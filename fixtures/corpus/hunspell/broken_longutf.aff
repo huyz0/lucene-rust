@@ -1,0 +1,5 @@
+# lucene-rust's own test dictionary: a malformed directive.
+SET UTF-8
+FLAG long
+SFX ĀĀ Y 1
+SFX ĀĀ 0 s .

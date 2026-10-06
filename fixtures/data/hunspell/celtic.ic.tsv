@@ -1,0 +1,49 @@
+W	a¢airð	0	a¢airð	a¢airð	a¢airð			aḃair	aḃair	1
+W	«a¢air	0	«a¢air	«a¢air	«a¢air					1
+W	«¡ach	0	«¡ach	«¡ach	«¡ach			ḃach	ḃach	1
+W	÷þbð	0	÷þbð	÷þbð	÷þbð					1
+W	cartt	0	cartt	cartt	cartt			cart	cart	1
+W	dðnn	0	dðnn	dðnn	dðnn					1
+W	¡achð	0	¡achð	¡achð	¡achð			ḃach	ḃach	1
+W	a¢air	0	a¢air	a¢air	a¢air			aḃair	aḃair	0
+W	÷þb	0	÷þb	÷þb	÷þb					0
+W	cart	1	cart	cart	cart	cart	AffixedWord[word=cart, entry=cart, prefixes=[], suffixes=[]]	cart	cart	0
+W	¡ach	0	¡ach	¡ach	¡ach			ḃach	ḃach	0
+W	dðn	0	dðn	dðn	dðn			dŵn	dŵn	0
+W	A¢AIRÐ	0	A¢AIRÐ	A¢AIRÐ	A¢AIRÐ			aḃair	aḃair	1
+W	A¢airð	0	A¢airð	A¢airð	A¢airð			aḃair	aḃair	1
+W	«A¢AIR	0	«A¢AIR	«A¢AIR	«A¢AIR					1
+W	«¡ACH	0	«¡ACH	«¡ACH	«¡ACH			ḃach	ḃach	1
+W	÷ÞBÐ	0	÷ÞBÐ	÷ÞBÐ	÷ÞBÐ					1
+W	CARTT	0	CARTT	CARTT	CARTT			cart	cart	1
+W	Cartt	0	Cartt	Cartt	Cartt			cart	cart	1
+W	DÐNN	0	DÐNN	DÐNN	DÐNN					1
+W	Dðnn	0	Dðnn	Dðnn	Dðnn					1
+W	¡ACHÐ	0	¡ACHÐ	¡ACHÐ	¡ACHÐ			ḃach	ḃach	1
+W	A¢AIR	0	A¢AIR	A¢AIR	A¢AIR			aḃair	aḃair	0
+W	A¢air	0	A¢air	A¢air	A¢air			aḃair	aḃair	1
+W	÷ÞB	0	÷ÞB	÷ÞB	÷ÞB					0
+W	CART	1	cart	cart	cart	cart	AffixedWord[word=CART, entry=cart, prefixes=[], suffixes=[]]	cart	cart	1
+W	Cart	1	cart	cart	cart	cart	AffixedWord[word=Cart, entry=cart, prefixes=[], suffixes=[]]	cart	cart	1
+W	¡ACH	0	¡ACH	¡ACH	¡ACH			ḃach	ḃach	1
+W	DÐN	0	DÐN	DÐN	DÐN			dŵn	dŵn	1
+W	Dðn	0	Dðn	Dðn	Dðn			dŵn	dŵn	1
+W	a¢arð	0	a¢arð	a¢arð	a¢arð					1
+W	¢aairð	0	¢aairð	¢aairð	¢aairð					1
+W	«a¢ir	0	«a¢ir	«a¢ir	«a¢ir					1
+W	a«¢air	0	a«¢air	a«¢air	a«¢air			aḃair	aḃair	1
+W	«¡ch	0	«¡ch	«¡ch	«¡ch					1
+W	¡«ach	0	¡«ach	¡«ach	¡«ach			ḃach	ḃach	1
+W	÷þð	0	÷þð	÷þð	÷þð					1
+W	þ÷bð	0	þ÷bð	þ÷bð	þ÷bð					1
+W	catt	0	catt	catt	catt			cart	cart	1
+W	acrtt	0	acrtt	acrtt	acrtt					1
+W	ðdnn	0	ðdnn	ðdnn	ðdnn					0
+W	¡ahð	0	¡ahð	¡ahð	¡ahð					1
+W	a¡chð	0	a¡chð	a¡chð	a¡chð					1
+E	a¢air	null	
+E	÷þb	null	
+E	cart	cart	AffixedWord[word=cart, entry=cart, prefixes=[], suffixes=[]]
+E	¡ach	null	
+E	dðn	null	
+G	AffixedWord[word=ṫŷb, entry=ṫŷb/S, prefixes=[], suffixes=[]]|AffixedWord[word=ṫŷbŵ, entry=ṫŷb/S, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=cart, entry=cart, prefixes=[], suffixes=[]]|AffixedWord[word=aḃair, entry=aḃair/DS, prefixes=[], suffixes=[]]|AffixedWord[word=ḋaḃair, entry=aḃair/DS, prefixes=[D(id=1)], suffixes=[]]|AffixedWord[word=aḃairŵ, entry=aḃair/DS, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=ḋaḃairŵ, entry=aḃair/DS, prefixes=[D(id=1)], suffixes=[S(id=0)]]|AffixedWord[word=ḃach, entry=ḃach/D, prefixes=[], suffixes=[]]|AffixedWord[word=ḋḃach, entry=ḃach/D, prefixes=[D(id=1)], suffixes=[]]|AffixedWord[word=dŵn, entry=dŵn, prefixes=[], suffixes=[]]

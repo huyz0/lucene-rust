@@ -1,0 +1,9 @@
+# lucene-rust's own test dictionary: the ISO8859-14 (Latin-8) charset.
+SET ISO8859-14
+TRY aΆ«πώ
+
+SFX S Y 1
+SFX S   0     π      .
+
+PFX D Y 1
+PFX D   0     «      .

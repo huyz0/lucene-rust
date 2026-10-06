@@ -1,0 +1,5 @@
+W	word	1	word	word	word	word	AffixedWord[word=word, entry=word/1, prefixes=[], suffixes=[]]	word	word	0
+W	WORD	1	word	word	word	word	AffixedWord[word=WORD, entry=word/1, prefixes=[], suffixes=[]]	word	word	1
+W	Word	1	word	word	word	word	AffixedWord[word=Word, entry=word/1, prefixes=[], suffixes=[]]	word	word	1
+E	word	word/1	AffixedWord[word=word, entry=word/1, prefixes=[], suffixes=[]]|AffixedWord[word=words, entry=word/1, prefixes=[], suffixes=[1(id=0)]]
+G	AffixedWord[word=word, entry=word/1, prefixes=[], suffixes=[]]|AffixedWord[word=words, entry=word/1, prefixes=[], suffixes=[1(id=0)]]

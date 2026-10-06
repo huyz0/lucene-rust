@@ -82,6 +82,12 @@ case "$BENCH" in
     SRC=benchmarks/micro/java/SnowballMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common" ;;
+  # M11 T11.4: HunspellStemFilter per dictionary over its fixture words.
+  hunspell)
+    MAIN=HunspellMicro
+    SRC=benchmarks/micro/java/HunspellMicro.java
+    EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-analysis-common" ;;
   # The per-area sweep: one Java class, the bench name as its first argument.
   vint|bitset|lz4|direct_monotonic|checksum|analysis|vectors|automaton|quantized|fst_build|bytes_ref_hash|bkd_build)
     MAIN=SweepMicro

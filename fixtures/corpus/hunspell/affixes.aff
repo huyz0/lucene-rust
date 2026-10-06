@@ -1,0 +1,49 @@
+# lucene-rust's own test dictionary: prefixes, suffixes, conditions,
+# continuation classes, homonyms, morphological data.
+SET UTF-8
+TRY esianrtolcdugmphbyfvkwz'
+WORDCHARS .'-
+KEY qwertyuiop|asdfghjkl|zxcvbnm
+FORBIDDENWORD !
+NEEDAFFIX ?
+KEEPCASE K
+NOSUGGEST N
+
+PFX R Y 1
+PFX R   0     re         .
+
+PFX U Y 2
+PFX U   0     un         [^n]
+PFX U   0     in         n
+
+PFX P N 1
+PFX P   0     pre        [aeiou]
+
+SFX S Y 4
+SFX S   y     ies        [^aeiou]y
+SFX S   0     s          [aeiou]y
+SFX S   0     es         [sxz]
+SFX S   0     s          [^sxyz]
+
+SFX D Y 4
+SFX D   0     d          e
+SFX D   y     ied        [^aeiou]y
+SFX D   0     ed         [^ey]
+SFX D   0     ed         [aeiou]y
+
+SFX G Y 2
+SFX G   e     ing        e
+SFX G   0     ing        [^e]
+
+SFX L Y 1
+SFX L   0     ly/S       .
+
+SFX N N 2
+SFX N   e     ion/S      e
+SFX N   0     ion/SD     [^e]
+
+SFX M Y 1
+SFX M   0     ment/S     .
+
+SFX Q Y 1
+SFX Q   0     ness       [^y]

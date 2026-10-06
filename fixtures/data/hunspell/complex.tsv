@@ -1,0 +1,107 @@
+W	gemachen	1	mach	mach	mach	mach	AffixedWord[word=gemachen, entry=mach/AE, prefixes=[A(id=0)], suffixes=[E(id=4)]]	gemachen	gemachen	1
+W	ungemachen	1	mach	mach	mach	mach	AffixedWord[word=ungemachen, entry=mach/AE, prefixes=[B(id=1), A(id=0)], suffixes=[E(id=4)]]			1
+W	gemach	1	mach	mach	mach	mach	AffixedWord[word=gemach, entry=mach/AE, prefixes=[A(id=0)], suffixes=[]]	gemach	gemach	1
+W	sagen	1	sag	sag	sag	sag	AffixedWord[word=sagen, entry=sag/AE, prefixes=[], suffixes=[E(id=4)]]	sagen	sagen	1
+W	belieb	1	lieb	lieb	lieb	lieb	AffixedWord[word=belieb, entry=lieb/CD, prefixes=[C(id=2)], suffixes=[]]	belieb|lieb	belieb|lieb	1
+W	liebt	0	liebt	liebt	liebt			lieb	lieb	1
+W	beliebt	1	lieb	lieb	lieb	lieb	AffixedWord[word=beliebt, entry=lieb/CD, prefixes=[C(id=2)], suffixes=[D(id=3)]]	beliebt|belieb|lieb	beliebt|belieb|lieb	1
+W	läufer	1	lauf	lauf	lauf	lauf	AffixedWord[word=läufer, entry=lauf/F, prefixes=[], suffixes=[F(id=5)]]	läufer	läufer	1
+W	großheit	1	groß	groß	groß	groß	AffixedWord[word=großheit, entry=groß/G, prefixes=[], suffixes=[G(id=6)]]	großheit	großheit	1
+W	GROSSHEIT	1	groß	groß	groß	groß	AffixedWord[word=GROSSHEIT, entry=groß/G, prefixes=[], suffixes=[G(id=6)]]			1
+W	STRASSE	1	straße	straße	straße	straße	AffixedWord[word=STRASSE, entry=straße/E, prefixes=[], suffixes=[]]	STRASSE|straße	STRASSE|straße	1
+W	STRASSEN	0	STRASSEN	STRASSEN	STRASSEN			STRASSEEN|straßeen	STRASSEEN|straßeen	1
+W	Straße	1	straße	straße	straße	straße	AffixedWord[word=Straße, entry=straße/E, prefixes=[], suffixes=[]]	Straße	Straße	1
+W	fischen	1	fisch	fisch	fisch	fisch	AffixedWord[word=fischen, entry=fisch/E, prefixes=[], suffixes=[E(id=4)]]	fischen	fischen	1
+W	ﬁschen	1	fisch	fisch	fisch	fisch	AffixedWord[word=ﬁschen, entry=fisch/E, prefixes=[], suffixes=[E(id=4)]]	fischen	fischen	1
+W	fi­schen	1	fisch	fisch	fisch	fisch	AffixedWord[word=fi­schen, entry=fisch/E, prefixes=[], suffixes=[E(id=4)]]	fischen	fischen	1
+W	o’clock	1	o'clock	o'clock	o'clock	o'clock	AffixedWord[word=o’clock, entry=o'clock, prefixes=[], suffixes=[]]	o'clock	o'clock	1
+W	O'CLOCK	1	o'clock	o'clock	o'clock	o'clock	AffixedWord[word=O'CLOCK, entry=o'clock, prefixes=[], suffixes=[]]	O'CLOCK	O'CLOCK	1
+W	mach	1	mach	mach	mach	mach	AffixedWord[word=mach, entry=mach/AE, prefixes=[], suffixes=[]]	mach	mach	0
+W	sag	1	sag	sag	sag	sag	AffixedWord[word=sag, entry=sag/AE, prefixes=[], suffixes=[]]	sag	sag	0
+W	lieb	1	lieb	lieb	lieb	lieb	AffixedWord[word=lieb, entry=lieb/CD, prefixes=[], suffixes=[]]	lieb	lieb	0
+W	lauf	1	lauf	lauf	lauf	lauf	AffixedWord[word=lauf, entry=lauf/F, prefixes=[], suffixes=[]]	lauf	lauf	0
+W	groß	1	groß	groß	groß	groß	AffixedWord[word=groß, entry=groß/G, prefixes=[], suffixes=[]]	groß	groß	0
+W	straße	1	straße	straße	straße	straße	AffixedWord[word=straße, entry=straße/E, prefixes=[], suffixes=[]]	straße	straße	0
+W	fisch	1	fisch	fisch	fisch	fisch	AffixedWord[word=fisch, entry=fisch/E, prefixes=[], suffixes=[]]	fisch	fisch	0
+W	o'clock	1	o'clock	o'clock	o'clock	o'clock	AffixedWord[word=o'clock, entry=o'clock, prefixes=[], suffixes=[]]	o'clock	o'clock	0
+W	GEMACHEN	1	mach	mach	mach	mach	AffixedWord[word=GEMACHEN, entry=mach/AE, prefixes=[A(id=0)], suffixes=[E(id=4)]]	GEMACHEN	GEMACHEN	1
+W	Gemachen	1	mach	mach	mach	mach	AffixedWord[word=Gemachen, entry=mach/AE, prefixes=[A(id=0)], suffixes=[E(id=4)]]	Gemachen	Gemachen	1
+W	UNGEMACHEN	1	mach	mach	mach	mach	AffixedWord[word=UNGEMACHEN, entry=mach/AE, prefixes=[B(id=1), A(id=0)], suffixes=[E(id=4)]]	UNGEMACHEN	UNGEMACHEN	1
+W	Ungemachen	1	mach	mach	mach	mach	AffixedWord[word=Ungemachen, entry=mach/AE, prefixes=[B(id=1), A(id=0)], suffixes=[E(id=4)]]			1
+W	GEMACH	1	mach	mach	mach	mach	AffixedWord[word=GEMACH, entry=mach/AE, prefixes=[A(id=0)], suffixes=[]]	GEMACH	GEMACH	1
+W	Gemach	1	mach	mach	mach	mach	AffixedWord[word=Gemach, entry=mach/AE, prefixes=[A(id=0)], suffixes=[]]	Gemach	Gemach	1
+W	SAGEN	1	sag	sag	sag	sag	AffixedWord[word=SAGEN, entry=sag/AE, prefixes=[], suffixes=[E(id=4)]]	SAGEN	SAGEN	1
+W	Sagen	1	sag	sag	sag	sag	AffixedWord[word=Sagen, entry=sag/AE, prefixes=[], suffixes=[E(id=4)]]	Sagen	Sagen	1
+W	BELIEB	1	lieb	lieb	lieb	lieb	AffixedWord[word=BELIEB, entry=lieb/CD, prefixes=[C(id=2)], suffixes=[]]	BELIEB|LIEB	BELIEB|LIEB	1
+W	Belieb	1	lieb	lieb	lieb	lieb	AffixedWord[word=Belieb, entry=lieb/CD, prefixes=[C(id=2)], suffixes=[]]	Belieb|Lieb	Belieb|Lieb	1
+W	LIEBT	0	LIEBT	LIEBT	LIEBT			LIEB	LIEB	1
+W	Liebt	0	Liebt	Liebt	Liebt			Lieb	Lieb	1
+W	BELIEBT	1	lieb	lieb	lieb	lieb	AffixedWord[word=BELIEBT, entry=lieb/CD, prefixes=[C(id=2)], suffixes=[D(id=3)]]	BELIEBT|BELIEB|LIEB	BELIEBT|BELIEB|LIEB	1
+W	Beliebt	1	lieb	lieb	lieb	lieb	AffixedWord[word=Beliebt, entry=lieb/CD, prefixes=[C(id=2)], suffixes=[D(id=3)]]	Beliebt|Belieb|Lieb	Beliebt|Belieb|Lieb	1
+W	LÄUFER	1	lauf	lauf	lauf	lauf	AffixedWord[word=LÄUFER, entry=lauf/F, prefixes=[], suffixes=[F(id=5)]]	LÄUFER	LÄUFER	1
+W	Läufer	1	lauf	lauf	lauf	lauf	AffixedWord[word=Läufer, entry=lauf/F, prefixes=[], suffixes=[F(id=5)]]	Läufer	Läufer	1
+W	Großheit	1	groß	groß	groß	groß	AffixedWord[word=Großheit, entry=groß/G, prefixes=[], suffixes=[G(id=6)]]	Großheit	Großheit	1
+W	FISCHEN	1	fisch	fisch	fisch	fisch	AffixedWord[word=FISCHEN, entry=fisch/E, prefixes=[], suffixes=[E(id=4)]]	FISCHEN	FISCHEN	1
+W	Fischen	1	fisch	fisch	fisch	fisch	AffixedWord[word=Fischen, entry=fisch/E, prefixes=[], suffixes=[E(id=4)]]	Fischen	Fischen	1
+W	FI­SCHEN	1	fisch	fisch	fisch	fisch	AffixedWord[word=FI­SCHEN, entry=fisch/E, prefixes=[], suffixes=[E(id=4)]]	FISCHEN	FISCHEN	1
+W	Fi­schen	1	fisch	fisch	fisch	fisch	AffixedWord[word=Fi­schen, entry=fisch/E, prefixes=[], suffixes=[E(id=4)]]	Fischen	Fischen	1
+W	O’CLOCK	1	o'clock	o'clock	o'clock	o'clock	AffixedWord[word=O’CLOCK, entry=o'clock, prefixes=[], suffixes=[]]	O'CLOCK	O'CLOCK	1
+W	O’clock	1	o'clock	o'clock	o'clock	o'clock	AffixedWord[word=O’clock, entry=o'clock, prefixes=[], suffixes=[]]	O'clock	O'clock	1
+W	MACH	1	mach	mach	mach	mach	AffixedWord[word=MACH, entry=mach/AE, prefixes=[], suffixes=[]]	MACH	MACH	1
+W	Mach	1	mach	mach	mach	mach	AffixedWord[word=Mach, entry=mach/AE, prefixes=[], suffixes=[]]	Mach	Mach	1
+W	SAG	1	sag	sag	sag	sag	AffixedWord[word=SAG, entry=sag/AE, prefixes=[], suffixes=[]]	SAG	SAG	1
+W	Sag	1	sag	sag	sag	sag	AffixedWord[word=Sag, entry=sag/AE, prefixes=[], suffixes=[]]	Sag	Sag	1
+W	LIEB	1	lieb	lieb	lieb	lieb	AffixedWord[word=LIEB, entry=lieb/CD, prefixes=[], suffixes=[]]	LIEB	LIEB	1
+W	Lieb	1	lieb	lieb	lieb	lieb	AffixedWord[word=Lieb, entry=lieb/CD, prefixes=[], suffixes=[]]	Lieb	Lieb	1
+W	LAUF	1	lauf	lauf	lauf	lauf	AffixedWord[word=LAUF, entry=lauf/F, prefixes=[], suffixes=[]]	LAUF	LAUF	1
+W	Lauf	1	lauf	lauf	lauf	lauf	AffixedWord[word=Lauf, entry=lauf/F, prefixes=[], suffixes=[]]	Lauf	Lauf	1
+W	GROSS	1	groß	groß	groß	groß	AffixedWord[word=GROSS, entry=groß/G, prefixes=[], suffixes=[]]	GROSS|groß	GROSS|groß	1
+W	Groß	1	groß	groß	groß	groß	AffixedWord[word=Groß, entry=groß/G, prefixes=[], suffixes=[]]	Groß	Groß	1
+W	FISCH	1	fisch	fisch	fisch	fisch	AffixedWord[word=FISCH, entry=fisch/E, prefixes=[], suffixes=[]]	FISCH	FISCH	1
+W	Fisch	1	fisch	fisch	fisch	fisch	AffixedWord[word=Fisch, entry=fisch/E, prefixes=[], suffixes=[]]	Fisch	Fisch	1
+W	O'clock	1	o'clock	o'clock	o'clock	o'clock	AffixedWord[word=O'clock, entry=o'clock, prefixes=[], suffixes=[]]	O'clock	O'clock	1
+W	gemahen	0	gemahen	gemahen	gemahen			gemachen	gemachen	1
+W	egmachen	0	egmachen	egmachen	egmachen			gemachen|machen	gemachen|machen	1
+W	ungemchen	0	ungemchen	ungemchen	ungemchen					1
+W	nugemachen	0	nugemachen	nugemachen	nugemachen			ungemachen	ungemachen	1
+W	gemch	0	gemch	gemch	gemch			gemach	gemach	1
+W	egmach	0	egmach	egmach	egmach			gemach|mach	gemach|mach	1
+W	saen	0	saen	saen	saen			sagen	sagen	1
+W	asgen	0	asgen	asgen	asgen			sagen	sagen	1
+W	beleb	0	beleb	beleb	beleb					1
+W	eblieb	0	eblieb	eblieb	eblieb			belieb|lieb	belieb|lieb	1
+W	libt	0	libt	libt	libt			lieb	lieb	1
+W	ilebt	0	ilebt	ilebt	ilebt					1
+W	belebt	0	belebt	belebt	belebt					1
+W	ebliebt	0	ebliebt	ebliebt	ebliebt			beliebt|lieb	beliebt|lieb	1
+W	läuer	0	läuer	läuer	läuer					1
+W	älufer	0	älufer	älufer	älufer			läufer	läufer	1
+W	großeit	0	großeit	großeit	großeit			groß	groß	1
+W	rgoßheit	0	rgoßheit	rgoßheit	rgoßheit			großheit	großheit	1
+W	GROSHEIT	0	GROSHEIT	GROSHEIT	GROSHEIT			GROSSHEIT|großheit	GROSSHEIT|großheit	1
+W	RGOSSHEIT	0	RGOSSHEIT	RGOSSHEIT	RGOSSHEIT					1
+W	STRSSE	0	STRSSE	STRSSE	STRSSE			STRASSE|straße	STRASSE|straße	1
+W	TSRASSE	0	TSRASSE	TSRASSE	TSRASSE					1
+W	STRASEN	0	STRASEN	STRASEN	STRASEN			STRASSEEN|straßeen	STRASSEEN|straßeen	1
+W	TSRASSEN	0	TSRASSEN	TSRASSEN	TSRASSEN					1
+W	Strße	0	Strße	Strße	Strße			Straße	Straße	1
+W	tSraße	0	tSraße	tSraße	tSraße			straße	straße	1
+W	fishen	0	fishen	fishen	fishen			fischen	fischen	1
+W	ifschen	0	ifschen	ifschen	ifschen			fischen|machen	fischen|machen	1
+W	ﬁscen	0	ﬁscen	ﬁscen	ﬁscen			fischen	fischen	1
+W	sﬁchen	0	sﬁchen	sﬁchen	sﬁchen			fischen|machen	fischen|machen	1
+W	fi­shen	0	fi­shen	fi­shen	fi­shen			fischen	fischen	1
+W	if­schen	0	if­schen	if­schen	if­schen			fischen|machen	fischen|machen	1
+W	o’cock	0	o’cock	o’cock	o’cock			o'clock	o'clock	1
+W	’oclock	0	’oclock	’oclock	’oclock			o'clock	o'clock	1
+W	O'COCK	0	O'COCK	O'COCK	O'COCK			O'CLOCK	O'CLOCK	1
+W	'OCLOCK	0	'OCLOCK	'OCLOCK	'OCLOCK			O'CLOCK	O'CLOCK	1
+E	mach	mach/AE	AffixedWord[word=mach, entry=mach/AE, prefixes=[], suffixes=[]]|AffixedWord[word=gemach, entry=mach/AE, prefixes=[A(id=0)], suffixes=[]]|AffixedWord[word=ungemach, entry=mach/AE, prefixes=[B(id=1), A(id=0)], suffixes=[]]|AffixedWord[word=machen, entry=mach/AE, prefixes=[], suffixes=[E(id=4)]]|AffixedWord[word=gemachen, entry=mach/AE, prefixes=[A(id=0)], suffixes=[E(id=4)]]|AffixedWord[word=ungemachen, entry=mach/AE, prefixes=[B(id=1), A(id=0)], suffixes=[E(id=4)]]
+E	sag	sag/AE	AffixedWord[word=sag, entry=sag/AE, prefixes=[], suffixes=[]]|AffixedWord[word=gesag, entry=sag/AE, prefixes=[A(id=0)], suffixes=[]]|AffixedWord[word=ungesag, entry=sag/AE, prefixes=[B(id=1), A(id=0)], suffixes=[]]|AffixedWord[word=sagen, entry=sag/AE, prefixes=[], suffixes=[E(id=4)]]|AffixedWord[word=gesagen, entry=sag/AE, prefixes=[A(id=0)], suffixes=[E(id=4)]]|AffixedWord[word=ungesagen, entry=sag/AE, prefixes=[B(id=1), A(id=0)], suffixes=[E(id=4)]]
+E	lieb	lieb/CD	AffixedWord[word=lieb, entry=lieb/CD, prefixes=[], suffixes=[]]|AffixedWord[word=belieb, entry=lieb/CD, prefixes=[C(id=2)], suffixes=[]]|AffixedWord[word=beliebt, entry=lieb/CD, prefixes=[C(id=2)], suffixes=[D(id=3)]]
+E	lauf	lauf/F	AffixedWord[word=lauf, entry=lauf/F, prefixes=[], suffixes=[]]|AffixedWord[word=läufer, entry=lauf/F, prefixes=[], suffixes=[F(id=5)]]
+E	groß	groß/G	AffixedWord[word=groß, entry=groß/G, prefixes=[], suffixes=[]]|AffixedWord[word=großheit, entry=groß/G, prefixes=[], suffixes=[G(id=6)]]
+E	straße	straße/E	AffixedWord[word=straße, entry=straße/E, prefixes=[], suffixes=[]]|AffixedWord[word=straßeen, entry=straße/E, prefixes=[], suffixes=[E(id=4)]]
+E	fisch	fisch/E	AffixedWord[word=fisch, entry=fisch/E, prefixes=[], suffixes=[]]|AffixedWord[word=fischen, entry=fisch/E, prefixes=[], suffixes=[E(id=4)]]
+E	o'clock	o'clock	AffixedWord[word=o'clock, entry=o'clock, prefixes=[], suffixes=[]]
+G	AffixedWord[word=sag, entry=sag/AE, prefixes=[], suffixes=[]]|AffixedWord[word=gesag, entry=sag/AE, prefixes=[A(id=0)], suffixes=[]]|AffixedWord[word=ungesag, entry=sag/AE, prefixes=[B(id=1), A(id=0)], suffixes=[]]|AffixedWord[word=sagen, entry=sag/AE, prefixes=[], suffixes=[E(id=4)]]|AffixedWord[word=gesagen, entry=sag/AE, prefixes=[A(id=0)], suffixes=[E(id=4)]]|AffixedWord[word=ungesagen, entry=sag/AE, prefixes=[B(id=1), A(id=0)], suffixes=[E(id=4)]]|AffixedWord[word=mach, entry=mach/AE, prefixes=[], suffixes=[]]|AffixedWord[word=gemach, entry=mach/AE, prefixes=[A(id=0)], suffixes=[]]|AffixedWord[word=ungemach, entry=mach/AE, prefixes=[B(id=1), A(id=0)], suffixes=[]]|AffixedWord[word=machen, entry=mach/AE, prefixes=[], suffixes=[E(id=4)]]|AffixedWord[word=gemachen, entry=mach/AE, prefixes=[A(id=0)], suffixes=[E(id=4)]]|AffixedWord[word=ungemachen, entry=mach/AE, prefixes=[B(id=1), A(id=0)], suffixes=[E(id=4)]]|AffixedWord[word=straße, entry=straße/E, prefixes=[], suffixes=[]]|AffixedWord[word=straßeen, entry=straße/E, prefixes=[], suffixes=[E(id=4)]]|AffixedWord[word=lieb, entry=lieb/CD, prefixes=[], suffixes=[]]|AffixedWord[word=belieb, entry=lieb/CD, prefixes=[C(id=2)], suffixes=[]]|AffixedWord[word=beliebt, entry=lieb/CD, prefixes=[C(id=2)], suffixes=[D(id=3)]]|AffixedWord[word=groß, entry=groß/G, prefixes=[], suffixes=[]]|AffixedWord[word=großheit, entry=groß/G, prefixes=[], suffixes=[G(id=6)]]|AffixedWord[word=fisch, entry=fisch/E, prefixes=[], suffixes=[]]|AffixedWord[word=fischen, entry=fisch/E, prefixes=[], suffixes=[E(id=4)]]|AffixedWord[word=o'clock, entry=o'clock, prefixes=[], suffixes=[]]|AffixedWord[word=lauf, entry=lauf/F, prefixes=[], suffixes=[]]|AffixedWord[word=läufer, entry=lauf/F, prefixes=[], suffixes=[F(id=5)]]

@@ -1,0 +1,4 @@
+# lucene-rust's own test dictionary: a malformed directive.
+AM 1
+AM po:noun
+AM po:verb

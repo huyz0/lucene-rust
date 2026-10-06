@@ -1,0 +1,184 @@
+W	fone	0	fone	fone	fone			phone	phone	0
+W	fones	0	fones	fones	fones			phones	phones	0
+W	nashun	0	nashun	nashun	nashun			nation	nation	1
+W	stashun	0	stashun	stashun	stashun			station	station	0
+W	alot	0	alot	alot	alot			a lot|lot	a lot|lot	1
+W	cafe	0	cafe	cafe	cafe			café	café	0
+W	strasse	0	strasse	strasse	strasse			straße	straße	1
+W	recieve	0	recieve	recieve	recieve			receive|believe	receive|believe	1
+W	beleive	0	beleive	beleive	beleive			believe|receive	believe|receive	1
+W	seperate	0	seperate	seperate	seperate			separate	separate	0
+W	definately	0	definately	definately	definately			definitely	definitely	1
+W	wensday	0	wensday	wensday	wensday			wednesday	wednesday	1
+W	Wensday	0	Wensday	Wensday	Wensday			wednesday	wednesday	1
+W	pritier	0	pritier	pritier	pritier					1
+W	prity	0	prity	prity	prity			pretty	pretty	1
+W	naugty	0	naugty	naugty	naugty					1
+W	appel	0	appel	appel	appel			apple	apple	1
+W	aple	0	aple	aple	aple			apple	apple	1
+W	banan	0	banan	banan	banan			banana	banana	0
+W	bananna	0	bananna	bananna	bananna			banana	banana	1
+W	apples	1	apple	apple	apple	apple	AffixedWord[word=apples, entry=apple/S, prefixes=[], suffixes=[S(id=0)]]	apples|apple	apples|apple	0
+W	applesbanana	0	applesbanana	applesbanana	applesbanana			apples banana|apples-banana	apples banana|apples-banana	1
+W	phonestation	0	phonestation	phonestation	phonestation			phone station|phone-station	phone station|phone-station	1
+W	qpple	0	qpple	qpple	qpple			apple	apple	0
+W	xyz	0	xyz	xyz	xyz					0
+W	phone	1	phone	phone	phone	phone	AffixedWord[word=phone, entry=phone/S, prefixes=[], suffixes=[]]	phone|phones	phone|phones	0
+W	nation	1	nation	nation	nation	nation	AffixedWord[word=nation, entry=nation/S, prefixes=[], suffixes=[]]	nation|nations	nation|nations	0
+W	station	1	station	station	station	station	AffixedWord[word=station, entry=station/S, prefixes=[], suffixes=[]]	station|stations	station|stations	0
+W	a	1	a	a	a	a	AffixedWord[word=a, entry=a, prefixes=[], suffixes=[]]	a	a	0
+W	lot	1	lot	lot	lot	lot	AffixedWord[word=lot, entry=lot/S, prefixes=[], suffixes=[]]	lot|lots	lot|lots	0
+W	café	1	café	café	café	café	AffixedWord[word=café, entry=café, prefixes=[], suffixes=[]]	café	café	0
+W	straße	1	straße	straße	straße	straße	AffixedWord[word=straße, entry=straße, prefixes=[], suffixes=[]]	straße	straße	0
+W	receive	1	receive	receive	receive	receive	AffixedWord[word=receive, entry=receive, prefixes=[], suffixes=[]]	receive	receive	0
+W	believe	1	believe	believe	believe	believe	AffixedWord[word=believe, entry=believe, prefixes=[], suffixes=[]]	believe	believe	0
+W	separate	1	separate	separate	separate	separate	AffixedWord[word=separate, entry=separate, prefixes=[], suffixes=[]]	separate	separate	0
+W	definitely	1	definitely	definitely	definitely	definitely	AffixedWord[word=definitely, entry=definitely, prefixes=[], suffixes=[]]	definitely	definitely	0
+W	Wednesday	1	wednesday	wednesday	wednesday	wednesday	AffixedWord[word=Wednesday, entry=wednesday, prefixes=[], suffixes=[]]	wednesday	wednesday	0
+W	pretty	1	pretty	pretty	pretty	pretty	AffixedWord[word=pretty, entry=pretty, prefixes=[], suffixes=[]]	pretty	pretty	0
+W	naughty	1	naughty	naughty	naughty	naughty	AffixedWord[word=naughty, entry=naughty/N, prefixes=[], suffixes=[]]			0
+W	apple	1	apple	apple	apple	apple	AffixedWord[word=apple, entry=apple/S, prefixes=[], suffixes=[]]	apple|apples	apple|apples	0
+W	banana	1	banana	banana	banana	banana	AffixedWord[word=banana, entry=banana/S, prefixes=[], suffixes=[]]	banana|bananas	banana|bananas	0
+W	FONE	0	FONE	FONE	FONE			phone	phone	0
+W	Fone	0	Fone	Fone	Fone			phone	phone	0
+W	FONES	0	FONES	FONES	FONES			phones	phones	1
+W	Fones	0	Fones	Fones	Fones			phones	phones	0
+W	NASHUN	0	NASHUN	NASHUN	NASHUN			nation	nation	0
+W	Nashun	0	Nashun	Nashun	Nashun			nation	nation	0
+W	STASHUN	0	STASHUN	STASHUN	STASHUN			station	station	1
+W	Stashun	0	Stashun	Stashun	Stashun			station	station	0
+W	ALOT	0	ALOT	ALOT	ALOT			a lot|lot	a lot|lot	1
+W	Alot	0	Alot	Alot	Alot			a lot|lot	a lot|lot	0
+W	CAFE	0	CAFE	CAFE	CAFE			café	café	0
+W	Cafe	0	Cafe	Cafe	Cafe			café	café	0
+W	STRASSE	0	STRASSE	STRASSE	STRASSE			straße	straße	0
+W	Strasse	0	Strasse	Strasse	Strasse			straße	straße	1
+W	RECIEVE	0	RECIEVE	RECIEVE	RECIEVE			receive|believe	receive|believe	1
+W	Recieve	0	Recieve	Recieve	Recieve			receive|believe	receive|believe	1
+W	BELEIVE	0	BELEIVE	BELEIVE	BELEIVE			believe|receive	believe|receive	1
+W	Beleive	0	Beleive	Beleive	Beleive			believe|receive	believe|receive	1
+W	SEPERATE	0	SEPERATE	SEPERATE	SEPERATE			separate	separate	1
+W	Seperate	0	Seperate	Seperate	Seperate			separate	separate	1
+W	DEFINATELY	0	DEFINATELY	DEFINATELY	DEFINATELY			definitely	definitely	1
+W	Definately	0	Definately	Definately	Definately			definitely	definitely	1
+W	WENSDAY	0	WENSDAY	WENSDAY	WENSDAY			wednesday	wednesday	1
+W	PRITIER	0	PRITIER	PRITIER	PRITIER					1
+W	Pritier	0	Pritier	Pritier	Pritier					1
+W	PRITY	0	PRITY	PRITY	PRITY			pretty	pretty	1
+W	Prity	0	Prity	Prity	Prity			pretty	pretty	1
+W	NAUGTY	0	NAUGTY	NAUGTY	NAUGTY					0
+W	Naugty	0	Naugty	Naugty	Naugty					1
+W	APPEL	0	APPEL	APPEL	APPEL			apple	apple	1
+W	Appel	0	Appel	Appel	Appel			apple	apple	1
+W	APLE	0	APLE	APLE	APLE			apple	apple	1
+W	Aple	0	Aple	Aple	Aple			apple	apple	1
+W	BANAN	0	BANAN	BANAN	BANAN			banana	banana	1
+W	Banan	0	Banan	Banan	Banan			banana	banana	1
+W	BANANNA	0	BANANNA	BANANNA	BANANNA			banana	banana	1
+W	Bananna	0	Bananna	Bananna	Bananna			banana	banana	1
+W	APPLES	1	apple	apple	apple	apple	AffixedWord[word=APPLES, entry=apple/S, prefixes=[], suffixes=[S(id=0)]]	apples|apple	apples|apple	1
+W	Apples	1	apple	apple	apple	apple	AffixedWord[word=Apples, entry=apple/S, prefixes=[], suffixes=[S(id=0)]]	apples|apple	apples|apple	1
+W	APPLESBANANA	0	APPLESBANANA	APPLESBANANA	APPLESBANANA			apples banana|apples-banana	apples banana|apples-banana	1
+W	Applesbanana	0	Applesbanana	Applesbanana	Applesbanana			apples banana|apples-banana	apples banana|apples-banana	1
+W	PHONESTATION	0	PHONESTATION	PHONESTATION	PHONESTATION			phone station|phone-station	phone station|phone-station	1
+W	Phonestation	0	Phonestation	Phonestation	Phonestation			phone station|phone-station	phone station|phone-station	1
+W	QPPLE	0	QPPLE	QPPLE	QPPLE			apple	apple	1
+W	Qpple	0	Qpple	Qpple	Qpple			apple	apple	0
+W	XYZ	0	XYZ	XYZ	XYZ					1
+W	Xyz	0	Xyz	Xyz	Xyz					1
+W	PHONE	1	phone	phone	phone	phone	AffixedWord[word=PHONE, entry=phone/S, prefixes=[], suffixes=[]]	phone|phones	phone|phones	0
+W	Phone	1	phone	phone	phone	phone	AffixedWord[word=Phone, entry=phone/S, prefixes=[], suffixes=[]]	phone|phones	phone|phones	0
+W	NATION	1	nation	nation	nation	nation	AffixedWord[word=NATION, entry=nation/S, prefixes=[], suffixes=[]]	nation|nations	nation|nations	1
+W	Nation	1	nation	nation	nation	nation	AffixedWord[word=Nation, entry=nation/S, prefixes=[], suffixes=[]]	nation|nations	nation|nations	0
+W	STATION	1	station	station	station	station	AffixedWord[word=STATION, entry=station/S, prefixes=[], suffixes=[]]	station|stations	station|stations	1
+W	Station	1	station	station	station	station	AffixedWord[word=Station, entry=station/S, prefixes=[], suffixes=[]]	station|stations	station|stations	0
+W	A	1	a	a	a	a	AffixedWord[word=A, entry=a, prefixes=[], suffixes=[]]	a	a	0
+W	LOT	1	lot	lot	lot	lot	AffixedWord[word=LOT, entry=lot/S, prefixes=[], suffixes=[]]	lot|lots	lot|lots	1
+W	Lot	1	lot	lot	lot	lot	AffixedWord[word=Lot, entry=lot/S, prefixes=[], suffixes=[]]	lot|lots	lot|lots	1
+W	CAFÉ	1	café	café	café	café	AffixedWord[word=CAFÉ, entry=café, prefixes=[], suffixes=[]]	café	café	1
+W	Café	1	café	café	café	café	AffixedWord[word=Café, entry=café, prefixes=[], suffixes=[]]	café	café	0
+W	Straße	1	straße	straße	straße	straße	AffixedWord[word=Straße, entry=straße, prefixes=[], suffixes=[]]	straße	straße	0
+W	RECEIVE	1	receive	receive	receive	receive	AffixedWord[word=RECEIVE, entry=receive, prefixes=[], suffixes=[]]	receive	receive	1
+W	Receive	1	receive	receive	receive	receive	AffixedWord[word=Receive, entry=receive, prefixes=[], suffixes=[]]	receive	receive	0
+W	BELIEVE	1	believe	believe	believe	believe	AffixedWord[word=BELIEVE, entry=believe, prefixes=[], suffixes=[]]	believe	believe	1
+W	Believe	1	believe	believe	believe	believe	AffixedWord[word=Believe, entry=believe, prefixes=[], suffixes=[]]	believe	believe	0
+W	SEPARATE	1	separate	separate	separate	separate	AffixedWord[word=SEPARATE, entry=separate, prefixes=[], suffixes=[]]	separate	separate	1
+W	Separate	1	separate	separate	separate	separate	AffixedWord[word=Separate, entry=separate, prefixes=[], suffixes=[]]	separate	separate	1
+W	DEFINITELY	1	definitely	definitely	definitely	definitely	AffixedWord[word=DEFINITELY, entry=definitely, prefixes=[], suffixes=[]]	definitely	definitely	1
+W	Definitely	1	definitely	definitely	definitely	definitely	AffixedWord[word=Definitely, entry=definitely, prefixes=[], suffixes=[]]	definitely	definitely	0
+W	WEDNESDAY	1	wednesday	wednesday	wednesday	wednesday	AffixedWord[word=WEDNESDAY, entry=wednesday, prefixes=[], suffixes=[]]	wednesday	wednesday	1
+W	PRETTY	1	pretty	pretty	pretty	pretty	AffixedWord[word=PRETTY, entry=pretty, prefixes=[], suffixes=[]]	pretty	pretty	1
+W	Pretty	1	pretty	pretty	pretty	pretty	AffixedWord[word=Pretty, entry=pretty, prefixes=[], suffixes=[]]	pretty	pretty	0
+W	NAUGHTY	1	naughty	naughty	naughty	naughty	AffixedWord[word=NAUGHTY, entry=naughty/N, prefixes=[], suffixes=[]]			1
+W	Naughty	1	naughty	naughty	naughty	naughty	AffixedWord[word=Naughty, entry=naughty/N, prefixes=[], suffixes=[]]			0
+W	APPLE	1	apple	apple	apple	apple	AffixedWord[word=APPLE, entry=apple/S, prefixes=[], suffixes=[]]	apple|apples	apple|apples	1
+W	Apple	1	apple	apple	apple	apple	AffixedWord[word=Apple, entry=apple/S, prefixes=[], suffixes=[]]	apple|apples	apple|apples	1
+W	BANANA	1	banana	banana	banana	banana	AffixedWord[word=BANANA, entry=banana/S, prefixes=[], suffixes=[]]	banana|bananas	banana|bananas	1
+W	Banana	1	banana	banana	banana	banana	AffixedWord[word=Banana, entry=banana/S, prefixes=[], suffixes=[]]	banana|bananas	banana|bananas	1
+W	foe	0	foe	foe	foe					0
+W	ofne	0	ofne	ofne	ofne			phone	phone	1
+W	foes	0	foes	foes	foes			phones	phones	1
+W	ofnes	0	ofnes	ofnes	ofnes			phones	phones	1
+W	nasun	0	nasun	nasun	nasun			nation	nation	1
+W	anshun	0	anshun	anshun	anshun					1
+W	stahun	0	stahun	stahun	stahun			station	station	0
+W	tsashun	0	tsashun	tsashun	tsashun					0
+W	alt	0	alt	alt	alt			apple	apple	1
+W	laot	0	laot	laot	laot			lot	lot	1
+W	cae	0	cae	cae	cae			café	café	0
+W	acfe	0	acfe	acfe	acfe					1
+W	strsse	0	strsse	strsse	strsse			straße	straße	0
+W	tsrasse	0	tsrasse	tsrasse	tsrasse					1
+W	receve	0	receve	receve	receve			receive	receive	1
+W	ercieve	0	ercieve	ercieve	ercieve			believe	believe	1
+W	belive	0	belive	belive	belive			believe	believe	0
+W	ebleive	0	ebleive	ebleive	ebleive			receive	receive	1
+W	sepeate	0	sepeate	sepeate	sepeate			separate	separate	1
+W	esperate	0	esperate	esperate	esperate			separate	separate	1
+W	defintely	0	defintely	defintely	defintely			definitely	definitely	1
+W	edfinately	0	edfinately	edfinately	edfinately			definitely	definitely	1
+W	wenday	0	wenday	wenday	wenday			wednesday	wednesday	0
+W	ewnsday	0	ewnsday	ewnsday	ewnsday			wednesday	wednesday	1
+W	Wenday	0	Wenday	Wenday	Wenday			wednesday	wednesday	1
+W	eWnsday	0	eWnsday	eWnsday	eWnsday			wednesday	wednesday	1
+W	priier	0	priier	priier	priier					1
+W	rpitier	0	rpitier	rpitier	rpitier					1
+W	prty	0	prty	prty	prty			pretty	pretty	0
+W	rpity	0	rpity	rpity	rpity					0
+W	nauty	0	nauty	nauty	nauty			nation	nation	1
+W	anugty	0	anugty	anugty	anugty					1
+W	apel	0	apel	apel	apel			apple	apple	1
+W	papel	0	papel	papel	papel			apple	apple	1
+W	ape	0	ape	ape	ape			apple	apple	0
+W	pale	0	pale	pale	pale			apple	apple	0
+W	baan	0	baan	baan	baan			banana	banana	1
+W	abnan	0	abnan	abnan	abnan			banana	banana	0
+W	bannna	0	bannna	bannna	bannna			banana	banana	1
+W	abnanna	0	abnanna	abnanna	abnanna			banana	banana	1
+W	appes	0	appes	appes	appes			apples|apple	apples|apple	1
+W	paples	0	paples	paples	paples			apples|apple	apples|apple	1
+W	applesanana	0	applesanana	applesanana	applesanana					0
+W	paplesbanana	0	paplesbanana	paplesbanana	paplesbanana					1
+W	phonesation	0	phonesation	phonesation	phonesation			station	station	1
+W	hponestation	0	hponestation	hponestation	hponestation					1
+W	qple	0	qple	qple	qple			apple	apple	1
+W	pqple	0	pqple	pqple	pqple			apple	apple	1
+W	xz	0	xz	xz	xz					0
+W	yxz	0	yxz	yxz	yxz					0
+E	phone	phone/S	AffixedWord[word=phone, entry=phone/S, prefixes=[], suffixes=[]]|AffixedWord[word=phones, entry=phone/S, prefixes=[], suffixes=[S(id=0)]]
+E	nation	nation/S	AffixedWord[word=nation, entry=nation/S, prefixes=[], suffixes=[]]|AffixedWord[word=nations, entry=nation/S, prefixes=[], suffixes=[S(id=0)]]
+E	station	station/S	AffixedWord[word=station, entry=station/S, prefixes=[], suffixes=[]]|AffixedWord[word=stations, entry=station/S, prefixes=[], suffixes=[S(id=0)]]
+E	a	a	AffixedWord[word=a, entry=a, prefixes=[], suffixes=[]]
+E	lot	lot/S	AffixedWord[word=lot, entry=lot/S, prefixes=[], suffixes=[]]|AffixedWord[word=lots, entry=lot/S, prefixes=[], suffixes=[S(id=0)]]
+E	café	café	AffixedWord[word=café, entry=café, prefixes=[], suffixes=[]]
+E	straße	straße	AffixedWord[word=straße, entry=straße, prefixes=[], suffixes=[]]
+E	receive	receive	AffixedWord[word=receive, entry=receive, prefixes=[], suffixes=[]]
+E	believe	believe	AffixedWord[word=believe, entry=believe, prefixes=[], suffixes=[]]
+E	separate	separate	AffixedWord[word=separate, entry=separate, prefixes=[], suffixes=[]]
+E	definitely	definitely	AffixedWord[word=definitely, entry=definitely, prefixes=[], suffixes=[]]
+E	Wednesday	null	
+E	pretty	pretty	AffixedWord[word=pretty, entry=pretty, prefixes=[], suffixes=[]]
+E	naughty	naughty/N	AffixedWord[word=naughty, entry=naughty/N, prefixes=[], suffixes=[]]
+E	apple	apple/S	AffixedWord[word=apple, entry=apple/S, prefixes=[], suffixes=[]]|AffixedWord[word=apples, entry=apple/S, prefixes=[], suffixes=[S(id=0)]]
+E	banana	banana/S	AffixedWord[word=banana, entry=banana/S, prefixes=[], suffixes=[]]|AffixedWord[word=bananas, entry=banana/S, prefixes=[], suffixes=[S(id=0)]]
+G	AffixedWord[word=lot, entry=lot/S, prefixes=[], suffixes=[]]|AffixedWord[word=lots, entry=lot/S, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=café, entry=café, prefixes=[], suffixes=[]]|AffixedWord[word=a, entry=a, prefixes=[], suffixes=[]]|AffixedWord[word=separate, entry=separate, prefixes=[], suffixes=[]]|AffixedWord[word=receive, entry=receive, prefixes=[], suffixes=[]]|AffixedWord[word=definitely, entry=definitely, prefixes=[], suffixes=[]]|AffixedWord[word=wednesday, entry=wednesday, prefixes=[], suffixes=[]]|AffixedWord[word=naughty, entry=naughty/N, prefixes=[], suffixes=[]]|AffixedWord[word=nation, entry=nation/S, prefixes=[], suffixes=[]]|AffixedWord[word=nations, entry=nation/S, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=straße, entry=straße, prefixes=[], suffixes=[]]|AffixedWord[word=pretty, entry=pretty, prefixes=[], suffixes=[]]|AffixedWord[word=apple, entry=apple/S, prefixes=[], suffixes=[]]|AffixedWord[word=apples, entry=apple/S, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=banana, entry=banana/S, prefixes=[], suffixes=[]]|AffixedWord[word=bananas, entry=banana/S, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=station, entry=station/S, prefixes=[], suffixes=[]]|AffixedWord[word=stations, entry=station/S, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=believe, entry=believe, prefixes=[], suffixes=[]]|AffixedWord[word=phone, entry=phone/S, prefixes=[], suffixes=[]]|AffixedWord[word=phones, entry=phone/S, prefixes=[], suffixes=[S(id=0)]]

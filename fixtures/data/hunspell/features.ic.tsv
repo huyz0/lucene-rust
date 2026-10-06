@@ -1,0 +1,1294 @@
+W	1st	0	1st	1st	1st			best	best	1
+W	11th	1	11th	11th	11th			11th	11th	1
+W	21st	0	21st	21st	21st			12st|2st	12st|2st	1
+W	2nd	1	2nd	2nd	2nd			2nd	2nd	1
+W	3rd	0	3rd	3rd	3rd			3nd|bird	bird	0
+W	13th	1	13th	13th	13th			13th	13th	0
+W	1th	1	1th	1th	1th			1th	1th	1
+W	st	0	st	st	st			set|best	set|best	0
+W	sunrise	0	sunrise	sunrise	sunrise			sun rise|sun-rise|rise	sun rise|sun-rise|rise	1
+W	sunset	1	sunset	sunset	sunset			Sunset	Sunset	1
+W	sunriseset	1	sunriseset	sunriseset	sunriseset			Sunriseset	Sunriseset	1
+W	risesun	0	risesun	risesun	risesun			rise sun|rise-sun|rise	rise sun|rise-sun|rise	0
+W	fozar	1	fozar	fozar	fozar			Fozar	Fozar	0
+W	foobar	0	foobar	foobar	foobar			foo bar|foo-bar	foo bar|foo-bar	1
+W	barfoo	1	barfoo	barfoo	barfoo			Barfoo	Barfoo	1
+W	barbaz	0	barbaz	barbaz	barbaz			bazbar|barbar|bar baz|bar-baz|baz	bazbar|barbar|bar baz|bar-baz|baz	0
+W	Barbaz	0	Barbaz	Barbaz	Barbaz			bazbar|barbar|bar baz|bar-baz|baz	bazbar|barbar|bar baz|bar-baz|baz	1
+W	bazbar	1	bazbar	bazbar	bazbar			Bazbar	Bazbar	0
+W	alot	0	alot	alot	alot			a lot	a lot|lot	0
+W	anew	0	anew	anew	anew			new|a new	new|a new	0
+W	aNew	0	aNew	aNew	aNew			new|a new	new|a new	1
+W	hello.World	0	hello.World	hello.World	hello.World					0
+W	hello.world	0	hello.world	hello.world	hello.world					1
+W	Hello.World	0	Hello.World	Hello.World	Hello.World					0
+W	act.	1	act.	act.	act.			Act.	Act.	1
+W	act..	1	act..	act..	act..			Act..	Act..	1
+W	dog...	1	dog...	dog...	dog...			Dog...	Dog...	1
+W	xy.	0	xy.	xy.	xy.					0
+W	.	1	.	.	.			a|c	a|c	0
+W	..	1	..	..	..					0
+W	abs	0	abs	abs	abs			acs|abc|aby|ab-cs	acs|abc|aby|ab-cs	0
+W	ab-cs	1	ab-c	ab-c	ab-c	ab-c	AffixedWord[word=ab-cs, entry=ab-c/A, prefixes=[], suffixes=[A(id=0)]]	Ab-cs	Ab-cs	0
+W	cas	1	ca	ca	ca	ca	AffixedWord[word=cas, entry=ca/A, prefixes=[], suffixes=[A(id=0)]]	Cas	Cas	0
+W	cbs	0	cbs	cbs	cbs			bcs|cs|cb|cas	bcs|cs|cb|cas	0
+W	ces	0	ces	ces	ces			cs|ce|cas	cs|ce|cas	0
+W	laeer	1	lae	lae	lae	lae	AffixedWord[word=laeer, entry=lae/A, prefixes=[], suffixes=[A(id=1)]]	Laeer	Laeer	1
+W	caer	1	ca	ca	ca	ca	AffixedWord[word=caer, entry=ca/A, prefixes=[], suffixes=[A(id=1)]]	Caer	Caer	0
+W	x	1	x	x	x	x	AffixedWord[word=x, entry=x/B, prefixes=[], suffixes=[]]	X	X	0
+W	xx	0	xx	xx	xx			x|x x	x|x x	0
+W	aby	1	aby	aby	aby	aby	AffixedWord[word=aby, entry=aby/B, prefixes=[], suffixes=[]]	Aby	Aby	0
+W	abies	0	abies	abies	abies			ab-cs	ab-cs	1
+W	abx	0	abx	abx	abx			abc|aby	abc|aby	0
+W	xd	0	xd	xd	xd			x|xcd	x|xcd	0
+W	abcd	1	abcd	abcd	abcd	abcd	AffixedWord[word=abcd, entry=abcd/G, prefixes=[], suffixes=[]]	Abcd	Abcd	0
+W	xcd	1	abcd	abcd	abcd	abcd	AffixedWord[word=xcd, entry=abcd/G, prefixes=[G(id=5)], suffixes=[]]	Xcd	Xcd	0
+W	reab-c	0	reab-c	reab-c	reab-c			reabcd|bear-c|reabcd-c	reabcd|bear-c|reabcd-c	0
+W	re-x	0	re-x	re-x	re-x			ce-x|care-x	ce-x|care-x	1
+W	hoping	0	hoping	hoping	hoping			hope	hope	1
+W	hopeing	0	hopeing	hopeing	hopeing			hope	hope	0
+W	mak	0	mak	mak	mak			make	make	0
+W	making	0	making	making	making			make	make	1
+W	fone	0	fone	fone	fone			phone	phone|bone	1
+W	fon	0	fon	fon	fon			foo	foo	1
+W	tuff	0	tuff	tuff	tuff			tough	tough	1
+W	nite	0	nite	nite	nite			night	night	1
+W	teh	0	teh	teh	teh			death	death	1
+W	pariss	0	pariss	pariss	pariss			paris	paris	0
+W	nato	1	nato	nato	nato	nato	AffixedWord[word=nato, entry=nato, prefixes=[], suffixes=[]]	Nato	Nato	1
+W	Nato	1	nato	nato	nato	nato	AffixedWord[word=Nato, entry=nato, prefixes=[], suffixes=[]]	Nato	Nato	0
+W	dictionery	0	dictionery	dictionery	dictionery			dictionary|condition	dictionary|condition	0
+W	dicshunary	0	dicshunary	dicshunary	dicshunary			dictionary	dictionary	1
+W	contian	0	contian	contian	contian			contain	contain	0
+W	cappital	0	cappital	cappital	cappital			capital|captain	capital|captain	0
+W	beutiful	0	beutiful	beutiful	beutiful					1
+W	beauti	0	beauti	beauti	beauti			beauty	beauty	0
+W	dessert	0	dessert	dessert	dessert			desert|dress	desert|dress	0
+W	desighn	0	desighn	desighn	desighn			design|describe	design|describe	1
+W	agianst	0	agianst	agianst	agianst			against	against	1
+W	cuntry	0	cuntry	cuntry	cuntry			country|current	country|current	0
+W	brigt	0	brigt	brigt	brigt			bright	bright	1
+W	wrold	0	wrold	wrold	wrold			world	world	1
+W	crese	0	crese	crese	crese			crease|create	crease|create	0
+W	doubel	0	doubel	doubel	doubel			double	double	1
+W	kat	0	kat	kat	kat			cat	cat	0
+W	bok	0	bok	bok	bok			book|boy|box	book|boy|box	0
+W	climbb	0	climbb	climbb	climbb			climb	climb	0
+W	abouut	0	abouut	abouut	abouut			about|above	about|above	1
+W	deterimne	0	deterimne	deterimne	deterimne			determine	determine	1
+W	corect	0	corect	corect	corect			correct|direct	correct|direct	0
+W	a-lot	1	a-lot	a-lot	a-lot			A-lot	A-lot	1
+W	a lot	1	a lot	a lot	a lot	a lot	AffixedWord[word=a lot, entry=a lot, prefixes=[], suffixes=[]]	A lot	A lot	1
+W	dog-cat	1	dog-cat	dog-cat	dog-cat			Dog-cat	Dog-cat	1
+W	dog-cta	0	dog-cta	dog-cta	dog-cta			dog-cat|dog-ca|dog-act	dog-cat|dog-ca|dog-act	0
+W	catdog	0	catdog	catdog	catdog			cat dog|cat-dog|catch	cat dog|cat-dog|catch	1
+W	acen	0	acen	acen	acen			chance	chance	0
+W	bcen	0	bcen	bcen	bcen			center	center	1
+W	-cen	0	-cen	-cen	-cen			center	center	0
+W	cen	0	cen	cen	cen			ce|can	ce|can	0
+W	abyied	0	abyied	abyied	abyied			aby	aby	1
+W	abzied	0	abzied	abzied	abzied					1
+W	yd	0	yd	yd	yd			ycd	ycd	0
+W	ybcd	0	ybcd	ybcd	ybcd			ycd|abcd	ycd|abcd	0
+W	pneumonoultramicroscopicsilicovolcanoconiosis	1	pneumonoultramicroscopicsilicovolcanoconiosis	pneumonoultramicroscopicsilicovolcanoconiosis	pneumonoultramicroscopicsilicovolcanoconiosis	pneumonoultramicroscopicsilicovolcanoconiosis	AffixedWord[word=pneumonoultramicroscopicsilicovolcanoconiosis, entry=pneumonoultramicroscopicsilicovolcanoconiosis, prefixes=[], suffixes=[]]	Pneumonoultramicroscopicsilicovolcanoconiosis	Pneumonoultramicroscopicsilicovolcanoconiosis	0
+W	pneumonoultramicroscopicsilicovolcanoconiosiss	0	pneumonoultramicroscopicsilicovolcanoconiosiss	pneumonoultramicroscopicsilicovolcanoconiosiss	pneumonoultramicroscopicsilicovolcanoconiosiss			pneumonoultramicroscopicsilicovolcanoconiosis	pneumonoultramicroscopicsilicovolcanoconiosis	0
+W	-c	1	-c	-c	-c	-c	AffixedWord[word=-c, entry=-c/A, prefixes=[], suffixes=[]]	-c	-c	0
+W	0	1	0	0	0	0	AffixedWord[word=0, entry=0/mn, prefixes=[], suffixes=[]]	0|a|c	0|a|c	0
+W	1	1	1	1	1	1	AffixedWord[word=1, entry=1/1n, prefixes=[], suffixes=[]]	1|a|c	1|a|c	0
+W	2	1	2	2	2	2	AffixedWord[word=2, entry=2/mn, prefixes=[], suffixes=[]]	2|a|c	2|a|c	0
+W	3	1	3	3	3	3	AffixedWord[word=3, entry=3/mn, prefixes=[], suffixes=[]]	3|a|c	3|a|c	0
+W	NATO	1	nato	nato	nato	nato	AffixedWord[word=NATO, entry=nato, prefixes=[], suffixes=[]]	Nato	Nato	0
+W	Paris	1	paris	paris	paris	paris	AffixedWord[word=Paris, entry=paris, prefixes=[], suffixes=[]]	Paris	Paris	0
+W	World	1	world	world	world	world	AffixedWord[word=World, entry=world, prefixes=[], suffixes=[]]	World	World	0
+W	\c	0	\c	\c	\c			c|ac|bc	c|ac|bc	0
+W	a	1	a	a	a	a	AffixedWord[word=a, entry=a, prefixes=[], suffixes=[]]	A	A	0
+W	ab-c	1	ab-c	ab-c	ab-c	ab-c	AffixedWord[word=ab-c, entry=ab-c/A, prefixes=[], suffixes=[]]	Ab-c	Ab-c	0
+W	abc	1	abc	abc	abc	abc	AffixedWord[word=abc, entry=abc/B, prefixes=[], suffixes=[]]	Abc	Abc	0
+W	about	1	about	about	about	about	AffixedWord[word=about, entry=about, prefixes=[], suffixes=[]]	About	About	0
+W	above	1	above	above	above	above	AffixedWord[word=above, entry=above, prefixes=[], suffixes=[]]	Above	Above	0
+W	ac	1	ac	ac	ac	ac	AffixedWord[word=ac, entry=ac/A, prefixes=[], suffixes=[]]	Ac	Ac	0
+W	across	1	across	across	across	across	AffixedWord[word=across, entry=across, prefixes=[], suffixes=[]]	Across	Across	0
+W	act	1	act	act	act	act	AffixedWord[word=act, entry=act, prefixes=[], suffixes=[]]	Act	Act	0
+W	add	1	add	add	add	add	AffixedWord[word=add, entry=add, prefixes=[], suffixes=[]]	Add	Add	0
+W	after	1	after	after	after	after	AffixedWord[word=after, entry=after, prefixes=[], suffixes=[]]	After	After	0
+W	again	1	again	again	again	again	AffixedWord[word=again, entry=again, prefixes=[], suffixes=[]]	Again	Again	0
+W	against	1	against	against	against	against	AffixedWord[word=against, entry=against, prefixes=[], suffixes=[]]	Against	Against	0
+W	age	1	age	age	age	age	AffixedWord[word=age, entry=age, prefixes=[], suffixes=[]]	Age	Age	0
+W	ago	1	ago	ago	ago	ago	AffixedWord[word=ago, entry=ago, prefixes=[], suffixes=[]]	Ago	Ago	0
+W	agree	1	agree	agree	agree	agree	AffixedWord[word=agree, entry=agree, prefixes=[], suffixes=[]]	Agree	Agree	0
+W	air	1	air	air	air	air	AffixedWord[word=air, entry=air, prefixes=[], suffixes=[]]	Air	Air	0
+W	all	1	all	all	all	all	AffixedWord[word=all, entry=all, prefixes=[], suffixes=[]]	All	All	0
+W	almost	1	almost	almost	almost	almost	AffixedWord[word=almost, entry=almost, prefixes=[], suffixes=[]]	Almost	Almost	0
+W	alone	1	alone	alone	alone	alone	AffixedWord[word=alone, entry=alone, prefixes=[], suffixes=[]]	Alone	Alone	0
+W	along	1	along	along	along	along	AffixedWord[word=along, entry=along, prefixes=[], suffixes=[]]	Along	Along	0
+W	already	1	already	already	already	already	AffixedWord[word=already, entry=already, prefixes=[], suffixes=[]]	Already	Already	0
+W	also	1	also	also	also	also	AffixedWord[word=also, entry=also, prefixes=[], suffixes=[]]	Also	Also	0
+W	always	1	always	always	always	always	AffixedWord[word=always, entry=always, prefixes=[], suffixes=[]]	Always	Always	0
+W	among	1	among	among	among	among	AffixedWord[word=among, entry=among, prefixes=[], suffixes=[]]	Among	Among	0
+W	amount	1	amount	amount	amount	amount	AffixedWord[word=amount, entry=amount, prefixes=[], suffixes=[]]	Amount	Amount	0
+W	and	1	and	and	and	and	AffixedWord[word=and, entry=and, prefixes=[], suffixes=[]]	And	And	0
+W	animal	1	animal	animal	animal	animal	AffixedWord[word=animal, entry=animal, prefixes=[], suffixes=[]]	Animal	Animal	0
+W	answer	1	answer	answer	answer	answer	AffixedWord[word=answer, entry=answer, prefixes=[], suffixes=[]]	Answer	Answer	0
+W	any	1	any	any	any	any	AffixedWord[word=any, entry=any, prefixes=[], suffixes=[]]	Any	Any	0
+W	appear	1	appear	appear	appear	appear	AffixedWord[word=appear, entry=appear, prefixes=[], suffixes=[]]	Appear	Appear	0
+W	apple	1	apple	apple	apple	apple	AffixedWord[word=apple, entry=apple, prefixes=[], suffixes=[]]	Apple	Apple	0
+W	area	1	area	area	area	area	AffixedWord[word=area, entry=area, prefixes=[], suffixes=[]]	Area	Area	0
+W	arm	1	arm	arm	arm	arm	AffixedWord[word=arm, entry=arm, prefixes=[], suffixes=[]]	Arm	Arm	0
+W	around	1	around	around	around	around	AffixedWord[word=around, entry=around, prefixes=[], suffixes=[]]	Around	Around	0
+W	arrive	1	arrive	arrive	arrive	arrive	AffixedWord[word=arrive, entry=arrive, prefixes=[], suffixes=[]]	Arrive	Arrive	0
+W	art	1	art	art	art	art	AffixedWord[word=art, entry=art, prefixes=[], suffixes=[]]	Art	Art	0
+W	ask	1	ask	ask	ask	ask	AffixedWord[word=ask, entry=ask, prefixes=[], suffixes=[]]	Ask	Ask	0
+W	away	1	away	away	away	away	AffixedWord[word=away, entry=away, prefixes=[], suffixes=[]]	Away	Away	0
+W	baby	1	baby	baby	baby	baby	AffixedWord[word=baby, entry=baby, prefixes=[], suffixes=[]]	Baby	Baby	0
+W	back	1	back	back	back	back	AffixedWord[word=back, entry=back, prefixes=[], suffixes=[]]	Back	Back	0
+W	bad	1	bad	bad	bad	bad	AffixedWord[word=bad, entry=bad, prefixes=[], suffixes=[]]	Bad	Bad	0
+W	bag	1	bag	bag	bag	bag	AffixedWord[word=bag, entry=bag, prefixes=[], suffixes=[]]	Bag	Bag	0
+W	ball	1	ball	ball	ball	ball	AffixedWord[word=ball, entry=ball, prefixes=[], suffixes=[]]	Ball	Ball	0
+W	bank	1	bank	bank	bank	bank	AffixedWord[word=bank, entry=bank, prefixes=[], suffixes=[]]	Bank	Bank	0
+W	bar	1	bar	bar	bar	bar	AffixedWord[word=bar, entry=bar/C, prefixes=[], suffixes=[]]	Bar	Bar	0
+W	base	1	base	base	base	base	AffixedWord[word=base, entry=base, prefixes=[], suffixes=[]]	Base	Base	0
+W	basket	1	basket	basket	basket	basket	AffixedWord[word=basket, entry=basket, prefixes=[], suffixes=[]]	Basket	Basket	0
+W	baz	1	baz	baz	baz	baz	AffixedWord[word=baz, entry=baz/CU, prefixes=[], suffixes=[]]	Baz	Baz	0
+W	bc	1	bc	bc	bc	bc	AffixedWord[word=bc, entry=bc/A, prefixes=[], suffixes=[]]	Bc	Bc	0
+W	bear	1	bear	bear	bear	bear	AffixedWord[word=bear, entry=bear, prefixes=[], suffixes=[]]	Bear	Bear	0
+W	beat	1	beat	beat	beat	beat	AffixedWord[word=beat, entry=beat, prefixes=[], suffixes=[]]	Beat	Beat	0
+W	beauty	1	beauty	beauty	beauty	beauty	AffixedWord[word=beauty, entry=beauty, prefixes=[], suffixes=[]]	Beauty	Beauty	0
+W	bed	1	bed	bed	bed	bed	AffixedWord[word=bed, entry=bed, prefixes=[], suffixes=[]]	Bed	Bed	0
+W	before	1	before	before	before	before	AffixedWord[word=before, entry=before, prefixes=[], suffixes=[]]	Before	Before	0
+W	begin	1	begin	begin	begin	begin	AffixedWord[word=begin, entry=begin, prefixes=[], suffixes=[]]	Begin	Begin	0
+W	behind	1	behind	behind	behind	behind	AffixedWord[word=behind, entry=behind, prefixes=[], suffixes=[]]	Behind	Behind	0
+W	believe	1	believe	believe	believe	believe	AffixedWord[word=believe, entry=believe, prefixes=[], suffixes=[]]	Believe	Believe	0
+W	bell	1	bell	bell	bell	bell	AffixedWord[word=bell, entry=bell, prefixes=[], suffixes=[]]	Bell	Bell	0
+W	best	1	best	best	best	best	AffixedWord[word=best, entry=best, prefixes=[], suffixes=[]]	Best	Best	0
+W	better	1	better	better	better	better	AffixedWord[word=better, entry=better, prefixes=[], suffixes=[]]	Better	Better	0
+W	between	1	between	between	between	between	AffixedWord[word=between, entry=between, prefixes=[], suffixes=[]]	Between	Between	0
+W	big	1	big	big	big	big	AffixedWord[word=big, entry=big, prefixes=[], suffixes=[]]	Big	Big	0
+W	bird	1	bird	bird	bird	bird	AffixedWord[word=bird, entry=bird, prefixes=[], suffixes=[]]	Bird	Bird	0
+W	black	1	black	black	black	black	AffixedWord[word=black, entry=black, prefixes=[], suffixes=[]]	Black	Black	0
+W	blood	1	blood	blood	blood	blood	AffixedWord[word=blood, entry=blood, prefixes=[], suffixes=[]]	Blood	Blood	0
+W	blue	1	blue	blue	blue	blue	AffixedWord[word=blue, entry=blue, prefixes=[], suffixes=[]]	Blue	Blue	0
+W	board	1	board	board	board	board	AffixedWord[word=board, entry=board, prefixes=[], suffixes=[]]	Board	Board	0
+W	boat	1	boat	boat	boat	boat	AffixedWord[word=boat, entry=boat, prefixes=[], suffixes=[]]	Boat	Boat	0
+W	body	1	body	body	body	body	AffixedWord[word=body, entry=body, prefixes=[], suffixes=[]]	Body	Body	0
+W	bone	1	bone	bone	bone	bone	AffixedWord[word=bone, entry=bone, prefixes=[], suffixes=[]]	Bone	Bone	0
+W	book	1	book	book	book	book	AffixedWord[word=book, entry=book, prefixes=[], suffixes=[]]	Book	Book	0
+W	born	1	born	born	born	born	AffixedWord[word=born, entry=born, prefixes=[], suffixes=[]]	Born	Born	0
+W	both	1	both	both	both	both	AffixedWord[word=both, entry=both, prefixes=[], suffixes=[]]	Both	Both	0
+W	bottom	1	bottom	bottom	bottom	bottom	AffixedWord[word=bottom, entry=bottom, prefixes=[], suffixes=[]]	Bottom	Bottom	0
+W	box	1	box	box	box	box	AffixedWord[word=box, entry=box, prefixes=[], suffixes=[]]	Box	Box	0
+W	boy	1	boy	boy	boy	boy	AffixedWord[word=boy, entry=boy, prefixes=[], suffixes=[]]	Boy	Boy	0
+W	bread	1	bread	bread	bread	bread	AffixedWord[word=bread, entry=bread, prefixes=[], suffixes=[]]	Bread	Bread	0
+W	break	1	break	break	break	break	AffixedWord[word=break, entry=break, prefixes=[], suffixes=[]]	Break	Break	0
+W	bright	1	bright	bright	bright	bright	AffixedWord[word=bright, entry=bright, prefixes=[], suffixes=[]]	Bright	Bright	0
+W	bring	1	bring	bring	bring	bring	AffixedWord[word=bring, entry=bring, prefixes=[], suffixes=[]]	Bring	Bring	0
+W	brother	1	brother	brother	brother	brother	AffixedWord[word=brother, entry=brother, prefixes=[], suffixes=[]]	Brother	Brother	0
+W	brown	1	brown	brown	brown	brown	AffixedWord[word=brown, entry=brown, prefixes=[], suffixes=[]]	Brown	Brown	0
+W	build	1	build	build	build	build	AffixedWord[word=build, entry=build, prefixes=[], suffixes=[]]	Build	Build	0
+W	burn	1	burn	burn	burn	burn	AffixedWord[word=burn, entry=burn, prefixes=[], suffixes=[]]	Burn	Burn	0
+W	busy	1	busy	busy	busy	busy	AffixedWord[word=busy, entry=busy, prefixes=[], suffixes=[]]	Busy	Busy	0
+W	buy	1	buy	buy	buy	buy	AffixedWord[word=buy, entry=buy, prefixes=[], suffixes=[]]	Buy	Buy	0
+W	ca	1	ca	ca	ca	ca	AffixedWord[word=ca, entry=ca/A, prefixes=[], suffixes=[]]	Ca	Ca	0
+W	call	1	call	call	call	call	AffixedWord[word=call, entry=call, prefixes=[], suffixes=[]]	Call	Call	0
+W	camp	1	camp	camp	camp	camp	AffixedWord[word=camp, entry=camp, prefixes=[], suffixes=[]]	Camp	Camp	0
+W	can	1	can	can	can	can	AffixedWord[word=can, entry=can, prefixes=[], suffixes=[]]	Can	Can	0
+W	capital	1	capital	capital	capital	capital	AffixedWord[word=capital, entry=capital, prefixes=[], suffixes=[]]	Capital	Capital	0
+W	captain	1	captain	captain	captain	captain	AffixedWord[word=captain, entry=captain, prefixes=[], suffixes=[]]	Captain	Captain	0
+W	car	1	car	car	car	car	AffixedWord[word=car, entry=car, prefixes=[], suffixes=[]]	Car	Car	0
+W	card	1	card	card	card	card	AffixedWord[word=card, entry=card, prefixes=[], suffixes=[]]	Card	Card	0
+W	care	1	care	care	care	care	AffixedWord[word=care, entry=care, prefixes=[], suffixes=[]]	Care	Care	0
+W	carry	1	carry	carry	carry	carry	AffixedWord[word=carry, entry=carry, prefixes=[], suffixes=[]]	Carry	Carry	0
+W	case	1	case	case	case	case	AffixedWord[word=case, entry=case, prefixes=[], suffixes=[]]	Case	Case	0
+W	cat	1	cat	cat	cat	cat	AffixedWord[word=cat, entry=cat, prefixes=[], suffixes=[]]	Cat	Cat	0
+W	catch	1	catch	catch	catch	catch	AffixedWord[word=catch, entry=catch, prefixes=[], suffixes=[]]	Catch	Catch	0
+W	cause	1	cause	cause	cause	cause	AffixedWord[word=cause, entry=cause, prefixes=[], suffixes=[]]	Cause	Cause	0
+W	cb	1	cb	cb	cb	cb	AffixedWord[word=cb, entry=cb/A, prefixes=[], suffixes=[]]	Cb	Cb	0
+W	ce	1	ce	ce	ce	ce	AffixedWord[word=ce, entry=ce/A, prefixes=[], suffixes=[]]	Ce	Ce	0
+W	cell	1	cell	cell	cell	cell	AffixedWord[word=cell, entry=cell, prefixes=[], suffixes=[]]	Cell	Cell	0
+W	center	1	center	center	center	center	AffixedWord[word=center, entry=center, prefixes=[], suffixes=[]]	Center	Center	0
+W	chair	1	chair	chair	chair	chair	AffixedWord[word=chair, entry=chair, prefixes=[], suffixes=[]]	Chair	Chair	0
+W	chance	1	chance	chance	chance	chance	AffixedWord[word=chance, entry=chance, prefixes=[], suffixes=[]]	Chance	Chance	0
+W	change	1	change	change	change	change	AffixedWord[word=change, entry=change, prefixes=[], suffixes=[]]	Change	Change	0
+W	charge	1	charge	charge	charge	charge	AffixedWord[word=charge, entry=charge, prefixes=[], suffixes=[]]	Charge	Charge	0
+W	check	1	check	check	check	check	AffixedWord[word=check, entry=check, prefixes=[], suffixes=[]]	Check	Check	0
+W	child	1	child	child	child	child	AffixedWord[word=child, entry=child, prefixes=[], suffixes=[]]	Child	Child	0
+W	choose	1	choose	choose	choose	choose	AffixedWord[word=choose, entry=choose, prefixes=[], suffixes=[]]	Choose	Choose	0
+W	church	1	church	church	church	church	AffixedWord[word=church, entry=church, prefixes=[], suffixes=[]]	Church	Church	0
+W	circle	1	circle	circle	circle	circle	AffixedWord[word=circle, entry=circle, prefixes=[], suffixes=[]]	Circle	Circle	0
+W	city	1	city	city	city	city	AffixedWord[word=city, entry=city, prefixes=[], suffixes=[]]	City	City	0
+W	class	1	class	class	class	class	AffixedWord[word=class, entry=class, prefixes=[], suffixes=[]]	Class	Class	0
+W	clean	1	clean	clean	clean	clean	AffixedWord[word=clean, entry=clean, prefixes=[], suffixes=[]]	Clean	Clean	0
+W	clear	1	clear	clear	clear	clear	AffixedWord[word=clear, entry=clear, prefixes=[], suffixes=[]]	Clear	Clear	0
+W	climb	1	climb	climb	climb	climb	AffixedWord[word=climb, entry=climb, prefixes=[], suffixes=[]]	Climb	Climb	0
+W	clock	1	clock	clock	clock	clock	AffixedWord[word=clock, entry=clock, prefixes=[], suffixes=[]]	Clock	Clock	0
+W	close	1	close	close	close	close	AffixedWord[word=close, entry=close, prefixes=[], suffixes=[]]	Close	Close	0
+W	cloud	1	cloud	cloud	cloud	cloud	AffixedWord[word=cloud, entry=cloud, prefixes=[], suffixes=[]]	Cloud	Cloud	0
+W	coast	1	coast	coast	coast	coast	AffixedWord[word=coast, entry=coast, prefixes=[], suffixes=[]]	Coast	Coast	0
+W	coat	1	coat	coat	coat	coat	AffixedWord[word=coat, entry=coat, prefixes=[], suffixes=[]]	Coat	Coat	0
+W	cold	1	cold	cold	cold	cold	AffixedWord[word=cold, entry=cold, prefixes=[], suffixes=[]]	Cold	Cold	0
+W	color	1	color	color	color	color	AffixedWord[word=color, entry=color, prefixes=[], suffixes=[]]	Color	Color	0
+W	come	1	come	come	come	come	AffixedWord[word=come, entry=come, prefixes=[], suffixes=[]]	Come	Come	0
+W	common	1	common	common	common	common	AffixedWord[word=common, entry=common, prefixes=[], suffixes=[]]	Common	Common	0
+W	company	1	company	company	company	company	AffixedWord[word=company, entry=company, prefixes=[], suffixes=[]]	Company	Company	0
+W	compare	1	compare	compare	compare	compare	AffixedWord[word=compare, entry=compare, prefixes=[], suffixes=[]]	Compare	Compare	0
+W	complete	1	complete	complete	complete	complete	AffixedWord[word=complete, entry=complete, prefixes=[], suffixes=[]]	Complete	Complete	0
+W	condition	1	condition	condition	condition	condition	AffixedWord[word=condition, entry=condition, prefixes=[], suffixes=[]]	Condition	Condition	0
+W	consider	1	consider	consider	consider	consider	AffixedWord[word=consider, entry=consider, prefixes=[], suffixes=[]]	Consider	Consider	0
+W	contain	1	contain	contain	contain	contain	AffixedWord[word=contain, entry=contain, prefixes=[], suffixes=[]]	Contain	Contain	0
+W	continue	1	continue	continue	continue	continue	AffixedWord[word=continue, entry=continue, prefixes=[], suffixes=[]]	Continue	Continue	0
+W	control	1	control	control	control	control	AffixedWord[word=control, entry=control, prefixes=[], suffixes=[]]	Control	Control	0
+W	cook	1	cook	cook	cook	cook	AffixedWord[word=cook, entry=cook, prefixes=[], suffixes=[]]	Cook	Cook	0
+W	cool	1	cool	cool	cool	cool	AffixedWord[word=cool, entry=cool, prefixes=[], suffixes=[]]	Cool	Cool	0
+W	copy	1	copy	copy	copy	copy	AffixedWord[word=copy, entry=copy, prefixes=[], suffixes=[]]	Copy	Copy	0
+W	corn	1	corn	corn	corn	corn	AffixedWord[word=corn, entry=corn, prefixes=[], suffixes=[]]	Corn	Corn	0
+W	corner	1	corner	corner	corner	corner	AffixedWord[word=corner, entry=corner, prefixes=[], suffixes=[]]	Corner	Corner	0
+W	correct	1	correct	correct	correct	correct	AffixedWord[word=correct, entry=correct, prefixes=[], suffixes=[]]	Correct	Correct	0
+W	cost	1	cost	cost	cost	cost	AffixedWord[word=cost, entry=cost, prefixes=[], suffixes=[]]	Cost	Cost	0
+W	cotton	1	cotton	cotton	cotton	cotton	AffixedWord[word=cotton, entry=cotton, prefixes=[], suffixes=[]]	Cotton	Cotton	0
+W	could	1	could	could	could	could	AffixedWord[word=could, entry=could, prefixes=[], suffixes=[]]	Could	Could	0
+W	count	1	count	count	count	count	AffixedWord[word=count, entry=count, prefixes=[], suffixes=[]]	Count	Count	0
+W	country	1	country	country	country	country	AffixedWord[word=country, entry=country, prefixes=[], suffixes=[]]	Country	Country	0
+W	course	1	course	course	course	course	AffixedWord[word=course, entry=course, prefixes=[], suffixes=[]]	Course	Course	0
+W	cover	1	cover	cover	cover	cover	AffixedWord[word=cover, entry=cover, prefixes=[], suffixes=[]]	Cover	Cover	0
+W	cow	1	cow	cow	cow	cow	AffixedWord[word=cow, entry=cow, prefixes=[], suffixes=[]]	Cow	Cow	0
+W	crease	1	crease	crease	crease	crease	AffixedWord[word=crease, entry=crease, prefixes=[], suffixes=[]]	Crease	Crease	0
+W	create	1	create	create	create	create	AffixedWord[word=create, entry=create, prefixes=[], suffixes=[]]	Create	Create	0
+W	crop	1	crop	crop	crop	crop	AffixedWord[word=crop, entry=crop, prefixes=[], suffixes=[]]	Crop	Crop	0
+W	cross	1	cross	cross	cross	cross	AffixedWord[word=cross, entry=cross, prefixes=[], suffixes=[]]	Cross	Cross	0
+W	crowd	1	crowd	crowd	crowd	crowd	AffixedWord[word=crowd, entry=crowd, prefixes=[], suffixes=[]]	Crowd	Crowd	0
+W	cry	1	cry	cry	cry	cry	AffixedWord[word=cry, entry=cry, prefixes=[], suffixes=[]]	Cry	Cry	0
+W	current	1	current	current	current	current	AffixedWord[word=current, entry=current, prefixes=[], suffixes=[]]	Current	Current	0
+W	cut	1	cut	cut	cut	cut	AffixedWord[word=cut, entry=cut, prefixes=[], suffixes=[]]	Cut	Cut	0
+W	dance	1	dance	dance	dance	dance	AffixedWord[word=dance, entry=dance, prefixes=[], suffixes=[]]	Dance	Dance	0
+W	danger	1	danger	danger	danger	danger	AffixedWord[word=danger, entry=danger, prefixes=[], suffixes=[]]	Danger	Danger	0
+W	dark	1	dark	dark	dark	dark	AffixedWord[word=dark, entry=dark, prefixes=[], suffixes=[]]	Dark	Dark	0
+W	day	1	day	day	day	day	AffixedWord[word=day, entry=day, prefixes=[], suffixes=[]]	Day	Day	0
+W	dead	1	dead	dead	dead	dead	AffixedWord[word=dead, entry=dead, prefixes=[], suffixes=[]]	Dead	Dead	0
+W	deal	1	deal	deal	deal	deal	AffixedWord[word=deal, entry=deal, prefixes=[], suffixes=[]]	Deal	Deal	0
+W	dear	1	dear	dear	dear	dear	AffixedWord[word=dear, entry=dear, prefixes=[], suffixes=[]]	Dear	Dear	0
+W	death	1	death	death	death	death	AffixedWord[word=death, entry=death, prefixes=[], suffixes=[]]	Death	Death	0
+W	decide	1	decide	decide	decide	decide	AffixedWord[word=decide, entry=decide, prefixes=[], suffixes=[]]	Decide	Decide	0
+W	deep	1	deep	deep	deep	deep	AffixedWord[word=deep, entry=deep, prefixes=[], suffixes=[]]	Deep	Deep	0
+W	degree	1	degree	degree	degree	degree	AffixedWord[word=degree, entry=degree, prefixes=[], suffixes=[]]	Degree	Degree	0
+W	depend	1	depend	depend	depend	depend	AffixedWord[word=depend, entry=depend, prefixes=[], suffixes=[]]	Depend	Depend	0
+W	describe	1	describe	describe	describe	describe	AffixedWord[word=describe, entry=describe, prefixes=[], suffixes=[]]	Describe	Describe	0
+W	desert	1	desert	desert	desert	desert	AffixedWord[word=desert, entry=desert, prefixes=[], suffixes=[]]	Desert	Desert	0
+W	design	1	design	design	design	design	AffixedWord[word=design, entry=design, prefixes=[], suffixes=[]]	Design	Design	0
+W	determine	1	determine	determine	determine	determine	AffixedWord[word=determine, entry=determine, prefixes=[], suffixes=[]]	Determine	Determine	0
+W	develop	1	develop	develop	develop	develop	AffixedWord[word=develop, entry=develop, prefixes=[], suffixes=[]]	Develop	Develop	0
+W	dictionary	1	dictionary	dictionary	dictionary	dictionary	AffixedWord[word=dictionary, entry=dictionary, prefixes=[], suffixes=[]]	Dictionary	Dictionary	0
+W	differ	1	differ	differ	differ	differ	AffixedWord[word=differ, entry=differ, prefixes=[], suffixes=[]]	Differ	Differ	0
+W	difficult	1	difficult	difficult	difficult	difficult	AffixedWord[word=difficult, entry=difficult, prefixes=[], suffixes=[]]	Difficult	Difficult	0
+W	direct	1	direct	direct	direct	direct	AffixedWord[word=direct, entry=direct, prefixes=[], suffixes=[]]	Direct	Direct	0
+W	discuss	1	discuss	discuss	discuss	discuss	AffixedWord[word=discuss, entry=discuss, prefixes=[], suffixes=[]]	Discuss	Discuss	0
+W	distant	1	distant	distant	distant	distant	AffixedWord[word=distant, entry=distant, prefixes=[], suffixes=[]]	Distant	Distant	0
+W	divide	1	divide	divide	divide	divide	AffixedWord[word=divide, entry=divide, prefixes=[], suffixes=[]]	Divide	Divide	0
+W	doctor	1	doctor	doctor	doctor	doctor	AffixedWord[word=doctor, entry=doctor, prefixes=[], suffixes=[]]	Doctor	Doctor	0
+W	dog	1	dog	dog	dog	dog	AffixedWord[word=dog, entry=dog, prefixes=[], suffixes=[]]	Dog	Dog	0
+W	dollar	1	dollar	dollar	dollar	dollar	AffixedWord[word=dollar, entry=dollar, prefixes=[], suffixes=[]]	Dollar	Dollar	0
+W	door	1	door	door	door	door	AffixedWord[word=door, entry=door, prefixes=[], suffixes=[]]	Door	Door	0
+W	double	1	double	double	double	double	AffixedWord[word=double, entry=double, prefixes=[], suffixes=[]]	Double	Double	0
+W	down	1	down	down	down	down	AffixedWord[word=down, entry=down, prefixes=[], suffixes=[]]	Down	Down	0
+W	draw	1	draw	draw	draw	draw	AffixedWord[word=draw, entry=draw, prefixes=[], suffixes=[]]	Draw	Draw	0
+W	dream	1	dream	dream	dream	dream	AffixedWord[word=dream, entry=dream, prefixes=[], suffixes=[]]	Dream	Dream	0
+W	dress	1	dress	dress	dress	dress	AffixedWord[word=dress, entry=dress, prefixes=[], suffixes=[]]	Dress	Dress	0
+W	drink	1	drink	drink	drink	drink	AffixedWord[word=drink, entry=drink, prefixes=[], suffixes=[]]	Drink	Drink	0
+W	drive	1	drive	drive	drive	drive	AffixedWord[word=drive, entry=drive, prefixes=[], suffixes=[]]	Drive	Drive	0
+W	drop	1	drop	drop	drop	drop	AffixedWord[word=drop, entry=drop, prefixes=[], suffixes=[]]	Drop	Drop	0
+W	dry	1	dry	dry	dry	dry	AffixedWord[word=dry, entry=dry, prefixes=[], suffixes=[]]	Dry	Dry	0
+W	duck	1	duck	duck	duck	duck	AffixedWord[word=duck, entry=duck, prefixes=[], suffixes=[]]	Duck	Duck	0
+W	during	1	during	during	during	during	AffixedWord[word=during, entry=during, prefixes=[], suffixes=[]]	During	During	0
+W	foo	1	foo	foo	foo	foo	AffixedWord[word=foo, entry=foo/C, prefixes=[], suffixes=[]]	Foo	Foo	0
+W	hello	1	hello	hello	hello	hello	AffixedWord[word=hello, entry=hello, prefixes=[], suffixes=[]]	Hello	Hello	0
+W	hope	1	hope	hope	hope	hope	AffixedWord[word=hope, entry=hope/H, prefixes=[], suffixes=[]]	Hope	Hope	0
+W	lae	1	lae	lae	lae	lae	AffixedWord[word=lae, entry=lae/A, prefixes=[], suffixes=[]]	Lae	Lae	0
+W	lot	1	lot	lot	lot	lot	AffixedWord[word=lot, entry=lot, prefixes=[], suffixes=[]]	Lot	Lot	0
+W	make	1	make	make	make	make	AffixedWord[word=make, entry=make/H, prefixes=[], suffixes=[]]	Make	Make	0
+W	nd	0	nd	nd	nd			and	and	0
+W	new	1	new	new	new	new	AffixedWord[word=new, entry=new, prefixes=[], suffixes=[]]	New	New	0
+W	night	1	night	night	night	night	AffixedWord[word=night, entry=night, prefixes=[], suffixes=[]]	Night	Night	0
+W	phone	1	phone	phone	phone	phone	AffixedWord[word=phone, entry=phone, prefixes=[], suffixes=[]]	Phone	Phone	0
+W	rise	1	rise	rise	rise	rise	AffixedWord[word=rise, entry=rise/w, prefixes=[], suffixes=[]]	Rise	Rise	0
+W	set	1	set	set	set	set	AffixedWord[word=set, entry=set/z, prefixes=[], suffixes=[]]	Set	Set	0
+W	sun	1	sun	sun	sun	sun	AffixedWord[word=sun, entry=sun/y, prefixes=[], suffixes=[]]	Sun	Sun	0
+W	th	0	th	th	th			both	both	0
+W	tough	1	tough	tough	tough	tough	AffixedWord[word=tough, entry=tough, prefixes=[], suffixes=[]]	Tough	Tough	0
+W	1ST	0	1ST	1ST	1ST			best	best	1
+W	11TH	1	11TH	11TH	11TH			11th	11th	1
+W	21ST	0	21ST	21ST	21ST			12st|2st	12st|2st	1
+W	2ND	1	2ND	2ND	2ND			2nd	2nd	1
+W	3RD	0	3RD	3RD	3RD			3nd|bird	bird	0
+W	13TH	1	13TH	13TH	13TH			13th	13th	0
+W	1TH	1	1TH	1TH	1TH			1th	1th	1
+W	ST	0	ST	ST	ST			set|best	set|best	0
+W	St	0	St	St	St			set|best	set|best	0
+W	SUNRISE	0	SUNRISE	SUNRISE	SUNRISE			sun rise|sun-rise|rise	sun rise|sun-rise|rise	1
+W	Sunrise	0	Sunrise	Sunrise	Sunrise			sun rise|sun-rise|rise	sun rise|sun-rise|rise	1
+W	SUNSET	1	SUNSET	SUNSET	SUNSET			Sunset	Sunset	0
+W	Sunset	1	Sunset	Sunset	Sunset			Sunset	Sunset	1
+W	SUNRISESET	1	SUNRISESET	SUNRISESET	SUNRISESET			Sunriseset	Sunriseset	1
+W	Sunriseset	1	Sunriseset	Sunriseset	Sunriseset			Sunriseset	Sunriseset	1
+W	RISESUN	0	RISESUN	RISESUN	RISESUN			rise sun|rise-sun|rise	rise sun|rise-sun|rise	1
+W	Risesun	0	Risesun	Risesun	Risesun			rise sun|rise-sun|rise	rise sun|rise-sun|rise	1
+W	FOZAR	1	FOZAR	FOZAR	FOZAR			Fozar	Fozar	1
+W	Fozar	1	Fozar	Fozar	Fozar			Fozar	Fozar	0
+W	FOOBAR	0	FOOBAR	FOOBAR	FOOBAR			foo bar|foo-bar	foo bar|foo-bar	1
+W	Foobar	0	Foobar	Foobar	Foobar			foo bar|foo-bar	foo bar|foo-bar	1
+W	BARFOO	1	BARFOO	BARFOO	BARFOO			Barfoo	Barfoo	1
+W	Barfoo	1	Barfoo	Barfoo	Barfoo			Barfoo	Barfoo	1
+W	BARBAZ	0	BARBAZ	BARBAZ	BARBAZ			bazbar|barbar|bar baz|bar-baz|baz	bazbar|barbar|bar baz|bar-baz|baz	1
+W	BAZBAR	1	BAZBAR	BAZBAR	BAZBAR			Bazbar	Bazbar	1
+W	Bazbar	1	Bazbar	Bazbar	Bazbar			Bazbar	Bazbar	0
+W	ALOT	0	ALOT	ALOT	ALOT			a lot	a lot|lot	0
+W	Alot	0	Alot	Alot	Alot			a lot	a lot|lot	0
+W	ANEW	0	ANEW	ANEW	ANEW			new|a new	new|a new	1
+W	Anew	0	Anew	Anew	Anew			new|a new	new|a new	0
+W	ANew	0	ANew	ANew	ANew			new|a new	new|a new	1
+W	HELLO.WORLD	0	HELLO.WORLD	HELLO.WORLD	HELLO.WORLD					1
+W	Hello.world	0	Hello.world	Hello.world	Hello.world					1
+W	ACT.	1	ACT.	ACT.	ACT.			Act.	Act.	1
+W	Act.	1	Act.	Act.	Act.			Act.	Act.	1
+W	ACT..	1	ACT..	ACT..	ACT..			Act..	Act..	1
+W	Act..	1	Act..	Act..	Act..			Act..	Act..	1
+W	DOG...	1	DOG...	DOG...	DOG...			Dog...	Dog...	1
+W	Dog...	1	Dog...	Dog...	Dog...			Dog...	Dog...	1
+W	XY.	0	XY.	XY.	XY.					0
+W	Xy.	0	Xy.	Xy.	Xy.					1
+W	ABS	0	ABS	ABS	ABS			acs|abc|aby|ab-cs	acs|abc|aby|ab-cs	0
+W	Abs	0	Abs	Abs	Abs			acs|abc|aby|ab-cs	acs|abc|aby|ab-cs	0
+W	AB-CS	1	ab-c	ab-c	ab-c	ab-c	AffixedWord[word=AB-CS, entry=ab-c/A, prefixes=[], suffixes=[A(id=0)]]	Ab-cs	Ab-cs	0
+W	Ab-cs	1	ab-c	ab-c	ab-c	ab-c	AffixedWord[word=Ab-cs, entry=ab-c/A, prefixes=[], suffixes=[A(id=0)]]	Ab-cs	Ab-cs	1
+W	CAS	1	ca	ca	ca	ca	AffixedWord[word=CAS, entry=ca/A, prefixes=[], suffixes=[A(id=0)]]	Cas	Cas	1
+W	Cas	1	ca	ca	ca	ca	AffixedWord[word=Cas, entry=ca/A, prefixes=[], suffixes=[A(id=0)]]	Cas	Cas	1
+W	CBS	0	CBS	CBS	CBS			bcs|cs|cb|cas	bcs|cs|cb|cas	0
+W	Cbs	0	Cbs	Cbs	Cbs			bcs|cs|cb|cas	bcs|cs|cb|cas	0
+W	CES	0	CES	CES	CES			cs|ce|cas	cs|ce|cas	0
+W	Ces	0	Ces	Ces	Ces			cs|ce|cas	cs|ce|cas	0
+W	LAEER	1	lae	lae	lae	lae	AffixedWord[word=LAEER, entry=lae/A, prefixes=[], suffixes=[A(id=1)]]	Laeer	Laeer	1
+W	Laeer	1	lae	lae	lae	lae	AffixedWord[word=Laeer, entry=lae/A, prefixes=[], suffixes=[A(id=1)]]	Laeer	Laeer	1
+W	CAER	1	ca	ca	ca	ca	AffixedWord[word=CAER, entry=ca/A, prefixes=[], suffixes=[A(id=1)]]	Caer	Caer	0
+W	Caer	1	ca	ca	ca	ca	AffixedWord[word=Caer, entry=ca/A, prefixes=[], suffixes=[A(id=1)]]	Caer	Caer	0
+W	X	1	x	x	x	x	AffixedWord[word=X, entry=x/B, prefixes=[], suffixes=[]]	X	X	0
+W	XX	0	XX	XX	XX			x|x x	x|x x	0
+W	Xx	0	Xx	Xx	Xx			x|x x	x|x x	0
+W	ABY	1	aby	aby	aby	aby	AffixedWord[word=ABY, entry=aby/B, prefixes=[], suffixes=[]]	Aby	Aby	1
+W	Aby	1	aby	aby	aby	aby	AffixedWord[word=Aby, entry=aby/B, prefixes=[], suffixes=[]]	Aby	Aby	1
+W	ABIES	0	ABIES	ABIES	ABIES			ab-cs	ab-cs	0
+W	Abies	0	Abies	Abies	Abies			ab-cs	ab-cs	1
+W	ABX	0	ABX	ABX	ABX			abc|aby	abc|aby	1
+W	Abx	0	Abx	Abx	Abx			abc|aby	abc|aby	1
+W	XD	0	XD	XD	XD			x|xcd	x|xcd	0
+W	Xd	0	Xd	Xd	Xd			x|xcd	x|xcd	0
+W	ABCD	1	abcd	abcd	abcd	abcd	AffixedWord[word=ABCD, entry=abcd/G, prefixes=[], suffixes=[]]	Abcd	Abcd	0
+W	Abcd	1	abcd	abcd	abcd	abcd	AffixedWord[word=Abcd, entry=abcd/G, prefixes=[], suffixes=[]]	Abcd	Abcd	0
+W	XCD	1	abcd	abcd	abcd	abcd	AffixedWord[word=XCD, entry=abcd/G, prefixes=[G(id=5)], suffixes=[]]	Xcd	Xcd	0
+W	Xcd	1	abcd	abcd	abcd	abcd	AffixedWord[word=Xcd, entry=abcd/G, prefixes=[G(id=5)], suffixes=[]]	Xcd	Xcd	0
+W	REAB-C	0	REAB-C	REAB-C	REAB-C			reabcd|bear-c|reabcd-c	reabcd|bear-c|reabcd-c	0
+W	Reab-c	0	Reab-c	Reab-c	Reab-c			reabcd|bear-c|reabcd-c	reabcd|bear-c|reabcd-c	0
+W	RE-X	0	RE-X	RE-X	RE-X			ce-x|care-x	ce-x|care-x	1
+W	Re-x	0	Re-x	Re-x	Re-x			ce-x|care-x	ce-x|care-x	0
+W	HOPING	0	HOPING	HOPING	HOPING			hope	hope	1
+W	Hoping	0	Hoping	Hoping	Hoping			hope	hope	1
+W	HOPEING	0	HOPEING	HOPEING	HOPEING			hope	hope	1
+W	Hopeing	0	Hopeing	Hopeing	Hopeing			hope	hope	0
+W	MAK	0	MAK	MAK	MAK			make	make	1
+W	Mak	0	Mak	Mak	Mak			make	make	1
+W	MAKING	0	MAKING	MAKING	MAKING			make	make	1
+W	Making	0	Making	Making	Making			make	make	1
+W	FONE	0	FONE	FONE	FONE			phone	phone|bone	0
+W	Fone	0	Fone	Fone	Fone			phone	phone|bone	0
+W	FON	0	FON	FON	FON			foo	foo	0
+W	Fon	0	Fon	Fon	Fon			foo	foo	0
+W	TUFF	0	TUFF	TUFF	TUFF			tough	tough	0
+W	Tuff	0	Tuff	Tuff	Tuff			tough	tough	1
+W	NITE	0	NITE	NITE	NITE			night	night	1
+W	Nite	0	Nite	Nite	Nite			night	night	1
+W	TEH	0	TEH	TEH	TEH			death	death	0
+W	Teh	0	Teh	Teh	Teh			death	death	0
+W	PARISS	0	PARISS	PARISS	PARISS			paris	paris	1
+W	Pariss	0	Pariss	Pariss	Pariss			paris	paris	0
+W	DICTIONERY	0	DICTIONERY	DICTIONERY	DICTIONERY			dictionary|condition	dictionary|condition	1
+W	Dictionery	0	Dictionery	Dictionery	Dictionery			dictionary|condition	dictionary|condition	1
+W	DICSHUNARY	0	DICSHUNARY	DICSHUNARY	DICSHUNARY			dictionary	dictionary	1
+W	Dicshunary	0	Dicshunary	Dicshunary	Dicshunary			dictionary	dictionary	1
+W	CONTIAN	0	CONTIAN	CONTIAN	CONTIAN			contain	contain	1
+W	Contian	0	Contian	Contian	Contian			contain	contain	1
+W	CAPPITAL	0	CAPPITAL	CAPPITAL	CAPPITAL			capital|captain	capital|captain	1
+W	Cappital	0	Cappital	Cappital	Cappital			capital|captain	capital|captain	0
+W	BEUTIFUL	0	BEUTIFUL	BEUTIFUL	BEUTIFUL					1
+W	Beutiful	0	Beutiful	Beutiful	Beutiful					1
+W	BEAUTI	0	BEAUTI	BEAUTI	BEAUTI			beauty	beauty	1
+W	Beauti	0	Beauti	Beauti	Beauti			beauty	beauty	1
+W	DESSERT	0	DESSERT	DESSERT	DESSERT			desert|dress	desert|dress	1
+W	Dessert	0	Dessert	Dessert	Dessert			desert|dress	desert|dress	0
+W	DESIGHN	0	DESIGHN	DESIGHN	DESIGHN			design|describe	design|describe	1
+W	Desighn	0	Desighn	Desighn	Desighn			design|describe	design|describe	1
+W	AGIANST	0	AGIANST	AGIANST	AGIANST			against	against	1
+W	Agianst	0	Agianst	Agianst	Agianst			against	against	0
+W	CUNTRY	0	CUNTRY	CUNTRY	CUNTRY			country|current	country|current	1
+W	Cuntry	0	Cuntry	Cuntry	Cuntry			country|current	country|current	1
+W	BRIGT	0	BRIGT	BRIGT	BRIGT			bright	bright	0
+W	Brigt	0	Brigt	Brigt	Brigt			bright	bright	1
+W	WROLD	0	WROLD	WROLD	WROLD			world	world	1
+W	Wrold	0	Wrold	Wrold	Wrold			world	world	0
+W	CRESE	0	CRESE	CRESE	CRESE			crease|create	crease|create	1
+W	Crese	0	Crese	Crese	Crese			crease|create	crease|create	1
+W	DOUBEL	0	DOUBEL	DOUBEL	DOUBEL			double	double	0
+W	Doubel	0	Doubel	Doubel	Doubel			double	double	1
+W	KAT	0	KAT	KAT	KAT			cat	cat	0
+W	Kat	0	Kat	Kat	Kat			cat	cat	0
+W	BOK	0	BOK	BOK	BOK			book|boy|box	book|boy|box	1
+W	Bok	0	Bok	Bok	Bok			book|boy|box	book|boy|box	1
+W	CLIMBB	0	CLIMBB	CLIMBB	CLIMBB			climb	climb	1
+W	Climbb	0	Climbb	Climbb	Climbb			climb	climb	0
+W	ABOUUT	0	ABOUUT	ABOUUT	ABOUUT			about|above	about|above	0
+W	Abouut	0	Abouut	Abouut	Abouut			about|above	about|above	1
+W	DETERIMNE	0	DETERIMNE	DETERIMNE	DETERIMNE			determine	determine	1
+W	Deterimne	0	Deterimne	Deterimne	Deterimne			determine	determine	1
+W	CORECT	0	CORECT	CORECT	CORECT			correct|direct	correct|direct	1
+W	Corect	0	Corect	Corect	Corect			correct|direct	correct|direct	1
+W	A-LOT	1	A-LOT	A-LOT	A-LOT			A-lot	A-lot	1
+W	A-lot	1	A-lot	A-lot	A-lot			A-lot	A-lot	1
+W	A LOT	1	a lot	a lot	a lot	a lot	AffixedWord[word=A LOT, entry=a lot, prefixes=[], suffixes=[]]	A lot	A lot	1
+W	A lot	1	a lot	a lot	a lot	a lot	AffixedWord[word=A lot, entry=a lot, prefixes=[], suffixes=[]]	A lot	A lot	0
+W	DOG-CAT	1	DOG-CAT	DOG-CAT	DOG-CAT			Dog-cat	Dog-cat	1
+W	Dog-cat	1	Dog-cat	Dog-cat	Dog-cat			Dog-cat	Dog-cat	1
+W	DOG-CTA	0	DOG-CTA	DOG-CTA	DOG-CTA			dog-cat|dog-ca|dog-act	dog-cat|dog-ca|dog-act	1
+W	Dog-cta	0	Dog-cta	Dog-cta	Dog-cta			dog-cat|dog-ca|dog-act	dog-cat|dog-ca|dog-act	0
+W	CATDOG	0	CATDOG	CATDOG	CATDOG			cat dog|cat-dog|catch	cat dog|cat-dog|catch	1
+W	Catdog	0	Catdog	Catdog	Catdog			cat dog|cat-dog|catch	cat dog|cat-dog|catch	1
+W	ACEN	0	ACEN	ACEN	ACEN			chance	chance	1
+W	Acen	0	Acen	Acen	Acen			chance	chance	1
+W	BCEN	0	BCEN	BCEN	BCEN			center	center	0
+W	Bcen	0	Bcen	Bcen	Bcen			center	center	0
+W	-CEN	0	-CEN	-CEN	-CEN			center	center	0
+W	CEN	0	CEN	CEN	CEN			ce|can	ce|can	0
+W	Cen	0	Cen	Cen	Cen			ce|can	ce|can	0
+W	ABYIED	0	ABYIED	ABYIED	ABYIED			aby	aby	1
+W	Abyied	0	Abyied	Abyied	Abyied			aby	aby	1
+W	ABZIED	0	ABZIED	ABZIED	ABZIED					1
+W	Abzied	0	Abzied	Abzied	Abzied					1
+W	YD	0	YD	YD	YD			ycd	ycd	0
+W	Yd	0	Yd	Yd	Yd			ycd	ycd	0
+W	YBCD	0	YBCD	YBCD	YBCD			ycd|abcd	ycd|abcd	0
+W	Ybcd	0	Ybcd	Ybcd	Ybcd			ycd|abcd	ycd|abcd	0
+W	PNEUMONOULTRAMICROSCOPICSILICOVOLCANOCONIOSIS	1	pneumonoultramicroscopicsilicovolcanoconiosis	pneumonoultramicroscopicsilicovolcanoconiosis	pneumonoultramicroscopicsilicovolcanoconiosis	pneumonoultramicroscopicsilicovolcanoconiosis	AffixedWord[word=PNEUMONOULTRAMICROSCOPICSILICOVOLCANOCONIOSIS, entry=pneumonoultramicroscopicsilicovolcanoconiosis, prefixes=[], suffixes=[]]	Pneumonoultramicroscopicsilicovolcanoconiosis	Pneumonoultramicroscopicsilicovolcanoconiosis	1
+W	Pneumonoultramicroscopicsilicovolcanoconiosis	1	pneumonoultramicroscopicsilicovolcanoconiosis	pneumonoultramicroscopicsilicovolcanoconiosis	pneumonoultramicroscopicsilicovolcanoconiosis	pneumonoultramicroscopicsilicovolcanoconiosis	AffixedWord[word=Pneumonoultramicroscopicsilicovolcanoconiosis, entry=pneumonoultramicroscopicsilicovolcanoconiosis, prefixes=[], suffixes=[]]	Pneumonoultramicroscopicsilicovolcanoconiosis	Pneumonoultramicroscopicsilicovolcanoconiosis	1
+W	PNEUMONOULTRAMICROSCOPICSILICOVOLCANOCONIOSISS	0	PNEUMONOULTRAMICROSCOPICSILICOVOLCANOCONIOSISS	PNEUMONOULTRAMICROSCOPICSILICOVOLCANOCONIOSISS	PNEUMONOULTRAMICROSCOPICSILICOVOLCANOCONIOSISS			pneumonoultramicroscopicsilicovolcanoconiosis	pneumonoultramicroscopicsilicovolcanoconiosis	1
+W	Pneumonoultramicroscopicsilicovolcanoconiosiss	0	Pneumonoultramicroscopicsilicovolcanoconiosiss	Pneumonoultramicroscopicsilicovolcanoconiosiss	Pneumonoultramicroscopicsilicovolcanoconiosiss			pneumonoultramicroscopicsilicovolcanoconiosis	pneumonoultramicroscopicsilicovolcanoconiosis	1
+W	-C	1	-c	-c	-c	-c	AffixedWord[word=-C, entry=-c/A, prefixes=[], suffixes=[]]	-c	-c	0
+W	PARIS	1	paris	paris	paris	paris	AffixedWord[word=PARIS, entry=paris, prefixes=[], suffixes=[]]	Paris	Paris	1
+W	WORLD	1	world	world	world	world	AffixedWord[word=WORLD, entry=world, prefixes=[], suffixes=[]]	World	World	1
+W	\C	0	\C	\C	\C			c|ac|bc	c|ac|bc	0
+W	A	1	a	a	a	a	AffixedWord[word=A, entry=a, prefixes=[], suffixes=[]]	A	A	0
+W	AB-C	1	ab-c	ab-c	ab-c	ab-c	AffixedWord[word=AB-C, entry=ab-c/A, prefixes=[], suffixes=[]]	Ab-c	Ab-c	0
+W	Ab-c	1	ab-c	ab-c	ab-c	ab-c	AffixedWord[word=Ab-c, entry=ab-c/A, prefixes=[], suffixes=[]]	Ab-c	Ab-c	1
+W	ABC	1	abc	abc	abc	abc	AffixedWord[word=ABC, entry=abc/B, prefixes=[], suffixes=[]]	Abc	Abc	0
+W	Abc	1	abc	abc	abc	abc	AffixedWord[word=Abc, entry=abc/B, prefixes=[], suffixes=[]]	Abc	Abc	0
+W	ABOUT	1	about	about	about	about	AffixedWord[word=ABOUT, entry=about, prefixes=[], suffixes=[]]	About	About	0
+W	About	1	about	about	about	about	AffixedWord[word=About, entry=about, prefixes=[], suffixes=[]]	About	About	0
+W	ABOVE	1	above	above	above	above	AffixedWord[word=ABOVE, entry=above, prefixes=[], suffixes=[]]	Above	Above	1
+W	Above	1	above	above	above	above	AffixedWord[word=Above, entry=above, prefixes=[], suffixes=[]]	Above	Above	0
+W	AC	1	ac	ac	ac	ac	AffixedWord[word=AC, entry=ac/A, prefixes=[], suffixes=[]]	Ac	Ac	0
+W	Ac	1	ac	ac	ac	ac	AffixedWord[word=Ac, entry=ac/A, prefixes=[], suffixes=[]]	Ac	Ac	0
+W	ACROSS	1	across	across	across	across	AffixedWord[word=ACROSS, entry=across, prefixes=[], suffixes=[]]	Across	Across	1
+W	Across	1	across	across	across	across	AffixedWord[word=Across, entry=across, prefixes=[], suffixes=[]]	Across	Across	1
+W	ACT	1	act	act	act	act	AffixedWord[word=ACT, entry=act, prefixes=[], suffixes=[]]	Act	Act	1
+W	Act	1	act	act	act	act	AffixedWord[word=Act, entry=act, prefixes=[], suffixes=[]]	Act	Act	1
+W	ADD	1	add	add	add	add	AffixedWord[word=ADD, entry=add, prefixes=[], suffixes=[]]	Add	Add	0
+W	Add	1	add	add	add	add	AffixedWord[word=Add, entry=add, prefixes=[], suffixes=[]]	Add	Add	0
+W	AFTER	1	after	after	after	after	AffixedWord[word=AFTER, entry=after, prefixes=[], suffixes=[]]	After	After	1
+W	After	1	after	after	after	after	AffixedWord[word=After, entry=after, prefixes=[], suffixes=[]]	After	After	0
+W	AGAIN	1	again	again	again	again	AffixedWord[word=AGAIN, entry=again, prefixes=[], suffixes=[]]	Again	Again	0
+W	Again	1	again	again	again	again	AffixedWord[word=Again, entry=again, prefixes=[], suffixes=[]]	Again	Again	0
+W	AGAINST	1	against	against	against	against	AffixedWord[word=AGAINST, entry=against, prefixes=[], suffixes=[]]	Against	Against	1
+W	Against	1	against	against	against	against	AffixedWord[word=Against, entry=against, prefixes=[], suffixes=[]]	Against	Against	0
+W	AGE	1	age	age	age	age	AffixedWord[word=AGE, entry=age, prefixes=[], suffixes=[]]	Age	Age	0
+W	Age	1	age	age	age	age	AffixedWord[word=Age, entry=age, prefixes=[], suffixes=[]]	Age	Age	0
+W	AGO	1	ago	ago	ago	ago	AffixedWord[word=AGO, entry=ago, prefixes=[], suffixes=[]]	Ago	Ago	1
+W	Ago	1	ago	ago	ago	ago	AffixedWord[word=Ago, entry=ago, prefixes=[], suffixes=[]]	Ago	Ago	1
+W	AGREE	1	agree	agree	agree	agree	AffixedWord[word=AGREE, entry=agree, prefixes=[], suffixes=[]]	Agree	Agree	0
+W	Agree	1	agree	agree	agree	agree	AffixedWord[word=Agree, entry=agree, prefixes=[], suffixes=[]]	Agree	Agree	0
+W	AIR	1	air	air	air	air	AffixedWord[word=AIR, entry=air, prefixes=[], suffixes=[]]	Air	Air	0
+W	Air	1	air	air	air	air	AffixedWord[word=Air, entry=air, prefixes=[], suffixes=[]]	Air	Air	0
+W	ALL	1	all	all	all	all	AffixedWord[word=ALL, entry=all, prefixes=[], suffixes=[]]	All	All	1
+W	All	1	all	all	all	all	AffixedWord[word=All, entry=all, prefixes=[], suffixes=[]]	All	All	1
+W	ALMOST	1	almost	almost	almost	almost	AffixedWord[word=ALMOST, entry=almost, prefixes=[], suffixes=[]]	Almost	Almost	0
+W	Almost	1	almost	almost	almost	almost	AffixedWord[word=Almost, entry=almost, prefixes=[], suffixes=[]]	Almost	Almost	0
+W	ALONE	1	alone	alone	alone	alone	AffixedWord[word=ALONE, entry=alone, prefixes=[], suffixes=[]]	Alone	Alone	0
+W	Alone	1	alone	alone	alone	alone	AffixedWord[word=Alone, entry=alone, prefixes=[], suffixes=[]]	Alone	Alone	0
+W	ALONG	1	along	along	along	along	AffixedWord[word=ALONG, entry=along, prefixes=[], suffixes=[]]	Along	Along	0
+W	Along	1	along	along	along	along	AffixedWord[word=Along, entry=along, prefixes=[], suffixes=[]]	Along	Along	0
+W	ALREADY	1	already	already	already	already	AffixedWord[word=ALREADY, entry=already, prefixes=[], suffixes=[]]	Already	Already	1
+W	Already	1	already	already	already	already	AffixedWord[word=Already, entry=already, prefixes=[], suffixes=[]]	Already	Already	0
+W	ALSO	1	also	also	also	also	AffixedWord[word=ALSO, entry=also, prefixes=[], suffixes=[]]	Also	Also	1
+W	Also	1	also	also	also	also	AffixedWord[word=Also, entry=also, prefixes=[], suffixes=[]]	Also	Also	1
+W	ALWAYS	1	always	always	always	always	AffixedWord[word=ALWAYS, entry=always, prefixes=[], suffixes=[]]	Always	Always	1
+W	Always	1	always	always	always	always	AffixedWord[word=Always, entry=always, prefixes=[], suffixes=[]]	Always	Always	0
+W	AMONG	1	among	among	among	among	AffixedWord[word=AMONG, entry=among, prefixes=[], suffixes=[]]	Among	Among	0
+W	Among	1	among	among	among	among	AffixedWord[word=Among, entry=among, prefixes=[], suffixes=[]]	Among	Among	0
+W	AMOUNT	1	amount	amount	amount	amount	AffixedWord[word=AMOUNT, entry=amount, prefixes=[], suffixes=[]]	Amount	Amount	1
+W	Amount	1	amount	amount	amount	amount	AffixedWord[word=Amount, entry=amount, prefixes=[], suffixes=[]]	Amount	Amount	0
+W	AND	1	and	and	and	and	AffixedWord[word=AND, entry=and, prefixes=[], suffixes=[]]	And	And	1
+W	And	1	and	and	and	and	AffixedWord[word=And, entry=and, prefixes=[], suffixes=[]]	And	And	1
+W	ANIMAL	1	animal	animal	animal	animal	AffixedWord[word=ANIMAL, entry=animal, prefixes=[], suffixes=[]]	Animal	Animal	1
+W	Animal	1	animal	animal	animal	animal	AffixedWord[word=Animal, entry=animal, prefixes=[], suffixes=[]]	Animal	Animal	0
+W	ANSWER	1	answer	answer	answer	answer	AffixedWord[word=ANSWER, entry=answer, prefixes=[], suffixes=[]]	Answer	Answer	1
+W	Answer	1	answer	answer	answer	answer	AffixedWord[word=Answer, entry=answer, prefixes=[], suffixes=[]]	Answer	Answer	0
+W	ANY	1	any	any	any	any	AffixedWord[word=ANY, entry=any, prefixes=[], suffixes=[]]	Any	Any	1
+W	Any	1	any	any	any	any	AffixedWord[word=Any, entry=any, prefixes=[], suffixes=[]]	Any	Any	1
+W	APPEAR	1	appear	appear	appear	appear	AffixedWord[word=APPEAR, entry=appear, prefixes=[], suffixes=[]]	Appear	Appear	0
+W	Appear	1	appear	appear	appear	appear	AffixedWord[word=Appear, entry=appear, prefixes=[], suffixes=[]]	Appear	Appear	0
+W	APPLE	1	apple	apple	apple	apple	AffixedWord[word=APPLE, entry=apple, prefixes=[], suffixes=[]]	Apple	Apple	1
+W	Apple	1	apple	apple	apple	apple	AffixedWord[word=Apple, entry=apple, prefixes=[], suffixes=[]]	Apple	Apple	0
+W	AREA	1	area	area	area	area	AffixedWord[word=AREA, entry=area, prefixes=[], suffixes=[]]	Area	Area	1
+W	Area	1	area	area	area	area	AffixedWord[word=Area, entry=area, prefixes=[], suffixes=[]]	Area	Area	1
+W	ARM	1	arm	arm	arm	arm	AffixedWord[word=ARM, entry=arm, prefixes=[], suffixes=[]]	Arm	Arm	0
+W	Arm	1	arm	arm	arm	arm	AffixedWord[word=Arm, entry=arm, prefixes=[], suffixes=[]]	Arm	Arm	0
+W	AROUND	1	around	around	around	around	AffixedWord[word=AROUND, entry=around, prefixes=[], suffixes=[]]	Around	Around	1
+W	Around	1	around	around	around	around	AffixedWord[word=Around, entry=around, prefixes=[], suffixes=[]]	Around	Around	0
+W	ARRIVE	1	arrive	arrive	arrive	arrive	AffixedWord[word=ARRIVE, entry=arrive, prefixes=[], suffixes=[]]	Arrive	Arrive	0
+W	Arrive	1	arrive	arrive	arrive	arrive	AffixedWord[word=Arrive, entry=arrive, prefixes=[], suffixes=[]]	Arrive	Arrive	0
+W	ART	1	art	art	art	art	AffixedWord[word=ART, entry=art, prefixes=[], suffixes=[]]	Art	Art	1
+W	Art	1	art	art	art	art	AffixedWord[word=Art, entry=art, prefixes=[], suffixes=[]]	Art	Art	1
+W	ASK	1	ask	ask	ask	ask	AffixedWord[word=ASK, entry=ask, prefixes=[], suffixes=[]]	Ask	Ask	0
+W	Ask	1	ask	ask	ask	ask	AffixedWord[word=Ask, entry=ask, prefixes=[], suffixes=[]]	Ask	Ask	0
+W	AWAY	1	away	away	away	away	AffixedWord[word=AWAY, entry=away, prefixes=[], suffixes=[]]	Away	Away	0
+W	Away	1	away	away	away	away	AffixedWord[word=Away, entry=away, prefixes=[], suffixes=[]]	Away	Away	0
+W	BABY	1	baby	baby	baby	baby	AffixedWord[word=BABY, entry=baby, prefixes=[], suffixes=[]]	Baby	Baby	1
+W	Baby	1	baby	baby	baby	baby	AffixedWord[word=Baby, entry=baby, prefixes=[], suffixes=[]]	Baby	Baby	0
+W	BACK	1	back	back	back	back	AffixedWord[word=BACK, entry=back, prefixes=[], suffixes=[]]	Back	Back	1
+W	Back	1	back	back	back	back	AffixedWord[word=Back, entry=back, prefixes=[], suffixes=[]]	Back	Back	1
+W	BAD	1	bad	bad	bad	bad	AffixedWord[word=BAD, entry=bad, prefixes=[], suffixes=[]]	Bad	Bad	0
+W	Bad	1	bad	bad	bad	bad	AffixedWord[word=Bad, entry=bad, prefixes=[], suffixes=[]]	Bad	Bad	0
+W	BAG	1	bag	bag	bag	bag	AffixedWord[word=BAG, entry=bag, prefixes=[], suffixes=[]]	Bag	Bag	0
+W	Bag	1	bag	bag	bag	bag	AffixedWord[word=Bag, entry=bag, prefixes=[], suffixes=[]]	Bag	Bag	0
+W	BALL	1	ball	ball	ball	ball	AffixedWord[word=BALL, entry=ball, prefixes=[], suffixes=[]]	Ball	Ball	1
+W	Ball	1	ball	ball	ball	ball	AffixedWord[word=Ball, entry=ball, prefixes=[], suffixes=[]]	Ball	Ball	1
+W	BANK	1	bank	bank	bank	bank	AffixedWord[word=BANK, entry=bank, prefixes=[], suffixes=[]]	Bank	Bank	0
+W	Bank	1	bank	bank	bank	bank	AffixedWord[word=Bank, entry=bank, prefixes=[], suffixes=[]]	Bank	Bank	0
+W	BAR	1	bar	bar	bar	bar	AffixedWord[word=BAR, entry=bar/C, prefixes=[], suffixes=[]]	Bar	Bar	1
+W	Bar	1	bar	bar	bar	bar	AffixedWord[word=Bar, entry=bar/C, prefixes=[], suffixes=[]]	Bar	Bar	1
+W	BASE	1	base	base	base	base	AffixedWord[word=BASE, entry=base, prefixes=[], suffixes=[]]	Base	Base	1
+W	Base	1	base	base	base	base	AffixedWord[word=Base, entry=base, prefixes=[], suffixes=[]]	Base	Base	1
+W	BASKET	1	basket	basket	basket	basket	AffixedWord[word=BASKET, entry=basket, prefixes=[], suffixes=[]]	Basket	Basket	1
+W	Basket	1	basket	basket	basket	basket	AffixedWord[word=Basket, entry=basket, prefixes=[], suffixes=[]]	Basket	Basket	1
+W	BAZ	1	baz	baz	baz	baz	AffixedWord[word=BAZ, entry=baz/CU, prefixes=[], suffixes=[]]	Baz	Baz	0
+W	Baz	1	baz	baz	baz	baz	AffixedWord[word=Baz, entry=baz/CU, prefixes=[], suffixes=[]]	Baz	Baz	0
+W	BC	1	bc	bc	bc	bc	AffixedWord[word=BC, entry=bc/A, prefixes=[], suffixes=[]]	Bc	Bc	0
+W	Bc	1	bc	bc	bc	bc	AffixedWord[word=Bc, entry=bc/A, prefixes=[], suffixes=[]]	Bc	Bc	0
+W	BEAR	1	bear	bear	bear	bear	AffixedWord[word=BEAR, entry=bear, prefixes=[], suffixes=[]]	Bear	Bear	1
+W	Bear	1	bear	bear	bear	bear	AffixedWord[word=Bear, entry=bear, prefixes=[], suffixes=[]]	Bear	Bear	1
+W	BEAT	1	beat	beat	beat	beat	AffixedWord[word=BEAT, entry=beat, prefixes=[], suffixes=[]]	Beat	Beat	1
+W	Beat	1	beat	beat	beat	beat	AffixedWord[word=Beat, entry=beat, prefixes=[], suffixes=[]]	Beat	Beat	1
+W	BEAUTY	1	beauty	beauty	beauty	beauty	AffixedWord[word=BEAUTY, entry=beauty, prefixes=[], suffixes=[]]	Beauty	Beauty	1
+W	Beauty	1	beauty	beauty	beauty	beauty	AffixedWord[word=Beauty, entry=beauty, prefixes=[], suffixes=[]]	Beauty	Beauty	1
+W	BED	1	bed	bed	bed	bed	AffixedWord[word=BED, entry=bed, prefixes=[], suffixes=[]]	Bed	Bed	1
+W	Bed	1	bed	bed	bed	bed	AffixedWord[word=Bed, entry=bed, prefixes=[], suffixes=[]]	Bed	Bed	1
+W	BEFORE	1	before	before	before	before	AffixedWord[word=BEFORE, entry=before, prefixes=[], suffixes=[]]	Before	Before	1
+W	Before	1	before	before	before	before	AffixedWord[word=Before, entry=before, prefixes=[], suffixes=[]]	Before	Before	1
+W	BEGIN	1	begin	begin	begin	begin	AffixedWord[word=BEGIN, entry=begin, prefixes=[], suffixes=[]]	Begin	Begin	1
+W	Begin	1	begin	begin	begin	begin	AffixedWord[word=Begin, entry=begin, prefixes=[], suffixes=[]]	Begin	Begin	1
+W	BEHIND	1	behind	behind	behind	behind	AffixedWord[word=BEHIND, entry=behind, prefixes=[], suffixes=[]]	Behind	Behind	1
+W	Behind	1	behind	behind	behind	behind	AffixedWord[word=Behind, entry=behind, prefixes=[], suffixes=[]]	Behind	Behind	1
+W	BELIEVE	1	believe	believe	believe	believe	AffixedWord[word=BELIEVE, entry=believe, prefixes=[], suffixes=[]]	Believe	Believe	1
+W	Believe	1	believe	believe	believe	believe	AffixedWord[word=Believe, entry=believe, prefixes=[], suffixes=[]]	Believe	Believe	0
+W	BELL	1	bell	bell	bell	bell	AffixedWord[word=BELL, entry=bell, prefixes=[], suffixes=[]]	Bell	Bell	1
+W	Bell	1	bell	bell	bell	bell	AffixedWord[word=Bell, entry=bell, prefixes=[], suffixes=[]]	Bell	Bell	0
+W	BEST	1	best	best	best	best	AffixedWord[word=BEST, entry=best, prefixes=[], suffixes=[]]	Best	Best	1
+W	Best	1	best	best	best	best	AffixedWord[word=Best, entry=best, prefixes=[], suffixes=[]]	Best	Best	0
+W	BETTER	1	better	better	better	better	AffixedWord[word=BETTER, entry=better, prefixes=[], suffixes=[]]	Better	Better	1
+W	Better	1	better	better	better	better	AffixedWord[word=Better, entry=better, prefixes=[], suffixes=[]]	Better	Better	0
+W	BETWEEN	1	between	between	between	between	AffixedWord[word=BETWEEN, entry=between, prefixes=[], suffixes=[]]	Between	Between	1
+W	Between	1	between	between	between	between	AffixedWord[word=Between, entry=between, prefixes=[], suffixes=[]]	Between	Between	0
+W	BIG	1	big	big	big	big	AffixedWord[word=BIG, entry=big, prefixes=[], suffixes=[]]	Big	Big	0
+W	Big	1	big	big	big	big	AffixedWord[word=Big, entry=big, prefixes=[], suffixes=[]]	Big	Big	0
+W	BIRD	1	bird	bird	bird	bird	AffixedWord[word=BIRD, entry=bird, prefixes=[], suffixes=[]]	Bird	Bird	0
+W	Bird	1	bird	bird	bird	bird	AffixedWord[word=Bird, entry=bird, prefixes=[], suffixes=[]]	Bird	Bird	0
+W	BLACK	1	black	black	black	black	AffixedWord[word=BLACK, entry=black, prefixes=[], suffixes=[]]	Black	Black	1
+W	Black	1	black	black	black	black	AffixedWord[word=Black, entry=black, prefixes=[], suffixes=[]]	Black	Black	0
+W	BLOOD	1	blood	blood	blood	blood	AffixedWord[word=BLOOD, entry=blood, prefixes=[], suffixes=[]]	Blood	Blood	1
+W	Blood	1	blood	blood	blood	blood	AffixedWord[word=Blood, entry=blood, prefixes=[], suffixes=[]]	Blood	Blood	0
+W	BLUE	1	blue	blue	blue	blue	AffixedWord[word=BLUE, entry=blue, prefixes=[], suffixes=[]]	Blue	Blue	0
+W	Blue	1	blue	blue	blue	blue	AffixedWord[word=Blue, entry=blue, prefixes=[], suffixes=[]]	Blue	Blue	0
+W	BOARD	1	board	board	board	board	AffixedWord[word=BOARD, entry=board, prefixes=[], suffixes=[]]	Board	Board	1
+W	Board	1	board	board	board	board	AffixedWord[word=Board, entry=board, prefixes=[], suffixes=[]]	Board	Board	1
+W	BOAT	1	boat	boat	boat	boat	AffixedWord[word=BOAT, entry=boat, prefixes=[], suffixes=[]]	Boat	Boat	1
+W	Boat	1	boat	boat	boat	boat	AffixedWord[word=Boat, entry=boat, prefixes=[], suffixes=[]]	Boat	Boat	1
+W	BODY	1	body	body	body	body	AffixedWord[word=BODY, entry=body, prefixes=[], suffixes=[]]	Body	Body	0
+W	Body	1	body	body	body	body	AffixedWord[word=Body, entry=body, prefixes=[], suffixes=[]]	Body	Body	0
+W	BONE	1	bone	bone	bone	bone	AffixedWord[word=BONE, entry=bone, prefixes=[], suffixes=[]]	Bone	Bone	0
+W	Bone	1	bone	bone	bone	bone	AffixedWord[word=Bone, entry=bone, prefixes=[], suffixes=[]]	Bone	Bone	0
+W	BOOK	1	book	book	book	book	AffixedWord[word=BOOK, entry=book, prefixes=[], suffixes=[]]	Book	Book	0
+W	Book	1	book	book	book	book	AffixedWord[word=Book, entry=book, prefixes=[], suffixes=[]]	Book	Book	0
+W	BORN	1	born	born	born	born	AffixedWord[word=BORN, entry=born, prefixes=[], suffixes=[]]	Born	Born	1
+W	Born	1	born	born	born	born	AffixedWord[word=Born, entry=born, prefixes=[], suffixes=[]]	Born	Born	1
+W	BOTH	1	both	both	both	both	AffixedWord[word=BOTH, entry=both, prefixes=[], suffixes=[]]	Both	Both	0
+W	Both	1	both	both	both	both	AffixedWord[word=Both, entry=both, prefixes=[], suffixes=[]]	Both	Both	0
+W	BOTTOM	1	bottom	bottom	bottom	bottom	AffixedWord[word=BOTTOM, entry=bottom, prefixes=[], suffixes=[]]	Bottom	Bottom	1
+W	Bottom	1	bottom	bottom	bottom	bottom	AffixedWord[word=Bottom, entry=bottom, prefixes=[], suffixes=[]]	Bottom	Bottom	0
+W	BOX	1	box	box	box	box	AffixedWord[word=BOX, entry=box, prefixes=[], suffixes=[]]	Box	Box	1
+W	Box	1	box	box	box	box	AffixedWord[word=Box, entry=box, prefixes=[], suffixes=[]]	Box	Box	1
+W	BOY	1	boy	boy	boy	boy	AffixedWord[word=BOY, entry=boy, prefixes=[], suffixes=[]]	Boy	Boy	0
+W	Boy	1	boy	boy	boy	boy	AffixedWord[word=Boy, entry=boy, prefixes=[], suffixes=[]]	Boy	Boy	0
+W	BREAD	1	bread	bread	bread	bread	AffixedWord[word=BREAD, entry=bread, prefixes=[], suffixes=[]]	Bread	Bread	1
+W	Bread	1	bread	bread	bread	bread	AffixedWord[word=Bread, entry=bread, prefixes=[], suffixes=[]]	Bread	Bread	0
+W	BREAK	1	break	break	break	break	AffixedWord[word=BREAK, entry=break, prefixes=[], suffixes=[]]	Break	Break	0
+W	Break	1	break	break	break	break	AffixedWord[word=Break, entry=break, prefixes=[], suffixes=[]]	Break	Break	0
+W	BRIGHT	1	bright	bright	bright	bright	AffixedWord[word=BRIGHT, entry=bright, prefixes=[], suffixes=[]]	Bright	Bright	0
+W	Bright	1	bright	bright	bright	bright	AffixedWord[word=Bright, entry=bright, prefixes=[], suffixes=[]]	Bright	Bright	0
+W	BRING	1	bring	bring	bring	bring	AffixedWord[word=BRING, entry=bring, prefixes=[], suffixes=[]]	Bring	Bring	0
+W	Bring	1	bring	bring	bring	bring	AffixedWord[word=Bring, entry=bring, prefixes=[], suffixes=[]]	Bring	Bring	0
+W	BROTHER	1	brother	brother	brother	brother	AffixedWord[word=BROTHER, entry=brother, prefixes=[], suffixes=[]]	Brother	Brother	1
+W	Brother	1	brother	brother	brother	brother	AffixedWord[word=Brother, entry=brother, prefixes=[], suffixes=[]]	Brother	Brother	0
+W	BROWN	1	brown	brown	brown	brown	AffixedWord[word=BROWN, entry=brown, prefixes=[], suffixes=[]]	Brown	Brown	0
+W	Brown	1	brown	brown	brown	brown	AffixedWord[word=Brown, entry=brown, prefixes=[], suffixes=[]]	Brown	Brown	0
+W	BUILD	1	build	build	build	build	AffixedWord[word=BUILD, entry=build, prefixes=[], suffixes=[]]	Build	Build	1
+W	Build	1	build	build	build	build	AffixedWord[word=Build, entry=build, prefixes=[], suffixes=[]]	Build	Build	1
+W	BURN	1	burn	burn	burn	burn	AffixedWord[word=BURN, entry=burn, prefixes=[], suffixes=[]]	Burn	Burn	1
+W	Burn	1	burn	burn	burn	burn	AffixedWord[word=Burn, entry=burn, prefixes=[], suffixes=[]]	Burn	Burn	0
+W	BUSY	1	busy	busy	busy	busy	AffixedWord[word=BUSY, entry=busy, prefixes=[], suffixes=[]]	Busy	Busy	0
+W	Busy	1	busy	busy	busy	busy	AffixedWord[word=Busy, entry=busy, prefixes=[], suffixes=[]]	Busy	Busy	0
+W	BUY	1	buy	buy	buy	buy	AffixedWord[word=BUY, entry=buy, prefixes=[], suffixes=[]]	Buy	Buy	1
+W	Buy	1	buy	buy	buy	buy	AffixedWord[word=Buy, entry=buy, prefixes=[], suffixes=[]]	Buy	Buy	1
+W	CA	1	ca	ca	ca	ca	AffixedWord[word=CA, entry=ca/A, prefixes=[], suffixes=[]]	Ca	Ca	0
+W	Ca	1	ca	ca	ca	ca	AffixedWord[word=Ca, entry=ca/A, prefixes=[], suffixes=[]]	Ca	Ca	0
+W	CALL	1	call	call	call	call	AffixedWord[word=CALL, entry=call, prefixes=[], suffixes=[]]	Call	Call	1
+W	Call	1	call	call	call	call	AffixedWord[word=Call, entry=call, prefixes=[], suffixes=[]]	Call	Call	0
+W	CAMP	1	camp	camp	camp	camp	AffixedWord[word=CAMP, entry=camp, prefixes=[], suffixes=[]]	Camp	Camp	1
+W	Camp	1	camp	camp	camp	camp	AffixedWord[word=Camp, entry=camp, prefixes=[], suffixes=[]]	Camp	Camp	1
+W	CAN	1	can	can	can	can	AffixedWord[word=CAN, entry=can, prefixes=[], suffixes=[]]	Can	Can	0
+W	Can	1	can	can	can	can	AffixedWord[word=Can, entry=can, prefixes=[], suffixes=[]]	Can	Can	0
+W	CAPITAL	1	capital	capital	capital	capital	AffixedWord[word=CAPITAL, entry=capital, prefixes=[], suffixes=[]]	Capital	Capital	1
+W	Capital	1	capital	capital	capital	capital	AffixedWord[word=Capital, entry=capital, prefixes=[], suffixes=[]]	Capital	Capital	0
+W	CAPTAIN	1	captain	captain	captain	captain	AffixedWord[word=CAPTAIN, entry=captain, prefixes=[], suffixes=[]]	Captain	Captain	1
+W	Captain	1	captain	captain	captain	captain	AffixedWord[word=Captain, entry=captain, prefixes=[], suffixes=[]]	Captain	Captain	0
+W	CAR	1	car	car	car	car	AffixedWord[word=CAR, entry=car, prefixes=[], suffixes=[]]	Car	Car	0
+W	Car	1	car	car	car	car	AffixedWord[word=Car, entry=car, prefixes=[], suffixes=[]]	Car	Car	0
+W	CARD	1	card	card	card	card	AffixedWord[word=CARD, entry=card, prefixes=[], suffixes=[]]	Card	Card	1
+W	Card	1	card	card	card	card	AffixedWord[word=Card, entry=card, prefixes=[], suffixes=[]]	Card	Card	0
+W	CARE	1	care	care	care	care	AffixedWord[word=CARE, entry=care, prefixes=[], suffixes=[]]	Care	Care	1
+W	Care	1	care	care	care	care	AffixedWord[word=Care, entry=care, prefixes=[], suffixes=[]]	Care	Care	0
+W	CARRY	1	carry	carry	carry	carry	AffixedWord[word=CARRY, entry=carry, prefixes=[], suffixes=[]]	Carry	Carry	0
+W	Carry	1	carry	carry	carry	carry	AffixedWord[word=Carry, entry=carry, prefixes=[], suffixes=[]]	Carry	Carry	0
+W	CASE	1	case	case	case	case	AffixedWord[word=CASE, entry=case, prefixes=[], suffixes=[]]	Case	Case	1
+W	Case	1	case	case	case	case	AffixedWord[word=Case, entry=case, prefixes=[], suffixes=[]]	Case	Case	1
+W	CAT	1	cat	cat	cat	cat	AffixedWord[word=CAT, entry=cat, prefixes=[], suffixes=[]]	Cat	Cat	0
+W	Cat	1	cat	cat	cat	cat	AffixedWord[word=Cat, entry=cat, prefixes=[], suffixes=[]]	Cat	Cat	0
+W	CATCH	1	catch	catch	catch	catch	AffixedWord[word=CATCH, entry=catch, prefixes=[], suffixes=[]]	Catch	Catch	1
+W	Catch	1	catch	catch	catch	catch	AffixedWord[word=Catch, entry=catch, prefixes=[], suffixes=[]]	Catch	Catch	0
+W	CAUSE	1	cause	cause	cause	cause	AffixedWord[word=CAUSE, entry=cause, prefixes=[], suffixes=[]]	Cause	Cause	0
+W	Cause	1	cause	cause	cause	cause	AffixedWord[word=Cause, entry=cause, prefixes=[], suffixes=[]]	Cause	Cause	0
+W	CB	1	cb	cb	cb	cb	AffixedWord[word=CB, entry=cb/A, prefixes=[], suffixes=[]]	Cb	Cb	0
+W	Cb	1	cb	cb	cb	cb	AffixedWord[word=Cb, entry=cb/A, prefixes=[], suffixes=[]]	Cb	Cb	0
+W	CE	1	ce	ce	ce	ce	AffixedWord[word=CE, entry=ce/A, prefixes=[], suffixes=[]]	Ce	Ce	0
+W	Ce	1	ce	ce	ce	ce	AffixedWord[word=Ce, entry=ce/A, prefixes=[], suffixes=[]]	Ce	Ce	0
+W	CELL	1	cell	cell	cell	cell	AffixedWord[word=CELL, entry=cell, prefixes=[], suffixes=[]]	Cell	Cell	1
+W	Cell	1	cell	cell	cell	cell	AffixedWord[word=Cell, entry=cell, prefixes=[], suffixes=[]]	Cell	Cell	0
+W	CENTER	1	center	center	center	center	AffixedWord[word=CENTER, entry=center, prefixes=[], suffixes=[]]	Center	Center	1
+W	Center	1	center	center	center	center	AffixedWord[word=Center, entry=center, prefixes=[], suffixes=[]]	Center	Center	0
+W	CHAIR	1	chair	chair	chair	chair	AffixedWord[word=CHAIR, entry=chair, prefixes=[], suffixes=[]]	Chair	Chair	1
+W	Chair	1	chair	chair	chair	chair	AffixedWord[word=Chair, entry=chair, prefixes=[], suffixes=[]]	Chair	Chair	0
+W	CHANCE	1	chance	chance	chance	chance	AffixedWord[word=CHANCE, entry=chance, prefixes=[], suffixes=[]]	Chance	Chance	1
+W	Chance	1	chance	chance	chance	chance	AffixedWord[word=Chance, entry=chance, prefixes=[], suffixes=[]]	Chance	Chance	0
+W	CHANGE	1	change	change	change	change	AffixedWord[word=CHANGE, entry=change, prefixes=[], suffixes=[]]	Change	Change	1
+W	Change	1	change	change	change	change	AffixedWord[word=Change, entry=change, prefixes=[], suffixes=[]]	Change	Change	0
+W	CHARGE	1	charge	charge	charge	charge	AffixedWord[word=CHARGE, entry=charge, prefixes=[], suffixes=[]]	Charge	Charge	1
+W	Charge	1	charge	charge	charge	charge	AffixedWord[word=Charge, entry=charge, prefixes=[], suffixes=[]]	Charge	Charge	0
+W	CHECK	1	check	check	check	check	AffixedWord[word=CHECK, entry=check, prefixes=[], suffixes=[]]	Check	Check	1
+W	Check	1	check	check	check	check	AffixedWord[word=Check, entry=check, prefixes=[], suffixes=[]]	Check	Check	0
+W	CHILD	1	child	child	child	child	AffixedWord[word=CHILD, entry=child, prefixes=[], suffixes=[]]	Child	Child	0
+W	Child	1	child	child	child	child	AffixedWord[word=Child, entry=child, prefixes=[], suffixes=[]]	Child	Child	0
+W	CHOOSE	1	choose	choose	choose	choose	AffixedWord[word=CHOOSE, entry=choose, prefixes=[], suffixes=[]]	Choose	Choose	1
+W	Choose	1	choose	choose	choose	choose	AffixedWord[word=Choose, entry=choose, prefixes=[], suffixes=[]]	Choose	Choose	1
+W	CHURCH	1	church	church	church	church	AffixedWord[word=CHURCH, entry=church, prefixes=[], suffixes=[]]	Church	Church	1
+W	Church	1	church	church	church	church	AffixedWord[word=Church, entry=church, prefixes=[], suffixes=[]]	Church	Church	0
+W	CIRCLE	1	circle	circle	circle	circle	AffixedWord[word=CIRCLE, entry=circle, prefixes=[], suffixes=[]]	Circle	Circle	1
+W	Circle	1	circle	circle	circle	circle	AffixedWord[word=Circle, entry=circle, prefixes=[], suffixes=[]]	Circle	Circle	0
+W	CITY	1	city	city	city	city	AffixedWord[word=CITY, entry=city, prefixes=[], suffixes=[]]	City	City	1
+W	City	1	city	city	city	city	AffixedWord[word=City, entry=city, prefixes=[], suffixes=[]]	City	City	0
+W	CLASS	1	class	class	class	class	AffixedWord[word=CLASS, entry=class, prefixes=[], suffixes=[]]	Class	Class	1
+W	Class	1	class	class	class	class	AffixedWord[word=Class, entry=class, prefixes=[], suffixes=[]]	Class	Class	1
+W	CLEAN	1	clean	clean	clean	clean	AffixedWord[word=CLEAN, entry=clean, prefixes=[], suffixes=[]]	Clean	Clean	1
+W	Clean	1	clean	clean	clean	clean	AffixedWord[word=Clean, entry=clean, prefixes=[], suffixes=[]]	Clean	Clean	1
+W	CLEAR	1	clear	clear	clear	clear	AffixedWord[word=CLEAR, entry=clear, prefixes=[], suffixes=[]]	Clear	Clear	1
+W	Clear	1	clear	clear	clear	clear	AffixedWord[word=Clear, entry=clear, prefixes=[], suffixes=[]]	Clear	Clear	1
+W	CLIMB	1	climb	climb	climb	climb	AffixedWord[word=CLIMB, entry=climb, prefixes=[], suffixes=[]]	Climb	Climb	1
+W	Climb	1	climb	climb	climb	climb	AffixedWord[word=Climb, entry=climb, prefixes=[], suffixes=[]]	Climb	Climb	0
+W	CLOCK	1	clock	clock	clock	clock	AffixedWord[word=CLOCK, entry=clock, prefixes=[], suffixes=[]]	Clock	Clock	0
+W	Clock	1	clock	clock	clock	clock	AffixedWord[word=Clock, entry=clock, prefixes=[], suffixes=[]]	Clock	Clock	0
+W	CLOSE	1	close	close	close	close	AffixedWord[word=CLOSE, entry=close, prefixes=[], suffixes=[]]	Close	Close	1
+W	Close	1	close	close	close	close	AffixedWord[word=Close, entry=close, prefixes=[], suffixes=[]]	Close	Close	0
+W	CLOUD	1	cloud	cloud	cloud	cloud	AffixedWord[word=CLOUD, entry=cloud, prefixes=[], suffixes=[]]	Cloud	Cloud	1
+W	Cloud	1	cloud	cloud	cloud	cloud	AffixedWord[word=Cloud, entry=cloud, prefixes=[], suffixes=[]]	Cloud	Cloud	0
+W	COAST	1	coast	coast	coast	coast	AffixedWord[word=COAST, entry=coast, prefixes=[], suffixes=[]]	Coast	Coast	1
+W	Coast	1	coast	coast	coast	coast	AffixedWord[word=Coast, entry=coast, prefixes=[], suffixes=[]]	Coast	Coast	0
+W	COAT	1	coat	coat	coat	coat	AffixedWord[word=COAT, entry=coat, prefixes=[], suffixes=[]]	Coat	Coat	0
+W	Coat	1	coat	coat	coat	coat	AffixedWord[word=Coat, entry=coat, prefixes=[], suffixes=[]]	Coat	Coat	0
+W	COLD	1	cold	cold	cold	cold	AffixedWord[word=COLD, entry=cold, prefixes=[], suffixes=[]]	Cold	Cold	1
+W	Cold	1	cold	cold	cold	cold	AffixedWord[word=Cold, entry=cold, prefixes=[], suffixes=[]]	Cold	Cold	0
+W	COLOR	1	color	color	color	color	AffixedWord[word=COLOR, entry=color, prefixes=[], suffixes=[]]	Color	Color	1
+W	Color	1	color	color	color	color	AffixedWord[word=Color, entry=color, prefixes=[], suffixes=[]]	Color	Color	0
+W	COME	1	come	come	come	come	AffixedWord[word=COME, entry=come, prefixes=[], suffixes=[]]	Come	Come	1
+W	Come	1	come	come	come	come	AffixedWord[word=Come, entry=come, prefixes=[], suffixes=[]]	Come	Come	0
+W	COMMON	1	common	common	common	common	AffixedWord[word=COMMON, entry=common, prefixes=[], suffixes=[]]	Common	Common	0
+W	Common	1	common	common	common	common	AffixedWord[word=Common, entry=common, prefixes=[], suffixes=[]]	Common	Common	0
+W	COMPANY	1	company	company	company	company	AffixedWord[word=COMPANY, entry=company, prefixes=[], suffixes=[]]	Company	Company	1
+W	Company	1	company	company	company	company	AffixedWord[word=Company, entry=company, prefixes=[], suffixes=[]]	Company	Company	0
+W	COMPARE	1	compare	compare	compare	compare	AffixedWord[word=COMPARE, entry=compare, prefixes=[], suffixes=[]]	Compare	Compare	1
+W	Compare	1	compare	compare	compare	compare	AffixedWord[word=Compare, entry=compare, prefixes=[], suffixes=[]]	Compare	Compare	0
+W	COMPLETE	1	complete	complete	complete	complete	AffixedWord[word=COMPLETE, entry=complete, prefixes=[], suffixes=[]]	Complete	Complete	1
+W	Complete	1	complete	complete	complete	complete	AffixedWord[word=Complete, entry=complete, prefixes=[], suffixes=[]]	Complete	Complete	0
+W	CONDITION	1	condition	condition	condition	condition	AffixedWord[word=CONDITION, entry=condition, prefixes=[], suffixes=[]]	Condition	Condition	1
+W	Condition	1	condition	condition	condition	condition	AffixedWord[word=Condition, entry=condition, prefixes=[], suffixes=[]]	Condition	Condition	1
+W	CONSIDER	1	consider	consider	consider	consider	AffixedWord[word=CONSIDER, entry=consider, prefixes=[], suffixes=[]]	Consider	Consider	1
+W	Consider	1	consider	consider	consider	consider	AffixedWord[word=Consider, entry=consider, prefixes=[], suffixes=[]]	Consider	Consider	1
+W	CONTAIN	1	contain	contain	contain	contain	AffixedWord[word=CONTAIN, entry=contain, prefixes=[], suffixes=[]]	Contain	Contain	1
+W	Contain	1	contain	contain	contain	contain	AffixedWord[word=Contain, entry=contain, prefixes=[], suffixes=[]]	Contain	Contain	1
+W	CONTINUE	1	continue	continue	continue	continue	AffixedWord[word=CONTINUE, entry=continue, prefixes=[], suffixes=[]]	Continue	Continue	1
+W	Continue	1	continue	continue	continue	continue	AffixedWord[word=Continue, entry=continue, prefixes=[], suffixes=[]]	Continue	Continue	1
+W	CONTROL	1	control	control	control	control	AffixedWord[word=CONTROL, entry=control, prefixes=[], suffixes=[]]	Control	Control	1
+W	Control	1	control	control	control	control	AffixedWord[word=Control, entry=control, prefixes=[], suffixes=[]]	Control	Control	1
+W	COOK	1	cook	cook	cook	cook	AffixedWord[word=COOK, entry=cook, prefixes=[], suffixes=[]]	Cook	Cook	0
+W	Cook	1	cook	cook	cook	cook	AffixedWord[word=Cook, entry=cook, prefixes=[], suffixes=[]]	Cook	Cook	0
+W	COOL	1	cool	cool	cool	cool	AffixedWord[word=COOL, entry=cool, prefixes=[], suffixes=[]]	Cool	Cool	0
+W	Cool	1	cool	cool	cool	cool	AffixedWord[word=Cool, entry=cool, prefixes=[], suffixes=[]]	Cool	Cool	0
+W	COPY	1	copy	copy	copy	copy	AffixedWord[word=COPY, entry=copy, prefixes=[], suffixes=[]]	Copy	Copy	1
+W	Copy	1	copy	copy	copy	copy	AffixedWord[word=Copy, entry=copy, prefixes=[], suffixes=[]]	Copy	Copy	0
+W	CORN	1	corn	corn	corn	corn	AffixedWord[word=CORN, entry=corn, prefixes=[], suffixes=[]]	Corn	Corn	1
+W	Corn	1	corn	corn	corn	corn	AffixedWord[word=Corn, entry=corn, prefixes=[], suffixes=[]]	Corn	Corn	1
+W	CORNER	1	corner	corner	corner	corner	AffixedWord[word=CORNER, entry=corner, prefixes=[], suffixes=[]]	Corner	Corner	1
+W	Corner	1	corner	corner	corner	corner	AffixedWord[word=Corner, entry=corner, prefixes=[], suffixes=[]]	Corner	Corner	1
+W	CORRECT	1	correct	correct	correct	correct	AffixedWord[word=CORRECT, entry=correct, prefixes=[], suffixes=[]]	Correct	Correct	1
+W	Correct	1	correct	correct	correct	correct	AffixedWord[word=Correct, entry=correct, prefixes=[], suffixes=[]]	Correct	Correct	1
+W	COST	1	cost	cost	cost	cost	AffixedWord[word=COST, entry=cost, prefixes=[], suffixes=[]]	Cost	Cost	0
+W	Cost	1	cost	cost	cost	cost	AffixedWord[word=Cost, entry=cost, prefixes=[], suffixes=[]]	Cost	Cost	0
+W	COTTON	1	cotton	cotton	cotton	cotton	AffixedWord[word=COTTON, entry=cotton, prefixes=[], suffixes=[]]	Cotton	Cotton	1
+W	Cotton	1	cotton	cotton	cotton	cotton	AffixedWord[word=Cotton, entry=cotton, prefixes=[], suffixes=[]]	Cotton	Cotton	0
+W	COULD	1	could	could	could	could	AffixedWord[word=COULD, entry=could, prefixes=[], suffixes=[]]	Could	Could	1
+W	Could	1	could	could	could	could	AffixedWord[word=Could, entry=could, prefixes=[], suffixes=[]]	Could	Could	1
+W	COUNT	1	count	count	count	count	AffixedWord[word=COUNT, entry=count, prefixes=[], suffixes=[]]	Count	Count	1
+W	Count	1	count	count	count	count	AffixedWord[word=Count, entry=count, prefixes=[], suffixes=[]]	Count	Count	1
+W	COUNTRY	1	country	country	country	country	AffixedWord[word=COUNTRY, entry=country, prefixes=[], suffixes=[]]	Country	Country	1
+W	Country	1	country	country	country	country	AffixedWord[word=Country, entry=country, prefixes=[], suffixes=[]]	Country	Country	1
+W	COURSE	1	course	course	course	course	AffixedWord[word=COURSE, entry=course, prefixes=[], suffixes=[]]	Course	Course	1
+W	Course	1	course	course	course	course	AffixedWord[word=Course, entry=course, prefixes=[], suffixes=[]]	Course	Course	1
+W	COVER	1	cover	cover	cover	cover	AffixedWord[word=COVER, entry=cover, prefixes=[], suffixes=[]]	Cover	Cover	1
+W	Cover	1	cover	cover	cover	cover	AffixedWord[word=Cover, entry=cover, prefixes=[], suffixes=[]]	Cover	Cover	1
+W	COW	1	cow	cow	cow	cow	AffixedWord[word=COW, entry=cow, prefixes=[], suffixes=[]]	Cow	Cow	0
+W	Cow	1	cow	cow	cow	cow	AffixedWord[word=Cow, entry=cow, prefixes=[], suffixes=[]]	Cow	Cow	0
+W	CREASE	1	crease	crease	crease	crease	AffixedWord[word=CREASE, entry=crease, prefixes=[], suffixes=[]]	Crease	Crease	1
+W	Crease	1	crease	crease	crease	crease	AffixedWord[word=Crease, entry=crease, prefixes=[], suffixes=[]]	Crease	Crease	1
+W	CREATE	1	create	create	create	create	AffixedWord[word=CREATE, entry=create, prefixes=[], suffixes=[]]	Create	Create	1
+W	Create	1	create	create	create	create	AffixedWord[word=Create, entry=create, prefixes=[], suffixes=[]]	Create	Create	1
+W	CROP	1	crop	crop	crop	crop	AffixedWord[word=CROP, entry=crop, prefixes=[], suffixes=[]]	Crop	Crop	1
+W	Crop	1	crop	crop	crop	crop	AffixedWord[word=Crop, entry=crop, prefixes=[], suffixes=[]]	Crop	Crop	0
+W	CROSS	1	cross	cross	cross	cross	AffixedWord[word=CROSS, entry=cross, prefixes=[], suffixes=[]]	Cross	Cross	0
+W	Cross	1	cross	cross	cross	cross	AffixedWord[word=Cross, entry=cross, prefixes=[], suffixes=[]]	Cross	Cross	0
+W	CROWD	1	crowd	crowd	crowd	crowd	AffixedWord[word=CROWD, entry=crowd, prefixes=[], suffixes=[]]	Crowd	Crowd	0
+W	Crowd	1	crowd	crowd	crowd	crowd	AffixedWord[word=Crowd, entry=crowd, prefixes=[], suffixes=[]]	Crowd	Crowd	0
+W	CRY	1	cry	cry	cry	cry	AffixedWord[word=CRY, entry=cry, prefixes=[], suffixes=[]]	Cry	Cry	1
+W	Cry	1	cry	cry	cry	cry	AffixedWord[word=Cry, entry=cry, prefixes=[], suffixes=[]]	Cry	Cry	1
+W	CURRENT	1	current	current	current	current	AffixedWord[word=CURRENT, entry=current, prefixes=[], suffixes=[]]	Current	Current	1
+W	Current	1	current	current	current	current	AffixedWord[word=Current, entry=current, prefixes=[], suffixes=[]]	Current	Current	0
+W	CUT	1	cut	cut	cut	cut	AffixedWord[word=CUT, entry=cut, prefixes=[], suffixes=[]]	Cut	Cut	0
+W	Cut	1	cut	cut	cut	cut	AffixedWord[word=Cut, entry=cut, prefixes=[], suffixes=[]]	Cut	Cut	0
+W	DANCE	1	dance	dance	dance	dance	AffixedWord[word=DANCE, entry=dance, prefixes=[], suffixes=[]]	Dance	Dance	1
+W	Dance	1	dance	dance	dance	dance	AffixedWord[word=Dance, entry=dance, prefixes=[], suffixes=[]]	Dance	Dance	0
+W	DANGER	1	danger	danger	danger	danger	AffixedWord[word=DANGER, entry=danger, prefixes=[], suffixes=[]]	Danger	Danger	1
+W	Danger	1	danger	danger	danger	danger	AffixedWord[word=Danger, entry=danger, prefixes=[], suffixes=[]]	Danger	Danger	0
+W	DARK	1	dark	dark	dark	dark	AffixedWord[word=DARK, entry=dark, prefixes=[], suffixes=[]]	Dark	Dark	1
+W	Dark	1	dark	dark	dark	dark	AffixedWord[word=Dark, entry=dark, prefixes=[], suffixes=[]]	Dark	Dark	0
+W	DAY	1	day	day	day	day	AffixedWord[word=DAY, entry=day, prefixes=[], suffixes=[]]	Day	Day	1
+W	Day	1	day	day	day	day	AffixedWord[word=Day, entry=day, prefixes=[], suffixes=[]]	Day	Day	1
+W	DEAD	1	dead	dead	dead	dead	AffixedWord[word=DEAD, entry=dead, prefixes=[], suffixes=[]]	Dead	Dead	1
+W	Dead	1	dead	dead	dead	dead	AffixedWord[word=Dead, entry=dead, prefixes=[], suffixes=[]]	Dead	Dead	0
+W	DEAL	1	deal	deal	deal	deal	AffixedWord[word=DEAL, entry=deal, prefixes=[], suffixes=[]]	Deal	Deal	0
+W	Deal	1	deal	deal	deal	deal	AffixedWord[word=Deal, entry=deal, prefixes=[], suffixes=[]]	Deal	Deal	0
+W	DEAR	1	dear	dear	dear	dear	AffixedWord[word=DEAR, entry=dear, prefixes=[], suffixes=[]]	Dear	Dear	0
+W	Dear	1	dear	dear	dear	dear	AffixedWord[word=Dear, entry=dear, prefixes=[], suffixes=[]]	Dear	Dear	0
+W	DEATH	1	death	death	death	death	AffixedWord[word=DEATH, entry=death, prefixes=[], suffixes=[]]	Death	Death	1
+W	Death	1	death	death	death	death	AffixedWord[word=Death, entry=death, prefixes=[], suffixes=[]]	Death	Death	0
+W	DECIDE	1	decide	decide	decide	decide	AffixedWord[word=DECIDE, entry=decide, prefixes=[], suffixes=[]]	Decide	Decide	1
+W	Decide	1	decide	decide	decide	decide	AffixedWord[word=Decide, entry=decide, prefixes=[], suffixes=[]]	Decide	Decide	0
+W	DEEP	1	deep	deep	deep	deep	AffixedWord[word=DEEP, entry=deep, prefixes=[], suffixes=[]]	Deep	Deep	1
+W	Deep	1	deep	deep	deep	deep	AffixedWord[word=Deep, entry=deep, prefixes=[], suffixes=[]]	Deep	Deep	1
+W	DEGREE	1	degree	degree	degree	degree	AffixedWord[word=DEGREE, entry=degree, prefixes=[], suffixes=[]]	Degree	Degree	1
+W	Degree	1	degree	degree	degree	degree	AffixedWord[word=Degree, entry=degree, prefixes=[], suffixes=[]]	Degree	Degree	1
+W	DEPEND	1	depend	depend	depend	depend	AffixedWord[word=DEPEND, entry=depend, prefixes=[], suffixes=[]]	Depend	Depend	0
+W	Depend	1	depend	depend	depend	depend	AffixedWord[word=Depend, entry=depend, prefixes=[], suffixes=[]]	Depend	Depend	0
+W	DESCRIBE	1	describe	describe	describe	describe	AffixedWord[word=DESCRIBE, entry=describe, prefixes=[], suffixes=[]]	Describe	Describe	1
+W	Describe	1	describe	describe	describe	describe	AffixedWord[word=Describe, entry=describe, prefixes=[], suffixes=[]]	Describe	Describe	0
+W	DESERT	1	desert	desert	desert	desert	AffixedWord[word=DESERT, entry=desert, prefixes=[], suffixes=[]]	Desert	Desert	1
+W	Desert	1	desert	desert	desert	desert	AffixedWord[word=Desert, entry=desert, prefixes=[], suffixes=[]]	Desert	Desert	0
+W	DESIGN	1	design	design	design	design	AffixedWord[word=DESIGN, entry=design, prefixes=[], suffixes=[]]	Design	Design	1
+W	Design	1	design	design	design	design	AffixedWord[word=Design, entry=design, prefixes=[], suffixes=[]]	Design	Design	0
+W	DETERMINE	1	determine	determine	determine	determine	AffixedWord[word=DETERMINE, entry=determine, prefixes=[], suffixes=[]]	Determine	Determine	1
+W	Determine	1	determine	determine	determine	determine	AffixedWord[word=Determine, entry=determine, prefixes=[], suffixes=[]]	Determine	Determine	1
+W	DEVELOP	1	develop	develop	develop	develop	AffixedWord[word=DEVELOP, entry=develop, prefixes=[], suffixes=[]]	Develop	Develop	1
+W	Develop	1	develop	develop	develop	develop	AffixedWord[word=Develop, entry=develop, prefixes=[], suffixes=[]]	Develop	Develop	0
+W	DICTIONARY	1	dictionary	dictionary	dictionary	dictionary	AffixedWord[word=DICTIONARY, entry=dictionary, prefixes=[], suffixes=[]]	Dictionary	Dictionary	1
+W	Dictionary	1	dictionary	dictionary	dictionary	dictionary	AffixedWord[word=Dictionary, entry=dictionary, prefixes=[], suffixes=[]]	Dictionary	Dictionary	1
+W	DIFFER	1	differ	differ	differ	differ	AffixedWord[word=DIFFER, entry=differ, prefixes=[], suffixes=[]]	Differ	Differ	1
+W	Differ	1	differ	differ	differ	differ	AffixedWord[word=Differ, entry=differ, prefixes=[], suffixes=[]]	Differ	Differ	1
+W	DIFFICULT	1	difficult	difficult	difficult	difficult	AffixedWord[word=DIFFICULT, entry=difficult, prefixes=[], suffixes=[]]	Difficult	Difficult	1
+W	Difficult	1	difficult	difficult	difficult	difficult	AffixedWord[word=Difficult, entry=difficult, prefixes=[], suffixes=[]]	Difficult	Difficult	1
+W	DIRECT	1	direct	direct	direct	direct	AffixedWord[word=DIRECT, entry=direct, prefixes=[], suffixes=[]]	Direct	Direct	1
+W	Direct	1	direct	direct	direct	direct	AffixedWord[word=Direct, entry=direct, prefixes=[], suffixes=[]]	Direct	Direct	1
+W	DISCUSS	1	discuss	discuss	discuss	discuss	AffixedWord[word=DISCUSS, entry=discuss, prefixes=[], suffixes=[]]	Discuss	Discuss	1
+W	Discuss	1	discuss	discuss	discuss	discuss	AffixedWord[word=Discuss, entry=discuss, prefixes=[], suffixes=[]]	Discuss	Discuss	0
+W	DISTANT	1	distant	distant	distant	distant	AffixedWord[word=DISTANT, entry=distant, prefixes=[], suffixes=[]]	Distant	Distant	1
+W	Distant	1	distant	distant	distant	distant	AffixedWord[word=Distant, entry=distant, prefixes=[], suffixes=[]]	Distant	Distant	0
+W	DIVIDE	1	divide	divide	divide	divide	AffixedWord[word=DIVIDE, entry=divide, prefixes=[], suffixes=[]]	Divide	Divide	1
+W	Divide	1	divide	divide	divide	divide	AffixedWord[word=Divide, entry=divide, prefixes=[], suffixes=[]]	Divide	Divide	0
+W	DOCTOR	1	doctor	doctor	doctor	doctor	AffixedWord[word=DOCTOR, entry=doctor, prefixes=[], suffixes=[]]	Doctor	Doctor	1
+W	Doctor	1	doctor	doctor	doctor	doctor	AffixedWord[word=Doctor, entry=doctor, prefixes=[], suffixes=[]]	Doctor	Doctor	0
+W	DOG	1	dog	dog	dog	dog	AffixedWord[word=DOG, entry=dog, prefixes=[], suffixes=[]]	Dog	Dog	0
+W	Dog	1	dog	dog	dog	dog	AffixedWord[word=Dog, entry=dog, prefixes=[], suffixes=[]]	Dog	Dog	0
+W	DOLLAR	1	dollar	dollar	dollar	dollar	AffixedWord[word=DOLLAR, entry=dollar, prefixes=[], suffixes=[]]	Dollar	Dollar	1
+W	Dollar	1	dollar	dollar	dollar	dollar	AffixedWord[word=Dollar, entry=dollar, prefixes=[], suffixes=[]]	Dollar	Dollar	1
+W	DOOR	1	door	door	door	door	AffixedWord[word=DOOR, entry=door, prefixes=[], suffixes=[]]	Door	Door	1
+W	Door	1	door	door	door	door	AffixedWord[word=Door, entry=door, prefixes=[], suffixes=[]]	Door	Door	1
+W	DOUBLE	1	double	double	double	double	AffixedWord[word=DOUBLE, entry=double, prefixes=[], suffixes=[]]	Double	Double	1
+W	Double	1	double	double	double	double	AffixedWord[word=Double, entry=double, prefixes=[], suffixes=[]]	Double	Double	0
+W	DOWN	1	down	down	down	down	AffixedWord[word=DOWN, entry=down, prefixes=[], suffixes=[]]	Down	Down	1
+W	Down	1	down	down	down	down	AffixedWord[word=Down, entry=down, prefixes=[], suffixes=[]]	Down	Down	1
+W	DRAW	1	draw	draw	draw	draw	AffixedWord[word=DRAW, entry=draw, prefixes=[], suffixes=[]]	Draw	Draw	0
+W	Draw	1	draw	draw	draw	draw	AffixedWord[word=Draw, entry=draw, prefixes=[], suffixes=[]]	Draw	Draw	0
+W	DREAM	1	dream	dream	dream	dream	AffixedWord[word=DREAM, entry=dream, prefixes=[], suffixes=[]]	Dream	Dream	1
+W	Dream	1	dream	dream	dream	dream	AffixedWord[word=Dream, entry=dream, prefixes=[], suffixes=[]]	Dream	Dream	1
+W	DRESS	1	dress	dress	dress	dress	AffixedWord[word=DRESS, entry=dress, prefixes=[], suffixes=[]]	Dress	Dress	1
+W	Dress	1	dress	dress	dress	dress	AffixedWord[word=Dress, entry=dress, prefixes=[], suffixes=[]]	Dress	Dress	1
+W	DRINK	1	drink	drink	drink	drink	AffixedWord[word=DRINK, entry=drink, prefixes=[], suffixes=[]]	Drink	Drink	1
+W	Drink	1	drink	drink	drink	drink	AffixedWord[word=Drink, entry=drink, prefixes=[], suffixes=[]]	Drink	Drink	1
+W	DRIVE	1	drive	drive	drive	drive	AffixedWord[word=DRIVE, entry=drive, prefixes=[], suffixes=[]]	Drive	Drive	1
+W	Drive	1	drive	drive	drive	drive	AffixedWord[word=Drive, entry=drive, prefixes=[], suffixes=[]]	Drive	Drive	1
+W	DROP	1	drop	drop	drop	drop	AffixedWord[word=DROP, entry=drop, prefixes=[], suffixes=[]]	Drop	Drop	1
+W	Drop	1	drop	drop	drop	drop	AffixedWord[word=Drop, entry=drop, prefixes=[], suffixes=[]]	Drop	Drop	0
+W	DRY	1	dry	dry	dry	dry	AffixedWord[word=DRY, entry=dry, prefixes=[], suffixes=[]]	Dry	Dry	0
+W	Dry	1	dry	dry	dry	dry	AffixedWord[word=Dry, entry=dry, prefixes=[], suffixes=[]]	Dry	Dry	0
+W	DUCK	1	duck	duck	duck	duck	AffixedWord[word=DUCK, entry=duck, prefixes=[], suffixes=[]]	Duck	Duck	1
+W	Duck	1	duck	duck	duck	duck	AffixedWord[word=Duck, entry=duck, prefixes=[], suffixes=[]]	Duck	Duck	0
+W	DURING	1	during	during	during	during	AffixedWord[word=DURING, entry=during, prefixes=[], suffixes=[]]	During	During	0
+W	During	1	during	during	during	during	AffixedWord[word=During, entry=during, prefixes=[], suffixes=[]]	During	During	0
+W	FOO	1	foo	foo	foo	foo	AffixedWord[word=FOO, entry=foo/C, prefixes=[], suffixes=[]]	Foo	Foo	1
+W	Foo	1	foo	foo	foo	foo	AffixedWord[word=Foo, entry=foo/C, prefixes=[], suffixes=[]]	Foo	Foo	1
+W	HELLO	1	hello	hello	hello	hello	AffixedWord[word=HELLO, entry=hello, prefixes=[], suffixes=[]]	Hello	Hello	1
+W	Hello	1	hello	hello	hello	hello	AffixedWord[word=Hello, entry=hello, prefixes=[], suffixes=[]]	Hello	Hello	0
+W	HOPE	1	hope	hope	hope	hope	AffixedWord[word=HOPE, entry=hope/H, prefixes=[], suffixes=[]]	Hope	Hope	1
+W	Hope	1	hope	hope	hope	hope	AffixedWord[word=Hope, entry=hope/H, prefixes=[], suffixes=[]]	Hope	Hope	0
+W	LAE	1	lae	lae	lae	lae	AffixedWord[word=LAE, entry=lae/A, prefixes=[], suffixes=[]]	Lae	Lae	0
+W	Lae	1	lae	lae	lae	lae	AffixedWord[word=Lae, entry=lae/A, prefixes=[], suffixes=[]]	Lae	Lae	0
+W	LOT	1	lot	lot	lot	lot	AffixedWord[word=LOT, entry=lot, prefixes=[], suffixes=[]]	Lot	Lot	0
+W	Lot	1	lot	lot	lot	lot	AffixedWord[word=Lot, entry=lot, prefixes=[], suffixes=[]]	Lot	Lot	0
+W	MAKE	1	make	make	make	make	AffixedWord[word=MAKE, entry=make/H, prefixes=[], suffixes=[]]	Make	Make	1
+W	Make	1	make	make	make	make	AffixedWord[word=Make, entry=make/H, prefixes=[], suffixes=[]]	Make	Make	1
+W	ND	0	ND	ND	ND			and	and	0
+W	Nd	0	Nd	Nd	Nd			and	and	0
+W	NEW	1	new	new	new	new	AffixedWord[word=NEW, entry=new, prefixes=[], suffixes=[]]	New	New	1
+W	New	1	new	new	new	new	AffixedWord[word=New, entry=new, prefixes=[], suffixes=[]]	New	New	1
+W	NIGHT	1	night	night	night	night	AffixedWord[word=NIGHT, entry=night, prefixes=[], suffixes=[]]	Night	Night	0
+W	Night	1	night	night	night	night	AffixedWord[word=Night, entry=night, prefixes=[], suffixes=[]]	Night	Night	0
+W	PHONE	1	phone	phone	phone	phone	AffixedWord[word=PHONE, entry=phone, prefixes=[], suffixes=[]]	Phone	Phone	1
+W	Phone	1	phone	phone	phone	phone	AffixedWord[word=Phone, entry=phone, prefixes=[], suffixes=[]]	Phone	Phone	0
+W	RISE	1	rise	rise	rise	rise	AffixedWord[word=RISE, entry=rise/w, prefixes=[], suffixes=[]]	Rise	Rise	1
+W	Rise	1	rise	rise	rise	rise	AffixedWord[word=Rise, entry=rise/w, prefixes=[], suffixes=[]]	Rise	Rise	1
+W	SET	1	set	set	set	set	AffixedWord[word=SET, entry=set/z, prefixes=[], suffixes=[]]	Set	Set	0
+W	Set	1	set	set	set	set	AffixedWord[word=Set, entry=set/z, prefixes=[], suffixes=[]]	Set	Set	0
+W	SUN	1	sun	sun	sun	sun	AffixedWord[word=SUN, entry=sun/y, prefixes=[], suffixes=[]]	Sun	Sun	0
+W	Sun	1	sun	sun	sun	sun	AffixedWord[word=Sun, entry=sun/y, prefixes=[], suffixes=[]]	Sun	Sun	0
+W	TH	0	TH	TH	TH			both	both	0
+W	Th	0	Th	Th	Th			both	both	0
+W	TOUGH	1	tough	tough	tough	tough	AffixedWord[word=TOUGH, entry=tough, prefixes=[], suffixes=[]]	Tough	Tough	1
+W	Tough	1	tough	tough	tough	tough	AffixedWord[word=Tough, entry=tough, prefixes=[], suffixes=[]]	Tough	Tough	1
+W	1t	0	1t	1t	1t			1|1th	1|1th	0
+W	s1t	0	s1t	s1t	s1t			set	set	1
+W	11h	0	11h	11h	11h			11th|1th		0
+W	21t	0	21t	21t	21t			21th|2st	21th	1
+W	12st	1	12st	12st	12st			12st	12st	1
+W	2d	0	2d	2d	2d			2|2nd	2	0
+W	n2d	0	n2d	n2d	n2d			2nd	2nd	0
+W	3d	0	3d	3d	3d			3|3nd	3	0
+W	r3d	0	r3d	r3d	r3d					1
+W	13h	0	13h	13h	13h			13th|1th		0
+W	31th	1	31th	31th	31th			31th	31th	1
+W	1h	0	1h	1h	1h			1|1th	1	0
+W	t1h	0	t1h	t1h	t1h			1th|tough	1th|tough	0
+W	sunise	0	sunise	sunise	sunise			sun	sun	1
+W	usnrise	0	usnrise	usnrise	usnrise			rise	rise	1
+W	sunet	0	sunet	sunet	sunet			sunset|sun	sunset|sun	0
+W	usnset	0	usnset	usnset	usnset			sunset	sunset	1
+W	sunrieset	0	sunrieset	sunrieset	sunrieset			sunriseset	sunriseset	1
+W	usnriseset	0	usnriseset	usnriseset	usnriseset			sunriseset	sunriseset	1
+W	rissun	0	rissun	rissun	rissun			rise	rise	0
+W	irsesun	0	irsesun	irsesun	irsesun					0
+W	foar	0	foar	foar	foar			fozar|board	board	1
+W	ofzar	0	ofzar	ofzar	ofzar			fozar	fozar	0
+W	fooar	0	fooar	fooar	fooar			fozar|foo	foo	0
+W	ofobar	0	ofobar	ofobar	ofobar					1
+W	baroo	0	baroo	baroo	baroo			barfoo|bar	bar	0
+W	abrfoo	0	abrfoo	abrfoo	abrfoo			barfoo	barfoo	1
+W	baraz	0	baraz	baraz	baraz			baz	baz	0
+W	abrbaz	0	abrbaz	abrbaz	abrbaz					0
+W	Baraz	0	Baraz	Baraz	Baraz			baz	baz	1
+W	aBrbaz	0	aBrbaz	aBrbaz	aBrbaz					1
+W	bazar	0	bazar	bazar	bazar			bazbar|bar	bar	1
+W	abzbar	0	abzbar	abzbar	abzbar			bazbar	bazbar	1
+W	alt	0	alt	alt	alt			art|act|all	art|act|all	0
+W	laot	0	laot	laot	laot			lot	lot	1
+W	anw	0	anw	anw	anw			any|and	any|and	0
+W	naew	0	naew	naew	naew			new	new	1
+W	aNw	0	aNw	aNw	aNw			any|and	any|and	0
+W	Naew	0	Naew	Naew	Naew			new	new	1
+W	helloWorld	0	helloWorld	helloWorld	helloWorld			hello world|hello-world	hello world|hello-world	1
+W	ehllo.World	0	ehllo.World	ehllo.World	ehllo.World					1
+W	helloworld	0	helloworld	helloworld	helloworld			hello world|hello-world	hello world|hello-world	1
+W	ehllo.world	0	ehllo.world	ehllo.world	ehllo.world					1
+W	HelloWorld	0	HelloWorld	HelloWorld	HelloWorld			hello world|hello-world	hello world|hello-world	1
+W	eHllo.World	0	eHllo.World	eHllo.World	eHllo.World					0
+W	ac.	1	ac.	ac.	ac.			Ac.	Ac.	0
+W	cat.	1	cat.	cat.	cat.			Cat.	Cat.	0
+W	ac..	1	ac..	ac..	ac..			Ac..	Ac..	0
+W	cat..	1	cat..	cat..	cat..			Cat..	Cat..	1
+W	dog..	1	dog..	dog..	dog..			Dog..	Dog..	1
+W	odg...	0	odg...	odg...	odg...					1
+W	x.	1	x.	x.	x.			X.	X.	0
+W	yx.	0	yx.	yx.	yx.					1
+W	as	0	as	as	as			a|cas|acs|ask|cs|ac	a|cas|acs|ask|cs|ac	0
+W	bas	0	bas	bas	bas			cas|bad|bag|base|bcs|bar|baz	cas|bad|bag|base|bcs|bar|baz	0
+W	abcs	0	abcs	abcs	abcs			ab-cs	ab-cs	0
+W	ba-cs	0	ba-cs	ba-cs	ba-cs			ab-cs	ab-cs	1
+W	cs	1	c	c	c	c	AffixedWord[word=cs, entry=c/A, prefixes=[], suffixes=[A(id=0)]]	Cs	Cs	0
+W	acs	1	ac	ac	ac	ac	AffixedWord[word=acs, entry=ac/A, prefixes=[], suffixes=[A(id=0)]]	Acs	Acs	0
+W	bcs	1	bc	bc	bc	bc	AffixedWord[word=bcs, entry=bc/A, prefixes=[], suffixes=[A(id=0)]]	Bcs	Bcs	0
+W	ecs	0	ecs	ecs	ecs			cs|acs|bcs	cs|acs|bcs	1
+W	laer	0	laer	laer	laer			lae|laeer|caer	lae|laeer|caer	0
+W	aleer	0	aleer	aleer	aleer			laeer	laeer	0
+W	acer	0	acer	acer	acer			caer|care	caer|care	0
+W	ay	0	ay	ay	ay			a|day|any|aby|ac	a|day|any|aby|ac	0
+W	bay	0	bay	bay	bay			aby|bar|baby|day|boy|buy|bad|bag|baz	aby|bar|baby|day|boy|buy|bad|bag|baz	1
+W	abes	0	abes	abes	abes			base|best	base|best	1
+W	baies	0	baies	baies	baies			base	base	1
+W	ax	0	ax	ax	ax			ac|x|a|a x	ac|x|a|a x	0
+W	bax	0	bax	bax	bax			baz|box|bar|bad|bag	baz|box|bar|bad|bag	0
+W	abd	0	abd	abd	abd			bad|and|abcd|add|abc|aby	bad|and|abcd|add|abc|aby	0
+W	bacd	0	bacd	bacd	bacd			abcd|back|bad	abcd|back|bad	0
+W	cxd	0	cxd	cxd	cxd			xcd|card	xcd|card	0
+W	rea-c	0	rea-c	rea-c	rea-c			reabcd|area-c|bread-c	reabcd|area-c|bread-c	1
+W	erab-c	0	erab-c	erab-c	erab-c			ab-c	ab-c	1
+W	rex	0	rex	rex	rex			care	care	0
+W	er-x	0	er-x	er-x	er-x			ceer-x	ceer-x	1
+W	hopng	0	hopng	hopng	hopng			hope	hope	0
+W	ohping	0	ohping	ohping	ohping					1
+W	ohpeing	0	ohpeing	ohpeing	ohpeing					1
+W	mk	0	mk	mk	mk			make	make	0
+W	amk	0	amk	amk	amk			ask|among	ask|among	0
+W	makng	0	makng	makng	makng			make	make	1
+W	amking	0	amking	amking	amking			among	among	0
+W	foe	0	foe	foe	foe			foo	foo	0
+W	ofne	0	ofne	ofne	ofne			bone	bone	1
+W	fn	0	fn	fn	fn			foo	foo	0
+W	ofn	0	ofn	ofn	ofn					1
+W	tuf	0	tuf	tuf	tuf			tough	tough	1
+W	utff	0	utff	utff	utff					0
+W	nie	0	nie	nie	nie			night	night	0
+W	inte	0	inte	inte	inte			center	center	0
+W	eth	0	eth	eth	eth			death	death	0
+W	parss	0	parss	parss	parss			paris	paris	0
+W	apriss	0	apriss	apriss	apriss			paris	paris	1
+W	nao	0	nao	nao	nao			nato	nato	0
+W	anto	0	anto	anto	anto			nato	nato	1
+W	Nao	0	Nao	Nao	Nao			nato	nato	1
+W	aNto	0	aNto	aNto	aNto			nato	nato	0
+W	dictinery	0	dictinery	dictinery	dictinery			dictionary	dictionary	0
+W	idctionery	0	idctionery	idctionery	idctionery			dictionary	dictionary	0
+W	dicshnary	0	dicshnary	dicshnary	dicshnary			dictionary	dictionary	1
+W	idcshunary	0	idcshunary	idcshunary	idcshunary					1
+W	conian	0	conian	conian	conian			contain	contain	0
+W	ocntian	0	ocntian	ocntian	ocntian			continue	continue	1
+W	capptal	0	capptal	capptal	capptal			capital|captain	capital|captain	1
+W	acppital	0	acppital	acppital	acppital			capital	capital	0
+W	beutful	0	beutful	beutful	beutful					1
+W	ebutiful	0	ebutiful	ebutiful	ebutiful					1
+W	beati	0	beati	beati	beati			beat|beauty	beat|beauty	1
+W	ebauti	0	ebauti	ebauti	ebauti			beauty	beauty	1
+W	edssert	0	edssert	edssert	edssert			desert	desert	1
+W	desghn	0	desghn	desghn	desghn			design	design	1
+W	edsighn	0	edsighn	edsighn	edsighn			design	design	1
+W	aginst	0	aginst	aginst	aginst			against|again	against|again	1
+W	gaianst	0	gaianst	gaianst	gaianst			against	against	1
+W	cunry	0	cunry	cunry	cunry			country	country	0
+W	ucntry	0	ucntry	ucntry	ucntry			country	country	1
+W	brgt	0	brgt	brgt	brgt			bright	bright	1
+W	rbigt	0	rbigt	rbigt	rbigt			bright	bright	1
+W	wrld	0	wrld	wrld	wrld			world	world	1
+W	rwold	0	rwold	rwold	rwold			world	world	1
+W	crse	0	crse	crse	crse			case|crease	case|crease	0
+W	rcese	0	rcese	rcese	rcese			desert	desert	1
+W	douel	0	douel	douel	douel			double	double	1
+W	odubel	0	odubel	odubel	odubel					1
+W	kt	0	kt	kt	kt					0
+W	akt	0	akt	akt	akt			art|act	art|act	0
+W	bk	0	bk	bk	bk			bc|back	bc|back	0
+W	obk	0	obk	obk	obk			book	book	1
+W	clibb	0	clibb	clibb	clibb			climb	climb	1
+W	lcimbb	0	lcimbb	lcimbb	lcimbb			climb	climb	1
+W	baouut	0	baouut	baouut	baouut			about	about	1
+W	deteimne	0	deteimne	deteimne	deteimne			determine	determine	1
+W	edterimne	0	edterimne	edterimne	edterimne			determine	determine	1
+W	corct	0	corct	corct	corct			correct	correct	1
+W	ocrect	0	ocrect	ocrect	ocrect			correct	correct	0
+W	a-ot	0	a-ot	a-ot	a-ot			a lot|a-lot	a lot|a-lot	1
+W	-alot	0	-alot	-alot	-alot			a lot	a lot	1
+W	a ot	0	a ot	a ot	a ot			a lot	a lot	0
+W	 alot	0	 alot	 alot	 alot			a lot	a lot	0
+W	dogcat	0	dogcat	dogcat	dogcat			dog cat|dog-cat|dog	dog cat|dog-cat|dog	0
+W	odg-cat	0	odg-cat	odg-cat	odg-cat			dog-cat	dog-cat	1
+W	dogcta	0	dogcta	dogcta	dogcta			doctor	doctor	1
+W	odg-cta	0	odg-cta	odg-cta	odg-cta					1
+W	catog	0	catog	catog	catog			cat	cat	0
+W	actdog	0	actdog	actdog	actdog			act dog|act-dog|act	act dog|act-dog|act	1
+W	acn	0	acn	acn	acn			can|ac|acs|act	can|ac|acs|act	0
+W	caen	0	caen	caen	caen			can|caer	can|caer	1
+W	bcn	0	bcn	bcn	bcn			bc|bcs	bc|bcs	1
+W	cben	0	cben	cben	cben			cb	cb	0
+W	-cn	0	-cn	-cn	-cn			-c|-cs	-c|-cs	1
+W	c-en	0	c-en	c-en	c-en			center|c-new	center|c-new	0
+W	cn	0	cn	cn	cn			cb|c|can|ce|cs|ca	cb|c|can|ce|cs|ca	0
+W	ecn	0	ecn	ecn	ecn			check	check	0
+W	abyed	0	abyed	abyed	abyed			aby	aby	0
+W	bayied	0	bayied	bayied	bayied					1
+W	abzed	0	abzed	abzed	abzed			abcd	abcd	0
+W	bazied	0	bazied	bazied	bazied			baz	baz	1
+W	ybd	0	ybd	ybd	ybd			ycd|body	ycd|body	1
+W	bycd	0	bycd	bycd	bycd			ycd|abcd	ycd|abcd	0
+W	pneumonoultramicroscopcsilicovolcanoconiosis	0	pneumonoultramicroscopcsilicovolcanoconiosis	pneumonoultramicroscopcsilicovolcanoconiosis	pneumonoultramicroscopcsilicovolcanoconiosis			pneumonoultramicroscopicsilicovolcanoconiosis	pneumonoultramicroscopicsilicovolcanoconiosis	1
+W	npeumonoultramicroscopicsilicovolcanoconiosis	0	npeumonoultramicroscopicsilicovolcanoconiosis	npeumonoultramicroscopicsilicovolcanoconiosis	npeumonoultramicroscopicsilicovolcanoconiosis			pneumonoultramicroscopicsilicovolcanoconiosis	pneumonoultramicroscopicsilicovolcanoconiosis	0
+W	pneumonoultramicroscopisilicovolcanoconiosiss	0	pneumonoultramicroscopisilicovolcanoconiosiss	pneumonoultramicroscopisilicovolcanoconiosiss	pneumonoultramicroscopisilicovolcanoconiosiss			pneumonoultramicroscopicsilicovolcanoconiosis	pneumonoultramicroscopicsilicovolcanoconiosis	1
+W	npeumonoultramicroscopicsilicovolcanoconiosiss	0	npeumonoultramicroscopicsilicovolcanoconiosiss	npeumonoultramicroscopicsilicovolcanoconiosiss	npeumonoultramicroscopicsilicovolcanoconiosiss			pneumonoultramicroscopicsilicovolcanoconiosis	pneumonoultramicroscopicsilicovolcanoconiosis	0
+E	-c	-c/A	AffixedWord[word=-c, entry=-c/A, prefixes=[], suffixes=[]]|AffixedWord[word=-cs, entry=-c/A, prefixes=[], suffixes=[A(id=0)]]
+E	0	0/mn	AffixedWord[word=0, entry=0/mn, prefixes=[], suffixes=[]]
+E	1	1/1n	AffixedWord[word=1, entry=1/1n, prefixes=[], suffixes=[]]
+E	2	2/mn	AffixedWord[word=2, entry=2/mn, prefixes=[], suffixes=[]]
+E	3	3/mn	AffixedWord[word=3, entry=3/mn, prefixes=[], suffixes=[]]
+E	NATO	null	
+E	Paris	null	
+E	World	null	
+E	\c	null	
+E	a	a	AffixedWord[word=a, entry=a, prefixes=[], suffixes=[]]
+E	a	a	AffixedWord[word=a, entry=a, prefixes=[], suffixes=[]]
+E	ab-c	ab-c/A	AffixedWord[word=ab-c, entry=ab-c/A, prefixes=[], suffixes=[]]|AffixedWord[word=ab-cs, entry=ab-c/A, prefixes=[], suffixes=[A(id=0)]]
+E	abc	abc/B	AffixedWord[word=abc, entry=abc/B, prefixes=[], suffixes=[]]
+E	abcd	abcd/G	AffixedWord[word=abcd, entry=abcd/G, prefixes=[], suffixes=[]]|AffixedWord[word=reabcd, entry=abcd/G, prefixes=[G(id=6)], suffixes=[]]|AffixedWord[word=xcd, entry=abcd/G, prefixes=[G(id=5)], suffixes=[]]|AffixedWord[word=ycd, entry=abcd/G, prefixes=[G(id=7)], suffixes=[]]
+E	about	about	AffixedWord[word=about, entry=about, prefixes=[], suffixes=[]]
+E	above	above	AffixedWord[word=above, entry=above, prefixes=[], suffixes=[]]
+E	aby	aby/B	AffixedWord[word=aby, entry=aby/B, prefixes=[], suffixes=[]]
+E	ac	ac/A	AffixedWord[word=ac, entry=ac/A, prefixes=[], suffixes=[]]|AffixedWord[word=acs, entry=ac/A, prefixes=[], suffixes=[A(id=0)]]
+E	across	across	AffixedWord[word=across, entry=across, prefixes=[], suffixes=[]]
+E	act	act	AffixedWord[word=act, entry=act, prefixes=[], suffixes=[]]
+E	add	add	AffixedWord[word=add, entry=add, prefixes=[], suffixes=[]]
+E	after	after	AffixedWord[word=after, entry=after, prefixes=[], suffixes=[]]
+E	again	again	AffixedWord[word=again, entry=again, prefixes=[], suffixes=[]]
+E	against	against	AffixedWord[word=against, entry=against, prefixes=[], suffixes=[]]
+E	age	age	AffixedWord[word=age, entry=age, prefixes=[], suffixes=[]]
+E	ago	ago	AffixedWord[word=ago, entry=ago, prefixes=[], suffixes=[]]
+E	agree	agree	AffixedWord[word=agree, entry=agree, prefixes=[], suffixes=[]]
+E	air	air	AffixedWord[word=air, entry=air, prefixes=[], suffixes=[]]
+E	all	all	AffixedWord[word=all, entry=all, prefixes=[], suffixes=[]]
+E	almost	almost	AffixedWord[word=almost, entry=almost, prefixes=[], suffixes=[]]
+E	alone	alone	AffixedWord[word=alone, entry=alone, prefixes=[], suffixes=[]]
+E	along	along	AffixedWord[word=along, entry=along, prefixes=[], suffixes=[]]
+E	already	already	AffixedWord[word=already, entry=already, prefixes=[], suffixes=[]]
+E	also	also	AffixedWord[word=also, entry=also, prefixes=[], suffixes=[]]
+E	always	always	AffixedWord[word=always, entry=always, prefixes=[], suffixes=[]]
+E	among	among	AffixedWord[word=among, entry=among, prefixes=[], suffixes=[]]
+E	amount	amount	AffixedWord[word=amount, entry=amount, prefixes=[], suffixes=[]]
+E	and	and	AffixedWord[word=and, entry=and, prefixes=[], suffixes=[]]
+E	animal	animal	AffixedWord[word=animal, entry=animal, prefixes=[], suffixes=[]]
+E	answer	answer	AffixedWord[word=answer, entry=answer, prefixes=[], suffixes=[]]
+E	any	any	AffixedWord[word=any, entry=any, prefixes=[], suffixes=[]]
+E	appear	appear	AffixedWord[word=appear, entry=appear, prefixes=[], suffixes=[]]
+E	apple	apple	AffixedWord[word=apple, entry=apple, prefixes=[], suffixes=[]]
+E	area	area	AffixedWord[word=area, entry=area, prefixes=[], suffixes=[]]
+E	arm	arm	AffixedWord[word=arm, entry=arm, prefixes=[], suffixes=[]]
+E	around	around	AffixedWord[word=around, entry=around, prefixes=[], suffixes=[]]
+E	arrive	arrive	AffixedWord[word=arrive, entry=arrive, prefixes=[], suffixes=[]]
+E	art	art	AffixedWord[word=art, entry=art, prefixes=[], suffixes=[]]
+E	ask	ask	AffixedWord[word=ask, entry=ask, prefixes=[], suffixes=[]]
+E	away	away	AffixedWord[word=away, entry=away, prefixes=[], suffixes=[]]
+E	baby	baby	AffixedWord[word=baby, entry=baby, prefixes=[], suffixes=[]]
+E	back	back	AffixedWord[word=back, entry=back, prefixes=[], suffixes=[]]
+E	bad	bad	AffixedWord[word=bad, entry=bad, prefixes=[], suffixes=[]]
+E	bag	bag	AffixedWord[word=bag, entry=bag, prefixes=[], suffixes=[]]
+E	ball	ball	AffixedWord[word=ball, entry=ball, prefixes=[], suffixes=[]]
+E	bank	bank	AffixedWord[word=bank, entry=bank, prefixes=[], suffixes=[]]
+E	bar	bar/C	AffixedWord[word=bar, entry=bar/C, prefixes=[], suffixes=[]]
+E	base	base	AffixedWord[word=base, entry=base, prefixes=[], suffixes=[]]
+E	basket	basket	AffixedWord[word=basket, entry=basket, prefixes=[], suffixes=[]]
+E	baz	baz/CU	AffixedWord[word=baz, entry=baz/CU, prefixes=[], suffixes=[]]
+E	bc	bc/A	AffixedWord[word=bc, entry=bc/A, prefixes=[], suffixes=[]]|AffixedWord[word=bcs, entry=bc/A, prefixes=[], suffixes=[A(id=0)]]
+E	bear	bear	AffixedWord[word=bear, entry=bear, prefixes=[], suffixes=[]]
+E	beat	beat	AffixedWord[word=beat, entry=beat, prefixes=[], suffixes=[]]
+E	beauty	beauty	AffixedWord[word=beauty, entry=beauty, prefixes=[], suffixes=[]]
+E	bed	bed	AffixedWord[word=bed, entry=bed, prefixes=[], suffixes=[]]
+E	before	before	AffixedWord[word=before, entry=before, prefixes=[], suffixes=[]]
+E	begin	begin	AffixedWord[word=begin, entry=begin, prefixes=[], suffixes=[]]
+E	behind	behind	AffixedWord[word=behind, entry=behind, prefixes=[], suffixes=[]]
+E	believe	believe	AffixedWord[word=believe, entry=believe, prefixes=[], suffixes=[]]
+E	bell	bell	AffixedWord[word=bell, entry=bell, prefixes=[], suffixes=[]]
+E	best	best	AffixedWord[word=best, entry=best, prefixes=[], suffixes=[]]
+E	better	better	AffixedWord[word=better, entry=better, prefixes=[], suffixes=[]]
+E	between	between	AffixedWord[word=between, entry=between, prefixes=[], suffixes=[]]
+E	big	big	AffixedWord[word=big, entry=big, prefixes=[], suffixes=[]]
+E	bird	bird	AffixedWord[word=bird, entry=bird, prefixes=[], suffixes=[]]
+E	black	black	AffixedWord[word=black, entry=black, prefixes=[], suffixes=[]]
+E	blood	blood	AffixedWord[word=blood, entry=blood, prefixes=[], suffixes=[]]
+E	blue	blue	AffixedWord[word=blue, entry=blue, prefixes=[], suffixes=[]]
+E	board	board	AffixedWord[word=board, entry=board, prefixes=[], suffixes=[]]
+E	boat	boat	AffixedWord[word=boat, entry=boat, prefixes=[], suffixes=[]]
+E	body	body	AffixedWord[word=body, entry=body, prefixes=[], suffixes=[]]
+E	bone	bone	AffixedWord[word=bone, entry=bone, prefixes=[], suffixes=[]]
+E	book	book	AffixedWord[word=book, entry=book, prefixes=[], suffixes=[]]
+E	born	born	AffixedWord[word=born, entry=born, prefixes=[], suffixes=[]]
+E	both	both	AffixedWord[word=both, entry=both, prefixes=[], suffixes=[]]
+E	bottom	bottom	AffixedWord[word=bottom, entry=bottom, prefixes=[], suffixes=[]]
+E	box	box	AffixedWord[word=box, entry=box, prefixes=[], suffixes=[]]
+E	boy	boy	AffixedWord[word=boy, entry=boy, prefixes=[], suffixes=[]]
+E	bread	bread	AffixedWord[word=bread, entry=bread, prefixes=[], suffixes=[]]
+E	break	break	AffixedWord[word=break, entry=break, prefixes=[], suffixes=[]]
+E	bright	bright	AffixedWord[word=bright, entry=bright, prefixes=[], suffixes=[]]
+E	bring	bring	AffixedWord[word=bring, entry=bring, prefixes=[], suffixes=[]]
+E	brother	brother	AffixedWord[word=brother, entry=brother, prefixes=[], suffixes=[]]
+E	brown	brown	AffixedWord[word=brown, entry=brown, prefixes=[], suffixes=[]]
+E	build	build	AffixedWord[word=build, entry=build, prefixes=[], suffixes=[]]
+E	burn	burn	AffixedWord[word=burn, entry=burn, prefixes=[], suffixes=[]]
+E	busy	busy	AffixedWord[word=busy, entry=busy, prefixes=[], suffixes=[]]
+E	buy	buy	AffixedWord[word=buy, entry=buy, prefixes=[], suffixes=[]]
+E	ca	ca/A	AffixedWord[word=ca, entry=ca/A, prefixes=[], suffixes=[]]|AffixedWord[word=caer, entry=ca/A, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=cas, entry=ca/A, prefixes=[], suffixes=[A(id=0)]]
+E	call	call	AffixedWord[word=call, entry=call, prefixes=[], suffixes=[]]
+E	camp	camp	AffixedWord[word=camp, entry=camp, prefixes=[], suffixes=[]]
+E	can	can	AffixedWord[word=can, entry=can, prefixes=[], suffixes=[]]
+E	capital	capital	AffixedWord[word=capital, entry=capital, prefixes=[], suffixes=[]]
+E	captain	captain	AffixedWord[word=captain, entry=captain, prefixes=[], suffixes=[]]
+E	car	car	AffixedWord[word=car, entry=car, prefixes=[], suffixes=[]]
+E	card	card	AffixedWord[word=card, entry=card, prefixes=[], suffixes=[]]
+E	care	care	AffixedWord[word=care, entry=care, prefixes=[], suffixes=[]]
+E	carry	carry	AffixedWord[word=carry, entry=carry, prefixes=[], suffixes=[]]
+E	case	case	AffixedWord[word=case, entry=case, prefixes=[], suffixes=[]]
+E	cat	cat	AffixedWord[word=cat, entry=cat, prefixes=[], suffixes=[]]
+E	catch	catch	AffixedWord[word=catch, entry=catch, prefixes=[], suffixes=[]]
+E	cause	cause	AffixedWord[word=cause, entry=cause, prefixes=[], suffixes=[]]
+E	cb	cb/A	AffixedWord[word=cb, entry=cb/A, prefixes=[], suffixes=[]]
+E	ce	ce/A	AffixedWord[word=ce, entry=ce/A, prefixes=[], suffixes=[]]|AffixedWord[word=ceer, entry=ce/A, prefixes=[], suffixes=[A(id=1)]]
+E	cell	cell	AffixedWord[word=cell, entry=cell, prefixes=[], suffixes=[]]
+E	center	center	AffixedWord[word=center, entry=center, prefixes=[], suffixes=[]]
+E	chair	chair	AffixedWord[word=chair, entry=chair, prefixes=[], suffixes=[]]
+E	chance	chance	AffixedWord[word=chance, entry=chance, prefixes=[], suffixes=[]]
+E	change	change	AffixedWord[word=change, entry=change, prefixes=[], suffixes=[]]
+E	charge	charge	AffixedWord[word=charge, entry=charge, prefixes=[], suffixes=[]]
+E	check	check	AffixedWord[word=check, entry=check, prefixes=[], suffixes=[]]
+E	child	child	AffixedWord[word=child, entry=child, prefixes=[], suffixes=[]]
+E	choose	choose	AffixedWord[word=choose, entry=choose, prefixes=[], suffixes=[]]
+E	church	church	AffixedWord[word=church, entry=church, prefixes=[], suffixes=[]]
+E	circle	circle	AffixedWord[word=circle, entry=circle, prefixes=[], suffixes=[]]
+E	city	city	AffixedWord[word=city, entry=city, prefixes=[], suffixes=[]]
+E	class	class	AffixedWord[word=class, entry=class, prefixes=[], suffixes=[]]
+E	clean	clean	AffixedWord[word=clean, entry=clean, prefixes=[], suffixes=[]]
+E	clear	clear	AffixedWord[word=clear, entry=clear, prefixes=[], suffixes=[]]
+E	climb	climb	AffixedWord[word=climb, entry=climb, prefixes=[], suffixes=[]]
+E	clock	clock	AffixedWord[word=clock, entry=clock, prefixes=[], suffixes=[]]
+E	close	close	AffixedWord[word=close, entry=close, prefixes=[], suffixes=[]]
+E	cloud	cloud	AffixedWord[word=cloud, entry=cloud, prefixes=[], suffixes=[]]
+E	coast	coast	AffixedWord[word=coast, entry=coast, prefixes=[], suffixes=[]]
+E	coat	coat	AffixedWord[word=coat, entry=coat, prefixes=[], suffixes=[]]
+E	cold	cold	AffixedWord[word=cold, entry=cold, prefixes=[], suffixes=[]]
+E	color	color	AffixedWord[word=color, entry=color, prefixes=[], suffixes=[]]
+E	come	come	AffixedWord[word=come, entry=come, prefixes=[], suffixes=[]]
+E	common	common	AffixedWord[word=common, entry=common, prefixes=[], suffixes=[]]
+E	company	company	AffixedWord[word=company, entry=company, prefixes=[], suffixes=[]]
+E	compare	compare	AffixedWord[word=compare, entry=compare, prefixes=[], suffixes=[]]
+E	complete	complete	AffixedWord[word=complete, entry=complete, prefixes=[], suffixes=[]]
+E	condition	condition	AffixedWord[word=condition, entry=condition, prefixes=[], suffixes=[]]
+E	consider	consider	AffixedWord[word=consider, entry=consider, prefixes=[], suffixes=[]]
+E	contain	contain	AffixedWord[word=contain, entry=contain, prefixes=[], suffixes=[]]
+E	continue	continue	AffixedWord[word=continue, entry=continue, prefixes=[], suffixes=[]]
+E	control	control	AffixedWord[word=control, entry=control, prefixes=[], suffixes=[]]
+E	cook	cook	AffixedWord[word=cook, entry=cook, prefixes=[], suffixes=[]]
+E	cool	cool	AffixedWord[word=cool, entry=cool, prefixes=[], suffixes=[]]
+E	copy	copy	AffixedWord[word=copy, entry=copy, prefixes=[], suffixes=[]]
+E	corn	corn	AffixedWord[word=corn, entry=corn, prefixes=[], suffixes=[]]
+E	corner	corner	AffixedWord[word=corner, entry=corner, prefixes=[], suffixes=[]]
+E	correct	correct	AffixedWord[word=correct, entry=correct, prefixes=[], suffixes=[]]
+E	cost	cost	AffixedWord[word=cost, entry=cost, prefixes=[], suffixes=[]]
+E	cotton	cotton	AffixedWord[word=cotton, entry=cotton, prefixes=[], suffixes=[]]
+E	could	could	AffixedWord[word=could, entry=could, prefixes=[], suffixes=[]]
+E	count	count	AffixedWord[word=count, entry=count, prefixes=[], suffixes=[]]
+E	country	country	AffixedWord[word=country, entry=country, prefixes=[], suffixes=[]]
+E	course	course	AffixedWord[word=course, entry=course, prefixes=[], suffixes=[]]
+E	cover	cover	AffixedWord[word=cover, entry=cover, prefixes=[], suffixes=[]]
+E	cow	cow	AffixedWord[word=cow, entry=cow, prefixes=[], suffixes=[]]
+E	crease	crease	AffixedWord[word=crease, entry=crease, prefixes=[], suffixes=[]]
+E	create	create	AffixedWord[word=create, entry=create, prefixes=[], suffixes=[]]
+E	crop	crop	AffixedWord[word=crop, entry=crop, prefixes=[], suffixes=[]]
+E	cross	cross	AffixedWord[word=cross, entry=cross, prefixes=[], suffixes=[]]
+E	crowd	crowd	AffixedWord[word=crowd, entry=crowd, prefixes=[], suffixes=[]]
+E	cry	cry	AffixedWord[word=cry, entry=cry, prefixes=[], suffixes=[]]
+E	current	current	AffixedWord[word=current, entry=current, prefixes=[], suffixes=[]]
+E	cut	cut	AffixedWord[word=cut, entry=cut, prefixes=[], suffixes=[]]
+E	dance	dance	AffixedWord[word=dance, entry=dance, prefixes=[], suffixes=[]]
+E	danger	danger	AffixedWord[word=danger, entry=danger, prefixes=[], suffixes=[]]
+E	dark	dark	AffixedWord[word=dark, entry=dark, prefixes=[], suffixes=[]]
+E	day	day	AffixedWord[word=day, entry=day, prefixes=[], suffixes=[]]
+E	dead	dead	AffixedWord[word=dead, entry=dead, prefixes=[], suffixes=[]]
+E	deal	deal	AffixedWord[word=deal, entry=deal, prefixes=[], suffixes=[]]
+E	dear	dear	AffixedWord[word=dear, entry=dear, prefixes=[], suffixes=[]]
+E	death	death	AffixedWord[word=death, entry=death, prefixes=[], suffixes=[]]
+E	decide	decide	AffixedWord[word=decide, entry=decide, prefixes=[], suffixes=[]]
+E	deep	deep	AffixedWord[word=deep, entry=deep, prefixes=[], suffixes=[]]
+E	degree	degree	AffixedWord[word=degree, entry=degree, prefixes=[], suffixes=[]]
+E	depend	depend	AffixedWord[word=depend, entry=depend, prefixes=[], suffixes=[]]
+E	describe	describe	AffixedWord[word=describe, entry=describe, prefixes=[], suffixes=[]]
+E	desert	desert	AffixedWord[word=desert, entry=desert, prefixes=[], suffixes=[]]
+E	design	design	AffixedWord[word=design, entry=design, prefixes=[], suffixes=[]]
+E	determine	determine	AffixedWord[word=determine, entry=determine, prefixes=[], suffixes=[]]
+E	develop	develop	AffixedWord[word=develop, entry=develop, prefixes=[], suffixes=[]]
+E	dictionary	dictionary	AffixedWord[word=dictionary, entry=dictionary, prefixes=[], suffixes=[]]
+E	differ	differ	AffixedWord[word=differ, entry=differ, prefixes=[], suffixes=[]]
+E	difficult	difficult	AffixedWord[word=difficult, entry=difficult, prefixes=[], suffixes=[]]
+E	direct	direct	AffixedWord[word=direct, entry=direct, prefixes=[], suffixes=[]]
+E	discuss	discuss	AffixedWord[word=discuss, entry=discuss, prefixes=[], suffixes=[]]
+E	distant	distant	AffixedWord[word=distant, entry=distant, prefixes=[], suffixes=[]]
+E	divide	divide	AffixedWord[word=divide, entry=divide, prefixes=[], suffixes=[]]
+E	doctor	doctor	AffixedWord[word=doctor, entry=doctor, prefixes=[], suffixes=[]]
+E	dog	dog	AffixedWord[word=dog, entry=dog, prefixes=[], suffixes=[]]
+E	dollar	dollar	AffixedWord[word=dollar, entry=dollar, prefixes=[], suffixes=[]]
+E	door	door	AffixedWord[word=door, entry=door, prefixes=[], suffixes=[]]
+E	double	double	AffixedWord[word=double, entry=double, prefixes=[], suffixes=[]]
+E	down	down	AffixedWord[word=down, entry=down, prefixes=[], suffixes=[]]
+E	draw	draw	AffixedWord[word=draw, entry=draw, prefixes=[], suffixes=[]]
+E	dream	dream	AffixedWord[word=dream, entry=dream, prefixes=[], suffixes=[]]
+E	dress	dress	AffixedWord[word=dress, entry=dress, prefixes=[], suffixes=[]]
+E	drink	drink	AffixedWord[word=drink, entry=drink, prefixes=[], suffixes=[]]
+E	drive	drive	AffixedWord[word=drive, entry=drive, prefixes=[], suffixes=[]]
+E	drop	drop	AffixedWord[word=drop, entry=drop, prefixes=[], suffixes=[]]
+E	dry	dry	AffixedWord[word=dry, entry=dry, prefixes=[], suffixes=[]]
+E	duck	duck	AffixedWord[word=duck, entry=duck, prefixes=[], suffixes=[]]
+E	during	during	AffixedWord[word=during, entry=during, prefixes=[], suffixes=[]]
+E	foo	foo/C	AffixedWord[word=foo, entry=foo/C, prefixes=[], suffixes=[]]
+E	hello	hello	AffixedWord[word=hello, entry=hello, prefixes=[], suffixes=[]]
+E	hope	hope/H	AffixedWord[word=hope, entry=hope/H, prefixes=[], suffixes=[]]
+E	lae	lae/A	AffixedWord[word=lae, entry=lae/A, prefixes=[], suffixes=[]]|AffixedWord[word=laeer, entry=lae/A, prefixes=[], suffixes=[A(id=1)]]
+E	lot	lot	AffixedWord[word=lot, entry=lot, prefixes=[], suffixes=[]]
+E	make	make/H	AffixedWord[word=make, entry=make/H, prefixes=[], suffixes=[]]
+E	nd	nd/cp	
+E	new	new	AffixedWord[word=new, entry=new, prefixes=[], suffixes=[]]
+E	night	night	AffixedWord[word=night, entry=night, prefixes=[], suffixes=[]]
+E	phone	phone	AffixedWord[word=phone, entry=phone, prefixes=[], suffixes=[]]
+E	pneumonoultramicroscopicsilicovolcanoconiosis	pneumonoultramicroscopicsilicovolcanoconiosis	AffixedWord[word=pneumonoultramicroscopicsilicovolcanoconiosis, entry=pneumonoultramicroscopicsilicovolcanoconiosis, prefixes=[], suffixes=[]]
+E	rise	rise/w	AffixedWord[word=rise, entry=rise/w, prefixes=[], suffixes=[]]
+E	set	set/z	AffixedWord[word=set, entry=set/z, prefixes=[], suffixes=[]]
+E	st	st/cp	
+E	sun	sun/y	AffixedWord[word=sun, entry=sun/y, prefixes=[], suffixes=[]]
+E	th	th/cpt	
+E	tough	tough	AffixedWord[word=tough, entry=tough, prefixes=[], suffixes=[]]
+E	x	x/B	AffixedWord[word=x, entry=x/B, prefixes=[], suffixes=[]]
+G	AffixedWord[word=ca, entry=ca/A, prefixes=[], suffixes=[]]|AffixedWord[word=caer, entry=ca/A, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=cas, entry=ca/A, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=cb, entry=cb/A, prefixes=[], suffixes=[]]|AffixedWord[word=bed, entry=bed, prefixes=[], suffixes=[]]|AffixedWord[word=rise, entry=rise/w, prefixes=[], suffixes=[]]|AffixedWord[word=ce, entry=ce/A, prefixes=[], suffixes=[]]|AffixedWord[word=ceer, entry=ce/A, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=appear, entry=appear, prefixes=[], suffixes=[]]|AffixedWord[word=boat, entry=boat, prefixes=[], suffixes=[]]|AffixedWord[word=busy, entry=busy, prefixes=[], suffixes=[]]|AffixedWord[word=age, entry=age, prefixes=[], suffixes=[]]|AffixedWord[word=drive, entry=drive, prefixes=[], suffixes=[]]|AffixedWord[word=difficult, entry=difficult, prefixes=[], suffixes=[]]|AffixedWord[word=day, entry=day, prefixes=[], suffixes=[]]|AffixedWord[word=color, entry=color, prefixes=[], suffixes=[]]|AffixedWord[word=differ, entry=differ, prefixes=[], suffixes=[]]|AffixedWord[word=night, entry=night, prefixes=[], suffixes=[]]|AffixedWord[word=dead, entry=dead, prefixes=[], suffixes=[]]|AffixedWord[word=describe, entry=describe, prefixes=[], suffixes=[]]|AffixedWord[word=ago, entry=ago, prefixes=[], suffixes=[]]|AffixedWord[word=any, entry=any, prefixes=[], suffixes=[]]|AffixedWord[word=child, entry=child, prefixes=[], suffixes=[]]|AffixedWord[word=deal, entry=deal, prefixes=[], suffixes=[]]|AffixedWord[word=between, entry=between, prefixes=[], suffixes=[]]|AffixedWord[word=beauty, entry=beauty, prefixes=[], suffixes=[]]|AffixedWord[word=church, entry=church, prefixes=[], suffixes=[]]|AffixedWord[word=new, entry=new, prefixes=[], suffixes=[]]|AffixedWord[word=death, entry=death, prefixes=[], suffixes=[]]|AffixedWord[word=cotton, entry=cotton, prefixes=[], suffixes=[]]|AffixedWord[word=cloud, entry=cloud, prefixes=[], suffixes=[]]|AffixedWord[word=dear, entry=dear, prefixes=[], suffixes=[]]|AffixedWord[word=cry, entry=cry, prefixes=[], suffixes=[]]|AffixedWord[word=abcd, entry=abcd/G, prefixes=[], suffixes=[]]|AffixedWord[word=reabcd, entry=abcd/G, prefixes=[G(id=6)], suffixes=[]]|AffixedWord[word=xcd, entry=abcd/G, prefixes=[G(id=5)], suffixes=[]]|AffixedWord[word=ycd, entry=abcd/G, prefixes=[G(id=7)], suffixes=[]]|AffixedWord[word=amount, entry=amount, prefixes=[], suffixes=[]]|AffixedWord[word=again, entry=again, prefixes=[], suffixes=[]]|AffixedWord[word=center, entry=center, prefixes=[], suffixes=[]]|AffixedWord[word=corn, entry=corn, prefixes=[], suffixes=[]]|AffixedWord[word=pneumonoultramicroscopicsilicovolcanoconiosis, entry=pneumonoultramicroscopicsilicovolcanoconiosis, prefixes=[], suffixes=[]]|AffixedWord[word=paris, entry=paris, prefixes=[], suffixes=[]]|AffixedWord[word=dream, entry=dream, prefixes=[], suffixes=[]]|AffixedWord[word=bring, entry=bring, prefixes=[], suffixes=[]]|AffixedWord[word=count, entry=count, prefixes=[], suffixes=[]]|AffixedWord[word=0, entry=0/mn, prefixes=[], suffixes=[]]|AffixedWord[word=cover, entry=cover, prefixes=[], suffixes=[]]|AffixedWord[word=1, entry=1/1n, prefixes=[], suffixes=[]]|AffixedWord[word=2, entry=2/mn, prefixes=[], suffixes=[]]|AffixedWord[word=3, entry=3/mn, prefixes=[], suffixes=[]]|AffixedWord[word=continue, entry=continue, prefixes=[], suffixes=[]]|AffixedWord[word=answer, entry=answer, prefixes=[], suffixes=[]]|AffixedWord[word=bank, entry=bank, prefixes=[], suffixes=[]]|AffixedWord[word=among, entry=among, prefixes=[], suffixes=[]]|AffixedWord[word=away, entry=away, prefixes=[], suffixes=[]]|AffixedWord[word=about, entry=about, prefixes=[], suffixes=[]]|AffixedWord[word=captain, entry=captain, prefixes=[], suffixes=[]]|AffixedWord[word=board, entry=board, prefixes=[], suffixes=[]]|AffixedWord[word=consider, entry=consider, prefixes=[], suffixes=[]]|AffixedWord[word=danger, entry=danger, prefixes=[], suffixes=[]]|AffixedWord[word=current, entry=current, prefixes=[], suffixes=[]]|AffixedWord[word=compare, entry=compare, prefixes=[], suffixes=[]]|AffixedWord[word=across, entry=across, prefixes=[], suffixes=[]]|AffixedWord[word=cold, entry=cold, prefixes=[], suffixes=[]]|AffixedWord[word=believe, entry=believe, prefixes=[], suffixes=[]]|AffixedWord[word=buy, entry=buy, prefixes=[], suffixes=[]]|AffixedWord[word=course, entry=course, prefixes=[], suffixes=[]]|AffixedWord[word=crowd, entry=crowd, prefixes=[], suffixes=[]]|AffixedWord[word=cost, entry=cost, prefixes=[], suffixes=[]]|AffixedWord[word=behind, entry=behind, prefixes=[], suffixes=[]]|AffixedWord[word=drop, entry=drop, prefixes=[], suffixes=[]]|AffixedWord[word=above, entry=above, prefixes=[], suffixes=[]]|AffixedWord[word=hello, entry=hello, prefixes=[], suffixes=[]]|AffixedWord[word=born, entry=born, prefixes=[], suffixes=[]]|AffixedWord[word=around, entry=around, prefixes=[], suffixes=[]]|AffixedWord[word=abc, entry=abc/B, prefixes=[], suffixes=[]]|AffixedWord[word=complete, entry=complete, prefixes=[], suffixes=[]]|AffixedWord[word=doctor, entry=doctor, prefixes=[], suffixes=[]]|AffixedWord[word=cause, entry=cause, prefixes=[], suffixes=[]]|AffixedWord[word=set, entry=set/z, prefixes=[], suffixes=[]]|AffixedWord[word=build, entry=build, prefixes=[], suffixes=[]]|AffixedWord[word=air, entry=air, prefixes=[], suffixes=[]]|AffixedWord[word=class, entry=class, prefixes=[], suffixes=[]]|AffixedWord[word=dry, entry=dry, prefixes=[], suffixes=[]]|AffixedWord[word=desert, entry=desert, prefixes=[], suffixes=[]]|AffixedWord[word=bread, entry=bread, prefixes=[], suffixes=[]]|AffixedWord[word=begin, entry=begin, prefixes=[], suffixes=[]]|AffixedWord[word=divide, entry=divide, prefixes=[], suffixes=[]]|AffixedWord[word=duck, entry=duck, prefixes=[], suffixes=[]]|AffixedWord[word=alone, entry=alone, prefixes=[], suffixes=[]]|AffixedWord[word=create, entry=create, prefixes=[], suffixes=[]]|AffixedWord[word=break, entry=break, prefixes=[], suffixes=[]]|AffixedWord[word=along, entry=along, prefixes=[], suffixes=[]]|AffixedWord[word=a, entry=a, prefixes=[], suffixes=[]]|AffixedWord[word=dark, entry=dark, prefixes=[], suffixes=[]]|AffixedWord[word=come, entry=come, prefixes=[], suffixes=[]]|AffixedWord[word=c, entry=c/A, prefixes=[], suffixes=[]]|AffixedWord[word=cs, entry=c/A, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=area, entry=area, prefixes=[], suffixes=[]]|AffixedWord[word=foo, entry=foo/C, prefixes=[], suffixes=[]]|AffixedWord[word=draw, entry=draw, prefixes=[], suffixes=[]]|AffixedWord[word=aby, entry=aby/B, prefixes=[], suffixes=[]]|AffixedWord[word=bad, entry=bad, prefixes=[], suffixes=[]]|AffixedWord[word=depend, entry=depend, prefixes=[], suffixes=[]]|AffixedWord[word=decide, entry=decide, prefixes=[], suffixes=[]]|AffixedWord[word=body, entry=body, prefixes=[], suffixes=[]]|AffixedWord[word=box, entry=box, prefixes=[], suffixes=[]]|AffixedWord[word=boy, entry=boy, prefixes=[], suffixes=[]]|AffixedWord[word=bag, entry=bag, prefixes=[], suffixes=[]]|AffixedWord[word=determine, entry=determine, prefixes=[], suffixes=[]]|AffixedWord[word=basket, entry=basket, prefixes=[], suffixes=[]]|AffixedWord[word=bear, entry=bear, prefixes=[], suffixes=[]]|AffixedWord[word=climb, entry=climb, prefixes=[], suffixes=[]]|AffixedWord[word=crop, entry=crop, prefixes=[], suffixes=[]]|AffixedWord[word=chance, entry=chance, prefixes=[], suffixes=[]]|AffixedWord[word=beat, entry=beat, prefixes=[], suffixes=[]]|AffixedWord[word=always, entry=always, prefixes=[], suffixes=[]]|AffixedWord[word=animal, entry=animal, prefixes=[], suffixes=[]]|AffixedWord[word=already, entry=already, prefixes=[], suffixes=[]]|AffixedWord[word=bar, entry=bar/C, prefixes=[], suffixes=[]]|AffixedWord[word=x, entry=x/B, prefixes=[], suffixes=[]]|AffixedWord[word=cut, entry=cut, prefixes=[], suffixes=[]]|AffixedWord[word=sun, entry=sun/y, prefixes=[], suffixes=[]]|AffixedWord[word=country, entry=country, prefixes=[], suffixes=[]]|AffixedWord[word=act, entry=act, prefixes=[], suffixes=[]]|AffixedWord[word=crease, entry=crease, prefixes=[], suffixes=[]]|AffixedWord[word=carry, entry=carry, prefixes=[], suffixes=[]]|AffixedWord[word=baz, entry=baz/CU, prefixes=[], suffixes=[]]|AffixedWord[word=big, entry=big, prefixes=[], suffixes=[]]|AffixedWord[word=door, entry=door, prefixes=[], suffixes=[]]|AffixedWord[word=card, entry=card, prefixes=[], suffixes=[]]|AffixedWord[word=arm, entry=arm, prefixes=[], suffixes=[]]|AffixedWord[word=tough, entry=tough, prefixes=[], suffixes=[]]|AffixedWord[word=care, entry=care, prefixes=[], suffixes=[]]|AffixedWord[word=both, entry=both, prefixes=[], suffixes=[]]|AffixedWord[word=after, entry=after, prefixes=[], suffixes=[]]|AffixedWord[word=choose, entry=choose, prefixes=[], suffixes=[]]|AffixedWord[word=-c, entry=-c/A, prefixes=[], suffixes=[]]|AffixedWord[word=-cs, entry=-c/A, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=art, entry=art, prefixes=[], suffixes=[]]|AffixedWord[word=common, entry=common, prefixes=[], suffixes=[]]|AffixedWord[word=against, entry=against, prefixes=[], suffixes=[]]|AffixedWord[word=add, entry=add, prefixes=[], suffixes=[]]|AffixedWord[word=world, entry=world, prefixes=[], suffixes=[]]|AffixedWord[word=discuss, entry=discuss, prefixes=[], suffixes=[]]|AffixedWord[word=corner, entry=corner, prefixes=[], suffixes=[]]|AffixedWord[word=double, entry=double, prefixes=[], suffixes=[]]|AffixedWord[word=a lot, entry=a lot, prefixes=[], suffixes=[]]|AffixedWord[word=down, entry=down, prefixes=[], suffixes=[]]|AffixedWord[word=baby, entry=baby, prefixes=[], suffixes=[]]|AffixedWord[word=apple, entry=apple, prefixes=[], suffixes=[]]|AffixedWord[word=deep, entry=deep, prefixes=[], suffixes=[]]|AffixedWord[word=dress, entry=dress, prefixes=[], suffixes=[]]|AffixedWord[word=clock, entry=clock, prefixes=[], suffixes=[]]|AffixedWord[word=ask, entry=ask, prefixes=[], suffixes=[]]|AffixedWord[word=cow, entry=cow, prefixes=[], suffixes=[]]|AffixedWord[word=case, entry=case, prefixes=[], suffixes=[]]|AffixedWord[word=ab-c, entry=ab-c/A, prefixes=[], suffixes=[]]|AffixedWord[word=ab-cs, entry=ab-c/A, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=cook, entry=cook, prefixes=[], suffixes=[]]|AffixedWord[word=cool, entry=cool, prefixes=[], suffixes=[]]|AffixedWord[word=chair, entry=chair, prefixes=[], suffixes=[]]|AffixedWord[word=back, entry=back, prefixes=[], suffixes=[]]|AffixedWord[word=contain, entry=contain, prefixes=[], suffixes=[]]|AffixedWord[word=ac, entry=ac/A, prefixes=[], suffixes=[]]|AffixedWord[word=acs, entry=ac/A, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=bone, entry=bone, prefixes=[], suffixes=[]]|AffixedWord[word=all, entry=all, prefixes=[], suffixes=[]]|AffixedWord[word=circle, entry=circle, prefixes=[], suffixes=[]]|AffixedWord[word=can, entry=can, prefixes=[], suffixes=[]]|AffixedWord[word=direct, entry=direct, prefixes=[], suffixes=[]]|AffixedWord[word=car, entry=car, prefixes=[], suffixes=[]]|AffixedWord[word=dance, entry=dance, prefixes=[], suffixes=[]]|AffixedWord[word=black, entry=black, prefixes=[], suffixes=[]]|AffixedWord[word=bird, entry=bird, prefixes=[], suffixes=[]]|AffixedWord[word=phone, entry=phone, prefixes=[], suffixes=[]]|AffixedWord[word=degree, entry=degree, prefixes=[], suffixes=[]]|AffixedWord[word=cat, entry=cat, prefixes=[], suffixes=[]]|AffixedWord[word=during, entry=during, prefixes=[], suffixes=[]]|AffixedWord[word=condition, entry=condition, prefixes=[], suffixes=[]]|AffixedWord[word=bottom, entry=bottom, prefixes=[], suffixes=[]]|AffixedWord[word=call, entry=call, prefixes=[], suffixes=[]]|AffixedWord[word=dictionary, entry=dictionary, prefixes=[], suffixes=[]]|AffixedWord[word=cell, entry=cell, prefixes=[], suffixes=[]]|AffixedWord[word=arrive, entry=arrive, prefixes=[], suffixes=[]]|AffixedWord[word=make, entry=make/H, prefixes=[], suffixes=[]]|AffixedWord[word=distant, entry=distant, prefixes=[], suffixes=[]]|AffixedWord[word=correct, entry=correct, prefixes=[], suffixes=[]]|AffixedWord[word=company, entry=company, prefixes=[], suffixes=[]]|AffixedWord[word=cross, entry=cross, prefixes=[], suffixes=[]]|AffixedWord[word=control, entry=control, prefixes=[], suffixes=[]]|AffixedWord[word=coast, entry=coast, prefixes=[], suffixes=[]]|AffixedWord[word=agree, entry=agree, prefixes=[], suffixes=[]]|AffixedWord[word=coat, entry=coat, prefixes=[], suffixes=[]]|AffixedWord[word=burn, entry=burn, prefixes=[], suffixes=[]]|AffixedWord[word=close, entry=close, prefixes=[], suffixes=[]]|AffixedWord[word=could, entry=could, prefixes=[], suffixes=[]]|AffixedWord[word=bright, entry=bright, prefixes=[], suffixes=[]]|AffixedWord[word=bc, entry=bc/A, prefixes=[], suffixes=[]]|AffixedWord[word=bcs, entry=bc/A, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=check, entry=check, prefixes=[], suffixes=[]]|AffixedWord[word=brother, entry=brother, prefixes=[], suffixes=[]]|AffixedWord[word=before, entry=before, prefixes=[], suffixes=[]]|AffixedWord[word=dog, entry=dog, prefixes=[], suffixes=[]]|AffixedWord[word=better, entry=better, prefixes=[], suffixes=[]]|AffixedWord[word=clean, entry=clean, prefixes=[], suffixes=[]]|AffixedWord[word=base, entry=base, prefixes=[], suffixes=[]]|AffixedWord[word=also, entry=also, prefixes=[], suffixes=[]]|AffixedWord[word=nato, entry=nato, prefixes=[], suffixes=[]]|AffixedWord[word=book, entry=book, prefixes=[], suffixes=[]]|AffixedWord[word=design, entry=design, prefixes=[], suffixes=[]]|AffixedWord[word=develop, entry=develop, prefixes=[], suffixes=[]]|AffixedWord[word=clear, entry=clear, prefixes=[], suffixes=[]]|AffixedWord[word=blood, entry=blood, prefixes=[], suffixes=[]]|AffixedWord[word=copy, entry=copy, prefixes=[], suffixes=[]]|AffixedWord[word=catch, entry=catch, prefixes=[], suffixes=[]]|AffixedWord[word=hope, entry=hope/H, prefixes=[], suffixes=[]]|AffixedWord[word=dollar, entry=dollar, prefixes=[], suffixes=[]]|AffixedWord[word=capital, entry=capital, prefixes=[], suffixes=[]]|AffixedWord[word=camp, entry=camp, prefixes=[], suffixes=[]]|AffixedWord[word=charge, entry=charge, prefixes=[], suffixes=[]]|AffixedWord[word=blue, entry=blue, prefixes=[], suffixes=[]]|AffixedWord[word=change, entry=change, prefixes=[], suffixes=[]]|AffixedWord[word=city, entry=city, prefixes=[], suffixes=[]]|AffixedWord[word=drink, entry=drink, prefixes=[], suffixes=[]]|AffixedWord[word=lot, entry=lot, prefixes=[], suffixes=[]]|AffixedWord[word=ball, entry=ball, prefixes=[], suffixes=[]]|AffixedWord[word=brown, entry=brown, prefixes=[], suffixes=[]]|AffixedWord[word=best, entry=best, prefixes=[], suffixes=[]]|AffixedWord[word=bell, entry=bell, prefixes=[], suffixes=[]]|AffixedWord[word=lae, entry=lae/A, prefixes=[], suffixes=[]]|AffixedWord[word=laeer, entry=lae/A, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=almost, entry=almost, prefixes=[], suffixes=[]]|AffixedWord[word=and, entry=and, prefixes=[], suffixes=[]]

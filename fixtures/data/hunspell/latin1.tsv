@@ -1,0 +1,22 @@
+W	café	1	caf	caf	caf	caf	AffixedWord[word=café, entry=caf/é, prefixes=[], suffixes=[é(id=0)]]	caf	caf	1
+W	caf	1	caf	caf	caf	caf	AffixedWord[word=caf, entry=caf/é, prefixes=[], suffixes=[]]	caf	caf	0
+W	naïve	1	naïve	naïve	naïve	naïve	AffixedWord[word=naïve, entry=naïve, prefixes=[], suffixes=[]]	naïve	naïve	0
+W	naive	0	naive	naive	naive			naïve	naïve	1
+W	CAFÉ	1	caf	caf	caf	caf	AffixedWord[word=CAFÉ, entry=caf/é, prefixes=[], suffixes=[é(id=0)]]	CAFÉ|CAF	CAFÉ|CAF	1
+W	Café	1	caf	caf	caf	caf	AffixedWord[word=Café, entry=caf/é, prefixes=[], suffixes=[é(id=0)]]	Caf	Caf	1
+W	CAF	1	caf	caf	caf	caf	AffixedWord[word=CAF, entry=caf/é, prefixes=[], suffixes=[]]	CAF	CAF	0
+W	Caf	1	caf	caf	caf	caf	AffixedWord[word=Caf, entry=caf/é, prefixes=[], suffixes=[]]	Caf	Caf	0
+W	NAÏVE	1	naïve	naïve	naïve	naïve	AffixedWord[word=NAÏVE, entry=naïve, prefixes=[], suffixes=[]]	NAÏVE	NAÏVE	1
+W	Naïve	1	naïve	naïve	naïve	naïve	AffixedWord[word=Naïve, entry=naïve, prefixes=[], suffixes=[]]	Naïve	Naïve	1
+W	NAIVE	0	NAIVE	NAIVE	NAIVE			NAÏVE	NAÏVE	1
+W	Naive	0	Naive	Naive	Naive			Naïve	Naïve	1
+W	caé	0	caé	caé	caé			café	café	1
+W	acfé	0	acfé	acfé	acfé			café	café	1
+W	cf	0	cf	cf	cf			caf	caf	0
+W	acf	0	acf	acf	acf			caf	caf	1
+W	nave	0	nave	nave	nave			naïve	naïve	1
+W	anïve	0	anïve	anïve	anïve			naïve	naïve	1
+W	anive	0	anive	anive	anive					1
+E	caf	caf/é	AffixedWord[word=caf, entry=caf/é, prefixes=[], suffixes=[]]|AffixedWord[word=café, entry=caf/é, prefixes=[], suffixes=[é(id=0)]]
+E	naïve	naïve	AffixedWord[word=naïve, entry=naïve, prefixes=[], suffixes=[]]
+G	AffixedWord[word=caf, entry=caf/é, prefixes=[], suffixes=[]]|AffixedWord[word=café, entry=caf/é, prefixes=[], suffixes=[é(id=0)]]|AffixedWord[word=naïve, entry=naïve, prefixes=[], suffixes=[]]

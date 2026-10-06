@@ -1,0 +1,27 @@
+﻿# lucene-rust's own test dictionary: parser corners -- a BOM, CRLF lines,
+# FLAG UTF-8 in a UTF-8 file, empty KEY groups and AF values, IGNORE in
+# affixes, BREAK patterns, escaped slashes, astral suffixes, phonetic
+# entries under LANG de.
+SET UTF-8
+FLAG UTF-8
+LANG de_DE
+IGNORE x
+KEY qwe|asd||
+BREAK 3
+BREAK -$
+BREAK ^-
+BREAK --
+AF 3
+AF
+AF AB
+AF É
+
+SFX A Y 2
+SFX A 0 0/3 .
+SFX A 0 sx .
+
+SFX B Y 1
+SFX B 0 𝒜 .
+
+SFX É Y 1
+SFX É 0 en .

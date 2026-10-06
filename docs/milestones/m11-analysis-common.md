@@ -144,6 +144,20 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   unedited term. Per-file line coverage of the generated stemmers is 88-100%
   (Turkish and Greek suffix chains the synthetic words do not reach;
   unreachable `setlimit` guards).
+- **T11.4** -- Hunspell: `Dictionary` (affix/dic parsing, the four flag
+  encodings, aliases, conversions, compounding directives), `Stemmer`,
+  `HunspellStemFilter`, `Hunspell` (spell checking, compounds, `analyzeSimpleWord`),
+  `Suggester` (modifying and n-gram generating suggestions, `FragmentChecker`,
+  `proceedPastRep`) and `WordFormGenerator`, over UTF-16 units like the Java.
+  Lucene's test dictionaries are Hunspell-derived and not redistributed, so
+  `GenHunspell.java` runs Lucene over 38 dictionaries written here (15
+  loadable, each exercising named features; 23 Lucene refuses), both case
+  modes: 4,412 words' spell/stems/roots/analyses/suggestions and 644 roots'
+  entries and word forms, all equal to Lucene's -- including two Lucene
+  quirks kept (a second `formStep()` stride skipping homonyms; a numeric flag
+  reading `1x` as 1). Left for later: `WordFormGenerator.compress`,
+  `SuggestibleEntryCache`, suggestion time limits. Bench pair `--bench
+  hunspell` (HunspellStemFilter per dictionary over its fixture words).
 - `java.util.regex` is the `regex` crate behind a Java-syntax shim (`util/java_regex.rs`: ASCII
   `\d\w\s`, `$n` replacements; no backreferences or lookaround).
 - The parity ledger's 400 KB budget is shared (the large area files were
@@ -155,7 +169,8 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
 - [ ] Every analyzer and factory in the module produces Lucene's token
       stream -- every attribute -- on the T11.1 corpus.
 - [ ] Hunspell matches Lucene's stems and suggestions for every dictionary in
-      Lucene's test resources.
+      Lucene's test resources. (Those are not redistributable; matched on this
+      project's own 38 dictionaries instead -- T11.4 above.)
 - [ ] Each analyzer is no slower than Lucene's on the corpus benchmark.
 - [ ] `check-port-inventory.py`'s allowlist holds no class of this module.
 

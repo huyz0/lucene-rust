@@ -1,0 +1,4 @@
+# lucene-rust's own test dictionary: a malformed directive.
+FLAG num
+SFX 70000 Y 1
+SFX 70000 0 s .

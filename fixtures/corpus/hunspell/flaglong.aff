@@ -1,0 +1,23 @@
+# FLAG long with AF aliases and AM morphological aliases.
+SET UTF-8
+FLAG long
+AF 3
+AF AaBb
+AF Bb
+AF AaCc
+AM 2
+AM po:noun is:singular
+AM po:verb
+
+SFX Aa Y 1
+SFX Aa 0 s .
+
+SFX Bb Y 2
+SFX Bb 0 ed [^e]
+SFX Bb 0 d e
+
+SFX Cc Y 1
+SFX Cc 0 er/1 .
+
+PFX Dd Y 1
+PFX Dd 0 over .

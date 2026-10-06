@@ -1,0 +1,2 @@
+# lucene-rust's own test dictionary: a malformed directive.
+FLAG long extra
