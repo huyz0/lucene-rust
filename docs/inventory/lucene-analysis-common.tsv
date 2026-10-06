@@ -21,25 +21,25 @@ analysis/bn/BengaliNormalizer	todo:M11	T11.6 per-language (bn): BengaliNormalize
 analysis/bn/BengaliStemFilter	todo:M11	T11.6 per-language (bn): BengaliStemFilter
 analysis/bn/BengaliStemFilterFactory	todo:M11	T11.7 factory/SPI: BengaliStemFilterFactory
 analysis/bn/BengaliStemmer	todo:M11	T11.6 per-language (bn): BengaliStemmer
-analysis/boost/DelimitedBoostTokenFilter	todo:M11	T11.6 boost: DelimitedBoostTokenFilter
+analysis/boost/DelimitedBoostTokenFilter	ported	crates/lucene-analysis/src/boost/mod.rs::DelimitedBoostTokenFilter
 analysis/boost/DelimitedBoostTokenFilterFactory	todo:M11	T11.7 factory/SPI: DelimitedBoostTokenFilterFactory
 analysis/br/BrazilianAnalyzer	todo:M11	T11.6 per-language (br): BrazilianAnalyzer
 analysis/br/BrazilianStemFilter	todo:M11	T11.6 per-language (br): BrazilianStemFilter
 analysis/br/BrazilianStemFilterFactory	todo:M11	T11.7 factory/SPI: BrazilianStemFilterFactory
 analysis/br/BrazilianStemmer	todo:M11	T11.6 per-language (br): BrazilianStemmer
 analysis/ca/CatalanAnalyzer	todo:M11	T11.6 per-language (ca): CatalanAnalyzer
-analysis/charfilter/BaseCharFilter	todo:M11	T11.6 charfilter: BaseCharFilter
+analysis/charfilter/BaseCharFilter	ported	crates/lucene-analysis/src/charfilter/mod.rs::OffsetCorrections
 analysis/charfilter/HTMLStripCharFilter	todo:M11	T11.6 charfilter: HTMLStripCharFilter
 analysis/charfilter/HTMLStripCharFilterFactory	todo:M11	T11.7 factory/SPI: HTMLStripCharFilterFactory
-analysis/charfilter/MappingCharFilter	todo:M11	T11.6 charfilter: MappingCharFilter
+analysis/charfilter/MappingCharFilter	ported	crates/lucene-analysis/src/charfilter/mod.rs::MappingCharFilter
 analysis/charfilter/MappingCharFilterFactory	todo:M11	T11.7 factory/SPI: MappingCharFilterFactory
-analysis/charfilter/NormalizeCharMap	todo:M11	T11.6 charfilter: NormalizeCharMap
-analysis/cjk/CJKAnalyzer	todo:M11	T11.6 cjk: CJKAnalyzer
-analysis/cjk/CJKBigramFilter	todo:M11	T11.6 cjk: CJKBigramFilter
+analysis/charfilter/NormalizeCharMap	ported	crates/lucene-analysis/src/charfilter/mod.rs::NormalizeCharMap
+analysis/cjk/CJKAnalyzer	ported	crates/lucene-analysis/src/cjk/mod.rs::CJKAnalyzer
+analysis/cjk/CJKBigramFilter	ported	crates/lucene-analysis/src/cjk/mod.rs::CJKBigramFilter
 analysis/cjk/CJKBigramFilterFactory	todo:M11	T11.7 factory/SPI: CJKBigramFilterFactory
-analysis/cjk/CJKWidthCharFilter	todo:M11	T11.6 cjk: CJKWidthCharFilter
+analysis/cjk/CJKWidthCharFilter	ported	crates/lucene-analysis/src/cjk/mod.rs::CJKWidthCharFilter
 analysis/cjk/CJKWidthCharFilterFactory	todo:M11	T11.7 factory/SPI: CJKWidthCharFilterFactory
-analysis/cjk/CJKWidthFilter	todo:M11	T11.6 cjk: CJKWidthFilter
+analysis/cjk/CJKWidthFilter	ported	crates/lucene-analysis/src/cjk/mod.rs::CJKWidthFilter
 analysis/cjk/CJKWidthFilterFactory	todo:M11	T11.7 factory/SPI: CJKWidthFilterFactory
 analysis/ckb/SoraniAnalyzer	todo:M11	T11.6 per-language (ckb): SoraniAnalyzer
 analysis/ckb/SoraniNormalizationFilter	todo:M11	T11.6 per-language (ckb): SoraniNormalizationFilter
@@ -54,9 +54,9 @@ analysis/classic/ClassicFilterFactory	todo:M11	T11.7 factory/SPI: ClassicFilterF
 analysis/classic/ClassicTokenizer	todo:M11	T11.2 JFlex tokenizer: ClassicTokenizer
 analysis/classic/ClassicTokenizerFactory	todo:M11	T11.7 factory/SPI: ClassicTokenizerFactory
 analysis/classic/ClassicTokenizerImpl	todo:M11	T11.2 JFlex tokenizer: ClassicTokenizerImpl
-analysis/commongrams/CommonGramsFilter	todo:M11	T11.6 commongrams: CommonGramsFilter
+analysis/commongrams/CommonGramsFilter	ported	crates/lucene-analysis/src/commongrams/mod.rs::CommonGramsFilter
 analysis/commongrams/CommonGramsFilterFactory	todo:M11	T11.7 factory/SPI: CommonGramsFilterFactory
-analysis/commongrams/CommonGramsQueryFilter	todo:M11	T11.6 commongrams: CommonGramsQueryFilter
+analysis/commongrams/CommonGramsQueryFilter	ported	crates/lucene-analysis/src/commongrams/mod.rs::CommonGramsQueryFilter
 analysis/commongrams/CommonGramsQueryFilterFactory	todo:M11	T11.7 factory/SPI: CommonGramsQueryFilterFactory
 analysis/compound/CompoundWordTokenFilterBase	todo:M11	T11.6 compound: CompoundWordTokenFilterBase
 analysis/compound/DictionaryCompoundWordTokenFilter	todo:M11	T11.6 compound: DictionaryCompoundWordTokenFilter
@@ -248,7 +248,7 @@ analysis/lv/LatvianAnalyzer	todo:M11	T11.6 per-language (lv): LatvianAnalyzer
 analysis/lv/LatvianStemFilter	todo:M11	T11.6 per-language (lv): LatvianStemFilter
 analysis/lv/LatvianStemFilterFactory	todo:M11	T11.7 factory/SPI: LatvianStemFilterFactory
 analysis/lv/LatvianStemmer	todo:M11	T11.6 per-language (lv): LatvianStemmer
-analysis/minhash/MinHashFilter	todo:M11	T11.6 minhash: MinHashFilter
+analysis/minhash/MinHashFilter	ported	crates/lucene-analysis/src/minhash/mod.rs::MinHashFilter
 analysis/minhash/MinHashFilterFactory	todo:M11	T11.7 factory/SPI: MinHashFilterFactory
 analysis/miscellaneous/ASCIIFoldingFilter	ported	crates/lucene-analysis/src/miscellaneous/stateful.rs::AsciiFoldingTokenFilter
 analysis/miscellaneous/ASCIIFoldingFilterFactory	todo:M11	T11.7 factory/SPI: ASCIIFoldingFilterFactory
@@ -331,12 +331,12 @@ analysis/morph/Viterbi	todo:M11	T11.6 morph: Viterbi
 analysis/morph/ViterbiNBest	todo:M11	T11.6 morph: ViterbiNBest
 analysis/ne/NepaliAnalyzer	todo:M11	T11.6 per-language (ne): NepaliAnalyzer
 analysis/ngram/EdgeNGramFilterFactory	todo:M11	T11.7 factory/SPI: EdgeNGramFilterFactory
-analysis/ngram/EdgeNGramTokenFilter	partial	crates/lucene-analysis/src/lib.rs::EdgeNGramTokenFilter -- M11: T11.6 the streaming filter
-analysis/ngram/EdgeNGramTokenizer	todo:M11	T11.6 ngram: EdgeNGramTokenizer
+analysis/ngram/EdgeNGramTokenFilter	ported	crates/lucene-analysis/src/ngram/mod.rs::EdgeNGramTokenFilter
+analysis/ngram/EdgeNGramTokenizer	ported	crates/lucene-analysis/src/ngram/mod.rs::EdgeNGramTokenizer
 analysis/ngram/EdgeNGramTokenizerFactory	todo:M11	T11.7 factory/SPI: EdgeNGramTokenizerFactory
 analysis/ngram/NGramFilterFactory	todo:M11	T11.7 factory/SPI: NGramFilterFactory
-analysis/ngram/NGramTokenFilter	partial	crates/lucene-analysis/src/lib.rs::NGramTokenFilter -- M11: T11.6 the streaming filter
-analysis/ngram/NGramTokenizer	todo:M11	T11.6 ngram: NGramTokenizer
+analysis/ngram/NGramTokenFilter	ported	crates/lucene-analysis/src/ngram/mod.rs::NGramTokenFilter
+analysis/ngram/NGramTokenizer	ported	crates/lucene-analysis/src/ngram/mod.rs::NGramTokenizer
 analysis/ngram/NGramTokenizerFactory	todo:M11	T11.7 factory/SPI: NGramTokenizerFactory
 analysis/nl/DutchAnalyzer	todo:M11	T11.6 per-language (nl): DutchAnalyzer
 analysis/no/NorwegianAnalyzer	todo:M11	T11.6 per-language (no): NorwegianAnalyzer
@@ -348,36 +348,36 @@ analysis/no/NorwegianMinimalStemFilterFactory	todo:M11	T11.7 factory/SPI: Norweg
 analysis/no/NorwegianMinimalStemmer	todo:M11	T11.6 per-language (no): NorwegianMinimalStemmer
 analysis/no/NorwegianNormalizationFilter	todo:M11	T11.6 per-language (no): NorwegianNormalizationFilter
 analysis/no/NorwegianNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: NorwegianNormalizationFilterFactory
-analysis/path/PathHierarchyTokenizer	todo:M11	T11.6 path: PathHierarchyTokenizer
+analysis/path/PathHierarchyTokenizer	ported	crates/lucene-analysis/src/path/mod.rs::PathHierarchyTokenizer
 analysis/path/PathHierarchyTokenizerFactory	todo:M11	T11.7 factory/SPI: PathHierarchyTokenizerFactory
-analysis/path/ReversePathHierarchyTokenizer	todo:M11	T11.6 path: ReversePathHierarchyTokenizer
+analysis/path/ReversePathHierarchyTokenizer	ported	crates/lucene-analysis/src/path/mod.rs::ReversePathHierarchyTokenizer
 analysis/pattern/PatternCaptureGroupFilterFactory	todo:M11	T11.7 factory/SPI: PatternCaptureGroupFilterFactory
-analysis/pattern/PatternCaptureGroupTokenFilter	todo:M11	T11.6 pattern: PatternCaptureGroupTokenFilter
-analysis/pattern/PatternReplaceCharFilter	todo:M11	T11.6 pattern: PatternReplaceCharFilter
+analysis/pattern/PatternCaptureGroupTokenFilter	ported	crates/lucene-analysis/src/pattern/mod.rs::PatternCaptureGroupTokenFilter
+analysis/pattern/PatternReplaceCharFilter	ported	crates/lucene-analysis/src/pattern/mod.rs::PatternReplaceCharFilter
 analysis/pattern/PatternReplaceCharFilterFactory	todo:M11	T11.7 factory/SPI: PatternReplaceCharFilterFactory
-analysis/pattern/PatternReplaceFilter	todo:M11	T11.6 pattern: PatternReplaceFilter
+analysis/pattern/PatternReplaceFilter	ported	crates/lucene-analysis/src/pattern/mod.rs::PatternReplaceFilter
 analysis/pattern/PatternReplaceFilterFactory	todo:M11	T11.7 factory/SPI: PatternReplaceFilterFactory
-analysis/pattern/PatternTokenizer	todo:M11	T11.6 pattern: PatternTokenizer
+analysis/pattern/PatternTokenizer	ported	crates/lucene-analysis/src/pattern/mod.rs::PatternTokenizer
 analysis/pattern/PatternTokenizerFactory	todo:M11	T11.7 factory/SPI: PatternTokenizerFactory
-analysis/pattern/PatternTypingFilter	todo:M11	T11.6 pattern: PatternTypingFilter
+analysis/pattern/PatternTypingFilter	ported	crates/lucene-analysis/src/pattern/mod.rs::PatternTypingFilter
 analysis/pattern/PatternTypingFilterFactory	todo:M11	T11.7 factory/SPI: PatternTypingFilterFactory
-analysis/pattern/SimplePatternSplitTokenizer	todo:M11	T11.6 pattern: SimplePatternSplitTokenizer
+analysis/pattern/SimplePatternSplitTokenizer	ported	crates/lucene-analysis/src/pattern/mod.rs::SimplePatternSplitTokenizer
 analysis/pattern/SimplePatternSplitTokenizerFactory	todo:M11	T11.7 factory/SPI: SimplePatternSplitTokenizerFactory
-analysis/pattern/SimplePatternTokenizer	todo:M11	T11.6 pattern: SimplePatternTokenizer
+analysis/pattern/SimplePatternTokenizer	ported	crates/lucene-analysis/src/pattern/mod.rs::SimplePatternTokenizer
 analysis/pattern/SimplePatternTokenizerFactory	todo:M11	T11.7 factory/SPI: SimplePatternTokenizerFactory
-analysis/payloads/AbstractEncoder	todo:M11	T11.6 payloads: AbstractEncoder
-analysis/payloads/DelimitedPayloadTokenFilter	todo:M11	T11.6 payloads: DelimitedPayloadTokenFilter
+analysis/payloads/AbstractEncoder	ported	crates/lucene-analysis/src/payloads/mod.rs::PayloadEncoder
+analysis/payloads/DelimitedPayloadTokenFilter	ported	crates/lucene-analysis/src/payloads/mod.rs::DelimitedPayloadTokenFilter
 analysis/payloads/DelimitedPayloadTokenFilterFactory	todo:M11	T11.7 factory/SPI: DelimitedPayloadTokenFilterFactory
-analysis/payloads/FloatEncoder	todo:M11	T11.6 payloads: FloatEncoder
-analysis/payloads/IdentityEncoder	todo:M11	T11.6 payloads: IdentityEncoder
-analysis/payloads/IntegerEncoder	todo:M11	T11.6 payloads: IntegerEncoder
-analysis/payloads/NumericPayloadTokenFilter	todo:M11	T11.6 payloads: NumericPayloadTokenFilter
+analysis/payloads/FloatEncoder	ported	crates/lucene-analysis/src/payloads/mod.rs::FloatEncoder
+analysis/payloads/IdentityEncoder	ported	crates/lucene-analysis/src/payloads/mod.rs::IdentityEncoder
+analysis/payloads/IntegerEncoder	ported	crates/lucene-analysis/src/payloads/mod.rs::IntegerEncoder
+analysis/payloads/NumericPayloadTokenFilter	ported	crates/lucene-analysis/src/payloads/mod.rs::NumericPayloadTokenFilter
 analysis/payloads/NumericPayloadTokenFilterFactory	todo:M11	T11.7 factory/SPI: NumericPayloadTokenFilterFactory
-analysis/payloads/PayloadEncoder	todo:M11	T11.6 payloads: PayloadEncoder
-analysis/payloads/PayloadHelper	todo:M11	T11.6 payloads: PayloadHelper
-analysis/payloads/TokenOffsetPayloadTokenFilter	todo:M11	T11.6 payloads: TokenOffsetPayloadTokenFilter
+analysis/payloads/PayloadEncoder	ported	crates/lucene-analysis/src/payloads/mod.rs::PayloadEncoder
+analysis/payloads/PayloadHelper	ported	crates/lucene-analysis/src/payloads/mod.rs::encode_float
+analysis/payloads/TokenOffsetPayloadTokenFilter	ported	crates/lucene-analysis/src/payloads/mod.rs::TokenOffsetPayloadTokenFilter
 analysis/payloads/TokenOffsetPayloadTokenFilterFactory	todo:M11	T11.7 factory/SPI: TokenOffsetPayloadTokenFilterFactory
-analysis/payloads/TypeAsPayloadTokenFilter	todo:M11	T11.6 payloads: TypeAsPayloadTokenFilter
+analysis/payloads/TypeAsPayloadTokenFilter	ported	crates/lucene-analysis/src/payloads/mod.rs::TypeAsPayloadTokenFilter
 analysis/payloads/TypeAsPayloadTokenFilterFactory	todo:M11	T11.7 factory/SPI: TypeAsPayloadTokenFilterFactory
 analysis/pt/PortugueseAnalyzer	todo:M11	T11.6 per-language (pt): PortugueseAnalyzer
 analysis/pt/PortugueseLightStemFilter	todo:M11	T11.6 per-language (pt): PortugueseLightStemFilter
@@ -401,10 +401,10 @@ analysis/ru/RussianAnalyzer	todo:M11	T11.6 per-language (ru): RussianAnalyzer
 analysis/ru/RussianLightStemFilter	todo:M11	T11.6 per-language (ru): RussianLightStemFilter
 analysis/ru/RussianLightStemFilterFactory	todo:M11	T11.7 factory/SPI: RussianLightStemFilterFactory
 analysis/ru/RussianLightStemmer	todo:M11	T11.6 per-language (ru): RussianLightStemmer
-analysis/shingle/FixedShingleFilter	todo:M11	T11.6 shingle: FixedShingleFilter
+analysis/shingle/FixedShingleFilter	ported	crates/lucene-analysis/src/shingle/mod.rs::FixedShingleFilter
 analysis/shingle/FixedShingleFilterFactory	todo:M11	T11.7 factory/SPI: FixedShingleFilterFactory
 analysis/shingle/ShingleAnalyzerWrapper	todo:M11	T11.6 shingle: ShingleAnalyzerWrapper
-analysis/shingle/ShingleFilter	todo:M11	T11.6 shingle: ShingleFilter
+analysis/shingle/ShingleFilter	ported	crates/lucene-analysis/src/shingle/mod.rs::ShingleFilter
 analysis/shingle/ShingleFilterFactory	todo:M11	T11.7 factory/SPI: ShingleFilterFactory
 analysis/sinks/TeeSinkTokenFilter	todo:M11	T11.6 sinks: TeeSinkTokenFilter
 analysis/snowball/SnowballFilter	partial	crates/lucene-analysis/src/lib.rs::SnowballEnglishStemFilter -- M11: T11.3 every other Snowball language
@@ -457,7 +457,7 @@ analysis/util/ElisionFilter	ported	crates/lucene-analysis/src/util/elision_filte
 analysis/util/ElisionFilterFactory	todo:M11	T11.7 factory/SPI: ElisionFilterFactory
 analysis/util/FilesystemResourceLoader	todo:M11	T11.7 factory/SPI: FilesystemResourceLoader
 analysis/util/OpenStringBuilder	todo:M11	T11.6 util: OpenStringBuilder
-analysis/util/RollingCharBuffer	todo:M11	T11.6 util: RollingCharBuffer
+analysis/util/RollingCharBuffer	ported	crates/lucene-analysis/src/charfilter/mod.rs::RollingCharBuffer
 analysis/util/SegmentingTokenizerBase	todo:M11	T11.6 util: SegmentingTokenizerBase
 analysis/util/StemmerUtil	todo:M11	T11.6 util: StemmerUtil
 analysis/util/UnicodeProps	ported	crates/lucene-analysis/src/java_character.rs::is_unicode_whitespace

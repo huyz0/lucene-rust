@@ -87,6 +87,7 @@ import org.apache.lucene.analysis.pattern.PatternCaptureGroupTokenFilter;
 import org.apache.lucene.analysis.pattern.PatternReplaceCharFilter;
 import org.apache.lucene.analysis.pattern.PatternReplaceFilter;
 import org.apache.lucene.analysis.pattern.PatternTokenizer;
+import org.apache.lucene.analysis.pattern.PatternTypingFilter;
 import org.apache.lucene.analysis.pattern.SimplePatternSplitTokenizer;
 import org.apache.lucene.analysis.pattern.SimplePatternTokenizer;
 import org.apache.lucene.analysis.payloads.DelimitedPayloadTokenFilter;
@@ -111,6 +112,7 @@ import org.apache.lucene.analysis.tokenattributes.TermFrequencyAttribute;
 import org.apache.lucene.analysis.tokenattributes.TermToBytesRefAttribute;
 import org.apache.lucene.analysis.tokenattributes.TypeAttribute;
 import org.apache.lucene.analysis.util.ElisionFilter;
+import org.apache.lucene.search.BoostAttribute;
 import org.apache.lucene.util.BytesRef;
 
 /**
@@ -125,13 +127,14 @@ import org.apache.lucene.util.BytesRef;
  * <p>Rows ({@code \t}-separated):
  *
  * <pre>
- *   T line term start end posInc posLen type flags payload(hex|-) keyword(0|1) termFreq
+ *   T line term start end posInc posLen type flags payload(hex|-) keyword(0|1) termFreq [boost]
  *   E line finalStart finalEnd finalPosInc
  *   X line ExceptionSimpleName
  * </pre>
  *
  * Terms and types escape {@code \\ \t \n \r} and every other char below U+0020 or a lone surrogate
- * as {@code \\uXXXX}. Each chain is one {@link Analyzer}, reused across the lines as Lucene reuses
+ * as {@code \\uXXXX}. {@code boost} (the float's bits in hex) is there only for a chain with a
+ * {@code BoostAttribute}. Each chain is one {@link Analyzer}, reused across the lines as Lucene reuses
  * it, so reset/reuse is exercised too.
  */
 public class GenAnalysisCommon {
@@ -296,6 +299,9 @@ public class GenAnalysisCommon {
     c.put("ws_pattern_replace_first", () -> chain(WhitespaceTokenizer::new, t -> new PatternReplaceFilter(t, Pattern.compile("([a-z])([a-z]*)"), "$2$1", false)));
     c.put("ws_pattern_capture_group", () -> chain(WhitespaceTokenizer::new,
         t -> new PatternCaptureGroupTokenFilter(t, true, Pattern.compile("([A-Z][a-z]+)"), Pattern.compile("([0-9]+)"))));
+    c.put("std_pattern_typing", () -> chain(StandardTokenizer::new, t -> new PatternTypingFilter(t,
+        new PatternTypingFilter.PatternTypingRule(Pattern.compile("^(\\d+)\\.(\\d+)$"), 3, "decimal_$1"),
+        new PatternTypingFilter.PatternTypingRule(Pattern.compile("^([A-Z])"), 4, "capital_$1"))));
     c.put("pattern_replace_char_filter", () -> chain(r -> new PatternReplaceCharFilter(Pattern.compile("([a-z]+)-([a-z]+)"), "$2_$1", r),
         WhitespaceTokenizer::new, t -> t));
 
@@ -415,6 +421,7 @@ public class GenAnalysisCommon {
             PayloadAttribute payload = ts.addAttribute(PayloadAttribute.class);
             KeywordAttribute kw = ts.addAttribute(KeywordAttribute.class);
             TermFrequencyAttribute tf = ts.addAttribute(TermFrequencyAttribute.class);
+            BoostAttribute boost = ts.hasAttribute(BoostAttribute.class) ? ts.getAttribute(BoostAttribute.class) : null;
             ts.reset();
             while (ts.incrementToken()) {
               String t = term != null ? esc(term.toString()) : "#" + hex(bytes.getBytesRef());
@@ -423,7 +430,11 @@ public class GenAnalysisCommon {
                   .append('\t').append(inc.getPositionIncrement()).append('\t').append(len.getPositionLength())
                   .append('\t').append(esc(type.type())).append('\t').append(flags.getFlags())
                   .append('\t').append(hex(payload.getPayload())).append('\t').append(kw.isKeyword() ? 1 : 0)
-                  .append('\t').append(tf.getTermFrequency()).append('\n');
+                  .append('\t').append(tf.getTermFrequency());
+              if (boost != null) {
+                m.append('\t').append(Integer.toHexString(Float.floatToIntBits(boost.getBoost())));
+              }
+              m.append('\n');
             }
             ts.end();
             m.append("E\t").append(ln).append('\t').append(off.startOffset()).append('\t').append(off.endOffset())

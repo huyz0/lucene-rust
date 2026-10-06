@@ -137,6 +137,107 @@ impl JavaPattern {
     }
 }
 
+/// A `java.util.regex.Matcher` over one text: `find()` from where the last
+/// match ended (one character on after an empty match, as Java), and
+/// `start(group)`/`end(group)` in UTF-16 units (`-1` for a group that did
+/// not participate).
+#[derive(Debug, Clone)]
+pub struct JavaMatcher {
+    regex: Regex,
+    text: String,
+    /// UTF-16 offset of every byte offset that starts a `char` (and the end).
+    utf16_at: Vec<i32>,
+    last: Option<(usize, usize)>,
+    groups: Vec<Option<(usize, usize)>>,
+}
+
+impl JavaMatcher {
+    /// `pattern.matcher(text)`.
+    pub fn new(pattern: &JavaPattern, text: &str) -> Self {
+        let mut m = JavaMatcher {
+            regex: pattern.regex.clone(),
+            text: String::new(),
+            utf16_at: Vec::new(),
+            last: None,
+            groups: Vec::new(),
+        };
+        m.reset(text);
+        m
+    }
+
+    /// `reset(CharSequence)`.
+    pub fn reset(&mut self, text: &str) {
+        self.text.clear();
+        self.text.push_str(text);
+        self.utf16_at.clear();
+        self.utf16_at.resize(text.len() + 1, 0);
+        let mut u = 0i32;
+        for (i, c) in text.char_indices() {
+            self.utf16_at[i] = u;
+            u += c.len_utf16() as i32;
+        }
+        self.utf16_at[text.len()] = u;
+        self.last = None;
+        self.groups.clear();
+    }
+
+    /// The text being matched.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// `groupCount()`.
+    pub fn group_count(&self) -> usize {
+        self.regex.captures_len() - 1
+    }
+
+    /// `find()`.
+    pub fn find(&mut self) -> bool {
+        let from = match self.last {
+            None => 0,
+            Some((s, e)) if s == e => match self.text[e..].chars().next() {
+                Some(c) => e + c.len_utf8(),
+                None => {
+                    self.groups.clear();
+                    return false;
+                }
+            },
+            Some((_, e)) => e,
+        };
+        match self.regex.captures_at(&self.text, from) {
+            Some(caps) => {
+                self.groups = (0..caps.len())
+                    .map(|g| caps.get(g).map(|m| (m.start(), m.end())))
+                    .collect();
+                let m = caps.get(0).expect("group 0");
+                self.last = Some((m.start(), m.end()));
+                true
+            }
+            None => {
+                self.groups.clear();
+                false
+            }
+        }
+    }
+
+    /// The byte range of `group` in the last match.
+    pub fn group_bytes(&self, group: usize) -> Option<(usize, usize)> {
+        self.groups.get(group).copied().flatten()
+    }
+
+    /// `start(group)` in UTF-16 units, `-1` if the group did not match.
+    pub fn start(&self, group: usize) -> i32 {
+        self.group_bytes(group)
+            .map_or(-1, |(s, _)| self.utf16_at[s])
+    }
+
+    /// `end(group)` in UTF-16 units, `-1` if the group did not match.
+    pub fn end(&self, group: usize) -> i32 {
+        self.group_bytes(group)
+            .map_or(-1, |(_, e)| self.utf16_at[e])
+    }
+}
+
 /// `Matcher.appendReplacement`'s expansion of `replacement` for one match.
 pub(crate) fn append_replacement(
     out: &mut String,
@@ -224,6 +325,26 @@ mod tests {
         assert!(JavaPattern::compile("(a").is_err());
         assert!(JavaPattern::compile("a\\").is_err());
         assert_eq!(translate("a\\"), "a\\");
+    }
+
+    #[test]
+    fn matcher_finds_like_java() {
+        let p = JavaPattern::compile("a*").unwrap();
+        let mut m = JavaMatcher::new(&p, "baa😀");
+        let mut found = Vec::new();
+        while m.find() {
+            found.push((m.start(0), m.end(0)));
+        }
+        assert_eq!(found, vec![(0, 0), (1, 3), (3, 3), (5, 5)]);
+        let p = JavaPattern::compile("(x)|(y)").unwrap();
+        let mut m = JavaMatcher::new(&p, "😀y");
+        assert_eq!(m.group_count(), 2);
+        assert!(m.find());
+        assert_eq!((m.start(1), m.end(1), m.start(2), m.end(2)), (-1, -1, 2, 3));
+        assert_eq!(m.text(), "😀y");
+        assert!(!m.find());
+        assert_eq!(m.start(0), -1, "a failed find clears the groups");
+        assert!(!m.find(), "an empty last match at the end stays exhausted");
     }
 
     #[test]

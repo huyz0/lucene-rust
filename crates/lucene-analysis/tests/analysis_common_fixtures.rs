@@ -56,50 +56,9 @@ fn corpus() -> Vec<String> {
 /// The chains the generator writes that the port does not build yet.
 const PENDING: &[&str] = &[
     "std_concatenate_graph",
-    "ngram_tokenizer_1_2",
-    "ngram_tokenizer_2_3",
-    "edge_ngram_tokenizer_1_3",
-    "std_ngram_filter_2_3",
-    "std_ngram_filter_2_3_preserve",
-    "std_edge_ngram_filter_1_4",
-    "std_edge_ngram_filter_2_3_preserve",
-    "std_shingle_default",
-    "std_shingle_2_3_no_unigrams",
-    "std_shingle_unigrams_if_none",
-    "std_fixed_shingle_3",
-    "pattern_tokenizer_split",
-    "pattern_tokenizer_group",
-    "simple_pattern_tokenizer",
-    "simple_pattern_split_tokenizer",
-    "ws_pattern_replace_all",
-    "ws_pattern_replace_first",
-    "ws_pattern_capture_group",
-    "pattern_replace_char_filter",
-    "path_hierarchy",
-    "path_hierarchy_backslash_skip1",
-    "reverse_path_hierarchy",
-    "reverse_path_hierarchy_dot_skip1",
-    "mapping_char_filter",
     "html_strip_standard",
     "html_strip_keyword",
     "html_strip_escaped_b",
-    "std_common_grams",
-    "std_common_grams_query",
-    "cjk_analyzer",
-    "std_cjk_bigram_unigrams",
-    "std_cjk_bigram_han_only",
-    "ws_cjk_width",
-    "cjk_width_char_filter",
-    "ws_delimited_payload_float",
-    "ws_delimited_payload_int",
-    "ws_delimited_payload_identity",
-    "std_numeric_payload",
-    "std_type_as_payload",
-    "std_token_offset_payload",
-    "ws_delimited_boost",
-    "ws_shingle_minhash",
-    "ws_minhash_64_buckets",
-    "ws_minhash_no_rotation",
     "uax29_url_email_analyzer",
     "uax29_url_email_tokenizer",
     "std_kstem",
@@ -137,6 +96,17 @@ fn chain(f: impl Fn() -> Sink + Send + Sync + 'static) -> Analyzer {
     })
 }
 
+/// [`chain`] with an `initReader` char filter.
+fn chain_cf(
+    cf: impl Fn(Box<dyn CharReader>) -> Box<dyn CharReader> + Send + Sync + 'static,
+    f: impl Fn() -> Sink + Send + Sync + 'static,
+) -> Analyzer {
+    Analyzer::new(Chain {
+        components: Box::new(f),
+        char_filters: Some(Box::new(cf)),
+    })
+}
+
 fn comps(sink: impl TokenStream + 'static) -> Sink {
     Ok(TokenStreamComponents::new(sink))
 }
@@ -159,8 +129,20 @@ fn english() -> Arc<CharArraySet> {
 /// The Rust twin of each generator chain, `None` while it is pending.
 fn build(name: &str) -> Option<Analyzer> {
     use core_analysis::*;
+    use lucene_analysis::boost::DelimitedBoostTokenFilter;
+    use lucene_analysis::charfilter::{MappingCharFilter, NormalizeCharMapBuilder};
+    use lucene_analysis::cjk::{
+        self, CJKAnalyzer, CJKBigramFilter, CJKWidthCharFilter, CJKWidthFilter,
+    };
+    use lucene_analysis::commongrams::{CommonGramsFilter, CommonGramsQueryFilter};
     use lucene_analysis::en::*;
+    use lucene_analysis::minhash::MinHashFilter;
     use lucene_analysis::miscellaneous::{self as m, *};
+    use lucene_analysis::ngram::{EdgeNGramTokenFilter, NGramTokenFilter, NGramTokenizer};
+    use lucene_analysis::path::{PathHierarchyTokenizer, ReversePathHierarchyTokenizer};
+    use lucene_analysis::pattern::*;
+    use lucene_analysis::payloads::*;
+    use lucene_analysis::shingle::{FixedShingleFilter, ShingleFilter};
     use lucene_analysis::util::{ElisionFilter, JavaPattern};
     Some(match name {
         // ---- core
@@ -413,6 +395,269 @@ fn build(name: &str) -> Option<Analyzer> {
             chain(|| comps(DropIfFlaggedFilter::new(StandardTokenizer::new(), 1)))
         }
 
+        // ---- ngram
+        "ngram_tokenizer_1_2" => chain(|| comps(NGramTokenizer::new(1, 2)?)),
+        "ngram_tokenizer_2_3" => chain(|| comps(NGramTokenizer::new(2, 3)?)),
+        "edge_ngram_tokenizer_1_3" => chain(|| comps(NGramTokenizer::edge(1, 3)?)),
+        "std_ngram_filter_2_3" => chain(|| {
+            comps(NGramTokenFilter::new(
+                StandardTokenizer::new(),
+                2,
+                3,
+                false,
+            )?)
+        }),
+        "std_ngram_filter_2_3_preserve" => {
+            chain(|| comps(NGramTokenFilter::new(StandardTokenizer::new(), 2, 3, true)?))
+        }
+        "std_edge_ngram_filter_1_4" => chain(|| {
+            comps(EdgeNGramTokenFilter::new(
+                StandardTokenizer::new(),
+                1,
+                4,
+                false,
+            )?)
+        }),
+        "std_edge_ngram_filter_2_3_preserve" => chain(|| {
+            comps(EdgeNGramTokenFilter::new(
+                StandardTokenizer::new(),
+                2,
+                3,
+                true,
+            )?)
+        }),
+
+        // ---- shingle
+        "std_shingle_default" => {
+            chain(|| comps(ShingleFilter::new(StandardTokenizer::new(), 2, 2)?))
+        }
+        "std_shingle_2_3_no_unigrams" => chain(|| {
+            let mut s =
+                ShingleFilter::new(StopFilter::new(StandardTokenizer::new(), english()), 2, 3)?;
+            s.set_output_unigrams(false);
+            s.set_token_separator(Some("+"));
+            s.set_filler_token(Some("*"));
+            comps(s)
+        }),
+        "std_shingle_unigrams_if_none" => chain(|| {
+            let mut s = ShingleFilter::new(StandardTokenizer::new(), 3, 3)?;
+            s.set_output_unigrams(false);
+            s.set_output_unigrams_if_no_shingles(true);
+            comps(s)
+        }),
+        "std_fixed_shingle_3" => chain(|| {
+            comps(FixedShingleFilter::new(
+                StopFilter::new(StandardTokenizer::new(), english()),
+                3,
+            )?)
+        }),
+
+        // ---- pattern
+        "pattern_tokenizer_split" => chain(|| {
+            comps(PatternTokenizer::new(
+                &JavaPattern::compile("[ ,;.]+")?,
+                -1,
+            )?)
+        }),
+        "pattern_tokenizer_group" => chain(|| {
+            comps(PatternTokenizer::new(
+                &JavaPattern::compile("([a-z]+)([0-9]*)")?,
+                1,
+            )?)
+        }),
+        "simple_pattern_tokenizer" => {
+            chain(|| comps(SimplePatternTokenizer::new("[a-zA-Z]+[0-9]*")?))
+        }
+        "simple_pattern_split_tokenizer" => {
+            chain(|| comps(SimplePatternSplitTokenizer::new("[ \t,;.]+")?))
+        }
+        "ws_pattern_replace_all" => chain(|| {
+            comps(PatternReplaceFilter::new(
+                WhitespaceTokenizer::new(),
+                JavaPattern::compile("[aeiou]")?,
+                Some("_"),
+                true,
+            ))
+        }),
+        "ws_pattern_replace_first" => chain(|| {
+            comps(PatternReplaceFilter::new(
+                WhitespaceTokenizer::new(),
+                JavaPattern::compile("([a-z])([a-z]*)")?,
+                Some("$2$1"),
+                false,
+            ))
+        }),
+        "ws_pattern_capture_group" => chain(|| {
+            let pats = [
+                JavaPattern::compile("([A-Z][a-z]+)")?,
+                JavaPattern::compile("([0-9]+)")?,
+            ];
+            comps(PatternCaptureGroupTokenFilter::new(
+                WhitespaceTokenizer::new(),
+                true,
+                &pats,
+            ))
+        }),
+        "std_pattern_typing" => chain(|| {
+            let rules = vec![
+                PatternTypingRule {
+                    pattern: JavaPattern::compile("^(\\d+)\\.(\\d+)$")?,
+                    flags: 3,
+                    type_template: "decimal_$1".into(),
+                },
+                PatternTypingRule {
+                    pattern: JavaPattern::compile("^([A-Z])")?,
+                    flags: 4,
+                    type_template: "capital_$1".into(),
+                },
+            ];
+            comps(PatternTypingFilter::new(StandardTokenizer::new(), rules))
+        }),
+        "pattern_replace_char_filter" => chain_cf(
+            |r| {
+                Box::new(PatternReplaceCharFilter::new(
+                    JavaPattern::compile("([a-z]+)-([a-z]+)").unwrap(),
+                    "$2_$1",
+                    r,
+                ))
+            },
+            || comps(WhitespaceTokenizer::new()),
+        ),
+
+        // ---- path
+        "path_hierarchy" => chain(|| comps(PathHierarchyTokenizer::default())),
+        "path_hierarchy_backslash_skip1" => {
+            chain(|| comps(PathHierarchyTokenizer::new('\\', '/', 1)?))
+        }
+        "reverse_path_hierarchy" => chain(|| comps(ReversePathHierarchyTokenizer::default())),
+        "reverse_path_hierarchy_dot_skip1" => {
+            chain(|| comps(ReversePathHierarchyTokenizer::new('.', '.', 1)?))
+        }
+
+        // ---- charfilter
+        "mapping_char_filter" => {
+            let mut b = NormalizeCharMapBuilder::new();
+            for (k, v) in [
+                ("ä", "ae"),
+                ("ß", "ss"),
+                ("fox", "wolf"),
+                ("qu", "kw"),
+                ("the", ""),
+                ("&", " and "),
+                ("é", "e"),
+            ] {
+                b.add(k, v).unwrap();
+            }
+            let map = Arc::new(b.build());
+            chain_cf(
+                move |r| Box::new(MappingCharFilter::new(map.clone(), r)),
+                || comps(WhitespaceTokenizer::new()),
+            )
+        }
+
+        // ---- commongrams
+        "std_common_grams" => chain(|| {
+            comps(CommonGramsFilter::new(
+                LowerCaseFilter::new(StandardTokenizer::new()),
+                Some(english()),
+            ))
+        }),
+        "std_common_grams_query" => chain(|| {
+            comps(CommonGramsQueryFilter::new(CommonGramsFilter::new(
+                LowerCaseFilter::new(StandardTokenizer::new()),
+                Some(english()),
+            )))
+        }),
+
+        // ---- cjk
+        "cjk_analyzer" => Analyzer::new(CJKAnalyzer::default()),
+        "std_cjk_bigram_unigrams" => chain(|| {
+            comps(CJKBigramFilter::new(
+                StandardTokenizer::new(),
+                cjk::HAN | cjk::HIRAGANA_FLAG | cjk::KATAKANA_FLAG | cjk::HANGUL_FLAG,
+                true,
+            ))
+        }),
+        "std_cjk_bigram_han_only" => chain(|| {
+            comps(CJKBigramFilter::new(
+                StandardTokenizer::new(),
+                cjk::HAN,
+                false,
+            ))
+        }),
+        "ws_cjk_width" => chain(|| comps(CJKWidthFilter::new(WhitespaceTokenizer::new()))),
+        "cjk_width_char_filter" => chain_cf(
+            |r| Box::new(CJKWidthCharFilter::new(r)),
+            || comps(WhitespaceTokenizer::new()),
+        ),
+
+        // ---- payloads / boost
+        "ws_delimited_payload_float" => chain(|| {
+            comps(DelimitedPayloadTokenFilter::new(
+                WhitespaceTokenizer::new(),
+                u16::from(b'|'),
+                FloatEncoder,
+            ))
+        }),
+        "ws_delimited_payload_int" => chain(|| {
+            comps(DelimitedPayloadTokenFilter::new(
+                WhitespaceTokenizer::new(),
+                u16::from(b'|'),
+                IntegerEncoder,
+            ))
+        }),
+        "ws_delimited_payload_identity" => chain(|| {
+            comps(DelimitedPayloadTokenFilter::new(
+                WhitespaceTokenizer::new(),
+                u16::from(b'|'),
+                IdentityEncoder,
+            ))
+        }),
+        "std_numeric_payload" => chain(|| {
+            comps(NumericPayloadTokenFilter::new(
+                StandardTokenizer::new(),
+                3.5,
+                "<NUM>",
+            ))
+        }),
+        "std_type_as_payload" => {
+            chain(|| comps(TypeAsPayloadTokenFilter::new(StandardTokenizer::new())))
+        }
+        "std_token_offset_payload" => {
+            chain(|| comps(TokenOffsetPayloadTokenFilter::new(StandardTokenizer::new())))
+        }
+        "ws_delimited_boost" => chain(|| {
+            comps(DelimitedBoostTokenFilter::new(
+                WhitespaceTokenizer::new(),
+                '|',
+            ))
+        }),
+
+        // ---- minhash
+        "ws_shingle_minhash" => chain(|| {
+            let mut s = ShingleFilter::new(WhitespaceTokenizer::new(), 2, 2)?;
+            s.set_output_unigrams(false);
+            comps(MinHashFilter::new(s, 4, 2, 1, true)?)
+        }),
+        "ws_minhash_64_buckets" => chain(|| {
+            comps(MinHashFilter::new(
+                WhitespaceTokenizer::new(),
+                1,
+                64,
+                1,
+                true,
+            )?)
+        }),
+        "ws_minhash_no_rotation" => chain(|| {
+            comps(MinHashFilter::new(
+                WhitespaceTokenizer::new(),
+                2,
+                8,
+                2,
+                false,
+            )?)
+        }),
+
         // ---- en
         "english_analyzer" => Analyzer::new(EnglishAnalyzer::default()),
         "std_english_possessive" => {
@@ -470,7 +715,10 @@ fn exception_name(e: &AnalysisError) -> &'static str {
     }
 }
 
-fn token_row(ln: usize, a: &AttributeSource) -> String {
+/// The chains with a `BoostAttribute`, whose rows end with the boost's bits.
+const BOOST_CHAINS: &[&str] = &["ws_delimited_boost"];
+
+fn token_row(ln: usize, a: &AttributeSource, boost: bool) -> String {
     let term = match a.bytes_term() {
         Some(bytes) => format!("#{}", hex(Some(bytes))),
         None => esc(a.term()),
@@ -486,10 +734,14 @@ fn token_row(ln: usize, a: &AttributeSource) -> String {
         hex(a.payload()),
         u8::from(a.is_keyword()),
         a.term_frequency()
-    )
+    ) + &if boost {
+        format!("\t{:x}", a.boost().to_bits())
+    } else {
+        String::new()
+    }
 }
 
-fn analyze_line(a: &Analyzer, ln: usize, line: &str, out: &mut Vec<String>) {
+fn analyze_line(a: &Analyzer, ln: usize, line: &str, boost: bool, out: &mut Vec<String>) {
     let mut ts = match a.token_stream("f", line) {
         Ok(ts) => ts,
         Err(e) => {
@@ -500,7 +752,7 @@ fn analyze_line(a: &Analyzer, ln: usize, line: &str, out: &mut Vec<String>) {
     let run = |ts: &mut dyn TokenStream, out: &mut Vec<String>| -> Result<(), AnalysisError> {
         ts.reset()?;
         while ts.increment_token()? {
-            out.push(token_row(ln, ts.attributes()));
+            out.push(token_row(ln, ts.attributes(), boost));
         }
         ts.end()?;
         let e = ts.attributes();
@@ -580,7 +832,13 @@ fn chains_match_lucene_token_for_token() {
         let expected: Vec<String> = expected_text.lines().map(normalise_expected).collect();
         let mut actual = Vec::new();
         for (ln, line) in lines.iter().enumerate() {
-            analyze_line(&analyzer, ln, line, &mut actual);
+            analyze_line(
+                &analyzer,
+                ln,
+                line,
+                BOOST_CHAINS.contains(&name.as_str()),
+                &mut actual,
+            );
         }
         for (i, (e, a)) in expected.iter().zip(&actual).enumerate() {
             assert_eq!(a, e, "{name}: row {i} differs");
@@ -588,7 +846,7 @@ fn chains_match_lucene_token_for_token() {
         assert_eq!(actual.len(), expected.len(), "{name}: row count");
         checked += 1;
     }
-    assert!(checked >= 16, "only {checked} chains checked");
+    assert!(checked >= 97, "only {checked} chains checked");
 }
 
 #[test]
