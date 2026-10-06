@@ -1,0 +1,17 @@
+# Suggestions: REP, MAP, KEY, TRY, MAXDIFF, NOSUGGEST, ph:.
+SET UTF-8
+TRY esianrtolcdugmphbyfvkwz
+KEY qwertyuiop|asdfghjkl|zxcvbnm
+MAXDIFF 6
+MAXNGRAMSUGS 3
+NOSUGGEST N
+REP 3
+REP f ph
+REP ^alot$ a_lot
+REP shun$ tion
+MAP 2
+MAP aáà
+MAP (ss)ß
+
+SFX S Y 1
+SFX S 0 s .

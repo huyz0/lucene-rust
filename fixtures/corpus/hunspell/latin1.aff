@@ -1,0 +1,6 @@
+SET ISO8859-1
+FLAG UTF-8
+TRY e
+
+SFX é Y 1
+SFX é 0 � .

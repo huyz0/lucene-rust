@@ -1,0 +1,4 @@
+# lucene-rust's own test dictionary: a malformed directive.
+AF 1
+AF AB
+AF CD

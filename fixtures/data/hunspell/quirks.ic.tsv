@@ -1,0 +1,128 @@
+W	a/b	1	a/b|a/b	a/b	a/b	a/b	AffixedWord[word=a/b, entry=a/b/AB, prefixes=[], suffixes=[]]|AffixedWord[word=a/b, entry=a/b/AB, prefixes=[], suffixes=[A(id=0)]]	a/b	a/b	1
+W	a/bs	1	a/b	a/b	a/b	a/b	AffixedWord[word=a/bs, entry=a/b/AB, prefixes=[], suffixes=[A(id=1)]]	a/b	a/b	1
+W	ab	0	ab	ab	ab			a/b	a/b	0
+W	bs	0	bs	bs	bs			a/bs	a/bs	0
+W	rots	0	rots	rots	rots			rot	rot	1
+W	roten	1	rot	rot	rot	rot	AffixedWord[word=roten, entry=rot/É, prefixes=[], suffixes=[É(id=3)]]	roten	roten	1
+W	rot𝒜	0	rot𝒜	rot𝒜	rot𝒜			rot	rot	1
+W	pariss	0	pariss	pariss	pariss			paris	paris	1
+W	paris	1	paris	paris	paris	paris	AffixedWord[word=paris, entry=paris, prefixes=[], suffixes=[]]	paris	paris	1
+W	hauss	0	hauss	hauss	hauss			haus	haus	1
+W	wal	0	wal	wal	wal			wald	wald	1
+W	kint	0	kint	kint	kint			kind	kind	0
+W	Kint	0	Kint	Kint	Kint			kind	kind	1
+W	kind	1	kind	kind	kind	kind	AffixedWord[word=kind, entry=kind st:kind, prefixes=[], suffixes=[]]	kind	kind	0
+W	word	1	word	word	word	word	AffixedWord[word=word, entry=word is:x po:noun, prefixes=[], suffixes=[]]	word	word	0
+W	words	0	words	words	words			word	word	1
+W	Ünïcodes	1	ünïcode	ünïcode	ünïcode	ünïcode	AffixedWord[word=Ünïcodes, entry=ünïcode/AB, prefixes=[], suffixes=[A(id=1)]]	ünïcode	ünïcode	1
+W	ünïcode	1	ünïcode|ünïcode	ünïcode	ünïcode	ünïcode	AffixedWord[word=ünïcode, entry=ünïcode/AB, prefixes=[], suffixes=[]]|AffixedWord[word=ünïcode, entry=ünïcode/AB, prefixes=[], suffixes=[A(id=0)]]	ünïcode	ünïcode	1
+W	x	1	x	x	x			!StringIndexOutOfBoundsException	!StringIndexOutOfBoundsException	0
+W	axb	0	axb	axb	axb			a/b	a/b	0
+W	rotxen	1	rot	rot	rot	rot	AffixedWord[word=rotxen, entry=rot/É, prefixes=[], suffixes=[É(id=3)]]	roten	roten	1
+W	-	0	-	-	-					0
+W	--	0	--	--	--					0
+W	a-	0	a-	a-	a-			a/b|a/b-	a/b|a/b-	0
+W	-a	0	-a	-a	-a			-a/b	-a/b	0
+W	a--b	0	a--b	a--b	a--b					1
+W	Wald	1	wald	wald	wald	wald	AffixedWord[word=Wald, entry=wald, prefixes=[], suffixes=[]]	wald	wald	0
+W	#	0	#	#	#					0
+W	a\	0	a\	a\	a\			a/b	a/b	0
+W	xx	1	xx	xx	xx			!StringIndexOutOfBoundsException	!StringIndexOutOfBoundsException	0
+W	Paris	1	paris	paris	paris	paris	AffixedWord[word=Paris, entry=paris, prefixes=[], suffixes=[]]	paris	paris	0
+W	Haus	1	haus	haus	haus	haus	AffixedWord[word=Haus, entry=haus, prefixes=[], suffixes=[]]	haus	haus	0
+W	rot	1	rot	rot	rot	rot	AffixedWord[word=rot, entry=rot/É, prefixes=[], suffixes=[]]	rot	rot	0
+W	Ünïcode	1	ünïcode|ünïcode	ünïcode	ünïcode	ünïcode	AffixedWord[word=Ünïcode, entry=ünïcode/AB, prefixes=[], suffixes=[]]|AffixedWord[word=Ünïcode, entry=ünïcode/AB, prefixes=[], suffixes=[A(id=0)]]	ünïcode	ünïcode	0
+W	A/B	1	a/b|a/b	a/b	a/b	a/b	AffixedWord[word=A/B, entry=a/b/AB, prefixes=[], suffixes=[]]|AffixedWord[word=A/B, entry=a/b/AB, prefixes=[], suffixes=[A(id=0)]]	a/b	a/b	1
+W	A/b	1	a/b|a/b	a/b	a/b	a/b	AffixedWord[word=A/b, entry=a/b/AB, prefixes=[], suffixes=[]]|AffixedWord[word=A/b, entry=a/b/AB, prefixes=[], suffixes=[A(id=0)]]	a/b	a/b	1
+W	A/BS	1	a/b	a/b	a/b	a/b	AffixedWord[word=A/BS, entry=a/b/AB, prefixes=[], suffixes=[A(id=1)]]	a/b	a/b	1
+W	A/bs	1	a/b	a/b	a/b	a/b	AffixedWord[word=A/bs, entry=a/b/AB, prefixes=[], suffixes=[A(id=1)]]	a/b	a/b	1
+W	AB	0	AB	AB	AB			a/b	a/b	0
+W	Ab	0	Ab	Ab	Ab			a/b	a/b	0
+W	BS	0	BS	BS	BS			a/bs	a/bs	0
+W	Bs	0	Bs	Bs	Bs			a/bs	a/bs	0
+W	ROTS	0	ROTS	ROTS	ROTS			rot	rot	1
+W	Rots	0	Rots	Rots	Rots			rot	rot	1
+W	ROTEN	1	rot	rot	rot	rot	AffixedWord[word=ROTEN, entry=rot/É, prefixes=[], suffixes=[É(id=3)]]	roten	roten	1
+W	Roten	1	rot	rot	rot	rot	AffixedWord[word=Roten, entry=rot/É, prefixes=[], suffixes=[É(id=3)]]	roten	roten	1
+W	ROT𝒜	0	ROT𝒜	ROT𝒜	ROT𝒜			rot	rot	1
+W	Rot𝒜	0	Rot𝒜	Rot𝒜	Rot𝒜			rot	rot	1
+W	PARISS	0	PARISS	PARISS	PARISS			paris	paris	1
+W	Pariss	0	Pariss	Pariss	Pariss			paris	paris	1
+W	PARIS	1	paris	paris	paris	paris	AffixedWord[word=PARIS, entry=paris, prefixes=[], suffixes=[]]	paris	paris	1
+W	HAUSS	0	HAUSS	HAUSS	HAUSS			haus	haus	1
+W	Hauss	0	Hauss	Hauss	Hauss			haus	haus	1
+W	WAL	0	WAL	WAL	WAL			wald	wald	0
+W	Wal	0	Wal	Wal	Wal			wald	wald	0
+W	KINT	0	KINT	KINT	KINT			kind	kind	1
+W	KIND	1	kind	kind	kind	kind	AffixedWord[word=KIND, entry=kind st:kind, prefixes=[], suffixes=[]]	kind	kind	1
+W	Kind	1	kind	kind	kind	kind	AffixedWord[word=Kind, entry=kind st:kind, prefixes=[], suffixes=[]]	kind	kind	1
+W	WORD	1	word	word	word	word	AffixedWord[word=WORD, entry=word is:x po:noun, prefixes=[], suffixes=[]]	word	word	1
+W	Word	1	word	word	word	word	AffixedWord[word=Word, entry=word is:x po:noun, prefixes=[], suffixes=[]]	word	word	1
+W	WORDS	0	WORDS	WORDS	WORDS			word	word	1
+W	Words	0	Words	Words	Words			word	word	1
+W	ÜNÏCODES	1	ünïcode	ünïcode	ünïcode	ünïcode	AffixedWord[word=ÜNÏCODES, entry=ünïcode/AB, prefixes=[], suffixes=[A(id=1)]]	ünïcode	ünïcode	1
+W	ÜNÏCODE	1	ünïcode|ünïcode	ünïcode	ünïcode	ünïcode	AffixedWord[word=ÜNÏCODE, entry=ünïcode/AB, prefixes=[], suffixes=[]]|AffixedWord[word=ÜNÏCODE, entry=ünïcode/AB, prefixes=[], suffixes=[A(id=0)]]	ünïcode	ünïcode	1
+W	X	0	X	X	X					0
+W	AXB	0	AXB	AXB	AXB			a/b	a/b	1
+W	Axb	0	Axb	Axb	Axb			a/b	a/b	1
+W	ROTXEN	0	ROTXEN	ROTXEN	ROTXEN			roten|rot	roten|rot	1
+W	Rotxen	1	rot	rot	rot	rot	AffixedWord[word=Rotxen, entry=rot/É, prefixes=[], suffixes=[É(id=3)]]	roten	roten	1
+W	A-	0	A-	A-	A-			a/b|a/b-	a/b|a/b-	0
+W	-A	0	-A	-A	-A			-a/b	-a/b	0
+W	A--B	0	A--B	A--B	A--B					1
+W	A--b	0	A--b	A--b	A--b					0
+W	WALD	1	wald	wald	wald	wald	AffixedWord[word=WALD, entry=wald, prefixes=[], suffixes=[]]	wald	wald	1
+W	A\	0	A\	A\	A\			a/b	a/b	0
+W	XX	0	XX	XX	XX					0
+W	Xx	0	Xx	Xx	Xx					0
+W	HAUS	1	haus	haus	haus	haus	AffixedWord[word=HAUS, entry=haus, prefixes=[], suffixes=[]]	haus	haus	1
+W	ROT	1	rot	rot	rot	rot	AffixedWord[word=ROT, entry=rot/É, prefixes=[], suffixes=[]]	rot	rot	1
+W	Rot	1	rot	rot	rot	rot	AffixedWord[word=Rot, entry=rot/É, prefixes=[], suffixes=[]]	rot	rot	1
+W	/ab	0	/ab	/ab	/ab			a/b	a/b	0
+W	a/s	0	a/s	a/s	a/s			a/bs	a/bs	1
+W	/abs	0	/abs	/abs	/abs			a/bs	a/bs	0
+W	ros	0	ros	ros	ros			rot	rot	1
+W	orts	0	orts	orts	orts					1
+W	roen	0	roen	roen	roen			roten	roten	1
+W	orten	0	orten	orten	orten			roten	roten	1
+W	ro𝒜	0	ro𝒜	ro𝒜	ro𝒜			rot	rot	1
+W	ort𝒜	0	ort𝒜	ort𝒜	ort𝒜					1
+W	parss	0	parss	parss	parss			paris	paris	1
+W	apriss	0	apriss	apriss	apriss			paris	paris	1
+W	pais	0	pais	pais	pais			paris	paris	1
+W	apris	0	apris	apris	apris			paris	paris	1
+W	hass	0	hass	hass	hass			haus	haus	0
+W	ahuss	0	ahuss	ahuss	ahuss					1
+W	wl	0	wl	wl	wl			wald	wald	0
+W	awl	0	awl	awl	awl			wald	wald	1
+W	kit	0	kit	kit	kit			kind	kind	1
+W	iknt	0	iknt	iknt	iknt					1
+W	Kit	0	Kit	Kit	Kit			kind	kind	1
+W	iKnt	0	iKnt	iKnt	iKnt					1
+W	kid	0	kid	kid	kid			kind	kind	1
+W	iknd	0	iknd	iknd	iknd			kind	kind	1
+W	wod	0	wod	wod	wod			word	word	1
+W	owrd	0	owrd	owrd	owrd			word	word	1
+W	wods	0	wods	wods	wods			word	word	1
+W	owrds	0	owrds	owrds	owrds					1
+W	Ünïcdes	0	Ünïcdes	Ünïcdes	Ünïcdes			ünïcodes	ünïcodes	1
+W	nÜïcodes	0	nÜïcodes	nÜïcodes	nÜïcodes			ünïcodes|ünïcode	ünïcodes|ünïcode	1
+W	ünïode	0	ünïode	ünïode	ünïode			ünïcode	ünïcode	1
+W	nüïcode	0	nüïcode	nüïcode	nüïcode			ünïcode	ünïcode	0
+W	xab	0	xab	xab	xab			a/b	a/b	1
+W	ortxen	0	ortxen	ortxen	ortxen			roten	roten	1
+W	a-b	0	a-b	a-b	a-b			a/b	a/b	1
+W	-a-b	0	-a-b	-a-b	-a-b					1
+W	Wad	0	Wad	Wad	Wad			wald	wald	0
+W	aWld	0	aWld	aWld	aWld			wald	wald	1
+E	#	null	
+E	a\	null	
+E	xx	null	
+E	Paris	null	
+E	Haus	null	
+E	Wald	null	
+E	kind	kind st:kind	AffixedWord[word=kind, entry=kind, prefixes=[], suffixes=[]]
+E	rot	rot/É	AffixedWord[word=rot, entry=rot/É, prefixes=[], suffixes=[]]|AffixedWord[word=roten, entry=rot/É, prefixes=[], suffixes=[É(id=3)]]
+E	word	word is:x po:noun	AffixedWord[word=word, entry=word, prefixes=[], suffixes=[]]
+E	Ünïcode	null	
+G	AffixedWord[word=rot, entry=rot/É, prefixes=[], suffixes=[]]|AffixedWord[word=roten, entry=rot/É, prefixes=[], suffixes=[É(id=3)]]|AffixedWord[word=kind, entry=kind, prefixes=[], suffixes=[]]|AffixedWord[word=a/b, entry=a/b/AB, prefixes=[], suffixes=[]]|AffixedWord[word=a/b, entry=a/b/AB, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=a/ben, entry=a/b/AB, prefixes=[], suffixes=[É(id=3), A(id=0)]]|AffixedWord[word=a/bs, entry=a/b/AB, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=paris, entry=paris, prefixes=[], suffixes=[]]|AffixedWord[word=haus, entry=haus, prefixes=[], suffixes=[]]|AffixedWord[word=word, entry=word, prefixes=[], suffixes=[]]|AffixedWord[word=wald, entry=wald, prefixes=[], suffixes=[]]|AffixedWord[word=ünïcode, entry=ünïcode/AB, prefixes=[], suffixes=[]]|AffixedWord[word=ünïcode, entry=ünïcode/AB, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=ünïcodeen, entry=ünïcode/AB, prefixes=[], suffixes=[É(id=3), A(id=0)]]|AffixedWord[word=ünïcodes, entry=ünïcode/AB, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=/2, entry=/2, prefixes=[], suffixes=[]]

@@ -1,0 +1,62 @@
+W	jumps	1	jump	jump	jump	jump	AffixedWord[word=jumps, entry=jump/101,2000,65000, prefixes=[], suffixes=[101(id=0)]]	jump	jump	1
+W	jumped	1	jump	jump	jump	jump	AffixedWord[word=jumped, entry=jump/101,2000,65000, prefixes=[], suffixes=[2000(id=1)]]	jumped	jumped	1
+W	outjumped	1	jump	jump	jump	jump	AffixedWord[word=outjumped, entry=jump/101,2000,65000, prefixes=[65000(id=4)], suffixes=[2000(id=1)]]	outjumped	outjumped	1
+W	dances	1	dance	dance	dance	dance	AffixedWord[word=dances, entry=dance/101,2000, prefixes=[], suffixes=[101(id=0)]]	danced|dance	danced|dance	1
+W	danced	1	dance	dance	dance	dance	AffixedWord[word=danced, entry=dance/101,2000, prefixes=[], suffixes=[2000(id=2)]]	dances|dance	dances|dance	1
+W	farmers	1	farm	farm	farm	farm	AffixedWord[word=farmers, entry=farm/101,3, prefixes=[], suffixes=[101(id=0), 3(id=3)]]	farmers|farmer|farms	farmers|farmer|farms	1
+W	farmer	1	farm	farm	farm	farm	AffixedWord[word=farmer, entry=farm/101,3, prefixes=[], suffixes=[3(id=3)]]	farmer	farmer	1
+W	outsing	1	sing	sing	sing	sing	AffixedWord[word=outsing, entry=sing/65000, prefixes=[65000(id=4)], suffixes=[]]	outsing	outsing	1
+W	outsings	0	outsings	outsings	outsings			outsing|outjumps	outsing|outjumps	1
+W	jump	1	jump	jump	jump	jump	AffixedWord[word=jump, entry=jump/101,2000,65000, prefixes=[], suffixes=[]]	jump	jump	0
+W	dance	1	dance	dance	dance	dance	AffixedWord[word=dance, entry=dance/101,2000, prefixes=[], suffixes=[]]	dance	dance	0
+W	farm	1	farm	farm	farm	farm	AffixedWord[word=farm, entry=farm/101,3, prefixes=[], suffixes=[]]	farm	farm	0
+W	sing	1	sing	sing	sing	sing	AffixedWord[word=sing, entry=sing/65000, prefixes=[], suffixes=[]]	sing	sing	0
+W	JUMPS	1	jump	jump	jump	jump	AffixedWord[word=JUMPS, entry=jump/101,2000,65000, prefixes=[], suffixes=[101(id=0)]]	jump	jump	1
+W	Jumps	1	jump	jump	jump	jump	AffixedWord[word=Jumps, entry=jump/101,2000,65000, prefixes=[], suffixes=[101(id=0)]]	jump	jump	1
+W	JUMPED	1	jump	jump	jump	jump	AffixedWord[word=JUMPED, entry=jump/101,2000,65000, prefixes=[], suffixes=[2000(id=1)]]	jumped	jumped	1
+W	Jumped	1	jump	jump	jump	jump	AffixedWord[word=Jumped, entry=jump/101,2000,65000, prefixes=[], suffixes=[2000(id=1)]]	jumped	jumped	1
+W	OUTJUMPED	1	jump	jump	jump	jump	AffixedWord[word=OUTJUMPED, entry=jump/101,2000,65000, prefixes=[65000(id=4)], suffixes=[2000(id=1)]]	outjumped	outjumped	1
+W	Outjumped	1	jump	jump	jump	jump	AffixedWord[word=Outjumped, entry=jump/101,2000,65000, prefixes=[65000(id=4)], suffixes=[2000(id=1)]]	outjumped	outjumped	1
+W	DANCES	1	dance	dance	dance	dance	AffixedWord[word=DANCES, entry=dance/101,2000, prefixes=[], suffixes=[101(id=0)]]	danced|dance	danced|dance	1
+W	Dances	1	dance	dance	dance	dance	AffixedWord[word=Dances, entry=dance/101,2000, prefixes=[], suffixes=[101(id=0)]]	danced|dance	danced|dance	1
+W	DANCED	1	dance	dance	dance	dance	AffixedWord[word=DANCED, entry=dance/101,2000, prefixes=[], suffixes=[2000(id=2)]]	dances|dance	dances|dance	1
+W	Danced	1	dance	dance	dance	dance	AffixedWord[word=Danced, entry=dance/101,2000, prefixes=[], suffixes=[2000(id=2)]]	dances|dance	dances|dance	1
+W	FARMERS	1	farm	farm	farm	farm	AffixedWord[word=FARMERS, entry=farm/101,3, prefixes=[], suffixes=[101(id=0), 3(id=3)]]	farmers|farmer|farms	farmers|farmer|farms	1
+W	Farmers	1	farm	farm	farm	farm	AffixedWord[word=Farmers, entry=farm/101,3, prefixes=[], suffixes=[101(id=0), 3(id=3)]]	farmers|farmer|farms	farmers|farmer|farms	1
+W	FARMER	1	farm	farm	farm	farm	AffixedWord[word=FARMER, entry=farm/101,3, prefixes=[], suffixes=[3(id=3)]]	farmer	farmer	1
+W	Farmer	1	farm	farm	farm	farm	AffixedWord[word=Farmer, entry=farm/101,3, prefixes=[], suffixes=[3(id=3)]]	farmer	farmer	1
+W	OUTSING	1	sing	sing	sing	sing	AffixedWord[word=OUTSING, entry=sing/65000, prefixes=[65000(id=4)], suffixes=[]]	outsing	outsing	1
+W	Outsing	1	sing	sing	sing	sing	AffixedWord[word=Outsing, entry=sing/65000, prefixes=[65000(id=4)], suffixes=[]]	outsing	outsing	1
+W	OUTSINGS	0	OUTSINGS	OUTSINGS	OUTSINGS			outsing|outjumps	outsing|outjumps	1
+W	Outsings	0	Outsings	Outsings	Outsings			outsing|outjumps	outsing|outjumps	1
+W	JUMP	1	jump	jump	jump	jump	AffixedWord[word=JUMP, entry=jump/101,2000,65000, prefixes=[], suffixes=[]]	jump	jump	1
+W	Jump	1	jump	jump	jump	jump	AffixedWord[word=Jump, entry=jump/101,2000,65000, prefixes=[], suffixes=[]]	jump	jump	1
+W	DANCE	1	dance	dance	dance	dance	AffixedWord[word=DANCE, entry=dance/101,2000, prefixes=[], suffixes=[]]	dance	dance	1
+W	Dance	1	dance	dance	dance	dance	AffixedWord[word=Dance, entry=dance/101,2000, prefixes=[], suffixes=[]]	dance	dance	1
+W	FARM	1	farm	farm	farm	farm	AffixedWord[word=FARM, entry=farm/101,3, prefixes=[], suffixes=[]]	farm	farm	1
+W	Farm	1	farm	farm	farm	farm	AffixedWord[word=Farm, entry=farm/101,3, prefixes=[], suffixes=[]]	farm	farm	1
+W	SING	1	sing	sing	sing	sing	AffixedWord[word=SING, entry=sing/65000, prefixes=[], suffixes=[]]	sing	sing	1
+W	Sing	1	sing	sing	sing	sing	AffixedWord[word=Sing, entry=sing/65000, prefixes=[], suffixes=[]]	sing	sing	1
+W	jups	0	jups	jups	jups			jumps	jumps	1
+W	ujmps	0	ujmps	ujmps	ujmps			jumps	jumps	1
+W	jumed	0	jumed	jumed	jumed			jumped	jumped	1
+W	ujmped	0	ujmped	ujmped	ujmped			jumped	jumped	1
+W	outjmped	0	outjmped	outjmped	outjmped			outjumped	outjumped	1
+W	uotjumped	0	uotjumped	uotjumped	uotjumped			outjumped	outjumped	1
+W	danes	0	danes	danes	danes			dances	dances	1
+W	adnces	0	adnces	adnces	adnces			dances|dance	dances|dance	1
+W	daned	0	daned	daned	daned			danced	danced	1
+W	adnced	0	adnced	adnced	adnced			danced|dance	danced|dance	1
+W	farers	0	farers	farers	farers			farms	farms	1
+W	afrmers	0	afrmers	afrmers	afrmers			farmers	farmers	1
+W	farer	0	farer	farer	farer			farmer	farmer	1
+W	afrmer	0	afrmer	afrmer	afrmer			farmer	farmer	1
+W	outing	0	outing	outing	outing			outsing	outsing	1
+W	uotsing	0	uotsing	uotsing	uotsing			outsing|sing	outsing|sing	1
+W	outsngs	0	outsngs	outsngs	outsngs			outsing	outsing	1
+W	uotsings	0	uotsings	uotsings	uotsings					1
+E	jump	jump/101,2000,65000	AffixedWord[word=jump, entry=jump/101,2000,65000, prefixes=[], suffixes=[]]|AffixedWord[word=jumps, entry=jump/101,2000,65000, prefixes=[], suffixes=[101(id=0)]]|AffixedWord[word=outjumps, entry=jump/101,2000,65000, prefixes=[65000(id=4)], suffixes=[101(id=0)]]|AffixedWord[word=jumped, entry=jump/101,2000,65000, prefixes=[], suffixes=[2000(id=1)]]|AffixedWord[word=outjumped, entry=jump/101,2000,65000, prefixes=[65000(id=4)], suffixes=[2000(id=1)]]|AffixedWord[word=outjump, entry=jump/101,2000,65000, prefixes=[65000(id=4)], suffixes=[]]
+E	dance	dance/101,2000	AffixedWord[word=dance, entry=dance/101,2000, prefixes=[], suffixes=[]]|AffixedWord[word=dances, entry=dance/101,2000, prefixes=[], suffixes=[101(id=0)]]|AffixedWord[word=danced, entry=dance/101,2000, prefixes=[], suffixes=[2000(id=2)]]
+E	farm	farm/101,3	AffixedWord[word=farm, entry=farm/101,3, prefixes=[], suffixes=[]]|AffixedWord[word=farmer, entry=farm/101,3, prefixes=[], suffixes=[3(id=3)]]|AffixedWord[word=farmers, entry=farm/101,3, prefixes=[], suffixes=[101(id=0), 3(id=3)]]|AffixedWord[word=farms, entry=farm/101,3, prefixes=[], suffixes=[101(id=0)]]
+E	sing	sing/65000	AffixedWord[word=sing, entry=sing/65000, prefixes=[], suffixes=[]]|AffixedWord[word=outsing, entry=sing/65000, prefixes=[65000(id=4)], suffixes=[]]
+G	AffixedWord[word=jump, entry=jump/101,2000,65000, prefixes=[], suffixes=[]]|AffixedWord[word=jumps, entry=jump/101,2000,65000, prefixes=[], suffixes=[101(id=0)]]|AffixedWord[word=outjumps, entry=jump/101,2000,65000, prefixes=[65000(id=4)], suffixes=[101(id=0)]]|AffixedWord[word=jumped, entry=jump/101,2000,65000, prefixes=[], suffixes=[2000(id=1)]]|AffixedWord[word=outjumped, entry=jump/101,2000,65000, prefixes=[65000(id=4)], suffixes=[2000(id=1)]]|AffixedWord[word=outjump, entry=jump/101,2000,65000, prefixes=[65000(id=4)], suffixes=[]]|AffixedWord[word=farm, entry=farm/101,3, prefixes=[], suffixes=[]]|AffixedWord[word=farmer, entry=farm/101,3, prefixes=[], suffixes=[3(id=3)]]|AffixedWord[word=farmers, entry=farm/101,3, prefixes=[], suffixes=[101(id=0), 3(id=3)]]|AffixedWord[word=farms, entry=farm/101,3, prefixes=[], suffixes=[101(id=0)]]|AffixedWord[word=sing, entry=sing/65000, prefixes=[], suffixes=[]]|AffixedWord[word=outsing, entry=sing/65000, prefixes=[65000(id=4)], suffixes=[]]|AffixedWord[word=dance, entry=dance/101,2000, prefixes=[], suffixes=[]]|AffixedWord[word=dances, entry=dance/101,2000, prefixes=[], suffixes=[101(id=0)]]|AffixedWord[word=danced, entry=dance/101,2000, prefixes=[], suffixes=[2000(id=2)]]

@@ -65,6 +65,7 @@ pub mod email;
 pub mod en;
 pub mod graph_finite_strings;
 mod graph_token_filter;
+pub mod hunspell;
 pub mod java_character;
 #[rustfmt::skip]
 mod java_character_tables;

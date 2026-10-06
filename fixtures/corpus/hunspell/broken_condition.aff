@@ -1,0 +1,3 @@
+# lucene-rust's own test dictionary: a malformed directive.
+SFX A Y 1
+SFX A 0 en [a\b-]c

@@ -197,40 +197,40 @@ analysis/hu/HungarianAnalyzer	todo:M11	T11.6 per-language (hu): HungarianAnalyze
 analysis/hu/HungarianLightStemFilter	todo:M11	T11.6 per-language (hu): HungarianLightStemFilter
 analysis/hu/HungarianLightStemFilterFactory	todo:M11	T11.7 factory/SPI: HungarianLightStemFilterFactory
 analysis/hu/HungarianLightStemmer	todo:M11	T11.6 per-language (hu): HungarianLightStemmer
-analysis/hunspell/AffixCondition	todo:M11	T11.4 Hunspell: AffixCondition
-analysis/hunspell/AffixKind	todo:M11	T11.4 Hunspell: AffixKind
-analysis/hunspell/AffixedWord	todo:M11	T11.4 Hunspell: AffixedWord
-analysis/hunspell/CheckCompoundPattern	todo:M11	T11.4 Hunspell: CheckCompoundPattern
-analysis/hunspell/CompoundRule	todo:M11	T11.4 Hunspell: CompoundRule
-analysis/hunspell/ConvTable	todo:M11	T11.4 Hunspell: ConvTable
-analysis/hunspell/DictEntries	todo:M11	T11.4 Hunspell: DictEntries
-analysis/hunspell/DictEntry	todo:M11	T11.4 Hunspell: DictEntry
-analysis/hunspell/Dictionary	todo:M11	T11.4 Hunspell: Dictionary
-analysis/hunspell/EntrySuggestion	todo:M11	T11.4 Hunspell: EntrySuggestion
-analysis/hunspell/FlagEnumerator	todo:M11	T11.4 Hunspell: FlagEnumerator
-analysis/hunspell/FlyweightEntry	todo:M11	T11.4 Hunspell: FlyweightEntry
-analysis/hunspell/FragmentChecker	todo:M11	T11.4 Hunspell: FragmentChecker
-analysis/hunspell/GeneratingSuggester	todo:M11	T11.4 Hunspell: GeneratingSuggester
-analysis/hunspell/Hunspell	todo:M11	T11.4 Hunspell: Hunspell
-analysis/hunspell/HunspellStemFilter	todo:M11	T11.4 Hunspell: HunspellStemFilter
+analysis/hunspell/AffixCondition	ported	crates/lucene-analysis/src/hunspell/affix_condition.rs::AffixCondition -- M11 T11.4
+analysis/hunspell/AffixKind	ported	crates/lucene-analysis/src/hunspell/affix_condition.rs::AffixKind -- M11 T11.4
+analysis/hunspell/AffixedWord	ported	crates/lucene-analysis/src/hunspell/affixed_word.rs::AffixedWord -- M11 T11.4
+analysis/hunspell/CheckCompoundPattern	ported	crates/lucene-analysis/src/hunspell/dictionary.rs::CheckCompoundPattern -- M11 T11.4
+analysis/hunspell/CompoundRule	ported	crates/lucene-analysis/src/hunspell/dictionary.rs::CompoundRule -- M11 T11.4
+analysis/hunspell/ConvTable	ported	crates/lucene-analysis/src/hunspell/conv_table.rs::ConvTable -- M11 T11.4
+analysis/hunspell/DictEntries	ported	crates/lucene-analysis/src/hunspell/dictionary.rs::lookup_entries -- M11 T11.4
+analysis/hunspell/DictEntry	ported	crates/lucene-analysis/src/hunspell/dictionary.rs::DictEntry -- M11 T11.4
+analysis/hunspell/Dictionary	ported	crates/lucene-analysis/src/hunspell/dictionary.rs::Dictionary -- M11 T11.4
+analysis/hunspell/EntrySuggestion	todo:M11	T11.4 remainder: WordFormGenerator.compress (munch) result
+analysis/hunspell/FlagEnumerator	ported	crates/lucene-analysis/src/hunspell/flags.rs::FlagEnumerator -- M11 T11.4
+analysis/hunspell/FlyweightEntry	ported	crates/lucene-analysis/src/hunspell/word_storage.rs::WordEntry -- M11 T11.4
+analysis/hunspell/FragmentChecker	ported	crates/lucene-analysis/src/hunspell/word_form_generator.rs::FragmentChecker -- M11 T11.4
+analysis/hunspell/GeneratingSuggester	ported	crates/lucene-analysis/src/hunspell/suggester.rs::GeneratingSuggester -- M11 T11.4
+analysis/hunspell/Hunspell	ported	crates/lucene-analysis/src/hunspell/speller.rs::Hunspell -- M11 T11.4
+analysis/hunspell/HunspellStemFilter	ported	crates/lucene-analysis/src/hunspell/mod.rs::HunspellStemFilter -- M11 T11.4
 analysis/hunspell/HunspellStemFilterFactory	todo:M11	T11.7 factory/SPI: HunspellStemFilterFactory
-analysis/hunspell/ISO8859_14Decoder	todo:M11	T11.4 Hunspell: ISO8859_14Decoder
-analysis/hunspell/ModifyingSuggester	todo:M11	T11.4 Hunspell: ModifyingSuggester
-analysis/hunspell/NGramFragmentChecker	todo:M11	T11.4 Hunspell: NGramFragmentChecker
-analysis/hunspell/RepEntry	todo:M11	T11.4 Hunspell: RepEntry
-analysis/hunspell/Root	todo:M11	T11.4 Hunspell: Root
-analysis/hunspell/SortingStrategy	todo:M11	T11.4 Hunspell: SortingStrategy
-analysis/hunspell/Stemmer	todo:M11	T11.4 Hunspell: Stemmer
-analysis/hunspell/Suggester	todo:M11	T11.4 Hunspell: Suggester
-analysis/hunspell/SuggestibleEntryCache	todo:M11	T11.4 Hunspell: SuggestibleEntryCache
-analysis/hunspell/Suggestion	todo:M11	T11.4 Hunspell: Suggestion
-analysis/hunspell/SuggestionTimeoutException	todo:M11	T11.4 Hunspell: SuggestionTimeoutException
-analysis/hunspell/TimeoutPolicy	todo:M11	T11.4 Hunspell: TimeoutPolicy
-analysis/hunspell/TrigramAutomaton	todo:M11	T11.4 Hunspell: TrigramAutomaton
-analysis/hunspell/WordCase	todo:M11	T11.4 Hunspell: WordCase
-analysis/hunspell/WordContext	todo:M11	T11.4 Hunspell: WordContext
-analysis/hunspell/WordFormGenerator	todo:M11	T11.4 Hunspell: WordFormGenerator
-analysis/hunspell/WordStorage	todo:M11	T11.4 Hunspell: WordStorage
+analysis/hunspell/ISO8859_14Decoder	ported	crates/lucene-analysis/src/hunspell/dictionary.rs::ISO8859_14 -- M11 T11.4
+analysis/hunspell/ModifyingSuggester	ported	crates/lucene-analysis/src/hunspell/suggester.rs::ModifyingSuggester -- M11 T11.4
+analysis/hunspell/NGramFragmentChecker	ported	crates/lucene-analysis/src/hunspell/word_form_generator.rs::NGramFragmentChecker -- M11 T11.4
+analysis/hunspell/RepEntry	ported	crates/lucene-analysis/src/hunspell/dictionary.rs::RepEntry -- M11 T11.4
+analysis/hunspell/Root	ported	crates/lucene-analysis/src/hunspell/speller.rs::Root -- M11 T11.4
+analysis/hunspell/SortingStrategy	not-needed	entry sorting is in memory (SortingStrategy.inMemory()); the offline variant only bounds JVM heap while loading
+analysis/hunspell/Stemmer	ported	crates/lucene-analysis/src/hunspell/stemmer.rs::Stemmer -- M11 T11.4
+analysis/hunspell/Suggester	ported	crates/lucene-analysis/src/hunspell/suggester.rs::Suggester -- M11 T11.4
+analysis/hunspell/SuggestibleEntryCache	todo:M11	T11.4 remainder: Suggester.withSuggestibleEntryCache (speed for memory; same suggestions)
+analysis/hunspell/Suggestion	ported	crates/lucene-analysis/src/hunspell/suggester.rs::Suggestion -- M11 T11.4
+analysis/hunspell/SuggestionTimeoutException	todo:M11	T11.4 remainder: suggestion time limits (TimeoutPolicy)
+analysis/hunspell/TimeoutPolicy	todo:M11	T11.4 remainder: suggestion time limits; the port runs NO_TIMEOUT
+analysis/hunspell/TrigramAutomaton	ported	crates/lucene-analysis/src/hunspell/suggester.rs::TrigramScore -- M11 T11.4
+analysis/hunspell/WordCase	ported	crates/lucene-analysis/src/hunspell/word_case.rs::WordCase -- M11 T11.4
+analysis/hunspell/WordContext	ported	crates/lucene-analysis/src/hunspell/stemmer.rs::WordContext -- M11 T11.4
+analysis/hunspell/WordFormGenerator	partial	crates/lucene-analysis/src/hunspell/word_form_generator.rs::WordFormGenerator -- M11: compress (EntrySuggestion) not ported
+analysis/hunspell/WordStorage	ported	crates/lucene-analysis/src/hunspell/word_storage.rs::WordStorage -- M11 T11.4
 analysis/hy/ArmenianAnalyzer	todo:M11	T11.6 per-language (hy): ArmenianAnalyzer
 analysis/id/IndonesianAnalyzer	todo:M11	T11.6 per-language (id): IndonesianAnalyzer
 analysis/id/IndonesianStemFilter	todo:M11	T11.6 per-language (id): IndonesianStemFilter

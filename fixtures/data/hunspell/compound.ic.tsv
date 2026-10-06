@@ -1,0 +1,148 @@
+W	foobar	0	foobar	foobar	foobar			foosbar|foo bar|foo-bar	foo bar|foo-bar	1
+W	barfoo	1	barfoo	barfoo	barfoo			barfoo|barsfoo|barfoos|bazfoo|bar foo|bar-foo|bar	barfoo|barfoos|bar foo|bar-foo|bar	1
+W	foobarbaz	0	foobarbaz	foobarbaz	foobarbaz					1
+W	bazmidend	1	bazmidend	bazmidend	bazmidend			bazmidend|bazsmidend|bazmidends|barmidend	bazmidend	1
+W	bazend	1	bazend	bazend	bazend			bazsend|bazends|barend|baz end|baz-end|baz	baz end|baz-end|baz	1
+W	endbaz	0	endbaz	endbaz	endbaz			end baz|end-baz|end	end baz|end-baz|end	1
+W	foofoo	0	foofoo	foofoo	foofoo			foo foo|foo-foo|foo	foo foo|foo-foo|foo	0
+W	onlyfoo	1	onlyfoo	onlyfoo	onlyfoo			onlyfoo|onlyfoos	onlyfoo|onlyfoos	1
+W	only	0	only	only	only					0
+W	fallick	1	fallick	fallick	fallick			fallick|ballick|fall	fallick|ballick|fall	1
+W	falllick	0	falllick	falllick	falllick			fallick|fall lick|fall-lick|fall	fallick|fall lick|fall-lick|fall	1
+W	fallball	1	fallball	fallball	fallball			fallball|ballfall|fall ball|fall-ball|fall	fallball|ballfall|fall ball|fall-ball|fall	1
+W	loopboot	0	loopboot	loopboot	loopboot			loop boot|loop-boot|loop	loop boot|loop-boot|loop	0
+W	foosbar	1	foosbar	foosbar	foosbar			foosbar|foosbars|foos bar|foos-bar	foosbar|foosbars|foos bar|foos-bar	1
+W	unfoobar	0	unfoobar	unfoobar	unfoobar					1
+W	foo-bar	1	foo-bar	foo-bar	foo-bar			foosbar		1
+W	-foo	1	-foo	-foo	-foo			foo	foo	0
+W	foo-	0	foo-	foo-	foo-			foo|foos	foo|foos	0
+W	fooWord	1	fooWord	fooWord	fooWord			fooword|foosword|foo word|foo-word|word	fooword|foo word|foo-word|word	1
+W	Wordfoo	1	Wordfoo	Wordfoo	Wordfoo			wordfoo|wordfoos|word foo|word-foo|word	wordfoo|wordfoos|word foo|word-foo|word	1
+W	foobarfoobar	0	foobarfoobar	foobarfoobar	foobarfoobar					1
+W	fo	0	fo	fo	fo			foo|fall	foo|fall	0
+W	foo	1	foo	foo	foo	foo	AffixedWord[word=foo, entry=foo/CS, prefixes=[], suffixes=[]]	foo|foos	foo|foos	0
+W	bar	1	bar	bar	bar	bar	AffixedWord[word=bar, entry=bar/CS, prefixes=[], suffixes=[]]	bars|baz|bar	bars|bar	0
+W	baz	1	baz	baz	baz	baz	AffixedWord[word=baz, entry=baz/BS, prefixes=[], suffixes=[]]	bazs|bar|baz	bar|baz	0
+W	mid	1	mid	mid	mid	mid	AffixedWord[word=mid, entry=mid/M, prefixes=[], suffixes=[]]	mid	mid	0
+W	end	1	end	end	end	end	AffixedWord[word=end, entry=end/ES, prefixes=[], suffixes=[]]	ends|end	end	0
+W	fall	1	fall	fall	fall	fall	AffixedWord[word=fall, entry=fall/C, prefixes=[], suffixes=[]]	fall|ball	fall|ball	0
+W	lick	1	lick	lick	lick	lick	AffixedWord[word=lick, entry=lick/C, prefixes=[], suffixes=[]]	lick	lick	0
+W	ball	1	ball	ball	ball	ball	AffixedWord[word=ball, entry=ball/C, prefixes=[], suffixes=[]]	ball|fall	ball|fall	0
+W	loop	1	loop	loop	loop	loop	AffixedWord[word=loop, entry=loop/CX, prefixes=[], suffixes=[]]	loop	loop	0
+W	boot	1	boot	boot	boot	boot	AffixedWord[word=boot, entry=boot/CY, prefixes=[], suffixes=[]]	boot	boot	0
+W	Word	1	word	word	word	word	AffixedWord[word=Word, entry=word/C, prefixes=[], suffixes=[]]	word	word	0
+W	FOOBAR	0	FOOBAR	FOOBAR	FOOBAR			foosbar|foo bar|foo-bar	foo bar|foo-bar	1
+W	Foobar	0	Foobar	Foobar	Foobar			foosbar|foo bar|foo-bar	foo bar|foo-bar	1
+W	BARFOO	1	BARFOO	BARFOO	BARFOO			barfoo|barsfoo|barfoos|bazfoo|bar foo|bar-foo|bar	barfoo|barfoos|bar foo|bar-foo|bar	1
+W	Barfoo	1	Barfoo	Barfoo	Barfoo			barfoo|barsfoo|barfoos|bazfoo|bar foo|bar-foo|bar	barfoo|barfoos|bar foo|bar-foo|bar	1
+W	FOOBARBAZ	0	FOOBARBAZ	FOOBARBAZ	FOOBARBAZ					1
+W	Foobarbaz	0	Foobarbaz	Foobarbaz	Foobarbaz					1
+W	BAZMIDEND	1	BAZMIDEND	BAZMIDEND	BAZMIDEND			bazmidend|bazsmidend|bazmidends|barmidend	bazmidend	1
+W	Bazmidend	1	Bazmidend	Bazmidend	Bazmidend			bazmidend|bazsmidend|bazmidends|barmidend	bazmidend	1
+W	BAZEND	1	BAZEND	BAZEND	BAZEND			bazsend|bazends|barend|baz end|baz-end|baz	baz end|baz-end|baz	1
+W	Bazend	1	Bazend	Bazend	Bazend			bazsend|bazends|barend|baz end|baz-end|baz	baz end|baz-end|baz	1
+W	ENDBAZ	0	ENDBAZ	ENDBAZ	ENDBAZ			end baz|end-baz|end	end baz|end-baz|end	1
+W	Endbaz	0	Endbaz	Endbaz	Endbaz			end baz|end-baz|end	end baz|end-baz|end	1
+W	FOOFOO	0	FOOFOO	FOOFOO	FOOFOO			foo foo|foo-foo|foo	foo foo|foo-foo|foo	1
+W	Foofoo	0	Foofoo	Foofoo	Foofoo			foo foo|foo-foo|foo	foo foo|foo-foo|foo	0
+W	ONLYFOO	1	ONLYFOO	ONLYFOO	ONLYFOO			onlyfoo|onlyfoos	onlyfoo|onlyfoos	1
+W	Onlyfoo	1	Onlyfoo	Onlyfoo	Onlyfoo			onlyfoo|onlyfoos	onlyfoo|onlyfoos	1
+W	ONLY	0	ONLY	ONLY	ONLY					1
+W	Only	0	Only	Only	Only					1
+W	FALLICK	1	FALLICK	FALLICK	FALLICK			fallick|ballick|fall	fallick|ballick|fall	1
+W	Fallick	1	Fallick	Fallick	Fallick			fallick|ballick|fall	fallick|ballick|fall	1
+W	FALLLICK	0	FALLLICK	FALLLICK	FALLLICK			fallick|fall lick|fall-lick|fall	fallick|fall lick|fall-lick|fall	1
+W	Falllick	0	Falllick	Falllick	Falllick			fallick|fall lick|fall-lick|fall	fallick|fall lick|fall-lick|fall	1
+W	FALLBALL	1	FALLBALL	FALLBALL	FALLBALL			fallball|ballfall|fall ball|fall-ball|fall	fallball|ballfall|fall ball|fall-ball|fall	1
+W	Fallball	1	Fallball	Fallball	Fallball			fallball|ballfall|fall ball|fall-ball|fall	fallball|ballfall|fall ball|fall-ball|fall	1
+W	LOOPBOOT	0	LOOPBOOT	LOOPBOOT	LOOPBOOT			loop boot|loop-boot|loop	loop boot|loop-boot|loop	1
+W	Loopboot	0	Loopboot	Loopboot	Loopboot			loop boot|loop-boot|loop	loop boot|loop-boot|loop	1
+W	FOOSBAR	1	FOOSBAR	FOOSBAR	FOOSBAR			foosbar|foosbars|foos bar|foos-bar	foosbar|foosbars|foos bar|foos-bar	1
+W	Foosbar	1	Foosbar	Foosbar	Foosbar			foosbar|foosbars|foos bar|foos-bar	foosbar|foosbars|foos bar|foos-bar	1
+W	UNFOOBAR	0	UNFOOBAR	UNFOOBAR	UNFOOBAR					1
+W	Unfoobar	0	Unfoobar	Unfoobar	Unfoobar					1
+W	FOO-BAR	1	FOO-BAR	FOO-BAR	FOO-BAR			foosbar		1
+W	Foo-bar	1	Foo-bar	Foo-bar	Foo-bar			foosbar		1
+W	-FOO	1	-FOO	-FOO	-FOO			foo	foo	0
+W	FOO-	0	FOO-	FOO-	FOO-			foo|foos	foo|foos	0
+W	Foo-	0	Foo-	Foo-	Foo-			foo|foos	foo|foos	0
+W	FOOWORD	1	FOOWORD	FOOWORD	FOOWORD			fooword|foosword|foo word|foo-word|word	fooword|foo word|foo-word|word	1
+W	FooWord	1	FooWord	FooWord	FooWord			fooword|foosword|foo word|foo-word|word	fooword|foo word|foo-word|word	1
+W	WORDFOO	1	WORDFOO	WORDFOO	WORDFOO			wordfoo|wordfoos|word foo|word-foo|word	wordfoo|wordfoos|word foo|word-foo|word	1
+W	FOOBARFOOBAR	0	FOOBARFOOBAR	FOOBARFOOBAR	FOOBARFOOBAR					1
+W	Foobarfoobar	0	Foobarfoobar	Foobarfoobar	Foobarfoobar					1
+W	FO	0	FO	FO	FO			foo|fall	foo|fall	0
+W	Fo	0	Fo	Fo	Fo			foo|fall	foo|fall	0
+W	FOO	1	foo	foo	foo	foo	AffixedWord[word=FOO, entry=foo/CS, prefixes=[], suffixes=[]]	foo|foos	foo|foos	0
+W	Foo	1	foo	foo	foo	foo	AffixedWord[word=Foo, entry=foo/CS, prefixes=[], suffixes=[]]	foo|foos	foo|foos	0
+W	BAR	1	bar	bar	bar	bar	AffixedWord[word=BAR, entry=bar/CS, prefixes=[], suffixes=[]]	bars|baz|bar	bars|bar	1
+W	Bar	1	bar	bar	bar	bar	AffixedWord[word=Bar, entry=bar/CS, prefixes=[], suffixes=[]]	bars|baz|bar	bars|bar	1
+W	BAZ	1	baz	baz	baz	baz	AffixedWord[word=BAZ, entry=baz/BS, prefixes=[], suffixes=[]]	bazs|bar|baz	bar|baz	1
+W	Baz	1	baz	baz	baz	baz	AffixedWord[word=Baz, entry=baz/BS, prefixes=[], suffixes=[]]	bazs|bar|baz	bar|baz	1
+W	MID	1	mid	mid	mid	mid	AffixedWord[word=MID, entry=mid/M, prefixes=[], suffixes=[]]	mid	mid	1
+W	Mid	1	mid	mid	mid	mid	AffixedWord[word=Mid, entry=mid/M, prefixes=[], suffixes=[]]	mid	mid	1
+W	END	1	end	end	end	end	AffixedWord[word=END, entry=end/ES, prefixes=[], suffixes=[]]	ends|end	end	0
+W	End	1	end	end	end	end	AffixedWord[word=End, entry=end/ES, prefixes=[], suffixes=[]]	ends|end	end	0
+W	FALL	1	fall	fall	fall	fall	AffixedWord[word=FALL, entry=fall/C, prefixes=[], suffixes=[]]	fall|ball	fall|ball	0
+W	Fall	1	fall	fall	fall	fall	AffixedWord[word=Fall, entry=fall/C, prefixes=[], suffixes=[]]	fall|ball	fall|ball	0
+W	LICK	1	lick	lick	lick	lick	AffixedWord[word=LICK, entry=lick/C, prefixes=[], suffixes=[]]	lick	lick	0
+W	Lick	1	lick	lick	lick	lick	AffixedWord[word=Lick, entry=lick/C, prefixes=[], suffixes=[]]	lick	lick	0
+W	BALL	1	ball	ball	ball	ball	AffixedWord[word=BALL, entry=ball/C, prefixes=[], suffixes=[]]	ball|fall	ball|fall	1
+W	Ball	1	ball	ball	ball	ball	AffixedWord[word=Ball, entry=ball/C, prefixes=[], suffixes=[]]	ball|fall	ball|fall	1
+W	LOOP	1	loop	loop	loop	loop	AffixedWord[word=LOOP, entry=loop/CX, prefixes=[], suffixes=[]]	loop	loop	1
+W	Loop	1	loop	loop	loop	loop	AffixedWord[word=Loop, entry=loop/CX, prefixes=[], suffixes=[]]	loop	loop	1
+W	BOOT	1	boot	boot	boot	boot	AffixedWord[word=BOOT, entry=boot/CY, prefixes=[], suffixes=[]]	boot	boot	1
+W	Boot	1	boot	boot	boot	boot	AffixedWord[word=Boot, entry=boot/CY, prefixes=[], suffixes=[]]	boot	boot	1
+W	WORD	1	word	word	word	word	AffixedWord[word=WORD, entry=word/C, prefixes=[], suffixes=[]]	word	word	0
+W	fooar	0	fooar	fooar	fooar			foo	foo	1
+W	ofobar	0	ofobar	ofobar	ofobar					1
+W	baroo	0	baroo	baroo	baroo			barfoo|bar	bar	1
+W	abrfoo	0	abrfoo	abrfoo	abrfoo			barfoo	barfoo	1
+W	foobrbaz	0	foobrbaz	foobrbaz	foobrbaz					1
+W	ofobarbaz	0	ofobarbaz	ofobarbaz	ofobarbaz					1
+W	bazmdend	0	bazmdend	bazmdend	bazmdend			bazmidend		1
+W	abzmidend	0	abzmidend	abzmidend	abzmidend			bazmidend	bazmidend	1
+W	baznd	0	baznd	baznd	baznd			bazend|baz	baz	1
+W	abzend	0	abzend	abzend	abzend			bazend	bazend	1
+W	endaz	0	endaz	endaz	endaz			end	end	0
+W	nedbaz	0	nedbaz	nedbaz	nedbaz					1
+W	foooo	0	foooo	foooo	foooo			foo	foo	1
+W	ofofoo	0	ofofoo	ofofoo	ofofoo					0
+W	onlfoo	0	onlfoo	onlfoo	onlfoo			onlyfoo		1
+W	nolyfoo	0	nolyfoo	nolyfoo	nolyfoo			onlyfoo	onlyfoo	1
+W	ony	0	ony	ony	ony					1
+W	noly	0	noly	noly	noly					1
+W	falick	0	falick	falick	falick			fallick|lick	fallick|lick	1
+W	afllick	0	afllick	afllick	afllick			fallick|lick	fallick|lick	1
+W	aflllick	0	aflllick	aflllick	aflllick					1
+W	fallall	0	fallall	fallall	fallall			fallball|fall	fall	1
+W	afllball	0	afllball	afllball	afllball			fallball|ball	fallball|ball	1
+W	loopoot	0	loopoot	loopoot	loopoot			loop	loop	1
+W	olopboot	0	olopboot	olopboot	olopboot					1
+W	ofosbar	0	ofosbar	ofosbar	ofosbar			foosbar	foosbar	1
+W	unfobar	0	unfobar	unfobar	unfobar					1
+W	nufoobar	0	nufoobar	nufoobar	nufoobar					1
+W	ofo-bar	0	ofo-bar	ofo-bar	ofo-bar			foo-bar	foo-bar	1
+W	-fo	0	-fo	-fo	-fo			foo|-foo|-fall	foo|-foo|-fall	0
+W	f-oo	0	f-oo	f-oo	f-oo			foo	foo	1
+W	fo-	0	fo-	fo-	fo-			foo	foo	1
+W	ofo-	0	ofo-	ofo-	ofo-					1
+W	fooord	0	fooord	fooord	fooord			fooword|foo	foo	1
+W	ofoWord	0	ofoWord	ofoWord	ofoWord			fooword|word	fooword|word	1
+W	Worfoo	0	Worfoo	Worfoo	Worfoo			wordfoo|word	word	0
+W	oWrdfoo	0	oWrdfoo	oWrdfoo	oWrdfoo			wordfoo	wordfoo	1
+W	foobaroobar	0	foobaroobar	foobaroobar	foobaroobar					1
+W	ofobarfoobar	0	ofobarfoobar	ofobarfoobar	ofobarfoobar					1
+E	foo	foo/CS	AffixedWord[word=foo, entry=foo/CS, prefixes=[], suffixes=[]]|AffixedWord[word=foos, entry=foo/CS, prefixes=[], suffixes=[S(id=0)]]
+E	bar	bar/CS	AffixedWord[word=bar, entry=bar/CS, prefixes=[], suffixes=[]]|AffixedWord[word=bars, entry=bar/CS, prefixes=[], suffixes=[S(id=0)]]
+E	baz	baz/BS	
+E	mid	mid/M	
+E	end	end/ES	
+E	only	only/CO	
+E	fall	fall/C	AffixedWord[word=fall, entry=fall/C, prefixes=[], suffixes=[]]
+E	lick	lick/C	AffixedWord[word=lick, entry=lick/C, prefixes=[], suffixes=[]]
+E	ball	ball/C	AffixedWord[word=ball, entry=ball/C, prefixes=[], suffixes=[]]
+E	loop	loop/CX	AffixedWord[word=loop, entry=loop/CX, prefixes=[], suffixes=[]]
+E	boot	boot/CY	AffixedWord[word=boot, entry=boot/CY, prefixes=[], suffixes=[]]
+E	Word	null	
+G	AffixedWord[word=bar, entry=bar/CS, prefixes=[], suffixes=[]]|AffixedWord[word=bars, entry=bar/CS, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=ball, entry=ball/C, prefixes=[], suffixes=[]]|AffixedWord[word=loop, entry=loop/CX, prefixes=[], suffixes=[]]|AffixedWord[word=lick, entry=lick/C, prefixes=[], suffixes=[]]|AffixedWord[word=word, entry=word/C, prefixes=[], suffixes=[]]|AffixedWord[word=foo, entry=foo/CS, prefixes=[], suffixes=[]]|AffixedWord[word=foos, entry=foo/CS, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=fall, entry=fall/C, prefixes=[], suffixes=[]]|AffixedWord[word=boot, entry=boot/CY, prefixes=[], suffixes=[]]
