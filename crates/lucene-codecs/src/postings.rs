@@ -6104,10 +6104,13 @@ impl<'a> PositionsCursor<'a> {
     /// cursor reading payloads, or a document with no position left).
     #[inline]
     pub fn try_next_position(&mut self) -> Option<i32> {
-        if self.docs.doc_id != self.pos_doc && !self.try_start_doc() {
-            return None;
-        }
-        if self.doc_left == 0 || self.pay_r.is_some() || self.buf_upto >= self.block.len {
+        // Payloads first: a cursor reading them never takes this step, and
+        // should not pay for a `try_start_doc` call per document either.
+        if self.pay_r.is_some()
+            || (self.docs.doc_id != self.pos_doc && !self.try_start_doc())
+            || self.doc_left == 0
+            || self.buf_upto >= self.block.len
+        {
             return None;
         }
         let delta = *self.block.pos_deltas.get(self.buf_upto)?;

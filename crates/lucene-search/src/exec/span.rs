@@ -228,9 +228,20 @@ impl<'a> LeafPositions<'a> {
         }
     }
 
+    /// `getPayload()` after [`Self::next_position`] on a cursor streaming
+    /// payloads: `None` where the position has none, and always for a leaf
+    /// that is not a lazy cursor.
+    pub(crate) fn payload(&self) -> Result<Option<&[u8]>> {
+        match self {
+            LeafPositions::Lazy(cursor) => Ok(cursor.payload()?),
+            _ => Ok(None),
+        }
+    }
+
     /// `nextPosition()` and `getPayload()` of the document the cursor is on,
-    /// once [`Self::stream_payloads`] said yes.
-    #[inline]
+    /// once [`Self::stream_payloads`] said yes. Always inlined: a payload
+    /// stream's per-position step, which a separate call measurably slowed.
+    #[inline(always)]
     pub(crate) fn next_position_with_payload(&mut self) -> Result<(i32, Option<&[u8]>)> {
         match self {
             LeafPositions::Lazy(cursor) => {
