@@ -19,6 +19,8 @@ pub const ALPHA: i32 = 0x03;
 pub const ALPHANUM: i32 = 0x07;
 /// `WordDelimiterIterator.DONE`.
 const DONE: i32 = -1;
+/// `WordDelimiterIterator.DONE`, for the deprecated `WordDelimiterFilter`.
+pub(crate) const WORD_DELIMITER_DONE: i32 = DONE;
 
 /// `WordDelimiterIterator.DEFAULT_WORD_DELIM_TABLE`: Latin-1 by
 /// `Character.isLowerCase`/`isUpperCase`/`isDigit`. `isLowerCase` counts
@@ -62,6 +64,16 @@ pub fn get_type(ch: u32) -> i32 {
     }
 }
 
+/// `WordDelimiterFilter.isAlpha`.
+pub(crate) fn is_alpha_type(t: i32) -> bool {
+    is_alpha(t)
+}
+
+/// `WordDelimiterFilter.isDigit`.
+pub(crate) fn is_digit_type(t: i32) -> bool {
+    is_digit(t)
+}
+
 fn is_alpha(t: i32) -> bool {
     t & ALPHA != 0
 }
@@ -76,13 +88,13 @@ fn is_upper(t: i32) -> bool {
 }
 
 /// `org.apache.lucene.analysis.miscellaneous.WordDelimiterIterator`.
-struct WordDelimiterIterator {
+pub(crate) struct WordDelimiterIterator {
     text: Vec<u16>,
     length: i32,
     start_bounds: i32,
     end_bounds: i32,
-    current: i32,
-    end: i32,
+    pub(crate) current: i32,
+    pub(crate) end: i32,
     has_final_possessive: bool,
     split_on_case_change: bool,
     split_on_numerics: bool,
@@ -92,7 +104,7 @@ struct WordDelimiterIterator {
 }
 
 impl WordDelimiterIterator {
-    fn new(table: Arc<[u8]>, case: bool, numerics: bool, possessive: bool) -> Self {
+    pub(crate) fn new(table: Arc<[u8]>, case: bool, numerics: bool, possessive: bool) -> Self {
         WordDelimiterIterator {
             text: Vec::new(),
             length: 0,
@@ -121,7 +133,7 @@ impl WordDelimiterIterator {
     }
 
     // Java: WordDelimiterIterator.next
-    fn next(&mut self) -> i32 {
+    pub(crate) fn next(&mut self) -> i32 {
         self.current = self.end;
         if self.current == DONE {
             return DONE;
@@ -158,7 +170,7 @@ impl WordDelimiterIterator {
     }
 
     // Java: WordDelimiterIterator.type
-    fn word_type(&self) -> i32 {
+    pub(crate) fn word_type(&self) -> i32 {
         if self.end == DONE {
             return 0;
         }
@@ -169,7 +181,7 @@ impl WordDelimiterIterator {
     }
 
     // Java: WordDelimiterIterator.setText
-    fn set_text(&mut self, text: &[u16]) {
+    pub(crate) fn set_text(&mut self, text: &[u16]) {
         self.text.clear();
         self.text.extend_from_slice(text);
         self.length = text.len() as i32;
@@ -196,7 +208,7 @@ impl WordDelimiterIterator {
     }
 
     // Java: WordDelimiterIterator.isSingleWord
-    fn is_single_word(&self) -> bool {
+    pub(crate) fn is_single_word(&self) -> bool {
         if self.has_final_possessive {
             self.current == self.start_bounds && self.end == self.end_bounds - 2
         } else {

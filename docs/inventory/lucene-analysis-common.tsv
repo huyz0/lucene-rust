@@ -309,7 +309,7 @@ analysis/miscellaneous/TruncateTokenFilter	ported	crates/lucene-analysis/src/mis
 analysis/miscellaneous/TruncateTokenFilterFactory	todo:M11	T11.7 factory/SPI: TruncateTokenFilterFactory
 analysis/miscellaneous/TypeAsSynonymFilter	ported	crates/lucene-analysis/src/miscellaneous/stateful.rs::TypeAsSynonymFilter
 analysis/miscellaneous/TypeAsSynonymFilterFactory	todo:M11	T11.7 factory/SPI: TypeAsSynonymFilterFactory
-analysis/miscellaneous/WordDelimiterFilter	todo:M11	T11.6 miscellaneous: WordDelimiterFilter
+analysis/miscellaneous/WordDelimiterFilter	ported	crates/lucene-analysis/src/miscellaneous/word_delimiter_filter.rs::WordDelimiterFilter
 analysis/miscellaneous/WordDelimiterFilterFactory	todo:M11	T11.7 factory/SPI: WordDelimiterFilterFactory
 analysis/miscellaneous/WordDelimiterGraphFilter	ported	crates/lucene-analysis/src/miscellaneous/word_delimiter.rs::WordDelimiterGraphFilter
 analysis/miscellaneous/WordDelimiterGraphFilterFactory	todo:M11	T11.7 factory/SPI: WordDelimiterGraphFilterFactory

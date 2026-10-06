@@ -92,8 +92,8 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   differ between the two, so it is byte-identical under both, and
   `tests/code_point_fixtures.rs` pins the port's Unicode 16 answers there.
 - **T11.6** packages done: `core` (with `FlattenGraphFilter`) and the
-  `CharTokenizer` family; `miscellaneous` but `DateRecognizerFilter` and the
-  deprecated `WordDelimiterFilter`; `en` (KStem's dictionary generated from
+  `CharTokenizer` family; `miscellaneous` but `DateRecognizerFilter` (the
+  deprecated `WordDelimiterFilter` came in part 3); `en` (KStem's dictionary generated from
   Lucene's sources); `ngram`, `shingle`, `pattern`, `path`, `charfilter`,
   `commongrams`, `cjk`, `payloads`, `boost`, `minhash`, `email`. All 121
   built harness chains match Lucene token for token (two more record
@@ -190,11 +190,12 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
 - **T11.6, the rest** -- `compound` (both decompounders, Liang hyphenation,
   the FOP pattern format over a minimal XML reader; `GenAnalysisCompound.java`
   over a toy grammar written here: points and 13 chains equal),
-  `ReverseStringFilter`, `TeeSinkTokenFilter`, `CSVUtil` (`GenAnalysisMisc.java`).
+  `ReverseStringFilter`, `TeeSinkTokenFilter`, `CSVUtil`, the deprecated
+  `WordDelimiterFilter` (`GenAnalysisMisc.java`: 5 reverse and 6 WDF chains equal).
   Deferred to M12 with reasons (`docs/parity/analysis-lang.md`): Thai (the
   JDK's GPL dictionary), `SegmentingTokenizerBase`/`CharArrayIterator`,
-  collation, `morph`. Left in M11: `DateRecognizerFilter`, the deprecated
-  `WordDelimiterFilter`, `QueryAutoStopWordAnalyzer` (needs an index reader),
+  collation, `morph`. Left in M11: `DateRecognizerFilter`,
+  `QueryAutoStopWordAnalyzer` (needs an index reader),
   `CustomAnalyzer` and the factories (T11.7), `word2vec` synonyms.
 - `java.util.regex` is the `regex` crate behind a Java-syntax shim (`util/java_regex.rs`: ASCII
   `\d\w\s`, `$n` replacements; no backreferences or lookaround).
