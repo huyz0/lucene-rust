@@ -78,6 +78,8 @@ pub struct HunspellStemFilter<I> {
     input: I,
     dictionary: std::sync::Arc<Dictionary>,
     buffer: Vec<Vec<u16>>,
+    /// The current term's units (reused across tokens).
+    term: Vec<u16>,
     saved_state: Option<State>,
     dedup: bool,
     longest_only: bool,
@@ -96,6 +98,7 @@ impl<I: TokenStream> HunspellStemFilter<I> {
             input,
             dictionary,
             buffer: Vec::new(),
+            term: Vec::new(),
             saved_state: None,
             dedup: dedup && !longest_only,
             longest_only,
@@ -129,12 +132,13 @@ impl<I: TokenStream> TokenFilter for HunspellStemFilter<I> {
         if a.is_keyword() {
             return Ok(true);
         }
-        let term: Vec<u16> = a.term().encode_utf16().collect();
+        self.term.clear();
+        self.term.extend(a.term().encode_utf16());
         let stemmer = Stemmer::new(&self.dictionary);
         let mut buffer = if self.dedup {
-            stemmer.unique_stems_units(&term)
+            stemmer.unique_stems_units(&self.term)
         } else {
-            stemmer.stem_units(&term)
+            stemmer.stem_units(&self.term)
         };
         if buffer.is_empty() {
             return Ok(true);
