@@ -48,7 +48,10 @@ pub use automaton::{Automaton, Builder, StatePair, Transition, TransitionAccesso
 pub use case_folding::{expand as case_folding_expand, java_to_lower_case, java_to_upper_case};
 pub use compiled_automaton::{AutomatonType, CompiledAutomaton};
 pub use error::{AutomatonError, TooComplexToDeterminize};
-pub use finite_strings::{FiniteStringsIterator, LimitedFiniteStringsIterator};
+pub use finite_strings::{
+    FiniteStringsCursor, FiniteStringsIterator, LimitedFiniteStringsCursor,
+    LimitedFiniteStringsIterator,
+};
 pub use levenshtein::{LevenshteinAutomata, MAXIMUM_SUPPORTED_DISTANCE};
 pub use nfa_run_automaton::NfaRunAutomaton;
 pub use operations::DEFAULT_DETERMINIZE_WORK_LIMIT;

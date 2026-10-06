@@ -4,7 +4,7 @@
 use super::automaton::{Automaton, Transition, TransitionAccessor};
 use super::error::AutomatonError;
 
-#[derive(Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 struct PathNode {
     state: i32,
     to: i32,
@@ -40,9 +40,13 @@ impl PathNode {
     }
 }
 
-/// `FiniteStringsIterator`.
-pub struct FiniteStringsIterator<'a> {
-    a: &'a Automaton,
+/// `FiniteStringsIterator`'s traversal state without the automaton: each
+/// [`Self::next_string`] call is handed the automaton the cursor was made
+/// for. A caller that owns the automaton keeps the two side by side and
+/// iterates lazily, where [`FiniteStringsIterator`]'s borrow would tie the
+/// iteration to a local.
+#[derive(Debug, Clone)]
+pub struct FiniteStringsCursor {
     end_state: i32,
     path_states: Vec<bool>,
     string: Vec<i32>,
@@ -50,17 +54,16 @@ pub struct FiniteStringsIterator<'a> {
     emit_empty_string: bool,
 }
 
-impl<'a> FiniteStringsIterator<'a> {
-    /// `new FiniteStringsIterator(a)`.
-    pub fn new(a: &'a Automaton) -> Self {
+impl FiniteStringsCursor {
+    /// A cursor over every string `a` accepts.
+    pub fn new(a: &Automaton) -> Self {
         Self::with_range(a, 0, -1)
     }
 
-    /// `new FiniteStringsIterator(a, startState, endState)`: strings on paths
-    /// from `start_state`, stopping at `end_state` (`-1` for none).
-    pub fn with_range(a: &'a Automaton, start_state: i32, end_state: i32) -> Self {
-        let mut it = FiniteStringsIterator {
-            a,
+    /// A cursor over the strings on paths from `start_state`, stopping at
+    /// `end_state` (`-1` for none).
+    pub fn with_range(a: &Automaton, start_state: i32, end_state: i32) -> Self {
+        let mut it = FiniteStringsCursor {
             end_state,
             path_states: vec![false; a.get_num_states() as usize],
             string: Vec::new(),
@@ -75,16 +78,15 @@ impl<'a> FiniteStringsIterator<'a> {
         it
     }
 
-    /// `next()`: the next accepted string, `Ok(None)` when done.
+    /// `next()` over `a`, the automaton this cursor was made for.
     ///
     /// # Errors
     /// `IllegalArgument("automaton has cycles")`.
-    pub fn next_string(&mut self) -> Result<Option<Vec<i32>>, AutomatonError> {
+    pub fn next_string(&mut self, a: &Automaton) -> Result<Option<Vec<i32>>, AutomatonError> {
         if self.emit_empty_string {
             self.emit_empty_string = false;
             return Ok(Some(Vec::new()));
         }
-        let a = self.a;
         let mut depth = self.string.len();
         while depth > 0 {
             let label = self.nodes[depth - 1].next_label(a);
@@ -121,40 +123,72 @@ impl<'a> FiniteStringsIterator<'a> {
     }
 }
 
-/// `LimitedFiniteStringsIterator`: at most `limit` strings.
-pub struct LimitedFiniteStringsIterator<'a> {
-    inner: FiniteStringsIterator<'a>,
+/// `FiniteStringsIterator`.
+pub struct FiniteStringsIterator<'a> {
+    a: &'a Automaton,
+    cursor: FiniteStringsCursor,
+}
+
+impl<'a> FiniteStringsIterator<'a> {
+    /// `new FiniteStringsIterator(a)`.
+    pub fn new(a: &'a Automaton) -> Self {
+        Self::with_range(a, 0, -1)
+    }
+
+    /// `new FiniteStringsIterator(a, startState, endState)`: strings on paths
+    /// from `start_state`, stopping at `end_state` (`-1` for none).
+    pub fn with_range(a: &'a Automaton, start_state: i32, end_state: i32) -> Self {
+        FiniteStringsIterator {
+            a,
+            cursor: FiniteStringsCursor::with_range(a, start_state, end_state),
+        }
+    }
+
+    /// `next()`: the next accepted string, `Ok(None)` when done.
+    ///
+    /// # Errors
+    /// `IllegalArgument("automaton has cycles")`.
+    pub fn next_string(&mut self) -> Result<Option<Vec<i32>>, AutomatonError> {
+        self.cursor.next_string(self.a)
+    }
+}
+
+/// `LimitedFiniteStringsIterator`'s state without the automaton (see
+/// [`FiniteStringsCursor`]).
+#[derive(Debug, Clone)]
+pub struct LimitedFiniteStringsCursor {
+    inner: FiniteStringsCursor,
     limit: i32,
     count: i32,
 }
 
-impl<'a> LimitedFiniteStringsIterator<'a> {
-    /// `new LimitedFiniteStringsIterator(a, limit)`; `-1` means no limit.
+impl LimitedFiniteStringsCursor {
+    /// At most `limit` strings of `a`; `-1` means no limit.
     ///
     /// # Errors
     /// `IllegalArgument` for a limit that is neither `-1` nor positive.
-    pub fn new(a: &'a Automaton, limit: i32) -> Result<Self, AutomatonError> {
+    pub fn new(a: &Automaton, limit: i32) -> Result<Self, AutomatonError> {
         if limit != -1 && limit <= 0 {
             return Err(AutomatonError::IllegalArgument(format!(
                 "limit must be -1 (which means no limit), or > 0; got: {limit}"
             )));
         }
-        Ok(LimitedFiniteStringsIterator {
-            inner: FiniteStringsIterator::new(a),
+        Ok(LimitedFiniteStringsCursor {
+            inner: FiniteStringsCursor::new(a),
             limit: if limit > 0 { limit } else { i32::MAX },
             count: 0,
         })
     }
 
-    /// `next()`.
+    /// `next()` over `a`, the automaton this cursor was made for.
     ///
     /// # Errors
-    /// As [`FiniteStringsIterator::next_string`].
-    pub fn next_string(&mut self) -> Result<Option<Vec<i32>>, AutomatonError> {
+    /// As [`FiniteStringsCursor::next_string`].
+    pub fn next_string(&mut self, a: &Automaton) -> Result<Option<Vec<i32>>, AutomatonError> {
         if self.count >= self.limit {
             return Ok(None);
         }
-        let r = self.inner.next_string()?;
+        let r = self.inner.next_string(a)?;
         if r.is_some() {
             self.count += 1;
         }
@@ -164,6 +198,38 @@ impl<'a> LimitedFiniteStringsIterator<'a> {
     /// `size()`: strings returned so far.
     pub fn size(&self) -> i32 {
         self.count
+    }
+}
+
+/// `LimitedFiniteStringsIterator`: at most `limit` strings.
+pub struct LimitedFiniteStringsIterator<'a> {
+    a: &'a Automaton,
+    cursor: LimitedFiniteStringsCursor,
+}
+
+impl<'a> LimitedFiniteStringsIterator<'a> {
+    /// `new LimitedFiniteStringsIterator(a, limit)`; `-1` means no limit.
+    ///
+    /// # Errors
+    /// `IllegalArgument` for a limit that is neither `-1` nor positive.
+    pub fn new(a: &'a Automaton, limit: i32) -> Result<Self, AutomatonError> {
+        Ok(LimitedFiniteStringsIterator {
+            a,
+            cursor: LimitedFiniteStringsCursor::new(a, limit)?,
+        })
+    }
+
+    /// `next()`.
+    ///
+    /// # Errors
+    /// As [`FiniteStringsIterator::next_string`].
+    pub fn next_string(&mut self) -> Result<Option<Vec<i32>>, AutomatonError> {
+        self.cursor.next_string(self.a)
+    }
+
+    /// `size()`: strings returned so far.
+    pub fn size(&self) -> i32 {
+        self.cursor.size()
     }
 }
 

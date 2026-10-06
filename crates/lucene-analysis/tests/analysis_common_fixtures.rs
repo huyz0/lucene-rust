@@ -768,6 +768,13 @@ fn build(name: &str) -> Option<Analyzer> {
         "std_concatenate_graph" => {
             chain(|| comps(ConcatenateGraphFilter::new(StandardTokenizer::new())))
         }
+        "ws_wdgf_concatenate_graph" => chain(|| {
+            comps(ConcatenateGraphFilter::new(WordDelimiterGraphFilter::new(
+                WhitespaceTokenizer::new(),
+                m::GENERATE_WORD_PARTS | m::CATENATE_ALL,
+                None,
+            )?))
+        }),
         "std_english_minimal" => chain(|| {
             comps(EnglishMinimalStemFilter::new(LowerCaseFilter::new(
                 StandardTokenizer::new(),
@@ -1218,4 +1225,34 @@ fn java_regex_case_folding_matches_lucene() {
         n += 1;
     }
     assert!(n > 4000, "{n} forms");
+}
+
+/// `concatenate.words`: `ConcatenateGraphFilter`'s indexed bytes with
+/// separators above ASCII (Java casts the separator to a byte).
+#[test]
+fn concatenate_graph_separators_match_lucene_byte_for_byte() {
+    use lucene_analysis::miscellaneous::ConcatenateGraphFilter;
+    use lucene_analysis::reader::StrReader;
+    use lucene_analysis::token_stream::{consume, Tokenizer};
+    let text = std::fs::read_to_string(format!("{}concatenate.words", dir())).unwrap();
+    let mut n = 0;
+    for line in text.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        let sep = match f[0] {
+            "-" => None,
+            h => Some(char::from_u32(u32::from_str_radix(h, 16).unwrap()).unwrap()),
+        };
+        let mut t = WhitespaceTokenizer::new();
+        t.set_reader(Box::new(StrReader::new(unesc(f[1])))).unwrap();
+        let mut c = ConcatenateGraphFilter::with_options(t, sep, true, 10_000);
+        let mut got = String::new();
+        consume(&mut c, |a| {
+            got.push_str(&hex(Some(a.term_bytes())));
+            got.push('|');
+        })
+        .unwrap();
+        assert_eq!(got, f[2], "{line}");
+        n += 1;
+    }
+    assert_eq!(n, 45);
 }

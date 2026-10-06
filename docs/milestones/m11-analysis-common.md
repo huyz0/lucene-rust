@@ -88,7 +88,7 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   `CharTokenizer` family; `miscellaneous` but `DateRecognizerFilter` and the
   deprecated `WordDelimiterFilter`; `en` (KStem's dictionary generated from
   Lucene's sources); `ngram`, `shingle`, `pattern`, `path`, `charfilter`,
-  `commongrams`, `cjk`, `payloads`, `boost`, `minhash`, `email`. All 120
+  `commongrams`, `cjk`, `payloads`, `boost`, `minhash`, `email`. All 121
   built harness chains match Lucene token for token (two more record
   Lucene's tokens for patterns the port rejects); `stems.words` (40,392 words
   through KStem and Porter), `urls.words` (3,000 URL/email fragment joins),
