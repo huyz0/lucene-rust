@@ -1069,3 +1069,15 @@ T	48	heroes	297	303	1	1	<ALPHANUM>	0	-	0	1
 T	48	heroes axes	297	308	0	2	shingle	0	-	0	1
 T	48	axes	304	308	1	1	<ALPHANUM>	0	-	0	1
 E	48	308	308	0
+T	49	ーﾟ	0	2	1	1	<KATAKANA>	0	-	0	1
+T	49	ーﾟ ヽﾟ	0	5	0	2	shingle	0	-	0	1
+T	49	ヽﾟ	3	5	1	1	<KATAKANA>	0	-	0	1
+T	49	ヽﾟ ｰﾟ	3	8	0	2	shingle	0	-	0	1
+T	49	ｰﾟ	6	8	1	1	<KATAKANA>	0	-	0	1
+T	49	ｰﾟ ヽﾞ	6	11	0	2	shingle	0	-	0	1
+T	49	ヽﾞ	9	11	1	1	<KATAKANA>	0	-	0	1
+T	49	ヽﾞ ｳﾞ	9	14	0	2	shingle	0	-	0	1
+T	49	ｳﾞ	12	14	1	1	<KATAKANA>	0	-	0	1
+T	49	ｳﾞ ﾊﾟ	12	17	0	2	shingle	0	-	0	1
+T	49	ﾊﾟ	15	17	1	1	<KATAKANA>	0	-	0	1
+E	49	17	17	0

@@ -259,7 +259,7 @@ impl<I: TokenStream> TokenFilter for CJKBigramFilter<I> {
 }
 
 /// `CJKWidthFilter.KANA_NORM`: half-width katakana U+FF65..=U+FF9F to full width.
-const KANA_NORM: [u16; 59] = [
+const KANA_NORM: [u16; 0xFF9F - 0xFF65 + 1] = [
     0x30fb, 0x30f2, 0x30a1, 0x30a3, 0x30a5, 0x30a7, 0x30a9, 0x30e3, 0x30e5, 0x30e7, 0x30c3, 0x30fc,
     0x30a2, 0x30a4, 0x30a6, 0x30a8, 0x30aa, 0x30ab, 0x30ad, 0x30af, 0x30b1, 0x30b3, 0x30b5, 0x30b7,
     0x30b9, 0x30bb, 0x30bd, 0x30bf, 0x30c1, 0x30c4, 0x30c6, 0x30c8, 0x30ca, 0x30cb, 0x30cc, 0x30cd,
@@ -267,18 +267,24 @@ const KANA_NORM: [u16; 59] = [
     0x30e6, 0x30e8, 0x30e9, 0x30ea, 0x30eb, 0x30ec, 0x30ed, 0x30ef, 0x30f3, 0x3099, 0x309A,
 ];
 
+/// The length of Java's two combine tables: one entry per code point of
+/// U+30A6..=U+30FD, the range `combine` indexes. A fixed-length type, so a
+/// transcription that drops an entry fails to compile instead of panicking
+/// on the last code points of the range.
+const KANA_COMBINE_LEN: usize = 0x30FD - 0x30A6 + 1;
+
 /// `KANA_COMBINE_VOICED`, indexed from U+30A6.
-const KANA_COMBINE_VOICED: &[u8] = &[
+const KANA_COMBINE_VOICED: [u8; KANA_COMBINE_LEN] = [
     78, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1,
     0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 8, 8, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
 ];
 
 /// `KANA_COMBINE_HALF_VOICED`, indexed from U+30A6.
-const KANA_COMBINE_HALF_VOICED: &[u8] = &[
+const KANA_COMBINE_HALF_VOICED: [u8; KANA_COMBINE_LEN] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 ];
 
 const VOICED_MARK: u16 = 0xFF9E;
@@ -440,7 +446,7 @@ impl<R: CharReader> CharFilter for CJKWidthCharFilter<R> {
 }
 
 /// `cjk/stopwords.txt` from the Lucene 10.5.0 jar (Apache-2.0).
-pub const CJK_STOP_WORDS: &[&str] = &[
+pub const CJK_STOP_WORDS: [&str; 35] = [
     "a", "and", "are", "as", "at", "be", "but", "by", "for", "if", "in", "into", "is", "it", "no",
     "not", "of", "on", "or", "s", "such", "t", "that", "the", "their", "then", "there", "these",
     "they", "this", "to", "was", "will", "with", "www",
@@ -540,6 +546,36 @@ mod tests {
         let n = f.read(&mut buf).unwrap();
         assert_eq!(String::from_utf16(&buf[..n]).unwrap(), "ガA");
         assert_eq!((f.correct_offset(1), f.correct_offset(2)), (2, 3));
+    }
+
+    /// A semi-voiced mark after the last two code points of the combine
+    /// range (U+30FC `ー`, U+30FD `ヽ`, and `ｰ` which normalises to U+30FC)
+    /// indexes the final entries of Java's 88-entry tables: nothing
+    /// combines, and the mark itself is normalised (Lucene: `30fc 309a`).
+    #[test]
+    fn semi_voiced_mark_after_the_range_end() {
+        for (input, want) in [
+            ("ーﾟ", "ー\u{309A}"),
+            ("ヽﾟ", "ヽ\u{309A}"),
+            ("ｰﾟ", "ー\u{309A}"),
+            ("ヽﾞ", "ヾ"),
+        ] {
+            let mut c = Canned::parse("x:0:1:1:1");
+            c.set_terms(&[input]);
+            let mut out = Vec::new();
+            crate::token_stream::consume(&mut CJKWidthFilter::new(c), |a| {
+                out.push(a.term().to_string())
+            })
+            .unwrap();
+            assert_eq!(out, vec![want], "filter {input}");
+            let mut f = CJKWidthCharFilter::new(StrReader::new(input));
+            let mut buf = [0u16; 8];
+            let n = f.read(&mut buf).unwrap();
+            assert_eq!(String::from_utf16(&buf[..n]).unwrap(), want, "{input}");
+        }
+        let a = Analyzer::new(CJKAnalyzer::default());
+        let t: Vec<String> = a.analyze("ーﾟ").into_iter().map(|t| t.term).collect();
+        assert_eq!(t, vec!["ー\u{309A}"]);
     }
 
     #[test]
