@@ -27,6 +27,7 @@ pub use stateful::{
     AsciiFoldingTokenFilter, FingerprintFilter, FixBrokenOffsetsFilter, HyphenatedWordsFilter,
     TypeAsSynonymFilter, FINGERPRINT_DEFAULT_MAX_OUTPUT_TOKEN_SIZE, FINGERPRINT_DEFAULT_SEPARATOR,
 };
+pub(crate) use term_filters::parse_int;
 pub use term_filters::{
     CapitalizationFilter, DelimitedTermFrequencyTokenFilter, Folding, ScandinavianFoldingFilter,
     ScandinavianNormalizationFilter, ScandinavianNormalizer, TrimFilter, TruncateTokenFilter,
