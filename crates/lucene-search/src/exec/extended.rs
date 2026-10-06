@@ -2713,6 +2713,113 @@ mod tests {
         );
     }
 
+    /// A segment without the queried field, or without postings at all.
+    fn empty_ctx(fields: &BlockTreeFields) -> LeafContext<'_> {
+        LeafContext {
+            fields,
+            doc_in: None,
+            pos_in: None,
+            pay_in: None,
+            live_docs: None,
+            points: None,
+            norms: None,
+            global: None,
+            max_doc: Some(4),
+            cache: None,
+            reader: None,
+            similarity: None,
+        }
+    }
+
+    /// The two queries with no weight of their own refuse to build a scorer
+    /// until the searcher rewrites them, naming the rewrite that was missed.
+    #[test]
+    fn unrewritten_common_terms_and_mlt_queries_are_illegal_state() {
+        let fields = BlockTreeFields::empty();
+        let ctx = empty_ctx(&fields);
+        let mut ct = crate::common_terms::CommonTermsQuery::new(
+            crate::query_visitor::Occur::Should,
+            crate::query_visitor::Occur::Should,
+            0.1,
+        )
+        .unwrap();
+        ct.add("f", "a");
+        let mlt = crate::mlt::MoreLikeThisQuery::new(
+            "a b",
+            vec!["f".into()],
+            std::sync::Arc::new(lucene_analysis::Analyzer::standard(None)),
+            "f",
+        );
+        for (q, name) in [
+            (ExtendedQuery::CommonTerms(ct), "CommonTermsQuery"),
+            (ExtendedQuery::MoreLikeThis(mlt), "MoreLikeThisQuery"),
+        ] {
+            match build(&ctx, &q, 1.0, Mode::Complete, true) {
+                Err(crate::Error::IllegalState(m)) => assert!(m.starts_with(name), "{m}"),
+                Err(e) => panic!("{name}: {e:?}"),
+                Ok(_) => panic!("{name} built a scorer"),
+            }
+        }
+    }
+
+    /// A phrase with explicit positions over a segment that lacks the field
+    /// or its postings has no scorer, as `PhraseWeight.scorer` returns
+    /// `null`; an empty one matches nothing, a one-term one is its term.
+    #[test]
+    fn positional_phrases_without_postings_have_no_scorer() {
+        let fields = BlockTreeFields::empty();
+        let ctx = empty_ctx(&fields);
+        let two = PhraseQuery::with_positions("f", [("a", 0), ("b", 2)]).unwrap();
+        assert!(positional_phrase(&ctx, &two, 1.0, Mode::Complete)
+            .unwrap()
+            .is_none());
+        let one = PhraseQuery::with_positions("f", [("a", 3)]).unwrap();
+        assert!(positional_phrase(&ctx, &one, 1.0, Mode::Complete)
+            .unwrap()
+            .is_none());
+        let none = PhraseQuery::with_positions("f", Vec::<(&str, i32)>::new()).unwrap();
+        assert!(positional_phrase(&ctx, &none, 1.0, Mode::NoScores)
+            .unwrap()
+            .is_none());
+        // Without the `.doc` stream the term cursor is not opened at all.
+        assert!(cursor(&ctx, "f", b"a", PostingsFlags::Freqs)
+            .unwrap()
+            .is_none());
+    }
+
+    /// `IndexOrDocValuesQuery`'s two sides over a segment without points or
+    /// a reader: a point-in-set index side has no supplier (`null`), any
+    /// other clause one of unknown cost; the doc-values side cannot be
+    /// asked without the segment's reader.
+    #[test]
+    fn index_or_doc_values_sides_without_points_or_reader() {
+        let fields = BlockTreeFields::empty();
+        let ctx = empty_ctx(&fields);
+        let pis = Clause::Extended(Box::new(ExtendedQuery::PointInSet(
+            crate::extended_query::PointInSetQuery::new("p", 1, 4, [vec![0, 0, 0, 1]]).unwrap(),
+        )));
+        assert!(matches!(index_side(&ctx, &pis).unwrap(), Supplier::Absent));
+        let term = Clause::Term(TermQuery::new("f", "a"));
+        assert!(matches!(
+            index_side(&ctx, &term).unwrap(),
+            Supplier::Present(None)
+        ));
+        let dv = Clause::Extended(Box::new(ExtendedQuery::NumericDocValuesRange(
+            crate::extended_query::NumericDocValuesRangeQuery::new("n", 1, 5),
+        )));
+        assert!(matches!(
+            dv_side_present(&ctx, &dv),
+            Err(crate::Error::MissingSegmentReader(f)) if f == "n"
+        ));
+        assert!(dv_side_present(&ctx, &term).unwrap());
+        let iodv = IndexOrDocValuesQuery::new(pis, dv);
+        assert!(
+            index_or_doc_values(&ctx, &iodv, 1.0, Mode::Complete, true, None)
+                .unwrap()
+                .is_none()
+        );
+    }
+
     #[test]
     fn logit_sigmoid_softplus_follow_java() {
         assert_eq!(sigmoid(0.0), 0.5);

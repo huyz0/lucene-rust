@@ -2409,6 +2409,109 @@ fn group(keys: &[(u32, i64)]) -> HashMap<u32, Vec<u32>> {
 mod tests {
     use super::*;
 
+    /// A leaf over no column whose window holds `vals` (one per document
+    /// from 0; `multi`: each document's values at `offsets`).
+    fn windowed(vals: Vec<i64>, multi: Option<Vec<u32>>) -> Leaf<'static> {
+        let len = multi.as_ref().map_or(vals.len(), |o| o.len() - 1);
+        Leaf {
+            col: Col::None,
+            buf: Vec::new(),
+            max_to: Vec::new(),
+            memo: (1, 0, 0, 0, u32::MAX),
+            done: false,
+            pre_base: 0,
+            pre_len: len,
+            pre_bits: vec![u64::MAX; len.div_ceil(64)],
+            pre_vals: vals,
+            pre_multi: multi.is_some(),
+            pre_offsets: multi.unwrap_or_default(),
+            win_docs: Vec::new(),
+            win_ords: Vec::new(),
+            term_buckets: Vec::new(),
+            subs: Vec::new(),
+        }
+    }
+
+    /// A multi-valued window answers `read` with each document's values
+    /// and never `prefetched` (a single value per document only).
+    #[test]
+    fn a_multi_valued_window_reads_each_documents_values() {
+        let mut leaf = windowed(vec![4, 5, 9], Some(vec![0, 2, 2, 3]));
+        assert!(leaf.read(0).unwrap());
+        assert_eq!(leaf.buf, [4, 5]);
+        assert!(!leaf.read(1).unwrap(), "no values");
+        assert!(leaf.read(2).unwrap());
+        assert_eq!(leaf.buf, [9]);
+        assert_eq!(leaf.prefetched(0), None);
+        let single = windowed(vec![7, 8], None);
+        assert_eq!(single.prefetched(1), Some(Some(8)));
+        assert_eq!(single.prefetched(2), None, "past the window");
+    }
+
+    /// A cardinality node whose state or column disagrees with its kind is
+    /// an internal inconsistency, reported rather than miscounted.
+    #[test]
+    fn a_cardinality_state_that_disagrees_with_its_kind_is_an_error() {
+        let node = |kind| AggNode::Cardinality {
+            field: "f".into(),
+            kind,
+            precision: None,
+        };
+        let numeric = node(CardinalityKind::Numeric(ValueKind::Long));
+        let keyword = node(CardinalityKind::Keyword);
+        let cases: [(&AggNode, State, &str); 3] = [
+            (
+                &numeric,
+                State::OrdBits(Vec::new()),
+                "without an ordinal column",
+            ),
+            (
+                &keyword,
+                State::Sketches {
+                    p: 14,
+                    sketches: Vec::new(),
+                },
+                "no direct sketch",
+            ),
+            (
+                &keyword,
+                State::Cardinality(Vec::new()),
+                "counted as values",
+            ),
+        ];
+        for (node, mut state, want) in cases {
+            let mut leaf = windowed(vec![3], None);
+            match collect(node, &mut state, &mut leaf, 0, 0) {
+                Err(crate::Error::TermsAggType(m)) => assert!(m.contains(want), "{m}"),
+                other => panic!("{want}: {other:?}"),
+            }
+        }
+        // A document without values collects nothing, whatever the state.
+        let mut leaf = windowed(vec![3], Some(vec![0, 0]));
+        let mut state = State::OrdBits(Vec::new());
+        assert!(collect(&numeric, &mut state, &mut leaf, 0, 0).is_ok());
+    }
+
+    /// Only a metric answered from the points reads them, at any depth.
+    #[test]
+    fn reads_points_finds_a_points_metric() {
+        let metric = |source| AggNode::Metric {
+            field: "n".into(),
+            kind: ValueKind::Long,
+            source,
+            needs: aggs::NEED_MIN,
+        };
+        assert!(metric(Source::PointsMin).reads_points());
+        assert!(!metric(Source::DocValues).reads_points());
+        let terms = |sub| AggNode::Terms {
+            field: "k".into(),
+            shard_size: 10,
+            subs: vec![sub],
+        };
+        assert!(terms(metric(Source::PointsMax)).reads_points());
+        assert!(!terms(metric(Source::DocValues)).reads_points());
+    }
+
     /// The hasher's byte and word paths agree with its per-word mixing, and
     /// the month tables are `DateUtilsRounding`'s (checked at run time too:
     /// the constants are built by a `const fn`).
