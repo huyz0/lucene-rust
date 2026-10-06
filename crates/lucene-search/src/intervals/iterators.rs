@@ -103,6 +103,9 @@ macro_rules! dispatch {
     };
 }
 
+// Every method forwarded, defaulted ones included: a default left in place
+// would run on this wrapper instead of the boxed iterator's own override.
+#[deny(clippy::missing_trait_methods)]
 impl IntervalIterator for BoxIntervals<'_> {
     #[inline]
     fn doc_id(&self) -> i32 {

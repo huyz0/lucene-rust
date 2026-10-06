@@ -1,9 +1,9 @@
 //! M10 T10.6, differentially against Lucene 10.5.0:
 //! `fixtures/src/GenMoreLikeThis.java`'s `mlt.tsv`.
 //!
-//! `mlt.tsv`: `MoreLikeThis` under twelve settings over a four-segment index
-//! with deletions -- for six documents (from term vectors, or stored values
-//! re-analyzed) the interesting terms, the query's clauses and its hits;
+//! `mlt.tsv`: `MoreLikeThis` under thirteen settings over a four-segment
+//! index with deletions -- for six documents (from term vectors, or stored
+//! values re-analyzed, a stored number skipped) the interesting terms, the query's clauses and its hits;
 //! `like(field, texts)` and `like(Map)`; `MoreLikeThisQuery` with hits and
 //! explanations. The file is rebuilt here line for line and compared with
 //! Lucene's (`common.tsv` is `common_terms_fixtures.rs`').
@@ -176,7 +176,7 @@ fn mlt_lines(
     }
 }
 
-const SETTINGS: [&str; 12] = [
+const SETTINGS: [&str; 13] = [
     "defaults\tbody\t2\t5\t-1\t25\tfalse\t1\t0\t0\t-",
     "tf1\tbody\t1\t1\t-1\t25\tfalse\t1\t0\t0\t-",
     "tv\ttv\t1\t1\t-1\t25\tfalse\t1\t0\t0\t-",
@@ -189,6 +189,8 @@ const SETTINGS: [&str; 12] = [
     "maxdfpct\ttv\t1\t1\tpct30\t25\tfalse\t1\t0\t0\t-",
     "nofields\ttitle|missing\t1\t1\t-1\t25\tfalse\t1\t0\t0\t-",
     "noanalyzer\tbody\t1\t1\t-1\t25\tfalse\t1\t0\t0\t-",
+    // A stored number among the fields: no string to re-analyze.
+    "numeric\tbody|num\t1\t1\t-1\t25\tfalse\t1\t0\t0\t-",
 ];
 
 const MLTQ: [&str; 4] = [

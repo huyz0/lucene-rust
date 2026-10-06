@@ -1235,15 +1235,17 @@ outright.
   every fifth position), a big-endian `int` (`ipay`), a `float` (`fpay`) and a
   short UTF-8 string (`spay`), none on every sixth; `queries.tsv`: 95 span and
   payload queries -- `toString`, then plain, boosted and as a boolean's
-  required, filter or prohibited clause, hits with score bits and five explanations, or
-  Lucene's exception.
+  required, filter or prohibited clause, hits with score bits and five
+  explanations; the `Matches` of the hits and explained documents (each
+  match's positions, offsets and reported query, its terms as sub-matches);
+  or Lucene's exception.
 
 - `GenMoreLikeThis.java` (M10 T10.6) → `mlt/`, for `lucene-search`'s
   `mlt_fixtures.rs` and `common_terms_fixtures.rs`: `index/`, four segments
   with deletions in two, of stored text (`body`, some documents twice, some
-  without), stored text with term vectors (`tv`) and short titles, the words
-  skewed so some are in most documents and some in few; `mlt.tsv`:
-  `MoreLikeThis` under twelve settings (interesting terms, the query's
+  without), stored text with term vectors (`tv`), short titles and a stored
+  int (`num`), the words skewed so some are in most documents and some in
+  few; `mlt.tsv`: `MoreLikeThis` under thirteen settings (interesting terms, the query's
   clauses and hits for six documents, `like(field, texts)`, `like(Map)`) and
   `MoreLikeThisQuery` (rewrite, hits, explanations); `common.tsv`:
   `CommonTermsQuery` over twelve term sets (`toString`, hits with score bits,
