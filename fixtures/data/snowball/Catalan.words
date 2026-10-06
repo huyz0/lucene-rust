@@ -3386,6 +3386,7 @@ conditional	condition
 core	cor
 cpu
 cried
+crossing
 crème	crem
 d'air
 dansk
@@ -3411,6 +3412,7 @@ ellipsis	ellip
 emergency
 emoji	emoj
 end
+ends	end
 estación	estacion
 está	est
 example	examp
@@ -3473,6 +3475,8 @@ jumped	jump
 jumping
 jumps	jump
 jusqu'à	jusqu'
+k
+kelvin	kelv
 l'avion
 l'aéroport	l'aeroport
 l'hôtel
@@ -3500,6 +3504,7 @@ nationalize	nationaliz
 naïve	naiv
 nbsp
 net
+next
 niño	niñ
 norsk
 o'neil's	o'n
@@ -3547,6 +3552,7 @@ see
 sensibility
 sensitivity
 sep
+separator	separat
 sind
 sing
 single	sing
@@ -3559,6 +3565,7 @@ someone	someon
 space	spac
 spaces	spac
 stopped	stopp
+strasse	stras
 straße	straß
 studies	stud
 style
@@ -3596,6 +3603,7 @@ walking
 were	wer
 wi
 width
+with
 world
 www
 x
@@ -3694,6 +3702,9 @@ zero	zer
 ภาษาไทยไม่มีช่องว่างระหว่างคำ
 แต่มีช่องว่างระหว่างประโยค
 ๑๒๓
+ーﾟ
+ヽﾞ
+ヽﾟ
 中华人民共和国成立于1949年
 我爱北京天安门
 日本語のテキストとカタカナとｶﾀｶﾅとひらがな
@@ -3705,6 +3716,9 @@ zero	zer
 ️
 ａｂｃ１２３と全角
 ｋｏｒｅａ
+ｰﾟ
+ｳﾞ
+ﾊﾟ
 l
 -
 h
@@ -3736,7 +3750,6 @@ j
 ý
 þ
 ÿ
-k
 w
 ·S	.S
 ·áà-slosiï	.aa-sl
