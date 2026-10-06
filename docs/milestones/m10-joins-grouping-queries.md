@@ -298,8 +298,8 @@ grouping. Each of them falls back to Lucene today.
   queries **ported** (`lucene-search/src/spans`, `exec/spans.rs`): `SpanNode`
   (first, position range, not, containing, within, field masking, the
   multi-term wrapper, payload check and payload score, over terms, nears and
-  ors) on lazy `Spans` -- `GenSpans`'s 73 queries, 1 387 lines equal to
-  Lucene's but ten where Java's `toString` throws on a `null` payload.
+  ors) on lazy `Spans` -- `GenSpans`'s 95 queries, 2 335 lines equal to
+  Lucene's but the 18 where Java's `toString` throws on a `null` payload.
 - **T10.7** — Plugin wiring for the OpenSearch shapes above.
 
 ## Stage-3 status (2026-10-05)

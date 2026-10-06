@@ -1210,9 +1210,24 @@ fn explain_boolean(
             },
             _ => clause,
         };
-        let e = explain_clause_with_stats(
-            fields, doc_in, pos_in, pay_in, live_docs, points, unscored, doc, norms, global,
-        )?;
+        // A span query's weight without scores has no similarity
+        // (`buildSimWeight` with no term states).
+        let e = match unscored {
+            Clause::Extended(x)
+                if matches!(x.as_ref(), crate::extended_query::ExtendedQuery::Span(_)) =>
+            {
+                let crate::extended_query::ExtendedQuery::Span(sq) = x.as_ref() else {
+                    unreachable!("matched above")
+                };
+                let ctx = interval_context(
+                    fields, doc_in, pos_in, pay_in, live_docs, points, norms, global,
+                );
+                crate::exec::spans::explain_span_unscored(&ctx, sq, doc)?
+            }
+            _ => explain_clause_with_stats(
+                fields, doc_in, pos_in, pay_in, live_docs, points, unscored, doc, norms, global,
+            )?,
+        };
         if e.matched {
             match_count += 1;
             details.push(

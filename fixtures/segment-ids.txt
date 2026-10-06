@@ -319,11 +319,11 @@ sorted_search_index/_0.si 3b495d4088e554e17c18f3905b26037d
 sorted_search_index/_1.si 3b495d4088e554e17c18f3905b260381
 sorted_search_index/_2.si 3b495d4088e554e17c18f3905b260385
 sorted_search_index/segments_4 3b495d4088e554e17c18f3905b26038b
-spans/index/_0.si 50e75a45653db5a084a64567e61be655
-spans/index/_1.si 50e75a45653db5a084a64567e61be659
-spans/index/_2.si 50e75a45653db5a084a64567e61be65f
-spans/index/_3.si 50e75a45653db5a084a64567e61be665
-spans/index/segments_6 50e75a45653db5a084a64567e61be668
+spans/index/_0.si 4467852eb01faf627d9fa708fa52a516
+spans/index/_1.si 4467852eb01faf627d9fa708fa52a51a
+spans/index/_2.si 4467852eb01faf627d9fa708fa52a520
+spans/index/_3.si 4467852eb01faf627d9fa708fa52a526
+spans/index/segments_6 4467852eb01faf627d9fa708fa52a529
 spatial_strategies/index/_0.si ab99e2746d3e68bffe35333e8460ea66
 spatial_strategies/index/_1.si ab99e2746d3e68bffe35333e8460ea6a
 spatial_strategies/index/_2.si ab99e2746d3e68bffe35333e8460ea6e
