@@ -20,7 +20,7 @@
 //! an `IllegalArgument` error where Java would accept it), and `\W`/`\D`/`\S`
 //! *inside* a character class keep the crate's Unicode meaning.
 
-use regex::{Captures, Regex};
+use regex::{CaptureLocations, Captures, Regex};
 
 use crate::AnalysisError;
 
@@ -145,10 +145,13 @@ impl JavaPattern {
 pub struct JavaMatcher {
     regex: Regex,
     text: String,
-    /// UTF-16 offset of every byte offset that starts a `char` (and the end).
+    /// UTF-16 offset of every byte offset that starts a `char` (and the end);
+    /// empty when the text is ASCII, where the two offsets are equal.
     utf16_at: Vec<i32>,
     last: Option<(usize, usize)>,
     groups: Vec<Option<(usize, usize)>>,
+    /// Reused by every `find()` (no allocation per match).
+    locs: CaptureLocations,
 }
 
 impl JavaMatcher {
@@ -156,6 +159,7 @@ impl JavaMatcher {
     pub fn new(pattern: &JavaPattern, text: &str) -> Self {
         let mut m = JavaMatcher {
             regex: pattern.regex.clone(),
+            locs: pattern.regex.capture_locations(),
             text: String::new(),
             utf16_at: Vec::new(),
             last: None,
@@ -170,13 +174,15 @@ impl JavaMatcher {
         self.text.clear();
         self.text.push_str(text);
         self.utf16_at.clear();
-        self.utf16_at.resize(text.len() + 1, 0);
-        let mut u = 0i32;
-        for (i, c) in text.char_indices() {
-            self.utf16_at[i] = u;
-            u += c.len_utf16() as i32;
+        if !text.is_ascii() {
+            self.utf16_at.resize(text.len() + 1, 0);
+            let mut u = 0i32;
+            for (i, c) in text.char_indices() {
+                self.utf16_at[i] = u;
+                u += c.len_utf16() as i32;
+            }
+            self.utf16_at[text.len()] = u;
         }
-        self.utf16_at[text.len()] = u;
         self.last = None;
         self.groups.clear();
     }
@@ -204,19 +210,30 @@ impl JavaMatcher {
             },
             Some((_, e)) => e,
         };
-        match self.regex.captures_at(&self.text, from) {
-            Some(caps) => {
-                self.groups = (0..caps.len())
-                    .map(|g| caps.get(g).map(|m| (m.start(), m.end())))
-                    .collect();
-                let m = caps.get(0).expect("group 0");
+        self.groups.clear();
+        // Without capturing groups the match alone is asked for, which the
+        // regex crate finds faster than a capture search.
+        if self.locs.len() == 1 {
+            return match self.regex.find_at(&self.text, from) {
+                Some(m) => {
+                    self.groups.push(Some((m.start(), m.end())));
+                    self.last = Some((m.start(), m.end()));
+                    true
+                }
+                None => false,
+            };
+        }
+        match self
+            .regex
+            .captures_read_at(&mut self.locs, &self.text, from)
+        {
+            Some(m) => {
+                let locs = &self.locs;
+                self.groups.extend((0..locs.len()).map(|g| locs.get(g)));
                 self.last = Some((m.start(), m.end()));
                 true
             }
-            None => {
-                self.groups.clear();
-                false
-            }
+            None => false,
         }
     }
 
@@ -227,14 +244,21 @@ impl JavaMatcher {
 
     /// `start(group)` in UTF-16 units, `-1` if the group did not match.
     pub fn start(&self, group: usize) -> i32 {
-        self.group_bytes(group)
-            .map_or(-1, |(s, _)| self.utf16_at[s])
+        self.group_bytes(group).map_or(-1, |(s, _)| self.utf16(s))
     }
 
     /// `end(group)` in UTF-16 units, `-1` if the group did not match.
     pub fn end(&self, group: usize) -> i32 {
-        self.group_bytes(group)
-            .map_or(-1, |(_, e)| self.utf16_at[e])
+        self.group_bytes(group).map_or(-1, |(_, e)| self.utf16(e))
+    }
+
+    /// The UTF-16 offset of byte offset `b` (a `char` boundary).
+    fn utf16(&self, b: usize) -> i32 {
+        match self.utf16_at.get(b) {
+            Some(&u) => u,
+            // ASCII text: no table, the offsets are equal.
+            None => b as i32,
+        }
     }
 }
 

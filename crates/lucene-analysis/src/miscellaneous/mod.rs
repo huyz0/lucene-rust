@@ -12,6 +12,7 @@ mod limit;
 mod stateful;
 mod term_filters;
 mod word_delimiter;
+mod wrappers;
 
 pub use concatenate_graph::{ConcatenateGraphFilter, DEFAULT_MAX_GRAPH_EXPANSIONS, SEP_LABEL};
 pub use conditional::{
@@ -40,4 +41,7 @@ pub use word_delimiter::{
     CATENATE_NUMBERS, CATENATE_WORDS, DEFAULT_WORD_DELIM_TABLE, GENERATE_NUMBER_PARTS,
     GENERATE_WORD_PARTS, IGNORE_KEYWORDS, PRESERVE_ORIGINAL, SPLIT_ON_CASE_CHANGE,
     SPLIT_ON_NUMERICS, STEM_ENGLISH_POSSESSIVE,
+};
+pub use wrappers::{
+    ConcatenatingTokenStream, EmptyTokenStream, LimitTokenCountAnalyzer, PerFieldAnalyzerWrapper,
 };

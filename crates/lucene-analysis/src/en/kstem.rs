@@ -15,6 +15,7 @@ use super::kstem_data::{
     COUNTRY_NATIONALITY, DIRECT_CONFLATIONS, EXCEPTION_WORDS, HEAD_WORDS, PROPER_NOUNS,
     SUPPLEMENT_DICT,
 };
+use crate::char_array_set::WordHash;
 use crate::token_stream::{TokenFilter, TokenStream};
 use crate::AnalysisError;
 
@@ -30,8 +31,8 @@ struct DictEntry {
 
 /// `KStemmer.dict_ht` (a `CharArrayMap` over UTF-16 units; every key is
 /// ASCII, so a `str` key is the same lookup).
-static DICT: LazyLock<HashMap<&'static str, DictEntry>> = LazyLock::new(|| {
-    let mut d = HashMap::with_capacity(30_000);
+static DICT: LazyLock<HashMap<&'static str, DictEntry, WordHash>> = LazyLock::new(|| {
+    let mut d = HashMap::with_capacity_and_hasher(30_000, WordHash::default());
     let mut put = |k: &'static str, e: DictEntry, which: u8| {
         let fresh = d.insert(k, e).is_none();
         assert!(fresh, "Warning: Entry [{k}] already in dictionary {which}");
@@ -87,8 +88,15 @@ fn dict_get(chars: &[u16]) -> Option<DictEntry> {
     if chars.iter().any(|&c| c >= 0x80) {
         return None;
     }
-    let s: String = chars.iter().map(|&c| c as u8 as char).collect();
-    DICT.get(s.as_str()).copied()
+    // Narrowed on the stack: KStem only looks up words of at most
+    // `MAX_WORD_LEN` units, and no key is longer.
+    let mut narrow = [0u8; MAX_WORD_LEN];
+    let dst = narrow.get_mut(..chars.len())?;
+    for (d, &c) in dst.iter_mut().zip(chars) {
+        *d = c as u8;
+    }
+    let key = std::str::from_utf8(dst).ok()?;
+    DICT.get(key).copied()
 }
 
 /// `org.apache.lucene.analysis.util.OpenStringBuilder`, as KStem uses it.
