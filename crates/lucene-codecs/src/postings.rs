@@ -5968,13 +5968,15 @@ impl<'a> PositionsCursor<'a> {
     }
 
     /// `PostingsEnum.getPayload()` after [`Self::next_position`]: `None`
-    /// where the position has none, or payloads are not being read.
+    /// where the position has none, payloads are not being read, or no
+    /// position of the current document has been read yet (the last one
+    /// read was another document's).
     ///
     /// # Errors
     /// Payload lengths that overrun the block's payload bytes.
     pub fn payload(&self) -> Result<Option<&[u8]>> {
         let (start, len) = self.payload;
-        if self.pay_r.is_none() || len == 0 {
+        if self.pay_r.is_none() || len == 0 || self.docs.doc_id != self.pos_doc {
             return Ok(None);
         }
         Ok(Some(self.block.payload(start, len)?))
@@ -6321,6 +6323,7 @@ impl<'a> PositionsCursor<'a> {
             .filter(|&f| f > 0)
             .ok_or_else(|| corrupted(format!("document frequency {freq} is not positive")))?;
         self.position = 0;
+        self.payload = (0, 0);
         self.pos_doc = doc;
         Ok(())
     }
@@ -6442,13 +6445,20 @@ mod tests {
     use super::*;
     use lucene_store::data_output::DataOutput;
 
-    /// A term whose documents' frequencies claim more positions than its
-    /// `totalTermFreq` accounts for (a corrupt `.tim`): once the full
-    /// positions blocks run out, the "last block" holds none. Reading
-    /// positions must then fail, not spin on an empty refill forever --
-    /// a hang `catch_unwind` at the FFI boundary could never rescue.
-    #[test]
-    fn positions_past_a_short_total_term_freq_are_an_error_not_a_hang() {
+    /// `postings_skip_index` (`GenPostingsSkip.java`) opened: its `pskip`
+    /// field, the `.doc`/`.pos`/`.pay` inputs, and its dense term -- in all
+    /// 8 500 documents, one to three positions each, so a positions block
+    /// holds many documents and a `.doc` block spans several positions
+    /// blocks.
+    fn with_skip_fixture(
+        f: impl FnOnce(
+            &crate::blocktree::FieldTerms,
+            &DocInput<'_>,
+            &PosInput<'_>,
+            &PayInput<'_>,
+            &[u8],
+        ),
+    ) {
         let dir = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../fixtures/data/postings_skip_index/"
@@ -6474,7 +6484,11 @@ mod tests {
             raw("tip_file_name"),
             raw("tmd_file_name"),
         );
-        let (doc, pos) = (raw("doc_file_name"), raw("pos_file_name"));
+        let (doc, pos, pay) = (
+            raw("doc_file_name"),
+            raw("pos_file_name"),
+            raw("pay_file_name"),
+        );
         let infos = crate::field_infos::parse(&fnm, &id, "").unwrap();
         let fields = crate::blocktree::open(
             &tim,
@@ -6489,39 +6503,164 @@ mod tests {
         let field = fields.field("pskip").unwrap();
         let doc_in = DocInput::open(&doc, &id, &suffix).unwrap();
         let pos_in = PosInput::open(&pos, &id, &suffix).unwrap();
-        let (stats, meta) = field.term_state(get("term").as_bytes()).unwrap().unwrap();
-        assert!(stats.total_term_freq > 2 * BLOCK_SIZE as i64);
-        for bulk in [false, true] {
-            let docs = doc_in
-                .lazy_cursor_with_flags(
-                    meta,
-                    stats.doc_freq,
-                    IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
-                    true,
-                    PostingsFlags::Freqs,
-                )
-                .unwrap();
-            // A multiple of the block size: the tail the real total leaves
-            // (at `lastPosBlockOffset`) now holds no positions at all.
-            let short = stats.total_term_freq / BLOCK_SIZE as i64 * BLOCK_SIZE as i64;
-            let mut c = PositionsCursor::new(docs, &pos_in, meta, short, true, true).unwrap();
-            let mut out = Vec::new();
-            let err = loop {
-                if c.next_doc().unwrap() == NO_MORE_DOCS {
-                    panic!("every position read past a short totalTermFreq");
-                }
-                let r = if bulk {
-                    out.clear();
-                    c.positions_into(&mut out)
-                } else {
-                    (0..c.freq()).try_for_each(|_| c.next_position().map(drop))
+        let pay_in = PayInput::open(&pay, &id, &suffix).unwrap();
+        f(field, &doc_in, &pos_in, &pay_in, get("term").as_bytes());
+    }
+
+    /// A term whose documents' frequencies claim more positions than its
+    /// `totalTermFreq` accounts for (a corrupt `.tim`): once the full
+    /// positions blocks run out, the "last block" holds none. Reading
+    /// positions must then fail, not spin on an empty refill forever --
+    /// a hang `catch_unwind` at the FFI boundary could never rescue.
+    #[test]
+    fn positions_past_a_short_total_term_freq_are_an_error_not_a_hang() {
+        with_skip_fixture(|field, doc_in, pos_in, _, term| {
+            let (stats, meta) = field.term_state(term).unwrap().unwrap();
+            assert!(stats.total_term_freq > 2 * BLOCK_SIZE as i64);
+            for bulk in [false, true] {
+                let docs = doc_in
+                    .lazy_cursor_with_flags(
+                        meta,
+                        stats.doc_freq,
+                        IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
+                        true,
+                        PostingsFlags::Freqs,
+                    )
+                    .unwrap();
+                // A multiple of the block size: the tail the real total leaves
+                // (at `lastPosBlockOffset`) now holds no positions at all.
+                let short = stats.total_term_freq / BLOCK_SIZE as i64 * BLOCK_SIZE as i64;
+                let mut c = PositionsCursor::new(docs, pos_in, meta, short, true, true).unwrap();
+                let mut out = Vec::new();
+                let err = loop {
+                    if c.next_doc().unwrap() == NO_MORE_DOCS {
+                        panic!("every position read past a short totalTermFreq");
+                    }
+                    let r = if bulk {
+                        out.clear();
+                        c.positions_into(&mut out)
+                    } else {
+                        (0..c.freq()).try_for_each(|_| c.next_position().map(drop))
+                    };
+                    if let Err(e) = r {
+                        break e;
+                    }
                 };
-                if let Err(e) = r {
-                    break e;
+                assert!(err.to_string().contains("totalTermFreq"), "{err}");
+            }
+        });
+    }
+
+    /// The inline step ([`PositionsCursor::try_next_position`] and
+    /// `try_start_doc`) against a cursor reading every document whole
+    /// ([`PositionsCursor::positions_into`]): documents skipped, `k < freq`
+    /// positions read and the rest left behind, under several patterns, each
+    /// position compared. The walk must take `try_start_doc`'s step over
+    /// skipped documents inside a `.doc` block, with positions left over from
+    /// the last document read, and onto a document whose first position is
+    /// exactly at the end of the decoded positions block (the next read
+    /// refills) -- each counted, so a fixture change that stopped reaching
+    /// one fails here.
+    #[test]
+    fn inline_position_steps_match_whole_document_reads() {
+        with_skip_fixture(|field, doc_in, pos_in, _, term| {
+            let open = || field.lazy_positions(term, doc_in, pos_in).unwrap().unwrap();
+            let mut whole = open();
+            let mut expected = Vec::new();
+            while whole.next_doc().unwrap() != NO_MORE_DOCS {
+                let mut out = Vec::new();
+                whole.positions_into(&mut out).unwrap();
+                expected.push(out);
+            }
+            assert!(expected.iter().map(Vec::len).sum::<usize>() > 2 * BLOCK_SIZE as usize);
+            let (mut skipped_between, mut left_over, mut at_block_end) = (0, 0, 0);
+            let mut seed = 0x5eed_u64;
+            for (skip_one_in, read) in [(1u64, 0usize), (2, 1), (3, 2), (5, usize::MAX), (7, 1)] {
+                let mut c = open();
+                let mut i = 0;
+                while c.next_doc().unwrap() != NO_MORE_DOCS {
+                    seed = seed
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    if skip_one_in > 1 && (seed >> 33).is_multiple_of(skip_one_in) {
+                        i += 1;
+                        continue;
+                    }
+                    let want = &expected[i];
+                    let k = if read == 0 {
+                        want.len()
+                    } else {
+                        read.min(want.len())
+                    };
+                    // What `try_start_doc` is about to step over.
+                    let between =
+                        c.pos_doc_upto < c.docs.block_pos && c.docs.block_gen == c.block_gen;
+                    let doc_left = c.doc_left;
+                    if c.try_start_doc() {
+                        skipped_between += usize::from(between);
+                        left_over += usize::from(doc_left > 0);
+                        at_block_end += usize::from(c.buf_upto == c.block.len);
+                    }
+                    let got: Vec<i32> = (0..k).map(|_| c.next_position().unwrap()).collect();
+                    assert_eq!(got, want[..k], "doc #{i}, pattern {skip_one_in}/{read}");
+                    i += 1;
                 }
-            };
-            assert!(err.to_string().contains("totalTermFreq"), "{err}");
-        }
+                assert_eq!(i, expected.len());
+            }
+            assert!(skipped_between > 0, "no inline step over skipped documents");
+            assert!(left_over > 0, "no inline step over a partly read document");
+            assert!(
+                at_block_end > 0,
+                "no inline step landing at the block's end"
+            );
+        });
+    }
+
+    /// A corrupt per-document frequency in the current `.doc` block: zero
+    /// for the document read (`try_start_doc` declines it, `start_doc`
+    /// reports it), negative for one stepped over.
+    #[test]
+    fn a_non_positive_frequency_fails_the_next_position() {
+        with_skip_fixture(|field, doc_in, pos_in, _, term| {
+            let open = || field.lazy_positions(term, doc_in, pos_in).unwrap().unwrap();
+            let mut c = open();
+            c.next_doc().unwrap();
+            let at = c.docs.block_pos;
+            c.docs.block_freqs[at] = 0;
+            let err = c.next_position().unwrap_err().to_string();
+            assert!(err.contains("is not positive"), "{err}");
+
+            let mut c = open();
+            c.next_doc().unwrap();
+            c.next_position().unwrap();
+            c.next_doc().unwrap();
+            c.next_doc().unwrap();
+            let at = c.docs.block_pos;
+            assert!(at >= 2 && c.pos_doc_upto < at);
+            c.docs.block_freqs[at - 1] = -1;
+            let err = c.next_position().unwrap_err().to_string();
+            assert!(err.contains("negative per-doc frequency"), "{err}");
+        });
+    }
+
+    /// A payload is the last position's of the current document: after the
+    /// cursor moves on, and before the new document's first position is
+    /// read, there is none -- not the previous document's last.
+    #[test]
+    fn payload_is_none_before_the_documents_first_position() {
+        with_skip_fixture(|field, doc_in, pos_in, pay_in, term| {
+            let mut c = field.lazy_positions(term, doc_in, pos_in).unwrap().unwrap();
+            c.read_payloads(pay_in).unwrap();
+            let mut seen = 0;
+            while c.next_doc().unwrap() != NO_MORE_DOCS && seen < 50 {
+                assert_eq!(c.payload().unwrap(), None, "doc {}", c.doc_id());
+                for _ in 0..c.freq() {
+                    c.next_position().unwrap();
+                    seen += usize::from(c.payload().unwrap().is_some());
+                }
+            }
+            assert!(seen > 0, "no payload read at all");
+        });
     }
 
     /// Test-only encoder mirroring `Lucene104PostingsWriter.writeImpacts`
