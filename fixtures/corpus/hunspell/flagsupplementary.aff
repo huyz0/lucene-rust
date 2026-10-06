@@ -1,0 +1,5 @@
+# lucene-rust's own test dictionary: a FLAG UTF-8 flag outside the BMP (two char flags).
+SET UTF-8
+FLAG UTF-8
+SFX 𝄞 Y 1
+SFX 𝄞 0 ing .

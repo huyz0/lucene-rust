@@ -1,0 +1,161 @@
+W	worktogether	0	worktogether	worktogether	worktogether					1
+W	workplay	0	workplay	workplay	workplay					1
+W	walk	0	walk	walk	walk			walks	walks	0
+W	walks	1	walk	walk	walk	walk	AffixedWord[word=walks, entry=walk/PS, prefixes=[], suffixes=[S(id=0)]]	talks|walks	talks|walks	0
+W	walkd	0	walkd	walkd	walkd			walks	walks	1
+W	gona	0	gona	gona	gona					0
+W	wana	0	wana	wana	wana					0
+W	alott	0	alott	alott	alott					0
+W	tomorow	0	tomorow	tomorow	tomorow			tomorrow	tomorrow	0
+W	anothr	0	anothr	anothr	anothr			another	another	0
+W	hous	0	hous	hous	hous			house	house	0
+W	mous	0	mous	mous	mous			mouse	mouse	0
+W	replayed	1	play	play	play	play	AffixedWord[word=replayed, entry=play/DRS, prefixes=[R(id=3)], suffixes=[D(id=1)]]	replayed	replayed	1
+W	plaing	0	plaing	plaing	plaing					1
+W	talkd	0	talkd	talkd	talkd			talks|talked	talks|talked	1
+W	togeter	0	togeter	togeter	togeter			together	together	1
+W	workdays	1	workday	workday	workday	workday	AffixedWord[word=workdays, entry=workday/S, prefixes=[], suffixes=[S(id=0)]]	workday	workday	1
+W	wrokday	0	wrokday	wrokday	wrokday			workday	workday	1
+W	darn	1	darn	darn	darn	darn	AffixedWord[word=darn, entry=darn/N, prefixes=[], suffixes=[]]			0
+W	darns	0	darns	darns	darns					0
+W	houseed	0	houseed	houseed	houseed			housed	housed	0
+W	housed	1	house	house	house	house	AffixedWord[word=housed, entry=house/DS, prefixes=[], suffixes=[D(id=2)]]	houses|house	houses|house	0
+W	work	1	work	work	work	work	AffixedWord[word=work, entry=work/DS, prefixes=[], suffixes=[]]	works|work	works|work	0
+W	play	1	play	play	play	play	AffixedWord[word=play, entry=play/DRS, prefixes=[], suffixes=[]]	plays|play	plays|play	0
+W	talk	0	talk	talk	talk			talks	talks	0
+W	gonna	1	gonna	gonna	gonna	gonna	AffixedWord[word=gonna, entry=gonna/Z, prefixes=[], suffixes=[]]			0
+W	wanna	1	wanna	wanna	wanna	wanna	AffixedWord[word=wanna, entry=wanna/Z, prefixes=[], suffixes=[]]			0
+W	alot	1	alot	alot	alot	alot	AffixedWord[word=alot, entry=alot/Z, prefixes=[], suffixes=[]]			0
+W	together	1	together	together	together	together	AffixedWord[word=together, entry=together, prefixes=[], suffixes=[]]	together	together	0
+W	tomorrow	1	tomorrow	tomorrow	tomorrow	tomorrow	AffixedWord[word=tomorrow, entry=tomorrow, prefixes=[], suffixes=[]]	tomorrow	tomorrow	0
+W	another	1	another	another	another	another	AffixedWord[word=another, entry=another, prefixes=[], suffixes=[]]	another	another	0
+W	house	1	house	house	house	house	AffixedWord[word=house, entry=house/DS, prefixes=[], suffixes=[]]	houses|housed|mouse|house	houses|housed|mouse|house	0
+W	mouse	1	mouse	mouse	mouse	mouse	AffixedWord[word=mouse, entry=mouse/S, prefixes=[], suffixes=[]]	mouses|house|mouse	mouses|house|mouse	0
+W	workday	1	workday	workday	workday	workday	AffixedWord[word=workday, entry=workday/S, prefixes=[], suffixes=[]]	workdays|workday	workdays|workday	0
+W	WORKTOGETHER	0	WORKTOGETHER	WORKTOGETHER	WORKTOGETHER					1
+W	Worktogether	0	Worktogether	Worktogether	Worktogether					1
+W	WORKPLAY	0	WORKPLAY	WORKPLAY	WORKPLAY					1
+W	Workplay	0	Workplay	Workplay	Workplay					1
+W	WALK	0	WALK	WALK	WALK			WALKS	WALKS	1
+W	Walk	0	Walk	Walk	Walk			Walks	Walks	1
+W	WALKS	1	walk	walk	walk	walk	AffixedWord[word=WALKS, entry=walk/PS, prefixes=[], suffixes=[S(id=0)]]	WALKS|TALKS	WALKS|TALKS	1
+W	Walks	1	walk	walk	walk	walk	AffixedWord[word=Walks, entry=walk/PS, prefixes=[], suffixes=[S(id=0)]]	Talks|Walks	Talks|Walks	1
+W	WALKD	0	WALKD	WALKD	WALKD			WALKS	WALKS	1
+W	Walkd	0	Walkd	Walkd	Walkd			Walks	Walks	1
+W	GONA	0	GONA	GONA	GONA					1
+W	Gona	0	Gona	Gona	Gona					1
+W	WANA	0	WANA	WANA	WANA					0
+W	Wana	0	Wana	Wana	Wana					0
+W	ALOTT	0	ALOTT	ALOTT	ALOTT					1
+W	Alott	0	Alott	Alott	Alott					1
+W	TOMOROW	0	TOMOROW	TOMOROW	TOMOROW			TOMORROW	TOMORROW	1
+W	Tomorow	0	Tomorow	Tomorow	Tomorow			Tomorrow	Tomorrow	0
+W	ANOTHR	0	ANOTHR	ANOTHR	ANOTHR			ANOTHER	ANOTHER	1
+W	Anothr	0	Anothr	Anothr	Anothr			Another	Another	0
+W	HOUS	0	HOUS	HOUS	HOUS			HOUSE	HOUSE	1
+W	Hous	0	Hous	Hous	Hous			House	House	1
+W	MOUS	0	MOUS	MOUS	MOUS			MOUSE	MOUSE	0
+W	Mous	0	Mous	Mous	Mous			Mouse	Mouse	0
+W	REPLAYED	1	play	play	play	play	AffixedWord[word=REPLAYED, entry=play/DRS, prefixes=[R(id=3)], suffixes=[D(id=1)]]	REPLAYED	REPLAYED	1
+W	Replayed	1	play	play	play	play	AffixedWord[word=Replayed, entry=play/DRS, prefixes=[R(id=3)], suffixes=[D(id=1)]]	Replayed	Replayed	1
+W	PLAING	0	PLAING	PLAING	PLAING					1
+W	Plaing	0	Plaing	Plaing	Plaing					1
+W	TALKD	0	TALKD	TALKD	TALKD			TALKS|TALKED	TALKS|TALKED	1
+W	Talkd	0	Talkd	Talkd	Talkd			Talks|Talked	Talks|Talked	1
+W	TOGETER	0	TOGETER	TOGETER	TOGETER			TOGETHER	TOGETHER	1
+W	Togeter	0	Togeter	Togeter	Togeter			Together	Together	1
+W	WORKDAYS	1	workday	workday	workday	workday	AffixedWord[word=WORKDAYS, entry=workday/S, prefixes=[], suffixes=[S(id=0)]]	WORKDAYS|WORKDAY	WORKDAYS|WORKDAY	1
+W	Workdays	1	workday	workday	workday	workday	AffixedWord[word=Workdays, entry=workday/S, prefixes=[], suffixes=[S(id=0)]]	Workdays|Workday	Workdays|Workday	1
+W	WROKDAY	0	WROKDAY	WROKDAY	WROKDAY			WORKDAY	WORKDAY	1
+W	Wrokday	0	Wrokday	Wrokday	Wrokday			Workday	Workday	1
+W	DARN	1	darn	darn	darn	darn	AffixedWord[word=DARN, entry=darn/N, prefixes=[], suffixes=[]]			1
+W	Darn	1	darn	darn	darn	darn	AffixedWord[word=Darn, entry=darn/N, prefixes=[], suffixes=[]]			1
+W	DARNS	0	DARNS	DARNS	DARNS					1
+W	Darns	0	Darns	Darns	Darns					1
+W	HOUSEED	0	HOUSEED	HOUSEED	HOUSEED			HOUSED	HOUSED	1
+W	Houseed	0	Houseed	Houseed	Houseed			Housed	Housed	1
+W	HOUSED	1	house	house	house	house	AffixedWord[word=HOUSED, entry=house/DS, prefixes=[], suffixes=[D(id=2)]]	HOUSED|HOUSES|HOUSE	HOUSED|HOUSES|HOUSE	1
+W	Housed	1	house	house	house	house	AffixedWord[word=Housed, entry=house/DS, prefixes=[], suffixes=[D(id=2)]]	Housed|Houses|House	Housed|Houses|House	1
+W	WORK	1	work	work	work	work	AffixedWord[word=WORK, entry=work/DS, prefixes=[], suffixes=[]]	WORK|WORKS	WORK|WORKS	0
+W	Work	1	work	work	work	work	AffixedWord[word=Work, entry=work/DS, prefixes=[], suffixes=[]]	Work|Works	Work|Works	0
+W	PLAY	1	play	play	play	play	AffixedWord[word=PLAY, entry=play/DRS, prefixes=[], suffixes=[]]	PLAY|PLAYS	PLAY|PLAYS	1
+W	Play	1	play	play	play	play	AffixedWord[word=Play, entry=play/DRS, prefixes=[], suffixes=[]]	Play|Plays	Play|Plays	1
+W	TALK	0	TALK	TALK	TALK			TALKS	TALKS	0
+W	Talk	0	Talk	Talk	Talk			Talks	Talks	0
+W	GONNA	1	gonna	gonna	gonna	gonna	AffixedWord[word=GONNA, entry=gonna/Z, prefixes=[], suffixes=[]]			1
+W	Gonna	1	gonna	gonna	gonna	gonna	AffixedWord[word=Gonna, entry=gonna/Z, prefixes=[], suffixes=[]]			1
+W	WANNA	1	wanna	wanna	wanna	wanna	AffixedWord[word=WANNA, entry=wanna/Z, prefixes=[], suffixes=[]]			0
+W	Wanna	1	wanna	wanna	wanna	wanna	AffixedWord[word=Wanna, entry=wanna/Z, prefixes=[], suffixes=[]]			0
+W	ALOT	1	alot	alot	alot	alot	AffixedWord[word=ALOT, entry=alot/Z, prefixes=[], suffixes=[]]			1
+W	Alot	1	alot	alot	alot	alot	AffixedWord[word=Alot, entry=alot/Z, prefixes=[], suffixes=[]]			1
+W	TOGETHER	1	together	together	together	together	AffixedWord[word=TOGETHER, entry=together, prefixes=[], suffixes=[]]	TOGETHER	TOGETHER	1
+W	Together	1	together	together	together	together	AffixedWord[word=Together, entry=together, prefixes=[], suffixes=[]]	Together	Together	1
+W	TOMORROW	1	tomorrow	tomorrow	tomorrow	tomorrow	AffixedWord[word=TOMORROW, entry=tomorrow, prefixes=[], suffixes=[]]	TOMORROW	TOMORROW	0
+W	Tomorrow	1	tomorrow	tomorrow	tomorrow	tomorrow	AffixedWord[word=Tomorrow, entry=tomorrow, prefixes=[], suffixes=[]]	Tomorrow	Tomorrow	0
+W	ANOTHER	1	another	another	another	another	AffixedWord[word=ANOTHER, entry=another, prefixes=[], suffixes=[]]	ANOTHER	ANOTHER	1
+W	Another	1	another	another	another	another	AffixedWord[word=Another, entry=another, prefixes=[], suffixes=[]]	Another	Another	0
+W	HOUSE	1	house	house	house	house	AffixedWord[word=HOUSE, entry=house/DS, prefixes=[], suffixes=[]]	HOUSE|HOUSES|HOUSED|MOUSE	HOUSE|HOUSES|HOUSED|MOUSE	1
+W	House	1	house	house	house	house	AffixedWord[word=House, entry=house/DS, prefixes=[], suffixes=[]]	Mouse|House|Houses|Housed	Mouse|House|Houses|Housed	1
+W	MOUSE	1	mouse	mouse	mouse	mouse	AffixedWord[word=MOUSE, entry=mouse/S, prefixes=[], suffixes=[]]	MOUSE|MOUSES|HOUSE	MOUSE|MOUSES|HOUSE	1
+W	Mouse	1	mouse	mouse	mouse	mouse	AffixedWord[word=Mouse, entry=mouse/S, prefixes=[], suffixes=[]]	Mouse|House|Mouses	Mouse|House|Mouses	0
+W	WORKDAY	1	workday	workday	workday	workday	AffixedWord[word=WORKDAY, entry=workday/S, prefixes=[], suffixes=[]]	WORKDAY|WORKDAYS	WORKDAY|WORKDAYS	1
+W	Workday	1	workday	workday	workday	workday	AffixedWord[word=Workday, entry=workday/S, prefixes=[], suffixes=[]]	Workday|Workdays	Workday|Workdays	0
+W	worktoether	0	worktoether	worktoether	worktoether					1
+W	owrktogether	0	owrktogether	owrktogether	owrktogether					1
+W	worklay	0	worklay	worklay	worklay			workday	workday	0
+W	owrkplay	0	owrkplay	owrkplay	owrkplay					1
+W	wak	0	wak	wak	wak					1
+W	awlk	0	awlk	awlk	awlk					0
+W	waks	0	waks	waks	waks			walks	walks	1
+W	awlks	0	awlks	awlks	awlks			walks	walks	0
+W	wakd	0	wakd	wakd	wakd					1
+W	awlkd	0	awlkd	awlkd	awlkd					1
+W	goa	0	goa	goa	goa					1
+W	ogna	0	ogna	ogna	ogna					1
+W	waa	0	waa	waa	waa					1
+W	awna	0	awna	awna	awna					0
+W	altt	0	altt	altt	altt					1
+W	laott	0	laott	laott	laott					0
+W	tomrow	0	tomrow	tomrow	tomrow					0
+W	otmorow	0	otmorow	otmorow	otmorow					1
+W	anohr	0	anohr	anohr	anohr					1
+W	naothr	0	naothr	naothr	naothr					0
+W	hos	0	hos	hos	hos					0
+W	ohus	0	ohus	ohus	ohus					1
+W	mos	0	mos	mos	mos					0
+W	omus	0	omus	omus	omus					1
+W	replyed	0	replyed	replyed	replyed			replayed	replayed	1
+W	erplayed	0	erplayed	erplayed	erplayed			replayed	replayed	1
+W	plang	0	plang	plang	plang					1
+W	lpaing	0	lpaing	lpaing	lpaing					1
+W	takd	0	takd	takd	takd					1
+W	atlkd	0	atlkd	atlkd	atlkd					1
+W	togter	0	togter	togter	togter					1
+W	otgeter	0	otgeter	otgeter	otgeter					1
+W	workays	0	workays	workays	workays			workdays	workdays	1
+W	owrkdays	0	owrkdays	owrkdays	owrkdays			workdays	workdays	1
+W	wroday	0	wroday	wroday	wroday					1
+W	rwokday	0	rwokday	rwokday	rwokday			workday	workday	1
+W	dan	0	dan	dan	dan					0
+W	adrn	0	adrn	adrn	adrn					0
+W	dans	0	dans	dans	dans					1
+W	adrns	0	adrns	adrns	adrns					0
+W	houeed	0	houeed	houeed	houeed			housed	housed	1
+W	ohuseed	0	ohuseed	ohuseed	ohuseed					1
+W	houed	0	houed	houed	houed			housed	housed	0
+W	ohused	0	ohused	ohused	ohused			housed	housed	1
+E	work	work/DS	AffixedWord[word=work, entry=work/DS, prefixes=[], suffixes=[]]|AffixedWord[word=worked, entry=work/DS, prefixes=[], suffixes=[D(id=1)]]|AffixedWord[word=works, entry=work/DS, prefixes=[], suffixes=[S(id=0)]]
+E	play	play/DRS	AffixedWord[word=play, entry=play/DRS, prefixes=[], suffixes=[]]|AffixedWord[word=played, entry=play/DRS, prefixes=[], suffixes=[D(id=1)]]|AffixedWord[word=replayed, entry=play/DRS, prefixes=[R(id=3)], suffixes=[D(id=1)]]|AffixedWord[word=replay, entry=play/DRS, prefixes=[R(id=3)], suffixes=[]]|AffixedWord[word=plays, entry=play/DRS, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=replays, entry=play/DRS, prefixes=[R(id=3)], suffixes=[S(id=0)]]
+E	walk	walk/PS	AffixedWord[word=walks, entry=walk/PS, prefixes=[], suffixes=[S(id=0)]]
+E	talk	talk/DPS	AffixedWord[word=talked, entry=talk/DPS, prefixes=[], suffixes=[D(id=1)]]|AffixedWord[word=talks, entry=talk/DPS, prefixes=[], suffixes=[S(id=0)]]
+E	gonna	gonna/Z	AffixedWord[word=gonna, entry=gonna/Z, prefixes=[], suffixes=[]]
+E	wanna	wanna/Z	AffixedWord[word=wanna, entry=wanna/Z, prefixes=[], suffixes=[]]
+E	alot	alot/Z	AffixedWord[word=alot, entry=alot/Z, prefixes=[], suffixes=[]]
+E	together	together	AffixedWord[word=together, entry=together, prefixes=[], suffixes=[]]
+E	tomorrow	tomorrow	AffixedWord[word=tomorrow, entry=tomorrow, prefixes=[], suffixes=[]]
+E	another	another	AffixedWord[word=another, entry=another, prefixes=[], suffixes=[]]
+E	house	house/DS	AffixedWord[word=house, entry=house/DS, prefixes=[], suffixes=[]]|AffixedWord[word=housed, entry=house/DS, prefixes=[], suffixes=[D(id=2)]]|AffixedWord[word=houses, entry=house/DS, prefixes=[], suffixes=[S(id=0)]]
+E	mouse	mouse/S	AffixedWord[word=mouse, entry=mouse/S, prefixes=[], suffixes=[]]|AffixedWord[word=mouses, entry=mouse/S, prefixes=[], suffixes=[S(id=0)]]
+E	workday	workday/S	AffixedWord[word=workday, entry=workday/S, prefixes=[], suffixes=[]]|AffixedWord[word=workdays, entry=workday/S, prefixes=[], suffixes=[S(id=0)]]
+E	darn	darn/N	AffixedWord[word=darn, entry=darn/N, prefixes=[], suffixes=[]]
+G	AffixedWord[word=gonna, entry=gonna/Z, prefixes=[], suffixes=[]]|AffixedWord[word=another, entry=another, prefixes=[], suffixes=[]]|AffixedWord[word=darn, entry=darn/N, prefixes=[], suffixes=[]]|AffixedWord[word=alot, entry=alot/Z, prefixes=[], suffixes=[]]|AffixedWord[word=workday, entry=workday/S, prefixes=[], suffixes=[]]|AffixedWord[word=workdays, entry=workday/S, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=walks, entry=walk/PS, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=wanna, entry=wanna/Z, prefixes=[], suffixes=[]]|AffixedWord[word=tomorrow, entry=tomorrow, prefixes=[], suffixes=[]]|AffixedWord[word=mouse, entry=mouse/S, prefixes=[], suffixes=[]]|AffixedWord[word=mouses, entry=mouse/S, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=together, entry=together, prefixes=[], suffixes=[]]|AffixedWord[word=talked, entry=talk/DPS, prefixes=[], suffixes=[D(id=1)]]|AffixedWord[word=talks, entry=talk/DPS, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=play, entry=play/DRS, prefixes=[], suffixes=[]]|AffixedWord[word=played, entry=play/DRS, prefixes=[], suffixes=[D(id=1)]]|AffixedWord[word=replayed, entry=play/DRS, prefixes=[R(id=3)], suffixes=[D(id=1)]]|AffixedWord[word=replay, entry=play/DRS, prefixes=[R(id=3)], suffixes=[]]|AffixedWord[word=plays, entry=play/DRS, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=replays, entry=play/DRS, prefixes=[R(id=3)], suffixes=[S(id=0)]]|AffixedWord[word=house, entry=house/DS, prefixes=[], suffixes=[]]|AffixedWord[word=housed, entry=house/DS, prefixes=[], suffixes=[D(id=2)]]|AffixedWord[word=houses, entry=house/DS, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=work, entry=work/DS, prefixes=[], suffixes=[]]|AffixedWord[word=worked, entry=work/DS, prefixes=[], suffixes=[D(id=1)]]|AffixedWord[word=works, entry=work/DS, prefixes=[], suffixes=[S(id=0)]]
