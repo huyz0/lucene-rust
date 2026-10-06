@@ -775,6 +775,50 @@ def rule_toplevel_whole_reader(files, problems, stats):
                 )
 
 
+# --------------------------------------------------------------------------
+# Rule 10: a guard on a boolean's occurs names all four of them
+# --------------------------------------------------------------------------
+#
+# T10.6's review found `BooleanQuery::rewrite` flattening a nested "pure
+# disjunction" on `inner.must.is_empty() && inner.must_not.is_empty()`: Java's
+# `isPureDisjunction()` is "every clause is SHOULD", and the guard forgot the
+# fourth occur, so `[(a #b), c]` flattened to `[a, c]` and lost `#b`. `FILTER`
+# arrived after `MUST`/`SHOULD`/`MUST_NOT` in this port, and every guard
+# written before it named three buckets. The rule: outside tests, a condition
+# (code between two of `{` `}` `;` `=>`) that tests both `R.must.is_empty()`
+# and `R.must_not.is_empty()` on one receiver `R` also names `R.filter`.
+
+OCCUR_MUST = re.compile(r"(?<![\w.])((?:\w+\.)*)must\s*\.\s*is_empty\s*\(\s*\)")
+OCCUR_SPLIT = re.compile(r"[{};]|=>")
+
+
+def rule_occur_guard(files, problems, stats):
+    for rel, raw in files:
+        lines = blank_cfg_test(raw)
+        # Each piece carries the line it starts on, for the diagnostic.
+        text = "\n".join(strip_comment(line) for line in lines)
+        start = 0
+        for m in list(OCCUR_SPLIT.finditer(text)) + [None]:
+            end = m.start() if m else len(text)
+            seg = text[start:end]
+            for g in OCCUR_MUST.finditer(seg):
+                recv = re.escape(g.group(1))
+                if not re.search(r"(?<![\w.])" + recv + r"must_not\s*\.\s*is_empty\s*\(", seg):
+                    continue
+                stats["occur_guard_sites"] += 1
+                if re.search(r"(?<![\w.])" + recv + r"filter\b", seg):
+                    continue
+                line = text.count("\n", 0, start + g.start()) + 1
+                problems.append(
+                    f"{rel}:{line}: a guard tests `{g.group(1)}must` and "
+                    f"`{g.group(1)}must_not` but not `{g.group(1)}filter`. A "
+                    f"`FILTER` clause is a fourth occur: say what it means here "
+                    f"(Java's `isPureDisjunction()` is every clause `SHOULD`). "
+                    f"(docs/mechanical-gates.md#occur-guard)"
+                )
+            start = m.end() if m else len(text)
+
+
 RULES = (
     ("fixed-bitset-bound", rule_fixed_bitset_bound),
     ("sentinel-callers", rule_sentinel_callers),
@@ -785,6 +829,7 @@ RULES = (
     ("block-guard", rule_block_guard),
     ("alloc-from-doc", rule_alloc_from_doc),
     ("toplevel-whole-reader", rule_toplevel_whole_reader),
+    ("occur-guard", rule_occur_guard),
 )
 
 
@@ -808,6 +853,7 @@ def main(argv):
         "block_flag_sites": 0,
         "alloc_doc_sites": 0,
         "toplevel_sites": 0,
+        "occur_guard_sites": 0,
     }
     for name, rule in RULES:
         if only and name != only:
@@ -826,6 +872,7 @@ def main(argv):
         print(f"block-flag sites (guarded)          : {stats['block_flag_sites']}")
         print(f"allocations sized from a doc id     : {stats['alloc_doc_sites']}")
         print(f"function TopLevel constructions     : {stats['toplevel_sites']}")
+        print(f"must+must_not guards (name filter)  : {stats['occur_guard_sites']}")
 
     if problems:
         for p in problems:
