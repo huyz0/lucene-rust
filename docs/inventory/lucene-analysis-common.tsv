@@ -224,8 +224,8 @@ analysis/hunspell/Stemmer	ported	crates/lucene-analysis/src/hunspell/stemmer.rs:
 analysis/hunspell/Suggester	ported	crates/lucene-analysis/src/hunspell/suggester.rs::Suggester -- M11 T11.4
 analysis/hunspell/SuggestibleEntryCache	todo:M11	T11.4 remainder: Suggester.withSuggestibleEntryCache (speed for memory; same suggestions)
 analysis/hunspell/Suggestion	ported	crates/lucene-analysis/src/hunspell/suggester.rs::Suggestion -- M11 T11.4
-analysis/hunspell/SuggestionTimeoutException	todo:M11	T11.4 remainder: suggestion time limits (TimeoutPolicy)
-analysis/hunspell/TimeoutPolicy	todo:M11	T11.4 remainder: suggestion time limits; the port runs NO_TIMEOUT
+analysis/hunspell/SuggestionTimeoutException	ported	crates/lucene-analysis/src/hunspell/timeout.rs::SuggestionTimeout -- M11 T11.4
+analysis/hunspell/TimeoutPolicy	ported	crates/lucene-analysis/src/hunspell/timeout.rs::TimeoutPolicy -- M11 T11.4
 analysis/hunspell/TrigramAutomaton	ported	crates/lucene-analysis/src/hunspell/suggester.rs::TrigramScore -- M11 T11.4
 analysis/hunspell/WordCase	ported	crates/lucene-analysis/src/hunspell/word_case.rs::WordCase -- M11 T11.4
 analysis/hunspell/WordContext	ported	crates/lucene-analysis/src/hunspell/stemmer.rs::WordContext -- M11 T11.4

@@ -165,6 +165,111 @@ fn stemmer_unique_stems() {
     assert!(Stemmer::new(&d).stem(&long).is_empty());
 }
 
+/// The reviewer's exponential compound case: every split of `a{24}b` into
+/// `a`/`aa`/`aaa` parts is tried before `b` fails, for every candidate the
+/// suggester spells. Lucene's `NO_TIMEOUT` takes 18 s on it; the default
+/// policy (`RETURN_PARTIAL_RESULT`, 250 ms) returns what it has.
+const EXPONENTIAL_AFF: &[u8] = b"SET UTF-8\nCOMPOUNDFLAG X\nCOMPOUNDMIN 1\n";
+const EXPONENTIAL_DIC: &[u8] = b"3\na/X\naa/X\naaa/X\n";
+
+/// Runs `f` on its own thread; `None` when it has not returned in `limit`.
+fn within<T: Send + 'static>(
+    limit: std::time::Duration,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f());
+    });
+    rx.recv_timeout(limit).ok()
+}
+
+#[test]
+fn default_suggest_stops_at_its_time_limit() {
+    let d = Arc::new(Dictionary::new(EXPONENTIAL_AFF, &[EXPONENTIAL_DIC], false).unwrap());
+    let word = format!("{}b", "a".repeat(24));
+    let (d2, w2) = (Arc::clone(&d), word.clone());
+    let r = within(std::time::Duration::from_secs(10), move || {
+        let started = std::time::Instant::now();
+        let r = Hunspell::new(&d2).suggest(&w2);
+        (r, started.elapsed())
+    });
+    let (r, took) = r.expect("suggest ran past 10 s");
+    // RETURN_PARTIAL_RESULT: what was found, as a result.
+    assert!(r.is_ok(), "{r:?}");
+    assert!(took >= SUGGEST_TIME_LIMIT, "{took:?}");
+    let r = within(std::time::Duration::from_secs(10), move || {
+        Hunspell::with_timeout_policy(&d, TimeoutPolicy::ThrowException, None)
+            .suggest_with_time_limit(&word, std::time::Duration::from_millis(20))
+    });
+    let e = r.expect("suggest ran past 10 s").unwrap_err();
+    assert_eq!(
+        e.message(),
+        format!("Time limit of 20ms exceeded for {}b", "a".repeat(24))
+    );
+    assert_eq!(e.to_string(), e.message());
+    assert!(e.partial_result().is_empty());
+}
+
+#[test]
+fn check_canceled_stops_spell_and_suggest() {
+    let d = Dictionary::new(AFF, &[DIC], false).unwrap();
+    let never: &(dyn Fn() -> bool + Sync) = &|| false;
+    let always: &(dyn Fn() -> bool + Sync) = &|| true;
+    let h = Hunspell::with_timeout_policy(&d, TimeoutPolicy::NoTimeout, Some(never));
+    assert!(h.spell("walks"));
+    let all = Suggester::new(&d).suggest_no_timeout("walkz");
+    assert!(!all.is_empty());
+    assert_eq!(h.suggest("walkz").unwrap(), all);
+    assert!(format!("{h:?}").contains("NoTimeout"));
+    // A canceled `spell` answers `false`; a canceled suggestion is a
+    // `SuggestionTimeout` unless the policy returns partial results.
+    let h = Hunspell::with_timeout_policy(&d, TimeoutPolicy::NoTimeout, Some(always));
+    assert!(!h.spell("walks"));
+    let e = h.suggest("walkz").unwrap_err();
+    assert_eq!((e.message(), e.partial_result()), ("canceled", &[][..]));
+    let h = Hunspell::with_timeout_policy(&d, TimeoutPolicy::ReturnPartialResult, Some(always));
+    assert_eq!(h.suggest("walkz").unwrap(), Vec::<String>::new());
+    // Cancelled after `k` checks: a prefix of the full answer, growing
+    // with `k` (each later check stops at once, nothing more is added).
+    let (mut sizes, mut k) = (Vec::new(), 0);
+    loop {
+        let calls = std::sync::atomic::AtomicU32::new(0);
+        let after: &(dyn Fn() -> bool + Sync) =
+            &|| calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= k;
+        let r = Suggester::new(&d).suggest_with_timeout(
+            "walkz",
+            std::time::Duration::from_secs(60),
+            Some(after),
+        );
+        match r {
+            Ok(full) => {
+                assert_eq!(full, all);
+                break;
+            }
+            Err(e) => {
+                let partial = e.into_partial_result();
+                assert!(all.starts_with(&partial), "{k}: {partial:?}");
+                sizes.push(partial.len());
+            }
+        }
+        k += 1;
+    }
+    assert_eq!(sizes.first(), Some(&0));
+    assert!(sizes.windows(2).all(|w| w[0] <= w[1]), "{sizes:?}");
+    // Suggesting for a dashed word recurses into each chunk under the
+    // same canceler.
+    let r = Suggester::new(&d).suggest_with_timeout(
+        "walkz-walkz",
+        std::time::Duration::from_secs(60),
+        None,
+    );
+    assert_eq!(
+        r.unwrap(),
+        Suggester::new(&d).suggest_no_timeout("walkz-walkz")
+    );
+}
+
 #[test]
 fn alias_counts_do_not_size_allocations() {
     // Java allocates `new String[count]` up front; a hostile header must not

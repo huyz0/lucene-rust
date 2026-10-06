@@ -4,26 +4,64 @@
 use super::affixed_word::{Affix, AffixedWord};
 use super::dictionary::Dictionary;
 use super::stemmer::Stemmer;
+use super::timeout::{Canceler, CheckCanceled, TimeoutPolicy};
 
-/// `org.apache.lucene.analysis.hunspell.Hunspell` (with
-/// `TimeoutPolicy.NO_TIMEOUT`: every call runs to completion).
-#[derive(Debug, Clone, Copy)]
+/// `org.apache.lucene.analysis.hunspell.Hunspell`: spell checking,
+/// suggestions, roots and analyses, under a [`TimeoutPolicy`] and an
+/// optional [`CheckCanceled`] hook.
+#[derive(Clone, Copy)]
 pub struct Hunspell<'d> {
     pub(crate) dictionary: &'d Dictionary,
     pub(crate) stemmer: Stemmer<'d>,
     /// The `Suggester`'s speller: `acceptsStem` refuses `NOSUGGEST` and
     /// `SUBSTANDARD` roots.
     pub(crate) suggestion_mode: bool,
+    /// What `suggest` does when it runs out of time.
+    pub(crate) policy: TimeoutPolicy,
+    /// The caller's `checkCanceled`.
+    pub(crate) check_canceled: Option<CheckCanceled<'d>>,
+    /// The running computation's `checkCanceled` (`None`: never stops).
+    pub(crate) cancel: Option<&'d Canceler<'d>>,
+}
+
+impl std::fmt::Debug for Hunspell<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Hunspell")
+            .field("suggestion_mode", &self.suggestion_mode)
+            .field("policy", &self.policy)
+            .field("check_canceled", &self.check_canceled.is_some())
+            .field("cancel", &self.cancel)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'d> Hunspell<'d> {
-    /// `new Hunspell(dictionary, TimeoutPolicy.NO_TIMEOUT, () -> {})`.
+    /// `new Hunspell(dictionary)`: `TimeoutPolicy.RETURN_PARTIAL_RESULT`,
+    /// no cancellation hook.
     pub fn new(dictionary: &'d Dictionary) -> Self {
+        Self::with_timeout_policy(dictionary, TimeoutPolicy::ReturnPartialResult, None)
+    }
+
+    /// `new Hunspell(dictionary, policy, checkCanceled)`.
+    pub fn with_timeout_policy(
+        dictionary: &'d Dictionary,
+        policy: TimeoutPolicy,
+        check_canceled: Option<CheckCanceled<'d>>,
+    ) -> Self {
         Hunspell {
             dictionary,
             stemmer: Stemmer::new(dictionary),
             suggestion_mode: false,
+            policy,
+            check_canceled,
+            cancel: None,
         }
+    }
+
+    /// `checkCanceled.run()`: whether the running computation must stop.
+    #[inline]
+    pub(crate) fn canceled(&self) -> bool {
+        self.cancel.is_some_and(Canceler::check)
     }
 
     /// `getRoots(word)`: the distinct stems.
@@ -101,13 +139,27 @@ use super::FLAG_UNSET;
 use super::HIDDEN_FLAG;
 
 impl<'d> Hunspell<'d> {
-    /// `spell(word)`: whether `word` is correctly spelled.
+    /// `spell(word)`: whether `word` is correctly spelled (`false` once the
+    /// [`CheckCanceled`] hook cancels it).
     pub fn spell(&self, word: &str) -> bool {
         let units: Vec<u16> = word.encode_utf16().collect();
-        self.spell_units(&units)
+        match (self.cancel, self.check_canceled) {
+            (None, Some(hook)) => {
+                let cancel = Canceler::new(Some(hook), None);
+                Hunspell {
+                    cancel: Some(&cancel),
+                    ..*self
+                }
+                .spell_units(&units)
+            }
+            _ => self.spell_units(&units),
+        }
     }
 
     pub(crate) fn spell_units(&self, word: &[u16]) -> bool {
+        if self.canceled() {
+            return false;
+        }
         if word.is_empty() {
             return true;
         }
@@ -201,6 +253,9 @@ impl<'d> Hunspell<'d> {
         original: Option<WordCase>,
         context: WordContext,
     ) -> Option<Root> {
+        if self.canceled() {
+            return None;
+        }
         let d = self.dictionary;
         let to_check =
             if context != WordContext::CompoundMiddle && context != WordContext::CompoundEnd {
@@ -478,7 +533,7 @@ impl<'d> Hunspell<'d> {
     /// `checkCompoundRules`.
     fn check_compound_rules(&self, word: &[u16], words: &mut Vec<Vec<i32>>) -> bool {
         let d = self.dictionary;
-        if words.len() >= 100 {
+        if words.len() >= 100 || self.canceled() {
             return false;
         }
         let min = d.compound_min as usize;

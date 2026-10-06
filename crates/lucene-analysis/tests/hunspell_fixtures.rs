@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use lucene_analysis::hunspell::{
     Dictionary, FragmentChecker, Hunspell, HunspellError, HunspellStemFilter, NGramFragmentChecker,
-    Suggester, WordFormGenerator,
+    Suggester, TimeoutPolicy, WordFormGenerator,
 };
 use lucene_analysis::{
     AnalysisError, Analyzer, AnalyzerDefinition, KeywordTokenizer, TokenStream,
@@ -107,7 +107,7 @@ fn hunspell_matches_lucene_on_every_dictionary() {
                     continue;
                 }
             };
-            let h = Hunspell::new(&dictionary);
+            let h = Hunspell::with_timeout_policy(&dictionary, TimeoutPolicy::NoTimeout, None);
             let checker = NGramFragmentChecker::from_all_simple_words(2, &dictionary).unwrap();
             let tuned = Suggester::new(&dictionary)
                 .with_fragment_checker(&checker)
@@ -180,7 +180,11 @@ fn hunspell_matches_lucene_on_every_dictionary() {
                                 c.to_string()
                             }
                         };
-                        assert_eq!(h.suggest(w).join("|"), expect(f[8]), "{file}: suggest({w})");
+                        assert_eq!(
+                            h.suggest(w).unwrap().join("|"),
+                            expect(f[8]),
+                            "{file}: suggest({w})"
+                        );
                         assert_eq!(
                             tuned.suggest_no_timeout(w).join("|"),
                             expect(f[9]),

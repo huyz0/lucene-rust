@@ -17,6 +17,7 @@ mod flags;
 mod speller;
 mod stemmer;
 mod suggester;
+mod timeout;
 mod word_case;
 mod word_form_generator;
 mod word_storage;
@@ -26,6 +27,7 @@ pub use dictionary::{DictEntry, Dictionary};
 pub use speller::Hunspell;
 pub use stemmer::Stemmer;
 pub use suggester::Suggester;
+pub use timeout::{CheckCanceled, SuggestionTimeout, TimeoutPolicy, SUGGEST_TIME_LIMIT};
 pub use word_form_generator::{
     EverythingPossible, FragmentChecker, NGramFragmentChecker, WordFormGenerator,
 };
