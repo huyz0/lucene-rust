@@ -350,7 +350,7 @@ fn term_spans<'a>(
     field: &str,
     term: &[u8],
     payloads: bool,
-) -> Result<Option<BoxSpans<'a>>> {
+) -> Result<Option<TermSpans<'a>>> {
     let Some(ft) = ctx.fields.field(field) else {
         return Ok(None);
     };
@@ -372,7 +372,7 @@ fn term_spans<'a>(
     let mut postings = LeafPositions::open(ctx, pos_in, field, term)?;
     let stream = payloads && ft.has_payloads() && postings.stream_payloads(ctx);
     let lazy = postings.is_lazy();
-    Ok(Some(BoxSpans::Term(TermSpans {
+    Ok(Some(TermSpans {
         postings,
         field_terms: ft,
         ctx: *ctx,
@@ -390,7 +390,7 @@ fn term_spans<'a>(
         payload: None,
         cost: i64::from(stats.doc_freq),
         positions_cost,
-    })))
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -1448,37 +1448,18 @@ pub(crate) fn spans_with<'a>(
 ) -> Result<Option<BoxSpans<'a>>> {
     let sub = |ctx: &LeafContext<'a>, q: &SpanNode| spans_with(ctx, q, payloads);
     Ok(match q {
-        SpanNode::Term { field, term } => term_spans(ctx, field, term, payloads)?,
+        SpanNode::Term { field, term } => {
+            term_spans(ctx, field, term, payloads)?.map(BoxSpans::Term)
+        }
         SpanNode::Near {
             clauses,
             slop,
             in_order,
-        } => {
-            let Some(field) = q.field() else {
-                return Ok(None);
-            };
-            if ctx.fields.field(field).is_none() {
-                return Ok(None);
-            }
-            let mut subs = Vec::with_capacity(clauses.len());
-            for c in clauses {
-                match sub(ctx, c)? {
-                    Some(s) => subs.push(s),
-                    None => return Ok(None),
-                }
-            }
-            if subs.len() < 2 {
-                return Err(Error::IllegalArgument(format!(
-                    "Less than 2 subSpans.size():{}",
-                    subs.len()
-                )));
-            }
-            if *in_order {
-                Some(BoxSpans::boxed(NearSpansOrdered::new(*slop, subs)))
-            } else {
-                Some(BoxSpans::boxed(NearSpansUnordered::new(*slop, subs)))
-            }
-        }
+        } => match near_subs(ctx, q, clauses, payloads)? {
+            None => None,
+            Some(subs) if *in_order => Some(BoxSpans::boxed(NearSpansOrdered::new(*slop, subs))),
+            Some(subs) => Some(BoxSpans::boxed(NearSpansUnordered::new(*slop, subs))),
+        },
         SpanNode::Or { clauses } => {
             let mut subs = Vec::with_capacity(clauses.len());
             for c in clauses {
@@ -1560,6 +1541,128 @@ pub(crate) fn spans_with<'a>(
             return Err(Error::IllegalArgument("Rewrite first!".into()));
         }
     })
+}
+
+/// What [`root_spans`] hands a query's spans to: generic over the spans'
+/// type, so a scorer built from them is monomorphised for it.
+pub(crate) trait SpansSink<'a> {
+    type Out;
+    fn sink<S: Spans + 'a>(self, spans: S) -> Self::Out;
+}
+
+/// [`spans_with`], the spans of the common shapes -- a term, a first or
+/// position range, a not, a near, a containment -- handed to `sink` as
+/// their own types rather than boxed: a scorer over them then calls its
+/// spans without a virtual call per document and per span (the dispatch
+/// Java's JIT removes by inlining). Everything else goes boxed.
+pub(crate) fn root_spans<'a, K: SpansSink<'a>>(
+    ctx: &LeafContext<'a>,
+    q: &SpanNode,
+    payloads: bool,
+    sink: K,
+) -> Result<Option<K::Out>> {
+    let sub = |q: &SpanNode| spans_with(ctx, q, payloads);
+    Ok(match q {
+        SpanNode::Term { field, term } => {
+            term_spans(ctx, field, term, payloads)?.map(|t| sink.sink(t))
+        }
+        SpanNode::First { inner, end } => sub(inner)?.map(|s| {
+            sink.sink(FilterSpans::new(
+                s,
+                PositionRange {
+                    start: 0,
+                    end: *end,
+                },
+            ))
+        }),
+        SpanNode::PositionRange { inner, start, end } => sub(inner)?.map(|s| {
+            sink.sink(FilterSpans::new(
+                s,
+                PositionRange {
+                    start: *start,
+                    end: *end,
+                },
+            ))
+        }),
+        SpanNode::Not {
+            include,
+            exclude,
+            pre,
+            post,
+        } => {
+            let Some(inc) = sub(include)? else {
+                return Ok(None);
+            };
+            match sub(exclude)? {
+                None => Some(sink.sink(inc)),
+                Some(exc) => Some(sink.sink(FilterSpans::new(
+                    inc,
+                    NotFilter {
+                        exclude: exc,
+                        pre: *pre,
+                        post: *post,
+                        last_approx_doc: -1,
+                        last_approx_result: false,
+                    },
+                ))),
+            }
+        }
+        SpanNode::Near {
+            clauses,
+            slop,
+            in_order,
+        } => match near_subs(ctx, q, clauses, payloads)? {
+            None => None,
+            Some(subs) if *in_order => Some(sink.sink(NearSpansOrdered::new(*slop, subs))),
+            Some(subs) => Some(sink.sink(NearSpansUnordered::new(*slop, subs))),
+        },
+        SpanNode::Containing { big, little } | SpanNode::Within { big, little } => {
+            let Some(b) = sub(big)? else {
+                return Ok(None);
+            };
+            let Some(l) = sub(little)? else {
+                return Ok(None);
+            };
+            Some(sink.sink(ContainSpans::new(
+                b,
+                l,
+                matches!(q, SpanNode::Containing { .. }),
+            )))
+        }
+        _ => spans_with(ctx, q, payloads)?.map(|s| sink.sink(s)),
+    })
+}
+
+/// A near query's sub-spans, `None` when the field or a clause has none.
+///
+/// # Errors
+/// Fewer than two clauses (`"Less than 2 subSpans.size()"`).
+fn near_subs<'a>(
+    ctx: &LeafContext<'a>,
+    q: &SpanNode,
+    clauses: &[SpanNode],
+    payloads: bool,
+) -> Result<Option<Vec<BoxSpans<'a>>>> {
+    let Some(field) = q.field() else {
+        return Ok(None);
+    };
+    if ctx.fields.field(field).is_none() {
+        return Ok(None);
+    }
+    let mut subs = Vec::with_capacity(clauses.len());
+    for c in clauses {
+        match spans_with(ctx, c, payloads)? {
+            Some(s) => subs.push(s),
+            None => return Ok(None),
+        }
+    }
+    if subs.len() < 2 {
+        return Err(Error::IllegalArgument(format!(
+            "Less than 2 subSpans.size():{}",
+            subs.len()
+        )));
+    }
+    Ok(Some(subs))
 }
 
 /// `getTermStates(weights)` as `buildSimWeight` sees them: the `(field,
