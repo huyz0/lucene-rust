@@ -41,14 +41,19 @@ mod analyzer;
 pub mod attributes;
 mod automaton;
 mod char_array_set;
+pub mod core_analysis;
 pub mod graph_finite_strings;
 mod graph_token_filter;
+pub mod java_character;
+#[rustfmt::skip]
+mod java_character_tables;
 mod keyword_tokenizer;
 mod legacy;
 pub mod reader;
 pub mod standard;
 mod stopword_analyzer_base;
 pub mod token_stream;
+pub mod util;
 pub mod wordlist_loader;
 
 pub use analyzer::{

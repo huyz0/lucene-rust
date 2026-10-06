@@ -1,0 +1,96 @@
+T	0	The quick brown fox jumps over the lazy dog.	0	44	1	1	word	0	-	0	1
+E	0	44	44	0
+T	1	the the The quick quick brown BROWN fox	0	39	1	1	word	0	-	0	1
+E	1	39	39	0
+T	2	Running runs ran easily; the ponies' caresses were relational, conditional and generalizations of happiness.	0	108	1	1	word	0	-	0	1
+E	2	108	108	0
+T	3	O'Neil's friend's dogs' toys -- John's and JAMES'S books aren't theirs.	0	71	1	1	word	0	-	0	1
+E	3	71	71	0
+T	4	Wi-Fi PowerShot500 SD-500 foo_bar 42nd 1st-place AT&T e-mail j2se iPhone XMLHttpRequest ABCdef	0	94	1	1	word	0	-	0	1
+E	4	94	94	0
+T	5	U.S.A. I.B.M. e.g. Dr. Smith's 3.14 1,000,000 0x1F 2026-10-06 12:30 -42 +7 1.5e10	0	81	1	1	word	0	-	0	1
+E	5	81	81	0
+T	6	Crème brûlée à la café — naïve façade, Ærøskøbing, Straße, Ĳsselmeer, ﬁnancial ﬂow, Œuvre, Ångström	0	99	1	1	word	0	-	0	1
+E	6	99	99	0
+T	7	l'avion d'Air France qu'il a pris jusqu'à l'aéroport n'était pas L'Hôtel	0	72	1	1	word	0	-	0	1
+E	7	72	72	0
+T	8	Die Bundesrepublik Deutschland ist ein Bundesstaat in Mitteleuropa; Fußgängerübergänge sind häufig.	0	99	1	1	word	0	-	0	1
+E	8	99	99	0
+T	9	El niño comió pequeñas manzanas; ¿Dónde está la estación? ¡Qué día!	0	67	1	1	word	0	-	0	1
+E	9	67	67	0
+T	10	Съешь же ещё этих мягких французских булок, да выпей чаю. ЁЛКА ёлка	0	67	1	1	word	0	-	0	1
+E	10	67	67	0
+T	11	Η γρήγορη καφέ αλεπού πηδάει πάνω από τον τεμπέλη σκύλο. ΟΔΟΣ Σίσυφος	0	69	1	1	word	0	-	0	1
+E	11	69	69	0
+T	12	Türkçe İstanbul ılık ISPARTA; Ünlü şarkıcı Çağrı	0	48	1	1	word	0	-	0	1
+E	12	48	48	0
+T	13	Svenska: åka på sjön, Norsk: blåbærsyltetøy, Dansk: rødgrød med fløde, Íslenska: þú ðú	0	86	1	1	word	0	-	0	1
+E	13	86	86	0
+T	14	العربية لغة جميلة، والكتابُ مفيدٌ ٠١٢٣٤٥٦٧٨٩	0	44	1	1	word	0	-	0	1
+E	14	44	44	0
+T	15	עברית היא שפה שמית; ספר "תורה"	0	30	1	1	word	0	-	0	1
+E	15	30	30	0
+T	16	فارسی زبان زیبایی است و می‌خواهم کتاب‌ها را بخوانم ۱۲۳	0	54	1	1	word	0	-	0	1
+E	16	54	54	0
+T	17	हिन्दी भाषा बहुत सुंदर है। संख्या १२३	0	37	1	1	word	0	-	0	1
+E	17	37	37	0
+T	18	বাংলা ভাষা সুন্দর ১২৩	0	21	1	1	word	0	-	0	1
+E	18	21	21	0
+T	19	ภาษาไทยไม่มีช่องว่างระหว่างคำ แต่มีช่องว่างระหว่างประโยค ๑๒๓	0	60	1	1	word	0	-	0	1
+E	19	60	60	0
+T	20	中华人民共和国成立于1949年。我爱北京天安门！	0	24	1	1	word	0	-	0	1
+E	20	24	24	0
+T	21	日本語のテキストとカタカナとｶﾀｶﾅとひらがな、ＡＢＣ１２３と全角	0	33	1	1	word	0	-	0	1
+E	21	33	33	0
+T	22	한국어 텍스트입니다 서울특별시 ＫＯＲＥＡ	0	22	1	1	word	0	-	0	1
+E	22	22	22	0
+T	23	Emoji: 👍 🇺🇸 👨‍👩‍👧 ✌🏽 😀😀 ❤️ 1️⃣ and 𝐀𝐁𝐂 math plus 𠀀𠀁 rare ideographs	0	81	1	1	word	0	-	0	1
+E	23	81	81	0
+T	24	Visit https://lucene.apache.org/core/ or mail dev@lucene.apache.org today!	0	74	1	1	word	0	-	0	1
+E	24	74	74	0
+T	25	See www.example.com/path?q=1&x=y#frag and http://[::1]:8080/a, user.name+tag@sub.example.co.uk, 192.168.0.1	0	107	1	1	word	0	-	0	1
+E	25	107	107	0
+T	26	mailto:someone@example.org ftp://files.example.net/pub/file.tar.gz example.com.	0	79	1	1	word	0	-	0	1
+E	26	79	79	0
+T	27	\nHello world & friends <tag> © ☺  xé\n\n	0	106	1	1	word	0	-	0	1
+E	27	106	106	0
+T	28	\na link \nafter	0	112	1	1	word	0	-	0	1
+E	28	112	112	0
+T	29	\n"quoted" 'single' &unknown; &#xZZ;  raw <data>  tail\n	0	105	1	1	word	0	-	0	1
+E	29	105	105	0
+T	30	/usr/local/bin/lucene /var/log//syslog.1 relative/path/to/file.txt	0	66	1	1	word	0	-	0	1
+E	30	66	66	0
+T	31	C:\\Program Files\\Lucene\\index a\\b\\c	0	35	1	1	word	0	-	0	1
+E	31	35	35	0
+T	32	the|1.5 quick|2 brown|0.5 fox jumps|3	0	37	1	1	word	0	-	0	1
+E	32	37	37	0
+T	33	apple|3 banana|1 cherry pear|10	0	31	1	1	word	0	-	0	1
+E	33	31	31	0
+T	34	quick|0.5 fox|2.0 dog|-1.25	0	27	1	1	word	0	-	0	1
+E	34	27	27	0
+T	35	token1|payload one|two|three	0	28	1	1	word	0	-	0	1
+E	35	28	28	0
+T	36	\tTabs\tand   multiple   spaces and NBSP here and ideographic　space and line sep and zero​width soft­hyphen	0	105	1	1	word	0	-	0	1
+E	36	105	105	0
+T	37	ab	0	2	1	1	word	0	-	0	1
+E	37	2	2	0
+T	38	A	0	1	1	1	word	0	-	0	1
+E	38	1	1	0
+T	39	supercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocioussupercalifragilisticexpialidocious end	0	310	1	1	word	0	-	0	1
+E	39	310	310	0
+T	40	x y z xy xyz a-b-c a.b.c a_b_c a/b/c a:b:c	0	42	1	1	word	0	-	0	1
+E	40	42	42	0
+T	41	foo-bar-baz FooBarBaz FOObar fooBAR foo2bar 2foo bar2 ...ellipsis... --dashes--	0	79	1	1	word	0	-	0	1
+E	41	79	79	0
+T	42	The CEO's 1990s-era IBM-compatible PCs ran MS-DOS 6.22; the 5th gen. Core i7-4790K CPU @ 4.00GHz	0	96	1	1	word	0	-	0	1
+E	42	96	96	0
+T	43	running jumping happily happiness conditional relational sensibility agreed feed bled sing	0	90	1	1	word	0	-	0	1
+E	43	90	90	0
+T	44	  leading and trailing spaces   	0	32	1	1	word	0	-	0	1
+E	44	32	32	0
+T	45		0	0	1	1	word	0	-	0	1
+E	45	0	0	0
+T	46	ÀÁÂÃÄÅ àáâãäå ÇçÈÉÊË èéêë ÌÍÎÏ ìíîï ÑñÒÓÔÕÖ òóôõö ÙÚÛÜ ùúûü Ýýÿ ŠšŽž Łł Ðð Þþ ß ŒœÆæØø	0	86	1	1	word	0	-	0	1
+E	46	86	86	0
+T	47	“Smart quotes” ‘single’ «guillemets» ‹single› „low“ ‐‑‒–—― … ‰ € £ ¥ © ® ™ ½ ¼ ² ³ ¹	0	84	1	1	word	0	-	0	1
+E	47	84	84	0
