@@ -20,6 +20,15 @@ a dependency the shipped library links is not under a licence listed here.
     (BSD-style): `lucene-analysis`' `en/kstem.rs` ports `KStemmer`, and
     `en/kstem_data.rs` is its dictionary, generated from Lucene's sources
     (M11).
+  - the Snowball stemmers (BSD-3-Clause, Dr Martin Porter, Richard Boulton
+    and contributors): `lucene-analysis`' `snowball/algorithms/` is the
+    Snowball compiler's Rust output over the `.sbl` sources Lucene 10.5.0's
+    Java stemmers were generated from (Snowball commit `34f3612e`,
+    `tools/gen_snowball.sh`), and `snowball/program.rs` follows Snowball's
+    runtime and Lucene's `SnowballProgram`. The test vocabulary
+    (`fixtures/data/snowball/`) is synthetic, built by `GenSnowball.java`
+    from the stemmers' own suffix tables -- no Snowball test data is
+    redistributed.
   - Two others this port does *not* carry, and the reason:
     - the moman Levenshtein tables (MIT): `fuzzy` matches by dynamic
       programming instead;

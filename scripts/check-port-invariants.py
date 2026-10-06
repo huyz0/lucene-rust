@@ -833,8 +833,25 @@ def rule_occur_guard(files, problems, stats):
 
 TABLE_CRATE = "crates/lucene-analysis/src/"
 SLICE_TABLE = re.compile(
-    r"\b(?:static|const)\s+(?P<name>[A-Z][A-Z0-9_]*)\s*:\s*&\s*(?:'static\s+)?\[.*=\s*&\s*\["
+    r"\b(?:static|const)\s+(?P<name>[A-Z][A-Z0-9_]*)\s*:\s*&\s*(?:'static\s+)?(?P<ty>\[.*)=\s*&\s*\["
 )
+
+
+def is_array_type(ty):
+    """Whether `ty` (starting at its `[`) is `[T; N]` rather than `[T]`: a
+    `;` at the outer bracket's own depth. `&'static [T; N] = &[` (a reference
+    to an array, as the Snowball compiler emits) is counted by the compiler."""
+    depth = 0
+    for k, c in enumerate(ty):
+        if c in "[(<{":
+            depth += 1
+        elif c in "])>}" and not (c == ">" and ty[k - 1 : k] == "-"):
+            depth -= 1
+            if depth == 0:
+                return False
+        elif c == ";" and depth == 1:
+            return True
+    return False
 
 
 def rule_table_fixed_len(files, problems, stats):
@@ -844,7 +861,7 @@ def rule_table_fixed_len(files, problems, stats):
         lines = blank_cfg_test(raw)
         for k, line in enumerate(lines):
             m = SLICE_TABLE.search(strip_comment(line))
-            if not m:
+            if not m or is_array_type(m.group("ty")):
                 continue
             stats["slice_tables"] += 1
             problems.append(

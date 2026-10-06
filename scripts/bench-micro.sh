@@ -76,6 +76,12 @@ case "$BENCH" in
     SRC=benchmarks/micro/java/AnalysisCommonMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common" ;;
+  # M11 T11.3: SnowballFilter per language over the fixture vocabularies.
+  snowball)
+    MAIN=SnowballMicro
+    SRC=benchmarks/micro/java/SnowballMicro.java
+    EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-analysis-common" ;;
   # The per-area sweep: one Java class, the bench name as its first argument.
   vint|bitset|lz4|direct_monotonic|checksum|analysis|vectors|automaton|quantized|fst_build|bytes_ref_hash|bkd_build)
     MAIN=SweepMicro

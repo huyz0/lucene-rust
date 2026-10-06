@@ -509,10 +509,15 @@ array type makes the compiler count. The rule: outside tests, no `static` or
 `const` in `crates/lucene-analysis/src` is a slice literal (`: &[..] = &[`,
 `: &'static [..] = &[`). Indexed tables spell `N` from the range Java
 indexes them by (`[u8; 0x30FD - 0x30A6 + 1]`), so the count is checked
-against Java's arithmetic, not against the transcription. **Seen to fail** on
+against Java's arithmetic, not against the transcription. A reference to an
+array (`&'static [T; N] = &[`, the Snowball compiler's tables) is an array
+type: the rule looks for a `;` at the outer bracket's depth, so `[[u8; 4]]`
+stays a slice. **Seen to fail** on
 the original `&[u8]` declaration (`crates/lucene-analysis/src/cjk/mod.rs:284:
 table `KANA_COMBINE_HALF_VOICED` is a slice literal`) and on
-`PROPER_NOUNS: &'static [&str]`; with the array type, the 86-entry
+`PROPER_NOUNS: &'static [&str]`, and on the generated Snowball `STEMMERS:
+&[(&str, fn(..) -> bool)]` while passing its `&'static [Among<Context>; N]`
+tables; with the array type, the 86-entry
 transcription is `error[E0308]: mismatched types`. Blind to: an `N` copied
 from the short transcription rather than derived (only list tables do this,
 and every one was counted against the Java source or resource when the rule

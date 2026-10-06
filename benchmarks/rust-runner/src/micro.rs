@@ -23,6 +23,7 @@ use lucene_store::data_input::SliceInput;
 use lucene_store::MmapDirectory;
 
 mod micro_analysis_common;
+mod micro_snowball;
 mod micro_geo;
 mod micro_geo3d;
 mod micro_geo3d_points;
@@ -2062,6 +2063,7 @@ fn main() {
         "checksum" => bench_checksum(warmup, measure),
         "analysis" => bench_analysis(warmup, measure),
         "analysis_common" => micro_analysis_common::bench_analysis_common(warmup, measure),
+        "snowball" => micro_snowball::bench_snowball(warmup, measure),
         "vectors" => bench_vectors(warmup, measure),
         "automaton" => bench_automaton(warmup, measure),
         "quantized" => bench_quantized(warmup, measure),
