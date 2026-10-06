@@ -6989,3 +6989,247 @@ T	49	ﾊ	15	16	1	1	word	0	-	0	1
 T	49	ﾊﾟ	15	17	1	1	word	0	-	0	1
 T	49	ﾟ	16	17	1	1	word	0	-	0	1
 E	49	17	17	0
+T	50	e	0	1	1	1	word	0	-	0	1
+T	50	en	0	2	1	1	word	0	-	0	1
+T	50	n	1	2	1	1	word	0	-	0	1
+T	50	nd	1	3	1	1	word	0	-	0	1
+T	50	d	2	3	1	1	word	0	-	0	1
+T	50	ds	2	4	1	1	word	0	-	0	1
+T	50	s	3	4	1	1	word	0	-	0	1
+T	50	s 	3	5	1	1	word	0	-	0	1
+T	50	 	4	5	1	1	word	0	-	0	1
+T	50	 w	4	6	1	1	word	0	-	0	1
+T	50	w	5	6	1	1	word	0	-	0	1
+T	50	wi	5	7	1	1	word	0	-	0	1
+T	50	i	6	7	1	1	word	0	-	0	1
+T	50	it	6	8	1	1	word	0	-	0	1
+T	50	t	7	8	1	1	word	0	-	0	1
+T	50	th	7	9	1	1	word	0	-	0	1
+T	50	h	8	9	1	1	word	0	-	0	1
+T	50	h 	8	10	1	1	word	0	-	0	1
+T	50	 	9	10	1	1	word	0	-	0	1
+T	50	 a	9	11	1	1	word	0	-	0	1
+T	50	a	10	11	1	1	word	0	-	0	1
+T	50	a 	10	12	1	1	word	0	-	0	1
+T	50	 	11	12	1	1	word	0	-	0	1
+T	50	 n	11	13	1	1	word	0	-	0	1
+T	50	n	12	13	1	1	word	0	-	0	1
+T	50	ne	12	14	1	1	word	0	-	0	1
+T	50	e	13	14	1	1	word	0	-	0	1
+T	50	ex	13	15	1	1	word	0	-	0	1
+T	50	x	14	15	1	1	word	0	-	0	1
+T	50	xt	14	16	1	1	word	0	-	0	1
+T	50	t	15	16	1	1	word	0	-	0	1
+T	50	t 	15	17	1	1	word	0	-	0	1
+T	50	 	16	17	1	1	word	0	-	0	1
+T	50	 l	16	18	1	1	word	0	-	0	1
+T	50	l	17	18	1	1	word	0	-	0	1
+T	50	li	17	19	1	1	word	0	-	0	1
+T	50	i	18	19	1	1	word	0	-	0	1
+T	50	in	18	20	1	1	word	0	-	0	1
+T	50	n	19	20	1	1	word	0	-	0	1
+T	50	ne	19	21	1	1	word	0	-	0	1
+T	50	e	20	21	1	1	word	0	-	0	1
+T	50	e	20	22	1	1	word	0	-	0	1
+T	50		21	22	1	1	word	0	-	0	1
+E	50	22	22	0
+T	51	e	0	1	1	1	word	0	-	0	1
+T	51	en	0	2	1	1	word	0	-	0	1
+T	51	n	1	2	1	1	word	0	-	0	1
+T	51	nd	1	3	1	1	word	0	-	0	1
+T	51	d	2	3	1	1	word	0	-	0	1
+T	51	ds	2	4	1	1	word	0	-	0	1
+T	51	s	3	4	1	1	word	0	-	0	1
+T	51	s 	3	5	1	1	word	0	-	0	1
+T	51	 	4	5	1	1	word	0	-	0	1
+T	51	 w	4	6	1	1	word	0	-	0	1
+T	51	w	5	6	1	1	word	0	-	0	1
+T	51	wi	5	7	1	1	word	0	-	0	1
+T	51	i	6	7	1	1	word	0	-	0	1
+T	51	it	6	8	1	1	word	0	-	0	1
+T	51	t	7	8	1	1	word	0	-	0	1
+T	51	th	7	9	1	1	word	0	-	0	1
+T	51	h	8	9	1	1	word	0	-	0	1
+T	51	h 	8	10	1	1	word	0	-	0	1
+T	51	 	9	10	1	1	word	0	-	0	1
+T	51	 a	9	11	1	1	word	0	-	0	1
+T	51	a	10	11	1	1	word	0	-	0	1
+T	51	a 	10	12	1	1	word	0	-	0	1
+T	51	 	11	12	1	1	word	0	-	0	1
+T	51	 l	11	13	1	1	word	0	-	0	1
+T	51	l	12	13	1	1	word	0	-	0	1
+T	51	li	12	14	1	1	word	0	-	0	1
+T	51	i	13	14	1	1	word	0	-	0	1
+T	51	in	13	15	1	1	word	0	-	0	1
+T	51	n	14	15	1	1	word	0	-	0	1
+T	51	ne	14	16	1	1	word	0	-	0	1
+T	51	e	15	16	1	1	word	0	-	0	1
+T	51	e 	15	17	1	1	word	0	-	0	1
+T	51	 	16	17	1	1	word	0	-	0	1
+T	51	 s	16	18	1	1	word	0	-	0	1
+T	51	s	17	18	1	1	word	0	-	0	1
+T	51	se	17	19	1	1	word	0	-	0	1
+T	51	e	18	19	1	1	word	0	-	0	1
+T	51	ep	18	20	1	1	word	0	-	0	1
+T	51	p	19	20	1	1	word	0	-	0	1
+T	51	pa	19	21	1	1	word	0	-	0	1
+T	51	a	20	21	1	1	word	0	-	0	1
+T	51	ar	20	22	1	1	word	0	-	0	1
+T	51	r	21	22	1	1	word	0	-	0	1
+T	51	ra	21	23	1	1	word	0	-	0	1
+T	51	a	22	23	1	1	word	0	-	0	1
+T	51	at	22	24	1	1	word	0	-	0	1
+T	51	t	23	24	1	1	word	0	-	0	1
+T	51	to	23	25	1	1	word	0	-	0	1
+T	51	o	24	25	1	1	word	0	-	0	1
+T	51	or	24	26	1	1	word	0	-	0	1
+T	51	r	25	26	1	1	word	0	-	0	1
+T	51	r 	25	27	1	1	word	0	-	0	1
+T	51	 	26	27	1	1	word	0	-	0	1
+E	51	27	27	0
+T	52	T	0	1	1	1	word	0	-	0	1
+T	52	Th	0	2	1	1	word	0	-	0	1
+T	52	h	1	2	1	1	word	0	-	0	1
+T	52	he	1	3	1	1	word	0	-	0	1
+T	52	e	2	3	1	1	word	0	-	0	1
+T	52	e 	2	4	1	1	word	0	-	0	1
+T	52	 	3	4	1	1	word	0	-	0	1
+T	52	 C	3	5	1	1	word	0	-	0	1
+T	52	C	4	5	1	1	word	0	-	0	1
+T	52	Ca	4	6	1	1	word	0	-	0	1
+T	52	a	5	6	1	1	word	0	-	0	1
+T	52	af	5	7	1	1	word	0	-	0	1
+T	52	f	6	7	1	1	word	0	-	0	1
+T	52	fé	6	8	1	1	word	0	-	0	1
+T	52	é	7	8	1	1	word	0	-	0	1
+T	52	é 	7	9	1	1	word	0	-	0	1
+T	52	 	8	9	1	1	word	0	-	0	1
+T	52	 c	8	10	1	1	word	0	-	0	1
+T	52	c	9	10	1	1	word	0	-	0	1
+T	52	cr	9	11	1	1	word	0	-	0	1
+T	52	r	10	11	1	1	word	0	-	0	1
+T	52	ro	10	12	1	1	word	0	-	0	1
+T	52	o	11	12	1	1	word	0	-	0	1
+T	52	os	11	13	1	1	word	0	-	0	1
+T	52	s	12	13	1	1	word	0	-	0	1
+T	52	ss	12	14	1	1	word	0	-	0	1
+T	52	s	13	14	1	1	word	0	-	0	1
+T	52	si	13	15	1	1	word	0	-	0	1
+T	52	i	14	15	1	1	word	0	-	0	1
+T	52	in	14	16	1	1	word	0	-	0	1
+T	52	n	15	16	1	1	word	0	-	0	1
+T	52	ng	15	17	1	1	word	0	-	0	1
+T	52	g	16	17	1	1	word	0	-	0	1
+T	52	g 	16	18	1	1	word	0	-	0	1
+T	52	 	17	18	1	1	word	0	-	0	1
+T	52	 Σ	17	19	1	1	word	0	-	0	1
+T	52	Σ	18	19	1	1	word	0	-	0	1
+T	52	ΣΊ	18	20	1	1	word	0	-	0	1
+T	52	Ί	19	20	1	1	word	0	-	0	1
+T	52	ΊΣ	19	21	1	1	word	0	-	0	1
+T	52	Σ	20	21	1	1	word	0	-	0	1
+T	52	ΣΥ	20	22	1	1	word	0	-	0	1
+T	52	Υ	21	22	1	1	word	0	-	0	1
+T	52	ΥΦ	21	23	1	1	word	0	-	0	1
+T	52	Φ	22	23	1	1	word	0	-	0	1
+T	52	ΦΟ	22	24	1	1	word	0	-	0	1
+T	52	Ο	23	24	1	1	word	0	-	0	1
+T	52	ΟΣ	23	25	1	1	word	0	-	0	1
+T	52	Σ	24	25	1	1	word	0	-	0	1
+T	52	Σ 	24	26	1	1	word	0	-	0	1
+T	52	 	25	26	1	1	word	0	-	0	1
+T	52	 s	25	27	1	1	word	0	-	0	1
+T	52	s	26	27	1	1	word	0	-	0	1
+T	52	st	26	28	1	1	word	0	-	0	1
+T	52	t	27	28	1	1	word	0	-	0	1
+T	52	tr	27	29	1	1	word	0	-	0	1
+T	52	r	28	29	1	1	word	0	-	0	1
+T	52	ra	28	30	1	1	word	0	-	0	1
+T	52	a	29	30	1	1	word	0	-	0	1
+T	52	aß	29	31	1	1	word	0	-	0	1
+T	52	ß	30	31	1	1	word	0	-	0	1
+T	52	ße	30	32	1	1	word	0	-	0	1
+T	52	e	31	32	1	1	word	0	-	0	1
+T	52	e 	31	33	1	1	word	0	-	0	1
+T	52	 	32	33	1	1	word	0	-	0	1
+T	52	 S	32	34	1	1	word	0	-	0	1
+T	52	S	33	34	1	1	word	0	-	0	1
+T	52	ST	33	35	1	1	word	0	-	0	1
+T	52	T	34	35	1	1	word	0	-	0	1
+T	52	TR	34	36	1	1	word	0	-	0	1
+T	52	R	35	36	1	1	word	0	-	0	1
+T	52	RA	35	37	1	1	word	0	-	0	1
+T	52	A	36	37	1	1	word	0	-	0	1
+T	52	AS	36	38	1	1	word	0	-	0	1
+T	52	S	37	38	1	1	word	0	-	0	1
+T	52	SS	37	39	1	1	word	0	-	0	1
+T	52	S	38	39	1	1	word	0	-	0	1
+T	52	SE	38	40	1	1	word	0	-	0	1
+T	52	E	39	40	1	1	word	0	-	0	1
+T	52	E 	39	41	1	1	word	0	-	0	1
+T	52	 	40	41	1	1	word	0	-	0	1
+T	52	 K	40	42	1	1	word	0	-	0	1
+T	52	K	41	42	1	1	word	0	-	0	1
+T	52	K 	41	43	1	1	word	0	-	0	1
+T	52	 	42	43	1	1	word	0	-	0	1
+T	52	 k	42	44	1	1	word	0	-	0	1
+T	52	k	43	44	1	1	word	0	-	0	1
+T	52	ke	43	45	1	1	word	0	-	0	1
+T	52	e	44	45	1	1	word	0	-	0	1
+T	52	el	44	46	1	1	word	0	-	0	1
+T	52	l	45	46	1	1	word	0	-	0	1
+T	52	lv	45	47	1	1	word	0	-	0	1
+T	52	v	46	47	1	1	word	0	-	0	1
+T	52	vi	46	48	1	1	word	0	-	0	1
+T	52	i	47	48	1	1	word	0	-	0	1
+T	52	in	47	49	1	1	word	0	-	0	1
+T	52	n	48	49	1	1	word	0	-	0	1
+T	52	n 	48	50	1	1	word	0	-	0	1
+T	52	 	49	50	1	1	word	0	-	0	1
+T	52	 K	49	51	1	1	word	0	-	0	1
+T	52	K	50	51	1	1	word	0	-	0	1
+T	52	K,	50	52	1	1	word	0	-	0	1
+T	52	,	51	52	1	1	word	0	-	0	1
+T	52	, 	51	53	1	1	word	0	-	0	1
+T	52	 	52	53	1	1	word	0	-	0	1
+T	52	 1	52	54	1	1	word	0	-	0	1
+T	52	1	53	54	1	1	word	0	-	0	1
+T	52	12	53	55	1	1	word	0	-	0	1
+T	52	2	54	55	1	1	word	0	-	0	1
+T	52	2 	54	56	1	1	word	0	-	0	1
+T	52	 	55	56	1	1	word	0	-	0	1
+T	52	 a	55	57	1	1	word	0	-	0	1
+T	52	a	56	57	1	1	word	0	-	0	1
+T	52	an	56	58	1	1	word	0	-	0	1
+T	52	n	57	58	1	1	word	0	-	0	1
+T	52	nd	57	59	1	1	word	0	-	0	1
+T	52	d	58	59	1	1	word	0	-	0	1
+T	52	d 	58	60	1	1	word	0	-	0	1
+T	52	 	59	60	1	1	word	0	-	0	1
+T	52	 t	59	61	1	1	word	0	-	0	1
+T	52	t	60	61	1	1	word	0	-	0	1
+T	52	th	60	62	1	1	word	0	-	0	1
+T	52	h	61	62	1	1	word	0	-	0	1
+T	52	he	61	63	1	1	word	0	-	0	1
+T	52	e	62	63	1	1	word	0	-	0	1
+T	52	e 	62	64	1	1	word	0	-	0	1
+T	52	 	63	64	1	1	word	0	-	0	1
+T	52	 e	63	65	1	1	word	0	-	0	1
+T	52	e	64	65	1	1	word	0	-	0	1
+T	52	en	64	66	1	1	word	0	-	0	1
+T	52	n	65	66	1	1	word	0	-	0	1
+T	52	nd	65	67	1	1	word	0	-	0	1
+T	52	d	66	67	1	1	word	0	-	0	1
+T	52	d:	66	68	1	1	word	0	-	0	1
+T	52	:	67	68	1	1	word	0	-	0	1
+T	52	: 	67	69	1	1	word	0	-	0	1
+T	52	 	68	69	1	1	word	0	-	0	1
+T	52	 😀	68	71	1	1	word	0	-	0	1
+T	52	😀	69	71	1	1	word	0	-	0	1
+T	52	😀x	69	72	1	1	word	0	-	0	1
+T	52	x	71	72	1	1	word	0	-	0	1
+T	52	x 	71	73	1	1	word	0	-	0	1
+T	52	 	72	73	1	1	word	0	-	0	1
+T	52	 𝐀	72	75	1	1	word	0	-	0	1
+T	52	𝐀	73	75	1	1	word	0	-	0	1
+E	52	75	75	0

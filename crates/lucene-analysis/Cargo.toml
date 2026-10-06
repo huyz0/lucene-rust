@@ -9,6 +9,8 @@ lucene-util = { path = "../lucene-util" }
 thiserror.workspace = true
 # java.util.regex for the pattern package (src/util/java_regex.rs).
 regex = "1"
+# Parses java.util.regex patterns before they are re-emitted for `regex`.
+regex-syntax = "0.8"
 # Inflates the JFlex scanner tables (src/util/jflex.rs).
 miniz_oxide.workspace = true
 

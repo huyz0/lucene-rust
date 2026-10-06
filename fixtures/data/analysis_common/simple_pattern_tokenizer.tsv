@@ -501,3 +501,28 @@ T	48	heroes	297	303	1	1	word	0	-	0	1
 T	48	axes	304	308	1	1	word	0	-	0	1
 E	48	308	308	0
 E	49	17	17	0
+T	50	ends	0	4	1	1	word	0	-	0	1
+T	50	with	5	9	1	1	word	0	-	0	1
+T	50	a	10	11	1	1	word	0	-	0	1
+T	50	next	12	16	1	1	word	0	-	0	1
+T	50	line	17	21	1	1	word	0	-	0	1
+E	50	22	22	0
+T	51	ends	0	4	1	1	word	0	-	0	1
+T	51	with	5	9	1	1	word	0	-	0	1
+T	51	a	10	11	1	1	word	0	-	0	1
+T	51	line	12	16	1	1	word	0	-	0	1
+T	51	separator	17	26	1	1	word	0	-	0	1
+E	51	27	27	0
+T	52	The	0	3	1	1	word	0	-	0	1
+T	52	Caf	4	7	1	1	word	0	-	0	1
+T	52	crossing	9	17	1	1	word	0	-	0	1
+T	52	stra	26	30	1	1	word	0	-	0	1
+T	52	e	31	32	1	1	word	0	-	0	1
+T	52	STRASSE	33	40	1	1	word	0	-	0	1
+T	52	K	41	42	1	1	word	0	-	0	1
+T	52	kelvin	43	49	1	1	word	0	-	0	1
+T	52	and	56	59	1	1	word	0	-	0	1
+T	52	the	60	63	1	1	word	0	-	0	1
+T	52	end	64	67	1	1	word	0	-	0	1
+T	52	x	71	72	1	1	word	0	-	0	1
+E	52	75	75	0

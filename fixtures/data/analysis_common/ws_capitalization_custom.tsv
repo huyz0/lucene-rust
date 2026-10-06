@@ -477,3 +477,31 @@ T	49	ヽﾞ	9	11	1	1	word	0	-	0	1
 T	49	ｳﾞ	12	14	1	1	word	0	-	0	1
 T	49	ﾊﾟ	15	17	1	1	word	0	-	0	1
 E	49	17	17	0
+T	50	Ends	0	4	1	1	word	0	-	0	1
+T	50	With	5	9	1	1	word	0	-	0	1
+T	50	a	10	11	1	1	word	0	-	0	1
+T	50	Next	12	16	1	1	word	0	-	0	1
+T	50	Line	17	22	1	1	word	0	-	0	1
+E	50	22	22	0
+T	51	Ends	0	4	1	1	word	0	-	0	1
+T	51	With	5	9	1	1	word	0	-	0	1
+T	51	a	10	11	1	1	word	0	-	0	1
+T	51	Line	12	16	1	1	word	0	-	0	1
+T	51	separator	17	26	1	1	word	0	-	0	1
+E	51	27	27	0
+T	52	The	0	3	1	1	word	0	-	0	1
+T	52	Café	4	8	1	1	word	0	-	0	1
+T	52	crossing	9	17	1	1	word	0	-	0	1
+T	52	ΣΊΣΥΦΟΣ	18	25	1	1	word	0	-	0	1
+T	52	straße	26	32	1	1	word	0	-	0	1
+T	52	STRASSE	33	40	1	1	word	0	-	0	1
+T	52	K	41	42	1	1	word	0	-	0	1
+T	52	kelvin	43	49	1	1	word	0	-	0	1
+T	52	K,	50	52	1	1	word	0	-	0	1
+T	52	12	53	55	1	1	word	0	-	0	1
+T	52	And	56	59	1	1	word	0	-	0	1
+T	52	The	60	63	1	1	word	0	-	0	1
+T	52	End:	64	68	1	1	word	0	-	0	1
+T	52	😀x	69	72	1	1	word	0	-	0	1
+T	52	𝐀	73	75	1	1	word	0	-	0	1
+E	52	75	75	0

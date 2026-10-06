@@ -1107,3 +1107,48 @@ T	49	ヽﾞ	9	11	1	1	word	0	-	0	1
 T	49	ｳﾞ	12	14	1	1	word	0	-	0	1
 T	49	ﾊﾟ	15	17	1	1	word	0	-	0	1
 E	49	17	17	0
+T	50	end	0	3	1	1	word	0	-	0	1
+T	50	s	3	4	1	1	word	0	-	0	1
+T	50	wit	5	8	1	1	word	0	-	0	1
+T	50	h	8	9	1	1	word	0	-	0	1
+T	50	a	10	11	1	1	word	0	-	0	1
+T	50	nex	12	15	1	1	word	0	-	0	1
+T	50	t	15	16	1	1	word	0	-	0	1
+T	50	lin	17	20	1	1	word	0	-	0	1
+T	50	e	20	21	1	1	word	0	-	0	1
+E	50	22	22	0
+T	51	end	0	3	1	1	word	0	-	0	1
+T	51	s	3	4	1	1	word	0	-	0	1
+T	51	wit	5	8	1	1	word	0	-	0	1
+T	51	h	8	9	1	1	word	0	-	0	1
+T	51	a	10	11	1	1	word	0	-	0	1
+T	51	lin	12	15	1	1	word	0	-	0	1
+T	51	e	15	16	1	1	word	0	-	0	1
+T	51	sep	17	20	1	1	word	0	-	0	1
+T	51	ara	20	23	1	1	word	0	-	0	1
+T	51	tor	23	26	1	1	word	0	-	0	1
+E	51	27	27	0
+T	52	The	0	3	1	1	word	0	-	0	1
+T	52	Caf	4	7	1	1	word	0	-	0	1
+T	52	é	7	8	1	1	word	0	-	0	1
+T	52	cro	9	12	1	1	word	0	-	0	1
+T	52	ssi	12	15	1	1	word	0	-	0	1
+T	52	ng	15	17	1	1	word	0	-	0	1
+T	52	ΣΊΣ	18	21	1	1	word	0	-	0	1
+T	52	ΥΦΟ	21	24	1	1	word	0	-	0	1
+T	52	Σ	24	25	1	1	word	0	-	0	1
+T	52	str	26	29	1	1	word	0	-	0	1
+T	52	aße	29	32	1	1	word	0	-	0	1
+T	52	STR	33	36	1	1	word	0	-	0	1
+T	52	ASS	36	39	1	1	word	0	-	0	1
+T	52	E	39	40	1	1	word	0	-	0	1
+T	52	K	41	42	1	1	word	0	-	0	1
+T	52	kel	43	46	1	1	word	0	-	0	1
+T	52	vin	46	49	1	1	word	0	-	0	1
+T	52	K	50	51	1	1	word	0	-	0	1
+T	52	and	56	59	1	1	word	0	-	0	1
+T	52	the	60	63	1	1	word	0	-	0	1
+T	52	end	64	67	1	1	word	0	-	0	1
+T	52	x	71	72	1	1	word	0	-	0	1
+T	52	𝐀	73	75	1	1	word	0	-	0	1
+E	52	75	75	0

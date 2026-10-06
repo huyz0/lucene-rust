@@ -122,7 +122,7 @@ a dependency the shipped library links is not under a licence listed here.
 | rayon-core | 1.13.0 | MIT OR Apache-2.0 | MIT |
 | regex | 1.13.1 | MIT OR Apache-2.0 | MIT (M11: `java.util.regex` for analysis-common's `pattern` package) |
 | regex-automata | 0.4.18 | MIT OR Apache-2.0 | MIT |
-| regex-syntax | 0.8.11 | MIT OR Apache-2.0 | MIT |
+| regex-syntax | 0.8.11 | MIT OR Apache-2.0 | MIT (also direct, M11: parses the `java.util.regex` patterns) |
 | syn | 2.0.119 | MIT OR Apache-2.0 | MIT (build time only) |
 | thiserror | 1.0.69 | MIT OR Apache-2.0 | MIT |
 | thiserror-impl | 1.0.69 | MIT OR Apache-2.0 | MIT (build time only) |

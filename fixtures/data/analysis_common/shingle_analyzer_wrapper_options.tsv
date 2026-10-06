@@ -767,3 +767,47 @@ T	49	ヽﾞ_ｳﾞ	9	14	1	1	shingle	0	-	0	1
 T	49	ヽﾞ_ｳﾞ_ﾊﾟ	9	17	0	2	shingle	0	-	0	1
 T	49	ｳﾞ_ﾊﾟ	12	17	1	1	shingle	0	-	0	1
 E	49	17	17	0
+T	50	ends_with	0	9	1	1	shingle	0	-	0	1
+T	50	ends_with_a	0	11	0	2	shingle	0	-	0	1
+T	50	with_a	5	11	1	1	shingle	0	-	0	1
+T	50	with_a_next	5	16	0	2	shingle	0	-	0	1
+T	50	a_next	10	16	1	1	shingle	0	-	0	1
+T	50	a_next_line	10	22	0	2	shingle	0	-	0	1
+T	50	next_line	12	22	1	1	shingle	0	-	0	1
+E	50	22	22	0
+T	51	ends_with	0	9	1	1	shingle	0	-	0	1
+T	51	ends_with_a	0	11	0	2	shingle	0	-	0	1
+T	51	with_a	5	11	1	1	shingle	0	-	0	1
+T	51	with_a_line	5	16	0	2	shingle	0	-	0	1
+T	51	a_line	10	16	1	1	shingle	0	-	0	1
+T	51	a_line_separator	10	26	0	2	shingle	0	-	0	1
+T	51	line_separator	12	26	1	1	shingle	0	-	0	1
+E	51	27	27	0
+T	52	The_Café	0	8	1	1	shingle	0	-	0	1
+T	52	The_Café_crossing	0	17	0	2	shingle	0	-	0	1
+T	52	Café_crossing	4	17	1	1	shingle	0	-	0	1
+T	52	Café_crossing_ΣΊΣΥΦΟΣ	4	25	0	2	shingle	0	-	0	1
+T	52	crossing_ΣΊΣΥΦΟΣ	9	25	1	1	shingle	0	-	0	1
+T	52	crossing_ΣΊΣΥΦΟΣ_straße	9	32	0	2	shingle	0	-	0	1
+T	52	ΣΊΣΥΦΟΣ_straße	18	32	1	1	shingle	0	-	0	1
+T	52	ΣΊΣΥΦΟΣ_straße_STRASSE	18	40	0	2	shingle	0	-	0	1
+T	52	straße_STRASSE	26	40	1	1	shingle	0	-	0	1
+T	52	straße_STRASSE_K	26	42	0	2	shingle	0	-	0	1
+T	52	STRASSE_K	33	42	1	1	shingle	0	-	0	1
+T	52	STRASSE_K_kelvin	33	49	0	2	shingle	0	-	0	1
+T	52	K_kelvin	41	49	1	1	shingle	0	-	0	1
+T	52	K_kelvin_K,	41	52	0	2	shingle	0	-	0	1
+T	52	kelvin_K,	43	52	1	1	shingle	0	-	0	1
+T	52	kelvin_K,_12	43	55	0	2	shingle	0	-	0	1
+T	52	K,_12	50	55	1	1	shingle	0	-	0	1
+T	52	K,_12_and	50	59	0	2	shingle	0	-	0	1
+T	52	12_and	53	59	1	1	shingle	0	-	0	1
+T	52	12_and_the	53	63	0	2	shingle	0	-	0	1
+T	52	and_the	56	63	1	1	shingle	0	-	0	1
+T	52	and_the_end:	56	68	0	2	shingle	0	-	0	1
+T	52	the_end:	60	68	1	1	shingle	0	-	0	1
+T	52	the_end:_😀x	60	72	0	2	shingle	0	-	0	1
+T	52	end:_😀x	64	72	1	1	shingle	0	-	0	1
+T	52	end:_😀x_𝐀	64	75	0	2	shingle	0	-	0	1
+T	52	😀x_𝐀	69	75	1	1	shingle	0	-	0	1
+E	52	75	75	0

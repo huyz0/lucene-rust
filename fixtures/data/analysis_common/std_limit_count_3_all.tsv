@@ -191,3 +191,15 @@ T	49	ーﾟ	0	2	1	1	<KATAKANA>	0	-	0	1
 T	49	ヽﾟ	3	5	1	1	<KATAKANA>	0	-	0	1
 T	49	ｰﾟ	6	8	1	1	<KATAKANA>	0	-	0	1
 E	49	17	17	0
+T	50	ends	0	4	1	1	<ALPHANUM>	0	-	0	1
+T	50	with	5	9	1	1	<ALPHANUM>	0	-	0	1
+T	50	a	10	11	1	1	<ALPHANUM>	0	-	0	1
+E	50	22	22	0
+T	51	ends	0	4	1	1	<ALPHANUM>	0	-	0	1
+T	51	with	5	9	1	1	<ALPHANUM>	0	-	0	1
+T	51	a	10	11	1	1	<ALPHANUM>	0	-	0	1
+E	51	27	27	0
+T	52	The	0	3	1	1	<ALPHANUM>	0	-	0	1
+T	52	Café	4	8	1	1	<ALPHANUM>	0	-	0	1
+T	52	crossing	9	17	1	1	<ALPHANUM>	0	-	0	1
+E	52	75	75	0

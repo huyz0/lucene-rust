@@ -98,3 +98,9 @@ T	48	abilities agreed activism capable cried dependence emergency fabricate freq
 E	48	308	308	0
 T	49	ーﾟ ヽﾟ ｰﾟ ヽﾞ ｳﾞ ﾊﾟ	0	17	1	1	word	0	-	0	1
 E	49	17	17	0
+T	50	ends with a next line	0	22	1	1	word	0	-	0	1
+E	50	22	22	0
+T	51	ends with a line separator 	0	27	1	1	word	0	-	0	1
+E	51	27	27	0
+T	52	The Café crossing ΣΊΣΥΦΟΣ straße STRASSE K kelvin K, 12 and the end: 😀x 𝐀	0	75	1	1	word	0	-	0	1
+E	52	75	75	0

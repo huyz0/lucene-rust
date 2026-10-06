@@ -495,3 +495,26 @@ T	49	ヽﾟ ｰﾟ ヽﾞ	3	11	1	1	shingle	0	-	0	1
 T	49	ｰﾟ ヽﾞ ｳﾞ	6	14	1	1	shingle	0	-	0	1
 T	49	ヽﾞ ｳﾞ ﾊﾟ	9	17	1	1	shingle	0	-	0	1
 E	49	17	17	0
+T	50	ends with a	0	11	1	1	shingle	0	-	0	1
+T	50	with a next	5	16	1	1	shingle	0	-	0	1
+T	50	a next line	10	21	1	1	shingle	0	-	0	1
+E	50	22	22	0
+T	51	ends with a	0	11	1	1	shingle	0	-	0	1
+T	51	with a line	5	16	1	1	shingle	0	-	0	1
+T	51	a line separator	10	26	1	1	shingle	0	-	0	1
+E	51	27	27	0
+T	52	The Café crossing	0	17	1	1	shingle	0	-	0	1
+T	52	Café crossing ΣΊΣΥΦΟΣ	4	25	1	1	shingle	0	-	0	1
+T	52	crossing ΣΊΣΥΦΟΣ straße	9	32	1	1	shingle	0	-	0	1
+T	52	ΣΊΣΥΦΟΣ straße STRASSE	18	40	1	1	shingle	0	-	0	1
+T	52	straße STRASSE K	26	42	1	1	shingle	0	-	0	1
+T	52	STRASSE K kelvin	33	49	1	1	shingle	0	-	0	1
+T	52	K kelvin K	41	51	1	1	shingle	0	-	0	1
+T	52	kelvin K 12	43	55	1	1	shingle	0	-	0	1
+T	52	K 12 and	50	59	1	1	shingle	0	-	0	1
+T	52	12 and the	53	63	1	1	shingle	0	-	0	1
+T	52	and the end	56	67	1	1	shingle	0	-	0	1
+T	52	the end 😀	60	71	1	1	shingle	0	-	0	1
+T	52	end 😀 x	64	72	1	1	shingle	0	-	0	1
+T	52	😀 x 𝐀	69	75	1	1	shingle	0	-	0	1
+E	52	75	75	0
