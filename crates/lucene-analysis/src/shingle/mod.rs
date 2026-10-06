@@ -134,6 +134,14 @@ impl<I: TokenStream> ShingleFilter<I> {
         Ok(f)
     }
 
+    /// The most shifted-out sources [`Self::spare`] keeps: one full window
+    /// plus the token being read. Fillers and the token after a position
+    /// gap are fresh values, never taken from the pool, so without a cap
+    /// every gap would leave two more sources in it.
+    fn spare_cap(&self) -> usize {
+        usize::try_from(self.max_shingle_size).map_or(0, |m| m + 1)
+    }
+
     fn new_sequence(&self) -> CircularSequence {
         CircularSequence::new(if self.output_unigrams {
             1
@@ -269,7 +277,9 @@ impl<I: TokenStream> ShingleFilter<I> {
     // Java: ShingleFilter.shiftInputWindow
     fn shift_input_window(&mut self) -> Result<(), AnalysisError> {
         if let Some(t) = self.input_window.pop_front() {
-            self.spare.push(t.att_source);
+            if self.spare.len() < self.spare_cap() {
+                self.spare.push(t.att_source);
+            }
         }
         while (self.input_window.len() as i32) < self.max_shingle_size {
             match self.get_next_token()? {
@@ -383,6 +393,9 @@ impl<I: TokenStream> TokenFilter for ShingleFilter<I> {
         self.no_shingle_output = true;
         self.exhausted = false;
         self.end_state = None;
+        // Java's reset drops the window; the pool goes with it, so nothing
+        // one document left behind outlives it.
+        self.spare.clear();
         if self.output_unigrams_if_no_shingles && !self.output_unigrams {
             self.gram_size.min_value = self.min_shingle_size;
         }
@@ -632,6 +645,36 @@ mod tests {
         f.reset().unwrap();
         f.end().unwrap();
         assert_eq!(f.attributes().end_offset(), 4);
+    }
+
+    /// Position gaps (a stop filter upstream) make filler tokens and a fresh
+    /// capture of the token after the gap; neither is taken from the spare
+    /// pool, so recycling every shifted-out source grew it by about two per
+    /// gap, and a reused analyzer kept the growth across documents. The
+    /// pool stays within one window of sources.
+    #[test]
+    fn spare_pool_is_bounded_across_gaps_and_reuse() {
+        let spec: Vec<String> = (0..2000)
+            .map(|i| format!("w:{}:{}:3:1", 4 * i, 4 * i + 1))
+            .collect();
+        let spec = format!("{}|8000|2", spec.join(" "));
+        let mut f = ShingleFilter::new(Canned::parse(&spec), 2, 3).unwrap();
+        let cap = f.spare_cap();
+        let first = render(&mut f);
+        assert!(first.starts_with("_ _ w:0:1:1:3 _ w:0:1:1:2 _ w _:0:4:0:3 w:0:1:1:1 "));
+        for _ in 0..5 {
+            assert!(f.spare.len() <= cap, "spare grew to {}", f.spare.len());
+            assert_eq!(render(&mut f), first);
+        }
+        // And without gaps the pool still recycles (it is not just empty).
+        let mut f = ShingleFilter::new(
+            Canned::parse("a:0:1:1:1 b:2:3:1:1 c:4:5:1:1 d:6:7:1:1|7|0"),
+            2,
+            2,
+        )
+        .unwrap();
+        render(&mut f);
+        assert!(!f.spare.is_empty() && f.spare.len() <= f.spare_cap());
     }
 
     #[test]
