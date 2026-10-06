@@ -203,7 +203,7 @@ impl IndexQueue {
         self.heap[1..=self.size].iter().copied()
     }
 
-    pub(crate) fn add(&mut self, e: usize, less: &dyn Fn(usize, usize) -> bool) {
+    pub(crate) fn add(&mut self, e: usize, less: &impl Fn(usize, usize) -> bool) {
         let index = self.size.saturating_add(1);
         if index >= self.heap.len() {
             self.heap.resize(index.saturating_add(1), 0);
@@ -215,12 +215,12 @@ impl IndexQueue {
 
     /// `updateTop()`: the top changed in place; re-sift it and return the
     /// new top.
-    pub(crate) fn update_top(&mut self, less: &dyn Fn(usize, usize) -> bool) -> Option<usize> {
+    pub(crate) fn update_top(&mut self, less: &impl Fn(usize, usize) -> bool) -> Option<usize> {
         self.down_heap(1, less);
         self.top()
     }
 
-    pub(crate) fn pop(&mut self, less: &dyn Fn(usize, usize) -> bool) -> Option<usize> {
+    pub(crate) fn pop(&mut self, less: &impl Fn(usize, usize) -> bool) -> Option<usize> {
         if self.size == 0 {
             return None;
         }
@@ -231,7 +231,7 @@ impl IndexQueue {
         Some(result)
     }
 
-    fn up_heap(&mut self, orig: usize, less: &dyn Fn(usize, usize) -> bool) {
+    fn up_heap(&mut self, orig: usize, less: &impl Fn(usize, usize) -> bool) {
         let mut i = orig;
         let node = self.heap[i];
         let mut j = i >> 1;
@@ -243,7 +243,7 @@ impl IndexQueue {
         self.heap[i] = node;
     }
 
-    fn down_heap(&mut self, mut i: usize, less: &dyn Fn(usize, usize) -> bool) {
+    fn down_heap(&mut self, mut i: usize, less: &impl Fn(usize, usize) -> bool) {
         if self.size == 0 {
             return;
         }
@@ -296,7 +296,7 @@ fn parent_node(node: usize) -> Option<usize> {
 
 impl DisiQueue {
     /// Every sub-iterator added in order, unpositioned (`doc == -1`).
-    pub(crate) fn new(subs: &[BoxIntervals<'_>]) -> Self {
+    pub(crate) fn new<I: IntervalIterator>(subs: &[I]) -> Self {
         let mut q = DisiQueue {
             docs: vec![-1; subs.len()],
             next: vec![None; subs.len()],
@@ -411,7 +411,7 @@ impl DisiQueue {
     }
 
     /// `DisjunctionDISIApproximation.nextDoc()`.
-    pub(crate) fn next_doc(&mut self, subs: &mut [BoxIntervals<'_>]) -> Result<i32> {
+    pub(crate) fn next_doc<I: IntervalIterator>(&mut self, subs: &mut [I]) -> Result<i32> {
         if self.size == 0 {
             return Ok(NO_MORE_DOCS);
         }
@@ -428,7 +428,11 @@ impl DisiQueue {
     }
 
     /// `DisjunctionDISIApproximation.advance(target)`.
-    pub(crate) fn advance(&mut self, subs: &mut [BoxIntervals<'_>], target: i32) -> Result<i32> {
+    pub(crate) fn advance<I: IntervalIterator>(
+        &mut self,
+        subs: &mut [I],
+        target: i32,
+    ) -> Result<i32> {
         if self.size == 0 {
             return Ok(NO_MORE_DOCS);
         }
@@ -578,6 +582,52 @@ impl<'a> TermIntervals<'a> {
         self.at = 0;
     }
 
+    /// [`IntervalIterator::next_interval`] in full: the document's first
+    /// position, a refill, a payload filter, or a pulsed singleton's list.
+    #[inline(never)]
+    fn next_interval_slow(&mut self) -> Result<i32> {
+        loop {
+            if self.upto <= 0 {
+                self.pos = NO_MORE_INTERVALS;
+                return Ok(self.pos);
+            }
+            self.upto -= 1;
+            if self.lazy && self.payloads.is_none() {
+                self.pos = self.postings.next_position()?;
+                return Ok(self.pos);
+            }
+            if self.stream {
+                let (position, payload) = self.postings.next_position_with_payload()?;
+                self.pos = position;
+                if self
+                    .payloads
+                    .as_ref()
+                    .is_some_and(|p| p.filter.test(payload))
+                {
+                    return Ok(position);
+                }
+                continue;
+            }
+            self.load()?;
+            match &self.payloads {
+                None => {
+                    self.pos = self.positions.get(self.at).copied().unwrap_or(-1);
+                    self.at += 1;
+                    return Ok(self.pos);
+                }
+                Some(p) => {
+                    let occ = p.occurrences.get(self.at);
+                    self.at += 1;
+                    self.pos = occ.map_or(-1, |o| o.position);
+                    let payload = occ.map(|o| o.payload.as_slice()).filter(|b| !b.is_empty());
+                    if p.filter.test(payload) {
+                        return Ok(self.pos);
+                    }
+                }
+            }
+        }
+    }
+
     fn load(&mut self) -> Result<()> {
         if self.loaded {
             return Ok(());
@@ -634,48 +684,23 @@ impl IntervalIterator for TermIntervals<'_> {
     fn gaps(&self) -> i32 {
         0
     }
+    /// The common step -- the next position off a lazy cursor's decoded
+    /// block, no payload filter -- inline; the rest in
+    /// [`TermIntervals::next_interval_slow`].
     #[inline]
     fn next_interval(&mut self) -> Result<i32> {
-        loop {
-            if self.upto <= 0 {
-                self.pos = NO_MORE_INTERVALS;
-                return Ok(self.pos);
-            }
-            self.upto -= 1;
-            if self.lazy && self.payloads.is_none() {
-                self.pos = self.postings.next_position()?;
-                return Ok(self.pos);
-            }
-            if self.stream {
-                let (position, payload) = self.postings.next_position_with_payload()?;
+        if self.upto <= 0 {
+            self.pos = NO_MORE_INTERVALS;
+            return Ok(self.pos);
+        }
+        if self.payloads.is_none() {
+            if let Some(position) = self.postings.try_next_position() {
+                self.upto -= 1;
                 self.pos = position;
-                if self
-                    .payloads
-                    .as_ref()
-                    .is_some_and(|p| p.filter.test(payload))
-                {
-                    return Ok(position);
-                }
-                continue;
-            }
-            self.load()?;
-            match &self.payloads {
-                None => {
-                    self.pos = self.positions.get(self.at).copied().unwrap_or(-1);
-                    self.at += 1;
-                    return Ok(self.pos);
-                }
-                Some(p) => {
-                    let occ = p.occurrences.get(self.at);
-                    self.at += 1;
-                    self.pos = occ.map_or(-1, |o| o.position);
-                    let payload = occ.map(|o| o.payload.as_slice()).filter(|b| !b.is_empty());
-                    if p.filter.test(payload) {
-                        return Ok(self.pos);
-                    }
-                }
+                return Ok(position);
             }
         }
+        self.next_interval_slow()
     }
     fn match_cost(&self) -> f32 {
         self.match_cost
@@ -707,14 +732,14 @@ fn term_iterator<'a>(
     term: &[u8],
     stats: lucene_codecs::blocktree::TermStats,
     payloads: Option<(PayloadFilter, &'a lucene_codecs::blocktree::FieldTerms)>,
-) -> Result<BoxIntervals<'a>> {
+) -> Result<TermIntervals<'a>> {
     let Some(pos_in) = ctx.pos_in else {
         return Err(Error::MissingPosInput);
     };
     let mut postings = LeafPositions::open(ctx, pos_in, field, term)?;
     let stream = payloads.is_some() && postings.stream_payloads(ctx);
     let lazy = postings.is_lazy();
-    Ok(BoxIntervals::Term(TermIntervals {
+    Ok(TermIntervals {
         postings,
         doc: -1,
         upto: 0,
@@ -733,7 +758,23 @@ fn term_iterator<'a>(
         }),
         stream,
         lazy,
-    }))
+    })
+}
+
+/// `TermIntervalsSource.intervals(field, ctx)`: the term's iterator, `None`
+/// when the field or the term is not in this segment.
+fn term_leaf<'a>(
+    ctx: &LeafContext<'a>,
+    field: &str,
+    term: &[u8],
+) -> Result<Option<TermIntervals<'a>>> {
+    let Some(ft) = positions_field(ctx, field)? else {
+        return Ok(None);
+    };
+    match ft.try_seek_exact(term)? {
+        Some(stats) => Ok(Some(term_iterator(ctx, field, term, stats, None)?)),
+        None => Ok(None),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -748,9 +789,11 @@ enum Current {
     Sub(usize),
 }
 
-/// `DisjunctionIntervalsSource.DisjunctionIntervalIterator`.
-pub(crate) struct DisjunctionIntervals<'a> {
-    pub(crate) subs: Vec<BoxIntervals<'a>>,
+/// `DisjunctionIntervalsSource.DisjunctionIntervalIterator`, generic over
+/// its sub-iterators: terms held as themselves when every source is a term
+/// (or a multi-term's expansion), so its queues call them statically.
+pub(crate) struct DisjunctionIntervals<I> {
+    pub(crate) subs: Vec<I>,
     disi: DisiQueue,
     queue: IndexQueue,
     current: Current,
@@ -758,7 +801,7 @@ pub(crate) struct DisjunctionIntervals<'a> {
 }
 
 /// The interval queue's `lessThan`: by end, then the wider first.
-fn end_then_wider<'s>(subs: &'s [BoxIntervals<'_>]) -> impl Fn(usize, usize) -> bool + 's {
+fn end_then_wider<I: IntervalIterator>(subs: &[I]) -> impl Fn(usize, usize) -> bool + '_ {
     move |a, b| {
         let (ea, eb) = (subs[a].end(), subs[b].end());
         ea < eb || (ea == eb && subs[a].start() >= subs[b].start())
@@ -766,15 +809,15 @@ fn end_then_wider<'s>(subs: &'s [BoxIntervals<'_>]) -> impl Fn(usize, usize) -> 
 }
 
 /// The proximity queue's `lessThan`: by start, then the wider first.
-fn start_then_wider<'s>(subs: &'s [BoxIntervals<'_>]) -> impl Fn(usize, usize) -> bool + 's {
+fn start_then_wider<I: IntervalIterator>(subs: &[I]) -> impl Fn(usize, usize) -> bool + '_ {
     move |a, b| {
         let (sa, sb) = (subs[a].start(), subs[b].start());
         sa < sb || (sa == sb && subs[a].end() >= subs[b].end())
     }
 }
 
-impl<'a> DisjunctionIntervals<'a> {
-    pub(crate) fn new(subs: Vec<BoxIntervals<'a>>) -> Self {
+impl<I: IntervalIterator> DisjunctionIntervals<I> {
+    pub(crate) fn new(subs: Vec<I>) -> Self {
         let disi = DisiQueue::new(&subs);
         // `costsum += it.cost()`: the documents, not the match costs.
         let match_cost = subs.iter().fold(0.0f32, |acc, s| acc + s.cost() as f32);
@@ -808,7 +851,7 @@ impl<'a> DisjunctionIntervals<'a> {
     }
 }
 
-impl IntervalIterator for DisjunctionIntervals<'_> {
+impl<I: IntervalIterator> IntervalIterator for DisjunctionIntervals<I> {
     fn doc_id(&self) -> i32 {
         self.disi.top_doc()
     }
@@ -2067,15 +2110,7 @@ pub(crate) fn intervals<'a>(
 ) -> Result<Option<BoxIntervals<'a>>> {
     use IntervalsSource as S;
     Ok(match source {
-        S::Term(term) => {
-            let Some(ft) = positions_field(ctx, field)? else {
-                return Ok(None);
-            };
-            match ft.try_seek_exact(term)? {
-                Some(stats) => Some(term_iterator(ctx, field, term, stats, None)?),
-                None => None,
-            }
-        }
+        S::Term(term) => term_leaf(ctx, field, term)?.map(BoxIntervals::Term),
         S::PayloadFilteredTerm { term, filter } => {
             let Some(ft) = positions_field(ctx, field)? else {
                 return Ok(None);
@@ -2086,13 +2121,13 @@ pub(crate) fn intervals<'a>(
                 )));
             }
             match ft.try_seek_exact(term)? {
-                Some(stats) => Some(term_iterator(
+                Some(stats) => Some(BoxIntervals::Term(term_iterator(
                     ctx,
                     field,
                     term,
                     stats,
                     Some((filter.clone(), ft)),
-                )?),
+                )?)),
                 None => None,
             }
         }
@@ -2100,6 +2135,25 @@ pub(crate) fn intervals<'a>(
         S::Ordered(subs) => all_of(subs, field, ctx)?.map(|s| ordered(s, None)),
         S::Unordered(subs) => all_of(subs, field, ctx)?.map(|s| unordered(s, None)),
         S::Disjunction { sources, .. } => {
+            // Every source a term: the terms held as themselves, so the
+            // disjunction's queues call them statically.
+            let terms: Option<Vec<&[u8]>> = sources
+                .iter()
+                .map(|s| match s {
+                    S::Term(term) => Some(term.as_slice()),
+                    _ => None,
+                })
+                .collect();
+            if let Some(terms) = terms {
+                let mut subs = Vec::with_capacity(terms.len());
+                for term in terms {
+                    if let Some(it) = term_leaf(ctx, field, term)? {
+                        subs.push(it);
+                    }
+                }
+                return Ok((!subs.is_empty())
+                    .then(|| BoxIntervals::boxed(DisjunctionIntervals::new(subs))));
+            }
             let mut subs = Vec::with_capacity(sources.len());
             for s in sources {
                 if let Some(it) = intervals(s, field, ctx)? {

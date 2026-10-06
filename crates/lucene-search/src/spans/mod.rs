@@ -236,6 +236,44 @@ impl<'a> TermSpans<'a> {
         self.occurrences_loaded = false;
     }
 
+    /// [`Spans::next_start_position`] in full: the document's first
+    /// position, a refill, payloads streamed with the positions, or a pulsed
+    /// singleton's decoded list.
+    #[inline(never)]
+    fn next_start_position_slow(&mut self) -> Result<i32> {
+        if self.count == self.freq {
+            self.position = NO_MORE_POSITIONS;
+            return Ok(self.position);
+        }
+        if self.stream {
+            let (position, payload) = self.postings.next_position_with_payload()?;
+            self.position = position;
+            match (&mut self.payload, payload) {
+                (Some(buf), Some(p)) => {
+                    buf.clear();
+                    buf.extend_from_slice(p);
+                }
+                (slot, p) => *slot = p.map(<[u8]>::to_vec),
+            }
+            self.count += 1;
+            return Ok(self.position);
+        }
+        if self.lazy {
+            self.position = self.postings.next_position()?;
+            self.count += 1;
+            return Ok(self.position);
+        }
+        if !self.loaded {
+            self.loaded = true;
+            self.positions.clear();
+            self.postings.positions_at(self.doc, &mut self.positions)?;
+        }
+        let at = usize::try_from(self.count).unwrap_or(0);
+        self.position = self.positions.get(at).copied().unwrap_or(NO_MORE_POSITIONS);
+        self.count += 1;
+        Ok(self.position)
+    }
+
     /// The payload at the current position (`postings.getPayload()`),
     /// `None` where it has none.
     pub(crate) fn payload(&mut self) -> Result<Option<&[u8]>> {
@@ -292,39 +330,18 @@ impl Spans for TermSpans<'_> {
     fn two_phase(&self) -> bool {
         false
     }
+    /// The common step -- the next position off a lazy cursor's decoded
+    /// block -- inline; the rest in [`TermSpans::next_start_position_slow`].
     #[inline]
     fn next_start_position(&mut self) -> Result<i32> {
-        if self.count == self.freq {
-            self.position = NO_MORE_POSITIONS;
-            return Ok(self.position);
-        }
-        if self.stream {
-            let (position, payload) = self.postings.next_position_with_payload()?;
-            self.position = position;
-            match (&mut self.payload, payload) {
-                (Some(buf), Some(p)) => {
-                    buf.clear();
-                    buf.extend_from_slice(p);
-                }
-                (slot, p) => *slot = p.map(<[u8]>::to_vec),
+        if self.count != self.freq {
+            if let Some(position) = self.postings.try_next_position() {
+                self.position = position;
+                self.count += 1;
+                return Ok(position);
             }
-            self.count += 1;
-            return Ok(self.position);
         }
-        if self.lazy {
-            self.position = self.postings.next_position()?;
-            self.count += 1;
-            return Ok(self.position);
-        }
-        if !self.loaded {
-            self.loaded = true;
-            self.positions.clear();
-            self.postings.positions_at(self.doc, &mut self.positions)?;
-        }
-        let at = usize::try_from(self.count).unwrap_or(0);
-        self.position = self.positions.get(at).copied().unwrap_or(NO_MORE_POSITIONS);
-        self.count += 1;
-        Ok(self.position)
+        self.next_start_position_slow()
     }
     #[inline]
     fn start_position(&self) -> i32 {
@@ -417,7 +434,7 @@ struct SpansConjunction {
 }
 
 impl SpansConjunction {
-    fn new(subs: &[BoxSpans<'_>]) -> Self {
+    fn new<S: Spans>(subs: &[S]) -> Self {
         let mut order: Vec<usize> = (0..subs.len()).collect();
         order.sort_by_key(|&i| subs[i].cost());
         SpansConjunction {
@@ -428,15 +445,15 @@ impl SpansConjunction {
         }
     }
 
-    fn doc_id(&self, subs: &[BoxSpans<'_>]) -> i32 {
+    fn doc_id<S: Spans>(&self, subs: &[S]) -> i32 {
         subs[self.lead1].doc_id()
     }
 
-    fn cost(&self, subs: &[BoxSpans<'_>]) -> i64 {
+    fn cost<S: Spans>(&self, subs: &[S]) -> i64 {
         subs[self.lead1].cost()
     }
 
-    fn do_next(&self, subs: &mut [BoxSpans<'_>], mut doc: i32) -> Result<i32> {
+    fn do_next<S: Spans>(&self, subs: &mut [S], mut doc: i32) -> Result<i32> {
         'advance_head: loop {
             if doc == NO_MORE_DOCS {
                 return Ok(doc);
@@ -461,18 +478,18 @@ impl SpansConjunction {
         }
     }
 
-    fn next_doc(&self, subs: &mut [BoxSpans<'_>]) -> Result<i32> {
+    fn next_doc<S: Spans>(&self, subs: &mut [S]) -> Result<i32> {
         let doc = subs[self.lead1].next_doc()?;
         self.do_next(subs, doc)
     }
 
-    fn advance(&self, subs: &mut [BoxSpans<'_>], target: i32) -> Result<i32> {
+    fn advance<S: Spans>(&self, subs: &mut [S], target: i32) -> Result<i32> {
         let doc = subs[self.lead1].advance(target)?;
         self.do_next(subs, doc)
     }
 
     /// `ConjunctionTwoPhaseIterator.matches()`: every sub-spans confirmed.
-    fn subs_match(subs: &mut [BoxSpans<'_>]) -> Result<bool> {
+    fn subs_match<S: Spans>(subs: &mut [S]) -> Result<bool> {
         for s in subs.iter_mut() {
             if !s.matches()? {
                 return Ok(false);
@@ -482,9 +499,11 @@ impl SpansConjunction {
     }
 }
 
-/// `NearSpansOrdered`.
-pub(crate) struct NearSpansOrdered<'a> {
-    subs: Vec<BoxSpans<'a>>,
+/// `NearSpansOrdered`, generic over its sub-spans: terms held as
+/// themselves when every clause is a term ([`root_spans`]), so the
+/// per-position walk in `stretchToOrder` calls them statically.
+pub(crate) struct NearSpansOrdered<S> {
+    subs: Vec<S>,
     conj: SpansConjunction,
     at_first_in_current_doc: bool,
     one_exhausted_in_current_doc: bool,
@@ -494,8 +513,8 @@ pub(crate) struct NearSpansOrdered<'a> {
     allowed_slop: i32,
 }
 
-impl<'a> NearSpansOrdered<'a> {
-    pub(crate) fn new(allowed_slop: i32, subs: Vec<BoxSpans<'a>>) -> Self {
+impl<S: Spans> NearSpansOrdered<S> {
+    pub(crate) fn new(allowed_slop: i32, subs: Vec<S>) -> Self {
         let conj = SpansConjunction::new(&subs);
         NearSpansOrdered {
             subs,
@@ -546,7 +565,7 @@ impl<'a> NearSpansOrdered<'a> {
     }
 }
 
-impl Spans for NearSpansOrdered<'_> {
+impl<S: Spans> Spans for NearSpansOrdered<S> {
     fn doc_id(&self) -> i32 {
         self.conj.doc_id(&self.subs)
     }
@@ -1247,19 +1266,19 @@ pub(crate) enum AcceptStatus {
 /// What a `FilterSpans` accepts.
 pub(crate) trait SpanFilter {
     /// `accept(candidate)`.
-    fn accept(&mut self, candidate: &mut BoxSpans<'_>) -> Result<AcceptStatus>;
+    fn accept<S: Spans>(&mut self, candidate: &mut S) -> Result<AcceptStatus>;
 }
 
 /// `FilterSpans`.
-pub(crate) struct FilterSpans<'a, F> {
-    inner: BoxSpans<'a>,
+pub(crate) struct FilterSpans<S, F> {
+    inner: S,
     filter: F,
     at_first_in_current_doc: bool,
     start_pos: i32,
 }
 
-impl<'a, F: SpanFilter> FilterSpans<'a, F> {
-    pub(crate) fn new(inner: BoxSpans<'a>, filter: F) -> Self {
+impl<S: Spans, F: SpanFilter> FilterSpans<S, F> {
+    pub(crate) fn new(inner: S, filter: F) -> Self {
         FilterSpans {
             inner,
             filter,
@@ -1294,7 +1313,7 @@ impl<'a, F: SpanFilter> FilterSpans<'a, F> {
     }
 }
 
-impl<F: SpanFilter> Spans for FilterSpans<'_, F> {
+impl<S: Spans, F: SpanFilter> Spans for FilterSpans<S, F> {
     fn doc_id(&self) -> i32 {
         self.inner.doc_id()
     }
@@ -1380,7 +1399,7 @@ pub(crate) struct PositionRange {
 }
 
 impl SpanFilter for PositionRange {
-    fn accept(&mut self, s: &mut BoxSpans<'_>) -> Result<AcceptStatus> {
+    fn accept<S: Spans>(&mut self, s: &mut S) -> Result<AcceptStatus> {
         Ok(if s.start_position() >= self.end {
             AcceptStatus::NoMoreInCurrentDoc
         } else if s.start_position() >= self.start && s.end_position() <= self.end {
@@ -1402,7 +1421,7 @@ pub(crate) struct NotFilter<'a> {
 }
 
 impl SpanFilter for NotFilter<'_> {
-    fn accept(&mut self, candidate: &mut BoxSpans<'_>) -> Result<AcceptStatus> {
+    fn accept<S: Spans>(&mut self, candidate: &mut S) -> Result<AcceptStatus> {
         let doc = candidate.doc_id();
         let two_phase = self.exclude.two_phase();
         if doc > self.exclude.doc_id() {
@@ -1497,8 +1516,10 @@ impl<'a> SpansSink<'a> for Boxing {
 /// The query's spans handed to `sink`: a term, a first or position range, a
 /// not, a near or a containment as their own types rather than boxed, so a
 /// scorer over them calls its spans without a virtual call per document and
-/// per span (the dispatch Java's JIT removes by inlining). Their clauses,
-/// a disjunction and the payload queries go boxed ([`spans_with`]).
+/// per span (the dispatch Java's JIT removes by inlining). An ordered near
+/// over terms holds its terms unboxed, and a first or position range holds
+/// such a near or a term unboxed ([`inner_spans`]); other clauses, a
+/// disjunction and the payload queries go boxed ([`spans_with`]).
 pub(crate) fn root_spans<'a, K: SpansSink<'a>>(
     ctx: &LeafContext<'a>,
     q: &SpanNode,
@@ -1506,7 +1527,6 @@ pub(crate) fn root_spans<'a, K: SpansSink<'a>>(
     sink: K,
 ) -> Result<Option<K::Out>> {
     let sub = |q: &SpanNode| spans_with(ctx, q, payloads);
-    let range = |s, start, end| FilterSpans::new(s, PositionRange { start, end });
     Ok(match q {
         SpanNode::Term { field, term } => {
             term_spans(ctx, field, term, payloads)?.map(|t| sink.sink_term(t))
@@ -1515,11 +1535,16 @@ pub(crate) fn root_spans<'a, K: SpansSink<'a>>(
             clauses,
             slop,
             in_order,
-        } => match near_subs(ctx, q, clauses, payloads)? {
-            None => None,
-            Some(subs) if *in_order => Some(sink.sink(NearSpansOrdered::new(*slop, subs))),
-            Some(subs) => Some(sink.sink(NearSpansUnordered::new(*slop, subs))),
-        },
+        } => {
+            if let Some(near) = ordered_term_near(ctx, q, payloads)? {
+                return Ok(near.map(|n| sink.sink(n)));
+            }
+            match near_subs(ctx, q, clauses, payloads)? {
+                None => None,
+                Some(subs) if *in_order => Some(sink.sink(NearSpansOrdered::new(*slop, subs))),
+                Some(subs) => Some(sink.sink(NearSpansUnordered::new(*slop, subs))),
+            }
+        }
         SpanNode::Or { clauses } => {
             let mut subs = Vec::with_capacity(clauses.len());
             for c in clauses {
@@ -1533,9 +1558,13 @@ pub(crate) fn root_spans<'a, K: SpansSink<'a>>(
                 _ => Some(sink.sink_boxed(BoxSpans::boxed(OrSpans::new(subs)))),
             }
         }
-        SpanNode::First { inner, end } => sub(inner)?.map(|s| sink.sink(range(s, 0, *end))),
+        SpanNode::First { inner, end } => {
+            let (start, end) = (0, *end);
+            inner_spans(ctx, inner, payloads, RangeSink { sink, start, end })?
+        }
         SpanNode::PositionRange { inner, start, end } => {
-            sub(inner)?.map(|s| sink.sink(range(s, *start, *end)))
+            let (start, end) = (*start, *end);
+            inner_spans(ctx, inner, payloads, RangeSink { sink, start, end })?
         }
         SpanNode::Not {
             include,
@@ -1587,6 +1616,79 @@ pub(crate) fn root_spans<'a, K: SpansSink<'a>>(
     })
 }
 
+/// [`root_spans`]' sink for a first or position range query's inner
+/// spans: wraps them in the range's filter for the outer sink.
+struct RangeSink<K> {
+    sink: K,
+    start: i32,
+    end: i32,
+}
+
+impl<'a, K: SpansSink<'a>> SpansSink<'a> for RangeSink<K> {
+    type Out = K::Out;
+    fn sink<S: Spans + 'a>(self, spans: S) -> K::Out {
+        let range = PositionRange {
+            start: self.start,
+            end: self.end,
+        };
+        self.sink.sink(FilterSpans::new(spans, range))
+    }
+}
+
+/// A wrapper's inner spans handed to `sink`: an ordered near over terms
+/// and a term as their own types (the shapes a first or position range
+/// query most often wraps), anything else boxed ([`spans_with`]). One level
+/// only, so the sinks it is instantiated with stay finite.
+fn inner_spans<'a, K: SpansSink<'a>>(
+    ctx: &LeafContext<'a>,
+    q: &SpanNode,
+    payloads: bool,
+    sink: K,
+) -> Result<Option<K::Out>> {
+    if let Some(near) = ordered_term_near(ctx, q, payloads)? {
+        return Ok(near.map(|n| sink.sink(n)));
+    }
+    if let SpanNode::Term { field, term } = q {
+        return Ok(term_spans(ctx, field, term, payloads)?.map(|t| sink.sink(t)));
+    }
+    Ok(spans_with(ctx, q, payloads)?.map(|s| sink.sink_boxed(s)))
+}
+
+/// `q`'s spans when it is an ordered near over terms only: its terms'
+/// spans held as themselves, not boxed. `Ok(None)` for any other query;
+/// `Ok(Some(None))` when it has no spans in this segment.
+///
+/// # Errors
+/// As [`near_subs`].
+fn ordered_term_near<'a>(
+    ctx: &LeafContext<'a>,
+    q: &SpanNode,
+    payloads: bool,
+) -> Result<Option<Option<NearSpansOrdered<TermSpans<'a>>>>> {
+    let SpanNode::Near {
+        clauses,
+        slop,
+        in_order: true,
+    } = q
+    else {
+        return Ok(None);
+    };
+    let terms: Option<Vec<(&str, &[u8])>> = clauses
+        .iter()
+        .map(|c| match c {
+            SpanNode::Term { field, term } => Some((field.as_str(), term.as_slice())),
+            _ => None,
+        })
+        .collect();
+    let Some(terms) = terms else {
+        return Ok(None);
+    };
+    let subs = near_subs_with(ctx, q, &terms, |&(field, term)| {
+        term_spans(ctx, field, term, payloads)
+    })?;
+    Ok(Some(subs.map(|subs| NearSpansOrdered::new(*slop, subs))))
+}
+
 /// A near query's sub-spans, `None` when the field or a clause has none.
 ///
 /// # Errors
@@ -1597,6 +1699,16 @@ fn near_subs<'a>(
     clauses: &[SpanNode],
     payloads: bool,
 ) -> Result<Option<Vec<BoxSpans<'a>>>> {
+    near_subs_with(ctx, q, clauses, |c| spans_with(ctx, c, payloads))
+}
+
+/// [`near_subs`] with each clause's spans made by `each`.
+fn near_subs_with<C, T>(
+    ctx: &LeafContext<'_>,
+    q: &SpanNode,
+    clauses: &[C],
+    mut each: impl FnMut(&C) -> Result<Option<T>>,
+) -> Result<Option<Vec<T>>> {
     let Some(field) = q.field() else {
         return Ok(None);
     };
@@ -1605,7 +1717,7 @@ fn near_subs<'a>(
     }
     let mut subs = Vec::with_capacity(clauses.len());
     for c in clauses {
-        match spans_with(ctx, c, payloads)? {
+        match each(c)? {
             Some(s) => subs.push(s),
             None => return Ok(None),
         }

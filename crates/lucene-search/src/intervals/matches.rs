@@ -617,7 +617,7 @@ impl IntervalMatchesIterator for ConjunctionMatches {
 
 /// `DisjunctionIntervalsSource.DisjunctionMatchesIterator`.
 struct DisjunctionMatches {
-    it: iterators::DisjunctionIntervals<'static>,
+    it: iterators::DisjunctionIntervals<iterators::BoxIntervals<'static>>,
     subs: Vec<Shared>,
     query: Arc<Clause>,
 }
