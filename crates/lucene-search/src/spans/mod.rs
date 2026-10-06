@@ -1504,7 +1504,7 @@ impl<'a> SpansSink<'a> for Boxing {
 /// scorer over them calls its spans without a virtual call per document and
 /// per span (the dispatch Java's JIT removes by inlining). An ordered near
 /// over terms holds its terms unboxed, and a first or position range holds
-/// such a near or a term unboxed ([`inner_spans`]); other clauses, a
+/// a near or a term unboxed ([`inner_spans`]); other clauses, a
 /// disjunction and the payload queries go boxed ([`spans_with`]).
 pub(crate) fn root_spans<'a, K: SpansSink<'a>>(
     ctx: &LeafContext<'a>,
@@ -1514,22 +1514,8 @@ pub(crate) fn root_spans<'a, K: SpansSink<'a>>(
 ) -> Result<Option<K::Out>> {
     let sub = |q: &SpanNode| spans_with(ctx, q, payloads);
     Ok(match q {
-        SpanNode::Term { field, term } => {
-            term_spans(ctx, field, term, payloads)?.map(|t| sink.sink_term(t))
-        }
-        SpanNode::Near {
-            clauses,
-            slop,
-            in_order,
-        } => {
-            if let Some(near) = ordered_term_near(ctx, q, payloads)? {
-                return Ok(near.map(|n| sink.sink(n)));
-            }
-            match near_subs(ctx, q, clauses, payloads)? {
-                None => None,
-                Some(subs) if *in_order => Some(sink.sink(NearSpansOrdered::new(*slop, subs))),
-                Some(subs) => Some(sink.sink(NearSpansUnordered::new(*slop, subs))),
-            }
+        SpanNode::Term { .. } | SpanNode::Near { .. } => {
+            return inner_spans(ctx, q, payloads, sink);
         }
         SpanNode::Or { clauses } => {
             let mut subs = Vec::with_capacity(clauses.len());
@@ -1621,23 +1607,38 @@ impl<'a, K: SpansSink<'a>> SpansSink<'a> for RangeSink<K> {
     }
 }
 
-/// A wrapper's inner spans handed to `sink`: an ordered near over terms
-/// and a term as their own types (the shapes a first or position range
-/// query most often wraps), anything else boxed ([`spans_with`]). One level
-/// only, so the sinks it is instantiated with stay finite.
+/// A term's or a near's spans handed to `sink` as their own types -- an
+/// ordered near over terms with its terms unboxed too ([`root_spans`]' own
+/// arms for both) -- and anything else boxed ([`spans_with`]): what a first
+/// or position range query wraps. One level only, so the sinks it is
+/// instantiated with stay finite: nothing here hands `sink` to anything
+/// that wraps it again.
 fn inner_spans<'a, K: SpansSink<'a>>(
     ctx: &LeafContext<'a>,
     q: &SpanNode,
     payloads: bool,
     sink: K,
 ) -> Result<Option<K::Out>> {
-    if let Some(near) = ordered_term_near(ctx, q, payloads)? {
-        return Ok(near.map(|n| sink.sink(n)));
-    }
-    if let SpanNode::Term { field, term } = q {
-        return Ok(term_spans(ctx, field, term, payloads)?.map(|t| sink.sink(t)));
-    }
-    Ok(spans_with(ctx, q, payloads)?.map(|s| sink.sink_boxed(s)))
+    Ok(match q {
+        SpanNode::Term { field, term } => {
+            term_spans(ctx, field, term, payloads)?.map(|t| sink.sink_term(t))
+        }
+        SpanNode::Near {
+            clauses,
+            slop,
+            in_order,
+        } => {
+            if let Some(near) = ordered_term_near(ctx, q, payloads)? {
+                return Ok(near.map(|n| sink.sink(n)));
+            }
+            match near_subs(ctx, q, clauses, payloads)? {
+                None => None,
+                Some(subs) if *in_order => Some(sink.sink(NearSpansOrdered::new(*slop, subs))),
+                Some(subs) => Some(sink.sink(NearSpansUnordered::new(*slop, subs))),
+            }
+        }
+        _ => spans_with(ctx, q, payloads)?.map(|s| sink.sink_boxed(s)),
+    })
 }
 
 /// `q`'s spans when it is an ordered near over terms only: its terms'

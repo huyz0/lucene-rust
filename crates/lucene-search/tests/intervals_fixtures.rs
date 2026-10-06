@@ -17,6 +17,7 @@ use std::collections::HashSet;
 
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
+use lucene_search::intervals::iterators::root_shape_counts;
 use lucene_search::intervals::{IntervalQuery, Intervals, IntervalsSource, PayloadFilter};
 use lucene_search::matches::{matches, BoxMatches};
 use lucene_search::query::{BooleanQuery, BoostQuery, Clause, TermQuery};
@@ -354,4 +355,16 @@ fn intervals_match_lucene() {
     }
     assert_eq!(want.len(), got.len(), "line counts");
     assert_eq!(bad, 0, "{bad} of {} lines differ", want.len());
+    // Every construction a query's root iterator can take -- each a
+    // different monomorphised scorer -- compared with Lucene above at least
+    // once. Counted on this thread, so no other test's queries count.
+    let unreached: Vec<_> = root_shape_counts()
+        .into_iter()
+        .filter(|&(_, n)| n == 0)
+        .map(|(s, _)| s)
+        .collect();
+    assert!(
+        unreached.is_empty(),
+        "no fixture query reaches {unreached:?}"
+    );
 }
