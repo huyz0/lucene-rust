@@ -420,3 +420,99 @@ fn advance_to(scorer: &mut SpanScorer<'_>, doc: i32) -> Result<bool> {
     }
     Ok(d == doc)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reader() -> crate::directory_reader::DirectoryReader {
+        let dir = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/data/spans/index"
+        ));
+        crate::directory_reader::DirectoryReader::open(&lucene_store::FsDirectory::open(dir))
+            .unwrap()
+    }
+
+    /// The weight's statistics where Java's `simScorer` is `null`; a scorer
+    /// without norms explains BM25 over unnormed lengths; the scorer's
+    /// bounds and costs.
+    #[test]
+    fn statistics_bounds_and_unnormed_explanations() {
+        let reader = reader();
+        let opened = reader.open_segments().unwrap();
+        let segments = opened.as_open_segments();
+        let seg = &segments[0];
+        let ctx = LeafContext {
+            fields: seg.fields,
+            doc_in: seg.doc_in,
+            pos_in: seg.pos_in,
+            pay_in: seg.pay_in,
+            live_docs: seg.live_docs,
+            points: None,
+            norms: None,
+            global: None,
+            max_doc: seg.max_doc,
+            cache: None,
+            reader: None,
+            similarity: None,
+        };
+        let empty = SpanNode::Near {
+            clauses: Vec::new(),
+            slop: 0,
+            in_order: true,
+        };
+        assert!(sim_inputs(&ctx, &empty).unwrap().is_none());
+        assert!(sim_inputs(&ctx, &SpanNode::term("body", "nosuch"))
+            .unwrap()
+            .is_none());
+        assert!(sim_inputs(&ctx, &SpanNode::term("nofield", "a"))
+            .unwrap()
+            .is_none());
+        assert!(span_node(&ctx, &empty, 1.0, Mode::Complete)
+            .unwrap()
+            .is_none());
+
+        let q = SpanNode::term("body", "apple");
+        let mut s = build_scorer(&ctx, &q, 2.0, Mode::Complete)
+            .unwrap()
+            .unwrap();
+        assert_eq!(s.max_score(NO_MORE_DOCS).unwrap(), f32::INFINITY);
+        assert!(!s.two_phase());
+        assert!(s.cost() > 0 && s.match_cost() > 0.0);
+        let doc = s.next_doc().unwrap();
+        let score = s.score().unwrap();
+        let e = explain_span_node(&ctx, &q, 2.0, doc).unwrap();
+        assert_eq!(e.value, score);
+        let text = e.to_string();
+        assert!(text.contains("2.0 = boost"), "{text}");
+        assert!(text.contains("1.0 = dl, length of field"), "{text}");
+        assert_eq!(
+            explain_span_node(&ctx, &q, 1.0, NO_MORE_DOCS - 1)
+                .unwrap()
+                .description,
+            "no matching term"
+        );
+        // Without scores: frequency 1, no similarity.
+        let mut n = build_scorer(&ctx, &q, 1.0, Mode::NoScores)
+            .unwrap()
+            .unwrap();
+        n.next_doc().unwrap();
+        assert_eq!(n.score().unwrap(), 0.0);
+        let e = explain_span_unscored(&ctx, &q, doc).unwrap();
+        assert_eq!(
+            e.description,
+            format!("match body:apple in {doc} without score")
+        );
+        assert!(
+            !explain_span_unscored(&ctx, &q, NO_MORE_DOCS - 1)
+                .unwrap()
+                .matched
+        );
+        assert!(
+            !explain_span_unscored(&ctx, &SpanNode::term("body", "nosuch"), 0)
+                .unwrap()
+                .matched
+        );
+    }
+}
