@@ -1034,8 +1034,10 @@ outright.
   chains the port does not build yet (`PENDING`) and fails on any other gap.
 - `GenSnowball.java` — M11 T11.3: every Snowball stemmer through Lucene's
   `SnowballFilter` over a synthetic vocabulary built from the stemmers' own
-  `Among` tables, selected by a traced stemmer for new decisions
-  (`data/snowball/<Language>.words`); read by
+  `Among` tables, selected by a traced stemmer for new decisions, plus the
+  words of `corpus/snowball-seed.txt` (a frozen copy of the analysis-common
+  corpus, so editing that corpus leaves these files alone; output is
+  identical on JDK 21 and 25) (`data/snowball/<Language>.words`); read by
   `crates/lucene-analysis/tests/snowball_fixtures.rs`.
 - `GenHunspell.java` — M11 T11.4: Lucene's Hunspell over this project's own
   dictionaries (`corpus/hunspell/<name>.aff`/`.dic`/`.words`, each named for

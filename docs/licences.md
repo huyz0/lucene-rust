@@ -85,7 +85,8 @@ a dependency the shipped library links is not under a licence listed here.
   extracted from the JDK (GPL-2.0 with the Classpath Exception): Java's
   `Character.getType` is specified as the UCD's `General_Category`, and the
   generated tables equal JDK 25's code point for code point.
-- **The analysis-common corpus** (M11), `fixtures/corpus/analysis-common.txt`,
+- **The analysis-common corpus** (M11), `fixtures/corpus/analysis-common.txt`
+  (and its frozen copy `snowball-seed.txt`, which seeds `GenSnowball`),
   is written for this project (Apache-2.0); the few well-known pangrams in it
   are short phrases in common use. Test data only.
 
