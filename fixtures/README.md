@@ -1024,7 +1024,9 @@ outright.
   and `regex_ci.words` (which code points each case-insensitive form of
   ~1,800 probes matches, over every code point with a simple case mapping;
   code points whose properties differ between JDK 21 and JDK 25 are left
-  out, so the output is the same under both). Deterministic. Consumed by
+  out, so the output is the same under both) and `concatenate.words`
+  (`ConcatenateGraphFilter`'s indexed bytes for separators above ASCII).
+  Deterministic. Consumed by
   `crates/lucene-analysis/tests/analysis_common_fixtures.rs`, which lists the
   chains the port does not build yet (`PENDING`) and fails on any other gap.
 - `GenSnowball.java` — M11 T11.3: every Snowball stemmer through Lucene's
