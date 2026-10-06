@@ -6,6 +6,7 @@ mod elision_filter;
 pub mod java_regex;
 pub mod jflex;
 pub mod rolling_buffer;
+pub mod stemmer_util;
 
 pub use char_tokenizer::{
     from_separator_char_predicate, CharTokenizer, JavaLetter, LetterTokenizer, NotJavaWhitespace,
