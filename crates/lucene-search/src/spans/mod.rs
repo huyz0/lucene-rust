@@ -120,6 +120,9 @@ macro_rules! dispatch {
     };
 }
 
+// Every method forwarded, defaulted ones included: a default left in place
+// would run on this wrapper instead of the boxed spans's own override.
+#[deny(clippy::missing_trait_methods)]
 impl Spans for BoxSpans<'_> {
     #[inline]
     fn doc_id(&self) -> i32 {
@@ -1675,6 +1678,16 @@ pub(crate) fn all_terms(q: &SpanNode, out: &mut Vec<(String, Vec<u8>)>) {
 pub(crate) fn weight_query(q: &SpanNode) -> &SpanNode {
     match q {
         SpanNode::FieldMasking { inner, .. } => weight_query(inner),
+        other => other,
+    }
+}
+
+/// [`weight_query`] for a weight created without scores, as `Weight.matches`
+/// runs: `PayloadScoreQuery.createWeight` then returns its wrapped query's
+/// weight too, so that is the query a match reports.
+pub(crate) fn unscored_weight_query(q: &SpanNode) -> &SpanNode {
+    match weight_query(q) {
+        SpanNode::PayloadScore(p) => unscored_weight_query(&p.inner),
         other => other,
     }
 }
