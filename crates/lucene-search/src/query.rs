@@ -723,8 +723,9 @@ impl Clause {
     ///
     /// See [`BooleanQuery::rewrite`]'s doc comment for the exact rewrite
     /// rules this delegates to for `Clause::Boolean`. `BoostQuery.rewrite`'s
-    /// two simplifications apply (a boost of `1` is dropped, nested boosts
-    /// multiply; its boost-of-`0` constant-score wrapping does not);
+    /// three simplifications apply (a boost of `1` is dropped, nested boosts
+    /// multiply, a boosted `MatchNoDocsQuery` bubbles up bare; its
+    /// boost-of-`0` constant-score wrapping does not);
     /// `DisjunctionMax`/`ConstantScore` are never collapsed away, only their
     /// wrapped clause(s) are rewritten.
     pub fn rewrite(self) -> Clause {
@@ -747,8 +748,9 @@ impl Clause {
                     score,
                 }))
             }
-            // `BoostQuery.rewrite`: a boost of `1` is its query, and a boost
-            // of a boost one boost of their product.
+            // `BoostQuery.rewrite`: a boost of `1` is its query, a boost of
+            // a boost one boost of their product, and a boosted
+            // `MatchNoDocsQuery` that query alone ("bubble up").
             Clause::Boost(boxed) => {
                 let BoostQuery { inner, boost } = *boxed;
                 let inner = inner.rewrite();
@@ -760,6 +762,7 @@ impl Clause {
                         inner: nested.inner,
                         boost: boost * nested.boost,
                     })),
+                    none @ Clause::MatchNoDocs(_) => none,
                     inner => Clause::Boost(Box::new(BoostQuery {
                         inner: Box::new(inner),
                         boost,
@@ -2093,6 +2096,18 @@ mod tests {
         let inner = BoostQuery::new(TermQuery::new("body", "cat"), 2.5);
         let clause: Clause = inner.clone().into();
         assert_eq!(clause, Clause::Boost(Box::new(inner)));
+    }
+
+    /// `BoostQuery.rewrite` bubbles a `MatchNoDocsQuery` up without its
+    /// boost.
+    #[test]
+    fn rewrite_drops_the_boost_of_match_no_docs() {
+        let none = Clause::MatchNoDocs(MatchNoDocsQuery::new().with_reason("x"));
+        let boosted = Clause::Boost(Box::new(BoostQuery::new(none.clone(), 3.0)));
+        assert_eq!(boosted.rewrite(), none);
+        // An empty boolean rewrites to one, then bubbles up too.
+        let empty = Clause::Boost(Box::new(BoostQuery::new(BooleanQuery::new(), 2.0)));
+        assert!(matches!(empty.rewrite(), Clause::MatchNoDocs(_)));
     }
 
     #[test]

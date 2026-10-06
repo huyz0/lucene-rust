@@ -1,12 +1,15 @@
 //! M10 T10.6, differentially against Lucene 10.5.0:
 //! `fixtures/src/GenMoreLikeThis.java`'s `common.tsv`.
 //!
-//! `CommonTermsQuery` over a four-segment index with deletions: twelve term
-//! sets and settings (a count or a fraction of `maxDoc` as the frequent-term
-//! threshold, either occur on either side, minimum-should-match counts and
-//! fractions, boosts, a term absent everywhere, a field of its own, no terms
-//! and one term) -- `toString`, every hit's score bits and four documents'
-//! explanations. The file is rebuilt here line for line and compared with
+//! `CommonTermsQuery` over a four-segment index with deletions: fourteen
+//! term sets and settings (a count or a fraction of `maxDoc` as the
+//! frequent-term threshold, every legal occur on either side, `FILTER`
+//! included, minimum-should-match counts and fractions, boosts, a term absent
+//! everywhere, a field of its own, no terms and one term) -- `toString`,
+//! every hit's score bits and four documents' explanations; then hits and
+//! explanations for four boosted booleans of `MUST`/`FILTER`/`SHOULD`/
+//! `MUST_NOT` term clauses (a boost the term weights take into their
+//! explanation). The file is rebuilt here line for line and compared with
 //! Lucene's.
 
 // Test fixtures' own arithmetic -- see `docs/arithmetic-gate.md`'s "Test code".
@@ -15,7 +18,7 @@
 use lucene_search::common_terms::CommonTermsQuery;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
-use lucene_search::query::{BooleanQuery, Clause};
+use lucene_search::query::{BooleanQuery, BoostQuery, Clause, TermQuery};
 use lucene_search::query_visitor::Occur;
 use lucene_search::{Error, Result};
 use lucene_store::FsDirectory;
@@ -66,7 +69,7 @@ fn as_boolean(c: Clause) -> BooleanQuery {
     }
 }
 
-const COMMON: [&str; 12] = [
+const COMMON: [&str; 14] = [
     "body:river|body:glacier|body:quartz,0.3,SHOULD,SHOULD,0,0,1,1",
     "body:river|body:stone|body:glacier|body:tundra,0.25,SHOULD,MUST,0,0,1,1",
     "body:river|body:stone|body:light,0.1,SHOULD,SHOULD,0,0,1,1",
@@ -79,7 +82,41 @@ const COMMON: [&str; 12] = [
     ",0.1,SHOULD,SHOULD,0,0,1,1",
     "title:river|title:stone|title:quartz,0.1,SHOULD,SHOULD,0.4,0.6,1,1",
     "body:river|body:stone,0.1,MUST_NOT,SHOULD,0,0,1,1",
+    "body:river|body:glacier|body:quartz,0.3,SHOULD,FILTER,0,0,2,1",
+    "body:river|body:stone|body:glacier|body:tundra,0.25,MUST,FILTER,0,0,1,0.5",
 ];
+
+/// `GenMoreLikeThis.BOOSTED`: `+`/`#`/`-` prefixed term clauses, the boost.
+const BOOSTED: [(&str, &str); 4] = [
+    ("+body:river #body:stone -body:glacier", "2.5"),
+    ("#body:light body:river body:stone -body:quartz", "0.5"),
+    ("#body:river #body:stone", "3"),
+    ("+body:stone -body:river -body:zephyr", "1.5"),
+];
+
+fn boosted_lines(s: &IndexSearcher<'_, '_>, (clauses, boost): (&str, &str), out: &mut Vec<String>) {
+    let mut b = BooleanQuery::new();
+    for c in clauses.split(' ') {
+        let (list, t) = match c.as_bytes()[0] {
+            b'+' => (&mut b.must, &c[1..]),
+            b'#' => (&mut b.filter, &c[1..]),
+            b'-' => (&mut b.must_not, &c[1..]),
+            _ => (&mut b.should, c),
+        };
+        let (f, text) = t.split_once(':').unwrap();
+        list.push(Clause::Term(TermQuery::new(f, text)));
+    }
+    let q = Clause::Boost(Box::new(BoostQuery::new(b, boost.parse().unwrap())));
+    let head = format!("boost\t{clauses}^{boost}");
+    let query = as_boolean(q);
+    out.push(format!("{head}\thits\t{}", g(hits(s, &query))));
+    for doc in [0, 7, 33, 60] {
+        out.push(format!(
+            "{head}\texplain {doc}\t{}",
+            g(s.explain(&query, doc).map(|e| e.to_string()))
+        ));
+    }
+}
 
 fn occur(s: &str) -> Occur {
     match s {
@@ -149,6 +186,9 @@ fn common_terms_match_lucene() {
     let mut got = Vec::new();
     for spec in COMMON {
         common_lines(&searcher, spec, &mut got);
+    }
+    for spec in BOOSTED {
+        boosted_lines(&searcher, spec, &mut got);
     }
     compare(
         &std::fs::read_to_string(dir.join("common.tsv")).unwrap(),

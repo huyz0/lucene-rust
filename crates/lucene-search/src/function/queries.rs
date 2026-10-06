@@ -327,7 +327,7 @@ impl fmt::Debug for FunctionScoreQuery {
         write!(
             f,
             "FunctionScoreQuery({}, scored by {})",
-            crate::explain::describe_query(&self.in_query),
+            crate::explain::describe_clause(&self.in_query),
             self.source.describe()
         )
     }

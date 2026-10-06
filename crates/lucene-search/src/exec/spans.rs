@@ -337,7 +337,9 @@ pub(crate) fn explain_span_node(
             spans, function, ..
         } = &scorer.spans
         else {
-            unreachable!("a payload score query scoring builds payload spans")
+            return Err(crate::Error::IllegalState(
+                "a payload score query's scorer holds no payload spans".into(),
+            ));
         };
         let payload_expl =
             payloads::payload_explanation(*function, spans.payloads_seen, spans.payload_score);
