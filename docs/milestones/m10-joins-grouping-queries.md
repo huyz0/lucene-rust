@@ -10,7 +10,7 @@
 | **Effort** | L |
 | **Depends on** | [M7](m7-core-complete.md) |
 | **Unblocks** | native `nested`, `function_score`, `intervals`, `combined_fields`, field collapsing |
-| **Status** | in progress (T10.0, T10.1, T10.3 done; T10.2 queries ported; T10.4, T10.5 ported; T10.6 done: intervals, common terms, more-like-this, spans, payloads, two benchmark cases below 1.0 written up; T10.7 wired, its REST and YAML runs pending) |
+| **Status** | delivered 2026-10-06, all four criteria met: T10.0-T10.7 done. Block and query-time joins, grouping, function, interval, span, payload and more-like-this queries ported and differentially tested; OpenSearch's `nested`, spans, `intervals`, `combined_fields` and `function_score` run natively (CI run 37427655043: the YAML suites fail identically with and without the plugin, the M10 matrix 9 819 checks with no failure); every benchmark case above Lucene or at parity inside its run's noise (stage-3 status below) |
 
 ---
 
@@ -376,7 +376,7 @@ the build before; `~` inside the run's noise floor):
 | `grouping` (T10.4) | 9 | 1.05x-2.98x | blocks 1.05x-1.17x (two 7-rep runs of two builds each; floors 1.14x-1.30x) |
 | `function` (T10.5) | 10 | 1.39x-2.82x | `FunctionRangeQuery` as a filter 1.39x |
 | `aggs` (terms behind a filter) | 6 | 1.45x-3.11x | dense range on a keyword 1.45x; see below |
-| `queries` (T10.6) | 19 | 1.01x-1.59x | `CommonTermsQuery` split 1.01~, `maxgaps(unordered)` 1.01~, `msm` 1.02~, seven inside the noise in all (1.01~-1.13~); a phrase over a disjunction 1.39x, `SpanPositionRangeQuery` 1.27x (were 0.89x, 0.90x; see below); `MoreLikeThisQuery` 1.59x |
+| `queries` (T10.6) | 19 | 1.01x-1.59x | nine at parity within the noise (1.01x-1.13x, floor 1.13x): `CommonTermsQuery` split 1.01~ and `msm` 1.02~, `maxgaps(unordered)` 1.01~, `ordered` 1.04~, `SpanContainingQuery` 1.04~, `SpanPayloadCheckQuery` 1.07~, `SpanNotQuery` 1.09~, `containing` 1.13~, a multi-term wrapper in a near 1.13~; a phrase over a disjunction 1.39x, `SpanPositionRangeQuery` 1.27x (were 0.89x, 0.90x; see below); `MoreLikeThisQuery` 1.59x |
 
 Lucene's side of the two term-filtered `cat` cases (a single-valued
 `SORTED_SET`) is bimodal: in some JVM runs (one of six, three of five in
@@ -457,8 +457,9 @@ layer -- and the near's and the disjunction's terms still behind a
 
 Instructions: `sp_pos_range` -22%, `iv_or_phrase` -26%, `sp_check` -6%,
 `PayloadScoreQuery` -11%; against Lucene `iv_or_phrase` 0.89x -> 1.39x,
-`sp_pos_range` 0.90x -> 1.27x, and every `queries` case at 1.01x or
-above (one 3-rep run each way, noise floor 1.13x). The neighbours did not
+`sp_pos_range` 0.90x -> 1.27x (one 3-rep run each way, noise floor
+1.13x). Ten `queries` cases are above the noise; the other nine, at
+1.01x-1.13x, are parity within it, not wins (table above). The neighbours did not
 move: `similarity`'s span cases and `m7_fixture`'s phrase, synonym and
 fuzzy cases within 5% of the build before (3 interleaved reps, inside this
 machine's noise), `span_near_unordered` to the instruction. Tried and
@@ -472,7 +473,12 @@ dropped: an inlined `LazyDocsCursor::try_advance` for a term's `advance`
       (`GenBlockJoin` -- empty and single-child blocks, whole-block and lone
       deletes, deleted parents --, `GenQueryTimeJoin`, `GenGrouping`,
       `GenFunction`, `GenIntervals`, `GenSpans`, `GenMoreLikeThis`: every
-      fixture line eq- [x] OpenSearch's `nested` and `function_score` YAML suites fail
+      fixture line equal to Lucene's.)
+- [x] A Rust-written block index passes Lucene's `CheckJoinIndex`. (T10.1:
+      `fixtures/src/VerifyJoin.java` runs Lucene's `CheckJoinIndex` over
+      Rust-written block indices, sorted and unsorted, before and after a
+      force merge.)
+- [x] OpenSearch's `nested` and `function_score` YAML suites fail
       identically with and without native execution. OpenSearch's core REST
       spec has no suite of its own for either: `nested` is exercised by
       `search.inner_hits` (in `YAML_SUITES`), `function_score` only by the
@@ -483,15 +489,10 @@ dropped: an inlined `LazyDocsCursor::try_advance` for a term's `advance`
       nested, spans, intervals, combined_fields, function_score,
       more_like_this, common, parent_id native; has_child/has_parent
       falling back by name) inside 9 819 checks, 0 failures.
-e execution. Open: not run yet
-      (`scripts/verify-opensearch.sh --yaml` needs Docker). OpenSearch's core
-      REST spec has no suite of its own for either: `nested` is exercised by
-      `search.inner_hits` (in `YAML_SUITES`), `function_score` only by the
-      `lang-painless` module's `script_score` suites, which fall back.
 - [x] Each new query is no slower than Lucene on its benchmark. (Stage-3
       status above: every case of `join`, `query_join`, `grouping`,
-      `function`, `aggs` and `queries` at or above 1.0, or inside its run's
-      noise.)
+      `function`, `aggs` and `queries` above 1.0, or at parity inside its
+      run's noise.)
 
 ## Risks and unknowns
 
