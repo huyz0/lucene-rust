@@ -8,10 +8,12 @@
 //!
 //! Re-specified from `Pattern`'s documented grammar and checked against it
 //! on generated patterns and texts (`GenJavaRegex.java`); no JDK code is
-//! copied. The pattern is parsed with Java's grammar into a tree, and the
-//! tree is matched by continuation passing over the text's UTF-16 units,
-//! with the choices Java's compiler makes for each construct:
+//! copied. The pattern is parsed with Java's grammar into a tree, compiled
+//! to a flat program and run over the text's UTF-16 units with explicit
+//! stacks on the heap ([`vm`]), with the choices Java's compiler makes for
+//! each construct:
 //!
+//! - `X{0,1}` is `X?` in every respect.
 //! - A quantifier on a single character, class, assertion, backreference,
 //!   lookaround or atomic group repeats that atom's *first* match at each
 //!   step and backtracks only over the count (Java's `Curly`/`Ques`).
@@ -45,56 +47,59 @@
 //!
 //! Speed, none of it observable: a run of nodes with one way to match
 //! (characters, literals, backreferences, assertions, fixed repetitions) is
-//! walked without a continuation each; an alternative -- or a search start
-//! -- whose first character cannot be the text's is not tried, when trying
-//! it would fail before setting a capture or a loop's memo.
+//! one instruction, and so is the minimum of a one-step repetition; a
+//! capture of such a run checks the run after it before it records anything
+//! to undo; an alternative -- or a search start -- whose first character
+//! cannot be the text's is not tried, when trying it would fail before
+//! setting a capture or a loop's memo (a table per ASCII unit says which).
 //!
 //! **Refused** (`IllegalArgument` starting [`super::java_regex::UNSUPPORTED`],
 //! as before): `\X`, `\b{g}` (extended grapheme clusters, from the JDK's
 //! Unicode version's segmentation rules), `\N{name}` (character names) and
-//! `CANON_EQ` (`(?c)`). A match or a parse that would take more than
-//! [`STACK_BUDGET`] bytes of stack (Java's `StackOverflowError`, whose depth
-//! depends on the thread's stack) is an `IllegalState` error, from
-//! [`super::java_regex::JavaMatcher::try_find`] or `compile`: never a Rust
-//! stack overflow, which would abort the process (and the JVM over FFI).
+//! `CANON_EQ` (`(?c)`). Java's `StackOverflowError` -- whose depth depends on
+//! the thread's stack -- is an `IllegalState` error, from
+//! [`super::java_regex::JavaMatcher::try_find`] or `compile`, never a Rust
+//! stack overflow, which would abort the process (and the JVM over FFI): a
+//! match past [`vm::MAX_ENTRIES`] backtracking entries (some hundreds of
+//! thousands of iterations, where Java's 1 MiB stack holds some 1,500), a
+//! parse deeper than [`DEEP_STACK_BUDGET`] allows. Neither is measured
+//! against the caller's stack: a match's depth is heap, and a pattern that
+//! nests more than [`SHALLOW_NESTING`] levels is parsed -- and, if its
+//! lookarounds, atomic groups or quantified groups nest that deep, matched
+//! -- on a thread with a stack of its own.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use super::java_regex::{
     class_literal_set, class_range_set, for_property, literal_set, CpSet, JFlags, UNSUPPORTED,
 };
 use super::java_regex_props as props;
 use crate::java_character::{
-    self as jc, char_count, code_point_at, get_type, is_letter_or_digit, to_lower_case,
-    to_upper_case,
+    self as jc, code_point_at, get_type, is_letter_or_digit, to_lower_case, to_upper_case,
 };
 use crate::AnalysisError;
 
-/// The stack a match (or a parse) may use on the caller's thread: measured,
-/// not counted, since a frame's size depends on the build. A JVM thread's
-/// whole stack is 1 MiB (`-Xss1m`), so this leaves the caller room.
-pub const STACK_BUDGET: usize = 256 * 1024;
+mod vm;
 
-/// What exceeds [`STACK_BUDGET`] runs again on a thread of this stack...
+/// The stack a parse may use on the caller's thread: measured, not counted,
+/// since a frame's size depends on the build. A pattern that might nest
+/// deeper than [`SHALLOW_NESTING`] is parsed on a thread of its own
+/// instead, so this never meets the caller's own stack limit.
+const STACK_BUDGET: usize = 256 * 1024;
+
+/// How deeply a pattern may nest (groups, classes, intersections; and the
+/// sub-programs a match runs nested) to be parsed and matched on the
+/// caller's stack: some tens of KiB, whatever the caller has left (a JVM
+/// thread's whole stack is 1 MiB, `-Xss1m`).
+pub(crate) const SHALLOW_NESTING: usize = 32;
+
+/// A deeper pattern is parsed (and, if its sub-programs nest that deep,
+/// matched) on a thread of this stack...
 const DEEP_STACK: usize = 32 * 1024 * 1024;
 
-/// ... within this budget, beyond which it fails as Java's
-/// `StackOverflowError` would. Java's own depth depends on its thread's
-/// stack: at 1 MiB, `(a|b)*` overflows after some 1,500 iterations, which
-/// this allows many times over.
-pub const DEEP_STACK_BUDGET: usize = 24 * 1024 * 1024;
-
-/// Runs `f` within [`STACK_BUDGET`] here, and if that overflows, again on
-/// a thread with [`DEEP_STACK`] within [`DEEP_STACK_BUDGET`]. `f` starts
-/// from its arguments each time (it measures the stack from its own entry).
-fn with_deep_stack<T: Send>(
-    f: impl Fn(usize) -> Result<T, AnalysisError> + Sync,
-) -> Result<T, AnalysisError> {
-    match f(STACK_BUDGET) {
-        Err(e) if is_overflow(&e) => on_deep_stack(|| f(DEEP_STACK_BUDGET)).unwrap_or(Err(e)),
-        r => r,
-    }
-}
+/// ... and a parse within this budget, beyond which it fails as Java's
+/// `StackOverflowError` would.
+const DEEP_STACK_BUDGET: usize = 24 * 1024 * 1024;
 
 /// `f` on a thread with [`DEEP_STACK`]; `None` when no thread can be had.
 fn on_deep_stack<T: Send>(f: impl FnOnce() -> T + Send) -> Option<T> {
@@ -108,8 +113,20 @@ fn on_deep_stack<T: Send>(f: impl FnOnce() -> T + Send) -> Option<T> {
     })
 }
 
-fn is_overflow(e: &AnalysisError) -> bool {
-    matches!(e, AnalysisError::IllegalState(m) if m.starts_with("StackOverflowError"))
+/// An upper bound on how deeply the parser recurses over `p` (after
+/// `\Q..\E` removal): every unescaped `(`, `[` and `&` may open a level.
+fn nesting_bound(p: &[u32]) -> usize {
+    let mut n = 0usize;
+    let mut i = 0;
+    while i < p.len() {
+        match char::from_u32(p[i]) {
+            Some('\\') => i += 1,
+            Some('(' | '[' | '&') => n += 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    n
 }
 
 /// The address of a local: how deep the stack is here.
@@ -1197,7 +1214,6 @@ impl Parser<'_> {
     /// `closure(prev)`: a quantifier, if one follows.
     fn closure(&mut self, prev: Node) -> Result<Node, AnalysisError> {
         let c = self.peek();
-        let ques = c == u32::from(b'?');
         let (min, max) = match char::from_u32(c).unwrap_or('\u{FFFD}') {
             '?' => (0, 1),
             '*' => (0, MAX_REPS),
@@ -1237,6 +1253,9 @@ impl Parser<'_> {
             }
             _ => return Ok(prev),
         };
+        // `X{0,1}` is `X?` in every respect (black-box: captures, greed,
+        // zero-width bodies).
+        let ques = (min, max) == (0, 1);
         let n = self.next();
         let greed = if n == u32::from(b'?') {
             self.cursor += 1;
@@ -1644,7 +1663,7 @@ fn posix_property(name: &str, ci: bool) -> Option<CpSet> {
 /// A compiled pattern for the backtracking matcher.
 #[derive(Debug)]
 pub(crate) struct Program {
-    root: Node,
+    code: vm::Code,
     /// Capturing groups, group 0 included.
     groups: usize,
     names: HashMap<String, usize>,
@@ -1658,14 +1677,17 @@ pub(crate) struct Program {
 
 /// `Pattern.compile(pattern)` for the backtracking matcher.
 pub(crate) fn compile(pattern: &str) -> Result<Program, AnalysisError> {
-    with_deep_stack(|budget| compile_within(pattern, budget))
-}
-
-fn compile_within(pattern: &str, budget: usize) -> Result<Program, AnalysisError> {
     let cps: Vec<u32> = pattern.chars().map(u32::from).collect();
     let p = remove_qe(&cps);
+    if nesting_bound(&p) <= SHALLOW_NESTING {
+        return compile_within(&p, STACK_BUDGET);
+    }
+    on_deep_stack(|| compile_within(&p, DEEP_STACK_BUDGET)).unwrap_or_else(|| Err(overflow()))
+}
+
+fn compile_within(p: &[u32], budget: usize) -> Result<Program, AnalysisError> {
     let mut parser = Parser {
-        p: &p,
+        p,
         cursor: 0,
         flags: 0,
         groups: 0,
@@ -1708,7 +1730,7 @@ fn compile_within(pattern: &str, budget: usize) -> Result<Program, AnalysisError
         names: parser.names,
         has_supplementary: parser.has_supplementary,
         min_len,
-        root,
+        code: vm::Code::compile(&root),
         root_first,
     })
 }
@@ -1829,23 +1851,19 @@ impl Program {
 // ---------------------------------------------------------------- matcher
 
 /// A match's state: the text, the groups (`2n`, `2n + 1`; -1 unset), where
-/// the last match ended (`\G`), and the continuation depth.
+/// the last match ended (`\G`), and the machine's stacks.
 pub(crate) struct State<'t> {
     text: &'t [u16],
     pub(crate) groups: Vec<i32>,
     old_last: usize,
-    /// The stack's depth where the search started, and how much it may use.
-    stack_base: usize,
-    budget: usize,
-    overflow: bool,
-    /// `localsPos`: per memoised `Loop`, the positions where another
-    /// iteration failed (for this `find`).
-    failed: HashSet<(usize, usize)>,
-    /// The greedy repetitions' back-off positions, innermost last.
-    positions: Vec<usize>,
+    scratch: vm::Scratch,
 }
 
-type K<'a, 't> = &'a mut dyn FnMut(&mut State<'t>, usize) -> bool;
+/// A hasher for the loops' failed-position memo: FxHash's mix over the
+/// (loop, position) pairs, on the hot path of every memoised iteration.
+pub(crate) type FastHash = crate::char_array_set::WordHash;
+
+pub(crate) use vm::Scratch;
 
 fn line_terminator(c: u16) -> bool {
     matches!(c, 0x0A | 0x0D | 0x85 | 0x2028 | 0x2029)
@@ -1853,13 +1871,15 @@ fn line_terminator(c: u16) -> bool {
 
 impl<'t> State<'t> {
     pub(crate) fn new(text: &'t [u16], groups: usize, old_last: usize) -> Self {
-        Self::reusing(text, Vec::new(), groups, old_last)
+        Self::reusing(text, Vec::new(), Scratch::default(), groups, old_last)
     }
 
-    /// A fresh state whose group slots reuse `buffer`'s allocation.
+    /// A fresh state whose group slots and stacks reuse `buffer`'s and
+    /// `scratch`'s allocations ([`Self::into_parts`] gives them back).
     pub(crate) fn reusing(
         text: &'t [u16],
         mut buffer: Vec<i32>,
+        scratch: Scratch,
         groups: usize,
         old_last: usize,
     ) -> Self {
@@ -1869,12 +1889,13 @@ impl<'t> State<'t> {
             text,
             groups: buffer,
             old_last,
-            stack_base: 0,
-            budget: STACK_BUDGET,
-            overflow: false,
-            failed: HashSet::new(),
-            positions: Vec::new(),
+            scratch,
         }
+    }
+
+    /// The group slots and the stacks, for the next match to reuse.
+    pub(crate) fn into_parts(self) -> (Vec<i32>, Scratch) {
+        (self.groups, self.scratch)
     }
 
     fn len(&self) -> usize {
@@ -1912,723 +1933,10 @@ impl<'t> State<'t> {
     }
 }
 
-impl Program {
-    /// Matches `n` at `i`, then `k`.
-    fn m<'t>(&self, n: &Node, i: usize, st: &mut State<'t>, k: K<'_, 't>) -> bool {
-        if st.overflow {
-            return false;
-        }
-        if stack_addr().abs_diff(st.stack_base) > st.budget {
-            st.overflow = true;
-            return false;
-        }
-        self.m_inner(n, i, st, k)
-    }
-
-    /// The first match of `n` at `i`: where it ends (`matcher.last`).
-    fn first<'t>(&self, n: &Node, i: usize, st: &mut State<'t>) -> Option<usize> {
-        if let Some(r) = Self::simple_step(n, i, st) {
-            return r;
-        }
-        let mut end = None;
-        self.m(n, i, st, &mut |_, j| {
-            end = Some(j);
-            true
-        });
-        end
-    }
-
-    /// A zero-width assertion without side effects (`\A`, `\z`, `^`, `$`,
-    /// `\b`, `\G`) at `i`; `None` for any other node.
-    fn assertion(n: &Node, i: usize, st: &State<'_>) -> Option<bool> {
-        let len = st.len();
-        Some(match n {
-            Node::Begin => i == 0,
-            Node::End => i == len,
-            Node::Caret { unix } => {
-                if i == len {
-                    false
-                } else if i == 0 {
-                    true
-                } else {
-                    let c = st.text[i - 1];
-                    if *unix {
-                        c == 0x0A
-                    } else {
-                        line_terminator(c) && !(c == 0x0D && st.text[i] == 0x0A)
-                    }
-                }
-            }
-            Node::Dollar { multiline, unix } => {
-                if *unix {
-                    i >= len || (st.text[i] == 0x0A && (*multiline || i == len - 1))
-                } else if !*multiline
-                    && (i + 2 < len
-                        || (i + 2 == len && (st.text[i] != 0x0D || st.text[i + 1] != 0x0A)))
-                {
-                    false
-                } else if i < len {
-                    let c = st.text[i];
-                    if c == 0x0A {
-                        !(i > 0 && st.text[i - 1] == 0x0D)
-                    } else {
-                        line_terminator(c)
-                    }
-                } else {
-                    true
-                }
-            }
-            Node::Bound { not, unicode } => {
-                let word = |c: u32, at: usize| {
-                    is_word(c, *unicode)
-                        || (c >= 0x300 && get_type(c) == jc::NON_SPACING_MARK && has_base(st, at))
-                };
-                let left = i > 0 && word(st.cp_before(i), i - 1);
-                let right = i < len && word(st.cp(i), i);
-                (left != right) != *not
-            }
-            Node::LastMatch => i == st.old_last,
-            _ => return None,
-        })
-    }
-
-    /// Where a backreference to `group` at `i` ends.
-    fn backref_step(group: usize, ci: Option<bool>, i: usize, st: &State<'_>) -> Option<usize> {
-        let len = st.len();
-        let (s, e) = st.group(group);
-        if s < 0 {
-            return None;
-        }
-        let (s, size) = (s as usize, (e - s) as usize);
-        if i + size > len {
-            return None;
-        }
-        match ci {
-            None => {
-                // Element by element: these are short, and `memcmp` costs a call.
-                if (0..size).any(|d| st.text[i + d] != st.text[s + d]) {
-                    return None;
-                }
-            }
-            Some(unicode) => {
-                let (mut x, mut j) = (i, s);
-                for _ in 0..size {
-                    if x >= len || j >= len {
-                        return None;
-                    }
-                    let (c1, c2) = (st.cp(x), st.cp(j));
-                    if c1 != c2 {
-                        if unicode {
-                            let (u1, u2) = (to_upper_case(c1), to_upper_case(c2));
-                            if u1 != u2 && to_lower_case(u1) != to_lower_case(u2) {
-                                return None;
-                            }
-                        } else if ascii_lower(c1) != ascii_lower(c2) {
-                            return None;
-                        }
-                    }
-                    x += char_count(c1);
-                    j += char_count(c2);
-                }
-            }
-        }
-        Some(i + size)
-    }
-
-    /// Where the run of literals `sets` at `i` ends.
-    #[inline]
-    fn slice_step(sets: &[CharSet], i: usize, st: &State<'_>) -> Option<usize> {
-        let mut j = i;
-        for set in sets {
-            j = Self::char_step_cp(set, j, st)?;
-        }
-        Some(j)
-    }
-
-    /// One code point of `cs` at `i` (a literal of a run reads code points).
-    #[inline]
-    fn char_step_cp(cs: &CharSet, i: usize, st: &State<'_>) -> Option<usize> {
-        let u = *st.text.get(i)?;
-        if !(0xD800..=0xDBFF).contains(&u) {
-            return cs.contains(u32::from(u)).then_some(i + 1);
-        }
-        let c = st.cp(i);
-        cs.contains(c).then(|| i + char_count(c))
-    }
-
-    /// A node with one way to match and no side effects -- a character,
-    /// literals, a backreference, an assertion, a fixed repetition or a
-    /// sequence of them: `Some` of where it ends (`Some(None)`: it fails);
-    /// `None` for any other node.
-    fn simple_step(n: &Node, i: usize, st: &State<'_>) -> Option<Option<usize>> {
-        Some(match n {
-            Node::Empty => Some(i),
-            Node::Char(cs) => Self::char_step(cs, i, st),
-            Node::Slice(sets) => Self::slice_step(sets, i, st),
-            Node::BackRef { group, ci } => Self::backref_step(*group, *ci, i, st),
-            Node::Group(None, body) => return Self::simple_step(body, i, st),
-            Node::Seq(items) => {
-                let mut j = i;
-                for n in items {
-                    match Self::simple_step(n, j, st)? {
-                        Some(e) => j = e,
-                        None => return Some(None),
-                    }
-                }
-                Some(j)
-            }
-            Node::Repeat {
-                atom,
-                min,
-                max,
-                mode: RepMode::First,
-                ..
-            } if min == max
-                && matches!(
-                    **atom,
-                    Node::Char(_) | Node::Slice(_) | Node::BackRef { .. }
-                ) =>
-            {
-                let mut j = i;
-                for _ in 0..*min {
-                    match Self::simple_step(atom, j, st)? {
-                        Some(e) => j = e,
-                        None => return Some(None),
-                    }
-                }
-                Some(j)
-            }
-            _ => return Self::assertion(n, i, st).map(|ok| ok.then_some(i)),
-        })
-    }
-
-    /// Where one character of `cs` at `i` ends.
-    #[inline]
-    fn char_step(cs: &CharSet, i: usize, st: &State<'_>) -> Option<usize> {
-        let u = *st.text.get(i)?;
-        if cs.bmp || !(0xD800..=0xDBFF).contains(&u) {
-            return cs.contains(u32::from(u)).then_some(i + 1);
-        }
-        let c = st.cp(i);
-        cs.contains(c).then(|| i + char_count(c))
-    }
-
-    fn seq<'t>(&self, items: &[Node], i: usize, st: &mut State<'t>, k: K<'_, 't>) -> bool {
-        // A leading run of single characters, literals and side-effect-free
-        // assertions has one way to match: walked here, without a
-        // continuation each.
-        let mut j = i;
-        let mut skip = 0;
-        for n in items {
-            match Self::simple_step(n, j, st) {
-                Some(Some(e)) => j = e,
-                Some(None) => return false,
-                None => break,
-            }
-            skip += 1;
-        }
-        let (i, items) = (j, &items[skip..]);
-        match items.split_first() {
-            None => k(st, i),
-            Some((head, [])) => self.m(head, i, st, k),
-            Some((head, rest)) => self.m(head, i, st, &mut |st, j| self.seq(rest, j, st, k)),
-        }
-    }
-
-    #[inline(never)]
-    fn m_inner<'t>(&self, n: &Node, i: usize, st: &mut State<'t>, k: K<'_, 't>) -> bool {
-        let len = st.len();
-        match n {
-            Node::Empty => k(st, i),
-            Node::Seq(items) => self.seq(items, i, st, k),
-            Node::Alt(alts, firsts) => {
-                // A non-surrogate `char` an alternative cannot start with.
-                let unit = st
-                    .text
-                    .get(i)
-                    .copied()
-                    .filter(|u| !(0xD800..=0xDFFF).contains(u));
-                alts.iter().zip(firsts).any(|(a, first)| {
-                    let hopeless = match (first, unit) {
-                        (Some(set), Some(u)) => !set.contains(u32::from(u)),
-                        (Some(_), None) => i >= st.len(),
-                        (None, _) => false,
-                    };
-                    !hopeless && self.m(a, i, st, &mut *k)
-                })
-            }
-            Node::Slice(sets) => match Self::slice_step(sets, i, st) {
-                Some(j) => k(st, j),
-                None => false,
-            },
-            Node::Char(cs) => {
-                if i >= len {
-                    return false;
-                }
-                match Self::char_step(cs, i, st) {
-                    Some(e) => k(st, e),
-                    None => false,
-                }
-            }
-            Node::Group(None, body) => self.m(body, i, st, k),
-            Node::Group(Some(g), body) => {
-                let g = *g;
-                if let Some(end) = Self::simple_step(body, i, st) {
-                    let Some(j) = end else {
-                        return false;
-                    };
-                    let old = st.group(g);
-                    st.set_group(g, i as i32, j as i32);
-                    if k(st, j) {
-                        return true;
-                    }
-                    st.set_group(g, old.0, old.1);
-                    return false;
-                }
-                self.m(body, i, st, &mut |st, j| {
-                    let old = st.group(g);
-                    st.set_group(g, i as i32, j as i32);
-                    if k(st, j) {
-                        return true;
-                    }
-                    st.set_group(g, old.0, old.1);
-                    false
-                })
-            }
-            Node::LookAhead { negate, body } => {
-                let matched = self.m(body, i, st, &mut |_, _| true);
-                matched != *negate && k(st, i)
-            }
-            Node::LookBehind {
-                negate,
-                body,
-                min,
-                max,
-                by_code_point,
-            } => {
-                // Java's `int` arithmetic: `i - rmax` may wrap.
-                let ii = i as i32;
-                let (from, start) = if *by_code_point {
-                    let rmax_chars = count_chars(st, ii, max.wrapping_neg());
-                    let rmin_chars = count_chars(st, ii, min.wrapping_neg());
-                    (
-                        ii.wrapping_sub(rmax_chars).max(0),
-                        ii.wrapping_sub(rmin_chars),
-                    )
-                } else {
-                    (ii.wrapping_sub(*max).max(0), ii.wrapping_sub(*min))
-                };
-                let mut matched = false;
-                let mut j = start;
-                while !matched && j >= from && j <= ii {
-                    matched = self.m(body, j as usize, st, &mut |_, e| e == i);
-                    j -= if *by_code_point && j > from {
-                        count_chars(st, j, -1)
-                    } else {
-                        1
-                    };
-                }
-                matched != *negate && k(st, i)
-            }
-            Node::Atomic(body) => match self.first(body, i, st) {
-                Some(e) => k(st, e),
-                None => false,
-            },
-            Node::Repeat {
-                atom,
-                min,
-                max,
-                greed,
-                mode,
-                capture,
-            } => match mode {
-                RepMode::First => self.curly(atom, *min, *max, *greed, i, st, k),
-                RepMode::Ques => match greed {
-                    Greed::Greedy => self.first(atom, i, st).is_some_and(|e| k(st, e)) || k(st, i),
-                    Greed::Lazy => k(st, i) || self.first(atom, i, st).is_some_and(|e| k(st, e)),
-                    Greed::Possessive => {
-                        let e = self.first(atom, i, st).unwrap_or(i);
-                        k(st, e)
-                    }
-                },
-                RepMode::GroupCurly => {
-                    self.group_curly(atom, *min, *max, *greed, *capture, i, st, k)
-                }
-                RepMode::Loop => self.loop_init(atom, (*min, *max, *capture), *greed, i, st, k),
-            },
-            Node::BackRef { group, ci } => match Self::backref_step(*group, *ci, i, st) {
-                Some(e) => k(st, e),
-                None => false,
-            },
-            Node::Begin
-            | Node::End
-            | Node::Caret { .. }
-            | Node::Dollar { .. }
-            | Node::Bound { .. }
-            | Node::LastMatch => Self::assertion(n, i, st) == Some(true) && k(st, i),
-            Node::LineEnding => {
-                if i >= len {
-                    return false;
-                }
-                let c = st.text[i];
-                if matches!(c, 0x0A | 0x0B | 0x0C | 0x85 | 0x2028 | 0x2029) {
-                    return k(st, i + 1);
-                }
-                if c == 0x0D {
-                    if i + 1 < len && st.text[i + 1] == 0x0A && k(st, i + 2) {
-                        return true;
-                    }
-                    return k(st, i + 1);
-                }
-                false
-            }
-        }
-    }
-
-    /// `Curly`/`Ques` over the atom's first match.
-    #[allow(clippy::too_many_arguments)]
-    fn curly<'t>(
-        &self,
-        atom: &Node,
-        min: u32,
-        max: u32,
-        greed: Greed,
-        i: usize,
-        st: &mut State<'t>,
-        k: K<'_, 't>,
-    ) -> bool {
-        let mut pos = i;
-        for _ in 0..min {
-            match self.first(atom, pos, st) {
-                Some(e) => pos = e,
-                None => return false,
-            }
-        }
-        let mut count = min;
-        match greed {
-            Greed::Greedy => {
-                // The positions to back off through, on a stack shared with
-                // the nested repetitions (each pops its own).
-                let base = st.positions.len();
-                st.positions.push(pos);
-                while count < max {
-                    match self.first(atom, pos, st) {
-                        Some(e) if e != pos => {
-                            pos = e;
-                            st.positions.push(e);
-                            count += 1;
-                        }
-                        _ => break,
-                    }
-                }
-                let mut top = st.positions.len();
-                let mut ok = false;
-                while top > base {
-                    top -= 1;
-                    let p = st.positions[top];
-                    if k(st, p) {
-                        ok = true;
-                        break;
-                    }
-                }
-                st.positions.truncate(base);
-                ok
-            }
-            Greed::Lazy => loop {
-                if k(st, pos) {
-                    return true;
-                }
-                if count >= max {
-                    return false;
-                }
-                match self.first(atom, pos, st) {
-                    Some(e) if e != pos => {
-                        pos = e;
-                        count += 1;
-                    }
-                    _ => return false,
-                }
-            },
-            Greed::Possessive => {
-                while count < max {
-                    match self.first(atom, pos, st) {
-                        Some(e) if e != pos => {
-                            pos = e;
-                            count += 1;
-                        }
-                        _ => break,
-                    }
-                }
-                k(st, pos)
-            }
-        }
-    }
-
-    /// `GroupCurly`: a deterministic group's body repeated by its first
-    /// match, each iteration's span recorded in `capture`.
-    #[allow(clippy::too_many_arguments)]
-    fn group_curly<'t>(
-        &self,
-        body: &Node,
-        min: u32,
-        max: u32,
-        greed: Greed,
-        capture: Option<usize>,
-        i: usize,
-        st: &mut State<'t>,
-        k: K<'_, 't>,
-    ) -> bool {
-        let saved = capture.map(|g| st.group(g));
-        let set = |st: &mut State, s: usize, e: usize| {
-            if let Some(g) = capture {
-                st.set_group(g, s as i32, e as i32);
-            }
-        };
-        let restore = |st: &mut State, v: Option<(i32, i32)>| {
-            if let (Some(g), Some((s, e))) = (capture, v) {
-                st.set_group(g, s, e);
-            }
-        };
-        let mut pos = i;
-        let mut count = 0;
-        while count < min {
-            match self.first(body, pos, st) {
-                Some(e) => {
-                    set(st, pos, e);
-                    pos = e;
-                    count += 1;
-                }
-                None => {
-                    restore(st, saved);
-                    return false;
-                }
-            }
-        }
-        let ok = match greed {
-            Greed::Lazy => loop {
-                if k(st, pos) {
-                    break true;
-                }
-                if count >= max {
-                    break false;
-                }
-                match self.first(body, pos, st) {
-                    Some(e) if e != pos => {
-                        set(st, pos, e);
-                        pos = e;
-                        count += 1;
-                    }
-                    _ => break false,
-                }
-            },
-            _ => {
-                let at_min = capture.map(|g| st.group(g));
-                let start = pos;
-                let mut spans = Vec::new();
-                while count < max {
-                    match self.first(body, pos, st) {
-                        Some(e) if e > pos => {
-                            spans.push((pos, e));
-                            pos = e;
-                            count += 1;
-                        }
-                        _ => break,
-                    }
-                }
-                let mut found = false;
-                for &(s, e) in spans.iter().rev() {
-                    set(st, s, e);
-                    if k(st, e) {
-                        // Java records the span again once the rest has
-                        // matched, over what a later visit recorded.
-                        set(st, s, e);
-                        found = true;
-                        break;
-                    }
-                }
-                found || {
-                    restore(st, at_min);
-                    k(st, start)
-                }
-            }
-        };
-        if !ok {
-            restore(st, saved);
-        }
-        ok
-    }
-
-    /// `Prolog`/`Loop.matchInit` (and `LazyLoop`'s).
-    #[allow(clippy::too_many_arguments)]
-    fn loop_init<'t>(
-        &self,
-        group: &Node,
-        (min, max, memo): (u32, u32, Option<usize>),
-        greed: Greed,
-        i: usize,
-        st: &mut State<'t>,
-        k: K<'_, 't>,
-    ) -> bool {
-        let lazy = greed == Greed::Lazy;
-        let body = |st: &mut State<'t>, k: K<'_, 't>| {
-            self.m(group, i, st, &mut |st, j| {
-                self.loop_next(group, (min, max, memo), lazy, j, 1, i, st, &mut *k)
-            })
-        };
-        if 0 < min {
-            body(st, k)
-        } else if lazy {
-            k(st, i) || (0 < max && body(st, k))
-        } else if 0 < max {
-            body(st, &mut *k) || k(st, i)
-        } else {
-            k(st, i)
-        }
-    }
-
-    /// `Loop.match`: after an iteration from `begin` to `i`, the `count`th.
-    #[allow(clippy::too_many_arguments)]
-    fn loop_next<'t>(
-        &self,
-        group: &Node,
-        (min, max, memo): (u32, u32, Option<usize>),
-        lazy: bool,
-        i: usize,
-        count: u32,
-        begin: usize,
-        st: &mut State<'t>,
-        k: K<'_, 't>,
-    ) -> bool {
-        let again = |st: &mut State<'t>, k: K<'_, 't>| {
-            self.m(group, i, st, &mut |st, j| {
-                self.loop_next(group, (min, max, memo), lazy, j, count + 1, i, st, &mut *k)
-            })
-        };
-        if i > begin {
-            if count < min {
-                return again(st, k);
-            }
-            if lazy {
-                if k(st, i) {
-                    return true;
-                }
-                return count < max && again(st, k);
-            }
-            if count < max {
-                // `posIndex`: another iteration from here already failed.
-                if memo.is_some_and(|id| st.failed.contains(&(id, i))) {
-                    return k(st, i);
-                }
-                if again(st, &mut *k) {
-                    return true;
-                }
-                if let Some(id) = memo {
-                    st.failed.insert((id, i));
-                }
-            }
-        }
-        k(st, i)
-    }
-
-    /// `Start`/`StartS`: the first match at or after `from`; its groups in
-    /// `st`.
-    pub(crate) fn search(&self, from: usize, st: &mut State<'_>) -> Result<bool, AnalysisError> {
-        self.deep(st, |p, st| p.search_within(from, st))
-    }
-
-    /// `matches()`: the whole text.
-    pub(crate) fn matches_all(&self, st: &mut State<'_>) -> Result<bool, AnalysisError> {
-        self.deep(st, |p, st| p.matches_within(st))
-    }
-
-    /// Runs `f` over a fresh `st` within [`STACK_BUDGET`], and if that
-    /// overflows, again from scratch on a deep stack ([`with_deep_stack`]).
-    fn deep<'t>(
-        &self,
-        st: &mut State<'t>,
-        f: impl Fn(&Program, &mut State<'t>) -> Result<bool, AnalysisError> + Sync,
-    ) -> Result<bool, AnalysisError> {
-        st.budget = STACK_BUDGET;
-        match f(self, st) {
-            Err(e) if is_overflow(&e) => {
-                st.groups.fill(-1);
-                st.failed.clear();
-                st.positions.clear();
-                st.overflow = false;
-                st.budget = DEEP_STACK_BUDGET;
-                on_deep_stack(|| f(self, st)).unwrap_or(Err(e))
-            }
-            r => r,
-        }
-    }
-
-    fn search_within(&self, from: usize, st: &mut State<'_>) -> Result<bool, AnalysisError> {
-        let len = st.len();
-        st.stack_base = stack_addr();
-        let Some(guard) = len.checked_sub(self.min_len) else {
-            return Ok(false);
-        };
-        let mut i = from;
-        while i <= guard {
-            if let Some(first) = &self.root_first {
-                // A `char` no match starts with: the attempt would fail at once.
-                let u = st.text.get(i).copied().unwrap_or(0xD800);
-                if !(0xD800..=0xDFFF).contains(&u) && !first.contains(u32::from(u)) {
-                    i += 1;
-                    continue;
-                }
-            }
-            let mut end = None;
-            if self.m(&self.root, i, st, &mut |_, j| {
-                end = Some(j);
-                true
-            }) {
-                st.set_group(0, i as i32, end.map_or(i, |e| e) as i32);
-                return Ok(true);
-            }
-            if st.overflow {
-                return Err(overflow());
-            }
-            if self.has_supplementary
-                && i < len
-                && (0xD800..=0xDBFF).contains(&st.text[i])
-                && i + 1 < len
-                && (0xDC00..=0xDFFF).contains(&st.text[i + 1])
-            {
-                i += 2;
-            } else {
-                i += 1;
-            }
-        }
-        Ok(false)
-    }
-
-    fn matches_within(&self, st: &mut State<'_>) -> Result<bool, AnalysisError> {
-        let len = st.len();
-        st.stack_base = stack_addr();
-        let ok = self.m(&self.root, 0, st, &mut |_, j| j == len);
-        if st.overflow {
-            return Err(overflow());
-        }
-        if ok {
-            st.set_group(0, 0, len as i32);
-        }
-        Ok(ok)
-    }
-}
-
 fn overflow() -> AnalysisError {
     AnalysisError::IllegalState(
         "StackOverflowError: java.util.regex needs more stack than it may use".to_string(),
     )
-}
-
-fn ascii_lower(c: u32) -> u32 {
-    if (0x41..=0x5A).contains(&c) {
-        c + 0x20
-    } else {
-        c
-    }
 }
 
 /// `countChars(seq, index, lengthInCodePoints)`: the UTF-16 units of that
@@ -2886,6 +2194,10 @@ mod tests {
             (r"(?=a)*b", r"b", r"(0,1)"),
             (r"(?<=a){2}b", r"ab", r"(1,2)"),
             (r"(?>a)?b", r"ab", r"(0,2)"),
+            // `X{0,1}` is `X?`: a zero-width iteration records its capture.
+            (r"(\b){0,1}", r"ab", r"(0,0 0:0)(1,1 -1:-1)(2,2 2:2)"),
+            (r"(\B){0,1}(a)", r"aab", r"(0,1 -1:-1 0:1)(1,2 1:1 1:2)"),
+            (r"(?=(a)){0,1}?\1", r"ab", r"(0,1 0:1)"),
             (r"a\", r"a", r"ERR Unescaped trailing backslash"),
         ];
         for &(p, text, want) in cases {
@@ -2897,15 +2209,87 @@ mod tests {
         }
     }
 
+    /// A match whose backtracking overflows the caller's budget inside a
+    /// negated lookaround or a zero-count quantifier is retried on the deep
+    /// stack, not taken as the (wrong) match the overflow left behind.
+    #[test]
+    fn overflow_under_negation_retries() {
+        let text = units(&format!("{}c", "ab".repeat(800)));
+        for (p, want) in [
+            (r"(?!(?:a|b)*c)", "(1601,1601)"),
+            (r"(?>(?:a|b)*c)?", "(0,1601)(1601,1601)"),
+            (r"((?:a|b)*c)?+", "(0,1601 0:1601)(1601,1601 -1:-1)"),
+        ] {
+            assert_eq!(finds(p, &text), want, "{p}");
+        }
+    }
+
+    /// The caller's stack is never what a match or a parse is measured
+    /// against: on a 1 MiB thread with most of it used, a deep match and a
+    /// pattern nested past [`SHALLOW_NESTING`] still finish (the match on
+    /// the heap, the parse and its nested sub-programs on a thread of their
+    /// own).
+    #[test]
+    fn small_stack_caller() {
+        fn burn(n: usize, f: &dyn Fn()) {
+            let buf = [0u8; 1024];
+            std::hint::black_box(&buf);
+            if n == 0 {
+                f()
+            } else {
+                burn(n - 1, f)
+            }
+        }
+        let h = std::thread::Builder::new()
+            .stack_size(1 << 20)
+            .spawn(|| {
+                // In a release build these frames are some 1 KiB each: most
+                // of the 1 MiB is gone before the regex runs.
+                burn(700, &|| {
+                    let text = units(&format!("{}c", "ab".repeat(20_000)));
+                    let prog = compile("(?=a)(?:a|b)*c|(?!(?:a|b)*c)").unwrap();
+                    let mut st = State::new(&text, prog.group_total(), 0);
+                    assert!(prog.search(0, &mut st).unwrap());
+                    assert_eq!(st.group(0), (0, 40_001));
+                    let nested = format!("{}a{}", "(?=".repeat(40), ")".repeat(40));
+                    let prog = compile(&nested).unwrap();
+                    let mut st = State::new(&text, prog.group_total(), 0);
+                    assert!(prog.search(0, &mut st).unwrap());
+                    assert_eq!(st.group(0), (0, 0));
+                    let mut st = State::new(&text[..1], prog.group_total(), 0);
+                    assert!(!prog.matches_all(&mut st).unwrap());
+                });
+            })
+            .unwrap();
+        assert!(h.join().is_ok());
+        assert_eq!(nesting_bound(&[0x5C, 0x28, 0x28, 0x5B, 0x26, 0x61]), 3);
+        // `\b` reads an ASCII unit by the ASCII rule, `(?U)` or not.
+        assert!((0..128).all(|c| is_word(c, true) == is_word(c, false)));
+    }
+
     /// Java's `StackOverflowError`: a typed error, from `find()` and
     /// `matches()` alike.
     #[test]
     fn deep_backtracking_overflows() {
+        // Five entries an iteration: past `MAX_ENTRIES` at some 210,000.
         let prog = compile("(a|b)*c").unwrap();
-        let text = units(&"a".repeat(200_000));
+        let text = units(&"a".repeat(300_000));
         let mut st = State::new(&text, prog.group_total(), 0);
         let e = prog.search(0, &mut st).unwrap_err();
         assert!(e.to_string().contains("StackOverflowError"), "{e}");
+        // ... which is far deeper than Java's own limit (some 1,500 at
+        // 1 MiB): 150,000 iterations still match.
+        let mut st = State::new(&text[..150_000], prog.group_total(), 0);
+        assert!(!prog.search(0, &mut st).unwrap());
+        let ok = units(&format!("{}c", "ab".repeat(75_000)));
+        let mut st = State::new(&ok, prog.group_total(), 0);
+        assert!(prog.matches_all(&mut st).unwrap());
+        assert_eq!(st.group(1), (149_999, 150_000));
+        // A greedy repetition's back-off positions count too.
+        let atomic = compile("(?>a|b)*c").unwrap();
+        let long = units(&"a".repeat(1_100_000));
+        let mut st = State::new(&long, atomic.group_total(), 0);
+        assert!(atomic.search(0, &mut st).is_err());
         let mut st = State::new(&text, prog.group_total(), 0);
         assert!(prog.matches_all(&mut st).is_err());
         let mut st = State::new(&text[..10], prog.group_total(), 0);

@@ -77,7 +77,7 @@ use regex_syntax::ast::{
     LiteralKind, RepetitionKind, RepetitionRange,
 };
 
-use super::java_backtrack::{self, Program, State};
+use super::java_backtrack::{self, Program, Scratch, State};
 use crate::java_character::{to_lower_case, to_upper_case};
 use crate::java_character_tables::GENERAL_CATEGORY_RUNS;
 use crate::AnalysisError;
@@ -1402,6 +1402,8 @@ pub struct JavaMatcher {
     old_last: Option<usize>,
     /// The backtracking matcher's group slots, kept between searches.
     bt_groups: Vec<i32>,
+    /// The backtracking matcher's stacks, kept between `find()`s.
+    bt_scratch: Scratch,
 }
 
 impl JavaMatcher {
@@ -1426,6 +1428,7 @@ impl JavaMatcher {
             units: Vec::new(),
             old_last: None,
             bt_groups: Vec::new(),
+            bt_scratch: Scratch::default(),
         };
         m.reset(text);
         m
@@ -1564,23 +1567,26 @@ impl JavaMatcher {
         let mut st = State::reusing(
             &self.units,
             std::mem::take(&mut self.bt_groups),
+            std::mem::take(&mut self.bt_scratch),
             p.group_total(),
             old_last,
         );
         let found = p.search(from, &mut st);
+        let (groups, scratch) = st.into_parts();
+        self.bt_scratch = scratch;
         let found = match found {
             Ok(f) => f,
             Err(e) => {
                 self.done = true;
+                self.bt_groups = groups;
                 return Err(e);
             }
         };
         if !found {
             self.done = true;
-            self.bt_groups = std::mem::take(&mut st.groups);
+            self.bt_groups = groups;
             return Ok(false);
         }
-        let groups = std::mem::take(&mut st.groups);
         self.groups.clear();
         self.groups
             .extend(groups.chunks_exact(2).map(|g| (g[0], g[1])));
