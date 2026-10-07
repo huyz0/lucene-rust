@@ -137,6 +137,10 @@ pub struct SynonymFilter<I> {
 
 impl<I: TokenStream> SynonymFilter<I> {
     /// `new SynonymFilter(input, synonyms, ignoreCase)`.
+    ///
+    /// Differs: over an empty map ([`SynonymMap::is_empty`], Java's `null`
+    /// FST) every token passes through, where Java's constructor throws
+    /// `IllegalArgumentException("fst must be non-null")`.
     pub fn new(input: I, synonyms: Arc<SynonymMap>, ignore_case: bool) -> Self {
         let roll_buffer_size = 1 + synonyms.max_horizontal_context;
         SynonymFilter {
