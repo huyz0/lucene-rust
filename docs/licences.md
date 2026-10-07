@@ -179,6 +179,15 @@ a dependency the shipped library links is not under a licence listed here.
   this project) only so that the port decodes exactly as Lucene does on the
   JDK, including which bytes the JDK refuses. No JDK code is copied. Ships in
   the native library.
+- **JDK text services, re-specified** (M11, M12 T12.6).
+  `lang/final_sigma.rs` (the word `BreakIterator`) and `util/sentence_break.rs`
+  (the sentence `BreakIterator`, with the exception table
+  `tools/GenSentenceBreakClasses.java` prints) describe the JDK's observable
+  behaviour, worked out from black-box runs; no JDK code or data file is
+  copied. Where the behaviour *is* a JDK data file -- the Thai word
+  dictionary (`ThaiTokenizer`) and `java.text.Collator`'s `CollationRules`
+  and locale tailorings (collation) -- nothing is derived from it: those
+  classes are not supported (`docs/parity/analysis-lang.md`).
 - **The analysis-common corpus** (M11), `fixtures/corpus/analysis-common.txt`
   (and its frozen copy `snowball-seed.txt`, which seeds `GenSnowball`),
   is written for this project (Apache-2.0); the few well-known pangrams in it
