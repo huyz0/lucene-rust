@@ -62,7 +62,7 @@ fn word2vec_configurations_match_lucene() {
         assert_eq!(actual.len(), expected.len(), "{name}: row count");
         checked += 1;
     }
-    assert_eq!(checked, 5);
+    assert_eq!(checked, 8);
 }
 
 #[test]

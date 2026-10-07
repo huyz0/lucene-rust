@@ -65,9 +65,14 @@ pub trait TokenStream: Send {
     /// conditional filter to downcast: every filter forwards to its input,
     /// the wrapper answers itself, a conditional filter skips its own
     /// wrapper. `None` for every other stream.
-    fn conditional_root(&mut self) -> Option<&mut dyn std::any::Any> {
-        None
-    }
+    ///
+    /// Deliberately without a default: a stream that wraps another (an
+    /// `input` field) and answers `None` breaks every conditional filter
+    /// built around it with an `IllegalStateException` (Word2Vec's filter
+    /// did), so each implementation has to decide -- forward to its input,
+    /// or answer `None` because it is a source. [`TokenFilter`]s get the
+    /// forwarding answer from their blanket impl.
+    fn conditional_root(&mut self) -> Option<&mut dyn std::any::Any>;
 }
 
 impl TokenStream for Box<dyn TokenStream> {
@@ -538,6 +543,10 @@ mod tests {
     struct Bare(AttributeSource);
 
     impl TokenStream for Bare {
+        /// A source, not a wrapper: no conditional wrapper below it.
+        fn conditional_root(&mut self) -> Option<&mut dyn std::any::Any> {
+            None
+        }
         fn attributes(&self) -> &AttributeSource {
             &self.0
         }

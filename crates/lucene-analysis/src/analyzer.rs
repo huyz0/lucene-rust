@@ -719,6 +719,9 @@ impl AnalyzerTokenStream<'_> {
 }
 
 impl TokenStream for AnalyzerTokenStream<'_> {
+    fn conditional_root(&mut self) -> Option<&mut dyn std::any::Any> {
+        self.sink().conditional_root()
+    }
     fn attributes(&self) -> &AttributeSource {
         self.components
             .as_ref()
@@ -781,6 +784,10 @@ impl StringTokenStream {
 }
 
 impl TokenStream for StringTokenStream {
+    /// A source, not a wrapper: no conditional wrapper below it.
+    fn conditional_root(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
     fn attributes(&self) -> &AttributeSource {
         &self.atts
     }
