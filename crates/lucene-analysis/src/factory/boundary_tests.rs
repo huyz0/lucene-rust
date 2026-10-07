@@ -368,3 +368,90 @@ fn every_tokenizer_is_a_conditional_source() {
     }
     assert!(built >= 13, "{built}");
 }
+
+/// `Locale.Builder.setLanguageTag` over tags of every shape, against what
+/// JDK 21 answered (a throwaway `Locale.Builder` program): well-formed, or
+/// `IllformedLocaleException`'s message.
+#[test]
+fn language_tags_parse_as_the_jdk_does() {
+    let cases: &[(&str, Option<&str>)] = &[
+        ("en", None),
+        ("en-", Some("Empty subtag [at index 3]")),
+        ("-en", Some("Empty subtag [at index 0]")),
+        ("e", Some("Invalid subtag: e [at index 0]")),
+        ("x", Some("Incomplete privateuse [at index 0]")),
+        ("x-", Some("Incomplete privateuse [at index 0]")),
+        ("en-x", Some("Incomplete privateuse [at index 3]")),
+        ("en-x-a", None),
+        ("en-a", Some("Incomplete extension 'a' [at index 3]")),
+        ("en-a-bb", None),
+        ("en-a-bb-a-cc", None),
+        ("en-a-bb-x", Some("Incomplete privateuse [at index 8]")),
+        ("en-a-x-1", Some("Incomplete extension 'a' [at index 3]")),
+        ("123", Some("Invalid subtag: 123 [at index 0]")),
+        ("en-123", None),
+        ("en-US", None),
+        ("en-USA", None),
+        ("en-us-us", Some("Invalid subtag: us [at index 6]")),
+        ("en--US", Some("Empty subtag [at index 3]")),
+        ("en-Latn", None),
+        ("en-Latn-US", None),
+        ("en-Latn-US-posix", None),
+        ("en-1abc", None),
+        ("en-abcd", None),
+        ("en-abcde", None),
+        ("en-abc", None),
+        ("en-abc-def-ghi", None),
+        (
+            "en-abc-def-ghi-jkl",
+            Some("Invalid subtag: jkl [at index 15]"),
+        ),
+        ("abcdefghi", Some("Invalid subtag: abcdefghi [at index 0]")),
+        (
+            "en-abcdefghi",
+            Some("Invalid subtag: abcdefghi [at index 3]"),
+        ),
+        ("i-klingon", None),
+        ("en-GB-oed", None),
+        ("zh-min-nan", None),
+        ("art-lojban", None),
+        ("en-x-abcdefghi", Some("Incomplete privateuse [at index 3]")),
+        (
+            "en-x-toolongsubtag",
+            Some("Incomplete privateuse [at index 3]"),
+        ),
+        ("en-US-posix-posix", None),
+        ("en-a-bb-a-cc", None),
+        ("en-a-bb-b-cc", None),
+        ("en US", Some("Invalid subtag: en US [at index 0]")),
+        ("en_US", Some("Invalid subtag: en_US [at index 0]")),
+        ("en-ü", Some("Invalid subtag: ü [at index 3]")),
+        ("ü", Some("Invalid subtag: ü [at index 0]")),
+        ("", None),
+        ("EN-us", None),
+        ("en-a-bb-x-x", None),
+        ("x-a", None),
+        ("x-a-", Some("Empty subtag [at index 4]")),
+        ("qaa", None),
+        ("sgn-be-fr", None),
+        ("en-u-ca-japanese", None),
+        ("en-u-ca", None),
+        ("en-u-xx-yyy", None),
+        ("en-t-de", None),
+        ("en-t-de-u-ca-gregory", None),
+        ("en-US-u-co-phonebk-x-a", None),
+        ("en-a-b", Some("Incomplete extension 'a' [at index 3]")),
+        ("en-1234", None),
+        ("en-12345", None),
+        ("en-001", None),
+        ("en-0", Some("Invalid subtag: 0 [at index 3]")),
+        ("-", Some("Empty subtag [at index 0]")),
+    ];
+    for (tag, want) in cases {
+        assert_eq!(
+            super::filters_misc::language_tag_error(tag).as_deref(),
+            *want,
+            "{tag}"
+        );
+    }
+}
