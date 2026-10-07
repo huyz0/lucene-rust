@@ -9,6 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -215,6 +216,33 @@ public class GenAnalysisMorfologik {
     URL ukUrl = UkrainianMorfologikAnalyzer.class.getClassLoader().getResource("ua/net/nlp/ukrainian.dict");
     Dictionary ukrainian = Dictionary.read(ukUrl);
     lookups(out.resolve("lookups_ukrainian.tsv"), ukrainian, sample(ukrainian, 600, 10000));
+
+    // Charset.forName (what DictionaryMetadata resolves fsa.dict.encoding
+    // with) over every name and alias of the three charsets the port reads,
+    // in three cases, and over names it must refuse.
+    List<String> names = new ArrayList<>(List.of("DEFAULT", "default", "UTF-16", "KOI8-R", "windows-1252",
+        "Cp1250", "UTF_8", "utf-8 ", "latin2", "ascii8", "ISO-8859-2", "unicode"));
+    for (String c : new String[] {"UTF-8", "US-ASCII", "ISO-8859-1"}) {
+      List<String> aliases = new ArrayList<>(Charset.forName(c).aliases());
+      aliases.add(c);
+      Collections.sort(aliases);
+      for (String n : aliases) {
+        names.add(n);
+        names.add(n.toLowerCase(Locale.ROOT));
+        names.add(n.toUpperCase(Locale.ROOT));
+      }
+    }
+    StringBuilder charsets = new StringBuilder();
+    for (String n : names) {
+      String r;
+      try {
+        r = Charset.forName(n).name();
+      } catch (Exception e) {
+        r = "X " + e.getClass().getSimpleName();
+      }
+      charsets.append(n).append('\t').append(r).append('\n');
+    }
+    Files.writeString(out.resolve("charsets.tsv"), charsets.toString(), StandardCharsets.UTF_8);
 
     List<String> probe = new ArrayList<>();
     for (String e : ENTRIES) probe.add(e.split("\t", -1)[0]);

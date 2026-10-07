@@ -71,7 +71,9 @@ impl AnalysisFactory for MorfologikFilterFactory {
                 let fsa = loader.open_resource(name)?;
                 let meta = loader.open_resource(&expected_metadata_file_name(name))?;
                 let meta = String::from_utf8_lossy(&meta);
-                Arc::new(Dictionary::read(&fsa, &meta).map_err(|e| FactoryError::io(e.message()))?)
+                Arc::new(
+                    Dictionary::from_vec(fsa, &meta).map_err(|e| FactoryError::io(e.message()))?,
+                )
             }
         });
         Ok(())

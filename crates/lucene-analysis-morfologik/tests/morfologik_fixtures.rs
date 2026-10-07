@@ -4,9 +4,10 @@
 //! `lookups_<lang>.tsv` (words through the real Polish and Ukrainian
 //! dictionaries), `dicts/` (dictionaries built with Morfologik's own
 //! builders -- every encoder, both formats, two charsets, conversions,
-//! tagless entries -- and words through each), and analyzer, filter and
-//! factory rows with each token's tags. Every lemma, tag and row must be
-//! equal.
+//! tagless entries -- and words through each), analyzer, filter and
+//! factory rows with each token's tags, and `charsets.tsv` (`Charset.forName`
+//! over the charset names and aliases). Every lemma, tag, row and charset
+//! must be equal.
 #![allow(clippy::arithmetic_side_effects)] // test code: no value read off disk
 
 #[path = "../../lucene-analysis/tests/support/factory_config.rs"]
@@ -21,6 +22,7 @@ use lucene_analysis::miscellaneous::SetKeywordMarkerFilter;
 use lucene_analysis::util::WhitespaceTokenizer;
 use lucene_analysis::{AnalysisError, Analyzer, CharArraySet, TokenStream};
 use lucene_analysis_morfologik::analyzer::{polish_dictionary, ukrainian_dictionary};
+use lucene_analysis_morfologik::metadata::Charset;
 use lucene_analysis_morfologik::{
     Dictionary, DictionaryLookup, MorfologikAnalyzer, MorfologikFilter,
     MorphosyntacticTagsAttribute, UkrainianMorfologikAnalyzer,
@@ -102,6 +104,27 @@ fn polish_lookups_match_morfologik() {
 #[test]
 fn ukrainian_lookups_match_morfologik() {
     assert!(check_lookups(ukrainian_dictionary(), "lookups_ukrainian.tsv") > 1_000);
+}
+
+/// `charsets.tsv`: `Charset.forName` over every name and alias of the
+/// three charsets read (in three cases) and names Java refuses or the port
+/// does not read.
+#[test]
+fn charset_names_match_the_jdk() {
+    let text = std::fs::read_to_string(data_dir("analysis_morfologik") + "charsets.tsv").unwrap();
+    let mut rows = 0;
+    for line in text.lines() {
+        let (name, java) = line.split_once('\t').unwrap();
+        let expected = match java {
+            "UTF-8" => Some(Charset::Utf8),
+            "US-ASCII" => Some(Charset::Ascii),
+            "ISO-8859-1" => Some(Charset::Latin1),
+            _ => None, // refused, or a charset the port does not read
+        };
+        assert_eq!(Charset::for_name(name), expected, "{name:?} -> {java}");
+        rows += 1;
+    }
+    assert!(rows > 90, "{rows}");
 }
 
 fn dicts_dir() -> String {

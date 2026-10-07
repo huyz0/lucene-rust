@@ -7,12 +7,15 @@
 //! whose entry has no tag keeps the previous form's tag bytes at that
 //! position (`WordData.update` only `clear()`s the buffer, so its limit is
 //! the old capacity): [`DictionaryLookup`] keeps the same buffers per
-//! position, so the port answers what Java answers there too.
+//! position, so the port answers what Java answers there too. It also
+//! reuses everything else a lookup needs (the traversal's stack, the
+//! decoded stems and tags), so a lookup allocates only while its buffers
+//! grow.
 
 use std::sync::Arc;
 
-use crate::fsa::{Fsa, Match};
-use crate::metadata::{DictionaryMetadata, EncoderType};
+use crate::fsa::{Fsa, Match, SequenceScratch};
+use crate::metadata::{Charset, DictionaryMetadata, EncoderType};
 use crate::MorfologikError;
 
 /// `morfologik.stemming.Dictionary`: an automaton and its metadata.
@@ -26,7 +29,13 @@ pub struct Dictionary {
 impl Dictionary {
     /// `Dictionary.read(InputStream fsa, InputStream metadata)`.
     pub fn read(fsa: &[u8], metadata: &str) -> Result<Dictionary, MorfologikError> {
-        let fsa = Fsa::read(fsa)?;
+        Dictionary::from_vec(fsa.to_vec(), metadata)
+    }
+
+    /// [`Dictionary::read`] over an owned automaton file, which the
+    /// dictionary keeps (no copy).
+    pub fn from_vec(fsa: Vec<u8>, metadata: &str) -> Result<Dictionary, MorfologikError> {
+        let fsa = Fsa::from_vec(fsa)?;
         let metadata = DictionaryMetadata::read(metadata)?;
         let root = fsa.root()?;
         Ok(Dictionary {
@@ -54,6 +63,18 @@ pub fn decode(
     source: &[u8],
     encoded: &[u8],
 ) -> Result<Vec<u8>, MorfologikError> {
+    let mut out = Vec::new();
+    decode_into(&mut out, encoder, source, encoded)?;
+    Ok(out)
+}
+
+/// [`decode`] into `out` (cleared first), as Java decodes into `reuse`.
+fn decode_into(
+    out: &mut Vec<u8>,
+    encoder: EncoderType,
+    source: &[u8],
+    encoded: &[u8],
+) -> Result<(), MorfologikError> {
     const REMOVE_EVERYTHING: usize = 255;
     let bad = || {
         MorfologikError::new("IndexOutOfBoundsException: a dictionary entry decodes past its word")
@@ -64,7 +85,7 @@ pub fn decode(
         ))
     };
     let tail = |from: usize| encoded.get(from..).ok_or_else(bad);
-    let mut out = Vec::new();
+    out.clear();
     match encoder {
         EncoderType::None => out.extend_from_slice(encoded),
         EncoderType::Suffix => {
@@ -100,7 +121,7 @@ pub fn decode(
             out.extend_from_slice(tail(3)?);
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 /// `DictionaryLookup.applyReplacements`: each pair in order, every
@@ -127,13 +148,15 @@ pub fn apply_replacements(word: &[u16], pairs: &[(Vec<u16>, Vec<u16>)]) -> Vec<u
     sb
 }
 
-/// One reused `WordData`: the stem and the tag's backing buffer, whose
-/// whole capacity a tagless entry reads.
+/// One reused `WordData`: the stem, the tag's backing buffer (whose whole
+/// capacity a tagless entry reads), and both decoded to text.
 #[derive(Debug, Clone, Default)]
 struct Slot {
     stem: Vec<u8>,
     tag_buf: Vec<u8>,
     tag_len: usize,
+    stem_text: String,
+    tag_text: String,
 }
 
 /// A form a lookup found: `WordData.getStem()` and `getTag()`.
@@ -150,6 +173,16 @@ pub struct WordData {
 pub struct DictionaryLookup {
     dictionary: Arc<Dictionary>,
     slots: Vec<Slot>,
+    forms: usize,
+    scratch: SequenceScratch,
+    units: Vec<u16>,
+    word: Vec<u8>,
+}
+
+fn unmappable() -> MorfologikError {
+    MorfologikError::new(
+        "RuntimeException: Input cannot be mapped to bytes using the dictionary's encoding",
+    )
 }
 
 impl DictionaryLookup {
@@ -158,6 +191,10 @@ impl DictionaryLookup {
         DictionaryLookup {
             dictionary,
             slots: Vec::new(),
+            forms: 0,
+            scratch: SequenceScratch::default(),
+            units: Vec::new(),
+            word: Vec::new(),
         }
     }
 
@@ -165,6 +202,69 @@ impl DictionaryLookup {
     /// entries, in the automaton's order; empty for a word holding the
     /// separator or that the charset cannot encode.
     pub fn lookup(&mut self, word: &[u16]) -> Result<Vec<WordData>, MorfologikError> {
+        let n = self.lookup_units(word)?;
+        let units = |s: Option<&str>| s.map(|s| s.encode_utf16().collect());
+        Ok((0..n)
+            .filter_map(|k| self.form(k))
+            .map(|(stem, tag)| WordData {
+                stem: units(stem),
+                tag: units(tag),
+            })
+            .collect())
+    }
+
+    /// [`DictionaryLookup::lookup`] of a `&str` (a term attribute's text),
+    /// answering the number of forms, each read with
+    /// [`DictionaryLookup::form`]. A UTF-8 dictionary without input
+    /// conversions looks the text's own bytes up.
+    pub fn lookup_str(&mut self, word: &str) -> Result<usize, MorfologikError> {
+        let m = &self.dictionary.metadata;
+        let (converts, separator, charset) =
+            (!m.input_conversion.is_empty(), m.separator_char, m.charset);
+        if converts {
+            let mut units = std::mem::take(&mut self.units);
+            units.clear();
+            units.extend(word.encode_utf16());
+            let n = self.lookup_units(&units);
+            self.units = units;
+            return n;
+        }
+        self.forms = 0;
+        // The separator is a single unit outside the surrogates (checked when
+        // the metadata is read), so it is a `char`.
+        if char::from_u32(u32::from(separator)).is_some_and(|c| word.contains(c)) {
+            return Ok(0);
+        }
+        if charset == Charset::Utf8 {
+            return self.lookup_bytes(word.as_bytes());
+        }
+        let mut bytes = std::mem::take(&mut self.word);
+        let encoded = charset.encode_str(word, &mut bytes);
+        let n = if encoded {
+            self.lookup_bytes(&bytes)
+        } else {
+            Ok(0)
+        };
+        self.word = bytes;
+        n
+    }
+
+    /// The `k`th form of the last lookup: its stem and tag, `None` for an
+    /// empty one; `None` past the last form.
+    pub fn form(&self, k: usize) -> Option<(Option<&str>, Option<&str>)> {
+        if k >= self.forms {
+            return None;
+        }
+        let slot = self.slots.get(k)?;
+        fn text(s: &str) -> Option<&str> {
+            (!s.is_empty()).then_some(s)
+        }
+        Some((text(&slot.stem_text), text(&slot.tag_text)))
+    }
+
+    /// [`DictionaryLookup::lookup`] up to the encoded word.
+    fn lookup_units(&mut self, word: &[u16]) -> Result<usize, MorfologikError> {
+        self.forms = 0;
         let d = Arc::clone(&self.dictionary);
         let m = &d.metadata;
         let converted;
@@ -175,46 +275,58 @@ impl DictionaryLookup {
             &converted
         };
         if word.contains(&m.separator_char) {
-            return Ok(Vec::new());
+            return Ok(0);
         }
         let Some(bytes) = m.charset.encode(word) else {
-            return Ok(Vec::new());
+            return Ok(0);
         };
-        let Match::SequenceIsAPrefix(node) = d.fsa.match_sequence(&bytes, d.root)? else {
-            return Ok(Vec::new());
+        self.lookup_bytes(&bytes)
+    }
+
+    /// The lookup of the word's bytes in the dictionary's charset.
+    fn lookup_bytes(&mut self, bytes: &[u8]) -> Result<usize, MorfologikError> {
+        let DictionaryLookup {
+            dictionary,
+            slots,
+            forms,
+            scratch,
+            ..
+        } = self;
+        *forms = 0;
+        let d: &Dictionary = dictionary;
+        let m = &d.metadata;
+        let Match::SequenceIsAPrefix(node) = d.fsa.match_sequence(bytes, d.root)? else {
+            return Ok(0);
         };
         let arc = d.fsa.arc(node, m.separator)?;
         if arc == 0 || d.fsa.is_final(arc)? {
-            return Ok(Vec::new());
+            return Ok(0);
         }
         let end = d.fsa.end_node(arc)?;
-        let sequences = if end == 0 {
-            Vec::new()
-        } else {
-            d.fsa.sequences(end)?
-        };
+        if end == 0 {
+            return Ok(0);
+        }
         let prefix_bytes = m.encoder.prefix_bytes();
-        let mut out = Vec::with_capacity(sequences.len());
-        for (k, ba) in sequences.iter().enumerate() {
-            if self.slots.len() <= k {
-                self.slots.resize_with(k.saturating_add(10), Slot::default);
+        let mut count = 0usize;
+        d.fsa.visit_sequences(end, scratch, |ba| {
+            if slots.len() <= count {
+                slots.resize_with(count.saturating_add(10), Slot::default);
             }
-            let slot = &mut self.slots[k];
+            let slot = &mut slots[count];
+            count = count.saturating_add(1);
             // WordData.update: the tag buffer cleared to its capacity.
             slot.tag_len = slot.tag_buf.len();
-            let sep_pos = ba
-                .iter()
-                .enumerate()
-                .skip(prefix_bytes)
-                .find(|&(_, &b)| b == m.separator)
-                .map_or(ba.len(), |(i, _)| i);
             if ba.len() < prefix_bytes {
                 // Java asserts this (and, without -ea, reads stale bytes).
                 return Err(MorfologikError::new(
                     "AssertionError: an entry shorter than its encoder's prefix",
                 ));
             }
-            slot.stem = decode(m.encoder, &bytes, &ba[..sep_pos])?;
+            let sep_pos = ba[prefix_bytes..]
+                .iter()
+                .position(|&b| b == m.separator)
+                .map_or(ba.len(), |i| i.saturating_add(prefix_bytes));
+            decode_into(&mut slot.stem, m.encoder, bytes, &ba[..sep_pos])?;
             let tag_start = sep_pos.saturating_add(1);
             if let Some(tag) = ba.get(tag_start..).filter(|t| !t.is_empty()) {
                 if slot.tag_buf.len() < tag.len() {
@@ -223,18 +335,17 @@ impl DictionaryLookup {
                 slot.tag_buf[..tag.len()].copy_from_slice(tag);
                 slot.tag_len = tag.len();
             }
-            let decode_chars = |b: &[u8]| -> Result<Option<Vec<u16>>, MorfologikError> {
-                let chars = m.charset.decode(b).ok_or_else(|| {
-                    MorfologikError::new("RuntimeException: Input cannot be mapped to bytes using the dictionary's encoding")
-                })?;
-                Ok((!chars.is_empty()).then_some(chars))
-            };
-            out.push(WordData {
-                stem: decode_chars(&slot.stem)?,
-                tag: decode_chars(&slot.tag_buf[..slot.tag_len])?,
-            });
-        }
-        Ok(out)
+            if !m.charset.decode_into(&slot.stem, &mut slot.stem_text)
+                || !m
+                    .charset
+                    .decode_into(&slot.tag_buf[..slot.tag_len], &mut slot.tag_text)
+            {
+                return Err(unmappable());
+            }
+            Ok(())
+        })?;
+        *forms = count;
+        Ok(count)
     }
 }
 
@@ -289,6 +400,10 @@ mod tests {
 
     /// A CFSA2 holding `a` `+` then `tail` (or a terminal `+` arc).
     fn dict(tail: Option<u8>, encoder: &str) -> Dictionary {
+        dict_with(tail, encoder, "UTF-8", "")
+    }
+
+    fn dict_with(tail: Option<u8>, encoder: &str, charset: &str, extra: &str) -> Dictionary {
         let mut f = b"\\fsa\xC6\x00\x00\x00".to_vec();
         f.extend_from_slice(&[0x40, 0x00, 0x03, 0x40, b'a', 0x07, 0x00]);
         match tail {
@@ -296,7 +411,7 @@ mod tests {
             None => f.extend_from_slice(&[0x40, b'+', 0x00]),
         }
         let info =
-            format!("fsa.dict.separator=+\nfsa.dict.encoding=UTF-8\nfsa.dict.encoder={encoder}");
+            format!("fsa.dict.separator=+\nfsa.dict.encoding={charset}\nfsa.dict.encoder={encoder}\n{extra}");
         Dictionary::read(&f, &info).unwrap()
     }
 
@@ -312,6 +427,41 @@ mod tests {
         // A stem that is not UTF-8.
         let mut l = DictionaryLookup::new(Arc::new(dict(Some(0xFF), "NONE")));
         assert!(l.lookup(&[u16::from(b'a')]).is_err());
+    }
+
+    #[test]
+    fn str_lookups_match_unit_lookups() {
+        let z = (Some("z"), None);
+        let mut l = DictionaryLookup::new(Arc::new(dict(Some(b'z'), "NONE")));
+        assert_eq!(l.lookup_str("a").unwrap(), 1);
+        assert_eq!(l.form(0), Some(z));
+        assert_eq!(l.form(1), None);
+        assert_eq!(l.lookup_str("a+").unwrap(), 0); // the separator
+        assert_eq!(l.form(0), None);
+        assert_eq!(l.lookup_str("b").unwrap(), 0);
+        let units = l.lookup(&[u16::from(b'a')]).unwrap();
+        assert_eq!(units[0].stem, Some(vec![u16::from(b'z')]));
+        for (charset, unmapped) in [("ISO-8859-1", "ł"), ("US-ASCII", "é")] {
+            let mut l = DictionaryLookup::new(Arc::new(dict_with(Some(b'z'), "NONE", charset, "")));
+            assert_eq!(l.lookup_str("a").unwrap(), 1, "{charset}");
+            assert_eq!(l.form(0), Some(z));
+            assert_eq!(l.lookup_str(unmapped).unwrap(), 0, "{charset}");
+            assert_eq!(l.lookup_str("+").unwrap(), 0, "{charset}");
+        }
+        let conv = "fsa.dict.input-conversion=q a";
+        let mut l = DictionaryLookup::new(Arc::new(dict_with(Some(b'z'), "NONE", "UTF-8", conv)));
+        assert_eq!(l.lookup_str("q").unwrap(), 1);
+        assert_eq!(l.form(0), Some(z));
+        assert_eq!(l.lookup_str("+").unwrap(), 0);
+        assert_eq!(l.lookup_str("\u{d7ff}").unwrap(), 0);
+        // A tag that is not ISO-8859-1-decodable cannot happen; one that is
+        // not ASCII is the unmappable error.
+        let mut l = DictionaryLookup::new(Arc::new(dict_with(Some(0xE9), "NONE", "US-ASCII", "")));
+        assert!(l.lookup_str("a").is_err());
+        let mut l =
+            DictionaryLookup::new(Arc::new(dict_with(Some(0xE9), "NONE", "ISO-8859-1", "")));
+        assert_eq!(l.lookup_str("a").unwrap(), 1);
+        assert_eq!(l.form(0), Some((Some("é"), None)));
     }
 
     #[test]
