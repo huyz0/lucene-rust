@@ -208,7 +208,10 @@ mod tests {
             (None, None)
         );
         let uid = UnknownDictionary::instance().lookup_word_ids(1)[0];
-        assert_eq!((us.inflection_type(id), u.inflection_form(uid)), (None, None));
+        assert_eq!(
+            (us.inflection_type(id), u.inflection_form(uid)),
+            (None, None)
+        );
         assert!(u.part_of_speech(uid).is_some());
         assert_eq!(u.base_form(uid, &[], 0, 0), None);
         assert!(read_file(std::path::Path::new("/"))
