@@ -331,3 +331,179 @@ column, and empty answers kept in the query cache, as `LRUQueryCache` keeps
 - Geo fixture generators and the real-world polygon corpus
 - `docs/parity.md` rows for `geo`, the geo `document` classes, `spatial3d`,
   `spatial-extras`
+
+## Ledger evidence
+
+The fixtures and benchmarks behind the parity ledger's rows for this
+milestone, by ledger file (current facts; the rows carry the status).
+
+### [spatial-extras.md](../parity/spatial-extras.md): lucene-util / lucene-search -- spatial-extras (M9 T9.5)
+
+**Ported**: every class of the jar
+(`docs/inventory/lucene-spatial-extras.tsv`). spatial-extras is built on two
+third-party Java libraries with no Rust equivalent: **Spatial4j 0.8** (its
+shape model -- `SpatialContext`, `Shape`/`Point`/`Rectangle`/`Circle`,
+`SpatialRelation`, `DistanceCalculator`, the WKT reader, `BinaryCodec`) and
+**s2-geometry-library-java 1.0.0** (`S2PrefixTree`'s cell ids). Decision
+(T9.5): port the subset spatial-extras exercises, differentially tested
+against the real jars (both Apache-2.0: `docs/licences.md`, `NOTICE`), in
+`lucene-util` beside `geo`/`spatial3d`. JTS is not ported (Lucene does not ship
+it; polygons go through Geo3D, `Geo3dShapeFactory`); a non-Geo3D context
+answers a POLYGON with Spatial4j's `UnsupportedOperationException`, as Java
+without JTS.
+
+Tests, all generated with HotSpot's trig intrinsics off (as `GenGeo3d`):
+- `fixtures/src/GenSpatial4j.java` -> `spatial4j/spatial4j.tsv` ->
+  `crates/lucene-util/tests/spatial4j_fixtures.rs`: eight contexts (geodetic
+  haversine/law of cosines/Vincenty, wrapping, planar bounded/unbounded,
+  Geo3D sphere/WGS84), 160 random shapes each, relations, distances,
+  `pointOnBearing`, binary codec both ways, WKT (results and errors),
+  `DistanceUtils`, geohashes, S2 cells: 12 577 records bit for bit (a NaN's
+  sign aside).
+- `fixtures/src/GenSpatialPrefixTree.java` -> `spatial_prefix_tree/trees.tsv`
+  -> `crates/lucene-util/tests/spatial_prefix_tree_fixtures.rs`: 14 trees
+  (geohash, quad, packed quad pruned or not, S2 arity 1-3, planar and Geo3D),
+  cells of 70 shapes per tree, terms read back, both date trees,
+  `SpatialArgsParser`/`SpatialOperation`: 4 534 records.
+- `fixtures/src/GenSpatialStrategies.java` (+ `SpatialExtrasCorpus.java`) ->
+  `spatial_strategies/` -> `crates/lucene-search/tests/spatial_strategies_fixtures.rs`:
+  400 documents through 15 strategies, four segments with deletions; every
+  field token byte for byte, then 1 901 answers (every strategy x operation,
+  BM25 scores for RPT's point term query, value sources bit for bit,
+  heatmaps, date facets, `toString`) over Lucene's index and this port's.
+  `VerifySpatialExtras` (`scripts/verify-write-path.sh`) has Lucene check and
+  query the Rust-written index. `arbitrary_terms_read_without_panicking`:
+  3 000 random terms per tree, errors never panics.
+
+Bench: `scripts/bench-micro.sh --bench spatial_extras --reps 5`
+(`SpatialExtrasMicro.java` / `micro_spatial_extras.rs`, 100 000 docs, 11-level
+quad RPT; 2026-10-03, noise 1.17x): `spx_rpt_intersects_rect` 1.24x,
+`spx_rpt_intersects_circle` 1.17x, `spx_heatmap` 1.23x, `spx_date_range`
+1.38x, `spx_bbox_similarity` 1.08x, `spx_rpt_index_polygon` 1.01x (last two in
+noise). These need the quad cells as values (`QuadCellRelater`, `visit_quad`,
+`visit_scanned_quad`, `Cell::rect_bounds`, `HaversineWithin`), the block
+tree's seek-state reuse and block-at-a-time `collectDocs`; the earlier
+profiles are in git history and `docs/sweep/m2/c1-lazy-blocktree.md` F-9.
+
+### [spatial3d.md](../parity/spatial3d.md): lucene-util / lucene-index / lucene-search -- spatial3d (M9 T9.4)
+
+`lucene-spatial3d`'s `geom` package (shapes on an
+ellipsoid as planes through x/y/z space: relations, bounds, distances, stream
+format) in `lucene-util` beside `geo`, plus `Geo3DPoint` and its query/sorts.
+No index format of its own, but `Geo3DPoint` indexes the x/y/z these compute
+and `PointInGeo3DShapeQuery` asks `GeoArea.getRelationship` per BKD cell, so
+everything is held to Java's bits.
+
+Tests (two seeded corpora, record for record): `fixtures/src/GenGeo3d.java` ->
+`geo3d/shapes.tsv` -> `crates/lucene-util/tests/geo3d_fixtures.rs` (five planet
+models; every factory branch and shape kind incl. degenerate, polar,
+antimeridian and untileable polygons with holes; per shape the
+`writePlanetObject` bytes or exception and the round trip, bounds, edge points,
+membership, distances per style, relationships vs other shapes and x/y/z
+solids) and `fixtures/src/GenGeo3dMath.java` -> `geo3d/math.tsv` ->
+`crates/lucene-util/tests/geo3d_math_fixtures.rs` (`Vector`, `GeoPoint`,
+`Plane`, `SidedPlane`, `PlanetModel` + `DocValueEncoder`, `XYZBounds`,
+`LatLonBounds`, `DistanceStyle`). All equal bit for bit and message for
+message except a `NullPointerException`'s text (compared by class).
+Twenty-four extra seeds (`-Dgeo3d.seed=N`, test `GEO3D_FIXTURES=dir`) were
+swept once, all equal.
+
+**Trigonometry.** HotSpot's `Math.sin/cos/tan` intrinsics differ from fdlibm in
+the last bit for ~3% of arguments; the port uses fdlibm and the generators run
+with `-XX:DisableIntrinsic=_dsin,_dcos,_dtan` (`scripts/gen-fixtures.sh`).
+Against a stock JVM 5 824 of 50 571 records change in last bits; of 39 608
+membership/relationship answers none changes for the same input.
+
+Bench (2026-10-02, cross-engine digests): `--bench geo3d` (`Geo3dMicro.java` /
+`micro_geo3d.rs`): `geo3d_polygon_build` 1.41x, `geo3d_within` 1.20x,
+`geo3d_relate` 1.18x, `geo3d_circle_build` 1.10x, `geo3d_distance` 1.01x
+(T9.4 review, 9 reps, noise 1.10x; needs concrete-typed plane bounds,
+`intersection_coords`, a signum-free `isWithin`,
+`Plane::find_intersections_two`/`find_intersections_arr`, `strict_math::sin_cos`).
+`--bench geo3d_points` (`Geo3dPointsMicro.java` / `micro_geo3d_points.rs`,
+300 000 WGS84 points): `geo3d_query_path` 1.74x, `geo3d_query_box` 1.69x,
+`geo3d_query_distance` 1.65x, `geo3d_query_polygon` 1.42x,
+`geo3d_distance_sort` 1.26x, `geo3d_outside_sort` 1.18x.
+
+### [geo-shapes.md](../parity/geo-shapes.md): lucene-index / lucene-search -- geo shapes (M9 T9.3)
+
+The shape half of Lucene's geo `document` classes:
+`ShapeField`'s triangle encoding, the `LatLonShape`/`XYShape` fields and their
+shape doc values, every shape query (`SpatialQuery`'s visitors under all four
+relations, the encoded-space bounding-box query, the doc-values queries).
+
+Tests: `fixtures/src/GenGeoShapes.java` (answers through `VerifyGeoShapes.run`;
+package-private doc-values constructors through `fixtures/src/ShapeAccess.java`)
+-> `crates/lucene-search/tests/geo_shapes_fixtures.rs`: 1576 queries
+(polygons with holes, lines, points, circles, boxes across the dateline and on
+the poles, multi-geometries; all four relations; indexed and doc-values;
+lat/lon and cartesian) over a four-segment index with deletions, answered
+identically (hits, score bits) over Lucene's index **and** this port's, whose
+triangles and doc values equal Lucene's byte for byte; plus 1500 triangles
+through `encodeTriangle`/`decodeTriangle` and 140 doc values (bytes, header,
+centroid, bounding box, 700 `relate` answers). Write path:
+`scripts/verify-write-path.sh` runs `write_geo_shapes_fixture` ->
+`VerifyGeoShapes`.
+
+Bench: `scripts/bench-micro.sh --bench geo_shapes` (`GeoShapesMicro.java` /
+`micro_geo_shapes.rs`, 200 000 shapes; 2026-10-02, noise 1.07x):
+`shape_index_fields` 1.09x (almost all Tessellator cost), `shape_index_doc_value`
+1.63x, `shape_intersects_polygon` 1.55x, `shape_within` 1.24x,
+`shape_contains_point` 1.76x, `shape_doc_values_box` 1.53x (needs `visit_many`
+once per run and the fixed-window header decode).
+
+### [geo-points.md](../parity/geo-points.md): lucene-index / lucene-search -- geo points (M9 T9.2)
+
+The point half of Lucene's geo `document` classes: the
+four fields and every query, sort and `nearest` they build.
+
+Tests: `fixtures/src/GenGeoPoints.java` ->
+`crates/lucene-search/tests/geo_points_fixtures.rs` -- ~1100 queries over a
+four-segment index with deletions, plus 80 over a 24 000-point segment
+(distance-feature narrowing, the sort comparator's sampled updates), each
+answered identically (hits, score/sort-value/distance bits) over Lucene's index
+**and** over this port's index of the same documents, whose packed points equal
+Lucene's byte for byte. Write path: `scripts/verify-write-path.sh` runs
+`write_geo_points_fixture` -> `VerifyGeoPoints` (`CheckIndex`, then Lucene
+replays every query over the Rust-written index).
+
+Bench: `scripts/bench-micro.sh --bench geo_points` (`GeoPointsMicro.java` /
+`micro_geo_points.rs`, one million points, counting collector, cross-engine
+digests, query set `geo-queries-v2.tsv`; 2026-10-02 T9.2 review, noise 1.22x):
+`geo_box` 1.53x, `geo_distance` 3.36x, `geo_polygon` 3.45x,
+`geo_distance_sort` 0.98x and `geo_nearest` 1.18x (both in noise),
+`geo_distance_feature` 1.13x (in noise), `geo_polygon_within` 2.94x,
+`geo_polygon_disjoint` 3.22x, `geo_points_contains` 2.20x, `geo_line` 2.37x,
+`geo_circle_within` 3.95x, `geo_xy_box` 1.70x, `geo_xy_distance` 1.42x,
+`geo_xy_polygon` 1.64x. `nearest` navigates lazily and the distance sort reads
+the resolved single-valued array (both needed to reach 1.0).
+
+### [util-geo.md](../parity/util-geo.md): lucene-util -- geo (M9 T9.1)
+
+`org.apache.lucene.geo`: pure geometry, no index format
+of its own -- but the encodings and the Tessellator's triangles *are* what
+`LatLonPoint`/`LatLonShape` index ([geo-points.md](../parity/geo-points.md),
+[geo-shapes.md](../parity/geo-shapes.md)), so everything here is held to Java's bits.
+Tests: `fixtures/src/GenGeo.java`, `GenGeoTessellator.java`,
+`GenGeoParsers.java` (corpus: `GeoCorpus.java`) ->
+`crates/lucene-util/tests/geo_fixtures.rs`. Bench: `scripts/bench-micro.sh
+--bench geo` (`GeoMicro.java` / `micro_geo.rs`, cross-engine digests;
+2026-10-02, noise 1.07x): `tessellate_latlon` 1.36x,
+`tessellate_latlon_checked` 1.33x, `tessellate_xy_checked` 1.04x (in noise),
+`component_build` 3.54x, `component_relate` 1.44x, `component_contains`
+1.50x, `component_intersects_triangle` 1.28x, `haversin_meters` 1.01x.
+
+### [plugin-geo.md](../parity/plugin-geo.md): how the geo queries reach the native engine
+
+What OpenSearch 3.8.0 builds for `geo_bounding_box`, `geo_distance`,
+`geo_polygon` and `geo_shape` (on `geo_point` and `geo_shape` fields) and
+for the `_geo_distance` sort, and how each reaches the native engine. The
+Java query objects are read by class (the four geo query classes are
+package-private: their constructor arguments through the plugin's `Reflect`)
+in `opensearch-plugin/.../GeoEncoder.java`, sent as the query tree's nodes
+15-19, decoded in `lucene-ffi/src/jvm_reader.rs` and run as
+`DocumentClause`s -- the T9.2/T9.3 ports as leaves of the scorer tree, their
+sets before deletions, keyed for the query cache by the node's bytes (Java's
+`equals`: every constructor argument). Proved against a stock node by
+`opensearch-plugin/e2e/geo_matrix.py` (in `scripts/verify-opensearch.sh`) and
+against Lucene in process by `NativeSelfTest.geo`.

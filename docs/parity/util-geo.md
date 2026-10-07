@@ -1,17 +1,11 @@
 # lucene-util -- geo (M9 T9.1)
 
-[Index](../parity.md). `org.apache.lucene.geo`: pure geometry, no index format
-of its own -- but the encodings and the Tessellator's triangles *are* what
-`LatLonPoint`/`LatLonShape` index ([geo-points.md](geo-points.md),
-[geo-shapes.md](geo-shapes.md)), so everything here is held to Java's bits.
-Tests: `fixtures/src/GenGeo.java`, `GenGeoTessellator.java`,
-`GenGeoParsers.java` (corpus: `GeoCorpus.java`) ->
-`crates/lucene-util/tests/geo_fixtures.rs`. Bench: `scripts/bench-micro.sh
---bench geo` (`GeoMicro.java` / `micro_geo.rs`, cross-engine digests;
-2026-10-02, noise 1.07x): `tessellate_latlon` 1.36x,
-`tessellate_latlon_checked` 1.33x, `tessellate_xy_checked` 1.04x (in noise),
-`component_build` 3.54x, `component_relate` 1.44x, `component_contains`
-1.50x, `component_intersects_triangle` 1.28x, `haversin_meters` 1.01x.
+[Index](../parity.md). `org.apache.lucene.geo`: pure geometry, but its
+encodings and the Tessellator's triangles are what `LatLonPoint`/`LatLonShape`
+index, so everything is held to Java's bits. Tests: `GenGeo.java`,
+`GenGeoTessellator.java`, `GenGeoParsers.java` ->
+`crates/lucene-util/tests/geo_fixtures.rs`. Bench `--bench geo`: 1.01x-3.54x
+([M9 evidence](../milestones/m9-geo-and-spatial.md#ledger-evidence)).
 
 | Java | Rust | Status |
 |---|---|---|
@@ -22,6 +16,6 @@ Tests: `fixtures/src/GenGeo.java`, `GenGeoTessellator.java`,
 | `geo/GeoUtils`, `geo/GeoEncodingUtils` (+ `DistancePredicate`, `Component2DPredicate`, the private `Grid`), `geo/XYEncodingUtils` | `lucene-util/src/geo/geo_utils.rs::{GeoUtils, WindingOrder}`, `lucene-util/src/geo/geo_encoding_utils.rs::{GeoEncodingUtils, DistancePredicate, Component2DPredicate}`, `lucene-util/src/geo/xy_encoding_utils.rs::XYEncodingUtils` | **ported**, bit-exact: floor/ceil encodings over 3000 values incl. poles, +-180, NaN, out-of-range (messages verbatim), `distanceQuerySortKey`, `relate` (dateline error included), `orient`, segment predicates, distance predicates (40 circles x 40 points), the cartesian sortable-int encoding. |
 | `geo/Geometry`, `geo/LatLonGeometry`, `geo/XYGeometry`, `geo/Point`, `geo/Line`, `geo/Polygon`, `geo/Circle`, `geo/Rectangle`, `geo/XYPoint`, `geo/XYLine`, `geo/XYPolygon`, `geo/XYCircle`, `geo/XYRectangle` | `lucene-util/src/geo/lat_lon_geometry.rs::LatLonGeometry`, `lucene-util/src/geo/xy_geometry.rs::XYGeometry`, `lucene-util/src/geo/point.rs`, `lucene-util/src/geo/line.rs`, `lucene-util/src/geo/polygon.rs`, `lucene-util/src/geo/circle.rs`, `lucene-util/src/geo/rectangle.rs`, `lucene-util/src/geo/xy_point.rs`, `lucene-util/src/geo/xy_line.rs`, `lucene-util/src/geo/xy_polygon.rs`, `lucene-util/src/geo/xy_circle.rs`, `lucene-util/src/geo/xy_rectangle.rs` | **ported**: the hierarchy is two enums (`create` builds a `Component2D` or `ComponentTree`); Java's validation and messages, bounding boxes, winding order (`XYPolygon`'s in `float`); `Rectangle.fromPointDistance` bit-exact over 800 cases. Differs: `Rectangle.axisLat` uses libm for the `Math.cos` intrinsic -- exact on >99% of the corpus, within 2 ulps elsewhere, absorbed by `GeoUtils.relate`'s `AXISLAT_ERROR`; `equals`/`hashCode` are Rust derives (`toString`/`toGeoJSON` are Java's). |
 | `geo/Component2D`, `geo/ComponentTree`, `geo/EdgeTree`, `geo/Point2D`, `geo/Line2D`, `geo/Polygon2D`, `geo/Rectangle2D`, `geo/Circle2D` | `lucene-util/src/geo/component2d.rs::{Component2D, WithinRelation, disjoint, within, contains_point, point_in_triangle}`, `lucene-util/src/geo/component_tree.rs::ComponentTree`, `lucene-util/src/geo/edge_tree.rs::EdgeTree`, `lucene-util/src/geo/point2d.rs`, `lucene-util/src/geo/line2d.rs`, `lucene-util/src/geo/polygon2d.rs`, `lucene-util/src/geo/rectangle2d.rs`, `lucene-util/src/geo/circle2d.rs` | **ported**, query-for-query identical: ~100 shapes x every query, 11 000+ answers, bounds included; `ComponentTree` built with the ported `IntroSelector`, so its shape is Java's. Differs: the `within*` methods return `Result` (Java's `ComponentTree` throws). |
-| `geo/Tessellator` (+ `Monitor`, `Triangle`) | `lucene-util/src/geo/tessellator.rs::{tessellate, tessellate_xy, tessellate_with_monitor, tessellate_xy_with_monitor, lines_intersect, Triangle, Monitor}` | **ported**, triangle for triangle (same order, edge flags, or same failure message): ~200 polygons with/without `checkSelfIntersections` (holes, poles, dateline, CURE/SPLIT, morton path); real world via `GenGeoTessellatorReal` -> `tessellator_matches_lucene_on_real_world_polygons` (Lucene's `TestTessellator` shapes and Natural Earth: 4,193 polygons, 833,628 triangles equal by digest, 33 failures with Lucene's messages). Nodes in an arena with index links. Bench: 1.36x/1.33x latlon, 1.04x cartesian; real-world `tessellate_real`/`tessellate_real_checked` 1.11x/1.08x. |
+| `geo/Tessellator` (+ `Monitor`, `Triangle`) | `lucene-util/src/geo/tessellator.rs::{tessellate, tessellate_xy, tessellate_with_monitor, tessellate_xy_with_monitor, lines_intersect, Triangle, Monitor}` | **ported**, triangle for triangle (same order, edge flags, or same failure message): ~200 polygons; real world via `GenGeoTessellatorReal` -> `tessellator_matches_lucene_on_real_world_polygons` (4,193 polygons, 833,628 triangles by digest, 33 failures with Lucene's messages). Nodes in an arena. Bench: 1.36x/1.33x latlon, 1.04x cartesian; real-world 1.11x/1.08x. |
 | `geo/SimpleWKTShapeParser` (+ `ShapeType`) | `lucene-util/src/geo/simple_wkt_shape_parser.rs::{parse, parse_expected_type, ShapeType, WktGeometry}` | **ported**: Java's `StreamTokenizer` setup as a tokenizer (UTF-16 line counting), `Double.parseDouble`'s grammar. Results are the `WktGeometry` enum; `EMPTY` is `None`. Tests: 790 inputs, same bits or same exception class/message/offset. |
 | `geo/SimpleGeoJSONPolygonParser` (`Polygon.fromGeoJSON`) | `lucene-util/src/geo/simple_geojson_polygon_parser.rs::SimpleGeoJSONPolygonParser` | **ported**, quirks included (a `\u` escape appends the decimal value and re-reads its digits; `NumberFormatException`, `IndexOutOfBoundsException`, `NullPointerException` escape as Java's). Differs: `\u` digits ASCII or fullwidth only. Tests: 510 inputs, same polygons or same exception/message/fragment/offset. |
