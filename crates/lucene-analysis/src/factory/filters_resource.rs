@@ -382,8 +382,19 @@ impl HyphenationCompoundWordTokenFilterFactory {
         }
         let bytes = loader.open_resource(&self.hyp_file)?;
         let xml = super::xml_source::decode(&bytes, self.encoding.as_deref(), &self.hyp_file)?;
-        let tree = HyphenationTree::from_xml(&xml)
-            .map_err(|e| FactoryError::new(JavaException::Runtime, e.to_string()))?;
+        // Java's SAX parser reports malformed XML as a SAXParseException,
+        // which PatternParser.parse wraps in an IOException.
+        let tree = HyphenationTree::from_xml(&xml).map_err(|e| match &e {
+            AnalysisError::IllegalArgument(m)
+                if m.starts_with(crate::compound::hyphenation::MALFORMED) =>
+            {
+                FactoryError::io(format!(
+                    "org.xml.sax.SAXParseException; {}",
+                    &m[crate::compound::hyphenation::MALFORMED.len()..]
+                ))
+            }
+            _ => FactoryError::new(JavaException::Runtime, e.to_string()),
+        })?;
         self.hyphenator = Some(Arc::new(tree));
         Ok(())
     }

@@ -376,7 +376,19 @@ pub fn parse_java_float(s: &str) -> Result<f32, FactoryError> {
             "empty String",
         ));
     }
-    crate::payloads::parse_java_float(trimmed).map_err(|_| number_format(trimmed))
+    crate::payloads::parse_java_float(trimmed).map_err(|_| {
+        // FloatingDecimal.readJavaFormatString: a second '.' in the leading
+        // run of digits and points (after a sign) is its own message.
+        let unsigned = trimmed.strip_prefix(['+', '-']).unwrap_or(trimmed);
+        let run = unsigned
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.');
+        if run.filter(|&c| c == '.').count() > 1 {
+            FactoryError::new(JavaException::NumberFormat, "multiple points")
+        } else {
+            number_format(trimmed)
+        }
+    })
 }
 
 /// `Boolean.parseBoolean(s)`.
@@ -634,6 +646,14 @@ mod tests {
             parse_java_float(" x ").unwrap_err().message,
             "For input string: \"x\""
         );
+        // FloatingDecimal's own message for a second point in the leading run.
+        for (s, want) in [
+            ("4.0.0", "multiple points"),
+            ("-..", "multiple points"),
+            ("1x.0.0", "For input string: \"1x.0.0\""),
+        ] {
+            assert_eq!(parse_java_float(s).unwrap_err().message, want, "{s}");
+        }
         assert!(parse_java_boolean("TRUE"));
         assert!(!parse_java_boolean("yes"));
         assert!(java_equals_ignore_case("Straße", "STRAßE"));

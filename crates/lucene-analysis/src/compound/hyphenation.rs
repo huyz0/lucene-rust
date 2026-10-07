@@ -21,7 +21,11 @@
 //!   or mismatched element, a second root, text outside the root, a bad
 //!   entity or attribute); Java's SAX parser checks more (name characters,
 //!   duplicate attributes, `<` in attribute values, ...), and a file only it
-//!   refuses loads here. A malformed file is an `IllegalArgument`.
+//!   refuses loads here. A malformed file is an `IllegalArgument` whose
+//!   message starts [`MALFORMED`]; character data outside the root element
+//!   carries Xerces' own message (`Content is not allowed in prolog.`), and
+//!   the factory reports every such error as Java does, an `IOException`
+//!   wrapping a `SAXParseException`.
 //! - SAX hands `PatternParser.characters` the text in small chunks; here it
 //!   is one chunk per text node, which `readToken` walks with an index
 //!   instead of deleting what it consumed from the front (the result does
@@ -297,7 +301,25 @@ enum Event {
 }
 
 fn malformed(what: &str) -> AnalysisError {
-    AnalysisError::IllegalArgument(format!("malformed hyphenation XML: {what}"))
+    AnalysisError::IllegalArgument(format!("{MALFORMED}{what}"))
+}
+
+/// How a malformed-XML error's message starts (the rest is Xerces'
+/// message where the check is Xerces', the port's own otherwise).
+pub const MALFORMED: &str = "malformed hyphenation XML: ";
+
+/// XML's whitespace: space, tab, CR, LF.
+fn is_xml_space(s: &str) -> bool {
+    s.chars().all(|c| matches!(c, ' ' | '\t' | '\r' | '\n'))
+}
+
+/// Xerces' message for character data outside the root element.
+fn outside_root(root_closed: bool) -> AnalysisError {
+    malformed(if root_closed {
+        "Content is not allowed in trailing section."
+    } else {
+        "Content is not allowed in prolog."
+    })
 }
 
 /// Decodes `&...;` references.
@@ -351,8 +373,11 @@ fn parse_xml(xml: &str) -> Result<Vec<Event>, AnalysisError> {
     let mut root_closed = false;
     while !rest.is_empty() {
         let Some(lt) = rest.find('<') else {
-            if !open.is_empty() || !rest.trim().is_empty() {
+            if !open.is_empty() {
                 return Err(malformed("text outside the root element"));
+            }
+            if !is_xml_space(rest) {
+                return Err(outside_root(root_closed));
             }
             break;
         };
@@ -360,6 +385,8 @@ fn parse_xml(xml: &str) -> Result<Vec<Event>, AnalysisError> {
             let text = decode_entities(&rest[..lt])?;
             if !open.is_empty() {
                 events.push(Event::Text(text));
+            } else if !is_xml_space(&text) {
+                return Err(outside_root(root_closed));
             }
         }
         rest = &rest[lt..];
@@ -813,5 +840,23 @@ ta=ble <hyphen pre="k" no="c" post="k"/>
             assert!(HyphenationTree::from_xml(bad).is_err(), "{bad}");
         }
         assert!(HyphenationTree::from_xml("<a x:b='1'>&lt;&gt;&amp;&quot;&apos;&#65;</a>").is_ok());
+        // Character data outside the root: Xerces' two messages.
+        let msg = |x: &str| HyphenationTree::from_xml(x).err().unwrap().to_string();
+        for (x, want) in [
+            ("x<a/>", "Content is not allowed in prolog."),
+            ("x", "Content is not allowed in prolog."),
+            ("<a/>x", "Content is not allowed in trailing section."),
+            (
+                "<a/>x<!-- c -->",
+                "Content is not allowed in trailing section.",
+            ),
+        ] {
+            assert!(
+                msg(x).ends_with(&format!("{MALFORMED}{want}")),
+                "{x}: {}",
+                msg(x)
+            );
+        }
+        assert!(HyphenationTree::from_xml(" \r\n\t<a/> \n").is_ok());
     }
 }
