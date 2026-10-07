@@ -95,7 +95,12 @@ impl Word2VecSynonymProvider {
             query: query.to_vec(),
         };
         // `max + 1`, in Java's int arithmetic; a non-positive `k` finds nothing.
-        let k = usize::try_from(max_synonyms_per_term.wrapping_add(1)).unwrap_or(0);
+        // A `k` past the model's size finds what `k = size` finds (the queue
+        // only fills once every term is in it), so it is clamped rather than
+        // sizing the queues by it (Java allocates `k + 1` slots and fails).
+        let k = usize::try_from(max_synonyms_per_term.wrapping_add(1))
+            .unwrap_or(0)
+            .min(self.model.size());
         if k == 0 {
             return Ok(Vec::new());
         }
@@ -241,5 +246,10 @@ mod tests {
         assert_eq!(s.len(), 1);
         assert_eq!(s[0].term, b"b");
         assert!(p.synonyms(b"a", 1, 1.0).unwrap().is_empty());
+        // A `k` past the model's two terms finds what `k = 2` finds, without
+        // queues of `i32::MAX` slots.
+        let s = p.synonyms(b"a", i32::MAX - 1, 0.0).unwrap();
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].term, b"b");
     }
 }
