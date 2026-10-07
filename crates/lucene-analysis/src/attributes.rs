@@ -280,13 +280,30 @@ impl<T: CustomAttribute> DynAttribute for T {
     }
 }
 
-impl PartialEq for Box<dyn DynAttribute> {
+/// A custom attribute with its type's id, so finding a class's instance
+/// compares ids rather than making two `dyn` calls per attribute.
+#[derive(Debug)]
+struct Custom {
+    id: TypeId,
+    attr: Box<dyn DynAttribute>,
+}
+
+impl PartialEq for Custom {
     fn eq(&self, other: &Self) -> bool {
-        self.eq_dyn(other.as_ref())
+        self.id == other.id && self.attr.eq_dyn(other.attr.as_ref())
     }
 }
 
-impl Eq for Box<dyn DynAttribute> {}
+impl Eq for Custom {}
+
+impl Custom {
+    fn new(attr: Box<dyn DynAttribute>) -> Self {
+        Custom {
+            id: attr.as_any().type_id(),
+            attr,
+        }
+    }
+}
 
 /// `TypeAttribute.DEFAULT_TYPE`.
 pub const DEFAULT_TYPE: &str = "word";
@@ -327,7 +344,7 @@ pub struct AttributeSource {
     /// `search.BoostAttribute`, as `f32` bits (so the struct stays `Eq`).
     boost_bits: u32,
     /// The custom attributes, in the order they were added.
-    custom: Vec<Box<dyn DynAttribute>>,
+    custom: Vec<Custom>,
 }
 
 /// `AttributeSource.State`: a captured copy of every attribute, restored with
@@ -351,13 +368,17 @@ impl Clone for AttributeSource {
                 .custom
                 .iter()
                 .zip(&source.custom)
-                .all(|(a, b)| a.as_any().type_id() == b.as_any().type_id());
+                .all(|(a, b)| a.id == b.id);
         if same_types {
             for (mine, theirs) in self.custom.iter_mut().zip(&source.custom) {
-                mine.copy_from(theirs.as_ref());
+                mine.attr.copy_from(theirs.attr.as_ref());
             }
         } else {
-            self.custom = source.custom.iter().map(|a| a.clone_box()).collect();
+            self.custom = source
+                .custom
+                .iter()
+                .map(|a| Custom::new(a.attr.clone_box()))
+                .collect();
         }
     }
 }
@@ -451,8 +472,8 @@ impl AttributeSource {
         self.term_frequency = 1;
         self.sentence_index = 0;
         self.boost_bits = 1.0f32.to_bits();
-        for attr in &mut self.custom {
-            attr.clear();
+        for c in &mut self.custom {
+            c.attr.clear();
         }
     }
 
@@ -462,8 +483,8 @@ impl AttributeSource {
     pub fn end_attributes(&mut self) {
         self.clear_attributes();
         self.position_increment = 0;
-        for attr in &mut self.custom {
-            attr.end();
+        for c in &mut self.custom {
+            c.attr.end();
         }
     }
 
@@ -473,14 +494,15 @@ impl AttributeSource {
     /// instance, created (at its `Default`) on first use.
     pub fn add_custom<T: CustomAttribute>(&mut self) -> &mut T {
         let id = TypeId::of::<T>();
-        let i = match self.custom.iter().position(|a| a.as_any().type_id() == id) {
+        let i = match self.custom.iter().position(|c| c.id == id) {
             Some(i) => i,
             None => {
-                self.custom.push(Box::new(T::default()));
+                self.custom.push(Custom::new(Box::new(T::default())));
                 self.custom.len() - 1
             }
         };
         self.custom[i]
+            .attr
             .as_any_mut()
             .downcast_mut::<T>()
             .expect("the attribute at this type's index is of this type")
@@ -489,9 +511,11 @@ impl AttributeSource {
     /// `getAttribute(Class)` for a [`CustomAttribute`]; `None` when no
     /// stage added it (`hasAttribute` is `false`).
     pub fn custom<T: CustomAttribute>(&self) -> Option<&T> {
+        let id = TypeId::of::<T>();
         self.custom
             .iter()
-            .find_map(|a| a.as_any().downcast_ref::<T>())
+            .find(|c| c.id == id)
+            .and_then(|c| c.attr.as_any().downcast_ref::<T>())
     }
 
     /// `AttributeSource.captureState()`.
@@ -511,11 +535,10 @@ impl AttributeSource {
     /// as Java does.
     pub fn restore_state(&mut self, state: &State) {
         self.copy_core_from(state);
-        for attr in &state.custom {
-            let id = attr.as_any().type_id();
-            match self.custom.iter_mut().find(|a| a.as_any().type_id() == id) {
-                Some(mine) => mine.copy_from(attr.as_ref()),
-                None => self.custom.push(attr.clone_box()),
+        for c in &state.custom {
+            match self.custom.iter_mut().find(|a| a.id == c.id) {
+                Some(mine) => mine.attr.copy_from(c.attr.as_ref()),
+                None => self.custom.push(Custom::new(c.attr.clone_box())),
             }
         }
     }
@@ -531,14 +554,13 @@ impl AttributeSource {
     /// custom ones' order can decide what is copied before the error.)
     pub fn try_restore_state(&mut self, state: &State) -> Result<(), AnalysisError> {
         self.copy_core_from(state);
-        for attr in &state.custom {
-            let id = attr.as_any().type_id();
-            match self.custom.iter_mut().find(|a| a.as_any().type_id() == id) {
-                Some(mine) => mine.copy_from(attr.as_ref()),
+        for c in &state.custom {
+            match self.custom.iter_mut().find(|a| a.id == c.id) {
+                Some(mine) => mine.attr.copy_from(c.attr.as_ref()),
                 None => {
                     return Err(AnalysisError::IllegalArgument(format!(
                         "State contains AttributeImpl of type {} that is not in in this AttributeSource",
-                        attr.impl_class()
+                        c.attr.impl_class()
                     )))
                 }
             }
@@ -628,8 +650,8 @@ impl AttributeSource {
         &self,
         reflector: &mut dyn FnMut(&'static str, &'static str, AttrValue<'_>),
     ) {
-        for attr in &self.custom {
-            attr.reflect(reflector);
+        for c in &self.custom {
+            c.attr.reflect(reflector);
         }
     }
 
