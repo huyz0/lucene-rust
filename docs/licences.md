@@ -35,7 +35,9 @@ a dependency the shipped library links is not under a licence listed here.
     into a temporary directory.
   - the language packages' stop word lists and RSLP rule files
     (`lucene-analysis/src/lang/stopwords/`, vendored verbatim from the
-    10.5.0 jar, headers kept): Jacques Savoy's (BSD) and Snowball's (BSD)
+    10.5.0 jar, headers kept -- `english_stop.txt` (Snowball, BSD) and
+    `cjk_stopwords.txt` (Lucene's own) among them, which only
+    `ClasspathResourceLoader` serves): Jacques Savoy's (BSD) and Snowball's (BSD)
     lists and the others Lucene ships under its own licence, attributed in
     Lucene's `NOTICE.txt`, which [`NOTICE`](../NOTICE) carries in full; they
     are compiled into the library (`include_str!`).

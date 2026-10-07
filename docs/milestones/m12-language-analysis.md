@@ -57,6 +57,22 @@ in external libraries). Sizes from the 10.5.0 sources jars:
 - **T12.4** — ICU over ICU4X.
 - **T12.5** — OpenNLP: model loading and inference, or a recorded decision
   that it stays JVM-only if no faithful Rust runtime exists.
+- **T12.6** — The analysis-common classes M11 deferred
+  (`docs/inventory/lucene-analysis-common.tsv`, `deferred:M12`): Thai
+  (`ThaiAnalyzer`, `ThaiTokenizer`, `ThaiTokenizerFactory`, which today
+  refuses configuration with `UnsupportedOperationException`), collation
+  (`CollationKeyAnalyzer`, `CollationAttributeFactory`,
+  `CollationDocValuesField`, `tokenattributes/CollatedTermAttributeImpl`) and
+  `analysis/util/{SegmentingTokenizerBase, CharArrayIterator}`. Each rests on
+  a JDK service no Rust crate reproduces bit for bit -- `java.text.BreakIterator`
+  (Thai's dictionary word breaker, the sentence iterator
+  `SegmentingTokenizerBase` drives) or `java.text.Collator` (sort keys from
+  the JDK's locale data): implement it faithfully, checked against the JDK on
+  the same text as `lang/final_sigma.rs` checks the word iterator, or record a
+  not-supported decision naming the typed error a caller sees. T12.2's SmartCN
+  (`HMMChineseTokenizer` extends `SegmentingTokenizerBase`) depends on this
+  task; `analysis/morph` (the Kuromoji/Nori base, also deferred from M11) is
+  T12.1's.
 
 ## Architecture
 

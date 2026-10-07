@@ -428,8 +428,10 @@ pub fn cannot_load_class(class_name: &str) -> FactoryError {
     )
 }
 
-/// The analyzers a `SynonymFilterFactory`'s `analyzer` may name: the no-arg
-/// constructors of lucene-core's and analysis-common's core analyzers.
+/// The analyzers a `SynonymFilterFactory`'s `analyzer` may name: every
+/// analyzer with a public no-arg constructor (Java's
+/// `getConstructor().newInstance()`) in lucene-core and analysis-common,
+/// bar `ThaiAnalyzer` (M12).
 pub fn new_analyzer(class_name: &str) -> Result<Analyzer, FactoryError> {
     use crate::core_analysis::{SimpleAnalyzer, UnicodeWhitespaceAnalyzer, WhitespaceAnalyzer};
     Ok(match class_name {
@@ -444,6 +446,126 @@ pub fn new_analyzer(class_name: &str) -> Result<Analyzer, FactoryError> {
             Analyzer::new(UnicodeWhitespaceAnalyzer)
         }
         "org.apache.lucene.analysis.core.KeywordAnalyzer" => Analyzer::keyword(),
+        "org.apache.lucene.analysis.ar.ArabicAnalyzer" => {
+            Analyzer::new(crate::lang::ar::ArabicAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.bg.BulgarianAnalyzer" => {
+            Analyzer::new(crate::lang::bg::BulgarianAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.bn.BengaliAnalyzer" => {
+            Analyzer::new(crate::lang::bn::BengaliAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.br.BrazilianAnalyzer" => {
+            Analyzer::new(crate::lang::br::BrazilianAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.ca.CatalanAnalyzer" => {
+            Analyzer::new(crate::lang::ca::CatalanAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.ckb.SoraniAnalyzer" => {
+            Analyzer::new(crate::lang::ckb::SoraniAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.cz.CzechAnalyzer" => {
+            Analyzer::new(crate::lang::cz::CzechAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.da.DanishAnalyzer" => {
+            Analyzer::new(crate::lang::da::DanishAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.de.GermanAnalyzer" => {
+            Analyzer::new(crate::lang::de::GermanAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.el.GreekAnalyzer" => {
+            Analyzer::new(crate::lang::el::GreekAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.es.SpanishAnalyzer" => {
+            Analyzer::new(crate::lang::es::SpanishAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.et.EstonianAnalyzer" => {
+            Analyzer::new(crate::lang::et::EstonianAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.eu.BasqueAnalyzer" => {
+            Analyzer::new(crate::lang::eu::BasqueAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.fa.PersianAnalyzer" => {
+            Analyzer::new(crate::lang::fa::PersianAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.fi.FinnishAnalyzer" => {
+            Analyzer::new(crate::lang::fi::FinnishAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.fr.FrenchAnalyzer" => {
+            Analyzer::new(crate::lang::fr::FrenchAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.ga.IrishAnalyzer" => {
+            Analyzer::new(crate::lang::ga::IrishAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.gl.GalicianAnalyzer" => {
+            Analyzer::new(crate::lang::gl::GalicianAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.hi.HindiAnalyzer" => {
+            Analyzer::new(crate::lang::hi::HindiAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.hu.HungarianAnalyzer" => {
+            Analyzer::new(crate::lang::hu::HungarianAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.hy.ArmenianAnalyzer" => {
+            Analyzer::new(crate::lang::hy::ArmenianAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.id.IndonesianAnalyzer" => {
+            Analyzer::new(crate::lang::id::IndonesianAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.it.ItalianAnalyzer" => {
+            Analyzer::new(crate::lang::it::ItalianAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.lt.LithuanianAnalyzer" => {
+            Analyzer::new(crate::lang::lt::LithuanianAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.lv.LatvianAnalyzer" => {
+            Analyzer::new(crate::lang::lv::LatvianAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.ne.NepaliAnalyzer" => {
+            Analyzer::new(crate::lang::ne::NepaliAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.nl.DutchAnalyzer" => {
+            Analyzer::new(crate::lang::nl::DutchAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.no.NorwegianAnalyzer" => {
+            Analyzer::new(crate::lang::no::NorwegianAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.pt.PortugueseAnalyzer" => {
+            Analyzer::new(crate::lang::pt::PortugueseAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.ro.RomanianAnalyzer" => {
+            Analyzer::new(crate::lang::ro::RomanianAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.ru.RussianAnalyzer" => {
+            Analyzer::new(crate::lang::ru::RussianAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.sr.SerbianAnalyzer" => {
+            Analyzer::new(crate::lang::sr::SerbianAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.sv.SwedishAnalyzer" => {
+            Analyzer::new(crate::lang::sv::SwedishAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.ta.TamilAnalyzer" => {
+            Analyzer::new(crate::lang::ta::TamilAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.te.TeluguAnalyzer" => {
+            Analyzer::new(crate::lang::te::TeluguAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.tr.TurkishAnalyzer" => {
+            Analyzer::new(crate::lang::tr::TurkishAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.cjk.CJKAnalyzer" => {
+            Analyzer::new(crate::cjk::CJKAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.classic.ClassicAnalyzer" => {
+            Analyzer::new(crate::classic::ClassicAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.en.EnglishAnalyzer" => {
+            Analyzer::new(crate::en::EnglishAnalyzer::default())
+        }
+        "org.apache.lucene.analysis.email.UAX29URLEmailAnalyzer" => {
+            Analyzer::new(crate::email::UAX29URLEmailAnalyzer::default())
+        }
         _ => return Err(cannot_load_class(class_name)),
     })
 }
@@ -508,6 +630,46 @@ mod tests {
             "org.apache.lucene.analysis.core.SimpleAnalyzer",
             "org.apache.lucene.analysis.core.UnicodeWhitespaceAnalyzer",
             "org.apache.lucene.analysis.core.KeywordAnalyzer",
+            "org.apache.lucene.analysis.ar.ArabicAnalyzer",
+            "org.apache.lucene.analysis.bg.BulgarianAnalyzer",
+            "org.apache.lucene.analysis.bn.BengaliAnalyzer",
+            "org.apache.lucene.analysis.br.BrazilianAnalyzer",
+            "org.apache.lucene.analysis.ca.CatalanAnalyzer",
+            "org.apache.lucene.analysis.ckb.SoraniAnalyzer",
+            "org.apache.lucene.analysis.cz.CzechAnalyzer",
+            "org.apache.lucene.analysis.da.DanishAnalyzer",
+            "org.apache.lucene.analysis.de.GermanAnalyzer",
+            "org.apache.lucene.analysis.el.GreekAnalyzer",
+            "org.apache.lucene.analysis.es.SpanishAnalyzer",
+            "org.apache.lucene.analysis.et.EstonianAnalyzer",
+            "org.apache.lucene.analysis.eu.BasqueAnalyzer",
+            "org.apache.lucene.analysis.fa.PersianAnalyzer",
+            "org.apache.lucene.analysis.fi.FinnishAnalyzer",
+            "org.apache.lucene.analysis.fr.FrenchAnalyzer",
+            "org.apache.lucene.analysis.ga.IrishAnalyzer",
+            "org.apache.lucene.analysis.gl.GalicianAnalyzer",
+            "org.apache.lucene.analysis.hi.HindiAnalyzer",
+            "org.apache.lucene.analysis.hu.HungarianAnalyzer",
+            "org.apache.lucene.analysis.hy.ArmenianAnalyzer",
+            "org.apache.lucene.analysis.id.IndonesianAnalyzer",
+            "org.apache.lucene.analysis.it.ItalianAnalyzer",
+            "org.apache.lucene.analysis.lt.LithuanianAnalyzer",
+            "org.apache.lucene.analysis.lv.LatvianAnalyzer",
+            "org.apache.lucene.analysis.ne.NepaliAnalyzer",
+            "org.apache.lucene.analysis.nl.DutchAnalyzer",
+            "org.apache.lucene.analysis.no.NorwegianAnalyzer",
+            "org.apache.lucene.analysis.pt.PortugueseAnalyzer",
+            "org.apache.lucene.analysis.ro.RomanianAnalyzer",
+            "org.apache.lucene.analysis.ru.RussianAnalyzer",
+            "org.apache.lucene.analysis.sr.SerbianAnalyzer",
+            "org.apache.lucene.analysis.sv.SwedishAnalyzer",
+            "org.apache.lucene.analysis.ta.TamilAnalyzer",
+            "org.apache.lucene.analysis.te.TeluguAnalyzer",
+            "org.apache.lucene.analysis.tr.TurkishAnalyzer",
+            "org.apache.lucene.analysis.cjk.CJKAnalyzer",
+            "org.apache.lucene.analysis.classic.ClassicAnalyzer",
+            "org.apache.lucene.analysis.en.EnglishAnalyzer",
+            "org.apache.lucene.analysis.email.UAX29URLEmailAnalyzer",
         ] {
             assert!(new_analyzer(c).is_ok(), "{c}");
         }
