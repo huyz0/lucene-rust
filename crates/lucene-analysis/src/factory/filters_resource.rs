@@ -320,13 +320,15 @@ impl TokenFilterFactory for DictionaryCompoundWordTokenFilterFactory {
 
 factory_struct! {
     /// `org.apache.lucene.analysis.compound.HyphenationCompoundWordTokenFilterFactory`
-    /// (`hyphenationCompoundWord`). `encoding` is accepted and ignored: the
-    /// grammar is read as UTF-8 unless its XML declaration says otherwise
-    /// (see [`crate::compound::PatternParser`]).
+    /// (`hyphenationCompoundWord`). The grammar's bytes are decoded as the
+    /// JDK's SAX parser decodes them ([`super::xml_source`]): by the
+    /// `encoding` argument when there is one, else by the byte-order mark
+    /// or the XML declaration.
     HyphenationCompoundWordTokenFilterFactory {
         dictionary: Option<Arc<CharArraySet>>,
         hyphenator: Option<Arc<HyphenationTree>>,
         dict_file: Option<String>,
+        encoding: Option<String>,
         hyp_file: String,
         sizes: CompoundSizes,
         no_sub_matches: bool,
@@ -342,7 +344,7 @@ impl FactoryClass for HyphenationCompoundWordTokenFilterFactory {
     fn from_args(args: &mut JavaArgs) -> Result<Self, FactoryError> {
         let base = FactoryBase::new(Self::CLASS_NAME, args)?;
         let dict_file = args::get(args, "dictionary");
-        let _encoding = args::get(args, "encoding");
+        let encoding = args::get(args, "encoding");
         let hyp_file = args::require(args, "hyphenator")?;
         let sizes = compound_sizes(args, false)?;
         let no_sub_matches = args::get_boolean(args, "noSubMatches", false);
@@ -353,6 +355,7 @@ impl FactoryClass for HyphenationCompoundWordTokenFilterFactory {
             dictionary: None,
             hyphenator: None,
             dict_file,
+            encoding,
             hyp_file,
             sizes: checked_sizes(sizes)?,
             no_sub_matches,
@@ -367,7 +370,8 @@ impl HyphenationCompoundWordTokenFilterFactory {
         if let Some(dict_file) = &self.dict_file {
             self.dictionary = get_word_set(loader, dict_file, false)?.map(Arc::new);
         }
-        let xml = decode_utf8(loader.open_resource(&self.hyp_file)?)?;
+        let bytes = loader.open_resource(&self.hyp_file)?;
+        let xml = super::xml_source::decode(&bytes, self.encoding.as_deref(), &self.hyp_file)?;
         let tree = HyphenationTree::from_xml(&xml)
             .map_err(|e| FactoryError::new(JavaException::Runtime, e.to_string()))?;
         self.hyphenator = Some(Arc::new(tree));

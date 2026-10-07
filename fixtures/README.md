@@ -1099,9 +1099,9 @@ outright.
   `random_lines.txt`, `random_chains.rows`). Deterministic. Read by
   `crates/lucene-analysis/tests/analysis_compound_fixtures.rs`.
 - `GenAnalysisFactories.java` — M11 T11.7: the factories and `CustomAnalyzer`
-  from configuration text. `corpus/analysis-factories.conf` (306 lines: a name,
+  from configuration text. `corpus/analysis-factories.conf` (316 lines: a name,
   then builder steps and their `key=value` arguments; resources under
-  `corpus/analysis-factories/`) is built with `CustomAnalyzer.builder`; each
+  `corpus/analysis-factories/`; its `hyph-*.xml` are `corpus/hyphenation-test.xml` re-encoded as Latin-1 and UTF-16) is built with `CustomAnalyzer.builder`; each
   `analysis_factories/<name>.tsv` holds the build's exception (`B`, class and
   message; the SPI name list and Hunspell's stream list cut, as they vary by
   run) or `toString` (`S`), `GenAnalysisCommon`'s rows over
