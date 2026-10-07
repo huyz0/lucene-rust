@@ -1,0 +1,40 @@
+# Lucene 10.5.0 lucene-analysis-nori: every top-level class of the jar, and what became of it.
+# Checked by scripts/check-port-inventory.py --module analysis-nori (see its docstring for the statuses).
+# M12 T12.1 (Korean morphological analysis over mecab-ko-dic (the Viterbi lattice, user dictionary, decompounding)); docs/milestones/m12-language-analysis.md.
+# class	status	detail
+analysis/ko/DecompoundToken	todo:M12	T12.1: DecompoundToken, not started
+analysis/ko/DictionaryToken	todo:M12	T12.1: DictionaryToken, not started
+analysis/ko/KoreanAnalyzer	todo:M12	T12.1: KoreanAnalyzer, not started
+analysis/ko/KoreanNumberFilter	todo:M12	T12.1: KoreanNumberFilter, not started
+analysis/ko/KoreanNumberFilterFactory	todo:M12	T12.1: KoreanNumberFilterFactory, not started
+analysis/ko/KoreanPartOfSpeechStopFilter	todo:M12	T12.1: KoreanPartOfSpeechStopFilter, not started
+analysis/ko/KoreanPartOfSpeechStopFilterFactory	todo:M12	T12.1: KoreanPartOfSpeechStopFilterFactory, not started
+analysis/ko/KoreanReadingFormFilter	todo:M12	T12.1: KoreanReadingFormFilter, not started
+analysis/ko/KoreanReadingFormFilterFactory	todo:M12	T12.1: KoreanReadingFormFilterFactory, not started
+analysis/ko/KoreanTokenizer	todo:M12	T12.1: KoreanTokenizer, not started
+analysis/ko/KoreanTokenizerFactory	todo:M12	T12.1: KoreanTokenizerFactory, not started
+analysis/ko/POS	todo:M12	T12.1: POS, not started
+analysis/ko/Token	todo:M12	T12.1: Token, not started
+analysis/ko/Viterbi	todo:M12	T12.1: Viterbi, not started
+analysis/ko/dict/CharacterDefinition	todo:M12	T12.1: CharacterDefinition, not started
+analysis/ko/dict/ConnectionCosts	todo:M12	T12.1: ConnectionCosts, not started
+analysis/ko/dict/ConnectionCostsBuilder	todo:M12	T12.1: ConnectionCostsBuilder, not started
+analysis/ko/dict/DictionaryBuilder	todo:M12	T12.1: DictionaryBuilder, not started
+analysis/ko/dict/DictionaryConstants	todo:M12	T12.1: DictionaryConstants, not started
+analysis/ko/dict/KoMorphData	todo:M12	T12.1: KoMorphData, not started
+analysis/ko/dict/TokenInfoDictionary	todo:M12	T12.1: TokenInfoDictionary, not started
+analysis/ko/dict/TokenInfoDictionaryBuilder	todo:M12	T12.1: TokenInfoDictionaryBuilder, not started
+analysis/ko/dict/TokenInfoDictionaryEntryWriter	todo:M12	T12.1: TokenInfoDictionaryEntryWriter, not started
+analysis/ko/dict/TokenInfoDictionaryWriter	todo:M12	T12.1: TokenInfoDictionaryWriter, not started
+analysis/ko/dict/TokenInfoFST	todo:M12	T12.1: TokenInfoFST, not started
+analysis/ko/dict/TokenInfoMorphData	todo:M12	T12.1: TokenInfoMorphData, not started
+analysis/ko/dict/UnknownDictionary	todo:M12	T12.1: UnknownDictionary, not started
+analysis/ko/dict/UnknownDictionaryBuilder	todo:M12	T12.1: UnknownDictionaryBuilder, not started
+analysis/ko/dict/UnknownDictionaryWriter	todo:M12	T12.1: UnknownDictionaryWriter, not started
+analysis/ko/dict/UnknownMorphData	todo:M12	T12.1: UnknownMorphData, not started
+analysis/ko/dict/UserDictionary	todo:M12	T12.1: UserDictionary, not started
+analysis/ko/dict/UserMorphData	todo:M12	T12.1: UserMorphData, not started
+analysis/ko/tokenattributes/PartOfSpeechAttribute	todo:M12	T12.1: PartOfSpeechAttribute, not started
+analysis/ko/tokenattributes/PartOfSpeechAttributeImpl	todo:M12	T12.1: PartOfSpeechAttributeImpl, not started
+analysis/ko/tokenattributes/ReadingAttribute	todo:M12	T12.1: ReadingAttribute, not started
+analysis/ko/tokenattributes/ReadingAttributeImpl	todo:M12	T12.1: ReadingAttributeImpl, not started

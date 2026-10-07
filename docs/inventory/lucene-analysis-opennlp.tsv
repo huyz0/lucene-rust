@@ -1,0 +1,21 @@
+# Lucene 10.5.0 lucene-analysis-opennlp: every top-level class of the jar, and what became of it.
+# Checked by scripts/check-port-inventory.py --module analysis-opennlp (see its docstring for the statuses).
+# M12 T12.5 (OpenNLP model loading and inference, or a recorded JVM-only decision); docs/milestones/m12-language-analysis.md.
+# class	status	detail
+analysis/opennlp/OpenNLPChunkerFilter	todo:M12	T12.5: OpenNLPChunkerFilter, not started
+analysis/opennlp/OpenNLPChunkerFilterFactory	todo:M12	T12.5: OpenNLPChunkerFilterFactory, not started
+analysis/opennlp/OpenNLPLemmatizerFilter	todo:M12	T12.5: OpenNLPLemmatizerFilter, not started
+analysis/opennlp/OpenNLPLemmatizerFilterFactory	todo:M12	T12.5: OpenNLPLemmatizerFilterFactory, not started
+analysis/opennlp/OpenNLPPOSFilter	todo:M12	T12.5: OpenNLPPOSFilter, not started
+analysis/opennlp/OpenNLPPOSFilterFactory	todo:M12	T12.5: OpenNLPPOSFilterFactory, not started
+analysis/opennlp/OpenNLPSentenceBreakIterator	todo:M12	T12.5: OpenNLPSentenceBreakIterator, not started
+analysis/opennlp/OpenNLPTokenizer	todo:M12	T12.5: OpenNLPTokenizer, not started
+analysis/opennlp/OpenNLPTokenizerFactory	todo:M12	T12.5: OpenNLPTokenizerFactory, not started
+analysis/opennlp/SentenceAttributeExtractor	todo:M12	T12.5: SentenceAttributeExtractor, not started
+analysis/opennlp/tools/NLPChunkerOp	todo:M12	T12.5: NLPChunkerOp, not started
+analysis/opennlp/tools/NLPLemmatizerOp	todo:M12	T12.5: NLPLemmatizerOp, not started
+analysis/opennlp/tools/NLPNERTaggerOp	todo:M12	T12.5: NLPNERTaggerOp, not started
+analysis/opennlp/tools/NLPPOSTaggerOp	todo:M12	T12.5: NLPPOSTaggerOp, not started
+analysis/opennlp/tools/NLPSentenceDetectorOp	todo:M12	T12.5: NLPSentenceDetectorOp, not started
+analysis/opennlp/tools/NLPTokenizerOp	todo:M12	T12.5: NLPTokenizerOp, not started
+analysis/opennlp/tools/OpenNLPOpsFactory	todo:M12	T12.5: OpenNLPOpsFactory, not started

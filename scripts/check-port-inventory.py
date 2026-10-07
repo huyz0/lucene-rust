@@ -44,7 +44,7 @@ which makes a missing jar a failure: a membership check that silently did not
 run must not read as a pass.
 
 Usage:
-  scripts/check-port-inventory.py [--module core|backward-codecs|spatial3d|spatial-extras|join|grouping|queries|analysis-common] [--milestone M7] [--summary] [--require-jar]
+  scripts/check-port-inventory.py [--module core|backward-codecs|spatial3d|spatial-extras|join|grouping|queries|analysis-common|analysis-<m12 module>] [--milestone M7] [--summary] [--require-jar]
 """
 
 from __future__ import annotations
@@ -71,6 +71,14 @@ MODULES = {
     "grouping": "lucene-grouping",
     "queries": "lucene-queries",
     "analysis-common": "lucene-analysis-common",
+    "analysis-icu": "lucene-analysis-icu",
+    "analysis-kuromoji": "lucene-analysis-kuromoji",
+    "analysis-nori": "lucene-analysis-nori",
+    "analysis-smartcn": "lucene-analysis-smartcn",
+    "analysis-stempel": "lucene-analysis-stempel",
+    "analysis-morfologik": "lucene-analysis-morfologik",
+    "analysis-phonetic": "lucene-analysis-phonetic",
+    "analysis-opennlp": "lucene-analysis-opennlp",
 }
 
 
@@ -103,14 +111,15 @@ def jar_classes(module: str) -> set[str] | None:
             # Multi-release variants (`META-INF/versions/<n>/...`) are real
             # classes of the jar too: the Panama implementations live there.
             m = re.match(
-                r"^(?:META-INF/versions/\d+/)?(?:org/apache/lucene/(.+)|(org/tartarus/.+))\.class$",
+                r"^(?:META-INF/versions/\d+/)?(?:org/apache/lucene/(.+)|(org/(?:tartarus|egothor)/.+))\.class$",
                 name,
             )
             if not m:
                 continue
             # lucene-analysis-common also ships the Snowball runtime and its
-            # generated stemmers under `org/tartarus/snowball/`; those rows keep
-            # their full path.
+            # generated stemmers under `org/tartarus/snowball/`, and
+            # lucene-analysis-stempel the Egothor stemmer under
+            # `org/egothor/stemmer/`; those rows keep their full path.
             cls = m.group(1) or m.group(2)
             if "$" in cls:
                 continue

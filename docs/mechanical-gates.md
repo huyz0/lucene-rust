@@ -377,6 +377,19 @@ class M11 has not ported is `todo:M11` tagged with its task (T11.2 JFlex,
 T11.3 Snowball, T11.4 Hunspell, T11.5 synonyms, T11.6 per package, T11.7
 factories), so `--milestone M11` lists what the milestone still owes.
 
+**`--module analysis-<m>`** (M12: `icu`, `kuromoji`, `nori`, `smartcn`,
+`stempel`, `morfologik`, `phonetic`, `opennlp`; 178 classes in
+`docs/inventory/lucene-analysis-<m>.tsv`). Stempel's jar ships the Egothor
+stemmer under `org/egothor/stemmer/`, which the checker now reads beside
+`org/tartarus/` (keeping the full path). Seen to fail before joining `gate.sh`
+and CI: a deleted Egothor row (`org/egothor/stemmer/Trie: in the jar, not in
+lucene-analysis-stempel.tsv` -- invisible before the prefix was added), an
+extra row (`org/egothor/Bogus: in lucene-analysis-phonetic.tsv, not in the
+jar`) and a missing jar (`no lucene-analysis-nori jar ...`). It does not see
+the third-party libraries the modules are built on (Commons Codec,
+Morfologik's FSA, ICU4J, OpenNLP): their ported subsets are recorded in
+`docs/parity/analysis-lang-modules.md` only.
+
 **Blind spots.** It checks that a cited symbol *exists*, not that it does
 what the Java class does -- the classification is a judgement, made per class
 against the Java source and recorded in the row, and a wrong `ported` passes.
