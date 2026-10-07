@@ -75,12 +75,18 @@ pub struct CharArraySet {
 }
 
 /// Lowercases `s` code point by code point with Java's simple mapping,
-/// borrowing when nothing changes.
+/// borrowing when nothing changes (most non-Latin text: a probe of such a
+/// word allocates nothing).
 fn lower(s: &str) -> std::borrow::Cow<'_, str> {
-    if s.bytes().all(|b| !b.is_ascii_uppercase() && b < 0x80) {
-        return std::borrow::Cow::Borrowed(s);
+    match crate::first_to_lowercase(s.as_bytes()) {
+        None => std::borrow::Cow::Borrowed(s),
+        Some(i) => {
+            let mut out = String::with_capacity(s.len());
+            out.push_str(&s[..i]);
+            out.extend(s[i..].chars().map(simple_to_lowercase));
+            std::borrow::Cow::Owned(out)
+        }
     }
-    std::borrow::Cow::Owned(s.chars().map(simple_to_lowercase).collect())
 }
 
 impl CharArraySet {

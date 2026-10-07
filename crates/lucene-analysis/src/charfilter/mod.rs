@@ -2,7 +2,7 @@
 //! corrections, `NormalizeCharMap`, `MappingCharFilter`, `HTMLStripCharFilter` (and
 //! `analysis/util/RollingCharBuffer`, which it reads through).
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 
 mod html_strip;
 
@@ -62,10 +62,16 @@ impl OffsetCorrections {
 
 /// `org.apache.lucene.analysis.util.RollingCharBuffer`: the window of input
 /// units from the first one not yet freed.
+///
+/// Differs: one contiguous vector whose freed front is dropped in bulk
+/// (Java's ring of `char`s wraps), so a buffered unit is one index and a
+/// span of them one slice.
 #[derive(Debug, Default)]
 pub struct RollingCharBuffer {
-    window: VecDeque<u16>,
-    /// Position of `window[0]`.
+    /// `window[head..]` holds positions `first_pos..`.
+    window: Vec<u16>,
+    head: usize,
+    /// Position of `window[head]`.
     first_pos: i32,
     end: bool,
     chunk: Vec<u16>,
@@ -75,18 +81,33 @@ impl RollingCharBuffer {
     /// `reset(Reader)`.
     pub fn reset(&mut self) {
         self.window.clear();
+        self.head = 0;
         self.first_pos = 0;
         self.end = false;
     }
 
     /// `get(int pos)`: the unit at `pos`, reading on demand; `None` at the
     /// end of the input.
+    #[inline]
     pub fn get(
         &mut self,
         reader: &mut dyn CharReader,
         pos: i32,
     ) -> Result<Option<u16>, AnalysisError> {
-        while pos >= self.first_pos + self.window.len() as i32 {
+        match self.peek(pos) {
+            Some(u) => Ok(Some(u)),
+            None => self.read_to(reader, pos),
+        }
+    }
+
+    /// [`Self::get`] of a unit not buffered yet.
+    fn read_to(
+        &mut self,
+        reader: &mut dyn CharReader,
+        pos: i32,
+    ) -> Result<Option<u16>, AnalysisError> {
+        let buffered = |b: &Self| b.first_pos + (b.window.len() - b.head) as i32;
+        while pos >= buffered(self) {
             if self.end {
                 return Ok(None);
             }
@@ -98,41 +119,47 @@ impl RollingCharBuffer {
                 self.end = true;
                 return Ok(None);
             }
-            self.window.extend(&self.chunk[..n]);
+            self.window.extend_from_slice(&self.chunk[..n]);
         }
-        let idx = pos - self.first_pos;
-        debug_assert!(idx >= 0, "pos {pos} was freed");
-        Ok(self.window.get(idx as usize).copied())
+        debug_assert!(pos >= self.first_pos, "pos {pos} was freed");
+        Ok(self.peek(pos))
     }
 
     /// The unit at `pos` if it is already buffered (read and not freed),
     /// without reading.
+    #[inline]
     pub fn peek(&self, pos: i32) -> Option<u16> {
         let idx = usize::try_from(pos.checked_sub(self.first_pos)?).ok()?;
-        self.window.get(idx).copied()
+        self.window.get(self.head.checked_add(idx)?).copied()
     }
 
-    /// `get(int posStart, int length)`: a copy of `length` buffered units
-    /// from `pos_start` (units not buffered are left out).
-    pub fn slice(&self, pos_start: i32, length: i32) -> Vec<u16> {
+    /// `get(int posStart, int length)`: `length` buffered units from
+    /// `pos_start` (units not buffered are left out).
+    pub fn slice(&self, pos_start: i32, length: i32) -> &[u16] {
         let Some(start) = pos_start
             .checked_sub(self.first_pos)
             .and_then(|s| usize::try_from(s).ok())
         else {
-            return Vec::new();
+            return &[];
         };
-        let len = usize::try_from(length).unwrap_or(0);
-        self.window
-            .range(start.min(self.window.len())..)
-            .take(len)
-            .copied()
-            .collect()
+        let live = &self.window[self.head..];
+        let start = start.min(live.len());
+        let len = usize::try_from(length).unwrap_or(0).min(live.len() - start);
+        &live[start..start + len]
     }
 
     /// `freeBefore(int pos)`.
     pub fn free_before(&mut self, pos: i32) {
-        while self.first_pos < pos && self.window.pop_front().is_some() {
-            self.first_pos += 1;
+        let live = self.window.len() - self.head;
+        let n = usize::try_from(pos.saturating_sub(self.first_pos))
+            .unwrap_or(0)
+            .min(live);
+        self.head += n;
+        self.first_pos += n as i32;
+        // Drop the freed front once it is most of the vector.
+        if self.head >= 1024 && self.head * 2 >= self.window.len() {
+            self.window.drain(..self.head);
+            self.head = 0;
         }
     }
 }
@@ -395,5 +422,16 @@ mod tests {
         assert!(r.slice(10, 2).is_empty());
         assert!(r.slice(650, 2).is_empty());
         r.reset();
+        // A freed front past 1,024 units is dropped; positions stay put.
+        let text: Vec<u16> = (0..3000u16).map(|i| 0x3040 + i % 80).collect();
+        let mut input = StrReader::new(String::from_utf16(&text).unwrap());
+        assert_eq!(r.get(&mut input, 1500).unwrap(), Some(text[1500]));
+        r.free_before(1400);
+        assert_eq!((r.peek(1399), r.peek(1400)), (None, Some(text[1400])));
+        assert_eq!(r.get(&mut input, 2999).unwrap(), Some(text[2999]));
+        assert_eq!(r.slice(1400, 3), &text[1400..1403]);
+        r.free_before(5000);
+        assert_eq!(r.peek(2999), None);
+        assert_eq!(r.get(&mut input, 3000).unwrap(), None);
     }
 }

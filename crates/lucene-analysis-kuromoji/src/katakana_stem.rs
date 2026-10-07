@@ -5,7 +5,7 @@ use lucene_analysis::{AnalysisError, TokenFilter, TokenStream};
 
 /// `JapaneseKatakanaStemFilter.DEFAULT_MINIMUM_LENGTH`.
 pub const DEFAULT_MINIMUM_LENGTH: i32 = 4;
-const HIRAGANA_KATAKANA_PROLONGED_SOUND_MARK: u16 = 0x30FC;
+const HIRAGANA_KATAKANA_PROLONGED_SOUND_MARK: char = '\u{30FC}';
 
 /// `JapaneseKatakanaStemFilter`.
 pub struct JapaneseKatakanaStemFilter<I> {
@@ -30,9 +30,14 @@ impl<I: TokenStream> JapaneseKatakanaStemFilter<I> {
     }
 }
 
-/// `Character.UnicodeBlock.of(c) == KATAKANA` (U+30A0..U+30FF).
-fn is_katakana(term: &[u16]) -> bool {
-    term.iter().all(|&c| (0x30A0..=0x30FF).contains(&c))
+/// `stem(term, length)`'s test, over the term's chars: at least `min`
+/// long, all `Character.UnicodeBlock.KATAKANA` (U+30A0..U+30FF, BMP: one
+/// unit each, so the length is the count of chars) and ending in the
+/// prolonged sound mark.
+fn stems(term: &str, min: usize) -> bool {
+    term.ends_with(HIRAGANA_KATAKANA_PROLONGED_SOUND_MARK)
+        && term.chars().all(|c| ('\u{30A0}'..='\u{30FF}').contains(&c))
+        && term.chars().count() >= min
 }
 
 impl<I: TokenStream> TokenFilter for JapaneseKatakanaStemFilter<I> {
@@ -49,15 +54,8 @@ impl<I: TokenStream> TokenFilter for JapaneseKatakanaStemFilter<I> {
         }
         let min = self.minimum_katakana_length;
         let atts = self.input.attributes_mut();
-        if !atts.is_keyword() {
-            let term: Vec<u16> = atts.term().encode_utf16().collect();
-            // Java: stem(term, length)
-            if term.len() >= min
-                && is_katakana(&term)
-                && term.last() == Some(&HIRAGANA_KATAKANA_PROLONGED_SOUND_MARK)
-            {
-                atts.term_mut().pop();
-            }
+        if !atts.is_keyword() && stems(atts.term(), min) {
+            atts.term_mut().pop();
         }
         Ok(true)
     }
@@ -74,6 +72,6 @@ mod tests {
             e.err().unwrap().to_string(),
             "illegal argument: minimumLength must be >=1"
         );
-        assert!(is_katakana(&[0x30A2, 0x30FC]) && !is_katakana(&[0x3042]));
+        assert!(stems("アー", 2) && !stems("アー", 3) && !stems("あー", 1) && !stems("アア", 1));
     }
 }

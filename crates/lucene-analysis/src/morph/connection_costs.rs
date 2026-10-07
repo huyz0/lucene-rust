@@ -62,6 +62,21 @@ impl ConnectionCosts {
         })
     }
 
+    /// The costs of every `forwardId` before `backward_id` (`get(f,
+    /// backward_id)` is `row[f]` for each `f` in the row); empty for an id
+    /// outside the matrix, whose cells [`Self::get`] reads.
+    #[inline]
+    pub fn row(&self, backward_id: i32) -> &[i16] {
+        usize::try_from(backward_id)
+            .ok()
+            .filter(|&b| b < self.backward_size)
+            .and_then(|b| {
+                let start = b.checked_mul(self.forward_size)?;
+                self.costs.get(start..start.checked_add(self.forward_size)?)
+            })
+            .unwrap_or(&[])
+    }
+
     /// `get(forwardId, backwardId)`.
     #[inline]
     pub fn get(&self, forward_id: i32, backward_id: i32) -> i32 {

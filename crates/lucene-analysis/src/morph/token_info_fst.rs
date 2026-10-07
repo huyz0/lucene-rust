@@ -135,7 +135,7 @@ struct Reader<'a> {
 }
 
 impl Reader<'_> {
-    #[inline]
+    #[inline(always)]
     fn read_byte(&mut self) -> Result<u8, AnalysisError> {
         let b = usize::try_from(self.pos)
             .ok()
@@ -170,7 +170,19 @@ impl Reader<'_> {
         Ok(u16::from_le_bytes([pair[1], pair[0]]))
     }
 
+    #[inline]
     fn read_vint(&mut self) -> Result<i32, AnalysisError> {
+        // One byte: the common case, inline.
+        let b = self.read_byte()?;
+        if b & 0x80 == 0 {
+            return Ok(i32::from(b));
+        }
+        self.pos = self.pos.wrapping_add(1);
+        self.read_vint_long()
+    }
+
+    /// [`Self::read_vint`] of more than one byte.
+    fn read_vint_long(&mut self) -> Result<i32, AnalysisError> {
         let mut result: u32 = 0;
         for shift in [0u32, 7, 14, 21] {
             let b = self.read_byte()?;
@@ -190,7 +202,18 @@ impl Reader<'_> {
         ))
     }
 
+    #[inline]
     fn read_vlong(&mut self) -> Result<i64, AnalysisError> {
+        let b = self.read_byte()?;
+        if b & 0x80 == 0 {
+            return Ok(i64::from(b));
+        }
+        self.pos = self.pos.wrapping_add(1);
+        self.read_vlong_long()
+    }
+
+    /// [`Self::read_vlong`] of more than one byte.
+    fn read_vlong_long(&mut self) -> Result<i64, AnalysisError> {
         let mut result: u64 = 0;
         for shift in [0u32, 7, 14, 21, 28, 35, 42, 49, 56] {
             let b = self.read_byte()?;
@@ -277,7 +300,7 @@ impl Fst {
     }
 
     /// `readLabel`.
-    #[inline]
+    #[inline(always)]
     fn read_label(&self, r: &mut Reader<'_>) -> Result<i32, AnalysisError> {
         Ok(match self.input_type {
             InputType::Byte1 => i32::from(r.read_byte()?),
