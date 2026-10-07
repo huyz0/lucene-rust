@@ -347,6 +347,12 @@ impl AttributeSource {
         &self.token_type
     }
 
+    /// `TypeAttribute.type()` as stored: a clone of a type set from a
+    /// `&'static str` copies no bytes.
+    pub fn token_type_cow(&self) -> &Cow<'static, str> {
+        &self.token_type
+    }
+
     /// `TypeAttribute.setType`.
     pub fn set_token_type(&mut self, t: impl Into<Cow<'static, str>>) {
         self.token_type = t.into();

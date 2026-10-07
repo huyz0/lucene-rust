@@ -217,6 +217,22 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   where Java edits one `char[]`; closing that needs a UTF-16 view of the term
   shared along the chain, a redesign of `AttributeSource`'s term storage
   not made for one analyzer's last few percent.
+- **Benchmark, part 3's other packages** -- `scripts/bench-micro.sh --bench
+  analysis_misc` (`AnalysisMiscMicro.java` / `micro_analysis_misc.rs`, ns per
+  token, corpora both sides generate from `SweepMicro.Rng`; 2026-10-07,
+  Rust/Java, on a machine shared with another build, noise floor ~1.25x):
+  classic 1.51x, date_default 5.31x, date_iso 7.63x, dict_compound 1.10~,
+  hyph_compound 1.21~, hyph_compound_nodict 1.20~, wdf 1.82x, wdf_all
+  1.67x, wdgf_all 1.30x, wikipedia 1.13~, word2vec_synonym 2.46x (a quieter
+  run read the decompounders 1.37x/1.32x/1.66x and wikipedia 0.99~). The
+  first run read dict_compound 0.73x, hyph_compound 0.84~, wdf 1.00~ and
+  wikipedia 1.00~; callgrind put the cost in a `String` per dictionary probe
+  (now a UTF-16 probe of `CharArraySet` through a stack buffer), SipHash and
+  a nibble decode per hyphenation-pattern lookup (now the crate's word hash
+  over unpacked values), a capture allocation per buffered `WordDelimiterFilter`
+  part and a `String` per token type (now reused states and a borrowed
+  type), and in the JFlex scanner's two-level character-class lookup (now
+  one table for the BMP) and `StrReader`'s byte-at-a-time ASCII copy.
 - **T11.6, the rest** -- `compound` (both decompounders, Liang hyphenation,
   the FOP pattern format over a minimal XML reader; `GenAnalysisCompound.java`
   over a toy grammar written here: points and 13 chains equal),
@@ -267,8 +283,9 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
       Lucene's test resources. (Those are not redistributable; matched on this
       project's own 38 dictionaries instead -- T11.4 above.)
 - [ ] Each analyzer is no slower than Lucene's on the corpus benchmark.
-      Every case of `analysis_common`, `analysis_lang`, `snowball` and
-      `hunspell` is above 1.0x or inside its run's noise floor (above), but
+      Every case of `analysis_common`, `analysis_lang`, `analysis_misc`,
+      `snowball` and `hunspell` is above 1.0x or inside its run's noise
+      floor (above), but
       five sit below 1.0 there: `pattern` 0.97~ (the `regex` crate's lazy
       DFA finds a match's end, then scans back for its start, where
       `java.util.regex` walks `[ ,.]+` once), `german` 0.97~/0.92~ (two
