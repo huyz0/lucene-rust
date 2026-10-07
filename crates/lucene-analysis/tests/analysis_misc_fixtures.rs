@@ -135,6 +135,25 @@ fn word_delimiter_chains_match_lucene() {
     );
 }
 
+/// 48 random flag sets over random lines of every character class.
+#[test]
+fn word_delimiter_random_flags_match_lucene() {
+    let lines = lines("wdf_random_lines.txt");
+    let groups = support::prefixed_rows("analysis_misc", "wdf_random.rows", 2);
+    for (prefix, rows) in &groups {
+        let flags: i32 = prefix.split_once('\t').unwrap().1.parse().unwrap();
+        let a = chain(move || {
+            comps(WordDelimiterFilter::new(
+                WhitespaceTokenizer::new(),
+                flags,
+                None,
+            ))
+        });
+        support::check_rows(&format!("flags {flags}"), &a, &lines, rows);
+    }
+    assert_eq!(groups.len(), 48);
+}
+
 #[test]
 fn csv_util_matches_lucene() {
     let text = std::fs::read_to_string(support::data_dir("analysis_misc") + "csv.words").unwrap();

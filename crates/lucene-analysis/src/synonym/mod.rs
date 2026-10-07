@@ -3,7 +3,8 @@
 //! deprecated [`SynonymFilter`].
 //!
 //! The factories (`SynonymGraphFilterFactory`, `SynonymFilterFactory`) are
-//! T11.7's; `word2vec` (a model-driven synonym source) is not ported.
+//! T11.7's; `word2vec` (a model-driven synonym source) is `lucene-search`'s
+//! `word2vec` module, as its provider is an HNSW graph.
 
 mod solr_synonym_parser;
 mod synonym_filter;

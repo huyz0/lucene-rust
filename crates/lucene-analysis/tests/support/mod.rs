@@ -211,6 +211,39 @@ pub fn normalise_expected(row: &str) -> String {
     out
 }
 
+/// A `.rows` fixture of many configurations: each row is `prefix<TAB>row`,
+/// the prefix `prefix_fields` tab-separated fields naming the
+/// configuration. The rows grouped by prefix, in file order, normalised.
+pub fn prefixed_rows(dir: &str, file: &str, prefix_fields: usize) -> Vec<(String, Vec<String>)> {
+    let text = std::fs::read_to_string(data_dir(dir) + file).unwrap();
+    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+    for line in text.lines() {
+        let cut = line
+            .match_indices('\t')
+            .nth(prefix_fields - 1)
+            .map(|(i, _)| i)
+            .unwrap_or_else(|| panic!("{file}: no prefix in {line:?}"));
+        let (prefix, row) = (&line[..cut], &line[cut + 1..]);
+        if groups.last().is_none_or(|g| g.0 != prefix) {
+            groups.push((prefix.to_string(), Vec::new()));
+        }
+        groups.last_mut().unwrap().1.push(normalise_expected(row));
+    }
+    groups
+}
+
+/// `analyzer` over `lines`, row for row against `expected`.
+pub fn check_rows(what: &str, analyzer: &Analyzer, lines: &[String], expected: &[String]) {
+    let mut actual = Vec::new();
+    for (ln, line) in lines.iter().enumerate() {
+        analyze_line(analyzer, ln, line, &mut actual);
+    }
+    for (i, (e, a)) in expected.iter().zip(&actual).enumerate() {
+        assert_eq!(a, e, "{what}: row {i} differs");
+    }
+    assert_eq!(actual.len(), expected.len(), "{what}: row count");
+}
+
 /// The `.tsv` chain fixtures of `fixtures/data/<dir>`.
 pub fn fixture_names(dir: &str) -> BTreeSet<String> {
     std::fs::read_dir(data_dir(dir))

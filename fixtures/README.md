@@ -1084,13 +1084,19 @@ outright.
   `data/analysis_lang/<chain>.tsv`), and `lang.words`: each stemmer and
   normalizer over words built from its own suffixes, prefixes and characters
   (harvested once from Lucene's sources into the generator's `AFFIXES`; RSLP
-  exception words as they are) on short bases. Deterministic. Read by
+  exception words as they are) on short bases, and `final_sigma.words`:
+  `String.toLowerCase(Locale.ROOT)` of 8,000 random strings around capital
+  sigmas (the JDK's word-iterator final-sigma context). Deterministic. Read by
   `crates/lucene-analysis/tests/analysis_lang_fixtures.rs`.
 - `GenAnalysisCompound.java` — M11 T11.6: `corpus/hyphenation-test.xml` (a
   toy hyphenation grammar written for this project) loaded into a
   `HyphenationTree`: hyphenation points for words (`points.words`), and the
   dictionary and hyphenation decompounders over `corpus/analysis-compound.txt`
-  (`data/analysis_compound/<chain>.tsv`). Deterministic. Read by
+  (`data/analysis_compound/<chain>.tsv`); then a random 3,000-pattern grammar
+  (`random.xml`, at a scale where Java's `TernaryTree`s grow and balance), its
+  points for 4,000 random words (`random_points.words`) and 32 random
+  decompounder configurations over random lines (`random_configs.txt`,
+  `random_lines.txt`, `random_chains.rows`). Deterministic. Read by
   `crates/lucene-analysis/tests/analysis_compound_fixtures.rs`.
 - `GenAnalysisFactories.java` — M11 T11.7: the factories and `CustomAnalyzer`
   from configuration text. `corpus/analysis-factories.conf` (303 lines: a name,
@@ -1105,9 +1111,11 @@ outright.
   `Word2VecSynonym` configurations, `crates/lucene-search/tests/word2vec_factory_fixtures.rs`.
 - `GenAnalysisMisc.java` — M11 T11.6: `ReverseStringFilter` with each marker
   over lines held in the generator (written to `lines.txt` with the rows),
-  `CSVUtil` (`csv.words`), the deprecated `WordDelimiterFilter` (`wdf_*`) and
+  `CSVUtil` (`csv.words`), the deprecated `WordDelimiterFilter` (`wdf_*`, and
+  48 random flag sets over random lines: `wdf_random.rows`) and
   `DateRecognizerFilter`: whether `DateFormat.parse` accepts seeded valid and
-  mutated texts per `SimpleDateFormat` pattern, plus hand-picked edges
+  mutated texts per `SimpleDateFormat` pattern, 48 patterns of abutting
+  numeric fields over glued and mutated texts, plus hand-picked edges
   (`date_formats.txt`; texts with a space separator other than U+0020 are
   left out, since JDK 23+ matches them leniently and JDK 21 does not), and two
   filter chains (`date_*.tsv`). Read by

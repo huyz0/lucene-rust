@@ -8,16 +8,28 @@
 //!   `CharVector` storage). `searchPatterns` visits every pattern that is a
 //!   prefix of the word from a position, which is exactly what a lookup of
 //!   each such prefix in a map visits, and merges values the same way; the
-//!   packed nibble encoding of values is not needed.
+//!   packed nibble encoding of values is not needed. So a grammar Java
+//!   cannot load is loaded here: building Java's `TernaryTree`s throws
+//!   `ArrayIndexOutOfBoundsException` or `StackOverflowError` on files of
+//!   20,000 and 80,000 random patterns (137 KB and 548 KB), which these
+//!   maps load in tens of milliseconds.
 //! - The XML is read by a minimal parser of this module's own (elements,
 //!   attributes, text, comments, CDATA, the five predefined entities and
 //!   character references; a `DOCTYPE` is skipped, as Java resolves only
-//!   `hyphenation.dtd` and that DTD declares no entities). Java's SAX parser
-//!   validates well-formedness more strictly; a malformed file is an
-//!   `IllegalArgument` here.
+//!   `hyphenation.dtd` and that DTD declares no entities). It refuses what
+//!   is not well-formed in the ways a grammar file goes wrong (an unclosed
+//!   or mismatched element, a second root, text outside the root, a bad
+//!   entity or attribute); Java's SAX parser checks more (name characters,
+//!   duplicate attributes, `<` in attribute values, ...), and a file only it
+//!   refuses loads here. A malformed file is an `IllegalArgument`.
+//! - SAX hands `PatternParser.characters` the text in small chunks; here it
+//!   is one chunk per text node, which `readToken` walks with an index
+//!   instead of deleting what it consumed from the front (the result does
+//!   not depend on the chunking).
 
 use std::collections::HashMap;
 
+use crate::char_array_set::WordHash;
 use crate::java_character::{is_digit, is_whitespace};
 use crate::AnalysisError;
 
@@ -69,16 +81,17 @@ impl Hyphenation {
 /// `HyphenationTree`.
 #[derive(Debug, Default, Clone)]
 pub struct HyphenationTree {
-    /// Pattern letters -> its packed inter-letter values (`TernaryTree` +
-    /// `vspace`: two nibbles a byte, each `digit - '0' + 1`, a zero nibble
-    /// ending them).
-    patterns: HashMap<Vec<u16>, Vec<u8>>,
+    /// Pattern letters -> its inter-letter values (`TernaryTree` + `vspace`,
+    /// which packs them two nibbles a byte, each `digit - '0' + 1`, a zero
+    /// nibble ending them; kept as `getValues` unpacks them, so a lookup
+    /// decodes nothing).
+    patterns: HashMap<Vec<u16>, Vec<i8>, WordHash>,
     /// The longest pattern, bounding the prefixes `search_patterns` probes.
     max_pattern_len: usize,
     /// `classmap`: a letter -> its class's first char.
-    classmap: HashMap<u16, u16>,
+    classmap: HashMap<u16, u16, WordHash>,
     /// `stoplist`: exception word -> its parts.
-    stoplist: HashMap<Vec<u16>, Vec<ExceptionPart>>,
+    stoplist: HashMap<Vec<u16>, Vec<ExceptionPart>, WordHash>,
 }
 
 fn units(s: &str) -> Vec<u16> {
@@ -119,7 +132,8 @@ impl HyphenationTree {
     pub fn add_pattern(&mut self, pattern: &str, ivalue: &str) {
         let key = units(pattern);
         self.max_pattern_len = self.max_pattern_len.max(key.len());
-        self.patterns.insert(key, Self::pack_values(ivalue));
+        self.patterns
+            .insert(key, Self::get_values(&Self::pack_values(ivalue)));
     }
 
     // Java: HyphenationTree.packValues
@@ -172,12 +186,13 @@ impl HyphenationTree {
     /// `findPattern(String)`: a pattern's values as digits, or `""`
     /// (`unpackValues`).
     pub fn find_pattern(&self, pat: &str) -> String {
+        // `unpackValues`' `nibble - 1 + '0'` is `getValues`' value + '0'.
         self.patterns
             .get(&units(pat))
-            .map(|p| {
-                let u: Vec<u16> = Self::nibbles(p)
-                    .into_iter()
-                    .map(|n| u16::from(n).wrapping_sub(1).wrapping_add(u16::from(b'0')))
+            .map(|values| {
+                let u: Vec<u16> = values
+                    .iter()
+                    .map(|&v| (i16::from(v) as u16).wrapping_add(u16::from(b'0')))
                     .collect();
                 String::from_utf16_lossy(&u)
             })
@@ -194,11 +209,10 @@ impl HyphenationTree {
             .map_or(word.len(), |p| index + p);
         let longest = (end - index).min(self.max_pattern_len);
         for l in 1..=longest {
-            if let Some(packed) = self.patterns.get(&word[index..index + l]) {
-                for (k, v) in Self::get_values(packed).into_iter().enumerate() {
-                    let j = index + k;
-                    if j < il.len() && v > il[j] {
-                        il[j] = v;
+            if let Some(values) = self.patterns.get(&word[index..index + l]) {
+                for (slot, &v) in il[index..].iter_mut().zip(values) {
+                    if v > *slot {
+                        *slot = v;
                     }
                 }
             }
@@ -332,17 +346,19 @@ fn local(name: &str) -> String {
 fn parse_xml(xml: &str) -> Result<Vec<Event>, AnalysisError> {
     let mut events = Vec::new();
     let mut rest = xml.strip_prefix('\u{FEFF}').unwrap_or(xml);
-    let mut depth = 0usize;
+    // The open elements, innermost last; whether the root has closed.
+    let mut open: Vec<&str> = Vec::new();
+    let mut root_closed = false;
     while !rest.is_empty() {
         let Some(lt) = rest.find('<') else {
-            if depth > 0 || !rest.trim().is_empty() {
+            if !open.is_empty() || !rest.trim().is_empty() {
                 return Err(malformed("text outside the root element"));
             }
             break;
         };
         if lt > 0 {
             let text = decode_entities(&rest[..lt])?;
-            if depth > 0 {
+            if !open.is_empty() {
                 events.push(Event::Text(text));
             }
         }
@@ -383,10 +399,12 @@ fn parse_xml(xml: &str) -> Result<Vec<Event>, AnalysisError> {
             let end = r
                 .find('>')
                 .ok_or_else(|| malformed("unterminated end tag"))?;
-            events.push(Event::End(local(r[..end].trim())));
-            depth = depth
-                .checked_sub(1)
-                .ok_or_else(|| malformed("unbalanced end tag"))?;
+            let name = r[..end].trim_end();
+            if open.pop() != Some(name) {
+                return Err(malformed("end tag not matching the open element"));
+            }
+            root_closed = open.is_empty();
+            events.push(Event::End(local(name)));
             rest = &r[end + 1..];
         } else {
             // A start tag; quoted '>' may appear in attribute values.
@@ -422,6 +440,9 @@ fn parse_xml(xml: &str) -> Result<Vec<Event>, AnalysisError> {
             if name.is_empty() {
                 return Err(malformed("empty tag name"));
             }
+            if root_closed {
+                return Err(malformed("an element after the root element"));
+            }
             let mut attrs = Vec::new();
             let mut a = inner[name_end..].trim_start();
             while !a.is_empty() {
@@ -441,13 +462,14 @@ fn parse_xml(xml: &str) -> Result<Vec<Event>, AnalysisError> {
             events.push(Event::Start(local(name), attrs));
             if empty {
                 events.push(Event::End(local(name)));
+                root_closed = open.is_empty();
             } else {
-                depth += 1;
+                open.push(name);
             }
             rest = &r[end + 1..];
         }
     }
-    if depth != 0 {
+    if !open.is_empty() || !root_closed {
         return Err(malformed("unclosed element"));
     }
     Ok(events)
@@ -497,18 +519,24 @@ impl<'a> PatternParser<'a> {
     }
 
     // Java: PatternParser.readToken
-    fn read_token(&mut self, chars: &mut Vec<u16>) -> Option<String> {
-        let lead = chars.iter().take_while(|&&c| is_ws(c)).count();
+    //
+    // Java deletes what it consumed from the front of `chars`; this advances
+    // `pos` past it instead (Java's chunks are SAX's small buffers, this
+    // parser's one chunk is the whole text).
+    fn read_token(&mut self, chars: &[u16], pos: &mut usize) -> Option<String> {
+        let rest = &chars[*pos..];
+        let lead = rest.iter().take_while(|&&c| is_ws(c)).count();
         if lead > 0 {
-            chars.drain(..lead);
+            *pos += lead;
             if !self.token.is_empty() {
                 return Some(String::from_utf16_lossy(&std::mem::take(&mut self.token)));
             }
         }
-        let word_end = chars.iter().position(|&c| is_ws(c));
-        let i = word_end.unwrap_or(chars.len());
-        self.token.extend_from_slice(&chars[..i]);
-        chars.drain(..i);
+        let rest = &chars[*pos..];
+        let word_end = rest.iter().position(|&c| is_ws(c));
+        let i = word_end.unwrap_or(rest.len());
+        self.token.extend_from_slice(&rest[..i]);
+        *pos += i;
         if word_end.is_some() {
             return Some(String::from_utf16_lossy(&std::mem::take(&mut self.token)));
         }
@@ -649,8 +677,9 @@ impl<'a> PatternParser<'a> {
 
     // Java: PatternParser.characters
     fn characters(&mut self, text: &str) {
-        let mut chars = units(text);
-        while let Some(word) = self.read_token(&mut chars) {
+        let chars = units(text);
+        let mut pos = 0;
+        while let Some(word) = self.read_token(&chars, &mut pos) {
             match self.curr_element {
                 ELEM_CLASSES => self.consumer.add_class(&word),
                 ELEM_EXCEPTIONS => {
@@ -737,6 +766,24 @@ ta=ble <hyphen pre="k" no="c" post="k"/>
     }
 
     #[test]
+    fn reads_one_large_text_in_linear_time() {
+        // One text node of 900k units: SAX hands Java's `characters` small
+        // chunks, but this parser hands it the whole text, so a token must
+        // not cost a copy of the rest of it (that was minutes, not
+        // milliseconds).
+        let xml = format!(
+            "<hyphenation-info><patterns>{}a1b</patterns></hyphenation-info>",
+            "b1c ".repeat(225_000)
+        );
+        let start = std::time::Instant::now();
+        let t = HyphenationTree::from_xml(&xml).unwrap();
+        let took = start.elapsed();
+        assert_eq!(t.find_pattern("bc"), "010");
+        assert_eq!(t.find_pattern("ab"), "010");
+        assert!(took < std::time::Duration::from_secs(30), "{took:?}");
+    }
+
+    #[test]
     fn rejects_malformed_xml() {
         for bad in [
             "<a>",
@@ -754,6 +801,14 @@ ta=ble <hyphen pre="k" no="c" post="k"/>
             "<a b></a>",
             "<a>&x</a>",
             "x",
+            // What SAX refuses as not well-formed: a mismatched end tag, a
+            // second root, no root at all.
+            "<a></b>",
+            "<a><b></a></b>",
+            "<a></a><b></b>",
+            "<a/><b/>",
+            "",
+            " <!-- only a comment --> ",
         ] {
             assert!(HyphenationTree::from_xml(bad).is_err(), "{bad}");
         }

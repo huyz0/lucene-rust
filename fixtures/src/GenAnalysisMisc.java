@@ -54,6 +54,43 @@ public class GenAnalysisMisc {
           | WordDelimiterFilter.SPLIT_ON_CASE_CHANGE | WordDelimiterFilter.SPLIT_ON_NUMERICS
           | WordDelimiterFilter.STEM_ENGLISH_POSSESSIVE;
 
+  /** What {@link #wdfRandom}'s words are glued from: every character class the iterator splits on. */
+  static final String[] WDF_BITS = {
+    "a", "A", "b", "B", "1", "2", "-", "_", "'s", "'S", "'", ".", "Ł", "À", "ß", "😀", "𐐀", "𐐨", "中",
+    "́", "٣", "x"
+  };
+
+  /**
+   * {@code WordDelimiterFilter} under 48 random flag sets (the first all ten) over 40 random lines
+   * ({@code wdf_random_lines.txt}; {@code wdf_random.rows}: {@link AnalysisRows}' rows, each
+   * prefixed with its configuration's number and flags).
+   */
+  static void wdfRandom(Path out) throws Exception {
+    java.util.Random r = new java.util.Random(11);
+    List<String> lines = new java.util.ArrayList<>();
+    StringBuilder lf = new StringBuilder();
+    for (int i = 0; i < 40; i++) {
+      StringBuilder l = new StringBuilder();
+      int n = r.nextInt(5);
+      for (int w = 0; w < n; w++) {
+        if (w > 0) l.append(' ');
+        int k = 1 + r.nextInt(8);
+        for (int j = 0; j < k; j++) l.append(WDF_BITS[r.nextInt(WDF_BITS.length)]);
+      }
+      lines.add(l.toString());
+      lf.append(AnalysisRows.esc(l.toString())).append('\n');
+    }
+    StringBuilder rows = new StringBuilder();
+    for (int c = 0; c < 48; c++) {
+      int flags = c == 0 ? 1023 : r.nextInt(1024);
+      try (Analyzer an = AnalysisRows.chain(WhitespaceTokenizer::new, t -> new WordDelimiterFilter(t, flags, null))) {
+        for (String row : AnalysisRows.rows(an, lines).split("\n")) rows.append(c).append('\t').append(flags).append('\t').append(row).append('\n');
+      }
+    }
+    Files.writeString(out.resolve("wdf_random_lines.txt"), lf.toString(), StandardCharsets.UTF_8);
+    Files.writeString(out.resolve("wdf_random.rows"), rows.toString(), StandardCharsets.UTF_8);
+  }
+
   static final String[] CSV = {
     "a,b,c", "\"a,b\",c", "\"x\"\"y\",z", "a,\"b,c\"", "\"a,b", "", "\"\",x", "a,,b", ",", "\"q\",\"r\"",
     "\"\"\"\",x", "x,\"y\"\"z\",w", "abc", "\"a\"b\",c", "日本,\"語,文\""
@@ -267,6 +304,7 @@ public class GenAnalysisMisc {
     w.put("wdf_no_case_numerics", () -> AnalysisRows.chain(WhitespaceTokenizer::new,
         t -> new WordDelimiterFilter(t, WordDelimiterFilter.GENERATE_WORD_PARTS | WordDelimiterFilter.GENERATE_NUMBER_PARTS | WordDelimiterFilter.CATENATE_ALL, null)));
     AnalysisRows.writeChains(out, w, List.of(WDF_LINES));
+    wdfRandom(out);
     StringBuilder csv = new StringBuilder();
     for (String s : CSV) {
       csv.append(AnalysisRows.esc(s)).append('\t').append(AnalysisRows.esc(CSVUtil.quoteEscape(s)));
