@@ -75,6 +75,65 @@ pub fn corpus(name: &str) -> Vec<String> {
     lines
 }
 
+/// A generated corpus under `fixtures/data/<dir>/` (`stress.txt`,
+/// `hostile.txt`): its lines, split on '\n' only, the last one terminated.
+pub fn data_lines(dir: &str, file: &str) -> Vec<String> {
+    let path = data_dir(dir) + file;
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let mut lines: Vec<String> = text.split('\n').map(str::to_string).collect();
+    assert_eq!(lines.pop().as_deref(), Some(""), "{path}: unterminated");
+    lines
+}
+
+/// FNV-1a, 64 bits, over UTF-8 (`HostileText.fnv1a`).
+pub fn fnv1a(s: &str) -> u64 {
+    s.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+/// `sweep.tsv` of `fixtures/data/<dir>/` (`HostileText.digests`'s
+/// `config line rows fnv1a64` rows), grouped by configuration in file
+/// order.
+pub fn sweep_digests(dir: &str) -> Vec<(String, Vec<String>)> {
+    let text = std::fs::read_to_string(data_dir(dir) + "sweep.tsv").unwrap();
+    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+    for row in text.lines() {
+        let config = row.split('\t').next().unwrap();
+        if groups.last().is_none_or(|g| g.0 != config) {
+            groups.push((config.to_string(), Vec::new()));
+        }
+        groups.last_mut().unwrap().1.push(row.to_string());
+    }
+    groups
+}
+
+/// One configuration's rows over `lines` (`T`/`E`/`X` rows numbered by
+/// line, a `K` row of attribute keys ignored), summarised per line as
+/// `HostileText.digests` does and checked against `expected`. A mismatch
+/// names the line, its text and the port's rows for it.
+pub fn check_digests(config: &str, rows: &[String], lines: &[String], expected: &[String]) {
+    let mut by_line: Vec<Vec<&str>> = vec![Vec::new(); lines.len()];
+    for row in rows.iter().filter(|r| !r.starts_with("K\t")) {
+        let ln: usize = row
+            .split('\t')
+            .nth(1)
+            .and_then(|f| f.parse().ok())
+            .unwrap_or_else(|| panic!("{config}: no line number in {row:?}"));
+        by_line[ln].push(row);
+    }
+    assert_eq!(expected.len(), lines.len(), "{config}: digest count");
+    for (ln, (rows, want)) in by_line.iter().zip(expected).enumerate() {
+        let joined = rows.join("\n");
+        let got = format!("{config}\t{ln}\t{}\t{:016x}", rows.len(), fnv1a(&joined));
+        assert_eq!(
+            &got, want,
+            "{config}: line {ln} {:?}; the port's rows:\n{joined}",
+            lines[ln]
+        );
+    }
+}
+
 /// `AnalysisRows.esc`.
 pub fn esc(s: &str) -> String {
     let mut b = String::with_capacity(s.len());

@@ -58,6 +58,9 @@ fn display_morphemes(morphemes: Option<Vec<Morpheme>>) -> Option<String> {
 }
 
 impl CustomAttribute for PartOfSpeechAttribute {
+    fn impl_class(&self) -> &'static str {
+        "org.apache.lucene.analysis.ko.tokenattributes.PartOfSpeechAttributeImpl"
+    }
     fn clear(&mut self) {
         self.token = None;
     }
@@ -90,6 +93,9 @@ impl ReadingAttribute {
 }
 
 impl CustomAttribute for ReadingAttribute {
+    fn impl_class(&self) -> &'static str {
+        "org.apache.lucene.analysis.ko.tokenattributes.ReadingAttributeImpl"
+    }
     fn clear(&mut self) {
         self.token = None;
     }
@@ -99,5 +105,37 @@ impl CustomAttribute for ReadingAttribute {
             "reading",
             AttrValue::Str(self.reading().map(Cow::Owned)),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lucene_analysis::AttributeSource;
+
+    /// The implementation class `restoreState`'s error names.
+    fn refused<T: CustomAttribute>() -> String {
+        let mut a = AttributeSource::new();
+        a.add_custom::<T>();
+        AttributeSource::new()
+            .try_restore_state(&a.capture_state())
+            .unwrap_err()
+            .to_string()
+    }
+
+    #[test]
+    fn restore_state_names_java_impl_classes() {
+        for (e, class) in [
+            (
+                refused::<PartOfSpeechAttribute>(),
+                "org.apache.lucene.analysis.ko.tokenattributes.PartOfSpeechAttributeImpl",
+            ),
+            (
+                refused::<ReadingAttribute>(),
+                "org.apache.lucene.analysis.ko.tokenattributes.ReadingAttributeImpl",
+            ),
+        ] {
+            assert!(e.contains(&format!("type {class} that")), "{e}");
+        }
     }
 }

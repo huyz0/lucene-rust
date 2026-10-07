@@ -342,3 +342,41 @@ fn factories_match_lucene() {
     }
     assert_eq!(n, 21);
 }
+
+/// The hostile sweep (`sweep.tsv`): `hostile.txt`, a seeded corpus of text
+/// no tokenizer is tuned for, through every combination of decompound mode,
+/// unknown unigrams, punctuation and user dictionary (24), with every
+/// attribute, each line's rows checked against Lucene's by digest.
+#[test]
+fn hostile_sweep_matches_lucene() {
+    let lines = support::data_lines("analysis_nori", "hostile.txt");
+    let u = user_dict();
+    let groups = support::sweep_digests("analysis_nori");
+    let mut n = 0;
+    for (mode, name) in [
+        (DecompoundMode::None, "none"),
+        (DecompoundMode::Discard, "discard"),
+        (DecompoundMode::Mixed, "mixed"),
+    ] {
+        for unigrams in [false, true] {
+            for punct in [true, false] {
+                for user in [false, true] {
+                    let config = format!(
+                        "{name}_un{}_dp{}_ud{}",
+                        u8::from(unigrams),
+                        u8::from(punct),
+                        u8::from(user)
+                    );
+                    let (want_config, expected) = &groups[n];
+                    assert_eq!(want_config, &config);
+                    let mut t =
+                        KoreanTokenizer::new(user.then(|| u.clone()), mode, unigrams, punct);
+                    let actual = rows(&mut t, &lines, true);
+                    support::check_digests(&config, &actual, &lines, expected);
+                    n += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(n, groups.len());
+}

@@ -10,9 +10,13 @@
 //! Differs: Java allocates the matrix before reading it and fails on the
 //! first missing value; this refuses a matrix with more cells than the file
 //! has bytes left (each cell takes at least one) before allocating, with the
-//! `EOFException` Java would reach. An id outside the matrix -- a dictionary
-//! that does not belong to these costs -- reads cost 0 where Java throws
-//! `IndexOutOfBoundsException`.
+//! `EOFException` Java would reach. `get` computes Java's offset
+//! `(backwardId * forwardSize + forwardId) * 2` in wrapping `int`
+//! arithmetic, so an id outside its own dimension (`forwardId >=
+//! forwardSize`, or a negative one) reads a neighbouring cell exactly as
+//! Java's `ByteBuffer.getShort` does; only an offset outside the buffer --
+//! negative, or past its end, where Java throws
+//! `IndexOutOfBoundsException` -- reads cost 0 instead.
 
 use super::resource::{io_error, ResourceInput};
 use crate::AnalysisError;
@@ -61,17 +65,18 @@ impl ConnectionCosts {
     /// `get(forwardId, backwardId)`.
     #[inline]
     pub fn get(&self, forward_id: i32, backward_id: i32) -> i32 {
-        let (Ok(f), Ok(b)) = (usize::try_from(forward_id), usize::try_from(backward_id)) else {
-            return 0;
-        };
-        if f >= self.forward_size {
-            return 0;
-        }
-        // `b < backward_size` is only checked by the lookup, after the
-        // product: an overflow is an id outside the matrix.
-        b.checked_mul(self.forward_size)
-            .and_then(|row| row.checked_add(f))
-            .and_then(|i| self.costs.get(i))
+        // Java: `buffer.getShort((backwardId * forwardSize + forwardId) * 2)`,
+        // `int` arithmetic. The forward size came from a vint, so it fits.
+        let forward_size = self.forward_size as i32;
+        let offset = backward_id
+            .wrapping_mul(forward_size)
+            .wrapping_add(forward_id)
+            .wrapping_mul(2);
+        // An even, non-negative offset is cell `offset / 2`; a negative one
+        // is Java's `IndexOutOfBoundsException`, read as 0 here.
+        usize::try_from(offset)
+            .ok()
+            .and_then(|o| self.costs.get(o >> 1))
             .map_or(0, |&c| i32::from(c))
     }
 
@@ -112,9 +117,17 @@ pub(crate) mod tests {
         // Stored as a Java short.
         assert_eq!(c.get(0, 1), 40000i32 as i16 as i32);
         assert_eq!(c.get(2, 1), 6);
-        for (f, b) in [(3, 0), (0, 2), (-1, 0), (0, -1), (i32::MAX, i32::MAX)] {
+        // Java reads a neighbouring row for an id outside its own dimension.
+        assert_eq!(c.get(3, 0), 40000i32 as i16 as i32);
+        assert_eq!(c.get(-1, 1), 3);
+        assert_eq!(c.get(5, 0), 6);
+        // Past the buffer, or a negative offset: Java throws, this reads 0.
+        for (f, b) in [(6, 0), (0, 2), (-1, 0), (0, -1), (i32::MAX, i32::MAX)] {
             assert_eq!(c.get(f, b), 0);
         }
+        // The offset wraps as Java's `int` does: (1 << 30) * 2 = i32::MIN.
+        assert_eq!(c.get(1 << 30, 0), 0);
+        assert_eq!(c.get(0, i32::MIN), 1);
     }
 
     #[test]

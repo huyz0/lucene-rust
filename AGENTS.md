@@ -103,6 +103,7 @@ the hook, the container and this table cannot drift apart:
 | Regenerate Java fixtures | `scripts/gen-fixtures.sh --only <Gen…>` (a full run rewrites every index with fresh segment ids — see [`fixtures/README.md`](fixtures/README.md)) |
 | Check fixtures are still Java-produced | `scripts/gen-fixtures.sh --check` and `scripts/gen-bwc-fixtures.sh --check` |
 | Hunspell charset tables match their generator (read off the JDK) | `java crates/lucene-analysis/tools/GenHunspellCharsets.java \| diff - crates/lucene-analysis/src/hunspell/charsets.rs` |
+| Nori's `UnicodeScript` table matches its generator (read off JDK 25, which the capped container lacks; CI `fixtures`) | `java crates/lucene-analysis/tools/DumpUnicodeScripts.java \| diff - crates/lucene-analysis/src/java_unicode_script.rs` |
 | Opt-in: Lucene 10.5.0's 97 Hunspell test dictionaries through `GenHunspell` and `hunspell_fixtures.rs` (fetched, SHA-256-pinned, never committed) | `scripts/check-hunspell-lucene-dictionaries.sh [LUCENE_CHECKOUT]` |
 | Every Snowball stemmer reproduces snowball-data's `output.txt` (pinned, never committed; CI `snowball`) | `scripts/check-snowball-vocabulary.sh` |
 | The generated Snowball stemmers are exactly `gen_snowball.sh`'s output (CI `snowball`) | `scripts/check-snowball-generated.sh` |

@@ -8,7 +8,6 @@
 //! Differs: `userDictionaryEncoding` other than UTF-8 is refused with
 //! `UnsupportedEncodingException` (Java decodes any JDK charset).
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use lucene_analysis::factory::args::{self, JavaArgs};
@@ -18,7 +17,7 @@ use lucene_analysis::factory::{
 };
 use lucene_analysis::lang::java_string_to_upper_case;
 use lucene_analysis::reader::CharReader;
-use lucene_analysis::{AnalysisError, TokenStream};
+use lucene_analysis::{AnalysisError, CharArraySet, TokenStream};
 
 use crate::analyzer::default_stop_tags;
 use crate::base_form::JapaneseBaseFormFilter;
@@ -300,7 +299,7 @@ impl TokenFilterFactory for JapaneseReadingFormFilterFactory {
 pub struct JapanesePartOfSpeechStopFilterFactory {
     base: FactoryBase,
     stop_tag_files: Option<String>,
-    stop_tags: Option<Arc<HashSet<String>>>,
+    stop_tags: Option<Arc<CharArraySet>>,
 }
 
 impl FactoryClass for JapanesePartOfSpeechStopFilterFactory {
@@ -333,8 +332,7 @@ impl AnalysisFactory for JapanesePartOfSpeechStopFilterFactory {
     // Java: JapanesePartOfSpeechStopFilterFactory.inform
     fn inform(&mut self, loader: &dyn ResourceLoader) -> Result<(), FactoryError> {
         if let Some(files) = &self.stop_tag_files {
-            self.stop_tags = get_word_set(loader, files, false)?
-                .map(|cas| Arc::new(cas.iter().map(str::to_string).collect()));
+            self.stop_tags = get_word_set(loader, files, false)?.map(Arc::new);
         }
         Ok(())
     }

@@ -31,6 +31,7 @@ to describe a defect that got past it.
 | [`doc-values-per-doc`](#doc-values-per-doc) | `check-port-invariants.py` | a *new* per-document `doc_values::numeric_value`/`binary_value` call | a per-document call hidden behind a helper fn; the ten already on the burn-down list |
 | [`parity ::item`](#parity-item) | `check-parity.py` | a ledger row (`docs/parity/*.md`) naming a Rust item its own file does not define, or a backticked `scripts/..`/`tools/..` path in its Status column that does not exist | other prose outside a row's Rust column; an item that exists but no longer does what the row says; a tool path written without backticks or outside `scripts/`/`tools/` |
 | [`parity-layout`](#parity-layout) | `check-parity.py` | an area file the index does not link; a relative link to a missing file; a stated row count that is wrong; a row over 2,000 characters, a file over 80 KB, a ledger over 400 KB; a `## ` heading in two files | history written *within* budget; a row filed in the wrong area; a stale fact; a link to a file that exists but no longer says what the link claims |
+| [`parity bench-clause`](#parity-bench-clause) | `check-parity.py` | a **ported** row of a `lucene-analysis-<module>` crate naming an item `benchmarks/rust-runner/src` imports (`use lucene_analysis_<module>::..`) with no `Bench` clause | a clause whose ratio is stale or wrong; a bench case that reaches the port through an item no row names; every crate outside the M12 language modules |
 | [`ledger-single-list`](#ledger-single-list) | `check-port-invariants.py` | an unticked `- [ ]` anywhere in `docs/sweep/m2/LEDGER.md` | whether a `- [x]` is *true*, or whether a `- [->]` names the right item |
 | [`block-guard`](#block-guard) | `check-port-invariants.py` | a `lucene-index` fn setting `pending_has_blocks`/`dwpt.has_blocks = true` with no earlier `check_block(` call in the same fn | a guard that is called but whose result is ignored, or that sits on a branch the flag's line does not follow; a block flag spelled any other way |
 | [`alloc-from-doc`](#alloc-from-doc) | `check-port-invariants.py` | an allocation size (`vec![_; n]`, `with_capacity(n)`, `.resize(n, ..)`, `FixedBitSet::new(n)`) mentioning a name its fn bound from a doc list's `.last()`/`.first()`/`.max()`, with no `max_doc` in the size and no `// ALLOC:` proof | a doc id reaching the size through a struct field, a parameter or another fn; a source not spelled on a `*doc*` name (`ids.last()`); a `max_doc` in the size that does not actually bound it |
@@ -260,6 +261,35 @@ repository or a crate the row's Rust column names (`crates/<crate>/tools/`).
 script does not exist: tools/snowball_utf16_tables.py`. Blind to a path
 outside those two directories, one not in backticks, or one that exists but
 no longer does what the row says.
+
+## parity bench-clause
+
+**Rule.** In a `docs/parity/*.md` row whose status starts `**ported**`, if the
+Rust column names an item of a `lucene-analysis-<module>` crate (M12's
+language modules, one crate per Lucene module) that a source under
+`benchmarks/rust-runner/src` imports with `use lucene_analysis_<module>::..`,
+the status carries a `Bench` clause -- the ratio against Lucene, or `Bench:
+see` the row that holds it. The M12 part 2 review found the Nori rows silent
+about an `analysis_m12` bench that existed and had been run; the ratios were
+only in a commit message.
+
+**Seen to fail** on that tree, before the rows were written: `docs/parity/analysis-lang-modules.md:21:
+a bench case drives DecompoundMode, KoreanTokenizer, but this **ported** row
+has no Bench clause`, the same for `KoreanAnalyzer` (:23) and
+`JapaneseAnalyzer` (:20), and for the Commons Codec rows whose `Encoder`,
+`NameType`, `RuleType` and `PhoneticEngine` the phonetic cases drive (:9,
+:10). Its first version read the status up to the first `|`, which a
+backticked regex in the phonetic filters' row contains, and so also flagged
+that row although it had its clause: the status is now the rest of the row.
+
+**Blind spots.** It checks that a clause exists, not that its numbers are
+current or were measured as stated. It keys on what the runner imports, so a
+case that reaches a port through an item no row names (a constructor
+re-exported elsewhere, a type built by a helper) leaves the rows silent.
+Ledger-wide, the same rule flags 95 rows of other crates whose items a
+bench imports only to set up its input (`Directory`, `IndexWriter`,
+`BooleanQuery`, ...), so it is scoped to the language modules; the other
+areas' bench ratios are still a review item.
 
 ## parity-layout
 
@@ -757,8 +787,8 @@ records the exact edit and the exact message for each.
 ## The analysis gates over third-party data (M11)
 
 Not in `scripts/gate.sh`: they download pinned inputs or need a C compiler or
-a JDK. The Snowball ones are CI job `snowball vocabularies`, the charset tables
-a step of `fixtures are Java-produced`; Lucene's dictionaries are opt-in.
+a JDK. The Snowball ones are CI job `snowball vocabularies`, the charset and
+UnicodeScript tables steps of `fixtures are Java-produced`; Lucene's dictionaries are opt-in.
 
 | gate | where | catches | seen to fail by | blind to |
 |---|---|---|---|---|
@@ -766,6 +796,7 @@ a step of `fixtures are Java-produced`; Lucene's dictionaries are opt-in.
 | snowball vocabularies | `scripts/check-snowball-vocabulary.sh` -> `tests/snowball_vocabulary.rs` (skipped without `SNOWBALL_DATA`) | a stem of any of the 11.3 million snowball-data `f08c4d63` words that differs from its `output.txt` (where Lucene 10.5.0's own stemmers agree word for word); a moved data file (SHA-256 per file) | one Danish `output.txt` line changed (`Danish: 1 of 23830 differ, first ["adami -> adami (snowball-data: adamix)"]`) | words outside the vocabularies (the committed fixtures cover the synthetic ones); the filter around the stemmer (`SnowballFilter`, which the committed fixtures run) |
 | Lucene's Hunspell dictionaries | `scripts/check-hunspell-lucene-dictionaries.sh` -> `GenHunspell` + `tests/hunspell_fixtures.rs` (`HUNSPELL_CORPUS`/`HUNSPELL_DATA`, every file checked, every difference listed) | any column of `GenHunspell`'s output that differs on Lucene 10.5.0's own 97 test dictionaries (their `.good` and `.wrong` words); moved dictionaries (SHA-256 over the files) | `empty.tsv: fragment(everything) (Lucene: !ArithmeticException)` -- Java's n-gram checker over a dictionary with no roots divides by zero, the port's does not; now a listed difference | `.sug` expectations (Lucene's own tests compare suggestions to them; this compares the port to Lucene instead); dictionaries Lucene's tests load in other ways (several files, `ignoreCase` only) |
 | Hunspell charset tables | CI `fixtures are Java-produced`: `java crates/lucene-analysis/tools/GenHunspellCharsets.java \| diff - crates/lucene-analysis/src/hunspell/charsets.rs` | a hand edit of `charsets.rs`; a JDK (21 on CI) decoding one of the seven charsets, or naming charsets, otherwise than the one the file was generated on (21 and 25 agree) | ISO-8859-2's 0xA1 changed from U+0104 to U+0105 (`12c12 < ... 0x0104 ... > ... 0x0105 ...`) | whether the JDK's decoding is Lucene's (it is: Lucene decodes through it); charsets the port does not table |
+| UnicodeScript table | CI `fixtures are Java-produced`, on JDK 25 (its last step): `java crates/lucene-analysis/tools/DumpUnicodeScripts.java \| diff - crates/lucene-analysis/src/java_unicode_script.rs` | a hand edit of `java_unicode_script.rs` (the generator emits the whole file, arrays laid out as rustfmt fills them); a JDK whose `Character.UnicodeScript.of` differs over the BMP -- the generator refuses any feature release but 25 | `0x0041` changed to `0x0042` in `RUN_STARTS` (`91c91 < 0x0000, 0x0041, ... > 0x0000, 0x0042, ...`); run on JDK 21 (`needs JDK 25 (Unicode 16.0), running on 21.0.10...`, and an empty output that diffs) | whether Nori asks the JDK the same question (it does: `KoreanTokenizer` calls `UnicodeScript.of` per unit); code points outside the BMP, which the table does not hold |
 
 ## The OpenSearch plugin's gates (M2)
 
