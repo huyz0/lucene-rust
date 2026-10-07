@@ -93,6 +93,10 @@ impl<I: TokenStream> SynonymGraphFilter<I> {
     /// `new SynonymGraphFilter(input, synonyms, ignoreCase)`: `ignore_case`
     /// lowercases the input (`Character.toLowerCase`) before matching; the
     /// map's keys must then be lowercase.
+    ///
+    /// Differs: over an empty map ([`SynonymMap::is_empty`], Java's `null`
+    /// FST) every token passes through, where Java's constructor throws
+    /// `IllegalArgumentException("fst must be non-null")`.
     pub fn new(input: I, synonyms: Arc<SynonymMap>, ignore_case: bool) -> Self {
         SynonymGraphFilter {
             input,

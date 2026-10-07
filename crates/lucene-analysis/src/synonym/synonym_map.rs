@@ -57,6 +57,13 @@ pub struct SynonymMap {
 pub type NodeId = u32;
 
 impl SynonymMap {
+    /// `fst == null`: a map built from no rules. Java's `SynonymFilter` and
+    /// `SynonymGraphFilter` refuse one and its factories return their input
+    /// unfiltered instead.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     /// The node before any input (`fst.getFirstArc`).
     pub fn root(&self) -> NodeId {
         0
@@ -219,15 +226,9 @@ impl SynonymMapBuilder {
         Ok(())
     }
 
-    /// `build()`. An empty map is an `IllegalState` error: Lucene 10.5.0's
-    /// `build()` throws a `NullPointerException` there (`FST.fromFSTReader`
-    /// of the `null` an empty `FSTCompiler` compiles to).
+    /// `build()`. With no rules it is Java's map with a `null` FST:
+    /// [`SynonymMap::is_empty`].
     pub fn build(self) -> Result<SynonymMap, AnalysisError> {
-        if self.working_set.is_empty() {
-            return Err(AnalysisError::IllegalState(
-                "NullPointerException: an empty SynonymMap has no FST".to_string(),
-            ));
-        }
         let mut nodes = vec![Node::default()];
         let mut entries = Vec::with_capacity(self.working_set.len());
         for (input, e) in self.working_set {
@@ -398,7 +399,14 @@ mod tests {
         b.add("a", "x", false).unwrap();
         b.add("a", "x", false).unwrap();
         assert_eq!(b.build().unwrap().entries()[0].1.ords, vec![0, 0]);
-        assert!(SynonymMapBuilder::default().build().is_err());
+        // Java's `build()` of no rules: a map with a `null` FST.
+        let empty = SynonymMapBuilder::default().build().unwrap();
+        assert!(empty.is_empty());
+        assert!(empty.entries().is_empty());
+        assert_eq!((empty.word_count(), empty.max_horizontal_context), (0, 0));
+        assert!(empty.entry(empty.root()).is_none());
+        assert!(empty.step(empty.root(), 'a' as u32).is_none());
+        assert!(!m.is_empty());
     }
 
     #[test]
