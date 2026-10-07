@@ -162,9 +162,29 @@ impl ResourceLoader for FilesystemResourceLoader {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 self.delegate.open_resource(resource)
             }
-            Err(e) => Err(FactoryError::io(format!("{}: {e}", path.display()))),
+            Err(e) => Err(io_error_message(&e, resource)),
         }
     }
+}
+
+/// The `IOException` Java's `Files.newInputStream(path)` and its first
+/// read report: a directory is `"Is a directory"`, an unreadable file an
+/// `AccessDeniedException` whose message is the path (the resource name
+/// here, never the base directory's absolute path), anything else the
+/// system's reason without Rust's `(os error n)` suffix.
+fn io_error_message(e: &std::io::Error, resource: &str) -> FactoryError {
+    let message = match e.kind() {
+        std::io::ErrorKind::IsADirectory => "Is a directory".to_string(),
+        std::io::ErrorKind::PermissionDenied => resource.to_string(),
+        _ => {
+            let text = e.to_string();
+            match text.find(" (os error ") {
+                Some(i) => text[..i].to_string(),
+                None => text,
+            }
+        }
+    };
+    FactoryError::io(message)
 }
 
 /// An in-memory loader (Rust-only): resources by name, then a delegate.
@@ -263,6 +283,20 @@ pub fn get_snowball_word_set(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn io_errors_carry_javas_text_not_paths() {
+        use std::io::{Error, ErrorKind};
+        let denied = io_error_message(&Error::from(ErrorKind::PermissionDenied), "w.txt");
+        assert_eq!(
+            (denied.kind, denied.message.as_str()),
+            (JavaException::Io, "w.txt")
+        );
+        let eio = io_error_message(&Error::from_raw_os_error(5), "w.txt");
+        assert_eq!(eio.message, "Input/output error");
+        let other = io_error_message(&Error::other("odd"), "w.txt");
+        assert_eq!(other.message, "odd");
+    }
 
     #[test]
     fn classpath_serves_the_vendored_files() {
