@@ -11,9 +11,10 @@
 //! [`ClasspathResourceLoader`] serves the resource files this crate vendors
 //! from the analysis-common jar, at their jar paths
 //! (`org/apache/lucene/analysis/snowball/german_stop.txt`): the 40 stopword
-//! and RSLP files the analyzers use. The jar's `snowball/english_stop.txt`,
-//! `cjk/stopwords.txt` and `hyphenation.dtd` are not vendored, so the loader
-//! reports them as not found.
+//! and RSLP files the analyzers use, and `snowball/english_stop.txt` and
+//! `cjk/stopwords.txt`, which configurations name. The jar's
+//! `hyphenation.dtd` is not vendored (the grammar parser skips the
+//! `DOCTYPE`), so the loader reports it as not found.
 //!
 //! Resource bytes are decoded as UTF-8 with Java's `CodingErrorAction.REPORT`:
 //! a malformed sequence is a `MalformedInputException` (`Input length =
@@ -67,7 +68,9 @@ const VENDORED: &[(&str, &[u8])] = vendored! {
     "org/apache/lucene/analysis/te/stopwords.txt" => "te_stopwords.txt",
     "org/apache/lucene/analysis/th/stopwords.txt" => "th_stopwords.txt",
     "org/apache/lucene/analysis/tr/stopwords.txt" => "tr_stopwords.txt",
+    "org/apache/lucene/analysis/cjk/stopwords.txt" => "cjk_stopwords.txt",
     "org/apache/lucene/analysis/snowball/danish_stop.txt" => "danish_stop.txt",
+    "org/apache/lucene/analysis/snowball/english_stop.txt" => "english_stop.txt",
     "org/apache/lucene/analysis/snowball/dutch_stop.txt" => "dutch_stop.txt",
     "org/apache/lucene/analysis/snowball/finnish_stop.txt" => "finnish_stop.txt",
     "org/apache/lucene/analysis/snowball/french_stop.txt" => "french_stop.txt",
@@ -301,16 +304,25 @@ mod tests {
     #[test]
     fn classpath_serves_the_vendored_files() {
         let names: Vec<&str> = ClasspathResourceLoader::resources().collect();
-        assert_eq!(names.len(), 40);
+        assert_eq!(names.len(), 42);
         let german = ClasspathResourceLoader
             .open_resource("org/apache/lucene/analysis/snowball/german_stop.txt")
             .unwrap();
         assert!(!german.is_empty());
+        for vendored in [
+            "org/apache/lucene/analysis/snowball/english_stop.txt",
+            "org/apache/lucene/analysis/cjk/stopwords.txt",
+        ] {
+            assert!(!ClasspathResourceLoader
+                .open_resource(vendored)
+                .unwrap()
+                .is_empty());
+        }
         let e = ClasspathResourceLoader
-            .open_resource("org/apache/lucene/analysis/snowball/english_stop.txt")
+            .open_resource("org/apache/lucene/analysis/compound/hyphenation/hyphenation.dtd")
             .unwrap_err();
         assert_eq!(e.kind, JavaException::Io);
-        assert!(e.message.ends_with("english_stop.txt"));
+        assert!(e.message.ends_with("hyphenation.dtd"));
     }
 
     #[test]

@@ -254,8 +254,8 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   SPI name (lucene-core's `standard` plus analysis-common's 130; `lucene-search`
   registers `Word2VecSynonym`), `ResourceLoader`/`FilesystemResourceLoader`,
   every factory, and `CustomAnalyzer` with its builder and `when`/`whenTerm`.
-  `GenAnalysisFactories.java` builds the 328 configurations of
-  `corpus/analysis-factories.conf` with Lucene's builder: 215 run over
+  `GenAnalysisFactories.java` builds the 332 configurations of
+  `corpus/analysis-factories.conf` with Lucene's builder: 219 run over
   `corpus/analysis-factories.txt` (every attribute, `normalize`, `toString`)
   and 113 throw (class and message), all equal; the registered name sets are
   Lucene's. Byte-identical under JDK 21 and 25. Not buildable: `thai` (its
@@ -273,12 +273,17 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
       *Proven for every ported one:* the T11.1 corpus through
       `GenAnalysisCommon` and the per-package generators (classic, every
       language analyzer, synonyms, compound, misc), and every registered
-      factory through `GenAnalysisFactories` (204 configurations built and
-      run, 99 refused with Java's exception and message). *Remaining:* Thai
-      (`ThaiAnalyzer`, `ThaiTokenizer`, `ThaiTokenizerFactory`) and
-      `CollationKeyAnalyzer`, deferred to M12 (above: the JDK's
-      `BreakIterator` dictionary and `Collator`); `DateRecognizerFilterFactory`
-      outside `Locale.ENGLISH`.
+      factory through `GenAnalysisFactories` (219 configurations built and
+      run, 113 refused with Java's exception and message). *Remaining:* Thai
+      (`ThaiAnalyzer`, `ThaiTokenizer`, `ThaiTokenizerFactory`, which refuses
+      configuration) and collation (`CollationKeyAnalyzer` and its three
+      classes), M12's T12.6 (the JDK's `BreakIterator` dictionary and
+      `Collator`); `DateRecognizerFilterFactory` outside `Locale.ENGLISH`; a
+      pattern argument the regex shim cannot compile (backreferences,
+      lookaround, possessive and atomic groups, `\b`, `(?m)` anchors, script
+      and block properties: an `UnsupportedOperationException`); a hyphenation
+      grammar in a JDK charset beyond UTF-8, UTF-16, US-ASCII and the Hunspell
+      tables (`factory/xml_source.rs`).
 - [x] Hunspell matches Lucene's stems and suggestions for every dictionary in
       Lucene's test resources. (Those are not redistributable; matched on this
       project's own 38 dictionaries instead -- T11.4 above.)
