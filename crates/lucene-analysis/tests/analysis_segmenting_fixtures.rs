@@ -80,8 +80,14 @@ struct WholeSentence {
 }
 
 impl Segmenter for WholeSentence {
-    fn set_next_sentence(&mut self, _: &SegmentingBase, start: usize, end: usize) {
+    fn set_next_sentence(
+        &mut self,
+        _: &SegmentingBase,
+        start: usize,
+        end: usize,
+    ) -> Result<(), AnalysisError> {
         self.bounds = Some((start, end));
+        Ok(())
     }
     fn increment_word(&mut self, base: &mut SegmentingBase) -> Result<bool, AnalysisError> {
         let Some((start, end)) = self.bounds.take() else {
@@ -109,10 +115,16 @@ impl Default for SentenceAndWord {
 }
 
 impl Segmenter for SentenceAndWord {
-    fn set_next_sentence(&mut self, _: &SegmentingBase, start: usize, end: usize) {
+    fn set_next_sentence(
+        &mut self,
+        _: &SegmentingBase,
+        start: usize,
+        end: usize,
+    ) -> Result<(), AnalysisError> {
         self.word_end = start;
         self.sentence_end = end;
         self.pos_boost += 10;
+        Ok(())
     }
     fn increment_word(&mut self, base: &mut SegmentingBase) -> Result<bool, AnalysisError> {
         let word = |u: u16| java_character::is_letter_or_digit(u32::from(u));

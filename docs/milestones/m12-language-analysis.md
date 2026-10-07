@@ -9,7 +9,7 @@
 | **Effort** | L |
 | **Depends on** | [M11](m11-analysis-common.md) |
 | **Unblocks** | analysing CJK and other scripts without a JVM |
-| **Status** | in progress -- part 1: architecture, inventory, T12.2 Stempel, T12.3 phonetic and Morfologik; part 2: T12.1 `analysis/morph`, Kuromoji and Nori; part 3: T12.6 (see [Progress](#progress)) |
+| **Status** | in progress -- part 1: architecture, inventory, T12.2 Stempel, T12.3 phonetic and Morfologik; part 2: T12.1 `analysis/morph`, Kuromoji and Nori; part 3: T12.6, T12.2 SmartCN (see [Progress](#progress)) |
 
 ---
 
@@ -289,6 +289,30 @@ Part 3 (T12.6, T12.2 SmartCN, T12.7):
   type; ICU collation (T12.4) is the route. The inventory gained the status
   `not-supported` (`check-port-inventory.py`); analysis-common has no
   `deferred:M12` class left.
+
+- **T12.2 SmartCN** -- `lucene-analysis-smartcn`: `coredict.mem` and
+  `bigramdict.mem` (Lucene's Java-serialized dictionaries, Apache-2.0 from
+  imdict.net, vendored zlib-compressed 6.4 MB -> 3.5 MB) read by a reader of
+  Java serialization's primitive-array subset, every count bounded and every
+  hash slot validated; `WordDictionary`, `BigramDictionary`, the HHMM
+  segment graph, bigram graph and shortest path, `WordSegmenter`,
+  `HMMChineseTokenizer` (on `SegmentingTokenizerBase`),
+  `SmartChineseAnalyzer` and `hmmChinese`. The `.dct` fallback loaders
+  (`AnalyzerProfile`) are not ported: Java reads them only when the jar's
+  `.mem` resources are missing. `GenAnalysisSmartcn.java`: 86 corpus lines
+  (`corpus/analysis-chinese.txt`, written here) and 200 seeded stress lines
+  through the tokenizer, three analyzers and the factory, 8,000+ dictionary
+  lookups, 3,000+ bigrams and every corpus line's segmentation path with its
+  weights, all equal; byte-identical under JDK 21 and 25; corrupt
+  dictionaries never panic (`smartcn_hostile.rs`).
+- **Bench** (`--bench analysis_m12`, 2026-10-07, noise floor 1.15x):
+  sentence_segmenting 1.15~. The faithful SmartCN port read
+  smartcn_tokenizer 0.89~ and smartcn_analyzer 0.91~; perf put a quarter of
+  the time in the allocator (a clone of every segment for the path, of every
+  bigram key for its edge) and a fifth in per-lookup hash probing. Taking the
+  segments instead of cloning them, keeping no edge text and probing each
+  unit's dictionary row once at load gave 1.25x and 1.26x (Rust re-measured
+  against the same run's Java: 1,187 vs 1,480 and 1,530 vs 1,929 ns/token).
 
 ## Acceptance criteria
 

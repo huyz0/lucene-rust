@@ -5,7 +5,7 @@
 use std::hint::black_box;
 use std::time::Duration;
 
-use lucene_analysis::util::WhitespaceTokenizer;
+use lucene_analysis::util::{SegmentingBase, SegmentingTokenizer, Segmenter, WhitespaceTokenizer};
 use lucene_analysis::{AnalysisError, Analyzer, AnalyzerDefinition, TokenStream, TokenStreamComponents};
 use lucene_analysis_phonetic::bm::{NameType, PhoneticEngine, RuleType};
 use lucene_analysis_phonetic::encoder::{Encoder, LANGUAGE_PACKAGE};
@@ -14,6 +14,8 @@ use lucene_analysis_nori::{DecompoundMode, KoreanAnalyzer, KoreanTokenizer};
 use lucene_analysis_morfologik::analyzer::polish_dictionary;
 use lucene_analysis_morfologik::{MorfologikFilter, UkrainianMorfologikAnalyzer};
 use lucene_analysis_phonetic::{BeiderMorseFilter, DaitchMokotoffSoundexFilter, DoubleMetaphoneFilter, PhoneticFilter};
+use lucene_analysis_smartcn::tokenizer::hmm_chinese_tokenizer;
+use lucene_analysis_smartcn::SmartChineseAnalyzer;
 use lucene_analysis_stempel::stemmer::default_table;
 use lucene_analysis_stempel::{PolishAnalyzer, StempelFilter, StempelStemmer};
 
@@ -175,6 +177,18 @@ pub(super) fn bench_analysis_m12(w: Duration, m: Duration) {
         m,
     );
     run("korean_analyzer", &Analyzer::new(KoreanAnalyzer::default()), &ko, w, m);
+    let zh = line_docs(&["fixtures/corpus/analysis-chinese.txt"]);
+    // texts.txt holds escapes (`\n`); both sides read the escaped lines.
+    let sentences = line_docs(&["fixtures/data/analysis_segmenting/texts.txt"]);
+    run(
+        "sentence_segmenting",
+        &chain(|| comps(SegmentingTokenizer::new(WholeSentence::default()))),
+        &sentences,
+        w,
+        m,
+    );
+    run("smartcn_tokenizer", &chain(|| comps(hmm_chinese_tokenizer())), &zh, w, m);
+    run("smartcn_analyzer", &Analyzer::new(SmartChineseAnalyzer::default()), &zh, w, m);
     run(
         "beider_morse_ash_exact",
         &chain(move || comps(BeiderMorseFilter::new(WhitespaceTokenizer::new(), exact.clone()))),
@@ -218,4 +232,33 @@ fn line_docs(files: &[&str]) -> Vec<String> {
 
 fn names_few() -> Vec<String> {
     names(0x2545_F491_4F6C_DD1D, 10)
+}
+
+/// `AnalysisM12Micro.WholeSentenceTokenizer`.
+#[derive(Default)]
+struct WholeSentence {
+    bounds: Option<(usize, usize)>,
+}
+
+impl Segmenter for WholeSentence {
+    fn set_next_sentence(&mut self, _: &SegmentingBase, start: usize, end: usize) -> Result<(), AnalysisError> {
+        self.bounds = Some((start, end));
+        Ok(())
+    }
+
+    fn increment_word(&mut self, base: &mut SegmentingBase) -> Result<bool, AnalysisError> {
+        let Some((start, end)) = self.bounds.take() else {
+            return Ok(false);
+        };
+        let s = base.correct_offset(base.offset() + start as i32);
+        let e = base.correct_offset(base.offset() + end as i32);
+        let mut term = [0u16; 1024];
+        let len = end - start;
+        term[..len].copy_from_slice(&base.buffer()[start..end]);
+        let a = base.attributes_mut();
+        a.clear_attributes();
+        a.set_term_utf16(&term[..len]);
+        a.set_offset(s, e)?;
+        Ok(true)
+    }
 }
