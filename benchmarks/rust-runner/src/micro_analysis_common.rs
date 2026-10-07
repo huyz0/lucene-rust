@@ -11,6 +11,7 @@ use lucene_analysis::cjk::CJKAnalyzer;
 use lucene_analysis::core_analysis::{SimpleAnalyzer, WhitespaceAnalyzer};
 use lucene_analysis::email::UAX29URLEmailAnalyzer;
 use lucene_analysis::en::{EnglishAnalyzer, KStemFilter};
+use lucene_analysis::factory::CustomAnalyzer;
 use lucene_analysis::miscellaneous::{self as m, AsciiFoldingTokenFilter, WordDelimiterGraphFilter};
 use lucene_analysis::ngram::NGramTokenizer;
 use lucene_analysis::pattern::PatternTokenizer;
@@ -104,6 +105,18 @@ pub(super) fn bench_analysis_common(w: Duration, mt: Duration) {
         ),
         ("cjk_multilingual", Analyzer::new(CJKAnalyzer::default()), &multi),
         ("uax29_url_email_multilingual", Analyzer::new(UAX29URLEmailAnalyzer::default()), &multi),
+        (
+            "custom_analyzer",
+            CustomAnalyzer::builder()
+                .with_tokenizer("standard", &[])
+                .and_then(|b| b.add_token_filter("lowercase", &[]))
+                .and_then(|b| b.add_token_filter("stop", &[]))
+                .and_then(|b| b.add_token_filter("porterStem", &[]))
+                .and_then(|b| b.build())
+                .expect("the custom analyzer builds")
+                .into_analyzer(),
+            &docs,
+        ),
     ];
     for (name, a, corpus) in &cases {
         run(name, a, corpus, w, mt);

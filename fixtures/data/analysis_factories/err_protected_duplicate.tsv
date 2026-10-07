@@ -1,0 +1,1 @@
+B	IllegalArgumentException	wrappedFilters contains duplicate 'lowercase'. Add unique '-id' suffixes (stripped prior to SPI lookup).

@@ -1,68 +1,68 @@
 # Lucene 10.5.0 lucene-analysis-common: every top-level class of the jar, and what became of it.
 # Checked by scripts/check-port-inventory.py --module analysis-common (see its docstring for the statuses).
-# M11 ships in parts; every class not yet ported is todo:M11 tagged with the M11 task that takes it
+# M11 is complete here: every class is ported, or deferred to M12 with the reason.
 # (docs/milestones/m11-analysis-common.md). Factories (T11.7) are the configuration layer.
 # class	status	detail
 analysis/ar/ArabicAnalyzer	ported	crates/lucene-analysis/src/lang/ar.rs::ArabicAnalyzer
 analysis/ar/ArabicNormalizationFilter	ported	crates/lucene-analysis/src/lang/ar.rs::ArabicNormalizationFilter
-analysis/ar/ArabicNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: ArabicNormalizationFilterFactory
+analysis/ar/ArabicNormalizationFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::ArabicNormalizationFilterFactory
 analysis/ar/ArabicNormalizer	ported	crates/lucene-analysis/src/lang/ar.rs::ArabicNormalizer
 analysis/ar/ArabicStemFilter	ported	crates/lucene-analysis/src/lang/ar.rs::ArabicStemFilter
-analysis/ar/ArabicStemFilterFactory	todo:M11	T11.7 factory/SPI: ArabicStemFilterFactory
+analysis/ar/ArabicStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::ArabicStemFilterFactory
 analysis/ar/ArabicStemmer	ported	crates/lucene-analysis/src/lang/ar.rs::ArabicStemmer
 analysis/bg/BulgarianAnalyzer	ported	crates/lucene-analysis/src/lang/bg.rs::BulgarianAnalyzer
 analysis/bg/BulgarianStemFilter	ported	crates/lucene-analysis/src/lang/bg.rs::BulgarianStemFilter
-analysis/bg/BulgarianStemFilterFactory	todo:M11	T11.7 factory/SPI: BulgarianStemFilterFactory
+analysis/bg/BulgarianStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::BulgarianStemFilterFactory
 analysis/bg/BulgarianStemmer	ported	crates/lucene-analysis/src/lang/bg.rs::BulgarianStemmer
 analysis/bn/BengaliAnalyzer	ported	crates/lucene-analysis/src/lang/bn.rs::BengaliAnalyzer
 analysis/bn/BengaliNormalizationFilter	ported	crates/lucene-analysis/src/lang/bn.rs::BengaliNormalizationFilter
-analysis/bn/BengaliNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: BengaliNormalizationFilterFactory
+analysis/bn/BengaliNormalizationFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::BengaliNormalizationFilterFactory
 analysis/bn/BengaliNormalizer	ported	crates/lucene-analysis/src/lang/bn.rs::BengaliNormalizer
 analysis/bn/BengaliStemFilter	ported	crates/lucene-analysis/src/lang/bn.rs::BengaliStemFilter
-analysis/bn/BengaliStemFilterFactory	todo:M11	T11.7 factory/SPI: BengaliStemFilterFactory
+analysis/bn/BengaliStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::BengaliStemFilterFactory
 analysis/bn/BengaliStemmer	ported	crates/lucene-analysis/src/lang/bn.rs::BengaliStemmer
 analysis/boost/DelimitedBoostTokenFilter	ported	crates/lucene-analysis/src/boost/mod.rs::DelimitedBoostTokenFilter
-analysis/boost/DelimitedBoostTokenFilterFactory	todo:M11	T11.7 factory/SPI: DelimitedBoostTokenFilterFactory
+analysis/boost/DelimitedBoostTokenFilterFactory	ported	crates/lucene-analysis/src/factory/filters_misc.rs::DelimitedBoostTokenFilterFactory
 analysis/br/BrazilianAnalyzer	ported	crates/lucene-analysis/src/lang/br.rs::BrazilianAnalyzer
 analysis/br/BrazilianStemFilter	ported	crates/lucene-analysis/src/lang/br.rs::BrazilianStemFilter
-analysis/br/BrazilianStemFilterFactory	todo:M11	T11.7 factory/SPI: BrazilianStemFilterFactory
+analysis/br/BrazilianStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::BrazilianStemFilterFactory
 analysis/br/BrazilianStemmer	ported	crates/lucene-analysis/src/lang/br.rs::BrazilianStemmer
 analysis/ca/CatalanAnalyzer	ported	crates/lucene-analysis/src/lang/ca.rs::CatalanAnalyzer
 analysis/charfilter/BaseCharFilter	ported	crates/lucene-analysis/src/charfilter/mod.rs::OffsetCorrections
 analysis/charfilter/HTMLStripCharFilter	ported	crates/lucene-analysis/src/charfilter/html_strip.rs::HTMLStripCharFilter
-analysis/charfilter/HTMLStripCharFilterFactory	todo:M11	T11.7 factory/SPI: HTMLStripCharFilterFactory
+analysis/charfilter/HTMLStripCharFilterFactory	ported	crates/lucene-analysis/src/factory/char_filters.rs::HTMLStripCharFilterFactory
 analysis/charfilter/MappingCharFilter	ported	crates/lucene-analysis/src/charfilter/mod.rs::MappingCharFilter
-analysis/charfilter/MappingCharFilterFactory	todo:M11	T11.7 factory/SPI: MappingCharFilterFactory
+analysis/charfilter/MappingCharFilterFactory	ported	crates/lucene-analysis/src/factory/char_filters.rs::MappingCharFilterFactory
 analysis/charfilter/NormalizeCharMap	ported	crates/lucene-analysis/src/charfilter/mod.rs::NormalizeCharMap
 analysis/cjk/CJKAnalyzer	ported	crates/lucene-analysis/src/cjk/mod.rs::CJKAnalyzer
 analysis/cjk/CJKBigramFilter	ported	crates/lucene-analysis/src/cjk/mod.rs::CJKBigramFilter
-analysis/cjk/CJKBigramFilterFactory	todo:M11	T11.7 factory/SPI: CJKBigramFilterFactory
+analysis/cjk/CJKBigramFilterFactory	ported	crates/lucene-analysis/src/factory/filters_misc.rs::CJKBigramFilterFactory
 analysis/cjk/CJKWidthCharFilter	ported	crates/lucene-analysis/src/cjk/mod.rs::CJKWidthCharFilter
-analysis/cjk/CJKWidthCharFilterFactory	todo:M11	T11.7 factory/SPI: CJKWidthCharFilterFactory
+analysis/cjk/CJKWidthCharFilterFactory	ported	crates/lucene-analysis/src/factory/char_filters.rs::CJKWidthCharFilterFactory
 analysis/cjk/CJKWidthFilter	ported	crates/lucene-analysis/src/cjk/mod.rs::CJKWidthFilter
-analysis/cjk/CJKWidthFilterFactory	todo:M11	T11.7 factory/SPI: CJKWidthFilterFactory
+analysis/cjk/CJKWidthFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::CJKWidthFilterFactory
 analysis/ckb/SoraniAnalyzer	ported	crates/lucene-analysis/src/lang/ckb.rs::SoraniAnalyzer
 analysis/ckb/SoraniNormalizationFilter	ported	crates/lucene-analysis/src/lang/ckb.rs::SoraniNormalizationFilter
-analysis/ckb/SoraniNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: SoraniNormalizationFilterFactory
+analysis/ckb/SoraniNormalizationFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::SoraniNormalizationFilterFactory
 analysis/ckb/SoraniNormalizer	ported	crates/lucene-analysis/src/lang/ckb.rs::SoraniNormalizer
 analysis/ckb/SoraniStemFilter	ported	crates/lucene-analysis/src/lang/ckb.rs::SoraniStemFilter
-analysis/ckb/SoraniStemFilterFactory	todo:M11	T11.7 factory/SPI: SoraniStemFilterFactory
+analysis/ckb/SoraniStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::SoraniStemFilterFactory
 analysis/ckb/SoraniStemmer	ported	crates/lucene-analysis/src/lang/ckb.rs::SoraniStemmer
 analysis/classic/ClassicAnalyzer	ported	crates/lucene-analysis/src/classic/mod.rs::ClassicAnalyzer
 analysis/classic/ClassicFilter	ported	crates/lucene-analysis/src/classic/mod.rs::ClassicFilter
-analysis/classic/ClassicFilterFactory	todo:M11	T11.7 factory/SPI: ClassicFilterFactory
+analysis/classic/ClassicFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::ClassicFilterFactory
 analysis/classic/ClassicTokenizer	ported	crates/lucene-analysis/src/classic/mod.rs::ClassicTokenizer
-analysis/classic/ClassicTokenizerFactory	todo:M11	T11.7 factory/SPI: ClassicTokenizerFactory
+analysis/classic/ClassicTokenizerFactory	ported	crates/lucene-analysis/src/factory/tokenizers.rs::ClassicTokenizerFactory
 analysis/classic/ClassicTokenizerImpl	ported	crates/lucene-analysis/src/classic/mod.rs::ClassicTokenizer
 analysis/commongrams/CommonGramsFilter	ported	crates/lucene-analysis/src/commongrams/mod.rs::CommonGramsFilter
-analysis/commongrams/CommonGramsFilterFactory	todo:M11	T11.7 factory/SPI: CommonGramsFilterFactory
+analysis/commongrams/CommonGramsFilterFactory	ported	crates/lucene-analysis/src/factory/filters_resource.rs::CommonGramsFilterFactory
 analysis/commongrams/CommonGramsQueryFilter	ported	crates/lucene-analysis/src/commongrams/mod.rs::CommonGramsQueryFilter
-analysis/commongrams/CommonGramsQueryFilterFactory	todo:M11	T11.7 factory/SPI: CommonGramsQueryFilterFactory
+analysis/commongrams/CommonGramsQueryFilterFactory	ported	crates/lucene-analysis/src/factory/filters_resource.rs::CommonGramsQueryFilterFactory
 analysis/compound/CompoundWordTokenFilterBase	ported	crates/lucene-analysis/src/compound/mod.rs::CompoundWordTokenFilter
 analysis/compound/DictionaryCompoundWordTokenFilter	ported	crates/lucene-analysis/src/compound/mod.rs::DictionaryCompoundWordTokenFilter
-analysis/compound/DictionaryCompoundWordTokenFilterFactory	todo:M11	T11.7 factory/SPI: DictionaryCompoundWordTokenFilterFactory
+analysis/compound/DictionaryCompoundWordTokenFilterFactory	ported	crates/lucene-analysis/src/factory/filters_resource.rs::DictionaryCompoundWordTokenFilterFactory
 analysis/compound/HyphenationCompoundWordTokenFilter	ported	crates/lucene-analysis/src/compound/mod.rs::HyphenationCompoundWordTokenFilter
-analysis/compound/HyphenationCompoundWordTokenFilterFactory	todo:M11	T11.7 factory/SPI: HyphenationCompoundWordTokenFilterFactory
+analysis/compound/HyphenationCompoundWordTokenFilterFactory	ported	crates/lucene-analysis/src/factory/filters_resource.rs::HyphenationCompoundWordTokenFilterFactory
 analysis/compound/hyphenation/ByteVector	ported	crates/lucene-analysis/src/compound/hyphenation.rs::pack_values
 analysis/compound/hyphenation/CharVector	ported	crates/lucene-analysis/src/compound/hyphenation.rs::HyphenationTree
 analysis/compound/hyphenation/Hyphen	ported	crates/lucene-analysis/src/compound/hyphenation.rs::Hyphen
@@ -72,64 +72,64 @@ analysis/compound/hyphenation/PatternConsumer	ported	crates/lucene-analysis/src/
 analysis/compound/hyphenation/PatternParser	ported	crates/lucene-analysis/src/compound/hyphenation.rs::PatternParser
 analysis/compound/hyphenation/TernaryTree	ported	crates/lucene-analysis/src/compound/hyphenation.rs::search_patterns
 analysis/core/DecimalDigitFilter	ported	crates/lucene-analysis/src/core_analysis/filters.rs::DecimalDigitFilter
-analysis/core/DecimalDigitFilterFactory	todo:M11	T11.7 factory/SPI: DecimalDigitFilterFactory
+analysis/core/DecimalDigitFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::DecimalDigitFilterFactory
 analysis/core/FlattenGraphFilter	ported	crates/lucene-analysis/src/core_analysis/flatten_graph_filter.rs::FlattenGraphFilter
-analysis/core/FlattenGraphFilterFactory	todo:M11	T11.7 factory/SPI: FlattenGraphFilterFactory
+analysis/core/FlattenGraphFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::FlattenGraphFilterFactory
 analysis/core/KeywordAnalyzer	ported	crates/lucene-analysis/src/analyzer.rs::keyword
 analysis/core/KeywordTokenizer	ported	crates/lucene-analysis/src/keyword_tokenizer.rs::KeywordTokenizer
-analysis/core/KeywordTokenizerFactory	todo:M11	T11.7 factory/SPI: KeywordTokenizerFactory
+analysis/core/KeywordTokenizerFactory	ported	crates/lucene-analysis/src/factory/tokenizers.rs::KeywordTokenizerFactory
 analysis/core/LetterTokenizer	ported	crates/lucene-analysis/src/util/char_tokenizer.rs::LetterTokenizer
-analysis/core/LetterTokenizerFactory	todo:M11	T11.7 factory/SPI: LetterTokenizerFactory
+analysis/core/LetterTokenizerFactory	ported	crates/lucene-analysis/src/factory/tokenizers.rs::LetterTokenizerFactory
 analysis/core/LowerCaseFilter	ported	crates/lucene-analysis/src/lib.rs::LowerCaseFilter
-analysis/core/LowerCaseFilterFactory	todo:M11	T11.7 factory/SPI: LowerCaseFilterFactory
+analysis/core/LowerCaseFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::LowerCaseFilterFactory
 analysis/core/SimpleAnalyzer	ported	crates/lucene-analysis/src/core_analysis/analyzers.rs::SimpleAnalyzer
 analysis/core/StopAnalyzer	ported	crates/lucene-analysis/src/core_analysis/analyzers.rs::StopAnalyzer
 analysis/core/StopFilter	ported	crates/lucene-analysis/src/lib.rs::StopFilter
-analysis/core/StopFilterFactory	todo:M11	T11.7 factory/SPI: StopFilterFactory
+analysis/core/StopFilterFactory	ported	crates/lucene-analysis/src/factory/filters_resource.rs::StopFilterFactory
 analysis/core/TypeTokenFilter	ported	crates/lucene-analysis/src/core_analysis/filters.rs::TypeTokenFilter
-analysis/core/TypeTokenFilterFactory	todo:M11	T11.7 factory/SPI: TypeTokenFilterFactory
+analysis/core/TypeTokenFilterFactory	ported	crates/lucene-analysis/src/factory/filters_resource.rs::TypeTokenFilterFactory
 analysis/core/UnicodeWhitespaceAnalyzer	ported	crates/lucene-analysis/src/core_analysis/analyzers.rs::UnicodeWhitespaceAnalyzer
 analysis/core/UnicodeWhitespaceTokenizer	ported	crates/lucene-analysis/src/util/char_tokenizer.rs::UnicodeWhitespaceTokenizer
 analysis/core/UpperCaseFilter	ported	crates/lucene-analysis/src/core_analysis/filters.rs::UpperCaseFilter
-analysis/core/UpperCaseFilterFactory	todo:M11	T11.7 factory/SPI: UpperCaseFilterFactory
+analysis/core/UpperCaseFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::UpperCaseFilterFactory
 analysis/core/WhitespaceAnalyzer	ported	crates/lucene-analysis/src/core_analysis/analyzers.rs::WhitespaceAnalyzer
 analysis/core/WhitespaceTokenizer	ported	crates/lucene-analysis/src/util/char_tokenizer.rs::WhitespaceTokenizer
-analysis/core/WhitespaceTokenizerFactory	todo:M11	T11.7 factory/SPI: WhitespaceTokenizerFactory
-analysis/custom/CustomAnalyzer	todo:M11	T11.7 factory/SPI: CustomAnalyzer (its Builder is configured by factory names and classes)
+analysis/core/WhitespaceTokenizerFactory	ported	crates/lucene-analysis/src/factory/tokenizers.rs::WhitespaceTokenizerFactory
+analysis/custom/CustomAnalyzer	ported	crates/lucene-analysis/src/factory/custom_analyzer.rs::CustomAnalyzer
 analysis/cz/CzechAnalyzer	ported	crates/lucene-analysis/src/lang/cz.rs::CzechAnalyzer
 analysis/cz/CzechStemFilter	ported	crates/lucene-analysis/src/lang/cz.rs::CzechStemFilter
-analysis/cz/CzechStemFilterFactory	todo:M11	T11.7 factory/SPI: CzechStemFilterFactory
+analysis/cz/CzechStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::CzechStemFilterFactory
 analysis/cz/CzechStemmer	ported	crates/lucene-analysis/src/lang/cz.rs::CzechStemmer
 analysis/da/DanishAnalyzer	ported	crates/lucene-analysis/src/lang/da.rs::DanishAnalyzer
 analysis/de/GermanAnalyzer	ported	crates/lucene-analysis/src/lang/de.rs::GermanAnalyzer
 analysis/de/GermanLightStemFilter	ported	crates/lucene-analysis/src/lang/de.rs::GermanLightStemFilter
-analysis/de/GermanLightStemFilterFactory	todo:M11	T11.7 factory/SPI: GermanLightStemFilterFactory
+analysis/de/GermanLightStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::GermanLightStemFilterFactory
 analysis/de/GermanLightStemmer	ported	crates/lucene-analysis/src/lang/de.rs::GermanLightStemmer
 analysis/de/GermanMinimalStemFilter	ported	crates/lucene-analysis/src/lang/de.rs::GermanMinimalStemFilter
-analysis/de/GermanMinimalStemFilterFactory	todo:M11	T11.7 factory/SPI: GermanMinimalStemFilterFactory
+analysis/de/GermanMinimalStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::GermanMinimalStemFilterFactory
 analysis/de/GermanMinimalStemmer	ported	crates/lucene-analysis/src/lang/de.rs::GermanMinimalStemmer
 analysis/de/GermanNormalizationFilter	ported	crates/lucene-analysis/src/lang/de.rs::GermanNormalizationFilter
-analysis/de/GermanNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: GermanNormalizationFilterFactory
+analysis/de/GermanNormalizationFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::GermanNormalizationFilterFactory
 analysis/de/GermanStemFilter	ported	crates/lucene-analysis/src/lang/de.rs::GermanStemFilter
-analysis/de/GermanStemFilterFactory	todo:M11	T11.7 factory/SPI: GermanStemFilterFactory
+analysis/de/GermanStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::GermanStemFilterFactory
 analysis/de/GermanStemmer	ported	crates/lucene-analysis/src/lang/de.rs::GermanStemmer
 analysis/el/GreekAnalyzer	ported	crates/lucene-analysis/src/lang/el.rs::GreekAnalyzer
 analysis/el/GreekLowerCaseFilter	ported	crates/lucene-analysis/src/lang/el.rs::GreekLowerCaseFilter
-analysis/el/GreekLowerCaseFilterFactory	todo:M11	T11.7 factory/SPI: GreekLowerCaseFilterFactory
+analysis/el/GreekLowerCaseFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::GreekLowerCaseFilterFactory
 analysis/el/GreekStemFilter	ported	crates/lucene-analysis/src/lang/el.rs::GreekStemFilter
-analysis/el/GreekStemFilterFactory	todo:M11	T11.7 factory/SPI: GreekStemFilterFactory
+analysis/el/GreekStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::GreekStemFilterFactory
 analysis/el/GreekStemmer	ported	crates/lucene-analysis/src/lang/el.rs::GreekStemmer
 analysis/email/UAX29URLEmailAnalyzer	ported	crates/lucene-analysis/src/email/mod.rs::UAX29URLEmailAnalyzer
 analysis/email/UAX29URLEmailTokenizer	ported	crates/lucene-analysis/src/email/mod.rs::UAX29URLEmailTokenizer
-analysis/email/UAX29URLEmailTokenizerFactory	todo:M11	T11.7 factory/SPI: UAX29URLEmailTokenizerFactory
+analysis/email/UAX29URLEmailTokenizerFactory	ported	crates/lucene-analysis/src/factory/tokenizers.rs::UAX29URLEmailTokenizerFactory
 analysis/email/UAX29URLEmailTokenizerImpl	ported	crates/lucene-analysis/src/email/mod.rs::get_next_token
-analysis/en/AbstractWordsFileFilterFactory	todo:M11	T11.7 factory/SPI: AbstractWordsFileFilterFactory
+analysis/en/AbstractWordsFileFilterFactory	ported	crates/lucene-analysis/src/factory/filters_resource.rs::WordsFileFilterFactory
 analysis/en/EnglishAnalyzer	ported	crates/lucene-analysis/src/en/mod.rs::EnglishAnalyzer
 analysis/en/EnglishMinimalStemFilter	ported	crates/lucene-analysis/src/en/mod.rs::EnglishMinimalStemFilter
-analysis/en/EnglishMinimalStemFilterFactory	todo:M11	T11.7 factory/SPI: EnglishMinimalStemFilterFactory
+analysis/en/EnglishMinimalStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::EnglishMinimalStemFilterFactory
 analysis/en/EnglishMinimalStemmer	ported	crates/lucene-analysis/src/en/mod.rs::minimal_stem
 analysis/en/EnglishPossessiveFilter	ported	crates/lucene-analysis/src/en/mod.rs::EnglishPossessiveFilter
-analysis/en/EnglishPossessiveFilterFactory	todo:M11	T11.7 factory/SPI: EnglishPossessiveFilterFactory
+analysis/en/EnglishPossessiveFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::EnglishPossessiveFilterFactory
 analysis/en/KStemData1	ported	crates/lucene-analysis/src/en/kstem_data.rs::HEAD_WORDS
 analysis/en/KStemData2	ported	crates/lucene-analysis/src/en/kstem_data.rs::HEAD_WORDS
 analysis/en/KStemData3	ported	crates/lucene-analysis/src/en/kstem_data.rs::HEAD_WORDS
@@ -139,63 +139,63 @@ analysis/en/KStemData6	ported	crates/lucene-analysis/src/en/kstem_data.rs::HEAD_
 analysis/en/KStemData7	ported	crates/lucene-analysis/src/en/kstem_data.rs::HEAD_WORDS
 analysis/en/KStemData8	ported	crates/lucene-analysis/src/en/kstem_data.rs::HEAD_WORDS
 analysis/en/KStemFilter	ported	crates/lucene-analysis/src/en/kstem.rs::KStemFilter
-analysis/en/KStemFilterFactory	todo:M11	T11.7 factory/SPI: KStemFilterFactory
+analysis/en/KStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::KStemFilterFactory
 analysis/en/KStemmer	ported	crates/lucene-analysis/src/en/kstem.rs::KStemmer
 analysis/en/PorterStemFilter	ported	crates/lucene-analysis/src/en/mod.rs::PorterStemFilter
-analysis/en/PorterStemFilterFactory	todo:M11	T11.7 factory/SPI: PorterStemFilterFactory
+analysis/en/PorterStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::PorterStemFilterFactory
 analysis/en/PorterStemmer	ported	crates/lucene-analysis/src/lib.rs::porter
 analysis/es/SpanishAnalyzer	ported	crates/lucene-analysis/src/lang/es.rs::SpanishAnalyzer
 analysis/es/SpanishLightStemFilter	ported	crates/lucene-analysis/src/lang/es.rs::SpanishLightStemFilter
-analysis/es/SpanishLightStemFilterFactory	todo:M11	T11.7 factory/SPI: SpanishLightStemFilterFactory
+analysis/es/SpanishLightStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::SpanishLightStemFilterFactory
 analysis/es/SpanishLightStemmer	ported	crates/lucene-analysis/src/lang/es.rs::SpanishLightStemmer
 analysis/es/SpanishMinimalStemFilter	ported	crates/lucene-analysis/src/lang/es.rs::SpanishMinimalStemFilter
-analysis/es/SpanishMinimalStemFilterFactory	todo:M11	T11.7 factory/SPI: SpanishMinimalStemFilterFactory
+analysis/es/SpanishMinimalStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::SpanishMinimalStemFilterFactory
 analysis/es/SpanishMinimalStemmer	ported	crates/lucene-analysis/src/lang/es.rs::SpanishMinimalStemmer
 analysis/es/SpanishPluralStemFilter	ported	crates/lucene-analysis/src/lang/es.rs::SpanishPluralStemFilter
-analysis/es/SpanishPluralStemFilterFactory	todo:M11	T11.7 factory/SPI: SpanishPluralStemFilterFactory
+analysis/es/SpanishPluralStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::SpanishPluralStemFilterFactory
 analysis/es/SpanishPluralStemmer	ported	crates/lucene-analysis/src/lang/es.rs::SpanishPluralStemmer
 analysis/et/EstonianAnalyzer	ported	crates/lucene-analysis/src/lang/et.rs::EstonianAnalyzer
 analysis/eu/BasqueAnalyzer	ported	crates/lucene-analysis/src/lang/eu.rs::BasqueAnalyzer
 analysis/fa/PersianAnalyzer	ported	crates/lucene-analysis/src/lang/fa.rs::PersianAnalyzer
 analysis/fa/PersianCharFilter	ported	crates/lucene-analysis/src/lang/fa.rs::PersianCharFilter
-analysis/fa/PersianCharFilterFactory	todo:M11	T11.7 factory/SPI: PersianCharFilterFactory
+analysis/fa/PersianCharFilterFactory	ported	crates/lucene-analysis/src/factory/char_filters.rs::PersianCharFilterFactory
 analysis/fa/PersianNormalizationFilter	ported	crates/lucene-analysis/src/lang/fa.rs::PersianNormalizationFilter
-analysis/fa/PersianNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: PersianNormalizationFilterFactory
+analysis/fa/PersianNormalizationFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::PersianNormalizationFilterFactory
 analysis/fa/PersianNormalizer	ported	crates/lucene-analysis/src/lang/fa.rs::PersianNormalizer
 analysis/fa/PersianStemFilter	ported	crates/lucene-analysis/src/lang/fa.rs::PersianStemFilter
-analysis/fa/PersianStemFilterFactory	todo:M11	T11.7 factory/SPI: PersianStemFilterFactory
+analysis/fa/PersianStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::PersianStemFilterFactory
 analysis/fa/PersianStemmer	ported	crates/lucene-analysis/src/lang/fa.rs::PersianStemmer
 analysis/fi/FinnishAnalyzer	ported	crates/lucene-analysis/src/lang/fi.rs::FinnishAnalyzer
 analysis/fi/FinnishLightStemFilter	ported	crates/lucene-analysis/src/lang/fi.rs::FinnishLightStemFilter
-analysis/fi/FinnishLightStemFilterFactory	todo:M11	T11.7 factory/SPI: FinnishLightStemFilterFactory
+analysis/fi/FinnishLightStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::FinnishLightStemFilterFactory
 analysis/fi/FinnishLightStemmer	ported	crates/lucene-analysis/src/lang/fi.rs::FinnishLightStemmer
 analysis/fr/FrenchAnalyzer	ported	crates/lucene-analysis/src/lang/fr.rs::FrenchAnalyzer
 analysis/fr/FrenchLightStemFilter	ported	crates/lucene-analysis/src/lang/fr.rs::FrenchLightStemFilter
-analysis/fr/FrenchLightStemFilterFactory	todo:M11	T11.7 factory/SPI: FrenchLightStemFilterFactory
+analysis/fr/FrenchLightStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::FrenchLightStemFilterFactory
 analysis/fr/FrenchLightStemmer	ported	crates/lucene-analysis/src/lang/fr.rs::FrenchLightStemmer
 analysis/fr/FrenchMinimalStemFilter	ported	crates/lucene-analysis/src/lang/fr.rs::FrenchMinimalStemFilter
-analysis/fr/FrenchMinimalStemFilterFactory	todo:M11	T11.7 factory/SPI: FrenchMinimalStemFilterFactory
+analysis/fr/FrenchMinimalStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::FrenchMinimalStemFilterFactory
 analysis/fr/FrenchMinimalStemmer	ported	crates/lucene-analysis/src/lang/fr.rs::FrenchMinimalStemmer
 analysis/ga/IrishAnalyzer	ported	crates/lucene-analysis/src/lang/ga.rs::IrishAnalyzer
 analysis/ga/IrishLowerCaseFilter	ported	crates/lucene-analysis/src/lang/ga.rs::IrishLowerCaseFilter
-analysis/ga/IrishLowerCaseFilterFactory	todo:M11	T11.7 factory/SPI: IrishLowerCaseFilterFactory
+analysis/ga/IrishLowerCaseFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::IrishLowerCaseFilterFactory
 analysis/gl/GalicianAnalyzer	ported	crates/lucene-analysis/src/lang/gl.rs::GalicianAnalyzer
 analysis/gl/GalicianMinimalStemFilter	ported	crates/lucene-analysis/src/lang/gl.rs::GalicianMinimalStemFilter
-analysis/gl/GalicianMinimalStemFilterFactory	todo:M11	T11.7 factory/SPI: GalicianMinimalStemFilterFactory
+analysis/gl/GalicianMinimalStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::GalicianMinimalStemFilterFactory
 analysis/gl/GalicianMinimalStemmer	ported	crates/lucene-analysis/src/lang/gl.rs::GalicianMinimalStemmer
 analysis/gl/GalicianStemFilter	ported	crates/lucene-analysis/src/lang/gl.rs::GalicianStemFilter
-analysis/gl/GalicianStemFilterFactory	todo:M11	T11.7 factory/SPI: GalicianStemFilterFactory
+analysis/gl/GalicianStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::GalicianStemFilterFactory
 analysis/gl/GalicianStemmer	ported	crates/lucene-analysis/src/lang/gl.rs::GalicianStemmer
 analysis/hi/HindiAnalyzer	ported	crates/lucene-analysis/src/lang/hi.rs::HindiAnalyzer
 analysis/hi/HindiNormalizationFilter	ported	crates/lucene-analysis/src/lang/hi.rs::HindiNormalizationFilter
-analysis/hi/HindiNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: HindiNormalizationFilterFactory
+analysis/hi/HindiNormalizationFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::HindiNormalizationFilterFactory
 analysis/hi/HindiNormalizer	ported	crates/lucene-analysis/src/lang/hi.rs::HindiNormalizer
 analysis/hi/HindiStemFilter	ported	crates/lucene-analysis/src/lang/hi.rs::HindiStemFilter
-analysis/hi/HindiStemFilterFactory	todo:M11	T11.7 factory/SPI: HindiStemFilterFactory
+analysis/hi/HindiStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::HindiStemFilterFactory
 analysis/hi/HindiStemmer	ported	crates/lucene-analysis/src/lang/hi.rs::HindiStemmer
 analysis/hu/HungarianAnalyzer	ported	crates/lucene-analysis/src/lang/hu.rs::HungarianAnalyzer
 analysis/hu/HungarianLightStemFilter	ported	crates/lucene-analysis/src/lang/hu.rs::HungarianLightStemFilter
-analysis/hu/HungarianLightStemFilterFactory	todo:M11	T11.7 factory/SPI: HungarianLightStemFilterFactory
+analysis/hu/HungarianLightStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::HungarianLightStemFilterFactory
 analysis/hu/HungarianLightStemmer	ported	crates/lucene-analysis/src/lang/hu.rs::HungarianLightStemmer
 analysis/hunspell/AffixCondition	ported	crates/lucene-analysis/src/hunspell/affix_condition.rs::AffixCondition -- M11 T11.4
 analysis/hunspell/AffixKind	ported	crates/lucene-analysis/src/hunspell/affix_condition.rs::AffixKind -- M11 T11.4
@@ -213,7 +213,7 @@ analysis/hunspell/FragmentChecker	ported	crates/lucene-analysis/src/hunspell/wor
 analysis/hunspell/GeneratingSuggester	ported	crates/lucene-analysis/src/hunspell/suggester.rs::GeneratingSuggester -- M11 T11.4
 analysis/hunspell/Hunspell	ported	crates/lucene-analysis/src/hunspell/speller.rs::Hunspell -- M11 T11.4
 analysis/hunspell/HunspellStemFilter	ported	crates/lucene-analysis/src/hunspell/mod.rs::HunspellStemFilter -- M11 T11.4
-analysis/hunspell/HunspellStemFilterFactory	todo:M11	T11.7 factory/SPI: HunspellStemFilterFactory
+analysis/hunspell/HunspellStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_resource.rs::HunspellStemFilterFactory
 analysis/hunspell/ISO8859_14Decoder	ported	crates/lucene-analysis/src/hunspell/dictionary.rs::ISO8859_14 -- M11 T11.4
 analysis/hunspell/ModifyingSuggester	ported	crates/lucene-analysis/src/hunspell/suggester.rs::ModifyingSuggester -- M11 T11.4
 analysis/hunspell/NGramFragmentChecker	ported	crates/lucene-analysis/src/hunspell/word_form_generator.rs::NGramFragmentChecker -- M11 T11.4
@@ -234,85 +234,85 @@ analysis/hunspell/WordStorage	ported	crates/lucene-analysis/src/hunspell/word_st
 analysis/hy/ArmenianAnalyzer	ported	crates/lucene-analysis/src/lang/hy.rs::ArmenianAnalyzer
 analysis/id/IndonesianAnalyzer	ported	crates/lucene-analysis/src/lang/id.rs::IndonesianAnalyzer
 analysis/id/IndonesianStemFilter	ported	crates/lucene-analysis/src/lang/id.rs::IndonesianStemFilter
-analysis/id/IndonesianStemFilterFactory	todo:M11	T11.7 factory/SPI: IndonesianStemFilterFactory
+analysis/id/IndonesianStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::IndonesianStemFilterFactory
 analysis/id/IndonesianStemmer	ported	crates/lucene-analysis/src/lang/id.rs::IndonesianStemmer
 analysis/in/IndicNormalizationFilter	ported	crates/lucene-analysis/src/lang/in_.rs::IndicNormalizationFilter
-analysis/in/IndicNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: IndicNormalizationFilterFactory
+analysis/in/IndicNormalizationFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::IndicNormalizationFilterFactory
 analysis/in/IndicNormalizer	ported	crates/lucene-analysis/src/lang/in_.rs::IndicNormalizer
 analysis/it/ItalianAnalyzer	ported	crates/lucene-analysis/src/lang/it.rs::ItalianAnalyzer
 analysis/it/ItalianLightStemFilter	ported	crates/lucene-analysis/src/lang/it.rs::ItalianLightStemFilter
-analysis/it/ItalianLightStemFilterFactory	todo:M11	T11.7 factory/SPI: ItalianLightStemFilterFactory
+analysis/it/ItalianLightStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::ItalianLightStemFilterFactory
 analysis/it/ItalianLightStemmer	ported	crates/lucene-analysis/src/lang/it.rs::ItalianLightStemmer
 analysis/lt/LithuanianAnalyzer	ported	crates/lucene-analysis/src/lang/lt.rs::LithuanianAnalyzer
 analysis/lv/LatvianAnalyzer	ported	crates/lucene-analysis/src/lang/lv.rs::LatvianAnalyzer
 analysis/lv/LatvianStemFilter	ported	crates/lucene-analysis/src/lang/lv.rs::LatvianStemFilter
-analysis/lv/LatvianStemFilterFactory	todo:M11	T11.7 factory/SPI: LatvianStemFilterFactory
+analysis/lv/LatvianStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::LatvianStemFilterFactory
 analysis/lv/LatvianStemmer	ported	crates/lucene-analysis/src/lang/lv.rs::LatvianStemmer
 analysis/minhash/MinHashFilter	ported	crates/lucene-analysis/src/minhash/mod.rs::MinHashFilter
-analysis/minhash/MinHashFilterFactory	todo:M11	T11.7 factory/SPI: MinHashFilterFactory
+analysis/minhash/MinHashFilterFactory	ported	crates/lucene-analysis/src/factory/filters_misc.rs::MinHashFilterFactory
 analysis/miscellaneous/ASCIIFoldingFilter	ported	crates/lucene-analysis/src/miscellaneous/stateful.rs::AsciiFoldingTokenFilter
-analysis/miscellaneous/ASCIIFoldingFilterFactory	todo:M11	T11.7 factory/SPI: ASCIIFoldingFilterFactory
+analysis/miscellaneous/ASCIIFoldingFilterFactory	ported	crates/lucene-analysis/src/factory/filters_misc.rs::ASCIIFoldingFilterFactory
 analysis/miscellaneous/CapitalizationFilter	ported	crates/lucene-analysis/src/miscellaneous/term_filters.rs::CapitalizationFilter
-analysis/miscellaneous/CapitalizationFilterFactory	todo:M11	T11.7 factory/SPI: CapitalizationFilterFactory
+analysis/miscellaneous/CapitalizationFilterFactory	ported	crates/lucene-analysis/src/factory/filters_misc.rs::CapitalizationFilterFactory
 analysis/miscellaneous/CodepointCountFilter	ported	crates/lucene-analysis/src/miscellaneous/filtering.rs::CodepointCountFilter
-analysis/miscellaneous/CodepointCountFilterFactory	todo:M11	T11.7 factory/SPI: CodepointCountFilterFactory
+analysis/miscellaneous/CodepointCountFilterFactory	ported	crates/lucene-analysis/src/factory/filters_misc.rs::CodepointCountFilterFactory
 analysis/miscellaneous/ConcatenateGraphFilter	ported	crates/lucene-analysis/src/miscellaneous/concatenate_graph.rs::ConcatenateGraphFilter
-analysis/miscellaneous/ConcatenateGraphFilterFactory	todo:M11	T11.7 factory/SPI: ConcatenateGraphFilterFactory
+analysis/miscellaneous/ConcatenateGraphFilterFactory	ported	crates/lucene-analysis/src/factory/filters_misc.rs::ConcatenateGraphFilterFactory
 analysis/miscellaneous/ConcatenatingTokenStream	ported	crates/lucene-analysis/src/miscellaneous/wrappers.rs::ConcatenatingTokenStream
 analysis/miscellaneous/ConditionalTokenFilter	ported	crates/lucene-analysis/src/miscellaneous/conditional.rs::ConditionalTokenFilter
-analysis/miscellaneous/ConditionalTokenFilterFactory	todo:M11	T11.7 factory/SPI: ConditionalTokenFilterFactory
+analysis/miscellaneous/ConditionalTokenFilterFactory	ported	crates/lucene-analysis/src/factory/conditional.rs::ConditionalTokenFilterFactory
 analysis/miscellaneous/DateRecognizerFilter	ported	crates/lucene-analysis/src/miscellaneous/date_recognizer.rs::DateRecognizerFilter
-analysis/miscellaneous/DateRecognizerFilterFactory	todo:M11	T11.7 factory/SPI: DateRecognizerFilterFactory
+analysis/miscellaneous/DateRecognizerFilterFactory	ported	crates/lucene-analysis/src/factory/filters_misc.rs::DateRecognizerFilterFactory
 analysis/miscellaneous/DelimitedTermFrequencyTokenFilter	ported	crates/lucene-analysis/src/miscellaneous/term_filters.rs::DelimitedTermFrequencyTokenFilter
-analysis/miscellaneous/DelimitedTermFrequencyTokenFilterFactory	todo:M11	T11.7 factory/SPI: DelimitedTermFrequencyTokenFilterFactory
+analysis/miscellaneous/DelimitedTermFrequencyTokenFilterFactory	ported	crates/lucene-analysis/src/factory/filters_misc.rs::DelimitedTermFrequencyTokenFilterFactory
 analysis/miscellaneous/DropIfFlaggedFilter	ported	crates/lucene-analysis/src/miscellaneous/filtering.rs::DropIfFlaggedFilter
-analysis/miscellaneous/DropIfFlaggedFilterFactory	todo:M11	T11.7 factory/SPI: DropIfFlaggedFilterFactory
+analysis/miscellaneous/DropIfFlaggedFilterFactory	ported	crates/lucene-analysis/src/factory/filters_misc.rs::DropIfFlaggedFilterFactory
 analysis/miscellaneous/EmptyTokenStream	ported	crates/lucene-analysis/src/miscellaneous/wrappers.rs::EmptyTokenStream
 analysis/miscellaneous/FingerprintFilter	ported	crates/lucene-analysis/src/miscellaneous/stateful.rs::FingerprintFilter
-analysis/miscellaneous/FingerprintFilterFactory	todo:M11	T11.7 factory/SPI: FingerprintFilterFactory
+analysis/miscellaneous/FingerprintFilterFactory	ported	crates/lucene-analysis/src/factory/filters_misc.rs::FingerprintFilterFactory
 analysis/miscellaneous/FixBrokenOffsetsFilter	ported	crates/lucene-analysis/src/miscellaneous/stateful.rs::FixBrokenOffsetsFilter
-analysis/miscellaneous/FixBrokenOffsetsFilterFactory	todo:M11	T11.7 factory/SPI: FixBrokenOffsetsFilterFactory
+analysis/miscellaneous/FixBrokenOffsetsFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::FixBrokenOffsetsFilterFactory
 analysis/miscellaneous/HyphenatedWordsFilter	ported	crates/lucene-analysis/src/miscellaneous/stateful.rs::HyphenatedWordsFilter
-analysis/miscellaneous/HyphenatedWordsFilterFactory	todo:M11	T11.7 factory/SPI: HyphenatedWordsFilterFactory
+analysis/miscellaneous/HyphenatedWordsFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::HyphenatedWordsFilterFactory
 analysis/miscellaneous/KeepWordFilter	ported	crates/lucene-analysis/src/miscellaneous/filtering.rs::KeepWordFilter
-analysis/miscellaneous/KeepWordFilterFactory	todo:M11	T11.7 factory/SPI: KeepWordFilterFactory
+analysis/miscellaneous/KeepWordFilterFactory	ported	crates/lucene-analysis/src/factory/filters_resource.rs::KeepWordFilterFactory
 analysis/miscellaneous/KeywordMarkerFilter	ported	crates/lucene-analysis/src/miscellaneous/keyword.rs::KeywordMarkerFilter
-analysis/miscellaneous/KeywordMarkerFilterFactory	todo:M11	T11.7 factory/SPI: KeywordMarkerFilterFactory
+analysis/miscellaneous/KeywordMarkerFilterFactory	ported	crates/lucene-analysis/src/factory/filters_resource.rs::KeywordMarkerFilterFactory
 analysis/miscellaneous/KeywordRepeatFilter	ported	crates/lucene-analysis/src/miscellaneous/keyword.rs::KeywordRepeatFilter
-analysis/miscellaneous/KeywordRepeatFilterFactory	todo:M11	T11.7 factory/SPI: KeywordRepeatFilterFactory
+analysis/miscellaneous/KeywordRepeatFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::KeywordRepeatFilterFactory
 analysis/miscellaneous/LengthFilter	ported	crates/lucene-analysis/src/miscellaneous/filtering.rs::LengthFilter
-analysis/miscellaneous/LengthFilterFactory	todo:M11	T11.7 factory/SPI: LengthFilterFactory
+analysis/miscellaneous/LengthFilterFactory	ported	crates/lucene-analysis/src/factory/filters_misc.rs::LengthFilterFactory
 analysis/miscellaneous/LimitTokenCountAnalyzer	ported	crates/lucene-analysis/src/miscellaneous/wrappers.rs::LimitTokenCountAnalyzer
 analysis/miscellaneous/LimitTokenCountFilter	ported	crates/lucene-analysis/src/miscellaneous/limit.rs::LimitTokenCountFilter
-analysis/miscellaneous/LimitTokenCountFilterFactory	todo:M11	T11.7 factory/SPI: LimitTokenCountFilterFactory
+analysis/miscellaneous/LimitTokenCountFilterFactory	ported	crates/lucene-analysis/src/factory/filters_misc.rs::LimitTokenCountFilterFactory
 analysis/miscellaneous/LimitTokenOffsetFilter	ported	crates/lucene-analysis/src/miscellaneous/limit.rs::LimitTokenOffsetFilter
-analysis/miscellaneous/LimitTokenOffsetFilterFactory	todo:M11	T11.7 factory/SPI: LimitTokenOffsetFilterFactory
+analysis/miscellaneous/LimitTokenOffsetFilterFactory	ported	crates/lucene-analysis/src/factory/filters_misc.rs::LimitTokenOffsetFilterFactory
 analysis/miscellaneous/LimitTokenPositionFilter	ported	crates/lucene-analysis/src/miscellaneous/limit.rs::LimitTokenPositionFilter
-analysis/miscellaneous/LimitTokenPositionFilterFactory	todo:M11	T11.7 factory/SPI: LimitTokenPositionFilterFactory
+analysis/miscellaneous/LimitTokenPositionFilterFactory	ported	crates/lucene-analysis/src/factory/filters_misc.rs::LimitTokenPositionFilterFactory
 analysis/miscellaneous/PatternKeywordMarkerFilter	ported	crates/lucene-analysis/src/miscellaneous/keyword.rs::PatternKeywordMarkerFilter
 analysis/miscellaneous/PerFieldAnalyzerWrapper	ported	crates/lucene-analysis/src/miscellaneous/wrappers.rs::PerFieldAnalyzerWrapper
 analysis/miscellaneous/ProtectedTermFilter	ported	crates/lucene-analysis/src/miscellaneous/conditional.rs::ProtectedTermFilter
-analysis/miscellaneous/ProtectedTermFilterFactory	todo:M11	T11.7 factory/SPI: ProtectedTermFilterFactory
+analysis/miscellaneous/ProtectedTermFilterFactory	ported	crates/lucene-analysis/src/factory/conditional.rs::ProtectedTermFilterFactory
 analysis/miscellaneous/RemoveDuplicatesTokenFilter	ported	crates/lucene-analysis/src/miscellaneous/keyword.rs::RemoveDuplicatesTokenFilter
-analysis/miscellaneous/RemoveDuplicatesTokenFilterFactory	todo:M11	T11.7 factory/SPI: RemoveDuplicatesTokenFilterFactory
+analysis/miscellaneous/RemoveDuplicatesTokenFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::RemoveDuplicatesTokenFilterFactory
 analysis/miscellaneous/ScandinavianFoldingFilter	ported	crates/lucene-analysis/src/miscellaneous/term_filters.rs::ScandinavianFoldingFilter
-analysis/miscellaneous/ScandinavianFoldingFilterFactory	todo:M11	T11.7 factory/SPI: ScandinavianFoldingFilterFactory
+analysis/miscellaneous/ScandinavianFoldingFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::ScandinavianFoldingFilterFactory
 analysis/miscellaneous/ScandinavianNormalizationFilter	ported	crates/lucene-analysis/src/miscellaneous/term_filters.rs::ScandinavianNormalizationFilter
-analysis/miscellaneous/ScandinavianNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: ScandinavianNormalizationFilterFactory
+analysis/miscellaneous/ScandinavianNormalizationFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::ScandinavianNormalizationFilterFactory
 analysis/miscellaneous/ScandinavianNormalizer	ported	crates/lucene-analysis/src/miscellaneous/term_filters.rs::ScandinavianNormalizer
 analysis/miscellaneous/SetKeywordMarkerFilter	ported	crates/lucene-analysis/src/miscellaneous/keyword.rs::SetKeywordMarkerFilter
 analysis/miscellaneous/StemmerOverrideFilter	ported	crates/lucene-analysis/src/miscellaneous/keyword.rs::StemmerOverrideFilter
-analysis/miscellaneous/StemmerOverrideFilterFactory	todo:M11	T11.7 factory/SPI: StemmerOverrideFilterFactory
+analysis/miscellaneous/StemmerOverrideFilterFactory	ported	crates/lucene-analysis/src/factory/filters_resource.rs::StemmerOverrideFilterFactory
 analysis/miscellaneous/TrimFilter	ported	crates/lucene-analysis/src/miscellaneous/term_filters.rs::TrimFilter
-analysis/miscellaneous/TrimFilterFactory	todo:M11	T11.7 factory/SPI: TrimFilterFactory
+analysis/miscellaneous/TrimFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::TrimFilterFactory
 analysis/miscellaneous/TruncateTokenFilter	ported	crates/lucene-analysis/src/miscellaneous/term_filters.rs::TruncateTokenFilter
-analysis/miscellaneous/TruncateTokenFilterFactory	todo:M11	T11.7 factory/SPI: TruncateTokenFilterFactory
+analysis/miscellaneous/TruncateTokenFilterFactory	ported	crates/lucene-analysis/src/factory/filters_misc.rs::TruncateTokenFilterFactory
 analysis/miscellaneous/TypeAsSynonymFilter	ported	crates/lucene-analysis/src/miscellaneous/stateful.rs::TypeAsSynonymFilter
-analysis/miscellaneous/TypeAsSynonymFilterFactory	todo:M11	T11.7 factory/SPI: TypeAsSynonymFilterFactory
+analysis/miscellaneous/TypeAsSynonymFilterFactory	ported	crates/lucene-analysis/src/factory/filters_misc.rs::TypeAsSynonymFilterFactory
 analysis/miscellaneous/WordDelimiterFilter	ported	crates/lucene-analysis/src/miscellaneous/word_delimiter_filter.rs::WordDelimiterFilter
-analysis/miscellaneous/WordDelimiterFilterFactory	todo:M11	T11.7 factory/SPI: WordDelimiterFilterFactory
+analysis/miscellaneous/WordDelimiterFilterFactory	ported	crates/lucene-analysis/src/factory/filters_resource.rs::WordDelimiterFilterFactory
 analysis/miscellaneous/WordDelimiterGraphFilter	ported	crates/lucene-analysis/src/miscellaneous/word_delimiter.rs::WordDelimiterGraphFilter
-analysis/miscellaneous/WordDelimiterGraphFilterFactory	todo:M11	T11.7 factory/SPI: WordDelimiterGraphFilterFactory
+analysis/miscellaneous/WordDelimiterGraphFilterFactory	ported	crates/lucene-analysis/src/factory/filters_resource.rs::WordDelimiterGraphFilterFactory
 analysis/miscellaneous/WordDelimiterIterator	ported	crates/lucene-analysis/src/miscellaneous/word_delimiter.rs::WordDelimiterIterator
 analysis/morph/BinaryDictionary	deferred:M12	BinaryDictionary: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
 analysis/morph/BinaryDictionaryWriter	deferred:M12	BinaryDictionaryWriter: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
@@ -330,141 +330,141 @@ analysis/morph/TokenType	deferred:M12	TokenType: the Viterbi/dictionary base of 
 analysis/morph/Viterbi	deferred:M12	Viterbi: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
 analysis/morph/ViterbiNBest	deferred:M12	ViterbiNBest: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
 analysis/ne/NepaliAnalyzer	ported	crates/lucene-analysis/src/lang/ne.rs::NepaliAnalyzer
-analysis/ngram/EdgeNGramFilterFactory	todo:M11	T11.7 factory/SPI: EdgeNGramFilterFactory
+analysis/ngram/EdgeNGramFilterFactory	ported	crates/lucene-analysis/src/factory/filters_misc.rs::EdgeNGramFilterFactory
 analysis/ngram/EdgeNGramTokenFilter	ported	crates/lucene-analysis/src/ngram/mod.rs::EdgeNGramTokenFilter
 analysis/ngram/EdgeNGramTokenizer	ported	crates/lucene-analysis/src/ngram/mod.rs::EdgeNGramTokenizer
-analysis/ngram/EdgeNGramTokenizerFactory	todo:M11	T11.7 factory/SPI: EdgeNGramTokenizerFactory
-analysis/ngram/NGramFilterFactory	todo:M11	T11.7 factory/SPI: NGramFilterFactory
+analysis/ngram/EdgeNGramTokenizerFactory	ported	crates/lucene-analysis/src/factory/tokenizers.rs::EdgeNGramTokenizerFactory
+analysis/ngram/NGramFilterFactory	ported	crates/lucene-analysis/src/factory/filters_misc.rs::NGramFilterFactory
 analysis/ngram/NGramTokenFilter	ported	crates/lucene-analysis/src/ngram/mod.rs::NGramTokenFilter
 analysis/ngram/NGramTokenizer	ported	crates/lucene-analysis/src/ngram/mod.rs::NGramTokenizer
-analysis/ngram/NGramTokenizerFactory	todo:M11	T11.7 factory/SPI: NGramTokenizerFactory
+analysis/ngram/NGramTokenizerFactory	ported	crates/lucene-analysis/src/factory/tokenizers.rs::NGramTokenizerFactory
 analysis/nl/DutchAnalyzer	ported	crates/lucene-analysis/src/lang/nl.rs::DutchAnalyzer
 analysis/no/NorwegianAnalyzer	ported	crates/lucene-analysis/src/lang/no.rs::NorwegianAnalyzer
 analysis/no/NorwegianLightStemFilter	ported	crates/lucene-analysis/src/lang/no.rs::NorwegianLightStemFilter
-analysis/no/NorwegianLightStemFilterFactory	todo:M11	T11.7 factory/SPI: NorwegianLightStemFilterFactory
+analysis/no/NorwegianLightStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::NorwegianLightStemFilterFactory
 analysis/no/NorwegianLightStemmer	ported	crates/lucene-analysis/src/lang/no.rs::NorwegianLightStemmer
 analysis/no/NorwegianMinimalStemFilter	ported	crates/lucene-analysis/src/lang/no.rs::NorwegianMinimalStemFilter
-analysis/no/NorwegianMinimalStemFilterFactory	todo:M11	T11.7 factory/SPI: NorwegianMinimalStemFilterFactory
+analysis/no/NorwegianMinimalStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::NorwegianMinimalStemFilterFactory
 analysis/no/NorwegianMinimalStemmer	ported	crates/lucene-analysis/src/lang/no.rs::NorwegianMinimalStemmer
 analysis/no/NorwegianNormalizationFilter	ported	crates/lucene-analysis/src/lang/no.rs::NorwegianNormalizationFilter
-analysis/no/NorwegianNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: NorwegianNormalizationFilterFactory
+analysis/no/NorwegianNormalizationFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::NorwegianNormalizationFilterFactory
 analysis/path/PathHierarchyTokenizer	ported	crates/lucene-analysis/src/path/mod.rs::PathHierarchyTokenizer
-analysis/path/PathHierarchyTokenizerFactory	todo:M11	T11.7 factory/SPI: PathHierarchyTokenizerFactory
+analysis/path/PathHierarchyTokenizerFactory	ported	crates/lucene-analysis/src/factory/tokenizers.rs::PathHierarchyTokenizerFactory
 analysis/path/ReversePathHierarchyTokenizer	ported	crates/lucene-analysis/src/path/mod.rs::ReversePathHierarchyTokenizer
-analysis/pattern/PatternCaptureGroupFilterFactory	todo:M11	T11.7 factory/SPI: PatternCaptureGroupFilterFactory
+analysis/pattern/PatternCaptureGroupFilterFactory	ported	crates/lucene-analysis/src/factory/filters_misc.rs::PatternCaptureGroupFilterFactory
 analysis/pattern/PatternCaptureGroupTokenFilter	ported	crates/lucene-analysis/src/pattern/mod.rs::PatternCaptureGroupTokenFilter
 analysis/pattern/PatternReplaceCharFilter	ported	crates/lucene-analysis/src/pattern/mod.rs::PatternReplaceCharFilter
-analysis/pattern/PatternReplaceCharFilterFactory	todo:M11	T11.7 factory/SPI: PatternReplaceCharFilterFactory
+analysis/pattern/PatternReplaceCharFilterFactory	ported	crates/lucene-analysis/src/factory/char_filters.rs::PatternReplaceCharFilterFactory
 analysis/pattern/PatternReplaceFilter	ported	crates/lucene-analysis/src/pattern/mod.rs::PatternReplaceFilter
-analysis/pattern/PatternReplaceFilterFactory	todo:M11	T11.7 factory/SPI: PatternReplaceFilterFactory
+analysis/pattern/PatternReplaceFilterFactory	ported	crates/lucene-analysis/src/factory/filters_misc.rs::PatternReplaceFilterFactory
 analysis/pattern/PatternTokenizer	ported	crates/lucene-analysis/src/pattern/mod.rs::PatternTokenizer
-analysis/pattern/PatternTokenizerFactory	todo:M11	T11.7 factory/SPI: PatternTokenizerFactory
+analysis/pattern/PatternTokenizerFactory	ported	crates/lucene-analysis/src/factory/tokenizers.rs::PatternTokenizerFactory
 analysis/pattern/PatternTypingFilter	ported	crates/lucene-analysis/src/pattern/mod.rs::PatternTypingFilter
-analysis/pattern/PatternTypingFilterFactory	todo:M11	T11.7 factory/SPI: PatternTypingFilterFactory
+analysis/pattern/PatternTypingFilterFactory	ported	crates/lucene-analysis/src/factory/filters_resource.rs::PatternTypingFilterFactory
 analysis/pattern/SimplePatternSplitTokenizer	ported	crates/lucene-analysis/src/pattern/mod.rs::SimplePatternSplitTokenizer
-analysis/pattern/SimplePatternSplitTokenizerFactory	todo:M11	T11.7 factory/SPI: SimplePatternSplitTokenizerFactory
+analysis/pattern/SimplePatternSplitTokenizerFactory	ported	crates/lucene-analysis/src/factory/tokenizers.rs::SimplePatternSplitTokenizerFactory
 analysis/pattern/SimplePatternTokenizer	ported	crates/lucene-analysis/src/pattern/mod.rs::SimplePatternTokenizer
-analysis/pattern/SimplePatternTokenizerFactory	todo:M11	T11.7 factory/SPI: SimplePatternTokenizerFactory
+analysis/pattern/SimplePatternTokenizerFactory	ported	crates/lucene-analysis/src/factory/tokenizers.rs::SimplePatternTokenizerFactory
 analysis/payloads/AbstractEncoder	ported	crates/lucene-analysis/src/payloads/mod.rs::PayloadEncoder
 analysis/payloads/DelimitedPayloadTokenFilter	ported	crates/lucene-analysis/src/payloads/mod.rs::DelimitedPayloadTokenFilter
-analysis/payloads/DelimitedPayloadTokenFilterFactory	todo:M11	T11.7 factory/SPI: DelimitedPayloadTokenFilterFactory
+analysis/payloads/DelimitedPayloadTokenFilterFactory	ported	crates/lucene-analysis/src/factory/filters_resource.rs::DelimitedPayloadTokenFilterFactory
 analysis/payloads/FloatEncoder	ported	crates/lucene-analysis/src/payloads/mod.rs::FloatEncoder
 analysis/payloads/IdentityEncoder	ported	crates/lucene-analysis/src/payloads/mod.rs::IdentityEncoder
 analysis/payloads/IntegerEncoder	ported	crates/lucene-analysis/src/payloads/mod.rs::IntegerEncoder
 analysis/payloads/NumericPayloadTokenFilter	ported	crates/lucene-analysis/src/payloads/mod.rs::NumericPayloadTokenFilter
-analysis/payloads/NumericPayloadTokenFilterFactory	todo:M11	T11.7 factory/SPI: NumericPayloadTokenFilterFactory
+analysis/payloads/NumericPayloadTokenFilterFactory	ported	crates/lucene-analysis/src/factory/filters_misc.rs::NumericPayloadTokenFilterFactory
 analysis/payloads/PayloadEncoder	ported	crates/lucene-analysis/src/payloads/mod.rs::PayloadEncoder
 analysis/payloads/PayloadHelper	ported	crates/lucene-analysis/src/payloads/mod.rs::encode_float
 analysis/payloads/TokenOffsetPayloadTokenFilter	ported	crates/lucene-analysis/src/payloads/mod.rs::TokenOffsetPayloadTokenFilter
-analysis/payloads/TokenOffsetPayloadTokenFilterFactory	todo:M11	T11.7 factory/SPI: TokenOffsetPayloadTokenFilterFactory
+analysis/payloads/TokenOffsetPayloadTokenFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::TokenOffsetPayloadTokenFilterFactory
 analysis/payloads/TypeAsPayloadTokenFilter	ported	crates/lucene-analysis/src/payloads/mod.rs::TypeAsPayloadTokenFilter
-analysis/payloads/TypeAsPayloadTokenFilterFactory	todo:M11	T11.7 factory/SPI: TypeAsPayloadTokenFilterFactory
+analysis/payloads/TypeAsPayloadTokenFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::TypeAsPayloadTokenFilterFactory
 analysis/pt/PortugueseAnalyzer	ported	crates/lucene-analysis/src/lang/pt.rs::PortugueseAnalyzer
 analysis/pt/PortugueseLightStemFilter	ported	crates/lucene-analysis/src/lang/pt.rs::PortugueseLightStemFilter
-analysis/pt/PortugueseLightStemFilterFactory	todo:M11	T11.7 factory/SPI: PortugueseLightStemFilterFactory
+analysis/pt/PortugueseLightStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::PortugueseLightStemFilterFactory
 analysis/pt/PortugueseLightStemmer	ported	crates/lucene-analysis/src/lang/pt.rs::PortugueseLightStemmer
 analysis/pt/PortugueseMinimalStemFilter	ported	crates/lucene-analysis/src/lang/pt.rs::PortugueseMinimalStemFilter
-analysis/pt/PortugueseMinimalStemFilterFactory	todo:M11	T11.7 factory/SPI: PortugueseMinimalStemFilterFactory
+analysis/pt/PortugueseMinimalStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::PortugueseMinimalStemFilterFactory
 analysis/pt/PortugueseMinimalStemmer	ported	crates/lucene-analysis/src/lang/pt.rs::PortugueseMinimalStemmer
 analysis/pt/PortugueseStemFilter	ported	crates/lucene-analysis/src/lang/pt.rs::PortugueseStemFilter
-analysis/pt/PortugueseStemFilterFactory	todo:M11	T11.7 factory/SPI: PortugueseStemFilterFactory
+analysis/pt/PortugueseStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::PortugueseStemFilterFactory
 analysis/pt/PortugueseStemmer	ported	crates/lucene-analysis/src/lang/pt.rs::PortugueseStemmer
 analysis/pt/RSLPStemmerBase	ported	crates/lucene-analysis/src/lang/pt.rs::parse_rslp
 analysis/query/QueryAutoStopWordAnalyzer	ported	crates/lucene-search/src/query_auto_stop_word_analyzer.rs::QueryAutoStopWordAnalyzer
 analysis/reverse/ReverseStringFilter	ported	crates/lucene-analysis/src/reverse/mod.rs::ReverseStringFilter
-analysis/reverse/ReverseStringFilterFactory	todo:M11	T11.7 factory/SPI: ReverseStringFilterFactory
+analysis/reverse/ReverseStringFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::ReverseStringFilterFactory
 analysis/ro/RomanianAnalyzer	ported	crates/lucene-analysis/src/lang/ro.rs::RomanianAnalyzer
 analysis/ro/RomanianNormalizationFilter	ported	crates/lucene-analysis/src/lang/ro.rs::RomanianNormalizationFilter
-analysis/ro/RomanianNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: RomanianNormalizationFilterFactory
+analysis/ro/RomanianNormalizationFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::RomanianNormalizationFilterFactory
 analysis/ro/RomanianNormalizer	ported	crates/lucene-analysis/src/lang/ro.rs::RomanianNormalizer
 analysis/ru/RussianAnalyzer	ported	crates/lucene-analysis/src/lang/ru.rs::RussianAnalyzer
 analysis/ru/RussianLightStemFilter	ported	crates/lucene-analysis/src/lang/ru.rs::RussianLightStemFilter
-analysis/ru/RussianLightStemFilterFactory	todo:M11	T11.7 factory/SPI: RussianLightStemFilterFactory
+analysis/ru/RussianLightStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::RussianLightStemFilterFactory
 analysis/ru/RussianLightStemmer	ported	crates/lucene-analysis/src/lang/ru.rs::RussianLightStemmer
 analysis/shingle/FixedShingleFilter	ported	crates/lucene-analysis/src/shingle/mod.rs::FixedShingleFilter
-analysis/shingle/FixedShingleFilterFactory	todo:M11	T11.7 factory/SPI: FixedShingleFilterFactory
+analysis/shingle/FixedShingleFilterFactory	ported	crates/lucene-analysis/src/factory/filters_misc.rs::FixedShingleFilterFactory
 analysis/shingle/ShingleAnalyzerWrapper	ported	crates/lucene-analysis/src/shingle/mod.rs::ShingleAnalyzerWrapper
 analysis/shingle/ShingleFilter	ported	crates/lucene-analysis/src/shingle/mod.rs::ShingleFilter
-analysis/shingle/ShingleFilterFactory	todo:M11	T11.7 factory/SPI: ShingleFilterFactory
+analysis/shingle/ShingleFilterFactory	ported	crates/lucene-analysis/src/factory/filters_misc.rs::ShingleFilterFactory
 analysis/sinks/TeeSinkTokenFilter	ported	crates/lucene-analysis/src/sinks/mod.rs::TeeSinkTokenFilter
 analysis/snowball/SnowballFilter	ported	crates/lucene-analysis/src/snowball/mod.rs::SnowballFilter -- M11 T11.3
-analysis/snowball/SnowballPorterFilterFactory	todo:M11	T11.7 factory/SPI: SnowballPorterFilterFactory
+analysis/snowball/SnowballPorterFilterFactory	ported	crates/lucene-analysis/src/factory/filters_resource.rs::SnowballPorterFilterFactory
 analysis/sr/SerbianAnalyzer	ported	crates/lucene-analysis/src/lang/sr.rs::SerbianAnalyzer
 analysis/sr/SerbianNormalizationFilter	ported	crates/lucene-analysis/src/lang/sr.rs::SerbianNormalizationFilter
-analysis/sr/SerbianNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: SerbianNormalizationFilterFactory
+analysis/sr/SerbianNormalizationFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::SerbianNormalizationFilterFactory
 analysis/sr/SerbianNormalizationRegularFilter	ported	crates/lucene-analysis/src/lang/sr.rs::SerbianNormalizationRegularFilter
 analysis/sv/SwedishAnalyzer	ported	crates/lucene-analysis/src/lang/sv.rs::SwedishAnalyzer
 analysis/sv/SwedishLightStemFilter	ported	crates/lucene-analysis/src/lang/sv.rs::SwedishLightStemFilter
-analysis/sv/SwedishLightStemFilterFactory	todo:M11	T11.7 factory/SPI: SwedishLightStemFilterFactory
+analysis/sv/SwedishLightStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::SwedishLightStemFilterFactory
 analysis/sv/SwedishLightStemmer	ported	crates/lucene-analysis/src/lang/sv.rs::SwedishLightStemmer
 analysis/sv/SwedishMinimalStemFilter	ported	crates/lucene-analysis/src/lang/sv.rs::SwedishMinimalStemFilter
-analysis/sv/SwedishMinimalStemFilterFactory	todo:M11	T11.7 factory/SPI: SwedishMinimalStemFilterFactory
+analysis/sv/SwedishMinimalStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::SwedishMinimalStemFilterFactory
 analysis/sv/SwedishMinimalStemmer	ported	crates/lucene-analysis/src/lang/sv.rs::SwedishMinimalStemmer
 analysis/synonym/SolrSynonymParser	ported	crates/lucene-analysis/src/synonym/solr_synonym_parser.rs::SolrSynonymParser
 analysis/synonym/SynonymFilter	ported	crates/lucene-analysis/src/synonym/synonym_filter.rs::SynonymFilter
-analysis/synonym/SynonymFilterFactory	todo:M11	T11.7 factory/SPI: SynonymFilterFactory
+analysis/synonym/SynonymFilterFactory	ported	crates/lucene-analysis/src/factory/filters_resource.rs::SynonymFilterFactory
 analysis/synonym/SynonymGraphFilter	ported	crates/lucene-analysis/src/synonym/synonym_graph_filter.rs::SynonymGraphFilter
-analysis/synonym/SynonymGraphFilterFactory	todo:M11	T11.7 factory/SPI: SynonymGraphFilterFactory
+analysis/synonym/SynonymGraphFilterFactory	ported	crates/lucene-analysis/src/factory/filters_resource.rs::SynonymGraphFilterFactory
 analysis/synonym/SynonymMap	ported	crates/lucene-analysis/src/synonym/synonym_map.rs::SynonymMap
 analysis/synonym/WordnetSynonymParser	ported	crates/lucene-analysis/src/synonym/wordnet_synonym_parser.rs::WordnetSynonymParser
 analysis/synonym/word2vec/Dl4jModelReader	ported	crates/lucene-search/src/word2vec/dl4j.rs::read_dl4j_model
 analysis/synonym/word2vec/TermAndBoost	ported	crates/lucene-search/src/word2vec/model.rs::TermAndBoost
 analysis/synonym/word2vec/Word2VecModel	ported	crates/lucene-search/src/word2vec/model.rs::Word2VecModel
 analysis/synonym/word2vec/Word2VecSynonymFilter	ported	crates/lucene-search/src/word2vec/mod.rs::Word2VecSynonymFilter
-analysis/synonym/word2vec/Word2VecSynonymFilterFactory	todo:M11	T11.7 factory/SPI: Word2VecSynonymFilterFactory
+analysis/synonym/word2vec/Word2VecSynonymFilterFactory	ported	crates/lucene-search/src/word2vec/factory.rs::Word2VecSynonymFilterFactory
 analysis/synonym/word2vec/Word2VecSynonymProvider	ported	crates/lucene-search/src/word2vec/mod.rs::Word2VecSynonymProvider
-analysis/synonym/word2vec/Word2VecSynonymProviderFactory	todo:M11	T11.7 factory/SPI: Word2VecSynonymProviderFactory
+analysis/synonym/word2vec/Word2VecSynonymProviderFactory	ported	crates/lucene-search/src/word2vec/factory.rs::get_synonym_provider
 analysis/ta/TamilAnalyzer	ported	crates/lucene-analysis/src/lang/ta.rs::TamilAnalyzer
 analysis/te/TeluguAnalyzer	ported	crates/lucene-analysis/src/lang/te.rs::TeluguAnalyzer
 analysis/te/TeluguNormalizationFilter	ported	crates/lucene-analysis/src/lang/te.rs::TeluguNormalizationFilter
-analysis/te/TeluguNormalizationFilterFactory	todo:M11	T11.7 factory/SPI: TeluguNormalizationFilterFactory
+analysis/te/TeluguNormalizationFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::TeluguNormalizationFilterFactory
 analysis/te/TeluguNormalizer	ported	crates/lucene-analysis/src/lang/te.rs::TeluguNormalizer
 analysis/te/TeluguStemFilter	ported	crates/lucene-analysis/src/lang/te.rs::TeluguStemFilter
-analysis/te/TeluguStemFilterFactory	todo:M11	T11.7 factory/SPI: TeluguStemFilterFactory
+analysis/te/TeluguStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::TeluguStemFilterFactory
 analysis/te/TeluguStemmer	ported	crates/lucene-analysis/src/lang/te.rs::TeluguStemmer
 analysis/th/ThaiAnalyzer	deferred:M12	ThaiAnalyzer: ThaiTokenizer is java.text.BreakIterator's dictionary word breaking for Thai, whose dictionary is GPL-licensed JDK data; M12 takes Thai with ICU
 analysis/th/ThaiTokenizer	deferred:M12	ThaiTokenizer: BreakIterator.getWordInstance(th) is the JDK's GPL-licensed Thai dictionary; M12 (ICU)
-analysis/th/ThaiTokenizerFactory	todo:M11	T11.7 factory/SPI: ThaiTokenizerFactory
+analysis/th/ThaiTokenizerFactory	deferred:M12	ThaiTokenizerFactory: registered (crates/lucene-analysis/src/factory/tokenizers.rs, arguments parsed as Java does) but its ThaiTokenizer runs java.text.BreakIterator; M12 ports it
 analysis/tr/ApostropheFilter	ported	crates/lucene-analysis/src/lang/tr.rs::ApostropheFilter
-analysis/tr/ApostropheFilterFactory	todo:M11	T11.7 factory/SPI: ApostropheFilterFactory
+analysis/tr/ApostropheFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::ApostropheFilterFactory
 analysis/tr/TurkishAnalyzer	ported	crates/lucene-analysis/src/lang/tr.rs::TurkishAnalyzer
 analysis/tr/TurkishLowerCaseFilter	ported	crates/lucene-analysis/src/lang/tr.rs::TurkishLowerCaseFilter
-analysis/tr/TurkishLowerCaseFilterFactory	todo:M11	T11.7 factory/SPI: TurkishLowerCaseFilterFactory
+analysis/tr/TurkishLowerCaseFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::TurkishLowerCaseFilterFactory
 analysis/util/CSVUtil	ported	crates/lucene-analysis/src/util/csv_util.rs::quote_escape
 analysis/util/CharArrayIterator	deferred:M12	CharArrayIterator: the CharacterIterator SegmentingTokenizerBase feeds BreakIterator; M12
 analysis/util/CharTokenizer	ported	crates/lucene-analysis/src/util/char_tokenizer.rs::CharTokenizer
 analysis/util/ElisionFilter	ported	crates/lucene-analysis/src/util/elision_filter.rs::ElisionFilter
-analysis/util/ElisionFilterFactory	todo:M11	T11.7 factory/SPI: ElisionFilterFactory
-analysis/util/FilesystemResourceLoader	todo:M11	T11.7 factory/SPI: FilesystemResourceLoader
+analysis/util/ElisionFilterFactory	ported	crates/lucene-analysis/src/factory/filters_resource.rs::ElisionFilterFactory
+analysis/util/FilesystemResourceLoader	ported	crates/lucene-analysis/src/factory/loader.rs::FilesystemResourceLoader
 analysis/util/OpenStringBuilder	ported	crates/lucene-analysis/src/en/kstem.rs::OpenStringBuilder
 analysis/util/RollingCharBuffer	ported	crates/lucene-analysis/src/charfilter/mod.rs::RollingCharBuffer
 analysis/util/SegmentingTokenizerBase	deferred:M12	SegmentingTokenizerBase: its tokenizers (Thai, smartcn, ICU) run java.text.BreakIterator; M12 ports it with them
 analysis/util/StemmerUtil	ported	crates/lucene-analysis/src/util/stemmer_util.rs::delete_n
 analysis/util/UnicodeProps	ported	crates/lucene-analysis/src/java_character.rs::is_unicode_whitespace
 analysis/wikipedia/WikipediaTokenizer	ported	crates/lucene-analysis/src/wikipedia/mod.rs::WikipediaTokenizer
-analysis/wikipedia/WikipediaTokenizerFactory	todo:M11	T11.7 factory/SPI: WikipediaTokenizerFactory
+analysis/wikipedia/WikipediaTokenizerFactory	ported	crates/lucene-analysis/src/factory/tokenizers.rs::WikipediaTokenizerFactory
 analysis/wikipedia/WikipediaTokenizerImpl	ported	crates/lucene-analysis/src/wikipedia/mod.rs::WikipediaTokenizer
-collation/CollationAttributeFactory	todo:M11	T11.7 factory/SPI: CollationAttributeFactory
+collation/CollationAttributeFactory	deferred:M12	CollationAttributeFactory: a java.text.Collator attribute factory; collation is M12
 collation/CollationDocValuesField	deferred:M12	CollationDocValuesField: java.text.Collator sort keys (JDK locale data); M12 (ICU collation)
 collation/CollationKeyAnalyzer	deferred:M12	CollationKeyAnalyzer: java.text.Collator sort keys (JDK locale data); M12 (ICU collation)
 collation/tokenattributes/CollatedTermAttributeImpl	deferred:M12	CollatedTermAttributeImpl: java.text.Collator sort keys; M12 (ICU collation)

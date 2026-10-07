@@ -10,6 +10,7 @@
 //! the same graph Java builds, arc for arc, from the same seed.
 
 mod dl4j;
+mod factory;
 mod model;
 
 use std::collections::VecDeque;
@@ -24,6 +25,10 @@ use lucene_codecs::hnsw::{
 };
 
 pub use dl4j::read_dl4j_model;
+pub use factory::{
+    get_synonym_provider, register_factories, Word2VecSynonymFilterFactory,
+    DEFAULT_MAX_SYNONYMS_PER_TERM, DEFAULT_MIN_ACCEPTED_SIMILARITY,
+};
 use model::ModelScorer;
 pub use model::{TermAndBoost, Word2VecModel};
 

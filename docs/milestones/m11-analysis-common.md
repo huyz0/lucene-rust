@@ -231,8 +231,19 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   20 edge sets, all equal; JDK 25's
   lenient space matching, which CI's JDK 21 lacks, in unit tests) and `QueryAutoStopWordAnalyzer` (in
   `lucene-search`, which reads the index: `GenQueryAutoStop.java`, three
-  segments with deletions, six constructors, equal). Left in M11:
-  `CustomAnalyzer` and the factories (T11.7, part 4).
+  segments with deletions, six constructors, equal).
+- **T11.7** (part 4) -- the factory SPI and `CustomAnalyzer`
+  (`src/factory/`): `AbstractAnalysisFactory`'s helpers with Java's
+  messages over a `java.util.HashMap`-ordered argument map, the registry by
+  SPI name (lucene-core's `standard` plus analysis-common's 130; `lucene-search`
+  registers `Word2VecSynonym`), `ResourceLoader`/`FilesystemResourceLoader`,
+  every factory, and `CustomAnalyzer` with its builder and `when`/`whenTerm`.
+  `GenAnalysisFactories.java` builds the 303 configurations of
+  `corpus/analysis-factories.conf` with Lucene's builder: 204 run over
+  `corpus/analysis-factories.txt` (every attribute, `normalize`, `toString`)
+  and 99 throw (class and message), all equal; the registered name sets are
+  Lucene's. Byte-identical under JDK 21 and 25. Not buildable: `thai` (its
+  tokenizer is M12's); `dateRecognizer` takes `Locale.ENGLISH` only.
 - `java.util.regex` is the `regex` crate behind a Java-syntax shim (`util/java_regex.rs`: ASCII
   `\d\w\s`, `$n` replacements; no backreferences or lookaround).
 - The parity ledger's 400 KB budget is shared (the large area files were

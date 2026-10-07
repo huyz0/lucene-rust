@@ -1,0 +1,4 @@
+the | definite article
+and  over
+| a comment line
+is are
