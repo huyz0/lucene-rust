@@ -25,7 +25,8 @@ import java.util.TimeZone;
  * locale), every pattern of {@link #PATTERNS} over formatted dates and mutations of them, and numbers
  * in the locale's own symbols ({@code dates.txt}: {@code tag<TAB>pattern<TAB>text<TAB>end}, {@code
  * end} the parse position's index or -1). Texts whose space separators JDK 23+'s lenient matching
- * would read otherwise than JDK 21 are left out. Read by {@code
+ * would read otherwise than JDK 21 are left out. {@code --jdk25} writes {@code dates_jdk25.txt}
+ * instead (see {@link #main}). Read by {@code
  * crates/lucene-analysis/tests/date_locale_fixtures.rs}.
  */
 public class GenAnalysisDateLocales {
@@ -49,13 +50,15 @@ public class GenAnalysisDateLocales {
   /**
    * Kept: the pattern has no space separator, or one kind only and the text no other kind (JDK
    * 23+ matches any space separator for a pattern's, JDK 21 only the same one); no split pair.
+   * Without {@code filter}, only the split pair is left out.
    */
-  static boolean kept(String pattern, String text) {
+  static boolean kept(boolean filter, String pattern, String text) {
     for (int i = 0; i < text.length(); i++) {
       char c = text.charAt(i);
       if (Character.isHighSurrogate(c) && (i + 1 == text.length() || !Character.isLowSurrogate(text.charAt(i + 1)))) return false;
       if (Character.isLowSurrogate(c) && (i == 0 || !Character.isHighSurrogate(text.charAt(i - 1)))) return false;
     }
+    if (!filter) return true;
     String p = spaces(pattern.replaceAll("'[^']*'", "")), t = spaces(text);
     if (p.isEmpty()) return true;
     return p.length() == 1 && t.chars().allMatch(c -> c == p.charAt(0));
@@ -77,18 +80,51 @@ public class GenAnalysisDateLocales {
     return text;
   }
 
+  /**
+   * {@code tools/GenDateLocales.java}'s locales: every available one without a variant whose
+   * calendar is Gregorian or Buddhist, by tag.
+   */
+  static List<String> availableTags() {
+    Set<String> tags = new java.util.TreeSet<>();
+    for (Locale l : Locale.getAvailableLocales()) {
+      if (!l.getVariant().isEmpty()) continue;
+      String cal = java.util.Calendar.getInstance(l).getCalendarType();
+      if (cal.equals("gregory") || cal.equals("buddhist")) tags.add(l.toLanguageTag());
+    }
+    return new ArrayList<>(tags);
+  }
+
+  /**
+   * Without arguments past the output directory: {@code dates.txt}, the same under JDK 21 and 25.
+   * With {@code --jdk25} (JDK 25 only): {@code dates_jdk25.txt}, the same batteries over every
+   * locale {@code date_locales.rs} holds (all 1,151) with no text left out for its spaces -- the
+   * JDK-25-only behaviour the table was generated from (CI's {@code fixtures} job regenerates and
+   * diffs it).
+   */
   public static void main(String[] args) throws Exception {
     Path out = Path.of(args[0]).resolve("analysis_date_locales");
     Files.createDirectories(out);
+    if (args.length > 1 && args[1].equals("--jdk25")) {
+      if (Runtime.version().feature() != 25) {
+        throw new IllegalStateException("--jdk25 needs JDK 25, not " + Runtime.version());
+      }
+      Files.writeString(out.resolve("dates_jdk25.txt"), generate(availableTags(), false), StandardCharsets.UTF_8);
+    } else {
+      Files.writeString(out.resolve("dates.txt"), generate(AnalysisRows.corpus("date-locales.txt"), true), StandardCharsets.UTF_8);
+    }
+  }
+
+  /** The rows over {@code tags}; {@code filter}: leave out {@link #kept}'s rejects. */
+  static String generate(List<String> tags, boolean filter) {
     StringBuilder o = new StringBuilder();
     Set<String> records = new LinkedHashSet<>();
     Random r = new Random(0x5EED_DA7EL);
-    for (String tag : AnalysisRows.corpus("date-locales.txt")) {
+    for (String tag : tags) {
       Locale l = new Locale.Builder().setLanguageTag(tag).build();
       DateFormat def = DateFormat.getDateInstance(DateFormat.DEFAULT, l);
       def.setTimeZone(TimeZone.getTimeZone("UTC"));
       String text = def.format(new Date(r.nextLong() % 4_000_000_000_000L));
-      if (kept(((SimpleDateFormat) def).toPattern(), text)) {
+      if (kept(filter, ((SimpleDateFormat) def).toPattern(), text)) {
         o.append(tag).append("\tDEFAULT\t").append(AnalysisRows.esc(text)).append('\t').append(end(def, text)).append('\n');
       }
       DecimalFormat df = (DecimalFormat) new SimpleDateFormat("y", l).getNumberFormat();
@@ -119,7 +155,7 @@ public class GenAnalysisDateLocales {
         for (int k = 0; k < 12 && seen.size() < 6; k++) {
           String t = f.format(new Date(r.nextLong() % 4_000_000_000_000L));
           if (k > 1) t = mutate(r, t, bits);
-          if (kept(pattern, t) && seen.add(t)) {
+          if (kept(filter, pattern, t) && seen.add(t)) {
             o.append(tag).append('\t').append(AnalysisRows.esc(pattern)).append('\t').append(AnalysisRows.esc(t)).append('\t').append(end(f, t)).append('\n');
           }
         }
@@ -127,9 +163,9 @@ public class GenAnalysisDateLocales {
       SimpleDateFormat y = new SimpleDateFormat("y", l);
       String n = df.getNegativePrefix(), x = sy.getExponentSeparator();
       for (String t : new String[] {sy.getNaN(), n + "12", n + sy.getInfinity(), sy.getInfinity(), "1" + x + "2", "1" + x + n + "2", "1" + x, "1" + x + n, n, n + sy.getNaN(), "-3", "−3", "1E2", "1e2"}) {
-        if (kept("y", t)) o.append(tag).append("\ty\t").append(AnalysisRows.esc(t)).append('\t').append(end(y, t)).append('\n');
+        if (kept(filter, "y", t)) o.append(tag).append("\ty\t").append(AnalysisRows.esc(t)).append('\t').append(end(y, t)).append('\n');
       }
     }
-    Files.writeString(out.resolve("dates.txt"), o.toString(), StandardCharsets.UTF_8);
+    return o.toString();
   }
 }
