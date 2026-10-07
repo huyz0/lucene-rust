@@ -10,6 +10,14 @@ pub fn clean(s: &[u16]) -> Vec<u16> {
     if s.is_empty() {
         return Vec::new();
     }
+    // ASCII: the letters are A-Z/a-z and upper-case to A-Z, one pass.
+    if s.iter().all(|&c| c < 0x80) {
+        return s
+            .iter()
+            .filter(|&&c| (c as u8).is_ascii_alphabetic())
+            .map(|&c| u16::from((c as u8).to_ascii_uppercase()))
+            .collect();
+    }
     let letters: Vec<u16> = s.iter().copied().filter(|&c| is_letter(c)).collect();
     to_upper(&letters)
 }
@@ -143,6 +151,11 @@ impl RefinedSoundex {
 
     // Java: RefinedSoundex.getMappingCode; 0 for "no code".
     fn mapping_code(&self, c: u16) -> u16 {
+        // ASCII letters (what clean() leaves of most words): no table lookups.
+        if let Some(i) = u8::try_from(c).ok().filter(u8::is_ascii_alphabetic) {
+            let index = usize::from(i.to_ascii_uppercase() - b'A');
+            return self.mapping.get(index).copied().unwrap_or(0);
+        }
         if !is_letter(c) {
             return 0;
         }

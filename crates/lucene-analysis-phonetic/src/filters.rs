@@ -35,6 +35,8 @@ pub struct PhoneticFilter<I> {
     inject: bool,
     encoder: Encoder,
     save: Option<State>,
+    /// The term as UTF-16 units, reused across tokens.
+    value: Vec<u16>,
 }
 
 impl<I: TokenStream> PhoneticFilter<I> {
@@ -45,6 +47,7 @@ impl<I: TokenStream> PhoneticFilter<I> {
             inject,
             encoder,
             save: None,
+            value: Vec::new(),
         }
     }
 }
@@ -65,10 +68,11 @@ impl<I: TokenStream> TokenFilter for PhoneticFilter<I> {
         if attrs.term().is_empty() {
             return Ok(true);
         }
-        let value = units(attrs.term());
+        self.value.clear();
+        self.value.extend(attrs.term().encode_utf16());
         // Java: any exception from the encoder keeps the token as it is.
-        let phonetic = match self.encoder.encode(&value) {
-            Ok(v) if !v.is_empty() && v != value => v,
+        let phonetic = match self.encoder.encode(&self.value) {
+            Ok(v) if !v.is_empty() && v != self.value => v,
             _ => return Ok(true),
         };
         if !self.inject {

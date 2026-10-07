@@ -1,0 +1,43 @@
+kotami	kot	subst:pl:inst:m2
+kota	kot	subst:sg:gen:m2+subst:sg:acc:m2
+koty	kot	subst:pl:nom:m2
+kot	kot	subst:sg:nom:m2
+psa	pies	subst:sg:gen:m2
+psami	pies	subst:pl:inst:m2
+najlepszy	dobry	adj:sg:nom:m1:sup
+lepszy	dobry	adj:sg:nom:m1:com
+nielepszy	dobry	adj:neg
+dobra	dobro	subst:pl:nom:n|subst:pl:acc:n	dobry	adj:sg:nom:f:pos
+dobra	dobro	subst:pl:nom:n|subst:pl:acc:n	dobry	adj:sg:nom:f:pos
+zamek	zamek	subst:pl:nom:n|subst:pl:acc:nm2
+zamku	zamek	subst:pl:nom:n|subst:pl:acc:nm2
+zamki	zamek	subst:pl
+Łódź
+łodzi
+ab	ab	subst:pl:nom:n|subst:pl:acc:nm2
+abc	b	x
+xyz	~	tagonly
+rozmawiać
+przeczytaj
+zżółkły
+aaaa	a	q
+a	aaaa	q
+colour	color	subst+british
+kotek	kot	subst+britishn|subst:pl:acc:nm2
+
+KOTAMI
+kotam
+kotamix
+x
+zamek	zamek	subst+britishn|subst:pl:acc:nm2
+dobra	dobro	subst:pl:nom:n|subst:pl:acc:n	dobry	adj:sg:nom:f:pos
+nie
+ŁÓDŹ
+a+b
+a;b
+a|b
+colour	color	subst+british
+zamki	zamek	subst:pl
+zamku	zamek	subst:plitishn|subst:pl:acc:nm2
+kotek	kot	subst:plitishn|subst:pl:acc:nm2
+zamek	zamek	subst:plitishn|subst:pl:acc:nm2

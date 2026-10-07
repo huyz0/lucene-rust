@@ -47,7 +47,8 @@ adopted](#lints-considered-and-not-adopted).
 | `lucene-store` | **on, fully audited** | none |
 | `lucene-codecs` | **on, fully audited** | none |
 | `lucene-index` | **on, fully audited** | none |
-| `lucene-util`, `lucene-analysis`, `lucene-search`, `lucene-core`, `lucene-ffi` | off | — |
+| `lucene-analysis-stempel`, `lucene-analysis-morfologik` (M12: they read stemmer tables and dictionary automata) | **on from their first line**; truncation and single-byte-flip sweeps over Java-built tables and automata in their fixture tests | none |
+| `lucene-util`, `lucene-analysis`, `lucene-analysis-phonetic`, `lucene-search`, `lucene-core`, `lucene-ffi` | off | — |
 
 All three crates it is on for are now fully audited; c30 closed the last
 three modules (`index_writer`, `merge`, `merge_policy`).
