@@ -88,6 +88,12 @@ public class GenAnalysisMisc {
     {"ddMM", "0512", "5 12", "05 12", "051", "-0512", "-5-12", " 0512", "  0512", "NaN12", "5NaN", "\u221e12",
         "-512", "- 512", "1E12", "1E-3", "\t512"},
     {"HHmm", "1234", "12 34", "1 234", " 1234", "1\t234"},
+    // An abutting field whose letter count runs past the text's end fails, however
+    // short the number in it (SimpleDateFormat checks start + count first).
+    {"yyyyMM", "1-2", "5-0", "-0\u221e", "2\t\uff11", "123456", "12345", "1234", "1234 5"},
+    {"yyyyw", "1-2", "5\u221e", "12345", "1234"},
+    {"ddddMM", "1-2", "123456", "1234"},
+    {"SSSSmm", "1-2", "123456", "1234"},
     {"MMM", "Jan", " Jan", "jAN", "January", "Janu", "1", "Ma", "\u017fep", "SEP", "Sept", "\u212aan", "J\u0131n"},
     {"MMM d", "Jan 5", "Jan\t5", "Jan\u00855", "Jan\u200b5", "Jan\u20285", "Jan  5", "Jan5"},
     {"d-M", "5--1", "5-1", "5- 1", "5 -1", "-5--1"},
@@ -101,6 +107,26 @@ public class GenAnalysisMisc {
     {"'T'd", "T5", "t5"},
     {"''d''", "'5'", "5"},
     {"", "", "x"}
+  };
+
+  /**
+   * Patterns with abutting numeric fields (and their neighbours), run over texts glued from
+   * {@link #ABUTTING_BITS} and mutated formatted dates.
+   */
+  static final String[] ABUTTING_PATTERNS = {
+    "yyyyMM", "yyMMdd", "HHmm", "hhmma", "dMMM", "yyyyMMM", "MMyyyy", "ddEEE", "yyyy MM", "yMd",
+    "yyyyMMdd", "kkmm", "MMdd", "yyyyX", "ddX", "Gy", "yG", "dd'x'MM", "d MMM y", "MMM d, y", "H:mm",
+    "yyyyw", "D", "MMMMM", "EEEE d", "a h", "h a", "mm ss", "yyyy-MM-dd", "SSS", "ss.SSS", "Kmm",
+    "MMddyyyy", "dMy", "ddMMyyyy", "yyyyMMddHHmmss", "LLLLd", "uw", "d M", "MMM d", "MM", "y''",
+    "''y", "d'x'", "Ld", "EEEd", "aK", "dd-MMM-yy"
+  };
+
+  static final String[] ABUTTING_BITS = {
+    "0", "1", "2", "3", "5", "9", "12", "31", "2020", "20", "-", " ", "  ", "\t", ":", ".", ",", "/",
+    "'", "x", "X", "Z", "+01", "+0100", "+01:00", "Jan", "jan", "JANUARY", "May", "Mon", "Thursday",
+    "AM", "pm", "ad", "BC", "Anno Domini", "E", "E2", "E-", "NaN", "\u221e", "\u0663", "\uff11",
+    "\u017f", "\u0130", "\u0131", "\u212a", "1E2", "00", "000", "99999999999",
+    "9999999999999999999999", "-0", "--1", "-NaN", "1-2", "T"
   };
 
   static String dateBit(java.util.Random r) {
@@ -121,6 +147,20 @@ public class GenAnalysisMisc {
     } catch (java.text.ParseException e) {
       return false;
     }
+  }
+
+  /** Whether {@code text} is left out: a split surrogate pair or a non-U+0020 space separator. */
+  static boolean skipped(String text) {
+    for (int i = 0; i < text.length(); i++) {
+      char c = text.charAt(i);
+      // A split surrogate pair cannot reach a Rust term.
+      if (Character.isHighSurrogate(c) && (i + 1 == text.length() || !Character.isLowSurrogate(text.charAt(i + 1)))) return true;
+      if (Character.isLowSurrogate(c) && (i == 0 || !Character.isHighSurrogate(text.charAt(i - 1)))) return true;
+      // A space separator other than U+0020 matches a pattern's space in JDK 23+'s lenient
+      // parse, not JDK 21's: left to the Rust unit tests, so the file is the same under both.
+      if (c != ' ' && Character.getType(c) == Character.SPACE_SEPARATOR) return true;
+    }
+    return false;
   }
 
   static String dateFormats() {
@@ -152,21 +192,28 @@ public class GenAnalysisMisc {
           for (int k = r.nextInt(6); k >= 0; k--) b.append(dateBit(r));
           text = b.toString();
         }
-        // A split surrogate pair cannot reach a Rust term.
-        boolean lone = false;
-        for (int i = 0; i < text.length(); i++) {
-          char c = text.charAt(i);
-          if (Character.isHighSurrogate(c) && (i + 1 == text.length() || !Character.isLowSurrogate(text.charAt(i + 1)))) lone = true;
-          if (Character.isLowSurrogate(c) && (i == 0 || !Character.isHighSurrogate(text.charAt(i - 1)))) lone = true;
+        if (skipped(text) || !seen.add(text)) continue;
+        o.append(AnalysisRows.esc(text)).append('\t').append(parses(f, text) ? '1' : '0').append('\n');
+      }
+    }
+    for (int pi = 0; pi < ABUTTING_PATTERNS.length; pi++) {
+      String pattern = ABUTTING_PATTERNS[pi];
+      java.text.DateFormat f = dateFormat(pattern);
+      f.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
+      java.util.Random r = new java.util.Random(2000 + pi);
+      o.append("#pattern\t").append(AnalysisRows.esc(pattern)).append('\n');
+      java.util.Set<String> seen = new java.util.LinkedHashSet<>();
+      while (seen.size() < 150) {
+        StringBuilder b = new StringBuilder();
+        if (r.nextInt(3) == 0) {
+          b.append(f.format(new java.util.Date(r.nextLong() % 315537897600000L)));
+          b.insert(r.nextInt(b.length() + 1), ABUTTING_BITS[r.nextInt(ABUTTING_BITS.length)]);
+          if (r.nextBoolean()) b.setLength(r.nextInt(b.length() + 1));
+        } else {
+          for (int k = r.nextInt(5); k >= 0; k--) b.append(ABUTTING_BITS[r.nextInt(ABUTTING_BITS.length)]);
         }
-        // A space separator other than U+0020 matches a pattern's space in JDK 23+'s lenient
-        // parse, not JDK 21's: left to the Rust unit tests, so the file is the same under both.
-        boolean otherSpace = false;
-        for (int i = 0; i < text.length(); i++) {
-          char c = text.charAt(i);
-          if (c != ' ' && Character.getType(c) == Character.SPACE_SEPARATOR) otherSpace = true;
-        }
-        if (lone || otherSpace || !seen.add(text)) continue;
+        String text = b.toString();
+        if (skipped(text) || !seen.add(text)) continue;
         o.append(AnalysisRows.esc(text)).append('\t').append(parses(f, text) ? '1' : '0').append('\n');
       }
     }

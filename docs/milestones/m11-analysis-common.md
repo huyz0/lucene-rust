@@ -226,8 +226,9 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   JDK's GPL dictionary), `SegmentingTokenizerBase`/`CharArrayIterator`,
   collation, `morph`. Part 3 also ported `DateRecognizerFilter` (the
   acceptance of `SimpleDateFormat.parse` re-specified from black-box runs,
-  no JDK code: English names, `z`/`Z` refused; `date_formats.txt`, 14,555
-  texts over 48 seeded patterns and 16 edge sets, all equal; JDK 25's
+  no JDK code: English names, `z`/`Z` refused; `date_formats.txt`, 21,773
+  texts over 96 seeded patterns, 48 of them abutting numeric fields, and
+  20 edge sets, all equal; JDK 25's
   lenient space matching, which CI's JDK 21 lacks, in unit tests) and `QueryAutoStopWordAnalyzer` (in
   `lucene-search`, which reads the index: `GenQueryAutoStop.java`, three
   segments with deletions, six constructors, equal). Left in M11:
