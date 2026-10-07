@@ -254,8 +254,8 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   SPI name (lucene-core's `standard` plus analysis-common's 130; `lucene-search`
   registers `Word2VecSynonym`), `ResourceLoader`/`FilesystemResourceLoader`,
   every factory, and `CustomAnalyzer` with its builder and `when`/`whenTerm`.
-  `GenAnalysisFactories.java` builds the 303 configurations of
-  `corpus/analysis-factories.conf` with Lucene's builder: 204 run over
+  `GenAnalysisFactories.java` builds the 306 configurations of
+  `corpus/analysis-factories.conf` with Lucene's builder: 207 run over
   `corpus/analysis-factories.txt` (every attribute, `normalize`, `toString`)
   and 99 throw (class and message), all equal; the registered name sets are
   Lucene's. Byte-identical under JDK 21 and 25. Not buildable: `thai` (its

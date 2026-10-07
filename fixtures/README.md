@@ -1099,7 +1099,7 @@ outright.
   `random_lines.txt`, `random_chains.rows`). Deterministic. Read by
   `crates/lucene-analysis/tests/analysis_compound_fixtures.rs`.
 - `GenAnalysisFactories.java` — M11 T11.7: the factories and `CustomAnalyzer`
-  from configuration text. `corpus/analysis-factories.conf` (303 lines: a name,
+  from configuration text. `corpus/analysis-factories.conf` (306 lines: a name,
   then builder steps and their `key=value` arguments; resources under
   `corpus/analysis-factories/`) is built with `CustomAnalyzer.builder`; each
   `analysis_factories/<name>.tsv` holds the build's exception (`B`, class and

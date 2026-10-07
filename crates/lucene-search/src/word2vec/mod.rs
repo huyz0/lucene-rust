@@ -212,6 +212,11 @@ impl<I: TokenStream> TokenStream for Word2VecSynonymFilter<I> {
     fn as_tokenizer(&mut self) -> Option<&mut dyn Tokenizer> {
         self.input.as_tokenizer()
     }
+
+    /// A filter: a conditional filter's wrapper lies below it.
+    fn conditional_root(&mut self) -> Option<&mut dyn std::any::Any> {
+        self.input.conditional_root()
+    }
 }
 
 #[cfg(test)]

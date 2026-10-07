@@ -60,6 +60,10 @@ impl PatternTokenizer {
 }
 
 impl TokenStream for PatternTokenizer {
+    /// A source, not a wrapper: no conditional wrapper below it.
+    fn conditional_root(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
     fn attributes(&self) -> &AttributeSource {
         &self.atts
     }
@@ -588,6 +592,10 @@ impl SimplePatternTokenizer {
 }
 
 impl TokenStream for SimplePatternTokenizer {
+    /// A source, not a wrapper: no conditional wrapper below it.
+    fn conditional_root(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
     fn attributes(&self) -> &AttributeSource {
         &self.atts
     }
@@ -725,6 +733,10 @@ impl SimplePatternSplitTokenizer {
 }
 
 impl TokenStream for SimplePatternSplitTokenizer {
+    /// A source, not a wrapper: no conditional wrapper below it.
+    fn conditional_root(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
     fn attributes(&self) -> &AttributeSource {
         &self.atts
     }

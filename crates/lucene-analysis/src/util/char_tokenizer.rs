@@ -231,6 +231,10 @@ pub fn from_separator_char_predicate<F: Fn(u32) -> bool + Send>(
 }
 
 impl<P: TokenChar> TokenStream for CharTokenizer<P> {
+    /// A source, not a wrapper: no conditional wrapper below it.
+    fn conditional_root(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
     fn attributes(&self) -> &AttributeSource {
         &self.atts
     }

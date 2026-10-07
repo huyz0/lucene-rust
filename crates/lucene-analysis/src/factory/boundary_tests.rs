@@ -341,3 +341,26 @@ fn char_reader_boxes_compose() {
     let mut r = f.normalize(r);
     assert_eq!(crate::reader::read_to_string(&mut *r).unwrap(), "a");
 }
+
+/// A tokenizer is a source: no conditional filter's wrapper lies below it,
+/// whatever the factory (`TokenStream::conditional_root` has no default, so
+/// each one answers for itself).
+#[test]
+fn every_tokenizer_is_a_conditional_source() {
+    let mut built = 0;
+    for name in spi::available_tokenizers() {
+        let pairs: &[(&str, &str)] = match name {
+            "pattern" | "simplePattern" | "simplePatternSplit" => &[("pattern", "a")],
+            _ => &[],
+        };
+        let Ok(factory) = spi::tokenizer_for_name(name, &mut JavaArgs::from_pairs(pairs)) else {
+            continue;
+        };
+        let Ok(mut ts) = factory.create() else {
+            continue;
+        };
+        assert!(ts.conditional_root().is_none(), "{name}");
+        built += 1;
+    }
+    assert!(built >= 13, "{built}");
+}

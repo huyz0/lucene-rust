@@ -217,6 +217,10 @@ impl<'t> Replay<'t> {
 }
 
 impl TokenStream for Replay<'_> {
+    /// A source, not a wrapper: no conditional wrapper below it.
+    fn conditional_root(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
     fn attributes(&self) -> &AttributeSource {
         &self.atts
     }
@@ -255,7 +259,9 @@ mod tests {
 
     fn built(spec: &[(&str, i32, i32)], max_gaps: i32, ordered: bool) -> String {
         let toks = tokens(spec);
-        analyzed_tokens(&mut Replay::new(&toks), max_gaps, ordered)
+        let mut replay = Replay::new(&toks);
+        assert!(replay.conditional_root().is_none());
+        analyzed_tokens(&mut replay, max_gaps, ordered)
             .unwrap()
             .to_string()
     }

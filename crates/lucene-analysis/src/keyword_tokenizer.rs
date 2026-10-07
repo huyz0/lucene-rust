@@ -37,6 +37,10 @@ impl KeywordTokenizer {
 }
 
 impl TokenStream for KeywordTokenizer {
+    /// A source, not a wrapper: no conditional wrapper below it.
+    fn conditional_root(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
     fn attributes(&self) -> &AttributeSource {
         &self.atts
     }

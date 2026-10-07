@@ -286,6 +286,10 @@ impl FiniteStringsTokenStream {
 }
 
 impl TokenStream for FiniteStringsTokenStream {
+    /// A source, not a wrapper: no conditional wrapper below it.
+    fn conditional_root(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
     fn attributes(&self) -> &AttributeSource {
         &self.atts
     }
@@ -322,6 +326,10 @@ mod tests {
     }
 
     impl TokenStream for Canned {
+        /// A source, not a wrapper: no conditional wrapper below it.
+        fn conditional_root(&mut self) -> Option<&mut dyn std::any::Any> {
+            None
+        }
         fn attributes(&self) -> &AttributeSource {
             &self.atts
         }
@@ -346,12 +354,13 @@ mod tests {
     }
 
     fn graph(tokens: Vec<(&'static str, i32, i32)>) -> GraphTokenStreamFiniteStrings {
-        GraphTokenStreamFiniteStrings::new(&mut Canned {
+        let mut canned = Canned {
             atts: AttributeSource::new(),
             tokens,
             upto: 0,
-        })
-        .unwrap()
+        };
+        assert!(canned.conditional_root().is_none());
+        GraphTokenStreamFiniteStrings::new(&mut canned).unwrap()
     }
 
     fn paths(g: &GraphTokenStreamFiniteStrings, start: i32, end: i32) -> Vec<String> {
@@ -360,6 +369,7 @@ mod tests {
             .unwrap()
             .into_iter()
             .map(|mut ts| {
+                assert!(ts.conditional_root().is_none());
                 let mut words = Vec::new();
                 ts.reset().unwrap();
                 while ts.increment_token().unwrap() {
