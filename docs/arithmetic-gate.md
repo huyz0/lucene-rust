@@ -47,7 +47,7 @@ adopted](#lints-considered-and-not-adopted).
 | `lucene-store` | **on, fully audited** | none |
 | `lucene-codecs` | **on, fully audited** | none |
 | `lucene-index` | **on, fully audited** | none |
-| `lucene-analysis-stempel`, `lucene-analysis-morfologik`, `lucene-analysis-kuromoji`, `lucene-analysis-nori` (M12: they read stemmer tables, dictionary automata and morphological dictionaries), and `lucene-analysis`' `morph` module (a module-scope deny: the Viterbi base and dictionary readers Kuromoji and Nori share) | **on from their first line**; truncation and single-byte-flip sweeps over Java-built tables, automata and dictionaries in their tests (`kuromoji_hostile.rs`, `nori_hostile.rs`) | none |
+| `lucene-analysis-stempel`, `lucene-analysis-morfologik`, `lucene-analysis-kuromoji`, `lucene-analysis-nori`, `lucene-analysis-smartcn` (M12: they read stemmer tables, dictionary automata, morphological dictionaries and Java-serialized dictionaries), and `lucene-analysis`' `morph` module (a module-scope deny: the Viterbi base and dictionary readers Kuromoji and Nori share) | **on from their first line**; truncation and single-byte-flip sweeps over Java-built tables, automata and dictionaries in their tests (`kuromoji_hostile.rs`, `nori_hostile.rs`, `smartcn_hostile.rs`) | none |
 | `lucene-util`, `lucene-analysis`, `lucene-analysis-phonetic`, `lucene-search`, `lucene-core`, `lucene-ffi` | off | — |
 
 All three crates it is on for are now fully audited; c30 closed the last

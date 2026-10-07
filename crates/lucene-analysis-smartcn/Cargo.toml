@@ -1,0 +1,22 @@
+[package]
+name = "lucene-analysis-smartcn"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# lucene-analysis-smartcn (M12 T12.2): Chinese word segmentation -- the
+# hierarchical HMM over the bundled core and bigram dictionaries,
+# HMMChineseTokenizer and SmartChineseAnalyzer. Over lucene-analysis only, as
+# Lucene's module is over lucene-analysis-common
+# (docs/milestones/m12-language-analysis.md).
+[lints]
+workspace = true
+
+[dependencies]
+lucene-analysis = { path = "../lucene-analysis" }
+# Inflates the vendored dictionaries (src/resources/*.mem.z).
+miniz_oxide.workspace = true
+
+[dev-dependencies]
+# The shared factory-configuration harness (lucene-analysis/tests/support).
+lucene-util = { path = "../lucene-util" }

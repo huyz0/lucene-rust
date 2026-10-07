@@ -146,6 +146,13 @@ a dependency the shipped library links is not under a licence listed here.
   defaults use them and every dictionary class also loads a caller's files
   (`from_paths`). The Korean fixture corpus
   (`fixtures/corpus/analysis-korean*.txt`) is written for this project.
+  `crates/lucene-analysis-smartcn/src/resources/` carries `coredict.mem`
+  and `bigramdict.mem` of Lucene 10.5.0's `analysis-smartcn` jar (Java
+  serialization of the core and bigram dictionaries; 6.4 MB -> 3.5 MB
+  zlib-compressed) and its `stopwords.txt`: Apache-2.0, contributed with
+  the SmartChineseAnalyzer source by Xiaoping Gao / www.imdict.net (2009),
+  which `NOTICE` names as Lucene's does. The Chinese fixture corpus
+  (`fixtures/corpus/analysis-chinese.txt`) is written for this project.
 
 - **Test data from third parties** (M9). `fixtures/corpus/real_polygons.z`,
   the Tessellator's real-world polygon corpus (`scripts/gen-tessellator-corpus.py`),

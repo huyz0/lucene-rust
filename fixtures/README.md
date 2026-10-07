@@ -1160,6 +1160,17 @@ outright.
   `SegmentingTokenizerBase` subclasses written here over texts up to five
   windows long (`texts.txt`, `<chain>.tsv`). Byte-identical under JDK 21 and
   25. Read by `crates/lucene-analysis/tests/analysis_segmenting_fixtures.rs`.
+- `GenAnalysisSmartcn.java` — M12 T12.2: `HMMChineseTokenizer` over
+  `corpus/analysis-chinese.txt` (written here) and 200 seeded stress lines
+  (`stress.txt`, five past the 1,024-unit window; `tok_hmm.tsv`),
+  `SmartChineseAnalyzer` (default, no and custom stop sets) and the
+  `hmmChinese` factory over the corpus (`c_*.tsv`), `WordDictionary` lookups
+  for every corpus substring of up to four units and 2,000 random Han strings
+  (`words.tsv`), `BigramDictionary` lookups (`bigrams.tsv`) and
+  `HHMMSegmenter.process` per corpus line (`paths.tsv`) -- the last three
+  through `SmartcnAccess.java`, compiled into smartcn's package on the class
+  path. Own classpath. Byte-identical under JDK 21 and 25. Read by
+  `crates/lucene-analysis-smartcn/tests/smartcn_fixtures.rs`.
 - `GenAnalysisCompound.java` — M11 T11.6: `corpus/hyphenation-test.xml` (a
   toy hyphenation grammar written for this project) loaded into a
   `HyphenationTree`: hyphenation points for words (`points.words`), and the
