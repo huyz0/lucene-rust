@@ -46,4 +46,9 @@ E	÷þb	null
 E	cart	cart	AffixedWord[word=cart, entry=cart, prefixes=[], suffixes=[]]
 E	¡ach	null	
 E	dðn	null	
+C			null
+C			null
+C	cart		EntrySuggestion{toEdit=[cart], toAdd=[], extra=[]}
+C			null
+C			null
 G	AffixedWord[word=ṫŷb, entry=ṫŷb/S, prefixes=[], suffixes=[]]|AffixedWord[word=ṫŷbŵ, entry=ṫŷb/S, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=cart, entry=cart, prefixes=[], suffixes=[]]|AffixedWord[word=aḃair, entry=aḃair/DS, prefixes=[], suffixes=[]]|AffixedWord[word=ḋaḃair, entry=aḃair/DS, prefixes=[D(id=1)], suffixes=[]]|AffixedWord[word=aḃairŵ, entry=aḃair/DS, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=ḋaḃairŵ, entry=aḃair/DS, prefixes=[D(id=1)], suffixes=[S(id=0)]]|AffixedWord[word=Ḃach, entry=Ḃach/D, prefixes=[], suffixes=[]]|AffixedWord[word=ḋḂach, entry=Ḃach/D, prefixes=[D(id=1)], suffixes=[]]|AffixedWord[word=dŵn, entry=dŵn, prefixes=[], suffixes=[]]

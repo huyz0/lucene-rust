@@ -82,4 +82,20 @@ E	do	do/Ä	AffixedWord[word=do, entry=do/Ä, prefixes=[], suffixes=[]]|AffixedWo
 E	λόγος	λόγος/Ä is:sg po:noun	AffixedWord[word=λόγος, entry=λόγος/Ä, prefixes=[], suffixes=[]]|AffixedWord[word=λόγοςs, entry=λόγος/Ä, prefixes=[], suffixes=[Ä(id=0)]]
 E	house	house/Äж鳥 is:sg po:noun	AffixedWord[word=house, entry=house/Äж鳥, prefixes=[], suffixes=[]]|AffixedWord[word=houses, entry=house/Äж鳥, prefixes=[], suffixes=[Ä(id=0)]]|AffixedWord[word=unhouses, entry=house/Äж鳥, prefixes=[ж(id=3)], suffixes=[Ä(id=0)]]|AffixedWord[word=unhouse, entry=house/Äж鳥, prefixes=[ж(id=3)], suffixes=[]]|AffixedWord[word=housed, entry=house/Äж鳥, prefixes=[], suffixes=[鳥(id=2)]]|AffixedWord[word=unhoused, entry=house/Äж鳥, prefixes=[ж(id=3)], suffixes=[鳥(id=2)]]
 E	boat	boat/Äж	AffixedWord[word=boat, entry=boat/Äж, prefixes=[], suffixes=[]]|AffixedWord[word=boats, entry=boat/Äж, prefixes=[], suffixes=[Ä(id=0)]]|AffixedWord[word=unboats, entry=boat/Äж, prefixes=[ж(id=3)], suffixes=[Ä(id=0)]]|AffixedWord[word=unboat, entry=boat/Äж, prefixes=[ж(id=3)], suffixes=[]]
+C	cat|cats|uncats|uncat		EntrySuggestion{toEdit=[cat/Äж], toAdd=[], extra=[]}
+C	cats|uncats|uncat		EntrySuggestion{toEdit=[cat/Äж], toAdd=[], extra=[]}
+C	cat|cats	uncats	EntrySuggestion{toEdit=[cat/Ä], toAdd=[], extra=[]}
+C	jump|unjump|jumped|unjumped		EntrySuggestion{toEdit=[jump/ж鳥], toAdd=[], extra=[]}
+C	unjump|jumped|unjumped		EntrySuggestion{toEdit=[jump/ж鳥], toAdd=[], extra=[]}
+C	jump|unjump	jumped	EntrySuggestion{toEdit=[jump/ж], toAdd=[], extra=[]}
+C	do|dos		EntrySuggestion{toEdit=[do/Ä], toAdd=[], extra=[]}
+C	dos		EntrySuggestion{toEdit=[], toAdd=[dos], extra=[]}
+C	λόγος|λόγοςs		EntrySuggestion{toEdit=[λόγος/Ä], toAdd=[], extra=[]}
+C	λόγοςs		EntrySuggestion{toEdit=[], toAdd=[λόγοςs], extra=[]}
+C	house|houses|unhouses|unhouse		EntrySuggestion{toEdit=[house/Äж], toAdd=[], extra=[]}
+C	houses|unhouses|unhouse		EntrySuggestion{toEdit=[house/Äж], toAdd=[], extra=[]}
+C	house|houses	unhouses	EntrySuggestion{toEdit=[house/Ä], toAdd=[], extra=[]}
+C	boat|boats|unboats|unboat		EntrySuggestion{toEdit=[boat/Äж], toAdd=[], extra=[]}
+C	boats|unboats|unboat		EntrySuggestion{toEdit=[boat/Äж], toAdd=[], extra=[]}
+C	boat|boats	unboats	EntrySuggestion{toEdit=[boat/Ä], toAdd=[], extra=[]}
 G	AffixedWord[word=jump, entry=jump/ж鳥, prefixes=[], suffixes=[]]|AffixedWord[word=unjump, entry=jump/ж鳥, prefixes=[ж(id=3)], suffixes=[]]|AffixedWord[word=jumped, entry=jump/ж鳥, prefixes=[], suffixes=[鳥(id=1)]]|AffixedWord[word=unjumped, entry=jump/ж鳥, prefixes=[ж(id=3)], suffixes=[鳥(id=1)]]|AffixedWord[word=cat, entry=cat/Äж, prefixes=[], suffixes=[]]|AffixedWord[word=cats, entry=cat/Äж, prefixes=[], suffixes=[Ä(id=0)]]|AffixedWord[word=uncats, entry=cat/Äж, prefixes=[ж(id=3)], suffixes=[Ä(id=0)]]|AffixedWord[word=uncat, entry=cat/Äж, prefixes=[ж(id=3)], suffixes=[]]|AffixedWord[word=λόγος, entry=λόγος/Ä, prefixes=[], suffixes=[]]|AffixedWord[word=λόγοςs, entry=λόγος/Ä, prefixes=[], suffixes=[Ä(id=0)]]|AffixedWord[word=do, entry=do/Ä, prefixes=[], suffixes=[]]|AffixedWord[word=dos, entry=do/Ä, prefixes=[], suffixes=[Ä(id=0)]]|AffixedWord[word=house, entry=house/Äж鳥, prefixes=[], suffixes=[]]|AffixedWord[word=houses, entry=house/Äж鳥, prefixes=[], suffixes=[Ä(id=0)]]|AffixedWord[word=unhouses, entry=house/Äж鳥, prefixes=[ж(id=3)], suffixes=[Ä(id=0)]]|AffixedWord[word=unhouse, entry=house/Äж鳥, prefixes=[ж(id=3)], suffixes=[]]|AffixedWord[word=housed, entry=house/Äж鳥, prefixes=[], suffixes=[鳥(id=2)]]|AffixedWord[word=unhoused, entry=house/Äж鳥, prefixes=[ж(id=3)], suffixes=[鳥(id=2)]]|AffixedWord[word=boat, entry=boat/Äж, prefixes=[], suffixes=[]]|AffixedWord[word=boats, entry=boat/Äж, prefixes=[], suffixes=[Ä(id=0)]]|AffixedWord[word=unboats, entry=boat/Äж, prefixes=[ж(id=3)], suffixes=[Ä(id=0)]]|AffixedWord[word=unboat, entry=boat/Äж, prefixes=[ж(id=3)], suffixes=[]]

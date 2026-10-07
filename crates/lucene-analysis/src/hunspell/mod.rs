@@ -14,6 +14,7 @@ mod affixed_word;
 mod charsets;
 mod conv_table;
 mod dictionary;
+mod entry_suggestion;
 mod flags;
 mod speller;
 mod stemmer;
@@ -25,6 +26,7 @@ mod word_storage;
 
 pub use affixed_word::{Affix, AffixedWord};
 pub use dictionary::{DictEntry, Dictionary};
+pub use entry_suggestion::EntrySuggestion;
 pub use speller::Hunspell;
 pub use stemmer::Stemmer;
 pub use suggester::Suggester;

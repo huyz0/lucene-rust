@@ -145,4 +145,12 @@ E	ball	ball/C	AffixedWord[word=ball, entry=ball/C, prefixes=[], suffixes=[]]
 E	loop	loop/CX	AffixedWord[word=loop, entry=loop/CX, prefixes=[], suffixes=[]]
 E	boot	boot/CY	AffixedWord[word=boot, entry=boot/CY, prefixes=[], suffixes=[]]
 E	Word	null	
+C	foo|foos		EntrySuggestion{toEdit=[foo/S], toAdd=[], extra=[]}
+C	foos		EntrySuggestion{toEdit=[], toAdd=[foos], extra=[]}
+C	bar|bars		EntrySuggestion{toEdit=[bar/S], toAdd=[], extra=[]}
+C	bars		EntrySuggestion{toEdit=[], toAdd=[bars], extra=[]}
+C			null
+C			null
+C			null
+C			null
 G	AffixedWord[word=bar, entry=bar/CS, prefixes=[], suffixes=[]]|AffixedWord[word=bars, entry=bar/CS, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=ball, entry=ball/C, prefixes=[], suffixes=[]]|AffixedWord[word=loop, entry=loop/CX, prefixes=[], suffixes=[]]|AffixedWord[word=lick, entry=lick/C, prefixes=[], suffixes=[]]|AffixedWord[word=word, entry=word/C, prefixes=[], suffixes=[]]|AffixedWord[word=foo, entry=foo/CS, prefixes=[], suffixes=[]]|AffixedWord[word=foos, entry=foo/CS, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=fall, entry=fall/C, prefixes=[], suffixes=[]]|AffixedWord[word=boot, entry=boot/CY, prefixes=[], suffixes=[]]

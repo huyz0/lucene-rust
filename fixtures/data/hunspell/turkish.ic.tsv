@@ -33,4 +33,9 @@ W	sitanbul	0	sitanbul	sitanbul	sitanbul			istanbul	istanbul	1
 E	ılık	ılık/S	AffixedWord[word=ılık, entry=ılık/S, prefixes=[], suffixes=[]]|AffixedWord[word=ılıkler, entry=ılık/S, prefixes=[], suffixes=[S(id=0)]]
 E	iyi	iyi/S	AffixedWord[word=iyi, entry=iyi/S, prefixes=[], suffixes=[]]|AffixedWord[word=iyiler, entry=iyi/S, prefixes=[], suffixes=[S(id=0)]]
 E	İstanbul	null	
+C	ılık|ılıkler		EntrySuggestion{toEdit=[ılık/S], toAdd=[], extra=[]}
+C	ılıkler		EntrySuggestion{toEdit=[], toAdd=[ılıkler], extra=[]}
+C	iyi|iyiler		EntrySuggestion{toEdit=[iyi/S], toAdd=[], extra=[]}
+C	iyiler		EntrySuggestion{toEdit=[], toAdd=[iyiler], extra=[]}
+C			null
 G	AffixedWord[word=ılık, entry=ılık/S, prefixes=[], suffixes=[]]|AffixedWord[word=ılıkler, entry=ılık/S, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=iyi, entry=iyi/S, prefixes=[], suffixes=[]]|AffixedWord[word=iyiler, entry=iyi/S, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=istanbul, entry=istanbul, prefixes=[], suffixes=[]]

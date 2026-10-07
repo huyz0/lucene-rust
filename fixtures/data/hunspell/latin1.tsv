@@ -19,4 +19,7 @@ W	anïve	0	anïve	anïve	anïve			naïve	naïve	1
 W	anive	0	anive	anive	anive					1
 E	caf	caf/é	AffixedWord[word=caf, entry=caf/é, prefixes=[], suffixes=[]]|AffixedWord[word=café, entry=caf/é, prefixes=[], suffixes=[é(id=0)]]
 E	naïve	naïve	AffixedWord[word=naïve, entry=naïve, prefixes=[], suffixes=[]]
+C	caf|café		EntrySuggestion{toEdit=[caf/é], toAdd=[], extra=[]}
+C	café		EntrySuggestion{toEdit=[], toAdd=[café], extra=[]}
+C	naïve		EntrySuggestion{toEdit=[naïve], toAdd=[], extra=[]}
 G	AffixedWord[word=caf, entry=caf/é, prefixes=[], suffixes=[]]|AffixedWord[word=café, entry=caf/é, prefixes=[], suffixes=[é(id=0)]]|AffixedWord[word=naïve, entry=naïve, prefixes=[], suffixes=[]]

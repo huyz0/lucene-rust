@@ -6,6 +6,7 @@
 
 mod concatenate_graph;
 mod conditional;
+mod date_recognizer;
 mod filtering;
 mod keyword;
 mod limit;
@@ -19,6 +20,9 @@ pub use concatenate_graph::{ConcatenateGraphFilter, DEFAULT_MAX_GRAPH_EXPANSIONS
 pub use conditional::{
     protected_term_filter, ConditionalRoot, ConditionalTokenFilter, NotProtected, OneTimeWrapper,
     ProtectedTermFilter, ShouldFilter,
+};
+pub use date_recognizer::{
+    DateRecognizerFilter, SimpleDateFormat, DATE_TYPE, ENGLISH_DEFAULT_DATE_PATTERN,
 };
 pub use filtering::{CodepointCountFilter, DropIfFlaggedFilter, KeepWordFilter, LengthFilter};
 pub use keyword::{

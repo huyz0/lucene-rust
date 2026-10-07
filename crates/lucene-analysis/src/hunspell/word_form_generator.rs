@@ -1,7 +1,7 @@
 //! `WordFormGenerator`: every word form a dictionary entry produces with
 //! its affixes ("unmunch").
 //!
-//! Gap: `compress` (`EntrySuggestion`, "munch") is not ported.
+//! `compress` (`EntrySuggestion`, "munch") is `entry_suggestion.rs`.
 
 use std::collections::BTreeMap;
 
@@ -24,10 +24,10 @@ struct AffixEntry {
 /// `org.apache.lucene.analysis.hunspell.WordFormGenerator`.
 #[derive(Debug)]
 pub struct WordFormGenerator<'d> {
-    dictionary: &'d Dictionary,
+    pub(super) dictionary: &'d Dictionary,
     /// Affixes by flag, prefixes first, each in key order.
     affixes: BTreeMap<u16, Vec<AffixEntry>>,
-    stemmer: Stemmer<'d>,
+    pub(super) stemmer: Stemmer<'d>,
     /// `NGramFragmentChecker`'s subclass: `canStemToOriginal` always true.
     overgenerate: bool,
 }
@@ -89,12 +89,23 @@ impl<'d> WordFormGenerator<'d> {
         let Ok(encoded) = self.dictionary.flag_parsing.parse_utf_flags(&raw) else {
             return vec![];
         };
+        self.word_forms_of_flags(stem, flags.to_string(), encoded)
+    }
+
+    /// `getAllWordForms(stem, flags)` past the parsing of `flags` (which
+    /// `compress` prints from, and would parse back into, `encoded`).
+    pub(super) fn word_forms_of_flags(
+        &self,
+        stem: &str,
+        flags: String,
+        encoded: Vec<u16>,
+    ) -> Vec<AffixedWord> {
         if !self.should_consider_at_all(&encoded) {
             return vec![];
         }
         let entry = DictEntry {
             stem: stem.to_string(),
-            flags: flags.to_string(),
+            flags,
             morphological_data: String::new(),
         };
         self.forms_of(entry, encoded)

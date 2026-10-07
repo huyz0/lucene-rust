@@ -62,4 +62,17 @@ E	кошк	кошк/B	AffixedWord[word=кошк, entry=кошк/B, prefixes=[], 
 E	стол	стол/A	AffixedWord[word=стол, entry=стол/A, prefixes=[], suffixes=[]]|AffixedWord[word=стола, entry=стол/A, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=столом, entry=стол/A, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=столы, entry=стол/A, prefixes=[], suffixes=[A(id=1)]]
 E	ёж	ёж/A	AffixedWord[word=ёж, entry=ёж/A, prefixes=[], suffixes=[]]|AffixedWord[word=ёжа, entry=ёж/A, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=ёжом, entry=ёж/A, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=ёжы, entry=ёж/A, prefixes=[], suffixes=[A(id=1)]]
 E	Москва	null	
+C	дом|дома|передома|домом		EntrySuggestion{toEdit=[дом/AN], toAdd=[], extra=[домы, передом, передомом, передомы]}
+C	дома|передома|домом		EntrySuggestion{toEdit=[дом/AN], toAdd=[], extra=[домы, передом, передомом, передомы]}
+C	дом|дома	передома	EntrySuggestion{toEdit=[дом/A], toAdd=[], extra=[домом, домы]}
+C	кошк|кошкей|кошкой		EntrySuggestion{toEdit=[кошк/B], toAdd=[], extra=[]}
+C	кошкей|кошкой		EntrySuggestion{toEdit=[кошк/B], toAdd=[], extra=[]}
+C	кошк|кошкей	кошкой	EntrySuggestion{toEdit=[кошк], toAdd=[кошкей], extra=[]}
+C	стол|стола|столом|столы		EntrySuggestion{toEdit=[стол/A], toAdd=[], extra=[]}
+C	стола|столом|столы		EntrySuggestion{toEdit=[стол/A], toAdd=[], extra=[]}
+C	стол|стола	столом	EntrySuggestion{toEdit=[стол], toAdd=[стола], extra=[]}
+C	ёж|ёжа|ёжом|ёжы		EntrySuggestion{toEdit=[ёж/A], toAdd=[], extra=[]}
+C	ёжа|ёжом|ёжы		EntrySuggestion{toEdit=[ёж/A], toAdd=[], extra=[]}
+C	ёж|ёжа	ёжом	EntrySuggestion{toEdit=[ёж], toAdd=[ёжа], extra=[]}
+C			null
 G	AffixedWord[word=москва, entry=москва, prefixes=[], suffixes=[]]|AffixedWord[word=кошк, entry=кошк/B, prefixes=[], suffixes=[]]|AffixedWord[word=кошкей, entry=кошк/B, prefixes=[], suffixes=[B(id=4)]]|AffixedWord[word=кошкой, entry=кошк/B, prefixes=[], suffixes=[B(id=3)]]|AffixedWord[word=дом, entry=дом/AN, prefixes=[], suffixes=[]]|AffixedWord[word=дома, entry=дом/AN, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=передома, entry=дом/AN, prefixes=[N(id=5)], suffixes=[A(id=0)]]|AffixedWord[word=домом, entry=дом/AN, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=передомом, entry=дом/AN, prefixes=[N(id=5)], suffixes=[A(id=2)]]|AffixedWord[word=домы, entry=дом/AN, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=передомы, entry=дом/AN, prefixes=[N(id=5)], suffixes=[A(id=1)]]|AffixedWord[word=передом, entry=дом/AN, prefixes=[N(id=5)], suffixes=[]]|AffixedWord[word=ёж, entry=ёж/A, prefixes=[], suffixes=[]]|AffixedWord[word=ёжа, entry=ёж/A, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=ёжом, entry=ёж/A, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=ёжы, entry=ёж/A, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=стол, entry=стол/A, prefixes=[], suffixes=[]]|AffixedWord[word=стола, entry=стол/A, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=столом, entry=стол/A, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=столы, entry=стол/A, prefixes=[], suffixes=[A(id=1)]]

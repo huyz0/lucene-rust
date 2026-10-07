@@ -95,7 +95,7 @@ analysis/core/UpperCaseFilterFactory	todo:M11	T11.7 factory/SPI: UpperCaseFilter
 analysis/core/WhitespaceAnalyzer	ported	crates/lucene-analysis/src/core_analysis/analyzers.rs::WhitespaceAnalyzer
 analysis/core/WhitespaceTokenizer	ported	crates/lucene-analysis/src/util/char_tokenizer.rs::WhitespaceTokenizer
 analysis/core/WhitespaceTokenizerFactory	todo:M11	T11.7 factory/SPI: WhitespaceTokenizerFactory
-analysis/custom/CustomAnalyzer	todo:M11	T11.6 custom: CustomAnalyzer
+analysis/custom/CustomAnalyzer	todo:M11	T11.7 factory/SPI: CustomAnalyzer (its Builder is configured by factory names and classes)
 analysis/cz/CzechAnalyzer	ported	crates/lucene-analysis/src/lang/cz.rs::CzechAnalyzer
 analysis/cz/CzechStemFilter	ported	crates/lucene-analysis/src/lang/cz.rs::CzechStemFilter
 analysis/cz/CzechStemFilterFactory	todo:M11	T11.7 factory/SPI: CzechStemFilterFactory
@@ -206,7 +206,7 @@ analysis/hunspell/ConvTable	ported	crates/lucene-analysis/src/hunspell/conv_tabl
 analysis/hunspell/DictEntries	ported	crates/lucene-analysis/src/hunspell/dictionary.rs::lookup_entries -- M11 T11.4
 analysis/hunspell/DictEntry	ported	crates/lucene-analysis/src/hunspell/dictionary.rs::DictEntry -- M11 T11.4
 analysis/hunspell/Dictionary	ported	crates/lucene-analysis/src/hunspell/dictionary.rs::Dictionary -- M11 T11.4
-analysis/hunspell/EntrySuggestion	todo:M11	T11.4 remainder: WordFormGenerator.compress (munch) result
+analysis/hunspell/EntrySuggestion	ported	crates/lucene-analysis/src/hunspell/entry_suggestion.rs::EntrySuggestion
 analysis/hunspell/FlagEnumerator	ported	crates/lucene-analysis/src/hunspell/flags.rs::FlagEnumerator -- M11 T11.4
 analysis/hunspell/FlyweightEntry	ported	crates/lucene-analysis/src/hunspell/word_storage.rs::WordEntry -- M11 T11.4
 analysis/hunspell/FragmentChecker	ported	crates/lucene-analysis/src/hunspell/word_form_generator.rs::FragmentChecker -- M11 T11.4
@@ -222,7 +222,7 @@ analysis/hunspell/Root	ported	crates/lucene-analysis/src/hunspell/speller.rs::Ro
 analysis/hunspell/SortingStrategy	not-needed	entry sorting is in memory (SortingStrategy.inMemory()); the offline variant only bounds JVM heap while loading
 analysis/hunspell/Stemmer	ported	crates/lucene-analysis/src/hunspell/stemmer.rs::Stemmer -- M11 T11.4
 analysis/hunspell/Suggester	ported	crates/lucene-analysis/src/hunspell/suggester.rs::Suggester -- M11 T11.4
-analysis/hunspell/SuggestibleEntryCache	todo:M11	T11.4 remainder: Suggester.withSuggestibleEntryCache (speed for memory; same suggestions)
+analysis/hunspell/SuggestibleEntryCache	not-needed	WordStorage already keeps its entries in plain vectors (the cache's layout); withSuggestibleEntryCache would only copy them, and changes no suggestion
 analysis/hunspell/Suggestion	ported	crates/lucene-analysis/src/hunspell/suggester.rs::Suggestion -- M11 T11.4
 analysis/hunspell/SuggestionTimeoutException	ported	crates/lucene-analysis/src/hunspell/timeout.rs::SuggestionTimeout -- M11 T11.4
 analysis/hunspell/TimeoutPolicy	ported	crates/lucene-analysis/src/hunspell/timeout.rs::TimeoutPolicy -- M11 T11.4
@@ -261,7 +261,7 @@ analysis/miscellaneous/ConcatenateGraphFilterFactory	todo:M11	T11.7 factory/SPI:
 analysis/miscellaneous/ConcatenatingTokenStream	ported	crates/lucene-analysis/src/miscellaneous/wrappers.rs::ConcatenatingTokenStream
 analysis/miscellaneous/ConditionalTokenFilter	ported	crates/lucene-analysis/src/miscellaneous/conditional.rs::ConditionalTokenFilter
 analysis/miscellaneous/ConditionalTokenFilterFactory	todo:M11	T11.7 factory/SPI: ConditionalTokenFilterFactory
-analysis/miscellaneous/DateRecognizerFilter	todo:M11	T11.6 miscellaneous: DateRecognizerFilter
+analysis/miscellaneous/DateRecognizerFilter	ported	crates/lucene-analysis/src/miscellaneous/date_recognizer.rs::DateRecognizerFilter
 analysis/miscellaneous/DateRecognizerFilterFactory	todo:M11	T11.7 factory/SPI: DateRecognizerFilterFactory
 analysis/miscellaneous/DelimitedTermFrequencyTokenFilter	ported	crates/lucene-analysis/src/miscellaneous/term_filters.rs::DelimitedTermFrequencyTokenFilter
 analysis/miscellaneous/DelimitedTermFrequencyTokenFilterFactory	todo:M11	T11.7 factory/SPI: DelimitedTermFrequencyTokenFilterFactory
@@ -390,7 +390,7 @@ analysis/pt/PortugueseStemFilter	ported	crates/lucene-analysis/src/lang/pt.rs::P
 analysis/pt/PortugueseStemFilterFactory	todo:M11	T11.7 factory/SPI: PortugueseStemFilterFactory
 analysis/pt/PortugueseStemmer	ported	crates/lucene-analysis/src/lang/pt.rs::PortugueseStemmer
 analysis/pt/RSLPStemmerBase	ported	crates/lucene-analysis/src/lang/pt.rs::parse_rslp
-analysis/query/QueryAutoStopWordAnalyzer	todo:M11	T11.6 query: QueryAutoStopWordAnalyzer
+analysis/query/QueryAutoStopWordAnalyzer	ported	crates/lucene-search/src/query_auto_stop_word_analyzer.rs::QueryAutoStopWordAnalyzer
 analysis/reverse/ReverseStringFilter	ported	crates/lucene-analysis/src/reverse/mod.rs::ReverseStringFilter
 analysis/reverse/ReverseStringFilterFactory	todo:M11	T11.7 factory/SPI: ReverseStringFilterFactory
 analysis/ro/RomanianAnalyzer	ported	crates/lucene-analysis/src/lang/ro.rs::RomanianAnalyzer
@@ -427,12 +427,12 @@ analysis/synonym/SynonymGraphFilter	ported	crates/lucene-analysis/src/synonym/sy
 analysis/synonym/SynonymGraphFilterFactory	todo:M11	T11.7 factory/SPI: SynonymGraphFilterFactory
 analysis/synonym/SynonymMap	ported	crates/lucene-analysis/src/synonym/synonym_map.rs::SynonymMap
 analysis/synonym/WordnetSynonymParser	ported	crates/lucene-analysis/src/synonym/wordnet_synonym_parser.rs::WordnetSynonymParser
-analysis/synonym/word2vec/Dl4jModelReader	todo:M11	T11.5 synonyms: Dl4jModelReader
-analysis/synonym/word2vec/TermAndBoost	todo:M11	T11.5 synonyms: TermAndBoost
-analysis/synonym/word2vec/Word2VecModel	todo:M11	T11.5 synonyms: Word2VecModel
-analysis/synonym/word2vec/Word2VecSynonymFilter	todo:M11	T11.5 synonyms: Word2VecSynonymFilter
+analysis/synonym/word2vec/Dl4jModelReader	ported	crates/lucene-search/src/word2vec/dl4j.rs::read_dl4j_model
+analysis/synonym/word2vec/TermAndBoost	ported	crates/lucene-search/src/word2vec/model.rs::TermAndBoost
+analysis/synonym/word2vec/Word2VecModel	ported	crates/lucene-search/src/word2vec/model.rs::Word2VecModel
+analysis/synonym/word2vec/Word2VecSynonymFilter	ported	crates/lucene-search/src/word2vec/mod.rs::Word2VecSynonymFilter
 analysis/synonym/word2vec/Word2VecSynonymFilterFactory	todo:M11	T11.7 factory/SPI: Word2VecSynonymFilterFactory
-analysis/synonym/word2vec/Word2VecSynonymProvider	todo:M11	T11.5 synonyms: Word2VecSynonymProvider
+analysis/synonym/word2vec/Word2VecSynonymProvider	ported	crates/lucene-search/src/word2vec/mod.rs::Word2VecSynonymProvider
 analysis/synonym/word2vec/Word2VecSynonymProviderFactory	todo:M11	T11.7 factory/SPI: Word2VecSynonymProviderFactory
 analysis/ta/TamilAnalyzer	ported	crates/lucene-analysis/src/lang/ta.rs::TamilAnalyzer
 analysis/te/TeluguAnalyzer	ported	crates/lucene-analysis/src/lang/te.rs::TeluguAnalyzer

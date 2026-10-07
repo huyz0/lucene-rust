@@ -56,4 +56,16 @@ E	θάλασσα	θάλασσα	AffixedWord[word=θάλασσα, entry=θάλα�
 E	πόλη	πόλη/B	AffixedWord[word=πόλη, entry=πόλη/B, prefixes=[], suffixes=[]]|AffixedWord[word=πόληων, entry=πόλη/B, prefixes=[], suffixes=[B(id=3)]]|AffixedWord[word=πόληους, entry=πόλη/B, prefixes=[], suffixes=[B(id=4)]]
 E	Αθήνα	Αθήνα	AffixedWord[word=Αθήνα, entry=Αθήνα, prefixes=[], suffixes=[]]
 E	€	€	AffixedWord[word=€, entry=€, prefixes=[], suffixes=[]]
+C	άνθρωπο|άνθρωποι|άνθρωπος|άνθρωπου		EntrySuggestion{toEdit=[άνθρωπο/A], toAdd=[], extra=[]}
+C	άνθρωποι|άνθρωπος|άνθρωπου		EntrySuggestion{toEdit=[άνθρωπο/A], toAdd=[], extra=[]}
+C	άνθρωπο|άνθρωποι	άνθρωπος	EntrySuggestion{toEdit=[άνθρωπο], toAdd=[άνθρωποι], extra=[]}
+C	λόγο|λόγοι|ξλόγοι|λόγος		EntrySuggestion{toEdit=[λόγο/AN], toAdd=[], extra=[λόγου, ξλόγο, ξλόγος, ξλόγου]}
+C	λόγοι|ξλόγοι|λόγος		EntrySuggestion{toEdit=[λόγο/AN], toAdd=[], extra=[λόγου, ξλόγο, ξλόγος, ξλόγου]}
+C	λόγο|λόγοι	ξλόγοι	EntrySuggestion{toEdit=[λόγο/A], toAdd=[], extra=[λόγος, λόγου]}
+C	θάλασσα		EntrySuggestion{toEdit=[θάλασσα], toAdd=[], extra=[]}
+C	πόλη|πόληων|πόληους		EntrySuggestion{toEdit=[πόλη/B], toAdd=[], extra=[]}
+C	πόληων|πόληους		EntrySuggestion{toEdit=[πόλη/B], toAdd=[], extra=[]}
+C	πόλη|πόληων	πόληους	EntrySuggestion{toEdit=[πόλη], toAdd=[πόληων], extra=[]}
+C	Αθήνα		EntrySuggestion{toEdit=[Αθήνα], toAdd=[], extra=[]}
+C	€		EntrySuggestion{toEdit=[€], toAdd=[], extra=[]}
 G	AffixedWord[word=€, entry=€, prefixes=[], suffixes=[]]|AffixedWord[word=θάλασσα, entry=θάλασσα, prefixes=[], suffixes=[]]|AffixedWord[word=πόλη, entry=πόλη/B, prefixes=[], suffixes=[]]|AffixedWord[word=πόληων, entry=πόλη/B, prefixes=[], suffixes=[B(id=3)]]|AffixedWord[word=πόληους, entry=πόλη/B, prefixes=[], suffixes=[B(id=4)]]|AffixedWord[word=άνθρωπο, entry=άνθρωπο/AB, prefixes=[], suffixes=[]]|AffixedWord[word=άνθρωποι, entry=άνθρωπο/AB, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=άνθρωπος, entry=άνθρωπο/AB, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=άνθρωπου, entry=άνθρωπο/AB, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=άνθρωποων, entry=άνθρωπο/AB, prefixes=[], suffixes=[B(id=3)]]|AffixedWord[word=άνθρωποους, entry=άνθρωπο/AB, prefixes=[], suffixes=[B(id=4)]]|AffixedWord[word=λόγο, entry=λόγο/AN, prefixes=[], suffixes=[]]|AffixedWord[word=λόγοι, entry=λόγο/AN, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=ξλόγοι, entry=λόγο/AN, prefixes=[N(id=5)], suffixes=[A(id=2)]]|AffixedWord[word=λόγος, entry=λόγο/AN, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=ξλόγος, entry=λόγο/AN, prefixes=[N(id=5)], suffixes=[A(id=0)]]|AffixedWord[word=λόγου, entry=λόγο/AN, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=ξλόγου, entry=λόγο/AN, prefixes=[N(id=5)], suffixes=[A(id=1)]]|AffixedWord[word=ξλόγο, entry=λόγο/AN, prefixes=[N(id=5)], suffixes=[]]|AffixedWord[word=Αθήνα, entry=Αθήνα, prefixes=[], suffixes=[]]

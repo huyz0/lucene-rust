@@ -181,4 +181,14 @@ E	pretty	pretty	AffixedWord[word=pretty, entry=pretty, prefixes=[], suffixes=[]]
 E	naughty	naughty/N	AffixedWord[word=naughty, entry=naughty/N, prefixes=[], suffixes=[]]
 E	apple	apple/S	AffixedWord[word=apple, entry=apple/S, prefixes=[], suffixes=[]]|AffixedWord[word=apples, entry=apple/S, prefixes=[], suffixes=[S(id=0)]]
 E	banana	banana/S	AffixedWord[word=banana, entry=banana/S, prefixes=[], suffixes=[]]|AffixedWord[word=bananas, entry=banana/S, prefixes=[], suffixes=[S(id=0)]]
+C	phone|phones		EntrySuggestion{toEdit=[phone/S], toAdd=[], extra=[]}
+C	phones		EntrySuggestion{toEdit=[], toAdd=[phones], extra=[]}
+C	nation|nations		EntrySuggestion{toEdit=[nation/S], toAdd=[], extra=[]}
+C	nations		EntrySuggestion{toEdit=[], toAdd=[nations], extra=[]}
+C	station|stations		EntrySuggestion{toEdit=[station/S], toAdd=[], extra=[]}
+C	stations		EntrySuggestion{toEdit=[], toAdd=[stations], extra=[]}
+C	a		EntrySuggestion{toEdit=[a], toAdd=[], extra=[]}
+C	lot|lots		EntrySuggestion{toEdit=[lot/S], toAdd=[], extra=[]}
+C	lots		EntrySuggestion{toEdit=[], toAdd=[lots], extra=[]}
+C	café		EntrySuggestion{toEdit=[café], toAdd=[], extra=[]}
 G	AffixedWord[word=lot, entry=lot/S, prefixes=[], suffixes=[]]|AffixedWord[word=lots, entry=lot/S, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=café, entry=café, prefixes=[], suffixes=[]]|AffixedWord[word=a, entry=a, prefixes=[], suffixes=[]]|AffixedWord[word=separate, entry=separate, prefixes=[], suffixes=[]]|AffixedWord[word=receive, entry=receive, prefixes=[], suffixes=[]]|AffixedWord[word=definitely, entry=definitely, prefixes=[], suffixes=[]]|AffixedWord[word=wednesday, entry=wednesday, prefixes=[], suffixes=[]]|AffixedWord[word=naughty, entry=naughty/N, prefixes=[], suffixes=[]]|AffixedWord[word=nation, entry=nation/S, prefixes=[], suffixes=[]]|AffixedWord[word=nations, entry=nation/S, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=straße, entry=straße, prefixes=[], suffixes=[]]|AffixedWord[word=pretty, entry=pretty, prefixes=[], suffixes=[]]|AffixedWord[word=apple, entry=apple/S, prefixes=[], suffixes=[]]|AffixedWord[word=apples, entry=apple/S, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=banana, entry=banana/S, prefixes=[], suffixes=[]]|AffixedWord[word=bananas, entry=banana/S, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=station, entry=station/S, prefixes=[], suffixes=[]]|AffixedWord[word=stations, entry=station/S, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=believe, entry=believe, prefixes=[], suffixes=[]]|AffixedWord[word=phone, entry=phone/S, prefixes=[], suffixes=[]]|AffixedWord[word=phones, entry=phone/S, prefixes=[], suffixes=[S(id=0)]]

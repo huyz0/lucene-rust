@@ -104,4 +104,19 @@ E	groß	groß/G	AffixedWord[word=groß, entry=groß/G, prefixes=[], suffixes=[]]
 E	straße	straße/E	AffixedWord[word=straße, entry=straße/E, prefixes=[], suffixes=[]]|AffixedWord[word=straßeen, entry=straße/E, prefixes=[], suffixes=[E(id=4)]]
 E	fisch	fisch/E	AffixedWord[word=fisch, entry=fisch/E, prefixes=[], suffixes=[]]|AffixedWord[word=fischen, entry=fisch/E, prefixes=[], suffixes=[E(id=4)]]
 E	o'clock	o'clock	AffixedWord[word=o'clock, entry=o'clock, prefixes=[], suffixes=[]]
+C	mach|gemach|ungemach|machen		EntrySuggestion{toEdit=[mach/AE], toAdd=[], extra=[gemachen, ungemachen]}
+C	gemach|ungemach|machen		EntrySuggestion{toEdit=[mach/AE], toAdd=[], extra=[gemachen, ungemachen]}
+C	mach|gemach	ungemach	EntrySuggestion{toEdit=[mach], toAdd=[gemach], extra=[]}
+C	sag|gesag|ungesag|sagen		EntrySuggestion{toEdit=[sag/AE], toAdd=[], extra=[gesagen, ungesagen]}
+C	gesag|ungesag|sagen		EntrySuggestion{toEdit=[sag/AE], toAdd=[], extra=[gesagen, ungesagen]}
+C	sag|gesag	ungesag	EntrySuggestion{toEdit=[sag], toAdd=[gesag], extra=[]}
+C	lieb|belieb|beliebt		EntrySuggestion{toEdit=[lieb/CD], toAdd=[], extra=[]}
+C	belieb|beliebt		EntrySuggestion{toEdit=[lieb/CD], toAdd=[], extra=[]}
+C	lieb|belieb	beliebt	EntrySuggestion{toEdit=[lieb/C], toAdd=[], extra=[]}
+C	lauf|läufer		EntrySuggestion{toEdit=[lauf/F], toAdd=[], extra=[]}
+C	läufer		EntrySuggestion{toEdit=[], toAdd=[läufer], extra=[]}
+C	groß|großheit		EntrySuggestion{toEdit=[groß/G], toAdd=[], extra=[]}
+C	großheit		EntrySuggestion{toEdit=[], toAdd=[großheit], extra=[]}
+C	straße|straßeen		EntrySuggestion{toEdit=[straße/E], toAdd=[], extra=[]}
+C	straßeen		EntrySuggestion{toEdit=[], toAdd=[straßeen], extra=[]}
 G	AffixedWord[word=sag, entry=sag/AE, prefixes=[], suffixes=[]]|AffixedWord[word=gesag, entry=sag/AE, prefixes=[A(id=0)], suffixes=[]]|AffixedWord[word=ungesag, entry=sag/AE, prefixes=[B(id=1), A(id=0)], suffixes=[]]|AffixedWord[word=sagen, entry=sag/AE, prefixes=[], suffixes=[E(id=4)]]|AffixedWord[word=gesagen, entry=sag/AE, prefixes=[A(id=0)], suffixes=[E(id=4)]]|AffixedWord[word=ungesagen, entry=sag/AE, prefixes=[B(id=1), A(id=0)], suffixes=[E(id=4)]]|AffixedWord[word=mach, entry=mach/AE, prefixes=[], suffixes=[]]|AffixedWord[word=gemach, entry=mach/AE, prefixes=[A(id=0)], suffixes=[]]|AffixedWord[word=ungemach, entry=mach/AE, prefixes=[B(id=1), A(id=0)], suffixes=[]]|AffixedWord[word=machen, entry=mach/AE, prefixes=[], suffixes=[E(id=4)]]|AffixedWord[word=gemachen, entry=mach/AE, prefixes=[A(id=0)], suffixes=[E(id=4)]]|AffixedWord[word=ungemachen, entry=mach/AE, prefixes=[B(id=1), A(id=0)], suffixes=[E(id=4)]]|AffixedWord[word=straße, entry=straße/E, prefixes=[], suffixes=[]]|AffixedWord[word=straßeen, entry=straße/E, prefixes=[], suffixes=[E(id=4)]]|AffixedWord[word=lieb, entry=lieb/CD, prefixes=[], suffixes=[]]|AffixedWord[word=belieb, entry=lieb/CD, prefixes=[C(id=2)], suffixes=[]]|AffixedWord[word=beliebt, entry=lieb/CD, prefixes=[C(id=2)], suffixes=[D(id=3)]]|AffixedWord[word=groß, entry=groß/G, prefixes=[], suffixes=[]]|AffixedWord[word=großheit, entry=groß/G, prefixes=[], suffixes=[G(id=6)]]|AffixedWord[word=fisch, entry=fisch/E, prefixes=[], suffixes=[]]|AffixedWord[word=fischen, entry=fisch/E, prefixes=[], suffixes=[E(id=4)]]|AffixedWord[word=o'clock, entry=o'clock, prefixes=[], suffixes=[]]|AffixedWord[word=lauf, entry=lauf/F, prefixes=[], suffixes=[]]|AffixedWord[word=läufer, entry=lauf/F, prefixes=[], suffixes=[F(id=5)]]

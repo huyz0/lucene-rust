@@ -2,4 +2,6 @@ W	sing	1	sing	sing	sing	sing	AffixedWord[word=sing, entry=sing/𝄞, prefixes=[]
 W	SING	1	sing	sing	sing	sing	AffixedWord[word=SING, entry=sing/𝄞, prefixes=[], suffixes=[]]	SING	SING	1
 W	Sing	1	sing	sing	sing	sing	AffixedWord[word=Sing, entry=sing/𝄞, prefixes=[], suffixes=[]]	Sing	Sing	1
 E	sing	sing/𝄞	AffixedWord[word=sing, entry=sing/𝄞, prefixes=[], suffixes=[]]|AffixedWord[word=singing, entry=sing/𝄞, prefixes=[], suffixes=[�(id=0)]]
+C	sing|singing		EntrySuggestion{toEdit=[sing/�], toAdd=[], extra=[]}
+C	singing		EntrySuggestion{toEdit=[], toAdd=[singing], extra=[]}
 G	AffixedWord[word=sing, entry=sing/𝄞, prefixes=[], suffixes=[]]|AffixedWord[word=singing, entry=sing/𝄞, prefixes=[], suffixes=[�(id=0)]]

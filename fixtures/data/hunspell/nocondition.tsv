@@ -2,4 +2,6 @@ W	word	1	word	word	word	word	AffixedWord[word=word, entry=word/A, prefixes=[], s
 W	WORD	1	word	word	word	word	AffixedWord[word=WORD, entry=word/A, prefixes=[], suffixes=[]]	WORD	WORD	1
 W	Word	1	word	word	word	word	AffixedWord[word=Word, entry=word/A, prefixes=[], suffixes=[]]	Word	Word	1
 E	word	word/A	AffixedWord[word=word, entry=word/A, prefixes=[], suffixes=[]]|AffixedWord[word=words, entry=word/A, prefixes=[], suffixes=[A(id=0)]]
+C	word|words		EntrySuggestion{toEdit=[word/A], toAdd=[], extra=[]}
+C	words		EntrySuggestion{toEdit=[], toAdd=[words], extra=[]}
 G	AffixedWord[word=word, entry=word/A, prefixes=[], suffixes=[]]|AffixedWord[word=words, entry=word/A, prefixes=[], suffixes=[A(id=0)]]

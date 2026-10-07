@@ -31,4 +31,10 @@ E	ac	ac/A	AffixedWord[word=ac, entry=ac/A, prefixes=[], suffixes=[]]|AffixedWord
 E	-c	-c/A	AffixedWord[word=-c, entry=-c/A, prefixes=[], suffixes=[]]|AffixedWord[word=-cen, entry=-c/A, prefixes=[], suffixes=[A(id=0)]]
 E	bc	bc/A	AffixedWord[word=bc, entry=bc/A, prefixes=[], suffixes=[]]
 E	\c	null	
+C	ac|acen		EntrySuggestion{toEdit=[ac/A], toAdd=[], extra=[]}
+C	acen		EntrySuggestion{toEdit=[], toAdd=[acen], extra=[]}
+C	-c|-cen		EntrySuggestion{toEdit=[-c/A], toAdd=[], extra=[]}
+C	-cen		EntrySuggestion{toEdit=[], toAdd=[-cen], extra=[]}
+C	bc		EntrySuggestion{toEdit=[bc], toAdd=[], extra=[]}
+C			null
 G	AffixedWord[word=bc, entry=bc/A, prefixes=[], suffixes=[]]|AffixedWord[word=ac, entry=ac/A, prefixes=[], suffixes=[]]|AffixedWord[word=acen, entry=ac/A, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=-c, entry=-c/A, prefixes=[], suffixes=[]]|AffixedWord[word=-cen, entry=-c/A, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=c, entry=c/A, prefixes=[], suffixes=[]]

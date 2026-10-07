@@ -1059,7 +1059,8 @@ outright.
   case-sensitive and `ignoreCase` (`data/hunspell/<name>[.ic].tsv`): per word,
   `spell`, `HunspellStemFilter`'s stems three ways, `getRoots`,
   `analyzeSimpleWord`, `suggest`, a tuned `Suggester` and an n-gram
-  `FragmentChecker`; per root, `lookupEntries` and `getAllWordForms`; per
+  `FragmentChecker`; per root, `lookupEntries` and `getAllWordForms`; for the
+  first six roots, `WordFormGenerator.compress` over some of their forms; per
   dictionary, `generateAllSimpleWords`; a refused dictionary's exception. Read
   by `crates/lucene-analysis/tests/hunspell_fixtures.rs`.
 - `GenAnalysisSynonym.java` — M11 T11.5: `SolrSynonymParser` and
@@ -1092,9 +1093,25 @@ outright.
   (`data/analysis_compound/<chain>.tsv`). Deterministic. Read by
   `crates/lucene-analysis/tests/analysis_compound_fixtures.rs`.
 - `GenAnalysisMisc.java` — M11 T11.6: `ReverseStringFilter` with each marker
-  over lines held in the generator (written to `lines.txt` with the rows) and
-  `CSVUtil` (`csv.words`). Read by
+  over lines held in the generator (written to `lines.txt` with the rows),
+  `CSVUtil` (`csv.words`), the deprecated `WordDelimiterFilter` (`wdf_*`) and
+  `DateRecognizerFilter`: whether `DateFormat.parse` accepts seeded valid and
+  mutated texts per `SimpleDateFormat` pattern, plus hand-picked edges
+  (`date_formats.txt`; texts with a space separator other than U+0020 are
+  left out, since JDK 23+ matches them leniently and JDK 21 does not), and two
+  filter chains (`date_*.tsv`). Read by
   `crates/lucene-analysis/tests/analysis_misc_fixtures.rs`.
+- `GenQueryAutoStop.java` — M11 T11.6: `QueryAutoStopWordAnalyzer` over a
+  three-segment index with deletions (`query_auto_stop/index`): each
+  constructor's stop words per field and tokens (`cases.txt`). Read by
+  `crates/lucene-search/tests/query_auto_stop_fixtures.rs`.
+- `GenWord2Vec.java` — M11 T11.5: two Deeplearning4j-style word2vec model zips
+  written from seeded clustered vectors (`word2vec/model_b64.zip`, deflated
+  with data descriptors and `B64:` terms; `model_plain.zip`, stored), every
+  term's `Word2VecSynonymProvider.getSynonyms` with boost bits
+  (`synonyms.txt`) and `Word2VecSynonymFilter`'s tokens (`filter.txt`). Entry
+  times are fixed, so the zips are deterministic. Read by
+  `crates/lucene-search/tests/word2vec_fixtures.rs`.
 - `GenDisiJumpTable.java` — the only Java-written `IndexedDISI` **block jump
   table** in this tree (`disi_jump_table_index/`). `IndexedDISI.writeBitSet`
   emits `jumpTableEntryCount = 0` below two logical 65 536-document blocks, and

@@ -30,4 +30,9 @@ W	¡bded	0	¡bded	¡bded	¡bded			b¡ded	b¡ded	1
 E	cwn	cwn/é	AffixedWord[word=cwn, entry=cwn/é, prefixes=[], suffixes=[]]|AffixedWord[word=cwns, entry=cwn/é, prefixes=[], suffixes=[é(id=0)]]
 E	dyn	dyn	AffixedWord[word=dyn, entry=dyn, prefixes=[], suffixes=[]]
 E	b¡d	b¡d/é	AffixedWord[word=b¡d, entry=b¡d/é, prefixes=[], suffixes=[]]|AffixedWord[word=b¡ds, entry=b¡d/é, prefixes=[], suffixes=[é(id=0)]]
+C	cwn|cwns		EntrySuggestion{toEdit=[cwn/é], toAdd=[], extra=[]}
+C	cwns		EntrySuggestion{toEdit=[], toAdd=[cwns], extra=[]}
+C	dyn		EntrySuggestion{toEdit=[dyn], toAdd=[], extra=[]}
+C	b¡d|b¡ds		EntrySuggestion{toEdit=[b¡d/é], toAdd=[], extra=[]}
+C	b¡ds		EntrySuggestion{toEdit=[], toAdd=[b¡ds], extra=[]}
 G	AffixedWord[word=dyn, entry=dyn, prefixes=[], suffixes=[]]|AffixedWord[word=dyned, entry=dyn, prefixes=[], suffixes=[�(id=1)]]|AffixedWord[word=cwn, entry=cwn/é, prefixes=[], suffixes=[]]|AffixedWord[word=cwns, entry=cwn/é, prefixes=[], suffixes=[é(id=0)]]|AffixedWord[word=b¡d, entry=b¡d/é, prefixes=[], suffixes=[]]|AffixedWord[word=b¡ds, entry=b¡d/é, prefixes=[], suffixes=[é(id=0)]]|AffixedWord[word=b¡ded, entry=b¡d/é, prefixes=[], suffixes=[�(id=1)]]
