@@ -3,7 +3,7 @@
 
 use std::sync::{Arc, LazyLock};
 
-use crate::util::stemmer_util::ends_with;
+use crate::util::stemmer_util::{ends, ends_with};
 use crate::CharArraySet;
 
 use super::{comment_set, mark_exclusions, std_lower_stop, CharStemmer, StemFilter};
@@ -31,7 +31,7 @@ pub struct CzechStemmer;
 impl CzechStemmer {
     fn remove_case(s: &[u16], len: usize) -> usize {
         let any = |xs: &[&str]| xs.iter().any(|x| ends_with(s, len, x));
-        if len > 7 && ends_with(s, len, "atech") {
+        if len > 7 && ends!(s, len, "atech") {
             return len - 5;
         }
         if len > 6 && any(&["ětem", "etem", "atům"]) {
@@ -73,12 +73,12 @@ impl CzechStemmer {
     }
 
     fn normalize(s: &mut [u16], len: usize) -> usize {
-        if ends_with(s, len, "čt") {
+        if ends!(s, len, "čt") {
             s[len - 2] = c('c');
             s[len - 1] = c('k');
             return len;
         }
-        if ends_with(s, len, "št") {
+        if ends!(s, len, "št") {
             s[len - 2] = c('s');
             s[len - 1] = c('k');
             return len;

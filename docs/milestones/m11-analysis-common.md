@@ -187,6 +187,26 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   `GenAnalysisLanguages.java`: every analyzer and four filter chains over
   `corpus/analysis-lang.txt` (45 chains), every analyzer's `normalize` (540 cases) and
   25,659 words through 53 stemmers and normalizers, all equal to Lucene.
+- **Benchmark, part 3** -- `scripts/bench-micro.sh --bench analysis_lang`
+  (`AnalysisLangMicro.java` / `micro_analysis_lang.rs`, ns per token, each
+  language analyzer over its own language's lines of
+  `corpus/analysis-lang.txt`, the synonym filters over
+  `corpus/analysis-synonym.txt`; 2026-10-07, Rust/Java, noise floor 1.18x):
+  arabic 1.09~, french 1.38x, german 0.97~, greek 2.15x, hindi 1.28x,
+  portuguese_rslp 2.44x, russian_light 1.37x, spanish 1.21x, synonym_graph
+  1.65x, synonym_graph_flatten 1.14~, synonym_legacy 1.85x. The faithful
+  port (over the whole multilingual corpus) read greek 0.26x, russian_light
+  0.31x, hindi 0.60x, german 0.66x, french 0.71x; callgrind put the cost in
+  suffix literals re-encoded per comparison (now compile-time UTF-16
+  arrays), the `String` -> UTF-16 -> `String` round trip of every stem filter
+  (now a byte-wise decode, and a term left unchanged or only shortened is
+  kept in place), a binary search of the 2,900-row case table per non-ASCII
+  character in `LowerCaseFilter` (now a compile-time two-level table, the
+  JDK's shape), the general-category search per character in
+  `DecimalDigitFilter` (now a digit bitmap) and Greek's 23 rules run on terms
+  whose last letter no rule can match. german stays at ~1.0: its two UTF-16
+  filters (normalization, light stemmer) each convert the term and back where
+  Java edits one `char[]`.
 - **T11.6, the rest** -- `compound` (both decompounders, Liang hyphenation,
   the FOP pattern format over a minimal XML reader; `GenAnalysisCompound.java`
   over a toy grammar written here: points and 13 chains equal),

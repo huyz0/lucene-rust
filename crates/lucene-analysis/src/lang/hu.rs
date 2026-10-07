@@ -3,7 +3,7 @@
 
 use std::sync::{Arc, LazyLock};
 
-use crate::util::stemmer_util::ends_with;
+use crate::util::stemmer_util::{ends, ends_with};
 use crate::CharArraySet;
 
 use super::{mark_exclusions, snowball, snowball_set, std_lower_stop, CharStemmer, StemFilter};
@@ -27,7 +27,7 @@ pub struct HungarianLightStemmer;
 impl HungarianLightStemmer {
     // Java: HungarianLightStemmer.removeCase
     fn remove_case(s: &[u16], len: usize) -> usize {
-        if len > 6 && ends_with(s, len, "kent") {
+        if len > 6 && ends!(s, len, "kent") {
             return len - 4;
         }
         if len > 5 {
@@ -81,10 +81,10 @@ impl HungarianLightStemmer {
             if !is_vowel(s[len - 4]) && any_end(s, len, &["unk", "tok", "tek"]) {
                 return len - 3;
             }
-            if is_vowel(s[len - 4]) && ends_with(s, len, "juk") {
+            if is_vowel(s[len - 4]) && ends!(s, len, "juk") {
                 return len - 3;
             }
-            if ends_with(s, len, "ink") {
+            if ends!(s, len, "ink") {
                 return len - 3;
             }
         }

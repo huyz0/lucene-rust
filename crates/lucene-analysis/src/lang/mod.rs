@@ -39,6 +39,8 @@ pub struct CharStemFilter<I, S, const KEYWORD: bool> {
     input: I,
     stemmer: S,
     buf: Vec<u16>,
+    /// The term's units before stemming, to skip an unneeded write-back.
+    orig: Vec<u16>,
 }
 
 /// A stem filter: `if (!keywordAttr.isKeyword()) termAtt.setLength(stemmer.stem(...))`.
@@ -60,6 +62,7 @@ impl<I: TokenStream, S: CharStemmer, const KEYWORD: bool> CharStemFilter<I, S, K
             input,
             stemmer,
             buf: Vec::new(),
+            orig: Vec::new(),
         }
     }
 }
@@ -75,15 +78,63 @@ impl<I: TokenStream, S: CharStemmer, const KEYWORD: bool> TokenFilter
         }
         let a = self.input.attributes_mut();
         if !(KEYWORD && a.is_keyword()) {
-            let stemmer = &self.stemmer;
-            crate::util::with_utf16_term(a, &mut self.buf, |b| {
-                let len = b.len();
-                let n = stemmer.stem(b, len);
-                b.truncate(n);
-                true
-            });
+            let (buf, orig) = (&mut self.buf, &mut self.orig);
+            buf.clear();
+            let term = a.term();
+            let ascii = term.is_ascii();
+            if ascii {
+                buf.extend(term.bytes().map(u16::from));
+            } else {
+                crate::util::push_utf16(term, buf);
+                orig.clear();
+                orig.extend_from_slice(buf);
+            }
+            let len = buf.len();
+            let n = self.stemmer.stem(buf, len);
+            // Java's `setLength(n)` over the edited buffer. Most terms come
+            // back unchanged or only shortened, which the `String` can take
+            // in place instead of being rebuilt from the units.
+            let kept = n <= len
+                && if ascii {
+                    buf[..n]
+                        .iter()
+                        .zip(term.bytes())
+                        .all(|(&u, b)| u == u16::from(b))
+                } else {
+                    buf[..n] == orig[..n]
+                };
+            if kept {
+                if n < len {
+                    if ascii {
+                        a.term_mut().truncate(n);
+                    } else {
+                        truncate_utf16(a.term_mut(), n);
+                    }
+                }
+            } else {
+                a.set_term_utf16(&buf[..n]);
+            }
         }
         Ok(true)
+    }
+}
+
+/// Cuts `term` to its first `n` UTF-16 units, as `setLength(n)` does; a cut
+/// inside a surrogate pair leaves the unpaired high surrogate, which the
+/// attribute stores as U+FFFD (`set_term_utf16`).
+fn truncate_utf16(term: &mut String, n: usize) {
+    let mut seen = 0;
+    for (at, c) in term.char_indices() {
+        if seen == n {
+            term.truncate(at);
+            return;
+        }
+        seen += c.len_utf16();
+        if seen > n {
+            term.truncate(at);
+            term.push(char::REPLACEMENT_CHARACTER);
+            return;
+        }
     }
 }
 
@@ -327,6 +378,27 @@ mod tests {
         c.set_keywords(&[true, false]);
         let mut f = NormalizeFilter::with_stemmer(c, DropLast);
         assert_eq!(render(&mut f), "ab:0:3:1:1 xy:4:7:1:1|7|0");
+    }
+
+    #[derive(Default)]
+    struct Edit;
+    impl CharStemmer for Edit {
+        fn stem(&self, s: &mut Vec<u16>, len: usize) -> usize {
+            s[0] = u16::from(b'Z');
+            len
+        }
+    }
+
+    #[test]
+    fn write_back_truncates_in_place_or_rebuilds() {
+        let spec = "a\u{1F600}:0:3:1:1 é\u{1F600}x:4:8:1:1 αβ:9:11:1:1|11|0";
+        let mut f = StemFilter::<_, DropLast>::new(Canned::parse(spec));
+        assert_eq!(
+            render(&mut f),
+            "a\u{FFFD}:0:3:1:1 é\u{1F600}:4:8:1:1 α:9:11:1:1|11|0"
+        );
+        let mut f = NormalizeFilter::<_, Edit>::new(Canned::parse("ab:0:2:1:1 é:3:4:1:1|4|0"));
+        assert_eq!(render(&mut f), "Zb:0:2:1:1 Z:3:4:1:1|4|0");
     }
 
     #[test]

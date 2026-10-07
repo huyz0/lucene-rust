@@ -277,6 +277,9 @@ pub(crate) fn utf16_len(s: &str) -> usize {
 /// ([`simple_to_lowercase`]), leaving every other attribute untouched.
 pub struct LowerCaseFilter<I = Box<dyn TokenStream>> {
     input: I,
+    /// The lowercased term is built here and swapped in, so a token that
+    /// changes case costs no allocation.
+    scratch: String,
 }
 
 /// Java's `CharacterUtils.toLowerCase` applied to one codepoint.
@@ -293,11 +296,13 @@ pub struct LowerCaseFilter<I = Box<dyn TokenStream>> {
 /// read from the same table `lucene-util`'s `CaseFolding` uses. Rust's
 /// `char::to_lowercase` follows the toolchain's Unicode version (17.0 on
 /// Rust 1.97) and lowercased 28 code points Unicode 16 leaves unassigned.
+#[inline]
 pub(crate) fn simple_to_lowercase(c: char) -> char {
     if c.is_ascii() {
         return c.to_ascii_lowercase();
     }
-    if is_caseless_block(c) {
+    // The BMP's table lookup is cheaper than the block test.
+    if u32::from(c) >= 0x10000 && is_caseless_block(c) {
         return c;
     }
     char::from_u32(java_character::to_lower_case(u32::from(c))).unwrap_or(c)
@@ -316,27 +321,88 @@ fn is_caseless_block(c: char) -> bool {
 /// `CharacterUtils.toLowerCase` over a whole term, in place; a term that
 /// lowercasing leaves unchanged (most non-Latin text) is not rebuilt.
 fn lowercase_term(term: &mut String) {
-    if term.is_ascii() {
-        term.make_ascii_lowercase();
-        return;
+    lowercase_term_with(term, &mut String::new());
+}
+
+/// The byte index of the first code point of `b` (valid UTF-8) that
+/// [`simple_to_lowercase`] changes.
+fn first_to_lowercase(b: &[u8]) -> Option<usize> {
+    let mut i = 0;
+    while i < b.len() {
+        let x = u32::from(b[i]);
+        if x < 0x80 {
+            if b[i].is_ascii_uppercase() {
+                return Some(i);
+            }
+            i += 1;
+            continue;
+        }
+        let cont = |k: usize| u32::from(b[i + k] & 0x3F);
+        let (cp, w) = if x < 0xE0 {
+            (((x & 0x1F) << 6) | cont(1), 2)
+        } else if x < 0xF0 {
+            (((x & 0x0F) << 12) | (cont(1) << 6) | cont(2), 3)
+        } else {
+            (
+                ((x & 0x07) << 18) | (cont(1) << 12) | (cont(2) << 6) | cont(3),
+                4,
+            )
+        };
+        let changes = if cp < 0x10000 {
+            java_character::to_lower_case(cp) != cp
+        } else {
+            char::from_u32(cp).is_some_and(|c| simple_to_lowercase(c) != c)
+        };
+        if changes {
+            return Some(i);
+        }
+        i += w;
     }
-    let Some(first) = term
-        .char_indices()
-        .find(|&(_, c)| simple_to_lowercase(c) != c)
-        .map(|(i, _)| i)
-    else {
+    None
+}
+
+/// [`lowercase_term`]: a code point whose lowercase has the same UTF-8
+/// width is rewritten in place (Java's in-place `Character.toChars` write);
+/// from the first one that does not, the rest is built in `scratch` and
+/// swapped in.
+fn lowercase_term_with(term: &mut String, scratch: &mut String) {
+    // Most terms need no change: find the first unit that does, decoding
+    // the UTF-8 by hand.
+    let Some(mut i) = first_to_lowercase(term.as_bytes()) else {
         return;
     };
-    let mut out = String::with_capacity(term.len());
-    out.push_str(&term[..first]);
-    out.extend(term[first..].chars().map(simple_to_lowercase));
-    *term = out;
+    while i < term.len() {
+        if term.as_bytes()[i] < 0x80 {
+            term[i..i + 1].make_ascii_lowercase();
+            i += 1;
+            continue;
+        }
+        let Some(c) = term[i..].chars().next() else {
+            break;
+        };
+        let w = c.len_utf8();
+        let l = simple_to_lowercase(c);
+        if l != c {
+            if l.len_utf8() != w {
+                scratch.clear();
+                scratch.push_str(&term[..i]);
+                scratch.extend(term[i..].chars().map(simple_to_lowercase));
+                std::mem::swap(term, scratch);
+                return;
+            }
+            term.replace_range(i..i + w, l.encode_utf8(&mut [0; 4]));
+        }
+        i += w;
+    }
 }
 
 impl<I: TokenStream> LowerCaseFilter<I> {
     /// `new LowerCaseFilter(TokenStream)`.
     pub fn new(input: I) -> Self {
-        LowerCaseFilter { input }
+        LowerCaseFilter {
+            input,
+            scratch: String::new(),
+        }
     }
 }
 
@@ -363,7 +429,7 @@ impl<I: TokenStream> TokenFilter for LowerCaseFilter<I> {
     }
     fn increment(&mut self) -> Result<bool, AnalysisError> {
         if self.input.increment_token()? {
-            lowercase_term(self.input.attributes_mut().term_mut());
+            lowercase_term_with(self.input.attributes_mut().term_mut(), &mut self.scratch);
             Ok(true)
         } else {
             Ok(false)
@@ -3067,6 +3133,11 @@ mod tests {
         let mut t = "日本".to_string();
         lowercase_term(&mut t);
         assert_eq!(t, "日本");
+        // In place while widths agree; rebuilt from a width change (İ is two
+        // bytes, i one; Ⱥ two, ⱥ three).
+        let mut t = "ÄA\u{10400}İBȺÉ".to_string();
+        lowercase_term(&mut t);
+        assert_eq!(t, "äa\u{10428}ibⱥé");
     }
 
     fn tok(term: &str, start: i32, end: i32, pos_inc: i32) -> Token {

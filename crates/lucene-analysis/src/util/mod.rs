@@ -21,17 +21,54 @@ use crate::attributes::AttributeSource;
 
 /// Runs `f` over the term's UTF-16 code units (Java's `buffer()` /
 /// `length()`), in `buf`; when `f` returns `true` the units are written back
-/// (`copyBuffer`/`setLength`), an unpaired surrogate becoming U+FFFD.
+/// (`copyBuffer`/`setLength`), an unpaired surrogate becoming U+FFFD. A
+/// write-back of the units the term already holds is skipped.
 pub(crate) fn with_utf16_term(
     a: &mut AttributeSource,
     buf: &mut Vec<u16>,
     f: impl FnOnce(&mut Vec<u16>) -> bool,
 ) {
     buf.clear();
-    buf.extend(a.term().encode_utf16());
-    if f(buf) {
+    push_utf16(a.term(), buf);
+    if f(buf) && !utf16_eq(a.term(), buf) {
         a.set_term_utf16(buf);
     }
+}
+
+/// Appends `s`'s UTF-16 code units to `buf`: `str::encode_utf16`, decoded
+/// byte-wise (the iterator's per-unit capacity checks were a stem filter's
+/// largest single cost).
+pub(crate) fn push_utf16(s: &str, buf: &mut Vec<u16>) {
+    let b = s.as_bytes();
+    buf.reserve(b.len());
+    let cont = |i: usize| u32::from(b[i] & 0x3F);
+    let mut i = 0;
+    while i < b.len() {
+        let x = u32::from(b[i]);
+        if x < 0x80 {
+            buf.push(x as u16);
+            i += 1;
+        } else if x < 0xE0 {
+            buf.push((((x & 0x1F) << 6) | cont(i + 1)) as u16);
+            i += 2;
+        } else if x < 0xF0 {
+            buf.push((((x & 0x0F) << 12) | (cont(i + 1) << 6) | cont(i + 2)) as u16);
+            i += 3;
+        } else {
+            let cp = ((x & 0x07) << 18) | (cont(i + 1) << 12) | (cont(i + 2) << 6) | cont(i + 3);
+            buf.push((0xD7C0 + (cp >> 10)) as u16);
+            buf.push((0xDC00 | (cp & 0x3FF)) as u16);
+            i += 4;
+        }
+    }
+}
+
+/// `s` holds exactly the UTF-16 units `units`.
+pub(crate) fn utf16_eq(s: &str, units: &[u16]) -> bool {
+    if s.len() == units.len() && s.is_ascii() {
+        return s.bytes().zip(units).all(|(b, &u)| u16::from(b) == u);
+    }
+    s.len() >= units.len() && s.encode_utf16().eq(units.iter().copied())
 }
 
 /// Test support: Lucene test-framework's `CannedTokenStream`, written as the

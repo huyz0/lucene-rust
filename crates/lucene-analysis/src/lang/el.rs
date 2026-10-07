@@ -16,7 +16,7 @@ use std::sync::{Arc, LazyLock};
 use crate::analyzer::{AnalyzerDefinition, TokenStreamComponents};
 use crate::java_character::to_lower_case;
 use crate::token_stream::TokenStream;
-use crate::util::stemmer_util::ends_with;
+use crate::util::stemmer_util::ends;
 use crate::{AnalysisError, CharArraySet, StandardTokenizer, StopFilter};
 
 use super::{comment_set, CharStemmer, NormalizeFilter, StemFilter};
@@ -54,6 +54,12 @@ impl CharStemmer for GreekLowerCase {
     fn stem(&self, s: &mut Vec<u16>, len: usize) -> usize {
         let mut i = 0;
         while i < len {
+            if s[i] < 0x80 {
+                // Rust-only fast path: `greek_lower` of ASCII is ASCII's.
+                s[i] = u16::from((s[i] as u8).to_ascii_lowercase());
+                i += 1;
+                continue;
+            }
             let cp = crate::java_character::code_point_at(s, i, len);
             let lower = greek_lower(cp);
             let mut b = [0u16; 2];
@@ -75,8 +81,19 @@ impl CharStemmer for GreekLowerCase {
 pub type GreekLowerCaseFilter<I> = NormalizeFilter<I, GreekLowerCase>;
 
 /// `CharArraySet.contains(char[], 0, len)` of an exception set.
+/// The word is decoded on the stack (the exception words are short); a
+/// longer one takes a `String`.
 fn contains(set: &CharArraySet, s: &[u16], len: usize) -> bool {
-    set.contains(&String::from_utf16_lossy(&s[..len]))
+    let mut buf = [0u8; 64];
+    let mut at = 0;
+    for r in char::decode_utf16(s[..len].iter().copied()) {
+        let c = r.unwrap_or(char::REPLACEMENT_CHARACTER);
+        if at + c.len_utf8() > buf.len() {
+            return set.contains(&String::from_utf16_lossy(&s[..len]));
+        }
+        at += c.encode_utf8(&mut buf[at..]).len();
+    }
+    std::str::from_utf8(&buf[..at]).is_ok_and(|w| set.contains(w))
 }
 
 /// `GreekStemmer.endsWithVowel`.
@@ -503,6 +520,13 @@ fn stem_greek(s: &mut [u16], len: usize) -> usize {
     if len < 4 {
         return len;
     }
+    // Rust-only fast path: every rule first needs the term to end in a
+    // literal suffix, an exception word or a vowel, all of them lowercase
+    // unaccented Greek (U+03B1..U+03C9), so a term ending in anything else
+    // passes through all 23 unchanged.
+    if !(0x3B1..=0x3C9).contains(&s[len - 1]) {
+        return len;
+    }
 
     let orig_len = len;
 
@@ -538,93 +562,90 @@ fn stem_greek(s: &mut [u16], len: usize) -> usize {
 // Java: GreekStemmer.rule0
 #[allow(unused_mut)]
 fn rule0(s: &mut [u16], mut len: usize) -> usize {
-    if len > 9 && (ends_with(s, len, "καθεστωτοσ") || ends_with(s, len, "καθεστωτων"))
-    {
+    if len > 9 && (ends!(s, len, "καθεστωτοσ") || ends!(s, len, "καθεστωτων")) {
         return len - 4;
     }
 
-    if len > 8 && (ends_with(s, len, "γεγονοτοσ") || ends_with(s, len, "γεγονοτων"))
-    {
+    if len > 8 && (ends!(s, len, "γεγονοτοσ") || ends!(s, len, "γεγονοτων")) {
         return len - 4;
     }
 
-    if len > 8 && ends_with(s, len, "καθεστωτα") {
+    if len > 8 && ends!(s, len, "καθεστωτα") {
         return len - 3;
     }
 
-    if len > 7 && (ends_with(s, len, "τατογιου") || ends_with(s, len, "τατογιων")) {
+    if len > 7 && (ends!(s, len, "τατογιου") || ends!(s, len, "τατογιων")) {
         return len - 4;
     }
 
-    if len > 7 && ends_with(s, len, "γεγονοτα") {
+    if len > 7 && ends!(s, len, "γεγονοτα") {
         return len - 3;
     }
 
-    if len > 7 && ends_with(s, len, "καθεστωσ") {
+    if len > 7 && ends!(s, len, "καθεστωσ") {
         return len - 2;
     }
 
-    if len > 6 && (ends_with(s, len, "σκαγιου"))
-        || ends_with(s, len, "σκαγιων")
-        || ends_with(s, len, "ολογιου")
-        || ends_with(s, len, "ολογιων")
-        || ends_with(s, len, "κρεατοσ")
-        || ends_with(s, len, "κρεατων")
-        || ends_with(s, len, "περατοσ")
-        || ends_with(s, len, "περατων")
-        || ends_with(s, len, "τερατοσ")
-        || ends_with(s, len, "τερατων")
+    if len > 6 && (ends!(s, len, "σκαγιου"))
+        || ends!(s, len, "σκαγιων")
+        || ends!(s, len, "ολογιου")
+        || ends!(s, len, "ολογιων")
+        || ends!(s, len, "κρεατοσ")
+        || ends!(s, len, "κρεατων")
+        || ends!(s, len, "περατοσ")
+        || ends!(s, len, "περατων")
+        || ends!(s, len, "τερατοσ")
+        || ends!(s, len, "τερατων")
     {
         return len - 4;
     }
 
-    if len > 6 && ends_with(s, len, "τατογια") {
+    if len > 6 && ends!(s, len, "τατογια") {
         return len - 3;
     }
 
-    if len > 6 && ends_with(s, len, "γεγονοσ") {
+    if len > 6 && ends!(s, len, "γεγονοσ") {
         return len - 2;
     }
 
     if len > 5
-        && (ends_with(s, len, "φαγιου")
-            || ends_with(s, len, "φαγιων")
-            || ends_with(s, len, "σογιου")
-            || ends_with(s, len, "σογιων"))
+        && (ends!(s, len, "φαγιου")
+            || ends!(s, len, "φαγιων")
+            || ends!(s, len, "σογιου")
+            || ends!(s, len, "σογιων"))
     {
         return len - 4;
     }
 
     if len > 5
-        && (ends_with(s, len, "σκαγια")
-            || ends_with(s, len, "ολογια")
-            || ends_with(s, len, "κρεατα")
-            || ends_with(s, len, "περατα")
-            || ends_with(s, len, "τερατα"))
+        && (ends!(s, len, "σκαγια")
+            || ends!(s, len, "ολογια")
+            || ends!(s, len, "κρεατα")
+            || ends!(s, len, "περατα")
+            || ends!(s, len, "τερατα"))
     {
         return len - 3;
     }
 
     if len > 4
-        && (ends_with(s, len, "φαγια")
-            || ends_with(s, len, "σογια")
-            || ends_with(s, len, "φωτοσ")
-            || ends_with(s, len, "φωτων"))
+        && (ends!(s, len, "φαγια")
+            || ends!(s, len, "σογια")
+            || ends!(s, len, "φωτοσ")
+            || ends!(s, len, "φωτων"))
     {
         return len - 3;
     }
 
-    if len > 4
-        && (ends_with(s, len, "κρεασ") || ends_with(s, len, "περασ") || ends_with(s, len, "τερασ"))
+    if len > 4 && (ends!(s, len, "κρεασ") || ends!(s, len, "περασ") || ends!(s, len, "τερασ"))
     {
         return len - 2;
     }
 
-    if len > 3 && ends_with(s, len, "φωτα") {
+    if len > 3 && ends!(s, len, "φωτα") {
         return len - 2;
     }
 
-    if len > 2 && ends_with(s, len, "φωσ") {
+    if len > 2 && ends!(s, len, "φωσ") {
         return len - 1;
     }
 
@@ -634,18 +655,18 @@ fn rule0(s: &mut [u16], mut len: usize) -> usize {
 // Java: GreekStemmer.rule1
 #[allow(unused_mut)]
 fn rule1(s: &mut [u16], mut len: usize) -> usize {
-    if len > 4 && (ends_with(s, len, "αδεσ") || ends_with(s, len, "αδων")) {
+    if len > 4 && (ends!(s, len, "αδεσ") || ends!(s, len, "αδων")) {
         len -= 4;
-        if !(ends_with(s, len, "οκ")
-            || ends_with(s, len, "μαμ")
-            || ends_with(s, len, "μαν")
-            || ends_with(s, len, "μπαμπ")
-            || ends_with(s, len, "πατερ")
-            || ends_with(s, len, "γιαγι")
-            || ends_with(s, len, "νταντ")
-            || ends_with(s, len, "κυρ")
-            || ends_with(s, len, "θει")
-            || ends_with(s, len, "πεθερ"))
+        if !(ends!(s, len, "οκ")
+            || ends!(s, len, "μαμ")
+            || ends!(s, len, "μαν")
+            || ends!(s, len, "μπαμπ")
+            || ends!(s, len, "πατερ")
+            || ends!(s, len, "γιαγι")
+            || ends!(s, len, "νταντ")
+            || ends!(s, len, "κυρ")
+            || ends!(s, len, "θει")
+            || ends!(s, len, "πεθερ"))
         {
             len += 2;
         }
@@ -656,16 +677,16 @@ fn rule1(s: &mut [u16], mut len: usize) -> usize {
 // Java: GreekStemmer.rule2
 #[allow(unused_mut)]
 fn rule2(s: &mut [u16], mut len: usize) -> usize {
-    if len > 4 && (ends_with(s, len, "εδεσ") || ends_with(s, len, "εδων")) {
+    if len > 4 && (ends!(s, len, "εδεσ") || ends!(s, len, "εδων")) {
         len -= 4;
-        if ends_with(s, len, "οπ")
-            || ends_with(s, len, "ιπ")
-            || ends_with(s, len, "εμπ")
-            || ends_with(s, len, "υπ")
-            || ends_with(s, len, "γηπ")
-            || ends_with(s, len, "δαπ")
-            || ends_with(s, len, "κρασπ")
-            || ends_with(s, len, "μιλ")
+        if ends!(s, len, "οπ")
+            || ends!(s, len, "ιπ")
+            || ends!(s, len, "εμπ")
+            || ends!(s, len, "υπ")
+            || ends!(s, len, "γηπ")
+            || ends!(s, len, "δαπ")
+            || ends!(s, len, "κρασπ")
+            || ends!(s, len, "μιλ")
         {
             len += 2;
         }
@@ -676,23 +697,23 @@ fn rule2(s: &mut [u16], mut len: usize) -> usize {
 // Java: GreekStemmer.rule3
 #[allow(unused_mut)]
 fn rule3(s: &mut [u16], mut len: usize) -> usize {
-    if len > 5 && (ends_with(s, len, "ουδεσ") || ends_with(s, len, "ουδων")) {
+    if len > 5 && (ends!(s, len, "ουδεσ") || ends!(s, len, "ουδων")) {
         len -= 5;
-        if ends_with(s, len, "αρκ")
-            || ends_with(s, len, "καλιακ")
-            || ends_with(s, len, "πεταλ")
-            || ends_with(s, len, "λιχ")
-            || ends_with(s, len, "πλεξ")
-            || ends_with(s, len, "σκ")
-            || ends_with(s, len, "σ")
-            || ends_with(s, len, "φλ")
-            || ends_with(s, len, "φρ")
-            || ends_with(s, len, "βελ")
-            || ends_with(s, len, "λουλ")
-            || ends_with(s, len, "χν")
-            || ends_with(s, len, "σπ")
-            || ends_with(s, len, "τραγ")
-            || ends_with(s, len, "φε")
+        if ends!(s, len, "αρκ")
+            || ends!(s, len, "καλιακ")
+            || ends!(s, len, "πεταλ")
+            || ends!(s, len, "λιχ")
+            || ends!(s, len, "πλεξ")
+            || ends!(s, len, "σκ")
+            || ends!(s, len, "σ")
+            || ends!(s, len, "φλ")
+            || ends!(s, len, "φρ")
+            || ends!(s, len, "βελ")
+            || ends!(s, len, "λουλ")
+            || ends!(s, len, "χν")
+            || ends!(s, len, "σπ")
+            || ends!(s, len, "τραγ")
+            || ends!(s, len, "φε")
         {
             len += 3;
         }
@@ -703,7 +724,7 @@ fn rule3(s: &mut [u16], mut len: usize) -> usize {
 // Java: GreekStemmer.rule4
 #[allow(unused_mut)]
 fn rule4(s: &mut [u16], mut len: usize) -> usize {
-    if len > 3 && (ends_with(s, len, "εωσ") || ends_with(s, len, "εων")) {
+    if len > 3 && (ends!(s, len, "εωσ") || ends!(s, len, "εων")) {
         len -= 3;
         if contains(&EXC4, s, len) {
             len += 1;
@@ -715,12 +736,12 @@ fn rule4(s: &mut [u16], mut len: usize) -> usize {
 // Java: GreekStemmer.rule5
 #[allow(unused_mut)]
 fn rule5(s: &mut [u16], mut len: usize) -> usize {
-    if len > 2 && ends_with(s, len, "ια") {
+    if len > 2 && ends!(s, len, "ια") {
         len -= 2;
         if ends_with_vowel(s, len) {
             len += 1;
         }
-    } else if len > 3 && (ends_with(s, len, "ιου") || ends_with(s, len, "ιων")) {
+    } else if len > 3 && (ends!(s, len, "ιου") || ends!(s, len, "ιων")) {
         len -= 3;
         if ends_with_vowel(s, len) {
             len += 1;
@@ -733,10 +754,10 @@ fn rule5(s: &mut [u16], mut len: usize) -> usize {
 #[allow(unused_mut)]
 fn rule6(s: &mut [u16], mut len: usize) -> usize {
     let mut removed = false;
-    if len > 3 && (ends_with(s, len, "ικα") || ends_with(s, len, "ικο")) {
+    if len > 3 && (ends!(s, len, "ικα") || ends!(s, len, "ικο")) {
         len -= 3;
         removed = true;
-    } else if len > 4 && (ends_with(s, len, "ικου") || ends_with(s, len, "ικων")) {
+    } else if len > 4 && (ends!(s, len, "ικου") || ends!(s, len, "ικων")) {
         len -= 4;
         removed = true;
     }
@@ -752,21 +773,21 @@ fn rule6(s: &mut [u16], mut len: usize) -> usize {
 // Java: GreekStemmer.rule7
 #[allow(unused_mut)]
 fn rule7(s: &mut [u16], mut len: usize) -> usize {
-    if len == 5 && ends_with(s, len, "αγαμε") {
+    if len == 5 && ends!(s, len, "αγαμε") {
         return len - 1;
     }
 
-    if len > 7 && ends_with(s, len, "ηθηκαμε") {
+    if len > 7 && ends!(s, len, "ηθηκαμε") {
         len -= 7;
-    } else if len > 6 && ends_with(s, len, "ουσαμε") {
+    } else if len > 6 && ends!(s, len, "ουσαμε") {
         len -= 6;
     } else if len > 5
-        && (ends_with(s, len, "αγαμε") || ends_with(s, len, "ησαμε") || ends_with(s, len, "ηκαμε"))
+        && (ends!(s, len, "αγαμε") || ends!(s, len, "ησαμε") || ends!(s, len, "ηκαμε"))
     {
         len -= 5;
     }
 
-    if len > 3 && ends_with(s, len, "αμε") {
+    if len > 3 && ends!(s, len, "αμε") {
         len -= 3;
         if contains(&EXC7, s, len) {
             len += 2;
@@ -781,25 +802,25 @@ fn rule7(s: &mut [u16], mut len: usize) -> usize {
 fn rule8(s: &mut [u16], mut len: usize) -> usize {
     let mut removed = false;
 
-    if len > 8 && ends_with(s, len, "ιουντανε") {
+    if len > 8 && ends!(s, len, "ιουντανε") {
         len -= 8;
         removed = true;
-    } else if len > 7 && ends_with(s, len, "ιοντανε")
-        || ends_with(s, len, "ουντανε")
-        || ends_with(s, len, "ηθηκανε")
+    } else if len > 7 && ends!(s, len, "ιοντανε")
+        || ends!(s, len, "ουντανε")
+        || ends!(s, len, "ηθηκανε")
     {
         len -= 7;
         removed = true;
-    } else if len > 6 && ends_with(s, len, "ιοτανε")
-        || ends_with(s, len, "οντανε")
-        || ends_with(s, len, "ουσανε")
+    } else if len > 6 && ends!(s, len, "ιοτανε")
+        || ends!(s, len, "οντανε")
+        || ends!(s, len, "ουσανε")
     {
         len -= 6;
         removed = true;
-    } else if len > 5 && ends_with(s, len, "αγανε")
-        || ends_with(s, len, "ησανε")
-        || ends_with(s, len, "οτανε")
-        || ends_with(s, len, "ηκανε")
+    } else if len > 5 && ends!(s, len, "αγανε")
+        || ends!(s, len, "ησανε")
+        || ends!(s, len, "οτανε")
+        || ends!(s, len, "ηκανε")
     {
         len -= 5;
         removed = true;
@@ -813,7 +834,7 @@ fn rule8(s: &mut [u16], mut len: usize) -> usize {
         s[len - 1] = c('ν');
     }
 
-    if len > 3 && ends_with(s, len, "ανε") {
+    if len > 3 && ends!(s, len, "ανε") {
         len -= 3;
         if ends_with_vowel_no_y(s, len) || contains(&EXC8B, s, len) {
             len += 2;
@@ -826,45 +847,45 @@ fn rule8(s: &mut [u16], mut len: usize) -> usize {
 // Java: GreekStemmer.rule9
 #[allow(unused_mut)]
 fn rule9(s: &mut [u16], mut len: usize) -> usize {
-    if len > 5 && ends_with(s, len, "ησετε") {
+    if len > 5 && ends!(s, len, "ησετε") {
         len -= 5;
     }
 
-    if len > 3 && ends_with(s, len, "ετε") {
+    if len > 3 && ends!(s, len, "ετε") {
         len -= 3;
         if contains(&EXC9, s, len)
             || ends_with_vowel_no_y(s, len)
-            || ends_with(s, len, "οδ")
-            || ends_with(s, len, "αιρ")
-            || ends_with(s, len, "φορ")
-            || ends_with(s, len, "ταθ")
-            || ends_with(s, len, "διαθ")
-            || ends_with(s, len, "σχ")
-            || ends_with(s, len, "ενδ")
-            || ends_with(s, len, "ευρ")
-            || ends_with(s, len, "τιθ")
-            || ends_with(s, len, "υπερθ")
-            || ends_with(s, len, "ραθ")
-            || ends_with(s, len, "ενθ")
-            || ends_with(s, len, "ροθ")
-            || ends_with(s, len, "σθ")
-            || ends_with(s, len, "πυρ")
-            || ends_with(s, len, "αιν")
-            || ends_with(s, len, "συνδ")
-            || ends_with(s, len, "συν")
-            || ends_with(s, len, "συνθ")
-            || ends_with(s, len, "χωρ")
-            || ends_with(s, len, "πον")
-            || ends_with(s, len, "βρ")
-            || ends_with(s, len, "καθ")
-            || ends_with(s, len, "ευθ")
-            || ends_with(s, len, "εκθ")
-            || ends_with(s, len, "νετ")
-            || ends_with(s, len, "ρον")
-            || ends_with(s, len, "αρκ")
-            || ends_with(s, len, "βαρ")
-            || ends_with(s, len, "βολ")
-            || ends_with(s, len, "ωφελ")
+            || ends!(s, len, "οδ")
+            || ends!(s, len, "αιρ")
+            || ends!(s, len, "φορ")
+            || ends!(s, len, "ταθ")
+            || ends!(s, len, "διαθ")
+            || ends!(s, len, "σχ")
+            || ends!(s, len, "ενδ")
+            || ends!(s, len, "ευρ")
+            || ends!(s, len, "τιθ")
+            || ends!(s, len, "υπερθ")
+            || ends!(s, len, "ραθ")
+            || ends!(s, len, "ενθ")
+            || ends!(s, len, "ροθ")
+            || ends!(s, len, "σθ")
+            || ends!(s, len, "πυρ")
+            || ends!(s, len, "αιν")
+            || ends!(s, len, "συνδ")
+            || ends!(s, len, "συν")
+            || ends!(s, len, "συνθ")
+            || ends!(s, len, "χωρ")
+            || ends!(s, len, "πον")
+            || ends!(s, len, "βρ")
+            || ends!(s, len, "καθ")
+            || ends!(s, len, "ευθ")
+            || ends!(s, len, "εκθ")
+            || ends!(s, len, "νετ")
+            || ends!(s, len, "ρον")
+            || ends!(s, len, "αρκ")
+            || ends!(s, len, "βαρ")
+            || ends!(s, len, "βολ")
+            || ends!(s, len, "ωφελ")
         {
             len += 2;
         }
@@ -876,13 +897,13 @@ fn rule9(s: &mut [u16], mut len: usize) -> usize {
 // Java: GreekStemmer.rule10
 #[allow(unused_mut)]
 fn rule10(s: &mut [u16], mut len: usize) -> usize {
-    if len > 5 && (ends_with(s, len, "οντασ") || ends_with(s, len, "ωντασ")) {
+    if len > 5 && (ends!(s, len, "οντασ") || ends!(s, len, "ωντασ")) {
         len -= 5;
-        if len == 3 && ends_with(s, len, "αρχ") {
+        if len == 3 && ends!(s, len, "αρχ") {
             len += 3;
             s[len - 3] = c('ο');
         }
-        if ends_with(s, len, "κρε") {
+        if ends!(s, len, "κρε") {
             len += 3;
             s[len - 3] = c('ω');
         }
@@ -894,14 +915,14 @@ fn rule10(s: &mut [u16], mut len: usize) -> usize {
 // Java: GreekStemmer.rule11
 #[allow(unused_mut)]
 fn rule11(s: &mut [u16], mut len: usize) -> usize {
-    if len > 6 && ends_with(s, len, "ομαστε") {
+    if len > 6 && ends!(s, len, "ομαστε") {
         len -= 6;
-        if len == 2 && ends_with(s, len, "ον") {
+        if len == 2 && ends!(s, len, "ον") {
             len += 5;
         }
-    } else if len > 7 && ends_with(s, len, "ιομαστε") {
+    } else if len > 7 && ends!(s, len, "ιομαστε") {
         len -= 7;
-        if len == 2 && ends_with(s, len, "ον") {
+        if len == 2 && ends!(s, len, "ον") {
             len += 5;
             s[len - 5] = c('ο');
             s[len - 4] = c('μ');
@@ -916,14 +937,14 @@ fn rule11(s: &mut [u16], mut len: usize) -> usize {
 // Java: GreekStemmer.rule12
 #[allow(unused_mut)]
 fn rule12(s: &mut [u16], mut len: usize) -> usize {
-    if len > 5 && ends_with(s, len, "ιεστε") {
+    if len > 5 && ends!(s, len, "ιεστε") {
         len -= 5;
         if contains(&EXC12A, s, len) {
             len += 4;
         }
     }
 
-    if len > 4 && ends_with(s, len, "εστε") {
+    if len > 4 && ends!(s, len, "εστε") {
         len -= 4;
         if contains(&EXC12B, s, len) {
             len += 3;
@@ -936,30 +957,30 @@ fn rule12(s: &mut [u16], mut len: usize) -> usize {
 // Java: GreekStemmer.rule13
 #[allow(unused_mut)]
 fn rule13(s: &mut [u16], mut len: usize) -> usize {
-    if len > 6 && ends_with(s, len, "ηθηκεσ") {
+    if len > 6 && ends!(s, len, "ηθηκεσ") {
         len -= 6;
-    } else if len > 5 && (ends_with(s, len, "ηθηκα") || ends_with(s, len, "ηθηκε")) {
+    } else if len > 5 && (ends!(s, len, "ηθηκα") || ends!(s, len, "ηθηκε")) {
         len -= 5;
     }
 
     let mut removed = false;
 
-    if len > 4 && ends_with(s, len, "ηκεσ") {
+    if len > 4 && ends!(s, len, "ηκεσ") {
         len -= 4;
         removed = true;
-    } else if len > 3 && (ends_with(s, len, "ηκα") || ends_with(s, len, "ηκε")) {
+    } else if len > 3 && (ends!(s, len, "ηκα") || ends!(s, len, "ηκε")) {
         len -= 3;
         removed = true;
     }
 
     if removed
         && (contains(&EXC13, s, len)
-            || ends_with(s, len, "σκωλ")
-            || ends_with(s, len, "σκουλ")
-            || ends_with(s, len, "ναρθ")
-            || ends_with(s, len, "σφ")
-            || ends_with(s, len, "οθ")
-            || ends_with(s, len, "πιθ"))
+            || ends!(s, len, "σκωλ")
+            || ends!(s, len, "σκουλ")
+            || ends!(s, len, "ναρθ")
+            || ends!(s, len, "σφ")
+            || ends!(s, len, "οθ")
+            || ends!(s, len, "πιθ"))
     {
         len += 2;
     }
@@ -972,10 +993,10 @@ fn rule13(s: &mut [u16], mut len: usize) -> usize {
 fn rule14(s: &mut [u16], mut len: usize) -> usize {
     let mut removed = false;
 
-    if len > 5 && ends_with(s, len, "ουσεσ") {
+    if len > 5 && ends!(s, len, "ουσεσ") {
         len -= 5;
         removed = true;
-    } else if len > 4 && (ends_with(s, len, "ουσα") || ends_with(s, len, "ουσε")) {
+    } else if len > 4 && (ends!(s, len, "ουσα") || ends!(s, len, "ουσε")) {
         len -= 4;
         removed = true;
     }
@@ -983,18 +1004,18 @@ fn rule14(s: &mut [u16], mut len: usize) -> usize {
     if removed
         && (contains(&EXC14, s, len)
             || ends_with_vowel(s, len)
-            || ends_with(s, len, "ποδαρ")
-            || ends_with(s, len, "βλεπ")
-            || ends_with(s, len, "πανταχ")
-            || ends_with(s, len, "φρυδ")
-            || ends_with(s, len, "μαντιλ")
-            || ends_with(s, len, "μαλλ")
-            || ends_with(s, len, "κυματ")
-            || ends_with(s, len, "λαχ")
-            || ends_with(s, len, "ληγ")
-            || ends_with(s, len, "φαγ")
-            || ends_with(s, len, "ομ")
-            || ends_with(s, len, "πρωτ"))
+            || ends!(s, len, "ποδαρ")
+            || ends!(s, len, "βλεπ")
+            || ends!(s, len, "πανταχ")
+            || ends!(s, len, "φρυδ")
+            || ends!(s, len, "μαντιλ")
+            || ends!(s, len, "μαλλ")
+            || ends!(s, len, "κυματ")
+            || ends!(s, len, "λαχ")
+            || ends!(s, len, "ληγ")
+            || ends!(s, len, "φαγ")
+            || ends!(s, len, "ομ")
+            || ends!(s, len, "πρωτ"))
     {
         len += 3;
     }
@@ -1006,28 +1027,28 @@ fn rule14(s: &mut [u16], mut len: usize) -> usize {
 #[allow(unused_mut)]
 fn rule15(s: &mut [u16], mut len: usize) -> usize {
     let mut removed = false;
-    if len > 4 && ends_with(s, len, "αγεσ") {
+    if len > 4 && ends!(s, len, "αγεσ") {
         len -= 4;
         removed = true;
-    } else if len > 3 && (ends_with(s, len, "αγα") || ends_with(s, len, "αγε")) {
+    } else if len > 3 && (ends!(s, len, "αγα") || ends!(s, len, "αγε")) {
         len -= 3;
         removed = true;
     }
 
     if removed {
         let cond1 = contains(&EXC15A, s, len)
-            || ends_with(s, len, "οφ")
-            || ends_with(s, len, "πελ")
-            || ends_with(s, len, "χορτ")
-            || ends_with(s, len, "λλ")
-            || ends_with(s, len, "σφ")
-            || ends_with(s, len, "ρπ")
-            || ends_with(s, len, "φρ")
-            || ends_with(s, len, "πρ")
-            || ends_with(s, len, "λοχ")
-            || ends_with(s, len, "σμην");
+            || ends!(s, len, "οφ")
+            || ends!(s, len, "πελ")
+            || ends!(s, len, "χορτ")
+            || ends!(s, len, "λλ")
+            || ends!(s, len, "σφ")
+            || ends!(s, len, "ρπ")
+            || ends!(s, len, "φρ")
+            || ends!(s, len, "πρ")
+            || ends!(s, len, "λοχ")
+            || ends!(s, len, "σμην");
 
-        let cond2 = contains(&EXC15B, s, len) || ends_with(s, len, "κολλ");
+        let cond2 = contains(&EXC15B, s, len) || ends!(s, len, "κολλ");
 
         if cond1 && !cond2 {
             len += 2;
@@ -1041,10 +1062,10 @@ fn rule15(s: &mut [u16], mut len: usize) -> usize {
 #[allow(unused_mut)]
 fn rule16(s: &mut [u16], mut len: usize) -> usize {
     let mut removed = false;
-    if len > 4 && ends_with(s, len, "ησου") {
+    if len > 4 && ends!(s, len, "ησου") {
         len -= 4;
         removed = true;
-    } else if len > 3 && (ends_with(s, len, "ησε") || ends_with(s, len, "ησα")) {
+    } else if len > 3 && (ends!(s, len, "ησε") || ends!(s, len, "ησα")) {
         len -= 3;
         removed = true;
     }
@@ -1059,7 +1080,7 @@ fn rule16(s: &mut [u16], mut len: usize) -> usize {
 // Java: GreekStemmer.rule17
 #[allow(unused_mut)]
 fn rule17(s: &mut [u16], mut len: usize) -> usize {
-    if len > 4 && ends_with(s, len, "ηστε") {
+    if len > 4 && ends!(s, len, "ηστε") {
         len -= 4;
         if contains(&EXC17, s, len) {
             len += 3;
@@ -1074,10 +1095,10 @@ fn rule17(s: &mut [u16], mut len: usize) -> usize {
 fn rule18(s: &mut [u16], mut len: usize) -> usize {
     let mut removed = false;
 
-    if len > 6 && (ends_with(s, len, "ησουνε") || ends_with(s, len, "ηθουνε")) {
+    if len > 6 && (ends!(s, len, "ησουνε") || ends!(s, len, "ηθουνε")) {
         len -= 6;
         removed = true;
-    } else if len > 4 && ends_with(s, len, "ουνε") {
+    } else if len > 4 && ends!(s, len, "ουνε") {
         len -= 4;
         removed = true;
     }
@@ -1096,10 +1117,10 @@ fn rule18(s: &mut [u16], mut len: usize) -> usize {
 fn rule19(s: &mut [u16], mut len: usize) -> usize {
     let mut removed = false;
 
-    if len > 6 && (ends_with(s, len, "ησουμε") || ends_with(s, len, "ηθουμε")) {
+    if len > 6 && (ends!(s, len, "ησουμε") || ends!(s, len, "ηθουμε")) {
         len -= 6;
         removed = true;
-    } else if len > 4 && ends_with(s, len, "ουμε") {
+    } else if len > 4 && ends!(s, len, "ουμε") {
         len -= 4;
         removed = true;
     }
@@ -1116,9 +1137,9 @@ fn rule19(s: &mut [u16], mut len: usize) -> usize {
 // Java: GreekStemmer.rule20
 #[allow(unused_mut)]
 fn rule20(s: &mut [u16], mut len: usize) -> usize {
-    if len > 5 && (ends_with(s, len, "ματων") || ends_with(s, len, "ματοσ")) {
+    if len > 5 && (ends!(s, len, "ματων") || ends!(s, len, "ματοσ")) {
         len -= 3;
-    } else if len > 4 && ends_with(s, len, "ματα") {
+    } else if len > 4 && ends!(s, len, "ματα") {
         len -= 2;
     }
     return len;
@@ -1127,117 +1148,117 @@ fn rule20(s: &mut [u16], mut len: usize) -> usize {
 // Java: GreekStemmer.rule21
 #[allow(unused_mut)]
 fn rule21(s: &mut [u16], mut len: usize) -> usize {
-    if len > 9 && ends_with(s, len, "ιοντουσαν") {
+    if len > 9 && ends!(s, len, "ιοντουσαν") {
         return len - 9;
     }
 
     if len > 8
-        && (ends_with(s, len, "ιομασταν")
-            || ends_with(s, len, "ιοσασταν")
-            || ends_with(s, len, "ιουμαστε")
-            || ends_with(s, len, "οντουσαν"))
+        && (ends!(s, len, "ιομασταν")
+            || ends!(s, len, "ιοσασταν")
+            || ends!(s, len, "ιουμαστε")
+            || ends!(s, len, "οντουσαν"))
     {
         return len - 8;
     }
 
     if len > 7
-        && (ends_with(s, len, "ιεμαστε")
-            || ends_with(s, len, "ιεσαστε")
-            || ends_with(s, len, "ιομουνα")
-            || ends_with(s, len, "ιοσαστε")
-            || ends_with(s, len, "ιοσουνα")
-            || ends_with(s, len, "ιουνται")
-            || ends_with(s, len, "ιουνταν")
-            || ends_with(s, len, "ηθηκατε")
-            || ends_with(s, len, "ομασταν")
-            || ends_with(s, len, "οσασταν")
-            || ends_with(s, len, "ουμαστε"))
+        && (ends!(s, len, "ιεμαστε")
+            || ends!(s, len, "ιεσαστε")
+            || ends!(s, len, "ιομουνα")
+            || ends!(s, len, "ιοσαστε")
+            || ends!(s, len, "ιοσουνα")
+            || ends!(s, len, "ιουνται")
+            || ends!(s, len, "ιουνταν")
+            || ends!(s, len, "ηθηκατε")
+            || ends!(s, len, "ομασταν")
+            || ends!(s, len, "οσασταν")
+            || ends!(s, len, "ουμαστε"))
     {
         return len - 7;
     }
 
     if len > 6
-        && (ends_with(s, len, "ιομουν")
-            || ends_with(s, len, "ιονταν")
-            || ends_with(s, len, "ιοσουν")
-            || ends_with(s, len, "ηθειτε")
-            || ends_with(s, len, "ηθηκαν")
-            || ends_with(s, len, "ομουνα")
-            || ends_with(s, len, "οσαστε")
-            || ends_with(s, len, "οσουνα")
-            || ends_with(s, len, "ουνται")
-            || ends_with(s, len, "ουνταν")
-            || ends_with(s, len, "ουσατε"))
+        && (ends!(s, len, "ιομουν")
+            || ends!(s, len, "ιονταν")
+            || ends!(s, len, "ιοσουν")
+            || ends!(s, len, "ηθειτε")
+            || ends!(s, len, "ηθηκαν")
+            || ends!(s, len, "ομουνα")
+            || ends!(s, len, "οσαστε")
+            || ends!(s, len, "οσουνα")
+            || ends!(s, len, "ουνται")
+            || ends!(s, len, "ουνταν")
+            || ends!(s, len, "ουσατε"))
     {
         return len - 6;
     }
 
     if len > 5
-        && (ends_with(s, len, "αγατε")
-            || ends_with(s, len, "ιεμαι")
-            || ends_with(s, len, "ιεται")
-            || ends_with(s, len, "ιεσαι")
-            || ends_with(s, len, "ιοταν")
-            || ends_with(s, len, "ιουμα")
-            || ends_with(s, len, "ηθεισ")
-            || ends_with(s, len, "ηθουν")
-            || ends_with(s, len, "ηκατε")
-            || ends_with(s, len, "ησατε")
-            || ends_with(s, len, "ησουν")
-            || ends_with(s, len, "ομουν")
-            || ends_with(s, len, "ονται")
-            || ends_with(s, len, "ονταν")
-            || ends_with(s, len, "οσουν")
-            || ends_with(s, len, "ουμαι")
-            || ends_with(s, len, "ουσαν"))
+        && (ends!(s, len, "αγατε")
+            || ends!(s, len, "ιεμαι")
+            || ends!(s, len, "ιεται")
+            || ends!(s, len, "ιεσαι")
+            || ends!(s, len, "ιοταν")
+            || ends!(s, len, "ιουμα")
+            || ends!(s, len, "ηθεισ")
+            || ends!(s, len, "ηθουν")
+            || ends!(s, len, "ηκατε")
+            || ends!(s, len, "ησατε")
+            || ends!(s, len, "ησουν")
+            || ends!(s, len, "ομουν")
+            || ends!(s, len, "ονται")
+            || ends!(s, len, "ονταν")
+            || ends!(s, len, "οσουν")
+            || ends!(s, len, "ουμαι")
+            || ends!(s, len, "ουσαν"))
     {
         return len - 5;
     }
 
     if len > 4
-        && (ends_with(s, len, "αγαν")
-            || ends_with(s, len, "αμαι")
-            || ends_with(s, len, "ασαι")
-            || ends_with(s, len, "αται")
-            || ends_with(s, len, "ειτε")
-            || ends_with(s, len, "εσαι")
-            || ends_with(s, len, "εται")
-            || ends_with(s, len, "ηδεσ")
-            || ends_with(s, len, "ηδων")
-            || ends_with(s, len, "ηθει")
-            || ends_with(s, len, "ηκαν")
-            || ends_with(s, len, "ησαν")
-            || ends_with(s, len, "ησει")
-            || ends_with(s, len, "ησεσ")
-            || ends_with(s, len, "ομαι")
-            || ends_with(s, len, "οταν"))
+        && (ends!(s, len, "αγαν")
+            || ends!(s, len, "αμαι")
+            || ends!(s, len, "ασαι")
+            || ends!(s, len, "αται")
+            || ends!(s, len, "ειτε")
+            || ends!(s, len, "εσαι")
+            || ends!(s, len, "εται")
+            || ends!(s, len, "ηδεσ")
+            || ends!(s, len, "ηδων")
+            || ends!(s, len, "ηθει")
+            || ends!(s, len, "ηκαν")
+            || ends!(s, len, "ησαν")
+            || ends!(s, len, "ησει")
+            || ends!(s, len, "ησεσ")
+            || ends!(s, len, "ομαι")
+            || ends!(s, len, "οταν"))
     {
         return len - 4;
     }
 
     if len > 3
-        && (ends_with(s, len, "αει")
-            || ends_with(s, len, "εισ")
-            || ends_with(s, len, "ηθω")
-            || ends_with(s, len, "ησω")
-            || ends_with(s, len, "ουν")
-            || ends_with(s, len, "ουσ"))
+        && (ends!(s, len, "αει")
+            || ends!(s, len, "εισ")
+            || ends!(s, len, "ηθω")
+            || ends!(s, len, "ησω")
+            || ends!(s, len, "ουν")
+            || ends!(s, len, "ουσ"))
     {
         return len - 3;
     }
 
     if len > 2
-        && (ends_with(s, len, "αν")
-            || ends_with(s, len, "ασ")
-            || ends_with(s, len, "αω")
-            || ends_with(s, len, "ει")
-            || ends_with(s, len, "εσ")
-            || ends_with(s, len, "ησ")
-            || ends_with(s, len, "οι")
-            || ends_with(s, len, "οσ")
-            || ends_with(s, len, "ου")
-            || ends_with(s, len, "υσ")
-            || ends_with(s, len, "ων"))
+        && (ends!(s, len, "αν")
+            || ends!(s, len, "ασ")
+            || ends!(s, len, "αω")
+            || ends!(s, len, "ει")
+            || ends!(s, len, "εσ")
+            || ends!(s, len, "ησ")
+            || ends!(s, len, "οι")
+            || ends!(s, len, "οσ")
+            || ends!(s, len, "ου")
+            || ends!(s, len, "υσ")
+            || ends!(s, len, "ων"))
     {
         return len - 2;
     }
@@ -1252,19 +1273,34 @@ fn rule21(s: &mut [u16], mut len: usize) -> usize {
 // Java: GreekStemmer.rule22
 #[allow(unused_mut)]
 fn rule22(s: &mut [u16], mut len: usize) -> usize {
-    if ends_with(s, len, "εστερ") || ends_with(s, len, "εστατ") {
+    if ends!(s, len, "εστερ") || ends!(s, len, "εστατ") {
         return len - 5;
     }
 
-    if ends_with(s, len, "οτερ")
-        || ends_with(s, len, "οτατ")
-        || ends_with(s, len, "υτερ")
-        || ends_with(s, len, "υτατ")
-        || ends_with(s, len, "ωτερ")
-        || ends_with(s, len, "ωτατ")
+    if ends!(s, len, "οτερ")
+        || ends!(s, len, "οτατ")
+        || ends!(s, len, "υτερ")
+        || ends!(s, len, "υτατ")
+        || ends!(s, len, "ωτερ")
+        || ends!(s, len, "ωτατ")
     {
         return len - 4;
     }
 
     return len;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exception_lookup_spills_long_words() {
+        let long = "α".repeat(40);
+        let set = CharArraySet::from_words([long.as_str(), "αβ"], false);
+        let u = |w: &str| w.encode_utf16().collect::<Vec<u16>>();
+        assert!(contains(&set, &u(&long), 40));
+        assert!(contains(&set, &u("αβγ"), 2));
+        assert!(!contains(&set, &u("αβγ"), 3));
+    }
 }

@@ -3,7 +3,7 @@
 
 use std::sync::{Arc, LazyLock};
 
-use crate::util::stemmer_util::{delete, ends_with};
+use crate::util::stemmer_util::{delete, ends};
 use crate::util::ElisionFilter;
 use crate::{CharArraySet, LowerCaseFilter, StandardTokenizer, StopFilter};
 
@@ -61,7 +61,7 @@ impl FrenchLightStemmer {
                 }
             }
         }
-        if len > 4 && ends_with(s, len, "ie") {
+        if len > 4 && ends!(s, len, "ie") {
             len -= 2;
         }
         if len > 4 {
@@ -99,44 +99,44 @@ impl CharStemmer for FrenchLightStemmer {
         if len > 3 && s[len - 1] == c('s') {
             len -= 1;
         }
-        if len > 9 && ends_with(s, len, "issement") {
+        if len > 9 && ends!(s, len, "issement") {
             len -= 6;
             s[len - 1] = c('r');
             return norm(s, len);
         }
-        if len > 8 && ends_with(s, len, "issant") {
+        if len > 8 && ends!(s, len, "issant") {
             len -= 4;
             s[len - 1] = c('r');
             return norm(s, len);
         }
-        if len > 6 && ends_with(s, len, "ement") {
+        if len > 6 && ends!(s, len, "ement") {
             len -= 4;
-            if len > 3 && ends_with(s, len, "ive") {
+            if len > 3 && ends!(s, len, "ive") {
                 len -= 1;
                 s[len - 1] = c('f');
             }
             return norm(s, len);
         }
-        if len > 11 && ends_with(s, len, "ficatrice") {
+        if len > 11 && ends!(s, len, "ficatrice") {
             len -= 5;
             s[len - 2] = c('e');
             s[len - 1] = c('r');
             return norm(s, len);
         }
-        if len > 10 && ends_with(s, len, "ficateur") {
+        if len > 10 && ends!(s, len, "ficateur") {
             len -= 4;
             s[len - 2] = c('e');
             s[len - 1] = c('r');
             return norm(s, len);
         }
-        if len > 9 && ends_with(s, len, "catrice") {
+        if len > 9 && ends!(s, len, "catrice") {
             len -= 3;
             s[len - 4] = c('q');
             s[len - 3] = c('u');
             s[len - 2] = c('e');
             return norm(s, len);
         }
-        if len > 8 && ends_with(s, len, "cateur") {
+        if len > 8 && ends!(s, len, "cateur") {
             len -= 2;
             s[len - 4] = c('q');
             s[len - 3] = c('u');
@@ -144,85 +144,85 @@ impl CharStemmer for FrenchLightStemmer {
             s[len - 1] = c('r');
             return norm(s, len);
         }
-        if len > 8 && ends_with(s, len, "atrice") {
+        if len > 8 && ends!(s, len, "atrice") {
             len -= 4;
             s[len - 2] = c('e');
             s[len - 1] = c('r');
             return norm(s, len);
         }
-        if len > 7 && ends_with(s, len, "ateur") {
+        if len > 7 && ends!(s, len, "ateur") {
             len -= 3;
             s[len - 2] = c('e');
             s[len - 1] = c('r');
             return norm(s, len);
         }
-        if len > 6 && ends_with(s, len, "trice") {
+        if len > 6 && ends!(s, len, "trice") {
             len -= 1;
             s[len - 3] = c('e');
             s[len - 2] = c('u');
             s[len - 1] = c('r');
         }
-        if len > 5 && ends_with(s, len, "ième") {
+        if len > 5 && ends!(s, len, "ième") {
             return norm(s, len - 4);
         }
-        if len > 7 && ends_with(s, len, "teuse") {
+        if len > 7 && ends!(s, len, "teuse") {
             len -= 2;
             s[len - 1] = c('r');
             return norm(s, len);
         }
-        if len > 6 && ends_with(s, len, "teur") {
+        if len > 6 && ends!(s, len, "teur") {
             len -= 1;
             s[len - 1] = c('r');
             return norm(s, len);
         }
-        if len > 5 && ends_with(s, len, "euse") {
+        if len > 5 && ends!(s, len, "euse") {
             return norm(s, len - 2);
         }
-        if len > 8 && ends_with(s, len, "ère") {
+        if len > 8 && ends!(s, len, "ère") {
             len -= 1;
             s[len - 2] = c('e');
             return norm(s, len);
         }
-        if len > 7 && ends_with(s, len, "ive") {
+        if len > 7 && ends!(s, len, "ive") {
             len -= 1;
             s[len - 1] = c('f');
             return norm(s, len);
         }
-        if len > 4 && (ends_with(s, len, "folle") || ends_with(s, len, "molle")) {
+        if len > 4 && (ends!(s, len, "folle") || ends!(s, len, "molle")) {
             len -= 2;
             s[len - 1] = c('u');
             return norm(s, len);
         }
-        if len > 9 && ends_with(s, len, "nnelle") {
+        if len > 9 && ends!(s, len, "nnelle") {
             return norm(s, len - 5);
         }
-        if len > 9 && ends_with(s, len, "nnel") {
+        if len > 9 && ends!(s, len, "nnel") {
             return norm(s, len - 3);
         }
-        if len > 4 && ends_with(s, len, "ète") {
+        if len > 4 && ends!(s, len, "ète") {
             len -= 1;
             s[len - 2] = c('e');
         }
-        if len > 8 && ends_with(s, len, "ique") {
+        if len > 8 && ends!(s, len, "ique") {
             len -= 4;
         }
-        if len > 8 && ends_with(s, len, "esse") {
+        if len > 8 && ends!(s, len, "esse") {
             return norm(s, len - 3);
         }
-        if len > 7 && ends_with(s, len, "inage") {
+        if len > 7 && ends!(s, len, "inage") {
             return norm(s, len - 3);
         }
-        if len > 9 && ends_with(s, len, "isation") {
+        if len > 9 && ends!(s, len, "isation") {
             len -= 7;
-            if len > 5 && ends_with(s, len, "ual") {
+            if len > 5 && ends!(s, len, "ual") {
                 s[len - 2] = c('e');
             }
             return norm(s, len);
         }
-        if len > 9 && ends_with(s, len, "isateur") {
+        if len > 9 && ends!(s, len, "isateur") {
             return norm(s, len - 7);
         }
-        if len > 8 && (ends_with(s, len, "ation") || ends_with(s, len, "ition")) {
+        if len > 8 && (ends!(s, len, "ation") || ends!(s, len, "ition")) {
             return norm(s, len - 5);
         }
         norm(s, len)
