@@ -155,6 +155,8 @@ fn parsers_match_lucene_on_good_and_bad_rules() {
             wordnet(&rules, dedup, expand, &analyzer)
         };
         match built {
+            // The generator's `dump` of a `null` FST: `new IntsRefFSTEnum(null)`.
+            Ok(m) if m.is_empty() => actual.push("X\tNullPointerException".to_string()),
             Ok(m) => actual.extend(dump(&m)),
             Err(e) => actual.push(format!("X\t{e}")),
         }

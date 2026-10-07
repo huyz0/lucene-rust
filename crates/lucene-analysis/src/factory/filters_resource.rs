@@ -1282,18 +1282,6 @@ pub(crate) fn wrapped_runtime(cause: &FactoryError) -> FactoryError {
     )
 }
 
-/// `parser.build()` of a map with no rules: Java's has a `null` FST, which
-/// [`crate::synonym::SynonymMapBuilder::build`] reports as an error.
-fn empty_is_none(
-    built: Result<SynonymMap, AnalysisError>,
-) -> Result<Option<SynonymMap>, AnalysisError> {
-    match built {
-        Ok(map) => Ok(Some(map)),
-        Err(AnalysisError::IllegalState(m)) if m.contains("an empty SynonymMap") => Ok(None),
-        Err(e) => Err(e),
-    }
-}
-
 impl<const GRAPH: bool> SynonymFactory<GRAPH> {
     // Java: SynonymFilterFactory.loadTokenizerFactory
     fn load_tokenizer_factory(
@@ -1357,17 +1345,17 @@ impl<const GRAPH: bool> SynonymFactory<GRAPH> {
             for text in &texts {
                 parser.parse(text).map_err(parse_error)?;
             }
-            empty_is_none(parser.build())?
+            parser.build()?
         } else {
             let mut parser = WordnetSynonymParser::new(true, self.expand, &analyzer);
             for text in &texts {
                 parser.parse(text).map_err(parse_error)?;
             }
-            empty_is_none(parser.build())?
+            parser.build()?
         };
-        // Java: a map without entries has a null FST and the factory returns
-        // its input.
-        self.map = map.filter(|m| !m.entries().is_empty()).map(Arc::new);
+        // Java: a map built from no rules has a null FST and the factory
+        // returns its input.
+        self.map = (!map.is_empty()).then(|| Arc::new(map));
         Ok(())
     }
 }
