@@ -156,12 +156,23 @@ Part 1:
   daitch_mokotoff 1.24x, double_metaphone_filter 1.43x, ph_caverphone2
   5.25x, ph_cologne 1.29x, ph_double_metaphone 1.50x, ph_metaphone 1.31x,
   ph_mra 2.70x, ph_nysiis 1.57x, ph_refined_soundex 0.94~, ph_soundex
-  1.00~, stempel_filter 1.17x, polish_analyzer 1.22x, morfologik_filter
-  0.90~, ukrainian_analyzer 0.99~. The faithful port read ph_soundex 0.64x
-  and ph_refined_soundex 0.52x: the cost was allocation and table lookups
-  for ASCII words (now an ASCII path through `clean`, `toUpperCase` and the
-  refined code, and a reused term buffer). The Morfologik cases sit inside
-  the noise floor and are not yet profiled.
+  1.00~, stempel_filter 1.17x, polish_analyzer 1.22x. The faithful port read
+  ph_soundex 0.64x and ph_refined_soundex 0.52x: the cost was allocation and
+  table lookups for ASCII words (now an ASCII path through `clean`,
+  `toUpperCase` and the refined code, and a reused term buffer).
+  Morfologik: this run's morfologik_filter 0.90~ and ukrainian_analyzer
+  0.99~ did not reproduce -- the Tier 2 review measured 0.70-0.77x and
+  ~0.85x pinned and warmed, with `DictionaryLookup::lookup` at 81% of the
+  profile (the CFSA2 arc scan through a `Result` per byte read 43%, every
+  sequence materialised as a `Vec` 27%, the allocator ~20%, the UTF-16
+  round trip 5-7%). After reading each arc's flag once, visiting sequences
+  in one reused buffer, reusing every lookup buffer and looking the term's
+  UTF-8 up directly, a rerun pinned to one core (3 reps, load < 1.5,
+  noise floor 1.10x) measured morfologik_filter 2.45x and
+  ukrainian_analyzer 2.11x; the remaining profile is the arc scan itself
+  (`Fsa::arc`, a third of the instructions -- Morfologik scans the same
+  arcs). The same rerun read ph_soundex 0.81x (noise 1.20x), below the
+  1.00~ above: not investigated here.
 - **Custom attributes** -- `lucene-analysis`' `AttributeSource` now holds
   attributes outside the core set (`CustomAttribute`, `add_custom`), which
   Morfologik's tags use and Kuromoji's, Nori's and ICU's will.

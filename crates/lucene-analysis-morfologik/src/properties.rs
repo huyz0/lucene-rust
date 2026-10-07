@@ -53,37 +53,45 @@ fn logical_lines(text: &str) -> Vec<String> {
     out
 }
 
-/// `Properties.loadConvert`: the escapes.
+/// `Properties.loadConvert`: the escapes. Java appends each `\uXXXX` as one
+/// UTF-16 unit, so the text is built in units: an escaped surrogate pair is
+/// one supplementary character, and an unpaired surrogate (which a Rust
+/// string cannot hold) becomes U+FFFD.
 fn unescape(s: &str) -> Result<String, MorfologikError> {
-    let mut out = String::with_capacity(s.len());
+    let mut out: Vec<u16> = Vec::with_capacity(s.len());
     let mut it = s.chars();
+    let push = |out: &mut Vec<u16>, c: char| {
+        let mut b = [0u16; 2];
+        out.extend_from_slice(c.encode_utf16(&mut b));
+    };
     while let Some(c) = it.next() {
         if c != '\\' {
-            out.push(c);
+            push(&mut out, c);
             continue;
         }
         match it.next() {
             Some('u') => {
                 let hex: String = it.by_ref().take(4).collect();
-                let v = (hex.len() == 4)
-                    .then(|| u32::from_str_radix(&hex, 16).ok())
+                // Java takes exactly four hex digits (`+` is not one).
+                let v = (hex.len() == 4 && hex.chars().all(|c| c.is_ascii_hexdigit()))
+                    .then(|| u16::from_str_radix(&hex, 16).ok())
                     .flatten()
                     .ok_or_else(|| {
                         MorfologikError::new(
                             "IllegalArgumentException: Malformed \\uxxxx encoding.",
                         )
                     })?;
-                out.push(char::from_u32(v).unwrap_or(char::REPLACEMENT_CHARACTER));
+                out.push(v);
             }
-            Some('t') => out.push('\t'),
-            Some('n') => out.push('\n'),
-            Some('r') => out.push('\r'),
-            Some('f') => out.push('\u{c}'),
-            Some(o) => out.push(o),
+            Some('t') => out.push(u16::from(b'\t')),
+            Some('n') => out.push(u16::from(b'\n')),
+            Some('r') => out.push(u16::from(b'\r')),
+            Some('f') => out.push(0x0C),
+            Some(o) => push(&mut out, o),
             None => {}
         }
     }
-    Ok(out)
+    Ok(String::from_utf16_lossy(&out))
 }
 
 /// `Properties.load`: the key/value pairs, a repeated key keeping its last
@@ -180,6 +188,25 @@ mod tests {
         assert_eq!(kv("x = = y"), [("x".to_string(), "= y".to_string())]);
         assert!(load("x=\\u12").is_err());
         assert!(load("x=\\uZZZZ").is_err());
+        assert!(load("x=\\u+FFF").is_err());
         assert_eq!(kv("x=\\\\"), [("x".to_string(), "\\".to_string())]);
+    }
+
+    #[test]
+    fn unicode_escapes_are_utf16_units() {
+        // Java's loadConvert appends each \uXXXX as a char: two escapes are
+        // one supplementary character.
+        assert_eq!(
+            kv("\\uD83D\\uDE00=a\\uD83D\\uDE00b"),
+            [("😀".to_string(), "a😀b".to_string())]
+        );
+        assert_eq!(
+            kv("x=\\uD83D😀"),
+            [("x".to_string(), "\u{FFFD}😀".to_string())]
+        );
+        assert_eq!(
+            kv("x=\\uDE00\\u0041"),
+            [("x".to_string(), "\u{FFFD}A".to_string())]
+        );
     }
 }

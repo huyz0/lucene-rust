@@ -8,7 +8,7 @@ use lucene_analysis::java_character;
 use lucene_analysis::token_stream::{TokenFilter, TokenStream};
 use lucene_analysis::{AnalysisError, CustomAttribute};
 
-use crate::dictionary::{Dictionary, DictionaryLookup, WordData};
+use crate::dictionary::{Dictionary, DictionaryLookup};
 
 /// `MorphosyntacticTagsAttribute`: the tags of the current lemma (`None`
 /// when cleared, as Java's `null`).
@@ -24,24 +24,41 @@ impl CustomAttribute for MorphosyntacticTagsAttribute {
     }
 }
 
-/// `MorfologikFilter.lemmaSplitter.split(tag)`: `+` and `|` separate tags;
-/// trailing empty tags are dropped, as `Pattern.split` drops them.
-fn split_tags(tag: &str) -> Vec<String> {
-    let mut parts: Vec<String> = tag.split(['+', '|']).map(str::to_string).collect();
-    while parts.last().is_some_and(String::is_empty) {
-        parts.pop();
+/// `MorfologikFilter.lemmaSplitter.split(tag)` into `out`, reusing its
+/// strings: `+` and `|` separate tags; trailing empty tags are dropped, as
+/// `Pattern.split` drops them.
+fn split_tags_into(tag: &str, out: &mut Vec<String>) {
+    let mut n = 0usize;
+    for part in tag.split(['+', '|']) {
+        match out.get_mut(n) {
+            Some(s) => {
+                s.clear();
+                s.push_str(part);
+            }
+            None => out.push(part.to_string()),
+        }
+        n = n.saturating_add(1);
     }
-    parts
+    out.truncate(n);
+    while out.last().is_some_and(String::is_empty) {
+        out.pop();
+    }
 }
 
-/// `MorfologikFilter.toLowercase`: `Character.toLowerCase` per code point.
-fn to_lowercase(units: &[u16]) -> Vec<u16> {
-    let mut out = Vec::with_capacity(units.len());
-    for r in char::decode_utf16(units.iter().copied()) {
-        let cp = r.map_or_else(|e| u32::from(e.unpaired_surrogate()), u32::from);
-        java_character::push_utf16(&mut out, java_character::to_lower_case(cp));
+/// `MorfologikFilter.toLowercase`: `Character.toLowerCase` per code point,
+/// into `out` (cleared first).
+fn to_lowercase_into(term: &str, out: &mut String) {
+    out.clear();
+    if term.is_ascii() {
+        out.push_str(term);
+        out.make_ascii_lowercase();
+        return;
     }
-    out
+    for c in term.chars() {
+        let cp = java_character::to_lower_case(u32::from(c));
+        // A code point's lower case is a code point, never a surrogate.
+        out.push(char::from_u32(cp).unwrap_or(char::REPLACEMENT_CHARACTER));
+    }
 }
 
 /// `MorfologikFilter`: each term found in the dictionary (as it is, or
@@ -51,9 +68,10 @@ fn to_lowercase(units: &[u16]) -> Vec<u16> {
 pub struct MorfologikFilter<I> {
     input: I,
     lookup: DictionaryLookup,
-    lemmas: Vec<WordData>,
+    lemmas: usize,
     lemma_index: usize,
     current: Option<State>,
+    lower: String,
 }
 
 impl<I: TokenStream> MorfologikFilter<I> {
@@ -62,9 +80,10 @@ impl<I: TokenStream> MorfologikFilter<I> {
         let mut f = MorfologikFilter {
             input,
             lookup: DictionaryLookup::new(dictionary),
-            lemmas: Vec::new(),
+            lemmas: 0,
             lemma_index: 0,
             current: None,
+            lower: String::new(),
         };
         f.input
             .attributes_mut()
@@ -72,28 +91,21 @@ impl<I: TokenStream> MorfologikFilter<I> {
         f
     }
 
-    // Java: MorfologikFilter.lookupSurfaceForm
-    fn lookup(&mut self, word: &[u16]) -> Result<bool, AnalysisError> {
-        self.lemmas = self.lookup.lookup(word)?;
-        self.lemma_index = 0;
-        Ok(!self.lemmas.is_empty())
-    }
-
     // Java: MorfologikFilter.popNextLemma
     fn pop_next_lemma(&mut self) {
-        let lemma = &self.lemmas[self.lemma_index];
+        let (stem, tag) = self.lookup.form(self.lemma_index).unwrap_or_default();
         self.lemma_index = self.lemma_index.saturating_add(1);
         let attrs = self.input.attributes_mut();
-        match &lemma.stem {
-            Some(stem) => attrs.set_term_utf16(stem),
-            // CharTermAttribute.append(null) appends "null".
-            None => attrs.set_term("null"),
+        // CharTermAttribute.append(null) appends "null".
+        attrs.set_term(stem.unwrap_or("null"));
+        let tags = attrs
+            .add_custom::<MorphosyntacticTagsAttribute>()
+            .tags
+            .get_or_insert_with(Vec::new);
+        match tag {
+            Some(tag) => split_tags_into(tag, tags),
+            None => tags.clear(),
         }
-        let tags = match &lemma.tag {
-            Some(tag) => split_tags(&String::from_utf16_lossy(tag)),
-            None => Vec::new(),
-        };
-        attrs.add_custom::<MorphosyntacticTagsAttribute>().tags = Some(tags);
     }
 }
 
@@ -108,7 +120,7 @@ impl<I: TokenStream> TokenFilter for MorfologikFilter<I> {
 
     // Java: MorfologikFilter.incrementToken
     fn increment(&mut self) -> Result<bool, AnalysisError> {
-        if self.lemma_index < self.lemmas.len() {
+        if self.lemma_index < self.lemmas {
             if let Some(state) = &self.current {
                 self.input.attributes_mut().restore_state(state);
             }
@@ -120,13 +132,23 @@ impl<I: TokenStream> TokenFilter for MorfologikFilter<I> {
             return Ok(false);
         }
         let attrs = self.input.attributes();
-        let found = if attrs.is_keyword() {
-            false
-        } else {
-            let term: Vec<u16> = attrs.term().encode_utf16().collect();
-            self.lookup(&term)? || self.lookup(&to_lowercase(&term))?
-        };
-        if found {
+        self.lemma_index = 0;
+        self.lemmas = 0;
+        if !attrs.is_keyword() {
+            // Java: lookupSurfaceForm(termAtt) ||
+            // lookupSurfaceForm(toLowercase(termAtt)). A lookup that finds
+            // nothing leaves the reused forms alone, so a term that is its
+            // own lower case is not looked up twice.
+            let term = attrs.term();
+            self.lemmas = self.lookup.lookup_str(term)?;
+            if self.lemmas == 0 {
+                to_lowercase_into(term, &mut self.lower);
+                if self.lower != term {
+                    self.lemmas = self.lookup.lookup_str(&self.lower)?;
+                }
+            }
+        }
+        if self.lemmas > 0 {
             self.current = Some(self.input.attributes().capture_state());
             self.pop_next_lemma();
         } else {
@@ -140,7 +162,7 @@ impl<I: TokenStream> TokenFilter for MorfologikFilter<I> {
 
     fn reset_filter(&mut self) -> Result<(), AnalysisError> {
         self.lemma_index = 0;
-        self.lemmas.clear();
+        self.lemmas = 0;
         self.input.reset()
     }
 }
@@ -148,6 +170,18 @@ impl<I: TokenStream> TokenFilter for MorfologikFilter<I> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn split_tags(tag: &str) -> Vec<String> {
+        let mut out = vec!["stale".to_string(); 4];
+        split_tags_into(tag, &mut out);
+        out
+    }
+
+    fn lower(term: &str) -> String {
+        let mut out = "stale".to_string();
+        to_lowercase_into(term, &mut out);
+        out
+    }
 
     #[test]
     fn tags_split_as_java() {
@@ -158,10 +192,9 @@ mod tests {
         assert_eq!(split_tags("+a"), ["", "a"]);
         assert!(split_tags("++").is_empty());
         assert_eq!(split_tags("x"), ["x"]);
-        assert_eq!(
-            to_lowercase(&"ÀB𐐀".encode_utf16().collect::<Vec<_>>()),
-            "àb𐐨".encode_utf16().collect::<Vec<_>>()
-        );
+        assert_eq!(split_tags("a|b|c|d|e"), ["a", "b", "c", "d", "e"]);
+        assert_eq!(lower("ÀB𐐀"), "àb𐐨");
+        assert_eq!(lower("AbC"), "abc");
         let mut t = MorphosyntacticTagsAttribute { tags: Some(vec![]) };
         CustomAttribute::clear(&mut t);
         assert_eq!(t.tags, None);
