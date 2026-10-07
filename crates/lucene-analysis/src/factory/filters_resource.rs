@@ -222,7 +222,10 @@ factory_struct! {
     DictionaryCompoundWordTokenFilterFactory {
         dictionary: Option<Arc<CharArraySet>>,
         dict_file: String,
-        sizes: CompoundSizes,
+        // `minWordSize`, `minSubwordSize`, `maxSubwordSize`,
+        // `onlyLongestMatch`: checked when the filter is built, as Java's
+        // `CompoundWordTokenFilterBase` constructor checks them.
+        sizes: RawSizes,
         only_longest_match_ignore_subwords: bool,
     }
 }
@@ -259,13 +262,17 @@ fn compound_sizes(
     ))
 }
 
-/// `CompoundWordTokenFilterBase`'s size checks.
+/// The compound factories' size arguments, as Java holds them.
+type RawSizes = (i32, i32, i32, bool);
+
+/// `CompoundWordTokenFilterBase`'s size checks, made when `create` builds
+/// the filter (a factory with a negative size builds; its streams fail).
 fn checked_sizes(
-    (min_word_size, min_subword_size, max_subword_size, only_longest_match): (i32, i32, i32, bool),
-) -> Result<CompoundSizes, FactoryError> {
+    (min_word_size, min_subword_size, max_subword_size, only_longest_match): RawSizes,
+) -> Result<CompoundSizes, AnalysisError> {
     let to_size = |v: i32, name: &str| {
         usize::try_from(v)
-            .map_err(|_| FactoryError::illegal_argument(format!("{name} cannot be negative")))
+            .map_err(|_| AnalysisError::IllegalArgument(format!("{name} cannot be negative")))
     };
     Ok(CompoundSizes {
         min_word_size: to_size(min_word_size, "minWordSize")?,
@@ -290,7 +297,7 @@ impl FactoryClass for DictionaryCompoundWordTokenFilterFactory {
             base,
             dictionary: None,
             dict_file,
-            sizes: checked_sizes(sizes)?,
+            sizes,
             only_longest_match_ignore_subwords,
         })
     }
@@ -311,7 +318,7 @@ impl TokenFilterFactory for DictionaryCompoundWordTokenFilterFactory {
             Some(d) => Box::new(CompoundWordTokenFilter::dictionary_with(
                 input,
                 Arc::clone(d),
-                self.sizes,
+                checked_sizes(self.sizes)?,
                 self.only_longest_match_ignore_subwords,
             )),
         })
@@ -330,7 +337,10 @@ factory_struct! {
         dict_file: Option<String>,
         encoding: Option<String>,
         hyp_file: String,
-        sizes: CompoundSizes,
+        // `minWordSize`, `minSubwordSize`, `maxSubwordSize`,
+        // `onlyLongestMatch`: checked when the filter is built, as Java's
+        // `CompoundWordTokenFilterBase` constructor checks them.
+        sizes: RawSizes,
         no_sub_matches: bool,
         no_overlapping_matches: bool,
     }
@@ -357,7 +367,7 @@ impl FactoryClass for HyphenationCompoundWordTokenFilterFactory {
             dict_file,
             encoding,
             hyp_file,
-            sizes: checked_sizes(sizes)?,
+            sizes,
             no_sub_matches,
             no_overlapping_matches,
         })
@@ -389,7 +399,7 @@ impl TokenFilterFactory for HyphenationCompoundWordTokenFilterFactory {
             input,
             hyphenator,
             self.dictionary.clone(),
-            self.sizes,
+            checked_sizes(self.sizes)?,
             self.no_sub_matches,
             self.no_overlapping_matches,
         )))
@@ -537,7 +547,8 @@ impl HunspellStemFilterFactory {
             dictionaries.push(loader.open_resource(file)?);
         }
         let affix_file = self.affix_file.as_deref().ok_or_else(|| {
-            FactoryError::new(JavaException::NullPointer, "the affix file is null")
+            // Java: `loader.openResource(null)` -> `Path.resolve(null)`'s bare NPE.
+            FactoryError::new(JavaException::NullPointer, "null")
         })?;
         let affix = loader.open_resource(affix_file)?;
         let refs: Vec<&[u8]> = dictionaries.iter().map(Vec::as_slice).collect();
@@ -1342,21 +1353,21 @@ impl<const GRAPH: bool> SynonymFactory<GRAPH> {
                 format!("malformed WordNet line {line}"),
             ),
         };
-        // loadSynonyms: each file decoded as strict UTF-8 and parsed.
-        let mut texts = Vec::new();
-        for file in args::split_file_names(Some(&self.synonyms)) {
-            texts.push(decode_utf8(loader.open_resource(&file)?)?);
-        }
+        // loadSynonyms: each file opened, decoded as strict UTF-8 and parsed
+        // before the next is opened (so a parse error precedes a later
+        // file's absence, as in Java).
+        let files = args::split_file_names(Some(&self.synonyms));
+        let read = |file: &String| decode_utf8(loader.open_resource(file)?);
         let map = if solr {
             let mut parser = SolrSynonymParser::new(true, self.expand, &analyzer);
-            for text in &texts {
-                parser.parse(text).map_err(parse_error)?;
+            for file in &files {
+                parser.parse(&read(file)?).map_err(parse_error)?;
             }
             parser.build()?
         } else {
             let mut parser = WordnetSynonymParser::new(true, self.expand, &analyzer);
-            for text in &texts {
-                parser.parse(text).map_err(parse_error)?;
+            for file in &files {
+                parser.parse(&read(file)?).map_err(parse_error)?;
             }
             parser.build()?
         };

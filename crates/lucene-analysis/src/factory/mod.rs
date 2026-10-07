@@ -244,6 +244,15 @@ pub struct FactoryBase {
     explicit_lucene_match_version: bool,
 }
 
+/// `Character.digit(c, 10)` over a UTF-16 unit: a BMP decimal digit of any
+/// script (`Integer.parseInt` walks units, so a supplementary digit is none).
+fn java_decimal_digit(c: char) -> Option<u32> {
+    let cp = u32::from(c);
+    (cp <= 0xFFFF)
+        .then(|| crate::java_character::decimal_digit_value(cp))
+        .flatten()
+}
+
 impl FactoryBase {
     /// `AbstractAnalysisFactory(Map<String, String> args)`: keeps a copy of
     /// the arguments, consumes `luceneMatchVersion` (parsed leniently,
@@ -252,10 +261,12 @@ impl FactoryBase {
         let original_args = args.clone();
         let lucene_match_version = match args.remove(LUCENE_MATCH_VERSION_PARAM) {
             None => Version::LATEST,
-            Some(v) => Version::parse_leniently(&v).map_err(|pe| {
-                // new IllegalArgumentException(ParseException): the cause's toString.
-                FactoryError::illegal_argument(format!("java.text.ParseException: {}", pe.0))
-            })?,
+            Some(v) => {
+                Version::parse_leniently_with_digits(&v, java_decimal_digit).map_err(|pe| {
+                    // new IllegalArgumentException(ParseException): the cause's toString.
+                    FactoryError::illegal_argument(format!("java.text.ParseException: {}", pe.0))
+                })?
+            }
         };
         args.remove(CLASS_NAME);
         args.remove(SPI_NAME);

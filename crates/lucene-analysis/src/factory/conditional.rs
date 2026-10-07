@@ -213,9 +213,11 @@ impl ProtectedTermFilterFactory {
     }
 }
 
-/// `String.toLowerCase(Locale.ROOT)` with the simple per-character mapping.
+/// `String.toLowerCase(Locale.ROOT)`: the per-character mapping plus
+/// Java's special cases (`İ` becomes `i̇`, a final `Σ` `ς`).
 fn java_lower(s: &str) -> String {
-    s.chars().map(crate::simple_to_lowercase).collect()
+    let units: Vec<u16> = s.encode_utf16().collect();
+    String::from_utf16_lossy(&crate::lang::java_string_to_lower_case(&units))
 }
 
 impl AnalysisFactory for ProtectedTermFilterFactory {

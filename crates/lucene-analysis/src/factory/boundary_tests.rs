@@ -270,11 +270,18 @@ fn argument_errors_the_fixtures_do_not_reach() {
             (key, "x")
         ])
         .is_err());
-        let e =
-            build::<DictionaryCompoundWordTokenFilterFactory>(&[("dictionary", "d"), (key, "-1")])
-                .err()
-                .unwrap();
-        assert_eq!(e.message, format!("{key} cannot be negative"));
+        // Java checks the sizes when the filter is built, not the factory.
+        let mut f = build::<DictionaryCompoundWordTokenFilterFactory>(&[
+            ("dictionary", "words.txt"),
+            (key, "-1"),
+        ])
+        .unwrap();
+        f.inform(&loader()).unwrap();
+        let e = f.create(input("a")).err().unwrap();
+        assert!(
+            matches!(&e, AnalysisError::IllegalArgument(m) if *m == format!("{key} cannot be negative")),
+            "{e}"
+        );
     }
     let mut h = build::<HunspellStemFilterFactory>(&[("dictionary", "words.txt")]).unwrap();
     assert_eq!(

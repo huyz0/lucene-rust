@@ -254,10 +254,10 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   SPI name (lucene-core's `standard` plus analysis-common's 130; `lucene-search`
   registers `Word2VecSynonym`), `ResourceLoader`/`FilesystemResourceLoader`,
   every factory, and `CustomAnalyzer` with its builder and `when`/`whenTerm`.
-  `GenAnalysisFactories.java` builds the 332 configurations of
-  `corpus/analysis-factories.conf` with Lucene's builder: 219 run over
+  `GenAnalysisFactories.java` builds the 338 configurations of
+  `corpus/analysis-factories.conf` with Lucene's builder: 221 run over
   `corpus/analysis-factories.txt` (every attribute, `normalize`, `toString`)
-  and 113 throw (class and message), all equal; the registered name sets are
+  and 117 throw (class and message), all equal; the registered name sets are
   Lucene's. Byte-identical under JDK 21 and 25. Not buildable: `thai` (its
   tokenizer is M12's); `dateRecognizer` takes `Locale.ENGLISH` only.
 - `java.util.regex` is the `regex` crate behind a Java-syntax shim (`util/java_regex.rs`: ASCII
@@ -273,8 +273,7 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
       *Proven for every ported one:* the T11.1 corpus through
       `GenAnalysisCommon` and the per-package generators (classic, every
       language analyzer, synonyms, compound, misc), and every registered
-      factory through `GenAnalysisFactories` (219 configurations built and
-      run, 113 refused with Java's exception and message). *Remaining:* Thai
+      factory through `GenAnalysisFactories` (221 configurations built and run, 117 refused with Java's exception and message). *Remaining:* Thai
       (`ThaiAnalyzer`, `ThaiTokenizer`, `ThaiTokenizerFactory`, which refuses
       configuration) and collation (`CollationKeyAnalyzer` and its three
       classes), M12's T12.6 (the JDK's `BreakIterator` dictionary and

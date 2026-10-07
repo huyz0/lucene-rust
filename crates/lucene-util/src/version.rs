@@ -149,15 +149,26 @@ impl Version {
         self.encoded >= other.encoded
     }
 
-    /// `Version.parse`: `major.minor[.bugfix[.prerelease]]`.
+    /// `Version.parse`: `major.minor[.bugfix[.prerelease]]`, with ASCII
+    /// digits (see [`Version::parse_with_digits`]).
     pub fn parse(version: &str) -> Result<Version, VersionParseError> {
+        Self::parse_with_digits(version, ascii_digit)
+    }
+
+    /// `Version.parse` with `digit` as `Integer.parseInt`'s
+    /// `Character.digit(c, 10)`: Java reads every BMP decimal digit, whose
+    /// table this crate does not carry, so a caller that has it passes it.
+    pub fn parse_with_digits(
+        version: &str,
+        digit: fn(char) -> Option<u32>,
+    ) -> Result<Version, VersionParseError> {
         let form = || {
             VersionParseError(format!(
                 "Version is not in form major.minor.bugfix(.prerelease) (got: {version})"
             ))
         };
         let num = |what: &str, token: &str| {
-            parse_java_int(token).ok_or_else(|| {
+            parse_java_int(token, digit).ok_or_else(|| {
                 VersionParseError(format!(
                     "Failed to parse {what} version from \"{token}\" (got: {version})"
                 ))
@@ -191,12 +202,22 @@ impl Version {
     /// `Version.parseLeniently`: also `LATEST`, `LUCENE_CURRENT`,
     /// `LUCENE_X_Y_Z`, `LUCENE_X_Y` and `LUCENE_XY`, case-insensitively.
     pub fn parse_leniently(version: &str) -> Result<Version, VersionParseError> {
+        Self::parse_leniently_with_digits(version, ascii_digit)
+    }
+
+    /// [`Version::parse_leniently`] with `digit` as `Character.digit(c, 10)`
+    /// for `Version.parse`'s numbers (the `LUCENE_x_y` rewrite's `\d` stays
+    /// ASCII, as Java's regex has it).
+    pub fn parse_leniently_with_digits(
+        version: &str,
+        digit: fn(char) -> Option<u32>,
+    ) -> Result<Version, VersionParseError> {
         let upper = version.to_uppercase();
         if upper == "LATEST" || upper == "LUCENE_CURRENT" {
             return Ok(Version::LATEST);
         }
         let rewritten = lenient_rewrite(&upper);
-        Version::parse(&rewritten).map_err(|pe| {
+        Version::parse_with_digits(&rewritten, digit).map_err(|pe| {
             VersionParseError(format!(
                 "failed to parse lenient version string \"{version}\": {}",
                 pe.0
@@ -226,12 +247,28 @@ fn lenient_rewrite(s: &str) -> String {
 
 /// Java's `Integer.parseInt` over ASCII: optional sign, at least one digit,
 /// no overflow.
-fn parse_java_int(s: &str) -> Option<i32> {
-    let digits = s.strip_prefix(['+', '-']).unwrap_or(s);
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+/// An ASCII decimal digit's value.
+fn ascii_digit(c: char) -> Option<u32> {
+    c.to_digit(10)
+}
+
+/// `Integer.parseInt(s)`: an optional sign, then `digit` digits, in range.
+fn parse_java_int(s: &str, digit: fn(char) -> Option<u32>) -> Option<i32> {
+    let (negative, digits) = match s.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, s.strip_prefix('+').unwrap_or(s)),
+    };
+    if digits.is_empty() {
         return None;
     }
-    s.parse().ok()
+    let mut value: i64 = 0;
+    for c in digits.chars() {
+        value = value
+            .checked_mul(10)?
+            .checked_add(i64::from(digit(c)?))
+            .filter(|&v| v <= 1 << 31)?;
+    }
+    i32::try_from(if negative { -value } else { value }).ok()
 }
 
 impl fmt::Display for Version {
@@ -301,6 +338,36 @@ mod tests {
         assert!(err("1.1.0.1").contains("Prerelease version only supported"));
         assert!(err("99999999999.0").starts_with("Failed to parse major"));
         assert!(err("-.0").starts_with("Failed to parse major"));
+    }
+
+    #[test]
+    fn parse_with_a_callers_digits() {
+        // Arabic-Indic digits, as `Character.digit` reads them.
+        fn indic(c: char) -> Option<u32> {
+            c.to_digit(10).or_else(|| {
+                ('\u{660}'..='\u{669}')
+                    .contains(&c)
+                    .then(|| c as u32 - 0x660)
+            })
+        }
+        let v = Version::parse_leniently_with_digits("\u{669}.\u{661}\u{662}.\u{660}", indic);
+        assert_eq!(v, Ok(Version::LUCENE_9_12_0));
+        // A lone number is Java's "not in form", not a failed major.
+        let e = Version::parse_leniently_with_digits("\u{663}", indic)
+            .unwrap_err()
+            .0;
+        assert!(
+            e.ends_with("Version is not in form major.minor.bugfix(.prerelease) (got: \u{663})"),
+            "{e}"
+        );
+        // The LUCENE_x_y rewrite stays ASCII.
+        assert!(Version::parse_leniently_with_digits("LUCENE_\u{669}_0", indic).is_err());
+        assert!(Version::parse("\u{669}.0").is_err());
+        assert_eq!(parse_java_int("-2147483648", ascii_digit), Some(i32::MIN));
+        assert_eq!(parse_java_int("2147483648", ascii_digit), None);
+        assert_eq!(parse_java_int("99999999999", ascii_digit), None);
+        assert_eq!(parse_java_int("-", ascii_digit), None);
+        assert_eq!(parse_java_int("+-1", ascii_digit), None);
     }
 
     #[test]

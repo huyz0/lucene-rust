@@ -1,0 +1,1 @@
+B	IllegalArgumentException	java.text.ParseException: failed to parse lenient version string "٣": Version is not in form major.minor.bugfix(.prerelease) (got: ٣)
