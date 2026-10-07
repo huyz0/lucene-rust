@@ -1,0 +1,1 @@
+B	IllegalStateException	You may only set the default match version before adding tokenizers, token filters, or char filters.

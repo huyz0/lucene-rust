@@ -1,0 +1,1 @@
+B	IOException	Resource not found (if you use Java Module System, make sure to open module and package containing resources to 'org.apache.lucene.core' module):  synonyms-extra.txt

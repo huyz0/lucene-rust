@@ -59,6 +59,15 @@ pub trait TokenStream: Send {
     fn as_tokenizer(&mut self) -> Option<&mut dyn Tokenizer> {
         None
     }
+
+    /// The `ConditionalTokenFilter.OneTimeWrapper` at the bottom of a
+    /// delegate chain built at run time (by the factories), as `Any` for the
+    /// conditional filter to downcast: every filter forwards to its input,
+    /// the wrapper answers itself, a conditional filter skips its own
+    /// wrapper. `None` for every other stream.
+    fn conditional_root(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
 }
 
 impl TokenStream for Box<dyn TokenStream> {
@@ -82,6 +91,9 @@ impl TokenStream for Box<dyn TokenStream> {
     }
     fn as_tokenizer(&mut self) -> Option<&mut dyn Tokenizer> {
         (**self).as_tokenizer()
+    }
+    fn conditional_root(&mut self) -> Option<&mut dyn std::any::Any> {
+        (**self).conditional_root()
     }
 }
 
@@ -202,6 +214,11 @@ pub trait TokenFilter: Send {
     fn close_filter(&mut self) -> Result<(), AnalysisError> {
         self.input_mut().close()
     }
+
+    /// [`TokenStream::conditional_root`]; the default asks the input.
+    fn conditional_root_filter(&mut self) -> Option<&mut dyn std::any::Any> {
+        self.input_mut().conditional_root()
+    }
 }
 
 impl<F: TokenFilter> TokenStream for F {
@@ -225,6 +242,9 @@ impl<F: TokenFilter> TokenStream for F {
     }
     fn as_tokenizer(&mut self) -> Option<&mut dyn Tokenizer> {
         self.input_mut().as_tokenizer()
+    }
+    fn conditional_root(&mut self) -> Option<&mut dyn std::any::Any> {
+        self.conditional_root_filter()
     }
 }
 

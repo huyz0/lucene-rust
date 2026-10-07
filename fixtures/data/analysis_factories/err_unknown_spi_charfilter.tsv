@@ -1,0 +1,1 @@
+B	IllegalArgumentException	A SPI class of type org.apache.lucene.analysis.CharFilterFactory with name 'nosuchcharfilter' does not exist. You need to add the corresponding JAR file supporting this SPI to your classpath. 

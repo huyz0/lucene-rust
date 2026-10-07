@@ -1,0 +1,366 @@
+S	CustomAnalyzer(org.apache.lucene.analysis.core.LetterTokenizerFactory)
+T	0	The	0	3	1	1	word	0	-	0	1
+T	0	Qui	4	7	1	1	word	0	-	0	1
+T	0	ck	7	9	1	1	word	0	-	0	1
+T	0	Bro	10	13	1	1	word	0	-	0	1
+T	0	wn	13	15	1	1	word	0	-	0	1
+T	0	Fox	16	19	1	1	word	0	-	0	1
+T	0	s	20	21	1	1	word	0	-	0	1
+T	0	jum	22	25	1	1	word	0	-	0	1
+T	0	ped	25	28	1	1	word	0	-	0	1
+T	0	ove	29	32	1	1	word	0	-	0	1
+T	0	r	32	33	1	1	word	0	-	0	1
+T	0	the	34	37	1	1	word	0	-	0	1
+T	0	laz	38	41	1	1	word	0	-	0	1
+T	0	y	41	42	1	1	word	0	-	0	1
+T	0	dog	43	46	1	1	word	0	-	0	1
+T	0	s	46	47	1	1	word	0	-	0	1
+T	0	it	49	51	1	1	word	0	-	0	1
+T	0	s	52	53	1	1	word	0	-	0	1
+T	0	and	65	68	1	1	word	0	-	0	1
+T	0	Jan	69	72	1	1	word	0	-	0	1
+E	0	82	82	0
+T	1	Hel	0	3	1	1	word	0	-	0	1
+T	1	lo	3	5	1	1	word	0	-	0	1
+T	1	Wor	7	10	1	1	word	0	-	0	1
+T	1	ld	10	12	1	1	word	0	-	0	1
+T	1	foo	14	17	1	1	word	0	-	0	1
+T	1	bar	18	21	1	1	word	0	-	0	1
+T	1	baz	22	25	1	1	word	0	-	0	1
+T	1	qux	26	29	1	1	word	0	-	0	1
+T	1	WiF	30	33	1	1	word	0	-	0	1
+T	1	i	33	34	1	1	word	0	-	0	1
+T	1	Pow	35	38	1	1	word	0	-	0	1
+T	1	erS	38	41	1	1	word	0	-	0	1
+T	1	hot	41	44	1	1	word	0	-	0	1
+T	1	O	48	49	1	1	word	0	-	0	1
+T	1	Nei	50	53	1	1	word	0	-	0	1
+T	1	l	53	54	1	1	word	0	-	0	1
+T	1	s	55	56	1	1	word	0	-	0	1
+T	1	SD	57	59	1	1	word	0	-	0	1
+T	1	wi	63	65	1	1	word	0	-	0	1
+T	1	fi	66	68	1	1	word	0	-	0	1
+T	1	TV	69	71	1	1	word	0	-	0	1
+E	1	71	71	0
+T	2	p	1	2	1	1	word	0	-	0	1
+T	2	Som	3	6	1	1	word	0	-	0	1
+T	2	e	6	7	1	1	word	0	-	0	1
+T	2	b	9	10	1	1	word	0	-	0	1
+T	2	HTM	11	14	1	1	word	0	-	0	1
+T	2	L	14	15	1	1	word	0	-	0	1
+T	2	b	17	18	1	1	word	0	-	0	1
+T	2	amp	21	24	1	1	word	0	-	0	1
+T	2	tex	26	29	1	1	word	0	-	0	1
+T	2	t	29	30	1	1	word	0	-	0	1
+T	2	lt	32	34	1	1	word	0	-	0	1
+T	2	her	35	38	1	1	word	0	-	0	1
+T	2	e	38	39	1	1	word	0	-	0	1
+T	2	gt	40	42	1	1	word	0	-	0	1
+T	2	scr	45	48	1	1	word	0	-	0	1
+T	2	ipt	48	51	1	1	word	0	-	0	1
+T	2	x	52	53	1	1	word	0	-	0	1
+T	2	scr	57	60	1	1	word	0	-	0	1
+T	2	ipt	60	63	1	1	word	0	-	0	1
+T	2	caf	65	68	1	1	word	0	-	0	1
+T	2	eac	69	72	1	1	word	0	-	0	1
+T	2	ute	72	75	1	1	word	0	-	0	1
+T	2	p	78	79	1	1	word	0	-	0	1
+E	2	80	80	0
+T	3	ema	0	3	1	1	word	0	-	0	1
+T	3	il	3	5	1	1	word	0	-	0	1
+T	3	joh	7	10	1	1	word	0	-	0	1
+T	3	n	10	11	1	1	word	0	-	0	1
+T	3	doe	12	15	1	1	word	0	-	0	1
+T	3	exa	16	19	1	1	word	0	-	0	1
+T	3	mpl	19	22	1	1	word	0	-	0	1
+T	3	e	22	23	1	1	word	0	-	0	1
+T	3	com	24	27	1	1	word	0	-	0	1
+T	3	url	28	31	1	1	word	0	-	0	1
+T	3	htt	33	36	1	1	word	0	-	0	1
+T	3	ps	36	38	1	1	word	0	-	0	1
+T	3	luc	41	44	1	1	word	0	-	0	1
+T	3	ene	44	47	1	1	word	0	-	0	1
+T	3	apa	48	51	1	1	word	0	-	0	1
+T	3	che	51	54	1	1	word	0	-	0	1
+T	3	org	55	58	1	1	word	0	-	0	1
+T	3	cor	59	62	1	1	word	0	-	0	1
+T	3	e	62	63	1	1	word	0	-	0	1
+T	3	pat	65	68	1	1	word	0	-	0	1
+T	3	h	68	69	1	1	word	0	-	0	1
+T	3	usr	71	74	1	1	word	0	-	0	1
+T	3	loc	75	78	1	1	word	0	-	0	1
+T	3	al	78	80	1	1	word	0	-	0	1
+T	3	bin	81	84	1	1	word	0	-	0	1
+E	3	84	84	0
+T	4	Ünï	0	3	1	1	word	0	-	0	1
+T	4	cöd	3	6	1	1	word	0	-	0	1
+T	4	é	6	7	1	1	word	0	-	0	1
+T	4	faç	8	11	1	1	word	0	-	0	1
+T	4	ade	11	14	1	1	word	0	-	0	1
+T	4	rés	15	18	1	1	word	0	-	0	1
+T	4	umé	18	21	1	1	word	0	-	0	1
+T	4	naï	22	25	1	1	word	0	-	0	1
+T	4	ve	25	27	1	1	word	0	-	0	1
+T	4	Æsi	28	31	1	1	word	0	-	0	1
+T	4	r	31	32	1	1	word	0	-	0	1
+T	4	Øre	33	36	1	1	word	0	-	0	1
+T	4	sun	36	39	1	1	word	0	-	0	1
+T	4	d	39	40	1	1	word	0	-	0	1
+T	4	Åla	41	44	1	1	word	0	-	0	1
+T	4	nd	44	46	1	1	word	0	-	0	1
+T	4	str	47	50	1	1	word	0	-	0	1
+T	4	aße	50	53	1	1	word	0	-	0	1
+T	4	ﬁne	54	57	1	1	word	0	-	0	1
+E	4	57	57	0
+T	5	東京都	0	3	1	1	word	0	-	0	1
+T	5	に住ん	3	6	1	1	word	0	-	0	1
+T	5	でいま	6	9	1	1	word	0	-	0	1
+T	5	す	9	10	1	1	word	0	-	0	1
+T	5	서울특	11	14	1	1	word	0	-	0	1
+T	5	별시	14	16	1	1	word	0	-	0	1
+T	5	ｶﾀｶ	17	20	1	1	word	0	-	0	1
+T	5	ﾅ	20	21	1	1	word	0	-	0	1
+T	5	ﾃｽﾄ	22	25	1	1	word	0	-	0	1
+T	5	ＦＵＬ	26	29	1	1	word	0	-	0	1
+T	5	ＬＷＩ	29	32	1	1	word	0	-	0	1
+T	5	ＤＴＨ	32	35	1	1	word	0	-	0	1
+T	5	ひらが	36	39	1	1	word	0	-	0	1
+T	5	な	39	40	1	1	word	0	-	0	1
+T	5	カタカ	41	44	1	1	word	0	-	0	1
+T	5	ナ	44	45	1	1	word	0	-	0	1
+E	5	45	45	0
+T	6	مرح	0	3	1	1	word	0	-	0	1
+T	6	با	3	5	1	1	word	0	-	0	1
+T	6	بال	6	9	1	1	word	0	-	0	1
+T	6	عال	9	12	1	1	word	0	-	0	1
+T	6	م	12	13	1	1	word	0	-	0	1
+T	6	الك	14	17	1	1	word	0	-	0	1
+T	6	تاب	17	20	1	1	word	0	-	0	1
+T	6	ة	20	21	1	1	word	0	-	0	1
+T	6	الع	22	25	1	1	word	0	-	0	1
+T	6	ربي	25	28	1	1	word	0	-	0	1
+T	6	ة	28	29	1	1	word	0	-	0	1
+T	6	وال	30	33	1	1	word	0	-	0	1
+T	6	كتب	33	36	1	1	word	0	-	0	1
+E	6	44	44	0
+T	7	При	0	3	1	1	word	0	-	0	1
+T	7	вет	3	6	1	1	word	0	-	0	1
+T	7	мир	7	10	1	1	word	0	-	0	1
+T	7	бег	12	15	1	1	word	0	-	0	1
+T	7	ущи	15	18	1	1	word	0	-	0	1
+T	7	е	18	19	1	1	word	0	-	0	1
+T	7	соб	20	23	1	1	word	0	-	0	1
+T	7	аки	23	26	1	1	word	0	-	0	1
+T	7	и	27	28	1	1	word	0	-	0	1
+T	7	кош	29	32	1	1	word	0	-	0	1
+T	7	ки	32	34	1	1	word	0	-	0	1
+E	7	34	34	0
+T	8	Ελλ	0	3	1	1	word	0	-	0	1
+T	8	ηνι	3	6	1	1	word	0	-	0	1
+T	8	κά	6	8	1	1	word	0	-	0	1
+T	8	γρά	9	12	1	1	word	0	-	0	1
+T	8	μμα	12	15	1	1	word	0	-	0	1
+T	8	τα	15	17	1	1	word	0	-	0	1
+T	8	ΣΊΣ	18	21	1	1	word	0	-	0	1
+T	8	ΥΦΟ	21	24	1	1	word	0	-	0	1
+T	8	Σ	24	25	1	1	word	0	-	0	1
+T	8	οδό	26	29	1	1	word	0	-	0	1
+T	8	ς	29	30	1	1	word	0	-	0	1
+E	8	30	30	0
+T	9	ह	0	1	1	1	word	0	-	0	1
+T	9	न	2	3	1	1	word	0	-	0	1
+T	9	द	4	5	1	1	word	0	-	0	1
+T	9	भ	7	8	1	1	word	0	-	0	1
+T	9	ष	9	10	1	1	word	0	-	0	1
+T	9	ব	12	13	1	1	word	0	-	0	1
+T	9	ল	15	16	1	1	word	0	-	0	1
+T	9	ভ	18	19	1	1	word	0	-	0	1
+T	9	ষ	20	21	1	1	word	0	-	0	1
+T	9	త	23	24	1	1	word	0	-	0	1
+T	9	ల	25	26	1	1	word	0	-	0	1
+T	9	గ	27	28	1	1	word	0	-	0	1
+T	9	భ	30	31	1	1	word	0	-	0	1
+T	9	ష	32	33	1	1	word	0	-	0	1
+E	9	33	33	0
+T	10	Die	0	3	1	1	word	0	-	0	1
+T	10	Häu	4	7	1	1	word	0	-	0	1
+T	10	ser	7	10	1	1	word	0	-	0	1
+T	10	war	11	14	1	1	word	0	-	0	1
+T	10	en	14	16	1	1	word	0	-	0	1
+T	10	grö	17	20	1	1	word	0	-	0	1
+T	10	ßer	20	23	1	1	word	0	-	0	1
+T	10	als	24	27	1	1	word	0	-	0	1
+T	10	die	28	31	1	1	word	0	-	0	1
+T	10	Bäu	32	35	1	1	word	0	-	0	1
+T	10	me	35	37	1	1	word	0	-	0	1
+T	10	Don	38	41	1	1	word	0	-	0	1
+T	10	aud	41	44	1	1	word	0	-	0	1
+T	10	amp	44	47	1	1	word	0	-	0	1
+T	10	fsc	47	50	1	1	word	0	-	0	1
+T	10	hif	50	53	1	1	word	0	-	0	1
+T	10	ffa	53	56	1	1	word	0	-	0	1
+T	10	hrt	56	59	1	1	word	0	-	0	1
+T	10	Rin	60	63	1	1	word	0	-	0	1
+T	10	dfl	63	66	1	1	word	0	-	0	1
+T	10	eis	66	69	1	1	word	0	-	0	1
+T	10	che	69	72	1	1	word	0	-	0	1
+T	10	tik	72	75	1	1	word	0	-	0	1
+T	10	ett	75	78	1	1	word	0	-	0	1
+T	10	ier	78	81	1	1	word	0	-	0	1
+T	10	ung	81	84	1	1	word	0	-	0	1
+T	10	Fus	85	88	1	1	word	0	-	0	1
+T	10	sba	88	91	1	1	word	0	-	0	1
+T	10	ll	91	93	1	1	word	0	-	0	1
+E	10	93	93	0
+T	11	les	0	3	1	1	word	0	-	0	1
+T	11	enf	4	7	1	1	word	0	-	0	1
+T	11	ant	7	10	1	1	word	0	-	0	1
+T	11	s	10	11	1	1	word	0	-	0	1
+T	11	l	12	13	1	1	word	0	-	0	1
+T	11	arb	14	17	1	1	word	0	-	0	1
+T	11	re	17	19	1	1	word	0	-	0	1
+T	11	d	20	21	1	1	word	0	-	0	1
+T	11	une	22	25	1	1	word	0	-	0	1
+T	11	mai	26	29	1	1	word	0	-	0	1
+T	11	son	29	32	1	1	word	0	-	0	1
+T	11	auj	33	36	1	1	word	0	-	0	1
+T	11	our	36	39	1	1	word	0	-	0	1
+T	11	d	39	40	1	1	word	0	-	0	1
+T	11	hui	41	44	1	1	word	0	-	0	1
+T	11	qu	45	47	1	1	word	0	-	0	1
+T	11	il	48	50	1	1	word	0	-	0	1
+E	11	50	50	0
+T	12	boo	0	3	1	1	word	0	-	0	1
+T	12	st	3	5	1	1	word	0	-	0	1
+T	12	ter	10	13	1	1	word	0	-	0	1
+T	12	m	13	14	1	1	word	0	-	0	1
+T	12	fre	19	22	1	1	word	0	-	0	1
+T	12	q	22	23	1	1	word	0	-	0	1
+T	12	pay	26	29	1	1	word	0	-	0	1
+T	12	loa	29	32	1	1	word	0	-	0	1
+T	12	d	32	33	1	1	word	0	-	0	1
+T	12	cou	38	41	1	1	word	0	-	0	1
+T	12	ch	41	43	1	1	word	0	-	0	1
+T	12	sof	44	47	1	1	word	0	-	0	1
+T	12	a	47	48	1	1	word	0	-	0	1
+T	12	tv	49	51	1	1	word	0	-	0	1
+T	12	wif	52	55	1	1	word	0	-	0	1
+T	12	i	55	56	1	1	word	0	-	0	1
+E	12	56	56	0
+T	13	lea	2	5	1	1	word	0	-	0	1
+T	13	din	5	8	1	1	word	0	-	0	1
+T	13	g	8	9	1	1	word	0	-	0	1
+T	13	and	10	13	1	1	word	0	-	0	1
+T	13	tra	14	17	1	1	word	0	-	0	1
+T	13	ili	17	20	1	1	word	0	-	0	1
+T	13	ng	20	22	1	1	word	0	-	0	1
+T	13	spa	25	28	1	1	word	0	-	0	1
+T	13	ces	28	31	1	1	word	0	-	0	1
+T	13	and	32	35	1	1	word	0	-	0	1
+T	13	tab	36	39	1	1	word	0	-	0	1
+T	13	s	39	40	1	1	word	0	-	0	1
+E	13	42	42	0
+T	14	İst	0	3	1	1	word	0	-	0	1
+T	14	anb	3	6	1	1	word	0	-	0	1
+T	14	ul	6	8	1	1	word	0	-	0	1
+T	14	da	9	11	1	1	word	0	-	0	1
+T	14	ıIi	12	15	1	1	word	0	-	0	1
+T	14	İ	15	16	1	1	word	0	-	0	1
+T	14	Tür	17	20	1	1	word	0	-	0	1
+T	14	kçe	20	23	1	1	word	0	-	0	1
+T	14	ÇOK	24	27	1	1	word	0	-	0	1
+T	14	güz	28	31	1	1	word	0	-	0	1
+T	14	el	31	33	1	1	word	0	-	0	1
+E	14	33	33	0
+T	15	hyp	0	3	1	1	word	0	-	0	1
+T	15	hen	3	6	1	1	word	0	-	0	1
+T	15	ate	8	11	1	1	word	0	-	0	1
+T	15	d	11	12	1	1	word	0	-	0	1
+T	15	rai	13	16	1	1	word	0	-	0	1
+T	15	n	16	17	1	1	word	0	-	0	1
+T	15	bow	18	21	1	1	word	0	-	0	1
+T	15	num	22	25	1	1	word	0	-	0	1
+T	15	ber	25	28	1	1	word	0	-	0	1
+T	15	s	28	29	1	1	word	0	-	0	1
+T	15	e	44	45	1	1	word	0	-	0	1
+T	15	mc	46	48	1	1	word	0	-	0	1
+E	15	54	54	0
+T	16	Cat	2	5	1	1	word	0	-	0	1
+T	16	ego	5	8	1	1	word	0	-	0	1
+T	16	ry	8	10	1	1	word	0	-	0	1
+T	16	Tes	11	14	1	1	word	0	-	0	1
+T	16	t	14	15	1	1	word	0	-	0	1
+T	16	bol	21	24	1	1	word	0	-	0	1
+T	16	d	24	25	1	1	word	0	-	0	1
+T	16	ita	31	34	1	1	word	0	-	0	1
+T	16	lic	34	37	1	1	word	0	-	0	1
+T	16	htt	41	44	1	1	word	0	-	0	1
+T	16	p	44	45	1	1	word	0	-	0	1
+T	16	x	48	49	1	1	word	0	-	0	1
+T	16	org	50	53	1	1	word	0	-	0	1
+T	16	lin	54	57	1	1	word	0	-	0	1
+T	16	k	57	58	1	1	word	0	-	0	1
+T	16	cit	62	65	1	1	word	0	-	0	1
+T	16	e	65	66	1	1	word	0	-	0	1
+E	16	68	68	0
+T	17	run	0	3	1	1	word	0	-	0	1
+T	17	nin	3	6	1	1	word	0	-	0	1
+T	17	g	6	7	1	1	word	0	-	0	1
+T	17	run	8	11	1	1	word	0	-	0	1
+T	17	s	11	12	1	1	word	0	-	0	1
+T	17	ran	13	16	1	1	word	0	-	0	1
+T	17	eas	17	20	1	1	word	0	-	0	1
+T	17	ily	20	23	1	1	word	0	-	0	1
+T	17	fai	24	27	1	1	word	0	-	0	1
+T	17	rly	27	30	1	1	word	0	-	0	1
+T	17	cat	31	34	1	1	word	0	-	0	1
+T	17	s	34	35	1	1	word	0	-	0	1
+T	17	pon	36	39	1	1	word	0	-	0	1
+T	17	ies	39	42	1	1	word	0	-	0	1
+T	17	gen	43	46	1	1	word	0	-	0	1
+T	17	ero	46	49	1	1	word	0	-	0	1
+T	17	usl	49	52	1	1	word	0	-	0	1
+T	17	y	52	53	1	1	word	0	-	0	1
+T	17	hap	54	57	1	1	word	0	-	0	1
+T	17	pin	57	60	1	1	word	0	-	0	1
+T	17	ess	60	63	1	1	word	0	-	0	1
+E	17	63	63	0
+E	18	0	0	0
+T	19	los	0	3	1	1	word	0	-	0	1
+T	19	niñ	4	7	1	1	word	0	-	0	1
+T	19	os	7	9	1	1	word	0	-	0	1
+T	19	can	10	13	1	1	word	0	-	0	1
+T	19	tab	13	16	1	1	word	0	-	0	1
+T	19	an	16	18	1	1	word	0	-	0	1
+T	19	can	19	22	1	1	word	0	-	0	1
+T	19	cio	22	25	1	1	word	0	-	0	1
+T	19	nes	25	28	1	1	word	0	-	0	1
+T	19	ale	29	32	1	1	word	0	-	0	1
+T	19	gre	32	35	1	1	word	0	-	0	1
+T	19	s	35	36	1	1	word	0	-	0	1
+T	19	por	37	40	1	1	word	0	-	0	1
+T	19	tug	40	43	1	1	word	0	-	0	1
+T	19	uês	43	46	1	1	word	0	-	0	1
+T	19	açõ	47	50	1	1	word	0	-	0	1
+T	19	es	50	52	1	1	word	0	-	0	1
+E	19	52	52	0
+N	0	54686520517569636b2042726f776e20466f782773206a756d706564206f76657220746865206c617a7920646f67733b206974277320323032342d30362d303120616e64204a616e2031322c20323032332e
+N	1	48656c6c6f2c20576f726c642120666f6f2d6261722062617a5f717578205769466920506f77657253686f74353030204f274e65696c27732053443530302077692d6669205456
+N	2	3c703e536f6d65203c623e48544d4c3c2f623e2026616d703b207465787420266c743b686572652667743b203c7363726970743e7828293c2f7363726970743e20636166266561637574653b3c2f703e
+N	3	656d61696c3a206a6f686e2e646f65406578616d706c652e636f6d2075726c3a2068747470733a2f2f6c7563656e652e6170616368652e6f72672f636f72652f2070617468202f7573722f6c6f63616c2f62696e
+N	4	c39c6ec3af63c3b664c3a9206661c3a76164652072c3a973756dc3a9206e61c3af766520c38673697220c398726573756e6420c3856c616e642073747261c39f6520efac816e65
+N	5	e69db1e4baace983bde381abe4bd8fe38293e381a7e38184e381bee3819920ec849cec9ab8ed8ab9ebb384ec8b9c20efbdb6efbe80efbdb6efbe8520efbe83efbdbdefbe8420efbca6efbcb5efbcacefbcacefbcb7efbca9efbca4efbcb4efbca820e381b2e38289e3818ce381aa20e382abe382bfe382abe3838a
+N	6	d985d8b1d8add8a8d8a720d8a8d8a7d984d8b9d8a7d984d98520d8a7d984d983d8aad8a7d8a8d8a920d8a7d984d8b9d8b1d8a8d98ad8a920d988d8a7d984d983d8aad8a820d9a1d9a2d9a320d9a4d9a5d9a6
+N	7	d09fd180d0b8d0b2d0b5d18220d0bcd0b8d1802c20d0b1d0b5d0b3d183d189d0b8d0b520d181d0bed0b1d0b0d0bad0b820d0b820d0bad0bed188d0bad0b8
+N	8	ce95cebbcebbceb7cebdceb9cebaceac20ceb3cf81ceaccebccebcceb1cf84ceb120cea3ce8acea3cea5cea6ce9fcea320cebfceb4cf8ccf82
+N	9	e0a4b9e0a4bfe0a4a8e0a58de0a4a6e0a58020e0a4ade0a4bee0a4b7e0a4be20e0a6ace0a6bee0a682e0a6b2e0a6be20e0a6ade0a6bee0a6b7e0a6be20e0b0a4e0b186e0b0b2e0b181e0b097e0b18120e0b0ade0b0bee0b0b7
+N	10	4469652048c3a47573657220776172656e206772c3b6c39f657220616c73206469652042c3a4756d6520446f6e617564616d706673636869666666616872742052696e64666c65697363686574696b657474696572756e67204675737362616c6c
+N	11	6c657320656e66616e7473206c276172627265206427756e65206d6169736f6e2061756a6f7572642768756920717527696c
+N	12	626f6f73747c322e35207465726d7c302e3520667265717c33207061796c6f61647c312e3020636f75636820736f66612074762077696669
+N	13	20206c656164696e6720616e6420747261696c696e6720202073706163657309616e6409746162732020
+N	14	c4b07374616e62756c27646120c4b14969c4b02054c3bc726bc3a76520c3874f4b2067c3bc7a656c
+N	15	68797068656e2d2061746564207261696e2d626f77206e756d6265727320312c3233342e353620332e313420653d6d63c2b220c2bd203432
+N	16	5b5b43617465676f72793a546573745d5d20272727626f6c642727272027276974616c69632727205b687474703a2f2f782e6f7267206c696e6b5d207b7b636974657d7d
+N	17	72756e6e696e672072756e732072616e20656173696c7920666169726c79206361747320706f6e6965732067656e65726f75736c792068617070696e657373
+N	18	
+N	19	6c6f73206e69c3b16f732063616e746162616e2063616e63696f6e657320616c656772657320706f7274756775c3aa732061c3a7c3b56573

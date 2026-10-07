@@ -1,8 +1,8 @@
 # Lucene 10.5.0 lucene-core: every top-level class of the jar, and what became of it.
 # Checked by scripts/check-port-inventory.py (see its docstring for the statuses).
 # class	status	detail
-analysis/AbstractAnalysisFactory	not-needed	Base class of the SPI name-based factory plumbing (Solr/CustomAnalyzer configuration); Rust composes analyzers directly in code.
-analysis/AnalysisSPILoader	not-needed	JVM ServiceLoader lookup of analysis factories by name; no Rust equivalent needed.
+analysis/AbstractAnalysisFactory	ported	crates/lucene-analysis/src/factory/mod.rs::FactoryBase
+analysis/AnalysisSPILoader	ported	crates/lucene-analysis/src/factory/spi.rs::lookup_token_filter
 analysis/Analyzer	ported	crates/lucene-analysis/src/analyzer.rs::Analyzer
 analysis/AnalyzerWrapper	ported	crates/lucene-analysis/src/analyzer.rs::AnalyzerWrapper
 analysis/AutomatonToTokenStream	ported	crates/lucene-analysis/src/automaton.rs::automaton_to_token_stream
@@ -10,7 +10,7 @@ analysis/CachingTokenFilter	ported	crates/lucene-analysis/src/token_stream.rs::C
 analysis/CharArrayMap	not-needed	char[]-keyed map that exists to avoid String allocation on the JVM; its only core use is backing CharArraySet, and Rust's HashMap<String,_> covers it.
 analysis/CharArraySet	ported	crates/lucene-analysis/src/char_array_set.rs::CharArraySet
 analysis/CharFilter	ported	crates/lucene-analysis/src/reader.rs::CharFilter
-analysis/CharFilterFactory	not-needed	SPI name-based factory plumbing for CharFilters; no behaviour beyond construction by name.
+analysis/CharFilterFactory	ported	crates/lucene-analysis/src/factory/mod.rs::CharFilterFactory
 analysis/CharacterUtils	not-needed	JVM char[]/codepoint buffer helpers; the one behavioural piece (simple toLowerCase) lives in lucene-analysis::simple_to_lowercase.
 analysis/DelegatingAnalyzerWrapper	ported	crates/lucene-analysis/src/analyzer.rs::DelegatingAnalyzerWrapper
 analysis/FilteringTokenFilter	ported	crates/lucene-analysis/src/token_stream.rs::FilteringTokenFilter
@@ -20,15 +20,15 @@ analysis/ReusableStringReader	ported	crates/lucene-analysis/src/reader.rs::StrRe
 analysis/StopFilter	ported	crates/lucene-analysis/src/lib.rs::StopFilter
 analysis/StopwordAnalyzerBase	ported	crates/lucene-analysis/src/stopword_analyzer_base.rs::StopwordAnalyzerBase
 analysis/TokenFilter	ported	crates/lucene-analysis/src/token_stream.rs::TokenFilter
-analysis/TokenFilterFactory	not-needed	SPI name-based factory plumbing for TokenFilters; no behaviour beyond construction by name.
+analysis/TokenFilterFactory	ported	crates/lucene-analysis/src/factory/mod.rs::TokenFilterFactory
 analysis/TokenStream	ported	crates/lucene-analysis/src/token_stream.rs::TokenStream
 analysis/TokenStreamToAutomaton	ported	crates/lucene-analysis/src/automaton.rs::TokenStreamToAutomaton
 analysis/Tokenizer	ported	crates/lucene-analysis/src/token_stream.rs::Tokenizer
-analysis/TokenizerFactory	not-needed	SPI name-based factory plumbing for Tokenizers; no behaviour beyond construction by name.
+analysis/TokenizerFactory	ported	crates/lucene-analysis/src/factory/mod.rs::TokenizerFactory
 analysis/WordlistLoader	ported	crates/lucene-analysis/src/wordlist_loader.rs::get_word_set
 analysis/standard/StandardAnalyzer	ported	crates/lucene-analysis/src/standard/mod.rs::StandardAnalyzer
 analysis/standard/StandardTokenizer	ported	crates/lucene-analysis/src/standard/mod.rs::StandardTokenizer
-analysis/standard/StandardTokenizerFactory	not-needed	SPI name-based factory for StandardTokenizer; construction plumbing only.
+analysis/standard/StandardTokenizerFactory	ported	crates/lucene-analysis/src/factory/tokenizers.rs::StandardTokenizerFactory
 analysis/standard/StandardTokenizerImpl	ported	crates/lucene-analysis/src/standard/tokenizer_impl.rs::StandardTokenizerImpl
 analysis/tokenattributes/BytesTermAttribute	ported	crates/lucene-analysis/src/attributes.rs::set_bytes_term
 analysis/tokenattributes/BytesTermAttributeImpl	ported	crates/lucene-analysis/src/attributes.rs::set_bytes_term
@@ -942,7 +942,7 @@ util/BytesRefIterator	not-needed	pull iterator over BytesRefs; Rust Iterator<Ite
 util/CharsRef	not-needed	char-array reference; Rust &str/String
 util/CharsRefBuilder	not-needed	growable char buffer; Rust String
 util/ClassLoaderUtils	not-needed	JVM classloader helper
-util/ClasspathResourceLoader	not-needed	JVM classpath resource loading; Rust callers pass data or use std::fs
+util/ClasspathResourceLoader	ported	crates/lucene-analysis/src/factory/loader.rs::ClasspathResourceLoader
 util/CloseableThreadLocal	not-needed	JVM ThreadLocal leak workaround; Rust uses owned per-thread state / thread_local!
 util/CollectionUtil	not-needed	in-place List sorting helpers; Rust slice::sort (stable) / sort_unstable
 util/CommandLineUtil	not-needed	reflection loading of Directory/FSDirectory classes by name for CLI tools
@@ -1002,8 +1002,8 @@ util/RamUsageEstimator	not-needed	JVM object-size estimation
 util/RecyclingByteBlockAllocator	not-needed	ByteBlockPool block recycling; no block pools in the port
 util/RecyclingIntBlockAllocator	not-needed	IntBlockPool block recycling; no block pools in the port
 util/RefCount	not-needed	ref-counted holder; Rust Arc / plain counts (index_file_deleter.rs refcounts)
-util/ResourceLoader	not-needed	JVM resource/class loading for analysis factories; Rust callers pass data directly
-util/ResourceLoaderAware	not-needed	JVM resource-loading callback for analysis factories
+util/ResourceLoader	ported	crates/lucene-analysis/src/factory/loader.rs::ResourceLoader
+util/ResourceLoaderAware	ported	crates/lucene-analysis/src/factory/mod.rs::AnalysisFactory
 util/RoaringDocIdSet	ported	crates/lucene-search/src/docid_set.rs::RoaringDocIdSet
 util/RollingBuffer	not-needed	generic ring buffer; Rust VecDeque
 util/SameThreadExecutorService	not-needed	JVM ExecutorService running tasks inline

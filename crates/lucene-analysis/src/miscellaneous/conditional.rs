@@ -53,7 +53,7 @@ pub struct OneTimeWrapper<I, C> {
     end_offset: i32,
 }
 
-impl<I: TokenStream, C: ShouldFilter> TokenStream for OneTimeWrapper<I, C> {
+impl<I: TokenStream + 'static, C: ShouldFilter + 'static> TokenStream for OneTimeWrapper<I, C> {
     fn attributes(&self) -> &AttributeSource {
         self.input.attributes()
     }
@@ -112,6 +112,10 @@ impl<I: TokenStream, C: ShouldFilter> TokenStream for OneTimeWrapper<I, C> {
 
     fn as_tokenizer(&mut self) -> Option<&mut dyn Tokenizer> {
         self.input.as_tokenizer()
+    }
+
+    fn conditional_root(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 }
 
@@ -299,6 +303,12 @@ where
     fn close_filter(&mut self) -> Result<(), AnalysisError> {
         self.delegate.root().input.close()?;
         self.delegate.close()
+    }
+
+    /// Past this filter's own wrapper: an enclosing conditional filter's
+    /// wrapper is below it.
+    fn conditional_root_filter(&mut self) -> Option<&mut dyn std::any::Any> {
+        self.delegate.root().input.conditional_root()
     }
 }
 

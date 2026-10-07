@@ -1,0 +1,10 @@
+donau
+dampf
+schiff
+fahrt
+rind
+fleisch
+etikett
+fuss
+ball
+haus
