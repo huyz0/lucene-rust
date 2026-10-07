@@ -47,6 +47,16 @@ fn add(a: usize, b: usize) -> Result<usize, MorfologikError> {
     a.checked_add(b).ok_or_else(corrupt)
 }
 
+/// One arc, read once: what `getArcLabel`, `isArcFinal`, `getNextArc` and
+/// `getEndNode` (`0`: terminal) answer for it.
+#[derive(Debug, Clone, Copy)]
+struct ArcData {
+    label: u8,
+    is_final: bool,
+    next: usize,
+    target: usize,
+}
+
 /// `morfologik.fsa.FSA5`.
 #[derive(Debug, Clone)]
 pub struct Fsa5 {
@@ -56,15 +66,53 @@ pub struct Fsa5 {
 }
 
 impl Fsa5 {
-    // Java: FSA5(InputStream)
-    fn read(body: &[u8]) -> Result<Fsa5, MorfologikError> {
-        let [_filler, _annotation, hgtl, ref arcs @ ..] = *body else {
+    // Java: FSA5(InputStream) -- `bytes` is the whole file, its first
+    // `start` bytes (magic and version) already read. The arcs keep the
+    // file's allocation: the header is drained in place.
+    fn read(mut bytes: Vec<u8>, start: usize) -> Result<Fsa5, MorfologikError> {
+        let Some(&[_filler, _annotation, hgtl]) = bytes.get(start..).and_then(|b| b.get(..3))
+        else {
             return Err(MorfologikError::new("EOFException: truncated FSA5 header"));
         };
+        // ARITH: `start + 3` bytes were just read, so the sum is in range.
+        #[allow(clippy::arithmetic_side_effects)]
+        bytes.drain(..start + 3);
         Ok(Fsa5 {
-            arcs: arcs.to_vec(),
+            arcs: bytes,
             node_data_length: usize::from((hgtl >> 4) & 0x0F),
             gtl: usize::from(hgtl & 0x0F),
+        })
+    }
+
+    // Java: FSA5.getArc
+    fn find_arc(&self, node: usize, label: u8) -> Result<usize, MorfologikError> {
+        let mut arc = self.first_arc(node)?;
+        while arc != 0 {
+            if byte(&self.arcs, arc)? == label {
+                return Ok(arc);
+            }
+            arc = if self.is_last(arc)? {
+                0
+            } else {
+                self.skip_arc(arc)?
+            };
+        }
+        Ok(0)
+    }
+
+    /// The arc at `arc`, read once.
+    fn decode(&self, arc: usize) -> Result<ArcData, MorfologikError> {
+        let label = byte(&self.arcs, arc)?;
+        let flags = self.flags(arc)?;
+        Ok(ArcData {
+            label,
+            is_final: flags & 1 != 0,
+            next: if flags & 2 != 0 {
+                0
+            } else {
+                self.skip_arc(arc)?
+            },
+            target: self.destination(arc)?,
         })
     }
 
@@ -113,8 +161,9 @@ pub struct Cfsa2 {
 }
 
 impl Cfsa2 {
-    // Java: CFSA2(InputStream)
-    fn read(body: &[u8]) -> Result<Cfsa2, MorfologikError> {
+    // Java: CFSA2(InputStream) -- as `Fsa5::read`.
+    fn read(mut bytes: Vec<u8>, start: usize) -> Result<Cfsa2, MorfologikError> {
+        let body = bytes.get(start..).unwrap_or_default();
         let [f0, f1, size, ref rest @ ..] = *body else {
             return Err(MorfologikError::new("EOFException: truncated CFSA2 header"));
         };
@@ -130,32 +179,110 @@ impl Cfsa2 {
             .get(..size)
             .ok_or_else(|| MorfologikError::new("EOFException: truncated CFSA2 label mapping"))?
             .to_vec();
+        let has_numbers = flags & NUMBERS != 0;
+        // ARITH: the header (`start + 3` bytes) and the `size` mapping bytes
+        // were just read, so the sum is at most `bytes.len()`.
+        #[allow(clippy::arithmetic_side_effects)]
+        bytes.drain(..start + 3 + size);
         Ok(Cfsa2 {
-            arcs: rest[size..].to_vec(),
+            arcs: bytes,
             label_mapping,
-            has_numbers: flags & NUMBERS != 0,
+            has_numbers,
+        })
+    }
+
+    /// `getArcLabel` of the arc at `arc`, whose flag byte is `flag`, and
+    /// the offset past the label.
+    #[inline]
+    fn label_at(&self, arc: usize, flag: u8) -> Result<(u8, usize), MorfologikError> {
+        let index = usize::from(flag & 0x1F);
+        // ARITH: `arc` indexes `arcs` (its flag was read), so `arc + 1` is at
+        // most `arcs.len()`; `arc + 2` follows a successful read of `arc + 1`.
+        #[allow(clippy::arithmetic_side_effects)]
+        if index > 0 {
+            let label = self.label_mapping.get(index).copied().ok_or_else(corrupt)?;
+            Ok((label, arc + 1))
+        } else {
+            Ok((byte(&self.arcs, arc + 1)?, arc + 2))
+        }
+    }
+
+    // Java: CFSA2.getArc -- `getArcLabel` and `getNextArc` with the flag
+    // byte read once per arc.
+    fn find_arc(&self, node: usize, label: u8) -> Result<usize, MorfologikError> {
+        let mut arc = self.first_arc(node)?;
+        if arc == 0 {
+            return Ok(0);
+        }
+        loop {
+            let flag = byte(&self.arcs, arc)?;
+            let (l, after) = self.label_at(arc, flag)?;
+            if l == label {
+                return Ok(arc);
+            }
+            if flag & 0x40 != 0 {
+                return Ok(0);
+            }
+            arc = if flag & 0x80 != 0 {
+                after
+            } else {
+                self.skip_vint(after)?
+            };
+        }
+    }
+
+    /// The arc at `arc`, read once.
+    fn decode(&self, arc: usize) -> Result<ArcData, MorfologikError> {
+        let flag = byte(&self.arcs, arc)?;
+        let (label, after) = self.label_at(arc, flag)?;
+        let (target, after) = if flag & 0x80 == 0 {
+            self.read_vint_at(after)?
+        } else if flag & 0x40 != 0 {
+            // Target-next on the node's last arc: the node right after it.
+            (after, after)
+        } else {
+            (self.destination(arc)?, after)
+        };
+        Ok(ArcData {
+            label,
+            is_final: flag & 0x20 != 0,
+            next: if flag & 0x40 != 0 { 0 } else { after },
+            target,
         })
     }
 
     // Java: CFSA2.readVInt -- a Java int: shifts past 31 wrap, as `<<` does.
-    fn read_vint(&self, mut offset: usize) -> Result<usize, MorfologikError> {
+    fn read_vint(&self, offset: usize) -> Result<usize, MorfologikError> {
+        Ok(self.read_vint_at(offset)?.0)
+    }
+
+    /// `readVInt` at `offset` and the offset past the v-int.
+    // ARITH: `offset` is only advanced past a byte just read from `arcs`, so
+    // it stays at most `arcs.len()`.
+    #[allow(clippy::arithmetic_side_effects)]
+    #[inline]
+    fn read_vint_at(&self, mut offset: usize) -> Result<(usize, usize), MorfologikError> {
         let mut b = byte(&self.arcs, offset)?;
+        offset += 1;
         let mut value: i32 = i32::from(b & 0x7F);
         let mut shift: u32 = 7;
         while b & 0x80 != 0 {
-            offset = add(offset, 1)?;
             b = byte(&self.arcs, offset)?;
+            offset += 1;
             value |= i32::from(b & 0x7F).wrapping_shl(shift);
             shift = shift.wrapping_add(7);
         }
-        usize::try_from(value).map_err(|_| corrupt())
+        Ok((usize::try_from(value).map_err(|_| corrupt())?, offset))
     }
 
     // Java: CFSA2.skipVInt
+    // ARITH: as `read_vint_at`.
+    #[allow(clippy::arithmetic_side_effects)]
+    #[inline]
     fn skip_vint(&self, mut offset: usize) -> Result<usize, MorfologikError> {
         loop {
             let b = byte(&self.arcs, offset)?;
-            offset = add(offset, 1)?;
+            offset += 1;
             if b & 0x80 == 0 {
                 return Ok(offset);
             }
@@ -219,26 +346,50 @@ pub enum Match {
     SequenceIsAPrefix(usize),
 }
 
-/// The longest sequence [`Fsa::sequences`] follows: a cycle in a corrupt
-/// automaton would otherwise never end.
+/// The longest sequence [`Fsa::visit_sequences`] follows (and no longer
+/// than the automaton has arc bytes, which no acyclic path can exceed): a
+/// cycle in a corrupt automaton would otherwise never end.
 const MAX_DEPTH: usize = 1 << 16;
+
+/// The most sequences one [`Fsa::visit_sequences`] reports. Morfologik has
+/// no bound; a 102-byte automaton of two-way branches holds 2^18.
+pub const MAX_SEQUENCES: usize = 1 << 16;
+
+/// The most bytes (summed over the sequences) one
+/// [`Fsa::visit_sequences`] reports: a chain of `n` final arcs holds
+/// `n(n+1)/2`.
+pub const MAX_SEQUENCE_BYTES: usize = 1 << 24;
+
+/// The stack and buffer [`Fsa::visit_sequences`] reuses
+/// (`ByteSequenceIterator`'s `arcs` and `buffer`).
+#[derive(Debug, Clone, Default)]
+pub struct SequenceScratch {
+    arcs: Vec<usize>,
+    buffer: Vec<u8>,
+}
 
 impl Fsa {
     /// `FSA.read(InputStream)`.
     pub fn read(bytes: &[u8]) -> Result<Fsa, MorfologikError> {
-        let Some(rest) = bytes.strip_prefix(b"\\fsa") else {
+        Fsa::from_vec(bytes.to_vec())
+    }
+
+    /// `FSA.read(InputStream)` over an owned file: the automaton keeps the
+    /// file's allocation.
+    pub fn from_vec(bytes: Vec<u8>) -> Result<Fsa, MorfologikError> {
+        if !bytes.starts_with(b"\\fsa") {
             return Err(MorfologikError::new(
                 "IOException: Invalid file header, probably not an FSA.",
             ));
-        };
-        let Some((&version, body)) = rest.split_first() else {
+        }
+        let Some(&version) = bytes.get(4) else {
             return Err(MorfologikError::new(
                 "IOException: Truncated file, no version number.",
             ));
         };
         match version {
-            5 => Ok(Fsa::Fsa5(Fsa5::read(body)?)),
-            0xC6 => Ok(Fsa::Cfsa2(Cfsa2::read(body)?)),
+            5 => Ok(Fsa::Fsa5(Fsa5::read(bytes, 5)?)),
+            0xC6 => Ok(Fsa::Cfsa2(Cfsa2::read(bytes, 5)?)),
             v => Err(MorfologikError::new(format!(
                 "IOException: Unsupported automaton version: 0x{v:02x}"
             ))),
@@ -318,14 +469,24 @@ impl Fsa {
 
     /// `getArc(node, label)`: `0` when the node has no such arc.
     pub fn arc(&self, node: usize, label: u8) -> Result<usize, MorfologikError> {
-        let mut arc = self.first_arc(node)?;
-        while arc != 0 {
-            if self.label(arc)? == label {
-                return Ok(arc);
-            }
-            arc = self.next_arc(arc)?;
+        match self {
+            Fsa::Fsa5(f) => f.find_arc(node, label),
+            Fsa::Cfsa2(c) => c.find_arc(node, label),
         }
-        Ok(0)
+    }
+
+    fn decode(&self, arc: usize) -> Result<ArcData, MorfologikError> {
+        match self {
+            Fsa::Fsa5(f) => f.decode(arc),
+            Fsa::Cfsa2(c) => c.decode(arc),
+        }
+    }
+
+    fn arcs_len(&self) -> usize {
+        match self {
+            Fsa::Fsa5(f) => f.arcs.len(),
+            Fsa::Cfsa2(c) => c.arcs.len(),
+        }
     }
 
     /// `FSATraversal.match(sequence, root)`.
@@ -356,39 +517,79 @@ impl Fsa {
         Ok(Match::SequenceIsAPrefix(node))
     }
 
-    /// `ByteSequenceIterator` from `node`: every sequence its final arcs
-    /// end, depth first in arc order.
+    /// `ByteSequenceIterator` from `node`, collected: every sequence its
+    /// final arcs end, depth first in arc order.
     pub fn sequences(&self, node: usize) -> Result<Vec<Vec<u8>>, MorfologikError> {
         let mut out = Vec::new();
+        self.visit_sequences(node, &mut SequenceScratch::default(), |s| {
+            out.push(s.to_vec());
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
+    /// `ByteSequenceIterator` from `node`: `visit` sees every sequence its
+    /// final arcs end, depth first in arc order, in `scratch`'s buffer (as
+    /// Java's iterator hands out one reused `ByteBuffer`). A path deeper
+    /// than the automaton has arc bytes (a cycle), more than
+    /// [`MAX_SEQUENCES`] sequences or more than [`MAX_SEQUENCE_BYTES`] of
+    /// them are errors; Morfologik loops or runs out of memory there.
+    pub fn visit_sequences<F>(
+        &self,
+        node: usize,
+        scratch: &mut SequenceScratch,
+        mut visit: F,
+    ) -> Result<(), MorfologikError>
+    where
+        F: FnMut(&[u8]) -> Result<(), MorfologikError>,
+    {
+        let SequenceScratch { arcs, buffer } = scratch;
+        arcs.clear();
+        buffer.clear();
         let first = self.first_arc(node)?;
         if first == 0 {
-            return Ok(out);
+            return Ok(());
         }
-        let mut arcs: Vec<usize> = vec![first];
-        let mut buffer: Vec<u8> = Vec::new();
+        let max_depth = MAX_DEPTH.min(self.arcs_len());
+        arcs.push(first);
+        let (mut count, mut bytes) = (0usize, 0usize);
         while let Some(&arc) = arcs.last() {
-            let last_index = arcs.len().checked_sub(1).ok_or_else(corrupt)?;
+            // ARITH: `arcs` is not empty.
+            #[allow(clippy::arithmetic_side_effects)]
+            let last_index = arcs.len() - 1;
             if arc == 0 {
                 arcs.pop();
                 continue;
             }
-            arcs[last_index] = self.next_arc(arc)?;
+            let a = self.decode(arc)?;
+            arcs[last_index] = a.next;
             buffer.truncate(last_index);
-            buffer.push(self.label(arc)?);
-            let end = self.end_node(arc)?;
-            if end != 0 {
-                if arcs.len() >= MAX_DEPTH {
+            buffer.push(a.label);
+            if a.target != 0 {
+                if arcs.len() > max_depth {
                     return Err(MorfologikError::new(
                         "IOException: the automaton has a cycle",
                     ));
                 }
-                arcs.push(self.first_arc(end)?);
+                arcs.push(self.first_arc(a.target)?);
             }
-            if self.is_final(arc)? {
-                out.push(buffer.clone());
+            if a.is_final {
+                count = count.saturating_add(1);
+                bytes = bytes.saturating_add(buffer.len());
+                if count > MAX_SEQUENCES {
+                    return Err(MorfologikError::new(format!(
+                        "IOException: a lookup reaches more than {MAX_SEQUENCES} sequences"
+                    )));
+                }
+                if bytes > MAX_SEQUENCE_BYTES {
+                    return Err(MorfologikError::new(format!(
+                        "IOException: a lookup reaches more than {MAX_SEQUENCE_BYTES} bytes of sequences"
+                    )));
+                }
+                visit(buffer)?;
             }
         }
-        Ok(out)
+        Ok(())
     }
 }
 
@@ -481,6 +682,112 @@ mod tests {
         c[8 + 5] = 0x03;
         let fsa = Fsa::read(&c).unwrap();
         assert!(fsa.sequences(3).is_err());
+    }
+
+    /// A CFSA2 whose root reads `a`, then `+`, then the node at 9: `tail`.
+    fn after_separator(tail: &[u8]) -> Vec<u8> {
+        let mut f = b"\\fsa\xC6\x00\x00\x00".to_vec();
+        f.extend_from_slice(&[0x40, b'x', 3, 0x40, b'a', 6, 0x40, b'+', 9]);
+        f.extend_from_slice(tail);
+        f
+    }
+
+    #[test]
+    fn a_final_cycle_stops_at_the_automatons_size() {
+        // 9: 'b', final and last, back to 9 -- every "b...b" is a sequence.
+        // Bounded only by the 65,536-level cap, the walk held 2 GB of them
+        // before it stopped.
+        let fsa = Fsa::read(&after_separator(&[0x60, b'b', 9])).unwrap();
+        let e = fsa.sequences(9).unwrap_err();
+        assert!(e.message().contains("cycle"), "{}", e.message());
+    }
+
+    #[test]
+    fn a_lookups_sequences_are_capped() {
+        // 17 levels of two final arcs each: 2^18 - 2 sequences from 102
+        // bytes of arcs.
+        let mut dag = Vec::new();
+        for k in 0..17u8 {
+            let next = if k == 16 { 0 } else { 9 + 6 * (k + 1) };
+            dag.extend_from_slice(&[0x20, b'b', next, 0x60, b'c', next]);
+        }
+        let fsa = Fsa::read(&after_separator(&dag)).unwrap();
+        let e = fsa.sequences(9).unwrap_err();
+        assert!(e.message().contains("65536 sequences"), "{}", e.message());
+        // A chain of n final arcs: n sequences, n(n+1)/2 bytes.
+        let chain = |n: usize| {
+            let mut c = Vec::new();
+            for _ in 1..n {
+                c.extend_from_slice(&[0xE0, b'b']); // final, last, target next
+            }
+            c.extend_from_slice(&[0x60, b'b', 0]);
+            Fsa::read(&after_separator(&c)).unwrap()
+        };
+        let e = chain(6000).sequences(9).unwrap_err();
+        assert!(e.message().contains("bytes"), "{}", e.message());
+        let ok = chain(100).sequences(9).unwrap();
+        assert_eq!(ok.len(), 100);
+        assert_eq!(ok[99], vec![b'b'; 100]);
+    }
+
+    #[test]
+    fn target_next_and_mapped_labels() {
+        // Mapping [_, 'q']. Node 3: 'b' (final, target next, not last),
+        // 'c' (final, last, terminal); node 8: mapped 'q' (final, last,
+        // terminal).
+        let mut f = b"\\fsa\xC6\x00\x00\x02\x00q".to_vec();
+        f.extend_from_slice(&[0x40, 0x00, 0x03, 0xA0, b'b', 0x60, b'c', 0x00, 0x61, 0x00]);
+        let fsa = Fsa::read(&f).unwrap();
+        assert_eq!(fsa.root().unwrap(), 3);
+        assert_eq!(
+            fsa.sequences(3).unwrap(),
+            vec![b"b".to_vec(), b"bq".to_vec(), b"c".to_vec()]
+        );
+        assert_eq!(fsa.arc(3, b'c').unwrap(), 5);
+        assert_eq!(fsa.arc(3, b'x').unwrap(), 0);
+        assert_eq!(fsa.arc(8, b'q').unwrap(), 8);
+        assert_eq!(fsa.label(8).unwrap(), b'q');
+        assert_eq!(fsa.next_arc(3).unwrap(), 5);
+        assert_eq!(fsa.next_arc(5).unwrap(), 0);
+        assert!(fsa.is_final(3).unwrap());
+        assert_eq!(fsa.end_node(3).unwrap(), 8);
+        assert_eq!(fsa.end_node(5).unwrap(), 0);
+        assert_eq!(fsa.match_sequence(b"bq", 3).unwrap(), Match::Exact);
+        // The same scans over a truncated copy fail cleanly.
+        let fsa = Fsa::read(&f[..f.len() - 3]).unwrap();
+        assert!(fsa.sequences(3).is_err());
+        assert!(fsa.arc(8, b'x').is_err());
+    }
+
+    #[test]
+    fn fsa5_arcs_one_by_one() {
+        let arc = |label: u8, target: u16, flags: u16| {
+            let v = (target << 3) | flags;
+            [label, (v & 0xFF) as u8, (v >> 8) as u8]
+        };
+        // Root 6: 'a' (not last) -> 12, 'b' (final, last, terminal);
+        // 12: 'c' (final, last, terminal).
+        let mut f = b"\\fsa\x05_+\x02".to_vec();
+        f.extend_from_slice(&arc(0, 0, 2));
+        f.extend_from_slice(&arc(0, 6, 2));
+        f.extend_from_slice(&arc(b'a', 12, 0));
+        f.extend_from_slice(&arc(b'b', 0, 3));
+        f.extend_from_slice(&arc(b'c', 0, 3));
+        let fsa = Fsa::from_vec(f.clone()).unwrap();
+        assert_eq!(fsa.arc(6, b'b').unwrap(), 9);
+        assert_eq!(fsa.arc(6, b'x').unwrap(), 0);
+        assert_eq!(fsa.label(9).unwrap(), b'b');
+        assert_eq!(fsa.next_arc(6).unwrap(), 9);
+        assert_eq!(fsa.next_arc(9).unwrap(), 0);
+        assert!(!fsa.is_final(6).unwrap());
+        assert_eq!(fsa.end_node(6).unwrap(), 12);
+        assert_eq!(
+            fsa.sequences(6).unwrap(),
+            vec![b"ac".to_vec(), b"b".to_vec()]
+        );
+        let fsa = Fsa::read(&f[..f.len() - 2]).unwrap();
+        assert!(fsa.sequences(6).is_err());
+        assert!(fsa.arc(12, b'x').is_err());
     }
 
     #[test]

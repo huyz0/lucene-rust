@@ -27,7 +27,7 @@ pub fn polish_dictionary() -> Arc<Dictionary> {
     static DICT: LazyLock<Arc<Dictionary>> = LazyLock::new(|| {
         let fsa = inflate(include_bytes!("resources/polish.dict.z"));
         Arc::new(
-            Dictionary::read(&fsa, include_str!("resources/polish.info"))
+            Dictionary::from_vec(fsa, include_str!("resources/polish.info"))
                 .expect("the vendored Polish dictionary reads"),
         )
     });
@@ -39,7 +39,7 @@ pub fn ukrainian_dictionary() -> Arc<Dictionary> {
     static DICT: LazyLock<Arc<Dictionary>> = LazyLock::new(|| {
         let fsa = inflate(include_bytes!("resources/ukrainian.dict.z"));
         Arc::new(
-            Dictionary::read(&fsa, include_str!("resources/ukrainian.info"))
+            Dictionary::from_vec(fsa, include_str!("resources/ukrainian.info"))
                 .expect("the vendored Ukrainian dictionary reads"),
         )
     });

@@ -3,8 +3,10 @@
 //! conversions, each attribute validated as Morfologik validates it.
 //!
 //! Charsets: `UTF-8` (every dictionary Lucene loads), `ISO-8859-1` and
-//! `US-ASCII`, under Java's names and aliases; any other charset is
-//! refused when the metadata is read (Java supports the JDK's whole set).
+//! `US-ASCII`, under their canonical names and JDK 21's `aliases()`
+//! (checked against `Charset.forName` in `charsets.tsv`); any other charset
+//! is refused when the metadata is read (Java supports the JDK's whole
+//! set).
 
 use crate::properties;
 use crate::MorfologikError;
@@ -46,17 +48,52 @@ pub enum Charset {
 }
 
 impl Charset {
-    /// `Charset.forName` for the supported charsets (case-insensitive, with
-    /// the JDK's common aliases).
-    fn for_name(name: &str) -> Option<Charset> {
-        match name.to_ascii_uppercase().as_str() {
-            "UTF-8" | "UTF8" | "UNICODE-1-1-UTF-8" => Some(Charset::Utf8),
-            "ISO-8859-1" | "ISO8859-1" | "ISO8859_1" | "ISO_8859-1" | "LATIN1" | "L1"
-            | "8859_1" | "CP819" | "IBM819" | "ISO-IR-100" => Some(Charset::Latin1),
-            "US-ASCII" | "ASCII" | "US" | "ASCII7" | "646" | "ISO646-US" | "DEFAULT" => {
-                Some(Charset::Ascii)
-            }
-            _ => None,
+    /// `Charset.forName` for the supported charsets: the canonical name or
+    /// one of JDK 21's `aliases()` (the same in JDK 25), ignoring ASCII case.
+    pub fn for_name(name: &str) -> Option<Charset> {
+        const UTF8: [&str; 3] = ["UTF-8", "unicode-1-1-utf-8", "UTF8"];
+        const ASCII: [&str; 14] = [
+            "US-ASCII",
+            "cp367",
+            "ANSI_X3.4-1986",
+            "us",
+            "646",
+            "ISO646-US",
+            "ISO_646.irv:1991",
+            "csASCII",
+            "IBM367",
+            "ascii7",
+            "ANSI_X3.4-1968",
+            "iso_646.irv:1983",
+            "ASCII",
+            "iso-ir-6",
+        ];
+        const LATIN1: [&str; 15] = [
+            "ISO-8859-1",
+            "latin1",
+            "ISO8859-1",
+            "iso-ir-100",
+            "ISO_8859-1:1987",
+            "ISO8859_1",
+            "819",
+            "l1",
+            "ISO_8859-1",
+            "8859_1",
+            "IBM-819",
+            "cp819",
+            "ISO_8859_1",
+            "csISOLatin1",
+            "IBM819",
+        ];
+        let is = |names: &[&str]| names.iter().any(|n| n.eq_ignore_ascii_case(name));
+        if is(&UTF8) {
+            Some(Charset::Utf8)
+        } else if is(&ASCII) {
+            Some(Charset::Ascii)
+        } else if is(&LATIN1) {
+            Some(Charset::Latin1)
+        } else {
+            None
         }
     }
 
@@ -70,6 +107,47 @@ impl Charset {
                 .iter()
                 .map(|&u| u8::try_from(u).ok().filter(u8::is_ascii))
                 .collect(),
+        }
+    }
+
+    /// [`Charset::encode`] of a `&str` into `out` (cleared first): `false`
+    /// for a character the charset cannot map.
+    pub fn encode_str(self, text: &str, out: &mut Vec<u8>) -> bool {
+        out.clear();
+        match self {
+            Charset::Utf8 => {
+                out.extend_from_slice(text.as_bytes());
+                true
+            }
+            Charset::Latin1 | Charset::Ascii => {
+                let limit = if self == Charset::Latin1 { 0xFF } else { 0x7F };
+                for c in text.chars() {
+                    match u8::try_from(u32::from(c)) {
+                        Ok(b) if u32::from(b) <= limit => out.push(b),
+                        _ => return false,
+                    }
+                }
+                true
+            }
+        }
+    }
+
+    /// [`Charset::decode`] to text, into `out` (cleared first): `false` for
+    /// malformed input.
+    pub fn decode_into(self, bytes: &[u8], out: &mut String) -> bool {
+        out.clear();
+        match self {
+            Charset::Utf8 | Charset::Ascii => match std::str::from_utf8(bytes) {
+                Ok(s) if self == Charset::Utf8 || s.is_ascii() => {
+                    out.push_str(s);
+                    true
+                }
+                _ => false,
+            },
+            Charset::Latin1 => {
+                out.extend(bytes.iter().map(|&b| char::from(b)));
+                true
+            }
         }
     }
 
@@ -445,7 +523,21 @@ mod tests {
         assert_eq!(Charset::Utf8.decode(&[0xC3]), None);
         assert_eq!(Charset::Latin1.decode(&[0xE9]), Some(vec![0xE9]));
         assert_eq!(Charset::Ascii.decode(&[0xE9]), None);
+        let mut b = vec![1];
+        assert!(Charset::Utf8.encode_str("é", &mut b) && b == [0xC3, 0xA9]);
+        assert!(Charset::Latin1.encode_str("é", &mut b) && b == [0xE9]);
+        assert!(!Charset::Latin1.encode_str("ł", &mut b));
+        assert!(!Charset::Ascii.encode_str("Aé", &mut b));
+        assert!(Charset::Ascii.encode_str("A", &mut b) && b == [0x41]);
+        let mut s = "x".to_string();
+        assert!(Charset::Utf8.decode_into(&[0xC3, 0xA9], &mut s) && s == "é");
+        assert!(!Charset::Utf8.decode_into(&[0xC3], &mut s));
+        assert!(!Charset::Ascii.decode_into(&[0xC3, 0xA9], &mut s));
+        assert!(!Charset::Ascii.decode_into(&[0xE9], &mut s));
+        assert!(Charset::Ascii.decode_into(b"A", &mut s) && s == "A");
+        assert!(Charset::Latin1.decode_into(&[0xE9], &mut s) && s == "é");
         assert_eq!(Charset::for_name("Latin1"), Some(Charset::Latin1));
+        assert_eq!(Charset::for_name("default"), None);
         assert!(boolean_value("ON").unwrap());
         assert!(!boolean_value("off").unwrap());
         assert_eq!(
