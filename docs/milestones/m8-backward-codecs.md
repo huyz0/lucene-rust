@@ -518,3 +518,25 @@ through `NativeReaders` and answer its term, boolean, sorted, aggregated,
 - `fixtures/data/bwc/<version>/` and `fixtures/data/bwc-big/<version>/` indices and their generators
 - `docs/parity.md` rows for every `lucene-backward-codecs` class
 - The plugin's fallback table in `feature-matrix.md` updated
+
+## Ledger evidence
+
+The fixtures and benchmarks behind the parity ledger's rows for this
+milestone, by ledger file (current facts; the rows carry the status).
+
+### [backward-codecs.md](../parity/backward-codecs.md): lucene-codecs -- backward codecs (M8)
+
+Reading (and merging away) every format Lucene
+9.0-10.4 wrote; Lucene 8 formats are rejected. Per-class status:
+`docs/inventory/lucene-backward-codecs.tsv`.
+
+Tests: `crates/lucene-search/tests/bwc_fixtures.rs` reads every
+`fixtures/data/bwc/<version>/` index (T8.1: one per codec era, 9.0.0-10.4.0,
+written by that release's jars) and reproduces every line of the
+`expected.txt` Lucene 10.5.0 + backward-codecs wrote for it (infos in full;
+FNV-1a digests over postings with positions/offsets/payloads, norms, doc
+values, points, stored fields, term vectors, vectors; KNN hits) --
+`EXPECTED_FAILURES` is empty. It also runs 34 queries through
+`DirectoryReader` per version (hits, scores, totals equal to the 10.4.0
+fixture's bit for bit) and this port's `CheckIndex` (vector and graph families
+required). `scripts/verify-bwc-merge.sh` covers merging and upgrading.

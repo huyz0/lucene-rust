@@ -507,3 +507,46 @@ dropped: an inlined `LazyDocsCursor::try_advance` for a term's `advance`
 - Join, grouping and function fixture generators
 - `docs/parity.md` rows for `lucene-join`, `lucene-grouping`, `lucene-queries`
   and the ported `sandbox` classes
+
+## Ledger evidence
+
+The fixtures and benchmarks behind the parity ledger's rows for this
+milestone, by ledger file (current facts; the rows carry the status).
+
+### [joins.md](../parity/joins.md): lucene-index / lucene-search -- document blocks and block joins (M10)
+
+Document blocks in the writer (T10.1), `lucene-join`'s
+block joins (T10.2) and query-time joins (T10.3). Inventory:
+`docs/inventory/lucene-join.tsv` (`check-port-inventory.py --module join`).
+
+Tests: write path `scripts/verify-write-path.sh` runs
+`write_block_join_fixture` -> `VerifyJoin` (seeded streams of block adds,
+`updateDocuments`, whole-block deletes, commits, merges, one index-sorted;
+Lucene runs `CheckIndex` and `CheckJoinIndex`, joins every live block, appends
+and force-merges). Merge stress
+`crates/lucene-search/tests/block_join_merge_stress.rs` (24 streams, then
+`check_join_index` and `CheckIndex`). `scripts/op-stream-fuzz.sh` adds
+`addDocuments`/`updateDocuments` blocks and compares each block as one run of
+a segment. Unit: `lucene-index/src/index_writer/block_tests.rs`,
+`lucene-search/src/join/tests.rs`.
+
+### Fixtures behind queries.md, functions.md and grouping.md
+
+- Intervals: `fixtures/src/GenIntervals.java` -> `lucene-search/tests/intervals_fixtures.rs`,
+  four segments with deletions, a stop word's position holes, offsets,
+  payloads and a pulsed singleton term: 120 source specs, each with its
+  `toString` and `minExtent`, five scoring variants (hits with score bits,
+  five explanations each) and the `Matches` of every hit and of each
+  explained document, 6,538 lines equal to Lucene's.
+- Function queries: `fixtures/src/GenFunction.java` -> `lucene-search/tests/function_fixtures.rs`,
+  four segments with deletions and missing, multi-valued, `NaN`, infinite
+  and `-0.0` values: 96 value-source specs (`values.tsv`: every getter of
+  every document, or Lucene's exception) and 236 searches (`searches.tsv`:
+  score bits, four explanations each; reader-wide filters through the
+  sorted, counted and aggregated paths), all equal.
+- Grouping: `fixtures/src/GenGrouping.java` -> `lucene-search/tests/grouping_fixtures.rs`,
+  668 searches over a four-segment index with deletions (missing,
+  multi-valued, tied values; `SORTED`, `NUMERIC`, double/float,
+  `SORTED_NUMERIC`, `SORTED_SET` keys) and a three-segment block index --
+  every group, document, score and sort value equal to Lucene's, or
+  Lucene's exception.

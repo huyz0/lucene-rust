@@ -3,11 +3,8 @@
 [Index](../parity.md). `lucene-grouping` (T10.4). Inventory:
 `docs/inventory/lucene-grouping.tsv` (`check-port-inventory.py --module
 grouping`). Tests: `fixtures/src/GenGrouping.java` ->
-`lucene-search/tests/grouping_fixtures.rs`, 668 searches over a four-segment
-index with deletions (missing, multi-valued, tied values; `SORTED`, `NUMERIC`,
-double/float, `SORTED_NUMERIC`, `SORTED_SET` keys) and a three-segment block
-index -- every group, document, score and sort value equal to Lucene's, or
-Lucene's exception. Unit: `lucene-search/src/grouping/tests.rs`.
+`lucene-search/tests/grouping_fixtures.rs` (668 searches, equal;
+[M10 evidence](../milestones/m10-joins-grouping-queries.md#ledger-evidence)). Unit: `lucene-search/src/grouping/tests.rs`.
 
 | Java | Rust | Status |
 |---|---|---|
