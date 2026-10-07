@@ -12,7 +12,7 @@ a dependency the shipped library links is not under a licence listed here.
   of it, so it carries Lucene's licence and its notices (`PLAN.md` §3).
 - **[`LICENSE`](../LICENSE)** is Lucene 10.5.0's own `LICENSE.txt`, verbatim:
   the Apache License 2.0 followed by the licences of third-party code inside
-  Lucene. What was ported touches one of them:
+  Lucene. What was ported touches these:
   - the Brics-derived `o.a.l.util.automaton` (BSD): `lucene-codecs`'
     `automaton` ports `Operations.determinize`, `UTF32ToUTF8` and
     `ByteRunAutomaton`.
@@ -43,11 +43,12 @@ a dependency the shipped library links is not under a licence listed here.
     are compiled into the library (`include_str!`).
   - the Savoy light stemmers (BSD reference implementations, also in
     Lucene's `NOTICE.txt`): ported in `lucene-analysis/src/lang/`.
-  - Two others this port does *not* carry, and the reason:
-    - the moman Levenshtein tables (MIT): `fuzzy` matches by dynamic
-      programming instead;
-    - Lucene's LZ4 rewrite (BSD-2-Clause): LZ4 is decompressed by the
-      `lz4_flex` crate, with a literal-only encoder of this port's own.
+  - the moman-generated Levenshtein tables (MIT): `lucene-util`'s
+    `automaton/lev_tables.rs` transcribes Lucene's four
+    `Lev*ParametricDescription` tables.
+  - One this port does *not* carry, and the reason: Lucene's LZ4 rewrite
+    (BSD-2-Clause): LZ4 is decompressed by the `lz4_flex` crate, with a
+    literal-only encoder of this port's own.
   - The whole file is kept anyway, so the notices stay those of the upstream
     the port follows.
 - **[`NOTICE`](../NOTICE)** is this project's notice, then Lucene 10.5.0's
@@ -190,26 +191,49 @@ a dependency the shipped library links is not under a licence listed here.
   the ISO, Windows, KOI8, IBM/EBCDIC and Mac code pages, each fixed by its
   vendor's or standard's published table), printed by
   `tools/GenXmlCharsets.java`.
-- **JDK text services, re-specified** (M11, M12 T12.6).
-  `lang/final_sigma.rs` (the word `BreakIterator`) and `util/sentence_break.rs`
+- **JDK text services, re-specified** (M11, M12 T12.6, T12.7).
+  `lang/final_sigma.rs` (the word `BreakIterator`), `util/sentence_break.rs`
   (the sentence `BreakIterator`, with the exception table
-  `tools/GenSentenceBreakClasses.java` prints) describe the JDK's observable
-  behaviour, worked out from black-box runs; no JDK code or data file is
-  copied. Where the behaviour *is* a JDK data file -- the Thai word
-  dictionary (`ThaiTokenizer`) and `java.text.Collator`'s `CollationRules`
-  and locale tailorings (collation) -- nothing is derived from it: those
-  classes are not supported (`docs/parity/analysis-lang.md`).
-  `util/java_backtrack.rs` (M12 T12.7, `java.util.regex` beyond the shim) is
-  re-specified the same way, from `Pattern`'s documented grammar and
-  black-box runs. Its property sets, `util/java_regex_props.rs`, are Unicode
-  facts (scripts, blocks, binary properties: Unicode-3.0 data) read through
-  the JDK's public API by `tools/GenJavaRegexProperties.java` (written for
-  this project), as the charset tables are; no JDK code or data file is
-  copied. `miscellaneous/date_locales.rs` (M12 T12.7) is the same kind:
-  each locale's month, weekday, era and AM/PM names, default date pattern
-  and number symbols -- CLDR data (Unicode-3.0) -- read through
-  `SimpleDateFormat`, `Calendar` and `DecimalFormatSymbols`' public API by
-  `tools/GenDateLocales.java`.
+  `tools/GenSentenceBreakClasses.java` prints) and `util/java_backtrack.rs`
+  (`java.util.regex` beyond the shim, from `Pattern`'s documented grammar)
+  describe the JDK's observable behaviour, worked out from black-box runs;
+  no JDK code or data file is copied.
+- **Data read through the JDK** -- the criterion. The JDK is GPL-2.0 with
+  the Classpath Exception; its code and its data files are never copied.
+  A generator may read data through the JDK's *public API* only when that
+  data has a permissive upstream the JDK itself takes it from, so that what
+  ships is the upstream's data under the upstream's licence, and the JDK is
+  just the reader that reproduces Lucene's behaviour exactly:
+  - **allowed**: the Unicode Character Database and CLDR (Unicode-3.0,
+    attributed in `NOTICE`), and charset mappings fixed by a published
+    standard. `util/java_regex_props.rs` (scripts, blocks, binary
+    properties; `tools/GenJavaRegexProperties.java`),
+    `java_unicode_script.rs` (`tools/DumpUnicodeScripts.java`) and
+    `lucene-util`'s `automaton/java_case_table.rs` (simple case mappings)
+    are UCD 16.0.0 as JDK 25 implements it; `miscellaneous/date_locales.rs`
+    (month, weekday, era and AM/PM names, default date patterns, number
+    symbols; `tools/GenDateLocales.java`) is CLDR 47 as JDK 25 ships it
+    (its `legal/java.base/cldr.md`). Reading the UCD files themselves
+    (`Scripts.txt`, `Blocks.txt`, `PropList.txt`,
+    `DerivedCoreProperties.txt`, pinned by SHA-256) with the JDK as the
+    equality check would be the stronger provenance; unicode.org is not
+    reachable from this project's build environment, so the JDK-API
+    generators stay, and `java_character_tables.rs` alone is read from the
+    UCD (through `unicodedata2`).
+  - **not allowed**: data whose only source is the JDK. The Thai word
+    dictionary behind `BreakIterator.getWordInstance(th)` (`ThaiTokenizer`)
+    has no known permissive upstream; the path to Thai is ICU's
+    Unicode-licensed dictionary through `ICUTokenizer` (M12 T12.4).
+    `java.text.Collator`'s default rules (`CollationRules`) are the legacy
+    Taligent/IBM table, not the Unicode Collation Algorithm's DUCET, so a
+    clean-room UCA cannot reach `CollationKeyAnalyzer` parity either; the
+    path is `ICUCollationKeyAnalyzer` over ICU's (Unicode-licensed) CLDR
+    collation. Thai segmentation fails with a typed error; collation has
+    no Rust type (`docs/parity/analysis-lang.md`).
+  - `scripts/check-vendored-licences.py` keeps the attribution true: every
+    generated source must be listed with its data's licence, and `NOTICE`
+    must name each third-party one. It cannot judge which side of the
+    criterion a source is on; review does.
 - **The analysis-common corpus** (M11), `fixtures/corpus/analysis-common.txt`
   (and its frozen copy `snowball-seed.txt`, which seeds `GenSnowball`),
   is written for this project (Apache-2.0); the few well-known pangrams in it
