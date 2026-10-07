@@ -14,6 +14,7 @@
 //! `PRIME_INDEX_LENGTH` long, every occupied slot points at a row that
 //! exists, and every row has a frequency per word.
 
+use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
 use super::abstract_dictionary::{hash1_char, hash2_char, probe};
@@ -26,16 +27,24 @@ pub const PRIME_INDEX_LENGTH: usize = 12071;
 
 const CORE_DICT_Z: &[u8] = include_bytes!("../resources/coredict.mem.z");
 
+/// One row of `wordItem_charArrayTable`: the rests of its words.
+type Row = Arc<[Word]>;
+
+/// One word of a row: the rest after its first character (`None`: Java's
+/// `null`).
+type Word = Option<Arc<[u16]>>;
+
 /// `WordDictionary`.
 #[derive(Debug)]
 pub struct WordDictionary {
     word_index_table: Vec<i16>,
     char_index_table: Vec<u16>,
     /// `wordItem_charArrayTable`: per row, the words (`None`: Java's `null`,
-    /// the empty rest of a one-character word).
-    items: Vec<Option<Vec<Option<Vec<u16>>>>>,
+    /// the empty rest of a one-character word). Shared as Java shares
+    /// them: every reference to one array in the file is one `Arc`.
+    items: Vec<Option<Row>>,
     /// `wordItem_frequencyTable`.
-    frequencies: Vec<Option<Vec<i32>>>,
+    frequencies: Vec<Option<Arc<[i32]>>>,
     /// Every UTF-16 unit's row (-1: none), [`Self::get_word_item_table_index`]
     /// probed once per unit at load.
     row_of: Vec<i32>,
@@ -87,30 +96,37 @@ impl WordDictionary {
             unreachable!("[[I is read as objects")
         };
         // The reader has checked every element's class: a row is a `[[C`
-        // of `[C`s, a frequency row an `[I`.
+        // of `[C`s, a frequency row an `[I`. Arrays are shared, never
+        // copied per reference: a row is built once per handle, so the
+        // memory is in proportion to the file's bytes.
         let chars = |h: Option<usize>| match h.and_then(|h| stream.array_at(h)) {
-            Some((_, ArrayData::Char(c))) => Some(c.clone()),
+            Some((_, ArrayData::Char(c))) => Some(Arc::clone(c)),
             _ => None,
         };
+        let mut built: HashMap<usize, Row> = HashMap::new();
         let items = rows
             .iter()
-            .map(|&row| match row.and_then(|h| stream.array_at(h)) {
-                Some((_, ArrayData::Objects(words))) => {
-                    Some(words.iter().map(|&w| chars(w)).collect())
-                }
-                _ => None,
+            .map(|&row| {
+                let h = row?;
+                let Some((_, ArrayData::Objects(words))) = stream.array_at(h) else {
+                    return None;
+                };
+                let row = built
+                    .entry(h)
+                    .or_insert_with(|| words.iter().map(|&w| chars(w)).collect());
+                Some(Arc::clone(row))
             })
             .collect();
         let frequencies = freq_rows
             .iter()
             .map(|&row| match row.and_then(|h| stream.array_at(h)) {
-                Some((_, ArrayData::Int(f))) => Some(f.clone()),
+                Some((_, ArrayData::Int(f))) => Some(Arc::clone(f)),
                 _ => None,
             })
             .collect();
         let dict = WordDictionary {
-            word_index_table: word_index_table.clone(),
-            char_index_table: char_index_table.clone(),
+            word_index_table: word_index_table.to_vec(),
+            char_index_table: char_index_table.to_vec(),
             items,
             frequencies,
             row_of: Vec::new(),
@@ -155,7 +171,7 @@ impl WordDictionary {
     }
 
     /// The row a hash slot's `wordIndexTable` entry names.
-    fn row(&self, row: i16) -> Option<&Vec<Option<Vec<u16>>>> {
+    fn row(&self, row: i16) -> Option<&Row> {
         usize::try_from(row)
             .ok()
             .and_then(|r| self.items.get(r))
@@ -166,7 +182,7 @@ impl WordDictionary {
     /// Java indexes the tables with whatever the probe finds, so a unit
     /// whose slot names no row (U+0000 lands on an empty slot) is an
     /// `ArrayIndexOutOfBoundsException` there; here it has no words.
-    fn row_for(&self, chars: &[u16]) -> Option<(usize, &Vec<Option<Vec<u16>>>)> {
+    fn row_for(&self, chars: &[u16]) -> Option<(usize, &[Word])> {
         let row = usize::try_from(*self.row_of.get(usize::from(*chars.first()?))?).ok()?;
         Some((row, self.items[row].as_ref()?))
     }
@@ -194,7 +210,7 @@ impl WordDictionary {
     /// character already found) in its row, or -1.
     // SENTINEL: -1 is "not in the row"; the caller converts with
     // `usize::try_from`.
-    fn find_in_table(items: &[Option<Vec<u16>>], chars: &[u16]) -> i32 {
+    fn find_in_table(items: &[Word], chars: &[u16]) -> i32 {
         if chars.is_empty() {
             return -1;
         }

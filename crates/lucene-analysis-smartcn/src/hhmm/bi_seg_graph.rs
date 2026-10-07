@@ -96,6 +96,13 @@ impl BiSegGraph {
                         id_buffer.push(WORD_SEGMENT_CHAR);
                         id_buffer.extend_from_slice(&t2.char_array);
                         let word_pair_freq = f64::from(bigram_dict.get_frequency(&id_buffer));
+                        // Java's operation order. `f64::ln` is the platform
+                        // libm, not HotSpot's `Math.log` intrinsic (which
+                        // itself differs between x86-64 and arm64): the two
+                        // differ by 1 ulp on about 4,700 of 18M edge-weight
+                        // arguments, enough in principle to flip a tie
+                        // between two paths of equal cost; no fixture's
+                        // path does.
                         let weight = -(smooth * (1.0 + one_word_freq)
                             / (f64::from(MAX_FREQUENCE) + 0.0)
                             + (1.0 - smooth)

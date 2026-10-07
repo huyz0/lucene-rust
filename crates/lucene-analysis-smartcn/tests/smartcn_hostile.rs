@@ -92,3 +92,23 @@ fn corrupt_bigram_dictionaries_never_panic() {
     }
     assert!(rejected > 6, "{rejected}");
 }
+
+#[test]
+fn a_nesting_bomb_is_refused_before_it_recurses() {
+    // A `[[C` whose element is an array of the `[[C` descriptor itself (a
+    // TC_REFERENCE to handle 0), nested 100,000 levels: about 1 MB. The
+    // element's class is checked before its body is read, so the second
+    // level is refused instead of recursing into the third.
+    let mut b = vec![0xAC, 0xED, 0, 5, 0x75, 0x72, 0, 3, b'[', b'[', b'C'];
+    b.extend_from_slice(&[0; 8]);
+    b.extend_from_slice(&[2, 0, 0, 0x78, 0x70, 0, 0, 0, 1]);
+    for _ in 0..100_000 {
+        b.extend_from_slice(&[0x75, 0x71, 0, 0x7E, 0, 0, 0, 0, 0, 1]);
+    }
+    b.push(0x70);
+    let e = WordDictionary::from_mem(&b).err().unwrap().to_string();
+    assert!(
+        e.contains("ArrayStoreException: [[C in an array of [C"),
+        "{e}"
+    );
+}
