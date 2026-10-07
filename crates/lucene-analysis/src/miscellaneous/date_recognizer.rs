@@ -9,8 +9,9 @@
 //! one after another from the start of the term, and anything after the last
 //! one is ignored. What each element accepts is written here from
 //! `SimpleDateFormat`'s and `DecimalFormat`'s specifications and checked
-//! against the JDK, input by input (`GenAnalysisMisc.java`'s `date_formats.tsv`
-//! runs ~45 patterns over seeded valid and mutated texts); no JDK code is
+//! against the JDK, input by input (`GenAnalysisMisc.java`'s `date_formats.txt`
+//! runs ~95 patterns, 48 of them abutting fields and their neighbours, over
+//! seeded valid, mutated and glued-together texts); no JDK code is
 //! copied (`docs/licences.md`). Over UTF-16 units, as Java compares `char`s:
 //!
 //! - A literal (text between quotes, `''` for a quote, or any non-letter)
@@ -22,9 +23,10 @@
 //!   three letters) skips spaces and tabs, then reads `DecimalFormat`'s
 //!   integer: `NaN`; or an optional `-`, then `∞` or digits (every BMP
 //!   decimal digit, `Character.digit`), then an optional exponent `E`,
-//!   optional `-`, digits. When the next element is also a numeric field the
-//!   number may not run past the field's start plus its letter count
-//!   (abutting fields: `yyyyMMdd`).
+//!   optional `-`, digits. When the next element is also a numeric field
+//!   (abutting fields: `yyyyMMdd`) the field fails if its start (before the
+//!   blanks) plus its letter count is past the text's end, and otherwise its
+//!   number may not run past that index.
 //! - A text field matches the longest of its English names, ignoring case
 //!   the way `String.regionMatches(true, ...)` does, with no skipping: `G`
 //!   (`AD`, `BC`, `Anno Domini`, `Before Christ`), `M`/`L` from three letters
@@ -249,9 +251,15 @@ fn parse_field(t: &[u16], start: usize, letter: u8, count: usize, abutting: bool
         _ => {
             let pos = skip_blanks(t, start);
             // An abutting field's number ends `count` chars after where the
-            // field began (before the blanks).
+            // field began (before the blanks), and the field fails outright
+            // when those chars run past the text's end, however short the
+            // number in them.
             let limit = if abutting {
-                t.len().min(start + count)
+                let limit = start.checked_add(count)?;
+                if limit > t.len() {
+                    return None;
+                }
+                limit
             } else {
                 t.len()
             };

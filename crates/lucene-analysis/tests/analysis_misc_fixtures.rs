@@ -208,5 +208,5 @@ fn simple_date_format_parses_as_lucene() {
         bad.len(),
         bad.join("\n")
     );
-    assert_eq!(checked, 14_555);
+    assert_eq!(checked, 21_773);
 }
