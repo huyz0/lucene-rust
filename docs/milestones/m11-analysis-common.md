@@ -9,7 +9,7 @@
 | **Effort** | XL |
 | **Depends on** | [M7](m7-core-complete.md) (`StandardTokenizer`, the attribute model) |
 | **Unblocks** | [M12](m12-language-analysis.md); a Rust engine that analyses in Rust |
-| **Status** | in progress -- part 1 (see [Progress](#progress)) |
+| **Status** | in progress -- T11.0-T11.7 done (parts 1-4); open: the M12 deferrals and the benchmark cases under 1.0 (see [Acceptance criteria](#acceptance-criteria)) |
 
 ---
 
@@ -254,11 +254,36 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
 
 - [ ] Every analyzer and factory in the module produces Lucene's token
       stream -- every attribute -- on the T11.1 corpus.
-- [ ] Hunspell matches Lucene's stems and suggestions for every dictionary in
+      *Proven for every ported one:* the T11.1 corpus through
+      `GenAnalysisCommon` and the per-package generators (classic, every
+      language analyzer, synonyms, compound, misc), and every registered
+      factory through `GenAnalysisFactories` (204 configurations built and
+      run, 99 refused with Java's exception and message). *Remaining:* Thai
+      (`ThaiAnalyzer`, `ThaiTokenizer`, `ThaiTokenizerFactory`) and
+      `CollationKeyAnalyzer`, deferred to M12 (above: the JDK's
+      `BreakIterator` dictionary and `Collator`); `DateRecognizerFilterFactory`
+      outside `Locale.ENGLISH`.
+- [x] Hunspell matches Lucene's stems and suggestions for every dictionary in
       Lucene's test resources. (Those are not redistributable; matched on this
       project's own 38 dictionaries instead -- T11.4 above.)
 - [ ] Each analyzer is no slower than Lucene's on the corpus benchmark.
+      Every case of `analysis_common`, `analysis_lang`, `snowball` and
+      `hunspell` is above 1.0x or inside its run's noise floor (above), but
+      five sit below 1.0 there: `pattern` 0.97~ (the `regex` crate's lazy
+      DFA finds a match's end, then scans back for its start, where
+      `java.util.regex` walks `[ ,.]+` once), `german` 0.97~/0.92~ (two
+      UTF-16 filters convert the term and back where Java edits one
+      `char[]`), `shingle` 0.92~, `ngram_2_3` 0.93~ and snowball `russian`
+      0.96~ (no cause beyond run-to-run spread found). `custom_analyzer`
+      (`CustomAnalyzer` over `standard`, `lowercase`, `stop`, `porterStem`)
+      is in the `analysis_common` pair and not yet measured on a quiet
+      machine.
 - [ ] `check-port-inventory.py`'s allowlist holds no class of this module.
+      *Remaining:* 24 classes are `deferred:M12`: `analysis/morph` (15, the
+      Viterbi/dictionary base of Kuromoji and Nori, which are M12's), Thai
+      (3) with `SegmentingTokenizerBase` and `CharArrayIterator` (2, the
+      `BreakIterator` tokenizers'), and collation (4). No class is
+      `todo:M11`.
 
 ## Risks and unknowns
 
