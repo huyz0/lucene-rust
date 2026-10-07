@@ -28,10 +28,12 @@
 //! 3. **`captureState`/`restoreState`/`cloneAttributes`/`copyTo` become
 //!    `Clone`/`clone_from`** of one value ([`State`]).
 //!
-//! What it gives up: a *custom* attribute type (a class outside
-//! `tokenattributes`, e.g. analysis-common's `ScriptAttribute`) has no slot.
-//! No core class defines one; a later module that needs one extends this
-//! struct.
+//! A *custom* attribute (a class outside `tokenattributes`: Morfologik's
+//! `MorphosyntacticTagsAttribute`, Kuromoji's readings, ICU's
+//! `ScriptAttribute`) is a [`CustomAttribute`] type, added on demand with
+//! [`AttributeSource::add_custom`] as Java's `addAttribute` adds one, and
+//! held in a list beside the fixed fields: cleared, ended, captured and
+//! restored with them. A chain that adds none carries an empty list.
 //!
 //! `CharTermAttribute`'s `char[]` buffer is a Rust `String`. Java terms are
 //! UTF-16 and may hold an unpaired surrogate; a Rust `String` cannot, so the
@@ -41,9 +43,71 @@
 //! reaches an index) turns it into, so the indexed bytes agree.
 //! [`AttributeSource::term_utf16_len`] is Java's `CharTermAttribute.length()`.
 
+use std::any::{Any, TypeId};
 use std::borrow::Cow;
+use std::fmt::Debug;
 
 use crate::AnalysisError;
+
+/// An attribute outside the core set: Java's `Attribute` interface and its
+/// `AttributeImpl` in one type. `Default` is the value `addAttribute`
+/// creates; [`Self::clear`] is `AttributeImpl.clear()`, [`Self::end`]
+/// `AttributeImpl.end()` (`clear()` unless overridden); `Clone` is
+/// `copyTo`/`captureState`.
+pub trait CustomAttribute: Clone + PartialEq + Debug + Default + Send + Sync + 'static {
+    /// `AttributeImpl.clear()`.
+    fn clear(&mut self);
+
+    /// `AttributeImpl.end()`.
+    fn end(&mut self) {
+        self.clear();
+    }
+}
+
+/// [`CustomAttribute`] as an object, for the source's list.
+trait DynAttribute: Debug + Send + Sync {
+    fn clear(&mut self);
+    fn end(&mut self);
+    fn clone_box(&self) -> Box<dyn DynAttribute>;
+    fn eq_dyn(&self, other: &dyn DynAttribute) -> bool;
+    fn copy_from(&mut self, other: &dyn DynAttribute);
+    fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+impl<T: CustomAttribute> DynAttribute for T {
+    fn clear(&mut self) {
+        CustomAttribute::clear(self);
+    }
+    fn end(&mut self) {
+        CustomAttribute::end(self);
+    }
+    fn clone_box(&self) -> Box<dyn DynAttribute> {
+        Box::new(self.clone())
+    }
+    fn eq_dyn(&self, other: &dyn DynAttribute) -> bool {
+        other.as_any().downcast_ref::<T>() == Some(self)
+    }
+    fn copy_from(&mut self, other: &dyn DynAttribute) {
+        if let Some(o) = other.as_any().downcast_ref::<T>() {
+            self.clone_from(o);
+        }
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+impl PartialEq for Box<dyn DynAttribute> {
+    fn eq(&self, other: &Self) -> bool {
+        self.eq_dyn(other.as_ref())
+    }
+}
+
+impl Eq for Box<dyn DynAttribute> {}
 
 /// `TypeAttribute.DEFAULT_TYPE`.
 pub const DEFAULT_TYPE: &str = "word";
@@ -83,6 +147,8 @@ pub struct AttributeSource {
     sentence_index: i32,
     /// `search.BoostAttribute`, as `f32` bits (so the struct stays `Eq`).
     boost_bits: u32,
+    /// The custom attributes, in the order they were added.
+    custom: Vec<Box<dyn DynAttribute>>,
 }
 
 /// `AttributeSource.State`: a captured copy of every attribute, restored with
@@ -116,6 +182,7 @@ impl Clone for AttributeSource {
             term_frequency,
             sentence_index,
             boost_bits,
+            custom,
         } = source;
         self.term.clone_from(term);
         if self.bytes_term.is_some() || bytes_term.is_some() {
@@ -134,6 +201,15 @@ impl Clone for AttributeSource {
         self.term_frequency = *term_frequency;
         self.sentence_index = *sentence_index;
         self.boost_bits = *boost_bits;
+        // Java's restoreState copies each of the state's attributes into
+        // this source's instance of that class.
+        for attr in custom {
+            let id = attr.as_any().type_id();
+            match self.custom.iter_mut().find(|a| a.as_any().type_id() == id) {
+                Some(mine) => mine.copy_from(attr.as_ref()),
+                None => self.custom.push(attr.clone_box()),
+            }
+        }
     }
 }
 
@@ -160,6 +236,7 @@ impl AttributeSource {
             term_frequency: 1,
             sentence_index: 0,
             boost_bits: 1.0f32.to_bits(),
+            custom: Vec::new(),
         }
     }
 
@@ -181,6 +258,9 @@ impl AttributeSource {
         self.term_frequency = 1;
         self.sentence_index = 0;
         self.boost_bits = 1.0f32.to_bits();
+        for attr in &mut self.custom {
+            attr.clear();
+        }
     }
 
     /// `AttributeSource.endAttributes()`: every attribute's `end()`, which is
@@ -189,6 +269,36 @@ impl AttributeSource {
     pub fn end_attributes(&mut self) {
         self.clear_attributes();
         self.position_increment = 0;
+        for attr in &mut self.custom {
+            attr.end();
+        }
+    }
+
+    // ------------------------------------------------------ custom attributes
+
+    /// `addAttribute(Class)` for a [`CustomAttribute`]: the source's
+    /// instance, created (at its `Default`) on first use.
+    pub fn add_custom<T: CustomAttribute>(&mut self) -> &mut T {
+        let id = TypeId::of::<T>();
+        let i = match self.custom.iter().position(|a| a.as_any().type_id() == id) {
+            Some(i) => i,
+            None => {
+                self.custom.push(Box::new(T::default()));
+                self.custom.len() - 1
+            }
+        };
+        self.custom[i]
+            .as_any_mut()
+            .downcast_mut::<T>()
+            .expect("the attribute at this type's index is of this type")
+    }
+
+    /// `getAttribute(Class)` for a [`CustomAttribute`]; `None` when no
+    /// stage added it (`hasAttribute` is `false`).
+    pub fn custom<T: CustomAttribute>(&self) -> Option<&T> {
+        self.custom
+            .iter()
+            .find_map(|a| a.as_any().downcast_ref::<T>())
     }
 
     /// `AttributeSource.captureState()`.
@@ -454,6 +564,52 @@ mod tests {
         a.set_term_frequency(6).unwrap();
         a.set_sentence_index(8);
         a
+    }
+
+    #[derive(Debug, Clone, PartialEq, Default)]
+    struct Tags(Option<Vec<String>>);
+
+    impl CustomAttribute for Tags {
+        fn clear(&mut self) {
+            self.0 = None;
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Default)]
+    struct Sticky(u32);
+
+    impl CustomAttribute for Sticky {
+        fn clear(&mut self) {
+            self.0 = 0;
+        }
+        fn end(&mut self) {
+            self.0 = 99;
+        }
+    }
+
+    #[test]
+    fn custom_attributes_follow_the_lifecycle() {
+        let mut a = AttributeSource::new();
+        assert!(a.custom::<Tags>().is_none());
+        a.add_custom::<Tags>().0 = Some(vec!["x".into()]);
+        assert_eq!(a.custom::<Tags>(), Some(&Tags(Some(vec!["x".into()]))));
+        let state = a.capture_state();
+        a.add_custom::<Tags>().0 = None;
+        a.add_custom::<Sticky>().0 = 5;
+        assert_ne!(a, state);
+        a.restore_state(&state);
+        assert_eq!(a.custom::<Tags>(), state.custom::<Tags>());
+        assert_eq!(a.custom::<Sticky>(), Some(&Sticky(5)));
+        // A state holding an attribute this source lacks adds it.
+        let mut b = AttributeSource::new();
+        b.restore_state(&state);
+        assert_eq!(b.custom::<Tags>(), state.custom::<Tags>());
+        a.clear_attributes();
+        assert_eq!(a.custom::<Tags>(), Some(&Tags(None)));
+        a.end_attributes();
+        assert_eq!(a.custom::<Sticky>(), Some(&Sticky(99)));
+        assert_eq!(a.clone(), a);
+        assert!(format!("{a:?}").contains("Sticky"));
     }
 
     #[test]

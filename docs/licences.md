@@ -87,6 +87,30 @@ a dependency the shipped library links is not under a licence listed here.
   (`PHONETIC_DEPS` in `scripts/lib-lucene-jars.sh`) and the container image,
   never redistributed.
 
+- **Ported third-party code and data** (M12 T12.2, T12.3).
+  - **Egothor** (`org.egothor.stemmer`, inside Lucene's
+    `lucene-analysis-stempel`; Egothor Software License 1.00, BSD-style:
+    redistribution keeps the notice, binaries reproduce it, the
+    acknowledgement "This product includes software developed by the
+    Egothor Project" is requested) -> `crates/lucene-analysis-stempel/src/egothor.rs`
+    and `diff.rs`, the table reader only; the licence text is in
+    `egothor.rs`'s module docs and `NOTICE` carries the acknowledgement.
+    Lucene's `stemmer_20000.tbl` (Apache-2.0, Lucene's) and the Carrot2 Polish
+    stop words (BSD, already in Lucene's `NOTICE.txt`) are vendored.
+  - **Morfologik 2.1.9** (`org.carrot2:morfologik-fsa`/`-stemming`, BSD) ->
+    `crates/lucene-analysis-morfologik/`, reading and lookup only.
+  - **Dictionaries**: Morfologik's Polish dictionary (`morfologik-polish`
+    2.1.9, BSD-2-Clause, its licence vendored as
+    `src/resources/polish.LICENSE.txt` and in the `.info` header) and the
+    Ukrainian dictionary (`ua.net.nlp:morfologik-ukrainian-search:4.9.1`,
+    Apache-2.0) are vendored zlib-compressed (1.9 MB, 4.1 MB) so that
+    `MorfologikAnalyzer::default()` and `UkrainianMorfologikAnalyzer::default()`
+    work without files, as Lucene's no-argument constructors do. Both are
+    licence-clean for redistribution; `NOTICE` attributes them. The
+    fixture generator also uses `morfologik-fsa-builders` 2.1.9 (BSD) and
+    HPPC 0.7.2 (Apache-2.0) to build test dictionaries; none of them is
+    redistributed (`MORFOLOGIK_DEPS` in `scripts/lib-lucene-jars.sh`).
+
 - **Test data from third parties** (M9). `fixtures/corpus/real_polygons.z`,
   the Tessellator's real-world polygon corpus (`scripts/gen-tessellator-corpus.py`),
   holds:

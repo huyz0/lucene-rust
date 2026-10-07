@@ -1100,6 +1100,26 @@ outright.
   (`generator_classpath` in `scripts/gen-fixtures.sh`), so their SPI entries
   do not reach the other analysis generators. Deterministic. Read by
   `crates/lucene-analysis-phonetic/tests/phonetic_fixtures.rs`.
+- `GenAnalysisStempel.java` — M12 T12.2: Lucene's default Polish Stempel
+  table over 30,198 words (Polish stems written here joined with word
+  endings read off the table's own first trie, edge cases; `stems.tsv`);
+  eight tables Egothor's own `Compile` builds from
+  `corpus/analysis-stempel-train.txt` (every kind and optimiser;
+  `tables/<method>.tbl` with `tables/<method>.tsv`); `PolishAnalyzer` and
+  `StempelFilter` chains and `stempelPolishStem` over
+  `corpus/analysis-stempel.txt`. Own classpath (`generator_classpath`).
+  Deterministic. Read by
+  `crates/lucene-analysis-stempel/tests/stempel_fixtures.rs`.
+- `GenAnalysisMorfologik.java` — M12 T12.3: Morfologik lookups in the real
+  Polish and Ukrainian dictionaries (`lookups_<lang>.tsv`: surface forms
+  sampled from the dictionaries themselves and variants), eight dictionaries
+  built with Morfologik's `FSABuilder` and serializers from entries written
+  here (`dicts/`, every encoder, FSA5/CFSA2, two charsets, conversions,
+  tagless entries) with their lookups, and `MorfologikAnalyzer`,
+  `UkrainianMorfologikAnalyzer` (`corpus/analysis-ukrainian.txt`), filter and
+  factory rows with each token's tags (`corpus/analysis-morfologik.txt`). Own
+  classpath. Deterministic. Read by
+  `crates/lucene-analysis-morfologik/tests/morfologik_fixtures.rs`.
 - `GenAnalysisCompound.java` — M11 T11.6: `corpus/hyphenation-test.xml` (a
   toy hyphenation grammar written for this project) loaded into a
   `HyphenationTree`: hyphenation points for words (`points.words`), and the

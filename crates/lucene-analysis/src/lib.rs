@@ -101,7 +101,7 @@ pub use analyzer::{
     collect_tokens, Analyzer, AnalyzerDefinition, AnalyzerTokenStream, AnalyzerWrapper,
     DelegatingAnalyzerWrapper, ReuseStrategy, SourceFn, TokenStreamComponents,
 };
-pub use attributes::{AttributeSource, State, DEFAULT_TYPE};
+pub use attributes::{AttributeSource, CustomAttribute, State, DEFAULT_TYPE};
 pub use automaton::{
     automaton_to_token_stream, token_stream_to_automaton, Automaton, AutomatonBuilder,
     TokenStreamToAutomaton, Transition, HOLE, POS_SEP,

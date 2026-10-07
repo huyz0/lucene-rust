@@ -24,6 +24,7 @@ use lucene_store::MmapDirectory;
 
 mod micro_analysis_common;
 mod micro_analysis_lang;
+mod micro_analysis_m12;
 mod micro_analysis_misc;
 mod micro_hunspell;
 mod micro_snowball;
@@ -2068,6 +2069,7 @@ fn main() {
         "analysis_common" => micro_analysis_common::bench_analysis_common(warmup, measure),
         "analysis_lang" => micro_analysis_lang::bench_analysis_lang(warmup, measure),
         "analysis_misc" => micro_analysis_misc::bench_analysis_misc(warmup, measure),
+        "analysis_m12" => micro_analysis_m12::bench_analysis_m12(warmup, measure),
         "snowball" => micro_snowball::bench_snowball(warmup, measure),
         "hunspell" => micro_hunspell::bench_hunspell(warmup, measure),
         "vectors" => bench_vectors(warmup, measure),

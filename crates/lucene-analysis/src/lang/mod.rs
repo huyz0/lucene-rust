@@ -360,6 +360,13 @@ pub fn java_string_to_lower_case(units: &[u16]) -> Vec<u16> {
 /// ([`crate::java_character::SPECIAL_UPPER`]: `ß` -> `SS`). An unpaired
 /// surrogate is kept as is.
 pub fn java_string_to_upper_case(units: &[u16]) -> Vec<u16> {
+    // ASCII: no special casing, one table-free pass.
+    if units.iter().all(|&u| u < 0x80) {
+        return units
+            .iter()
+            .map(|&u| u16::from((u as u8).to_ascii_uppercase()))
+            .collect();
+    }
     let mut out = Vec::with_capacity(units.len());
     for r in char::decode_utf16(units.iter().copied()) {
         match r {

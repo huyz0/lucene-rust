@@ -205,7 +205,9 @@ CP=$(lucene_classpath "${LUCENE_MODULES[@]}"):$(thirdparty_classpath "${SPATIAL_
 # generator's `TokenFilterFactory.availableTokenFilters()` reports.
 # lib-lucene-jars.sh's PHONETIC_DEPS names the third-party jars and their licences.
 PHONETIC_CP=$(lucene_classpath lucene-analysis-phonetic):$(thirdparty_classpath "${PHONETIC_DEPS[@]}")
-M12_COMPILE_CP="$PHONETIC_CP"
+STEMPEL_CP=$(lucene_classpath lucene-analysis-stempel)
+MORFOLOGIK_CP=$(lucene_classpath lucene-analysis-morfologik):$(thirdparty_classpath "${MORFOLOGIK_DEPS[@]}")
+M12_COMPILE_CP="$PHONETIC_CP:$STEMPEL_CP:$MORFOLOGIK_CP"
 # Read as data, never put on the classpath (its SPI registrations name codecs
 # from modules the generators do not load): GenStandardTokenizerCorpus takes
 # its text from this jar's europarl.lines.txt.gz.
@@ -238,6 +240,8 @@ generator_jvm_opts() {
 generator_classpath() {
   case "$1" in
     GenAnalysisPhonetic) echo ":$PHONETIC_CP" ;;
+    GenAnalysisStempel) echo ":$STEMPEL_CP" ;;
+    GenAnalysisMorfologik) echo ":$MORFOLOGIK_CP" ;;
   esac
 }
 

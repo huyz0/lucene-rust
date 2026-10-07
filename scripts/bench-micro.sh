@@ -89,6 +89,14 @@ case "$BENCH" in
     SRC=benchmarks/micro/java/AnalysisMiscMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common" ;;
+  # M12: the language modules' filters over generated corpora; each module's
+  # third-party jars join through M12_THIRDPARTY.
+  analysis_m12)
+    MAIN=AnalysisM12Micro
+    SRC=benchmarks/micro/java/AnalysisM12Micro.java
+    EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-analysis-common lucene-analysis-phonetic lucene-analysis-stempel lucene-analysis-morfologik"
+    M12_THIRDPARTY=1 ;;
   # M11 T11.3: SnowballFilter per language over the fixture vocabularies.
   snowball)
     MAIN=SnowballMicro
@@ -274,6 +282,10 @@ source "$(dirname "$0")/lib-lucene-jars.sh"
 CP=$(lucene_classpath ${JAR_MODULES:-lucene-core})
 # lucene-spatial-extras' Spatial4j and S2 jars.
 if [ -n "${SPATIAL_JARS:-}" ]; then CP="$CP:$(thirdparty_classpath "${SPATIAL_EXTRAS_DEPS[@]}")"; fi
+# The M12 modules' third-party jars (Commons Codec, Morfologik).
+if [ -n "${M12_THIRDPARTY:-}" ]; then
+  CP="$CP:$(thirdparty_classpath "${PHONETIC_DEPS[@]}" "${MORFOLOGIK_DEPS[@]}")"
+fi
 
 OUT=$(mktemp -d); trap 'rm -rf "$OUT"' EXIT
 

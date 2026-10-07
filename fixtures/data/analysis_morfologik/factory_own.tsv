@@ -1,0 +1,41 @@
+T	0	kot	0	6	1	0	[subst:pl:inst:m2]
+T	0	kot	7	11	1	0	[subst:sg:gen:m2|subst:sg:acc:m2]
+T	0	kot	12	16	1	0	[subst:pl:nom:m2]
+T	0	kot	17	20	1	0	[subst:sg:nom:m2]
+T	0	pies	21	24	1	0	[subst:sg:gen:m2]
+T	0	pies	25	30	1	0	[subst:pl:inst:m2]
+E	0	30	30	0
+T	1	dobry	0	9	1	0	[adj:sg:nom:m1:sup]
+T	1	dobry	10	16	1	0	[adj:sg:nom:m1:com]
+T	1	dobry	17	26	1	0	[adj:neg]
+T	1	dobro	27	32	1	0	[subst:pl:nom:n|subst:pl:acc:n]
+T	1	dobry	27	32	0	0	[adj:sg:nom:f:pos]
+T	1	zamek	33	38	1	0	[subst:pl:nom:n|subst:pl:acc:nm2]
+T	1	zamek	39	44	1	0	[subst:pl:nom:n|subst:pl:acc:nm2]
+T	1	zamek	45	50	1	0	[subst:pl]
+E	1	50	50	0
+T	2	Łódź	0	4	1	0	[subst:sg:nom:f]
+T	2	łódź	5	10	1	0	[subst:sg:gen:f]
+T	2	ŁÓDŹ	11	15	1	0	-
+T	2	kot	16	22	1	0	[subst:pl:inst:m2]
+T	2	kot	23	29	1	0	[subst:pl:inst:m2]
+E	2	29	29	0
+T	3	ab	0	2	1	0	[subst:pl:inst:m2ubst:pl:acc:nm2]
+T	3	b	3	6	1	0	[x]
+T	3	null	7	10	1	0	[tagonly]
+T	3	a	11	15	1	0	[q]
+T	3	aaaa	16	17	1	0	[q]
+T	3	color	18	24	1	0	[subst|british]
+T	3	kot	25	30	1	0	[subst|british:m2ubst:pl:acc:nm2]
+E	3	30	30	0
+T	4	mówić	0	9	1	0	[verb:inf]
+T	4	czytać	10	20	1	0	[impt]
+T	4	żółknąć	21	28	1	0	[ppas]
+T	4	nieznane	29	37	1	0	-
+T	4	słowo	38	43	1	0	-
+E	4	43	43	0
+T	5	a+b	0	3	1	0	-
+T	5	a;b	4	7	1	0	-
+T	5	x	8	9	1	0	-
+T	5	kotamix	10	17	1	0	-
+E	5	17	17	0

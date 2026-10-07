@@ -1,0 +1,21 @@
+[package]
+name = "lucene-analysis-stempel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# lucene-analysis-stempel (M12 T12.2): the Egothor/Stempel stemmer tables,
+# StempelFilter and PolishAnalyzer. Over lucene-analysis only, as Lucene's
+# module is over lucene-analysis-common
+# (docs/milestones/m12-language-analysis.md).
+[lints]
+workspace = true
+
+[dependencies]
+lucene-analysis = { path = "../lucene-analysis" }
+# Inflates the vendored stemmer table (src/resources/stemmer_20000.tbl.z).
+miniz_oxide.workspace = true
+
+[dev-dependencies]
+# The shared factory-configuration harness (lucene-analysis/tests/support).
+lucene-util = { path = "../lucene-util" }

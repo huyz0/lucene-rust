@@ -1,0 +1,60 @@
+T	0	kota	0	6	1	0	[subst:pl:inst:f]
+T	0	kot	0	6	0	0	[subst:pl:inst:m1|subst:pl:inst:m2]
+T	0	kota	7	11	1	0	[subst:sg:nom:f]
+T	0	kot	7	11	0	0	[subst:sg:acc:m1|subst:sg:acc:m2|subst:sg:gen:m1|subst:sg:gen:m2]
+T	0	kot	12	16	1	0	[depr:pl:nom:m2|depr:pl:voc:m2|subst:pl:acc:m2|subst:pl:nom:m2|subst:pl:voc:m2]
+T	0	kota	12	16	0	0	[subst:pl:acc:f|subst:pl:nom:f|subst:pl:voc:f|subst:sg:gen:f]
+T	0	kot	17	20	1	0	[subst:sg:nom:m1|subst:sg:nom:m2]
+T	0	kota	17	20	0	0	[subst:pl:gen:f]
+T	0	pies	21	24	1	0	[subst:sg:acc:m1|subst:sg:acc:m2|subst:sg:gen:m1|subst:sg:gen:m2]
+T	0	pies	25	30	1	0	[subst:pl:inst:m1|subst:pl:inst:m2]
+E	0	30	30	0
+T	1	dobry	0	9	1	0	[adj:sg:acc:m3:sup|adj:sg:nom.voc:m1.m2.m3:sup]
+T	1	dobry	10	16	1	0	[adj:sg:acc:m3:com|adj:sg:nom.voc:m1.m2.m3:com]
+T	1	nielepszy	17	26	1	0	-
+T	1	dobra	27	32	1	0	[qub|subst:pl:acc:p3|subst:pl:nom:p3|subst:pl:voc:p3]
+T	1	dobro	27	32	0	0	[subst:pl:acc:n2|subst:pl:nom:n2|subst:pl:voc:n2|subst:sg:gen:n2]
+T	1	dobry	27	32	0	0	[adj:sg:nom.voc:f:pos]
+T	1	zamek	33	38	1	0	[subst:sg:acc:m3|subst:sg:nom:m3]
+T	1	zamek	39	44	1	0	[subst:sg:gen:m3|subst:sg:loc:m3|subst:sg:voc:m3]
+T	1	zamek	45	50	1	0	[subst:pl:acc:m3|subst:pl:nom:m3|subst:pl:voc:m3]
+E	1	50	50	0
+T	2	Łódź	0	4	1	0	[subst:sg:acc:f|subst:sg:nom:f]
+T	2	łódź	5	10	1	0	[subst:pl:gen:f|subst:sg:dat:f|subst:sg:gen:f|subst:sg:loc:f|subst:sg:voc:f]
+T	2	łódź	11	15	1	0	[subst:sg:acc:f|subst:sg:nom:f]
+T	2	kota	16	22	1	0	[subst:pl:inst:f]
+T	2	kot	16	22	0	0	[subst:pl:inst:m1|subst:pl:inst:m2]
+T	2	Kot	23	29	1	0	[subst:pl:inst:m1]
+T	2	Koty	23	29	0	0	[subst:pl:inst:p3]
+E	2	29	29	0
+T	3	ab	0	2	1	0	-
+T	3	abc	3	6	1	0	[subst:pl:acc:n2|subst:pl:dat:n2|subst:pl:gen:n2|subst:pl:inst:n2|subst:pl:loc:n2|subst:pl:nom:n2|subst:pl:voc:n2|subst:sg:acc:n2|subst:sg:dat:n2|subst:sg:gen:n2|subst:sg:inst:n2|subst:sg:loc:n2|subst:sg:nom:n2|subst:sg:voc:n2]
+T	3	xyz	7	10	1	0	-
+T	3	aaaa	11	15	1	0	-
+T	3	a	16	17	1	0	[conj|interj|prep:nom|qub]
+T	3	colour	18	24	1	0	-
+T	3	kotek	25	30	1	0	[subst:sg:nom:m2]
+T	3	kotka	25	30	0	0	[subst:pl:gen:f]
+E	3	30	30	0
+T	4	rozmawiać	0	9	1	0	[verb:inf:imperf:nonrefl]
+T	4	przeczytać	10	20	1	0	[verb:impt:sg:sec:perf:refl.nonrefl]
+T	4	zżółkły	21	28	1	0	[adj:sg:acc:m3:pos|adj:sg:nom.voc:m1.m2.m3:pos]
+T	4	zżółknąć	21	28	0	0	[verb:praet:pl:m2.m3.f.n1.n2.p2.p3:ter:perf:nonrefl]
+T	4	nieznane	29	37	1	0	[subst:pl:acc:n2|subst:pl:nom:n2|subst:pl:voc:n2|subst:sg:acc:n2|subst:sg:nom:n2|subst:sg:voc:n2]
+T	4	nieznany	29	37	0	0	[adj:pl:acc:m2.m3.f.n1.n2.p2.p3:pos|adj:pl:nom.voc:m2.m3.f.n1.n2.p2.p3:pos|adj:sg:acc:n1.n2:pos|adj:sg:nom.voc:n1.n2:pos]
+T	4	znać	29	37	0	0	[ppas:pl:nom.acc.voc:m2.m3.f.n1.n2.p2.p3:imperf:neg|ppas:sg:nom.acc.voc:n1.n2:imperf:neg]
+T	4	słowo	38	43	1	0	[subst:sg:acc:n2|subst:sg:nom:n2|subst:sg:voc:n2]
+E	4	43	43	0
+T	5	a	0	1	1	0	[conj|interj|prep:nom|qub]
+T	5	bar	2	3	1	0	[brev:npun]
+T	5	bardzo	2	3	0	0	[brev:pun]
+T	5	bieżący	2	3	0	0	[brev:pun]
+T	5	były	2	3	0	0	[brev:pun]
+T	5	a	4	5	1	0	[conj|interj|prep:nom|qub]
+T	5	bar	6	7	1	0	[brev:npun]
+T	5	bardzo	6	7	0	0	[brev:pun]
+T	5	bieżący	6	7	0	0	[brev:pun]
+T	5	były	6	7	0	0	[brev:pun]
+T	5	x	8	9	1	0	-
+T	5	kotamix	10	17	1	0	-
+E	5	17	17	0
