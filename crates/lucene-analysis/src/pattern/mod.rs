@@ -80,7 +80,7 @@ impl TokenStream for PatternTokenizer {
         self.atts.clear_attributes();
         if self.group >= 0 {
             let g = self.group as usize;
-            while self.matcher.find() {
+            while self.matcher.try_find()? {
                 self.index = self.matcher.start(g);
                 let end_index = self.matcher.end(g);
                 if self.index == end_index {
@@ -92,7 +92,7 @@ impl TokenStream for PatternTokenizer {
             self.index = i32::MAX;
             return Ok(false);
         }
-        while self.matcher.find() {
+        while self.matcher.try_find()? {
             let (start, end) = (self.matcher.start(0), self.matcher.end(0));
             if start - self.index > 0 {
                 self.emit(self.index, start)?;
@@ -173,7 +173,7 @@ impl<I: TokenStream> TokenFilter for PatternReplaceFilter<I> {
         }
         let a = self.input.attributes_mut();
         self.matcher.reset(a.term());
-        if self.matcher.find() {
+        if self.matcher.try_find()? {
             // replaceAll/replaceFirst rewind this find.
             let t = self.matcher.replace(&self.replacement, self.all)?;
             a.set_term(&t);
@@ -213,13 +213,13 @@ impl<I: TokenStream> PatternCaptureGroupTokenFilter<I> {
     }
 
     // Java: PatternCaptureGroupTokenFilter.nextCapture
-    fn next_capture(&mut self) -> bool {
+    fn next_capture(&mut self) -> Result<bool, AnalysisError> {
         let mut min_offset = i32::MAX;
         self.current_matcher = -1;
         let mut i = 0usize;
         while i < self.matchers.len() {
             if self.current_group[i] == -1 {
-                self.current_group[i] = i32::from(self.matchers[i].find());
+                self.current_group[i] = i32::from(self.matchers[i].try_find()?);
             }
             if self.current_group[i] != 0 {
                 while self.current_group[i] < self.group_counts[i] + 1 {
@@ -245,14 +245,15 @@ impl<I: TokenStream> PatternCaptureGroupTokenFilter<I> {
             }
             i += 1;
         }
-        self.current_matcher != -1
+        Ok(self.current_matcher != -1)
     }
 
-    /// The current capture's text.
-    fn current_text(&self) -> String {
+    /// Sets the term to the current capture's text.
+    fn set_current_text(&mut self) {
         let m = &self.matchers[self.current_matcher as usize];
         let g = self.current_group[self.current_matcher as usize] as usize;
-        m.slice(m.start(g), m.end(g)).into_owned()
+        let text = m.slice(m.start(g), m.end(g));
+        self.input.attributes_mut().set_term(&text);
     }
 }
 
@@ -261,14 +262,13 @@ impl<I: TokenStream> TokenFilter for PatternCaptureGroupTokenFilter<I> {
 
     // Java: PatternCaptureGroupTokenFilter.incrementToken
     fn increment(&mut self) -> Result<bool, AnalysisError> {
-        if self.current_matcher != -1 && self.next_capture() {
-            let term = self.current_text();
+        if self.current_matcher != -1 && self.next_capture()? {
             let m = self.current_matcher as usize;
             let a = self.input.attributes_mut();
             a.clear_attributes();
             a.restore_state(self.state.as_ref().expect("a token was read"));
             a.set_position_increment(0)?;
-            a.set_term(&term);
+            self.set_current_text();
             self.current_group[m] += 1;
             return Ok(true);
         }
@@ -284,10 +284,9 @@ impl<I: TokenStream> TokenFilter for PatternCaptureGroupTokenFilter<I> {
         self.spare_len = self.matchers.first().map_or(0, JavaMatcher::len_utf16);
         if self.preserve_original {
             self.current_matcher = 0;
-        } else if self.next_capture() {
+        } else if self.next_capture()? {
             // Java: setLength(end) when the capture starts at 0, else copy.
-            let term = self.current_text();
-            self.input.attributes_mut().set_term(&term);
+            self.set_current_text();
             let m = self.current_matcher as usize;
             self.current_group[m] += 1;
         }
@@ -345,7 +344,7 @@ impl<I: TokenStream> TokenFilter for PatternTypingFilter<I> {
         let a = self.input.attributes_mut();
         for (rule, matcher) in &mut self.rules {
             matcher.reset(a.term());
-            if matcher.find() {
+            if matcher.try_find()? {
                 // Java: matcher.replaceFirst(typeTemplate) over the term.
                 let t = matcher.replace(&rule.type_template, false)?;
                 a.set_token_type(t);
@@ -388,7 +387,7 @@ impl<R: CharReader> PatternReplaceCharFilter<R> {
         let mut out: Vec<u16> = Vec::with_capacity(input.len());
         let mut cumulative = 0i32;
         let mut last_match_end = 0i32;
-        while m.find() {
+        while m.try_find()? {
             let (start, end) = (m.start(0), m.end(0));
             let group_size = end - start;
             let skipped_size = start - last_match_end;

@@ -255,7 +255,8 @@ fn argument_errors_the_fixtures_do_not_reach() {
         e.message,
         "Can only give one of the following parameters: [truncateAfterCodePoints, truncateAfterChars, prefixLength]"
     );
-    let e = build::<DateRecognizerFilterFactory>(&[("locale", "de")])
+    assert!(build::<DateRecognizerFilterFactory>(&[("locale", "de")]).is_ok());
+    let e = build::<DateRecognizerFilterFactory>(&[("locale", "en-Latn")])
         .err()
         .unwrap();
     assert_eq!(e.kind, JavaException::UnsupportedOperation);
@@ -434,7 +435,7 @@ fn language_tags_parse_as_the_jdk_does() {
         ("en_US", Some("Invalid subtag: en_US [at index 0]")),
         ("en-ü", Some("Invalid subtag: ü [at index 3]")),
         ("ü", Some("Invalid subtag: ü [at index 0]")),
-        ("", None),
+        ("", Some("Empty subtag [at index 0]")),
         ("EN-us", None),
         ("en-a-bb-x-x", None),
         ("x-a", None),

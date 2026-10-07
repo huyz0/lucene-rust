@@ -6,7 +6,10 @@ pub mod char_array_iterator;
 pub mod char_tokenizer;
 pub mod csv_util;
 mod elision_filter;
+pub mod java_backtrack;
 pub mod java_regex;
+#[rustfmt::skip]
+mod java_regex_props;
 pub mod jflex;
 pub mod rolling_buffer;
 pub mod segmenting_tokenizer_base;

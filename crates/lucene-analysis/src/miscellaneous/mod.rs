@@ -6,6 +6,8 @@
 
 mod concatenate_graph;
 mod conditional;
+#[rustfmt::skip]
+mod date_locales;
 mod date_recognizer;
 mod filtering;
 mod keyword;
@@ -22,7 +24,7 @@ pub use conditional::{
     ProtectedTermFilter, ShouldFilter,
 };
 pub use date_recognizer::{
-    DateRecognizerFilter, SimpleDateFormat, DATE_TYPE, ENGLISH_DEFAULT_DATE_PATTERN,
+    DateLocale, DateRecognizerFilter, SimpleDateFormat, DATE_TYPE, ENGLISH_DEFAULT_DATE_PATTERN,
 };
 pub use filtering::{CodepointCountFilter, DropIfFlaggedFilter, KeepWordFilter, LengthFilter};
 pub use keyword::{
