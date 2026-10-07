@@ -1,0 +1,14 @@
+# User dictionary for the Nori differential tests (written for this project).
+# Each line: a noun, then optionally its segmentation.
+c++
+C샤프
+세종
+세종시 세종 시
+대한민국날씨
+대한민국
+날씨
+가곡역 가곡 역
+행정중심복합도시 행정 중심 복합 도시
+뽀로로
+해리포터 해리 포터
+서울대학교

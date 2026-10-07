@@ -28,7 +28,9 @@ pub const POSDICT_FILENAME_SUFFIX: &str = "$posDict.dat";
 /// `BinaryDictionary`'s target map and buffer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BinaryDictionary {
-    target_map_offsets: Vec<usize>,
+    /// `u32` (Java's `int[]`): half the cache lines of `usize` on the
+    /// per-match lookup.
+    target_map_offsets: Vec<u32>,
     target_map: Vec<i32>,
     buffer: Vec<u8>,
 }
@@ -59,9 +61,11 @@ impl BinaryDictionary {
             return Err(Self::broken(map_len, offsets_len, 0));
         }
         let mut target_map = Vec::with_capacity(map_len);
-        let mut target_map_offsets = vec![0usize; offsets_len];
+        let mut target_map_offsets = vec![0u32; offsets_len];
+        // `map_len` is a non-negative vint, so it fits.
+        let map_len_u32 = map_len as u32;
         let (mut accum, mut source_id) = (0i32, 0usize);
-        for ofs in 0..map_len {
+        for ofs in 0..map_len_u32 {
             let val = input.read_vint()?;
             if val & 0x01 != 0 {
                 let slot = target_map_offsets
@@ -77,7 +81,7 @@ impl BinaryDictionary {
             return Err(Self::broken(map_len, offsets_len, source_id));
         }
         if let Some(last) = target_map_offsets.get_mut(source_id) {
-            *last = map_len;
+            *last = map_len_u32;
         }
 
         let mut input = ResourceInput::new(dict_bytes);
@@ -116,7 +120,9 @@ impl BinaryDictionary {
         ) else {
             return &[];
         };
-        self.target_map.get(start..end).unwrap_or(&[])
+        self.target_map
+            .get(start as usize..end as usize)
+            .unwrap_or(&[])
     }
 
     /// Every word id of the map (to validate the entries they point at).
