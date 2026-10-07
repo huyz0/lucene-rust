@@ -62,8 +62,11 @@ pub struct WordDelimiterFilter<I> {
     has_illegal_offsets: bool,
     has_output_token: bool,
     has_output_following_original: bool,
-    /// `buffered`, `startOff`, `posInc`.
+    /// `buffered`, `startOff`, `posInc`: the first `buffered_len` entries;
+    /// those past it are spent states kept for their buffers (Java captures
+    /// a new state per buffered token).
     buffered: Vec<(State, i32, i32)>,
+    buffered_len: usize,
     buffered_pos: usize,
     first: bool,
     scratch: Vec<u16>,
@@ -113,6 +116,7 @@ impl<I: TokenStream> WordDelimiterFilter<I> {
             has_output_token: false,
             has_output_following_original: false,
             buffered: Vec::new(),
+            buffered_len: 0,
             buffered_pos: 0,
             first: false,
             scratch: Vec::new(),
@@ -126,8 +130,15 @@ impl<I: TokenStream> WordDelimiterFilter<I> {
     // Java: WordDelimiterFilter.buffer
     fn buffer(&mut self) {
         let a = self.input.attributes();
-        self.buffered
-            .push((a.capture_state(), a.start_offset(), a.position_increment()));
+        let (start, inc) = (a.start_offset(), a.position_increment());
+        match self.buffered.get_mut(self.buffered_len) {
+            Some(slot) => {
+                slot.0.clone_from(a);
+                (slot.1, slot.2) = (start, inc);
+            }
+            None => self.buffered.push((a.capture_state(), start, inc)),
+        }
+        self.buffered_len += 1;
     }
 
     // Java: WordDelimiterFilter.saveState
@@ -135,11 +146,12 @@ impl<I: TokenStream> WordDelimiterFilter<I> {
         let a = self.input.attributes();
         self.saved_start_offset = a.start_offset();
         self.saved_end_offset = a.end_offset();
+        // `scratch` holds this term's UTF-16 units (set by `increment`).
         self.saved_buffer.clear();
-        self.saved_buffer.extend(a.term().encode_utf16());
+        self.saved_buffer.extend_from_slice(&self.scratch);
         self.has_illegal_offsets =
             self.saved_end_offset - self.saved_start_offset != self.saved_buffer.len() as i32;
-        self.saved_type = std::borrow::Cow::Owned(a.token_type().to_string());
+        self.saved_type = a.token_type_cow().clone();
         self.has_saved_state = true;
     }
 
@@ -324,11 +336,11 @@ impl<I: TokenStream> TokenFilter for WordDelimiterFilter<I> {
                     }
                     self.concat_all.clear();
                 }
-                if self.buffered_pos < self.buffered.len() {
+                if self.buffered_pos < self.buffered_len {
                     if self.buffered_pos == 0 {
                         // InPlaceMergeSorter: stable, by start offset then
                         // position increment descending.
-                        self.buffered
+                        self.buffered[..self.buffered_len]
                             .sort_by(|x, y| x.1.cmp(&y.1).then(y.2.cmp(&x.2)));
                     }
                     let state = &self.buffered[self.buffered_pos].0;
@@ -342,7 +354,7 @@ impl<I: TokenStream> TokenFilter for WordDelimiterFilter<I> {
                     self.first = false;
                     return Ok(true);
                 }
-                self.buffered.clear();
+                self.buffered_len = 0;
                 self.buffered_pos = 0;
                 self.has_saved_state = false;
                 continue;
@@ -387,7 +399,7 @@ impl<I: TokenStream> TokenFilter for WordDelimiterFilter<I> {
         self.concat.clear();
         self.concat_all.clear();
         self.accum_pos_inc = 0;
-        self.buffered.clear();
+        self.buffered_len = 0;
         self.buffered_pos = 0;
         self.first = true;
         Ok(())

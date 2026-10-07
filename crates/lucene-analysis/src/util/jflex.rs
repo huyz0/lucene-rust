@@ -37,6 +37,9 @@ pub struct JFlexTables {
     rowmap: Vec<i32>,
     trans: Vec<i32>,
     attribute: Vec<i32>,
+    /// `zzCMap` of every BMP `char`, unpacked from the two tables above at
+    /// load, so the scanner's step for a `char` is one lookup.
+    cmap_bmp: Box<[i32; 0x10000]>,
 }
 
 const TABLE_NAMES: [&str; 7] = [
@@ -86,7 +89,8 @@ impl JFlexTables {
         }
         let mut it = tables.into_iter();
         let mut next = || it.next().expect("seven tables");
-        let t = JFlexTables {
+        let mut t = JFlexTables {
+            cmap_bmp: Box::new([0; 0x10000]),
             lexstate: next(),
             cmap_top: next(),
             cmap_blocks: next(),
@@ -101,6 +105,14 @@ impl JFlexTables {
             || t.cmap_top.len() != 0x110000 >> 8
         {
             return Err(corrupt("shapes"));
+        }
+        for c in 0..0x10000usize {
+            let block = if c < 256 { 0 } else { t.cmap_top[c >> 8] };
+            t.cmap_bmp[c] = usize::try_from(block | (c & 255) as i32)
+                .ok()
+                .and_then(|i| t.cmap_blocks.get(i))
+                .copied()
+                .ok_or_else(|| corrupt("ZZ_CMAP_BLOCKS"))?;
         }
         Ok(t)
     }
@@ -350,8 +362,29 @@ impl JFlexScanner {
         let input: i32 = 'for_action: loop {
             let input;
             if current < self.end_read {
-                input = code_point_at(&self.buffer, current, self.end_read) as i32;
-                current += char_count(input as u32);
+                let unit = self.buffer[current];
+                if is_high_surrogate(unit) {
+                    input = code_point_at(&self.buffer, current, self.end_read) as i32;
+                    current += char_count(input as u32);
+                } else {
+                    input = i32::from(unit);
+                    current += 1;
+                    // The BMP fast path of the step below.
+                    let next = t.trans[(t.rowmap[state] + t.cmap_bmp[usize::from(unit)]) as usize];
+                    if next == -1 {
+                        break 'for_action input;
+                    }
+                    state = next as usize;
+                    let attributes = t.attribute[state];
+                    if attributes & 1 == 1 {
+                        action = state as i32;
+                        marked = current;
+                        if attributes & 8 == 8 {
+                            break 'for_action input;
+                        }
+                    }
+                    continue;
+                }
             } else if self.at_eof {
                 break 'for_action YYEOF;
             } else {
@@ -439,6 +472,19 @@ mod tests {
         }
         assert!(JFlexTables::load(&zlib(&raw)).is_err(), "bad shapes");
         assert!(JFlexTables::load(&tiny()).is_ok());
+        // A `ZZ_CMAP_TOP` entry past `ZZ_CMAP_BLOCKS`.
+        let mut raw = b"JFLX".to_vec();
+        table(&mut raw, "ZZ_LEXSTATE", &[0, 0]);
+        let mut top = vec![0; 0x110000 >> 8];
+        top[1] = 256;
+        table(&mut raw, "ZZ_CMAP_TOP", &top);
+        table(&mut raw, "ZZ_CMAP_BLOCKS", &[0; 256]);
+        table(&mut raw, "ZZ_ACTION", &[0, 1]);
+        table(&mut raw, "ZZ_ROWMAP", &[0, 1]);
+        table(&mut raw, "ZZ_TRANS", &[1, -1]);
+        table(&mut raw, "ZZ_ATTRIBUTE", &[0, 9]);
+        let e = JFlexTables::load(&zlib(&raw)).unwrap_err().to_string();
+        assert!(e.contains("ZZ_CMAP_BLOCKS"), "{e}");
     }
 
     #[test]

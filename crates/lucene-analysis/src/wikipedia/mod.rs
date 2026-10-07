@@ -505,8 +505,8 @@ impl TokenStream for WikipediaTokenizer {
             return Ok(false);
         }
         let ty = TOKEN_TYPES[token_type as usize];
-        let untokenized = self.untokenized_types.contains(ty);
-        if self.token_output == TOKENS_ONLY || !untokenized {
+        // `TOKENS_ONLY` (the default) never looks the type up.
+        if self.token_output == TOKENS_ONLY || !self.untokenized_types.contains(ty) {
             self.setup_token()?;
         } else if self.token_output == UNTOKENIZED_ONLY {
             self.collapse(token_type, ty, false)?;

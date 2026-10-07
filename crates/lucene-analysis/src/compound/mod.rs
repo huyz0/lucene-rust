@@ -52,17 +52,19 @@ impl Default for CompoundSizes {
     }
 }
 
-/// `CompoundToken`: a subword's UTF-16 slice (offsets are the whole token's).
+/// `CompoundToken`: a subword, as its range of the decomposed term's UTF-16
+/// units (Java copies it out; the term stays in `buf` until every subword
+/// is emitted), and the whole token's offsets.
 #[derive(Debug, Clone)]
 struct CompoundToken {
-    txt: Vec<u16>,
+    txt: std::ops::Range<usize>,
     start_offset: i32,
     end_offset: i32,
 }
 
 /// `CharArraySet.contains(char[], off, len)`.
 fn dict_contains(dict: &CharArraySet, s: &[u16]) -> bool {
-    dict.contains(&String::from_utf16_lossy(s))
+    dict.contains_utf16(s)
 }
 
 /// `CompoundWordTokenFilterBase.decompose()`: the subwords of `term`, as
@@ -288,7 +290,7 @@ impl<I: TokenStream, D: Decompose> TokenFilter for CompoundWordTokenFilter<I, D>
         if let Some(token) = self.tokens.pop_front() {
             let a = self.input.attributes_mut();
             a.restore_state(self.current.as_ref().expect("a decomposed token"));
-            a.set_term_utf16(&token.txt);
+            a.set_term_utf16(&self.buf[token.txt]);
             a.set_offset(token.start_offset, token.end_offset)?;
             a.set_position_increment(0)?;
             return Ok(true);
@@ -307,7 +309,7 @@ impl<I: TokenStream, D: Decompose> TokenFilter for CompoundWordTokenFilter<I, D>
             let (start, end) = (a.start_offset(), a.end_offset());
             for &(off, len) in &self.parts {
                 self.tokens.push_back(CompoundToken {
-                    txt: self.buf[off..off + len].to_vec(),
+                    txt: off..off + len,
                     start_offset: start,
                     end_offset: end,
                 });

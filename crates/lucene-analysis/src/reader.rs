@@ -110,12 +110,15 @@ impl CharReader for StrReader {
             n = 1;
         }
         let bytes = self.text.as_bytes();
-        // ASCII run: one unit per byte.
-        while n < buf.len() && self.pos < bytes.len() && bytes[self.pos] < 0x80 {
-            buf[n] = bytes[self.pos] as u16;
-            n += 1;
-            self.pos += 1;
+        // ASCII run: one unit per byte (a loop the compiler vectorizes).
+        let avail = (buf.len() - n).min(bytes.len() - self.pos);
+        let src = &bytes[self.pos..self.pos + avail];
+        let run = src.iter().position(|&b| b >= 0x80).unwrap_or(avail);
+        for (d, &s) in buf[n..n + run].iter_mut().zip(&src[..run]) {
+            *d = u16::from(s);
         }
+        n += run;
+        self.pos += run;
         while n < buf.len() && self.pos < bytes.len() {
             // `text` is valid UTF-8, so the lead byte gives the length and
             // every continuation byte is present.

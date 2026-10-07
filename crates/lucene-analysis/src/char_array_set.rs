@@ -144,6 +144,33 @@ impl CharArraySet {
         }
     }
 
+    /// `contains(char[] text, int off, int len)`: a probe with a UTF-16
+    /// slice, as Java's filters probe with a slice of their term buffer.
+    /// The slice is transcoded into a stack buffer (a `String` only past 128
+    /// bytes of UTF-8), so a probe allocates nothing. A slice with an
+    /// unpaired surrogate is never in the set: Java compares `char`s, and no
+    /// key -- a Rust string -- holds one.
+    pub fn contains_utf16(&self, word: &[u16]) -> bool {
+        if self.words.is_empty() {
+            return false;
+        }
+        let mut buf = [0u8; 128];
+        let mut len = 0;
+        for c in char::decode_utf16(word.iter().copied()) {
+            let Ok(mut c) = c else {
+                return false;
+            };
+            if self.ignore_case {
+                c = simple_to_lowercase(c);
+            }
+            let Some(slot) = buf.get_mut(len..len + c.len_utf8()) else {
+                return String::from_utf16(word).is_ok_and(|w| self.contains(&w));
+            };
+            len += c.encode_utf8(slot).len();
+        }
+        std::str::from_utf8(&buf[..len]).is_ok_and(|w| self.words.contains(w))
+    }
+
     /// `size()`.
     pub fn len(&self) -> usize {
         self.words.len()
@@ -205,6 +232,30 @@ mod tests {
         let mut words: Vec<&str> = set.iter().collect();
         words.sort();
         assert_eq!(words, vec!["istanbul", "école", "οδοσ"]);
+    }
+
+    #[test]
+    fn utf16_probes_match_str_probes() {
+        let u = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+        let long = "ü".repeat(70);
+        let mut set = CharArraySet::from_words(["Haus", "😀x", long.as_str(), "\u{FFFD}"], false);
+        assert!(set.contains_utf16(&u("Haus")));
+        assert!(!set.contains_utf16(&u("haus")));
+        assert!(set.contains_utf16(&u("😀x")));
+        // 140 bytes of UTF-8: past the stack buffer.
+        assert!(set.contains_utf16(&u(&long)));
+        assert!(!set.contains_utf16(&u(&"ü".repeat(71))));
+        // An unpaired surrogate is not U+FFFD.
+        assert!(!set.contains_utf16(&[0xD83D]));
+        assert!(!set.contains_utf16(&u("😀x")[1..]));
+        set.clear();
+        assert!(!set.contains_utf16(&u("Haus")));
+
+        let set = CharArraySet::from_words(["école", "istanbul", long.as_str()], true);
+        assert!(set.contains_utf16(&u("ÉCOLE")));
+        assert!(set.contains_utf16(&u("\u{0130}stanbul")));
+        assert!(set.contains_utf16(&u(&"Ü".repeat(70))));
+        assert!(!set.contains_utf16(&u("ecole")));
     }
 
     #[test]
