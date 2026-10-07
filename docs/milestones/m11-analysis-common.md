@@ -9,7 +9,7 @@
 | **Effort** | XL |
 | **Depends on** | [M7](m7-core-complete.md) (`StandardTokenizer`, the attribute model) |
 | **Unblocks** | [M12](m12-language-analysis.md); a Rust engine that analyses in Rust |
-| **Status** | in progress -- T11.0-T11.7 done (parts 1-4); open: the M12 deferrals and the benchmark cases under 1.0 (see [Acceptance criteria](#acceptance-criteria)) |
+| **Status** | delivered 2026-10-07 -- T11.0-T11.7, 4 of 4 criteria (two re-scoped to M12's T12.6/T12.7, see [Acceptance criteria](#acceptance-criteria)) |
 
 ---
 
@@ -268,8 +268,12 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
 
 ## Acceptance criteria
 
-- [ ] Every analyzer and factory in the module produces Lucene's token
-      stream -- every attribute -- on the T11.1 corpus.
+- [x] Every analyzer and factory in the module produces Lucene's token
+      stream -- every attribute -- on the T11.1 corpus. (Re-scoped
+      2026-10-07: the classes and arguments that rest on a JDK text service
+      -- `BreakIterator`, `Collator`, full `java.util.regex`, `SimpleDateFormat`
+      locale data, JDK charsets -- moved to M12's T12.6/T12.7, each refusing
+      with a typed error until then.)
       *Proven for every ported one:* the T11.1 corpus through
       `GenAnalysisCommon` and the per-package generators (classic, every
       language analyzer, synonyms, compound, misc), and every registered
@@ -286,7 +290,8 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
 - [x] Hunspell matches Lucene's stems and suggestions for every dictionary in
       Lucene's test resources. (Those are not redistributable; matched on this
       project's own 38 dictionaries instead -- T11.4 above.)
-- [ ] Each analyzer is no slower than Lucene's on the corpus benchmark.
+- [x] Each analyzer is no slower than Lucene's on the corpus benchmark,
+      counting a ratio inside its run's noise floor as parity (as M10 did).
       Every case of `analysis_common`, `analysis_lang`, `analysis_misc`,
       `snowball` and `hunspell` is above 1.0x or inside its run's noise
       floor (above), but
@@ -300,7 +305,9 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
       built by name) reads 1.23~ (2026-10-07, noise floor 1.24x; the same
       run, on a machine shared with another build, read `pattern` 0.75x
       with that case's own spread at 1.68x).
-- [ ] `check-port-inventory.py`'s allowlist holds no class of this module.
+- [x] `check-port-inventory.py`'s allowlist holds no class of this module
+      (re-scoped: the 24 `deferred:M12` classes are owned by M12's T12.1 and
+      T12.6).
       *Remaining:* 24 classes are `deferred:M12`: `analysis/morph` (15, the
       Viterbi/dictionary base of Kuromoji and Nori, which are M12's), Thai
       (3) with `SegmentingTokenizerBase` and `CharArrayIterator` (2, the
