@@ -17,7 +17,13 @@ import java.util.regex.Pattern;
  *       cases) over {@link #INPUTS};
  *   <li>{@code random.txt}: 2,500 patterns drawn from a grammar of those constructs (groups,
  *       alternation, lookaround, atomic groups, backreferences, greedy, lazy and possessive
- *       quantifiers, anchors, boundaries, inline flags, classes) over 8 random inputs each.
+ *       quantifiers, anchors, boundaries, inline flags, classes) over 8 random inputs each;
+ *   <li>{@code deep.txt}: inputs of 300 to 1,500 characters, deep enough that the matcher's
+ *       backtracking outgrows the caller's stack budget and is retried (an overflow inside a
+ *       negated lookaround or a zero-count quantifier must not read as a match): {@link #DEEP}
+ *       over {@code "ab"} repeated then {@code "c"}, and 200 generated patterns over one long
+ *       input each. An input on which Java itself overflows is written as {@code SOE}, and
+ *       skipped.
  * </ul>
  *
  * Each block is {@code P<TAB>pattern} then {@code I<TAB>input<TAB>result}, the result {@link
@@ -79,6 +85,12 @@ public class GenJavaRegex {
     "a,b,c", "a\u0085", "  a\tb", "a b\u000Bc", "xbb0bbub0bba", "Bbb0\uFFFDbunBa\uFFFD\uFFFD",
   };
 
+  /** Patterns whose deep backtracking sits under a negation or a zero-count quantifier. */
+  static final String[] DEEP = {
+    "(?!(?:a|b)*c)", "(?>(?:a|b)*c)?", "((?:a|b)*c)?+", "(?:a|b)*c", "(?=(?:a|b)*c)", "(?!(a|b)*+c)",
+    "(?<!x)(?:(?:a|b)*c)?+x?", "((?:a|b)*c){0,1}", "(?:(?:a|b)*c)*", "(a|b)*c|(?!(?:a|b)*c)",
+  };
+
   static String esc(String s) {
     return AnalysisRows.esc(s);
   }
@@ -88,7 +100,7 @@ public class GenJavaRegex {
     "é", "😀", "\\p{L}", "\\p{IsLatin}", "\\R", "\\Z", "\\z", "\\G", " ", "a{0,3}", "\\S", "\\W", "\\h", "\\v", "\\p{Lu}", "\\x{1F600}", "\\Q.\\E", "\\.",
     "[\\w&&[^a]]", "(?<n>a)", "\\uFFFD"
   };
-  static final String[] QUANTS = {"*", "+", "?", "{2}", "{1,2}", "{0,}", "{2,}", "*", "*"};
+  static final String[] QUANTS = {"*", "+", "?", "{2}", "{1,2}", "{0,}", "{2,}", "{0,1}", "{0,2}", "*", "*"};
   static final String[] FLAGS = {"(?i)", "(?m)", "(?s)", "(?x)", "(?iu)", "(?d)", "(?U)"};
 
   static String gen(Random r, int depth, int[] groups) {
@@ -141,8 +153,23 @@ public class GenJavaRegex {
   static void block(StringBuilder out, String p, List<String> inputs) {
     out.append("P\t").append(esc(p)).append('\n');
     for (String in : inputs) {
-      out.append("I\t").append(esc(in)).append('\t').append(GenAnalysisCommon.regexRun(p, in)).append('\n');
+      String result;
+      try {
+        result = GenAnalysisCommon.regexRun(p, in);
+      } catch (StackOverflowError e) {
+        result = "SOE";
+      }
+      out.append("I\t").append(esc(in)).append('\t').append(result).append('\n');
     }
+  }
+
+  /** {@code base} repeated to {@code length} characters. */
+  static String repeatTo(String base, int length) {
+    StringBuilder b = new StringBuilder();
+    while (b.length() < length) b.append(base.isEmpty() ? "a" : base);
+    String s = b.substring(0, length);
+    // Never a lone high surrogate at the cut.
+    return Character.isHighSurrogate(s.charAt(length - 1)) ? s.substring(0, length - 1) : s;
   }
 
   public static void main(String[] args) throws Exception {
@@ -160,5 +187,13 @@ public class GenJavaRegex {
       block(rnd, p, ins);
     }
     Files.writeString(out.resolve("random.txt"), rnd.toString(), StandardCharsets.UTF_8);
+    StringBuilder deep = new StringBuilder();
+    for (String p : DEEP) block(deep, p, List.of("ab".repeat(400) + "c", "ab".repeat(700) + "c"));
+    Random d = new Random(2028);
+    for (int i = 0; i < 200; i++) {
+      String p = gen(d, 0, new int[1]);
+      block(deep, p, List.of(repeatTo(input(d) + input(d), 300 + d.nextInt(1201))));
+    }
+    Files.writeString(out.resolve("deep.txt"), deep.toString(), StandardCharsets.UTF_8);
   }
 }
