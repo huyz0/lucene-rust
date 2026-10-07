@@ -1,0 +1,3 @@
+ASHKENAZI	de,bar,van,von,ben,da
+GENERIC	de,van,di,dos,del,do,dal,della,du,des,von,dela,de la,da
+SEPHARDIC	de,van,di,el,dos,del,al,do,dal,della,du,des,von,dela,de la,da

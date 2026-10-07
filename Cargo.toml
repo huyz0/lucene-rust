@@ -9,6 +9,7 @@ members = [
     "crates/lucene-codecs",
     "crates/lucene-index",
     "crates/lucene-analysis",
+    "crates/lucene-analysis-phonetic",
     "crates/lucene-search",
     "crates/lucene-core",
     "crates/lucene-ffi",

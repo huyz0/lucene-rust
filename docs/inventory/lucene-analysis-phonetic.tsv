@@ -2,11 +2,11 @@
 # Checked by scripts/check-port-inventory.py --module analysis-phonetic (see its docstring for the statuses).
 # M12 T12.3 (Commons Codec phonetic encoders behind token filters); docs/milestones/m12-language-analysis.md.
 # class	status	detail
-analysis/phonetic/BeiderMorseFilter	todo:M12	T12.3: BeiderMorseFilter, not started
-analysis/phonetic/BeiderMorseFilterFactory	todo:M12	T12.3: BeiderMorseFilterFactory, not started
-analysis/phonetic/DaitchMokotoffSoundexFilter	todo:M12	T12.3: DaitchMokotoffSoundexFilter, not started
-analysis/phonetic/DaitchMokotoffSoundexFilterFactory	todo:M12	T12.3: DaitchMokotoffSoundexFilterFactory, not started
-analysis/phonetic/DoubleMetaphoneFilter	todo:M12	T12.3: DoubleMetaphoneFilter, not started
-analysis/phonetic/DoubleMetaphoneFilterFactory	todo:M12	T12.3: DoubleMetaphoneFilterFactory, not started
-analysis/phonetic/PhoneticFilter	todo:M12	T12.3: PhoneticFilter, not started
-analysis/phonetic/PhoneticFilterFactory	todo:M12	T12.3: PhoneticFilterFactory, not started
+analysis/phonetic/BeiderMorseFilter	ported	crates/lucene-analysis-phonetic/src/filters.rs::BeiderMorseFilter
+analysis/phonetic/BeiderMorseFilterFactory	ported	crates/lucene-analysis-phonetic/src/factory.rs::BeiderMorseFilterFactory
+analysis/phonetic/DaitchMokotoffSoundexFilter	ported	crates/lucene-analysis-phonetic/src/filters.rs::DaitchMokotoffSoundexFilter
+analysis/phonetic/DaitchMokotoffSoundexFilterFactory	ported	crates/lucene-analysis-phonetic/src/factory.rs::DaitchMokotoffSoundexFilterFactory
+analysis/phonetic/DoubleMetaphoneFilter	ported	crates/lucene-analysis-phonetic/src/filters.rs::DoubleMetaphoneFilter
+analysis/phonetic/DoubleMetaphoneFilterFactory	ported	crates/lucene-analysis-phonetic/src/factory.rs::DoubleMetaphoneFilterFactory
+analysis/phonetic/PhoneticFilter	ported	crates/lucene-analysis-phonetic/src/filters.rs::PhoneticFilter
+analysis/phonetic/PhoneticFilterFactory	ported	crates/lucene-analysis-phonetic/src/factory.rs::PhoneticFilterFactory

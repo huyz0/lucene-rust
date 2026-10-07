@@ -199,6 +199,13 @@ fi
 # shellcheck source=scripts/lib-lucene-jars.sh
 source "$(dirname "$0")/lib-lucene-jars.sh"
 CP=$(lucene_classpath "${LUCENE_MODULES[@]}"):$(thirdparty_classpath "${SPATIAL_EXTRAS_DEPS[@]}")
+# The M12 language modules and the third-party jars they run on. They join
+# only their own generators' classpaths (generator_classpath below): on the
+# shared one their SPI registrations would change what every other analysis
+# generator's `TokenFilterFactory.availableTokenFilters()` reports.
+# lib-lucene-jars.sh's PHONETIC_DEPS names the third-party jars and their licences.
+PHONETIC_CP=$(lucene_classpath lucene-analysis-phonetic):$(thirdparty_classpath "${PHONETIC_DEPS[@]}")
+M12_COMPILE_CP="$PHONETIC_CP"
 # Read as data, never put on the classpath (its SPI registrations name codecs
 # from modules the generators do not load): GenStandardTokenizerCorpus takes
 # its text from this jar's europarl.lines.txt.gz.
@@ -212,7 +219,7 @@ export FIXTURES_CORPUS="$FIXTURES/corpus"
 # --- compile -----------------------------------------------------------------
 CLASSES=$(mktemp -d)
 trap 'rm -rf "$CLASSES" ${TMP_A:-} ${TMP_B:-}' EXIT
-javac -nowarn -cp "$CP" -d "$CLASSES" "$FIXTURES"/src/*.java
+javac -nowarn -cp "$CP:$M12_COMPILE_CP" -d "$CLASSES" "$FIXTURES"/src/*.java
 
 # JVM flags one generator needs on top of LUCENE_FIXTURE_JVM_OPTS. The geo3d
 # generators run with HotSpot's Math.sin/cos/tan intrinsics disabled: on x86-64
@@ -227,6 +234,13 @@ generator_jvm_opts() {
   esac
 }
 
+# Jars one generator needs on top of $CP (see PHONETIC_CP above).
+generator_classpath() {
+  case "$1" in
+    GenAnalysisPhonetic) echo ":$PHONETIC_CP" ;;
+  esac
+}
+
 generate_into() {
   local dest="$1"; shift
   local -a classes=("$@")
@@ -234,7 +248,7 @@ generate_into() {
   for cls in "${classes[@]}"; do
     local -a extra=()
     read -r -a extra <<< "$(generator_jvm_opts "$cls")"
-    java --enable-native-access=ALL-UNNAMED "${LUCENE_FIXTURE_JVM_OPTS[@]}" "${extra[@]}" -cp "$CLASSES:$CP" "$cls" "$dest" >/dev/null
+    java --enable-native-access=ALL-UNNAMED "${LUCENE_FIXTURE_JVM_OPTS[@]}" "${extra[@]}" -cp "$CLASSES:$CP$(generator_classpath "$cls")" "$cls" "$dest" >/dev/null
   done
   # IndexWriter leaves a zero-byte write.lock behind in every index it creates.
   # It is a lock artifact, not a fixture, and nothing in crates/ reads it --

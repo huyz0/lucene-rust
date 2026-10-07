@@ -16,6 +16,15 @@ spatial-extras module depends on, both under the Apache License, Version 2.0
  - The S2 Geometry Library for Java, as published in
    io.sgr:s2-geometry-library-java 1.0.0, Copyright 2005 Google Inc.
 
+crates/lucene-analysis-phonetic reimplements the phonetic encoders of Apache
+Commons Codec 1.17.2 (https://commons.apache.org/proper/commons-codec/, under
+the Apache License, Version 2.0; Copyright 2002-2024 The Apache Software
+Foundation) and carries its rule files (src/resources/dmrules.txt and
+src/resources/bm/) verbatim. Its NOTICE reads: "Apache Commons Codec /
+Copyright 2002-2024 The Apache Software Foundation / This product includes
+software developed at The Apache Software Foundation
+(https://www.apache.org/)."
+
 crates/lucene-analysis/src/java_character_tables.rs is generated from the
 Unicode Character Database 16.0.0, Copyright (c) 1991-2024 Unicode, Inc.,
 under the Unicode License v3, reproduced at the end of this file.

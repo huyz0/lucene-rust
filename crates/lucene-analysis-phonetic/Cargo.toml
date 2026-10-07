@@ -1,0 +1,16 @@
+[package]
+name = "lucene-analysis-phonetic"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# lucene-analysis-phonetic (M12 T12.3): Commons Codec 1.17.2's phonetic
+# encoders, reimplemented, behind Lucene's phonetic token filters and their
+# factories. Over lucene-analysis only, as Lucene's module is over
+# lucene-analysis-common (docs/milestones/m12-language-analysis.md).
+[dependencies]
+lucene-analysis = { path = "../lucene-analysis" }
+
+[dev-dependencies]
+# The shared factory-configuration harness (lucene-analysis/tests/support).
+lucene-util = { path = "../lucene-util" }

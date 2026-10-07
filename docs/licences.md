@@ -74,6 +74,17 @@ a dependency the shipped library links is not under a licence listed here.
     container image, never redistributed. Neither jar carries a `NOTICE`
     file of its own.
 
+- **Ported third-party Java code** (M12 T12.3). Lucene's
+  `lucene-analysis-phonetic` runs **Apache Commons Codec 1.17.2**
+  (`commons-codec:commons-codec:1.17.2`, the version its 10.5.0 pom names;
+  Apache-2.0, ASF): its `language` and `language.bm` encoders are
+  reimplemented in `crates/lucene-analysis-phonetic/`, and the rule files
+  they load (`dmrules.txt`, 123 `bm/*.txt`, each with its ASF licence
+  header) are vendored verbatim and compiled in (`include_str!`). `NOTICE`
+  carries Commons Codec's notice. The jar is fetched by the fixture scripts
+  (`PHONETIC_DEPS` in `scripts/lib-lucene-jars.sh`) and the container image,
+  never redistributed.
+
 - **Test data from third parties** (M9). `fixtures/corpus/real_polygons.z`,
   the Tessellator's real-world polygon corpus (`scripts/gen-tessellator-corpus.py`),
   holds:

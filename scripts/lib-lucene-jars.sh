@@ -48,6 +48,10 @@ lucene_classpath() {
 # are Apache-2.0 (docs/licences.md).
 SPATIAL_EXTRAS_DEPS=(org.locationtech.spatial4j:spatial4j:0.8 io.sgr:s2-geometry-library-java:1.0.0)
 
+# lucene-analysis-phonetic 10.5.0's pom names Commons Codec 1.17.2
+# (Apache-2.0), whose encoders crates/lucene-analysis-phonetic reimplements.
+PHONETIC_DEPS=(commons-codec:commons-codec:1.17.2)
+
 thirdparty_resolve_jar() {
   local coord="$1" group artifact version jar found=""
   IFS=: read -r group artifact version <<< "$coord"
