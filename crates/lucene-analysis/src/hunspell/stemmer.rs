@@ -301,14 +301,22 @@ impl<'d> Stemmer<'d> {
         word: &[u16],
         f: &mut dyn FnMut(&[u16]) -> bool,
     ) -> bool {
+        self.remove_affixes_with_candidates(word, &mut |c| f(c.word))
+    }
+
+    /// [`Self::remove_affixes_for_candidates`] with the removed affixes
+    /// (`WordFormGenerator.compress`).
+    pub(crate) fn remove_affixes_with_candidates(
+        &self,
+        word: &[u16],
+        f: &mut dyn FnMut(&Candidate<'_>) -> bool,
+    ) -> bool {
         let applied = Applied {
             outer_prefix: -1,
             inner_prefix: -1,
             outer_suffix: -1,
         };
-        self.remove_affixes(word, true, applied, WordContext::SimpleWord, &mut |c| {
-            f(c.word)
-        })
+        self.remove_affixes(word, true, applied, WordContext::SimpleWord, f)
     }
 
     /// The `StemCandidateProcessor` of `doStem`: a stripped word whose root

@@ -158,4 +158,15 @@ E	house	house/DS	AffixedWord[word=house, entry=house/DS, prefixes=[], suffixes=[
 E	mouse	mouse/S	AffixedWord[word=mouse, entry=mouse/S, prefixes=[], suffixes=[]]|AffixedWord[word=mouses, entry=mouse/S, prefixes=[], suffixes=[S(id=0)]]
 E	workday	workday/S	AffixedWord[word=workday, entry=workday/S, prefixes=[], suffixes=[]]|AffixedWord[word=workdays, entry=workday/S, prefixes=[], suffixes=[S(id=0)]]
 E	darn	darn/N	AffixedWord[word=darn, entry=darn/N, prefixes=[], suffixes=[]]
+C	work|worked|works		EntrySuggestion{toEdit=[work/DS], toAdd=[], extra=[]}
+C	worked|works		EntrySuggestion{toEdit=[work/DS], toAdd=[], extra=[]}
+C	work|worked	works	EntrySuggestion{toEdit=[work/D], toAdd=[], extra=[]}
+C	play|played|replayed|replay		EntrySuggestion{toEdit=[play/DR], toAdd=[], extra=[]}
+C	played|replayed|replay		EntrySuggestion{toEdit=[play/DR], toAdd=[], extra=[]}
+C	play|played	replayed	EntrySuggestion{toEdit=[play/D], toAdd=[], extra=[]}
+C	walks		EntrySuggestion{toEdit=[], toAdd=[walks], extra=[]}
+C	talked|talks		EntrySuggestion{toEdit=[talk/DS], toAdd=[], extra=[]}
+C	talks		EntrySuggestion{toEdit=[], toAdd=[talks], extra=[]}
+C	gonna		EntrySuggestion{toEdit=[gonna], toAdd=[], extra=[]}
+C	wanna		EntrySuggestion{toEdit=[wanna], toAdd=[], extra=[]}
 G	AffixedWord[word=gonna, entry=gonna/Z, prefixes=[], suffixes=[]]|AffixedWord[word=another, entry=another, prefixes=[], suffixes=[]]|AffixedWord[word=darn, entry=darn/N, prefixes=[], suffixes=[]]|AffixedWord[word=alot, entry=alot/Z, prefixes=[], suffixes=[]]|AffixedWord[word=workday, entry=workday/S, prefixes=[], suffixes=[]]|AffixedWord[word=workdays, entry=workday/S, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=walks, entry=walk/PS, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=wanna, entry=wanna/Z, prefixes=[], suffixes=[]]|AffixedWord[word=tomorrow, entry=tomorrow, prefixes=[], suffixes=[]]|AffixedWord[word=mouse, entry=mouse/S, prefixes=[], suffixes=[]]|AffixedWord[word=mouses, entry=mouse/S, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=together, entry=together, prefixes=[], suffixes=[]]|AffixedWord[word=talked, entry=talk/DPS, prefixes=[], suffixes=[D(id=1)]]|AffixedWord[word=talks, entry=talk/DPS, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=play, entry=play/DRS, prefixes=[], suffixes=[]]|AffixedWord[word=played, entry=play/DRS, prefixes=[], suffixes=[D(id=1)]]|AffixedWord[word=replayed, entry=play/DRS, prefixes=[R(id=3)], suffixes=[D(id=1)]]|AffixedWord[word=replay, entry=play/DRS, prefixes=[R(id=3)], suffixes=[]]|AffixedWord[word=plays, entry=play/DRS, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=replays, entry=play/DRS, prefixes=[R(id=3)], suffixes=[S(id=0)]]|AffixedWord[word=house, entry=house/DS, prefixes=[], suffixes=[]]|AffixedWord[word=housed, entry=house/DS, prefixes=[], suffixes=[D(id=2)]]|AffixedWord[word=houses, entry=house/DS, prefixes=[], suffixes=[S(id=0)]]|AffixedWord[word=work, entry=work/DS, prefixes=[], suffixes=[]]|AffixedWord[word=worked, entry=work/DS, prefixes=[], suffixes=[D(id=1)]]|AffixedWord[word=works, entry=work/DS, prefixes=[], suffixes=[S(id=0)]]

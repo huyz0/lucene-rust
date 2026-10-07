@@ -233,6 +233,7 @@ pub mod ordinal_map;
 mod phrase_scorer;
 pub mod points_query;
 pub mod query;
+pub mod query_auto_stop_word_analyzer;
 pub mod query_builder;
 pub mod query_cache;
 pub mod query_parser;
@@ -259,6 +260,7 @@ pub mod top_field;
 pub mod values_source;
 pub mod vector_query;
 pub mod weight_count;
+pub mod word2vec;
 
 pub use collector::{
     Collector, CountCollector, FieldValueDoc, MaxScoreAccumulator, ScoreDoc, ScoreMode,

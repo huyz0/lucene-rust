@@ -90,4 +90,18 @@ E	bake	bake/Bb po:verb	AffixedWord[word=bake, entry=bake/Bb, prefixes=[], suffix
 E	read	read/AaCc	AffixedWord[word=read, entry=read/AaCc, prefixes=[], suffixes=[]]|AffixedWord[word=reads, entry=read/AaCc, prefixes=[], suffixes=[Aa(id=0)]]|AffixedWord[word=reader, entry=read/AaCc, prefixes=[], suffixes=[Cc(id=3)]]|AffixedWord[word=readers, entry=read/AaCc, prefixes=[], suffixes=[Aa(id=0), Cc(id=3)]]|AffixedWord[word=readered, entry=read/AaCc, prefixes=[], suffixes=[Bb(id=1), Cc(id=3)]]
 E	work	work/AaBb	AffixedWord[word=work, entry=work/AaBb, prefixes=[], suffixes=[]]|AffixedWord[word=works, entry=work/AaBb, prefixes=[], suffixes=[Aa(id=0)]]|AffixedWord[word=worked, entry=work/AaBb, prefixes=[], suffixes=[Bb(id=1)]]
 E	run	run/AaCc	AffixedWord[word=run, entry=run/AaCc, prefixes=[], suffixes=[]]|AffixedWord[word=runs, entry=run/AaCc, prefixes=[], suffixes=[Aa(id=0)]]|AffixedWord[word=runer, entry=run/AaCc, prefixes=[], suffixes=[Cc(id=3)]]|AffixedWord[word=runers, entry=run/AaCc, prefixes=[], suffixes=[Aa(id=0), Cc(id=3)]]|AffixedWord[word=runered, entry=run/AaCc, prefixes=[], suffixes=[Bb(id=1), Cc(id=3)]]
+C	walk|walks|walked		EntrySuggestion{toEdit=[walk/AaBb], toAdd=[], extra=[]}
+C	walks|walked		EntrySuggestion{toEdit=[walk/AaBb], toAdd=[], extra=[]}
+C	walk|walks	walked	EntrySuggestion{toEdit=[walk/Aa], toAdd=[], extra=[]}
+C	bake|baked		EntrySuggestion{toEdit=[bake/Bb], toAdd=[], extra=[]}
+C	baked		EntrySuggestion{toEdit=[], toAdd=[baked], extra=[]}
+C	read|reads|reader|readers		EntrySuggestion{toEdit=[read/AaCc], toAdd=[], extra=[readered]}
+C	reads|reader|readers		EntrySuggestion{toEdit=[read/AaCc], toAdd=[], extra=[readered]}
+C	read|reads	reader	EntrySuggestion{toEdit=[read/Aa], toAdd=[], extra=[]}
+C	work|works|worked		EntrySuggestion{toEdit=[work/AaBb], toAdd=[], extra=[]}
+C	works|worked		EntrySuggestion{toEdit=[work/AaBb], toAdd=[], extra=[]}
+C	work|works	worked	EntrySuggestion{toEdit=[work/Aa], toAdd=[], extra=[]}
+C	run|runs|runer|runers		EntrySuggestion{toEdit=[run/AaCc], toAdd=[], extra=[runered]}
+C	runs|runer|runers		EntrySuggestion{toEdit=[run/AaCc], toAdd=[], extra=[runered]}
+C	run|runs	runer	EntrySuggestion{toEdit=[run/Aa], toAdd=[], extra=[]}
 G	AffixedWord[word=work, entry=work/AaBb, prefixes=[], suffixes=[]]|AffixedWord[word=works, entry=work/AaBb, prefixes=[], suffixes=[Aa(id=0)]]|AffixedWord[word=worked, entry=work/AaBb, prefixes=[], suffixes=[Bb(id=1)]]|AffixedWord[word=walk, entry=walk/AaBb, prefixes=[], suffixes=[]]|AffixedWord[word=walks, entry=walk/AaBb, prefixes=[], suffixes=[Aa(id=0)]]|AffixedWord[word=walked, entry=walk/AaBb, prefixes=[], suffixes=[Bb(id=1)]]|AffixedWord[word=run, entry=run/AaCc, prefixes=[], suffixes=[]]|AffixedWord[word=runs, entry=run/AaCc, prefixes=[], suffixes=[Aa(id=0)]]|AffixedWord[word=runer, entry=run/AaCc, prefixes=[], suffixes=[Cc(id=3)]]|AffixedWord[word=runers, entry=run/AaCc, prefixes=[], suffixes=[Aa(id=0), Cc(id=3)]]|AffixedWord[word=runered, entry=run/AaCc, prefixes=[], suffixes=[Bb(id=1), Cc(id=3)]]|AffixedWord[word=read, entry=read/AaCc, prefixes=[], suffixes=[]]|AffixedWord[word=reads, entry=read/AaCc, prefixes=[], suffixes=[Aa(id=0)]]|AffixedWord[word=reader, entry=read/AaCc, prefixes=[], suffixes=[Cc(id=3)]]|AffixedWord[word=readers, entry=read/AaCc, prefixes=[], suffixes=[Aa(id=0), Cc(id=3)]]|AffixedWord[word=readered, entry=read/AaCc, prefixes=[], suffixes=[Bb(id=1), Cc(id=3)]]|AffixedWord[word=bake, entry=bake/Bb, prefixes=[], suffixes=[]]|AffixedWord[word=baked, entry=bake/Bb, prefixes=[], suffixes=[Bb(id=2)]]

@@ -48,9 +48,9 @@ Milestones (M1-M10, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [codecs.md](parity/codecs.md) | `lucene-codecs`: the `Lucene104` codec, every format read and written | 67 |
 | [backward-codecs.md](parity/backward-codecs.md) | `lucene-backward-codecs`: Lucene 9.0-10.4 formats (M8) | 18 |
 | [analysis.md](parity/analysis.md) | `lucene-analysis`: analyzers, tokenizers, filters | 18 |
-| [analysis-common.md](parity/analysis-common.md) | `lucene-analysis-common` (M11) | 15 |
+| [analysis-common.md](parity/analysis-common.md) | `lucene-analysis-common` (M11) | 16 |
 | [index.md](parity/index.md) | `lucene-index`: documents, `IndexWriter`, flush, merge, deletes, segment files, NRT snapshots | 45 |
-| [search-queries.md](parity/search-queries.md) | `lucene-search`: query types, rewrites, parser, vector queries | 37 |
+| [search-queries.md](parity/search-queries.md) | `lucene-search`: query types, rewrites, parser, vector queries | 38 |
 | [search-execution.md](parity/search-execution.md) | `lucene-search`: scorer tree, bulk scorers, similarities, multi-segment fan-out | 29 |
 | [search-collectors.md](parity/search-collectors.md) | `lucene-search`: collectors, sorting, facets, aggregations, highlighting, fetch | 33 |
 | [search-readers.md](parity/search-readers.md) | `lucene-search`: `DirectoryReader`, NRT readers, `CheckIndex`, searcher management | 26 |
@@ -62,7 +62,7 @@ Milestones (M1-M10, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [grouping.md](parity/grouping.md) | `lucene-grouping` (M10 T10.4) | 11 |
 | [functions.md](parity/functions.md) | `lucene-queries` function queries (M10 T10.5) | 11 |
 | [queries.md](parity/queries.md) | `lucene-queries` intervals, payloads, more-like-this, common terms, spans (M10 T10.6) | 12 |
-| [analysis-lang.md](parity/analysis-lang.md) | `lucene-analysis-common` synonyms, classic, language packages (M11 part 3) | 10 |
+| [analysis-lang.md](parity/analysis-lang.md) | `lucene-analysis-common` synonyms, classic, language packages (M11 part 3) | 11 |
 | [ffi.md](parity/ffi.md) | `lucene-ffi`: the general C ABI (handles, searches, writer) | 16 |
 | [plugin.md](parity/plugin.md) | `lucene-ffi`: the OpenSearch plugin boundary (JVM reader, FFM, query phase), M10 query shapes | 10 |
 | [plugin-geo.md](parity/plugin-geo.md) | OpenSearch plugin: geo queries and geo sorting (M9 T9.6) | 7 |

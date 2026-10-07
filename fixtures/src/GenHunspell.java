@@ -47,7 +47,9 @@ import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
  * NGramFragmentChecker.fromAllSimpleWords(2)} and {@code proceedPastRep()}, and whether {@code
  * NGramFragmentChecker.fromWords(3, roots)} finds an impossible fragment in the word (a suggester
  * that throws, or a checker Lucene cannot build, writes {@code !} and the exception class). Per root,
- * {@code E  root  lookupEntries  getAllWordForms}; per dictionary, {@code G  generateAllSimpleWords}.
+ * {@code E  root  lookupEntries  getAllWordForms}; for the first six roots, {@code C  words  forbidden
+ * compress} over up to four of the root's forms, those without the first, and the first two with the
+ * third forbidden; per dictionary, {@code G  generateAllSimpleWords}.
  * A dictionary Lucene refuses writes {@code X  exception-class  message}. Deterministic.
  */
 public class GenHunspell {
@@ -146,6 +148,19 @@ public class GenHunspell {
 
   static InputStream in(byte[] b) {
     return new ByteArrayInputStream(b);
+  }
+
+  /** {@code C  words  forbidden  compress(words, forbidden)} ({@code null}, or {@code !} and the exception class). */
+  static void compress(StringBuilder sb, WordFormGenerator gen, List<String> words, Set<String> forbidden) {
+    String result;
+    try {
+      Object s = gen.compress(words, forbidden, () -> {});
+      result = String.valueOf(s);
+    } catch (RuntimeException e) {
+      result = "!" + e.getClass().getSimpleName();
+    }
+    sb.append("C\t").append(join(words)).append('\t').append(join(new ArrayList<>(forbidden)))
+        .append('\t').append(result).append('\n');
   }
 
   public static void main(String[] args) throws Exception {
@@ -255,6 +270,17 @@ public class GenHunspell {
           DictEntries e = d.lookupEntries(r);
           sb.append("E\t").append(r).append('\t').append(e == null ? "null" : join(e))
               .append('\t').append(join(gen.getAllWordForms(r, () -> {}))).append('\n');
+        }
+        int compressed = 0;
+        for (String r : rootWords) {
+          if (compressed++ >= 6) break;
+          List<String> forms = new ArrayList<>();
+          for (AffixedWord aw : gen.getAllWordForms(r, () -> {})) {
+            if (!forms.contains(aw.getWord()) && forms.size() < 4) forms.add(aw.getWord());
+          }
+          compress(sb, gen, forms, Set.of());
+          if (forms.size() > 1) compress(sb, gen, forms.subList(1, forms.size()), Set.of());
+          if (forms.size() > 2) compress(sb, gen, forms.subList(0, 2), Set.of(forms.get(2)));
         }
         List<String> all = new ArrayList<>();
         gen.generateAllSimpleWords(aw -> all.add(aw.toString()), () -> {});

@@ -137,6 +137,20 @@ fn check_file(
                     .collect();
                 assert_eq!(forms.join("|"), f[3], "{file}: getAllWordForms({})", f[1]);
             }
+            "C" => {
+                let words: Vec<&str> = f[1].split('|').filter(|w| !w.is_empty()).collect();
+                let forbidden: std::collections::HashSet<String> = f[2]
+                    .split('|')
+                    .filter(|w| !w.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                let got = match gen.compress(&words, &forbidden) {
+                    Ok(None) => "null".to_string(),
+                    Ok(Some(s)) => s.to_string(),
+                    Err(e) => format!("!{}", exception_name(&e)),
+                };
+                assert_eq!(got, f[3], "{file}: compress({}, {})", f[1], f[2]);
+            }
             "G" => {
                 let mut all = Vec::new();
                 gen.generate_all_simple_words(&mut |aw| all.push(aw.to_string()));
