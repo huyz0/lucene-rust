@@ -200,7 +200,7 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   language analyzer over its own language's lines of
   `corpus/analysis-lang.txt`, the synonym filters over
   `corpus/analysis-synonym.txt`; 2026-10-07, Rust/Java, noise floor 1.18x):
-  arabic 1.09~, french 1.38x, german 0.97~, greek 2.15x, hindi 1.28x,
+  arabic 1.09~, french 1.38x, german 0.97~ (0.92~ in a second run), greek 2.15x, hindi 1.28x,
   portuguese_rslp 2.44x, russian_light 1.37x, spanish 1.21x, synonym_graph
   1.65x, synonym_graph_flatten 1.14~, synonym_legacy 1.85x. The faithful
   port (over the whole multilingual corpus) read greek 0.26x, russian_light
@@ -212,9 +212,11 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   character in `LowerCaseFilter` (now a compile-time two-level table, the
   JDK's shape), the general-category search per character in
   `DecimalDigitFilter` (now a digit bitmap) and Greek's 23 rules run on terms
-  whose last letter no rule can match. german stays at ~1.0: its two UTF-16
-  filters (normalization, light stemmer) each convert the term and back where
-  Java edits one `char[]`.
+  whose last letter no rule can match. german stays just under 1.0: its two
+  UTF-16 filters (normalization, light stemmer) each convert the term and back
+  where Java edits one `char[]`; closing that needs a UTF-16 view of the term
+  shared along the chain, a redesign of `AttributeSource`'s term storage
+  not made for one analyzer's last few percent.
 - **T11.6, the rest** -- `compound` (both decompounders, Liang hyphenation,
   the FOP pattern format over a minimal XML reader; `GenAnalysisCompound.java`
   over a toy grammar written here: points and 13 chains equal),
