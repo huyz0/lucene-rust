@@ -270,12 +270,25 @@ def matrix():
     add("sort keyword desc then n", {"query": {"match_all": {}}, "sort": [{"tag": "desc"}, {"n": "asc"}]}, "native")
     add("sort keyword missing first max", {"query": {"match": {"body": "beta"}}, "sort": [{"tag": {"order": "asc", "missing": "_first", "mode": "max"}}, "_score"]}, "native")
     add("sort keyword search_after", {"query": {"match_all": {}}, "sort": [{"tag": "asc"}, {"n": "asc"}], "search_after": ["gamma", 100]}, "native")
-    add("sort mode avg", {"query": {"match": {"body": "alpha"}}, "sort": [{"m": {"order": "asc", "mode": "avg"}}]}, "native")
+    # OpenSearch's comparators for the avg/sum/median modes (LongValuesComparatorSource and
+    # the rest) skip with Lucene's NumericComparator, over the points of the single values.
+    # When the points range is not selective, NumericComparator iterates the comparator's
+    # doc values instead -- here MultiValueMode.select's wrapper, whose advance() throws
+    # UnsupportedOperationException on a multi-valued segment (OpenSearch 3.8.0). The shard
+    # fails, and the search answers HTTP 200 with the other shards' hits only. Skipping starts
+    # once the collector reaches its hits threshold: 10,000 by default, which no shard of these
+    # rows reaches with a bottom value high enough -- but the coordinator, once the shards that
+    # answered so far count more than track_total_hits, sends each later shard
+    # track_total_hits false (SearchQueryThenFetchAsyncAction.rewriteShardSearchRequest), a
+    # threshold of one, and that shard throws. Whether a shard is sent its request after two
+    # others answered is timing: "sort mode avg" on the three-shard index lost its third shard
+    # so on one arm64 CI run (its two value-0 hits missing from the stock answer). An exact
+    # total turns both the rewrite and the skipping off, so every row whose mode sort matches
+    # more than 10,000 documents across two shards asks for one.
+    add("sort mode avg", {"track_total_hits": True, "query": {"match": {"body": "alpha"}}, "sort": [{"m": {"order": "asc", "mode": "avg"}}]}, "native")
     # sum: OpenSearch's comparator skips with the points of the single values,
     # which a sum can pass -- its answer depends on where skipping starts, so it
-    # stays Lucene's (and a mode whose points path is not selective iterates a
-    # doc-values wrapper that cannot iterate: a stock node answers some of these
-    # shapes with a 500, which are left out here).
+    # stays Lucene's.
     # An exact total, or on more than one shard the stock answer is not one:
     # the coordinator sends each later shard the bottom sort value so far, and
     # the shard skips itself when its bounds cannot beat it -- bounds that
@@ -285,8 +298,8 @@ def matrix():
     # first (OpenSearch 3.8.0). An exact total turns that pruning off.
     add("sort mode sum", {"track_total_hits": True, "query": {"match": {"body": "beta"}}, "sort": [{"m": {"order": "desc", "mode": "sum"}}, "_doc"]}, "sort_*")
     add("sort mode median", {"query": {"match": {"body": "gamma"}}, "sort": [{"m": {"order": "asc", "mode": "median", "missing": "_first"}}]}, "native")
-    add("sort mode avg double", {"query": {"match": {"body": "alpha"}}, "sort": [{"md": {"order": "desc", "mode": "avg"}}, "_doc"]}, "native")
-    add("sort mode median double", {"query": {"match_all": {}}, "sort": [{"md": {"order": "asc", "mode": "median"}}, {"n": "asc"}]}, "native")
+    add("sort mode avg double", {"track_total_hits": True, "query": {"match": {"body": "alpha"}}, "sort": [{"md": {"order": "desc", "mode": "avg"}}, "_doc"]}, "native")
+    add("sort mode median double", {"track_total_hits": True, "query": {"match_all": {}}, "sort": [{"md": {"order": "asc", "mode": "median"}}, {"n": "asc"}]}, "native")
     add("sort mode avg int", {"query": {"match": {"body": "sigma omega"}}, "sort": [{"mi": {"order": "desc", "mode": "avg", "missing": 0}}, "_doc"]}, "native")
     add("sort mode median int", {"query": {"match": {"body": "tau omega"}}, "sort": [{"mi": {"order": "desc", "mode": "median"}}, "_doc"]}, "native")
     add("sort mode median int missing first", {"size": 25, "query": {"match_all": {}}, "sort": [{"mi": {"order": "asc", "mode": "median", "missing": "_first"}}]}, "native")
@@ -413,11 +426,32 @@ def matrix():
     return q
 
 
+def failed_shards(resp):
+    """A search response's shard failures. OpenSearch answers HTTP 200 with the
+    other shards' hits when some fail (allow_partial_search_results), so a
+    failed shard reads as hits that are missing, not as an error."""
+    sh = resp.get("_shards") or {}
+    if not sh.get("failed"):
+        return []
+    reasons = [f"shard {f.get('shard')}: {(f.get('reason') or {}).get('type')}: {(f.get('reason') or {}).get('reason')}"
+               for f in sh.get("failures", [])]
+    return reasons or [f"{sh['failed']} of {sh.get('total')} shards failed"]
+
+
+def complete(resp):
+    """`resp`, unless a shard failed: a partial answer is no reference."""
+    failed = failed_shards(resp)
+    if failed:
+        raise RuntimeError(f"partial response: {'; '.join(failed)}")
+    return resp
+
+
 def shape(resp, body):
     """The part of a search response both engines must agree on."""
     hits = resp["hits"]
     total = hits.get("total")
     out = {
+        "failed_shards": failed_shards(resp),
         "total": total,
         "max_score": hits.get("max_score"),
         "hits": [(h["_id"], h.get("_score"), h.get("sort")) for h in hits["hits"]],
@@ -433,6 +467,8 @@ def shape(resp, body):
 
 def same(a, b):
     """Equal, with scores compared to 1e-5; hits whose scores tie may swap."""
+    if a.get("failed_shards") or b.get("failed_shards"):
+        return f"failed shards: {a.get('failed_shards')} vs {b.get('failed_shards')}"
     if a["total"] != b["total"]:
         return f"total {a['total']} vs {b['total']}"
     for k in ("aggs", "highlight", "terminated_early", "timed_out"):
@@ -472,7 +508,7 @@ def run_matrix(index, shards, label, shapes="fast", index_sorted=False, rows=Non
     for name, body, _ in queries:
         url, b = search_url(index, body)
         try:
-            reference[name] = shape(req("POST", url, b), b)
+            reference[name] = shape(complete(req("POST", url, b)), b)
         except RuntimeError as e:
             # A row the stock engine itself cannot answer is no reference.
             UNVERIFIABLE.append(f"{label} {index} [{name}]")
