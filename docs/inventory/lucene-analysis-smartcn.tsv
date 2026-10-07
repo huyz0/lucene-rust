@@ -1,0 +1,22 @@
+# Lucene 10.5.0 lucene-analysis-smartcn: every top-level class of the jar, and what became of it.
+# Checked by scripts/check-port-inventory.py --module analysis-smartcn (see its docstring for the statuses).
+# M12 T12.2 (Chinese word segmentation (HHMM over the bundled core and bigram dictionaries)); docs/milestones/m12-language-analysis.md.
+# class	status	detail
+analysis/cn/smart/AnalyzerProfile	todo:M12	T12.2: AnalyzerProfile, not started
+analysis/cn/smart/CharType	todo:M12	T12.2: CharType, not started
+analysis/cn/smart/HMMChineseTokenizer	todo:M12	T12.2: HMMChineseTokenizer, not started
+analysis/cn/smart/HMMChineseTokenizerFactory	todo:M12	T12.2: HMMChineseTokenizerFactory, not started
+analysis/cn/smart/SmartChineseAnalyzer	todo:M12	T12.2: SmartChineseAnalyzer, not started
+analysis/cn/smart/Utility	todo:M12	T12.2: Utility, not started
+analysis/cn/smart/WordSegmenter	todo:M12	T12.2: WordSegmenter, not started
+analysis/cn/smart/WordType	todo:M12	T12.2: WordType, not started
+analysis/cn/smart/hhmm/AbstractDictionary	todo:M12	T12.2: AbstractDictionary, not started
+analysis/cn/smart/hhmm/BiSegGraph	todo:M12	T12.2: BiSegGraph, not started
+analysis/cn/smart/hhmm/BigramDictionary	todo:M12	T12.2: BigramDictionary, not started
+analysis/cn/smart/hhmm/HHMMSegmenter	todo:M12	T12.2: HHMMSegmenter, not started
+analysis/cn/smart/hhmm/PathNode	todo:M12	T12.2: PathNode, not started
+analysis/cn/smart/hhmm/SegGraph	todo:M12	T12.2: SegGraph, not started
+analysis/cn/smart/hhmm/SegToken	todo:M12	T12.2: SegToken, not started
+analysis/cn/smart/hhmm/SegTokenFilter	todo:M12	T12.2: SegTokenFilter, not started
+analysis/cn/smart/hhmm/SegTokenPair	todo:M12	T12.2: SegTokenPair, not started
+analysis/cn/smart/hhmm/WordDictionary	todo:M12	T12.2: WordDictionary, not started

@@ -75,6 +75,7 @@ Cargo workspace, one crate per Java module boundary (roughly):
 | `lucene-codecs` | `o.a.l.codecs` | Codec trait + the one pinned default codec: postings (PFOR-delta), doc values, stored fields (LZ4/zstd blocks), points (BKD), KNN vectors (HNSW), norms, live docs, segment infos |
 | `lucene-index` | `o.a.l.index` | SegmentReader/DirectoryReader, Terms/PostingsEnum, IndexWriter, DWPT, merge policy/scheduler, deletes, commits |
 | `lucene-analysis` | `o.a.l.analysis` + `analysis/common` subset | TokenStream trait, StandardTokenizer (from Unicode segmentation), lowercase/stop/ascii-folding/Porter-stem; everything else stays JVM-side long-term |
+| `lucene-analysis-<m>` | `lucene-analysis-{phonetic,stempel,morfologik,kuromoji,nori,smartcn,icu,opennlp}` | M12: one crate per language module, each over `lucene-util` + `lucene-analysis` only, nothing depending on it (see `docs/milestones/m12-language-analysis.md`, Architecture) |
 | `lucene-search` | `o.a.l.search` | Query/Weight/Scorer, Boolean (WAND/BMW), term/phrase/points ranges, collectors, BM25, ConstantScore, MatchAll |
 | `lucene-core` | — | Facade crate re-exporting the above; the "public API" |
 | `lucene-ffi` | — | `cdylib`: C ABI (called from Java through FFM downcalls), handle registry, panic → error-code mapping |
