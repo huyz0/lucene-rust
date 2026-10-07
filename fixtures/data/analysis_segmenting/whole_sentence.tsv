@@ -1,0 +1,4055 @@
+T	0	Hello world. 	0	13	1	1	word	0	-	0	1
+T	0	This is it. no more! 	13	34	1	1	word	0	-	0	1
+T	0	Yes? 	34	39	1	1	word	0	-	0	1
+T	0	ok.	39	42	1	1	word	0	-	0	1
+E	0	42	42	0
+T	1	Mr. 	0	4	1	1	word	0	-	0	1
+T	1	Smith went to Washington. 	4	30	1	1	word	0	-	0	1
+T	1	He said "Hi." 	30	44	1	1	word	0	-	0	1
+T	1	Then (quietly) left.	44	64	1	1	word	0	-	0	1
+E	1	64	64	0
+T	2	Version 3.5 is out. e.g. this one... 	0	37	1	1	word	0	-	0	1
+T	2	And 1.2.3? 	37	48	1	1	word	0	-	0	1
+T	2	Sure! 	48	54	1	1	word	0	-	0	1
+T	2	(Really.) 	54	64	1	1	word	0	-	0	1
+T	2	"Yes." 	64	71	1	1	word	0	-	0	1
+T	2	'No.'	71	76	1	1	word	0	-	0	1
+E	2	76	76	0
+T	3	这是一个句子。	0	7	1	1	word	0	-	0	1
+T	3	这是另一个！	7	13	1	1	word	0	-	0	1
+T	3	还有吗？	13	17	1	1	word	0	-	0	1
+T	3	没有。	17	20	1	1	word	0	-	0	1
+E	3	20	20	0
+T	4	中文和English混合。	0	13	1	1	word	0	-	0	1
+T	4	Mixed text. 	13	25	1	1	word	0	-	0	1
+T	4	第二句	25	28	1	1	word	0	-	0	1
+E	4	28	28	0
+T	5	यह एक वाक्य है। 	0	16	1	1	word	0	-	0	1
+T	5	यह दूसरा है॥ 	16	29	1	1	word	0	-	0	1
+T	5	तीसरा	29	34	1	1	word	0	-	0	1
+E	5	34	34	0
+T	6	ภาษาไทยไม่มีจุด ประโยคที่สอง	0	28	1	1	word	0	-	0	1
+E	6	28	28	0
+T	7	a.  	0	4	1	1	word	0	-	0	1
+T	7	b. c. 	4	10	1	1	word	0	-	0	1
+T	7	D  	10	13	1	1	word	0	-	0	1
+T	7	 e f. 	13	19	1	1	word	0	-	0	1
+T	7	G	19	20	1	1	word	0	-	0	1
+E	7	20	20	0
+E	8	0	0	0
+T	9	gamma. 	0	7	1	1	word	0	-	0	1
+T	9	😀x Beta? 	7	17	1	1	word	0	-	0	1
+T	9	é。	17	20	1	1	word	0	-	0	1
+T	9	3.14. 3.14 U.S. 	20	36	1	1	word	0	-	0	1
+T	9	😀x, alpha 	36	47	1	1	word	0	-	0	1
+T	9	alpha 	47	53	1	1	word	0	-	0	1
+T	9	gammaU.S. é. 	53	68	1	1	word	0	-	0	1
+T	9	U.S. é 	68	76	1	1	word	0	-	0	1
+T	9	alpha alpha 	76	88	1	1	word	0	-	0	1
+T	9	gamma。	88	94	1	1	word	0	-	0	1
+T	9	中文é\r\né alpha 😀x alpha, alpha\r\n中文? 	94	132	1	1	word	0	-	0	1
+T	9	ok? 	132	136	1	1	word	0	-	0	1
+T	9	Beta 中文 alpha。	136	150	1	1	word	0	-	0	1
+T	9	alpha。	150	156	1	1	word	0	-	0	1
+T	9	Beta? 	156	162	1	1	word	0	-	0	1
+T	9	中文, 😀x\né3.14。	162	178	1	1	word	0	-	0	1
+T	9	Beta 	178	183	1	1	word	0	-	0	1
+T	9	alpha。	183	189	1	1	word	0	-	0	1
+T	9	Beta\r\né. 3.14Beta 	189	209	1	1	word	0	-	0	1
+T	9	é 中文ok 😀x\r\n中文? 	209	227	1	1	word	0	-	0	1
+T	9	é 3.14。	227	235	1	1	word	0	-	0	1
+T	9	Beta 中文? 	235	244	1	1	word	0	-	0	1
+T	9	Beta 😀x, alpha\n3.14 é 3.14. ok U.S. 	244	282	1	1	word	0	-	0	1
+T	9	alpha\nalpha 😀x 中文 3.14\r\nok? 	282	311	1	1	word	0	-	0	1
+T	9	3.14. ok! 	311	321	1	1	word	0	-	0	1
+T	9	ok, U.S.. 	321	331	1	1	word	0	-	0	1
+T	9	中文 😀xalpha? 	331	345	1	1	word	0	-	0	1
+T	9	😀x! 	345	350	1	1	word	0	-	0	1
+T	9	中文 é. ok. 	350	361	1	1	word	0	-	0	1
+T	9	中文, alpha. 	361	372	1	1	word	0	-	0	1
+T	9	Beta, alpha。	372	384	1	1	word	0	-	0	1
+T	9	gamma😀x, 3.14, gamma alpha\nU.S. 	384	418	1	1	word	0	-	0	1
+T	9	U.S.! 	418	424	1	1	word	0	-	0	1
+T	9	U.S.\nok。	424	432	1	1	word	0	-	0	1
+T	9	gamma! 	432	439	1	1	word	0	-	0	1
+E	9	439	439	0
+T	10	U.S.? 	0	6	1	1	word	0	-	0	1
+T	10	中文alpha! 	6	16	1	1	word	0	-	0	1
+T	10	alpha ok? 	16	26	1	1	word	0	-	0	1
+T	10	ok, 中文 U.S. 	26	38	1	1	word	0	-	0	1
+T	10	é U.S. 	38	46	1	1	word	0	-	0	1
+T	10	U.S. 3.14 ok. gamma! 	46	67	1	1	word	0	-	0	1
+T	10	gamma Beta alpha! 	67	85	1	1	word	0	-	0	1
+T	10	U.S. 	85	90	1	1	word	0	-	0	1
+T	10	😀x alpha 😀x alpha? 	90	111	1	1	word	0	-	0	1
+T	10	😀xBeta, Beta ok 3.14 3.14, U.S.! 	111	146	1	1	word	0	-	0	1
+T	10	中文 alpha\r\né 😀x。	146	163	1	1	word	0	-	0	1
+T	10	U.S. alphaé gamma? 	163	184	1	1	word	0	-	0	1
+T	10	中文, 😀x gamma 	184	198	1	1	word	0	-	0	1
+T	10	3.14 	198	203	1	1	word	0	-	0	1
+T	10	中文 é! 	203	210	1	1	word	0	-	0	1
+T	10	gamma é, é\r\né\nalpha alpha? 	210	240	1	1	word	0	-	0	1
+T	10	é 😀x 	240	247	1	1	word	0	-	0	1
+T	10	ok alphaU.S.。	247	261	1	1	word	0	-	0	1
+T	10	Beta。	261	266	1	1	word	0	-	0	1
+T	10	alpha。	266	272	1	1	word	0	-	0	1
+T	10	中文! 	272	276	1	1	word	0	-	0	1
+T	10	Beta! 	276	282	1	1	word	0	-	0	1
+T	10	alpha中文 éU.S.? 	282	300	1	1	word	0	-	0	1
+T	10	gammaé ok。	300	312	1	1	word	0	-	0	1
+T	10	😀x\r\ngamma! 	312	324	1	1	word	0	-	0	1
+T	10	é 中文 	324	330	1	1	word	0	-	0	1
+T	10	U.S., Beta. 	330	342	1	1	word	0	-	0	1
+T	10	😀x ok\n😀x? 	342	354	1	1	word	0	-	0	1
+T	10	3.14😀x 中文! 	354	367	1	1	word	0	-	0	1
+T	10	U.S. 	367	372	1	1	word	0	-	0	1
+T	10	Beta。	372	377	1	1	word	0	-	0	1
+T	10	😀x. 	377	382	1	1	word	0	-	0	1
+T	10	Beta? 	382	388	1	1	word	0	-	0	1
+T	10	U.S. ok? 	388	397	1	1	word	0	-	0	1
+T	10	é é alphaé U.S.! 	397	418	1	1	word	0	-	0	1
+T	10	ok. alphaBeta? 	418	434	1	1	word	0	-	0	1
+T	10	中文\r\nok\r\nBeta 😀x U.S. ok\r\né, 😀x 	434	468	1	1	word	0	-	0	1
+T	10	😀x。	468	472	1	1	word	0	-	0	1
+T	10	😀x gamma。	472	482	1	1	word	0	-	0	1
+T	10	alpha 3.14 😀x\r\né? 	482	502	1	1	word	0	-	0	1
+T	10	3.14 中文? 	502	511	1	1	word	0	-	0	1
+T	10	ok。	511	514	1	1	word	0	-	0	1
+T	10	alphaok ok😀x。	514	530	1	1	word	0	-	0	1
+T	10	é? 	530	534	1	1	word	0	-	0	1
+T	10	Beta。	534	539	1	1	word	0	-	0	1
+T	10	Beta Betaok! 	539	553	1	1	word	0	-	0	1
+T	10	中文Beta ok\ngamma。	553	570	1	1	word	0	-	0	1
+T	10	gamma3.14 alpha 	570	587	1	1	word	0	-	0	1
+T	10	3.14 ok中文 😀x BetaBetagamma。	587	618	1	1	word	0	-	0	1
+T	10	gamma, alpha 	618	631	1	1	word	0	-	0	1
+T	10	3.14 3.14。	631	641	1	1	word	0	-	0	1
+T	10	中文 Beta ok。	641	652	1	1	word	0	-	0	1
+T	10	3.14 ok gamma。	652	666	1	1	word	0	-	0	1
+T	10	中文 égamma 	666	678	1	1	word	0	-	0	1
+T	10	éalpha3.14, 3.14\r\nok 😀x\n3.14 😀x U.S. 	678	720	1	1	word	0	-	0	1
+T	10	中文? 	720	724	1	1	word	0	-	0	1
+T	10	gamma\r\nok\r\n3.14 	724	740	1	1	word	0	-	0	1
+T	10	é? 	740	744	1	1	word	0	-	0	1
+T	10	3.14 gamma. gamma, gamma。	744	769	1	1	word	0	-	0	1
+T	10	alpha 中文U.S. 3.14 3.14, gamma\r\nalpha, Beta. gamma\r\nU.S.. 	769	827	1	1	word	0	-	0	1
+T	10	Beta。	827	832	1	1	word	0	-	0	1
+T	10	3.14。	832	837	1	1	word	0	-	0	1
+T	10	alpha. gamma! 	837	851	1	1	word	0	-	0	1
+T	10	3.14 U.S.. ok ok gamma ok。	851	877	1	1	word	0	-	0	1
+T	10	中文。	877	880	1	1	word	0	-	0	1
+T	10	😀x ok 	880	887	1	1	word	0	-	0	1
+T	10	中文\r\nalpha U.S.? 	887	903	1	1	word	0	-	0	1
+T	10	ok! 	903	907	1	1	word	0	-	0	1
+T	10	😀x? 	907	912	1	1	word	0	-	0	1
+T	10	U.S., 😀x Beta U.S. gamma\nBeta。	912	943	1	1	word	0	-	0	1
+T	10	U.S.! 	943	949	1	1	word	0	-	0	1
+T	10	U.S.? 	949	955	1	1	word	0	-	0	1
+T	10	中文, U.S.? 	955	965	1	1	word	0	-	0	1
+T	10	中文. é 😀x alpha😀x\r\nalpha? 	965	994	1	1	word	0	-	0	1
+T	10	ok alpha\n	994	1003	1	1	word	0	-	0	1
+T	10	é. gamma, ok! 	1003	1018	1	1	word	0	-	0	1
+T	10	3.14. 	1018	1024	1	1	word	0	-	0	1
+T	10	Beta alpha 中文 Beta! 	1024	1044	1	1	word	0	-	0	1
+T	10	😀x, alpha\ngamma Beta ok 中文 😀x 	1044	1076	1	1	word	0	-	0	1
+T	10	Beta. 	1076	1082	1	1	word	0	-	0	1
+T	10	U.S. 	1082	1087	1	1	word	0	-	0	1
+T	10	Beta\r\nalpha\r\n3.14 alpha\n3.14! 	1087	1117	1	1	word	0	-	0	1
+T	10	😀x 	1117	1121	1	1	word	0	-	0	1
+T	10	😀x! 	1121	1126	1	1	word	0	-	0	1
+T	10	Beta 3.14. é gamma 	1126	1146	1	1	word	0	-	0	1
+T	10	ok U.S.。	1146	1154	1	1	word	0	-	0	1
+T	10	alpha ok 3.14, U.S.。	1154	1174	1	1	word	0	-	0	1
+T	10	alphaBeta 3.14 	1174	1190	1	1	word	0	-	0	1
+T	10	é, 3.14 Betaé U.S. 	1190	1212	1	1	word	0	-	0	1
+T	10	😀x 😀x 😀x, alpha Beta Beta\nalpha, 3.14。	1212	1253	1	1	word	0	-	0	1
+T	10	gamma\r\nU.S. alpha。	1253	1271	1	1	word	0	-	0	1
+T	10	Beta alpha. 	1271	1283	1	1	word	0	-	0	1
+T	10	中文. 	1283	1287	1	1	word	0	-	0	1
+T	10	😀x gamma Beta. 	1287	1303	1	1	word	0	-	0	1
+T	10	中文! 	1303	1307	1	1	word	0	-	0	1
+T	10	😀x\r\n😀x\r\n3.14. 	1307	1323	1	1	word	0	-	0	1
+T	10	😀x\nU.S. 	1323	1332	1	1	word	0	-	0	1
+T	10	U.S.! 	1332	1338	1	1	word	0	-	0	1
+T	10	中文。	1338	1341	1	1	word	0	-	0	1
+T	10	3.14 😀x\nalpha 	1341	1356	1	1	word	0	-	0	1
+T	10	U.S.! 	1356	1362	1	1	word	0	-	0	1
+T	10	😀x\n3.14 	1362	1371	1	1	word	0	-	0	1
+T	10	alpha。	1371	1377	1	1	word	0	-	0	1
+T	10	3.14\r\n中文\nok. 3.14 	1377	1395	1	1	word	0	-	0	1
+T	10	alpha, 😀x, é, oké 	1395	1417	1	1	word	0	-	0	1
+T	10	Beta\nU.S. é。	1417	1430	1	1	word	0	-	0	1
+T	10	ok! 	1430	1434	1	1	word	0	-	0	1
+T	10	3.14\r\n😀x! 	1434	1445	1	1	word	0	-	0	1
+T	10	U.S.? 	1445	1451	1	1	word	0	-	0	1
+T	10	3.14 Beta alpha, alpha, U.S. é 	1451	1483	1	1	word	0	-	0	1
+T	10	gamma\r\ngamma, Beta\r\nalpha ok\n😀xok. 	1483	1520	1	1	word	0	-	0	1
+T	10	U.S. 	1520	1525	1	1	word	0	-	0	1
+T	10	U.S.\nalpha\r\n3.14 	1525	1542	1	1	word	0	-	0	1
+T	10	3.14 gamma ok é 	1542	1559	1	1	word	0	-	0	1
+T	10	ok 	1559	1562	1	1	word	0	-	0	1
+T	10	gamma\n中文\r\nalpha, é alpha! 	1562	1589	1	1	word	0	-	0	1
+T	10	ok\n中文 😀x, Beta, 3.14Beta ok ok U.S.。	1589	1627	1	1	word	0	-	0	1
+T	10	gamma gamma, U.S.. gamma, é😀x\r\n3.14。	1627	1666	1	1	word	0	-	0	1
+T	10	中文? 	1666	1670	1	1	word	0	-	0	1
+T	10	gamma 	1670	1676	1	1	word	0	-	0	1
+T	10	é。	1676	1679	1	1	word	0	-	0	1
+T	10	Beta ok\nBeta\r\nok ok。	1679	1699	1	1	word	0	-	0	1
+T	10	😀x. 	1699	1704	1	1	word	0	-	0	1
+T	10	中文. alpha gamma! 	1704	1721	1	1	word	0	-	0	1
+T	10	Beta 😀x ok\n😀x Beta U.S.! 	1721	1748	1	1	word	0	-	0	1
+T	10	é é\r\n3.14\nalpha. 	1748	1767	1	1	word	0	-	0	1
+T	10	U.S. gamma。	1767	1778	1	1	word	0	-	0	1
+T	10	U.S.. 	1778	1784	1	1	word	0	-	0	1
+T	10	Beta? 	1784	1790	1	1	word	0	-	0	1
+T	10	中文. gamma\r\n中文。	1790	1804	1	1	word	0	-	0	1
+T	10	ok\n😀x! 	1804	1812	1	1	word	0	-	0	1
+T	10	3.14\r\n😀xalpha. gamma é alpha é 	1812	1847	1	1	word	0	-	0	1
+T	10	U.S.. 	1847	1853	1	1	word	0	-	0	1
+T	10	Beta é Beta BetaU.S. ok ok, 😀x 中文 é 	1853	1893	1	1	word	0	-	0	1
+T	10	😀xalpha. ok gammaok, ok, é, alpha! 	1893	1932	1	1	word	0	-	0	1
+T	10	3.14! 	1932	1938	1	1	word	0	-	0	1
+T	10	gamma 	1938	1944	1	1	word	0	-	0	1
+T	10	3.14, 3.14 中文 	1944	1958	1	1	word	0	-	0	1
+T	10	gamma 3.14 ok U.S. 	1958	1977	1	1	word	0	-	0	1
+T	10	😀x. 	1977	1982	1	1	word	0	-	0	1
+T	10	Beta 😀x。	1982	1991	1	1	word	0	-	0	1
+T	10	😀xé. é gamma é\r\ngamma。	1991	2018	1	1	word	0	-	0	1
+T	10	中文. 	2018	2022	1	1	word	0	-	0	1
+T	10	Beta 	2022	2027	1	1	word	0	-	0	1
+T	10	😀x? 	2027	2032	1	1	word	0	-	0	1
+T	10	Beta。	2032	2037	1	1	word	0	-	0	1
+T	10	😀x gammaalpha ok\ngamma 	2037	2062	1	1	word	0	-	0	1
+T	10	中文! 	2062	2066	1	1	word	0	-	0	1
+T	10	ok。	2066	2069	1	1	word	0	-	0	1
+T	10	Beta 😀x 😀x。	2069	2082	1	1	word	0	-	0	1
+T	10	ok\r\n3.14\r\n3.14\n3.14 	2082	2102	1	1	word	0	-	0	1
+T	10	ok 3.14? 	2102	2111	1	1	word	0	-	0	1
+T	10	gamma U.S. alpha? 	2111	2129	1	1	word	0	-	0	1
+T	10	U.S. é\r\n3.14 	2129	2143	1	1	word	0	-	0	1
+T	10	3.14 	2143	2148	1	1	word	0	-	0	1
+T	10	gamma é 😀x\n中文 U.S., U.S., 😀x! 	2148	2181	1	1	word	0	-	0	1
+T	10	gamma中文。	2181	2190	1	1	word	0	-	0	1
+T	10	U.S.\r\n	2190	2196	1	1	word	0	-	0	1
+T	10	ok? 	2196	2200	1	1	word	0	-	0	1
+T	10	gamma\né ok ok Beta. gamma? 	2200	2228	1	1	word	0	-	0	1
+T	10	gamma 	2228	2234	1	1	word	0	-	0	1
+T	10	Betagamma\r\nalpha 	2234	2252	1	1	word	0	-	0	1
+T	10	éBeta é Beta alpha 	2252	2274	1	1	word	0	-	0	1
+T	10	Beta alpha! 	2274	2286	1	1	word	0	-	0	1
+T	10	gamma é! 	2286	2296	1	1	word	0	-	0	1
+T	10	U.S.. é? 	2296	2306	1	1	word	0	-	0	1
+T	10	😀x! 	2306	2311	1	1	word	0	-	0	1
+T	10	é ok Beta! 	2311	2323	1	1	word	0	-	0	1
+T	10	gamma! 	2323	2330	1	1	word	0	-	0	1
+T	10	中文 	2330	2333	1	1	word	0	-	0	1
+T	10	ok 	2333	2336	1	1	word	0	-	0	1
+T	10	U.S. alpha? 	2336	2348	1	1	word	0	-	0	1
+T	10	é\ngamma! 	2348	2358	1	1	word	0	-	0	1
+T	10	😀x? 	2358	2363	1	1	word	0	-	0	1
+T	10	é U.S. 	2363	2371	1	1	word	0	-	0	1
+T	10	中文! 	2371	2375	1	1	word	0	-	0	1
+T	10	ok\nok. 	2375	2382	1	1	word	0	-	0	1
+T	10	Beta。	2382	2387	1	1	word	0	-	0	1
+T	10	😀x Beta 😀x Beta3.14? 	2387	2411	1	1	word	0	-	0	1
+T	10	gamma 	2411	2417	1	1	word	0	-	0	1
+T	10	ok alpha 	2417	2426	1	1	word	0	-	0	1
+T	10	中文, é U.S.. gamma\r\nok。	2426	2449	1	1	word	0	-	0	1
+T	10	Beta. é😀x 	2449	2462	1	1	word	0	-	0	1
+T	10	é\r\n中文 	2462	2469	1	1	word	0	-	0	1
+T	10	alpha é gamma, 3.14! 	2469	2491	1	1	word	0	-	0	1
+T	10	U.S.. é\n中文. alpha\r\n😀x 3.14 中文? 	2491	2524	1	1	word	0	-	0	1
+T	10	U.S. 	2524	2529	1	1	word	0	-	0	1
+T	10	中文, 3.14 	2529	2538	1	1	word	0	-	0	1
+T	10	ok\n中文。	2538	2544	1	1	word	0	-	0	1
+T	10	é. 	2544	2548	1	1	word	0	-	0	1
+T	10	中文 中文? 	2548	2555	1	1	word	0	-	0	1
+T	10	alpha. 	2555	2562	1	1	word	0	-	0	1
+T	10	U.S.。	2562	2567	1	1	word	0	-	0	1
+T	10	3.14。	2567	2572	1	1	word	0	-	0	1
+T	10	U.S., é ok gammaok 😀x? 	2572	2598	1	1	word	0	-	0	1
+T	10	U.S.\n	2598	2603	1	1	word	0	-	0	1
+T	10	😀x ok 😀x 😀x! 	2603	2619	1	1	word	0	-	0	1
+T	10	Beta? 	2619	2625	1	1	word	0	-	0	1
+T	10	😀x\r\ngamma 	2625	2636	1	1	word	0	-	0	1
+T	10	é 	2636	2639	1	1	word	0	-	0	1
+T	10	ok, é. ok U.S.。	2639	2655	1	1	word	0	-	0	1
+T	10	ok! 	2655	2659	1	1	word	0	-	0	1
+T	10	alphagamma。	2659	2671	1	1	word	0	-	0	1
+T	10	ok\r\n中文 Beta! 	2671	2684	1	1	word	0	-	0	1
+T	10	alpha alpha 😀x alpha. 	2684	2707	1	1	word	0	-	0	1
+T	10	中文3.14 ok 	2707	2718	1	1	word	0	-	0	1
+T	10	中文 é, U.S. 	2718	2730	1	1	word	0	-	0	1
+T	10	alpha, gamma! 	2730	2744	1	1	word	0	-	0	1
+T	10	中文\n3.14. alpha 	2744	2759	1	1	word	0	-	0	1
+T	10	alpha. ok 😀x 	2759	2773	1	1	word	0	-	0	1
+T	10	😀x? 	2773	2778	1	1	word	0	-	0	1
+T	10	alpha. 3.14ok 😀x Beta! 	2778	2803	1	1	word	0	-	0	1
+T	10	😀x! 	2803	2808	1	1	word	0	-	0	1
+T	10	中文 é! 	2808	2815	1	1	word	0	-	0	1
+T	10	U.S.. 	2815	2821	1	1	word	0	-	0	1
+T	10	Betaé! 	2821	2830	1	1	word	0	-	0	1
+T	10	中文 3.14 U.S., ok\r\nBeta! 	2830	2854	1	1	word	0	-	0	1
+T	10	gamma. gamma. é U.S.	2854	2875	1	1	word	0	-	0	1
+T	10	alpha gamma\né 	2875	2891	1	1	word	0	-	0	1
+T	10	é ok\r\nBeta ok\nBeta, Beta 	2891	2917	1	1	word	0	-	0	1
+T	10	中文\r\nalpha 中文? 	2917	2931	1	1	word	0	-	0	1
+T	10	ok, ok\r\négamma\r\nalpha 😀x。	2931	2959	1	1	word	0	-	0	1
+T	10	3.14 U.S. ok\ngamma 	2959	2978	1	1	word	0	-	0	1
+T	10	中文。	2978	2981	1	1	word	0	-	0	1
+T	10	alpha, 中文U.S.? 	2981	2997	1	1	word	0	-	0	1
+T	10	😀x😀x 	2997	3005	1	1	word	0	-	0	1
+T	10	gamma 	3005	3011	1	1	word	0	-	0	1
+T	10	alpha 	3011	3017	1	1	word	0	-	0	1
+T	10	ok 中文, 中文. alpha! 	3017	3035	1	1	word	0	-	0	1
+T	10	U.S.。	3035	3040	1	1	word	0	-	0	1
+T	10	😀x\n	3040	3044	1	1	word	0	-	0	1
+T	10	é, U.S. 	3044	3053	1	1	word	0	-	0	1
+T	10	😀x\r\nok 	3053	3061	1	1	word	0	-	0	1
+T	10	Beta? 	3061	3067	1	1	word	0	-	0	1
+T	10	ok? 	3067	3071	1	1	word	0	-	0	1
+T	10	3.14。	3071	3076	1	1	word	0	-	0	1
+T	10	U.S. 3.14 3.14. gamma\r\ngamma\n中文\n😀x. 	3076	3113	1	1	word	0	-	0	1
+T	10	中文。	3113	3116	1	1	word	0	-	0	1
+T	10	Beta. 	3116	3122	1	1	word	0	-	0	1
+T	10	U.S. 	3122	3127	1	1	word	0	-	0	1
+T	10	中文 	3127	3130	1	1	word	0	-	0	1
+T	10	Beta\r\nU.S. alpha! 	3130	3148	1	1	word	0	-	0	1
+T	10	U.S. gammaU.S.\n	3148	3164	1	1	word	0	-	0	1
+T	10	U.S.. 	3164	3170	1	1	word	0	-	0	1
+T	10	😀x! 	3170	3175	1	1	word	0	-	0	1
+T	10	alpha! 	3175	3182	1	1	word	0	-	0	1
+T	10	中文 	3182	3185	1	1	word	0	-	0	1
+T	10	alpha\nok\nBeta。	3185	3199	1	1	word	0	-	0	1
+T	10	ok. gamma 	3199	3209	1	1	word	0	-	0	1
+T	10	é 中文。	3209	3215	1	1	word	0	-	0	1
+T	10	é。	3215	3218	1	1	word	0	-	0	1
+T	10	Beta! 	3218	3224	1	1	word	0	-	0	1
+T	10	😀x 	3224	3228	1	1	word	0	-	0	1
+T	10	3.14! 	3228	3234	1	1	word	0	-	0	1
+T	10	😀xok gamma. gamma. alpha ok alpha? 	3234	3271	1	1	word	0	-	0	1
+T	10	中文中文 	3271	3277	1	1	word	0	-	0	1
+T	10	3.14 U.S.	3277	3286	1	1	word	0	-	0	1
+T	10	😀x, 中文\n3.14 alpha é é, ok. 3.14 	3286	3322	1	1	word	0	-	0	1
+T	10	ok\r\nU.S.\né, okok? 	3322	3342	1	1	word	0	-	0	1
+T	10	alpha。	3342	3348	1	1	word	0	-	0	1
+T	10	alpha? 	3348	3355	1	1	word	0	-	0	1
+T	10	Beta! 	3355	3361	1	1	word	0	-	0	1
+T	10	😀xU.S. ok U.S.! 	3361	3379	1	1	word	0	-	0	1
+T	10	3.14ok! 	3379	3388	1	1	word	0	-	0	1
+T	10	中文! 	3388	3392	1	1	word	0	-	0	1
+T	10	U.S. 	3392	3397	1	1	word	0	-	0	1
+T	10	😀x U.S.\né。	3397	3409	1	1	word	0	-	0	1
+T	10	中文, 3.14\r\néU.S.。	3409	3427	1	1	word	0	-	0	1
+T	10	😀x 	3427	3431	1	1	word	0	-	0	1
+T	10	😀x. alpha 中文。	3431	3445	1	1	word	0	-	0	1
+T	10	é U.S., 3.14\n😀x Beta? 	3445	3469	1	1	word	0	-	0	1
+T	10	é é 3.14\n中文? 	3469	3484	1	1	word	0	-	0	1
+T	10	ok Beta 中文! 	3484	3496	1	1	word	0	-	0	1
+T	10	Beta! 	3496	3502	1	1	word	0	-	0	1
+T	10	3.14 中文? 	3502	3511	1	1	word	0	-	0	1
+T	10	😀x. ok 中文? 	3511	3523	1	1	word	0	-	0	1
+T	10	中文\nU.S. 	3523	3531	1	1	word	0	-	0	1
+T	10	alpha! 	3531	3538	1	1	word	0	-	0	1
+T	10	ok, alpha 中文 Beta。	3538	3556	1	1	word	0	-	0	1
+T	10	alpha alpha 中文, 中文 alpha, gamma alpha gamma. 	3556	3601	1	1	word	0	-	0	1
+T	10	中文\nalpha ok. gamma! 	3601	3621	1	1	word	0	-	0	1
+T	10	Beta. ok 中文 😀x 😀x. ok\n😀x. alpha 3.14😀x。	3621	3665	1	1	word	0	-	0	1
+T	10	alpha 3.14 U.S.。	3665	3681	1	1	word	0	-	0	1
+T	10	gamma\r\ngamma 😀x alpha😀x. 	3681	3709	1	1	word	0	-	0	1
+T	10	Betaalpha\r\né\r\nU.S. 	3709	3730	1	1	word	0	-	0	1
+T	10	alpha gamma U.S. 3.14 😀x! 	3730	3757	1	1	word	0	-	0	1
+T	10	中文? 	3757	3761	1	1	word	0	-	0	1
+T	10	gammaU.S. ok 	3761	3775	1	1	word	0	-	0	1
+T	10	3.14。	3775	3780	1	1	word	0	-	0	1
+T	10	ok gamma? 	3780	3790	1	1	word	0	-	0	1
+T	10	😀x ok, é\n😀x\ngamma, ok\n中文? 	3790	3819	1	1	word	0	-	0	1
+T	10	Beta 中文 3.14\n中文, 3.14 U.S.	3819	3845	1	1	word	0	-	0	1
+T	10	Beta 中文? 	3845	3855	1	1	word	0	-	0	1
+T	10	3.14 3.14? 	3855	3866	1	1	word	0	-	0	1
+T	10	ok, alpha? 	3866	3877	1	1	word	0	-	0	1
+T	10	3.14。	3877	3882	1	1	word	0	-	0	1
+T	10	😀xU.S. 3.14! 	3882	3897	1	1	word	0	-	0	1
+T	10	3.14 	3897	3902	1	1	word	0	-	0	1
+T	10	ok\ngamma 	3902	3911	1	1	word	0	-	0	1
+T	10	😀x alpha, U.S. 	3911	3927	1	1	word	0	-	0	1
+T	10	😀x. 	3927	3932	1	1	word	0	-	0	1
+T	10	😀x 3.14\r\nU.S. 	3932	3947	1	1	word	0	-	0	1
+T	10	alpha? 	3947	3954	1	1	word	0	-	0	1
+T	10	😀x. é, ok 中文? 	3954	3970	1	1	word	0	-	0	1
+T	10	Beta\nU.S. gamma! 	3970	3987	1	1	word	0	-	0	1
+T	10	gamma! 	3987	3994	1	1	word	0	-	0	1
+T	10	😀x, 3.14! 	3994	4005	1	1	word	0	-	0	1
+T	10	U.S.! 	4005	4011	1	1	word	0	-	0	1
+T	10	alpha 	4011	4017	1	1	word	0	-	0	1
+T	10	é 	4017	4020	1	1	word	0	-	0	1
+T	10	ok alpha, ok\ngamma 	4020	4039	1	1	word	0	-	0	1
+T	10	alpha。	4039	4045	1	1	word	0	-	0	1
+T	10	gamma 	4045	4051	1	1	word	0	-	0	1
+T	10	中文 	4051	4054	1	1	word	0	-	0	1
+T	10	U.S., Beta? 	4054	4066	1	1	word	0	-	0	1
+T	10	中文 	4066	4069	1	1	word	0	-	0	1
+T	10	é。	4069	4072	1	1	word	0	-	0	1
+T	10	😀x 3.14, U.S. alpha Beta\r\n中文 中文\né\nU.S.	4072	4112	1	1	word	0	-	0	1
+T	10	😀x ok U.S. 	4112	4125	1	1	word	0	-	0	1
+T	10	Beta! 	4125	4131	1	1	word	0	-	0	1
+T	10	Beta。	4131	4136	1	1	word	0	-	0	1
+T	10	中文 	4136	4139	1	1	word	0	-	0	1
+T	10	ok 	4139	4142	1	1	word	0	-	0	1
+T	10	😀x\nU.S.\r\n	4142	4152	1	1	word	0	-	0	1
+T	10	alpha\nok alpha 	4152	4167	1	1	word	0	-	0	1
+T	10	ok 3.14 	4167	4175	1	1	word	0	-	0	1
+T	10	gamma。	4175	4181	1	1	word	0	-	0	1
+T	10	😀x\nU.S.. 	4181	4191	1	1	word	0	-	0	1
+T	10	中文! 	4191	4195	1	1	word	0	-	0	1
+T	10	gamma, alphaalpha 	4195	4214	1	1	word	0	-	0	1
+T	10	😀x, alpha gamma é\né. é中文 U.S.! 	4214	4250	1	1	word	0	-	0	1
+T	10	3.14\r\nok 	4250	4259	1	1	word	0	-	0	1
+E	10	4259	4259	0
+T	11	alpha\r\n中文 3.14。	0	15	1	1	word	0	-	0	1
+T	11	3.14? 	15	21	1	1	word	0	-	0	1
+T	11	gamma\r\n😀x 3.14 é alpha gamma。	21	52	1	1	word	0	-	0	1
+T	11	Beta\r\n😀x! 	52	63	1	1	word	0	-	0	1
+T	11	😀x? 	63	68	1	1	word	0	-	0	1
+T	11	Beta中文3.14! 	68	82	1	1	word	0	-	0	1
+T	11	Beta é? 	82	91	1	1	word	0	-	0	1
+T	11	U.S.! 	91	97	1	1	word	0	-	0	1
+T	11	é。	97	100	1	1	word	0	-	0	1
+T	11	3.14 ok。	100	108	1	1	word	0	-	0	1
+T	11	U.S.\n3.14? 	108	119	1	1	word	0	-	0	1
+T	11	gamma\nBeta! 	119	131	1	1	word	0	-	0	1
+T	11	alpha. ok\nok 	131	144	1	1	word	0	-	0	1
+T	11	Beta gamma ok\r\n3.14 Beta? 	144	170	1	1	word	0	-	0	1
+T	11	U.S., 3.14\nalpha. 	170	188	1	1	word	0	-	0	1
+T	11	U.S. 	188	193	1	1	word	0	-	0	1
+T	11	é alpha. 	193	203	1	1	word	0	-	0	1
+T	11	U.S. 	203	208	1	1	word	0	-	0	1
+T	11	3.14, alpha 3.14😀x gamma 	208	235	1	1	word	0	-	0	1
+T	11	😀x 中文\nalpha 😀x 😀x 	235	256	1	1	word	0	-	0	1
+T	11	U.S., ok? 	256	266	1	1	word	0	-	0	1
+T	11	3.14. 	266	272	1	1	word	0	-	0	1
+T	11	😀x\r\n中文 	272	280	1	1	word	0	-	0	1
+T	11	gamma\nU.S. gammaBeta。	280	302	1	1	word	0	-	0	1
+T	11	é。	302	305	1	1	word	0	-	0	1
+T	11	ok! 	305	309	1	1	word	0	-	0	1
+T	11	U.S. alpha? 	309	321	1	1	word	0	-	0	1
+T	11	😀x 3.14. 	321	331	1	1	word	0	-	0	1
+T	11	U.S. alpha 中文\n😀x é é 3.14! 	331	361	1	1	word	0	-	0	1
+T	11	okgamma U.S. gamma, 3.14 é 中文 😀x gamma gamma。	361	409	1	1	word	0	-	0	1
+T	11	é。	409	412	1	1	word	0	-	0	1
+T	11	é\r\nU.S.。	412	421	1	1	word	0	-	0	1
+T	11	alpha\r\nok 😀x. 	421	436	1	1	word	0	-	0	1
+T	11	Beta? 	436	442	1	1	word	0	-	0	1
+T	11	😀x 	442	446	1	1	word	0	-	0	1
+T	11	中文 ok, 3.14, U.S.\r\n	446	465	1	1	word	0	-	0	1
+T	11	gammaU.S. 	465	476	1	1	word	0	-	0	1
+T	11	BetaBeta! 	476	487	1	1	word	0	-	0	1
+T	11	gamma! 	487	494	1	1	word	0	-	0	1
+T	11	Beta? 	494	500	1	1	word	0	-	0	1
+T	11	gamma 中文\n😀x Beta\r\n中文\nBeta\n中文 😀x. 	500	535	1	1	word	0	-	0	1
+T	11	U.S.. 	535	541	1	1	word	0	-	0	1
+T	11	中文. gamma\né 	541	554	1	1	word	0	-	0	1
+T	11	ok\r\nU.S.! 	554	564	1	1	word	0	-	0	1
+T	11	alpha. 	564	571	1	1	word	0	-	0	1
+T	11	U.S.\n	571	576	1	1	word	0	-	0	1
+T	11	😀x? 	576	581	1	1	word	0	-	0	1
+T	11	3.14 ok Beta. 	581	595	1	1	word	0	-	0	1
+T	11	😀x. 	595	600	1	1	word	0	-	0	1
+T	11	U.S.。	600	605	1	1	word	0	-	0	1
+T	11	😀x! 	605	610	1	1	word	0	-	0	1
+T	11	é alpha ok\n3.14\r\nok\r\n3.14 U.S.! 	610	643	1	1	word	0	-	0	1
+T	11	U.S.3.14 3.14。	643	658	1	1	word	0	-	0	1
+T	11	alpha。	658	664	1	1	word	0	-	0	1
+T	11	U.S.\r\n	664	670	1	1	word	0	-	0	1
+T	11	ok, 😀x。	670	678	1	1	word	0	-	0	1
+T	11	é 3.14\nU.S.	678	690	1	1	word	0	-	0	1
+T	11	é. é, U.S. 	690	704	1	1	word	0	-	0	1
+T	11	gamma, okalpha 	704	720	1	1	word	0	-	0	1
+T	11	😀x, 中文 U.S. 	720	733	1	1	word	0	-	0	1
+T	11	alpha ok. gamma U.S., é\nalpha3.14 Beta! 	733	775	1	1	word	0	-	0	1
+T	11	U.S. 	775	780	1	1	word	0	-	0	1
+T	11	Beta\r\n😀x 	780	790	1	1	word	0	-	0	1
+T	11	😀xU.S. 	790	799	1	1	word	0	-	0	1
+T	11	中文。	799	802	1	1	word	0	-	0	1
+T	11	中文\n3.14 	802	810	1	1	word	0	-	0	1
+T	11	Beta? 	810	816	1	1	word	0	-	0	1
+T	11	gamma 😀x\r\ngammaBetaBeta。	816	843	1	1	word	0	-	0	1
+T	11	中文? 	843	847	1	1	word	0	-	0	1
+T	11	é? 	847	851	1	1	word	0	-	0	1
+T	11	中文 3.14 	851	859	1	1	word	0	-	0	1
+T	11	中文\nBeta? 	859	868	1	1	word	0	-	0	1
+T	11	gamma, ok, gamma\r\nU.S.? 	868	892	1	1	word	0	-	0	1
+T	11	😀x 😀x😀x! 	892	905	1	1	word	0	-	0	1
+T	11	U.S.? 	905	911	1	1	word	0	-	0	1
+T	11	alpha 😀x! 	911	922	1	1	word	0	-	0	1
+T	11	ok\né alpha 3.14\r\nBeta 中文 U.S. 	922	953	1	1	word	0	-	0	1
+T	11	😀x 	953	957	1	1	word	0	-	0	1
+T	11	U.S.? 	957	963	1	1	word	0	-	0	1
+T	11	gamma é😀x 	963	976	1	1	word	0	-	0	1
+T	11	3.14, alpha 	976	988	1	1	word	0	-	0	1
+T	11	gamma 	988	994	1	1	word	0	-	0	1
+T	11	Beta, gamma! 	994	1007	1	1	word	0	-	0	1
+T	11	ok, Beta 😀x é	1007	1023	1	1	word	0	-	0	1
+T	11	U.S. 	1023	1028	1	1	word	0	-	0	1
+T	11	😀x. 	1028	1033	1	1	word	0	-	0	1
+T	11	中文\r\n3.14, U.S.. 	1033	1049	1	1	word	0	-	0	1
+T	11	中文\n😀x 中文, alpha. 	1049	1067	1	1	word	0	-	0	1
+T	11	Beta中文\n中文gamma. é 	1067	1088	1	1	word	0	-	0	1
+T	11	alpha, Beta中文\r\nok gamma 中文\r\n中文\r\né Beta Beta! 	1088	1135	1	1	word	0	-	0	1
+T	11	ok é alpha\nalpha, Beta alpha. alpha U.S.\r\n	1135	1178	1	1	word	0	-	0	1
+T	11	alpha! 	1178	1185	1	1	word	0	-	0	1
+T	11	Beta! 	1185	1191	1	1	word	0	-	0	1
+T	11	ok! 	1191	1195	1	1	word	0	-	0	1
+T	11	中文。	1195	1198	1	1	word	0	-	0	1
+T	11	Beta\r\né? 	1198	1208	1	1	word	0	-	0	1
+T	11	ok alpha! 	1208	1218	1	1	word	0	-	0	1
+T	11	alpha Beta. ok\r\ngamma. 	1218	1241	1	1	word	0	-	0	1
+T	11	😀x\r\nBeta😀x\r\n😀x 3.14。	1241	1265	1	1	word	0	-	0	1
+T	11	alpha\r\nU.S.. gamma 中文\r\n3.14 U.S.. 	1265	1299	1	1	word	0	-	0	1
+T	11	😀x 中文. 3.14 U.S. 	1299	1317	1	1	word	0	-	0	1
+T	11	Beta\r\nok. gamma U.S.。	1317	1338	1	1	word	0	-	0	1
+T	11	😀x 中文 U.S.	1338	1349	1	1	word	0	-	0	1
+T	11	gamma, alpha! 	1349	1364	1	1	word	0	-	0	1
+T	11	Beta? 	1364	1370	1	1	word	0	-	0	1
+T	11	Beta\n3.14. alpha\r\nalpha! 	1370	1395	1	1	word	0	-	0	1
+T	11	😀x中文 é, 😀x. ok 中文 ok. gamma. ok 	1395	1431	1	1	word	0	-	0	1
+T	11	中文ok3.14中文! 	1431	1446	1	1	word	0	-	0	1
+T	11	中文 	1446	1449	1	1	word	0	-	0	1
+T	11	ok U.S. gamma ok 3.14 😀x? 	1449	1476	1	1	word	0	-	0	1
+T	11	中文 alpha! 	1476	1486	1	1	word	0	-	0	1
+T	11	U.S. 	1486	1491	1	1	word	0	-	0	1
+T	11	ok é Beta。	1491	1502	1	1	word	0	-	0	1
+T	11	éé😀x Beta okU.S.\r\n	1502	1526	1	1	word	0	-	0	1
+T	11	alpha。	1526	1532	1	1	word	0	-	0	1
+T	11	中文, gammaokalphaalpha! 	1532	1558	1	1	word	0	-	0	1
+T	11	é? 	1558	1562	1	1	word	0	-	0	1
+T	11	中文 alpha 	1562	1571	1	1	word	0	-	0	1
+T	11	gammagamma\r\n3.14\r\n😀x alpha\r\nBeta\r\nBeta ok é, 😀x 😀x! 	1571	1628	1	1	word	0	-	0	1
+T	11	é é 😀x\r\n3.14 中文, U.S. é? 	1628	1657	1	1	word	0	-	0	1
+T	11	ok? 	1657	1661	1	1	word	0	-	0	1
+T	11	alpha。	1661	1667	1	1	word	0	-	0	1
+T	11	中文 Beta\r\nBeta alpha\r\ngamma, Beta U.S.	1667	1704	1	1	word	0	-	0	1
+T	11	é ok 3.14. 3.14? 	1704	1723	1	1	word	0	-	0	1
+T	11	gamma! 	1723	1730	1	1	word	0	-	0	1
+T	11	中文. 	1730	1734	1	1	word	0	-	0	1
+T	11	U.S.。	1734	1739	1	1	word	0	-	0	1
+T	11	é\r\n中文\n😀x\nU.S.. ok U.S.? 	1739	1765	1	1	word	0	-	0	1
+T	11	😀x。	1765	1769	1	1	word	0	-	0	1
+T	11	😀x。	1769	1773	1	1	word	0	-	0	1
+T	11	ok. 	1773	1777	1	1	word	0	-	0	1
+T	11	Beta\nBeta! 	1777	1788	1	1	word	0	-	0	1
+T	11	中文\r\ngamma alpha。	1788	1804	1	1	word	0	-	0	1
+T	11	😀x 中文中文! 	1804	1815	1	1	word	0	-	0	1
+T	11	gamma 3.14? 	1815	1827	1	1	word	0	-	0	1
+T	11	alpha. 	1827	1834	1	1	word	0	-	0	1
+T	11	😀x\nok\ngamma 	1834	1847	1	1	word	0	-	0	1
+T	11	中文. é é alpha? 	1847	1864	1	1	word	0	-	0	1
+T	11	Beta? 	1864	1870	1	1	word	0	-	0	1
+T	11	alpha。	1870	1876	1	1	word	0	-	0	1
+T	11	3.14 中文? 	1876	1885	1	1	word	0	-	0	1
+T	11	alpha\r\ngamma? 	1885	1899	1	1	word	0	-	0	1
+T	11	gamma! 	1899	1906	1	1	word	0	-	0	1
+T	11	é\ngamma 	1906	1915	1	1	word	0	-	0	1
+T	11	U.S.。	1915	1920	1	1	word	0	-	0	1
+T	11	U.S.	1920	1924	1	1	word	0	-	0	1
+T	11	ok? 	1924	1929	1	1	word	0	-	0	1
+T	11	3.14 ok 😀x Beta\ngamma? 	1929	1953	1	1	word	0	-	0	1
+T	11	U.S.。	1953	1958	1	1	word	0	-	0	1
+T	11	okBeta 	1958	1966	1	1	word	0	-	0	1
+T	11	Beta\nBeta alpha 	1966	1982	1	1	word	0	-	0	1
+T	11	ok\nU.S. 	1982	1990	1	1	word	0	-	0	1
+T	11	Beta. ok. 	1990	2000	1	1	word	0	-	0	1
+T	11	😀x 	2000	2004	1	1	word	0	-	0	1
+T	11	3.14U.S.? 	2004	2015	1	1	word	0	-	0	1
+T	11	ok 😀x Beta! 	2015	2028	1	1	word	0	-	0	1
+T	11	Beta 	2028	2033	1	1	word	0	-	0	1
+T	11	é。	2033	2036	1	1	word	0	-	0	1
+T	11	3.14. gamma, 中文? 	2036	2053	1	1	word	0	-	0	1
+T	11	😀x, 😀x\r\nok\n中文 Beta\r\nok 	2053	2078	1	1	word	0	-	0	1
+T	11	中文 é, 😀x, ok 	2078	2093	1	1	word	0	-	0	1
+T	11	gamma。	2093	2099	1	1	word	0	-	0	1
+T	11	alpha éU.S. 	2099	2113	1	1	word	0	-	0	1
+T	11	中文, 中文 3.14 Beta alpha\nalpha! 	2113	2143	1	1	word	0	-	0	1
+T	11	U.S.! 	2143	2149	1	1	word	0	-	0	1
+T	11	é é\ngamma 	2149	2161	1	1	word	0	-	0	1
+T	11	中文 gamma。	2161	2170	1	1	word	0	-	0	1
+T	11	é alpha 	2170	2179	1	1	word	0	-	0	1
+T	11	3.14 ok\r\nok中文\ngamma\nalpha\r\nU.S., gamma? 	2179	2220	1	1	word	0	-	0	1
+T	11	3.14? 	2220	2226	1	1	word	0	-	0	1
+T	11	alpha gamma, 😀x! 	2226	2244	1	1	word	0	-	0	1
+T	11	中文. ok😀x\r\nU.S.。	2244	2261	1	1	word	0	-	0	1
+T	11	okok! 	2261	2268	1	1	word	0	-	0	1
+T	11	U.S.\n3.14\nU.S. alpha Beta ok é\n中文 alpha, alpha 	2268	2316	1	1	word	0	-	0	1
+T	11	é😀x。	2316	2323	1	1	word	0	-	0	1
+T	11	U.S. 	2323	2328	1	1	word	0	-	0	1
+T	11	中文, alpha! 	2328	2339	1	1	word	0	-	0	1
+T	11	中文 alpha 3.14? 	2339	2354	1	1	word	0	-	0	1
+T	11	ok\r\né alpha U.S.。	2354	2372	1	1	word	0	-	0	1
+T	11	中文\né? 	2372	2379	1	1	word	0	-	0	1
+T	11	gamma éé\r\nok. ok\nok! 	2379	2403	1	1	word	0	-	0	1
+T	11	alpha? 	2403	2410	1	1	word	0	-	0	1
+T	11	alpha。	2410	2416	1	1	word	0	-	0	1
+T	11	é 	2416	2419	1	1	word	0	-	0	1
+T	11	alpha。	2419	2425	1	1	word	0	-	0	1
+T	11	gamma\r\nalpha 3.14。	2425	2443	1	1	word	0	-	0	1
+T	11	gamma\r\nBeta gamma é 	2443	2464	1	1	word	0	-	0	1
+T	11	gammaU.S.	2464	2474	1	1	word	0	-	0	1
+T	11	U.S.3.14 gamma 	2474	2491	1	1	word	0	-	0	1
+T	11	é\r\n😀x\nok Beta ok. 3.14\r\ngamma, é。	2491	2527	1	1	word	0	-	0	1
+T	11	alphaU.S.? 	2527	2539	1	1	word	0	-	0	1
+T	11	é 😀x U.S., 中文。	2539	2555	1	1	word	0	-	0	1
+T	11	é! 	2555	2559	1	1	word	0	-	0	1
+T	11	中文\ngamma。	2559	2568	1	1	word	0	-	0	1
+T	11	😀x中文 	2568	2575	1	1	word	0	-	0	1
+T	11	中文 	2575	2578	1	1	word	0	-	0	1
+T	11	alphaU.S. 	2578	2589	1	1	word	0	-	0	1
+E	11	2589	2589	0
+T	12	gamma U.S.。	0	11	1	1	word	0	-	0	1
+T	12	中文. 	11	15	1	1	word	0	-	0	1
+T	12	Beta 	15	20	1	1	word	0	-	0	1
+T	12	é\ngamma\nBeta ok 3.14? 	20	43	1	1	word	0	-	0	1
+T	12	U.S.! 	43	49	1	1	word	0	-	0	1
+T	12	ok? 	49	53	1	1	word	0	-	0	1
+T	12	U.S. 	53	58	1	1	word	0	-	0	1
+T	12	U.S. okgamma, 3.14? 	58	79	1	1	word	0	-	0	1
+T	12	Beta 中文, é U.S. 3.14 é 3.14\r\nok? 	79	114	1	1	word	0	-	0	1
+T	12	Beta 😀x\r\né 	114	127	1	1	word	0	-	0	1
+T	12	Beta? 	127	133	1	1	word	0	-	0	1
+T	12	gamma。	133	139	1	1	word	0	-	0	1
+T	12	中文! 	139	143	1	1	word	0	-	0	1
+T	12	ok\r\n😀x, 中文alpha? 	143	162	1	1	word	0	-	0	1
+T	12	3.14? 	162	168	1	1	word	0	-	0	1
+T	12	é! 	168	172	1	1	word	0	-	0	1
+T	12	3.14 Beta 中文 	172	185	1	1	word	0	-	0	1
+T	12	é. 3.14 😀x alpha. 	185	205	1	1	word	0	-	0	1
+T	12	U.S., é gamma alpha 	205	226	1	1	word	0	-	0	1
+T	12	gamma。	226	232	1	1	word	0	-	0	1
+T	12	é\ngamma\nU.S. 	232	246	1	1	word	0	-	0	1
+T	12	😀x Beta 3.14 U.S. 	246	265	1	1	word	0	-	0	1
+E	12	265	265	0
+T	13	é Beta\n中文\nok 	0	14	1	1	word	0	-	0	1
+T	13	中文, é 	14	21	1	1	word	0	-	0	1
+T	13	Beta\nalpha. é 😀x 	21	40	1	1	word	0	-	0	1
+T	13	é alpha。	40	49	1	1	word	0	-	0	1
+T	13	U.S.? 	49	55	1	1	word	0	-	0	1
+T	13	3.14. é gamma, BetaBeta, 中文 	55	85	1	1	word	0	-	0	1
+T	13	é\r\nok\nU.S.. 	85	98	1	1	word	0	-	0	1
+T	13	中文Beta\né gamma! 	98	116	1	1	word	0	-	0	1
+T	13	gamma! 	116	123	1	1	word	0	-	0	1
+T	13	中文\r\nok 😀x\r\nU.S.\n	123	140	1	1	word	0	-	0	1
+T	13	😀x. 3.14ok。	140	153	1	1	word	0	-	0	1
+T	13	中文! 	153	157	1	1	word	0	-	0	1
+T	13	ok\n3.14 3.14\nok Beta! 	157	179	1	1	word	0	-	0	1
+T	13	中文😀x? 	179	187	1	1	word	0	-	0	1
+T	13	alpha\r\né 😀x 中文\r\nU.S. alpha, U.S.! 	187	223	1	1	word	0	-	0	1
+T	13	gamma! 	223	230	1	1	word	0	-	0	1
+T	13	Beta. 	230	236	1	1	word	0	-	0	1
+T	13	Beta 中文。	236	244	1	1	word	0	-	0	1
+T	13	alpha 	244	250	1	1	word	0	-	0	1
+T	13	3.14 	250	255	1	1	word	0	-	0	1
+T	13	Beta, gamma\r\nalpha\r\nBeta 😀x 3.14\r\né alpha? 	255	300	1	1	word	0	-	0	1
+T	13	3.14 U.S.	300	309	1	1	word	0	-	0	1
+T	13	ok. é Beta\r\n3.14\r\nBeta. 	309	335	1	1	word	0	-	0	1
+T	13	中文 	335	338	1	1	word	0	-	0	1
+T	13	3.14? 	338	344	1	1	word	0	-	0	1
+T	13	Beta 	344	349	1	1	word	0	-	0	1
+T	13	Beta Beta! 	349	360	1	1	word	0	-	0	1
+T	13	ok gamma\n3.14! 	360	375	1	1	word	0	-	0	1
+T	13	3.14 	375	380	1	1	word	0	-	0	1
+T	13	3.14\r\ngamma, 3.14 gamma 3.14 gamma é\nBeta, éalpha. 	380	434	1	1	word	0	-	0	1
+T	13	Beta! 	434	440	1	1	word	0	-	0	1
+T	13	中文? 	440	444	1	1	word	0	-	0	1
+T	13	ok. 	444	448	1	1	word	0	-	0	1
+T	13	Beta。	448	453	1	1	word	0	-	0	1
+T	13	Beta\r\nok. 	453	463	1	1	word	0	-	0	1
+T	13	中文 	463	466	1	1	word	0	-	0	1
+T	13	😀x\nU.S.? 	466	476	1	1	word	0	-	0	1
+T	13	😀x! 	476	481	1	1	word	0	-	0	1
+T	13	😀x\r\n中文 U.S. 	481	494	1	1	word	0	-	0	1
+T	13	alpha 中文\né。	494	506	1	1	word	0	-	0	1
+T	13	alpha。	506	512	1	1	word	0	-	0	1
+T	13	ok\n中文。	512	518	1	1	word	0	-	0	1
+T	13	gamma\r\n3.14。	518	530	1	1	word	0	-	0	1
+T	13	alpha 3.14\né 😀x\n😀x\r\noké\r\né 3.14! 	530	569	1	1	word	0	-	0	1
+T	13	😀x? 	569	574	1	1	word	0	-	0	1
+T	13	é\r\nU.S. 	574	583	1	1	word	0	-	0	1
+T	13	😀x 	583	587	1	1	word	0	-	0	1
+T	13	ok? 	587	591	1	1	word	0	-	0	1
+T	13	gamma\r\n中文 3.14, gamma? 	591	614	1	1	word	0	-	0	1
+T	13	中文 😀x? 	614	622	1	1	word	0	-	0	1
+T	13	é, gamma U.S.。	622	637	1	1	word	0	-	0	1
+T	13	😀x 	637	641	1	1	word	0	-	0	1
+T	13	gamma。	641	647	1	1	word	0	-	0	1
+T	13	😀xé\n😀x. gamma? 	647	666	1	1	word	0	-	0	1
+T	13	gamma。	666	672	1	1	word	0	-	0	1
+T	13	😀x, Beta é! 	672	686	1	1	word	0	-	0	1
+T	13	gamma\n3.14 	686	697	1	1	word	0	-	0	1
+T	13	U.S. 	697	702	1	1	word	0	-	0	1
+T	13	中文, é gamma 😀x alpha\r\n3.14! 	702	732	1	1	word	0	-	0	1
+T	13	中文! 	732	736	1	1	word	0	-	0	1
+T	13	Beta. é\r\nU.S.	736	750	1	1	word	0	-	0	1
+T	13	gamma U.S.\nalpha\r\nalphaok。	750	778	1	1	word	0	-	0	1
+T	13	Beta gamma 	778	789	1	1	word	0	-	0	1
+T	13	gamma, 3.14 U.S. 	789	806	1	1	word	0	-	0	1
+T	13	中文\n😀x! 	806	814	1	1	word	0	-	0	1
+T	13	中文\r\n😀x. 	814	823	1	1	word	0	-	0	1
+T	13	Beta ok alpha é 	823	840	1	1	word	0	-	0	1
+T	13	ok\nalpha\n3.14. 	840	855	1	1	word	0	-	0	1
+T	13	中文\r\nok U.S. gamma? 	855	874	1	1	word	0	-	0	1
+T	13	é 3.14alpha😀x. 	874	893	1	1	word	0	-	0	1
+T	13	U.S. 	893	898	1	1	word	0	-	0	1
+T	13	😀x\n😀xalpha 😀x gamma 中文 U.S. 	898	930	1	1	word	0	-	0	1
+T	13	中文. é\r\né, ok Beta\r\ngamma gamma. éBeta。	930	972	1	1	word	0	-	0	1
+T	13	é! 	972	976	1	1	word	0	-	0	1
+T	13	Beta。	976	981	1	1	word	0	-	0	1
+T	13	gammaalpha? 	981	994	1	1	word	0	-	0	1
+T	13	é 	994	997	1	1	word	0	-	0	1
+T	13	3.14! 	997	1003	1	1	word	0	-	0	1
+T	13	alpha, Beta ok。	1003	1018	1	1	word	0	-	0	1
+T	13	😀x. é, 😀x 	1018	1031	1	1	word	0	-	0	1
+T	13	😀x ok? 	1031	1039	1	1	word	0	-	0	1
+T	13	ok U.S.。	1039	1047	1	1	word	0	-	0	1
+T	13	alpha é! 	1047	1057	1	1	word	0	-	0	1
+T	13	alpha? 	1057	1064	1	1	word	0	-	0	1
+T	13	中文. 	1064	1068	1	1	word	0	-	0	1
+T	13	U.S. 	1068	1073	1	1	word	0	-	0	1
+T	13	Beta ok, 中文😀x 	1073	1089	1	1	word	0	-	0	1
+T	13	U.S. 	1089	1094	1	1	word	0	-	0	1
+T	13	U.S.. é 	1094	1103	1	1	word	0	-	0	1
+T	13	Beta. gamma, é! 	1103	1120	1	1	word	0	-	0	1
+T	13	é U.S.\r\n	1120	1129	1	1	word	0	-	0	1
+T	13	😀x, alpha! 	1129	1141	1	1	word	0	-	0	1
+T	13	中文. 3.14 3.14😀x。	1141	1159	1	1	word	0	-	0	1
+T	13	Beta. 	1159	1165	1	1	word	0	-	0	1
+T	13	U.S.\n	1165	1170	1	1	word	0	-	0	1
+T	13	Beta 3.14, ok\r\n中文\r\nBeta\n中文 Beta\n中文中文! 	1170	1209	1	1	word	0	-	0	1
+T	13	3.14, alpha. é。	1209	1225	1	1	word	0	-	0	1
+T	13	gamma 中文ok! 	1225	1238	1	1	word	0	-	0	1
+T	13	U.S., alpha😀x\nBeta! 	1238	1260	1	1	word	0	-	0	1
+T	13	ok, ok中文 alpha 	1260	1276	1	1	word	0	-	0	1
+T	13	é\n中文\r\n3.14 é Beta, gamma éBeta。	1276	1311	1	1	word	0	-	0	1
+T	13	ok? 	1311	1315	1	1	word	0	-	0	1
+T	13	Beta, é。	1315	1324	1	1	word	0	-	0	1
+T	13	ok 3.14\ngamma ok. gamma 3.14 U.S.? 	1324	1359	1	1	word	0	-	0	1
+T	13	gamma, 3.14 中文! 	1359	1375	1	1	word	0	-	0	1
+T	13	U.S. 	1375	1380	1	1	word	0	-	0	1
+T	13	😀x? 	1380	1385	1	1	word	0	-	0	1
+T	13	alpha. 	1385	1392	1	1	word	0	-	0	1
+T	13	😀x 😀x é gamma。	1392	1409	1	1	word	0	-	0	1
+T	13	ok 3.14? 	1409	1418	1	1	word	0	-	0	1
+T	13	😀x\r\n3.14 é! 	1418	1432	1	1	word	0	-	0	1
+T	13	é. 	1432	1436	1	1	word	0	-	0	1
+T	13	😀xBeta\nU.S. alphaok Beta, 3.14 3.14 	1436	1475	1	1	word	0	-	0	1
+T	13	alpha. égamma\r\n😀x U.S.. ok\n😀xé\nok 中文! 	1475	1519	1	1	word	0	-	0	1
+T	13	Beta。	1519	1524	1	1	word	0	-	0	1
+T	13	3.14? 	1524	1530	1	1	word	0	-	0	1
+T	13	alpha😀x。	1530	1540	1	1	word	0	-	0	1
+T	13	U.S., 中文! 	1540	1550	1	1	word	0	-	0	1
+T	13	中文. ok! 	1550	1558	1	1	word	0	-	0	1
+T	13	😀xU.S.\n	1558	1567	1	1	word	0	-	0	1
+T	13	U.S.。	1567	1572	1	1	word	0	-	0	1
+T	13	中文。	1572	1575	1	1	word	0	-	0	1
+T	13	ok\n😀x! 	1575	1583	1	1	word	0	-	0	1
+T	13	U.S.	1583	1587	1	1	word	0	-	0	1
+T	13	ok! 	1587	1592	1	1	word	0	-	0	1
+T	13	中文, 3.14\nU.S.。	1592	1606	1	1	word	0	-	0	1
+T	13	中文 alpha gamma. 	1606	1622	1	1	word	0	-	0	1
+T	13	😀x。	1622	1626	1	1	word	0	-	0	1
+T	13	U.S.\r\n	1626	1632	1	1	word	0	-	0	1
+T	13	gamma U.S.! 	1632	1644	1	1	word	0	-	0	1
+T	13	ok? 	1644	1648	1	1	word	0	-	0	1
+T	13	中文 Beta gamma中文 Beta3.14. alpha gamma! 	1648	1689	1	1	word	0	-	0	1
+T	13	3.14\r\né\r\nU.S.? 	1689	1705	1	1	word	0	-	0	1
+T	13	😀x 	1705	1709	1	1	word	0	-	0	1
+T	13	😀x\r\nalpha 中文 	1709	1723	1	1	word	0	-	0	1
+T	13	😀x 	1723	1727	1	1	word	0	-	0	1
+T	13	中文 é 中文。	1727	1736	1	1	word	0	-	0	1
+T	13	U.S.	1736	1740	1	1	word	0	-	0	1
+T	13	U.S. 	1740	1746	1	1	word	0	-	0	1
+T	13	😀xé! 	1746	1754	1	1	word	0	-	0	1
+T	13	U.S.\nalphaU.S.. 	1754	1771	1	1	word	0	-	0	1
+T	13	U.S.? 	1771	1777	1	1	word	0	-	0	1
+T	13	Beta 中文\nU.S.。	1777	1790	1	1	word	0	-	0	1
+T	13	中文 	1790	1793	1	1	word	0	-	0	1
+T	13	U.S., U.S. ok U.S. 	1793	1812	1	1	word	0	-	0	1
+T	13	😀x gamma\r\nalpha! 	1812	1830	1	1	word	0	-	0	1
+T	13	中文 😀x 	1830	1837	1	1	word	0	-	0	1
+T	13	3.14\r\nU.S.. 3.14\nalpha? 	1837	1861	1	1	word	0	-	0	1
+T	13	ok。	1861	1864	1	1	word	0	-	0	1
+T	13	U.S. 	1864	1869	1	1	word	0	-	0	1
+T	13	gamma! 	1869	1876	1	1	word	0	-	0	1
+T	13	gamma\n😀x. 	1876	1887	1	1	word	0	-	0	1
+T	13	U.S.。	1887	1892	1	1	word	0	-	0	1
+T	13	😀x 中文中文 gamma 3.14 Beta! 	1892	1919	1	1	word	0	-	0	1
+T	13	gamma, gamma 	1919	1932	1	1	word	0	-	0	1
+T	13	é! 	1932	1936	1	1	word	0	-	0	1
+T	13	Beta U.S.\r\n3.14! 	1936	1953	1	1	word	0	-	0	1
+T	13	中文。	1953	1956	1	1	word	0	-	0	1
+T	13	alpha。	1956	1962	1	1	word	0	-	0	1
+T	13	alpha é😀x gamma. 	1962	1982	1	1	word	0	-	0	1
+T	13	😀x 😀x\n3.14\n	1982	1995	1	1	word	0	-	0	1
+T	13	Beta。	1995	2000	1	1	word	0	-	0	1
+T	13	U.S.。	2000	2005	1	1	word	0	-	0	1
+T	13	ok, é? 	2005	2013	1	1	word	0	-	0	1
+T	13	ok 😀x. é! 	2013	2025	1	1	word	0	-	0	1
+T	13	Beta Beta 😀x 中文? 	2025	2043	1	1	word	0	-	0	1
+T	13	😀xok? 	2043	2051	1	1	word	0	-	0	1
+T	13	中文 alpha。	2051	2060	1	1	word	0	-	0	1
+T	13	é U.S., 中文 中文 	2060	2075	1	1	word	0	-	0	1
+T	13	ok\n3.14. gamma alpha? 	2075	2097	1	1	word	0	-	0	1
+T	13	éok 	2097	2103	1	1	word	0	-	0	1
+T	13	😀x Beta。	2103	2112	1	1	word	0	-	0	1
+T	13	é? 	2112	2116	1	1	word	0	-	0	1
+T	13	😀x 😀x, Beta, Beta\r\nBeta ok? 	2116	2146	1	1	word	0	-	0	1
+T	13	ok。	2146	2149	1	1	word	0	-	0	1
+T	13	3.14 😀x. 3.14 Beta! 	2149	2170	1	1	word	0	-	0	1
+T	13	😀x! 	2170	2175	1	1	word	0	-	0	1
+T	13	😀x é! 	2175	2183	1	1	word	0	-	0	1
+T	13	Beta。	2183	2188	1	1	word	0	-	0	1
+T	13	ok\r\nok, ok 中文! 	2188	2203	1	1	word	0	-	0	1
+T	13	é 😀x, 中文. 	2203	2215	1	1	word	0	-	0	1
+T	13	中文! 	2215	2219	1	1	word	0	-	0	1
+T	13	Beta ok ok, é 3.14 	2219	2239	1	1	word	0	-	0	1
+T	13	gamma\r\ngamma gamma 	2239	2258	1	1	word	0	-	0	1
+T	13	ok gamma。	2258	2267	1	1	word	0	-	0	1
+T	13	gamma! 	2267	2274	1	1	word	0	-	0	1
+T	13	3.14! 	2274	2280	1	1	word	0	-	0	1
+T	13	U.S. 	2280	2285	1	1	word	0	-	0	1
+T	13	Beta alpha\n😀x 😀x。	2285	2304	1	1	word	0	-	0	1
+T	13	gamma. alpha 3.14。	2304	2322	1	1	word	0	-	0	1
+T	13	3.14 中文gamma。	2322	2336	1	1	word	0	-	0	1
+T	13	ok Betaé\nU.S. 3.14, ok? 	2336	2362	1	1	word	0	-	0	1
+T	13	gammaok. 	2362	2372	1	1	word	0	-	0	1
+T	13	Beta\r\nalpha! 	2372	2385	1	1	word	0	-	0	1
+T	13	中文. 	2385	2389	1	1	word	0	-	0	1
+T	13	中文 😀x。	2389	2396	1	1	word	0	-	0	1
+T	13	Beta。	2396	2401	1	1	word	0	-	0	1
+T	13	alpha ok 	2401	2410	1	1	word	0	-	0	1
+T	13	alpha. é\nU.S.? 	2410	2426	1	1	word	0	-	0	1
+T	13	gamma ok. 	2426	2436	1	1	word	0	-	0	1
+T	13	BetaBeta? 	2436	2447	1	1	word	0	-	0	1
+T	13	Beta U.S. gamma😀x, ok, alpha。	2447	2478	1	1	word	0	-	0	1
+T	13	Beta 😀x Beta\r\n😀x gamma alpha gamma。	2478	2515	1	1	word	0	-	0	1
+T	13	alpha. 	2515	2522	1	1	word	0	-	0	1
+T	13	U.S.	2522	2526	1	1	word	0	-	0	1
+T	13	😀x Beta U.S.。	2526	2541	1	1	word	0	-	0	1
+T	13	éalpha. 	2541	2551	1	1	word	0	-	0	1
+T	13	中文. 	2551	2555	1	1	word	0	-	0	1
+T	13	😀x? 	2555	2560	1	1	word	0	-	0	1
+T	13	😀x, gammagamma! 	2560	2578	1	1	word	0	-	0	1
+T	13	é\né Beta alpha, 3.14 ok 	2578	2604	1	1	word	0	-	0	1
+T	13	alpha 😀x 3.14 	2604	2619	1	1	word	0	-	0	1
+T	13	中文。	2619	2622	1	1	word	0	-	0	1
+T	13	Beta3.14\r\n😀x. é 	2622	2641	1	1	word	0	-	0	1
+T	13	3.14. 3.14\r\ngamma中文! 	2641	2663	1	1	word	0	-	0	1
+T	13	gamma? 	2663	2670	1	1	word	0	-	0	1
+T	13	alpha\r\ngamma\r\nU.S. gamma, 中文! 	2670	2700	1	1	word	0	-	0	1
+T	13	gamma alpha 	2700	2712	1	1	word	0	-	0	1
+T	13	ok。	2712	2715	1	1	word	0	-	0	1
+T	13	3.14 Beta。	2715	2725	1	1	word	0	-	0	1
+T	13	3.14. ok, Beta\né? 	2725	2744	1	1	word	0	-	0	1
+T	13	😀x U.S.? 	2744	2754	1	1	word	0	-	0	1
+T	13	Beta Beta 中文 U.S.? 	2754	2773	1	1	word	0	-	0	1
+T	13	alpha3.14\r\n😀x\r\nok\nBeta 3.14。	2773	2803	1	1	word	0	-	0	1
+T	13	😀x, é? 	2803	2812	1	1	word	0	-	0	1
+T	13	alpha, 3.14 alpha\nU.S.? 	2812	2836	1	1	word	0	-	0	1
+T	13	😀x。	2836	2840	1	1	word	0	-	0	1
+T	13	gamma, 3.14. 	2840	2853	1	1	word	0	-	0	1
+T	13	U.S.. 	2853	2859	1	1	word	0	-	0	1
+T	13	U.S.	2859	2863	1	1	word	0	-	0	1
+T	13	中文\nalpha\n3.14! 	2863	2879	1	1	word	0	-	0	1
+T	13	U.S. 	2879	2884	1	1	word	0	-	0	1
+T	13	Betagamma, 中文 é é 	2884	2905	1	1	word	0	-	0	1
+T	13	é? 	2905	2909	1	1	word	0	-	0	1
+T	13	ok 中文\r\ngamma。	2909	2922	1	1	word	0	-	0	1
+T	13	alpha? 	2922	2929	1	1	word	0	-	0	1
+T	13	ok? 	2929	2933	1	1	word	0	-	0	1
+T	13	gamma\nBeta Beta U.S. 3.14。	2933	2959	1	1	word	0	-	0	1
+T	13	ok。	2959	2962	1	1	word	0	-	0	1
+T	13	U.S. alpha\r\n3.14\r\né。	2962	2983	1	1	word	0	-	0	1
+T	13	gamma 	2983	2989	1	1	word	0	-	0	1
+T	13	alpha 	2989	2995	1	1	word	0	-	0	1
+T	13	😀x😀x! 	2995	3004	1	1	word	0	-	0	1
+T	13	alpha U.S.\n	3004	3015	1	1	word	0	-	0	1
+T	13	é。	3015	3018	1	1	word	0	-	0	1
+T	13	U.S.。	3018	3023	1	1	word	0	-	0	1
+T	13	😀x\nBeta 😀x alpha。	3023	3042	1	1	word	0	-	0	1
+T	13	gamma? 	3042	3049	1	1	word	0	-	0	1
+T	13	é gamma\ngamma 	3049	3064	1	1	word	0	-	0	1
+T	13	中文 U.S.	3064	3071	1	1	word	0	-	0	1
+T	13	中文 ok alpha? 	3071	3085	1	1	word	0	-	0	1
+T	13	😀x. 	3085	3090	1	1	word	0	-	0	1
+T	13	中文 	3090	3093	1	1	word	0	-	0	1
+T	13	😀x? 	3093	3098	1	1	word	0	-	0	1
+T	13	U.S. 3.14Beta é 	3098	3116	1	1	word	0	-	0	1
+T	13	é 中文 Beta gamma, alpha 	3116	3140	1	1	word	0	-	0	1
+T	13	U.S.. alpha U.S.	3140	3156	1	1	word	0	-	0	1
+T	13	U.S. ok, alpha。	3156	3172	1	1	word	0	-	0	1
+T	13	é 	3172	3175	1	1	word	0	-	0	1
+T	13	😀x, 😀x 3.14 alpha gamma\r\n3.14 é. 	3175	3211	1	1	word	0	-	0	1
+T	13	😀x! 	3211	3216	1	1	word	0	-	0	1
+T	13	U.S. 	3216	3221	1	1	word	0	-	0	1
+T	13	Beta。	3221	3226	1	1	word	0	-	0	1
+T	13	alpha U.S.	3226	3236	1	1	word	0	-	0	1
+T	13	中文! 	3236	3241	1	1	word	0	-	0	1
+T	13	😀x。	3241	3245	1	1	word	0	-	0	1
+T	13	Beta 3.14\nBetaBeta 3.14 中文é! 	3245	3277	1	1	word	0	-	0	1
+T	13	alpha 	3277	3283	1	1	word	0	-	0	1
+T	13	é U.S.! 	3283	3292	1	1	word	0	-	0	1
+T	13	gamma 中文 Beta U.S.\r\n	3292	3312	1	1	word	0	-	0	1
+T	13	ok 	3312	3315	1	1	word	0	-	0	1
+T	13	gamma\n中文? 	3315	3325	1	1	word	0	-	0	1
+T	13	é. ok alpha okalpha\r\né. 	3325	3352	1	1	word	0	-	0	1
+T	13	中文\r\noké\r\nBeta。	3352	3368	1	1	word	0	-	0	1
+T	13	é gamma😀x? 	3368	3382	1	1	word	0	-	0	1
+T	13	gamma é! 	3382	3392	1	1	word	0	-	0	1
+T	13	😀x。	3392	3396	1	1	word	0	-	0	1
+T	13	gamma\r\nok. 3.14 U.S. alpha é 	3396	3426	1	1	word	0	-	0	1
+T	13	😀x? 	3426	3431	1	1	word	0	-	0	1
+T	13	gamma alpha, é é ok! 	3431	3454	1	1	word	0	-	0	1
+T	13	U.S.! 	3454	3460	1	1	word	0	-	0	1
+T	13	gamma\r\nok\n😀x, Beta! 	3460	3481	1	1	word	0	-	0	1
+T	13	ok U.S.	3481	3488	1	1	word	0	-	0	1
+T	13	é? 	3488	3493	1	1	word	0	-	0	1
+T	13	3.14。	3493	3498	1	1	word	0	-	0	1
+T	13	gamma alpha. ok. é\r\n中文? 	3498	3523	1	1	word	0	-	0	1
+T	13	alpha, 中文. 	3523	3534	1	1	word	0	-	0	1
+T	13	U.S.? 	3534	3540	1	1	word	0	-	0	1
+T	13	gamma\r\nU.S.\r\n	3540	3553	1	1	word	0	-	0	1
+T	13	gamma 😀x\r\ngamma, U.S.\r\n	3553	3577	1	1	word	0	-	0	1
+T	13	ok\r\n3.14。	3577	3586	1	1	word	0	-	0	1
+T	13	Beta. alpha gamma. gamma, ok\nok 😀x\r\nok, é é 	3586	3633	1	1	word	0	-	0	1
+T	13	😀xalpha😀x\nalpha? 	3633	3654	1	1	word	0	-	0	1
+T	13	中文 	3654	3657	1	1	word	0	-	0	1
+T	13	gamma 中文! 	3657	3667	1	1	word	0	-	0	1
+T	13	3.14\r\n中文 中文\r\nok U.S.? 	3667	3689	1	1	word	0	-	0	1
+T	13	U.S.\r\n	3689	3695	1	1	word	0	-	0	1
+T	13	gamma\nU.S. ok é, 3.14 alpha Beta 3.14\n3.14 中文 	3695	3742	1	1	word	0	-	0	1
+T	13	ok! 	3742	3746	1	1	word	0	-	0	1
+T	13	alpha, 3.14\ngamma ok gamma\n3.14 😀x。	3746	3782	1	1	word	0	-	0	1
+T	13	ok\n😀x? 	3782	3790	1	1	word	0	-	0	1
+T	13	é alpha! 	3790	3800	1	1	word	0	-	0	1
+T	13	gamma 	3800	3806	1	1	word	0	-	0	1
+T	13	ok 😀x! 	3806	3814	1	1	word	0	-	0	1
+T	13	Beta\r\n3.14? 	3814	3826	1	1	word	0	-	0	1
+T	13	gamma\r\nBeta\r\n3.14! 	3826	3845	1	1	word	0	-	0	1
+T	13	ok ok U.S.。	3845	3856	1	1	word	0	-	0	1
+T	13	中文 	3856	3859	1	1	word	0	-	0	1
+T	13	Betaé 😀x\nU.S., U.S. 	3859	3882	1	1	word	0	-	0	1
+T	13	Beta! 	3882	3888	1	1	word	0	-	0	1
+T	13	U.S.. 	3888	3894	1	1	word	0	-	0	1
+T	13	U.S.	3894	3898	1	1	word	0	-	0	1
+T	13	é ok U.S.? 	3898	3911	1	1	word	0	-	0	1
+T	13	中文U.S.	3911	3918	1	1	word	0	-	0	1
+T	13	Beta。	3918	3924	1	1	word	0	-	0	1
+T	13	3.14\nU.S.\nalpha ok。	3924	3943	1	1	word	0	-	0	1
+T	13	alpha? 	3943	3950	1	1	word	0	-	0	1
+T	13	U.S.\r\n	3950	3956	1	1	word	0	-	0	1
+T	13	alpha é。	3956	3965	1	1	word	0	-	0	1
+T	13	中文? 	3965	3969	1	1	word	0	-	0	1
+T	13	😀x é, ok, gamma 3.14 ok。	3969	3995	1	1	word	0	-	0	1
+T	13	Beta。	3995	4000	1	1	word	0	-	0	1
+T	13	é\n3.14 ok gamma\né 	4000	4020	1	1	word	0	-	0	1
+T	13	中文? 	4020	4024	1	1	word	0	-	0	1
+T	13	中文 é. 	4024	4031	1	1	word	0	-	0	1
+T	13	😀x ok, ok 😀x ok 😀x。	4031	4053	1	1	word	0	-	0	1
+T	13	U.S.! 	4053	4059	1	1	word	0	-	0	1
+T	13	ok\nalpha 	4059	4068	1	1	word	0	-	0	1
+T	13	3.14 	4068	4073	1	1	word	0	-	0	1
+T	13	3.14 ok 	4073	4081	1	1	word	0	-	0	1
+T	13	oké gamma。	4081	4093	1	1	word	0	-	0	1
+T	13	gamma。	4093	4099	1	1	word	0	-	0	1
+T	13	U.S., ok alpha. 	4099	4115	1	1	word	0	-	0	1
+T	13	中文。	4115	4118	1	1	word	0	-	0	1
+T	13	gamma é 	4118	4127	1	1	word	0	-	0	1
+T	13	ok。	4127	4130	1	1	word	0	-	0	1
+T	13	Beta 3.14\nU.S.\n	4130	4145	1	1	word	0	-	0	1
+T	13	中文? 	4145	4149	1	1	word	0	-	0	1
+T	13	alpha! 	4149	4156	1	1	word	0	-	0	1
+T	13	U.S.! 	4156	4162	1	1	word	0	-	0	1
+E	13	4162	4162	0
+T	14	gamma é gamma Beta。	0	20	1	1	word	0	-	0	1
+T	14	中文, 😀x Beta 中文 U.S. ok? 	20	45	1	1	word	0	-	0	1
+T	14	é Beta 中文 ok 3.14 é 😀x U.S. 	45	76	1	1	word	0	-	0	1
+T	14	U.S.? 	76	82	1	1	word	0	-	0	1
+T	14	ok, U.S. 	82	91	1	1	word	0	-	0	1
+T	14	😀x! 	91	96	1	1	word	0	-	0	1
+T	14	3.14 😀x alpha. alpha 中文。	96	121	1	1	word	0	-	0	1
+T	14	ok 😀x é? 	121	132	1	1	word	0	-	0	1
+T	14	ok gamma, U.S.? 	132	148	1	1	word	0	-	0	1
+T	14	alpha 中文 😀x 😀x 😀x 3.14, gamma U.S. 	148	186	1	1	word	0	-	0	1
+T	14	😀x 3.14? 	186	196	1	1	word	0	-	0	1
+T	14	é! 	196	200	1	1	word	0	-	0	1
+T	14	alpha. 3.14 gamma 中文? 	200	222	1	1	word	0	-	0	1
+T	14	gamma U.S., é, é 😀x. alpha, gamma 😀x ok! 	222	267	1	1	word	0	-	0	1
+T	14	gamma? 	267	274	1	1	word	0	-	0	1
+T	14	gamma gamma gamma。	274	292	1	1	word	0	-	0	1
+T	14	😀x。	292	296	1	1	word	0	-	0	1
+T	14	gamma 3.14! 	296	308	1	1	word	0	-	0	1
+T	14	U.S. 	308	313	1	1	word	0	-	0	1
+T	14	Beta。	313	318	1	1	word	0	-	0	1
+T	14	ok。	318	321	1	1	word	0	-	0	1
+T	14	ok. alpha alpha 中文. 	321	341	1	1	word	0	-	0	1
+T	14	😀x 😀x é. ok! 	341	357	1	1	word	0	-	0	1
+T	14	Beta! 	357	363	1	1	word	0	-	0	1
+T	14	😀x é 😀x alpha。	363	380	1	1	word	0	-	0	1
+T	14	😀x! 	380	385	1	1	word	0	-	0	1
+T	14	Beta 😀x alpha U.S. ok 😀x 3.14, gamma 中文 gamma. gamma 😀x 中文? 	385	448	1	1	word	0	-	0	1
+T	14	U.S. é gamma ok gamma! 	448	472	1	1	word	0	-	0	1
+T	14	é ok. gamma U.S. 	472	490	1	1	word	0	-	0	1
+T	14	U.S.? 	490	496	1	1	word	0	-	0	1
+T	14	中文 gamma! 	496	506	1	1	word	0	-	0	1
+T	14	U.S. 	506	511	1	1	word	0	-	0	1
+T	14	中文 U.S.! 	511	520	1	1	word	0	-	0	1
+T	14	😀x ok ok 😀x é 3.14 😀x。	520	546	1	1	word	0	-	0	1
+T	14	中文 中文。	546	552	1	1	word	0	-	0	1
+T	14	😀x 3.14. 3.14 😀x。	552	571	1	1	word	0	-	0	1
+T	14	3.14! 	571	577	1	1	word	0	-	0	1
+T	14	alpha Beta alpha ok。	577	597	1	1	word	0	-	0	1
+T	14	3.14! 	597	603	1	1	word	0	-	0	1
+T	14	中文 中文。	603	609	1	1	word	0	-	0	1
+T	14	3.14 U.S. 	609	619	1	1	word	0	-	0	1
+T	14	中文. 	619	623	1	1	word	0	-	0	1
+T	14	中文 中文. alpha, Beta é. alpha U.S.。	623	657	1	1	word	0	-	0	1
+T	14	ok Beta 中文 alpha. 	657	675	1	1	word	0	-	0	1
+T	14	😀x 3.14 ok alpha alpha alpha Beta gamma 3.14 Beta 中文? 	675	730	1	1	word	0	-	0	1
+T	14	Beta。	730	735	1	1	word	0	-	0	1
+T	14	3.14 3.14. 	735	746	1	1	word	0	-	0	1
+T	14	Beta. 	746	752	1	1	word	0	-	0	1
+T	14	U.S. 	752	757	1	1	word	0	-	0	1
+T	14	Beta Beta 中文! 	757	771	1	1	word	0	-	0	1
+T	14	3.14! 	771	777	1	1	word	0	-	0	1
+T	14	alpha Beta. 	777	789	1	1	word	0	-	0	1
+T	14	U.S.! 	789	795	1	1	word	0	-	0	1
+T	14	gamma alpha. ok ok? 	795	815	1	1	word	0	-	0	1
+T	14	Beta? 	815	821	1	1	word	0	-	0	1
+T	14	gamma 3.14! 	821	833	1	1	word	0	-	0	1
+T	14	gamma alpha gamma é 😀x alpha 😀x 😀x, U.S. alpha 中文 alpha 😀x. 3.14 😀x! 	833	908	1	1	word	0	-	0	1
+T	14	Beta gamma 中文 ok, 3.14 😀x 😀x, 😀x ok. 3.14 中文 Beta? 	908	962	1	1	word	0	-	0	1
+T	14	Beta, gamma ok 😀x! 	962	982	1	1	word	0	-	0	1
+T	14	😀x gamma é。	982	995	1	1	word	0	-	0	1
+T	14	gamma 3.14, alpha U.S. alpha 	995	1024	1	1	word	0	-	0	1
+T	14	中文? 	1024	1028	1	1	word	0	-	0	1
+T	14	ok 3.14 😀x 3.14。	1028	1045	1	1	word	0	-	0	1
+T	14	Beta! 	1045	1051	1	1	word	0	-	0	1
+T	14	😀x。	1051	1055	1	1	word	0	-	0	1
+T	14	alpha U.S.. ok ok 😀x ok U.S.。	1055	1085	1	1	word	0	-	0	1
+T	14	alpha 😀x gamma gamma alpha! 	1085	1114	1	1	word	0	-	0	1
+T	14	3.14 中文 3.14. 	1114	1128	1	1	word	0	-	0	1
+T	14	U.S.. alpha U.S. 	1128	1145	1	1	word	0	-	0	1
+T	14	😀x 中文 Beta! 	1145	1158	1	1	word	0	-	0	1
+T	14	3.14 alpha é é ok Beta gamma Beta 😀x alpha Beta alpha U.S. 	1158	1220	1	1	word	0	-	0	1
+T	14	😀x é ok é. alpha ok 中文. gamma. ok alpha 😀x ok! 	1220	1271	1	1	word	0	-	0	1
+T	14	3.14 gamma? 	1271	1283	1	1	word	0	-	0	1
+T	14	中文 gamma U.S. ok alpha Beta 😀x ok. 	1283	1319	1	1	word	0	-	0	1
+T	14	😀x! 	1319	1324	1	1	word	0	-	0	1
+T	14	alpha ok. alpha 中文 😀x ok 中文 U.S.! 	1324	1359	1	1	word	0	-	0	1
+T	14	gamma ok? 	1359	1369	1	1	word	0	-	0	1
+T	14	3.14. ok alpha 😀x U.S. 	1369	1393	1	1	word	0	-	0	1
+T	14	U.S. 3.14 gamma。	1393	1409	1	1	word	0	-	0	1
+T	14	中文! 	1409	1413	1	1	word	0	-	0	1
+T	14	中文 😀x 😀x? 	1413	1425	1	1	word	0	-	0	1
+T	14	Beta。	1425	1430	1	1	word	0	-	0	1
+T	14	Beta 3.14! 	1430	1441	1	1	word	0	-	0	1
+T	14	ok ok, 😀x 3.14 😀x 中文 中文. 	1441	1468	1	1	word	0	-	0	1
+T	14	😀x? 	1468	1473	1	1	word	0	-	0	1
+T	14	ok gamma Beta 3.14。	1473	1492	1	1	word	0	-	0	1
+T	14	中文。	1492	1495	1	1	word	0	-	0	1
+T	14	alpha é U.S., ok 中文 gamma é é? 	1495	1529	1	1	word	0	-	0	1
+T	14	é alpha。	1529	1538	1	1	word	0	-	0	1
+T	14	3.14, 3.14 中文! 	1538	1553	1	1	word	0	-	0	1
+T	14	Beta. 	1553	1559	1	1	word	0	-	0	1
+T	14	Beta, gamma ok! 	1559	1575	1	1	word	0	-	0	1
+T	14	alpha. 	1575	1582	1	1	word	0	-	0	1
+T	14	Beta。	1582	1587	1	1	word	0	-	0	1
+T	14	alpha ok alpha é gamma? 	1587	1612	1	1	word	0	-	0	1
+T	14	U.S. 	1612	1617	1	1	word	0	-	0	1
+E	14	1617	1617	0
+T	15	3.14。	0	5	1	1	word	0	-	0	1
+T	15	😀x? 	5	10	1	1	word	0	-	0	1
+T	15	3.14gamma alpha U.S., 😀x 	10	37	1	1	word	0	-	0	1
+T	15	gamma? 	37	44	1	1	word	0	-	0	1
+T	15	Betaalpha 😀x 	44	59	1	1	word	0	-	0	1
+T	15	alpha。	59	65	1	1	word	0	-	0	1
+T	15	中文 中文\n3.14\nalpha é alpha 	65	91	1	1	word	0	-	0	1
+T	15	😀x 3.14 é\nok U.S. 	91	111	1	1	word	0	-	0	1
+T	15	Beta\r\n3.14。	111	122	1	1	word	0	-	0	1
+T	15	U.S. 	122	127	1	1	word	0	-	0	1
+T	15	中文? 	127	131	1	1	word	0	-	0	1
+T	15	😀x! 	131	136	1	1	word	0	-	0	1
+T	15	U.S.\n	136	141	1	1	word	0	-	0	1
+T	15	😀x 	141	145	1	1	word	0	-	0	1
+T	15	é Beta. 	145	154	1	1	word	0	-	0	1
+T	15	中文\r\nBeta! 	154	164	1	1	word	0	-	0	1
+T	15	3.14 中文 中文! 	164	176	1	1	word	0	-	0	1
+T	15	3.14 U.S. 	176	186	1	1	word	0	-	0	1
+T	15	😀x 😀x\r\nU.S. 	186	200	1	1	word	0	-	0	1
+T	15	3.14。	200	205	1	1	word	0	-	0	1
+T	15	😀x é 	205	212	1	1	word	0	-	0	1
+T	15	U.S.? 	212	218	1	1	word	0	-	0	1
+T	15	Betaé U.S.	218	230	1	1	word	0	-	0	1
+T	15	U.S. 	230	236	1	1	word	0	-	0	1
+T	15	😀x 3.14 U.S.\r\n	236	251	1	1	word	0	-	0	1
+T	15	ok é 中文 é Beta中文 gamma alpha alpha\nU.S.? 	251	295	1	1	word	0	-	0	1
+T	15	Betaé. 	295	304	1	1	word	0	-	0	1
+T	15	Beta U.S.. alpha. é U.S.\n3.14 😀x. ok 	304	343	1	1	word	0	-	0	1
+T	15	alpha。	343	349	1	1	word	0	-	0	1
+T	15	é\r\ngamma, 3.14 U.S.\n	349	370	1	1	word	0	-	0	1
+T	15	U.S. 	370	375	1	1	word	0	-	0	1
+T	15	Beta! 	375	381	1	1	word	0	-	0	1
+E	15	381	381	0
+T	16	😀x 	0	4	1	1	word	0	-	0	1
+T	16	é U.S. 	4	12	1	1	word	0	-	0	1
+T	16	U.S.	12	16	1	1	word	0	-	0	1
+T	16	😀x. alpha\r\nalpha\r\n3.14 alpha 3.14! 	16	53	1	1	word	0	-	0	1
+T	16	ok😀x 3.14. é\nU.S.? 	53	75	1	1	word	0	-	0	1
+T	16	中文. 	75	79	1	1	word	0	-	0	1
+T	16	中文 Beta alphaé\nU.S. alpha😀x 中文\r\ngamma\nU.S. 	79	126	1	1	word	0	-	0	1
+T	16	U.S.\nok 	126	134	1	1	word	0	-	0	1
+T	16	gamma. 	134	141	1	1	word	0	-	0	1
+T	16	中文. 	141	145	1	1	word	0	-	0	1
+T	16	中文。	145	148	1	1	word	0	-	0	1
+T	16	😀x. 	148	153	1	1	word	0	-	0	1
+T	16	U.S., é。	153	162	1	1	word	0	-	0	1
+T	16	Beta, 3.14\r\nBeta 	162	179	1	1	word	0	-	0	1
+T	16	U.S.. 	179	185	1	1	word	0	-	0	1
+T	16	中文 	185	188	1	1	word	0	-	0	1
+T	16	é! 	188	192	1	1	word	0	-	0	1
+T	16	中文! 	192	196	1	1	word	0	-	0	1
+T	16	中文\r\nBeta alpha ok? 	196	215	1	1	word	0	-	0	1
+T	16	U.S.! 	215	221	1	1	word	0	-	0	1
+T	16	gamma\n中文\r\nBeta gamma! 	221	243	1	1	word	0	-	0	1
+T	16	gamma 	243	249	1	1	word	0	-	0	1
+T	16	ok alpha! 	249	259	1	1	word	0	-	0	1
+T	16	U.S.	259	263	1	1	word	0	-	0	1
+T	16	gamma, ok, U.S.\n	263	280	1	1	word	0	-	0	1
+T	16	U.S.\r\n	280	286	1	1	word	0	-	0	1
+T	16	Beta? 	286	292	1	1	word	0	-	0	1
+T	16	éok. 	292	299	1	1	word	0	-	0	1
+T	16	Beta Beta. 3.14。	299	315	1	1	word	0	-	0	1
+T	16	gamma Beta 	315	326	1	1	word	0	-	0	1
+T	16	ok, é? 	326	334	1	1	word	0	-	0	1
+T	16	Beta Beta? 	334	345	1	1	word	0	-	0	1
+T	16	😀x Beta\r\nU.S.? 	345	361	1	1	word	0	-	0	1
+T	16	3.14\ngamma Beta\nok 3.14\n3.14. 	361	391	1	1	word	0	-	0	1
+T	16	中文 alpha\ngamma 😀x 3.14? 	391	416	1	1	word	0	-	0	1
+T	16	gamma. 3.14。	416	428	1	1	word	0	-	0	1
+T	16	U.S.\n	428	433	1	1	word	0	-	0	1
+T	16	U.S. 	433	438	1	1	word	0	-	0	1
+T	16	😀x 3.14. 3.14 okalpha 	438	462	1	1	word	0	-	0	1
+T	16	gamma. 3.14\r\n😀x alpha U.S. 	462	490	1	1	word	0	-	0	1
+T	16	中文\r\n中文 U.S. é。	490	505	1	1	word	0	-	0	1
+T	16	ok。	505	508	1	1	word	0	-	0	1
+T	16	3.14? 	508	514	1	1	word	0	-	0	1
+T	16	Beta\r\nU.S. é! 	514	529	1	1	word	0	-	0	1
+T	16	U.S., 3.14\r\ngamma? 	529	548	1	1	word	0	-	0	1
+T	16	ok? 	548	552	1	1	word	0	-	0	1
+T	16	Beta。	552	557	1	1	word	0	-	0	1
+T	16	alpha\né. é\r\nalpha! 	557	578	1	1	word	0	-	0	1
+T	16	U.S. 	578	583	1	1	word	0	-	0	1
+T	16	😀x。	583	587	1	1	word	0	-	0	1
+T	16	U.S.! 	587	593	1	1	word	0	-	0	1
+T	16	中文 3.14, U.S. 	593	607	1	1	word	0	-	0	1
+T	16	U.S.. gamma. gammaBeta Beta。	607	636	1	1	word	0	-	0	1
+T	16	Beta! 	636	642	1	1	word	0	-	0	1
+T	16	é alpha\r\nalpha? 	642	659	1	1	word	0	-	0	1
+T	16	é\n😀x? 	659	667	1	1	word	0	-	0	1
+T	16	Beta Beta\r\né. 3.14! 	667	688	1	1	word	0	-	0	1
+T	16	gamma, U.S. 	688	700	1	1	word	0	-	0	1
+T	16	U.S., U.S.! 	700	712	1	1	word	0	-	0	1
+T	16	ok alpha? 	712	722	1	1	word	0	-	0	1
+T	16	😀x 	722	726	1	1	word	0	-	0	1
+T	16	😀x U.S., U.S., é。	726	745	1	1	word	0	-	0	1
+T	16	Beta? 	745	751	1	1	word	0	-	0	1
+T	16	é3.14, ok 	751	763	1	1	word	0	-	0	1
+T	16	U.S. 	763	768	1	1	word	0	-	0	1
+T	16	U.S.\n	768	773	1	1	word	0	-	0	1
+T	16	中文\r\n😀x\r\n中文 	773	785	1	1	word	0	-	0	1
+T	16	okok? 	785	792	1	1	word	0	-	0	1
+T	16	U.S.. 	792	798	1	1	word	0	-	0	1
+T	16	U.S. é\nU.S. 	798	811	1	1	word	0	-	0	1
+T	16	U.S.	811	815	1	1	word	0	-	0	1
+T	16	中文é\r\nalpha é 	815	832	1	1	word	0	-	0	1
+T	16	U.S., 😀x Beta U.S.! 	832	853	1	1	word	0	-	0	1
+T	16	Betaok. 	853	862	1	1	word	0	-	0	1
+T	16	😀x\r\ngamma。	862	873	1	1	word	0	-	0	1
+T	16	ok. gamma\ngamma é\nalpha\n😀x 😀x gamma\r\nBeta U.S. 	873	923	1	1	word	0	-	0	1
+T	16	😀x\r\n😀x é. 3.14\n中文\r\nBeta! 	923	951	1	1	word	0	-	0	1
+T	16	3.14 gamma 	951	962	1	1	word	0	-	0	1
+T	16	gamma é\nalpha é, é? 	962	985	1	1	word	0	-	0	1
+T	16	U.S. 3.14 	985	995	1	1	word	0	-	0	1
+T	16	Beta. alpha? 	995	1008	1	1	word	0	-	0	1
+T	16	U.S. 	1008	1013	1	1	word	0	-	0	1
+T	16	3.14. alpha gamma Beta, 😀x 中文 3.14\r\n3.14, 3.14\né! 	1013	1065	1	1	word	0	-	0	1
+T	16	gamma\nU.S.\n	1065	1076	1	1	word	0	-	0	1
+T	16	U.S., é\ngamma. 3.14? 	1076	1098	1	1	word	0	-	0	1
+T	16	😀x 中文! 	1098	1106	1	1	word	0	-	0	1
+T	16	3.14? 	1106	1112	1	1	word	0	-	0	1
+T	16	中文 gamma? 	1112	1122	1	1	word	0	-	0	1
+T	16	alpha\r\n😀x3.14. 	1122	1139	1	1	word	0	-	0	1
+T	16	😀x 😀x, é 	1139	1151	1	1	word	0	-	0	1
+T	16	U.S.? 	1151	1157	1	1	word	0	-	0	1
+T	16	Betaalpha。	1157	1168	1	1	word	0	-	0	1
+T	16	中文 😀x 中文. 	1168	1179	1	1	word	0	-	0	1
+T	16	U.S.! 	1179	1185	1	1	word	0	-	0	1
+T	16	U.S.	1185	1189	1	1	word	0	-	0	1
+T	16	Beta 	1189	1195	1	1	word	0	-	0	1
+T	16	alpha 3.14\r\nalpha 	1195	1213	1	1	word	0	-	0	1
+T	16	3.14? 	1213	1219	1	1	word	0	-	0	1
+T	16	中文. 	1219	1223	1	1	word	0	-	0	1
+T	16	中文? 	1223	1227	1	1	word	0	-	0	1
+T	16	U.S., Beta\r\né\n😀x 	1227	1246	1	1	word	0	-	0	1
+T	16	ok? 	1246	1250	1	1	word	0	-	0	1
+T	16	gamma. gamma gamma U.S. 3.14 gammaok 😀x. 	1250	1293	1	1	word	0	-	0	1
+T	16	😀x! 	1293	1298	1	1	word	0	-	0	1
+T	16	中文? 	1298	1302	1	1	word	0	-	0	1
+T	16	ok alpha\r\nalpha Beta? 	1302	1324	1	1	word	0	-	0	1
+T	16	ok。	1324	1327	1	1	word	0	-	0	1
+T	16	Beta。	1327	1332	1	1	word	0	-	0	1
+T	16	ok. 	1332	1336	1	1	word	0	-	0	1
+T	16	中文 gamma\r\ngamma? 	1336	1353	1	1	word	0	-	0	1
+T	16	é? 	1353	1357	1	1	word	0	-	0	1
+T	16	Beta。	1357	1362	1	1	word	0	-	0	1
+T	16	3.14 中文 	1362	1370	1	1	word	0	-	0	1
+T	16	中文。	1370	1373	1	1	word	0	-	0	1
+T	16	gamma\nU.S.! 	1373	1385	1	1	word	0	-	0	1
+T	16	Beta。	1385	1390	1	1	word	0	-	0	1
+T	16	中文, U.S.! 	1390	1400	1	1	word	0	-	0	1
+T	16	中文 	1400	1403	1	1	word	0	-	0	1
+T	16	中文 	1403	1406	1	1	word	0	-	0	1
+T	16	U.S. ok, gamma\n3.14。	1406	1426	1	1	word	0	-	0	1
+T	16	3.14! 	1426	1432	1	1	word	0	-	0	1
+T	16	ok 	1432	1435	1	1	word	0	-	0	1
+T	16	é。	1435	1438	1	1	word	0	-	0	1
+T	16	😀x\nok! 	1438	1446	1	1	word	0	-	0	1
+T	16	U.S. 	1446	1451	1	1	word	0	-	0	1
+T	16	3.14\n中文 	1451	1459	1	1	word	0	-	0	1
+T	16	中文。	1459	1462	1	1	word	0	-	0	1
+T	16	éBetaBeta 😀x 😀xalpha alpha 中文, é中文? 	1462	1506	1	1	word	0	-	0	1
+T	16	U.S. 	1506	1511	1	1	word	0	-	0	1
+T	16	U.S.? 	1511	1517	1	1	word	0	-	0	1
+T	16	é。	1517	1520	1	1	word	0	-	0	1
+T	16	ok中文, U.S., 3.14gamma! 	1520	1545	1	1	word	0	-	0	1
+T	16	é Beta\né 	1545	1556	1	1	word	0	-	0	1
+T	16	é. 	1556	1560	1	1	word	0	-	0	1
+T	16	中文 Betaé ok, gamma! 	1560	1582	1	1	word	0	-	0	1
+T	16	Beta\r\nU.S.。	1582	1593	1	1	word	0	-	0	1
+T	16	Beta\r\n3.14, 😀x gammaBeta, 3.14 	1593	1626	1	1	word	0	-	0	1
+T	16	gamma\ngamma ok 	1626	1641	1	1	word	0	-	0	1
+T	16	中文alphagamma! 	1641	1657	1	1	word	0	-	0	1
+T	16	😀x. alpha alpha。	1657	1674	1	1	word	0	-	0	1
+T	16	Beta 3.14 😀x。	1674	1688	1	1	word	0	-	0	1
+T	16	3.14 ok ok\ngamma, U.S.! 	1688	1712	1	1	word	0	-	0	1
+T	16	ok U.S. 	1712	1720	1	1	word	0	-	0	1
+T	16	gamma. gamma, gamma。	1720	1740	1	1	word	0	-	0	1
+T	16	gamma。	1740	1746	1	1	word	0	-	0	1
+T	16	ok! 	1746	1750	1	1	word	0	-	0	1
+T	16	alpha. 	1750	1757	1	1	word	0	-	0	1
+T	16	Betaok! 	1757	1766	1	1	word	0	-	0	1
+T	16	中文. alphaBeta, 3.14 中文, U.S.? 	1766	1797	1	1	word	0	-	0	1
+T	16	😀x? 	1797	1802	1	1	word	0	-	0	1
+T	16	gamma\né! 	1802	1812	1	1	word	0	-	0	1
+T	16	3.14 é 	1812	1820	1	1	word	0	-	0	1
+T	16	Beta. gamma ok 3.14 alpha, 3.14? 	1820	1853	1	1	word	0	-	0	1
+T	16	gamma 3.14 中文! 	1853	1868	1	1	word	0	-	0	1
+T	16	alpha! 	1868	1875	1	1	word	0	-	0	1
+T	16	😀x. gamma 😀x 	1875	1890	1	1	word	0	-	0	1
+T	16	3.14中文. 3.14! 	1890	1905	1	1	word	0	-	0	1
+T	16	U.S., 😀x? 	1905	1916	1	1	word	0	-	0	1
+T	16	alpha 	1916	1922	1	1	word	0	-	0	1
+T	16	é 😀x! 	1922	1930	1	1	word	0	-	0	1
+T	16	中文? 	1930	1934	1	1	word	0	-	0	1
+T	16	😀x. 	1934	1939	1	1	word	0	-	0	1
+T	16	U.S. 	1939	1944	1	1	word	0	-	0	1
+T	16	U.S.! 	1944	1950	1	1	word	0	-	0	1
+T	16	3.14 alpha! 	1950	1962	1	1	word	0	-	0	1
+T	16	😀x gammaok Beta. gamma Beta, gamma 3.14 gamma alpha! 	1962	2017	1	1	word	0	-	0	1
+T	16	ok ok 中文? 	2017	2027	1	1	word	0	-	0	1
+T	16	😀x U.S	2027	2034	1	1	word	0	-	0	1
+T	16	.	2034	2035	1	1	word	0	-	0	1
+T	16		2035	2036	1	1	word	0	-	0	1
+T	16	3.14 é gamma 😀xU.S.. alpha! 	2036	2067	1	1	word	0	-	0	1
+T	16	😀x, Beta! 	2067	2078	1	1	word	0	-	0	1
+T	16	😀x 	2078	2082	1	1	word	0	-	0	1
+T	16	é\r\nU.S.\n	2082	2091	1	1	word	0	-	0	1
+T	16	中文. ok, é! 	2091	2103	1	1	word	0	-	0	1
+T	16	alpha? 	2103	2110	1	1	word	0	-	0	1
+T	16	Beta 	2110	2115	1	1	word	0	-	0	1
+T	16	ok Beta 中文! 	2115	2127	1	1	word	0	-	0	1
+T	16	3.14\r\nU.S. 	2127	2138	1	1	word	0	-	0	1
+T	16	Beta 中文ok. é. ok。	2138	2157	1	1	word	0	-	0	1
+T	16	gamma é。	2157	2166	1	1	word	0	-	0	1
+T	16	😀x Beta é。	2166	2178	1	1	word	0	-	0	1
+T	16	gamma alphaé 3.14 Beta。	2178	2203	1	1	word	0	-	0	1
+T	16	😀x gamma3.14. 	2203	2219	1	1	word	0	-	0	1
+T	16	中文! 	2219	2223	1	1	word	0	-	0	1
+T	16	U.S. ok\r\nok! 	2223	2236	1	1	word	0	-	0	1
+T	16	中文. alpha, é。	2236	2250	1	1	word	0	-	0	1
+T	16	gamma\r\n😀x! 	2250	2262	1	1	word	0	-	0	1
+T	16	alpha! 	2262	2269	1	1	word	0	-	0	1
+T	16	3.14! 	2269	2275	1	1	word	0	-	0	1
+T	16	3.14! 	2275	2281	1	1	word	0	-	0	1
+T	16	Beta Beta 😀x\r\nBeta。	2281	2301	1	1	word	0	-	0	1
+T	16	U.S.. 	2301	2307	1	1	word	0	-	0	1
+T	16	U.S. 	2307	2312	1	1	word	0	-	0	1
+T	16	Betaé! 	2312	2321	1	1	word	0	-	0	1
+T	16	gamma! 	2321	2328	1	1	word	0	-	0	1
+T	16	U.S. 	2328	2333	1	1	word	0	-	0	1
+T	16	U.S., alpha 😀x\r\ngamma! 	2333	2357	1	1	word	0	-	0	1
+T	16	é U.S. 	2357	2365	1	1	word	0	-	0	1
+T	16	Beta 中文, ok 	2365	2377	1	1	word	0	-	0	1
+T	16	é! 	2377	2381	1	1	word	0	-	0	1
+T	16	😀x! 	2381	2386	1	1	word	0	-	0	1
+T	16	U.S.\r\n	2386	2392	1	1	word	0	-	0	1
+T	16	é ok 	2392	2398	1	1	word	0	-	0	1
+T	16	ok ok 3.14 	2398	2409	1	1	word	0	-	0	1
+T	16	😀x? 	2409	2414	1	1	word	0	-	0	1
+T	16	U.S. 	2414	2419	1	1	word	0	-	0	1
+T	16	😀x U.S. 	2419	2428	1	1	word	0	-	0	1
+T	16	U.S.! 	2428	2434	1	1	word	0	-	0	1
+T	16	Beta? 	2434	2440	1	1	word	0	-	0	1
+T	16	alpha, 3.14 Beta. gamma\r\n3.14\n😀x\n😀x\n3.14。	2440	2483	1	1	word	0	-	0	1
+T	16	中文。	2483	2486	1	1	word	0	-	0	1
+T	16	😀x。	2486	2490	1	1	word	0	-	0	1
+T	16	😀x\r\n3.14 gamma 中文Beta。	2490	2514	1	1	word	0	-	0	1
+T	16	U.S., 😀x 😀x é\r\n3.14. ok? 	2514	2542	1	1	word	0	-	0	1
+T	16	alpha? 	2542	2549	1	1	word	0	-	0	1
+T	16	U.S.. 	2549	2555	1	1	word	0	-	0	1
+T	16	中文\r\nU.S.。	2555	2564	1	1	word	0	-	0	1
+T	16	Beta。	2564	2569	1	1	word	0	-	0	1
+T	16	gamma\n😀x\r\n中文? 	2569	2584	1	1	word	0	-	0	1
+T	16	😀x 	2584	2588	1	1	word	0	-	0	1
+T	16	😀x。	2588	2592	1	1	word	0	-	0	1
+T	16	é 中文\nBeta! 	2592	2604	1	1	word	0	-	0	1
+T	16	ok\n3.14 gamma中文 	2604	2621	1	1	word	0	-	0	1
+T	16	gamma, ok U.S. 	2621	2636	1	1	word	0	-	0	1
+T	16	😀x Beta, alpha U.S.? 	2636	2658	1	1	word	0	-	0	1
+T	16	3.14. 	2658	2664	1	1	word	0	-	0	1
+T	16	U.S.? 	2664	2670	1	1	word	0	-	0	1
+T	16	é! 	2670	2674	1	1	word	0	-	0	1
+T	16	Beta\ngamma。	2674	2685	1	1	word	0	-	0	1
+T	16	3.14 Beta. ok? 	2685	2700	1	1	word	0	-	0	1
+T	16	U.S.\n	2700	2705	1	1	word	0	-	0	1
+T	16	中文 éBeta\néBeta 3.14alphaalpha! 	2705	2742	1	1	word	0	-	0	1
+T	16	中文 😀x, 😀x? 	2742	2755	1	1	word	0	-	0	1
+T	16	é\r\n3.14\ngamma ok. 	2755	2774	1	1	word	0	-	0	1
+T	16	U.S.. 	2774	2780	1	1	word	0	-	0	1
+T	16	Beta, 中文😀x é? 	2780	2797	1	1	word	0	-	0	1
+T	16	中文 é. gamma. 	2797	2811	1	1	word	0	-	0	1
+T	16	Beta. alpha? 	2811	2824	1	1	word	0	-	0	1
+T	16	Beta 3.14\n😀x\n中文\r\nok😀x! 	2824	2850	1	1	word	0	-	0	1
+T	16	gamma. 	2850	2857	1	1	word	0	-	0	1
+T	16	中文 alpha\nBeta 中文 é, 中文 gamma。	2857	2887	1	1	word	0	-	0	1
+T	16	ok é gamma\néU.S.\né Beta。	2887	2915	1	1	word	0	-	0	1
+T	16	gamma U.S. 3.14\r\nalphaalpha\nBetagamma 	2915	2955	1	1	word	0	-	0	1
+T	16	U.S.	2955	2959	1	1	word	0	-	0	1
+T	16	é U.S.\r\n	2959	2969	1	1	word	0	-	0	1
+T	16	中文 	2969	2972	1	1	word	0	-	0	1
+T	16	😀x U.S.	2972	2980	1	1	word	0	-	0	1
+T	16	ok 3.14 中文\n😀x, 中文? 	2980	3001	1	1	word	0	-	0	1
+T	16	Beta\n3.14, Beta\r\nalpha 😀x! 	3001	3029	1	1	word	0	-	0	1
+T	16	😀x é 	3029	3036	1	1	word	0	-	0	1
+T	16	3.14。	3036	3041	1	1	word	0	-	0	1
+T	16	3.14\né 中文\n中文. 	3041	3056	1	1	word	0	-	0	1
+T	16	中文	3056	3059	1	1	word	0	-	0	1
+T	16	alpha alpha\r\ngamma, Beta 中文。	3059	3087	1	1	word	0	-	0	1
+T	16	😀x, 😀x。	3087	3096	1	1	word	0	-	0	1
+T	16	Beta ok gamma? 	3096	3111	1	1	word	0	-	0	1
+T	16	ok。	3111	3114	1	1	word	0	-	0	1
+T	16	alpha! 	3114	3121	1	1	word	0	-	0	1
+T	16	gamma\nalpha\r\ngamma U.S.? 	3121	3146	1	1	word	0	-	0	1
+T	16	gamma。	3146	3152	1	1	word	0	-	0	1
+T	16	gamma, 3.143.14。	3152	3169	1	1	word	0	-	0	1
+T	16	é gamma。	3169	3178	1	1	word	0	-	0	1
+T	16	gamma ok! 	3178	3188	1	1	word	0	-	0	1
+T	16	3.14 	3188	3193	1	1	word	0	-	0	1
+T	16	3.14 中文 3.14! 	3193	3207	1	1	word	0	-	0	1
+T	16	U.S.? 	3207	3213	1	1	word	0	-	0	1
+T	16	gamma\n😀x? 	3213	3224	1	1	word	0	-	0	1
+T	16	3.14\nok! 	3224	3233	1	1	word	0	-	0	1
+T	16	Beta\n😀x。	3233	3242	1	1	word	0	-	0	1
+T	16	Beta, gamma, Beta ok. 	3242	3264	1	1	word	0	-	0	1
+T	16	中文\ngamma3.14 3.14\nBeta. 	3264	3289	1	1	word	0	-	0	1
+T	16	中文. 	3289	3293	1	1	word	0	-	0	1
+T	16	中文 alpha。	3293	3302	1	1	word	0	-	0	1
+T	16	U.S. 	3302	3307	1	1	word	0	-	0	1
+T	16	😀x, é U.S.。	3307	3320	1	1	word	0	-	0	1
+T	16	U.S., 中文 	3320	3329	1	1	word	0	-	0	1
+T	16	中文! 	3329	3333	1	1	word	0	-	0	1
+T	16	ok é é alpha\n3.14 	3333	3353	1	1	word	0	-	0	1
+T	16	Beta Beta\r\ngamma, U.S.。	3353	3376	1	1	word	0	-	0	1
+T	16	中文\n中文。	3376	3382	1	1	word	0	-	0	1
+T	16	Beta 😀x! 	3382	3392	1	1	word	0	-	0	1
+T	16	gamma? 	3392	3399	1	1	word	0	-	0	1
+T	16	Beta! 	3399	3405	1	1	word	0	-	0	1
+T	16	3.14。	3405	3410	1	1	word	0	-	0	1
+T	16	U.S.. 	3410	3416	1	1	word	0	-	0	1
+T	16	😀x 	3416	3420	1	1	word	0	-	0	1
+T	16	U.S. gamma 😀x gamma\n3.14! 	3420	3447	1	1	word	0	-	0	1
+T	16	3.14\r\n3.14! 	3447	3459	1	1	word	0	-	0	1
+T	16	😀x。	3459	3463	1	1	word	0	-	0	1
+T	16	中文. gamma\r\n😀x3.14 Beta U.S. 	3463	3493	1	1	word	0	-	0	1
+T	16	Beta Beta. 	3493	3504	1	1	word	0	-	0	1
+T	16	U.S.! 	3504	3510	1	1	word	0	-	0	1
+T	16	😀x。	3510	3514	1	1	word	0	-	0	1
+T	16	中文? 	3514	3518	1	1	word	0	-	0	1
+T	16	ok\né! 	3518	3525	1	1	word	0	-	0	1
+T	16	alpha。	3525	3531	1	1	word	0	-	0	1
+T	16	Beta 	3531	3536	1	1	word	0	-	0	1
+T	16	U.S.。	3536	3541	1	1	word	0	-	0	1
+T	16	Beta? 	3541	3547	1	1	word	0	-	0	1
+T	16	U.S.. alpha, ok? 	3547	3564	1	1	word	0	-	0	1
+T	16	3.14! 	3564	3570	1	1	word	0	-	0	1
+T	16	😀x\r\nBeta alpha。	3570	3586	1	1	word	0	-	0	1
+T	16	gamma 😀x? 	3586	3597	1	1	word	0	-	0	1
+T	16	é 	3597	3600	1	1	word	0	-	0	1
+T	16	U.S., gamma。	3600	3612	1	1	word	0	-	0	1
+T	16	é é 中文\r\ngamma😀x? 	3612	3633	1	1	word	0	-	0	1
+T	16	é, ok! 	3633	3641	1	1	word	0	-	0	1
+T	16	Beta Beta 😀xé ok! 	3641	3662	1	1	word	0	-	0	1
+T	16	gamma 	3662	3668	1	1	word	0	-	0	1
+T	16	中文 3.14? 	3668	3677	1	1	word	0	-	0	1
+T	16	alpha, Beta 3.14. 	3677	3695	1	1	word	0	-	0	1
+T	16	U.S. 	3695	3700	1	1	word	0	-	0	1
+T	16	中文? 	3700	3704	1	1	word	0	-	0	1
+T	16	3.14 	3704	3709	1	1	word	0	-	0	1
+T	16	Beta é. gamma? 	3709	3725	1	1	word	0	-	0	1
+T	16	😀x。	3725	3729	1	1	word	0	-	0	1
+T	16	3.14, 😀x BetaU.S.. 	3729	3750	1	1	word	0	-	0	1
+T	16	😀x。	3750	3754	1	1	word	0	-	0	1
+T	16	3.14 3.14\n3.14。	3754	3769	1	1	word	0	-	0	1
+T	16	U.S.. 3.14! 	3769	3781	1	1	word	0	-	0	1
+T	16	3.14 	3781	3786	1	1	word	0	-	0	1
+T	16	U.S.	3786	3790	1	1	word	0	-	0	1
+T	16	alpha! 	3790	3798	1	1	word	0	-	0	1
+T	16	3.14。	3798	3803	1	1	word	0	-	0	1
+T	16	Beta 😀x gamma 😀x, 中文? 	3803	3827	1	1	word	0	-	0	1
+T	16	ok中文 ok 中文? 	3827	3840	1	1	word	0	-	0	1
+T	16	ok? 	3840	3844	1	1	word	0	-	0	1
+T	16	U.S.	3844	3848	1	1	word	0	-	0	1
+T	16	U.S.\r\n	3848	3855	1	1	word	0	-	0	1
+T	16	gamma 😀x\n3.14 😀x\n3.14。	3855	3879	1	1	word	0	-	0	1
+T	16	ok! 	3879	3883	1	1	word	0	-	0	1
+T	16	Beta U.S.? 	3883	3894	1	1	word	0	-	0	1
+T	16	Beta\r\nBeta. ok 😀x! 	3894	3914	1	1	word	0	-	0	1
+T	16	😀x\r\n😀x. 	3914	3924	1	1	word	0	-	0	1
+T	16	中文! 	3924	3928	1	1	word	0	-	0	1
+T	16	😀x! 	3928	3933	1	1	word	0	-	0	1
+T	16	😀x 3.14, 3.14 	3933	3948	1	1	word	0	-	0	1
+T	16	😀x\r\nU.S. 	3948	3958	1	1	word	0	-	0	1
+T	16	Beta? 	3958	3964	1	1	word	0	-	0	1
+T	16	alpha! 	3964	3971	1	1	word	0	-	0	1
+T	16	U.S.. 	3971	3977	1	1	word	0	-	0	1
+T	16	😀x 	3977	3981	1	1	word	0	-	0	1
+T	16	3.14 	3981	3986	1	1	word	0	-	0	1
+T	16	Betaé? 	3986	3995	1	1	word	0	-	0	1
+T	16	中文中文\r\nok, 😀x。	3995	4010	1	1	word	0	-	0	1
+T	16	ok! 	4010	4014	1	1	word	0	-	0	1
+T	16	gamma, Beta, ok\r\ngamma, ok! 	4014	4042	1	1	word	0	-	0	1
+T	16	ok 中文 中文, alpha ok。	4042	4061	1	1	word	0	-	0	1
+T	16	é. é 😀x! 	4061	4073	1	1	word	0	-	0	1
+T	16	Beta 	4073	4078	1	1	word	0	-	0	1
+T	16	alpha, ok, 中文 é\r\n中文 	4078	4099	1	1	word	0	-	0	1
+T	16	alpha\r\nU.S.。	4099	4111	1	1	word	0	-	0	1
+T	16	é Beta\r\n	4111	4120	1	1	word	0	-	0	1
+E	16	4120	4120	0
+T	17	U.S. 	0	5	1	1	word	0	-	0	1
+T	17	Beta 3.14, Beta? 	5	22	1	1	word	0	-	0	1
+T	17	gamma, 中文. alpha alpha. 	22	46	1	1	word	0	-	0	1
+T	17	中文 中文\r\n😀x! 	46	58	1	1	word	0	-	0	1
+T	17	é gamma\r\n中文. 	58	72	1	1	word	0	-	0	1
+T	17	😀x。	72	76	1	1	word	0	-	0	1
+T	17	alpha, 中文? 	76	87	1	1	word	0	-	0	1
+T	17	😀x alpha, U.S. alpha 中文. 	87	113	1	1	word	0	-	0	1
+T	17	中文 U.S. 	113	121	1	1	word	0	-	0	1
+T	17	😀x é 中文。	121	131	1	1	word	0	-	0	1
+T	17	😀x, U.S., é 	131	145	1	1	word	0	-	0	1
+T	17	中文 😀x Beta. 	145	158	1	1	word	0	-	0	1
+T	17	😀x\nU.S.! 	158	168	1	1	word	0	-	0	1
+T	17	alpha\n😀x Beta gamma! 	168	190	1	1	word	0	-	0	1
+T	17	3.14, ok, Beta\r\nU.S.	190	210	1	1	word	0	-	0	1
+T	17	Beta😀x, ok 3.14 Beta\nU.S.。	210	239	1	1	word	0	-	0	1
+T	17	é U.S.! 	239	248	1	1	word	0	-	0	1
+T	17	é ok\r\n😀x\r\nBeta\nU.S.	248	269	1	1	word	0	-	0	1
+T	17	ok ok ok. 	269	280	1	1	word	0	-	0	1
+T	17	U.S. 3.14 😀x 中文? 	280	298	1	1	word	0	-	0	1
+T	17	😀x! 	298	303	1	1	word	0	-	0	1
+T	17	中文! 	303	307	1	1	word	0	-	0	1
+T	17	3.14Beta 😀x。	307	321	1	1	word	0	-	0	1
+T	17	é。	321	324	1	1	word	0	-	0	1
+T	17	3.14 gamma 😀x. 	324	340	1	1	word	0	-	0	1
+T	17	U.S., é, Beta gamma! 	340	362	1	1	word	0	-	0	1
+T	17	Beta。	362	367	1	1	word	0	-	0	1
+T	17	中文 gamma\r\n😀x gamma 😀x 😀x\nBeta 	367	400	1	1	word	0	-	0	1
+T	17	é? 	400	404	1	1	word	0	-	0	1
+T	17	alphaalpha? 	404	417	1	1	word	0	-	0	1
+T	17	ok, Beta, 😀x. 3.14\nU.S.	417	441	1	1	word	0	-	0	1
+T	17	gamma。	441	448	1	1	word	0	-	0	1
+T	17	中文\n中文\r\né 	448	458	1	1	word	0	-	0	1
+T	17	😀x\nalpha 😀x 	458	472	1	1	word	0	-	0	1
+T	17	gamma ok ok ok, 😀x. 	472	493	1	1	word	0	-	0	1
+T	17	U.S.\nalpha。	493	504	1	1	word	0	-	0	1
+T	17	😀x\n中文 	504	511	1	1	word	0	-	0	1
+T	17	中文 	511	514	1	1	word	0	-	0	1
+T	17	é。	514	517	1	1	word	0	-	0	1
+T	17	é😀x。	517	524	1	1	word	0	-	0	1
+T	17	ok! 	524	528	1	1	word	0	-	0	1
+T	17	alpha U.S.\r\n	528	540	1	1	word	0	-	0	1
+T	17	alpha! 	540	547	1	1	word	0	-	0	1
+T	17	3.14。	547	552	1	1	word	0	-	0	1
+T	17	é U.S. 	552	560	1	1	word	0	-	0	1
+T	17	U.S.? 	560	566	1	1	word	0	-	0	1
+T	17	😀x\ngamma\ngamma。	566	582	1	1	word	0	-	0	1
+T	17	éalpha\n3.14 Beta 	582	601	1	1	word	0	-	0	1
+T	17	U.S.。	601	606	1	1	word	0	-	0	1
+T	17	😀x! 	606	611	1	1	word	0	-	0	1
+T	17	U.S. alpha\r\n中文? 	611	627	1	1	word	0	-	0	1
+T	17	Beta. ok 	627	636	1	1	word	0	-	0	1
+T	17	Beta é U.S.. alpha。	636	656	1	1	word	0	-	0	1
+T	17	3.14 Beta. 	656	667	1	1	word	0	-	0	1
+T	17	中文\nU.S.。	667	675	1	1	word	0	-	0	1
+T	17	gamma gamma, Beta é。	675	696	1	1	word	0	-	0	1
+T	17	😀x Beta 	696	705	1	1	word	0	-	0	1
+T	17	gamma 	705	711	1	1	word	0	-	0	1
+T	17	Beta 3.14! 	711	722	1	1	word	0	-	0	1
+T	17	ok. 3.14 Beta 	722	736	1	1	word	0	-	0	1
+T	17	é3.14 	736	744	1	1	word	0	-	0	1
+T	17	gamma Beta 😀x\nalpha é? 	744	769	1	1	word	0	-	0	1
+T	17	é 	769	772	1	1	word	0	-	0	1
+T	17	Beta 3.14! 	772	783	1	1	word	0	-	0	1
+T	17	é\r\nBeta gamma 	783	798	1	1	word	0	-	0	1
+T	17	中文 中文 😀x. 	798	809	1	1	word	0	-	0	1
+T	17	中文3.14, U.S.? 	809	824	1	1	word	0	-	0	1
+T	17	ok ok Beta 	824	835	1	1	word	0	-	0	1
+T	17	alpha\r\ngamma? 	835	849	1	1	word	0	-	0	1
+T	17	alpha, 😀x, 中文, U.S.! 	849	871	1	1	word	0	-	0	1
+T	17	3.14 U.S. ok! 	871	885	1	1	word	0	-	0	1
+T	17	3.14\nalpha 3.14\r\n3.14\né\n中文, 😀xé\n中文\n中文\n中文 😀x ok. alpha alpha! 	885	951	1	1	word	0	-	0	1
+T	17	Beta\ngamma。	951	962	1	1	word	0	-	0	1
+T	17	3.14。	962	967	1	1	word	0	-	0	1
+T	17	ok。	967	970	1	1	word	0	-	0	1
+T	17	alpha 	970	976	1	1	word	0	-	0	1
+T	17	ok ok! 	976	983	1	1	word	0	-	0	1
+T	17	ok! 	983	987	1	1	word	0	-	0	1
+T	17	3.14😀x 中文. ok 中文. 	987	1007	1	1	word	0	-	0	1
+T	17	中文 gamma\r\n	1007	1017	1	1	word	0	-	0	1
+T	17	😀x! 	1017	1022	1	1	word	0	-	0	1
+T	17	éBeta? 	1022	1031	1	1	word	0	-	0	1
+T	17	3.14 é\r\n😀x. alpha\né. ok. é! 	1031	1063	1	1	word	0	-	0	1
+T	17	ok 	1063	1066	1	1	word	0	-	0	1
+T	17	😀x 3.14\n中文\n😀x! 	1066	1083	1	1	word	0	-	0	1
+T	17	Beta alpha 中文 	1083	1097	1	1	word	0	-	0	1
+T	17	é 中文\ngamma😀x U.S. 	1097	1118	1	1	word	0	-	0	1
+T	17	Beta? 	1118	1124	1	1	word	0	-	0	1
+T	17	中文。	1124	1127	1	1	word	0	-	0	1
+T	17	éé. 	1127	1134	1	1	word	0	-	0	1
+T	17	U.S. ok? 	1134	1143	1	1	word	0	-	0	1
+T	17	中文 ok。	1143	1149	1	1	word	0	-	0	1
+T	17	Beta, alpha 😀x。	1149	1165	1	1	word	0	-	0	1
+T	17	3.14 	1165	1170	1	1	word	0	-	0	1
+T	17	3.14ok\r\nok. ok, gamma\nalpha U.S. ok é 😀x, 3.14。	1170	1220	1	1	word	0	-	0	1
+T	17	ok? 	1220	1224	1	1	word	0	-	0	1
+T	17	ok\nok? 	1224	1231	1	1	word	0	-	0	1
+T	17	Beta? 	1231	1237	1	1	word	0	-	0	1
+T	17	gamma Beta! 	1237	1249	1	1	word	0	-	0	1
+T	17	U.S. gamma alpha\r\nok. é! 	1249	1275	1	1	word	0	-	0	1
+T	17	gamma😀x\n中文\nok\r\nalpha ok, 😀x 	1275	1306	1	1	word	0	-	0	1
+T	17	éBeta é 😀x gamma。	1306	1327	1	1	word	0	-	0	1
+T	17	alpha. 3.14. 	1327	1340	1	1	word	0	-	0	1
+T	17	Beta 	1340	1345	1	1	word	0	-	0	1
+T	17	😀x é é3.14 	1345	1360	1	1	word	0	-	0	1
+T	17	中文\r\nokBetaU.S., U.S.。	1360	1383	1	1	word	0	-	0	1
+T	17	alpha, alpha\nU.S. 3.14\r\n3.14 	1383	1412	1	1	word	0	-	0	1
+T	17	gamma 3.14\r\né 	1412	1427	1	1	word	0	-	0	1
+T	17	中文。	1427	1430	1	1	word	0	-	0	1
+T	17	ok\r\nBeta😀x. alpha。	1430	1450	1	1	word	0	-	0	1
+T	17	alpha\nok Beta alpha Beta, ok, alpha. 	1450	1487	1	1	word	0	-	0	1
+T	17	中文 	1487	1490	1	1	word	0	-	0	1
+T	17	U.S.! 	1490	1496	1	1	word	0	-	0	1
+T	17	3.14 gamma\n3.14\r\nU.S., gamma 😀x 	1496	1529	1	1	word	0	-	0	1
+T	17	U.S. 3.14 3.14\nok\r\nU.S.\n	1529	1553	1	1	word	0	-	0	1
+T	17	U.S.\ngamma\r\nok 中文 U.S.\r\n3.14. é U.S. 	1553	1591	1	1	word	0	-	0	1
+T	17	中文。	1591	1594	1	1	word	0	-	0	1
+T	17	中文. 	1594	1598	1	1	word	0	-	0	1
+T	17	中文. 	1598	1602	1	1	word	0	-	0	1
+T	17	Beta 中文? 	1602	1611	1	1	word	0	-	0	1
+T	17	中文 alpha\n中文 3.14 3.14 中文\r\n3.14 😀x Beta 3.14! 	1611	1657	1	1	word	0	-	0	1
+T	17	gammaBeta\né 😀x。	1657	1675	1	1	word	0	-	0	1
+T	17	é\r\nU.S.。	1675	1684	1	1	word	0	-	0	1
+T	17	😀x\r\n中文3.14? 	1684	1698	1	1	word	0	-	0	1
+T	17	3.14? 	1698	1704	1	1	word	0	-	0	1
+T	17	U.S.\r\n3.14 3.14! 	1704	1721	1	1	word	0	-	0	1
+T	17	gamma\r\ngamma。	1721	1734	1	1	word	0	-	0	1
+T	17	中文。	1734	1737	1	1	word	0	-	0	1
+T	17	alpha\r\nalpha\r\n3.14 é。	1737	1759	1	1	word	0	-	0	1
+T	17	gamma Beta\r\nok, U.S. 	1759	1780	1	1	word	0	-	0	1
+T	17	中文\r\ngamma。	1780	1790	1	1	word	0	-	0	1
+T	17	😀x é 	1790	1797	1	1	word	0	-	0	1
+T	17	3.14\r\né\r\n3.14! 	1797	1813	1	1	word	0	-	0	1
+T	17	3.14\nalpha 😀x! 	1813	1829	1	1	word	0	-	0	1
+T	17	3.14 ok 	1829	1837	1	1	word	0	-	0	1
+T	17	alpha? 	1837	1844	1	1	word	0	-	0	1
+T	17	é\n3.14 3.14! 	1844	1858	1	1	word	0	-	0	1
+T	17	中文. gamma U.S.	1858	1872	1	1	word	0	-	0	1
+T	17	中文\r\n中文3.14. é! 	1872	1890	1	1	word	0	-	0	1
+T	17	é 	1890	1893	1	1	word	0	-	0	1
+T	17	Beta é 😀x, gamma\r\n3.14? 	1893	1919	1	1	word	0	-	0	1
+T	17	é! 	1919	1923	1	1	word	0	-	0	1
+T	17	ok gamma, 3.14 ok Beta, 中文 gamma\r\n3.14! 	1923	1963	1	1	word	0	-	0	1
+T	17	U.S. 	1963	1968	1	1	word	0	-	0	1
+T	17	Beta。	1968	1973	1	1	word	0	-	0	1
+T	17	Beta\r\n3.14 3.14? 	1973	1990	1	1	word	0	-	0	1
+T	17	ok é。	1990	1996	1	1	word	0	-	0	1
+T	17	gamma Beta 中文! 	1996	2011	1	1	word	0	-	0	1
+T	17	alpha\nBeta! 	2011	2023	1	1	word	0	-	0	1
+T	17	3.14\n	2023	2028	1	1	word	0	-	0	1
+T	17	3.14 😀x。	2028	2037	1	1	word	0	-	0	1
+T	17	alpha alpha Beta 	2037	2054	1	1	word	0	-	0	1
+T	17	中文 BetaU.S.\n	2054	2067	1	1	word	0	-	0	1
+T	17	U.S.\n	2067	2072	1	1	word	0	-	0	1
+T	17	U.S. alpha, 3.14 	2072	2089	1	1	word	0	-	0	1
+T	17	3.14, U.S.	2089	2099	1	1	word	0	-	0	1
+T	17	Beta, gamma\r\ngamma\nBeta. gamma! 	2099	2132	1	1	word	0	-	0	1
+T	17	3.14 gamma 	2132	2143	1	1	word	0	-	0	1
+T	17	ok! 	2143	2147	1	1	word	0	-	0	1
+T	17	ok? 	2147	2151	1	1	word	0	-	0	1
+T	17	gamma 	2151	2157	1	1	word	0	-	0	1
+T	17	ok ok\r\n中文 é gamma 	2157	2176	1	1	word	0	-	0	1
+T	17	中文\r\ngamma 	2176	2186	1	1	word	0	-	0	1
+T	17	gamma Beta! 	2186	2198	1	1	word	0	-	0	1
+T	17	gamma Beta3.14 😀x ok。	2198	2221	1	1	word	0	-	0	1
+T	17	ok 3.14? 	2221	2230	1	1	word	0	-	0	1
+T	17	é gamma? 	2230	2240	1	1	word	0	-	0	1
+T	17	中文 é! 	2240	2247	1	1	word	0	-	0	1
+T	17	3.14, é é Beta é 	2247	2267	1	1	word	0	-	0	1
+T	17	中文\r\nU.S. alpha 中文. alpha? 	2267	2293	1	1	word	0	-	0	1
+T	17	3.14\r\ngamma. é\n中文gamma Beta 3.14, Beta é 😀x 	2293	2341	1	1	word	0	-	0	1
+T	17	3.14! 	2341	2347	1	1	word	0	-	0	1
+T	17	alpha。	2347	2353	1	1	word	0	-	0	1
+T	17	gamma? 	2353	2360	1	1	word	0	-	0	1
+T	17	gamma\nok。	2360	2369	1	1	word	0	-	0	1
+T	17	gamma\r\n3.14 U.S. 	2369	2386	1	1	word	0	-	0	1
+T	17	U.S.! 	2386	2392	1	1	word	0	-	0	1
+T	17	3.14! 	2392	2398	1	1	word	0	-	0	1
+T	17	😀x 3.14\r\né Beta ok\nok。	2398	2422	1	1	word	0	-	0	1
+T	17	中文! 	2422	2426	1	1	word	0	-	0	1
+T	17	😀x ok中文\n😀x\r\ngamma 	2426	2447	1	1	word	0	-	0	1
+T	17	Beta 中文 gamma! 	2447	2462	1	1	word	0	-	0	1
+T	17	😀x! 	2462	2467	1	1	word	0	-	0	1
+T	17	alpha 中文 	2467	2476	1	1	word	0	-	0	1
+T	17	alpha? 	2476	2483	1	1	word	0	-	0	1
+T	17	U.S.\n	2483	2488	1	1	word	0	-	0	1
+T	17	U.S.. 	2488	2494	1	1	word	0	-	0	1
+T	17	U.S.。	2494	2499	1	1	word	0	-	0	1
+T	17	ok U.S.? 	2499	2508	1	1	word	0	-	0	1
+T	17	gamma。	2508	2514	1	1	word	0	-	0	1
+T	17	alpha? 	2514	2521	1	1	word	0	-	0	1
+T	17	gamma! 	2521	2528	1	1	word	0	-	0	1
+T	17	ok? 	2528	2532	1	1	word	0	-	0	1
+T	17	Beta gamma 3.14\r\né! 	2532	2553	1	1	word	0	-	0	1
+T	17	U.S., 中文\r\nalpha\né 3.14。	2553	2577	1	1	word	0	-	0	1
+T	17	U.S.\r\n	2577	2583	1	1	word	0	-	0	1
+T	17	alpha 	2583	2589	1	1	word	0	-	0	1
+T	17	gamma gamma U.S., gamma! 	2589	2614	1	1	word	0	-	0	1
+T	17	é. 3.14 U.S.	2614	2627	1	1	word	0	-	0	1
+T	17	é 3.14. ok Beta\r\nBeta, U.S. ok alpha! 	2627	2667	1	1	word	0	-	0	1
+T	17	U.S. 	2667	2672	1	1	word	0	-	0	1
+T	17	中文 U.S.? 	2672	2681	1	1	word	0	-	0	1
+T	17	U.S.。	2681	2686	1	1	word	0	-	0	1
+T	17	😀x gamma, 😀x, gamma, 中文 3.14 中文, U.S.	2686	2725	1	1	word	0	-	0	1
+T	17	ok alphaBeta! 	2725	2741	1	1	word	0	-	0	1
+T	17	3.14 gamma? 	2741	2753	1	1	word	0	-	0	1
+T	17	alpha\n中文? 	2753	2763	1	1	word	0	-	0	1
+T	17	中文 	2763	2766	1	1	word	0	-	0	1
+T	17	Beta Beta\r\ngamma\nU.S.? 	2766	2789	1	1	word	0	-	0	1
+T	17	alpha U.S.! 	2789	2801	1	1	word	0	-	0	1
+T	17	Beta! 	2801	2807	1	1	word	0	-	0	1
+T	17	é\r\né。	2807	2814	1	1	word	0	-	0	1
+T	17	中文 é。	2814	2820	1	1	word	0	-	0	1
+T	17	gamma? 	2820	2827	1	1	word	0	-	0	1
+T	17	中文 😀x! 	2827	2835	1	1	word	0	-	0	1
+T	17	ok 3.14 3.14! 	2835	2849	1	1	word	0	-	0	1
+T	17	ok。	2849	2852	1	1	word	0	-	0	1
+T	17	U.S.\r\n	2852	2858	1	1	word	0	-	0	1
+T	17	gamma。	2858	2864	1	1	word	0	-	0	1
+T	17	U.S.! 	2864	2870	1	1	word	0	-	0	1
+T	17	😀x。	2870	2874	1	1	word	0	-	0	1
+T	17	中文 alpha gamma。	2874	2889	1	1	word	0	-	0	1
+T	17	alpha alpha é3.14 	2889	2909	1	1	word	0	-	0	1
+T	17	gamma? 	2909	2916	1	1	word	0	-	0	1
+T	17	ok alpha 😀x. 3.14 gamma\né 中文 	2916	2947	1	1	word	0	-	0	1
+T	17	Beta 	2947	2952	1	1	word	0	-	0	1
+T	17	é? 	2952	2956	1	1	word	0	-	0	1
+T	17	U.S. ok 😀x, alpha ok 3.14\r\nU.S.	2956	2988	1	1	word	0	-	0	1
+T	17	alpha U.S. 	2988	3000	1	1	word	0	-	0	1
+T	17	中文! 	3000	3004	1	1	word	0	-	0	1
+T	17	3.14 	3004	3009	1	1	word	0	-	0	1
+T	17	中文\r\n中文. 3.14\nalpha 😀x\nBeta\r\n中文 alpha 中文 	3009	3050	1	1	word	0	-	0	1
+T	17	Beta\r\nok, Beta. 3.14! 	3050	3072	1	1	word	0	-	0	1
+T	17	gamma é, 中文\r\nok, gamma. ok中文. 	3072	3104	1	1	word	0	-	0	1
+T	17	U.S.? 	3104	3110	1	1	word	0	-	0	1
+T	17	é. ok! 	3110	3118	1	1	word	0	-	0	1
+T	17	alpha Beta alpha! 	3118	3136	1	1	word	0	-	0	1
+T	17	gamma U.S. 	3136	3147	1	1	word	0	-	0	1
+T	17	😀x\r\né alpha ok okgamma\n中文? 	3147	3177	1	1	word	0	-	0	1
+E	17	3177	3177	0
+T	18	3.14. 	0	6	1	1	word	0	-	0	1
+T	18	U.S.? 	6	12	1	1	word	0	-	0	1
+T	18	alpha alpha 中文 Beta 3.14. gamma! 	12	45	1	1	word	0	-	0	1
+T	18	😀x 	45	49	1	1	word	0	-	0	1
+T	18	ok U.S. 	49	57	1	1	word	0	-	0	1
+T	18	ok! 	57	61	1	1	word	0	-	0	1
+T	18	é\r\nU.S. 3.14. 	61	76	1	1	word	0	-	0	1
+T	18	😀x. alpha ok 	76	90	1	1	word	0	-	0	1
+T	18	3.14。	90	95	1	1	word	0	-	0	1
+T	18	é U.S.3.14。	95	108	1	1	word	0	-	0	1
+T	18	alpha é U.S.\ngamma\né 	108	131	1	1	word	0	-	0	1
+T	18	中文! 	131	135	1	1	word	0	-	0	1
+T	18	3.14\r\nok. é? 	135	149	1	1	word	0	-	0	1
+T	18	é. 	149	153	1	1	word	0	-	0	1
+T	18	Beta? 	153	159	1	1	word	0	-	0	1
+T	18	ok中文。	159	165	1	1	word	0	-	0	1
+T	18	😀x 中文alpha, alpha! 	165	186	1	1	word	0	-	0	1
+T	18	😀x U.S. 3.143.14\n😀x gamma 3.14\r\nU.S.\n	186	226	1	1	word	0	-	0	1
+T	18	中文! 	226	230	1	1	word	0	-	0	1
+T	18	é 中文\r\ngamma 中文, 😀x 😀x 😀x. gamma\né, gamma. 	230	277	1	1	word	0	-	0	1
+T	18	U.S.? 	277	283	1	1	word	0	-	0	1
+T	18	😀x? 	283	288	1	1	word	0	-	0	1
+T	18	ok U.S. alpha. é alpha? 	288	313	1	1	word	0	-	0	1
+T	18	😀x é 3.14? 	313	326	1	1	word	0	-	0	1
+T	18	U.S.\né. é? 	326	339	1	1	word	0	-	0	1
+T	18	中文 	339	342	1	1	word	0	-	0	1
+T	18	U.S. 	342	347	1	1	word	0	-	0	1
+T	18	😀x\ngamma gamma。	347	363	1	1	word	0	-	0	1
+T	18	ok alpha😀x Beta? 	363	382	1	1	word	0	-	0	1
+T	18	U.S. ok 	382	390	1	1	word	0	-	0	1
+T	18	😀x, ok 	390	398	1	1	word	0	-	0	1
+T	18	U.S. 	398	403	1	1	word	0	-	0	1
+T	18	中文3.14gamma gamma, é\r\nBeta\r\nBeta\n中文 	403	442	1	1	word	0	-	0	1
+T	18	Beta? 	442	448	1	1	word	0	-	0	1
+T	18	é 中文. alpha gamma, 3.14 	448	473	1	1	word	0	-	0	1
+T	18	ok. 	473	477	1	1	word	0	-	0	1
+T	18	Beta? 	477	483	1	1	word	0	-	0	1
+T	18	gamma Beta. 	483	495	1	1	word	0	-	0	1
+T	18	中文\nok 中文\né 中文 	495	510	1	1	word	0	-	0	1
+E	18	510	510	0
+T	19	Beta 	0	5	1	1	word	0	-	0	1
+T	19	alpha 	5	11	1	1	word	0	-	0	1
+T	19	é! 	11	15	1	1	word	0	-	0	1
+T	19	gamma\n😀x? 	15	26	1	1	word	0	-	0	1
+T	19	é gamma, gamma中文。	26	45	1	1	word	0	-	0	1
+T	19	é 	45	48	1	1	word	0	-	0	1
+T	19	é? 	48	52	1	1	word	0	-	0	1
+T	19	alpha\ngamma\n中文。	52	67	1	1	word	0	-	0	1
+T	19	ok Beta 中文? 	67	79	1	1	word	0	-	0	1
+T	19	3.14。	79	84	1	1	word	0	-	0	1
+T	19	U.S. 	84	89	1	1	word	0	-	0	1
+T	19	Beta alpha 3.14 é 😀x ok\nBeta 	89	120	1	1	word	0	-	0	1
+T	19	gamma Beta。	120	131	1	1	word	0	-	0	1
+T	19	U.S.	131	135	1	1	word	0	-	0	1
+T	19	中文? 	135	140	1	1	word	0	-	0	1
+T	19	U.S., ok 中文\r\nok. é\n😀x 	140	164	1	1	word	0	-	0	1
+T	19	é 	164	167	1	1	word	0	-	0	1
+T	19	é ok é? 	167	177	1	1	word	0	-	0	1
+T	19	中文? 	177	181	1	1	word	0	-	0	1
+T	19	Beta。	181	186	1	1	word	0	-	0	1
+T	19	Beta 中文alpha éalpha gamma 	186	215	1	1	word	0	-	0	1
+T	19	😀x, alpha? 	215	227	1	1	word	0	-	0	1
+T	19	3.14。	227	232	1	1	word	0	-	0	1
+T	19	gamma 😀x gamma Beta gamma\né, U.S., 😀x 	232	273	1	1	word	0	-	0	1
+T	19	Beta\n3.14 U.S. 	273	288	1	1	word	0	-	0	1
+T	19	ok alpha é, alpha\n中文。	288	310	1	1	word	0	-	0	1
+T	19	中文 U.S.\ngamma 	310	324	1	1	word	0	-	0	1
+T	19	😀x okok\nalpha ok 	324	343	1	1	word	0	-	0	1
+T	19	ok。	343	346	1	1	word	0	-	0	1
+T	19	Beta ok 3.14 Beta? 	346	365	1	1	word	0	-	0	1
+T	19	U.S.. 	365	371	1	1	word	0	-	0	1
+T	19	中文, é. 	371	379	1	1	word	0	-	0	1
+T	19	Beta U.S.\n	379	389	1	1	word	0	-	0	1
+T	19	中文! 	389	393	1	1	word	0	-	0	1
+T	19	😀x。	393	397	1	1	word	0	-	0	1
+T	19	中文? 	397	401	1	1	word	0	-	0	1
+T	19	gamma ok! 	401	411	1	1	word	0	-	0	1
+T	19	U.S.! 	411	417	1	1	word	0	-	0	1
+T	19	😀x gamma。	417	427	1	1	word	0	-	0	1
+T	19	éU.S. 	427	435	1	1	word	0	-	0	1
+T	19	Beta! 	435	441	1	1	word	0	-	0	1
+T	19	é U.S.	441	448	1	1	word	0	-	0	1
+T	19	中文 ok\r\nok\r\n中文 3.14? 	448	469	1	1	word	0	-	0	1
+T	19	😀x 3.14 é 😀x? 	469	486	1	1	word	0	-	0	1
+T	19	中文。	486	489	1	1	word	0	-	0	1
+T	19	alpha gammagamma 	489	507	1	1	word	0	-	0	1
+T	19	alpha, 😀x. 	507	519	1	1	word	0	-	0	1
+T	19	中文 gamma? 	519	529	1	1	word	0	-	0	1
+T	19	😀xU.S.! 	529	539	1	1	word	0	-	0	1
+T	19	3.14。	539	544	1	1	word	0	-	0	1
+T	19	gamma? 	544	551	1	1	word	0	-	0	1
+T	19	3.14😀x。	551	560	1	1	word	0	-	0	1
+T	19	alpha é! 	560	570	1	1	word	0	-	0	1
+T	19	ok Beta\né? 	570	582	1	1	word	0	-	0	1
+T	19	中文。	582	585	1	1	word	0	-	0	1
+T	19	U.S. 	585	590	1	1	word	0	-	0	1
+T	19	U.S. 	590	595	1	1	word	0	-	0	1
+T	19	Beta。	595	600	1	1	word	0	-	0	1
+T	19	Beta U.S.\r\n	600	611	1	1	word	0	-	0	1
+T	19	😀x gamma é ok! 	611	628	1	1	word	0	-	0	1
+T	19	😀x? 	628	633	1	1	word	0	-	0	1
+T	19	3.14 U.S.? 	633	644	1	1	word	0	-	0	1
+T	19	é。	644	647	1	1	word	0	-	0	1
+T	19	ok alpha。	647	656	1	1	word	0	-	0	1
+T	19	中文 gamma。	656	665	1	1	word	0	-	0	1
+T	19	😀x\r\ngamma 中文 Beta 3.14, 😀x\nok 中文é。	665	703	1	1	word	0	-	0	1
+T	19	U.S.\ngammaU.S. 	703	719	1	1	word	0	-	0	1
+T	19	😀x! 	719	724	1	1	word	0	-	0	1
+T	19	中文 	724	727	1	1	word	0	-	0	1
+T	19	U.S.\n	727	732	1	1	word	0	-	0	1
+T	19	中文 é! 	732	739	1	1	word	0	-	0	1
+T	19	3.14 😀x? 	739	749	1	1	word	0	-	0	1
+T	19	😀x, ok. 	749	758	1	1	word	0	-	0	1
+T	19	BetaU.S.\né U.S.? 	758	777	1	1	word	0	-	0	1
+T	19	alpha alpha\r\nalpha 	777	796	1	1	word	0	-	0	1
+T	19	中文 U.S.! 	796	805	1	1	word	0	-	0	1
+T	19	Beta. gamma, é Beta ok alpha! 	805	836	1	1	word	0	-	0	1
+T	19	ok3.14. 	836	845	1	1	word	0	-	0	1
+T	19	Beta alpha3.14? 	845	862	1	1	word	0	-	0	1
+T	19	gamma é 	862	871	1	1	word	0	-	0	1
+T	19	Beta. gamma é\nBeta. alpha\nBeta? 	871	904	1	1	word	0	-	0	1
+T	19	ok U.S. 	904	912	1	1	word	0	-	0	1
+T	19	Beta? 	912	918	1	1	word	0	-	0	1
+T	19	ok. gamma\n3.14 中文! 	918	937	1	1	word	0	-	0	1
+T	19	😀x! 	937	942	1	1	word	0	-	0	1
+T	19	gamma! 	942	949	1	1	word	0	-	0	1
+T	19	😀x. é。	949	957	1	1	word	0	-	0	1
+T	19	alpha 😀x\r\n😀x. 	957	973	1	1	word	0	-	0	1
+T	19	中文 gamma\n中文 	973	985	1	1	word	0	-	0	1
+T	19	gamma U.S.. 	985	997	1	1	word	0	-	0	1
+T	19	Beta! 	997	1003	1	1	word	0	-	0	1
+T	19	U.S.\né 	1003	1011	1	1	word	0	-	0	1
+T	19	ok! 	1011	1015	1	1	word	0	-	0	1
+T	19	alpha. ok\nBeta\r\nU.S., alpha。	1015	1043	1	1	word	0	-	0	1
+T	19	é\nalpha gamma。	1043	1058	1	1	word	0	-	0	1
+T	19	中文\r\né\n中文。	1058	1068	1	1	word	0	-	0	1
+T	19	ok. 	1068	1072	1	1	word	0	-	0	1
+T	19	U.S.! 	1072	1078	1	1	word	0	-	0	1
+T	19	ok? 	1078	1082	1	1	word	0	-	0	1
+T	19	3.14, 3.14? 	1082	1094	1	1	word	0	-	0	1
+T	19	中文 U.S.! 	1094	1103	1	1	word	0	-	0	1
+T	19	ok. 	1103	1107	1	1	word	0	-	0	1
+T	19	Beta é\r\n3.14\r\ngamma. 	1107	1129	1	1	word	0	-	0	1
+T	19	😀x U.S.。	1129	1138	1	1	word	0	-	0	1
+T	19	😀xBeta gamma 中文 gamma 	1138	1162	1	1	word	0	-	0	1
+T	19	U.S.	1162	1166	1	1	word	0	-	0	1
+T	19	é! 	1166	1171	1	1	word	0	-	0	1
+T	19	3.14 	1171	1176	1	1	word	0	-	0	1
+T	19	Beta. 	1176	1182	1	1	word	0	-	0	1
+T	19	😀x, é? 	1182	1191	1	1	word	0	-	0	1
+T	19	中文! 	1191	1195	1	1	word	0	-	0	1
+T	19	é, Beta! 	1195	1205	1	1	word	0	-	0	1
+T	19	ok. 	1205	1209	1	1	word	0	-	0	1
+T	19	U.S. alpha gamma 中文 3.14! 	1209	1235	1	1	word	0	-	0	1
+T	19	ok, 3.14 	1235	1244	1	1	word	0	-	0	1
+T	19	é, U.S.。	1244	1253	1	1	word	0	-	0	1
+T	19	gamma, Beta 中文! 	1253	1269	1	1	word	0	-	0	1
+T	19	3.14 😀x ok é, 3.14 	1269	1290	1	1	word	0	-	0	1
+T	19	ok\r\nU.S.。	1290	1299	1	1	word	0	-	0	1
+T	19	alpha é 	1299	1308	1	1	word	0	-	0	1
+T	19	😀x gamma? 	1308	1319	1	1	word	0	-	0	1
+T	19	U.S.\n	1319	1324	1	1	word	0	-	0	1
+T	19	中文\nBeta\r\nalpha, 3.14? 	1324	1346	1	1	word	0	-	0	1
+T	19	U.S.	1346	1350	1	1	word	0	-	0	1
+T	19	gamma 	1350	1357	1	1	word	0	-	0	1
+T	19	gamma\r\n3.14\r\n😀x, U.S. 	1357	1380	1	1	word	0	-	0	1
+T	19	😀x\ngamma\r\n3.14 é\r\nok? 	1380	1404	1	1	word	0	-	0	1
+T	19	Beta? 	1404	1410	1	1	word	0	-	0	1
+T	19	U.S. é, 中文! 	1410	1423	1	1	word	0	-	0	1
+T	19	中文 ok 😀x, é3.14\nU.S. ok\nU.S. 	1423	1455	1	1	word	0	-	0	1
+T	19	U.S. 	1455	1460	1	1	word	0	-	0	1
+T	19	😀x U.S. 	1460	1469	1	1	word	0	-	0	1
+T	19	3.14😀x 	1469	1478	1	1	word	0	-	0	1
+T	19	U.S.! 	1478	1484	1	1	word	0	-	0	1
+T	19	alpha. 	1484	1491	1	1	word	0	-	0	1
+T	19	Beta. alphaok, 中文é. 3.14 	1491	1519	1	1	word	0	-	0	1
+T	19	3.14\r\né, Beta 中文\r\nU.S.? 	1519	1544	1	1	word	0	-	0	1
+T	19	é U.S. 	1544	1552	1	1	word	0	-	0	1
+T	19	Beta, ok\nalpha é. 	1552	1571	1	1	word	0	-	0	1
+T	19	😀x! 	1571	1576	1	1	word	0	-	0	1
+T	19	😀x Beta。	1576	1585	1	1	word	0	-	0	1
+T	19	Beta. 	1585	1591	1	1	word	0	-	0	1
+T	19	中文 	1591	1594	1	1	word	0	-	0	1
+T	19	alpha 	1594	1600	1	1	word	0	-	0	1
+T	19	Beta alpha é 中文\n中文 alpha gamma\n3.14。	1600	1637	1	1	word	0	-	0	1
+T	19	é. alpha. okU.S. 	1637	1656	1	1	word	0	-	0	1
+T	19	gamma. 	1656	1663	1	1	word	0	-	0	1
+T	19	U.S. 3.14? 	1663	1674	1	1	word	0	-	0	1
+T	19	é alpha. 3.14。	1674	1689	1	1	word	0	-	0	1
+T	19	ok\ngamma 	1689	1698	1	1	word	0	-	0	1
+T	19	3.14, Beta ok\ngammaé! 	1698	1722	1	1	word	0	-	0	1
+T	19	3.14。	1722	1727	1	1	word	0	-	0	1
+T	19	U.S., 3.14 3.143.14BetaU.S.! 	1727	1759	1	1	word	0	-	0	1
+T	19	U.S.\r\n	1759	1765	1	1	word	0	-	0	1
+T	19	U.S.. 	1765	1771	1	1	word	0	-	0	1
+T	19	😀x! 	1771	1776	1	1	word	0	-	0	1
+T	19	alpha U.S.。	1776	1787	1	1	word	0	-	0	1
+T	19	3.14\ngamma。	1787	1798	1	1	word	0	-	0	1
+T	19	3.14, ok\r\nU.S. 3.14, 中文\r\né, alpha gamma。	1798	1839	1	1	word	0	-	0	1
+T	19	😀x? 	1839	1844	1	1	word	0	-	0	1
+T	19	ok ok alpha, U.S. 	1844	1862	1	1	word	0	-	0	1
+T	19	😀x! 	1862	1867	1	1	word	0	-	0	1
+T	19	ok é? 	1867	1874	1	1	word	0	-	0	1
+T	19	😀x, alpha 中文! 	1874	1889	1	1	word	0	-	0	1
+T	19	Beta U.S.! 	1889	1900	1	1	word	0	-	0	1
+T	19	gamma. 	1900	1907	1	1	word	0	-	0	1
+T	19	中文 3.14! 	1907	1916	1	1	word	0	-	0	1
+T	19	😀xé 😀x! 	1916	1928	1	1	word	0	-	0	1
+T	19	alpha。	1928	1934	1	1	word	0	-	0	1
+T	19	é 3.14! 	1934	1943	1	1	word	0	-	0	1
+T	19	é? 	1943	1947	1	1	word	0	-	0	1
+T	19	U.S.\ngamma 😀x\r\n中文? 	1947	1967	1	1	word	0	-	0	1
+T	19	😀x。	1967	1971	1	1	word	0	-	0	1
+T	19	ok, é 3.14. 	1971	1984	1	1	word	0	-	0	1
+T	19	U.S.3.14 alpha\nalpha 中文\r\né\nok alpha gamma. 	1984	2029	1	1	word	0	-	0	1
+T	19	Beta	2029	2034	1	1	word	0	-	0	1
+T	19	中文\n3.14 gamma, 😀x gamma\n3.14\r\nU.S. 	2034	2070	1	1	word	0	-	0	1
+T	19	U.S. 	2070	2075	1	1	word	0	-	0	1
+T	19	😀x 	2075	2079	1	1	word	0	-	0	1
+T	19	Beta, Beta, 中文 U.S.\né! 	2079	2103	1	1	word	0	-	0	1
+T	19	BetaBeta alpha Beta? 	2103	2125	1	1	word	0	-	0	1
+T	19	U.S.! 	2125	2131	1	1	word	0	-	0	1
+T	19	3.14\ngamma? 	2131	2143	1	1	word	0	-	0	1
+T	19	alpha\r\né? 	2143	2154	1	1	word	0	-	0	1
+T	19	U.S. gamma\n😀x\nok Beta 😀xok. 	2154	2185	1	1	word	0	-	0	1
+T	19	😀x U.S. gamma Beta! 	2185	2206	1	1	word	0	-	0	1
+T	19	😀x\nBeta😀x\nalpha alpha 中文 alpha\r\nalphaalpha? 	2206	2254	1	1	word	0	-	0	1
+T	19	中文 中文 Beta alpha 	2254	2271	1	1	word	0	-	0	1
+T	19	é. ok\nU.S.\ngamma. gamma。	2271	2296	1	1	word	0	-	0	1
+T	19	gamma\nU.S.! 	2296	2308	1	1	word	0	-	0	1
+T	19	gammagamma。	2308	2320	1	1	word	0	-	0	1
+T	19	é 	2320	2323	1	1	word	0	-	0	1
+T	19	alpha, é Beta。	2323	2338	1	1	word	0	-	0	1
+T	19	alpha! 	2338	2345	1	1	word	0	-	0	1
+T	19	U.S.\nalpha gamma é\nBeta。	2345	2370	1	1	word	0	-	0	1
+T	19	U.S.。	2370	2375	1	1	word	0	-	0	1
+T	19	😀x。	2375	2379	1	1	word	0	-	0	1
+T	19	gamma 😀x Beta alpha é 	2379	2403	1	1	word	0	-	0	1
+T	19	Beta 	2403	2408	1	1	word	0	-	0	1
+T	19	3.14 😀x\nalpha\r\nok\né。	2408	2430	1	1	word	0	-	0	1
+T	19	é alpha😀x。	2430	2443	1	1	word	0	-	0	1
+T	19	U.S.! 	2443	2449	1	1	word	0	-	0	1
+T	19	alpha\nok U.S.\r\n	2449	2464	1	1	word	0	-	0	1
+T	19	U.S. gamma。	2464	2475	1	1	word	0	-	0	1
+T	19	gamma 	2475	2481	1	1	word	0	-	0	1
+T	19	3.14. ok。	2481	2490	1	1	word	0	-	0	1
+T	19	alpha 	2490	2496	1	1	word	0	-	0	1
+T	19	U.S. 	2496	2501	1	1	word	0	-	0	1
+T	19	Beta alpha alpha U.S.? 	2501	2524	1	1	word	0	-	0	1
+T	19	U.S. é 3.14 alpha Beta, 中文? 	2524	2553	1	1	word	0	-	0	1
+T	19	😀x. ok é. 	2553	2565	1	1	word	0	-	0	1
+T	19	Beta\r\n中文😀x Beta\nalpha\nBeta é alpha, U.S. ok. ok. 	2565	2617	1	1	word	0	-	0	1
+T	19	Beta\n😀x! 	2617	2627	1	1	word	0	-	0	1
+T	19	gamma, U.S. 	2627	2639	1	1	word	0	-	0	1
+T	19	中文 	2639	2642	1	1	word	0	-	0	1
+T	19	😀x, gamma gamma 	2642	2659	1	1	word	0	-	0	1
+T	19	Beta。	2659	2664	1	1	word	0	-	0	1
+T	19	Beta ok\n😀x 	2664	2676	1	1	word	0	-	0	1
+T	19	é😀x。	2676	2683	1	1	word	0	-	0	1
+T	19	alpha? 	2683	2690	1	1	word	0	-	0	1
+T	19	Beta é. 3.14。	2690	2704	1	1	word	0	-	0	1
+T	19	中文 中文\r\n3.14? 	2704	2717	1	1	word	0	-	0	1
+T	19	alpha\r\nalpha\r\ngamma 	2717	2737	1	1	word	0	-	0	1
+T	19	gamma, Beta U.S. 	2737	2754	1	1	word	0	-	0	1
+T	19	中文. 3.14 ok 😀x。	2754	2770	1	1	word	0	-	0	1
+T	19	gamma 😀xU.S.! 	2770	2786	1	1	word	0	-	0	1
+T	19	é。	2786	2789	1	1	word	0	-	0	1
+T	19	U.S.? 	2789	2795	1	1	word	0	-	0	1
+T	19	U.S., 中文 	2795	2804	1	1	word	0	-	0	1
+T	19	é\r\né\nBeta é。	2804	2819	1	1	word	0	-	0	1
+T	19	gamma. 	2819	2826	1	1	word	0	-	0	1
+E	19	2826	2826	0
+T	20	U.S.? 	0	6	1	1	word	0	-	0	1
+T	20	Beta ok gamma 😀x 3.14! 	6	30	1	1	word	0	-	0	1
+T	20	3.14. 	30	36	1	1	word	0	-	0	1
+T	20	U.S. 	36	41	1	1	word	0	-	0	1
+T	20	Beta U.S. 3.14 3.14. ok 😀x é 中文。	41	75	1	1	word	0	-	0	1
+T	20	😀x 3.14 Beta 3.14? 	75	95	1	1	word	0	-	0	1
+T	20	gamma alpha。	95	107	1	1	word	0	-	0	1
+T	20	é。	107	110	1	1	word	0	-	0	1
+T	20	é 中文 ok Beta, 3.14 é gamma ok gamma。	110	148	1	1	word	0	-	0	1
+T	20	😀x. gamma Beta 😀x? 	148	169	1	1	word	0	-	0	1
+T	20	3.14? 	169	175	1	1	word	0	-	0	1
+T	20	U.S.。	175	180	1	1	word	0	-	0	1
+T	20	3.14 ok 😀x 3.14 ok 中文 alpha。	180	209	1	1	word	0	-	0	1
+T	20	alpha。	209	215	1	1	word	0	-	0	1
+T	20	😀x 3.14 中文。	215	227	1	1	word	0	-	0	1
+T	20	gamma ok U.S. 	227	241	1	1	word	0	-	0	1
+T	20	Beta 3.14. 	241	252	1	1	word	0	-	0	1
+T	20	😀x Beta ok gamma。	252	270	1	1	word	0	-	0	1
+T	20	gamma, 😀x alpha 中文 U.S. 3.14. 3.14 U.S., alpha alpha? 	270	325	1	1	word	0	-	0	1
+T	20	U.S. 	325	330	1	1	word	0	-	0	1
+T	20	😀x 3.14。	330	339	1	1	word	0	-	0	1
+T	20	ok, ok é U.S.! 	339	355	1	1	word	0	-	0	1
+T	20	é 3.14 ok? 	355	367	1	1	word	0	-	0	1
+T	20	Beta gamma é U.S. 	367	386	1	1	word	0	-	0	1
+T	20	中文 中文? 	386	393	1	1	word	0	-	0	1
+T	20	😀x alpha gamma é 3.14 alpha。	393	423	1	1	word	0	-	0	1
+T	20	alpha? 	423	430	1	1	word	0	-	0	1
+T	20	gamma, 中文 中文! 	430	444	1	1	word	0	-	0	1
+T	20	Beta? 	444	450	1	1	word	0	-	0	1
+T	20	alpha U.S. 	450	461	1	1	word	0	-	0	1
+T	20	😀x。	461	465	1	1	word	0	-	0	1
+T	20	U.S. 3.14 U.S.! 	465	481	1	1	word	0	-	0	1
+T	20	alpha gamma! 	481	494	1	1	word	0	-	0	1
+T	20	3.14 U.S., 3.14? 	494	511	1	1	word	0	-	0	1
+T	20	😀x。	511	515	1	1	word	0	-	0	1
+T	20	é, gamma alpha 😀x? 	515	536	1	1	word	0	-	0	1
+T	20	😀x ok alpha U.S.. 	536	555	1	1	word	0	-	0	1
+T	20	中文 é alpha? 	555	568	1	1	word	0	-	0	1
+T	20	alpha 😀x 3.14 3.14! 	568	589	1	1	word	0	-	0	1
+T	20	中文 gamma Beta 3.14 😀x gamma! 	589	619	1	1	word	0	-	0	1
+T	20	é 😀x U.S. é U.S. alpha。	619	645	1	1	word	0	-	0	1
+T	20	ok, ok. 	645	653	1	1	word	0	-	0	1
+T	20	U.S. 3.14? 	653	664	1	1	word	0	-	0	1
+T	20	U.S.. ok 😀x U.S.. alpha ok。	664	692	1	1	word	0	-	0	1
+T	20	é U.S. alpha! 	692	707	1	1	word	0	-	0	1
+T	20	ok Beta 中文 Beta。	707	723	1	1	word	0	-	0	1
+T	20	Beta, U.S. 3.14 ok. alpha? 	723	750	1	1	word	0	-	0	1
+T	20	3.14。	750	755	1	1	word	0	-	0	1
+T	20	é gamma ok? 	755	768	1	1	word	0	-	0	1
+T	20	gamma Beta 3.14. 	768	785	1	1	word	0	-	0	1
+T	20	Beta. 3.14 中文? 	785	800	1	1	word	0	-	0	1
+T	20	U.S. 	800	805	1	1	word	0	-	0	1
+T	20	Beta 3.14。	805	815	1	1	word	0	-	0	1
+T	20	ok 😀x。	815	822	1	1	word	0	-	0	1
+T	20	Beta。	822	827	1	1	word	0	-	0	1
+T	20	Beta。	827	832	1	1	word	0	-	0	1
+T	20	é alpha。	832	841	1	1	word	0	-	0	1
+T	20	😀x 	841	845	1	1	word	0	-	0	1
+E	20	845	845	0
+T	21	😀x! 	0	5	1	1	word	0	-	0	1
+T	21	U.S.. é. 	5	15	1	1	word	0	-	0	1
+T	21	😀xgamma ok? 	15	29	1	1	word	0	-	0	1
+T	21	3.14. ok\r\nalpha 😀x U.S.\né, 中文gamma 中文。	29	70	1	1	word	0	-	0	1
+T	21	gamma\r\nok alpha U.S.\r\n	70	92	1	1	word	0	-	0	1
+T	21	gamma。	92	98	1	1	word	0	-	0	1
+T	21	U.S.! 	98	104	1	1	word	0	-	0	1
+T	21	ok\nok 中文😀x, é\ngamma3.14\ngamma 	104	138	1	1	word	0	-	0	1
+T	21	gamma? 	138	145	1	1	word	0	-	0	1
+T	21	3.14? 	145	151	1	1	word	0	-	0	1
+T	21	gamma, é! 	151	162	1	1	word	0	-	0	1
+T	21	3.14。	162	167	1	1	word	0	-	0	1
+T	21	alpha? 	167	174	1	1	word	0	-	0	1
+T	21	😀x U.S.。	174	183	1	1	word	0	-	0	1
+T	21	3.14\n3.14\né\n中文, ok ok 	183	206	1	1	word	0	-	0	1
+T	21	U.S. 	206	211	1	1	word	0	-	0	1
+T	21	中文! 	211	215	1	1	word	0	-	0	1
+T	21	Beta 😀x。	215	224	1	1	word	0	-	0	1
+T	21	ok3.14é. 	224	236	1	1	word	0	-	0	1
+T	21	U.S.\n	236	241	1	1	word	0	-	0	1
+T	21	😀x. 	241	246	1	1	word	0	-	0	1
+T	21	Beta. 	246	252	1	1	word	0	-	0	1
+T	21	Beta中文 Beta。	252	265	1	1	word	0	-	0	1
+T	21	ok 中文 	265	271	1	1	word	0	-	0	1
+T	21	Beta 😀x! 	271	281	1	1	word	0	-	0	1
+T	21	Beta\r\nU.S. éalpha, alpha é? 	281	312	1	1	word	0	-	0	1
+T	21	中文alpha Beta gamma 3.14\r\nalpha 	312	344	1	1	word	0	-	0	1
+T	21	Beta\r\n3.14 é! 	344	359	1	1	word	0	-	0	1
+T	21	alpha。	359	365	1	1	word	0	-	0	1
+T	21	3.14 3.14. 	365	376	1	1	word	0	-	0	1
+T	21	U.S. 3.14 ok? 	376	390	1	1	word	0	-	0	1
+T	21	中文. é, Beta 中文。	390	406	1	1	word	0	-	0	1
+T	21	é。	406	409	1	1	word	0	-	0	1
+T	21	U.S. ok, U.S. gamma! 	409	430	1	1	word	0	-	0	1
+T	21	alpha Beta 	430	441	1	1	word	0	-	0	1
+T	21	😀x alpha😀x gamma。	441	461	1	1	word	0	-	0	1
+T	21	中文 	461	464	1	1	word	0	-	0	1
+T	21	ok, 😀x\r\nalpha? 	464	480	1	1	word	0	-	0	1
+T	21	Beta 	480	485	1	1	word	0	-	0	1
+E	21	485	485	0
+T	22	gamma! 	0	7	1	1	word	0	-	0	1
+T	22	gamma\r\nBeta. alpha\r\nU.S. 	7	32	1	1	word	0	-	0	1
+T	22	U.S. 3.14 😀x\nok. 3.14 alpha ok ok gamma ok 中文? 	32	80	1	1	word	0	-	0	1
+T	22	Beta 	80	85	1	1	word	0	-	0	1
+T	22	Beta gamma\nU.S. 	85	101	1	1	word	0	-	0	1
+T	22	😀x? 	101	106	1	1	word	0	-	0	1
+T	22	ok é! 	106	113	1	1	word	0	-	0	1
+T	22	Beta 	113	118	1	1	word	0	-	0	1
+T	22	U.S. gamma alphagamma 中文, 3.14。	118	150	1	1	word	0	-	0	1
+T	22	alpha! 	150	157	1	1	word	0	-	0	1
+T	22	gamma。	157	163	1	1	word	0	-	0	1
+T	22	中文, U.S.\n	163	172	1	1	word	0	-	0	1
+T	22	U.S. 	172	177	1	1	word	0	-	0	1
+T	22	中文\n中文\nalpha é 	177	192	1	1	word	0	-	0	1
+T	22	U.S., é. 	192	202	1	1	word	0	-	0	1
+T	22	Beta Beta。	202	212	1	1	word	0	-	0	1
+T	22	中文\r\ngamma\n3.14\r\nok é。	212	234	1	1	word	0	-	0	1
+T	22	é? 	234	238	1	1	word	0	-	0	1
+T	22	😀x. 	238	243	1	1	word	0	-	0	1
+T	22	😀x. gamma中文? 	243	258	1	1	word	0	-	0	1
+T	22	U.S.. 3.14 	258	269	1	1	word	0	-	0	1
+T	22	gamma Beta 3.14! 	269	286	1	1	word	0	-	0	1
+T	22	3.14 	286	291	1	1	word	0	-	0	1
+T	22	gamma。	291	297	1	1	word	0	-	0	1
+T	22	😀x. alpha! 	297	309	1	1	word	0	-	0	1
+T	22	3.14 é。	309	317	1	1	word	0	-	0	1
+T	22	ok 	317	320	1	1	word	0	-	0	1
+T	22	ok? 	320	324	1	1	word	0	-	0	1
+T	22	ok 3.14\r\n3.14\nok, 3.14 é😀xU.S.. gamma Beta? 	324	372	1	1	word	0	-	0	1
+T	22	U.S.! 	372	378	1	1	word	0	-	0	1
+T	22	gamma Beta é U.S.. 	378	398	1	1	word	0	-	0	1
+T	22	中文\nok\n😀x。	398	408	1	1	word	0	-	0	1
+T	22	中文? 	408	412	1	1	word	0	-	0	1
+T	22	alpha gamma\r\nalpha U.S. alpha 3.14 中文 ok, 中文gamma 3.14 Beta ok。	412	476	1	1	word	0	-	0	1
+T	22	é\n3.14, U.S. 3.14! 	476	496	1	1	word	0	-	0	1
+T	22	Beta。	496	501	1	1	word	0	-	0	1
+T	22	😀x 中文 ok. ok中文 U.S.! 	501	524	1	1	word	0	-	0	1
+T	22	alpha。	524	530	1	1	word	0	-	0	1
+T	22	alpha, 3.14 é。	530	545	1	1	word	0	-	0	1
+T	22	gamma。	545	551	1	1	word	0	-	0	1
+T	22	Beta 中文 中文! 	551	563	1	1	word	0	-	0	1
+T	22	中文U.S.! 	563	572	1	1	word	0	-	0	1
+T	22	alpha 😀x ok gamma? 	572	592	1	1	word	0	-	0	1
+T	22	U.S.? 	592	598	1	1	word	0	-	0	1
+T	22	alpha! 	598	605	1	1	word	0	-	0	1
+T	22	中文. 	605	609	1	1	word	0	-	0	1
+T	22	U.S. 	609	614	1	1	word	0	-	0	1
+T	22	é。	614	617	1	1	word	0	-	0	1
+T	22	3.14! 	617	623	1	1	word	0	-	0	1
+T	22	😀x é\nok gamma ok! 	623	643	1	1	word	0	-	0	1
+T	22	ok! 	643	647	1	1	word	0	-	0	1
+T	22	gamma? 	647	654	1	1	word	0	-	0	1
+T	22	gamma\r\nokU.S. 	654	669	1	1	word	0	-	0	1
+T	22	中文! 	669	673	1	1	word	0	-	0	1
+T	22	ok! 	673	677	1	1	word	0	-	0	1
+T	22	3.14é 	677	685	1	1	word	0	-	0	1
+T	22	ok\r\nok ok? 	685	696	1	1	word	0	-	0	1
+T	22	U.S. ok, ok 	696	708	1	1	word	0	-	0	1
+T	22	U.S.\n	708	713	1	1	word	0	-	0	1
+T	22	Beta alpha, 中文\nok. é😀x, ok Beta, 😀x中文。	713	756	1	1	word	0	-	0	1
+T	22	中文 U.S. 	756	764	1	1	word	0	-	0	1
+T	22	gamma! 	764	771	1	1	word	0	-	0	1
+T	22	é\r\n中文? 	771	779	1	1	word	0	-	0	1
+T	22	alpha 😀x! 	779	790	1	1	word	0	-	0	1
+T	22	alpha alpha\r\nok, 3.14。	790	812	1	1	word	0	-	0	1
+T	22	Beta 3.14! 	812	823	1	1	word	0	-	0	1
+T	22	alpha\r\n😀xU.S.. é\n😀x? 	823	848	1	1	word	0	-	0	1
+T	22	gamma 	848	854	1	1	word	0	-	0	1
+T	22	中文! 	854	858	1	1	word	0	-	0	1
+T	22	é alpha。	858	867	1	1	word	0	-	0	1
+T	22	BetaU.S.. ok ok. 	867	885	1	1	word	0	-	0	1
+T	22	U.S.? 	885	891	1	1	word	0	-	0	1
+T	22	中文! 	891	895	1	1	word	0	-	0	1
+T	22	😀x? 	895	900	1	1	word	0	-	0	1
+T	22	gamma\nBeta 	900	911	1	1	word	0	-	0	1
+T	22	oké? 	911	918	1	1	word	0	-	0	1
+T	22	Betaalpha? 	918	930	1	1	word	0	-	0	1
+T	22	中文 	930	933	1	1	word	0	-	0	1
+T	22	gamma\r\nBeta? 	933	946	1	1	word	0	-	0	1
+T	22	3.14. 	946	952	1	1	word	0	-	0	1
+T	22	U.S.\nok 中文! 	952	964	1	1	word	0	-	0	1
+T	22	gamma。	964	970	1	1	word	0	-	0	1
+T	22	é\r\nU.S. é\r\n3.14\n中文alpha\r\né alpha\ngamma é\nBeta\r\n	970	1022	1	1	word	0	-	0	1
+T	22	中文 3.14, 3.14 	1022	1036	1	1	word	0	-	0	1
+T	22	😀x 😀x? 	1036	1045	1	1	word	0	-	0	1
+T	22	😀x! 	1045	1050	1	1	word	0	-	0	1
+T	22	ok ok, U.S. alphaBeta? 	1050	1074	1	1	word	0	-	0	1
+T	22	ok 😀xgamma, U.S.? 	1074	1094	1	1	word	0	-	0	1
+T	22	ok! 	1094	1098	1	1	word	0	-	0	1
+T	22	Beta! 	1098	1104	1	1	word	0	-	0	1
+T	22	é? 	1104	1108	1	1	word	0	-	0	1
+T	22	gamma. 	1108	1115	1	1	word	0	-	0	1
+T	22	😀x. 	1115	1120	1	1	word	0	-	0	1
+T	22	Beta\n中文\r\ngamma, Beta. 3.14gamma😀x U.S.。	1120	1162	1	1	word	0	-	0	1
+T	22	3.14\nok alpha? 	1162	1177	1	1	word	0	-	0	1
+T	22	中文! 	1177	1181	1	1	word	0	-	0	1
+T	22	gamma! 	1181	1188	1	1	word	0	-	0	1
+T	22	gamma 3.14. alpha Beta! 	1188	1212	1	1	word	0	-	0	1
+T	22	3.14\ngamma alpha. 	1212	1230	1	1	word	0	-	0	1
+T	22	中文! 	1230	1234	1	1	word	0	-	0	1
+T	22	😀x 😀x\nU.S.? 	1234	1248	1	1	word	0	-	0	1
+T	22	U.S.\r\n	1248	1254	1	1	word	0	-	0	1
+T	22	Beta 	1254	1259	1	1	word	0	-	0	1
+T	22	alpha. 	1259	1266	1	1	word	0	-	0	1
+T	22	中文😀x, é 	1266	1277	1	1	word	0	-	0	1
+T	22	Beta\n😀x。	1277	1286	1	1	word	0	-	0	1
+T	22	U.S. 3.14 中文. 	1286	1300	1	1	word	0	-	0	1
+T	22	U.S.\n	1300	1305	1	1	word	0	-	0	1
+T	22	中文 é? 	1305	1312	1	1	word	0	-	0	1
+T	22	3.14 ok! 	1312	1321	1	1	word	0	-	0	1
+T	22	alpha 	1321	1327	1	1	word	0	-	0	1
+T	22	gamma 	1327	1333	1	1	word	0	-	0	1
+T	22	U.S.. 	1333	1339	1	1	word	0	-	0	1
+T	22	中文! 	1339	1343	1	1	word	0	-	0	1
+T	22	gamma\r\ngamma? 	1343	1357	1	1	word	0	-	0	1
+T	22	alpha ok, 3.14 alpha. 	1357	1379	1	1	word	0	-	0	1
+T	22	😀x Beta\né gamma gamma。	1379	1403	1	1	word	0	-	0	1
+T	22	中文\r\nBeta 😀x é? 	1403	1420	1	1	word	0	-	0	1
+T	22	gamma! 	1420	1427	1	1	word	0	-	0	1
+T	22	😀x Beta 中文 😀x U.S.。	1427	1448	1	1	word	0	-	0	1
+T	22	😀x! 	1448	1453	1	1	word	0	-	0	1
+T	22	ok Beta BetaU.S. 	1453	1471	1	1	word	0	-	0	1
+T	22	é? 	1471	1475	1	1	word	0	-	0	1
+T	22	é 中文。	1475	1481	1	1	word	0	-	0	1
+T	22	Beta! 	1481	1487	1	1	word	0	-	0	1
+T	22	U.S. ok 中文, é? 	1487	1503	1	1	word	0	-	0	1
+T	22	é. ok? 	1503	1511	1	1	word	0	-	0	1
+T	22	😀x\n3.14! 	1511	1521	1	1	word	0	-	0	1
+T	22	中文! 	1521	1525	1	1	word	0	-	0	1
+T	22	U.S. 3.14! 	1525	1536	1	1	word	0	-	0	1
+T	22	中文 	1536	1539	1	1	word	0	-	0	1
+T	22	é? 	1539	1543	1	1	word	0	-	0	1
+T	22	gamma\r\n中文? 	1543	1554	1	1	word	0	-	0	1
+T	22	😀x U.S.. ok Beta。	1554	1572	1	1	word	0	-	0	1
+T	22	é 	1572	1575	1	1	word	0	-	0	1
+T	22	Beta\nU.S. alpha\né\r\nU.S. 	1575	1600	1	1	word	0	-	0	1
+T	22	中文中文\nalpha\r\n3.14? 	1600	1619	1	1	word	0	-	0	1
+T	22	alpha? 	1619	1626	1	1	word	0	-	0	1
+T	22	3.14 3.14. 	1626	1637	1	1	word	0	-	0	1
+T	22	Beta gamma. 	1637	1649	1	1	word	0	-	0	1
+T	22	😀x\ngamma\nBeta, é é. 3.14é? 	1649	1681	1	1	word	0	-	0	1
+T	22	alpha\r\ngamma 	1681	1694	1	1	word	0	-	0	1
+T	22	ok! 	1694	1698	1	1	word	0	-	0	1
+T	22	gamma 3.14 gamma 😀xok。	1698	1722	1	1	word	0	-	0	1
+T	22	ok, 3.14 😀x 	1722	1735	1	1	word	0	-	0	1
+T	22	3.14\n3.14 U.S. gamma gamma。	1735	1762	1	1	word	0	-	0	1
+T	22	gamma alpha\r\ngammaok, BetaBeta! 	1762	1796	1	1	word	0	-	0	1
+T	22	中文\n中文, 😀x gamma。	1796	1813	1	1	word	0	-	0	1
+T	22	U.S.\r\n	1813	1819	1	1	word	0	-	0	1
+T	22	gamma! 	1819	1826	1	1	word	0	-	0	1
+T	22	é\r\nalpha\ngamma 😀x。	1826	1846	1	1	word	0	-	0	1
+T	22	中文? 	1846	1850	1	1	word	0	-	0	1
+T	22	é 3.14 中文 é! 	1850	1865	1	1	word	0	-	0	1
+T	22	U.S.\n	1865	1870	1	1	word	0	-	0	1
+T	22	中文 Beta。	1870	1878	1	1	word	0	-	0	1
+T	22	Beta\n😀x? 	1878	1888	1	1	word	0	-	0	1
+T	22	é😀x。	1888	1895	1	1	word	0	-	0	1
+T	22	3.14\r\nok! 	1895	1905	1	1	word	0	-	0	1
+T	22	é. 3.14! 	1905	1915	1	1	word	0	-	0	1
+T	22	3.14 3.14. é 	1915	1929	1	1	word	0	-	0	1
+T	22	😀x? 	1929	1934	1	1	word	0	-	0	1
+T	22	3.14? 	1934	1940	1	1	word	0	-	0	1
+T	22	é 	1940	1943	1	1	word	0	-	0	1
+T	22	alpha\r\né\n😀x? 	1943	1958	1	1	word	0	-	0	1
+T	22	gamma 	1958	1964	1	1	word	0	-	0	1
+T	22	U.S., gamma ok 中文U.S. alpha\r\n中文? 	1964	1998	1	1	word	0	-	0	1
+T	22	3.14\né\nBeta gamma\r\n😀x. 	1998	2023	1	1	word	0	-	0	1
+T	22	😀x, alpha? 	2023	2035	1	1	word	0	-	0	1
+T	22	😀x\nBeta\n	2035	2044	1	1	word	0	-	0	1
+T	22	😀x. alpha\n😀x alpha é\r\n😀x! 	2044	2074	1	1	word	0	-	0	1
+T	22	中文。	2074	2077	1	1	word	0	-	0	1
+T	22	gamma gamma! 	2077	2090	1	1	word	0	-	0	1
+T	22	中文\r\nok\r\nalpha ok é 😀x! 	2090	2115	1	1	word	0	-	0	1
+T	22	alpha。	2115	2121	1	1	word	0	-	0	1
+T	22	3.14。	2121	2126	1	1	word	0	-	0	1
+T	22	😀x? 	2126	2131	1	1	word	0	-	0	1
+T	22	ok, 中文 中文, 中文。	2131	2145	1	1	word	0	-	0	1
+T	22	😀x 	2145	2149	1	1	word	0	-	0	1
+T	22	U.S.. 	2149	2155	1	1	word	0	-	0	1
+T	22	U.S. 	2155	2160	1	1	word	0	-	0	1
+T	22	中文 éalpha alpha. ok gamma3.14? 	2160	2194	1	1	word	0	-	0	1
+T	22	😀x\r\nok 中文! 	2194	2206	1	1	word	0	-	0	1
+T	22	😀x 3.14 	2206	2215	1	1	word	0	-	0	1
+T	22	中文 	2215	2218	1	1	word	0	-	0	1
+T	22	alpha. 	2218	2225	1	1	word	0	-	0	1
+T	22	U.S. 	2225	2230	1	1	word	0	-	0	1
+T	22	中文 alpha 😀x! 	2230	2244	1	1	word	0	-	0	1
+T	22	中文 gamma 😀x! 	2244	2258	1	1	word	0	-	0	1
+T	22	ok\r\n3.14! 	2258	2268	1	1	word	0	-	0	1
+T	22	ok é 3.14\n3.14。	2268	2284	1	1	word	0	-	0	1
+T	22	é Beta\r\nU.S.! 	2284	2299	1	1	word	0	-	0	1
+T	22	alpha\r\ngamma U.S. é\r\n😀x U.S. 	2299	2330	1	1	word	0	-	0	1
+T	22	ok gamma gamma! 	2330	2346	1	1	word	0	-	0	1
+T	22	U.S. 	2346	2351	1	1	word	0	-	0	1
+T	22	U.S. 	2351	2356	1	1	word	0	-	0	1
+T	22	中文\n中文U.S.. 	2356	2368	1	1	word	0	-	0	1
+T	22	😀x. 	2368	2373	1	1	word	0	-	0	1
+T	22	中文alpha é alpha ok 	2373	2394	1	1	word	0	-	0	1
+T	22	U.S. ok\r\ngamma alpha\r\n😀x。	2394	2420	1	1	word	0	-	0	1
+T	22	3.14\nok。	2420	2428	1	1	word	0	-	0	1
+T	22	中文中文ok BetaBeta 	2428	2447	1	1	word	0	-	0	1
+T	22	é\n3.14\ngammaok, alpha. é\r\nok 中文3.14, U.S. 	2447	2493	1	1	word	0	-	0	1
+T	22	Beta 😀x? 	2493	2503	1	1	word	0	-	0	1
+T	22	é é。	2503	2509	1	1	word	0	-	0	1
+T	22	ok 	2509	2512	1	1	word	0	-	0	1
+T	22	U.S., 😀x\r\nok 中文\r\n😀x。	2512	2534	1	1	word	0	-	0	1
+T	22	alpha. 3.14ok\né. 3.14\nok 	2534	2561	1	1	word	0	-	0	1
+T	22	😀x 中文, gammaBeta\r\nalpha\r\nU.S.! 	2561	2594	1	1	word	0	-	0	1
+T	22	alpha. é é 3.14 😀x。	2594	2616	1	1	word	0	-	0	1
+T	22	U.S.\r\n	2616	2622	1	1	word	0	-	0	1
+T	22	gamma\r\né\n3.14 ok. alpha? 	2622	2648	1	1	word	0	-	0	1
+T	22	3.14, 😀x Beta😀x 3.14 U.S.? 	2648	2678	1	1	word	0	-	0	1
+T	22	U.S. 	2678	2683	1	1	word	0	-	0	1
+T	22	Beta, Beta 中文。	2683	2697	1	1	word	0	-	0	1
+T	22	Beta\r\négamma! 	2697	2713	1	1	word	0	-	0	1
+T	22	3.14 ok 	2713	2721	1	1	word	0	-	0	1
+T	22	3.14. ok\nalpha! 	2721	2737	1	1	word	0	-	0	1
+T	22	U.S.。	2737	2742	1	1	word	0	-	0	1
+T	22	Beta 3.14 😀x. gamma gamma U.S.\n	2742	2774	1	1	word	0	-	0	1
+T	22	Beta 中文? 	2774	2783	1	1	word	0	-	0	1
+T	22	Beta gamma, Beta é, 😀x! 	2783	2809	1	1	word	0	-	0	1
+T	22	Beta\n中文 3.14 3.14 Beta U.S., Beta! 	2809	2844	1	1	word	0	-	0	1
+T	22	é gamma? 	2844	2854	1	1	word	0	-	0	1
+T	22	gammaBeta 😀x? 	2854	2870	1	1	word	0	-	0	1
+T	22	U.S. ok Beta? 	2870	2884	1	1	word	0	-	0	1
+T	22	alpha? 	2884	2891	1	1	word	0	-	0	1
+T	22	ok\nalpha 	2891	2900	1	1	word	0	-	0	1
+T	22	gamma 😀x\r\nalpha, 😀x 	2900	2922	1	1	word	0	-	0	1
+T	22	Beta! 	2922	2928	1	1	word	0	-	0	1
+T	22	é! 	2928	2932	1	1	word	0	-	0	1
+T	22	U.S. gamma! 	2932	2944	1	1	word	0	-	0	1
+T	22	U.S. ok. 	2944	2953	1	1	word	0	-	0	1
+T	22	Beta。	2953	2958	1	1	word	0	-	0	1
+T	22	U.S. ok 中文。	2958	2969	1	1	word	0	-	0	1
+T	22	é。	2969	2972	1	1	word	0	-	0	1
+T	22	3.14 Beta, 中文? 	2972	2987	1	1	word	0	-	0	1
+T	22	U.S. 	2987	2992	1	1	word	0	-	0	1
+T	22	Beta. 	2992	2998	1	1	word	0	-	0	1
+T	22	Beta 	2998	3003	1	1	word	0	-	0	1
+T	22	U.S.。	3003	3008	1	1	word	0	-	0	1
+T	22	3.14? 	3008	3014	1	1	word	0	-	0	1
+T	22	alpha. 3.14\r\né. 3.14 	3014	3036	1	1	word	0	-	0	1
+T	22	é\n3.14\r\nalpha 	3036	3051	1	1	word	0	-	0	1
+T	22	gamma U.S. ok ok	3051	3068	1	1	word	0	-	0	1
+T	22	Beta3.14 	3068	3078	1	1	word	0	-	0	1
+T	22	😀x\r\nU.S.\nalpha? 	3078	3095	1	1	word	0	-	0	1
+T	22	é😀x, 😀x\nok U.S.. gamma alpha U.S.. alpha. é? 	3095	3145	1	1	word	0	-	0	1
+T	22	😀x\nalpha, 😀x, ok, 😀x, gamma! 	3145	3177	1	1	word	0	-	0	1
+T	22	ok alpha\r\nok. 	3177	3191	1	1	word	0	-	0	1
+T	22	Beta\r\n中文. gamma 	3191	3207	1	1	word	0	-	0	1
+T	22	3.14 😀x\n😀x。	3207	3220	1	1	word	0	-	0	1
+T	22	gamma\r\n😀x3.14。	3220	3236	1	1	word	0	-	0	1
+T	22	gamma Beta. 	3236	3248	1	1	word	0	-	0	1
+T	22	中文 Beta. 	3248	3257	1	1	word	0	-	0	1
+T	22	中文 alpha éBeta 	3257	3274	1	1	word	0	-	0	1
+T	22	ok! 	3274	3278	1	1	word	0	-	0	1
+T	22	é, ok。	3278	3285	1	1	word	0	-	0	1
+T	22	é? 	3285	3289	1	1	word	0	-	0	1
+T	22	Beta ok. 3.14! 	3289	3304	1	1	word	0	-	0	1
+T	22	U.S., alphaBeta。	3304	3321	1	1	word	0	-	0	1
+T	22	gamma. 	3321	3328	1	1	word	0	-	0	1
+T	22	中文 3.14 alpha, ok\r\n😀x 中文? 	3328	3355	1	1	word	0	-	0	1
+T	22	U.S. é alpha 😀x 	3355	3373	1	1	word	0	-	0	1
+T	22	ok\n中文 	3373	3379	1	1	word	0	-	0	1
+T	22	中文! 	3379	3383	1	1	word	0	-	0	1
+T	22	ok Beta 中文\nU.S.? 	3383	3400	1	1	word	0	-	0	1
+T	22	é ok😀x 中文, é Beta? 	3400	3423	1	1	word	0	-	0	1
+T	22	éé3.14\r\n😀x 	3423	3439	1	1	word	0	-	0	1
+T	22	U.S.\n3.14 中文 U.S., gamma\r\nok! 	3439	3469	1	1	word	0	-	0	1
+T	22	alpha gamma 	3469	3481	1	1	word	0	-	0	1
+T	22	U.S.\n3.14! 	3481	3492	1	1	word	0	-	0	1
+T	22	Beta U.S. gamma. é\nok. 	3492	3516	1	1	word	0	-	0	1
+T	22	😀x U.S.\n	3516	3525	1	1	word	0	-	0	1
+T	22	中文é ok。	3525	3534	1	1	word	0	-	0	1
+T	22	é? 	3534	3538	1	1	word	0	-	0	1
+T	22	gamma 中文。	3538	3547	1	1	word	0	-	0	1
+T	22	U.S.	3547	3551	1	1	word	0	-	0	1
+T	22	😀x\r\n中文 é! 	3551	3564	1	1	word	0	-	0	1
+T	22	U.S. ok\nalpha 😀x3.14 中文。	3564	3590	1	1	word	0	-	0	1
+T	22	😀x. alpha\r\nU.S.\r\n	3590	3608	1	1	word	0	-	0	1
+T	22	alpha ok\né, U.S. alpha gamma Beta 3.14é! 	3608	3652	1	1	word	0	-	0	1
+T	22	é gamma, 中文3.14! 	3652	3671	1	1	word	0	-	0	1
+T	22	éalpha 中文 	3671	3683	1	1	word	0	-	0	1
+T	22	gamma 中文Beta, 3.14? 	3683	3704	1	1	word	0	-	0	1
+T	22	😀x 中文 Beta😀x! 	3704	3721	1	1	word	0	-	0	1
+T	22	U.S. alphagamma U.S.! 	3721	3744	1	1	word	0	-	0	1
+T	22	é. é 	3744	3751	1	1	word	0	-	0	1
+T	22	中文gamma U.S.\nalpha alpha 中文! 	3751	3781	1	1	word	0	-	0	1
+T	22	é gamma alpha\nU.S. ok\n😀x\n中文 U.S. ok 	3781	3819	1	1	word	0	-	0	1
+T	22	ok alpha gamma. ok 	3819	3838	1	1	word	0	-	0	1
+T	22	ok ok\r\nU.S.。	3838	3850	1	1	word	0	-	0	1
+T	22	3.14, U.S. ok 😀x é\nalpha é. gamma\néU.S.\r\n	3850	3896	1	1	word	0	-	0	1
+T	22	é 3.14 😀x U.S. 	3896	3913	1	1	word	0	-	0	1
+T	22	😀x 	3913	3917	1	1	word	0	-	0	1
+T	22	é. gamma\n中文, 😀x, ok\r\nok 3.14 	3917	3948	1	1	word	0	-	0	1
+T	22	😀x gamma é ok。	3948	3964	1	1	word	0	-	0	1
+T	22	U.S. 	3964	3969	1	1	word	0	-	0	1
+T	22	U.S.。	3969	3974	1	1	word	0	-	0	1
+T	22	U.S. 	3974	3979	1	1	word	0	-	0	1
+T	22	3.14\né 3.14? 	3979	3993	1	1	word	0	-	0	1
+T	22	alpha\n3.14! 	3993	4005	1	1	word	0	-	0	1
+T	22	3.14 	4005	4010	1	1	word	0	-	0	1
+E	22	4010	4010	0
+T	23	😀x\r\n3.14. 	0	11	1	1	word	0	-	0	1
+T	23	😀x U.S.\r\n	11	21	1	1	word	0	-	0	1
+T	23	😀x\r\n3.14. 	21	32	1	1	word	0	-	0	1
+T	23	中文 	32	35	1	1	word	0	-	0	1
+T	23	é 	35	38	1	1	word	0	-	0	1
+T	23	😀x. é ok 	38	49	1	1	word	0	-	0	1
+T	23	gamma! 	49	56	1	1	word	0	-	0	1
+T	23	Beta 	56	61	1	1	word	0	-	0	1
+T	23	😀x U.S. 	61	70	1	1	word	0	-	0	1
+T	23	U.S.	70	74	1	1	word	0	-	0	1
+T	23	U.S.. 	74	81	1	1	word	0	-	0	1
+T	23	Beta! 	81	87	1	1	word	0	-	0	1
+T	23	😀xU.S. 	87	96	1	1	word	0	-	0	1
+T	23	U.S. gamma? 	96	108	1	1	word	0	-	0	1
+T	23	3.14! 	108	114	1	1	word	0	-	0	1
+T	23	alpha? 	114	121	1	1	word	0	-	0	1
+T	23	alpha 3.14\ngamma? 	121	139	1	1	word	0	-	0	1
+T	23	ok, gamma中文. 	139	153	1	1	word	0	-	0	1
+T	23	中文\r\n3.14 alpha Beta\nU.S. ok。	153	181	1	1	word	0	-	0	1
+T	23	Beta. alpha。	181	193	1	1	word	0	-	0	1
+T	23	中文? 	193	197	1	1	word	0	-	0	1
+T	23	ok? 	197	201	1	1	word	0	-	0	1
+T	23	Beta 😀x. 	201	211	1	1	word	0	-	0	1
+T	23	中文 gamma\nU.S. 	211	225	1	1	word	0	-	0	1
+T	23	U.S. 	225	230	1	1	word	0	-	0	1
+T	23	😀x。	230	234	1	1	word	0	-	0	1
+T	23	中文, ok gamma 中文? 	234	251	1	1	word	0	-	0	1
+T	23	ok\né\n中文alpha, 中文 😀x. 	251	275	1	1	word	0	-	0	1
+T	23	😀x alpha U.S.	275	289	1	1	word	0	-	0	1
+T	23	alpha U.S.. é, é U.S. alpha? 	289	321	1	1	word	0	-	0	1
+T	23	ok。	321	324	1	1	word	0	-	0	1
+T	23	中文! 	324	328	1	1	word	0	-	0	1
+T	23	gamma 	328	334	1	1	word	0	-	0	1
+T	23	Beta。	334	339	1	1	word	0	-	0	1
+T	23	é? 	339	343	1	1	word	0	-	0	1
+T	23	gamma, alphaok。	343	359	1	1	word	0	-	0	1
+T	23	gammagamma ok, U.S.。	359	380	1	1	word	0	-	0	1
+T	23	Betaok. 	380	389	1	1	word	0	-	0	1
+T	23	中文, 中文 alpha, 中文 😀x é\nU.S. ok! 	389	422	1	1	word	0	-	0	1
+T	23	中文。	422	425	1	1	word	0	-	0	1
+T	23	😀x 中文\r\nok? 	425	437	1	1	word	0	-	0	1
+T	23	ok ok 	437	443	1	1	word	0	-	0	1
+T	23	Beta! 	443	449	1	1	word	0	-	0	1
+T	23	gamma 3.14, gamma。	449	467	1	1	word	0	-	0	1
+T	23	Beta。	467	472	1	1	word	0	-	0	1
+T	23	gamma\nBeta é 	472	486	1	1	word	0	-	0	1
+T	23	U.S.! 	486	492	1	1	word	0	-	0	1
+T	23	U.S.。	492	497	1	1	word	0	-	0	1
+T	23	alpha 	497	503	1	1	word	0	-	0	1
+T	23	okgamma ok\nBeta中文\n3.14 	503	528	1	1	word	0	-	0	1
+T	23	gamma. alpha. gamma, 😀x? 	528	554	1	1	word	0	-	0	1
+T	23	Beta U.S.. 	554	565	1	1	word	0	-	0	1
+T	23	😀x é 中文Beta U.S., ok! 	565	590	1	1	word	0	-	0	1
+T	23	中文。	590	593	1	1	word	0	-	0	1
+T	23	gamma Beta, é。	593	608	1	1	word	0	-	0	1
+T	23	gamma 😀x U.S.\r\n	608	624	1	1	word	0	-	0	1
+T	23	alpha alpha, é\r\nU.S.. 	624	647	1	1	word	0	-	0	1
+T	23	😀x 3.14 gamma ok 	647	665	1	1	word	0	-	0	1
+T	23	3.14。	665	670	1	1	word	0	-	0	1
+T	23	U.S. 	670	675	1	1	word	0	-	0	1
+T	23	😀x Beta gamma. 	675	691	1	1	word	0	-	0	1
+T	23	😀x, é! 	691	700	1	1	word	0	-	0	1
+T	23	alpha gamma! 	700	713	1	1	word	0	-	0	1
+T	23	3.14 Beta alpha! 	713	730	1	1	word	0	-	0	1
+T	23	U.S.. é! 	730	740	1	1	word	0	-	0	1
+T	23	ok 😀x 中文 	740	750	1	1	word	0	-	0	1
+T	23	中文, U.S. alpha😀x 3.14ok? 	750	778	1	1	word	0	-	0	1
+T	23	Beta\r\nU.S. 	778	789	1	1	word	0	-	0	1
+T	23	U.S. alpha\r\nok gamma, 😀xBeta 	789	820	1	1	word	0	-	0	1
+T	23	U.S. 	820	825	1	1	word	0	-	0	1
+T	23	U.S.! 	825	831	1	1	word	0	-	0	1
+T	23	U.S., 3.14! 	831	843	1	1	word	0	-	0	1
+T	23	3.14 gamma 	843	854	1	1	word	0	-	0	1
+T	23	😀x 😀x! 	854	863	1	1	word	0	-	0	1
+T	23	😀x, alpha 	863	874	1	1	word	0	-	0	1
+T	23	é? 	874	878	1	1	word	0	-	0	1
+T	23	alpha。	878	884	1	1	word	0	-	0	1
+T	23	Beta U.S.! 	884	895	1	1	word	0	-	0	1
+T	23	U.S. 	895	900	1	1	word	0	-	0	1
+T	23	U.S.	900	904	1	1	word	0	-	0	1
+T	23	é。	904	908	1	1	word	0	-	0	1
+T	23	Beta 	908	913	1	1	word	0	-	0	1
+T	23	😀x\ngamma\nU.S.\r\n	913	929	1	1	word	0	-	0	1
+T	23	ok gamma\r\n😀x。	929	943	1	1	word	0	-	0	1
+T	23	Beta 3.14? 	943	954	1	1	word	0	-	0	1
+T	23	gammaok é, gamma gamma é! 	954	983	1	1	word	0	-	0	1
+T	23	😀x alpha 3.14 	983	998	1	1	word	0	-	0	1
+T	23	ok 中文。	998	1004	1	1	word	0	-	0	1
+T	23	é 中文 Beta\n😀x 	1004	1019	1	1	word	0	-	0	1
+T	23	alpha? 	1019	1026	1	1	word	0	-	0	1
+T	23	Beta é alpha? 	1026	1041	1	1	word	0	-	0	1
+T	23	alpha 	1041	1047	1	1	word	0	-	0	1
+T	23	U.S.? 	1047	1053	1	1	word	0	-	0	1
+T	23	😀x\né。	1053	1060	1	1	word	0	-	0	1
+T	23	ok\n3.14 oké, é 	1060	1078	1	1	word	0	-	0	1
+T	23	😀x, U.S. 	1078	1088	1	1	word	0	-	0	1
+T	23	Beta。	1088	1093	1	1	word	0	-	0	1
+T	23	Beta. alpha, Beta 😀x. 	1093	1116	1	1	word	0	-	0	1
+T	23	中文 ok\n😀x 	1116	1126	1	1	word	0	-	0	1
+T	23	gamma\n😀x\r\nalpha, ok, Beta。	1126	1153	1	1	word	0	-	0	1
+T	23	Beta U.S., 中文 é! 	1153	1171	1	1	word	0	-	0	1
+T	23	😀x 中文 3.14😀x 	1171	1187	1	1	word	0	-	0	1
+T	23	gamma, gamma 	1187	1200	1	1	word	0	-	0	1
+T	23	中文 3.14, alpha! 	1200	1216	1	1	word	0	-	0	1
+T	23	ok gamma é? 	1216	1229	1	1	word	0	-	0	1
+T	23	Beta\r\nU.S.	1229	1239	1	1	word	0	-	0	1
+T	23	中文ok 中文! 	1239	1250	1	1	word	0	-	0	1
+T	23	Beta 中文 Beta! 	1250	1264	1	1	word	0	-	0	1
+T	23	é? 	1264	1268	1	1	word	0	-	0	1
+T	23	3.14? 	1268	1274	1	1	word	0	-	0	1
+T	23	Beta 	1274	1279	1	1	word	0	-	0	1
+T	23	3.14\r\n中文\r\nalpha 3.14 3.14! 	1279	1306	1	1	word	0	-	0	1
+T	23	alpha? 	1306	1313	1	1	word	0	-	0	1
+T	23	gamma alpha\ngamma 	1313	1331	1	1	word	0	-	0	1
+T	23	ok ok é\r\ngamma éok Beta alpha 	1331	1364	1	1	word	0	-	0	1
+T	23	😀x, é\r\nBeta\r\né Beta 	1364	1387	1	1	word	0	-	0	1
+T	23	U.S. 	1387	1392	1	1	word	0	-	0	1
+T	23	中文 3.14\r\nok! 	1392	1405	1	1	word	0	-	0	1
+T	23	alphaalphaBeta, U.S. 	1405	1428	1	1	word	0	-	0	1
+T	23	3.14 é. ok, U.S., 3.14中文. 	1428	1456	1	1	word	0	-	0	1
+T	23	😀x\nalpha 😀x 	1456	1470	1	1	word	0	-	0	1
+T	23	ok. 	1470	1474	1	1	word	0	-	0	1
+T	23	Beta, é。	1474	1483	1	1	word	0	-	0	1
+T	23	😀x! 	1483	1488	1	1	word	0	-	0	1
+T	23	😀x! 	1488	1493	1	1	word	0	-	0	1
+T	23	ok U.S. é\r\nalpha😀x\r\nok, Beta U.S. 	1493	1530	1	1	word	0	-	0	1
+T	23	U.S. ok. 	1530	1539	1	1	word	0	-	0	1
+T	23	中文 alpha, Beta? 	1539	1555	1	1	word	0	-	0	1
+T	23	3.14。	1555	1560	1	1	word	0	-	0	1
+T	23	Beta 	1560	1565	1	1	word	0	-	0	1
+T	23	😀x ok. ok. é3.14! 	1565	1586	1	1	word	0	-	0	1
+T	23	3.14。	1586	1591	1	1	word	0	-	0	1
+T	23	Beta ok. 	1591	1600	1	1	word	0	-	0	1
+T	23	中文Beta, gamma. alpha😀x\nU.S. 	1600	1631	1	1	word	0	-	0	1
+T	23	U.S.? 	1631	1637	1	1	word	0	-	0	1
+T	23	é! 	1637	1641	1	1	word	0	-	0	1
+T	23	alpha😀x U.S.! 	1641	1657	1	1	word	0	-	0	1
+T	23	alpha。	1657	1663	1	1	word	0	-	0	1
+T	23	😀x, U.S.? 	1663	1674	1	1	word	0	-	0	1
+T	23	中文 U.S., Beta. 	1674	1689	1	1	word	0	-	0	1
+T	23	中文。	1689	1692	1	1	word	0	-	0	1
+T	23	alpha, é 中文 	1692	1705	1	1	word	0	-	0	1
+T	23	Beta é gammaalpha\n😀x。	1705	1729	1	1	word	0	-	0	1
+T	23	gamma U.S.。	1729	1740	1	1	word	0	-	0	1
+T	23	é 中文\ngamma 	1740	1752	1	1	word	0	-	0	1
+T	23	alpha\r\nU.S.? 	1752	1765	1	1	word	0	-	0	1
+T	23	U.S. 	1765	1770	1	1	word	0	-	0	1
+T	23	中文. 	1770	1774	1	1	word	0	-	0	1
+T	23	中文. gamma? 	1774	1785	1	1	word	0	-	0	1
+T	23	中文. ok? 	1785	1793	1	1	word	0	-	0	1
+T	23	okalpha Beta? 	1793	1808	1	1	word	0	-	0	1
+T	23	Beta éalpha, Beta 😀x, alpha。	1808	1839	1	1	word	0	-	0	1
+T	23	ok\né alpha\nU.S. é 	1839	1859	1	1	word	0	-	0	1
+T	23	3.14\r\n3.14 alpha ok! 	1859	1880	1	1	word	0	-	0	1
+T	23	Beta\r\n😀x 	1880	1890	1	1	word	0	-	0	1
+T	23	gamma 3.14alpha, U.S., alpha。	1890	1920	1	1	word	0	-	0	1
+T	23	3.14\né! 	1920	1929	1	1	word	0	-	0	1
+T	23	ok é. 	1929	1936	1	1	word	0	-	0	1
+T	23	😀x 中文. alpha 	1936	1950	1	1	word	0	-	0	1
+T	23	gamma\r\né? 	1950	1961	1	1	word	0	-	0	1
+T	23	Beta\r\nBeta? 	1961	1973	1	1	word	0	-	0	1
+T	23	😀x gamma! 	1973	1984	1	1	word	0	-	0	1
+T	23	中文! 	1984	1988	1	1	word	0	-	0	1
+T	23	3.14 gamma, U.S. 	1988	2005	1	1	word	0	-	0	1
+T	23	😀x, 中文中文\r\n😀x 中文 😀x U.S	2005	2031	1	1	word	0	-	0	1
+T	23	.	2031	2032	1	1	word	0	-	0	1
+T	23		2032	2033	1	1	word	0	-	0	1
+T	23	U.S.! 	2033	2039	1	1	word	0	-	0	1
+T	23	3.14\r\né, é? 	2039	2053	1	1	word	0	-	0	1
+T	23	é é gamma3.14\né? 	2053	2074	1	1	word	0	-	0	1
+T	23	U.S.\r\n	2074	2080	1	1	word	0	-	0	1
+T	23	alpha! 	2080	2087	1	1	word	0	-	0	1
+T	23	Beta 中文gamma。	2087	2101	1	1	word	0	-	0	1
+T	23	alpha? 	2101	2108	1	1	word	0	-	0	1
+T	23	alpha中文. gamma\né okalpha\nok\n中文 Beta. 	2108	2148	1	1	word	0	-	0	1
+T	23	Beta. ok\ngamma. 	2148	2164	1	1	word	0	-	0	1
+T	23	😀xU.S. 	2164	2173	1	1	word	0	-	0	1
+T	23	Beta 中文\r\n3.14 3.14 ok gamma ok 😀x 	2173	2208	1	1	word	0	-	0	1
+T	23	é 	2208	2211	1	1	word	0	-	0	1
+T	23	gamma\r\nalpha. é 中文。	2211	2231	1	1	word	0	-	0	1
+T	23	中文中文\r\nBeta! 	2231	2244	1	1	word	0	-	0	1
+T	23	U.S.\r\n	2244	2250	1	1	word	0	-	0	1
+T	23	alpha. ok? 	2250	2261	1	1	word	0	-	0	1
+T	23	😀x 中文 alpha ok 	2261	2277	1	1	word	0	-	0	1
+T	23	gamma 😀x ok 	2277	2290	1	1	word	0	-	0	1
+T	23	3.14 gamma gamma, 😀x。	2290	2312	1	1	word	0	-	0	1
+T	23	Beta? 	2312	2318	1	1	word	0	-	0	1
+T	23	中文 gamma, Beta! 	2318	2334	1	1	word	0	-	0	1
+T	23	3.14alpha 	2334	2345	1	1	word	0	-	0	1
+T	23	gamma. gamma\n中文 ok 	2345	2364	1	1	word	0	-	0	1
+T	23	é 中文 ok? 	2364	2374	1	1	word	0	-	0	1
+T	23	3.14Betagamma Beta 😀x U.S. é ok Beta。	2374	2415	1	1	word	0	-	0	1
+T	23	中文, ok alpha? 	2415	2429	1	1	word	0	-	0	1
+T	23	Beta😀x 😀x gamma	2429	2448	1	1	word	0	-	0	1
+E	23	2448	2448	0
+T	24	é alpha ok\ngamma中文 ok. gamma 	0	31	1	1	word	0	-	0	1
+T	24	é。	31	34	1	1	word	0	-	0	1
+T	24	alpha 	34	40	1	1	word	0	-	0	1
+T	24	ok é! 	40	47	1	1	word	0	-	0	1
+T	24	中文。	47	50	1	1	word	0	-	0	1
+T	24	alpha gamma\r\né ok alpha\nBeta? 	50	81	1	1	word	0	-	0	1
+T	24	gamma 中文\r\nU.S.. 	81	97	1	1	word	0	-	0	1
+T	24	😀x\r\nBeta! 	97	108	1	1	word	0	-	0	1
+T	24	okalpha 	108	117	1	1	word	0	-	0	1
+T	24	U.S.. 	117	123	1	1	word	0	-	0	1
+T	24	Beta\r\nU.S. 	123	134	1	1	word	0	-	0	1
+T	24	ok? 	134	138	1	1	word	0	-	0	1
+T	24	Beta Beta 3.14。	138	153	1	1	word	0	-	0	1
+T	24	U.S. 3.14 	153	163	1	1	word	0	-	0	1
+T	24	gamma gamma? 	163	176	1	1	word	0	-	0	1
+T	24	Beta, 3.14U.S.\nok, U.S.\r\n	176	202	1	1	word	0	-	0	1
+T	24	U.S.。	202	207	1	1	word	0	-	0	1
+T	24	😀x\r\n3.14 中文, é. 3.14 	207	230	1	1	word	0	-	0	1
+T	24	é\r\né\r\n3.14 😀x U.S.. gamma\nokok. 	230	266	1	1	word	0	-	0	1
+T	24	中文, 3.14 😀x 3.14 Beta U.S.\n3.14 	266	299	1	1	word	0	-	0	1
+E	24	299	299	0
+T	25	é 😀x 	0	7	1	1	word	0	-	0	1
+T	25	U.S. 3.14 ok\r\né U.S.. é, alpha 	7	40	1	1	word	0	-	0	1
+T	25	😀xalpha\nU.S. ok, Beta\nok, é! 	40	72	1	1	word	0	-	0	1
+T	25	3.14ok. ok\r\nU.S.	72	89	1	1	word	0	-	0	1
+T	25	中文。	89	93	1	1	word	0	-	0	1
+T	25	alpha alpha\n3.14. 	93	111	1	1	word	0	-	0	1
+T	25	Beta Beta, 3.14 ok\r\nok ok\r\nU.S.。	111	143	1	1	word	0	-	0	1
+T	25	alpha\nok. 	143	153	1	1	word	0	-	0	1
+T	25	中文。	153	156	1	1	word	0	-	0	1
+T	25	ok U.S., é. é\r\n😀x。	156	177	1	1	word	0	-	0	1
+T	25	😀xéé, U.S.. 	177	194	1	1	word	0	-	0	1
+T	25	中文\r\nok? 	194	202	1	1	word	0	-	0	1
+T	25	😀x 3.14 é, alpha! 	202	222	1	1	word	0	-	0	1
+T	25	Beta\nalpha! 	222	234	1	1	word	0	-	0	1
+T	25	中文\r\n中文? 	234	242	1	1	word	0	-	0	1
+T	25	3.14 ok. 3.14 alpha 3.14 😀x。	242	271	1	1	word	0	-	0	1
+T	25	中文 Beta。	271	279	1	1	word	0	-	0	1
+T	25	中文 😀xgamma 中文。	279	295	1	1	word	0	-	0	1
+T	25	3.14 alpha. ok😀x。	295	314	1	1	word	0	-	0	1
+T	25	alpha\r\ngamma 😀x. 3.14 	314	337	1	1	word	0	-	0	1
+T	25	3.14 é, gamma gammaok? 	337	362	1	1	word	0	-	0	1
+T	25	U.S., 中文 中文\noké ok gammagamma。	362	395	1	1	word	0	-	0	1
+T	25	é 中文Beta\r\n中文。	395	410	1	1	word	0	-	0	1
+T	25	é? 	410	414	1	1	word	0	-	0	1
+T	25	中文alpha. 	414	424	1	1	word	0	-	0	1
+T	25	U.S.. 3.14。	424	435	1	1	word	0	-	0	1
+T	25	é\nalphagamma\r\n😀x ok, ok 	435	462	1	1	word	0	-	0	1
+T	25	é 中文Beta\r\n中文\r\nok. 	462	482	1	1	word	0	-	0	1
+T	25	😀x alpha\r\nalphaU.S.\r\n	482	505	1	1	word	0	-	0	1
+T	25	alpha 3.14! 	505	517	1	1	word	0	-	0	1
+T	25	3.14 ok? 	517	526	1	1	word	0	-	0	1
+T	25	ok U.S.\r\n	526	535	1	1	word	0	-	0	1
+T	25	Betaé\nok\r\ngamma\nok? 	535	557	1	1	word	0	-	0	1
+T	25	U.S.? 	557	563	1	1	word	0	-	0	1
+T	25	ok U.S. 	563	571	1	1	word	0	-	0	1
+T	25	中文\nU.S.! 	571	580	1	1	word	0	-	0	1
+T	25	Beta gamma 	580	591	1	1	word	0	-	0	1
+T	25	中文 ok gamma。	591	603	1	1	word	0	-	0	1
+T	25	3.14 😀x\n😀x\r\nU.S.\r\n	603	623	1	1	word	0	-	0	1
+T	25	Beta alpha 中文😀xU.S.\n3.14 gamma。	623	657	1	1	word	0	-	0	1
+T	25	alpha😀x。	657	667	1	1	word	0	-	0	1
+T	25	alpha\r\nok\r\nalpha. 	667	685	1	1	word	0	-	0	1
+T	25	U.S.\r\n	685	691	1	1	word	0	-	0	1
+T	25	😀x\r\ngamma gammaok\r\n😀x, Beta alpha 3.14 	691	733	1	1	word	0	-	0	1
+T	25	Beta\nokBeta! 	733	747	1	1	word	0	-	0	1
+T	25	Beta Beta 	747	757	1	1	word	0	-	0	1
+T	25	中文, 3.14\r\né é! 	757	774	1	1	word	0	-	0	1
+T	25	3.14ok U.S.. 	774	788	1	1	word	0	-	0	1
+T	25	Beta Beta\ngamma。	788	804	1	1	word	0	-	0	1
+T	25	😀x U.S.。	804	813	1	1	word	0	-	0	1
+T	25	alpha! 	813	820	1	1	word	0	-	0	1
+T	25	ok 	820	823	1	1	word	0	-	0	1
+T	25	U.S. 	823	828	1	1	word	0	-	0	1
+T	25	中文 😀x\nBeta 	828	840	1	1	word	0	-	0	1
+T	25	gamma, 3.14, gamma U.S.	840	863	1	1	word	0	-	0	1
+T	25	ok。	863	867	1	1	word	0	-	0	1
+T	25	gamma! 	867	874	1	1	word	0	-	0	1
+T	25	3.14! 	874	880	1	1	word	0	-	0	1
+T	25	U.S. ok! 	880	889	1	1	word	0	-	0	1
+T	25	3.14 	889	894	1	1	word	0	-	0	1
+T	25	U.S. ok 中文\r\nok. 	894	910	1	1	word	0	-	0	1
+T	25	Beta U.S.	910	919	1	1	word	0	-	0	1
+T	25	😀x alpha U.S. 	919	935	1	1	word	0	-	0	1
+T	25	Beta! 	935	941	1	1	word	0	-	0	1
+T	25	😀x! 	941	946	1	1	word	0	-	0	1
+T	25	ok? 	946	950	1	1	word	0	-	0	1
+T	25	U.S.\r\n	950	956	1	1	word	0	-	0	1
+T	25	Beta 😀x。	956	965	1	1	word	0	-	0	1
+T	25	ok。	965	968	1	1	word	0	-	0	1
+T	25	U.S.3.14。	968	978	1	1	word	0	-	0	1
+T	25	alpha ok😀x gamma, alpha 中文 	978	1007	1	1	word	0	-	0	1
+T	25	alpha alpha 	1007	1019	1	1	word	0	-	0	1
+T	25	U.S., é, 中文, ok. 	1019	1037	1	1	word	0	-	0	1
+T	25	😀x\r\nok\r\ngamma é。	1037	1055	1	1	word	0	-	0	1
+T	25	😀x, 3.14\r\ngamma gamma, ok Beta。	1055	1087	1	1	word	0	-	0	1
+T	25	😀x 中文 😀x 中文\r\nBeta gamma。	1087	1113	1	1	word	0	-	0	1
+T	25	alpha\nok\n😀x. 	1113	1127	1	1	word	0	-	0	1
+T	25	U.S.。	1127	1132	1	1	word	0	-	0	1
+T	25	ok. gamma\r\nalpha gamma\ngamma 	1132	1161	1	1	word	0	-	0	1
+T	25	3.14。	1161	1166	1	1	word	0	-	0	1
+T	25	gamma。	1166	1172	1	1	word	0	-	0	1
+T	25	alpha\r\nalpha gamma。	1172	1191	1	1	word	0	-	0	1
+T	25	U.S.. gamma\r\n3.14é. ok。	1191	1216	1	1	word	0	-	0	1
+T	25	3.14 中文, 😀x 	1216	1229	1	1	word	0	-	0	1
+T	25	ok gamma中文 ok 😀x! 	1229	1249	1	1	word	0	-	0	1
+T	25	Beta。	1249	1254	1	1	word	0	-	0	1
+T	25	ok, é. gamma\r\nU.S., ok U.S. 	1254	1283	1	1	word	0	-	0	1
+T	25	U.S. okU.S.\r\n	1283	1297	1	1	word	0	-	0	1
+T	25	U.S.\r\n3.14U.S.\r\n3.14? 	1297	1320	1	1	word	0	-	0	1
+T	25	alpha! 	1320	1327	1	1	word	0	-	0	1
+T	25	3.14\r\n3.143.14\nBeta! 	1327	1349	1	1	word	0	-	0	1
+T	25	3.14, alpha 	1349	1361	1	1	word	0	-	0	1
+T	25	中文okalpha é😀x\r\nalpha\r\n😀x gamma\ngamma。	1361	1404	1	1	word	0	-	0	1
+T	25	Beta! 	1404	1410	1	1	word	0	-	0	1
+T	25	中文, gamma. 	1410	1421	1	1	word	0	-	0	1
+T	25	Beta ok 😀x! 	1421	1434	1	1	word	0	-	0	1
+T	25	3.14? 	1434	1440	1	1	word	0	-	0	1
+T	25	😀x? 	1440	1445	1	1	word	0	-	0	1
+T	25	alpha, U.S. alpha alpha U.S.。	1445	1474	1	1	word	0	-	0	1
+T	25	gamma 😀x? 	1474	1485	1	1	word	0	-	0	1
+T	25	gammaBeta? 	1485	1497	1	1	word	0	-	0	1
+T	25	gamma, Beta\r\nBeta! 	1497	1516	1	1	word	0	-	0	1
+T	25	gamma 	1516	1522	1	1	word	0	-	0	1
+T	25	U.S.! 	1522	1528	1	1	word	0	-	0	1
+T	25	ok 	1528	1531	1	1	word	0	-	0	1
+T	25	中文? 	1531	1535	1	1	word	0	-	0	1
+T	25	ok Beta! 	1535	1544	1	1	word	0	-	0	1
+T	25	中文 	1544	1547	1	1	word	0	-	0	1
+T	25	alpha? 	1547	1554	1	1	word	0	-	0	1
+T	25	alpha 中文 gamma 中文 alpha。	1554	1578	1	1	word	0	-	0	1
+T	25	gamma! 	1578	1585	1	1	word	0	-	0	1
+T	25	3.14? 	1585	1591	1	1	word	0	-	0	1
+T	25	é 	1591	1594	1	1	word	0	-	0	1
+T	25	gamma3.14\ngamma, 😀x, U.S.? 	1594	1623	1	1	word	0	-	0	1
+T	25	ok 	1623	1626	1	1	word	0	-	0	1
+T	25	ok gamma 中文。	1626	1638	1	1	word	0	-	0	1
+T	25	3.14 alpha gamma\nU.S. 	1638	1660	1	1	word	0	-	0	1
+T	25	Beta 	1660	1665	1	1	word	0	-	0	1
+T	25	ok Beta? 	1665	1674	1	1	word	0	-	0	1
+T	25	Beta Beta. 	1674	1685	1	1	word	0	-	0	1
+T	25	U.S.\n	1685	1690	1	1	word	0	-	0	1
+T	25	Beta? 	1690	1696	1	1	word	0	-	0	1
+T	25	alpha。	1696	1702	1	1	word	0	-	0	1
+T	25	U.S.. 	1702	1708	1	1	word	0	-	0	1
+T	25	😀x! 	1708	1713	1	1	word	0	-	0	1
+T	25	é\r\n😀x! 	1713	1722	1	1	word	0	-	0	1
+T	25	中文 alpha 	1722	1731	1	1	word	0	-	0	1
+T	25	gamma! 	1731	1738	1	1	word	0	-	0	1
+T	25	Beta ok gamma\r\n😀x, 中文 ok ok, ok ok? 	1738	1775	1	1	word	0	-	0	1
+T	25	3.14\r\nok? 	1775	1785	1	1	word	0	-	0	1
+T	25	alpha 😀x 😀x! 	1785	1800	1	1	word	0	-	0	1
+T	25	3.14 3.14? 	1800	1811	1	1	word	0	-	0	1
+T	25	é alpha。	1811	1820	1	1	word	0	-	0	1
+T	25	Beta gamma 	1820	1831	1	1	word	0	-	0	1
+T	25	中文 	1831	1834	1	1	word	0	-	0	1
+T	25	😀x 	1834	1838	1	1	word	0	-	0	1
+T	25	3.14 	1838	1843	1	1	word	0	-	0	1
+T	25	é é 3.14 	1843	1854	1	1	word	0	-	0	1
+T	25	Beta! 	1854	1860	1	1	word	0	-	0	1
+T	25	Beta。	1860	1865	1	1	word	0	-	0	1
+T	25	alpha! 	1865	1872	1	1	word	0	-	0	1
+T	25	Beta 	1872	1877	1	1	word	0	-	0	1
+T	25	é. 	1877	1881	1	1	word	0	-	0	1
+T	25	BetaU.S.! 	1881	1892	1	1	word	0	-	0	1
+T	25	alpha\nU.S. 	1892	1903	1	1	word	0	-	0	1
+T	25	U.S. é? 	1903	1912	1	1	word	0	-	0	1
+T	25	3.14? 	1912	1918	1	1	word	0	-	0	1
+T	25	U.S.? 	1918	1924	1	1	word	0	-	0	1
+T	25	alpha? 	1924	1931	1	1	word	0	-	0	1
+T	25	alpha 	1931	1937	1	1	word	0	-	0	1
+T	25	😀x 	1937	1941	1	1	word	0	-	0	1
+T	25	U.S.\n	1941	1946	1	1	word	0	-	0	1
+T	25	😀x 	1946	1950	1	1	word	0	-	0	1
+T	25	é。	1950	1953	1	1	word	0	-	0	1
+T	25	alpha\r\n😀x Beta? 	1953	1970	1	1	word	0	-	0	1
+T	25	alpha alpha\nBeta。	1970	1987	1	1	word	0	-	0	1
+T	25	ok Beta。	1987	1995	1	1	word	0	-	0	1
+T	25	U.S. alpha é\nBeta 	1995	2014	1	1	word	0	-	0	1
+T	25	gamma! 	2014	2021	1	1	word	0	-	0	1
+T	25	é! 	2021	2025	1	1	word	0	-	0	1
+T	25	ok 3.14\r\né 	2025	2037	1	1	word	0	-	0	1
+T	25	gamma\r	2037	2043	1	1	word	0	-	0	1
+T	25	\n中文\n😀x, é 	2043	2055	1	1	word	0	-	0	1
+T	25	中文\n😀x! 	2055	2063	1	1	word	0	-	0	1
+T	25	中文. 	2063	2067	1	1	word	0	-	0	1
+T	25	😀xBeta中文 	2067	2079	1	1	word	0	-	0	1
+T	25	é\r\n😀x ok ok U.S. 	2079	2098	1	1	word	0	-	0	1
+T	25	😀x U.S.? 	2098	2108	1	1	word	0	-	0	1
+T	25	U.S. gammaU.S. 	2108	2124	1	1	word	0	-	0	1
+T	25	😀x Beta\r\n中文. 	2124	2138	1	1	word	0	-	0	1
+T	25	Beta。	2138	2143	1	1	word	0	-	0	1
+T	25	U.S.. 	2143	2149	1	1	word	0	-	0	1
+T	25	U.S.\n	2149	2154	1	1	word	0	-	0	1
+T	25	😀x. 	2154	2159	1	1	word	0	-	0	1
+T	25	Beta\ngamma 3.14 U.S.	2159	2179	1	1	word	0	-	0	1
+T	25	gamma。	2179	2186	1	1	word	0	-	0	1
+T	25	3.14 é. 	2186	2195	1	1	word	0	-	0	1
+T	25	😀x\n😀x。	2195	2203	1	1	word	0	-	0	1
+T	25	gamma. 3.14 Beta😀x 	2203	2224	1	1	word	0	-	0	1
+T	25	gamma. alpha 😀x。	2224	2241	1	1	word	0	-	0	1
+T	25	3.14 😀x。	2241	2250	1	1	word	0	-	0	1
+T	25	U.S.. alpha\r\n😀x。	2250	2267	1	1	word	0	-	0	1
+T	25	é alpha! 	2267	2277	1	1	word	0	-	0	1
+T	25	中文! 	2277	2281	1	1	word	0	-	0	1
+T	25	gamma\r\n😀x? 	2281	2293	1	1	word	0	-	0	1
+T	25	alpha 	2293	2299	1	1	word	0	-	0	1
+T	25	Beta\nBeta 中文, é 	2299	2316	1	1	word	0	-	0	1
+T	25	Beta\n😀x。	2316	2325	1	1	word	0	-	0	1
+T	25	ok, é. alpha ok gamma U.S., Beta\nok é Beta é é 	2325	2376	1	1	word	0	-	0	1
+T	25	ok 3.14! 	2376	2385	1	1	word	0	-	0	1
+T	25	alpha? 	2385	2392	1	1	word	0	-	0	1
+T	25	3.14\n3.14 😀x。	2392	2406	1	1	word	0	-	0	1
+T	25	ok 	2406	2409	1	1	word	0	-	0	1
+T	25	😀x。	2409	2413	1	1	word	0	-	0	1
+T	25	😀x中文! 	2413	2421	1	1	word	0	-	0	1
+T	25	😀x! 	2421	2426	1	1	word	0	-	0	1
+T	25	3.14\r\ngamma, ok? 	2426	2443	1	1	word	0	-	0	1
+T	25	alpha. alpha alpha 中文 3.14\n中文é ok\r\nU.S. 	2443	2485	1	1	word	0	-	0	1
+T	25	gamma. gamma Beta U.S., U.S. alpha中文中文 ok, 中文\r\n😀x Beta, 3.14 gamma 	2485	2555	1	1	word	0	-	0	1
+T	25	é! 	2555	2559	1	1	word	0	-	0	1
+T	25	😀x 中文? 	2559	2567	1	1	word	0	-	0	1
+T	25	Beta\nok, éok 😀x é, 3.14中文 	2567	2598	1	1	word	0	-	0	1
+T	25	U.S. 	2598	2603	1	1	word	0	-	0	1
+T	25	中文 	2603	2606	1	1	word	0	-	0	1
+T	25	3.14\ngamma ok\r\nalpha 😀x, é. 3.14, Beta 	2606	2647	1	1	word	0	-	0	1
+T	25	alpha Beta U.S.. é éalpha. 	2647	2677	1	1	word	0	-	0	1
+T	25	U.S.. 	2677	2683	1	1	word	0	-	0	1
+T	25	中文? 	2683	2687	1	1	word	0	-	0	1
+T	25	U.S. 	2687	2692	1	1	word	0	-	0	1
+T	25	Beta. 	2692	2698	1	1	word	0	-	0	1
+T	25	中文 é\r\n😀x 中文 alpha é\r\ngamma\r\nBeta 😀x, é 😀x 中文\r\nBeta\ngamma? 	2698	2762	1	1	word	0	-	0	1
+T	25	ok\r\nBeta, gamma Beta中文 3.14 3.14\nalpha\r\nU.S.	2762	2807	1	1	word	0	-	0	1
+T	25	Beta! 	2807	2814	1	1	word	0	-	0	1
+T	25	U.S.\n	2814	2819	1	1	word	0	-	0	1
+T	25	中文? 	2819	2823	1	1	word	0	-	0	1
+T	25	é, Beta, U.S. 	2823	2838	1	1	word	0	-	0	1
+T	25	U.S. ok, gamma 	2838	2853	1	1	word	0	-	0	1
+T	25	Beta 中文中文 😀x gamma 中文, 😀x\nalpha, 😀x 	2853	2893	1	1	word	0	-	0	1
+T	25	gamma? 	2893	2900	1	1	word	0	-	0	1
+T	25	😀x, 3.14 é, ok, é。	2900	2921	1	1	word	0	-	0	1
+T	25	Beta 中文3.14! 	2921	2935	1	1	word	0	-	0	1
+T	25	3.14 中文? 	2935	2944	1	1	word	0	-	0	1
+T	25	中文, 😀x, 3.14 😀xalpha\n😀x alpha Beta😀x\r\nok\r\nBeta! 	2944	2998	1	1	word	0	-	0	1
+T	25	alpha! 	2998	3005	1	1	word	0	-	0	1
+T	25	中文! 	3005	3009	1	1	word	0	-	0	1
+E	25	3009	3009	0
+T	26	é 中文! 	0	7	1	1	word	0	-	0	1
+T	26	alpha. alpha。	7	20	1	1	word	0	-	0	1
+T	26	Beta, 中文 U.S.. 	20	35	1	1	word	0	-	0	1
+T	26	😀x alpha。	35	45	1	1	word	0	-	0	1
+T	26	é。	45	48	1	1	word	0	-	0	1
+T	26	中文。	48	51	1	1	word	0	-	0	1
+T	26	中文。	51	54	1	1	word	0	-	0	1
+T	26	中文。	54	57	1	1	word	0	-	0	1
+T	26	é gamma 中文。	57	69	1	1	word	0	-	0	1
+T	26	ok。	69	72	1	1	word	0	-	0	1
+T	26	gamma 😀x, U.S. 	72	88	1	1	word	0	-	0	1
+T	26	Beta gamma 中文? 	88	103	1	1	word	0	-	0	1
+T	26	😀x gamma 3.14 Beta é? 	103	127	1	1	word	0	-	0	1
+T	26	Beta 中文 😀x ok 中文. 	127	146	1	1	word	0	-	0	1
+T	26	😀x Beta? 	146	156	1	1	word	0	-	0	1
+T	26	alpha gamma alpha ok ok, Beta é. 3.14, Beta 3.14 中文 ok. 	156	213	1	1	word	0	-	0	1
+T	26	中文 U.S. ok U.S. é alpha 中文 中文? 	213	245	1	1	word	0	-	0	1
+T	26	中文 Beta 😀x gamma U.S. 	245	268	1	1	word	0	-	0	1
+T	26	U.S. ok. 	268	277	1	1	word	0	-	0	1
+T	26	中文 gamma Beta? 	277	292	1	1	word	0	-	0	1
+T	26	Beta Beta! 	292	303	1	1	word	0	-	0	1
+T	26	Beta 3.14, gamma。	303	320	1	1	word	0	-	0	1
+T	26	中文 é? 	320	327	1	1	word	0	-	0	1
+T	26	U.S. alpha U.S. gamma ok Beta ok alpha 😀x 中文 中文 😀x 😀x gamma ok, alpha. é。	327	404	1	1	word	0	-	0	1
+T	26	ok 中文 中文 alpha 3.14 gamma 中文 gamma U.S. 3.14. 	404	450	1	1	word	0	-	0	1
+T	26	U.S. alpha gamma 3.14 é 中文. 3.14 alpha Beta gamma? 	450	502	1	1	word	0	-	0	1
+T	26	3.14 ok, Beta ok 😀x 😀x gamma gamma。	502	539	1	1	word	0	-	0	1
+T	26	😀x alpha alpha gamma. 	539	562	1	1	word	0	-	0	1
+T	26	中文 ok 中文 中文? 	562	575	1	1	word	0	-	0	1
+T	26	U.S.. é 3.14 ok。	575	592	1	1	word	0	-	0	1
+T	26	中文 😀x alpha。	592	605	1	1	word	0	-	0	1
+T	26	alpha。	605	611	1	1	word	0	-	0	1
+T	26	U.S. é。	611	619	1	1	word	0	-	0	1
+T	26	Beta Beta gamma gamma, gamma。	619	648	1	1	word	0	-	0	1
+T	26	中文! 	648	652	1	1	word	0	-	0	1
+T	26	Beta ok U.S. ok 中文, 3.14 alpha Beta. 	652	689	1	1	word	0	-	0	1
+T	26	中文 Beta? 	689	698	1	1	word	0	-	0	1
+T	26	gamma 中文! 	698	708	1	1	word	0	-	0	1
+T	26	U.S.。	708	713	1	1	word	0	-	0	1
+T	26	gamma? 	713	720	1	1	word	0	-	0	1
+T	26	é é, U.S., 3.14. 	720	739	1	1	word	0	-	0	1
+T	26	😀x? 	739	744	1	1	word	0	-	0	1
+T	26	ok 3.14 gamma, 😀x。	744	763	1	1	word	0	-	0	1
+T	26	中文! 	763	767	1	1	word	0	-	0	1
+T	26	3.14 😀x é é alpha? 	767	789	1	1	word	0	-	0	1
+T	26	U.S.。	789	794	1	1	word	0	-	0	1
+T	26	😀x。	794	798	1	1	word	0	-	0	1
+T	26	3.14 Beta alpha U.S.. 	798	820	1	1	word	0	-	0	1
+T	26	U.S.。	820	825	1	1	word	0	-	0	1
+T	26	ok U.S.! 	825	834	1	1	word	0	-	0	1
+T	26	3.14。	834	839	1	1	word	0	-	0	1
+T	26	😀x é 中文. gamma? 	839	857	1	1	word	0	-	0	1
+T	26	😀x 😀x! 	857	866	1	1	word	0	-	0	1
+T	26	3.14! 	866	872	1	1	word	0	-	0	1
+T	26	gamma! 	872	879	1	1	word	0	-	0	1
+T	26	é. ok ok alpha alpha。	879	901	1	1	word	0	-	0	1
+T	26	3.14 gamma? 	901	913	1	1	word	0	-	0	1
+T	26	gamma! 	913	920	1	1	word	0	-	0	1
+T	26	3.14 ok é é? 	920	935	1	1	word	0	-	0	1
+T	26	Beta。	935	940	1	1	word	0	-	0	1
+T	26	U.S.. alpha? 	940	953	1	1	word	0	-	0	1
+T	26	gamma. 3.14 中文 ok. 	953	972	1	1	word	0	-	0	1
+T	26	U.S. ok gamma gamma? 	972	993	1	1	word	0	-	0	1
+T	26	中文 😀x alpha é 3.14, alpha, é	993	1024	1	1	word	0	-	0	1
+T	26	 😀x 中文 gamma。	1024	1038	1	1	word	0	-	0	1
+T	26	ok. gamma gamma? 	1038	1055	1	1	word	0	-	0	1
+T	26	😀x Beta ok? 	1055	1068	1	1	word	0	-	0	1
+T	26	alpha, 😀x 3.14 ok! 	1068	1088	1	1	word	0	-	0	1
+T	26	中文? 	1088	1092	1	1	word	0	-	0	1
+T	26	U.S.? 	1092	1098	1	1	word	0	-	0	1
+T	26	3.14。	1098	1103	1	1	word	0	-	0	1
+T	26	中文 😀x gamma alpha. ok 中文. 	1103	1130	1	1	word	0	-	0	1
+T	26	😀x, ok? 	1130	1139	1	1	word	0	-	0	1
+T	26	ok ok. 	1139	1146	1	1	word	0	-	0	1
+T	26	U.S. 	1146	1151	1	1	word	0	-	0	1
+T	26	😀x 3.14 U.S. é? 	1151	1169	1	1	word	0	-	0	1
+T	26	é 😀x 😀x é? 	1169	1184	1	1	word	0	-	0	1
+T	26	gamma 3.14. 3.14 U.S. 	1184	1206	1	1	word	0	-	0	1
+T	26	中文! 	1206	1210	1	1	word	0	-	0	1
+T	26	alpha U.S. 	1210	1221	1	1	word	0	-	0	1
+T	26	😀x Beta. é é é 😀x é! 	1221	1248	1	1	word	0	-	0	1
+T	26	alpha alpha ok 😀x gamma, é Beta gamma gamma? 	1248	1295	1	1	word	0	-	0	1
+T	26	alpha. 	1295	1302	1	1	word	0	-	0	1
+T	26	😀x, 中文 U.S. gamma? 	1302	1322	1	1	word	0	-	0	1
+T	26	U.S. alpha, U.S.! 	1322	1340	1	1	word	0	-	0	1
+T	26	é 😀x 3.14? 	1340	1353	1	1	word	0	-	0	1
+T	26	😀x 😀x alpha é U.S.? 	1353	1376	1	1	word	0	-	0	1
+T	26	é ok! 	1376	1383	1	1	word	0	-	0	1
+T	26	😀x alpha! 	1383	1394	1	1	word	0	-	0	1
+T	26	中文, 3.14! 	1394	1404	1	1	word	0	-	0	1
+T	26	U.S. 	1404	1409	1	1	word	0	-	0	1
+T	26	中文 中文 é U.S.。	1409	1423	1	1	word	0	-	0	1
+T	26	3.14。	1423	1428	1	1	word	0	-	0	1
+T	26	😀x 中文 é gamma Beta 😀x。	1428	1453	1	1	word	0	-	0	1
+T	26	3.14, 3.14 😀x! 	1453	1469	1	1	word	0	-	0	1
+T	26	gamma。	1469	1475	1	1	word	0	-	0	1
+T	26	alpha é ok. 	1475	1488	1	1	word	0	-	0	1
+T	26	😀x, 3.14 gamma é. gamma 😀x é gamma Beta. gamma? 	1488	1540	1	1	word	0	-	0	1
+T	26	U.S. 3.14 中文。	1540	1553	1	1	word	0	-	0	1
+T	26	gamma é é Beta 3.14 alpha, Beta é, U.S. 	1553	1596	1	1	word	0	-	0	1
+T	26	😀x alpha alpha! 	1596	1613	1	1	word	0	-	0	1
+T	26	alpha é 😀x。	1613	1626	1	1	word	0	-	0	1
+T	26	alpha! 	1626	1633	1	1	word	0	-	0	1
+T	26	alpha! 	1633	1640	1	1	word	0	-	0	1
+T	26	é。	1640	1643	1	1	word	0	-	0	1
+T	26	😀x ok? 	1643	1651	1	1	word	0	-	0	1
+T	26	3.14 3.14, 中文, 3.14, 😀x, U.S., 3.14! 	1651	1689	1	1	word	0	-	0	1
+T	26	alpha? 	1689	1696	1	1	word	0	-	0	1
+T	26	中文。	1696	1699	1	1	word	0	-	0	1
+T	26	gamma. alpha? 	1699	1713	1	1	word	0	-	0	1
+T	26	Beta ok gamma gamma 3.14, 😀x 3.14 中文! 	1713	1752	1	1	word	0	-	0	1
+T	26	😀x ok 中文 中文? 	1752	1766	1	1	word	0	-	0	1
+T	26	ok 中文 ok。	1766	1775	1	1	word	0	-	0	1
+T	26	gamma gamma 3.14 U.S.! 	1775	1798	1	1	word	0	-	0	1
+T	26	Beta 😀x! 	1798	1808	1	1	word	0	-	0	1
+T	26	中文 é! 	1808	1815	1	1	word	0	-	0	1
+T	26	😀x. alpha gamma U.S. 	1815	1837	1	1	word	0	-	0	1
+E	26	1837	1837	0
+T	27	U.S.。	0	5	1	1	word	0	-	0	1
+T	27	Beta U.S., 中文. ok é ok 3.14? 	5	35	1	1	word	0	-	0	1
+T	27	3.14? 	35	41	1	1	word	0	-	0	1
+T	27	中文 	41	44	1	1	word	0	-	0	1
+T	27	😀x? 	44	49	1	1	word	0	-	0	1
+T	27	😀x ok3.14 	49	61	1	1	word	0	-	0	1
+T	27	3.14? 	61	67	1	1	word	0	-	0	1
+T	27	Beta, U.S.\r\n	67	79	1	1	word	0	-	0	1
+T	27	é3.14? 	79	88	1	1	word	0	-	0	1
+T	27	Betaalpha, Beta? 	88	106	1	1	word	0	-	0	1
+T	27	中文 😀x\r\nok 	106	117	1	1	word	0	-	0	1
+T	27	ok 中文 中文 Beta! 	117	132	1	1	word	0	-	0	1
+T	27	中文. ok。	132	139	1	1	word	0	-	0	1
+T	27	中文U.S., é\nok\r\né。	139	158	1	1	word	0	-	0	1
+T	27	U.S. 	158	163	1	1	word	0	-	0	1
+T	27	U.S.。	163	168	1	1	word	0	-	0	1
+T	27	3.14\nok Beta, é\r\nalpha 	168	192	1	1	word	0	-	0	1
+T	27	alpha 3.14, é 	192	207	1	1	word	0	-	0	1
+T	27	alpha\r\n中文. 	207	218	1	1	word	0	-	0	1
+T	27	中文 	218	221	1	1	word	0	-	0	1
+T	27	ok? 	221	225	1	1	word	0	-	0	1
+T	27	Beta 	225	230	1	1	word	0	-	0	1
+T	27	alpha。	230	236	1	1	word	0	-	0	1
+T	27	中文 3.14\r\nU.S.! 	236	251	1	1	word	0	-	0	1
+T	27	ok 	251	254	1	1	word	0	-	0	1
+T	27	Beta 中文, ok 	254	266	1	1	word	0	-	0	1
+T	27	ok ok 	266	272	1	1	word	0	-	0	1
+E	27	272	272	0
+T	28	😀x\r\ngamma 3.14。	0	16	1	1	word	0	-	0	1
+T	28	Beta. alpha。	16	28	1	1	word	0	-	0	1
+T	28	Beta! 	28	34	1	1	word	0	-	0	1
+T	28	é ok\n😀x? 	34	45	1	1	word	0	-	0	1
+T	28	alpha。	45	51	1	1	word	0	-	0	1
+T	28	gamma 	51	57	1	1	word	0	-	0	1
+T	28	Beta\nok U.S.. ok Beta alpha 3.14 é\r\n3.14. 	57	100	1	1	word	0	-	0	1
+T	28	😀x? 	100	105	1	1	word	0	-	0	1
+T	28	ok 3.14. ok 	105	117	1	1	word	0	-	0	1
+T	28	中文 	117	120	1	1	word	0	-	0	1
+T	28	中文。	120	123	1	1	word	0	-	0	1
+T	28	3.14 3.14\r\né😀x\r\n中文! 	123	146	1	1	word	0	-	0	1
+T	28	gamma alpha, alpha! 	146	166	1	1	word	0	-	0	1
+T	28	3.14。	166	171	1	1	word	0	-	0	1
+T	28	gamma\r\nBeta. 	171	184	1	1	word	0	-	0	1
+T	28	U.S.\r\n	184	190	1	1	word	0	-	0	1
+T	28	gamma? 	190	197	1	1	word	0	-	0	1
+T	28	U.S. 	197	202	1	1	word	0	-	0	1
+T	28	Beta é, gamma, é gamma。	202	227	1	1	word	0	-	0	1
+T	28	é alpha中文? 	227	240	1	1	word	0	-	0	1
+T	28	3.14? 	240	246	1	1	word	0	-	0	1
+T	28	ok alpha, ok U.S.\n	246	264	1	1	word	0	-	0	1
+T	28	U.S.\r\n	264	270	1	1	word	0	-	0	1
+T	28	ok. 	270	274	1	1	word	0	-	0	1
+T	28	中文! 	274	278	1	1	word	0	-	0	1
+T	28	3.14! 	278	284	1	1	word	0	-	0	1
+T	28	alpha? 	284	291	1	1	word	0	-	0	1
+T	28	okU.S.	291	298	1	1	word	0	-	0	1
+T	28	😀x, gamma? 	298	311	1	1	word	0	-	0	1
+T	28	中文 😀x U.S.\r\n	311	324	1	1	word	0	-	0	1
+T	28	中文\né 😀x 3.14。	324	339	1	1	word	0	-	0	1
+T	28	3.14. é 😀x\nU.S.\n	339	357	1	1	word	0	-	0	1
+T	28	U.S. gamma! 	357	369	1	1	word	0	-	0	1
+T	28	ok, gamma3.14\nalpha\né\r\ngamma! 	369	401	1	1	word	0	-	0	1
+T	28	alpha gamma😀x 3.14 U.S.? 	401	428	1	1	word	0	-	0	1
+T	28	Beta! 	428	434	1	1	word	0	-	0	1
+T	28	U.S. 	434	439	1	1	word	0	-	0	1
+T	28	Beta 	439	444	1	1	word	0	-	0	1
+T	28	😀x é 😀x! 	444	456	1	1	word	0	-	0	1
+T	28	中文 é\nBeta Beta é 😀x 😀x 中文。	456	486	1	1	word	0	-	0	1
+T	28	é gamma gamma 😀x gamma? 	486	512	1	1	word	0	-	0	1
+T	28	中文? 	512	516	1	1	word	0	-	0	1
+T	28	3.14\r\nBeta. é. ok? 	516	536	1	1	word	0	-	0	1
+T	28	Beta, ok\r\nok 	536	549	1	1	word	0	-	0	1
+T	28	U.S.。	549	554	1	1	word	0	-	0	1
+T	28	U.S.\r\n	554	560	1	1	word	0	-	0	1
+T	28	😀x 3.14 😀x\r\n😀x U.S.\r\n	560	584	1	1	word	0	-	0	1
+T	28	alpha? 	584	591	1	1	word	0	-	0	1
+T	28	3.14 😀x。	591	600	1	1	word	0	-	0	1
+T	28	gammaé 	600	609	1	1	word	0	-	0	1
+T	28	😀x3.14 	609	618	1	1	word	0	-	0	1
+T	28	中文 alpha。	618	627	1	1	word	0	-	0	1
+T	28	oké. ok 中文? 	627	641	1	1	word	0	-	0	1
+T	28	Beta Beta Beta alpha alpha alpha? 	641	675	1	1	word	0	-	0	1
+T	28	3.14 中文 Beta! 	675	689	1	1	word	0	-	0	1
+T	28	U.S. é, 😀x gamma. 3.14! 	689	715	1	1	word	0	-	0	1
+T	28	3.14 é。	715	723	1	1	word	0	-	0	1
+T	28	U.S.\r\n	723	729	1	1	word	0	-	0	1
+T	28	alpha, 😀x\r\né 3.14, é 	729	753	1	1	word	0	-	0	1
+T	28	3.14\r\né U.S.\nalpha 	753	773	1	1	word	0	-	0	1
+T	28	U.S. 	773	778	1	1	word	0	-	0	1
+T	28	😀x! 	778	783	1	1	word	0	-	0	1
+T	28	alpha! 	783	790	1	1	word	0	-	0	1
+T	28	3.14\r\n中文 U.S. é. gamma gamma 中文 ok é U.S.\né 😀x? 	790	842	1	1	word	0	-	0	1
+T	28	Beta\n😀x Beta U.S. é 	842	864	1	1	word	0	-	0	1
+T	28	3.14! 	864	870	1	1	word	0	-	0	1
+T	28	alpha ok. alpha 中文 é\r\n3.14U.S. 	870	903	1	1	word	0	-	0	1
+T	28	alpha. 	903	910	1	1	word	0	-	0	1
+T	28	中文okalpha. 	910	923	1	1	word	0	-	0	1
+T	28	Beta? 	923	929	1	1	word	0	-	0	1
+T	28	alpha 	929	935	1	1	word	0	-	0	1
+T	28	中文! 	935	939	1	1	word	0	-	0	1
+T	28	Beta? 	939	945	1	1	word	0	-	0	1
+T	28	Beta? 	945	951	1	1	word	0	-	0	1
+T	28	é 3.14 Beta. 	951	965	1	1	word	0	-	0	1
+T	28	中文 😀x\n3.14。	965	977	1	1	word	0	-	0	1
+T	28	Beta 3.14\r\nBeta. 	977	994	1	1	word	0	-	0	1
+T	28	😀x\r\n	994	999	1	1	word	0	-	0	1
+T	28	ok 😀x é. gamma alpha。	999	1022	1	1	word	0	-	0	1
+T	28	ok? 	1022	1026	1	1	word	0	-	0	1
+T	28	U.S.\r\n	1026	1032	1	1	word	0	-	0	1
+T	28	é. alpha ok, é! 	1032	1050	1	1	word	0	-	0	1
+T	28	é! 	1050	1054	1	1	word	0	-	0	1
+T	28	ok. alpha 	1054	1064	1	1	word	0	-	0	1
+T	28	Beta U.S. 	1064	1074	1	1	word	0	-	0	1
+T	28	Beta\r\nok 	1074	1083	1	1	word	0	-	0	1
+T	28	中文, 中文ok é! 	1083	1097	1	1	word	0	-	0	1
+T	28	alpha 	1097	1103	1	1	word	0	-	0	1
+T	28	ok 😀xok! 	1103	1114	1	1	word	0	-	0	1
+T	28	é! 	1114	1118	1	1	word	0	-	0	1
+T	28	😀x. 	1118	1123	1	1	word	0	-	0	1
+T	28	U.S.	1123	1127	1	1	word	0	-	0	1
+T	28	😀x? 	1127	1133	1	1	word	0	-	0	1
+T	28	gamma 3.14gamma? 	1133	1151	1	1	word	0	-	0	1
+T	28	Beta U.S.? 	1151	1162	1	1	word	0	-	0	1
+T	28	😀x 	1162	1166	1	1	word	0	-	0	1
+T	28	😀x. 3.14, é\r\nok é! 	1166	1188	1	1	word	0	-	0	1
+T	28	中文\ngamma\r\n😀x。	1188	1202	1	1	word	0	-	0	1
+T	28	3.14 ok. ok\n中文\nok. 3.14 	1202	1226	1	1	word	0	-	0	1
+T	28	Beta gamma. ok 3.14. 	1226	1247	1	1	word	0	-	0	1
+T	28	Beta\r\n中文 	1247	1256	1	1	word	0	-	0	1
+T	28	alpha\r\nalpha中文中文U.S.\ngamma\r\nU.S.\r\n	1256	1293	1	1	word	0	-	0	1
+T	28	😀xgamma Beta? 	1293	1309	1	1	word	0	-	0	1
+T	28	Beta. alpha😀x, U.S. 	1309	1331	1	1	word	0	-	0	1
+T	28	é Beta 3.14\r\nBeta gammagamma 	1331	1362	1	1	word	0	-	0	1
+T	28	gamma alpha? 	1362	1375	1	1	word	0	-	0	1
+T	28	U.S. 	1375	1380	1	1	word	0	-	0	1
+T	28	gamma? 	1380	1387	1	1	word	0	-	0	1
+T	28	😀x 	1387	1391	1	1	word	0	-	0	1
+T	28	U.S.. 	1391	1397	1	1	word	0	-	0	1
+T	28	U.S. gamma! 	1397	1409	1	1	word	0	-	0	1
+T	28	Beta gamma 	1409	1420	1	1	word	0	-	0	1
+T	28	alpha 中文 中文3.14 	1420	1437	1	1	word	0	-	0	1
+T	28	中文. 	1437	1441	1	1	word	0	-	0	1
+T	28	中文 alpha\né。	1441	1453	1	1	word	0	-	0	1
+T	28	é ok。	1453	1459	1	1	word	0	-	0	1
+T	28	U.S., 3.14 	1459	1470	1	1	word	0	-	0	1
+T	28	gamma 😀x! 	1470	1481	1	1	word	0	-	0	1
+T	28	Beta 	1481	1486	1	1	word	0	-	0	1
+T	28	gamma, gamma\ngamma! 	1486	1506	1	1	word	0	-	0	1
+T	28	😀x? 	1506	1511	1	1	word	0	-	0	1
+T	28	😀x\nU.S., gamma中文! 	1511	1531	1	1	word	0	-	0	1
+T	28	alphaalpha。	1531	1543	1	1	word	0	-	0	1
+T	28	😀x 3.14 	1543	1552	1	1	word	0	-	0	1
+T	28	ok U.S.. 	1552	1561	1	1	word	0	-	0	1
+T	28	😀x é 中文U.S. 	1561	1576	1	1	word	0	-	0	1
+T	28	Beta é 😀x gamma 中文 alpha 中文 😀x\négamma? 	1576	1620	1	1	word	0	-	0	1
+T	28	Beta, ok, ok. ok\r\ngamma\r\ngamma 😀xBeta, Beta gamma? 	1620	1673	1	1	word	0	-	0	1
+T	28	é Beta. 3.14中文, 3.14! 	1673	1697	1	1	word	0	-	0	1
+T	28	3.14, alpha 中文 	1697	1712	1	1	word	0	-	0	1
+T	28	alpha, Beta\r\nU.S.! 	1712	1731	1	1	word	0	-	0	1
+T	28	ok! 	1731	1735	1	1	word	0	-	0	1
+T	28	Beta? 	1735	1741	1	1	word	0	-	0	1
+T	28	ok中文, 中文。	1741	1751	1	1	word	0	-	0	1
+T	28	😀x 3.14。	1751	1760	1	1	word	0	-	0	1
+T	28	😀x gamma 	1760	1770	1	1	word	0	-	0	1
+T	28	ok é 	1770	1776	1	1	word	0	-	0	1
+T	28	3.14 é3.14\nBeta, gamma alpha! 	1776	1808	1	1	word	0	-	0	1
+T	28	Beta, gamma 	1808	1820	1	1	word	0	-	0	1
+T	28	U.S. 	1820	1825	1	1	word	0	-	0	1
+T	28	3.14? 	1825	1831	1	1	word	0	-	0	1
+T	28	U.S. alpha? 	1831	1843	1	1	word	0	-	0	1
+T	28	alpha 	1843	1849	1	1	word	0	-	0	1
+T	28	3.14。	1849	1854	1	1	word	0	-	0	1
+T	28	U.S.	1854	1858	1	1	word	0	-	0	1
+T	28	alpha Beta gamma 3.14. é! 	1858	1886	1	1	word	0	-	0	1
+T	28	3.14 alpha 😀x ok. ok! 	1886	1909	1	1	word	0	-	0	1
+T	28	中文 Beta Beta\r\n😀xok U.S.\r\n	1909	1936	1	1	word	0	-	0	1
+T	28	alpha Beta Beta 	1936	1952	1	1	word	0	-	0	1
+T	28	alpha gamma! 	1952	1965	1	1	word	0	-	0	1
+T	28	U.S. 3.14 	1965	1975	1	1	word	0	-	0	1
+T	28	😀x U.S.\nalpha alpha é. ok é 😀x\né 	1975	2013	1	1	word	0	-	0	1
+T	28	gamma? 	2013	2020	1	1	word	0	-	0	1
+T	28	3.14? 	2020	2026	1	1	word	0	-	0	1
+T	28	é3.14。	2026	2034	1	1	word	0	-	0	1
+T	28	alpha\r\nU.S., Beta\r\né。	2034	2056	1	1	word	0	-	0	1
+T	28	ok. 	2056	2060	1	1	word	0	-	0	1
+T	28	U.S. 	2060	2065	1	1	word	0	-	0	1
+T	28	ok\nBetaé 😀xé\r\n中文 ok, gamma. gamma 😀x okU.S. 	2065	2116	1	1	word	0	-	0	1
+T	28	3.14 中文! 	2116	2125	1	1	word	0	-	0	1
+T	28	中文, é\r\ngamma。	2125	2139	1	1	word	0	-	0	1
+T	28	Beta 	2139	2144	1	1	word	0	-	0	1
+T	28	U.S.。	2144	2149	1	1	word	0	-	0	1
+T	28	é. 	2149	2153	1	1	word	0	-	0	1
+T	28	😀x U.S.\né! 	2153	2166	1	1	word	0	-	0	1
+T	28	alpha? 	2166	2173	1	1	word	0	-	0	1
+T	28	gamma\nok 	2173	2182	1	1	word	0	-	0	1
+T	28	gamma 中文\nalpha? 	2182	2198	1	1	word	0	-	0	1
+T	28	é 	2198	2201	1	1	word	0	-	0	1
+T	28	é. 	2201	2205	1	1	word	0	-	0	1
+T	28	中文, é gamma中文, 3.14 é\r\n3.14! 	2205	2237	1	1	word	0	-	0	1
+T	28	U.S. 	2237	2242	1	1	word	0	-	0	1
+T	28	😀x alpha 	2242	2252	1	1	word	0	-	0	1
+T	28	Beta\n😀x? 	2252	2262	1	1	word	0	-	0	1
+T	28	Beta\r\né é。	2262	2274	1	1	word	0	-	0	1
+T	28	😀x\ngamma 	2274	2284	1	1	word	0	-	0	1
+T	28	中文! 	2284	2288	1	1	word	0	-	0	1
+T	28	alpha 	2288	2294	1	1	word	0	-	0	1
+T	28	3.14 Beta\r\ngammaé? 	2294	2315	1	1	word	0	-	0	1
+T	28	alpha gamma, okBeta\nalpha alpha. gamma\nok\r\nalpha alpha! 	2315	2372	1	1	word	0	-	0	1
+T	28	é alpha! 	2372	2382	1	1	word	0	-	0	1
+T	28	😀x U.S.! 	2382	2392	1	1	word	0	-	0	1
+T	28	alpha 	2392	2398	1	1	word	0	-	0	1
+T	28	ok\r\nU.S., 3.14。	2398	2413	1	1	word	0	-	0	1
+T	28	é 3.14 ok? 	2413	2425	1	1	word	0	-	0	1
+T	28	ok中文! 	2425	2432	1	1	word	0	-	0	1
+T	28	3.14, é! 	2432	2442	1	1	word	0	-	0	1
+T	28	3.14. 3.14. 	2442	2454	1	1	word	0	-	0	1
+T	28	U.S. ok ok 	2454	2465	1	1	word	0	-	0	1
+T	28	gamma\r\n中文 	2465	2475	1	1	word	0	-	0	1
+T	28	中文 中文。	2475	2481	1	1	word	0	-	0	1
+T	28	é? 	2481	2485	1	1	word	0	-	0	1
+T	28	ok\r\ngamma 中文, Beta 😀x, 3.14 Beta, ok 	2485	2523	1	1	word	0	-	0	1
+T	28	BetaU.S. 3.14。	2523	2538	1	1	word	0	-	0	1
+T	28	3.14 é? 	2538	2547	1	1	word	0	-	0	1
+T	28	中文 	2547	2550	1	1	word	0	-	0	1
+T	28	3.14 Beta. ok 	2550	2564	1	1	word	0	-	0	1
+T	28	中文 	2564	2567	1	1	word	0	-	0	1
+T	28	中文\r\nok. gamma okBetaok\né\nBeta\nBeta é Beta 😀x! 	2567	2618	1	1	word	0	-	0	1
+T	28	é. é 😀x alpha. é 😀x\r\n中文。	2618	2647	1	1	word	0	-	0	1
+T	28	3.14\nBeta\n😀x\nok. é。	2647	2668	1	1	word	0	-	0	1
+T	28	U.S. 	2668	2673	1	1	word	0	-	0	1
+T	28	😀x 3.14! 	2673	2683	1	1	word	0	-	0	1
+T	28	ok 中文. 	2683	2690	1	1	word	0	-	0	1
+T	28	Beta, alpha! 	2690	2703	1	1	word	0	-	0	1
+T	28	gamma, 😀x! 	2703	2715	1	1	word	0	-	0	1
+T	28	3.14\n中文3.14! 	2715	2729	1	1	word	0	-	0	1
+T	28	gamma U.S., é。	2729	2744	1	1	word	0	-	0	1
+T	28	U.S. 	2744	2749	1	1	word	0	-	0	1
+T	28	U.S.	2749	2753	1	1	word	0	-	0	1
+T	28	alpha, ok。	2753	2764	1	1	word	0	-	0	1
+T	28	gamma? 	2764	2771	1	1	word	0	-	0	1
+T	28	ok. alphaBeta。	2771	2786	1	1	word	0	-	0	1
+T	28	U.S. 	2786	2791	1	1	word	0	-	0	1
+T	28	😀x alpha alpha Beta? 	2791	2813	1	1	word	0	-	0	1
+T	28	3.14! 	2813	2819	1	1	word	0	-	0	1
+T	28	é 	2819	2822	1	1	word	0	-	0	1
+T	28	é, Beta! 	2822	2832	1	1	word	0	-	0	1
+T	28	gamma é. alpha。	2832	2848	1	1	word	0	-	0	1
+T	28	Beta\nalpha, 3.14! 	2848	2866	1	1	word	0	-	0	1
+T	28	gamma. alpha alpha. 	2866	2886	1	1	word	0	-	0	1
+T	28	U.S., alpha\nok U.S.! 	2886	2907	1	1	word	0	-	0	1
+T	28	Beta\né! 	2907	2916	1	1	word	0	-	0	1
+T	28	ok é. 	2916	2923	1	1	word	0	-	0	1
+T	28	😀x 中文 😀x 😀x alpha, ok。	2923	2948	1	1	word	0	-	0	1
+T	28	Beta! 	2948	2954	1	1	word	0	-	0	1
+T	28	3.14. 	2954	2960	1	1	word	0	-	0	1
+T	28	Beta gamma. 	2960	2972	1	1	word	0	-	0	1
+T	28	Beta U.S.	2972	2981	1	1	word	0	-	0	1
+T	28	ok? 	2981	2986	1	1	word	0	-	0	1
+T	28	alpha\r\n3.14 	2986	2998	1	1	word	0	-	0	1
+T	28	ok! 	2998	3002	1	1	word	0	-	0	1
+T	28	U.S.\né 	3002	3010	1	1	word	0	-	0	1
+T	28	😀x Beta? 	3010	3020	1	1	word	0	-	0	1
+T	28	gamma	3020	3026	1	1	word	0	-	0	1
+T	28	gamma, gamma gamma ok. alpha? 	3026	3056	1	1	word	0	-	0	1
+T	28	中文\r\nU.S.。	3056	3065	1	1	word	0	-	0	1
+T	28	ok😀x\r\nBeta\r\ngamma, 中文。	3065	3089	1	1	word	0	-	0	1
+T	28	😀x\nBeta\r\n😀x. 	3089	3104	1	1	word	0	-	0	1
+T	28	中文, alpha。	3104	3114	1	1	word	0	-	0	1
+T	28	😀x, gamma U.S.\n3.14? 	3114	3136	1	1	word	0	-	0	1
+T	28	alpha\nok Beta 中文 中文\r\nok. 3.14 中文. gamma? 	3136	3177	1	1	word	0	-	0	1
+T	28	U.S. 	3177	3182	1	1	word	0	-	0	1
+T	28	中文\n😀x\n中文gamma\n😀x 3.14! 	3182	3208	1	1	word	0	-	0	1
+T	28	😀x? 	3208	3213	1	1	word	0	-	0	1
+T	28	中文 é 中文? 	3213	3223	1	1	word	0	-	0	1
+T	28	alpha。	3223	3229	1	1	word	0	-	0	1
+T	28	ok😀x ok\r\né 😀x, é U.S.。	3229	3256	1	1	word	0	-	0	1
+T	28	U.S.\r\n	3256	3262	1	1	word	0	-	0	1
+T	28	Beta\r\n😀x. 	3262	3273	1	1	word	0	-	0	1
+T	28	中文 ok! 	3273	3280	1	1	word	0	-	0	1
+T	28	U.S. alpha U.S. alpha。	3280	3302	1	1	word	0	-	0	1
+T	28	ok\r\né. 	3302	3310	1	1	word	0	-	0	1
+T	28	U.S., 😀x 	3310	3320	1	1	word	0	-	0	1
+T	28	é! 	3320	3324	1	1	word	0	-	0	1
+T	28	😀x 	3324	3328	1	1	word	0	-	0	1
+T	28	3.14. alpha! 	3328	3341	1	1	word	0	-	0	1
+T	28	U.S., 中文 é3.14😀x, 3.14! 	3341	3369	1	1	word	0	-	0	1
+T	28	gamma。	3369	3375	1	1	word	0	-	0	1
+T	28	éU.S. 	3375	3383	1	1	word	0	-	0	1
+T	28	😀x! 	3383	3388	1	1	word	0	-	0	1
+T	28	alpha\n中文 	3388	3397	1	1	word	0	-	0	1
+T	28	ok3.14? 	3397	3406	1	1	word	0	-	0	1
+T	28	中文! 	3406	3410	1	1	word	0	-	0	1
+T	28	alpha。	3410	3416	1	1	word	0	-	0	1
+T	28	é\n3.14, ok 	3416	3428	1	1	word	0	-	0	1
+T	28	中文! 	3428	3432	1	1	word	0	-	0	1
+T	28	U.S. ok Beta? 	3432	3446	1	1	word	0	-	0	1
+T	28	gamma\n中文. alpha! 	3446	3463	1	1	word	0	-	0	1
+T	28	Beta。	3463	3468	1	1	word	0	-	0	1
+T	28	3.14 U.S. 	3468	3478	1	1	word	0	-	0	1
+T	28	U.S. 	3478	3483	1	1	word	0	-	0	1
+T	28	😀x\nBeta\r\n中文 	3483	3496	1	1	word	0	-	0	1
+T	28	😀x 3.14, 3.14 	3496	3511	1	1	word	0	-	0	1
+T	28	Beta é! 	3511	3520	1	1	word	0	-	0	1
+T	28	中文3.14? 	3520	3529	1	1	word	0	-	0	1
+T	28	é alpha! 	3529	3539	1	1	word	0	-	0	1
+T	28	中文\nalpha 	3539	3548	1	1	word	0	-	0	1
+T	28	U.S. ok. gamma gamma\nBeta? 	3548	3575	1	1	word	0	-	0	1
+T	28	3.14\r\nBeta? 	3575	3587	1	1	word	0	-	0	1
+T	28	alpha, U.S.	3587	3598	1	1	word	0	-	0	1
+T	28	U.S. 3.14\r\né! 	3598	3614	1	1	word	0	-	0	1
+T	28	😀x\n3.14! 	3614	3624	1	1	word	0	-	0	1
+T	28	😀x 3.14 gamma Beta\r\nU.S.? 	3624	3651	1	1	word	0	-	0	1
+T	28	😀x! 	3651	3656	1	1	word	0	-	0	1
+T	28	Beta ok U.S. gamma? 	3656	3676	1	1	word	0	-	0	1
+T	28	😀xU.S.! 	3676	3686	1	1	word	0	-	0	1
+T	28	😀x! 	3686	3691	1	1	word	0	-	0	1
+T	28	3.14? 	3691	3697	1	1	word	0	-	0	1
+T	28	中文\r\n中文 😀x\r\nalpha 	3697	3715	1	1	word	0	-	0	1
+T	28	gamma。	3715	3721	1	1	word	0	-	0	1
+T	28	中文, é 😀x。	3721	3732	1	1	word	0	-	0	1
+T	28	Beta Beta 	3732	3742	1	1	word	0	-	0	1
+T	28	gamma 3.14\n3.14\r\nU.S.。	3742	3764	1	1	word	0	-	0	1
+T	28	U.S. 	3764	3769	1	1	word	0	-	0	1
+T	28	é\nalpha! 	3769	3779	1	1	word	0	-	0	1
+T	28	U.S.. 	3779	3785	1	1	word	0	-	0	1
+T	28	中文. 	3785	3789	1	1	word	0	-	0	1
+T	28	中文\r\né U.S.。	3789	3801	1	1	word	0	-	0	1
+T	28	😀x。	3801	3805	1	1	word	0	-	0	1
+T	28	3.14。	3805	3810	1	1	word	0	-	0	1
+T	28	gamma! 	3810	3817	1	1	word	0	-	0	1
+T	28	3.14. ok。	3817	3826	1	1	word	0	-	0	1
+T	28	3.14. alpha. 3.14? 	3826	3845	1	1	word	0	-	0	1
+T	28	3.14, alpha? 	3845	3858	1	1	word	0	-	0	1
+T	28	é? 	3858	3862	1	1	word	0	-	0	1
+T	28	Beta alpha. gamma\r\n😀x。	3862	3885	1	1	word	0	-	0	1
+T	28	alpha ok U.S.。	3885	3899	1	1	word	0	-	0	1
+T	28	Beta\r\n😀x\r\ngammaBeta 3.14 U.S.。	3899	3931	1	1	word	0	-	0	1
+T	28	U.S.\n3.14? 	3931	3942	1	1	word	0	-	0	1
+T	28	é é 中文 alpha! 	3942	3958	1	1	word	0	-	0	1
+T	28	é\n中文! 	3958	3965	1	1	word	0	-	0	1
+T	28	😀x alpha 	3965	3975	1	1	word	0	-	0	1
+T	28	3.14 ok alpha 	3975	3989	1	1	word	0	-	0	1
+T	28	é\n3.14 ok. é 	3989	4004	1	1	word	0	-	0	1
+T	28	ok 😀x! 	4004	4012	1	1	word	0	-	0	1
+T	28	ok é, gamma 中文。	4012	4028	1	1	word	0	-	0	1
+T	28	gamma 3.14! 	4028	4040	1	1	word	0	-	0	1
+T	28	中文。	4040	4043	1	1	word	0	-	0	1
+T	28	Beta! 	4043	4049	1	1	word	0	-	0	1
+T	28	3.14! 	4049	4055	1	1	word	0	-	0	1
+T	28	Beta, gamma Beta? 	4055	4073	1	1	word	0	-	0	1
+T	28	gamma。	4073	4079	1	1	word	0	-	0	1
+T	28	ok. 	4079	4083	1	1	word	0	-	0	1
+T	28	Beta 3.14\r\nBeta! 	4083	4100	1	1	word	0	-	0	1
+T	28	Beta gamma 3.143.14. gamma 	4100	4128	1	1	word	0	-	0	1
+T	28	U.S. 	4128	4133	1	1	word	0	-	0	1
+T	28	ok 	4133	4136	1	1	word	0	-	0	1
+T	28	Beta! 	4136	4142	1	1	word	0	-	0	1
+T	28	é\r\nU.S. 	4142	4151	1	1	word	0	-	0	1
+T	28	中文\r\n3.14。	4151	4160	1	1	word	0	-	0	1
+T	28	😀x ok 	4160	4167	1	1	word	0	-	0	1
+T	28	alpha, 😀x 😀x? 	4167	4183	1	1	word	0	-	0	1
+T	28	alpha? 	4183	4190	1	1	word	0	-	0	1
+T	28	alpha! 	4190	4197	1	1	word	0	-	0	1
+T	28	ok, é! 	4197	4205	1	1	word	0	-	0	1
+T	28	U.S.	4205	4209	1	1	word	0	-	0	1
+T	28	alpha. 	4209	4217	1	1	word	0	-	0	1
+T	28	中文! 	4217	4221	1	1	word	0	-	0	1
+T	28	中文! 	4221	4225	1	1	word	0	-	0	1
+T	28	U.S. é Beta。	4225	4238	1	1	word	0	-	0	1
+T	28	gammagammaU.S.\n	4238	4255	1	1	word	0	-	0	1
+T	28	😀xalpha\r\nalpha? 	4255	4273	1	1	word	0	-	0	1
+T	28	U.S. é 	4273	4281	1	1	word	0	-	0	1
+T	28	中文\r\nU.S., gamma? 	4281	4298	1	1	word	0	-	0	1
+T	28	中文U.S.\r\n3.14\n😀x. 	4298	4317	1	1	word	0	-	0	1
+T	28	中文? 	4317	4321	1	1	word	0	-	0	1
+T	28	U.S. gamma gamma 	4321	4338	1	1	word	0	-	0	1
+T	28	U.S.。	4338	4343	1	1	word	0	-	0	1
+T	28	é, 3.14 😀x. alpha, gamma. 3.14。	4343	4376	1	1	word	0	-	0	1
+T	28	U.S. 	4376	4381	1	1	word	0	-	0	1
+T	28	3.14 alpha\r\nU.S.\ngamma 3.14? 	4381	4410	1	1	word	0	-	0	1
+T	28	中文 ok\né Beta é! 	4410	4428	1	1	word	0	-	0	1
+T	28	中文gamma é, U.S.\n3.14 3.14 alphaok\n3.14 okok! 	4428	4477	1	1	word	0	-	0	1
+T	28	ok\r\n中文。	4477	4484	1	1	word	0	-	0	1
+T	28	é. 	4484	4488	1	1	word	0	-	0	1
+T	28	😀x gamma, 中文\r\ngamma. alpha U.S.? 	4488	4522	1	1	word	0	-	0	1
+T	28	中文。	4522	4525	1	1	word	0	-	0	1
+T	28	ok? 	4525	4529	1	1	word	0	-	0	1
+T	28	alpha\r\n😀x。	4529	4540	1	1	word	0	-	0	1
+T	28	U.S. é! 	4540	4549	1	1	word	0	-	0	1
+T	28	😀x 中文 中文\r\nBeta U.S. 	4549	4570	1	1	word	0	-	0	1
+T	28	U.S. 	4570	4575	1	1	word	0	-	0	1
+T	28	中文 gamma\nU.S. 3.14 3.14。	4575	4599	1	1	word	0	-	0	1
+T	28	U.S. ok Beta\nU.S. 	4599	4617	1	1	word	0	-	0	1
+T	28	Beta? 	4617	4623	1	1	word	0	-	0	1
+T	28	alphaU.S.\n	4623	4634	1	1	word	0	-	0	1
+T	28	中文, Beta! 	4634	4644	1	1	word	0	-	0	1
+T	28	gamma。	4644	4650	1	1	word	0	-	0	1
+T	28	中文. gamma 😀x, gamma. gamma, U.S. 	4650	4684	1	1	word	0	-	0	1
+T	28	😀x😀x\r\n😀x! 	4684	4698	1	1	word	0	-	0	1
+T	28	é 	4698	4701	1	1	word	0	-	0	1
+T	28	gamma gamma ok 中文3.14! 	4701	4725	1	1	word	0	-	0	1
+T	28	Beta ok 😀x。	4725	4737	1	1	word	0	-	0	1
+T	28	中文 	4737	4740	1	1	word	0	-	0	1
+T	28	U.S.! 	4740	4746	1	1	word	0	-	0	1
+T	28	alpha。	4746	4752	1	1	word	0	-	0	1
+T	28	😀x gamma 中文? 	4752	4766	1	1	word	0	-	0	1
+T	28	中文 3.14 é, gamma。	4766	4784	1	1	word	0	-	0	1
+T	28	okalpha\r\n中文 é U.S.	4784	4804	1	1	word	0	-	0	1
+T	28	😀x\nok? 	4804	4813	1	1	word	0	-	0	1
+T	28	U.S.? 	4813	4819	1	1	word	0	-	0	1
+T	28	alpha é? 	4819	4829	1	1	word	0	-	0	1
+T	28	alpha. é\r\n3.14 U.S.	4829	4849	1	1	word	0	-	0	1
+T	28	中文? 	4849	4854	1	1	word	0	-	0	1
+T	28	Beta, 中文? 	4854	4864	1	1	word	0	-	0	1
+T	28	😀x, é alpha é é 	4864	4884	1	1	word	0	-	0	1
+E	28	4884	4884	0
+T	29	Beta\r\n中文 Beta。	0	14	1	1	word	0	-	0	1
+T	29	Beta\n3.14\ngamma? 	14	31	1	1	word	0	-	0	1
+T	29	中文 ok. 	31	38	1	1	word	0	-	0	1
+T	29	Beta. 	38	44	1	1	word	0	-	0	1
+T	29	😀x! 	44	49	1	1	word	0	-	0	1
+T	29	Beta égamma\r\ngamma 中文alpha 中文\n3.14 中文。	49	90	1	1	word	0	-	0	1
+T	29	gamma? 	90	97	1	1	word	0	-	0	1
+T	29	中文? 	97	101	1	1	word	0	-	0	1
+T	29	中文. alpha! 	101	112	1	1	word	0	-	0	1
+T	29	U.S. gamma ok, alpha\r\né alpha。	112	143	1	1	word	0	-	0	1
+T	29	3.14! 	143	149	1	1	word	0	-	0	1
+T	29	Beta U.S.? 	149	160	1	1	word	0	-	0	1
+T	29	U.S.	160	164	1	1	word	0	-	0	1
+T	29	é? 	164	169	1	1	word	0	-	0	1
+T	29	U.S. 	169	174	1	1	word	0	-	0	1
+T	29	😀x ok, 中文\r\nok gamma\r\nU.S.\n	174	201	1	1	word	0	-	0	1
+T	29	U.S.	201	205	1	1	word	0	-	0	1
+T	29	U.S., ok, alpha. 3.14. ok 	205	232	1	1	word	0	-	0	1
+T	29	U.S. ok. é。	232	244	1	1	word	0	-	0	1
+T	29	3.14 U.S. 	244	254	1	1	word	0	-	0	1
+T	29	U.S.. 3.14\r\n😀x中文 é 	254	276	1	1	word	0	-	0	1
+T	29	gamma 😀x 中文。	276	289	1	1	word	0	-	0	1
+T	29	é, alpha! 	289	300	1	1	word	0	-	0	1
+T	29	3.14 	300	305	1	1	word	0	-	0	1
+T	29	é. 3.14. gamma alpha U.S.	305	331	1	1	word	0	-	0	1
+T	29	é\ngamma! 	331	342	1	1	word	0	-	0	1
+T	29	é3.14, alpha! 	342	358	1	1	word	0	-	0	1
+T	29	😀x alpha 😀x U.S.? 	358	378	1	1	word	0	-	0	1
+T	29	中文。	378	381	1	1	word	0	-	0	1
+T	29	中文\n😀x U.S.? 	381	394	1	1	word	0	-	0	1
+T	29	alpha\n😀x, ok\n中文 	394	411	1	1	word	0	-	0	1
+T	29	gamma中文。	411	420	1	1	word	0	-	0	1
+T	29	ok? 	420	424	1	1	word	0	-	0	1
+T	29	😀x\r\n😀x。	424	433	1	1	word	0	-	0	1
+T	29	gammaBeta. 	433	445	1	1	word	0	-	0	1
+T	29	U.S., 😀x。	445	455	1	1	word	0	-	0	1
+T	29	Beta gamma\r\nBeta 3.14 	455	477	1	1	word	0	-	0	1
+T	29	gamma, gamma\n3.14 é! 	477	499	1	1	word	0	-	0	1
+T	29	Beta U.S.. 	499	510	1	1	word	0	-	0	1
+T	29	中文? 	510	514	1	1	word	0	-	0	1
+T	29	ok, gamma\r\n中文? 	514	529	1	1	word	0	-	0	1
+T	29	ok ok, ok Beta? 	529	545	1	1	word	0	-	0	1
+T	29	中文 U.S. 	545	553	1	1	word	0	-	0	1
+T	29	😀x? 	553	558	1	1	word	0	-	0	1
+T	29	中文, 中文, gamma alphaBeta。	558	583	1	1	word	0	-	0	1
+T	29	U.S.	583	587	1	1	word	0	-	0	1
+T	29	😀x\nBeta U.S.	587	601	1	1	word	0	-	0	1
+T	29	中文 中文😀x? 	601	613	1	1	word	0	-	0	1
+T	29	😀x! 	613	618	1	1	word	0	-	0	1
+T	29	Beta, Beta 😀x ok😀x? 	618	641	1	1	word	0	-	0	1
+T	29	U.S. 	641	646	1	1	word	0	-	0	1
+T	29	U.S. 	646	651	1	1	word	0	-	0	1
+T	29	ok. 	651	655	1	1	word	0	-	0	1
+T	29	😀x? 	655	660	1	1	word	0	-	0	1
+T	29	Beta 中文。	660	668	1	1	word	0	-	0	1
+T	29	gamma é? 	668	678	1	1	word	0	-	0	1
+T	29	😀x? 	678	683	1	1	word	0	-	0	1
+T	29	é\r\n中文, 中文 é 3.14, 中文? 	683	707	1	1	word	0	-	0	1
+T	29	中文\n😀x\nalpha. gamma 	707	727	1	1	word	0	-	0	1
+T	29	U.S.。	727	732	1	1	word	0	-	0	1
+T	29	alpha U.S.. 	732	744	1	1	word	0	-	0	1
+T	29	Beta? 	744	750	1	1	word	0	-	0	1
+T	29	😀x, alpha U.S.. ok? 	750	771	1	1	word	0	-	0	1
+T	29	中文 U.S., ok alpha\nBeta, 中文! 	771	799	1	1	word	0	-	0	1
+T	29	3.143.14? 	799	810	1	1	word	0	-	0	1
+T	29	U.S. alpha 	810	821	1	1	word	0	-	0	1
+T	29	Beta 	821	826	1	1	word	0	-	0	1
+T	29	alpha. 	826	833	1	1	word	0	-	0	1
+T	29	U.S.! 	833	839	1	1	word	0	-	0	1
+T	29	U.S. éé okBeta中文\n3.14? 	839	867	1	1	word	0	-	0	1
+T	29	中文. alphaé U.S.	867	884	1	1	word	0	-	0	1
+T	29	ok 3.14! 	884	894	1	1	word	0	-	0	1
+T	29	😀x 中文U.S.。	894	906	1	1	word	0	-	0	1
+T	29	égamma. 	906	916	1	1	word	0	-	0	1
+T	29	Beta ok\r\n中文\r\n😀x, 3.14 中文, U.S.。	916	948	1	1	word	0	-	0	1
+T	29	中文 😀x gamma. 	948	962	1	1	word	0	-	0	1
+T	29	U.S. 	962	967	1	1	word	0	-	0	1
+T	29	中文 é, é\n中文! 	967	981	1	1	word	0	-	0	1
+T	29	U.S.. é? 	981	991	1	1	word	0	-	0	1
+T	29	U.S.\r\n3.14 gamma gamma\n	991	1014	1	1	word	0	-	0	1
+T	29	alpha, U.S.	1014	1025	1	1	word	0	-	0	1
+T	29	中文. 	1025	1030	1	1	word	0	-	0	1
+T	29	中文 gamma\ngammaok, gamma。	1030	1055	1	1	word	0	-	0	1
+T	29	中文 é Beta 3.14. gamma gamma, Beta\n3.14\r\nU.S. 	1055	1101	1	1	word	0	-	0	1
+T	29	Beta? 	1101	1107	1	1	word	0	-	0	1
+T	29	U.S., 😀x\nok gamma\nU.S. 	1107	1131	1	1	word	0	-	0	1
+T	29	😀x\r\nBeta\r\n3.14\n中文! 	1131	1151	1	1	word	0	-	0	1
+T	29	😀xBeta\nU.S. 	1151	1165	1	1	word	0	-	0	1
+T	29	中文\r\n中文 	1165	1172	1	1	word	0	-	0	1
+T	29	alpha 中文! 	1172	1182	1	1	word	0	-	0	1
+T	29	Beta😀x. 3.14 😀x 😀xU.S. gamma? 	1182	1217	1	1	word	0	-	0	1
+T	29	Beta。	1217	1222	1	1	word	0	-	0	1
+T	29	alpha U.S.。	1222	1233	1	1	word	0	-	0	1
+T	29	alpha, ok é 中文。	1233	1249	1	1	word	0	-	0	1
+T	29	é. 	1249	1253	1	1	word	0	-	0	1
+T	29	U.S. alpha 	1253	1264	1	1	word	0	-	0	1
+T	29	Beta 3.14, ok\n😀x. 	1264	1283	1	1	word	0	-	0	1
+T	29	Beta? 	1283	1289	1	1	word	0	-	0	1
+T	29	é gamma\r\n3.14, 😀x。	1289	1309	1	1	word	0	-	0	1
+T	29	é? 	1309	1313	1	1	word	0	-	0	1
+T	29	U.S.\n	1313	1318	1	1	word	0	-	0	1
+T	29	U.S. alpha 中文 gamma! 	1318	1339	1	1	word	0	-	0	1
+T	29	Beta. 	1339	1345	1	1	word	0	-	0	1
+T	29	😀x。	1345	1349	1	1	word	0	-	0	1
+T	29	é é 	1349	1355	1	1	word	0	-	0	1
+T	29	U.S. 	1355	1360	1	1	word	0	-	0	1
+T	29	U.S.\r\n	1360	1366	1	1	word	0	-	0	1
+T	29	Beta 	1366	1371	1	1	word	0	-	0	1
+T	29	U.S. alphaBeta! 	1371	1388	1	1	word	0	-	0	1
+T	29	ok! 	1388	1392	1	1	word	0	-	0	1
+T	29	😀x。	1392	1396	1	1	word	0	-	0	1
+T	29	alpha! 	1396	1403	1	1	word	0	-	0	1
+T	29	gamma3.14. 	1403	1415	1	1	word	0	-	0	1
+T	29	Beta 	1415	1420	1	1	word	0	-	0	1
+T	29	中文 gamma? 	1420	1430	1	1	word	0	-	0	1
+T	29	3.14, Beta\nok. 	1430	1445	1	1	word	0	-	0	1
+T	29	BetaU.S. alpha? 	1445	1462	1	1	word	0	-	0	1
+T	29	3.14\r\n中文 3.14。	1462	1476	1	1	word	0	-	0	1
+T	29	😀x 3.14. 3.14alpha 	1476	1497	1	1	word	0	-	0	1
+T	29	ok. 	1497	1501	1	1	word	0	-	0	1
+T	29	中文。	1501	1504	1	1	word	0	-	0	1
+T	29	U.S.\n	1504	1509	1	1	word	0	-	0	1
+T	29	U.S. 	1509	1514	1	1	word	0	-	0	1
+T	29	U.S.	1514	1518	1	1	word	0	-	0	1
+T	29	😀x, 中文 3.14 é。	1518	1535	1	1	word	0	-	0	1
+T	29	ok U.S., gamma\n中文. 	1535	1554	1	1	word	0	-	0	1
+T	29	中文 é。	1554	1560	1	1	word	0	-	0	1
+T	29	3.14 é 中文. 	1560	1572	1	1	word	0	-	0	1
+T	29	中文 	1572	1575	1	1	word	0	-	0	1
+T	29	alpha 3.14\r\n中文, 😀x, 😀x, é, é 	1575	1608	1	1	word	0	-	0	1
+T	29	U.S. 	1608	1613	1	1	word	0	-	0	1
+T	29	U.S.	1613	1617	1	1	word	0	-	0	1
+T	29	alpha 😀x U.S. 	1617	1633	1	1	word	0	-	0	1
+T	29	é, 3.14? 	1633	1643	1	1	word	0	-	0	1
+T	29	U.S. alpha? 	1643	1655	1	1	word	0	-	0	1
+T	29	中文3.14, é😀x。	1655	1671	1	1	word	0	-	0	1
+T	29	é? 	1671	1675	1	1	word	0	-	0	1
+T	29	gamma\r\nok! 	1675	1686	1	1	word	0	-	0	1
+T	29	alpha é, U.S. gamma? 	1686	1708	1	1	word	0	-	0	1
+T	29	U.S.\r\n	1708	1714	1	1	word	0	-	0	1
+T	29	Beta\r\n中文. 	1714	1724	1	1	word	0	-	0	1
+T	29	中文, ok, U.S., 3.14! 	1724	1744	1	1	word	0	-	0	1
+T	29	é 3.14\r\n3.14, Beta ok! 	1744	1768	1	1	word	0	-	0	1
+T	29	alpha! 	1768	1775	1	1	word	0	-	0	1
+T	29	gamma\né 	1775	1784	1	1	word	0	-	0	1
+T	29	ok, gamma é\n3.14. ok ok。	1784	1809	1	1	word	0	-	0	1
+T	29	alpha 	1809	1815	1	1	word	0	-	0	1
+T	29	3.14\n中文. 	1815	1824	1	1	word	0	-	0	1
+T	29	U.S.\n	1824	1829	1	1	word	0	-	0	1
+T	29	😀x é 😀x\r\nok? 	1829	1845	1	1	word	0	-	0	1
+T	29	é é? 	1845	1852	1	1	word	0	-	0	1
+T	29	ok。	1852	1855	1	1	word	0	-	0	1
+T	29	é\nalpha ok U.S. 	1855	1872	1	1	word	0	-	0	1
+T	29	U.S.? 	1872	1878	1	1	word	0	-	0	1
+T	29	alpha ok 	1878	1887	1	1	word	0	-	0	1
+T	29	gamma? 	1887	1894	1	1	word	0	-	0	1
+T	29	3.14 gamma。	1894	1905	1	1	word	0	-	0	1
+T	29	中文! 	1905	1909	1	1	word	0	-	0	1
+T	29	alpha 	1909	1915	1	1	word	0	-	0	1
+T	29	😀x\r\nU.S.. gamma。	1915	1932	1	1	word	0	-	0	1
+T	29	ok。	1932	1935	1	1	word	0	-	0	1
+T	29	中文 U.S.. 	1935	1944	1	1	word	0	-	0	1
+T	29	Beta. alpha\nalpha? 	1944	1963	1	1	word	0	-	0	1
+T	29	gamma. 	1963	1970	1	1	word	0	-	0	1
+T	29	U.S. ok\nok alpha U.S.! 	1970	1993	1	1	word	0	-	0	1
+T	29	U.S.! 	1993	1999	1	1	word	0	-	0	1
+T	29	alpha? 	1999	2006	1	1	word	0	-	0	1
+T	29	gamma gamma。	2006	2018	1	1	word	0	-	0	1
+T	29	3.14? 	2018	2024	1	1	word	0	-	0	1
+T	29	ok\nok? 	2024	2031	1	1	word	0	-	0	1
+T	29	alpha	2031	2037	1	1	word	0	-	0	1
+T	29	é。	2037	2040	1	1	word	0	-	0	1
+T	29	😀x, 😀x! 	2040	2050	1	1	word	0	-	0	1
+T	29	gamma。	2050	2056	1	1	word	0	-	0	1
+T	29	Beta\né\nBeta ok。	2056	2072	1	1	word	0	-	0	1
+T	29	ok 😀x! 	2072	2080	1	1	word	0	-	0	1
+T	29	alpha3.14. 	2080	2092	1	1	word	0	-	0	1
+T	29	Beta\n3.14 é 	2092	2105	1	1	word	0	-	0	1
+T	29	😀x U.S.! 	2105	2115	1	1	word	0	-	0	1
+T	29	中文U.S. 	2115	2123	1	1	word	0	-	0	1
+T	29	中文? 	2123	2127	1	1	word	0	-	0	1
+T	29	3.14 alpha。	2127	2138	1	1	word	0	-	0	1
+T	29	gamma 中文gamma\n中文\r\nU.S.? 	2138	2163	1	1	word	0	-	0	1
+T	29	gamma\r\nok 	2163	2173	1	1	word	0	-	0	1
+T	29	😀x\r\ngamma 3.14. ok ok 	2173	2196	1	1	word	0	-	0	1
+T	29	é alpha 😀x\n😀x! 	2196	2214	1	1	word	0	-	0	1
+T	29	é Beta, ok 😀x\r\néBeta。	2214	2239	1	1	word	0	-	0	1
+T	29	é Beta 3.14. ok\r\nok 3.14 alpha😀x gamma. alpha\r\nalpha。	2239	2295	1	1	word	0	-	0	1
+T	29	U.S.\r\n	2295	2301	1	1	word	0	-	0	1
+T	29	gamma 	2301	2307	1	1	word	0	-	0	1
+T	29	3.14 3.14 alpha ok。	2307	2326	1	1	word	0	-	0	1
+T	29	gamma 😀x alpha\r\né alpha 😀x\nBeta? 	2326	2362	1	1	word	0	-	0	1
+T	29	okgamma! 	2362	2372	1	1	word	0	-	0	1
+T	29	okokalphagamma\nalpha。	2372	2396	1	1	word	0	-	0	1
+T	29	3.14. alpha。	2396	2408	1	1	word	0	-	0	1
+T	29	gamma? 	2408	2415	1	1	word	0	-	0	1
+T	29	é 	2415	2418	1	1	word	0	-	0	1
+T	29	U.S.\r\n	2418	2424	1	1	word	0	-	0	1
+T	29	gamma\r\n😀x gamma。	2424	2441	1	1	word	0	-	0	1
+T	29	gamma3.14, alpha U.S.	2441	2463	1	1	word	0	-	0	1
+T	29	😀x, alpha? 	2463	2476	1	1	word	0	-	0	1
+T	29	alpha\n中文 alpha é\r\nalpha, ok U.S.! 	2476	2511	1	1	word	0	-	0	1
+T	29	Betagamma 	2511	2522	1	1	word	0	-	0	1
+T	29	gamma 中文 3.14 中文 U.S.! 	2522	2545	1	1	word	0	-	0	1
+T	29	中文 alpha, é U.S. 	2545	2563	1	1	word	0	-	0	1
+T	29	alpha 3.14 😀x? 	2563	2579	1	1	word	0	-	0	1
+T	29	ok 	2579	2582	1	1	word	0	-	0	1
+T	29	中文 alpha. gamma gamma, alpha 3.14 	2582	2616	1	1	word	0	-	0	1
+T	29	gamma, ok 	2616	2626	1	1	word	0	-	0	1
+T	29	alpha. ok U.S., 3.14? 	2626	2648	1	1	word	0	-	0	1
+T	29	3.14\r\n3.14? 	2648	2660	1	1	word	0	-	0	1
+T	29	é, alpha? 	2660	2671	1	1	word	0	-	0	1
+T	29	U.S., Beta alpha? 	2671	2689	1	1	word	0	-	0	1
+T	29	U.S.\ngamma\nok。	2689	2703	1	1	word	0	-	0	1
+T	29	ok。	2703	2706	1	1	word	0	-	0	1
+T	29	ok\r\né! 	2706	2714	1	1	word	0	-	0	1
+T	29	gamma! 	2714	2721	1	1	word	0	-	0	1
+T	29	é ok é. 	2721	2731	1	1	word	0	-	0	1
+T	29	😀x 	2731	2735	1	1	word	0	-	0	1
+T	29	U.S. ok 	2735	2743	1	1	word	0	-	0	1
+T	29	😀x\r\né。	2743	2751	1	1	word	0	-	0	1
+T	29	中文 	2751	2754	1	1	word	0	-	0	1
+T	29	é。	2754	2757	1	1	word	0	-	0	1
+T	29	Beta。	2757	2762	1	1	word	0	-	0	1
+T	29	😀x。	2762	2766	1	1	word	0	-	0	1
+T	29	ok, ok 😀x! 	2766	2778	1	1	word	0	-	0	1
+T	29	ok! 	2778	2782	1	1	word	0	-	0	1
+T	29	中文 	2782	2785	1	1	word	0	-	0	1
+T	29	3.14? 	2785	2791	1	1	word	0	-	0	1
+T	29	é 	2791	2794	1	1	word	0	-	0	1
+E	29	2794	2794	0
+T	30	中文 ok。	0	6	1	1	word	0	-	0	1
+T	30	3.14 	6	11	1	1	word	0	-	0	1
+T	30	Beta\r\nU.S. 3.14. 3.14 Betaalpha! 	11	45	1	1	word	0	-	0	1
+T	30	Beta😀x! 	45	55	1	1	word	0	-	0	1
+T	30	😀x\n中文. 3.14 gamma. ok。	55	78	1	1	word	0	-	0	1
+T	30	中文 3.14, é\r\n中文。	78	94	1	1	word	0	-	0	1
+T	30	3.14 😀x. 	94	104	1	1	word	0	-	0	1
+T	30	中文, 3.14, 中文 3.14 	104	122	1	1	word	0	-	0	1
+T	30	é gamma 中文 中文, é. 	122	142	1	1	word	0	-	0	1
+T	30	Beta\r\n😀x\n😀x, alpha, gamma é! 	142	174	1	1	word	0	-	0	1
+T	30	3.14, ok, 3.14, 3.14! 	174	196	1	1	word	0	-	0	1
+T	30	中文? 	196	200	1	1	word	0	-	0	1
+T	30	ok。	200	203	1	1	word	0	-	0	1
+T	30	ok é gamma? 	203	216	1	1	word	0	-	0	1
+T	30	U.S. 	216	221	1	1	word	0	-	0	1
+T	30	Beta 	221	226	1	1	word	0	-	0	1
+T	30	é 	226	229	1	1	word	0	-	0	1
+T	30	😀x Beta 	229	238	1	1	word	0	-	0	1
+T	30	gamma U.S., U.S. ok! 	238	259	1	1	word	0	-	0	1
+T	30	ok\né! 	259	266	1	1	word	0	-	0	1
+T	30	3.14。	266	271	1	1	word	0	-	0	1
+T	30	中文! 	271	275	1	1	word	0	-	0	1
+T	30	U.S.! 	275	281	1	1	word	0	-	0	1
+T	30	Beta alpha。	281	292	1	1	word	0	-	0	1
+T	30	ok? 	292	296	1	1	word	0	-	0	1
+T	30	3.14U.S. 	296	306	1	1	word	0	-	0	1
+T	30	é. é\r\ngamma。	306	320	1	1	word	0	-	0	1
+T	30	3.14 中文 gamma 	320	334	1	1	word	0	-	0	1
+T	30	3.14, 中文 Beta。	334	348	1	1	word	0	-	0	1
+T	30	中文\nBeta. 	348	357	1	1	word	0	-	0	1
+T	30	U.S. 	357	362	1	1	word	0	-	0	1
+T	30	中文 ok 中文 中文! 	362	375	1	1	word	0	-	0	1
+T	30	gamma😀x alpha U.S.? 	375	397	1	1	word	0	-	0	1
+T	30	éU.S. 	397	405	1	1	word	0	-	0	1
+T	30	😀x? 	405	410	1	1	word	0	-	0	1
+T	30	é。	410	413	1	1	word	0	-	0	1
+T	30	alpha 	413	419	1	1	word	0	-	0	1
+T	30	3.14? 	419	425	1	1	word	0	-	0	1
+T	30	Beta. é 	425	434	1	1	word	0	-	0	1
+T	30	é 	434	437	1	1	word	0	-	0	1
+T	30	中文, 中文\n😀x, é, gamma? 	437	460	1	1	word	0	-	0	1
+T	30	😀x, ok? 	460	469	1	1	word	0	-	0	1
+T	30	é alpha 	469	478	1	1	word	0	-	0	1
+T	30	Beta 	478	483	1	1	word	0	-	0	1
+E	30	483	483	0
+T	31	ok. 	0	4	1	1	word	0	-	0	1
+T	31	Betagamma。	4	15	1	1	word	0	-	0	1
+T	31	中文 ok, 3.14? 	15	28	1	1	word	0	-	0	1
+T	31	gamma\nalpha! 	28	41	1	1	word	0	-	0	1
+T	31	3.14! 	41	47	1	1	word	0	-	0	1
+T	31	中文。	47	50	1	1	word	0	-	0	1
+T	31	ok\né. 	50	57	1	1	word	0	-	0	1
+T	31	Beta gamma, 😀x, alpha\r\ngamma 	57	87	1	1	word	0	-	0	1
+T	31	gamma gamma, 😀x 	87	104	1	1	word	0	-	0	1
+T	31	é? 	104	108	1	1	word	0	-	0	1
+T	31	gamma alpha\né U.S., 3.14 中文\r\n中文 	108	141	1	1	word	0	-	0	1
+T	31	ok\r\ngamma gamma\r\n😀x gamma 中文 中文! 	141	175	1	1	word	0	-	0	1
+T	31	ok 中文! 	175	182	1	1	word	0	-	0	1
+T	31	Beta? 	182	188	1	1	word	0	-	0	1
+T	31	3.14? 	188	194	1	1	word	0	-	0	1
+T	31	中文! 	194	198	1	1	word	0	-	0	1
+T	31	😀xok\ngamma。	198	211	1	1	word	0	-	0	1
+T	31	é\r\n3.14。	211	220	1	1	word	0	-	0	1
+T	31	U.S. 	220	225	1	1	word	0	-	0	1
+T	31	ok? 	225	229	1	1	word	0	-	0	1
+T	31	😀x! 	229	234	1	1	word	0	-	0	1
+T	31	é U.S.\n	234	242	1	1	word	0	-	0	1
+T	31	中文 é, Beta. 	242	255	1	1	word	0	-	0	1
+T	31	Beta3.14! 	255	266	1	1	word	0	-	0	1
+T	31	3.14。	266	271	1	1	word	0	-	0	1
+T	31	é 3.14。	271	279	1	1	word	0	-	0	1
+T	31	é Beta3.14 é ok alpha 	279	304	1	1	word	0	-	0	1
+T	31	gamma é\r\nU.S. 	304	319	1	1	word	0	-	0	1
+T	31	中文U.S. 	319	327	1	1	word	0	-	0	1
+T	31	😀x. ok\né U.S.? 	327	344	1	1	word	0	-	0	1
+T	31	é Beta é? 	344	356	1	1	word	0	-	0	1
+T	31	Beta 😀x ok. alpha é? 	356	379	1	1	word	0	-	0	1
+T	31	中文! 	379	383	1	1	word	0	-	0	1
+T	31	Beta\r\nBeta U.S.。	383	399	1	1	word	0	-	0	1
+T	31	U.S.\n3.14中文 U.S. 	399	417	1	1	word	0	-	0	1
+T	31	中文。	417	420	1	1	word	0	-	0	1
+T	31	中文。	420	423	1	1	word	0	-	0	1
+T	31	3.14 😀x。	423	432	1	1	word	0	-	0	1
+T	31	Beta, U.S. ok! 	432	447	1	1	word	0	-	0	1
+T	31	alphaok! 	447	457	1	1	word	0	-	0	1
+T	31	中文 	457	460	1	1	word	0	-	0	1
+T	31	中文 é. 	460	467	1	1	word	0	-	0	1
+T	31	Beta gamma。	467	478	1	1	word	0	-	0	1
+T	31	alpha😀x ok 中文gamma! 	478	501	1	1	word	0	-	0	1
+T	31	3.14 éok3.14. 	501	518	1	1	word	0	-	0	1
+T	31	Beta? 	518	524	1	1	word	0	-	0	1
+T	31	中文。	524	527	1	1	word	0	-	0	1
+T	31	中文 U.S.。	527	535	1	1	word	0	-	0	1
+T	31	中文 U.S. 	535	543	1	1	word	0	-	0	1
+T	31	😀x\r\n中文\r\nok。	543	555	1	1	word	0	-	0	1
+T	31	ok, é. 	555	563	1	1	word	0	-	0	1
+T	31	Beta。	563	568	1	1	word	0	-	0	1
+T	31	3.14. gamma gamma. ok Betaé! 	568	599	1	1	word	0	-	0	1
+T	31	ok gamma alpha中文. 3.14alpha 😀x! 	599	634	1	1	word	0	-	0	1
+T	31	é\nBeta, U.S., Beta Beta, Beta 😀x, 中文 	634	673	1	1	word	0	-	0	1
+T	31	中文, 3.14\nalpha\r\n3.14, ok gamma 😀x! 	673	709	1	1	word	0	-	0	1
+T	31	Beta! 	709	715	1	1	word	0	-	0	1
+T	31	Beta? 	715	721	1	1	word	0	-	0	1
+T	31	3.14? 	721	727	1	1	word	0	-	0	1
+T	31	gamma\r\nalpha, gamma, é\n😀xé? 	727	759	1	1	word	0	-	0	1
+T	31	U.S., alpha 😀x。	759	775	1	1	word	0	-	0	1
+T	31	ok 3.14, Beta, alpha U.S.! 	775	802	1	1	word	0	-	0	1
+T	31	U.S., 3.14 3.14 é. 3.14 ok\nalpha U.S.! 	802	842	1	1	word	0	-	0	1
+T	31	Beta. ok\n😀x\n😀x alpha. 	842	866	1	1	word	0	-	0	1
+T	31	😀x\n3.14 3.14。	866	880	1	1	word	0	-	0	1
+T	31	gamma 	880	886	1	1	word	0	-	0	1
+T	31	Beta\r\nok\né, U.S. 3.14 😀x\nU.S. gamma\r\ngamma ok。	886	934	1	1	word	0	-	0	1
+T	31	中文 é\r\n😀x, 3.14\nU.S.\nok, 😀x。	934	964	1	1	word	0	-	0	1
+T	31	中文 é gamma, ok\nok U.S.\r\n3.14? 	964	995	1	1	word	0	-	0	1
+T	31	gamma Beta! 	995	1007	1	1	word	0	-	0	1
+T	31	中文\r\né\r\nok? 	1007	1019	1	1	word	0	-	0	1
+T	31	中文\r\n	1019	1023	1	1	word	0	-	0	1
+T	31	Beta 中文\n😀x! 	1023	1036	1	1	word	0	-	0	1
+T	31	中文\n😀x alpha。	1036	1049	1	1	word	0	-	0	1
+T	31	alpha 	1049	1055	1	1	word	0	-	0	1
+T	31	😀x3.14 gamma! 	1055	1071	1	1	word	0	-	0	1
+T	31	中文, gamma\nalphagamma。	1071	1093	1	1	word	0	-	0	1
+T	31	U.S.。	1093	1098	1	1	word	0	-	0	1
+T	31	3.14\r\nU.S. 	1098	1109	1	1	word	0	-	0	1
+T	31	😀x 中文 alpha😀x! 	1109	1127	1	1	word	0	-	0	1
+T	31	Beta 😀x\nalpha gamma alpha! 	1127	1155	1	1	word	0	-	0	1
+T	31	é? 	1155	1159	1	1	word	0	-	0	1
+T	31	U.S., U.S. 	1159	1170	1	1	word	0	-	0	1
+T	31	中文。	1170	1173	1	1	word	0	-	0	1
+T	31	U.S.? 	1173	1179	1	1	word	0	-	0	1
+T	31	gamma é, gamma é U.S.? 	1179	1204	1	1	word	0	-	0	1
+T	31	中文 3.14 中文. é? 	1204	1220	1	1	word	0	-	0	1
+T	31	é 	1220	1223	1	1	word	0	-	0	1
+T	31	U.S.。	1223	1228	1	1	word	0	-	0	1
+T	31	ok。	1228	1231	1	1	word	0	-	0	1
+T	31	3.14? 	1231	1237	1	1	word	0	-	0	1
+T	31	😀x? 	1237	1242	1	1	word	0	-	0	1
+T	31	😀x U.S.! 	1242	1252	1	1	word	0	-	0	1
+T	31	alpha? 	1252	1259	1	1	word	0	-	0	1
+T	31	gamma。	1259	1265	1	1	word	0	-	0	1
+T	31	3.14 gamma 	1265	1276	1	1	word	0	-	0	1
+T	31	ok gamma? 	1276	1286	1	1	word	0	-	0	1
+T	31	Beta. 3.14, ok U.S. 3.14 é! 	1286	1315	1	1	word	0	-	0	1
+T	31	中文中文. 	1315	1322	1	1	word	0	-	0	1
+T	31	U.S.! 	1322	1328	1	1	word	0	-	0	1
+T	31	U.S.! 	1328	1334	1	1	word	0	-	0	1
+T	31	Beta gamma 	1334	1345	1	1	word	0	-	0	1
+T	31	😀x\n中文\n中文 😀x, é alpha! 	1345	1370	1	1	word	0	-	0	1
+T	31	ok! 	1370	1374	1	1	word	0	-	0	1
+T	31	é U.S.! 	1374	1383	1	1	word	0	-	0	1
+T	31	😀x。	1383	1387	1	1	word	0	-	0	1
+T	31	U.S. 	1387	1392	1	1	word	0	-	0	1
+T	31	Beta? 	1392	1398	1	1	word	0	-	0	1
+T	31	gamma? 	1398	1405	1	1	word	0	-	0	1
+T	31	3.14。	1405	1410	1	1	word	0	-	0	1
+T	31	3.14\r\n3.14? 	1410	1422	1	1	word	0	-	0	1
+T	31	é。	1422	1425	1	1	word	0	-	0	1
+T	31	ok\nBeta gamma 	1425	1439	1	1	word	0	-	0	1
+T	31	Beta中文. 	1439	1448	1	1	word	0	-	0	1
+T	31	Beta é 	1448	1456	1	1	word	0	-	0	1
+T	31	😀x3.14. 	1456	1466	1	1	word	0	-	0	1
+T	31	U.S.\r\n	1466	1472	1	1	word	0	-	0	1
+T	31	U.S.	1472	1476	1	1	word	0	-	0	1
+T	31	alphaok 😀xBeta gamma ok 	1476	1504	1	1	word	0	-	0	1
+T	31	gamma? 	1504	1511	1	1	word	0	-	0	1
+T	31	U.S. gamma。	1511	1522	1	1	word	0	-	0	1
+T	31	é 	1522	1525	1	1	word	0	-	0	1
+T	31	BetaU.S.。	1525	1535	1	1	word	0	-	0	1
+T	31	中文alpha 3.14 3.14。	1535	1554	1	1	word	0	-	0	1
+T	31	中文. 	1554	1558	1	1	word	0	-	0	1
+T	31	😀x。	1558	1562	1	1	word	0	-	0	1
+T	31	éé! 	1562	1569	1	1	word	0	-	0	1
+T	31	Beta? 	1569	1575	1	1	word	0	-	0	1
+T	31	Beta\nalpha\r\noké\n3.14? 	1575	1599	1	1	word	0	-	0	1
+T	31	U.S. alpha, alpha 	1599	1617	1	1	word	0	-	0	1
+T	31	Beta\r\nok 	1617	1626	1	1	word	0	-	0	1
+T	31	é\r\n中文\r\nalpha3.14 3.14\nok ok\n😀x\n😀x\r\n😀x é! 	1626	1673	1	1	word	0	-	0	1
+T	31	3.14 gamma 😀x 中文 Beta Beta, 3.14 gamma gamma Beta。	1673	1724	1	1	word	0	-	0	1
+T	31	U.S.\r\n	1724	1730	1	1	word	0	-	0	1
+T	31	😀x é? 	1730	1738	1	1	word	0	-	0	1
+T	31	3.14\r\nU.S.? 	1738	1750	1	1	word	0	-	0	1
+T	31	gamma 中文 中文\r\ngamma 😀x, gamma? 	1750	1781	1	1	word	0	-	0	1
+T	31	é. ok。	1781	1788	1	1	word	0	-	0	1
+T	31	中文, Beta\r\nU.S. 	1788	1803	1	1	word	0	-	0	1
+T	31	中文. 	1803	1807	1	1	word	0	-	0	1
+T	31	Beta 😀x 	1807	1816	1	1	word	0	-	0	1
+T	31	中文ok中文\n中文 😀x\r\nBeta\r\nBeta, gamma, 中文。	1816	1855	1	1	word	0	-	0	1
+T	31	Beta é? 	1855	1864	1	1	word	0	-	0	1
+T	31	U.S.? 	1864	1870	1	1	word	0	-	0	1
+T	31	😀x! 	1870	1875	1	1	word	0	-	0	1
+T	31	3.14ok中文 é。	1875	1889	1	1	word	0	-	0	1
+T	31	ok。	1889	1892	1	1	word	0	-	0	1
+T	31	alpha gamma\nalpha。	1892	1910	1	1	word	0	-	0	1
+T	31	gamma alpha 中文 3.14. é é! 	1910	1938	1	1	word	0	-	0	1
+T	31	ok! 	1938	1942	1	1	word	0	-	0	1
+T	31	é 中文! 	1942	1949	1	1	word	0	-	0	1
+T	31	gamma\r\n中文? 	1949	1960	1	1	word	0	-	0	1
+T	31	U.S.\né 中文. é 😀x\r\nBeta😀x, 3.14! 	1960	1996	1	1	word	0	-	0	1
+T	31	中文! 	1996	2000	1	1	word	0	-	0	1
+T	31	😀x 	2000	2004	1	1	word	0	-	0	1
+T	31	3.14? 	2004	2010	1	1	word	0	-	0	1
+T	31	U.S., ok é! 	2010	2023	1	1	word	0	-	0	1
+T	31	Beta😀x\ngamma\n	2023	2038	1	1	word	0	-	0	1
+T	31	Beta? 	2038	2044	1	1	word	0	-	0	1
+T	31	ok。	2044	2047	1	1	word	0	-	0	1
+T	31	alpha! 	2047	2054	1	1	word	0	-	0	1
+T	31	ok! 	2054	2058	1	1	word	0	-	0	1
+T	31	alpha\né 中文, 😀x。	2058	2075	1	1	word	0	-	0	1
+T	31	BetaU.S.\r\n	2075	2086	1	1	word	0	-	0	1
+T	31	U.S. 3.14 中文 alphaalpha? 	2086	2112	1	1	word	0	-	0	1
+T	31	U.S. 	2112	2117	1	1	word	0	-	0	1
+T	31	😀x é Beta! 	2117	2130	1	1	word	0	-	0	1
+T	31	ok 	2130	2133	1	1	word	0	-	0	1
+T	31	U.S., 3.14gamma\r\n😀x alpha. 	2133	2162	1	1	word	0	-	0	1
+T	31	U.S. 	2162	2167	1	1	word	0	-	0	1
+T	31	alpha 	2167	2173	1	1	word	0	-	0	1
+T	31	中文\r\ngamma U.S.! 	2173	2189	1	1	word	0	-	0	1
+T	31	😀x? 	2189	2194	1	1	word	0	-	0	1
+T	31	gamma\r\n3.14 中文\r\né. ok 3.14 	2194	2222	1	1	word	0	-	0	1
+T	31	gamma 	2222	2228	1	1	word	0	-	0	1
+T	31	ok 中文 Beta é\r\n3.14\né ok 3.14? 	2228	2260	1	1	word	0	-	0	1
+T	31	ok? 	2260	2264	1	1	word	0	-	0	1
+T	31	é! 	2264	2268	1	1	word	0	-	0	1
+T	31	ok\né é Beta 中文, Beta\r\n3.14 😀x 	2268	2301	1	1	word	0	-	0	1
+T	31	中文 é\nU.S.! 	2301	2313	1	1	word	0	-	0	1
+T	31	Beta! 	2313	2319	1	1	word	0	-	0	1
+T	31	Beta。	2319	2324	1	1	word	0	-	0	1
+T	31	😀x 中文\r\n3.14。	2324	2337	1	1	word	0	-	0	1
+T	31	中文3.14 	2337	2345	1	1	word	0	-	0	1
+T	31	gamma。	2345	2351	1	1	word	0	-	0	1
+T	31	é 中文\né 	2351	2360	1	1	word	0	-	0	1
+T	31	U.S. 	2360	2365	1	1	word	0	-	0	1
+T	31	😀x\r\n3.14, ok 3.14 alpha! 	2365	2391	1	1	word	0	-	0	1
+T	31	gammaBeta! 	2391	2403	1	1	word	0	-	0	1
+T	31	U.S.\r\n	2403	2409	1	1	word	0	-	0	1
+T	31	é, é é? 	2409	2420	1	1	word	0	-	0	1
+T	31	U.S.\r\n	2420	2426	1	1	word	0	-	0	1
+T	31	é. 	2426	2430	1	1	word	0	-	0	1
+T	31	U.S.. gamma 	2430	2442	1	1	word	0	-	0	1
+T	31	3.14 U.S.	2442	2451	1	1	word	0	-	0	1
+T	31	é! 	2451	2456	1	1	word	0	-	0	1
+T	31	é。	2456	2459	1	1	word	0	-	0	1
+T	31	é 	2459	2462	1	1	word	0	-	0	1
+T	31	😀x alpha\r\nok\ngamma Beta 中文! 	2462	2491	1	1	word	0	-	0	1
+T	31	Beta 	2491	2496	1	1	word	0	-	0	1
+T	31	3.14 gamma? 	2496	2508	1	1	word	0	-	0	1
+T	31	ok, 中文\r\nBeta! 	2508	2522	1	1	word	0	-	0	1
+T	31	中文 Betaok\r\nBeta\r\nBeta! 	2522	2546	1	1	word	0	-	0	1
+T	31	U.S.	2546	2550	1	1	word	0	-	0	1
+T	31	U.S.。	2550	2556	1	1	word	0	-	0	1
+T	31	gamma 中文 	2556	2565	1	1	word	0	-	0	1
+T	31	ok ok\r\nU.S.。	2565	2577	1	1	word	0	-	0	1
+T	31	gamma, 中文3.14 中文. 3.14中文\nBeta 😀x, alpha? 	2577	2621	1	1	word	0	-	0	1
+T	31	gamma 	2621	2627	1	1	word	0	-	0	1
+T	31	ok\né\r\nalpha U.S. 	2627	2645	1	1	word	0	-	0	1
+T	31	😀x. 	2645	2650	1	1	word	0	-	0	1
+T	31	Beta\ngamma。	2650	2661	1	1	word	0	-	0	1
+T	31	alpha Beta? 	2661	2673	1	1	word	0	-	0	1
+T	31	alpha 中文. 	2673	2683	1	1	word	0	-	0	1
+E	31	2683	2683	0
+T	32	ok! 	0	4	1	1	word	0	-	0	1
+T	32	U.S. 	4	9	1	1	word	0	-	0	1
+T	32	😀x Beta Beta, alpha? 	9	31	1	1	word	0	-	0	1
+T	32	😀x, Beta Beta alpha Beta, alpha 3.14 é, Beta. 	31	79	1	1	word	0	-	0	1
+T	32	中文 😀x 😀x 😀x 中文 Beta? 	79	103	1	1	word	0	-	0	1
+T	32	中文? 	103	107	1	1	word	0	-	0	1
+T	32	😀x 3.14. alpha U.S.。	107	128	1	1	word	0	-	0	1
+T	32	😀x é. 	128	136	1	1	word	0	-	0	1
+T	32	中文 ok alpha。	136	148	1	1	word	0	-	0	1
+T	32	ok é gamma 3.14 é。	148	168	1	1	word	0	-	0	1
+T	32	ok? 	168	172	1	1	word	0	-	0	1
+T	32	Beta alpha. 3.14 中文 ok 3.14 😀x。	172	204	1	1	word	0	-	0	1
+T	32	中文 alpha é alpha 中文 alpha 3.14, 中文 alpha 中文 3.14? 	204	255	1	1	word	0	-	0	1
+T	32	3.14 中文, ok。	255	267	1	1	word	0	-	0	1
+T	32	U.S. alpha 😀x 3.14 ok。	267	290	1	1	word	0	-	0	1
+T	32	alpha。	290	296	1	1	word	0	-	0	1
+T	32	Beta? 	296	302	1	1	word	0	-	0	1
+T	32	3.14 😀x alpha? 	302	318	1	1	word	0	-	0	1
+T	32	gamma? 	318	325	1	1	word	0	-	0	1
+T	32	gamma é? 	325	335	1	1	word	0	-	0	1
+T	32	gamma。	335	341	1	1	word	0	-	0	1
+T	32	gamma. 	341	348	1	1	word	0	-	0	1
+T	32	😀x 😀x U.S. gamma。	348	367	1	1	word	0	-	0	1
+T	32	Beta, 中文 U.S. é gamma 中文。	367	393	1	1	word	0	-	0	1
+T	32	3.14 é U.S. 	393	406	1	1	word	0	-	0	1
+T	32	中文。	406	409	1	1	word	0	-	0	1
+T	32	3.14 😀x? 	409	419	1	1	word	0	-	0	1
+T	32	ok alpha 3.14 中文 Beta, 😀x alpha 中文? 	419	456	1	1	word	0	-	0	1
+T	32	alpha 中文 3.14 😀x。	456	474	1	1	word	0	-	0	1
+T	32	中文? 	474	478	1	1	word	0	-	0	1
+T	32	😀x alpha? 	478	489	1	1	word	0	-	0	1
+T	32	U.S. 	489	494	1	1	word	0	-	0	1
+T	32	U.S., alpha。	494	506	1	1	word	0	-	0	1
+T	32	gamma 😀x 😀x gamma, gamma, 😀x gamma alpha alpha U.S. alpha 3.14 😀x é。	506	579	1	1	word	0	-	0	1
+T	32	😀x。	579	583	1	1	word	0	-	0	1
+T	32	ok Beta。	583	591	1	1	word	0	-	0	1
+T	32	alpha. 	591	598	1	1	word	0	-	0	1
+T	32	Beta! 	598	604	1	1	word	0	-	0	1
+T	32	U.S. 	604	609	1	1	word	0	-	0	1
+T	32	U.S. 	609	614	1	1	word	0	-	0	1
+T	32	Beta é Beta Beta alpha U.S.。	614	643	1	1	word	0	-	0	1
+T	32	中文! 	643	647	1	1	word	0	-	0	1
+T	32	😀x alpha 3.14 alpha alpha, gamma 3.14, ok Beta alpha é! 	647	705	1	1	word	0	-	0	1
+T	32	é。	705	708	1	1	word	0	-	0	1
+T	32	alpha é alpha alpha? 	708	730	1	1	word	0	-	0	1
+T	32	3.14 é。	730	738	1	1	word	0	-	0	1
+T	32	Beta, 3.14 Beta 3.14! 	738	760	1	1	word	0	-	0	1
+T	32	gamma. é U.S. alpha. 	760	782	1	1	word	0	-	0	1
+T	32	Beta ok 😀x 中文. 	782	798	1	1	word	0	-	0	1
+T	32	U.S. 	798	803	1	1	word	0	-	0	1
+T	32	Beta Beta 3.14 ok alpha 中文? 	803	831	1	1	word	0	-	0	1
+T	32	é. gamma alpha。	831	847	1	1	word	0	-	0	1
+T	32	U.S.。	847	852	1	1	word	0	-	0	1
+T	32	é Beta! 	852	861	1	1	word	0	-	0	1
+T	32	😀x. 	861	866	1	1	word	0	-	0	1
+T	32	中文 中文 é 😀x alpha? 	866	886	1	1	word	0	-	0	1
+T	32	ok gamma alpha, Beta ok Beta alpha alpha. 	886	928	1	1	word	0	-	0	1
+T	32	U.S. 	928	933	1	1	word	0	-	0	1
+T	32	U.S. é ok gamma 3.14 alpha! 	933	962	1	1	word	0	-	0	1
+T	32	U.S.! 	962	968	1	1	word	0	-	0	1
+T	32	gamma! 	968	975	1	1	word	0	-	0	1
+T	32	alpha é, U.S., gamma? 	975	998	1	1	word	0	-	0	1
+T	32	é 😀x gamma Beta 3.14, 中文	998	1024	1	1	word	0	-	0	1
+T	32	, ok? 	1024	1030	1	1	word	0	-	0	1
+T	32	alpha alpha! 	1030	1043	1	1	word	0	-	0	1
+T	32	gamma gamma! 	1043	1056	1	1	word	0	-	0	1
+T	32	3.14 U.S. 	1056	1066	1	1	word	0	-	0	1
+T	32	U.S. gamma? 	1066	1078	1	1	word	0	-	0	1
+T	32	U.S. 	1078	1083	1	1	word	0	-	0	1
+T	32	U.S. 3.14 gamma é Beta, 😀x 3.14? 	1083	1118	1	1	word	0	-	0	1
+T	32	é! 	1118	1122	1	1	word	0	-	0	1
+T	32	Beta Beta? 	1122	1133	1	1	word	0	-	0	1
+T	32	中文 é? 	1133	1140	1	1	word	0	-	0	1
+T	32	ok 3.14, alpha gamma! 	1140	1162	1	1	word	0	-	0	1
+T	32	ok! 	1162	1166	1	1	word	0	-	0	1
+T	32	3.14? 	1166	1172	1	1	word	0	-	0	1
+T	32	é! 	1172	1176	1	1	word	0	-	0	1
+T	32	3.14。	1176	1181	1	1	word	0	-	0	1
+T	32	U.S.! 	1181	1187	1	1	word	0	-	0	1
+T	32	😀x。	1187	1191	1	1	word	0	-	0	1
+T	32	Beta gamma Beta U.S. 	1191	1212	1	1	word	0	-	0	1
+T	32	😀x é! 	1212	1220	1	1	word	0	-	0	1
+T	32	U.S. 	1220	1225	1	1	word	0	-	0	1
+T	32	中文 U.S. alpha Beta é alpha。	1225	1253	1	1	word	0	-	0	1
+T	32	é ok 中文 中文, gamma gamma gamma。	1253	1284	1	1	word	0	-	0	1
+T	32	3.14 é? 	1284	1293	1	1	word	0	-	0	1
+T	32	é! 	1293	1297	1	1	word	0	-	0	1
+T	32	中文? 	1297	1301	1	1	word	0	-	0	1
+T	32	é é ok? 	1301	1311	1	1	word	0	-	0	1
+T	32	ok gamma é alpha é, Beta! 	1311	1339	1	1	word	0	-	0	1
+T	32	Beta 3.14 😀x ok 3.14 中文 中文 é. 3.14 alpha 3.14, alpha. 3.14 é 3.14! 	1339	1409	1	1	word	0	-	0	1
+T	32	ok, é gamma 3.14 3.14 ok Beta gamma 3.14! 	1409	1452	1	1	word	0	-	0	1
+T	32	3.14 é 中文 ok! 	1452	1467	1	1	word	0	-	0	1
+T	32	中文 3.14 alpha ok, 中文. 	1467	1489	1	1	word	0	-	0	1
+T	32	Beta! 	1489	1495	1	1	word	0	-	0	1
+T	32	Beta é. é. 3.14 ok Beta! 	1495	1522	1	1	word	0	-	0	1
+T	32	中文 Beta? 	1522	1531	1	1	word	0	-	0	1
+T	32	gamma ok 中文 é 😀x 3.14 3.14, 中文! 	1531	1565	1	1	word	0	-	0	1
+T	32	gamma Beta! 	1565	1577	1	1	word	0	-	0	1
+T	32	gamma U.S. 	1577	1588	1	1	word	0	-	0	1
+T	32	U.S., 3.14 alpha. 	1588	1606	1	1	word	0	-	0	1
+T	32	U.S.. alpha é gamma 中文 😀x? 	1606	1635	1	1	word	0	-	0	1
+T	32	é ok ok 😀x U.S. alpha Beta? 	1635	1665	1	1	word	0	-	0	1
+T	32	3.14 3.14 ok。	1665	1678	1	1	word	0	-	0	1
+T	32	中文 é 😀x 3.14 😀x, Beta gamma alpha. gamma 中文 alpha ok? 	1678	1735	1	1	word	0	-	0	1
+T	32	😀x, gamma alpha ok 3.14 U.S. é。	1735	1768	1	1	word	0	-	0	1
+T	32	gamma Beta ok U.S. gamma, alpha ok, 中文 😀x 3.14 中文 U.S. gamma ok。	1768	1833	1	1	word	0	-	0	1
+T	32	ok alpha? 	1833	1843	1	1	word	0	-	0	1
+T	32	ok, gamma gamma 😀x 3.14 ok 😀x ok, 中文 中文? 	1843	1886	1	1	word	0	-	0	1
+T	32	😀x é ok Beta Beta ok, 😀x 😀x。	1886	1918	1	1	word	0	-	0	1
+T	32	gamma? 	1918	1925	1	1	word	0	-	0	1
+T	32	é 中文 ok alpha é! 	1925	1944	1	1	word	0	-	0	1
+T	32	中文 é Beta gamma! 	1944	1962	1	1	word	0	-	0	1
+T	32	Beta gamma! 	1962	1974	1	1	word	0	-	0	1
+T	32	3.14 中文! 	1974	1983	1	1	word	0	-	0	1
+T	32	é, é! 	1983	1991	1	1	word	0	-	0	1
+T	32	ok 😀x Beta 3.14. 	1991	2009	1	1	word	0	-	0	1
+T	32	😀x U.S., 😀x 中文. 	2009	2027	1	1	word	0	-	0	1
+T	32	中文! 	2027	2031	1	1	word	0	-	0	1
+T	32	中文. 	2031	2035	1	1	word	0	-	0	1
+T	32	Beta。	2035	2040	1	1	word	0	-	0	1
+T	32	3.14, U.	2040	2048	1	1	word	0	-	0	1
+T	32	S.? 	2048	2052	1	1	word	0	-	0	1
+T	32	alpha。	2052	2058	1	1	word	0	-	0	1
+T	32	中文! 	2058	2062	1	1	word	0	-	0	1
+T	32	gamma gamma Beta 中文。	2062	2082	1	1	word	0	-	0	1
+T	32	alpha 中文 中文! 	2082	2095	1	1	word	0	-	0	1
+T	32	中文! 	2095	2099	1	1	word	0	-	0	1
+T	32	gamma, Beta. 	2099	2112	1	1	word	0	-	0	1
+T	32	Beta 中文。	2112	2120	1	1	word	0	-	0	1
+T	32	U.S. 	2120	2125	1	1	word	0	-	0	1
+T	32	Beta? 	2125	2131	1	1	word	0	-	0	1
+T	32	3.14 中文 3.14 gamma! 	2131	2151	1	1	word	0	-	0	1
+T	32	U.S.。	2151	2156	1	1	word	0	-	0	1
+T	32	Beta, é. ok ok。	2156	2172	1	1	word	0	-	0	1
+T	32	alpha ok alpha U.S. 	2172	2192	1	1	word	0	-	0	1
+T	32	中文? 	2192	2196	1	1	word	0	-	0	1
+T	32	U.S. 	2196	2201	1	1	word	0	-	0	1
+T	32	U.S., é 3.14 Beta ok 3.14 3.14 中文 U.S. alpha. alpha. 	2201	2255	1	1	word	0	-	0	1
+T	32	中文, alpha gamma é。	2255	2274	1	1	word	0	-	0	1
+T	32	U.S. ok Beta, alpha alpha. 	2274	2301	1	1	word	0	-	0	1
+T	32	U.S.. é 3.14. 	2301	2316	1	1	word	0	-	0	1
+T	32	😀x。	2316	2320	1	1	word	0	-	0	1
+T	32	3.14, 3.14, 3.14 😀x 3.14, 😀x. alpha alpha。	2320	2364	1	1	word	0	-	0	1
+T	32	é. 	2364	2368	1	1	word	0	-	0	1
+T	32	Beta! 	2368	2374	1	1	word	0	-	0	1
+T	32	gamma? 	2374	2381	1	1	word	0	-	0	1
+T	32	é. 	2381	2385	1	1	word	0	-	0	1
+T	32	😀x 中文. 	2385	2393	1	1	word	0	-	0	1
+T	32	😀x, Beta! 	2393	2404	1	1	word	0	-	0	1
+T	32	😀x. gamma. alpha 3.14. gamma gamma 😀x 中文 U.S. alpha! 	2404	2459	1	1	word	0	-	0	1
+T	32	U.S. 	2459	2464	1	1	word	0	-	0	1
+T	32	Beta。	2464	2469	1	1	word	0	-	0	1
+T	32	中文 gamma 😀x 😀x! 	2469	2487	1	1	word	0	-	0	1
+T	32	😀x é, 😀x! 	2487	2500	1	1	word	0	-	0	1
+T	32	3.14 é. 	2500	2509	1	1	word	0	-	0	1
+T	32	U.S. 	2509	2514	1	1	word	0	-	0	1
+T	32	Beta é Beta 😀x. gamma 中文? 	2514	2542	1	1	word	0	-	0	1
+T	32	中文. é é 中文 alpha! 	2542	2562	1	1	word	0	-	0	1
+T	32	U.S., 😀x gamma, Beta ok Beta é. 	2562	2596	1	1	word	0	-	0	1
+T	32	中文! 	2596	2600	1	1	word	0	-	0	1
+T	32	U.S. 	2600	2605	1	1	word	0	-	0	1
+T	32	😀x, 3.14 gamma? 	2605	2622	1	1	word	0	-	0	1
+T	32	中文, é alpha? 	2622	2636	1	1	word	0	-	0	1
+T	32	Beta? 	2636	2642	1	1	word	0	-	0	1
+T	32	ok。	2642	2645	1	1	word	0	-	0	1
+T	32	3.14! 	2645	2651	1	1	word	0	-	0	1
+T	32	中文 alpha 中文 é U.S.! 	2651	2672	1	1	word	0	-	0	1
+T	32	alpha! 	2672	2679	1	1	word	0	-	0	1
+T	32	😀x 中文 中文! 	2679	2690	1	1	word	0	-	0	1
+T	32	é 3.14 Beta。	2690	2703	1	1	word	0	-	0	1
+T	32	ok! 	2703	2707	1	1	word	0	-	0	1
+T	32	U.S.. 3.14? 	2707	2719	1	1	word	0	-	0	1
+T	32	alpha alpha。	2719	2731	1	1	word	0	-	0	1
+T	32	中文! 	2731	2735	1	1	word	0	-	0	1
+T	32	gamma 😀x ok Beta 😀x, gamma alpha. 3.14! 	2735	2777	1	1	word	0	-	0	1
+T	32	3.14 😀x ok, 😀x é U.S.! 	2777	2803	1	1	word	0	-	0	1
+T	32	ok! 	2803	2807	1	1	word	0	-	0	1
+T	32	😀x é 3.14 U.S. ok! 	2807	2828	1	1	word	0	-	0	1
+T	32	ok 中文 Beta Beta é. ok gamma 中文 中文, U.S. 	2828	2869	1	1	word	0	-	0	1
+T	32	中文? 	2869	2873	1	1	word	0	-	0	1
+T	32	gamma ok, gamma Beta é 3.14 é 中文 é. gamma 😀x U.S. 3.14! 	2873	2933	1	1	word	0	-	0	1
+T	32	😀x Beta gamma alpha。	2933	2954	1	1	word	0	-	0	1
+T	32	😀x é 😀x gamma, gamma, 3.14 Beta alpha ok! 	2954	2999	1	1	word	0	-	0	1
+T	32	gamma é 😀x, 中文 gamma? 	2999	3023	1	1	word	0	-	0	1
+T	32	中文? 	3023	3027	1	1	word	0	-	0	1
+T	32	U.S.? 	3027	3033	1	1	word	0	-	0	1
+T	32	中文 ok? 	3033	3040	1	1	word	0	-	0	1
+T	32	U.S. 	3040	3045	1	1	word	0	-	0	1
+T	32	中文? 	3045	3049	1	1	word	0	-	0	1
+T	32	3.14 3.14 😀x U.S.。	3049	3068	1	1	word	0	-	0	1
+T	32	alph	3068	3072	1	1	word	0	-	0	1
+T	32	a 😀x é gamma é 😀x。	3072	3094	1	1	word	0	-	0	1
+T	32	中文 alpha. gamma alpha é ok é U.S.! 	3094	3131	1	1	word	0	-	0	1
+T	32	gamma U.S.. 	3131	3143	1	1	word	0	-	0	1
+T	32	U.S. 3.14? 	3143	3154	1	1	word	0	-	0	1
+T	32	中文? 	3154	3158	1	1	word	0	-	0	1
+T	32	ok gamma Beta ok. 	3158	3176	1	1	word	0	-	0	1
+T	32	Beta. 	3176	3182	1	1	word	0	-	0	1
+T	32	😀x é ok, 中文! 	3182	3197	1	1	word	0	-	0	1
+T	32	3.14。	3197	3202	1	1	word	0	-	0	1
+T	32	ok é 中文 gamma alpha U.S. 3.14 alpha 中文。	3202	3242	1	1	word	0	-	0	1
+T	32	😀x! 	3242	3247	1	1	word	0	-	0	1
+T	32	é, é 3.14。	3247	3259	1	1	word	0	-	0	1
+T	32	中文 中文 alpha 😀x gamma 3.14? 	3259	3287	1	1	word	0	-	0	1
+T	32	U.S. gamma. gamma Beta! 	3287	3311	1	1	word	0	-	0	1
+T	32	U.S. 	3311	3316	1	1	word	0	-	0	1
+T	32	😀x 中文, 😀x gamma, 3.14 ok? 	3316	3344	1	1	word	0	-	0	1
+T	32	alpha 3.14 😀x。	3344	3359	1	1	word	0	-	0	1
+T	32	Beta alpha ok! 	3359	3374	1	1	word	0	-	0	1
+T	32	alpha! 	3374	3381	1	1	word	0	-	0	1
+T	32	U.S. gamma 中文。	3381	3395	1	1	word	0	-	0	1
+T	32	é? 	3395	3399	1	1	word	0	-	0	1
+T	32	中文 é alpha ok ok。	3399	3417	1	1	word	0	-	0	1
+T	32	é é é? 	3417	3427	1	1	word	0	-	0	1
+T	32	gamma, ok gamma é, U.S. 	3427	3452	1	1	word	0	-	0	1
+T	32	U.S. 	3452	3457	1	1	word	0	-	0	1
+T	32	中文 😀x gamma 😀x 中文, Beta? 	3457	3484	1	1	word	0	-	0	1
+E	32	3484	3484	0

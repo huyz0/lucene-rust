@@ -253,6 +253,7 @@ pub mod sr;
 pub mod sv;
 pub mod ta;
 pub mod te;
+pub mod th;
 pub mod tr;
 
 /// `new StopFilter(new LowerCaseFilter(new StandardTokenizer()), stopwords)`.

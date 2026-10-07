@@ -135,6 +135,11 @@ pub enum AnalysisError {
     /// `IOException` from a reader.
     #[error("i/o: {0}")]
     Io(String),
+    /// `UnsupportedOperationException`: an operation this port refuses by
+    /// design (`ThaiTokenizer` without the JDK's Thai dictionary, see
+    /// `lang::th`).
+    #[error("unsupported operation: {0}")]
+    UnsupportedOperation(String),
 }
 
 /// One analyzed token: term text plus the attributes real Lucene's

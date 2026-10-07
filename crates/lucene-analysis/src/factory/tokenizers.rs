@@ -1,7 +1,7 @@
 //! The tokenizer factories: `StandardTokenizerFactory` (lucene-core) and
 //! analysis-common's twelve, plus `ThaiTokenizerFactory`, whose tokenizer is
-//! deferred to M12 (it parses its arguments as Java does; `create` is an
-//! `IllegalState` error).
+//! not supported (it parses its arguments as Java does; `create` is
+//! `ThaiTokenizer`'s `UnsupportedOperationException`, see [`crate::lang::th`]).
 
 use std::collections::HashSet;
 
@@ -427,34 +427,27 @@ impl TokenizerFactory for SimplePatternSplitTokenizerFactory {
 
 factory_struct! {
     /// `org.apache.lucene.analysis.th.ThaiTokenizerFactory` (`thai`): the
-    /// arguments are Java's; the tokenizer (`java.text.BreakIterator`'s Thai
-    /// dictionary) is deferred to M12, so configuring it fails, once Java's
-    /// own checks pass, with `UnsupportedOperationException`.
+    /// arguments are Java's; creating the tokenizer is `ThaiTokenizer`'s
+    /// `UnsupportedOperationException` (no Thai dictionary, see
+    /// [`crate::lang::th`]).
     ThaiTokenizerFactory {}
 }
 analysis_factory!(ThaiTokenizerFactory);
-
-/// Why `thai` cannot be built.
-const THAI_DEFERRED: &str =
-    "ThaiTokenizer is not ported (deferred to M12: it needs the JDK's Thai BreakIterator)";
 
 impl FactoryClass for ThaiTokenizerFactory {
     const NAME: &'static str = "thai";
     const CLASS_NAME: &'static str = "org.apache.lucene.analysis.th.ThaiTokenizerFactory";
     fn from_args(args: &mut JavaArgs) -> Result<Self, FactoryError> {
-        FactoryBase::new(Self::CLASS_NAME, args)?;
+        let base = FactoryBase::new(Self::CLASS_NAME, args)?;
         args::reject_unknown(args)?;
-        Err(FactoryError::new(
-            super::JavaException::UnsupportedOperation,
-            format!("ThaiTokenizerFactory: {THAI_DEFERRED}"),
-        ))
+        Ok(ThaiTokenizerFactory { base })
     }
 }
 
 impl TokenizerFactory for ThaiTokenizerFactory {
     fn create(&self) -> Result<Box<dyn TokenStream>, AnalysisError> {
-        // Unreachable through `from_args`, which refuses first.
-        Err(AnalysisError::IllegalState(THAI_DEFERRED.into()))
+        crate::lang::th::ThaiTokenizer::new()?;
+        unreachable!("ThaiTokenizer::new always refuses")
     }
 }
 
@@ -579,15 +572,15 @@ mod tests {
         }
         let k = build::<KeywordTokenizerFactory>(&[("maxTokenLen", "10")]).unwrap();
         assert_eq!(k.max_token_len(), 10);
-        // Thai is refused when configured, after Java's own checks.
-        let e = build::<ThaiTokenizerFactory>(&[]).err().unwrap();
-        assert_eq!(e.kind, super::super::JavaException::UnsupportedOperation);
+        // Thai configures as in Java and refuses to create its tokenizer.
+        let thai = build::<ThaiTokenizerFactory>(&[]).unwrap();
+        let e = thai.create().err().unwrap();
+        assert_eq!(
+            e,
+            AnalysisError::UnsupportedOperation(crate::lang::th::UNSUPPORTED.into())
+        );
         let e = build::<ThaiTokenizerFactory>(&[("x", "1")]).err().unwrap();
         assert_eq!(e.message, "Unknown parameters: {x=1}");
-        let thai = ThaiTokenizerFactory {
-            base: FactoryBase::new(ThaiTokenizerFactory::CLASS_NAME, &mut JavaArgs::new()).unwrap(),
-        };
-        assert!(thai.create().is_err());
     }
 
     #[test]

@@ -32,6 +32,7 @@ Every area file is one table, `| Java | Rust | Status |`:
 | **partial** | Ported for a stated scope; the rest listed under Gap. |
 | **rust-only** | No Java counterpart (boundary, test or performance machinery). |
 | **not-needed** | Deliberately not ported, with the reason. |
+| **not-supported** | Cannot be ported faithfully (licence, missing data): refused with the named typed error, or no Rust type. |
 | **generated** | Produced by a script from Lucene's own sources (tables, automata). |
 | **native** / **falls back** | Plugin rows only: served by Rust, or left to Lucene with the reason OpenSearch's stats count. |
 
@@ -62,7 +63,7 @@ Milestones (M1-M12, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [grouping.md](parity/grouping.md) | `lucene-grouping` (M10 T10.4) | 11 |
 | [functions.md](parity/functions.md) | `lucene-queries` function queries (M10 T10.5) | 11 |
 | [queries.md](parity/queries.md) | `lucene-queries` intervals, payloads, more-like-this, common terms, spans (M10 T10.6) | 12 |
-| [analysis-lang.md](parity/analysis-lang.md) | `lucene-analysis-common` synonyms, classic, language packages (M11 part 3) | 12 |
+| [analysis-lang.md](parity/analysis-lang.md) | `lucene-analysis-common` synonyms, classic, language packages (M11 part 3), Thai, collation, `SegmentingTokenizerBase` | 14 |
 | [analysis-lang-modules.md](parity/analysis-lang-modules.md) | The M12 language modules: `lucene-analysis-phonetic` (with Commons Codec), Stempel (with Egothor), Morfologik, `lucene-analysis`' `morph` base, Kuromoji, Nori | 17 |
 | [ffi.md](parity/ffi.md) | `lucene-ffi`: the general C ABI (handles, searches, writer) | 17 |
 | [plugin.md](parity/plugin.md) | `lucene-ffi`: the OpenSearch plugin boundary (JVM reader, FFM, query phase), M10 query shapes | 10 |
