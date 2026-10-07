@@ -43,6 +43,8 @@ impl Positions {
     fn get(&mut self, pos: i64) -> &mut Position {
         let pos = usize::try_from(pos).expect("positions are non-negative");
         if pos >= self.0.len() {
+            // ALLOC: `pos` is a position the token stream reached, one per
+            // token at most -- bounded by the input, not by configuration.
             self.0.resize(pos + 1, Position::default());
         }
         &mut self.0[pos]
