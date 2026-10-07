@@ -229,7 +229,7 @@ analysis/hunspell/TimeoutPolicy	ported	crates/lucene-analysis/src/hunspell/timeo
 analysis/hunspell/TrigramAutomaton	ported	crates/lucene-analysis/src/hunspell/suggester.rs::TrigramScore -- M11 T11.4
 analysis/hunspell/WordCase	ported	crates/lucene-analysis/src/hunspell/word_case.rs::WordCase -- M11 T11.4
 analysis/hunspell/WordContext	ported	crates/lucene-analysis/src/hunspell/stemmer.rs::WordContext -- M11 T11.4
-analysis/hunspell/WordFormGenerator	partial	crates/lucene-analysis/src/hunspell/word_form_generator.rs::WordFormGenerator -- M11: compress (EntrySuggestion) not ported
+analysis/hunspell/WordFormGenerator	ported	crates/lucene-analysis/src/hunspell/word_form_generator.rs::WordFormGenerator
 analysis/hunspell/WordStorage	ported	crates/lucene-analysis/src/hunspell/word_storage.rs::WordStorage -- M11 T11.4
 analysis/hy/ArmenianAnalyzer	ported	crates/lucene-analysis/src/lang/hy.rs::ArmenianAnalyzer
 analysis/id/IndonesianAnalyzer	ported	crates/lucene-analysis/src/lang/id.rs::IndonesianAnalyzer
