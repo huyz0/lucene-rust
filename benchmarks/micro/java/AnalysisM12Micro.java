@@ -23,6 +23,8 @@ import org.apache.lucene.analysis.Tokenizer;
 import org.apache.lucene.analysis.core.WhitespaceTokenizer;
 import org.apache.lucene.analysis.ja.JapaneseAnalyzer;
 import org.apache.lucene.analysis.ja.JapaneseTokenizer;
+import org.apache.lucene.analysis.ko.KoreanAnalyzer;
+import org.apache.lucene.analysis.ko.KoreanTokenizer;
 import org.apache.lucene.analysis.phonetic.BeiderMorseFilter;
 import org.apache.lucene.analysis.phonetic.DaitchMokotoffSoundexFilter;
 import org.apache.lucene.analysis.phonetic.DoubleMetaphoneFilter;
@@ -87,8 +89,17 @@ public class AnalysisM12Micro {
 
   /** The Japanese corpus and the Kuromoji fixture's stress lines, one document each. */
   static List<String> japaneseDocs() throws IOException {
+    return lineDocs("fixtures/corpus/analysis-japanese.txt", "fixtures/data/analysis_kuromoji/stress.txt");
+  }
+
+  /** The Korean corpus and the Nori fixture's stress lines, one document each. */
+  static List<String> koreanDocs() throws IOException {
+    return lineDocs("fixtures/corpus/analysis-korean.txt", "fixtures/data/analysis_nori/stress.txt");
+  }
+
+  static List<String> lineDocs(String... files) throws IOException {
     List<String> docs = new ArrayList<>();
-    for (String f : new String[] {"fixtures/corpus/analysis-japanese.txt", "fixtures/data/analysis_kuromoji/stress.txt"}) {
+    for (String f : files) {
       for (String line : Files.readAllLines(Path.of(f), StandardCharsets.UTF_8)) {
         if (!line.isEmpty()) docs.add(line);
       }
@@ -153,5 +164,10 @@ public class AnalysisM12Micro {
       return t;
     }, t -> t), ja);
     run("japanese_analyzer", new JapaneseAnalyzer(), ja);
+    List<String> ko = koreanDocs();
+    run("nori_discard", chain(() -> new KoreanTokenizer(), t -> t), ko);
+    run("nori_mixed", chain(() -> new KoreanTokenizer(TokenStream.DEFAULT_TOKEN_ATTRIBUTE_FACTORY, null,
+        KoreanTokenizer.DecompoundMode.MIXED, true, false), t -> t), ko);
+    run("korean_analyzer", new KoreanAnalyzer(), ko);
   }
 }

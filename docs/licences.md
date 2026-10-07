@@ -134,6 +134,12 @@ a dependency the shipped library links is not under a licence listed here.
   (`fixtures/corpus/analysis-japanese*.txt`) is written for this project,
   apart from short public-domain literary quotations (Sōseki, Bashō, the
   Heike Monogatari, Sei Shōnagon, Miyazawa Kenji).
+  `crates/lucene-analysis-nori/src/resources/` likewise carries the nine
+  binary files of Lucene 10.5.0's `analysis-nori` jar -- mecab-ko-dic-2.1.1-20180720,
+  Apache-2.0 -- zlib-compressed (25.0 MB -> 7.6 MB); `KoreanTokenizer`'s
+  defaults use them and every dictionary class also loads a caller's files
+  (`from_paths`). The Korean fixture corpus
+  (`fixtures/corpus/analysis-korean*.txt`) is written for this project.
 
 - **Test data from third parties** (M9). `fixtures/corpus/real_polygons.z`,
   the Tessellator's real-world polygon corpus (`scripts/gen-tessellator-corpus.py`),

@@ -1,0 +1,23 @@
+[package]
+name = "lucene-analysis-nori"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# lucene-analysis-nori (M12 T12.1): Korean morphological analysis over
+# mecab-ko-dic -- KoreanTokenizer (the Viterbi lattice of lucene-analysis'
+# morph module, user dictionaries, decompounding), its filters,
+# KoreanAnalyzer and the factories. Over lucene-analysis only, as Lucene's
+# module is over lucene-analysis-common (docs/milestones/m12-language-analysis.md).
+[lints]
+workspace = true
+
+[dependencies]
+lucene-analysis = { path = "../lucene-analysis" }
+# Inflates the vendored dictionary (src/resources/*.z).
+miniz_oxide.workspace = true
+
+[dev-dependencies]
+# The shared factory-configuration harness (lucene-analysis/tests/support).
+lucene-util = { path = "../lucene-util" }
+miniz_oxide.workspace = true

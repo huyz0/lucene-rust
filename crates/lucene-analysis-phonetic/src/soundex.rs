@@ -95,20 +95,33 @@ impl Soundex {
     /// (`IllegalArgumentException`) on a letter outside `A`-`Z` after
     /// cleaning.
     pub fn soundex(&self, s: &[u16]) -> Result<Vec<u16>, EncoderError> {
-        let s = clean(s);
-        if s.is_empty() {
-            return Ok(s);
+        // `SoundexUtils.clean` without its copy on the ASCII path (the
+        // common one): the cleaned letters are streamed, not collected.
+        if s.iter().all(|&c| c < 0x80) {
+            self.code(
+                s.iter()
+                    .filter(|&&c| (c as u8).is_ascii_alphabetic())
+                    .map(|&c| u16::from((c as u8).to_ascii_uppercase())),
+            )
+        } else {
+            self.code(clean(s).into_iter())
         }
+    }
+
+    /// The code of the cleaned letters `s`.
+    fn code(&self, mut s: impl Iterator<Item = u16>) -> Result<Vec<u16>, EncoderError> {
+        let Some(first) = s.next() else {
+            return Ok(Vec::new());
+        };
         let mut out = [b'0' as u16; 4];
         let mut count = 0;
-        let first = s[0];
         out[count] = first;
         count += 1;
         let mut last_digit = self.map(first)?;
-        let mut i = 1;
-        while i < s.len() && count < out.len() {
-            let ch = s[i];
-            i += 1;
+        for ch in s {
+            if count >= out.len() {
+                break;
+            }
             if self.special_case_hw && (ch == u16::from(b'H') || ch == u16::from(b'W')) {
                 continue;
             }
@@ -126,7 +139,6 @@ impl Soundex {
     }
 }
 
-/// `RefinedSoundex.US_ENGLISH_MAPPING_STRING`.
 pub const REFINED_US_ENGLISH_MAPPING: &str = "01360240043788015936020505";
 
 /// `org.apache.commons.codec.language.RefinedSoundex`.
@@ -169,13 +181,27 @@ impl RefinedSoundex {
 
     /// `RefinedSoundex.soundex(String)`.
     pub fn soundex(&self, s: &[u16]) -> Vec<u16> {
-        let s = clean(s);
-        if s.is_empty() {
-            return s;
+        // As `Soundex::soundex`: no cleaned copy on the ASCII path.
+        if s.iter().all(|&c| c < 0x80) {
+            self.code(
+                s.iter()
+                    .filter(|&&c| (c as u8).is_ascii_alphabetic())
+                    .map(|&c| u16::from((c as u8).to_ascii_uppercase())),
+            )
+        } else {
+            self.code(clean(s).into_iter())
         }
-        let mut out = vec![s[0]];
+    }
+
+    /// The code of the cleaned letters `s`.
+    fn code(&self, s: impl Iterator<Item = u16> + Clone) -> Vec<u16> {
+        let mut letters = s.clone();
+        let Some(first) = letters.next() else {
+            return Vec::new();
+        };
+        let mut out = vec![first];
         let mut last = u16::from(b'*');
-        for &c in &s {
+        for c in s {
             let current = self.mapping_code(c);
             if current == last {
                 continue;

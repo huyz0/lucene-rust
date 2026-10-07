@@ -247,14 +247,21 @@ impl WrappedPositionArray {
     }
 
     /// `getIndex(pos)`.
+    #[inline]
     fn index(&self, pos: i32) -> usize {
-        let len = i64::try_from(self.positions.len()).unwrap_or(i64::MAX);
-        let back = i64::from(self.next_pos).wrapping_sub(i64::from(pos));
-        let i = i64::try_from(self.next_write)
-            .unwrap_or(0)
-            .wrapping_sub(back)
-            .rem_euclid(len.max(1));
-        usize::try_from(i).unwrap_or(0)
+        // Java's `nextWrite - (nextPos - pos)`, plus the length when that is
+        // negative. A live position is at most `count <= len` behind
+        // `nextPos`, so one wrap suffices: no division on this hot path.
+        let len = self.positions.len();
+        let back = usize::try_from(self.next_pos.wrapping_sub(pos)).unwrap_or(0);
+        match self.next_write.checked_sub(back) {
+            Some(i) => i,
+            None => len
+                .wrapping_add(self.next_write)
+                .wrapping_sub(back)
+                .checked_rem(len)
+                .unwrap_or(0),
+        }
     }
 
     /// `freeBefore(pos)`.
@@ -457,6 +464,9 @@ pub fn forward<T, L: ViterbiLang<T>>(
     let mut unknown_word_end_index: i32 = -1;
     // Maximum posAhead of user word in the entire input
     let mut user_word_max_pos_ahead: i32 = -1;
+    // The automata, held once rather than per position.
+    let fst = Arc::clone(&v.fst);
+    let user_fst = v.user_fst.clone();
 
     while char_at(v, reader, v.pos)? != -1 {
         let pd = v.pos;
@@ -567,7 +577,7 @@ pub fn forward<T, L: ViterbiLang<T>>(
         let mut any_matches = false;
 
         // First try user dict:
-        if let Some(user_fst) = v.user_fst.clone() {
+        if let Some(user_fst) = user_fst.as_deref() {
             let mut arc = user_fst.first_arc();
             let mut output: i32 = 0;
             let mut max_pos_ahead: i32 = 0;
@@ -602,7 +612,7 @@ pub fn forward<T, L: ViterbiLang<T>>(
                             pos_ahead.wrapping_add(1),
                             output.wrapping_add(arc.next_final_output() as i32),
                             false,
-                        )?;
+                        );
                     }
                 }
                 pos_ahead = pos_ahead.wrapping_add(1);
@@ -621,7 +631,7 @@ pub fn forward<T, L: ViterbiLang<T>>(
                         max_pos_ahead.wrapping_add(1),
                         output_max_pos_ahead.wrapping_add(arc_final_out_max_pos_ahead),
                         false,
-                    )?;
+                    );
                 }
                 user_word_max_pos_ahead = user_word_max_pos_ahead.max(max_pos_ahead);
             }
@@ -629,7 +639,6 @@ pub fn forward<T, L: ViterbiLang<T>>(
 
         if !any_matches {
             // Next, try known dictionary matches
-            let fst = Arc::clone(&v.fst);
             let mut arc = fst.first_arc();
             let mut output: i32 = 0;
             let mut pos_ahead = v.pos;
@@ -657,7 +666,7 @@ pub fn forward<T, L: ViterbiLang<T>>(
                             pos_ahead.wrapping_add(1),
                             word_id,
                             false,
-                        )?;
+                        );
                         any_matches = true;
                     }
                 }
@@ -713,11 +722,9 @@ pub fn add<T, L: ViterbiLang<T> + ?Sized>(
     end_pos: i32,
     word_id: i32,
     add_penalty: bool,
-) -> Result<(), AnalysisError> {
+) {
     let morph = lang.morph_data(token_type);
-    let word_cost = morph.word_cost(word_id);
-    let left_id = morph.left_id(word_id);
-    let right_id = morph.right_id(word_id);
+    let (left_id, right_id, word_cost) = morph.connection(word_id);
     let mut least_cost = i32::MAX;
     let mut least_idx: i32 = -1;
     // Create the end position first: the array may grow.
@@ -756,5 +763,150 @@ pub fn add<T, L: ViterbiLang<T> + ?Sized>(
         word_id,
         token_type,
     );
-    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::arithmetic_side_effects)]
+    use super::*;
+    use crate::morph::connection_costs::tests::costs_file;
+    use crate::morph::token::Token;
+    use crate::reader::StrReader;
+
+    /// Every word costs its id; one connection class, cost 0.
+    struct Toy;
+    impl MorphData for Toy {
+        fn left_id(&self, _: i32) -> i32 {
+            0
+        }
+        fn right_id(&self, _: i32) -> i32 {
+            0
+        }
+        fn word_cost(&self, id: i32) -> i32 {
+            id * 10
+        }
+    }
+
+    /// A language with no unknown words, whose backtrace emits the best
+    /// path, and which keeps the trait's defaults (no n-best).
+    struct ToyLang {
+        ids: Vec<i32>,
+    }
+    impl ViterbiLang<Token> for ToyLang {
+        fn morph_data(&self, _: TokenType) -> &dyn MorphData {
+            &Toy
+        }
+        fn known_word_ids(&self, source_id: i32) -> &[i32] {
+            let s = source_id as usize;
+            &self.ids[s..s + 1]
+        }
+        fn process_unknown_word(
+            &mut self,
+            _v: &mut Viterbi<Token>,
+            _r: &mut dyn CharReader,
+            _any: bool,
+            _pos: i32,
+        ) -> Result<i32, AnalysisError> {
+            Ok(0)
+        }
+        fn backtrace(
+            &mut self,
+            v: &mut Viterbi<Token>,
+            end_pos: i32,
+            from_idx: i32,
+        ) -> Result<(), AnalysisError> {
+            let last = v.last_back_trace_pos;
+            let frag = v.fragment(last, end_pos - last);
+            let (mut pos, mut idx) = (end_pos, from_idx.max(0) as usize);
+            while pos > last {
+                let p = v.positions.at(pos);
+                let (back, t, next) = (p.back_pos(idx)?, p.back_type(idx)?, p.back_index(idx)?);
+                v.pending.push(Token::new(
+                    frag.clone(),
+                    back - last,
+                    pos - back,
+                    back,
+                    pos,
+                    t,
+                ));
+                pos = back;
+                idx = next.max(0) as usize;
+            }
+            v.last_back_trace_pos = end_pos;
+            v.buffer.free_before(end_pos);
+            v.positions.free_before(end_pos);
+            Ok(())
+        }
+    }
+
+    fn units(s: &str) -> Vec<u16> {
+        s.encode_utf16().collect()
+    }
+
+    fn viterbi(user: Option<&[&str]>) -> Viterbi<Token> {
+        let fst =
+            TokenInfoFst::from_sorted(&[units("a"), units("ab"), units("b")], 0x7F, 0x20).unwrap();
+        let user = user.map(|keys| {
+            let keys: Vec<Vec<u16>> = keys.iter().map(|k| units(k)).collect();
+            Arc::new(TokenInfoFst::from_sorted(&keys, 0x7F, 0x20).unwrap())
+        });
+        let costs = ConnectionCosts::read(&costs_file("cc", 1, &[0]), "cc", 1).unwrap();
+        let mut v = Viterbi::new(Arc::new(fst), user, Arc::new(costs));
+        v.reset_state();
+        v
+    }
+
+    fn run(v: &mut Viterbi<Token>, text: &str) -> Result<Vec<String>, AnalysisError> {
+        let mut lang = ToyLang { ids: vec![0, 1, 2] };
+        let mut r = StrReader::new(text);
+        let mut out = Vec::new();
+        while !v.end || !v.pending.is_empty() {
+            if v.pending.is_empty() {
+                forward(v, &mut lang, &mut r)?;
+            }
+            if let Some(t) = v.pending.pop() {
+                out.push(format!(
+                    "{}:{}",
+                    t.surface_form_string(),
+                    t.token_type.name()
+                ));
+            }
+        }
+        Ok(out)
+    }
+
+    #[test]
+    fn toy_language_over_the_trait_defaults() {
+        // "ab" (id 1, cost 10) beats "a"+"b" (0 + 20).
+        assert_eq!(
+            run(&mut viterbi(None), "abab").unwrap(),
+            ["ab:KNOWN", "ab:KNOWN"]
+        );
+        assert!(run(&mut viterbi(None), "").unwrap().is_empty());
+        // User entries replace the system dictionary's at their start (every
+        // one, or only the longest): "ab" (ordinal 1, cost 10) beats "a"
+        // (0) + "b" (20).
+        let mut v = viterbi(Some(&["a", "ab"]));
+        assert_eq!(run(&mut v, "ab").unwrap(), ["ab:USER"]);
+        let mut v = viterbi(Some(&["a", "ab"]));
+        v.output_longest_user_entry_only = true;
+        assert_eq!(run(&mut v, "ab").unwrap(), ["ab:USER"]);
+        // A language without n-best refuses it, as Java's base class does.
+        let mut v = viterbi(None);
+        v.output_nbest = true;
+        let e = run(&mut v, "ab").unwrap_err();
+        assert!(
+            e.to_string().contains("UnsupportedOperationException"),
+            "{e}"
+        );
+        let lang = ToyLang { ids: vec![] };
+        assert_eq!(lang.compute_space_penalty(TokenType::Known, 0, 3), 0);
+        assert_eq!(lang.compute_penalty(&viterbi(None), 0, 3), 0);
+        let mut lang = ToyLang { ids: vec![] };
+        assert!(lang.fixup_pending_list(&mut viterbi(None)).is_err());
+        // An index past the back pointers is Java's AIOOBE.
+        let p = Position::default();
+        assert!(p.cost(3).is_err());
+        assert_eq!((p.pos(), p.count()), (0, 0));
+    }
 }

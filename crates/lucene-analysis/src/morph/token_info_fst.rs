@@ -8,7 +8,9 @@
 //! `ARCS_FOR_BINARY_SEARCH`, `ARCS_FOR_DIRECT_ADDRESSING` with its presence
 //! bit table, `ARCS_FOR_CONTINUOUS`), `ReverseBytesReader`, `BitTableUtil`
 //! and `PositiveIntOutputs` (a vlong, `0` being no output), BYTE1/BYTE2
-//! (both byte orders)/BYTE4 labels.
+//! (both byte orders)/BYTE4 labels. Enumeration (`readNextArc`,
+//! `readLastTargetArc`, `IntsRefFSTEnum`) is not ported: nothing walks a
+//! dictionary's FST in order.
 //!
 //! Differs:
 //! - `lucene-codecs` has a general FST port, but this crate sits on
@@ -149,10 +151,23 @@ impl Reader<'_> {
     }
 
     /// `DataInput.readShort()`: little-endian in read order.
+    #[inline]
     fn read_short(&mut self) -> Result<u16, AnalysisError> {
-        let b1 = self.read_byte()?;
-        let b2 = self.read_byte()?;
-        Ok(u16::from_le_bytes([b1, b2]))
+        // Bytes `pos` then `pos - 1`: one bounds check for both.
+        let hi = usize::try_from(self.pos).map_err(|_| out_of_bounds(self.pos))?;
+        let pair = hi
+            .checked_sub(1)
+            .and_then(|lo| self.bytes.get(lo..=hi))
+            .ok_or_else(|| {
+                // Java fails on the first byte it cannot read.
+                if self.bytes.get(hi).is_none() {
+                    out_of_bounds(self.pos)
+                } else {
+                    out_of_bounds(self.pos.wrapping_sub(1))
+                }
+            })?;
+        self.pos = self.pos.wrapping_sub(2);
+        Ok(u16::from_le_bytes([pair[1], pair[0]]))
     }
 
     fn read_vint(&mut self) -> Result<i32, AnalysisError> {
@@ -297,60 +312,25 @@ impl Fst {
         r.skip_bytes(i64::from(num_presence_bytes(arc.num_arcs)));
     }
 
-    /// `readFirstArcInfo`.
-    fn read_first_arc_info(
-        &self,
-        node: i64,
-        arc: &mut FstArc,
-        r: &mut Reader<'_>,
-    ) -> Result<(), AnalysisError> {
-        r.pos = node;
-        let flags = r.read_byte()?;
-        arc.node_flags = flags;
-        if flags == ARCS_FOR_BINARY_SEARCH
-            || flags == ARCS_FOR_DIRECT_ADDRESSING
-            || flags == ARCS_FOR_CONTINUOUS
-        {
-            arc.num_arcs = r.read_vint()?;
-            arc.bytes_per_arc = r.read_vint()?;
-            arc.arc_idx = -1;
-            if flags == ARCS_FOR_DIRECT_ADDRESSING {
-                Self::read_presence_bytes(arc, r);
-                arc.first_label = self.read_label(r)?;
-                arc.presence_index = -1;
-            } else if flags == ARCS_FOR_CONTINUOUS {
-                arc.first_label = self.read_label(r)?;
-            }
-            arc.pos_arcs_start = r.pos;
-        } else {
-            arc.next_arc = node;
-            arc.bytes_per_arc = 0;
-        }
-        Ok(())
+    /// `readFirstArcInfo` of a list node (the only kind `findTargetArc`
+    /// scans linearly; the fixed-length-arc branch serves enumeration,
+    /// which is not ported).
+    fn read_first_arc_info(node: i64, arc: &mut FstArc) {
+        arc.next_arc = node;
+        arc.bytes_per_arc = 0;
     }
 
-    /// `readNextRealArc`.
+    /// `readNextRealArc` for the arc after `arc.arc_idx` of a binary-search
+    /// or continuous node (the direct-addressing and list branches serve
+    /// enumeration, which is not ported).
     fn read_next_real_arc(
         &self,
         arc: &mut FstArc,
         r: &mut Reader<'_>,
     ) -> Result<(), AnalysisError> {
-        match arc.node_flags {
-            ARCS_FOR_BINARY_SEARCH | ARCS_FOR_CONTINUOUS => {
-                arc.arc_idx = arc.arc_idx.wrapping_add(1);
-                r.pos = arc_pos(arc.pos_arcs_start, arc.arc_idx, arc.bytes_per_arc);
-                arc.flags = r.read_byte()?;
-            }
-            ARCS_FOR_DIRECT_ADDRESSING => {
-                let next = next_bit_set(arc.arc_idx, arc, r)?;
-                let presence = arc.presence_index.wrapping_add(1);
-                return self.read_arc_by_direct_addressing(arc, r, next, presence);
-            }
-            _ => {
-                r.pos = arc.next_arc;
-                arc.flags = r.read_byte()?;
-            }
-        }
+        arc.arc_idx = arc.arc_idx.wrapping_add(1);
+        r.pos = arc_pos(arc.pos_arcs_start, arc.arc_idx, arc.bytes_per_arc);
+        arc.flags = r.read_byte()?;
         self.read_arc(arc, r)
     }
 
@@ -516,7 +496,7 @@ impl Fst {
             return Ok(Some(arc));
         }
         // Linear scan
-        self.read_first_arc_info(follow.target, &mut arc, &mut r)?;
+        Self::read_first_arc_info(follow.target, &mut arc);
         r.pos = arc.next_arc;
         loop {
             arc.flags = r.read_byte()?;
@@ -573,45 +553,41 @@ fn count_bits_up_to(
     arc: &FstArc,
     r: &mut Reader<'_>,
 ) -> Result<i32, AnalysisError> {
-    r.pos = arc.bit_table_start;
-    let mut count = 0i32;
-    for _ in 0..(bit_index >> 3) {
-        count = count.wrapping_add(r.read_byte()?.count_ones() as i32);
+    // The table is read backwards from `bit_table_start`: its first `full`
+    // bytes are `bytes[start - full + 1..=start]`, so the whole-byte part is
+    // one slice popcount (Java's `BitTableUtil` reads longs for the same
+    // reason) rather than a checked read per byte.
+    let full = i64::from(bit_index.max(0) >> 3);
+    let start = arc.bit_table_start;
+    let lo = start.wrapping_sub(full).wrapping_add(1);
+    let slice = usize::try_from(lo)
+        .ok()
+        .zip(usize::try_from(start).ok())
+        .and_then(|(lo, hi)| {
+            if full == 0 {
+                Some(&r.bytes[..0])
+            } else {
+                r.bytes.get(lo..=hi)
+            }
+        })
+        .ok_or_else(|| out_of_bounds(lo))?;
+    let mut count = 0u32;
+    let mut chunks = slice.chunks_exact(8);
+    for c in &mut chunks {
+        let mut w = [0u8; 8];
+        w.copy_from_slice(c);
+        count = count.wrapping_add(u64::from_ne_bytes(w).count_ones());
     }
+    for b in chunks.remainder() {
+        count = count.wrapping_add(b.count_ones());
+    }
+    r.pos = start.wrapping_sub(full);
     let remaining = bit_index & 7;
     if remaining != 0 {
         let mask = (1u8 << remaining).wrapping_sub(1);
-        count = count.wrapping_add((r.read_byte()? & mask).count_ones() as i32);
+        count = count.wrapping_add((r.read_byte()? & mask).count_ones());
     }
-    Ok(count)
-}
-
-/// `BitTable.nextBitSet` / `BitTableUtil.nextBitSet`: the first set bit
-/// after `bit_index` (`-1` for the start), `-1` if none.
-fn next_bit_set(bit_index: i32, arc: &FstArc, r: &mut Reader<'_>) -> Result<i32, AnalysisError> {
-    r.pos = arc.bit_table_start;
-    let table_bytes = num_presence_bytes(arc.num_arcs);
-    // Java's `bitIndex / Byte.SIZE` truncates toward zero.
-    let mut byte_index = bit_index / 8;
-    let mask: i32 = -1i32 << (bit_index.wrapping_add(1) & 7);
-    let mut i: i32;
-    if mask == -1 && bit_index != -1 {
-        r.skip_bytes(i64::from(byte_index).wrapping_add(1));
-        i = 0;
-    } else {
-        r.skip_bytes(i64::from(byte_index));
-        i = i32::from(r.read_byte()?) & mask;
-    }
-    while i == 0 {
-        byte_index = byte_index.wrapping_add(1);
-        if byte_index >= table_bytes {
-            // Java compares for equality; `>=` also ends a walk that started
-            // past a hostile table's end.
-            return Ok(-1);
-        }
-        i = i32::from(r.read_byte()?);
-    }
-    Ok((i.trailing_zeros() as i32).wrapping_add(byte_index.wrapping_mul(8)))
+    Ok(count as i32)
 }
 
 /// One node of a user dictionary's trie: its arcs by label, and the ordinal
@@ -635,7 +611,11 @@ pub struct TokenInfoFst {
     automaton: Automaton,
     cache_ceiling: i32,
     cache_floor: i32,
-    root_cache: Vec<Option<FstArc>>,
+    /// Per cached label, `0` for no arc or `i + 1` for `root_arcs[i]`: a
+    /// dense index (Java holds an `Arc` per slot) so the 28,608 Kuromoji
+    /// slots cost 4 bytes each, and the arcs that exist sit together.
+    root_index: Vec<u32>,
+    root_arcs: Vec<FstArc>,
 }
 
 impl TokenInfoFst {
@@ -692,15 +672,23 @@ impl TokenInfoFst {
             automaton,
             cache_ceiling,
             cache_floor,
-            root_cache: Vec::new(),
+            root_index: Vec::new(),
+            root_arcs: Vec::new(),
         };
         // Java: cacheRootArcs
         let first = fst.first_arc();
-        let mut cache = Vec::new();
+        let (mut index, mut arcs) = (Vec::new(), Vec::new());
         for label in cache_floor..=cache_ceiling {
-            cache.push(fst.find(label, &first)?);
+            match fst.find(label, &first)? {
+                Some(arc) => {
+                    arcs.push(arc);
+                    index.push(u32::try_from(arcs.len()).unwrap_or(u32::MAX));
+                }
+                None => index.push(0),
+            }
         }
-        fst.root_cache = cache;
+        fst.root_index = index;
+        fst.root_arcs = arcs;
         Ok(fst)
     }
 
@@ -760,7 +748,12 @@ impl TokenInfoFst {
     ) -> Result<Option<FstArc>, AnalysisError> {
         if use_cache && ch >= self.cache_floor && ch <= self.cache_ceiling {
             let slot = usize::try_from(ch.wrapping_sub(self.cache_floor)).unwrap_or(usize::MAX);
-            return Ok(self.root_cache.get(slot).copied().flatten());
+            let i = self.root_index.get(slot).copied().unwrap_or(0);
+            return Ok(usize::try_from(i)
+                .ok()
+                .and_then(|i| i.checked_sub(1))
+                .and_then(|i| self.root_arcs.get(i))
+                .copied());
         }
         self.find(ch, follow)
     }
@@ -901,6 +894,64 @@ mod tests {
     }
 
     #[test]
+    fn hand_built_target_next_arcs() {
+        // Read order from the start node: arc 'a' (target-next, output 3,
+        // final output 5), arc 'b' (last, stop, final), then the next node:
+        // arc 'c' (last, stop, final, output 7).
+        let read_order = [
+            BIT_TARGET_NEXT | BIT_ARC_HAS_OUTPUT | BIT_ARC_HAS_FINAL_OUTPUT,
+            b'a',
+            3,
+            5,
+            BIT_LAST_ARC | BIT_STOP_NODE | BIT_FINAL_ARC,
+            b'b',
+            BIT_LAST_ARC | BIT_STOP_NODE | BIT_FINAL_ARC | BIT_ARC_HAS_OUTPUT,
+            b'c',
+            7,
+        ];
+        let mut body = read_order.to_vec();
+        body.reverse();
+        let f = TokenInfoFst::read(&fst_file(0, None, 8, &body), 0, 0).unwrap();
+        let first = f.first_arc();
+        let a = f
+            .find_target_arc(i32::from(b'a'), &first, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (a.output(), a.next_final_output(), a.is_final()),
+            (3, 5, false)
+        );
+        let c = f
+            .find_target_arc(i32::from(b'c'), &a, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!((c.output(), c.is_final()), (7, true));
+        let b = f
+            .find_target_arc(i32::from(b'b'), &first, false)
+            .unwrap()
+            .unwrap();
+        assert!(b.is_final() && b.is_last());
+        assert_eq!(
+            f.find_target_arc(i32::from(b'A'), &first, false).unwrap(),
+            None
+        );
+        assert_eq!(
+            f.find_target_arc(i32::from(b'z'), &first, false).unwrap(),
+            None
+        );
+        // A non-final stop arc ends at no node.
+        let mut odd = read_order.to_vec();
+        odd[4] = BIT_LAST_ARC | BIT_STOP_NODE;
+        odd.reverse();
+        let g = TokenInfoFst::read(&fst_file(0, None, 8, &odd), 0, 0).unwrap();
+        let b = g
+            .find_target_arc(i32::from(b'b'), &g.first_arc(), false)
+            .unwrap()
+            .unwrap();
+        assert_eq!((b.is_final(), b.target()), (false, NON_FINAL_END_NODE));
+    }
+
+    #[test]
     fn corrupt_files_fail_without_panicking() {
         let flags = BIT_FINAL_ARC | BIT_LAST_ARC | BIT_STOP_NODE | BIT_ARC_HAS_OUTPUT;
         let file = fst_file(1, None, 4, &[0u8, 5, b'a', 0, flags]);
@@ -946,11 +997,6 @@ mod tests {
         assert_eq!(count_bits_up_to(2, &arc, &mut r).unwrap(), 1);
         assert_eq!(count_bits_up_to(8, &arc, &mut r).unwrap(), 2);
         assert_eq!(count_bits_up_to(15, &arc, &mut r).unwrap(), 2);
-        assert_eq!(next_bit_set(-1, &arc, &mut r).unwrap(), 0);
-        assert_eq!(next_bit_set(0, &arc, &mut r).unwrap(), 2);
-        assert_eq!(next_bit_set(2, &arc, &mut r).unwrap(), 15);
-        assert_eq!(next_bit_set(7, &arc, &mut r).unwrap(), 15);
-        assert_eq!(next_bit_set(15, &arc, &mut r).unwrap(), -1);
         assert_eq!(num_presence_bytes(9), 2);
     }
 

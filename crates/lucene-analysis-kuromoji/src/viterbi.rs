@@ -119,30 +119,38 @@ impl JaViterbi {
     ) -> Result<(), AnalysisError> {
         // First pass: walk backwards, building up the forward arcs and
         // pruning inadmissible arcs:
+        // The arcs to keep, gathered before the positions they name are
+        // touched (one scratch vector for the call, not a copy of every
+        // position).
+        let mut kept: Vec<(i32, i32, i32, TokenType)> = Vec::new();
         let mut pos = end_pos;
         while pos > start_pos {
-            let p = v.positions.get(pos).clone();
+            kept.clear();
+            let p = v.positions.get(pos);
             for arc_idx in 0..p.count() {
                 let back_pos = p.back_pos(arc_idx)?;
                 if back_pos >= start_pos {
                     // Keep this arc:
-                    let (id, t) = (p.back_id(arc_idx)?, p.back_type(arc_idx)?);
-                    v.positions.get(back_pos).add_forward(
-                        pos,
+                    kept.push((
+                        back_pos,
                         i32::try_from(arc_idx).unwrap_or(i32::MAX),
-                        id,
-                        t,
-                    );
+                        p.back_id(arc_idx)?,
+                        p.back_type(arc_idx)?,
+                    ));
                 }
+            }
+            for &(back_pos, arc_idx, id, t) in &kept {
+                v.positions.get(back_pos).add_forward(pos, arc_idx, id, t);
             }
             v.positions.get(pos).set_count(0);
             pos = pos.wrapping_sub(1);
         }
 
         // Second pass: walk forward, re-scoring:
+        let mut forwards: Vec<(i32, i32, TokenType)> = Vec::new();
         let mut pos = start_pos;
         while pos < end_pos {
-            let p = v.positions.get(pos).clone();
+            let p = v.positions.get(pos);
             if p.count() == 0 {
                 // No arcs arrive here...
                 v.positions.get(pos).clear_forwards();
@@ -161,8 +169,11 @@ impl JaViterbi {
                     self.morph_data(p.back_type(b)?).right_id(p.back_id(b)?)
                 };
                 let path_cost = p.cost(idx(best_start_idx))?;
+                forwards.clear();
                 for f in 0..p.forward_count() {
-                    let (to_pos, word_id, forward_type) = p.forward(f)?;
+                    forwards.push(p.forward(f)?);
+                }
+                for &(to_pos, word_id, forward_type) in &forwards {
                     let dict2 = self.morph_data(forward_type);
                     let new_cost = path_cost
                         .wrapping_add(dict2.word_cost(word_id))
@@ -182,9 +193,12 @@ impl JaViterbi {
             } else {
                 // On non-initial positions, we maximize score across all
                 // arriving lastRightIDs:
+                forwards.clear();
                 for f in 0..p.forward_count() {
-                    let (to_pos, word_id, forward_type) = p.forward(f)?;
-                    add(v, self, forward_type, pos, pos, to_pos, word_id, true)?;
+                    forwards.push(p.forward(f)?);
+                }
+                for &(to_pos, word_id, forward_type) in &forwards {
+                    add(v, self, forward_type, pos, pos, to_pos, word_id, true);
                 }
             }
             v.positions.get(pos).clear_forwards();
@@ -282,7 +296,7 @@ impl ViterbiLang<Token> for JaViterbi {
                 pos_data.wrapping_add(unknown_word_length),
                 word_id,
                 false,
-            )?;
+            );
         }
         Ok(unknown_word_length)
     }
@@ -324,13 +338,21 @@ impl ViterbiLang<Token> for JaViterbi {
         let mut back_count: i32 = 0;
 
         while pos > last {
-            let p = v.positions.at(pos).clone();
+            // The one back pointer read, copied out (not the position:
+            // cloning it allocated per token).
             let b = idx(best_idx);
-            let mut back_pos = p.back_pos(b)?;
+            let (best_cost, mut back_pos, mut back_type, mut back_id, best_back_index) = {
+                let p = v.positions.at(pos);
+                (
+                    p.cost(b)?,
+                    p.back_pos(b)?,
+                    p.back_type(b)?,
+                    p.back_id(b)?,
+                    p.back_index(b)?,
+                )
+            };
             let mut length = pos.wrapping_sub(back_pos);
-            let mut back_type = p.back_type(b)?;
-            let mut back_id = p.back_id(b)?;
-            let mut next_best_idx = p.back_index(b)?;
+            let mut next_best_idx = best_back_index;
 
             if self.search_mode && alt_token.is_none() && back_type != TokenType::User {
                 // In searchMode, if best path had picked a too-long token,
@@ -343,7 +365,7 @@ impl ViterbiLang<Token> for JaViterbi {
                 if penalty > 0 {
                     // Use the penalty to set maxCost on the 2nd best
                     // segmentation:
-                    let mut max_cost = p.cost(b)?.wrapping_add(penalty);
+                    let mut max_cost = best_cost.wrapping_add(penalty);
                     if last_left_word_id != -1 {
                         max_cost = max_cost.wrapping_add(v.costs.get(
                             self.morph_data(back_type).right_id(back_id),
@@ -351,7 +373,7 @@ impl ViterbiLang<Token> for JaViterbi {
                         ));
                     }
                     // Now, prune all too-long tokens from the graph:
-                    self.prune_and_rescore(v, back_pos, pos, p.back_index(b)?)?;
+                    self.prune_and_rescore(v, back_pos, pos, best_back_index)?;
 
                     // Finally, find 2nd best back-trace and resume
                     // backtrace there:
