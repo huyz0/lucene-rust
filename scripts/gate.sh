@@ -44,6 +44,9 @@ python3 scripts/check-java-refs.py
 echo "gate: check-licences (every shipped dependency is under an allowed licence)"
 python3 scripts/check-licences.py
 
+echo "gate: check-vendored-licences (every embedded third-party file's licence ships in LICENSE)"
+python3 scripts/check-vendored-licences.py
+
 echo "gate: check-port-inventory (every lucene-core, lucene-backward-codecs, lucene-spatial3d, lucene-spatial-extras, lucene-join, lucene-grouping, lucene-queries, lucene-analysis-common and M12 analysis module class has a status; every 'ported' location exists)"
 python3 scripts/check-port-inventory.py --require-jar
 python3 scripts/check-port-inventory.py --module backward-codecs --require-jar

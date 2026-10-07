@@ -715,6 +715,23 @@ integration-test build is under-reported: `lucene-codecs`'
 
 ---
 
+## vendored-licences
+
+`scripts/check-vendored-licences.py`. **Catches** a directory a
+`include_bytes!`/`include_str!` under `crates/*/src` reads from that is not
+recorded with its licences; a recorded licence whose text the shipped
+`LICENSE` (or `NOTICE`, for the two stop lists Lucene attributes there) does
+not hold; a recorded directory nothing embeds any more. **Seen to fail**: on
+its first run, over the M12 part 1 tree whose `LICENSE` lacked both texts --
+`crates/lucene-analysis-morfologik/src/resources: LICENSE lacks the licence of
+morfologik-polish 2.1.9's dictionary (BSD-2-Clause)` and the same for the
+Egothor licence; with lucene-ffi's seed directory dropped from `VENDORED`
+(`... embedded by crates/lucene-ffi/src/jvm_reader.rs but not in VENDORED`)
+and an entry nothing embeds (`... in VENDORED but nothing embeds it any
+more`). **Blind to** a directory recorded under the wrong licence, a marker
+line another licence also contains, a resource read at run time rather than
+embedded, and an include whose path is not a string literal.
+
 ## Running them
 
 All of them are in `scripts/gate.sh` and therefore in
