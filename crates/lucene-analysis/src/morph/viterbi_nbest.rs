@@ -244,10 +244,7 @@ impl Lattice {
             ..Node::default()
         };
         if word_id >= 0 {
-            let dic = lang.morph_data(dic_type);
-            n.word_cost = dic.word_cost(word_id);
-            n.left_id = dic.left_id(word_id);
-            n.right_id = dic.right_id(word_id);
+            (n.left_id, n.right_id, n.word_cost) = lang.connection(dic_type, word_id);
         }
         n.left_chain = -1;
         if let Some(root) = self.l_root.get_mut(slot(left)) {
@@ -298,10 +295,8 @@ impl Lattice {
             // optimize: exclude disconnected nodes.
             if self.l_root.get(slot(right)).is_some_and(|&r| 0 <= r) {
                 let pos = positions.get(offset);
-                let backs: Vec<(TokenType, i32, i32)> = (0..pos.count())
-                    .map(|i| Ok((pos.back_type(i)?, pos.back_id(i)?, pos.back_pos(i)?)))
-                    .collect::<Result<_, AnalysisError>>()?;
-                for (t, id, back_pos) in backs {
+                for i in 0..pos.count() {
+                    let (t, id, back_pos) = (pos.back_type(i)?, pos.back_id(i)?, pos.back_pos(i)?);
                     self.add_node(lang, t, id, back_pos.wrapping_sub(self.root_base), right);
                 }
             }
@@ -310,27 +305,28 @@ impl Lattice {
         Ok(())
     }
 
-    /// The nodes of the chain starting at `head`, following `next`.
-    fn chain(&self, head: i32, next: fn(&Node) -> i32) -> Vec<usize> {
-        let mut out = Vec::new();
-        let mut node = head;
-        while let Some(n) = self.node(node) {
-            out.push(slot(node));
-            if out.len() > self.nodes.len() {
-                break; // a cycle: no lattice this code builds has one
-            }
-            node = next(n);
+    /// Node `node` of a chain being walked (its slot and a copy), or `None`
+    /// at the chain's end -- or once `*steps` passes the node count, which
+    /// only a cycle could (no lattice this code builds has one).
+    #[inline]
+    fn step(&self, node: i32, steps: &mut usize) -> Option<(usize, Node)> {
+        let n = *self.node(node)?;
+        *steps = steps.saturating_add(1);
+        if *steps > self.nodes.len().saturating_add(1) {
+            return None;
         }
-        out
+        Some((slot(node), n))
     }
 
     /// `markUnreachable()`: nodes starting where no node ends are excluded.
     fn mark_unreachable(&mut self) {
         for index in 1..self.root_size.wrapping_sub(1).max(1) {
             if self.r_root.get(slot(index)).is_some_and(|&r| r < 0) {
-                let head = self.l_root.get(slot(index)).copied().unwrap_or(-1);
-                for node in self.chain(head, |n| n.left_chain) {
-                    self.nodes[node].mark = -1;
+                let mut node = self.l_root.get(slot(index)).copied().unwrap_or(-1);
+                let mut steps = 0;
+                while let Some((i, n)) = self.step(node, &mut steps) {
+                    self.nodes[i].mark = -1;
+                    node = n.left_chain;
                 }
             }
         }
@@ -348,32 +344,36 @@ impl Lattice {
     /// `calcLeftCost(costs)`.
     fn calc_left_cost(&mut self, costs: &ConnectionCosts) {
         for index in 0..self.root_size {
-            let heads = (
+            let (l_head, r_head) = (
                 self.l_root.get(slot(index)).copied().unwrap_or(-1),
                 self.r_root.get(slot(index)).copied().unwrap_or(-1),
             );
-            let lefts = self.chain(heads.1, |n| n.right_chain);
-            for node in self.chain(heads.0, |n| n.left_chain) {
-                if self.nodes[node].mark < 0 {
+            let mut node = l_head;
+            let mut steps = 0;
+            while let Some((i, n)) = self.step(node, &mut steps) {
+                node = n.left_chain;
+                if n.mark < 0 {
                     continue;
                 }
                 let mut least_node = -1i32;
                 let mut least_cost = i32::MAX;
-                for &left_node in &lefts {
-                    let l = &self.nodes[left_node];
+                let mut left_node = r_head;
+                let mut left_steps = 0;
+                while let Some((j, l)) = self.step(left_node, &mut left_steps) {
+                    left_node = l.right_chain;
                     if 0 <= l.mark {
                         let cost = l
                             .left_cost
                             .wrapping_add(l.word_cost)
-                            .wrapping_add(self.connection_cost(costs, l, &self.nodes[node]));
+                            .wrapping_add(self.connection_cost(costs, &l, &self.nodes[i]));
                         if cost < least_cost {
                             least_cost = cost;
-                            least_node = left_node as i32;
+                            least_node = j as i32;
                         }
                     }
                 }
-                self.nodes[node].left_node = least_node;
-                self.nodes[node].left_cost = least_cost;
+                self.nodes[i].left_node = least_node;
+                self.nodes[i].left_cost = least_cost;
             }
         }
     }
@@ -382,32 +382,36 @@ impl Lattice {
     fn calc_right_cost(&mut self, costs: &ConnectionCosts) {
         let mut index = self.root_size.wrapping_sub(1);
         while 0 <= index {
-            let heads = (
+            let (l_head, r_head) = (
                 self.l_root.get(slot(index)).copied().unwrap_or(-1),
                 self.r_root.get(slot(index)).copied().unwrap_or(-1),
             );
-            let rights = self.chain(heads.0, |n| n.left_chain);
-            for node in self.chain(heads.1, |n| n.right_chain) {
-                if self.nodes[node].mark < 0 {
+            let mut node = r_head;
+            let mut steps = 0;
+            while let Some((i, n)) = self.step(node, &mut steps) {
+                node = n.right_chain;
+                if n.mark < 0 {
                     continue;
                 }
                 let mut least_node = -1i32;
                 let mut least_cost = i32::MAX;
-                for &right_node in &rights {
-                    let r = &self.nodes[right_node];
+                let mut right_node = l_head;
+                let mut right_steps = 0;
+                while let Some((j, r)) = self.step(right_node, &mut right_steps) {
+                    right_node = r.left_chain;
                     if 0 <= r.mark {
                         let cost = r
                             .right_cost
                             .wrapping_add(r.word_cost)
-                            .wrapping_add(self.connection_cost(costs, &self.nodes[node], r));
+                            .wrapping_add(self.connection_cost(costs, &self.nodes[i], &r));
                         if cost < least_cost {
                             least_cost = cost;
-                            least_node = right_node as i32;
+                            least_node = j as i32;
                         }
                     }
                 }
-                self.nodes[node].right_node = least_node;
-                self.nodes[node].right_cost = least_cost;
+                self.nodes[i].right_node = least_node;
+                self.nodes[i].right_cost = least_cost;
             }
             index = index.wrapping_sub(1);
         }
@@ -418,10 +422,12 @@ impl Lattice {
         let Some(&Node { left, right, .. }) = self.nodes.get(ref_node) else {
             return;
         };
-        let head = self.l_root.get(slot(left)).copied().unwrap_or(-1);
-        for node in self.chain(head, |n| n.left_chain) {
-            if self.nodes[node].right == right {
-                self.nodes[node].mark = value;
+        let mut node = self.l_root.get(slot(left)).copied().unwrap_or(-1);
+        let mut steps = 0;
+        while let Some((i, n)) = self.step(node, &mut steps) {
+            node = n.left_chain;
+            if n.right == right {
+                self.nodes[i].mark = value;
             }
         }
     }
@@ -493,10 +499,12 @@ impl Lattice {
             return i32::MAX;
         }
         let mut probed = i32::MAX;
-        let head = self.l_root.get(slot(left)).copied().unwrap_or(-1);
-        for node in self.chain(head, |n| n.left_chain) {
-            if self.nodes[node].right == right {
-                probed = probed.min(self.cost(node));
+        let mut node = self.l_root.get(slot(left)).copied().unwrap_or(-1);
+        let mut steps = 0;
+        while let Some((i, n)) = self.step(node, &mut steps) {
+            node = n.left_chain;
+            if n.right == right {
+                probed = probed.min(self.cost(i));
             }
         }
         probed.wrapping_sub(self.best_cost())

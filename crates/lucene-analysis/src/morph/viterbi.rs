@@ -8,11 +8,14 @@
 //! penalties). [`forward`] and [`add`] are Java's final methods, taking
 //! both.
 //!
-//! Differs: a [`Position`] holds its back pointers as one vector of
-//! records rather than seven parallel arrays (Java's `ArrayUtil.grow` sizes
-//! are not observable); positions are named by their absolute position
-//! rather than held by reference across a call that may grow the array.
-//! Costs are Java `int`s: sums wrap (`wrapping_add`) as Java's do.
+//! Differs: a [`Position`] holds its back pointers as two vectors of
+//! records rather than seven parallel arrays -- the path cost and right id
+//! that [`add`]'s least-cost scan reads, and the rest (Java's
+//! `ArrayUtil.grow` sizes are not observable); positions are named by their
+//! absolute position rather than held by reference across a call that may
+//! grow the array, and [`add`] reads the connection costs of the word's
+//! left id as one row. Costs are Java `int`s: sums wrap (`wrapping_add`) as
+//! Java's do.
 
 use std::sync::Arc;
 
@@ -30,12 +33,19 @@ pub const MAX_UNKNOWN_WORD_LENGTH: i32 = 1024;
 /// `Viterbi.MAX_BACKTRACE_GAP`.
 const MAX_BACKTRACE_GAP: i32 = 1024;
 
-/// One back pointer of a [`Position`] (Java's parallel arrays, one
-/// record).
+/// What [`add`] reads of a [`Position`]'s back pointer, per arriving arc:
+/// the path cost and the right id (Java's `costs` and `lastRightID`
+/// arrays), apart from the rest so the least-cost scan walks 8 bytes an
+/// arc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Back {
+struct Arrival {
     cost: i32,
     last_right_id: i32,
+}
+
+/// The rest of a back pointer (Java's other parallel arrays, one record).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Back {
     back_pos: i32,
     back_word_pos: i32,
     back_index: i32,
@@ -57,6 +67,8 @@ struct Forward {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Position {
     pos: i32,
+    /// `arrivals[i]` and `backs[i]` are back pointer `i`.
+    arrivals: Vec<Arrival>,
     backs: Vec<Back>,
     forwards: Vec<Forward>,
 }
@@ -69,6 +81,7 @@ impl Position {
     /// `add(cost, lastRightID, backPos, backRPos, backIndex, backID,
     /// backType)`.
     #[allow(clippy::too_many_arguments)]
+    #[inline]
     pub fn add(
         &mut self,
         cost: i32,
@@ -79,9 +92,11 @@ impl Position {
         back_id: i32,
         back_type: TokenType,
     ) {
-        self.backs.push(Back {
+        self.arrivals.push(Arrival {
             cost,
             last_right_id,
+        });
+        self.backs.push(Back {
             back_pos,
             back_word_pos,
             back_index,
@@ -90,59 +105,77 @@ impl Position {
         });
     }
 
+    #[inline]
     fn back(&self, i: usize) -> Result<&Back, AnalysisError> {
         self.backs.get(i).ok_or_else(|| bad_index(i))
     }
 
+    #[inline]
+    fn arrival(&self, i: usize) -> Result<&Arrival, AnalysisError> {
+        self.arrivals.get(i).ok_or_else(|| bad_index(i))
+    }
+
     /// `reset()`.
+    #[inline]
     pub fn reset(&mut self) {
+        self.arrivals.clear();
         self.backs.clear();
     }
     /// `getPos()`.
+    #[inline]
     pub fn pos(&self) -> i32 {
         self.pos
     }
     /// `getCount()`.
+    #[inline]
     pub fn count(&self) -> usize {
-        self.backs.len()
+        self.arrivals.len()
     }
     /// `setCount(count)`: keeps the first `count` back pointers.
     pub fn set_count(&mut self, count: usize) {
+        self.arrivals.truncate(count);
         self.backs.truncate(count);
     }
     /// `getCost(index)`.
+    #[inline]
     pub fn cost(&self, i: usize) -> Result<i32, AnalysisError> {
-        Ok(self.back(i)?.cost)
+        Ok(self.arrival(i)?.cost)
     }
     /// `costs[index] = cost`.
     pub fn set_cost(&mut self, i: usize, cost: i32) {
-        if let Some(b) = self.backs.get_mut(i) {
-            b.cost = cost;
+        if let Some(a) = self.arrivals.get_mut(i) {
+            a.cost = cost;
         }
     }
     /// `getBackPos(index)`.
+    #[inline]
     pub fn back_pos(&self, i: usize) -> Result<i32, AnalysisError> {
         Ok(self.back(i)?.back_pos)
     }
     /// `getBackWordPos(index)`.
+    #[inline]
     pub fn back_word_pos(&self, i: usize) -> Result<i32, AnalysisError> {
         Ok(self.back(i)?.back_word_pos)
     }
     /// `getBackID(index)`.
+    #[inline]
     pub fn back_id(&self, i: usize) -> Result<i32, AnalysisError> {
         Ok(self.back(i)?.back_id)
     }
     /// `getBackIndex(index)`.
+    #[inline]
     pub fn back_index(&self, i: usize) -> Result<i32, AnalysisError> {
         Ok(self.back(i)?.back_index)
     }
     /// `getBackType(index)`.
+    #[inline]
     pub fn back_type(&self, i: usize) -> Result<TokenType, AnalysisError> {
         Ok(self.back(i)?.back_type)
     }
     /// `getLastRightID(index)`.
+    #[inline]
     pub fn last_right_id(&self, i: usize) -> Result<i32, AnalysisError> {
-        Ok(self.back(i)?.last_right_id)
+        Ok(self.arrival(i)?.last_right_id)
     }
 
     /// `PositionNBest.addForward(forwardPos, forwardIndex, forwardID,
@@ -195,9 +228,14 @@ impl Default for WrappedPositionArray {
 impl WrappedPositionArray {
     /// `reset()`.
     pub fn reset(&mut self) {
-        for p in &mut self.positions {
-            p.reset();
-            p.forwards.clear();
+        // The live positions only (the freed ones were reset when freed;
+        // forward pointers are cleared after every use).
+        let len = self.positions.len();
+        let mut index = self.next_write;
+        for _ in 0..self.count {
+            index = index.checked_sub(1).unwrap_or(len.saturating_sub(1));
+            self.positions[index].reset();
+            self.positions[index].forwards.clear();
         }
         self.next_write = 0;
         self.next_pos = 0;
@@ -206,7 +244,17 @@ impl WrappedPositionArray {
 
     /// `get(pos)`: the position, created (with every one before it) if it
     /// is in the future.
+    #[inline]
     pub fn get(&mut self, pos: i32) -> &mut Position {
+        if pos >= self.next_pos {
+            self.extend_to(pos);
+        }
+        let i = self.index(pos);
+        &mut self.positions[i]
+    }
+
+    /// Creates the positions up to `pos`.
+    fn extend_to(&mut self, pos: i32) {
         while pos >= self.next_pos {
             if self.count == self.positions.len() {
                 // Grow, unrolling the ring so the oldest position is first.
@@ -231,12 +279,11 @@ impl WrappedPositionArray {
             self.next_pos = self.next_pos.wrapping_add(1);
             self.count = self.count.saturating_add(1);
         }
-        let i = self.index(pos);
-        &mut self.positions[i]
     }
 
     /// The position `pos`, which must not be in the future
     /// (`pos < getNextPos()`).
+    #[inline]
     pub fn at(&self, pos: i32) -> &Position {
         &self.positions[self.index(pos)]
     }
@@ -279,6 +326,7 @@ impl WrappedPositionArray {
                 index = 0;
             }
             self.positions[index].reset();
+            self.positions[index].forwards.clear();
             index = index.wrapping_add(1);
         }
         self.count = self.count.saturating_sub(to_free);
@@ -289,6 +337,14 @@ impl WrappedPositionArray {
 pub trait ViterbiLang<T>: Send {
     /// The dictionary of a token type (`dictionaryMap.get(type)`).
     fn morph_data(&self, token_type: TokenType) -> &dyn MorphData;
+
+    /// `(getLeftId, getRightId, getWordCost)` of a word of the dictionary
+    /// of `token_type`: [`MorphData::connection`] of [`Self::morph_data`],
+    /// which a language may answer without the `dyn` call.
+    #[inline]
+    fn connection(&self, token_type: TokenType, word_id: i32) -> (i32, i32, i32) {
+        self.morph_data(token_type).connection(word_id)
+    }
 
     /// `dictionary.lookupWordIds(sourceId, wordIdRef)` on the system
     /// dictionary.
@@ -430,7 +486,7 @@ impl<T> Viterbi<T> {
 
     /// `buffer.get(posStart, length)` as a shared fragment.
     pub fn fragment(&self, pos_start: i32, length: i32) -> Arc<[u16]> {
-        self.buffer.slice(pos_start, length).into()
+        Arc::from(self.buffer.slice(pos_start, length))
     }
 }
 
@@ -532,7 +588,8 @@ pub fn forward<T, L: ViterbiLang<T>>(
                     p.reset();
                 } else {
                     if least_idx != 0 {
-                        let best = *p.back(least_idx)?;
+                        let (arrival, best) = (*p.arrival(least_idx)?, *p.back(least_idx)?);
+                        p.arrivals[0] = arrival;
                         p.backs[0] = best;
                     }
                     p.set_count(1);
@@ -545,8 +602,8 @@ pub fn forward<T, L: ViterbiLang<T>>(
             }
 
             // Re-base cost so we don't risk int overflow:
-            for b in &mut v.positions.get(least_pos).backs {
-                b.cost = 0;
+            for a in &mut v.positions.get(least_pos).arrivals {
+                a.cost = 0;
             }
 
             if v.pos != least_pos {
@@ -688,7 +745,7 @@ pub fn forward<T, L: ViterbiLang<T>>(
         let mut least_cost = i32::MAX;
         let mut least_idx: i32 = -1;
         let end_data = v.positions.get(end_pos);
-        for (idx, b) in end_data.backs.iter().enumerate() {
+        for (idx, b) in end_data.arrivals.iter().enumerate() {
             // Add EOS cost:
             let cost = b.cost.wrapping_add(v.costs.get(b.last_right_id, 0));
             if cost < least_cost {
@@ -723,8 +780,7 @@ pub fn add<T, L: ViterbiLang<T> + ?Sized>(
     word_id: i32,
     add_penalty: bool,
 ) {
-    let morph = lang.morph_data(token_type);
-    let (left_id, right_id, word_cost) = morph.connection(word_id);
+    let (left_id, right_id, word_cost) = lang.connection(token_type, word_id);
     let mut least_cost = i32::MAX;
     let mut least_idx: i32 = -1;
     // Create the end position first: the array may grow.
@@ -733,13 +789,19 @@ pub fn add<T, L: ViterbiLang<T> + ?Sized>(
     // The number of spaces before the term
     let num_spaces = word_pos.wrapping_sub(from.pos);
     let space_penalty = lang.compute_space_penalty(token_type, word_id, num_spaces);
-    for (idx, b) in from.backs.iter().enumerate() {
+    // Every cost here has the word's left id: one row of the matrix.
+    let row = v.costs.row(left_id);
+    for (idx, b) in from.arrivals.iter().enumerate() {
         // Cost is path cost so far, plus word cost (added at end of loop),
         // plus bigram cost and space penalty cost.
-        let cost = b
-            .cost
-            .wrapping_add(v.costs.get(b.last_right_id, left_id))
-            .wrapping_add(space_penalty);
+        let bigram = match usize::try_from(b.last_right_id)
+            .ok()
+            .and_then(|r| row.get(r))
+        {
+            Some(&c) => i32::from(c),
+            None => v.costs.get(b.last_right_id, left_id),
+        };
+        let cost = b.cost.wrapping_add(bigram).wrapping_add(space_penalty);
         if cost < least_cost {
             least_cost = cost;
             least_idx = i32::try_from(idx).unwrap_or(i32::MAX);
