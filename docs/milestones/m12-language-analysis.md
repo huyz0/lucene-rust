@@ -221,15 +221,41 @@ Part 2 (T12.1):
   8 tokenizer configurations with every attribute, Graphviz lattices,
   10,236 dictionary entries and 24 analyzer/factory chains (6 refused),
   all equal; hostile-dictionary sweeps (`nori_hostile.rs`) never panic.
-- **Bench** (`scripts/bench-micro.sh --bench analysis_m12`, pinned, 3
-  reps): kuromoji_normal 0.93~, search 0.96~, extended 1.11~, nbest 0.96~,
-  japanese_analyzer 0.89~ (noise floor 1.21x); the first faithful port read
-  0.64-0.70x. Profile-backed (perf): the per-position division in
+  Bench (`analysis_m12`, pinned to two cores, 3 reps): nori_discard 2.33x,
+  nori_mixed 2.21x, korean_analyzer 2.19x (noise floor 1.15x); the part 2
+  run read 2.28x, 2.26x, 2.12x and the Tier 2 review's 2.44x, 1.58x, 1.69x
+  (noise 1.17x) -- faster than Lucene in every run, by a margin the shared
+  machine moves.
+- **Hostile sweep** -- both generators also run a seeded corpus of 400
+  lines drawn from pools no tokenizer is tuned for (`fixtures/src/HostileText.java`:
+  half-width forms, supplementary kanji, emoji, combining marks, joiners,
+  variation selectors, jamo, Thai, private use, C0 controls, radicals,
+  specials) through every option combination -- 48 for Kuromoji (mode,
+  punctuation, compounds, user dictionary, n-best 0/2000), 24 for Nori
+  (decompound mode, unigrams, punctuation, user dictionary) -- with every
+  attribute; `sweep.tsv` holds one row-count and FNV-1a digest per line
+  (1.2 million rows in all), byte-identical under JDK 21 and 25, all equal.
+- **Bench** (`scripts/bench-micro.sh --bench analysis_m12`, pinned to two
+  cores, 3 reps, noise floor 1.15x, load 1.5-2.5 from a concurrent build):
+  kuromoji_normal 0.94~, search 0.94~, extended 0.91~, nbest 0.99~,
+  japanese_analyzer 0.87~ (the Tier 2 review's 0.89~); the first faithful
+  port read 0.64-0.70x. Profile-backed (perf): the per-position division in
   `WrappedPositionArray`, a per-byte presence-bit count and a `Position`
   clone per backtraced token were removed; what remains is memory-bound --
   half of `add`'s samples and most of `forward`'s sit on loads from the
   3.4 MB connection-cost matrix, the target map and the entry buffer,
-  which Java's lattice touches identically.
+  which Java's lattice touches identically. `JapaneseAnalyzer`'s
+  part-of-speech stop filter allocated a `String` per token and hashed it
+  with SipHash; the part of speech is now borrowed from the dictionary and
+  the stop tags are a `CharArraySet` (its word hash). That was 1-2% of the
+  token: an interleaved A/B, best of five, read 2,239 ns/token before and
+  2,306 after, inside this machine's noise. The analyzer's profile is
+  still the tokenizer's lattice (~70%: `increment_token`, `add`, the
+  connection costs, the FST, the backtrace); the five filters and the
+  width char filter come to ~8% (the two set probes 2.3%, the four
+  attributes' bookkeeping ~3%, lowercasing 1.5%), the allocator ~3%.
+  Nori's stop tags were never strings (`POS.Tag` is an enum); its set is
+  SipHash over one discriminant byte, below the profile's noise.
 - **Dictionaries** -- licence-clean for redistribution (IPADIC's NAIST/ICOT
   terms; mecab-ko-dic is Apache-2.0), so vendored zlib-compressed: IPADIC
   9.2 MB -> 4.6 MB, mecab-ko-dic 25.0 MB -> 7.6 MB in the repository

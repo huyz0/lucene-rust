@@ -53,6 +53,10 @@ import org.apache.lucene.util.fst.IntsRefFSTEnum;
  *       then, for four configurations, every Kuromoji attribute's {@code reflectWith} values (their keys
  *       head the file: {@code K key...}), {@code E line
  *       finalStart finalEnd finalPosInc} after each line, {@code X line Exception} on failure.
+ *   <li>{@code sweep.tsv}: the hostile sweep -- a seeded corpus of 400 lines from {@link
+ *       HostileText}'s pools ({@code hostile.txt}) through every combination of mode, punctuation,
+ *       compounds, user dictionary and n-best cost (0 or 2000), 48 configurations, rows with
+ *       every attribute summarised per line as {@code config line rows fnv1a64}.
  *   <li>{@code graphviz_<config>.txt}: the {@link GraphvizFormatter} lattice of each corpus line.
  *   <li>{@code nbest_examples.tsv}: {@code calcNBestCost} of example strings.
  *   <li>{@code dictionary.tsv}: every 80th surface of the system dictionary's FST with each of its
@@ -336,6 +340,31 @@ public class GenAnalysisKuromoji {
       boolean attributes = FULL.contains(e.getKey());
       Files.writeString(out.resolve("tok_" + e.getKey() + ".tsv"), rows(e.getValue(), both, attributes), StandardCharsets.UTF_8);
     }
+
+    // The hostile sweep: every mode combination over a seeded hostile corpus,
+    // every attribute, one digest per line (HostileText).
+    List<String> hostile = HostileText.lines(20261008L, 400);
+    Files.writeString(out.resolve("hostile.txt"), String.join("\n", hostile) + "\n", StandardCharsets.UTF_8);
+    StringBuilder sweep = new StringBuilder();
+    for (Mode mode : Mode.values()) {
+      for (boolean punct : new boolean[] {true, false}) {
+        for (boolean compound : new boolean[] {true, false}) {
+          for (UserDictionary ud : new UserDictionary[] {null, user}) {
+            for (int nb : new int[] {0, 2000}) {
+              String name = mode.name().toLowerCase() + "_dp" + (punct ? 1 : 0) + "_dc" + (compound ? 1 : 0)
+                  + "_ud" + (ud == null ? 0 : 1) + "_nb" + nb;
+              Supplier<Tokenizer> s = () -> {
+                JapaneseTokenizer t = new JapaneseTokenizer(ud, punct, compound, mode);
+                if (nb > 0) t.setNBestCost(nb);
+                return t;
+              };
+              sweep.append(HostileText.digests(name, rows(s, hostile, true), hostile.size()));
+            }
+          }
+        }
+      }
+    }
+    Files.writeString(out.resolve("sweep.tsv"), sweep.toString(), StandardCharsets.UTF_8);
 
     // The lattice of each corpus line.
     Object[][] dots = {{"normal", Mode.NORMAL, null}, {"user_search", Mode.SEARCH, user}};

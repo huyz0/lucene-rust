@@ -104,17 +104,13 @@ impl JaDict {
         }
     }
 
-    /// `getPartOfSpeech(morphId)`.
-    pub fn part_of_speech(&self, morph_id: i32) -> Option<String> {
+    /// `getPartOfSpeech(morphId)`: borrowed from the dictionary, which
+    /// holds every part of speech as a string already (Java returns the
+    /// same shared `String` too).
+    pub fn part_of_speech(&self, morph_id: i32) -> Option<&str> {
         match self {
-            JaDict::Known(d) => d
-                .morph_attributes()
-                .part_of_speech(morph_id)
-                .map(str::to_string),
-            JaDict::Unknown(d) => d
-                .morph_attributes()
-                .part_of_speech(morph_id)
-                .map(str::to_string),
+            JaDict::Known(d) => d.morph_attributes().part_of_speech(morph_id),
+            JaDict::Unknown(d) => d.morph_attributes().part_of_speech(morph_id),
             JaDict::User(d) => d.morph_attributes().part_of_speech(morph_id),
         }
     }
@@ -201,7 +197,7 @@ mod tests {
         assert_eq!(us.token_type(), TokenType::User);
         let id = user_dictionary::CUSTOM_DICTIONARY_WORD_ID_OFFSET;
         assert_eq!(us.morph_data().word_cost(id), user_dictionary::WORD_COST);
-        assert_eq!(us.part_of_speech(id).as_deref(), Some("n"));
+        assert_eq!(us.part_of_speech(id), Some("n"));
         assert_eq!(us.reading(id, &[], 0, 0).as_deref(), Some("a"));
         assert_eq!(
             (us.base_form(id, &[], 0, 0), us.pronunciation(id, &[], 0, 0)),

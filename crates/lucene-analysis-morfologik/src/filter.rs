@@ -19,6 +19,9 @@ pub struct MorphosyntacticTagsAttribute {
 }
 
 impl CustomAttribute for MorphosyntacticTagsAttribute {
+    fn impl_class(&self) -> &'static str {
+        "org.apache.lucene.analysis.morfologik.MorphosyntacticTagsAttributeImpl"
+    }
     fn clear(&mut self) {
         self.tags = None;
     }
@@ -210,6 +213,17 @@ mod tests {
         assert_eq!(
             out,
             ["org.apache.lucene.analysis.morfologik.MorphosyntacticTagsAttribute#tags=[subst:sg, adj]"]
+        );
+        // restoreState's error names Java's implementation class.
+        let e = lucene_analysis::AttributeSource::new()
+            .try_restore_state(&a.capture_state())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains(
+                "type org.apache.lucene.analysis.morfologik.MorphosyntacticTagsAttributeImpl that"
+            ),
+            "{e}"
         );
         a.clear_attributes();
         assert!(a.reflect_as_string(false).ends_with("tags=null"));

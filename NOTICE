@@ -45,9 +45,11 @@ https://github.com/brown-uk/dict_uk).
 
 crates/lucene-analysis-kuromoji carries the Japanese dictionary Apache
 Lucene's analysis-kuromoji jar carries, compiled by Lucene from
-mecab-ipadic-2.7.0-20070801 (Nara Institute of Science and Technology; the
-mecab-ipadic notice, with ICOT's conditions, is reproduced in the Apache
-Lucene NOTICE below), zlib-compressed under src/resources/.
+mecab-ipadic-2.7.0-20070801 (Copyright 2000, 2001, 2002, 2003 Nara
+Institute of Science and Technology. All Rights Reserved. The mecab-ipadic
+notice, with ICOT's conditions, is reproduced in the Apache Lucene NOTICE
+below, and mecab-ipadic's COPYING file in full in LICENSE),
+zlib-compressed under src/resources/.
 
 crates/lucene-analysis-nori carries the Korean dictionary Apache Lucene's
 analysis-nori jar carries, compiled by Lucene from mecab-ko-dic-2.1.1-20180720

@@ -36,6 +36,9 @@ impl BaseFormAttribute {
 }
 
 impl CustomAttribute for BaseFormAttribute {
+    fn impl_class(&self) -> &'static str {
+        "org.apache.lucene.analysis.ja.tokenattributes.BaseFormAttributeImpl"
+    }
     fn clear(&mut self) {
         self.token = None;
     }
@@ -67,6 +70,9 @@ impl InflectionAttribute {
 }
 
 impl CustomAttribute for InflectionAttribute {
+    fn impl_class(&self) -> &'static str {
+        "org.apache.lucene.analysis.ja.tokenattributes.InflectionAttributeImpl"
+    }
     fn clear(&mut self) {
         self.token = None;
     }
@@ -96,20 +102,23 @@ pub struct PartOfSpeechAttribute {
 
 impl PartOfSpeechAttribute {
     /// `getPartOfSpeech()`.
-    pub fn part_of_speech(&self) -> Option<String> {
+    pub fn part_of_speech(&self) -> Option<&str> {
         self.token.as_ref()?.part_of_speech()
     }
 }
 
 impl CustomAttribute for PartOfSpeechAttribute {
+    fn impl_class(&self) -> &'static str {
+        "org.apache.lucene.analysis.ja.tokenattributes.PartOfSpeechAttributeImpl"
+    }
     fn clear(&mut self) {
         self.token = None;
     }
     fn reflect(&self, r: &mut Reflector<'_>) {
         const C: &str = "org.apache.lucene.analysis.ja.tokenattributes.PartOfSpeechAttribute";
         let pos = self.part_of_speech();
-        let pos_en = pos.as_deref().and_then(to_string_util::pos_translation);
-        r(C, "partOfSpeech", s(pos));
+        let pos_en = pos.and_then(to_string_util::pos_translation);
+        r(C, "partOfSpeech", AttrValue::Str(pos.map(Cow::Borrowed)));
         r(C, "partOfSpeech (en)", s_static(pos_en));
     }
 }
@@ -133,6 +142,9 @@ impl ReadingAttribute {
 }
 
 impl CustomAttribute for ReadingAttribute {
+    fn impl_class(&self) -> &'static str {
+        "org.apache.lucene.analysis.ja.tokenattributes.ReadingAttributeImpl"
+    }
     fn clear(&mut self) {
         self.token = None;
     }
@@ -146,5 +158,45 @@ impl CustomAttribute for ReadingAttribute {
         r(C, "reading (en)", s(reading_en));
         r(C, "pronunciation", s(pron));
         r(C, "pronunciation (en)", s(pron_en));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lucene_analysis::AttributeSource;
+
+    /// The implementation class `restoreState`'s error names.
+    fn refused<T: CustomAttribute>() -> String {
+        let mut a = AttributeSource::new();
+        a.add_custom::<T>();
+        AttributeSource::new()
+            .try_restore_state(&a.capture_state())
+            .unwrap_err()
+            .to_string()
+    }
+
+    #[test]
+    fn restore_state_names_java_impl_classes() {
+        for (e, class) in [
+            (
+                refused::<BaseFormAttribute>(),
+                "org.apache.lucene.analysis.ja.tokenattributes.BaseFormAttributeImpl",
+            ),
+            (
+                refused::<InflectionAttribute>(),
+                "org.apache.lucene.analysis.ja.tokenattributes.InflectionAttributeImpl",
+            ),
+            (
+                refused::<PartOfSpeechAttribute>(),
+                "org.apache.lucene.analysis.ja.tokenattributes.PartOfSpeechAttributeImpl",
+            ),
+            (
+                refused::<ReadingAttribute>(),
+                "org.apache.lucene.analysis.ja.tokenattributes.ReadingAttributeImpl",
+            ),
+        ] {
+            assert!(e.contains(&format!("type {class} that")), "{e}");
+        }
     }
 }

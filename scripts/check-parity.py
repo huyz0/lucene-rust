@@ -278,14 +278,70 @@ def check_layout(ledger, errors):
             )
 
 
+# The benchmark runner's sources: a `use lucene_<crate>::...;` there names
+# the items a bench case drives.
+BENCH_SOURCES = os.path.join(ROOT, "benchmarks", "rust-runner", "src")
+BENCH_USE = re.compile(r"\buse\s+(lucene_[a-z0-9_]+)::([^;]*);", re.S)
+# The crates `check_bench_clauses` covers: M12's language modules, one crate
+# per Lucene module (`lucene-analysis-kuromoji`, ...).
+BENCH_CLAUSE_CRATE = re.compile(r"lucene-analysis-[a-z0-9-]+")
+BENCH_CLAUSE = re.compile(r"\bBench\b")
+
+
+def bench_imports():
+    """`{crate: {item, ...}}`: what the benchmark runner imports, per crate."""
+    imported = defaultdict(set)
+    if not os.path.isdir(BENCH_SOURCES):
+        return imported
+    for name in sorted(os.listdir(BENCH_SOURCES)):
+        if not name.endswith(".rs"):
+            continue
+        source = open(os.path.join(BENCH_SOURCES, name), encoding="utf-8").read()
+        for crate, items in BENCH_USE.findall(source):
+            imported[crate.replace("_", "-")].update(re.findall(r"\b[A-Za-z_]\w*\b", items))
+    return imported
+
+
+def check_bench_clauses(name, text, errors, imported):
+    """A **ported** row of a language-module crate whose Rust column names an
+    item a bench case imports must carry a `Bench` clause (its ratio, or a
+    pointer to the row that has it): the M12 part 2 review found the Nori
+    rows silent about a bench that existed and had been run.
+
+    Scoped to the `lucene-analysis-<module>` crates: ledger-wide, the same
+    rule flags 95 rows of other crates whose items a bench imports only to
+    set up its input (`Directory`, `IndexWriter`, `BooleanQuery`, ...).
+    """
+    for lineno, cells in rows(text):
+        # A `|` inside a backticked regex splits the status; keep all of it.
+        rust_cell, status = cells[1], "|".join(cells[2:])
+        if not status.startswith("**ported**") or BENCH_CLAUSE.search(status):
+            continue
+        hits = sorted(
+            item
+            for path, items in RUST_ITEMS.findall(rust_cell)
+            if BENCH_CLAUSE_CRATE.fullmatch(path.split("/", 1)[0])
+            for item in item_names(items)
+            if item in imported.get(path.split("/", 1)[0], ())
+        )
+        if hits:
+            errors.append(
+                f"{name}:{lineno}: a bench case drives {', '.join(hits)}, but this "
+                f"**ported** row has no Bench clause (its ratio, or `Bench: see` the row "
+                f"that has it)"
+            )
+
+
 def main():
     ledger = ledger_files()
     errors = []
     java_to_rows = defaultdict(list)
     check_layout(ledger, errors)
 
+    imported = bench_imports()
     for path, text in ledger:
         check_rows(rel(path), text, errors, java_to_rows)
+        check_bench_clauses(rel(path), text, errors, imported)
     text = "\n".join(t for _, t in ledger)
 
     # Coverage: every ported source file should be described by at least one

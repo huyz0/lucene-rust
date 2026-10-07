@@ -79,6 +79,10 @@ VENDORED = {
         ("Lucene's compiled mecab-ipadic-2.7.0-20070801 dictionary (NAIST, with ICOT's "
          "conditions; Lucene ships the notice in its NOTICE)", "NOTICE",
          "Nara Institute of Science and Technology (NAIST),"),
+        ("mecab-ipadic-2.7.0-20070801's COPYING, whose first paragraph requires its "
+         "copyright line in every copy", "LICENSE",
+         "Copyright 2000, 2001, 2002, 2003 Nara Institute of Science\nand Technology.  "
+         "All Rights Reserved."),
         ("Lucene's Japanese stop words, stop tags and romaji map (Apache-2.0)", "LICENSE", APACHE),
     ],
     "crates/lucene-analysis-nori/src/resources": [

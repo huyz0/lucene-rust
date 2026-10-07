@@ -103,11 +103,7 @@ impl std::fmt::Display for AttrValue<'_> {
             AttrValue::Str(Some(s)) => f.write_str(s),
             AttrValue::Int(i) => write!(f, "{i}"),
             AttrValue::Bool(b) => write!(f, "{b}"),
-            // Java's Float.toString for the values a boost takes.
-            AttrValue::Float(v) if v.is_finite() && v.fract() == 0.0 && v.abs() < 1e7 => {
-                write!(f, "{v:.1}")
-            }
-            AttrValue::Float(v) => write!(f, "{v}"),
+            AttrValue::Float(v) => f.write_str(&java_float_to_string(*v)),
             AttrValue::Bytes(Some(b)) => {
                 f.write_str("[")?;
                 for (i, byte) in b.iter().enumerate() {
@@ -130,6 +126,113 @@ impl std::fmt::Display for AttrValue<'_> {
             }
         }
     }
+}
+
+/// Java's `Float.toString(float)` as JDK 19 and later define it (the JDKs
+/// the fixtures run on, 21 and 25, agree): `NaN`, `Infinity`, `0.0`,
+/// `-0.0`; for `10^-3 <= |v| < 10^7` a plain decimal with at least one
+/// fractional digit, otherwise `d.dddEn` (`1.0E-5`, `1.0E10`). The digits
+/// are those of the shortest decimals that round to `v` (the length of
+/// Rust's `{:e}`, but at least two), and of those the closest to `v`, a tie
+/// going to the even last digit: `271183.625` is `271183.62` where Rust
+/// prints `.63`, and `Float.MIN_VALUE` is `1.4E-45` where Rust's shortest
+/// is `1e-45`.
+pub(crate) fn java_float_to_string(v: f32) -> String {
+    if v.is_nan() {
+        return "NaN".into();
+    }
+    let mut out = String::from(if v.is_sign_negative() { "-" } else { "" });
+    let a = v.abs();
+    if a.is_infinite() {
+        out.push_str("Infinity");
+        return out;
+    }
+    if a == 0.0 {
+        out.push_str("0.0");
+        return out;
+    }
+    let (mut digits, mut exp) = split_scientific(&format!("{a:e}"));
+    if let Some((d, e)) = closest_digits(a, digits.len().max(2)) {
+        digits = d;
+        exp = e;
+    }
+    while digits.len() > 1 && digits.last() == Some(&b'0') {
+        digits.pop();
+    }
+    let digit = |i: usize| char::from(digits.get(i).copied().unwrap_or(b'0'));
+    let all_from = |out: &mut String, from: usize| {
+        (from..digits.len()).for_each(|i| out.push(digit(i)));
+    };
+    if !(1e-3..1e7).contains(&f64::from(a)) {
+        out.push(digit(0));
+        out.push('.');
+        if digits.len() > 1 {
+            all_from(&mut out, 1);
+        } else {
+            out.push('0');
+        }
+        out.push('E');
+        out.push_str(&exp.to_string());
+    } else if let Ok(int_len @ 1..) = usize::try_from(exp.saturating_add(1)) {
+        // `exp` is in 0..=6.
+        (0..int_len).for_each(|i| out.push(digit(i)));
+        out.push('.');
+        if digits.len() > int_len {
+            all_from(&mut out, int_len);
+        } else {
+            out.push('0');
+        }
+    } else {
+        // `exp` is in -3..=-1.
+        out.push_str("0.");
+        (exp..-1).for_each(|_| out.push('0'));
+        all_from(&mut out, 0);
+    }
+    out
+}
+
+/// The digits and decimal exponent of Rust's `{:e}` rendering
+/// (`"1.25e-3"` -> `(b"125", -3)`).
+fn split_scientific(s: &str) -> (Vec<u8>, i32) {
+    let (mantissa, exp) = s.split_once('e').unwrap_or((s, "0"));
+    let digits = mantissa.bytes().filter(u8::is_ascii_digit).collect();
+    (digits, exp.parse().unwrap_or(0))
+}
+
+/// Of the two `n`-digit decimals either side of `a`, the closer (a tie to
+/// the even last digit) if it rounds back to `a`, else the other if that
+/// one does; `None` when neither does. `n` is at most 9 (an f32's longest
+/// shortest decimal), so the digits fit a `u64`.
+fn closest_digits(a: f32, n: usize) -> Option<(Vec<u8>, i32)> {
+    // Every f32 is exact in at most 112 significant digits.
+    let (exact, e) = split_scientific(&format!("{a:.120e}"));
+    let (head, rest) = exact.split_at_checked(n)?;
+    let t = head.iter().fold(0u64, |t, &d| t * 10 + u64::from(d - b'0'));
+    if rest.iter().all(|&d| d == b'0') {
+        return Some((head.to_vec(), e));
+    }
+    let pow = 10u64.pow(u32::try_from(n).ok()?);
+    let down = (t, e);
+    let up = if t + 1 == pow {
+        (pow / 10, e.saturating_add(1))
+    } else {
+        (t + 1, e)
+    };
+    let above_half = match rest.split_first() {
+        Some((&d, _)) if d != b'5' => d > b'5',
+        _ => rest.iter().skip(1).any(|&d| d != b'0'),
+    };
+    let tie = rest.first() == Some(&b'5') && !above_half;
+    let order = if above_half || (tie && t % 2 == 1) {
+        [up, down]
+    } else {
+        [down, up]
+    };
+    let shift = i32::try_from(n).ok()?.saturating_sub(1);
+    order
+        .into_iter()
+        .find(|&(t, e)| format!("{t}e{}", e.saturating_sub(shift)).parse::<f32>() == Ok(a))
+        .map(|(t, e)| (t.to_string().into_bytes(), e))
 }
 
 /// [`CustomAttribute`] as an object, for the source's list.
@@ -419,18 +522,27 @@ impl AttributeSource {
 
     /// `AttributeSource.restoreState(State)` with Java's check: a state
     /// holding an attribute this source lacks is an `IllegalArgument`
-    /// error, and nothing is restored.
+    /// error. As in Java, the state's attributes are copied in order until
+    /// the missing one, so what precedes it -- the core attributes, then
+    /// the custom ones in the order they were added -- is restored before
+    /// the error. (Java's order interleaves the core attributes outside
+    /// `PackedTokenAttributeImpl` with the custom ones by `addAttribute`
+    /// order; the core attributes here are always present, so only the
+    /// custom ones' order can decide what is copied before the error.)
     pub fn try_restore_state(&mut self, state: &State) -> Result<(), AnalysisError> {
-        if let Some(missing) = state.custom.iter().find(|s| {
-            let id = s.as_any().type_id();
-            !self.custom.iter().any(|a| a.as_any().type_id() == id)
-        }) {
-            return Err(AnalysisError::IllegalArgument(format!(
-                "State contains AttributeImpl of type {} that is not in in this AttributeSource",
-                missing.impl_class()
-            )));
+        self.copy_core_from(state);
+        for attr in &state.custom {
+            let id = attr.as_any().type_id();
+            match self.custom.iter_mut().find(|a| a.as_any().type_id() == id) {
+                Some(mine) => mine.copy_from(attr.as_ref()),
+                None => {
+                    return Err(AnalysisError::IllegalArgument(format!(
+                        "State contains AttributeImpl of type {} that is not in in this AttributeSource",
+                        attr.impl_class()
+                    )))
+                }
+            }
         }
-        self.restore_state(state);
         Ok(())
     }
 
@@ -849,6 +961,17 @@ mod tests {
             "{e}"
         );
         assert!(b.custom::<Tags>().is_none());
+        // Java copies the state's attributes in order up to the missing one.
+        let mut d = dirty();
+        d.add_custom::<Sticky>().0 = 7;
+        d.add_custom::<Tags>().0 = Some(vec!["t".into()]);
+        let partial = d.capture_state();
+        let mut target = AttributeSource::new();
+        target.add_custom::<Sticky>();
+        assert!(target.try_restore_state(&partial).is_err());
+        assert_eq!(target.term(), "Foo");
+        assert_eq!(target.custom::<Sticky>(), Some(&Sticky(7)));
+        assert!(target.custom::<Tags>().is_none());
         b.restore_state(&state);
         assert_eq!(b.custom::<Tags>(), state.custom::<Tags>());
         b.try_restore_state(&state).unwrap();
@@ -892,8 +1015,58 @@ mod tests {
         a.add_custom::<Tags>().0 = None;
         let s = a.reflect_as_string(false);
         assert!(s.contains("boost=2.5") && s.ends_with("tags=null"), "{s}");
-        assert_eq!(AttrValue::Float(1e8).to_string(), "100000000");
+        assert_eq!(AttrValue::Float(1e8).to_string(), "1.0E8");
         assert!(CustomAttribute::impl_class(&Sticky(0)).ends_with("Sticky"));
+    }
+
+    #[test]
+    fn float_values_print_as_java_float_to_string() {
+        // `Float.toString(Float.intBitsToFloat(bits))` under JDK 21 and 25
+        // (identical); the same rule matched 3,070,588 values -- every
+        // pattern below 70,000, powers of ten +-3 ulps and three million
+        // seeded random patterns -- when it was written.
+        for (bits, java) in [
+            (0x00000000, "0.0"),
+            (0x80000000, "-0.0"),
+            (0x00000001, "1.4E-45"),
+            (0x00000002, "2.8E-45"),
+            (0x00000003, "4.2E-45"),
+            (0x00000010, "2.2E-44"),
+            (0x000fffff, "1.469367E-39"),
+            (0x00800000, "1.1754944E-38"),
+            (0x7f7fffff, "3.4028235E38"),
+            (0x7f800000, "Infinity"),
+            (0xff800000, "-Infinity"),
+            (0x7fc00000, "NaN"),
+            (0x3a83126e, "9.999999E-4"),
+            (0x3a83126f, "0.001"),
+            (0x3a831270, "0.0010000002"),
+            (0x4b18967f, "9999999.0"),
+            (0x4b189680, "1.0E7"),
+            (0x4b189681, "1.0000001E7"),
+            (0x3727c5ac, "1.0E-5"),
+            (0x501502f9, "1.0E10"),
+            (0x4cbebc20, "1.0E8"),
+            (0x3f800000, "1.0"),
+            (0x40200000, "2.5"),
+            (0x3dcccccd, "0.1"),
+            (0x42c80000, "100.0"),
+            (0xbf000000, "-0.5"),
+            (0x3c23d70a, "0.01"),
+            (0x47f12065, "123456.79"),
+            (0x7f7fc99e, "3.4E38"),
+            (0xc88469f4, "-271183.62"),
+            (0x3dcccccd, "0.1"),
+            (0x3f7fffff, "0.99999994"),
+            (0xbed4fc71, "-0.41598848"),
+            (0x4b189680, "1.0E7"),
+            (0x3a83126f, "0.001"),
+        ] {
+            let v = f32::from_bits(bits);
+            assert_eq!(java_float_to_string(v), java, "{bits:#x}");
+            assert_eq!(AttrValue::Float(v).to_string(), java);
+        }
+        assert_eq!(split_scientific("7"), (b"7".to_vec(), 0));
     }
 
     #[test]

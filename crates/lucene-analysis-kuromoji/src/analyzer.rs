@@ -1,7 +1,6 @@
 //! `org.apache.lucene.analysis.ja.JapaneseAnalyzer` and
 //! `JapaneseCompletionAnalyzer`.
 
-use std::collections::HashSet;
 use std::sync::{Arc, LazyLock};
 
 use lucene_analysis::cjk::CJKWidthCharFilter;
@@ -35,14 +34,14 @@ pub fn default_stop_set() -> Arc<CharArraySet> {
 }
 
 /// `JapaneseAnalyzer.getDefaultStopTags()`: `stoptags.txt`.
-pub fn default_stop_tags() -> Arc<HashSet<String>> {
-    static TAGS: LazyLock<Arc<HashSet<String>>> = LazyLock::new(|| {
+pub fn default_stop_tags() -> Arc<CharArraySet> {
+    static TAGS: LazyLock<Arc<CharArraySet>> = LazyLock::new(|| {
         let set = wordlist_loader::get_word_set_with_comment(
             include_str!("resources/stoptags.txt").as_bytes(),
             "#",
         )
         .expect("the vendored stop tags read");
-        Arc::new(set.iter().map(str::to_string).collect())
+        Arc::new(set)
     });
     Arc::clone(&TAGS)
 }
@@ -56,7 +55,7 @@ pub struct JapaneseAnalyzer {
     user_dict: Option<Arc<UserDictionary>>,
     mode: Mode,
     stopwords: Arc<CharArraySet>,
-    stoptags: Arc<HashSet<String>>,
+    stoptags: Arc<CharArraySet>,
 }
 
 impl Default for JapaneseAnalyzer {
@@ -77,7 +76,7 @@ impl JapaneseAnalyzer {
         user_dict: Option<Arc<UserDictionary>>,
         mode: Mode,
         stopwords: Arc<CharArraySet>,
-        stoptags: Arc<HashSet<String>>,
+        stoptags: Arc<CharArraySet>,
     ) -> Self {
         JapaneseAnalyzer {
             user_dict,

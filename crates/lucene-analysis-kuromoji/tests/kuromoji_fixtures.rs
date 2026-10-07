@@ -442,3 +442,50 @@ fn to_string_util_matches_lucene() {
         assert_eq!(actual, Some(f[2]), "{row}");
     }
 }
+
+/// The hostile sweep (`sweep.tsv`): `hostile.txt`, a seeded corpus of text
+/// no tokenizer is tuned for, through every combination of mode,
+/// punctuation, compounds, user dictionary and n-best cost (48), with every
+/// attribute, each line's rows checked against Lucene's by digest.
+#[test]
+fn hostile_sweep_matches_lucene() {
+    let lines = support::data_lines("analysis_kuromoji", "hostile.txt");
+    let u = user_dict();
+    let groups = support::sweep_digests("analysis_kuromoji");
+    let mut n = 0;
+    for (mode, name) in [
+        (Mode::Normal, "normal"),
+        (Mode::Search, "search"),
+        (Mode::Extended, "extended"),
+    ] {
+        for punct in [true, false] {
+            for compound in [true, false] {
+                for user in [false, true] {
+                    for nb in [0, 2000] {
+                        let config = format!(
+                            "{name}_dp{}_dc{}_ud{}_nb{nb}",
+                            u8::from(punct),
+                            u8::from(compound),
+                            u8::from(user)
+                        );
+                        let (want_config, expected) = &groups[n];
+                        assert_eq!(want_config, &config);
+                        let mut t = JapaneseTokenizer::with_options(
+                            user.then(|| u.clone()),
+                            punct,
+                            compound,
+                            mode,
+                        );
+                        if nb > 0 {
+                            t.set_n_best_cost(nb);
+                        }
+                        let actual = rows(&mut t, &lines, true);
+                        support::check_digests(&config, &actual, &lines, expected);
+                        n += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(n, groups.len());
+}

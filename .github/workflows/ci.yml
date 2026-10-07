@@ -215,6 +215,15 @@ jobs:
       # generators above; this re-reads it with 10.5.0 + backward-codecs.
       - name: Backward-codecs fixtures
         run: ./scripts/gen-bwc-fixtures.sh --check
+      # Nori's UnicodeScript table is read off JDK 25 (Unicode 16.0; JDK 21
+      # answers differently in a few ranges, and the generator refuses it).
+      # Last, so the steps above keep JDK 21.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: The UnicodeScript table matches its generator
+        run: java crates/lucene-analysis/tools/DumpUnicodeScripts.java | diff - crates/lucene-analysis/src/java_unicode_script.rs
 
   # ---------------------------------------------------------------------------
   # The Snowball stemmers over the Snowball project's own test vocabularies
