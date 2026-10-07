@@ -1,0 +1,10 @@
+# Lucene 10.5.0 lucene-analysis-morfologik: every top-level class of the jar, and what became of it.
+# Checked by scripts/check-port-inventory.py --module analysis-morfologik (see its docstring for the statuses).
+# M12 T12.3 (Morfologik FSA dictionary lookup); docs/milestones/m12-language-analysis.md.
+# class	status	detail
+analysis/morfologik/MorfologikAnalyzer	todo:M12	T12.3: MorfologikAnalyzer, not started
+analysis/morfologik/MorfologikFilter	todo:M12	T12.3: MorfologikFilter, not started
+analysis/morfologik/MorfologikFilterFactory	todo:M12	T12.3: MorfologikFilterFactory, not started
+analysis/morfologik/MorphosyntacticTagsAttribute	todo:M12	T12.3: MorphosyntacticTagsAttribute, not started
+analysis/morfologik/MorphosyntacticTagsAttributeImpl	todo:M12	T12.3: MorphosyntacticTagsAttributeImpl, not started
+analysis/uk/UkrainianMorfologikAnalyzer	todo:M12	T12.3: UkrainianMorfologikAnalyzer, not started

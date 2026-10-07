@@ -1,0 +1,21 @@
+# Lucene 10.5.0 lucene-analysis-stempel: every top-level class of the jar, and what became of it.
+# Checked by scripts/check-port-inventory.py --module analysis-stempel (see its docstring for the statuses).
+# M12 T12.2 (Polish stemming over the Egothor trie table); docs/milestones/m12-language-analysis.md.
+# class	status	detail
+analysis/pl/PolishAnalyzer	todo:M12	T12.2: PolishAnalyzer, not started
+analysis/stempel/StempelFilter	todo:M12	T12.2: StempelFilter, not started
+analysis/stempel/StempelPolishStemFilterFactory	todo:M12	T12.2: StempelPolishStemFilterFactory, not started
+analysis/stempel/StempelStemmer	todo:M12	T12.2: StempelStemmer, not started
+org/egothor/stemmer/Cell	todo:M12	T12.2: Cell, not started
+org/egothor/stemmer/Compile	todo:M12	T12.2: Compile, not started
+org/egothor/stemmer/Diff	todo:M12	T12.2: Diff, not started
+org/egothor/stemmer/DiffIt	todo:M12	T12.2: DiffIt, not started
+org/egothor/stemmer/Gener	todo:M12	T12.2: Gener, not started
+org/egothor/stemmer/Lift	todo:M12	T12.2: Lift, not started
+org/egothor/stemmer/MultiTrie	todo:M12	T12.2: MultiTrie, not started
+org/egothor/stemmer/MultiTrie2	todo:M12	T12.2: MultiTrie2, not started
+org/egothor/stemmer/Optimizer	todo:M12	T12.2: Optimizer, not started
+org/egothor/stemmer/Optimizer2	todo:M12	T12.2: Optimizer2, not started
+org/egothor/stemmer/Reduce	todo:M12	T12.2: Reduce, not started
+org/egothor/stemmer/Row	todo:M12	T12.2: Row, not started
+org/egothor/stemmer/Trie	todo:M12	T12.2: Trie, not started

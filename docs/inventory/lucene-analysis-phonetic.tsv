@@ -1,0 +1,12 @@
+# Lucene 10.5.0 lucene-analysis-phonetic: every top-level class of the jar, and what became of it.
+# Checked by scripts/check-port-inventory.py --module analysis-phonetic (see its docstring for the statuses).
+# M12 T12.3 (Commons Codec phonetic encoders behind token filters); docs/milestones/m12-language-analysis.md.
+# class	status	detail
+analysis/phonetic/BeiderMorseFilter	todo:M12	T12.3: BeiderMorseFilter, not started
+analysis/phonetic/BeiderMorseFilterFactory	todo:M12	T12.3: BeiderMorseFilterFactory, not started
+analysis/phonetic/DaitchMokotoffSoundexFilter	todo:M12	T12.3: DaitchMokotoffSoundexFilter, not started
+analysis/phonetic/DaitchMokotoffSoundexFilterFactory	todo:M12	T12.3: DaitchMokotoffSoundexFilterFactory, not started
+analysis/phonetic/DoubleMetaphoneFilter	todo:M12	T12.3: DoubleMetaphoneFilter, not started
+analysis/phonetic/DoubleMetaphoneFilterFactory	todo:M12	T12.3: DoubleMetaphoneFilterFactory, not started
+analysis/phonetic/PhoneticFilter	todo:M12	T12.3: PhoneticFilter, not started
+analysis/phonetic/PhoneticFilterFactory	todo:M12	T12.3: PhoneticFilterFactory, not started
