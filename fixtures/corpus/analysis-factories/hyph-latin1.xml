@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<!DOCTYPE hyphenation-info SYSTEM "hyphenation.dtd">
+<!-- A toy grammar written for lucene-rust (Apache-2.0); not a real language's patterns. -->
+<hyphenation-info>
+<hyphen-char value="-"/>
+<hyphen-min before="2" after="2"/>
+<classes>
+aA bB cC dD eE fF gG hH iI jJ kK lL mM nN oO pP qQ rR sS tT uU vV wW xX yY zZ äÄ öÖ üÜ ß
+</classes>
+<exceptions>
+fuss-ball rind-fleisch don-au-dampf schiff-fahrt
+ka<hyphen pre="p" no="pp" post="p"/>en
+</exceptions>
+<patterns>
+1ba 1be 1bi 1bo 1bu 1da 1de 1di 1do 1du 1fa 1fe
+1fi 1fo 1fu 1ga 1ge 1gi 1go 1gu 1ka 1ke 1ki 1ko
+1ku 1la 1le 1li 1lo 1lu 1ma 1me 1mi 1mo 1mu 1na
+1ne 1ni 1no 1nu 1pa 1pe 1pi 1po 1pu 1ra 1re 1ri
+1ro 1ru 1sa 1se 1si 1so 1su 1ta 1te 1ti 1to 1tu
+1va 1ve 1vi 1vo 1vu 1wa 1we 1wi 1wo 1wu 1za 1ze
+1zi 1zo 1zu 2ch 2sch s2t 2ck n1g 1sch 2ph 3hof 4be.
+2nd. .ab4 .un1 .ver3 a1a e1e i1i o1o u1u ss1 1ss ff1
+1ff tt1 l3l r5r m1m4 n2n 1äu 1ei 1ie 1ü 1ö 1ä
+9z
+</patterns>
+</hyphenation-info>

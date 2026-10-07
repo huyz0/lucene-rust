@@ -83,6 +83,10 @@ fn exception_names() {
             JavaException::ArrayIndexOutOfBounds,
             "java.lang.ArrayIndexOutOfBoundsException",
         ),
+        (
+            JavaException::UnsupportedEncoding,
+            "java.io.UnsupportedEncodingException",
+        ),
     ];
     for (k, name) in all {
         assert_eq!(k.qualified_name(), name);

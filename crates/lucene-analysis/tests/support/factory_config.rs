@@ -141,6 +141,18 @@ pub fn stable(class: &str, message: &str) -> String {
     if class == "PatternSyntaxException" || class == "StringIndexOutOfBoundsException" {
         return String::new();
     }
+    // A SAX parse error's location (GenAnalysisFactories.stable cuts it too).
+    const SAX: &str = "org.xml.sax.SAXParseException; ";
+    if let Some(rest) = message
+        .strip_prefix(SAX)
+        .filter(|r| r.starts_with("systemId: "))
+    {
+        if let Some(at) = rest.find("columnNumber: ") {
+            if let Some(end) = rest[at..].find("; ") {
+                return format!("{SAX}{}", &rest[at + end + 2..]);
+            }
+        }
+    }
     message.to_string()
 }
 

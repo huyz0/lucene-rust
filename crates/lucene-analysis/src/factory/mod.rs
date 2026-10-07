@@ -45,6 +45,7 @@ mod filters_resource;
 mod loader;
 pub mod spi;
 mod tokenizers;
+mod xml_source;
 
 use lucene_util::version::Version;
 
@@ -105,13 +106,15 @@ pub enum JavaException {
     /// `java.util.regex.PatternSyntaxException` (its message is the port's,
     /// not Java's multi-line one).
     PatternSyntax,
+    /// `java.io.UnsupportedEncodingException`.
+    UnsupportedEncoding,
 }
 
 impl JavaException {
     /// The class's fully qualified name (what `Throwable.toString()` prints).
     pub fn qualified_name(self) -> String {
         let package = match self {
-            JavaException::Io => "java.io.",
+            JavaException::Io | JavaException::UnsupportedEncoding => "java.io.",
             JavaException::AlreadySet => "org.apache.lucene.util.SetOnce$",
             JavaException::AlreadyClosed => "org.apache.lucene.store.",
             JavaException::TooComplexToDeterminize => "org.apache.lucene.util.automaton.",
@@ -142,6 +145,7 @@ impl JavaException {
             JavaException::NoSuchElement => "NoSuchElementException",
             JavaException::ArrayIndexOutOfBounds => "ArrayIndexOutOfBoundsException",
             JavaException::PatternSyntax => "PatternSyntaxException",
+            JavaException::UnsupportedEncoding => "UnsupportedEncodingException",
         }
     }
 }

@@ -23,9 +23,11 @@ import org.apache.lucene.util.Version;
  * analysis_factories/<name>.tsv}: either {@code B<TAB>ExceptionSimpleName<TAB>message} when the
  * build throws, or {@code S<TAB>toString} (identity hashes removed), {@link AnalysisRows}' rows over
  * {@code corpus/analysis-factories.txt}, and {@code N<TAB>line<TAB>hex|X:Exception} for {@code
- * normalize("f", line)}. Two messages are trimmed where Java's own text changes from run to run:
- * the SPI loader's list of names (a {@code Set.copyOf}) and Hunspell's list of input streams;
- * a {@code StringIndexOutOfBoundsException}'s message, the JDK's own wording, is left out.
+ * normalize("f", line)}. Three messages are trimmed where Java's own text changes from run to run:
+ * the SPI loader's list of names (a {@code Set.copyOf}), Hunspell's list of input streams, and a
+ * SAX parse error's location (a system id resolved against the working directory, and the line
+ * and column the reader's buffer had reached); a {@code StringIndexOutOfBoundsException}'s
+ * message, the JDK's own wording, is left out.
  * {@code names.txt} lists every SPI name of the three kinds ({@code T}, {@code F}, {@code C}),
  * sorted. {@code crates/lucene-analysis/tests/analysis_factory_fixtures.rs} compares (the {@code
  * Word2VecSynonym} configurations in {@code lucene-search}, where that filter lives).
@@ -57,7 +59,8 @@ public class GenAnalysisFactories {
 
   /**
    * Java's messages that differ from run to run, cut where they start to; a {@code
-   * StringIndexOutOfBoundsException}'s, whose wording is the JDK's, is dropped.
+   * StringIndexOutOfBoundsException}'s, whose wording is the JDK's, is dropped, and a SAX parse
+   * error loses its location.
    */
   static String stable(Throwable e) {
     String message = e.getMessage();
@@ -66,7 +69,12 @@ public class GenAnalysisFactories {
     int i = message.indexOf("The current classpath supports the following names: ");
     if (i >= 0) return message.substring(0, i);
     if (message.startsWith("Unable to load hunspell data!")) return "Unable to load hunspell data!";
-    return message;
+    // A SAX parse error's location: the system id the JDK resolved against the working
+    // directory, and the line and column its reader's buffer had reached.
+    return message.replaceFirst(
+        "^(org\\.xml\\.sax\\.SAXParseException; )systemId: [^;]*; lineNumber: -?\\d+; columnNumber:"
+            + " -?\\d+; ",
+        "$1");
   }
 
   static final class Step {

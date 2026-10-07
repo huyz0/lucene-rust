@@ -11,7 +11,7 @@
 
 mod affix_condition;
 mod affixed_word;
-mod charsets;
+pub(crate) mod charsets;
 mod conv_table;
 mod dictionary;
 mod entry_suggestion;
