@@ -61,6 +61,9 @@ pub struct JaViterbi {
     output_compounds: bool,
     pub(crate) nbest: NBestState,
     pub(crate) dot_out: Option<GraphvizFormatter>,
+    /// `pruneAndRescore`'s arcs, kept between calls.
+    kept: Vec<(i32, i32, i32, TokenType)>,
+    forwards: Vec<(i32, i32, TokenType)>,
 }
 
 fn idx(i: i32) -> usize {
@@ -91,6 +94,8 @@ impl JaViterbi {
             output_compounds,
             nbest: NBestState::default(),
             dot_out: None,
+            kept: Vec::new(),
+            forwards: Vec::new(),
         }
     }
 
@@ -111,18 +116,43 @@ impl JaViterbi {
     /// `pruneAndRescore(startPos, endPos, bestStartIDX)`: drops the arcs
     /// that are compound tokens or cross `start_pos`, and rescores the rest.
     fn prune_and_rescore(
+        &mut self,
+        v: &mut Viterbi<Token>,
+        start_pos: i32,
+        end_pos: i32,
+        best_start_idx: i32,
+    ) -> Result<(), AnalysisError> {
+        let (mut kept, mut forwards) = (
+            std::mem::take(&mut self.kept),
+            std::mem::take(&mut self.forwards),
+        );
+        let r = self.prune_with(
+            v,
+            start_pos,
+            end_pos,
+            best_start_idx,
+            &mut kept,
+            &mut forwards,
+        );
+        (self.kept, self.forwards) = (kept, forwards);
+        r
+    }
+
+    /// [`Self::prune_and_rescore`] with its scratch vectors.
+    fn prune_with(
         &self,
         v: &mut Viterbi<Token>,
         start_pos: i32,
         end_pos: i32,
         best_start_idx: i32,
+        kept: &mut Vec<(i32, i32, i32, TokenType)>,
+        forwards: &mut Vec<(i32, i32, TokenType)>,
     ) -> Result<(), AnalysisError> {
         // First pass: walk backwards, building up the forward arcs and
         // pruning inadmissible arcs:
         // The arcs to keep, gathered before the positions they name are
         // touched (one scratch vector for the call, not a copy of every
         // position).
-        let mut kept: Vec<(i32, i32, i32, TokenType)> = Vec::new();
         let mut pos = end_pos;
         while pos > start_pos {
             kept.clear();
@@ -139,7 +169,7 @@ impl JaViterbi {
                     ));
                 }
             }
-            for &(back_pos, arc_idx, id, t) in &kept {
+            for &(back_pos, arc_idx, id, t) in kept.iter() {
                 v.positions.get(back_pos).add_forward(pos, arc_idx, id, t);
             }
             v.positions.get(pos).set_count(0);
@@ -147,7 +177,6 @@ impl JaViterbi {
         }
 
         // Second pass: walk forward, re-scoring:
-        let mut forwards: Vec<(i32, i32, TokenType)> = Vec::new();
         let mut pos = start_pos;
         while pos < end_pos {
             let p = v.positions.get(pos);
@@ -173,7 +202,7 @@ impl JaViterbi {
                 for f in 0..p.forward_count() {
                     forwards.push(p.forward(f)?);
                 }
-                for &(to_pos, word_id, forward_type) in &forwards {
+                for &(to_pos, word_id, forward_type) in forwards.iter() {
                     let dict2 = self.morph_data(forward_type);
                     let new_cost = path_cost
                         .wrapping_add(dict2.word_cost(word_id))
@@ -197,7 +226,7 @@ impl JaViterbi {
                 for f in 0..p.forward_count() {
                     forwards.push(p.forward(f)?);
                 }
-                for &(to_pos, word_id, forward_type) in &forwards {
+                for &(to_pos, word_id, forward_type) in forwards.iter() {
                     add(v, self, forward_type, pos, pos, to_pos, word_id, true);
                 }
             }
@@ -214,6 +243,15 @@ impl ViterbiLang<Token> for JaViterbi {
             (TokenType::User, Some(u)) => u.morph_attributes(),
             (TokenType::Unknown, _) => self.unknown.morph_attributes(),
             _ => self.known.morph_attributes(),
+        }
+    }
+
+    #[inline]
+    fn connection(&self, t: TokenType, word_id: i32) -> (i32, i32, i32) {
+        match (t, &self.user) {
+            (TokenType::User, Some(u)) => u.morph_attributes().connection(word_id),
+            (TokenType::Unknown, _) => self.unknown.morph_attributes().connection(word_id),
+            _ => self.known.morph_attributes().connection(word_id),
         }
     }
 

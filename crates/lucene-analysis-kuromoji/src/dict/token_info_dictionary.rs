@@ -309,6 +309,14 @@ impl MorphData for TokenInfoMorphData {
     }
     #[inline]
     fn connection(&self, id: i32) -> (i32, i32, i32) {
+        // The entry's two shorts in one read (an entry is never at the
+        // buffer's very end; the byte-wise reads cover one that is).
+        if let Some(&[a, b, c, d]) =
+            at(id, 0).and_then(|o| self.dict.buffer().get(o..o.checked_add(4)?))
+        {
+            let ids = i32::from(u16::from_be_bytes([a, b]) >> 3);
+            return (ids, ids, i32::from(i16::from_be_bytes([c, d])));
+        }
         let ids = i32::from(self.short(id, 0) >> 3);
         (ids, ids, self.word_cost(id))
     }

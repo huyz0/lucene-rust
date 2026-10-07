@@ -235,27 +235,33 @@ Part 2 (T12.1):
   (decompound mode, unigrams, punctuation, user dictionary) -- with every
   attribute; `sweep.tsv` holds one row-count and FNV-1a digest per line
   (1.2 million rows in all), byte-identical under JDK 21 and 25, all equal.
-- **Bench** (`scripts/bench-micro.sh --bench analysis_m12`, pinned to two
-  cores, 3 reps, noise floor 1.15x, load 1.5-2.5 from a concurrent build):
-  kuromoji_normal 0.94~, search 0.94~, extended 0.91~, nbest 0.99~,
-  japanese_analyzer 0.87~ (the Tier 2 review's 0.89~); the first faithful
-  port read 0.64-0.70x. Profile-backed (perf): the per-position division in
-  `WrappedPositionArray`, a per-byte presence-bit count and a `Position`
-  clone per backtraced token were removed; what remains is memory-bound --
-  half of `add`'s samples and most of `forward`'s sit on loads from the
-  3.4 MB connection-cost matrix, the target map and the entry buffer,
-  which Java's lattice touches identically. `JapaneseAnalyzer`'s
-  part-of-speech stop filter allocated a `String` per token and hashed it
-  with SipHash; the part of speech is now borrowed from the dictionary and
-  the stop tags are a `CharArraySet` (its word hash). That was 1-2% of the
-  token: an interleaved A/B, best of five, read 2,239 ns/token before and
-  2,306 after, inside this machine's noise. The analyzer's profile is
-  still the tokenizer's lattice (~70%: `increment_token`, `add`, the
-  connection costs, the FST, the backtrace); the five filters and the
-  width char filter come to ~8% (the two set probes 2.3%, the four
-  attributes' bookkeeping ~3%, lowercasing 1.5%), the allocator ~3%.
-  Nori's stop tags were never strings (`POS.Tag` is an enum); its set is
-  SipHash over one discriminant byte, below the profile's noise.
+- **Bench** (`--bench analysis_m12` harness, pinned to cores 2-3, 5 reps,
+  2026-10-07, noise floor 1.17x): kuromoji_normal 1.13~, search 1.08~,
+  extended 1.10~, nbest 1.39x, japanese_analyzer 1.14~ (Rust 1,696 vs Java
+  1,939 ns/token). History: the first faithful port read 0.64-0.70x; a
+  first optimisation pass (the per-position division in
+  `WrappedPositionArray`, a per-byte presence-bit count, a `Position` clone
+  per backtraced token, a `String` and SipHash per part-of-speech probe)
+  reached 0.91-0.99~ and 0.87~. The second pass, decided on callgrind
+  instruction counts (x86-64-v3, fat LTO; per pass over the corpus before
+  -> after: analyzer 122.2M -> 94.5M, normal 89.5M -> 71.9M, search
+  104.5M -> 84.4M, extended 107.3M -> 87.1M, nbest 246.2M -> 150.0M) and
+  an interleaved Rust-vs-Rust A/B (speed-ups 1.13-1.33x): `add` reads the
+  word's row of the cost matrix once and scans each position's arcs as
+  8-byte (cost, right id) records apart from the rest (Java's parallel
+  arrays have the same split); the word's connection data is one 4-byte
+  read without a `dyn` call; `WrappedPositionArray::get` and the
+  `RollingCharBuffer` (now one vector, the freed front dropped in bulk) have
+  inline fast paths, and `reset` touches only the live positions, as
+  Java's does; the n-best lattice walks its chains in place (it collected
+  each into a `Vec`, two allocations per position); `pruneAndRescore`
+  reuses its two vectors; the FST reader's one-byte varints and labels are
+  inline. In the filters, `CharArraySet`'s ignore-case probe lowercased
+  every non-ASCII word into a new `String` (now only one that lowercasing
+  changes) and the katakana stem filter re-encoded every term to UTF-16
+  (now a scan of the chars). What remains of the profile is the lattice
+  itself -- `add`'s least-cost scan, the FST walk per start position, the
+  backtrace -- the work Java's `Viterbi` does, on the same arrays.
 - **Dictionaries** -- licence-clean for redistribution (IPADIC's NAIST/ICOT
   terms; mecab-ko-dic is Apache-2.0), so vendored zlib-compressed: IPADIC
   9.2 MB -> 4.6 MB, mecab-ko-dic 25.0 MB -> 7.6 MB in the repository
