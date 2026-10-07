@@ -20,6 +20,9 @@
 //! - [`StandardTokenizer`] -- Lucene's JFlex UAX#29 scanner, tables and all --
 //!   and [`StandardAnalyzer`].
 //! - [`token_stream_to_automaton`] / [`automaton_to_token_stream`].
+//! - [`factory`] -- the factory SPI (`TokenizerFactory.forName("standard", args)`
+//!   and the rest) and [`factory::CustomAnalyzer`]: analyzers from Java's
+//!   configuration text.
 //!
 //! Offsets everywhere are **UTF-16 code units** (Java `char` indices); see
 //! [`Token`] and [`reader`].
