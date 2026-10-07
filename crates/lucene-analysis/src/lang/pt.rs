@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock};
 
-use crate::util::stemmer_util::{ends_with, ends_with_units};
+use crate::util::stemmer_util::{ends, ends_with, ends_with_units};
 use crate::CharArraySet;
 
 use super::{mark_exclusions, snowball_set, std_lower_stop, CharStemmer, StemFilter};
@@ -252,38 +252,38 @@ pub struct PortugueseLightStemmer;
 impl PortugueseLightStemmer {
     // Java: PortugueseLightStemmer.removeSuffix
     fn remove_suffix(s: &mut [u16], len: usize) -> usize {
-        if len > 4 && ends_with(s, len, "es") && matches!(s[len - 3], 0x72 | 0x73 | 0x6C | 0x7A) {
+        if len > 4 && ends!(s, len, "es") && matches!(s[len - 3], 0x72 | 0x73 | 0x6C | 0x7A) {
             return len - 2;
         }
-        if len > 3 && ends_with(s, len, "ns") {
+        if len > 3 && ends!(s, len, "ns") {
             s[len - 2] = c('m');
             return len - 1;
         }
-        if len > 4 && (ends_with(s, len, "eis") || ends_with(s, len, "éis")) {
+        if len > 4 && (ends!(s, len, "eis") || ends!(s, len, "éis")) {
             s[len - 3] = c('e');
             s[len - 2] = c('l');
             return len - 1;
         }
-        if len > 4 && ends_with(s, len, "ais") {
+        if len > 4 && ends!(s, len, "ais") {
             s[len - 2] = c('l');
             return len - 1;
         }
-        if len > 4 && ends_with(s, len, "óis") {
+        if len > 4 && ends!(s, len, "óis") {
             s[len - 3] = c('o');
             s[len - 2] = c('l');
             return len - 1;
         }
-        if len > 4 && ends_with(s, len, "is") {
+        if len > 4 && ends!(s, len, "is") {
             s[len - 1] = c('l');
             return len;
         }
-        if len > 3 && (ends_with(s, len, "ões") || ends_with(s, len, "ães")) {
+        if len > 3 && (ends!(s, len, "ões") || ends!(s, len, "ães")) {
             let len = len - 1;
             s[len - 2] = c('ã');
             s[len - 1] = c('o');
             return len;
         }
-        if len > 6 && ends_with(s, len, "mente") {
+        if len > 6 && ends!(s, len, "mente") {
             return len - 5;
         }
         if len > 3 && s[len - 1] == c('s') {

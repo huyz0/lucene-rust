@@ -19,10 +19,10 @@ fn transliterate(s: &mut Vec<u16>, mut len: usize, map: fn(char) -> Option<&'sta
     while i < len {
         let out = char::from_u32(u32::from(s[i])).and_then(map);
         if let Some(out) = out {
-            let o: Vec<u16> = out.encode_utf16().collect();
-            s[i] = o[0];
-            if o.len() == 2 {
-                s.insert(i + 1, o[1]);
+            let mut o = out.encode_utf16();
+            s[i] = o.next().unwrap_or(s[i]);
+            if let Some(second) = o.next() {
+                s.insert(i + 1, second);
                 i += 1;
                 len += 1;
             }

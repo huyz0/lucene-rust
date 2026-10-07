@@ -16,13 +16,75 @@ fn lookup(c: i32) -> Option<(u32, u32, u32)> {
         .map(|i| SIMPLE_CASE[i])
 }
 
+/// [`SIMPLE_CASE`]'s Basic Multilingual Plane as a two-level table built at
+/// compile time, the shape of the JDK's `CharacterData` lookups: a 256-entry
+/// block index into 256-entry blocks of `(c ^ upper, c ^ lower)`, every
+/// block without a mapping sharing the all-zero block 0. A binary search
+/// over the 2,900-row table per character was most of a non-ASCII
+/// `LowerCaseFilter`'s cost. Every BMP code point's simple mappings stay in
+/// the BMP (`bmp_table_matches_the_rows` checks); the rest are searched.
+const fn bmp_blocks() -> usize {
+    let mut used = [false; 256];
+    let (mut i, mut n) = (0, 1);
+    while i < SIMPLE_CASE.len() {
+        let (c, u, l) = SIMPLE_CASE[i];
+        if c < 0x10000 && u < 0x10000 && l < 0x10000 && !used[(c >> 8) as usize] {
+            used[(c >> 8) as usize] = true;
+            n += 1;
+        }
+        i += 1;
+    }
+    n
+}
+
+const BMP_BLOCKS: usize = bmp_blocks();
+
+/// `(block index, blocks)` of the table above.
+type BmpCase = ([u16; 256], [[u16; 2]; BMP_BLOCKS * 256]);
+
+static BMP_CASE: BmpCase = build_bmp_case();
+
+const fn build_bmp_case() -> BmpCase {
+    let mut t: BmpCase = ([0; 256], [[0; 2]; BMP_BLOCKS * 256]);
+    let (mut i, mut next) = (0, 1u16);
+    while i < SIMPLE_CASE.len() {
+        let (c, u, l) = SIMPLE_CASE[i];
+        if c < 0x10000 && u < 0x10000 && l < 0x10000 {
+            let hi = (c >> 8) as usize;
+            if t.0[hi] == 0 {
+                t.0[hi] = next;
+                next += 1;
+            }
+            let at = t.0[hi] as usize * 256 + (c & 0xFF) as usize;
+            t.1[at] = [(c ^ u) as u16, (c ^ l) as u16];
+        }
+        i += 1;
+    }
+    t
+}
+
+/// `(toUpperCase(c), toLowerCase(c))` of a BMP code point from [`BMP_CASE`].
+#[inline]
+fn bmp(c: u16) -> [u16; 2] {
+    let x = BMP_CASE.1[usize::from(BMP_CASE.0[usize::from(c >> 8)]) * 256 + usize::from(c & 0xFF)];
+    [c ^ x[0], c ^ x[1]]
+}
+
 /// `Character.toUpperCase(int)`: the JDK's simple uppercase mapping.
+#[inline]
 pub fn java_to_upper_case(c: i32) -> i32 {
+    if let Ok(u) = u16::try_from(c) {
+        return i32::from(bmp(u)[0]);
+    }
     lookup(c).map_or(c, |(_, u, _)| u as i32)
 }
 
 /// `Character.toLowerCase(int)`: the JDK's simple lowercase mapping.
+#[inline]
 pub fn java_to_lower_case(c: i32) -> i32 {
+    if let Ok(u) = u16::try_from(c) {
+        return i32::from(bmp(u)[1]);
+    }
     lookup(c).map_or(c, |(_, _, l)| l as i32)
 }
 
@@ -144,6 +206,28 @@ mod tests {
         let mut v = Vec::new();
         expand(c, &mut |x| v.push(x));
         v
+    }
+
+    #[test]
+    fn bmp_table_matches_the_rows() {
+        // The compile-time builders, run again at run time.
+        assert_eq!(bmp_blocks(), BMP_BLOCKS);
+        assert!(build_bmp_case() == BMP_CASE);
+        for c in 0..=0x10FFFF {
+            let row = lookup(c);
+            assert_eq!(
+                java_to_upper_case(c),
+                row.map_or(c, |r| r.1 as i32),
+                "{c:X}"
+            );
+            assert_eq!(
+                java_to_lower_case(c),
+                row.map_or(c, |r| r.2 as i32),
+                "{c:X}"
+            );
+        }
+        assert_eq!(java_to_lower_case(-1), -1);
+        assert_eq!(java_to_lower_case(0x10400), 0x10428);
     }
 
     #[test]

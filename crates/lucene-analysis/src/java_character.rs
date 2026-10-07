@@ -23,6 +23,8 @@
 //! `codepoints.words` (every code point) leaves those out, so the fixtures
 //! agree under either; `tests/code_point_fixtures.rs` pins them to JDK 25.
 
+use std::sync::LazyLock;
+
 use crate::java_character_tables::{
     DECIMAL_DIGIT_ZEROS, GENERAL_CATEGORY_RUNS, UNICODE_WHITESPACE,
 };
@@ -158,24 +160,41 @@ pub fn is_lower_case_letter(cp: u32) -> bool {
     get_type(cp) == LOWERCASE_LETTER
 }
 
+/// Bit `cp` set for every BMP decimal digit (`Nd`), so that
+/// [`decimal_digit_value`] of a BMP non-digit is one load.
+static BMP_DIGITS: LazyLock<[u64; 1024]> = LazyLock::new(|| {
+    let mut bits = [0u64; 1024];
+    for zero in DECIMAL_DIGIT_ZEROS.iter().filter(|&&z| z < 0x10000) {
+        for cp in *zero..zero + 10 {
+            if is_digit(cp) {
+                bits[(cp >> 6) as usize] |= 1 << (cp & 63);
+            }
+        }
+    }
+    bits
+});
+
 /// `Character.getNumericValue(int)` of a decimal digit (`Nd`): its value
 /// 0..=9; `None` for any other code point.
 pub fn decimal_digit_value(cp: u32) -> Option<u32> {
-    if !is_digit(cp) {
+    // A BMP code point is first looked up in a bitmap of the plane's digits.
+    if cp < 0x10000 && BMP_DIGITS[(cp >> 6) as usize] & (1 << (cp & 63)) == 0 {
         return None;
     }
+    // A digit always has its run's zero at or below it, within nine.
     let i = DECIMAL_DIGIT_ZEROS.partition_point(|&z| z <= cp);
-    // A digit always has its run's zero at or below it.
     let zero = DECIMAL_DIGIT_ZEROS[i.checked_sub(1)?];
-    Some(cp - zero)
+    (cp - zero < 10 && is_digit(cp)).then(|| cp - zero)
 }
 
 /// `Character.toUpperCase(int)`: the JDK's simple uppercase mapping.
+#[inline]
 pub fn to_upper_case(cp: u32) -> u32 {
     lucene_util::automaton::java_to_upper_case(cp as i32) as u32
 }
 
 /// `Character.toLowerCase(int)`: the JDK's simple lowercase mapping.
+#[inline]
 pub fn to_lower_case(cp: u32) -> u32 {
     lucene_util::automaton::java_to_lower_case(cp as i32) as u32
 }
@@ -297,6 +316,9 @@ mod tests {
         assert_eq!(decimal_digit_value(0x0669), Some(9));
         assert_eq!(decimal_digit_value(0x1D7CE), Some(0));
         assert_eq!(decimal_digit_value('x' as u32), None);
+        for cp in 0..=0x10FFFF {
+            assert_eq!(decimal_digit_value(cp).is_some(), is_digit(cp), "{cp:X}");
+        }
         assert_eq!(to_upper_case('ß' as u32), 'ß' as u32);
         assert_eq!(to_upper_case('a' as u32), 'A' as u32);
         assert_eq!(to_lower_case(0x0130), 'i' as u32);
