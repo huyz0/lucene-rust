@@ -1088,6 +1088,18 @@ outright.
   `String.toLowerCase(Locale.ROOT)` of 8,000 random strings around capital
   sigmas (the JDK's word-iterator final-sigma context). Deterministic. Read by
   `crates/lucene-analysis/tests/analysis_lang_fixtures.rs`.
+- `GenAnalysisPhonetic.java` — M12 T12.3: Commons Codec 1.17.2's phonetic
+  encoders (`words.tsv`: 18,076 words -- edge cases, every third KStem head
+  word, 10,000 names joined at random from the encoders' own rule patterns --
+  through 28 encoder/option columns; `bm.tsv`: 2,188 words through 16
+  Beider-Morse columns; `prefixes.txt`: `PhoneticEngine.NAME_PREFIXES` in
+  `HashSet` order) and the 52 `CustomAnalyzer` configurations of
+  `corpus/analysis-phonetic.conf` over `corpus/analysis-phonetic.txt`
+  (`data/analysis_phonetic/<config>.tsv`, `GenAnalysisFactories`' rows). Runs
+  with lucene-analysis-phonetic and Commons Codec on its own classpath only
+  (`generator_classpath` in `scripts/gen-fixtures.sh`), so their SPI entries
+  do not reach the other analysis generators. Deterministic. Read by
+  `crates/lucene-analysis-phonetic/tests/phonetic_fixtures.rs`.
 - `GenAnalysisCompound.java` — M11 T11.6: `corpus/hyphenation-test.xml` (a
   toy hyphenation grammar written for this project) loaded into a
   `HyphenationTree`: hyphenation points for words (`points.words`), and the

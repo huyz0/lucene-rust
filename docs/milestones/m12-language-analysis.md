@@ -92,6 +92,17 @@ Part 1:
 - **Inventory** -- the eight modules' 178 top-level classes (Stempel's
   `org/egothor/stemmer/` included), each `todo:M12` with its task until
   ported.
+- **T12.3 phonetic** -- `lucene-analysis-phonetic`: the four filters and
+  factories (`register_factories()`), over Commons Codec 1.17.2's encoders
+  reimplemented rule for rule on UTF-16 units (`Soundex` and its two variant
+  mappings, `RefinedSoundex`, `Metaphone`, `DoubleMetaphone`, `Caverphone1`/`2`,
+  `ColognePhonetic`, `Nysiis`, `MatchRatingApproachEncoder`,
+  `DaitchMokotoffSoundex`, Beider-Morse with its 123 rule files vendored).
+  `GenAnalysisPhonetic.java`: 18,076 words x 28 encoder/option columns,
+  2,188 words x 16 Beider-Morse columns and 52 `CustomAnalyzer`
+  configurations (11 refused), all equal. `String.toUpperCase`'s special
+  casing (`ß` -> `SS`) joined `lucene-analysis` for it
+  (`java_string_to_upper_case`).
 
 ## Acceptance criteria
 
