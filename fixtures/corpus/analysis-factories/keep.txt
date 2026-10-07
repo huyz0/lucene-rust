@@ -1,0 +1,6 @@
+quick
+brown
+fox
+hello
+world
+running

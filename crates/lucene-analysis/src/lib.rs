@@ -65,6 +65,7 @@ pub mod compound;
 pub mod core_analysis;
 pub mod email;
 pub mod en;
+pub mod factory;
 pub mod graph_finite_strings;
 mod graph_token_filter;
 pub mod hunspell;

@@ -1,0 +1,6 @@
+# English-ish stop words written for lucene-rust (Apache-2.0)
+the
+and
+over
+it's
+It

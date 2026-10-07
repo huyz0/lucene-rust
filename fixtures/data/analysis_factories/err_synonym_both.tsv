@@ -1,0 +1,1 @@
+B	IllegalArgumentException	Analyzer and TokenizerFactory can't be specified both: a and b

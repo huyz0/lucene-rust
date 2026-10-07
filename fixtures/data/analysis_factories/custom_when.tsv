@@ -1,0 +1,185 @@
+S	CustomAnalyzer(org.apache.lucene.analysis.core.WhitespaceTokenizerFactory,org.apache.lucene.analysis.miscellaneous.ProtectedTermFilterFactory,org.apache.lucene.analysis.reverse.ReverseStringFilterFactory)
+T	0	eht	0	3	1	1	word	0	-	0	1
+T	0	kciuQ	4	9	1	1	word	0	-	0	1
+T	0	nworb	10	15	1	1	word	0	-	0	1
+T	0	'xof	16	21	1	1	word	0	-	0	1
+T	0	pmuj	22	28	1	1	word	0	-	0	1
+T	0	revo	29	33	1	1	word	0	-	0	1
+T	0	eht	34	37	1	1	word	0	-	0	1
+T	0	izal	38	42	1	1	word	0	-	0	1
+T	0	;sgod	43	48	1	1	word	0	-	0	1
+T	0	'ti	49	53	1	1	word	0	-	0	1
+T	0	10-60-4202	54	64	1	1	word	0	-	0	1
+T	0	dna	65	68	1	1	word	0	-	0	1
+T	0	naj	69	72	1	1	word	0	-	0	1
+T	0	,21	73	76	1	1	word	0	-	0	1
+T	0	.3202	77	82	1	1	word	0	-	0	1
+E	0	82	82	0
+T	1	,olleh	0	6	1	1	word	0	-	0	1
+T	1	!dlrow	7	13	1	1	word	0	-	0	1
+T	1	rab-oof	14	21	1	1	word	0	-	0	1
+T	1	xuq_zab	22	29	1	1	word	0	-	0	1
+T	1	ifiw	30	34	1	1	word	0	-	0	1
+T	1	005tohsrewop	35	47	1	1	word	0	-	0	1
+T	1	'lien'o	48	56	1	1	word	0	-	0	1
+T	1	005ds	57	62	1	1	word	0	-	0	1
+T	1	if-iw	63	68	1	1	word	0	-	0	1
+T	1	vt	69	71	1	1	word	0	-	0	1
+E	1	71	71	0
+T	2	emos>p<	0	7	1	1	word	0	-	0	1
+T	2	>b/<lmth>b<	8	19	1	1	word	0	-	0	1
+T	2	;pma&	20	25	1	1	word	0	-	0	1
+T	2	txet	26	30	1	1	word	0	-	0	1
+T	2	;tg&ereh;tl&	31	43	1	1	word	0	-	0	1
+T	2	>tpircs/<)(x>tpircs<	44	64	1	1	word	0	-	0	1
+T	2	>p/<;etucae&fac	65	80	1	1	word	0	-	0	1
+E	2	80	80	0
+T	3	:liame	0	6	1	1	word	0	-	0	1
+T	3	moc.elpmaxe@eod.nhoj	7	27	1	1	word	0	-	0	1
+T	3	:lru	28	32	1	1	word	0	-	0	1
+T	3	/eroc/gro.ehcapa.enecul//:sptth	33	64	1	1	word	0	-	0	1
+T	3	htap	65	69	1	1	word	0	-	0	1
+T	3	nib/lacol/rsu/	70	84	1	1	word	0	-	0	1
+E	3	84	84	0
+T	4	édöcïnü	0	7	1	1	word	0	-	0	1
+T	4	daçaf	8	14	1	1	word	0	-	0	1
+T	4	émusér	15	21	1	1	word	0	-	0	1
+T	4	vïan	22	27	1	1	word	0	-	0	1
+T	4	risæ	28	32	1	1	word	0	-	0	1
+T	4	dnuserø	33	40	1	1	word	0	-	0	1
+T	4	dnalå	41	46	1	1	word	0	-	0	1
+T	4	eßarts	47	53	1	1	word	0	-	0	1
+T	4	enﬁ	54	57	1	1	word	0	-	0	1
+E	4	57	57	0
+T	5	すまいでん住に都京東	0	10	1	1	word	0	-	0	1
+T	5	시별특울서	11	16	1	1	word	0	-	0	1
+T	5	ﾅｶﾀｶ	17	21	1	1	word	0	-	0	1
+T	5	ﾄｽﾃ	22	25	1	1	word	0	-	0	1
+T	5	ｈｔｄｉｗｌｌｕｆ	26	35	1	1	word	0	-	0	1
+T	5	ながらひ	36	40	1	1	word	0	-	0	1
+T	5	ナカタカ	41	45	1	1	word	0	-	0	1
+E	5	45	45	0
+T	6	ابحرم	0	5	1	1	word	0	-	0	1
+T	6	ملاعلاب	6	13	1	1	word	0	-	0	1
+T	6	ةباتكلا	14	21	1	1	word	0	-	0	1
+T	6	ةيبرعلا	22	29	1	1	word	0	-	0	1
+T	6	بتكلاو	30	36	1	1	word	0	-	0	1
+T	6	٣٢١	37	40	1	1	word	0	-	0	1
+T	6	٦٥٤	41	44	1	1	word	0	-	0	1
+E	6	44	44	0
+T	7	тевирп	0	6	1	1	word	0	-	0	1
+T	7	,рим	7	11	1	1	word	0	-	0	1
+T	7	еищугеб	12	19	1	1	word	0	-	0	1
+T	7	икабос	20	26	1	1	word	0	-	0	1
+T	7	и	27	28	1	1	word	0	-	0	1
+T	7	икшок	29	34	1	1	word	0	-	0	1
+E	7	34	34	0
+T	8	άκινηλλε	0	8	1	1	word	0	-	0	1
+T	8	αταμμάργ	9	17	1	1	word	0	-	0	1
+T	8	σοφυσίσ	18	25	1	1	word	0	-	0	1
+T	8	ςόδο	26	30	1	1	word	0	-	0	1
+E	8	30	30	0
+T	9	ीद्निह	0	6	1	1	word	0	-	0	1
+T	9	ाषाभ	7	11	1	1	word	0	-	0	1
+T	9	ালংাব	12	17	1	1	word	0	-	0	1
+T	9	াষাভ	18	22	1	1	word	0	-	0	1
+T	9	ుగులెత	23	29	1	1	word	0	-	0	1
+T	9	షాభ	30	33	1	1	word	0	-	0	1
+E	9	33	33	0
+T	10	eid	0	3	1	1	word	0	-	0	1
+T	10	resuäH	4	10	1	1	word	0	-	0	1
+T	10	neraw	11	16	1	1	word	0	-	0	1
+T	10	reßörg	17	23	1	1	word	0	-	0	1
+T	10	la	24	27	1	1	word	0	-	0	1
+T	10	eid	28	31	1	1	word	0	-	0	1
+T	10	emuäb	32	37	1	1	word	0	-	0	1
+T	10	trhafffihcsfpmaduanod	38	59	1	1	word	0	-	0	1
+T	10	gnureittekitehcsielfdnir	60	84	1	1	word	0	-	0	1
+T	10	labssuf	85	93	1	1	word	0	-	0	1
+E	10	93	93	0
+T	11	el	0	3	1	1	word	0	-	0	1
+T	11	tnafne	4	11	1	1	word	0	-	0	1
+T	11	rbra'l	12	19	1	1	word	0	-	0	1
+T	11	enu'd	20	25	1	1	word	0	-	0	1
+T	11	nosiam	26	32	1	1	word	0	-	0	1
+T	11	iuh'druojua	33	44	1	1	word	0	-	0	1
+T	11	li'uq	45	50	1	1	word	0	-	0	1
+E	11	50	50	0
+T	12	5.2|tsoob	0	9	1	1	word	0	-	0	1
+T	12	5.0|mret	10	18	1	1	word	0	-	0	1
+T	12	3|qerf	19	25	1	1	word	0	-	0	1
+T	12	0.1|daolyap	26	37	1	1	word	0	-	0	1
+T	12	hcuoc	38	43	1	1	word	0	-	0	1
+T	12	afos	44	48	1	1	word	0	-	0	1
+T	12	vt	49	51	1	1	word	0	-	0	1
+T	12	ifiw	52	56	1	1	word	0	-	0	1
+E	12	56	56	0
+T	13	dael	2	9	1	1	word	0	-	0	1
+T	13	dna	10	13	1	1	word	0	-	0	1
+T	13	liart	14	22	1	1	word	0	-	0	1
+T	13	ecaps	25	31	1	1	word	0	-	0	1
+T	13	dna	32	35	1	1	word	0	-	0	1
+T	13	bat	36	40	1	1	word	0	-	0	1
+E	13	42	42	0
+T	14	ad'lubnatsi	0	11	1	1	word	0	-	0	1
+T	14	iiiı	12	16	1	1	word	0	-	0	1
+T	14	eçkrüt	17	23	1	1	word	0	-	0	1
+T	14	koç	24	27	1	1	word	0	-	0	1
+T	14	lezüg	28	33	1	1	word	0	-	0	1
+E	14	33	33	0
+T	15	-nehpyh	0	7	1	1	word	0	-	0	1
+T	15	ta	8	12	1	1	word	0	-	0	1
+T	15	wob-niar	13	21	1	1	word	0	-	0	1
+T	15	rebmun	22	29	1	1	word	0	-	0	1
+T	15	65.432,1	30	38	1	1	word	0	-	0	1
+T	15	41.3	39	43	1	1	word	0	-	0	1
+T	15	²cm=e	44	49	1	1	word	0	-	0	1
+T	15	½	50	51	1	1	word	0	-	0	1
+T	15	24	52	54	1	1	word	0	-	0	1
+E	15	54	54	0
+T	16	]]tset:yrogetac[[	0	17	1	1	word	0	-	0	1
+T	16	'''dlob'''	18	28	1	1	word	0	-	0	1
+T	16	''cilati''	29	39	1	1	word	0	-	0	1
+T	16	gro.x//:ptth[	40	53	1	1	word	0	-	0	1
+T	16	]knil	54	59	1	1	word	0	-	0	1
+T	16	}}etic{{	60	68	1	1	word	0	-	0	1
+E	16	68	68	0
+T	17	gninnur	0	7	1	1	word	0	-	0	1
+T	17	nur	8	12	1	1	word	0	-	0	1
+T	17	nar	13	16	1	1	word	0	-	0	1
+T	17	ilisae	17	23	1	1	word	0	-	0	1
+T	17	ilriaf	24	30	1	1	word	0	-	0	1
+T	17	tac	31	35	1	1	word	0	-	0	1
+T	17	inop	36	42	1	1	word	0	-	0	1
+T	17	reneg	43	53	1	1	word	0	-	0	1
+T	17	ippah	54	63	1	1	word	0	-	0	1
+E	17	63	63	0
+E	18	0	0	0
+T	19	ol	0	3	1	1	word	0	-	0	1
+T	19	oñin	4	9	1	1	word	0	-	0	1
+T	19	nabatnac	10	18	1	1	word	0	-	0	1
+T	19	noicnac	19	28	1	1	word	0	-	0	1
+T	19	rgela	29	36	1	1	word	0	-	0	1
+T	19	êugutrop	37	46	1	1	word	0	-	0	1
+T	19	õça	47	52	1	1	word	0	-	0	1
+E	19	52	52	0
+N	0	54686520517569636b2042726f776e20466f782773206a756d706564206f76657220746865206c617a7920646f67733b206974277320323032342d30362d303120616e64204a616e2031322c20323032332e
+N	1	48656c6c6f2c20576f726c642120666f6f2d6261722062617a5f717578205769466920506f77657253686f74353030204f274e65696c27732053443530302077692d6669205456
+N	2	3c703e536f6d65203c623e48544d4c3c2f623e2026616d703b207465787420266c743b686572652667743b203c7363726970743e7828293c2f7363726970743e20636166266561637574653b3c2f703e
+N	3	656d61696c3a206a6f686e2e646f65406578616d706c652e636f6d2075726c3a2068747470733a2f2f6c7563656e652e6170616368652e6f72672f636f72652f2070617468202f7573722f6c6f63616c2f62696e
+N	4	c39c6ec3af63c3b664c3a9206661c3a76164652072c3a973756dc3a9206e61c3af766520c38673697220c398726573756e6420c3856c616e642073747261c39f6520efac816e65
+N	5	e69db1e4baace983bde381abe4bd8fe38293e381a7e38184e381bee3819920ec849cec9ab8ed8ab9ebb384ec8b9c20efbdb6efbe80efbdb6efbe8520efbe83efbdbdefbe8420efbca6efbcb5efbcacefbcacefbcb7efbca9efbca4efbcb4efbca820e381b2e38289e3818ce381aa20e382abe382bfe382abe3838a
+N	6	d985d8b1d8add8a8d8a720d8a8d8a7d984d8b9d8a7d984d98520d8a7d984d983d8aad8a7d8a8d8a920d8a7d984d8b9d8b1d8a8d98ad8a920d988d8a7d984d983d8aad8a820d9a1d9a2d9a320d9a4d9a5d9a6
+N	7	d09fd180d0b8d0b2d0b5d18220d0bcd0b8d1802c20d0b1d0b5d0b3d183d189d0b8d0b520d181d0bed0b1d0b0d0bad0b820d0b820d0bad0bed188d0bad0b8
+N	8	ce95cebbcebbceb7cebdceb9cebaceac20ceb3cf81ceaccebccebcceb1cf84ceb120cea3ce8acea3cea5cea6ce9fcea320cebfceb4cf8ccf82
+N	9	e0a4b9e0a4bfe0a4a8e0a58de0a4a6e0a58020e0a4ade0a4bee0a4b7e0a4be20e0a6ace0a6bee0a682e0a6b2e0a6be20e0a6ade0a6bee0a6b7e0a6be20e0b0a4e0b186e0b0b2e0b181e0b097e0b18120e0b0ade0b0bee0b0b7
+N	10	4469652048c3a47573657220776172656e206772c3b6c39f657220616c73206469652042c3a4756d6520446f6e617564616d706673636869666666616872742052696e64666c65697363686574696b657474696572756e67204675737362616c6c
+N	11	6c657320656e66616e7473206c276172627265206427756e65206d6169736f6e2061756a6f7572642768756920717527696c
+N	12	626f6f73747c322e35207465726d7c302e3520667265717c33207061796c6f61647c312e3020636f75636820736f66612074762077696669
+N	13	20206c656164696e6720616e6420747261696c696e6720202073706163657309616e6409746162732020
+N	14	c4b07374616e62756c27646120c4b14969c4b02054c3bc726bc3a76520c3874f4b2067c3bc7a656c
+N	15	68797068656e2d2061746564207261696e2d626f77206e756d6265727320312c3233342e353620332e313420653d6d63c2b220c2bd203432
+N	16	5b5b43617465676f72793a546573745d5d20272727626f6c642727272027276974616c69632727205b687474703a2f2f782e6f7267206c696e6b5d207b7b636974657d7d
+N	17	72756e6e696e672072756e732072616e20656173696c7920666169726c79206361747320706f6e6965732067656e65726f75736c792068617070696e657373
+N	18	
+N	19	6c6f73206e69c3b16f732063616e746162616e2063616e63696f6e657320616c656772657320706f7274756775c3aa732061c3a7c3b56573

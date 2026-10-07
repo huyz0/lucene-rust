@@ -114,6 +114,9 @@ a dependency the shipped library links is not under a licence listed here.
   `synonyms-solr.txt` and `synonyms-wordnet.txt`, are written for this project
   (Apache-2.0); the WordNet file uses only WordNet's `wn_s.pl` line *format*,
   none of its synsets. Test data only.
+- **The factory fixtures' inputs** (M11 T11.7), `fixtures/corpus/analysis-factories.txt`,
+  `analysis-factories.conf` and the word, rule and mapping files under
+  `analysis-factories/`, are written for this project (Apache-2.0). Test data only.
 
 ## What ships, and under what
 

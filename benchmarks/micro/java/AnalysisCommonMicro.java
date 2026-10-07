@@ -11,6 +11,7 @@ import org.apache.lucene.analysis.Tokenizer;
 import org.apache.lucene.analysis.charfilter.HTMLStripCharFilter;
 import org.apache.lucene.analysis.cjk.CJKAnalyzer;
 import org.apache.lucene.analysis.core.SimpleAnalyzer;
+import org.apache.lucene.analysis.custom.CustomAnalyzer;
 import org.apache.lucene.analysis.core.WhitespaceAnalyzer;
 import org.apache.lucene.analysis.core.WhitespaceTokenizer;
 import org.apache.lucene.analysis.email.UAX29URLEmailAnalyzer;
@@ -85,5 +86,14 @@ public class AnalysisCommonMicro {
     run("ascii_folding_multilingual", chain(StandardTokenizer::new, ASCIIFoldingFilter::new), multi);
     run("cjk_multilingual", new CJKAnalyzer(), multi);
     run("uax29_url_email_multilingual", new UAX29URLEmailAnalyzer(), multi);
+    run(
+        "custom_analyzer",
+        CustomAnalyzer.builder()
+            .withTokenizer("standard")
+            .addTokenFilter("lowercase")
+            .addTokenFilter("stop")
+            .addTokenFilter("porterStem")
+            .build(),
+        docs);
   }
 }

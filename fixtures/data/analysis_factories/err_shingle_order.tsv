@@ -1,0 +1,1 @@
+B	IllegalArgumentException	Invalid minShingleSize (4) - must be no greater than maxShingleSize (3)

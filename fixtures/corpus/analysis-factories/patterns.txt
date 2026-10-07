@@ -1,0 +1,2 @@
+2 ^(\w+)-(\w+)$ ::: hyphenated_$1
+1 \d+ ::: number

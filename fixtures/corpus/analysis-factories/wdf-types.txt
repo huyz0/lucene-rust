@@ -1,0 +1,5 @@
+# word delimiter types
+- => ALPHA
+_ => ALPHANUM
+\u00df => UPPER
+$ => DIGIT

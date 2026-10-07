@@ -1,0 +1,1 @@
+B	IllegalArgumentException	minAcceptedSimilarity must be in the range (0, 1]. Found: 1.5
