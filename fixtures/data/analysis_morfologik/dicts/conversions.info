@@ -1,0 +1,5 @@
+fsa.dict.separator=+
+fsa.dict.encoding=UTF-8
+fsa.dict.encoder=SUFFIX
+fsa.dict.input-conversion=x kot, colour colour
+fsa.dict.output-conversion=kot KOT

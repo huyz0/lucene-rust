@@ -51,6 +51,13 @@ SPATIAL_EXTRAS_DEPS=(org.locationtech.spatial4j:spatial4j:0.8 io.sgr:s2-geometry
 # lucene-analysis-phonetic 10.5.0's pom names Commons Codec 1.17.2
 # (Apache-2.0), whose encoders crates/lucene-analysis-phonetic reimplements.
 PHONETIC_DEPS=(commons-codec:commons-codec:1.17.2)
+# lucene-analysis-morfologik 10.5.0's pom names Morfologik 2.1.9 (BSD) and its
+# Polish dictionary (BSD-2-Clause) and the Ukrainian one 4.9.1 (Apache-2.0);
+# GenAnalysisMorfologik also builds dictionaries with Morfologik's own
+# FSABuilder (morfologik-fsa-builders, BSD, over HPPC 0.7.2, Apache-2.0).
+MORFOLOGIK_DEPS=(org.carrot2:morfologik-fsa:2.1.9 org.carrot2:morfologik-stemming:2.1.9
+  org.carrot2:morfologik-polish:2.1.9 ua.net.nlp:morfologik-ukrainian-search:4.9.1
+  org.carrot2:morfologik-fsa-builders:2.1.9 com.carrotsearch:hppc:0.7.2)
 
 thirdparty_resolve_jar() {
   local coord="$1" group artifact version jar found=""

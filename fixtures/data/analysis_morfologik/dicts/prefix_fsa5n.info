@@ -1,0 +1,3 @@
+fsa.dict.separator=+
+fsa.dict.encoding=UTF-8
+fsa.dict.encoder=PREFIX

@@ -1,0 +1,21 @@
+[package]
+name = "lucene-analysis-morfologik"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# lucene-analysis-morfologik (M12 T12.3): Morfologik's FSA dictionaries
+# (FSA5, CFSA2) and lookup, MorfologikFilter, MorfologikAnalyzer and
+# UkrainianMorfologikAnalyzer. Over lucene-analysis only, as Lucene's module
+# is over lucene-analysis-common (docs/milestones/m12-language-analysis.md).
+[lints]
+workspace = true
+
+[dependencies]
+lucene-analysis = { path = "../lucene-analysis" }
+# Inflates the vendored dictionaries (src/resources/*.dict.z).
+miniz_oxide.workspace = true
+
+[dev-dependencies]
+# The shared factory-configuration harness (lucene-analysis/tests/support).
+lucene-util = { path = "../lucene-util" }

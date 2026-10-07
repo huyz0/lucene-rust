@@ -50,7 +50,12 @@ RUN mkdir -p "$LUCENE_JARS" && cd "$LUCENE_JARS" \
        done \
     && curl -fsSL -O https://repo1.maven.org/maven2/org/locationtech/spatial4j/spatial4j/0.8/spatial4j-0.8.jar \
     && curl -fsSL -O https://repo1.maven.org/maven2/io/sgr/s2-geometry-library-java/1.0.0/s2-geometry-library-java-1.0.0.jar \
-    && curl -fsSL -O https://repo1.maven.org/maven2/commons-codec/commons-codec/1.17.2/commons-codec-1.17.2.jar
+    && curl -fsSL -O https://repo1.maven.org/maven2/commons-codec/commons-codec/1.17.2/commons-codec-1.17.2.jar \
+    && for a in morfologik-fsa morfologik-stemming morfologik-polish morfologik-fsa-builders; do \
+         curl -fsSL -O "https://repo1.maven.org/maven2/org/carrot2/$a/2.1.9/$a-2.1.9.jar"; \
+       done \
+    && curl -fsSL -O https://repo1.maven.org/maven2/ua/net/nlp/morfologik-ukrainian-search/4.9.1/morfologik-ukrainian-search-4.9.1.jar \
+    && curl -fsSL -O https://repo1.maven.org/maven2/com/carrotsearch/hppc/0.7.2/hppc-0.7.2.jar
 
 # The gate is not just `cargo test`: it includes an aarch64 check-only clippy
 # pass (c_char signedness differs by target, so a class of FFI defect is

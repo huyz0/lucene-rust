@@ -25,6 +25,24 @@ Copyright 2002-2024 The Apache Software Foundation / This product includes
 software developed at The Apache Software Foundation
 (https://www.apache.org/)."
 
+crates/lucene-analysis-stempel ports the stemmer-table reader of the Egothor
+project's org.egothor.stemmer (src/egothor.rs, src/diff.rs) under the Egothor
+Software License version 1.00 (BSD-style; Copyright (C) 1997-2004 Leo
+Galambos, (C) 2002-2004 "Egothor developers"), whose text src/egothor.rs
+reproduces. This product includes software developed by the Egothor Project.
+http://egothor.sf.net/ It also carries Apache Lucene's Polish stemmer table
+(stemmer_20000.tbl) and Carrot2's Polish stop word list (BSD).
+
+crates/lucene-analysis-morfologik ports the dictionary lookup of Morfologik
+2.1.9 (morfologik-fsa, morfologik-stemming; BSD; Copyright (c) 2006 Dawid
+Weiss, (c) 2007-2016 Dawid Weiss, Marcin Milkowski) and carries two
+dictionaries: Morfologik's Polish dictionary (morfologik-polish 2.1.9;
+Copyright (c) 2016, Marcin Milkowski; BSD 2-Clause, reproduced in
+src/resources/polish.LICENSE.txt; data from the SGJP/PoliMorf dictionary of
+Polish) and the Ukrainian dictionary of morfologik-ukrainian-search 4.9.1
+(Apache License 2.0; based on the dict_uk project,
+https://github.com/brown-uk/dict_uk).
+
 crates/lucene-analysis/src/java_character_tables.rs is generated from the
 Unicode Character Database 16.0.0, Copyright (c) 1991-2024 Unicode, Inc.,
 under the Unicode License v3, reproduced at the end of this file.

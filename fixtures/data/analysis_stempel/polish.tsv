@@ -1,0 +1,116 @@
+T	0	kot	0	3	1	1	<ALPHANUM>	0	-	0	1
+T	0	pies	6	10	2	1	<ALPHANUM>	0	-	0	1
+T	0	mieszkać	11	20	1	1	<ALPHANUM>	0	-	0	1
+T	0	dużym	23	28	2	1	<ALPHANUM>	0	-	0	1
+T	0	dom	29	33	1	1	<ALPHANUM>	0	-	0	1
+T	0	skraj	37	43	2	1	<ALPHANUM>	0	-	0	1
+T	0	miasty	44	50	1	1	<ALPHANUM>	0	-	0	1
+E	0	51	51	0
+T	1	dziecko	0	6	1	1	<ALPHANUM>	0	-	0	1
+T	1	czytać	7	14	1	1	<ALPHANUM>	0	-	0	1
+T	1	książek	15	22	1	1	<ALPHANUM>	0	-	0	1
+T	1	szć	25	31	2	1	<ALPHANUM>	0	-	0	1
+T	1	a	33	34	1	1	<ALPHANUM>	0	-	0	1
+T	1	kobieta	35	42	1	1	<ALPHANUM>	0	-	0	1
+T	1	pisać	43	49	1	1	<ALPHANUM>	0	-	0	1
+T	1	lista	50	55	1	1	<ALPHANUM>	0	-	0	1
+E	1	56	56	0
+T	2	najlepszy	0	9	1	1	<ALPHANUM>	0	-	0	1
+T	2	dzień	10	15	1	1	<ALPHANUM>	0	-	0	1
+T	2	wtedić	25	30	3	1	<ALPHANUM>	0	-	0	1
+T	2	wszyski	36	43	2	1	<ALPHANUM>	0	-	0	1
+T	2	lud	44	50	1	1	<ALPHANUM>	0	-	0	1
+T	2	mówić	51	57	1	1	<ALPHANUM>	0	-	0	1
+T	2	eć	58	64	1	1	<ALPHANUM>	0	-	0	1
+E	2	65	65	0
+T	3	nowiey	2	8	2	1	<ALPHANUM>	0	-	0	1
+T	3	miasto	9	17	1	1	<ALPHANUM>	0	-	0	1
+T	3	budować	18	26	1	1	<ALPHANUM>	0	-	0	1
+T	3	szkoł	32	38	2	1	<ALPHANUM>	0	-	0	1
+T	3	domy	41	45	2	1	<ALPHANUM>	0	-	0	1
+T	3	dziecko	50	56	2	1	<ALPHANUM>	0	-	0	1
+E	3	57	57	0
+T	4	psy	0	3	1	1	<ALPHANUM>	0	-	0	1
+T	4	szczekać	4	13	1	1	<ALPHANUM>	0	-	0	1
+T	4	całą	14	18	1	1	<ALPHANUM>	0	-	0	1
+T	4	noc	19	22	1	1	<ALPHANUM>	0	-	0	1
+T	4	koty	24	28	1	1	<ALPHANUM>	0	-	0	1
+T	4	spać	29	34	1	1	<ALPHANUM>	0	-	0	1
+T	4	dacha	38	45	2	1	<ALPHANUM>	0	-	0	1
+E	4	46	46	0
+T	5	mówić	0	5	1	1	<ALPHANUM>	0	-	0	1
+T	5	ci	6	8	1	1	<ALPHANUM>	0	-	0	1
+T	5	najnowy	21	30	4	1	<ALPHANUM>	0	-	0	1
+T	5	książek	31	38	1	1	<ALPHANUM>	0	-	0	1
+T	5	kotach	41	47	2	1	<ALPHANUM>	0	-	0	1
+T	5	psach	50	55	2	1	<ALPHANUM>	0	-	0	1
+E	5	56	56	0
+T	6	lud	0	6	1	1	<ALPHANUM>	0	-	0	1
+T	6	duży	9	15	2	1	<ALPHANUM>	0	-	0	1
+T	6	miasto	16	21	1	1	<ALPHANUM>	0	-	0	1
+T	6	czytać	29	36	2	1	<ALPHANUM>	0	-	0	1
+T	6	gazeta	37	43	1	1	<ALPHANUM>	0	-	0	1
+T	6	tramwajach	46	56	2	1	<ALPHANUM>	0	-	0	1
+E	6	57	57	0
+T	7	zażółcić	0	6	1	1	<ALPHANUM>	0	-	0	1
+T	7	gęślą	7	12	1	1	<ALPHANUM>	0	-	0	1
+T	7	jaźnić	13	17	1	1	<ALPHANUM>	0	-	0	1
+T	7	źdźbło	19	25	1	1	<ALPHANUM>	0	-	0	1
+T	7	trawa	26	31	1	1	<ALPHANUM>	0	-	0	1
+T	7	chrząszcz	33	42	1	1	<ALPHANUM>	0	-	0	1
+T	7	brzmieć	43	48	1	1	<ALPHANUM>	0	-	0	1
+T	7	trzcina	51	59	2	1	<ALPHANUM>	0	-	0	1
+E	7	60	60	0
+T	8	warszawa	0	8	1	1	<ALPHANUM>	0	-	0	1
+T	8	krak	10	16	1	1	<ALPHANUM>	0	-	0	1
+T	8	gdańsk	18	24	1	1	<ALPHANUM>	0	-	0	1
+T	8	wrocław	26	33	1	1	<ALPHANUM>	0	-	0	1
+T	8	poznanie	36	42	2	1	<ALPHANUM>	0	-	0	1
+T	8	więki	46	56	2	1	<ALPHANUM>	0	-	0	1
+T	8	polski	57	64	1	1	<ALPHANUM>	0	-	0	1
+T	8	miasty	65	71	1	1	<ALPHANUM>	0	-	0	1
+E	8	72	72	0
+T	9	2024	2	6	2	1	<NUM>	0	-	0	1
+T	9	15	12	14	2	1	<NUM>	0	-	0	1
+T	9	procent	15	22	1	1	<ALPHANUM>	0	-	0	1
+T	9	uczć	23	30	1	1	<ALPHANUM>	0	-	0	1
+T	9	pisać	31	37	1	1	<ALPHANUM>	0	-	0	1
+T	9	egzamin	38	45	1	1	<ALPHANUM>	0	-	0	1
+T	9	drugi	53	58	3	1	<ALPHANUM>	0	-	0	1
+E	9	59	59	0
+T	10	łódzić	0	4	1	1	<ALPHANUM>	0	-	0	1
+T	10	łódzki	5	11	1	1	<ALPHANUM>	0	-	0	1
+T	10	łódzki	12	19	1	1	<ALPHANUM>	0	-	0	1
+T	10	łodzić	20	25	1	1	<ALPHANUM>	0	-	0	1
+T	10	łódzki	26	34	1	1	<ALPHANUM>	0	-	0	1
+T	10	łosoś	35	40	1	1	<ALPHANUM>	0	-	0	1
+T	10	łosoś	41	48	1	1	<ALPHANUM>	0	-	0	1
+T	10	łosoś	49	57	1	1	<ALPHANUM>	0	-	0	1
+E	10	57	57	0
+E	11	46	46	14
+T	12	a	0	1	1	1	<ALPHANUM>	0	-	0	1
+T	12	chociść	40	47	9	1	<ALPHANUM>	0	-	0	1
+E	12	47	47	0
+T	13	programować	0	13	1	1	<ALPHANUM>	0	-	0	1
+T	13	programista	14	25	1	1	<ALPHANUM>	0	-	0	1
+T	13	programista	26	38	1	1	<ALPHANUM>	0	-	0	1
+T	13	programista	39	52	1	1	<ALPHANUM>	0	-	0	1
+T	13	komputer	53	61	1	1	<ALPHANUM>	0	-	0	1
+T	13	komputer	62	72	1	1	<ALPHANUM>	0	-	0	1
+T	13	komputer	73	84	1	1	<ALPHANUM>	0	-	0	1
+E	13	84	84	0
+T	14	ab	0	2	1	1	<ALPHANUM>	0	-	0	1
+T	14	abc	3	6	1	1	<ALPHANUM>	0	-	0	1
+T	14	abcd	7	11	1	1	<ALPHANUM>	0	-	0	1
+T	14	x	12	13	1	1	<ALPHANUM>	0	-	0	1
+T	14	y	14	15	1	1	<ALPHANUM>	0	-	0	1
+T	14	ę	18	19	2	1	<ALPHANUM>	0	-	0	1
+T	14	ą	20	21	1	1	<ALPHANUM>	0	-	0	1
+T	14	ś	22	23	1	1	<ALPHANUM>	0	-	0	1
+T	14	ł	24	25	1	1	<ALPHANUM>	0	-	0	1
+T	14	ż	26	27	1	1	<ALPHANUM>	0	-	0	1
+T	14	ź	28	29	1	1	<ALPHANUM>	0	-	0	1
+T	14	ć	30	31	1	1	<ALPHANUM>	0	-	0	1
+T	14	ń	32	33	1	1	<ALPHANUM>	0	-	0	1
+T	14	ó	34	35	1	1	<ALPHANUM>	0	-	0	1
+E	14	35	35	0

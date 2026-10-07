@@ -128,6 +128,43 @@ Part 1:
   configurations (11 refused), all equal. `String.toUpperCase`'s special
   casing (`ß` -> `SS`) joined `lucene-analysis` for it
   (`java_string_to_upper_case`).
+- **T12.2 Stempel** -- `lucene-analysis-stempel`: Egothor's table reader
+  (`Trie`, `Row`, `Cell`, `MultiTrie2`, `Diff.apply`; the Egothor licence
+  kept in the source and `NOTICE`), `StempelStemmer`, `StempelFilter`,
+  `PolishAnalyzer` and `stempelPolishStem`, over Lucene's
+  `stemmer_20000.tbl` (vendored, zlib). Table building (`Compile` and its
+  optimisers) is out of scope. `GenAnalysisStempel.java`: 30,198 words
+  through the default table, eight tables Egothor's own `Compile` builds
+  (every kind and optimiser) read and run, 5 chains and the factory, all
+  equal.
+- **T12.3 Morfologik** -- `lucene-analysis-morfologik`: Morfologik's FSA5
+  and CFSA2 automata, `.info` metadata (`java.util.Properties` syntax, every
+  attribute validated), `DictionaryLookup` with the four sequence decoders
+  (and the reused-buffer stale tag of a tagless entry), `MorfologikFilter`
+  with `MorphosyntacticTagsAttribute`, `MorfologikAnalyzer`,
+  `UkrainianMorfologikAnalyzer` and `morfologik`. The Polish (BSD-2-Clause)
+  and Ukrainian (Apache-2.0) dictionaries are vendored zlib-compressed so
+  the default constructors work. `GenAnalysisMorfologik.java`: 47,247
+  Polish and 23,248 Ukrainian lookups, eight dictionaries built with
+  Morfologik's own builder (every encoder, both formats, two charsets,
+  conversions, tagless entries), analyzer, filter and factory rows with
+  tags, all equal.
+- **Benchmark** -- `scripts/bench-micro.sh --bench analysis_m12`
+  (`AnalysisM12Micro.java` / `micro_analysis_m12.rs`, ns per token,
+  2026-10-07, Rust/Java, on a machine shared with another build, noise
+  floor 1.12x): beider_morse_ash_exact 2.91x, beider_morse_gen_approx 3.32x,
+  daitch_mokotoff 1.24x, double_metaphone_filter 1.43x, ph_caverphone2
+  5.25x, ph_cologne 1.29x, ph_double_metaphone 1.50x, ph_metaphone 1.31x,
+  ph_mra 2.70x, ph_nysiis 1.57x, ph_refined_soundex 0.94~, ph_soundex
+  1.00~, stempel_filter 1.17x, polish_analyzer 1.22x, morfologik_filter
+  0.90~, ukrainian_analyzer 0.99~. The faithful port read ph_soundex 0.64x
+  and ph_refined_soundex 0.52x: the cost was allocation and table lookups
+  for ASCII words (now an ASCII path through `clean`, `toUpperCase` and the
+  refined code, and a reused term buffer). The Morfologik cases sit inside
+  the noise floor and are not yet profiled.
+- **Custom attributes** -- `lucene-analysis`' `AttributeSource` now holds
+  attributes outside the core set (`CustomAttribute`, `add_custom`), which
+  Morfologik's tags use and Kuromoji's, Nori's and ICU's will.
 
 ## Acceptance criteria
 

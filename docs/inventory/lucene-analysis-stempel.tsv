@@ -2,20 +2,20 @@
 # Checked by scripts/check-port-inventory.py --module analysis-stempel (see its docstring for the statuses).
 # M12 T12.2 (Polish stemming over the Egothor trie table); docs/milestones/m12-language-analysis.md.
 # class	status	detail
-analysis/pl/PolishAnalyzer	todo:M12	T12.2: PolishAnalyzer, not started
-analysis/stempel/StempelFilter	todo:M12	T12.2: StempelFilter, not started
-analysis/stempel/StempelPolishStemFilterFactory	todo:M12	T12.2: StempelPolishStemFilterFactory, not started
-analysis/stempel/StempelStemmer	todo:M12	T12.2: StempelStemmer, not started
-org/egothor/stemmer/Cell	todo:M12	T12.2: Cell, not started
-org/egothor/stemmer/Compile	todo:M12	T12.2: Compile, not started
-org/egothor/stemmer/Diff	todo:M12	T12.2: Diff, not started
-org/egothor/stemmer/DiffIt	todo:M12	T12.2: DiffIt, not started
-org/egothor/stemmer/Gener	todo:M12	T12.2: Gener, not started
-org/egothor/stemmer/Lift	todo:M12	T12.2: Lift, not started
-org/egothor/stemmer/MultiTrie	todo:M12	T12.2: MultiTrie, not started
-org/egothor/stemmer/MultiTrie2	todo:M12	T12.2: MultiTrie2, not started
-org/egothor/stemmer/Optimizer	todo:M12	T12.2: Optimizer, not started
-org/egothor/stemmer/Optimizer2	todo:M12	T12.2: Optimizer2, not started
-org/egothor/stemmer/Reduce	todo:M12	T12.2: Reduce, not started
-org/egothor/stemmer/Row	todo:M12	T12.2: Row, not started
-org/egothor/stemmer/Trie	todo:M12	T12.2: Trie, not started
+analysis/pl/PolishAnalyzer	ported	crates/lucene-analysis-stempel/src/polish.rs::PolishAnalyzer
+analysis/stempel/StempelFilter	ported	crates/lucene-analysis-stempel/src/filter.rs::StempelFilter
+analysis/stempel/StempelPolishStemFilterFactory	ported	crates/lucene-analysis-stempel/src/factory.rs::StempelPolishStemFilterFactory
+analysis/stempel/StempelStemmer	ported	crates/lucene-analysis-stempel/src/stemmer.rs::StempelStemmer
+org/egothor/stemmer/Cell	ported	crates/lucene-analysis-stempel/src/egothor.rs::Cell
+org/egothor/stemmer/Compile	not-needed	table compilation (a CLI building stemmer tables); M12 loads tables, it does not build them
+org/egothor/stemmer/Diff	ported	crates/lucene-analysis-stempel/src/diff.rs::apply (exec, which builds commands, is table compilation)
+org/egothor/stemmer/DiffIt	not-needed	table compilation tool; M12 loads tables, it does not build them
+org/egothor/stemmer/Gener	not-needed	a Reduce used only when compiling tables; M12 does not build them
+org/egothor/stemmer/Lift	not-needed	a Reduce used only when compiling tables; M12 does not build them
+org/egothor/stemmer/MultiTrie	ported	crates/lucene-analysis-stempel/src/egothor.rs::MultiTrie2 (MultiTrie(DataInput) is the reader MultiTrie2 inherits; StempelStemmer.load never builds a plain MultiTrie)
+org/egothor/stemmer/MultiTrie2	ported	crates/lucene-analysis-stempel/src/egothor.rs::MultiTrie2
+org/egothor/stemmer/Optimizer	not-needed	a Reduce used only when compiling tables; M12 does not build them
+org/egothor/stemmer/Optimizer2	not-needed	a Reduce used only when compiling tables; M12 does not build them
+org/egothor/stemmer/Reduce	not-needed	trie reduction, used only when compiling tables; M12 does not build them
+org/egothor/stemmer/Row	ported	crates/lucene-analysis-stempel/src/egothor.rs::Row
+org/egothor/stemmer/Trie	ported	crates/lucene-analysis-stempel/src/egothor.rs::Trie
