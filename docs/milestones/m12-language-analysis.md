@@ -259,7 +259,10 @@ Part 2 (T12.1):
   inline. In the filters, `CharArraySet`'s ignore-case probe lowercased
   every non-ASCII word into a new `String` (now only one that lowercasing
   changes) and the katakana stem filter re-encoded every term to UTF-16
-  (now a scan of the chars). What remains of the profile is the lattice
+  (now a scan of the chars); `AttributeSource` finds a custom attribute by
+  its stored type id (it made two `dyn` calls per attribute per lookup, and
+  the tokenizer sets four per token: analyzer 94.5M -> 92.6M). What
+  remains of the profile is the lattice
   itself -- `add`'s least-cost scan, the FST walk per start position, the
   backtrace -- the work Java's `Viterbi` does, on the same arrays.
 - **Dictionaries** -- licence-clean for redistribution (IPADIC's NAIST/ICOT
