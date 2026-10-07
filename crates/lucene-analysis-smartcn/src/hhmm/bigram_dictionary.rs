@@ -68,8 +68,8 @@ impl BigramDictionary {
             ));
         }
         Ok(BigramDictionary {
-            bigram_hash_table: hashes.clone(),
-            frequency_table: freqs.clone(),
+            bigram_hash_table: hashes.to_vec(),
+            frequency_table: freqs.to_vec(),
         })
     }
 

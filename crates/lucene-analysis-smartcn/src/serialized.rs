@@ -16,10 +16,18 @@
 //! descriptor.
 //!
 //! Every count is checked against the bytes left before anything is
-//! allocated, nesting is bounded by the class name's dimensions, and an
-//! element whose class is not the array's component type is refused (Java's
-//! `ArrayStoreException`), so a corrupt or hostile file is an error, never
-//! a panic or an outsized allocation.
+//! allocated, and an element whose class is not the array's component type
+//! is refused (Java's `ArrayStoreException`) as soon as its class
+//! descriptor is read, before its body: each nested level then has one
+//! dimension fewer than its parent, so recursion is at most
+//! [`MAX_DIMENSIONS`] deep. A corrupt or hostile file is an error, never a
+//! panic, a stack overflow or an outsized allocation.
+//!
+//! Primitive arrays are held as `Arc<[T]>`, so a reader of the stream
+//! shares one array between every `TC_REFERENCE` to it, as Java shares the
+//! object.
+
+use std::sync::Arc;
 
 use crate::SmartcnError;
 
@@ -37,10 +45,10 @@ const MAX_DIMENSIONS: usize = 4;
 /// A primitive array's elements, or an array of arrays' element handles.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ArrayData {
-    Short(Vec<i16>),
-    Char(Vec<u16>),
-    Int(Vec<i32>),
-    Long(Vec<i64>),
+    Short(Arc<[i16]>),
+    Char(Arc<[u16]>),
+    Int(Arc<[i32]>),
+    Long(Arc<[i64]>),
     /// `None` is a `null` element.
     Objects(Vec<Option<usize>>),
 }
@@ -61,6 +69,17 @@ pub struct ObjectStream {
 
 fn corrupt(msg: impl Into<String>) -> SmartcnError {
     SmartcnError::new(format!("StreamCorruptedException: {}", msg.into()))
+}
+
+/// An element of class `name` stored in an array whose component type is
+/// `expected`: Java's `ArrayStoreException` when they differ.
+fn check_component(name: &str, expected: Option<&str>) -> Result<(), SmartcnError> {
+    match expected {
+        Some(want) if want != name => Err(SmartcnError::new(format!(
+            "ArrayStoreException: {name} in an array of {want}"
+        ))),
+        _ => Ok(()),
+    }
 }
 
 struct Reader<'a> {
@@ -121,26 +140,19 @@ impl ObjectStream {
         r: &mut Reader,
         expected: Option<&str>,
     ) -> Result<Option<usize>, SmartcnError> {
-        let handle = match r.u8()? {
-            TC_NULL => return Ok(None),
+        match r.u8()? {
+            TC_NULL => Ok(None),
             TC_REFERENCE => {
                 let h = self.reference(r)?;
-                if !matches!(self.handles[h], Handle::Array(..)) {
+                let Handle::Array(name, _) = &self.handles[h] else {
                     return Err(corrupt("reference to a class descriptor as an object"));
-                }
-                h
+                };
+                check_component(name, expected)?;
+                Ok(Some(h))
             }
-            TC_ARRAY => self.array(r)?,
-            tc => return Err(corrupt(format!("invalid type code: {tc:02X}"))),
-        };
-        if let (Some(want), Handle::Array(name, _)) = (expected, &self.handles[handle]) {
-            if name != want {
-                return Err(SmartcnError::new(format!(
-                    "ArrayStoreException: {name} in an array of {want}"
-                )));
-            }
+            TC_ARRAY => self.array(r, expected).map(Some),
+            tc => Err(corrupt(format!("invalid type code: {tc:02X}"))),
         }
-        Ok(Some(handle))
     }
 
     fn reference(&mut self, r: &mut Reader) -> Result<usize, SmartcnError> {
@@ -184,8 +196,13 @@ impl ObjectStream {
         }
     }
 
-    fn array(&mut self, r: &mut Reader) -> Result<usize, SmartcnError> {
+    /// An array, after its `TC_ARRAY`; `expected` as for [`Self::object`],
+    /// checked before the body is read, so each nested level has one
+    /// dimension fewer than its parent and recursion is at most
+    /// [`MAX_DIMENSIONS`] deep.
+    fn array(&mut self, r: &mut Reader, expected: Option<&str>) -> Result<usize, SmartcnError> {
         let name = self.class_desc(r)?;
+        check_component(&name, expected)?;
         let handle = self.handles.len();
         self.handles.push(Handle::Array(name.clone(), None));
         let len = r.i32()?;
@@ -379,11 +396,11 @@ mod tests {
         assert_eq!(top[5], None);
         assert_eq!(
             s.array_at(top[0].unwrap()),
-            Some(("[S", &ArrayData::Short(vec![-1, 2])))
+            Some(("[S", &ArrayData::Short(vec![-1, 2].into())))
         );
         assert_eq!(
             s.array_at(top[1].unwrap()),
-            Some(("[C", &ArrayData::Char(vec![0x4E2D])))
+            Some(("[C", &ArrayData::Char(vec![0x4E2D].into())))
         );
         let Some((name, ArrayData::Objects(outer))) = s.array_at(top[2].unwrap()) else {
             panic!()
@@ -394,11 +411,11 @@ mod tests {
         };
         assert_eq!(
             s.array_at(inner[0].unwrap()),
-            Some(("[C", &ArrayData::Char(vec![1, 2])))
+            Some(("[C", &ArrayData::Char(vec![1, 2].into())))
         );
         assert_eq!(
             s.array_at(top[4].unwrap()),
-            Some(("[J", &ArrayData::Long(vec![i64::MIN])))
+            Some(("[J", &ArrayData::Long(vec![i64::MIN].into())))
         );
         assert_eq!(s.array_at(0), None); // a descriptor
         assert_eq!(s.array_at(10_000), None);
