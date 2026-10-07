@@ -93,8 +93,8 @@ impl UserMorphData {
     }
 
     /// `getPartOfSpeech(morphId)`: feature 1.
-    pub fn part_of_speech(&self, word_id: i32) -> Option<String> {
-        self.features(word_id)?.get(1).map(|s| s.to_string())
+    pub fn part_of_speech(&self, word_id: i32) -> Option<&str> {
+        self.features(word_id)?.get(1).copied()
     }
 }
 
@@ -326,8 +326,7 @@ mod tests {
             Some("コクサイ")
         );
         assert_eq!(
-            m.part_of_speech(CUSTOM_DICTIONARY_WORD_ID_OFFSET)
-                .as_deref(),
+            m.part_of_speech(CUSTOM_DICTIONARY_WORD_ID_OFFSET),
             Some("カスタム名詞")
         );
         assert_eq!(m.reading(5), None);

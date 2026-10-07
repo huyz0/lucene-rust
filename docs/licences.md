@@ -126,9 +126,15 @@ a dependency the shipped library links is not under a licence listed here.
   4.6 MB in the repository), plus its `stopwords.txt`, `stoptags.txt` and
   `romaji_map.txt` (Apache-2.0, Lucene's). IPADIC's terms (NAIST, with
   ICOT's free-software conditions) allow redistribution, original or
-  modified, provided the no-warranty section accompanies it; Lucene ships
-  the data under them, and `NOTICE` reproduces Lucene's NOTICE with the full
-  mecab-ipadic notice. Licence-clean, so vendored: `JapaneseTokenizer`'s
+  modified, provided the no-warranty section accompanies it, and NAIST's
+  require every copy to carry its copyright line ("Copyright 2000, 2001,
+  2002, 2003 Nara Institute of Science and Technology. All Rights
+  Reserved.") and the paragraphs after it; Lucene ships the data under
+  them. `NOTICE` reproduces Lucene's NOTICE (the mecab-ipadic notice
+  without the copyright line) and names the copyright, and `LICENSE` holds
+  mecab-ipadic-2.7.0-20070801's `COPYING` in full (byte for byte the
+  release tarball's, SHA-256 `b62f527d...`, bar a stray last line of two
+  0xF7 bytes). Licence-clean, so vendored: `JapaneseTokenizer`'s
   default constructors work as Java's do; every dictionary class also loads
   a caller's files (`from_paths`). The fixture corpus
   (`fixtures/corpus/analysis-japanese*.txt`) is written for this project,

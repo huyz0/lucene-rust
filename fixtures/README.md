@@ -1130,7 +1130,14 @@ outright.
   a sample of the system dictionary's entries (`dictionary.tsv`),
   `UserDictionary.lookup`, and analyzer and factory chains (`chains/`,
   `corpus/analysis-kuromoji.conf` over the corpus and
-  `corpus/analysis-japanese-filters.txt`). Own classpath. Deterministic.
+  `corpus/analysis-japanese-filters.txt`). The hostile sweep: 400 seeded
+  lines of `HostileText.java`'s pools (`hostile.txt`: kana, half-width
+  forms, kanji in and out of the BMP, emoji, combining marks, joiners,
+  variation selectors, jamo, Thai, private use, C0 controls, radicals,
+  specials, real words) through all 48 combinations of mode, punctuation,
+  compounds, user dictionary and n-best cost with every attribute, one
+  `config line rows fnv1a64` digest per line (`sweep.tsv`). Byte-identical
+  under JDK 21 and 25. Own classpath. Deterministic.
   Read by `crates/lucene-analysis-kuromoji/tests/kuromoji_fixtures.rs`.
 - `GenAnalysisNori.java` — M12 T12.1: `KoreanTokenizer` over
   `corpus/analysis-korean.txt` (written here) and 303 seeded stress lines
@@ -1139,7 +1146,10 @@ outright.
   `tok_<config>.tsv` with every attribute's reflected values), Graphviz
   lattices, a sample of the system dictionary's entries (`dictionary.tsv`,
   10,236 rows with their morphemes), `UserDictionary` lookups, and analyzer
-  and factory chains (`chains/`, `corpus/analysis-nori.conf`). Own
+  and factory chains (`chains/`, `corpus/analysis-nori.conf`). The hostile
+  sweep, as Kuromoji's: 400 other seeded lines (`hostile.txt`) through all
+  24 combinations of decompound mode, unknown unigrams, punctuation and
+  user dictionary (`sweep.tsv`). Byte-identical under JDK 21 and 25. Own
   classpath. Deterministic. Read by
   `crates/lucene-analysis-nori/tests/nori_fixtures.rs`.
 - `GenAnalysisCompound.java` — M11 T11.6: `corpus/hyphenation-test.xml` (a

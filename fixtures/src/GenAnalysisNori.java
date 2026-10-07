@@ -46,6 +46,10 @@ import org.apache.lucene.util.fst.IntsRefFSTEnum;
  *       corpus/analysis-korean-userdict.txt}: rows {@code T line term start end posInc posLen},
  *       then, for three configurations, every Nori attribute's {@code reflectWith} values (their
  *       keys head the file: {@code K key...}); {@code E}/{@code X} rows as Kuromoji's.
+ *   <li>{@code sweep.tsv}: the hostile sweep -- a seeded corpus of 400 lines from {@link
+ *       HostileText}'s pools ({@code hostile.txt}) through every combination of decompound mode,
+ *       unknown unigrams, punctuation and user dictionary, 24 configurations, rows with every
+ *       attribute summarised per line as {@code config line rows fnv1a64}.
  *   <li>{@code graphviz_<config>.txt}: the {@link GraphvizFormatter} lattice of each corpus line.
  *   <li>{@code dictionary.tsv}: every 80th surface of the system dictionary's FST with each of its
  *       words' ids, connection ids, cost, POS type, left and right POS, reading and morphemes.
@@ -298,6 +302,24 @@ public class GenAnalysisNori {
       boolean attributes = FULL.contains(e.getKey());
       Files.writeString(out.resolve("tok_" + e.getKey() + ".tsv"), rows(e.getValue(), both, attributes), StandardCharsets.UTF_8);
     }
+
+    // The hostile sweep: every mode combination over a seeded hostile corpus,
+    // every attribute, one digest per line (HostileText).
+    List<String> hostile = HostileText.lines(20261009L, 400);
+    Files.writeString(out.resolve("hostile.txt"), String.join("\n", hostile) + "\n", StandardCharsets.UTF_8);
+    StringBuilder sweep = new StringBuilder();
+    for (DecompoundMode mode : DecompoundMode.values()) {
+      for (boolean unigrams : new boolean[] {false, true}) {
+        for (boolean punct : new boolean[] {true, false}) {
+          for (UserDictionary ud : new UserDictionary[] {null, user}) {
+            String name = mode.name().toLowerCase() + "_un" + (unigrams ? 1 : 0) + "_dp" + (punct ? 1 : 0)
+                + "_ud" + (ud == null ? 0 : 1);
+            sweep.append(HostileText.digests(name, rows(() -> tok(ud, mode, unigrams, punct), hostile, true), hostile.size()));
+          }
+        }
+      }
+    }
+    Files.writeString(out.resolve("sweep.tsv"), sweep.toString(), StandardCharsets.UTF_8);
 
     Object[][] dots = {{"discard", DecompoundMode.DISCARD, null}, {"user_mixed", DecompoundMode.MIXED, user}};
     for (Object[] d : dots) {

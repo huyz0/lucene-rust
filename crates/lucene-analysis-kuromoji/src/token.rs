@@ -78,7 +78,7 @@ impl Token {
     }
 
     /// `getPartOfSpeech()`.
-    pub fn part_of_speech(&self) -> Option<String> {
+    pub fn part_of_speech(&self) -> Option<&str> {
         self.dict.part_of_speech(self.morph_id)
     }
 

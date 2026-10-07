@@ -139,6 +139,7 @@ impl Soundex {
     }
 }
 
+/// `RefinedSoundex.US_ENGLISH_MAPPING_STRING`.
 pub const REFINED_US_ENGLISH_MAPPING: &str = "01360240043788015936020505";
 
 /// `org.apache.commons.codec.language.RefinedSoundex`.
