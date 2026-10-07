@@ -36,6 +36,16 @@ pub trait MorphData: Send + Sync {
     fn right_id(&self, morph_id: i32) -> i32;
     /// `getWordCost(morphId)`.
     fn word_cost(&self, morph_id: i32) -> i32;
+    /// `(getLeftId, getRightId, getWordCost)` in one call: what
+    /// `Viterbi.add` reads per lattice arc, which Java's JIT inlines into
+    /// one entry read and a `dyn` dispatch here would make three.
+    fn connection(&self, morph_id: i32) -> (i32, i32, i32) {
+        (
+            self.left_id(morph_id),
+            self.right_id(morph_id),
+            self.word_cost(morph_id),
+        )
+    }
 }
 
 /// `org.apache.lucene.analysis.morph.Token`: a span of a backtraced

@@ -73,6 +73,7 @@ pub mod graph_finite_strings;
 mod graph_token_filter;
 pub mod hunspell;
 pub mod java_character;
+pub mod java_unicode_script;
 #[rustfmt::skip]
 mod java_character_tables;
 mod keyword_tokenizer;

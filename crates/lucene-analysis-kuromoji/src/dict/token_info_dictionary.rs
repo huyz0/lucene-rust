@@ -307,6 +307,11 @@ impl MorphData for TokenInfoMorphData {
     fn word_cost(&self, id: i32) -> i32 {
         i32::from(self.short(id, 2) as i16)
     }
+    #[inline]
+    fn connection(&self, id: i32) -> (i32, i32, i32) {
+        let ids = i32::from(self.short(id, 0) >> 3);
+        (ids, ids, self.word_cost(id))
+    }
 }
 
 /// `TokenInfoDictionary`.

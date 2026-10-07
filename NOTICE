@@ -49,6 +49,11 @@ mecab-ipadic-2.7.0-20070801 (Nara Institute of Science and Technology; the
 mecab-ipadic notice, with ICOT's conditions, is reproduced in the Apache
 Lucene NOTICE below), zlib-compressed under src/resources/.
 
+crates/lucene-analysis-nori carries the Korean dictionary Apache Lucene's
+analysis-nori jar carries, compiled by Lucene from mecab-ko-dic-2.1.1-20180720
+(Apache License 2.0; named in the Apache Lucene NOTICE below),
+zlib-compressed under src/resources/.
+
 crates/lucene-analysis/src/java_character_tables.rs is generated from the
 Unicode Character Database 16.0.0, Copyright (c) 1991-2024 Unicode, Inc.,
 under the Unicode License v3, reproduced at the end of this file.

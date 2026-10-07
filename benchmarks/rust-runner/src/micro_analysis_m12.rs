@@ -10,6 +10,7 @@ use lucene_analysis::{AnalysisError, Analyzer, AnalyzerDefinition, TokenStream, 
 use lucene_analysis_phonetic::bm::{NameType, PhoneticEngine, RuleType};
 use lucene_analysis_phonetic::encoder::{Encoder, LANGUAGE_PACKAGE};
 use lucene_analysis_kuromoji::{JapaneseAnalyzer, JapaneseTokenizer, Mode};
+use lucene_analysis_nori::{DecompoundMode, KoreanAnalyzer, KoreanTokenizer};
 use lucene_analysis_morfologik::analyzer::polish_dictionary;
 use lucene_analysis_morfologik::{MorfologikFilter, UkrainianMorfologikAnalyzer};
 use lucene_analysis_phonetic::{BeiderMorseFilter, DaitchMokotoffSoundexFilter, DoubleMetaphoneFilter, PhoneticFilter};
@@ -164,6 +165,16 @@ pub(super) fn bench_analysis_m12(w: Duration, m: Duration) {
     run("kuromoji_extended", &kuromoji(Mode::Extended, true, 0), &ja, w, m);
     run("kuromoji_nbest", &kuromoji(Mode::Normal, true, 2000), &ja, w, m);
     run("japanese_analyzer", &Analyzer::new(JapaneseAnalyzer::default()), &ja, w, m);
+    let ko = line_docs(&["fixtures/corpus/analysis-korean.txt", "fixtures/data/analysis_nori/stress.txt"]);
+    run("nori_discard", &chain(|| comps(KoreanTokenizer::default())), &ko, w, m);
+    run(
+        "nori_mixed",
+        &chain(|| comps(KoreanTokenizer::new(None, DecompoundMode::Mixed, true, false))),
+        &ko,
+        w,
+        m,
+    );
+    run("korean_analyzer", &Analyzer::new(KoreanAnalyzer::default()), &ko, w, m);
     run(
         "beider_morse_ash_exact",
         &chain(move || comps(BeiderMorseFilter::new(WhitespaceTokenizer::new(), exact.clone()))),
@@ -187,7 +198,12 @@ fn fixture_docs(file: &str) -> Vec<String> {
 
 /// `AnalysisM12Micro.japaneseDocs`.
 fn japanese_docs() -> Vec<String> {
-    ["fixtures/corpus/analysis-japanese.txt", "fixtures/data/analysis_kuromoji/stress.txt"]
+    line_docs(&["fixtures/corpus/analysis-japanese.txt", "fixtures/data/analysis_kuromoji/stress.txt"])
+}
+
+/// `AnalysisM12Micro.lineDocs`: every non-empty line of the files.
+fn line_docs(files: &[&str]) -> Vec<String> {
+    files
         .iter()
         .flat_map(|f| {
             std::fs::read_to_string(f)

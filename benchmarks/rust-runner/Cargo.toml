@@ -17,6 +17,7 @@ lucene-analysis-phonetic = { path = "../../crates/lucene-analysis-phonetic" }
 lucene-analysis-stempel = { path = "../../crates/lucene-analysis-stempel" }
 lucene-analysis-morfologik = { path = "../../crates/lucene-analysis-morfologik" }
 lucene-analysis-kuromoji = { path = "../../crates/lucene-analysis-kuromoji" }
+lucene-analysis-nori = { path = "../../crates/lucene-analysis-nori" }
 crc32fast = "1"
 miniz_oxide = "0.9"
 

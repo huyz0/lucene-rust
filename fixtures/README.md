@@ -1132,6 +1132,16 @@ outright.
   `corpus/analysis-kuromoji.conf` over the corpus and
   `corpus/analysis-japanese-filters.txt`). Own classpath. Deterministic.
   Read by `crates/lucene-analysis-kuromoji/tests/kuromoji_fixtures.rs`.
+- `GenAnalysisNori.java` — M12 T12.1: `KoreanTokenizer` over
+  `corpus/analysis-korean.txt` (written here) and 303 seeded stress lines
+  (`stress.txt`) in 8 configurations (decompound modes, unknown unigrams,
+  punctuation, the user dictionary `corpus/analysis-korean-userdict.txt`;
+  `tok_<config>.tsv` with every attribute's reflected values), Graphviz
+  lattices, a sample of the system dictionary's entries (`dictionary.tsv`,
+  10,236 rows with their morphemes), `UserDictionary` lookups, and analyzer
+  and factory chains (`chains/`, `corpus/analysis-nori.conf`). Own
+  classpath. Deterministic. Read by
+  `crates/lucene-analysis-nori/tests/nori_fixtures.rs`.
 - `GenAnalysisCompound.java` — M11 T11.6: `corpus/hyphenation-test.xml` (a
   toy hyphenation grammar written for this project) loaded into a
   `HyphenationTree`: hyphenation points for words (`points.words`), and the

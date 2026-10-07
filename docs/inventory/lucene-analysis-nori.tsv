@@ -2,39 +2,39 @@
 # Checked by scripts/check-port-inventory.py --module analysis-nori (see its docstring for the statuses).
 # M12 T12.1 (Korean morphological analysis over mecab-ko-dic (the Viterbi lattice, user dictionary, decompounding)); docs/milestones/m12-language-analysis.md.
 # class	status	detail
-analysis/ko/DecompoundToken	todo:M12	T12.1: DecompoundToken, not started
-analysis/ko/DictionaryToken	todo:M12	T12.1: DictionaryToken, not started
-analysis/ko/KoreanAnalyzer	todo:M12	T12.1: KoreanAnalyzer, not started
-analysis/ko/KoreanNumberFilter	todo:M12	T12.1: KoreanNumberFilter, not started
-analysis/ko/KoreanNumberFilterFactory	todo:M12	T12.1: KoreanNumberFilterFactory, not started
-analysis/ko/KoreanPartOfSpeechStopFilter	todo:M12	T12.1: KoreanPartOfSpeechStopFilter, not started
-analysis/ko/KoreanPartOfSpeechStopFilterFactory	todo:M12	T12.1: KoreanPartOfSpeechStopFilterFactory, not started
-analysis/ko/KoreanReadingFormFilter	todo:M12	T12.1: KoreanReadingFormFilter, not started
-analysis/ko/KoreanReadingFormFilterFactory	todo:M12	T12.1: KoreanReadingFormFilterFactory, not started
-analysis/ko/KoreanTokenizer	todo:M12	T12.1: KoreanTokenizer, not started
-analysis/ko/KoreanTokenizerFactory	todo:M12	T12.1: KoreanTokenizerFactory, not started
-analysis/ko/POS	todo:M12	T12.1: POS, not started
-analysis/ko/Token	todo:M12	T12.1: Token, not started
-analysis/ko/Viterbi	todo:M12	T12.1: Viterbi, not started
-analysis/ko/dict/CharacterDefinition	todo:M12	T12.1: CharacterDefinition, not started
-analysis/ko/dict/ConnectionCosts	todo:M12	T12.1: ConnectionCosts, not started
-analysis/ko/dict/ConnectionCostsBuilder	todo:M12	T12.1: ConnectionCostsBuilder, not started
-analysis/ko/dict/DictionaryBuilder	todo:M12	T12.1: DictionaryBuilder, not started
-analysis/ko/dict/DictionaryConstants	todo:M12	T12.1: DictionaryConstants, not started
-analysis/ko/dict/KoMorphData	todo:M12	T12.1: KoMorphData, not started
-analysis/ko/dict/TokenInfoDictionary	todo:M12	T12.1: TokenInfoDictionary, not started
-analysis/ko/dict/TokenInfoDictionaryBuilder	todo:M12	T12.1: TokenInfoDictionaryBuilder, not started
-analysis/ko/dict/TokenInfoDictionaryEntryWriter	todo:M12	T12.1: TokenInfoDictionaryEntryWriter, not started
-analysis/ko/dict/TokenInfoDictionaryWriter	todo:M12	T12.1: TokenInfoDictionaryWriter, not started
-analysis/ko/dict/TokenInfoFST	todo:M12	T12.1: TokenInfoFST, not started
-analysis/ko/dict/TokenInfoMorphData	todo:M12	T12.1: TokenInfoMorphData, not started
-analysis/ko/dict/UnknownDictionary	todo:M12	T12.1: UnknownDictionary, not started
-analysis/ko/dict/UnknownDictionaryBuilder	todo:M12	T12.1: UnknownDictionaryBuilder, not started
-analysis/ko/dict/UnknownDictionaryWriter	todo:M12	T12.1: UnknownDictionaryWriter, not started
-analysis/ko/dict/UnknownMorphData	todo:M12	T12.1: UnknownMorphData, not started
-analysis/ko/dict/UserDictionary	todo:M12	T12.1: UserDictionary, not started
-analysis/ko/dict/UserMorphData	todo:M12	T12.1: UserMorphData, not started
-analysis/ko/tokenattributes/PartOfSpeechAttribute	todo:M12	T12.1: PartOfSpeechAttribute, not started
-analysis/ko/tokenattributes/PartOfSpeechAttributeImpl	todo:M12	T12.1: PartOfSpeechAttributeImpl, not started
-analysis/ko/tokenattributes/ReadingAttribute	todo:M12	T12.1: ReadingAttribute, not started
-analysis/ko/tokenattributes/ReadingAttributeImpl	todo:M12	T12.1: ReadingAttributeImpl, not started
+analysis/ko/DecompoundToken	ported	crates/lucene-analysis-nori/src/token.rs::Token (Kind::Decompound)
+analysis/ko/DictionaryToken	ported	crates/lucene-analysis-nori/src/token.rs::Token (Kind::Dictionary)
+analysis/ko/KoreanAnalyzer	ported	crates/lucene-analysis-nori/src/analyzer.rs::KoreanAnalyzer
+analysis/ko/KoreanNumberFilter	ported	crates/lucene-analysis-nori/src/number.rs::KoreanNumberFilter
+analysis/ko/KoreanNumberFilterFactory	ported	crates/lucene-analysis-nori/src/factory.rs::KoreanNumberFilterFactory
+analysis/ko/KoreanPartOfSpeechStopFilter	ported	crates/lucene-analysis-nori/src/pos_stop.rs::korean_part_of_speech_stop_filter
+analysis/ko/KoreanPartOfSpeechStopFilterFactory	ported	crates/lucene-analysis-nori/src/factory.rs::KoreanPartOfSpeechStopFilterFactory
+analysis/ko/KoreanReadingFormFilter	ported	crates/lucene-analysis-nori/src/reading_form.rs::KoreanReadingFormFilter
+analysis/ko/KoreanReadingFormFilterFactory	ported	crates/lucene-analysis-nori/src/factory.rs::KoreanReadingFormFilterFactory
+analysis/ko/KoreanTokenizer	ported	crates/lucene-analysis-nori/src/tokenizer.rs::KoreanTokenizer
+analysis/ko/KoreanTokenizerFactory	ported	crates/lucene-analysis-nori/src/factory.rs::KoreanTokenizerFactory
+analysis/ko/POS	ported	crates/lucene-analysis-nori/src/pos.rs::Tag
+analysis/ko/Token	ported	crates/lucene-analysis-nori/src/token.rs::Token
+analysis/ko/Viterbi	ported	crates/lucene-analysis-nori/src/viterbi.rs::KoViterbi
+analysis/ko/dict/CharacterDefinition	ported	crates/lucene-analysis-nori/src/dict/character_definition.rs::CharacterDefinition
+analysis/ko/dict/ConnectionCosts	ported	crates/lucene-analysis-nori/src/dict/connection_costs.rs::ConnectionCosts
+analysis/ko/dict/ConnectionCostsBuilder	not-needed	dictionary building (Lucene's build-time tool); M12 loads dictionaries, it does not build them
+analysis/ko/dict/DictionaryBuilder	not-needed	dictionary building (Lucene's build-time tool); M12 loads dictionaries, it does not build them
+analysis/ko/dict/DictionaryConstants	ported	crates/lucene-analysis-nori/src/dict/mod.rs::DICT_HEADER
+analysis/ko/dict/KoMorphData	ported	crates/lucene-analysis-nori/src/dict/mod.rs::KoDict (the interface is the enum over the three dictionaries; Morpheme alongside)
+analysis/ko/dict/TokenInfoDictionary	ported	crates/lucene-analysis-nori/src/dict/token_info_dictionary.rs::TokenInfoDictionary
+analysis/ko/dict/TokenInfoDictionaryBuilder	not-needed	dictionary building (Lucene's build-time tool); M12 loads dictionaries, it does not build them
+analysis/ko/dict/TokenInfoDictionaryEntryWriter	not-needed	dictionary building (Lucene's build-time tool); M12 loads dictionaries, it does not build them
+analysis/ko/dict/TokenInfoDictionaryWriter	not-needed	dictionary building (Lucene's build-time tool); M12 loads dictionaries, it does not build them
+analysis/ko/dict/TokenInfoFST	ported	crates/lucene-analysis/src/morph/token_info_fst.rs::TokenInfoFst (the ko subclass only fixes the cached range, in TokenInfoDictionary::read)
+analysis/ko/dict/TokenInfoMorphData	ported	crates/lucene-analysis-nori/src/dict/token_info_dictionary.rs::TokenInfoMorphData
+analysis/ko/dict/UnknownDictionary	ported	crates/lucene-analysis-nori/src/dict/unknown_dictionary.rs::UnknownDictionary
+analysis/ko/dict/UnknownDictionaryBuilder	not-needed	dictionary building (Lucene's build-time tool); M12 loads dictionaries, it does not build them
+analysis/ko/dict/UnknownDictionaryWriter	not-needed	dictionary building (Lucene's build-time tool); M12 loads dictionaries, it does not build them
+analysis/ko/dict/UnknownMorphData	ported	crates/lucene-analysis-nori/src/dict/mod.rs::KoDict (TokenInfoMorphData with no reading or morphemes)
+analysis/ko/dict/UserDictionary	ported	crates/lucene-analysis-nori/src/dict/user_dictionary.rs::UserDictionary
+analysis/ko/dict/UserMorphData	ported	crates/lucene-analysis-nori/src/dict/user_dictionary.rs::UserMorphData
+analysis/ko/tokenattributes/PartOfSpeechAttribute	ported	crates/lucene-analysis-nori/src/attributes.rs::PartOfSpeechAttribute
+analysis/ko/tokenattributes/PartOfSpeechAttributeImpl	ported	crates/lucene-analysis-nori/src/attributes.rs::PartOfSpeechAttribute (interface and implementation are one CustomAttribute type)
+analysis/ko/tokenattributes/ReadingAttribute	ported	crates/lucene-analysis-nori/src/attributes.rs::ReadingAttribute
+analysis/ko/tokenattributes/ReadingAttributeImpl	ported	crates/lucene-analysis-nori/src/attributes.rs::ReadingAttribute (interface and implementation are one CustomAttribute type)

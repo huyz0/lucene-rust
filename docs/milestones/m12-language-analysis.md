@@ -9,7 +9,7 @@
 | **Effort** | L |
 | **Depends on** | [M11](m11-analysis-common.md) |
 | **Unblocks** | analysing CJK and other scripts without a JVM |
-| **Status** | in progress -- part 1: architecture, inventory, T12.2 Stempel, T12.3 phonetic and Morfologik; part 2: T12.1 `analysis/morph` and Kuromoji (see [Progress](#progress)) |
+| **Status** | in progress -- part 1: architecture, inventory, T12.2 Stempel, T12.3 phonetic and Morfologik; part 2: T12.1 `analysis/morph`, Kuromoji and Nori (see [Progress](#progress)) |
 
 ---
 
@@ -172,7 +172,14 @@ Part 1:
   ukrainian_analyzer 2.11x; the remaining profile is the arc scan itself
   (`Fsa::arc`, a third of the instructions -- Morfologik scans the same
   arcs). The same rerun read ph_soundex 0.81x (noise 1.20x), below the
-  1.00~ above: not investigated here.
+  1.00~ above. Re-measured in part 2, pinned to two cores, four times:
+  ph_soundex 0.98~, 0.92~, 1.04~, 0.65x and ph_refined_soundex 0.91~,
+  1.36x, 1.05~, 1.20~ (noise floors 1.13-1.35x; Java itself ranged
+  110-155 ns/token). The profile of the ~150 ns token is the whitespace
+  tokenizer, the captured state and allocation; Soundex's own share was
+  `clean`'s copy, now streamed on the ASCII path (A/B best-of-6: 140 ->
+  123 ns/token). What is left is shared with Java's chain, so the ratio
+  follows the machine.
 - **Custom attributes** -- `lucene-analysis`' `AttributeSource` now holds
   attributes outside the core set (`CustomAttribute`, `add_custom`), which
   Morfologik's tags use and Kuromoji's, Nori's and ICU's will.
@@ -201,9 +208,32 @@ Part 2 (T12.1):
   every corpus line, `calcNBestCost`, 4,881 dictionary entries, and 45
   analyzer/factory chains (8 refused), all equal; hostile-dictionary sweeps
   (`kuromoji_hostile.rs`) never panic.
+- **Nori** -- `lucene-analysis-nori`: `KoreanTokenizer` (decompound modes
+  `NONE`/`DISCARD`/`MIXED`, unknown unigrams, punctuation, the space
+  penalty, user dictionaries with compounds), its four attributes as
+  `CustomAttribute`s, `POS` tags and types, the system, unknown and user
+  dictionaries (vendored mecab-ko-dic, or a caller's files),
+  `KoreanPartOfSpeechStopFilter`, `KoreanReadingFormFilter`,
+  `KoreanNumberFilter`, `KoreanAnalyzer` and the factories. Java's
+  `Character.UnicodeScript.of` (which Nori's unknown-word grouping uses)
+  is a BMP table generated from the JDK (`java_unicode_script.rs`).
+  `GenAnalysisNori.java`: 424 lines (121 written here, 303 stress) through
+  8 tokenizer configurations with every attribute, Graphviz lattices,
+  10,236 dictionary entries and 24 analyzer/factory chains (6 refused),
+  all equal; hostile-dictionary sweeps (`nori_hostile.rs`) never panic.
+- **Bench** (`scripts/bench-micro.sh --bench analysis_m12`, pinned, 3
+  reps): kuromoji_normal 0.93~, search 0.96~, extended 1.11~, nbest 0.96~,
+  japanese_analyzer 0.89~ (noise floor 1.21x); the first faithful port read
+  0.64-0.70x. Profile-backed (perf): the per-position division in
+  `WrappedPositionArray`, a per-byte presence-bit count and a `Position`
+  clone per backtraced token were removed; what remains is memory-bound --
+  half of `add`'s samples and most of `forward`'s sit on loads from the
+  3.4 MB connection-cost matrix, the target map and the entry buffer,
+  which Java's lattice touches identically.
 - **Dictionaries** -- licence-clean for redistribution (IPADIC's NAIST/ICOT
   terms; mecab-ko-dic is Apache-2.0), so vendored zlib-compressed: IPADIC
-  9.2 MB -> 4.6 MB in the repository (`docs/licences.md`).
+  9.2 MB -> 4.6 MB, mecab-ko-dic 25.0 MB -> 7.6 MB in the repository
+  (`docs/licences.md`).
 
 ## Acceptance criteria
 

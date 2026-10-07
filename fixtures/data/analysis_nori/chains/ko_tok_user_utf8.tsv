@@ -1,0 +1,1155 @@
+S	CustomAnalyzer(org.apache.lucene.analysis.ko.KoreanTokenizerFactory)
+T	0	오늘	0	2	1	1	word	0	-	0	1
+T	0	은	2	3	1	1	word	0	-	0	1
+T	0	날씨	4	6	1	1	word	0	-	0	1
+T	0	가	6	7	1	1	word	0	-	0	1
+T	0	정말	8	10	1	1	word	0	-	0	1
+T	0	좋	11	12	1	1	word	0	-	0	1
+T	0	네요	12	14	1	1	word	0	-	0	1
+E	0	15	15	0
+T	1	제	0	1	1	1	word	0	-	0	1
+T	1	는	1	2	1	1	word	0	-	0	1
+T	1	서울대학교	3	8	1	1	word	0	-	0	1
+T	1	에서	8	10	1	1	word	0	-	0	1
+T	1	언어	11	13	1	1	word	0	-	0	1
+T	1	학	13	14	1	1	word	0	-	0	1
+T	1	을	14	15	1	1	word	0	-	0	1
+T	1	공부	16	18	1	1	word	0	-	0	1
+T	1	하	18	19	1	1	word	0	-	0	1
+T	1	고	19	20	1	1	word	0	-	0	1
+T	1	있	21	22	1	1	word	0	-	0	1
+T	1	습니다	22	25	1	1	word	0	-	0	1
+E	1	26	26	0
+T	2	인천	0	2	1	1	word	0	-	0	1
+T	2	국제	2	4	1	1	word	0	-	0	1
+T	2	공항	4	6	1	1	word	0	-	0	1
+T	2	에서	6	8	1	1	word	0	-	0	1
+T	2	김포	9	11	1	1	word	0	-	0	1
+T	2	공항	11	13	1	1	word	0	-	0	1
+T	2	까지	13	15	1	1	word	0	-	0	1
+T	2	버스	16	18	1	1	word	0	-	0	1
+T	2	를	18	19	1	1	word	0	-	0	1
+T	2	타	20	21	1	1	word	0	-	0	1
+T	2	았	20	21	1	1	word	0	-	0	1
+T	2	다	21	22	1	1	word	0	-	0	1
+E	2	23	23	0
+T	3	이	0	1	1	1	word	0	-	0	1
+T	3	책	2	3	1	1	word	0	-	0	1
+T	3	은	3	4	1	1	word	0	-	0	1
+T	3	도서	5	7	1	1	word	0	-	0	1
+T	3	관	7	8	1	1	word	0	-	0	1
+T	3	에서	8	10	1	1	word	0	-	0	1
+T	3	빌리	11	13	1	1	word	0	-	0	1
+T	3	ᆫ	11	13	1	1	word	0	-	0	1
+T	3	것	14	15	1	1	word	0	-	0	1
+T	3	이	15	18	1	1	word	0	-	0	1
+T	3	ᄇ니다	15	18	1	1	word	0	-	0	1
+E	3	19	19	0
+T	4	내일	0	2	1	1	word	0	-	0	1
+T	4	회의	3	5	1	1	word	0	-	0	1
+T	4	는	5	6	1	1	word	0	-	0	1
+T	4	오후	7	9	1	1	word	0	-	0	1
+T	4	세	10	11	1	1	word	0	-	0	1
+T	4	시	12	13	1	1	word	0	-	0	1
+T	4	에	13	14	1	1	word	0	-	0	1
+T	4	시작	15	17	1	1	word	0	-	0	1
+T	4	하	17	20	1	1	word	0	-	0	1
+T	4	ᄇ니다	17	20	1	1	word	0	-	0	1
+E	4	21	21	0
+T	5	그녀	0	2	1	1	word	0	-	0	1
+T	5	는	2	3	1	1	word	0	-	0	1
+T	5	피아노	4	7	1	1	word	0	-	0	1
+T	5	를	7	8	1	1	word	0	-	0	1
+T	5	아주	9	11	1	1	word	0	-	0	1
+T	5	잘	12	13	1	1	word	0	-	0	1
+T	5	치	14	16	1	1	word	0	-	0	1
+T	5	ᆫ다	14	16	1	1	word	0	-	0	1
+E	5	17	17	0
+T	6	한국	0	2	1	1	word	0	-	0	1
+T	6	경제	2	4	1	1	word	0	-	0	1
+T	6	신문	4	6	1	1	word	0	-	0	1
+T	6	기사	7	9	1	1	word	0	-	0	1
+T	6	에	9	10	1	1	word	0	-	0	1
+T	6	따르	11	13	1	1	word	0	-	0	1
+T	6	면	13	14	1	1	word	0	-	0	1
+T	6	주가	15	17	1	1	word	0	-	0	1
+T	6	가	17	18	1	1	word	0	-	0	1
+T	6	크	19	20	1	1	word	0	-	0	1
+T	6	게	20	21	1	1	word	0	-	0	1
+T	6	오르	22	24	1	1	word	0	-	0	1
+T	6	았	22	24	1	1	word	0	-	0	1
+T	6	다	24	25	1	1	word	0	-	0	1
+E	6	26	26	0
+T	7	비빔	0	2	1	1	word	0	-	0	1
+T	7	밥	2	3	1	1	word	0	-	0	1
+T	7	과	3	4	1	1	word	0	-	0	1
+T	7	불	5	6	1	1	word	0	-	0	1
+T	7	고기	6	8	1	1	word	0	-	0	1
+T	7	와	8	9	1	1	word	0	-	0	1
+T	7	김치	10	12	1	1	word	0	-	0	1
+T	7	찌개	12	14	1	1	word	0	-	0	1
+T	7	중	15	16	1	1	word	0	-	0	1
+T	7	에서	16	18	1	1	word	0	-	0	1
+T	7	무엇	19	21	1	1	word	0	-	0	1
+T	7	을	21	22	1	1	word	0	-	0	1
+T	7	좋아하	23	26	1	1	word	0	-	0	1
+T	7	시	26	28	1	1	word	0	-	0	1
+T	7	어요	26	28	1	1	word	0	-	0	1
+E	7	29	29	0
+T	8	비	0	1	1	1	word	0	-	0	1
+T	8	가	1	2	1	1	word	0	-	0	1
+T	8	오	3	5	1	1	word	0	-	0	1
+T	8	아서	3	5	1	1	word	0	-	0	1
+T	8	우산	6	8	1	1	word	0	-	0	1
+T	8	을	8	9	1	1	word	0	-	0	1
+T	8	가지	10	12	1	1	word	0	-	0	1
+T	8	고	12	13	1	1	word	0	-	0	1
+T	8	나가	14	16	1	1	word	0	-	0	1
+T	8	았	14	16	1	1	word	0	-	0	1
+T	8	다	16	17	1	1	word	0	-	0	1
+E	8	18	18	0
+T	9	아이	0	2	1	1	word	0	-	0	1
+T	9	들	2	3	1	1	word	0	-	0	1
+T	9	이	3	4	1	1	word	0	-	0	1
+T	9	공원	5	7	1	1	word	0	-	0	1
+T	9	에서	7	9	1	1	word	0	-	0	1
+T	9	신나	10	12	1	1	word	0	-	0	1
+T	9	게	12	13	1	1	word	0	-	0	1
+T	9	놀	14	15	1	1	word	0	-	0	1
+T	9	고	15	16	1	1	word	0	-	0	1
+T	9	있	17	18	1	1	word	0	-	0	1
+T	9	다	18	19	1	1	word	0	-	0	1
+E	9	20	20	0
+T	10	컴퓨터	0	3	1	1	word	0	-	0	1
+T	10	소프트웨어	4	9	1	1	word	0	-	0	1
+T	10	를	9	10	1	1	word	0	-	0	1
+T	10	업데이트	11	15	1	1	word	0	-	0	1
+T	10	하	15	16	1	1	word	0	-	0	1
+T	10	아	15	16	1	1	word	0	-	0	1
+T	10	주	17	18	1	1	word	0	-	0	1
+T	10	시	18	20	1	1	word	0	-	0	1
+T	10	어요	18	20	1	1	word	0	-	0	1
+E	10	21	21	0
+T	11	스마트	0	3	1	1	word	0	-	0	1
+T	11	폰	3	4	1	1	word	0	-	0	1
+T	11	배터리	5	8	1	1	word	0	-	0	1
+T	11	가	8	9	1	1	word	0	-	0	1
+T	11	금방	10	12	1	1	word	0	-	0	1
+T	11	닳	13	14	1	1	word	0	-	0	1
+T	11	아	14	15	1	1	word	0	-	0	1
+T	11	버리	16	19	1	1	word	0	-	0	1
+T	11	ᆫ다	16	19	1	1	word	0	-	0	1
+E	11	20	20	0
+T	12	국립	0	2	1	1	word	0	-	0	1
+T	12	중앙	2	4	1	1	word	0	-	0	1
+T	12	도서	4	6	1	1	word	0	-	0	1
+T	12	관	6	7	1	1	word	0	-	0	1
+T	12	은	7	8	1	1	word	0	-	0	1
+T	12	한국	9	11	1	1	word	0	-	0	1
+T	12	에서	11	13	1	1	word	0	-	0	1
+T	12	가장	14	16	1	1	word	0	-	0	1
+T	12	크	17	18	1	1	word	0	-	0	1
+T	12	ᆫ	17	18	1	1	word	0	-	0	1
+T	12	도서	19	21	1	1	word	0	-	0	1
+T	12	관	21	22	1	1	word	0	-	0	1
+T	12	이	22	23	1	1	word	0	-	0	1
+T	12	다	23	24	1	1	word	0	-	0	1
+E	12	25	25	0
+T	13	서울	0	2	1	1	word	0	-	0	1
+T	13	특별	2	4	1	1	word	0	-	0	1
+T	13	시청	4	6	1	1	word	0	-	0	1
+T	13	은	6	7	1	1	word	0	-	0	1
+T	13	중구	8	10	1	1	word	0	-	0	1
+T	13	에	10	11	1	1	word	0	-	0	1
+T	13	있	12	13	1	1	word	0	-	0	1
+T	13	습니다	13	16	1	1	word	0	-	0	1
+E	13	17	17	0
+T	14	안녕	1	3	1	1	word	0	-	0	1
+T	14	하	3	4	1	1	word	0	-	0	1
+T	14	시	4	6	1	1	word	0	-	0	1
+T	14	어요	4	6	1	1	word	0	-	0	1
+T	14	라고	7	9	1	1	word	0	-	0	1
+T	14	그	10	11	1	1	word	0	-	0	1
+T	14	가	11	12	1	1	word	0	-	0	1
+T	14	말	13	14	1	1	word	0	-	0	1
+T	14	하	14	15	1	1	word	0	-	0	1
+T	14	았	14	15	1	1	word	0	-	0	1
+T	14	다	15	16	1	1	word	0	-	0	1
+E	14	17	17	0
+T	15	2024	0	4	1	1	word	0	-	0	1
+T	15	년	4	5	1	1	word	0	-	0	1
+T	15	10	6	8	1	1	word	0	-	0	1
+T	15	월	8	9	1	1	word	0	-	0	1
+T	15	7	10	11	1	1	word	0	-	0	1
+T	15	일	11	12	1	1	word	0	-	0	1
+T	15	맑	14	15	1	1	word	0	-	0	1
+T	15	음	15	16	1	1	word	0	-	0	1
+E	15	17	17	0
+T	16	가격	0	2	1	1	word	0	-	0	1
+T	16	은	2	3	1	1	word	0	-	0	1
+T	16	12	4	6	1	1	word	0	-	0	1
+T	16	800	7	10	1	1	word	0	-	0	1
+T	16	원	10	11	1	1	word	0	-	0	1
+T	16	부가	12	14	1	1	word	0	-	0	1
+T	16	세	14	15	1	1	word	0	-	0	1
+T	16	포함	16	18	1	1	word	0	-	0	1
+T	16	이	19	22	1	1	word	0	-	0	1
+T	16	ᄇ니다	19	22	1	1	word	0	-	0	1
+E	16	23	23	0
+T	17	전화	0	2	1	1	word	0	-	0	1
+T	17	번호	2	4	1	1	word	0	-	0	1
+T	17	는	4	5	1	1	word	0	-	0	1
+T	17	02	6	8	1	1	word	0	-	0	1
+T	17	1234	9	13	1	1	word	0	-	0	1
+T	17	5678	14	18	1	1	word	0	-	0	1
+T	17	이	18	21	1	1	word	0	-	0	1
+T	17	ᄇ니다	18	21	1	1	word	0	-	0	1
+E	17	22	22	0
+T	18	ABC	0	3	1	1	word	0	-	0	1
+T	18	주식	4	6	1	1	word	0	-	0	1
+T	18	회사	6	8	1	1	word	0	-	0	1
+T	18	대표	9	11	1	1	word	0	-	0	1
+T	18	가	11	12	1	1	word	0	-	0	1
+T	18	방한	13	15	1	1	word	0	-	0	1
+T	18	하	15	16	1	1	word	0	-	0	1
+T	18	았	15	16	1	1	word	0	-	0	1
+T	18	다	16	17	1	1	word	0	-	0	1
+E	18	18	18	0
+T	19	아이폰	0	3	1	1	word	0	-	0	1
+T	19	과	3	4	1	1	word	0	-	0	1
+T	19	안드로이드	5	10	1	1	word	0	-	0	1
+T	19	중	11	12	1	1	word	0	-	0	1
+T	19	에	12	13	1	1	word	0	-	0	1
+T	19	무엇	14	16	1	1	word	0	-	0	1
+T	19	을	16	17	1	1	word	0	-	0	1
+T	19	쓸	18	19	1	1	word	0	-	0	1
+T	19	시	19	21	1	1	word	0	-	0	1
+T	19	어요	19	21	1	1	word	0	-	0	1
+E	19	22	22	0
+T	20	저	0	1	1	1	word	0	-	0	1
+T	20	의	0	1	1	1	word	0	-	0	1
+T	20	이름	2	4	1	1	word	0	-	0	1
+T	20	은	4	5	1	1	word	0	-	0	1
+T	20	홍	6	7	1	1	word	0	-	0	1
+T	20	길동	7	9	1	1	word	0	-	0	1
+T	20	이	9	12	1	1	word	0	-	0	1
+T	20	ᄇ니다	9	12	1	1	word	0	-	0	1
+T	20	잘	14	15	1	1	word	0	-	0	1
+T	20	부탁	16	18	1	1	word	0	-	0	1
+T	20	드리	18	22	1	1	word	0	-	0	1
+T	20	ᄇ니다	18	22	1	1	word	0	-	0	1
+E	20	23	23	0
+T	21	세종	0	2	1	1	word	0	-	0	1
+T	21	대왕	2	4	1	1	word	0	-	0	1
+T	21	은	4	5	1	1	word	0	-	0	1
+T	21	훈민	6	8	1	1	word	0	-	0	1
+T	21	정음	8	10	1	1	word	0	-	0	1
+T	21	을	10	11	1	1	word	0	-	0	1
+T	21	창제	12	14	1	1	word	0	-	0	1
+T	21	하	14	15	1	1	word	0	-	0	1
+T	21	였	15	16	1	1	word	0	-	0	1
+T	21	다	16	17	1	1	word	0	-	0	1
+E	21	18	18	0
+T	22	大韓	0	2	1	1	word	0	-	0	1
+T	22	民國	2	4	1	1	word	0	-	0	1
+T	22	은	4	5	1	1	word	0	-	0	1
+T	22	民主	6	8	1	1	word	0	-	0	1
+T	22	共和	8	10	1	1	word	0	-	0	1
+T	22	國	10	11	1	1	word	0	-	0	1
+T	22	이	11	12	1	1	word	0	-	0	1
+T	22	다	12	13	1	1	word	0	-	0	1
+E	22	14	14	0
+T	23	韓	0	1	1	1	word	0	-	0	1
+T	23	國語	1	3	1	1	word	0	-	0	1
+T	23	와	3	4	1	1	word	0	-	0	1
+T	23	中國	5	7	1	1	word	0	-	0	1
+T	23	語	7	8	1	1	word	0	-	0	1
+T	23	와	8	9	1	1	word	0	-	0	1
+T	23	日本	10	12	1	1	word	0	-	0	1
+T	23	語	12	13	1	1	word	0	-	0	1
+E	23	13	13	0
+T	24	삼	0	1	1	1	word	0	-	0	1
+T	24	백	1	2	1	1	word	0	-	0	1
+T	24	이	2	3	1	1	word	0	-	0	1
+T	24	십	3	4	1	1	word	0	-	0	1
+T	24	원	5	6	1	1	word	0	-	0	1
+E	24	6	6	0
+T	25	일천	0	2	1	1	word	0	-	0	1
+T	25	이	2	3	1	1	word	0	-	0	1
+T	25	백	3	4	1	1	word	0	-	0	1
+T	25	삼	4	5	1	1	word	0	-	0	1
+T	25	십	5	6	1	1	word	0	-	0	1
+T	25	사만	6	8	1	1	word	0	-	0	1
+T	25	오	8	9	1	1	word	0	-	0	1
+T	25	천	9	10	1	1	word	0	-	0	1
+T	25	육	10	11	1	1	word	0	-	0	1
+T	25	백	11	12	1	1	word	0	-	0	1
+T	25	칠	12	13	1	1	word	0	-	0	1
+T	25	십	13	14	1	1	word	0	-	0	1
+T	25	팔	14	15	1	1	word	0	-	0	1
+E	25	15	15	0
+T	26	삼	0	1	1	1	word	0	-	0	1
+T	26	억	1	2	1	1	word	0	-	0	1
+T	26	오	2	3	1	1	word	0	-	0	1
+T	26	천만	3	5	1	1	word	0	-	0	1
+T	26	명	6	7	1	1	word	0	-	0	1
+E	26	7	7	0
+T	27	십	0	1	1	1	word	0	-	0	1
+T	27	년	2	3	1	1	word	0	-	0	1
+T	27	동안	4	6	1	1	word	0	-	0	1
+E	27	6	6	0
+T	28	1	0	1	1	1	word	0	-	0	1
+T	28	000	2	5	1	1	word	0	-	0	1
+T	28	000	6	9	1	1	word	0	-	0	1
+T	28	원	9	10	1	1	word	0	-	0	1
+T	28	과	10	11	1	1	word	0	-	0	1
+T	28	１	12	13	1	1	word	0	-	0	1
+T	28	０００	14	17	1	1	word	0	-	0	1
+T	28	０００	18	21	1	1	word	0	-	0	1
+T	28	원	21	22	1	1	word	0	-	0	1
+E	28	22	22	0
+T	29	2	0	1	1	1	word	0	-	0	1
+T	29	5	2	3	1	1	word	0	-	0	1
+T	29	3	4	5	1	1	word	0	-	0	1
+T	29	버전	6	8	1	1	word	0	-	0	1
+E	29	8	8	0
+T	30	가곡	0	2	1	1	word	0	-	0	1
+T	30	역	2	3	1	1	word	0	-	0	1
+T	30	에서	3	5	1	1	word	0	-	0	1
+T	30	기차	6	8	1	1	word	0	-	0	1
+T	30	를	8	9	1	1	word	0	-	0	1
+T	30	타	10	11	1	1	word	0	-	0	1
+T	30	았	10	11	1	1	word	0	-	0	1
+T	30	다	11	12	1	1	word	0	-	0	1
+E	30	13	13	0
+T	31	세종	0	2	1	1	word	0	-	0	1
+T	31	시	2	3	1	1	word	0	-	0	1
+T	31	는	3	4	1	1	word	0	-	0	1
+T	31	행정	5	7	1	1	word	0	-	0	1
+T	31	중심	7	9	1	1	word	0	-	0	1
+T	31	복합	9	11	1	1	word	0	-	0	1
+T	31	도시	11	13	1	1	word	0	-	0	1
+T	31	이	13	14	1	1	word	0	-	0	1
+T	31	다	14	15	1	1	word	0	-	0	1
+E	31	16	16	0
+T	32	먹	0	1	1	1	word	0	-	0	1
+T	32	었	1	2	1	1	word	0	-	0	1
+T	32	다	2	3	1	1	word	0	-	0	1
+T	32	먹	5	6	1	1	word	0	-	0	1
+T	32	는다	6	8	1	1	word	0	-	0	1
+T	32	먹	10	11	1	1	word	0	-	0	1
+T	32	겠	11	12	1	1	word	0	-	0	1
+T	32	다	12	13	1	1	word	0	-	0	1
+T	32	먹	15	16	1	1	word	0	-	0	1
+T	32	으면	16	18	1	1	word	0	-	0	1
+T	32	먹	20	21	1	1	word	0	-	0	1
+T	32	어서	21	23	1	1	word	0	-	0	1
+E	32	24	24	0
+T	33	가	0	1	1	1	word	0	-	0	1
+T	33	았	0	1	1	1	word	0	-	0	1
+T	33	다	1	2	1	1	word	0	-	0	1
+T	33	가	4	6	1	1	word	0	-	0	1
+T	33	ᆫ다	4	6	1	1	word	0	-	0	1
+T	33	갈	8	9	1	1	word	0	-	0	1
+T	33	겠	9	10	1	1	word	0	-	0	1
+T	33	다	10	11	1	1	word	0	-	0	1
+T	33	갈	13	14	1	1	word	0	-	0	1
+T	33	면	14	15	1	1	word	0	-	0	1
+T	33	갈	17	18	1	1	word	0	-	0	1
+T	33	서	18	19	1	1	word	0	-	0	1
+E	33	20	20	0
+T	34	아름답	0	3	1	1	word	0	-	0	1
+T	34	다	3	4	1	1	word	0	-	0	1
+T	34	아름답	6	10	1	1	word	0	-	0	1
+T	34	었	6	10	1	1	word	0	-	0	1
+T	34	다	10	11	1	1	word	0	-	0	1
+T	34	아름답	13	16	1	1	word	0	-	0	1
+T	34	지	16	17	1	1	word	0	-	0	1
+T	34	않	18	19	1	1	word	0	-	0	1
+T	34	다	19	20	1	1	word	0	-	0	1
+E	34	21	21	0
+T	35	조용	0	2	1	1	word	0	-	0	1
+T	35	하	2	3	1	1	word	0	-	0	1
+T	35	다	3	4	1	1	word	0	-	0	1
+T	35	조용	6	8	1	1	word	0	-	0	1
+T	35	하	8	9	1	1	word	0	-	0	1
+T	35	았	8	9	1	1	word	0	-	0	1
+T	35	다	9	10	1	1	word	0	-	0	1
+T	35	조용	12	14	1	1	word	0	-	0	1
+T	35	하	14	15	1	1	word	0	-	0	1
+T	35	지	15	16	1	1	word	0	-	0	1
+T	35	않	17	18	1	1	word	0	-	0	1
+T	35	다	18	19	1	1	word	0	-	0	1
+E	35	20	20	0
+T	36	공부	0	2	1	1	word	0	-	0	1
+T	36	하	2	3	1	1	word	0	-	0	1
+T	36	고	3	4	1	1	word	0	-	0	1
+T	36	싶	5	6	1	1	word	0	-	0	1
+T	36	었	6	7	1	1	word	0	-	0	1
+T	36	지만	7	9	1	1	word	0	-	0	1
+T	36	시간	10	12	1	1	word	0	-	0	1
+T	36	이	12	13	1	1	word	0	-	0	1
+T	36	없	14	15	1	1	word	0	-	0	1
+T	36	었	15	16	1	1	word	0	-	0	1
+T	36	다	16	17	1	1	word	0	-	0	1
+E	36	18	18	0
+T	37	만약	0	2	1	1	word	0	-	0	1
+T	37	내일	3	5	1	1	word	0	-	0	1
+T	37	비	6	7	1	1	word	0	-	0	1
+T	37	가	7	8	1	1	word	0	-	0	1
+T	37	오	9	10	1	1	word	0	-	0	1
+T	37	면	10	11	1	1	word	0	-	0	1
+T	37	경기	12	14	1	1	word	0	-	0	1
+T	37	는	14	15	1	1	word	0	-	0	1
+T	37	취소	16	18	1	1	word	0	-	0	1
+T	37	되	18	19	1	1	word	0	-	0	1
+T	37	ᆯ	18	19	1	1	word	0	-	0	1
+T	37	것	20	21	1	1	word	0	-	0	1
+T	37	이	21	22	1	1	word	0	-	0	1
+T	37	다	22	23	1	1	word	0	-	0	1
+E	37	24	24	0
+T	38	그	0	1	1	1	word	0	-	0	1
+T	38	가	1	2	1	1	word	0	-	0	1
+T	38	오	3	5	1	1	word	0	-	0	1
+T	38	ᆯ지	3	5	1	1	word	0	-	0	1
+T	38	안	6	7	1	1	word	0	-	0	1
+T	38	오	8	10	1	1	word	0	-	0	1
+T	38	ᆯ지	8	10	1	1	word	0	-	0	1
+T	38	모르	11	13	1	1	word	0	-	0	1
+T	38	겠	13	14	1	1	word	0	-	0	1
+T	38	다	14	15	1	1	word	0	-	0	1
+E	38	16	16	0
+T	39	책	0	1	1	1	word	0	-	0	1
+T	39	을	1	2	1	1	word	0	-	0	1
+T	39	읽	3	4	1	1	word	0	-	0	1
+T	39	는	4	5	1	1	word	0	-	0	1
+T	39	것	6	7	1	1	word	0	-	0	1
+T	39	을	7	8	1	1	word	0	-	0	1
+T	39	좋	9	10	1	1	word	0	-	0	1
+T	39	아	10	11	1	1	word	0	-	0	1
+T	39	하	11	14	1	1	word	0	-	0	1
+T	39	ᄇ니다	11	14	1	1	word	0	-	0	1
+E	39	15	15	0
+T	40	빨리	0	2	1	1	word	0	-	0	1
+T	40	자라	3	5	1	1	word	0	-	0	1
+E	40	6	6	0
+T	41	뭣	0	1	1	1	word	0	-	0	1
+T	41	이	1	3	1	1	word	0	-	0	1
+T	41	라고	1	3	1	1	word	0	-	0	1
+E	41	4	4	0
+T	42	잠깐	0	2	1	1	word	0	-	0	1
+T	42	만	2	3	1	1	word	0	-	0	1
+T	42	기다리	4	7	1	1	word	0	-	0	1
+T	42	어	4	7	1	1	word	0	-	0	1
+T	42	주	8	9	1	1	word	0	-	0	1
+T	42	시	9	11	1	1	word	0	-	0	1
+T	42	어요	9	11	1	1	word	0	-	0	1
+E	42	12	12	0
+T	43	음	0	1	1	1	word	0	-	0	1
+T	43	뭣	5	6	1	1	word	0	-	0	1
+T	43	이	6	7	1	1	word	0	-	0	1
+T	43	었	6	7	1	1	word	0	-	0	1
+T	43	더라	7	9	1	1	word	0	-	0	1
+E	43	10	10	0
+T	44	월드	0	2	1	1	word	0	-	0	1
+T	44	컵	2	3	1	1	word	0	-	0	1
+T	44	축구	4	6	1	1	word	0	-	0	1
+T	44	국가	7	9	1	1	word	0	-	0	1
+T	44	대표	9	11	1	1	word	0	-	0	1
+T	44	팀	11	12	1	1	word	0	-	0	1
+E	44	12	12	0
+T	45	아이스	0	3	1	1	word	0	-	0	1
+T	45	크림	3	5	1	1	word	0	-	0	1
+T	45	가게	6	8	1	1	word	0	-	0	1
+T	45	에서	8	10	1	1	word	0	-	0	1
+T	45	바닐라	11	14	1	1	word	0	-	0	1
+T	45	아이스	15	18	1	1	word	0	-	0	1
+T	45	크림	18	20	1	1	word	0	-	0	1
+T	45	을	20	21	1	1	word	0	-	0	1
+T	45	사	22	23	1	1	word	0	-	0	1
+T	45	ㅏㅆ	22	23	1	1	word	0	-	0	1
+T	45	다	23	24	1	1	word	0	-	0	1
+E	45	25	25	0
+T	46	백화	0	2	1	1	word	0	-	0	1
+T	46	점	2	3	1	1	word	0	-	0	1
+T	46	지하	4	6	1	1	word	0	-	0	1
+T	46	식품	7	9	1	1	word	0	-	0	1
+T	46	매장	10	12	1	1	word	0	-	0	1
+T	46	은	12	13	1	1	word	0	-	0	1
+T	46	붐비	14	16	1	1	word	0	-	0	1
+T	46	었	14	16	1	1	word	0	-	0	1
+T	46	다	16	17	1	1	word	0	-	0	1
+E	46	18	18	0
+T	47	프로그래밍	0	5	1	1	word	0	-	0	1
+T	47	언어	6	8	1	1	word	0	-	0	1
+T	47	비교	9	11	1	1	word	0	-	0	1
+T	47	연구	12	14	1	1	word	0	-	0	1
+E	47	14	14	0
+T	48	자바	0	2	1	1	word	0	-	0	1
+T	48	스크립트	2	6	1	1	word	0	-	0	1
+T	48	와	6	7	1	1	word	0	-	0	1
+T	48	파이썬	8	11	1	1	word	0	-	0	1
+T	48	과	11	12	1	1	word	0	-	0	1
+T	48	러스트	13	16	1	1	word	0	-	0	1
+E	48	16	16	0
+T	49	키보드	0	3	1	1	word	0	-	0	1
+T	49	와	3	4	1	1	word	0	-	0	1
+T	49	마우스	5	8	1	1	word	0	-	0	1
+T	49	와	8	9	1	1	word	0	-	0	1
+T	49	모니터	10	13	1	1	word	0	-	0	1
+E	49	13	13	0
+T	50	이	0	1	1	1	word	0	-	0	1
+T	50	음식	2	4	1	1	word	0	-	0	1
+T	50	정말	5	7	1	1	word	0	-	0	1
+T	50	맛있	8	10	1	1	word	0	-	0	1
+T	50	다	10	11	1	1	word	0	-	0	1
+E	50	12	12	0
+T	51	대박	0	2	1	1	word	0	-	0	1
+T	51	최고	4	6	1	1	word	0	-	0	1
+T	51	이	6	7	1	1	word	0	-	0	1
+T	51	야	6	7	1	1	word	0	-	0	1
+E	51	8	8	0
+T	52	으으	0	2	1	1	word	0	-	0	1
+T	52	춥	4	6	1	1	word	0	-	0	1
+T	52	어	4	6	1	1	word	0	-	0	1
+E	52	7	7	0
+T	53	헉헉	0	2	1	1	word	0	-	0	1
+T	53	힘들	4	6	1	1	word	0	-	0	1
+T	53	다	6	7	1	1	word	0	-	0	1
+E	53	8	8	0
+T	54	우리	0	2	1	1	word	0	-	0	1
+T	54	는	2	3	1	1	word	0	-	0	1
+T	54	내일	4	6	1	1	word	0	-	0	1
+T	54	부산	7	9	1	1	word	0	-	0	1
+T	54	에	9	10	1	1	word	0	-	0	1
+T	54	가	11	13	1	1	word	0	-	0	1
+T	54	ᆫ다	11	13	1	1	word	0	-	0	1
+E	54	14	14	0
+T	55	가운뎃	1	4	1	1	word	0	-	0	1
+T	55	점	4	5	1	1	word	0	-	0	1
+T	55	구분	6	8	1	1	word	0	-	0	1
+T	55	테스트	9	12	1	1	word	0	-	0	1
+E	55	13	13	0
+T	56	중요	1	3	1	1	word	0	-	0	1
+T	56	공지	5	7	1	1	word	0	-	0	1
+T	56	새	8	9	1	1	word	0	-	0	1
+T	56	소식	10	12	1	1	word	0	-	0	1
+E	56	13	13	0
+T	57	주의	1	3	1	1	word	0	-	0	1
+T	57	이	5	6	1	1	word	0	-	0	1
+T	57	앞	7	8	1	1	word	0	-	0	1
+T	57	공사	9	11	1	1	word	0	-	0	1
+T	57	중	12	13	1	1	word	0	-	0	1
+E	57	14	14	0
+T	58	서울	0	2	1	1	word	0	-	0	1
+T	58	특별	2	4	1	1	word	0	-	0	1
+T	58	시	4	5	1	1	word	0	-	0	1
+T	58	종로	6	8	1	1	word	0	-	0	1
+T	58	구	8	9	1	1	word	0	-	0	1
+T	58	세종	10	12	1	1	word	0	-	0	1
+T	58	대로	12	14	1	1	word	0	-	0	1
+T	58	1	15	16	1	1	word	0	-	0	1
+E	58	16	16	0
+T	59	주식	0	2	1	1	word	0	-	0	1
+T	59	회사	2	4	1	1	word	0	-	0	1
+T	59	ABC	5	8	1	1	word	0	-	0	1
+T	59	홀딩스	9	12	1	1	word	0	-	0	1
+T	59	대표	13	15	1	1	word	0	-	0	1
+T	59	이사	15	17	1	1	word	0	-	0	1
+T	59	사장	18	20	1	1	word	0	-	0	1
+E	59	20	20	0
+T	60	경기	0	2	1	1	word	0	-	0	1
+T	60	도	2	3	1	1	word	0	-	0	1
+T	60	수원	4	6	1	1	word	0	-	0	1
+T	60	시	6	7	1	1	word	0	-	0	1
+T	60	팔달	8	10	1	1	word	0	-	0	1
+T	60	구	10	11	1	1	word	0	-	0	1
+E	60	11	11	0
+T	61	부산	0	2	1	1	word	0	-	0	1
+T	61	광역	2	4	1	1	word	0	-	0	1
+T	61	시	4	5	1	1	word	0	-	0	1
+T	61	해운대	6	9	1	1	word	0	-	0	1
+T	61	구	9	10	1	1	word	0	-	0	1
+E	61	10	10	0
+T	62	제주	0	2	1	1	word	0	-	0	1
+T	62	특별자치도	2	7	1	1	word	0	-	0	1
+T	62	제주	8	10	1	1	word	0	-	0	1
+T	62	시	10	11	1	1	word	0	-	0	1
+E	62	11	11	0
+T	63	한라	0	2	1	1	word	0	-	0	1
+T	63	산	2	3	1	1	word	0	-	0	1
+T	63	은	3	4	1	1	word	0	-	0	1
+T	63	남한	5	7	1	1	word	0	-	0	1
+T	63	에서	7	9	1	1	word	0	-	0	1
+T	63	가장	10	12	1	1	word	0	-	0	1
+T	63	높	13	14	1	1	word	0	-	0	1
+T	63	은	14	15	1	1	word	0	-	0	1
+T	63	산	16	17	1	1	word	0	-	0	1
+T	63	이	17	18	1	1	word	0	-	0	1
+T	63	다	18	19	1	1	word	0	-	0	1
+E	63	20	20	0
+T	64	한강	0	2	1	1	word	0	-	0	1
+T	64	은	2	3	1	1	word	0	-	0	1
+T	64	서울	4	6	1	1	word	0	-	0	1
+T	64	을	6	7	1	1	word	0	-	0	1
+T	64	가로지르	8	13	1	1	word	0	-	0	1
+T	64	ᆫ다	8	13	1	1	word	0	-	0	1
+E	64	14	14	0
+T	65	낙동	0	2	1	1	word	0	-	0	1
+T	65	강	2	3	1	1	word	0	-	0	1
+T	65	은	3	4	1	1	word	0	-	0	1
+T	65	한국	5	7	1	1	word	0	-	0	1
+T	65	에서	7	9	1	1	word	0	-	0	1
+T	65	가장	10	12	1	1	word	0	-	0	1
+T	65	길	13	14	1	1	word	0	-	0	1
+T	65	ᆫ	13	14	1	1	word	0	-	0	1
+T	65	강	15	16	1	1	word	0	-	0	1
+T	65	이	16	17	1	1	word	0	-	0	1
+T	65	다	17	18	1	1	word	0	-	0	1
+E	65	19	19	0
+T	66	벚	0	1	1	1	word	0	-	0	1
+T	66	꽃	1	2	1	1	word	0	-	0	1
+T	66	이	2	3	1	1	word	0	-	0	1
+T	66	만개	4	6	1	1	word	0	-	0	1
+T	66	하	6	7	1	1	word	0	-	0	1
+T	66	았	6	7	1	1	word	0	-	0	1
+T	66	다	7	8	1	1	word	0	-	0	1
+E	66	9	9	0
+T	67	단풍	0	2	1	1	word	0	-	0	1
+T	67	구경	3	5	1	1	word	0	-	0	1
+T	67	갈	6	7	1	1	word	0	-	0	1
+T	67	자	7	8	1	1	word	0	-	0	1
+E	67	9	9	0
+T	68	연말	0	2	1	1	word	0	-	0	1
+T	68	연시	2	4	1	1	word	0	-	0	1
+T	68	휴무	5	7	1	1	word	0	-	0	1
+T	68	안내	8	10	1	1	word	0	-	0	1
+E	68	10	10	0
+T	69	감염병	0	3	1	1	word	0	-	0	1
+T	69	대응	4	6	1	1	word	0	-	0	1
+T	69	본부	7	9	1	1	word	0	-	0	1
+E	69	9	9	0
+T	70	국제	0	2	1	1	word	0	-	0	1
+T	70	연합	2	4	1	1	word	0	-	0	1
+T	70	교육	5	7	1	1	word	0	-	0	1
+T	70	과	7	8	1	1	word	0	-	0	1
+T	70	학문	8	10	1	1	word	0	-	0	1
+T	70	화	10	11	1	1	word	0	-	0	1
+T	70	기구	11	13	1	1	word	0	-	0	1
+E	70	13	13	0
+T	71	세계	0	2	1	1	word	0	-	0	1
+T	71	보건	2	4	1	1	word	0	-	0	1
+T	71	기구	4	6	1	1	word	0	-	0	1
+T	71	사무	7	9	1	1	word	0	-	0	1
+T	71	총장	9	11	1	1	word	0	-	0	1
+E	71	11	11	0
+T	72	대통령	0	3	1	1	word	0	-	0	1
+T	72	이	3	4	1	1	word	0	-	0	1
+T	72	기자	5	7	1	1	word	0	-	0	1
+T	72	회견	7	9	1	1	word	0	-	0	1
+T	72	을	9	10	1	1	word	0	-	0	1
+T	72	열	11	12	1	1	word	0	-	0	1
+T	72	었	12	13	1	1	word	0	-	0	1
+T	72	다	13	14	1	1	word	0	-	0	1
+E	72	15	15	0
+T	73	국회	0	2	1	1	word	0	-	0	1
+T	73	의원	2	4	1	1	word	0	-	0	1
+T	73	총	5	6	1	1	word	0	-	0	1
+T	73	선거	6	8	1	1	word	0	-	0	1
+T	73	투표	9	11	1	1	word	0	-	0	1
+T	73	일	11	12	1	1	word	0	-	0	1
+E	73	12	12	0
+T	74	대	0	1	1	1	word	0	-	0	1
+T	74	법원	1	3	1	1	word	0	-	0	1
+T	74	판결	4	6	1	1	word	0	-	0	1
+T	74	이	6	7	1	1	word	0	-	0	1
+T	74	내려지	8	11	1	1	word	0	-	0	1
+T	74	었	8	11	1	1	word	0	-	0	1
+T	74	다	11	12	1	1	word	0	-	0	1
+E	74	13	13	0
+T	75	기획	0	2	1	1	word	0	-	0	1
+T	75	재정	2	4	1	1	word	0	-	0	1
+T	75	부	4	5	1	1	word	0	-	0	1
+T	75	와	5	6	1	1	word	0	-	0	1
+T	75	교육	7	9	1	1	word	0	-	0	1
+T	75	부	9	10	1	1	word	0	-	0	1
+E	75	10	10	0
+T	76	저출산	0	3	1	1	word	0	-	0	1
+T	76	고령	4	6	1	1	word	0	-	0	1
+T	76	화	6	7	1	1	word	0	-	0	1
+T	76	사회	8	10	1	1	word	0	-	0	1
+T	76	의	10	11	1	1	word	0	-	0	1
+T	76	사회	12	14	1	1	word	0	-	0	1
+T	76	보장	14	16	1	1	word	0	-	0	1
+T	76	제도	16	18	1	1	word	0	-	0	1
+T	76	개혁	19	21	1	1	word	0	-	0	1
+E	76	21	21	0
+T	77	재생	0	2	1	1	word	0	-	0	1
+T	77	가능	3	5	1	1	word	0	-	0	1
+T	77	에너지	6	9	1	1	word	0	-	0	1
+T	77	보급	10	12	1	1	word	0	-	0	1
+T	77	촉진	13	15	1	1	word	0	-	0	1
+E	77	15	15	0
+T	78	반	0	1	1	1	word	0	-	0	1
+T	78	도체	1	3	1	1	word	0	-	0	1
+T	78	제조	4	6	1	1	word	0	-	0	1
+T	78	장비	7	9	1	1	word	0	-	0	1
+T	78	수출	10	12	1	1	word	0	-	0	1
+T	78	규제	13	15	1	1	word	0	-	0	1
+E	78	15	15	0
+T	79	양자	0	2	1	1	word	0	-	0	1
+T	79	컴퓨터	3	6	1	1	word	0	-	0	1
+T	79	연구	7	9	1	1	word	0	-	0	1
+T	79	개발	10	12	1	1	word	0	-	0	1
+E	79	12	12	0
+T	80	유전	0	2	1	1	word	0	-	0	1
+T	80	자	2	3	1	1	word	0	-	0	1
+T	80	변형	4	6	1	1	word	0	-	0	1
+T	80	작물	7	9	1	1	word	0	-	0	1
+T	80	의	9	10	1	1	word	0	-	0	1
+T	80	안전	11	13	1	1	word	0	-	0	1
+T	80	성	13	14	1	1	word	0	-	0	1
+T	80	평가	15	17	1	1	word	0	-	0	1
+E	80	17	17	0
+T	81	한국	0	2	1	1	word	0	-	0	1
+T	81	항공	2	4	1	1	word	0	-	0	1
+T	81	우주	4	6	1	1	word	0	-	0	1
+T	81	연구	6	8	1	1	word	0	-	0	1
+T	81	원	8	9	1	1	word	0	-	0	1
+T	81	의	9	10	1	1	word	0	-	0	1
+T	81	인공	11	13	1	1	word	0	-	0	1
+T	81	위성	13	15	1	1	word	0	-	0	1
+T	81	발사	16	18	1	1	word	0	-	0	1
+E	81	18	18	0
+T	82	육상	0	2	1	1	word	0	-	0	1
+T	82	100	3	6	1	1	word	0	-	0	1
+T	82	미터	6	8	1	1	word	0	-	0	1
+T	82	달리	9	11	1	1	word	0	-	0	1
+T	82	기	11	12	1	1	word	0	-	0	1
+T	82	세계	13	15	1	1	word	0	-	0	1
+T	82	기록	16	18	1	1	word	0	-	0	1
+E	82	18	18	0
+T	83	야구	0	2	1	1	word	0	-	0	1
+T	83	축구	4	6	1	1	word	0	-	0	1
+T	83	농구	8	10	1	1	word	0	-	0	1
+T	83	테니스	12	15	1	1	word	0	-	0	1
+E	83	15	15	0
+T	84	아침	0	2	1	1	word	0	-	0	1
+T	84	밥	2	3	1	1	word	0	-	0	1
+T	84	을	3	4	1	1	word	0	-	0	1
+T	84	먹	5	6	1	1	word	0	-	0	1
+T	84	지	6	7	1	1	word	0	-	0	1
+T	84	않	8	9	1	1	word	0	-	0	1
+T	84	고	9	10	1	1	word	0	-	0	1
+T	84	학교	11	13	1	1	word	0	-	0	1
+T	84	에	13	14	1	1	word	0	-	0	1
+T	84	가	15	16	1	1	word	0	-	0	1
+T	84	았	15	16	1	1	word	0	-	0	1
+T	84	다	16	17	1	1	word	0	-	0	1
+E	84	18	18	0
+T	85	그	0	1	1	1	word	0	-	0	1
+T	85	는	1	2	1	1	word	0	-	0	1
+T	85	의사	3	5	1	1	word	0	-	0	1
+T	85	가	5	6	1	1	word	0	-	0	1
+T	85	되	7	8	1	1	word	0	-	0	1
+T	85	고	8	9	1	1	word	0	-	0	1
+T	85	싶	10	11	1	1	word	0	-	0	1
+T	85	다고	11	13	1	1	word	0	-	0	1
+T	85	말	14	15	1	1	word	0	-	0	1
+T	85	하	15	16	1	1	word	0	-	0	1
+T	85	았	15	16	1	1	word	0	-	0	1
+T	85	다	16	17	1	1	word	0	-	0	1
+E	85	18	18	0
+T	86	동해	0	2	1	1	word	0	-	0	1
+T	86	물	3	4	1	1	word	0	-	0	1
+T	86	과	4	5	1	1	word	0	-	0	1
+T	86	백두	6	8	1	1	word	0	-	0	1
+T	86	산	8	9	1	1	word	0	-	0	1
+T	86	이	9	10	1	1	word	0	-	0	1
+T	86	마르	11	13	1	1	word	0	-	0	1
+T	86	고	13	14	1	1	word	0	-	0	1
+T	86	닳	15	16	1	1	word	0	-	0	1
+T	86	도록	16	18	1	1	word	0	-	0	1
+E	86	18	18	0
+T	87	하늘	0	2	1	1	word	0	-	0	1
+T	87	을	2	3	1	1	word	0	-	0	1
+T	87	우러르	4	7	1	1	word	0	-	0	1
+T	87	어	4	7	1	1	word	0	-	0	1
+T	87	한	8	9	1	1	word	0	-	0	1
+T	87	점	10	11	1	1	word	0	-	0	1
+T	87	부끄럼	12	15	1	1	word	0	-	0	1
+T	87	이	15	16	1	1	word	0	-	0	1
+T	87	없	17	18	1	1	word	0	-	0	1
+T	87	기	18	19	1	1	word	0	-	0	1
+T	87	를	19	20	1	1	word	0	-	0	1
+E	87	20	20	0
+T	88	나	0	1	1	1	word	0	-	0	1
+T	88	는	2	3	1	1	word	0	-	0	1
+T	88	학생	4	6	1	1	word	0	-	0	1
+T	88	이	7	8	1	1	word	0	-	0	1
+T	88	다	8	9	1	1	word	0	-	0	1
+E	88	9	9	0
+T	89	나	0	1	1	1	word	0	-	0	1
+T	89	는	1	2	1	1	word	0	-	0	1
+T	89	학생	2	4	1	1	word	0	-	0	1
+T	89	이	4	5	1	1	word	0	-	0	1
+T	89	다	5	6	1	1	word	0	-	0	1
+E	89	6	6	0
+T	90	이거	0	2	1	1	word	0	-	0	1
+T	90	은	2	3	1	1	word	0	-	0	1
+T	90	띄어	4	6	1	1	word	0	-	0	1
+T	90	쓰기	6	8	1	1	word	0	-	0	1
+T	90	가	8	9	1	1	word	0	-	0	1
+T	90	없	10	11	1	1	word	0	-	0	1
+T	90	는	11	12	1	1	word	0	-	0	1
+T	90	길	12	13	1	1	word	0	-	0	1
+T	90	ᆫ	12	13	1	1	word	0	-	0	1
+T	90	문장	13	15	1	1	word	0	-	0	1
+T	90	이	15	18	1	1	word	0	-	0	1
+T	90	ᄇ니다	15	18	1	1	word	0	-	0	1
+E	90	18	18	0
+T	91	ㄱ	0	1	1	1	word	0	-	0	1
+T	91	ㄴ	1	2	1	1	word	0	-	0	1
+T	91	ㄷ	2	3	1	1	word	0	-	0	1
+T	91	ㄹ	3	4	1	1	word	0	-	0	1
+T	91	ㅏㅑㅓㅕ	5	9	1	1	word	0	-	0	1
+E	91	9	9	0
+T	92	ᄀᄂᄃ	0	3	1	1	word	0	-	0	1
+T	92	옛	4	5	1	1	word	0	-	0	1
+T	92	한글	5	7	1	1	word	0	-	0	1
+E	92	7	7	0
+T	93	😀	0	2	1	1	word	0	-	0	1
+T	93	이	2	3	1	1	word	0	-	0	1
+T	93	모으	3	5	1	1	word	0	-	0	1
+T	93	지	3	5	1	1	word	0	-	0	1
+T	93	😀	5	7	1	1	word	0	-	0	1
+T	93	도	7	8	1	1	word	0	-	0	1
+T	93	넣	9	10	1	1	word	0	-	0	1
+T	93	어	10	11	1	1	word	0	-	0	1
+T	93	보	12	14	1	1	word	0	-	0	1
+T	93	ᆫ다	12	14	1	1	word	0	-	0	1
+E	93	14	14	0
+T	94	ABCDEFG	0	7	1	1	word	0	-	0	1
+T	94	abcdefg	8	15	1	1	word	0	-	0	1
+T	94	0123456789	16	26	1	1	word	0	-	0	1
+E	94	26	26	0
+T	95	Ｈｅｌｌｏ	0	5	1	1	word	0	-	0	1
+T	95	Ｗｏｒｌｄ	6	11	1	1	word	0	-	0	1
+E	95	11	11	0
+T	96	전	0	1	1	1	word	0	-	0	1
+T	96	각	1	2	1	1	word	0	-	0	1
+T	96	공백	3	5	1	1	word	0	-	0	1
+T	96	을	6	7	1	1	word	0	-	0	1
+T	96	포함	8	10	1	1	word	0	-	0	1
+T	96	하	10	11	1	1	word	0	-	0	1
+T	96	ᆫ	10	11	1	1	word	0	-	0	1
+T	96	문장	12	14	1	1	word	0	-	0	1
+E	96	14	14	0
+T	97	탭	0	1	1	1	word	0	-	0	1
+T	97	을	2	3	1	1	word	0	-	0	1
+T	97	포함	4	6	1	1	word	0	-	0	1
+T	97	하	6	7	1	1	word	0	-	0	1
+T	97	ᆫ	6	7	1	1	word	0	-	0	1
+T	97	문장	8	10	1	1	word	0	-	0	1
+E	97	10	10	0
+T	98	줄	0	1	1	1	word	0	-	0	1
+T	98	바꾸	1	3	1	1	word	0	-	0	1
+T	98	ᄆ	1	3	1	1	word	0	-	0	1
+T	98	이	3	4	1	1	word	0	-	0	1
+T	98	없	5	6	1	1	word	0	-	0	1
+T	98	는	6	7	1	1	word	0	-	0	1
+T	98	아주	8	10	1	1	word	0	-	0	1
+T	98	길	11	12	1	1	word	0	-	0	1
+T	98	ᆫ	11	12	1	1	word	0	-	0	1
+T	98	문장	13	15	1	1	word	0	-	0	1
+T	98	을	15	16	1	1	word	0	-	0	1
+T	98	만들	17	19	1	1	word	0	-	0	1
+T	98	기	19	20	1	1	word	0	-	0	1
+T	98	위하	21	24	1	1	word	0	-	0	1
+T	98	아서	21	24	1	1	word	0	-	0	1
+T	98	비슷	25	27	1	1	word	0	-	0	1
+T	98	하	27	28	1	1	word	0	-	0	1
+T	98	ᆫ	27	28	1	1	word	0	-	0	1
+T	98	말	29	30	1	1	word	0	-	0	1
+T	98	을	30	31	1	1	word	0	-	0	1
+T	98	여러	32	34	1	1	word	0	-	0	1
+T	98	번	35	36	1	1	word	0	-	0	1
+T	98	반복	37	39	1	1	word	0	-	0	1
+T	98	하	39	41	1	1	word	0	-	0	1
+T	98	아서	39	41	1	1	word	0	-	0	1
+T	98	쓰	42	43	1	1	word	0	-	0	1
+T	98	어	42	43	1	1	word	0	-	0	1
+T	98	보	44	45	1	1	word	0	-	0	1
+T	98	기	45	46	1	1	word	0	-	0	1
+T	98	로	46	47	1	1	word	0	-	0	1
+T	98	하	48	49	1	1	word	0	-	0	1
+T	98	았	48	49	1	1	word	0	-	0	1
+T	98	는데	49	51	1	1	word	0	-	0	1
+T	98	그러	52	55	1	1	word	0	-	0	1
+T	98	어도	52	55	1	1	word	0	-	0	1
+T	98	아직	56	58	1	1	word	0	-	0	1
+T	98	부족	59	61	1	1	word	0	-	0	1
+T	98	하	61	63	1	1	word	0	-	0	1
+T	98	ᆯ지	61	63	1	1	word	0	-	0	1
+T	98	도	63	64	1	1	word	0	-	0	1
+T	98	모르	65	67	1	1	word	0	-	0	1
+T	98	니까	67	69	1	1	word	0	-	0	1
+T	98	조금	70	72	1	1	word	0	-	0	1
+T	98	더	73	74	1	1	word	0	-	0	1
+T	98	이어서	75	78	1	1	word	0	-	0	1
+T	98	쓰	79	80	1	1	word	0	-	0	1
+T	98	어	79	80	1	1	word	0	-	0	1
+T	98	두	81	82	1	1	word	0	-	0	1
+T	98	기	82	83	1	1	word	0	-	0	1
+T	98	로	83	84	1	1	word	0	-	0	1
+T	98	하	85	86	1	1	word	0	-	0	1
+T	98	겠	86	87	1	1	word	0	-	0	1
+T	98	습니다	87	90	1	1	word	0	-	0	1
+E	98	91	91	0
+T	99	일	0	1	1	1	word	0	-	0	1
+T	99	이	1	2	1	1	word	0	-	0	1
+T	99	삼	2	3	1	1	word	0	-	0	1
+T	99	사	3	4	1	1	word	0	-	0	1
+T	99	오	4	5	1	1	word	0	-	0	1
+T	99	육	5	6	1	1	word	0	-	0	1
+T	99	칠	6	7	1	1	word	0	-	0	1
+T	99	팔	7	8	1	1	word	0	-	0	1
+T	99	구	8	9	1	1	word	0	-	0	1
+T	99	십	9	10	1	1	word	0	-	0	1
+T	99	백	10	11	1	1	word	0	-	0	1
+T	99	천만	11	13	1	1	word	0	-	0	1
+T	99	억조	13	15	1	1	word	0	-	0	1
+E	99	15	15	0
+T	100	영	0	1	1	1	word	0	-	0	1
+T	100	일	1	2	1	1	word	0	-	0	1
+T	100	이	2	3	1	1	word	0	-	0	1
+T	100	삼	3	4	1	1	word	0	-	0	1
+E	100	4	4	0
+T	101	제	0	1	1	1	word	0	-	0	1
+T	101	1	1	2	1	1	word	0	-	0	1
+T	101	회	2	3	1	1	word	0	-	0	1
+T	101	한국	4	6	1	1	word	0	-	0	1
+T	101	어	6	7	1	1	word	0	-	0	1
+T	101	처리	8	10	1	1	word	0	-	0	1
+T	101	스터디	11	14	1	1	word	0	-	0	1
+E	101	14	14	0
+T	102	KTX	0	3	1	1	word	0	-	0	1
+T	102	서울	4	6	1	1	word	0	-	0	1
+T	102	역	6	7	1	1	word	0	-	0	1
+E	102	7	7	0
+T	103	KBS	0	3	1	1	word	0	-	0	1
+T	103	방송	4	6	1	1	word	0	-	0	1
+T	103	국	6	7	1	1	word	0	-	0	1
+E	103	7	7	0
+T	104	USB	0	3	1	1	word	0	-	0	1
+T	104	메모리	4	7	1	1	word	0	-	0	1
+T	104	와	7	8	1	1	word	0	-	0	1
+T	104	SD	9	11	1	1	word	0	-	0	1
+T	104	카드	12	14	1	1	word	0	-	0	1
+E	104	14	14	0
+T	105	미국	0	2	1	1	word	0	-	0	1
+T	105	대통령	3	6	1	1	word	0	-	0	1
+T	105	선거	7	9	1	1	word	0	-	0	1
+E	105	9	9	0
+T	106	러시아	0	3	1	1	word	0	-	0	1
+T	106	와	3	4	1	1	word	0	-	0	1
+T	106	우크라	5	8	1	1	word	0	-	0	1
+T	106	이나	8	10	1	1	word	0	-	0	1
+E	106	10	10	0
+T	107	중화	0	2	1	1	word	0	-	0	1
+T	107	인민	2	4	1	1	word	0	-	0	1
+T	107	공화국	4	7	1	1	word	0	-	0	1
+T	107	의	7	8	1	1	word	0	-	0	1
+T	107	수도	9	11	1	1	word	0	-	0	1
+T	107	베이징	12	15	1	1	word	0	-	0	1
+E	107	15	15	0
+T	108	일본	0	2	1	1	word	0	-	0	1
+T	108	의	2	3	1	1	word	0	-	0	1
+T	108	도쿄	4	6	1	1	word	0	-	0	1
+T	108	도	6	7	1	1	word	0	-	0	1
+E	108	7	7	0
+T	109	유럽	0	2	1	1	word	0	-	0	1
+T	109	연합	2	4	1	1	word	0	-	0	1
+T	109	집행	5	7	1	1	word	0	-	0	1
+T	109	위원	7	9	1	1	word	0	-	0	1
+T	109	회	9	10	1	1	word	0	-	0	1
+E	109	10	10	0
+T	110	캘리포니아	0	6	1	1	word	0	-	0	1
+T	110	주	0	6	1	1	word	0	-	0	1
+T	110	로스앤젤레스	7	13	1	1	word	0	-	0	1
+E	110	13	13	0
+T	111	뉴욕	0	2	1	1	word	0	-	0	1
+T	111	타임스	3	6	1	1	word	0	-	0	1
+E	111	6	6	0
+T	112	워싱턴	0	3	1	1	word	0	-	0	1
+T	112	포스트	4	7	1	1	word	0	-	0	1
+E	112	7	7	0
+T	113	애플	0	2	1	1	word	0	-	0	1
+T	113	구	4	5	1	1	word	0	-	0	1
+T	113	글	5	6	1	1	word	0	-	0	1
+T	113	마이크	8	11	1	1	word	0	-	0	1
+T	113	로	11	12	1	1	word	0	-	0	1
+T	113	소프트	12	15	1	1	word	0	-	0	1
+T	113	아마존	17	20	1	1	word	0	-	0	1
+E	113	20	20	0
+T	114	삼성	0	2	1	1	word	0	-	0	1
+T	114	전자	2	4	1	1	word	0	-	0	1
+T	114	와	4	5	1	1	word	0	-	0	1
+T	114	현대	6	8	1	1	word	0	-	0	1
+T	114	자동	8	10	1	1	word	0	-	0	1
+T	114	차	10	11	1	1	word	0	-	0	1
+T	114	와	11	12	1	1	word	0	-	0	1
+T	114	엘지	13	15	1	1	word	0	-	0	1
+E	114	15	15	0
+T	115	홍	0	1	1	1	word	0	-	0	1
+T	115	길동	1	3	1	1	word	0	-	0	1
+T	115	씨	4	5	1	1	word	0	-	0	1
+T	115	와	5	6	1	1	word	0	-	0	1
+T	115	김철수	7	10	1	1	word	0	-	0	1
+T	115	씨	11	12	1	1	word	0	-	0	1
+E	115	12	12	0
+T	116	셜록	0	2	1	1	word	0	-	0	1
+T	116	홈즈	3	5	1	1	word	0	-	0	1
+T	116	의	5	6	1	1	word	0	-	0	1
+T	116	모험	7	9	1	1	word	0	-	0	1
+E	116	9	9	0
+T	117	해리	0	2	1	1	word	0	-	0	1
+T	117	포터	3	5	1	1	word	0	-	0	1
+T	117	와	5	6	1	1	word	0	-	0	1
+T	117	마법	7	9	1	1	word	0	-	0	1
+T	117	사	9	10	1	1	word	0	-	0	1
+T	117	의	10	11	1	1	word	0	-	0	1
+T	117	돌	12	13	1	1	word	0	-	0	1
+E	117	13	13	0
+T	118	뽀로로	0	3	1	1	word	0	-	0	1
+T	118	와	3	4	1	1	word	0	-	0	1
+T	118	친구	5	7	1	1	word	0	-	0	1
+T	118	들	7	8	1	1	word	0	-	0	1
+E	118	8	8	0
+T	119	포켓몬스터	0	5	1	1	word	0	-	0	1
+E	119	5	5	0
+T	120	감사	0	2	1	1	word	0	-	0	1
+T	120	하	2	5	1	1	word	0	-	0	1
+T	120	ᄇ니다	2	5	1	1	word	0	-	0	1
+E	120	6	6	0
+N	0	ec98a4eb8a98ec9d8020eb82a0ec94a8eab08020eca095eba79020eca28beb84a4ec9a942e
+N	1	eca080eb8a9420ec849cec9ab8eb8c80ed9599eab590ec9790ec849c20ec96b8ec96b4ed9599ec9d8420eab3b5ebb680ed9598eab3a020ec9e88ec8ab5eb8b88eb8ba42e
+N	2	ec9db8ecb29ceab5adeca09ceab3b5ed95adec9790ec849c20eab980ed8faceab3b5ed95adeab98ceca78020ebb284ec8aa4eba5bc20ed8394eb8ba42e
+N	3	ec9db420ecb185ec9d8020eb8f84ec849ceab480ec9790ec849c20ebb98ceba6b020eab283ec9e85eb8b88eb8ba42e
+N	4	eb82b4ec9dbc20ed9a8cec9d98eb8a9420ec98a4ed9b8420ec84b820ec8b9cec979020ec8b9cec9e91ed95a9eb8b88eb8ba42e
+N	5	eab7b8eb8580eb8a9420ed94bcec9584eb85b8eba5bc20ec9584eca3bc20ec9e9820ecb99ceb8ba42e
+N	6	ed959ceab5adeab2bdeca09cec8ba0ebacb820eab8b0ec82acec979020eb94b0eba5b4eba9b420eca3bceab080eab08020ed81aceab28c20ec98aceb9e90eb8ba42e
+N	7	ebb984ebb994ebb0a5eab3bc20ebb688eab3a0eab8b0ec998020eab980ecb998ecb08ceab09c20eca491ec9790ec849c20ebacb4ec9787ec9d8420eca28bec9584ed9598ec84b8ec9a943f
+N	8	ebb984eab08020ec9980ec849c20ec9ab0ec82b0ec9d8420eab080eca780eab3a020eb8298eab094eb8ba42e
+N	9	ec9584ec9db4eb93a4ec9db420eab3b5ec9b90ec9790ec849c20ec8ba0eb8298eab28c20eb8680eab3a020ec9e88eb8ba42e
+N	10	ecbbb4ed93a8ed84b020ec868ced9484ed8ab8ec9ba8ec96b4eba5bc20ec9785eb8db0ec9db4ed8ab8ed95b420eca3bcec84b8ec9a942e
+N	11	ec8aa4eba788ed8ab8ed8fb020ebb0b0ed84b0eba6aceab08020eab888ebb0a920eb8bb3ec958420ebb284eba6b0eb8ba42e
+N	12	eab5adeba6bdeca491ec9599eb8f84ec849ceab480ec9d8020ed959ceab5adec9790ec849c20eab080ec9ea520ed81b020eb8f84ec849ceab480ec9db4eb8ba42e
+N	13	ec849cec9ab8ed8ab9ebb384ec8b9cecb2adec9d8020eca491eab5acec979020ec9e88ec8ab5eb8b88eb8ba42e
+N	14	22ec9588eb8595ed9598ec84b8ec9a9422eb9dbceab3a020eab7b8eab08020eba790ed9688eb8ba42e
+N	15	32303234eb8584203130ec9b942037ec9dbc2c20eba791ec9d8c2e
+N	16	eab080eab2a9ec9d802031322c383030ec9b9028ebb680eab080ec84b820ed8faced95a829ec9e85eb8b88eb8ba42e
+N	17	eca084ed9994ebb288ed98b8eb8a942030322d313233342d35363738ec9e85eb8b88eb8ba42e
+N	18	41424320eca3bcec8b9ded9a8cec82ac20eb8c80ed919ceab08020ebb0a9ed959ced9688eb8ba42e
+N	19	ec9584ec9db4ed8fb0eab3bc20ec9588eb939ceba19cec9db4eb939c20eca491ec979020ebacb4ec9787ec9d8420ec93b0ec84b8ec9a943f
+N	20	eca09c20ec9db4eba684ec9d8020ed998deab8b8eb8f99ec9e85eb8b88eb8ba42e20ec9e9820ebb680ed8381eb939ceba6bdeb8b88eb8ba42e
+N	21	ec84b8eca285eb8c80ec9995ec9d8020ed9b88ebafbceca095ec9d8cec9d8420ecb0bdeca09ced9598ec9880eb8ba42e
+N	22	e5a4a7e99f93e6b091e59c8bec9d8020e6b091e4b8bbe585b1e5928ce59c8bec9db4eb8ba42e
+N	23	e99f93e59c8be8aa9eec998020e4b8ade59c8be8aa9eec998020e697a5e69cace8aa9e
+N	24	ec82bcebb0b1ec9db4ec8bad20ec9b90
+N	25	ec9dbcecb29cec9db4ebb0b1ec82bcec8badec82aceba78cec98a4ecb29cec9ca1ebb0b1ecb9a0ec8baded8c94
+N	26	ec82bcec96b5ec98a4ecb29ceba78c20ebaa85
+N	27	ec8bad20eb858420eb8f99ec9588
+N	28	312c3030302c303030ec9b90eab3bc20efbc91efbc8cefbc90efbc90efbc90efbc8cefbc90efbc90efbc90ec9b90
+N	29	322e352e3320ebb284eca084
+N	30	eab080eab3a1ec97adec9790ec849c20eab8b0ecb0a8eba5bc20ed8394eb8ba42e
+N	31	ec84b8eca285ec8b9ceb8a9420ed9689eca095eca491ec8bacebb3b5ed95a9eb8f84ec8b9cec9db4eb8ba42e
+N	32	eba8b9ec9788eb8ba42c20eba8b9eb8a94eb8ba42c20eba8b9eab2a0eb8ba42c20eba8b9ec9cbceba9b42c20eba8b9ec96b4ec849c2e
+N	33	eab094eb8ba42c20eab084eb8ba42c20eab080eab2a0eb8ba42c20eab080eba9b42c20eab080ec849c2e
+N	34	ec9584eba684eb8bb5eb8ba42c20ec9584eba684eb8ba4ec9ba0eb8ba42c20ec9584eba684eb8bb5eca78020ec958aeb8ba42e
+N	35	eca1b0ec9aa9ed9598eb8ba42c20eca1b0ec9aa9ed9688eb8ba42c20eca1b0ec9aa9ed9598eca78020ec958aeb8ba42e
+N	36	eab3b5ebb680ed9598eab3a020ec8bb6ec9788eca780eba78c20ec8b9ceab084ec9db420ec9786ec9788eb8ba42e
+N	37	eba78cec95bd20eb82b4ec9dbc20ebb984eab08020ec98a4eba9b420eab2bdeab8b0eb8a9420ecb7a8ec868ceb90a020eab283ec9db4eb8ba42e
+N	38	eab7b8eab08020ec98aceca78020ec958820ec98aceca78020ebaaa8eba5b4eab2a0eb8ba42e
+N	39	ecb185ec9d8420ec9dbdeb8a9420eab283ec9d8420eca28bec9584ed95a9eb8b88eb8ba42e
+N	40	ebb9a8eba6ac20ec9e90eb9dbc2e
+N	41	ebad90eb9dbceab3a03f
+N	42	ec9ea0eab990eba78c20eab8b0eb8ba4eba0a420eca3bcec84b8ec9a947e
+N	43	ec9d8c2e2e2e20ebad90ec9880eb8d94eb9dbc3f
+N	44	ec9b94eb939cecbbb520ecb695eab5ac20eab5adeab080eb8c80ed919ced8c80
+N	45	ec9584ec9db4ec8aa4ed81aceba6bc20eab080eab28cec9790ec849c20ebb094eb8b90eb9dbc20ec9584ec9db4ec8aa4ed81aceba6bcec9d8420ec8380eb8ba42e
+N	46	ebb0b1ed9994eca09020eca780ed959820ec8b9ded928820eba7a4ec9ea5ec9d8020ebb690ebb390eb8ba42e
+N	47	ed9484eba19ceab7b8eb9e98ebb08d20ec96b8ec96b420ebb984eab59020ec97b0eab5ac
+N	48	ec9e90ebb094ec8aa4ed81aceba6bded8ab8ec998020ed8c8cec9db4ec8daceab3bc20eb9facec8aa4ed8ab8
+N	49	ed82a4ebb3b4eb939cec998020eba788ec9ab0ec8aa4ec998020ebaaa8eb8b88ed84b0
+N	50	ec9db420ec9d8cec8b9d20eca095eba79020eba79bec9e88eb8ba421
+N	51	eb8c80ebb0952120ecb59ceab3a0ec95bc21
+N	52	ec9cbcec9cbc2c20ecb694ec9b8c2e
+N	53	ed9789ed97892c20ed9e98eb93a4eb8ba42e
+N	54	ec9ab0eba6aceb8a9420eb82b4ec9dbc20ebb680ec82b0ec979020eab084eb8ba42e
+N	55	e3868deab080ec9ab4eb8e83eca090e3868deab5acebb684e3868ded858cec8aa4ed8ab8e3868d
+N	56	e38090eca491ec9a94e3809120eab3b5eca780e3808aec838820ec868cec8b9de3808b
+N	57	e280bbeca3bcec9d983a20ec9db420ec959e20eab3b5ec82ac20eca4912e
+N	58	ec849cec9ab8ed8ab9ebb384ec8b9c20eca285eba19ceab5ac20ec84b8eca285eb8c80eba19c2031
+N	59	eca3bcec8b9ded9a8cec82ac2041424320ed9980eb94a9ec8aa420eb8c80ed919cec9db4ec82ac20ec82acec9ea5
+N	60	eab2bdeab8b0eb8f8420ec8898ec9b90ec8b9c20ed8c94eb8baceab5ac
+N	61	ebb680ec82b0eab491ec97adec8b9c20ed95b4ec9ab4eb8c80eab5ac
+N	62	eca09ceca3bced8ab9ebb384ec9e90ecb998eb8f8420eca09ceca3bcec8b9c
+N	63	ed959ceb9dbcec82b0ec9d8020eb82a8ed959cec9790ec849c20eab080ec9ea520eb8692ec9d8020ec82b0ec9db4eb8ba42e
+N	64	ed959ceab095ec9d8020ec849cec9ab8ec9d8420eab080eba19ceca780eba5b8eb8ba42e
+N	65	eb8299eb8f99eab095ec9d8020ed959ceab5adec9790ec849c20eab080ec9ea520eab8b420eab095ec9db4eb8ba42e
+N	66	ebb29aeabd83ec9db420eba78ceab09ced9688eb8ba42e
+N	67	eb8ba8ed928d20eab5aceab2bd20eab080ec9e902e
+N	68	ec97b0eba790ec97b0ec8b9c20ed9cb4ebacb420ec9588eb82b4
+N	69	eab090ec97bcebb39120eb8c80ec9d9120ebb3b8ebb680
+N	70	eab5adeca09cec97b0ed95a920eab590ec9ca1eab3bced9599ebacb8ed9994eab8b0eab5ac
+N	71	ec84b8eab384ebb3b4eab1b4eab8b0eab5ac20ec82acebacb4ecb49dec9ea5
+N	72	eb8c80ed86b5eba0b9ec9db420eab8b0ec9e90ed9a8ceab2acec9d8420ec97b4ec9788eb8ba42e
+N	73	eab5aded9a8cec9d98ec9b9020ecb49dec84a0eab1b020ed88aced919cec9dbc
+N	74	eb8c80ebb295ec9b9020ed8c90eab2b0ec9db420eb82b4eba0a4eca18ceb8ba42e
+N	75	eab8b0ed9a8dec9eaceca095ebb680ec998020eab590ec9ca1ebb680
+N	76	eca080ecb69cec82b020eab3a0eba0b9ed999420ec82aced9a8cec9d9820ec82aced9a8cebb3b4ec9ea5eca09ceb8f8420eab09ced9881
+N	77	ec9eacec839d20eab080eb8aa520ec9790eb8488eca78020ebb3b4eab88920ecb489eca784
+N	78	ebb098eb8f84ecb2b420eca09ceca1b020ec9ea5ebb98420ec8898ecb69c20eab79ceca09c
+N	79	ec9691ec9e9020ecbbb4ed93a8ed84b020ec97b0eab5ac20eab09cebb09c
+N	80	ec9ca0eca084ec9e9020ebb380ed989520ec9e91ebacbcec9d9820ec9588eca084ec84b120ed8f89eab080
+N	81	ed959ceab5aded95adeab3b5ec9ab0eca3bcec97b0eab5acec9b90ec9d9820ec9db8eab3b5ec9c84ec84b120ebb09cec82ac
+N	82	ec9ca1ec838120313030ebafb8ed84b020eb8baceba6aceab8b020ec84b8eab38420eab8b0eba19d
+N	83	ec95bceab5ac2c20ecb695eab5ac2c20eb868deab5ac2c20ed858ceb8b88ec8aa4
+N	84	ec9584ecb9a8ebb0a5ec9d8420eba8b9eca78020ec958aeab3a020ed9599eab590ec979020eab094eb8ba42e
+N	85	eab7b8eb8a9420ec9d98ec82aceab08020eb9098eab3a020ec8bb6eb8ba4eab3a020eba790ed9688eb8ba42e
+N	86	eb8f99ed95b420ebacbceab3bc20ebb0b1eb9190ec82b0ec9db420eba788eba5b4eab3a020eb8bb3eb8f84eba19d
+N	87	ed9598eb8a98ec9d8420ec9ab0eb9faceb9fac20ed959c20eca09020ebb680eb8184eb9fbcec9db420ec9786eab8b0eba5bc
+N	88	eb829820eb8a9420ed9599ec839d20ec9db4eb8ba4
+N	89	eb8298eb8a94ed9599ec839dec9db4eb8ba4
+N	90	ec9db4eab283ec9d8020eb9d84ec96b4ec93b0eab8b0eab08020ec9786eb8a94eab8b4ebacb8ec9ea5ec9e85eb8b88eb8ba4
+N	91	e384b1e384b4e384b7e384b920e3858fe38591e38593e38595
+N	92	e18480e18482e1848320ec989bed959ceab880
+N	93	f09f9880ec9db4ebaaa8eca780f09f9880eb8f8420eb84a3ec96b420ebb3b8eb8ba4
+N	94	4142434445464720616263646566672030313233343536373839
+N	95	efbca8efbd85efbd8cefbd8cefbd8fe38080efbcb7efbd8fefbd92efbd8cefbd84
+N	96	eca084eab08120eab3b5ebb0b1e38080ec9d84e38080ed8faced95a8ed959ce38080ebacb8ec9ea5
+N	97	ed83ad09ec9d8409ed8faced95a8ed959c09ebacb8ec9ea5
+N	98	eca484ebb094eabf88ec9db420ec9786eb8a9420ec9584eca3bc20eab8b420ebacb8ec9ea5ec9d8420eba78ceb93a4eab8b020ec9c84ed95b4ec849c20ebb984ec8ab7ed959c20eba790ec9d8420ec97aceb9fac20ebb28820ebb098ebb3b5ed95b4ec849c20ec8da820ebb3b4eab8b0eba19c20ed9688eb8a94eb8db020eab7b8eb9e98eb8f8420ec9584eca78120ebb680eca1b1ed95a0eca780eb8f8420ebaaa8eba5b4eb8b88eab98c20eca1b0eab88820eb8d9420ec9db4ec96b4ec849c20ec8da820eb9190eab8b0eba19c20ed9598eab2a0ec8ab5eb8b88eb8ba42e
+N	99	ec9dbcec9db4ec82bcec82acec98a4ec9ca1ecb9a0ed8c94eab5acec8badebb0b1ecb29ceba78cec96b5eca1b0
+N	100	ec9881ec9dbcec9db4ec82bc
+N	101	eca09c31ed9a8c20ed959ceab5adec96b420ecb298eba6ac20ec8aa4ed84b0eb9494
+N	102	4b545820ec849cec9ab8ec97ad
+N	103	4b425320ebb0a9ec86a1eab5ad
+N	104	55534220eba994ebaaa8eba6acec998020534420ecb9b4eb939c
+N	105	ebafb8eab5ad20eb8c80ed86b5eba0b920ec84a0eab1b0
+N	106	eb9facec8b9cec9584ec998020ec9ab0ed81aceb9dbcec9db4eb8298
+N	107	eca491ed9994ec9db8ebafbceab3b5ed9994eab5adec9d9820ec8898eb8f8420ebb2a0ec9db4eca795
+N	108	ec9dbcebb3b8ec9d9820eb8f84ecbf84eb8f84
+N	109	ec9ca0eb9fbdec97b0ed95a920eca791ed9689ec9c84ec9b90ed9a8c
+N	110	ecba98eba6aced8faceb8b88ec9584eca3bc20eba19cec8aa4ec95a4eca0a4eba088ec8aa4
+N	111	eb89b4ec9a9520ed8380ec9e84ec8aa4
+N	112	ec9b8cec8bb1ed84b420ed8facec8aa4ed8ab8
+N	113	ec95a0ed948c2c20eab5aceab8802c20eba788ec9db4ed81aceba19cec868ced9484ed8ab82c20ec9584eba788eca1b4
+N	114	ec82bcec84b1eca084ec9e90ec998020ed9884eb8c80ec9e90eb8f99ecb0a8ec998020ec9798eca780
+N	115	ed998deab8b8eb8f9920ec94a8ec998020eab980ecb2a0ec889820ec94a8
+N	116	ec859ceba19d20ed9988eca688ec9d9820ebaaa8ed9798
+N	117	ed95b4eba6ac20ed8faced84b0ec998020eba788ebb295ec82acec9d9820eb8f8c
+N	118	ebbd80eba19ceba19cec998020ecb99ceab5aceb93a4
+N	119	ed8facecbc93ebaaacec8aa4ed84b0
+N	120	eab090ec82aced95a9eb8b88eb8ba42e

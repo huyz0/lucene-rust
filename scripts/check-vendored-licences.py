@@ -81,6 +81,10 @@ VENDORED = {
          "Nara Institute of Science and Technology (NAIST),"),
         ("Lucene's Japanese stop words, stop tags and romaji map (Apache-2.0)", "LICENSE", APACHE),
     ],
+    "crates/lucene-analysis-nori/src/resources": [
+        ("Lucene's compiled mecab-ko-dic-2.1.1-20180720 dictionary (Apache-2.0; Lucene "
+         "names it in its NOTICE)", "LICENSE", APACHE),
+    ],
     "crates/lucene-ffi/fuzz/seeds/jvm_search": [
         ("this project's own fuzz seeds, read by a test (Apache-2.0)", "LICENSE", APACHE),
     ],

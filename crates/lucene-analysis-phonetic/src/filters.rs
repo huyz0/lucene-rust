@@ -69,7 +69,9 @@ impl<I: TokenStream> TokenFilter for PhoneticFilter<I> {
             return Ok(true);
         }
         self.value.clear();
-        self.value.extend(attrs.term().encode_utf16());
+        let term = attrs.term();
+        self.value.reserve(term.len());
+        self.value.extend(term.encode_utf16());
         // Java: any exception from the encoder keeps the token as it is.
         let phonetic = match self.encoder.encode(&self.value) {
             Ok(v) if !v.is_empty() && v != self.value => v,
