@@ -8,6 +8,7 @@ use crate::java_character::{char_count, code_point_at, push_utf16};
 use crate::reader::CharReader;
 use crate::token_stream::{TokenFilter, TokenStream, Tokenizer, TokenizerInput};
 use crate::util::char_tokenizer::{CharacterBuffer, TokenChar};
+use crate::util::configured_vec;
 use crate::AnalysisError;
 
 /// `NGramTokenizer.DEFAULT_MIN_NGRAM_SIZE`.
@@ -97,8 +98,9 @@ impl<P: TokenChar> NGramTokenizer<P> {
             atts: AttributeSource::new(),
             input: TokenizerInput::new(),
             predicate,
-            char_buffer: CharacterBuffer::new(size),
-            buffer: vec![0; size],
+            // ALLOC: `configured_vec` caps both at MAX_CONFIGURED_ALLOCATION.
+            char_buffer: CharacterBuffer::with_buffer(configured_vec(size, 0, "maxGram")?),
+            buffer: configured_vec(size, 0, "maxGram")?,
             buffer_start: 0,
             buffer_end: 0,
             offset: 0,

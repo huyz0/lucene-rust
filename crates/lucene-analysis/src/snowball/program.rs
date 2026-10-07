@@ -243,6 +243,8 @@ impl SnowballEnv {
         // Java grows the array to `newLength`; writing `s` needs `c_bra + n`,
         // which only exceeds it when `c_ket` is past `length`.
         let need = at(new_length.max(c_bra + n));
+        // ALLOC: the term's length plus a replacement string of the
+        // stemmer's own tables -- bounded by the term being stemmed.
         if need > self.current.len() {
             self.current.resize(need, 0);
         }

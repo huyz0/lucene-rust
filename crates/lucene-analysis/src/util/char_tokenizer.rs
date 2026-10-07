@@ -76,9 +76,14 @@ pub(crate) struct CharacterBuffer {
 impl CharacterBuffer {
     /// `CharacterUtils.newCharacterBuffer(int)`.
     pub(crate) fn new(size: usize) -> Self {
-        assert!(size >= 2, "buffersize must be >= 2");
+        Self::with_buffer(vec![0; size])
+    }
+
+    /// `CharacterUtils.newCharacterBuffer(int)` over an allocated buffer.
+    pub(crate) fn with_buffer(buffer: Vec<u16>) -> Self {
+        assert!(buffer.len() >= 2, "buffersize must be >= 2");
         CharacterBuffer {
-            buffer: vec![0; size],
+            buffer,
             length: 0,
             last_trailing_high_surrogate: 0,
         }
