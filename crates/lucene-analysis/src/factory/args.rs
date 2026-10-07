@@ -474,18 +474,36 @@ pub fn get_set(args: &mut JavaArgs, name: &str) -> Option<BTreeSet<String>> {
 }
 
 /// `getPattern(args, name)`: a pattern Java refuses is an
-/// `IllegalArgumentException` naming the factory's simple class name.
+/// `IllegalArgumentException` naming the factory's simple class name; one
+/// Java compiles and the regex shim cannot ([`crate::util::java_regex`]'s
+/// limits) is an `UnsupportedOperationException` with the shim's reason.
 pub fn get_pattern(
     args: &mut JavaArgs,
     name: &str,
     simple_class_name: &str,
 ) -> Result<JavaPattern, FactoryError> {
     let s = require(args, name)?;
-    JavaPattern::compile(&s).map_err(|_| {
-        FactoryError::illegal_argument(format!(
+    JavaPattern::compile(&s).map_err(|e| match unsupported_pattern(&e) {
+        Some(err) => err,
+        None => FactoryError::illegal_argument(format!(
             "Configuration Error: '{name}' can not be parsed in {simple_class_name}"
-        ))
+        )),
     })
+}
+
+/// The shim's refusal of a pattern Java compiles, as an
+/// `UnsupportedOperationException` carrying its reason; `None` for a
+/// pattern Java refuses too.
+pub(crate) fn unsupported_pattern(e: &crate::AnalysisError) -> Option<FactoryError> {
+    match e {
+        crate::AnalysisError::IllegalArgument(m) if crate::util::java_regex::is_unsupported(e) => {
+            Some(FactoryError::new(
+                JavaException::UnsupportedOperation,
+                m.clone(),
+            ))
+        }
+        _ => None,
+    }
 }
 
 /// `splitFileNames(fileNames)`: [`split_at`] on `,`.
@@ -663,6 +681,19 @@ mod tests {
                 .message,
             "Configuration Error: 'bad' can not be parsed in PatternTokenizerFactory"
         );
+        // Patterns Java compiles and the shim cannot are not Java's error.
+        for (p, why) in [
+            ("(a)\\1", "backreferences"),
+            ("a(?=b)", "lookaround"),
+            ("(?>ab)", "atomic groups"),
+            ("a*+", "possessive quantifiers"),
+            ("a\\Z", "an escape"),
+        ] {
+            let mut u = JavaArgs::from_pairs(&[("p", p)]);
+            let e = get_pattern(&mut u, "p", "PatternTokenizerFactory").unwrap_err();
+            assert_eq!(e.kind, JavaException::UnsupportedOperation, "{p}");
+            assert!(e.message.contains(why), "{p}: {}", e.message);
+        }
         assert!(a.is_empty());
         assert_eq!(
             require(&mut a, "n").unwrap_err().message,

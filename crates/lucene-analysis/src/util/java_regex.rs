@@ -48,19 +48,24 @@
 //! - Matching itself is leftmost-first over code points, which is what
 //!   Java's backtracking computes for the constructs that remain.
 //!
-//! **Rejected** (`IllegalArgument`, where Java would compile the pattern):
+//! **Rejected** (`IllegalArgument` starting [`UNSUPPORTED`], see
+//! [`is_unsupported`], where Java would compile the pattern):
 //! anything `regex-syntax` cannot parse (backreferences, lookaround,
 //! possessive and atomic groups, `\G`, `\Z`, `\R`, `\X`, `\N{..}`, `\cX`,
 //! octal `\0n`, lone surrogate escapes); `\b` and `\B` (Java's boundary
 //! counts a non-spacing mark after a letter or digit as a word character,
 //! which no `regex` assertion expresses); `^`/`$` under `(?m)`; the flags
 //! `(?x)`, `(?U)` and `(?d)`; script, block and binary properties and the
-//! `java*` properties; a repetition that can iterate twice over a body
+//! `java*` properties; a quantifier on a quantifier (`a**`); `~~` and an
+//! empty or `&`-led `&&` operand (literals to Java); a repetition that can
+//! iterate twice over a body
 //! that can match empty and holds a capturing group (the capture Java
-//! reports after the empty iteration differs, `(a|)*`). Also rejected,
-//! because Java rejects them and the `regex` crate would not: `(?P<..>)`,
+//! reports after the empty iteration differs, `(a|)*`); a property name
+//! Java refuses too (`\p{Latin}`) is reported this way as well. Also
+//! rejected, as a `PatternSyntaxException:` message, because Java rejects
+//! them and the `regex` crate would not: `\b{..}`, `(?R)`, `(?P<..>)`,
 //! group names outside `[a-zA-Z][a-zA-Z0-9]*`, `\u{..}`, `\U........`,
-//! `x{ 2 }`, `&&` with an empty or `&`-led operand, `--`, `~~`.
+//! `x{ 2 }`, `--`.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -99,10 +104,93 @@ fn syntax(e: impl std::fmt::Display) -> AnalysisError {
     AnalysisError::IllegalArgument(format!("PatternSyntaxException: {e}"))
 }
 
+/// A construct Java refuses too (a `PatternSyntaxException` there), which
+/// the `regex` crate would have accepted.
+fn java_rejects(what: &str, why: &str) -> AnalysisError {
+    syntax(format!("`{what}`: {why}"))
+}
+
+/// How [`JavaPattern::compile`]'s message starts when the shim refuses a
+/// pattern Java compiles (see [`is_unsupported`]).
+pub const UNSUPPORTED: &str = "unsupported java.util.regex construct";
+
 fn unsupported(what: &str, why: &str) -> AnalysisError {
-    AnalysisError::IllegalArgument(format!(
-        "unsupported java.util.regex construct `{what}`: {why}"
-    ))
+    AnalysisError::IllegalArgument(format!("{UNSUPPORTED} `{what}`: {why}"))
+}
+
+/// Whether [`JavaPattern::compile`] refused a pattern that Java compiles
+/// (a limit of this shim), rather than one Java refuses too.
+pub fn is_unsupported(e: &AnalysisError) -> bool {
+    matches!(e, AnalysisError::IllegalArgument(m) if m.starts_with(UNSUPPORTED))
+}
+
+/// The first construct of `src` that Java compiles and `regex-syntax`
+/// cannot parse -- consulted only once the parse has failed, so a pattern
+/// that is also malformed elsewhere is reported as unsupported.
+fn java_only_construct(src: &str) -> Option<(String, &'static str)> {
+    let chars: Vec<char> = src.chars().collect();
+    let mut depth = 0usize;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let rest: String = chars[i..chars.len().min(i + 4)].iter().collect();
+        if c == '\\' {
+            let Some(&e) = chars.get(i + 1) else { break };
+            let surrogate = e == 'u'
+                && chars.get(i + 2).is_some_and(|c| matches!(c, 'd' | 'D'))
+                && chars
+                    .get(i + 3)
+                    .is_some_and(|c| matches!(c, '8'..='9' | 'a'..='f' | 'A'..='F'));
+            let why = match e {
+                _ if surrogate => Some("lone surrogate escapes"),
+                '1'..='9' | 'k' => Some("backreferences"),
+                'G' | 'Z' | 'R' | 'X' | 'N' | 'c' | '0' => {
+                    Some("an escape the regex crate does not have")
+                }
+                _ => None,
+            };
+            if let Some(why) = why {
+                return Some((format!("\\{e}"), why));
+            }
+            i += 2;
+            continue;
+        }
+        if c == '[' {
+            depth += 1;
+        } else if c == ']' && depth > 0 {
+            depth -= 1;
+        } else if depth == 0 {
+            for (lead, why) in [
+                ("(?<=", "lookaround"),
+                ("(?<!", "lookaround"),
+                ("(?=", "lookaround"),
+                ("(?!", "lookaround"),
+                ("(?>", "atomic groups"),
+            ] {
+                if rest.starts_with(lead) {
+                    return Some((lead.to_string(), why));
+                }
+            }
+            if matches!(c, '*' | '+' | '?' | '}') && chars.get(i + 1) == Some(&'+') {
+                return Some((format!("{c}+"), "possessive quantifiers"));
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// A `regex-syntax` parse error: unsupported when the pattern holds a
+/// construct only Java has, else Java's syntax error too.
+fn parse_error(src: &str, e: ast::Error) -> AnalysisError {
+    match e.kind() {
+        ast::ErrorKind::UnsupportedBackreference => unsupported(src, "backreferences"),
+        ast::ErrorKind::UnsupportedLookAround => unsupported(src, "lookaround"),
+        _ => match java_only_construct(src) {
+            Some((what, why)) => unsupported(&what, why),
+            None => syntax(e),
+        },
+    }
 }
 
 // ------------------------------------------------------------ code point sets
@@ -594,9 +682,14 @@ impl Translator<'_> {
     fn literal_char(&self, lit: &ast::Literal) -> Result<u32, AnalysisError> {
         let bad = |why| Err(unsupported(self.text(&lit.span), why));
         match &lit.kind {
-            LiteralKind::HexFixed(HexLiteralKind::UnicodeLong) => bad("Java has no \\U escape"),
+            LiteralKind::HexFixed(HexLiteralKind::UnicodeLong) => {
+                Err(java_rejects(self.text(&lit.span), "Java has no \\U escape"))
+            }
             LiteralKind::HexBrace(HexLiteralKind::UnicodeShort | HexLiteralKind::UnicodeLong) => {
-                bad("Java's \\u takes exactly four hex digits")
+                Err(java_rejects(
+                    self.text(&lit.span),
+                    "Java's \\u takes exactly four hex digits",
+                ))
             }
             LiteralKind::Special(ast::SpecialLiteralKind::VerticalTab) => {
                 bad("Java's \\v is a class")
@@ -625,7 +718,7 @@ impl Translator<'_> {
                         return Err(unsupported(self.text(&flags.span), "COMMENTS mode"))
                     }
                     Flag::CRLF => {
-                        return Err(unsupported(self.text(&flags.span), "Java has no (?R)"))
+                        return Err(java_rejects(self.text(&flags.span), "Java has no (?R)"))
                     }
                 },
             }
@@ -671,11 +764,21 @@ impl Translator<'_> {
         match set {
             ClassSet::Item(item) => self.class_item(item, f),
             ClassSet::BinaryOp(op) => {
-                if op.kind != ClassSetBinaryOpKind::Intersection {
-                    return Err(unsupported(
-                        self.text(&op.span),
-                        "Java has no class difference operators",
-                    ));
+                match op.kind {
+                    ClassSetBinaryOpKind::Intersection => {}
+                    // Java refuses `--`; it reads `~~` as two literals.
+                    ClassSetBinaryOpKind::Difference => {
+                        return Err(java_rejects(
+                            self.text(&op.span),
+                            "Java has no class difference operator",
+                        ))
+                    }
+                    ClassSetBinaryOpKind::SymmetricDifference => {
+                        return Err(unsupported(
+                            self.text(&op.span),
+                            "Java reads `~~` as literals, the regex crate as an operator",
+                        ))
+                    }
                 }
                 for side in [&op.lhs, &op.rhs] {
                     if operand_is_quirky(side) {
@@ -755,7 +858,7 @@ impl Translator<'_> {
         if ok {
             Ok(())
         } else {
-            Err(unsupported(
+            Err(java_rejects(
                 t,
                 "Java's counted repetition is `{n}`, `{n,}` or `{n,m}`",
             ))
@@ -794,10 +897,10 @@ impl Translator<'_> {
             Ast::Repetition(r) => {
                 self.check_counted(&r.op)?;
                 if matches!(*r.ast, Ast::Repetition(_)) {
-                    // Java: `a*+` is possessive and `a**` an error.
+                    // Java: `a*+` is possessive, `a**` a repeated repetition.
                     return Err(unsupported(
                         self.text(&r.span),
-                        "a quantifier on a quantifier",
+                        "possessive quantifiers and a quantifier on a quantifier",
                     ));
                 }
                 let twice = match &r.op.kind {
@@ -841,7 +944,7 @@ impl Translator<'_> {
                         let java_name = cs.next().is_some_and(|c| c.is_ascii_alphabetic())
                             && cs.all(|c| c.is_ascii_alphanumeric());
                         if *starts_with_p || !java_name {
-                            return Err(unsupported(
+                            return Err(java_rejects(
                                 self.text(&g.span),
                                 "Java's group names are (?<[a-zA-Z][a-zA-Z0-9]*>..)",
                             ));
@@ -914,10 +1017,14 @@ impl Translator<'_> {
             // `\<` and `\>` are escaped literals in Java.
             AssertionKind::WordBoundaryStartAngle => self.emit_literal(u32::from('<'), f, false),
             AssertionKind::WordBoundaryEndAngle => self.emit_literal(u32::from('>'), f, false),
-            _ => return Err(unsupported(
-                what,
-                "Java's word boundary counts a non-spacing mark after a letter as a word character",
-            )),
+            AssertionKind::WordBoundary | AssertionKind::NotWordBoundary => {
+                return Err(unsupported(
+                    what,
+                    "Java's word boundary counts a non-spacing mark after a letter as a word character",
+                ))
+            }
+            // `\b{start}` and the like.
+            _ => return Err(java_rejects(what, "Java's \\b takes no braces")),
         }
         Ok(())
     }
@@ -1019,8 +1126,10 @@ pub struct JavaPattern {
     inner: Arc<Compiled>,
 }
 
+/// The `regex` crate's compilation of a translated pattern: what fails
+/// here (its size limit) is this shim's limit, not Java's.
 fn build(p: &str) -> Result<Regex, AnalysisError> {
-    Regex::new(p).map_err(syntax)
+    Regex::new(p).map_err(|e| unsupported("pattern", &e.to_string()))
 }
 
 fn translate<'s>(
@@ -1064,7 +1173,9 @@ impl JavaPattern {
     /// `Pattern.compile(String)`.
     pub fn compile(pattern: &str) -> Result<Self, AnalysisError> {
         let src = prepass(pattern);
-        let parsed = ast::parse::Parser::new().parse(&src).map_err(syntax)?;
+        let parsed = ast::parse::Parser::new()
+            .parse(&src)
+            .map_err(|e| parse_error(&src, e))?;
         let plain_t = translate(&src, &parsed, false, false)?;
         let plain = build(&plain_t.out)?;
         let plain_whole = build(&format!(r"\A(?:{})\z", plain_t.out))?;
@@ -1076,7 +1187,7 @@ impl JavaPattern {
         };
         let hir = regex_syntax::Parser::new()
             .parse(&plain_t.out)
-            .map_err(syntax)?;
+            .map_err(|e| unsupported(pattern, &e.to_string()))?;
         let mid = if hir.properties().minimum_len() != Some(0) {
             Mid::Never
         } else if plain_t.has_low_class {
@@ -1766,14 +1877,47 @@ mod tests {
 
     #[test]
     fn rejects_what_differs_from_java() {
+        // Java compiles these (`Pattern.compile`, JDK 21); the shim cannot.
         for p in [
             "\\bfox",
             "\\B",
-            "\\b{start}",
             "(?m)^a",
             "(?m)a$",
             "(?x)a",
             "(?U)a",
+            "[a~~b]",
+            "[&&a]",
+            "[a&&]",
+            "[a&&&b]",
+            "\\p{IsLatin}",
+            "\\p{InGreek}",
+            "\\p{IsAlphabetic}",
+            "\\p{javaLowerCase}",
+            "\\p{sc=Latin}",
+            "(a|)*",
+            "(a*)+",
+            "(a?){2}",
+            "a++",
+            "a*+",
+            "a**",
+            "(?<=a)b",
+            "(a)\\1",
+            "\\Z",
+            "\\G",
+            "\\R",
+            "\\X",
+            "\\cA",
+            "\\0101",
+            "\\uD800",
+            "\\N{LATIN SMALL LETTER A}",
+            "(?>ab)",
+        ] {
+            let e = JavaPattern::compile(p).unwrap_err();
+            assert!(is_unsupported(&e), "{p}: {e}");
+        }
+        // Java refuses these too; the `regex` crate alone would not.
+        for p in [
+            "\\b{start}",
             "(?R)a",
             "(?P<n>a)",
             "(?<a_b>a)",
@@ -1782,31 +1926,20 @@ mod tests {
             "a{ 2 }",
             "a{2, 3}",
             "[a--b]",
-            "[a~~b]",
-            "[&&a]",
-            "[a&&]",
-            "[a&&&b]",
+            "x{,3}",
+        ] {
+            let e = JavaPattern::compile(p).unwrap_err();
+            assert!(!is_unsupported(&e), "{p}: {e}");
+            assert!(rejected(p).contains("PatternSyntaxException"), "{p}");
+        }
+        // Java refuses these as well; the shim reports its own limit.
+        for p in [
             "\\p{Latin}",
-            "\\p{IsLatin}",
-            "\\p{InGreek}",
-            "\\p{IsAlphabetic}",
-            "\\p{javaLowerCase}",
             "\\p{gc:Lu}",
-            "\\p{sc=Latin}",
             "\\p{Uppercase_Letter}",
             "\\p{ Lu }",
-            "(a|)*",
-            "(a*)+",
-            "(a?){2}",
-            "a++",
-            "a*+",
         ] {
-            assert!(rejected(p).contains("unsupported"), "{p}");
-        }
-        for p in [
-            "(?<=a)b", "(a)\\1", "\\Z", "\\G", "\\R", "\\cA", "\\0101", "\\uD800", "x{,3}",
-        ] {
-            assert!(rejected(p).contains("PatternSyntaxException"), "{p}");
+            assert!(is_unsupported(&JavaPattern::compile(p).unwrap_err()), "{p}");
         }
         // A non-repeating or non-capturing nullable body is fine.
         for p in ["(a|)?", "(?:a|)*", "(a*)", "((a)|b)*"] {
