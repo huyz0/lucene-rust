@@ -48,10 +48,14 @@ impl CharFilterFactory for HTMLStripCharFilterFactory {
 /// `MappingCharFilterFactory.p`.
 const MAPPING_RULE: &str = "\"(.*)\"\\s*=>\\s*\"(.*)\"\\s*$";
 
+/// The size of the `char[] out` buffer `parseString` writes into.
+const PARSE_STRING_BUFFER: usize = 256;
+
 /// The `parseString` of `MappingCharFilterFactory` and the word delimiter
 /// factories: backslash escapes (`\\`, `\n`, `\t`, `\r`, `\b`, `\f`,
 /// `\uXXXX`; any other escaped char, `\"` among them, stands for
-/// itself), over UTF-16 units.
+/// itself), over UTF-16 units, into Java's fixed `char[256]`: a longer
+/// result is its `ArrayIndexOutOfBoundsException`.
 pub(crate) fn parse_escaped(s: &str) -> Result<Vec<u16>, FactoryError> {
     let units: Vec<u16> = s.encode_utf16().collect();
     let invalid = || FactoryError::illegal_argument(format!("Invalid escaped char in [{s}]"));
@@ -83,9 +87,34 @@ pub(crate) fn parse_escaped(s: &str) -> Result<Vec<u16>, FactoryError> {
                 _ => c,
             };
         }
+        if out.len() == PARSE_STRING_BUFFER {
+            return Err(FactoryError::new(
+                JavaException::ArrayIndexOutOfBounds,
+                format!(
+                    "Index {PARSE_STRING_BUFFER} out of bounds for length {PARSE_STRING_BUFFER}"
+                ),
+            ));
+        }
         out.push(c);
     }
     Ok(out)
+}
+
+/// `Character.digit(c, 16)`: a BMP decimal digit of any script, or a Latin
+/// letter `a`-`f` in ASCII or fullwidth form, either case.
+fn java_hex_digit(c: char) -> Option<u32> {
+    let cp = u32::from(c);
+    let letter = match cp {
+        0x41..=0x46 => Some(cp - 0x41),
+        0x61..=0x66 => Some(cp - 0x61),
+        0xFF21..=0xFF26 => Some(cp - 0xFF21),
+        0xFF41..=0xFF46 => Some(cp - 0xFF41),
+        _ => None,
+    };
+    letter
+        .map(|v| v + 10)
+        // Java walks UTF-16 units: a supplementary digit is two non-digits.
+        .or_else(|| (cp <= 0xFFFF).then(|| crate::java_character::decimal_digit_value(cp))?)
 }
 
 /// `(char) Integer.parseInt(hex, 16)` of four units.
@@ -93,7 +122,7 @@ fn parse_hex_unit(hex: &str) -> Result<u16, FactoryError> {
     let digits = hex.strip_prefix(['+', '-']).unwrap_or(hex);
     let value = digits
         .chars()
-        .try_fold(0u32, |acc, c| c.to_digit(16).map(|d| acc * 16 + d))
+        .try_fold(0u32, |acc, c| java_hex_digit(c).map(|d| acc * 16 + d))
         .filter(|_| !digits.is_empty());
     match value {
         // A sign makes a four-unit string at most three digits: in range.
@@ -356,5 +385,17 @@ mod tests {
         );
         assert_eq!(parse_escaped("\\u-001").unwrap(), vec![0xFFFF]);
         assert_eq!(parse_escaped("\\\"").unwrap(), vec![u16::from(b'"')]);
+        // Character.digit: fullwidth and other scripts' digits, BMP only.
+        assert_eq!(
+            parse_escaped("\\u\u{FF10}\u{FF10}\u{FF14}\u{FF41}").unwrap(),
+            vec![0x4A]
+        );
+        assert_eq!(parse_escaped("\\u00Af").unwrap(), vec![0xAF]);
+        assert!(parse_escaped("\\u0\u{1D7CE}1").is_err());
+        assert!(parse_escaped("\\u00g0").is_err());
+        // Java's char[256]: 256 units fit, the 257th does not.
+        assert_eq!(parse_escaped(&"a".repeat(256)).unwrap().len(), 256);
+        let e = parse_escaped(&"a".repeat(257)).unwrap_err();
+        assert_eq!(e.kind, JavaException::ArrayIndexOutOfBounds);
     }
 }

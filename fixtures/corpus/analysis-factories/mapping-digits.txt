@@ -1,0 +1,4 @@
+# \u escapes whose hex digits Character.digit reads beyond ASCII
+"\u００６ｃ" => "O"
+"\u٠٠٦٥" => "E"
+"\u00ＦＦ" => "y"
