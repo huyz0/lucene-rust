@@ -10,12 +10,27 @@
 //! `String.split(" ")`'s (trailing empty fields dropped), numbers are
 //! `Integer.parseInt` and `Float.parseFloat` (decimal forms; a hexadecimal
 //! float is refused), base64 is `Base64.getDecoder()`'s.
+//!
+//! Entries stream, as Java's do: an entry before the model is inflated into
+//! a fixed buffer and dropped, and the model's text is parsed line by line
+//! as it inflates, so memory is the model plus one line whatever the
+//! entries inflate to. Differs: a line longer than 1 MiB plus 64 bytes per
+//! declared dimension is refused (Java reads it, until the heap runs out).
 
 use super::model::Word2VecModel;
 use crate::{Error, Result};
 
 /// `Dl4jModelReader.MODEL_FILE_NAME_PREFIX`.
 const MODEL_FILE_NAME_PREFIX: &str = "syn0";
+
+/// The longest line, before the header gives the dimension.
+const MAX_LINE: usize = 1 << 20;
+
+/// What a declared dimension adds to [`MAX_LINE`], per component.
+const MAX_LINE_PER_DIMENSION: usize = 64;
+
+/// The inflater's output buffer.
+const INFLATE_CHUNK: usize = 64 * 1024;
 
 fn bad(msg: impl Into<String>) -> Error {
     Error::IllegalArgument(msg.into())
@@ -26,15 +41,18 @@ fn bad(msg: impl Into<String>) -> Error {
 /// # Errors
 /// `IllegalArgument` for a zip without a `syn0` entry (Java's message), a
 /// malformed zip or model text (Java's `ZipException`, `IOException`,
-/// `NumberFormatException` or `RuntimeException`), or a vector of the wrong
-/// size (Java's message).
+/// `NumberFormatException` or `RuntimeException`), a vector of the wrong
+/// size (Java's message), or an over-long line (see the module docs).
 pub fn read_dl4j_model(zip: &[u8]) -> Result<Word2VecModel> {
     let mut at = 0;
-    while let Some((name, data, next)) = next_entry(zip, at)? {
-        if name.starts_with(MODEL_FILE_NAME_PREFIX) {
-            return parse_model(&String::from_utf8_lossy(&data));
+    while let Some(entry) = next_entry(zip, at)? {
+        if entry.name.starts_with(MODEL_FILE_NAME_PREFIX) {
+            let mut parser = ModelParser::default();
+            entry_data(zip, &entry, &mut |chunk| parser.feed(chunk))?;
+            return parser.finish();
         }
-        at = next;
+        // `getNextEntry` closes the entry before: read through, dropped.
+        at = entry_data(zip, &entry, &mut |_| Ok(()))?;
     }
     Err(bad(format!(
         "Cannot read Dl4j word2vec model - '{p}' file is missing in the zip. '{p}' is a \
@@ -56,10 +74,20 @@ fn u32_at(b: &[u8], i: usize) -> Result<usize> {
         .ok_or_else(|| bad("truncated zip"))
 }
 
-/// The zip entry whose local header starts at `at`: its name, its
-/// uncompressed bytes and where the next header starts; `None` at the
-/// central directory (or the end).
-fn next_entry(z: &[u8], at: usize) -> Result<Option<(String, Vec<u8>, usize)>> {
+/// A zip entry's local header.
+struct Entry {
+    name: String,
+    /// Where its data starts.
+    start: usize,
+    method: usize,
+    compressed: usize,
+    /// Sizes and CRC follow the data (general purpose flag bit 3).
+    descriptor: bool,
+}
+
+/// The local header starting at `at`; `None` at the central directory (or
+/// the end).
+fn next_entry(z: &[u8], at: usize) -> Result<Option<Entry>> {
     if z.len() < at + 4 || u32_at(z, at)? != 0x0403_4B50 {
         return Ok(None);
     }
@@ -68,25 +96,35 @@ fn next_entry(z: &[u8], at: usize) -> Result<Option<(String, Vec<u8>, usize)>> {
     let compressed = u32_at(z, at + 18)?;
     let name_len = u16_at(z, at + 26)?;
     let extra_len = u16_at(z, at + 28)?;
-    let start = at + 30 + name_len + extra_len;
     let name = z
         .get(at + 30..at + 30 + name_len)
         .map(|n| String::from_utf8_lossy(n).into_owned())
         .ok_or_else(|| bad("truncated zip"))?;
-    let rest = z.get(start..).ok_or_else(|| bad("truncated zip"))?;
-    let descriptor = flags & 8 != 0;
-    let (data, used) = match method {
-        0 if !descriptor => (
-            rest.get(..compressed)
-                .ok_or_else(|| bad("truncated zip"))?
-                .to_vec(),
-            compressed,
-        ),
+    Ok(Some(Entry {
+        name,
+        start: at + 30 + name_len + extra_len,
+        method,
+        compressed,
+        descriptor: flags & 8 != 0,
+    }))
+}
+
+/// Streams `e`'s uncompressed bytes to `sink`, a bounded chunk at a time;
+/// returns where the next local header starts.
+fn entry_data(z: &[u8], e: &Entry, sink: &mut dyn FnMut(&[u8]) -> Result<()>) -> Result<usize> {
+    let rest = z.get(e.start..).ok_or_else(|| bad("truncated zip"))?;
+    let used = match e.method {
+        0 if !e.descriptor => {
+            sink(
+                rest.get(..e.compressed)
+                    .ok_or_else(|| bad("truncated zip"))?,
+            )?;
+            e.compressed
+        }
         8 => {
             let mut state =
                 miniz_oxide::inflate::stream::InflateState::new(miniz_oxide::DataFormat::Raw);
-            let mut out = Vec::new();
-            let mut buf = vec![0u8; 64 * 1024];
+            let mut buf = vec![0u8; INFLATE_CHUNK];
             let mut used = 0;
             loop {
                 let r = miniz_oxide::inflate::stream::inflate(
@@ -96,23 +134,29 @@ fn next_entry(z: &[u8], at: usize) -> Result<Option<(String, Vec<u8>, usize)>> {
                     miniz_oxide::MZFlush::None,
                 );
                 used += r.bytes_consumed;
-                out.extend_from_slice(&buf[..r.bytes_written]);
+                sink(&buf[..r.bytes_written])?;
                 match r.status {
                     Ok(miniz_oxide::MZStatus::StreamEnd) => break,
                     Ok(_) if r.bytes_consumed > 0 || r.bytes_written > 0 => {}
-                    _ => return Err(bad(format!("invalid deflated data in zip entry {name}"))),
+                    _ => {
+                        return Err(bad(format!(
+                            "invalid deflated data in zip entry {}",
+                            e.name
+                        )))
+                    }
                 }
             }
-            (out, used)
+            used
         }
-        _ => {
+        method => {
             return Err(bad(format!(
-                "unsupported zip entry {name}: compression method {method}"
+                "unsupported zip entry {}: compression method {method}",
+                e.name
             )))
         }
     };
-    let mut next = start + used;
-    if descriptor {
+    let mut next = e.start + used;
+    if e.descriptor {
         // An optional signature, then CRC-32 and the two sizes.
         next += if u32_at(z, next)? == 0x0807_4B50 {
             16
@@ -120,28 +164,7 @@ fn next_entry(z: &[u8], at: usize) -> Result<Option<(String, Vec<u8>, usize)>> {
             12
         };
     }
-    Ok(Some((name, data, next)))
-}
-
-/// `BufferedReader.readLine` over the whole text.
-fn read_lines(text: &str) -> Vec<&str> {
-    let mut lines = Vec::new();
-    let b = text.as_bytes();
-    let (mut start, mut i) = (0, 0);
-    while i < b.len() {
-        if b[i] == b'\n' || b[i] == b'\r' {
-            lines.push(&text[start..i]);
-            if b[i] == b'\r' && b.get(i + 1) == Some(&b'\n') {
-                i += 1;
-            }
-            start = i + 1;
-        }
-        i += 1;
-    }
-    if start < b.len() {
-        lines.push(&text[start..]);
-    }
-    lines
+    Ok(next)
 }
 
 /// `String.split(" ")`: trailing empty strings removed.
@@ -153,50 +176,126 @@ fn split_space(line: &str) -> Vec<&str> {
     parts
 }
 
-fn parse_model(text: &str) -> Result<Word2VecModel> {
-    let lines = read_lines(text);
-    let header = split_space(lines.first().copied().unwrap_or(""));
-    let int = |s: Option<&&str>| -> Result<usize> {
-        let s = s.copied().unwrap_or("");
-        java_parse_int(s)
-            .and_then(|v| usize::try_from(v).ok())
-            .ok_or_else(|| bad(format!("For input string: \"{s}\"")))
-    };
-    let dictionary_size = int(header.first())?;
-    let vector_dimension = int(header.get(1))?;
-    let mut model = Word2VecModel::new(dictionary_size, vector_dimension);
-    let mut b64 = false;
-    for (i, line) in lines.iter().enumerate().skip(1) {
-        let tokens = split_space(line);
-        let first = tokens.first().copied().unwrap_or("");
-        if i == 1 {
-            // `tokens[0].substring(0, 3).toLowerCase(Locale.ROOT)`.
-            let prefix: Vec<u16> = first.encode_utf16().take(3).collect();
-            if prefix.len() < 3 {
-                return Err(bad(format!("begin 0, end 3, length {}", prefix.len())));
-            }
-            b64 = String::from_utf16_lossy(&prefix).eq_ignore_ascii_case("b64");
+/// `Dl4jModelReader.read`'s loop over `BufferedReader.readLine`, fed the
+/// entry's bytes as they inflate.
+#[derive(Default)]
+struct ModelParser {
+    /// The current line's bytes so far.
+    line: Vec<u8>,
+    /// The last byte fed ended a line with `\r`: a `\n` next is its pair.
+    after_cr: bool,
+    /// Complete lines parsed.
+    lines: usize,
+    /// The header's model, once read.
+    model: Option<Word2VecModel>,
+    vector_dimension: usize,
+    b64: bool,
+}
+
+impl ModelParser {
+    fn max_line(&self) -> usize {
+        if self.lines == 0 {
+            return MAX_LINE;
         }
-        let term = if b64 {
-            decode_b64_term(first)?
-        } else {
-            first.as_bytes().to_vec()
-        };
-        let found = tokens.len().saturating_sub(1);
-        if found != vector_dimension {
+        self.vector_dimension
+            .saturating_mul(MAX_LINE_PER_DIMENSION)
+            .saturating_add(MAX_LINE)
+    }
+
+    fn feed(&mut self, mut bytes: &[u8]) -> Result<()> {
+        while !bytes.is_empty() {
+            if std::mem::take(&mut self.after_cr) && bytes[0] == b'\n' {
+                bytes = &bytes[1..];
+                continue;
+            }
+            match bytes.iter().position(|&b| b == b'\n' || b == b'\r') {
+                Some(i) => {
+                    self.push(&bytes[..i])?;
+                    self.after_cr = bytes[i] == b'\r';
+                    self.end_line()?;
+                    bytes = &bytes[i + 1..];
+                }
+                None => {
+                    self.push(bytes)?;
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn push(&mut self, bytes: &[u8]) -> Result<()> {
+        let max = self.max_line();
+        if bytes.len() > max - self.line.len().min(max) {
             return Err(bad(format!(
-                "Word2Vec model file corrupted. Declared vectors of size {vector_dimension} but \
-                 found vector of size {found} for word {first} ({})",
-                String::from_utf8_lossy(&term)
+                "Word2Vec model file corrupted. A line is over {max} bytes"
             )));
         }
-        let vector = tokens[1..]
-            .iter()
-            .map(|t| java_parse_float(t).ok_or_else(|| bad(format!("For input string: \"{t}\""))))
-            .collect::<Result<Vec<f32>>>()?;
-        model.add_term_and_vector(term, vector)?;
+        self.line.extend_from_slice(bytes);
+        Ok(())
     }
-    Ok(model)
+
+    fn end_line(&mut self) -> Result<()> {
+        let line = std::mem::take(&mut self.line);
+        let text = String::from_utf8_lossy(&line);
+        match self.model.as_mut() {
+            None => {
+                let header = split_space(&text);
+                let int = |s: Option<&&str>| -> Result<usize> {
+                    let s = s.copied().unwrap_or("");
+                    java_parse_int(s)
+                        .and_then(|v| usize::try_from(v).ok())
+                        .ok_or_else(|| bad(format!("For input string: \"{s}\"")))
+                };
+                let dictionary_size = int(header.first())?;
+                self.vector_dimension = int(header.get(1))?;
+                self.model = Some(Word2VecModel::new(dictionary_size, self.vector_dimension));
+            }
+            Some(model) => {
+                let tokens = split_space(&text);
+                let first = tokens.first().copied().unwrap_or("");
+                if self.lines == 1 {
+                    // `tokens[0].substring(0, 3).toLowerCase(Locale.ROOT)`.
+                    let prefix: Vec<u16> = first.encode_utf16().take(3).collect();
+                    if prefix.len() < 3 {
+                        return Err(bad(format!("begin 0, end 3, length {}", prefix.len())));
+                    }
+                    self.b64 = String::from_utf16_lossy(&prefix).eq_ignore_ascii_case("b64");
+                }
+                let term = if self.b64 {
+                    decode_b64_term(first)?
+                } else {
+                    first.as_bytes().to_vec()
+                };
+                let found = tokens.len().saturating_sub(1);
+                if found != self.vector_dimension {
+                    return Err(bad(format!(
+                        "Word2Vec model file corrupted. Declared vectors of size {} but found \
+                         vector of size {found} for word {first} ({})",
+                        self.vector_dimension,
+                        String::from_utf8_lossy(&term)
+                    )));
+                }
+                let vector = tokens[1..]
+                    .iter()
+                    .map(|t| {
+                        java_parse_float(t).ok_or_else(|| bad(format!("For input string: \"{t}\"")))
+                    })
+                    .collect::<Result<Vec<f32>>>()?;
+                model.add_term_and_vector(term, vector)?;
+            }
+        }
+        self.lines += 1;
+        Ok(())
+    }
+
+    /// The end of the entry: its last line, then the model.
+    fn finish(mut self) -> Result<Word2VecModel> {
+        if !self.line.is_empty() || self.model.is_none() {
+            self.end_line()?;
+        }
+        self.model.ok_or_else(|| bad("For input string: \"\""))
+    }
 }
 
 /// `Integer.parseInt`: optional sign, ASCII digits, in `i32` range.
@@ -347,10 +446,34 @@ mod tests {
         }
     }
 
+    /// The model of a whole text, fed in one chunk.
+    fn parse_model(text: &str) -> Result<Word2VecModel> {
+        let mut p = ModelParser::default();
+        p.feed(text.as_bytes())?;
+        p.finish()
+    }
+
     #[test]
     fn lines_and_fields_as_java_splits_them() {
-        assert_eq!(read_lines("a\nb\r\nc\rd"), ["a", "b", "c", "d"]);
-        assert_eq!(read_lines("a\n\n"), ["a", ""]);
+        // `\n`, `\r\n` and `\r` end lines, however the bytes are chunked.
+        let text = "3 1\naaa 1\r\nbbb 2\rccc 3";
+        for chunk in [1, 2, 3, 100] {
+            let mut p = ModelParser::default();
+            for c in text.as_bytes().chunks(chunk) {
+                p.feed(c).unwrap();
+            }
+            let m = p.finish().unwrap();
+            assert_eq!(
+                (m.term(0), m.term(1), m.term(2)),
+                (&b"aaa"[..], &b"bbb"[..], &b"ccc"[..])
+            );
+        }
+        // A final line break ends the last line; one more is an empty line.
+        assert_eq!(parse_model("1 1\naaa 1\n").unwrap().loaded(), 1);
+        assert!(parse_model("2 1\naaa 1\n\n")
+            .unwrap_err()
+            .to_string()
+            .contains("found vector of size 0"));
         assert_eq!(split_space("a b  "), ["a", "b"]);
         assert_eq!(split_space(" a"), ["", "a"]);
         assert!(split_space("").is_empty());
@@ -372,6 +495,36 @@ mod tests {
         assert_eq!((m.term(0), m.term(1)), (&b"a"[..], &b"b"[..]));
         let m = parse_model("1 1\nword 2\n").unwrap();
         assert_eq!((m.term(0), m.vector(0)), (&b"word"[..], &[1.0f32][..]));
+        assert!(err("").contains("\"\""));
+    }
+
+    #[test]
+    fn over_long_lines_are_refused() {
+        let err = |t: &[u8]| {
+            let mut p = ModelParser::default();
+            p.feed(t)
+                .and_then(|()| p.finish().map(|_| ()))
+                .unwrap_err()
+                .to_string()
+        };
+        // The header: 1 MiB.
+        assert!(err(&vec![b'1'; MAX_LINE + 1]).contains("over 1048576 bytes"));
+        // A term line: 1 MiB and 64 bytes a dimension, however it is fed.
+        let mut p = ModelParser::default();
+        p.feed(b"1 2\nxyz ").unwrap();
+        let fill = vec![b'1'; MAX_LINE + 2 * MAX_LINE_PER_DIMENSION - 4];
+        p.feed(&fill).unwrap();
+        let e = p.feed(b"1").unwrap_err().to_string();
+        assert!(e.contains("over 1048704 bytes"), "{e}");
+        // At the limit, the line is read (and here refused for its float).
+        let mut p = ModelParser::default();
+        p.feed(b"1 2\nxyz ").unwrap();
+        p.feed(&fill).unwrap();
+        assert!(p
+            .finish()
+            .unwrap_err()
+            .to_string()
+            .contains("Declared vectors"));
     }
 
     #[test]
