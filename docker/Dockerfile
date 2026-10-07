@@ -49,7 +49,8 @@ RUN mkdir -p "$LUCENE_JARS" && cd "$LUCENE_JARS" \
            echo "note: $m not published for $LUCENE_VERSION, skipping"; \
        done \
     && curl -fsSL -O https://repo1.maven.org/maven2/org/locationtech/spatial4j/spatial4j/0.8/spatial4j-0.8.jar \
-    && curl -fsSL -O https://repo1.maven.org/maven2/io/sgr/s2-geometry-library-java/1.0.0/s2-geometry-library-java-1.0.0.jar
+    && curl -fsSL -O https://repo1.maven.org/maven2/io/sgr/s2-geometry-library-java/1.0.0/s2-geometry-library-java-1.0.0.jar \
+    && curl -fsSL -O https://repo1.maven.org/maven2/commons-codec/commons-codec/1.17.2/commons-codec-1.17.2.jar
 
 # The gate is not just `cargo test`: it includes an aarch64 check-only clippy
 # pass (c_char signedness differs by target, so a class of FFI defect is

@@ -74,13 +74,13 @@ AREA_ROW = re.compile(r"^\|\s*\[[^\]]*\]\(([^)]+\.md)\)\s*\|.*\|\s*(\d+)\s*\|\s*
 MD_LINK = re.compile(r"\[[^\]]*\]\(([^)\s#]+)(?:#[^)]*)?\)")
 
 # A Rust path: `crate/src/path.rs`, optionally followed by `::item`.
-RUST_PATH = re.compile(r"`(lucene-[a-z]+/(?:src|tests|benches|examples)/[A-Za-z0-9_/]+\.rs)(?:::[^`]*)?`")
+RUST_PATH = re.compile(r"`(lucene-[a-z]+(?:-[a-z0-9]+)*/(?:src|tests|benches|examples)/[A-Za-z0-9_/]+\.rs)(?:::[^`]*)?`")
 # The same, capturing the `::item` suffix -- a single item, or a
 # `::{a, b, C::d}` group. Validated since c41: c37's Tier-2 review found
 # `parity.md` describing two *deleted* functions in the present tense, and
 # this script pointedly checked only the file path.
 RUST_ITEMS = re.compile(
-    r"`(lucene-[a-z]+/(?:src|tests|benches|examples)/[A-Za-z0-9_/]+\.rs)::([^`]+)`"
+    r"`(lucene-[a-z]+(?:-[a-z0-9]+)*/(?:src|tests|benches|examples)/[A-Za-z0-9_/]+\.rs)::([^`]+)`"
 )
 # What an item name may look like once the `Type::method` and generic noise is
 # stripped: the last path segment is what has to exist in the file.

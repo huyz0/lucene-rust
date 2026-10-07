@@ -354,10 +354,56 @@ pub fn java_string_to_lower_case(units: &[u16]) -> Vec<u16> {
     out
 }
 
+/// `String.toUpperCase(Locale)` for a locale without tailorings (not `tr`,
+/// `az`, `lt`): `Character.toUpperCase` per code point, except the
+/// characters whose full uppercase is several units
+/// ([`crate::java_character::SPECIAL_UPPER`]: `ß` -> `SS`). An unpaired
+/// surrogate is kept as is.
+pub fn java_string_to_upper_case(units: &[u16]) -> Vec<u16> {
+    let mut out = Vec::with_capacity(units.len());
+    for r in char::decode_utf16(units.iter().copied()) {
+        match r {
+            Ok(c) => {
+                let cp = u32::from(c);
+                if let Some(m) = u16::try_from(cp)
+                    .ok()
+                    .and_then(crate::java_character::special_upper)
+                {
+                    out.extend_from_slice(m);
+                    continue;
+                }
+                let up = crate::java_character::to_upper_case(cp);
+                let mut b = [0u16; 2];
+                match char::from_u32(up) {
+                    Some(c) => out.extend_from_slice(c.encode_utf16(&mut b)),
+                    None => out.push(up as u16),
+                }
+            }
+            Err(e) => out.push(e.unpaired_surrogate()),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::util::canned::{render, Canned};
+
+    #[test]
+    fn string_to_upper_case_applies_special_casing() {
+        let up = |s: &str| {
+            String::from_utf16(&java_string_to_upper_case(
+                &s.encode_utf16().collect::<Vec<_>>(),
+            ))
+            .unwrap()
+        };
+        assert_eq!(up("straße"), "STRASSE");
+        assert_eq!(up("ŉx"), "ʼNX");
+        assert_eq!(up("ǰ"), "J\u{30C}");
+        assert_eq!(up("𐐨a"), "𐐀A");
+        assert_eq!(java_string_to_upper_case(&[0xD800, 0x61]), [0xD800, 0x41]);
+    }
 
     #[derive(Default)]
     struct DropLast;
