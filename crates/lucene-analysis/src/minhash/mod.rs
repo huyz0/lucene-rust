@@ -5,6 +5,7 @@ use std::sync::LazyLock;
 
 use crate::attributes::State;
 use crate::token_stream::{TokenFilter, TokenStream};
+use crate::util::{check_configured_allocation, configured_vec};
 use crate::AnalysisError;
 
 /// `MinHashFilter.DEFAULT_HASH_COUNT`.
@@ -185,9 +186,21 @@ impl<I: TokenStream> MinHashFilter<I> {
         if (1i64 << 32) % i64::from(bucket_count) != 0 {
             bucket_size += 1;
         }
+        // Java allocates hashCount * bucketCount sets up front: past the
+        // heap that is its OutOfMemoryError, here an error, not an abort.
+        let (hashes, buckets) = (hash_count as usize, bucket_count as usize);
+        check_configured_allocation(
+            hashes.saturating_mul(buckets),
+            std::mem::size_of::<BTreeSet<LongPair>>(),
+            "hashCount * bucketCount",
+        )?;
+        let mut min_hash_sets = Vec::new();
+        for _ in 0..hashes {
+            min_hash_sets.push(configured_vec(buckets, BTreeSet::new(), "bucketCount")?);
+        }
         Ok(MinHashFilter {
             input,
-            min_hash_sets: vec![vec![BTreeSet::new(); bucket_count as usize]; hash_count as usize],
+            min_hash_sets,
             hash_set_size: hash_set_size as usize,
             bucket_count,
             hash_count,

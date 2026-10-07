@@ -455,3 +455,28 @@ fn language_tags_parse_as_the_jdk_does() {
         );
     }
 }
+
+/// A size taken from configuration that Java's heap could not hold is
+/// Java's `OutOfMemoryError` (an error here), never an aborted process:
+/// MinHash's `hashCount * bucketCount` sets, the n-gram tokenizers'
+/// `2 * maxGram + 1024` buffers.
+#[test]
+fn hostile_sizes_are_errors_not_aborts() {
+    let oom = |e: AnalysisError| matches!(e, AnalysisError::IllegalArgument(m) if m.starts_with("OutOfMemoryError"));
+    for pairs in [
+        &[("hashCount", "1000000000")][..],
+        &[("bucketCount", "2000000000")][..],
+        &[("hashCount", "100000"), ("bucketCount", "100000")][..],
+    ] {
+        let f = build::<MinHashFilterFactory>(pairs).unwrap();
+        assert!(oom(f.create(input("a")).err().unwrap()), "{pairs:?}");
+    }
+    for name in ["nGram", "edgeNGram"] {
+        let mut args = JavaArgs::from_pairs(&[("minGramSize", "1"), ("maxGramSize", "1000000000")]);
+        let f = spi::tokenizer_for_name(name, &mut args).unwrap();
+        assert!(oom(f.create().err().unwrap()), "{name}");
+    }
+    // Sizes a heap holds still build.
+    let f = build::<MinHashFilterFactory>(&[("hashCount", "2"), ("bucketCount", "3")]).unwrap();
+    assert!(f.create(input("a")).is_ok());
+}

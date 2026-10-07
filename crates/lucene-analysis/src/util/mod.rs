@@ -18,6 +18,46 @@ pub use java_regex::JavaPattern;
 pub use rolling_buffer::{Resettable, RollingBuffer};
 
 use crate::attributes::AttributeSource;
+use crate::AnalysisError;
+
+/// The most bytes one array sized from configuration may take: Java's
+/// `new int[n]` past the heap throws `OutOfMemoryError`, which an
+/// allocation failure here would turn into an aborted process (and the
+/// JVM with it, across the FFI).
+pub const MAX_CONFIGURED_ALLOCATION: usize = 1 << 30;
+
+/// Java's `OutOfMemoryError` for an array of `len` elements of `elem_size`
+/// bytes sized by `what`, as an `IllegalArgument` naming it.
+fn out_of_memory(what: &str, len: usize) -> AnalysisError {
+    AnalysisError::IllegalArgument(format!(
+        "OutOfMemoryError: Java heap space ({what}: {len} elements)"
+    ))
+}
+
+/// Checks that `len` elements of `elem_size` bytes, sized by the
+/// configuration value `what`, fit [`MAX_CONFIGURED_ALLOCATION`].
+pub fn check_configured_allocation(
+    len: usize,
+    elem_size: usize,
+    what: &str,
+) -> Result<(), AnalysisError> {
+    match len.checked_mul(elem_size.max(1)) {
+        Some(bytes) if bytes <= MAX_CONFIGURED_ALLOCATION => Ok(()),
+        _ => Err(out_of_memory(what, len)),
+    }
+}
+
+/// `new T[len]` (filled with `value`) for a length taken from
+/// configuration: past [`MAX_CONFIGURED_ALLOCATION`], or when the
+/// allocator refuses, Java's `OutOfMemoryError` rather than an abort.
+pub fn configured_vec<T: Clone>(len: usize, value: T, what: &str) -> Result<Vec<T>, AnalysisError> {
+    check_configured_allocation(len, std::mem::size_of::<T>(), what)?;
+    let mut v = Vec::new();
+    v.try_reserve_exact(len)
+        .map_err(|_| out_of_memory(what, len))?;
+    v.resize(len, value);
+    Ok(v)
+}
 
 /// Runs `f` over the term's UTF-16 code units (Java's `buffer()` /
 /// `length()`), in `buf`; when `f` returns `true` the units are written back

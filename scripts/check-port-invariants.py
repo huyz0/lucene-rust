@@ -890,17 +890,38 @@ def rule_table_fixed_len(files, problems, stats):
 # or from such a name, transitively, nor contain such a parse itself -- unless
 # the size expression caps it with `min(`, or an `// ALLOC:` comment within the
 # 6 lines above names the bound that makes it sound.
+#
+# The M11 part 4 review found the same abort one step removed: an analysis
+# factory parses `bucketCount`/`maxGramSize` with `getInt` and hands the int to
+# a filter's constructor, which sized `vec![..; bucket_count as usize]`. So in
+# the analysis crates a Java-int parameter (`i32`, `i64`, `u32`) of the fn is a
+# source too -- its value comes from configuration more often than not.
 
 PARSE_SOURCE = re.compile(
     r"\bparse_(int|num)\s*\(|\.\s*parse\s*(::\s*<[^>]*>\s*)?\(\s*\)"
 )
 
 
+INT_PARAM = re.compile(r"\b(?P<name>[a-z_]\w*)\s*:\s*(i32|i64|u32)\b")
+
+
+def int_params(lines, a, b):
+    """The Java-int parameters of the fn whose signature starts at `a`."""
+    sig = ""
+    for k in range(a, b + 1):
+        sig += " " + strip_comment(lines[k])
+        if "{" in lines[k] or ";" in lines[k]:
+            break
+    sig = sig.split("{", 1)[0]
+    return {m.group("name") for m in INT_PARAM.finditer(sig)}
+
+
 def rule_alloc_from_parse(files, problems, stats):
     for rel, raw in files:
         lines = blank_cfg_test(raw)
+        analysis = rel.startswith("crates/lucene-analysis")
         for fname, a, b in fn_spans(lines):
-            tainted = set()
+            tainted = int_params(lines, a, b) if analysis else set()
             for k in range(a, b + 1):
                 code = strip_comment(lines[k])
                 m = LET_BIND.match(code)
@@ -923,7 +944,8 @@ def rule_alloc_from_parse(files, problems, stats):
                         continue
                     problems.append(
                         f"{rel}:{k + 1}: `{fname}` sizes an allocation from a "
-                        f"count parsed out of its input (`{expr.strip()}`). A "
+                        f"count parsed out of its input or configuration "
+                        f"(`{expr.strip()}`). A "
                         f"hostile header announces any count it likes: reserve "
                         f"at most a capped `min(..)` and grow as entries arrive, "
                         f"or justify the bound in an `// ALLOC:` comment. "

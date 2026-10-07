@@ -573,6 +573,20 @@ decoded from binary (`read_vint`, which the arithmetic gate and
 `alloc-from-doc` cover in part); a `min(` against a bound that is itself too
 large; a loop that pushes once per announced entry without consuming input.
 
+The M11 part 4 review found the abort one step removed: analysis factories
+parse `bucketCount`/`maxGramSize` with `getInt` and pass the int to a
+constructor that sized `vec![..; bucket_count as usize]` (MinHash: 24 GB
+for `hashCount=1000000000`; n-grams: `2 * maxGram + 1024`). In
+`crates/lucene-analysis*` a fn's Java-int parameter (`i32`, `i64`, `u32`)
+is therefore a source too, and those sizes now go through
+`util::configured_vec` (a 1 GiB cap and `try_reserve`: Java's
+`OutOfMemoryError` as an error). **Seen to fail** on the unfixed code:
+`crates/lucene-analysis/src/minhash/mod.rs:190: `new` sizes an allocation
+from a count parsed out of its input or configuration (`bucket_count as
+usize`)` and `ngram/mod.rs:101` (`size`). Blind to: a configured int that
+arrives as `usize` (or `i16`, `u64`), or through a struct field; sizes
+inside `configured_vec` itself, which the cap bounds.
+
 ## write-path verifiers of the geo modules (M9)
 
 `scripts/verify-write-path.sh` runs a Java verifier over an index this
