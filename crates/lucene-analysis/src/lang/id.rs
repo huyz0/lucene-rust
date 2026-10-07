@@ -4,7 +4,7 @@
 
 use std::sync::{Arc, LazyLock};
 
-use crate::util::stemmer_util::{delete_n, ends_with, starts_with};
+use crate::util::stemmer_util::{delete_n, ends, ends_with, starts_with};
 use crate::CharArraySet;
 
 use super::{comment_set, mark_exclusions, std_lower_stop, CharStemmer, StemFilter};
@@ -57,11 +57,11 @@ impl Run {
     }
 
     fn remove_possessive_pronoun(&mut self, t: &[u16], len: usize) -> usize {
-        if ends_with(t, len, "ku") || ends_with(t, len, "mu") {
+        if ends!(t, len, "ku") || ends!(t, len, "mu") {
             self.num_syllables -= 1;
             return len - 2;
         }
-        if ends_with(t, len, "nya") {
+        if ends!(t, len, "nya") {
             self.num_syllables -= 1;
             return len - 3;
         }
@@ -146,16 +146,16 @@ impl Run {
     // Java: IndonesianStemmer.removeSuffix
     fn remove_suffix(&mut self, t: &[u16], len: usize) -> usize {
         let f = self.flags;
-        if ends_with(t, len, "kan") && f & (REMOVED_KE | REMOVED_PENG | REMOVED_PE) == 0 {
+        if ends!(t, len, "kan") && f & (REMOVED_KE | REMOVED_PENG | REMOVED_PE) == 0 {
             self.num_syllables -= 1;
             return len - 3;
         }
-        if ends_with(t, len, "an") && f & (REMOVED_DI | REMOVED_MENG | REMOVED_TER) == 0 {
+        if ends!(t, len, "an") && f & (REMOVED_DI | REMOVED_MENG | REMOVED_TER) == 0 {
             self.num_syllables -= 1;
             return len - 2;
         }
-        if ends_with(t, len, "i")
-            && !ends_with(t, len, "si")
+        if ends!(t, len, "i")
+            && !ends!(t, len, "si")
             && f & (REMOVED_BER | REMOVED_KE | REMOVED_PENG) == 0
         {
             self.num_syllables -= 1;

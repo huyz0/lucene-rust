@@ -3,7 +3,7 @@
 
 use std::sync::{Arc, LazyLock};
 
-use crate::util::stemmer_util::ends_with;
+use crate::util::stemmer_util::{ends, ends_with};
 use crate::CharArraySet;
 
 use super::{mark_exclusions, plain_set, std_lower_stop, CharStemmer, StemFilter};
@@ -68,13 +68,13 @@ impl LatvianStemmer {
     // first char, still in the buffer)
     fn unpalatalize(s: &mut [u16], mut len: usize) -> usize {
         if s[len] == c('u') {
-            if ends_with(s, len, "kš") {
+            if ends!(s, len, "kš") {
                 len += 1;
                 s[len - 2] = c('s');
                 s[len - 1] = c('t');
                 return len;
             }
-            if ends_with(s, len, "ņņ") {
+            if ends!(s, len, "ņņ") {
                 s[len - 2] = c('n');
                 s[len - 1] = c('n');
                 return len;
@@ -132,8 +132,11 @@ impl CharStemmer for LatvianStemmer {
             })
             .count();
         for (affix, vc, palatalizes) in AFFIXES {
+            if num_vowels <= vc || !ends_with(s, len, affix) {
+                continue;
+            }
             let n = affix.encode_utf16().count();
-            if num_vowels > vc && len >= n + 3 && ends_with(s, len, affix) {
+            if len >= n + 3 {
                 let len = len - n;
                 return if palatalizes {
                     Self::unpalatalize(s, len)

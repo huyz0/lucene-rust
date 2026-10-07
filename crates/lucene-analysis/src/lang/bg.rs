@@ -3,7 +3,7 @@
 
 use std::sync::{Arc, LazyLock};
 
-use crate::util::stemmer_util::ends_with;
+use crate::util::stemmer_util::{ends, ends_with};
 use crate::CharArraySet;
 
 use super::{comment_set, mark_exclusions, std_lower_stop, CharStemmer, StemFilter};
@@ -22,7 +22,7 @@ pub struct BulgarianStemmer;
 
 impl BulgarianStemmer {
     fn remove_article(s: &[u16], len: usize) -> usize {
-        if len > 6 && ends_with(s, len, "ият") {
+        if len > 6 && ends!(s, len, "ият") {
             return len - 3;
         }
         if len > 5
@@ -32,7 +32,7 @@ impl BulgarianStemmer {
         {
             return len - 2;
         }
-        if len > 4 && ends_with(s, len, "ят") {
+        if len > 4 && ends!(s, len, "ят") {
             return len - 2;
         }
         len
@@ -40,26 +40,26 @@ impl BulgarianStemmer {
 
     fn remove_plural(s: &mut [u16], len: usize) -> usize {
         if len > 6 {
-            if ends_with(s, len, "овци") || ends_with(s, len, "ове") {
+            if ends!(s, len, "овци") || ends!(s, len, "ове") {
                 return len - 3;
             }
-            if ends_with(s, len, "еве") {
+            if ends!(s, len, "еве") {
                 s[len - 3] = c('й');
                 return len - 2;
             }
         }
         if len > 5 {
-            if ends_with(s, len, "ища") {
+            if ends!(s, len, "ища") {
                 return len - 3;
             }
-            if ends_with(s, len, "та") {
+            if ends!(s, len, "та") {
                 return len - 2;
             }
-            if ends_with(s, len, "ци") {
+            if ends!(s, len, "ци") {
                 s[len - 2] = c('к');
                 return len - 1;
             }
-            if ends_with(s, len, "зи") {
+            if ends!(s, len, "зи") {
                 s[len - 2] = c('г');
                 return len - 1;
             }
@@ -69,11 +69,11 @@ impl BulgarianStemmer {
             }
         }
         if len > 4 {
-            if ends_with(s, len, "си") {
+            if ends!(s, len, "си") {
                 s[len - 2] = c('х');
                 return len - 1;
             }
-            if ends_with(s, len, "и") {
+            if ends!(s, len, "и") {
                 return len - 1;
             }
         }
@@ -87,20 +87,20 @@ impl CharStemmer for BulgarianStemmer {
         if len < 4 {
             return len;
         }
-        if len > 5 && ends_with(s, len, "ища") {
+        if len > 5 && ends!(s, len, "ища") {
             return len - 3;
         }
         len = Self::remove_article(s, len);
         len = Self::remove_plural(s, len);
         if len > 3 {
-            if ends_with(s, len, "я") {
+            if ends!(s, len, "я") {
                 len -= 1;
             }
-            if ends_with(s, len, "а") || ends_with(s, len, "о") || ends_with(s, len, "е") {
+            if ends!(s, len, "а") || ends!(s, len, "о") || ends!(s, len, "е") {
                 len -= 1;
             }
         }
-        if len > 4 && ends_with(s, len, "ен") {
+        if len > 4 && ends!(s, len, "ен") {
             s[len - 2] = c('н');
             len -= 1;
         }

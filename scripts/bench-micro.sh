@@ -76,6 +76,12 @@ case "$BENCH" in
     SRC=benchmarks/micro/java/AnalysisCommonMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common" ;;
+  # M11 part 3: language analyzers and synonym filters over their corpora.
+  analysis_lang)
+    MAIN=AnalysisLangMicro
+    SRC=benchmarks/micro/java/AnalysisLangMicro.java
+    EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-analysis-common" ;;
   # M11 T11.3: SnowballFilter per language over the fixture vocabularies.
   snowball)
     MAIN=SnowballMicro

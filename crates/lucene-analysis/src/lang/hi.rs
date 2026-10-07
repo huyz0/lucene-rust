@@ -4,7 +4,7 @@
 use std::sync::{Arc, LazyLock};
 
 use crate::core_analysis::DecimalDigitFilter;
-use crate::util::stemmer_util::{delete, ends_with};
+use crate::util::stemmer_util::{delete, ends_with_units, utf16};
 use crate::{CharArraySet, LowerCaseFilter, StandardTokenizer, StopFilter};
 
 use super::in_::IndicNormalizationFilter;
@@ -77,52 +77,83 @@ impl CharStemmer for HindiNormalizer {
     }
 }
 
-const ENDINGS_5: [&str; 7] = ["ाएंगी", "ाएंगे", "ाऊंगी", "ाऊंगा", "ाइयाँ", "ाइयों", "ाइयां"];
-const ENDINGS_4: [&str; 18] = [
-    "ाएगी",
-    "ाएगा",
-    "ाओगी",
-    "ाओगे",
-    "एंगी",
-    "ेंगी",
-    "एंगे",
-    "ेंगे",
-    "ूंगी",
-    "ूंगा",
-    "ातीं",
-    "नाओं",
-    "नाएं",
-    "ताओं",
-    "ताएं",
-    "ियाँ",
-    "ियों",
-    "ियां",
+const ENDINGS_5: [&[u16]; 7] = [
+    utf16!("ाएंगी"),
+    utf16!("ाएंगे"),
+    utf16!("ाऊंगी"),
+    utf16!("ाऊंगा"),
+    utf16!("ाइयाँ"),
+    utf16!("ाइयों"),
+    utf16!("ाइयां"),
 ];
-const ENDINGS_3: [&str; 19] = [
-    "ाकर",
-    "ाइए",
-    "ाईं",
-    "ाया",
-    "ेगी",
-    "ेगा",
-    "ोगी",
-    "ोगे",
-    "ाने",
-    "ाना",
-    "ाते",
-    "ाती",
-    "ाता",
-    "तीं",
-    "ाओं",
-    "ाएं",
-    "ुओं",
-    "ुएं",
-    "ुआं",
+const ENDINGS_4: [&[u16]; 18] = [
+    utf16!("ाएगी"),
+    utf16!("ाएगा"),
+    utf16!("ाओगी"),
+    utf16!("ाओगे"),
+    utf16!("एंगी"),
+    utf16!("ेंगी"),
+    utf16!("एंगे"),
+    utf16!("ेंगे"),
+    utf16!("ूंगी"),
+    utf16!("ूंगा"),
+    utf16!("ातीं"),
+    utf16!("नाओं"),
+    utf16!("नाएं"),
+    utf16!("ताओं"),
+    utf16!("ताएं"),
+    utf16!("ियाँ"),
+    utf16!("ियों"),
+    utf16!("ियां"),
 ];
-const ENDINGS_2: [&str; 16] = [
-    "कर", "ाओ", "िए", "ाई", "ाए", "ने", "नी", "ना", "ते", "ीं", "ती", "ता", "ाँ", "ां", "ों", "ें",
+const ENDINGS_3: [&[u16]; 19] = [
+    utf16!("ाकर"),
+    utf16!("ाइए"),
+    utf16!("ाईं"),
+    utf16!("ाया"),
+    utf16!("ेगी"),
+    utf16!("ेगा"),
+    utf16!("ोगी"),
+    utf16!("ोगे"),
+    utf16!("ाने"),
+    utf16!("ाना"),
+    utf16!("ाते"),
+    utf16!("ाती"),
+    utf16!("ाता"),
+    utf16!("तीं"),
+    utf16!("ाओं"),
+    utf16!("ाएं"),
+    utf16!("ुओं"),
+    utf16!("ुएं"),
+    utf16!("ुआं"),
 ];
-const ENDINGS_1: [&str; 7] = ["ो", "े", "ू", "ु", "ी", "ि", "ा"];
+const ENDINGS_2: [&[u16]; 16] = [
+    utf16!("कर"),
+    utf16!("ाओ"),
+    utf16!("िए"),
+    utf16!("ाई"),
+    utf16!("ाए"),
+    utf16!("ने"),
+    utf16!("नी"),
+    utf16!("ना"),
+    utf16!("ते"),
+    utf16!("ीं"),
+    utf16!("ती"),
+    utf16!("ता"),
+    utf16!("ाँ"),
+    utf16!("ां"),
+    utf16!("ों"),
+    utf16!("ें"),
+];
+const ENDINGS_1: [&[u16]; 7] = [
+    utf16!("ो"),
+    utf16!("े"),
+    utf16!("ू"),
+    utf16!("ु"),
+    utf16!("ी"),
+    utf16!("ि"),
+    utf16!("ा"),
+];
 
 /// `HindiStemmer`.
 #[derive(Debug, Default, Clone, Copy)]
@@ -131,7 +162,7 @@ pub struct HindiStemmer;
 impl CharStemmer for HindiStemmer {
     // Java: HindiStemmer.stem
     fn stem(&self, s: &mut Vec<u16>, len: usize) -> usize {
-        let any = |xs: &[&str]| xs.iter().any(|x| ends_with(s, len, x));
+        let any = |xs: &[&[u16]]| xs.iter().any(|x| ends_with_units(s, len, x));
         for (min, xs, cut) in [
             (6, &ENDINGS_5[..], 5),
             (5, &ENDINGS_4[..], 4),

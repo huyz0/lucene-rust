@@ -3,7 +3,7 @@
 
 use std::sync::{Arc, LazyLock};
 
-use crate::util::stemmer_util::{delete, ends_with};
+use crate::util::stemmer_util::{delete, ends, ends_with};
 use crate::CharArraySet;
 
 use super::{mark_exclusions, snowball, snowball_set, std_lower_stop, CharStemmer, StemFilter};
@@ -31,18 +31,18 @@ pub struct FinnishLightStemmer;
 impl FinnishLightStemmer {
     fn step1(s: &[u16], len: usize) -> usize {
         if len > 8 {
-            if ends_with(s, len, "kin") {
+            if ends!(s, len, "kin") {
                 return Self::step1(s, len - 3);
             }
-            if ends_with(s, len, "ko") {
+            if ends!(s, len, "ko") {
                 return Self::step1(s, len - 2);
             }
         }
         if len > 11 {
-            if ends_with(s, len, "dellinen") {
+            if ends!(s, len, "dellinen") {
                 return len - 8;
             }
-            if ends_with(s, len, "dellisuus") {
+            if ends!(s, len, "dellisuus") {
                 return len - 9;
             }
         }
@@ -54,10 +54,10 @@ impl FinnishLightStemmer {
             if any_end(s, len, &["lla", "tse", "sti"]) {
                 return len - 3;
             }
-            if ends_with(s, len, "ni") {
+            if ends!(s, len, "ni") {
                 return len - 2;
             }
-            if ends_with(s, len, "aa") {
+            if ends!(s, len, "aa") {
                 return len - 1;
             }
         }
@@ -66,18 +66,18 @@ impl FinnishLightStemmer {
 
     fn step3(s: &mut [u16], len: usize) -> usize {
         if len > 8 {
-            if ends_with(s, len, "nnen") {
+            if ends!(s, len, "nnen") {
                 s[len - 4] = c('s');
                 return len - 3;
             }
-            if ends_with(s, len, "ntena") {
+            if ends!(s, len, "ntena") {
                 s[len - 5] = c('s');
                 return len - 4;
             }
-            if ends_with(s, len, "tten") {
+            if ends!(s, len, "tten") {
                 return len - 4;
             }
-            if ends_with(s, len, "eiden") {
+            if ends!(s, len, "eiden") {
                 return len - 5;
             }
         }
@@ -88,11 +88,11 @@ impl FinnishLightStemmer {
             if s[len - 3] == c('h') && is_vowel(s[len - 2]) && s[len - 1] == c('n') {
                 return len - 3;
             }
-            if ends_with(s, len, "den") {
+            if ends!(s, len, "den") {
                 s[len - 3] = c('s');
                 return len - 2;
             }
-            if ends_with(s, len, "ksen") {
+            if ends!(s, len, "ksen") {
                 s[len - 4] = c('s');
                 return len - 3;
             }
@@ -104,7 +104,7 @@ impl FinnishLightStemmer {
             if any_end(s, len, &["na", "ne"]) {
                 return len - 2;
             }
-            if ends_with(s, len, "nei") {
+            if ends!(s, len, "nei") {
                 return len - 3;
             }
         }
@@ -126,7 +126,7 @@ impl FinnishLightStemmer {
     }
 
     fn norm1(s: &mut [u16], len: usize) -> usize {
-        if len > 5 && ends_with(s, len, "hde") {
+        if len > 5 && ends!(s, len, "hde") {
             s[len - 3] = c('k');
             s[len - 2] = c('s');
             s[len - 1] = c('i');

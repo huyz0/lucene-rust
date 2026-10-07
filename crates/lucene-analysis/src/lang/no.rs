@@ -6,7 +6,7 @@ use std::sync::{Arc, LazyLock};
 
 use crate::miscellaneous::{Folding, ScandinavianNormalizer};
 use crate::token_stream::{TokenFilter, TokenStream};
-use crate::util::stemmer_util::ends_with;
+use crate::util::stemmer_util::{ends, ends_with};
 use crate::{AnalysisError, CharArraySet};
 
 use super::{mark_exclusions, snowball, snowball_set, std_lower_stop, CharStemmer, StemFilter};
@@ -140,14 +140,14 @@ impl CharStemmer for NorwegianMinimalStemmer {
         if len > 4 && s[len - 1] == u16::from(b's') {
             len -= 1;
         }
-        if len > 5 && (ends_with(s, len, "ene") || (ends_with(s, len, "ane") && n)) {
+        if len > 5 && (ends!(s, len, "ene") || (ends!(s, len, "ane") && n)) {
             return len - 3;
         }
         if len > 4
-            && (ends_with(s, len, "er")
-                || ends_with(s, len, "en")
-                || ends_with(s, len, "et")
-                || (ends_with(s, len, "ar") && n))
+            && (ends!(s, len, "er")
+                || ends!(s, len, "en")
+                || ends!(s, len, "et")
+                || (ends!(s, len, "ar") && n))
         {
             return len - 2;
         }
