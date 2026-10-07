@@ -20,6 +20,11 @@ import org.apache.commons.codec.language.bm.RuleType;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.Tokenizer;
+import org.apache.lucene.analysis.cn.smart.HMMChineseTokenizer;
+import org.apache.lucene.analysis.cn.smart.SmartChineseAnalyzer;
+import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
+import org.apache.lucene.analysis.tokenattributes.OffsetAttribute;
+import org.apache.lucene.analysis.util.SegmentingTokenizerBase;
 import org.apache.lucene.analysis.core.WhitespaceTokenizer;
 import org.apache.lucene.analysis.ja.JapaneseAnalyzer;
 import org.apache.lucene.analysis.ja.JapaneseTokenizer;
@@ -117,6 +122,35 @@ public class AnalysisM12Micro {
     };
   }
 
+  /** Each sentence of the JDK's sentence iterator one token. */
+  static final class WholeSentenceTokenizer extends SegmentingTokenizerBase {
+    final CharTermAttribute termAtt = addAttribute(CharTermAttribute.class);
+    final OffsetAttribute offsetAtt = addAttribute(OffsetAttribute.class);
+    int sentenceStart, sentenceEnd;
+    boolean hasSentence;
+
+    WholeSentenceTokenizer() {
+      super(java.text.BreakIterator.getSentenceInstance(java.util.Locale.ROOT));
+    }
+
+    @Override
+    protected void setNextSentence(int sentenceStart, int sentenceEnd) {
+      this.sentenceStart = sentenceStart;
+      this.sentenceEnd = sentenceEnd;
+      hasSentence = true;
+    }
+
+    @Override
+    protected boolean incrementWord() {
+      if (!hasSentence) return false;
+      hasSentence = false;
+      clearAttributes();
+      termAtt.copyBuffer(buffer, sentenceStart, sentenceEnd - sentenceStart);
+      offsetAtt.setOffset(correctOffset(offset + sentenceStart), correctOffset(offset + sentenceEnd));
+      return true;
+    }
+  }
+
   static void run(String name, Analyzer a, List<String> docs) throws IOException {
     SweepMicro.measure(
         name,
@@ -169,5 +203,10 @@ public class AnalysisM12Micro {
     run("nori_mixed", chain(() -> new KoreanTokenizer(TokenStream.DEFAULT_TOKEN_ATTRIBUTE_FACTORY, null,
         KoreanTokenizer.DecompoundMode.MIXED, true, false), t -> t), ko);
     run("korean_analyzer", new KoreanAnalyzer(), ko);
+    List<String> zh = lineDocs("fixtures/corpus/analysis-chinese.txt");
+    List<String> sentences = lineDocs("fixtures/data/analysis_segmenting/texts.txt");
+    run("sentence_segmenting", chain(WholeSentenceTokenizer::new, t -> t), sentences);
+    run("smartcn_tokenizer", chain(HMMChineseTokenizer::new, t -> t), zh);
+    run("smartcn_analyzer", new SmartChineseAnalyzer(), zh);
   }
 }

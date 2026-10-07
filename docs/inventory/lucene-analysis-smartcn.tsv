@@ -2,21 +2,21 @@
 # Checked by scripts/check-port-inventory.py --module analysis-smartcn (see its docstring for the statuses).
 # M12 T12.2 (Chinese word segmentation (HHMM over the bundled core and bigram dictionaries)); docs/milestones/m12-language-analysis.md.
 # class	status	detail
-analysis/cn/smart/AnalyzerProfile	todo:M12	T12.2: AnalyzerProfile, not started
-analysis/cn/smart/CharType	todo:M12	T12.2: CharType, not started
-analysis/cn/smart/HMMChineseTokenizer	todo:M12	T12.2: HMMChineseTokenizer, not started
-analysis/cn/smart/HMMChineseTokenizerFactory	todo:M12	T12.2: HMMChineseTokenizerFactory, not started
-analysis/cn/smart/SmartChineseAnalyzer	todo:M12	T12.2: SmartChineseAnalyzer, not started
-analysis/cn/smart/Utility	todo:M12	T12.2: Utility, not started
-analysis/cn/smart/WordSegmenter	todo:M12	T12.2: WordSegmenter, not started
-analysis/cn/smart/WordType	todo:M12	T12.2: WordType, not started
-analysis/cn/smart/hhmm/AbstractDictionary	todo:M12	T12.2: AbstractDictionary, not started
-analysis/cn/smart/hhmm/BiSegGraph	todo:M12	T12.2: BiSegGraph, not started
-analysis/cn/smart/hhmm/BigramDictionary	todo:M12	T12.2: BigramDictionary, not started
-analysis/cn/smart/hhmm/HHMMSegmenter	todo:M12	T12.2: HHMMSegmenter, not started
-analysis/cn/smart/hhmm/PathNode	todo:M12	T12.2: PathNode, not started
-analysis/cn/smart/hhmm/SegGraph	todo:M12	T12.2: SegGraph, not started
-analysis/cn/smart/hhmm/SegToken	todo:M12	T12.2: SegToken, not started
-analysis/cn/smart/hhmm/SegTokenFilter	todo:M12	T12.2: SegTokenFilter, not started
-analysis/cn/smart/hhmm/SegTokenPair	todo:M12	T12.2: SegTokenPair, not started
-analysis/cn/smart/hhmm/WordDictionary	todo:M12	T12.2: WordDictionary, not started
+analysis/cn/smart/AnalyzerProfile	not-needed	locates analysis.data.dir for the .dct fallback, which Java takes only when the jar's .mem resources fail to load; here they are compiled in
+analysis/cn/smart/CharType	ported	crates/lucene-analysis-smartcn/src/utility.rs::char_type
+analysis/cn/smart/HMMChineseTokenizer	ported	crates/lucene-analysis-smartcn/src/tokenizer.rs::HMMChineseSegmenter
+analysis/cn/smart/HMMChineseTokenizerFactory	ported	crates/lucene-analysis-smartcn/src/factory.rs::HMMChineseTokenizerFactory
+analysis/cn/smart/SmartChineseAnalyzer	ported	crates/lucene-analysis-smartcn/src/analyzer.rs::SmartChineseAnalyzer
+analysis/cn/smart/Utility	ported	crates/lucene-analysis-smartcn/src/utility.rs::compare_array
+analysis/cn/smart/WordSegmenter	ported	crates/lucene-analysis-smartcn/src/word_segmenter.rs::WordSegmenter
+analysis/cn/smart/WordType	ported	crates/lucene-analysis-smartcn/src/utility.rs::word_type
+analysis/cn/smart/hhmm/AbstractDictionary	ported	crates/lucene-analysis-smartcn/src/hhmm/abstract_dictionary.rs::hash1
+analysis/cn/smart/hhmm/BiSegGraph	ported	crates/lucene-analysis-smartcn/src/hhmm/bi_seg_graph.rs::BiSegGraph
+analysis/cn/smart/hhmm/BigramDictionary	ported	crates/lucene-analysis-smartcn/src/hhmm/bigram_dictionary.rs::BigramDictionary
+analysis/cn/smart/hhmm/HHMMSegmenter	ported	crates/lucene-analysis-smartcn/src/hhmm/hhmm_segmenter.rs::HHMMSegmenter
+analysis/cn/smart/hhmm/PathNode	ported	crates/lucene-analysis-smartcn/src/hhmm/bi_seg_graph.rs::PathNode
+analysis/cn/smart/hhmm/SegGraph	ported	crates/lucene-analysis-smartcn/src/hhmm/seg_graph.rs::SegGraph
+analysis/cn/smart/hhmm/SegToken	ported	crates/lucene-analysis-smartcn/src/hhmm/seg_token.rs::SegToken
+analysis/cn/smart/hhmm/SegTokenFilter	ported	crates/lucene-analysis-smartcn/src/hhmm/seg_token_filter.rs::filter
+analysis/cn/smart/hhmm/SegTokenPair	ported	crates/lucene-analysis-smartcn/src/hhmm/bi_seg_graph.rs::SegTokenPair
+analysis/cn/smart/hhmm/WordDictionary	ported	crates/lucene-analysis-smartcn/src/hhmm/word_dictionary.rs::WordDictionary

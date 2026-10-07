@@ -86,13 +86,14 @@ impl SegmentingBase {
 /// plus the `reset()` and `isSafeEnd` overrides Java allows.
 pub trait Segmenter: Send {
     /// `setNextSentence(sentenceStart, sentenceEnd)`: the next sentence is
-    /// `base.buffer()[sentence_start..sentence_end]`.
+    /// `base.buffer()[sentence_start..sentence_end]`. An error is what the
+    /// Java subclass would throw.
     fn set_next_sentence(
         &mut self,
         base: &SegmentingBase,
         sentence_start: usize,
         sentence_end: usize,
-    );
+    ) -> Result<(), AnalysisError>;
 
     /// `incrementWord()`: the next word of the current sentence into the
     /// attributes, `false` when it has none left.
@@ -181,7 +182,7 @@ impl<S: Segmenter, B: BreakIterator + Send> SegmentingTokenizer<S, B> {
             let Some(end) = self.iterator.next() else {
                 return Ok(false); // BreakIterator exhausted
             };
-            self.segmenter.set_next_sentence(&self.base, start, end);
+            self.segmenter.set_next_sentence(&self.base, start, end)?;
             if self.segmenter.increment_word(&mut self.base)? {
                 return Ok(true);
             }
@@ -275,8 +276,14 @@ mod tests {
     }
 
     impl Segmenter for WholeSentence {
-        fn set_next_sentence(&mut self, _: &SegmentingBase, start: usize, end: usize) {
+        fn set_next_sentence(
+            &mut self,
+            _: &SegmentingBase,
+            start: usize,
+            end: usize,
+        ) -> Result<(), AnalysisError> {
             self.bounds = Some((start, end));
+            Ok(())
         }
         fn increment_word(&mut self, base: &mut SegmentingBase) -> Result<bool, AnalysisError> {
             let Some((start, end)) = self.bounds.take() else {
