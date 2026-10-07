@@ -428,27 +428,33 @@ impl TokenizerFactory for SimplePatternSplitTokenizerFactory {
 factory_struct! {
     /// `org.apache.lucene.analysis.th.ThaiTokenizerFactory` (`thai`): the
     /// arguments are Java's; the tokenizer (`java.text.BreakIterator`'s Thai
-    /// dictionary) is deferred to M12, so `create` fails.
+    /// dictionary) is deferred to M12, so configuring it fails, once Java's
+    /// own checks pass, with `UnsupportedOperationException`.
     ThaiTokenizerFactory {}
 }
 analysis_factory!(ThaiTokenizerFactory);
+
+/// Why `thai` cannot be built.
+const THAI_DEFERRED: &str =
+    "ThaiTokenizer is not ported (deferred to M12: it needs the JDK's Thai BreakIterator)";
 
 impl FactoryClass for ThaiTokenizerFactory {
     const NAME: &'static str = "thai";
     const CLASS_NAME: &'static str = "org.apache.lucene.analysis.th.ThaiTokenizerFactory";
     fn from_args(args: &mut JavaArgs) -> Result<Self, FactoryError> {
-        let base = FactoryBase::new(Self::CLASS_NAME, args)?;
+        FactoryBase::new(Self::CLASS_NAME, args)?;
         args::reject_unknown(args)?;
-        Ok(ThaiTokenizerFactory { base })
+        Err(FactoryError::new(
+            super::JavaException::UnsupportedOperation,
+            format!("ThaiTokenizerFactory: {THAI_DEFERRED}"),
+        ))
     }
 }
 
 impl TokenizerFactory for ThaiTokenizerFactory {
     fn create(&self) -> Result<Box<dyn TokenStream>, AnalysisError> {
-        Err(AnalysisError::IllegalState(
-            "ThaiTokenizer is not ported (deferred to M12: it needs the JDK's Thai BreakIterator)"
-                .into(),
-        ))
+        // Unreachable through `from_args`, which refuses first.
+        Err(AnalysisError::IllegalState(THAI_DEFERRED.into()))
     }
 }
 
@@ -573,7 +579,14 @@ mod tests {
         }
         let k = build::<KeywordTokenizerFactory>(&[("maxTokenLen", "10")]).unwrap();
         assert_eq!(k.max_token_len(), 10);
-        let thai = build::<ThaiTokenizerFactory>(&[]).unwrap();
+        // Thai is refused when configured, after Java's own checks.
+        let e = build::<ThaiTokenizerFactory>(&[]).err().unwrap();
+        assert_eq!(e.kind, super::super::JavaException::UnsupportedOperation);
+        let e = build::<ThaiTokenizerFactory>(&[("x", "1")]).err().unwrap();
+        assert_eq!(e.message, "Unknown parameters: {x=1}");
+        let thai = ThaiTokenizerFactory {
+            base: FactoryBase::new(ThaiTokenizerFactory::CLASS_NAME, &mut JavaArgs::new()).unwrap(),
+        };
         assert!(thai.create().is_err());
     }
 
