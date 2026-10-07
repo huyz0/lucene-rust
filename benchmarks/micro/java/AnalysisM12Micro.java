@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.regex.Pattern;
 import org.apache.commons.codec.language.Caverphone2;
 import org.apache.commons.codec.language.ColognePhonetic;
 import org.apache.commons.codec.language.DoubleMetaphone;
@@ -35,6 +36,9 @@ import org.apache.lucene.analysis.phonetic.DaitchMokotoffSoundexFilter;
 import org.apache.lucene.analysis.phonetic.DoubleMetaphoneFilter;
 import org.apache.lucene.analysis.phonetic.PhoneticFilter;
 import org.apache.lucene.analysis.morfologik.MorfologikFilter;
+import org.apache.lucene.analysis.pattern.PatternCaptureGroupTokenFilter;
+import org.apache.lucene.analysis.pattern.PatternReplaceFilter;
+import org.apache.lucene.analysis.pattern.PatternTokenizer;
 import org.apache.lucene.analysis.pl.PolishAnalyzer;
 import org.apache.lucene.analysis.stempel.StempelFilter;
 import org.apache.lucene.analysis.stempel.StempelStemmer;
@@ -208,5 +212,11 @@ public class AnalysisM12Micro {
     run("sentence_segmenting", chain(WholeSentenceTokenizer::new, t -> t), sentences);
     run("smartcn_tokenizer", chain(HMMChineseTokenizer::new, t -> t), zh);
     run("smartcn_analyzer", new SmartChineseAnalyzer(), zh);
+    // java.util.regex constructs the regex-crate shim refuses (the backtracking matcher's).
+    run("regex_lookaround_replace", chain(WhitespaceTokenizer::new, t -> new PatternReplaceFilter(t,
+        Pattern.compile("(?<=[aeiou])([bcdfgklmnprstvz])(?=[aeiou])"), "$1$1", true)), names);
+    run("regex_backref_split", chain(() -> new PatternTokenizer(Pattern.compile("(\\w)\\1+|\\s+"), -1), t -> t), names);
+    run("regex_boundary_capture", chain(WhitespaceTokenizer::new, t -> new PatternCaptureGroupTokenFilter(t, true,
+        Pattern.compile("\\b(\\w{2})(\\w*?)(?:ski|ald|idt)?\\b"))), names);
   }
 }

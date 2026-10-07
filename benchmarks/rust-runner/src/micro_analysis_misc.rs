@@ -13,7 +13,7 @@ use lucene_analysis::compound::{
     DictionaryCompoundWordTokenFilter, HyphenationCompoundWordTokenFilter, HyphenationTree,
 };
 use lucene_analysis::miscellaneous::{
-    self as m, DateRecognizerFilter, SimpleDateFormat, WordDelimiterFilter,
+    self as m, DateLocale, DateRecognizerFilter, SimpleDateFormat, WordDelimiterFilter,
     WordDelimiterGraphFilter,
 };
 use lucene_analysis::util::WhitespaceTokenizer;
@@ -215,6 +215,31 @@ fn english_date_docs() -> Vec<String> {
         .collect()
 }
 
+/// `AnalysisMiscMicro.RU_MONTHS`.
+const RU_MONTHS: [&str; 12] = [
+    "янв.", "февр.", "мар.", "апр.", "мая", "июн.", "июл.", "авг.", "сент.", "окт.", "нояб.", "дек.",
+];
+
+/// `AnalysisMiscMicro.russianDateDocs`.
+fn russian_date_docs() -> Vec<String> {
+    let mut r = Rng(0x0DA7_E0E0_5255_5353);
+    (0..20000)
+        .map(|_| {
+            let x = r.next();
+            if x & 1 == 0 {
+                format!(
+                    "{} {} {} г.",
+                    1 + (x >> 16) % 28,
+                    RU_MONTHS[((x >> 8) % 12) as usize],
+                    1900 + (x >> 24) % 200
+                )
+            } else {
+                format!("t{}", to_base36(((x >> 8) % 50000) as i64))
+            }
+        })
+        .collect()
+}
+
 const W2V_TERMS: usize = 2000;
 const W2V_DIM: usize = 50;
 
@@ -339,6 +364,17 @@ pub(super) fn bench_analysis_misc(w: Duration, mt: Duration) {
             "date_default",
             chain(|| comps(DateRecognizerFilter::new(KeywordTokenizer::new()))),
             english_date_docs(),
+        ),
+        (
+            "date_default_ru",
+            chain(|| {
+                let ru = DateLocale::for_language_tag("ru").expect("ru has date data");
+                comps(DateRecognizerFilter::with_format(
+                    KeywordTokenizer::new(),
+                    SimpleDateFormat::date_instance(ru),
+                ))
+            }),
+            russian_date_docs(),
         ),
         (
             "word2vec_synonym",

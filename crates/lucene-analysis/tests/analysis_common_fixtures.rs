@@ -56,14 +56,11 @@ fn corpus() -> Vec<String> {
 /// The chains the generator writes that the port does not build yet.
 const PENDING: &[&str] = &[];
 
-/// Chains whose `java.util.regex` pattern the port rejects (it would mean
-/// something else over the `regex` crate; see `util/java_regex.rs`): the
-/// fixture records Lucene's tokens, and the port must refuse the pattern
-/// with `IllegalArgument` rather than produce different ones.
-const REJECTED: &[(&str, &str)] = &[
-    ("keyword_pattern_replace_word_boundary", "\\bthe\\b"),
-    ("keyword_pattern_replace_multiline", "(?m)^"),
-];
+/// Chains whose `java.util.regex` pattern the port rejects (see
+/// `util/java_backtrack.rs`): the fixture records Lucene's tokens, and the
+/// port must refuse the pattern with `IllegalArgument` rather than produce
+/// different ones. None since the backtracking matcher.
+const REJECTED: &[(&str, &str)] = &[];
 
 // ---------------------------------------------------------------- chains
 
@@ -549,6 +546,10 @@ fn build(name: &str) -> Option<Analyzer> {
             replace_chain(KeywordTokenizer::new, "(\\S)\\s*$", "[$1]")
         }
         "keyword_pattern_replace_x_star" => replace_chain(KeywordTokenizer::new, "x*", "-"),
+        "keyword_pattern_replace_word_boundary" => {
+            replace_chain(KeywordTokenizer::new, "\\bthe\\b", "THE")
+        }
+        "keyword_pattern_replace_multiline" => replace_chain(KeywordTokenizer::new, "(?m)^", ">"),
         "pattern_replace_char_filter_x_star" => chain_cf(
             |r| {
                 Box::new(PatternReplaceCharFilter::new(
@@ -1132,40 +1133,9 @@ fn regex_run(p: &lucene_analysis::util::JavaPattern, input: &str) -> String {
 }
 
 /// The patterns `regex.words` runs that Java compiles and the port rejects
-/// on purpose (see `util/java_regex.rs`'s module docs for why each).
-const REGEX_REJECTED: &[&str] = &[
-    "\\bfox",
-    "\\b",
-    "\\B",
-    "(?m)^a",
-    "(?m)a$",
-    "(?x) a b",
-    "(?U)\\w",
-    "(a|)*",
-    "(a*)+",
-    "\\p{IsLatin}",
-    "\\p{InGreek}",
-    "\\p{IsAlphabetic}",
-    "\\p{javaLowerCase}",
-    "(a)\\1",
-    "(?=a)",
-    "(?<=a)b",
-    "a++",
-    "(?>a)",
-    "\\Z",
-    "\\G",
-    "\\R",
-    "\\X",
-    "\\cA",
-    "\\0101",
-    "\\N{LATIN SMALL LETTER A}",
-    "(?d).",
-    "[a~~b]",
-    "[&&a]",
-    "[a&&]",
-    "[a&&&b]",
-    "\\b?",
-];
+/// on purpose (see `util/java_backtrack.rs`'s module docs for why each):
+/// everything else the shim refuses runs on the backtracking matcher.
+const REGEX_REJECTED: &[&str] = &["\\X", "\\N{LATIN SMALL LETTER A}"];
 
 /// `regex.words`: every pattern of the generator over every input --
 /// `find()` spans and groups, `replaceAll("<$0>")`, `matches()` -- or the

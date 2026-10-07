@@ -156,6 +156,26 @@ public class AnalysisMiscMicro {
     return docs;
   }
 
+  /** CLDR's Russian abbreviated month names in the format (genitive) form. */
+  static final String[] RU_MONTHS = {
+    "янв.", "февр.", "мар.", "апр.", "мая", "июн.", "июл.", "авг.", "сент.", "окт.", "нояб.", "дек."
+  };
+
+  /** 20000 single-term documents: Russian {@code d MMM y 'г'.} dates and words. */
+  static List<String> russianDateDocs() {
+    SweepMicro.Rng r = new SweepMicro.Rng(0x0DA7_E0E0_5255_5353L);
+    List<String> docs = new ArrayList<>();
+    for (int d = 0; d < 20000; d++) {
+      long x = r.next();
+      if ((x & 1) == 0) {
+        docs.add((1 + rem(x >>> 16, 28)) + " " + RU_MONTHS[(int) rem(x >>> 8, 12)] + " " + (1900 + rem(x >>> 24, 200)) + " г.");
+      } else {
+        docs.add("t" + Long.toString(rem(x >>> 8, 50000), 36));
+      }
+    }
+    return docs;
+  }
+
   static final int W2V_TERMS = 2000;
   static final int W2V_DIM = 50;
 
@@ -233,6 +253,9 @@ public class AnalysisMiscMicro {
     run("date_iso", chain(WhitespaceTokenizer::new,
         t -> new DateRecognizerFilter(t, new java.text.SimpleDateFormat("yyyy-MM-dd", Locale.ENGLISH))), isoDateDocs());
     run("date_default", chain(KeywordTokenizer::new, DateRecognizerFilter::new), englishDateDocs());
+    run("date_default_ru", chain(KeywordTokenizer::new, t -> new DateRecognizerFilter(t,
+        java.text.DateFormat.getDateInstance(java.text.DateFormat.DEFAULT, new Locale.Builder().setLanguageTag("ru").build()))),
+        russianDateDocs());
     run("word2vec_synonym", chain(WhitespaceTokenizer::new, t -> new Word2VecSynonymFilter(t, provider, 5, 0f)), w2vDocs());
   }
 }

@@ -254,14 +254,17 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   SPI name (lucene-core's `standard` plus analysis-common's 130; `lucene-search`
   registers `Word2VecSynonym`), `ResourceLoader`/`FilesystemResourceLoader`,
   every factory, and `CustomAnalyzer` with its builder and `when`/`whenTerm`.
-  `GenAnalysisFactories.java` builds the 344 configurations of
-  `corpus/analysis-factories.conf` with Lucene's builder: 221 run over
+  `GenAnalysisFactories.java` builds the 347 configurations of
+  `corpus/analysis-factories.conf` with Lucene's builder: 223 run over
   `corpus/analysis-factories.txt` (every attribute, `normalize`, `toString`)
-  and 123 throw (class and message), all equal; the registered name sets are
+  and 124 throw (class and message), all equal; the registered name sets are
   Lucene's. Byte-identical under JDK 21 and 25. Not buildable: `thai` (its
-  tokenizer is M12's); `dateRecognizer` takes `Locale.ENGLISH` only.
+  tokenizer is M12's); `dateRecognizer` took `Locale.ENGLISH` only until
+  M12 T12.7.
 - `java.util.regex` is the `regex` crate behind a Java-syntax shim (`util/java_regex.rs`: ASCII
-  `\d\w\s`, `$n` replacements; no backreferences or lookaround).
+  `\d\w\s`, `$n` replacements); since M12 T12.7 what the shim refuses
+  (backreferences, lookaround, ...) runs on a backtracking matcher with
+  `Pattern`'s semantics (`util/java_backtrack.rs`).
 - The parity ledger's 400 KB budget is shared (the large area files were
   compacted to current facts to make room for M11), so M11's rows are one per package (`docs/parity/analysis-common.md`) and the
   per-class status lives in the inventory.
@@ -277,19 +280,20 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
       *Proven for every ported one:* the T11.1 corpus through
       `GenAnalysisCommon` and the per-package generators (classic, every
       language analyzer, synonyms, compound, misc), and every registered
-      factory through `GenAnalysisFactories` (221 configurations built and run, 123 refused with Java's exception and message). *Decided in
+      factory through `GenAnalysisFactories` (223 configurations built and run, 124 refused with Java's exception and message). *Decided in
       M12 T12.6:* Thai (`ThaiTokenizer`, `ThaiAnalyzer`, the `thai`
       factory) and collation (`CollationKeyAnalyzer` and its three classes)
       are not supported -- the JDK's Thai dictionary and `Collator` rules are
       GPL JDK data -- and refuse with `UnsupportedOperationException` (Thai)
       or have no Rust type (collation); `SegmentingTokenizerBase` is ported.
-      *Remaining (M12 T12.7):* `DateRecognizerFilterFactory` outside
-      `Locale.ENGLISH`; a pattern argument the regex shim cannot compile
-      (backreferences, lookaround, possessive and atomic groups, `\b`, `(?m)`
-      anchors, script and block properties: an
-      `UnsupportedOperationException`); a hyphenation
-      grammar in a JDK charset beyond UTF-8, UTF-16, US-ASCII and the Hunspell
-      tables (`factory/xml_source.rs`).
+      *Ported in M12 T12.7:* a pattern argument the regex shim cannot
+      compile runs on the backtracking matcher; only `\X`, `\b{g}`,
+      `\N{..}` and `(?c)` still refuse (`UnsupportedOperationException`).
+      `DateRecognizerFilterFactory` takes any locale of a generated
+      table (1,151 of the JDK's; M12 T12.7).
+      A hyphenation grammar decodes in every single-byte JDK charset (M12
+      T12.7); the multi-byte ones (CJK, ISO-2022, UTF-32) are not supported
+      (`UnsupportedOperationException`, `factory/xml_source.rs`).
 - [x] Hunspell matches Lucene's stems and suggestions for every dictionary in
       Lucene's test resources. (Those are not redistributable; matched on this
       project's own 38 dictionaries instead -- T11.4 above.)

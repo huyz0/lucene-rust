@@ -487,8 +487,9 @@ pub fn get_set(args: &mut JavaArgs, name: &str) -> Option<BTreeSet<String>> {
 
 /// `getPattern(args, name)`: a pattern Java refuses is an
 /// `IllegalArgumentException` naming the factory's simple class name; one
-/// Java compiles and the regex shim cannot ([`crate::util::java_regex`]'s
-/// limits) is an `UnsupportedOperationException` with the shim's reason.
+/// Java compiles and the port refuses (`\X`, `\N{..}`: see
+/// [`crate::util::java_backtrack`]) is an `UnsupportedOperationException`
+/// with the reason.
 pub fn get_pattern(
     args: &mut JavaArgs,
     name: &str,
@@ -503,7 +504,7 @@ pub fn get_pattern(
     })
 }
 
-/// The shim's refusal of a pattern Java compiles, as an
+/// The port's refusal of a pattern Java compiles, as an
 /// `UnsupportedOperationException` carrying its reason; `None` for a
 /// pattern Java refuses too.
 pub(crate) fn unsupported_pattern(e: &crate::AnalysisError) -> Option<FactoryError> {
@@ -701,13 +702,11 @@ mod tests {
                 .message,
             "Configuration Error: 'bad' can not be parsed in PatternTokenizerFactory"
         );
-        // Patterns Java compiles and the shim cannot are not Java's error.
+        // Patterns Java compiles and the port refuses are not Java's error.
         for (p, why) in [
-            ("(a)\\1", "backreferences"),
-            ("a(?=b)", "lookaround"),
-            ("(?>ab)", "atomic groups"),
-            ("a*+", "possessive quantifiers"),
-            ("a\\Z", "an escape"),
+            ("a\\X", "grapheme clusters"),
+            ("\\N{LATIN SMALL LETTER A}", "character names"),
+            ("(?c)a", "CANON_EQ"),
         ] {
             let mut u = JavaArgs::from_pairs(&[("p", p)]);
             let e = get_pattern(&mut u, "p", "PatternTokenizerFactory").unwrap_err();

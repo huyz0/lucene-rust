@@ -185,7 +185,11 @@ a dependency the shipped library links is not under a licence listed here.
   by `crates/lucene-analysis/tools/GenHunspellCharsets.java` (written for
   this project) only so that the port decodes exactly as Lucene does on the
   JDK, including which bytes the JDK refuses. No JDK code is copied. Ships in
-  the native library.
+  the native library. `crates/lucene-analysis/src/factory/xml_charsets.rs`
+  (M12 T12.7) is the same for every single-byte charset the JDK has (104:
+  the ISO, Windows, KOI8, IBM/EBCDIC and Mac code pages, each fixed by its
+  vendor's or standard's published table), printed by
+  `tools/GenXmlCharsets.java`.
 - **JDK text services, re-specified** (M11, M12 T12.6).
   `lang/final_sigma.rs` (the word `BreakIterator`) and `util/sentence_break.rs`
   (the sentence `BreakIterator`, with the exception table
@@ -195,6 +199,17 @@ a dependency the shipped library links is not under a licence listed here.
   dictionary (`ThaiTokenizer`) and `java.text.Collator`'s `CollationRules`
   and locale tailorings (collation) -- nothing is derived from it: those
   classes are not supported (`docs/parity/analysis-lang.md`).
+  `util/java_backtrack.rs` (M12 T12.7, `java.util.regex` beyond the shim) is
+  re-specified the same way, from `Pattern`'s documented grammar and
+  black-box runs. Its property sets, `util/java_regex_props.rs`, are Unicode
+  facts (scripts, blocks, binary properties: Unicode-3.0 data) read through
+  the JDK's public API by `tools/GenJavaRegexProperties.java` (written for
+  this project), as the charset tables are; no JDK code or data file is
+  copied. `miscellaneous/date_locales.rs` (M12 T12.7) is the same kind:
+  each locale's month, weekday, era and AM/PM names, default date pattern
+  and number symbols -- CLDR data (Unicode-3.0) -- read through
+  `SimpleDateFormat`, `Calendar` and `DecimalFormatSymbols`' public API by
+  `tools/GenDateLocales.java`.
 - **The analysis-common corpus** (M11), `fixtures/corpus/analysis-common.txt`
   (and its frozen copy `snowball-seed.txt`, which seeds `GenSnowball`),
   is written for this project (Apache-2.0); the few well-known pangrams in it
