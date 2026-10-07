@@ -340,27 +340,130 @@ factory_struct! {
     /// `org.apache.lucene.analysis.miscellaneous.DateRecognizerFilterFactory`
     /// (`dateRecognizer`). Differs: only `Locale.ENGLISH` (`locale` absent or
     /// `en`); another well-formed locale is an `UnsupportedOperation` error,
+    /// raised after Java's own checks (the tag, the pattern, unknown keys),
     /// and a `datePattern` with the time zone letters `z`/`Z` an
     /// `IllegalArgument` one (see [`crate::miscellaneous::SimpleDateFormat`]).
     DateRecognizerFilterFactory { format: misc::SimpleDateFormat }
 }
 analysis_factory!(DateRecognizerFilterFactory);
 
-/// `new Locale.Builder().setLanguageTag(tag).build()`, English only.
-fn english_locale(tag: &str) -> Result<(), FactoryError> {
-    let subtags: Vec<&str> = tag.split('-').collect();
-    let well_formed = !subtags[0].is_empty()
-        && (2..=8).contains(&subtags[0].len())
-        && subtags[0].bytes().all(|b| b.is_ascii_alphabetic())
-        && subtags[1..]
-            .iter()
-            .all(|s| (1..=8).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric()));
-    if !well_formed {
-        return Err(FactoryError::new(
-            JavaException::IllformedLocale,
-            format!("Ill-formed language tag: {tag}"),
-        ));
+/// The JDK's legacy (grandfathered) language tags, lowercased: `LanguageTag.parse`
+/// maps each to its preferred tag, so each is well-formed.
+const LEGACY_TAGS: [&str; 26] = [
+    "art-lojban",
+    "cel-gaulish",
+    "en-gb-oed",
+    "i-ami",
+    "i-bnn",
+    "i-default",
+    "i-enochian",
+    "i-hak",
+    "i-klingon",
+    "i-lux",
+    "i-mingo",
+    "i-navajo",
+    "i-pwn",
+    "i-tao",
+    "i-tay",
+    "i-tsu",
+    "no-bok",
+    "no-nyn",
+    "sgn-be-fr",
+    "sgn-be-nl",
+    "sgn-ch-de",
+    "zh-guoyu",
+    "zh-hakka",
+    "zh-min",
+    "zh-min-nan",
+    "zh-xiang",
+];
+
+/// `LanguageTag.parse(tag, status)`'s error, as `Locale.Builder.setLanguageTag`
+/// throws it (`IllformedLocaleException`: the message, then ` [at index n]`);
+/// `None` for a well-formed tag (an empty one clears the builder).
+pub(super) fn language_tag_error(tag: &str) -> Option<String> {
+    if tag.is_empty() || LEGACY_TAGS.contains(&tag.to_ascii_lowercase().as_str()) {
+        return None;
     }
+    // StringTokenIterator over '-': each subtag and where it starts.
+    let mut subtags = Vec::new();
+    let mut start = 0;
+    for s in tag.split('-') {
+        subtags.push((s, start));
+        start += s.len() + 1;
+    }
+    let alpha = |s: &str| s.bytes().all(|b| b.is_ascii_alphabetic());
+    let alnum = |s: &str| s.bytes().all(|b| b.is_ascii_alphanumeric());
+    let digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+    let mut i = 0;
+    let subtag_at = |i: usize| subtags.get(i).map(|&(s, _)| s);
+    let fail = |message: String, at: usize| Some(format!("{message} [at index {at}]"));
+    // langtag = language ["-" extlang] ["-" script] ["-" region] *("-" variant)
+    //           *("-" extension) ["-" privateuse]
+    if subtag_at(i).is_some_and(|s| (2..=8).contains(&s.len()) && alpha(s)) {
+        i += 1;
+        let mut extlangs = 0;
+        while extlangs < 3 && subtag_at(i).is_some_and(|s| s.len() == 3 && alpha(s)) {
+            i += 1;
+            extlangs += 1;
+        }
+        if subtag_at(i).is_some_and(|s| s.len() == 4 && alpha(s)) {
+            i += 1;
+        }
+        if subtag_at(i).is_some_and(|s| (s.len() == 2 && alpha(s)) || (s.len() == 3 && digits(s))) {
+            i += 1;
+        }
+        while subtag_at(i).is_some_and(|s| {
+            alnum(s)
+                && ((5..=8).contains(&s.len())
+                    || (s.len() == 4 && s.as_bytes()[0].is_ascii_digit()))
+        }) {
+            i += 1;
+        }
+        while let Some(singleton) =
+            subtag_at(i).filter(|s| s.len() == 1 && alpha(s) && !s.eq_ignore_ascii_case("x"))
+        {
+            let at = subtags[i].1;
+            i += 1;
+            let first = i;
+            while subtag_at(i).is_some_and(|s| (2..=8).contains(&s.len()) && alnum(s)) {
+                i += 1;
+            }
+            if i == first {
+                return fail(format!("Incomplete extension '{singleton}'"), at);
+            }
+        }
+    }
+    if subtag_at(i).is_some_and(|s| s.eq_ignore_ascii_case("x")) {
+        let at = subtags[i].1;
+        i += 1;
+        let first = i;
+        while subtag_at(i).is_some_and(|s| (1..=8).contains(&s.len()) && alnum(s)) {
+            i += 1;
+        }
+        if i == first {
+            return fail("Incomplete privateuse".to_string(), at);
+        }
+    }
+    match subtags.get(i) {
+        None => None,
+        Some(&("", at)) => fail("Empty subtag".to_string(), at),
+        Some(&(s, at)) => fail(format!("Invalid subtag: {s}"), at),
+    }
+}
+
+/// `new Locale.Builder().setLanguageTag(tag).build()`: Java's
+/// `IllformedLocaleException` for a malformed tag.
+fn parse_locale(tag: &str) -> Result<(), FactoryError> {
+    match language_tag_error(tag) {
+        None => Ok(()),
+        Some(message) => Err(FactoryError::new(JavaException::IllformedLocale, message)),
+    }
+}
+
+/// The port's own refusal, after every check Java makes: a locale other than
+/// `Locale.ENGLISH` (`en`), whose date formats are the only ones ported.
+fn english_only(tag: &str) -> Result<(), FactoryError> {
     if tag.eq_ignore_ascii_case("en") {
         Ok(())
     } else {
@@ -379,14 +482,18 @@ impl FactoryClass for DateRecognizerFilterFactory {
         "org.apache.lucene.analysis.miscellaneous.DateRecognizerFilterFactory";
     fn from_args(args: &mut JavaArgs) -> Result<Self, FactoryError> {
         let base = FactoryBase::new(Self::CLASS_NAME, args)?;
-        if let Some(tag) = args::get(args, "locale") {
-            english_locale(&tag)?;
+        let locale = args::get(args, "locale");
+        if let Some(tag) = &locale {
+            parse_locale(tag)?;
         }
         let format = match args::get(args, "datePattern") {
             Some(p) => misc::SimpleDateFormat::new(&p)?,
             None => misc::SimpleDateFormat::english_default(),
         };
         args::reject_unknown(args)?;
+        if let Some(tag) = &locale {
+            english_only(tag)?;
+        }
         Ok(DateRecognizerFilterFactory { base, format })
     }
 }
