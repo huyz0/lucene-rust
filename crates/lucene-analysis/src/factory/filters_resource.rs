@@ -600,11 +600,14 @@ impl FactoryClass for KeywordMarkerFilterFactory {
     }
 }
 
-/// `Pattern.compile(p)`; a pattern the port refuses is Java's
-/// `PatternSyntaxException`.
+/// `Pattern.compile(p)`; a pattern Java refuses is its
+/// `PatternSyntaxException`, one only the regex shim refuses an
+/// `UnsupportedOperationException` (see [`args::unsupported_pattern`]).
 fn compile_pattern(p: &str) -> Result<JavaPattern, FactoryError> {
-    JavaPattern::compile(p)
-        .map_err(|e| FactoryError::new(JavaException::PatternSyntax, e.to_string()))
+    JavaPattern::compile(p).map_err(|e| {
+        args::unsupported_pattern(&e)
+            .unwrap_or_else(|| FactoryError::new(JavaException::PatternSyntax, e.to_string()))
+    })
 }
 
 impl KeywordMarkerFilterFactory {
