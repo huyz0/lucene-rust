@@ -48,24 +48,23 @@
 //! - Matching itself is leftmost-first over code points, which is what
 //!   Java's backtracking computes for the constructs that remain.
 //!
-//! **Rejected** (`IllegalArgument` starting [`UNSUPPORTED`], see
-//! [`is_unsupported`], where Java would compile the pattern):
+//! **Handed to the backtracking matcher** ([`super::java_backtrack`]),
+//! which has `Pattern`'s own semantics, is every pattern the shim refuses:
 //! anything `regex-syntax` cannot parse (backreferences, lookaround,
-//! possessive and atomic groups, `\G`, `\Z`, `\R`, `\X`, `\N{..}`, `\cX`,
-//! octal `\0n`, lone surrogate escapes); `\b` and `\B` (Java's boundary
-//! counts a non-spacing mark after a letter or digit as a word character,
-//! which no `regex` assertion expresses); `^`/`$` under `(?m)`; the flags
-//! `(?x)`, `(?U)` and `(?d)`; script, block and binary properties and the
-//! `java*` properties; a quantifier on a quantifier (`a**`); `~~` and an
-//! empty or `&`-led `&&` operand (literals to Java); a repetition that can
-//! iterate twice over a body
-//! that can match empty and holds a capturing group (the capture Java
-//! reports after the empty iteration differs, `(a|)*`); a property name
-//! Java refuses too (`\p{Latin}`) is reported this way as well. Also
-//! rejected, as a `PatternSyntaxException:` message, because Java rejects
-//! them and the `regex` crate would not: `\b{..}`, `(?R)`, `(?P<..>)`,
-//! group names outside `[a-zA-Z][a-zA-Z0-9]*`, `\u{..}`, `\U........`,
-//! `x{ 2 }`, `--`.
+//! possessive and atomic groups, `\G`, `\Z`, `\R`, `\cX`, octal `\0n`, lone
+//! surrogate escapes); `\b` and `\B` (Java's boundary counts a non-spacing
+//! mark after a letter or digit as a word character); `^`/`$` under `(?m)`;
+//! more than one `$` at a position; the flags `(?x)`, `(?U)` and `(?d)`;
+//! script, block and binary properties and the `java*` properties; a
+//! quantifier on a quantifier; `~~` and an empty or `&`-led `&&` operand; a
+//! repeated group holding a capture, whose captures Java reports otherwise
+//! (`(a|)*`, `((a)|b)*`). The shim's [`UNSUPPORTED`] refusal reaches the
+//! caller only for what the backtracking matcher refuses too (`\X`,
+//! `\b{g}`, `\N{..}`, `(?c)`); any other error the shim reports is
+//! replaced by the backtracking parser's, which follows Java's grammar, so
+//! a pattern Java rejects is rejected with Java's
+//! `PatternSyntaxException:` description (`(?R)`, `(?P<..>)`, `\u{..}`,
+//! `x{ 2 }`, `--` among them, which the `regex` crate alone would take).
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -78,6 +77,7 @@ use regex_syntax::ast::{
     LiteralKind, RepetitionKind, RepetitionRange,
 };
 
+use super::java_backtrack::{self, Program, State};
 use crate::java_character::{to_lower_case, to_upper_case};
 use crate::java_character_tables::GENERAL_CATEGORY_RUNS;
 use crate::AnalysisError;
@@ -198,26 +198,26 @@ fn parse_error(src: &str, e: ast::Error) -> AnalysisError {
 /// A set of code points (surrogates included, as Java's classes hold them):
 /// sorted, disjoint, non-adjacent inclusive ranges.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct CpSet(Vec<(u32, u32)>);
+pub(super) struct CpSet(pub(super) Vec<(u32, u32)>);
 
 impl CpSet {
-    fn range(a: u32, b: u32) -> Self {
+    pub(super) fn range(a: u32, b: u32) -> Self {
         CpSet(vec![(a, b)])
     }
 
-    fn single(c: u32) -> Self {
+    pub(super) fn single(c: u32) -> Self {
         CpSet::range(c, c)
     }
 
-    fn all() -> Self {
+    pub(super) fn all() -> Self {
         CpSet::range(0, MAX_CP)
     }
 
-    fn from_points(points: impl IntoIterator<Item = u32>) -> Self {
+    pub(super) fn from_points(points: impl IntoIterator<Item = u32>) -> Self {
         CpSet::from_ranges(points.into_iter().map(|c| (c, c)).collect())
     }
 
-    fn from_ranges(mut v: Vec<(u32, u32)>) -> Self {
+    pub(super) fn from_ranges(mut v: Vec<(u32, u32)>) -> Self {
         v.sort_unstable();
         let mut out: Vec<(u32, u32)> = Vec::with_capacity(v.len());
         for (a, b) in v {
@@ -229,13 +229,13 @@ impl CpSet {
         CpSet(out)
     }
 
-    fn union(&self, o: &CpSet) -> CpSet {
+    pub(super) fn union(&self, o: &CpSet) -> CpSet {
         let mut v = self.0.clone();
         v.extend_from_slice(&o.0);
         CpSet::from_ranges(v)
     }
 
-    fn intersect(&self, o: &CpSet) -> CpSet {
+    pub(super) fn intersect(&self, o: &CpSet) -> CpSet {
         let (mut i, mut j) = (0, 0);
         let mut out = Vec::new();
         while i < self.0.len() && j < o.0.len() {
@@ -254,7 +254,7 @@ impl CpSet {
         CpSet(out)
     }
 
-    fn complement(&self) -> CpSet {
+    pub(super) fn complement(&self) -> CpSet {
         let mut out = Vec::new();
         let mut next = 0u32;
         for &(a, b) in &self.0 {
@@ -269,7 +269,7 @@ impl CpSet {
         CpSet(out)
     }
 
-    fn contains(&self, c: u32) -> bool {
+    pub(super) fn contains(&self, c: u32) -> bool {
         let i = self.0.partition_point(|&(_, b)| b < c);
         i < self.0.len() && self.0[i].0 <= c
     }
@@ -387,7 +387,7 @@ fn ascii_set(spec: &[(u8, u8)]) -> CpSet {
 
 /// `CharPredicates.forProperty(name, caseIns)`: the categories and the
 /// ASCII POSIX classes (the `java*` properties are not supported).
-fn for_property(name: &str, ci: bool) -> Option<CpSet> {
+pub(super) fn for_property(name: &str, ci: bool) -> Option<CpSet> {
     const ALPHA: [(u8, u8); 2] = [(b'A', b'Z'), (b'a', b'z')];
     Some(match name {
         "Lu" | "Ll" | "Lt" if ci => category(category_mask("LC")?),
@@ -459,7 +459,7 @@ fn lower_upper(c: u32) -> u32 {
 
 /// What a literal `c` matches outside a class: Java's `single(c)` (a lone
 /// literal) or one character of a `Slice` (a run of literals).
-fn literal_set(c: u32, f: JFlags, in_run: bool) -> CpSet {
+pub(super) fn literal_set(c: u32, f: JFlags, in_run: bool) -> CpSet {
     if !f.ci {
         return CpSet::single(c);
     }
@@ -485,7 +485,7 @@ fn unicode_class_of(x: u32) -> CpSet {
 }
 
 /// A literal inside a class: `bitsOrSingle`.
-fn class_literal_set(c: u32, f: JFlags) -> CpSet {
+pub(super) fn class_literal_set(c: u32, f: JFlags) -> CpSet {
     const UNICODE_SINGLE: [u32; 10] = [0xFF, 0xB5, 0x49, 0x69, 0x53, 0x73, 0x4B, 0x6B, 0xC5, 0xE5];
     if c < 0x100 && !(f.ci && f.uc && UNICODE_SINGLE.contains(&c)) {
         // BitClass.add
@@ -504,7 +504,7 @@ fn class_literal_set(c: u32, f: JFlags) -> CpSet {
 }
 
 /// A range inside a class: `Range`, `CIRange` or `CIRangeU`.
-fn class_range_set(a: u32, b: u32, f: JFlags) -> CpSet {
+pub(super) fn class_range_set(a: u32, b: u32, f: JFlags) -> CpSet {
     let base = CpSet::range(a, b);
     if !f.ci {
         return base;
@@ -592,15 +592,15 @@ fn prepass(p: &str) -> Cow<'_, str> {
 
 /// Java's inline flags that the translation honours.
 #[derive(Debug, Clone, Copy, Default)]
-struct JFlags {
+pub(super) struct JFlags {
     /// `CASE_INSENSITIVE` (`i`).
-    ci: bool,
+    pub(super) ci: bool,
     /// `UNICODE_CASE` (`u`).
-    uc: bool,
+    pub(super) uc: bool,
     /// `DOTALL` (`s`).
-    dotall: bool,
+    pub(super) dotall: bool,
     /// `MULTILINE` (`m`).
-    multiline: bool,
+    pub(super) multiline: bool,
 }
 
 /// One emission of a parsed Java pattern as a `regex` pattern.
@@ -1082,6 +1082,33 @@ fn nullable(a: &Ast) -> bool {
     }
 }
 
+/// Whether a repetition makes Java's captures differ from the `regex`
+/// crate's: a counted or starred repetition holding a capture inside
+/// another repetition (Java's `GroupCurly` records its own span again after
+/// the rest of the match succeeds), or holding one below its own group (a
+/// first-match iteration can leave it set from a failed attempt).
+fn capture_quirk(a: &Ast, in_rep: bool) -> bool {
+    match a {
+        Ast::Repetition(r) => {
+            let counted = !matches!(r.op.kind, RepetitionKind::ZeroOrOne);
+            if counted {
+                let nested = match &*r.ast {
+                    Ast::Group(g) => has_capture(&g.ast),
+                    other => has_capture(other),
+                };
+                if nested || (in_rep && has_capture(&r.ast)) {
+                    return true;
+                }
+            }
+            capture_quirk(&r.ast, in_rep || counted)
+        }
+        Ast::Group(g) => capture_quirk(&g.ast, in_rep),
+        Ast::Alternation(x) => x.asts.iter().any(|a| capture_quirk(a, in_rep)),
+        Ast::Concat(x) => x.asts.iter().any(|a| capture_quirk(a, in_rep)),
+        _ => false,
+    }
+}
+
 /// Whether `a` holds a capturing group.
 fn has_capture(a: &Ast) -> bool {
     match a {
@@ -1120,10 +1147,19 @@ struct Compiled {
     groups: usize,
 }
 
+/// Which matcher runs a pattern.
+#[derive(Debug, Clone)]
+enum Engine {
+    /// The `regex` crate (see the module docs).
+    Shim(Arc<Compiled>),
+    /// The backtracking matcher, for what the shim refuses.
+    Backtrack(Arc<Program>),
+}
+
 /// A compiled `java.util.regex.Pattern`.
 #[derive(Debug, Clone)]
 pub struct JavaPattern {
-    inner: Arc<Compiled>,
+    engine: Engine,
 }
 
 /// The `regex` crate's compilation of a translated pattern: what fails
@@ -1150,6 +1186,18 @@ fn translate<'s>(
     Ok(t)
 }
 
+/// The `$` assertions of `a`, a repeated one counted twice.
+fn dollars(a: &Ast, repeated: bool) -> usize {
+    match a {
+        Ast::Assertion(x) if x.kind == AssertionKind::EndLine => 1 + usize::from(repeated),
+        Ast::Repetition(r) => dollars(&r.ast, true),
+        Ast::Group(g) => dollars(&g.ast, repeated),
+        Ast::Alternation(x) => x.asts.iter().map(|a| dollars(a, repeated)).sum(),
+        Ast::Concat(x) => x.asts.iter().map(|a| dollars(a, repeated)).sum(),
+        _ => 0,
+    }
+}
+
 /// The byte index of the line terminator Java's non-multiline `$` may
 /// match before, when `text` ends in one.
 fn final_terminator(text: &str) -> Option<usize> {
@@ -1172,10 +1220,38 @@ fn with_sentinel(text: &str, at: usize) -> Vec<u8> {
 impl JavaPattern {
     /// `Pattern.compile(String)`.
     pub fn compile(pattern: &str) -> Result<Self, AnalysisError> {
+        // The shim first; whatever it refuses, the backtracking matcher
+        // compiles -- or rejects with Java's own reason.
+        match Self::compile_shim(pattern) {
+            Ok(p) => Ok(p),
+            Err(_) => Ok(JavaPattern {
+                engine: Engine::Backtrack(Arc::new(java_backtrack::compile(pattern)?)),
+            }),
+        }
+    }
+
+    /// Whether the backtracking matcher runs this pattern (the shim refused
+    /// it).
+    pub fn is_backtracking(&self) -> bool {
+        matches!(self.engine, Engine::Backtrack(_))
+    }
+
+    fn compile_shim(pattern: &str) -> Result<Self, AnalysisError> {
         let src = prepass(pattern);
         let parsed = ast::parse::Parser::new()
             .parse(&src)
             .map_err(|e| parse_error(&src, e))?;
+        if capture_quirk(&parsed, false) {
+            return Err(unsupported(
+                pattern,
+                "a repeated group holding a capture: Java's captures there are not the `regex` crate's",
+            ));
+        }
+        if dollars(&parsed, false) > 1 {
+            // The sentinel stands for one zero-width `$`: a second one, or
+            // a repeated one, would need it twice.
+            return Err(unsupported("$", "more than one `$` at a position"));
+        }
         let plain_t = translate(&src, &parsed, false, false)?;
         let plain = build(&plain_t.out)?;
         let plain_whole = build(&format!(r"\A(?:{})\z", plain_t.out))?;
@@ -1210,30 +1286,80 @@ impl JavaPattern {
             .filter_map(|(i, n)| n.map(|n| (n.to_string(), i)))
             .collect();
         Ok(JavaPattern {
-            inner: Arc::new(Compiled {
+            engine: Engine::Shim(Arc::new(Compiled {
                 groups: plain.captures_len(),
                 plain,
                 plain_whole,
                 dollar,
                 mid,
                 names,
-            }),
+            })),
         })
+    }
+
+    /// The shim's compilation, for a pattern it runs.
+    fn shim(&self) -> Option<&Arc<Compiled>> {
+        match &self.engine {
+            Engine::Shim(c) => Some(c),
+            Engine::Backtrack(_) => None,
+        }
+    }
+
+    /// Capturing groups, group 0 included.
+    fn group_total(&self) -> usize {
+        match &self.engine {
+            Engine::Shim(c) => c.groups,
+            Engine::Backtrack(p) => p.group_total(),
+        }
+    }
+
+    /// A named group's number.
+    fn group_named(&self, name: &str) -> Option<usize> {
+        match &self.engine {
+            Engine::Shim(c) => c.names.get(name).copied(),
+            Engine::Backtrack(p) => p.group_named(name),
+        }
+    }
+
+    /// The backtracking matcher's answer for `s`: `matches()` (`whole`) or
+    /// a first `find()`.
+    fn backtrack(p: &Program, s: &str, whole: bool) -> Result<bool, AnalysisError> {
+        let units: Vec<u16> = s.encode_utf16().collect();
+        let mut st = State::new(&units, p.group_total(), 0);
+        if whole {
+            p.matches_all(&mut st)
+        } else {
+            p.search(0, &mut st)
+        }
     }
 
     /// `matcher(s).matches()`.
     pub fn matches(&self, s: &str) -> bool {
-        match (&self.inner.dollar, final_terminator(s)) {
+        self.try_matches(s).unwrap_or(false)
+    }
+
+    /// `matcher(s).matches()`; `Err` where Java's backtracking overflows
+    /// its stack.
+    pub fn try_matches(&self, s: &str) -> Result<bool, AnalysisError> {
+        let inner = match &self.engine {
+            Engine::Shim(c) => c,
+            Engine::Backtrack(p) => return Self::backtrack(p, s, true),
+        };
+        Ok(match (&inner.dollar, final_terminator(s)) {
             (Some((_, whole)), Some(at)) => whole.is_match(&with_sentinel(s, at)),
-            _ => self.inner.plain_whole.is_match(s.as_bytes()),
-        }
+            _ => inner.plain_whole.is_match(s.as_bytes()),
+        })
     }
 
     /// `matcher(s).find()` from the start.
     pub fn find_in(&self, s: &str) -> bool {
-        match (&self.inner.dollar, final_terminator(s)) {
+        let inner = match &self.engine {
+            Engine::Shim(c) => c,
+            Engine::Backtrack(p) => return Self::backtrack(p, s, false).unwrap_or(false),
+        };
+        match (&inner.dollar, final_terminator(s)) {
             (Some((re, _)), Some(at)) => re.is_match(&with_sentinel(s, at)),
-            _ => self.inner.plain.is_match(s.as_bytes()),
+            _ => inner.plain.is_match(s.as_bytes()),
         }
     }
 
@@ -1270,6 +1396,12 @@ pub struct JavaMatcher {
     scratch: Vec<u8>,
     /// The last search's byte spans (reused).
     spans: Vec<Option<(usize, usize)>>,
+    /// The text's UTF-16 units, for the backtracking matcher.
+    units: Vec<u16>,
+    /// Where the last match ended, for `\G` (`oldLast`; `None`: reset).
+    old_last: Option<usize>,
+    /// The backtracking matcher's group slots, kept between searches.
+    bt_groups: Vec<i32>,
 }
 
 impl JavaMatcher {
@@ -1277,7 +1409,10 @@ impl JavaMatcher {
     pub fn new(pattern: &JavaPattern, text: &str) -> Self {
         let mut m = JavaMatcher {
             pattern: pattern.clone(),
-            locs: pattern.inner.plain.capture_locations(),
+            locs: match &pattern.engine {
+                Engine::Shim(c) => c.plain.capture_locations(),
+                Engine::Backtrack(_) => EMPTY_LOCS.capture_locations(),
+            },
             text: String::new(),
             hay: None,
             sentinel: None,
@@ -1288,6 +1423,9 @@ impl JavaMatcher {
             groups: Vec::new(),
             scratch: Vec::new(),
             spans: Vec::new(),
+            units: Vec::new(),
+            old_last: None,
+            bt_groups: Vec::new(),
         };
         m.reset(text);
         m
@@ -1314,7 +1452,11 @@ impl JavaMatcher {
         }
         self.sentinel = None;
         self.hay = None;
-        if self.pattern.inner.dollar.is_some() {
+        if let Engine::Backtrack(_) = self.pattern.engine {
+            self.units.clear();
+            self.units.extend(text.encode_utf16());
+        }
+        if self.pattern.shim().is_some_and(|c| c.dollar.is_some()) {
             if let Some(at) = final_terminator(text) {
                 self.sentinel = Some(at);
                 self.hay = Some(with_sentinel(text, at));
@@ -1328,6 +1470,7 @@ impl JavaMatcher {
         self.last = None;
         self.done = false;
         self.groups.clear();
+        self.old_last = None;
     }
 
     /// The text being matched.
@@ -1342,7 +1485,7 @@ impl JavaMatcher {
 
     /// `groupCount()`.
     pub fn group_count(&self) -> usize {
-        self.pattern.inner.groups - 1
+        self.pattern.group_total() - 1
     }
 
     #[inline]
@@ -1384,8 +1527,71 @@ impl JavaMatcher {
         }
     }
 
-    /// `find()`.
+    /// `find()`; `false` also where Java's backtracking would overflow its
+    /// stack ([`Self::try_find`] reports that).
     pub fn find(&mut self) -> bool {
+        self.try_find().unwrap_or(false)
+    }
+
+    /// `find()`; `Err` where Java's backtracking overflows its stack.
+    pub fn try_find(&mut self) -> Result<bool, AnalysisError> {
+        if matches!(self.pattern.engine, Engine::Backtrack(_)) {
+            return self.find_backtrack();
+        }
+        Ok(self.find_shim())
+    }
+
+    /// `find()` by the backtracking matcher.
+    fn find_backtrack(&mut self) -> Result<bool, AnalysisError> {
+        let Engine::Backtrack(p) = &self.pattern.engine else {
+            return Ok(false);
+        };
+        if self.done {
+            return Ok(false);
+        }
+        let from = match self.last {
+            None => 0,
+            Some((s, e)) if s == e => e + 1,
+            Some((_, e)) => e,
+        };
+        self.groups.clear();
+        if from > self.len16 {
+            self.done = true;
+            return Ok(false);
+        }
+        let from = from as usize;
+        let old_last = self.old_last.unwrap_or(from);
+        let mut st = State::reusing(
+            &self.units,
+            std::mem::take(&mut self.bt_groups),
+            p.group_total(),
+            old_last,
+        );
+        let found = p.search(from, &mut st);
+        let found = match found {
+            Ok(f) => f,
+            Err(e) => {
+                self.done = true;
+                return Err(e);
+            }
+        };
+        if !found {
+            self.done = true;
+            self.bt_groups = std::mem::take(&mut st.groups);
+            return Ok(false);
+        }
+        let groups = std::mem::take(&mut st.groups);
+        self.groups.clear();
+        self.groups
+            .extend(groups.chunks_exact(2).map(|g| (g[0], g[1])));
+        self.bt_groups = groups;
+        self.last = Some(self.groups[0]);
+        self.old_last = Some(self.groups[0].1 as usize);
+        Ok(true)
+    }
+
+    /// `find()` by the shim.
+    fn find_shim(&mut self) -> bool {
         if self.done {
             return false;
         }
@@ -1415,7 +1621,9 @@ impl JavaMatcher {
     }
 
     fn search_at(&mut self, h: usize) -> bool {
-        let inner = &self.pattern.inner;
+        let Some(inner) = self.pattern.shim() else {
+            return false;
+        };
         let (re, hay): (&Regex, &[u8]) = match (&self.hay, &inner.dollar) {
             (Some(hay), Some((re, _))) => (re, hay),
             _ => (&inner.plain, self.text.as_bytes()),
@@ -1477,7 +1685,9 @@ impl JavaMatcher {
     #[inline(never)]
     fn find_mid(&mut self, b: usize) -> bool {
         let u = self.utf16(b) + 1;
-        let inner = self.pattern.inner.clone();
+        let Some(inner) = self.pattern.shim().cloned() else {
+            return false;
+        };
         match &inner.mid {
             Mid::Never | Mid::Empty(None) => false,
             Mid::Empty(Some(took_part)) => {
@@ -1590,7 +1800,7 @@ impl JavaMatcher {
     ) -> Result<(), AnalysisError> {
         let bad = |m: &str| AnalysisError::IllegalArgument(m.to_string());
         let rep: Vec<char> = replacement.chars().collect();
-        let groups = self.pattern.inner.groups;
+        let groups = self.pattern.group_total();
         let mut i = 0;
         while i < rep.len() {
             let c = rep[i];
@@ -1613,8 +1823,8 @@ impl JavaMatcher {
                     };
                     let name: String = rep[i + 1..close].iter().collect();
                     i = close + 1;
-                    match self.pattern.inner.names.get(&name) {
-                        Some(&g) => g,
+                    match self.pattern.group_named(&name) {
+                        Some(g) => g,
                         None => return Err(bad(&format!("No group with name {{{name}}}"))),
                     }
                 } else {
@@ -1666,6 +1876,9 @@ impl JavaMatcher {
         Ok(out)
     }
 }
+
+/// The capture locations of a matcher the shim does not run.
+static EMPTY_LOCS: LazyLock<Regex> = LazyLock::new(|| Regex::new("").expect("an empty pattern"));
 
 /// Where [`JavaMatcher::expand_replacement`] writes: a `String` (a cut
 /// surrogate half is U+FFFD) or UTF-16 units (it is the unit itself).
@@ -1912,8 +2125,18 @@ mod tests {
             "\\N{LATIN SMALL LETTER A}",
             "(?>ab)",
         ] {
-            let e = JavaPattern::compile(p).unwrap_err();
+            let e = JavaPattern::compile_shim(p).unwrap_err();
             assert!(is_unsupported(&e), "{p}: {e}");
+            // The backtracking matcher takes them over -- but for two it
+            // refuses too, and one Java rejects.
+            match (p, JavaPattern::compile(p)) {
+                ("\\X" | "\\N{LATIN SMALL LETTER A}", Err(e)) => assert!(is_unsupported(&e), "{p}"),
+                ("a**", Err(e)) => {
+                    assert!(e.to_string().contains("Dangling meta character"), "{e}")
+                }
+                (_, Ok(q)) => assert!(q.is_backtracking(), "{p}"),
+                (_, Err(e)) => panic!("{p}: {e}"),
+            }
         }
         // Java refuses these too; the `regex` crate alone would not.
         for p in [
@@ -1939,7 +2162,14 @@ mod tests {
             "\\p{Uppercase_Letter}",
             "\\p{ Lu }",
         ] {
-            assert!(is_unsupported(&JavaPattern::compile(p).unwrap_err()), "{p}");
+            assert!(
+                is_unsupported(&JavaPattern::compile_shim(p).unwrap_err()),
+                "{p}"
+            );
+            assert!(
+                rejected(p).contains("Unknown character property name"),
+                "{p}"
+            );
         }
         // A non-repeating or non-capturing nullable body is fine.
         for p in ["(a|)?", "(?:a|)*", "(a*)", "((a)|b)*"] {

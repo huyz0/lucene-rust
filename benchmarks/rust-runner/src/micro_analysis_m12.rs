@@ -5,7 +5,8 @@
 use std::hint::black_box;
 use std::time::Duration;
 
-use lucene_analysis::util::{SegmentingBase, SegmentingTokenizer, Segmenter, WhitespaceTokenizer};
+use lucene_analysis::pattern::{PatternCaptureGroupTokenFilter, PatternReplaceFilter, PatternTokenizer};
+use lucene_analysis::util::{JavaPattern, SegmentingBase, SegmentingTokenizer, Segmenter, WhitespaceTokenizer};
 use lucene_analysis::{AnalysisError, Analyzer, AnalyzerDefinition, TokenStream, TokenStreamComponents};
 use lucene_analysis_phonetic::bm::{NameType, PhoneticEngine, RuleType};
 use lucene_analysis_phonetic::encoder::{Encoder, LANGUAGE_PACKAGE};
@@ -189,6 +190,30 @@ pub(super) fn bench_analysis_m12(w: Duration, m: Duration) {
     );
     run("smartcn_tokenizer", &chain(|| comps(hmm_chinese_tokenizer())), &zh, w, m);
     run("smartcn_analyzer", &Analyzer::new(SmartChineseAnalyzer::default()), &zh, w, m);
+    // java.util.regex constructs the regex-crate shim refuses (the backtracking matcher's).
+    let around = JavaPattern::compile("(?<=[aeiou])([bcdfgklmnprstvz])(?=[aeiou])").unwrap();
+    assert!(around.is_backtracking());
+    run(
+        "regex_lookaround_replace",
+        &chain(move || comps(PatternReplaceFilter::new(WhitespaceTokenizer::new(), around.clone(), Some("$1$1"), true))),
+        &names,
+        w,
+        m,
+    );
+    let backref = JavaPattern::compile(r"(\w)\1+|\s+").unwrap();
+    assert!(backref.is_backtracking());
+    run("regex_backref_split", &chain(move || comps(PatternTokenizer::new(&backref, -1)?)), &names, w, m);
+    let bound = JavaPattern::compile(r"\b(\w{2})(\w*?)(?:ski|ald|idt)?\b").unwrap();
+    assert!(bound.is_backtracking());
+    run(
+        "regex_boundary_capture",
+        &chain(move || {
+            comps(PatternCaptureGroupTokenFilter::new(WhitespaceTokenizer::new(), true, std::slice::from_ref(&bound)))
+        }),
+        &names,
+        w,
+        m,
+    );
     run(
         "beider_morse_ash_exact",
         &chain(move || comps(BeiderMorseFilter::new(WhitespaceTokenizer::new(), exact.clone()))),

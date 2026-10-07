@@ -21,16 +21,22 @@
 //! reader, a 16- or 32-bit charset leaves bytes the parser cannot read, and
 //! any other name is resolved as above, but as written (not upper-cased).
 //!
-//! Differs: a charset the JDK has but this port does not decode (all but
-//! UTF-8, UTF-16, US-ASCII and the single-byte charsets of
-//! [`crate::hunspell`]'s table, `charsets::NAMES`) is an
-//! `UnsupportedOperationException` naming it; the XML declaration of a UTF-16
+//! The JDK's charsets decoded here: UTF-8, UTF-16 (and `BE`/`LE`), and every
+//! single-byte one -- the Hunspell tables ([`crate::hunspell`]'s
+//! `charsets::NAMES`), then the 104 of `xml_charsets.rs` (ISO-8859-*,
+//! windows-125*, KOI8-*, the IBM code pages and EBCDIC, the Mac charsets),
+//! generated from the JDK by `tools/GenXmlCharsets.java`.
+//!
+//! Differs: a multi-byte charset the JDK has (the CJK ones -- Shift_JIS,
+//! EUC-JP, GBK, GB18030, Big5, EUC-KR --, ISO-2022-*, UTF-32, CESU-8: not
+//! supported, their decoders being megabytes of vendor tables or stateful)
+//! is an `UnsupportedOperationException` naming it; the XML declaration of a UTF-16
 //! stream is not read (Xerces switches to the declared charset); and a
 //! parse error reports its line and column at the offending character,
 //! where Xerces reports the position its buffer had reached (often the
 //! same).
 
-use super::{FactoryError, JavaException};
+use super::{xml_charsets, FactoryError, JavaException};
 use crate::hunspell::charsets;
 
 /// `java.io.UnsupportedEncodingException`'s message for `name`.
@@ -63,6 +69,8 @@ enum JdkCharset {
     Utf16Le,
     /// `charsets::TABLES[i]`.
     Table(usize),
+    /// `xml_charsets::TABLES[i]`.
+    Byte(usize),
 }
 
 /// The JDK's names and aliases of `US-ASCII`, lowercased.
@@ -119,6 +127,9 @@ fn lookup(name: &str) -> Lookup {
     }
     if let Some((_, cs)) = UTF16_NAMES.iter().find(|(n, _)| *n == lower) {
         return Lookup::Decoded(*cs);
+    }
+    if let Ok(i) = xml_charsets::NAMES.binary_search_by(|(k, _)| (*k).cmp(lower.as_str())) {
+        return Lookup::Decoded(JdkCharset::Byte(usize::from(xml_charsets::NAMES[i].1)));
     }
     if charsets::JDK_NAMES.binary_search(&lower.as_str()).is_ok() {
         Lookup::Undecoded
@@ -321,6 +332,10 @@ fn replacing(bytes: &[u8], charset: JdkCharset) -> Vec<u16> {
                 })
                 .collect()
         }
+        JdkCharset::Byte(t) => {
+            let table = &xml_charsets::TABLES[t];
+            bytes.iter().map(|&b| table[usize::from(b)]).collect()
+        }
     }
 }
 
@@ -509,9 +524,17 @@ mod tests {
             err(b"<a/>", Some("iso-10646-ucs-2")).1,
             "org.xml.sax.SAXParseException; Given byte order for encoding \"ISO-10646-UCS-2\" is not supported."
         );
-        let (kind, m) = err(b"<a/>", Some("windows-1252"));
+        // Every single-byte JDK charset decodes (an unmappable byte is
+        // U+FFFD); a multi-byte one is refused.
+        assert_eq!(
+            ok(b"<a>\x80\x81</a>", Some("windows-1252")),
+            "<a>\u{20AC}\u{FFFD}</a>"
+        );
+        assert_eq!(ok(&[0x4C, 0x81, 0x61, 0x6E], Some("ibm037")), "<a/>");
+        assert_eq!(ok(b"<a>\x80</a>", Some("x-MacRoman")), "<a>\u{C4}</a>");
+        let (kind, m) = err(b"<a/>", Some("Shift_JIS"));
         assert_eq!(kind, JavaException::UnsupportedOperation);
-        assert!(m.contains("WINDOWS-1252"), "{m}");
+        assert!(m.contains("SHIFT_JIS"), "{m}");
     }
 
     #[test]
@@ -595,8 +618,9 @@ mod tests {
         assert!(err(&decl("ISO-10646-UCS-4", b"<a/>"), None)
             .1
             .ends_with("\"ISO-10646-UCS-4\" is not supported."));
+        assert!(ok(&decl("Cp1252", b"<a>\x80</a>"), None).ends_with("<a>\u{20AC}</a>"));
         assert_eq!(
-            err(&decl("Cp1252", b"<a/>"), None).0,
+            err(&decl("EUC-JP", b"<a/>"), None).0,
             JavaException::UnsupportedOperation
         );
         // A declaration without an encoding, or not a declaration at all.
@@ -675,7 +699,15 @@ mod tests {
             lookup("UnicodeBigUnmarked"),
             Lookup::Decoded(JdkCharset::Utf16Be)
         );
-        assert_eq!(lookup("windows-1252"), Lookup::Undecoded);
+        assert!(matches!(
+            lookup("windows-1252"),
+            Lookup::Decoded(JdkCharset::Byte(_))
+        ));
+        assert_eq!(lookup("x-SJIS_0213"), Lookup::Undecoded);
+        // Every single-byte alias is one the JDK has.
+        for (n, _) in xml_charsets::NAMES {
+            assert!(charsets::JDK_NAMES.binary_search(&n).is_ok(), "{n}");
+        }
         assert_eq!(lookup("bogus"), Lookup::Unknown);
         // Every alias here is one the JDK has.
         for n in ASCII_NAMES.iter().chain(UTF16_NAMES.iter().map(|(n, _)| n)) {

@@ -338,11 +338,13 @@ impl TokenFilterFactory for ConcatenateGraphFilterFactory {
 
 factory_struct! {
     /// `org.apache.lucene.analysis.miscellaneous.DateRecognizerFilterFactory`
-    /// (`dateRecognizer`). Differs: only `Locale.ENGLISH` (`locale` absent or
-    /// `en`); another well-formed locale is an `UnsupportedOperation` error,
-    /// raised after Java's own checks (the tag, the pattern, unknown keys),
-    /// and a `datePattern` with the time zone letters `z`/`Z` an
-    /// `IllegalArgument` one (see [`crate::miscellaneous::SimpleDateFormat`]).
+    /// (`dateRecognizer`). Differs: a well-formed `locale` outside the
+    /// generated table ([`crate::miscellaneous::DateLocale`]: a tag the JDK
+    /// resolves by fallback, a variant, an extension, the Japanese calendar)
+    /// is an `UnsupportedOperation` error, raised after Java's own checks
+    /// (the tag, the pattern, unknown keys), and a `datePattern` with the
+    /// time zone letters `z`/`Z` an `IllegalArgument` one (see
+    /// [`crate::miscellaneous::SimpleDateFormat`]).
     DateRecognizerFilterFactory { format: misc::SimpleDateFormat }
 }
 analysis_factory!(DateRecognizerFilterFactory);
@@ -382,7 +384,7 @@ const LEGACY_TAGS: [&str; 26] = [
 /// throws it (`IllformedLocaleException`: the message, then ` [at index n]`);
 /// `None` for a well-formed tag (an empty one clears the builder).
 pub(super) fn language_tag_error(tag: &str) -> Option<String> {
-    if tag.is_empty() || LEGACY_TAGS.contains(&tag.to_ascii_lowercase().as_str()) {
+    if LEGACY_TAGS.contains(&tag.to_ascii_lowercase().as_str()) {
         return None;
     }
     // StringTokenIterator over '-': each subtag and where it starts.
@@ -461,19 +463,19 @@ fn parse_locale(tag: &str) -> Result<(), FactoryError> {
     }
 }
 
-/// The port's own refusal, after every check Java makes: a locale other than
-/// `Locale.ENGLISH` (`en`), whose date formats are the only ones ported.
-fn english_only(tag: &str) -> Result<(), FactoryError> {
-    if tag.eq_ignore_ascii_case("en") {
-        Ok(())
-    } else {
-        Err(FactoryError::new(
+/// The port's own refusal, after every check Java makes: a locale outside
+/// the generated table.
+fn date_locale(tag: &str) -> Result<misc::DateLocale, FactoryError> {
+    misc::DateLocale::for_language_tag(tag).ok_or_else(|| {
+        FactoryError::new(
             JavaException::UnsupportedOperation,
             format!(
-                "DateRecognizerFilterFactory: only Locale.ENGLISH's date formats are ported, not {tag}"
+                "DateRecognizerFilterFactory: no date data for locale {tag}: only the JDK's \
+                 available locales without a variant or extension, on a Gregorian or Buddhist \
+                 calendar, are ported"
             ),
-        ))
-    }
+        )
+    })
 }
 
 impl FactoryClass for DateRecognizerFilterFactory {
@@ -486,14 +488,20 @@ impl FactoryClass for DateRecognizerFilterFactory {
         if let Some(tag) = &locale {
             parse_locale(tag)?;
         }
-        let format = match args::get(args, "datePattern") {
-            Some(p) => misc::SimpleDateFormat::new(&p)?,
-            None => misc::SimpleDateFormat::english_default(),
-        };
-        args::reject_unknown(args)?;
-        if let Some(tag) = &locale {
-            english_only(tag)?;
+        let pattern = args::get(args, "datePattern");
+        // The pattern is checked before unknown keys and the locale's data.
+        if let Some(p) = &pattern {
+            misc::SimpleDateFormat::new(p)?;
         }
+        args::reject_unknown(args)?;
+        let locale = match &locale {
+            Some(tag) => date_locale(tag)?,
+            None => misc::DateLocale::english(),
+        };
+        let format = match &pattern {
+            Some(p) => misc::SimpleDateFormat::with_locale(p, locale)?,
+            None => misc::SimpleDateFormat::date_instance(locale),
+        };
         Ok(DateRecognizerFilterFactory { base, format })
     }
 }

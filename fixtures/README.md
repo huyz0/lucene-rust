@@ -1171,6 +1171,26 @@ outright.
   through `SmartcnAccess.java`, compiled into smartcn's package on the class
   path. Own classpath. Byte-identical under JDK 21 and 25. Read by
   `crates/lucene-analysis-smartcn/tests/smartcn_fixtures.rs`.
+- `GenJavaRegex.java` — M12 T12.7: `java.util.regex` itself, for the
+  backtracking matcher (`util/java_backtrack.rs`): 174 curated patterns
+  (every construct the `regex`-crate shim refuses and its corner cases --
+  backreferences, lookaround, atomic and possessive, boundaries, anchors,
+  flags, properties, repeated-group captures, the loop memo) over 30 inputs
+  (`curated.txt`), and 2,500 patterns drawn from a grammar of them over 8
+  random inputs each (`random.txt`): `find()` spans with every group,
+  `replaceAll("<$0>")`, `matches()`, or the exception. Inputs keep to
+  characters JDK 21 and 25 agree on: byte-identical under both. Read by
+  `crates/lucene-analysis/tests/java_regex_fixtures.rs`.
+- `GenAnalysisDateLocales.java` — M12 T12.7: `SimpleDateFormat`'s parse
+  outside `Locale.ENGLISH`, for `DateRecognizerFilterFactory`'s `locale`:
+  over the locales of `corpus/date-locales.txt` (the 886 whose record --
+  `crates/lucene-analysis/tools/GenDateLocales.java --facts` -- JDK 21 and
+  25 agree on), each one's default date instance over a formatted date and,
+  per distinct record, 15 patterns over formatted dates, mutations of them
+  and numbers in the locale's own symbols (`dates.txt`: the parse
+  position's index or -1). Texts whose space separators JDK 23+'s lenient
+  matching reads otherwise are left out: byte-identical under JDK 21 and
+  25. Read by `crates/lucene-analysis/tests/date_locale_fixtures.rs`.
 - `GenAnalysisCompound.java` — M11 T11.6: `corpus/hyphenation-test.xml` (a
   toy hyphenation grammar written for this project) loaded into a
   `HyphenationTree`: hyphenation points for words (`points.words`), and the
@@ -1182,7 +1202,7 @@ outright.
   `random_lines.txt`, `random_chains.rows`). Deterministic. Read by
   `crates/lucene-analysis/tests/analysis_compound_fixtures.rs`.
 - `GenAnalysisFactories.java` — M11 T11.7: the factories and `CustomAnalyzer`
-  from configuration text. `corpus/analysis-factories.conf` (344 lines: a name,
+  from configuration text. `corpus/analysis-factories.conf` (347 lines: a name,
   then builder steps and their `key=value` arguments; resources under
   `corpus/analysis-factories/`; its `hyph-*.xml` are `corpus/hyphenation-test.xml` re-encoded as Latin-1 and UTF-16) is built with `CustomAnalyzer.builder`; each
   `analysis_factories/<name>.tsv` holds the build's exception (`B`, class and

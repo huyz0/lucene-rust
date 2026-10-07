@@ -45,6 +45,8 @@ mod filters_resource;
 mod loader;
 pub mod spi;
 mod tokenizers;
+#[rustfmt::skip]
+mod xml_charsets;
 mod xml_source;
 
 use lucene_util::version::Version;
