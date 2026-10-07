@@ -12,9 +12,12 @@
 //! (`CustomAnalyzer.Builder`'s `paramsToMap`, `new HashMap<>()`) is its
 //! bucket order. [`JavaArgs`] reproduces it: Java's `String.hashCode`, the
 //! spread `h ^ (h >>> 16)`, power-of-two tables grown at a 0.75 load
-//! factor, and insertion order within a bucket. It does not model a bucket
-//! turned into a tree (eight colliding keys in a table of 64 or more), which
-//! no argument map reaches.
+//! factor, insertion order within a bucket, and `treeifyBin`'s resize when
+//! a bucket reaches nine entries in a table under 64 buckets. It does not
+//! model the tree such a bucket becomes in a table of 64 or more (its root
+//! moves to the front of the bucket's order): that takes nine keys whose
+//! spread hashes agree in their low six bits, and the map keeps listing
+//! that bucket in insertion order.
 //!
 //! # Java's number and boolean parsing
 //!
@@ -32,6 +35,14 @@ use crate::util::JavaPattern;
 
 /// `java.util.HashMap.DEFAULT_INITIAL_CAPACITY`.
 const DEFAULT_INITIAL_CAPACITY: usize = 16;
+
+/// `HashMap.TREEIFY_THRESHOLD`: a bucket holding more entries than this
+/// after an insertion is treeified -- or, in a table under
+/// [`MIN_TREEIFY_CAPACITY`], the table resized instead.
+const TREEIFY_THRESHOLD: usize = 8;
+
+/// `HashMap.MIN_TREEIFY_CAPACITY`.
+const MIN_TREEIFY_CAPACITY: usize = 64;
 
 /// `String.hashCode()`: `s[0]*31^(n-1) + ... + s[n-1]` over UTF-16 units,
 /// wrapping.
@@ -151,6 +162,11 @@ impl JavaArgs {
             return Some(old);
         }
         self.table[b].push((key.to_string(), value.to_string()));
+        // putVal: `binCount >= TREEIFY_THRESHOLD - 1` -> treeifyBin, which
+        // resizes a small table (a large one's tree is not modelled).
+        if self.table[b].len() > TREEIFY_THRESHOLD && self.table.len() < MIN_TREEIFY_CAPACITY {
+            self.resize();
+        }
         self.len += 1;
         // threshold = (int) (capacity * 0.75)
         if self.len > self.table.len() * 3 / 4 {
@@ -552,6 +568,23 @@ mod tests {
         one.put("b", "2");
         assert_eq!(one.len(), 2);
         assert!(JavaArgs::default().get("x").is_none());
+    }
+
+    #[test]
+    fn a_ninth_colliding_key_resizes_a_small_table() {
+        // These nine keys share a bucket of 16 (and of 32 the low four bits
+        // agree); Java's putVal resizes on the ninth (treeifyBin under 64
+        // buckets), long before 0.75 of the table is used.
+        let keys = [
+            "k18", "k29", "k90", "k140", "k151", "k162", "k173", "k184", "k195",
+        ];
+        let pairs: Vec<(&str, &str)> = keys.iter().map(|k| (*k, "v")).collect();
+        let map = JavaArgs::from_pairs(&pairs);
+        assert_eq!(map.table.len(), 32);
+        assert_eq!(
+            map.to_string(),
+            "{k90=v, k18=v, k29=v, k140=v, k151=v, k162=v, k173=v, k184=v, k195=v}"
+        );
     }
 
     #[test]
