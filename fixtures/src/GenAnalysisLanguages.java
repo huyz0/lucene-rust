@@ -347,6 +347,43 @@ public class GenAnalysisLanguages {
     AnalysisRows.writeChains(out, chains(), lines);
     writeWords(out);
     writeNormalize(out);
+    writeFinalSigma(out);
+  }
+
+  /**
+   * Characters of every class the JDK's word {@code BreakIterator} and {@code isCased} tell apart,
+   * around capital sigmas: letters cased and not, marks (U+0345 is cased), format characters, mid-word,
+   * mid-number, pre- and post-number characters, dandas, kana, kanji, Thai, spaces, line ends,
+   * supplementary letters, digits and symbols. All with the same properties in JDK 21's Unicode 15.0
+   * and JDK 25's 16.0.
+   */
+  static final int[] SIGMA_ALPHABET = {
+    'a', 'A', 'B', 0x2B0, 0x1C5, 0xAA, 0x65E5, 0x30A2, 0x30A3, 0x3042, 0x3044, 0xE01, 0xE02, 0xE31, '1', '2', 0x663,
+    0x2161, 0x24D0, 0x24B6, '-', '_', '.', '\'', ',', ':', ' ', '\t', '$', '%', '&', '#', '^', 0xA2, 0x20AC,
+    0x66A, 0x66B, 0x2030, 0x300, 0x301, 0x345, 0x200B, 0x200C, 0x200D, 0x200E, 0x2060, 0xFEFF, 0xAD, 0x3A3,
+    0x3A3, 0x3A3, 0x3A3, 0x3C2, 0x3C3, 0x10400, 0x10428, 0x1D400, 0x1D7CE, 0x964, 0x965, 0x903, 0x2019, 0x2027,
+    '"', 0x2E9, 0x37A, 0x1D2C, 0x1D62, 0x127, 0x1D8, 0x3005, 0x2028, '\n', '\r', 0xFE0F, 0x1F600, 0x5F3, 0xB7,
+    0x387, 0x2010, 0x203F, 0x37E, 0x1F0
+  };
+
+  /**
+   * {@code String.toLowerCase(Locale.ROOT)}'s final sigma ({@code final_sigma.words}: input, then
+   * its lowercase): 8000 random strings of up to 12 characters of {@link #SIGMA_ALPHABET}, each
+   * holding a capital sigma.
+   */
+  static void writeFinalSigma(Path out) throws Exception {
+    java.util.Random r = new java.util.Random(0x5167);
+    StringBuilder b = new StringBuilder();
+    for (int n = 0; n < 8000; ) {
+      StringBuilder s = new StringBuilder();
+      int len = 1 + r.nextInt(12);
+      for (int i = 0; i < len; i++) s.appendCodePoint(SIGMA_ALPHABET[r.nextInt(SIGMA_ALPHABET.length)]);
+      String w = s.toString();
+      if (w.indexOf(0x3A3) < 0) continue;
+      b.append(AnalysisRows.esc(w)).append('\t').append(AnalysisRows.esc(w.toLowerCase(java.util.Locale.ROOT))).append('\n');
+      n++;
+    }
+    Files.writeString(out.resolve("final_sigma.words"), b.toString(), StandardCharsets.UTF_8);
   }
 
   // ---- Lucene's own suffixes, prefixes and characters, per stemmer (harvested from the 10.5.0

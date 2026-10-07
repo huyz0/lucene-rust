@@ -18,7 +18,7 @@
 
 use std::sync::Arc;
 
-use crate::java_character::{to_lower_case, to_upper_case};
+use crate::java_character::to_lower_case;
 use crate::miscellaneous::SetKeywordMarkerFilter;
 use crate::snowball::{SnowballFilter, SnowballStemmer};
 use crate::token_stream::{TokenFilter, TokenStream};
@@ -231,6 +231,7 @@ pub mod et;
 pub mod eu;
 pub mod fa;
 pub mod fi;
+mod final_sigma;
 pub mod fr;
 pub mod ga;
 pub mod gl;
@@ -322,23 +323,21 @@ pub(crate) fn copy_set(set: &CharArraySet) -> Arc<CharArraySet> {
 /// context-free/contextual special cases -- U+0130 becomes `i̇` (two units)
 /// and a capital sigma ending a word becomes `ς`.
 ///
-/// Differs: the final-sigma context treats a letter with a case mapping as
-/// "cased" and skips nothing as "case-ignorable" (Java uses the Unicode
-/// `Cased`/`Case_Ignorable` properties).
+/// The final-sigma context is the JDK's ([`final_sigma`]: cased letters
+/// within the `BreakIterator` word holding the sigma).
 pub fn java_string_to_lower_case(units: &[u16]) -> Vec<u16> {
     let cps: Vec<u32> = char::decode_utf16(units.iter().copied())
         .map(|r| r.map_or_else(|e| u32::from(e.unpaired_surrogate()), u32::from))
         .collect();
-    let cased = |cp: u32| to_lower_case(cp) != cp || to_upper_case(cp) != cp;
+    let mut sigma: Option<final_sigma::FinalSigma> = None;
     let mut out = Vec::with_capacity(units.len());
     for (i, &cp) in cps.iter().enumerate() {
         let lower = if cp == 0x130 {
             out.extend_from_slice(&[0x69, 0x307]);
             continue;
         } else if cp == 0x3A3 {
-            let before = i > 0 && cased(cps[i - 1]);
-            let after = i + 1 < cps.len() && cased(cps[i + 1]);
-            if before && !after {
+            let context = sigma.get_or_insert_with(|| final_sigma::FinalSigma::new(&cps));
+            if context.is_final(i) {
                 0x3C2
             } else {
                 0x3C3
