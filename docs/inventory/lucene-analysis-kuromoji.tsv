@@ -2,57 +2,57 @@
 # Checked by scripts/check-port-inventory.py --module analysis-kuromoji (see its docstring for the statuses).
 # M12 T12.1 (Japanese morphological analysis over IPADIC (the Viterbi lattice, user dictionary, n-best)); docs/milestones/m12-language-analysis.md.
 # class	status	detail
-analysis/ja/JapaneseAnalyzer	todo:M12	T12.1: JapaneseAnalyzer, not started
-analysis/ja/JapaneseBaseFormFilter	todo:M12	T12.1: JapaneseBaseFormFilter, not started
-analysis/ja/JapaneseBaseFormFilterFactory	todo:M12	T12.1: JapaneseBaseFormFilterFactory, not started
-analysis/ja/JapaneseCompletionAnalyzer	todo:M12	T12.1: JapaneseCompletionAnalyzer, not started
-analysis/ja/JapaneseCompletionFilter	todo:M12	T12.1: JapaneseCompletionFilter, not started
-analysis/ja/JapaneseCompletionFilterFactory	todo:M12	T12.1: JapaneseCompletionFilterFactory, not started
-analysis/ja/JapaneseFilterUtil	todo:M12	T12.1: JapaneseFilterUtil, not started
-analysis/ja/JapaneseHiraganaUppercaseFilter	todo:M12	T12.1: JapaneseHiraganaUppercaseFilter, not started
-analysis/ja/JapaneseHiraganaUppercaseFilterFactory	todo:M12	T12.1: JapaneseHiraganaUppercaseFilterFactory, not started
-analysis/ja/JapaneseIterationMarkCharFilter	todo:M12	T12.1: JapaneseIterationMarkCharFilter, not started
-analysis/ja/JapaneseIterationMarkCharFilterFactory	todo:M12	T12.1: JapaneseIterationMarkCharFilterFactory, not started
-analysis/ja/JapaneseKatakanaStemFilter	todo:M12	T12.1: JapaneseKatakanaStemFilter, not started
-analysis/ja/JapaneseKatakanaStemFilterFactory	todo:M12	T12.1: JapaneseKatakanaStemFilterFactory, not started
-analysis/ja/JapaneseKatakanaUppercaseFilter	todo:M12	T12.1: JapaneseKatakanaUppercaseFilter, not started
-analysis/ja/JapaneseKatakanaUppercaseFilterFactory	todo:M12	T12.1: JapaneseKatakanaUppercaseFilterFactory, not started
-analysis/ja/JapaneseNumberFilter	todo:M12	T12.1: JapaneseNumberFilter, not started
-analysis/ja/JapaneseNumberFilterFactory	todo:M12	T12.1: JapaneseNumberFilterFactory, not started
-analysis/ja/JapanesePartOfSpeechStopFilter	todo:M12	T12.1: JapanesePartOfSpeechStopFilter, not started
-analysis/ja/JapanesePartOfSpeechStopFilterFactory	todo:M12	T12.1: JapanesePartOfSpeechStopFilterFactory, not started
-analysis/ja/JapaneseReadingFormFilter	todo:M12	T12.1: JapaneseReadingFormFilter, not started
-analysis/ja/JapaneseReadingFormFilterFactory	todo:M12	T12.1: JapaneseReadingFormFilterFactory, not started
-analysis/ja/JapaneseTokenizer	todo:M12	T12.1: JapaneseTokenizer, not started
-analysis/ja/JapaneseTokenizerFactory	todo:M12	T12.1: JapaneseTokenizerFactory, not started
-analysis/ja/Token	todo:M12	T12.1: Token, not started
-analysis/ja/ViterbiNBest	todo:M12	T12.1: ViterbiNBest, not started
-analysis/ja/completion/CharSequenceUtils	todo:M12	T12.1: CharSequenceUtils, not started
-analysis/ja/completion/KatakanaRomanizer	todo:M12	T12.1: KatakanaRomanizer, not started
-analysis/ja/dict/CharacterDefinition	todo:M12	T12.1: CharacterDefinition, not started
-analysis/ja/dict/ConnectionCosts	todo:M12	T12.1: ConnectionCosts, not started
-analysis/ja/dict/ConnectionCostsBuilder	todo:M12	T12.1: ConnectionCostsBuilder, not started
-analysis/ja/dict/DictionaryBuilder	todo:M12	T12.1: DictionaryBuilder, not started
-analysis/ja/dict/DictionaryConstants	todo:M12	T12.1: DictionaryConstants, not started
-analysis/ja/dict/JaMorphData	todo:M12	T12.1: JaMorphData, not started
-analysis/ja/dict/ToStringUtil	todo:M12	T12.1: ToStringUtil, not started
-analysis/ja/dict/TokenInfoDictionary	todo:M12	T12.1: TokenInfoDictionary, not started
-analysis/ja/dict/TokenInfoDictionaryBuilder	todo:M12	T12.1: TokenInfoDictionaryBuilder, not started
-analysis/ja/dict/TokenInfoDictionaryEntryWriter	todo:M12	T12.1: TokenInfoDictionaryEntryWriter, not started
-analysis/ja/dict/TokenInfoDictionaryWriter	todo:M12	T12.1: TokenInfoDictionaryWriter, not started
-analysis/ja/dict/TokenInfoFST	todo:M12	T12.1: TokenInfoFST, not started
-analysis/ja/dict/TokenInfoMorphData	todo:M12	T12.1: TokenInfoMorphData, not started
-analysis/ja/dict/UnknownDictionary	todo:M12	T12.1: UnknownDictionary, not started
-analysis/ja/dict/UnknownDictionaryBuilder	todo:M12	T12.1: UnknownDictionaryBuilder, not started
-analysis/ja/dict/UnknownDictionaryWriter	todo:M12	T12.1: UnknownDictionaryWriter, not started
-analysis/ja/dict/UnknownMorphData	todo:M12	T12.1: UnknownMorphData, not started
-analysis/ja/dict/UserDictionary	todo:M12	T12.1: UserDictionary, not started
-analysis/ja/dict/UserMorphData	todo:M12	T12.1: UserMorphData, not started
-analysis/ja/tokenattributes/BaseFormAttribute	todo:M12	T12.1: BaseFormAttribute, not started
-analysis/ja/tokenattributes/BaseFormAttributeImpl	todo:M12	T12.1: BaseFormAttributeImpl, not started
-analysis/ja/tokenattributes/InflectionAttribute	todo:M12	T12.1: InflectionAttribute, not started
-analysis/ja/tokenattributes/InflectionAttributeImpl	todo:M12	T12.1: InflectionAttributeImpl, not started
-analysis/ja/tokenattributes/PartOfSpeechAttribute	todo:M12	T12.1: PartOfSpeechAttribute, not started
-analysis/ja/tokenattributes/PartOfSpeechAttributeImpl	todo:M12	T12.1: PartOfSpeechAttributeImpl, not started
-analysis/ja/tokenattributes/ReadingAttribute	todo:M12	T12.1: ReadingAttribute, not started
-analysis/ja/tokenattributes/ReadingAttributeImpl	todo:M12	T12.1: ReadingAttributeImpl, not started
+analysis/ja/JapaneseAnalyzer	ported	crates/lucene-analysis-kuromoji/src/analyzer.rs::JapaneseAnalyzer
+analysis/ja/JapaneseBaseFormFilter	ported	crates/lucene-analysis-kuromoji/src/base_form.rs::JapaneseBaseFormFilter
+analysis/ja/JapaneseBaseFormFilterFactory	ported	crates/lucene-analysis-kuromoji/src/factory.rs::JapaneseBaseFormFilterFactory
+analysis/ja/JapaneseCompletionAnalyzer	ported	crates/lucene-analysis-kuromoji/src/analyzer.rs::JapaneseCompletionAnalyzer
+analysis/ja/JapaneseCompletionFilter	ported	crates/lucene-analysis-kuromoji/src/completion.rs::JapaneseCompletionFilter
+analysis/ja/JapaneseCompletionFilterFactory	ported	crates/lucene-analysis-kuromoji/src/factory.rs::JapaneseCompletionFilterFactory
+analysis/ja/JapaneseFilterUtil	ported	crates/lucene-analysis-kuromoji/src/uppercase.rs::hiragana (createCharMap: the maps are match tables)
+analysis/ja/JapaneseHiraganaUppercaseFilter	ported	crates/lucene-analysis-kuromoji/src/uppercase.rs::JapaneseHiraganaUppercaseFilter
+analysis/ja/JapaneseHiraganaUppercaseFilterFactory	ported	crates/lucene-analysis-kuromoji/src/factory.rs::JapaneseHiraganaUppercaseFilterFactory
+analysis/ja/JapaneseIterationMarkCharFilter	ported	crates/lucene-analysis-kuromoji/src/iteration_mark.rs::JapaneseIterationMarkCharFilter
+analysis/ja/JapaneseIterationMarkCharFilterFactory	ported	crates/lucene-analysis-kuromoji/src/factory.rs::JapaneseIterationMarkCharFilterFactory
+analysis/ja/JapaneseKatakanaStemFilter	ported	crates/lucene-analysis-kuromoji/src/katakana_stem.rs::JapaneseKatakanaStemFilter
+analysis/ja/JapaneseKatakanaStemFilterFactory	ported	crates/lucene-analysis-kuromoji/src/factory.rs::JapaneseKatakanaStemFilterFactory
+analysis/ja/JapaneseKatakanaUppercaseFilter	ported	crates/lucene-analysis-kuromoji/src/uppercase.rs::JapaneseKatakanaUppercaseFilter
+analysis/ja/JapaneseKatakanaUppercaseFilterFactory	ported	crates/lucene-analysis-kuromoji/src/factory.rs::JapaneseKatakanaUppercaseFilterFactory
+analysis/ja/JapaneseNumberFilter	ported	crates/lucene-analysis-kuromoji/src/number.rs::JapaneseNumberFilter
+analysis/ja/JapaneseNumberFilterFactory	ported	crates/lucene-analysis-kuromoji/src/factory.rs::JapaneseNumberFilterFactory
+analysis/ja/JapanesePartOfSpeechStopFilter	ported	crates/lucene-analysis-kuromoji/src/pos_stop.rs::japanese_part_of_speech_stop_filter
+analysis/ja/JapanesePartOfSpeechStopFilterFactory	ported	crates/lucene-analysis-kuromoji/src/factory.rs::JapanesePartOfSpeechStopFilterFactory
+analysis/ja/JapaneseReadingFormFilter	ported	crates/lucene-analysis-kuromoji/src/reading_form.rs::JapaneseReadingFormFilter
+analysis/ja/JapaneseReadingFormFilterFactory	ported	crates/lucene-analysis-kuromoji/src/factory.rs::JapaneseReadingFormFilterFactory
+analysis/ja/JapaneseTokenizer	ported	crates/lucene-analysis-kuromoji/src/tokenizer.rs::JapaneseTokenizer
+analysis/ja/JapaneseTokenizerFactory	ported	crates/lucene-analysis-kuromoji/src/factory.rs::JapaneseTokenizerFactory
+analysis/ja/Token	ported	crates/lucene-analysis-kuromoji/src/token.rs::Token
+analysis/ja/ViterbiNBest	ported	crates/lucene-analysis-kuromoji/src/viterbi.rs::JaViterbi
+analysis/ja/completion/CharSequenceUtils	ported	crates/lucene-analysis-kuromoji/src/completion.rs::char_sequence_utils
+analysis/ja/completion/KatakanaRomanizer	ported	crates/lucene-analysis-kuromoji/src/completion.rs::KatakanaRomanizer
+analysis/ja/dict/CharacterDefinition	ported	crates/lucene-analysis-kuromoji/src/dict/character_definition.rs::CharacterDefinition
+analysis/ja/dict/ConnectionCosts	ported	crates/lucene-analysis-kuromoji/src/dict/connection_costs.rs::ConnectionCosts
+analysis/ja/dict/ConnectionCostsBuilder	not-needed	dictionary building (Lucene's build-time tool); M12 loads dictionaries, it does not build them
+analysis/ja/dict/DictionaryBuilder	not-needed	dictionary building (Lucene's build-time tool); M12 loads dictionaries, it does not build them
+analysis/ja/dict/DictionaryConstants	ported	crates/lucene-analysis-kuromoji/src/dict/mod.rs::DICT_HEADER
+analysis/ja/dict/JaMorphData	ported	crates/lucene-analysis-kuromoji/src/dict/mod.rs::JaDict (the interface is the enum over the three dictionaries)
+analysis/ja/dict/ToStringUtil	ported	crates/lucene-analysis-kuromoji/src/dict/to_string_util.rs::romanization
+analysis/ja/dict/TokenInfoDictionary	ported	crates/lucene-analysis-kuromoji/src/dict/token_info_dictionary.rs::TokenInfoDictionary
+analysis/ja/dict/TokenInfoDictionaryBuilder	not-needed	dictionary building; M12 loads dictionaries, it does not build them
+analysis/ja/dict/TokenInfoDictionaryEntryWriter	not-needed	dictionary building; M12 loads dictionaries, it does not build them
+analysis/ja/dict/TokenInfoDictionaryWriter	not-needed	dictionary building; M12 loads dictionaries, it does not build them
+analysis/ja/dict/TokenInfoFST	ported	crates/lucene-analysis/src/morph/token_info_fst.rs::TokenInfoFst (the ja subclass only fixes the cached range, in TokenInfoDictionary::read)
+analysis/ja/dict/TokenInfoMorphData	ported	crates/lucene-analysis-kuromoji/src/dict/token_info_dictionary.rs::TokenInfoMorphData
+analysis/ja/dict/UnknownDictionary	ported	crates/lucene-analysis-kuromoji/src/dict/unknown_dictionary.rs::UnknownDictionary
+analysis/ja/dict/UnknownDictionaryBuilder	not-needed	dictionary building; M12 loads dictionaries, it does not build them
+analysis/ja/dict/UnknownDictionaryWriter	not-needed	dictionary building; M12 loads dictionaries, it does not build them
+analysis/ja/dict/UnknownMorphData	ported	crates/lucene-analysis-kuromoji/src/dict/mod.rs::JaDict (TokenInfoMorphData with no reading or inflection)
+analysis/ja/dict/UserDictionary	ported	crates/lucene-analysis-kuromoji/src/dict/user_dictionary.rs::UserDictionary
+analysis/ja/dict/UserMorphData	ported	crates/lucene-analysis-kuromoji/src/dict/user_dictionary.rs::UserMorphData
+analysis/ja/tokenattributes/BaseFormAttribute	ported	crates/lucene-analysis-kuromoji/src/attributes.rs::BaseFormAttribute
+analysis/ja/tokenattributes/BaseFormAttributeImpl	ported	crates/lucene-analysis-kuromoji/src/attributes.rs::BaseFormAttribute (interface and implementation are one CustomAttribute type)
+analysis/ja/tokenattributes/InflectionAttribute	ported	crates/lucene-analysis-kuromoji/src/attributes.rs::InflectionAttribute
+analysis/ja/tokenattributes/InflectionAttributeImpl	ported	crates/lucene-analysis-kuromoji/src/attributes.rs::InflectionAttribute (interface and implementation are one CustomAttribute type)
+analysis/ja/tokenattributes/PartOfSpeechAttribute	ported	crates/lucene-analysis-kuromoji/src/attributes.rs::PartOfSpeechAttribute
+analysis/ja/tokenattributes/PartOfSpeechAttributeImpl	ported	crates/lucene-analysis-kuromoji/src/attributes.rs::PartOfSpeechAttribute (interface and implementation are one CustomAttribute type)
+analysis/ja/tokenattributes/ReadingAttribute	ported	crates/lucene-analysis-kuromoji/src/attributes.rs::ReadingAttribute
+analysis/ja/tokenattributes/ReadingAttributeImpl	ported	crates/lucene-analysis-kuromoji/src/attributes.rs::ReadingAttribute (interface and implementation are one CustomAttribute type)

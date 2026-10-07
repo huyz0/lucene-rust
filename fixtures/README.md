@@ -1120,6 +1120,18 @@ outright.
   factory rows with each token's tags (`corpus/analysis-morfologik.txt`). Own
   classpath. Deterministic. Read by
   `crates/lucene-analysis-morfologik/tests/morfologik_fixtures.rs`.
+- `GenAnalysisKuromoji.java` — M12 T12.1: `JapaneseTokenizer` over
+  `corpus/analysis-japanese.txt` (written here) and 303 seeded stress lines
+  (`stress.txt`: dictionary surfaces, kana, kanji, digits, punctuation, and
+  three 2,100-3,000-unit lines) in 16 configurations (modes, punctuation,
+  compounds, n-best, the user dictionary
+  `corpus/analysis-japanese-userdict.txt`; `tok_<config>.tsv`, four with
+  every attribute's reflected values), Graphviz lattices, `calcNBestCost`,
+  a sample of the system dictionary's entries (`dictionary.tsv`),
+  `UserDictionary.lookup`, and analyzer and factory chains (`chains/`,
+  `corpus/analysis-kuromoji.conf` over the corpus and
+  `corpus/analysis-japanese-filters.txt`). Own classpath. Deterministic.
+  Read by `crates/lucene-analysis-kuromoji/tests/kuromoji_fixtures.rs`.
 - `GenAnalysisCompound.java` — M11 T11.6: `corpus/hyphenation-test.xml` (a
   toy hyphenation grammar written for this project) loaded into a
   `HyphenationTree`: hyphenation points for words (`points.words`), and the

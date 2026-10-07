@@ -207,7 +207,8 @@ CP=$(lucene_classpath "${LUCENE_MODULES[@]}"):$(thirdparty_classpath "${SPATIAL_
 PHONETIC_CP=$(lucene_classpath lucene-analysis-phonetic):$(thirdparty_classpath "${PHONETIC_DEPS[@]}")
 STEMPEL_CP=$(lucene_classpath lucene-analysis-stempel)
 MORFOLOGIK_CP=$(lucene_classpath lucene-analysis-morfologik):$(thirdparty_classpath "${MORFOLOGIK_DEPS[@]}")
-M12_COMPILE_CP="$PHONETIC_CP:$STEMPEL_CP:$MORFOLOGIK_CP"
+KUROMOJI_CP=$(lucene_classpath lucene-analysis-kuromoji)
+M12_COMPILE_CP="$PHONETIC_CP:$STEMPEL_CP:$MORFOLOGIK_CP:$KUROMOJI_CP"
 # Read as data, never put on the classpath (its SPI registrations name codecs
 # from modules the generators do not load): GenStandardTokenizerCorpus takes
 # its text from this jar's europarl.lines.txt.gz.
@@ -242,6 +243,7 @@ generator_classpath() {
     GenAnalysisPhonetic) echo ":$PHONETIC_CP" ;;
     GenAnalysisStempel) echo ":$STEMPEL_CP" ;;
     GenAnalysisMorfologik) echo ":$MORFOLOGIK_CP" ;;
+    GenAnalysisKuromoji) echo ":$KUROMOJI_CP" ;;
   esac
 }
 

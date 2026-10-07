@@ -223,7 +223,7 @@ impl ResourceLoader for MapResourceLoader {
 // ------------------------------------------------- AbstractAnalysisFactory
 
 /// UTF-8 with `CodingErrorAction.REPORT`.
-pub(crate) fn decode_utf8(bytes: Vec<u8>) -> Result<String, FactoryError> {
+pub fn decode_utf8(bytes: Vec<u8>) -> Result<String, FactoryError> {
     String::from_utf8(bytes).map_err(|e| {
         let len = e.utf8_error().error_len().unwrap_or(1);
         FactoryError::new(
@@ -234,7 +234,7 @@ pub(crate) fn decode_utf8(bytes: Vec<u8>) -> Result<String, FactoryError> {
 }
 
 /// `String.trim()`: strips chars `<= ' '`.
-pub(crate) fn java_trim(s: &str) -> &str {
+pub fn java_trim(s: &str) -> &str {
     s.trim_matches(|c: char| c <= ' ')
 }
 

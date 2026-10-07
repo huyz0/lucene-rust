@@ -9,6 +9,7 @@ use lucene_analysis::util::WhitespaceTokenizer;
 use lucene_analysis::{AnalysisError, Analyzer, AnalyzerDefinition, TokenStream, TokenStreamComponents};
 use lucene_analysis_phonetic::bm::{NameType, PhoneticEngine, RuleType};
 use lucene_analysis_phonetic::encoder::{Encoder, LANGUAGE_PACKAGE};
+use lucene_analysis_kuromoji::{JapaneseAnalyzer, JapaneseTokenizer, Mode};
 use lucene_analysis_morfologik::analyzer::polish_dictionary;
 use lucene_analysis_morfologik::{MorfologikFilter, UkrainianMorfologikAnalyzer};
 use lucene_analysis_phonetic::{BeiderMorseFilter, DaitchMokotoffSoundexFilter, DoubleMetaphoneFilter, PhoneticFilter};
@@ -150,6 +151,19 @@ pub(super) fn bench_analysis_m12(w: Duration, m: Duration) {
         w,
         m,
     );
+    let ja = japanese_docs();
+    let kuromoji = |mode: Mode, discard_compound: bool, nbest: i32| {
+        chain(move || {
+            let mut t = JapaneseTokenizer::with_options(None, true, discard_compound, mode);
+            t.set_n_best_cost(nbest);
+            comps(t)
+        })
+    };
+    run("kuromoji_normal", &kuromoji(Mode::Normal, true, 0), &ja, w, m);
+    run("kuromoji_search", &kuromoji(Mode::Search, false, 0), &ja, w, m);
+    run("kuromoji_extended", &kuromoji(Mode::Extended, true, 0), &ja, w, m);
+    run("kuromoji_nbest", &kuromoji(Mode::Normal, true, 2000), &ja, w, m);
+    run("japanese_analyzer", &Analyzer::new(JapaneseAnalyzer::default()), &ja, w, m);
     run(
         "beider_morse_ash_exact",
         &chain(move || comps(BeiderMorseFilter::new(WhitespaceTokenizer::new(), exact.clone()))),
@@ -169,6 +183,21 @@ fn fixture_docs(file: &str) -> Vec<String> {
         .filter(|w| !w.is_empty() && !w.contains('\\') && !w.contains(' '))
         .collect();
     words.chunks_exact(50).map(|c| c.join(" ")).collect()
+}
+
+/// `AnalysisM12Micro.japaneseDocs`.
+fn japanese_docs() -> Vec<String> {
+    ["fixtures/corpus/analysis-japanese.txt", "fixtures/data/analysis_kuromoji/stress.txt"]
+        .iter()
+        .flat_map(|f| {
+            std::fs::read_to_string(f)
+                .unwrap_or_else(|e| panic!("{f}: {e}"))
+                .split('\n')
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 fn names_few() -> Vec<String> {

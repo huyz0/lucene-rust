@@ -43,6 +43,12 @@ Polish) and the Ukrainian dictionary of morfologik-ukrainian-search 4.9.1
 (Apache License 2.0; based on the dict_uk project,
 https://github.com/brown-uk/dict_uk).
 
+crates/lucene-analysis-kuromoji carries the Japanese dictionary Apache
+Lucene's analysis-kuromoji jar carries, compiled by Lucene from
+mecab-ipadic-2.7.0-20070801 (Nara Institute of Science and Technology; the
+mecab-ipadic notice, with ICOT's conditions, is reproduced in the Apache
+Lucene NOTICE below), zlib-compressed under src/resources/.
+
 crates/lucene-analysis/src/java_character_tables.rs is generated from the
 Unicode Character Database 16.0.0, Copyright (c) 1991-2024 Unicode, Inc.,
 under the Unicode License v3, reproduced at the end of this file.

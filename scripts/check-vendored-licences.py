@@ -75,6 +75,12 @@ VENDORED = {
         ("morfologik-ukrainian-search 4.9.1's dictionary and Lucene's Ukrainian stop list "
          "(Apache-2.0)", "LICENSE", APACHE),
     ],
+    "crates/lucene-analysis-kuromoji/src/resources": [
+        ("Lucene's compiled mecab-ipadic-2.7.0-20070801 dictionary (NAIST, with ICOT's "
+         "conditions; Lucene ships the notice in its NOTICE)", "NOTICE",
+         "Nara Institute of Science and Technology (NAIST),"),
+        ("Lucene's Japanese stop words, stop tags and romaji map (Apache-2.0)", "LICENSE", APACHE),
+    ],
     "crates/lucene-ffi/fuzz/seeds/jvm_search": [
         ("this project's own fuzz seeds, read by a test (Apache-2.0)", "LICENSE", APACHE),
     ],
