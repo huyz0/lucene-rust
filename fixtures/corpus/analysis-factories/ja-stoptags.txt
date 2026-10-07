@@ -1,0 +1,6 @@
+# stop tags for the Kuromoji factory fixtures (written for this project)
+助詞-格助詞-一般
+助詞-係助詞
+助動詞
+記号-句点
+記号-読点

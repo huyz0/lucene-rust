@@ -1,0 +1,760 @@
+//! `org.apache.lucene.analysis.morph.Viterbi`: the forward pass over the
+//! lattice of dictionary words (user, known, unknown) and the backtrace
+//! hooks a language implements.
+//!
+//! Java's abstract class and its subclass are split here into the state
+//! ([`Viterbi`]: the rolling buffer, the positions, the pending tokens) and
+//! the language ([`ViterbiLang`]: `processUnknownWord`, `backtrace`, the
+//! penalties). [`forward`] and [`add`] are Java's final methods, taking
+//! both.
+//!
+//! Differs: a [`Position`] holds its back pointers as one vector of
+//! records rather than seven parallel arrays (Java's `ArrayUtil.grow` sizes
+//! are not observable); positions are named by their absolute position
+//! rather than held by reference across a call that may grow the array.
+//! Costs are Java `int`s: sums wrap (`wrapping_add`) as Java's do.
+
+use std::sync::Arc;
+
+use super::connection_costs::ConnectionCosts;
+use super::resource::io_error;
+use super::token::{MorphData, TokenType};
+use super::token_info_fst::TokenInfoFst;
+use crate::charfilter::RollingCharBuffer;
+use crate::java_character::{get_type, SPACE_SEPARATOR};
+use crate::reader::CharReader;
+use crate::AnalysisError;
+
+/// `Viterbi.MAX_UNKNOWN_WORD_LENGTH`.
+pub const MAX_UNKNOWN_WORD_LENGTH: i32 = 1024;
+/// `Viterbi.MAX_BACKTRACE_GAP`.
+const MAX_BACKTRACE_GAP: i32 = 1024;
+
+/// One back pointer of a [`Position`] (Java's parallel arrays, one
+/// record).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Back {
+    cost: i32,
+    last_right_id: i32,
+    back_pos: i32,
+    back_word_pos: i32,
+    back_index: i32,
+    back_id: i32,
+    back_type: TokenType,
+}
+
+/// One forward pointer (`ViterbiNBest.PositionNBest`'s arrays).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Forward {
+    pos: i32,
+    index: i32,
+    id: i32,
+    forward_type: TokenType,
+}
+
+/// `Viterbi.Position` (with `ViterbiNBest.PositionNBest`'s forward
+/// pointers): every back pointer arriving at one position.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Position {
+    pos: i32,
+    backs: Vec<Back>,
+    forwards: Vec<Forward>,
+}
+
+fn bad_index(i: usize) -> AnalysisError {
+    io_error("ArrayIndexOutOfBoundsException", i)
+}
+
+impl Position {
+    /// `add(cost, lastRightID, backPos, backRPos, backIndex, backID,
+    /// backType)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add(
+        &mut self,
+        cost: i32,
+        last_right_id: i32,
+        back_pos: i32,
+        back_word_pos: i32,
+        back_index: i32,
+        back_id: i32,
+        back_type: TokenType,
+    ) {
+        self.backs.push(Back {
+            cost,
+            last_right_id,
+            back_pos,
+            back_word_pos,
+            back_index,
+            back_id,
+            back_type,
+        });
+    }
+
+    fn back(&self, i: usize) -> Result<&Back, AnalysisError> {
+        self.backs.get(i).ok_or_else(|| bad_index(i))
+    }
+
+    /// `reset()`.
+    pub fn reset(&mut self) {
+        self.backs.clear();
+    }
+    /// `getPos()`.
+    pub fn pos(&self) -> i32 {
+        self.pos
+    }
+    /// `getCount()`.
+    pub fn count(&self) -> usize {
+        self.backs.len()
+    }
+    /// `setCount(count)`: keeps the first `count` back pointers.
+    pub fn set_count(&mut self, count: usize) {
+        self.backs.truncate(count);
+    }
+    /// `getCost(index)`.
+    pub fn cost(&self, i: usize) -> Result<i32, AnalysisError> {
+        Ok(self.back(i)?.cost)
+    }
+    /// `costs[index] = cost`.
+    pub fn set_cost(&mut self, i: usize, cost: i32) {
+        if let Some(b) = self.backs.get_mut(i) {
+            b.cost = cost;
+        }
+    }
+    /// `getBackPos(index)`.
+    pub fn back_pos(&self, i: usize) -> Result<i32, AnalysisError> {
+        Ok(self.back(i)?.back_pos)
+    }
+    /// `getBackWordPos(index)`.
+    pub fn back_word_pos(&self, i: usize) -> Result<i32, AnalysisError> {
+        Ok(self.back(i)?.back_word_pos)
+    }
+    /// `getBackID(index)`.
+    pub fn back_id(&self, i: usize) -> Result<i32, AnalysisError> {
+        Ok(self.back(i)?.back_id)
+    }
+    /// `getBackIndex(index)`.
+    pub fn back_index(&self, i: usize) -> Result<i32, AnalysisError> {
+        Ok(self.back(i)?.back_index)
+    }
+    /// `getBackType(index)`.
+    pub fn back_type(&self, i: usize) -> Result<TokenType, AnalysisError> {
+        Ok(self.back(i)?.back_type)
+    }
+    /// `getLastRightID(index)`.
+    pub fn last_right_id(&self, i: usize) -> Result<i32, AnalysisError> {
+        Ok(self.back(i)?.last_right_id)
+    }
+
+    /// `PositionNBest.addForward(forwardPos, forwardIndex, forwardID,
+    /// forwardType)`.
+    pub fn add_forward(&mut self, pos: i32, index: i32, id: i32, forward_type: TokenType) {
+        self.forwards.push(Forward {
+            pos,
+            index,
+            id,
+            forward_type,
+        });
+    }
+    /// `getForwardCount()`.
+    pub fn forward_count(&self) -> usize {
+        self.forwards.len()
+    }
+    /// `setForwardCount(0)`.
+    pub fn clear_forwards(&mut self) {
+        self.forwards.clear();
+    }
+    /// `getForwardPos`, `getForwardID`, `getForwardType` (and the index,
+    /// which Java keeps but never reads) of forward pointer `i`.
+    pub fn forward(&self, i: usize) -> Result<(i32, i32, TokenType), AnalysisError> {
+        let f = self.forwards.get(i).ok_or_else(|| bad_index(i))?;
+        Ok((f.pos, f.id, f.forward_type))
+    }
+}
+
+/// `Viterbi.WrappedPositionArray`: the positions from the last freed one
+/// on, in a ring that grows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrappedPositionArray {
+    positions: Vec<Position>,
+    next_write: usize,
+    next_pos: i32,
+    count: usize,
+}
+
+impl Default for WrappedPositionArray {
+    fn default() -> Self {
+        WrappedPositionArray {
+            positions: vec![Position::default(); 8],
+            next_write: 0,
+            next_pos: 0,
+            count: 0,
+        }
+    }
+}
+
+impl WrappedPositionArray {
+    /// `reset()`.
+    pub fn reset(&mut self) {
+        for p in &mut self.positions {
+            p.reset();
+            p.forwards.clear();
+        }
+        self.next_write = 0;
+        self.next_pos = 0;
+        self.count = 0;
+    }
+
+    /// `get(pos)`: the position, created (with every one before it) if it
+    /// is in the future.
+    pub fn get(&mut self, pos: i32) -> &mut Position {
+        while pos >= self.next_pos {
+            if self.count == self.positions.len() {
+                // Grow, unrolling the ring so the oldest position is first.
+                let len = self.positions.len();
+                let mut grown = Vec::with_capacity(len.saturating_mul(2));
+                grown.extend(self.positions.drain(self.next_write..));
+                grown.append(&mut self.positions);
+                grown.resize(
+                    (len.saturating_mul(3) / 2).saturating_add(1),
+                    Position::default(),
+                );
+                self.positions = grown;
+                self.next_write = len;
+            }
+            if self.next_write == self.positions.len() {
+                self.next_write = 0;
+            }
+            let next_pos = self.next_pos;
+            let slot = &mut self.positions[self.next_write];
+            slot.pos = next_pos;
+            self.next_write = self.next_write.saturating_add(1);
+            self.next_pos = self.next_pos.wrapping_add(1);
+            self.count = self.count.saturating_add(1);
+        }
+        let i = self.index(pos);
+        &mut self.positions[i]
+    }
+
+    /// The position `pos`, which must not be in the future
+    /// (`pos < getNextPos()`).
+    pub fn at(&self, pos: i32) -> &Position {
+        &self.positions[self.index(pos)]
+    }
+
+    /// `getNextPos()`.
+    pub fn next_pos(&self) -> i32 {
+        self.next_pos
+    }
+
+    /// `getIndex(pos)`.
+    fn index(&self, pos: i32) -> usize {
+        let len = i64::try_from(self.positions.len()).unwrap_or(i64::MAX);
+        let back = i64::from(self.next_pos).wrapping_sub(i64::from(pos));
+        let i = i64::try_from(self.next_write)
+            .unwrap_or(0)
+            .wrapping_sub(back)
+            .rem_euclid(len.max(1));
+        usize::try_from(i).unwrap_or(0)
+    }
+
+    /// `freeBefore(pos)`.
+    pub fn free_before(&mut self, pos: i32) {
+        let ahead = usize::try_from(self.next_pos.wrapping_sub(pos)).unwrap_or(0);
+        let to_free = self.count.saturating_sub(ahead);
+        let len = self.positions.len();
+        // nextWrite - count, wrapped into the ring.
+        let mut index = match self.next_write.checked_sub(self.count) {
+            Some(i) => i,
+            None => self.next_write.wrapping_add(len).wrapping_sub(self.count),
+        };
+        for _ in 0..to_free {
+            if index >= len {
+                index = 0;
+            }
+            self.positions[index].reset();
+            index = index.wrapping_add(1);
+        }
+        self.count = self.count.saturating_sub(to_free);
+    }
+}
+
+/// The language half of Java's `Viterbi` subclasses.
+pub trait ViterbiLang<T>: Send {
+    /// The dictionary of a token type (`dictionaryMap.get(type)`).
+    fn morph_data(&self, token_type: TokenType) -> &dyn MorphData;
+
+    /// `dictionary.lookupWordIds(sourceId, wordIdRef)` on the system
+    /// dictionary.
+    fn known_word_ids(&self, source_id: i32) -> &[i32];
+
+    /// `processUnknownWord(anyMatches, posData)`: adds the unknown words
+    /// starting at `v.pos`; `pos_data` names the position the arcs leave
+    /// from. Returns the word length (`0` when none was added).
+    fn process_unknown_word(
+        &mut self,
+        v: &mut Viterbi<T>,
+        reader: &mut dyn CharReader,
+        any_matches: bool,
+        pos_data: i32,
+    ) -> Result<i32, AnalysisError>;
+
+    /// `backtrace(endPosData, fromIDX)`.
+    fn backtrace(
+        &mut self,
+        v: &mut Viterbi<T>,
+        end_pos: i32,
+        from_idx: i32,
+    ) -> Result<(), AnalysisError>;
+
+    /// `backtraceNBest(endPosData, useEOS)`: Java's base throws
+    /// `UnsupportedOperationException`; only an n-best language sets
+    /// [`Viterbi::output_nbest`].
+    fn backtrace_nbest(
+        &mut self,
+        _v: &mut Viterbi<T>,
+        _end_pos: i32,
+        _use_eos: bool,
+    ) -> Result<(), AnalysisError> {
+        Err(unsupported())
+    }
+
+    /// `fixupPendingList()`: as [`Self::backtrace_nbest`].
+    fn fixup_pending_list(&mut self, _v: &mut Viterbi<T>) -> Result<(), AnalysisError> {
+        Err(unsupported())
+    }
+
+    /// `shouldSkipProcessUnknownWord(unknownWordEndIndex, posData)`.
+    fn should_skip_process_unknown_word(&self, unknown_word_end_index: i32, pos_data: i32) -> bool {
+        unknown_word_end_index > pos_data
+    }
+
+    /// `computeSpacePenalty(morphData, wordID, numSpaces)`.
+    fn compute_space_penalty(
+        &self,
+        _token_type: TokenType,
+        _word_id: i32,
+        _num_spaces: i32,
+    ) -> i32 {
+        0
+    }
+
+    /// `computePenalty(pos, length)`.
+    fn compute_penalty(&self, _v: &Viterbi<T>, _pos: i32, _length: i32) -> i32 {
+        0
+    }
+}
+
+fn unsupported() -> AnalysisError {
+    AnalysisError::IllegalState("UnsupportedOperationException".to_string())
+}
+
+/// `Viterbi`'s state.
+pub struct Viterbi<T> {
+    fst: Arc<TokenInfoFst>,
+    user_fst: Option<Arc<TokenInfoFst>>,
+    /// `costs`.
+    pub costs: Arc<ConnectionCosts>,
+    /// `buffer`.
+    pub buffer: RollingCharBuffer,
+    /// `positions`.
+    pub positions: WrappedPositionArray,
+    /// `end`: the input reader is exhausted.
+    pub end: bool,
+    /// `lastBackTracePos`.
+    pub last_back_trace_pos: i32,
+    /// `pos`: the next position to process.
+    pub pos: i32,
+    /// `pending`: parsed tokens, last first.
+    pub pending: Vec<T>,
+    /// `outputNBest`.
+    pub output_nbest: bool,
+    /// `enableSpacePenaltyFactor`.
+    pub enable_space_penalty_factor: bool,
+    /// `outputLongestUserEntryOnly`.
+    pub output_longest_user_entry_only: bool,
+}
+
+impl<T> Viterbi<T> {
+    /// `new Viterbi(fst, fstReader, dictionary, userFST, userFSTReader,
+    /// userDictionary, costs, positionImpl)`.
+    pub fn new(
+        fst: Arc<TokenInfoFst>,
+        user_fst: Option<Arc<TokenInfoFst>>,
+        costs: Arc<ConnectionCosts>,
+    ) -> Self {
+        Viterbi {
+            fst,
+            user_fst,
+            costs,
+            buffer: RollingCharBuffer::default(),
+            positions: WrappedPositionArray::default(),
+            end: false,
+            last_back_trace_pos: 0,
+            pos: 0,
+            pending: Vec::new(),
+            output_nbest: false,
+            enable_space_penalty_factor: false,
+            output_longest_user_entry_only: false,
+        }
+    }
+
+    /// `resetBuffer(reader)`: the buffer forgets its input.
+    pub fn reset_buffer(&mut self) {
+        self.buffer.reset();
+    }
+
+    /// `resetState()`: back to the beginning-of-sentence node.
+    pub fn reset_state(&mut self) {
+        self.positions.reset();
+        self.pos = 0;
+        self.end = false;
+        self.last_back_trace_pos = 0;
+        self.pending.clear();
+        self.positions
+            .get(0)
+            .add(0, 0, -1, -1, -1, -1, TokenType::Known);
+    }
+
+    /// A buffered unit (`buffer.get(pos)` of a position already read);
+    /// `-1` outside the buffer.
+    pub fn char_at(&self, pos: i32) -> i32 {
+        self.buffer.peek(pos).map_or(-1, i32::from)
+    }
+
+    /// `buffer.get(posStart, length)` as a shared fragment.
+    pub fn fragment(&self, pos_start: i32, length: i32) -> Arc<[u16]> {
+        self.buffer.slice(pos_start, length).into()
+    }
+}
+
+/// `buffer.get(pos)`: the unit, `-1` past the end of the input.
+fn char_at<T>(
+    v: &mut Viterbi<T>,
+    reader: &mut dyn CharReader,
+    pos: i32,
+) -> Result<i32, AnalysisError> {
+    Ok(v.buffer.get(reader, pos)?.map_or(-1, i32::from))
+}
+
+/// `buffer.get(pos)` for a language's unknown-word scan, which may read
+/// ahead of what [`forward`] has buffered.
+pub fn read_char<T>(
+    v: &mut Viterbi<T>,
+    reader: &mut dyn CharReader,
+    pos: i32,
+) -> Result<i32, AnalysisError> {
+    char_at(v, reader, pos)
+}
+
+/// `Viterbi.forward()`: runs the search forward until some tokens are
+/// pending (or the input ends).
+pub fn forward<T, L: ViterbiLang<T>>(
+    v: &mut Viterbi<T>,
+    lang: &mut L,
+    reader: &mut dyn CharReader,
+) -> Result<(), AnalysisError> {
+    // Index of the last character of unknown word:
+    let mut unknown_word_end_index: i32 = -1;
+    // Maximum posAhead of user word in the entire input
+    let mut user_word_max_pos_ahead: i32 = -1;
+
+    while char_at(v, reader, v.pos)? != -1 {
+        let pd = v.pos;
+        let count = v.positions.get(pd).count();
+        let is_frontier = v.positions.next_pos() == pd.wrapping_add(1);
+
+        if count == 0 {
+            // No arcs arrive here; move to next position:
+            v.pos = v.pos.wrapping_add(1);
+            continue;
+        }
+
+        if v.pos > v.last_back_trace_pos && count == 1 && is_frontier {
+            // We are at a "frontier", and only one node is alive, so
+            // whatever the eventual best path is must come through this
+            // node. So we can safely commit to the prefix of the best path
+            // at this point:
+            if v.output_nbest {
+                lang.backtrace_nbest(v, pd, false)?;
+            }
+            lang.backtrace(v, pd, 0)?;
+            if v.output_nbest {
+                lang.fixup_pending_list(v)?;
+            }
+            // Re-base cost so we don't risk int overflow:
+            v.positions.get(pd).set_cost(0, 0);
+            if !v.pending.is_empty() {
+                return Ok(());
+            }
+            // The backtrace only produced punctuation tokens, so keep
+            // parsing.
+        }
+
+        if v.pos.wrapping_sub(v.last_back_trace_pos) >= MAX_BACKTRACE_GAP {
+            // Safety: if we've buffered too much, force a backtrace now. We
+            // find the least-cost partial path, across all paths, backtrace
+            // from it, and then prune all others.
+            let mut least_idx: Option<usize> = None;
+            let mut least_cost = i32::MAX;
+            let mut least_pos = -1;
+            for pos2 in v.pos..v.positions.next_pos() {
+                let p = v.positions.at(pos2);
+                for idx in 0..p.count() {
+                    let cost = p.cost(idx)?;
+                    if cost < least_cost {
+                        least_cost = cost;
+                        least_idx = Some(idx);
+                        least_pos = pos2;
+                    }
+                }
+            }
+            // We will always have at least one live path:
+            let least_idx = least_idx.ok_or_else(|| bad_index(0))?;
+
+            if v.output_nbest {
+                lang.backtrace_nbest(v, least_pos, false)?;
+            }
+
+            // Second pass: prune all but the best path:
+            for pos2 in v.pos..v.positions.next_pos() {
+                let p = v.positions.get(pos2);
+                if pos2 != least_pos {
+                    p.reset();
+                } else {
+                    if least_idx != 0 {
+                        let best = *p.back(least_idx)?;
+                        p.backs[0] = best;
+                    }
+                    p.set_count(1);
+                }
+            }
+
+            lang.backtrace(v, least_pos, 0)?;
+            if v.output_nbest {
+                lang.fixup_pending_list(v)?;
+            }
+
+            // Re-base cost so we don't risk int overflow:
+            for b in &mut v.positions.get(least_pos).backs {
+                b.cost = 0;
+            }
+
+            if v.pos != least_pos {
+                // We jumped into a future position:
+                v.pos = least_pos;
+            }
+            if !v.pending.is_empty() {
+                return Ok(());
+            }
+            continue;
+        }
+
+        if v.enable_space_penalty_factor
+            && u32::try_from(char_at(v, reader, v.pos)?)
+                .is_ok_and(|c| get_type(c) == SPACE_SEPARATOR)
+        {
+            // We add single space separator as prefixes of the terms that we
+            // extract. This information is needed to compute the space
+            // penalty factor of each term. These whitespace prefixes are
+            // removed when the final tokens are generated, or added as
+            // separated tokens when discardPunctuation is unset.
+            v.pos = v.pos.wrapping_add(1);
+            if char_at(v, reader, v.pos)? == -1 {
+                v.pos = pd;
+            }
+        }
+
+        let mut any_matches = false;
+
+        // First try user dict:
+        if let Some(user_fst) = v.user_fst.clone() {
+            let mut arc = user_fst.first_arc();
+            let mut output: i32 = 0;
+            let mut max_pos_ahead: i32 = 0;
+            let mut output_max_pos_ahead: i32 = 0;
+            let mut arc_final_out_max_pos_ahead: i32 = 0;
+
+            let mut pos_ahead = v.pos;
+            loop {
+                let ch = char_at(v, reader, pos_ahead)?;
+                if ch == -1 {
+                    break;
+                }
+                match user_fst.find_target_arc(ch, &arc, pos_ahead == v.pos)? {
+                    Some(a) => arc = a,
+                    None => break,
+                }
+                output = output.wrapping_add(arc.output() as i32);
+                if arc.is_final() {
+                    max_pos_ahead = pos_ahead;
+                    output_max_pos_ahead = output;
+                    arc_final_out_max_pos_ahead = arc.next_final_output() as i32;
+                    any_matches = true;
+                    if !v.output_longest_user_entry_only {
+                        // add all matched user entries.
+                        let word_pos = v.pos;
+                        add(
+                            v,
+                            lang,
+                            TokenType::User,
+                            pd,
+                            word_pos,
+                            pos_ahead.wrapping_add(1),
+                            output.wrapping_add(arc.next_final_output() as i32),
+                            false,
+                        )?;
+                    }
+                }
+                pos_ahead = pos_ahead.wrapping_add(1);
+            }
+
+            // Longest matching for user word
+            if any_matches && max_pos_ahead > user_word_max_pos_ahead {
+                if v.output_longest_user_entry_only {
+                    let word_pos = v.pos;
+                    add(
+                        v,
+                        lang,
+                        TokenType::User,
+                        pd,
+                        word_pos,
+                        max_pos_ahead.wrapping_add(1),
+                        output_max_pos_ahead.wrapping_add(arc_final_out_max_pos_ahead),
+                        false,
+                    )?;
+                }
+                user_word_max_pos_ahead = user_word_max_pos_ahead.max(max_pos_ahead);
+            }
+        }
+
+        if !any_matches {
+            // Next, try known dictionary matches
+            let fst = Arc::clone(&v.fst);
+            let mut arc = fst.first_arc();
+            let mut output: i32 = 0;
+            let mut pos_ahead = v.pos;
+            loop {
+                let ch = char_at(v, reader, pos_ahead)?;
+                if ch == -1 {
+                    break;
+                }
+                match fst.find_target_arc(ch, &arc, pos_ahead == v.pos)? {
+                    Some(a) => arc = a,
+                    None => break,
+                }
+                output = output.wrapping_add(arc.output() as i32);
+                if arc.is_final() {
+                    let source = output.wrapping_add(arc.next_final_output() as i32);
+                    let lang = &*lang;
+                    for &word_id in lang.known_word_ids(source) {
+                        let word_pos = v.pos;
+                        add(
+                            v,
+                            lang,
+                            TokenType::Known,
+                            pd,
+                            word_pos,
+                            pos_ahead.wrapping_add(1),
+                            word_id,
+                            false,
+                        )?;
+                        any_matches = true;
+                    }
+                }
+                pos_ahead = pos_ahead.wrapping_add(1);
+            }
+        }
+
+        if !lang.should_skip_process_unknown_word(unknown_word_end_index, pd) {
+            let unknown_word_length = lang.process_unknown_word(v, reader, any_matches, pd)?;
+            unknown_word_end_index = pd.wrapping_add(unknown_word_length);
+        }
+        v.pos = v.pos.wrapping_add(1);
+    }
+
+    v.end = true;
+
+    if v.pos > 0 {
+        let end_pos = v.pos;
+        let mut least_cost = i32::MAX;
+        let mut least_idx: i32 = -1;
+        let end_data = v.positions.get(end_pos);
+        for (idx, b) in end_data.backs.iter().enumerate() {
+            // Add EOS cost:
+            let cost = b.cost.wrapping_add(v.costs.get(b.last_right_id, 0));
+            if cost < least_cost {
+                least_cost = cost;
+                least_idx = i32::try_from(idx).unwrap_or(i32::MAX);
+            }
+        }
+
+        if v.output_nbest {
+            lang.backtrace_nbest(v, end_pos, true)?;
+        }
+        lang.backtrace(v, end_pos, least_idx)?;
+        if v.output_nbest {
+            lang.fixup_pending_list(v)?;
+        }
+    }
+    // else: no characters in the input string; no tokens.
+    Ok(())
+}
+
+/// `Viterbi.add(morphData, fromPosData, wordPos, endPos, wordID, type,
+/// addPenalty)`: the least-cost arc from `from_pos` for the word, added to
+/// `end_pos`.
+#[allow(clippy::too_many_arguments)]
+pub fn add<T, L: ViterbiLang<T> + ?Sized>(
+    v: &mut Viterbi<T>,
+    lang: &L,
+    token_type: TokenType,
+    from_pos: i32,
+    word_pos: i32,
+    end_pos: i32,
+    word_id: i32,
+    add_penalty: bool,
+) -> Result<(), AnalysisError> {
+    let morph = lang.morph_data(token_type);
+    let word_cost = morph.word_cost(word_id);
+    let left_id = morph.left_id(word_id);
+    let right_id = morph.right_id(word_id);
+    let mut least_cost = i32::MAX;
+    let mut least_idx: i32 = -1;
+    // Create the end position first: the array may grow.
+    v.positions.get(end_pos);
+    let from = v.positions.at(from_pos);
+    // The number of spaces before the term
+    let num_spaces = word_pos.wrapping_sub(from.pos);
+    let space_penalty = lang.compute_space_penalty(token_type, word_id, num_spaces);
+    for (idx, b) in from.backs.iter().enumerate() {
+        // Cost is path cost so far, plus word cost (added at end of loop),
+        // plus bigram cost and space penalty cost.
+        let cost = b
+            .cost
+            .wrapping_add(v.costs.get(b.last_right_id, left_id))
+            .wrapping_add(space_penalty);
+        if cost < least_cost {
+            least_cost = cost;
+            least_idx = i32::try_from(idx).unwrap_or(i32::MAX);
+        }
+    }
+    let from_data_pos = from.pos;
+
+    least_cost = least_cost.wrapping_add(word_cost);
+
+    if add_penalty && token_type != TokenType::User {
+        let penalty = lang.compute_penalty(v, from_data_pos, end_pos.wrapping_sub(from_data_pos));
+        least_cost = least_cost.wrapping_add(penalty);
+    }
+
+    v.positions.get(end_pos).add(
+        least_cost,
+        right_id,
+        from_data_pos,
+        word_pos,
+        least_idx,
+        word_id,
+        token_type,
+    );
+    Ok(())
+}

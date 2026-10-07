@@ -105,6 +105,30 @@ impl RollingCharBuffer {
         Ok(self.window.get(idx as usize).copied())
     }
 
+    /// The unit at `pos` if it is already buffered (read and not freed),
+    /// without reading.
+    pub fn peek(&self, pos: i32) -> Option<u16> {
+        let idx = usize::try_from(pos.checked_sub(self.first_pos)?).ok()?;
+        self.window.get(idx).copied()
+    }
+
+    /// `get(int posStart, int length)`: a copy of `length` buffered units
+    /// from `pos_start` (units not buffered are left out).
+    pub fn slice(&self, pos_start: i32, length: i32) -> Vec<u16> {
+        let Some(start) = pos_start
+            .checked_sub(self.first_pos)
+            .and_then(|s| usize::try_from(s).ok())
+        else {
+            return Vec::new();
+        };
+        let len = usize::try_from(length).unwrap_or(0);
+        self.window
+            .range(start.min(self.window.len())..)
+            .take(len)
+            .copied()
+            .collect()
+    }
+
     /// `freeBefore(int pos)`.
     pub fn free_before(&mut self, pos: i32) {
         while self.first_pos < pos && self.window.pop_front().is_some() {
@@ -365,6 +389,11 @@ mod tests {
         assert_eq!(r.get(&mut input, 599).unwrap(), Some(u16::from(b'x')));
         assert_eq!(r.get(&mut input, 600).unwrap(), None);
         assert_eq!(r.get(&mut input, 601).unwrap(), None);
+        assert_eq!(r.peek(500), Some(u16::from(b'x')));
+        assert_eq!((r.peek(499), r.peek(600)), (None, None));
+        assert_eq!(r.slice(598, 5), [u16::from(b'x'); 2]);
+        assert!(r.slice(10, 2).is_empty());
+        assert!(r.slice(650, 2).is_empty());
         r.reset();
     }
 }

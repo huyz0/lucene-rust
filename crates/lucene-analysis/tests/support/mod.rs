@@ -132,6 +132,7 @@ pub fn exception_name(e: &AnalysisError) -> &'static str {
         AnalysisError::IllegalState(m) if m.starts_with("NullPointerException") => {
             "NullPointerException"
         }
+        AnalysisError::IllegalState(m) if m.starts_with("RuntimeException") => "RuntimeException",
         AnalysisError::IllegalState(_) => "IllegalStateException",
         AnalysisError::AlreadyClosed(_) => "AlreadyClosedException",
         AnalysisError::Io(_) => "IOException",

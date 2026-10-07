@@ -95,7 +95,7 @@ case "$BENCH" in
     MAIN=AnalysisM12Micro
     SRC=benchmarks/micro/java/AnalysisM12Micro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
-    JAR_MODULES="lucene-core lucene-analysis-common lucene-analysis-phonetic lucene-analysis-stempel lucene-analysis-morfologik"
+    JAR_MODULES="lucene-core lucene-analysis-common lucene-analysis-phonetic lucene-analysis-stempel lucene-analysis-morfologik lucene-analysis-kuromoji"
     M12_THIRDPARTY=1 ;;
   # M11 T11.3: SnowballFilter per language over the fixture vocabularies.
   snowball)

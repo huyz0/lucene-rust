@@ -21,6 +21,8 @@ import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.TokenStream;
 import org.apache.lucene.analysis.Tokenizer;
 import org.apache.lucene.analysis.core.WhitespaceTokenizer;
+import org.apache.lucene.analysis.ja.JapaneseAnalyzer;
+import org.apache.lucene.analysis.ja.JapaneseTokenizer;
 import org.apache.lucene.analysis.phonetic.BeiderMorseFilter;
 import org.apache.lucene.analysis.phonetic.DaitchMokotoffSoundexFilter;
 import org.apache.lucene.analysis.phonetic.DoubleMetaphoneFilter;
@@ -83,6 +85,17 @@ public class AnalysisM12Micro {
     return docs;
   }
 
+  /** The Japanese corpus and the Kuromoji fixture's stress lines, one document each. */
+  static List<String> japaneseDocs() throws IOException {
+    List<String> docs = new ArrayList<>();
+    for (String f : new String[] {"fixtures/corpus/analysis-japanese.txt", "fixtures/data/analysis_kuromoji/stress.txt"}) {
+      for (String line : Files.readAllLines(Path.of(f), StandardCharsets.UTF_8)) {
+        if (!line.isEmpty()) docs.add(line);
+      }
+    }
+    return docs;
+  }
+
   static Analyzer chain(Supplier<Tokenizer> tok, Function<TokenStream, TokenStream> filters) {
     return new Analyzer() {
       @Override
@@ -130,5 +143,15 @@ public class AnalysisM12Micro {
     run("morfologik_filter", chain(WhitespaceTokenizer::new, t -> new MorfologikFilter(t, dict)), morf);
     run("ukrainian_analyzer", new UkrainianMorfologikAnalyzer(),
         fixtureDocs("fixtures/data/analysis_morfologik/lookups_ukrainian.tsv"));
+    List<String> ja = japaneseDocs();
+    run("kuromoji_normal", chain(() -> new JapaneseTokenizer(null, true, true, JapaneseTokenizer.Mode.NORMAL), t -> t), ja);
+    run("kuromoji_search", chain(() -> new JapaneseTokenizer(null, true, false, JapaneseTokenizer.Mode.SEARCH), t -> t), ja);
+    run("kuromoji_extended", chain(() -> new JapaneseTokenizer(null, true, true, JapaneseTokenizer.Mode.EXTENDED), t -> t), ja);
+    run("kuromoji_nbest", chain(() -> {
+      JapaneseTokenizer t = new JapaneseTokenizer(null, true, true, JapaneseTokenizer.Mode.NORMAL);
+      t.setNBestCost(2000);
+      return t;
+    }, t -> t), ja);
+    run("japanese_analyzer", new JapaneseAnalyzer(), ja);
   }
 }

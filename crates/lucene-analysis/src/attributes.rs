@@ -54,13 +54,81 @@ use crate::AnalysisError;
 /// creates; [`Self::clear`] is `AttributeImpl.clear()`, [`Self::end`]
 /// `AttributeImpl.end()` (`clear()` unless overridden); `Clone` is
 /// `copyTo`/`captureState`.
-pub trait CustomAttribute: Clone + PartialEq + Debug + Default + Send + Sync + 'static {
+pub trait CustomAttribute: Clone + Eq + Debug + Default + Send + Sync + 'static {
     /// `AttributeImpl.clear()`.
     fn clear(&mut self);
 
     /// `AttributeImpl.end()`.
     fn end(&mut self) {
         self.clear();
+    }
+
+    /// `AttributeImpl.reflectWith(AttributeReflector)`: each of the
+    /// attribute's key/value pairs, with the fully qualified name of the
+    /// attribute interface it belongs to, in Java's order.
+    fn reflect(&self, reflector: &mut dyn FnMut(&'static str, &'static str, AttrValue<'_>));
+
+    /// The implementation's class name, for `restoreState`'s error (Java's
+    /// `getClass().getName()`).
+    fn impl_class(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
+}
+
+/// A reflected attribute value (`AttributeReflector.reflect`'s `Object`),
+/// whose [`Display`](std::fmt::Display) is Java's `String.valueOf`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AttrValue<'a> {
+    /// A `String`/`CharSequence` (`None`: `null`).
+    Str(Option<Cow<'a, str>>),
+    /// An `int`.
+    Int(i32),
+    /// A `boolean`.
+    Bool(bool),
+    /// A `float`.
+    Float(f32),
+    /// A `BytesRef` (`None`: `null`), shown as `BytesRef.toString()`.
+    Bytes(Option<&'a [u8]>),
+    /// A `List` of `CharSequence`s (`None`: `null`), shown as
+    /// `AbstractCollection.toString()`.
+    List(Option<Vec<Cow<'a, str>>>),
+}
+
+impl std::fmt::Display for AttrValue<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AttrValue::Str(None) | AttrValue::Bytes(None) | AttrValue::List(None) => {
+                f.write_str("null")
+            }
+            AttrValue::Str(Some(s)) => f.write_str(s),
+            AttrValue::Int(i) => write!(f, "{i}"),
+            AttrValue::Bool(b) => write!(f, "{b}"),
+            // Java's Float.toString for the values a boost takes.
+            AttrValue::Float(v) if v.is_finite() && v.fract() == 0.0 && v.abs() < 1e7 => {
+                write!(f, "{v:.1}")
+            }
+            AttrValue::Float(v) => write!(f, "{v}"),
+            AttrValue::Bytes(Some(b)) => {
+                f.write_str("[")?;
+                for (i, byte) in b.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(" ")?;
+                    }
+                    write!(f, "{byte:x}")?;
+                }
+                f.write_str("]")
+            }
+            AttrValue::List(Some(items)) => {
+                f.write_str("[")?;
+                for (i, s) in items.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    f.write_str(s)?;
+                }
+                f.write_str("]")
+            }
+        }
     }
 }
 
@@ -71,6 +139,8 @@ trait DynAttribute: Debug + Send + Sync {
     fn clone_box(&self) -> Box<dyn DynAttribute>;
     fn eq_dyn(&self, other: &dyn DynAttribute) -> bool;
     fn copy_from(&mut self, other: &dyn DynAttribute);
+    fn reflect(&self, reflector: &mut dyn FnMut(&'static str, &'static str, AttrValue<'_>));
+    fn impl_class(&self) -> &'static str;
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
@@ -92,6 +162,12 @@ impl<T: CustomAttribute> DynAttribute for T {
         if let Some(o) = other.as_any().downcast_ref::<T>() {
             self.clone_from(o);
         }
+    }
+    fn reflect(&self, reflector: &mut dyn FnMut(&'static str, &'static str, AttrValue<'_>)) {
+        CustomAttribute::reflect(self, reflector);
+    }
+    fn impl_class(&self) -> &'static str {
+        CustomAttribute::impl_class(self)
     }
     fn as_any(&self) -> &dyn Any {
         self
@@ -162,12 +238,34 @@ impl Clone for AttributeSource {
         a
     }
 
-    /// Field by field, so [`AttributeSource::restore_state`] reuses this
-    /// source's term and payload buffers (a derived `clone_from` would
+    /// An exact copy (`clone_from` is `*self = source.clone()`), reusing
+    /// this source's buffers and its instances of the source's custom
+    /// attributes; a custom attribute the source lacks is dropped.
+    fn clone_from(&mut self, source: &Self) {
+        self.copy_core_from(source);
+        let same_types = self.custom.len() == source.custom.len()
+            && self
+                .custom
+                .iter()
+                .zip(&source.custom)
+                .all(|(a, b)| a.as_any().type_id() == b.as_any().type_id());
+        if same_types {
+            for (mine, theirs) in self.custom.iter_mut().zip(&source.custom) {
+                mine.copy_from(theirs.as_ref());
+            }
+        } else {
+            self.custom = source.custom.iter().map(|a| a.clone_box()).collect();
+        }
+    }
+}
+
+impl AttributeSource {
+    /// The core attributes of `source`, field by field, so a restore reuses
+    /// this source's term and payload buffers (a derived `clone_from` would
     /// allocate a whole new value per call). The destructuring names every
     /// field, so a field added to the struct fails to compile here until it
     /// is copied too.
-    fn clone_from(&mut self, source: &Self) {
+    fn copy_core_from(&mut self, source: &Self) {
         let AttributeSource {
             term,
             bytes_term,
@@ -201,15 +299,7 @@ impl Clone for AttributeSource {
         self.term_frequency = *term_frequency;
         self.sentence_index = *sentence_index;
         self.boost_bits = *boost_bits;
-        // Java's restoreState copies each of the state's attributes into
-        // this source's instance of that class.
-        for attr in custom {
-            let id = attr.as_any().type_id();
-            match self.custom.iter_mut().find(|a| a.as_any().type_id() == id) {
-                Some(mine) => mine.copy_from(attr.as_ref()),
-                None => self.custom.push(attr.clone_box()),
-            }
-        }
+        let _ = custom; // copied by the callers, each its own way
     }
 }
 
@@ -307,8 +397,147 @@ impl AttributeSource {
     }
 
     /// `AttributeSource.restoreState(State)`; reuses this source's buffers.
+    /// Each of the state's attributes is copied into this source's instance
+    /// of its class; attributes the state does not hold keep their values.
+    ///
+    /// Differs: Java throws `IllegalArgumentException` for a state holding
+    /// an attribute this source lacks; this adds it. Within one chain that
+    /// cannot happen -- a state is captured from the chain's own source,
+    /// and attributes are never removed -- so only a state from another
+    /// chain reaches the difference; [`Self::try_restore_state`] refuses it
+    /// as Java does.
     pub fn restore_state(&mut self, state: &State) {
-        self.clone_from(state);
+        self.copy_core_from(state);
+        for attr in &state.custom {
+            let id = attr.as_any().type_id();
+            match self.custom.iter_mut().find(|a| a.as_any().type_id() == id) {
+                Some(mine) => mine.copy_from(attr.as_ref()),
+                None => self.custom.push(attr.clone_box()),
+            }
+        }
+    }
+
+    /// `AttributeSource.restoreState(State)` with Java's check: a state
+    /// holding an attribute this source lacks is an `IllegalArgument`
+    /// error, and nothing is restored.
+    pub fn try_restore_state(&mut self, state: &State) -> Result<(), AnalysisError> {
+        if let Some(missing) = state.custom.iter().find(|s| {
+            let id = s.as_any().type_id();
+            !self.custom.iter().any(|a| a.as_any().type_id() == id)
+        }) {
+            return Err(AnalysisError::IllegalArgument(format!(
+                "State contains AttributeImpl of type {} that is not in in this AttributeSource",
+                missing.impl_class()
+            )));
+        }
+        self.restore_state(state);
+        Ok(())
+    }
+
+    /// `AttributeSource.reflectWith(AttributeReflector)`: every attribute's
+    /// key/value pairs. The core attributes come first, in the order of the
+    /// default factory's `PackedTokenAttributeImpl` (term, bytes, offsets,
+    /// position increment and length, type, term frequency) and then flags,
+    /// keyword, payload, sentence and boost; the custom attributes follow in
+    /// the order they were added (Java's `addAttribute` order).
+    ///
+    /// Differs: Java reflects only the attributes a chain added, in the
+    /// order it added them; the core attributes here are always present
+    /// (see the module docs), so they are always reflected, in this fixed
+    /// order. The custom attributes' pairs and their order are Java's.
+    pub fn reflect_with(
+        &self,
+        reflector: &mut dyn FnMut(&'static str, &'static str, AttrValue<'_>),
+    ) {
+        reflector(
+            "org.apache.lucene.analysis.tokenattributes.CharTermAttribute",
+            "term",
+            AttrValue::Str(Some(Cow::Borrowed(&self.term))),
+        );
+        reflector(
+            "org.apache.lucene.analysis.tokenattributes.TermToBytesRefAttribute",
+            "bytes",
+            AttrValue::Bytes(Some(self.term_bytes())),
+        );
+        let offset = "org.apache.lucene.analysis.tokenattributes.OffsetAttribute";
+        reflector(offset, "startOffset", AttrValue::Int(self.start_offset));
+        reflector(offset, "endOffset", AttrValue::Int(self.end_offset));
+        reflector(
+            "org.apache.lucene.analysis.tokenattributes.PositionIncrementAttribute",
+            "positionIncrement",
+            AttrValue::Int(self.position_increment),
+        );
+        reflector(
+            "org.apache.lucene.analysis.tokenattributes.PositionLengthAttribute",
+            "positionLength",
+            AttrValue::Int(self.position_length),
+        );
+        reflector(
+            "org.apache.lucene.analysis.tokenattributes.TypeAttribute",
+            "type",
+            AttrValue::Str(Some(Cow::Borrowed(&self.token_type))),
+        );
+        reflector(
+            "org.apache.lucene.analysis.tokenattributes.TermFrequencyAttribute",
+            "termFrequency",
+            AttrValue::Int(self.term_frequency),
+        );
+        reflector(
+            "org.apache.lucene.analysis.tokenattributes.FlagsAttribute",
+            "flags",
+            AttrValue::Int(self.flags),
+        );
+        reflector(
+            "org.apache.lucene.analysis.tokenattributes.KeywordAttribute",
+            "keyword",
+            AttrValue::Bool(self.keyword),
+        );
+        reflector(
+            "org.apache.lucene.analysis.tokenattributes.PayloadAttribute",
+            "payload",
+            AttrValue::Bytes(self.payload.as_deref()),
+        );
+        reflector(
+            "org.apache.lucene.analysis.tokenattributes.SentenceAttribute",
+            "sentences",
+            AttrValue::Int(self.sentence_index),
+        );
+        reflector(
+            "org.apache.lucene.search.BoostAttribute",
+            "boost",
+            AttrValue::Float(self.boost()),
+        );
+        self.reflect_custom(reflector);
+    }
+
+    /// The custom attributes' part of [`Self::reflect_with`] alone, in the
+    /// order they were added.
+    pub fn reflect_custom(
+        &self,
+        reflector: &mut dyn FnMut(&'static str, &'static str, AttrValue<'_>),
+    ) {
+        for attr in &self.custom {
+            attr.reflect(reflector);
+        }
+    }
+
+    /// `AttributeSource.reflectAsString(prependAttClass)` over
+    /// [`Self::reflect_with`].
+    pub fn reflect_as_string(&self, prepend_att_class: bool) -> String {
+        let mut out = String::new();
+        self.reflect_with(&mut |class, key, value| {
+            if !out.is_empty() {
+                out.push(',');
+            }
+            if prepend_att_class {
+                out.push_str(class);
+                out.push('#');
+            }
+            out.push_str(key);
+            out.push('=');
+            out.push_str(&value.to_string());
+        });
+        out
     }
 
     // ------------------------------------------------------ CharTermAttribute
@@ -566,21 +795,32 @@ mod tests {
         a
     }
 
-    #[derive(Debug, Clone, PartialEq, Default)]
+    #[derive(Debug, Clone, PartialEq, Eq, Default)]
     struct Tags(Option<Vec<String>>);
 
     impl CustomAttribute for Tags {
         fn clear(&mut self) {
             self.0 = None;
         }
+        fn reflect(&self, r: &mut dyn FnMut(&'static str, &'static str, AttrValue<'_>)) {
+            let tags = self
+                .0
+                .as_ref()
+                .map(|t| t.iter().map(|s| Cow::Borrowed(s.as_str())).collect());
+            r("x.Tags", "tags", AttrValue::List(tags));
+        }
     }
 
-    #[derive(Debug, Clone, PartialEq, Default)]
+    #[derive(Debug, Clone, PartialEq, Eq, Default)]
     struct Sticky(u32);
 
     impl CustomAttribute for Sticky {
         fn clear(&mut self) {
             self.0 = 0;
+        }
+        fn reflect(&self, r: &mut dyn FnMut(&'static str, &'static str, AttrValue<'_>)) {
+            r("x.Sticky", "n", AttrValue::Int(self.0 as i32));
+            r("x.Sticky", "s", AttrValue::Str(None));
         }
         fn end(&mut self) {
             self.0 = 99;
@@ -600,16 +840,60 @@ mod tests {
         a.restore_state(&state);
         assert_eq!(a.custom::<Tags>(), state.custom::<Tags>());
         assert_eq!(a.custom::<Sticky>(), Some(&Sticky(5)));
-        // A state holding an attribute this source lacks adds it.
+        // A state holding an attribute this source lacks adds it; Java's
+        // check refuses it.
         let mut b = AttributeSource::new();
+        let e = b.try_restore_state(&state).unwrap_err().to_string();
+        assert!(
+            e.contains("State contains AttributeImpl of type") && e.contains("Tags"),
+            "{e}"
+        );
+        assert!(b.custom::<Tags>().is_none());
         b.restore_state(&state);
         assert_eq!(b.custom::<Tags>(), state.custom::<Tags>());
+        b.try_restore_state(&state).unwrap();
+        // clone_from is an exact copy: an attribute the source lacks goes.
+        let mut c = a.clone();
+        c.clone_from(&state);
+        assert_eq!(c, state);
+        assert!(c.custom::<Sticky>().is_none());
+        c.clone_from(&state);
+        assert_eq!(c, state);
         a.clear_attributes();
         assert_eq!(a.custom::<Tags>(), Some(&Tags(None)));
         a.end_attributes();
         assert_eq!(a.custom::<Sticky>(), Some(&Sticky(99)));
         assert_eq!(a.clone(), a);
         assert!(format!("{a:?}").contains("Sticky"));
+    }
+
+    #[test]
+    fn reflection_lists_core_then_custom_attributes() {
+        let mut a = dirty();
+        a.add_custom::<Sticky>().0 = 3;
+        a.add_custom::<Tags>().0 = Some(vec!["a".into(), "b".into()]);
+        assert_eq!(
+            a.reflect_as_string(false),
+            "term=Foo,bytes=[1 2],startOffset=3,endOffset=7,positionIncrement=4,positionLength=2,\
+             type=<NUM>,termFrequency=6,flags=9,keyword=true,payload=[5],sentences=8,boost=1.0,\
+             n=3,s=null,tags=[a, b]"
+        );
+        let mut custom = Vec::new();
+        a.reflect_custom(&mut |c, k, v| custom.push(format!("{c}#{k}={v}")));
+        assert_eq!(
+            custom,
+            ["x.Sticky#n=3", "x.Sticky#s=null", "x.Tags#tags=[a, b]"]
+        );
+        let fresh = AttributeSource::new().reflect_as_string(true);
+        assert!(fresh
+            .starts_with("org.apache.lucene.analysis.tokenattributes.CharTermAttribute#term=,"));
+        assert!(fresh.contains("PayloadAttribute#payload=null"), "{fresh}");
+        a.set_boost(2.5);
+        a.add_custom::<Tags>().0 = None;
+        let s = a.reflect_as_string(false);
+        assert!(s.contains("boost=2.5") && s.ends_with("tags=null"), "{s}");
+        assert_eq!(AttrValue::Float(1e8).to_string(), "100000000");
+        assert!(CustomAttribute::impl_class(&Sticky(0)).ends_with("Sticky"));
     }
 
     #[test]

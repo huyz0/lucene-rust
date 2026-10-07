@@ -1,0 +1,682 @@
+S	CustomAnalyzer(org.apache.lucene.analysis.core.WhitespaceTokenizerFactory,org.apache.lucene.analysis.ja.JapaneseBaseFormFilterFactory,org.apache.lucene.analysis.ja.JapaneseReadingFormFilterFactory,org.apache.lucene.analysis.ja.JapanesePartOfSpeechStopFilterFactory,org.apache.lucene.analysis.ja.JapaneseKatakanaStemFilterFactory,org.apache.lucene.analysis.ja.JapaneseNumberFilterFactory,org.apache.lucene.analysis.ja.JapaneseHiraganaUppercaseFilterFactory,org.apache.lucene.analysis.ja.JapaneseKatakanaUppercaseFilterFactory,org.apache.lucene.analysis.ja.JapaneseCompletionFilterFactory)
+T	0	今日ハトテモ良イ天気デスネ。	0	14	1	1	word	0	-	0	1
+E	0	14	14	0
+T	1	私ハ東京大学デ言語学ヲ勉強シテイマス。	0	19	1	1	word	0	-	0	1
+E	1	19	19	0
+T	2	関西国際空港カラ成田空港マデ飛行機デ移動シマシタ。	0	25	1	1	word	0	-	0	1
+E	2	25	25	0
+T	3	コノ本ハ図書館デ借リタモノデス。	0	16	1	1	word	0	-	0	1
+E	3	16	16	0
+T	4	明日ノ会議ハ午後三時カラ始マリマス。	0	18	1	1	word	0	-	0	1
+E	4	18	18	0
+T	5	彼女ハピアノヲ弾クノガトテモ上手ダ。	0	18	1	1	word	0	-	0	1
+E	5	18	18	0
+T	6	日本経済新聞ノ記事ニヨルト、株価ガ大キク上昇シタ。	0	25	1	1	word	0	-	0	1
+E	6	25	25	0
+T	7	寿司ト天プラトラーメン、ドレガ一番好キデスカ？	0	23	1	1	word	0	-	0	1
+E	7	23	23	0
+T	8	雨ガ降ツテイタノデ、傘ヲ持ツテ出カケタ。	0	20	1	1	word	0	-	0	1
+E	8	20	20	0
+T	9	子供タチハ公園デ元気ニ遊ンデイル。	0	17	1	1	word	0	-	0	1
+E	9	17	17	0
+T	10	コンピユーターノソフトウエアヲアツプデートシテクダサイ。	0	28	1	1	word	0	-	0	1
+E	10	28	28	0
+T	11	スマートフオンノバツテリーガスグニ切レテシマウ。	0	24	1	1	word	0	-	0	1
+E	11	24	24	0
+T	12	国立国会図書館ハ日本最大ノ図書館デアル。	0	20	1	1	word	0	-	0	1
+E	12	20	20	0
+T	13	東京都庁舎ハ新宿区ニアリマス。	0	15	1	1	word	0	-	0	1
+E	13	15	15	0
+T	14	「コンニチハ」ト彼ハ言ツタ。	0	14	1	1	word	0	-	0	1
+E	14	14	14	0
+T	15	二〇二四年十月七日、晴レ。	0	13	1	1	word	0	-	0	1
+E	15	13	13	0
+T	16	価格ハ１２，８００円（税込）デス。	0	17	1	1	word	0	-	0	1
+E	16	17	17	0
+T	17	電話番号ハ０３－１２３４－５６７８デス。	0	20	1	1	word	0	-	0	1
+E	17	20	20	0
+T	18	ＡＢＣ株式会社ノＣＥＯガ来日シタ。	0	17	1	1	word	0	-	0	1
+E	18	17	17	0
+T	19	iPhoneトAndroidノドチラヲ使ツテイマスカ。	0	27	1	1	word	0	-	0	1
+E	19	27	27	0
+T	20	私ノ名前ハ山田太郎デス。ヨロシクオ願イシマス。	0	23	1	1	word	0	-	0	1
+E	20	23	23	0
+T	21	人々ハ時々々々ト言イナガラ歩イタ。	0	17	1	1	word	0	-	0	1
+E	21	17	17	0
+T	22	ココハ静カナ町デ、夜ニナルト星ガヨク見エル。	0	22	1	1	word	0	-	0	1
+E	22	22	22	0
+T	23	猫ガ窓ノ外ヲジツト見ツメテイル。	0	16	1	1	word	0	-	0	1
+E	23	16	16	0
+T	24	吾輩ハ猫デアル。名前ハマダ無イ。	0	16	1	1	word	0	-	0	1
+E	24	16	16	0
+T	25	スモモモモモモモモノウチ。	0	13	1	1	word	0	-	0	1
+E	25	13	13	0
+T	26	ニワニハニワニワトリガイル。	0	14	1	1	word	0	-	0	1
+E	26	14	14	0
+T	27	東京特許許可局長今日急遽休暇許可拒否。	0	19	1	1	word	0	-	0	1
+E	27	19	19	0
+T	28	生麦生米生卵。	0	7	1	1	word	0	-	0	1
+E	28	7	7	0
+T	29	隣ノ客ハヨク柿食ウ客ダ。	0	12	1	1	word	0	-	0	1
+E	29	12	12	0
+T	30	地球温暖化対策推進法改正案ガ可決サレタ。	0	20	1	1	word	0	-	0	1
+E	30	20	20	0
+T	31	情報処理技術者試験ニ合格シマシタ。	0	17	1	1	word	0	-	0	1
+E	31	17	17	0
+T	32	自然言語処理ハ人工知能ノ一分野デス。	0	18	1	1	word	0	-	0	1
+E	32	18	18	0
+T	33	形態素解析器ハテキストヲ単語ニ分割スル。	0	20	1	1	word	0	-	0	1
+E	33	20	20	0
+T	34	検索エンジンノ全文検索インデツクスヲ作成スル。	0	23	1	1	word	0	-	0	1
+E	34	23	23	0
+T	35	三百五十六万七千八百九十円	0	13	1	1	word	0	-	0	1
+E	35	13	13	0
+T	36	一千万円ノ借金ヲ返済シタ。	0	13	1	1	word	0	-	0	1
+E	36	13	13	0
+T	37	第二次世界大戦後ノ復興期。	0	13	1	1	word	0	-	0	1
+E	37	13	13	0
+T	38	２０２０年東京オリンピツク・パラリンピツク	0	21	1	1	word	0	-	0	1
+E	38	21	21	0
+T	39	令和元年五月一日ニ改元サレタ。	0	15	1	1	word	0	-	0	1
+E	39	15	15	0
+T	40	アリガトウゴザイマシタ！	0	12	1	1	word	0	-	0	1
+E	40	12	12	0
+T	41	スミマセン、駅ハドコデスカ？	0	14	1	1	word	0	-	0	1
+E	41	14	14	0
+T	42	オハヨウゴザイマス。今日モヨロシク。	0	18	1	1	word	0	-	0	1
+E	42	18	18	0
+T	43	イタダキマス。ゴチソウサマデシタ。	0	17	1	1	word	0	-	0	1
+E	43	17	17	0
+T	44	ｶﾀｶﾅノ半角文字モ処理デキルカ確認スル。	0	21	1	1	word	0	-	0	1
+E	44	21	21	0
+T	45	ﾃｽﾄ用ノﾃﾞｰﾀデス。	0	12	1	1	word	0	-	0	1
+E	45	12	12	0
+T	46	ヒラガナ、カタカナ、漢字、English、123ヲ混ゼタ文。	0	30	1	1	word	0	-	0	1
+E	46	30	30	0
+T	47	メール：info@example.jp	0	19	1	1	word	0	-	0	1
+T	47	ヘ連絡シテクダサイ。	20	30	1	1	word	0	-	0	1
+E	47	30	30	0
+T	48	ウエブサイト	0	6	1	1	word	0	-	0	1
+T	48	uebusaito	0	6	0	1	word	0	-	0	1
+T	48	https://www.example.com	7	30	1	1	word	0	-	0	1
+T	48	ヲ参照。	31	35	1	1	word	0	-	0	1
+E	48	35	35	0
+T	49	赤イ鳥ガ青イ空ヲ飛ンデイツタ。	0	15	1	1	word	0	-	0	1
+E	49	15	15	0
+T	50	走ル、走ツタ、走ラナイ、走レバ、走ロウ。	0	20	1	1	word	0	-	0	1
+E	50	20	20	0
+T	51	食ベル、食ベタ、食ベナイ、食ベレバ、食ベヨウ。	0	23	1	1	word	0	-	0	1
+E	51	23	23	0
+T	52	美シイ、美シカツタ、美シクナイ、美シケレバ。	0	22	1	1	word	0	-	0	1
+E	52	22	22	0
+T	53	静カダ、静カダツタ、静カデハナイ。	0	17	1	1	word	0	-	0	1
+E	53	17	17	0
+T	54	行キマス、行キマシタ、行キマセン、行キマシヨウ。	0	24	1	1	word	0	-	0	1
+E	54	24	24	0
+T	55	読マセル、読マレル、読マセラレル。	0	17	1	1	word	0	-	0	1
+E	55	17	17	0
+T	56	勉強シタイト思ツテイタガ、時間ガナカツタ。	0	21	1	1	word	0	-	0	1
+E	56	21	21	0
+T	57	モシ明日雨ガ降ツタラ、試合ハ中止ニナルダロウ。	0	23	1	1	word	0	-	0	1
+E	57	23	23	0
+T	58	彼ガ来ルカドウカ分カラナイ。	0	14	1	1	word	0	-	0	1
+E	58	14	14	0
+T	59	本ヲ読ムコトガ好キデス。	0	12	1	1	word	0	-	0	1
+E	59	12	12	0
+T	60	早ク寝ナサイ。	0	7	1	1	word	0	-	0	1
+E	60	7	7	0
+T	61	ナンデヤネン！	0	7	1	1	word	0	-	0	1
+E	61	7	7	0
+T	62	チヨツト待ツテクダサイネ〜	0	13	1	1	word	0	-	0	1
+E	62	13	13	0
+T	63	エーツト、何ダツケ？	0	10	1	1	word	0	-	0	1
+E	63	10	10	0
+T	64	ワールドカツプサツカー日本代表チーム	0	18	1	1	word	0	-	0	1
+E	64	18	18	0
+T	65	アイスクリームシヨツプデバニラアイスヲ買ツタ。	0	23	1	1	word	0	-	0	1
+E	65	23	23	0
+T	66	デパートノ地下食品売リ場ハ混雑シテイタ。	0	20	1	1	word	0	-	0	1
+E	66	20	20	0
+T	67	プログラミング言語ノ比較研究。	0	15	1	1	word	0	-	0	1
+E	67	15	15	0
+T	68	ジヤバスクリプトトパイソントラスト。	0	18	1	1	word	0	-	0	1
+E	68	18	18	0
+T	69	キーボードトマウストデイスプレイ。	0	17	1	1	word	0	-	0	1
+E	69	17	17	0
+T	70	コノ料理、メツチヤ美味シイ！	0	14	1	1	word	0	-	0	1
+E	70	14	14	0
+T	71	スゴーイ！ヤツター！	0	10	1	1	word	0	-	0	1
+E	71	10	10	0
+T	72	ウウウ、寒イヨオ。	0	9	1	1	word	0	-	0	1
+E	72	9	9	0
+T	73	ハアハア、疲レタ。	0	9	1	1	word	0	-	0	1
+E	73	9	9	0
+T	74	私タチハ、明日、京都ヘ、行ク。	0	15	1	1	word	0	-	0	1
+E	74	15	15	0
+T	75	・中黒・区切リ・テスト・	0	12	1	1	word	0	-	0	1
+E	75	12	12	0
+T	76	【重要】オ知ラセ《新着》	0	12	1	1	word	0	-	0	1
+E	76	12	12	0
+T	77	※注意：コノ先、工事中。	0	12	1	1	word	0	-	0	1
+E	77	12	12	0
+T	78	〒100-0001	0	9	1	1	word	0	-	0	1
+T	78	東京都千代田区千代田1-1	10	23	1	1	word	0	-	0	1
+E	78	23	23	0
+T	79	株式会社ABCホールデイングス代表取締役社長	0	22	1	1	word	0	-	0	1
+E	79	22	22	0
+T	80	北海道札幌市中央区北一条西二丁目	0	16	1	1	word	0	-	0	1
+E	80	16	16	0
+T	81	大阪府大阪市北区梅田三丁目一番一号	0	17	1	1	word	0	-	0	1
+E	81	17	17	0
+T	82	福岡県北九州市小倉北区	0	11	1	1	word	0	-	0	1
+E	82	11	11	0
+T	83	沖縄県那覇市	0	6	1	1	word	0	-	0	1
+E	83	6	6	0
+T	84	富士山ハ日本一高イ山デス。	0	13	1	1	word	0	-	0	1
+E	84	13	13	0
+T	85	琵琶湖ハ日本最大ノ湖デアル。	0	14	1	1	word	0	-	0	1
+E	85	14	14	0
+T	86	信濃川ハ日本デ最モ長イ川ダ。	0	14	1	1	word	0	-	0	1
+E	86	14	14	0
+T	87	桜ノ花ガ満開ニナツタ。	0	11	1	1	word	0	-	0	1
+E	87	11	11	0
+T	88	紅葉狩リニ出カケマシヨウ。	0	13	1	1	word	0	-	0	1
+E	88	13	13	0
+T	89	年末年始ノ休業日ノオ知ラセ	0	13	1	1	word	0	-	0	1
+E	89	13	13	0
+T	90	新型コロナウイルス感染症対策本部	0	16	1	1	word	0	-	0	1
+E	90	16	16	0
+T	91	国際連合教育科学文化機関	0	12	1	1	word	0	-	0	1
+E	91	12	12	0
+T	92	世界保健機関ノ事務局長	0	11	1	1	word	0	-	0	1
+E	92	11	11	0
+T	93	内閣総理大臣ガ記者会見ヲ行ツタ。	0	16	1	1	word	0	-	0	1
+E	93	16	16	0
+T	94	衆議院議員総選挙ノ投票日	0	12	1	1	word	0	-	0	1
+E	94	12	12	0
+T	95	最高裁判所ノ判決ガ下サレタ。	0	14	1	1	word	0	-	0	1
+E	95	14	14	0
+T	96	経済産業省ト文部科学省	0	11	1	1	word	0	-	0	1
+E	96	11	11	0
+T	97	少子高齢化社会ニオケル社会保障制度改革	0	19	1	1	word	0	-	0	1
+E	97	19	19	0
+T	98	再生可能エネルギーノ普及促進	0	14	1	1	word	0	-	0	1
+E	98	14	14	0
+T	99	半導体製造装置ノ輸出規制	0	12	1	1	word	0	-	0	1
+E	99	12	12	0
+T	100	量子コンピユーターノ研究開発	0	14	1	1	word	0	-	0	1
+E	100	14	14	0
+T	101	遺伝子組ミ換エ作物ノ安全性評価	0	15	1	1	word	0	-	0	1
+E	101	15	15	0
+T	102	宇宙航空研究開発機構ノ人工衛星打チ上ゲ	0	19	1	1	word	0	-	0	1
+E	102	19	19	0
+T	103	陸上競技百メートル走ノ世界記録	0	15	1	1	word	0	-	0	1
+E	103	15	15	0
+T	104	野球、サツカー、バスケツトボール、テニス	0	20	1	1	word	0	-	0	1
+E	104	20	20	0
+T	105	朝ゴ飯ヲ食ベズニ学校ヘ行ツタ。	0	15	1	1	word	0	-	0	1
+E	105	15	15	0
+T	106	彼ハ医者ニナリタイト言ツテイル。	0	16	1	1	word	0	-	0	1
+E	106	16	16	0
+T	107	雨ニモ負ケズ風ニモ負ケズ	0	12	1	1	word	0	-	0	1
+E	107	12	12	0
+T	108	春ハアケボノ。ヤウヤウ白クナリユク山ギハ。	0	21	1	1	word	0	-	0	1
+E	108	21	21	0
+T	109	月日ハ百代ノ過客ニシテ、行キカフ年モマタ旅人ナリ。	0	25	1	1	word	0	-	0	1
+E	109	25	25	0
+T	110	祇園精舎ノ鐘ノ声、諸行無常ノ響キアリ。	0	19	1	1	word	0	-	0	1
+E	110	19	19	0
+T	111	々々々	0	3	1	1	word	0	-	0	1
+E	111	3	3	0
+T	112	ゝゞヽヾ	0	4	1	1	word	0	-	0	1
+E	112	4	4	0
+T	113	コゝロ、ミスゞ、イスゞ、ブゞ漬ケ	0	16	1	1	word	0	-	0	1
+E	113	16	16	0
+T	114	ー長音ー	0	4	1	1	word	0	-	0	1
+E	114	4	4	0
+T	115	！？。、	0	4	1	1	word	0	-	0	1
+E	115	4	4	0
+T	116	😀絵文字😀モ入レテミル	0	13	1	1	word	0	-	0	1
+E	116	13	13	0
+T	117	𠮷野家デ牛丼ヲ食ベタ。	0	12	1	1	word	0	-	0	1
+E	117	12	12	0
+T	118	ABCDEFG	0	7	1	1	word	0	-	0	1
+T	118	abcdefg	8	15	1	1	word	0	-	0	1
+T	118	123456789	16	26	1	1	word	0	-	0	1
+E	118	26	26	0
+T	119	Ｈｅｌｌｏ	0	5	1	1	word	0	-	0	1
+T	119	Ｗｏｒｌｄ	6	11	1	1	word	0	-	0	1
+E	119	11	11	0
+T	120	全角スペース	0	6	1	1	word	0	-	0	1
+T	120	ヲ	7	8	1	1	word	0	-	0	1
+T	120	wo	7	8	0	1	word	0	-	0	1
+T	120	o	7	8	0	1	word	0	-	0	1
+T	120	含ム	9	11	1	1	word	0	-	0	1
+T	120	文	12	13	1	1	word	0	-	0	1
+E	120	13	13	0
+T	121	タブ	0	2	1	1	word	0	-	0	1
+T	121	tabu	0	2	0	1	word	0	-	0	1
+T	121	ヲ	3	4	1	1	word	0	-	0	1
+T	121	wo	3	4	0	1	word	0	-	0	1
+T	121	o	3	4	0	1	word	0	-	0	1
+T	121	含ム	5	7	1	1	word	0	-	0	1
+T	121	文	8	9	1	1	word	0	-	0	1
+E	121	9	9	0
+T	122	改行ノ無イ非常ニ長イ文章ヲ作ルタメニ同ジヨウナ言葉ヲ何度モ繰リ返シテ書イテミルコトニシマシタガソレデモマダ足リナイカモシレナイノデモウ少シ続ケテ書イテオクコトニシマス。	0	84	1	1	word	0	-	0	1
+E	122	84	84	0
+T	123	13345789900000	0	15	1	1	word	0	-	0	1
+E	123	15	15	0
+T	124	123	0	4	1	1	word	0	-	0	1
+E	124	4	4	0
+T	125	第１回日本語処理勉強会	0	11	1	1	word	0	-	0	1
+E	125	11	11	0
+T	126	ＪＲ東日本ノ山手線	0	9	1	1	word	0	-	0	1
+E	126	9	9	0
+T	127	ＮＨＫ放送センター	0	9	1	1	word	0	-	0	1
+E	127	9	9	0
+T	128	ＵＳＢメモリートＳＤカード	0	13	1	1	word	0	-	0	1
+E	128	13	13	0
+T	129	アメリカ合衆国大統領選挙	0	12	1	1	word	0	-	0	1
+E	129	12	12	0
+T	130	ロシア連邦トウクライナ	0	11	1	1	word	0	-	0	1
+E	130	11	11	0
+T	131	中華人民共和国ノ首都北京	0	12	1	1	word	0	-	0	1
+E	131	12	12	0
+T	132	大韓民国ノソウル特別市	0	11	1	1	word	0	-	0	1
+E	132	11	11	0
+T	133	ヨーロツパ連合ノ欧州委員会	0	13	1	1	word	0	-	0	1
+E	133	13	13	0
+T	134	カリフオルニア州ロサンゼルス	0	14	1	1	word	0	-	0	1
+E	134	14	14	0
+T	135	ニユーヨーク・タイムズ紙	0	12	1	1	word	0	-	0	1
+E	135	12	12	0
+T	136	ワシントン・ポスト	0	9	1	1	word	0	-	0	1
+T	136	wasinton・posuto	0	9	0	1	word	0	-	0	1
+T	136	washinton・posuto	0	9	0	1	word	0	-	0	1
+T	136	wasinnton・posuto	0	9	0	1	word	0	-	0	1
+T	136	washinnton・posuto	0	9	0	1	word	0	-	0	1
+T	136	wasintonn・posuto	0	9	0	1	word	0	-	0	1
+T	136	washintonn・posuto	0	9	0	1	word	0	-	0	1
+T	136	wasinntonn・posuto	0	9	0	1	word	0	-	0	1
+T	136	washinntonn・posuto	0	9	0	1	word	0	-	0	1
+E	136	9	9	0
+T	137	アツプル、グーグル、マイクロソフト、アマゾン	0	22	1	1	word	0	-	0	1
+E	137	22	22	0
+T	138	トヨタ自動車トホンダトソニー	0	14	1	1	word	0	-	0	1
+E	138	14	14	0
+T	139	ジヨン・スミスサントメアリー・ジヨーンズサン	0	22	1	1	word	0	-	0	1
+T	139	ziyon・sumisusantomeariー・ziyoーnzusan	0	22	0	1	word	0	-	0	1
+T	139	jiyon・sumisusantomeariー・ziyoーnzusan	0	22	0	1	word	0	-	0	1
+T	139	ziyonn・sumisusantomeariー・ziyoーnzusan	0	22	0	1	word	0	-	0	1
+T	139	jiyonn・sumisusantomeariー・ziyoーnzusan	0	22	0	1	word	0	-	0	1
+T	139	ziyon・sumisusanntomeariー・ziyoーnzusan	0	22	0	1	word	0	-	0	1
+T	139	jiyon・sumisusanntomeariー・ziyoーnzusan	0	22	0	1	word	0	-	0	1
+T	139	ziyonn・sumisusanntomeariー・ziyoーnzusan	0	22	0	1	word	0	-	0	1
+T	139	jiyonn・sumisusanntomeariー・ziyoーnzusan	0	22	0	1	word	0	-	0	1
+T	139	ziyon・sumisusantomeariー・jiyoーnzusan	0	22	0	1	word	0	-	0	1
+T	139	jiyon・sumisusantomeariー・jiyoーnzusan	0	22	0	1	word	0	-	0	1
+T	139	ziyonn・sumisusantomeariー・jiyoーnzusan	0	22	0	1	word	0	-	0	1
+T	139	jiyonn・sumisusantomeariー・jiyoーnzusan	0	22	0	1	word	0	-	0	1
+T	139	ziyon・sumisusanntomeariー・jiyoーnzusan	0	22	0	1	word	0	-	0	1
+T	139	jiyon・sumisusanntomeariー・jiyoーnzusan	0	22	0	1	word	0	-	0	1
+T	139	ziyonn・sumisusanntomeariー・jiyoーnzusan	0	22	0	1	word	0	-	0	1
+T	139	jiyonn・sumisusanntomeariー・jiyoーnzusan	0	22	0	1	word	0	-	0	1
+T	139	ziyon・sumisusantomeariー・ziyoーnnzusan	0	22	0	1	word	0	-	0	1
+T	139	jiyon・sumisusantomeariー・ziyoーnnzusan	0	22	0	1	word	0	-	0	1
+T	139	ziyonn・sumisusantomeariー・ziyoーnnzusan	0	22	0	1	word	0	-	0	1
+T	139	jiyonn・sumisusantomeariー・ziyoーnnzusan	0	22	0	1	word	0	-	0	1
+T	139	ziyon・sumisusanntomeariー・ziyoーnnzusan	0	22	0	1	word	0	-	0	1
+T	139	jiyon・sumisusanntomeariー・ziyoーnnzusan	0	22	0	1	word	0	-	0	1
+T	139	ziyonn・sumisusanntomeariー・ziyoーnnzusan	0	22	0	1	word	0	-	0	1
+T	139	jiyonn・sumisusanntomeariー・ziyoーnnzusan	0	22	0	1	word	0	-	0	1
+T	139	ziyon・sumisusantomeariー・jiyoーnnzusan	0	22	0	1	word	0	-	0	1
+T	139	jiyon・sumisusantomeariー・jiyoーnnzusan	0	22	0	1	word	0	-	0	1
+T	139	ziyonn・sumisusantomeariー・jiyoーnnzusan	0	22	0	1	word	0	-	0	1
+T	139	jiyonn・sumisusantomeariー・jiyoーnnzusan	0	22	0	1	word	0	-	0	1
+T	139	ziyon・sumisusanntomeariー・jiyoーnnzusan	0	22	0	1	word	0	-	0	1
+T	139	jiyon・sumisusanntomeariー・jiyoーnnzusan	0	22	0	1	word	0	-	0	1
+T	139	ziyonn・sumisusanntomeariー・jiyoーnnzusan	0	22	0	1	word	0	-	0	1
+T	139	jiyonn・sumisusanntomeariー・jiyoーnnzusan	0	22	0	1	word	0	-	0	1
+T	139	ziyon・sumisusantomeariー・ziyoーnzusann	0	22	0	1	word	0	-	0	1
+T	139	jiyon・sumisusantomeariー・ziyoーnzusann	0	22	0	1	word	0	-	0	1
+T	139	ziyonn・sumisusantomeariー・ziyoーnzusann	0	22	0	1	word	0	-	0	1
+T	139	jiyonn・sumisusantomeariー・ziyoーnzusann	0	22	0	1	word	0	-	0	1
+T	139	ziyon・sumisusanntomeariー・ziyoーnzusann	0	22	0	1	word	0	-	0	1
+T	139	jiyon・sumisusanntomeariー・ziyoーnzusann	0	22	0	1	word	0	-	0	1
+T	139	ziyonn・sumisusanntomeariー・ziyoーnzusann	0	22	0	1	word	0	-	0	1
+T	139	jiyonn・sumisusanntomeariー・ziyoーnzusann	0	22	0	1	word	0	-	0	1
+T	139	ziyon・sumisusantomeariー・jiyoーnzusann	0	22	0	1	word	0	-	0	1
+T	139	jiyon・sumisusantomeariー・jiyoーnzusann	0	22	0	1	word	0	-	0	1
+T	139	ziyonn・sumisusantomeariー・jiyoーnzusann	0	22	0	1	word	0	-	0	1
+T	139	jiyonn・sumisusantomeariー・jiyoーnzusann	0	22	0	1	word	0	-	0	1
+T	139	ziyon・sumisusanntomeariー・jiyoーnzusann	0	22	0	1	word	0	-	0	1
+T	139	jiyon・sumisusanntomeariー・jiyoーnzusann	0	22	0	1	word	0	-	0	1
+T	139	ziyonn・sumisusanntomeariー・jiyoーnzusann	0	22	0	1	word	0	-	0	1
+T	139	jiyonn・sumisusanntomeariー・jiyoーnzusann	0	22	0	1	word	0	-	0	1
+T	139	ziyon・sumisusantomeariー・ziyoーnnzusann	0	22	0	1	word	0	-	0	1
+T	139	jiyon・sumisusantomeariー・ziyoーnnzusann	0	22	0	1	word	0	-	0	1
+T	139	ziyonn・sumisusantomeariー・ziyoーnnzusann	0	22	0	1	word	0	-	0	1
+T	139	jiyonn・sumisusantomeariー・ziyoーnnzusann	0	22	0	1	word	0	-	0	1
+T	139	ziyon・sumisusanntomeariー・ziyoーnnzusann	0	22	0	1	word	0	-	0	1
+T	139	jiyon・sumisusanntomeariー・ziyoーnnzusann	0	22	0	1	word	0	-	0	1
+T	139	ziyonn・sumisusanntomeariー・ziyoーnnzusann	0	22	0	1	word	0	-	0	1
+T	139	jiyonn・sumisusanntomeariー・ziyoーnnzusann	0	22	0	1	word	0	-	0	1
+T	139	ziyon・sumisusantomeariー・jiyoーnnzusann	0	22	0	1	word	0	-	0	1
+T	139	jiyon・sumisusantomeariー・jiyoーnnzusann	0	22	0	1	word	0	-	0	1
+T	139	ziyonn・sumisusantomeariー・jiyoーnnzusann	0	22	0	1	word	0	-	0	1
+T	139	jiyonn・sumisusantomeariー・jiyoーnnzusann	0	22	0	1	word	0	-	0	1
+T	139	ziyon・sumisusanntomeariー・jiyoーnnzusann	0	22	0	1	word	0	-	0	1
+T	139	jiyon・sumisusanntomeariー・jiyoーnnzusann	0	22	0	1	word	0	-	0	1
+T	139	ziyonn・sumisusanntomeariー・jiyoーnnzusann	0	22	0	1	word	0	-	0	1
+T	139	jiyonn・sumisusanntomeariー・jiyoーnnzusann	0	22	0	1	word	0	-	0	1
+E	139	22	22	0
+T	140	シヤーロツク・ホームズノ冒険	0	14	1	1	word	0	-	0	1
+E	140	14	14	0
+T	141	ハリー・ポツタート賢者ノ石	0	13	1	1	word	0	-	0	1
+E	141	13	13	0
+T	142	ドラエモントノビ太	0	9	1	1	word	0	-	0	1
+E	142	9	9	0
+T	143	ポケツトモンスタ	0	9	1	1	word	0	-	0	1
+T	143	poketutomonsuta	0	9	0	1	word	0	-	0	1
+T	143	poketsutomonsuta	0	9	0	1	word	0	-	0	1
+T	143	poketutomonnsuta	0	9	0	1	word	0	-	0	1
+T	143	poketsutomonnsuta	0	9	0	1	word	0	-	0	1
+E	143	9	9	0
+T	144	アリガトウ。	0	6	1	1	word	0	-	0	1
+E	144	6	6	0
+T	145	三百二十円	0	5	1	1	word	0	-	0	1
+E	145	5	5	0
+T	146	１２，８００円	0	7	1	1	word	0	-	0	1
+E	146	7	7	0
+T	147	3.2万人	0	5	1	1	word	0	-	0	1
+E	147	5	5	0
+T	148	12345678	0	15	1	1	word	0	-	0	1
+E	148	15	15	0
+T	149	二〇二四年十月七日	0	9	1	1	word	0	-	0	1
+E	149	9	9	0
+T	150	〇・五ト0.5ト０．５	0	11	1	1	word	0	-	0	1
+E	150	11	11	0
+T	151	一億二千万人ノ国	0	8	1	1	word	0	-	0	1
+E	151	8	8	0
+T	152	100010001000000000000	0	3	1	1	word	0	-	0	1
+E	152	3	3	0
+T	153	1,000,000ト１，０００，０００	0	19	1	1	word	0	-	0	1
+E	153	19	19	0
+T	154	2.5.3版	0	6	1	1	word	0	-	0	1
+E	154	6	6	0
+T	155	30	0	3	1	1	word	0	-	0	1
+E	155	3	3	0
+T	156	百万円ト千万円	0	7	1	1	word	0	-	0	1
+E	156	7	7	0
+T	157	3万5千円	0	5	1	1	word	0	-	0	1
+E	157	5	5	0
+T	158	ゼロ円	0	3	1	1	word	0	-	0	1
+E	158	3	3	0
+T	159	々々時々人々	0	6	1	1	word	0	-	0	1
+E	159	6	6	0
+T	160	コゝロトミスゞ	0	7	1	1	word	0	-	0	1
+T	160	koヽロトミスヾ	0	7	0	1	word	0	-	0	1
+E	160	7	7	0
+T	161	イスゞ自動車	0	6	1	1	word	0	-	0	1
+E	161	6	6	0
+T	162	カヽミトハヾ	0	6	1	1	word	0	-	0	1
+T	162	kaヽミトハヾ	0	6	0	1	word	0	-	0	1
+E	162	6	6	0
+T	163	ブゞ漬ケ。ゝ	0	6	1	1	word	0	-	0	1
+E	163	6	6	0
+T	164	バケツヽ	0	4	1	1	word	0	-	0	1
+T	164	baketuヽ	0	4	0	1	word	0	-	0	1
+T	164	baketsuヽ	0	4	0	1	word	0	-	0	1
+E	164	4	4	0
+T	165	サツk	0	3	1	1	word	0	-	0	1
+E	165	3	3	0
+T	166	反sy	0	3	1	1	word	0	-	0	1
+E	166	3	3	0
+T	167	コイヌ	0	3	1	1	word	0	-	0	1
+T	167	koinu	0	3	0	1	word	0	-	0	1
+E	167	3	3	0
+T	168	スシ	0	2	1	1	word	0	-	0	1
+T	168	susi	0	2	0	1	word	0	-	0	1
+T	168	sushi	0	2	0	1	word	0	-	0	1
+E	168	2	2	0
+T	169	kyouha	0	6	1	1	word	0	-	0	1
+E	169	6	6	0
+T	170	ﾃｽﾄﾃﾞｰﾀ	0	7	1	1	word	0	-	0	1
+E	170	7	7	0
+T	171	アイウエオツヤユヨワカケ	0	12	1	1	word	0	-	0	1
+T	171	aiueotuyayuyowakake	0	12	0	1	word	0	-	0	1
+T	171	aiueotsuyayuyowakake	0	12	0	1	word	0	-	0	1
+E	171	12	12	0
+T	172	アイウエオカクケシスツトヌハヒフプヘホムヤユヨラリルレロワ	0	30	1	1	word	0	-	0	1
+T	172	aiueokakukesisututonuhahihupuhehomuyayuyorarirurerowa	0	30	0	1	word	0	-	0	1
+T	172	aiueokakukeshisututonuhahihupuhehomuyayuyorarirurerowa	0	30	0	1	word	0	-	0	1
+T	172	aiueokakukesisutsutonuhahihupuhehomuyayuyorarirurerowa	0	30	0	1	word	0	-	0	1
+T	172	aiueokakukeshisutsutonuhahihupuhehomuyayuyorarirurerowa	0	30	0	1	word	0	-	0	1
+T	172	aiueokakukesisututonuhahifupuhehomuyayuyorarirurerowa	0	30	0	1	word	0	-	0	1
+T	172	aiueokakukeshisututonuhahifupuhehomuyayuyorarirurerowa	0	30	0	1	word	0	-	0	1
+T	172	aiueokakukesisutsutonuhahifupuhehomuyayuyorarirurerowa	0	30	0	1	word	0	-	0	1
+T	172	aiueokakukeshisutsutonuhahifupuhehomuyayuyorarirurerowa	0	30	0	1	word	0	-	0	1
+E	172	30	30	0
+T	173	コンピユータ	0	7	1	1	word	0	-	0	1
+T	173	konpiyuーta	0	7	0	1	word	0	-	0	1
+T	173	konnpiyuーta	0	7	0	1	word	0	-	0	1
+E	173	7	7	0
+T	174	サーバ	0	4	1	1	word	0	-	0	1
+T	174	saーba	0	4	0	1	word	0	-	0	1
+E	174	4	4	0
+T	175	プリンタ	0	5	1	1	word	0	-	0	1
+T	175	purinta	0	5	0	1	word	0	-	0	1
+T	175	purinnta	0	5	0	1	word	0	-	0	1
+E	175	5	5	0
+T	176	ユーザ	0	4	1	1	word	0	-	0	1
+T	176	yuーza	0	4	0	1	word	0	-	0	1
+E	176	4	4	0
+T	177	エー	0	2	1	1	word	0	-	0	1
+T	177	eー	0	2	0	1	word	0	-	0	1
+E	177	2	2	0
+T	178	エーー	0	3	1	1	word	0	-	0	1
+T	178	eーー	0	3	0	1	word	0	-	0	1
+E	178	3	3	0
+T	179	ＡＢＣＤ	0	4	1	1	word	0	-	0	1
+E	179	4	4	0
+T	180	Ｗｉ－Ｆｉ	0	5	1	1	word	0	-	0	1
+E	180	5	5	0
+T	181	ＳＨＩＢＵＹＡ	0	7	1	1	word	0	-	0	1
+E	181	7	7	0
+T	182	タワーマンシヨン	0	8	1	1	word	0	-	0	1
+T	182	tawaーmansiyon	0	8	0	1	word	0	-	0	1
+T	182	tawaーmannsiyon	0	8	0	1	word	0	-	0	1
+T	182	tawaーmanshiyon	0	8	0	1	word	0	-	0	1
+T	182	tawaーmannshiyon	0	8	0	1	word	0	-	0	1
+T	182	tawaーmansiyonn	0	8	0	1	word	0	-	0	1
+T	182	tawaーmannsiyonn	0	8	0	1	word	0	-	0	1
+T	182	tawaーmanshiyonn	0	8	0	1	word	0	-	0	1
+T	182	tawaーmannshiyonn	0	8	0	1	word	0	-	0	1
+E	182	8	8	0
+T	183	パーテイ	0	5	1	1	word	0	-	0	1
+T	183	paーtei	0	5	0	1	word	0	-	0	1
+E	183	5	5	0
+N	0	e4bb8ae697a5e381afe381a8e381a6e38282e889afe38184e5a4a9e6b097e381a7e38199e381ade38082
+N	1	e7a781e381afe69db1e4baace5a4a7e5ada6e381a7e8a880e8aa9ee5ada6e38292e58b89e5bcb7e38197e381a6e38184e381bee38199e38082
+N	2	e996a2e8a5bfe59bbde99a9be7a9bae6b8afe3818be38289e68890e794b0e7a9bae6b8afe381bee381a7e9a39be8a18ce6a99fe381a7e7a7bbe58b95e38197e381bee38197e3819fe38082
+N	3	e38193e381aee69cace381afe59bb3e69bb8e9a4a8e381a7e5809fe3828ae3819fe38282e381aee381a7e38199e38082
+N	4	e6988ee697a5e381aee4bc9ae8adb0e381afe58d88e5be8ce4b889e69982e3818be38289e5a78be381bee3828ae381bee38199e38082
+N	5	e5bdbce5a5b3e381afe38394e382a2e3838ee38292e5bcbee3818fe381aee3818ce381a8e381a6e38282e4b88ae6898be381a0e38082
+N	6	e697a5e69cace7b58ce6b888e696b0e8819ee381aee8a898e4ba8be381abe38288e3828be381a8e38081e6a0aae4bea1e3818ce5a4a7e3818de3818fe4b88ae69887e38197e3819fe38082
+N	7	e5afbfe58fb8e381a8e5a4a9e381b7e38289e381a8e383a9e383bce383a1e383b3e38081e381a9e3828ce3818ce4b880e795aae5a5bde3818de381a7e38199e3818befbc9f
+N	8	e99ba8e3818ce9998de381a3e381a6e38184e3819fe381aee381a7e38081e58298e38292e68c81e381a3e381a6e587bae3818be38191e3819fe38082
+N	9	e5ad90e4be9be3819fe381a1e381afe585ace59c92e381a7e58583e6b097e381abe9818ae38293e381a7e38184e3828be38082
+N	10	e382b3e383b3e38394e383a5e383bce382bfe383bce381aee382bde38395e38388e382a6e382a7e382a2e38292e382a2e38383e38397e38387e383bce38388e38197e381a6e3818fe381a0e38195e38184e38082
+N	11	e382b9e3839ee383bce38388e38395e382a9e383b3e381aee38390e38383e38386e383aae383bce3818ce38199e38190e381abe58887e3828ce381a6e38197e381bee38186e38082
+N	12	e59bbde7ab8be59bbde4bc9ae59bb3e69bb8e9a4a8e381afe697a5e69cace69c80e5a4a7e381aee59bb3e69bb8e9a4a8e381a7e38182e3828be38082
+N	13	e69db1e4baace983bde5ba81e8888ee381afe696b0e5aebfe58cbae381abe38182e3828ae381bee38199e38082
+N	14	e3808ce38193e38293e381abe381a1e381afe3808de381a8e5bdbce381afe8a880e381a3e3819fe38082
+N	15	e4ba8ce38087e4ba8ce59b9be5b9b4e58d81e69c88e4b883e697a5e38081e699b4e3828ce38082
+N	16	e4bea1e6a0bce381afefbc91efbc92efbc8cefbc98efbc90efbc90e58686efbc88e7a88ee8bebcefbc89e381a7e38199e38082
+N	17	e99bbbe8a9b1e795aae58fb7e381afefbc90efbc93efbc8defbc91efbc92efbc93efbc94efbc8defbc95efbc96efbc97efbc98e381a7e38199e38082
+N	18	efbca1efbca2efbca3e6a0aae5bc8fe4bc9ae7a4bee381aeefbca3efbca5efbcafe3818ce69da5e697a5e38197e3819fe38082
+N	19	6950686f6e65e381a8416e64726f6964e381aee381a9e381a1e38289e38292e4bdbfe381a3e381a6e38184e381bee38199e3818be38082
+N	20	e7a781e381aee5908de5898de381afe5b1b1e794b0e5a4aae9838ee381a7e38199e38082e38288e3828de38197e3818fe3818ae9a198e38184e38197e381bee38199e38082
+N	21	e4babae38085e381afe69982e38085e38085e38085e381a8e8a880e38184e381aae3818ce38289e6ada9e38184e3819fe38082
+N	22	e38193e38193e381afe99d99e3818be381aae794bae381a7e38081e5a49ce381abe381aae3828be381a8e6989fe3818ce38288e3818fe8a68be38188e3828be38082
+N	23	e78cabe3818ce7aa93e381aee5a496e38292e38198e381a3e381a8e8a68be381a4e38281e381a6e38184e3828be38082
+N	24	e590bee8bca9e381afe78cabe381a7e38182e3828be38082e5908de5898de381afe381bee381a0e784a1e38184e38082
+N	25	e38199e38282e38282e38282e38282e38282e38282e38282e38282e381aee38186e381a1e38082
+N	26	e381abe3828fe381abe381afe381abe3828fe381abe3828fe381a8e3828ae3818ce38184e3828be38082
+N	27	e69db1e4baace789b9e8a8b1e8a8b1e58fafe5b180e995b7e4bb8ae697a5e680a5e981bde4bc91e69a87e8a8b1e58fafe68b92e590a6e38082
+N	28	e7949fe9baa6e7949fe7b1b3e7949fe58db5e38082
+N	29	e99aa3e381aee5aea2e381afe38288e3818fe69fbfe9a39fe38186e5aea2e381a0e38082
+N	30	e59cb0e79083e6b8a9e69a96e58c96e5afbee7ad96e68ea8e980b2e6b395e694b9e6ada3e6a188e3818ce58fafe6b1bae38195e3828ce3819fe38082
+N	31	e68385e5a0b1e587a6e79086e68a80e8a193e88085e8a9a6e9a893e381abe59088e6a0bce38197e381bee38197e3819fe38082
+N	32	e887aae784b6e8a880e8aa9ee587a6e79086e381afe4babae5b7a5e79fa5e883bde381aee4b880e58886e9878ee381a7e38199e38082
+N	33	e5bda2e6858be7b4a0e8a7a3e69e90e599a8e381afe38386e382ade382b9e38388e38292e58d98e8aa9ee381abe58886e589b2e38199e3828be38082
+N	34	e6a49ce7b4a2e382a8e383b3e382b8e383b3e381aee585a8e69687e6a49ce7b4a2e382a4e383b3e38387e38383e382afe382b9e38292e4bd9ce68890e38199e3828be38082
+N	35	e4b889e799bee4ba94e58d81e585ade4b887e4b883e58d83e585abe799bee4b99de58d81e58686
+N	36	e4b880e58d83e4b887e58686e381aee5809fe98791e38292e8bf94e6b888e38197e3819fe38082
+N	37	e7acace4ba8ce6aca1e4b896e7958ce5a4a7e688a6e5be8ce381aee5bea9e88888e69c9fe38082
+N	38	efbc92efbc90efbc92efbc90e5b9b4e69db1e4baace382aae383aae383b3e38394e38383e382afe383bbe38391e383a9e383aae383b3e38394e38383e382af
+N	39	e4bba4e5928ce58583e5b9b4e4ba94e69c88e4b880e697a5e381abe694b9e58583e38195e3828ce3819fe38082
+N	40	e38182e3828ae3818ce381a8e38186e38194e38196e38184e381bee38197e3819fefbc81
+N	41	e38199e381bfe381bee3819be38293e38081e9a785e381afe381a9e38193e381a7e38199e3818befbc9f
+N	42	e3818ae381afe38288e38186e38194e38196e38184e381bee38199e38082e4bb8ae697a5e38282e38288e3828de38197e3818fe38082
+N	43	e38184e3819fe381a0e3818de381bee38199e38082e38194e381a1e3819de38186e38195e381bee381a7e38197e3819fe38082
+N	44	efbdb6efbe80efbdb6efbe85e381aee58d8ae8a792e69687e5ad97e38282e587a6e79086e381a7e3818de3828be3818be7a2bae8aa8de38199e3828be38082
+N	45	efbe83efbdbdefbe84e794a8e381aeefbe83efbe9eefbdb0efbe80e381a7e38199e38082
+N	46	e381b2e38289e3818ce381aae38081e382abe382bfe382abe3838ae38081e6bca2e5ad97e38081456e676c697368e38081313233e38292e6b7b7e3819ce3819fe69687e38082
+N	47	e383a1e383bce383abefbc9a696e666f406578616d706c652e6a7020e381b8e980a3e7b5a1e38197e381a6e3818fe381a0e38195e38184e38082
+N	48	e382a6e382a7e38396e382b5e382a4e383882068747470733a2f2f7777772e6578616d706c652e636f6d20e38292e58f82e785a7e38082
+N	49	e8b5a4e38184e9b3a5e3818ce99d92e38184e7a9bae38292e9a39be38293e381a7e38184e381a3e3819fe38082
+N	50	e8b5b0e3828be38081e8b5b0e381a3e3819fe38081e8b5b0e38289e381aae38184e38081e8b5b0e3828ce381b0e38081e8b5b0e3828de38186e38082
+N	51	e9a39fe381b9e3828be38081e9a39fe381b9e3819fe38081e9a39fe381b9e381aae38184e38081e9a39fe381b9e3828ce381b0e38081e9a39fe381b9e38288e38186e38082
+N	52	e7be8ee38197e38184e38081e7be8ee38197e3818be381a3e3819fe38081e7be8ee38197e3818fe381aae38184e38081e7be8ee38197e38191e3828ce381b0e38082
+N	53	e99d99e3818be381a0e38081e99d99e3818be381a0e381a3e3819fe38081e99d99e3818be381a7e381afe381aae38184e38082
+N	54	e8a18ce3818de381bee38199e38081e8a18ce3818de381bee38197e3819fe38081e8a18ce3818de381bee3819be38293e38081e8a18ce3818de381bee38197e38287e38186e38082
+N	55	e8aaade381bee3819be3828be38081e8aaade381bee3828ce3828be38081e8aaade381bee3819be38289e3828ce3828be38082
+N	56	e58b89e5bcb7e38197e3819fe38184e381a8e6809de381a3e381a6e38184e3819fe3818ce38081e69982e99693e3818ce381aae3818be381a3e3819fe38082
+N	57	e38282e38197e6988ee697a5e99ba8e3818ce9998de381a3e3819fe38289e38081e8a9a6e59088e381afe4b8ade6ada2e381abe381aae3828be381a0e3828de38186e38082
+N	58	e5bdbce3818ce69da5e3828be3818be381a9e38186e3818be58886e3818be38289e381aae38184e38082
+N	59	e69cace38292e8aaade38280e38193e381a8e3818ce5a5bde3818de381a7e38199e38082
+N	60	e697a9e3818fe5af9de381aae38195e38184e38082
+N	61	e381aae38293e381a7e38284e381ade38293efbc81
+N	62	e381a1e38287e381a3e381a8e5be85e381a3e381a6e3818fe381a0e38195e38184e381ade3809c
+N	63	e38188e383bce381a3e381a8e38081e4bd95e381a0e381a3e38191efbc9f
+N	64	e383afe383bce383abe38389e382abe38383e38397e382b5e38383e382abe383bce697a5e69cace4bba3e8a1a8e38381e383bce383a0
+N	65	e382a2e382a4e382b9e382afe383aae383bce383a0e382b7e383a7e38383e38397e381a7e38390e3838be383a9e382a2e382a4e382b9e38292e8b2b7e381a3e3819fe38082
+N	66	e38387e38391e383bce38388e381aee59cb0e4b88be9a39fe59381e5a3b2e3828ae5a0b4e381afe6b7b7e99b91e38197e381a6e38184e3819fe38082
+N	67	e38397e383ade382b0e383a9e3839fe383b3e382b0e8a880e8aa9ee381aee6af94e8bc83e7a094e7a9b6e38082
+N	68	e382b8e383a3e38390e382b9e382afe383aae38397e38388e381a8e38391e382a4e382bde383b3e381a8e383a9e382b9e38388e38082
+N	69	e382ade383bce3839ce383bce38389e381a8e3839ee382a6e382b9e381a8e38387e382a3e382b9e38397e383ace382a4e38082
+N	70	e38193e381aee69699e79086e38081e38281e381a3e381a1e38283e7be8ee591b3e38197e38184efbc81
+N	71	e38199e38194e383bce38184efbc81e38284e381a3e3819fe383bcefbc81
+N	72	e38186e38186e38186e38081e5af92e38184e38288e38189e38082
+N	73	e3838fe382a2e3838fe382a2e38081e796b2e3828ce3819fe38082
+N	74	e7a781e3819fe381a1e381afe38081e6988ee697a5e38081e4baace983bde381b8e38081e8a18ce3818fe38082
+N	75	e383bbe4b8ade9bb92e383bbe58cbae58887e3828ae383bbe38386e382b9e38388e383bb
+N	76	e38090e9878de8a681e38091e3818ae79fa5e38289e3819be3808ae696b0e79d80e3808b
+N	77	e280bbe6b3a8e6848fefbc9ae38193e381aee58588e38081e5b7a5e4ba8be4b8ade38082
+N	78	e380923130302d3030303120e69db1e4baace983bde58d83e4bba3e794b0e58cbae58d83e4bba3e794b0312d31
+N	79	e6a0aae5bc8fe4bc9ae7a4be414243e3839be383bce383abe38387e382a3e383b3e382b0e382b9e4bba3e8a1a8e58f96e7b7a0e5bdb9e7a4bee995b7
+N	80	e58c97e6b5b7e98193e69cade5b98ce5b882e4b8ade5a4aee58cbae58c97e4b880e69da1e8a5bfe4ba8ce4b881e79bae
+N	81	e5a4a7e998aae5ba9ce5a4a7e998aae5b882e58c97e58cbae6a285e794b0e4b889e4b881e79baee4b880e795aae4b880e58fb7
+N	82	e7a68fe5b2a1e79c8ce58c97e4b99de5b79ee5b882e5b08fe58089e58c97e58cba
+N	83	e6b296e7b884e79c8ce982a3e8a687e5b882
+N	84	e5af8ce5a3abe5b1b1e381afe697a5e69cace4b880e9ab98e38184e5b1b1e381a7e38199e38082
+N	85	e790b5e790b6e6b996e381afe697a5e69cace69c80e5a4a7e381aee6b996e381a7e38182e3828be38082
+N	86	e4bfa1e6bf83e5b79de381afe697a5e69cace381a7e69c80e38282e995b7e38184e5b79de381a0e38082
+N	87	e6a19ce381aee88ab1e3818ce6ba80e9968be381abe381aae381a3e3819fe38082
+N	88	e7b485e89189e78ba9e3828ae381abe587bae3818be38191e381bee38197e38287e38186e38082
+N	89	e5b9b4e69cabe5b9b4e5a78be381aee4bc91e6a5ade697a5e381aee3818ae79fa5e38289e3819b
+N	90	e696b0e59e8be382b3e383ade3838ae382a6e382a4e383abe382b9e6849fe69f93e79787e5afbee7ad96e69cace983a8
+N	91	e59bbde99a9be980a3e59088e69599e882b2e7a791e5ada6e69687e58c96e6a99fe996a2
+N	92	e4b896e7958ce4bf9de581a5e6a99fe996a2e381aee4ba8be58b99e5b180e995b7
+N	93	e58685e996a3e7b78fe79086e5a4a7e887a3e3818ce8a898e88085e4bc9ae8a68be38292e8a18ce381a3e3819fe38082
+N	94	e8a186e8adb0e999a2e8adb0e593a1e7b78fe981b8e68c99e381aee68a95e7a5a8e697a5
+N	95	e69c80e9ab98e8a381e588a4e68980e381aee588a4e6b1bae3818ce4b88be38195e3828ce3819fe38082
+N	96	e7b58ce6b888e794a3e6a5ade79c81e381a8e69687e983a8e7a791e5ada6e79c81
+N	97	e5b091e5ad90e9ab98e9bda2e58c96e7a4bee4bc9ae381abe3818ae38191e3828be7a4bee4bc9ae4bf9de99a9ce588b6e5baa6e694b9e99da9
+N	98	e5868de7949fe58fafe883bde382a8e3838de383abe382aee383bce381aee699aee58f8ae4bf83e980b2
+N	99	e58d8ae5b08ee4bd93e8a3bde980a0e8a385e7bdaee381aee8bcb8e587bae8a68fe588b6
+N	100	e9878fe5ad90e382b3e383b3e38394e383a5e383bce382bfe383bce381aee7a094e7a9b6e9968be799ba
+N	101	e981bae4bc9de5ad90e7b584e381bfe68f9be38188e4bd9ce789a9e381aee5ae89e585a8e680a7e8a995e4bea1
+N	102	e5ae87e5ae99e888aae7a9bae7a094e7a9b6e9968be799bae6a99fe6a78be381aee4babae5b7a5e8a19be6989fe68993e381a1e4b88ae38192
+N	103	e999b8e4b88ae7abb6e68a80e799bee383a1e383bce38388e383abe8b5b0e381aee4b896e7958ce8a898e98cb2
+N	104	e9878ee79083e38081e382b5e38383e382abe383bce38081e38390e382b9e382b1e38383e38388e3839ce383bce383abe38081e38386e3838be382b9
+N	105	e69c9de38194e9a3afe38292e9a39fe381b9e3819ae381abe5ada6e6a0a1e381b8e8a18ce381a3e3819fe38082
+N	106	e5bdbce381afe58cbbe88085e381abe381aae3828ae3819fe38184e381a8e8a880e381a3e381a6e38184e3828be38082
+N	107	e99ba8e381abe38282e8b2a0e38191e3819ae9a2a8e381abe38282e8b2a0e38191e3819a
+N	108	e698a5e381afe38182e38191e381bce381aee38082e38284e38186e38284e38186e799bde3818fe381aae3828ae38286e3818fe5b1b1e3818ee381afe38082
+N	109	e69c88e697a5e381afe799bee4bba3e381aee9818ee5aea2e381abe38197e381a6e38081e8a18ce3818de3818be381b5e5b9b4e38282e381bee3819fe69785e4babae381aae3828ae38082
+N	110	e7a587e59c92e7b2bee8888ee381aee99098e381aee5a3b0e38081e8abb8e8a18ce784a1e5b8b8e381aee99fbfe3818de38182e3828ae38082
+N	111	e38085e38085e38085
+N	112	e3829de3829ee383bde383be
+N	113	e38193e3829de3828de38081e381bfe38199e3829ee38081e38184e38199e3829ee38081e381b6e3829ee6bcace38191
+N	114	e383bce995b7e99fb3e383bc
+N	115	efbc81efbc9fe38082e38081
+N	116	f09f9880e7b5b5e69687e5ad97f09f9880e38282e585a5e3828ce381a6e381bfe3828b
+N	117	f0a0aeb7e9878ee5aeb6e381a7e7899be4b8bce38292e9a39fe381b9e3819fe38082
+N	118	4142434445464720616263646566672030313233343536373839
+N	119	efbca8efbd85efbd8cefbd8cefbd8fe38080efbcb7efbd8fefbd92efbd8cefbd84
+N	120	e585a8e8a792e382b9e3839ae383bce382b9e38080e38292e38080e590abe38280e38080e69687
+N	121	e382bfe3839609e3829209e590abe3828009e69687
+N	122	e694b9e8a18ce381aee784a1e38184e99d9ee5b8b8e381abe995b7e38184e69687e7aba0e38292e4bd9ce3828be3819fe38281e381abe5908ce38198e38288e38186e381aae8a880e89189e38292e4bd95e5baa6e38282e7b9b0e3828ae8bf94e38197e381a6e69bb8e38184e381a6e381bfe3828be38193e381a8e381abe38197e381bee38197e3819fe3818ce3819de3828ce381a7e38282e381bee381a0e8b6b3e3828ae381aae38184e3818be38282e38197e3828ce381aae38184e381aee381a7e38282e38186e5b091e38197e7b69ae38191e381a6e69bb8e38184e381a6e3818ae3818fe38193e381a8e381abe38197e381bee38199e38082
+N	123	e4b880e4ba8ce4b889e59b9be4ba94e585ade4b883e585abe4b99de58d81e799bee58d83e4b887e58484e58586
+N	124	e38087e4b880e4ba8ce4b889
+N	125	e7acacefbc91e59b9ee697a5e69cace8aa9ee587a6e79086e58b89e5bcb7e4bc9a
+N	126	efbcaaefbcb2e69db1e697a5e69cace381aee5b1b1e6898be7b79a
+N	127	efbcaeefbca8efbcabe694bee98081e382bbe383b3e382bfe383bc
+N	128	efbcb5efbcb3efbca2e383a1e383a2e383aae383bce381a8efbcb3efbca4e382abe383bce38389
+N	129	e382a2e383a1e383aae382abe59088e8a186e59bbde5a4a7e7b5b1e9a098e981b8e68c99
+N	130	e383ade382b7e382a2e980a3e982a6e381a8e382a6e382afe383a9e382a4e3838a
+N	131	e4b8ade88fafe4babae6b091e585b1e5928ce59bbde381aee9a696e983bde58c97e4baac
+N	132	e5a4a7e99f93e6b091e59bbde381aee382bde382a6e383abe789b9e588a5e5b882
+N	133	e383a8e383bce383ade38383e38391e980a3e59088e381aee6aca7e5b79ee5a794e593a1e4bc9a
+N	134	e382abe383aae38395e382a9e383abe3838be382a2e5b79ee383ade382b5e383b3e382bce383abe382b9
+N	135	e3838be383a5e383bce383a8e383bce382afe383bbe382bfe382a4e383a0e382bae7b499
+N	136	e383afe382b7e383b3e38388e383b3e383bbe3839de382b9e38388
+N	137	e382a2e38383e38397e383abe38081e382b0e383bce382b0e383abe38081e3839ee382a4e382afe383ade382bde38395e38388e38081e382a2e3839ee382bee383b3
+N	138	e38388e383a8e382bfe887aae58b95e8bb8ae381a8e3839be383b3e38380e381a8e382bde3838be383bc
+N	139	e382b8e383a7e383b3e383bbe382b9e3839fe382b9e38195e38293e381a8e383a1e382a2e383aae383bce383bbe382b8e383a7e383bce383b3e382bae38195e38293
+N	140	e382b7e383a3e383bce383ade38383e382afe383bbe3839be383bce383a0e382bae381aee58692e999ba
+N	141	e3838fe383aae383bce383bbe3839de38383e382bfe383bce381a8e8b3a2e88085e381aee79fb3
+N	142	e38389e383a9e38188e38282e38293e381a8e381aee381b3e5a4aa
+N	143	e3839de382b1e38383e38388e383a2e383b3e382b9e382bfe383bc
+N	144	e38182e3828ae3818ce381a8e38186e38082
+N	145	e4b889e799bee4ba8ce58d81e58686
+N	146	efbc91efbc92efbc8cefbc98efbc90efbc90e58686
+N	147	332e32e4b887e4baba
+N	148	e4b880e58d83e4ba8ce799bee4b889e58d81e59b9be4b887e4ba94e58d83e585ade799bee4b883e58d81e585ab
+N	149	e4ba8ce38087e4ba8ce59b9be5b9b4e58d81e69c88e4b883e697a5
+N	150	e38087e383bbe4ba94e381a8302e35e381a8efbc90efbc8eefbc95
+N	151	e4b880e58484e4ba8ce58d83e4b887e4babae381aee59bbd
+N	152	e58586e4baace59e93
+N	153	312c3030302c303030e381a8efbc91efbc8cefbc90efbc90efbc90efbc8cefbc90efbc90efbc90
+N	154	322e352e33e78988
+N	155	e58d81e58d81e58d81
+N	156	e799bee4b887e58686e381a8e58d83e4b887e58686
+N	157	33e4b88735e58d83e58686
+N	158	e382bce383ade58686
+N	159	e38085e38085e69982e38085e4babae38085
+N	160	e38193e3829de3828de381a8e381bfe38199e3829e
+N	161	e38184e38199e3829ee887aae58b95e8bb8a
+N	162	e382abe383bde3839fe381a8e3838fe383be
+N	163	e381b6e3829ee6bcace38191e38082e3829d
+N	164	e38390e382b1e38384e383bd
+N	165	e382b5e383836b
+N	166	e58f8d7379
+N	167	e38193e38184e381ac
+N	168	e38199e38197
+N	169	6b796f756861
+N	170	efbe83efbdbdefbe84efbe83efbe9eefbdb0efbe80
+N	171	e38181e38183e38185e38187e38189e381a3e38283e38285e38287e3828ee38295e38296
+N	172	e382a1e382a3e382a5e382a7e382a9e383b5e387b0e383b6e387b1e387b2e38383e387b3e387b4e387b5e387b6e387b7e387b7e3829ae387b8e387b9e387bae383a3e383a5e383a7e387bbe387bce387bde387bee387bfe383ae
+N	173	e382b3e383b3e38394e383a5e383bce382bfe383bc
+N	174	e382b5e383bce38390e383bc
+N	175	e38397e383aae383b3e382bfe383bc
+N	176	e383a6e383bce382b6e383bc
+N	177	e382a8e383bc
+N	178	e382a8e383bce383bc
+N	179	efbca1efbca2efbca3efbca4
+N	180	efbcb7efbd89efbc8defbca6efbd89
+N	181	efbcb3efbca8efbca9efbca2efbcb5efbcb9efbca1
+N	182	e382bfe383afe383bce3839ee383b3e382b7e383a7e383b3
+N	183	e38391e383bce38386e382a3e383bc

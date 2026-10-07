@@ -22,6 +22,23 @@ impl CustomAttribute for MorphosyntacticTagsAttribute {
     fn clear(&mut self) {
         self.tags = None;
     }
+
+    /// `MorphosyntacticTagsAttributeImpl.reflectWith`: the tag list.
+    fn reflect(
+        &self,
+        reflector: &mut dyn FnMut(&'static str, &'static str, lucene_analysis::AttrValue<'_>),
+    ) {
+        let tags = self.tags.as_ref().map(|t| {
+            t.iter()
+                .map(|s| std::borrow::Cow::Borrowed(s.as_str()))
+                .collect()
+        });
+        reflector(
+            "org.apache.lucene.analysis.morfologik.MorphosyntacticTagsAttribute",
+            "tags",
+            lucene_analysis::AttrValue::List(tags),
+        );
+    }
 }
 
 /// `MorfologikFilter.lemmaSplitter.split(tag)` into `out`, reusing its
@@ -181,6 +198,21 @@ mod tests {
         let mut out = "stale".to_string();
         to_lowercase_into(term, &mut out);
         out
+    }
+
+    #[test]
+    fn tags_reflect_as_java_list() {
+        let mut a = lucene_analysis::AttributeSource::new();
+        a.add_custom::<MorphosyntacticTagsAttribute>().tags =
+            Some(vec!["subst:sg".into(), "adj".into()]);
+        let mut out = Vec::new();
+        a.reflect_custom(&mut |c, k, v| out.push(format!("{c}#{k}={v}")));
+        assert_eq!(
+            out,
+            ["org.apache.lucene.analysis.morfologik.MorphosyntacticTagsAttribute#tags=[subst:sg, adj]"]
+        );
+        a.clear_attributes();
+        assert!(a.reflect_as_string(false).ends_with("tags=null"));
     }
 
     #[test]
