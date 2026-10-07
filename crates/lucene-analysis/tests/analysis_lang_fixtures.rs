@@ -216,6 +216,23 @@ fn stemmers_and_normalizers_match_lucene_word_for_word() {
     assert!(n > 15_000, "{n} words");
 }
 
+/// `String.toLowerCase(Locale.ROOT)`'s final sigma, over strings of every
+/// character class the JDK's word boundaries and `isCased` tell apart.
+#[test]
+fn string_to_lower_case_finds_final_sigmas_as_java() {
+    let text =
+        std::fs::read_to_string(support::data_dir("analysis_lang") + "final_sigma.words").unwrap();
+    let mut n = 0;
+    for row in text.lines() {
+        let (input, expected) = row.split_once('\t').unwrap();
+        let units: Vec<u16> = unesc(input).encode_utf16().collect();
+        let got = String::from_utf16(&java_string_to_lower_case(&units)).unwrap();
+        assert_eq!(esc(&got), expected, "{input}");
+        n += 1;
+    }
+    assert_eq!(n, 8000);
+}
+
 #[test]
 fn analyzers_normalize_like_lucene() {
     let text =
