@@ -73,6 +73,15 @@ in external libraries). Sizes from the 10.5.0 sources jars:
   (`HMMChineseTokenizer` extends `SegmentingTokenizerBase`) depends on this
   task; `analysis/morph` (the Kuromoji/Nori base, also deferred from M11) is
   T12.1's.
+- **T12.7** — The other JDK text services M11's port stops short of, each
+  ported faithfully against the JDK or closed with a recorded not-supported
+  decision: `java.util.regex` beyond the shim (`util/java_regex.rs` refuses
+  backreferences, lookaround, possessive and atomic groups, `\b`, `(?m)`
+  anchors, script and block properties with `UnsupportedOperationException`;
+  `pattern*` and `KeywordMarker` factories), `SimpleDateFormat` locale data
+  (`DateRecognizerFilterFactory` outside `Locale.ENGLISH`), and JDK charsets
+  beyond UTF-8, UTF-16, US-ASCII and the Hunspell tables (hyphenation
+  grammars, `factory/xml_source.rs`).
 
 ## Architecture
 
