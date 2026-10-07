@@ -277,14 +277,17 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
       *Proven for every ported one:* the T11.1 corpus through
       `GenAnalysisCommon` and the per-package generators (classic, every
       language analyzer, synonyms, compound, misc), and every registered
-      factory through `GenAnalysisFactories` (221 configurations built and run, 123 refused with Java's exception and message). *Remaining:* Thai
-      (`ThaiAnalyzer`, `ThaiTokenizer`, `ThaiTokenizerFactory`, which refuses
-      configuration) and collation (`CollationKeyAnalyzer` and its three
-      classes), M12's T12.6 (the JDK's `BreakIterator` dictionary and
-      `Collator`); `DateRecognizerFilterFactory` outside `Locale.ENGLISH`; a
-      pattern argument the regex shim cannot compile (backreferences,
-      lookaround, possessive and atomic groups, `\b`, `(?m)` anchors, script
-      and block properties: an `UnsupportedOperationException`); a hyphenation
+      factory through `GenAnalysisFactories` (221 configurations built and run, 123 refused with Java's exception and message). *Decided in
+      M12 T12.6:* Thai (`ThaiTokenizer`, `ThaiAnalyzer`, the `thai`
+      factory) and collation (`CollationKeyAnalyzer` and its three classes)
+      are not supported -- the JDK's Thai dictionary and `Collator` rules are
+      GPL JDK data -- and refuse with `UnsupportedOperationException` (Thai)
+      or have no Rust type (collation); `SegmentingTokenizerBase` is ported.
+      *Remaining (M12 T12.7):* `DateRecognizerFilterFactory` outside
+      `Locale.ENGLISH`; a pattern argument the regex shim cannot compile
+      (backreferences, lookaround, possessive and atomic groups, `\b`, `(?m)`
+      anchors, script and block properties: an
+      `UnsupportedOperationException`); a hyphenation
       grammar in a JDK charset beyond UTF-8, UTF-16, US-ASCII and the Hunspell
       tables (`factory/xml_source.rs`).
 - [x] Hunspell matches Lucene's stems and suggestions for every dictionary in
@@ -308,10 +311,10 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
 - [x] `check-port-inventory.py`'s allowlist holds no class of this module
       (re-scoped: the 24 `deferred:M12` classes are owned by M12's T12.1 and
       T12.6).
-      *Remaining:* 24 classes are `deferred:M12`: `analysis/morph` (15, the
-      Viterbi/dictionary base of Kuromoji and Nori, which are M12's), Thai
-      (3) with `SegmentingTokenizerBase` and `CharArrayIterator` (2, the
-      `BreakIterator` tokenizers'), and collation (4). No class is
+      *Now:* no class is `deferred:M12`: `analysis/morph` (15) was ported
+      with Kuromoji and Nori (M12 T12.1), `SegmentingTokenizerBase` and
+      `CharArrayIterator` in T12.6, and Thai (3) and collation (4) are
+      `not-supported` (T12.6, see M12). No class is
       `todo:M11`.
 
 ## Risks and unknowns

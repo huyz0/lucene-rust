@@ -365,6 +365,11 @@ still owes; `--summary` counts by status and package.
 lucene-core.tsv`), a `ported` row naming a symbol its file lacks, and a
 `partial` row without its milestone tag.
 
+**`not-supported`** (M12 T12.6): a class refused by design (Thai, collation)
+names its refusal's location, checked as for `ported`, or `--` when no Rust
+type exists, then ` -- ` and why. Seen to fail: a row naming a symbol its
+file lacks, and a row without ` -- <why>`. It cannot judge the reason.
+
 **`--module spatial-extras`** (M9 T9.5, `docs/inventory/lucene-spatial-extras.tsv`,
 the 65 top-level classes of `lucene-spatial-extras`) was seen to fail the
 same three ways before it joined `gate.sh` and CI: a deleted row

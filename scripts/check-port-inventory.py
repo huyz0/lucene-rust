@@ -21,6 +21,10 @@ top-level class of the module's jar, one per line:
                       intrinsics), or a class whose behaviour lives in a
                       different Rust shape -- which must then be `ported`
                       pointing at that shape, not `not-needed`.
+  not-supported       cannot be ported faithfully (licence, missing data) and is
+                      refused by design. detail = the refusal's location
+                      (`crates/...rs::<symbol>`, checked as for `ported`) or
+                      `--` when no Rust type exists, then ` -- ` and why.
   todo:M<n>           not ported yet; milestone M<n> takes it. detail = what it is.
   deferred:M<n>       the same, for a class a later milestone takes on purpose.
 
@@ -59,7 +63,7 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-STATUS = re.compile(r"^(ported|partial|not-needed|todo:M\d+|deferred:M\d+)$")
+STATUS = re.compile(r"^(ported|partial|not-needed|not-supported|todo:M\d+|deferred:M\d+)$")
 PARTIAL_GAP = re.compile(r" -- (M\d+): \S")
 LOCATION = re.compile(r"^(crates/[\w-]+/src/[\w/]+\.rs)(?:::([\w:]+))?")
 MODULES = {
@@ -167,7 +171,13 @@ def main() -> int:
         if not detail:
             errors.append(f"{tsv.name}:{n}: {cls}: {status} needs a detail")
             continue
-        if status in ("ported", "partial"):
+        if status == "not-supported":
+            if not (detail.startswith("-- ") or " -- " in detail):
+                errors.append(f"{tsv.name}:{n}: {cls}: not-supported needs ' -- <why>'")
+                continue
+            if detail.startswith("-- "):
+                continue
+        if status in ("ported", "partial", "not-supported"):
             m = LOCATION.match(detail)
             if not m:
                 errors.append(f"{tsv.name}:{n}: {cls}: {status} must name crates/<crate>/src/<file>.rs")

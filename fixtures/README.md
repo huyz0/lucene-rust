@@ -1152,6 +1152,14 @@ outright.
   user dictionary (`sweep.tsv`). Byte-identical under JDK 21 and 25. Own
   classpath. Deterministic. Read by
   `crates/lucene-analysis-nori/tests/nori_fixtures.rs`.
+- `GenAnalysisSegmenting.java` — M12 T12.6: the JDK's sentence
+  `BreakIterator`: every code point's class, told apart by a greedily chosen
+  set of probe contexts, leaving out the JDK 21/25-dependent ones
+  (`sentence_classes.txt`); the boundaries of 9 texts and 20,000 seeded strings
+  over every class, as UTF-16 hex (`sentences.txt`); and two
+  `SegmentingTokenizerBase` subclasses written here over texts up to five
+  windows long (`texts.txt`, `<chain>.tsv`). Byte-identical under JDK 21 and
+  25. Read by `crates/lucene-analysis/tests/analysis_segmenting_fixtures.rs`.
 - `GenAnalysisCompound.java` — M11 T11.6: `corpus/hyphenation-test.xml` (a
   toy hyphenation grammar written for this project) loaded into a
   `HyphenationTree`: hyphenation points for words (`points.words`), and the

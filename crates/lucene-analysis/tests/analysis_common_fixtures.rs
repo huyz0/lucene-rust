@@ -868,6 +868,7 @@ fn exception_name(e: &AnalysisError) -> &'static str {
         AnalysisError::IllegalState(_) => "IllegalStateException",
         AnalysisError::AlreadyClosed(_) => "AlreadyClosedException",
         AnalysisError::Io(_) => "IOException",
+        AnalysisError::UnsupportedOperation(_) => "UnsupportedOperationException",
     }
 }
 

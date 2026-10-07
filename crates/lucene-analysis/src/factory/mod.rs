@@ -197,6 +197,9 @@ impl From<AnalysisError> for FactoryError {
             AnalysisError::IllegalState(m) => FactoryError::new(JavaException::IllegalState, m),
             AnalysisError::AlreadyClosed(m) => FactoryError::new(JavaException::AlreadyClosed, m),
             AnalysisError::Io(m) => FactoryError::new(JavaException::Io, m),
+            AnalysisError::UnsupportedOperation(m) => {
+                FactoryError::new(JavaException::UnsupportedOperation, m)
+            }
         }
     }
 }
@@ -225,6 +228,7 @@ impl From<FactoryError> for AnalysisError {
             }
             JavaException::Io | JavaException::MalformedInput => AnalysisError::Io(e.message),
             JavaException::AlreadyClosed => AnalysisError::AlreadyClosed(e.message),
+            JavaException::UnsupportedOperation => AnalysisError::UnsupportedOperation(e.message),
             _ => AnalysisError::IllegalState(e.message),
         }
     }

@@ -9,7 +9,7 @@
 | **Effort** | L |
 | **Depends on** | [M11](m11-analysis-common.md) |
 | **Unblocks** | analysing CJK and other scripts without a JVM |
-| **Status** | in progress -- part 1: architecture, inventory, T12.2 Stempel, T12.3 phonetic and Morfologik; part 2: T12.1 `analysis/morph`, Kuromoji and Nori (see [Progress](#progress)) |
+| **Status** | in progress -- part 1: architecture, inventory, T12.2 Stempel, T12.3 phonetic and Morfologik; part 2: T12.1 `analysis/morph`, Kuromoji and Nori; part 3: T12.6 (see [Progress](#progress)) |
 
 ---
 
@@ -260,6 +260,35 @@ Part 2 (T12.1):
   terms; mecab-ko-dic is Apache-2.0), so vendored zlib-compressed: IPADIC
   9.2 MB -> 4.6 MB, mecab-ko-dic 25.0 MB -> 7.6 MB in the repository
   (`docs/licences.md`).
+
+Part 3 (T12.6, T12.2 SmartCN, T12.7):
+
+- **T12.6 sentence `BreakIterator`, `SegmentingTokenizerBase`** --
+  `lucene-analysis/src/util/sentence_break.rs`: the JDK's sentence iterator
+  re-specified from black-box runs (no JDK code or data): thirteen classes from
+  `Character.getType` plus JDK 25's 128 exception ranges
+  (`tools/GenSentenceBreakClasses.java`), and an 11-state scanner learned
+  from the JDK as a Mealy machine, exhaustively equal on every class string up
+  to length 7 (39M strings) and on random texts, quirks included.
+  `SegmentingTokenizerBase` is state plus a `Segmenter` trait;
+  `CharArrayIterator` is ported. `GenAnalysisSegmenting.java`: every code
+  point's class (JDK 21/25-dependent ones left out), 20,009 texts' boundaries
+  and two subclasses over texts five windows long, all equal; byte-identical
+  under JDK 21 and 25.
+- **T12.6 Thai: not supported** -- Thai words come from the JDK's
+  dictionary word iterator over its GPL-licensed `thai_dict`, which cannot
+  ship here or be re-derived without copying it. The port behaves as Lucene
+  on a JRE without Thai segmentation: `ThaiTokenizer::new`, `ThaiAnalyzer`'s
+  streams and the `thai` factory's `create` return
+  `AnalysisError::UnsupportedOperation("This JRE does not have support for
+  Thai segmentation")` (a new variant); the stop set and `normalize` work.
+- **T12.6 collation: not supported** -- `java.text.Collator`'s sort keys
+  are a function of the JDK's `CollationRules` table and locale tailorings
+  (GPL JDK data; `Locale.ROOT` needs the whole table), so reproducing
+  `RuleBasedCollator` even for `ROOT`/`ENGLISH` means copying it. No Rust
+  type; ICU collation (T12.4) is the route. The inventory gained the status
+  `not-supported` (`check-port-inventory.py`); analysis-common has no
+  `deferred:M12` class left.
 
 ## Acceptance criteria
 

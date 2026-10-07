@@ -1,6 +1,6 @@
 # Lucene 10.5.0 lucene-analysis-common: every top-level class of the jar, and what became of it.
 # Checked by scripts/check-port-inventory.py --module analysis-common (see its docstring for the statuses).
-# M11 is complete here: every class is ported, or deferred to M12 with the reason.
+# M11 is complete here: every class is ported, or not-needed or not-supported (M12 T12.6) with the reason.
 # (docs/milestones/m11-analysis-common.md). Factories (T11.7) are the configuration layer.
 # class	status	detail
 analysis/ar/ArabicAnalyzer	ported	crates/lucene-analysis/src/lang/ar.rs::ArabicAnalyzer
@@ -442,32 +442,32 @@ analysis/te/TeluguNormalizer	ported	crates/lucene-analysis/src/lang/te.rs::Telug
 analysis/te/TeluguStemFilter	ported	crates/lucene-analysis/src/lang/te.rs::TeluguStemFilter
 analysis/te/TeluguStemFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::TeluguStemFilterFactory
 analysis/te/TeluguStemmer	ported	crates/lucene-analysis/src/lang/te.rs::TeluguStemmer
-analysis/th/ThaiAnalyzer	deferred:M12	ThaiAnalyzer: ThaiTokenizer is java.text.BreakIterator's dictionary word breaking for Thai, whose dictionary is GPL-licensed JDK data; M12 takes Thai with ICU
-analysis/th/ThaiTokenizer	deferred:M12	ThaiTokenizer: BreakIterator.getWordInstance(th) is the JDK's GPL-licensed Thai dictionary; M12 (ICU)
-analysis/th/ThaiTokenizerFactory	deferred:M12	ThaiTokenizerFactory: registered (crates/lucene-analysis/src/factory/tokenizers.rs, arguments parsed as Java does) but its ThaiTokenizer runs java.text.BreakIterator; M12 ports it
+analysis/th/ThaiAnalyzer	not-supported	crates/lucene-analysis/src/lang/th.rs::ThaiAnalyzer -- its ThaiTokenizer refuses (UnsupportedOperation: the JDK's Thai dictionary is GPL JDK data); stop set and normalize work
+analysis/th/ThaiTokenizer	not-supported	crates/lucene-analysis/src/lang/th.rs::ThaiTokenizer -- Lucene on a JRE without Thai segmentation: UnsupportedOperation, as the JDK's Thai word dictionary is GPL JDK data
+analysis/th/ThaiTokenizerFactory	not-supported	crates/lucene-analysis/src/factory/tokenizers.rs::ThaiTokenizerFactory -- arguments as Java; create() is ThaiTokenizer's UnsupportedOperation
 analysis/tr/ApostropheFilter	ported	crates/lucene-analysis/src/lang/tr.rs::ApostropheFilter
 analysis/tr/ApostropheFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::ApostropheFilterFactory
 analysis/tr/TurkishAnalyzer	ported	crates/lucene-analysis/src/lang/tr.rs::TurkishAnalyzer
 analysis/tr/TurkishLowerCaseFilter	ported	crates/lucene-analysis/src/lang/tr.rs::TurkishLowerCaseFilter
 analysis/tr/TurkishLowerCaseFilterFactory	ported	crates/lucene-analysis/src/factory/filters_lang.rs::TurkishLowerCaseFilterFactory
 analysis/util/CSVUtil	ported	crates/lucene-analysis/src/util/csv_util.rs::quote_escape
-analysis/util/CharArrayIterator	deferred:M12	CharArrayIterator: the CharacterIterator SegmentingTokenizerBase feeds BreakIterator; M12
+analysis/util/CharArrayIterator	ported	crates/lucene-analysis/src/util/char_array_iterator.rs::CharArrayIterator
 analysis/util/CharTokenizer	ported	crates/lucene-analysis/src/util/char_tokenizer.rs::CharTokenizer
 analysis/util/ElisionFilter	ported	crates/lucene-analysis/src/util/elision_filter.rs::ElisionFilter
 analysis/util/ElisionFilterFactory	ported	crates/lucene-analysis/src/factory/filters_resource.rs::ElisionFilterFactory
 analysis/util/FilesystemResourceLoader	ported	crates/lucene-analysis/src/factory/loader.rs::FilesystemResourceLoader
 analysis/util/OpenStringBuilder	ported	crates/lucene-analysis/src/en/kstem.rs::OpenStringBuilder
 analysis/util/RollingCharBuffer	ported	crates/lucene-analysis/src/charfilter/mod.rs::RollingCharBuffer
-analysis/util/SegmentingTokenizerBase	deferred:M12	SegmentingTokenizerBase: its tokenizers (Thai, smartcn, ICU) run java.text.BreakIterator; M12 ports it with them
+analysis/util/SegmentingTokenizerBase	ported	crates/lucene-analysis/src/util/segmenting_tokenizer_base.rs::SegmentingTokenizer
 analysis/util/StemmerUtil	ported	crates/lucene-analysis/src/util/stemmer_util.rs::delete_n
 analysis/util/UnicodeProps	ported	crates/lucene-analysis/src/java_character.rs::is_unicode_whitespace
 analysis/wikipedia/WikipediaTokenizer	ported	crates/lucene-analysis/src/wikipedia/mod.rs::WikipediaTokenizer
 analysis/wikipedia/WikipediaTokenizerFactory	ported	crates/lucene-analysis/src/factory/tokenizers.rs::WikipediaTokenizerFactory
 analysis/wikipedia/WikipediaTokenizerImpl	ported	crates/lucene-analysis/src/wikipedia/mod.rs::WikipediaTokenizer
-collation/CollationAttributeFactory	deferred:M12	CollationAttributeFactory: a java.text.Collator attribute factory; collation is M12
-collation/CollationDocValuesField	deferred:M12	CollationDocValuesField: java.text.Collator sort keys (JDK locale data); M12 (ICU collation)
-collation/CollationKeyAnalyzer	deferred:M12	CollationKeyAnalyzer: java.text.Collator sort keys (JDK locale data); M12 (ICU collation)
-collation/tokenattributes/CollatedTermAttributeImpl	deferred:M12	CollatedTermAttributeImpl: java.text.Collator sort keys; M12 (ICU collation)
+collation/CollationAttributeFactory	not-supported	-- java.text.Collator sort keys come from the JDK's GPL CollationRules table and locale tailorings; no Rust type (ICU collation, M12 T12.4)
+collation/CollationDocValuesField	not-supported	-- java.text.Collator sort keys (the JDK's GPL CollationRules data); no Rust type (ICU collation, M12 T12.4)
+collation/CollationKeyAnalyzer	not-supported	-- java.text.Collator sort keys (the JDK's GPL CollationRules data); no Rust type (ICU collation, M12 T12.4)
+collation/tokenattributes/CollatedTermAttributeImpl	not-supported	-- java.text.Collator sort keys (the JDK's GPL CollationRules data); no Rust type (ICU collation, M12 T12.4)
 org/tartarus/snowball/Among	ported	crates/lucene-analysis/src/snowball/program.rs::Among -- M11 T11.3
 org/tartarus/snowball/SnowballProgram	ported	crates/lucene-analysis/src/snowball/program.rs::SnowballEnv -- M11 T11.3
 org/tartarus/snowball/SnowballStemmer	ported	crates/lucene-analysis/src/snowball/mod.rs::SnowballStemmer -- M11 T11.3

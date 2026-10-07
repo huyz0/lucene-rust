@@ -2,12 +2,15 @@
 //! lucene-core's `RollingBuffer`, which the graph filters share.
 
 pub mod big_decimal;
+pub mod char_array_iterator;
 pub mod char_tokenizer;
 pub mod csv_util;
 mod elision_filter;
 pub mod java_regex;
 pub mod jflex;
 pub mod rolling_buffer;
+pub mod segmenting_tokenizer_base;
+pub mod sentence_break;
 pub mod stemmer_util;
 
 pub use char_tokenizer::{
@@ -17,6 +20,8 @@ pub use char_tokenizer::{
 pub use elision_filter::ElisionFilter;
 pub use java_regex::JavaPattern;
 pub use rolling_buffer::{Resettable, RollingBuffer};
+pub use segmenting_tokenizer_base::{Segmenter, SegmentingBase, SegmentingTokenizer, BUFFERMAX};
+pub use sentence_break::{BreakIterator, SentenceBreakIterator};
 
 use crate::attributes::AttributeSource;
 use crate::AnalysisError;
