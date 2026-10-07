@@ -275,9 +275,10 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
       UTF-16 filters convert the term and back where Java edits one
       `char[]`), `shingle` 0.92~, `ngram_2_3` 0.93~ and snowball `russian`
       0.96~ (no cause beyond run-to-run spread found). `custom_analyzer`
-      (`CustomAnalyzer` over `standard`, `lowercase`, `stop`, `porterStem`)
-      is in the `analysis_common` pair and not yet measured on a quiet
-      machine.
+      (`CustomAnalyzer` over `standard`, `lowercase`, `stop`, `porterStem`,
+      built by name) reads 1.23~ (2026-10-07, noise floor 1.24x; the same
+      run, on a machine shared with another build, read `pattern` 0.75x
+      with that case's own spread at 1.68x).
 - [ ] `check-port-inventory.py`'s allowlist holds no class of this module.
       *Remaining:* 24 classes are `deferred:M12`: `analysis/morph` (15, the
       Viterbi/dictionary base of Kuromoji and Nori, which are M12's), Thai
