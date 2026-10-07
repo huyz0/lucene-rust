@@ -15,7 +15,7 @@
 //! `BytesRefHash words` is a `Vec<String>` indexed by ord, ords assigned in
 //! insertion order as `BytesRefHash.add` assigns them.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::analyzer::Analyzer;
 use crate::token_stream::TokenStream;
@@ -232,9 +232,10 @@ impl SynonymMapBuilder {
         let mut entries = Vec::with_capacity(self.working_set.len());
         for (input, e) in self.working_set {
             let mut ords = Vec::with_capacity(e.ords.len());
+            // The dedup set is per entry, as Java clears it per key.
+            let mut seen = HashSet::new();
             for ord in e.ords {
-                // The dedup set is per entry, as Java clears it per key.
-                if self.dedup && ords.contains(&ord) {
+                if self.dedup && !seen.insert(ord) {
                     continue;
                 }
                 ords.push(ord);
@@ -398,6 +399,22 @@ mod tests {
         b.add("a", "x", false).unwrap();
         assert_eq!(b.build().unwrap().entries()[0].1.ords, vec![0, 0]);
         assert!(SynonymMapBuilder::default().build().is_err());
+    }
+
+    #[test]
+    fn dedup_is_linear_in_an_entrys_outputs() {
+        // 200k distinct outputs of one input: a scan of the kept ords per
+        // output would be 2e10 comparisons.
+        let mut b = SynonymMapBuilder::new(true);
+        for i in 0..200_000 {
+            b.add("a", &format!("w{i}"), false).unwrap();
+        }
+        b.add("a", "w7", false).unwrap();
+        let start = std::time::Instant::now();
+        let m = b.build().unwrap();
+        let took = start.elapsed();
+        assert_eq!(m.entries()[0].1.ords.len(), 200_000);
+        assert!(took < std::time::Duration::from_secs(15), "{took:?}");
     }
 
     #[test]
