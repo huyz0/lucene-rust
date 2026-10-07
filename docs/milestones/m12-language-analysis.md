@@ -9,7 +9,7 @@
 | **Effort** | L |
 | **Depends on** | [M11](m11-analysis-common.md) |
 | **Unblocks** | analysing CJK and other scripts without a JVM |
-| **Status** | in progress -- part 1: architecture, inventory, T12.2 Stempel, T12.3 phonetic and Morfologik (see [Progress](#progress)) |
+| **Status** | in progress -- part 1: architecture, inventory, T12.2 Stempel, T12.3 phonetic and Morfologik; part 2: T12.1 `analysis/morph` and Kuromoji (see [Progress](#progress)) |
 
 ---
 
@@ -176,6 +176,34 @@ Part 1:
 - **Custom attributes** -- `lucene-analysis`' `AttributeSource` now holds
   attributes outside the core set (`CustomAttribute`, `add_custom`), which
   Morfologik's tags use and Kuromoji's, Nori's and ICU's will.
+
+Part 2 (T12.1):
+
+- **`analysis/morph`** -- `lucene-analysis/src/morph/`: `Viterbi` and
+  `ViterbiNBest` (the lattice, n-best `Lattice`, `fixupPendingList`),
+  `GraphvizFormatter`, `TokenInfoFST` over a reader of Lucene's `FST<Long>`
+  (all four node encodings; `lucene-codecs`' FST is out of this crate's
+  reach and allocates per arc), `BinaryDictionary`, `CharacterDefinition`,
+  `ConnectionCosts`. Java's abstract classes are state plus a language
+  trait (`ViterbiLang`, `NBestLang`). A user dictionary is a trie over UTF-16
+  units rather than an FST (a lookup observes the same arcs and sums). The
+  module carries the arithmetic gate (module-scope deny).
+- **Kuromoji** -- `lucene-analysis-kuromoji`: `JapaneseTokenizer` (three
+  modes, punctuation, compounds, user phrases, n-best and
+  `calcNBestCost`), the four attributes as `CustomAttribute`s with Java's
+  reflection (`AttributeSource::reflect_with`, added for this), the system,
+  unknown and user dictionaries (default instances from the vendored IPADIC,
+  or a caller's files), `ToStringUtil`, every filter, the iteration-mark
+  char filter, `JapaneseAnalyzer`, `JapaneseCompletionAnalyzer` and the ten
+  factories. `GenAnalysisKuromoji.java`: 448 lines (145 written here, 303
+  seeded stress lines with three long enough to force the 1,024-position
+  backtrace) through 16 tokenizer configurations, Graphviz lattices of
+  every corpus line, `calcNBestCost`, 4,881 dictionary entries, and 45
+  analyzer/factory chains (8 refused), all equal; hostile-dictionary sweeps
+  (`kuromoji_hostile.rs`) never panic.
+- **Dictionaries** -- licence-clean for redistribution (IPADIC's NAIST/ICOT
+  terms; mecab-ko-dic is Apache-2.0), so vendored zlib-compressed: IPADIC
+  9.2 MB -> 4.6 MB in the repository (`docs/licences.md`).
 
 ## Acceptance criteria
 

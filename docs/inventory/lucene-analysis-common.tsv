@@ -314,21 +314,21 @@ analysis/miscellaneous/WordDelimiterFilterFactory	ported	crates/lucene-analysis/
 analysis/miscellaneous/WordDelimiterGraphFilter	ported	crates/lucene-analysis/src/miscellaneous/word_delimiter.rs::WordDelimiterGraphFilter
 analysis/miscellaneous/WordDelimiterGraphFilterFactory	ported	crates/lucene-analysis/src/factory/filters_resource.rs::WordDelimiterGraphFilterFactory
 analysis/miscellaneous/WordDelimiterIterator	ported	crates/lucene-analysis/src/miscellaneous/word_delimiter.rs::WordDelimiterIterator
-analysis/morph/BinaryDictionary	deferred:M12	BinaryDictionary: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
-analysis/morph/BinaryDictionaryWriter	deferred:M12	BinaryDictionaryWriter: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
-analysis/morph/CharacterDefinition	deferred:M12	CharacterDefinition: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
-analysis/morph/CharacterDefinitionWriter	deferred:M12	CharacterDefinitionWriter: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
-analysis/morph/ConnectionCosts	deferred:M12	ConnectionCosts: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
-analysis/morph/ConnectionCostsWriter	deferred:M12	ConnectionCostsWriter: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
-analysis/morph/Dictionary	deferred:M12	Dictionary: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
-analysis/morph/DictionaryEntryWriter	deferred:M12	DictionaryEntryWriter: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
-analysis/morph/GraphvizFormatter	deferred:M12	GraphvizFormatter: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
-analysis/morph/MorphData	deferred:M12	MorphData: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
-analysis/morph/Token	deferred:M12	Token: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
-analysis/morph/TokenInfoFST	deferred:M12	TokenInfoFST: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
-analysis/morph/TokenType	deferred:M12	TokenType: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
-analysis/morph/Viterbi	deferred:M12	Viterbi: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
-analysis/morph/ViterbiNBest	deferred:M12	ViterbiNBest: the Viterbi/dictionary base of Kuromoji and Nori, ported with them in M12
+analysis/morph/BinaryDictionary	ported	crates/lucene-analysis/src/morph/binary_dictionary.rs::BinaryDictionary
+analysis/morph/BinaryDictionaryWriter	not-needed	dictionary building (Lucene's build-time tool); M12 loads dictionaries, it does not build them
+analysis/morph/CharacterDefinition	ported	crates/lucene-analysis/src/morph/character_definition.rs::CharacterDefinition
+analysis/morph/CharacterDefinitionWriter	not-needed	dictionary building (Lucene's build-time tool); M12 loads dictionaries, it does not build them
+analysis/morph/ConnectionCosts	ported	crates/lucene-analysis/src/morph/connection_costs.rs::ConnectionCosts
+analysis/morph/ConnectionCostsWriter	not-needed	dictionary building (Lucene's build-time tool); M12 loads dictionaries, it does not build them
+analysis/morph/Dictionary	ported	crates/lucene-analysis/src/morph/token.rs::MorphData (Dictionary's defaults forward to it; a language maps a TokenType to its MorphData)
+analysis/morph/DictionaryEntryWriter	not-needed	dictionary building (Lucene's build-time tool); M12 loads dictionaries, it does not build them
+analysis/morph/GraphvizFormatter	ported	crates/lucene-analysis/src/morph/graphviz.rs::GraphvizFormatter
+analysis/morph/MorphData	ported	crates/lucene-analysis/src/morph/token.rs::MorphData
+analysis/morph/Token	ported	crates/lucene-analysis/src/morph/token.rs::Token
+analysis/morph/TokenInfoFST	ported	crates/lucene-analysis/src/morph/token_info_fst.rs::TokenInfoFst
+analysis/morph/TokenType	ported	crates/lucene-analysis/src/morph/token.rs::TokenType
+analysis/morph/Viterbi	ported	crates/lucene-analysis/src/morph/viterbi.rs::Viterbi
+analysis/morph/ViterbiNBest	ported	crates/lucene-analysis/src/morph/viterbi_nbest.rs::NBestState
 analysis/ne/NepaliAnalyzer	ported	crates/lucene-analysis/src/lang/ne.rs::NepaliAnalyzer
 analysis/ngram/EdgeNGramFilterFactory	ported	crates/lucene-analysis/src/factory/filters_misc.rs::EdgeNGramFilterFactory
 analysis/ngram/EdgeNGramTokenFilter	ported	crates/lucene-analysis/src/ngram/mod.rs::EdgeNGramTokenFilter

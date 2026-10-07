@@ -1,6 +1,7 @@
 //! `org.apache.lucene.analysis.util` (analysis-common's helpers), plus
 //! lucene-core's `RollingBuffer`, which the graph filters share.
 
+pub mod big_decimal;
 pub mod char_tokenizer;
 pub mod csv_util;
 mod elision_filter;

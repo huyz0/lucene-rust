@@ -12,6 +12,7 @@ members = [
     "crates/lucene-analysis-phonetic",
     "crates/lucene-analysis-stempel",
     "crates/lucene-analysis-morfologik",
+    "crates/lucene-analysis-kuromoji",
     "crates/lucene-search",
     "crates/lucene-core",
     "crates/lucene-ffi",

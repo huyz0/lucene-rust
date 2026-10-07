@@ -119,6 +119,22 @@ a dependency the shipped library links is not under a licence listed here.
     the Savoy and Carrot2 stop lists, `NOTICE`, as Lucene ships them) must
     hold.
 
+- **Dictionaries of the M12 morphological analyzers** (T12.1).
+  `crates/lucene-analysis-kuromoji/src/resources/` carries the nine binary
+  files of Lucene 10.5.0's `analysis-kuromoji` jar -- mecab-ipadic-2.7.0-20070801
+  compiled by Lucene's `DictionaryBuilder` -- zlib-compressed (9.2 MB ->
+  4.6 MB in the repository), plus its `stopwords.txt`, `stoptags.txt` and
+  `romaji_map.txt` (Apache-2.0, Lucene's). IPADIC's terms (NAIST, with
+  ICOT's free-software conditions) allow redistribution, original or
+  modified, provided the no-warranty section accompanies it; Lucene ships
+  the data under them, and `NOTICE` reproduces Lucene's NOTICE with the full
+  mecab-ipadic notice. Licence-clean, so vendored: `JapaneseTokenizer`'s
+  default constructors work as Java's do; every dictionary class also loads
+  a caller's files (`from_paths`). The fixture corpus
+  (`fixtures/corpus/analysis-japanese*.txt`) is written for this project,
+  apart from short public-domain literary quotations (Sōseki, Bashō, the
+  Heike Monogatari, Sei Shōnagon, Miyazawa Kenji).
+
 - **Test data from third parties** (M9). `fixtures/corpus/real_polygons.z`,
   the Tessellator's real-world polygon corpus (`scripts/gen-tessellator-corpus.py`),
   holds:
