@@ -125,4 +125,10 @@ E	kind	kind st:kind	AffixedWord[word=kind, entry=kind, prefixes=[], suffixes=[]]
 E	rot	rot/É	AffixedWord[word=rot, entry=rot/É, prefixes=[], suffixes=[]]|AffixedWord[word=roten, entry=rot/É, prefixes=[], suffixes=[É(id=3)]]
 E	word	word is:x po:noun	AffixedWord[word=word, entry=word, prefixes=[], suffixes=[]]
 E	Ünïcode	Ünïcode/AB	AffixedWord[word=Ünïcode, entry=Ünïcode/AB, prefixes=[], suffixes=[]]|AffixedWord[word=Ünïcode, entry=Ünïcode/AB, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=Ünïcodeen, entry=Ünïcode/AB, prefixes=[], suffixes=[É(id=3), A(id=0)]]|AffixedWord[word=Ünïcodes, entry=Ünïcode/AB, prefixes=[], suffixes=[A(id=1)]]
+C			null
+C			null
+C			null
+C	Paris		EntrySuggestion{toEdit=[Paris], toAdd=[], extra=[]}
+C	Haus		EntrySuggestion{toEdit=[Haus], toAdd=[], extra=[]}
+C	Wald		EntrySuggestion{toEdit=[Wald], toAdd=[], extra=[]}
 G	AffixedWord[word=rot, entry=rot/É, prefixes=[], suffixes=[]]|AffixedWord[word=roten, entry=rot/É, prefixes=[], suffixes=[É(id=3)]]|AffixedWord[word=Paris, entry=Paris, prefixes=[], suffixes=[]]|AffixedWord[word=Haus, entry=Haus, prefixes=[], suffixes=[]]|AffixedWord[word=kind, entry=kind, prefixes=[], suffixes=[]]|AffixedWord[word=a/b, entry=a/b/AB, prefixes=[], suffixes=[]]|AffixedWord[word=a/b, entry=a/b/AB, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=a/ben, entry=a/b/AB, prefixes=[], suffixes=[É(id=3), A(id=0)]]|AffixedWord[word=a/bs, entry=a/b/AB, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=Wald, entry=Wald, prefixes=[], suffixes=[]]|AffixedWord[word=Ünïcode, entry=Ünïcode/AB, prefixes=[], suffixes=[]]|AffixedWord[word=Ünïcode, entry=Ünïcode/AB, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=Ünïcodeen, entry=Ünïcode/AB, prefixes=[], suffixes=[É(id=3), A(id=0)]]|AffixedWord[word=Ünïcodes, entry=Ünïcode/AB, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=word, entry=word, prefixes=[], suffixes=[]]|AffixedWord[word=/2, entry=/2, prefixes=[], suffixes=[]]

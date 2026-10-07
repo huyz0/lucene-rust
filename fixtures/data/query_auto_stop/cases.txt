@@ -1,0 +1,114 @@
+#case	default
+stop	body	a and field lucene merge of query segment
+stop	title	
+stop	id	
+stop	note	
+stop	missing	
+all	body:a body:and body:field body:lucene body:merge body:of body:query body:segment
+tokens	body	0	the:1 index:2 the:2 rust:1 search:1
+tokens	body	1	stop:4 words:1
+tokens	body	2	日本:1 écrit:1
+tokens	body	3	
+tokens	title	0	the:1 index:2 the:2 rust:1 search:1
+tokens	title	1	stop:4 words:1
+tokens	title	2	日本:1 écrit:1
+tokens	title	3	
+tokens	missing	0	the:1 index:2 the:2 rust:1 search:1
+tokens	missing	1	stop:4 words:1
+tokens	missing	2	日本:1 écrit:1
+tokens	missing	3	
+#case	maxDocFreq=10
+stop	body	a analyzer and field index lucene merge of query rust search segment stop the token word écrit 日本
+stop	title	a and of query search
+stop	id	0 1 2 3 4 5 6
+stop	note	
+stop	missing	
+all	body:a body:analyzer body:and body:field body:index body:lucene body:merge body:of body:query body:rust body:search body:segment body:stop body:the body:token body:word body:écrit body:日本 id:0 id:1 id:2 id:3 id:4 id:5 id:6 title:a title:and title:of title:query title:search
+tokens	body	0	
+tokens	body	1	words:5
+tokens	body	2	
+tokens	body	3	
+tokens	title	0	
+tokens	title	1	words:5
+tokens	title	2	
+tokens	title	3	
+tokens	missing	0	
+tokens	missing	1	words:5
+tokens	missing	2	
+tokens	missing	3	
+#case	percent=0.1
+stop	body	a analyzer and field index lucene merge of query rust search segment stop the token word écrit 日本
+stop	title	a and of query search
+stop	id	0 1 2 3 4 5 6
+stop	note	
+stop	missing	
+all	body:a body:analyzer body:and body:field body:index body:lucene body:merge body:of body:query body:rust body:search body:segment body:stop body:the body:token body:word body:écrit body:日本 id:0 id:1 id:2 id:3 id:4 id:5 id:6 title:a title:and title:of title:query title:search
+tokens	body	0	
+tokens	body	1	words:5
+tokens	body	2	
+tokens	body	3	
+tokens	title	0	
+tokens	title	1	words:5
+tokens	title	2	
+tokens	title	3	
+tokens	missing	0	
+tokens	missing	1	words:5
+tokens	missing	2	
+tokens	missing	3	
+#case	fields=body,missing percent=0.25
+stop	body	a analyzer and field index lucene merge of query rust search segment stop the token word écrit 日本
+stop	title	
+stop	id	
+stop	note	
+stop	missing	
+all	body:a body:analyzer body:and body:field body:index body:lucene body:merge body:of body:query body:rust body:search body:segment body:stop body:the body:token body:word body:écrit body:日本
+tokens	body	0	
+tokens	body	1	words:5
+tokens	body	2	
+tokens	body	3	
+tokens	title	0	
+tokens	title	1	words:5
+tokens	title	2	
+tokens	title	3	
+tokens	missing	0	
+tokens	missing	1	words:5
+tokens	missing	2	
+tokens	missing	3	
+#case	fields=title,id maxDocFreq=3
+stop	body	
+stop	title	a analyzer and field index merge of query rust search segment stop the token word écrit 日本
+stop	id	0 1 2 3 4 5 6
+stop	note	
+stop	missing	
+all	id:0 id:1 id:2 id:3 id:4 id:5 id:6 title:a title:analyzer title:and title:field title:index title:merge title:of title:query title:rust title:search title:segment title:stop title:the title:token title:word title:écrit title:日本
+tokens	body	0	the:1 lucene:1 index:1 and:1 the:1 rust:1 search:1
+tokens	body	1	a:1 query:1 of:1 stop:1 words:1
+tokens	body	2	日本:1 écrit:1
+tokens	body	3	
+tokens	title	0	the:1 lucene:1 index:1 and:1 the:1 rust:1 search:1
+tokens	title	1	a:1 query:1 of:1 stop:1 words:1
+tokens	title	2	日本:1 écrit:1
+tokens	title	3	
+tokens	missing	0	the:1 lucene:1 index:1 and:1 the:1 rust:1 search:1
+tokens	missing	1	a:1 query:1 of:1 stop:1 words:1
+tokens	missing	2	日本:1 écrit:1
+tokens	missing	3	
+#case	maxDocFreq=1000
+stop	body	
+stop	title	
+stop	id	
+stop	note	
+stop	missing	
+all	
+tokens	body	0	the:1 lucene:1 index:1 and:1 the:1 rust:1 search:1
+tokens	body	1	a:1 query:1 of:1 stop:1 words:1
+tokens	body	2	日本:1 écrit:1
+tokens	body	3	
+tokens	title	0	the:1 lucene:1 index:1 and:1 the:1 rust:1 search:1
+tokens	title	1	a:1 query:1 of:1 stop:1 words:1
+tokens	title	2	日本:1 écrit:1
+tokens	title	3	
+tokens	missing	0	the:1 lucene:1 index:1 and:1 the:1 rust:1 search:1
+tokens	missing	1	a:1 query:1 of:1 stop:1 words:1
+tokens	missing	2	日本:1 écrit:1
+tokens	missing	3	

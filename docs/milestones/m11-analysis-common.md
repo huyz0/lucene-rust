@@ -92,8 +92,8 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   differ between the two, so it is byte-identical under both, and
   `tests/code_point_fixtures.rs` pins the port's Unicode 16 answers there.
 - **T11.6** packages done: `core` (with `FlattenGraphFilter`) and the
-  `CharTokenizer` family; `miscellaneous` but `DateRecognizerFilter` (the
-  deprecated `WordDelimiterFilter` came in part 3); `en` (KStem's dictionary generated from
+  `CharTokenizer` family; `miscellaneous` (the deprecated
+  `WordDelimiterFilter` and `DateRecognizerFilter` came in part 3); `en` (KStem's dictionary generated from
   Lucene's sources); `ngram`, `shingle`, `pattern`, `path`, `charfilter`,
   `commongrams`, `cjk`, `payloads`, `boost`, `minhash`, `email`. All 121
   built harness chains match Lucene token for token (two more record
@@ -161,8 +161,11 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   modes: 4,412 words' spell/stems/roots/analyses/suggestions and 644 roots'
   entries and word forms, all equal to Lucene's -- including two Lucene
   quirks kept (a second `formStep()` stride skipping homonyms; a numeric flag
-  reading `1x` as 1). Left for later: `WordFormGenerator.compress`,
-  `SuggestibleEntryCache`, suggestion time limits. Bench `--bench hunspell`
+  reading `1x` as 1). Part 3 added `WordFormGenerator.compress`
+  (`EntrySuggestion`; Java's best-first search in Java's order, its
+  `PriorityQueue` heap reproduced): 474 calls in `GenHunspell`'s `C` rows,
+  all equal; `SuggestibleEntryCache` is not needed (`WordStorage` is already
+  plain vectors). Bench `--bench hunspell`
   (HunspellStemFilter per dictionary over its fixture words, 2026-10-06):
   affixes 1.93x, compound 1.69x, features 1.53x. The faithful port started at
   1.06~/0.84x/0.99~; callgrind put the cost in SipHash on the affix trie's
@@ -176,7 +179,12 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   parses rule files written here (6 maps entry for entry; 68 rule texts x
   options, bad ones included, map or exception equal) and runs 16 chains
   (graph, legacy, flattened, stop-word holes, ignoreCase) over
-  `corpus/analysis-synonym.txt`: all equal. Left: `word2vec`, the factories.
+  `corpus/analysis-synonym.txt`: all equal. `word2vec` (part 3) lives in
+  `lucene-search/src/word2vec/` because its provider is `lucene-codecs`'
+  HNSW builder and searcher: the DL4J zip reader (stored, deflated, data
+  descriptors), the model (Java's duplicate-term quirk kept) and the filter;
+  `GenWord2Vec.java`: two zips of 80 clustered vectors, every term's
+  synonyms with equal boost bits, the filter's tokens. Left: the factories.
   Part 3's generators share `fixtures/src/AnalysisRows.java` /
   `tests/support/mod.rs` and record in `docs/parity/analysis-lang.md`.
 - **T11.6, languages** -- every language package (`src/lang/<code>.rs`, 37
@@ -214,9 +222,14 @@ Part 1 (inventory, harness, the first T11.6 packages, their benchmark):
   `WordDelimiterFilter` (`GenAnalysisMisc.java`: 5 reverse and 6 WDF chains equal).
   Deferred to M12 with reasons (`docs/parity/analysis-lang.md`): Thai (the
   JDK's GPL dictionary), `SegmentingTokenizerBase`/`CharArrayIterator`,
-  collation, `morph`. Left in M11: `DateRecognizerFilter`,
-  `QueryAutoStopWordAnalyzer` (needs an index reader),
-  `CustomAnalyzer` and the factories (T11.7), `word2vec` synonyms.
+  collation, `morph`. Part 3 also ported `DateRecognizerFilter` (the
+  acceptance of `SimpleDateFormat.parse` re-specified from black-box runs,
+  no JDK code: English names, `z`/`Z` refused; `date_formats.txt`, 14,555
+  texts over 48 seeded patterns and 16 edge sets, all equal; JDK 25's
+  lenient space matching, which CI's JDK 21 lacks, in unit tests) and `QueryAutoStopWordAnalyzer` (in
+  `lucene-search`, which reads the index: `GenQueryAutoStop.java`, three
+  segments with deletions, six constructors, equal). Left in M11:
+  `CustomAnalyzer` and the factories (T11.7, part 4).
 - `java.util.regex` is the `regex` crate behind a Java-syntax shim (`util/java_regex.rs`: ASCII
   `\d\w\s`, `$n` replacements; no backreferences or lookaround).
 - The parity ledger's 400 KB budget is shared (the large area files were

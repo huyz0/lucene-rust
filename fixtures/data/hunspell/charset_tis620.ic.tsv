@@ -36,4 +36,14 @@ E	บ้าน	บ้าน/AN	AffixedWord[word=บ้าน, entry=บ้าน
 E	น้ำ	น้ำ/B	AffixedWord[word=น้ำ, entry=น้ำ/B, prefixes=[], suffixes=[]]|AffixedWord[word=น้ำครับ, entry=น้ำ/B, prefixes=[], suffixes=[B(id=2)]]
 E	ภาษา	ภาษา	AffixedWord[word=ภาษา, entry=ภาษา, prefixes=[], suffixes=[]]
 E	ไทย	ไทย	AffixedWord[word=ไทย, entry=ไทย, prefixes=[], suffixes=[]]
+C	แมว|แมวไหม|แมวๆ		EntrySuggestion{toEdit=[แมว/A], toAdd=[], extra=[]}
+C	แมวไหม|แมวๆ		EntrySuggestion{toEdit=[แมว/A], toAdd=[], extra=[]}
+C	แมว|แมวไหม	แมวๆ	EntrySuggestion{toEdit=[แมว], toAdd=[แมวไหม], extra=[]}
+C	บ้าน|บ้านไหม|การบ้านไหม|บ้านๆ		EntrySuggestion{toEdit=[บ้าน/AN], toAdd=[], extra=[การบ้าน, การบ้านๆ]}
+C	บ้านไหม|การบ้านไหม|บ้านๆ		EntrySuggestion{toEdit=[บ้าน/AN], toAdd=[], extra=[การบ้าน, การบ้านๆ]}
+C	บ้าน|บ้านไหม	การบ้านไหม	EntrySuggestion{toEdit=[บ้าน/A], toAdd=[], extra=[บ้านๆ]}
+C	น้ำ|น้ำครับ		EntrySuggestion{toEdit=[น้ำ/B], toAdd=[], extra=[]}
+C	น้ำครับ		EntrySuggestion{toEdit=[], toAdd=[น้ำครับ], extra=[]}
+C	ภาษา		EntrySuggestion{toEdit=[ภาษา], toAdd=[], extra=[]}
+C	ไทย		EntrySuggestion{toEdit=[ไทย], toAdd=[], extra=[]}
 G	AffixedWord[word=บ้าน, entry=บ้าน/AN, prefixes=[], suffixes=[]]|AffixedWord[word=บ้านไหม, entry=บ้าน/AN, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=การบ้านไหม, entry=บ้าน/AN, prefixes=[N(id=3)], suffixes=[A(id=1)]]|AffixedWord[word=บ้านๆ, entry=บ้าน/AN, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=การบ้านๆ, entry=บ้าน/AN, prefixes=[N(id=3)], suffixes=[A(id=0)]]|AffixedWord[word=การบ้าน, entry=บ้าน/AN, prefixes=[N(id=3)], suffixes=[]]|AffixedWord[word=น้ำ, entry=น้ำ/B, prefixes=[], suffixes=[]]|AffixedWord[word=น้ำครับ, entry=น้ำ/B, prefixes=[], suffixes=[B(id=2)]]|AffixedWord[word=ไทย, entry=ไทย, prefixes=[], suffixes=[]]|AffixedWord[word=แมว, entry=แมว/A, prefixes=[], suffixes=[]]|AffixedWord[word=แมวไหม, entry=แมว/A, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=แมวๆ, entry=แมว/A, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=ภาษา, entry=ภาษา, prefixes=[], suffixes=[]]

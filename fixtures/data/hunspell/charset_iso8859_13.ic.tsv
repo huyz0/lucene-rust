@@ -65,4 +65,16 @@ E	gėl	gėl/B	AffixedWord[word=gėl, entry=gėl/B, prefixes=[], suffixes=[]]|Aff
 E	Vilnius	null	
 E	žuvis	žuvis	AffixedWord[word=žuvis, entry=žuvis, prefixes=[], suffixes=[]]
 E	ūkis	ūkis	AffixedWord[word=ūkis, entry=ūkis, prefixes=[], suffixes=[]]
+C	ąžuol|ąžuolai|ąžuolas|ąžuolų		EntrySuggestion{toEdit=[ąžuol/A], toAdd=[], extra=[]}
+C	ąžuolai|ąžuolas|ąžuolų		EntrySuggestion{toEdit=[ąžuol/A], toAdd=[], extra=[]}
+C	ąžuol|ąžuolai	ąžuolas	EntrySuggestion{toEdit=[ąžuol], toAdd=[ąžuolai], extra=[]}
+C	šun|šunai|nešunai|šunas		EntrySuggestion{toEdit=[šun/AN], toAdd=[], extra=[nešun, nešunas, nešunų, šunų]}
+C	šunai|nešunai|šunas		EntrySuggestion{toEdit=[šun/AN], toAdd=[], extra=[nešun, nešunas, nešunų, šunų]}
+C	šun|šunai	nešunai	EntrySuggestion{toEdit=[šun/A], toAdd=[], extra=[šunas, šunų]}
+C	gėl|gėlės|gėlė		EntrySuggestion{toEdit=[gėl/B], toAdd=[], extra=[]}
+C	gėlės|gėlė		EntrySuggestion{toEdit=[gėl/B], toAdd=[], extra=[]}
+C	gėl|gėlės	gėlė	EntrySuggestion{toEdit=[gėl], toAdd=[gėlės], extra=[]}
+C			null
+C	žuvis		EntrySuggestion{toEdit=[žuvis], toAdd=[], extra=[]}
+C	ūkis		EntrySuggestion{toEdit=[ūkis], toAdd=[], extra=[]}
 G	AffixedWord[word=ūkis, entry=ūkis, prefixes=[], suffixes=[]]|AffixedWord[word=vilnius, entry=vilnius, prefixes=[], suffixes=[]]|AffixedWord[word=ąžuol, entry=ąžuol/A, prefixes=[], suffixes=[]]|AffixedWord[word=ąžuolai, entry=ąžuol/A, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=ąžuolas, entry=ąžuol/A, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=ąžuolų, entry=ąžuol/A, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=žuvis, entry=žuvis, prefixes=[], suffixes=[]]|AffixedWord[word=šun, entry=šun/AN, prefixes=[], suffixes=[]]|AffixedWord[word=šunai, entry=šun/AN, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=nešunai, entry=šun/AN, prefixes=[N(id=5)], suffixes=[A(id=1)]]|AffixedWord[word=šunas, entry=šun/AN, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=nešunas, entry=šun/AN, prefixes=[N(id=5)], suffixes=[A(id=0)]]|AffixedWord[word=šunų, entry=šun/AN, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=nešunų, entry=šun/AN, prefixes=[N(id=5)], suffixes=[A(id=2)]]|AffixedWord[word=nešun, entry=šun/AN, prefixes=[N(id=5)], suffixes=[]]|AffixedWord[word=gėl, entry=gėl/B, prefixes=[], suffixes=[]]|AffixedWord[word=gėlės, entry=gėl/B, prefixes=[], suffixes=[B(id=3)]]|AffixedWord[word=gėlė, entry=gėl/B, prefixes=[], suffixes=[B(id=4)]]

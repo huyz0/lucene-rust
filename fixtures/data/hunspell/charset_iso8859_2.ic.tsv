@@ -70,4 +70,20 @@ E	część	część/AN	AffixedWord[word=część, entry=część/AN, prefixes=[]
 E	ściana	ściana/B	AffixedWord[word=ściana, entry=ściana/B, prefixes=[], suffixes=[]]|AffixedWord[word=ścianaą, entry=ściana/B, prefixes=[], suffixes=[B(id=4)]]|AffixedWord[word=ścianaę, entry=ściana/B, prefixes=[], suffixes=[B(id=3)]]
 E	źrebak	źrebak/A	AffixedWord[word=źrebak, entry=źrebak/A, prefixes=[], suffixes=[]]|AffixedWord[word=źrebakach, entry=źrebak/A, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=źrebakami, entry=źrebak/A, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=źrebaky, entry=źrebak/A, prefixes=[], suffixes=[A(id=0)]]
 E	Kraków	null	
+C	żółw|żółwach|żółwami|żółwy		EntrySuggestion{toEdit=[żółw/A], toAdd=[], extra=[]}
+C	żółwach|żółwami|żółwy		EntrySuggestion{toEdit=[żółw/A], toAdd=[], extra=[]}
+C	żółw|żółwach	żółwami	EntrySuggestion{toEdit=[żółw], toAdd=[żółwach], extra=[]}
+C	łódź|łódźach|łódźami|łódźy		EntrySuggestion{toEdit=[łódź/A], toAdd=[], extra=[]}
+C	łódźach|łódźami|łódźy		EntrySuggestion{toEdit=[łódź/A], toAdd=[], extra=[]}
+C	łódź|łódźach	łódźami	EntrySuggestion{toEdit=[łódź], toAdd=[łódźach], extra=[]}
+C	część|częśćach|nieczęśćach|częśćami		EntrySuggestion{toEdit=[część/AN], toAdd=[], extra=[częśćy, nieczęść, nieczęśćami, nieczęśćy]}
+C	częśćach|nieczęśćach|częśćami		EntrySuggestion{toEdit=[część/AN], toAdd=[], extra=[częśćy, nieczęść, nieczęśćami, nieczęśćy]}
+C	część|częśćach	nieczęśćach	EntrySuggestion{toEdit=[część/A], toAdd=[], extra=[częśćami, częśćy]}
+C	ściana|ścianaą|ścianaę		EntrySuggestion{toEdit=[ściana/B], toAdd=[], extra=[]}
+C	ścianaą|ścianaę		EntrySuggestion{toEdit=[ściana/B], toAdd=[], extra=[]}
+C	ściana|ścianaą	ścianaę	EntrySuggestion{toEdit=[ściana], toAdd=[ścianaą], extra=[]}
+C	źrebak|źrebakach|źrebakami|źrebaky		EntrySuggestion{toEdit=[źrebak/A], toAdd=[], extra=[]}
+C	źrebakach|źrebakami|źrebaky		EntrySuggestion{toEdit=[źrebak/A], toAdd=[], extra=[]}
+C	źrebak|źrebakach	źrebakami	EntrySuggestion{toEdit=[źrebak], toAdd=[źrebakach], extra=[]}
+C			null
 G	AffixedWord[word=ściana, entry=ściana/B, prefixes=[], suffixes=[]]|AffixedWord[word=ścianaą, entry=ściana/B, prefixes=[], suffixes=[B(id=4)]]|AffixedWord[word=ścianaę, entry=ściana/B, prefixes=[], suffixes=[B(id=3)]]|AffixedWord[word=żółw, entry=żółw/AB, prefixes=[], suffixes=[]]|AffixedWord[word=żółwach, entry=żółw/AB, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=żółwami, entry=żółw/AB, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=żółwy, entry=żółw/AB, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=żółwą, entry=żółw/AB, prefixes=[], suffixes=[B(id=4)]]|AffixedWord[word=żółwę, entry=żółw/AB, prefixes=[], suffixes=[B(id=3)]]|AffixedWord[word=część, entry=część/AN, prefixes=[], suffixes=[]]|AffixedWord[word=częśćach, entry=część/AN, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=nieczęśćach, entry=część/AN, prefixes=[N(id=5)], suffixes=[A(id=2)]]|AffixedWord[word=częśćami, entry=część/AN, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=nieczęśćami, entry=część/AN, prefixes=[N(id=5)], suffixes=[A(id=1)]]|AffixedWord[word=częśćy, entry=część/AN, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=nieczęśćy, entry=część/AN, prefixes=[N(id=5)], suffixes=[A(id=0)]]|AffixedWord[word=nieczęść, entry=część/AN, prefixes=[N(id=5)], suffixes=[]]|AffixedWord[word=kraków, entry=kraków, prefixes=[], suffixes=[]]|AffixedWord[word=źrebak, entry=źrebak/A, prefixes=[], suffixes=[]]|AffixedWord[word=źrebakach, entry=źrebak/A, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=źrebakami, entry=źrebak/A, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=źrebaky, entry=źrebak/A, prefixes=[], suffixes=[A(id=0)]]|AffixedWord[word=łódź, entry=łódź/A, prefixes=[], suffixes=[]]|AffixedWord[word=łódźach, entry=łódź/A, prefixes=[], suffixes=[A(id=2)]]|AffixedWord[word=łódźami, entry=łódź/A, prefixes=[], suffixes=[A(id=1)]]|AffixedWord[word=łódźy, entry=łódź/A, prefixes=[], suffixes=[A(id=0)]]
