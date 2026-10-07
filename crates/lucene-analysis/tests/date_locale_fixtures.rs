@@ -1,16 +1,18 @@
-//! M12 T12.7: `SimpleDateFormat`'s parse in every locale JDK 21 and 25 agree
-//! on (`GenAnalysisDateLocales.java`), against the generated table
-//! (`miscellaneous/date_locales.rs`).
+//! M12 T12.7: `SimpleDateFormat`'s parse against the generated table
+//! (`miscellaneous/date_locales.rs`), in every locale JDK 21 and 25 agree on
+//! (`GenAnalysisDateLocales.java`'s `dates.txt`) and, as JDK 25 alone
+//! answers, in all 1,151 of the table's (`dates_jdk25.txt`, no text left out
+//! for its spaces; `scripts/check-date-locales-jdk25.sh`).
 
 mod support;
 
 use lucene_analysis::miscellaneous::{DateLocale, SimpleDateFormat};
 use support::unesc;
 
-#[test]
-fn every_locale_parses_as_java() {
-    let text =
-        std::fs::read_to_string(support::data_dir("analysis_date_locales") + "dates.txt").unwrap();
+/// Every row of `analysis_date_locales/<file>` parsed as Java did: the
+/// number of rows, and the tags they name.
+fn run(file: &str) -> (usize, std::collections::BTreeSet<String>) {
+    let text = std::fs::read_to_string(support::data_dir("analysis_date_locales") + file).unwrap();
     let (mut rows, mut failures) = (0, Vec::new());
     let mut tags = std::collections::BTreeSet::new();
     for line in text.lines() {
@@ -19,7 +21,7 @@ fn every_locale_parses_as_java() {
         let locale =
             DateLocale::for_language_tag(tag).unwrap_or_else(|| panic!("{tag} has no data"));
         assert_eq!(locale.tag(), tag);
-        tags.insert(tag);
+        tags.insert(tag.to_string());
         let format = if pattern == "DEFAULT" {
             SimpleDateFormat::date_instance(locale)
         } else {
@@ -28,12 +30,18 @@ fn every_locale_parses_as_java() {
         let got = format.parse(&input).map_or(-1, |e| e as i64).to_string();
         if got != want && failures.len() < 40 {
             failures.push(format!(
-                "{tag} {pattern:?} {input:?}: java {want}, rust {got}"
+                "{file}: {tag} {pattern:?} {input:?}: java {want}, rust {got}"
             ));
         }
         rows += 1;
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+    (rows, tags)
+}
+
+#[test]
+fn every_locale_parses_as_java() {
+    let (rows, tags) = run("dates.txt");
     assert!(rows > 20_000, "{rows}");
     // Every locale of the list resolves (a few have no row: their one text
     // was left out and their record had its battery under another tag).
@@ -47,6 +55,15 @@ fn every_locale_parses_as_java() {
         tags.len(),
         corpus.len()
     );
+}
+
+/// JDK 25's behaviour where JDK 21's differs: every locale of the table,
+/// space separators included.
+#[test]
+fn every_available_locale_parses_as_jdk_25() {
+    let (rows, tags) = run("dates_jdk25.txt");
+    assert!(rows > 30_000, "{rows}");
+    assert_eq!(tags.len(), 1151);
 }
 
 /// What a tag resolves to: `Locale.Builder`'s canonical form, the table's

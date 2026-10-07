@@ -329,11 +329,15 @@ RUST_WRITTEN='^sparse_numeric_doc_values/'
 # has no dump, its tests read the index directly); the segment ids of both are
 # in the baseline below.
 BWC_OWNED='^bwc(-big|-quantized)?/'
+# Written under JDK 25 only (GenAnalysisDateLocales --jdk25), and verified by
+# scripts/check-date-locales-jdk25.sh in CI's JDK 25 step.
+JDK25_OWNED='^analysis_date_locales/dates_jdk25\.txt$'
 while IFS= read -r rel; do
   [ -e "$TMP_A/$rel" ] && continue
   if [[ "$rel" =~ $GENERATED_NOISE ]]; then continue; fi
   if [[ "$rel" =~ $RUST_WRITTEN ]]; then continue; fi
   if [[ "$rel" =~ $BWC_OWNED ]]; then continue; fi
+  if [[ "$rel" =~ $JDK25_OWNED ]]; then continue; fi
   echo "  EXTRA in committed fixtures, produced by no generator: $rel"
   extra=$((extra+1)); status=1
 done < <(cd "$OUT" && find . -type f | sed 's|^\./||' | sort)

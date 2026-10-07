@@ -224,6 +224,11 @@ jobs:
           java-version: '25'
       - name: The UnicodeScript table matches its generator
         run: java crates/lucene-analysis/tools/DumpUnicodeScripts.java | diff - crates/lucene-analysis/src/java_unicode_script.rs
+      # date_locales.rs follows JDK 25 where JDK 21 parses otherwise; the
+      # fixture of that behaviour (all 1,151 locales, spaces included) is
+      # GenAnalysisDateLocales --jdk25's output, regenerated and diffed here.
+      - name: The JDK 25 date-locale fixture matches its generator
+        run: ./scripts/check-date-locales-jdk25.sh
 
   # ---------------------------------------------------------------------------
   # The Snowball stemmers over the Snowball project's own test vocabularies

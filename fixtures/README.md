@@ -1190,7 +1190,12 @@ outright.
   and numbers in the locale's own symbols (`dates.txt`: the parse
   position's index or -1). Texts whose space separators JDK 23+'s lenient
   matching reads otherwise are left out: byte-identical under JDK 21 and
-  25. Read by `crates/lucene-analysis/tests/date_locale_fixtures.rs`.
+  25. With `--jdk25` (JDK 25 only), `dates_jdk25.txt`: the same batteries
+  over all 1,151 locales of `date_locales.rs` with no text left out for its
+  spaces -- the JDK-25-only behaviour; `gen-fixtures.sh --check` skips it,
+  `scripts/check-date-locales-jdk25.sh` (CI `fixtures`, under JDK 25)
+  regenerates and diffs it. Both read by
+  `crates/lucene-analysis/tests/date_locale_fixtures.rs`.
 - `GenAnalysisCompound.java` — M11 T11.6: `corpus/hyphenation-test.xml` (a
   toy hyphenation grammar written for this project) loaded into a
   `HyphenationTree`: hyphenation points for words (`points.words`), and the
