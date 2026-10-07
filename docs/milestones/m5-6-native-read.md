@@ -380,6 +380,16 @@ hits, totals, max-score bits -- and so do the self test's tracked pages.
   greatest value, so that skipping is exact for them and the native answer is
   Lucene's. `sum` stays on Lucene: a sum can pass the points, so which
   documents it keeps depends on where skipping starts.
+  Where the points range is not selective, `NumericComparator` iterates the
+  comparator's doc values instead, and `MultiValueMode.select`'s wrapper
+  throws `UnsupportedOperationException` from `advance` on a multi-valued
+  segment: the stock shard fails, and the search answers HTTP 200 with the
+  other shards' hits. The native key does not skip and answers in full. A
+  multi-shard search reaches this by timing alone -- once the shards that
+  answered count more than `track_total_hits`, the coordinator sends each later
+  shard `track_total_hits: false`, a hits threshold of one -- so the e2e matrix
+  asks these rows for an exact total and refuses a partial stock answer as a
+  reference (`verify_opensearch.py`'s `complete`).
 * Index-sorted shards (ABI 23): a segment whose index sort begins with the
   search's sort ends at its first non-competitive document
   (`TopFieldCollector.canEarlyTerminate`), decided per segment by the plugin
