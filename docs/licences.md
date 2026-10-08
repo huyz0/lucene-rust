@@ -168,10 +168,12 @@ a dependency the shipped library links is not under a licence listed here.
     (`nfc.nrm`, `nfkc.nrm`, `nfkc_cf.nrm`, `nfkc_scf.nrm`, `uts46.nrm`; the
     word break rules `word.brk`; the dictionaries `thaidict`, `laodict`,
     `khmerdict`, `burmesedict`, `cjdict` as `.dict.z`, zlib-compressed --
-    their third-party terms are in ICU's `LICENSE`; the collation data,
-    `coll/ucadata.icu` and the locale bundles, in `coll.pack.z` with
-    CLDR's default-script table and `LocaleIDs`' code mappings, written by
-    `tools/GenIcuCollPack.java`, 3.3 MB -> 1.1 MB), Lucene's `utr30.nrm`,
+    their third-party terms are in ICU's `LICENSE`; the case mappings
+    `ucase.icu`; the collation and transliteration data,
+    `coll/ucadata.icu`, the locale bundles and `translit/root.res`, in
+    `coll.pack.z` with CLDR's default-script table and `LocaleIDs`' code
+    mappings, written by `tools/GenIcuCollPack.java`, 4.4 MB -> 1.4 MB),
+    Lucene's `utr30.nrm`,
     `Default.brk` and `MyanmarSyllable.brk` (Apache-2.0, from the
     `analysis-icu` jar), and `uprops.bin.z`, the character properties and
     their aliases as ICU4J's public API reports them, written by

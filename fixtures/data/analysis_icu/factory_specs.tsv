@@ -27,3 +27,12 @@ c_factory_25	c:icuNormalizer2,mode=fcd t:whitespace
 c_factory_26	t:icu,rulefiles=Latn
 c_factory_27	t:icu,rulefiles=Nope:x.rbbi
 c_factory_28	t:icu,foo=1
+c_factory_29	t:whitespace f:icuTransform,id=Any-Latin
+c_factory_30	t:whitespace f:icuTransform,id=Cyrillic-Latin,direction=reverse
+c_factory_31	t:whitespace f:icuTransform,id=Traditional-Simplified,direction=Forward
+c_factory_32	t:whitespace f:icuTransform,id=NFD;_SPACE_[:Nonspacing_SPACE_Mark:]_SPACE_Remove
+c_factory_33	t:keyword f:icuTransform,id=Any-Latin;_SPACE_Latin-ASCII
+c_factory_34	t:whitespace f:icuTransform
+c_factory_35	t:whitespace f:icuTransform,id=Bogus-ID
+c_factory_36	t:whitespace f:icuTransform,id=Any-Latin,direction=up
+c_factory_37	t:whitespace f:icuTransform,id=Any-Latin,z=1
