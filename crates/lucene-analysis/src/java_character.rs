@@ -146,10 +146,15 @@ pub fn is_whitespace(cp: u32) -> bool {
     }
     match cp {
         0x00A0 | 0x2007 | 0x202F => false,
-        _ => matches!(
+        // Every other separator (Zs, Zl, Zp) of the JDK's table is one of
+        // these (`whitespace_candidates_cover_every_separator`), so the rest
+        // of the code space -- the letters of every script -- skips the
+        // category lookup.
+        0x1680 | 0x2000..=0x205F | 0x3000 => matches!(
             get_type(cp),
             SPACE_SEPARATOR | LINE_SEPARATOR | PARAGRAPH_SEPARATOR
         ),
+        _ => false,
     }
 }
 
@@ -382,6 +387,22 @@ pub fn special_upper(unit: u16) -> Option<&'static [u16]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `is_whitespace` consults the category table only for its candidate
+    /// ranges: no separator lies outside them.
+    #[test]
+    fn whitespace_candidates_cover_every_separator() {
+        for cp in 0x80..=0x10_FFFF {
+            let separator = matches!(
+                get_type(cp),
+                SPACE_SEPARATOR | LINE_SEPARATOR | PARAGRAPH_SEPARATOR
+            );
+            let candidate = matches!(cp, 0x00A0 | 0x1680 | 0x2000..=0x205F | 0x3000);
+            assert!(!separator || candidate, "{cp:#x}");
+        }
+        assert!(is_whitespace(0x3000) && is_whitespace(0x2028) && is_whitespace(0x1680));
+        assert!(!is_whitespace(0x2007) && !is_whitespace(0x4e00) && !is_whitespace(0x2010));
+    }
 
     /// The case table (JDK 25) and the category table (UCD 16.0) are the
     /// same Unicode version: no code point has a case mapping and no

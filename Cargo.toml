@@ -15,6 +15,7 @@ members = [
     "crates/lucene-analysis-kuromoji",
     "crates/lucene-analysis-nori",
     "crates/lucene-analysis-smartcn",
+    "crates/lucene-analysis-icu",
     "crates/lucene-search",
     "crates/lucene-core",
     "crates/lucene-ffi",

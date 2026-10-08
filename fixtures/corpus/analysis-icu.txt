@@ -1,0 +1,79 @@
+The quick-witted Résumé of Ångström's café: naïve coöperation, façade & piñata.
+Straße, STRASSE und Maßstab: Größe ändert sich nicht, aber ẞ ist groß.
+İstanbul'da ılık bir akşam; IĞDIR ve ıspanak İLE ilgili notlar.
+ΟΔΥΣΣΕΥΣ ταξίδεψε στην Ιθάκη· ο λόγος ήταν απλός, όπως πάντα.
+Москва́ и Санкт-Петербург: ёлка, Ёжик, ЩЕДРОСТЬ и тишина.
+Українська мова має літери ї, є, ґ і апостроф: м’ята, п'ять.
+اللُّغَةُ العَرَبِيَّةُ جَمِيلَةٌ، وَالكِتَابُ عَلَى الطَّاوِلَةِ ١٢٣٤٥.
+עִבְרִית: שָׁלוֹם לְכֻלָּם, הַסֵּפֶר עַל הַשֻּׁלְחָן.
+हिन्दी में क़लम और ज़मीन; नमस्ते, आप कैसे हैं? २०२४
+বাংলা ভাষায় লেখা একটি ছোট বাক্য, আর সংখ্যা ১২৩।
+தமிழ் எழுத்துக்கள்: கொ கோ கௌ, மற்றும் ஒரு சிறிய வாக்கியம்.
+ภาษาไทยไม่มีการเว้นวรรคระหว่างคำ เช่น ฉันชอบกินข้าวผัดกับไข่ดาว
+ພາສາລາວຂຽນຕໍ່ກັນໂດຍບໍ່ມີຍະຫວ່າງລະຫວ່າງຄໍາ
+ភាសាខ្មែរសរសេរជាប់គ្នាដោយគ្មានដកឃ្លារវាងពាក្យ
+မြန်မာဘာသာစကားကိုစကားလုံးများကြားတွင်နေရာလွတ်မပါဘဲရေးသည်
+བོད་ཡིག་ནི་ཚེག་གིས་ཚིག་ཁ་གྱེས་ཡོད། ཀྵ ཱ ཱི
+ქართული ანბანი ლამაზია, Აა ასომთავრული.
+Հայերեն գրերը՝ և, ﬓ, և Արարատ լեռը։
+ኢትዮጵያ በአማርኛ ቋንቋ ይጻፋል፤ ሰላም ለሁሉም።
+中华人民共和国成立于一九四九年，北京是首都。
+臺灣的繁體中文與簡體字不同，例如「國」與「国」。
+私は東京の大学で日本語を勉強しています。ひらがなとカタカナ。
+ﾊﾝｶｸｶﾀｶﾅとｶﾞｷﾞｸﾞ、そして全角ＡＢＣ１２３も混ざる。
+한국어 문장입니다. 서울특별시에서 만나요! ㄱㄴㄷ 한글
+조합형 자모: ᄒᆞᆫ글 그리고 ᄀᆞᄅᆞᆷ 옛한글.
+Emoji: 😀 👍🏽 👨‍👩‍👧‍👦 🇯🇵 🏳️‍🌈 #️⃣ 1️⃣ ©️ ®️ ™ ❤️ ✈︎
+Ligatures ﬁ ﬂ ﬀ ﬃ and ǅ Ǆ ǆ, Roman numerals Ⅻ ⅻ, circled ① ⑳ ㉑.
+Superscripts x² y³ H₂O, fractions ½ ¾ ⅞, units ㎞ ㎏ ㏂ ㍻ ㍿.
+Math 𝐀𝐁𝐂 𝒳𝒴𝒵 𝔄𝔅 𝟎𝟏𝟐 and musical 𝅗𝅥 𝅘𝅥𝅮 symbols.
+Soft­hyphen, zero​width, ZWNJ‌and ZWJ‍marks, variation︀selector.
+Combining stack: a̐̓̔̕͘ e̖̗̘̙ o͜o ö̀ ǘ ḗ ṩ q̣̇ q̣̇.
+Decomposed: é but real é, Å vs Å vs Å, Ω vs Ω.
+Numbers 3.14159, 1,234,567.89, −42, 2024-10-07, 10:30, ٣٫١٤ ۱۲۳ ๑๒๓ ໑໒໓.
+Mixed: Lucene10.5 ICU77 UTF-16 x86_64 e-mail user@example.com http://example.com/path?q=1
+Fullwidth ＨＥＬＬＯ　ｗｏｒｌｄ！ and halfwidth ｱｲｳｴｵ ﾞﾟ.
+CJK compatibility 豈 更 車 and radicals ⺀ ⼀ and enclosed ㊀ ㊎.
+Cherokee ᏣᎳᎩ ꮳꮃꭹ, Deseret 𐐷𐐸𐐹, Osage 𐓏𐓘𐓻.
+Hangul syllable composition ᄀ ᅡ ᆨ and 각 and 각.
+Mongolian ᠮᠣᠩᠭᠣᠯ ᠪᠢᠴᠢᠭ᠌ and Syriac ܠܫܢܐ ܣܘܪܝܝܐ.
+Sinhala සිංහල, Malayalam മലയാളം, Telugu తెలుగు, Kannada ಕನ್ನಡ, Gujarati ગુજરાતી.
+Thai digits and text: ราคา ๑๒๐ บาท และ 120 บาท ครับ
+Lao mixed ສະບາຍດີ hello ສະບາຍດີ
+Khmer with Latin: ព្រះរាជាណាចក្រកម្ពុជា Cambodia ២០២៤
+Myanmar mixed: ရန်ကုန်မြို့ Yangon ၁၂၃
+日本語とEnglishとカタカナＭＩＸ、ひらがなまじり漢字。
+中文English混合123測試，全角１２３和半角123。
+Greek final sigma: ΣΟΦΟΣ ΚΑΙ ΟΔΟΣ, σοφός και οδός.
+Dotless and dotted: Iı İi, Turkish casing differs from Azeri əƏ.
+Special casing: ŉ ǰ ΐ ΰ և ﬀ ﬆ ẞß ﬅ.
+Default ignorables: a͏b ᅟc ᅠd ㅤe ﾠf ᠋g.
+Bidi controls: ‪left‬ ‫right‬ ‎mark‏ ⁦iso⁩.
+Cyrillic with accents: ви́дение, йо́гурт, а̀ е̂.
+Vietnamese: Tiếng Việt có nhiều dấu: ằ ẳ ẵ ặ ề ể ễ ệ ố ồ ổ ỗ ộ.
+Polish and Czech: Zażółć gęślą jaźń; Příliš žluťoučký kůň.
+Icelandic and Nordic: Þórður, Æsir, Øresund, ÐÞ ðþ.
+Armenian ligature ﬔﬕﬖﬗ and Hebrew presentation ﬠﬡﬢ ﭏ.
+Arabic presentation forms ﻻ ﷲ ﷺ ﻼ and tatweel ــ.
+Hiragana iteration ゝゞ and katakana ヽヾ, small ぁぃ ァィ, long ー.
+Hangul compatibility jamo ㄱㅏㄴ and halfwidth ﾡﾢ.
+Brahmi 𑀩𑁆𑀭𑀸𑀳𑁆𑀫𑀻 and Grantha 𑌗𑍍𑌰𑌨𑍍𑌥.
+Tifinagh ⵜⴰⵎⴰⵣⵉⵖⵜ and N'Ko ߒߞߏ and Vai ꕙꔤ.
+Line with tabs	and	spaces   and trailing space
+Apostrophes: don't, l'homme, rock'n'roll, ’quoted’ and ‘single’.
+Hyphens: well-known, co‑operate (NB hyphen), e–mail (en dash), A—B (em dash).
+URLs: https://lucene.apache.org/core/10_5_0/ and ftp://ftp.example.org/x_y.
+Phone +1 (555) 012-3456 and IPv4 192.168.0.1, IPv6 fe80::1.
+Currency $5.00 €4,50 £3 ¥200 ₹100 ₩1000 ₿0.01.
+Emoji modifiers 👋🏻👋🏼👋🏽👋🏾👋🏿 and tags 🏴󠁧󠁢󠁳󠁣󠁴󠁿.
+Keycaps 0️⃣ *️⃣ #⃣ 9⃣ and plain # * 0.
+Regional indicators 🇺🇸🇬🇧🇫🇷 and a lone 🇦.
+Mixed scripts in a word: abcабвαβγ123אבג.
+Japanese long: 吾輩は猫である。名前はまだ無い。どこで生れたかとんと見当がつかぬ。
+Chinese long: 学而时习之，不亦说乎？有朋自远方来，不亦乐乎？
+Korean long: 동해 물과 백두산이 마르고 닳도록 하느님이 보우하사 우리나라 만세
+Thai long: กรุงเทพมหานครเป็นเมืองหลวงของประเทศไทยและเป็นศูนย์กลางเศรษฐกิจ
+Burmese long: မင်္ဂလာပါ။ ကျွန်တော်တို့သည်ရန်ကုန်မြို့တွင်နေထိုင်ကြသည်။
+Khmer long: ខ្ញុំចូលចិត្តញ៉ាំបាយជាមួយត្រីអាំងនៅពេលល្ងាច
+Lao long: ປະເທດລາວມີແມ່ນໍ້າຂອງໄຫຼຜ່ານຫຼາຍແຂວງ
+Final line with only punctuation: ... ,,, !!! ??? ;;; ::: --- ___ ***

@@ -1181,6 +1181,36 @@ outright.
   `replaceAll("<$0>")`, `matches()`, or the exception. Inputs keep to
   characters JDK 21 and 25 agree on: byte-identical under both. Read by
   `crates/lucene-analysis/tests/java_regex_fixtures.rs`.
+- `GenAnalysisIcu.java` — M12 T12.4: analysis-icu over ICU4J 77.1
+  (`ICU_DEPS`, own classpath): normalization of every assigned 256-code-point
+  block (`norm_blocks.tsv`, FNV-1a digests) and of 600 seeded stress strings
+  (`norm_strings.txt`/`.tsv`, full text) through `nfc`, `nfkc`, `nfkc_cf`,
+  `nfkc_scf`, `uts46` and Lucene's `utr30` in all four modes, with quick
+  checks, spans, boundaries and appends; `UnicodeSet` patterns
+  (`unicode_sets.tsv`); `ICUNormalizer2Filter`/`ICUFoldingFilter`/
+  `ICUNormalizer2CharFilter` chains over `corpus/analysis-icu.txt` (written
+  here) and the strings without lone surrogates (`n_*`, `cf*` -- small char
+  filter buffers through `IcuAccess.java`, compiled into the module's
+  package on the class path), and the factories through `CustomAnalyzer`
+  (`factory_specs.tsv`, `c_factory_*`; a refused one is a `B` row with its
+  exception class). `ICUTokenizer` first, in a fresh JVM (its break-engine
+  registry is process-global): the corpus and 300 seeded stress lines
+  (`tok_stress.txt`; one over 4,096 units) through the four
+  `DefaultICUTokenizerConfig`s (CJK as words or bigrams x Myanmar as words
+  or syllables) with offsets, types, increments and scripts (`tok_*.tsv`).
+  Read by `crates/lucene-analysis-icu/tests/icu_fixtures.rs` and
+  `icu_tokenizer_fixtures.rs`.
+- `GenAnalysisIcuCollation.java` — M12 T12.4: ICU4J 77.1 collation sort keys
+  (`getRawCollationKey`, what `ICUCollationKeyAnalyzer` indexes; `ICU_DEPS`,
+  own classpath, data under `analysis_icu_collation/`): 1,687 texts
+  (`coll_strings.txt`, UTF-16 units in hex -- the corpus, curated
+  contractions, numerics and specials, 1,400 seeded) through 1,829
+  collators (`coll_configs.tsv`: every collation bundle and type of the jar,
+  fallback IDs, attribute keywords, setter combinations; valid and actual
+  locale and an FNV-1a digest per 100 keys, or the exception class), full
+  keys for seven (`coll_keys_*.tsv`), and `ICUCollationKeyAnalyzer`/
+  `ICUCollationDocValuesField` bytes over the corpus (`coll_lucene.tsv`).
+  Read by `crates/lucene-analysis-icu/tests/icu_collation_fixtures.rs`.
 - `GenAnalysisDateLocales.java` — M12 T12.7: `SimpleDateFormat`'s parse
   outside `Locale.ENGLISH`, for `DateRecognizerFilterFactory`'s `locale`:
   over the locales of `corpus/date-locales.txt` (the 886 whose record --

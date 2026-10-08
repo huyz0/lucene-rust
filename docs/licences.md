@@ -155,6 +155,35 @@ a dependency the shipped library links is not under a licence listed here.
   which `NOTICE` names as Lucene's does. The Chinese fixture corpus
   (`fixtures/corpus/analysis-chinese.txt`) is written for this project.
 
+- **ICU** (M12 T12.4). Lucene's `analysis-icu` runs on **ICU4J 77.1**
+  (`com.ibm.icu:icu4j:77.1`, the version its 10.5.0 pom names; Unicode
+  License v3, with ICU 57.1-and-earlier code under the ICU licence and the
+  third-party terms of the dictionaries ICU carries -- all permissive).
+  - `crates/lucene-analysis-icu/src/icu4j/` ports the ICU4J classes the
+    module calls, class by class (`Normalizer2Impl`, `CodePointTrie`,
+    `UnicodeSet`, ...). ICU4X is not used: it reads neither ICU4J's data
+    formats nor Lucene's own (`utr30.nrm`, `Default.brk`), so it could not
+    run Lucene's data at all (`lib.rs`).
+  - `src/resources/` carries ICU data files from the ICU4J jar
+    (`nfc.nrm`, `nfkc.nrm`, `nfkc_cf.nrm`, `nfkc_scf.nrm`, `uts46.nrm`; the
+    word break rules `word.brk`; the dictionaries `thaidict`, `laodict`,
+    `khmerdict`, `burmesedict`, `cjdict` as `.dict.z`, zlib-compressed --
+    their third-party terms are in ICU's `LICENSE`; the collation data,
+    `coll/ucadata.icu` and the locale bundles, in `coll.pack.z` with
+    CLDR's default-script table and `LocaleIDs`' code mappings, written by
+    `tools/GenIcuCollPack.java`, 3.3 MB -> 1.1 MB), Lucene's `utr30.nrm`,
+    `Default.brk` and `MyanmarSyllable.brk` (Apache-2.0, from the
+    `analysis-icu` jar), and `uprops.bin.z`, the character properties and
+    their aliases as ICU4J's public API reports them, written by
+    `tools/GenIcuProperties.java`.
+  - ICU's `LICENSE` (ICU 77.1's, SHA-256 `451167c5...198aca`) is appended
+    to the root `LICENSE` in full; `NOTICE` names the port and the files.
+  - The jar is fetched by the fixture and benchmark scripts (`ICU_DEPS` in
+    `scripts/lib-lucene-jars.sh`) and the container image, never
+    redistributed. The fixture corpus `fixtures/corpus/analysis-icu.txt` is
+    written for this project, apart from short public-domain quotations
+    (Sōseki, the Analects, the Korean national anthem's first line).
+
 - **Test data from third parties** (M9). `fixtures/corpus/real_polygons.z`,
   the Tessellator's real-world polygon corpus (`scripts/gen-tessellator-corpus.py`),
   holds:
