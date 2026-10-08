@@ -68,7 +68,14 @@ struct RuleHalf {
     anchor_start: bool,
     anchor_end: bool,
     next_segment_number: usize,
+    /// How deep `parse_section` has recursed into `(...)` and `&F(...)`.
+    depth: u32,
 }
+
+/// Rust-forced change: how deeply segments and function calls may nest in
+/// one rule half. Java recurses until a `StackOverflowError`; a rule nested
+/// deeper fails to parse here instead of overflowing the stack.
+const MAX_SECTION_DEPTH: u32 = 64;
 
 /// The symbol table a set pattern inside a rule sees (`ParseData`).
 struct ParseData<'a> {
@@ -668,6 +675,12 @@ impl Parser {
 
     /// `getSegmentStandin(seg)`.
     fn segment_standin(&mut self, seg: usize) -> Result<u16, IcuError> {
+        // Rust-forced change: Java grows its stand-in buffer to `seg` first
+        // and runs out of memory for `$999999999`; a segment past what the
+        // variable range can number fails here instead.
+        if seg > usize::from(self.variable_limit.wrapping_sub(self.cur_base())) {
+            return Err(IcuError::new("Variable range exhausted"));
+        }
         if self.segment_standins.len() < seg {
             self.segment_standins.resize(seg, 0);
         }
@@ -753,6 +766,7 @@ impl RuleHalf {
             ante: -1,
             post: -1,
             next_segment_number: 1,
+            depth: 0,
             ..Default::default()
         }
     }
@@ -778,6 +792,26 @@ impl RuleHalf {
     /// `parseSection(rule, pos, limit, parser, buf, illegal, isSegment)`.
     #[allow(clippy::too_many_arguments)]
     fn parse_section(
+        &mut self,
+        rule: &[u16],
+        pos: usize,
+        limit: usize,
+        parser: &mut Parser,
+        buf: &mut Vec<u16>,
+        illegal: fn(u16) -> bool,
+        is_segment: bool,
+    ) -> Result<usize, IcuError> {
+        if self.depth >= MAX_SECTION_DEPTH {
+            return Err(syntax_error("Segments nested too deeply", rule, pos));
+        }
+        self.depth += 1;
+        let result = self.parse_section_nested(rule, pos, limit, parser, buf, illegal, is_segment);
+        self.depth -= 1;
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn parse_section_nested(
         &mut self,
         rule: &[u16],
         mut pos: usize,
@@ -979,10 +1013,15 @@ impl RuleHalf {
                     } else {
                         (len - 1, len)
                     };
-                    let (qs, ql) = (
-                        qstart.max(0) as usize,
-                        (qlimit.max(0) as usize).min(buf.len()),
-                    );
+                    // Java's StringMatcher(buf, qstart, qlimit) throws on
+                    // an empty range before the quantifier ("* > x").
+                    if qstart < 0 || qlimit > len {
+                        return Err(icu_illegal(format!(
+                            "Failure in rule: {}",
+                            utf16::string(&rule[start..pos.min(rule.len())])
+                        )));
+                    }
+                    let (qs, ql) = (qstart as usize, qlimit as usize);
                     let pattern = buf.get(qs..ql).unwrap_or(&[]).to_vec();
                     let (min, max) = match c {
                         0x2b => (1, i32::MAX),
@@ -1077,4 +1116,38 @@ pub fn parse(rules: &str, dir: i32) -> Result<Parsed, IcuError> {
         data_vector: p.data_vector.into_iter().map(Arc::new).collect(),
         compound_filter: p.compound_filter,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn huge_segment_references_fail_without_allocating() {
+        for rules in ["$999999999 > x;", "x > $65535;"] {
+            assert!(parse(rules, FORWARD).is_err(), "{rules}");
+        }
+        assert!(parse("(a) > $1;", FORWARD).is_ok());
+    }
+
+    #[test]
+    fn self_referencing_segments_do_not_overflow_the_stack() {
+        // Java recurses until a StackOverflowError; nesting is bounded here.
+        for rules in [
+            "($1) > x;",
+            "($1 a) > x;",
+            "(a $1) > x;",
+            "($2)($1) > x;",
+            "($1)+ > x;",
+        ] {
+            let t = crate::icu4j::translit::Transliterator::create_from_rules("T", rules, FORWARD)
+                .unwrap();
+            let _ = t.transliterate("aaaa");
+            let _ = t.source_set();
+        }
+        let deep = format!("{}a{} > x;", "(".repeat(5000), ")".repeat(5000));
+        assert!(parse(&deep, FORWARD).is_err());
+        let deep = format!("a > {}b{};", "&Any-Upper(".repeat(5000), ")".repeat(5000));
+        assert!(parse(&deep, FORWARD).is_err());
+    }
 }

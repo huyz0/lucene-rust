@@ -203,3 +203,26 @@ impl Tokenizer for ICUTokenizer {
         self.input.set_reader(input)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lucene_analysis::{StrReader, Tokenizer};
+
+    #[test]
+    fn default_tokenizer_and_end_offsets() {
+        let mut t = ICUTokenizer::default();
+        assert!(t.conditional_root().is_none());
+        t.set_reader(Box::new(StrReader::new("hello world")))
+            .unwrap();
+        t.reset().unwrap();
+        let mut n = 0;
+        while t.increment_token().unwrap() {
+            n += 1;
+        }
+        assert_eq!(n, 2);
+        t.end().unwrap();
+        assert_eq!(t.attributes().end_offset(), 11);
+        t.close().unwrap();
+    }
+}
