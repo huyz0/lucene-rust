@@ -111,6 +111,12 @@ pub enum JavaException {
     PatternSyntax,
     /// `java.io.UnsupportedEncodingException`.
     UnsupportedEncoding,
+    /// `java.util.MissingResourceException` (ICU data a name does not
+    /// resolve to).
+    MissingResource,
+    /// `com.ibm.icu.util.IllegalIcuArgumentException` (ICU's property and
+    /// value names).
+    IllegalIcuArgument,
 }
 
 impl JavaException {
@@ -121,9 +127,12 @@ impl JavaException {
             JavaException::AlreadySet => "org.apache.lucene.util.SetOnce$",
             JavaException::AlreadyClosed => "org.apache.lucene.store.",
             JavaException::TooComplexToDeterminize => "org.apache.lucene.util.automaton.",
-            JavaException::IllformedLocale | JavaException::NoSuchElement => "java.util.",
+            JavaException::IllformedLocale
+            | JavaException::NoSuchElement
+            | JavaException::MissingResource => "java.util.",
             JavaException::MalformedInput => "java.nio.charset.",
             JavaException::PatternSyntax => "java.util.regex.",
+            JavaException::IllegalIcuArgument => "com.ibm.icu.util.",
             _ => "java.lang.",
         };
         format!("{package}{}", self.simple_name())
@@ -149,6 +158,8 @@ impl JavaException {
             JavaException::ArrayIndexOutOfBounds => "ArrayIndexOutOfBoundsException",
             JavaException::PatternSyntax => "PatternSyntaxException",
             JavaException::UnsupportedEncoding => "UnsupportedEncodingException",
+            JavaException::MissingResource => "MissingResourceException",
+            JavaException::IllegalIcuArgument => "IllegalIcuArgumentException",
         }
     }
 }

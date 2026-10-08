@@ -109,6 +109,11 @@ VENDORED = {
         ("Lucene's smartcn dictionaries and stop words, contributed by imdict.net "
          "(Apache-2.0; Lucene names the contribution in its NOTICE)", "LICENSE", APACHE),
     ],
+    "crates/lucene-analysis-icu/src/resources": [
+        ("ICU 77.1's data files (Unicode-3.0, with the third-party terms of ICU's "
+         "dictionaries; ICU's LICENSE in full)", "LICENSE", "Copyright © 2016-2025 Unicode, Inc."),
+        ("Lucene's utr30.nrm (Apache-2.0)", "LICENSE", APACHE),
+    ],
     "crates/lucene-ffi/fuzz/seeds/jvm_search": [
         ("this project's own fuzz seeds, read by a test (Apache-2.0)", "LICENSE", APACHE),
     ],

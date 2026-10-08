@@ -274,7 +274,34 @@ enum Kind {
     Builtin(BuiltinChain),
 }
 
-type Pool = HashMap<Option<String>, Vec<TokenStreamComponents>>;
+/// The reuse cache: the global strategy's one slot apart from the
+/// per-field map, so the common case takes no hash per `tokenStream`.
+#[derive(Default)]
+struct Pool {
+    global: Vec<TokenStreamComponents>,
+    per_field: HashMap<String, Vec<TokenStreamComponents>>,
+}
+
+impl Pool {
+    fn slot(&mut self, key: Option<String>) -> &mut Vec<TokenStreamComponents> {
+        match key {
+            None => &mut self.global,
+            Some(k) => self.per_field.entry(k).or_default(),
+        }
+    }
+
+    fn take(&mut self, key: &Option<String>) -> Option<TokenStreamComponents> {
+        match key {
+            None => self.global.pop(),
+            Some(k) => self.per_field.get_mut(k).and_then(Vec::pop),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.global.clear();
+        self.per_field.clear();
+    }
+}
 
 /// `org.apache.lucene.analysis.Analyzer`: the final machinery over an
 /// [`AnalyzerDefinition`] -- component reuse, `tokenStream`, `normalize`,
@@ -296,7 +323,7 @@ impl Analyzer {
         Analyzer {
             kind,
             reuse_strategy,
-            pool: Mutex::new(Some(HashMap::new())),
+            pool: Mutex::new(Some(Pool::default())),
             position_increment_gap: None,
             offset_gap: None,
         }
@@ -443,7 +470,7 @@ impl Analyzer {
             None => Err(AnalysisError::AlreadyClosed(
                 "this Analyzer is closed".to_string(),
             )),
-            Some(pool) => Ok(pool.get_mut(key).and_then(Vec::pop)),
+            Some(pool) => Ok(pool.take(key)),
         }
     }
 
@@ -451,7 +478,7 @@ impl Analyzer {
     fn put_components(&self, key: Option<String>, components: TokenStreamComponents) {
         let mut pool = self.pool.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(pool) = pool.as_mut() {
-            pool.entry(key).or_default().push(components);
+            pool.slot(key).push(components);
         }
     }
 

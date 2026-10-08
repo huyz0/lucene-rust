@@ -79,6 +79,26 @@ Porter, (c) 2004-2005 Richard Boulton, (c) 2013 Yoshiki Shibukawa, (c) 2006-2019
 Olly Betts) from the Snowball sources Apache Lucene's stemmers come from; the
 licence is reproduced in LICENSE.
 
+crates/lucene-analysis-icu ports the parts of ICU4J 77.1 (com.ibm.icu:icu4j,
+https://icu.unicode.org/) that Apache Lucene's analysis-icu module runs --
+normalization (Normalizer2), UnicodeSet patterns, code point tries, rule-based
+and dictionary word breaking, collation sort keys, and the character
+properties they consult -- under the Unicode License v3 (Copyright (c)
+2016-2025 Unicode, Inc.; ICU 1.8.1 to 57.1 Copyright (c) 1995-2016
+International Business Machines Corporation and others), and carries ICU
+data files under src/resources/: from ICU4J's jar the normalization data
+(nfc.nrm, nfkc.nrm, nfkc_cf.nrm, nfkc_scf.nrm, uts46.nrm), the word break
+rules (word.brk) and dictionaries (thaidict, laodict, khmerdict, burmesedict,
+cjdict, zlib-compressed), and the collation data (coll/ucadata.icu and the
+locale bundles, packed in coll.pack.z with CLDR's default-script and
+ISO code tables by tools/GenIcuCollPack.java); and uprops.bin.z, the
+character properties ICU4J 77.1 reports (written by
+tools/GenIcuProperties.java). ICU's LICENSE, with the third-party terms of
+the data ICU carries (among them the Thai, Lao, Khmer, Burmese and
+Chinese/Japanese dictionaries), is reproduced in full in LICENSE. It also
+carries Apache Lucene's own utr30.nrm (UTR #30 foldings), Default.brk and
+MyanmarSyllable.brk (Apache License 2.0).
+
 The test corpus fixtures/corpus/real_polygons.z contains polygons from
 Apache Lucene's own tests (Apache License 2.0) and Natural Earth vector
 data (public domain, https://www.naturalearthdata.com/).

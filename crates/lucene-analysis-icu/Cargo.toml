@@ -1,0 +1,23 @@
+[package]
+name = "lucene-analysis-icu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# lucene-analysis-icu (M12 T12.4): Lucene's analysis-icu module -- ICU
+# normalization and folding, ICUTokenizer's script-aware rule-based break
+# iteration, transforms and collation keys -- over a port of the ICU4J 77.1
+# runtime pieces it calls (src/icu4j/), reading ICU's own binary data files
+# (Unicode-3.0). Over lucene-analysis only, as Lucene's module is over
+# lucene-analysis-common (docs/milestones/m12-language-analysis.md).
+[lints]
+workspace = true
+
+[dependencies]
+lucene-analysis = { path = "../lucene-analysis" }
+# Inflates the vendored dictionaries (src/resources/*.z).
+miniz_oxide.workspace = true
+
+[dev-dependencies]
+# The shared factory-configuration harness (lucene-analysis/tests/support).
+lucene-util = { path = "../lucene-util" }

@@ -1,26 +1,26 @@
 # Lucene 10.5.0 lucene-analysis-icu: every top-level class of the jar, and what became of it.
 # Checked by scripts/check-port-inventory.py --module analysis-icu (see its docstring for the statuses).
-# M12 T12.4 (ICU4J normalisation, folding, transforms, script-aware tokenization and collation, over ICU4X); docs/milestones/m12-language-analysis.md.
+# M12 T12.4 (ICU4J normalisation, folding, transforms, script-aware tokenization and collation, over a port of the ICU4J 77.1 runtime reading ICU's data); docs/milestones/m12-language-analysis.md.
 # class	status	detail
-analysis/icu/ICUCollationAttributeFactory	todo:M12	T12.4: ICUCollationAttributeFactory, not started
-analysis/icu/ICUCollationDocValuesField	todo:M12	T12.4: ICUCollationDocValuesField, not started
-analysis/icu/ICUCollationKeyAnalyzer	todo:M12	T12.4: ICUCollationKeyAnalyzer, not started
-analysis/icu/ICUFoldingFilter	todo:M12	T12.4: ICUFoldingFilter, not started
-analysis/icu/ICUFoldingFilterFactory	todo:M12	T12.4: ICUFoldingFilterFactory, not started
-analysis/icu/ICUNormalizer2CharFilter	todo:M12	T12.4: ICUNormalizer2CharFilter, not started
-analysis/icu/ICUNormalizer2CharFilterFactory	todo:M12	T12.4: ICUNormalizer2CharFilterFactory, not started
-analysis/icu/ICUNormalizer2Filter	todo:M12	T12.4: ICUNormalizer2Filter, not started
-analysis/icu/ICUNormalizer2FilterFactory	todo:M12	T12.4: ICUNormalizer2FilterFactory, not started
+analysis/icu/ICUCollationAttributeFactory	ported	crates/lucene-analysis-icu/src/collation.rs::ICUCollationAttributeFactory
+analysis/icu/ICUCollationDocValuesField	partial	crates/lucene-analysis-icu/src/collation.rs::ICUCollationDocValuesField -- M12: computes the name and key bytes; the Field (a SortedDocValuesField) belongs to lucene-search, above this crate
+analysis/icu/ICUCollationKeyAnalyzer	ported	crates/lucene-analysis-icu/src/collation.rs::ICUCollationKeyAnalyzer
+analysis/icu/ICUFoldingFilter	ported	crates/lucene-analysis-icu/src/folding_filter.rs::ICUFoldingFilter
+analysis/icu/ICUFoldingFilterFactory	ported	crates/lucene-analysis-icu/src/factory.rs::ICUFoldingFilterFactory
+analysis/icu/ICUNormalizer2CharFilter	ported	crates/lucene-analysis-icu/src/normalizer2_char_filter.rs::ICUNormalizer2CharFilter
+analysis/icu/ICUNormalizer2CharFilterFactory	ported	crates/lucene-analysis-icu/src/factory.rs::ICUNormalizer2CharFilterFactory
+analysis/icu/ICUNormalizer2Filter	ported	crates/lucene-analysis-icu/src/normalizer2_filter.rs::ICUNormalizer2Filter
+analysis/icu/ICUNormalizer2FilterFactory	ported	crates/lucene-analysis-icu/src/factory.rs::ICUNormalizer2FilterFactory
 analysis/icu/ICUTransformFilter	todo:M12	T12.4: ICUTransformFilter, not started
 analysis/icu/ICUTransformFilterFactory	todo:M12	T12.4: ICUTransformFilterFactory, not started
-analysis/icu/segmentation/BreakIteratorWrapper	todo:M12	T12.4: BreakIteratorWrapper, not started
-analysis/icu/segmentation/CharArrayIterator	todo:M12	T12.4: CharArrayIterator, not started
-analysis/icu/segmentation/CompositeBreakIterator	todo:M12	T12.4: CompositeBreakIterator, not started
-analysis/icu/segmentation/DefaultICUTokenizerConfig	todo:M12	T12.4: DefaultICUTokenizerConfig, not started
-analysis/icu/segmentation/ICUTokenizer	todo:M12	T12.4: ICUTokenizer, not started
-analysis/icu/segmentation/ICUTokenizerConfig	todo:M12	T12.4: ICUTokenizerConfig, not started
-analysis/icu/segmentation/ICUTokenizerFactory	todo:M12	T12.4: ICUTokenizerFactory, not started
-analysis/icu/segmentation/ScriptIterator	todo:M12	T12.4: ScriptIterator, not started
-analysis/icu/tokenattributes/ICUCollatedTermAttributeImpl	todo:M12	T12.4: ICUCollatedTermAttributeImpl, not started
-analysis/icu/tokenattributes/ScriptAttribute	todo:M12	T12.4: ScriptAttribute, not started
-analysis/icu/tokenattributes/ScriptAttributeImpl	todo:M12	T12.4: ScriptAttributeImpl, not started
+analysis/icu/segmentation/BreakIteratorWrapper	ported	crates/lucene-analysis-icu/src/segmentation/break_iterator_wrapper.rs::BreakIteratorWrapper
+analysis/icu/segmentation/CharArrayIterator	ported	crates/lucene-analysis-icu/src/icu4j/char_iter.rs::CharIter
+analysis/icu/segmentation/CompositeBreakIterator	ported	crates/lucene-analysis-icu/src/segmentation/composite_break_iterator.rs::CompositeBreakIterator
+analysis/icu/segmentation/DefaultICUTokenizerConfig	ported	crates/lucene-analysis-icu/src/segmentation/config.rs::DefaultICUTokenizerConfig
+analysis/icu/segmentation/ICUTokenizer	ported	crates/lucene-analysis-icu/src/segmentation/tokenizer.rs::ICUTokenizer
+analysis/icu/segmentation/ICUTokenizerConfig	ported	crates/lucene-analysis-icu/src/segmentation/config.rs::ICUTokenizerConfig
+analysis/icu/segmentation/ICUTokenizerFactory	partial	crates/lucene-analysis-icu/src/factory.rs::ICUTokenizerFactory -- M12: rulefiles needs ICU's break-rule compiler (RBBIRuleBuilder), not ported; inform refuses it with UnsupportedOperationException
+analysis/icu/segmentation/ScriptIterator	ported	crates/lucene-analysis-icu/src/segmentation/script_iterator.rs::ScriptIterator
+analysis/icu/tokenattributes/ICUCollatedTermAttributeImpl	ported	crates/lucene-analysis-icu/src/collation.rs::ICUCollatedTermFilter
+analysis/icu/tokenattributes/ScriptAttribute	ported	crates/lucene-analysis-icu/src/tokenattributes.rs::ScriptAttribute
+analysis/icu/tokenattributes/ScriptAttributeImpl	ported	crates/lucene-analysis-icu/src/tokenattributes.rs::ScriptAttribute

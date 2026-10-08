@@ -1,0 +1,29 @@
+c_factory_00	t:whitespace f:icuNormalizer2
+c_factory_01	t:whitespace f:icuNormalizer2,form=nfc
+c_factory_02	t:whitespace f:icuNormalizer2,form=nfkc,mode=decompose
+c_factory_03	t:whitespace f:icuNormalizer2,form=nfkc_cf,filter=[^åäöÅÄÖ]
+c_factory_04	t:whitespace f:icuNormalizer2,form=nfkc_cf,filter=[:Latin:]
+c_factory_05	t:whitespace f:icuNormalizer2,filter=[]
+c_factory_06	t:whitespace f:icuNormalizer2,form=uts46
+c_factory_07	t:whitespace f:icuFolding
+c_factory_08	t:whitespace f:icuFolding,filter=[^åäöÅÄÖ]
+c_factory_09	t:whitespace f:icuFolding,filter=[[:Greek:]_SPACE_[:Cyrillic:]]
+c_factory_10	c:icuNormalizer2 t:whitespace
+c_factory_11	c:icuNormalizer2,form=nfc,mode=decompose t:whitespace
+c_factory_12	c:icuNormalizer2,filter=[^ß] t:whitespace
+c_factory_13	c:icuNormalizer2,form=nfkc t:keyword
+c_factory_14	t:icu
+c_factory_15	t:icu,cjkAsWords=false
+c_factory_16	t:icu,myanmarAsWords=false
+c_factory_17	t:icu,cjkAsWords=false,myanmarAsWords=false f:icuFolding
+c_factory_18	c:icuNormalizer2 t:icu f:icuNormalizer2,form=nfc
+c_factory_19	t:whitespace f:icuNormalizer2,form=bogus
+c_factory_20	t:whitespace f:icuNormalizer2,mode=Compose
+c_factory_21	t:whitespace f:icuNormalizer2,filter=[a
+c_factory_22	t:whitespace f:icuNormalizer2,x=1
+c_factory_23	t:whitespace f:icuFolding,filter=[z-a]
+c_factory_24	t:whitespace f:icuFolding,y=2
+c_factory_25	c:icuNormalizer2,mode=fcd t:whitespace
+c_factory_26	t:icu,rulefiles=Latn
+c_factory_27	t:icu,rulefiles=Nope:x.rbbi
+c_factory_28	t:icu,foo=1

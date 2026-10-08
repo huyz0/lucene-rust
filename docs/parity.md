@@ -64,6 +64,7 @@ Milestones (M1-M12, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [functions.md](parity/functions.md) | `lucene-queries` function queries (M10 T10.5) | 11 |
 | [queries.md](parity/queries.md) | `lucene-queries` intervals, payloads, more-like-this, common terms, spans (M10 T10.6) | 12 |
 | [analysis-lang.md](parity/analysis-lang.md) | `lucene-analysis-common` synonyms, classic, language packages (M11 part 3), Thai, collation, `SegmentingTokenizerBase` | 14 |
+| [analysis-icu.md](parity/analysis-icu.md) | `lucene-analysis-icu` (M12 T12.4): the ICU4J runtime port, normalization, folding, `ICUTokenizer`, collation keys | 12 |
 | [analysis-lang-modules.md](parity/analysis-lang-modules.md) | The M12 language modules: `lucene-analysis-phonetic` (with Commons Codec), Stempel (with Egothor), Morfologik, `lucene-analysis`' `morph` base, Kuromoji, Nori, SmartCN | 19 |
 | [ffi.md](parity/ffi.md) | `lucene-ffi`: the general C ABI (handles, searches, writer) | 17 |
 | [plugin.md](parity/plugin.md) | `lucene-ffi`: the OpenSearch plugin boundary (JVM reader, FFM, query phase), M10 query shapes | 10 |

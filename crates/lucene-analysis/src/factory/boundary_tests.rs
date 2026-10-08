@@ -87,6 +87,14 @@ fn exception_names() {
             JavaException::UnsupportedEncoding,
             "java.io.UnsupportedEncodingException",
         ),
+        (
+            JavaException::MissingResource,
+            "java.util.MissingResourceException",
+        ),
+        (
+            JavaException::IllegalIcuArgument,
+            "com.ibm.icu.util.IllegalIcuArgumentException",
+        ),
     ];
     for (k, name) in all {
         assert_eq!(k.qualified_name(), name);
