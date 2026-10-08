@@ -14,13 +14,13 @@ import java.util.regex.Pattern;
  *
  * <ul>
  *   <li>{@code curated.txt}: {@link #CURATED} (every construct the shim refuses, and its corner
- *       cases) over {@link #INPUTS};
+ *       cases) over {@link #INPUTS}, then {@link #CURATED_TEXTS} over texts of their own;
  *   <li>{@code random.txt}: 2,500 patterns drawn from a grammar of those constructs (groups,
  *       alternation, lookaround, atomic groups, backreferences, greedy, lazy and possessive
  *       quantifiers, anchors, boundaries, inline flags, classes) over 8 random inputs each;
- *   <li>{@code deep.txt}: inputs of 300 to 1,500 characters, deep enough that the matcher's
- *       backtracking outgrows the caller's stack budget and is retried (an overflow inside a
- *       negated lookaround or a zero-count quantifier must not read as a match): {@link #DEEP}
+ *   <li>{@code deep.txt}: inputs of 300 to 1,500 characters, deep enough for thousands of
+ *       backtracking entries, among them under a negated lookaround or a zero-count quantifier
+ *       (where an attempt cut short must not read as a match): {@link #DEEP}
  *       over {@code "ab"} repeated then {@code "c"}, and 200 generated patterns over one long
  *       input each. An input on which Java itself overflows is written as {@code SOE}, and
  *       skipped.
@@ -75,8 +75,20 @@ public class GenJavaRegex {
     "\\x{1F601}|\\B", "\\x{1F601}a|\\B", "(?i)\\x{1F601}|\\B", "\\x{1F601}+|\\B", "\\Q😁\\E|\\B",
     // comments mode reaches past whitespace for the `?` of a group
     "(?x)( ?)", "(?x)( ?:a)+", "(?x)( ?<n> a)", "(?x)(? :a)", "(?x)( {2})", "(?x)( *)",
+    // a group under a zero-count quantifier still counts
+    "(a){0}b", "(a*){0}", "((a)){0}", "(a|ab){0}c", "(?<n>a){0}b", "(a){0,0}b", "(a){0}?b",
     // rejected by Java
     "(", "(?<=a*)b", "(?<=a+)b", "\\k<x>", "(a)\\k<y>", "*", "a**", "a{2,1}", "\\p{Latin}", "(?<a_b>x)",
+  };
+
+  /** Patterns, each with the texts it is run over (beyond {@link #INPUTS}'s reach). */
+  static final String[][] CURATED_TEXTS = {
+    // a case-insensitive backreference compares code points until it has covered the group's
+    // units
+    {"(?i)(😀)\\1", "😀😀", "😀😀x", "😀", "a😀😀"},
+    {"(?iu)(a😀)\\1", "a😀A😀", "a😀a😀b", "A😀a😀"},
+    {"(?i)(😀a)\\1", "😀a😀A", "😀a😀"},
+    {"(?iu)(𐐨)\\1", "𐐨𐐀x", "𐐀𐐨"},
   };
 
   static final String[] INPUTS = {
@@ -177,6 +189,7 @@ public class GenJavaRegex {
     Files.createDirectories(out);
     StringBuilder c = new StringBuilder();
     for (String p : CURATED) block(c, p, List.of(INPUTS));
+    for (String[] pt : CURATED_TEXTS) block(c, pt[0], List.of(pt).subList(1, pt.length));
     Files.writeString(out.resolve("curated.txt"), c.toString(), StandardCharsets.UTF_8);
     Random r = new Random(2027);
     StringBuilder rnd = new StringBuilder();

@@ -58,7 +58,8 @@
 //! script, block and binary properties and the `java*` properties; a
 //! quantifier on a quantifier; `~~` and an empty or `&`-led `&&` operand; a
 //! repeated group holding a capture, whose captures Java reports otherwise
-//! (`(a|)*`, `((a)|b)*`). The shim's [`UNSUPPORTED`] refusal reaches the
+//! (`(a|)*`, `((a)|b)*`); a capture under a zero-count quantifier
+//! (`(a){0}`), which Java counts and the `regex` crate drops. The shim's [`UNSUPPORTED`] refusal reaches the
 //! caller only for what the backtracking matcher refuses too (`\X`,
 //! `\b{g}`, `\N{..}`, `(?c)`); any other error the shim reports is
 //! replaced by the backtracking parser's, which follows Java's grammar, so
@@ -916,6 +917,18 @@ impl Translator<'_> {
                         "Java reports a different capture after an empty iteration",
                     ));
                 }
+                let never = matches!(
+                    r.op.kind,
+                    RepetitionKind::Range(
+                        RepetitionRange::Exactly(0) | RepetitionRange::Bounded(_, 0)
+                    )
+                );
+                if never && has_capture(&r.ast) {
+                    return Err(unsupported(
+                        self.text(&r.span),
+                        "a group under a zero-count quantifier: Java counts it, the `regex` crate drops it",
+                    ));
+                }
                 self.out.push_str("(?:");
                 self.walk(&r.ast, f)?;
                 self.out.push(')');
@@ -1572,7 +1585,8 @@ impl JavaMatcher {
             old_last,
         );
         let found = p.search(from, &mut st);
-        let (groups, scratch) = st.into_parts();
+        let (groups, mut scratch) = st.into_parts();
+        scratch.trim();
         self.bt_scratch = scratch;
         let found = match found {
             Ok(f) => f,
@@ -2274,6 +2288,46 @@ mod tests {
         assert!(m.find());
         m.expand_replacement("<$1é>", &mut units).unwrap();
         assert_eq!(String::from_utf16(&units).unwrap(), "<aé>");
+    }
+
+    /// A group under a zero-count quantifier still counts (the `regex`
+    /// crate drops it): `groupCount()` and `$1` are Java's (JDK 21 and 25).
+    #[test]
+    fn groups_under_a_zero_count_quantifier_count() {
+        for (p, text, groups, rep) in [
+            ("(a){0}b", "ab", 1, "a<>"),
+            ("(a*){0}", "ab", 1, "<>a<>b<>"),
+            ("((a)){0}", "ab", 2, "<>a<>b<>"),
+            ("(?<n>a){0}b", "ab", 1, "a<>"),
+            ("(a|ab){0}c", "abc", 1, "ab<>"),
+            ("(?:(a)){0}b", "ab", 1, "a<>"),
+            ("(a){0,0}b", "ab", 1, "a<>"),
+            ("(a){0}?b", "ab", 1, "a<>"),
+        ] {
+            let pat = JavaPattern::compile(p).unwrap();
+            assert_eq!(JavaMatcher::new(&pat, text).group_count(), groups, "{p}");
+            assert_eq!(pat.replace(text, "<$1>", true).unwrap(), rep, "{p}");
+        }
+        // Without a capture, the shim keeps it.
+        assert!(!JavaPattern::compile("(?:a){0}b").unwrap().is_backtracking());
+    }
+
+    /// A deep match grows the backtracking stacks; the matcher keeps no
+    /// more than [`Scratch::KEEP`] bytes of them for the next `find()`.
+    #[test]
+    fn matcher_keeps_small_stacks() {
+        let p = JavaPattern::compile("(?=a)(a|b)*c").unwrap();
+        assert!(p.is_backtracking());
+        let mut m = JavaMatcher::new(&p, &"ab".repeat(50_000));
+        assert!(!m.try_find().unwrap());
+        assert!(
+            m.bt_scratch.footprint() <= Scratch::KEEP,
+            "{}",
+            m.bt_scratch.footprint()
+        );
+        m.reset("abc");
+        assert!(m.try_find().unwrap());
+        assert_eq!((m.start(1), m.end(1)), (1, 2));
     }
 
     #[test]
