@@ -5082,6 +5082,223 @@ I	  a\tb	EXC PatternSyntaxException
 I	a b\u000Bc	EXC PatternSyntaxException
 I	xbb0bbub0bba	EXC PatternSyntaxException
 I	Bbb0�bunBa��	EXC PatternSyntaxException
+P	(a){0}b
+I		 rep= m=false
+I	a	 rep=a m=false
+I	aa	 rep=aa m=false
+I	aaa	 rep=aaa m=false
+I	ab	(1,2 -1:-1) rep=a<b> m=false
+I	abab	(1,2 -1:-1)(3,4 -1:-1) rep=a<b>a<b> m=false
+I	ba	(0,1 -1:-1) rep=<b>a m=false
+I	abc	(1,2 -1:-1) rep=a<b>c m=false
+I	aab	(2,3 -1:-1) rep=aa<b> m=false
+I	abcd	(1,2 -1:-1) rep=a<b>cd m=false
+I	a\nb	(2,3 -1:-1) rep=a\n<b> m=false
+I	a\n	 rep=a\n m=false
+I	\na	 rep=\na m=false
+I	a\r\nb\r\n	(3,4 -1:-1) rep=a\r\n<b>\r\n m=false
+I	x y	 rep=x y m=false
+I	fox foxes	 rep=fox foxes m=false
+I	a_1 b	(4,5 -1:-1) rep=a_1 <b> m=false
+I	é a	 rep=é a m=false
+I	é x	 rep=é x m=false
+I	😀a	 rep=😀a m=false
+I	a😀b	(3,4 -1:-1) rep=a😀<b> m=false
+I	AbA	(1,2 -1:-1) rep=A<b>A m=false
+I	αβγ ΑΒ	 rep=αβγ ΑΒ m=false
+I	中文abc	(3,4 -1:-1) rep=中文a<b>c m=false
+I	a,b,c	(2,3 -1:-1) rep=a,<b>,c m=false
+I	a	 rep=a m=false
+I	  a\tb	(4,5 -1:-1) rep=  a\t<b> m=false
+I	a b\u000Bc	(2,3 -1:-1) rep=a <b>\u000Bc m=false
+I	xbb0bbub0bba	(1,2 -1:-1)(2,3 -1:-1)(4,5 -1:-1)(5,6 -1:-1)(7,8 -1:-1)(9,10 -1:-1)(10,11 -1:-1) rep=x<b><b>0<b><b>u<b>0<b><b>a m=false
+I	Bbb0�bunBa��	(1,2 -1:-1)(2,3 -1:-1)(5,6 -1:-1) rep=B<b><b>0�<b>unBa�� m=false
+P	(a*){0}
+I		(0,0 -1:-1) rep=<> m=true
+I	a	(0,0 -1:-1)(1,1 -1:-1) rep=<>a<> m=false
+I	aa	(0,0 -1:-1)(1,1 -1:-1)(2,2 -1:-1) rep=<>a<>a<> m=false
+I	aaa	(0,0 -1:-1)(1,1 -1:-1)(2,2 -1:-1)(3,3 -1:-1) rep=<>a<>a<>a<> m=false
+I	ab	(0,0 -1:-1)(1,1 -1:-1)(2,2 -1:-1) rep=<>a<>b<> m=false
+I	abab	(0,0 -1:-1)(1,1 -1:-1)(2,2 -1:-1)(3,3 -1:-1)(4,4 -1:-1) rep=<>a<>b<>a<>b<> m=false
+I	ba	(0,0 -1:-1)(1,1 -1:-1)(2,2 -1:-1) rep=<>b<>a<> m=false
+I	abc	(0,0 -1:-1)(1,1 -1:-1)(2,2 -1:-1)(3,3 -1:-1) rep=<>a<>b<>c<> m=false
+I	aab	(0,0 -1:-1)(1,1 -1:-1)(2,2 -1:-1)(3,3 -1:-1) rep=<>a<>a<>b<> m=false
+I	abcd	(0,0 -1:-1)(1,1 -1:-1)(2,2 -1:-1)(3,3 -1:-1)(4,4 -1:-1) rep=<>a<>b<>c<>d<> m=false
+I	a\nb	(0,0 -1:-1)(1,1 -1:-1)(2,2 -1:-1)(3,3 -1:-1) rep=<>a<>\n<>b<> m=false
+I	a\n	(0,0 -1:-1)(1,1 -1:-1)(2,2 -1:-1) rep=<>a<>\n<> m=false
+I	\na	(0,0 -1:-1)(1,1 -1:-1)(2,2 -1:-1) rep=<>\n<>a<> m=false
+I	a\r\nb\r\n	(0,0 -1:-1)(1,1 -1:-1)(2,2 -1:-1)(3,3 -1:-1)(4,4 -1:-1)(5,5 -1:-1)(6,6 -1:-1) rep=<>a<>\r<>\n<>b<>\r<>\n<> m=false
+I	x y	(0,0 -1:-1)(1,1 -1:-1)(2,2 -1:-1)(3,3 -1:-1) rep=<>x<> <>y<> m=false
+I	fox foxes	(0,0 -1:-1)(1,1 -1:-1)(2,2 -1:-1)(3,3 -1:-1)(4,4 -1:-1)(5,5 -1:-1)(6,6 -1:-1)(7,7 -1:-1)(8,8 -1:-1)(9,9 -1:-1) rep=<>f<>o<>x<> <>f<>o<>x<>e<>s<> m=false
+I	a_1 b	(0,0 -1:-1)(1,1 -1:-1)(2,2 -1:-1)(3,3 -1:-1)(4,4 -1:-1)(5,5 -1:-1) rep=<>a<>_<>1<> <>b<> m=false
+I	é a	(0,0 -1:-1)(1,1 -1:-1)(2,2 -1:-1)(3,3 -1:-1) rep=<>é<> <>a<> m=false
+I	é x	(0,0 -1:-1)(1,1 -1:-1)(2,2 -1:-1)(3,3 -1:-1)(4,4 -1:-1) rep=<>e<>́<> <>x<> m=false
+I	😀a	(0,0 -1:-1)(1,1 -1:-1)(2,2 -1:-1)(3,3 -1:-1) rep=<>\uD83D<>\uDE00<>a<> m=false
+I	a😀b	(0,0 -1:-1)(1,1 -1:-1)(2,2 -1:-1)(3,3 -1:-1)(4,4 -1:-1) rep=<>a<>\uD83D<>\uDE00<>b<> m=false
+I	AbA	(0,0 -1:-1)(1,1 -1:-1)(2,2 -1:-1)(3,3 -1:-1) rep=<>A<>b<>A<> m=false
+I	αβγ ΑΒ	(0,0 -1:-1)(1,1 -1:-1)(2,2 -1:-1)(3,3 -1:-1)(4,4 -1:-1)(5,5 -1:-1)(6,6 -1:-1) rep=<>α<>β<>γ<> <>Α<>Β<> m=false
+I	中文abc	(0,0 -1:-1)(1,1 -1:-1)(2,2 -1:-1)(3,3 -1:-1)(4,4 -1:-1)(5,5 -1:-1) rep=<>中<>文<>a<>b<>c<> m=false
+I	a,b,c	(0,0 -1:-1)(1,1 -1:-1)(2,2 -1:-1)(3,3 -1:-1)(4,4 -1:-1)(5,5 -1:-1) rep=<>a<>,<>b<>,<>c<> m=false
+I	a	(0,0 -1:-1)(1,1 -1:-1)(2,2 -1:-1) rep=<>a<><> m=false
+I	  a\tb	(0,0 -1:-1)(1,1 -1:-1)(2,2 -1:-1)(3,3 -1:-1)(4,4 -1:-1)(5,5 -1:-1) rep=<> <> <>a<>\t<>b<> m=false
+I	a b\u000Bc	(0,0 -1:-1)(1,1 -1:-1)(2,2 -1:-1)(3,3 -1:-1)(4,4 -1:-1)(5,5 -1:-1) rep=<>a<> <>b<>\u000B<>c<> m=false
+I	xbb0bbub0bba	(0,0 -1:-1)(1,1 -1:-1)(2,2 -1:-1)(3,3 -1:-1)(4,4 -1:-1)(5,5 -1:-1)(6,6 -1:-1)(7,7 -1:-1)(8,8 -1:-1)(9,9 -1:-1)(10,10 -1:-1)(11,11 -1:-1)(12,12 -1:-1) rep=<>x<>b<>b<>0<>b<>b<>u<>b<>0<>b<>b<>a<> m=false
+I	Bbb0�bunBa��	(0,0 -1:-1)(1,1 -1:-1)(2,2 -1:-1)(3,3 -1:-1)(4,4 -1:-1)(5,5 -1:-1)(6,6 -1:-1)(7,7 -1:-1)(8,8 -1:-1)(9,9 -1:-1)(10,10 -1:-1)(11,11 -1:-1)(12,12 -1:-1) rep=<>B<>b<>b<>0<>�<>b<>u<>n<>B<>a<>�<>�<> m=false
+P	((a)){0}
+I		(0,0 -1:-1 -1:-1) rep=<> m=true
+I	a	(0,0 -1:-1 -1:-1)(1,1 -1:-1 -1:-1) rep=<>a<> m=false
+I	aa	(0,0 -1:-1 -1:-1)(1,1 -1:-1 -1:-1)(2,2 -1:-1 -1:-1) rep=<>a<>a<> m=false
+I	aaa	(0,0 -1:-1 -1:-1)(1,1 -1:-1 -1:-1)(2,2 -1:-1 -1:-1)(3,3 -1:-1 -1:-1) rep=<>a<>a<>a<> m=false
+I	ab	(0,0 -1:-1 -1:-1)(1,1 -1:-1 -1:-1)(2,2 -1:-1 -1:-1) rep=<>a<>b<> m=false
+I	abab	(0,0 -1:-1 -1:-1)(1,1 -1:-1 -1:-1)(2,2 -1:-1 -1:-1)(3,3 -1:-1 -1:-1)(4,4 -1:-1 -1:-1) rep=<>a<>b<>a<>b<> m=false
+I	ba	(0,0 -1:-1 -1:-1)(1,1 -1:-1 -1:-1)(2,2 -1:-1 -1:-1) rep=<>b<>a<> m=false
+I	abc	(0,0 -1:-1 -1:-1)(1,1 -1:-1 -1:-1)(2,2 -1:-1 -1:-1)(3,3 -1:-1 -1:-1) rep=<>a<>b<>c<> m=false
+I	aab	(0,0 -1:-1 -1:-1)(1,1 -1:-1 -1:-1)(2,2 -1:-1 -1:-1)(3,3 -1:-1 -1:-1) rep=<>a<>a<>b<> m=false
+I	abcd	(0,0 -1:-1 -1:-1)(1,1 -1:-1 -1:-1)(2,2 -1:-1 -1:-1)(3,3 -1:-1 -1:-1)(4,4 -1:-1 -1:-1) rep=<>a<>b<>c<>d<> m=false
+I	a\nb	(0,0 -1:-1 -1:-1)(1,1 -1:-1 -1:-1)(2,2 -1:-1 -1:-1)(3,3 -1:-1 -1:-1) rep=<>a<>\n<>b<> m=false
+I	a\n	(0,0 -1:-1 -1:-1)(1,1 -1:-1 -1:-1)(2,2 -1:-1 -1:-1) rep=<>a<>\n<> m=false
+I	\na	(0,0 -1:-1 -1:-1)(1,1 -1:-1 -1:-1)(2,2 -1:-1 -1:-1) rep=<>\n<>a<> m=false
+I	a\r\nb\r\n	(0,0 -1:-1 -1:-1)(1,1 -1:-1 -1:-1)(2,2 -1:-1 -1:-1)(3,3 -1:-1 -1:-1)(4,4 -1:-1 -1:-1)(5,5 -1:-1 -1:-1)(6,6 -1:-1 -1:-1) rep=<>a<>\r<>\n<>b<>\r<>\n<> m=false
+I	x y	(0,0 -1:-1 -1:-1)(1,1 -1:-1 -1:-1)(2,2 -1:-1 -1:-1)(3,3 -1:-1 -1:-1) rep=<>x<> <>y<> m=false
+I	fox foxes	(0,0 -1:-1 -1:-1)(1,1 -1:-1 -1:-1)(2,2 -1:-1 -1:-1)(3,3 -1:-1 -1:-1)(4,4 -1:-1 -1:-1)(5,5 -1:-1 -1:-1)(6,6 -1:-1 -1:-1)(7,7 -1:-1 -1:-1)(8,8 -1:-1 -1:-1)(9,9 -1:-1 -1:-1) rep=<>f<>o<>x<> <>f<>o<>x<>e<>s<> m=false
+I	a_1 b	(0,0 -1:-1 -1:-1)(1,1 -1:-1 -1:-1)(2,2 -1:-1 -1:-1)(3,3 -1:-1 -1:-1)(4,4 -1:-1 -1:-1)(5,5 -1:-1 -1:-1) rep=<>a<>_<>1<> <>b<> m=false
+I	é a	(0,0 -1:-1 -1:-1)(1,1 -1:-1 -1:-1)(2,2 -1:-1 -1:-1)(3,3 -1:-1 -1:-1) rep=<>é<> <>a<> m=false
+I	é x	(0,0 -1:-1 -1:-1)(1,1 -1:-1 -1:-1)(2,2 -1:-1 -1:-1)(3,3 -1:-1 -1:-1)(4,4 -1:-1 -1:-1) rep=<>e<>́<> <>x<> m=false
+I	😀a	(0,0 -1:-1 -1:-1)(1,1 -1:-1 -1:-1)(2,2 -1:-1 -1:-1)(3,3 -1:-1 -1:-1) rep=<>\uD83D<>\uDE00<>a<> m=false
+I	a😀b	(0,0 -1:-1 -1:-1)(1,1 -1:-1 -1:-1)(2,2 -1:-1 -1:-1)(3,3 -1:-1 -1:-1)(4,4 -1:-1 -1:-1) rep=<>a<>\uD83D<>\uDE00<>b<> m=false
+I	AbA	(0,0 -1:-1 -1:-1)(1,1 -1:-1 -1:-1)(2,2 -1:-1 -1:-1)(3,3 -1:-1 -1:-1) rep=<>A<>b<>A<> m=false
+I	αβγ ΑΒ	(0,0 -1:-1 -1:-1)(1,1 -1:-1 -1:-1)(2,2 -1:-1 -1:-1)(3,3 -1:-1 -1:-1)(4,4 -1:-1 -1:-1)(5,5 -1:-1 -1:-1)(6,6 -1:-1 -1:-1) rep=<>α<>β<>γ<> <>Α<>Β<> m=false
+I	中文abc	(0,0 -1:-1 -1:-1)(1,1 -1:-1 -1:-1)(2,2 -1:-1 -1:-1)(3,3 -1:-1 -1:-1)(4,4 -1:-1 -1:-1)(5,5 -1:-1 -1:-1) rep=<>中<>文<>a<>b<>c<> m=false
+I	a,b,c	(0,0 -1:-1 -1:-1)(1,1 -1:-1 -1:-1)(2,2 -1:-1 -1:-1)(3,3 -1:-1 -1:-1)(4,4 -1:-1 -1:-1)(5,5 -1:-1 -1:-1) rep=<>a<>,<>b<>,<>c<> m=false
+I	a	(0,0 -1:-1 -1:-1)(1,1 -1:-1 -1:-1)(2,2 -1:-1 -1:-1) rep=<>a<><> m=false
+I	  a\tb	(0,0 -1:-1 -1:-1)(1,1 -1:-1 -1:-1)(2,2 -1:-1 -1:-1)(3,3 -1:-1 -1:-1)(4,4 -1:-1 -1:-1)(5,5 -1:-1 -1:-1) rep=<> <> <>a<>\t<>b<> m=false
+I	a b\u000Bc	(0,0 -1:-1 -1:-1)(1,1 -1:-1 -1:-1)(2,2 -1:-1 -1:-1)(3,3 -1:-1 -1:-1)(4,4 -1:-1 -1:-1)(5,5 -1:-1 -1:-1) rep=<>a<> <>b<>\u000B<>c<> m=false
+I	xbb0bbub0bba	(0,0 -1:-1 -1:-1)(1,1 -1:-1 -1:-1)(2,2 -1:-1 -1:-1)(3,3 -1:-1 -1:-1)(4,4 -1:-1 -1:-1)(5,5 -1:-1 -1:-1)(6,6 -1:-1 -1:-1)(7,7 -1:-1 -1:-1)(8,8 -1:-1 -1:-1)(9,9 -1:-1 -1:-1)(10,10 -1:-1 -1:-1)(11,11 -1:-1 -1:-1)(12,12 -1:-1 -1:-1) rep=<>x<>b<>b<>0<>b<>b<>u<>b<>0<>b<>b<>a<> m=false
+I	Bbb0�bunBa��	(0,0 -1:-1 -1:-1)(1,1 -1:-1 -1:-1)(2,2 -1:-1 -1:-1)(3,3 -1:-1 -1:-1)(4,4 -1:-1 -1:-1)(5,5 -1:-1 -1:-1)(6,6 -1:-1 -1:-1)(7,7 -1:-1 -1:-1)(8,8 -1:-1 -1:-1)(9,9 -1:-1 -1:-1)(10,10 -1:-1 -1:-1)(11,11 -1:-1 -1:-1)(12,12 -1:-1 -1:-1) rep=<>B<>b<>b<>0<>�<>b<>u<>n<>B<>a<>�<>�<> m=false
+P	(a|ab){0}c
+I		 rep= m=false
+I	a	 rep=a m=false
+I	aa	 rep=aa m=false
+I	aaa	 rep=aaa m=false
+I	ab	 rep=ab m=false
+I	abab	 rep=abab m=false
+I	ba	 rep=ba m=false
+I	abc	(2,3 -1:-1) rep=ab<c> m=false
+I	aab	 rep=aab m=false
+I	abcd	(2,3 -1:-1) rep=ab<c>d m=false
+I	a\nb	 rep=a\nb m=false
+I	a\n	 rep=a\n m=false
+I	\na	 rep=\na m=false
+I	a\r\nb\r\n	 rep=a\r\nb\r\n m=false
+I	x y	 rep=x y m=false
+I	fox foxes	 rep=fox foxes m=false
+I	a_1 b	 rep=a_1 b m=false
+I	é a	 rep=é a m=false
+I	é x	 rep=é x m=false
+I	😀a	 rep=😀a m=false
+I	a😀b	 rep=a😀b m=false
+I	AbA	 rep=AbA m=false
+I	αβγ ΑΒ	 rep=αβγ ΑΒ m=false
+I	中文abc	(4,5 -1:-1) rep=中文ab<c> m=false
+I	a,b,c	(4,5 -1:-1) rep=a,b,<c> m=false
+I	a	 rep=a m=false
+I	  a\tb	 rep=  a\tb m=false
+I	a b\u000Bc	(4,5 -1:-1) rep=a b\u000B<c> m=false
+I	xbb0bbub0bba	 rep=xbb0bbub0bba m=false
+I	Bbb0�bunBa��	 rep=Bbb0�bunBa�� m=false
+P	(?<n>a){0}b
+I		 rep= m=false
+I	a	 rep=a m=false
+I	aa	 rep=aa m=false
+I	aaa	 rep=aaa m=false
+I	ab	(1,2 -1:-1) rep=a<b> m=false
+I	abab	(1,2 -1:-1)(3,4 -1:-1) rep=a<b>a<b> m=false
+I	ba	(0,1 -1:-1) rep=<b>a m=false
+I	abc	(1,2 -1:-1) rep=a<b>c m=false
+I	aab	(2,3 -1:-1) rep=aa<b> m=false
+I	abcd	(1,2 -1:-1) rep=a<b>cd m=false
+I	a\nb	(2,3 -1:-1) rep=a\n<b> m=false
+I	a\n	 rep=a\n m=false
+I	\na	 rep=\na m=false
+I	a\r\nb\r\n	(3,4 -1:-1) rep=a\r\n<b>\r\n m=false
+I	x y	 rep=x y m=false
+I	fox foxes	 rep=fox foxes m=false
+I	a_1 b	(4,5 -1:-1) rep=a_1 <b> m=false
+I	é a	 rep=é a m=false
+I	é x	 rep=é x m=false
+I	😀a	 rep=😀a m=false
+I	a😀b	(3,4 -1:-1) rep=a😀<b> m=false
+I	AbA	(1,2 -1:-1) rep=A<b>A m=false
+I	αβγ ΑΒ	 rep=αβγ ΑΒ m=false
+I	中文abc	(3,4 -1:-1) rep=中文a<b>c m=false
+I	a,b,c	(2,3 -1:-1) rep=a,<b>,c m=false
+I	a	 rep=a m=false
+I	  a\tb	(4,5 -1:-1) rep=  a\t<b> m=false
+I	a b\u000Bc	(2,3 -1:-1) rep=a <b>\u000Bc m=false
+I	xbb0bbub0bba	(1,2 -1:-1)(2,3 -1:-1)(4,5 -1:-1)(5,6 -1:-1)(7,8 -1:-1)(9,10 -1:-1)(10,11 -1:-1) rep=x<b><b>0<b><b>u<b>0<b><b>a m=false
+I	Bbb0�bunBa��	(1,2 -1:-1)(2,3 -1:-1)(5,6 -1:-1) rep=B<b><b>0�<b>unBa�� m=false
+P	(a){0,0}b
+I		 rep= m=false
+I	a	 rep=a m=false
+I	aa	 rep=aa m=false
+I	aaa	 rep=aaa m=false
+I	ab	(1,2 -1:-1) rep=a<b> m=false
+I	abab	(1,2 -1:-1)(3,4 -1:-1) rep=a<b>a<b> m=false
+I	ba	(0,1 -1:-1) rep=<b>a m=false
+I	abc	(1,2 -1:-1) rep=a<b>c m=false
+I	aab	(2,3 -1:-1) rep=aa<b> m=false
+I	abcd	(1,2 -1:-1) rep=a<b>cd m=false
+I	a\nb	(2,3 -1:-1) rep=a\n<b> m=false
+I	a\n	 rep=a\n m=false
+I	\na	 rep=\na m=false
+I	a\r\nb\r\n	(3,4 -1:-1) rep=a\r\n<b>\r\n m=false
+I	x y	 rep=x y m=false
+I	fox foxes	 rep=fox foxes m=false
+I	a_1 b	(4,5 -1:-1) rep=a_1 <b> m=false
+I	é a	 rep=é a m=false
+I	é x	 rep=é x m=false
+I	😀a	 rep=😀a m=false
+I	a😀b	(3,4 -1:-1) rep=a😀<b> m=false
+I	AbA	(1,2 -1:-1) rep=A<b>A m=false
+I	αβγ ΑΒ	 rep=αβγ ΑΒ m=false
+I	中文abc	(3,4 -1:-1) rep=中文a<b>c m=false
+I	a,b,c	(2,3 -1:-1) rep=a,<b>,c m=false
+I	a	 rep=a m=false
+I	  a\tb	(4,5 -1:-1) rep=  a\t<b> m=false
+I	a b\u000Bc	(2,3 -1:-1) rep=a <b>\u000Bc m=false
+I	xbb0bbub0bba	(1,2 -1:-1)(2,3 -1:-1)(4,5 -1:-1)(5,6 -1:-1)(7,8 -1:-1)(9,10 -1:-1)(10,11 -1:-1) rep=x<b><b>0<b><b>u<b>0<b><b>a m=false
+I	Bbb0�bunBa��	(1,2 -1:-1)(2,3 -1:-1)(5,6 -1:-1) rep=B<b><b>0�<b>unBa�� m=false
+P	(a){0}?b
+I		 rep= m=false
+I	a	 rep=a m=false
+I	aa	 rep=aa m=false
+I	aaa	 rep=aaa m=false
+I	ab	(1,2 -1:-1) rep=a<b> m=false
+I	abab	(1,2 -1:-1)(3,4 -1:-1) rep=a<b>a<b> m=false
+I	ba	(0,1 -1:-1) rep=<b>a m=false
+I	abc	(1,2 -1:-1) rep=a<b>c m=false
+I	aab	(2,3 -1:-1) rep=aa<b> m=false
+I	abcd	(1,2 -1:-1) rep=a<b>cd m=false
+I	a\nb	(2,3 -1:-1) rep=a\n<b> m=false
+I	a\n	 rep=a\n m=false
+I	\na	 rep=\na m=false
+I	a\r\nb\r\n	(3,4 -1:-1) rep=a\r\n<b>\r\n m=false
+I	x y	 rep=x y m=false
+I	fox foxes	 rep=fox foxes m=false
+I	a_1 b	(4,5 -1:-1) rep=a_1 <b> m=false
+I	é a	 rep=é a m=false
+I	é x	 rep=é x m=false
+I	😀a	 rep=😀a m=false
+I	a😀b	(3,4 -1:-1) rep=a😀<b> m=false
+I	AbA	(1,2 -1:-1) rep=A<b>A m=false
+I	αβγ ΑΒ	 rep=αβγ ΑΒ m=false
+I	中文abc	(3,4 -1:-1) rep=中文a<b>c m=false
+I	a,b,c	(2,3 -1:-1) rep=a,<b>,c m=false
+I	a	 rep=a m=false
+I	  a\tb	(4,5 -1:-1) rep=  a\t<b> m=false
+I	a b\u000Bc	(2,3 -1:-1) rep=a <b>\u000Bc m=false
+I	xbb0bbub0bba	(1,2 -1:-1)(2,3 -1:-1)(4,5 -1:-1)(5,6 -1:-1)(7,8 -1:-1)(9,10 -1:-1)(10,11 -1:-1) rep=x<b><b>0<b><b>u<b>0<b><b>a m=false
+I	Bbb0�bunBa��	(1,2 -1:-1)(2,3 -1:-1)(5,6 -1:-1) rep=B<b><b>0�<b>unBa�� m=false
 P	(
 I		EXC PatternSyntaxException
 I	a	EXC PatternSyntaxException
@@ -5392,3 +5609,18 @@ I	  a\tb	EXC PatternSyntaxException
 I	a b\u000Bc	EXC PatternSyntaxException
 I	xbb0bbub0bba	EXC PatternSyntaxException
 I	Bbb0�bunBa��	EXC PatternSyntaxException
+P	(?i)(😀)\\1
+I	😀😀	(0,4 0:2) rep=<😀😀> m=true
+I	😀😀x	(0,4 0:2) rep=<😀😀>x m=false
+I	😀	 rep=😀 m=false
+I	a😀😀	(1,5 1:3) rep=a<😀😀> m=false
+P	(?iu)(a😀)\\1
+I	a😀A😀	(0,6 0:3) rep=<a😀A😀> m=true
+I	a😀a😀b	(0,6 0:3) rep=<a😀a😀>b m=false
+I	A😀a😀	(0,6 0:3) rep=<A😀a😀> m=true
+P	(?i)(😀a)\\1
+I	😀a😀A	(0,6 0:3) rep=<😀a😀A> m=true
+I	😀a😀	 rep=😀a😀 m=false
+P	(?iu)(𐐨)\\1
+I	𐐨𐐀x	(0,4 0:2) rep=<𐐨𐐀>x m=false
+I	𐐀𐐨	(0,4 0:2) rep=<𐐀𐐨> m=true

@@ -357,8 +357,23 @@ Part 3 (T12.6, T12.2 SmartCN, T12.7):
   entry, so a match's depth is heap (Java's `StackOverflowError` past 2^20
   entries, some 200,000 iterations of `(a|b)*` against Java's 1,552); only
   lookarounds, atomic groups and quantifiers over sub-patterns run nested,
-  as deep as the pattern nests them; a pattern nested more than 32 levels is
-  parsed (and, if need be, matched) on a 32 MiB thread. `deep.txt` (220
+  as deep as the pattern nests them, measured against 64 KiB of the
+  caller's stack (a parse: also at most 32 levels of groups and classes) and
+  started again, only when that runs out, on a 32 MiB thread spawned for
+  the call (24 MiB measured). **Third review** (a pattern nesting
+  lookarounds or atomic groups 3,000-22,000 deep compiled, then aborted the
+  process with a Rust stack overflow on that thread; 20,000 nested `(a|`
+  took 113 s to compile; any pattern with more than 32 groups paid a thread
+  per match): groups and classes nest at most 20,000 levels -- Java on a
+  1 MiB thread fails between 700 and 3,100 levels of groups, 6,251 of
+  `[`, 8,424 of `[a&&` (two levels each) -- beyond which `compile` fails with Java's own
+  `PatternSyntaxException` "Stack overflow during pattern compilation"; the
+  per-alternation first characters and nested quantified groups' studies
+  are computed once (no longer quadratic: 20,000 levels compile in some
+  0.1 s, release); a `(?i)` backreference compares code points until the
+  group's units are covered (`(?i)(😀)\1`); a capture under `X{0}` routes
+  to the backtracking matcher, which counts it; a matcher keeps at most
+  64 KiB of backtracking stacks between `find()`s. `deep.txt` (220
   patterns over 300-1,600 characters) and `{0,1}`/`{0,2}` in the generated
   quantifiers joined the fixtures; 100,000 generated patterns x 6 inputs
   (JDK 21 and 25 answers) and 20,000 of a fresh seed, 0 differences. Bench

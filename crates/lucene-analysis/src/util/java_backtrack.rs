@@ -56,17 +56,38 @@
 //! **Refused** (`IllegalArgument` starting [`super::java_regex::UNSUPPORTED`],
 //! as before): `\X`, `\b{g}` (extended grapheme clusters, from the JDK's
 //! Unicode version's segmentation rules), `\N{name}` (character names) and
-//! `CANON_EQ` (`(?c)`). Java's `StackOverflowError` -- whose depth depends on
-//! the thread's stack -- is an `IllegalState` error, from
-//! [`super::java_regex::JavaMatcher::try_find`] or `compile`, never a Rust
-//! stack overflow, which would abort the process (and the JVM over FFI): a
-//! match past [`vm::MAX_ENTRIES`] backtracking entries (some hundreds of
-//! thousands of iterations, where Java's 1 MiB stack holds some 1,500), a
-//! parse deeper than [`DEEP_STACK_BUDGET`] allows. Neither is measured
-//! against the caller's stack: a match's depth is heap, and a pattern that
-//! nests more than [`SHALLOW_NESTING`] levels is parsed -- and, if its
-//! lookarounds, atomic groups or quantified groups nest that deep, matched
-//! -- on a thread with a stack of its own.
+//! `CANON_EQ` (`(?c)`).
+//!
+//! **Depth.** Java's `StackOverflowError` -- whose depth depends on the
+//! thread's stack -- is a typed error here, never a Rust stack overflow,
+//! which would abort the process (and the JVM over FFI):
+//!
+//! - `compile` fails as Java's does when its parser overflows (a
+//!   `PatternSyntaxException`, "Stack overflow during pattern
+//!   compilation") for a pattern whose groups and classes nest more than
+//!   [`MAX_NESTING`] levels (a `&&` operand is one) -- or more than its
+//!   stack budget allows, which a debug build reaches first. Java on a
+//!   1 MiB thread stack (OpenSearch's) fails between some 700 and 3,100
+//!   levels of groups, at 6,251 of `[` and at 8,424 of `[a&&` (16,848
+//!   levels), so this refuses nothing Java compiles there; it also bounds
+//!   a compile's time (some 0.1 s at the cap, release).
+//! - A match past [`vm::MAX_ENTRIES`] backtracking entries (some hundreds
+//!   of thousands of iterations, where Java's 1 MiB stack holds some
+//!   1,500) is an `IllegalState` `StackOverflowError` from
+//!   [`super::java_regex::JavaMatcher::try_find`]; so is a match whose
+//!   nested sub-programs (lookarounds, atomic groups, quantifiers over
+//!   them) outgrow their stack budget.
+//!
+//! Neither runs unmeasured: the parse and every pass over its tree, and a
+//! match's nested sub-programs, check the stack they have used. On the
+//! caller's stack, a compile may nest [`SHALLOW_NESTING`] levels and use
+//! [`STACK_BUDGET`] bytes, and a match's sub-programs [`STACK_BUDGET`]
+//! bytes (a debug build's frames included, all of it fits a 192 KiB
+//! thread); anything deeper starts again on a thread of its own
+//! ([`DEEP_STACK`], spawned for that one call), measured against
+//! [`DEEP_STACK_BUDGET`]. A match's backtracking depth is heap, so only a
+//! pattern whose match enters sub-programs some 40 levels deep (a release
+//! build; fewer in a debug one) pays for the thread, once per call.
 
 use std::collections::HashMap;
 
@@ -81,24 +102,24 @@ use crate::AnalysisError;
 
 mod vm;
 
-/// The stack a parse may use on the caller's thread: measured, not counted,
-/// since a frame's size depends on the build. A pattern that might nest
-/// deeper than [`SHALLOW_NESTING`] is parsed on a thread of its own
-/// instead, so this never meets the caller's own stack limit.
-const STACK_BUDGET: usize = 256 * 1024;
+/// The stack a parse or a match may use on the caller's thread: measured,
+/// not counted, since a frame's size depends on the build. Small, since it
+/// counts from the call, not from what the caller has left (a JVM thread's
+/// whole stack is 1 MiB, `-Xss1m`).
+const STACK_BUDGET: usize = 64 * 1024;
 
-/// How deeply a pattern may nest (groups, classes, intersections; and the
-/// sub-programs a match runs nested) to be parsed and matched on the
-/// caller's stack: some tens of KiB, whatever the caller has left (a JVM
-/// thread's whole stack is 1 MiB, `-Xss1m`).
-pub(crate) const SHALLOW_NESTING: usize = 32;
+/// How deeply groups and classes may nest for the parse (and the passes
+/// over its tree, which are as deep) to run on the caller's stack.
+const SHALLOW_NESTING: usize = 32;
 
-/// A deeper pattern is parsed (and, if its sub-programs nest that deep,
-/// matched) on a thread of this stack...
+/// How deeply groups and classes may nest at all (see the module docs).
+pub(crate) const MAX_NESTING: usize = 20_000;
+
+/// A deeper parse or match runs on a thread of this stack...
 const DEEP_STACK: usize = 32 * 1024 * 1024;
 
-/// ... and a parse within this budget, beyond which it fails as Java's
-/// `StackOverflowError` would.
+/// ... measured against this budget, which leaves room for the frames
+/// between two measurements.
 const DEEP_STACK_BUDGET: usize = 24 * 1024 * 1024;
 
 /// `f` on a thread with [`DEEP_STACK`]; `None` when no thread can be had.
@@ -113,20 +134,25 @@ fn on_deep_stack<T: Send>(f: impl FnOnce() -> T + Send) -> Option<T> {
     })
 }
 
-/// An upper bound on how deeply the parser recurses over `p` (after
-/// `\Q..\E` removal): every unescaped `(`, `[` and `&` may open a level.
-fn nesting_bound(p: &[u32]) -> usize {
-    let mut n = 0usize;
-    let mut i = 0;
-    while i < p.len() {
-        match char::from_u32(p[i]) {
-            Some('\\') => i += 1,
-            Some('(' | '[' | '&') => n += 1,
-            _ => {}
+thread_local! {
+    /// Where a compile on this thread started (the stack's depth), how much
+    /// stack it may use, and whether it ran out: the parse and every pass
+    /// over its tree measure themselves against it ([`too_deep`]).
+    static COMPILE_STACK: std::cell::Cell<(usize, usize, bool)> =
+        const { std::cell::Cell::new((0, usize::MAX, false)) };
+}
+
+/// Whether the compile under way has used up its stack (and from now on
+/// stops recursing, its result to be discarded).
+fn too_deep() -> bool {
+    COMPILE_STACK.with(|c| {
+        let (base, budget, hit) = c.get();
+        if !hit && stack_addr().abs_diff(base) > budget {
+            c.set((base, budget, true));
+            return true;
         }
-        i += 1;
-    }
-    n
+        hit
+    })
 }
 
 /// The address of a local: how deep the stack is here.
@@ -246,6 +272,10 @@ enum Node {
         /// a greedy unbounded `Loop`: its failed-position memo (`posIndex`),
         /// when it has one (see [`Parser::top_loops`]).
         capture: Option<usize>,
+        /// `study(atom)`, kept so a study of an enclosing node does not
+        /// walk the atom again (nested quantified groups would cost the
+        /// square of their depth).
+        info: Info,
     },
     BackRef {
         group: usize,
@@ -289,6 +319,13 @@ struct Info {
 }
 
 fn study(n: &Node) -> Info {
+    if too_deep() {
+        return Info {
+            min: 0,
+            max: None,
+            deterministic: false,
+        };
+    }
     let fixed = |l: usize| Info {
         min: l,
         max: Some(i32::try_from(l).unwrap_or(i32::MAX)),
@@ -339,9 +376,10 @@ fn study(n: &Node) -> Info {
             max,
             greed,
             mode,
+            info: a,
             ..
         } => {
-            let a = study(atom);
+            let a = *a;
             if *mode == RepMode::Ques {
                 return Info {
                     min: 0,
@@ -535,9 +573,12 @@ struct Parser<'p> {
     /// which failed attempts leave captures behind.
     top_loops: Vec<usize>,
     has_group_ref: bool,
-    /// The stack's depth where the parse started, and how much it may use.
-    stack_base: usize,
-    budget: usize,
+    /// Where the last supplementary character of the pattern is: a
+    /// lookbehind before it steps by code points.
+    last_supplementary: Option<usize>,
+    /// How deeply groups and classes nest here, and how deep they may.
+    depth: usize,
+    max_depth: usize,
 }
 
 /// `RemoveQEQuoting`: `\Q..\E` becomes its characters, each non-alphanumeric
@@ -580,13 +621,24 @@ fn remove_qe(p: &[u32]) -> Vec<u32> {
 }
 
 impl Parser<'_> {
-    /// Nesting that would take more than [`STACK_BUDGET`]: Java's
-    /// `StackOverflowError` from `compile`.
-    fn stack_check(&self) -> Result<(), AnalysisError> {
-        if stack_addr().abs_diff(self.stack_base) > self.budget {
-            return Err(overflow());
+    /// One more level of nesting, `f`, then one less: past
+    /// [`Self::max_depth`] levels or the compile's stack budget, the
+    /// `PatternSyntaxException` Java's `compile` makes of its own
+    /// `StackOverflowError`.
+    fn nested<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, AnalysisError>,
+    ) -> Result<T, AnalysisError> {
+        if self.depth >= self.max_depth {
+            COMPILE_STACK.with(|c| c.set((c.get().0, c.get().1, true)));
         }
-        Ok(())
+        if too_deep() {
+            return Err(compile_overflow());
+        }
+        self.depth += 1;
+        let r = f(self);
+        self.depth -= 1;
+        r
     }
 
     fn has(&self, f: u32) -> bool {
@@ -1092,7 +1144,10 @@ fn hex_val(c: u32) -> u32 {
 impl Parser<'_> {
     /// `group0()`: `None` for a flags-only group `(?i)`.
     fn group(&mut self) -> Result<Option<Node>, AnalysisError> {
-        self.stack_check()?;
+        self.nested(Self::group_body)
+    }
+
+    fn group_body(&mut self) -> Result<Option<Node>, AnalysisError> {
         let save = self.flags;
         let saved_loops = self.top_loops.len();
         self.cursor += 1; // '('
@@ -1128,9 +1183,7 @@ impl Parser<'_> {
                                 "Look-behind group does not have an obvious maximum length",
                             ));
                         };
-                        let by_code_point = self.p[start.min(self.p.len())..]
-                            .iter()
-                            .any(|&c| c >= 0x10000);
+                        let by_code_point = self.last_supplementary.is_some_and(|k| k >= start);
                         Node::LookBehind {
                             negate: c2 == u32::from(b'!'),
                             body: Box::new(body),
@@ -1286,6 +1339,7 @@ impl Parser<'_> {
 /// The node a quantifier makes of `atom` (see the module docs).
 fn repeat(atom: Node, min: u32, max: u32, greed: Greed, ques: bool) -> Node {
     let first = |atom| Node::Repeat {
+        info: study(&atom),
         atom: Box::new(atom),
         min,
         max,
@@ -1310,7 +1364,8 @@ fn repeat(atom: Node, min: u32, max: u32, greed: Greed, ques: bool) -> Node {
             Vec::new(),
         );
     }
-    if study(&body).deterministic {
+    let info = study(&body);
+    if info.deterministic {
         Node::Repeat {
             atom: body,
             min,
@@ -1318,6 +1373,7 @@ fn repeat(atom: Node, min: u32, max: u32, greed: Greed, ques: bool) -> Node {
             greed,
             mode: RepMode::GroupCurly,
             capture: index,
+            info,
         }
     } else {
         Node::Repeat {
@@ -1327,6 +1383,7 @@ fn repeat(atom: Node, min: u32, max: u32, greed: Greed, ques: bool) -> Node {
             greed,
             mode: RepMode::Loop,
             capture: None,
+            info,
         }
     }
 }
@@ -1334,7 +1391,10 @@ fn repeat(atom: Node, min: u32, max: u32, greed: Greed, ques: bool) -> Node {
 impl Parser<'_> {
     /// `clazz(consume)`, the cursor after the `[`.
     fn class(&mut self, consume: bool) -> Result<ClassAcc, AnalysisError> {
-        self.stack_check()?;
+        self.nested(|p| p.class_body(consume))
+    }
+
+    fn class_body(&mut self, consume: bool) -> Result<ClassAcc, AnalysisError> {
         let mut prev: Option<ClassAcc> = None;
         let mut bits: Option<ClassAcc> = None;
         let mut neg = false;
@@ -1675,17 +1735,30 @@ pub(crate) struct Program {
     root_first: Option<CharSet>,
 }
 
-/// `Pattern.compile(pattern)` for the backtracking matcher.
+/// `Pattern.compile(pattern)` for the backtracking matcher: on the
+/// caller's stack while the pattern nests at most [`SHALLOW_NESTING`]
+/// levels in [`STACK_BUDGET`] bytes, else again on a thread of its own.
 pub(crate) fn compile(pattern: &str) -> Result<Program, AnalysisError> {
     let cps: Vec<u32> = pattern.chars().map(u32::from).collect();
     let p = remove_qe(&cps);
-    if nesting_bound(&p) <= SHALLOW_NESTING {
-        return compile_within(&p, STACK_BUDGET);
+    match compile_within(&p, SHALLOW_NESTING, STACK_BUDGET) {
+        Err(Exhausted) => on_deep_stack(|| {
+            compile_within(&p, MAX_NESTING, DEEP_STACK_BUDGET)
+                .unwrap_or_else(|Exhausted| Err(compile_overflow()))
+        })
+        .unwrap_or_else(|| Err(compile_overflow())),
+        Ok(r) => r,
     }
-    on_deep_stack(|| compile_within(&p, DEEP_STACK_BUDGET)).unwrap_or_else(|| Err(overflow()))
 }
 
-fn compile_within(p: &[u32], budget: usize) -> Result<Program, AnalysisError> {
+/// A parse cut short by its nesting limit or stack budget.
+struct Exhausted;
+
+fn compile_within(
+    p: &[u32],
+    max_depth: usize,
+    budget: usize,
+) -> Result<Result<Program, AnalysisError>, Exhausted> {
     let mut parser = Parser {
         p,
         cursor: 0,
@@ -1696,70 +1769,150 @@ fn compile_within(p: &[u32], budget: usize) -> Result<Program, AnalysisError> {
         loops: 0,
         top_loops: Vec::new(),
         has_group_ref: false,
-        stack_base: stack_addr(),
-        budget,
+        // A supplementary character in the pattern's text, escaped or
+        // quoted or not.
+        last_supplementary: p.iter().rposition(|&c| c >= 0x10000),
+        depth: 0,
+        max_depth,
     };
-    // A supplementary character in the pattern's text, escaped or quoted
-    // or not.
-    parser.has_supplementary = p.iter().any(|&c| c >= 0x10000);
-    let mut root = parser.expr()?;
-    if parser.peek() != 0 || !parser.at_end() {
-        if parser.peek() == u32::from(b')') {
-            return Err(syntax("Unmatched closing ')'"));
-        }
-        return Err(syntax("Unexpected internal error"));
+    parser.has_supplementary = parser.last_supplementary.is_some();
+    let saved = COMPILE_STACK.with(|c| c.replace((stack_addr(), budget, false)));
+    let compiled = parser.expr().and_then(|root| parser.finish(root));
+    if COMPILE_STACK.with(|c| c.replace(saved)).2 {
+        return Err(Exhausted);
     }
-    if p.iter()
-        .rev()
-        .take_while(|&&c| c == u32::from(b'\\'))
-        .count()
-        % 2
-        == 1
-    {
-        return Err(syntax("Unescaped trailing backslash"));
-    }
-    let min_len = study(&root).min;
-    let memo: Vec<bool> = (0..parser.loops)
-        .map(|id| !parser.has_group_ref && parser.top_loops.contains(&id))
-        .collect();
-    keep_memos(&mut root, &memo);
-    annotate_alternatives(&mut root);
-    let root_first = first_chars(&root);
-    Ok(Program {
-        groups: parser.groups + 1,
-        names: parser.names,
-        has_supplementary: parser.has_supplementary,
-        min_len,
-        code: vm::Code::compile(&root),
-        root_first,
-    })
+    Ok(compiled)
 }
 
-/// The characters every match of `n` starts with, when `n` must consume
-/// one first and fails at no cost (no capture or memo set) otherwise.
-fn first_chars(n: &Node) -> Option<CharSet> {
+impl Parser<'_> {
+    /// The program of a parsed tree.
+    fn finish(mut self, mut root: Node) -> Result<Program, AnalysisError> {
+        if self.peek() != 0 || !self.at_end() {
+            if self.peek() == u32::from(b')') {
+                return Err(syntax("Unmatched closing ')'"));
+            }
+            return Err(syntax("Unexpected internal error"));
+        }
+        if self
+            .p
+            .iter()
+            .rev()
+            .take_while(|&&c| c == u32::from(b'\\'))
+            .count()
+            % 2
+            == 1
+        {
+            return Err(syntax("Unescaped trailing backslash"));
+        }
+        let min_len = study(&root).min;
+        let memo: Vec<bool> = (0..self.loops)
+            .map(|id| !self.has_group_ref && self.top_loops.contains(&id))
+            .collect();
+        keep_memos(&mut root, &memo);
+        let root_first = annotate(&mut root).first;
+        Ok(Program {
+            groups: self.groups + 1,
+            names: self.names,
+            has_supplementary: self.has_supplementary,
+            min_len,
+            code: vm::Code::compile(&root),
+            root_first,
+        })
+    }
+}
+
+/// What [`annotate`] learns of a node.
+struct Facts {
+    /// The characters every match of the node starts with, when it must
+    /// consume one first and fails at no cost (no capture or memo set)
+    /// otherwise.
+    first: Option<CharSet>,
+    /// Matching it can set a capture or a loop's memo.
+    sets_state: bool,
+}
+
+/// Fills each alternation's first characters, innermost first, in one pass
+/// (a node's facts from its children's): `n`'s facts.
+fn annotate(n: &mut Node) -> Facts {
+    let none = |sets_state| Facts {
+        first: None,
+        sets_state,
+    };
+    if too_deep() {
+        return none(true);
+    }
     match n {
-        Node::Char(cs) => Some(cs.clone()),
-        Node::Slice(sets) => sets.first().cloned(),
-        Node::Group(_, body) => first_chars(body),
+        Node::Char(cs) => Facts {
+            first: Some(cs.clone()),
+            sets_state: false,
+        },
+        Node::Slice(sets) => Facts {
+            first: sets.first().cloned(),
+            sets_state: false,
+        },
+        Node::Group(g, body) => {
+            let f = annotate(body);
+            Facts {
+                first: f.first,
+                sets_state: f.sets_state || g.is_some(),
+            }
+        }
         // Zero-width items without side effects first: the first consuming
         // item's.
-        Node::Seq(items) => first_chars(items.iter().find(|n| !inert(n))?),
-        Node::Repeat { atom, min, .. } if *min >= 1 => first_chars(atom),
-        Node::Alt(alts, _) => {
-            let mut set = CpSet::default();
-            for a in alts {
-                set = set.union(&first_chars(a)?.set);
+        Node::Seq(items) => {
+            let mut first = None;
+            let mut found = false;
+            let mut sets_state = false;
+            for item in items.iter_mut() {
+                let f = annotate(item);
+                if !found && !inert(item, &f) {
+                    found = true;
+                    first = f.first;
+                }
+                sets_state |= f.sets_state;
             }
-            Some(CharSet::new(set, false))
+            Facts { first, sets_state }
         }
-        _ => None,
+        Node::Alt(alts, firsts) => {
+            let facts: Vec<Facts> = alts.iter_mut().map(annotate).collect();
+            let sets_state = facts.iter().any(|f| f.sets_state);
+            *firsts = facts.into_iter().map(|f| f.first).collect();
+            let mut set = CpSet::default();
+            for f in firsts.iter() {
+                match f {
+                    Some(cs) => set = set.union(&cs.set),
+                    None => return none(sets_state),
+                }
+            }
+            Facts {
+                first: Some(CharSet::new(set, false)),
+                sets_state,
+            }
+        }
+        Node::Repeat {
+            atom,
+            min,
+            mode,
+            capture,
+            ..
+        } => {
+            let f = annotate(atom);
+            let own = capture.is_some() && matches!(mode, RepMode::Loop | RepMode::GroupCurly);
+            Facts {
+                first: if *min >= 1 { f.first } else { None },
+                sets_state: f.sets_state || own,
+            }
+        }
+        Node::Atomic(b) | Node::LookAhead { body: b, .. } | Node::LookBehind { body: b, .. } => {
+            none(annotate(b).sets_state)
+        }
+        _ => none(false),
     }
 }
 
-/// A zero-width node that sets nothing: an assertion, or a lookaround with
-/// no capturing group and no memoised loop inside.
-fn inert(n: &Node) -> bool {
+/// A zero-width node that sets nothing (`f`: its facts): an assertion, or a
+/// lookaround with no capturing group and no memoised loop inside.
+fn inert(n: &Node, f: &Facts) -> bool {
     match n {
         Node::Begin
         | Node::End
@@ -1767,54 +1920,16 @@ fn inert(n: &Node) -> bool {
         | Node::Dollar { .. }
         | Node::Bound { .. }
         | Node::LastMatch => true,
-        Node::LookAhead { body, .. } | Node::LookBehind { body, .. } => !sets_state(body),
+        Node::LookAhead { .. } | Node::LookBehind { .. } => !f.sets_state,
         _ => false,
-    }
-}
-
-/// Whether matching `n` can set a capture or a loop's memo.
-fn sets_state(n: &Node) -> bool {
-    match n {
-        Node::Group(Some(_), _) => true,
-        Node::Repeat {
-            mode: RepMode::Loop,
-            capture: Some(_),
-            ..
-        }
-        | Node::Repeat {
-            mode: RepMode::GroupCurly,
-            capture: Some(_),
-            ..
-        } => true,
-        Node::Seq(v) | Node::Alt(v, _) => v.iter().any(sets_state),
-        Node::Group(None, b)
-        | Node::Atomic(b)
-        | Node::LookAhead { body: b, .. }
-        | Node::LookBehind { body: b, .. } => sets_state(b),
-        Node::Repeat { atom, .. } => sets_state(atom),
-        _ => false,
-    }
-}
-
-/// Fills each alternation's first characters, innermost first.
-fn annotate_alternatives(n: &mut Node) {
-    match n {
-        Node::Seq(v) => v.iter_mut().for_each(annotate_alternatives),
-        Node::Alt(v, firsts) => {
-            v.iter_mut().for_each(annotate_alternatives);
-            *firsts = v.iter().map(first_chars).collect();
-        }
-        Node::Group(_, b)
-        | Node::Atomic(b)
-        | Node::LookAhead { body: b, .. }
-        | Node::LookBehind { body: b, .. } => annotate_alternatives(b),
-        Node::Repeat { atom, .. } => annotate_alternatives(atom),
-        _ => {}
     }
 }
 
 /// Drops the memo of each `Loop` that is not top-level after all.
 fn keep_memos(n: &mut Node, keep: &[bool]) {
+    if too_deep() {
+        return;
+    }
     match n {
         Node::Seq(v) | Node::Alt(v, _) => v.iter_mut().for_each(|c| keep_memos(c, keep)),
         Node::Group(_, b)
@@ -1857,6 +1972,11 @@ pub(crate) struct State<'t> {
     pub(crate) groups: Vec<i32>,
     old_last: usize,
     scratch: vm::Scratch,
+    /// The stack's depth where the match started, how much its nested
+    /// sub-programs may use, and whether they ran out.
+    stack_base: usize,
+    stack_budget: usize,
+    exhausted: bool,
 }
 
 /// A hasher for the loops' failed-position memo: FxHash's mix over the
@@ -1890,6 +2010,9 @@ impl<'t> State<'t> {
             groups: buffer,
             old_last,
             scratch,
+            stack_base: 0,
+            stack_budget: usize::MAX,
+            exhausted: false,
         }
     }
 
@@ -1937,6 +2060,11 @@ fn overflow() -> AnalysisError {
     AnalysisError::IllegalState(
         "StackOverflowError: java.util.regex needs more stack than it may use".to_string(),
     )
+}
+
+/// What `Pattern.compile` makes of its parser's `StackOverflowError`.
+fn compile_overflow() -> AnalysisError {
+    syntax("Stack overflow during pattern compilation")
 }
 
 /// `countChars(seq, index, lengthInCodePoints)`: the UTF-16 units of that
@@ -2199,6 +2327,14 @@ mod tests {
             (r"(\B){0,1}(a)", r"aab", r"(0,1 -1:-1 0:1)(1,2 1:1 1:2)"),
             (r"(?=(a)){0,1}?\1", r"ab", r"(0,1 0:1)"),
             (r"a\", r"a", r"ERR Unescaped trailing backslash"),
+            // A case-insensitive backreference compares code points until
+            // it has covered the group's units.
+            (r"(?i)(😀)\1", r"😀😀x", r"(0,4 0:2)"),
+            (r"(?i)(😀)\1", r"😀", r""),
+            (r"(?iu)(a😀)\1", r"a😀A😀", r"(0,6 0:3)"),
+            (r"(?i)(😀a)\1", r"😀a😀A", r"(0,6 0:3)"),
+            (r"(?iu)(𐐨)\1", r"𐐨𐐀x", r"(0,4 0:2)"),
+            (r"(?iu)(ſ)\1", r"ſs", r"(0,2 0:1)"),
         ];
         for &(p, text, want) in cases {
             let got = finds(p, &units(text));
@@ -2262,9 +2398,109 @@ mod tests {
             })
             .unwrap();
         assert!(h.join().is_ok());
-        assert_eq!(nesting_bound(&[0x5C, 0x28, 0x28, 0x5B, 0x26, 0x61]), 3);
+        // What stays on the caller's stack -- a parse 32 levels deep and the
+        // passes over its tree, a match within `STACK_BUDGET` -- fits in a
+        // 192 KiB thread, a debug build's frames included.
+        let h = std::thread::Builder::new()
+            .stack_size(192 << 10)
+            .spawn(|| {
+                for (open, close) in [("(?=", ")"), ("(?>a|", ")+"), ("(", ")"), ("[", "]")] {
+                    let p = format!(
+                        "{}b{}",
+                        open.repeat(SHALLOW_NESTING),
+                        close.repeat(SHALLOW_NESTING)
+                    );
+                    let prog = compile(&p).unwrap();
+                    let text = units("bb");
+                    let mut st = State::new(&text, prog.group_total(), 0);
+                    assert!(prog.search(0, &mut st).unwrap(), "{p}");
+                }
+            })
+            .unwrap();
+        assert!(h.join().is_ok());
         // `\b` reads an ASCII unit by the ASCII rule, `(?U)` or not.
         assert!((0..128).all(|c| is_word(c, true) == is_word(c, false)));
+    }
+
+    /// A pattern nested as deep as [`MAX_NESTING`] allows -- one per kind of
+    /// sub-program a match runs nested (lookahead, negative lookahead, an
+    /// atomic group, a quantifier over one, a group loop, lookbehind) and a
+    /// capturing alternation -- compiles or fails with Java's
+    /// `PatternSyntaxException`, and its match ends or fails as Java's
+    /// `StackOverflowError`: never a Rust stack overflow, which aborts the
+    /// process. Run in a child process, so an abort is a failure here, not
+    /// the end of the test binary.
+    #[test]
+    fn deep_nesting_never_aborts() {
+        const CHILD: &str = "LUCENE_JAVA_REGEX_DEEP_NESTING_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let path = module_path!().split_once("::").map_or("", |(_, p)| p);
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    &format!("{path}::deep_nesting_never_aborts"),
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(
+                out.status.success() && stdout.contains("deep nesting: done"),
+                "{}\n{stdout}\n{stderr}",
+                out.status
+            );
+            return;
+        }
+        let text = units("bx");
+        // Kinds whose match on "bx" takes time linear in the nesting, and
+        // those (a repetition tries another iteration at "x", through every
+        // level below) whose time is its square, matched shallower.
+        for (open, close, linear) in [
+            ("(?=a|", ")", true),
+            ("(?!x|", ")", true),
+            ("(?>a|", ")", true),
+            ("(?>a|", "){1}", true),
+            ("(?<=a|(?=", "))", true),
+            ("(a|", ")", true),
+            ("[a", "]", true),
+            ("(?>a|", ")+", false),
+            ("(?:a|b", ")+", false),
+            ("(?:a|", ")*", false),
+        ] {
+            for n in [3_000, MAX_NESTING, MAX_NESTING + 1] {
+                let p = format!("{}b{}", open.repeat(n), close.repeat(n));
+                let prog = match compile(&p) {
+                    Ok(prog) => prog,
+                    Err(e) => {
+                        let want = "Stack overflow during pattern compilation";
+                        assert_eq!(
+                            e.to_string(),
+                            format!("illegal argument: PatternSyntaxException: {want}")
+                        );
+                        println!("{open} {n}: {e}");
+                        continue;
+                    }
+                };
+                assert!(n <= MAX_NESTING, "{open} {n}");
+                if !linear && n > 3_000 {
+                    continue;
+                }
+                let mut st = State::new(&text, prog.group_total(), 0);
+                let found = prog.search(0, &mut st);
+                let mut st = State::new(&text, prog.group_total(), 0);
+                let whole = prog.matches_all(&mut st);
+                for r in [&found, &whole] {
+                    if let Err(e) = r {
+                        assert!(e.to_string().contains("StackOverflowError"), "{e}");
+                    }
+                }
+                println!("{open} {n}: find {found:?}, matches {whole:?}");
+            }
+        }
+        println!("deep nesting: done");
     }
 
     /// Java's `StackOverflowError`: a typed error, from `find()` and
@@ -2295,16 +2531,12 @@ mod tests {
         let mut st = State::new(&text[..10], prog.group_total(), 0);
         assert!(!prog.matches_all(&mut st).unwrap());
         assert_eq!(st.group(5), (-1, -1));
+        // What Java's `compile` makes of its parser's overflow.
         let deep = format!("{}a{}", "(".repeat(100_000), ")".repeat(100_000));
-        assert!(compile(&deep)
-            .unwrap_err()
-            .to_string()
-            .contains("StackOverflowError"));
+        let want = "Stack overflow during pattern compilation";
+        assert!(compile(&deep).unwrap_err().to_string().contains(want));
         let deep = format!("{}a", "[".repeat(100_000));
-        assert!(compile(&deep)
-            .unwrap_err()
-            .to_string()
-            .contains("StackOverflowError"));
+        assert!(compile(&deep).unwrap_err().to_string().contains(want));
         let named = compile("(?<word>a)").unwrap();
         assert_eq!(
             (named.group_named("word"), named.group_named("x")),
