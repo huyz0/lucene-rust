@@ -373,7 +373,14 @@ Part 3 (T12.6, T12.2 SmartCN, T12.7):
   0.1 s, release); a `(?i)` backreference compares code points until the
   group's units are covered (`(?i)(😀)\1`); a capture under `X{0}` routes
   to the backtracking matcher, which counts it; a matcher keeps at most
-  64 KiB of backtracking stacks between `find()`s. `deep.txt` (220
+  64 KiB of backtracking stacks between `find()`s. Re-measured after it
+  (same harness, the machine shared with another agent's builds, noise
+  floor 1.23x): regex_lookaround_replace 1.14~, regex_boundary_capture
+  1.01~, regex_backref_split 1.35x. A Rust-only A/B against the code
+  before the review (the three patterns, one core, interleaved, min of
+  six runs) puts its cost at 2-8% per `find()`, most of it the per-find
+  stack trim; within that A/B's own run-to-run spread, so not chased
+  further. `deep.txt` (220
   patterns over 300-1,600 characters) and `{0,1}`/`{0,2}` in the generated
   quantifiers joined the fixtures; 100,000 generated patterns x 6 inputs
   (JDK 21 and 25 answers) and 20,000 of a fresh seed, 0 differences. Bench
