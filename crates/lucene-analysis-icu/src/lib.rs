@@ -4,7 +4,8 @@
 //! UTR #30 folding (`ICUFoldingFilter`), script-aware segmentation
 //! (`ICUTokenizer`), collation keys (`ICUCollationKeyAnalyzer`,
 //! `ICUCollationAttributeFactory`, `ICUCollationDocValuesField` over
-//! [`Collator`]) and their factories, over a port of
+//! [`Collator`]), transliteration (`ICUTransformFilter` over
+//! [`Transliterator`]) and their factories, over a port of
 //! the ICU4J 77.1 runtime pieces they call ([`icu4j`]) reading ICU's own
 //! binary data.
 //!
@@ -26,6 +27,7 @@ pub mod normalizer2_char_filter;
 pub mod normalizer2_filter;
 pub mod segmentation;
 pub mod tokenattributes;
+pub mod transform_filter;
 
 pub use collation::{
     ICUCollatedTermFilter, ICUCollationAttributeFactory, ICUCollationDocValuesField,
@@ -33,16 +35,18 @@ pub use collation::{
 };
 pub use factory::{
     register_factories, ICUFoldingFilterFactory, ICUNormalizer2CharFilterFactory,
-    ICUNormalizer2FilterFactory, ICUTokenizerFactory,
+    ICUNormalizer2FilterFactory, ICUTokenizerFactory, ICUTransformFilterFactory,
 };
 pub use folding_filter::ICUFoldingFilter;
 pub use icu4j::coll::collator::Collator;
 pub use icu4j::normalizer2::{Mode, Normalizer2};
+pub use icu4j::translit::Transliterator;
 pub use icu4j::unicode_set::UnicodeSet;
 pub use normalizer2_char_filter::ICUNormalizer2CharFilter;
 pub use normalizer2_filter::ICUNormalizer2Filter;
 pub use segmentation::{DefaultICUTokenizerConfig, ICUTokenizer, ICUTokenizerConfig};
 pub use tokenattributes::ScriptAttribute;
+pub use transform_filter::ICUTransformFilter;
 
 use std::fmt;
 

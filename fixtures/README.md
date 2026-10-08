@@ -1211,6 +1211,18 @@ outright.
   keys for seven (`coll_keys_*.tsv`), and `ICUCollationKeyAnalyzer`/
   `ICUCollationDocValuesField` bytes over the corpus (`coll_lucene.tsv`).
   Read by `crates/lucene-analysis-icu/tests/icu_collation_fixtures.rs`.
+- `GenAnalysisIcuTransform.java` — M12 T12.4: ICU4J 77.1 transliterators
+  and Lucene's `ICUTransformFilter` (`ICU_DEPS`, own classpath, data under
+  `analysis_icu_transform/`): 517 texts (`tr_strings.txt`, UTF-16 units in
+  hex -- the corpus, curated strings, 400 seeded from pools of many
+  scripts) through every ID `getAvailableIDs()` lists and 88 compound,
+  filtered, inverse and malformed specs (`tr_ids.tsv`: `getID()` and an
+  FNV-1a digest per 50 outputs, or the exception class); full outputs of
+  26 transliterators (`tr_full.tsv`) and their source sets
+  (`tr_sources.tsv`); 41 rule sets through `createFromRules` both ways over
+  25 inputs (`tr_rules.tsv`); and 12 `ICUTransformFilter` chains over the
+  corpus (`tr_lucene_*.tsv`). Read by
+  `crates/lucene-analysis-icu/tests/icu_transform_fixtures.rs`.
 - `GenAnalysisDateLocales.java` — M12 T12.7: `SimpleDateFormat`'s parse
   outside `Locale.ENGLISH`, for `DateRecognizerFilterFactory`'s `locale`:
   over the locales of `corpus/date-locales.txt` (the 886 whose record --

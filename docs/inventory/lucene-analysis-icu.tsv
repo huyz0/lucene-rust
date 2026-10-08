@@ -11,8 +11,8 @@ analysis/icu/ICUNormalizer2CharFilter	ported	crates/lucene-analysis-icu/src/norm
 analysis/icu/ICUNormalizer2CharFilterFactory	ported	crates/lucene-analysis-icu/src/factory.rs::ICUNormalizer2CharFilterFactory
 analysis/icu/ICUNormalizer2Filter	ported	crates/lucene-analysis-icu/src/normalizer2_filter.rs::ICUNormalizer2Filter
 analysis/icu/ICUNormalizer2FilterFactory	ported	crates/lucene-analysis-icu/src/factory.rs::ICUNormalizer2FilterFactory
-analysis/icu/ICUTransformFilter	todo:M12	T12.4: ICUTransformFilter, not started
-analysis/icu/ICUTransformFilterFactory	todo:M12	T12.4: ICUTransformFilterFactory, not started
+analysis/icu/ICUTransformFilter	ported	crates/lucene-analysis-icu/src/transform_filter.rs::ICUTransformFilter
+analysis/icu/ICUTransformFilterFactory	ported	crates/lucene-analysis-icu/src/factory.rs::ICUTransformFilterFactory
 analysis/icu/segmentation/BreakIteratorWrapper	ported	crates/lucene-analysis-icu/src/segmentation/break_iterator_wrapper.rs::BreakIteratorWrapper
 analysis/icu/segmentation/CharArrayIterator	ported	crates/lucene-analysis-icu/src/icu4j/char_iter.rs::CharIter
 analysis/icu/segmentation/CompositeBreakIterator	ported	crates/lucene-analysis-icu/src/segmentation/composite_break_iterator.rs::CompositeBreakIterator

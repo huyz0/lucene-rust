@@ -89,8 +89,9 @@ International Business Machines Corporation and others), and carries ICU
 data files under src/resources/: from ICU4J's jar the normalization data
 (nfc.nrm, nfkc.nrm, nfkc_cf.nrm, nfkc_scf.nrm, uts46.nrm), the word break
 rules (word.brk) and dictionaries (thaidict, laodict, khmerdict, burmesedict,
-cjdict, zlib-compressed), and the collation data (coll/ucadata.icu and the
-locale bundles, packed in coll.pack.z with CLDR's default-script and
+cjdict, zlib-compressed), the case mappings (ucase.icu), and the
+collation and transliteration data (coll/ucadata.icu, the locale bundles
+and translit/root.res, packed in coll.pack.z with CLDR's default-script and
 ISO code tables by tools/GenIcuCollPack.java); and uprops.bin.z, the
 character properties ICU4J 77.1 reports (written by
 tools/GenIcuProperties.java). ICU's LICENSE, with the third-party terms of

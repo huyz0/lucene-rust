@@ -459,6 +459,16 @@ public class GenAnalysisIcu {
       "t:icu,rulefiles=Latn",
       "t:icu,rulefiles=Nope:x.rbbi",
       "t:icu,foo=1",
+      "t:whitespace f:icuTransform,id=Any-Latin",
+      "t:whitespace f:icuTransform,id=Cyrillic-Latin,direction=reverse",
+      "t:whitespace f:icuTransform,id=Traditional-Simplified,direction=Forward",
+      "t:whitespace f:icuTransform,id=NFD;_SPACE_[:Nonspacing_SPACE_Mark:]_SPACE_Remove",
+      "t:keyword f:icuTransform,id=Any-Latin;_SPACE_Latin-ASCII",
+      // refused
+      "t:whitespace f:icuTransform",
+      "t:whitespace f:icuTransform,id=Bogus-ID",
+      "t:whitespace f:icuTransform,id=Any-Latin,direction=up",
+      "t:whitespace f:icuTransform,id=Any-Latin,z=1",
     };
     for (int i = 0; i < specs.length; i++) fac.put(String.format("c_factory_%02d", i), factory(specs[i]));
     for (Map.Entry<String, Supplier<Analyzer>> e : fac.entrySet()) {

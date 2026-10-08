@@ -12,9 +12,11 @@ import org.apache.lucene.analysis.Tokenizer;
 import org.apache.lucene.analysis.core.WhitespaceTokenizer;
 import com.ibm.icu.text.Collator;
 import com.ibm.icu.text.RuleBasedCollator;
+import com.ibm.icu.text.Transliterator;
 import com.ibm.icu.util.ULocale;
 import org.apache.lucene.analysis.icu.ICUCollationKeyAnalyzer;
 import org.apache.lucene.analysis.icu.ICUFoldingFilter;
+import org.apache.lucene.analysis.icu.ICUTransformFilter;
 import org.apache.lucene.analysis.icu.ICUNormalizer2CharFilter;
 import org.apache.lucene.analysis.icu.ICUNormalizer2Filter;
 import org.apache.lucene.analysis.icu.segmentation.ICUTokenizer;
@@ -75,6 +77,10 @@ public class AnalysisIcuMicro {
       }
     }, docs);
     run("icu_tokenizer", chain(ICUTokenizer::new, t -> t), docs);
+    run("icu_transform_any_latin", chain(WhitespaceTokenizer::new,
+        t -> new ICUTransformFilter(t, Transliterator.getInstance("Any-Latin"))), docs);
+    run("icu_transform_trad_simp", chain(WhitespaceTokenizer::new,
+        t -> new ICUTransformFilter(t, Transliterator.getInstance("Traditional-Simplified"))), docs);
     run("icu_collation_key", new ICUCollationKeyAnalyzer(Collator.getInstance(ULocale.ROOT)), docs);
     RuleBasedCollator identical = (RuleBasedCollator) Collator.getInstance(new ULocale("de@collation=phonebook"));
     identical.setStrength(Collator.IDENTICAL);

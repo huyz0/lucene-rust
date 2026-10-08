@@ -11,7 +11,7 @@ use lucene_analysis::{
 };
 use lucene_analysis_icu::{
     Collator, ICUCollationKeyAnalyzer, ICUFoldingFilter, ICUNormalizer2CharFilter,
-    ICUNormalizer2Filter, ICUTokenizer,
+    ICUNormalizer2Filter, ICUTokenizer, ICUTransformFilter, Transliterator,
 };
 
 use super::{consume_stream, measure};
@@ -104,6 +104,19 @@ pub(super) fn bench_analysis_icu(w: Duration, m: Duration) {
         w,
         m,
     );
+    for (name, id) in [
+        ("icu_transform_any_latin", "Any-Latin"),
+        ("icu_transform_trad_simp", "Traditional-Simplified"),
+    ] {
+        let t = Transliterator::get_instance(id, 0).unwrap();
+        run(
+            name,
+            &chain(move || comps(ICUTransformFilter::new(WhitespaceTokenizer::new(), t.clone()))),
+            &docs,
+            w,
+            m,
+        );
+    }
     let root = Collator::root().unwrap();
     run(
         "icu_collation_key",
