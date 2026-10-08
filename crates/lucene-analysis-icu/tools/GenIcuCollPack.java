@@ -1,11 +1,13 @@
 /*
- * Writes crates/lucene-analysis-icu/src/resources/coll.pack.z: ICU4J's collation data, as the
- * ICU4J 77.1 jar carries it, for the collation port (src/icu4j/coll/).
+ * Writes crates/lucene-analysis-icu/src/resources/coll.pack.z: ICU4J's collation and
+ * transliteration data, as the ICU4J 77.1 jar carries it, for the collation port
+ * (src/icu4j/coll/) and the transliterator port (src/icu4j/translit/).
  *
  * Format (big-endian, then zlib at level 9): "ICP1"; u32 entry count; per entry, sorted by name:
  * u16 name length, the name (ASCII), u32 data length, the data. The entries are every file under
  * com/ibm/icu/impl/data/icudata/coll/ of the jar (ucadata.icu, res_index.res and each locale's
- * .res), byte for byte, plus one generated entry, "default_scripts.txt": the rows of
+ * .res), byte for byte, and translit/root.res (the transliterators' IDs and rules, entry
+ * "translit/root.res"), plus one generated entry, "default_scripts.txt": the rows of
  * com.ibm.icu.impl.LocaleFallbackData.DEFAULT_SCRIPT_TABLE (what ICUResourceBundle's parent
  * locale fallback reads) whose language has a collation bundle -- "id=Script" per line, sorted.
  * Every other language falls back to the root collation whatever its script. And "lang3.txt" and
@@ -33,6 +35,7 @@ import java.util.zip.DeflaterOutputStream;
 
 public class GenIcuCollPack {
   private static final String DIR = "com/ibm/icu/impl/data/icudata/coll/";
+  private static final String TRANSLIT_ROOT = "com/ibm/icu/impl/data/icudata/translit/root.res";
 
   public static void main(String[] args) throws Exception {
     TreeMap<String, byte[]> entries = new TreeMap<>();
@@ -45,6 +48,10 @@ public class GenIcuCollPack {
         try (InputStream in = jar.getInputStream(e)) {
           entries.put(rest, in.readAllBytes());
         }
+      }
+      // The transliterators' rules and IDs (src/icu4j/translit/), read through the same reader.
+      try (InputStream in = jar.getInputStream(jar.getJarEntry(TRANSLIT_ROOT))) {
+        entries.put("translit/root.res", in.readAllBytes());
       }
     }
     TreeSet<String> languages = new TreeSet<>();

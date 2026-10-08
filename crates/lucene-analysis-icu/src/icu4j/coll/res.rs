@@ -276,6 +276,74 @@ impl ResReader {
         }
     }
 
+    /// A local key (`getKey16`/`getKey32`): the NUL-terminated ASCII
+    /// string at `offset`; `None` for a pool bundle's key.
+    fn key_at(&self, offset: usize) -> Option<String> {
+        if offset >= self.local_key_limit {
+            return None;
+        }
+        let rest = self.bytes.get(offset..self.local_key_limit)?;
+        let end = rest.iter().position(|&b| b == 0)?;
+        Some(String::from_utf8_lossy(&rest[..end]).into_owned())
+    }
+
+    /// Every `(key, item)` of a table, in the bundle's order (`getSize`,
+    /// `get(i)`); empty for a resource that is not a table.
+    pub fn table_entries(&self, res: u32) -> Vec<(String, u32)> {
+        self.try_table_entries(res).unwrap_or_default()
+    }
+
+    fn try_table_entries(&self, res: u32) -> Option<Vec<(String, u32)>> {
+        let ty = res >> 28;
+        let offset = (res & 0x0fff_ffff) as usize;
+        if offset == 0 {
+            return Some(Vec::new());
+        }
+        match ty {
+            TABLE => {
+                let base = offset.checked_mul(4)?;
+                let size = usize::from(self.u16_at(base)?);
+                let items = base.checked_add(2usize.checked_mul((size + 2) & !1)?)?;
+                (0..size)
+                    .map(|i| {
+                        let key = self.key_at(usize::from(self.u16_at(base + 2 + 2 * i)?))?;
+                        Some((key, self.u32_at(items.checked_add(4 * i)?)?))
+                    })
+                    .collect()
+            }
+            TABLE16 => {
+                let size = usize::from(self.b16(offset)?);
+                (0..size)
+                    .map(|i| {
+                        let key = self.key_at(usize::from(self.b16(offset + 1 + i)?))?;
+                        let res16 = u32::from(self.b16(offset.checked_add(1 + size + i)?)?);
+                        let res16 = if res16 < self.pool_string_index16_limit {
+                            res16
+                        } else {
+                            res16 - self.pool_string_index16_limit + self.pool_string_index_limit
+                        };
+                        Some((key, (STRING_V2 << 28) | res16))
+                    })
+                    .collect()
+            }
+            TABLE32 => {
+                let base = offset.checked_mul(4)?;
+                let size = self.u32_at(base)? as usize;
+                (0..size)
+                    .map(|i| {
+                        let k = usize::try_from(self.u32_at(base + 4 + 4 * i)? as i32).ok()?;
+                        let key = self.key_at(k)?;
+                        Some((
+                            key,
+                            self.u32_at(base.checked_add(4usize.checked_mul(1 + size + i)?)?)?,
+                        ))
+                    })
+                    .collect()
+            }
+            _ => None,
+        }
+    }
+
     /// `findTableItem`: binary search of the sorted keys.
     fn search(
         &self,

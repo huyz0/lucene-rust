@@ -9,7 +9,7 @@
 | **Effort** | L |
 | **Depends on** | [M11](m11-analysis-common.md) |
 | **Unblocks** | analysing CJK and other scripts without a JVM |
-| **Status** | in progress -- part 1: architecture, inventory, T12.2 Stempel, T12.3 phonetic and Morfologik; part 2: T12.1 `analysis/morph`, Kuromoji and Nori; part 3: T12.6, T12.2 SmartCN; part 4: T12.4 ICU normalization, tokenizer and collation (see [Progress](#progress)) |
+| **Status** | in progress -- part 1: architecture, inventory, T12.2 Stempel, T12.3 phonetic and Morfologik; part 2: T12.1 `analysis/morph`, Kuromoji and Nori; part 3: T12.6, T12.2 SmartCN; part 4: T12.4 ICU normalization, tokenizer, collation and transforms (see [Progress](#progress)) |
 
 ---
 
@@ -405,12 +405,18 @@ Part 4 (T12.4 ICU):
   the Thai, Lao, Khmer, Burmese and CJK dictionary engines, and collation:
   the root and every locale tailoring ICU ships (`coll.pack.z`,
   `tools/GenIcuCollPack.java`), collation elements, sort keys byte for byte,
-  `Collator.getInstance` with ICU's locale fallback and attribute keywords.
+  `Collator.getInstance` with ICU's locale fallback and attribute keywords;
+  and transliteration: every rule-based transliterator ICU ships
+  (`translit/root.res`, in the same pack), compound/filtered/inverse IDs,
+  `Any-<script>`, normalization, case (`ucase.icu`), `Null`/`Remove`, the
+  Thai word-break inserter and `createFromRules`. Not ported: incremental
+  transliteration, `Hex`/`Name` escapes and IDs that name a locale
+  (`el-Latin`, `Any-am_FONIPA`; typed `UnsupportedOperation`).
 - **Lucene's classes** -- `ICUNormalizer2Filter`, `ICUFoldingFilter`,
   `ICUNormalizer2CharFilter`, `ICUTokenizer` (all four configurations,
   `ScriptAttribute`), `ICUCollationKeyAnalyzer`, `ICUCollationAttributeFactory`,
-  `ICUCollationDocValuesField` (the bytes; the `Field` is `lucene-search`'s)
-  and the factories. Not ported: `ICUTokenizerFactory`'s `rulefiles` (ICU's
+  `ICUCollationDocValuesField` (the bytes; the `Field` is `lucene-search`'s),
+  `ICUTransformFilter` and the factories. Not ported: `ICUTokenizerFactory`'s `rulefiles` (ICU's
   break-rule compiler; refused with `UnsupportedOperationException`) and
   collators from rules (`new RuleBasedCollator(rules)`, ICU's
   `CollationBuilder`).
@@ -420,14 +426,17 @@ Part 4 (T12.4 ICU):
   over 379 lines in four configurations (155,649 rows);
   `GenAnalysisIcuCollation.java`: 1,687 texts through 1,829 collators (every
   bundle and type, fallback IDs, keywords, setters), full keys for seven,
-  Lucene's analyzer and field bytes -- all equal, byte-identical under JDK 21
-  and 25.
+  Lucene's analyzer and field bytes; `GenAnalysisIcuTransform.java`: every
+  transliterator ID ICU4J lists and 88 more specs over 517 texts, 41 rule
+  sets both ways, 12 `ICUTransformFilter` chains -- all equal,
+  byte-identical under JDK 21 and 25.
 - **Thai over ICU** -- see T12.6 above: ICU's Thai breaks are not the JDK's,
   so `ThaiTokenizer` stays not supported.
 - **Bench** (`--bench analysis_icu`, 2026-10-08, noise floor 1.13x):
   icu_normalizer_charfilter 1.53x, icu_normalizer_nfkc_cf 0.90~, icu_folding
   0.85x, icu_tokenizer 0.67x, icu_collation_key 0.60x,
-  icu_collation_key_phonebook_identical 0.83x; the profiles and the
+  icu_collation_key_phonebook_identical 0.83x; icu_transform_any_latin
+  1.11~, icu_transform_trad_simp 0.58x (noise 1.24x); the profiles and the
   optimisation in progress are in `docs/parity/analysis-icu.md`.
 
 ## Acceptance criteria

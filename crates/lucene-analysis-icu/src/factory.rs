@@ -1,7 +1,8 @@
 //! The module's SPI factories -- `ICUNormalizer2CharFilterFactory`
 //! (`icuNormalizer2`), `ICUNormalizer2FilterFactory` (`icuNormalizer2`),
-//! `ICUFoldingFilterFactory` (`icuFolding`), `ICUTokenizerFactory` (`icu`)
-//! -- and [`register_factories`].
+//! `ICUFoldingFilterFactory` (`icuFolding`), `ICUTokenizerFactory` (`icu`),
+//! `ICUTransformFilterFactory` (`icuTransform`) -- and
+//! [`register_factories`].
 
 use lucene_analysis::factory::args::{self, JavaArgs};
 use lucene_analysis::factory::spi;
@@ -15,10 +16,12 @@ use lucene_analysis::{AnalysisError, CharReader, TokenStream};
 
 use crate::folding_filter::ICUFoldingFilter;
 use crate::icu4j::normalizer2::{Mode, Normalizer2};
+use crate::icu4j::translit::{Transliterator, FORWARD, REVERSE};
 use crate::icu4j::unicode_set::UnicodeSet;
 use crate::normalizer2_char_filter::ICUNormalizer2CharFilter;
 use crate::normalizer2_filter::ICUNormalizer2Filter;
 use crate::segmentation::{DefaultICUTokenizerConfig, ICUTokenizer};
+use crate::transform_filter::ICUTransformFilter;
 
 /// The `filter` argument: a non-empty `UnicodeSet` pattern wraps the
 /// normalizer in a `FilteredNormalizer2`.
@@ -132,6 +135,54 @@ impl TokenFilterFactory for ICUNormalizer2FilterFactory {
             input,
             self.normalizer.clone(),
         ))
+    }
+}
+
+/// `ICUTransformFilterFactory`: `id` (required) and `direction`
+/// (`forward`, the default, or `reverse`).
+pub struct ICUTransformFilterFactory {
+    base: FactoryBase,
+    transliterator: Transliterator,
+}
+base_impl!(ICUTransformFilterFactory);
+
+impl FactoryClass for ICUTransformFilterFactory {
+    const NAME: &'static str = "icuTransform";
+    const CLASS_NAME: &'static str = "org.apache.lucene.analysis.icu.ICUTransformFilterFactory";
+    fn from_args(args: &mut JavaArgs) -> Result<Self, FactoryError> {
+        let base = FactoryBase::new(Self::CLASS_NAME, args)?;
+        let id = args::require(args, "id")?;
+        let direction = args::get_one_of(
+            args,
+            "direction",
+            &["forward", "reverse"],
+            Some("forward"),
+            false,
+        )?;
+        let dir = if direction.as_deref() == Some("forward") {
+            FORWARD
+        } else {
+            REVERSE
+        };
+        let transliterator = Transliterator::get_instance(&id, dir)?;
+        args::reject_unknown(args)?;
+        Ok(ICUTransformFilterFactory {
+            base,
+            transliterator,
+        })
+    }
+}
+
+impl TokenFilterFactory for ICUTransformFilterFactory {
+    fn create(&self, input: Box<dyn TokenStream>) -> Result<Box<dyn TokenStream>, AnalysisError> {
+        Ok(Box::new(ICUTransformFilter::new(
+            input,
+            self.transliterator.clone(),
+        )))
+    }
+
+    fn normalize(&self, input: Box<dyn TokenStream>) -> Box<dyn TokenStream> {
+        Box::new(ICUTransformFilter::new(input, self.transliterator.clone()))
     }
 }
 
@@ -273,6 +324,7 @@ pub fn register_factories() -> Result<(), FactoryError> {
     spi::register_char_filter(spi::char_filter_entry::<ICUNormalizer2CharFilterFactory>())?;
     spi::register_token_filter(spi::token_filter_entry::<ICUNormalizer2FilterFactory>())?;
     spi::register_token_filter(spi::token_filter_entry::<ICUFoldingFilterFactory>())?;
+    spi::register_token_filter(spi::token_filter_entry::<ICUTransformFilterFactory>())?;
     spi::register_tokenizer(spi::tokenizer_entry::<ICUTokenizerFactory>())?;
     Ok(())
 }
