@@ -9,7 +9,7 @@
 | **Effort** | L |
 | **Depends on** | [M11](m11-analysis-common.md) |
 | **Unblocks** | analysing CJK and other scripts without a JVM |
-| **Status** | in progress -- part 1: architecture, inventory, T12.2 Stempel, T12.3 phonetic and Morfologik; part 2: T12.1 `analysis/morph`, Kuromoji and Nori; part 3: T12.6, T12.2 SmartCN (see [Progress](#progress)) |
+| **Status** | in progress -- part 1: architecture, inventory, T12.2 Stempel, T12.3 phonetic and Morfologik; part 2: T12.1 `analysis/morph`, Kuromoji and Nori; part 3: T12.6, T12.2 SmartCN; part 4: T12.4 ICU normalization, tokenizer and collation (see [Progress](#progress)) |
 
 ---
 
@@ -37,9 +37,11 @@ in external libraries). Sizes from the 10.5.0 sources jars:
 
 - All eight modules, reading the same dictionary and model files Lucene
   ships or loads, so a user's existing dictionaries work unchanged.
-- ICU through a Rust ICU implementation (ICU4X), with a differential test
-  proving the output matches ICU4J's for the operations Lucene uses; where
-  it cannot, the gap is recorded per operation.
+- ICU through a port of the ICU4J runtime pieces Lucene calls, reading
+  ICU's own data files (ICU4X reads neither ICU4J's data formats nor
+  Lucene's own `utr30.nrm`/`.brk` files), with differential tests proving
+  the output matches ICU4J's; where it cannot, the gap is recorded per
+  operation.
 
 ### Out of scope
 
@@ -54,7 +56,8 @@ in external libraries). Sizes from the 10.5.0 sources jars:
 - **T12.2** — SmartCN and Stempel.
 - **T12.3** — Morfologik FSA reading and phonetic encoders (reimplementing
   Commons Codec's algorithms, each against its Java output).
-- **T12.4** — ICU over ICU4X.
+- **T12.4** — ICU: a port of the ICU4J runtime Lucene calls (ICU4X cannot
+  read ICU4J's or Lucene's data files).
 - **T12.5** — OpenNLP: model loading and inference, or a recorded decision
   that it stays JVM-only if no faithful Rust runtime exists.
 - **T12.6** — The analysis-common classes M11 deferred
@@ -291,6 +294,11 @@ Part 3 (T12.6, T12.2 SmartCN, T12.7):
   streams and the `thai` factory's `create` return
   `AnalysisError::UnsupportedOperation("This JRE does not have support for
   Thai segmentation")` (a new variant); the stop set and `normalize` work.
+  Part 4 re-checked the ICU route once T12.4's `thaidict` engine existed:
+  ICU's Thai word breaks differ from the JDK's on 8 of the corpus's 10 Thai
+  lines (JDK 21 and 25 alike), so `ThaiTokenizer` over ICU would not be
+  Lucene's `ThaiTokenizer` -- it stays not supported, and `ICUTokenizer` is
+  the Thai tokenizer this port offers.
 - **T12.6 collation: not supported** -- `java.text.Collator`'s sort keys
   are a function of the JDK's `CollationRules` table and locale tailorings
   (GPL JDK data; `Locale.ROOT` needs the whole table), so reproducing
@@ -386,6 +394,41 @@ Part 3 (T12.6, T12.2 SmartCN, T12.7):
   EUC-KR, ISO-2022-*, UTF-32, CESU-8): megabytes of vendor tables or
   stateful decoders, for grammars that are UTF-8 or ISO-8859 in practice;
   they stay a typed `UnsupportedOperation`.
+
+Part 4 (T12.4 ICU):
+
+- **The ICU4J runtime** -- `lucene-analysis-icu/src/icu4j/`, a port of the
+  ICU4J 77.1 classes the module calls, reading ICU's own data files (why not
+  ICU4X: `lib.rs`): `Normalizer2` over `.nrm` (ICU's five and Lucene's
+  `utr30.nrm`), `UnicodeSet` patterns with properties (generated from ICU4J,
+  `tools/GenIcuProperties.java`), `RuleBasedBreakIterator` over `.brk` with
+  the Thai, Lao, Khmer, Burmese and CJK dictionary engines, and collation:
+  the root and every locale tailoring ICU ships (`coll.pack.z`,
+  `tools/GenIcuCollPack.java`), collation elements, sort keys byte for byte,
+  `Collator.getInstance` with ICU's locale fallback and attribute keywords.
+- **Lucene's classes** -- `ICUNormalizer2Filter`, `ICUFoldingFilter`,
+  `ICUNormalizer2CharFilter`, `ICUTokenizer` (all four configurations,
+  `ScriptAttribute`), `ICUCollationKeyAnalyzer`, `ICUCollationAttributeFactory`,
+  `ICUCollationDocValuesField` (the bytes; the `Field` is `lucene-search`'s)
+  and the factories. Not ported: `ICUTokenizerFactory`'s `rulefiles` (ICU's
+  break-rule compiler; refused with `UnsupportedOperationException`) and
+  collators from rules (`new RuleBasedCollator(rules)`, ICU's
+  `CollationBuilder`).
+- **Fixtures** -- `GenAnalysisIcu.java`: normalization of every assigned
+  block and 600 stress strings through six normalizers x four modes, 690
+  `UnicodeSet` patterns, the filters' and factories' chains, `ICUTokenizer`
+  over 379 lines in four configurations (155,649 rows);
+  `GenAnalysisIcuCollation.java`: 1,687 texts through 1,829 collators (every
+  bundle and type, fallback IDs, keywords, setters), full keys for seven,
+  Lucene's analyzer and field bytes -- all equal, byte-identical under JDK 21
+  and 25.
+- **Thai over ICU** -- see T12.6 above: ICU's Thai breaks are not the JDK's,
+  so `ThaiTokenizer` stays not supported.
+- **Bench** (`--bench analysis_icu`, 2026-10-08, noise floor 1.13x):
+  icu_normalizer_charfilter 1.53x, icu_normalizer_nfkc_cf 0.90~, icu_folding
+  0.85x, icu_tokenizer 0.67x, icu_collation_key 0.60x,
+  icu_collation_key_phonebook_identical 0.83x; the profiles and the
+  optimisation in progress are in `docs/parity/analysis-icu.md`.
 
 ## Acceptance criteria
 

@@ -59,6 +59,11 @@ MORFOLOGIK_DEPS=(org.carrot2:morfologik-fsa:2.1.9 org.carrot2:morfologik-stemmin
   org.carrot2:morfologik-polish:2.1.9 ua.net.nlp:morfologik-ukrainian-search:4.9.1
   org.carrot2:morfologik-fsa-builders:2.1.9 com.carrotsearch:hppc:0.7.2)
 
+# lucene-analysis-icu 10.5.0's pom names ICU4J 77.1 (Unicode-3.0), whose
+# normalization, break iteration and collation crates/lucene-analysis-icu
+# ports, reading the data files of this jar.
+ICU_DEPS=(com.ibm.icu:icu4j:77.1)
+
 thirdparty_resolve_jar() {
   local coord="$1" group artifact version jar found=""
   IFS=: read -r group artifact version <<< "$coord"
