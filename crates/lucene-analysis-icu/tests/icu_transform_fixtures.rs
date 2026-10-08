@@ -204,6 +204,7 @@ fn rules_match_icu4j() {
     let mut t: Option<Result<Transliterator, IcuError>> = None;
     let mut rules = String::new();
     let mut n = 0;
+    let mut bad: Vec<String> = Vec::new();
     for row in read("tr_rules.tsv").lines() {
         let f: Vec<&str> = row.split('\t').collect();
         let dir = if f[1].ends_with('R') {
@@ -211,52 +212,58 @@ fn rules_match_icu4j() {
         } else {
             FORWARD
         };
+        let key = f[1];
         match f[0] {
             "R" => {
                 rules = unesc(f[2]);
                 t = Some(Transliterator::create_from_rules("Test", &rules, dir));
                 n += 1;
             }
-            "I" => {
-                let got = t.as_ref().unwrap().as_ref();
-                let got = got.unwrap_or_else(|e| panic!("{} {rules:?}: {e}", f[1]));
-                assert_eq!(got.id(), f[2], "{} {rules:?}", f[1]);
-            }
+            "I" => match t.as_ref().unwrap() {
+                Ok(got) if got.id() == f[2] => {}
+                Ok(got) => bad.push(format!("{key} {rules:?}: id {} != {}", got.id(), f[2])),
+                Err(e) => bad.push(format!("{key} {rules:?}: refused: {e}")),
+            },
             "O" => {
-                let tr = t.as_ref().unwrap().as_ref().unwrap();
+                let Some(Ok(tr)) = t.as_ref() else {
+                    continue;
+                };
                 let i: usize = f[2].parse().unwrap();
                 let input: Vec<u16> = INPUTS[i].encode_utf16().collect();
                 let want = f.get(3).copied().unwrap_or("");
                 let mut got = input.clone();
                 let result = tr.transliterate_units(&mut got);
-                if want.starts_with('!') {
-                    assert!(
-                        result.is_err(),
-                        "{} {rules:?} on {:?}: {want}",
-                        f[1],
-                        INPUTS[i]
-                    );
-                    continue;
+                match result {
+                    Err(_) if want.starts_with('!') => {}
+                    Ok(()) if want.starts_with('!') => {
+                        bad.push(format!("{key} {rules:?} on {:?}: Java threw", INPUTS[i]))
+                    }
+                    Err(e) => bad.push(format!("{key} {rules:?} on {:?}: {e}", INPUTS[i])),
+                    Ok(()) if got != units(want) => bad.push(format!(
+                        "{key} {rules:?} on {:?}: {:?}, want {:?}",
+                        INPUTS[i],
+                        String::from_utf16_lossy(&got),
+                        String::from_utf16_lossy(&units(want))
+                    )),
+                    Ok(()) => {}
                 }
-                result.unwrap_or_else(|e| panic!("{} {rules:?} on {:?}: {e}", f[1], INPUTS[i]));
-                assert_eq!(
-                    String::from_utf16_lossy(&got),
-                    String::from_utf16_lossy(&units(want)),
-                    "{} {rules:?} on {:?}",
-                    f[1],
-                    INPUTS[i]
-                );
             }
-            "X" => assert!(
-                t.as_ref().unwrap().is_err(),
-                "{} {rules:?}: Java threw {}",
-                f[1],
-                f[2]
-            ),
+            "X" => {
+                if let Some(Ok(_)) = t.as_ref() {
+                    bad.push(format!("{key} {rules:?}: Java threw {}", f[2]));
+                }
+            }
             _ => panic!("{row}"),
         }
     }
-    assert!(n > 70);
+    bad.dedup();
+    assert!(
+        bad.is_empty(),
+        "{} mismatches:\n{}",
+        bad.len(),
+        bad.join("\n")
+    );
+    assert!(n > 200);
 }
 
 #[test]

@@ -661,3 +661,51 @@ pub fn create_from_rules(id: &str, rules: &str, dir: i32) -> Result<Transliterat
     t.set_filter(p.compound_filter);
     Ok(t)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rules_that_name_ids() {
+        // One ID block alone, unfiltered and filtered.
+        let t = create_from_rules("T", "::Upper;", FORWARD).unwrap();
+        assert_eq!(
+            (t.id(), t.transliterate("ab").unwrap().as_str()),
+            ("T", "AB")
+        );
+        let t = create_from_rules("T", ":: [a] ; :: Upper ;", FORWARD).unwrap();
+        assert_eq!(t.transliterate("ab").unwrap(), "Ab");
+        // A filter with no ID is `Any-Null`'s.
+        let single = SingleId {
+            canon_id: "[a]".into(),
+            basic_id: String::new(),
+            filter: Some("[a]".into()),
+        };
+        let t = single_instance(&single).unwrap().unwrap();
+        assert_eq!(
+            (t.id(), t.transliterate("ab").unwrap().as_str()),
+            ("[a]", "ab")
+        );
+        assert!(names_locale("el-Latin") && names_locale("Any-Any"));
+        assert!(!names_locale("Latin-Bogus") && !names_locale("Bogus-ID"));
+        assert_eq!(script_name_to_code("am_FONIPA"), -1);
+    }
+
+    #[test]
+    fn hiding_an_id_removes_it_from_the_spec_graph() {
+        let mut reg = Registry::default();
+        reg.put("Aa-Bb/V", Entry::Alias("Null".into()), true);
+        reg.put("Aa-Bb", Entry::Alias("Null".into()), true);
+        reg.put("Aa-Cc", Entry::Alias("Null".into()), true);
+        assert_eq!(reg.dag.sources.len(), 1);
+        reg.put("aa-bb/v", Entry::Alias("Null".into()), false);
+        reg.put("Aa-Bb", Entry::Alias("Null".into()), false);
+        reg.put("Aa-Zz", Entry::Alias("Null".into()), false);
+        reg.put("Qq-Bb", Entry::Alias("Null".into()), false);
+        assert_eq!(reg.dag.sources[0].1.len(), 1);
+        reg.put("Aa-Cc", Entry::Alias("Null".into()), false);
+        assert!(reg.dag.sources.is_empty());
+        assert!(reg.find("aa-cc").is_some());
+    }
+}

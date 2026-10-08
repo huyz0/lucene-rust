@@ -67,12 +67,21 @@ pub struct Data {
 #[derive(Debug)]
 pub struct MatchState {
     matches: Vec<(i32, i32)>,
+    /// How deep `string_matches` has recursed through nested matchers.
+    depth: u32,
 }
+
+/// Rust-forced change: how deep matchers may nest. A segment can name
+/// itself (`($1 a)`), which Java follows until a `StackOverflowError`;
+/// here a match that deep fails (and so does indexing such a rule) instead
+/// of overflowing the stack.
+const MAX_NESTING: u32 = 64;
 
 impl MatchState {
     pub fn new(n: usize) -> Self {
         MatchState {
             matches: vec![(-1, -1); n],
+            depth: 0,
         }
     }
 
@@ -171,6 +180,24 @@ impl Data {
         limit: i32,
         state: &mut MatchState,
     ) -> i32 {
+        if state.depth >= MAX_NESTING {
+            return U_MISMATCH;
+        }
+        state.depth += 1;
+        let m = self.string_matches_nested(pattern, idx, text, offset, limit, state);
+        state.depth -= 1;
+        m
+    }
+
+    fn string_matches_nested(
+        &self,
+        pattern: &[u16],
+        idx: Option<usize>,
+        text: &[u16],
+        offset: &mut i32,
+        limit: i32,
+        state: &mut MatchState,
+    ) -> i32 {
         let mut cursor = *offset;
         let at = |i: i32| -> i32 {
             usize::try_from(i)
@@ -229,47 +256,53 @@ impl Data {
     }
 
     /// `UnicodeMatcher.matchesIndexValue(v)` of a variable.
-    fn var_matches_index_value(&self, var: &Var, v: i32) -> bool {
+    fn var_matches_index_value(&self, var: &Var, v: i32, depth: u32) -> bool {
         match var {
             Var::Set(set) => set.matches_index_value(v),
-            Var::Matcher { pattern, .. } => self.string_matches_index_value(pattern, v),
+            Var::Matcher { pattern, .. } => self.string_matches_index_value(pattern, v, depth),
             Var::Quantifier { pattern, min, .. } => {
-                *min == 0 || self.string_matches_index_value(pattern, v)
+                *min == 0 || self.string_matches_index_value(pattern, v, depth)
             }
             _ => false,
         }
     }
 
-    fn string_matches_index_value(&self, pattern: &[u16], v: i32) -> bool {
+    fn string_matches_index_value(&self, pattern: &[u16], v: i32, depth: u32) -> bool {
+        if depth >= MAX_NESTING {
+            return false;
+        }
         if pattern.is_empty() {
             return true;
         }
         let c = utf16::code_point_at(pattern, 0);
         match self.lookup_matcher(c) {
             None => (c & 0xff) == v,
-            Some((_, m)) => self.var_matches_index_value(m, v),
+            Some((_, m)) => self.var_matches_index_value(m, v, depth + 1),
         }
     }
 
     /// `UnicodeMatcher.addMatchSetTo(set)` of a variable.
-    fn var_add_match_set_to(&self, var: &Var, to: &mut UnicodeSet) {
+    fn var_add_match_set_to(&self, var: &Var, to: &mut UnicodeSet, depth: u32) {
         match var {
             Var::Set(set) => to.add_all(set),
-            Var::Matcher { pattern, .. } => self.string_add_match_set_to(pattern, to),
+            Var::Matcher { pattern, .. } => self.string_add_match_set_to(pattern, to, depth),
             Var::Quantifier { pattern, max, .. } if *max > 0 => {
-                self.string_add_match_set_to(pattern, to);
+                self.string_add_match_set_to(pattern, to, depth);
             }
             _ => {}
         }
     }
 
-    fn string_add_match_set_to(&self, pattern: &[u16], to: &mut UnicodeSet) {
+    fn string_add_match_set_to(&self, pattern: &[u16], to: &mut UnicodeSet, depth: u32) {
+        if depth >= MAX_NESTING {
+            return;
+        }
         let mut i = 0;
         while i < pattern.len() {
             let ch = utf16::code_point_at(pattern, i);
             match self.lookup_matcher(ch) {
                 None => to.add(ch as u32),
-                Some((_, m)) => self.var_add_match_set_to(m, to),
+                Some((_, m)) => self.var_add_match_set_to(m, to, depth + 1),
             }
             i += char_count(ch);
         }
@@ -622,7 +655,7 @@ impl Rule {
     /// `matchesIndexValue(v)`.
     fn matches_index_value(&self, data: &Data, v: i32) -> bool {
         match self.key.as_ref().or(self.post_context.as_ref()) {
-            Some(m) => data.string_matches_index_value(m, v),
+            Some(m) => data.string_matches_index_value(m, v, 0),
             None => true,
         }
     }
@@ -724,7 +757,7 @@ impl Rule {
                 }
                 Some((_, m)) => {
                     let mut temp = UnicodeSet::new();
-                    data.var_add_match_set_to(m, &mut temp);
+                    data.var_add_match_set_to(m, &mut temp, 0);
                     if !filter.contains_some(&temp) {
                         return;
                     }

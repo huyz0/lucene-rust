@@ -562,6 +562,8 @@ pub fn append_result(dest: &mut Vec<u16>, result: CaseResult, out: &[u16]) {
 }
 
 #[cfg(test)]
+// ARITH: (the whole module) test code building small inputs by hand.
+#[allow(clippy::arithmetic_side_effects)]
 mod tests {
     use super::*;
 
@@ -616,5 +618,154 @@ mod tests {
         append_result(&mut d, 0x1f600, &[]);
         assert_eq!(d, [0x41, 0x53, 0x53, 0xd83d, 0xde00]);
         assert!(UCaseProps::load(&[0; 30]).is_err());
+        // Too few indexes; a trie longer than its index says.
+        let h = usize::from(u16::from_be_bytes([DATA[0], DATA[1]]));
+        let mut b = DATA.to_vec();
+        b[h..h + 4].copy_from_slice(&5i32.to_be_bytes());
+        assert!(UCaseProps::load(&b).is_err());
+        let mut b = DATA.to_vec();
+        let at = h + 4 * IX_TRIE_SIZE;
+        b[at..at + 4].copy_from_slice(&8i32.to_be_bytes());
+        assert!(UCaseProps::load(&b).is_err());
+    }
+
+    /// The text around a code point: `before` (nearest last) and `after`.
+    struct Around<'a> {
+        before: &'a [i32],
+        after: &'a [i32],
+        dir: i32,
+        i: usize,
+    }
+
+    impl ContextIterator for Around<'_> {
+        fn reset(&mut self, dir: i32) {
+            self.dir = dir;
+            self.i = 0;
+        }
+        fn next_context(&mut self) -> i32 {
+            let side = if self.dir > 0 {
+                self.after
+            } else {
+                self.before
+            };
+            let c = side.get(self.i).copied().unwrap_or(-1);
+            self.i += 1;
+            c
+        }
+    }
+
+    fn around<'a>(before: &'a [i32], after: &'a [i32]) -> Around<'a> {
+        Around {
+            before,
+            after,
+            dir: 0,
+            i: 0,
+        }
+    }
+
+    /// SpecialCasing.txt's conditional mappings, per case locale.
+    #[test]
+    fn conditional_mappings() {
+        let p = instance();
+        let lower = |c: i32, before: &[i32], after: &[i32], loc: i32| {
+            let mut out = Vec::new();
+            let r = p.to_full_lower(c, &mut around(before, after), &mut out, loc);
+            let mut d = Vec::new();
+            append_result(&mut d, r, &out);
+            d
+        };
+        let upper = |c: i32, before: &[i32], after: &[i32], loc: i32| {
+            let mut out = Vec::new();
+            let r = p.to_full_upper(c, &mut around(before, after), &mut out, loc);
+            let mut d = Vec::new();
+            append_result(&mut d, r, &out);
+            d
+        };
+        // Lithuanian: keep the dot of i before more accents above.
+        assert_eq!(lower(0x49, &[], &[0x300], LOC_LITHUANIAN), [0x69, 0x307]);
+        assert_eq!(lower(0x49, &[], &[0x41], LOC_LITHUANIAN), [0x69]);
+        assert_eq!(
+            lower(0x49, &[], &[0x334, 0x301], LOC_LITHUANIAN),
+            [0x69, 0x307]
+        );
+        assert_eq!(lower(0x49, &[], &[], LOC_LITHUANIAN), [0x69]);
+        assert_eq!(lower(0x4a, &[], &[0x301], LOC_LITHUANIAN), [0x6a, 0x307]);
+        assert_eq!(lower(0x12e, &[], &[0x301], LOC_LITHUANIAN), [0x12f, 0x307]);
+        assert_eq!(lower(0xcc, &[], &[], LOC_LITHUANIAN), [0x69, 0x307, 0x300]);
+        assert_eq!(lower(0xcd, &[], &[], LOC_LITHUANIAN), [0x69, 0x307, 0x301]);
+        assert_eq!(lower(0x128, &[], &[], LOC_LITHUANIAN), [0x69, 0x307, 0x303]);
+        assert_eq!(
+            upper(0x307, &[0x69], &[], LOC_LITHUANIAN),
+            Vec::<u16>::new()
+        );
+        assert_eq!(
+            upper(0x307, &[0x334, 0x69], &[], LOC_LITHUANIAN),
+            Vec::<u16>::new()
+        );
+        assert_eq!(upper(0x307, &[0x61], &[], LOC_LITHUANIAN), [0x307]);
+        assert_eq!(upper(0x307, &[], &[], LOC_LITHUANIAN), [0x307]);
+        // Turkic: dotless and dotted i.
+        assert_eq!(lower(0x307, &[0x49], &[], LOC_TURKISH), Vec::<u16>::new());
+        assert_eq!(
+            lower(0x307, &[0x334, 0x49], &[], LOC_TURKISH),
+            Vec::<u16>::new()
+        );
+        assert_eq!(lower(0x307, &[0x41], &[], LOC_TURKISH), [0x307]);
+        assert_eq!(lower(0x307, &[], &[], LOC_TURKISH), [0x307]);
+        assert_eq!(lower(0x49, &[], &[0x41], LOC_TURKISH), [0x131]);
+        assert_eq!(lower(0x49, &[], &[0x334, 0x307], LOC_TURKISH), [0x69]);
+        assert_eq!(lower(0x49, &[], &[], LOC_TURKISH), [0x131]);
+        assert_eq!(lower(0x130, &[], &[], LOC_ROOT), [0x69, 0x307]);
+        // Final sigma: after a cased letter (skipping ignorables), not before one.
+        assert_eq!(lower(0x3a3, &[0x391], &[], LOC_ROOT), [0x3c2]);
+        assert_eq!(lower(0x3a3, &[0x27, 0x391], &[0x20], LOC_ROOT), [0x3c2]);
+        assert_eq!(lower(0x3a3, &[0x391], &[0x391], LOC_ROOT), [0x3c3]);
+        assert_eq!(lower(0x3a3, &[], &[], LOC_ROOT), [0x3c3]);
+        // Armenian ech-yiwn.
+        assert_eq!(upper(0x587, &[], &[], LOC_ARMENIAN), [0x535, 0x54e]);
+        assert_eq!(upper(0x587, &[], &[], LOC_ROOT), [0x535, 0x552]);
+        let mut out = Vec::new();
+        assert_eq!(
+            p.to_full_title(0x587, &mut NoContext, &mut out, LOC_ARMENIAN),
+            2
+        );
+        assert_eq!(out, [0x535, 0x57e]);
+        out.clear();
+        assert_eq!(
+            p.to_full_title(0x587, &mut NoContext, &mut out, LOC_ROOT),
+            2
+        );
+        assert_eq!(out, [0x535, 0x582]);
+        // Unconditional exceptions: full title of a ligature, simple ones.
+        out.clear();
+        assert_eq!(
+            p.to_full_title(0xfb01, &mut NoContext, &mut out, LOC_ROOT),
+            2
+        );
+        assert_eq!(out, [0x46, 0x69]);
+        assert_eq!(lower(0x1c5, &[], &[], LOC_ROOT), [0x1c6]);
+        assert_eq!(upper(0x1c5, &[], &[], LOC_ROOT), [0x1c4]);
+        assert_eq!(upper(0x1c4, &[], &[], LOC_ROOT), [0x1c4]);
+        assert_eq!(lower(0x212a, &[], &[], LOC_ROOT), [0x6b]);
+        assert_eq!(upper(0x3c2, &[], &[], LOC_ROOT), [0x3a3]);
+        assert_eq!(upper(0x1e9e, &[], &[], LOC_ROOT), [0x1e9e]);
+        let mut out = Vec::new();
+        assert_eq!(p.to_full_folding(0x3c2, &mut out, false), 0x3c3);
+        assert_eq!(p.to_full_folding(0x130, &mut out, true), 0x69);
+        assert_eq!(p.to_full_folding(0x49, &mut out, false), 0x69);
+        assert_eq!(p.to_full_folding(0x1e9e, &mut out, false), 2);
+        assert_eq!(p.to_full_folding(0x1c5, &mut Vec::new(), false), 0x1c6);
+        assert_eq!(p.to_full_folding(0x61, &mut Vec::new(), false), !0x61);
+        assert_eq!(p.to_full_folding(0x131, &mut Vec::new(), false), !0x131);
+        for c in [0x41, 0x307, 0x69, 0x334, 0x3a3, 0x1c5] {
+            let _ = p.get_type_or_ignorable(c);
+            let _ = p.is_case_sensitive(c);
+        }
+        assert!(p.is_case_sensitive(0x1c5));
+        for l in [
+            "en", "uk", "az", "aze", "el", "ell", "lt", "lit", "nl", "nld", "hy", "de",
+        ] {
+            assert!(case_locale(l) >= LOC_ROOT);
+        }
     }
 }
