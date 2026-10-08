@@ -16,8 +16,8 @@
 //! lookaround, an atomic group, a quantifier over anything but one-way
 //! nodes -- runs it as a nested [`Code::run`], whose entries it drops (a
 //! success) or has popped (a failure) before it goes on. That recursion is
-//! as deep as the pattern nests such constructs ([`Code::depth`]), which
-//! [`super::Program`] bounds before it matches on the caller's stack.
+//! as deep as the pattern nests such constructs, and [`Code::run`] measures
+//! it against the match's stack budget (see [`super`]'s module docs).
 //!
 //! Runs of nodes with one way to match and no side effects (characters,
 //! literals, backreferences, assertions, fixed repetitions of them) are one
@@ -242,6 +242,24 @@ pub(crate) struct Scratch {
 }
 
 impl Scratch {
+    /// How many bytes of stacks a matcher keeps between matches.
+    pub(crate) const KEEP: usize = 64 * 1024;
+
+    /// The bytes the stacks hold on to.
+    pub(crate) fn footprint(&self) -> usize {
+        self.stack.capacity() * std::mem::size_of::<Entry>()
+            + (self.regs.capacity() + self.positions.capacity()) * std::mem::size_of::<usize>()
+            + self.failed.capacity() * std::mem::size_of::<(usize, usize)>()
+    }
+
+    /// Gives back what a deep match grew the stacks to, past [`Self::KEEP`]
+    /// bytes, so a matcher does not hold its deepest match's stacks.
+    pub(crate) fn trim(&mut self) {
+        if self.footprint() > Self::KEEP {
+            *self = Scratch::default();
+        }
+    }
+
     pub(crate) fn clear(&mut self) {
         self.stack.clear();
         self.positions.clear();
@@ -256,8 +274,6 @@ impl Scratch {
 pub(crate) struct Code {
     insts: Vec<Inst>,
     regs: usize,
-    /// How deeply sub-programs nest (the native recursion of a match).
-    pub(crate) depth: usize,
     /// A capturing `GroupCurly` exists ([`Entry::OnSuccess`]).
     on_success: bool,
 }
@@ -266,6 +282,9 @@ pub(crate) struct Code {
 
 /// The one-way steps of `n`, when it is a run of one-way nodes.
 fn simple_ops(n: &Node, out: &mut Vec<SOp>) -> bool {
+    if super::too_deep() {
+        return false;
+    }
     match n {
         Node::Empty => true,
         Node::Char(cs) => {
@@ -381,8 +400,6 @@ fn simple(n: &Node) -> Option<Vec<SOp>> {
 struct Compiler {
     insts: Vec<Inst>,
     regs: usize,
-    depth: usize,
-    nesting: usize,
     on_success: bool,
 }
 
@@ -395,7 +412,6 @@ impl Code {
         Code {
             insts: c.insts,
             regs: c.regs,
-            depth: c.depth,
             on_success: c.on_success,
         }
     }
@@ -435,10 +451,7 @@ impl Compiler {
             return Atom::Simple(ops.into_boxed_slice());
         }
         let pc = self.insts.len();
-        self.nesting += 1;
-        self.depth = self.depth.max(self.nesting);
         self.node(n);
-        self.nesting -= 1;
         self.insts.push(Inst::End);
         Atom::Code(pc)
     }
@@ -499,6 +512,9 @@ impl Compiler {
     }
 
     fn node(&mut self, n: &Node) {
+        if super::too_deep() {
+            return;
+        }
         if let Some(ops) = simple(n) {
             self.simple(ops);
             return;
@@ -579,6 +595,7 @@ impl Compiler {
                 greed,
                 mode,
                 capture,
+                ..
             } => {
                 let at = self.placeholder();
                 let (min, max, greed) = (*min, *max, *greed);
@@ -741,9 +758,11 @@ fn backref_ci(s: usize, size: usize, unicode: bool, i: usize, st: &State<'_>) ->
     if i + size > len {
         return None;
     }
+    // Code points until the group's units are covered (a supplementary
+    // character is one step of two units).
     let (mut x, mut j) = (i, s);
-    for _ in 0..size {
-        if x >= len || j >= len {
+    while x < i + size {
+        if j >= len {
             return None;
         }
         let (c1, c2) = (st.cp(x), st.cp(j));
@@ -874,7 +893,8 @@ impl Code {
     /// Runs from `pc` at `i` to the first [`Inst::End`] reached (at
     /// `target`, when given): where it is, or `None`. A success keeps the
     /// captures it set (its entries are dropped, unpopped); a failure has
-    /// restored them.
+    /// restored them. The one recursion of a match: past the match's stack
+    /// budget, Java's `StackOverflowError` (and `st.exhausted`).
     pub(crate) fn run(
         &self,
         st: &mut State<'_>,
@@ -882,6 +902,10 @@ impl Code {
         i: usize,
         target: Option<usize>,
     ) -> Result<Option<usize>, AnalysisError> {
+        if super::stack_addr().abs_diff(st.stack_base) > st.stack_budget {
+            st.exhausted = true;
+            return Err(overflow());
+        }
         Ok(self.exec(st, pc, i, target, None)?.map(|(_, e)| e))
     }
 
@@ -1594,17 +1618,33 @@ impl Program {
         })
     }
 
-    /// Runs `f` here, or -- for a pattern whose sub-programs nest deeper
-    /// than the caller's stack is trusted with -- on a deep stack.
+    /// Runs `f` here within [`super::STACK_BUDGET`] or, when its nested
+    /// sub-programs outgrow that, again from the start on a deep stack. A
+    /// match starts with every group unset.
     fn on_stack<'t>(
         &self,
         st: &mut State<'t>,
         f: impl Fn(&Program, &mut State<'t>) -> Result<bool, AnalysisError> + Sync,
     ) -> Result<bool, AnalysisError> {
-        if self.code.depth <= super::SHALLOW_NESTING {
-            return f(self, st);
+        let r = Self::measured(st, super::STACK_BUDGET, |st| f(self, st));
+        if !st.exhausted {
+            return r;
         }
-        super::on_deep_stack(|| f(self, st)).unwrap_or_else(|| Err(overflow()))
+        st.groups.fill(-1);
+        super::on_deep_stack(|| Self::measured(st, super::DEEP_STACK_BUDGET, |st| f(self, st)))
+            .unwrap_or_else(|| Err(overflow()))
+    }
+
+    /// `f`, its nested sub-programs measured against `budget` from here.
+    fn measured<'t>(
+        st: &mut State<'t>,
+        budget: usize,
+        f: impl FnOnce(&mut State<'t>) -> Result<bool, AnalysisError>,
+    ) -> Result<bool, AnalysisError> {
+        st.stack_base = super::stack_addr();
+        st.stack_budget = budget;
+        st.exhausted = false;
+        f(st)
     }
 
     fn search_here(&self, from: usize, st: &mut State<'_>) -> Result<bool, AnalysisError> {

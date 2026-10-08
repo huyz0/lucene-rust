@@ -93,9 +93,9 @@ fn curated_patterns_match_java() {
     assert!(refused <= REFUSED.len() * 40, "{refused}");
 }
 
-/// Inputs deep enough that the match outgrows the caller's stack budget: an
-/// overflow inside a negated lookaround or a zero-count quantifier is
-/// retried, never read as a match.
+/// Inputs deep enough for thousands of backtracking entries, among them
+/// under a negated lookaround or a zero-count quantifier (where an attempt
+/// cut short must never read as a match).
 #[test]
 fn deep_inputs_match_java() {
     let (compared, refused) = check("deep.txt");
