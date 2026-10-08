@@ -185,6 +185,10 @@ a dependency the shipped library links is not under a licence listed here.
     redistributed. The fixture corpus `fixtures/corpus/analysis-icu.txt` is
     written for this project, apart from short public-domain quotations
     (Sōseki, the Analects, the Korean national anthem's first line).
+    `fixtures/data/analysis_icu_breaks/*.brk` are ICU's compiled character,
+    line, sentence and title rules, copied from the jar by
+    `GenAnalysisIcuBreaks.java` (Unicode License v3, as above): test data
+    only, never shipped.
 
 - **Test data from third parties** (M9). `fixtures/corpus/real_polygons.z`,
   the Tessellator's real-world polygon corpus (`scripts/gen-tessellator-corpus.py`),

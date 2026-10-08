@@ -1219,10 +1219,25 @@ outright.
   filtered, inverse and malformed specs (`tr_ids.tsv`: `getID()` and an
   FNV-1a digest per 50 outputs, or the exception class); full outputs of
   26 transliterators (`tr_full.tsv`) and their source sets
-  (`tr_sources.tsv`); 41 rule sets through `createFromRules` both ways over
+  (`tr_sources.tsv`); 168 rule sets (well-formed and malformed) through
+  `createFromRules` both ways over
   25 inputs (`tr_rules.tsv`); and 12 `ICUTransformFilter` chains over the
   corpus (`tr_lucene_*.tsv`). Read by
   `crates/lucene-analysis-icu/tests/icu_transform_fixtures.rs`.
+- `GenAnalysisIcuTries.java` — M12 T12.4: ICU4J's `BytesTrie`/`CharsTrie`
+  (`ICU_DEPS`, own classpath, `analysis_icu_tries/tries.txt`): 48 tries
+  built by ICU4J's builders over seeded keys (both build options, values of
+  every size, up to 66 KB so jump deltas take three bytes), each walked by
+  up to 100 keys, prefixes, extensions and 20 random strings unit by unit
+  (and by code point for `CharsTrie`): every step's result, the value and
+  `current()`. Read by `crates/lucene-analysis-icu/tests/icu_tries_fixtures.rs`.
+- `GenAnalysisIcuBreaks.java` — M12 T12.4: `RuleBasedBreakIterator` over
+  ICU's compiled `char`, `line`, `sent`, `title`, `line_loose_cj` and
+  `sent_el` rules (`ICU_DEPS`, own classpath, `analysis_icu_breaks/`: the
+  `.brk` files copied from the jar, `breaks.txt` -- the corpus, curated
+  sentence/Thai/Lao/Khmer/Myanmar/kana lines, 200 seeded strings -- and per
+  rule set every boundary with its rule status and status vector). Read by
+  `crates/lucene-analysis-icu/tests/icu_breaks_fixtures.rs`.
 - `GenAnalysisDateLocales.java` — M12 T12.7: `SimpleDateFormat`'s parse
   outside `Locale.ENGLISH`, for `DateRecognizerFilterFactory`'s `locale`:
   over the locales of `corpus/date-locales.txt` (the 886 whose record --

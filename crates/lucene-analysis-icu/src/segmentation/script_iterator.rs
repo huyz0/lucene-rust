@@ -188,5 +188,9 @@ mod tests {
         assert_eq!(char_at_absolute(&[0xd800, 0xdc00], 0, 1, 0), 0xd800);
         assert_eq!(char_at_absolute(&[0xd800, 0xdc00], 0, 2, 1), 0x10000);
         assert_eq!(char_at_absolute(&[0xd800, 0xdc00], 1, 2, 1), 0xdc00);
+        assert_eq!(char_at_absolute(&[0xd800, 0x41], 0, 2, 0), 0xd800);
+        assert_eq!(char_at_absolute(&[0xd800], 0, 5, 0), 0xd800);
+        assert_eq!(char_at_absolute(&[0x41, 0xdc00], 0, 2, 1), 0xdc00);
+        assert_eq!(char_at_absolute(&[0x41], 0, 1, 7), 0);
     }
 }

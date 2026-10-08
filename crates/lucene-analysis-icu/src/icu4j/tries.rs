@@ -712,3 +712,144 @@ impl<'a> CharsTrie<'a> {
         TrieResult::NoMatch
     }
 }
+
+#[cfg(test)]
+// ARITH: (the whole module) test code building small inputs by hand.
+#[allow(clippy::arithmetic_side_effects)]
+mod tests {
+    use super::*;
+
+    /// A six-way branch (split on `d`) whose jump and value deltas use the
+    /// long encodings a dictionary-sized trie never needs: `a` -> 65536,
+    /// `b` -> 5, `c` -> 0x102, `d` -> 1, `e` -> -2, `f` -> 2.
+    fn bytes_trie(five_byte_jump: bool, corrupt_jump: bool) -> Vec<u8> {
+        let mut b = vec![0x05, b'd'];
+        let jump_at = b.len();
+        if five_byte_jump {
+            b.extend([0xff, 0, 0, 0, 0]);
+        } else {
+            b.extend([0xfe, 0, 0, 0]);
+        }
+        let jump_end = b.len();
+        b.extend([b'd', 0x23, b'e', 0xfe]);
+        let e_at = b.len();
+        b.extend([0, 0, 0, 0, b'f', 0x25]);
+        let e_target = b.len();
+        b.extend([0xff, 0xff, 0xff, 0xff, 0xfe]);
+        let left = b.len();
+        b.extend([b'a', 0xfc]);
+        let a_at = b.len();
+        b.extend([0, 0, 0, b'b', 0xa3, 0x05, b'c', 0xd9, 0x01, 0x02]);
+        let a_target = b.len();
+        b.extend([0xfd, 0x01, 0x00, 0x00]);
+        let put = |b: &mut Vec<u8>, at: usize, v: i32, n: usize| {
+            let bytes = v.to_be_bytes();
+            b[at..at + n].copy_from_slice(&bytes[4 - n..]);
+        };
+        let jump = if corrupt_jump {
+            0x0100_0000
+        } else {
+            (left - jump_end) as i32
+        };
+        put(&mut b, jump_at + 1, jump, jump_end - jump_at - 1);
+        put(&mut b, e_at, (e_target - (e_at + 4)) as i32, 4);
+        put(&mut b, a_at, (a_target - (a_at + 3)) as i32, 3);
+        b
+    }
+
+    #[test]
+    fn bytes_trie_long_encodings() {
+        for five in [false, true] {
+            let data = bytes_trie(five, false);
+            let mut t = BytesTrie::new(&data, 0);
+            for (byte, value) in [
+                (b'a', 65536),
+                (b'b', 5),
+                (b'c', 0x102),
+                (b'd', 1),
+                (b'e', -2),
+                (b'f', 2),
+            ] {
+                assert_eq!(t.first(i32::from(byte)), TrieResult::FinalValue, "{byte}");
+                assert_eq!(t.get_value(), value, "{byte}");
+            }
+            assert_eq!(t.first(i32::from(b'g')), TrieResult::NoMatch);
+            assert_eq!(t.next(i32::from(b'a')), TrieResult::NoMatch);
+            assert_eq!(t.first(i32::from(b'0')), TrieResult::NoMatch);
+            // Java's signed bytes.
+            assert_eq!(t.first(i32::from(b'd') - 0x100), TrieResult::FinalValue);
+            assert_eq!(t.next(-1), TrieResult::NoMatch);
+        }
+        let data = bytes_trie(false, true);
+        let mut t = BytesTrie::new(&data, 0);
+        assert_eq!(t.first(i32::from(b'a')), TrieResult::NoMatch);
+        assert_eq!(t.current(), TrieResult::NoMatch);
+    }
+
+    /// The same shape in 16-bit units: three-unit jump and value deltas.
+    fn chars_trie(three_unit_jump: bool, corrupt_jump: bool) -> Vec<u16> {
+        let d = u16::from(b'd');
+        let mut c = vec![0x0005, d];
+        let jump_at = c.len();
+        if three_unit_jump {
+            c.extend([0xffff, 0, 0]);
+        } else {
+            c.extend([0xfc00, 0]);
+        }
+        let jump_end = c.len();
+        c.extend([d, 0x8001, d + 1, 0x7fff]);
+        let e_at = c.len();
+        c.extend([0, 0, d + 2, 0x8002]);
+        let e_target = c.len();
+        c.extend([0xffff, 0x0001, 0x0000]);
+        let left = c.len();
+        c.extend([u16::from(b'a'), 0x4000]);
+        let a_at = c.len();
+        c.extend([0, u16::from(b'b'), 0xc000, 0x0005, u16::from(b'c'), 0x8003]);
+        let a_target = c.len();
+        c.push(0x8007);
+        let jump = if corrupt_jump {
+            0x0100_0000u32
+        } else {
+            (left - jump_end) as u32
+        };
+        if three_unit_jump {
+            c[jump_at + 1] = (jump >> 16) as u16;
+            c[jump_at + 2] = jump as u16;
+        } else {
+            c[jump_at] = 0xfc00 | (jump >> 16) as u16;
+            c[jump_at + 1] = jump as u16;
+        }
+        let e = (e_target - (e_at + 2)) as u32;
+        c[e_at] = (e >> 16) as u16;
+        c[e_at + 1] = e as u16;
+        c[a_at] = (a_target - (a_at + 1)) as u16;
+        c
+    }
+
+    #[test]
+    fn chars_trie_long_encodings() {
+        for three in [false, true] {
+            let data = chars_trie(three, false);
+            let mut t = CharsTrie::new(&data, 0);
+            for (unit, value) in [
+                (b'a', 7),
+                (b'b', 5),
+                (b'c', 3),
+                (b'd', 1),
+                (b'e', 65536),
+                (b'f', 2),
+            ] {
+                assert_eq!(t.first(i32::from(unit)), TrieResult::FinalValue, "{unit}");
+                assert_eq!(t.get_value(), value, "{unit}");
+            }
+            assert_eq!(t.first(i32::from(b'g')), TrieResult::NoMatch);
+            assert_eq!(t.next(i32::from(b'a')), TrieResult::NoMatch);
+            assert_eq!(t.first(i32::from(b'0')), TrieResult::NoMatch);
+        }
+        let data = chars_trie(true, true);
+        let mut t = CharsTrie::new(&data, 0);
+        assert_eq!(t.first(i32::from(b'a')), TrieResult::NoMatch);
+        assert_eq!(t.current(), TrieResult::NoMatch);
+    }
+}

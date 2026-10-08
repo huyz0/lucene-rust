@@ -791,3 +791,124 @@ fn handle_break(text: &mut Vec<u16>, pos: &mut Position) -> Result<(), IcuError>
     pos.start = pos.limit;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tr(id: &str) -> Transliterator {
+        Transliterator::get_instance(id, FORWARD).unwrap()
+    }
+
+    #[test]
+    fn ranges_and_positions() {
+        let t = tr("Any-Upper");
+        assert_eq!(t.transliterate("abc").unwrap(), "ABC");
+        let mut text: Vec<u16> = "abcd".encode_utf16().collect();
+        assert_eq!(t.transliterate_range(&mut text, 1, 3).unwrap(), 3);
+        assert_eq!(String::from_utf16_lossy(&text), "aBCd");
+        assert_eq!(t.transliterate_range(&mut text, -1, 2).unwrap(), -1);
+        assert_eq!(t.transliterate_range(&mut text, 3, 2).unwrap(), -1);
+        assert_eq!(t.transliterate_range(&mut text, 0, 9).unwrap(), -1);
+        // Empty ranges leave the text alone.
+        for id in [
+            "NFD",
+            "Any-Lower",
+            "Any-Title",
+            "Any-CaseFold",
+            "Remove",
+            "Null",
+        ] {
+            let mut text: Vec<u16> = "Ab".encode_utf16().collect();
+            assert_eq!(tr(id).transliterate_range(&mut text, 1, 1).unwrap(), 1);
+            assert_eq!(text, "Ab".encode_utf16().collect::<Vec<_>>());
+        }
+        assert_eq!(char32_at(&[0x41], 5), 0xffff);
+        assert_eq!(char32_at(&[0xd801, 0xdc00], 1), 0x10400);
+        assert_eq!(char32_at(&[0xd801, 0x41], 0), 0xd801);
+        assert_eq!(char32_at(&[0x41, 0xdc00], 1), 0xdc00);
+        let mut v = vec![1, 2, 3];
+        copy_text(&mut v, 1, 1, 0);
+        assert_eq!(v, [1, 2, 3]);
+    }
+
+    #[test]
+    fn title_case_reads_the_context() {
+        // The context starts at the range (Java's `Position(start, limit,
+        // start)`), so the letter before it does not count (outputs from
+        // ICU4J 77.1).
+        let t = tr("Any-Title");
+        let mut text: Vec<u16> = "ab cd".encode_utf16().collect();
+        t.transliterate_range(&mut text, 1, 5).unwrap();
+        assert_eq!(String::from_utf16_lossy(&text), "aB Cd");
+        let mut text: Vec<u16> = "a'b".encode_utf16().collect();
+        t.transliterate_range(&mut text, 2, 3).unwrap();
+        assert_eq!(String::from_utf16_lossy(&text), "a'B");
+        // Within a range, a letter or an ignorable before the cursor does.
+        let mut pos = Position {
+            context_start: 0,
+            context_limit: 3,
+            start: 2,
+            limit: 3,
+        };
+        let mut text: Vec<u16> = "a'b".encode_utf16().collect();
+        t.filtered_transliterate(&mut text, &mut pos).unwrap();
+        assert_eq!(String::from_utf16_lossy(&text), "a'b");
+        let mut pos = Position {
+            context_start: 0,
+            context_limit: 3,
+            start: 2,
+            limit: 3,
+        };
+        let mut text: Vec<u16> = ". b".encode_utf16().collect();
+        t.filtered_transliterate(&mut text, &mut pos).unwrap();
+        assert_eq!(String::from_utf16_lossy(&text), ". B");
+        let mut text: Vec<u16> = " b".encode_utf16().collect();
+        t.transliterate_range(&mut text, 1, 2).unwrap();
+        assert_eq!(String::from_utf16_lossy(&text), " B");
+        assert_eq!(tr("Any-Lower").transliterate("ΟΔΟΣ Σ").unwrap(), "οδος σ");
+    }
+
+    #[test]
+    fn compound_and_any_paths() {
+        // A pass that cannot finish inside a compound.
+        let t = Transliterator::create_from_rules("T", "::Null; b* > Y;", FORWARD).unwrap();
+        assert!(t.transliterate("abc").is_err());
+        let empty = Transliterator::new("E", Kind::Compound(Arc::new(Vec::new())));
+        assert_eq!(empty.transliterate("ab").unwrap(), "ab");
+        // Any- dispatch over runs after the start of the context.
+        let t = tr("[^a] Any-Latin");
+        assert_eq!(t.transliterate("aaМосква").unwrap(), "aaMoskva");
+        let t = tr("Any-Latin");
+        let mut text: Vec<u16> = "Мос ква".encode_utf16().collect();
+        t.transliterate_range(&mut text, 4, 7).unwrap();
+        assert_eq!(String::from_utf16_lossy(&text), "Мос kva");
+        assert_eq!(tr("Any-Hangul").transliterate("한 a").unwrap(), "한 아");
+        assert!(Transliterator::get_instance("Any-Han", FORWARD).is_err());
+    }
+
+    #[test]
+    fn source_sets_and_inverses() {
+        let t = tr("[a-c] Remove");
+        let set = t.source_set().unwrap();
+        assert!(set.contains(0x61) && !set.contains(0x64));
+        assert!(tr("Null").source_set().unwrap().is_empty());
+        assert!(tr("Any-Latin").source_set().is_ok());
+        assert!(tr("NFD; Lower").source_set().is_err());
+        let t = Transliterator::create_from_rules("T", "a > b;", FORWARD).unwrap();
+        assert!(t.source_set().unwrap().contains(0x61));
+        assert_eq!(
+            tr("Latin-Cyrillic").inverse().unwrap().id(),
+            "Cyrillic-Latin"
+        );
+        assert_eq!(tr("Any-Upper").inverse().unwrap().id(), "Any-Lower");
+        let mut t = tr("Any-Upper");
+        assert!(t.filter().is_none());
+        t.set_filter(Some(UnicodeSet::from_pattern("[a]").unwrap()));
+        assert_eq!(t.transliterate("ab").unwrap(), "Ab");
+        assert!(!t.is_rule_based());
+        assert!(Transliterator::create_from_rules("T", "a > b;", FORWARD)
+            .unwrap()
+            .is_rule_based());
+    }
+}

@@ -605,6 +605,8 @@ pub fn is_installed(locale_id: &str) -> bool {
 }
 
 #[cfg(test)]
+// ARITH: (the whole module) test code building small inputs by hand.
+#[allow(clippy::arithmetic_side_effects)]
 mod tests {
     use super::*;
 
@@ -653,6 +655,184 @@ mod tests {
             Some("sr")
         );
         assert_eq!(parent_locale_id("sr", "sr"), None);
+    }
+
+    /// A small bundle in ICU's `.res` layout (format version `major`):
+    /// root table `{a: "hi", bb: {a: "xyz", bb: "long"}, ccc: {a: "old",
+    /// ccc: "vl"}, zz: <01 02 03>}` with the root a 16-bit-key `TABLE`, `bb`
+    /// a `TABLE16`, `ccc` a `TABLE32`, strings of every encoding.
+    fn synthetic(big_endian: bool, major: u8, no_fallback: bool) -> &'static [u8] {
+        let mut h = vec![0u8; 32];
+        h[0..2].copy_from_slice(&if big_endian {
+            32u16.to_be_bytes()
+        } else {
+            32u16.to_le_bytes()
+        });
+        h[2] = 0xda;
+        h[3] = 0x27;
+        h[4..6].copy_from_slice(&if big_endian {
+            20u16.to_be_bytes()
+        } else {
+            20u16.to_le_bytes()
+        });
+        h[8] = u8::from(big_endian);
+        h[10] = 2;
+        h[12..16].copy_from_slice(b"ResB");
+        h[16] = major;
+        h[17] = 1;
+        let w32 = |v: u32| {
+            if big_endian {
+                v.to_be_bytes()
+            } else {
+                v.to_le_bytes()
+            }
+        };
+        let w16 = |v: u16| {
+            if big_endian {
+                v.to_be_bytes()
+            } else {
+                v.to_le_bytes()
+            }
+        };
+        // Keys at bytes 32.. of the data: "a" 32, "bb" 34, "ccc" 37, "zz" 41.
+        let keys = b"a\0bb\0ccc\0zz\0";
+        let keys_top = 11u32;
+        // 16-bit units.
+        let mut u: Vec<u16> = vec![0];
+        let table16 = u.len() as u32; // 1
+        u.extend([2, 32, 34, 0, 0]); // values patched below
+        let hi = u.len() as u16; // implicit length
+        u.extend([0x68, 0x69, 0]);
+        let xyz = u.len() as u16; // explicit short length
+        u.extend([0xdc03, 0x78, 0x79, 0x7a, 0]);
+        let long = u.len() as u16; // two-unit length
+        u.extend([0xdfef, 4, 0x6c, 0x6f, 0x6e, 0x67, 0]);
+        let vl = u.len() as u16; // three-unit length
+        u.extend([0xdfff, 0, 2, 0x76, 0x6c, 0]);
+        u[4] = xyz;
+        u[5] = long;
+        if u.len() % 2 == 1 {
+            u.push(0);
+        }
+        let top16 = keys_top + (u.len() / 2) as u32;
+        // 32-bit resources from word top16.
+        let mut words: Vec<[u8; 4]> = Vec::new();
+        let table = top16; // TABLE, 4 entries: size, 4 keys, pad -> 3 words, then 4 items
+        let table32 = table + 3 + 4;
+        let old = table32 + 1 + 2 + 2;
+        let binary = old + 1 + 2;
+        let r_string_v2 = |o: u16| (6u32 << 28) | u32::from(o);
+        // TABLE
+        let mut t = Vec::new();
+        t.extend(w16(4));
+        for k in [32u16, 34, 37, 41] {
+            t.extend(w16(k));
+        }
+        t.extend([0, 0]);
+        for c in t.chunks(4) {
+            words.push([c[0], c[1], c[2], c[3]]);
+        }
+        words.push(w32(r_string_v2(hi)));
+        words.push(w32((5 << 28) | table16));
+        words.push(w32((4 << 28) | table32));
+        words.push(w32((1 << 28) | binary));
+        // TABLE32 {a: "old", ccc: "vl"}
+        words.push(w32(2));
+        words.push(w32(32));
+        words.push(w32(37));
+        words.push(w32(old));
+        words.push(w32(r_string_v2(vl)));
+        // STRING "old"
+        words.push(w32(3));
+        let mut o = Vec::new();
+        for c in [0x6fu16, 0x6c, 0x64, 0] {
+            o.extend(w16(c));
+        }
+        words.push([o[0], o[1], o[2], o[3]]);
+        words.push([o[4], o[5], o[6], o[7]]);
+        // BINARY 01 02 03
+        words.push(w32(3));
+        words.push([1, 2, 3, 0]);
+        let bundle_top = top16 + words.len() as u32;
+        let mut data = Vec::new();
+        data.extend(w32((2 << 28) | table));
+        let attributes = u32::from(no_fallback);
+        for v in [7u32, keys_top, bundle_top, bundle_top, 4, attributes, top16] {
+            data.extend(w32(v));
+        }
+        data.extend(keys);
+        assert_eq!(data.len(), 44);
+        for c in &u {
+            data.extend(w16(*c));
+        }
+        for w in &words {
+            data.extend(w);
+        }
+        h.extend(data);
+        Box::leak(h.into_boxed_slice())
+    }
+
+    #[test]
+    fn reads_every_table_and_string_layout() {
+        for (big, major) in [(true, 2), (false, 2), (true, 3), (false, 1)] {
+            for no_fallback in [false, true] {
+                let r = ResReader::new(synthetic(big, major, no_fallback)).unwrap();
+                assert_eq!(r.no_fallback(), no_fallback);
+                let root = r.root();
+                assert!(ResReader::is_table(root));
+                let a = r.table_get(root, "a").unwrap();
+                assert_eq!(r.string(a).as_deref(), Some("hi"));
+                let bb = r.table_get(root, "bb").unwrap();
+                assert!(ResReader::is_table(bb));
+                assert_eq!(
+                    r.string(r.table_get(bb, "a").unwrap()).as_deref(),
+                    Some("xyz")
+                );
+                assert_eq!(
+                    r.string(r.table_get(bb, "bb").unwrap()).as_deref(),
+                    Some("long")
+                );
+                let ccc = r.table_get(root, "ccc").unwrap();
+                assert_eq!(
+                    r.string(r.table_get(ccc, "a").unwrap()).as_deref(),
+                    Some("old")
+                );
+                assert_eq!(
+                    r.string(r.table_get(ccc, "ccc").unwrap()).as_deref(),
+                    Some("vl")
+                );
+                let zz = r.table_get(root, "zz").unwrap();
+                assert_eq!(r.binary(zz), Some(&[1u8, 2, 3][..]));
+                assert_eq!(r.binary(a), None);
+                assert_eq!(r.string(zz), None);
+                for missing in ["", "b", "c", "zzz", "\u{7f}"] {
+                    assert!(r.table_get(root, missing).is_none());
+                    assert!(r.table_get(bb, missing).is_none());
+                    assert!(r.table_get(ccc, missing).is_none());
+                }
+                assert!(r.table_get(a, "a").is_none());
+                let keys: Vec<String> = r.table_entries(root).into_iter().map(|(k, _)| k).collect();
+                assert_eq!(keys, ["a", "bb", "ccc", "zz"]);
+                assert_eq!(r.table_entries(bb).len(), 2);
+                assert_eq!(r.table_entries(ccc).len(), 2);
+                assert!(r.table_entries(a).is_empty());
+                assert!(r.table_entries(2 << 28).is_empty());
+                assert!(r.table_get(2 << 28, "a").is_none());
+                assert_eq!(r.string(0).as_deref(), Some(""));
+                assert_eq!(r.binary(1 << 28), Some(&[][..]));
+            }
+        }
+        // Too few indexes, a bundle longer than the data, pool bundles.
+        let mut b = synthetic(true, 2, false).to_vec();
+        b[32 + 7] = 4;
+        assert!(ResReader::new(Box::leak(b.into_boxed_slice())).is_err());
+        let mut b = synthetic(true, 2, false).to_vec();
+        b[32 + 16] = 0xff;
+        assert!(ResReader::new(Box::leak(b.into_boxed_slice())).is_err());
+        let mut b = synthetic(true, 2, false).to_vec();
+        b[32 + 27] = 2;
+        assert!(ResReader::new(Box::leak(b.into_boxed_slice())).is_err());
+        assert!(ResReader::new(&synthetic(true, 2, false)[..40]).is_err());
     }
 
     #[test]

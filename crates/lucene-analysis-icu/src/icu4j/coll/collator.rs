@@ -44,16 +44,35 @@ fn illegal(msg: impl Into<String>) -> IcuError {
     IcuError::with_kind(IcuErrorKind::IllegalArgument, msg)
 }
 
+/// What `CollationRoot` throws without its data.
+fn missing_root_data() -> IcuError {
+    IcuError::with_kind(
+        IcuErrorKind::MissingResource,
+        "IOException while reading CLDR root data",
+    )
+}
+
+/// What `CollationLoader` throws for a type without `%%CollationBin`.
+fn missing_collation_bin(actual_locale: &str) -> IcuError {
+    IcuError::with_kind(
+        IcuErrorKind::MissingResource,
+        format!("Can't find resource for bundle {actual_locale}, key %%CollationBin"),
+    )
+}
+
+/// What `CollationLoader` throws for tailoring data it cannot read.
+fn tailoring_load_error(actual_locale: &str, ty: &str, e: &IcuError) -> IcuError {
+    IcuError::new(format!(
+        "Failed to load collation tailoring data for locale:{actual_locale} type:{ty}: {}",
+        e.message()
+    ))
+}
+
 /// `CollationRoot.getRoot()`.
 fn root() -> Result<Arc<CollationTailoring>, IcuError> {
     static ROOT: OnceLock<Result<Arc<CollationTailoring>, IcuError>> = OnceLock::new();
     ROOT.get_or_init(|| {
-        let bytes = pack_file("ucadata.icu").ok_or_else(|| {
-            IcuError::with_kind(
-                IcuErrorKind::MissingResource,
-                "IOException while reading CLDR root data",
-            )
-        })?;
+        let bytes = pack_file("ucadata.icu").ok_or_else(missing_root_data)?;
         data::read(None, bytes).map(Arc::new)
     })
     .clone()
@@ -132,20 +151,9 @@ fn load_tailoring(locale: &Locale) -> Result<(Arc<CollationTailoring>, String), 
             let binary = reader
                 .table_get(data_res, "%%CollationBin")
                 .and_then(|r| reader.binary(r))
-                .ok_or_else(|| {
-                    IcuError::with_kind(
-                        IcuErrorKind::MissingResource,
-                        format!(
-                            "Can't find resource for bundle {actual_locale}, key %%CollationBin"
-                        ),
-                    )
-                })?;
-            let mut t = data::read(Some(&root), binary).map_err(|e| {
-                IcuError::new(format!(
-                    "Failed to load collation tailoring data for locale:{actual_locale} type:{ty}: {}",
-                    e.message()
-                ))
-            })?;
+                .ok_or_else(|| missing_collation_bin(&actual_locale))?;
+            let mut t = data::read(Some(&root), binary)
+                .map_err(|e| tailoring_load_error(&actual_locale, &ty, &e))?;
             t.actual_locale.clone_from(&actual_locale);
             tailoring_cache()
                 .lock()
@@ -536,4 +544,111 @@ fn reorder_code(keyword: &str, s: &str) -> Result<i32, IcuError> {
         &["space", "punct", "symbol", "currency", "digit"],
     )?;
     Ok(REORDER_CODE_FIRST | i)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::icu4j::coll::data::{REORDER_CODE_DEFAULT, REORDER_CODE_FIRST, REORDER_CODE_NONE};
+
+    #[test]
+    fn loader_errors() {
+        assert_eq!(missing_root_data().kind(), IcuErrorKind::MissingResource);
+        assert!(missing_collation_bin("de").message().contains("bundle de"));
+        let e = tailoring_load_error("de", "phonebook", &IcuError::new("x"));
+        assert!(e.message().ends_with("type:phonebook: x"));
+    }
+
+    #[test]
+    fn instances_and_fallback() {
+        for id in [
+            "",
+            "root",
+            "zh__PINYIN",
+            "xx_YY",
+            "de__X",
+            "en_US_POSIX",
+            "sr_Latn_RS",
+        ] {
+            let c = Collator::get_instance(id).unwrap();
+            assert!(!c.raw_collation_key("abc").is_empty(), "{id}");
+        }
+        assert_eq!(
+            Collator::get_instance("de__X").unwrap().valid_locale(),
+            "de"
+        );
+        assert!(Collator::from_rules("&a < b").is_err());
+        // Collation types that fall back: `search*` to `search`, unknown
+        // ones to the bundle's default, then `standard`.
+        for id in [
+            "en@collation=searchjl",
+            "de@collation=searchfoo",
+            "de@collation=bogus",
+            "ja@collation=bogus",
+            "zh_Hant@collation=stroke",
+            "sr_ME@collation=search",
+            "yue@collation=pinyin",
+            "fil@collation=search",
+        ] {
+            let c = Collator::get_instance(id).unwrap();
+            assert!(!c.raw_collation_key("ab").is_empty(), "{id}");
+            let _ = (c.valid_locale(), c.actual_locale());
+        }
+        // Keyword values Java refuses.
+        for id in [
+            "en@colStrength=bogus",
+            "en@colBackwards=maybe",
+            "en@colCaseFirst=sideways",
+            "en@colReorder=Zzzzz",
+            "en@colReorder=Nope",
+            "en@kv=bogus",
+            "en@colReorder=Latn-Latn",
+            "en@colReorder=Abcd",
+            "en@colReorder=others",
+        ] {
+            assert!(Collator::get_instance(id).is_err(), "{id}");
+        }
+        let too_many = vec!["Latn"; 214].join("-");
+        assert!(Collator::get_instance(&format!("en@colReorder={too_many}")).is_err());
+        for id in [
+            "en@colCaseFirst=no",
+            "en@colCaseFirst=lower",
+            "en@colNormalization=no",
+            "en@colStrength=identical",
+            "en@colReorder=space-digit",
+        ] {
+            assert!(Collator::get_instance(id).is_ok(), "{id}");
+        }
+    }
+
+    #[test]
+    // Every outcome as ICU4J 77.1 `setReorderCodes` decides it.
+    fn reorder_codes_java_refuses() {
+        let mut c = Collator::root().unwrap();
+        let unknown = REORDER_CODE_NONE;
+        for codes in [
+            vec![unknown, 25, unknown],
+            vec![unknown, 25, REORDER_CODE_DEFAULT],
+            vec![25, REORDER_CODE_DEFAULT],
+            vec![25, 25],
+            vec![unknown, 25, 25],
+            vec![REORDER_CODE_FIRST + 1, REORDER_CODE_FIRST + 1],
+        ] {
+            assert!(c.set_reorder_codes(&codes).is_err(), "{codes:?}");
+        }
+        for codes in [
+            vec![],
+            vec![REORDER_CODE_DEFAULT],
+            vec![unknown],
+            vec![unknown, 25, 17],
+            vec![25, 0x7fff, -5],
+            vec![REORDER_CODE_FIRST + 7, 25],
+        ] {
+            assert!(c.set_reorder_codes(&codes).is_ok(), "{codes:?}");
+            assert!(!c.raw_collation_key("aα").is_empty());
+        }
+        assert!(c.set_max_variable(REORDER_CODE_FIRST + 9).is_err());
+        assert!(c.set_strength(9).is_err());
+        assert!(c.set_decomposition(3).is_err());
+    }
 }

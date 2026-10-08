@@ -82,3 +82,59 @@ fn flipped_nrm_bytes_never_panic() {
         assert!(loaded > 300, "{loaded}");
     }
 }
+
+/// Each word of a compiled break-rule file's data header rewritten, and
+/// truncations: every file either fails to load or iterates a text.
+#[test]
+fn rewritten_brk_headers_never_panic() {
+    use lucene_analysis_icu::icu4j::rbbi::{RuleBasedBreakIterator, DONE};
+    let files: [&[u8]; 3] = [
+        include_bytes!("../src/resources/word.brk"),
+        include_bytes!("../src/resources/Default.brk"),
+        include_bytes!("../src/resources/MyanmarSyllable.brk"),
+    ];
+    let text: Vec<u16> = "Hello, wörld! ภาษาไทย 日本語 123".encode_utf16().collect();
+    let run = |b: &[u8]| -> bool {
+        let Ok(mut bi) = RuleBasedBreakIterator::from_compiled_rules(b) else {
+            return false;
+        };
+        bi.set_text(&text);
+        let mut n = 0;
+        let mut p = bi.first();
+        while p != DONE && n < 1000 {
+            let _ = bi.get_rule_status_vec();
+            p = bi.next();
+            n += 1;
+        }
+        true
+    };
+    for data in files {
+        assert!(run(data));
+        let h = usize::from(u16::from_be_bytes([data[0], data[1]]));
+        let mut refused = 0;
+        for word in 0..16 {
+            let at = h + 4 * word;
+            let v = i32::from_be_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]]);
+            for nv in [
+                0,
+                1,
+                19,
+                20,
+                -4,
+                v - 4,
+                v + 4,
+                v + 400,
+                i32::MAX,
+                data.len() as i32,
+            ] {
+                let mut b = data.to_vec();
+                b[at..at + 4].copy_from_slice(&nv.to_be_bytes());
+                refused += usize::from(!run(&b));
+            }
+        }
+        assert!(refused > 40, "{refused}");
+        for len in (0..data.len()).step_by(997) {
+            run(&data[..len]);
+        }
+    }
+}
