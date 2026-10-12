@@ -23,7 +23,7 @@ use lucene_analysis::{
     TokenStreamComponents,
 };
 
-use crate::icu4j::coll::collator::Collator;
+use crate::icu4j::coll::collator::{Collator, KeyScratch};
 
 /// `ICUCollationAttributeFactory`.
 #[derive(Debug, Clone)]
@@ -50,6 +50,8 @@ impl ICUCollationAttributeFactory {
         ICUCollatedTermFilter {
             input,
             collator: self.collator.clone(),
+            scratch: KeyScratch::default(),
+            term: String::new(),
         }
     }
 }
@@ -59,6 +61,8 @@ impl ICUCollationAttributeFactory {
 pub struct ICUCollatedTermFilter<I> {
     input: I,
     collator: Arc<Collator>,
+    scratch: KeyScratch,
+    term: String,
 }
 
 impl<I: TokenStream> TokenFilter for ICUCollatedTermFilter<I> {
@@ -77,8 +81,12 @@ impl<I: TokenStream> TokenFilter for ICUCollatedTermFilter<I> {
             return Ok(false);
         }
         let atts = self.input.attributes_mut();
-        let key = self.collator.raw_collation_key(atts.term());
-        atts.set_bytes_term(Some(key));
+        // The key replaces the previous token's bytes in place.
+        self.term.clear();
+        self.term.push_str(atts.term());
+        let key = atts.bytes_term_mut();
+        self.collator
+            .raw_collation_key_into(&self.term, &mut self.scratch, key);
         Ok(true)
     }
 }

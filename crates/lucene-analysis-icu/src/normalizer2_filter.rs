@@ -68,7 +68,7 @@ impl<I: TokenStream> TokenFilter for ICUNormalizer2Filter<I> {
             }
         }
         self.units.clear();
-        self.units.extend(atts.term().encode_utf16());
+        crate::icu4j::utf16::extend_from_str(&mut self.units, atts.term());
         // Java runs `quickCheck` and, unless it is `YES`, `normalize`. A
         // string the quick check passes normalizes to itself, so one
         // `normalize` (which spans the quick-check-yes prefix itself) and a

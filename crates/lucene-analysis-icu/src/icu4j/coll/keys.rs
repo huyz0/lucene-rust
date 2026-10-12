@@ -59,10 +59,9 @@ fn level_mask(strength: i32) -> i32 {
 
 /// `SortKeyLevel`: one level's bytes. Java's `(byte)` casts keep the low
 /// byte of an `int`.
-#[derive(Debug, Default)]
-struct Level(Vec<u8>);
+struct Level<'b>(&'b mut Vec<u8>);
 
-impl Level {
+impl Level<'_> {
     #[inline]
     fn append_byte(&mut self, b: i32) {
         self.0.push(b as u8);
@@ -116,9 +115,10 @@ impl Level {
 #[allow(clippy::arithmetic_side_effects)]
 pub fn write_sort_key_up_to_quaternary(
     iter: &mut CollationIterator<'_>,
-    data_compressible: &dyn Fn(usize) -> bool,
+    data_compressible: impl Fn(usize) -> bool,
     settings: &CollationSettings,
     sink: &mut Vec<u8>,
+    level_buffers: &mut [Vec<u8>; 4],
 ) {
     let options = settings.options;
     let mut levels = level_mask(CollationSettings::strength_of(options));
@@ -136,10 +136,20 @@ pub fn write_sort_key_up_to_quaternary(
         settings.variable_top + 1
     };
     let tertiary_mask = CollationSettings::tertiary_mask(options);
-    let mut cases = Level::default();
-    let mut secondaries = Level::default();
-    let mut tertiaries = Level::default();
-    let mut quaternaries = Level::default();
+    // Java's `SortKeyLevel`s, over buffers the caller reuses.
+    let [b_cases, b_secondaries, b_tertiaries, b_quaternaries] = level_buffers;
+    for b in [
+        &mut *b_cases,
+        &mut *b_secondaries,
+        &mut *b_tertiaries,
+        &mut *b_quaternaries,
+    ] {
+        b.clear();
+    }
+    let mut cases = Level(b_cases);
+    let mut secondaries = Level(b_secondaries);
+    let mut tertiaries = Level(b_tertiaries);
+    let mut quaternaries = Level(b_quaternaries);
     let mut prev_reordered_primary: i64 = 0;
     let mut common_cases = 0;
     let mut common_secondaries = 0;
@@ -626,7 +636,8 @@ mod tests {
 
     #[test]
     fn levels() {
-        let mut l = Level::default();
+        let mut buf = Vec::new();
+        let mut l = Level(&mut buf);
         l.append_weight16(0x0500);
         l.append_weight16(0x1234);
         l.append_reverse_weight16(0x0600);
@@ -637,7 +648,7 @@ mod tests {
         l.append_weight32(0x1234_5678);
         l.append_byte(1);
         assert_eq!(
-            l.0,
+            *l.0,
             vec![
                 5, 0x12, 0x34, 6, 0x34, 0x12, 0x12, 0x12, 0x34, 0x12, 0x34, 0x56, 0x12, 0x34, 0x56,
                 0x78, 1

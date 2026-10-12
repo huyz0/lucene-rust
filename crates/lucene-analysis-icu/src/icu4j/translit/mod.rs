@@ -135,11 +135,46 @@ pub enum Kind {
     Break,
 }
 
+/// A transliterator's filter: the set, and a bitmap of its BMP code points
+/// (the per-character test `filteredTransliterate` makes, without a binary
+/// search over the set's ranges).
+#[derive(Debug)]
+struct Filter {
+    set: UnicodeSet,
+    bmp: Box<[u64]>,
+}
+
+impl Filter {
+    fn new(set: UnicodeSet) -> Filter {
+        // ALLOC: a fixed 8 KB bitmap, one bit per BMP code point.
+        let mut bmp = vec![0u64; 0x10000 / 64].into_boxed_slice();
+        for &(start, end) in set.ranges() {
+            if start > 0xffff {
+                break;
+            }
+            for c in start..=end.min(0xffff) {
+                if let Some(w) = bmp.get_mut((c >> 6) as usize) {
+                    *w |= 1 << (c & 63);
+                }
+            }
+        }
+        Filter { set, bmp }
+    }
+
+    #[inline]
+    fn contains(&self, c: i32) -> bool {
+        match usize::try_from(c) {
+            Ok(u) if u < 0x10000 => self.bmp.get(u >> 6).is_some_and(|w| w >> (u & 63) & 1 != 0),
+            _ => self.set.contains(c),
+        }
+    }
+}
+
 /// `Transliterator`.
 #[derive(Debug, Clone)]
 pub struct Transliterator {
     id: String,
-    filter: Option<Arc<UnicodeSet>>,
+    filter: Option<Arc<Filter>>,
     kind: Kind,
 }
 
@@ -175,12 +210,12 @@ impl Transliterator {
 
     /// `getFilter()`.
     pub fn filter(&self) -> Option<&UnicodeSet> {
-        self.filter.as_deref()
+        self.filter.as_deref().map(|f| &f.set)
     }
 
     /// `setFilter(filter)`.
     pub fn set_filter(&mut self, filter: Option<UnicodeSet>) {
-        self.filter = filter.map(Arc::new);
+        self.filter = filter.map(|set| Arc::new(Filter::new(set)));
     }
 
     /// Whether this is a single rule-based transliterator (Java's
@@ -408,7 +443,7 @@ impl Transliterator {
             None => external.clone(),
             Some(f) => {
                 let mut s = external.clone();
-                s.retain_all(f);
+                s.retain_all(&f.set);
                 s
             }
         }

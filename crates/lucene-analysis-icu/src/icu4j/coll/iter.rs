@@ -168,6 +168,14 @@ pub struct CollationIterator<'a> {
     is_numeric: bool,
 }
 
+/// A [`CollationIterator`]'s growable buffers (its CE buffer and the FCD
+/// iterator's normalized segment), kept between iterators.
+#[derive(Debug, Default)]
+pub struct IterBuffers {
+    ces: Vec<i64>,
+    normalized: Vec<u16>,
+}
+
 // ARITH: (the whole impl) positions stay within [start, limit] of the
 // current sequence (each step checks the bound first), the CE index within
 // the CE buffer, and the code point counters within the text's length --
@@ -177,13 +185,32 @@ impl<'a> CollationIterator<'a> {
     /// `new UTF16CollationIterator(d, numeric, s, 0)` (`fcd == false`) or
     /// `new FCDUTF16CollationIterator(d, numeric, s, 0)`.
     pub fn new(data: &'a CollationData, numeric: bool, text: &'a [u16], fcd: bool) -> Self {
+        Self::with_buffers(data, numeric, text, fcd, IterBuffers::default())
+    }
+
+    /// [`new`](Self::new) over buffers a previous iterator left
+    /// ([`into_buffers`](Self::into_buffers)), so that a caller keying
+    /// many strings allocates them once.
+    pub fn with_buffers(
+        data: &'a CollationData,
+        numeric: bool,
+        text: &'a [u16],
+        fcd: bool,
+        buffers: IterBuffers,
+    ) -> Self {
+        let IterBuffers {
+            mut ces,
+            mut normalized,
+        } = buffers;
+        ces.clear();
+        normalized.clear();
         let source = if fcd {
             Source::Fcd {
                 raw: true,
                 segment_start: 0,
                 segment_limit: 0,
                 raw_limit: text.len(),
-                normalized: Vec::new(),
+                normalized,
                 check_dir: 1,
             }
         } else {
@@ -196,11 +223,23 @@ impl<'a> CollationIterator<'a> {
             start: 0,
             pos: 0,
             limit: text.len(),
-            ce_buffer: Vec::with_capacity(40),
+            ce_buffer: ces,
             ces_index: 0,
             skipped: None,
             num_cp_fwd: -1,
             is_numeric: numeric,
+        }
+    }
+
+    /// The iterator's buffers, for the next one.
+    pub fn into_buffers(self) -> IterBuffers {
+        let normalized = match self.source {
+            Source::Fcd { normalized, .. } => normalized,
+            Source::Utf16 => Vec::new(),
+        };
+        IterBuffers {
+            ces: self.ce_buffer,
+            normalized,
         }
     }
 
@@ -227,12 +266,37 @@ impl<'a> CollationIterator<'a> {
     }
 
     /// `nextCE()`.
+    #[inline]
     pub fn next_ce(&mut self) -> i64 {
         if self.ces_index < self.ce_buffer.len() {
             let ce = self.ce_buffer[self.ces_index];
             self.ces_index += 1;
             return ce;
         }
+        // The common case inline (Java's `handleNextCE32` and
+        // `ceFromSimpleCE32`): forward over the raw text, a unit that
+        // starts no FCD segment, with a simple CE32.
+        if self.pos < self.limit {
+            if let Some(&u) = self.text.get(self.pos) {
+                let fast = match self.source {
+                    Source::Utf16 => true,
+                    Source::Fcd { check_dir, .. } => check_dir > 0 && u < 0xc0,
+                };
+                if fast {
+                    let ce32 = self.data.trie.get_from_u16_single_lead(u);
+                    if ce32 & 0xff < c::SPECIAL_CE32_LOW_BYTE {
+                        self.pos += 1;
+                        return c::ce_from_simple_ce32(ce32);
+                    }
+                }
+            }
+        }
+        self.next_ce_slow()
+    }
+
+    /// The rest of `nextCE()`.
+    #[inline(never)]
+    fn next_ce_slow(&mut self) -> i64 {
         let (cp, mut ce32) = self.handle_next_ce32();
         let mut t = ce32 & 0xff;
         if t < c::SPECIAL_CE32_LOW_BYTE {
@@ -265,10 +329,12 @@ impl<'a> CollationIterator<'a> {
         ce
     }
 
+    /// A CE `nextCE` returns as soon as it is made. Java appends it to the
+    /// CE buffer and moves past it; only `nextCE` reads the buffer, at
+    /// `cesIndex`, and only below its length, so leaving the buffer as it
+    /// is (all of it consumed) is the same state, one store cheaper.
     #[inline]
     fn push_returned(&mut self, ce: i64) -> i64 {
-        self.ce_buffer.push(ce);
-        self.ces_index += 1;
         ce
     }
 
@@ -331,6 +397,20 @@ impl<'a> CollationIterator<'a> {
     /// surrogate's own value: the `LEAD_SURROGATE_TAG` case reads the
     /// trail).
     fn handle_next_ce32(&mut self) -> (i32, i32) {
+        // The common case first: forward over raw FCD text (or plain
+        // UTF-16), a unit without a trail combining class.
+        let fast = match self.source {
+            Source::Fcd { check_dir, .. } => check_dir > 0,
+            Source::Utf16 => true,
+        };
+        if fast {
+            if let Some(&c) = self.text.get(self.pos).filter(|_| self.pos < self.limit) {
+                if c < 0xc0 {
+                    self.pos += 1;
+                    return (i32::from(c), self.data.trie.get_from_u16_single_lead(c));
+                }
+            }
+        }
         let c = match self.source {
             Source::Utf16 => {
                 if self.pos == self.limit {

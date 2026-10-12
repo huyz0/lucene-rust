@@ -747,6 +747,13 @@ impl AttributeSource {
         self.bytes_term = bytes;
     }
 
+    /// The binary term's buffer to fill in place (set, empty, when none
+    /// was): `BytesTermAttribute.setBytesRef` for a caller that reuses its
+    /// bytes from token to token.
+    pub fn bytes_term_mut(&mut self) -> &mut Vec<u8> {
+        self.bytes_term.get_or_insert_with(Vec::new)
+    }
+
     /// `BytesTermAttributeImpl.getBytesRef()` itself.
     pub fn bytes_term(&self) -> Option<&[u8]> {
         self.bytes_term.as_deref()
