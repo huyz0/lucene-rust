@@ -20,6 +20,7 @@ lucene-analysis-kuromoji = { path = "../../crates/lucene-analysis-kuromoji" }
 lucene-analysis-nori = { path = "../../crates/lucene-analysis-nori" }
 lucene-analysis-smartcn = { path = "../../crates/lucene-analysis-smartcn" }
 lucene-analysis-icu = { path = "../../crates/lucene-analysis-icu" }
+lucene-analysis-opennlp = { path = "../../crates/lucene-analysis-opennlp" }
 crc32fast = "1"
 miniz_oxide = "0.9"
 

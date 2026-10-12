@@ -190,6 +190,23 @@ a dependency the shipped library links is not under a licence listed here.
     `GenAnalysisIcuBreaks.java` (Unicode License v3, as above): test data
     only, never shipped.
 
+- **OpenNLP** (M12 T12.5). Lucene's `analysis-opennlp` runs on **Apache
+  OpenNLP 2.5.3** (`org.apache.opennlp:opennlp-tools:2.5.3`, the version its
+  10.5.0 pom names; Apache-2.0, as this project).
+  - `crates/lucene-analysis-opennlp/src/tools/` ports the inference classes
+    the module calls, class by class (`BaseModel`, `GISModel`,
+    `BeamSearch`, `SentenceDetectorME`, ...); training is not ported.
+  - `src/resources/pos-default-features.xml` is OpenNLP's default POS
+    feature descriptor, from its jar (Apache-2.0); `NOTICE` carries
+    OpenNLP's NOTICE. `src/tools/supplementary_scripts.rs` is the UCD's
+    scripts beyond the BMP read through the JDK
+    (`tools/DumpSupplementaryScripts.java`, Unicode-3.0).
+  - The jars (`OPENNLP_DEPS` in `scripts/lib-lucene-jars.sh`: OpenNLP and
+    the SLF4J API it logs through, MIT) are fetched by the fixture and
+    benchmark scripts, never redistributed. No pretrained OpenNLP model is
+    used: `fixtures/data/analysis_opennlp/*.bin` are trained by
+    `GenAnalysisOpenNLP.java` on a grammar it generates.
+
 - **Test data from third parties** (M9). `fixtures/corpus/real_polygons.z`,
   the Tessellator's real-world polygon corpus (`scripts/gen-tessellator-corpus.py`),
   holds:

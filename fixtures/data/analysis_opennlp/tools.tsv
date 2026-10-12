@@ -1,0 +1,2514 @@
+S	0	0-17
+S1	0	0-17
+T	0	0-3 4-7 8-11 12-16 16-17
+T1	0	0-3 4-7 8-11 12-16 16-17
+P0	0	DT JJ NN VBZ .
+P1	0	DT JJ NN VB .
+P2	0	DT JJ NN VBZ .
+P3	0	DT JJ NN VBZ .
+P4	0	DT JJ NN VBZ .
+C0	0	B-NP I-NP I-NP B-VP O
+C1	0	B-NP I-NP I-NP B-VP O
+L0	0	The big dog run .
+L1	0	the big dog run .
+L2	0	the big dog run .
+S	1	0-40
+S1	1	0-40
+T	1	0-4 5-10 11-14 15-18 19-24 25-29 30-33 34-39 39-40
+T1	1	0-4 5-10 11-14 15-18 19-24 25-29 30-33 34-39 39-40
+P0	1	NNP VBZ DT JJ NN IN DT NN .
+P1	1	NNP VB DT JJ NN IN DT NN .
+P2	1	NNP VBZ DT JJ NN IN DT NN .
+P3	1	NNP VBZ DT JJ NN IN DT NN .
+P4	1	NNP VBZ DT JJ NN IN DT NN .
+C0	1	B-NP B-VP B-NP I-NP I-NP B-PP B-NP I-NP O
+C1	1	B-NP B-VP B-NP I-NP I-NP B-PP B-NP I-NP O
+L0	1	Mary like the old house near the river .
+L1	1	mary like the old house near the river .
+L2	1	Mary like the old house near the river .
+S	2	0-50
+S1	2	0-50
+T	2	0-3 4-10 11-19 20-25 26-27 28-37 38-42 43-49 49-50
+T1	2	0-3 4-10 11-19 20-25 26-27 28-37 38-42 43-49 49-50
+P0	2	DT NN . VBZ DT NN IN NNP .
+P1	2	DT NN . VB DT NN IN NNP .
+P2	2	DT NN PRP VBZ DT NN IN NNP .
+P3	2	DT DT NN VBZ DT RB IN IN .
+P4	2	DT NN PRP VBZ DT NN IN NNP .
+C0	2	B-NP I-NP I-NP B-VP B-NP I-NP B-PP B-NP O
+C1	2	B-NP I-NP B-VP B-PP B-NP I-NP B-PP B-NP O
+L0	2	The purple elephant read a newspaper near Berlin .
+L1	2	the purple elephant read a newspaper near berlin .
+L2	2	the purple elephant read a newspaper near berlin .
+S	3	0-32 33-49 50-72
+S1	3	0-32 33-49 50-72
+T	3	0-3 4-9 10-13 14-16 17-21 22-24 25-31 31-32
+T1	3	0-2 2-3 4-9 10-13 14-16 17-21 22-24 25-31 31-32
+P0	3	DT IN VBD CD NNS IN NNP .
+P1	3	DT IN VB CD NN IN NNP .
+P2	3	. JJ VBD CD NNS IN NNP .
+P3	3	. IN VBD CD NNS IN NNP .
+P4	3	. JJ VBD CD NNS IN NNP .
+C0	3	B-NP I-NP B-VP B-NP I-NP B-PP B-NP O
+C1	3	B-NP I-NP B-VP B-NP I-NP B-PP B-NP O
+L0	3	Mr. Smith see 42 cat in London .
+L1	3	mr. smith see 42 cat in london .
+L2	3	mr. smith see 42 cat in London .
+T	3	0-4 5-9 10-15 15-16
+T1	3	0-4 5-9 10-15 15-16
+P0	3	PRP VBP JJ .
+P1	3	PRP MD JJ .
+P2	3	PRP VBP JJ .
+P3	3	PRP PRP JJ .
+P4	3	PRP VBP JJ .
+C0	3	B-NP B-VP B-NP O
+C1	3	B-NP B-VP B-NP O
+L0	3	They were happy !
+L1	3	they were happy !
+L2	3	they were happy !
+T	3	0-3 4-7 8-13 14-18 19-21 21-22
+T1	3	0-3 4-7 8-13 14-18 19-21 21-22
+P0	3	DT DT NN VBP PRP .
+P1	3	DT DT NN VB PRP .
+P2	3	VBD DT NN RB PRP .
+P3	3	VBD DT NN VBP PRP .
+P4	3	VBD DT NN RB PRP .
+C0	3	B-NP I-NP I-NP B-VP B-NP O
+C1	3	B-NP I-NP I-NP B-VP B-NP O
+L0	3	Did the child find it ?
+L1	3	did the child find it ?
+L2	3	did the child find it ?
+S	4	0-72
+S1	4	0-72
+T	4	0-3 4-9 10-15 16-20 20-22 23-27 28-30 31-34 35-42 42-43 44-47 48-51 52-60 61-66 67-71 71-72
+T1	4	0-2 2-3 4-9 10-15 16-20 20-22 23-27 28-30 31-34 35-42 42-43 44-47 48-51 52-60 61-66 67-71 71-72
+P0	4	DT NNP VBZ NNP . NN DT DT NN , CC DT NNS RB VBP .
+P1	4	DT NN VB NNP . NN DT DT NN . CC DT NN RB VB .
+P2	4	. VBZ VBZ NNP VBZ NN VBD DT NN , CC DT NNS RB VBP .
+P3	4	. NNP VBZ IN DT NN VBZ DT NN , CC DT NNS RB VBP .
+P4	4	. VBZ VBZ NNP VBZ NN VBD DT NN , CC DT NNS RB VBP .
+C0	4	B-NP I-NP B-VP B-NP I-NP I-NP B-VP B-NP I-NP O O B-NP I-NP B-ADVP B-VP O
+C1	4	B-NP I-NP B-VP B-NP I-NP I-NP B-VP B-NP I-NP O O B-NP I-NP B-ADVP B-VP O
+L0	4	Dr. Jones give John 's book to the teacher , but the child never read .
+L1	4	dr. jones give john 's book to the teacher , but the child never read .
+L2	4	dr. jones give John 's book to the teacher , but the child never read .
+S	5	0-61
+S1	5	0-61
+T	5	0-2 3-7 8-11 12-15 16-22 23-29 30-33 34-37 38-44 45-52 53-60 60-61
+T1	5	0-2 3-7 8-11 12-15 16-22 23-29 30-33 34-37 38-44 45-52 53-60 60-61
+P0	5	PRP MD VB DT JJS NNS CC DT JJR NN RB .
+P1	5	PRP MD VB DT JJ NN CC DT JJ NN RB .
+P2	5	PRP MD VB DT JJS NNS CC DT JJR VBZ RB .
+P3	5	PRP MD VB DT JJS NNS CC DT JJR NN RB .
+P4	5	PRP MD VB DT JJS NNS CC DT JJR VBZ RB .
+C0	5	B-NP B-VP I-VP B-NP I-NP I-NP O B-NP I-NP I-NP B-ADVP O
+C1	5	B-NP B-VP I-VP B-NP I-NP I-NP B-VP B-NP I-NP I-NP B-ADVP O
+L0	5	We will see the oldest city and the bigger gardens quickly .
+L1	5	we will see the old city and the big gardens quickly .
+L2	5	we will see the old city and the big gardens quickly .
+S	6	0-34
+S1	6	0-4 5-24 25-34
+T	6	0-4 5-9 10-12 13-14 15-19 20-24 25-28 29-33 33-34
+T1	6	0-3 3-4 5-9 10-12 13-14 15-19 20-23 23-24 25-28 29-33 33-34
+P0	6	. DT VBZ DT NN . CC PRP .
+P1	6	. DT MD DT NN . CC PRP .
+P2	6	. DT VBZ DT JJS . CC PRP .
+P3	6	. DT VBZ DT NN . CC VBP .
+P4	6	. DT VBZ DT JJS . CC PRP .
+C0	6	B-NP I-NP B-VP B-NP I-NP O O B-NP O
+C1	6	B-NP I-NP B-PP B-NP I-NP B-VP B-NP I-NP O
+L0	6	e.g. this be a test etc. and more .
+L1	6	e.g. this be a test etc. and more .
+L2	6	e.g. this be a test etc. and more .
+S	7	2-30
+S1	7	2-30
+T	7	0-7 8-11 12-20 21-27 27-28
+T1	7	0-7 8-11 12-20 21-27 27-28
+P0	7	NNP CC DT NNS .
+P1	7	NNP CC DT NN .
+P2	7	JJ CC DT VBZ .
+P3	7	JJ CC NN VBZ .
+P4	7	JJ CC DT VBZ .
+C0	7	B-NP B-VP B-NP I-NP O
+C1	7	B-NP B-VP B-NP I-NP O
+L0	7	Leading and trailing spaces .
+L1	7	leading and trailing space .
+L2	7	leading and trailing space .
+S	8	0-25
+S1	8	0-25
+T	8	0-2 3-8 9-20 21-25
+T1	8	0-2 3-8 9-20 21-25
+P0	8	DT VBZ IN PRP
+P1	8	DT VB IN PRP
+P2	8	PRP JJ IN PRP
+P3	8	NNP VBZ IN PRP
+P4	8	PRP JJ IN PRP
+C0	8	B-NP B-VP B-PP B-NP
+C1	8	B-NP I-NP B-PP B-NP
+L0	8	No final punctuation here
+L1	8	no fina punctuation here
+L2	8	no fina punctuation here
+S	9	
+S1	9	
+S	10	0-1
+S1	10	0-1
+T	10	0-1
+T1	10	0-1
+P0	10	DT
+P1	10	DT
+P2	10	DT
+P3	10	DT
+P4	10	DT
+C0	10	B-NP
+C1	10	B-NP
+L0	10	A
+L1	10	a
+L2	10	a
+S	11	0-3
+S1	11	0-3
+T	11	0-2 2-3
+T1	11	0-2 2-3
+P0	11	. .
+P1	11	. .
+P2	11	. .
+P3	11	. .
+P4	11	. .
+C0	11	B-NP O
+C1	11	B-NP O
+L0	11	?! .
+L1	11	?! .
+L2	11	?! .
+S	12	0-50
+S1	12	0-50
+T	12	0-3 4-8 9-11 11-14 15-18 19-21 22-25 26-31 32-33 33-37 37-38 39-41 41-44 45-49 49-50
+T1	12	0-3 4-8 9-11 11-14 15-18 19-21 22-25 26-31 32-33 33-37 37-38 39-41 41-44 45-49 49-50
+P0	12	DT NNS VBP . VBP IN DT NN . NNS . DT . PRP .
+P1	12	DT NN . CC VB IN DT NN . NN . DT . VB .
+P2	12	DT NNS NN . VBP IN DT NN . NNS . NN . PRP .
+P3	12	DT NNS NNS RB VBP IN DT NN . NNS . MD VB PRP .
+P4	12	DT NNS NN . VBP IN DT NN . NNS . NN . PRP .
+C0	12	B-NP I-NP B-VP B-NP B-VP B-PP B-NP I-NP O B-NP B-VP B-NP B-PP B-NP O
+C1	12	B-NP I-NP B-VP B-NP I-NP B-PP B-NP I-NP B-VP B-NP O B-NP I-NP B-VP O
+L0	12	The car do n't run on the river ( dog ) ca n't swim .
+L1	12	the car do n't run on the river ( dog ) ca n't swim .
+L2	12	the car do n't run on the river ( dog ) ca n't swim .
+S	13	0-31
+S1	13	0-31
+T	13	0-6 6-7 8-14 14-15 16-23 23-24 25-30 30-31
+T1	13	0-6 6-7 8-14 14-15 16-24 25-30 30-31
+P0	13	NNS , NNS , CC DT NNS .
+P1	13	NN . NN . VB . NN .
+P2	13	NNS , NNS , VBZ . NNS .
+P3	13	NNS , NNS , NN . NNS .
+P4	13	NNS , NNS , VBZ . NNS .
+C0	13	B-NP B-NP I-NP O O B-NP I-NP O
+C1	13	B-NP I-NP I-NP O O B-NP I-NP O
+L0	13	house , city , gardens : book !
+L1	13	house , city , gardens : book !
+L2	13	house , city , gardens : book !
+S	14	0-15 16-34 35-48
+S1	14	0-15 16-34 35-48
+T	14	0-3 4-7 8-9 10-14 14-15
+T1	14	0-3 4-7 8-9 10-14 14-15
+P0	14	PRP VBZ CD NNS .
+P1	14	PRP VB CD NN .
+P2	14	PRP VBZ CD NNS .
+P3	14	PRP VBZ CD NNS .
+P4	14	PRP VBZ CD NNS .
+C0	14	B-NP B-VP B-NP I-NP O
+C1	14	B-NP B-VP B-NP I-NP O
+L0	14	She have 3 car .
+L1	14	she have 3 car .
+L2	14	she have 3 car .
+T	14	0-2 3-6 7-11 12-17 17-18
+T1	14	0-2 3-6 7-11 12-17 17-18
+P0	14	PRP VBD CD NNS .
+P1	14	PRP VB CD NN .
+P2	14	PRP VBD CD NNS .
+P3	14	PRP VBD CD NNS .
+P4	14	PRP VBD CD NNS .
+C0	14	B-NP B-VP B-NP I-NP O
+C1	14	B-NP B-VP B-NP I-NP O
+L0	14	He have 1999 book .
+L1	14	he have 1999 book .
+L2	14	he have 1999 book .
+T	14	0-2 3-6 7-8 9-12 12-13
+T1	14	0-2 3-6 7-8 9-12 12-13
+P0	14	PRP VBD DT NN .
+P1	14	PRP MD DT NN .
+P2	14	PRP VBD DT NN .
+P3	14	PRP VBD DT NN .
+P4	14	PRP VBD DT NN .
+C0	14	B-NP B-VP B-NP I-NP O
+C1	14	B-NP B-VP B-NP I-NP O
+L0	14	It be a cat .
+L1	14	it be a cat .
+L2	14	it be a cat .
+S	15	0-21
+S1	15	0-21
+T	15	0-3 4-7 8-12 13-20 20-21
+T1	15	0-3 4-7 8-12 13-20 20-21
+P0	15	DT NN VBZ RB .
+P1	15	DT NN VB RB .
+P2	15	DT NN VBD CD .
+P3	15	DT NNS VBP . .
+P4	15	DT NN VBD CD .
+C0	15	B-NP I-NP B-VP B-ADVP O
+C1	15	B-NP I-NP B-VP B-ADVP O
+L0	15	THE dog run QUICKLY .
+L1	15	the dog runs quickly .
+L2	15	the dog run quickly .
+S	16	0-8 9-17 18-28
+S1	16	0-8 9-17 18-28
+T	16	0-3 4-7 7-8
+T1	16	0-3 4-7 7-8
+P0	16	DT NN .
+P1	16	DT NN .
+P2	16	DT NN .
+P3	16	DT NN .
+P4	16	DT NN .
+C0	16	B-NP I-NP O
+C1	16	B-NP I-NP O
+L0	16	the dog .
+L1	16	the dog .
+L2	16	the dog .
+T	16	0-3 4-7 7-8
+T1	16	0-3 4-7 7-8
+P0	16	DT NN .
+P1	16	DT NN .
+P2	16	DT NN .
+P3	16	DT NN .
+P4	16	DT NN .
+C0	16	B-NP I-NP O
+C1	16	B-NP I-NP O
+L0	16	the cat .
+L1	16	the cat .
+L2	16	the cat .
+T	16	0-3 4-9 9-10
+T1	16	0-3 4-9 9-10
+P0	16	DT NN .
+P1	16	DT NN .
+P2	16	DT NN .
+P3	16	DT NN .
+P4	16	DT NN .
+C0	16	B-NP I-NP O
+C1	16	B-NP I-NP O
+L0	16	the house .
+L1	16	the house .
+L2	16	the house .
+S	17	0-50
+S1	17	0-50
+T	17	0-8 9-14 15-19 20-25 26-34 35-37 38-41 42-49 49-50
+T1	17	0-8 9-14 15-19 20-25 26-34 35-37 38-41 42-49 49-50
+P0	17	NNS RB VBP JJ NNS IN JJ NN .
+P1	17	NN RB VB JJ NN IN JJ NN .
+P2	17	NNS RB VBP JJ NNS IN JJ VBZ .
+P3	17	NNS RB VBP JJ NNS IN JJ NN .
+P4	17	NNS RB VBP JJ NNS IN JJ VBZ .
+C0	17	B-NP B-ADVP B-VP B-NP I-NP B-PP B-NP I-NP O
+C1	17	B-NP B-ADVP B-VP B-NP I-NP B-PP B-NP I-NP O
+L0	17	teacher often find small child in old gardens .
+L1	17	teacher often find small child in old gardens .
+L2	17	teacher often find small child in old gardens .
+S	18	0-46
+S1	18	0-46
+T	18	0-5 6-13 14-18 19-23 24-25 26-30 31-33 34-39 40-45 45-46
+T1	18	0-5 6-13 14-18 19-23 24-25 26-30 31-33 34-39 40-45 45-46
+P0	18	DT NN MD VB DT NN . DT NN .
+P1	18	DT NN MD VB DT NN . DT NN .
+P2	18	DT NN MD VB DT NN IN DT NN .
+P3	18	DT NN MD VB DT NN . DT NN .
+P4	18	DT NN MD VB DT NN IN DT NN .
+C0	18	B-NP I-NP B-VP I-VP B-NP I-NP O B-NP I-NP O
+C1	18	B-NP I-NP B-VP I-VP B-NP I-NP B-VP B-NP I-NP O
+L0	18	Every teacher will give a book to every child .
+L1	18	every teacher will give a book to every child .
+L2	18	every teacher will give a book to every child .
+S	19	0-47
+S1	19	0-47
+T	19	0-7 7-8 9-15 15-16 17-25 25-26 27-33 33-34 35-39 39-40 41-46 46-47
+T1	19	0-7 7-8 9-15 15-16 17-25 25-26 27-33 33-34 35-39 39-40 41-46 46-47
+P0	19	PRP , CC , JJ , NNS , CC , NN .
+P1	19	PRP . CC . JJ . NN . CC . NN .
+P2	19	JJ , CC , CC , NNS , CC , NN .
+P3	19	NN , CC , JJS , NNS , CC , NN .
+P4	19	JJ , CC , CC , NNS , CC , NN .
+C0	19	B-NP O O B-NP B-VP B-NP I-NP O O B-NP I-NP O
+C1	19	B-NP O O B-NP B-VP B-NP I-NP O O B-NP I-NP O
+L0	19	Running , jumped , happiest , city , mice , geese .
+L1	19	running , jumped , happiest , city , mice , geese .
+L2	19	running , jumped , happiest , city , mice , geese .
+S	20	0-42
+S1	20	0-42
+T	20	0-5 6-9 10-16 17-20 21-27 27-28 29-34 35-37 38-41 41-42
+T1	20	0-5 6-9 10-16 17-20 21-27 27-28 29-34 35-37 38-41 41-42
+P0	20	NNP CC NNP VBP NNS , NNP VBZ JJ .
+P1	20	NNP CC NNP MD NN . NNP MD JJ .
+P2	20	NNP CC NNP VBP NNS , NNP VBZ JJ .
+P3	20	NNP CC NNP VBP NNS , NNP VBZ JJ .
+P4	20	NNP CC NNP VBP NNS , NNP VBZ JJ .
+C0	20	B-NP B-VP B-NP B-VP B-NP O O B-NP I-NP O
+C1	20	B-NP B-VP B-NP B-VP B-NP O O B-VP B-NP O
+L0	20	Paris and London be city , Paris be old .
+L1	20	paris and london be city , paris be old .
+L2	20	Paris and London be city , Paris be old .
+S	21	0-27 28-61
+S1	21	0-27 28-61
+T	21	0-3 4-6 7-11 12-15 16-18 19-22 23-26 26-27
+T1	21	0-3 4-6 7-11 12-15 16-18 19-22 23-26 26-27
+P0	21	DT NN VBZ CD IN DT NN .
+P1	21	DT NN VB CD NN DT NN .
+P2	21	DT NN VBZ CD RB DT NN .
+P3	21	DT NN VBZ CD RB DT NN .
+P4	21	DT NN VBZ CD RB DT NN .
+C0	21	B-NP I-NP B-VP B-NP B-PP B-NP I-NP O
+C1	21	B-NP I-NP B-VP B-NP B-PP B-NP I-NP O
+L0	21	The ねこ see 3/4 of the テレビ .
+L1	21	the ねこ see 3/4 of the テレビ .
+L2	21	the ねこ see 3/4 of the テレビ .
+T	21	0-2 3-7 8-13 14-18 19-22 23-26 27-32 32-33
+T1	21	0-2 3-7 8-13 14-18 19-22 23-26 27-32 32-33
+P0	21	PRP VBP CD NNS CC CD NNS .
+P1	21	PRP VB CD NN CC CD NN .
+P2	21	PRP VBP CD NNS CC CD NNS .
+P3	21	PRP VBP CD NNS CC CD NNS .
+P4	21	PRP VBP CD NNS CC CD NNS .
+C0	21	B-NP B-VP B-NP I-NP B-VP B-NP I-NP O
+C1	21	B-NP B-VP B-NP I-NP B-VP B-NP I-NP O
+L0	21	We have 1,000 car and 3.5 book !
+L1	21	we have 1,000 car and 3.5 book !
+L2	21	we have 1,000 car and 3.5 book !
+S	22	0-46
+S1	22	0-46
+T	22	0-4 5-10 11-15 16-21 22-26 27-29 30-33 34-37 38-45 45-46
+T1	22	0-4 5-10 11-15 16-21 22-26 27-29 30-33 34-37 38-45 45-46
+P0	22	NNP VBZ CD NNS IN NN CC NN RB .
+P1	22	NNP VB CD NN IN NN CC NN RB .
+P2	22	NNP VBZ CD NNS IN NN CC NN RB .
+P3	22	NNP VBZ CD NNS IN DT CC NN RB .
+P4	22	NNP VBZ CD NNS IN NN CC NN RB .
+C0	22	B-NP B-VP B-NP I-NP B-PP B-NP I-NP B-VP B-ADVP O
+C1	22	B-NP B-VP B-NP I-NP B-PP B-NP I-NP I-NP B-ADVP O
+L0	22	John read 12-5 book with ねこ and テレビ quickly .
+L1	22	john read 12-5 book with ねこ and テレビ quickly .
+L2	22	John read 12-5 book with ねこ and テレビ quickly .
+S	23	0-16 17-30
+S1	23	0-16 17-30
+T	23	0-3 4-6 7-10 11-15 15-16
+T1	23	0-3 4-6 7-10 11-15 15-16
+P0	23	DT NN NN VBZ .
+P1	23	DT NN NN VB .
+P2	23	DT JJ NN VBZ .
+P3	23	DT JJR NN VBZ .
+P4	23	DT JJ NN VBZ .
+C0	23	B-NP I-NP I-NP B-VP O
+C1	23	B-NP I-NP I-NP B-VP O
+L0	23	The 😀 dog run .
+L1	23	the 😀 dog run .
+L2	23	the 😀 dog run .
+T	23	0-1 2-4 5-8 9-12 12-13
+T1	23	0-1 2-4 5-8 9-12 12-13
+P0	23	DT NN NN VBD .
+P1	23	DT JJ NN VB .
+P2	23	DT JJ NN VBD .
+P3	23	DT JJ NN VBD .
+P4	23	DT JJ NN VBD .
+C0	23	B-NP I-NP I-NP B-VP O
+C1	23	B-NP I-NP I-NP B-VP O
+L0	23	A 𠀀 cat run !
+L1	23	a 𠀀 cat run !
+L2	23	a 𠀀 cat run !
+S	24	0-13 14-25
+S1	24	0-13 14-25
+T	24	0-3 4-7 8-12 12-13
+T1	24	0-3 4-7 8-12 12-13
+P0	24	DT NN VBZ .
+P1	24	DT NN VB .
+P2	24	DT NN VBZ .
+P3	24	DT NN VBZ .
+P4	24	DT NN VBZ .
+C0	24	B-NP I-NP B-VP O
+C1	24	B-NP I-NP B-VP O
+L0	24	The dog run .
+L1	24	the dog run .
+L2	24	the dog run .
+T	24	0-2 3-6 7-10 10-11
+T1	24	0-2 3-6 7-10 10-11
+P0	24	PRP VBD JJ .
+P1	24	PRP MD JJ .
+P2	24	PRP VBD JJ .
+P3	24	PRP VBD JJ .
+P4	24	PRP VBD JJ .
+C0	24	B-NP B-VP B-NP O
+C1	24	B-NP B-VP B-NP O
+L0	24	It be old .
+L1	24	it be old .
+L2	24	it be old .
+S	25	0-20
+S1	25	0-20
+T	25	0-4 4-5 6-9 10-14 15-19 19-20
+T1	25	0-5 6-9 10-14 15-19 19-20
+P0	25	. . DT NN VBZ .
+P1	25	. . DT NN VB .
+P2	25	. VBD DT . VBZ .
+P3	25	NNP . DT NN VBZ .
+P4	25	. VBD DT . VBZ .
+C0	25	B-NP B-VP B-NP I-NP B-VP O
+C1	25	B-NP I-NP B-NP I-NP B-VP O
+L0	25	&amp ; the dog; run .
+L1	25	&amp ; the dog; run .
+L2	25	&amp ; the dog; run .
+S	26	0-15 16-18 19-43
+S1	26	0-15 16-18 19-30 31-43
+T	26	0-2 2-8 9-12 13-14 14-15
+T1	26	0-2 2-8 9-12 13-14 14-15
+P0	26	DT . VBD DT .
+P1	26	DT . VB DT .
+P2	26	PRP . VBD DT .
+P3	26	NNP IN VBD DT .
+P4	26	PRP . VBD DT .
+C0	26	B-NP I-NP B-VP B-ADVP O
+C1	26	B-NP I-NP B-VP B-NP O
+L0	26	Mr .Smith see A .
+L1	26	mr .smith see a .
+L2	26	mr .smith see a .
+T	26	0-1 1-2
+T1	26	0-1 1-2
+P0	26	DT .
+P1	26	DT .
+P2	26	PRP .
+P3	26	JJ .
+P4	26	PRP .
+C0	26	B-NP O
+C1	26	B-NP O
+L0	26	B .
+L1	26	b .
+L2	26	b .
+T	26	0-5 6-9 9-10 10-11 12-16 17-20 20-23 23-24
+T1	26	0-5 6-9 9-10 10-11 12-16 17-20 20-23 23-24
+P0	26	DT NN . . DT . . .
+P1	26	DT NN . . DT . . .
+P2	26	NNS VBD . . DT . . .
+P3	26	VBZ DT . . DT JJ NN .
+P4	26	NNS VBD . . DT . . .
+C0	26	B-NP I-NP O O B-NP I-NP B-VP O
+C1	26	B-NP I-NP B-VP O B-NP I-NP B-VP O
+L0	26	Jones etc . . Then e.g .ok .
+L1	26	jones etc . . then e.g .ok .
+L2	26	jones etc . . then e.g .ok .
+S	27	0-39 40-42 43-46
+S1	27	0-39 40-42 43-45 45-46
+T	27	0-2 3-7 8-11 11-12 13-19 19-20 21-23 23-24 25-27 27-28 29-31 31-32 33-35 35-36 37-39
+T1	27	0-2 3-7 8-12 13-20 21-23 23-24 25-27 27-28 29-31 31-32 33-36 37-39
+P0	27	PRP VBD . . . . . . . . . . . . CD
+P1	27	PRP VB . . MD . . . . . . . . . CD
+P2	27	PRP VBD CD . . . . . . . . . . . CD
+P3	27	PRP VBD RB . VB DT NN VBZ RB . NNP . VBD IN CD
+P4	27	PRP VBD CD . . . . . . . . . . . CD
+C0	27	B-NP B-VP O B-NP I-NP O O B-NP I-NP O O B-NP I-NP O O
+C1	27	B-NP B-VP B-NP I-NP B-VP B-NP I-NP B-VP B-NP I-NP B-VP B-NP I-NP B-VP O
+L0	27	He said "no " [maybe ] {x } (y ) 'z ' `w ` 3!
+L1	27	he said "no " [maybe ] {x } (y ) 'z ' `w ` 3!
+L2	27	he said "no " [maybe ] {x } (y ) 'z ' `w ` 3!
+T	27	0-1 1-2
+T1	27	0-2
+P0	27	PRP .
+P1	27	NN .
+P2	27	PRP .
+P3	27	NNP .
+P4	27	PRP .
+C0	27	B-NP O
+C1	27	B-NP O
+L0	27	x ?
+L1	27	x ?
+L2	27	x ?
+T	27	0-3
+T1	27	0-3
+P0	27	.
+P1	27	.
+P2	27	.
+P3	27	NNP
+P4	27	.
+C0	27	B-NP
+C1	27	O
+L0	27	y.z
+L1	27	y.z
+L2	27	y.z
+S	28	0-14 15-44 45-75
+S1	28	0-14 15-44 45-75
+T	28	0-2 3-7 8-13 13-14
+T1	28	0-2 3-7 8-13 13-14
+P0	28	PRP VBD RB .
+P1	28	PRP VB RB .
+P2	28	PRP VBP RB .
+P3	28	PRP VBD RB .
+P4	28	PRP VBP RB .
+C0	28	B-NP B-VP B-ADVP O
+C1	28	B-NP B-VP B-ADVP O
+L0	28	We read never !
+L1	28	we read never !
+L2	28	we read never !
+T	28	0-5 6-9 10-14 15-17 18-21 22-28 28-29
+T1	28	0-5 6-9 10-14 15-17 18-21 22-28 28-29
+P0	28	DT NN VBZ IN CD NNS .
+P1	28	DT NN VB IN CD NN .
+P2	28	DT NN VBZ IN PRP NNS .
+P3	28	DT NN VBZ IN CD NNS .
+P4	28	DT NN VBZ IN PRP NNS .
+C0	28	B-NP I-NP B-VP B-PP B-NP I-NP O
+C1	28	B-NP I-NP B-VP B-PP B-NP I-NP O
+L0	28	Every テレビ run on 3/4 house !
+L1	28	every テレビ run on 3/4 house !
+L2	28	every テレビ run on 3/4 house !
+T	28	0-3 4-9 10-13 14-17 18-22 23-29 29-30
+T1	28	0-3 4-9 10-13 14-17 18-22 23-29 29-30
+P0	28	DT NN MD VB CD NNS .
+P1	28	DT NN MD VB CD NN .
+P2	28	DT NN MD VB CD NNS .
+P3	28	DT NN MD VB CD NNS .
+P4	28	DT NN MD VB CD NNS .
+C0	28	B-NP I-NP B-VP I-VP B-NP I-NP O
+C1	28	B-NP I-NP B-VP I-VP B-NP I-NP O
+L0	28	The child can see 1999 house .
+L1	28	the child can see 1999 house .
+L2	28	the child can see 1999 house .
+S	29	0-31 32-50
+S1	29	0-31 32-50
+T	29	0-3 4-8 9-14 15-17 18-21 22-30 30-31
+T1	29	0-3 4-8 9-14 15-17 18-21 22-30 30-31
+P0	29	DT NN VBZ IN JJ NNS .
+P1	29	DT NN VB IN JJ NN .
+P2	29	DT NN VBZ IN JJ NNS .
+P3	29	DT NN VBZ IN JJ NNS .
+P4	29	DT NN VBZ IN JJ NNS .
+C0	29	B-NP I-NP B-VP B-PP B-NP I-NP O
+C1	29	B-NP I-NP B-VP B-PP B-NP I-NP O
+L0	29	The book read on big child .
+L1	29	the book read on big child .
+L2	29	the book read on big child .
+T	29	0-3 4-7 8-11 12-17 17-18
+T1	29	0-3 4-7 8-11 12-17 17-18
+P0	29	PRP MD VB RB .
+P1	29	PRP MD VB RB .
+P2	29	PRP MD VB RB .
+P3	29	PRP MD VB RB .
+P4	29	PRP MD VB RB .
+C0	29	B-NP B-VP I-VP B-ADVP O
+C1	29	B-NP B-VP I-VP B-ADVP O
+L0	29	She can see never .
+L1	29	she can see never .
+L2	29	she can see never .
+S	30	0-44 45-62 63-76
+S1	30	0-44 45-62 63-76
+T	30	0-4 5-9 10-15 16-19 20-22 22-23 24-27 28-33 34-37 38-43 43-44
+T1	30	0-4 5-9 10-15 16-19 20-22 22-23 24-27 28-33 34-37 38-43 43-44
+P0	30	DT NN VBZ DT NN , CC DT NN VBZ .
+P1	30	DT NN VB DT NN . CC DT NN VB .
+P2	30	DT NN VBZ DT NN , CC DT NN VBZ .
+P3	30	DT NN VBZ DT NN , CC DT NN VBZ .
+P4	30	DT NN VBZ DT NN , CC DT NN VBZ .
+C0	30	B-NP I-NP B-VP B-NP I-NP O O B-NP I-NP B-VP O
+C1	30	B-NP I-NP B-VP B-NP I-NP O O B-NP I-NP B-VP O
+L0	30	This city read the ねこ , and every テレビ give !
+L1	30	this city read the ねこ , and every テレビ give !
+L2	30	this city read the ねこ , and every テレビ give !
+T	30	0-2 3-6 7-11 12-16 16-17
+T1	30	0-2 3-6 7-11 12-16 16-17
+P0	30	PRP VBZ IN NNP .
+P1	30	PRP VB IN NNP .
+P2	30	PRP VBZ IN NNP .
+P3	30	PRP VBZ IN PRP .
+P4	30	PRP VBZ IN NNP .
+C0	30	B-NP B-VP B-PP B-NP O
+C1	30	B-NP B-VP B-PP B-NP O
+L0	30	He have near John .
+L1	30	he have near john .
+L2	30	he have near John .
+T	30	0-2 3-6 7-12 12-13
+T1	30	0-2 3-6 7-12 12-13
+P0	30	PRP VBP RB .
+P1	30	PRP VB RB .
+P2	30	PRP VBP RB .
+P3	30	PRP VBP RB .
+P4	30	PRP VBP RB .
+C0	30	B-NP B-VP B-ADVP O
+C1	30	B-NP B-VP B-ADVP O
+L0	30	We see never ?
+L1	30	we see never ?
+L2	30	we see never ?
+S	31	0-22
+S1	31	0-22
+T	31	0-3 4-7 8-12 13-15 16-21 21-22
+T1	31	0-3 4-7 8-12 13-15 16-21 21-22
+P0	31	DT NN MD VB RB .
+P1	31	DT NN MD MD RB .
+P2	31	DT NN MD VB RB .
+P3	31	DT NN MD VB RB .
+P4	31	DT NN MD VB RB .
+C0	31	B-NP I-NP B-VP I-VP B-ADVP O
+C1	31	B-NP I-NP B-VP I-VP B-ADVP O
+L0	31	The dog will be never .
+L1	31	the dog will be never .
+L2	31	the dog will be never .
+S	32	0-23 24-50
+S1	32	0-23 24-50
+T	32	0-6 7-12 13-16 17-22 22-23
+T1	32	0-6 7-12 13-16 17-22 22-23
+P0	32	NNP VBZ DT NNS .
+P1	32	NNP VB DT NN .
+P2	32	NNP VBZ DT NNS .
+P3	32	NNP VBZ DT NNS .
+P4	32	NNP VBZ DT NNS .
+C0	32	B-NP B-VP B-NP I-NP O
+C1	32	B-NP B-VP B-NP I-NP O
+L0	32	London read the book .
+L1	32	london read the book .
+L2	32	London read the book .
+T	32	0-1 2-8 9-14 15-19 20-25 25-26
+T1	32	0-1 2-8 9-14 15-19 20-25 25-26
+P0	32	DT JJR NN VBZ NNS .
+P1	32	DT JJ NN VB NN .
+P2	32	DT JJR NN VBZ NNS .
+P3	32	DT JJR NN VBZ NNS .
+P4	32	DT JJR NN VBZ NNS .
+C0	32	B-NP I-NP I-NP B-VP B-NP O
+C1	32	B-NP I-NP I-NP B-VP B-NP O
+L0	32	A bigger river run book .
+L1	32	a big river run book .
+L2	32	a big river run book .
+S	33	0-31
+S1	33	0-31
+T	33	0-3 4-9 10-16 17-21 22-30 30-31
+T1	33	0-3 4-9 10-16 17-21 22-30 30-31
+P0	33	DT JJ NNS VBD NNS .
+P1	33	DT JJ NN VB NN .
+P2	33	DT JJ NNS VBD NNS .
+P3	33	DT JJ NNS VBD NNS .
+P4	33	DT JJ NNS VBD NNS .
+C0	33	B-NP I-NP I-NP B-VP B-NP O
+C1	33	B-NP I-NP I-NP B-VP B-NP O
+L0	33	The happy house read teacher .
+L1	33	the happy house read teacher .
+L2	33	the happy house read teacher .
+S	34	0-44
+S1	34	0-44
+T	34	0-4 5-10 11-16 17-22 23-27 28-33 34-39 40-43 43-44
+T1	34	0-4 5-10 11-16 17-22 23-27 28-33 34-39 40-43 43-44
+P0	34	DT JJ NN VBD PRP IN DT NN .
+P1	34	DT JJ NN VB PRP IN DT NN .
+P2	34	DT JJ NN VBD PRP IN DT NN .
+P3	34	DT JJ NN VBD PRP IN DT NN .
+P4	34	DT JJ NN VBD PRP IN DT NN .
+C0	34	B-NP I-NP I-NP B-VP B-NP B-PP B-NP I-NP O
+C1	34	B-NP I-NP I-NP B-VP B-NP B-PP B-NP I-NP O
+L0	34	This small house like they under every dog ?
+L1	34	this small house like they under every dog ?
+L2	34	this small house like they under every dog ?
+S	35	0-23
+S1	35	0-23
+T	35	0-4 5-9 10-13 14-19 20-22 22-23
+T1	35	0-4 5-9 10-13 14-19 20-22 22-23
+P0	35	NNP MD VB IN PRP .
+P1	35	NNP MD VB IN PRP .
+P2	35	NNP MD VB IN PRP .
+P3	35	NNP MD VB IN PRP .
+P4	35	NNP MD VB IN PRP .
+C0	35	B-NP B-VP I-VP B-PP B-NP O
+C1	35	B-NP B-VP I-VP B-PP B-NP O
+L0	35	Mary will see under we .
+L1	35	mary will see under we .
+L2	35	Mary will see under we .
+S	36	0-44 45-97
+S1	36	0-44 45-97
+T	36	0-4 5-8 9-14 15-20 20-21 22-25 26-30 31-39 40-43 43-44
+T1	36	0-4 5-8 9-14 15-20 20-21 22-25 26-30 31-39 40-43 43-44
+P0	36	NNS VBD DT NN , CC CD NNS VBP .
+P1	36	NN MD DT NN . CC CD NN MD .
+P2	36	NNS VBD DT NN , CC CD NNS VBP .
+P3	36	NNS VBD DT NN , CC CD NNS VBP .
+P4	36	NNS VBD DT NN , CC CD NNS VBP .
+C0	36	B-NP B-VP B-NP I-NP O O B-NP I-NP B-VP O
+C1	36	B-NP B-VP B-NP I-NP O O B-NP I-NP B-VP O
+L0	36	cat be every house , and 12-5 teacher be .
+L1	36	cat be every house , and 12-5 teacher be .
+L2	36	cat be every house , and 12-5 teacher be .
+T	36	0-3 4-9 10-14 15-19 20-25 26-31 31-32 33-36 37-41 42-46 47-51 51-52
+T1	36	0-3 4-9 10-14 15-19 20-25 26-31 31-32 33-36 37-41 42-46 47-51 51-52
+P0	36	DT NN MD VB DT NN , CC PRP MD VB .
+P1	36	DT NN MD VB DT NN . CC PRP MD VB .
+P2	36	DT NN MD VB DT NN , CC PRP MD VB .
+P3	36	DT NN MD VB DT NN , CC PRP MD VB .
+P4	36	DT NN MD VB DT NN , CC PRP MD VB .
+C0	36	B-NP I-NP B-VP I-VP B-NP I-NP O O B-NP B-VP I-VP O
+C1	36	B-NP I-NP B-VP I-VP B-NP I-NP O O B-NP B-VP I-VP O
+L0	36	The child will give every child , but they will like .
+L1	36	the child will give every child , but they will like .
+L2	36	the child will give every child , but they will like .
+S	37	0-40
+S1	37	0-40
+T	37	0-5 6-12 13-17 18-23 24-28 29-33 34-35 36-39 39-40
+T1	37	0-5 6-12 13-17 18-23 24-28 29-33 34-35 36-39 39-40
+P0	37	CD NNS VBP CD NNS IN DT NN .
+P1	37	CD NN VB CD NN IN DT NN .
+P2	37	CD NNS VBP CD NNS IN DT NN .
+P3	37	CD NNS VBP CD NNS IN DT NN .
+P4	37	CD NNS VBP CD NNS IN DT NN .
+C0	37	B-NP I-NP B-VP B-NP I-NP B-PP B-NP I-NP O
+C1	37	B-NP I-NP B-VP B-NP I-NP B-PP B-NP I-NP O
+L0	37	1,000 house like 1,000 dog near a car .
+L1	37	1,000 house like 1,000 dog near a car .
+L2	37	1,000 house like 1,000 dog near a car .
+S	38	0-35
+S1	38	0-35
+T	38	0-8 9-13 14-22 23-25 26-29 30-34 34-35
+T1	38	0-8 9-13 14-22 23-25 26-29 30-34 34-35
+P0	38	NNS VBD NNS IN CD NNS .
+P1	38	NN VB NN IN CD NN .
+P2	38	NNS VBD DT IN CD NNS .
+P3	38	NNS VBD NNS IN CD NNS .
+P4	38	NNS VBD DT IN CD NNS .
+C0	38	B-NP B-VP B-NP B-PP B-NP I-NP O
+C1	38	B-NP B-VP B-NP B-PP B-NP I-NP O
+L0	38	teacher give teacher in 3/4 cat .
+L1	38	teacher give teacher in 3/4 cat .
+L2	38	teacher give teacher in 3/4 cat .
+S	39	0-55 56-78
+S1	39	0-55 56-78
+T	39	0-3 4-7 8-12 13-20 21-26 27-33 33-34 35-38 39-42 43-50 51-54 54-55
+T1	39	0-3 4-7 8-12 13-20 21-26 27-33 33-34 35-38 39-42 43-50 51-54 54-55
+P0	39	DT JJ NN RB VBZ NNP , CC DT NN VBZ .
+P1	39	DT JJ NN RB VB NNP . CC DT NN VB .
+P2	39	DT JJ NN RB VBZ NNP , CC DT NN VBZ .
+P3	39	DT JJ NN RB VBZ NNP , CC DT NN VBZ .
+P4	39	DT JJ NN RB VBZ NNP , CC DT NN VBZ .
+C0	39	B-NP I-NP I-NP B-ADVP B-VP B-NP O O B-NP I-NP B-VP O
+C1	39	B-NP I-NP I-NP B-ADVP B-VP B-NP O O B-NP I-NP B-VP O
+L0	39	The old city quickly find London , and the teacher have !
+L1	39	the old city quickly find london , and the teacher have !
+L2	39	the old city quickly find London , and the teacher have !
+T	39	0-5 6-10 11-13 14-18 19-21 21-22
+T1	39	0-5 6-10 11-13 14-18 19-21 21-22
+P0	39	NNP VBZ IN DT NN .
+P1	39	NNP VB IN DT NN .
+P2	39	NNP VBZ IN DT NN .
+P3	39	NNP VBZ IN DT NN .
+P4	39	NNP VBZ IN DT NN .
+C0	39	B-NP B-VP B-PP B-NP I-NP O
+C1	39	B-NP B-VP B-PP B-NP I-NP O
+L0	39	Paris run on this ねこ .
+L1	39	paris run on this ねこ .
+L2	39	Paris run on this ねこ .
+S	40	0-26 27-56 57-81
+S1	40	0-26 27-56 57-81
+T	40	0-6 7-11 12-14 15-19 20-25 25-26
+T1	40	0-6 7-11 12-14 15-19 20-25 25-26
+P0	40	NNP VBD IN CD NNS .
+P1	40	NNP VB IN CD NN .
+P2	40	NNP VBD IN CD NNS .
+P3	40	NNP VBD IN CD NNS .
+P4	40	NNP VBD IN CD NNS .
+C0	40	B-NP B-VP B-PP B-NP I-NP O
+C1	40	B-NP B-VP B-PP B-NP I-NP O
+L0	40	London read on 1999 book .
+L1	40	london read on 1999 book .
+L2	40	London read on 1999 book .
+T	40	0-1 2-4 5-8 9-12 13-15 16-19 20-28 28-29
+T1	40	0-1 2-4 5-8 9-12 13-15 16-19 20-28 28-29
+P0	40	DT NN MD VB IN DT NNS .
+P1	40	DT NN MD VB IN DT NN .
+P2	40	DT NN MD VB IN DT NNS .
+P3	40	DT NN MD VB IN DT NNS .
+P4	40	DT NN MD VB IN DT NNS .
+C0	40	B-NP I-NP B-VP I-VP B-PP B-NP I-NP O
+C1	40	B-NP I-NP B-VP I-VP B-PP B-NP I-NP O
+L0	40	A ねこ can run in the child .
+L1	40	a ねこ can run in the child .
+L2	40	a ねこ can run in the child .
+T	40	0-5 6-11 12-17 18-23 23-24
+T1	40	0-5 6-11 12-17 18-23 23-24
+P0	40	NNP RB VBZ RB .
+P1	40	NNP RB VB RB .
+P2	40	NNP RB VBZ RB .
+P3	40	NNP RB VBZ RB .
+P4	40	NNP RB VBZ RB .
+C0	40	B-NP B-ADVP B-VP B-ADVP O
+C1	40	B-NP B-ADVP B-VP B-ADVP O
+L0	40	Paris never like never .
+L1	40	paris never like never .
+L2	40	Paris never like never .
+S	41	0-20
+S1	41	0-20
+T	41	0-2 3-6 7-10 11-14 15-19 19-20
+T1	41	0-2 3-6 7-10 11-14 15-19 19-20
+P0	41	PRP MD VB DT NNS .
+P1	41	PRP MD VB DT NN .
+P2	41	PRP MD VB DT NNS .
+P3	41	PRP MD VB DT NNS .
+P4	41	PRP MD VB DT NNS .
+C0	41	B-NP B-VP I-VP B-NP I-NP O
+C1	41	B-NP B-VP I-VP B-NP I-NP O
+L0	41	It can see the cat .
+L1	41	it can see the cat .
+L2	41	it can see the cat .
+S	42	0-42
+S1	42	0-42
+T	42	0-8 9-13 14-18 19-23 24-28 29-33 34-37 38-41 41-42
+T1	42	0-8 9-13 14-18 19-23 24-28 29-33 34-37 38-41 41-42
+P0	42	NNS MD VB NNP IN DT JJ NN .
+P1	42	NN MD VB NNP IN DT JJ NN .
+P2	42	NNS MD VB NNP IN DT JJ NN .
+P3	42	NNS MD VB NNP IN DT JJ NN .
+P4	42	NNS MD VB NNP IN DT JJ NN .
+C0	42	B-NP B-VP I-VP B-NP B-PP B-NP I-NP I-NP O
+C1	42	B-NP B-VP I-VP B-NP B-PP B-NP I-NP I-NP O
+L0	42	teacher will have Mary with this old dog .
+L1	42	teacher will have mary with this old dog .
+L2	42	teacher will have Mary with this old dog .
+S	43	0-25 26-53
+S1	43	0-25 26-53
+T	43	0-3 4-8 9-12 13-14 15-18 19-21 22-24 24-25
+T1	43	0-3 4-8 9-12 13-14 15-18 19-21 22-24 24-25
+P0	43	DT NNS VBD DT NN IN PRP .
+P1	43	DT NN VB DT NN IN PRP .
+P2	43	DT NNS VBD DT NN IN PRP .
+P3	43	DT NNS VBD DT NN IN PRP .
+P4	43	DT NNS VBD DT NN IN PRP .
+C0	43	B-NP I-NP B-VP B-NP I-NP B-PP B-NP O
+C1	43	B-NP I-NP B-VP B-NP I-NP B-PP B-NP O
+L0	43	The car have a テレビ on he .
+L1	43	the car have a テレビ on he .
+L2	43	the car have a テレビ on he .
+T	43	0-6 7-11 12-16 17-22 23-26 26-27
+T1	43	0-6 7-11 12-16 17-22 23-26 26-27
+P0	43	NNS VBD DT JJ NN .
+P1	43	NN VB DT JJ NN .
+P2	43	NNS VBP DT JJ NN .
+P3	43	NNS VBD DT JJ NN .
+P4	43	NNS VBP DT JJ NN .
+C0	43	B-NP B-VP B-NP I-NP I-NP O
+C1	43	B-NP B-VP B-NP I-NP I-NP O
+L0	43	city read this quick テレビ .
+L1	43	city read this quick テレビ .
+L2	43	city read this quick テレビ .
+S	44	0-32 33-72 73-95
+S1	44	0-32 33-72 73-95
+T	44	0-4 5-10 11-13 14-18 19-23 24-25 26-31 31-32
+T1	44	0-4 5-10 11-13 14-18 19-23 24-25 26-31 31-32
+P0	44	DT NN VBZ NNP IN DT NN .
+P1	44	DT NN MD NNP IN DT NN .
+P2	44	DT NN VBZ NNP IN DT NN .
+P3	44	DT NN VBZ NNP IN DT NN .
+P4	44	DT NN VBZ NNP IN DT NN .
+C0	44	B-NP I-NP B-VP B-NP B-PP B-NP I-NP O
+C1	44	B-NP I-NP B-VP B-NP B-PP B-NP I-NP O
+L0	44	This house be Mary with a house .
+L1	44	this house be mary with a house .
+L2	44	this house be Mary with a house .
+T	44	0-4 5-13 14-17 18-20 20-21 22-25 26-29 30-34 35-38 38-39
+T1	44	0-4 5-13 14-17 18-20 20-21 22-25 26-29 30-34 35-38 38-39
+P0	44	CD NNS VBP PRP , CC DT NNS VBP .
+P1	44	CD NN VB PRP . CC DT NN VB .
+P2	44	CD NNS VBP PRP , CC DT NNS VBP .
+P3	44	CD NNS VBP PRP , CC DT NNS VBP .
+P4	44	CD NNS VBP PRP , CC DT NNS VBP .
+C0	44	B-NP I-NP B-VP B-NP O O B-NP I-NP B-VP O
+C1	44	B-NP I-NP B-VP B-NP O O B-NP I-NP B-VP O
+L0	44	1999 child run we , and the dog see .
+L1	44	1999 child run we , and the dog see .
+L2	44	1999 child run we , and the dog see .
+T	44	0-4 5-10 11-15 16-21 21-22
+T1	44	0-4 5-10 11-15 16-21 21-22
+P0	44	NNP RB VBZ RB .
+P1	44	NNP RB VB RB .
+P2	44	NNP RB VBZ RB .
+P3	44	NNP RB VBZ RB .
+P4	44	NNP RB VBZ RB .
+C0	44	B-NP B-ADVP B-VP B-ADVP O
+C1	44	B-NP B-ADVP B-VP B-ADVP O
+L0	44	Mary often run never !
+L1	44	mary often run never !
+L2	44	Mary often run never !
+S	45	0-51
+S1	45	0-51
+T	45	0-5 6-10 11-16 17-21 21-22 23-26 27-31 32-35 36-41 42-46 47-50 50-51
+T1	45	0-5 6-10 11-16 17-21 21-22 23-26 27-31 32-35 36-41 42-46 47-50 50-51
+P0	45	DT NN VBD PRP , CC DT JJ NN MD VB .
+P1	45	DT NN VB PRP . CC DT JJ NN MD VB .
+P2	45	DT NN VBD PRP , CC DT JJ NN MD VB .
+P3	45	DT NN VBD PRP , CC DT JJ NN MD VB .
+P4	45	DT NN VBD PRP , CC DT JJ NN MD VB .
+C0	45	B-NP I-NP B-VP B-NP O O B-NP I-NP I-NP B-VP I-VP O
+C1	45	B-NP I-NP B-VP B-NP O O B-NP I-NP I-NP B-VP I-VP O
+L0	45	Every book like they , and this old river will run .
+L1	45	every book like they , and this old river will run .
+L2	45	every book like they , and this old river will run .
+S	46	0-27
+S1	46	0-27
+T	46	0-1 2-6 7-14 15-20 21-26 26-27
+T1	46	0-1 2-6 7-14 15-20 21-26 26-27
+P0	46	DT NN RB VBZ RB .
+P1	46	DT NN RB VB RB .
+P2	46	DT NN RB VBZ RB .
+P3	46	DT NN RB VBZ RB .
+P4	46	DT NN RB VBZ RB .
+C0	46	B-NP I-NP B-ADVP B-VP B-ADVP O
+C1	46	B-NP I-NP B-ADVP B-VP B-ADVP O
+L0	46	A city quickly give often ?
+L1	46	a city quickly give often ?
+L2	46	a city quickly give often ?
+S	47	0-17 18-34 35-61
+S1	47	0-17 18-34 35-61
+T	47	0-4 5-9 10-12 13-16 16-17
+T1	47	0-4 5-9 10-12 13-16 16-17
+P0	47	NNP VBD IN PRP .
+P1	47	NNP VB IN PRP .
+P2	47	NNP VBD IN PRP .
+P3	47	NNP VBD IN PRP .
+P4	47	NNP VBD IN PRP .
+C0	47	B-NP B-VP B-PP B-NP O
+C1	47	B-NP B-VP B-PP B-NP O
+L0	47	John read in she .
+L1	47	john read in she .
+L2	47	John read in she .
+T	47	0-4 5-9 10-15 15-16
+T1	47	0-4 5-9 10-15 15-16
+P0	47	PRP VBD RB .
+P1	47	PRP VB RB .
+P2	47	PRP VBD RB .
+P3	47	PRP VBD RB .
+P4	47	PRP VBD RB .
+C0	47	B-NP B-VP B-ADVP O
+C1	47	B-NP B-VP B-ADVP O
+L0	47	They read often .
+L1	47	they read often .
+L2	47	they read often .
+T	47	0-1 2-5 6-9 10-15 16-19 20-25 25-26
+T1	47	0-1 2-5 6-9 10-15 16-19 20-25 25-26
+P0	47	DT JJ NN RB VBZ RB .
+P1	47	DT JJ NN RB VB RB .
+P2	47	DT JJ NN RB VBZ RB .
+P3	47	DT JJ NN RB VBZ RB .
+P4	47	DT JJ NN RB VBZ RB .
+C0	47	B-NP I-NP I-NP B-ADVP B-VP B-ADVP O
+C1	47	B-NP I-NP I-NP B-ADVP B-VP B-ADVP O
+L0	47	A big car often have never ?
+L1	47	a big car often have never ?
+L2	47	a big car often have never ?
+S	48	0-25 26-77
+S1	48	0-25 26-77
+T	48	0-5 6-12 13-18 19-24 24-25
+T1	48	0-5 6-12 13-18 19-24 24-25
+P0	48	CD NNS VBD RB .
+P1	48	CD NN VB RB .
+P2	48	CD NNS VBD RB .
+P3	48	CD NNS VBD RB .
+P4	48	CD NNS VBD RB .
+C0	48	B-NP I-NP B-VP B-ADVP O
+C1	48	B-NP I-NP B-VP B-ADVP O
+L0	48	1,000 city like often .
+L1	48	1,000 city like often .
+L2	48	1,000 city like often .
+T	48	0-5 6-12 13-18 19-22 23-29 30-34 35-38 39-45 46-50 50-51
+T1	48	0-5 6-12 13-18 19-22 23-29 30-34 35-38 39-45 46-50 50-51
+P0	48	DT NN VBZ DT NNS IN DT JJR NNS .
+P1	48	DT NN VB DT NN IN DT JJ NN .
+P2	48	DT NN VBZ DT NNS IN DT JJR NNS .
+P3	48	DT NN VBZ DT NNS IN DT JJR NNS .
+P4	48	DT NN VBZ DT NNS IN DT JJR NNS .
+C0	48	B-NP I-NP B-VP B-NP I-NP B-PP B-NP I-NP I-NP O
+C1	48	B-NP I-NP B-VP B-NP I-NP B-PP B-NP I-NP I-NP O
+L0	48	Every garden like the house near the bigger cat .
+L1	48	every garden like the house near the big cat .
+L2	48	every garden like the house near the big cat .
+S	49	0-30 31-57 58-90
+S1	49	0-30 31-57 58-90
+T	49	0-3 4-12 13-16 17-18 19-25 26-29 29-30
+T1	49	0-3 4-12 13-16 17-18 19-25 26-29 29-30
+P0	49	DT NNS VBP DT JJR NN .
+P1	49	DT NN MD DT JJ NN .
+P2	49	DT NNS VBP DT JJR NN .
+P3	49	DT NNS VBP DT JJR NN .
+P4	49	DT NNS VBP DT JJR NN .
+C0	49	B-NP I-NP B-VP B-NP I-NP I-NP O
+C1	49	B-NP I-NP B-VP B-NP I-NP I-NP O
+L0	49	The child be a bigger car .
+L1	49	the child be a big car .
+L2	49	the child be a big car .
+T	49	0-1 2-8 9-13 14-18 19-25 25-26
+T1	49	0-1 2-8 9-13 14-18 19-25 25-26
+P0	49	CD NNS VBP CD NNS .
+P1	49	CD NN VB CD NN .
+P2	49	CD NNS VBP CD NNS .
+P3	49	CD NNS VBP CD NNS .
+P4	49	CD NNS VBP CD NNS .
+C0	49	B-NP I-NP B-VP B-NP I-NP O
+C1	49	B-NP I-NP B-VP B-NP I-NP O
+L0	49	3 house find 12-5 house .
+L1	49	3 house find 12-5 house .
+L2	49	3 house find 12-5 house .
+T	49	0-6 7-14 15-18 19-21 22-27 28-31 31-32
+T1	49	0-6 7-14 15-18 19-21 22-27 28-31 31-32
+P0	49	NNP RB VBZ IN DT NN .
+P1	49	NNP RB VB IN DT NN .
+P2	49	NNP RB VBZ IN DT NN .
+P3	49	NNP RB VBZ IN DT NN .
+P4	49	NNP RB VBZ IN DT NN .
+C0	49	B-NP B-ADVP B-VP B-PP B-NP I-NP O
+C1	49	B-NP B-ADVP B-VP B-PP B-NP I-NP O
+L0	49	London quickly have in every cat .
+L1	49	london quickly have in every cat .
+L2	49	London quickly have in every cat .
+S	50	0-56 57-88
+S1	50	0-56 57-88
+T	50	0-1 2-8 9-14 15-20 21-24 25-29 29-30 31-34 35-38 39-44 45-51 52-55 55-56
+T1	50	0-1 2-8 9-14 15-20 21-24 25-29 29-30 31-34 35-38 39-44 45-51 52-55 55-56
+P0	50	DT JJR NN RB VBZ NNP , CC DT JJ NNS VBP .
+P1	50	DT JJ NN RB VB NNP . CC DT JJ NN VB .
+P2	50	DT JJR NN RB VBZ NNP , CC DT JJ NNS VBP .
+P3	50	DT JJR NN RB VBZ NNP , CC DT JJ NNS VBP .
+P4	50	DT JJR NN RB VBZ NNP , CC DT JJ NNS VBP .
+C0	50	B-NP I-NP I-NP B-ADVP B-VP B-NP O O B-NP I-NP I-NP B-VP O
+C1	50	B-NP I-NP I-NP B-ADVP B-VP B-NP O O B-NP I-NP I-NP B-VP O
+L0	50	A bigger river often have Mary , but the quick city see .
+L1	50	a big river often have mary , but the quick city see .
+L2	50	a big river often have Mary , but the quick city see .
+T	50	0-1 2-8 9-16 17-22 23-30 30-31
+T1	50	0-1 2-8 9-16 17-22 23-30 30-31
+P0	50	DT JJR NN VBD RB .
+P1	50	DT JJ NN VB RB .
+P2	50	DT JJR NN VBD RB .
+P3	50	DT JJR NN VBD RB .
+P4	50	DT JJR NN VBD RB .
+C0	50	B-NP I-NP I-NP B-VP B-ADVP O
+C1	50	B-NP I-NP I-NP B-VP B-ADVP O
+L0	50	A bigger teacher like quickly .
+L1	50	a big teacher like quickly .
+L2	50	a big teacher like quickly .
+S	51	0-43 44-87
+S1	51	0-43 44-87
+T	51	0-1 2-5 6-10 11-15 16-17 18-24 25-30 31-37 38-42 42-43
+T1	51	0-1 2-5 6-10 11-15 16-17 18-24 25-30 31-37 38-42 42-43
+P0	51	DT NN MD VB CD NNS IN JJR NNS .
+P1	51	DT NN MD VB CD NN IN JJ NN .
+P2	51	DT NN MD VB CD NNS IN JJR NNS .
+P3	51	DT NN MD VB CD NNS IN JJR NNS .
+P4	51	DT NN MD VB CD NNS IN JJR NNS .
+C0	51	B-NP I-NP B-VP I-VP B-NP I-NP B-PP B-NP I-NP O
+C1	51	B-NP I-NP B-VP I-VP B-NP I-NP B-PP B-NP I-NP O
+L0	51	A car will like 3 house under bigger dog .
+L1	51	a car will like 3 house under big dog .
+L2	51	a car will like 3 house under big dog .
+T	51	0-5 6-9 10-12 13-16 17-21 21-22 23-26 27-31 32-37 38-42 42-43
+T1	51	0-5 6-9 10-12 13-16 17-21 21-22 23-26 27-31 32-37 38-42 42-43
+P0	51	DT NN VBZ JJ NNS , CC PRP RB VBP .
+P1	51	DT NN MD JJ NN . CC PRP RB VB .
+P2	51	DT NN VBZ JJ NNS , CC PRP RB VBP .
+P3	51	DT NN VBZ JJ NNS , CC PRP RB VBP .
+P4	51	DT NN VBZ JJ NNS , CC PRP RB VBP .
+C0	51	B-NP I-NP B-VP B-NP I-NP O O B-NP B-ADVP B-VP O
+C1	51	B-NP I-NP B-VP B-NP I-NP O O B-NP B-ADVP B-VP O
+L0	51	Every dog be big car , but they never find .
+L1	51	every dog be big car , but they never find .
+L2	51	every dog be big car , but they never find .
+S	52	0-49 50-81 82-111
+S1	52	0-49 50-81 82-111
+T	52	0-4 5-10 11-18 19-23 24-28 29-31 32-36 36-37 38-41 42-44 45-48 48-49
+T1	52	0-4 5-10 11-18 19-23 24-28 29-31 32-36 36-37 38-41 42-44 45-48 48-49
+P0	52	DT JJ NN MD VB CD NNS , CC PRP VBD .
+P1	52	DT JJ NN MD VB CD NN . CC PRP MD .
+P2	52	DT JJ NN MD VB CD NNS , CC PRP VBD .
+P3	52	DT JJ NN MD VB CD NNS , CC PRP VBD .
+P4	52	DT JJ NN MD VB CD NNS , CC PRP VBD .
+C0	52	B-NP I-NP I-NP B-VP I-VP B-NP I-NP O O B-NP B-VP O
+C1	52	B-NP I-NP I-NP B-VP I-VP B-NP I-NP O O B-NP B-VP O
+L0	52	This quick teacher will find 42 cat , and we be .
+L1	52	this quick teacher will find 42 cat , and we be .
+L2	52	this quick teacher will find 42 cat , and we be .
+T	52	0-1 2-5 6-10 11-14 15-20 21-23 24-25 26-30 30-31
+T1	52	0-1 2-5 6-10 11-14 15-20 21-23 24-25 26-30 30-31
+P0	52	DT NN VBD DT NN IN DT NN .
+P1	52	DT NN VB DT NN IN DT NN .
+P2	52	DT NN VBD DT NN IN DT NN .
+P3	52	DT NN VBD DT NN IN DT NN .
+P4	52	DT NN VBD DT NN IN DT NN .
+C0	52	B-NP I-NP B-VP B-NP I-NP B-PP B-NP I-NP O
+C1	52	B-NP I-NP B-VP B-NP I-NP B-PP B-NP I-NP O
+L0	52	A car read the child on a city .
+L1	52	a car read the child on a city .
+L2	52	a car read the child on a city .
+T	52	0-8 9-14 15-19 20-23 24-28 28-29
+T1	52	0-8 9-14 15-19 20-23 24-28 28-29
+P0	52	NNS RB VBP DT NNS .
+P1	52	NN RB VB DT NN .
+P2	52	NNS RB VBP DT NNS .
+P3	52	NNS RB VBP DT NNS .
+P4	52	NNS RB VBP DT NNS .
+C0	52	B-NP B-ADVP B-VP B-NP I-NP O
+C1	52	B-NP B-ADVP B-VP B-NP I-NP O
+L0	52	teacher never find the car .
+L1	52	teacher never find the car .
+L2	52	teacher never find the car .
+S	53	0-25 26-44 45-87
+S1	53	0-25 26-44 45-87
+T	53	0-5 6-9 10-14 15-20 21-24 24-25
+T1	53	0-5 6-9 10-14 15-20 21-24 24-25
+P0	53	DT NN VBZ IN PRP .
+P1	53	DT NN VB IN PRP .
+P2	53	DT NN VBZ IN PRP .
+P3	53	DT NN VBZ IN PRP .
+P4	53	DT NN VBZ IN PRP .
+C0	53	B-NP I-NP B-VP B-PP B-NP O
+C1	53	B-NP I-NP B-VP B-PP B-NP O
+L0	53	Every テレビ run under she .
+L1	53	every テレビ run under she .
+L2	53	every テレビ run under she .
+T	53	0-3 4-7 8-11 12-17 17-18
+T1	53	0-3 4-7 8-11 12-17 17-18
+P0	53	PRP MD VB RB .
+P1	53	PRP MD VB RB .
+P2	53	PRP MD VB RB .
+P3	53	PRP MD VB RB .
+P4	53	PRP MD VB RB .
+C0	53	B-NP B-VP I-VP B-ADVP O
+C1	53	B-NP B-VP I-VP B-ADVP O
+L0	53	She can run never ?
+L1	53	she can run never ?
+L2	53	she can run never ?
+T	53	0-5 6-11 12-16 17-19 20-23 24-26 26-27 28-31 32-36 37-41 41-42
+T1	53	0-5 6-11 12-16 17-19 20-23 24-26 26-27 28-31 32-36 37-41 41-42
+P0	53	JJ NNS MD VB DT NN , CC NNP VBD .
+P1	53	JJ NN MD MD DT NN . CC NNP VB .
+P2	53	JJ NNS MD VB DT NN , CC NNP VBD .
+P3	53	JJ NNS MD VB DT NN , CC PRP VBD .
+P4	53	JJ NNS MD VB DT NN , CC NNP VBD .
+C0	53	B-NP I-NP B-VP I-VP B-NP I-NP O O B-NP B-VP O
+C1	53	B-NP I-NP B-VP I-VP B-NP I-NP O O B-NP B-VP O
+L0	53	Happy book will be the ねこ , and John give .
+L1	53	happy book will be the ねこ , and john give .
+L2	53	happy book will be the ねこ , and John give .
+S	54	0-26
+S1	54	0-26
+T	54	0-4 5-9 10-12 13-14 15-20 21-25 25-26
+T1	54	0-4 5-9 10-12 13-14 15-20 21-25 25-26
+P0	54	PRP VBP IN DT JJ NN .
+P1	54	PRP VB IN DT JJ NN .
+P2	54	PRP VBP IN DT JJ NN .
+P3	54	PRP VBP IN DT JJ NN .
+P4	54	PRP VBP IN DT JJ NN .
+C0	54	B-NP B-VP B-PP B-NP I-NP I-NP O
+C1	54	B-NP B-VP B-PP B-NP I-NP I-NP O
+L0	54	They give on a small city !
+L1	54	they give on a small city !
+L2	54	they give on a small city !
+S	55	0-33
+S1	55	0-33
+T	55	0-4 5-7 8-16 17-21 22-26 27-32 32-33
+T1	55	0-4 5-7 8-16 17-21 22-26 27-32 32-33
+P0	55	NNP VBZ NNS IN DT NN .
+P1	55	NNP MD NN IN DT NN .
+P2	55	NNP VBZ NNS IN DT NN .
+P3	55	NNP VBZ NNS IN DT NN .
+P4	55	NNP VBZ NNS IN DT NN .
+C0	55	B-NP B-VP B-NP B-PP B-NP I-NP O
+C1	55	B-NP B-VP B-NP B-PP B-NP I-NP O
+L0	55	John be child with this house .
+L1	55	john be child with this house .
+L2	55	John be child with this house .
+S	56	0-29 30-57 58-109
+S1	56	0-29 30-57 58-109
+T	56	0-4 5-11 12-17 18-22 23-28 28-29
+T1	56	0-4 5-11 12-17 18-22 23-28 28-29
+P0	56	CD NNS RB VBP RB .
+P1	56	CD NN RB VB RB .
+P2	56	CD NNS RB VBP RB .
+P3	56	CD NNS RB VBP RB .
+P4	56	CD NNS RB VBP RB .
+C0	56	B-NP I-NP B-ADVP B-VP B-ADVP O
+C1	56	B-NP I-NP B-ADVP B-VP B-ADVP O
+L0	56	12-5 house often find often .
+L1	56	12-5 house often find often .
+L2	56	12-5 house often find often .
+T	56	0-4 5-11 12-15 16-21 22-26 26-27
+T1	56	0-4 5-11 12-15 16-21 22-26 26-27
+P0	56	DT JJR NN VBD NNP .
+P1	56	DT JJ NN VB NNP .
+P2	56	DT JJR NN VBD NNP .
+P3	56	DT JJR NN VBD . .
+P4	56	DT JJR NN VBD NNP .
+C0	56	B-NP I-NP I-NP B-VP B-NP O
+C1	56	B-NP I-NP I-NP B-VP B-NP O
+L0	56	This bigger cat like John ?
+L1	56	this big cat like john ?
+L2	56	this big cat like John ?
+T	56	0-4 5-11 12-15 16-19 20-24 25-26 27-35 36-41 42-45 46-50 50-51
+T1	56	0-4 5-11 12-15 16-19 20-24 25-26 27-35 36-41 42-45 46-50 50-51
+P0	56	DT JJS NN MD VB CD NNS IN DT NNS .
+P1	56	DT JJ NN MD VB CD NN IN DT NN .
+P2	56	DT JJS NN MD VB CD NNS IN DT NNS .
+P3	56	DT JJS NN MD VB CD NNS IN DT NNS .
+P4	56	DT JJS NN MD VB CD NNS IN DT NNS .
+C0	56	B-NP I-NP I-NP B-VP I-VP B-NP I-NP B-PP B-NP I-NP O
+C1	56	B-NP I-NP I-NP B-VP I-VP B-NP I-NP B-PP B-NP I-NP O
+L0	56	This oldest cat can find 3 child under the car .
+L1	56	this old cat can find 3 child under the car .
+L2	56	this old cat can find 3 child under the car .
+S	57	0-32 33-74
+S1	57	0-32 33-74
+T	57	0-5 6-11 12-16 17-20 21-26 27-31 31-32
+T1	57	0-5 6-11 12-16 17-20 21-26 27-31 31-32
+P0	57	NNP VBZ IN DT JJ NNS .
+P1	57	NNP VB IN DT JJ NN .
+P2	57	NNP VBZ IN DT JJ NNS .
+P3	57	NNP VBZ IN DT JJ NNS .
+P4	57	NNP VBZ IN DT JJ NNS .
+C0	57	B-NP B-VP B-PP B-NP I-NP I-NP O
+C1	57	B-NP B-VP B-PP B-NP I-NP I-NP O
+L0	57	Paris read near the happy dog .
+L1	57	paris read near the happy dog .
+L2	57	Paris read near the happy dog .
+T	57	0-5 6-9 10-14 15-18 19-24 25-27 28-31 32-35 36-40 40-41
+T1	57	0-5 6-9 10-14 15-18 19-24 25-27 28-31 32-35 36-40 40-41
+P0	57	DT NN VBD CD NNS IN DT JJ NNS .
+P1	57	DT NN VB CD NN IN DT JJ NN .
+P2	57	DT NN VBD CD NNS IN DT JJ NNS .
+P3	57	DT NN VBD CD NNS IN DT JJ NNS .
+P4	57	DT NN VBD CD NNS IN DT JJ NNS .
+C0	57	B-NP I-NP B-VP B-NP I-NP B-PP B-NP I-NP I-NP O
+C1	57	B-NP I-NP B-VP B-NP I-NP B-PP B-NP I-NP I-NP O
+L0	57	Every テレビ read 3/4 book in the old dog ?
+L1	57	every テレビ read 3/4 book in the old dog ?
+L2	57	every テレビ read 3/4 book in the old dog ?
+S	58	0-16 17-46
+S1	58	0-16 17-46
+T	58	0-5 6-9 10-12 13-15 15-16
+T1	58	0-5 6-9 10-12 13-15 15-16
+P0	58	NNS VBP IN PRP .
+P1	58	NN VB IN PRP .
+P2	58	NNS VBP IN PRP .
+P3	58	NNS VBP IN PRP .
+P4	58	NNS VBP IN PRP .
+C0	58	B-NP B-VP B-PP B-NP O
+C1	58	B-NP B-VP B-PP B-NP O
+L0	58	book run on he .
+L1	58	book run on he .
+L2	58	book run on he .
+T	58	0-1 2-5 6-9 10-14 15-18 19-21 22-28 28-29
+T1	58	0-1 2-5 6-9 10-14 15-18 19-21 22-28 28-29
+P0	58	DT NN VBD DT NN IN NNP .
+P1	58	DT NN MD DT NN IN NNP .
+P2	58	DT NN VBD DT NN IN NNP .
+P3	58	DT NN VBD DT NN IN NNP .
+P4	58	DT NN VBD DT NN IN NNP .
+C0	58	B-NP I-NP B-VP B-NP I-NP B-PP B-NP O
+C1	58	B-NP I-NP B-VP B-NP I-NP B-PP B-NP O
+L0	58	A テレビ be this dog in London .
+L1	58	a テレビ be this dog in london .
+L2	58	a テレビ be this dog in London .
+S	59	0-23 24-59 60-88
+S1	59	0-23 24-59 60-88
+T	59	0-3 4-8 9-14 15-16 17-22 22-23
+T1	59	0-3 4-8 9-14 15-16 17-22 22-23
+P0	59	DT NN VBZ DT NN .
+P1	59	DT NN VB DT NN .
+P2	59	DT NN VBZ DT NN .
+P3	59	DT NN VBZ DT NN .
+P4	59	DT NN VBZ DT NN .
+C0	59	B-NP I-NP B-VP B-NP I-NP O
+C1	59	B-NP I-NP B-VP B-NP I-NP O
+L0	59	The city read a house ?
+L1	59	the city read a house ?
+L2	59	the city read a house ?
+T	59	0-5 6-9 10-14 15-20 21-25 26-34 34-35
+T1	59	0-5 6-9 10-14 15-20 21-25 26-34 34-35
+P0	59	NNP VBD PRP IN CD NNS .
+P1	59	NNP MD PRP IN CD NN .
+P2	59	NNP VBD PRP IN CD NNS .
+P3	59	NNP VBD PRP IN CD NNS .
+P4	59	NNP VBD PRP IN CD NNS .
+C0	59	B-NP B-VP B-NP B-PP B-NP I-NP O
+C1	59	B-NP B-VP B-NP B-PP B-NP I-NP O
+L0	59	Paris be they under 12-5 teacher .
+L1	59	paris be they under 12-5 teacher .
+L2	59	Paris be they under 12-5 teacher .
+T	59	0-3 4-7 8-12 13-17 18-22 23-27 27-28
+T1	59	0-3 4-7 8-12 13-17 18-22 23-27 27-28
+P0	59	PRP MD VB IN DT NN .
+P1	59	PRP MD VB IN DT NN .
+P2	59	PRP MD VB IN DT NN .
+P3	59	PRP MD VB IN DT NN .
+P4	59	PRP MD VB IN DT NN .
+C0	59	B-NP B-VP I-VP B-PP B-NP I-NP O
+C1	59	B-NP B-VP I-VP B-PP B-NP I-NP O
+L0	59	She can have near this city !
+L1	59	she can have near this city !
+L2	59	she can have near this city !
+S	60	0-31 32-62 63-90
+S1	60	0-31 32-62 63-90
+T	60	0-3 4-8 9-13 14-16 17-23 24-26 27-30 30-31
+T1	60	0-3 4-8 9-13 14-16 17-23 24-26 27-30 30-31
+P0	60	CD NNS VBD CD NNS IN PRP .
+P1	60	CD NN VB CD NN IN PRP .
+P2	60	CD NNS VBD CD NNS IN PRP .
+P3	60	CD NNS VBD CD NNS IN PRP .
+P4	60	CD NNS VBD CD NNS IN PRP .
+C0	60	B-NP I-NP B-VP B-NP I-NP B-PP B-NP O
+C1	60	B-NP I-NP B-VP B-NP I-NP B-PP B-NP O
+L0	60	3/4 cat read 42 city on she .
+L1	60	3/4 cat read 42 city on she .
+L2	60	3/4 cat read 42 city on she .
+T	60	0-2 3-8 9-13 14-19 20-24 25-29 29-30
+T1	60	0-2 3-8 9-13 14-19 20-24 25-29 29-30
+P0	60	PRP VBZ DT NN IN NNP .
+P1	60	PRP VB DT NN IN NNP .
+P2	60	PRP VBZ DT NN IN NNP .
+P3	60	PRP VBZ DT NN IN NNP .
+P4	60	PRP VBZ DT NN IN NNP .
+C0	60	B-NP B-VP B-NP I-NP B-PP B-NP O
+C1	60	B-NP B-VP B-NP I-NP B-PP B-NP O
+L0	60	He give this river with Mary .
+L1	60	he give this river with mary .
+L2	60	he give this river with Mary .
+T	60	0-4 5-8 9-13 14-19 20-26 26-27
+T1	60	0-4 5-8 9-13 14-19 20-26 26-27
+P0	60	PRP MD VB CD NNS .
+P1	60	PRP MD VB CD NN .
+P2	60	PRP MD VB CD NNS .
+P3	60	PRP MD VB CD NNS .
+P4	60	PRP MD VB CD NNS .
+C0	60	B-NP B-VP I-VP B-NP I-NP O
+C1	60	B-NP B-VP I-VP B-NP I-NP O
+L0	60	They can read 1,000 city .
+L1	60	they can read 1,000 city .
+L2	60	they can read 1,000 city .
+S	61	0-16
+S1	61	0-16
+T	61	0-3 4-7 8-15 15-16
+T1	61	0-3 4-7 8-15 15-16
+P0	61	PRP VBD RB .
+P1	61	PRP VB RB .
+P2	61	PRP VBD RB .
+P3	61	PRP VBD RB .
+P4	61	PRP VBD RB .
+C0	61	B-NP B-VP B-ADVP O
+C1	61	B-NP B-VP B-ADVP O
+L0	61	She see quickly .
+L1	61	she see quickly .
+L2	61	she see quickly .
+S	62	0-18 19-38
+S1	62	0-18 19-38
+T	62	0-4 5-9 10-12 13-17 17-18
+T1	62	0-4 5-9 10-12 13-17 17-18
+P0	62	PRP VBP CD NNS .
+P1	62	PRP VB CD NN .
+P2	62	PRP VBP CD NNS .
+P3	62	PRP VBP CD NNS .
+P4	62	PRP VBP CD NNS .
+C0	62	B-NP B-VP B-NP I-NP O
+C1	62	B-NP B-VP B-NP I-NP O
+L0	62	They like 42 dog ?
+L1	62	they like 42 dog ?
+L2	62	they like 42 dog ?
+T	62	0-3 4-10 11-15 16-18 18-19
+T1	62	0-3 4-10 11-15 16-18 18-19
+P0	62	CD NNS VBP PRP .
+P1	62	CD NN VB PRP .
+P2	62	CD NNS VBP PRP .
+P3	62	CD NNS VBP PRP .
+P4	62	CD NNS VBP PRP .
+C0	62	B-NP I-NP B-VP B-NP O
+C1	62	B-NP I-NP B-VP B-NP O
+L0	62	3/4 house find he .
+L1	62	3/4 house find he .
+L2	62	3/4 house find he .
+S	63	0-41 42-93
+S1	63	0-41 42-93
+T	63	0-3 4-9 10-18 19-24 25-26 27-31 32-37 38-40 40-41
+T1	63	0-3 4-9 10-18 19-24 25-26 27-31 32-37 38-40 40-41
+P0	63	DT JJ NNS VBD DT NN IN PRP .
+P1	63	DT JJ NN VB DT NN IN PRP .
+P2	63	DT JJ NNS VBD DT NN IN PRP .
+P3	63	DT JJ NNS VBD DT NN IN PRP .
+P4	63	DT JJ NNS VBD DT NN IN PRP .
+C0	63	B-NP I-NP I-NP B-VP B-NP I-NP B-PP B-NP O
+C1	63	B-NP I-NP I-NP B-VP B-NP I-NP B-PP B-NP O
+L0	63	The small child find a book under we .
+L1	63	the small child find a book under we .
+L2	63	the small child find a book under we .
+T	63	0-3 4-9 10-16 17-21 22-26 27-30 31-36 37-39 40-45 46-50 50-51
+T1	63	0-3 4-9 10-16 17-21 22-26 27-30 31-36 37-39 40-45 46-50 50-51
+P0	63	DT JJ NNS VBD DT JJ NN IN CD NNS .
+P1	63	DT JJ NN VB DT JJ NN IN CD NN .
+P2	63	DT JJ NNS VBD DT JJ NN IN CD NNS .
+P3	63	DT JJ NNS VBD DT JJ NN IN CD NNS .
+P4	63	DT JJ NNS VBD DT JJ NN IN CD NNS .
+C0	63	B-NP I-NP I-NP B-VP B-NP I-NP I-NP B-PP B-NP I-NP O
+C1	63	B-NP I-NP I-NP B-VP B-NP I-NP I-NP B-PP B-NP I-NP O
+L0	63	The small city give this old river on 1,000 cat .
+L1	63	the small city give this old river on 1,000 cat .
+L2	63	the small city give this old river on 1,000 cat .
+S	64	0-19 20-60 61-116
+S1	64	0-19 20-60 61-116
+T	64	0-8 9-13 14-18 18-19
+T1	64	0-8 9-13 14-18 18-19
+P0	64	NNS VBD PRP .
+P1	64	NN VB PRP .
+P2	64	NNS VBD PRP .
+P3	64	NNS VBD PRP .
+P4	64	NNS VBD PRP .
+C0	64	B-NP B-VP B-NP O
+C1	64	B-NP B-VP B-NP O
+L0	64	teacher give they .
+L1	64	teacher give they .
+L2	64	teacher give they .
+T	64	0-5 6-10 11-14 15-20 20-21 22-25 26-27 28-31 32-35 36-39 39-40
+T1	64	0-5 6-10 11-14 15-20 20-21 22-25 26-27 28-31 32-35 36-39 39-40
+P0	64	NNP VBZ DT NNS , CC DT NN MD VB .
+P1	64	NNP VB DT NN . CC DT NN MD VB .
+P2	64	NNP VBZ DT NNS , CC DT NN MD VB .
+P3	64	NNP VBZ DT NNS , CC DT NN MD VB .
+P4	64	NNP VBZ DT NNS , CC DT NN MD VB .
+C0	64	B-NP B-VP B-NP I-NP O O B-NP I-NP B-VP I-VP O
+C1	64	B-NP B-VP B-NP I-NP O O B-NP I-NP B-VP I-VP O
+L0	64	Paris see the book , but a dog can see .
+L1	64	paris see the book , but a dog can see .
+L2	64	Paris see the book , but a dog can see .
+T	64	0-1 2-8 9-13 14-17 18-22 23-31 31-32 33-36 37-41 42-49 50-54 54-55
+T1	64	0-1 2-8 9-13 14-17 18-22 23-31 31-32 33-36 37-41 42-49 50-54 54-55
+P0	64	DT NN MD VB CD NNS , CC DT NN VBD .
+P1	64	DT NN MD VB CD NN . CC DT NN VB .
+P2	64	DT NN MD VB CD NNS , CC DT NN VBD .
+P3	64	DT NN MD VB CD NNS , CC DT NN VBD .
+P4	64	DT NN MD VB CD NNS , CC DT NN VBD .
+C0	64	B-NP I-NP B-VP I-VP B-NP I-NP O O B-NP I-NP B-VP O
+C1	64	B-NP I-NP B-VP I-VP B-NP I-NP O O B-NP I-NP B-VP O
+L0	64	A garden will run 12-5 teacher , and this teacher read .
+L1	64	a garden will run 12-5 teacher , and this teacher read .
+L2	64	a garden will run 12-5 teacher , and this teacher read .
+S	65	0-49
+S1	65	0-49
+T	65	0-3 4-9 10-12 13-16 17-22 23-28 28-29 30-33 34-39 40-43 44-48 48-49
+T1	65	0-3 4-9 10-12 13-16 17-22 23-28 28-29 30-33 34-39 40-43 44-48 48-49
+P0	65	DT NN VBZ DT JJ NNS , CC DT NN VBZ .
+P1	65	DT NN MD DT JJ NN . CC DT NN VB .
+P2	65	DT NN VBZ DT JJ NNS , CC DT NN VBZ .
+P3	65	DT NN VBZ DT JJ NNS , CC DT NN VBZ .
+P4	65	DT NN VBZ DT JJ NNS , CC DT NN VBZ .
+C0	65	B-NP I-NP B-VP B-NP I-NP I-NP O O B-NP I-NP B-VP O
+C1	65	B-NP I-NP B-VP B-NP I-NP I-NP O O B-NP I-NP B-VP O
+L0	65	The house be the quick book , and every テレビ run .
+L1	65	the house be the quick book , and every テレビ run .
+L2	65	the house be the quick book , and every テレビ run .
+S	66	0-36
+S1	66	0-36
+T	66	0-2 3-6 7-10 11-19 19-20 21-24 25-30 31-35 35-36
+T1	66	0-2 3-6 7-10 11-19 19-20 21-24 25-30 31-35 35-36
+P0	66	PRP VBD CD NNS , CC NNP VBZ .
+P1	66	PRP MD CD NN . CC NNP VB .
+P2	66	PRP VBD CD NNS , CC NNP VBZ .
+P3	66	PRP VBD CD NNS , CC NNP VBZ .
+P4	66	PRP VBD CD NNS , CC NNP VBZ .
+C0	66	B-NP B-VP B-NP I-NP O O B-NP B-VP O
+C1	66	B-NP B-VP B-NP I-NP O O B-NP B-VP O
+L0	66	We be 3.5 child , and Paris run .
+L1	66	we be 3.5 child , and paris run .
+L2	66	we be 3.5 child , and Paris run .
+S	67	0-26 27-53 54-85
+S1	67	0-26 27-53 54-85
+T	67	0-2 3-6 7-11 12-16 17-21 22-25 25-26
+T1	67	0-2 3-6 7-11 12-16 17-21 22-25 25-26
+P0	67	PRP MD VB IN DT NN .
+P1	67	PRP MD VB IN DT NN .
+P2	67	PRP MD VB IN DT NN .
+P3	67	PRP MD VB IN DT NN .
+P4	67	PRP MD VB IN DT NN .
+C0	67	B-NP B-VP I-VP B-PP B-NP I-NP O
+C1	67	B-NP B-VP I-VP B-PP B-NP I-NP O
+L0	67	We can find near this テレビ ?
+L1	67	we can find near this テレビ ?
+L2	67	we can find near this テレビ ?
+T	67	0-5 6-12 13-16 17-22 23-25 25-26
+T1	67	0-5 6-12 13-16 17-22 23-25 25-26
+P0	67	JJ NNS VBD IN PRP .
+P1	67	JJ NN VB IN PRP .
+P2	67	JJ NNS VBD IN PRP .
+P3	67	JJ NNS VBD IN PRP .
+P4	67	JJ NNS VBD IN PRP .
+C0	67	B-NP I-NP B-VP B-PP B-NP O
+C1	67	B-NP I-NP B-VP B-PP B-NP O
+L0	67	Quick city have under we .
+L1	67	quick city have under we .
+L2	67	quick city have under we .
+T	67	0-2 3-8 9-11 12-17 18-24 25-30 30-31
+T1	67	0-2 3-8 9-11 12-17 18-24 25-30 30-31
+P0	67	PRP VBZ IN DT JJS NN .
+P1	67	PRP VB IN DT JJ NN .
+P2	67	PRP VBZ IN DT JJS NN .
+P3	67	PRP VBZ IN DT JJS NN .
+P4	67	PRP VBZ IN DT JJS NN .
+C0	67	B-NP B-VP B-PP B-NP I-NP I-NP O
+C1	67	B-NP B-VP B-PP B-NP I-NP I-NP O
+L0	67	It like on every oldest house .
+L1	67	it like on every old house .
+L2	67	it like on every old house .
+S	68	0-30 31-59 60-113 114-140 141-171 172-211 212-232 233-249 250-304 305-326 327-357 358-406 407-449 450-467 468-500 501-556 557-574 575-612 613-631 632-677 678-698 699-724 725-763 764-808 809-856 857-901 902-927 928-946 947-977 978-1003 1004-1032 1033-1058 1059-1085 1086-1109 1110-1136 1137-1166 1167-1179 1180-1198 1199-1222 1223-1253 1254-1286 1287-1307 1308-1329 1330-1379 1380-1403 1404-1424 1425-1445 1446-1470 1471-1499 1500-1519 1520-1540 1541-1573 1574-1614 1615-1644 1645-1690 1691-1723 1724-1749 1750-1778 1779-1813 1814-1832 1833-1867 1868-1899 1900-1940 1941-1989 1990-2023 2024-2059 2060-2087 2088-2106 2107-2155 2156-2186 2187-2208 2209-2239 2240-2257 2258-2289 2290-2333 2334-2361 2362-2403 2404-2442 2443-2490 2491-2533
+S1	68	0-30 31-59 60-113 114-140 141-171 172-211 212-232 233-249 250-304 305-326 327-357 358-406 407-449 450-467 468-500 501-556 557-574 575-612 613-631 632-677 678-698 699-724 725-763 764-808 809-856 857-901 902-927 928-946 947-977 978-1003 1004-1032 1033-1058 1059-1085 1086-1109 1110-1136 1137-1166 1167-1179 1180-1198 1199-1222 1223-1253 1254-1286 1287-1307 1308-1329 1330-1379 1380-1403 1404-1424 1425-1445 1446-1470 1471-1499 1500-1519 1520-1540 1541-1573 1574-1614 1615-1644 1645-1690 1691-1723 1724-1749 1750-1778 1779-1813 1814-1832 1833-1867 1868-1899 1900-1940 1941-1989 1990-2023 2024-2059 2060-2087 2088-2106 2107-2155 2156-2186 2187-2208 2209-2239 2240-2257 2258-2289 2290-2333 2334-2361 2362-2403 2404-2442 2443-2490 2491-2533
+T	68	0-3 4-10 11-17 18-23 24-29 29-30
+T1	68	0-3 4-10 11-17 18-23 24-29 29-30
+P0	68	DT JJR NNS VBD RB .
+P1	68	DT JJ NN VB RB .
+P2	68	DT JJR NNS VBD RB .
+P3	68	DT JJR NNS VBD RB .
+P4	68	DT JJR NNS VBD RB .
+C0	68	B-NP I-NP I-NP B-VP B-ADVP O
+C1	68	B-NP I-NP I-NP B-VP B-ADVP O
+L0	68	The bigger city like often .
+L1	68	the big city like often .
+L2	68	the big city like often .
+T	68	0-6 7-10 11-15 16-20 21-27 27-28
+T1	68	0-6 7-10 11-15 16-20 21-27 27-28
+P0	68	NNP MD VB DT NN .
+P1	68	NNP MD VB DT NN .
+P2	68	NNP MD VB DT NN .
+P3	68	NNP MD VB DT NN .
+P4	68	NNP MD VB DT NN .
+C0	68	B-NP B-VP I-VP B-NP I-NP O
+C1	68	B-NP B-VP I-VP B-NP I-NP O
+L0	68	London can like this garden .
+L1	68	london can like this garden .
+L2	68	London can like this garden .
+T	68	0-2 3-7 8-11 12-15 16-23 23-24 25-28 29-34 35-43 44-47 48-52 52-53
+T1	68	0-2 3-7 8-11 12-15 16-23 23-24 25-28 29-34 35-43 44-47 48-52 52-53
+P0	68	CD NNS VBD DT NN , CC CD NNS MD VB .
+P1	68	CD NN VB DT NN . CC CD NN MD VB .
+P2	68	CD NNS VBD DT NN , CC CD NNS MD VB .
+P3	68	CD NNS VBD DT NN , CC CD NNS MD VB .
+P4	68	CD NNS VBD DT NN , CC CD NNS MD VB .
+C0	68	B-NP I-NP B-VP B-NP I-NP O O B-NP I-NP B-VP I-VP O
+C1	68	B-NP I-NP B-VP B-NP I-NP O O B-NP I-NP B-VP I-VP O
+L0	68	42 dog run the teacher , but 1,000 teacher can like ?
+L1	68	42 dog run the teacher , but 1,000 teacher can like ?
+L2	68	42 dog run the teacher , but 1,000 teacher can like ?
+T	68	0-4 5-8 9-14 15-19 20-25 25-26
+T1	68	0-4 5-8 9-14 15-19 20-25 25-26
+P0	68	DT NN RB VBZ RB .
+P1	68	DT NN RB VB RB .
+P2	68	DT NN RB VBZ RB .
+P3	68	DT NN RB VBZ RB .
+P4	68	DT NN RB VBZ RB .
+C0	68	B-NP I-NP B-ADVP B-VP B-ADVP O
+C1	68	B-NP I-NP B-ADVP B-VP B-ADVP O
+L0	68	This テレビ never run often .
+L1	68	this テレビ never run often .
+L2	68	this テレビ never run often .
+T	68	0-3 4-8 9-12 13-17 18-22 23-29 29-30
+T1	68	0-3 4-8 9-12 13-17 18-22 23-29 29-30
+P0	68	DT NNS MD VB IN NNS .
+P1	68	DT NN MD VB IN NN .
+P2	68	DT NNS MD VB IN NNS .
+P3	68	DT NNS MD VB IN NNS .
+P4	68	DT NNS MD VB IN NNS .
+C0	68	B-NP I-NP B-VP I-VP B-PP B-NP O
+C1	68	B-NP I-NP B-VP I-VP B-PP B-NP O
+L0	68	The dog can have near city .
+L1	68	the dog can have near city .
+L2	68	the dog can have near city .
+T	68	0-8 9-13 14-19 19-20 21-24 25-29 30-34 35-38 38-39
+T1	68	0-8 9-13 14-19 19-20 21-24 25-29 30-34 35-38 38-39
+P0	68	NNS VBP NNP , CC CD NNS VBD .
+P1	68	NN VB NNP . CC CD NN VB .
+P2	68	NNS VBP NNP , CC CD NNS VBD .
+P3	68	NNS VBP NNP , CC CD NNS VBD .
+P4	68	NNS VBP NNP , CC CD NNS VBD .
+C0	68	B-NP B-VP B-NP O O B-NP I-NP B-VP O
+C1	68	B-NP B-VP B-NP O O B-NP I-NP B-VP O
+L0	68	teacher like Paris , and 12-5 cat run .
+L1	68	teacher like paris , and 12-5 cat run .
+L2	68	teacher like Paris , and 12-5 cat run .
+T	68	0-4 5-9 10-13 14-19 19-20
+T1	68	0-4 5-9 10-13 14-19 19-20
+P0	68	PRP MD VB RB .
+P1	68	PRP MD VB RB .
+P2	68	PRP MD VB RB .
+P3	68	PRP MD VB RB .
+P4	68	PRP MD VB RB .
+C0	68	B-NP B-VP I-VP B-ADVP O
+C1	68	B-NP B-VP I-VP B-ADVP O
+L0	68	They will run never ?
+L1	68	they will run never ?
+L2	68	they will run never ?
+T	68	0-5 6-10 11-15 15-16
+T1	68	0-5 6-10 11-15 15-16
+P0	68	NNP VBZ PRP .
+P1	68	NNP VB PRP .
+P2	68	NNP VBZ PRP .
+P3	68	NNP VBZ PRP .
+P4	68	NNP VBZ PRP .
+C0	68	B-NP B-VP B-NP O
+C1	68	B-NP B-VP B-NP O
+L0	68	Paris see they .
+L1	68	paris see they .
+L2	68	Paris see they .
+T	68	0-3 4-8 9-13 14-18 19-24 24-25 26-29 30-35 36-41 42-47 48-53 53-54
+T1	68	0-3 4-8 9-13 14-18 19-24 24-25 26-29 30-35 36-41 42-47 48-53 53-54
+P0	68	DT NNS VBP DT NN , CC DT NN RB VBZ .
+P1	68	DT NN VB DT NN . CC DT NN RB VB .
+P2	68	DT NNS VBP DT NN , CC DT NN RB VBZ .
+P3	68	DT NNS VBD DT NN , CC DT NN RB VBZ .
+P4	68	DT NNS VBP DT NN , CC DT NN RB VBZ .
+C0	68	B-NP I-NP B-VP B-NP I-NP O O B-NP I-NP B-ADVP B-VP O
+C1	68	B-NP I-NP B-VP B-NP I-NP O O B-NP I-NP B-ADVP B-VP O
+L0	68	The car read this house , but every child often find .
+L1	68	the car read this house , but every child often find .
+L2	68	the car read this house , but every child often find .
+T	68	0-4 5-11 12-15 16-20 20-21
+T1	68	0-4 5-11 12-15 16-20 20-21
+P0	68	CD NNS VBD NNP .
+P1	68	CD NN VB NNP .
+P2	68	CD NNS VBD NNP .
+P3	68	CD NNS VBD NNP .
+P4	68	CD NNS VBD NNP .
+C0	68	B-NP I-NP B-VP B-NP O
+C1	68	B-NP I-NP B-VP B-NP O
+L0	68	1999 city have Mary .
+L1	68	1999 city have mary .
+L2	68	1999 city have Mary .
+T	68	0-4 5-9 10-14 15-19 20-24 25-29 29-30
+T1	68	0-4 5-9 10-14 15-19 20-24 25-29 29-30
+P0	68	NNP MD VB IN CD NNS .
+P1	68	NNP MD VB IN CD NN .
+P2	68	NNP MD VB IN CD NNS .
+P3	68	NNP MD VB IN CD NNS .
+P4	68	NNP MD VB IN CD NNS .
+C0	68	B-NP B-VP I-VP B-PP B-NP I-NP O
+C1	68	B-NP B-VP I-VP B-PP B-NP I-NP O
+L0	68	John will read with 1999 dog !
+L1	68	john will read with 1999 dog !
+L2	68	John will read with 1999 dog !
+T	68	0-3 4-8 9-16 17-21 22-25 25-26 27-30 31-37 38-42 43-47 47-48
+T1	68	0-3 4-8 9-16 17-21 22-25 25-26 27-30 31-37 38-42 43-47 47-48
+P0	68	DT NNS RB VBP PRP , CC JJR NNS VBP .
+P1	68	DT NN RB VB PRP . CC JJ NN VB .
+P2	68	DT NNS RB VBP PRP , CC JJR NNS VBP .
+P3	68	DT NNS RB VBP PRP , CC JJR NNS VBP .
+P4	68	DT NNS RB VBP PRP , CC JJR NNS VBP .
+C0	68	B-NP I-NP B-ADVP B-VP B-NP O O B-NP I-NP B-VP O
+C1	68	B-NP I-NP B-ADVP B-VP B-NP O O B-NP I-NP B-VP O
+L0	68	The dog quickly read she , and bigger car have .
+L1	68	the dog quickly read she , and big car have .
+L2	68	the dog quickly read she , and big car have .
+T	68	0-3 4-10 11-16 17-20 21-25 26-29 30-36 37-41 41-42
+T1	68	0-3 4-10 11-16 17-20 21-25 26-29 30-36 37-41 41-42
+P0	68	DT JJR NNS MD VB DT JJR NNS .
+P1	68	DT JJ NN MD VB DT JJ NN .
+P2	68	DT JJR NNS MD VB DT JJR NNS .
+P3	68	DT JJR NNS MD VB DT JJR NNS .
+P4	68	DT JJR NNS MD VB DT JJR NNS .
+C0	68	B-NP I-NP I-NP B-VP I-VP B-NP I-NP I-NP O
+C1	68	B-NP I-NP I-NP B-VP I-VP B-NP I-NP I-NP O
+L0	68	The bigger book can have the bigger dog .
+L1	68	the big book can have the big dog .
+L2	68	the big book can have the big dog .
+T	68	0-4 5-8 9-16 16-17
+T1	68	0-4 5-8 9-16 16-17
+P0	68	NNP VBZ RB .
+P1	68	NNP VB RB .
+P2	68	NNP VBZ RB .
+P3	68	NNP VBZ RB .
+P4	68	NNP VBZ RB .
+C0	68	B-NP B-VP B-ADVP O
+C1	68	B-NP B-VP B-ADVP O
+L0	68	John have quickly .
+L1	68	john have quickly .
+L2	68	John have quickly .
+T	68	0-4 5-7 8-11 12-15 15-16 17-20 21-27 28-31 31-32
+T1	68	0-4 5-7 8-11 12-15 15-16 17-20 21-27 28-31 31-32
+P0	68	NNP VBZ DT NN , CC NNP VBZ .
+P1	68	NNP MD DT NN . CC NNP VB .
+P2	68	NNP VBZ DT NN , CC NNP VBZ .
+P3	68	NNP VBZ DT NN , CC NNP VBZ .
+P4	68	NNP VBZ DT NN , CC NNP VBZ .
+C0	68	B-NP B-VP B-NP I-NP O O B-NP B-VP O
+C1	68	B-NP B-VP B-NP I-NP O O B-NP B-VP O
+L0	68	John be the cat , but London have .
+L1	68	john be the cat , but london have .
+L2	68	John be the cat , but London have .
+T	68	0-5 6-11 12-17 18-23 24-27 28-34 34-35 36-39 40-43 44-49 50-54 54-55
+T1	68	0-5 6-11 12-17 18-23 24-27 28-34 34-35 36-39 40-43 44-49 50-54 54-55
+P0	68	DT JJ NN VBZ DT NNS , CC CD NNS VBP .
+P1	68	DT JJ NN VB DT NN . CC CD NN VB .
+P2	68	DT JJ NN VBZ DT NNS , CC CD NNS VBP .
+P3	68	DT JJ NN VBZ DT NNS , CC CD NNS VBP .
+P4	68	DT JJ NN VBZ DT NNS , CC CD NNS VBP .
+C0	68	B-NP I-NP I-NP B-VP B-NP I-NP O O B-NP I-NP B-VP O
+C1	68	B-NP I-NP I-NP B-VP B-NP I-NP O O B-NP I-NP B-VP O
+L0	68	Every happy river like the house , but 3/4 book give .
+L1	68	every happy river like the house , but 3/4 book give .
+L2	68	every happy river like the house , but 3/4 book give .
+T	68	0-3 4-8 9-12 13-16 16-17
+T1	68	0-3 4-8 9-12 13-16 16-17
+P0	68	DT NNS VBP PRP .
+P1	68	DT NN MD PRP .
+P2	68	DT NNS VBP PRP .
+P3	68	DT NNS VBP PRP .
+P4	68	DT NNS VBP PRP .
+C0	68	B-NP I-NP B-VP B-NP O
+C1	68	B-NP I-NP B-VP B-NP O
+L0	68	The dog be she .
+L1	68	the dog be she .
+L2	68	the dog be she .
+T	68	0-2 3-6 7-13 13-14 15-18 19-24 25-30 31-36 36-37
+T1	68	0-2 3-6 7-13 13-14 15-18 19-24 25-30 31-36 36-37
+P0	68	PRP VBD NNP , CC DT NN VBZ .
+P1	68	PRP VB NNP . CC DT NN VB .
+P2	68	PRP VBD NNP , CC DT NN VBZ .
+P3	68	PRP VBD NNP , CC DT NN VBZ .
+P4	68	PRP VBD NNP , CC DT NN VBZ .
+C0	68	B-NP B-VP B-NP O O B-NP I-NP B-VP O
+C1	68	B-NP B-VP B-NP O O B-NP I-NP B-VP O
+L0	68	We have London , but every child give .
+L1	68	we have london , but every child give .
+L2	68	we have London , but every child give .
+T	68	0-2 3-6 7-11 12-17 17-18
+T1	68	0-2 3-6 7-11 12-17 17-18
+P0	68	PRP MD VB RB .
+P1	68	PRP MD VB RB .
+P2	68	PRP MD VB RB .
+P3	68	PRP MD VB RB .
+P4	68	PRP MD VB RB .
+C0	68	B-NP B-VP I-VP B-ADVP O
+C1	68	B-NP B-VP I-VP B-ADVP O
+L0	68	It can like often .
+L1	68	it can like often .
+L2	68	it can like often .
+T	68	0-2 3-10 11-14 15-19 19-20 21-24 25-30 31-34 35-40 41-44 44-45
+T1	68	0-2 3-10 11-14 15-19 19-20 21-24 25-30 31-34 35-40 41-44 44-45
+P0	68	PRP RB VBZ NNP , CC DT NN RB VBZ .
+P1	68	PRP RB VB NNP . CC DT NN RB VB .
+P2	68	PRP RB VBZ NNP , CC DT NN RB VBZ .
+P3	68	PRP RB VBZ NNP , CC DT NN RB VBZ .
+P4	68	PRP RB VBZ NNP , CC DT NN RB VBZ .
+C0	68	B-NP B-ADVP B-VP B-NP O O B-NP I-NP B-ADVP B-VP O
+C1	68	B-NP B-ADVP B-VP B-NP O O B-NP I-NP B-ADVP B-VP O
+L0	68	It quickly have Mary , but every テレビ never have .
+L1	68	it quickly have mary , but every テレビ never have .
+L2	68	it quickly have Mary , but every テレビ never have .
+T	68	0-1 2-6 7-11 12-19 19-20
+T1	68	0-1 2-6 7-11 12-19 19-20
+P0	68	CD NNS VBD RB .
+P1	68	CD NN VB RB .
+P2	68	CD NNS VBP RB .
+P3	68	CD NNS VBD RB .
+P4	68	CD NNS VBP RB .
+C0	68	B-NP I-NP B-VP B-ADVP O
+C1	68	B-NP I-NP B-VP B-ADVP O
+L0	68	3 cat read quickly ?
+L1	68	3 cat read quickly ?
+L2	68	3 cat read quickly ?
+T	68	0-4 5-9 10-14 15-20 21-24 24-25
+T1	68	0-4 5-9 10-14 15-20 21-24 24-25
+P0	68	DT NN VBD IN PRP .
+P1	68	DT NN VB IN PRP .
+P2	68	DT NN VB IN PRP .
+P3	68	DT NN VBD IN PRP .
+P4	68	DT NN VB IN PRP .
+C0	68	B-NP I-NP B-VP B-PP B-NP O
+C1	68	B-NP I-NP B-VP B-PP B-NP O
+L0	68	This city read under she .
+L1	68	this city read under she .
+L2	68	this city read under she .
+T	68	0-3 4-8 9-13 14-15 16-22 22-23 24-27 28-32 33-37 37-38
+T1	68	0-3 4-8 9-13 14-15 16-22 22-23 24-27 28-32 33-37 37-38
+P0	68	DT NN VBD CD NNS , CC PRP VBP .
+P1	68	DT NN VB CD NN . CC PRP VB .
+P2	68	DT NN VBD CD NNS , CC PRP VBP .
+P3	68	DT NN VBD CD NNS , CC PRP VBP .
+P4	68	DT NN VBD CD NNS , CC PRP VBP .
+C0	68	B-NP I-NP B-VP B-NP I-NP O O B-NP B-VP O
+C1	68	B-NP I-NP B-VP B-NP I-NP O O B-NP B-VP O
+L0	68	The city read 3 city , but they give .
+L1	68	the city read 3 city , but they give .
+L2	68	the city read 3 city , but they give .
+T	68	0-5 6-9 10-13 14-19 20-24 25-29 29-30 31-34 35-37 38-43 43-44
+T1	68	0-5 6-9 10-13 14-19 20-24 25-29 29-30 31-34 35-37 38-43 43-44
+P0	68	DT JJ NN RB VBZ NNS , CC PRP VBZ .
+P1	68	DT JJ NN RB VB NN . CC PRP VB .
+P2	68	DT JJ NN RB VBZ NNS , CC PRP VBZ .
+P3	68	DT JJ NN RB VBZ NNS , CC PRP VBZ .
+P4	68	DT JJ NN RB VBZ NNS , CC PRP VBZ .
+C0	68	B-NP I-NP I-NP B-ADVP B-VP B-NP O O B-NP B-VP O
+C1	68	B-NP I-NP I-NP B-ADVP B-VP B-NP O O B-NP B-VP O
+L0	68	Every big car never see car , but he give .
+L1	68	every big car never see car , but he give .
+L2	68	every big car never see car , but he give .
+T	68	0-3 4-10 11-15 16-20 21-26 26-27 28-31 32-36 37-41 42-46 46-47
+T1	68	0-3 4-10 11-15 16-20 21-26 26-27 28-31 32-36 37-41 42-46 46-47
+P0	68	DT NNS VBD DT NN , CC NNS MD VB .
+P1	68	DT NN VB DT NN . CC NN MD VB .
+P2	68	DT NNS VBP DT NN , CC NNS MD VB .
+P3	68	DT NNS VBD DT NN , CC NNS MD VB .
+P4	68	DT NNS VBP DT NN , CC NNS MD VB .
+C0	68	B-NP I-NP B-VP B-NP I-NP O O B-NP B-VP I-VP O
+C1	68	B-NP I-NP B-VP B-NP I-NP O O B-NP B-VP I-VP O
+L0	68	The city read this river , and dog will give .
+L1	68	the city read this river , and dog will give .
+L2	68	the city read this river , and dog will give .
+T	68	0-3 4-12 13-17 18-21 22-27 28-30 31-32 33-38 39-43 43-44
+T1	68	0-3 4-12 13-17 18-21 22-27 28-30 31-32 33-38 39-43 43-44
+P0	68	DT NNS VBP DT NN IN DT JJ NN .
+P1	68	DT NN VB DT NN IN DT JJ NN .
+P2	68	DT NNS VBP DT NN IN DT JJ NN .
+P3	68	DT NNS VBP DT NN IN DT JJ NN .
+P4	68	DT NNS VBP DT NN IN DT JJ NN .
+C0	68	B-NP I-NP B-VP B-NP I-NP B-PP B-NP I-NP I-NP O
+C1	68	B-NP I-NP B-VP B-NP I-NP B-PP B-NP I-NP I-NP O
+L0	68	The child find the house in a small book ?
+L1	68	the child find the house in a small book ?
+L2	68	the child find the house in a small book ?
+T	68	0-1 2-8 9-13 14-18 19-24 24-25
+T1	68	0-1 2-8 9-13 14-18 19-24 24-25
+P0	68	CD NNS MD VB RB .
+P1	68	CD NN MD VB RB .
+P2	68	CD NNS MD VB RB .
+P3	68	CD NNS MD VB RB .
+P4	68	CD NNS MD VB RB .
+C0	68	B-NP I-NP B-VP I-VP B-ADVP O
+C1	68	B-NP I-NP B-VP I-VP B-ADVP O
+L0	68	3 city will find often .
+L1	68	3 city will find often .
+L2	68	3 city will find often .
+T	68	0-4 5-9 10-12 13-17 17-18
+T1	68	0-4 5-9 10-12 13-17 17-18
+P0	68	NNP MD VB NNP .
+P1	68	NNP MD MD NNP .
+P2	68	NNP MD VB NNP .
+P3	68	NNP MD VB NNP .
+P4	68	NNP MD VB NNP .
+C0	68	B-NP B-VP I-VP B-NP O
+C1	68	B-NP B-VP I-VP B-NP O
+L0	68	Mary will be Mary .
+L1	68	mary will be mary .
+L2	68	Mary will be Mary .
+T	68	0-3 4-10 11-15 16-20 21-24 25-29 29-30
+T1	68	0-3 4-10 11-15 16-20 21-24 25-29 29-30
+P0	68	DT NNS MD VB CD NNS .
+P1	68	DT NN MD VB CD NN .
+P2	68	DT NNS MD VB CD NNS .
+P3	68	DT NNS MD VB CD NNS .
+P4	68	DT NNS MD VB CD NNS .
+C0	68	B-NP I-NP B-VP I-VP B-NP I-NP O
+C1	68	B-NP I-NP B-VP I-VP B-NP I-NP O
+L0	68	The house will have 3.5 dog ?
+L1	68	the house will have 3.5 dog ?
+L2	68	the house will have 3.5 dog ?
+T	68	0-5 6-11 12-15 16-24 24-25
+T1	68	0-5 6-11 12-15 16-24 24-25
+P0	68	NNP VBZ CD NNS .
+P1	68	NNP VB CD NN .
+P2	68	NNP VBZ CD NNS .
+P3	68	NNP VBZ CD NNS .
+P4	68	NNP VBZ CD NNS .
+C0	68	B-NP B-VP B-NP I-NP O
+C1	68	B-NP B-VP B-NP I-NP O
+L0	68	Paris give 3.5 child .
+L1	68	paris give 3.5 child .
+L2	68	Paris give 3.5 child .
+T	68	0-2 3-6 7-11 11-12 13-16 17-21 22-27 27-28
+T1	68	0-2 3-6 7-11 11-12 13-16 17-21 22-27 27-28
+P0	68	PRP VBP NNS , CC NNP VBZ .
+P1	68	PRP VB NN . CC NNP VB .
+P2	68	PRP VBP NNS , CC NNP VBZ .
+P3	68	PRP VBP NNS , CC NNP VBZ .
+P4	68	PRP VBP NNS , CC NNP VBZ .
+C0	68	B-NP B-VP B-NP O O B-NP B-VP O
+C1	68	B-NP B-VP B-NP O O B-NP B-VP O
+L0	68	We run car , but Mary like .
+L1	68	we run car , but mary like .
+L2	68	we run car , but Mary like .
+T	68	0-3 4-10 11-14 15-18 19-24 24-25
+T1	68	0-3 4-10 11-14 15-18 19-24 24-25
+P0	68	DT JJR NN VBD RB .
+P1	68	DT JJ NN VB RB .
+P2	68	DT JJR NN VBD RB .
+P3	68	DT JJR NN VBD RB .
+P4	68	DT JJR NN VBD RB .
+C0	68	B-NP I-NP I-NP B-VP B-ADVP O
+C1	68	B-NP I-NP I-NP B-VP B-ADVP O
+L0	68	The bigger cat have never .
+L1	68	the big cat have never .
+L2	68	the big cat have never .
+T	68	0-3 4-10 11-14 15-19 20-25 25-26
+T1	68	0-3 4-10 11-14 15-19 20-25 25-26
+P0	68	CD NNS MD VB RB .
+P1	68	CD NN MD VB RB .
+P2	68	CD NNS MD VB RB .
+P3	68	CD NNS MD VB RB .
+P4	68	CD NNS MD VB RB .
+C0	68	B-NP I-NP B-VP I-VP B-ADVP O
+C1	68	B-NP I-NP B-VP I-VP B-ADVP O
+L0	68	3/4 house can find never .
+L1	68	3/4 house can find never .
+L2	68	3/4 house can find never .
+T	68	0-6 7-12 13-17 18-22 22-23
+T1	68	0-6 7-12 13-17 18-22 22-23
+P0	68	NNP RB VBZ NNS .
+P1	68	NNP RB VB NN .
+P2	68	NNP RB VBZ NNS .
+P3	68	NNP RB VBZ NNS .
+P4	68	NNP RB VBZ NNS .
+C0	68	B-NP B-ADVP B-VP B-NP O
+C1	68	B-NP B-ADVP B-VP B-NP O
+L0	68	London never run car .
+L1	68	london never run car .
+L2	68	London never run car .
+T	68	0-3 4-9 10-14 15-19 20-25 25-26
+T1	68	0-3 4-9 10-14 15-19 20-25 25-26
+P0	68	DT NN MD VB RB .
+P1	68	DT NN MD VB RB .
+P2	68	DT NN MD VB RB .
+P3	68	DT NN MD VB RB .
+P4	68	DT NN MD VB RB .
+C0	68	B-NP I-NP B-VP I-VP B-ADVP O
+C1	68	B-NP I-NP B-VP I-VP B-ADVP O
+L0	68	The child will give often !
+L1	68	the child will give often !
+L2	68	the child will give often !
+T	68	0-5 6-9 10-13 14-20 21-25 26-28 28-29
+T1	68	0-5 6-9 10-13 14-20 21-25 26-28 28-29
+P0	68	NNP MD VB NNP IN PRP .
+P1	68	NNP MD VB NNP IN PRP .
+P2	68	NNP MD VB NNP IN PRP .
+P3	68	NNP MD VB NNP IN PRP .
+P4	68	NNP MD VB NNP IN PRP .
+C0	68	B-NP B-VP I-VP B-NP B-PP B-NP O
+C1	68	B-NP B-VP I-VP B-NP B-PP B-NP O
+L0	68	Paris can run London near we .
+L1	68	paris can run london near we .
+L2	68	Paris can run London near we .
+T	68	0-2 3-5 6-11 11-12
+T1	68	0-2 3-5 6-11 11-12
+P0	68	PRP VBZ RB .
+P1	68	PRP MD RB .
+P2	68	PRP VBZ RB .
+P3	68	PRP VBZ RB .
+P4	68	PRP VBZ RB .
+C0	68	B-NP B-VP B-ADVP O
+C1	68	B-NP B-VP B-ADVP O
+L0	68	He be often .
+L1	68	he be often .
+L2	68	he be often .
+T	68	0-6 7-11 12-17 17-18
+T1	68	0-6 7-11 12-17 17-18
+P0	68	NNP VBD RB .
+P1	68	NNP VB RB .
+P2	68	NNP VBD RB .
+P3	68	NNP VBD RB .
+P4	68	NNP VBD RB .
+C0	68	B-NP B-VP B-ADVP O
+C1	68	B-NP B-VP B-ADVP O
+L0	68	London read never .
+L1	68	london read never .
+L2	68	London read never .
+T	68	0-4 5-8 9-12 13-16 17-19 20-22 22-23
+T1	68	0-4 5-8 9-12 13-16 17-19 20-22 22-23
+P0	68	DT NN MD VB IN PRP .
+P1	68	DT NN MD VB IN PRP .
+P2	68	DT NN MD VB IN PRP .
+P3	68	DT NN MD VB IN PRP .
+P4	68	DT NN MD VB IN PRP .
+C0	68	B-NP I-NP B-VP I-VP B-PP B-NP O
+C1	68	B-NP I-NP B-VP I-VP B-PP B-NP O
+L0	68	This cat can run in we .
+L1	68	this cat can run in we .
+L2	68	this cat can run in we .
+T	68	0-3 4-9 10-15 16-20 21-23 24-29 29-30
+T1	68	0-3 4-9 10-15 16-20 21-23 24-29 29-30
+P0	68	DT NN VBZ PRP IN NNP .
+P1	68	DT NN VB PRP IN NNP .
+P2	68	DT NN VBZ PRP IN NNP .
+P3	68	DT NN VBZ PRP IN NNP .
+P4	68	DT NN VBZ PRP IN NNP .
+C0	68	B-NP I-NP B-VP B-NP B-PP B-NP O
+C1	68	B-NP I-NP B-VP B-NP B-PP B-NP O
+L0	68	The river find they in Paris !
+L1	68	the river find they in paris !
+L2	68	the river find they in Paris !
+T	68	0-4 5-9 10-16 16-17 18-21 22-26 27-31 31-32
+T1	68	0-4 5-9 10-16 16-17 18-21 22-26 27-31 31-32
+P0	68	NNP VBD NNS , CC NNP VBZ .
+P1	68	NNP VB NN . CC NNP VB .
+P2	68	NNP VBD NNS , CC NNP VBZ .
+P3	68	NNP VBD NNS , CC NNP VBZ .
+P4	68	NNP VBD NNS , CC NNP VBZ .
+C0	68	B-NP B-VP B-NP O O B-NP B-VP O
+C1	68	B-NP B-VP B-NP O O B-NP B-VP O
+L0	68	Mary give city , and Mary see !
+L1	68	mary give city , and mary see !
+L2	68	Mary give city , and Mary see !
+T	68	0-4 5-10 11-13 14-16 17-19 19-20
+T1	68	0-4 5-10 11-13 14-16 17-19 19-20
+P0	68	NNP VBD PRP IN PRP .
+P1	68	NNP VB PRP IN PRP .
+P2	68	NNP VBD PRP IN PRP .
+P3	68	NNP VBD PRP IN PRP .
+P4	68	NNP VBD PRP IN PRP .
+C0	68	B-NP B-VP B-NP B-PP B-NP O
+C1	68	B-NP B-VP B-NP B-PP B-NP O
+L0	68	John like we in we .
+L1	68	john like we in we .
+L2	68	John like we in we .
+T	68	0-2 3-9 10-14 15-20 20-21
+T1	68	0-2 3-9 10-14 15-20 20-21
+P0	68	CD NNS VBD RB .
+P1	68	CD NN VB RB .
+P2	68	CD NNS VBP RB .
+P3	68	CD NNS VBD RB .
+P4	68	CD NNS VBP RB .
+C0	68	B-NP I-NP B-VP B-ADVP O
+C1	68	B-NP I-NP B-VP B-ADVP O
+L0	68	42 city read often .
+L1	68	42 city read often .
+L2	68	42 city read often .
+T	68	0-3 4-8 9-13 14-18 19-23 23-24 25-28 29-30 31-36 37-42 43-48 48-49
+T1	68	0-3 4-8 9-13 14-18 19-23 23-24 25-28 29-30 31-36 37-42 43-48 48-49
+P0	68	DT NN MD VB NNS , CC DT JJ NN VBD .
+P1	68	DT NN MD VB NN . CC DT JJ NN VB .
+P2	68	DT NN MD VB NNS , CC DT JJ NN VBD .
+P3	68	DT NN MD VB NNS , CC DT JJ NN VBD .
+P4	68	DT NN MD VB NNS , CC DT JJ NN VBD .
+C0	68	B-NP I-NP B-VP I-VP B-NP O O B-NP I-NP I-NP B-VP O
+C1	68	B-NP I-NP B-VP I-VP B-NP O O B-NP I-NP I-NP B-VP O
+L0	68	The book will give dog , and a happy child like .
+L1	68	the book will give dog , and a happy child like .
+L2	68	the book will give dog , and a happy child like .
+T	68	0-4 5-10 11-16 17-22 22-23
+T1	68	0-4 5-10 11-16 17-22 22-23
+P0	68	DT NN VBD RB .
+P1	68	DT NN VB RB .
+P2	68	DT NN VBD RB .
+P3	68	DT NN VBD RB .
+P4	68	DT NN VBD RB .
+C0	68	B-NP I-NP B-VP B-ADVP O
+C1	68	B-NP I-NP B-VP B-ADVP O
+L0	68	This river like never ?
+L1	68	this river like never ?
+L2	68	this river like never ?
+T	68	0-2 3-9 10-14 15-19 19-20
+T1	68	0-2 3-9 10-14 15-19 19-20
+P0	68	CD NNS VBD NNP .
+P1	68	CD NN VB NNP .
+P2	68	CD NNS VBP NNP .
+P3	68	CD NNS VBD . .
+P4	68	CD NNS VBP NNP .
+C0	68	B-NP I-NP B-VP B-NP O
+C1	68	B-NP I-NP B-VP B-NP O
+L0	68	42 city read John .
+L1	68	42 city read john .
+L2	68	42 city read John .
+T	68	0-4 5-10 11-16 17-19 19-20
+T1	68	0-4 5-10 11-16 17-19 19-20
+P0	68	NNP VBZ IN PRP .
+P1	68	NNP VB IN PRP .
+P2	68	NNP VBZ IN PRP .
+P3	68	NNP VBZ IN PRP .
+P4	68	NNP VBZ IN PRP .
+C0	68	B-NP B-VP B-PP B-NP O
+C1	68	B-NP B-VP B-PP B-NP O
+L0	68	Mary find under he .
+L1	68	mary find under he .
+L2	68	Mary find under he .
+T	68	0-3 4-10 11-15 16-23 23-24
+T1	68	0-3 4-10 11-15 16-23 23-24
+P0	68	DT NN VBZ RB .
+P1	68	DT NN VB RB .
+P2	68	DT NN VBZ RB .
+P3	68	DT NN VBZ RB .
+P4	68	DT NN VBZ RB .
+C0	68	B-NP I-NP B-VP B-ADVP O
+C1	68	B-NP I-NP B-VP B-ADVP O
+L0	68	The garden see quickly !
+L1	68	the garden see quickly !
+L2	68	the garden see quickly !
+T	68	0-5 6-12 13-17 18-21 22-27 27-28
+T1	68	0-5 6-12 13-17 18-21 22-27 27-28
+P0	68	CD NNS MD VB RB .
+P1	68	CD NN MD VB RB .
+P2	68	CD NNS MD VB RB .
+P3	68	CD NNS MD VB RB .
+P4	68	CD NNS MD VB RB .
+C0	68	B-NP I-NP B-VP I-VP B-ADVP O
+C1	68	B-NP I-NP B-VP I-VP B-ADVP O
+L0	68	1,000 city will see often .
+L1	68	1,000 city will see often .
+L2	68	1,000 city will see often .
+T	68	0-2 3-7 8-9 10-18 18-19
+T1	68	0-2 3-7 8-9 10-18 18-19
+P0	68	PRP VBD CD NNS .
+P1	68	PRP VB CD NN .
+P2	68	PRP VBD CD NNS .
+P3	68	PRP VBD CD NNS .
+P4	68	PRP VBD CD NNS .
+C0	68	B-NP B-VP B-NP I-NP O
+C1	68	B-NP B-VP B-NP I-NP O
+L0	68	It give 3 child .
+L1	68	it give 3 child .
+L2	68	it give 3 child .
+T	68	0-2 3-11 12-15 16-19 19-20
+T1	68	0-2 3-11 12-15 16-19 19-20
+P0	68	CD NNS VBP PRP .
+P1	68	CD NN VB PRP .
+P2	68	CD NNS VBP PRP .
+P3	68	CD NNS VBP PRP .
+P4	68	CD NNS VBP PRP .
+C0	68	B-NP I-NP B-VP B-NP O
+C1	68	B-NP I-NP B-VP B-NP O
+L0	68	42 child run she .
+L1	68	42 child run she .
+L2	68	42 child run she .
+T	68	0-1 2-5 6-9 10-12 13-18 19-25 26-31 31-32
+T1	68	0-1 2-5 6-9 10-12 13-18 19-25 26-31 31-32
+P0	68	DT NN VBZ IN DT JJR NN .
+P1	68	DT NN VB IN DT JJ NN .
+P2	68	DT NN VBZ IN DT JJR NN .
+P3	68	DT NN VBZ IN DT JJR NN .
+P4	68	DT NN VBZ IN DT JJR NN .
+C0	68	B-NP I-NP B-VP B-PP B-NP I-NP I-NP O
+C1	68	B-NP I-NP B-VP B-PP B-NP I-NP I-NP O
+L0	68	A cat have on every bigger river .
+L1	68	a cat have on every big river .
+L2	68	a cat have on every big river .
+T	68	0-2 3-10 11-16 17-19 20-25 26-31 32-39 39-40
+T1	68	0-2 3-10 11-16 17-19 20-25 26-31 32-39 39-40
+P0	68	PRP RB VBZ PRP IN DT NN .
+P1	68	PRP RB VB PRP IN DT NN .
+P2	68	PRP RB VBZ PRP IN DT NN .
+P3	68	PRP RB VBZ PRP IN DT NN .
+P4	68	PRP RB VBZ PRP IN DT NN .
+C0	68	B-NP B-ADVP B-VP B-NP B-PP B-NP I-NP O
+C1	68	B-NP B-ADVP B-VP B-NP B-PP B-NP I-NP O
+L0	68	It quickly like we under every teacher !
+L1	68	it quickly like we under every teacher !
+L2	68	it quickly like we under every teacher !
+T	68	0-1 2-7 8-12 13-17 18-21 22-28 28-29
+T1	68	0-1 2-7 8-12 13-17 18-21 22-28 28-29
+P0	68	CD NNS VBP IN DT NNS .
+P1	68	CD NN VB IN DT NN .
+P2	68	CD NNS VBP IN DT NNS .
+P3	68	CD NNS VBP IN DT NNS .
+P4	68	CD NNS VBP IN DT NNS .
+C0	68	B-NP I-NP B-VP B-PP B-NP I-NP O
+C1	68	B-NP I-NP B-VP B-PP B-NP I-NP O
+L0	68	3 book like near the house .
+L1	68	3 book like near the house .
+L2	68	3 book like near the house .
+T	68	0-3 4-10 11-14 15-18 19-25 25-26 27-30 31-35 36-39 40-44 44-45
+T1	68	0-3 4-10 11-14 15-18 19-25 25-26 27-30 31-35 36-39 40-44 44-45
+P0	68	DT NNS VBD DT NN , CC NNP MD VB .
+P1	68	DT NN VB DT NN . CC NNP MD VB .
+P2	68	DT NNS VBD DT NN , CC NNP MD VB .
+P3	68	DT NNS VBD DT NN , CC NNP MD VB .
+P4	68	DT NNS VBD DT NN , CC NNP MD VB .
+C0	68	B-NP I-NP B-VP B-NP I-NP O O B-NP B-VP I-VP O
+C1	68	B-NP I-NP B-VP B-NP I-NP O O B-NP B-VP I-VP O
+L0	68	The city see the garden , and Mary can have .
+L1	68	the city see the garden , and mary can have .
+L2	68	the city see the garden , and Mary can have .
+T	68	0-6 7-11 12-16 17-21 22-27 28-31 31-32
+T1	68	0-6 7-11 12-16 17-21 22-27 28-31 31-32
+P0	68	NNP MD VB IN DT NN .
+P1	68	NNP MD VB IN DT NN .
+P2	68	NNP MD VB IN DT NN .
+P3	68	NNP MD VB IN DT NN .
+P4	68	NNP MD VB IN DT NN .
+C0	68	B-NP B-VP I-VP B-PP B-NP I-NP O
+C1	68	B-NP B-VP I-VP B-PP B-NP I-NP O
+L0	68	London will read with every car .
+L1	68	london will read with every car .
+L2	68	London will read with every car .
+T	68	0-1 2-5 6-9 10-13 14-18 19-24 24-25
+T1	68	0-1 2-5 6-9 10-13 14-18 19-24 24-25
+P0	68	DT JJ NN MD VB RB .
+P1	68	DT JJ NN MD VB RB .
+P2	68	DT JJ NN MD VB RB .
+P3	68	DT JJ NN MD VB RB .
+P4	68	DT JJ NN MD VB RB .
+C0	68	B-NP I-NP I-NP B-VP I-VP B-ADVP O
+C1	68	B-NP I-NP I-NP B-VP I-VP B-ADVP O
+L0	68	A old cat can have never !
+L1	68	a old cat can have never !
+L2	68	a old cat can have never !
+T	68	0-4 5-8 9-12 13-17 18-20 21-22 23-27 27-28
+T1	68	0-4 5-8 9-12 13-17 18-20 21-22 23-27 27-28
+P0	68	DT NN MD VB IN CD NNS .
+P1	68	DT NN MD VB IN CD NN .
+P2	68	DT NN MD VB IN CD NNS .
+P3	68	DT NN MD VB IN CD NNS .
+P4	68	DT NN MD VB IN CD NNS .
+C0	68	B-NP I-NP B-VP I-VP B-PP B-NP I-NP O
+C1	68	B-NP I-NP B-VP I-VP B-PP B-NP I-NP O
+L0	68	This dog can like in 3 dog .
+L1	68	this dog can like in 3 dog .
+L2	68	this dog can like in 3 dog .
+T	68	0-3 4-9 10-12 13-17 17-18 19-22 23-29 30-33 33-34
+T1	68	0-3 4-9 10-12 13-17 17-18 19-22 23-29 30-33 33-34
+P0	68	DT NN VBZ NNP , CC NNP VBD .
+P1	68	DT NN MD NNP . CC NNP MD .
+P2	68	DT NN VBZ NNP , CC NNP VBD .
+P3	68	DT NN VBZ . , CC NNP VBD .
+P4	68	DT NN VBZ NNP , CC NNP VBD .
+C0	68	B-NP I-NP B-VP B-NP O O B-NP B-VP O
+C1	68	B-NP I-NP B-VP B-NP O O B-NP B-VP O
+L0	68	The river be John , but London be !
+L1	68	the river be john , but london be !
+L2	68	the river be John , but London be !
+T	68	0-2 3-8 9-11 12-17 17-18
+T1	68	0-2 3-8 9-11 12-17 17-18
+P0	68	PRP RB VBZ NNP .
+P1	68	PRP RB MD NNP .
+P2	68	PRP RB VBZ NNP .
+P3	68	PRP RB VBZ NNP .
+P4	68	PRP RB VBZ NNP .
+C0	68	B-NP B-ADVP B-VP B-NP O
+C1	68	B-NP B-ADVP B-VP B-NP O
+L0	68	It often be Paris .
+L1	68	it often be paris .
+L2	68	it often be Paris .
+T	68	0-2 3-11 12-16 17-21 22-24 25-26 27-33 33-34
+T1	68	0-2 3-11 12-16 17-21 22-24 25-26 27-33 33-34
+P0	68	CD NNS MD VB IN CD NNS .
+P1	68	CD NN MD VB IN CD NN .
+P2	68	CD NNS MD VB IN CD NNS .
+P3	68	CD NNS MD VB IN CD NNS .
+P4	68	CD NNS MD VB IN CD NNS .
+C0	68	B-NP I-NP B-VP I-VP B-PP B-NP I-NP O
+C1	68	B-NP I-NP B-VP I-VP B-PP B-NP I-NP O
+L0	68	42 child will give in 3 city ?
+L1	68	42 child will give in 3 city ?
+L2	68	42 child will give in 3 city ?
+T	68	0-5 6-11 12-16 17-18 19-22 23-25 26-30 30-31
+T1	68	0-5 6-11 12-16 17-18 19-22 23-25 26-30 30-31
+P0	68	DT NN VBZ DT NN IN PRP .
+P1	68	DT NN VB DT NN IN PRP .
+P2	68	DT NN VBZ DT NN IN PRP .
+P3	68	DT NN VBZ DT NN IN PRP .
+P4	68	DT NN VBZ DT NN IN PRP .
+C0	68	B-NP I-NP B-VP B-NP I-NP B-PP B-NP O
+C1	68	B-NP I-NP B-VP B-NP I-NP B-PP B-NP O
+L0	68	Every river see a cat on they .
+L1	68	every river see a cat on they .
+L2	68	every river see a cat on they .
+T	68	0-3 4-9 10-14 14-15 16-19 20-23 24-30 31-35 36-39 39-40
+T1	68	0-3 4-9 10-14 14-15 16-19 20-23 24-30 31-35 36-39 39-40
+P0	68	PRP VBD NNP , CC DT JJS NN VBD .
+P1	68	PRP VB NNP . CC DT JJ NN VB .
+P2	68	PRP VBD NNP , CC DT JJS NN VBD .
+P3	68	PRP VBD . , CC DT JJS NN VBD .
+P4	68	PRP VBD NNP , CC DT JJS NN VBD .
+C0	68	B-NP B-VP B-NP O O B-NP I-NP I-NP B-VP O
+C1	68	B-NP B-VP B-NP O O B-NP I-NP I-NP B-VP O
+L0	68	She like John , and the oldest city have !
+L1	68	she like john , and the old city have !
+L2	68	she like John , and the old city have !
+T	68	0-4 5-11 12-16 17-21 22-26 27-31 32-34 35-38 39-47 47-48
+T1	68	0-4 5-11 12-16 17-21 22-26 27-31 32-34 35-38 39-47 47-48
+P0	68	CD NNS MD VB CD NNS IN CD NNS .
+P1	68	CD NN MD VB CD NN IN CD NN .
+P2	68	CD NNS MD VB CD NNS IN CD NNS .
+P3	68	CD NNS MD VB CD NNS IN CD NNS .
+P4	68	CD NNS MD VB CD NNS IN CD NNS .
+C0	68	B-NP I-NP B-VP I-VP B-NP I-NP B-PP B-NP I-NP O
+C1	68	B-NP I-NP B-VP I-VP B-NP I-NP B-PP B-NP I-NP O
+L0	68	1999 house will like 1999 car in 3/4 teacher .
+L1	68	1999 house will like 1999 car in 3/4 teacher .
+L2	68	1999 house will like 1999 car in 3/4 teacher .
+T	68	0-3 4-9 10-15 16-21 22-27 28-32 32-33
+T1	68	0-3 4-9 10-15 16-21 22-27 28-32 32-33
+P0	68	DT NN RB VBZ IN PRP .
+P1	68	DT NN RB VB IN PRP .
+P2	68	DT NN RB VBZ IN PRP .
+P3	68	DT NN RB VBZ IN PRP .
+P4	68	DT NN RB VBZ IN PRP .
+C0	68	B-NP I-NP B-ADVP B-VP B-PP B-NP O
+C1	68	B-NP I-NP B-ADVP B-VP B-PP B-NP O
+L0	68	The river often find under they .
+L1	68	the river often find under they .
+L2	68	the river often find under they .
+T	68	0-3 4-7 8-12 13-18 18-19 20-23 24-28 29-34 34-35
+T1	68	0-3 4-7 8-12 13-18 18-19 20-23 24-28 29-34 34-35
+P0	68	PRP MD VB NNP , CC NNP VBZ .
+P1	68	PRP MD VB NNP . CC NNP VB .
+P2	68	PRP MD VB NNP , CC NNP VBZ .
+P3	68	PRP MD VB NNP , CC PRP VBZ .
+P4	68	PRP MD VB NNP , CC NNP VBZ .
+C0	68	B-NP B-VP I-VP B-NP O O B-NP B-VP O
+C1	68	B-NP B-VP I-VP B-NP O O B-NP B-VP O
+L0	68	She can read Paris , but John find !
+L1	68	she can read paris , but john find !
+L2	68	she can read Paris , but John find !
+T	68	0-6 7-12 13-18 19-26 26-27
+T1	68	0-6 7-12 13-18 19-26 26-27
+P0	68	NNP RB VBZ RB .
+P1	68	NNP RB VB RB .
+P2	68	NNP RB VBZ RB .
+P3	68	NNP RB VBZ RB .
+P4	68	NNP RB VBZ RB .
+C0	68	B-NP B-ADVP B-VP B-ADVP O
+C1	68	B-NP B-ADVP B-VP B-ADVP O
+L0	68	London never read quickly .
+L1	68	london never read quickly .
+L2	68	London never read quickly .
+T	68	0-4 5-9 10-17 17-18
+T1	68	0-4 5-9 10-17 17-18
+P0	68	PRP VBP RB .
+P1	68	PRP VB RB .
+P2	68	PRP VBP RB .
+P3	68	PRP VBP RB .
+P4	68	PRP VBP RB .
+C0	68	B-NP B-VP B-ADVP O
+C1	68	B-NP B-VP B-ADVP O
+L0	68	They have quickly ?
+L1	68	they have quickly ?
+L2	68	they have quickly ?
+T	68	0-3 4-10 11-14 15-17 17-18 19-22 23-29 30-36 37-42 43-47 47-48
+T1	68	0-3 4-10 11-14 15-17 17-18 19-22 23-29 30-36 37-42 43-47 47-48
+P0	68	DT NN VBD PRP , CC JJR NNS RB VBP .
+P1	68	DT NN VB PRP . CC JJ NN RB VB .
+P2	68	DT NN VBD PRP , CC JJR NNS RB VBP .
+P3	68	DT NN VBD PRP , CC JJR NNS RB VBP .
+P4	68	DT NN VBD PRP , CC JJR NNS RB VBP .
+C0	68	B-NP I-NP B-VP B-NP O O B-NP I-NP B-ADVP B-VP O
+C1	68	B-NP I-NP B-VP B-NP O O B-NP I-NP B-ADVP B-VP O
+L0	68	The garden have it , and bigger city often give .
+L1	68	the garden have it , and big city often give .
+L2	68	the garden have it , and big city often give .
+T	68	0-4 5-12 13-18 19-24 25-29 29-30
+T1	68	0-4 5-12 13-18 19-24 25-29 29-30
+P0	68	DT NN VBZ DT NN .
+P1	68	DT NN VB DT NN .
+P2	68	DT NN VBZ DT NN .
+P3	68	DT NN VBZ DT NN .
+P4	68	DT NN VBZ DT NN .
+C0	68	B-NP I-NP B-VP B-NP I-NP O
+C1	68	B-NP I-NP B-VP B-NP I-NP O
+L0	68	This teacher read every city .
+L1	68	this teacher read every city .
+L2	68	this teacher read every city .
+T	68	0-2 3-8 9-11 12-14 15-20 20-21
+T1	68	0-2 3-8 9-11 12-14 15-20 20-21
+P0	68	PRP VBZ PRP IN NNP .
+P1	68	PRP VB PRP IN NNP .
+P2	68	PRP VBZ PRP IN NNP .
+P3	68	PRP VBZ PRP IN NNP .
+P4	68	PRP VBZ PRP IN NNP .
+C0	68	B-NP B-VP B-NP B-PP B-NP O
+C1	68	B-NP B-VP B-NP B-PP B-NP O
+L0	68	It give it in Paris .
+L1	68	it give it in paris .
+L2	68	it give it in Paris .
+T	68	0-5 6-12 13-16 17-20 21-26 27-29 29-30
+T1	68	0-5 6-12 13-16 17-20 21-26 27-29 29-30
+P0	68	DT JJR NN VBD IN PRP .
+P1	68	DT JJ NN VB IN PRP .
+P2	68	DT JJR NN VBD IN PRP .
+P3	68	DT JJR NN VBD IN PRP .
+P4	68	DT JJR NN VBD IN PRP .
+C0	68	B-NP I-NP I-NP B-VP B-PP B-NP O
+C1	68	B-NP I-NP I-NP B-VP B-PP B-NP O
+L0	68	Every bigger car see under he .
+L1	68	every big car see under he .
+L2	68	every big car see under he .
+T	68	0-5 6-10 11-16 16-17
+T1	68	0-5 6-10 11-16 16-17
+P0	68	NNS VBP RB .
+P1	68	NN VB RB .
+P2	68	NNS VBP RB .
+P3	68	NNS VBP RB .
+P4	68	NNS VBP RB .
+C0	68	B-NP B-VP B-ADVP O
+C1	68	B-NP B-VP B-ADVP O
+L0	68	book like never .
+L1	68	book like never .
+L2	68	book like never .
+T	68	0-5 6-10 11-14 15-19 20-22 23-24 25-30 30-31
+T1	68	0-5 6-10 11-14 15-19 20-22 23-24 25-30 30-31
+P0	68	NNP MD VB NNP IN DT NN .
+P1	68	NNP MD VB NNP IN DT NN .
+P2	68	NNP MD VB NNP IN DT NN .
+P3	68	NNP MD VB NNP IN DT NN .
+P4	68	NNP MD VB NNP IN DT NN .
+C0	68	B-NP B-VP I-VP B-NP B-PP B-NP I-NP O
+C1	68	B-NP B-VP I-VP B-NP B-PP B-NP I-NP O
+L0	68	Paris will run Mary on a child .
+L1	68	paris will run mary on a child .
+L2	68	Paris will run Mary on a child .
+T	68	0-3 4-9 10-15 16-21 22-26 27-29 30-35 36-42 42-43
+T1	68	0-3 4-9 10-15 16-21 22-26 27-29 30-35 36-42 42-43
+P0	68	DT NN VBZ JJ NNS IN DT NN .
+P1	68	DT NN VB JJ NN IN DT NN .
+P2	68	DT NN VBZ JJ NNS IN DT NN .
+P3	68	DT NN VBZ JJ NNS IN DT NN .
+P4	68	DT NN VBZ JJ NNS IN DT NN .
+C0	68	B-NP I-NP B-VP B-NP I-NP B-PP B-NP I-NP O
+C1	68	B-NP I-NP B-VP B-NP I-NP B-PP B-NP I-NP O
+L0	68	The child give quick cat in every garden ?
+L1	68	the child give quick cat in every garden ?
+L2	68	the child give quick cat in every garden ?
+T	68	0-1 2-8 9-12 13-18 19-26 26-27
+T1	68	0-1 2-8 9-12 13-18 19-26 26-27
+P0	68	DT JJS NN VBZ RB .
+P1	68	DT JJ NN VB RB .
+P2	68	DT JJS NN VBZ RB .
+P3	68	DT JJS NN VBZ RB .
+P4	68	DT JJS NN VBZ RB .
+C0	68	B-NP I-NP I-NP B-VP B-ADVP O
+C1	68	B-NP I-NP I-NP B-VP B-ADVP O
+L0	68	A oldest dog like quickly .
+L1	68	a old dog like quickly .
+L2	68	a old dog like quickly .
+T	68	0-6 7-11 12-15 16-19 19-20 21-24 25-29 30-35 36-40 40-41
+T1	68	0-6 7-11 12-15 16-19 19-20 21-24 25-29 30-35 36-40 40-41
+P0	68	NNP MD VB PRP , CC CD NNS VBP .
+P1	68	NNP MD VB PRP . CC CD NN VB .
+P2	68	NNP MD VB PRP , CC CD NNS VBP .
+P3	68	NNP MD VB PRP , CC CD NNS VBP .
+P4	68	NNP MD VB PRP , CC CD NNS VBP .
+C0	68	B-NP B-VP I-VP B-NP O O B-NP I-NP B-VP O
+C1	68	B-NP B-VP I-VP B-NP O O B-NP I-NP B-VP O
+L0	68	London will see she , and 12-5 book find .
+L1	68	london will see she , and 12-5 book find .
+L2	68	London will see she , and 12-5 book find .
+T	68	0-4 5-8 9-10 11-16 16-17 18-21 22-25 26-29 30-33 34-37 37-38
+T1	68	0-4 5-8 9-10 11-16 16-17 18-21 22-25 26-29 30-33 34-37 37-38
+P0	68	NNP VBD DT NN , CC DT NN MD VB .
+P1	68	NNP VB DT NN . CC DT NN MD VB .
+P2	68	NNP VBD DT NN , CC DT NN MD VB .
+P3	68	NNP VBD DT NN , CC DT NN MD VB .
+P4	68	NNP VBD DT NN , CC DT NN MD VB .
+C0	68	B-NP B-VP B-NP I-NP O O B-NP I-NP B-VP I-VP O
+C1	68	B-NP B-VP B-NP I-NP O O B-NP I-NP B-VP I-VP O
+L0	68	John have a child , but the car can run !
+L1	68	john have a child , but the car can run !
+L2	68	John have a child , but the car can run !
+T	68	0-4 5-9 10-13 14-18 19-22 23-27 27-28 29-32 33-34 35-40 41-46 46-47
+T1	68	0-4 5-9 10-13 14-18 19-22 23-27 27-28 29-32 33-34 35-40 41-46 46-47
+P0	68	CD NNS MD VB DT NN , CC DT NN VBZ .
+P1	68	CD NN MD VB DT NN . CC DT NN VB .
+P2	68	CD NNS MD VB DT NN , CC DT NN VBZ .
+P3	68	CD NNS MD VB DT NN , CC DT NN VBZ .
+P4	68	CD NNS MD VB DT NN , CC DT NN VBZ .
+C0	68	B-NP I-NP B-VP I-VP B-NP I-NP O O B-NP I-NP B-VP O
+C1	68	B-NP I-NP B-VP I-VP B-NP I-NP O O B-NP I-NP B-VP O
+L0	68	12-5 car can like the city , and a river find .
+L1	68	12-5 car can like the city , and a river find .
+L2	68	12-5 car can like the city , and a river find .
+T	68	0-4 5-10 11-15 16-20 21-24 25-29 30-32 33-36 37-41 41-42
+T1	68	0-4 5-10 11-15 16-20 21-24 25-29 30-32 33-36 37-41 41-42
+P0	68	DT JJ NN MD VB PRP IN DT NNS .
+P1	68	DT JJ NN MD VB PRP IN DT NN .
+P2	68	DT JJ NN MD VB PRP IN DT NNS .
+P3	68	DT JJ NN MD VB PRP IN DT NNS .
+P4	68	DT JJ NN MD VB PRP IN DT NNS .
+C0	68	B-NP I-NP I-NP B-VP I-VP B-NP B-PP B-NP I-NP O
+C1	68	B-NP I-NP I-NP B-VP I-VP B-NP B-PP B-NP I-NP O
+L0	68	This small book will run they in the dog .
+L1	68	this small book will run they in the dog .
+L2	68	this small book will run they in the dog .

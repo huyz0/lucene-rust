@@ -64,6 +64,11 @@ MORFOLOGIK_DEPS=(org.carrot2:morfologik-fsa:2.1.9 org.carrot2:morfologik-stemmin
 # ports, reading the data files of this jar.
 ICU_DEPS=(com.ibm.icu:icu4j:77.1)
 
+# lucene-analysis-opennlp 10.5.0's pom names OpenNLP 2.5.3 (Apache-2.0), whose
+# inference crates/lucene-analysis-opennlp ports, over SLF4J 2.0.16's API
+# (MIT; no binding, so OpenNLP's logging is silent).
+OPENNLP_DEPS=(org.apache.opennlp:opennlp-tools:2.5.3 org.slf4j:slf4j-api:2.0.16)
+
 thirdparty_resolve_jar() {
   local coord="$1" group artifact version jar found=""
   IFS=: read -r group artifact version <<< "$coord"

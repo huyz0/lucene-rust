@@ -56,7 +56,9 @@ RUN mkdir -p "$LUCENE_JARS" && cd "$LUCENE_JARS" \
        done \
     && curl -fsSL -O https://repo1.maven.org/maven2/ua/net/nlp/morfologik-ukrainian-search/4.9.1/morfologik-ukrainian-search-4.9.1.jar \
     && curl -fsSL -O https://repo1.maven.org/maven2/com/carrotsearch/hppc/0.7.2/hppc-0.7.2.jar \
-    && curl -fsSL -O https://repo1.maven.org/maven2/com/ibm/icu/icu4j/77.1/icu4j-77.1.jar
+    && curl -fsSL -O https://repo1.maven.org/maven2/com/ibm/icu/icu4j/77.1/icu4j-77.1.jar \
+    && curl -fsSL -O https://repo1.maven.org/maven2/org/apache/opennlp/opennlp-tools/2.5.3/opennlp-tools-2.5.3.jar \
+    && curl -fsSL -O https://repo1.maven.org/maven2/org/slf4j/slf4j-api/2.0.16/slf4j-api-2.0.16.jar
 
 # The gate is not just `cargo test`: it includes an aarch64 check-only clippy
 # pass (c_char signedness differs by target, so a class of FFI defect is

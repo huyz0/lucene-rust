@@ -104,6 +104,14 @@ case "$BENCH" in
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common lucene-analysis-icu"
     ICU_THIRDPARTY=1 ;;
+  # M12 T12.5: analysis-opennlp over OpenNLP (its jars join through
+  # OPENNLP_THIRDPARTY).
+  analysis_opennlp)
+    MAIN=AnalysisOpenNlpMicro
+    SRC=benchmarks/micro/java/AnalysisOpenNlpMicro.java
+    EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-analysis-common lucene-analysis-opennlp"
+    OPENNLP_THIRDPARTY=1 ;;
   # M11 T11.3: SnowballFilter per language over the fixture vocabularies.
   snowball)
     MAIN=SnowballMicro
@@ -291,6 +299,7 @@ CP=$(lucene_classpath ${JAR_MODULES:-lucene-core})
 if [ -n "${SPATIAL_JARS:-}" ]; then CP="$CP:$(thirdparty_classpath "${SPATIAL_EXTRAS_DEPS[@]}")"; fi
 # The M12 modules' third-party jars (Commons Codec, Morfologik).
 if [ -n "${ICU_THIRDPARTY:-}" ]; then CP="$CP:$(thirdparty_classpath "${ICU_DEPS[@]}")"; fi
+if [ -n "${OPENNLP_THIRDPARTY:-}" ]; then CP="$CP:$(thirdparty_classpath "${OPENNLP_DEPS[@]}")"; fi
 if [ -n "${M12_THIRDPARTY:-}" ]; then
   CP="$CP:$(thirdparty_classpath "${PHONETIC_DEPS[@]}" "${MORFOLOGIK_DEPS[@]}")"
 fi

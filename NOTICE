@@ -63,6 +63,8 @@ reproduced at the end of this file:
    Unicode, Inc.: crates/lucene-analysis/src/java_character_tables.rs
    (general categories, digits, White_Space),
    crates/lucene-analysis/src/java_unicode_script.rs (scripts),
+   crates/lucene-analysis-opennlp/src/tools/supplementary_scripts.rs
+   (scripts beyond the BMP),
    crates/lucene-analysis/src/util/java_regex_props.rs (scripts, blocks,
    binary properties) and crates/lucene-util/src/automaton/java_case_table.rs
    (simple case mappings);
@@ -99,6 +101,18 @@ the data ICU carries (among them the Thai, Lao, Khmer, Burmese and
 Chinese/Japanese dictionaries), is reproduced in full in LICENSE. It also
 carries Apache Lucene's own utr30.nrm (UTR #30 foldings), Default.brk and
 MyanmarSyllable.brk (Apache License 2.0).
+
+crates/lucene-analysis-opennlp ports the parts of Apache OpenNLP 2.5.3
+(org.apache.opennlp:opennlp-tools, https://opennlp.apache.org/) that Apache
+Lucene's analysis-opennlp module runs -- model package reading, maxent and
+perceptron evaluation, beam search, sentence detection, tokenization,
+part-of-speech tagging, chunking and lemmatization -- under the Apache
+License 2.0, and carries OpenNLP's pos-default-features.xml under
+src/resources/. OpenNLP's NOTICE: "Apache OpenNLP Tools Copyright 2024 The
+Apache Software Foundation. This product includes software developed at The
+Apache Software Foundation (http://www.apache.org/)." The OpenNLP models under
+fixtures/data/analysis_opennlp/ are trained by fixtures/src/GenAnalysisOpenNLP.java
+on text it generates.
 
 The test corpus fixtures/corpus/real_polygons.z contains polygons from
 Apache Lucene's own tests (Apache License 2.0) and Natural Earth vector

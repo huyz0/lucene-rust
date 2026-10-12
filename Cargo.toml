@@ -16,6 +16,7 @@ members = [
     "crates/lucene-analysis-nori",
     "crates/lucene-analysis-smartcn",
     "crates/lucene-analysis-icu",
+    "crates/lucene-analysis-opennlp",
     "crates/lucene-search",
     "crates/lucene-core",
     "crates/lucene-ffi",

@@ -1,0 +1,24 @@
+[package]
+name = "lucene-analysis-opennlp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# lucene-analysis-opennlp (M12 T12.5): Lucene's analysis-opennlp module --
+# OpenNLPTokenizer and the part-of-speech, chunker and lemmatizer filters --
+# over a port of the Apache OpenNLP 2.5.3 inference runtime they call
+# (src/tools/: model files, maxent/perceptron evaluation, beam search and the
+# sentence detector, tokenizer, POS tagger, chunker and lemmatizer). Over
+# lucene-analysis only, as Lucene's module is over lucene-analysis-common
+# (docs/milestones/m12-language-analysis.md).
+[lints]
+workspace = true
+
+[dependencies]
+lucene-analysis = { path = "../lucene-analysis" }
+# `StrictMath.exp`/`log`, which OpenNLP's models score with.
+lucene-util = { path = "../lucene-util" }
+# Inflates deflated model zip entries.
+miniz_oxide.workspace = true
+# The zip entries' CRC-32, as `ZipInputStream` checks it.
+crc32fast.workspace = true
