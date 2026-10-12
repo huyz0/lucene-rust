@@ -57,7 +57,7 @@ impl<I: TokenStream> TokenFilter for ICUTransformFilter<I> {
         }
         let atts = self.input.attributes_mut();
         self.units.clear();
-        self.units.extend(atts.term().encode_utf16());
+        crate::icu4j::utf16::extend_from_str(&mut self.units, atts.term());
         let length = i32::try_from(self.units.len())
             .map_err(|_| AnalysisError::IllegalArgument("term longer than 2^31 units".into()))?;
         let mut position = Position {

@@ -95,6 +95,10 @@ pub struct Property {
     /// A binary property's strings (`RGI_Emoji` and the other emoji
     /// properties of strings).
     pub strings: Vec<Vec<u16>>,
+    /// Every BMP code point's value, built on the first lookup of one (the
+    /// role of ICU's property tries: a per-character lookup without the
+    /// binary search over the runs).
+    bmp: OnceLock<Vec<i32>>,
 }
 
 impl Property {
@@ -102,10 +106,35 @@ impl Property {
     #[inline]
     pub fn value(&self, c: i32) -> i32 {
         let Ok(c) = u32::try_from(c) else { return 0 };
+        if c < 0x10000 {
+            let table = self.bmp.get_or_init(|| self.bmp_table());
+            return table.get(c as usize).copied().unwrap_or(0);
+        }
+        self.search(c)
+    }
+
+    /// The run holding `c`, by binary search.
+    fn search(&self, c: u32) -> i32 {
         match self.starts.partition_point(|&s| s <= c).checked_sub(1) {
             Some(i) => self.run_values.get(i).copied().unwrap_or(0),
             None => 0,
         }
+    }
+
+    /// The BMP's values, run by run.
+    fn bmp_table(&self) -> Vec<i32> {
+        // ALLOC: one value per BMP code point (a constant 65,536).
+        let mut table = vec![0; 0x10000];
+        for (first, last, value) in self.runs() {
+            if first >= 0x10000 {
+                break;
+            }
+            let last = last.min(0xffff) as usize;
+            if let Some(slots) = table.get_mut(first as usize..=last) {
+                slots.fill(value);
+            }
+        }
+        table
     }
 
     /// The runs: `(first, last, value)` for every run.
@@ -192,6 +221,7 @@ impl UProps {
                 starts,
                 run_values,
                 strings,
+                bmp: OnceLock::new(),
             });
         }
         let nlists = r.u16()?;
@@ -244,7 +274,8 @@ impl UProps {
 
     /// The script codes in `c`'s `Script_Extensions` (`UScript.getScriptExtensions`).
     pub fn script_extensions(&self, c: i32) -> &[u16] {
-        let i = self.int_value(SCRIPT_EXTENSIONS, c);
+        static P: OnceLock<Option<&'static Property>> = OnceLock::new();
+        let i = cached(&P, SCRIPT_EXTENSIONS).map_or(0, |p| p.value(c));
         usize::try_from(i)
             .ok()
             .and_then(|i| self.scx_lists.get(i))
@@ -292,16 +323,27 @@ pub fn compare_names(a: &str, b: &str) -> bool {
     }
 }
 
+/// A property looked up once (the per-character functions skip the id
+/// lookup).
+fn cached(
+    cell: &'static OnceLock<Option<&'static Property>>,
+    id: i32,
+) -> Option<&'static Property> {
+    *cell.get_or_init(|| uprops().property(id))
+}
+
 /// `UCharacter.getType(c)`.
 #[inline]
 pub fn char_type(c: i32) -> i32 {
-    uprops().int_value(GENERAL_CATEGORY, c)
+    static P: OnceLock<Option<&'static Property>> = OnceLock::new();
+    cached(&P, GENERAL_CATEGORY).map_or(0, |p| p.value(c))
 }
 
 /// `UScript.getScript(c)`.
 #[inline]
 pub fn script(c: i32) -> i32 {
-    uprops().int_value(SCRIPT, c)
+    static P: OnceLock<Option<&'static Property>> = OnceLock::new();
+    cached(&P, SCRIPT).map_or(0, |p| p.value(c))
 }
 
 /// `UScript.hasScript(c, sc)`.

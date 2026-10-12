@@ -84,6 +84,28 @@ pub fn string(s: &[u16]) -> String {
     String::from_utf16_lossy(s)
 }
 
+/// Appends `s` as UTF-16 (`String.toCharArray`), an ASCII string unit for
+/// byte and otherwise one push per unit: `extend(s.encode_utf16())` grows
+/// the vector unit by unit and copies through `memcpy` per character,
+/// which shows in the per-token filters.
+pub fn extend_from_str(units: &mut Vec<u16>, s: &str) {
+    if s.is_ascii() {
+        units.extend(s.bytes().map(u16::from));
+        return;
+    }
+    units.reserve(s.len());
+    for ch in s.chars() {
+        let c = u32::from(ch);
+        if c < 0x10000 {
+            units.push(c as u16);
+        } else {
+            let (lead, trail) = surrogates(c as i32);
+            units.push(lead);
+            units.push(trail);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
