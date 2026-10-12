@@ -1,5 +1,5 @@
-//! `java.lang.StrictMath`'s `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`
-//! and `hypot`: the fdlibm
+//! `java.lang.StrictMath`'s `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`,
+//! `hypot`, `exp` and `log`: the fdlibm
 //! algorithms Java specifies bit for bit (`java.lang.FdLibm`).
 //!
 //! Lucene's geo code and `SloppyMath` depend on these exact bits: SloppyMath
@@ -741,9 +741,241 @@ pub fn atan2(y: f64, x: f64) -> f64 {
     }
 }
 
+/// `StrictMath.exp` (`FdLibm.Exp`, fdlibm `e_exp.c`): OpenNLP's maxent and
+/// perceptron models normalise their outcome scores with it, and the beam
+/// search ranks sequences on the results, so a last-bit difference from the
+/// platform `exp` can change a tag.
+pub fn exp(x: f64) -> f64 {
+    const HALF: [f64; 2] = [0.5, -0.5];
+    const HUGE: f64 = f64::from_bits(0x7E37_E43C_8800_759C);
+    const TWOM1000: f64 = f64::from_bits(0x0170_0000_0000_0000);
+    const O_THRESHOLD: f64 = f64::from_bits(0x4086_2E42_FEFA_39EF);
+    const U_THRESHOLD: f64 = f64::from_bits(0xC087_4910_D52D_3051);
+    const LN2_HI: [f64; 2] = [
+        f64::from_bits(0x3FE6_2E42_FEE0_0000),
+        f64::from_bits(0xBFE6_2E42_FEE0_0000),
+    ];
+    const LN2_LO: [f64; 2] = [
+        f64::from_bits(0x3DEA_39EF_3579_3C76),
+        f64::from_bits(0xBDEA_39EF_3579_3C76),
+    ];
+    const INVLN2: f64 = f64::from_bits(0x3FF7_1547_652B_82FE);
+    const P1: f64 = f64::from_bits(0x3FC5_5555_5555_553E);
+    const P2: f64 = f64::from_bits(0xBF66_C16C_16BE_BD93);
+    const P3: f64 = f64::from_bits(0x3F11_566A_AF25_DE2C);
+    const P4: f64 = f64::from_bits(0xBEBB_BD41_C5D2_6BF1);
+    const P5: f64 = f64::from_bits(0x3E66_3769_72BE_A4D0);
+
+    let mut x = x;
+    let mut hi_part = 0.0;
+    let mut lo_part = 0.0;
+    let mut k: i32 = 0;
+    let hx = hi(x);
+    let xsb = ((hx >> 31) & 1) as usize;
+    let hx = hx & 0x7fff_ffff;
+    // filter out non-finite argument
+    if hx >= 0x4086_2E42 {
+        // |x| >= 709.78...
+        if hx >= 0x7ff0_0000 {
+            if ((hx & 0xf_ffff) as u32 | lo(x)) != 0 {
+                return x + x; // NaN
+            }
+            return if xsb == 0 { x } else { 0.0 }; // exp(+-inf) = {inf, 0}
+        }
+        if x > O_THRESHOLD {
+            return HUGE * HUGE; // overflow
+        }
+        if x < U_THRESHOLD {
+            return TWOM1000 * TWOM1000; // underflow
+        }
+    }
+    // argument reduction
+    if hx > 0x3fd6_2e42 {
+        // |x| > 0.5 ln2
+        if hx < 0x3FF0_A2B2 {
+            // and |x| < 1.5 ln2
+            hi_part = x - LN2_HI[xsb];
+            lo_part = LN2_LO[xsb];
+            k = 1 - 2 * xsb as i32;
+        } else {
+            k = (INVLN2 * x + HALF[xsb]) as i32;
+            let t = f64::from(k);
+            hi_part = x - t * LN2_HI[0]; // t*ln2HI is exact here
+            lo_part = t * LN2_LO[0];
+        }
+        x = hi_part - lo_part;
+    } else if hx < 0x3e30_0000 {
+        // |x| < 2**-28
+        if HUGE + x > 1.0 {
+            return 1.0 + x; // trigger inexact
+        }
+    }
+    // x is now in primary range
+    let t = x * x;
+    let c = x - t * (P1 + t * (P2 + t * (P3 + t * (P4 + t * P5))));
+    if k == 0 {
+        return 1.0 - ((x * c) / (c - 2.0) - x);
+    }
+    let y = 1.0 - ((lo_part - (x * c) / (2.0 - c)) - hi_part);
+    let with_hi = |y: f64, h: i32| f64::from_bits((u64::from(h as u32) << 32) | u64::from(lo(y)));
+    if k >= -1021 {
+        with_hi(y, hi(y).wrapping_add(k << 20)) // add k to y's exponent
+    } else {
+        with_hi(y, hi(y).wrapping_add((k + 1000) << 20)) * TWOM1000
+    }
+}
+
+/// `StrictMath.log` (`FdLibm.Log`, fdlibm `e_log.c`): OpenNLP's uniform
+/// prior and its sequence scores (`Sequence`: `score += StrictMath.log(p)`).
+pub fn log(x: f64) -> f64 {
+    const LN2_HI: f64 = f64::from_bits(0x3FE6_2E42_FEE0_0000);
+    const LN2_LO: f64 = f64::from_bits(0x3DEA_39EF_3579_3C76);
+    const TWO54: f64 = f64::from_bits(0x4350_0000_0000_0000);
+    const LG1: f64 = f64::from_bits(0x3FE5_5555_5555_5593);
+    const LG2: f64 = f64::from_bits(0x3FD9_9999_9997_FA04);
+    const LG3: f64 = f64::from_bits(0x3FD2_4924_9422_9359);
+    const LG4: f64 = f64::from_bits(0x3FCC_71C5_1D8E_78AF);
+    const LG5: f64 = f64::from_bits(0x3FC7_4664_96CB_03DE);
+    const LG6: f64 = f64::from_bits(0x3FC3_9A09_D078_C69F);
+    const LG7: f64 = f64::from_bits(0x3FC2_F112_DF3E_5244);
+    const ZERO: f64 = 0.0;
+
+    let mut x = x;
+    let mut hx = hi(x);
+    let lx = lo(x);
+    let mut k: i32 = 0;
+    if hx < 0x0010_0000 {
+        // x < 2**-1022
+        if ((hx & 0x7fff_ffff) as u32 | lx) == 0 {
+            return -TWO54 / ZERO; // log(+-0)=-inf
+        }
+        if hx < 0 {
+            return (x - x) / ZERO; // log(-#) = NaN
+        }
+        k -= 54;
+        x *= TWO54; // subnormal number, scale up x
+        hx = hi(x);
+    }
+    if hx >= 0x7ff0_0000 {
+        return x + x;
+    }
+    k += (hx >> 20) - 1023;
+    hx &= 0x000f_ffff;
+    let i = (hx + 0x95f64) & 0x10_0000;
+    // normalize x or x/2
+    x = f64::from_bits((u64::from((hx | (i ^ 0x3ff0_0000)) as u32) << 32) | u64::from(lo(x)));
+    k += i >> 20;
+    let f = x - 1.0;
+    if (0x000f_ffff & (2 + hx)) < 3 {
+        // |f| < 2**-20
+        if f == ZERO {
+            if k == 0 {
+                return ZERO;
+            }
+            let dk = f64::from(k);
+            return dk * LN2_HI + dk * LN2_LO;
+        }
+        let r = f * f * (0.5 - f64::from_bits(0x3FD5_5555_5555_5555) * f);
+        if k == 0 {
+            return f - r;
+        }
+        let dk = f64::from(k);
+        return dk * LN2_HI - ((r - dk * LN2_LO) - f);
+    }
+    let s = f / (2.0 + f);
+    let dk = f64::from(k);
+    let z = s * s;
+    let mut i = hx - 0x6147a;
+    let w = z * z;
+    let j = 0x6b851 - hx;
+    let t1 = w * (LG2 + w * (LG4 + w * LG6));
+    let t2 = z * (LG1 + w * (LG3 + w * (LG5 + w * LG7)));
+    i |= j;
+    let r = t2 + t1;
+    if i > 0 {
+        let hfsq = 0.5 * f * f;
+        if k == 0 {
+            f - (hfsq - s * (hfsq + r))
+        } else {
+            dk * LN2_HI - ((hfsq - (s * (hfsq + r) + dk * LN2_LO)) - f)
+        }
+    } else if k == 0 {
+        f - s * (f - r)
+    } else {
+        dk * LN2_HI - ((s * (f - r) - dk * LN2_LO) - f)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `StrictMath.exp`/`log` of hand-picked arguments (every branch of
+    /// both), as JDK 21 and 25 answer them, then digests of 200,000
+    /// pseudo-random arguments each (`(x bits, exp bits, log bits)`).
+    #[test]
+    fn exp_and_log_are_the_jdks_bit_for_bit() {
+        let fixed: [(u64, u64, u64); 35] = [
+            (0x0000000000000000, 0x3ff0000000000000, 0xfff0000000000000),
+            (0x8000000000000000, 0x3ff0000000000000, 0xfff0000000000000),
+            (0x3ff0000000000000, 0x4005bf0a8b14576a, 0x0000000000000000),
+            (0xbff0000000000000, 0x3fd78b56362cef38, 0xfff8000000000000),
+            (0x3fe0000000000000, 0x3ffa61298e1e069c, 0xbfe62e42fefa39ef),
+            (0x3fd0000000000000, 0x3ff48b5e3c3e8186, 0xbff62e42fefa39ef),
+            (0x4000000000000000, 0x401d8e64b8d4ddae, 0x3fe62e42fefa39ef),
+            (0x4024000000000000, 0x40d5829dcf950560, 0x40026bb1bbb55516),
+            (0xc024000000000000, 0x3f07cd79b5647c9a, 0xfff8000000000000),
+            (0x4059000000000000, 0x48f3494a9b171bf5, 0x40126bb1bbb55516),
+            (0xc059000000000000, 0x36ea8c1f14e2af5d, 0xfff8000000000000),
+            (0x4086280000000000, 0x7fdd422d2be5dc9b, 0x401a416357d87f55),
+            (0x40862e6666666666, 0x7ff0000000000000, 0x401a428af76e005d),
+            (0xc087480000000000, 0x0000000000000001, 0xfff8000000000000),
+            (0xc08749999999999a, 0x0000000000000000, 0xfff8000000000000),
+            (0xc087500000000000, 0x0000000000000000, 0xfff8000000000000),
+            (0x3ddb7cdfd9d7bdbb, 0x3ff000000006df38, 0xc037069e2aa2aa5b),
+            (0xbddb7cdfd9d7bdbb, 0x3feffffffff24190, 0xfff8000000000000),
+            (0x01a56e1fc2f8f359, 0x3ff0000000000000, 0xc085963447f87fb5),
+            (0x0000000000000001, 0x3ff0000000000000, 0xc0874385446d71c3),
+            (0x000fd1d7d505cd02, 0x3ff0000000000000, 0xc0862343131aa1ed),
+            (0x7e37e43c8800759c, 0x7ff0000000000000, 0x4085963447f87fb5),
+            (0x3fd62e42fead449c, 0x3ff6a09e66640654, 0xbff0f45e26abfb60),
+            (0x3fd62eb1c432ca58, 0x3ff6a0c5906bc779, 0xbff0f40e3fd2c1b4),
+            (0x3ff0a29c779a6b51, 0x4006a07f99728ef9, 0x3fa3eeec316ff708),
+            (0x3ff0a3d70a3d70a4, 0x4006a23c87af69e8, 0x3fa414bcc0a3665d),
+            (0x7ff0000000000000, 0x7ff0000000000000, 0x7ff0000000000000),
+            (0xfff0000000000000, 0x0000000000000000, 0xfff8000000000000),
+            (0x7ff8000000000000, 0x7ff8000000000000, 0x7ff8000000000000),
+            (0x3ff000001ad7f29b, 0x4005bf0aaf904984, 0x3e7ad7f2847b6492),
+            (0x3fefffffca501acb, 0x4005bf0a6698658d, 0xbe7ad7f2b1049b9f),
+            (0x3fd5555555555555, 0x3ff6546db1ba2d13, 0xbff193ea7aad030b),
+            (0x4002aaaaaaaaaaab, 0x40249fe058a62f2d, 0x3feb1d10670aae9a),
+            (0xc0862066151add8b, 0x0016a09e667f3bcc, 0xfff8000000000000),
+            (0xc0864f886378b146, 0x0000100000000000, 0xfff8000000000000),
+        ];
+        for (x, e, l) in fixed {
+            let x = f64::from_bits(x);
+            assert_eq!(exp(x).to_bits(), e, "exp({x:e})");
+            assert_eq!(log(x).to_bits(), l, "log({x:e})");
+        }
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let (mut h1, mut h2) = (0xcbf2_9ce4_8422_2325u64, 0xcbf2_9ce4_8422_2325u64);
+        for i in 0..200_000 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            let unit = (state >> 11) as f64 / (1u64 << 53) as f64;
+            let xe = (unit - 0.5) * 1500.0;
+            let xl = if i % 3 == 0 {
+                unit * 4.0
+            } else {
+                f64::from_bits((state >> 1) & 0x7fef_ffff_ffff_ffff)
+            };
+            h1 = (h1 ^ exp(xe).to_bits()).wrapping_mul(0x0100_0000_01b3);
+            h2 = (h2 ^ log(xl).to_bits()).wrapping_mul(0x0100_0000_01b3);
+        }
+        assert_eq!(h1, 0x4646_7ffa_1f1a_6286);
+        assert_eq!(h2, 0xbe29_7cda_956b_41c3);
+    }
 
     #[test]
     fn sin_cos_is_sin_and_cos_bit_for_bit() {

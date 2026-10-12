@@ -211,7 +211,8 @@ KUROMOJI_CP=$(lucene_classpath lucene-analysis-kuromoji)
 NORI_CP=$(lucene_classpath lucene-analysis-nori)
 SMARTCN_CP=$(lucene_classpath lucene-analysis-smartcn)
 ICU_CP=$(lucene_classpath lucene-analysis-icu):$(thirdparty_classpath "${ICU_DEPS[@]}")
-M12_COMPILE_CP="$PHONETIC_CP:$STEMPEL_CP:$MORFOLOGIK_CP:$KUROMOJI_CP:$NORI_CP:$SMARTCN_CP:$ICU_CP"
+OPENNLP_CP=$(lucene_classpath lucene-analysis-opennlp):$(thirdparty_classpath "${OPENNLP_DEPS[@]}")
+M12_COMPILE_CP="$PHONETIC_CP:$STEMPEL_CP:$MORFOLOGIK_CP:$KUROMOJI_CP:$NORI_CP:$SMARTCN_CP:$ICU_CP:$OPENNLP_CP"
 # Read as data, never put on the classpath (its SPI registrations name codecs
 # from modules the generators do not load): GenStandardTokenizerCorpus takes
 # its text from this jar's europarl.lines.txt.gz.
@@ -250,6 +251,7 @@ generator_classpath() {
     GenAnalysisNori) echo ":$NORI_CP" ;;
     GenAnalysisSmartcn) echo ":$SMARTCN_CP" ;;
     GenAnalysisIcu|GenAnalysisIcuCollation|GenAnalysisIcuTransform|GenAnalysisIcuTries|GenAnalysisIcuBreaks) echo ":$ICU_CP" ;;
+    GenAnalysisOpenNLP) echo ":$OPENNLP_CP" ;;
   esac
 }
 

@@ -1238,6 +1238,23 @@ outright.
   sentence/Thai/Lao/Khmer/Myanmar/kana lines, 200 seeded strings -- and per
   rule set every boundary with its rule status and status vector). Read by
   `crates/lucene-analysis-icu/tests/icu_breaks_fixtures.rs`.
+- `GenAnalysisOpenNLP.java` — M12 T12.5: analysis-opennlp over OpenNLP
+  2.5.3 (`OPENNLP_DEPS`, own classpath, `analysis_opennlp/`). Trains ten
+  models with OpenNLP itself on a seeded synthetic grammar (700 sentences:
+  Penn and UD tags, chunks, lemmas, numbers, kana): sentence detectors with
+  and without abbreviations/end-of-sentence characters, tokenizers with and
+  without the alphanumeric shortcut, maxent/UD/perceptron POS taggers (one
+  with a tag dictionary), a 1.5-version copy with an n-gram dictionary and
+  a copy without its feature descriptor, maxent/perceptron chunkers, a
+  lemmatizer and a lemma dictionary -- repacked stored, sorted and without
+  clock fields. Over `opennlp_text.txt` (69 lines: curated, generated, one
+  of 2,500 characters): every `NLP*Op` output (`tools.tsv`), 23
+  `CustomAnalyzer` chains (`o_*.tsv`, configured by `factory_specs.tsv`; 8
+  refused), `FeatureGeneratorUtil.tokenFeature` of 54 tokens
+  (`token_classes.tsv`) and two feature-generator descriptors' features
+  (`featuregen.tsv`). Read by
+  `crates/lucene-analysis-opennlp/tests/opennlp_fixtures.rs` and
+  `opennlp_hostile.rs`.
 - `GenAnalysisDateLocales.java` — M12 T12.7: `SimpleDateFormat`'s parse
   outside `Locale.ENGLISH`, for `DateRecognizerFilterFactory`'s `locale`:
   over the locales of `corpus/date-locales.txt` (the 886 whose record --

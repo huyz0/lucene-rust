@@ -114,6 +114,10 @@ VENDORED = {
          "dictionaries; ICU's LICENSE in full)", "LICENSE", "Copyright © 2016-2025 Unicode, Inc."),
         ("Lucene's utr30.nrm (Apache-2.0)", "LICENSE", APACHE),
     ],
+    "crates/lucene-analysis-opennlp/src/resources": [
+        ("Apache OpenNLP 2.5.3's pos-default-features.xml (Apache-2.0; OpenNLP "
+         "named in NOTICE)", "LICENSE", APACHE),
+    ],
     "crates/lucene-ffi/fuzz/seeds/jvm_search": [
         ("this project's own fuzz seeds, read by a test (Apache-2.0)", "LICENSE", APACHE),
     ],
@@ -137,6 +141,9 @@ GENERATED = {
     "crates/lucene-analysis/src/java_character_tables.rs": (
         "the Unicode Character Database 16.0.0 (Unicode-3.0)", True,
         [("NOTICE", UNICODE)]),
+    "crates/lucene-analysis-opennlp/src/tools/supplementary_scripts.rs": (
+        "the Unicode Character Database 16.0.0's scripts beyond the BMP, read "
+        "through the JDK's public API (Unicode-3.0)", True, [("NOTICE", UNICODE)]),
     "crates/lucene-analysis/src/java_unicode_script.rs": (
         "the Unicode Character Database 16.0.0's scripts, read through the "
         "JDK's public API (Unicode-3.0)", True, [("NOTICE", UNICODE)]),
