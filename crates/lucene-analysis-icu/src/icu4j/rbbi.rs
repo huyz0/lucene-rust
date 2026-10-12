@@ -214,7 +214,11 @@ impl RuleBasedBreakIterator {
     /// `getRuleStatusVec(fillInArray)`.
     pub fn get_rule_status_vec(&self) -> Vec<i32> {
         let n = self.data.status(self.rule_status_index);
-        (1..=n.max(0))
+        // A count past the end of the status table (corrupt rules) reads
+        // only what the table holds, instead of collecting billions of 0s.
+        let room = i32::try_from(self.data.status_table.len()).unwrap_or(i32::MAX);
+        let n = n.clamp(0, room);
+        (1..=n)
             .map(|i| self.data.status(self.rule_status_index.wrapping_add(i)))
             .collect()
     }

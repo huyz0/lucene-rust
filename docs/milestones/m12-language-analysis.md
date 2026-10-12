@@ -454,12 +454,14 @@ Part 4 (T12.4 ICU):
   byte-identical under JDK 21 and 25.
 - **Thai over ICU** -- see T12.6 above: ICU's Thai breaks are not the JDK's,
   so `ThaiTokenizer` stays not supported.
-- **Bench** (`--bench analysis_icu`, 2026-10-08, noise floor 1.13x):
-  icu_normalizer_charfilter 1.53x, icu_normalizer_nfkc_cf 0.90~, icu_folding
-  0.85x, icu_tokenizer 0.67x, icu_collation_key 0.60x,
-  icu_collation_key_phonebook_identical 0.83x; icu_transform_any_latin
-  1.11~, icu_transform_trad_simp 0.58x (noise 1.24x); the profiles and the
-  optimisation in progress are in `docs/parity/analysis-icu.md`.
+- **Bench** (`--bench analysis_icu`, 2026-10-08, noise floor 1.16x):
+  icu_transform_any_latin 1.39x, icu_normalizer_charfilter 1.19x,
+  icu_normalizer_nfkc_cf 0.81x, icu_collation_key_phonebook_identical
+  0.77x, icu_transform_trad_simp 0.76x, icu_tokenizer 0.72x, icu_folding
+  0.69x, icu_collation_key 0.56x. The ICU engines themselves are at or near
+  ICU4J (collation keys 0.79x-1.31x measured alone); the rest is the term's
+  UTF-8/UTF-16 round trip through `AttributeSource` around every ICU
+  filter -- profiles in `docs/parity/analysis-icu.md`.
 
 ## Acceptance criteria
 

@@ -26,7 +26,7 @@ use crate::icu4j::coll::data::{
     self, CollationTailoring, REORDER_CODE_CURRENCY, REORDER_CODE_DEFAULT, REORDER_CODE_FIRST,
     REORDER_CODE_NONE,
 };
-use crate::icu4j::coll::iter::CollationIterator;
+use crate::icu4j::coll::iter::{CollationIterator, IterBuffers};
 use crate::icu4j::coll::keys;
 use crate::icu4j::coll::locale::Locale;
 use crate::icu4j::coll::res::{self, find_with_fallback, instantiate, pack_file};
@@ -483,35 +483,65 @@ impl Collator {
     /// `getRawCollationKey(source, key)`: the sort key bytes, the
     /// terminating `0` included.
     pub fn raw_collation_key(&self, source: &str) -> Vec<u8> {
-        let units: Vec<u16> = source.encode_utf16().collect();
-        self.raw_collation_key_utf16(&units)
+        let mut key = Vec::new();
+        self.raw_collation_key_into(source, &mut KeyScratch::default(), &mut key);
+        key
+    }
+
+    /// `getRawCollationKey(source, key)` into `key` (cleared first), with
+    /// the working buffers in `scratch`: a caller keying many strings (a
+    /// token filter) allocates them once, as Java's caller reuses its
+    /// `RawCollationKey`.
+    pub fn raw_collation_key_into(
+        &self,
+        source: &str,
+        scratch: &mut KeyScratch,
+        key: &mut Vec<u8>,
+    ) {
+        let mut units = std::mem::take(&mut scratch.units);
+        units.clear();
+        crate::icu4j::utf16::extend_from_str(&mut units, source);
+        key.clear();
+        self.write_sort_key(&units, scratch, key);
+        scratch.units = units;
     }
 
     /// `getRawCollationKey` over UTF-16 text (unpaired surrogates as Java
     /// keeps them).
     pub fn raw_collation_key_utf16(&self, units: &[u16]) -> Vec<u8> {
         let mut key = Vec::with_capacity(units.len().saturating_mul(2).saturating_add(10));
-        self.write_sort_key(units, &mut key);
+        self.write_sort_key(units, &mut KeyScratch::default(), &mut key);
         key
     }
 
     /// `writeSortKey(s, sink, buffer)`.
-    fn write_sort_key(&self, units: &[u16], key: &mut Vec<u8>) {
+    fn write_sort_key(&self, units: &[u16], scratch: &mut KeyScratch, key: &mut Vec<u8>) {
         let data = &*self.tailoring.data;
         let numeric = self.settings.is_numeric();
         let fcd = !self.settings.dont_check_fcd();
-        let mut iter = CollationIterator::new(data, numeric, units, fcd);
+        let buffers = std::mem::take(&mut scratch.iter);
+        let mut iter = CollationIterator::with_buffers(data, numeric, units, fcd, buffers);
         keys::write_sort_key_up_to_quaternary(
             &mut iter,
-            &|b| data.is_compressible_lead_byte(b),
+            |b| data.is_compressible_lead_byte(b),
             &self.settings,
             key,
+            &mut scratch.levels,
         );
+        scratch.iter = iter.into_buffers();
         if self.settings.strength() == IDENTICAL {
             keys::write_identical_level(&data.nfc_impl, units, key);
         }
         key.push(0);
     }
+}
+
+/// The working buffers of [`Collator::raw_collation_key_into`].
+#[derive(Debug, Default)]
+pub struct KeyScratch {
+    units: Vec<u16>,
+    iter: IterBuffers,
+    levels: [Vec<u8>; 4],
 }
 
 /// `getYesOrNo(keyword, s)`.
