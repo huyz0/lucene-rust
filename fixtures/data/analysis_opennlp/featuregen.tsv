@@ -1,0 +1,14 @@
+D0	0	0	w=The	wc=ic	n1w=ÄÖÜ	n1wc=ac	n2w=A.	n2wc=cp	n3w=12	n3wc=2d	suf=e	suf=he	pre=T	pre=Th	pre=The	S=begin	wc=ic	w&c=the,ic	def
+D0	0	1	w=ÄÖÜ	wc=ac	p1w=The	p1wc=ic	n1w=A.	n1wc=cp	n2w=12	n2wc=2d	n3w=ひらがな	n3wc=jah	suf=Ü	suf=ÖÜ	pre=Ä	pre=ÄÖ	pre=ÄÖÜ	wc=ac	w&c=äöü,ac	def	t=T0	t=T0
+D0	0	2	w=A.	wc=cp	p1w=ÄÖÜ	p1wc=ac	n1w=12	n1wc=2d	n2w=ひらがな	n2wc=jah	n3w=x	n3wc=lc	suf=.	suf=A.	pre=A	pre=A.	wc=cp	w&c=a.,cp	def	t=T1	t2=T0,T1	t=T1	t2=T0,T1	p1t=T0
+D0	0	3	w=12	wc=2d	p1w=A.	p1wc=cp	n1w=ひらがな	n1wc=jah	n2w=x	n2wc=lc	suf=2	suf=12	pre=1	pre=12	wc=2d	w&c=12,2d	def	t=T2	t2=T1,T2	t=T2	t2=T1,T2	p1t=T1	p1t2=T0,T1	p2t=T0
+D0	0	4	w=ひらがな	wc=jah	p1w=12	p1wc=2d	n1w=x	n1wc=lc	suf=な	suf=がな	pre=ひ	pre=ひら	pre=ひらが	pre=ひらがな	wc=jah	w&c=ひらがな,jah	def	t=T3	t2=T2,T3	t=T3	t2=T2,T3	p1t=T2	p1t2=T1,T2	p2t=T1	p2t2=T0,T1
+D0	0	5	w=x	wc=lc	p1w=ひらがな	p1wc=jah	suf=x	pre=x	S=end	wc=lc	w&c=x,lc	def	t=T4	t2=T3,T4	t=T4	t2=T3,T4	p1t=T3	p1t2=T2,T3	p2t=T2	p2t2=T1,T2
+D0	1	0	w=Solo	wc=ic	suf=o	suf=lo	pre=S	pre=So	pre=Sol	pre=Solo	S=begin	S=end	wc=ic	w&c=solo,ic	def
+D1	0	0	w=the
+D1	0	1	w=äöü
+D1	0	2	w=a.
+D1	0	3	w=12
+D1	0	4	w=ひらがな
+D1	0	5	w=x
+D1	1	0	w=solo

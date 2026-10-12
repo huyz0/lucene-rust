@@ -1,0 +1,23 @@
+o_00	t:openNlp,sentenceModel=en-sent.bin,tokenizerModel=en-token.bin
+o_01	t:openNlp,sentenceModel=en-sent.bin,tokenizerModel=en-token.bin f:openNlppos,posTaggerModel=en-pos-maxent.bin
+o_02	t:openNlp,sentenceModel=en-sent.bin,tokenizerModel=en-token.bin f:openNlppos,posTaggerModel=en-pos-ud.bin
+o_03	t:openNlp,sentenceModel=en-sent.bin,tokenizerModel=en-token.bin f:openNlppos,posTaggerModel=en-pos-perceptron.bin
+o_04	t:openNlp,sentenceModel=en-sent.bin,tokenizerModel=en-token.bin f:openNlppos,posTaggerModel=en-pos-maxent.bin f:openNlpChunker,chunkerModel=en-chunker.bin
+o_05	t:openNlp,sentenceModel=en-sent.bin,tokenizerModel=en-token.bin f:openNlppos,posTaggerModel=en-pos-maxent.bin f:openNlpChunker,chunkerModel=en-chunker-perceptron.bin
+o_06	t:openNlp,sentenceModel=en-sent.bin,tokenizerModel=en-token.bin f:openNlppos,posTaggerModel=en-pos-maxent.bin f:openNlpLemmatizer,dictionary=en-lemmas.dict
+o_07	t:openNlp,sentenceModel=en-sent.bin,tokenizerModel=en-token.bin f:openNlppos,posTaggerModel=en-pos-maxent.bin f:openNlpLemmatizer,lemmatizerModel=en-lemmatizer.bin
+o_08	t:openNlp,sentenceModel=en-sent.bin,tokenizerModel=en-token.bin f:openNlppos,posTaggerModel=en-pos-maxent.bin f:openNlpLemmatizer,dictionary=en-lemmas.dict,lemmatizerModel=en-lemmatizer.bin
+o_09	t:openNlp,sentenceModel=en-sent.bin,tokenizerModel=en-token.bin f:openNlppos,posTaggerModel=en-pos-maxent.bin f:keywordRepeat f:openNlpLemmatizer,dictionary=en-lemmas.dict,lemmatizerModel=en-lemmatizer.bin f:removeDuplicates
+o_10	t:openNlp,sentenceModel=en-sent.bin,tokenizerModel=en-token.bin f:openNlppos,posTaggerModel=en-pos-maxent.bin f:openNlpChunker,chunkerModel=en-chunker.bin f:typeAsPayload
+o_11	t:openNlp,sentenceModel=en-sent.bin,tokenizerModel=en-token.bin f:openNlppos,posTaggerModel=en-pos-maxent.bin f:lowercase f:openNlpLemmatizer,lemmatizerModel=en-lemmatizer.bin
+o_12	t:openNlp,sentenceModel=en-sent.bin
+o_13	t:openNlp,tokenizerModel=en-token.bin
+o_14	t:openNlp,sentenceModel=en-sent.bin,tokenizerModel=en-token.bin f:openNlppos
+o_15	t:openNlp,sentenceModel=en-sent.bin,tokenizerModel=en-token.bin f:openNlppos,posTaggerModel=missing.bin
+o_16	t:openNlp,sentenceModel=en-sent.bin,tokenizerModel=en-token.bin f:openNlppos,posTaggerModel=en-pos-maxent.bin f:openNlpChunker,chunkerModel=en-pos-maxent.bin
+o_17	t:openNlp,sentenceModel=en-sent.bin,tokenizerModel=en-token.bin f:openNlppos,posTaggerModel=en-pos-maxent.bin,bogus=1
+o_18	t:openNlp,sentenceModel=en-token.bin,tokenizerModel=en-token.bin
+o_19	f:openNlpLemmatizer
+o_20	t:openNlp,sentenceModel=en-sent-default.bin,tokenizerModel=en-token-noopt.bin f:openNlppos,posTaggerModel=en-pos-v15.bin
+o_21	t:openNlp,sentenceModel=en-sent.bin,tokenizerModel=en-token.bin f:openNlppos,posTaggerModel=en-pos-nofeat.bin f:openNlpLemmatizer,lemmatizerModel=en-lemmatizer.bin
+o_22	t:openNlp,sentenceModel=en-sent.bin,tokenizerModel=en-token.bin f:openNlppos,posTaggerModel=en-pos-maxent.bin f:openNlpChunker

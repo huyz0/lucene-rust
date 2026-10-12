@@ -9,7 +9,7 @@
 | **Effort** | L |
 | **Depends on** | [M11](m11-analysis-common.md) |
 | **Unblocks** | analysing CJK and other scripts without a JVM |
-| **Status** | in progress -- part 1: architecture, inventory, T12.2 Stempel, T12.3 phonetic and Morfologik; part 2: T12.1 `analysis/morph`, Kuromoji and Nori; part 3: T12.6, T12.2 SmartCN; part 4: T12.4 ICU normalization, tokenizer, collation and transforms (see [Progress](#progress)) |
+| **Status** | in progress -- part 1: architecture, inventory, T12.2 Stempel, T12.3 phonetic and Morfologik; part 2: T12.1 `analysis/morph`, Kuromoji and Nori; part 3: T12.6, T12.2 SmartCN; part 4: T12.4 ICU normalization, tokenizer, collation and transforms; part 5: T12.5 OpenNLP (see [Progress](#progress)) |
 
 ---
 
@@ -463,22 +463,67 @@ Part 4 (T12.4 ICU):
   UTF-8/UTF-16 round trip through `AttributeSource` around every ICU
   filter -- profiles in `docs/parity/analysis-icu.md`.
 
+Part 5 (T12.5 OpenNLP):
+
+- **The OpenNLP runtime** -- `lucene-analysis-opennlp/src/tools/`, a port
+  of the Apache OpenNLP 2.5.3 inference classes the module calls, reading
+  OpenNLP's own model packages (why a port: `lib.rs`): `BaseModel`'s
+  two-pass zip reading and validation (`ZipInputStream`,
+  `Properties.load`, the persistor's XML dictionaries), `GISModel` and
+  `PerceptronModel` over `GenericModelReader`'s binary format, `BeamSearch`
+  over Java's `PriorityQueue` order, `SentenceDetectorME`, `TokenizerME`,
+  `POSTaggerME` (configurable feature generators for 1.8+ models,
+  `DefaultPOSContextGenerator` for older ones, tag dictionary, UD-to-Penn
+  mapping), `ChunkerME`, `LemmatizerME` and `DictionaryLemmatizer`.
+  `StrictMath.exp`/`log` joined `lucene-util`'s fdlibm port. Refused
+  (typed `UnsupportedOperation`): `QN`/`NaiveBayes` models, feature
+  generators outside the POS default set, user factory or serializer
+  classes. Training is out of scope; `NLPNERTaggerOp` (no Lucene filter
+  calls it) is deferred to M14.
+- **Lucene's classes** -- `OpenNLPTokenizer` (on `SegmentingTokenizerBase`,
+  with `OpenNLPSentenceBreakIterator`), `OpenNLPPOSFilter`,
+  `OpenNLPChunkerFilter`, `OpenNLPLemmatizerFilter`,
+  `SentenceAttributeExtractor`, the `NLP*Op`s and the four factories.
+- **Fixtures** -- `GenAnalysisOpenNLP.java` trains ten models with
+  OpenNLP itself on a seeded synthetic grammar (no pretrained model is
+  used) and writes every `NLP*Op` output over 69 lines (2,500+ rows), 23
+  `CustomAnalyzer` chains (8 refused), 54 token classes and 14
+  feature-generator rows -- all equal, byte-identical under JDK 21 and 25;
+  `opennlp_hostile.rs` sweeps truncated and corrupted models and every
+  manifest, artifact and descriptor Java refuses.
+- **Bench** (`--bench analysis_opennlp`, 2026-10-12, noise floor 1.15x, faithful port without tuning): opennlp_tokenizer 0.97~, opennlp_pos 1.22x, opennlp_pos_perceptron 0.91~, opennlp_chunker 0.97~, opennlp_lemmatizer 1.02~ --
+  at Lucene's speed within the noise; the time is the same feature-string building and map lookups OpenNLP does.
+
 ## Acceptance criteria
 
-- [ ] Each module produces Lucene's token stream on a native-language corpus
-      for its language(s), every attribute.
-- [ ] Kuromoji and Nori match Lucene's n-best lattices, not just the best
-      path.
-- [ ] Every bundled dictionary and model is licence-audited and in `NOTICE`.
-- [ ] Each analyzer is no slower than Lucene's.
+Evaluated 2026-10-12 (after part 5): three of four hold; M12 stays open.
+
+- [x] Each module produces Lucene's token stream on a native-language corpus
+      for its language(s), every attribute -- every module's generator
+      (phonetic, Stempel, Morfologik, Kuromoji, Nori, SmartCN, ICU, OpenNLP)
+      compares every attribute of Lucene's chains, all equal.
+- [x] Kuromoji and Nori match Lucene's n-best lattices, not just the best
+      path (part 2: `calcNBestCost`, n-best output, Graphviz lattices).
+- [x] Every bundled dictionary and model is licence-audited and in `NOTICE`
+      (`check-vendored-licences.py`; OpenNLP bundles no model).
+- [ ] Each analyzer is no slower than Lucene's -- **open**: six ICU cases
+      read below 1.0 (`icu_collation_key` 0.56x, `icu_folding` 0.69x,
+      `icu_tokenizer` 0.72x, `icu_transform_trad_simp` 0.76x,
+      `icu_collation_key_phonebook_identical` 0.77x,
+      `icu_normalizer_nfkc_cf` 0.81x), the gap the term's UTF-8/UTF-16 round
+      trip through `AttributeSource` (profiles in
+      `docs/parity/analysis-icu.md`). Also still tagged M12 in the
+      inventory: `ICUTokenizerFactory`'s `rulefiles` (ICU's break-rule
+      compiler) and `ICUCollationDocValuesField`'s `Field` (a
+      `lucene-search` type).
 
 ## Risks and unknowns
 
 - **ICU4X versus ICU4J.** The two implement the same Unicode standards but
   are separate codebases; differences in normalisation or break iteration
   are possible and must be found by the differential test, not assumed away.
-- **OpenNLP has no Rust runtime.** T12.5 may end as a documented decision
-  rather than a port.
+- **OpenNLP has no Rust runtime.** Resolved in part 5: the inference
+  runtime is ported (`lucene-analysis-opennlp/src/tools/`).
 
 ## Exit artifacts
 
