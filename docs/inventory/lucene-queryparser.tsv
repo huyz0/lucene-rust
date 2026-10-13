@@ -12,10 +12,10 @@ queryparser/classic/QueryParserTokenManager	ported	crates/lucene-search/src/quer
 queryparser/classic/Token	ported	crates/lucene-search/src/queryparser/classic/token_manager.rs::Token
 queryparser/classic/TokenMgrError	ported	crates/lucene-search/src/queryparser/classic/token_manager.rs::TokenMgrError
 queryparser/complexPhrase/ComplexPhraseQueryParser	todo:M13	ComplexPhraseQueryParser
-queryparser/ext/ExtendableQueryParser	todo:M13	the extendable query parser
-queryparser/ext/ExtensionQuery	todo:M13	the extendable query parser
-queryparser/ext/Extensions	todo:M13	the extendable query parser
-queryparser/ext/ParserExtension	todo:M13	the extendable query parser
+queryparser/ext/ExtendableQueryParser	ported	crates/lucene-search/src/queryparser/ext.rs::ExtendableQueryParser
+queryparser/ext/ExtensionQuery	ported	crates/lucene-search/src/queryparser/ext.rs::ExtensionQuery
+queryparser/ext/Extensions	ported	crates/lucene-search/src/queryparser/ext.rs::Extensions
+queryparser/ext/ParserExtension	ported	crates/lucene-search/src/queryparser/ext.rs::ParserExtension
 queryparser/flexible/core/QueryNodeError	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
 queryparser/flexible/core/QueryNodeException	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
 queryparser/flexible/core/QueryNodeParseException	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
