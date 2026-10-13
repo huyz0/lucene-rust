@@ -1,0 +1,83 @@
+foo|bar
+foo | bar
+foo+bar
+foo + bar
+-foo
+--foo
+---foo
+-foo bar
+foo -bar
+foo -"bar baz"
+-(foo bar)
+(foo bar) | baz
+((foo))
+(foo
+foo)
+)foo(
+(foo (bar) baz)
+"foo bar"~1
+"foo bar"~
+"foo bar"~x
+"foo bar"~-1
+"foo bar"~3 baz
+"foo bar
+foo"
+foo~
+foo~0
+foo~1
+foo~3
+foo~x
+foo~-2
+foo~+1
+foo~١
+~foo
+foo~1~2
+foo*
+f*
+*foo
+foo*bar
+fo\*
+\"foo\"
+foo\ bar
+foo\\
+\
+"\""
+"a \" b"
++foo
+|foo
+foo+
+foo|
+foo++bar
+foo||bar
+foo+|bar
+foo|+bar
+a + b | c
+a | b + c
+a b + c
+-a -b
+-a | -b
+a -b c
+(a | b) + (c | d)
+-(a | b)
+*
+ *
+* *
+foo *
+""
+" "
+( )
+()
+~
+~1
+the
+the | foo
+the + the
+"the"
+"the foo"
+FOO BAR
+wi-fi
+wi-fi*
+wi-fi~1
+"wi fi"~1
+日本語*
+é~1

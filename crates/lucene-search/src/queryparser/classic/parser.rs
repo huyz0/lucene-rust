@@ -13,7 +13,7 @@ use lucene_util::automaton::{
 
 use super::constants::*;
 use super::token_manager::{add_escapes, CharStream, Token, TokenManager, TokenMgrError};
-use super::{Operator, QueryParser, QueryParserError};
+use super::{Operator, QueryParser, QueryParserError, MAX_CLAUSE_COUNT};
 use crate::extended_query::TermRangeQuery;
 use crate::query::{FuzzyQuery, PrefixQuery, RegexpQuery, WildcardQuery};
 use crate::query_builder::QueryBuilder;
@@ -26,9 +26,6 @@ const CONJ_OR: i32 = 2;
 const MOD_NONE: i32 = 0;
 const MOD_NOT: i32 = 10;
 const MOD_REQ: i32 = 11;
-
-/// `IndexSearcher.getMaxClauseCount()`'s default.
-const MAX_CLAUSE_COUNT: usize = 1024;
 
 /// `jj_la1_0`.
 static JJ_LA1_0: [u32; 25] = [

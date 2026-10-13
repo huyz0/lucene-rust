@@ -48,7 +48,10 @@ fn from_clause_keeps_every_query_class() {
             )))),
             "Query",
         ),
-        (Clause::MatchNoDocs(MatchNoDocsQuery::new()), "Query"),
+        (
+            Clause::MatchNoDocs(MatchNoDocsQuery::new()),
+            "MatchNoDocsQuery",
+        ),
         (
             Clause::Span(SpanQuery::SpanTerm {
                 field: "f".into(),

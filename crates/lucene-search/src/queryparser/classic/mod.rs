@@ -16,6 +16,9 @@
 //! protected extension points (`newBooleanClause`, `newFieldQuery`,
 //! `getBooleanQuery`, ...) cannot be overridden.
 
+/// `IndexSearcher.getMaxClauseCount()`'s default.
+pub(crate) const MAX_CLAUSE_COUNT: usize = 1024;
+
 mod constants;
 mod parser;
 mod token_manager;
@@ -46,42 +49,49 @@ pub struct QueryParserError {
 }
 
 impl QueryParserError {
-    fn parse(message: impl Into<String>) -> Self {
+    pub(crate) fn parse(message: impl Into<String>) -> Self {
         QueryParserError {
             class: "ParseException",
             message: message.into(),
         }
     }
 
-    fn illegal_argument(message: impl Into<String>) -> Self {
+    pub(crate) fn illegal_argument(message: impl Into<String>) -> Self {
         QueryParserError {
             class: "IllegalArgumentException",
             message: message.into(),
         }
     }
 
-    fn runtime(message: impl Into<String>) -> Self {
+    pub(crate) fn runtime(message: impl Into<String>) -> Self {
         QueryParserError {
             class: "RuntimeException",
             message: message.into(),
         }
     }
 
-    fn too_complex(message: impl Into<String>) -> Self {
+    pub(crate) fn too_many_clauses() -> Self {
+        QueryParserError {
+            class: "TooManyClauses",
+            message: format!("maxClauseCount is set to {MAX_CLAUSE_COUNT}"),
+        }
+    }
+
+    pub(crate) fn too_complex(message: impl Into<String>) -> Self {
         QueryParserError {
             class: "TooComplexToDeterminizeException",
             message: message.into(),
         }
     }
 
-    fn from_search(e: crate::Error) -> Self {
+    pub(crate) fn from_search(e: crate::Error) -> Self {
         match e {
             crate::Error::IllegalArgument(m) => Self::illegal_argument(m),
             other => Self::runtime(other.to_string()),
         }
     }
 
-    fn from_analysis(e: AnalysisError) -> Self {
+    pub(crate) fn from_analysis(e: AnalysisError) -> Self {
         match e {
             AnalysisError::IllegalArgument(m) => Self::illegal_argument(m),
             other => Self::runtime(other.to_string()),

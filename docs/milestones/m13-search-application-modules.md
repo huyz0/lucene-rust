@@ -9,7 +9,7 @@
 | **Effort** | XL |
 | **Depends on** | [M10](m10-joins-grouping-queries.md), [M11](m11-analysis-common.md) |
 | **Unblocks** | native `highlight`, completion suggesters, `query_string`/`simple_query_string` parsing |
-| **Status** | in progress, 0 of 4 criteria -- T13.1: the classic `QueryParser` and `MultiFieldQueryParser` are ported (every row of `GenQueryParserClassic` equal); `simple`, `flexible`, `complexPhrase`, `surround`, `xml` and `ext` are not |
+| **Status** | in progress, 0 of 4 criteria -- T13.1: the classic `QueryParser`, `MultiFieldQueryParser` and `SimpleQueryParser` are ported (every fixture row equal); `flexible`, `complexPhrase`, `surround`, `xml` and `ext` are not |
 
 ---
 
@@ -70,8 +70,10 @@ through these modules; each of those falls back to Lucene today.
   failing rows carry Lucene's token, column and expected tokens; with
   `MultiFieldQueryParser` it matches every row under fourteen
   configurations (operators, analyzers, synonyms, per-field analyzers,
-  boosts). Remaining: date-resolution ranges, and the `simple`,
-  `flexible`, `complexPhrase`, `surround`, `xml` and `ext` parsers
+  boosts), and `SimpleQueryParser` (`GenQueryParserSimple`, twelve
+  configurations, each flag off in turn) likewise. Remaining:
+  date-resolution ranges, and the `flexible`, `complexPhrase`,
+  `surround`, `xml` and `ext` parsers
   (`docs/inventory/lucene-queryparser.tsv`).
 - **T13.2** — Highlighting, including term vectors in `DirectoryReader`.
 - **T13.3** — Suggesters and the completion postings format.

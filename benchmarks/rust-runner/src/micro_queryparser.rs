@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use lucene_analysis::{Analyzer, StandardAnalyzer};
 use lucene_search::queryparser::classic::QueryParser;
+use lucene_search::queryparser::simple::SimpleQueryParser;
 
 use super::measure;
 
@@ -80,6 +81,27 @@ pub fn bench_queryparser(w: Duration, m: Duration) {
         w,
         m,
     );
+    let mut simple = corpus.clone();
+    simple.extend(
+        std::fs::read_to_string("fixtures/corpus/queryparser-simple.txt")
+            .unwrap()
+            .lines()
+            .map(str::to_string),
+    );
+    let sp = SimpleQueryParser::new(standard(), "f");
+    measure("qp_simple_corpus", w, m, || {
+        for q in &simple {
+            match sp.parse(black_box(q)) {
+                Ok(parsed) => {
+                    black_box(&parsed);
+                }
+                Err(e) => {
+                    black_box(e.message.len());
+                }
+            }
+        }
+        simple.len() as u64
+    });
     run(
         "qp_multi_field_corpus",
         &QueryParser::multi_field(&["title", "body"], standard()),
