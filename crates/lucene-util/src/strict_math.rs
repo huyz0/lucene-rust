@@ -952,10 +952,21 @@ mod tests {
             (0xc0862066151add8b, 0x0016a09e667f3bcc, 0xfff8000000000000),
             (0xc0864f886378b146, 0x0000100000000000, 0xfff8000000000000),
         ];
+        // A NaN's sign bit is the hardware's choice for `(x - x) / 0` (x86
+        // sets it, aarch64 does not) and no Java code can observe it, so a
+        // NaN only has to be a NaN.
+        let same = |got: f64, want: u64| {
+            let want = f64::from_bits(want);
+            if want.is_nan() {
+                got.is_nan()
+            } else {
+                got.to_bits() == want.to_bits()
+            }
+        };
         for (x, e, l) in fixed {
             let x = f64::from_bits(x);
-            assert_eq!(exp(x).to_bits(), e, "exp({x:e})");
-            assert_eq!(log(x).to_bits(), l, "log({x:e})");
+            assert!(same(exp(x), e), "exp({x:e}) = {:#x}", exp(x).to_bits());
+            assert!(same(log(x), l), "log({x:e}) = {:#x}", log(x).to_bits());
         }
         let mut state = 0x9E37_79B9_7F4A_7C15u64;
         let (mut h1, mut h2) = (0xcbf2_9ce4_8422_2325u64, 0xcbf2_9ce4_8422_2325u64);

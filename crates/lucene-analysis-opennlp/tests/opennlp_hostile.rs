@@ -588,6 +588,18 @@ fn event_models() {
             .message
             .contains("is not one of")
     );
+    // ... but a pattern no predicate uses is never looked at, as in Java
+    let mut unused = header();
+    unused
+        .int(1)
+        .utf("a")
+        .int(2)
+        .utf("0 7")
+        .utf("1 0")
+        .int(1)
+        .utf("p")
+        .double(1.0);
+    assert!(MaxentModel::read(&unused.0).is_ok());
     assert!(refused(
         &header()
             .int(1)
@@ -698,15 +710,14 @@ fn beam_search_prunes_and_falls_back() {
             .unwrap(),
         vec![0, 0, 0]
     );
-    assert_eq!(
-        BeamSearch::new(0)
-            .best_sequence(&m, 0, &mut Only(0))
-            .unwrap(),
-        Vec::<u32>::new()
-    );
-    assert!(BeamSearch::new(0)
-        .best_sequence(&m, 1, &mut Only(0))
-        .is_err());
+    // a beam below 1 is `new PriorityQueue<>(size)`'s
+    // IllegalArgumentException, even over no positions
+    for (size, len) in [(0, 0), (0, 1), (-3, 2)] {
+        assert!(matches!(
+            BeamSearch::new(size).best_sequence(&m, len, &mut Only(0)),
+            Err(AnalysisError::IllegalArgument(ref s)) if s.is_empty()
+        ));
+    }
 }
 
 #[test]
@@ -881,9 +892,14 @@ fn taggers_with_odd_beams() {
     let zero = manifest("en-pos-maxent.bin", |m| {
         m.replace("BeamSize=3", "BeamSize=-4")
     });
+    // `new PriorityQueue<>(-4)`: refused when tagging starts, even an
+    // empty sentence
     let mut t = PosTagger::new(&PosModel::load(&zero).unwrap()).unwrap();
-    assert!(t.tag(&[]).unwrap().is_empty());
-    assert!(t.tag(&[text::units("dog")]).is_err());
+    for sentence in [&[][..], &[text::units("dog")][..]] {
+        assert!(
+            matches!(t.tag(sentence), Err(AnalysisError::IllegalArgument(ref m)) if m.is_empty())
+        );
+    }
     let chunker = ChunkerModel::load(&manifest("en-chunker.bin", |m| {
         m.replace("BeamSize=10", "BeamSize=1x")
     }))

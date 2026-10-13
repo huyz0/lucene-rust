@@ -503,13 +503,12 @@ impl BaseModel {
 
     /// `BeamSize` from the manifest, else `default`: Java's
     /// `Integer.parseInt` (a `NumberFormatException` for a bad one).
-    pub fn beam_size(&self, default: usize) -> Result<usize, lucene_analysis::AnalysisError> {
+    /// A size below 1 is kept: `BeamSearch` refuses it when it searches.
+    pub fn beam_size(&self, default: i32) -> Result<i32, lucene_analysis::AnalysisError> {
         match self.manifest_property("BeamSize") {
             None => Ok(default),
             Some(s) => match text::parse_int(&text::units(s)) {
-                // a beam of size 0 or less keeps no sequence (Java: none of
-                // its loops run), as size 0 here
-                Some(n) => Ok(usize::try_from(n).unwrap_or(0)),
+                Some(n) => Ok(n),
                 None => Err(lucene_analysis::AnalysisError::IllegalArgument(format!(
                     "NumberFormatException: For input string: \"{s}\""
                 ))),

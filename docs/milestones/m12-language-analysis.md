@@ -491,7 +491,7 @@ Part 5 (T12.5 OpenNLP):
   feature-generator rows -- all equal, byte-identical under JDK 21 and 25;
   `opennlp_hostile.rs` sweeps truncated and corrupted models and every
   manifest, artifact and descriptor Java refuses.
-- **Bench** (`--bench analysis_opennlp`, 2026-10-12, noise floor 1.15x, faithful port without tuning): opennlp_tokenizer 0.97~, opennlp_pos 1.22x, opennlp_pos_perceptron 0.91~, opennlp_chunker 0.97~, opennlp_lemmatizer 1.02~ --
+- **Bench** (`--bench analysis_opennlp`, 2026-10-12, noise floor 1.15x, faithful port, its one departure an FxHash map for the predicates): opennlp_tokenizer 0.97~, opennlp_pos 1.22x, opennlp_pos_perceptron 0.91~, opennlp_chunker 0.97~, opennlp_lemmatizer 1.02~ --
   at Lucene's speed within the noise; the time is the same feature-string building and map lookups OpenNLP does.
 
 ## Acceptance criteria

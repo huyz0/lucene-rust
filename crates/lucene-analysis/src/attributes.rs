@@ -754,6 +754,13 @@ impl AttributeSource {
         self.bytes_term.get_or_insert_with(Vec::new)
     }
 
+    /// The term beside the binary term's buffer ([`Self::bytes_term_mut`]),
+    /// for a caller that derives one from the other without copying the
+    /// term first (`ICUCollatedTermAttributeImpl`'s key).
+    pub fn term_and_bytes_term_mut(&mut self) -> (&str, &mut Vec<u8>) {
+        (&self.term, self.bytes_term.get_or_insert_with(Vec::new))
+    }
+
     /// `BytesTermAttributeImpl.getBytesRef()` itself.
     pub fn bytes_term(&self) -> Option<&[u8]> {
         self.bytes_term.as_deref()
