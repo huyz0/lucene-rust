@@ -104,6 +104,13 @@ case "$BENCH" in
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common lucene-analysis-icu"
     ICU_THIRDPARTY=1 ;;
+  # analysis_icu taken apart: the tokenizers alone and each ICU kernel alone.
+  analysis_icu_parts)
+    MAIN=AnalysisIcuPartsMicro
+    SRC=benchmarks/micro/java/AnalysisIcuPartsMicro.java
+    EXTRA_SRC="benchmarks/micro/java/AnalysisIcuMicro.java benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-analysis-common lucene-analysis-icu"
+    ICU_THIRDPARTY=1 ;;
   # M12 T12.5: analysis-opennlp over OpenNLP (its jars join through
   # OPENNLP_THIRDPARTY).
   analysis_opennlp)
