@@ -11,6 +11,7 @@
 //!   `QueryParserBase`.
 
 pub mod classic;
+pub mod ext;
 pub mod simple;
 
 use lucene_analysis::attributes::java_float_to_string;
