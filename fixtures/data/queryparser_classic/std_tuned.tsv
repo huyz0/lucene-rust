@@ -1,0 +1,312 @@
+a	Q	a	TermQuery(a)
+A	Q	a	TermQuery(a)
+foo bar	Q	foo bar	Boolean(TermQuery(foo) TermQuery(bar))
+foo  bar	Q	foo bar	Boolean(TermQuery(foo) TermQuery(bar))
+"foo bar"	Q	"foo bar"~1	PhraseQuery("foo bar"~1)
+"foo bar"~2	Q	"foo bar"~2	PhraseQuery("foo bar"~2)
+"foo bar"~2^3	Q	("foo bar"~2)^3.0	Boost(PhraseQuery("foo bar"~2)^3.0)
+"foo bar"^3~2	Q	("foo bar"~2)^3.0	Boost(PhraseQuery("foo bar"~2)^3.0)
+"foo"	Q	foo	TermQuery(foo)
+""	Q		Boolean()
+"a b c d"	Q	"a b c d"~1	PhraseQuery("a b c d"~1)
+"The Quick Brown Fox"	Q	"the quick brown fox"~1	PhraseQuery("the quick brown fox"~1)
+title:foo	Q	title:foo	TermQuery(title:foo)
+title:"foo bar"	Q	title:"foo bar"~1	PhraseQuery(title:"foo bar"~1)
+title:(foo bar)	Q	title:foo title:bar	Boolean(TermQuery(title:foo) TermQuery(title:bar))
+title:(+foo -bar)	Q	+title:foo -title:bar	Boolean(+TermQuery(title:foo) -TermQuery(title:bar))
++foo +bar	Q	+foo +bar	Boolean(+TermQuery(foo) +TermQuery(bar))
++foo -bar	Q	+foo -bar	Boolean(+TermQuery(foo) -TermQuery(bar))
+-foo	Q	-foo	Boolean(-TermQuery(foo))
+-foo -bar	Q	-foo -bar	Boolean(-TermQuery(foo) -TermQuery(bar))
+foo AND bar	Q	+foo +bar	Boolean(+TermQuery(foo) +TermQuery(bar))
+foo OR bar	Q	foo bar	Boolean(TermQuery(foo) TermQuery(bar))
+foo AND NOT bar	Q	+foo -bar	Boolean(+TermQuery(foo) -TermQuery(bar))
+foo && bar	Q	+foo +bar	Boolean(+TermQuery(foo) +TermQuery(bar))
+foo || bar	Q	foo bar	Boolean(TermQuery(foo) TermQuery(bar))
+!foo	Q	-foo	Boolean(-TermQuery(foo))
+foo !bar	Q	foo -bar	Boolean(TermQuery(foo) -TermQuery(bar))
+NOT foo	Q	-foo	Boolean(-TermQuery(foo))
+foo NOT bar	Q	foo -bar	Boolean(TermQuery(foo) -TermQuery(bar))
+a AND b OR c	Q	+a +b c	Boolean(+TermQuery(a) +TermQuery(b) TermQuery(c))
+a OR b AND c	Q	a +b +c	Boolean(TermQuery(a) +TermQuery(b) +TermQuery(c))
+a AND b AND c	Q	+a +b +c	Boolean(+TermQuery(a) +TermQuery(b) +TermQuery(c))
+a OR b OR c	Q	a b c	Boolean(TermQuery(a) TermQuery(b) TermQuery(c))
+(a OR b) AND c	Q	+(a b) +c	Boolean(+Boolean(TermQuery(a) TermQuery(b)) +TermQuery(c))
+a AND (b OR c)	Q	+a +(b c)	Boolean(+TermQuery(a) +Boolean(TermQuery(b) TermQuery(c)))
+((a))	Q	a	TermQuery(a)
+(a)	Q	a	TermQuery(a)
+()	E	Cannot parse '()': Encountered " ")" ") "" at line 1, column 1.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
+(a b) (c d)	Q	(a b) (c d)	Boolean(Boolean(TermQuery(a) TermQuery(b)) Boolean(TermQuery(c) TermQuery(d)))
++(a b) -(c d)	Q	+(a b) -(c d)	Boolean(+Boolean(TermQuery(a) TermQuery(b)) -Boolean(TermQuery(c) TermQuery(d)))
+title:a AND body:b	Q	+title:a +body:b	Boolean(+TermQuery(title:a) +TermQuery(body:b))
+foo^2	Q	(foo)^2.0	Boost(TermQuery(foo)^2.0)
+foo^2.5	Q	(foo)^2.5	Boost(TermQuery(foo)^2.5)
+foo^.5	E	Cannot parse 'foo^.5': Lexical error at line 1, column 5.  Encountered: '46' (46),
+foo^0	Q	(foo)^0.0	Boost(TermQuery(foo)^0.0)
+foo^	E	Cannot parse 'foo^': Encountered "<EOF>" at line 1, column 4.\nWas expecting:\n    <NUMBER> ...\n    
+foo~	Q	foo~1	FuzzyQuery(foo~1)
+foo~1	Q	foo~1	FuzzyQuery(foo~1)
+foo~2	Q	foo~2	FuzzyQuery(foo~2)
+foo~0.5	Q	foo~1	FuzzyQuery(foo~1)
+foo~0.8	Q	foo~0	FuzzyQuery(foo~0)
+foo~3	Q	foo~2	FuzzyQuery(foo~2)
+foo~1^2	Q	(foo~1)^2.0	Boost(FuzzyQuery(foo~1)^2.0)
+foo^2~1	Q	(foo~1)^2.0	Boost(FuzzyQuery(foo~1)^2.0)
+fo*	Q	fo*	PrefixQuery(fo*)
+f*o	Q	f*o	WildcardQuery(f*o)
+f?o	Q	f?o	WildcardQuery(f?o)
+*foo	E	Cannot parse '*foo': '*' or '?' not allowed as first character in WildcardQuery
+?foo	E	Cannot parse '?foo': '*' or '?' not allowed as first character in WildcardQuery
+*	E	Cannot parse '*': '*' or '?' not allowed as first character in WildcardQuery
+*:*	Q	*:*	MatchAllDocsQuery(*:*)
+title:*	E	Cannot parse 'title:*': '*' or '?' not allowed as first character in WildcardQuery
+title:fo*	Q	title:fo*	PrefixQuery(title:fo*)
+foo*bar*	Q	foo*bar*	WildcardQuery(foo*bar*)
+te?t	Q	te?t	WildcardQuery(te?t)
+"fo*"	Q	fo	TermQuery(fo)
+/fo.*/	Q	/fo.*/	RegexpQuery(/fo.*/)
+/[a-c]+/	Q	/[a-c]+/	RegexpQuery(/[a-c]+/)
+title:/x.*/	Q	title:/x.*/	RegexpQuery(title:/x.*/)
+/a/b	Q	/a/ b	Boolean(RegexpQuery(/a/) TermQuery(b))
+[a TO z]	Q	[a TO z]	TermRangeQuery([a TO z])
+{a TO z}	Q	{a TO z}	TermRangeQuery({a TO z})
+[a TO z}	Q	[a TO z}	TermRangeQuery([a TO z})
+{a TO z]	Q	{a TO z]	TermRangeQuery({a TO z])
+[* TO z]	Q	[* TO z]	TermRangeQuery([* TO z])
+[a TO *]	Q	[a TO *]	TermRangeQuery([a TO *])
+[* TO *]	Q	[* TO *]	TermRangeQuery([* TO *])
+title:[a TO z]	Q	title:[a TO z]	TermRangeQuery(title:[a TO z])
+[a TO z]^2	Q	([a TO z])^2.0	Boost(TermRangeQuery([a TO z])^2.0)
+[ a TO z ]	Q	[a TO z]	TermRangeQuery([a TO z])
+["a b" TO "c d"]	Q	[a b TO c d]	TermRangeQuery([a b TO c d])
+[1 TO 5]	Q	[1 TO 5]	TermRangeQuery([1 TO 5])
+[2002-01-01 TO 2003-01-01]	Q	[2002-01-01 TO 2003-01-01]	TermRangeQuery([2002-01-01 TO 2003-01-01])
+[a TO]	E	Cannot parse '[a TO]': Encountered " "]" "] "" at line 1, column 5.\nWas expecting one of:\n    "TO" ...\n    <RANGE_QUOTED> ...\n    <RANGE_GOOP> ...\n    
+[TO z]	E	Cannot parse '[TO z]': Encountered " <RANGE_GOOP> "z "" at line 1, column 4.\nWas expecting:\n    "TO" ...\n    
+[a z]	E	Cannot parse '[a z]': Encountered " <RANGE_GOOP> "z "" at line 1, column 3.\nWas expecting:\n    "TO" ...\n    
+a:b:c	E	Cannot parse 'a:b:c': Encountered " ":" ": "" at line 1, column 3.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
+a\\:b	Q	a:b	TermQuery(a:b)
+a\\ b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\\-b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\\+b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\\(b\\)	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\\"b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\\\\b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\\*b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\\?b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\\~b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\\^b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\\{b\\}	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\\[b\\]	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\\!b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\\&&b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\\|\\|b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+A	Q	a	TermQuery(a)
+é	Q	é	TermQuery(é)
+été	Q	été	TermQuery(été)
+foo\\	E	Cannot parse 'foo\\': Lexical error at line 1, column 5.  Encountered: <EOF> (in lexical state 2)
+"foo\\"bar"	Q	"foo bar"~1	PhraseQuery("foo bar"~1)
+"foo\\\\"	Q	foo	TermQuery(foo)
+foo-bar	Q	foo bar	Boolean(TermQuery(foo) TermQuery(bar))
+foo+bar	Q	foo bar	Boolean(TermQuery(foo) TermQuery(bar))
+foo.bar	Q	foo.bar	TermQuery(foo.bar)
+foo/bar	E	Cannot parse 'foo/bar': Lexical error at line 1, column 8.  Encountered: <EOF> after prefix "/bar" (in lexical state 2)
+wi-fi	Q	wi fi	Boolean(TermQuery(wi) TermQuery(fi))
+e-mail address	Q	e mail address	Boolean(TermQuery(e) TermQuery(mail) TermQuery(address))
+U.S.A.	Q	u.s.a	TermQuery(u.s.a)
+O'Neil	Q	o'neil	TermQuery(o'neil)
+café	Q	café	TermQuery(café)
+日本語	Q	日 本 語	Boolean(TermQuery(日) TermQuery(本) TermQuery(語))
+中文 测试	Q	中 文 测 试	Boolean(TermQuery(中) TermQuery(文) TermQuery(测) TermQuery(试))
+x AND	E	Cannot parse 'x AND': Encountered "<EOF>" at line 1, column 5.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
+AND x	E	Cannot parse 'AND x': Encountered " <AND> "AND "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
+OR	E	Cannot parse 'OR': Encountered " <OR> "OR "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
+AND	E	Cannot parse 'AND': Encountered " <AND> "AND "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
+NOT	E	Cannot parse 'NOT': Encountered "<EOF>" at line 1, column 3.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
+x OR	E	Cannot parse 'x OR': Encountered "<EOF>" at line 1, column 4.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
+(foo	E	Cannot parse '(foo': Encountered "<EOF>" at line 1, column 4.\nWas expecting one of:\n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    ")" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
+foo)	E	Cannot parse 'foo)': Encountered " ")" ") "" at line 1, column 3.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
+"foo	E	Cannot parse '"foo': Lexical error at line 1, column 5.  Encountered: <EOF> after prefix "\\"foo" (in lexical state 2)
+foo"	E	Cannot parse 'foo"': Lexical error at line 1, column 5.  Encountered: <EOF> (in lexical state 2)
+title:	E	Cannot parse 'title:': Encountered "<EOF>" at line 1, column 6.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
+:foo	E	Cannot parse ':foo': Encountered " ":" ": "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
+foo:	E	Cannot parse 'foo:': Encountered "<EOF>" at line 1, column 4.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
+[a TO	E	Cannot parse '[a TO': Encountered "<EOF>" at line 1, column 5.\nWas expecting one of:\n    "TO" ...\n    <RANGE_QUOTED> ...\n    <RANGE_GOOP> ...\n    
+a TO b	Q	a to b	Boolean(TermQuery(a) TermQuery(to) TermQuery(b))
+foo^bar	E	Cannot parse 'foo^bar': Lexical error at line 1, column 5.  Encountered: '98' (98),
+foo~bar	Q	foo~1	FuzzyQuery(foo~1)
++	E	Cannot parse '+': Encountered "<EOF>" at line 1, column 1.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
+-	E	Cannot parse '-': Encountered "<EOF>" at line 1, column 1.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
+!	E	Cannot parse '!': Encountered "<EOF>" at line 1, column 1.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
++ foo	Q	foo	Boolean(TermQuery(foo))
+- foo	Q	foo	Boolean(TermQuery(foo))
+! foo	Q	foo	Boolean(TermQuery(foo))
+foo +	E	Cannot parse 'foo +': Encountered "<EOF>" at line 1, column 5.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
+foo -	E	Cannot parse 'foo -': Encountered "<EOF>" at line 1, column 5.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
+a && || b	E	Cannot parse 'a && || b': Encountered " <OR> "|| "" at line 1, column 5.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
+a ^ b	E	Cannot parse 'a ^ b': Lexical error at line 1, column 4.  Encountered: '32' (32),
+^2	E	Cannot parse '^2': Encountered " "^" "^ "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
+~2	E	Cannot parse '~2': Encountered " <FUZZY_SLOP> "~2 "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
+"a"~	Q	a	TermQuery(a)
+"a"~x	Q	a	TermQuery(a)
+"a" ~2	Q	a	TermQuery(a)
+title:foo^2 body:bar^3	Q	(title:foo)^2.0 (body:bar)^3.0	Boolean(Boost(TermQuery(title:foo)^2.0) Boost(TermQuery(body:bar)^3.0))
++title:foo -body:bar baz	Q	+title:foo -body:bar baz	Boolean(+TermQuery(title:foo) -TermQuery(body:bar) TermQuery(baz))
+title:(a OR b)^2	Q	(title:a title:b)^2.0	Boost(Boolean(TermQuery(title:a) TermQuery(title:b))^2.0)
+(a b)^3	Q	(a b)^3.0	Boost(Boolean(TermQuery(a) TermQuery(b))^3.0)
+(a b)~2	E	Cannot parse '(a b)~2': Encountered " <FUZZY_SLOP> "~2 "" at line 1, column 5.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
+-(-a)	Q	-(-a)	Boolean(-Boolean(-TermQuery(a)))
++(+a)	Q	+(+a)	Boolean(+Boolean(+TermQuery(a)))
+foo*^2	Q	(foo*)^2.0	Boost(PrefixQuery(foo*)^2.0)
+fo*~2	Q	fo*	PrefixQuery(fo*)
+"foo bar" baz	Q	"foo bar"~1 baz	Boolean(PhraseQuery("foo bar"~1) TermQuery(baz))
+"foo bar" AND "baz qux"	Q	+"foo bar"~1 +"baz qux"~1	Boolean(+PhraseQuery("foo bar"~1) +PhraseQuery("baz qux"~1))
+the a an	Q	the a an	Boolean(TermQuery(the) TermQuery(a) TermQuery(an))
+The Quick	Q	the quick	Boolean(TermQuery(the) TermQuery(quick))
+FOO bar BAZ	Q	foo bar baz	Boolean(TermQuery(foo) TermQuery(bar) TermQuery(baz))
+foo\tbar	Q	foo bar	Boolean(TermQuery(foo) TermQuery(bar))
+ foo	Q	foo	TermQuery(foo)
+foo	Q	foo	TermQuery(foo)
+foo&bar	Q	foo bar	Boolean(TermQuery(foo) TermQuery(bar))
+foo|bar	Q	foo bar	Boolean(TermQuery(foo) TermQuery(bar))
+foo&&bar	Q	foo bar	Boolean(TermQuery(foo) TermQuery(bar))
+foo||bar	Q	foo bar	Boolean(TermQuery(foo) TermQuery(bar))
+a AND OR b	E	Cannot parse 'a AND OR b': Encountered " <OR> "OR "" at line 1, column 6.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
+a NOT NOT b	E	Cannot parse 'a NOT NOT b': Encountered " <NOT> "NOT "" at line 1, column 6.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
+NOT NOT a	E	Cannot parse 'NOT NOT a': Encountered " <NOT> "NOT "" at line 1, column 4.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
+a AND AND b	E	Cannot parse 'a AND AND b': Encountered " <AND> "AND "" at line 1, column 6.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
+(a AND b) OR (c AND NOT d)	Q	(+a +b) (+c -d)	Boolean(Boolean(+TermQuery(a) +TermQuery(b)) Boolean(+TermQuery(c) -TermQuery(d)))
+title:"a b"~3^2	Q	(title:"a b"~3)^2.0	Boost(PhraseQuery(title:"a b"~3)^2.0)
+"a b c"~10	Q	"a b c"~10	PhraseQuery("a b c"~10)
+"a  b"	Q	"a b"~1	PhraseQuery("a b"~1)
+"a-b"	Q	"a b"~1	PhraseQuery("a b"~1)
+"a,b"	Q	"a b"~1	PhraseQuery("a b"~1)
+a,b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+12345	Q	12345	TermQuery(12345)
+1.5	Q	1.5	TermQuery(1.5)
+-1	Q	-1	Boolean(-TermQuery(1))
++1	Q	+1	Boolean(+TermQuery(1))
+x^-1	E	Cannot parse 'x^-1': Lexical error at line 1, column 3.  Encountered: '45' (45),
+title:[1 TO 10] AND foo	Q	+title:[1 TO 10] +foo	Boolean(+TermRangeQuery(title:[1 TO 10]) +TermQuery(foo))
+*a*	E	Cannot parse '*a*': '*' or '?' not allowed as first character in WildcardQuery
+a*b?c	Q	a*b?c	WildcardQuery(a*b?c)
+?	E	Cannot parse '?': '*' or '?' not allowed as first character in WildcardQuery
+??	E	Cannot parse '??': '*' or '?' not allowed as first character in WildcardQuery
+**	E	Cannot parse '**': '*' or '?' not allowed as first character in WildcardQuery
+*?	E	Cannot parse '*?': '*' or '?' not allowed as first character in WildcardQuery
+foo~1.5	E	Cannot parse 'foo~1.5': Fractional edit distances are not allowed!
+foo~-1	E	Cannot parse 'foo~-1': Minimum similarity for a FuzzyQuery has to be between 0.0f and 1.0f !
+"foo"~1.5	Q	foo	TermQuery(foo)
+a b c d e f g h i j	Q	a b c d e f g h i j	Boolean(TermQuery(a) TermQuery(b) TermQuery(c) TermQuery(d) TermQuery(e) TermQuery(f) TermQuery(g) TermQuery(h) TermQuery(i) TermQuery(j))
+title:foo* body:bar?	Q	title:foo* body:bar?	Boolean(PrefixQuery(title:foo*) WildcardQuery(body:bar?))
+\\*	Q		Boolean()
+\\?	Q		Boolean()
+\\\\	Q		Boolean()
+"\\\\"	Q		Boolean()
+"\\""	Q		Boolean()
+"a\\nb"	Q	anb	TermQuery(anb)
+\\n	Q	n	TermQuery(n)
+a\\n	Q	an	TermQuery(an)
+[é TO 中]	Q	[é TO 中]	TermRangeQuery([é TO 中])
+{日本 TO 語}	Q	{日本 TO 語}	TermRangeQuery({日本 TO 語})
+["é" TO "\\"中"]	Q	[é TO "中]	TermRangeQuery([é TO "中])
+["a\\"b" TO c]	Q	[a"b TO c]	TermRangeQuery([a"b TO c])
+[a　TO　b]	E	Cannot parse '[a　TO　b]': Encountered " "]" "] "" at line 1, column 7.\nWas expecting:\n    "TO" ...\n    
+a　b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
++　a	Q	a	Boolean(TermQuery(a))
+-　a	Q	a	Boolean(TermQuery(a))
+!　a	Q	a	Boolean(TermQuery(a))
+a^é	E	Cannot parse 'a^é': Lexical error at line 1, column 4.  Encountered: <EOF>
+a^　	E	Cannot parse 'a^　': Lexical error at line 1, column 4.  Encountered: <EOF>
+a~é	Q	a~1	FuzzyQuery(a~1)
+a~2é	Q	a~1	FuzzyQuery(a~1)
+"a"~é	Q	a	TermQuery(a)
+/é/	Q	/é/	RegexpQuery(/é/)
+/a\\/é/	Q	/a\\/é/	RegexpQuery(/a\\/é/)
+é*	Q	é*	PrefixQuery(é*)
+*é	E	Cannot parse '*é': '*' or '?' not allowed as first character in WildcardQuery
+é?b	Q	é?b	WildcardQuery(é?b)
+a\\é*	Q	aé*	PrefixQuery(aé*)
+"é\\中"	Q	"é 中"~1	PhraseQuery("é 中"~1)
+a\\中	Q	a 中	Boolean(TermQuery(a) TermQuery(中))
+\\é	Q	é	TermQuery(é)
+a\\　b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+(\u0008	E	Cannot parse '(\u0008': Encountered "<EOF>" at line 1, column 2.\nWas expecting one of:\n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    ")" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
+)\u000C	E	Cannot parse ')\u000C': Encountered " ")" ") "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
+a\u0001(	E	Cannot parse 'a\u0001(': Encountered "<EOF>" at line 1, column 3.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
+\u0007:	E	Cannot parse '\u0007:': Encountered "<EOF>" at line 1, column 2.\nWas expecting one of:\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
+'(	E	Cannot parse ''(': Encountered "<EOF>" at line 1, column 2.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
+a'	Q	a	TermQuery(a)
+"a\u0008	E	Cannot parse '"a\u0008': Lexical error at line 1, column 4.  Encountered: <EOF> after prefix "\\"a\\b" (in lexical state 2)
+"x\u000C	E	Cannot parse '"x\u000C': Lexical error at line 1, column 4.  Encountered: <EOF> after prefix "\\"x\\f" (in lexical state 2)
+"'	E	Cannot parse '"'': Lexical error at line 1, column 3.  Encountered: <EOF> after prefix "\\"\\'" (in lexical state 2)
+/\u0008	E	Cannot parse '/\u0008': Lexical error at line 1, column 3.  Encountered: <EOF> after prefix "/\\b" (in lexical state 2)
+&	Q		Boolean()
+|	Q		Boolean()
+&&&	Q		Boolean()
+|||	Q		Boolean()
+AN	Q	an	TermQuery(an)
+O	Q	o	TermQuery(o)
+NO	Q	no	TermQuery(no)
+N	Q	n	TermQuery(n)
+A	Q	a	TermQuery(a)
+TO	Q	to	TermQuery(to)
+AND)	E	Cannot parse 'AND)': Encountered " <AND> "AND "" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
+a OR)	E	Cannot parse 'a OR)': Encountered " ")" ") "" at line 1, column 4.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    "*" ...\n    
+[T	E	Cannot parse '[T': Encountered "<EOF>" at line 1, column 2.\nWas expecting:\n    "TO" ...\n    
+[TO	E	Cannot parse '[TO': Encountered "<EOF>" at line 1, column 3.\nWas expecting:\n    "TO" ...\n    
+[TOx TO y]	Q	[tox TO y]	TermRangeQuery([tox TO y])
+[a TO T]	Q	[a TO t]	TermRangeQuery([a TO t])
+[a TO TO]	Q	[a TO to]	TermRangeQuery([a TO to])
+[a TO b c]	E	Cannot parse '[a TO b c]': Encountered " <RANGE_GOOP> "c "" at line 1, column 8.\nWas expecting one of:\n    "]" ...\n    "}" ...\n    
+"a\n	E	Cannot parse '"a\n': Lexical error at line 2, column 0.  Encountered: <EOF> after prefix "\\"a\\n" (in lexical state 2)
+"a\r	E	Cannot parse '"a\r': Lexical error at line 2, column 0.  Encountered: <EOF> after prefix "\\"a\\r" (in lexical state 2)
+a\\	E	Cannot parse 'a\\': Lexical error at line 1, column 3.  Encountered: <EOF> (in lexical state 2)
+[a TO b]^é	E	Cannot parse '[a TO b]^é': Lexical error at line 1, column 11.  Encountered: <EOF>
+a^1.	Q	(a)^1.0	Boost(TermQuery(a)^1.0)
+a^1.x	Q	(a)^1.0 x	Boolean(Boost(TermQuery(a)^1.0) TermQuery(x))
+a^.	E	Cannot parse 'a^.': Lexical error at line 1, column 4.  Encountered: <EOF>
+(a)^2.5^3	E	Cannot parse '(a)^2.5^3': Encountered " "^" "^ "" at line 1, column 7.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
+a^2~	Q	(a~1)^2.0	Boost(FuzzyQuery(a~1)^2.0)
+"a b"~1.9	Q	"a b"~1	PhraseQuery("a b"~1)
+"a b"~-2	X	IllegalArgumentException: Slop must be >= 0, got -2
+"a b"~x	Q	"a b"~1	PhraseQuery("a b"~1)
+a~-1	E	Cannot parse 'a~-1': Minimum similarity for a FuzzyQuery has to be between 0.0f and 1.0f !
+a~1.0	Q	a~1	FuzzyQuery(a~1)
+a~NaN	Q	a~0	FuzzyQuery(a~0)
+a~Infinity	E	Cannot parse 'a~Infinity': Fractional edit distances are not allowed!
+a~1e0	Q	a~1	FuzzyQuery(a~1)
+a~2f	Q	a~2	FuzzyQuery(a~2)
+/[/	X	IllegalArgumentException: unexpected end-of-string
+/a{2,1}/	X	IllegalArgumentException: invalid repetition range(out of order): 2..1
+/<foo>/	X	IllegalArgumentException: 'foo' not found
+é	Q	é	TermQuery(é)
+😀	Q	😀	TermQuery(😀)
+a😀*	Q	a😀*	PrefixQuery(a😀*)
+*:é*	Q	*:é*	PrefixQuery(*:é*)
+*:a	Q	*:a	TermQuery(*:a)
+*:*^2	Q	(*:*)^2.0	Boost(MatchAllDocsQuery(*:*)^2.0)
+title:*	E	Cannot parse 'title:*': '*' or '?' not allowed as first character in WildcardQuery
+\\u00e9\\u4E2D	Q	é 中	Boolean(TermQuery(é) TermQuery(中))
+\\u00zz	E	Cannot parse '\\u00zz': Non-hex character in Unicode escape sequence: z
+a\\u12	E	Cannot parse 'a\\u12': Truncated Unicode escape sequence.
+\u0000	Q		Boolean()
+ab	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+\\*\\*a	Q	a	TermQuery(a)
+a\\*\\?b*	Q	a*?b*	PrefixQuery(a*?b*)
+\\**	E	Cannot parse '\\**': '*' not allowed as first character in PrefixQuery
+[a\\ TO b]	E	Cannot parse '[a\\ TO b]': Term can not end with escape character.
+a~0	Q	a~0	FuzzyQuery(a~0)
+fast	Q	fast	TermQuery(fast)
+Fast car	Q	fast car	Boolean(TermQuery(fast) TermQuery(car))
+"fast car"~2	Q	"fast car"~2	PhraseQuery("fast car"~2)
+"fast car"~-1	X	IllegalArgumentException: Slop must be >= 0, got -1
+fast*	Q	fast*	PrefixQuery(fast*)
+car~1	Q	car~1	FuzzyQuery(car~1)
+x fast	Q	x fast	Boolean(TermQuery(x) TermQuery(fast))
+/(a|b)*a(a|b){20}/	X	TooComplexToDeterminizeException: Determinizing automaton with 22 states and 22 transitions would require more than 10000 effort.
+/(a|b)*a(a|b){5}/	Q	/(a|b)*a(a|b){5}/	RegexpQuery(/(a|b)*a(a|b){5}/)
+a?b?c?d?e?f?g?h*i*j*k*	Q	a?b?c?d?e?f?g?h*i*j*k*	WildcardQuery(a?b?c?d?e?f?g?h*i*j*k*)
+a\\ *	Q	a *	PrefixQuery(a *)
+a\\😀*	Q	a😀*	PrefixQuery(a😀*)

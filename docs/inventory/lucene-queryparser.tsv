@@ -1,0 +1,224 @@
+# Lucene 10.5.0 lucene-queryparser: every top-level class of the jar, and what became of it.
+# Checked by scripts/check-port-inventory.py --module queryparser (see its docstring for the statuses).
+# class	status	detail
+queryparser/charstream/CharStream	ported	crates/lucene-search/src/queryparser/classic/token_manager.rs::CharStream
+queryparser/charstream/FastCharStream	ported	crates/lucene-search/src/queryparser/classic/token_manager.rs::CharStream
+queryparser/classic/MultiFieldQueryParser	ported	crates/lucene-search/src/queryparser/classic/mod.rs::multi_field
+queryparser/classic/ParseException	ported	crates/lucene-search/src/queryparser/classic/parser.rs::parse_exception_message
+queryparser/classic/QueryParser	ported	crates/lucene-search/src/queryparser/classic/mod.rs::QueryParser
+queryparser/classic/QueryParserBase	partial	crates/lucene-search/src/queryparser/classic/parser.rs::add_clause -- M13: date-resolution ranges (setDateResolution/setLocale/setTimeZone); the MultiTermQuery rewrite method and determinizeWorkLimit setters
+queryparser/classic/QueryParserConstants	ported	crates/lucene-search/src/queryparser/classic/constants.rs::TOKEN_IMAGE
+queryparser/classic/QueryParserTokenManager	ported	crates/lucene-search/src/queryparser/classic/token_manager.rs::TokenManager
+queryparser/classic/Token	ported	crates/lucene-search/src/queryparser/classic/token_manager.rs::Token
+queryparser/classic/TokenMgrError	ported	crates/lucene-search/src/queryparser/classic/token_manager.rs::TokenMgrError
+queryparser/complexPhrase/ComplexPhraseQueryParser	todo:M13	ComplexPhraseQueryParser
+queryparser/ext/ExtendableQueryParser	todo:M13	the extendable query parser
+queryparser/ext/ExtensionQuery	todo:M13	the extendable query parser
+queryparser/ext/Extensions	todo:M13	the extendable query parser
+queryparser/ext/ParserExtension	todo:M13	the extendable query parser
+queryparser/flexible/core/QueryNodeError	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/QueryNodeException	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/QueryNodeParseException	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/QueryParserHelper	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/builders/QueryBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/builders/QueryTreeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/config/AbstractQueryConfig	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/config/ConfigurationKey	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/config/FieldConfig	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/config/FieldConfigListener	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/config/QueryConfigHandler	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/messages/QueryParserMessages	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/nodes/AndQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/nodes/AnyQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/nodes/BooleanQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/nodes/BoostQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/nodes/DeletedQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/nodes/FieldQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/nodes/FieldValuePairQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/nodes/FieldableNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/nodes/FuzzyQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/nodes/GroupQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/nodes/MatchAllDocsQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/nodes/MatchNoDocsQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/nodes/ModifierQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/nodes/NoTokenFoundQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/nodes/OpaqueQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/nodes/OrQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/nodes/PathQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/nodes/PhraseSlopQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/nodes/ProximityQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/nodes/QueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/nodes/QueryNodeImpl	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/nodes/QuotedFieldQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/nodes/RangeQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/nodes/SlopQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/nodes/TextableQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/nodes/TokenizedPhraseQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/nodes/ValueQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/parser/EscapeQuerySyntax	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/parser/SyntaxParser	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/processors/NoChildOptimizationQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/processors/QueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/processors/QueryNodeProcessorImpl	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/processors/QueryNodeProcessorPipeline	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/processors/RemoveDeletedQueryNodesProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/util/QueryNodeOperation	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/util/StringUtils	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/util/UnescapedCharSequence	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/messages/Message	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/messages/MessageImpl	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/messages/NLS	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/messages/NLSException	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/precedence/PrecedenceQueryParser	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/precedence/processors/BooleanModifiersQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/precedence/processors/PrecedenceQueryNodeProcessorPipeline	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/CommonQueryParserConfiguration	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/QueryParserUtil	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/StandardQueryParser	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/builders/AnyQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/builders/BooleanQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/builders/BoostQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/builders/DummyQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/builders/FieldQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/builders/FuzzyQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/builders/GroupQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/builders/IntervalQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/builders/MatchAllDocsQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/builders/MatchNoDocsQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/builders/MinShouldMatchNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/builders/ModifierQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/builders/MultiPhraseQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/builders/PhraseQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/builders/PointRangeQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/builders/PrefixWildcardQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/builders/RegexpQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/builders/SlopQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/builders/StandardQueryBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/builders/StandardQueryTreeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/builders/SynonymQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/builders/TermRangeQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/builders/WildcardQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/config/FieldBoostMapFCListener	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/config/FieldDateResolutionFCListener	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/config/FuzzyConfig	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/config/NumberDateFormat	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/config/PointsConfig	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/config/PointsConfigListener	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/config/StandardQueryConfigHandler	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/AbstractRangeQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/BooleanModifierNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/IntervalQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/MinShouldMatchNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/MultiPhraseQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/PointQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/PointRangeQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/PrefixWildcardQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/RegexpQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/SynonymQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/TermRangeQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/WildcardQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/intervalfn/After	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/intervalfn/AnalyzedText	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/intervalfn/AtLeast	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/intervalfn/Before	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/intervalfn/ContainedBy	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/intervalfn/Containing	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/intervalfn/Extend	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/intervalfn/FuzzyTerm	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/intervalfn/IntervalFunction	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/intervalfn/MaxGaps	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/intervalfn/MaxWidth	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/intervalfn/NonOverlapping	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/intervalfn/NotContainedBy	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/intervalfn/NotContaining	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/intervalfn/NotWithin	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/intervalfn/Or	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/intervalfn/Ordered	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/intervalfn/Overlapping	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/intervalfn/Phrase	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/intervalfn/Unordered	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/intervalfn/UnorderedNoOverlaps	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/intervalfn/Wildcard	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/nodes/intervalfn/Within	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/parser/EscapeQuerySyntaxImpl	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/parser/ParseException	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/parser/StandardSyntaxParser	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/parser/StandardSyntaxParserConstants	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/parser/StandardSyntaxParserTokenManager	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/parser/Token	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/parser/TokenMgrError	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/processors/AllowLeadingWildcardProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/processors/AnalyzerQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/processors/BooleanQuery2ModifierNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/processors/BooleanSingleChildOptimizationQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/processors/BoostQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/processors/DefaultPhraseSlopQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/processors/FuzzyQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/processors/IntervalQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/processors/MatchAllDocsQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/processors/MultiFieldQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/processors/MultiTermRewriteMethodProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/processors/OpenRangeQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/processors/PhraseSlopQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/processors/PointQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/processors/PointRangeQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/processors/RegexpQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/processors/RemoveEmptyNonLeafQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/processors/StandardQueryNodeProcessorPipeline	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/processors/TermRangeQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/standard/processors/WildcardQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/simple/SimpleQueryParser	todo:M13	SimpleQueryParser
+queryparser/surround/parser/ParseException	todo:M13	the surround query language
+queryparser/surround/parser/QueryParser	todo:M13	the surround query language
+queryparser/surround/parser/QueryParserConstants	todo:M13	the surround query language
+queryparser/surround/parser/QueryParserTokenManager	todo:M13	the surround query language
+queryparser/surround/parser/Token	todo:M13	the surround query language
+queryparser/surround/parser/TokenMgrError	todo:M13	the surround query language
+queryparser/surround/query/AndQuery	todo:M13	the surround query language
+queryparser/surround/query/BasicQueryFactory	todo:M13	the surround query language
+queryparser/surround/query/ComposedQuery	todo:M13	the surround query language
+queryparser/surround/query/DistanceQuery	todo:M13	the surround query language
+queryparser/surround/query/DistanceRewriteQuery	todo:M13	the surround query language
+queryparser/surround/query/DistanceSubQuery	todo:M13	the surround query language
+queryparser/surround/query/FieldsQuery	todo:M13	the surround query language
+queryparser/surround/query/NotQuery	todo:M13	the surround query language
+queryparser/surround/query/OrQuery	todo:M13	the surround query language
+queryparser/surround/query/RewriteQuery	todo:M13	the surround query language
+queryparser/surround/query/SimpleTerm	todo:M13	the surround query language
+queryparser/surround/query/SimpleTermRewriteQuery	todo:M13	the surround query language
+queryparser/surround/query/SpanNearClauseFactory	todo:M13	the surround query language
+queryparser/surround/query/SrndBooleanQuery	todo:M13	the surround query language
+queryparser/surround/query/SrndPrefixQuery	todo:M13	the surround query language
+queryparser/surround/query/SrndQuery	todo:M13	the surround query language
+queryparser/surround/query/SrndTermQuery	todo:M13	the surround query language
+queryparser/surround/query/SrndTruncQuery	todo:M13	the surround query language
+queryparser/surround/query/TooManyBasicQueries	todo:M13	the surround query language
+queryparser/xml/CoreParser	todo:M13	the XML query parser
+queryparser/xml/CorePlusExtensionsParser	todo:M13	the XML query parser
+queryparser/xml/CorePlusQueriesParser	todo:M13	the XML query parser
+queryparser/xml/DOMUtils	todo:M13	the XML query parser
+queryparser/xml/ParserException	todo:M13	the XML query parser
+queryparser/xml/QueryBuilder	todo:M13	the XML query parser
+queryparser/xml/QueryBuilderFactory	todo:M13	the XML query parser
+queryparser/xml/builders/BooleanQueryBuilder	todo:M13	the XML query parser
+queryparser/xml/builders/BoostingTermBuilder	todo:M13	the XML query parser
+queryparser/xml/builders/ConstantScoreQueryBuilder	todo:M13	the XML query parser
+queryparser/xml/builders/DisjunctionMaxQueryBuilder	todo:M13	the XML query parser
+queryparser/xml/builders/FuzzyLikeThisQueryBuilder	todo:M13	the XML query parser
+queryparser/xml/builders/LikeThisQueryBuilder	todo:M13	the XML query parser
+queryparser/xml/builders/MatchAllDocsQueryBuilder	todo:M13	the XML query parser
+queryparser/xml/builders/PointRangeQueryBuilder	todo:M13	the XML query parser
+queryparser/xml/builders/RangeQueryBuilder	todo:M13	the XML query parser
+queryparser/xml/builders/SpanBuilderBase	todo:M13	the XML query parser
+queryparser/xml/builders/SpanFirstBuilder	todo:M13	the XML query parser
+queryparser/xml/builders/SpanNearBuilder	todo:M13	the XML query parser
+queryparser/xml/builders/SpanNotBuilder	todo:M13	the XML query parser
+queryparser/xml/builders/SpanOrBuilder	todo:M13	the XML query parser
+queryparser/xml/builders/SpanOrTermsBuilder	todo:M13	the XML query parser
+queryparser/xml/builders/SpanPositionRangeBuilder	todo:M13	the XML query parser
+queryparser/xml/builders/SpanQueryBuilder	todo:M13	the XML query parser
+queryparser/xml/builders/SpanQueryBuilderFactory	todo:M13	the XML query parser
+queryparser/xml/builders/SpanTermBuilder	todo:M13	the XML query parser
+queryparser/xml/builders/TermQueryBuilder	todo:M13	the XML query parser
+queryparser/xml/builders/TermsQueryBuilder	todo:M13	the XML query parser
+queryparser/xml/builders/UserInputQueryBuilder	todo:M13	the XML query parser

@@ -137,7 +137,7 @@ impl std::fmt::Display for AttrValue<'_> {
 /// going to the even last digit: `271183.625` is `271183.62` where Rust
 /// prints `.63`, and `Float.MIN_VALUE` is `1.4E-45` where Rust's shortest
 /// is `1e-45`.
-pub(crate) fn java_float_to_string(v: f32) -> String {
+pub fn java_float_to_string(v: f32) -> String {
     if v.is_nan() {
         return "NaN".into();
     }

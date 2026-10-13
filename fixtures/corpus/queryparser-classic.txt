@@ -1,0 +1,209 @@
+a
+A
+foo bar
+foo  bar
+"foo bar"
+"foo bar"~2
+"foo bar"~2^3
+"foo bar"^3~2
+"foo"
+""
+"a b c d"
+"The Quick Brown Fox"
+title:foo
+title:"foo bar"
+title:(foo bar)
+title:(+foo -bar)
++foo +bar
++foo -bar
+-foo
+-foo -bar
+foo AND bar
+foo OR bar
+foo AND NOT bar
+foo && bar
+foo || bar
+!foo
+foo !bar
+NOT foo
+foo NOT bar
+a AND b OR c
+a OR b AND c
+a AND b AND c
+a OR b OR c
+(a OR b) AND c
+a AND (b OR c)
+((a))
+(a)
+()
+(a b) (c d)
++(a b) -(c d)
+title:a AND body:b
+foo^2
+foo^2.5
+foo^.5
+foo^0
+foo^
+foo~
+foo~1
+foo~2
+foo~0.5
+foo~0.8
+foo~3
+foo~1^2
+foo^2~1
+fo*
+f*o
+f?o
+*foo
+?foo
+*
+*:*
+title:*
+title:fo*
+foo*bar*
+te?t
+"fo*"
+/fo.*/
+/[a-c]+/
+title:/x.*/
+/a/b
+[a TO z]
+{a TO z}
+[a TO z}
+{a TO z]
+[* TO z]
+[a TO *]
+[* TO *]
+title:[a TO z]
+[a TO z]^2
+[ a TO z ]
+["a b" TO "c d"]
+[1 TO 5]
+[2002-01-01 TO 2003-01-01]
+[a TO]
+[TO z]
+[a z]
+a:b:c
+a\:b
+a\ b
+a\-b
+a\+b
+a\(b\)
+a\"b
+a\\b
+a\*b
+a\?b
+a\~b
+a\^b
+a\{b\}
+a\[b\]
+a\!b
+a\&&b
+a\|\|b
+A
+é
+été
+foo\
+"foo\"bar"
+"foo\\"
+foo-bar
+foo+bar
+foo.bar
+foo/bar
+wi-fi
+e-mail address
+U.S.A.
+O'Neil
+café
+日本語
+中文 测试
+x AND
+AND x
+OR
+AND
+NOT
+x OR
+(foo
+foo)
+"foo
+foo"
+title:
+:foo
+foo:
+[a TO
+a TO b
+foo^bar
+foo~bar
++
+-
+!
++ foo
+- foo
+! foo
+foo +
+foo -
+a && || b
+a ^ b
+^2
+~2
+"a"~
+"a"~x
+"a" ~2
+title:foo^2 body:bar^3
++title:foo -body:bar baz
+title:(a OR b)^2
+(a b)^3
+(a b)~2
+-(-a)
++(+a)
+foo*^2
+fo*~2
+"foo bar" baz
+"foo bar" AND "baz qux"
+the a an
+The Quick
+FOO bar BAZ
+foo	bar
+ foo
+foo
+foo&bar
+foo|bar
+foo&&bar
+foo||bar
+a AND OR b
+a NOT NOT b
+NOT NOT a
+a AND AND b
+(a AND b) OR (c AND NOT d)
+title:"a b"~3^2
+"a b c"~10
+"a  b"
+"a-b"
+"a,b"
+a,b
+12345
+1.5
+-1
++1
+x^-1
+title:[1 TO 10] AND foo
+*a*
+a*b?c
+?
+??
+**
+*?
+foo~1.5
+foo~-1
+"foo"~1.5
+a b c d e f g h i j
+title:foo* body:bar?
+\*
+\?
+\\
+"\\"
+"\""
+"a\nb"
+\n
+a\n
