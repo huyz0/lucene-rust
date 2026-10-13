@@ -8,9 +8,10 @@
 //! lone name is a General_Category (mask) value, else a Script value, else
 //! a binary property, else `ANY`, `ASCII` or `Assigned`; `name=value` takes
 //! any binary, enumerated or mask property, `Script_Extensions`, and a
-//! numeric `ccc`. **Not ported** (typed `UnsupportedOperation`): `\N{name}`
-//! and `na=` (character names), `Numeric_Value`, `Age`, `Identifier_Type`,
-//! and string ranges `{ab}-{ad}`; variables (`$x`) exist only with a
+//! numeric `ccc`; `\N{name}` and `na=` are a character name
+//! ([`unames`](mod@crate::icu4j::unames)); `Numeric_Value` and `Age` take
+//! their value. **Not ported** (typed `UnsupportedOperation`):
+//! `Identifier_Type`, and string ranges `{ab}-{ad}`; variables (`$x`) exist only with a
 //! symbol table, which no Lucene caller passes, so `$` is a literal or the
 //! `[...$]` anchor (U+FFFF), as in Java.
 //!
@@ -508,8 +509,18 @@ impl UnicodeSet {
                     return Ok(());
                 }
                 PropKind::Other => {
+                    if pr.names.first().map(String::as_str) == Some("na") {
+                        // the name must be munged, as `u_charFromName` does
+                        // not match loosely
+                        let name = munge_char_name(value_alias);
+                        let cp = crate::icu4j::unames::char_from_extended_name(&name)
+                            .ok_or_else(|| IcuError::illegal_argument("Invalid character name"))?;
+                        self.clear();
+                        self.add(cp);
+                        return Ok(());
+                    }
                     return Err(match pr.names.first().map(String::as_str) {
-                        Some("na" | "ID_Type") => IcuError::unsupported(format!(
+                        Some("ID_Type") => IcuError::unsupported(format!(
                             "UnicodeSet property {prop_alias} is not ported"
                         )),
                         _ => IcuError::illegal_argument("Unsupported property"),
@@ -832,6 +843,7 @@ impl UnicodeSet {
             return Err(fail(chars));
         }
         let posix;
+        let mut is_name = false;
         let mut invert = false;
         if t[pos] == '[' as u16 && t[pos + 1] == ':' as u16 {
             posix = true;
@@ -844,12 +856,8 @@ impl UnicodeSet {
             && (t[pos + 1] == 'p' as u16 || t[pos + 1] == 'P' as u16 || t[pos + 1] == 'N' as u16)
         {
             let c = t[pos + 1];
-            if c == 'N' as u16 {
-                return Err(IcuError::unsupported(
-                    "UnicodeSet \\N{name} (character names) is not ported",
-                ));
-            }
             posix = false;
+            is_name = c == 'N' as u16;
             invert = c == 'P' as u16;
             pos = skip_white_space(t, pos + 2);
             if pos == t.len() || t[pos] != '{' as u16 {
@@ -865,7 +873,11 @@ impl UnicodeSet {
         };
         let equals = find(t, pos, &[0x3d]);
         let (prop, value) = match equals {
-            Some(e) if e < close => (utf16::string(&t[pos..e]), utf16::string(&t[e + 1..close])),
+            Some(e) if e < close && !is_name => {
+                (utf16::string(&t[pos..e]), utf16::string(&t[e + 1..close]))
+            }
+            // `\N{name}` is the name property's value
+            _ if is_name => ("na".to_string(), utf16::string(&t[pos..close])),
             _ => (utf16::string(&t[pos..close]), String::new()),
         };
         self.apply_property_alias(&prop, &value)?;
@@ -1546,12 +1558,17 @@ mod tests {
                 "{p}: {e}"
             );
         }
-        for p in [
-            "[\\N{LATIN SMALL LETTER A}]",
-            "[{ab}-{ad}]",
-            "\\p{name=x}",
-            "\\p{ID_Type=x}",
-        ] {
+        // a character name is a one-character set; a name no character
+        // has is refused
+        assert_eq!(set("[\\N{LATIN SMALL LETTER A}]").ranges(), &[(97, 97)]);
+        assert_eq!(set("\\N{ latin  small letter a }").ranges(), &[(97, 97)]);
+        assert_eq!(set("[:name=HYPHEN-MINUS:]").ranges(), &[(45, 45)]);
+        assert_eq!(set("\\P{name=HYPHEN-MINUS}").size(), 0x10ffff);
+        for p in ["\\N{NO SUCH CHARACTER}", "\\p{name=x}"] {
+            let e = err(p);
+            assert_eq!(e.message(), "Invalid character name", "{p}");
+        }
+        for p in ["[{ab}-{ad}]", "\\p{ID_Type=x}"] {
             assert_eq!(
                 err(p).kind(),
                 crate::IcuErrorKind::UnsupportedOperation,

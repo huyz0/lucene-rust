@@ -1,0 +1,1 @@
+\p{Lu}\p{Ll}+ {1}; [:Nd:]+ {2}; \p{Script=Greek}+ {3}; . ;
