@@ -322,6 +322,11 @@ pub struct AttributeSource {
     /// [`Self::term_bytes`] (`TermToBytesRefAttribute.getBytesRef()`) reports
     /// instead of the UTF-8 of [`Self::term`].
     bytes_term: Option<Vec<u8>>,
+    /// The binary term's buffer while none is set: `clear()` parks it here
+    /// (Java's `ICUCollatedTermAttributeImpl` keeps its `RawCollationKey`),
+    /// and the next [`Self::bytes_term_mut`] takes it back, so a filter that
+    /// sets a key per token never regrows one from empty.
+    bytes_spare: Spare,
     /// `OffsetAttribute`.
     start_offset: i32,
     end_offset: i32,
@@ -350,6 +355,25 @@ pub struct AttributeSource {
 /// `AttributeSource.State`: a captured copy of every attribute, restored with
 /// [`AttributeSource::restore_state`].
 pub type State = AttributeSource;
+
+/// A parked buffer: capacity only, so it takes no part in a comparison or a
+/// debug print.
+#[derive(Default)]
+struct Spare(Vec<u8>);
+
+impl std::fmt::Debug for Spare {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Spare")
+    }
+}
+
+impl PartialEq for Spare {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for Spare {}
 
 impl Clone for AttributeSource {
     fn clone(&self) -> Self {
@@ -393,6 +417,7 @@ impl AttributeSource {
         let AttributeSource {
             term,
             bytes_term,
+            bytes_spare: _,
             start_offset,
             end_offset,
             position_increment,
@@ -407,8 +432,18 @@ impl AttributeSource {
             custom,
         } = source;
         self.term.clone_from(term);
-        if self.bytes_term.is_some() || bytes_term.is_some() {
-            self.bytes_term.clone_from(bytes_term);
+        match (&mut self.bytes_term, bytes_term) {
+            (Some(mine), Some(theirs)) => mine.clone_from(theirs),
+            (mine, theirs) => {
+                if let Some(parked) = mine.take() {
+                    self.bytes_spare.0 = parked;
+                }
+                if let Some(theirs) = theirs {
+                    let mut v = std::mem::take(&mut self.bytes_spare.0);
+                    v.clone_from(theirs);
+                    self.bytes_term = Some(v);
+                }
+            }
         }
         self.start_offset = *start_offset;
         self.end_offset = *end_offset;
@@ -439,6 +474,7 @@ impl AttributeSource {
         AttributeSource {
             term: String::new(),
             bytes_term: None,
+            bytes_spare: Spare::default(),
             start_offset: 0,
             end_offset: 0,
             position_increment: 1,
@@ -460,7 +496,9 @@ impl AttributeSource {
     /// Keeps the term's allocation, as Java keeps its `char[]`.
     pub fn clear_attributes(&mut self) {
         self.term.clear();
-        self.bytes_term = None;
+        if let Some(parked) = self.bytes_term.take() {
+            self.bytes_spare.0 = parked;
+        }
         self.start_offset = 0;
         self.end_offset = 0;
         self.position_increment = 1;
@@ -744,6 +782,9 @@ impl AttributeSource {
 
     /// `BytesTermAttribute.setBytesRef`; `None` clears it.
     pub fn set_bytes_term(&mut self, bytes: Option<Vec<u8>>) {
+        if let Some(parked) = self.bytes_term.take() {
+            self.bytes_spare.0 = parked;
+        }
         self.bytes_term = bytes;
     }
 
@@ -751,14 +792,22 @@ impl AttributeSource {
     /// was): `BytesTermAttribute.setBytesRef` for a caller that reuses its
     /// bytes from token to token.
     pub fn bytes_term_mut(&mut self) -> &mut Vec<u8> {
-        self.bytes_term.get_or_insert_with(Vec::new)
+        self.term_and_bytes_term_mut().1
     }
 
     /// The term beside the binary term's buffer ([`Self::bytes_term_mut`]),
     /// for a caller that derives one from the other without copying the
     /// term first (`ICUCollatedTermAttributeImpl`'s key).
     pub fn term_and_bytes_term_mut(&mut self) -> (&str, &mut Vec<u8>) {
-        (&self.term, self.bytes_term.get_or_insert_with(Vec::new))
+        let bytes = match &mut self.bytes_term {
+            Some(b) => b,
+            none => {
+                let mut v = std::mem::take(&mut self.bytes_spare.0);
+                v.clear();
+                none.insert(v)
+            }
+        };
+        (&self.term, bytes)
     }
 
     /// `BytesTermAttributeImpl.getBytesRef()` itself.
@@ -973,6 +1022,30 @@ mod tests {
         fn end(&mut self) {
             self.0 = 99;
         }
+    }
+
+    #[test]
+    fn clearing_parks_the_binary_term_buffer_for_the_next_one() {
+        let mut a = AttributeSource::new();
+        a.bytes_term_mut().extend_from_slice(&[1u8; 100]);
+        let capacity = a.bytes_term_mut().capacity();
+        a.clear_attributes();
+        // unset again, and equal to a source that never had one
+        assert_eq!(a.bytes_term(), None);
+        assert_eq!(a, AttributeSource::new());
+        // the buffer comes back empty with its capacity
+        let b = a.bytes_term_mut();
+        assert!(b.is_empty() && b.capacity() == capacity);
+        b.push(7);
+        assert_eq!(a.bytes_term(), Some(&[7u8][..]));
+        // a copy sets, and a copy of an unset source unsets, the term
+        let mut c = AttributeSource::new();
+        c.clone_from(&a);
+        assert_eq!(c.bytes_term(), Some(&[7u8][..]));
+        c.clone_from(&AttributeSource::new());
+        assert_eq!(c.bytes_term(), None);
+        a.set_bytes_term(None);
+        assert_eq!(a.bytes_term(), None);
     }
 
     #[test]

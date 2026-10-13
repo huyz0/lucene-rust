@@ -516,16 +516,20 @@ left open is M14 T14.7's, not dropped.
       2026-10-13**: every Kuromoji, Nori, SmartCN, Stempel, Morfologik,
       phonetic and OpenNLP case is at Lucene's speed or inside the noise;
       ICU is not. Measured 2026-10-13 (`--bench analysis_icu`, pinned to
-      cores 2-3, 3 reps, noise floor 1.10x): icu_collation_key 0.76x,
-      icu_folding 0.86x, icu_tokenizer 0.88x, icu_transform_trad_simp
-      0.89x, icu_collation_key_phonebook_identical 0.94~,
-      icu_normalizer_nfkc_cf 0.95~ (from 0.56x-0.81x after
-      `KeywordTokenizer`'s whole-text path and the collation filter's
-      copy-free key). The gap left is the term's UTF-8/UTF-16 round trip in
-      `AttributeSource`, shared by every analysis crate -- a change to
-      `lucene-analysis`, not to ICU -- and it moves to M14 T14.7 with the
-      inventory gap also tagged M14 there: `ICUTokenizerFactory`'s
-      `rulefiles` (ICU's break-rule compiler).
+      cores 2-3, 3 reps, noise floor 1.06x): icu_collation_key 0.92x,
+      icu_tokenizer 0.89x; icu_folding 0.98~, icu_normalizer_nfkc_cf
+      1.02~, icu_transform_trad_simp 1.08x,
+      icu_collation_key_phonebook_identical 1.14x (from 0.56x-0.81x after
+      `CharTokenizer` and `KeywordTokenizer` scan a plain string's UTF-8
+      directly, the collation filter keys without copying the term, and
+      `AttributeSource` keeps the binary-term buffer across `clear()`).
+      The two cases left are the per-document stream set-up (a boxed
+      `StrReader` and its text copy, the pool's lock) and
+      `ICUTokenizer`'s term transcoding from UTF-16 -- changes to
+      `lucene-analysis`, not to ICU, whose kernels measure at or above
+      ICU4J's (`--bench analysis_icu_parts`) -- and they move to M14
+      T14.7 with the inventory gap also tagged M14 there:
+      `ICUTokenizerFactory`'s `rulefiles` (ICU's break-rule compiler).
 
 ## Risks and unknowns
 
