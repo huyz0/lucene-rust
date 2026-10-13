@@ -284,9 +284,17 @@ impl<'a> CollationIterator<'a> {
                 };
                 if fast {
                     let ce32 = self.data.trie.get_from_u16_single_lead(u);
-                    if ce32 & 0xff < c::SPECIAL_CE32_LOW_BYTE {
+                    let t = ce32 & 0xff;
+                    if t < c::SPECIAL_CE32_LOW_BYTE {
                         self.pos += 1;
                         return c::ce_from_simple_ce32(ce32);
+                    }
+                    // A long primary (most Latin letters) is one CE with no
+                    // expansion: `nextCE`'s own branch, taken here, not in
+                    // the out-of-line `next_ce_slow`.
+                    if t == c::LONG_PRIMARY_CE32_LOW_BYTE {
+                        self.pos += 1;
+                        return (i64::from(ce32.wrapping_sub(t)) << 32) | c::COMMON_SEC_AND_TER_CE;
                     }
                 }
             }
