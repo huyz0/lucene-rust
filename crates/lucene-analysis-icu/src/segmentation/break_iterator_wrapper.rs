@@ -11,17 +11,54 @@ use crate::icu4j::unicode_set::UnicodeSet;
 use crate::segmentation::config::{EMOJI_SEQUENCE_STATUS, WORD_NONE};
 use crate::segmentation::script_iterator::char_at_absolute;
 
-fn emoji_rk() -> &'static UnicodeSet {
-    static S: OnceLock<UnicodeSet> = OnceLock::new();
+/// A frozen set (`UnicodeSet.freeze()`): the BMP answered from a bitmap, the
+/// rest by the set's ranges, as ICU's `BMPSet` does.
+struct FrozenSet {
+    set: UnicodeSet,
+    bmp: Vec<u64>,
+}
+
+impl FrozenSet {
+    fn new(set: UnicodeSet) -> FrozenSet {
+        // ALLOC: one bit per BMP code point (a constant 8 KiB).
+        let mut bmp = vec![0u64; 0x10000 / 64];
+        for &(first, last) in set.ranges() {
+            for c in first..=last.min(0xffff) {
+                if let Some(word) = bmp.get_mut(usize::try_from(c >> 6).unwrap_or(usize::MAX)) {
+                    *word |= 1 << (c & 63);
+                }
+            }
+        }
+        FrozenSet { set, bmp }
+    }
+
+    #[inline]
+    fn contains(&self, c: i32) -> bool {
+        match u32::try_from(c) {
+            Ok(c) if c < 0x10000 => self
+                .bmp
+                .get(usize::try_from(c >> 6).unwrap_or(usize::MAX))
+                .is_some_and(|w| (w >> (c & 63)) & 1 != 0),
+            _ => self.set.contains(c),
+        }
+    }
+}
+
+fn emoji_rk() -> &'static FrozenSet {
+    static S: OnceLock<FrozenSet> = OnceLock::new();
     S.get_or_init(|| {
-        UnicodeSet::from_pattern("[\\u002a\\u00230-9©®™〰〽]").expect("EMOJI_RK parses")
+        FrozenSet::new(
+            UnicodeSet::from_pattern("[\\u002a\\u00230-9©®™〰〽]").expect("EMOJI_RK parses"),
+        )
     })
 }
 
-fn emoji() -> &'static UnicodeSet {
-    static S: OnceLock<UnicodeSet> = OnceLock::new();
+fn emoji() -> &'static FrozenSet {
+    static S: OnceLock<FrozenSet> = OnceLock::new();
     S.get_or_init(|| {
-        UnicodeSet::from_pattern("[[:Emoji:][:Extended_Pictographic:]]").expect("EMOJI parses")
+        FrozenSet::new(
+            UnicodeSet::from_pattern("[[:Emoji:][:Extended_Pictographic:]]").expect("EMOJI parses"),
+        )
     })
 }
 

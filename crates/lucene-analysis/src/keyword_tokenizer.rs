@@ -104,6 +104,10 @@ impl Tokenizer for KeywordTokenizer {
     fn set_reader(&mut self, input: Box<dyn CharReader>) -> Result<(), AnalysisError> {
         self.input.set_reader(input)
     }
+
+    fn spare_reader(&mut self) -> Option<Box<crate::reader::StrReader>> {
+        self.input.take_spare()
+    }
 }
 
 #[cfg(test)]
