@@ -163,6 +163,10 @@ pub struct CharTokenizer<P> {
     final_offset: i32,
     max_token_len: usize,
     io_buffer: CharacterBuffer,
+    /// Scanning the reader's whole text as UTF-8 from `byte_pos` (see
+    /// `increment_utf8`); `offset` is then the UTF-16 offset of `byte_pos`.
+    utf8: bool,
+    byte_pos: usize,
 }
 
 /// `org.apache.lucene.analysis.core.WhitespaceTokenizer`.
@@ -203,6 +207,8 @@ impl<P: TokenChar> CharTokenizer<P> {
             final_offset: 0,
             max_token_len: DEFAULT_MAX_WORD_LEN,
             io_buffer: CharacterBuffer::new(IO_BUFFER_SIZE),
+            utf8: false,
+            byte_pos: 0,
         }
     }
 
@@ -224,6 +230,85 @@ impl<P: TokenChar> CharTokenizer<P> {
     fn correct(&self, off: usize) -> i32 {
         self.input
             .correct_offset(i32::try_from(off).unwrap_or(i32::MAX))
+    }
+}
+
+/// `CharTokenizer.incrementToken` over a plain string input: the same tokens,
+/// offsets and cuts as reading its UTF-16 units a buffer at a time, scanned
+/// where the text lies. A string reader's offsets are never corrected, and
+/// its text holds no unpaired surrogate. `offset` is the UTF-16 offset of
+/// `byte_pos`.
+fn scan_utf8<P: TokenChar>(
+    text: &str,
+    predicate: &P,
+    atts: &mut AttributeSource,
+    offset: &mut usize,
+    byte_pos: &mut usize,
+    final_offset: &mut i32,
+    max_token_len: usize,
+) -> Result<bool, AnalysisError> {
+    let bytes = text.as_bytes();
+    let mut i = *byte_pos;
+    let mut off = *offset;
+    // skip the characters that are not token characters
+    let start = loop {
+        if i >= bytes.len() {
+            *byte_pos = i;
+            *offset = off;
+            *final_offset = i32::try_from(off).unwrap_or(i32::MAX);
+            return Ok(false);
+        }
+        let (c, n) = decode_utf8(bytes, i);
+        if predicate.is_token_char(c) {
+            break i;
+        }
+        i += n;
+        off += if n == 4 { 2 } else { 1 };
+    };
+    let start_off = off;
+    let mut length = 0usize;
+    while i < bytes.len() {
+        let (c, n) = decode_utf8(bytes, i);
+        if !predicate.is_token_char(c) {
+            break;
+        }
+        let units = if n == 4 { 2 } else { 1 };
+        i += n;
+        off += units;
+        length += units;
+        if length >= max_token_len {
+            break;
+        }
+    }
+    *byte_pos = i;
+    *offset = off;
+    atts.set_term(&text[start..i]);
+    let (s, e) = (
+        i32::try_from(start_off).unwrap_or(i32::MAX),
+        i32::try_from(off).unwrap_or(i32::MAX),
+    );
+    *final_offset = e;
+    atts.set_offset(s, e)?;
+    Ok(true)
+}
+
+/// The code point at byte `i` of valid UTF-8 and its length in bytes.
+#[inline]
+fn decode_utf8(bytes: &[u8], i: usize) -> (u32, usize) {
+    let b0 = u32::from(bytes[i]);
+    if b0 < 0x80 {
+        return (b0, 1);
+    }
+    let cont = |k: usize| u32::from(bytes[i + k]) & 0x3F;
+    if b0 < 0xE0 {
+        (((b0 & 0x1F) << 6) | cont(1), 2)
+    } else if b0 < 0xF0 {
+        (((b0 & 0x0F) << 12) | (cont(1) << 6) | cont(2), 3)
+    } else {
+        (
+            ((b0 & 0x07) << 18) | (cont(1) << 12) | (cont(2) << 6) | cont(3),
+            4,
+        )
     }
 }
 
@@ -251,6 +336,29 @@ impl<P: TokenChar> TokenStream for CharTokenizer<P> {
     // Java: CharTokenizer.incrementToken
     fn increment_token(&mut self) -> Result<bool, AnalysisError> {
         self.atts.clear_attributes();
+        if self.utf8 {
+            let Self {
+                input,
+                atts,
+                predicate,
+                offset,
+                byte_pos,
+                final_offset,
+                max_token_len,
+                ..
+            } = self;
+            if let Some(text) = input.whole_text() {
+                return scan_utf8(
+                    text,
+                    predicate,
+                    atts,
+                    offset,
+                    byte_pos,
+                    final_offset,
+                    *max_token_len,
+                );
+            }
+        }
         let mut length = 0usize;
         let mut start = 0usize;
         let mut end = 0usize;
@@ -321,6 +429,9 @@ impl<P: TokenChar> TokenStream for CharTokenizer<P> {
         self.data_len = 0;
         self.final_offset = 0;
         self.io_buffer.reset();
+        // A plain string input is scanned as UTF-8, where it lies.
+        self.utf8 = self.input.whole_text().is_some();
+        self.byte_pos = 0;
         Ok(())
     }
 
@@ -407,6 +518,86 @@ mod tests {
         assert_eq!(terms, vec!["a", "b c", "d"]);
         let mut t = CharTokenizer::from_predicate(|c: u32| c != u32::from(b' '));
         assert_eq!(run(&mut t, "x y").0.len(), 2);
+    }
+
+    /// A string reader that hides its text, so the tokenizer reads UTF-16
+    /// units a buffer at a time.
+    struct Hidden(StrReader);
+
+    impl CharReader for Hidden {
+        fn read(&mut self, buf: &mut [u16]) -> Result<usize, AnalysisError> {
+            self.0.read(buf)
+        }
+    }
+
+    /// The UTF-8 scan of a plain string is the buffered UTF-16 read, token
+    /// for token: terms, offsets, final offset, over supplementary
+    /// characters, no-break spaces and every cut length.
+    #[test]
+    fn the_utf8_scan_equals_the_buffered_read() {
+        const ALPHABET: [&str; 12] = [
+            "a",
+            "b",
+            "z",
+            " ",
+            "\t",
+            "\u{00A0}",
+            "\u{3000}",
+            "\u{1F600}",
+            "\u{00E9}",
+            "\n",
+            "\u{2003}",
+            "\u{10400}",
+        ];
+        fn tokens<P: TokenChar + Default>(
+            text: &str,
+            max: usize,
+            hide: bool,
+        ) -> (Vec<(String, i32, i32)>, i32) {
+            let mut t = CharTokenizer::<P>::with_max_token_len(max).unwrap();
+            let reader: Box<dyn CharReader> = if hide {
+                Box::new(Hidden(StrReader::new(text)))
+            } else {
+                Box::new(StrReader::new(text))
+            };
+            t.set_reader(reader).unwrap();
+            let mut out = Vec::new();
+            let end = consume(&mut t, |a| {
+                out.push((a.term().to_string(), a.start_offset(), a.end_offset()))
+            })
+            .unwrap();
+            (out, end.end_offset())
+        }
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for round in 0..400 {
+            let len = (next() % 40) as usize + usize::from(round % 40 == 0) * 5000;
+            let text: String = (0..len)
+                .map(|_| ALPHABET[(next() % ALPHABET.len() as u64) as usize])
+                .collect();
+            for max in [1, 2, 3, 7, 255] {
+                assert_eq!(
+                    tokens::<NotJavaWhitespace>(&text, max, false),
+                    tokens::<NotJavaWhitespace>(&text, max, true),
+                    "whitespace {max} {text:?}"
+                );
+                assert_eq!(
+                    tokens::<JavaLetter>(&text, max, false),
+                    tokens::<JavaLetter>(&text, max, true),
+                    "letter {max} {text:?}"
+                );
+                assert_eq!(
+                    tokens::<NotUnicodeWhitespace>(&text, max, false),
+                    tokens::<NotUnicodeWhitespace>(&text, max, true),
+                    "unicode whitespace {max} {text:?}"
+                );
+            }
+        }
     }
 
     #[test]

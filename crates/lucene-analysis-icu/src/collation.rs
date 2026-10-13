@@ -16,12 +16,15 @@
 //! `getBytesRef`). Terms are UTF-8 here, so a lone surrogate (U+FFFD in
 //! the term) is keyed as U+FFFD, where Java keys the surrogate.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use lucene_analysis::{
-    AnalysisError, AnalyzerDefinition, KeywordTokenizer, TokenFilter, TokenStream,
+    AnalysisError, Analyzer, AnalyzerDefinition, KeywordTokenizer, TokenFilter, TokenStream,
     TokenStreamComponents,
 };
+use lucene_index::document::SortedDocValuesField;
+use lucene_index::document::{FieldTokens, FieldType, IndexableField};
 
 use crate::icu4j::coll::collator::{Collator, KeyScratch};
 
@@ -111,40 +114,56 @@ impl AnalyzerDefinition for ICUCollationKeyAnalyzer {
 }
 
 /// `ICUCollationDocValuesField`: a sorted doc values field whose value is
-/// the collation key of a string. Lucene's `Field` belongs to the search
-/// crate, above this one; this type holds the name and computes the bytes
-/// (`setStringValue`, then `binaryValue()`), which a caller indexes as a
-/// `SortedDocValuesField`.
+/// the collation key of a string (`setStringValue`). It is a
+/// [`SortedDocValuesField`] whose bytes the collator sets, so a document
+/// indexes it through [`IndexableField`] like any other field.
 #[derive(Debug, Clone)]
 pub struct ICUCollationDocValuesField {
-    name: String,
     collator: Collator,
-    bytes: Vec<u8>,
+    field: SortedDocValuesField,
 }
 
 impl ICUCollationDocValuesField {
-    /// `ICUCollationDocValuesField(name, collator)`.
+    /// `ICUCollationDocValuesField(name, collator)`: no value until one is
+    /// set.
     pub fn new(name: &str, collator: Collator) -> Self {
         ICUCollationDocValuesField {
-            name: name.to_string(),
             collator,
-            bytes: Vec::new(),
+            field: SortedDocValuesField::new(name, Vec::new()),
         }
     }
 
     /// `name()`.
     pub fn name(&self) -> &str {
-        &self.name
+        IndexableField::name(&self.field)
     }
 
-    /// `setStringValue(value)`.
+    /// `setStringValue(value)`: the value's collation key.
     pub fn set_string_value(&mut self, value: &str) {
-        self.bytes = self.collator.raw_collation_key(value);
+        self.field.set_value(self.collator.raw_collation_key(value));
     }
 
-    /// `binaryValue()` (`fieldsData`, empty before a value is set).
+    /// `binaryValue()` (empty before a value is set).
     pub fn binary_value(&self) -> &[u8] {
-        &self.bytes
+        self.field.value()
+    }
+}
+
+impl IndexableField for ICUCollationDocValuesField {
+    fn name(&self) -> &str {
+        IndexableField::name(&self.field)
+    }
+    fn field_type(&self) -> &FieldType {
+        self.field.field_type()
+    }
+    fn binary_value(&self) -> Option<Cow<'_, [u8]>> {
+        self.field.binary_value()
+    }
+    fn token_stream(
+        &self,
+        analyzer: &Analyzer,
+    ) -> lucene_index::document::Result<Option<FieldTokens>> {
+        self.field.token_stream(analyzer)
     }
 }
 
@@ -174,5 +193,22 @@ mod tests {
             factory.collator().strength(),
             crate::icu4j::coll::collator::TERTIARY
         );
+    }
+
+    /// `ICUCollationDocValuesField` is a sorted doc-values field whose value
+    /// is the collation key: what a document indexes, as `IndexableField`.
+    #[test]
+    fn the_field_is_a_sorted_doc_values_field_of_the_key() {
+        use lucene_index::document::{DocValuesType, IndexableField};
+        let root = Collator::root().unwrap();
+        let key = root.raw_collation_key("abc");
+        let mut f = ICUCollationDocValuesField::new("sort", root);
+        assert_eq!(IndexableField::name(&f), "sort");
+        assert_eq!(f.name(), "sort");
+        assert_eq!(f.field_type().doc_values_type(), DocValuesType::Sorted);
+        assert_eq!(IndexableField::binary_value(&f).unwrap().len(), 0);
+        f.set_string_value("abc");
+        assert_eq!(IndexableField::binary_value(&f).unwrap().as_ref(), &key[..]);
+        assert_eq!(f.binary_value(), &key[..]);
     }
 }

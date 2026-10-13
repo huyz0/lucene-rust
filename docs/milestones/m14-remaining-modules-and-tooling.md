@@ -67,10 +67,18 @@ After M7–M13 what is left is either self-contained or tooling:
   tests chosen by the bugs they historically caught.
 - **T14.5** — Index inspector CLI, demo, benchmark scripts.
 - **T14.6** — Empty the allowlist; publish the final `parity.md`.
+- **T14.7** — What M12 re-scoped: ICU at Lucene's speed (2026-10-13:
+  icu_collation_key 0.76x, icu_folding 0.86x, icu_tokenizer 0.88x,
+  icu_transform_trad_simp 0.89x -- the term's UTF-8/UTF-16 round trip in
+  `lucene-analysis`'s `AttributeSource`), `ICUTokenizerFactory`'s
+  `rulefiles` (a port of ICU's `RBBIRuleBuilder`).
 
 ## Acceptance criteria
 
 - [ ] Every ported module passes Java-fixture differential tests.
+- [ ] T14.7: every `--bench analysis_icu` case at or above 1.0x or inside
+      the noise floor, and no row tagged `M14` left in
+      `lucene-analysis-icu.tsv`.
 - [ ] Real Lucene reads indices written with each non-default codec.
 - [ ] `expressions` evaluates Lucene's expression test corpus to the same
       doubles.
