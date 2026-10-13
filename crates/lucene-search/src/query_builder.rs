@@ -180,7 +180,7 @@ impl<'a> QueryBuilder<'a> {
 
     /// `createFieldQuery(analyzer, operator, field, queryText, quoted,
     /// phraseSlop)`: the analyzer's tokens for `query_text`.
-    fn create_field_query_from_text(
+    pub(crate) fn create_field_query_from_text(
         &self,
         operator: Occur,
         field: &str,

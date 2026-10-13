@@ -1,0 +1,8 @@
+fields	Q	title:foo (body:bar body:baz)	Boolean(TermQuery(title:foo) Boolean(TermQuery(body:bar) TermQuery(body:baz)))
+fields_stop	Q	body:x	Boolean(TermQuery(body:x))
+fields_mismatch	X	IllegalArgumentException: queries.length != fields.length
+flags	Q	+(title:foo title:bar) -(body:foo body:bar)	Boolean(+Boolean(TermQuery(title:foo) TermQuery(title:bar)) -Boolean(TermQuery(body:foo) TermQuery(body:bar)))
+flags_mismatch	X	IllegalArgumentException: fields.length != flags.length
+fields_flags	Q		Boolean()
+fields_flags_mismatch	X	IllegalArgumentException: queries, fields, and flags array have have different length
+fields_error	E	Cannot parse '(b': Encountered "<EOF>" at line 1, column 2.\nWas expecting one of:\n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    ")" ...\n    "*" ...\n    "^" ...\n    <QUOTED> ...\n    <TERM> ...\n    <FUZZY_SLOP> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    

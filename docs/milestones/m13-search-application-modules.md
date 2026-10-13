@@ -9,7 +9,7 @@
 | **Effort** | XL |
 | **Depends on** | [M10](m10-joins-grouping-queries.md), [M11](m11-analysis-common.md) |
 | **Unblocks** | native `highlight`, completion suggesters, `query_string`/`simple_query_string` parsing |
-| **Status** | not started |
+| **Status** | in progress, 0 of 4 criteria -- T13.1: the classic `QueryParser` and `MultiFieldQueryParser` are ported (every row of `GenQueryParserClassic` equal); `simple`, `flexible`, `complexPhrase`, `surround`, `xml` and `ext` are not |
 
 ---
 
@@ -62,6 +62,17 @@ through these modules; each of those falls back to Lucene today.
 
 - **T13.1** — Query parsers: a differential harness that parses a corpus of
   query strings in Java and in Rust and compares the query trees.
+  *Progress:* the harness is `fixtures/src/GenQueryParserClassic.java` ->
+  `crates/lucene-search/tests/queryparser_classic_fixtures.rs`: a query's
+  `toString` and class tree, or its exception message, row for row. The
+  classic parser is the JavaCC 7 lexer and parser ported state for state
+  (`crates/lucene-search/src/queryparser/classic/`), so its 9,000-odd
+  failing rows carry Lucene's token, column and expected tokens; with
+  `MultiFieldQueryParser` it matches every row under fourteen
+  configurations (operators, analyzers, synonyms, per-field analyzers,
+  boosts). Remaining: date-resolution ranges, and the `simple`,
+  `flexible`, `complexPhrase`, `surround`, `xml` and `ext` parsers
+  (`docs/inventory/lucene-queryparser.tsv`).
 - **T13.2** — Highlighting, including term vectors in `DirectoryReader`.
 - **T13.3** — Suggesters and the completion postings format.
 - **T13.4** — Taxonomy facets and drill-sideways.

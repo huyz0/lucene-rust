@@ -1,0 +1,90 @@
+//! M13 T13.1's pairs (`benchmarks/micro/java/QueryParserMicro.java` is the
+//! Java twin): the classic `QueryParser` over
+//! `fixtures/corpus/queryparser-classic.txt` and over
+//! `fixtures/data/queryparser_classic/fragments.txt` (most of which are
+//! syntax errors), and `MultiFieldQueryParser` over the corpus.
+
+use std::hint::black_box;
+use std::time::Duration;
+
+use lucene_analysis::{Analyzer, StandardAnalyzer};
+use lucene_search::queryparser::classic::QueryParser;
+
+use super::measure;
+
+/// `AnalysisRows.esc` undone.
+fn unesc(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('t') => out.push('\t'),
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('u') => {
+                let h: String = it.by_ref().take(4).collect();
+                let unit = u32::from_str_radix(&h, 16).unwrap();
+                out.push(char::from_u32(unit).unwrap_or('\u{fffd}'));
+            }
+            Some(o) => out.push(o),
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
+fn run(name: &str, p: &QueryParser, queries: &[String], w: Duration, m: Duration) {
+    measure(name, w, m, || {
+        for q in queries {
+            match p.parse(black_box(q)) {
+                Ok(parsed) => {
+                    black_box(&parsed);
+                }
+                Err(e) => {
+                    black_box(e.message.len());
+                }
+            }
+        }
+        queries.len() as u64
+    });
+}
+
+pub fn bench_queryparser(w: Duration, m: Duration) {
+    let corpus: Vec<String> = std::fs::read_to_string("fixtures/corpus/queryparser-classic.txt")
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let fragments: Vec<String> =
+        std::fs::read_to_string("fixtures/data/queryparser_classic/fragments.txt")
+            .unwrap()
+            .lines()
+            .map(unesc)
+            .collect();
+    let standard = || Analyzer::new(StandardAnalyzer::new());
+    run(
+        "qp_classic_corpus",
+        &QueryParser::new("f", standard()),
+        &corpus,
+        w,
+        m,
+    );
+    run(
+        "qp_classic_fragments",
+        &QueryParser::new("f", standard()),
+        &fragments,
+        w,
+        m,
+    );
+    run(
+        "qp_multi_field_corpus",
+        &QueryParser::multi_field(&["title", "body"], standard()),
+        &corpus,
+        w,
+        m,
+    );
+}

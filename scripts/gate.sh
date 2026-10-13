@@ -47,7 +47,7 @@ python3 scripts/check-licences.py
 echo "gate: check-vendored-licences (every embedded third-party file's licence ships in LICENSE)"
 python3 scripts/check-vendored-licences.py
 
-echo "gate: check-port-inventory (every lucene-core, lucene-backward-codecs, lucene-spatial3d, lucene-spatial-extras, lucene-join, lucene-grouping, lucene-queries, lucene-analysis-common and M12 analysis module class has a status; every 'ported' location exists)"
+echo "gate: check-port-inventory (every lucene-core, lucene-backward-codecs, lucene-spatial3d, lucene-spatial-extras, lucene-join, lucene-grouping, lucene-queries, lucene-queryparser, lucene-analysis-common and M12 analysis module class has a status; every 'ported' location exists)"
 python3 scripts/check-port-inventory.py --require-jar
 python3 scripts/check-port-inventory.py --module backward-codecs --require-jar
 python3 scripts/check-port-inventory.py --module spatial3d --require-jar
@@ -55,6 +55,7 @@ python3 scripts/check-port-inventory.py --module spatial-extras --require-jar
 python3 scripts/check-port-inventory.py --module join --require-jar
 python3 scripts/check-port-inventory.py --module grouping --require-jar
 python3 scripts/check-port-inventory.py --module queries --require-jar
+python3 scripts/check-port-inventory.py --module queryparser --require-jar
 python3 scripts/check-port-inventory.py --module analysis-common --require-jar
 for m in icu kuromoji nori smartcn stempel morfologik phonetic opennlp; do
   python3 scripts/check-port-inventory.py --module "analysis-$m" --require-jar
