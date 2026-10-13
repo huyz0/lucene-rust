@@ -167,7 +167,7 @@ queryparser/flexible/standard/processors/RemoveEmptyNonLeafQueryNodeProcessor	to
 queryparser/flexible/standard/processors/StandardQueryNodeProcessorPipeline	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
 queryparser/flexible/standard/processors/TermRangeQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
 queryparser/flexible/standard/processors/WildcardQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/simple/SimpleQueryParser	todo:M13	SimpleQueryParser
+queryparser/simple/SimpleQueryParser	ported	crates/lucene-search/src/queryparser/simple.rs::SimpleQueryParser
 queryparser/surround/parser/ParseException	todo:M13	the surround query language
 queryparser/surround/parser/QueryParser	todo:M13	the surround query language
 queryparser/surround/parser/QueryParserConstants	todo:M13	the surround query language

@@ -11,6 +11,7 @@
 //!   `QueryParserBase`.
 
 pub mod classic;
+pub mod simple;
 
 use lucene_analysis::attributes::java_float_to_string;
 
@@ -18,8 +19,8 @@ use crate::extended_query::{
     ExtendedQuery, MultiTermQuery, MultiTermSource, RewriteMethod, SynonymQuery, TermRangeQuery,
 };
 use crate::query::{
-    BooleanQuery, BoostQuery, Clause, FuzzyQuery, MatchAllDocsQuery, MultiPhraseQuery, PhraseQuery,
-    PrefixQuery, RegexpQuery, TermQuery, WildcardQuery,
+    BooleanQuery, BoostQuery, Clause, FuzzyQuery, MatchAllDocsQuery, MatchNoDocsQuery,
+    MultiPhraseQuery, PhraseQuery, PrefixQuery, RegexpQuery, TermQuery, WildcardQuery,
 };
 use crate::query_visitor::Occur;
 
@@ -46,6 +47,8 @@ pub enum ParsedQuery {
     TermRange(TermRangeQuery),
     /// `MatchAllDocsQuery`.
     MatchAll,
+    /// `MatchNoDocsQuery(reason)`.
+    MatchNoDocs(String),
     /// `BooleanQuery`: its clauses in insertion order.
     Boolean(ParsedBoolean),
     /// `BoostQuery`.
@@ -74,6 +77,7 @@ impl ParsedQuery {
             Clause::Prefix(p) => ParsedQuery::Prefix(p),
             Clause::Fuzzy(f) => ParsedQuery::Fuzzy(f),
             Clause::Regexp(r) => ParsedQuery::Regexp(r),
+            Clause::MatchNoDocs(m) => ParsedQuery::MatchNoDocs(m.reason),
             Clause::Boost(b) => {
                 let BoostQuery { inner, boost } = *b;
                 ParsedQuery::Boost(Box::new(ParsedQuery::from_clause(*inner)), boost)
@@ -133,6 +137,9 @@ impl ParsedQuery {
                 ))))
             }
             ParsedQuery::MatchAll => Clause::MatchAllDocs(MatchAllDocsQuery::new(max_doc)),
+            ParsedQuery::MatchNoDocs(reason) => {
+                Clause::MatchNoDocs(MatchNoDocsQuery::new().with_reason(reason.clone()))
+            }
             ParsedQuery::Boolean(b) => {
                 let mut q = BooleanQuery::new();
                 for (occur, c) in &b.clauses {
@@ -194,6 +201,7 @@ impl ParsedQuery {
                 )
             }
             ParsedQuery::MatchAll => "*:*".to_string(),
+            ParsedQuery::MatchNoDocs(reason) => format!("MatchNoDocsQuery(\"{reason}\")"),
             ParsedQuery::Term(t) => {
                 crate::query_builder::to_query_string(Some(&Clause::Term(t.clone())), field)
             }
@@ -250,6 +258,7 @@ impl ParsedQuery {
             ParsedQuery::Regexp(_) => "RegexpQuery",
             ParsedQuery::TermRange(_) => "TermRangeQuery",
             ParsedQuery::MatchAll => "MatchAllDocsQuery",
+            ParsedQuery::MatchNoDocs(_) => "MatchNoDocsQuery",
             ParsedQuery::Boolean(_) => "BooleanQuery",
             ParsedQuery::Boost(..) => "BoostQuery",
             ParsedQuery::Other(_) => "Query",
