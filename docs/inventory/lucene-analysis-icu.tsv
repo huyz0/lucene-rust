@@ -19,7 +19,7 @@ analysis/icu/segmentation/CompositeBreakIterator	ported	crates/lucene-analysis-i
 analysis/icu/segmentation/DefaultICUTokenizerConfig	ported	crates/lucene-analysis-icu/src/segmentation/config.rs::DefaultICUTokenizerConfig
 analysis/icu/segmentation/ICUTokenizer	ported	crates/lucene-analysis-icu/src/segmentation/tokenizer.rs::ICUTokenizer
 analysis/icu/segmentation/ICUTokenizerConfig	ported	crates/lucene-analysis-icu/src/segmentation/config.rs::ICUTokenizerConfig
-analysis/icu/segmentation/ICUTokenizerFactory	partial	crates/lucene-analysis-icu/src/factory.rs::ICUTokenizerFactory -- M14: rulefiles needs ICU's break-rule compiler (RBBIRuleBuilder), not ported; inform refuses it with UnsupportedOperationException
+analysis/icu/segmentation/ICUTokenizerFactory	ported	crates/lucene-analysis-icu/src/factory.rs::ICUTokenizerFactory
 analysis/icu/segmentation/ScriptIterator	ported	crates/lucene-analysis-icu/src/segmentation/script_iterator.rs::ScriptIterator
 analysis/icu/tokenattributes/ICUCollatedTermAttributeImpl	ported	crates/lucene-analysis-icu/src/collation.rs::ICUCollatedTermFilter
 analysis/icu/tokenattributes/ScriptAttribute	ported	crates/lucene-analysis-icu/src/tokenattributes.rs::ScriptAttribute

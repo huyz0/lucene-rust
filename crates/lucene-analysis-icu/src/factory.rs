@@ -6,11 +6,12 @@
 
 use lucene_analysis::factory::args::{self, JavaArgs};
 use lucene_analysis::factory::spi;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use lucene_analysis::factory::{
-    AnalysisFactory, CharFilterFactory, FactoryBase, FactoryClass, FactoryError, JavaException,
-    ResourceLoader, TokenFilterFactory, TokenizerFactory,
+    decode_utf8, AnalysisFactory, CharFilterFactory, FactoryBase, FactoryClass, FactoryError,
+    JavaException, ResourceLoader, TokenFilterFactory, TokenizerFactory,
 };
 use lucene_analysis::{AnalysisError, CharReader, TokenStream};
 
@@ -20,7 +21,7 @@ use crate::icu4j::translit::{Transliterator, FORWARD, REVERSE};
 use crate::icu4j::unicode_set::UnicodeSet;
 use crate::normalizer2_char_filter::ICUNormalizer2CharFilter;
 use crate::normalizer2_filter::ICUNormalizer2Filter;
-use crate::segmentation::{DefaultICUTokenizerConfig, ICUTokenizer};
+use crate::segmentation::{DefaultICUTokenizerConfig, ICUTokenizer, ICUTokenizerConfig};
 use crate::transform_filter::ICUTransformFilter;
 
 /// The `filter` argument: a non-empty `UnicodeSet` pattern wraps the
@@ -221,14 +222,13 @@ impl TokenFilterFactory for ICUFoldingFilterFactory {
 }
 
 /// `ICUTokenizerFactory`: `cjkAsWords`, `myanmarAsWords` (both default
-/// `true`) and `rulefiles` (`Latn:my.rbbi,...`). **Differs:** `rulefiles`
-/// needs ICU's rule compiler (`RuleBasedBreakIterator(String)`), which is
-/// not ported: each entry's script is validated as Java validates it, then
-/// `inform` fails with `UnsupportedOperationException`.
+/// `true`) and `rulefiles` (`Latn:my.rbbi,...`): per-script break rules,
+/// compiled by `inform` from the resource's text (its `#` comment lines
+/// dropped) by this crate's rule compiler.
 pub struct ICUTokenizerFactory {
     base: FactoryBase,
     tailored: Vec<(i32, String)>,
-    config: Option<Arc<DefaultICUTokenizerConfig>>,
+    config: Option<Arc<dyn ICUTokenizerConfig>>,
     cjk_as_words: bool,
     myanmar_as_words: bool,
 }
@@ -244,20 +244,69 @@ impl AnalysisFactory for ICUTokenizerFactory {
         true
     }
     // Java: ICUTokenizerFactory.inform
-    fn inform(&mut self, _loader: &dyn ResourceLoader) -> Result<(), FactoryError> {
-        if let Some((_, path)) = self.tailored.first() {
-            return Err(FactoryError::new(
-                JavaException::UnsupportedOperation,
-                format!(
-                    "ICUTokenizerFactory rulefiles ({path}): compiling break rules from source is not ported"
-                ),
-            ));
+    fn inform(&mut self, loader: &dyn ResourceLoader) -> Result<(), FactoryError> {
+        let base = DefaultICUTokenizerConfig::new(self.cjk_as_words, self.myanmar_as_words);
+        if self.tailored.is_empty() {
+            self.config = Some(Arc::new(base));
+            return Ok(());
         }
-        self.config = Some(Arc::new(DefaultICUTokenizerConfig::new(
-            self.cjk_as_words,
-            self.myanmar_as_words,
-        )));
+        let mut breakers = HashMap::new();
+        for (script, path) in &self.tailored {
+            breakers.insert(*script, parse_rules(path, loader)?);
+        }
+        self.config = Some(Arc::new(TailoredICUTokenizerConfig { base, breakers }));
         Ok(())
+    }
+}
+
+/// `ICUTokenizerFactory.parseRules`: the resource's lines, except the ones
+/// starting with `#` (their line ends kept), compiled as break rules.
+fn parse_rules(
+    filename: &str,
+    loader: &dyn ResourceLoader,
+) -> Result<Arc<crate::icu4j::rbbi_data::RbbiData>, FactoryError> {
+    let text = decode_utf8(loader.open_resource(filename)?)?;
+    let mut rules = String::new();
+    // `BufferedReader.readLine`: a line ends at LF, CR or CR LF
+    let mut rest = text.as_str();
+    while !rest.is_empty() {
+        let end = rest.find(['\n', '\r']).unwrap_or(rest.len());
+        let line = &rest[..end];
+        if !line.starts_with('#') {
+            rules.push_str(line);
+        }
+        rules.push('\n');
+        let after = &rest[end..];
+        rest = after
+            .strip_prefix("\r\n")
+            .unwrap_or_else(|| after.get(1..).unwrap_or(""));
+    }
+    crate::icu4j::rbbi_compile::compile_rules(&rules)
+        .map(Arc::new)
+        .map_err(|e| FactoryError::new(JavaException::IllegalArgument, e.message().to_string()))
+}
+
+/// The configuration `ICUTokenizerFactory.inform` makes for `rulefiles`:
+/// the default one, with the compiled rules of the scripts they name.
+struct TailoredICUTokenizerConfig {
+    base: DefaultICUTokenizerConfig,
+    breakers: HashMap<i32, Arc<crate::icu4j::rbbi_data::RbbiData>>,
+}
+
+impl ICUTokenizerConfig for TailoredICUTokenizerConfig {
+    fn get_break_iterator(&self, script: i32) -> crate::icu4j::rbbi::RuleBasedBreakIterator {
+        match self.breakers.get(&script) {
+            Some(data) => crate::icu4j::rbbi::RuleBasedBreakIterator::from_data(Arc::clone(data)),
+            None => self.base.get_break_iterator(script),
+        }
+    }
+
+    fn get_type(&self, script: i32, rule_status: i32) -> &'static str {
+        self.base.get_type(script, rule_status)
+    }
+
+    fn combine_cj(&self) -> bool {
+        self.base.combine_cj()
     }
 }
 
@@ -306,7 +355,7 @@ impl FactoryClass for ICUTokenizerFactory {
 
 impl TokenizerFactory for ICUTokenizerFactory {
     fn create(&self) -> Result<Box<dyn TokenStream>, AnalysisError> {
-        let config = self.config.clone().unwrap_or_else(|| {
+        let config: Arc<dyn ICUTokenizerConfig> = self.config.clone().unwrap_or_else(|| {
             // Java asserts inform() ran; an uninformed factory uses the
             // arguments' configuration.
             Arc::new(DefaultICUTokenizerConfig::new(
@@ -359,8 +408,9 @@ mod tests {
         )]))
         .unwrap();
         assert!(f.is_resource_loader_aware());
+        // the rule file is read when the factory is informed
         let e = f.inform(&NoLoader).unwrap_err();
-        assert_eq!(e.kind, JavaException::UnsupportedOperation);
+        assert_eq!(e.kind, JavaException::Io);
         let mut f = ICUTokenizerFactory::from_args(&mut JavaArgs::from_pairs(&[
             ("cjkAsWords", "false"),
             ("myanmarAsWords", "false"),
