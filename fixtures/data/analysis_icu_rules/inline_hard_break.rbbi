@@ -1,0 +1,1 @@
+!!lookAheadHardBreak; [a-z]+ / '.' {10}; [a-z]+ {20}; . ;

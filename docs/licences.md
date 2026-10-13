@@ -177,7 +177,11 @@ a dependency the shipped library links is not under a licence listed here.
     `Default.brk` and `MyanmarSyllable.brk` (Apache-2.0, from the
     `analysis-icu` jar), and `uprops.bin.z`, the character properties and
     their aliases as ICU4J's public API reports them, written by
-    `tools/GenIcuProperties.java`.
+    `tools/GenIcuProperties.java`, and `unames.bin.z`, the character names
+    and name aliases (what `\N{name}` looks up) as ICU4J reports them,
+    written by `tools/GenIcuNames.java`, 193 KB. The rule compiler's parse
+    table (`icu4j/rbbi_compile/parse_table.rs`) is ICU4J's
+    `RBBIRuleParseTable`, row for row (Unicode License v3, as above).
   - ICU's `LICENSE` (ICU 77.1's, SHA-256 `451167c5...198aca`) is appended
     to the root `LICENSE` in full; `NOTICE` names the port and the files.
   - The jar is fetched by the fixture and benchmark scripts (`ICU_DEPS` in
@@ -188,7 +192,11 @@ a dependency the shipped library links is not under a licence listed here.
     `fixtures/data/analysis_icu_breaks/*.brk` are ICU's compiled character,
     line, sentence and title rules, copied from the jar by
     `GenAnalysisIcuBreaks.java` (Unicode License v3, as above): test data
-    only, never shipped.
+    only, never shipped. `fixtures/data/analysis_icu_rules_src/*.rbbi` are
+    the five break rule files of Lucene 10.5.0's `analysis-icu` (its
+    `Default` and `MyanmarSyllable` rules and the three its tokenizer
+    factory's tests use; Apache-2.0, as this project), plus `Bad.rbbi`,
+    written here: test inputs of the rule compiler, never shipped.
 
 - **OpenNLP** (M12 T12.5). Lucene's `analysis-opennlp` runs on **Apache
   OpenNLP 2.5.3** (`org.apache.opennlp:opennlp-tools:2.5.3`, the version its

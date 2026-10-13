@@ -1,0 +1,12 @@
+rulefiles_00	icu,rulefiles=Latn:Latin-break-only-on-whitespace.rbbi
+rulefiles_01	icu,rulefiles=Latn:KeywordTokenizer.rbbi
+rulefiles_02	icu,rulefiles=Latn:Default.rbbi
+rulefiles_03	icu,rulefiles=Latn:Latin-dont-break-on-hyphens.rbbi
+rulefiles_04	icu,rulefiles=Latn:KeywordTokenizer.rbbi_COMMA_Cyrl:Latin-break-only-on-whitespace.rbbi
+rulefiles_05	icu,rulefiles=Hani:KeywordTokenizer.rbbi
+rulefiles_06	icu,rulefiles=Latn:Latin-break-only-on-whitespace.rbbi,cjkAsWords=false
+rulefiles_07	icu,rulefiles=Grek:MyanmarSyllable.rbbi
+rulefiles_08	icu,rulefiles=Latn:nope.rbbi
+rulefiles_09	icu,rulefiles=Latn:Bad.rbbi
+rulefiles_10	icu,rulefiles=Latn
+rulefiles_11	icu,rulefiles=Nope:KeywordTokenizer.rbbi

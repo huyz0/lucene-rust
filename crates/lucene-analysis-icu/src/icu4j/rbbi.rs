@@ -138,6 +138,13 @@ impl RuleBasedBreakIterator {
         Ok(Self::from_data(Arc::new(RbbiData::get(bytes)?)))
     }
 
+    /// `new RuleBasedBreakIterator(rules)`: the rules' text, compiled.
+    pub fn from_rules(rules: &str) -> Result<RuleBasedBreakIterator, IcuError> {
+        Ok(Self::from_data(Arc::new(
+            crate::icu4j::rbbi_compile::compile_rules(rules)?,
+        )))
+    }
+
     /// An iterator over shared rules (`clone()` of a prototype).
     pub fn from_data(data: Arc<RbbiData>) -> RuleBasedBreakIterator {
         let n = usize::try_from(data.ftable.look_ahead_results_size).unwrap_or(0);

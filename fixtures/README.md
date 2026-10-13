@@ -1238,6 +1238,19 @@ outright.
   sentence/Thai/Lao/Khmer/Myanmar/kana lines, 200 seeded strings -- and per
   rule set every boundary with its rule status and status vector). Read by
   `crates/lucene-analysis-icu/tests/icu_breaks_fixtures.rs`.
+- `GenAnalysisIcuRules.java` — M12 T12.4: ICU4J's break rule compiler
+  (`new RuleBasedBreakIterator(String)`, `ICU_DEPS`, own classpath,
+  `analysis_icu_rules/`; inputs in `analysis_icu_rules_src/`: the five
+  `.rbbi` files of Lucene 10.5.0's analysis-icu, copied, and `Bad.rbbi`):
+  every rule set (those, and 27 `inline_*.rbbi` written here, one per rule
+  feature, and 24 ICU4J rejects) with, per 360 texts, every boundary, rule
+  status and status vector, or ICU4J's error text; `names_probe.tsv`
+  (`UCharacter.getCharFromExtendedName` over 5,621 names); and
+  `rulefiles_*.tsv`, `ICUTokenizerFactory`'s `rulefiles` chains through a
+  `CustomAnalyzer` reading the rule directory. (A custom `$dictionary`
+  rule set is not generated: ICU4J 77.1 loops forever iterating one over
+  Thai.) Read by `crates/lucene-analysis-icu/tests/icu_rule_compiler_fixtures.rs`
+  and `icu_rulefiles_fixtures.rs`.
 - `GenAnalysisOpenNLP.java` — M12 T12.5: analysis-opennlp over OpenNLP
   2.5.3 (`OPENNLP_DEPS`, own classpath, `analysis_opennlp/`). Trains ten
   models with OpenNLP itself on a seeded synthetic grammar (700 sentences:

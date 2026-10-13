@@ -250,7 +250,7 @@ generator_classpath() {
     GenAnalysisKuromoji) echo ":$KUROMOJI_CP" ;;
     GenAnalysisNori) echo ":$NORI_CP" ;;
     GenAnalysisSmartcn) echo ":$SMARTCN_CP" ;;
-    GenAnalysisIcu|GenAnalysisIcuCollation|GenAnalysisIcuTransform|GenAnalysisIcuTries|GenAnalysisIcuBreaks) echo ":$ICU_CP" ;;
+    GenAnalysisIcu|GenAnalysisIcuCollation|GenAnalysisIcuTransform|GenAnalysisIcuTries|GenAnalysisIcuBreaks|GenAnalysisIcuRules) echo ":$ICU_CP" ;;
     GenAnalysisOpenNLP) echo ":$OPENNLP_CP" ;;
   esac
 }

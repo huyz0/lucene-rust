@@ -84,6 +84,80 @@ impl StateTable {
     }
 }
 
+/// The character categories of compiled rules, as a lookup over all code
+/// points: what ICU4J's `MutableCodePointTrie` holds before serialising.
+#[derive(Debug, Clone)]
+pub struct CategoryMap {
+    /// The category of each BMP code point.
+    bmp: Vec<i16>,
+    /// The first code point of each run above the BMP, ascending, and the
+    /// run's category.
+    starts: Vec<u32>,
+    values: Vec<i32>,
+}
+
+impl CategoryMap {
+    /// The map of `(start, end, category)` ranges that tile U+0000..=U+10FFFF
+    /// in order (a gap reads category 0).
+    pub fn from_ranges(ranges: Vec<(u32, u32, i32)>) -> CategoryMap {
+        let mut bmp = vec![0i16; 0x10000];
+        let mut starts = Vec::new();
+        let mut values = Vec::new();
+        for (start, end, value) in ranges {
+            let v16 = i16::try_from(value).unwrap_or(0);
+            for c in start..=end.min(0xffff) {
+                if let Some(slot) = bmp.get_mut(usize::try_from(c).unwrap_or(usize::MAX)) {
+                    *slot = v16;
+                }
+            }
+            if end > 0xffff {
+                starts.push(start.max(0x10000));
+                values.push(value);
+            }
+        }
+        CategoryMap {
+            bmp,
+            starts,
+            values,
+        }
+    }
+
+    /// The category of `c` (0 outside U+0000..=U+10FFFF).
+    #[inline]
+    pub fn get(&self, c: i32) -> i32 {
+        match u32::try_from(c) {
+            Ok(c) if c <= 0xffff => self
+                .bmp
+                .get(usize::try_from(c).unwrap_or(usize::MAX))
+                .map_or(0, |&v| i32::from(v)),
+            Ok(c) if c <= 0x10ffff => match self.starts.partition_point(|&s| s <= c) {
+                0 => 0,
+                i => self.values.get(i.saturating_sub(1)).copied().unwrap_or(0),
+            },
+            _ => 0,
+        }
+    }
+}
+
+/// `fTrie`: ICU's serialised category trie, or the lookup of rules compiled
+/// here.
+#[derive(Debug, Clone)]
+pub enum CategoryTrie {
+    Icu(CodePointTrie),
+    Map(CategoryMap),
+}
+
+impl CategoryTrie {
+    /// The category of code point `c`.
+    #[inline]
+    pub fn get(&self, c: i32) -> i32 {
+        match self {
+            CategoryTrie::Icu(t) => t.get(c),
+            CategoryTrie::Map(m) => m.get(c),
+        }
+    }
+}
+
 /// `RBBIDataWrapper`.
 #[derive(Debug, Clone)]
 pub struct RbbiData {
@@ -94,7 +168,7 @@ pub struct RbbiData {
     /// `fRTable`.
     pub rtable: Option<StateTable>,
     /// `fTrie`.
-    pub trie: CodePointTrie,
+    pub trie: CategoryTrie,
     /// `fRuleSource`.
     pub rule_source: String,
     /// `fStatusTable`.
@@ -164,7 +238,7 @@ impl RbbiData {
             cat_count,
             ftable,
             rtable,
-            trie,
+            trie: CategoryTrie::Icu(trie),
             rule_source: src,
             status_table: status,
         })

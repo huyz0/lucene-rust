@@ -9,7 +9,7 @@
 | **Effort** | L |
 | **Depends on** | [M11](m11-analysis-common.md) |
 | **Unblocks** | analysing CJK and other scripts without a JVM |
-| **Status** | delivered 2026-10-13, 4 of 4 criteria (one re-scoped: the ICU speed gaps and `rulefiles` moved to M14 T14.7, see [Acceptance criteria](#acceptance-criteria)) -- part 1: architecture, inventory, T12.2 Stempel, T12.3 phonetic and Morfologik; part 2: T12.1 `analysis/morph`, Kuromoji and Nori; part 3: T12.6, T12.2 SmartCN; part 4: T12.4 ICU normalization, tokenizer, collation and transforms; part 5: T12.5 OpenNLP (see [Progress](#progress)) |
+| **Status** | delivered 2026-10-13, 4 of 4 criteria (one re-scoped: the two ICU speed gaps moved to M14 T14.7, see [Acceptance criteria](#acceptance-criteria)) -- part 1: architecture, inventory, T12.2 Stempel, T12.3 phonetic and Morfologik; part 2: T12.1 `analysis/morph`, Kuromoji and Nori; part 3: T12.6, T12.2 SmartCN; part 4: T12.4 ICU normalization, tokenizer, collation and transforms; part 5: T12.5 OpenNLP (see [Progress](#progress)) |
 
 ---
 
@@ -443,10 +443,13 @@ Part 4 (T12.4 ICU):
   `ICUNormalizer2CharFilter`, `ICUTokenizer` (all four configurations,
   `ScriptAttribute`), `ICUCollationKeyAnalyzer`, `ICUCollationAttributeFactory`,
   `ICUCollationDocValuesField` (a `SortedDocValuesField` holding the key),
-  `ICUTransformFilter` and the factories. Not ported: `ICUTokenizerFactory`'s `rulefiles` (ICU's
-  break-rule compiler; refused with `UnsupportedOperationException`) and
-  collators from rules (`new RuleBasedCollator(rules)`, ICU's
-  `CollationBuilder`).
+  `ICUTransformFilter` and the factories, `ICUTokenizerFactory`'s `rulefiles`
+  included: ICU's break rule compiler (`icu4j/rbbi_compile/`, ported from
+  ICU4J 77.1's bytecode: `RBBIRuleParseTable`'s state table, the scanner, the
+  set and table builders) compiles each rule file of a script, and a
+  `UnicodeSet`'s \N{name} reads ICU4J's character names
+  (`unames.rs`). Not ported: collators from rules
+  (`new RuleBasedCollator(rules)`, ICU's `CollationBuilder`).
 - **Fixtures** -- `GenAnalysisIcu.java`: normalization of every assigned
   block and 600 stress strings through six normalizers x four modes, 690
   `UnicodeSet` patterns, the filters' and factories' chains, `ICUTokenizer`
@@ -528,8 +531,9 @@ left open is M14 T14.7's, not dropped.
       `ICUTokenizer`'s term transcoding from UTF-16 -- changes to
       `lucene-analysis`, not to ICU, whose kernels measure at or above
       ICU4J's (`--bench analysis_icu_parts`) -- and they move to M14
-      T14.7 with the inventory gap also tagged M14 there:
-      `ICUTokenizerFactory`'s `rulefiles` (ICU's break-rule compiler).
+      T14.7. `rulefiles`, the collation doc-values `Field` and character
+      names are done (this part's compiler matches ICU4J on Lucene's five
+      rule files and 27 more, and on 24 rejected ones).
 
 ## Risks and unknowns
 

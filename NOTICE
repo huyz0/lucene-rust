@@ -96,7 +96,9 @@ collation and transliteration data (coll/ucadata.icu, the locale bundles
 and translit/root.res, packed in coll.pack.z with CLDR's default-script and
 ISO code tables by tools/GenIcuCollPack.java); and uprops.bin.z, the
 character properties ICU4J 77.1 reports (written by
-tools/GenIcuProperties.java). ICU's LICENSE, with the third-party terms of
+tools/GenIcuProperties.java) and unames.bin.z, the character names it
+reports (tools/GenIcuNames.java); the break rule compiler's parse table is
+ICU4J's RBBIRuleParseTable. ICU's LICENSE, with the third-party terms of
 the data ICU carries (among them the Thai, Lao, Khmer, Burmese and
 Chinese/Japanese dictionaries), is reproduced in full in LICENSE. It also
 carries Apache Lucene's own utr30.nrm (UTR #30 foldings), Default.brk and

@@ -1,0 +1,1 @@
+$Word = [a-z]+; $Num = [0-9]+; $Sep = [ ,.]; ($Word | $Num) ($Sep ($Word | $Num))* {5}; . ;
