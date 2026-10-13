@@ -9,7 +9,7 @@
 | **Effort** | L |
 | **Depends on** | [M11](m11-analysis-common.md) |
 | **Unblocks** | analysing CJK and other scripts without a JVM |
-| **Status** | in progress, 3 of 4 criteria -- the speed criterion is open: `icu_collation_key` is not shown above Lucene (1.01~ inside a 1.03x noise floor; later, noisier runs 0.91x-0.96x) (see [Acceptance criteria](#acceptance-criteria)) -- part 1: architecture, inventory, T12.2 Stempel, T12.3 phonetic and Morfologik; part 2: T12.1 `analysis/morph`, Kuromoji and Nori; part 3: T12.6, T12.2 SmartCN; part 4: T12.4 ICU normalization, tokenizer, collation and transforms; part 5: T12.5 OpenNLP (see [Progress](#progress)) |
+| **Status** | in progress, 3 of 4 criteria -- the speed criterion is open: `icu_collation_key` is at parity, not shown above Lucene (1.00~-1.01~ inside a 1.03x-1.04x noise floor) (see [Acceptance criteria](#acceptance-criteria)) -- part 1: architecture, inventory, T12.2 Stempel, T12.3 phonetic and Morfologik; part 2: T12.1 `analysis/morph`, Kuromoji and Nori; part 3: T12.6, T12.2 SmartCN; part 4: T12.4 ICU normalization, tokenizer, collation and transforms; part 5: T12.5 OpenNLP (see [Progress](#progress)) |
 
 ---
 
@@ -514,7 +514,7 @@ Evaluated 2026-10-14: four of four.
       path (part 2: `calcNBestCost`, n-best output, Graphviz lattices).
 - [x] Every bundled dictionary and model is licence-audited and in `NOTICE`
       (`check-vendored-licences.py`; OpenNLP bundles no model).
-- [ ] Each analyzer is no slower than Lucene's -- **open**: `icu_collation_key` is not shown above Lucene (1.01~ inside the 1.03x noise floor on a quiet machine; 0.91x-0.96x in later runs with a 1.12x-1.17x floor). Every Kuromoji, Nori,
+- [ ] Each analyzer is no slower than Lucene's -- **open**: `icu_collation_key` is at parity, not shown above Lucene: 1.01~ and 1.00~ (347.7 vs 347.1 ns) in two pinned 9 x 5 s container runs, noise floor 1.03x-1.04x. Host runs read 0.91x-0.96x, but Git Bash has no `taskset`, so they were unpinned on a P/E-core part, and the script now warns. A specialised default-settings sort-key loop cut instructions ~10% (callgrind) but measured 0.98~ (353.4 ns) and was dropped. Every Kuromoji, Nori,
       SmartCN, Stempel, Morfologik, phonetic and OpenNLP case is at Lucene's
       speed or inside the noise. ICU, measured 2026-10-14 over 9
       repetitions of 5-second windows (`--bench analysis_icu --reps 9
