@@ -3,7 +3,7 @@
 # M12 T12.4 (ICU4J normalisation, folding, transforms, script-aware tokenization and collation, over a port of the ICU4J 77.1 runtime reading ICU's data); docs/milestones/m12-language-analysis.md.
 # class	status	detail
 analysis/icu/ICUCollationAttributeFactory	ported	crates/lucene-analysis-icu/src/collation.rs::ICUCollationAttributeFactory
-analysis/icu/ICUCollationDocValuesField	partial	crates/lucene-analysis-icu/src/collation.rs::ICUCollationDocValuesField -- M12: computes the name and key bytes; the Field (a SortedDocValuesField) belongs to lucene-search, above this crate
+analysis/icu/ICUCollationDocValuesField	ported	crates/lucene-analysis-icu/src/collation.rs::ICUCollationDocValuesField
 analysis/icu/ICUCollationKeyAnalyzer	ported	crates/lucene-analysis-icu/src/collation.rs::ICUCollationKeyAnalyzer
 analysis/icu/ICUFoldingFilter	ported	crates/lucene-analysis-icu/src/folding_filter.rs::ICUFoldingFilter
 analysis/icu/ICUFoldingFilterFactory	ported	crates/lucene-analysis-icu/src/factory.rs::ICUFoldingFilterFactory
@@ -19,7 +19,7 @@ analysis/icu/segmentation/CompositeBreakIterator	ported	crates/lucene-analysis-i
 analysis/icu/segmentation/DefaultICUTokenizerConfig	ported	crates/lucene-analysis-icu/src/segmentation/config.rs::DefaultICUTokenizerConfig
 analysis/icu/segmentation/ICUTokenizer	ported	crates/lucene-analysis-icu/src/segmentation/tokenizer.rs::ICUTokenizer
 analysis/icu/segmentation/ICUTokenizerConfig	ported	crates/lucene-analysis-icu/src/segmentation/config.rs::ICUTokenizerConfig
-analysis/icu/segmentation/ICUTokenizerFactory	partial	crates/lucene-analysis-icu/src/factory.rs::ICUTokenizerFactory -- M12: rulefiles needs ICU's break-rule compiler (RBBIRuleBuilder), not ported; inform refuses it with UnsupportedOperationException
+analysis/icu/segmentation/ICUTokenizerFactory	partial	crates/lucene-analysis-icu/src/factory.rs::ICUTokenizerFactory -- M14: rulefiles needs ICU's break-rule compiler (RBBIRuleBuilder), not ported; inform refuses it with UnsupportedOperationException
 analysis/icu/segmentation/ScriptIterator	ported	crates/lucene-analysis-icu/src/segmentation/script_iterator.rs::ScriptIterator
 analysis/icu/tokenattributes/ICUCollatedTermAttributeImpl	ported	crates/lucene-analysis-icu/src/collation.rs::ICUCollatedTermFilter
 analysis/icu/tokenattributes/ScriptAttribute	ported	crates/lucene-analysis-icu/src/tokenattributes.rs::ScriptAttribute

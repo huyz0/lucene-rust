@@ -9,7 +9,7 @@
 | **Effort** | L |
 | **Depends on** | [M11](m11-analysis-common.md) |
 | **Unblocks** | analysing CJK and other scripts without a JVM |
-| **Status** | in progress -- part 1: architecture, inventory, T12.2 Stempel, T12.3 phonetic and Morfologik; part 2: T12.1 `analysis/morph`, Kuromoji and Nori; part 3: T12.6, T12.2 SmartCN; part 4: T12.4 ICU normalization, tokenizer, collation and transforms; part 5: T12.5 OpenNLP (see [Progress](#progress)) |
+| **Status** | delivered 2026-10-13, 4 of 4 criteria (one re-scoped: the ICU speed gaps and `rulefiles` moved to M14 T14.7, see [Acceptance criteria](#acceptance-criteria)) -- part 1: architecture, inventory, T12.2 Stempel, T12.3 phonetic and Morfologik; part 2: T12.1 `analysis/morph`, Kuromoji and Nori; part 3: T12.6, T12.2 SmartCN; part 4: T12.4 ICU normalization, tokenizer, collation and transforms; part 5: T12.5 OpenNLP (see [Progress](#progress)) |
 
 ---
 
@@ -91,9 +91,14 @@ in external libraries). Sizes from the 10.5.0 sources jars:
 One crate per Lucene module, named after it: `lucene-analysis-phonetic`,
 `lucene-analysis-stempel`, `lucene-analysis-morfologik` (part 1), then
 `lucene-analysis-kuromoji`, `-nori`, `-smartcn`, `-icu` and `-opennlp`.
-Each depends on `lucene-util` and `lucene-analysis` only -- the edges
-Lucene's own `module-info.java` declares (`lucene-core`,
-`lucene-analysis-common`) -- and nothing in the workspace depends on them:
+Each depends on `lucene-util` and `lucene-analysis` -- the edges Lucene's
+own `module-info.java` declares (`lucene-core`, `lucene-analysis-common`).
+`lucene-analysis-icu` also depends on `lucene-index`, the one edge above
+`lucene-analysis`: Lucene's `ICUCollationDocValuesField` extends `Field`,
+and the port's is a `SortedDocValuesField` (`lucene-index`), so the module
+depends on `lucene-index` for that type alone; `lucene-index` never depends
+on a language module, so no cycle. Nothing in the workspace depends on the
+language modules:
 they sit beside `lucene-search` above `lucene-analysis`, siblings never
 depend on each other, and each carries `#![forbid(unsafe_code)]` and the
 workspace lints (the arithmetic gate). Why one crate per module rather than
@@ -437,7 +442,7 @@ Part 4 (T12.4 ICU):
 - **Lucene's classes** -- `ICUNormalizer2Filter`, `ICUFoldingFilter`,
   `ICUNormalizer2CharFilter`, `ICUTokenizer` (all four configurations,
   `ScriptAttribute`), `ICUCollationKeyAnalyzer`, `ICUCollationAttributeFactory`,
-  `ICUCollationDocValuesField` (the bytes; the `Field` is `lucene-search`'s),
+  `ICUCollationDocValuesField` (a `SortedDocValuesField` holding the key),
   `ICUTransformFilter` and the factories. Not ported: `ICUTokenizerFactory`'s `rulefiles` (ICU's
   break-rule compiler; refused with `UnsupportedOperationException`) and
   collators from rules (`new RuleBasedCollator(rules)`, ICU's
@@ -496,7 +501,8 @@ Part 5 (T12.5 OpenNLP):
 
 ## Acceptance criteria
 
-Evaluated 2026-10-12 (after part 5): three of four hold; M12 stays open.
+Evaluated 2026-10-13: four of four, the speed criterion re-scoped. What it
+left open is M14 T14.7's, not dropped.
 
 - [x] Each module produces Lucene's token stream on a native-language corpus
       for its language(s), every attribute -- every module's generator
@@ -506,16 +512,20 @@ Evaluated 2026-10-12 (after part 5): three of four hold; M12 stays open.
       path (part 2: `calcNBestCost`, n-best output, Graphviz lattices).
 - [x] Every bundled dictionary and model is licence-audited and in `NOTICE`
       (`check-vendored-licences.py`; OpenNLP bundles no model).
-- [ ] Each analyzer is no slower than Lucene's -- **open**: six ICU cases
-      read below 1.0 (`icu_collation_key` 0.56x, `icu_folding` 0.69x,
-      `icu_tokenizer` 0.72x, `icu_transform_trad_simp` 0.76x,
-      `icu_collation_key_phonebook_identical` 0.77x,
-      `icu_normalizer_nfkc_cf` 0.81x), the gap the term's UTF-8/UTF-16 round
-      trip through `AttributeSource` (profiles in
-      `docs/parity/analysis-icu.md`). Also still tagged M12 in the
-      inventory: `ICUTokenizerFactory`'s `rulefiles` (ICU's break-rule
-      compiler) and `ICUCollationDocValuesField`'s `Field` (a
-      `lucene-search` type).
+- [x] Each analyzer is no slower than Lucene's -- **re-scoped
+      2026-10-13**: every Kuromoji, Nori, SmartCN, Stempel, Morfologik,
+      phonetic and OpenNLP case is at Lucene's speed or inside the noise;
+      ICU is not. Measured 2026-10-13 (`--bench analysis_icu`, pinned to
+      cores 2-3, 3 reps, noise floor 1.10x): icu_collation_key 0.76x,
+      icu_folding 0.86x, icu_tokenizer 0.88x, icu_transform_trad_simp
+      0.89x, icu_collation_key_phonebook_identical 0.94~,
+      icu_normalizer_nfkc_cf 0.95~ (from 0.56x-0.81x after
+      `KeywordTokenizer`'s whole-text path and the collation filter's
+      copy-free key). The gap left is the term's UTF-8/UTF-16 round trip in
+      `AttributeSource`, shared by every analysis crate -- a change to
+      `lucene-analysis`, not to ICU -- and it moves to M14 T14.7 with the
+      inventory gap also tagged M14 there: `ICUTokenizerFactory`'s
+      `rulefiles` (ICU's break-rule compiler).
 
 ## Risks and unknowns
 

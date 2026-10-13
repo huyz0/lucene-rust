@@ -19,10 +19,14 @@ each other.
   in the workspace. `lucene-ffi` is the only crate allowed to depend on
   everything (it is the boundary). See PLAN.md §1 for the full table.
 - **Nothing depends on a `lucene-analysis-<m>` crate** (PLAN.md §1): each
-  language module depends on `lucene-util` and `lucene-analysis` only, and
-  is a leaf -- not `lucene-analysis`, not another module, not `lucene-index`
-  (the out-of-workspace `benchmarks/rust-runner` is the one consumer). Shared
-  code a second module needs moves down into `lucene-analysis`.
+  language module depends on `lucene-util` and `lucene-analysis`, and is a
+  leaf -- not another module, not `lucene-search` or above (the
+  out-of-workspace `benchmarks/rust-runner` is the one consumer). Shared
+  code a second module needs moves down into `lucene-analysis`. One edge
+  to `lucene-index` is allowed, the one Lucene's `analysis-icu` has to
+  `lucene-core`: `ICUCollationDocValuesField` is a `SortedDocValuesField`
+  (Java: a `Field`), so `lucene-analysis-icu` depends on `lucene-index` for
+  that type alone (M12, Architecture).
 - **Port by format, not by class hierarchy.** A Java class name is not a
   license to create a matching Rust type — port the on-disk contract; design
   the in-memory shape for Rust (see the `rust-performance` skill).
