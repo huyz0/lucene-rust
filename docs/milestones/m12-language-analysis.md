@@ -9,7 +9,7 @@
 | **Effort** | L |
 | **Depends on** | [M11](m11-analysis-common.md) |
 | **Unblocks** | analysing CJK and other scripts without a JVM |
-| **Status** | delivered 2026-10-13, 4 of 4 criteria (one re-scoped: the two ICU speed gaps moved to M14 T14.7, see [Acceptance criteria](#acceptance-criteria)) -- part 1: architecture, inventory, T12.2 Stempel, T12.3 phonetic and Morfologik; part 2: T12.1 `analysis/morph`, Kuromoji and Nori; part 3: T12.6, T12.2 SmartCN; part 4: T12.4 ICU normalization, tokenizer, collation and transforms; part 5: T12.5 OpenNLP (see [Progress](#progress)) |
+| **Status** | delivered 2026-10-14, 4 of 4 criteria (see [Acceptance criteria](#acceptance-criteria)) -- part 1: architecture, inventory, T12.2 Stempel, T12.3 phonetic and Morfologik; part 2: T12.1 `analysis/morph`, Kuromoji and Nori; part 3: T12.6, T12.2 SmartCN; part 4: T12.4 ICU normalization, tokenizer, collation and transforms; part 5: T12.5 OpenNLP (see [Progress](#progress)) |
 
 ---
 
@@ -504,8 +504,7 @@ Part 5 (T12.5 OpenNLP):
 
 ## Acceptance criteria
 
-Evaluated 2026-10-13: four of four, the speed criterion re-scoped. What it
-left open is M14 T14.7's, not dropped.
+Evaluated 2026-10-14: four of four.
 
 - [x] Each module produces Lucene's token stream on a native-language corpus
       for its language(s), every attribute -- every module's generator
@@ -515,25 +514,34 @@ left open is M14 T14.7's, not dropped.
       path (part 2: `calcNBestCost`, n-best output, Graphviz lattices).
 - [x] Every bundled dictionary and model is licence-audited and in `NOTICE`
       (`check-vendored-licences.py`; OpenNLP bundles no model).
-- [x] Each analyzer is no slower than Lucene's -- **re-scoped
-      2026-10-13**: every Kuromoji, Nori, SmartCN, Stempel, Morfologik,
-      phonetic and OpenNLP case is at Lucene's speed or inside the noise;
-      ICU is not. Measured 2026-10-13 (`--bench analysis_icu`, pinned to
-      cores 2-3, 3 reps, noise floor 1.06x): icu_collation_key 0.92x,
-      icu_tokenizer 0.89x; icu_folding 0.98~, icu_normalizer_nfkc_cf
-      1.02~, icu_transform_trad_simp 1.08x,
-      icu_collation_key_phonebook_identical 1.14x (from 0.56x-0.81x after
-      `CharTokenizer` and `KeywordTokenizer` scan a plain string's UTF-8
-      directly, the collation filter keys without copying the term, and
-      `AttributeSource` keeps the binary-term buffer across `clear()`).
-      The two cases left are the per-document stream set-up (a boxed
-      `StrReader` and its text copy, the pool's lock) and
-      `ICUTokenizer`'s term transcoding from UTF-16 -- changes to
-      `lucene-analysis`, not to ICU, whose kernels measure at or above
-      ICU4J's (`--bench analysis_icu_parts`) -- and they move to M14
-      T14.7. `rulefiles`, the collation doc-values `Field` and character
-      names are done (this part's compiler matches ICU4J on Lucene's five
-      rule files and 27 more, and on 24 rejected ones).
+- [x] Each analyzer is no slower than Lucene's. Every Kuromoji, Nori,
+      SmartCN, Stempel, Morfologik, phonetic and OpenNLP case is at Lucene's
+      speed or inside the noise. ICU, measured 2026-10-14
+      (`--bench analysis_icu`, pinned to cores 2-3, 3 reps, noise floor
+      1.03x), every case at or above 1.0x or inside the noise:
+      icu_collation_key 0.98~, icu_collation_key_phonebook_identical 1.18x,
+      icu_folding 1.03x, icu_normalizer_charfilter 1.36x,
+      icu_normalizer_nfkc_cf 1.10x, icu_tokenizer 1.09x,
+      icu_transform_any_latin 1.31x, icu_transform_trad_simp 1.14x (from
+      0.56x-0.81x on 2026-10-08). What closed the gaps, each found with a
+      measurement (callgrind on the benchmark corpus, and
+      `--bench analysis_icu_parts`, which times each tokenizer and ICU
+      kernel alone against ICU4J): `CharTokenizer` and `KeywordTokenizer`
+      scan a plain string's UTF-8 directly; the collation filter keys the
+      term without copying it, and `AttributeSource` keeps its binary-term
+      buffer across `clear()`; `CompositeBreakIterator` holds its
+      per-script breakers in an array, not a SipHash map (18% of the
+      tokenizer's instructions); the emoji sets answer BMP lookups from a
+      bitmap, as a frozen `UnicodeSet` does; the UTF-8 to UTF-16 conversion
+      and the UTF-16 length count work a word at a time; a pooled analyzer
+      hands one document's string reader to the next
+      (`ReusableStringReader`); and the analyzer's component pool is
+      per thread, like Java's `CloseableThreadLocal`, instead of behind a
+      `Mutex` (four atomic operations per document, ~25 ns, invisible to an
+      instruction count). The ICU kernels themselves measure at or above
+      ICU4J's. `rulefiles`, the collation doc-values `Field` and character
+      names are done too: the rule compiler matches ICU4J on Lucene's five
+      rule files and 27 more, and on 24 rejected ones.
 
 ## Risks and unknowns
 
