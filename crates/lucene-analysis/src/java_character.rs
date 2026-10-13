@@ -140,6 +140,7 @@ pub fn is_letter_or_digit(cp: u32) -> bool {
 /// `Character.isWhitespace(int)`: a space, line or paragraph separator
 /// other than the three non-breaking spaces, or one of `\t \n \u000B \f \r
 /// \u001C..\u001F`.
+#[inline]
 pub fn is_whitespace(cp: u32) -> bool {
     if cp < 0x80 {
         return matches!(cp, 0x09..=0x0D | 0x1C..=0x20);

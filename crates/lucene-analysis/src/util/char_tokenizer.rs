@@ -293,7 +293,7 @@ fn scan_utf8<P: TokenChar>(
 }
 
 /// The code point at byte `i` of valid UTF-8 and its length in bytes.
-#[inline]
+#[inline(always)]
 fn decode_utf8(bytes: &[u8], i: usize) -> (u32, usize) {
     let b0 = u32::from(bytes[i]);
     if b0 < 0x80 {
@@ -447,6 +447,10 @@ impl<P: TokenChar> TokenStream for CharTokenizer<P> {
 impl<P: TokenChar> Tokenizer for CharTokenizer<P> {
     fn set_reader(&mut self, input: Box<dyn CharReader>) -> Result<(), AnalysisError> {
         self.input.set_reader(input)
+    }
+
+    fn spare_reader(&mut self) -> Option<Box<crate::reader::StrReader>> {
+        self.input.take_spare()
     }
 }
 

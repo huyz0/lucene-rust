@@ -2,7 +2,6 @@
 //! runs a [`ScriptIterator`] over the text and, within each script run, that
 //! script's break iterator, one per script, created on first use and reused.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::icu4j::rbbi::DONE;
@@ -13,7 +12,8 @@ use crate::segmentation::script_iterator::{ScriptIterator, COMMON};
 /// `CompositeBreakIterator`.
 pub struct CompositeBreakIterator {
     config: Arc<dyn ICUTokenizerConfig>,
-    word_breakers: HashMap<i32, BreakIteratorWrapper>,
+    /// `wordBreakers`: a wrapper per script code, made on first use.
+    word_breakers: Vec<Option<BreakIteratorWrapper>>,
     rbbi: i32,
     script_iterator: ScriptIterator,
 }
@@ -24,17 +24,23 @@ impl CompositeBreakIterator {
         let combine = config.combine_cj();
         CompositeBreakIterator {
             config,
-            word_breakers: HashMap::new(),
+            word_breakers: Vec::new(),
             rbbi: COMMON,
             script_iterator: ScriptIterator::new(combine),
         }
     }
 
     fn breaker(&mut self, script: i32) -> &mut BreakIteratorWrapper {
+        // script codes are small non-negative numbers (`INVALID_CODE`, -1,
+        // never reaches here: `rbbi` starts at COMMON)
+        let index = usize::try_from(script).unwrap_or(0);
+        if self.word_breakers.len() <= index {
+            self.word_breakers
+                .resize_with(index.saturating_add(1), || None);
+        }
         let config = &self.config;
-        self.word_breakers
-            .entry(script)
-            .or_insert_with(|| BreakIteratorWrapper::new(config.get_break_iterator(script)))
+        self.word_breakers[index]
+            .get_or_insert_with(|| BreakIteratorWrapper::new(config.get_break_iterator(script)))
     }
 
     /// `next()`: the next boundary in `text` (the buffer `set_text` was

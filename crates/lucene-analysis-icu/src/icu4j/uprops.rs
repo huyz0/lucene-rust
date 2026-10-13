@@ -358,6 +358,16 @@ pub fn has_script(c: i32, sc: i32) -> bool {
 /// separator other than the no-break spaces, or one of U+0009..U+000D and
 /// U+001C..U+001F.
 pub fn is_whitespace(c: i32) -> bool {
+    // ASCII and the code points above the separators' ranges need no property
+    // lookup: the separators (Zs, Zl, Zp) are U+0020, U+00A0, U+1680,
+    // U+2000..=U+200A, U+2028, U+2029, U+202F, U+205F and U+3000, plus the
+    // control white space below.
+    if c < 0x80 {
+        return matches!(c, 0x09..=0x0d | 0x1c..=0x20);
+    }
+    if !matches!(c, 0xa0 | 0x1680 | 0x2000..=0x205f | 0x3000) {
+        return false;
+    }
     let t = char_type(c);
     ((t == SPACE_SEPARATOR || t == LINE_SEPARATOR || t == PARAGRAPH_SEPARATOR)
         && c != 0x00a0

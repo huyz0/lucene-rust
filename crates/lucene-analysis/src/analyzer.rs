@@ -95,6 +95,16 @@ impl TokenStreamComponents {
         }
     }
 
+    /// The string reader the source tokenizer kept from its last document,
+    /// to be given the next text instead of allocating a new one; `None`
+    /// without a source tokenizer that keeps one.
+    pub fn spare_reader(&mut self) -> Option<Box<StrReader>> {
+        if self.source.is_some() {
+            return None;
+        }
+        self.sink.as_tokenizer().and_then(|t| t.spare_reader())
+    }
+
     /// `getTokenStream()`.
     pub fn token_stream(&mut self) -> &mut dyn TokenStream {
         &mut *self.sink
@@ -515,7 +525,35 @@ impl Analyzer {
         field_name: &str,
         text: &str,
     ) -> Result<AnalyzerTokenStream<'_>, AnalysisError> {
-        self.token_stream_from_reader(field_name, Box::new(StrReader::new(text)))
+        if let Kind::Delegating(d) = &self.kind {
+            return d
+                .wrapped_analyzer(field_name)
+                .token_stream(field_name, text);
+        }
+        let key = self.pool_key(field_name);
+        let mut components = self.take_components(&key)?;
+        // the reused components' tokenizer hands back its last string reader
+        // (Java's `ReusableStringReader`); the order, `initReader` before
+        // `createComponents`, is `token_stream_from_reader`'s
+        let reader: Box<dyn CharReader> = match components.as_mut().and_then(|c| c.spare_reader()) {
+            Some(mut r) => {
+                r.set_value(text);
+                r
+            }
+            None => Box::new(StrReader::new(text)),
+        };
+        let r = self.init_reader(field_name, reader);
+        let mut components = match components {
+            Some(c) => c,
+            None => self.create_components(field_name)?,
+        };
+        components.set_reader(r)?;
+        Ok(AnalyzerTokenStream {
+            analyzer: self,
+            key,
+            components: Some(components),
+            closed: false,
+        })
     }
 
     /// `normalize(String fieldName, String text)`: the term bytes a query
