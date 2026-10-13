@@ -280,7 +280,13 @@ pub(crate) fn utf16_len(s: &str) -> usize {
     if s.is_ascii() {
         return s.len();
     }
-    s.chars().map(char::len_utf16).sum()
+    // One unit per scalar (every byte that is not a continuation byte) and a
+    // second for a supplementary one (a four-byte lead, `0xf0` and up): a sum
+    // over the bytes that needs no decoding and vectorizes.
+    s.as_bytes()
+        .iter()
+        .map(|&b| usize::from(b & 0xc0 != 0x80).saturating_add(usize::from(b >= 0xf0)))
+        .fold(0, usize::saturating_add)
 }
 
 /// Lucene's `org.apache.lucene.analysis.LowerCaseFilter`: lowercases each
@@ -4773,6 +4779,35 @@ mod tests {
         let analyzer = Analyzer::keyword();
         let out = analyzer.analyze("Status: ACTIVE!");
         assert_eq!(out, vec![tok("Status: ACTIVE!", 0, 15, 1)]);
+    }
+
+    /// A pooled analyzer gives each document the previous one's string reader:
+    /// a longer text, a shorter one, an empty one and a supplementary-plane
+    /// one each tokenize exactly as with a new analyzer.
+    #[test]
+    fn consecutive_documents_reuse_the_string_reader() {
+        let texts = [
+            "a longer first document, with words",
+            "short",
+            "",
+            "x\u{1f600}y z\u{10400}",
+            "last one",
+            "a longer first document, with words",
+        ];
+        let pooled_keyword = Analyzer::keyword();
+        let pooled_standard = Analyzer::standard(None);
+        for text in texts {
+            assert_eq!(
+                pooled_keyword.analyze(text),
+                Analyzer::keyword().analyze(text),
+                "{text:?}"
+            );
+            assert_eq!(
+                pooled_standard.analyze(text),
+                Analyzer::standard(None).analyze(text),
+                "{text:?}"
+            );
+        }
     }
 
     #[test]

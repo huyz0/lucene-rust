@@ -94,14 +94,27 @@ pub fn extend_from_str(units: &mut Vec<u16>, s: &str) {
         return;
     }
     units.reserve(s.len());
-    for ch in s.chars() {
-        let c = u32::from(ch);
-        if c < 0x10000 {
-            units.push(c as u16);
+    // `s` is valid UTF-8: a lead byte says how many continuation bytes follow
+    let b = s.as_bytes();
+    let mut i = 0;
+    while let Some(&b0) = b.get(i) {
+        let cont = |k: usize| u32::from(b.get(i.saturating_add(k)).copied().unwrap_or(0) & 0x3f);
+        let b0 = u32::from(b0);
+        if b0 < 0x80 {
+            units.push(b0 as u16);
+            i = i.saturating_add(1);
+        } else if b0 < 0xe0 {
+            units.push((((b0 & 0x1f) << 6) | cont(1)) as u16);
+            i = i.saturating_add(2);
+        } else if b0 < 0xf0 {
+            units.push((((b0 & 0x0f) << 12) | (cont(1) << 6) | cont(2)) as u16);
+            i = i.saturating_add(3);
         } else {
+            let c = ((b0 & 0x07) << 18) | (cont(1) << 12) | (cont(2) << 6) | cont(3);
             let (lead, trail) = surrogates(c as i32);
             units.push(lead);
             units.push(trail);
+            i = i.saturating_add(4);
         }
     }
 }
@@ -109,6 +122,21 @@ pub fn extend_from_str(units: &mut Vec<u16>, s: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extending_from_a_string_is_encode_utf16() {
+        for s in [
+            "",
+            "plain ascii",
+            "caf\u{e9} \u{3b1}\u{3b2} \u{4e2d}\u{6587}",
+            "a\u{10400}b\u{1f600}\u{1f1fa}\u{1f1f8}",
+            "\u{7ff}\u{800}\u{ffff}\u{10000}\u{10ffff}",
+        ] {
+            let mut v = vec![7u16];
+            extend_from_str(&mut v, s);
+            assert_eq!(&v[1..], units(s).as_slice(), "{s:?}");
+        }
+    }
 
     #[test]
     fn surrogate_handling() {

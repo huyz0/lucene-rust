@@ -21,7 +21,7 @@
 //! violation).
 
 use crate::attributes::AttributeSource;
-use crate::reader::CharReader;
+use crate::reader::{CharReader, StrReader};
 use crate::AnalysisError;
 
 /// `org.apache.lucene.analysis.TokenStream`.
@@ -111,6 +111,13 @@ impl TokenStream for Box<dyn TokenStream> {
 pub trait Tokenizer: TokenStream {
     /// `setReader(Reader)`: the input for the next `reset()`.
     fn set_reader(&mut self, input: Box<dyn CharReader>) -> Result<(), AnalysisError>;
+
+    /// The string reader of the last, closed document, to be given the next
+    /// text (`ReusableStringReader`); `None` if there is none, or this
+    /// tokenizer does not keep it.
+    fn spare_reader(&mut self) -> Option<Box<StrReader>> {
+        None
+    }
 }
 
 /// Java's `Tokenizer.ILLEGAL_STATE_READER` message.
@@ -122,6 +129,8 @@ const ILLEGAL_STATE_READER_MSG: &str = "TokenStream contract violation: reset()/
 pub struct TokenizerInput {
     input: Option<Box<dyn CharReader>>,
     pending: Option<Box<dyn CharReader>>,
+    /// The closed input, if it was a string reader to reuse.
+    spare: Option<Box<StrReader>>,
 }
 
 impl TokenizerInput {
@@ -149,9 +158,18 @@ impl TokenizerInput {
     pub fn close(&mut self) -> Result<(), AnalysisError> {
         self.pending = None;
         match self.input.take() {
-            Some(mut input) => input.close(),
+            Some(mut input) => {
+                let closed = input.close();
+                self.spare = input.recycle();
+                closed
+            }
             None => Ok(()),
         }
+    }
+
+    /// The closed document's string reader, for [`Tokenizer::spare_reader`].
+    pub fn take_spare(&mut self) -> Option<Box<StrReader>> {
+        self.spare.take()
     }
 
     /// `Tokenizer.correctOffset`.

@@ -40,6 +40,13 @@ pub trait CharReader: Send {
     fn whole_text(&self) -> Option<&str> {
         None
     }
+
+    /// The reader itself, once the tokenizer is done with it, if it is a
+    /// [`StrReader`] worth reusing for the next document (Java's
+    /// `ReusableStringReader`); `None` for any other reader.
+    fn recycle(self: Box<Self>) -> Option<Box<StrReader>> {
+        None
+    }
 }
 
 impl CharReader for Box<dyn CharReader> {
@@ -59,6 +66,9 @@ impl CharReader for Box<dyn CharReader> {
         (**self).whole_text()
     }
 }
+
+/// The largest text buffer a recycled [`StrReader`] keeps.
+const RECYCLED_CAPACITY: usize = 1 << 16;
 
 /// Java's `StringReader` (and `Analyzer`'s `ReusableStringReader`): a Rust
 /// string read as the UTF-16 code units Java's `String` holds.
@@ -96,6 +106,11 @@ impl StrReader {
 }
 
 impl CharReader for StrReader {
+    fn recycle(self: Box<Self>) -> Option<Box<StrReader>> {
+        // a reader that held a huge document is not kept
+        (self.text.capacity() <= RECYCLED_CAPACITY).then_some(self)
+    }
+
     fn whole_text(&self) -> Option<&str> {
         (self.pos == 0 && self.pending_low.is_none()).then_some(self.text.as_str())
     }
