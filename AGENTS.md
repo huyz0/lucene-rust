@@ -71,7 +71,7 @@ scripts/docker-test.sh scripts/verify-write-path.sh
 scripts/docker-test.sh bash                     # a shell inside it
 ```
 
-It caps memory (8 GiB, swap disabled), CPUs, pids and `/tmp`, and pins both
+It caps memory (16 GiB, swap disabled), CPUs, pids and `/tmp`, and pins both
 toolchains the gate is defined against (Rust 1.97.1, JDK 21) with the Lucene
 10.5.0 jars baked in — so fixture generation and write-path verification are
 reproducible and offline. The cap is not bureaucracy: an unbounded local build

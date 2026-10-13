@@ -18,7 +18,7 @@
 # (.github/workflows/ci.yml).
 #
 # Env knobs (all have defensible defaults, none need setting):
-#   MEM=8g CPUS=8 PIDS=512 TMPFS=1g  scripts/docker-test.sh ...
+#   MEM=16g CPUS=8 PIDS=512 TMPFS=1g  scripts/docker-test.sh ...
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -28,7 +28,7 @@ IMAGE="${IMAGE:-lucene-rust-test}"
 # container: without it, a runaway allocates into swap and drags the host down
 # slowly instead of failing fast, which is the exact behaviour this script
 # exists to prevent.
-MEM="${MEM:-8g}"
+MEM="${MEM:-16g}"
 CPUS="${CPUS:-8}"
 PIDS="${PIDS:-512}"
 # /tmp is a tmpfs and therefore RAM. The suites used to leak a directory per
