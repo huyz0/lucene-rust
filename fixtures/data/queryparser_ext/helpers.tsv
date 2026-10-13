@@ -1,0 +1,10 @@
+a	\\:a	fld\\:a	a
+a:b	\\:a\\:b	fld\\:a\\:b	a\\:b
++x	\\:\\+x	fld\\:\\+x	\\+x
+	\\:	fld\\:	
+split	title	title	<null>
+split	title:t	title	t
+split	:t	dflt	t
+split	a:b:c	a	b:c
+split	title:	title	
+split	:	dflt	

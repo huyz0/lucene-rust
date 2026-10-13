@@ -1,0 +1,41 @@
+title\:t:foo
+title\:t:"foo bar"
+title\:t:"foo bar"~3
+title\:t:foo^2
+title\:t:(foo bar)
+\:t:foo
+\:t:foo bar
+\:p:"a b"
+title\:p:"a b c"
+title\:p:"(a OR"
+title\:p:"x:y z"
+title\:n:foo
+title\:n:foo bar
+a title\:n:foo b
+title\:e:foo
+title\:e:"foo bar"
+a title\:e:foo
+title\:b:foo
+title\:b:"x y"~2
+title\:zzz:foo
+title\:zzz:"foo bar"~2
+title\:t\:more:foo
+title:foo
+title\::foo
+\::foo
+a\:t:b\:t
+title\:t:foo* title\:t:fo?o
+title\:t:[a TO b]
+title\:t:foo~1
+title\:t:/foo/
++title\:t:foo -title\:b:bar
+title\:t:foo AND title\:p:"x y" OR title\:n:z
+(title\:t:foo title\:b:bar)^2
+title#t:foo
+title#p:"a b"
+title#t#x:foo
+#t:foo
+title#n:x
+title\:T:foo
+title\:t:é
+title\:t:ß

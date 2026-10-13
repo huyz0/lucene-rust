@@ -30,6 +30,7 @@ use std::sync::Arc;
 use lucene_analysis::{AnalysisError, Analyzer};
 
 use crate::query_visitor::Occur;
+use crate::queryparser::ext::Extensions;
 use crate::queryparser::{ParsedBoolean, ParsedQuery};
 
 /// `QueryParser.Operator`: what an absent conjunction means.
@@ -49,6 +50,11 @@ pub struct QueryParserError {
 }
 
 impl QueryParserError {
+    /// A `ParseException` an extension throws.
+    pub fn parse_exception(message: impl Into<String>) -> Self {
+        Self::parse(message)
+    }
+
     pub(crate) fn parse(message: impl Into<String>) -> Self {
         QueryParserError {
             class: "ParseException",
@@ -121,6 +127,8 @@ pub struct QueryParser {
     analyzer: Arc<Analyzer>,
     fields: Vec<String>,
     boosts: HashMap<String, f32>,
+    /// `ExtendableQueryParser`'s extensions.
+    extensions: Option<Arc<Extensions>>,
     operator: Operator,
     allow_leading_wildcard: bool,
     phrase_slop: i32,
@@ -165,6 +173,7 @@ impl QueryParser {
             analyzer,
             fields: Vec::new(),
             boosts: HashMap::new(),
+            extensions: None,
             operator: Operator::Or,
             allow_leading_wildcard: false,
             phrase_slop: 0,
@@ -178,6 +187,14 @@ impl QueryParser {
             enable_graph_queries: true,
             auto_generate_multi_term_synonyms_phrase_query: false,
         }
+    }
+
+    /// The parser as `ExtendableQueryParser` makes it: a field query
+    /// whose field name carries the extension delimiter goes to the
+    /// extension registered under the key after it.
+    pub fn with_extensions(mut self, extensions: Arc<Extensions>) -> Self {
+        self.extensions = Some(extensions);
+        self
     }
 
     /// `getField()`: `None` for a multi-field parser.

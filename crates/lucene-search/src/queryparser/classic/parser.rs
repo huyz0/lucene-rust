@@ -18,6 +18,7 @@ use crate::extended_query::TermRangeQuery;
 use crate::query::{FuzzyQuery, PrefixQuery, RegexpQuery, WildcardQuery};
 use crate::query_builder::QueryBuilder;
 use crate::query_visitor::Occur;
+use crate::queryparser::ext::{ExtensionQuery, Extensions};
 use crate::queryparser::{term_text, ParsedBoolean, ParsedQuery};
 
 const CONJ_NONE: i32 = 0;
@@ -1180,6 +1181,13 @@ impl<'p> Parser<'p> {
         quoted: bool,
     ) -> PResult<Option<ParsedQuery>> {
         if let Some(f) = field {
+            // `ExtendableQueryParser.getFieldQuery`: an extension for the
+            // field's key builds the query.
+            if let Some(ext) = &self.cfg.extensions {
+                if let Some(r) = self.extension_query(ext, f, text) {
+                    return r;
+                }
+            }
             return self.get_field_query_single(f, text, quoted);
         }
         let fields = &self.cfg.fields;
@@ -1225,6 +1233,29 @@ impl<'p> Parser<'p> {
         self.get_multi_field_query(clauses)
     }
 
+    /// `ExtendableQueryParser.getFieldQuery`'s extension branch: `None`
+    /// when no extension is registered for the field's key.
+    fn extension_query(
+        &self,
+        ext: &Extensions,
+        field: &str,
+        text: &str,
+    ) -> Option<PResult<Option<ParsedQuery>>> {
+        let default_field = self.cfg.field.as_deref().unwrap_or("");
+        let (index_field, key) = ext.split_extension_field(default_field, field);
+        let extension = ext.extension(key?)?;
+        let query = ExtensionQuery {
+            top_level_parser: self.cfg,
+            field: index_field,
+            raw_query_string: text,
+        };
+        Some(match extension.parse(&query) {
+            Ok(q) => Ok(q),
+            Err(e) if e.is_parse_exception() => Err(Fail::Parse(e.message)),
+            Err(e) => Err(Fail::Runtime(e)),
+        })
+    }
+
     /// `getFieldQuery(field, queryText, slop)`: a phrase at `slop`, across
     /// the fields when there is no field.
     fn get_field_query_slop(
@@ -1234,6 +1265,17 @@ impl<'p> Parser<'p> {
         slop: i32,
     ) -> PResult<Option<ParsedQuery>> {
         if let Some(f) = field {
+            if self.cfg.field.is_some() {
+                // `QueryParserBase.getFieldQuery(field, queryText, slop)`:
+                // the virtual `getFieldQuery(field, queryText, true)`, then
+                // the phrase's slop -- not through a boost.
+                return Ok(match self.get_field_query(Some(f), text, true)? {
+                    Some(q @ (ParsedQuery::Phrase(_) | ParsedQuery::MultiPhrase(_))) => {
+                        Some(apply_slop(q, slop)?)
+                    }
+                    other => other,
+                });
+            }
             return match self.get_field_query_single(f, text, true)? {
                 Some(q) => Ok(Some(apply_slop(q, slop)?)),
                 None => Ok(None),
