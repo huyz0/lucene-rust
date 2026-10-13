@@ -350,7 +350,12 @@ RUST_ARGS=("$BENCH" ${NEEDS_INDEX:+"$INDEX"})
 if [ -n "${RUST_BIN:-}" ]; then RUST_ARGS=(); else RUST_BIN=micro; fi
 
 PINCMD=(taskset -c "$PIN")
-command -v taskset >/dev/null || PINCMD=()
+if ! command -v taskset >/dev/null; then
+  # Git Bash on Windows has no taskset: unpinned runs migrate between P- and
+  # E-cores and read ~25% slow on one engine, in runs that look clean.
+  echo "bench-micro: WARNING -- no taskset, running UNPINNED; run it through scripts/docker-test.sh" >&2
+  PINCMD=()
+fi
 
 # Interleave the two engines rather than running all of one then all of the
 # other. A run takes minutes and this machine drifts over that: whatever the
