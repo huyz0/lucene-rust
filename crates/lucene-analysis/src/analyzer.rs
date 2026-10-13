@@ -20,19 +20,29 @@
 //! Java caches `TokenStreamComponents` in a `CloseableThreadLocal`, one set
 //! per thread (per field, under `PER_FIELD_REUSE_STRATEGY`). A Rust
 //! `Analyzer` is shared by reference across threads, so the cache is a pool
-//! behind a `Mutex`: [`Analyzer::token_stream`] takes a free set of
-//! components (creating one on a miss, as Java does), and the returned
-//! [`AnalyzerTokenStream`] puts it back when dropped. The observable
-//! behaviour is Java's -- components are created once per key and reused
-//! after `close()` -- and two concurrent streams simply use two sets, as two
-//! Java threads would.
+//! per thread (a `thread_local!`, as Java's is a thread local; no lock is
+//! taken to reuse components): [`Analyzer::token_stream`] takes a free set of
+//! components from the calling thread's pool (creating one on a miss, as
+//! Java does), and the returned [`AnalyzerTokenStream`] puts it back, in the
+//! pool of the thread it is dropped on. The observable behaviour is Java's
+//! -- components are created once per key and thread and reused -- and two
+//! concurrent streams on one thread simply use two sets.
+//!
+//! A thread's pool entry for an analyzer is found by the analyzer's identity
+//! token (a weak reference to an `Arc<()>` the analyzer holds), and is
+//! dropped, with its components, when the analyzer is: the next use of any
+//! pool on the thread prunes the entries whose analyzer is gone. A change to
+//! a built-in chain replaces the token, so components built before it are
+//! never reused.
 //!
 //! Dropping an [`AnalyzerTokenStream`] closes it first if the consumer did
 //! not, so a stream abandoned on an error path cannot poison the pool with
 //! the "close() call missing" state Java would throw on next use.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Weak};
 
 use crate::attributes::AttributeSource;
 use crate::reader::{read_to_string, CharReader, StrReader};
@@ -306,11 +316,17 @@ impl Pool {
             Some(k) => self.per_field.get_mut(k).and_then(Vec::pop),
         }
     }
+}
 
-    fn clear(&mut self) {
-        self.global.clear();
-        self.per_field.clear();
-    }
+/// One analyzer's cached components on one thread.
+struct ThreadPool {
+    owner: Weak<()>,
+    pool: Pool,
+}
+
+thread_local! {
+    /// The calling thread's reuse caches, one per analyzer it used.
+    static THREAD_POOLS: RefCell<Vec<ThreadPool>> = const { RefCell::new(Vec::new()) };
 }
 
 /// `org.apache.lucene.analysis.Analyzer`: the final machinery over an
@@ -320,7 +336,12 @@ pub struct Analyzer {
     kind: Kind,
     reuse_strategy: ReuseStrategy,
     /// The reuse cache; `None` once closed (Java nulls `storedValue`).
-    pool: Mutex<Option<Pool>>,
+    /// The identity of this analyzer's entries in the threads' pools
+    /// (replaced when a built-in chain changes; its weak copies die with
+    /// the analyzer).
+    alive: Arc<()>,
+    /// `close()` was called (Java nulls `storedValue`).
+    closed: AtomicBool,
     /// Override of the definition's `getPositionIncrementGap`, for every
     /// field (see [`Self::with_position_increment_gap`]).
     position_increment_gap: Option<i32>,
@@ -333,7 +354,8 @@ impl Analyzer {
         Analyzer {
             kind,
             reuse_strategy,
-            pool: Mutex::new(Some(Pool::default())),
+            alive: Arc::new(()),
+            closed: AtomicBool::new(false),
             position_increment_gap: None,
             offset_gap: None,
         }
@@ -460,7 +482,14 @@ impl Analyzer {
     /// `close()`: drops the reuse cache; later `token_stream` calls fail
     /// with Java's `AlreadyClosedException` message.
     pub fn close(&self) {
-        *self.pool.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.closed.store(true, Ordering::Release);
+        // this thread's cache goes now; another thread's with the analyzer
+        let owner = Arc::as_ptr(&self.alive);
+        let _ = THREAD_POOLS.try_with(|p| {
+            if let Ok(mut pools) = p.try_borrow_mut() {
+                pools.retain(|e| e.owner.as_ptr() != owner);
+            }
+        });
     }
 
     fn pool_key(&self, field_name: &str) -> Option<String> {
@@ -475,21 +504,48 @@ impl Analyzer {
         &self,
         key: &Option<String>,
     ) -> Result<Option<TokenStreamComponents>, AnalysisError> {
-        let mut pool = self.pool.lock().unwrap_or_else(|e| e.into_inner());
-        match pool.as_mut() {
-            None => Err(AnalysisError::AlreadyClosed(
+        if self.closed.load(Ordering::Acquire) {
+            return Err(AnalysisError::AlreadyClosed(
                 "this Analyzer is closed".to_string(),
-            )),
-            Some(pool) => Ok(pool.take(key)),
+            ));
         }
+        let owner = Arc::as_ptr(&self.alive);
+        let taken = THREAD_POOLS
+            .try_with(|p| {
+                let mut pools = p.try_borrow_mut().ok()?;
+                let entry = pools.iter_mut().find(|e| e.owner.as_ptr() == owner)?;
+                entry.pool.take(key)
+            })
+            .ok()
+            .flatten();
+        Ok(taken)
     }
 
     /// `ReuseStrategy.setReusableComponents`.
     fn put_components(&self, key: Option<String>, components: TokenStreamComponents) {
-        let mut pool = self.pool.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(pool) = pool.as_mut() {
-            pool.slot(key).push(components);
+        if self.closed.load(Ordering::Acquire) {
+            return;
         }
+        let owner = Arc::as_ptr(&self.alive);
+        // (a pool that cannot be reached -- the thread is exiting, or a
+        // component's drop re-entered -- just drops the components)
+        let _ = THREAD_POOLS.try_with(|p| {
+            let Ok(mut pools) = p.try_borrow_mut() else {
+                return;
+            };
+            if let Some(entry) = pools.iter_mut().find(|e| e.owner.as_ptr() == owner) {
+                entry.pool.slot(key).push(components);
+                return;
+            }
+            // a first use on this thread: forget the analyzers that are gone
+            pools.retain(|e| e.owner.strong_count() > 0);
+            let mut pool = Pool::default();
+            pool.slot(key).push(components);
+            pools.push(ThreadPool {
+                owner: Arc::downgrade(&self.alive),
+                pool,
+            });
+        });
     }
 
     /// `tokenStream(String fieldName, Reader reader)`.
@@ -620,9 +676,7 @@ impl Analyzer {
     fn builtin_mut(&mut self) -> Option<&mut BuiltinChain> {
         // A builder changes what `create_components` builds, so cached
         // components are stale.
-        if let Some(pool) = self.pool.get_mut().unwrap_or_else(|e| e.into_inner()) {
-            pool.clear();
-        }
+        self.alive = Arc::new(());
         match &mut self.kind {
             Kind::Builtin(b) => Some(b),
             _ => None,
@@ -1013,6 +1067,66 @@ mod tests {
         b.close();
         drop(ts);
         assert!(b.token_stream("f", "x").is_err());
+    }
+
+    /// Components are made once per thread and reused: Java's thread local.
+    #[test]
+    fn components_are_reused_per_thread() {
+        let made = Arc::new(AtomicUsize::new(0));
+        let a = Arc::new(Analyzer::new(Counting(Arc::clone(&made))));
+        for text in ["one", "two", "three"] {
+            assert_eq!(terms(&a, "f", text), vec![text]);
+        }
+        assert_eq!(made.load(Ordering::SeqCst), 1);
+        let other = Arc::clone(&a);
+        std::thread::spawn(move || {
+            for text in ["four", "five"] {
+                assert_eq!(terms(&other, "f", text), vec![text]);
+            }
+        })
+        .join()
+        .unwrap();
+        assert_eq!(
+            made.load(Ordering::SeqCst),
+            2,
+            "one set for the other thread"
+        );
+        assert_eq!(terms(&a, "f", "six"), vec!["six"]);
+        assert_eq!(made.load(Ordering::SeqCst), 2, "this thread's set was kept");
+        // two streams alive at once use two sets
+        let (mut x, mut y) = (
+            a.token_stream("f", "x").unwrap(),
+            a.token_stream("f", "y").unwrap(),
+        );
+        x.reset().unwrap();
+        y.reset().unwrap();
+        assert!(x.increment_token().unwrap() && y.increment_token().unwrap());
+        assert_eq!(made.load(Ordering::SeqCst), 3);
+    }
+
+    /// A thread's entries for analyzers that are gone are forgotten, and a
+    /// closed analyzer's are dropped at once.
+    #[test]
+    fn a_threads_pools_forget_dropped_and_closed_analyzers() {
+        for _ in 0..50 {
+            let a = Analyzer::new(Counting(Arc::new(AtomicUsize::new(0))));
+            assert_eq!(terms(&a, "f", "x"), vec!["x"]);
+        }
+        let keep = Analyzer::new(Counting(Arc::new(AtomicUsize::new(0))));
+        assert_eq!(terms(&keep, "f", "y"), vec!["y"]);
+        let live = THREAD_POOLS.with(|p| p.borrow().len());
+        assert!(live <= 2, "{live} pools kept on this thread");
+        keep.close();
+        let after_close = THREAD_POOLS.with(|p| {
+            p.borrow()
+                .iter()
+                .filter(|e| {
+                    e.owner.strong_count() > 0 && e.owner.as_ptr() == Arc::as_ptr(&keep.alive)
+                })
+                .count()
+        });
+        assert_eq!(after_close, 0);
+        assert!(keep.token_stream("f", "z").is_err());
     }
 
     #[test]

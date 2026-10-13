@@ -280,13 +280,31 @@ pub(crate) fn utf16_len(s: &str) -> usize {
     if s.is_ascii() {
         return s.len();
     }
-    // One unit per scalar (every byte that is not a continuation byte) and a
-    // second for a supplementary one (a four-byte lead, `0xf0` and up): a sum
-    // over the bytes that needs no decoding and vectorizes.
-    s.as_bytes()
-        .iter()
-        .map(|&b| usize::from(b & 0xc0 != 0x80).saturating_add(usize::from(b >= 0xf0)))
-        .fold(0, usize::saturating_add)
+    // One unit per scalar (every byte that is not a continuation byte,
+    // `10xxxxxx`) and a second for a supplementary one (a four-byte lead,
+    // `0xf0` and up): the byte length less the continuation bytes plus the
+    // four-byte leads, counted eight bytes to a step. Each step adds a 0/1 per
+    // byte lane; the lanes are summed before any can pass 31, so that their
+    // total fits one byte.
+    const LANES: u64 = 0x0101_0101_0101_0101;
+    let bytes = s.as_bytes();
+    let (mut continuations, mut four_byte_leads) = (0usize, 0usize);
+    for block in bytes.chunks(31 * 8) {
+        let (mut cont_lanes, mut lead_lanes) = (0u64, 0u64);
+        let mut words = block.chunks_exact(8);
+        for w in &mut words {
+            let w = u64::from_le_bytes([w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]]);
+            cont_lanes = cont_lanes.wrapping_add((w >> 7) & !(w >> 6) & LANES);
+            lead_lanes = lead_lanes.wrapping_add((w >> 4) & (w >> 5) & (w >> 6) & (w >> 7) & LANES);
+        }
+        continuations += (cont_lanes.wrapping_mul(LANES) >> 56) as usize;
+        four_byte_leads += (lead_lanes.wrapping_mul(LANES) >> 56) as usize;
+        for &b in words.remainder() {
+            continuations += usize::from(b & 0xc0 == 0x80);
+            four_byte_leads += usize::from(b >= 0xf0);
+        }
+    }
+    bytes.len() - continuations + four_byte_leads
 }
 
 /// Lucene's `org.apache.lucene.analysis.LowerCaseFilter`: lowercases each
@@ -4897,6 +4915,31 @@ mod tests {
                 "utf16_len disagreed for {text:?}"
             );
         }
+    }
+
+    /// The word-at-a-time count agrees with `encode_utf16` on strings of every
+    /// length around the 8-byte word and 248-byte block boundaries.
+    #[test]
+    fn utf16_len_counts_words_and_blocks_exactly() {
+        let alphabet = ["a", "\u{e9}", "\u{4e16}", "\u{1f600}", "z", "\u{10400}"];
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        for len in (0..40).chain([247, 248, 249, 250, 495, 496, 497, 1000, 2500]) {
+            let mut text = String::new();
+            for _ in 0..len {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                text.push_str(alphabet[(state % alphabet.len() as u64) as usize]);
+            }
+            assert_eq!(
+                utf16_len(&text),
+                text.encode_utf16().count(),
+                "{len} scalars"
+            );
+        }
+        // the densest run of four-byte leads one block can hold
+        let dense = "\u{1f600}".repeat(400);
+        assert_eq!(utf16_len(&dense), 800);
     }
 
     #[test]
