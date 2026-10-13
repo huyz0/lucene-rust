@@ -29,6 +29,7 @@ mod micro_analysis_icu;
 mod micro_analysis_icu_parts;
 mod micro_analysis_opennlp;
 mod micro_analysis_misc;
+mod micro_queryparser;
 mod micro_hunspell;
 mod micro_snowball;
 mod micro_geo;
@@ -2078,6 +2079,7 @@ fn main() {
             micro_analysis_icu_parts::bench_analysis_icu_parts(warmup, measure)
         }
         "analysis_opennlp" => micro_analysis_opennlp::bench_analysis_opennlp(warmup, measure),
+        "queryparser" => micro_queryparser::bench_queryparser(warmup, measure),
         "snowball" => micro_snowball::bench_snowball(warmup, measure),
         "hunspell" => micro_hunspell::bench_hunspell(warmup, measure),
         "vectors" => bench_vectors(warmup, measure),

@@ -192,8 +192,17 @@ fn prefix_automaton(prefix: &[u8]) -> automaton::Automaton {
     a
 }
 
-/// `WildcardQuery.toAutomaton(term, workLimit)`.
+/// `WildcardQuery.toAutomaton(term, workLimit)`, `None` when it is too
+/// complex to determinize.
 fn wildcard_automaton(pattern: &[u8]) -> Option<automaton::Automaton> {
+    wildcard_automaton_checked(pattern).ok()
+}
+
+/// `WildcardQuery.toAutomaton(term, DEFAULT_DETERMINIZE_WORK_LIMIT)`: the
+/// `TooComplexToDeterminizeException` it throws, or the automaton.
+pub(crate) fn wildcard_automaton_checked(
+    pattern: &[u8],
+) -> Result<automaton::Automaton, automaton::TooComplexToDeterminize> {
     let text = String::from_utf8_lossy(pattern);
     let chars: Vec<char> = text.chars().collect();
     let mut parts = Vec::new();
@@ -216,7 +225,6 @@ fn wildcard_automaton(pattern: &[u8]) -> Option<automaton::Automaton> {
         &automaton::operations::concatenate(&refs),
         automaton::DEFAULT_DETERMINIZE_WORK_LIMIT,
     )
-    .ok()
 }
 
 /// `Query.visit(visitor)` for `clause`.

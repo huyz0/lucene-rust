@@ -238,6 +238,7 @@ pub mod query_builder;
 pub mod query_cache;
 pub mod query_parser;
 pub mod query_visitor;
+pub mod queryparser;
 pub mod reader;
 pub mod reader_manager;
 pub mod reference_manager;

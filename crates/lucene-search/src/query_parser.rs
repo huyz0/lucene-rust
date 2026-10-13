@@ -1,3 +1,7 @@
+//! **The port of Lucene's classic `QueryParser` is
+//! [`crate::queryparser::classic`]**; this module is an older, minimal
+//! parser kept for its callers.
+//!
 //! A minimal query-string parser inspired by real Lucene's classic
 //! `org.apache.lucene.queryparser.classic.QueryParser` (and its
 //! `StandardQueryParser` sibling) -- **not** a port of either class. Those
