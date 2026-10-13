@@ -15,8 +15,10 @@
 //!   ranked in Java's order.
 //!
 //! Differs: an outcome id past the model's outcomes in a parameter pattern
-//! is refused when the model loads; Java loads it and throws an
-//! `ArrayIndexOutOfBoundsException` when a context using it is evaluated.
+//! that some predicate uses is refused when the model loads, whether or not
+//! that predicate is ever seen; Java loads it and throws an
+//! `ArrayIndexOutOfBoundsException` only when such a context is evaluated.
+//! A pattern no predicate uses is not checked, as in Java.
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
@@ -28,8 +30,11 @@ use lucene_util::strict_math;
 use super::text::{self, JString};
 
 /// A multiply-rotate hasher (FxHash's) for the feature maps: the keys are
-/// short strings looked up millions of times, which SipHash makes the
-/// dominant cost of an evaluation.
+/// short strings, looked up once per feature of every evaluation, where
+/// Java's `String.hashCode` is cached on the string. It is unseeded, so a
+/// model built to collide its predicates loads and evaluates slowly (no
+/// more: lookups stay correct) -- the model files are the user's own
+/// choice, trusted as OpenNLP trusts them.
 #[derive(Default, Clone, Copy)]
 pub struct FxHasher {
     hash: u64,
@@ -322,6 +327,11 @@ impl MaxentModel {
         let mut contexts: Vec<Option<Context>> = vec![None; n_preds];
         let mut pid = 0usize;
         for pattern in &patterns {
+            // a pattern no predicate uses is never read again (Java does not
+            // look at its outcome ids either)
+            if pattern[0] <= 0 {
+                continue;
+            }
             let pattern_outcomes = pattern[1..]
                 .iter()
                 .map(|&o| match u32::try_from(o) {
@@ -335,7 +345,7 @@ impl MaxentModel {
                     )),
                 })
                 .collect::<Result<Vec<u32>, _>>()?;
-            for _ in 0..pattern[0].max(0) {
+            for _ in 0..pattern[0] {
                 if pid >= n_preds {
                     return Err(FactoryError::new(
                         JavaException::ArrayIndexOutOfBounds,
@@ -592,7 +602,7 @@ pub trait SequenceContext {
 /// `getPosSequenceModel` & co. build has none).
 #[derive(Debug, Clone)]
 pub struct BeamSearch {
-    size: usize,
+    size: i32,
 }
 
 /// `BeamSearch.zeroLog`: the default `minSequenceScore`.
@@ -600,14 +610,16 @@ const ZERO_LOG: f64 = -100_000.0;
 
 impl BeamSearch {
     /// `new BeamSearch(size, model)`.
-    pub fn new(size: usize) -> Self {
+    pub fn new(size: i32) -> Self {
         BeamSearch { size }
     }
 
     /// `bestSequence(sequence, additionalContext, cg, validator)`'s
     /// outcomes over `len` positions. Java returns `null` when every
     /// sequence was pruned, which its callers dereference: here a
-    /// `NullPointerException`.
+    /// `NullPointerException`. A size below 1 is the
+    /// `IllegalArgumentException` of `new PriorityQueue<>(size)`, the
+    /// search's first statement, whatever the sentence.
     // ARITH: counts of the beam (at most its size) and a sequence one longer than its prefix.
     #[allow(clippy::arithmetic_side_effects)]
     pub fn best_sequence(
@@ -616,6 +628,10 @@ impl BeamSearch {
         len: usize,
         cg: &mut dyn SequenceContext,
     ) -> Result<Vec<u32>, AnalysisError> {
+        let size = match usize::try_from(self.size) {
+            Ok(n) if n >= 1 => n,
+            _ => return Err(AnalysisError::IllegalArgument(String::new())),
+        };
         let outcomes = model.outcomes();
         let mut prev = JavaPriorityQueue::default();
         let mut next = JavaPriorityQueue::default();
@@ -627,7 +643,7 @@ impl BeamSearch {
         let mut sorted = vec![0.0; model.num_outcomes()];
         let mut features = Vec::new();
         for i in 0..len {
-            let sz = self.size.min(prev.len());
+            let sz = size.min(prev.len());
             let mut sc = 0;
             while prev.len() > 0 && sc < sz {
                 sc += 1;
@@ -637,7 +653,7 @@ impl BeamSearch {
                 model.eval(&features, &mut probs);
                 sorted.copy_from_slice(&probs);
                 sorted.sort_by(|a, b| java_double_compare(*a, *b));
-                let min = sorted[sorted.len().saturating_sub(self.size)];
+                let min = sorted[sorted.len().saturating_sub(size)];
                 let extend = |p: usize, next: &mut JavaPriorityQueue| {
                     if cg.valid(i, &top.outcomes, p as u32, outcomes) {
                         let score = top.score + strict_math::log(probs[p]);

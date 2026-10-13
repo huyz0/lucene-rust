@@ -54,6 +54,18 @@ impl TokenStream for KeywordTokenizer {
         self.atts.clear_attributes();
         self.done = true;
         self.buffer.clear();
+        // A plain string reader: the term is the text itself, which is what
+        // reading its UTF-16 units and decoding them back would give.
+        if let Some(text) = self.input.whole_text() {
+            self.atts.set_term(text);
+            let upto = crate::utf16_len(text) as i32;
+            self.final_offset = self.input.correct_offset(upto);
+            let start = self.input.correct_offset(0);
+            return self
+                .atts
+                .set_offset(start, self.final_offset)
+                .map(|()| true);
+        }
         let reader = self.input.reader()?;
         let mut chunk = [0u16; DEFAULT_BUFFER_SIZE];
         loop {

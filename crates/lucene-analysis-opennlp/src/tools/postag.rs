@@ -48,7 +48,8 @@ impl PosModel {
 
 /// `Cache<String, String[]>`: a context generator's contexts of the
 /// current sentence by position and previous two tags, at most `capacity`,
-/// the eldest dropped first.
+/// the eldest dropped first (`Cache` is an insertion-ordered
+/// `LinkedHashMap`, so a hit does not refresh an entry).
 #[derive(Debug, Clone)]
 struct ContextCache {
     capacity: usize,
@@ -81,7 +82,13 @@ impl ContextCache {
         }
     }
 
+    /// `LinkedHashMap.put` in insertion order: a key already present keeps
+    /// its place.
     fn put(&mut self, key: JString, contexts: Vec<JString>) {
+        if let Some(v) = self.map.get_mut(&key) {
+            *v = contexts;
+            return;
+        }
         self.order.push_back(key.clone());
         self.map.insert(key, contexts);
         if self.map.len() > self.capacity {
@@ -190,7 +197,7 @@ impl PosTagger {
             penn: penn_tags(&maxent),
             model: maxent,
             generator,
-            cache: ContextCache::new(beam_size),
+            cache: ContextCache::new(usize::try_from(beam_size).unwrap_or(0)),
             tag_dictionary: model.tag_dictionary.clone(),
             beam: BeamSearch::new(beam_size),
             sentence: 0,
@@ -369,5 +376,28 @@ fn default_context(
     e.push(cat("n=", &next));
     if let Some(nn) = nextnext {
         e.push(cat("nn=", &nn));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Cache`'s insertion order: a re-put key keeps its place, a hit does
+    /// not refresh one, and another sentence starts empty.
+    #[test]
+    fn context_cache_is_an_insertion_ordered_map() {
+        let k = text::units;
+        let mut c = ContextCache::new(2).unwrap();
+        assert!(c.get(1, &k("a")).is_none());
+        c.put(k("a"), vec![k("1")]);
+        c.put(k("b"), vec![k("2")]);
+        c.put(k("a"), vec![k("3")]);
+        assert_eq!(c.get(1, &k("a")), Some(&vec![k("3")]));
+        c.put(k("c"), vec![k("4")]);
+        assert!(c.get(1, &k("a")).is_none());
+        assert!(c.get(1, &k("b")).is_some() && c.get(1, &k("c")).is_some());
+        assert!(c.get(2, &k("b")).is_none());
+        assert!(ContextCache::new(0).is_none());
     }
 }

@@ -51,7 +51,6 @@ impl ICUCollationAttributeFactory {
             input,
             collator: self.collator.clone(),
             scratch: KeyScratch::default(),
-            term: String::new(),
         }
     }
 }
@@ -62,7 +61,6 @@ pub struct ICUCollatedTermFilter<I> {
     input: I,
     collator: Arc<Collator>,
     scratch: KeyScratch,
-    term: String,
 }
 
 impl<I: TokenStream> TokenFilter for ICUCollatedTermFilter<I> {
@@ -80,13 +78,10 @@ impl<I: TokenStream> TokenFilter for ICUCollatedTermFilter<I> {
         if !self.input.increment_token()? {
             return Ok(false);
         }
-        let atts = self.input.attributes_mut();
         // The key replaces the previous token's bytes in place.
-        self.term.clear();
-        self.term.push_str(atts.term());
-        let key = atts.bytes_term_mut();
+        let (term, key) = self.input.attributes_mut().term_and_bytes_term_mut();
         self.collator
-            .raw_collation_key_into(&self.term, &mut self.scratch, key);
+            .raw_collation_key_into(term, &mut self.scratch, key);
         Ok(true)
     }
 }
