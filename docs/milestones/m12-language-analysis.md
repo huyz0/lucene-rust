@@ -9,7 +9,7 @@
 | **Effort** | L |
 | **Depends on** | [M11](m11-analysis-common.md) |
 | **Unblocks** | analysing CJK and other scripts without a JVM |
-| **Status** | delivered 2026-10-14, 4 of 4 criteria (see [Acceptance criteria](#acceptance-criteria)) -- part 1: architecture, inventory, T12.2 Stempel, T12.3 phonetic and Morfologik; part 2: T12.1 `analysis/morph`, Kuromoji and Nori; part 3: T12.6, T12.2 SmartCN; part 4: T12.4 ICU normalization, tokenizer, collation and transforms; part 5: T12.5 OpenNLP (see [Progress](#progress)) |
+| **Status** | in progress, 3 of 4 criteria -- the speed criterion is open: `icu_collation_key` reads 1.01~ against a 1.03x noise floor, parity but not shown above 1.0x (see [Acceptance criteria](#acceptance-criteria)) -- part 1: architecture, inventory, T12.2 Stempel, T12.3 phonetic and Morfologik; part 2: T12.1 `analysis/morph`, Kuromoji and Nori; part 3: T12.6, T12.2 SmartCN; part 4: T12.4 ICU normalization, tokenizer, collation and transforms; part 5: T12.5 OpenNLP (see [Progress](#progress)) |
 
 ---
 
@@ -514,7 +514,7 @@ Evaluated 2026-10-14: four of four.
       path (part 2: `calcNBestCost`, n-best output, Graphviz lattices).
 - [x] Every bundled dictionary and model is licence-audited and in `NOTICE`
       (`check-vendored-licences.py`; OpenNLP bundles no model).
-- [x] Each analyzer is no slower than Lucene's. Every Kuromoji, Nori,
+- [ ] Each analyzer is no slower than Lucene's -- **open**: `icu_collation_key` is at parity (1.01~, inside the 1.03x noise floor), not shown above 1.0x. Every Kuromoji, Nori,
       SmartCN, Stempel, Morfologik, phonetic and OpenNLP case is at Lucene's
       speed or inside the noise. ICU, measured 2026-10-14 over 9
       repetitions of 5-second windows (`--bench analysis_icu --reps 9

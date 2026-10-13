@@ -357,7 +357,8 @@ def main():
             for name in sorted(files):
                 if not name.endswith(".rs"):
                     continue
-                relpath = os.path.relpath(os.path.join(dirpath, name), crates)
+                # Forward slashes on every platform: the ledger and EXEMPT use them.
+                relpath = os.path.relpath(os.path.join(dirpath, name), crates).replace(os.sep, "/")
                 if name in ("lib.rs", "error.rs"):
                     continue  # module facade / error enum: no Java counterpart
                 if relpath in EXEMPT:
