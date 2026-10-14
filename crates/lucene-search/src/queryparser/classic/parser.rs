@@ -12,13 +12,14 @@ use lucene_util::automaton::{
 };
 
 use super::constants::*;
-use super::token_manager::{add_escapes, CharStream, Token, TokenManager, TokenMgrError};
+use super::token_manager::TokenManager;
 use super::{Operator, QueryParser, QueryParserError, MAX_CLAUSE_COUNT};
 use crate::extended_query::TermRangeQuery;
 use crate::query::{FuzzyQuery, PrefixQuery, RegexpQuery, WildcardQuery};
 use crate::query_builder::QueryBuilder;
 use crate::query_visitor::Occur;
 use crate::queryparser::ext::{ExtensionQuery, Extensions};
+use crate::queryparser::javacc::{CharStream, Grammar, JjError, Runtime, Stop, TokenMgrError};
 use crate::queryparser::{term_text, ParsedBoolean, ParsedQuery};
 
 const CONJ_NONE: i32 = 0;
@@ -41,6 +42,15 @@ static JJ_LA1_1: [u32; 25] = [
     0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
 ];
 
+/// The classic grammar for the shared JavaCC runtime.
+static GRAMMAR: Grammar<TokenManager> = Grammar {
+    token_image: &TOKEN_IMAGE,
+    num_tokens: 33,
+    la1_masks: &[&JJ_LA1_0, &JJ_LA1_1],
+    lookahead: jj_3,
+    num_lookaheads: 3,
+};
+
 /// What a production can throw.
 pub(crate) enum Fail {
     /// `ParseException` (and `TokenMgrError`, which `parse` wraps alike):
@@ -58,28 +68,13 @@ impl From<TokenMgrError> for Fail {
     }
 }
 
-type PResult<T> = Result<T, Fail>;
-
-/// How a lookahead scan stops early.
-enum Stop {
-    /// `LookaheadSuccess`: the lookahead matched.
-    Success,
-    Lex(TokenMgrError),
-}
-
-impl From<TokenMgrError> for Stop {
-    fn from(e: TokenMgrError) -> Self {
-        Stop::Lex(e)
+impl From<JjError> for Fail {
+    fn from(e: JjError) -> Self {
+        Fail::Parse(e.0)
     }
 }
 
-/// `JJCalls`: a lookahead to rescan when the parse fails.
-#[derive(Debug, Clone, Default)]
-struct JjCall {
-    gen: i32,
-    first: Option<usize>,
-    arg: i32,
-}
+type PResult<T> = Result<T, Fail>;
 
 fn parse_error(msg: impl Into<String>) -> Fail {
     Fail::Parse(msg.into())
@@ -102,411 +97,117 @@ impl AutomatonProvider for NoAutomata {
     }
 }
 
+/// `allowedPostMultiTerm(kind)`.
+fn allowed_post_multi_term(kind: i32) -> bool {
+    !matches!(kind, COLON | STAR | FUZZY_SLOP | CARAT | AND | OR)
+}
+
+/// `getToken(1).kind == TERM && allowedPostMultiTerm(getToken(2).kind)`.
+fn multi_term_continues(rt: &mut Runtime<TokenManager>) -> Result<bool, TokenMgrError> {
+    let t1 = rt.get_token(1)?;
+    if rt.kind(t1) != TERM {
+        return Ok(false);
+    }
+    let t2 = rt.get_token(2)?;
+    Ok(allowed_post_multi_term(rt.kind(t2)))
+}
+
+/// `jj_3_1()`, `jj_3_2()`, `jj_3_3()`: `Ok(true)` when the lookahead fails.
+fn jj_3(rt: &mut Runtime<TokenManager>, n: usize) -> Result<bool, Stop> {
+    match n {
+        0 | 1 => jj_3r_multi_term(rt),
+        _ => {
+            let xsp = rt.jj_scanpos;
+            if jj_3r_clause_field(rt, TERM)? {
+                rt.jj_scanpos = xsp;
+                if jj_3r_clause_field(rt, STAR)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+    }
+}
+
+/// `jj_3R_MultiTerm_381_3_3()`.
+fn jj_3r_multi_term(rt: &mut Runtime<TokenManager>) -> Result<bool, Stop> {
+    if rt.scan_token(TERM)? {
+        return Ok(true);
+    }
+    rt.jj_looking_ahead = true;
+    let sem_la = multi_term_continues(rt)?;
+    rt.jj_looking_ahead = false;
+    if !sem_la {
+        return Ok(true);
+    }
+    if rt.scan_token(TERM)? {
+        return Ok(true);
+    }
+    loop {
+        let xsp = rt.jj_scanpos;
+        if rt.scan_token(TERM)? {
+            rt.jj_scanpos = xsp;
+            break;
+        }
+    }
+    Ok(false)
+}
+
+/// `jj_3R_Clause_305_7_4()` (`TERM ":"`) and `jj_3R_Clause_306_9_5()`
+/// (`"*" ":"`).
+fn jj_3r_clause_field(rt: &mut Runtime<TokenManager>, first: i32) -> Result<bool, Stop> {
+    if rt.scan_token(first)? {
+        return Ok(true);
+    }
+    if rt.scan_token(COLON)? {
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 /// One parse of one query string.
 pub(crate) struct Parser<'p> {
     cfg: &'p QueryParser,
-    tm: TokenManager,
-    tokens: Vec<Token>,
-    token: usize,
-    jj_ntk: i32,
-    jj_scanpos: usize,
-    jj_lastpos: usize,
-    jj_la: i32,
-    jj_looking_ahead: bool,
-    jj_gen: i32,
-    jj_la1: [i32; 25],
-    jj_2_rtns: [Vec<JjCall>; 3],
-    jj_rescan: bool,
-    jj_gc: i32,
-    jj_expentries: Vec<Vec<i32>>,
-    jj_kind: i32,
-    jj_lasttokens: [i32; 100],
-    jj_endpos: i32,
+    rt: Runtime<TokenManager>,
 }
 
 impl<'p> Parser<'p> {
     pub(crate) fn new(cfg: &'p QueryParser, query: &str) -> Self {
         Parser {
             cfg,
-            tm: TokenManager::new(CharStream::new(query)),
-            tokens: vec![Token::default()],
-            token: 0,
-            jj_ntk: -1,
-            jj_scanpos: 0,
-            jj_lastpos: 0,
-            jj_la: 0,
-            jj_looking_ahead: false,
-            jj_gen: 0,
-            jj_la1: [-1; 25],
-            jj_2_rtns: [
-                vec![JjCall::default()],
-                vec![JjCall::default()],
-                vec![JjCall::default()],
-            ],
-            jj_rescan: false,
-            jj_gc: 0,
-            jj_expentries: Vec::new(),
-            jj_kind: -1,
-            jj_lasttokens: [0; 100],
-            jj_endpos: 0,
+            rt: Runtime::new(&GRAMMAR, TokenManager::new(CharStream::new(query))),
         }
     }
 
     // ------------------------------------------------------- the machinery
 
-    /// The token after `t`, read from the lexer the first time.
-    fn next_of(&mut self, t: usize) -> Result<usize, TokenMgrError> {
-        if let Some(n) = self.tokens[t].next {
-            return Ok(n);
-        }
-        let tok = self.tm.next_token()?;
-        self.tokens.push(tok);
-        let n = self.tokens.len() - 1;
-        self.tokens[t].next = Some(n);
-        Ok(n)
-    }
-
-    fn kind(&self, t: usize) -> i32 {
-        self.tokens[t].kind
-    }
-
     /// `(jj_ntk==-1)?jj_ntk_f():jj_ntk`.
     fn ntk(&mut self) -> PResult<i32> {
-        if self.jj_ntk == -1 {
-            let n = self.next_of(self.token)?;
-            self.jj_ntk = self.kind(n);
-        }
-        Ok(self.jj_ntk)
+        Ok(self.rt.ntk()?)
     }
 
     /// `jj_consume_token(kind)`.
     fn consume(&mut self, kind: i32) -> PResult<usize> {
-        let old = self.token;
-        self.token = self.next_of(self.token)?;
-        self.jj_ntk = -1;
-        if self.kind(self.token) == kind {
-            self.jj_gen += 1;
-            self.jj_gc += 1;
-            if self.jj_gc > 100 {
-                self.jj_gc = 0;
-                let gen = self.jj_gen;
-                for list in &mut self.jj_2_rtns {
-                    for c in list.iter_mut() {
-                        if c.gen < gen {
-                            c.first = None;
-                        }
-                    }
-                }
-            }
-            return Ok(self.token);
-        }
-        self.token = old;
-        self.jj_kind = kind;
-        Err(self.generate_parse_exception())
+        Ok(self.rt.consume(kind)?)
     }
 
-    /// `jj_consume_token(-1); throw new ParseException();` -- the second
-    /// is never reached: `-1` is no token's kind.
+    /// `jj_consume_token(-1); throw new ParseException();`.
     fn fail(&mut self) -> Fail {
-        self.consume(-1).err().unwrap_or_else(|| parse_error(""))
+        self.rt.fail().into()
     }
 
-    /// A choice none of whose alternatives starts with the next token:
-    /// `jj_la1[n] = jj_gen;`, then [`Self::fail`].
+    /// A choice none of whose alternatives starts with the next token.
     fn no_match(&mut self, n: usize) -> Fail {
-        self.jj_la1[n] = self.jj_gen;
-        self.fail()
+        self.rt.no_match(n).into()
     }
 
-    /// `jj_scan_token(kind)`: `Ok(true)` when the token is not `kind`.
-    fn scan_token(&mut self, kind: i32) -> Result<bool, Stop> {
-        if self.jj_scanpos == self.jj_lastpos {
-            self.jj_la -= 1;
-            let n = self.next_of(self.jj_scanpos)?;
-            self.jj_scanpos = n;
-            self.jj_lastpos = n;
-        } else {
-            self.jj_scanpos = self.next_of(self.jj_scanpos)?;
-        }
-        if self.jj_rescan {
-            let mut i = 0;
-            let mut tok = Some(self.token);
-            while let Some(t) = tok {
-                if t == self.jj_scanpos {
-                    break;
-                }
-                i += 1;
-                tok = self.tokens[t].next;
-            }
-            if tok.is_some() {
-                self.add_error_token(kind, i);
-            }
-        }
-        if self.kind(self.jj_scanpos) != kind {
-            return Ok(true);
-        }
-        if self.jj_la == 0 && self.jj_scanpos == self.jj_lastpos {
-            return Err(Stop::Success);
-        }
-        Ok(false)
-    }
-
-    /// `getToken(index)`.
-    fn get_token(&mut self, index: usize) -> Result<usize, TokenMgrError> {
-        let mut t = if self.jj_looking_ahead {
-            self.jj_scanpos
-        } else {
-            self.token
-        };
-        for _ in 0..index {
-            t = self.next_of(t)?;
-        }
-        Ok(t)
-    }
-
-    /// `allowedPostMultiTerm(kind)`.
-    fn allowed_post_multi_term(kind: i32) -> bool {
-        !matches!(kind, COLON | STAR | FUZZY_SLOP | CARAT | AND | OR)
-    }
-
-    /// `getToken(1).kind == TERM && allowedPostMultiTerm(getToken(2).kind)`.
-    fn multi_term_continues(&mut self) -> Result<bool, TokenMgrError> {
-        let t1 = self.get_token(1)?;
-        if self.kind(t1) != TERM {
-            return Ok(false);
-        }
-        let t2 = self.get_token(2)?;
-        Ok(Self::allowed_post_multi_term(self.kind(t2)))
-    }
-
-    /// `jj_2_<n>(xla)`.
+    /// `jj_2_<n+1>(xla)`.
     fn jj_2(&mut self, n: usize, xla: i32) -> PResult<bool> {
-        self.jj_la = xla;
-        self.jj_scanpos = self.token;
-        self.jj_lastpos = self.token;
-        let result = match self.jj_3(n) {
-            Ok(failed) => Ok(!failed),
-            Err(Stop::Success) => Ok(true),
-            Err(Stop::Lex(e)) => Err(Fail::from(e)),
-        };
-        self.jj_save(n, xla);
-        result
+        Ok(self.rt.jj_2(n, xla)?)
     }
 
-    /// `jj_3_1()`, `jj_3_2()`, `jj_3_3()`: `Ok(true)` when the lookahead
-    /// fails.
-    fn jj_3(&mut self, n: usize) -> Result<bool, Stop> {
-        match n {
-            0 | 1 => self.jj_3r_multi_term(),
-            _ => {
-                let xsp = self.jj_scanpos;
-                if self.jj_3r_clause_field(TERM)? {
-                    self.jj_scanpos = xsp;
-                    if self.jj_3r_clause_field(STAR)? {
-                        return Ok(true);
-                    }
-                }
-                Ok(false)
-            }
-        }
-    }
-
-    /// `jj_3R_MultiTerm_381_3_3()`.
-    fn jj_3r_multi_term(&mut self) -> Result<bool, Stop> {
-        if self.scan_token(TERM)? {
-            return Ok(true);
-        }
-        self.jj_looking_ahead = true;
-        let sem_la = self.multi_term_continues()?;
-        self.jj_looking_ahead = false;
-        if !sem_la {
-            return Ok(true);
-        }
-        if self.scan_token(TERM)? {
-            return Ok(true);
-        }
-        loop {
-            let xsp = self.jj_scanpos;
-            if self.scan_token(TERM)? {
-                self.jj_scanpos = xsp;
-                break;
-            }
-        }
-        Ok(false)
-    }
-
-    /// `jj_3R_Clause_305_7_4()` (`TERM ":"`) and `jj_3R_Clause_306_9_5()`
-    /// (`"*" ":"`).
-    fn jj_3r_clause_field(&mut self, first: i32) -> Result<bool, Stop> {
-        if self.scan_token(first)? {
-            return Ok(true);
-        }
-        if self.scan_token(COLON)? {
-            return Ok(true);
-        }
-        Ok(false)
-    }
-
-    /// `jj_save(index, xla)`.
-    fn jj_save(&mut self, index: usize, xla: i32) {
-        let gen = self.jj_gen;
-        let list = &mut self.jj_2_rtns[index];
-        let mut k = 0;
-        while list[k].gen > gen {
-            if k + 1 == list.len() {
-                list.push(JjCall::default());
-                k += 1;
-                break;
-            }
-            k += 1;
-        }
-        list[k].gen = gen + xla - self.jj_la;
-        list[k].first = Some(self.token);
-        list[k].arg = xla;
-    }
-
-    /// `jj_add_error_token(kind, pos)`.
-    fn add_error_token(&mut self, kind: i32, pos: i32) {
-        if pos >= 100 {
-            return;
-        }
-        if pos == self.jj_endpos + 1 {
-            self.jj_lasttokens[self.jj_endpos as usize] = kind;
-            self.jj_endpos += 1;
-        } else if self.jj_endpos != 0 {
-            let entry: Vec<i32> = self.jj_lasttokens[..self.jj_endpos as usize].to_vec();
-            // JavaCC 7 adds the sequence only when an equal one is already
-            // listed.
-            if self.jj_expentries.contains(&entry) {
-                self.jj_expentries.push(entry);
-            }
-            if pos != 0 {
-                self.jj_endpos = pos;
-                self.jj_lasttokens[(pos - 1) as usize] = kind;
-            }
-        }
-    }
-
-    /// `jj_rescan_token()`.
-    fn rescan_token(&mut self) -> Result<(), TokenMgrError> {
-        self.jj_rescan = true;
-        for i in 0..3 {
-            let mut k = 0;
-            while k < self.jj_2_rtns[i].len() {
-                let p = self.jj_2_rtns[i][k].clone();
-                if p.gen > self.jj_gen {
-                    self.jj_la = p.arg;
-                    let first = p.first.unwrap_or(0);
-                    self.jj_scanpos = first;
-                    self.jj_lastpos = first;
-                    match self.jj_3(i) {
-                        Ok(_) => {}
-                        Err(Stop::Success) => break,
-                        Err(Stop::Lex(e)) => {
-                            self.jj_rescan = false;
-                            return Err(e);
-                        }
-                    }
-                }
-                k += 1;
-            }
-        }
-        self.jj_rescan = false;
-        Ok(())
-    }
-
-    /// `generateParseException()`.
-    fn generate_parse_exception(&mut self) -> Fail {
-        self.jj_expentries.clear();
-        let mut la1tokens = [false; 64];
-        if self.jj_kind >= 0 {
-            la1tokens[self.jj_kind as usize] = true;
-            self.jj_kind = -1;
-        }
-        for i in 0..25 {
-            if self.jj_la1[i] == self.jj_gen {
-                for j in 0..32 {
-                    if JJ_LA1_0[i] & (1 << j) != 0 {
-                        la1tokens[j] = true;
-                    }
-                    if JJ_LA1_1[i] & (1 << j) != 0 {
-                        la1tokens[32 + j] = true;
-                    }
-                }
-            }
-        }
-        for (i, &set) in la1tokens.iter().enumerate().take(33) {
-            if set {
-                self.jj_expentries.push(vec![i as i32]);
-            }
-        }
-        self.jj_endpos = 0;
-        if let Err(e) = self.rescan_token() {
-            return Fail::from(e);
-        }
-        self.add_error_token(0, 0);
-        Fail::Parse(self.parse_exception_message())
-    }
-
-    /// `ParseException.initialise(token, jj_expentries, tokenImage)`.
-    fn parse_exception_message(&self) -> String {
-        const EOL: &str = "\n";
-        let mut expected = String::new();
-        let mut max_size = 0;
-        for seq in &self.jj_expentries {
-            max_size = max_size.max(seq.len());
-            for &k in seq {
-                expected.push_str(TOKEN_IMAGE[k as usize]);
-                expected.push(' ');
-            }
-            if seq.last().copied().unwrap_or(0) != 0 {
-                expected.push_str("...");
-            }
-            expected.push_str(EOL);
-            expected.push_str("    ");
-        }
-        let mut retval = String::from("Encountered \"");
-        let mut tok = self.tokens[self.token].next;
-        for i in 0..max_size {
-            if i != 0 {
-                retval.push(' ');
-            }
-            let Some(t) = tok else { break };
-            let t = &self.tokens[t];
-            if t.kind == 0 {
-                retval.push_str(TOKEN_IMAGE[0]);
-                break;
-            }
-            retval.push(' ');
-            retval.push_str(TOKEN_IMAGE[t.kind as usize]);
-            retval.push_str(" \"");
-            retval.push_str(&add_escapes(&t.image));
-            retval.push_str(" \"");
-            tok = t.next;
-        }
-        if let Some(next) = self.tokens[self.token].next {
-            retval.push_str(&format!(
-                "\" at line 1, column {}",
-                self.tokens[next].begin_column
-            ));
-        }
-        retval.push('.');
-        retval.push_str(EOL);
-        match self.jj_expentries.len() {
-            0 => {}
-            1 => {
-                retval.push_str("Was expecting:");
-                retval.push_str(EOL);
-                retval.push_str("    ");
-            }
-            _ => {
-                retval.push_str("Was expecting one of:");
-                retval.push_str(EOL);
-                retval.push_str("    ");
-            }
-        }
-        retval.push_str(&expected);
-        retval
+    fn multi_term_continues(&mut self) -> Result<bool, TokenMgrError> {
+        multi_term_continues(&mut self.rt)
     }
 
     // --------------------------------------------------------- productions
@@ -526,7 +227,7 @@ impl<'p> Parser<'p> {
                 }
                 _ => return Err(self.no_match(0)),
             },
-            _ => self.jj_la1[1] = self.jj_gen,
+            _ => self.rt.skipped(1),
         }
         Ok(ret)
     }
@@ -550,7 +251,7 @@ impl<'p> Parser<'p> {
                 }
                 _ => return Err(self.no_match(2)),
             },
-            _ => self.jj_la1[3] = self.jj_gen,
+            _ => self.rt.skipped(3),
         }
         Ok(ret)
     }
@@ -603,7 +304,7 @@ impl<'p> Parser<'p> {
         loop {
             let k = self.ntk()?;
             if !(k == AND || k == OR || Self::starts_clause(k)) {
-                self.jj_la1[5] = self.jj_gen;
+                self.rt.skipped(5);
                 break;
             }
             if self.jj_2(1, 2)? {
@@ -637,7 +338,7 @@ impl<'p> Parser<'p> {
                     let f = self.consume(TERM)?;
                     self.consume(COLON)?;
                     field = Some(string(
-                        &self.discard_escape_char(&self.tokens[f].image.clone())?,
+                        &self.discard_escape_char(&self.rt.tokens[f].image.clone())?,
                     ));
                 }
                 STAR => {
@@ -660,7 +361,7 @@ impl<'p> Parser<'p> {
                         self.consume(CARAT)?;
                         boost = Some(self.consume(NUMBER)?);
                     }
-                    _ => self.jj_la1[8] = self.jj_gen,
+                    _ => self.rt.skipped(8),
                 }
                 q
             }
@@ -682,7 +383,7 @@ impl<'p> Parser<'p> {
                     boost = Some(self.consume(NUMBER)?);
                     match self.ntk()? {
                         FUZZY_SLOP => fuzzy_slop = Some(self.consume(FUZZY_SLOP)?),
-                        _ => self.jj_la1[la1[0]] = self.jj_gen,
+                        _ => self.rt.skipped(la1[0]),
                     }
                 }
                 FUZZY_SLOP => {
@@ -692,12 +393,12 @@ impl<'p> Parser<'p> {
                             self.consume(CARAT)?;
                             boost = Some(self.consume(NUMBER)?);
                         }
-                        _ => self.jj_la1[la1[1]] = self.jj_gen,
+                        _ => self.rt.skipped(la1[1]),
                     }
                 }
                 _ => return Err(self.no_match(la1[2])),
             },
-            _ => self.jj_la1[la1[3]] = self.jj_gen,
+            _ => self.rt.skipped(la1[3]),
         }
         Ok((boost, fuzzy_slop))
     }
@@ -730,15 +431,15 @@ impl<'p> Parser<'p> {
                     NUMBER => self.consume(NUMBER)?,
                     BAREOPER => {
                         let t = self.consume(BAREOPER)?;
-                        self.tokens[t].image.truncate(1);
+                        self.rt.tokens[t].image.truncate(1);
                         t
                     }
                     _ => return Err(self.no_match(10)),
                 };
                 let (b, fuzzy_slop) = self.boost_and_slop([11, 12, 13, 14])?;
                 boost = b;
-                let image = self.tokens[term].image.clone();
-                let slop_image = fuzzy_slop.map(|t| self.tokens[t].image.clone());
+                let image = self.rt.tokens[term].image.clone();
+                let slop_image = fuzzy_slop.map(|t| self.rt.tokens[t].image.clone());
                 q = self.handle_bare_token_query(
                     field,
                     &image,
@@ -781,12 +482,12 @@ impl<'p> Parser<'p> {
                         Some(self.consume(NUMBER)?)
                     }
                     _ => {
-                        self.jj_la1[19] = self.jj_gen;
+                        self.rt.skipped(19);
                         None
                     }
                 };
                 let bound = |p: &Self, t: usize| -> (Vec<u16>, bool) {
-                    let tok = &p.tokens[t];
+                    let tok = &p.rt.tokens[t];
                     if tok.kind == RANGE_QUOTED {
                         (tok.image[1..tok.image.len() - 1].to_vec(), false)
                     } else {
@@ -812,8 +513,8 @@ impl<'p> Parser<'p> {
                 let term = self.consume(QUOTED)?;
                 let (b, fuzzy_slop) = self.boost_and_slop([20, 21, 22, 23])?;
                 boost = b;
-                let image = self.tokens[term].image.clone();
-                let slop_image = fuzzy_slop.map(|t| self.tokens[t].image.clone());
+                let image = self.rt.tokens[term].image.clone();
+                let slop_image = fuzzy_slop.map(|t| self.rt.tokens[t].image.clone());
                 q = self.handle_quoted_term(field, &image, slop_image.as_deref())?;
             }
             _ => return Err(self.no_match(24)),
@@ -839,7 +540,7 @@ impl<'p> Parser<'p> {
     ) -> PResult<Option<ParsedQuery>> {
         let mut first_query = None;
         let text = self.consume(TERM)?;
-        let mut text_image = self.tokens[text].image.clone();
+        let mut text_image = self.rt.tokens[text].image.clone();
         let split = self.cfg.split_on_whitespace;
         if split {
             let t = string(&self.discard_escape_char(&text_image)?);
@@ -851,7 +552,7 @@ impl<'p> Parser<'p> {
         }
         loop {
             let following = self.consume(TERM)?;
-            let following_image = self.tokens[following].image.clone();
+            let following_image = self.rt.tokens[following].image.clone();
             if split {
                 let t = string(&self.discard_escape_char(&following_image)?);
                 let q = self.get_field_query(field, &t, false)?;
@@ -1435,7 +1136,7 @@ impl<'p> Parser<'p> {
     /// `handleBoost(q, boost)`.
     fn handle_boost(&self, q: Option<ParsedQuery>, boost: Option<usize>) -> Option<ParsedQuery> {
         let Some(b) = boost else { return q };
-        let f = parse_java_float(&string(&self.tokens[b].image)).unwrap_or(1.0);
+        let f = parse_java_float(&string(&self.rt.tokens[b].image)).unwrap_or(1.0);
         q.map(|q| ParsedQuery::Boost(Box::new(q), f))
     }
 

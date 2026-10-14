@@ -102,6 +102,24 @@ pub fn bench_queryparser(w: Duration, m: Duration) {
         }
         simple.len() as u64
     });
+    let surround: Vec<String> = std::fs::read_to_string("fixtures/corpus/queryparser-surround.txt")
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    measure("qp_surround_corpus", w, m, || {
+        for q in &surround {
+            match lucene_search::queryparser::surround::parser::parse(black_box(q)) {
+                Ok(parsed) => {
+                    black_box(parsed.to_string().len());
+                }
+                Err(e) => {
+                    black_box(e.message.len());
+                }
+            }
+        }
+        surround.len() as u64
+    });
     run(
         "qp_multi_field_corpus",
         &QueryParser::multi_field(&["title", "body"], standard()),

@@ -8,6 +8,7 @@ import org.apache.lucene.queryparser.classic.MultiFieldQueryParser;
 import org.apache.lucene.queryparser.classic.ParseException;
 import org.apache.lucene.queryparser.classic.QueryParser;
 import org.apache.lucene.queryparser.simple.SimpleQueryParser;
+import org.apache.lucene.queryparser.surround.query.SrndQuery;
 import org.apache.lucene.search.Query;
 
 /**
@@ -73,6 +74,22 @@ public class QueryParserMicro {
         });
   }
 
+  static void runSurround(String name, List<String> queries) throws Exception {
+    SweepMicro.measure(
+        name,
+        () -> {
+          for (String q : queries) {
+            try {
+              SrndQuery parsed = org.apache.lucene.queryparser.surround.parser.QueryParser.parse(q);
+              SweepMicro.sink += parsed.toString().length();
+            } catch (org.apache.lucene.queryparser.surround.parser.ParseException | RuntimeException e) {
+              SweepMicro.sink += e.getMessage().length();
+            }
+          }
+          return queries.size();
+        });
+  }
+
   public static void main(String[] args) throws Exception {
     List<String> corpus = new ArrayList<>();
     for (String line : Files.readAllLines(Path.of("fixtures/corpus/queryparser-classic.txt"), StandardCharsets.UTF_8)) {
@@ -87,6 +104,8 @@ public class QueryParserMicro {
     List<String> simple = new ArrayList<>(corpus);
     simple.addAll(Files.readAllLines(Path.of("fixtures/corpus/queryparser-simple.txt"), StandardCharsets.UTF_8));
     runSimple("qp_simple_corpus", new SimpleQueryParser(new StandardAnalyzer(), "f"), simple);
+    runSurround("qp_surround_corpus",
+        Files.readAllLines(Path.of("fixtures/corpus/queryparser-surround.txt"), StandardCharsets.UTF_8));
     run("qp_multi_field_corpus", new MultiFieldQueryParser(new String[] {"title", "body"}, new StandardAnalyzer()), corpus);
   }
 }
