@@ -1,16 +1,16 @@
 # Lucene 10.5.0 lucene-queryparser: every top-level class of the jar, and what became of it.
 # Checked by scripts/check-port-inventory.py --module queryparser (see its docstring for the statuses).
 # class	status	detail
-queryparser/charstream/CharStream	ported	crates/lucene-search/src/queryparser/classic/token_manager.rs::CharStream
-queryparser/charstream/FastCharStream	ported	crates/lucene-search/src/queryparser/classic/token_manager.rs::CharStream
+queryparser/charstream/CharStream	ported	crates/lucene-search/src/queryparser/javacc.rs::CharStream
+queryparser/charstream/FastCharStream	ported	crates/lucene-search/src/queryparser/javacc.rs::CharStream
 queryparser/classic/MultiFieldQueryParser	ported	crates/lucene-search/src/queryparser/classic/mod.rs::multi_field
-queryparser/classic/ParseException	ported	crates/lucene-search/src/queryparser/classic/parser.rs::parse_exception_message
+queryparser/classic/ParseException	ported	crates/lucene-search/src/queryparser/javacc.rs::Runtime
 queryparser/classic/QueryParser	ported	crates/lucene-search/src/queryparser/classic/mod.rs::QueryParser
 queryparser/classic/QueryParserBase	partial	crates/lucene-search/src/queryparser/classic/parser.rs::add_clause -- M13: date-resolution ranges (setDateResolution/setLocale/setTimeZone); the MultiTermQuery rewrite method and determinizeWorkLimit setters
 queryparser/classic/QueryParserConstants	ported	crates/lucene-search/src/queryparser/classic/constants.rs::TOKEN_IMAGE
 queryparser/classic/QueryParserTokenManager	ported	crates/lucene-search/src/queryparser/classic/token_manager.rs::TokenManager
-queryparser/classic/Token	ported	crates/lucene-search/src/queryparser/classic/token_manager.rs::Token
-queryparser/classic/TokenMgrError	ported	crates/lucene-search/src/queryparser/classic/token_manager.rs::TokenMgrError
+queryparser/classic/Token	ported	crates/lucene-search/src/queryparser/javacc.rs::Token
+queryparser/classic/TokenMgrError	ported	crates/lucene-search/src/queryparser/javacc.rs::TokenMgrError
 queryparser/complexPhrase/ComplexPhraseQueryParser	todo:M13	ComplexPhraseQueryParser
 queryparser/ext/ExtendableQueryParser	ported	crates/lucene-search/src/queryparser/ext.rs::ExtendableQueryParser
 queryparser/ext/ExtensionQuery	ported	crates/lucene-search/src/queryparser/ext.rs::ExtensionQuery
@@ -168,31 +168,31 @@ queryparser/flexible/standard/processors/StandardQueryNodeProcessorPipeline	todo
 queryparser/flexible/standard/processors/TermRangeQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
 queryparser/flexible/standard/processors/WildcardQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
 queryparser/simple/SimpleQueryParser	ported	crates/lucene-search/src/queryparser/simple.rs::SimpleQueryParser
-queryparser/surround/parser/ParseException	todo:M13	the surround query language
-queryparser/surround/parser/QueryParser	todo:M13	the surround query language
-queryparser/surround/parser/QueryParserConstants	todo:M13	the surround query language
-queryparser/surround/parser/QueryParserTokenManager	todo:M13	the surround query language
-queryparser/surround/parser/Token	todo:M13	the surround query language
-queryparser/surround/parser/TokenMgrError	todo:M13	the surround query language
-queryparser/surround/query/AndQuery	todo:M13	the surround query language
-queryparser/surround/query/BasicQueryFactory	todo:M13	the surround query language
-queryparser/surround/query/ComposedQuery	todo:M13	the surround query language
-queryparser/surround/query/DistanceQuery	todo:M13	the surround query language
-queryparser/surround/query/DistanceRewriteQuery	todo:M13	the surround query language
-queryparser/surround/query/DistanceSubQuery	todo:M13	the surround query language
-queryparser/surround/query/FieldsQuery	todo:M13	the surround query language
-queryparser/surround/query/NotQuery	todo:M13	the surround query language
-queryparser/surround/query/OrQuery	todo:M13	the surround query language
-queryparser/surround/query/RewriteQuery	todo:M13	the surround query language
-queryparser/surround/query/SimpleTerm	todo:M13	the surround query language
-queryparser/surround/query/SimpleTermRewriteQuery	todo:M13	the surround query language
-queryparser/surround/query/SpanNearClauseFactory	todo:M13	the surround query language
-queryparser/surround/query/SrndBooleanQuery	todo:M13	the surround query language
-queryparser/surround/query/SrndPrefixQuery	todo:M13	the surround query language
-queryparser/surround/query/SrndQuery	todo:M13	the surround query language
-queryparser/surround/query/SrndTermQuery	todo:M13	the surround query language
-queryparser/surround/query/SrndTruncQuery	todo:M13	the surround query language
-queryparser/surround/query/TooManyBasicQueries	todo:M13	the surround query language
+queryparser/surround/parser/ParseException	ported	crates/lucene-search/src/queryparser/surround/parser.rs::parse
+queryparser/surround/parser/QueryParser	ported	crates/lucene-search/src/queryparser/surround/parser.rs::parse
+queryparser/surround/parser/QueryParserConstants	ported	crates/lucene-search/src/queryparser/surround/constants.rs::TOKEN_IMAGE
+queryparser/surround/parser/QueryParserTokenManager	ported	crates/lucene-search/src/queryparser/surround/token_manager.rs::TokenManager
+queryparser/surround/parser/Token	ported	crates/lucene-search/src/queryparser/surround/token_manager.rs::TokenManager
+queryparser/surround/parser/TokenMgrError	ported	crates/lucene-search/src/queryparser/surround/token_manager.rs::TokenManager
+queryparser/surround/query/AndQuery	ported	crates/lucene-search/src/queryparser/surround/query.rs::SrndQuery
+queryparser/surround/query/BasicQueryFactory	ported	crates/lucene-search/src/queryparser/surround/query.rs::BasicQueryFactory
+queryparser/surround/query/ComposedQuery	ported	crates/lucene-search/src/queryparser/surround/query.rs::SrndQuery
+queryparser/surround/query/DistanceQuery	ported	crates/lucene-search/src/queryparser/surround/query.rs::SrndQuery
+queryparser/surround/query/DistanceRewriteQuery	ported	crates/lucene-search/src/queryparser/surround/query.rs::SrndQuery
+queryparser/surround/query/DistanceSubQuery	ported	crates/lucene-search/src/queryparser/surround/query.rs::SrndQuery
+queryparser/surround/query/FieldsQuery	ported	crates/lucene-search/src/queryparser/surround/query.rs::SrndQuery
+queryparser/surround/query/NotQuery	ported	crates/lucene-search/src/queryparser/surround/query.rs::SrndQuery
+queryparser/surround/query/OrQuery	ported	crates/lucene-search/src/queryparser/surround/query.rs::SrndQuery
+queryparser/surround/query/RewriteQuery	ported	crates/lucene-search/src/queryparser/surround/query.rs::SrndQuery
+queryparser/surround/query/SimpleTerm	ported	crates/lucene-search/src/queryparser/surround/query.rs::SrndQuery
+queryparser/surround/query/SimpleTermRewriteQuery	ported	crates/lucene-search/src/queryparser/surround/query.rs::SrndQuery
+queryparser/surround/query/SpanNearClauseFactory	ported	crates/lucene-search/src/queryparser/surround/query.rs::SpanNearClauseFactory
+queryparser/surround/query/SrndBooleanQuery	ported	crates/lucene-search/src/queryparser/surround/query.rs::make_boolean_query
+queryparser/surround/query/SrndPrefixQuery	ported	crates/lucene-search/src/queryparser/surround/query.rs::SrndQuery
+queryparser/surround/query/SrndQuery	ported	crates/lucene-search/src/queryparser/surround/query.rs::SrndQuery
+queryparser/surround/query/SrndTermQuery	ported	crates/lucene-search/src/queryparser/surround/query.rs::SrndQuery
+queryparser/surround/query/SrndTruncQuery	ported	crates/lucene-search/src/queryparser/surround/query.rs::SrndQuery
+queryparser/surround/query/TooManyBasicQueries	ported	crates/lucene-search/src/queryparser/surround/query.rs::too_many_basic_queries
 queryparser/xml/CoreParser	todo:M13	the XML query parser
 queryparser/xml/CorePlusExtensionsParser	todo:M13	the XML query parser
 queryparser/xml/CorePlusQueriesParser	todo:M13	the XML query parser

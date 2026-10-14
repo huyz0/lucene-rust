@@ -1,0 +1,223 @@
+quick
+QUICK
+quick fox
+quick OR fox
+quick or fox
+quick AND fox
+quick and fox
+quick NOT fox
+quick not fox
+quick OR fox OR dog
+quick AND fox AND dog
+quick OR fox AND dog
+quick AND fox OR dog
+quick NOT fox NOT dog
+(quick OR fox) AND dog
+quick AND (fox OR dog)
+OR(quick, fox)
+AND(quick, fox, dog)
+NOT(quick, fox)
+OR(quick)
+OR(quick fox)
+OR(quick, )
+OR quick, fox)
+quick W fox
+quick w fox
+quick N fox
+quick n fox
+quick 2W fox
+quick 3N fox
+quick 10N fox
+quick 99W fox
+quick 1W fox
+quick 100W fox
+quick 0N fox
+quick W fox W dog
+quick N fox N dog
+quick W fox N dog
+quick N fox W dog
+W(quick, fox)
+N(quick, fox)
+2W(quick, fox, dog)
+3N(quick, fox, dog)
+W(quick, fox, dog)
+quick W (fox OR dog)
+(quick OR brown) W fox
+(quick OR brown) N (fox OR dog)
+quick W (fox AND dog)
+quick W (fox NOT dog)
+quick W (fox W dog)
+quick W (fox N dog)
+quick W fox*
+qui* W fox
+qui* N bro*
+qu?ck N fox
+quick N f?x
+q*k N fox
+qui*
+bro*
+brow*
+bro?n
+br*n
+b*
+*
+?
+qu*
+qui?k
+qu?ck
+quic*
+fo*
+f?x
+"quick brown"
+"quick"
+"quick brown"*
+"qui"*
+"quic"*
+"quick brown" W fox
+"quick brown" N fox
+quick^2
+quick ^2
+quick^0
+quick^-1
+quick^1.5
+quick^2.5 fox
+quick^2^3
+quick^2 OR fox^3
+(quick OR fox)^2
+OR(quick, fox)^2
+quick W fox^2
+quick^2 W fox
+(quick W fox)^2
+quick^
+quick^x
+quick^99999999999999999999999999999999999999999
+quick^0.0
+quick^.5
+body:quick
+title:quick
+body:title:quick
+body:quick OR fox
+body:(quick OR fox)
+body:quick AND title:fox
+title:quick W fox
+title:body:quick
+body:
+:quick
+body:(quick
+body:quick)
+((quick))
+(quick
+quick)
+()
+quick,
+,quick
+quick OR
+OR quick
+quick AND
+AND
+quick NOT
+NOT
+quick W
+W quick
+quick N
+N
+quick OR OR fox
+quick W W fox
+OR OR
+quick OR (
+quick fox
+quick quick
+quick   fox
+quick	fox
+quick
+fox
+quick
+
+zebra
+zebras
+nonexistent
+nonexistent OR fox
+nonexistent AND fox
+nonexistent W fox
+quick W nonexistent
+nonexistent N nonexistent
+non* W fox
+fo* W nonexistent
+qui* OR bro* OR fo* OR do*
+qui* AND bro*
+qui* NOT bro*
+j*
+ju*
+jum*
+jump*
+j?mp
+ja?k*
+???
+???*
+*??
+a*
+the
+the quick
+the W quick
+the N lazy
+quick W brown W fox
+quick N brown N fox
+quick 2N brown 2N fox
+quick 3W brown 3W fox
+quick N fox W dog
+(quick N fox) W dog
+quick N (fox W dog)
+W(quick, W(fox, dog))
+N(W(quick, brown), fox)
+OR(W(quick, fox), N(lazy, dog))
+AND(OR(quick, brown), OR(fox, dog))
+NOT(OR(quick, brown), fox)
+W(OR(quick, brown), fox)
+W(AND(quick, brown), fox)
+N(NOT(quick, brown), fox)
+W(quick, title:fox)
+W(title:quick, fox)
+title:W(quick, fox)
+title:quick W body:fox
+OR(title:quick, body:fox)
+title:OR(quick, fox)
+quick W fox W
+9b-b
+9b-b,m
+"9b-b,m"*
+\quick
+quick\
+qu\ick
+quick:
+é
+éé*
+日本語
+日本語*
+"日本"*
+quick "unterminated
+"
+""
+"" W quick
+"a"*
+"abcd"*
+"abcd"
+abcd*
+abc*
+ab*
+a?c
+a??
+?bc
+ab?
+a?
+"a\"b"
+"a\\b"
+"a\b"
+"a\\"
+"a\"
+ab*é
+ab?é
+ab*é*
+ab?é?c
+é*ab
+ab*é
+x?ñ

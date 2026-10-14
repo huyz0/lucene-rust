@@ -12,7 +12,9 @@
 
 pub mod classic;
 pub mod ext;
+mod javacc;
 pub mod simple;
+pub mod surround;
 
 use lucene_analysis::attributes::java_float_to_string;
 
@@ -21,7 +23,7 @@ use crate::extended_query::{
 };
 use crate::query::{
     BooleanQuery, BoostQuery, Clause, FuzzyQuery, MatchAllDocsQuery, MatchNoDocsQuery,
-    MultiPhraseQuery, PhraseQuery, PrefixQuery, RegexpQuery, TermQuery, WildcardQuery,
+    MultiPhraseQuery, PhraseQuery, PrefixQuery, RegexpQuery, SpanQuery, TermQuery, WildcardQuery,
 };
 use crate::query_visitor::Occur;
 
@@ -50,6 +52,8 @@ pub enum ParsedQuery {
     MatchAll,
     /// `MatchNoDocsQuery(reason)`.
     MatchNoDocs(String),
+    /// `SpanTermQuery`, `SpanNearQuery` or `SpanOrQuery`.
+    Span(SpanQuery),
     /// `BooleanQuery`: its clauses in insertion order.
     Boolean(ParsedBoolean),
     /// `BoostQuery`.
@@ -79,6 +83,7 @@ impl ParsedQuery {
             Clause::Fuzzy(f) => ParsedQuery::Fuzzy(f),
             Clause::Regexp(r) => ParsedQuery::Regexp(r),
             Clause::MatchNoDocs(m) => ParsedQuery::MatchNoDocs(m.reason),
+            Clause::Span(s) => ParsedQuery::Span(s),
             Clause::Boost(b) => {
                 let BoostQuery { inner, boost } = *b;
                 ParsedQuery::Boost(Box::new(ParsedQuery::from_clause(*inner)), boost)
@@ -141,6 +146,7 @@ impl ParsedQuery {
             ParsedQuery::MatchNoDocs(reason) => {
                 Clause::MatchNoDocs(MatchNoDocsQuery::new().with_reason(reason.clone()))
             }
+            ParsedQuery::Span(s) => Clause::Span(s.clone()),
             ParsedQuery::Boolean(b) => {
                 let mut q = BooleanQuery::new();
                 for (occur, c) in &b.clauses {
@@ -203,6 +209,7 @@ impl ParsedQuery {
             }
             ParsedQuery::MatchAll => "*:*".to_string(),
             ParsedQuery::MatchNoDocs(reason) => format!("MatchNoDocsQuery(\"{reason}\")"),
+            ParsedQuery::Span(s) => span_string(s, field),
             ParsedQuery::Term(t) => {
                 crate::query_builder::to_query_string(Some(&Clause::Term(t.clone())), field)
             }
@@ -260,9 +267,37 @@ impl ParsedQuery {
             ParsedQuery::TermRange(_) => "TermRangeQuery",
             ParsedQuery::MatchAll => "MatchAllDocsQuery",
             ParsedQuery::MatchNoDocs(_) => "MatchNoDocsQuery",
+            ParsedQuery::Span(SpanQuery::SpanTerm { .. }) => "SpanTermQuery",
+            ParsedQuery::Span(SpanQuery::SpanNear { .. }) => "SpanNearQuery",
+            ParsedQuery::Span(SpanQuery::SpanOr { .. }) => "SpanOrQuery",
             ParsedQuery::Boolean(_) => "BooleanQuery",
             ParsedQuery::Boost(..) => "BoostQuery",
             ParsedQuery::Other(_) => "Query",
+        }
+    }
+}
+
+/// `SpanTermQuery`, `SpanNearQuery` and `SpanOrQuery`'s `toString(field)`.
+fn span_string(s: &SpanQuery, field: &str) -> String {
+    match s {
+        SpanQuery::SpanTerm { field: f, term } => {
+            if f == field {
+                term_text(term)
+            } else {
+                format!("{f}:{}", term_text(term))
+            }
+        }
+        SpanQuery::SpanNear {
+            clauses,
+            slop,
+            in_order,
+        } => {
+            let parts: Vec<String> = clauses.iter().map(|c| span_string(c, field)).collect();
+            format!("spanNear([{}], {slop}, {in_order})", parts.join(", "))
+        }
+        SpanQuery::SpanOr { clauses } => {
+            let parts: Vec<String> = clauses.iter().map(|c| span_string(c, field)).collect();
+            format!("spanOr([{}])", parts.join(", "))
         }
     }
 }

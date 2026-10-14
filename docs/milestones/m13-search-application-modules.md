@@ -9,7 +9,7 @@
 | **Effort** | XL |
 | **Depends on** | [M10](m10-joins-grouping-queries.md), [M11](m11-analysis-common.md) |
 | **Unblocks** | native `highlight`, completion suggesters, `query_string`/`simple_query_string` parsing |
-| **Status** | in progress, 0 of 4 criteria -- T13.1: the classic `QueryParser`, `MultiFieldQueryParser`, `SimpleQueryParser` and the `ext` package are ported (every fixture row equal); `flexible`, `complexPhrase`, `surround`, `xml` and `ext` are not |
+| **Status** | in progress, 0 of 4 criteria -- T13.1: the classic `QueryParser`, `MultiFieldQueryParser`, `SimpleQueryParser`, the `ext` package and the surround language are ported (every fixture row equal); `flexible`, `complexPhrase` and `xml` are not |
 
 ---
 
@@ -71,10 +71,13 @@ through these modules; each of those falls back to Lucene today.
   `MultiFieldQueryParser` it matches every row under fourteen
   configurations (operators, analyzers, synonyms, per-field analyzers,
   boosts), and `SimpleQueryParser` (`GenQueryParserSimple`, twelve
-  configurations, each flag off in turn) and the `ext` package
-  (`GenQueryParserExt`: five extensions, two delimiters) likewise. Remaining:
-  date-resolution ranges, and the `flexible`, `complexPhrase`,
-  `surround`, `xml` and `ext` parsers
+  configurations, each flag off in turn), the `ext` package
+  (`GenQueryParserExt`: five extensions, two delimiters) and the surround
+  language (`GenQueryParserSurround`: trees, exceptions, and the rewrite
+  against a Java-written index) likewise; the three JavaCC lexers and
+  parsers share one runtime (`queryparser/javacc.rs`). Remaining:
+  date-resolution ranges, and the `flexible`, `complexPhrase` and `xml`
+  parsers
   (`docs/inventory/lucene-queryparser.tsv`).
 - **T13.2** — Highlighting, including term vectors in `DirectoryReader`.
 - **T13.3** — Suggesters and the completion postings format.

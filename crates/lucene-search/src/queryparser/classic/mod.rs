@@ -69,6 +69,14 @@ impl QueryParserError {
         }
     }
 
+    /// A checked `IOException` subclass of the surround rewrite.
+    pub(crate) fn io_exception(class: &'static str, message: impl Into<String>) -> Self {
+        QueryParserError {
+            class,
+            message: message.into(),
+        }
+    }
+
     pub(crate) fn runtime(message: impl Into<String>) -> Self {
         QueryParserError {
             class: "RuntimeException",
