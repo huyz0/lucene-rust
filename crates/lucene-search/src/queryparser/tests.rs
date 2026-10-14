@@ -57,7 +57,7 @@ fn from_clause_keeps_every_query_class() {
                 field: "f".into(),
                 term: b"a".to_vec(),
             }),
-            "Query",
+            "SpanTermQuery",
         ),
     ];
     for (clause, class) in cases {

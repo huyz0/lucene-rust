@@ -1532,6 +1532,32 @@ impl BooleanQuery {
             .rewrite();
         }
 
+        // Rule 13: "Inline SHOULD clauses from the only MUST clause". With no
+        // `SHOULD` clause of its own, a query whose one `MUST` clause is a
+        // `BooleanQuery` of nothing but `SHOULD` clauses takes those as its
+        // own, requiring at least one of them (`minimumNumberShouldMatch` is
+        // the inner query's, at least 1); its `FILTER` and `MUST_NOT`
+        // clauses stay. Java's single-clause unwrap runs first, so a query
+        // with nothing but that `MUST` clause is the inner query itself,
+        // which the unwrap below returns.
+        if should.is_empty()
+            && must.len() == 1
+            && (!filter.is_empty() || !must_not.is_empty())
+            && matches!(&must[0], Clause::Boolean(inner)
+                if inner.must.is_empty() && inner.filter.is_empty() && inner.must_not.is_empty())
+        {
+            if let Some(Clause::Boolean(inner)) = must.pop() {
+                return BooleanQuery {
+                    must: Vec::new(),
+                    filter,
+                    should: inner.should,
+                    must_not,
+                    minimum_should_match: inner.minimum_should_match.max(1),
+                }
+                .rewrite();
+            }
+        }
+
         // Rule 1, the single-clause unwrap. Java runs this *before* recursing
         // (`if (clauses.size() == 1)`), which is why every arm here also
         // requires the other three buckets to be empty -- "one clause" means
@@ -2975,6 +3001,47 @@ mod tests {
                     .with_should([TermQuery::new("body", "bird")])
             ))
         );
+    }
+
+    #[test]
+    fn rewrite_inlines_the_should_clauses_of_the_only_must_clause() {
+        // Rule 13: `+(cat dog) -bird` is `cat dog -bird` with at least one of
+        // the two required (`~1`); the inner query's own minimum is kept when
+        // it is larger.
+        let inner = BooleanQuery::new()
+            .with_should([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
+        let q = BooleanQuery::new()
+            .with_must([Clause::from(inner)])
+            .with_must_not([TermQuery::new("body", "bird")]);
+        let mut want = BooleanQuery::new()
+            .with_should([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")])
+            .with_must_not([TermQuery::new("body", "bird")]);
+        want.minimum_should_match = 1;
+        assert_eq!(q.rewrite(), Clause::Boolean(Box::new(want)));
+
+        let mut inner = BooleanQuery::new().with_should([
+            TermQuery::new("body", "a"),
+            TermQuery::new("body", "b"),
+            TermQuery::new("body", "c"),
+        ]);
+        inner.minimum_should_match = 2;
+        let q = BooleanQuery::new()
+            .with_must([Clause::from(inner)])
+            .with_filter([TermQuery::new("body", "f")]);
+        let Clause::Boolean(b) = q.rewrite() else {
+            panic!("expected a BooleanQuery");
+        };
+        assert_eq!(
+            (b.minimum_should_match, b.should.len(), b.filter.len()),
+            (2, 3, 1)
+        );
+
+        // with nothing beside the only MUST clause, the unwrap returns the
+        // inner query as it is
+        let inner = BooleanQuery::new()
+            .with_should([TermQuery::new("body", "cat"), TermQuery::new("body", "dog")]);
+        let q = BooleanQuery::new().with_must([Clause::from(inner.clone())]);
+        assert_eq!(q.rewrite(), Clause::Boolean(Box::new(inner)));
     }
 
     #[test]

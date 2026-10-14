@@ -124,7 +124,7 @@ case "$BENCH" in
     MAIN=QueryParserMicro
     SRC=benchmarks/micro/java/QueryParserMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
-    JAR_MODULES="lucene-core lucene-analysis-common lucene-queryparser" ;;
+    JAR_MODULES="lucene-core lucene-analysis-common lucene-queries lucene-queryparser" ;;
   # M11 T11.3: SnowballFilter per language over the fixture vocabularies.
   snowball)
     MAIN=SnowballMicro
