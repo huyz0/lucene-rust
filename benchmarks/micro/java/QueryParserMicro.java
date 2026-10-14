@@ -4,18 +4,23 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import org.apache.lucene.analysis.standard.StandardAnalyzer;
+import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.queryparser.classic.MultiFieldQueryParser;
 import org.apache.lucene.queryparser.classic.ParseException;
 import org.apache.lucene.queryparser.classic.QueryParser;
+import org.apache.lucene.queryparser.complexPhrase.ComplexPhraseQueryParser;
 import org.apache.lucene.queryparser.simple.SimpleQueryParser;
 import org.apache.lucene.queryparser.surround.query.SrndQuery;
+import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.store.FSDirectory;
 
 /**
  * M13 T13.1's pairs (the Rust twin is {@code benchmarks/rust-runner/src/micro_queryparser.rs}):
  * the classic {@code QueryParser} over {@code fixtures/corpus/queryparser-classic.txt} and over
  * {@code fixtures/data/queryparser_classic/fragments.txt} (most of which are syntax errors), and
- * {@code MultiFieldQueryParser} over the corpus. Units are queries; output is {@code
+ * {@code MultiFieldQueryParser} over the corpus; {@code ComplexPhraseQueryParser} over its corpus,
+ * each query parsed and rewritten against {@code fixtures/data/queryparser_complexphrase/index}. Units are queries; output is {@code
  * name\tns_per_query\tqueries}.
  */
 public class QueryParserMicro {
@@ -107,5 +112,24 @@ public class QueryParserMicro {
     runSurround("qp_surround_corpus",
         Files.readAllLines(Path.of("fixtures/corpus/queryparser-surround.txt"), StandardCharsets.UTF_8));
     run("qp_multi_field_corpus", new MultiFieldQueryParser(new String[] {"title", "body"}, new StandardAnalyzer()), corpus);
+    List<String> complex =
+        Files.readAllLines(Path.of("fixtures/corpus/queryparser-complexphrase.txt"), StandardCharsets.UTF_8);
+    try (FSDirectory dir = FSDirectory.open(Path.of("fixtures/data/queryparser_complexphrase/index"));
+        DirectoryReader reader = DirectoryReader.open(dir)) {
+      IndexSearcher searcher = new IndexSearcher(reader);
+      ComplexPhraseQueryParser p = new ComplexPhraseQueryParser("body", new StandardAnalyzer());
+      SweepMicro.measure(
+          "qp_complexphrase_corpus",
+          () -> {
+            for (String q : complex) {
+              try {
+                SweepMicro.sink += searcher.rewrite(p.parse(q)).hashCode();
+              } catch (ParseException | RuntimeException e) {
+                SweepMicro.sink += String.valueOf(e.getMessage()).length();
+              }
+            }
+            return complex.size();
+          });
+    }
   }
 }

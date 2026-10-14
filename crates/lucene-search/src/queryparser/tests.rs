@@ -59,6 +59,10 @@ fn from_clause_keeps_every_query_class() {
             }),
             "SpanTermQuery",
         ),
+        (
+            Clause::MatchAllDocs(crate::query::MatchAllDocsQuery::new(7)),
+            "MatchAllDocsQuery",
+        ),
     ];
     for (clause, class) in cases {
         let parsed = ParsedQuery::from_clause(clause.clone());
@@ -150,4 +154,63 @@ fn leaves_print_as_lucene_prints_them() {
         minimum_should_match: 0,
     });
     assert_eq!(nested.to_string("f"), "+() x");
+}
+
+#[test]
+fn spans_print_and_name_as_lucene_does() {
+    let t = |f: &str, s: &str| SpanQuery::SpanTerm {
+        field: f.into(),
+        term: s.as_bytes().to_vec(),
+    };
+    let near = ParsedQuery::Span(SpanQuery::SpanNear {
+        clauses: vec![t("f", "a"), t("g", "b")],
+        slop: 1,
+        in_order: true,
+    });
+    assert_eq!(near.to_string("f"), "spanNear([a, g:b], 1, true)");
+    assert_eq!(near.class_name(), "SpanNearQuery");
+    let or = ParsedQuery::Span(SpanQuery::SpanOr {
+        clauses: vec![t("f", "a"), t("f", "b")],
+    });
+    assert_eq!(or.class_name(), "SpanOrQuery");
+    assert_eq!(or.to_string("f"), "spanOr([a, b])");
+    assert_eq!(ParsedQuery::Span(t("f", "a")).to_string("g"), "f:a");
+
+    use crate::spans::SpanNode;
+    let a = SpanNode::term("f", b"a".to_vec());
+    let b = SpanNode::term("f", b"b".to_vec());
+    let cases = [
+        (a.clone(), "SpanTermQuery"),
+        (
+            SpanNode::near(vec![a.clone(), b.clone()], 0, true).unwrap(),
+            "SpanNearQuery",
+        ),
+        (
+            SpanNode::or(vec![a.clone(), b.clone()]).unwrap(),
+            "SpanOrQuery",
+        ),
+        (
+            SpanNode::not(a.clone(), b.clone(), 0, 0).unwrap(),
+            "SpanNotQuery",
+        ),
+        (SpanNode::first(a.clone(), 3), "SpanQuery"),
+    ];
+    for (node, class) in cases {
+        let q = ParsedQuery::SpanNode(node.clone());
+        assert_eq!(q.class_name(), class);
+        assert_eq!(q.to_string("f"), node.to_string());
+    }
+    assert_eq!(
+        ParsedQuery::Other(Clause::ConstantScore(Box::new(
+            crate::query::ConstantScoreQuery::new(Clause::Term(term("f", "a")), 1.0)
+        )))
+        .class_name(),
+        "ConstantScoreQuery"
+    );
+    assert_eq!(ParsedQuery::MatchAll.class_name(), "MatchAllDocsQuery");
+    let empty = ParsedQuery::Boolean(ParsedBoolean {
+        clauses: Vec::new(),
+        minimum_should_match: 0,
+    });
+    assert_eq!(empty.class_name(), "BooleanQuery");
 }
