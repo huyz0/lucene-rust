@@ -2,7 +2,9 @@
 //! Java twin): the classic `QueryParser` over
 //! `fixtures/corpus/queryparser-classic.txt` and over
 //! `fixtures/data/queryparser_classic/fragments.txt` (most of which are
-//! syntax errors), and `MultiFieldQueryParser` over the corpus.
+//! syntax errors), and `MultiFieldQueryParser` over the corpus;
+//! `ComplexPhraseQueryParser` over its corpus, each query parsed and rewritten
+//! against `fixtures/data/queryparser_complexphrase/index`.
 
 use std::hint::black_box;
 use std::time::Duration;
@@ -127,4 +129,33 @@ pub fn bench_queryparser(w: Duration, m: Duration) {
         w,
         m,
     );
+    let complex: Vec<String> =
+        std::fs::read_to_string("fixtures/corpus/queryparser-complexphrase.txt")
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect();
+    let reader = lucene_search::directory_reader::DirectoryReader::open(
+        &lucene_store::FsDirectory::open("fixtures/data/queryparser_complexphrase/index"),
+    )
+    .unwrap();
+    let max_doc = reader.max_doc();
+    let p = QueryParser::complex_phrase("body", standard());
+    measure("qp_complexphrase_corpus", w, m, || {
+        for q in &complex {
+            let rewritten = p
+                .parse(black_box(q))
+                .and_then(|parsed| parsed.rewrite_complex_phrases(&reader))
+                .map(|r| r.to_clause(max_doc).rewrite());
+            match rewritten {
+                Ok(c) => {
+                    black_box(&c);
+                }
+                Err(e) => {
+                    black_box(e.message.len());
+                }
+            }
+        }
+        complex.len() as u64
+    });
 }
