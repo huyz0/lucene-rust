@@ -17,6 +17,10 @@ rayon.workspace = true
 unicode-segmentation.workspace = true
 # Inflates a Deeplearning4j word2vec model zip (`word2vec::read_dl4j_model`).
 miniz_oxide.workspace = true
+# A streaming XML pull parser for `queryparser::xml`'s DOM-shaped query
+# documents: read event by event into the element tree the builders walk,
+# never a second copy of the text. MIT, pure Rust.
+quick-xml = "0.39"
 
 [features]
 # Exposes this crate's `#[cfg(test)]`-only MAXSCORE block-skip counter

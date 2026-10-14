@@ -1,0 +1,104 @@
+<TermQuery fieldName="body">quick</TermQuery>
+<TermQuery fieldName="body" boost="2.0">fox</TermQuery>
+<TermQuery fieldName="body" boost="1">fox</TermQuery>
+<TermQuery>quick</TermQuery>
+<TermQuery fieldName="body">   </TermQuery>
+<TermQuery fieldName="body" boost="x">a</TermQuery>
+<TermQuery fieldName="body" boost="-1">a</TermQuery>
+<TermQuery fieldName="body" boost="NaN">a</TermQuery>
+<TermQuery fieldName="body">  a &amp; b  </TermQuery>
+<TermQuery fieldName="body">qu<![CDATA[ick]]></TermQuery>
+<TermQuery fieldName="body"><![CDATA[quick]]></TermQuery>
+<TermQuery fieldName="body">&#113;uick</TermQuery>
+<BooleanQuery fieldName="body"><Clause occurs="must"><TermQuery>quick</TermQuery></Clause></BooleanQuery>
+<BooleanQuery><Clause occurs="must"><TermQuery fieldName="body">quick</TermQuery></Clause><Clause occurs="mustNot"><TermQuery fieldName="body">lazy</TermQuery></Clause></BooleanQuery>
+<BooleanQuery minimumNumberShouldMatch="1"><Clause occurs="should"><TermQuery fieldName="body">quick</TermQuery></Clause><Clause occurs="should"><TermQuery fieldName="body">dog</TermQuery></Clause></BooleanQuery>
+<BooleanQuery><Clause occurs="filter"><TermQuery fieldName="body">fox</TermQuery></Clause><Clause occurs="MUST_NOT"><TermQuery fieldName="body">dog</TermQuery></Clause></BooleanQuery>
+<BooleanQuery><Clause><TermQuery fieldName="body">quick</TermQuery></Clause></BooleanQuery>
+<BooleanQuery><Clause occurs="bogus"><TermQuery fieldName="body">quick</TermQuery></Clause></BooleanQuery>
+<BooleanQuery><Clause occurs="must"/></BooleanQuery>
+<BooleanQuery boost="3"><Clause occurs="should"><TermQuery fieldName="body">dog</TermQuery></Clause></BooleanQuery>
+<BooleanQuery minimumNumberShouldMatch="x"><Clause occurs="should"><TermQuery fieldName="body">dog</TermQuery></Clause></BooleanQuery>
+<BooleanQuery><Clause occurs="should"><TermQuery fieldName="body">quick</TermQuery> <TermQuery fieldName="body">fox</TermQuery></Clause></BooleanQuery>
+<TermsQuery fieldName="body">quick brown fox</TermsQuery>
+<TermsQuery fieldName="body" minimumNumberShouldMatch="2" boost="0.5">the quick the</TermsQuery>
+<TermsQuery fieldName="body">   </TermsQuery>
+<MatchAllDocsQuery/>
+<RangeQuery fieldName="body" lowerTerm="a" upperTerm="m"/>
+<RangeQuery fieldName="body" lowerTerm="a" upperTerm="m" includeLower="false" includeUpper="FALSE"/>
+<RangeQuery fieldName="body" upperTerm="m"/>
+<RangeQuery lowerTerm="a"/>
+<DisjunctionMaxQuery tieBreaker="0.3"><TermQuery fieldName="body">quick</TermQuery><BooleanQuery><Clause occurs="should"><TermQuery fieldName="body">fox</TermQuery></Clause></BooleanQuery></DisjunctionMaxQuery>
+<DisjunctionMaxQuery boost="2"></DisjunctionMaxQuery>
+<DisjunctionMaxQuery><TermQuery fieldName="body">dog</TermQuery><TermQuery fieldName="body">quick</TermQuery></DisjunctionMaxQuery>
+<UserQuery fieldName="body">quick fox</UserQuery>
+<UserQuery>"quick fox"~2 OR lazy</UserQuery>
+<UserQuery fieldName="body">quick (</UserQuery>
+<UserQuery fieldName="body" boost="2">dog</UserQuery>
+<UserQuery fieldName="body">body:quick -fox</UserQuery>
+<ConstantScoreQuery><TermQuery fieldName="body">quick</TermQuery></ConstantScoreQuery>
+<ConstantScoreQuery boost="2"><BooleanQuery><Clause occurs="must"><TermQuery fieldName="body">fox</TermQuery></Clause></BooleanQuery></ConstantScoreQuery>
+<ConstantScoreQuery boost="2"/>
+<SpanNear slop="1" inOrder="true"><SpanTerm fieldName="body">quick</SpanTerm><SpanTerm fieldName="body">fox</SpanTerm></SpanNear>
+<SpanNear slop="0"><SpanTerm fieldName="body">quick</SpanTerm><SpanTerm fieldName="body">brown</SpanTerm></SpanNear>
+<SpanNear><SpanTerm fieldName="body">quick</SpanTerm></SpanNear>
+<SpanNear slop="2"><SpanOr><SpanTerm fieldName="body">quick</SpanTerm><SpanTerm fieldName="body">lazy</SpanTerm></SpanOr><SpanTerm fieldName="body">dog</SpanTerm></SpanNear>
+<SpanOr><SpanTerm fieldName="body">quick</SpanTerm><SpanTerm fieldName="body">lazy</SpanTerm></SpanOr>
+<SpanOr/>
+<SpanOrTerms fieldName="body">quick brown</SpanOrTerms>
+<SpanFirst end="3"><SpanTerm fieldName="body">quick</SpanTerm></SpanFirst>
+<SpanFirst><SpanTerm fieldName="body">quick</SpanTerm></SpanFirst>
+<SpanPositionRange start="0" end="2"><SpanTerm fieldName="body">quick</SpanTerm></SpanPositionRange>
+<SpanNot><Include><SpanTerm fieldName="body">quick</SpanTerm></Include><Exclude><SpanTerm fieldName="body">brown</SpanTerm></Exclude></SpanNot>
+<SpanNot><Include><SpanTerm fieldName="body">quick</SpanTerm></Include></SpanNot>
+<SpanTerm fieldName="body" boost="2">quick</SpanTerm>
+<BoostingTermQuery fieldName="body">quick</BoostingTermQuery>
+<SpanNear slop="1"><BoostingTermQuery fieldName="body">quick</BoostingTermQuery><SpanTerm fieldName="body">fox</SpanTerm></SpanNear>
+<TermQuery><TermQuery fieldName="body">quick</TermQuery></TermQuery>
+<SpanTerm fieldName="body"><SpanTerm fieldName="body">quick</SpanTerm></SpanTerm>
+<Bogus/>
+<SpanNear slop="1"><TermQuery fieldName="body">quick</TermQuery></SpanNear>
+<TermQuery fieldName="body">quick
+<TermQuery fieldName="body"/>
+<TermQuery fieldName="body">quick</TermQuery><TermQuery fieldName="body">fox</TermQuery>
+<PointRangeQuery fieldName="n" type="int" lowerTerm="1" upperTerm="5"/>
+<PointRangeQuery fieldName="n" lowerTerm="-7"/>
+<PointRangeQuery fieldName="n" type="LONG" lowerTerm="10000000000" upperTerm="20000000000"/>
+<PointRangeQuery fieldName="x" type="float" lowerTerm="1.5" upperTerm="2.25"/>
+<PointRangeQuery fieldName="x" type="double" lowerTerm="-0.1"/>
+<PointRangeQuery fieldName="x" type="double"/>
+<PointRangeQuery fieldName="n" type="int" lowerTerm="one"/>
+<PointRangeQuery fieldName="n" type="short" lowerTerm="1"/>
+<PointRangeQuery type="int" lowerTerm="1"/>
+<BooleanQuery><Clause occurs="must"><PointRangeQuery fieldName="body" type="int" lowerTerm="1"/></Clause></BooleanQuery>
+<BooleanQuery><Clause occurs="must" fieldName="body"><TermQuery>quick</TermQuery></Clause></BooleanQuery>
+<SpanNot><Include fieldName="body"><SpanTerm>quick</SpanTerm></Include><Exclude fieldName="body"><SpanTerm>brown</SpanTerm></Exclude></SpanNot>
+<DisjunctionMaxQuery tieBreaker="1.5"><TermQuery fieldName="body">dog</TermQuery></DisjunctionMaxQuery>
+<DisjunctionMaxQuery tieBreaker="NaN"><TermQuery fieldName="body">dog</TermQuery></DisjunctionMaxQuery>
+<SpanTerm boost="x"/>
+<x:TermQuery xmlns:x="u" fieldName="body">quick</x:TermQuery>
+<TermQuery xmlns:x="u" x:fieldName="body">quick</TermQuery>
+<TermQuery fieldName="body">qu<!-- c -->ick</TermQuery>
+<TermQuery fieldName="body">qu<?p x?>ick</TermQuery>
+<TermQuery fieldName="body">qu<b>ick</b></TermQuery>
+<UserQuery fieldName="body"><![CDATA[quick fox]]></UserQuery>
+<RangeQuery fieldName="body" lowerTerm="a&amp;b" upperTerm="z"/>
+  <TermQuery fieldName="body">quick</TermQuery>  
+<TermQuery fieldName="body">naïve</TermQuery>
+<BooleanQuery><Clause occurs="should"><TermQuery fieldName="body">quick</TermQuery></Clause><Junk/><Clause occurs="must"><TermQuery fieldName="body">fox</TermQuery></Clause></BooleanQuery>
+<TermQuery fieldName="body" boost="0">fox</TermQuery>
+<TermQuery fieldName="body" boost="Infinity">fox</TermQuery>
+<TermQuery fieldName="body" boost=" 2">fox</TermQuery>
+<SpanNear slop="1"><SpanTerm fieldName="body">quick</SpanTerm><SpanTerm fieldName="title">fox</SpanTerm></SpanNear>
+<SpanOr><SpanTerm fieldName="body">quick</SpanTerm><SpanTerm fieldName="title">fox</SpanTerm></SpanOr>
+<SpanNot><Include><SpanTerm fieldName="body">quick</SpanTerm></Include><Exclude><SpanTerm fieldName="title">fox</SpanTerm></Exclude></SpanNot>
+<TermsQuery fieldName="body">!!!</TermsQuery>
+<SpanOrTerms fieldName="body">naïve café</SpanOrTerms>
+<TermQuery fieldName="a<b">x</TermQuery>
+<TermQuery fieldName="body">ab</TermQuery>
+<TermQuery fieldName="body" fieldName="x">a</TermQuery>
+<SpanFirst end="2"/>
+<TermQuery fieldName="bo	dy">x</TermQuery>
+<TermQuery fieldName="body">ab</TermQuery>
+<TermQuery fieldName="body">a b</TermQuery>
+<TermQuery fieldName="body">&#1;</TermQuery>
