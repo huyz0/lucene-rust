@@ -140,6 +140,25 @@ pub fn bench_queryparser(w: Duration, m: Duration) {
     )
     .unwrap();
     let max_doc = reader.max_doc();
+    let xml: Vec<String> = std::fs::read_to_string("fixtures/corpus/queryparser-xml.txt")
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let xml_parser = lucene_search::queryparser::xml::CoreParser::new(Some("body"), standard());
+    measure("qp_xml_corpus", w, m, || {
+        for q in &xml {
+            match xml_parser.parse(black_box(q)) {
+                Ok(parsed) => {
+                    black_box(&parsed);
+                }
+                Err(e) => {
+                    black_box(e.message.len());
+                }
+            }
+        }
+        xml.len() as u64
+    });
     let p = QueryParser::complex_phrase("body", standard());
     measure("qp_complexphrase_corpus", w, m, || {
         for q in &complex {

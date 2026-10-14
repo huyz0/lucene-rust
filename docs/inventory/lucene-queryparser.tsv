@@ -193,32 +193,32 @@ queryparser/surround/query/SrndQuery	ported	crates/lucene-search/src/queryparser
 queryparser/surround/query/SrndTermQuery	ported	crates/lucene-search/src/queryparser/surround/query.rs::SrndQuery
 queryparser/surround/query/SrndTruncQuery	ported	crates/lucene-search/src/queryparser/surround/query.rs::SrndQuery
 queryparser/surround/query/TooManyBasicQueries	ported	crates/lucene-search/src/queryparser/surround/query.rs::too_many_basic_queries
-queryparser/xml/CoreParser	todo:M13	the XML query parser
-queryparser/xml/CorePlusExtensionsParser	todo:M13	the XML query parser
-queryparser/xml/CorePlusQueriesParser	todo:M13	the XML query parser
-queryparser/xml/DOMUtils	todo:M13	the XML query parser
-queryparser/xml/ParserException	todo:M13	the XML query parser
-queryparser/xml/QueryBuilder	todo:M13	the XML query parser
-queryparser/xml/QueryBuilderFactory	todo:M13	the XML query parser
-queryparser/xml/builders/BooleanQueryBuilder	todo:M13	the XML query parser
-queryparser/xml/builders/BoostingTermBuilder	todo:M13	the XML query parser
-queryparser/xml/builders/ConstantScoreQueryBuilder	todo:M13	the XML query parser
-queryparser/xml/builders/DisjunctionMaxQueryBuilder	todo:M13	the XML query parser
-queryparser/xml/builders/FuzzyLikeThisQueryBuilder	todo:M13	the XML query parser
-queryparser/xml/builders/LikeThisQueryBuilder	todo:M13	the XML query parser
-queryparser/xml/builders/MatchAllDocsQueryBuilder	todo:M13	the XML query parser
-queryparser/xml/builders/PointRangeQueryBuilder	todo:M13	the XML query parser
-queryparser/xml/builders/RangeQueryBuilder	todo:M13	the XML query parser
-queryparser/xml/builders/SpanBuilderBase	todo:M13	the XML query parser
-queryparser/xml/builders/SpanFirstBuilder	todo:M13	the XML query parser
-queryparser/xml/builders/SpanNearBuilder	todo:M13	the XML query parser
-queryparser/xml/builders/SpanNotBuilder	todo:M13	the XML query parser
-queryparser/xml/builders/SpanOrBuilder	todo:M13	the XML query parser
-queryparser/xml/builders/SpanOrTermsBuilder	todo:M13	the XML query parser
-queryparser/xml/builders/SpanPositionRangeBuilder	todo:M13	the XML query parser
-queryparser/xml/builders/SpanQueryBuilder	todo:M13	the XML query parser
-queryparser/xml/builders/SpanQueryBuilderFactory	todo:M13	the XML query parser
-queryparser/xml/builders/SpanTermBuilder	todo:M13	the XML query parser
-queryparser/xml/builders/TermQueryBuilder	todo:M13	the XML query parser
-queryparser/xml/builders/TermsQueryBuilder	todo:M13	the XML query parser
-queryparser/xml/builders/UserInputQueryBuilder	todo:M13	the XML query parser
+queryparser/xml/CoreParser	ported	crates/lucene-search/src/queryparser/xml/mod.rs::CoreParser
+queryparser/xml/CorePlusExtensionsParser	todo:M13	CorePlusExtensionsParser: FuzzyLikeThisQuery over the core set; not ported
+queryparser/xml/CorePlusQueriesParser	todo:M13	CorePlusQueriesParser: LikeThisQuery over the core set; not ported
+queryparser/xml/DOMUtils	ported	crates/lucene-search/src/queryparser/xml/builders.rs::inherited
+queryparser/xml/ParserException	ported	crates/lucene-search/src/queryparser/xml/mod.rs::PARSER_EXCEPTION
+queryparser/xml/QueryBuilder	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::query
+queryparser/xml/QueryBuilderFactory	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::query
+queryparser/xml/builders/BooleanQueryBuilder	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::boolean_query
+queryparser/xml/builders/BoostingTermBuilder	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::boosting_term
+queryparser/xml/builders/ConstantScoreQueryBuilder	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::constant_score_query
+queryparser/xml/builders/DisjunctionMaxQueryBuilder	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::disjunction_max_query
+queryparser/xml/builders/FuzzyLikeThisQueryBuilder	todo:M13	FuzzyLikeThisQuery builder (CorePlusExtensionsParser); the query is not ported
+queryparser/xml/builders/LikeThisQueryBuilder	todo:M13	LikeThisQuery builder (CorePlusQueriesParser); not ported
+queryparser/xml/builders/MatchAllDocsQueryBuilder	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::query
+queryparser/xml/builders/PointRangeQueryBuilder	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::point_range_query
+queryparser/xml/builders/RangeQueryBuilder	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::range_query
+queryparser/xml/builders/SpanBuilderBase	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::query
+queryparser/xml/builders/SpanFirstBuilder	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::span_first
+queryparser/xml/builders/SpanNearBuilder	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::span_near
+queryparser/xml/builders/SpanNotBuilder	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::span_not
+queryparser/xml/builders/SpanOrBuilder	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::span_or
+queryparser/xml/builders/SpanOrTermsBuilder	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::span_or_terms
+queryparser/xml/builders/SpanPositionRangeBuilder	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::span_position_range
+queryparser/xml/builders/SpanQueryBuilder	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::span
+queryparser/xml/builders/SpanQueryBuilderFactory	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::span
+queryparser/xml/builders/SpanTermBuilder	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::span_term
+queryparser/xml/builders/TermQueryBuilder	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::term_query
+queryparser/xml/builders/TermsQueryBuilder	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::terms_query
+queryparser/xml/builders/UserInputQueryBuilder	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::user_query

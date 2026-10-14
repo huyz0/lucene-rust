@@ -10,9 +10,11 @@ import org.apache.lucene.queryparser.classic.ParseException;
 import org.apache.lucene.queryparser.classic.QueryParser;
 import org.apache.lucene.queryparser.complexPhrase.ComplexPhraseQueryParser;
 import org.apache.lucene.queryparser.simple.SimpleQueryParser;
+import org.apache.lucene.queryparser.xml.CoreParser;
 import org.apache.lucene.queryparser.surround.query.SrndQuery;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
+import java.io.ByteArrayInputStream;
 import org.apache.lucene.store.FSDirectory;
 
 /**
@@ -112,6 +114,20 @@ public class QueryParserMicro {
     runSurround("qp_surround_corpus",
         Files.readAllLines(Path.of("fixtures/corpus/queryparser-surround.txt"), StandardCharsets.UTF_8));
     run("qp_multi_field_corpus", new MultiFieldQueryParser(new String[] {"title", "body"}, new StandardAnalyzer()), corpus);
+    List<String> xml = Files.readAllLines(Path.of("fixtures/corpus/queryparser-xml.txt"), StandardCharsets.UTF_8);
+    CoreParser xmlParser = new CoreParser("body", new StandardAnalyzer());
+    SweepMicro.measure(
+        "qp_xml_corpus",
+        () -> {
+          for (String q : xml) {
+            try {
+              SweepMicro.sink += xmlParser.parse(new ByteArrayInputStream(q.getBytes(StandardCharsets.UTF_8))).hashCode();
+            } catch (org.apache.lucene.queryparser.xml.ParserException | RuntimeException e) {
+              SweepMicro.sink += String.valueOf(e.getMessage()).length();
+            }
+          }
+          return xml.size();
+        });
     List<String> complex =
         Files.readAllLines(Path.of("fixtures/corpus/queryparser-complexphrase.txt"), StandardCharsets.UTF_8);
     try (FSDirectory dir = FSDirectory.open(Path.of("fixtures/data/queryparser_complexphrase/index"));

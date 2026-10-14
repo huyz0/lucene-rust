@@ -9,7 +9,7 @@
 | **Effort** | XL |
 | **Depends on** | [M10](m10-joins-grouping-queries.md), [M11](m11-analysis-common.md) |
 | **Unblocks** | native `highlight`, completion suggesters, `query_string`/`simple_query_string` parsing |
-| **Status** | in progress, 0 of 4 criteria -- T13.1: the classic `QueryParser`, `MultiFieldQueryParser`, `SimpleQueryParser`, the `ext` package, the surround language and `ComplexPhraseQueryParser` are ported (every fixture row equal); `flexible` and `xml` are not |
+| **Status** | in progress, 0 of 4 criteria -- T13.1: the classic `QueryParser`, `MultiFieldQueryParser`, `SimpleQueryParser`, the `ext` package, the surround language, `ComplexPhraseQueryParser` and `CoreParser` (the `xml` package's core builders) are ported (every fixture row equal); `flexible`, `CorePlusQueriesParser` and `CorePlusExtensionsParser` are not |
 
 ---
 
@@ -77,8 +77,12 @@ through these modules; each of those falls back to Lucene today.
   against a Java-written index) likewise, and `ComplexPhraseQueryParser`
   (`GenQueryParserComplexPhrase`: in order and not, trees, exceptions, the
   span rewrite and its hits); the three JavaCC lexers and parsers share one
-  runtime (`queryparser/javacc.rs`). Remaining: date-resolution ranges, and
-  the `flexible` and `xml` parsers
+  runtime (`queryparser/javacc.rs`), and the XML query parser's core builders
+  (`GenQueryParserXml`: 104 documents, each's tree and hits over an index with
+  an `IntPoint` field, or its exception, through `quick-xml`). Remaining:
+  date-resolution ranges, the `flexible` parser, and the `xml` package's
+  `LikeThisQuery` and `FuzzyLikeThisQuery` builders (`CorePlusQueriesParser`,
+  `CorePlusExtensionsParser`)
   (`docs/inventory/lucene-queryparser.tsv`).
 - **T13.2** — Highlighting, including term vectors in `DirectoryReader`.
 - **T13.3** — Suggesters and the completion postings format.

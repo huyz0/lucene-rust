@@ -16,6 +16,7 @@ pub mod ext;
 mod javacc;
 pub mod simple;
 pub mod surround;
+pub mod xml;
 
 use lucene_analysis::attributes::java_float_to_string;
 
@@ -23,8 +24,9 @@ use crate::extended_query::{
     ExtendedQuery, MultiTermQuery, MultiTermSource, RewriteMethod, SynonymQuery, TermRangeQuery,
 };
 use crate::query::{
-    BooleanQuery, BoostQuery, Clause, FuzzyQuery, MatchAllDocsQuery, MatchNoDocsQuery,
-    MultiPhraseQuery, PhraseQuery, PrefixQuery, RegexpQuery, SpanQuery, TermQuery, WildcardQuery,
+    BooleanQuery, BoostQuery, Clause, DisjunctionMaxQuery, FuzzyQuery, MatchAllDocsQuery,
+    MatchNoDocsQuery, MultiPhraseQuery, PhraseQuery, PrefixQuery, RegexpQuery, SpanQuery,
+    TermQuery, WildcardQuery,
 };
 use crate::query_visitor::Occur;
 
@@ -63,6 +65,20 @@ pub enum ParsedQuery {
     Boolean(ParsedBoolean),
     /// `BoostQuery`.
     Boost(Box<ParsedQuery>, f32),
+    /// `DisjunctionMaxQuery`: its disjuncts in the order given, and the tie
+    /// breaker.
+    DisjunctionMax {
+        disjuncts: Vec<ParsedQuery>,
+        tie_breaker: f32,
+    },
+    /// `ConstantScoreQuery` with score 1, as the XML parser makes it.
+    ConstantScore(Box<ParsedQuery>),
+    /// A point range `IntPoint`, `LongPoint`, `FloatPoint` or `DoublePoint`
+    /// makes: the bounds decode as `kind`.
+    PointRange {
+        query: crate::extended_query::PointRangeQuery,
+        kind: PointKind,
+    },
     /// Any other query an analysis chain made (a graph query's spans).
     Other(Clause),
 }
@@ -173,6 +189,19 @@ impl ParsedQuery {
             ParsedQuery::Boost(q, boost) => {
                 Clause::Boost(Box::new(BoostQuery::new(q.to_clause(max_doc), *boost)))
             }
+            ParsedQuery::DisjunctionMax {
+                disjuncts,
+                tie_breaker,
+            } => Clause::DisjunctionMax(Box::new(DisjunctionMaxQuery::new(
+                disjuncts.iter().map(|d| d.to_clause(max_doc)),
+                *tie_breaker,
+            ))),
+            ParsedQuery::PointRange { query, .. } => {
+                Clause::Extended(Box::new(ExtendedQuery::PointRange(query.clone())))
+            }
+            ParsedQuery::ConstantScore(q) => Clause::ConstantScore(Box::new(
+                crate::query::ConstantScoreQuery::new(q.to_clause(max_doc), 1.0),
+            )),
             ParsedQuery::Other(c) => c.clone(),
         }
     }
@@ -219,8 +248,28 @@ impl ParsedQuery {
             ParsedQuery::MatchAll => "*:*".to_string(),
             ParsedQuery::MatchNoDocs(reason) => format!("MatchNoDocsQuery(\"{reason}\")"),
             ParsedQuery::Span(s) => span_string(s, field),
-            ParsedQuery::SpanNode(n) => n.to_string(),
+            ParsedQuery::SpanNode(n) => span_node_string(n, field),
             ParsedQuery::ComplexPhrase(c) => c.to_string(field),
+            ParsedQuery::DisjunctionMax {
+                disjuncts,
+                tie_breaker,
+            } => {
+                let parts: Vec<String> = disjuncts
+                    .iter()
+                    .map(|d| match d {
+                        ParsedQuery::Boolean(_) => format!("({})", d.to_string(field)),
+                        _ => d.to_string(field),
+                    })
+                    .collect();
+                let tie = if *tie_breaker != 0.0 {
+                    format!("~{}", java_float_to_string(*tie_breaker))
+                } else {
+                    String::new()
+                };
+                format!("({}){tie}", parts.join(" | "))
+            }
+            ParsedQuery::ConstantScore(q) => format!("ConstantScore({})", q.to_string(field)),
+            ParsedQuery::PointRange { query, kind } => point_range_string(query, *kind, field),
             ParsedQuery::Term(t) => {
                 crate::query_builder::to_query_string(Some(&Clause::Term(t.clone())), field)
             }
@@ -285,13 +334,127 @@ impl ParsedQuery {
             ParsedQuery::SpanNode(crate::spans::SpanNode::Near { .. }) => "SpanNearQuery",
             ParsedQuery::SpanNode(crate::spans::SpanNode::Or { .. }) => "SpanOrQuery",
             ParsedQuery::SpanNode(crate::spans::SpanNode::Not { .. }) => "SpanNotQuery",
+            ParsedQuery::SpanNode(crate::spans::SpanNode::First { .. }) => "SpanFirstQuery",
+            ParsedQuery::SpanNode(crate::spans::SpanNode::PositionRange { .. }) => {
+                "SpanPositionRangeQuery"
+            }
+            ParsedQuery::SpanNode(crate::spans::SpanNode::PayloadScore(_)) => "PayloadScoreQuery",
             ParsedQuery::SpanNode(_) => "SpanQuery",
             ParsedQuery::ComplexPhrase(_) => "ComplexPhraseQuery",
+            ParsedQuery::DisjunctionMax { .. } => "DisjunctionMaxQuery",
+            ParsedQuery::ConstantScore(_) => "ConstantScoreQuery",
+            // `IntPoint.newRangeQuery` and its kin return an anonymous
+            // subclass, whose simple name is empty
+            ParsedQuery::PointRange { .. } => "",
             ParsedQuery::Boolean(_) => "BooleanQuery",
             ParsedQuery::Boost(..) => "BoostQuery",
             ParsedQuery::Other(Clause::ConstantScore(_)) => "ConstantScoreQuery",
+            ParsedQuery::Other(Clause::DisjunctionMax(_)) => "DisjunctionMaxQuery",
             ParsedQuery::Other(_) => "Query",
         }
+    }
+}
+
+/// The numeric type a point range was built for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointKind {
+    Int,
+    Long,
+    Float,
+    Double,
+}
+
+/// `PointRangeQuery.toString(field)`: each dimension's `[lower TO upper]`,
+/// the bounds decoded as the type they were built with, comma-separated,
+/// behind the field when it is not `field`.
+fn point_range_string(
+    q: &crate::extended_query::PointRangeQuery,
+    kind: PointKind,
+    field: &str,
+) -> String {
+    use lucene_util::numeric_utils::{
+        sortable_bytes_to_int, sortable_bytes_to_long, sortable_int_to_float,
+        sortable_long_to_double,
+    };
+    let decode = |bytes: &[u8]| -> String {
+        match kind {
+            PointKind::Int => sortable_bytes_to_int(bytes, 0).to_string(),
+            PointKind::Long => sortable_bytes_to_long(bytes, 0).to_string(),
+            PointKind::Float => {
+                java_float_to_string(sortable_int_to_float(sortable_bytes_to_int(bytes, 0)))
+            }
+            PointKind::Double => crate::function::java_double(sortable_long_to_double(
+                sortable_bytes_to_long(bytes, 0),
+            )),
+        }
+    };
+    let mut out = String::new();
+    if q.field != field {
+        out.push_str(&q.field);
+        out.push(':');
+    }
+    for dim in 0..q.num_dims {
+        if dim > 0 {
+            out.push(',');
+        }
+        let at = dim * q.bytes_per_dim;
+        let lo = &q.lower[at..at + q.bytes_per_dim];
+        let hi = &q.upper[at..at + q.bytes_per_dim];
+        out.push_str(&format!("[{} TO {}]", decode(lo), decode(hi)));
+    }
+    out
+}
+
+/// `toString(field)` of a span query, as Java prints it: a term as its text
+/// when its field is `field`, as `field:text` otherwise, and the other span
+/// queries in the form each class uses.
+fn span_node_string(n: &crate::spans::SpanNode, field: &str) -> String {
+    use crate::spans::SpanNode;
+    let join = |clauses: &[SpanNode]| {
+        clauses
+            .iter()
+            .map(|c| span_node_string(c, field))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    match n {
+        SpanNode::Term { field: f, term } => {
+            if f == field {
+                term_text(term)
+            } else {
+                format!("{f}:{}", term_text(term))
+            }
+        }
+        SpanNode::Near {
+            clauses,
+            slop,
+            in_order,
+        } => format!("spanNear([{}], {slop}, {in_order})", join(clauses)),
+        SpanNode::Or { clauses } => format!("spanOr([{}])", join(clauses)),
+        SpanNode::First { inner, end } => {
+            format!("spanFirst({}, {end})", span_node_string(inner, field))
+        }
+        SpanNode::PositionRange { inner, start, end } => format!(
+            "spanPosRange({}, {start}, {end})",
+            span_node_string(inner, field)
+        ),
+        SpanNode::Not {
+            include,
+            exclude,
+            pre,
+            post,
+        } => format!(
+            "spanNot({}, {}, {pre}, {post})",
+            span_node_string(include, field),
+            span_node_string(exclude, field)
+        ),
+        SpanNode::PayloadScore(p) => format!(
+            "PayloadScoreQuery({}, function: {}, includeSpanScore: {})",
+            span_node_string(&p.inner, field),
+            p.function.name(),
+            p.include_span_score
+        ),
+        other => other.to_string(),
     }
 }
 

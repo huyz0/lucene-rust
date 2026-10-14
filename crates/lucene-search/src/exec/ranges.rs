@@ -477,6 +477,7 @@ fn points_field<'a>(
     field: &str,
     num_dims: usize,
     bytes_per_dim: usize,
+    range: bool,
 ) -> Result<Option<(&'a crate::points_query::PointsInput<'a>, i32, i32)>> {
     let Some(points) = ctx.points else {
         return Err(crate::Error::MissingPointsInput(field.to_string()));
@@ -491,7 +492,23 @@ fn points_field<'a>(
     let Some(info) = points.reader.field(number) else {
         return Ok(None);
     };
-    if usize::try_from(info.num_dims).ok() != Some(num_dims)
+    // `PointRangeQuery.checkValidPointValues` checks the dimension count, then
+    // the bytes per dimension, each with its own message; the set queries
+    // check both at once
+    if range {
+        if usize::try_from(info.num_dims).ok() != Some(num_dims) {
+            return Err(crate::Error::IllegalArgument(format!(
+                "field=\"{field}\" was indexed with numIndexDimensions={} but this query has numDims={num_dims}",
+                info.num_dims
+            )));
+        }
+        if usize::try_from(info.bytes_per_dim).ok() != Some(bytes_per_dim) {
+            return Err(crate::Error::IllegalArgument(format!(
+                "field=\"{field}\" was indexed with bytesPerDim={} but this query has bytesPerDim={bytes_per_dim}",
+                info.bytes_per_dim
+            )));
+        }
+    } else if usize::try_from(info.num_dims).ok() != Some(num_dims)
         || usize::try_from(info.bytes_per_dim).ok() != Some(bytes_per_dim)
     {
         return Err(crate::Error::InvalidQuery(format!(
@@ -509,7 +526,8 @@ pub(crate) fn point_range<'a>(
     boost: f32,
     mode: Mode,
 ) -> Result<Option<BoxScorer<'a>>> {
-    let Some((points, number, max_doc)) = points_field(ctx, &q.field, q.num_dims, q.bytes_per_dim)?
+    let Some((points, number, max_doc)) =
+        points_field(ctx, &q.field, q.num_dims, q.bytes_per_dim, true)?
     else {
         return Ok(None);
     };
@@ -526,7 +544,8 @@ pub(crate) fn point_range_cost(
     q: &PointRangeQuery,
 ) -> Result<super::extended::Supplier> {
     use super::extended::Supplier;
-    let Some((points, number, max_doc)) = points_field(ctx, &q.field, q.num_dims, q.bytes_per_dim)?
+    let Some((points, number, max_doc)) =
+        points_field(ctx, &q.field, q.num_dims, q.bytes_per_dim, true)?
     else {
         return Ok(Supplier::Absent);
     };
@@ -569,7 +588,8 @@ pub(crate) fn point_in_set<'a>(
     if q.points.is_empty() {
         return Ok(None);
     }
-    let Some((points, number, max_doc)) = points_field(ctx, &q.field, q.num_dims, q.bytes_per_dim)?
+    let Some((points, number, max_doc)) =
+        points_field(ctx, &q.field, q.num_dims, q.bytes_per_dim, false)?
     else {
         return Ok(None);
     };

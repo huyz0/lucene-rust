@@ -314,7 +314,7 @@ a dependency the shipped library links is not under a licence listed here.
   - `native/<platform>/liblucene_ffi.so`.
 - **No third-party jar is bundled:** OpenSearch and Lucene are `compileOnly`,
   supplied by the node at run time (both Apache-2.0).
-- **The native library** statically links the workspace and these 26 crates
+- **The native library** statically links the workspace and these 27 crates
   (the resolved graph of normal and build dependencies at the time of the
   audit; `scripts/check-licences.py --all` prints the current one):
 
@@ -334,6 +334,7 @@ a dependency the shipped library links is not under a licence listed here.
 | memmap2 | 0.9.11 | MIT OR Apache-2.0 | MIT |
 | miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 | MIT |
 | proc-macro2 | 1.0.107 | MIT OR Apache-2.0 | MIT (build time only) |
+| quick-xml | 0.39.4 | MIT | MIT (M13: reads the XML query parser's documents) |
 | quote | 1.0.47 | MIT OR Apache-2.0 | MIT (build time only) |
 | rayon | 1.12.0 | MIT OR Apache-2.0 | MIT |
 | rayon-core | 1.13.0 | MIT OR Apache-2.0 | MIT |

@@ -193,13 +193,32 @@ fn spans_print_and_name_as_lucene_does() {
             SpanNode::not(a.clone(), b.clone(), 0, 0).unwrap(),
             "SpanNotQuery",
         ),
-        (SpanNode::first(a.clone(), 3), "SpanQuery"),
+        (SpanNode::first(a.clone(), 3), "SpanFirstQuery"),
     ];
     for (node, class) in cases {
         let q = ParsedQuery::SpanNode(node.clone());
         assert_eq!(q.class_name(), class);
-        assert_eq!(q.to_string("f"), node.to_string());
     }
+    // a term is printed bare in its own field, qualified in another
+    assert_eq!(ParsedQuery::SpanNode(a.clone()).to_string("f"), "a");
+    assert_eq!(ParsedQuery::SpanNode(a.clone()).to_string("g"), "f:a");
+    assert_eq!(
+        ParsedQuery::SpanNode(SpanNode::first(a.clone(), 3)).to_string("f"),
+        "spanFirst(a, 3)"
+    );
+    assert_eq!(
+        ParsedQuery::SpanNode(SpanNode::PositionRange {
+            inner: Box::new(a.clone()),
+            start: 0,
+            end: 2
+        })
+        .to_string("f"),
+        "spanPosRange(a, 0, 2)"
+    );
+    assert_eq!(
+        ParsedQuery::SpanNode(SpanNode::not(a.clone(), b.clone(), 1, 2).unwrap()).to_string("f"),
+        "spanNot(a, b, 1, 2)"
+    );
     assert_eq!(
         ParsedQuery::Other(Clause::ConstantScore(Box::new(
             crate::query::ConstantScoreQuery::new(Clause::Term(term("f", "a")), 1.0)
