@@ -1,0 +1,104 @@
+<TermQuery fieldName="body">quick</TermQuery>	Q	quick	TermQuery(body:quick)	[0,1,3,7,9]
+<TermQuery fieldName="body" boost="2.0">fox</TermQuery>	Q	(fox)^2.0	Boost(TermQuery(body:fox)^2.0)	[0,1,7]
+<TermQuery fieldName="body" boost="1">fox</TermQuery>	Q	fox	TermQuery(body:fox)	[0,1,7]
+<TermQuery>quick</TermQuery>	X	org.apache.lucene.queryparser.xml.ParserException: TermQuery missing "fieldName" attribute
+<TermQuery fieldName="body">   </TermQuery>	X	org.apache.lucene.queryparser.xml.ParserException: TermQuery has no text
+<TermQuery fieldName="body" boost="x">a</TermQuery>	X	java.lang.NumberFormatException: For input string: "x"
+<TermQuery fieldName="body" boost="-1">a</TermQuery>	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+<TermQuery fieldName="body" boost="NaN">a</TermQuery>	X	java.lang.IllegalArgumentException: boost must be a positive float, got NaN
+<TermQuery fieldName="body">  a &amp; b  </TermQuery>	Q	a & b	TermQuery(body:a & b)	-
+<TermQuery fieldName="body">qu<![CDATA[ick]]></TermQuery>	Q	qu	TermQuery(body:qu)	-
+<TermQuery fieldName="body"><![CDATA[quick]]></TermQuery>	X	org.apache.lucene.queryparser.xml.ParserException: TermQuery has no text
+<TermQuery fieldName="body">&#113;uick</TermQuery>	Q	quick	TermQuery(body:quick)	[0,1,3,7,9]
+<BooleanQuery fieldName="body"><Clause occurs="must"><TermQuery>quick</TermQuery></Clause></BooleanQuery>	Q	+quick	Boolean(+TermQuery(body:quick))	[0,1,3,7,9]
+<BooleanQuery><Clause occurs="must"><TermQuery fieldName="body">quick</TermQuery></Clause><Clause occurs="mustNot"><TermQuery fieldName="body">lazy</TermQuery></Clause></BooleanQuery>	Q	+quick -lazy	Boolean(+TermQuery(body:quick) -TermQuery(body:lazy))	[1,3,9]
+<BooleanQuery minimumNumberShouldMatch="1"><Clause occurs="should"><TermQuery fieldName="body">quick</TermQuery></Clause><Clause occurs="should"><TermQuery fieldName="body">dog</TermQuery></Clause></BooleanQuery>	Q	(quick dog)~1	Boolean(msm=1 TermQuery(body:quick) TermQuery(body:dog))	[0,1,3,7,9]
+<BooleanQuery><Clause occurs="filter"><TermQuery fieldName="body">fox</TermQuery></Clause><Clause occurs="MUST_NOT"><TermQuery fieldName="body">dog</TermQuery></Clause></BooleanQuery>	X	org.apache.lucene.queryparser.xml.ParserException: Invalid value for "occurs" attribute of clause:MUST_NOT
+<BooleanQuery><Clause><TermQuery fieldName="body">quick</TermQuery></Clause></BooleanQuery>	X	org.apache.lucene.queryparser.xml.ParserException: Invalid value for "occurs" attribute of clause:
+<BooleanQuery><Clause occurs="bogus"><TermQuery fieldName="body">quick</TermQuery></Clause></BooleanQuery>	X	org.apache.lucene.queryparser.xml.ParserException: Invalid value for "occurs" attribute of clause:bogus
+<BooleanQuery><Clause occurs="must"/></BooleanQuery>	X	org.apache.lucene.queryparser.xml.ParserException: Clause does not contain a child element
+<BooleanQuery boost="3"><Clause occurs="should"><TermQuery fieldName="body">dog</TermQuery></Clause></BooleanQuery>	Q	(dog)^3.0	Boost(Boolean(TermQuery(body:dog))^3.0)	[0,1,7,9]
+<BooleanQuery minimumNumberShouldMatch="x"><Clause occurs="should"><TermQuery fieldName="body">dog</TermQuery></Clause></BooleanQuery>	X	java.lang.NumberFormatException: For input string: "x"
+<BooleanQuery><Clause occurs="should"><TermQuery fieldName="body">quick</TermQuery> <TermQuery fieldName="body">fox</TermQuery></Clause></BooleanQuery>	Q	quick	Boolean(TermQuery(body:quick))	[0,1,3,7,9]
+<TermsQuery fieldName="body">quick brown fox</TermsQuery>	Q	(quick brown fox)^1.0	Boost(Boolean(TermQuery(body:quick) TermQuery(body:brown) TermQuery(body:fox))^1.0)	[0,1,3,7,9]
+<TermsQuery fieldName="body" minimumNumberShouldMatch="2" boost="0.5">the quick the</TermsQuery>	Q	((the quick the)~2)^0.5	Boost(Boolean(msm=2 TermQuery(body:the) TermQuery(body:quick) TermQuery(body:the))^0.5)	[0,5,7]
+<TermsQuery fieldName="body">   </TermsQuery>	X	org.apache.lucene.queryparser.xml.ParserException: TermsQuery has no text
+<MatchAllDocsQuery/>	Q	*:*	MatchAllDocsQuery(*:*)	[0,1,2,3,4,5,6,7,8,9]
+<RangeQuery fieldName="body" lowerTerm="a" upperTerm="m"/>	Q	[a TO m]	TermRangeQuery(body:[a TO m])	[0,1,2,3,4,5,6,7,8,9]
+<RangeQuery fieldName="body" lowerTerm="a" upperTerm="m" includeLower="false" includeUpper="FALSE"/>	Q	{a TO m}	TermRangeQuery(body:{a TO m})	[0,1,2,3,4,5,6,7,8,9]
+<RangeQuery fieldName="body" upperTerm="m"/>	Q	[ TO m]	TermRangeQuery(body:[ TO m])	[0,1,2,3,4,5,6,7,8,9]
+<RangeQuery lowerTerm="a"/>	X	java.lang.NullPointerException: field must not be null
+<DisjunctionMaxQuery tieBreaker="0.3"><TermQuery fieldName="body">quick</TermQuery><BooleanQuery><Clause occurs="should"><TermQuery fieldName="body">fox</TermQuery></Clause></BooleanQuery></DisjunctionMaxQuery>	Q	(quick | (fox))~0.3	DisjunctionMaxQuery((body:quick | (body:fox))~0.3)	[0,1,3,7,9]
+<DisjunctionMaxQuery boost="2"></DisjunctionMaxQuery>	Q	(())^2.0	Boost(DisjunctionMaxQuery(())^2.0)	-
+<DisjunctionMaxQuery><TermQuery fieldName="body">dog</TermQuery><TermQuery fieldName="body">quick</TermQuery></DisjunctionMaxQuery>	Q	(dog | quick)	DisjunctionMaxQuery((body:dog | body:quick))	[0,1,3,7,9]
+<UserQuery fieldName="body">quick fox</UserQuery>	Q	(quick fox)^1.0	Boost(Boolean(TermQuery(body:quick) TermQuery(body:fox))^1.0)	[0,1,3,7,9]
+<UserQuery>"quick fox"~2 OR lazy</UserQuery>	Q	("quick fox"~2 lazy)^1.0	Boost(Boolean(PhraseQuery(body:"quick fox"~2) TermQuery(body:lazy))^1.0)	[0,1,7]
+<UserQuery fieldName="body">quick (</UserQuery>	X	org.apache.lucene.queryparser.xml.ParserException: Cannot parse 'quick (': Encountered "<EOF>" at line 1, column 7.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
+<UserQuery fieldName="body" boost="2">dog</UserQuery>	Q	(dog)^2.0	Boost(TermQuery(body:dog)^2.0)	[0,1,7,9]
+<UserQuery fieldName="body">body:quick -fox</UserQuery>	Q	(quick -fox)^1.0	Boost(Boolean(TermQuery(body:quick) -TermQuery(body:fox))^1.0)	[3,9]
+<ConstantScoreQuery><TermQuery fieldName="body">quick</TermQuery></ConstantScoreQuery>	Q	ConstantScore(quick)	ConstantScoreQuery(ConstantScore(body:quick))	[0,1,3,7,9]
+<ConstantScoreQuery boost="2"><BooleanQuery><Clause occurs="must"><TermQuery fieldName="body">fox</TermQuery></Clause></BooleanQuery></ConstantScoreQuery>	Q	(ConstantScore(+fox))^2.0	Boost(ConstantScoreQuery(ConstantScore(+body:fox))^2.0)	[0,1,7]
+<ConstantScoreQuery boost="2"/>	X	org.apache.lucene.queryparser.xml.ParserException: ConstantScoreQuery does not contain a child element
+<SpanNear slop="1" inOrder="true"><SpanTerm fieldName="body">quick</SpanTerm><SpanTerm fieldName="body">fox</SpanTerm></SpanNear>	Q	spanNear([quick, fox], 1, true)	SpanNearQuery(spanNear([body:quick, body:fox], 1, true))	[0,1,7]
+<SpanNear slop="0"><SpanTerm fieldName="body">quick</SpanTerm><SpanTerm fieldName="body">brown</SpanTerm></SpanNear>	Q	spanNear([quick, brown], 0, false)	SpanNearQuery(spanNear([body:quick, body:brown], 0, false))	[0,1,9]
+<SpanNear><SpanTerm fieldName="body">quick</SpanTerm></SpanNear>	X	java.lang.NumberFormatException: For input string: ""
+<SpanNear slop="2"><SpanOr><SpanTerm fieldName="body">quick</SpanTerm><SpanTerm fieldName="body">lazy</SpanTerm></SpanOr><SpanTerm fieldName="body">dog</SpanTerm></SpanNear>	Q	spanNear([spanOr([quick, lazy]), dog], 2, false)	SpanNearQuery(spanNear([spanOr([body:quick, body:lazy]), body:dog], 2, false))	[0,1,7,9]
+<SpanOr><SpanTerm fieldName="body">quick</SpanTerm><SpanTerm fieldName="body">lazy</SpanTerm></SpanOr>	Q	spanOr([quick, lazy])	SpanOrQuery(spanOr([body:quick, body:lazy]))	[0,1,3,7,9]
+<SpanOr/>	Q	spanOr([])	SpanOrQuery(spanOr([]))	-
+<SpanOrTerms fieldName="body">quick brown</SpanOrTerms>	Q	spanOr([quick, brown])	SpanOrQuery(spanOr([body:quick, body:brown]))	[0,1,3,7,9]
+<SpanFirst end="3"><SpanTerm fieldName="body">quick</SpanTerm></SpanFirst>	Q	spanFirst(quick, 3)	SpanFirstQuery(spanFirst(body:quick, 3))	[0,1,3,9]
+<SpanFirst><SpanTerm fieldName="body">quick</SpanTerm></SpanFirst>	Q	spanFirst(quick, 1)	SpanFirstQuery(spanFirst(body:quick, 1))	[9]
+<SpanPositionRange start="0" end="2"><SpanTerm fieldName="body">quick</SpanTerm></SpanPositionRange>	Q	spanPosRange(quick, 0, 2)	SpanPositionRangeQuery(spanPosRange(body:quick, 0, 2))	[0,1,9]
+<SpanNot><Include><SpanTerm fieldName="body">quick</SpanTerm></Include><Exclude><SpanTerm fieldName="body">brown</SpanTerm></Exclude></SpanNot>	Q	spanNot(quick, brown, 0, 0)	SpanNotQuery(spanNot(body:quick, body:brown, 0, 0))	[0,1,3,7,9]
+<SpanNot><Include><SpanTerm fieldName="body">quick</SpanTerm></Include></SpanNot>	X	org.apache.lucene.queryparser.xml.ParserException: SpanNot missing "Exclude" child element
+<SpanTerm fieldName="body" boost="2">quick</SpanTerm>	Q	(quick)^2.0	Boost(SpanTermQuery(body:quick)^2.0)	[0,1,3,7,9]
+<BoostingTermQuery fieldName="body">quick</BoostingTermQuery>	Q	PayloadScoreQuery(quick, function: AveragePayloadFunction, includeSpanScore: true)	PayloadScoreQuery(PayloadScoreQuery(body:quick, function: AveragePayloadFunction, includeSpanScore: true))	[0,1,3,7,9]
+<SpanNear slop="1"><BoostingTermQuery fieldName="body">quick</BoostingTermQuery><SpanTerm fieldName="body">fox</SpanTerm></SpanNear>	Q	spanNear([PayloadScoreQuery(quick, function: AveragePayloadFunction, includeSpanScore: true), fox], 1, false)	SpanNearQuery(spanNear([PayloadScoreQuery(body:quick, function: AveragePayloadFunction, includeSpanScore: true), body:fox], 1, false))	[0,1,7]
+<TermQuery><TermQuery fieldName="body">quick</TermQuery></TermQuery>	X	org.apache.lucene.queryparser.xml.ParserException: TermQuery missing "fieldName" attribute
+<SpanTerm fieldName="body"><SpanTerm fieldName="body">quick</SpanTerm></SpanTerm>	Q	quick	SpanTermQuery(body:quick)	[0,1,3,7,9]
+<Bogus/>	X	org.apache.lucene.queryparser.xml.ParserException: No QueryObjectBuilder defined for node Bogus
+<SpanNear slop="1"><TermQuery fieldName="body">quick</TermQuery></SpanNear>	X	org.apache.lucene.queryparser.xml.ParserException: No SpanQueryObjectBuilder defined for node TermQuery
+<TermQuery fieldName="body">quick	X	org.apache.lucene.queryparser.xml.ParserException: (syntax)
+<TermQuery fieldName="body"/>	X	org.apache.lucene.queryparser.xml.ParserException: TermQuery has no text
+<TermQuery fieldName="body">quick</TermQuery><TermQuery fieldName="body">fox</TermQuery>	X	org.apache.lucene.queryparser.xml.ParserException: (syntax)
+<PointRangeQuery fieldName="n" type="int" lowerTerm="1" upperTerm="5"/>	Q	n:[1 TO 5]	(n:[1 TO 5])	[0,1,2,3,4]
+<PointRangeQuery fieldName="n" lowerTerm="-7"/>	Q	n:[-7 TO 2147483647]	(n:[-7 TO 2147483647])	[0,1,2,3,4,5,6,7,8,9]
+<PointRangeQuery fieldName="n" type="LONG" lowerTerm="10000000000" upperTerm="20000000000"/>	Q	n:[10000000000 TO 20000000000]	(n:[10000000000 TO 20000000000])	X	java.lang.IllegalArgumentException: field="n" was indexed with bytesPerDim=4 but this query has bytesPerDim=8
+<PointRangeQuery fieldName="x" type="float" lowerTerm="1.5" upperTerm="2.25"/>	Q	x:[1.5 TO 2.25]	(x:[1.5 TO 2.25])	-
+<PointRangeQuery fieldName="x" type="double" lowerTerm="-0.1"/>	Q	x:[-0.1 TO Infinity]	(x:[-0.1 TO Infinity])	-
+<PointRangeQuery fieldName="x" type="double"/>	Q	x:[-Infinity TO Infinity]	(x:[-Infinity TO Infinity])	-
+<PointRangeQuery fieldName="n" type="int" lowerTerm="one"/>	X	org.apache.lucene.queryparser.xml.ParserException: Could not parse lowerTerm or upperTerm into a number
+<PointRangeQuery fieldName="n" type="short" lowerTerm="1"/>	X	org.apache.lucene.queryparser.xml.ParserException: type attribute must be one of: [long, int, double, float]
+<PointRangeQuery type="int" lowerTerm="1"/>	X	org.apache.lucene.queryparser.xml.ParserException: PointRangeQuery missing "fieldName" attribute
+<BooleanQuery><Clause occurs="must"><PointRangeQuery fieldName="body" type="int" lowerTerm="1"/></Clause></BooleanQuery>	Q	+[1 TO 2147483647]	Boolean(+(body:[1 TO 2147483647]))	-
+<BooleanQuery><Clause occurs="must" fieldName="body"><TermQuery>quick</TermQuery></Clause></BooleanQuery>	Q	+quick	Boolean(+TermQuery(body:quick))	[0,1,3,7,9]
+<SpanNot><Include fieldName="body"><SpanTerm>quick</SpanTerm></Include><Exclude fieldName="body"><SpanTerm>brown</SpanTerm></Exclude></SpanNot>	Q	spanNot(quick, brown, 0, 0)	SpanNotQuery(spanNot(body:quick, body:brown, 0, 0))	[0,1,3,7,9]
+<DisjunctionMaxQuery tieBreaker="1.5"><TermQuery fieldName="body">dog</TermQuery></DisjunctionMaxQuery>	X	java.lang.IllegalArgumentException: tieBreakerMultiplier must be in [0, 1]
+<DisjunctionMaxQuery tieBreaker="NaN"><TermQuery fieldName="body">dog</TermQuery></DisjunctionMaxQuery>	Q	(dog)~NaN	DisjunctionMaxQuery((body:dog)~NaN)	[0,1,7,9]
+<SpanTerm boost="x"/>	X	java.lang.NumberFormatException: For input string: "x"
+<x:TermQuery xmlns:x="u" fieldName="body">quick</x:TermQuery>	X	org.apache.lucene.queryparser.xml.ParserException: No QueryObjectBuilder defined for node x:TermQuery
+<TermQuery xmlns:x="u" x:fieldName="body">quick</TermQuery>	X	org.apache.lucene.queryparser.xml.ParserException: TermQuery missing "fieldName" attribute
+<TermQuery fieldName="body">qu<!-- c -->ick</TermQuery>	Q	quick	TermQuery(body:quick)	[0,1,3,7,9]
+<TermQuery fieldName="body">qu<?p x?>ick</TermQuery>	Q	quick	TermQuery(body:quick)	[0,1,3,7,9]
+<TermQuery fieldName="body">qu<b>ick</b></TermQuery>	Q	quick	TermQuery(body:quick)	[0,1,3,7,9]
+<UserQuery fieldName="body"><![CDATA[quick fox]]></UserQuery>	X	org.apache.lucene.queryparser.xml.ParserException: Cannot parse '': Encountered "<EOF>" at line 1, column 0.\nWas expecting one of:\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    <TERM> ...\n    
+<RangeQuery fieldName="body" lowerTerm="a&amp;b" upperTerm="z"/>	Q	[a&b TO z]	TermRangeQuery(body:[a&b TO z])	[0,1,2,3,4,5,6,7,8,9]
+  <TermQuery fieldName="body">quick</TermQuery>  	Q	quick	TermQuery(body:quick)	[0,1,3,7,9]
+<TermQuery fieldName="body">naïve</TermQuery>	Q	naïve	TermQuery(body:naïve)	-
+<BooleanQuery><Clause occurs="should"><TermQuery fieldName="body">quick</TermQuery></Clause><Junk/><Clause occurs="must"><TermQuery fieldName="body">fox</TermQuery></Clause></BooleanQuery>	Q	quick +fox	Boolean(TermQuery(body:quick) +TermQuery(body:fox))	[0,1,7]
+<TermQuery fieldName="body" boost="0">fox</TermQuery>	Q	(fox)^0.0	Boost(TermQuery(body:fox)^0.0)	[0,1,7]
+<TermQuery fieldName="body" boost="Infinity">fox</TermQuery>	X	java.lang.IllegalArgumentException: boost must be a positive float, got Infinity
+<TermQuery fieldName="body" boost=" 2">fox</TermQuery>	Q	(fox)^2.0	Boost(TermQuery(body:fox)^2.0)	[0,1,7]
+<SpanNear slop="1"><SpanTerm fieldName="body">quick</SpanTerm><SpanTerm fieldName="title">fox</SpanTerm></SpanNear>	X	java.lang.IllegalArgumentException: Clauses must have same field.
+<SpanOr><SpanTerm fieldName="body">quick</SpanTerm><SpanTerm fieldName="title">fox</SpanTerm></SpanOr>	X	java.lang.IllegalArgumentException: Clauses must have same field.
+<SpanNot><Include><SpanTerm fieldName="body">quick</SpanTerm></Include><Exclude><SpanTerm fieldName="title">fox</SpanTerm></Exclude></SpanNot>	X	java.lang.IllegalArgumentException: Clauses must have same field.
+<TermsQuery fieldName="body">!!!</TermsQuery>	Q	()^1.0	Boost(Boolean()^1.0)	-
+<SpanOrTerms fieldName="body">naïve café</SpanOrTerms>	Q	spanOr([naïve, café])	SpanOrQuery(spanOr([body:naïve, body:café]))	-
+<TermQuery fieldName="a<b">x</TermQuery>	X	org.apache.lucene.queryparser.xml.ParserException: (syntax)
+<TermQuery fieldName="body">a\u0001b</TermQuery>	X	org.apache.lucene.queryparser.xml.ParserException: (syntax)
+<TermQuery fieldName="body" fieldName="x">a</TermQuery>	X	org.apache.lucene.queryparser.xml.ParserException: (syntax)
+<SpanFirst end="2"/>	X	java.lang.NullPointerException: Cannot invoke "org.w3c.dom.Element.getNodeName()" because "e" is null
+<TermQuery fieldName="bo\tdy">x</TermQuery>	Q	bo dy:x	TermQuery(bo dy:x)	-
+<TermQuery fieldName="body">ab</TermQuery>	Q	ab	TermQuery(body:ab)	-
+<TermQuery fieldName="body">a b</TermQuery>	Q	a b	TermQuery(body:a b)	-
+<TermQuery fieldName="body">&#1;</TermQuery>	X	org.apache.lucene.queryparser.xml.ParserException: (syntax)
