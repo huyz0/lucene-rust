@@ -11,6 +11,7 @@
 //!   `QueryParserBase`.
 
 pub mod classic;
+pub mod complex_phrase;
 pub mod ext;
 mod javacc;
 pub mod simple;
@@ -54,6 +55,10 @@ pub enum ParsedQuery {
     MatchNoDocs(String),
     /// `SpanTermQuery`, `SpanNearQuery` or `SpanOrQuery`.
     Span(SpanQuery),
+    /// Any span query, `SpanNotQuery` among them.
+    SpanNode(crate::spans::SpanNode),
+    /// `ComplexPhraseQueryParser.ComplexPhraseQuery`.
+    ComplexPhrase(Box<complex_phrase::ComplexPhraseQuery>),
     /// `BooleanQuery`: its clauses in insertion order.
     Boolean(ParsedBoolean),
     /// `BoostQuery`.
@@ -83,6 +88,7 @@ impl ParsedQuery {
             Clause::Fuzzy(f) => ParsedQuery::Fuzzy(f),
             Clause::Regexp(r) => ParsedQuery::Regexp(r),
             Clause::MatchNoDocs(m) => ParsedQuery::MatchNoDocs(m.reason),
+            Clause::MatchAllDocs(_) => ParsedQuery::MatchAll,
             Clause::Span(s) => ParsedQuery::Span(s),
             Clause::Boost(b) => {
                 let BoostQuery { inner, boost } = *b;
@@ -115,6 +121,7 @@ impl ParsedQuery {
                     source: MultiTermSource::TermRange(r),
                     ..
                 }) => ParsedQuery::TermRange(r),
+                ExtendedQuery::Span(node) => ParsedQuery::SpanNode(node),
                 other => ParsedQuery::Other(Clause::Extended(Box::new(other))),
             },
             other => ParsedQuery::Other(other),
@@ -147,6 +154,8 @@ impl ParsedQuery {
                 Clause::MatchNoDocs(MatchNoDocsQuery::new().with_reason(reason.clone()))
             }
             ParsedQuery::Span(s) => Clause::Span(s.clone()),
+            ParsedQuery::SpanNode(n) => Clause::Extended(Box::new(ExtendedQuery::Span(n.clone()))),
+            ParsedQuery::ComplexPhrase(_) => complex_phrase::unrewritten_clause(),
             ParsedQuery::Boolean(b) => {
                 let mut q = BooleanQuery::new();
                 for (occur, c) in &b.clauses {
@@ -210,6 +219,8 @@ impl ParsedQuery {
             ParsedQuery::MatchAll => "*:*".to_string(),
             ParsedQuery::MatchNoDocs(reason) => format!("MatchNoDocsQuery(\"{reason}\")"),
             ParsedQuery::Span(s) => span_string(s, field),
+            ParsedQuery::SpanNode(n) => n.to_string(),
+            ParsedQuery::ComplexPhrase(c) => c.to_string(field),
             ParsedQuery::Term(t) => {
                 crate::query_builder::to_query_string(Some(&Clause::Term(t.clone())), field)
             }
@@ -270,8 +281,15 @@ impl ParsedQuery {
             ParsedQuery::Span(SpanQuery::SpanTerm { .. }) => "SpanTermQuery",
             ParsedQuery::Span(SpanQuery::SpanNear { .. }) => "SpanNearQuery",
             ParsedQuery::Span(SpanQuery::SpanOr { .. }) => "SpanOrQuery",
+            ParsedQuery::SpanNode(crate::spans::SpanNode::Term { .. }) => "SpanTermQuery",
+            ParsedQuery::SpanNode(crate::spans::SpanNode::Near { .. }) => "SpanNearQuery",
+            ParsedQuery::SpanNode(crate::spans::SpanNode::Or { .. }) => "SpanOrQuery",
+            ParsedQuery::SpanNode(crate::spans::SpanNode::Not { .. }) => "SpanNotQuery",
+            ParsedQuery::SpanNode(_) => "SpanQuery",
+            ParsedQuery::ComplexPhrase(_) => "ComplexPhraseQuery",
             ParsedQuery::Boolean(_) => "BooleanQuery",
             ParsedQuery::Boost(..) => "BoostQuery",
+            ParsedQuery::Other(Clause::ConstantScore(_)) => "ConstantScoreQuery",
             ParsedQuery::Other(_) => "Query",
         }
     }

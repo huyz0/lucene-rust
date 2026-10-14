@@ -11,7 +11,7 @@ queryparser/classic/QueryParserConstants	ported	crates/lucene-search/src/querypa
 queryparser/classic/QueryParserTokenManager	ported	crates/lucene-search/src/queryparser/classic/token_manager.rs::TokenManager
 queryparser/classic/Token	ported	crates/lucene-search/src/queryparser/javacc.rs::Token
 queryparser/classic/TokenMgrError	ported	crates/lucene-search/src/queryparser/javacc.rs::TokenMgrError
-queryparser/complexPhrase/ComplexPhraseQueryParser	todo:M13	ComplexPhraseQueryParser
+queryparser/complexPhrase/ComplexPhraseQueryParser	ported	crates/lucene-search/src/queryparser/complex_phrase.rs::ComplexPhraseQuery
 queryparser/ext/ExtendableQueryParser	ported	crates/lucene-search/src/queryparser/ext.rs::ExtendableQueryParser
 queryparser/ext/ExtensionQuery	ported	crates/lucene-search/src/queryparser/ext.rs::ExtensionQuery
 queryparser/ext/Extensions	ported	crates/lucene-search/src/queryparser/ext.rs::Extensions

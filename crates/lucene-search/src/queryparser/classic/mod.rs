@@ -77,6 +77,13 @@ impl QueryParserError {
         }
     }
 
+    pub(crate) fn runtime_class(class: &'static str, message: impl Into<String>) -> Self {
+        QueryParserError {
+            class,
+            message: message.into(),
+        }
+    }
+
     pub(crate) fn runtime(message: impl Into<String>) -> Self {
         QueryParserError {
             class: "RuntimeException",
@@ -137,6 +144,8 @@ pub struct QueryParser {
     boosts: HashMap<String, f32>,
     /// `ExtendableQueryParser`'s extensions.
     extensions: Option<Arc<Extensions>>,
+    /// `ComplexPhraseQueryParser`'s `inOrder`, when this is one.
+    complex_phrase_in_order: Option<bool>,
     operator: Operator,
     allow_leading_wildcard: bool,
     phrase_slop: i32,
@@ -182,6 +191,7 @@ impl QueryParser {
             fields: Vec::new(),
             boosts: HashMap::new(),
             extensions: None,
+            complex_phrase_in_order: None,
             operator: Operator::Or,
             allow_leading_wildcard: false,
             phrase_slop: 0,
@@ -203,6 +213,23 @@ impl QueryParser {
     pub fn with_extensions(mut self, extensions: Arc<Extensions>) -> Self {
         self.extensions = Some(extensions);
         self
+    }
+
+    /// `ComplexPhraseQueryParser(f, a)`: a quoted phrase is a
+    /// [`ComplexPhraseQuery`](crate::queryparser::complex_phrase::ComplexPhraseQuery)
+    /// whose words may be wildcards, fuzzy terms, ranges or booleans.
+    pub fn complex_phrase(field: impl Into<String>, analyzer: impl Into<Arc<Analyzer>>) -> Self {
+        let mut p = Self::new(field, analyzer);
+        p.complex_phrase_in_order = Some(true);
+        p
+    }
+
+    /// `ComplexPhraseQueryParser.setInOrder(inOrder)`: whether a phrase's
+    /// words must keep their order; no effect on another parser.
+    pub fn set_in_order(&mut self, in_order: bool) {
+        if self.complex_phrase_in_order.is_some() {
+            self.complex_phrase_in_order = Some(in_order);
+        }
     }
 
     /// `getField()`: `None` for a multi-field parser.
@@ -332,7 +359,49 @@ impl QueryParser {
     /// threw (an invalid regular expression, a negative slop).
     pub fn parse(&self, query: &str) -> Result<ParsedQuery, QueryParserError> {
         let mut p = parser::Parser::new(self, query);
-        match p.top_level_query(self.field.as_deref()) {
+        let mut q = self.parse_top(&mut p, self.field.as_deref(), query)?;
+        if self.complex_phrase_in_order.is_some() {
+            // `ComplexPhraseQueryParser.parse`'s second pass: each phrase's
+            // text parsed on its field, in the order the phrases were made.
+            self.resolve_phrases(&mut q)?;
+        }
+        Ok(q)
+    }
+
+    fn resolve_phrases(&self, q: &mut ParsedQuery) -> Result<(), QueryParserError> {
+        match q {
+            ParsedQuery::ComplexPhrase(c) => {
+                let mut p = parser::Parser::in_phrase(self, &c.text, &c.field);
+                c.contents = Some(self.parse_top(&mut p, Some(&c.field), &c.text)?);
+                if p.nested_phrase() {
+                    // the phrase added to the list being iterated
+                    return Err(QueryParserError::runtime_class(
+                        "ConcurrentModificationException",
+                        "null",
+                    ));
+                }
+                Ok(())
+            }
+            ParsedQuery::Boolean(b) => {
+                for (_, c) in &mut b.clauses {
+                    self.resolve_phrases(c)?;
+                }
+                Ok(())
+            }
+            ParsedQuery::Boost(inner, _) => self.resolve_phrases(inner),
+            _ => Ok(()),
+        }
+    }
+
+    /// `QueryParserBase.parse(query)`'s body: `TopLevelQuery(field)` and
+    /// its exceptions.
+    fn parse_top(
+        &self,
+        p: &mut parser::Parser<'_>,
+        field: Option<&str>,
+        query: &str,
+    ) -> Result<ParsedQuery, QueryParserError> {
+        match p.top_level_query(field) {
             Ok(q) => Ok(q.unwrap_or_else(|| ParsedQuery::Boolean(ParsedBoolean::default()))),
             Err(parser::Fail::Parse(msg)) => Err(QueryParserError::parse(format!(
                 "Cannot parse '{query}': {msg}"

@@ -18,6 +18,7 @@ use crate::extended_query::TermRangeQuery;
 use crate::query::{FuzzyQuery, PrefixQuery, RegexpQuery, WildcardQuery};
 use crate::query_builder::QueryBuilder;
 use crate::query_visitor::Occur;
+use crate::queryparser::complex_phrase::ComplexPhraseQuery;
 use crate::queryparser::ext::{ExtensionQuery, Extensions};
 use crate::queryparser::javacc::{CharStream, Grammar, JjError, Runtime, Stop, TokenMgrError};
 use crate::queryparser::{term_text, ParsedBoolean, ParsedQuery};
@@ -169,6 +170,12 @@ fn jj_3r_clause_field(rt: &mut Runtime<TokenManager>, first: i32) -> Result<bool
 pub(crate) struct Parser<'p> {
     cfg: &'p QueryParser,
     rt: Runtime<TokenManager>,
+    /// `ComplexPhraseQueryParser`'s second pass: the field of the phrase
+    /// whose text this parse is (`isPass2ResolvingPhrases`).
+    phrase_field: Option<String>,
+    /// A phrase met in the second pass (Java adds it to the list it is
+    /// iterating).
+    nested_phrase: std::cell::Cell<bool>,
 }
 
 impl<'p> Parser<'p> {
@@ -176,6 +183,31 @@ impl<'p> Parser<'p> {
         Parser {
             cfg,
             rt: Runtime::new(&GRAMMAR, TokenManager::new(CharStream::new(query))),
+            phrase_field: None,
+            nested_phrase: std::cell::Cell::new(false),
+        }
+    }
+
+    /// The second pass of `ComplexPhraseQueryParser` over a phrase's text,
+    /// on the phrase's field.
+    pub(crate) fn in_phrase(cfg: &'p QueryParser, query: &str, phrase_field: &str) -> Self {
+        let mut p = Self::new(cfg, query);
+        p.phrase_field = Some(phrase_field.to_string());
+        p
+    }
+
+    /// Whether this second-pass parse met a phrase of its own.
+    pub(crate) fn nested_phrase(&self) -> bool {
+        self.nested_phrase.get()
+    }
+
+    /// `checkPhraseClauseIsForSameField(field)`, in the second pass.
+    fn check_phrase_field(&self, field: &str) -> PResult<()> {
+        match &self.phrase_field {
+            Some(pf) if pf != field => Err(parse_error(format!(
+                "Cannot have clause for field \"{field}\" nested in phrase  for field \"{pf}\""
+            ))),
+            _ => Ok(()),
         }
     }
 
@@ -696,7 +728,17 @@ impl<'p> Parser<'p> {
                 _ => {}
             }
         }
-        Ok(q.map(ParsedQuery::from_clause))
+        let q = q.map(ParsedQuery::from_clause);
+        // `ComplexPhraseQueryParser.newTermQuery` in the second pass: a term
+        // of another field than the phrase's.
+        if let (Some(pf), Some(q)) = (&self.phrase_field, &q) {
+            if field != pf && has_term_query(q) {
+                return Err(Fail::Runtime(QueryParserError::runtime(
+                    "Error parsing complex phrase",
+                )));
+            }
+        }
+        Ok(q)
     }
 
     /// `getRangeQuery(field, part1, part2, startInclusive, endInclusive)`:
@@ -711,6 +753,7 @@ impl<'p> Parser<'p> {
         start_inclusive: bool,
         end_inclusive: bool,
     ) -> PResult<Option<ParsedQuery>> {
+        self.check_phrase_field(field)?;
         let start = match part1 {
             None => None,
             Some(p) => Some(self.normalize(field, &p)?),
@@ -756,6 +799,7 @@ impl<'p> Parser<'p> {
 
     /// `QueryParserBase.getWildcardQuery(field, termStr)`.
     fn get_wildcard_query_single(&self, field: &str, term: &[u16]) -> PResult<Option<ParsedQuery>> {
+        self.check_phrase_field(field)?;
         let star = [u16::from(b'*')];
         if field == "*" && term == star {
             return Ok(Some(ParsedQuery::MatchAll));
@@ -832,6 +876,7 @@ impl<'p> Parser<'p> {
         term: &str,
         min_similarity: f32,
     ) -> PResult<Option<ParsedQuery>> {
+        self.check_phrase_field(field)?;
         let bytes = self.normalize(field, term)?;
         let text = term_text(&bytes);
         let num_edits = float_to_edits(min_similarity, text.chars().count());
@@ -965,6 +1010,22 @@ impl<'p> Parser<'p> {
         text: &str,
         slop: i32,
     ) -> PResult<Option<ParsedQuery>> {
+        // `ComplexPhraseQueryParser.getFieldQuery(field, queryText, slop)`:
+        // the phrase is kept as text, parsed in the second pass.
+        if let Some(in_order) = self.cfg.complex_phrase_in_order {
+            if self.phrase_field.is_some() {
+                self.nested_phrase.set(true);
+            }
+            return Ok(Some(ParsedQuery::ComplexPhrase(Box::new(
+                ComplexPhraseQuery {
+                    field: field.unwrap_or_default().to_string(),
+                    text: text.to_string(),
+                    slop,
+                    in_order,
+                    contents: None,
+                },
+            ))));
+        }
         if let Some(f) = field {
             if self.cfg.field.is_some() {
                 // `QueryParserBase.getFieldQuery(field, queryText, slop)`:
@@ -1201,6 +1262,17 @@ fn apply_slop(q: ParsedQuery, slop: i32) -> PResult<ParsedQuery> {
         ParsedQuery::Boost(q, b) => ParsedQuery::Boost(Box::new(apply_slop(*q, slop)?), b),
         other => other,
     })
+}
+
+/// Whether `QueryBuilder` made a `TermQuery` in `q` (through
+/// `newTermQuery`): a term, or one in a boolean or boost.
+fn has_term_query(q: &ParsedQuery) -> bool {
+    match q {
+        ParsedQuery::Term(_) => true,
+        ParsedQuery::Boolean(b) => b.clauses.iter().any(|(_, c)| has_term_query(c)),
+        ParsedQuery::Boost(inner, _) => has_term_query(inner),
+        _ => false,
+    }
 }
 
 /// `hexToInt(c)`.
