@@ -23,13 +23,13 @@ monitor/PartitionMatcher	todo:M13	A multi-threaded matcher that collects all pos
 monitor/Presearcher	todo:M13	A Presearcher is used by the Monitor to reduce the number of queries actually run against a Document.
 monitor/PresearcherMatch	todo:M13	Wraps a QueryMatch with information about which queries were selected by the presearcher
 monitor/PresearcherMatches	todo:M13	Wraps a MultiMatchingQueries with information on which presearcher queries were selected
-monitor/QueryAnalyzer	todo:M13	Class to analyze and extract terms from a lucene query, to be used by a Presearcher in indexing.
+monitor/QueryAnalyzer	ported	crates/lucene-search/src/monitor/analyzer.rs::QueryAnalyzer -- Class to analyze and extract terms from a lucene query, to be used by a Presearcher in indexing.
 monitor/QueryCacheEntry	todo:M13	QueryCacheEntry
-monitor/QueryDecomposer	todo:M13	Split a disjunction query into its consituent parts, so that they can be indexed and run separately in the Monitor.
+monitor/QueryDecomposer	ported	crates/lucene-search/src/monitor/analyzer.rs::QueryDecomposer -- Split a disjunction query into its consituent parts, so that they can be indexed and run separately in the Monitor.
 monitor/QueryIndex	todo:M13	QueryIndex
 monitor/QueryMatch	todo:M13	Represents a match for a specific query and document Derived classes may contain more information (such as scores, highlights, etc)
 monitor/QueryTimeListener	todo:M13	Notified of the time it takes to run individual queries against a set of documents
-monitor/QueryTree	todo:M13	A representation of a node in a query tree Queries are analyzed and converted into an abstract tree, consisting of conjunction and disjunction nodes, and leaf n
+monitor/QueryTree	ported	crates/lucene-search/src/monitor/tree.rs::QueryTree -- A representation of a node in a query tree Queries are analyzed and converted into an abstract tree, consisting of conjunction and disjunction nodes, and leaf n
 monitor/ReadonlyQueryIndex	todo:M13	ReadonlyQueryIndex
 monitor/RegexpQueryHandler	todo:M13	A query handler implementation that matches Regexp queries by indexing regex terms by their longest static substring, and generates ngrams from Document tokens
 monitor/ScoringMatch	todo:M13	A QueryMatch that reports scores for each match
@@ -38,5 +38,5 @@ monitor/SuffixingNGramTokenFilter	todo:M13	SuffixingNGramTokenFilter
 monitor/TermFilteredPresearcher	todo:M13	Presearcher implementation that uses terms extracted from queries to index them in the Monitor, and builds a disjunction from terms in a document to match them.
 monitor/TermsEnumTokenStream	todo:M13	A TokenStream created from a org.apache.lucene.index.TermsEnum
 monitor/TermsHashBuilder	todo:M13	TermsHashBuilder
-monitor/TermWeightor	todo:M13	Calculates the weight of a Term
+monitor/TermWeightor	ported	crates/lucene-search/src/monitor/tree.rs::TermWeightor -- Calculates the weight of a Term
 monitor/WritableQueryIndex	todo:M13	WritableQueryIndex

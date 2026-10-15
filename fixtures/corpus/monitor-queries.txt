@@ -1,0 +1,41 @@
+fox
+quick brown
+"quick brown fox"
+quick AND brown
+quick OR brown
++quick -brown
+quick -brown
+-quick
+quick NOT brown
+a AND b
+title:quick
+title:quick AND body:fox
+body:fox^2 title:quick
+(fox quick)^3
+fox^2
+(quick OR brown) AND fox
+quick AND (brown OR fox)
+quick AND -brown
+(quick brown) OR (fox jumps)
+"a b c"~2
+fox*
+f?x
+quick~1
+body:extraordinarily
+the
+a
+x y z
+"quick the fox"
+fox AND fox
+fox AND fox^2
+(fox AND quick) OR (fox AND brown)
+title:fox^2 AND title:quick
+zzzz AND quick
+zzzz OR quick
+-zzzz OR quick
+a -a
+(quick -quick) AND brown
+quick brown fox jumps over lazy dog
++(fox quick) -brown
+fox AND (quick AND brown)
+fox || quick

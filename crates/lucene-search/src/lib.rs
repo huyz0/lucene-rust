@@ -225,6 +225,7 @@ pub mod leaf_collector;
 pub mod matches;
 pub mod memory;
 pub mod mlt;
+pub mod monitor;
 pub mod multi_bits;
 pub mod multi_segment;
 pub mod multi_terms;

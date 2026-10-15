@@ -104,7 +104,10 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
   `monitor` (41 classes, 5,374 lines) is planned as four sub-tasks, in order:
   - **T13.5a** `QueryAnalyzer`, `QueryTree`, `QueryDecomposer`,
     `TermWeightor`, `TermsEnumTokenStream`, `TermsHashBuilder`: each query's
-    term tree, the input to the presearcher.
+    term tree, the input to the presearcher. **Done**: `QueryAnalyzer`,
+    `QueryTree`, `QueryDecomposer`, `TermWeightor` ported and tested
+    (`GenMonitor.java`, `monitor_fixtures.rs`); `TermsEnumTokenStream` and
+    `TermsHashBuilder` are part of T13.5b, which needs them.
   - **T13.5b** `TermFilteredPresearcher`, `MultipassTermFilteredPresearcher`,
     `Presearcher`, `PresearcherMatch(es)`: the term-filter index that narrows
     a document batch to candidate queries.
@@ -122,7 +125,7 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
 - **T13.6** — Plugin wiring for the OpenSearch features above.
 
 **Status by task:** T13.1 done; T13.5 `MemoryIndex` done, `monitor` in
-progress (none of T13.5a-d committed yet); T13.2, T13.3, T13.4 and T13.6
+progress (T13.5a done; T13.5b-d not started); T13.2, T13.3, T13.4 and T13.6
 not started. M13 closes when all four acceptance criteria hold.
 
 ## Acceptance criteria
