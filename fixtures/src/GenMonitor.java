@@ -1,0 +1,101 @@
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import org.apache.lucene.analysis.standard.StandardAnalyzer;
+import org.apache.lucene.index.Term;
+import org.apache.lucene.monitor.QueryDecomposer;
+import org.apache.lucene.monitor.MonitorFixtureAccess;
+import org.apache.lucene.monitor.QueryTree;
+import org.apache.lucene.monitor.TermWeightor;
+import org.apache.lucene.queryparser.classic.QueryParser;
+import org.apache.lucene.search.Query;
+import org.apache.lucene.util.BytesRef;
+
+/**
+ * M13 T13.5a: {@code QueryDecomposer} and {@code QueryAnalyzer} (the term tree the
+ * presearcher indexes) over {@code fixtures/corpus/monitor-queries.txt}, one classic-syntax query a
+ * line, default field {@code body}, parsed with {@code StandardAnalyzer}. {@code decompose.tsv}:
+ * per query, the escaped query, then each decomposed sub-query's {@code toString()} (escaped,
+ * sorted, tab-separated) -- or {@code X} and the exception. {@code tree.tsv}: per query, the
+ * escaped query, the tree's {@code toString()} and its collected terms under the default weightor,
+ * or {@code X} and the exception. {@code weights.tsv}: the named weightors' weights over a few
+ * terms. {@code crates/lucene-search/tests/monitor_fixtures.rs} compares.
+ */
+public class GenMonitor {
+
+  static String esc(String s) {
+    return AnalysisRows.esc(s);
+  }
+
+  static List<String> queries() throws Exception {
+    return AnalysisRows.corpus("monitor-queries.txt");
+  }
+
+  public static void main(String[] args) throws Exception {
+    Path out = Path.of(args[0]).resolve("monitor");
+    Files.createDirectories(out);
+    List<String> qs = queries();
+    QueryParser parser = new QueryParser("body", new StandardAnalyzer());
+    QueryDecomposer decomposer = new QueryDecomposer();
+    TermWeightor weightor = TermWeightor.DEFAULT;
+
+    StringBuilder decompose = new StringBuilder();
+    StringBuilder tree = new StringBuilder();
+    for (String text : qs) {
+      decompose.append(esc(text)).append('\t');
+      tree.append(esc(text)).append('\t');
+      try {
+        Query q = parser.parse(text);
+        List<String> subs = new ArrayList<>();
+        for (Query sub : decomposer.decompose(q)) {
+          subs.add(sub.toString());
+        }
+        java.util.Collections.sort(subs);
+        decompose.append("Q");
+        for (String s : subs) {
+          decompose.append('\t').append(esc(s));
+        }
+      } catch (Exception e) {
+        decompose.append("X\t").append(esc(e.getClass().getName() + ": " + e.getMessage()));
+      }
+      decompose.append('\n');
+
+      try {
+        Query q = parser.parse(text);
+        QueryTree t = MonitorFixtureAccess.buildTree(q, weightor);
+        List<String> terms = new ArrayList<>();
+        t.collectTerms((field, bytes) -> terms.add(field + ":" + bytes.utf8ToString()));
+        tree.append("Q\t").append(esc(t.toString())).append('\t')
+            .append(esc(String.join(" ", terms)));
+      } catch (Exception e) {
+        tree.append("X\t").append(esc(e.getClass().getName() + ": " + e.getMessage()));
+      }
+      tree.append('\n');
+    }
+    Files.writeString(out.resolve("decompose.tsv"), decompose.toString(), StandardCharsets.UTF_8);
+    Files.writeString(out.resolve("tree.tsv"), tree.toString(), StandardCharsets.UTF_8);
+
+    StringBuilder weights = new StringBuilder();
+    Term[] probes = {
+      new Term("body", "fox"), new Term("body", "a"), new Term("title", "quick"),
+      new Term("body", "extraordinarily"), new Term("body", "")
+    };
+    java.util.Map<String, TermWeightor> named = new java.util.LinkedHashMap<>();
+    named.put("default", TermWeightor.DEFAULT);
+    named.put("length", TermWeightor.lengthWeightor(3, 0.3f));
+    named.put("field", TermWeightor.fieldWeightor(2.0, "title"));
+    named.put("term", TermWeightor.termWeightor(3.0, new BytesRef("fox")));
+    named.put("freq", TermWeightor.termFreqWeightor(java.util.Map.of("fox", 4), 10, 1));
+    named.put("combined", TermWeightor.combine(TermWeightor.DEFAULT, TermWeightor.fieldWeightor(2.0, "title")));
+    for (var e : named.entrySet()) {
+      weights.append(e.getKey());
+      for (Term p : probes) {
+        weights.append('\t').append(Double.doubleToLongBits(e.getValue().applyAsDouble(p)));
+      }
+      weights.append('\n');
+    }
+    Files.writeString(out.resolve("weights.tsv"), weights.toString(), StandardCharsets.UTF_8);
+  }
+}

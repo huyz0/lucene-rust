@@ -1,0 +1,41 @@
+fox	Q	body:fox
+quick brown	Q	body:brown	body:quick
+"quick brown fox"	Q	body:"quick brown fox"
+quick AND brown	Q	+body:quick +body:brown
+quick OR brown	Q	body:brown	body:quick
++quick -brown	Q	+body:quick -body:brown
+quick -brown	Q	+body:quick -body:brown
+-quick	Q
+quick NOT brown	Q	+body:quick -body:brown
+a AND b	Q	+body:a +body:b
+title:quick	Q	title:quick
+title:quick AND body:fox	Q	+title:quick +body:fox
+body:fox^2 title:quick	Q	(body:fox)^2.0	title:quick
+(fox quick)^3	Q	(body:fox)^3.0	(body:quick)^3.0
+fox^2	Q	(body:fox)^2.0
+(quick OR brown) AND fox	Q	+(body:quick body:brown) +body:fox
+quick AND (brown OR fox)	Q	+body:quick +(body:brown body:fox)
+quick AND -brown	Q	+body:quick -body:brown
+(quick brown) OR (fox jumps)	Q	body:brown	body:fox	body:jumps	body:quick
+"a b c"~2	Q	body:"a b c"~2
+fox*	Q	body:fox*
+f?x	Q	body:f?x
+quick~1	Q	body:quick~1
+body:extraordinarily	Q	body:extraordinarily
+the	Q	body:the
+a	Q	body:a
+x y z	Q	body:x	body:y	body:z
+"quick the fox"	Q	body:"quick the fox"
+fox AND fox	Q	body:fox
+fox AND fox^2	Q	+body:fox +(body:fox)^2.0
+(fox AND quick) OR (fox AND brown)	Q	+body:fox +body:brown	+body:fox +body:quick
+title:fox^2 AND title:quick	Q	+(title:fox)^2.0 +title:quick
+zzzz AND quick	Q	+body:zzzz +body:quick
+zzzz OR quick	Q	body:quick	body:zzzz
+-zzzz OR quick	Q	+body:quick -body:zzzz
+a -a	Q	+body:a -body:a
+(quick -quick) AND brown	Q	+(body:quick -body:quick) +body:brown
+quick brown fox jumps over lazy dog	Q	body:brown	body:dog	body:fox	body:jumps	body:lazy	body:over	body:quick
++(fox quick) -brown	Q	+body:fox -body:brown	+body:quick -body:brown
+fox AND (quick AND brown)	Q	+body:fox +(+body:quick +body:brown)
+fox || quick	Q	body:fox	body:quick
