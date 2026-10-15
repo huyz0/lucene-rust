@@ -1,0 +1,16 @@
+body=The quick brown fox jumps over the lazy dog
+body=Readings about Salmons and other select Alaska fishing Manuals	title=Fishing in Alaska
+body=a a a b b c	title=a
+body=the quick	body=brown fox	body=jumps
+body=	title=empty body
+title=only a title here
+body=Ölmühle über Straße café naïve résumé	title=Unicode
+body=quick|5 brown|x fox|abc dog	title=payload|1 words
+body=one two three four five six seven eight nine ten one two three
+body=New York is a big city; new york has many boroughs	title=New York
+body=The 2024 report: 3.5% growth, e-mail foo@example.com	body=second value of the report
+body=apple banana apple cherry apple banana	tags=fruit	tags=food	tags=fruit
+body=lucene memory index highlighter monitor percolator
+body=x	title=y	author=z
+body=multi word phrase across values	body=values join here
+body=UPPER lower MiXeD Case

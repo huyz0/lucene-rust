@@ -345,9 +345,14 @@ impl<'a> FuzzyMatch<'a> {
     ///
     /// A budget above `max_edits` is not clamped: nothing in this port asks for
     /// one, and clamping would silently answer a different question.
+    ///
+    /// A candidate that is not valid UTF-8 is out of range, whatever its
+    /// lossy decoding is within reach of: Lucene matches through a UTF-8
+    /// automaton, which never accepts one (and neither does [`Self::to_dfa`]).
     pub fn edits_within(&self, candidate: &[u8], max_edits: u8) -> Option<usize> {
         if candidate.len() < self.prefix_bytes
             || candidate[..self.prefix_bytes] != self.term[..self.prefix_bytes]
+            || std::str::from_utf8(candidate).is_err()
         {
             return None;
         }
@@ -369,84 +374,31 @@ impl<'a> FuzzyMatch<'a> {
         self.max_edits
     }
 
-    /// A byte DFA accepting a **superset** of the terms within `max_edits`
-    /// of this pattern -- `LevenshteinAutomata` built directly as an NFA and
-    /// determinized, for term-dictionary intersection (see
-    /// `crate::automaton`). The exact `prefix_length` code points are a
-    /// literal byte path; after them, state `(i, e)` has consumed `i` pattern
-    /// characters with `e` edits, and the edges are match, substitution,
-    /// insertion, deletion and (with `transpositions`) the adjacent swap of
-    /// the optimal-string-alignment distance [`Self::edits_within`] computes.
+    /// A byte DFA accepting the terms within `max_edits` of this pattern --
+    /// `FuzzyAutomatonBuilder`'s automaton: `LevenshteinAutomata` over the
+    /// code points past `prefix_length` (Lucene's parametric
+    /// `Lev1`/`Lev1T`/`Lev2`/`Lev2T` descriptions, so construction is linear
+    /// in the term), the exact prefix in front (`toAutomaton(n, prefix)`),
+    /// then `UTF32ToUTF8` and `CompiledAutomaton`'s determinization, which
+    /// has nothing to do unless a non-ASCII pattern's edges come to share a
+    /// UTF-8 lead byte.
     ///
-    /// A term character is consumed with
-    /// [`crate::automaton::Nfa::lenient_char`], so a term that is not valid
-    /// UTF-8 -- which the exact matcher decodes lossily -- is still covered;
-    /// a pattern that itself contains U+FFFD could match such a term *by*
-    /// its replacement character, so that case gets no automaton at all.
-    /// `None` also when the automaton would be too large.
+    /// The automaton reads UTF-8, so a term that is not valid UTF-8 is
+    /// rejected, as Lucene's is, and as [`Self::edits_within`] rejects it. A
+    /// pattern that is not valid UTF-8 itself (its lossy decoding holds
+    /// U+FFFD) gets no automaton, and the walk falls back to
+    /// [`Self::edits_within`] alone. `None` also when the automaton would be
+    /// too large.
     pub(crate) fn to_dfa(&self, max_edits: u8) -> Option<crate::automaton::ByteDfa> {
+        use lucene_util::automaton::{LevenshteinAutomata, Utf32ToUtf8};
         if self.term_chars.contains(&char::REPLACEMENT_CHARACTER) {
             return None;
         }
-        let k = max_edits as usize;
-        let p = &self.term_chars[self.prefix_chars..];
-        let m = p.len();
-        let mut nfa = crate::automaton::Nfa::new();
-        let start = nfa.state()?;
-        let origin = nfa.bytes(start, &self.term[..self.prefix_bytes])?;
-        // `st[i * (k + 1) + e]`: `i` pattern characters consumed, `e` edits.
-        // A grid past the NFA's own state cap could never be built, so it is
-        // refused before anything is allocated for it.
-        let width = k.checked_add(1)?;
-        let cells = m.checked_add(1)?.checked_mul(width)?;
-        if cells > crate::automaton::MAX_NFA_STATES {
-            return None;
-        }
-        let mut st = Vec::with_capacity(cells);
-        for idx in 0..cells {
-            st.push(if idx == 0 { origin } else { nfa.state()? });
-        }
-        let accept = nfa.state()?;
-        let mut buf = [0u8; 4];
-        let mut buf2 = [0u8; 4];
-        let mut shared = std::collections::HashMap::new();
-        // ARITH: `cells = (m + 1) * width` was computed checked and is at most
-        // `MAX_NFA_STATES`. Every index below is `i2 * width + e2` with `i2 <=
-        // m` (`i + 1` only under `i < m`, `i + 2` only under `i + 1 < m`) and
-        // `e2 <= k` (`e + 1` only under `e < k`), so it is below `cells`.
-        #[allow(clippy::arithmetic_side_effects)]
-        for i in 0..=m {
-            for e in 0..=k {
-                let from = st[i * width + e];
-                if i < m {
-                    // Match.
-                    let c = p[i].encode_utf8(&mut buf).as_bytes();
-                    nfa.bytes_to(from, c, st[(i + 1) * width + e])?;
-                }
-                if e < k {
-                    if i < m {
-                        // Substitution.
-                        nfa.lenient_char_shared(from, st[(i + 1) * width + e + 1], &mut shared)?;
-                        // Deletion (a pattern character the term lacks).
-                        nfa.epsilon(from, st[(i + 1) * width + e + 1]);
-                    }
-                    // Insertion (a term character the pattern lacks).
-                    nfa.lenient_char_shared(from, st[i * width + e + 1], &mut shared)?;
-                    if self.transpositions && i + 1 < m {
-                        // `p[i + 1] p[i]`, then two characters consumed for one
-                        // edit.
-                        let second = p[i + 1].encode_utf8(&mut buf).as_bytes().to_vec();
-                        let mid = nfa.bytes(from, &second)?;
-                        let first = p[i].encode_utf8(&mut buf2).as_bytes();
-                        nfa.bytes_to(mid, first, st[(i + 2) * width + e + 1])?;
-                    }
-                }
-                if i == m {
-                    nfa.epsilon(from, accept);
-                }
-            }
-        }
-        nfa.determinize(start, accept)
+        let prefix: String = self.term_chars[..self.prefix_chars].iter().collect();
+        let suffix: String = self.term_chars[self.prefix_chars..].iter().collect();
+        let lev = LevenshteinAutomata::new(&suffix, self.transpositions);
+        let automaton = lev.to_automaton_with_prefix(i32::from(max_edits), &prefix)?;
+        crate::automaton::from_byte_automaton(&Utf32ToUtf8::new().convert(&automaton))
     }
 
     /// Tests whether `candidate` matches: it must start with this pattern's
@@ -885,6 +837,9 @@ mod tests {
     #[test]
     fn per_budget_helpers_agree_with_the_whole_budget() {
         let m = FuzzyMatch::new(b"lucene", 2, 1, true);
+        // ill-formed UTF-8 is out of range, as in Lucene's UTF-8 automaton
+        assert_eq!(m.edits(b"l\xffcene"), None);
+        assert_eq!(m.edits(b"lucen\xff"), None);
         for c in [
             &b"lucene"[..],
             b"lucine",
