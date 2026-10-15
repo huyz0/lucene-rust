@@ -56,7 +56,7 @@ Milestones (M1-M12, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [search-execution.md](parity/search-execution.md) | `lucene-search`: scorer tree, bulk scorers, similarities, multi-segment fan-out | 29 |
 | [search-collectors.md](parity/search-collectors.md) | `lucene-search`: collectors, sorting, facets, aggregations, highlighting, fetch | 33 |
 | [search-readers.md](parity/search-readers.md) | `lucene-search`: `DirectoryReader`, NRT readers, `CheckIndex`, searcher management | 27 |
-| [monitor.md](parity/monitor.md) | `lucene-search`: the percolator's query analysis (M13 T13.5a) | 5 |
+| [monitor.md](parity/monitor.md) | `lucene-search`: the percolator's query analysis and presearcher (M13 T13.5a-b) | 7 |
 | [geo-points.md](parity/geo-points.md) | Geo point fields and queries (M9 T9.2) | 9 |
 | [geo-shapes.md](parity/geo-shapes.md) | Geo shape fields and queries (M9 T9.3) | 8 |
 | [spatial3d.md](parity/spatial3d.md) | `lucene-spatial3d` (M9 T9.4) | 16 |
