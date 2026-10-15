@@ -25,7 +25,7 @@ modules themselves are much larger:
 | `highlighter` | 95 | 8,900 | `UnifiedHighlighter`, subset |
 | `suggest` | 81 | 8,205 | FST completion shape |
 | `facet` | 101 | 11,007 | SSDV and range facets |
-| `memory` | 3 | 1,762 | none |
+| `memory` | 3 | 1,762 | `MemoryIndex` ported (T13.5) |
 | `monitor` | 41 | 3,102 | none |
 
 OpenSearch highlights, parses `query_string` and serves completion suggesters
@@ -95,7 +95,12 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
 - **T13.2** — Highlighting, including term vectors in `DirectoryReader`.
 - **T13.3** — Suggesters and the completion postings format.
 - **T13.4** — Taxonomy facets and drill-sideways.
-- **T13.5** — `MemoryIndex` and `monitor`.
+- **T13.5** — `MemoryIndex` and `monitor`. `MemoryIndex` is ported
+  (`GenMemoryIndex`: 16 documents under eight configurations, every query's
+  score bit for bit, `toStringDebug`, the refusals), searched in memory over
+  the codec's own encoding: 1.08x Lucene to build, 1.8x to search. Its
+  benchmark moved `FuzzyQuery` onto Lucene's parametric Levenshtein
+  automata, 4x cheaper to build per query. `monitor` is not started.
 - **T13.6** — Plugin wiring for the OpenSearch features above.
 
 ## Acceptance criteria

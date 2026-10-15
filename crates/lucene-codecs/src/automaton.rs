@@ -1308,6 +1308,58 @@ impl Expander {
 /// table at the end. Scanning a 256-entry row per state in each of three
 /// passes was most of what compiling a small pattern such as `t1[0-9]` cost
 /// -- once per query.
+/// A [`ByteDfa`] of a `lucene_util` byte automaton (every label a byte,
+/// state 0 the start) -- `CompiledAutomaton`'s `Operations.determinize(binary)`
+/// after `UTF32ToUTF8`. A deterministic automaton is taken as it is, with no
+/// subset construction (`determinize` returns it unchanged in Java too);
+/// `UTF32ToUTF8` keeps most deterministic automata deterministic, but not
+/// one whose edges share a UTF-8 lead byte, which goes through
+/// [`Nfa::determinize`]. `None` for a label above `0xff` or past the state
+/// limits.
+pub(crate) fn from_byte_automaton(a: &lucene_util::automaton::Automaton) -> Option<ByteDfa> {
+    let n = usize::try_from(a.get_num_states()).ok()?;
+    if n == 0 || n > MAX_DFA_STATES {
+        return None;
+    }
+    if !a.is_deterministic() {
+        let mut nfa = Nfa::new();
+        let mut states = Vec::with_capacity(n);
+        for _ in 0..n {
+            states.push(nfa.state()?);
+        }
+        let accept = nfa.state()?;
+        for (s, out) in a.get_sorted_transitions().iter().enumerate() {
+            for t in out {
+                let to = *states.get(usize::try_from(t.dest).ok()?)?;
+                nfa.range(
+                    states[s],
+                    u8::try_from(t.min).ok()?,
+                    u8::try_from(t.max).ok()?,
+                    to,
+                );
+            }
+            if a.is_accept(i32::try_from(s).ok()?) {
+                nfa.epsilon(states[s], accept);
+            }
+        }
+        return nfa.determinize(states[0], accept);
+    }
+    let mut trans = Vec::new();
+    for (s, out) in a.get_sorted_transitions().iter().enumerate() {
+        let s = u32::try_from(s).ok()?;
+        for t in out {
+            trans.push((
+                s,
+                u8::try_from(t.min).ok()?,
+                u8::try_from(t.max).ok()?,
+                u32::try_from(t.dest).ok()?,
+            ));
+        }
+    }
+    let accept = (0..a.get_num_states()).map(|s| a.is_accept(s)).collect();
+    Some(prune(&trans, accept))
+}
+
 // ARITH: `n = accept.len() <= MAX_DFA_STATES` (10 000), so state numbers fit
 // a `u32` and `ns << 8 | b` (`b < 256`) stays under 2^22, inside `out`, which
 // holds 256 entries per live state; `count` counts live states, at most `n`,
@@ -1835,15 +1887,37 @@ mod tests {
             ("té€".as_bytes(), 1, 0, true),
             (b"ba", 2, 0, true),
             (b"", 1, 0, true),
+            // the prefix covering the whole term: an empty suffix
+            (b"ab", 1, 2, true),
+            (b"ab", 2, 5, false),
+            // no edits: the exact term behind its prefix
+            (b"abc", 0, 1, true),
+            // non-ASCII at two edits: edges sharing a UTF-8 lead byte, the
+            // subset-construction branch of `from_byte_automaton`
+            ("é€x".as_bytes(), 2, 1, true),
         ] {
             let m = crate::fuzzy::FuzzyMatch::new(target, edits, prefix, transpositions);
             let dfa = m.to_dfa(edits).expect("dfa");
+            // Lucene's automaton reads UTF-8: a term that is not valid UTF-8
+            // never matches, whatever its lossy decoding is within reach of
             assert_superset(
                 &dfa,
                 &terms,
                 |t| m.edits_within(t, edits).is_some(),
                 &format!("{:?}~{edits}", String::from_utf8_lossy(target)),
             );
+            for t in terms.iter().filter(|t| std::str::from_utf8(t).is_err()) {
+                assert!(!dfa.run(t), "{target:?}~{edits} accepts ill-formed {t:?}");
+            }
+            // Lucene's parametric automaton is exact, not just a superset:
+            // it accepts what the banded distance accepts, and nothing else
+            for t in &terms {
+                assert_eq!(
+                    dfa.run(t),
+                    m.edits_within(t, edits).is_some(),
+                    "{target:?}~{edits} prefix {prefix} on {t:?}"
+                );
+            }
         }
     }
 

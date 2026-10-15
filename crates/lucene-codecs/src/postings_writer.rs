@@ -741,7 +741,11 @@ pub fn write_fields_with_options(
 
     // ---- .doc ----
     let mut maxima = PostingsMaxima::default();
-    let mut doc = Vec::new();
+    // Every file starts at a size a small segment fits: growing an empty
+    // buffer through 8, 16, 32 ... bytes was a measurable share of a
+    // one-document flush (`MemoryIndex`).
+    let initial = 256usize;
+    let mut doc = Vec::with_capacity(initial);
     codec_util::write_index_header(
         &mut doc,
         DOC_CODEC,
@@ -760,6 +764,7 @@ pub fn write_fields_with_options(
     });
     let mut pos = Vec::new();
     if any_positions {
+        pos.reserve(initial);
         codec_util::write_index_header(
             &mut pos,
             POS_CODEC,
@@ -782,6 +787,7 @@ pub fn write_fields_with_options(
         .unwrap_or_else(|| inputs.iter().any(|input| input.has_payloads));
     let mut pay = Vec::new();
     if any_offsets || any_payloads {
+        pay.reserve(initial);
         codec_util::write_index_header(
             &mut pay,
             PAY_CODEC,
@@ -792,7 +798,7 @@ pub fn write_fields_with_options(
     }
 
     // ---- .tim / .tip headers ----
-    let mut tim = Vec::new();
+    let mut tim = Vec::with_capacity(initial);
     codec_util::write_index_header(
         &mut tim,
         TERMS_CODEC_NAME,
@@ -800,7 +806,7 @@ pub fn write_fields_with_options(
         segment_id,
         segment_suffix,
     );
-    let mut tip = Vec::new();
+    let mut tip = Vec::with_capacity(initial);
     codec_util::write_index_header(
         &mut tip,
         TERMS_INDEX_CODEC_NAME,
@@ -810,7 +816,7 @@ pub fn write_fields_with_options(
     );
 
     // ---- .tmd header ----
-    let mut tmd = Vec::new();
+    let mut tmd = Vec::with_capacity(initial);
     codec_util::write_index_header(
         &mut tmd,
         TERMS_META_CODEC_NAME,
@@ -1045,7 +1051,7 @@ pub fn write_fields_with_options(
     // records `getFilePointer()` after writing the footer). Lucene sizes its
     // impact-decoding buffers from these maxima before reading any block, so
     // they must cover what was actually written.
-    let mut psm = Vec::new();
+    let mut psm = Vec::with_capacity(initial);
     codec_util::write_index_header(
         &mut psm,
         META_CODEC,

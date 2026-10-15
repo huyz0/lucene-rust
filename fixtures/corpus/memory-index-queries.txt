@@ -1,0 +1,53 @@
+quick
+fox
+the
+dog OR cat
++quick +fox
++quick -fox
+quick AND brown AND fox
+"quick brown"
+"quick fox"~2
+"brown quick"~3
+"fox jumps"
+qui*
+f?x
+fishing~1
+salmon~2
+title:alaska
+title:fishing body:fishing
+a
+a^3 b
+b c
+"a b"
+title:empty
+body:empty
+title:title
+ölmühle
+über
+cafe
+café
+payload
+quick|5
+brown
+"new york"
+york^0.5 city
+report
+growth
+"report second"
+"report second"~200
+apple
+apple banana cherry
+tags:fruit
+lucene AND (memory OR monitor)
+x y z
+title:y author:z
+"values values"~150
+"values join"
+upper
+mixed
+*:*
+[a TO c]
+{apple TO cherry}
+/ap+le/
+-nothing
+nothing
