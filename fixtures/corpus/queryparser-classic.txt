@@ -207,3 +207,8 @@ title:foo* body:bar?
 "a\nb"
 \n
 a\n
+AB\C*
+A\B\C*D
+Fo\O?bar*
+X\*Y*
+Q\ Z*

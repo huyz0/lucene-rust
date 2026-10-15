@@ -9,6 +9,7 @@ import org.apache.lucene.queryparser.classic.MultiFieldQueryParser;
 import org.apache.lucene.queryparser.classic.ParseException;
 import org.apache.lucene.queryparser.classic.QueryParser;
 import org.apache.lucene.queryparser.complexPhrase.ComplexPhraseQueryParser;
+import org.apache.lucene.queryparser.flexible.standard.StandardQueryParser;
 import org.apache.lucene.queryparser.simple.SimpleQueryParser;
 import org.apache.lucene.queryparser.xml.CoreParser;
 import org.apache.lucene.queryparser.surround.query.SrndQuery;
@@ -114,6 +115,21 @@ public class QueryParserMicro {
     runSurround("qp_surround_corpus",
         Files.readAllLines(Path.of("fixtures/corpus/queryparser-surround.txt"), StandardCharsets.UTF_8));
     run("qp_multi_field_corpus", new MultiFieldQueryParser(new String[] {"title", "body"}, new StandardAnalyzer()), corpus);
+    List<String> flexible = new ArrayList<>(corpus);
+    flexible.addAll(Files.readAllLines(Path.of("fixtures/corpus/queryparser-flexible.txt"), StandardCharsets.UTF_8));
+    StandardQueryParser flexibleParser = new StandardQueryParser(new StandardAnalyzer());
+    SweepMicro.measure(
+        "qp_flexible_corpus",
+        () -> {
+          for (String q : flexible) {
+            try {
+              SweepMicro.sink += flexibleParser.parse(q, "f").hashCode();
+            } catch (org.apache.lucene.queryparser.flexible.core.QueryNodeException | RuntimeException e) {
+              SweepMicro.sink += String.valueOf(e.getMessage()).length();
+            }
+          }
+          return flexible.size();
+        });
     List<String> xml = Files.readAllLines(Path.of("fixtures/corpus/queryparser-xml.txt"), StandardCharsets.UTF_8);
     CoreParser xmlParser = new CoreParser("body", new StandardAnalyzer());
     SweepMicro.measure(

@@ -39,6 +39,7 @@ RUN mkdir -p "$LUCENE_JARS" && cd "$LUCENE_JARS" \
     && base=https://repo1.maven.org/maven2/org/apache/lucene \
     && for m in lucene-core lucene-analysis-common lucene-queryparser \
                 lucene-facet lucene-highlighter lucene-suggest lucene-codecs \
+                lucene-monitor lucene-memory \
                 lucene-backward-codecs lucene-misc lucene-queries lucene-spatial3d \
                 lucene-spatial-extras lucene-join lucene-grouping \
                 lucene-analysis-icu lucene-analysis-kuromoji lucene-analysis-nori \

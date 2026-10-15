@@ -1,0 +1,352 @@
+a	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+A	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+foo bar	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+foo  bar	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+"foo bar"	X	java.lang.IllegalArgumentException: Slop must be >= 0, got -1
+"foo bar"~2	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+"foo bar"~2^3	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+"foo bar"^3~2	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse "foo bar"^3~2:  
+"foo"	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+""	Q	MatchNoDocsQuery("")	MatchNoDocsQuery(MatchNoDocsQuery(""))
+"a b c d"	X	java.lang.IllegalArgumentException: Slop must be >= 0, got -1
+"The Quick Brown Fox"	X	java.lang.IllegalArgumentException: Slop must be >= 0, got -1
+title:foo	Q	title:foo	TermQuery(title:foo)
+title:"foo bar"	X	java.lang.IllegalArgumentException: Slop must be >= 0, got -1
+title:(foo bar)	Q	title:foo title:bar	Boolean(TermQuery(title:foo) TermQuery(title:bar))
+title:(+foo -bar)	Q	+title:foo -title:bar	Boolean(+TermQuery(title:foo) -TermQuery(title:bar))
++foo +bar	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
++foo -bar	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+-foo	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+-foo -bar	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+foo AND bar	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+foo OR bar	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+foo AND NOT bar	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+foo && bar	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+foo || bar	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+!foo	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+foo !bar	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+NOT foo	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+foo NOT bar	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a AND b OR c	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a OR b AND c	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a AND b AND c	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a OR b OR c	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+(a OR b) AND c	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a AND (b OR c)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+((a))	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+(a)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+()	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse ():  
+(a b) (c d)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
++(a b) -(c d)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+title:a AND body:b	Q	+title:a +body:b	Boolean(+TermQuery(title:a) +TermQuery(body:b))
+foo^2	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+foo^2.5	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+foo^.5	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse foo^.5:  
+foo^0	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+foo^	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse foo^:  
+foo~	X	java.lang.IllegalArgumentException: prefixLength cannot be negative.
+foo~1	X	java.lang.IllegalArgumentException: prefixLength cannot be negative.
+foo~2	X	java.lang.IllegalArgumentException: prefixLength cannot be negative.
+foo~0.5	X	java.lang.IllegalArgumentException: prefixLength cannot be negative.
+foo~0.8	X	java.lang.IllegalArgumentException: prefixLength cannot be negative.
+foo~3	X	java.lang.IllegalArgumentException: prefixLength cannot be negative.
+foo~1^2	X	java.lang.IllegalArgumentException: prefixLength cannot be negative.
+foo^2~1	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse foo^2~1:  
+fo*	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+f*o	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+f?o	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+*foo	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Leading wildcard is not allowed: f:*foo
+?foo	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Leading wildcard is not allowed: f:?foo
+*	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Leading wildcard is not allowed: f:*
+*:*	Q	*:*	MatchAllDocsQuery(*:*)
+title:*	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Leading wildcard is not allowed: title:*
+title:fo*	Q	title:fo*	PrefixQuery(title:fo*)
+foo*bar*	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+te?t	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+"fo*"	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+/fo.*/	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+/[a-c]+/	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+title:/x.*/	Q	title:/x.*/	RegexpQuery(title:/x.*/)
+/a/b	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+[a TO z]	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+{a TO z}	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+[a TO z}	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+{a TO z]	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+[* TO z]	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+[a TO *]	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+[* TO *]	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+title:[a TO z]	Q	title:[a TO z]	TermRangeQuery(title:[a TO z])
+[a TO z]^2	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+[ a TO z ]	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+["a b" TO "c d"]	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+[1 TO 5]	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+[2002-01-01 TO 2003-01-01]	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+[a TO]	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse [a TO]:  
+[TO z]	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse [TO z]:  
+[a z]	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse [a z]:  
+a:b:c	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse a:b:c:  
+a\\:b	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a\\ b	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a\\-b	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a\\+b	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a\\(b\\)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a\\"b	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a\\\\b	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a\\*b	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a\\?b	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a\\~b	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a\\^b	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a\\{b\\}	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a\\[b\\]	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a\\!b	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a\\&&b	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a\\|\\|b	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+A	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+é	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+été	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+foo\\	X	org.apache.lucene.queryparser.flexible.core.QueryNodeParseException: Syntax Error, cannot parse foo\\: Lexical error at line 1, column 5.  Encountered: <EOF> (in lexical state 2) 
+"foo\\"bar"	X	java.lang.IllegalArgumentException: Slop must be >= 0, got -1
+"foo\\\\"	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+foo-bar	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+foo+bar	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+foo.bar	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+foo/bar	X	org.apache.lucene.queryparser.flexible.core.QueryNodeParseException: Syntax Error, cannot parse foo/bar: Lexical error at line 1, column 8.  Encountered: <EOF> after prefix "/bar" (in lexical state 2) 
+wi-fi	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+e-mail address	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+U.S.A.	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+O'Neil	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+café	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+日本語	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+中文 测试	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+x AND	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse x AND:  
+AND x	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse AND x:  
+OR	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse OR:  
+AND	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse AND:  
+NOT	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse NOT:  
+x OR	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse x OR:  
+(foo	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse (foo:  
+foo)	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse foo):  
+"foo	X	org.apache.lucene.queryparser.flexible.core.QueryNodeParseException: Syntax Error, cannot parse "foo: Lexical error at line 1, column 5.  Encountered: <EOF> after prefix "\\"foo" (in lexical state 2) 
+foo"	X	org.apache.lucene.queryparser.flexible.core.QueryNodeParseException: Syntax Error, cannot parse foo": Lexical error at line 1, column 5.  Encountered: <EOF> (in lexical state 2) 
+title:	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse title::  
+:foo	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse :foo:  
+foo:	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse foo::  
+[a TO	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse [a TO:  
+a TO b	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+foo^bar	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse foo^bar:  
+foo~bar	X	java.lang.IllegalArgumentException: prefixLength cannot be negative.
++	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse +:  
+-	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse -:  
+!	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse !:  
++ foo	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+- foo	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+! foo	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+foo +	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse foo +:  
+foo -	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse foo -:  
+a && || b	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse a && || b:  
+a ^ b	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse a ^ b:  
+^2	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse ^2:  
+~2	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse ~2:  
+"a"~	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse "a"~:  
+"a"~x	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse "a"~x:  
+"a" ~2	Q	a	TermQuery(a)
+title:foo^2 body:bar^3	Q	(title:foo)^2.0 (body:bar)^3.0	Boolean(Boost(TermQuery(title:foo)^2.0) Boost(TermQuery(body:bar)^3.0))
++title:foo -body:bar baz	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+title:(a OR b)^2	Q	(title:a title:b)^2.0	Boost(Boolean(TermQuery(title:a) TermQuery(title:b))^2.0)
+(a b)^3	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+(a b)~2	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse (a b)~2:  
+-(-a)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
++(+a)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+foo*^2	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fo*~2	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+"foo bar" baz	X	java.lang.IllegalArgumentException: Slop must be >= 0, got -1
+"foo bar" AND "baz qux"	X	java.lang.IllegalArgumentException: Slop must be >= 0, got -1
+the a an	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+The Quick	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+FOO bar BAZ	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+foo\tbar	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+ foo	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+foo	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+foo&bar	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+foo|bar	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+foo&&bar	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+foo||bar	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a AND OR b	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse a AND OR b:  
+a NOT NOT b	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse a NOT NOT b:  
+NOT NOT a	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse NOT NOT a:  
+a AND AND b	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse a AND AND b:  
+(a AND b) OR (c AND NOT d)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+title:"a b"~3^2	Q	(title:"a b"~3)^2.0	Boost(PhraseQuery(title:"a b"~3)^2.0)
+"a b c"~10	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+"a  b"	X	java.lang.IllegalArgumentException: Slop must be >= 0, got -1
+"a-b"	X	java.lang.IllegalArgumentException: Slop must be >= 0, got -1
+"a,b"	X	java.lang.IllegalArgumentException: Slop must be >= 0, got -1
+a,b	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+12345	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+1.5	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+-1	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
++1	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+x^-1	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse x^-1:  
+title:[1 TO 10] AND foo	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+*a*	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Leading wildcard is not allowed: f:*a*
+a*b?c	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+?	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Leading wildcard is not allowed: f:?
+??	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Leading wildcard is not allowed: f:??
+**	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Leading wildcard is not allowed: f:**
+*?	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Leading wildcard is not allowed: f:*?
+foo~1.5	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse foo~1.5:  
+foo~-1	X	java.lang.IllegalArgumentException: prefixLength cannot be negative.
+"foo"~1.5	X	java.lang.NumberFormatException: For input string: "1.5"
+a b c d e f g h i j	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+title:foo* body:bar?	Q	title:foo* body:bar?	Boolean(PrefixQuery(title:foo*) WildcardQuery(body:bar?))
+\\*	Q	MatchNoDocsQuery("")	MatchNoDocsQuery(MatchNoDocsQuery(""))
+\\?	Q	MatchNoDocsQuery("")	MatchNoDocsQuery(MatchNoDocsQuery(""))
+\\\\	Q	MatchNoDocsQuery("")	MatchNoDocsQuery(MatchNoDocsQuery(""))
+"\\\\"	Q	MatchNoDocsQuery("")	MatchNoDocsQuery(MatchNoDocsQuery(""))
+"\\""	Q	MatchNoDocsQuery("")	MatchNoDocsQuery(MatchNoDocsQuery(""))
+"a\\nb"	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+\\n	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a\\n	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+AB\\C*	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+A\\B\\C*D	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+Fo\\O?bar*	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+X\\*Y*	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+Q\\ Z*	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a AND b	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a && b	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a || b OR c	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+!a NOT b	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a:b	Q	a:b	TermQuery(a:b)
+a=b	Q	a:b	TermQuery(a:b)
+f:<3	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse f:<3:  
+f:<=3	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse f:<=3:  
+f:>3	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse f:>3:  
+f:>=3	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse f:>=3:  
+f<3	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+f<=abc	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+f>"x y"	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+f>=1.5	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+"phrase here"~3	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+term^2	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+term^2.5	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+term~0.5	X	java.lang.IllegalArgumentException: prefixLength cannot be negative.
+term~	X	java.lang.IllegalArgumentException: prefixLength cannot be negative.
+[a TO b]	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+{a TO b}	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+[a TO "b c"]	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+{* TO *}	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+[a TO b}	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+/reg.*/	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+/a\\/b/	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+(a b c)@2	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+(a b)@	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse (a b)@:  
+fn:ordered(a b)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:unordered(a b)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:atleast(2 a b c)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:atLeast(2 a b c)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:maxgaps(2 fn:unordered(a b))	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:maxGaps(1 fn:ordered(a b))	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:maxwidth(3 fn:ordered(a b))	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:maxWidth(3 a)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:wildcard(a*)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:wildcard(a* 5)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:fuzzyTerm(abc 2)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:fuzzyterm(abc)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:or(a b c)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:phrase(a b)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:within(a 3 b)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:notWithin(a 3 b)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:notwithin(a 3 b)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:containedBy(a b)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:containedby(a b)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:notContainedBy(a b)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:containing(a b)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:notContaining(a b)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:extend(a 2 3)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:before(a b)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:after(a b)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:overlapping(a b)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:nonOverlapping(a b)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:nonoverlapping(a b)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:unorderedNoOverlaps(a b)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:unorderednooverlaps(a b)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+field:fn:ordered(a b)	Q	field:ORDERED(a,b)	IntervalQuery(field:ORDERED(a,b))
+fn:ordered("a b" c)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:ordered(fn:or(a b) c)	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fn:bogus(a)	X	org.apache.lucene.queryparser.flexible.core.QueryNodeParseException: Syntax Error, cannot parse fn:bogus(a): Lexical error at line 1, column 5.  Encountered: '111' (111), after prefix "b" 
+fn:ordered(a	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse fn:ordered(a:  
+fn:	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse fn::  
+fn	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fnx	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a:"unterminated	X	org.apache.lucene.queryparser.flexible.core.QueryNodeParseException: Syntax Error, cannot parse a:"unterminated: Lexical error at line 1, column 16.  Encountered: <EOF> after prefix "\\"unterminated" (in lexical state 2) 
+\\	X	org.apache.lucene.queryparser.flexible.core.QueryNodeParseException: Syntax Error, cannot parse \\: Lexical error at line 1, column 2.  Encountered: <EOF> (in lexical state 2) 
+a\\	X	org.apache.lucene.queryparser.flexible.core.QueryNodeParseException: Syntax Error, cannot parse a\\: Lexical error at line 1, column 3.  Encountered: <EOF> (in lexical state 2) 
+[a TO	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse [a TO:  
+a b	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a\tb	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+b	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a　b	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a\\:b	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a\\ b	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+\\+a	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+-a +b	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a:(b c)	Q	a:b a:c	Boolean(TermQuery(a:b) TermQuery(a:c))
+a:b^2 c:d~2	X	java.lang.IllegalArgumentException: prefixLength cannot be negative.
+"a\\"b"	X	java.lang.IllegalArgumentException: Slop must be >= 0, got -1
+1.5	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+.5	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+1.	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a^	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse a^:  
+~a	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse ~a:  
+a@b	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse a@b:  
+@	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse @:  
+<	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse <:  
+>	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse >:  
+=	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse =:  
+<=	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse <=:  
+>=	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse >=:  
+:	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse ::  
+)	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse ):  
+(	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse (:  
+*	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Leading wildcard is not allowed: f:*
+?	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Leading wildcard is not allowed: f:?
+a*b?c	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+*:*	Q	*:*	MatchAllDocsQuery(*:*)
+"" 	Q	MatchNoDocsQuery("")	MatchNoDocsQuery(MatchNoDocsQuery(""))
+a)	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse a):  
++-a	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse +-a:  
+fast	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fast car	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+"fast car"	X	java.lang.IllegalArgumentException: Slop must be >= 0, got -1
+"fast car"~2	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+"x fast y"	X	java.lang.IllegalArgumentException: Slop must be >= 0, got -1
+x fast	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+car~1	X	java.lang.IllegalArgumentException: prefixLength cannot be negative.
+fast*	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+fast^2	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+"fast"	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+"the car"	X	java.lang.IllegalArgumentException: Slop must be >= 0, got -1
+the	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+"the the"	X	java.lang.IllegalArgumentException: Slop must be >= 0, got -1
+f:fast OR car	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a~1	X	java.lang.IllegalArgumentException: prefixLength cannot be negative.
+"a b"~1	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a*b	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a\\\\*b*	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+a\\\\?b	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+x\\\\*y*z	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+A\\\\*B?	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+Foo~1	X	java.lang.IllegalArgumentException: prefixLength cannot be negative.
+F*~	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+/Foo.*/	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+[A TO B]	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+{ÀB TO É}	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+f>=ABC	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+f<ÀB	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+(a)@2	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+(a)^2@1	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+(fast car)@2	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+(the a)@2	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+(the)@2	X	java.lang.IllegalArgumentException: boost must be a positive float, got -1.0
+(a b)@-1	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse (a b)@-1:  

@@ -16,157 +16,157 @@ queryparser/ext/ExtendableQueryParser	ported	crates/lucene-search/src/queryparse
 queryparser/ext/ExtensionQuery	ported	crates/lucene-search/src/queryparser/ext.rs::ExtensionQuery
 queryparser/ext/Extensions	ported	crates/lucene-search/src/queryparser/ext.rs::Extensions
 queryparser/ext/ParserExtension	ported	crates/lucene-search/src/queryparser/ext.rs::ParserExtension
-queryparser/flexible/core/QueryNodeError	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/QueryNodeException	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/QueryNodeParseException	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/QueryParserHelper	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/builders/QueryBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/builders/QueryTreeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/config/AbstractQueryConfig	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/config/ConfigurationKey	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/config/FieldConfig	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/config/FieldConfigListener	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/config/QueryConfigHandler	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/messages/QueryParserMessages	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/nodes/AndQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/nodes/AnyQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/nodes/BooleanQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/nodes/BoostQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/nodes/DeletedQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/nodes/FieldQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/nodes/FieldValuePairQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/nodes/FieldableNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/nodes/FuzzyQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/nodes/GroupQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/nodes/MatchAllDocsQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/nodes/MatchNoDocsQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/nodes/ModifierQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/nodes/NoTokenFoundQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/nodes/OpaqueQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/nodes/OrQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/nodes/PathQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/nodes/PhraseSlopQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/nodes/ProximityQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/nodes/QueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/nodes/QueryNodeImpl	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/nodes/QuotedFieldQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/nodes/RangeQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/nodes/SlopQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/nodes/TextableQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/nodes/TokenizedPhraseQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/nodes/ValueQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/parser/EscapeQuerySyntax	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/parser/SyntaxParser	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/processors/NoChildOptimizationQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/processors/QueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/processors/QueryNodeProcessorImpl	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/processors/QueryNodeProcessorPipeline	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/processors/RemoveDeletedQueryNodesProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/util/QueryNodeOperation	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/util/StringUtils	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/core/util/UnescapedCharSequence	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/messages/Message	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/messages/MessageImpl	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/messages/NLS	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/messages/NLSException	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/precedence/PrecedenceQueryParser	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/precedence/processors/BooleanModifiersQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/precedence/processors/PrecedenceQueryNodeProcessorPipeline	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/CommonQueryParserConfiguration	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/QueryParserUtil	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/StandardQueryParser	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/builders/AnyQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/builders/BooleanQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/builders/BoostQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/builders/DummyQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/builders/FieldQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/builders/FuzzyQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/builders/GroupQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/builders/IntervalQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/builders/MatchAllDocsQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/builders/MatchNoDocsQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/builders/MinShouldMatchNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/builders/ModifierQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/builders/MultiPhraseQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/builders/PhraseQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/builders/PointRangeQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/builders/PrefixWildcardQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/builders/RegexpQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/builders/SlopQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/builders/StandardQueryBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/builders/StandardQueryTreeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/builders/SynonymQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/builders/TermRangeQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/builders/WildcardQueryNodeBuilder	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/config/FieldBoostMapFCListener	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/config/FieldDateResolutionFCListener	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/config/FuzzyConfig	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/config/NumberDateFormat	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/config/PointsConfig	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/config/PointsConfigListener	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/config/StandardQueryConfigHandler	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/AbstractRangeQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/BooleanModifierNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/IntervalQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/MinShouldMatchNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/MultiPhraseQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/PointQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/PointRangeQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/PrefixWildcardQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/RegexpQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/SynonymQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/TermRangeQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/WildcardQueryNode	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/intervalfn/After	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/intervalfn/AnalyzedText	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/intervalfn/AtLeast	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/intervalfn/Before	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/intervalfn/ContainedBy	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/intervalfn/Containing	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/intervalfn/Extend	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/intervalfn/FuzzyTerm	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/intervalfn/IntervalFunction	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/intervalfn/MaxGaps	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/intervalfn/MaxWidth	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/intervalfn/NonOverlapping	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/intervalfn/NotContainedBy	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/intervalfn/NotContaining	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/intervalfn/NotWithin	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/intervalfn/Or	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/intervalfn/Ordered	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/intervalfn/Overlapping	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/intervalfn/Phrase	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/intervalfn/Unordered	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/intervalfn/UnorderedNoOverlaps	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/intervalfn/Wildcard	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/nodes/intervalfn/Within	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/parser/EscapeQuerySyntaxImpl	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/parser/ParseException	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/parser/StandardSyntaxParser	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/parser/StandardSyntaxParserConstants	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/parser/StandardSyntaxParserTokenManager	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/parser/Token	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/parser/TokenMgrError	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/processors/AllowLeadingWildcardProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/processors/AnalyzerQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/processors/BooleanQuery2ModifierNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/processors/BooleanSingleChildOptimizationQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/processors/BoostQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/processors/DefaultPhraseSlopQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/processors/FuzzyQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/processors/IntervalQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/processors/MatchAllDocsQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/processors/MultiFieldQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/processors/MultiTermRewriteMethodProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/processors/OpenRangeQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/processors/PhraseSlopQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/processors/PointQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/processors/PointRangeQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/processors/RegexpQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/processors/RemoveEmptyNonLeafQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/processors/StandardQueryNodeProcessorPipeline	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/processors/TermRangeQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
-queryparser/flexible/standard/processors/WildcardQueryNodeProcessor	todo:M13	the flexible query parser framework (StandardQueryParser and its processors, builders, nodes)
+queryparser/flexible/core/QueryNodeError	not-needed	the Error the generated parser throws for cases its grammar rules out (Unhandled case); the Rust match is exhaustive
+queryparser/flexible/core/QueryNodeException	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::QUERY_NODE_EXCEPTION
+queryparser/flexible/core/QueryNodeParseException	ported	crates/lucene-search/src/queryparser/flexible/mod.rs::syntax_error
+queryparser/flexible/core/QueryParserHelper	ported	crates/lucene-search/src/queryparser/flexible/mod.rs::StandardQueryParser
+queryparser/flexible/core/builders/QueryBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
+queryparser/flexible/core/builders/QueryTreeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
+queryparser/flexible/core/config/AbstractQueryConfig	ported	crates/lucene-search/src/queryparser/flexible/mod.rs::StandardQueryParser
+queryparser/flexible/core/config/ConfigurationKey	ported	crates/lucene-search/src/queryparser/flexible/mod.rs::StandardQueryParser
+queryparser/flexible/core/config/FieldConfig	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::check_field_config
+queryparser/flexible/core/config/FieldConfigListener	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::check_field_config
+queryparser/flexible/core/config/QueryConfigHandler	ported	crates/lucene-search/src/queryparser/flexible/mod.rs::StandardQueryParser
+queryparser/flexible/core/messages/QueryParserMessages	ported	crates/lucene-search/src/queryparser/flexible/mod.rs::syntax_error
+queryparser/flexible/core/nodes/AndQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
+queryparser/flexible/core/nodes/AnyQueryNode	not-supported	-- -- no syntax this port parses builds it (only a caller's own syntax parser would), and the Rust node tree is closed
+queryparser/flexible/core/nodes/BooleanQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
+queryparser/flexible/core/nodes/BoostQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
+queryparser/flexible/core/nodes/DeletedQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
+queryparser/flexible/core/nodes/FieldQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
+queryparser/flexible/core/nodes/FieldValuePairQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Node
+queryparser/flexible/core/nodes/FieldableNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Node
+queryparser/flexible/core/nodes/FuzzyQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
+queryparser/flexible/core/nodes/GroupQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
+queryparser/flexible/core/nodes/MatchAllDocsQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
+queryparser/flexible/core/nodes/MatchNoDocsQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
+queryparser/flexible/core/nodes/ModifierQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
+queryparser/flexible/core/nodes/NoTokenFoundQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
+queryparser/flexible/core/nodes/OpaqueQueryNode	not-supported	-- -- no syntax this port parses builds it (only a caller's own syntax parser would), and the Rust node tree is closed
+queryparser/flexible/core/nodes/OrQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
+queryparser/flexible/core/nodes/PathQueryNode	not-supported	-- -- no syntax this port parses builds it (only a caller's own syntax parser would), and the Rust node tree is closed
+queryparser/flexible/core/nodes/PhraseSlopQueryNode	not-supported	-- -- no syntax this port parses builds it (only a caller's own syntax parser would), and the Rust node tree is closed
+queryparser/flexible/core/nodes/ProximityQueryNode	not-supported	-- -- no syntax this port parses builds it (only a caller's own syntax parser would), and the Rust node tree is closed
+queryparser/flexible/core/nodes/QueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Node
+queryparser/flexible/core/nodes/QueryNodeImpl	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Node
+queryparser/flexible/core/nodes/QuotedFieldQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
+queryparser/flexible/core/nodes/RangeQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Node
+queryparser/flexible/core/nodes/SlopQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
+queryparser/flexible/core/nodes/TextableQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Node
+queryparser/flexible/core/nodes/TokenizedPhraseQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
+queryparser/flexible/core/nodes/ValueQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Node
+queryparser/flexible/core/parser/EscapeQuerySyntax	partial	crates/lucene-search/src/queryparser/flexible/parser.rs::discard_escape_char -- M14: escape(), which only a message about a too-large boolean prints
+queryparser/flexible/core/parser/SyntaxParser	ported	crates/lucene-search/src/queryparser/flexible/parser.rs::Parser
+queryparser/flexible/core/processors/NoChildOptimizationQueryNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::NoChildOptimizationProc
+queryparser/flexible/core/processors/QueryNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::Processor
+queryparser/flexible/core/processors/QueryNodeProcessorImpl	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::walk
+queryparser/flexible/core/processors/QueryNodeProcessorPipeline	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::run
+queryparser/flexible/core/processors/RemoveDeletedQueryNodesProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::RemoveDeletedProc
+queryparser/flexible/core/util/QueryNodeOperation	not-supported	-- -- a helper for callers combining node trees by hand, which the closed Rust node tree does not offer
+queryparser/flexible/core/util/StringUtils	not-needed	toString of a possibly-null CharSequence; Rust fields are Option<String>
+queryparser/flexible/core/util/UnescapedCharSequence	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Text
+queryparser/flexible/messages/Message	not-needed	Java resource-bundle localisation: the English bundle's messages are formatted where they are thrown
+queryparser/flexible/messages/MessageImpl	not-needed	Java resource-bundle localisation: the English bundle's messages are formatted where they are thrown
+queryparser/flexible/messages/NLS	not-needed	Java resource-bundle localisation: the English bundle's messages are formatted where they are thrown
+queryparser/flexible/messages/NLSException	not-needed	Java resource-bundle localisation: the English bundle's messages are formatted where they are thrown
+queryparser/flexible/precedence/PrecedenceQueryParser	ported	crates/lucene-search/src/queryparser/flexible/mod.rs::precedence
+queryparser/flexible/precedence/processors/BooleanModifiersQueryNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::BooleanModifiersProc
+queryparser/flexible/precedence/processors/PrecedenceQueryNodeProcessorPipeline	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::run
+queryparser/flexible/standard/CommonQueryParserConfiguration	ported	crates/lucene-search/src/queryparser/flexible/mod.rs::StandardQueryParser
+queryparser/flexible/standard/QueryParserUtil	ported	crates/lucene-search/src/queryparser/flexible/mod.rs::query_parser_util
+queryparser/flexible/standard/StandardQueryParser	ported	crates/lucene-search/src/queryparser/flexible/mod.rs::StandardQueryParser
+queryparser/flexible/standard/builders/AnyQueryNodeBuilder	not-supported	-- -- builds AnyQueryNode, which no syntax this port parses makes; StandardQueryTreeBuilder does not register it
+queryparser/flexible/standard/builders/BooleanQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
+queryparser/flexible/standard/builders/BoostQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
+queryparser/flexible/standard/builders/DummyQueryNodeBuilder	deferred:M14	the points builders: PointsConfig and date resolutions, which need Java's locale NumberFormat/DateFormat
+queryparser/flexible/standard/builders/FieldQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
+queryparser/flexible/standard/builders/FuzzyQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
+queryparser/flexible/standard/builders/GroupQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
+queryparser/flexible/standard/builders/IntervalQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
+queryparser/flexible/standard/builders/MatchAllDocsQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
+queryparser/flexible/standard/builders/MatchNoDocsQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
+queryparser/flexible/standard/builders/MinShouldMatchNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
+queryparser/flexible/standard/builders/ModifierQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
+queryparser/flexible/standard/builders/MultiPhraseQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::multi_phrase
+queryparser/flexible/standard/builders/PhraseQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::phrase
+queryparser/flexible/standard/builders/PointRangeQueryNodeBuilder	deferred:M14	the points builders: PointsConfig and date resolutions, which need Java's locale NumberFormat/DateFormat
+queryparser/flexible/standard/builders/PrefixWildcardQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
+queryparser/flexible/standard/builders/RegexpQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
+queryparser/flexible/standard/builders/SlopQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
+queryparser/flexible/standard/builders/StandardQueryBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
+queryparser/flexible/standard/builders/StandardQueryTreeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
+queryparser/flexible/standard/builders/SynonymQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
+queryparser/flexible/standard/builders/TermRangeQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
+queryparser/flexible/standard/builders/WildcardQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
+queryparser/flexible/standard/config/FieldBoostMapFCListener	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::BoostProc
+queryparser/flexible/standard/config/FieldDateResolutionFCListener	deferred:M14	PointsConfig and date resolutions, which need Java's locale NumberFormat/DateFormat
+queryparser/flexible/standard/config/FuzzyConfig	ported	crates/lucene-search/src/queryparser/flexible/mod.rs::StandardQueryParser
+queryparser/flexible/standard/config/NumberDateFormat	deferred:M14	PointsConfig and date resolutions, which need Java's locale NumberFormat/DateFormat
+queryparser/flexible/standard/config/PointsConfig	deferred:M14	PointsConfig and date resolutions, which need Java's locale NumberFormat/DateFormat
+queryparser/flexible/standard/config/PointsConfigListener	deferred:M14	PointsConfig and date resolutions, which need Java's locale NumberFormat/DateFormat
+queryparser/flexible/standard/config/StandardQueryConfigHandler	ported	crates/lucene-search/src/queryparser/flexible/mod.rs::StandardQueryParser
+queryparser/flexible/standard/nodes/AbstractRangeQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
+queryparser/flexible/standard/nodes/BooleanModifierNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
+queryparser/flexible/standard/nodes/IntervalQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
+queryparser/flexible/standard/nodes/MinShouldMatchNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
+queryparser/flexible/standard/nodes/MultiPhraseQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
+queryparser/flexible/standard/nodes/PointQueryNode	deferred:M14	the points nodes: PointsConfig and date resolutions, which need Java's locale NumberFormat/DateFormat
+queryparser/flexible/standard/nodes/PointRangeQueryNode	deferred:M14	the points nodes: PointsConfig and date resolutions, which need Java's locale NumberFormat/DateFormat
+queryparser/flexible/standard/nodes/PrefixWildcardQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
+queryparser/flexible/standard/nodes/RegexpQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
+queryparser/flexible/standard/nodes/SynonymQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
+queryparser/flexible/standard/nodes/TermRangeQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
+queryparser/flexible/standard/nodes/WildcardQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
+queryparser/flexible/standard/nodes/intervalfn/After	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::IntervalFn
+queryparser/flexible/standard/nodes/intervalfn/AnalyzedText	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::IntervalFn
+queryparser/flexible/standard/nodes/intervalfn/AtLeast	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::IntervalFn
+queryparser/flexible/standard/nodes/intervalfn/Before	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::IntervalFn
+queryparser/flexible/standard/nodes/intervalfn/ContainedBy	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::IntervalFn
+queryparser/flexible/standard/nodes/intervalfn/Containing	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::IntervalFn
+queryparser/flexible/standard/nodes/intervalfn/Extend	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::IntervalFn
+queryparser/flexible/standard/nodes/intervalfn/FuzzyTerm	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::IntervalFn
+queryparser/flexible/standard/nodes/intervalfn/IntervalFunction	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::IntervalFn
+queryparser/flexible/standard/nodes/intervalfn/MaxGaps	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::IntervalFn
+queryparser/flexible/standard/nodes/intervalfn/MaxWidth	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::IntervalFn
+queryparser/flexible/standard/nodes/intervalfn/NonOverlapping	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::IntervalFn
+queryparser/flexible/standard/nodes/intervalfn/NotContainedBy	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::IntervalFn
+queryparser/flexible/standard/nodes/intervalfn/NotContaining	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::IntervalFn
+queryparser/flexible/standard/nodes/intervalfn/NotWithin	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::IntervalFn
+queryparser/flexible/standard/nodes/intervalfn/Or	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::IntervalFn
+queryparser/flexible/standard/nodes/intervalfn/Ordered	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::IntervalFn
+queryparser/flexible/standard/nodes/intervalfn/Overlapping	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::IntervalFn
+queryparser/flexible/standard/nodes/intervalfn/Phrase	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::IntervalFn
+queryparser/flexible/standard/nodes/intervalfn/Unordered	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::IntervalFn
+queryparser/flexible/standard/nodes/intervalfn/UnorderedNoOverlaps	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::IntervalFn
+queryparser/flexible/standard/nodes/intervalfn/Wildcard	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::IntervalFn
+queryparser/flexible/standard/nodes/intervalfn/Within	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::IntervalFn
+queryparser/flexible/standard/parser/EscapeQuerySyntaxImpl	partial	crates/lucene-search/src/queryparser/flexible/parser.rs::discard_escape_char -- M14: escape(), which only a message about a too-large boolean prints
+queryparser/flexible/standard/parser/ParseException	ported	crates/lucene-search/src/queryparser/flexible/mod.rs::syntax_error
+queryparser/flexible/standard/parser/StandardSyntaxParser	ported	crates/lucene-search/src/queryparser/flexible/parser.rs::Parser
+queryparser/flexible/standard/parser/StandardSyntaxParserConstants	ported	crates/lucene-search/src/queryparser/flexible/constants.rs::TOKEN_IMAGE
+queryparser/flexible/standard/parser/StandardSyntaxParserTokenManager	ported	crates/lucene-search/src/queryparser/flexible/token_manager.rs::TokenManager
+queryparser/flexible/standard/parser/Token	ported	crates/lucene-search/src/queryparser/javacc.rs::Token
+queryparser/flexible/standard/parser/TokenMgrError	ported	crates/lucene-search/src/queryparser/javacc.rs::TokenMgrError
+queryparser/flexible/standard/processors/AllowLeadingWildcardProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::LeadingWildcardProc
+queryparser/flexible/standard/processors/AnalyzerQueryNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::AnalyzerProc
+queryparser/flexible/standard/processors/BooleanQuery2ModifierNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::boolean_to_modifier
+queryparser/flexible/standard/processors/BooleanSingleChildOptimizationQueryNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::BooleanSingleChildProc
+queryparser/flexible/standard/processors/BoostQueryNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::BoostProc
+queryparser/flexible/standard/processors/DefaultPhraseSlopQueryNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::DefaultPhraseSlopProc
+queryparser/flexible/standard/processors/FuzzyQueryNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::FuzzyProc
+queryparser/flexible/standard/processors/IntervalQueryNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::IntervalProc
+queryparser/flexible/standard/processors/MatchAllDocsQueryNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::MatchAllProc
+queryparser/flexible/standard/processors/MultiFieldQueryNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::MultiFieldProc
+queryparser/flexible/standard/processors/MultiTermRewriteMethodProcessor	partial	crates/lucene-search/src/queryparser/flexible/processors.rs::run -- M14: setMultiTermRewriteMethod; every multi-term query takes the default CONSTANT_SCORE_BLENDED_REWRITE
+queryparser/flexible/standard/processors/OpenRangeQueryNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::OpenRangeProc
+queryparser/flexible/standard/processors/PhraseSlopQueryNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::PhraseSlopProc
+queryparser/flexible/standard/processors/PointQueryNodeProcessor	partial	crates/lucene-search/src/queryparser/flexible/processors.rs::PointProc -- M14: PointsConfig and date resolutions, which need Java's locale NumberFormat/DateFormat
+queryparser/flexible/standard/processors/PointRangeQueryNodeProcessor	partial	crates/lucene-search/src/queryparser/flexible/processors.rs::PointRangeProc -- M14: PointsConfig and date resolutions, which need Java's locale NumberFormat/DateFormat
+queryparser/flexible/standard/processors/RegexpQueryNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::RegexpProc
+queryparser/flexible/standard/processors/RemoveEmptyNonLeafQueryNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::RemoveEmptyNonLeafProc
+queryparser/flexible/standard/processors/StandardQueryNodeProcessorPipeline	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::run
+queryparser/flexible/standard/processors/TermRangeQueryNodeProcessor	partial	crates/lucene-search/src/queryparser/flexible/processors.rs::TermRangeProc -- M14: PointsConfig and date resolutions, which need Java's locale NumberFormat/DateFormat
+queryparser/flexible/standard/processors/WildcardQueryNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::WildcardProc
 queryparser/simple/SimpleQueryParser	ported	crates/lucene-search/src/queryparser/simple.rs::SimpleQueryParser
 queryparser/surround/parser/ParseException	ported	crates/lucene-search/src/queryparser/surround/parser.rs::parse
 queryparser/surround/parser/QueryParser	ported	crates/lucene-search/src/queryparser/surround/parser.rs::parse
