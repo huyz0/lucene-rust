@@ -13,6 +13,7 @@
 pub mod classic;
 pub mod complex_phrase;
 pub mod ext;
+pub mod flexible;
 mod javacc;
 pub mod simple;
 pub mod surround;
@@ -269,6 +270,17 @@ impl ParsedQuery {
                 format!("({}){tie}", parts.join(" | "))
             }
             ParsedQuery::ConstantScore(q) => format!("ConstantScore({})", q.to_string(field)),
+            // `IntervalQuery.toString(field)`: the source, behind its field
+            // when that is not `field`
+            ParsedQuery::Other(Clause::Extended(e))
+                if matches!(**e, ExtendedQuery::Interval(_)) =>
+            {
+                match &**e {
+                    ExtendedQuery::Interval(q) if q.field == field => q.source.to_string(),
+                    ExtendedQuery::Interval(q) => format!("{}:{}", q.field, q.source),
+                    _ => String::new(),
+                }
+            }
             ParsedQuery::PointRange { query, kind } => point_range_string(query, *kind, field),
             ParsedQuery::Term(t) => {
                 crate::query_builder::to_query_string(Some(&Clause::Term(t.clone())), field)
@@ -350,6 +362,7 @@ impl ParsedQuery {
             ParsedQuery::Boost(..) => "BoostQuery",
             ParsedQuery::Other(Clause::ConstantScore(_)) => "ConstantScoreQuery",
             ParsedQuery::Other(Clause::DisjunctionMax(_)) => "DisjunctionMaxQuery",
+            ParsedQuery::Other(Clause::Extended(e)) => e.name(),
             ParsedQuery::Other(_) => "Query",
         }
     }

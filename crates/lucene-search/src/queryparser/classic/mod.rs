@@ -21,6 +21,7 @@ pub(crate) const MAX_CLAUSE_COUNT: usize = 1024;
 
 mod constants;
 mod parser;
+pub(crate) use parser::{check_regexp, float_to_edits};
 mod token_manager;
 
 use std::collections::HashMap;

@@ -1,0 +1,352 @@
+a	T	25:0:a 0:1:
+A	T	25:0:A 0:1:
+foo bar	T	25:0:foo 25:4:bar 0:7:
+foo  bar	T	25:0:foo 25:5:bar 0:8:
+"foo bar"	T	23:0:"foo\u0020bar" 0:9:
+"foo bar"~2	T	23:0:"foo\u0020bar" 22:9:~ 24:10:2 0:11:
+"foo bar"~2^3	T	23:0:"foo\u0020bar" 22:9:~ 24:10:2 21:11:^ 24:12:3 0:13:
+"foo bar"^3~2	T	23:0:"foo\u0020bar" 21:9:^ 24:10:3 22:11:~ 24:12:2 0:13:
+"foo"	T	23:0:"foo" 0:5:
+""	T	23:0:"" 0:2:
+"a b c d"	T	23:0:"a\u0020b\u0020c\u0020d" 0:9:
+"The Quick Brown Fox"	T	23:0:"The\u0020Quick\u0020Brown\u0020Fox" 0:21:
+title:foo	T	25:0:title 15:5:: 25:6:foo 0:9:
+title:"foo bar"	T	25:0:title 15:5:: 23:6:"foo\u0020bar" 0:15:
+title:(foo bar)	T	25:0:title 15:5:: 29:6:( 25:7:foo 25:11:bar 14:14:) 0:15:
+title:(+foo -bar)	T	25:0:title 15:5:: 29:6:( 12:7:+ 25:8:foo 13:12:- 25:13:bar 14:16:) 0:17:
++foo +bar	T	12:0:+ 25:1:foo 12:5:+ 25:6:bar 0:9:
++foo -bar	T	12:0:+ 25:1:foo 13:5:- 25:6:bar 0:9:
+-foo	T	13:0:- 25:1:foo 0:4:
+-foo -bar	T	13:0:- 25:1:foo 13:5:- 25:6:bar 0:9:
+foo AND bar	T	25:0:foo 8:4:AND 25:8:bar 0:11:
+foo OR bar	T	25:0:foo 9:4:OR 25:7:bar 0:10:
+foo AND NOT bar	T	25:0:foo 8:4:AND 10:8:NOT 25:12:bar 0:15:
+foo && bar	T	25:0:foo 8:4:&& 25:7:bar 0:10:
+foo || bar	T	25:0:foo 9:4:|| 25:7:bar 0:10:
+!foo	T	10:0:! 25:1:foo 0:4:
+foo !bar	T	25:0:foo 10:4:! 25:5:bar 0:8:
+NOT foo	T	10:0:NOT 25:4:foo 0:7:
+foo NOT bar	T	25:0:foo 10:4:NOT 25:8:bar 0:11:
+a AND b OR c	T	25:0:a 8:2:AND 25:6:b 9:8:OR 25:11:c 0:12:
+a OR b AND c	T	25:0:a 9:2:OR 25:5:b 8:7:AND 25:11:c 0:12:
+a AND b AND c	T	25:0:a 8:2:AND 25:6:b 8:8:AND 25:12:c 0:13:
+a OR b OR c	T	25:0:a 9:2:OR 25:5:b 9:7:OR 25:10:c 0:11:
+(a OR b) AND c	T	29:0:( 25:1:a 9:3:OR 25:6:b 14:7:) 8:9:AND 25:13:c 0:14:
+a AND (b OR c)	T	25:0:a 8:2:AND 29:6:( 25:7:b 9:9:OR 25:12:c 14:13:) 0:14:
+((a))	T	29:0:( 29:1:( 25:2:a 14:3:) 14:4:) 0:5:
+(a)	T	29:0:( 25:1:a 14:2:) 0:3:
+()	T	29:0:( 14:1:) 0:2:
+(a b) (c d)	T	29:0:( 25:1:a 25:3:b 14:4:) 29:6:( 25:7:c 25:9:d 14:10:) 0:11:
++(a b) -(c d)	T	12:0:+ 29:1:( 25:2:a 25:4:b 14:5:) 13:7:- 29:8:( 25:9:c 25:11:d 14:12:) 0:13:
+title:a AND body:b	T	25:0:title 15:5:: 25:6:a 8:8:AND 25:12:body 15:16:: 25:17:b 0:18:
+foo^2	T	25:0:foo 21:3:^ 24:4:2 0:5:
+foo^2.5	T	25:0:foo 21:3:^ 24:4:2.5 0:7:
+foo^.5	T	25:0:foo 21:3:^ 25:4:.5 0:6:
+foo^0	T	25:0:foo 21:3:^ 24:4:0 0:5:
+foo^	T	25:0:foo 21:3:^ 0:4:
+foo~	T	25:0:foo 22:3:~ 0:4:
+foo~1	T	25:0:foo 22:3:~ 24:4:1 0:5:
+foo~2	T	25:0:foo 22:3:~ 24:4:2 0:5:
+foo~0.5	T	25:0:foo 22:3:~ 24:4:0.5 0:7:
+foo~0.8	T	25:0:foo 22:3:~ 24:4:0.8 0:7:
+foo~3	T	25:0:foo 22:3:~ 24:4:3 0:5:
+foo~1^2	T	25:0:foo 22:3:~ 24:4:1 21:5:^ 24:6:2 0:7:
+foo^2~1	T	25:0:foo 21:3:^ 24:4:2 22:5:~ 24:6:1 0:7:
+fo*	T	25:0:fo* 0:3:
+f*o	T	25:0:f*o 0:3:
+f?o	T	25:0:f?o 0:3:
+*foo	T	25:0:*foo 0:4:
+?foo	T	25:0:?foo 0:4:
+*	T	25:0:* 0:1:
+*:*	T	25:0:* 15:1:: 25:2:* 0:3:
+title:*	T	25:0:title 15:5:: 25:6:* 0:7:
+title:fo*	T	25:0:title 15:5:: 25:6:fo* 0:9:
+foo*bar*	T	25:0:foo*bar* 0:8:
+te?t	T	25:0:te?t 0:4:
+"fo*"	T	23:0:"fo*" 0:5:
+/fo.*/	T	26:0:/fo.*/ 0:6:
+/[a-c]+/	T	26:0:/[a-c]+/ 0:8:
+title:/x.*/	T	25:0:title 15:5:: 26:6:/x.*/ 0:11:
+/a/b	T	26:0:/a/ 25:3:b 0:4:
+[a TO z]	T	27:0:[ 55:1:a 51:3:TO 55:6:z 52:7:] 0:8:
+{a TO z}	T	28:0:{ 55:1:a 51:3:TO 55:6:z 53:7:} 0:8:
+[a TO z}	T	27:0:[ 55:1:a 51:3:TO 55:6:z 53:7:} 0:8:
+{a TO z]	T	28:0:{ 55:1:a 51:3:TO 55:6:z 52:7:] 0:8:
+[* TO z]	T	27:0:[ 55:1:* 51:3:TO 55:6:z 52:7:] 0:8:
+[a TO *]	T	27:0:[ 55:1:a 51:3:TO 55:6:* 52:7:] 0:8:
+[* TO *]	T	27:0:[ 55:1:* 51:3:TO 55:6:* 52:7:] 0:8:
+title:[a TO z]	T	25:0:title 15:5:: 27:6:[ 55:7:a 51:9:TO 55:12:z 52:13:] 0:14:
+[a TO z]^2	T	27:0:[ 55:1:a 51:3:TO 55:6:z 52:7:] 21:8:^ 24:9:2 0:10:
+[ a TO z ]	T	27:0:[ 55:2:a 51:4:TO 55:7:z 52:9:] 0:10:
+["a b" TO "c d"]	T	27:0:[ 54:1:"a\u0020b" 51:7:TO 54:10:"c\u0020d" 52:15:] 0:16:
+[1 TO 5]	T	27:0:[ 55:1:1 51:3:TO 55:6:5 52:7:] 0:8:
+[2002-01-01 TO 2003-01-01]	T	27:0:[ 55:1:2002-01-01 51:12:TO 55:15:2003-01-01 52:25:] 0:26:
+[a TO]	T	27:0:[ 55:1:a 51:3:TO 52:5:] 0:6:
+[TO z]	T	27:0:[ 51:1:TO 55:4:z 52:5:] 0:6:
+[a z]	T	27:0:[ 55:1:a 55:3:z 52:4:] 0:5:
+a:b:c	T	25:0:a 15:1:: 25:2:b 15:3:: 25:4:c 0:5:
+a\\:b	T	25:0:a\\:b 0:4:
+a\\ b	T	25:0:a\\\u0020b 0:4:
+a\\-b	T	25:0:a\\-b 0:4:
+a\\+b	T	25:0:a\\+b 0:4:
+a\\(b\\)	T	25:0:a\\(b\\) 0:6:
+a\\"b	T	25:0:a\\"b 0:4:
+a\\\\b	T	25:0:a\\\\b 0:4:
+a\\*b	T	25:0:a\\*b 0:4:
+a\\?b	T	25:0:a\\?b 0:4:
+a\\~b	T	25:0:a\\~b 0:4:
+a\\^b	T	25:0:a\\^b 0:4:
+a\\{b\\}	T	25:0:a\\{b\\} 0:6:
+a\\[b\\]	T	25:0:a\\[b\\] 0:6:
+a\\!b	T	25:0:a\\!b 0:4:
+a\\&&b	T	25:0:a\\&&b 0:5:
+a\\|\\|b	T	25:0:a\\|\\|b 0:6:
+A	T	25:0:A 0:1:
+é	T	25:0:é 0:1:
+été	T	25:0:été 0:3:
+foo\\	E	Lexical error at line 1, column 5.  Encountered: <EOF> (in lexical state 2)
+"foo\\"bar"	T	23:0:"foo\\"bar" 0:10:
+"foo\\\\"	T	23:0:"foo\\\\" 0:7:
+foo-bar	T	25:0:foo-bar 0:7:
+foo+bar	T	25:0:foo+bar 0:7:
+foo.bar	T	25:0:foo.bar 0:7:
+foo/bar	E	Lexical error at line 1, column 8.  Encountered: <EOF> after prefix "/bar" (in lexical state 2)
+wi-fi	T	25:0:wi-fi 0:5:
+e-mail address	T	25:0:e-mail 25:7:address 0:14:
+U.S.A.	T	25:0:U.S.A. 0:6:
+O'Neil	T	25:0:O'Neil 0:6:
+café	T	25:0:café 0:4:
+日本語	T	25:0:日本語 0:3:
+中文 测试	T	25:0:中文 25:3:测试 0:5:
+x AND	T	25:0:x 8:2:AND 0:5:
+AND x	T	8:0:AND 25:4:x 0:5:
+OR	T	9:0:OR 0:2:
+AND	T	8:0:AND 0:3:
+NOT	T	10:0:NOT 0:3:
+x OR	T	25:0:x 9:2:OR 0:4:
+(foo	T	29:0:( 25:1:foo 0:4:
+foo)	T	25:0:foo 14:3:) 0:4:
+"foo	E	Lexical error at line 1, column 5.  Encountered: <EOF> after prefix "\\"foo" (in lexical state 2)
+foo"	E	Lexical error at line 1, column 5.  Encountered: <EOF> (in lexical state 2)
+title:	T	25:0:title 15:5:: 0:6:
+:foo	T	15:0:: 25:1:foo 0:4:
+foo:	T	25:0:foo 15:3:: 0:4:
+[a TO	T	27:0:[ 55:1:a 51:3:TO 0:5:
+a TO b	T	25:0:a 25:2:TO 25:5:b 0:6:
+foo^bar	T	25:0:foo 21:3:^ 25:4:bar 0:7:
+foo~bar	T	25:0:foo 22:3:~ 25:4:bar 0:7:
++	T	12:0:+ 0:1:
+-	T	13:0:- 0:1:
+!	T	10:0:! 0:1:
++ foo	T	12:0:+ 25:2:foo 0:5:
+- foo	T	13:0:- 25:2:foo 0:5:
+! foo	T	10:0:! 25:2:foo 0:5:
+foo +	T	25:0:foo 12:4:+ 0:5:
+foo -	T	25:0:foo 13:4:- 0:5:
+a && || b	T	25:0:a 8:2:&& 9:5:|| 25:8:b 0:9:
+a ^ b	T	25:0:a 21:2:^ 25:4:b 0:5:
+^2	T	21:0:^ 24:1:2 0:2:
+~2	T	22:0:~ 24:1:2 0:2:
+"a"~	T	23:0:"a" 22:3:~ 0:4:
+"a"~x	T	23:0:"a" 22:3:~ 25:4:x 0:5:
+"a" ~2	T	23:0:"a" 22:4:~ 24:5:2 0:6:
+title:foo^2 body:bar^3	T	25:0:title 15:5:: 25:6:foo 21:9:^ 24:10:2 25:12:body 15:16:: 25:17:bar 21:20:^ 24:21:3 0:22:
++title:foo -body:bar baz	T	12:0:+ 25:1:title 15:6:: 25:7:foo 13:11:- 25:12:body 15:16:: 25:17:bar 25:21:baz 0:24:
+title:(a OR b)^2	T	25:0:title 15:5:: 29:6:( 25:7:a 9:9:OR 25:12:b 14:13:) 21:14:^ 24:15:2 0:16:
+(a b)^3	T	29:0:( 25:1:a 25:3:b 14:4:) 21:5:^ 24:6:3 0:7:
+(a b)~2	T	29:0:( 25:1:a 25:3:b 14:4:) 22:5:~ 24:6:2 0:7:
+-(-a)	T	13:0:- 29:1:( 13:2:- 25:3:a 14:4:) 0:5:
++(+a)	T	12:0:+ 29:1:( 12:2:+ 25:3:a 14:4:) 0:5:
+foo*^2	T	25:0:foo* 21:4:^ 24:5:2 0:6:
+fo*~2	T	25:0:fo* 22:3:~ 24:4:2 0:5:
+"foo bar" baz	T	23:0:"foo\u0020bar" 25:10:baz 0:13:
+"foo bar" AND "baz qux"	T	23:0:"foo\u0020bar" 8:10:AND 23:14:"baz\u0020qux" 0:23:
+the a an	T	25:0:the 25:4:a 25:6:an 0:8:
+The Quick	T	25:0:The 25:4:Quick 0:9:
+FOO bar BAZ	T	25:0:FOO 25:4:bar 25:8:BAZ 0:11:
+foo\tbar	T	25:0:foo 25:4:bar 0:7:
+ foo	T	25:1:foo 0:4:
+foo	T	25:0:foo 0:3:
+foo&bar	T	25:0:foo&bar 0:7:
+foo|bar	T	25:0:foo|bar 0:7:
+foo&&bar	T	25:0:foo&&bar 0:8:
+foo||bar	T	25:0:foo||bar 0:8:
+a AND OR b	T	25:0:a 8:2:AND 9:6:OR 25:9:b 0:10:
+a NOT NOT b	T	25:0:a 10:2:NOT 10:6:NOT 25:10:b 0:11:
+NOT NOT a	T	10:0:NOT 10:4:NOT 25:8:a 0:9:
+a AND AND b	T	25:0:a 8:2:AND 8:6:AND 25:10:b 0:11:
+(a AND b) OR (c AND NOT d)	T	29:0:( 25:1:a 8:3:AND 25:7:b 14:8:) 9:10:OR 29:13:( 25:14:c 8:16:AND 10:20:NOT 25:24:d 14:25:) 0:26:
+title:"a b"~3^2	T	25:0:title 15:5:: 23:6:"a\u0020b" 22:11:~ 24:12:3 21:13:^ 24:14:2 0:15:
+"a b c"~10	T	23:0:"a\u0020b\u0020c" 22:7:~ 24:8:10 0:10:
+"a  b"	T	23:0:"a\u0020\u0020b" 0:6:
+"a-b"	T	23:0:"a-b" 0:5:
+"a,b"	T	23:0:"a,b" 0:5:
+a,b	T	25:0:a,b 0:3:
+12345	T	24:0:12345 0:5:
+1.5	T	24:0:1.5 0:3:
+-1	T	13:0:- 24:1:1 0:2:
++1	T	12:0:+ 24:1:1 0:2:
+x^-1	T	25:0:x 21:1:^ 13:2:- 24:3:1 0:4:
+title:[1 TO 10] AND foo	T	25:0:title 15:5:: 27:6:[ 55:7:1 51:9:TO 55:12:10 52:14:] 8:16:AND 25:20:foo 0:23:
+*a*	T	25:0:*a* 0:3:
+a*b?c	T	25:0:a*b?c 0:5:
+?	T	25:0:? 0:1:
+??	T	25:0:?? 0:2:
+**	T	25:0:** 0:2:
+*?	T	25:0:*? 0:2:
+foo~1.5	T	25:0:foo 22:3:~ 24:4:1.5 0:7:
+foo~-1	T	25:0:foo 22:3:~ 13:4:- 24:5:1 0:6:
+"foo"~1.5	T	23:0:"foo" 22:5:~ 24:6:1.5 0:9:
+a b c d e f g h i j	T	25:0:a 25:2:b 25:4:c 25:6:d 25:8:e 25:10:f 25:12:g 25:14:h 25:16:i 25:18:j 0:19:
+title:foo* body:bar?	T	25:0:title 15:5:: 25:6:foo* 25:11:body 15:15:: 25:16:bar? 0:20:
+\\*	T	25:0:\\* 0:2:
+\\?	T	25:0:\\? 0:2:
+\\\\	T	25:0:\\\\ 0:2:
+"\\\\"	T	23:0:"\\\\" 0:4:
+"\\""	T	23:0:"\\"" 0:4:
+"a\\nb"	T	23:0:"a\\nb" 0:6:
+\\n	T	25:0:\\n 0:2:
+a\\n	T	25:0:a\\n 0:3:
+AB\\C*	T	25:0:AB\\C* 0:5:
+A\\B\\C*D	T	25:0:A\\B\\C*D 0:7:
+Fo\\O?bar*	T	25:0:Fo\\O?bar* 0:9:
+X\\*Y*	T	25:0:X\\*Y* 0:5:
+Q\\ Z*	T	25:0:Q\\\u0020Z* 0:5:
+a AND b	T	25:0:a 8:2:AND 25:6:b 0:7:
+a && b	T	25:0:a 8:2:&& 25:5:b 0:6:
+a || b OR c	T	25:0:a 9:2:|| 25:5:b 9:7:OR 25:10:c 0:11:
+!a NOT b	T	10:0:! 25:1:a 10:3:NOT 25:7:b 0:8:
+a:b	T	25:0:a 15:1:: 25:2:b 0:3:
+a=b	T	25:0:a 16:1:= 25:2:b 0:3:
+f:<3	T	25:0:f 15:1:: 17:2:< 24:3:3 0:4:
+f:<=3	T	25:0:f 15:1:: 18:2:<= 24:4:3 0:5:
+f:>3	T	25:0:f 15:1:: 19:2:> 24:3:3 0:4:
+f:>=3	T	25:0:f 15:1:: 20:2:>= 24:4:3 0:5:
+f<3	T	25:0:f 17:1:< 24:2:3 0:3:
+f<=abc	T	25:0:f 18:1:<= 25:3:abc 0:6:
+f>"x y"	T	25:0:f 19:1:> 23:2:"x\u0020y" 0:7:
+f>=1.5	T	25:0:f 20:1:>= 24:3:1.5 0:6:
+"phrase here"~3	T	23:0:"phrase\u0020here" 22:13:~ 24:14:3 0:15:
+term^2	T	25:0:term 21:4:^ 24:5:2 0:6:
+term^2.5	T	25:0:term 21:4:^ 24:5:2.5 0:8:
+term~0.5	T	25:0:term 22:4:~ 24:5:0.5 0:8:
+term~	T	25:0:term 22:4:~ 0:5:
+[a TO b]	T	27:0:[ 55:1:a 51:3:TO 55:6:b 52:7:] 0:8:
+{a TO b}	T	28:0:{ 55:1:a 51:3:TO 55:6:b 53:7:} 0:8:
+[a TO "b c"]	T	27:0:[ 55:1:a 51:3:TO 54:6:"b\u0020c" 52:11:] 0:12:
+{* TO *}	T	28:0:{ 55:1:* 51:3:TO 55:6:* 53:7:} 0:8:
+[a TO b}	T	27:0:[ 55:1:a 51:3:TO 55:6:b 53:7:} 0:8:
+/reg.*/	T	26:0:/reg.*/ 0:7:
+/a\\/b/	T	26:0:/a\\/b/ 0:6:
+(a b c)@2	T	29:0:( 25:1:a 25:3:b 25:5:c 14:6:) 56:7:@ 24:8:2 0:9:
+(a b)@	T	29:0:( 25:1:a 25:3:b 14:4:) 56:5:@ 0:6:
+fn:ordered(a b)	T	11:0:fn: 44:3:ordered 29:10:( 25:11:a 25:13:b 14:14:) 0:15:
+fn:unordered(a b)	T	11:0:fn: 47:3:unordered 29:12:( 25:13:a 25:15:b 14:16:) 0:17:
+fn:atleast(2 a b c)	T	11:0:fn: 30:3:atleast 29:10:( 24:11:2 25:13:a 25:15:b 25:17:c 14:18:) 0:19:
+fn:atLeast(2 a b c)	T	11:0:fn: 30:3:atLeast 29:10:( 24:11:2 25:13:a 25:15:b 25:17:c 14:18:) 0:19:
+fn:maxgaps(2 fn:unordered(a b))	T	11:0:fn: 38:3:maxgaps 29:10:( 24:11:2 11:13:fn: 47:16:unordered 29:25:( 25:26:a 25:28:b 14:29:) 14:30:) 0:31:
+fn:maxGaps(1 fn:ordered(a b))	T	11:0:fn: 38:3:maxGaps 29:10:( 24:11:1 11:13:fn: 44:16:ordered 29:23:( 25:24:a 25:26:b 14:27:) 14:28:) 0:29:
+fn:maxwidth(3 fn:ordered(a b))	T	11:0:fn: 39:3:maxwidth 29:11:( 24:12:3 11:14:fn: 44:17:ordered 29:24:( 25:25:a 25:27:b 14:28:) 14:29:) 0:30:
+fn:maxWidth(3 a)	T	11:0:fn: 39:3:maxWidth 29:11:( 24:12:3 25:14:a 14:15:) 0:16:
+fn:wildcard(a*)	T	11:0:fn: 49:3:wildcard 29:11:( 25:12:a* 14:14:) 0:15:
+fn:wildcard(a* 5)	T	11:0:fn: 49:3:wildcard 29:11:( 25:12:a* 24:15:5 14:16:) 0:17:
+fn:fuzzyTerm(abc 2)	T	11:0:fn: 37:3:fuzzyTerm 29:12:( 25:13:abc 24:17:2 14:18:) 0:19:
+fn:fuzzyterm(abc)	T	11:0:fn: 37:3:fuzzyterm 29:12:( 25:13:abc 14:16:) 0:17:
+fn:or(a b c)	T	11:0:fn: 36:3:or 29:5:( 25:6:a 25:8:b 25:10:c 14:11:) 0:12:
+fn:phrase(a b)	T	11:0:fn: 46:3:phrase 29:9:( 25:10:a 25:12:b 14:13:) 0:14:
+fn:within(a 3 b)	T	11:0:fn: 50:3:within 29:9:( 25:10:a 24:12:3 25:14:b 14:15:) 0:16:
+fn:notWithin(a 3 b)	T	11:0:fn: 43:3:notWithin 29:12:( 25:13:a 24:15:3 25:17:b 14:18:) 0:19:
+fn:notwithin(a 3 b)	T	11:0:fn: 43:3:notwithin 29:12:( 25:13:a 24:15:3 25:17:b 14:18:) 0:19:
+fn:containedBy(a b)	T	11:0:fn: 33:3:containedBy 29:14:( 25:15:a 25:17:b 14:18:) 0:19:
+fn:containedby(a b)	T	11:0:fn: 33:3:containedby 29:14:( 25:15:a 25:17:b 14:18:) 0:19:
+fn:notContainedBy(a b)	T	11:0:fn: 41:3:notContainedBy 29:17:( 25:18:a 25:20:b 14:21:) 0:22:
+fn:containing(a b)	T	11:0:fn: 34:3:containing 29:13:( 25:14:a 25:16:b 14:17:) 0:18:
+fn:notContaining(a b)	T	11:0:fn: 42:3:notContaining 29:16:( 25:17:a 25:19:b 14:20:) 0:21:
+fn:extend(a 2 3)	T	11:0:fn: 35:3:extend 29:9:( 25:10:a 24:12:2 24:14:3 14:15:) 0:16:
+fn:before(a b)	T	11:0:fn: 32:3:before 29:9:( 25:10:a 25:12:b 14:13:) 0:14:
+fn:after(a b)	T	11:0:fn: 31:3:after 29:8:( 25:9:a 25:11:b 14:12:) 0:13:
+fn:overlapping(a b)	T	11:0:fn: 45:3:overlapping 29:14:( 25:15:a 25:17:b 14:18:) 0:19:
+fn:nonOverlapping(a b)	T	11:0:fn: 40:3:nonOverlapping 29:17:( 25:18:a 25:20:b 14:21:) 0:22:
+fn:nonoverlapping(a b)	T	11:0:fn: 40:3:nonoverlapping 29:17:( 25:18:a 25:20:b 14:21:) 0:22:
+fn:unorderedNoOverlaps(a b)	T	11:0:fn: 48:3:unorderedNoOverlaps 29:22:( 25:23:a 25:25:b 14:26:) 0:27:
+fn:unorderednooverlaps(a b)	T	11:0:fn: 48:3:unorderednooverlaps 29:22:( 25:23:a 25:25:b 14:26:) 0:27:
+field:fn:ordered(a b)	T	25:0:field 15:5:: 11:6:fn: 44:9:ordered 29:16:( 25:17:a 25:19:b 14:20:) 0:21:
+fn:ordered("a b" c)	T	11:0:fn: 44:3:ordered 29:10:( 23:11:"a\u0020b" 25:17:c 14:18:) 0:19:
+fn:ordered(fn:or(a b) c)	T	11:0:fn: 44:3:ordered 29:10:( 11:11:fn: 36:14:or 29:16:( 25:17:a 25:19:b 14:20:) 25:22:c 14:23:) 0:24:
+fn:bogus(a)	E	Lexical error at line 1, column 5.  Encountered: '111' (111), after prefix "b"
+fn:ordered(a	T	11:0:fn: 44:3:ordered 29:10:( 25:11:a 0:12:
+fn:	T	11:0:fn: 0:3:
+fn	T	25:0:fn 0:2:
+fnx	T	25:0:fnx 0:3:
+a:"unterminated	E	Lexical error at line 1, column 16.  Encountered: <EOF> after prefix "\\"unterminated" (in lexical state 2)
+\\	E	Lexical error at line 1, column 2.  Encountered: <EOF> (in lexical state 2)
+a\\	E	Lexical error at line 1, column 3.  Encountered: <EOF> (in lexical state 2)
+[a TO	T	27:0:[ 55:1:a 51:3:TO 0:5:
+a b	T	25:0:a 25:2:b 0:3:
+a\tb	T	25:0:a 25:2:b 0:3:
+a	T	25:0:a 0:1:
+b	T	25:0:b 0:1:
+a　b	T	25:0:a 25:2:b 0:3:
+a\\:b	T	25:0:a\\:b 0:4:
+a\\ b	T	25:0:a\\\u0020b 0:4:
+\\+a	T	25:0:\\+a 0:3:
+-a +b	T	13:0:- 25:1:a 12:3:+ 25:4:b 0:5:
+a:(b c)	T	25:0:a 15:1:: 29:2:( 25:3:b 25:5:c 14:6:) 0:7:
+a:b^2 c:d~2	T	25:0:a 15:1:: 25:2:b 21:3:^ 24:4:2 25:6:c 15:7:: 25:8:d 22:9:~ 24:10:2 0:11:
+"a\\"b"	T	23:0:"a\\"b" 0:6:
+1.5	T	24:0:1.5 0:3:
+.5	T	25:0:.5 0:2:
+1.	T	25:0:1. 0:2:
+a^	T	25:0:a 21:1:^ 0:2:
+~a	T	22:0:~ 25:1:a 0:2:
+a@b	T	25:0:a 56:1:@ 25:2:b 0:3:
+@	T	56:0:@ 0:1:
+<	T	17:0:< 0:1:
+>	T	19:0:> 0:1:
+=	T	16:0:= 0:1:
+<=	T	18:0:<= 0:2:
+>=	T	20:0:>= 0:2:
+:	T	15:0:: 0:1:
+)	T	14:0:) 0:1:
+(	T	29:0:( 0:1:
+*	T	25:0:* 0:1:
+?	T	25:0:? 0:1:
+a*b?c	T	25:0:a*b?c 0:5:
+*:*	T	25:0:* 15:1:: 25:2:* 0:3:
+"" 	T	23:0:"" 0:3:
+a)	T	25:0:a 14:1:) 0:2:
++-a	T	12:0:+ 13:1:- 25:2:a 0:3:
+fast	T	25:0:fast 0:4:
+fast car	T	25:0:fast 25:5:car 0:8:
+"fast car"	T	23:0:"fast\u0020car" 0:10:
+"fast car"~2	T	23:0:"fast\u0020car" 22:10:~ 24:11:2 0:12:
+"x fast y"	T	23:0:"x\u0020fast\u0020y" 0:10:
+x fast	T	25:0:x 25:2:fast 0:6:
+car~1	T	25:0:car 22:3:~ 24:4:1 0:5:
+fast*	T	25:0:fast* 0:5:
+fast^2	T	25:0:fast 21:4:^ 24:5:2 0:6:
+"fast"	T	23:0:"fast" 0:6:
+"the car"	T	23:0:"the\u0020car" 0:9:
+the	T	25:0:the 0:3:
+"the the"	T	23:0:"the\u0020the" 0:9:
+f:fast OR car	T	25:0:f 15:1:: 25:2:fast 9:7:OR 25:10:car 0:13:
+a~1	T	25:0:a 22:1:~ 24:2:1 0:3:
+"a b"~1	T	23:0:"a\u0020b" 22:5:~ 24:6:1 0:7:
+a*b	T	25:0:a*b 0:3:
+a\\\\*b*	T	25:0:a\\\\*b* 0:6:
+a\\\\?b	T	25:0:a\\\\?b 0:5:
+x\\\\*y*z	T	25:0:x\\\\*y*z 0:7:
+A\\\\*B?	T	25:0:A\\\\*B? 0:6:
+Foo~1	T	25:0:Foo 22:3:~ 24:4:1 0:5:
+F*~	T	25:0:F* 22:2:~ 0:3:
+/Foo.*/	T	26:0:/Foo.*/ 0:7:
+[A TO B]	T	27:0:[ 55:1:A 51:3:TO 55:6:B 52:7:] 0:8:
+{ÀB TO É}	T	28:0:{ 55:1:ÀB 51:4:TO 55:7:É 53:8:} 0:9:
+f>=ABC	T	25:0:f 20:1:>= 25:3:ABC 0:6:
+f<ÀB	T	25:0:f 17:1:< 25:2:ÀB 0:4:
+(a)@2	T	29:0:( 25:1:a 14:2:) 56:3:@ 24:4:2 0:5:
+(a)^2@1	T	29:0:( 25:1:a 14:2:) 21:3:^ 24:4:2 56:5:@ 24:6:1 0:7:
+(fast car)@2	T	29:0:( 25:1:fast 25:6:car 14:9:) 56:10:@ 24:11:2 0:12:
+(the a)@2	T	29:0:( 25:1:the 25:5:a 14:6:) 56:7:@ 24:8:2 0:9:
+(the)@2	T	29:0:( 25:1:the 14:4:) 56:5:@ 24:6:2 0:7:
+(a b)@-1	T	29:0:( 25:1:a 25:3:b 14:4:) 56:5:@ 13:6:- 24:7:1 0:8:

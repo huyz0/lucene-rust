@@ -1332,6 +1332,24 @@ fn wildcard_match_at(term: &[u16], i: usize) -> Option<usize> {
     None
 }
 
+/// What `new RegexpQuery(term, RegExp.ALL, 0, name -> null,
+/// DEFAULT_DETERMINIZE_WORK_LIMIT, ..)` throws for `text`: the expression's
+/// syntax errors, and an automaton too large to determinize.
+pub(crate) fn check_regexp(text: &str) -> Result<(), QueryParserError> {
+    let to_error = |f: Fail| match f {
+        Fail::Runtime(e) => e,
+        Fail::Parse(m) => QueryParserError::runtime(m),
+        Fail::TooManyClauses => QueryParserError::too_many_clauses(),
+    };
+    let re = RegExp::with_flags(text, RegExp::ALL, 0).map_err(|e| to_error(automaton_error(&e)))?;
+    let a = re
+        .to_automaton_with_provider(&NoAutomata)
+        .map_err(|e| to_error(automaton_error(&e)))?;
+    operations::determinize(&a, DEFAULT_DETERMINIZE_WORK_LIMIT)
+        .map_err(|e| to_error(too_complex(e)))?;
+    Ok(())
+}
+
 /// `TooComplexToDeterminizeException`, which `parse` lets through.
 fn too_complex(e: TooComplexToDeterminize) -> Fail {
     Fail::Runtime(QueryParserError::too_complex(e.to_string()))

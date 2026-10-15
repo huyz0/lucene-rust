@@ -1,0 +1,4 @@
+# Lucene 10.5.0 lucene-memory: every top-level class of the jar, and what became of it.
+# Checked by scripts/check-port-inventory.py --module memory (see its docstring for the statuses).
+# class	status	detail
+index/memory/MemoryIndex	todo:M13	High-performance single-document main memory Apache Lucene fulltext search index.

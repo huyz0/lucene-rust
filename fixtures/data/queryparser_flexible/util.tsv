@@ -1,0 +1,8 @@
+Q	a (g:b g:c)	Boolean(TermQuery(a) Boolean(TermQuery(g:b) TermQuery(g:c)))
+X	java.lang.IllegalArgumentException: queries.length != fields.length
+Q	+(a b) -(g:a g:b)	Boolean(+Boolean(TermQuery(a) TermQuery(b)) -Boolean(TermQuery(g:a) TermQuery(g:b)))
+X	java.lang.IllegalArgumentException: fields.length != flags.length
+Q	a #g:"b c"	Boolean(TermQuery(a) #PhraseQuery(g:"b c"))
+X	java.lang.IllegalArgumentException: queries, fields, and flags array have have different length
+X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse a(:  
+E	a\\+b\\-c\\!\\(d\\)\\:e\\^\\[f\\]\\"g\\{h\\}\\~i\\*j\\?k\\|l\\&m\\/n\\\\o p

@@ -1,0 +1,352 @@
+a	Q	a	TermQuery(a)
+A	Q	a	TermQuery(a)
+foo bar	Q	foo bar	Boolean(TermQuery(foo) TermQuery(bar))
+foo  bar	Q	foo bar	Boolean(TermQuery(foo) TermQuery(bar))
+"foo bar"	Q	"foo bar"	PhraseQuery("foo bar")
+"foo bar"~2	Q	"foo bar"~2	PhraseQuery("foo bar"~2)
+"foo bar"~2^3	Q	("foo bar"~2)^3.0	Boost(PhraseQuery("foo bar"~2)^3.0)
+"foo bar"^3~2	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse "foo bar"^3~2:  
+"foo"	Q	foo	TermQuery(foo)
+""	Q	MatchNoDocsQuery("")	MatchNoDocsQuery(MatchNoDocsQuery(""))
+"a b c d"	Q	"a b c d"	PhraseQuery("a b c d")
+"The Quick Brown Fox"	Q	"the quick brown fox"	PhraseQuery("the quick brown fox")
+title:foo	Q	title:foo	TermQuery(title:foo)
+title:"foo bar"	Q	title:"foo bar"	PhraseQuery(title:"foo bar")
+title:(foo bar)	Q	title:foo title:bar	Boolean(TermQuery(title:foo) TermQuery(title:bar))
+title:(+foo -bar)	Q	+title:foo -title:bar	Boolean(+TermQuery(title:foo) -TermQuery(title:bar))
++foo +bar	Q	+foo +bar	Boolean(+TermQuery(foo) +TermQuery(bar))
++foo -bar	Q	+foo -bar	Boolean(+TermQuery(foo) -TermQuery(bar))
+-foo	Q	-foo	Boolean(-TermQuery(foo))
+-foo -bar	Q	-foo -bar	Boolean(-TermQuery(foo) -TermQuery(bar))
+foo AND bar	Q	+foo +bar	Boolean(+TermQuery(foo) +TermQuery(bar))
+foo OR bar	Q	foo bar	Boolean(TermQuery(foo) TermQuery(bar))
+foo AND NOT bar	Q	+foo -bar	Boolean(+TermQuery(foo) -TermQuery(bar))
+foo && bar	Q	+foo +bar	Boolean(+TermQuery(foo) +TermQuery(bar))
+foo || bar	Q	foo bar	Boolean(TermQuery(foo) TermQuery(bar))
+!foo	Q	-foo	Boolean(-TermQuery(foo))
+foo !bar	Q	foo -bar	Boolean(TermQuery(foo) -TermQuery(bar))
+NOT foo	Q	-foo	Boolean(-TermQuery(foo))
+foo NOT bar	Q	foo -bar	Boolean(TermQuery(foo) -TermQuery(bar))
+a AND b OR c	Q	+a +b c	Boolean(+TermQuery(a) +TermQuery(b) TermQuery(c))
+a OR b AND c	Q	a +b +c	Boolean(TermQuery(a) +TermQuery(b) +TermQuery(c))
+a AND b AND c	Q	+a +b +c	Boolean(+TermQuery(a) +TermQuery(b) +TermQuery(c))
+a OR b OR c	Q	a b c	Boolean(TermQuery(a) TermQuery(b) TermQuery(c))
+(a OR b) AND c	Q	+(a b) +c	Boolean(+Boolean(TermQuery(a) TermQuery(b)) +TermQuery(c))
+a AND (b OR c)	Q	+a +(b c)	Boolean(+TermQuery(a) +Boolean(TermQuery(b) TermQuery(c)))
+((a))	Q	a	TermQuery(a)
+(a)	Q	a	TermQuery(a)
+()	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse ():  
+(a b) (c d)	Q	(a b) (c d)	Boolean(Boolean(TermQuery(a) TermQuery(b)) Boolean(TermQuery(c) TermQuery(d)))
++(a b) -(c d)	Q	+(a b) -(c d)	Boolean(+Boolean(TermQuery(a) TermQuery(b)) -Boolean(TermQuery(c) TermQuery(d)))
+title:a AND body:b	Q	+title:a +body:b	Boolean(+TermQuery(title:a) +TermQuery(body:b))
+foo^2	Q	(foo)^2.0	Boost(TermQuery(foo)^2.0)
+foo^2.5	Q	(foo)^2.5	Boost(TermQuery(foo)^2.5)
+foo^.5	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse foo^.5:  
+foo^0	Q	(foo)^0.0	Boost(TermQuery(foo)^0.0)
+foo^	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse foo^:  
+foo~	Q	foo~2	FuzzyQuery(foo~2)
+foo~1	Q	foo~1	FuzzyQuery(foo~1)
+foo~2	Q	foo~2	FuzzyQuery(foo~2)
+foo~0.5	Q	foo~1	FuzzyQuery(foo~1)
+foo~0.8	Q	foo~0	FuzzyQuery(foo~0)
+foo~3	Q	foo~2	FuzzyQuery(foo~2)
+foo~1^2	Q	(foo~1)^2.0	Boost(FuzzyQuery(foo~1)^2.0)
+foo^2~1	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse foo^2~1:  
+fo*	Q	fo*	PrefixQuery(fo*)
+f*o	Q	f*o	WildcardQuery(f*o)
+f?o	Q	f?o	WildcardQuery(f?o)
+*foo	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Leading wildcard is not allowed: f:*foo
+?foo	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Leading wildcard is not allowed: f:?foo
+*	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Leading wildcard is not allowed: f:*
+*:*	Q	*:*	MatchAllDocsQuery(*:*)
+title:*	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Leading wildcard is not allowed: title:*
+title:fo*	Q	title:fo*	PrefixQuery(title:fo*)
+foo*bar*	Q	foo*bar*	WildcardQuery(foo*bar*)
+te?t	Q	te?t	WildcardQuery(te?t)
+"fo*"	Q	fo	TermQuery(fo)
+/fo.*/	Q	/fo.*/	RegexpQuery(/fo.*/)
+/[a-c]+/	Q	/[a-c]+/	RegexpQuery(/[a-c]+/)
+title:/x.*/	Q	title:/x.*/	RegexpQuery(title:/x.*/)
+/a/b	Q	/a/ b	Boolean(RegexpQuery(/a/) TermQuery(b))
+[a TO z]	Q	[a TO z]	TermRangeQuery([a TO z])
+{a TO z}	Q	{a TO z}	TermRangeQuery({a TO z})
+[a TO z}	Q	[a TO z}	TermRangeQuery([a TO z})
+{a TO z]	Q	{a TO z]	TermRangeQuery({a TO z])
+[* TO z]	Q	[* TO z]	TermRangeQuery([* TO z])
+[a TO *]	Q	[a TO *]	TermRangeQuery([a TO *])
+[* TO *]	Q	[* TO *]	TermRangeQuery([* TO *])
+title:[a TO z]	Q	title:[a TO z]	TermRangeQuery(title:[a TO z])
+[a TO z]^2	Q	([a TO z])^2.0	Boost(TermRangeQuery([a TO z])^2.0)
+[ a TO z ]	Q	[a TO z]	TermRangeQuery([a TO z])
+["a b" TO "c d"]	Q	[a b TO c d]	TermRangeQuery([a b TO c d])
+[1 TO 5]	Q	[1 TO 5]	TermRangeQuery([1 TO 5])
+[2002-01-01 TO 2003-01-01]	Q	[2002-01-01 TO 2003-01-01]	TermRangeQuery([2002-01-01 TO 2003-01-01])
+[a TO]	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse [a TO]:  
+[TO z]	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse [TO z]:  
+[a z]	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse [a z]:  
+a:b:c	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse a:b:c:  
+a\\:b	Q	a:b	TermQuery(a:b)
+a\\ b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\\-b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\\+b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\\(b\\)	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\\"b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\\\\b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\\*b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\\?b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\\~b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\\^b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\\{b\\}	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\\[b\\]	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\\!b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\\&&b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\\|\\|b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+A	Q	a	TermQuery(a)
+é	Q	é	TermQuery(é)
+été	Q	été	TermQuery(été)
+foo\\	X	org.apache.lucene.queryparser.flexible.core.QueryNodeParseException: Syntax Error, cannot parse foo\\: Lexical error at line 1, column 5.  Encountered: <EOF> (in lexical state 2) 
+"foo\\"bar"	Q	"foo bar"	PhraseQuery("foo bar")
+"foo\\\\"	Q	foo	TermQuery(foo)
+foo-bar	Q	foo bar	Boolean(TermQuery(foo) TermQuery(bar))
+foo+bar	Q	foo bar	Boolean(TermQuery(foo) TermQuery(bar))
+foo.bar	Q	foo.bar	TermQuery(foo.bar)
+foo/bar	X	org.apache.lucene.queryparser.flexible.core.QueryNodeParseException: Syntax Error, cannot parse foo/bar: Lexical error at line 1, column 8.  Encountered: <EOF> after prefix "/bar" (in lexical state 2) 
+wi-fi	Q	wi fi	Boolean(TermQuery(wi) TermQuery(fi))
+e-mail address	Q	(e mail) address	Boolean(Boolean(TermQuery(e) TermQuery(mail)) TermQuery(address))
+U.S.A.	Q	u.s.a	TermQuery(u.s.a)
+O'Neil	Q	o'neil	TermQuery(o'neil)
+café	Q	café	TermQuery(café)
+日本語	Q	日 本 語	Boolean(TermQuery(日) TermQuery(本) TermQuery(語))
+中文 测试	Q	(中 文) (测 试)	Boolean(Boolean(TermQuery(中) TermQuery(文)) Boolean(TermQuery(测) TermQuery(试)))
+x AND	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse x AND:  
+AND x	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse AND x:  
+OR	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse OR:  
+AND	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse AND:  
+NOT	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse NOT:  
+x OR	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse x OR:  
+(foo	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse (foo:  
+foo)	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse foo):  
+"foo	X	org.apache.lucene.queryparser.flexible.core.QueryNodeParseException: Syntax Error, cannot parse "foo: Lexical error at line 1, column 5.  Encountered: <EOF> after prefix "\\"foo" (in lexical state 2) 
+foo"	X	org.apache.lucene.queryparser.flexible.core.QueryNodeParseException: Syntax Error, cannot parse foo": Lexical error at line 1, column 5.  Encountered: <EOF> (in lexical state 2) 
+title:	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse title::  
+:foo	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse :foo:  
+foo:	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse foo::  
+[a TO	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse [a TO:  
+a TO b	Q	a to b	Boolean(TermQuery(a) TermQuery(to) TermQuery(b))
+foo^bar	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse foo^bar:  
+foo~bar	Q	foo~2 bar	Boolean(FuzzyQuery(foo~2) TermQuery(bar))
++	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse +:  
+-	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse -:  
+!	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse !:  
++ foo	Q	foo	TermQuery(foo)
+- foo	Q	-foo	Boolean(-TermQuery(foo))
+! foo	Q	-foo	Boolean(-TermQuery(foo))
+foo +	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse foo +:  
+foo -	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse foo -:  
+a && || b	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse a && || b:  
+a ^ b	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse a ^ b:  
+^2	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse ^2:  
+~2	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse ~2:  
+"a"~	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse "a"~:  
+"a"~x	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse "a"~x:  
+"a" ~2	Q	a	TermQuery(a)
+title:foo^2 body:bar^3	Q	(title:foo)^2.0 (body:bar)^3.0	Boolean(Boost(TermQuery(title:foo)^2.0) Boost(TermQuery(body:bar)^3.0))
++title:foo -body:bar baz	Q	+title:foo -body:bar baz	Boolean(+TermQuery(title:foo) -TermQuery(body:bar) TermQuery(baz))
+title:(a OR b)^2	Q	(title:a title:b)^2.0	Boost(Boolean(TermQuery(title:a) TermQuery(title:b))^2.0)
+(a b)^3	Q	(a b)^3.0	Boost(Boolean(TermQuery(a) TermQuery(b))^3.0)
+(a b)~2	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse (a b)~2:  
+-(-a)	Q	-(-a)	Boolean(-Boolean(-TermQuery(a)))
++(+a)	Q	a	TermQuery(a)
+foo*^2	Q	(foo*)^2.0	Boost(PrefixQuery(foo*)^2.0)
+fo*~2	Q	fo*	PrefixQuery(fo*)
+"foo bar" baz	Q	"foo bar" baz	Boolean(PhraseQuery("foo bar") TermQuery(baz))
+"foo bar" AND "baz qux"	Q	+"foo bar" +"baz qux"	Boolean(+PhraseQuery("foo bar") +PhraseQuery("baz qux"))
+the a an	Q	the a an	Boolean(TermQuery(the) TermQuery(a) TermQuery(an))
+The Quick	Q	the quick	Boolean(TermQuery(the) TermQuery(quick))
+FOO bar BAZ	Q	foo bar baz	Boolean(TermQuery(foo) TermQuery(bar) TermQuery(baz))
+foo\tbar	Q	foo bar	Boolean(TermQuery(foo) TermQuery(bar))
+ foo	Q	foo	TermQuery(foo)
+foo	Q	foo	TermQuery(foo)
+foo&bar	Q	foo bar	Boolean(TermQuery(foo) TermQuery(bar))
+foo|bar	Q	foo bar	Boolean(TermQuery(foo) TermQuery(bar))
+foo&&bar	Q	foo bar	Boolean(TermQuery(foo) TermQuery(bar))
+foo||bar	Q	foo bar	Boolean(TermQuery(foo) TermQuery(bar))
+a AND OR b	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse a AND OR b:  
+a NOT NOT b	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse a NOT NOT b:  
+NOT NOT a	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse NOT NOT a:  
+a AND AND b	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse a AND AND b:  
+(a AND b) OR (c AND NOT d)	Q	(+a +b) (+c -d)	Boolean(Boolean(+TermQuery(a) +TermQuery(b)) Boolean(+TermQuery(c) -TermQuery(d)))
+title:"a b"~3^2	Q	(title:"a b"~3)^2.0	Boost(PhraseQuery(title:"a b"~3)^2.0)
+"a b c"~10	Q	"a b c"~10	PhraseQuery("a b c"~10)
+"a  b"	Q	"a b"	PhraseQuery("a b")
+"a-b"	Q	"a b"	PhraseQuery("a b")
+"a,b"	Q	"a b"	PhraseQuery("a b")
+a,b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+12345	Q	12345	TermQuery(12345)
+1.5	Q	1.5	TermQuery(1.5)
+-1	Q	-1	Boolean(-TermQuery(1))
++1	Q	1	TermQuery(1)
+x^-1	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse x^-1:  
+title:[1 TO 10] AND foo	Q	+title:[1 TO 10] +foo	Boolean(+TermRangeQuery(title:[1 TO 10]) +TermQuery(foo))
+*a*	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Leading wildcard is not allowed: f:*a*
+a*b?c	Q	a*b?c	WildcardQuery(a*b?c)
+?	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Leading wildcard is not allowed: f:?
+??	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Leading wildcard is not allowed: f:??
+**	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Leading wildcard is not allowed: f:**
+*?	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Leading wildcard is not allowed: f:*?
+foo~1.5	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse foo~1.5:  
+foo~-1	Q	foo~2 -1	Boolean(FuzzyQuery(foo~2) -TermQuery(1))
+"foo"~1.5	X	java.lang.NumberFormatException: For input string: "1.5"
+a b c d e f g h i j	Q	a b c d e f g h i j	Boolean(TermQuery(a) TermQuery(b) TermQuery(c) TermQuery(d) TermQuery(e) TermQuery(f) TermQuery(g) TermQuery(h) TermQuery(i) TermQuery(j))
+title:foo* body:bar?	Q	title:foo* body:bar?	Boolean(PrefixQuery(title:foo*) WildcardQuery(body:bar?))
+\\*	Q	MatchNoDocsQuery("")	MatchNoDocsQuery(MatchNoDocsQuery(""))
+\\?	Q	MatchNoDocsQuery("")	MatchNoDocsQuery(MatchNoDocsQuery(""))
+\\\\	Q	MatchNoDocsQuery("")	MatchNoDocsQuery(MatchNoDocsQuery(""))
+"\\\\"	Q	MatchNoDocsQuery("")	MatchNoDocsQuery(MatchNoDocsQuery(""))
+"\\""	Q	MatchNoDocsQuery("")	MatchNoDocsQuery(MatchNoDocsQuery(""))
+"a\\nb"	Q	anb	TermQuery(anb)
+\\n	Q	n	TermQuery(n)
+a\\n	Q	an	TermQuery(an)
+AB\\C*	Q	abc*	PrefixQuery(abc*)
+A\\B\\C*D	Q	abc*d	WildcardQuery(abc*d)
+Fo\\O?bar*	Q	foo?bar*	WildcardQuery(foo?bar*)
+X\\*Y*	Q	x*y*	WildcardQuery(x*y*)
+Q\\ Z*	Q	q z*	PrefixQuery(q z*)
+a AND b	Q	+a +b	Boolean(+TermQuery(a) +TermQuery(b))
+a && b	Q	+a +b	Boolean(+TermQuery(a) +TermQuery(b))
+a || b OR c	Q	a b c	Boolean(TermQuery(a) TermQuery(b) TermQuery(c))
+!a NOT b	Q	-a -b	Boolean(-TermQuery(a) -TermQuery(b))
+a:b	Q	a:b	TermQuery(a:b)
+a=b	Q	a:b	TermQuery(a:b)
+f:<3	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse f:<3:  
+f:<=3	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse f:<=3:  
+f:>3	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse f:>3:  
+f:>=3	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse f:>=3:  
+f<3	Q	[* TO 3}	TermRangeQuery([* TO 3})
+f<=abc	Q	[* TO abc]	TermRangeQuery([* TO abc])
+f>"x y"	Q	{x y TO *]	TermRangeQuery({x y TO *])
+f>=1.5	Q	[1.5 TO *]	TermRangeQuery([1.5 TO *])
+"phrase here"~3	Q	"phrase here"~3	PhraseQuery("phrase here"~3)
+term^2	Q	(term)^2.0	Boost(TermQuery(term)^2.0)
+term^2.5	Q	(term)^2.5	Boost(TermQuery(term)^2.5)
+term~0.5	Q	term~2	FuzzyQuery(term~2)
+term~	Q	term~2	FuzzyQuery(term~2)
+[a TO b]	Q	[a TO b]	TermRangeQuery([a TO b])
+{a TO b}	Q	{a TO b}	TermRangeQuery({a TO b})
+[a TO "b c"]	Q	[a TO b c]	TermRangeQuery([a TO b c])
+{* TO *}	Q	{* TO *}	TermRangeQuery({* TO *})
+[a TO b}	Q	[a TO b}	TermRangeQuery([a TO b})
+/reg.*/	Q	/reg.*/	RegexpQuery(/reg.*/)
+/a\\/b/	Q	/a\\/b/	RegexpQuery(/a\\/b/)
+(a b c)@2	Q	(a b c)~2	Boolean(msm=2 TermQuery(a) TermQuery(b) TermQuery(c))
+(a b)@	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse (a b)@:  
+fn:ordered(a b)	Q	ORDERED(a,b)	IntervalQuery(ORDERED(a,b))
+fn:unordered(a b)	Q	UNORDERED(a,b)	IntervalQuery(UNORDERED(a,b))
+fn:atleast(2 a b c)	Q	AtLeast(a,b,c~2)	IntervalQuery(AtLeast(a,b,c~2))
+fn:atLeast(2 a b c)	Q	AtLeast(a,b,c~2)	IntervalQuery(AtLeast(a,b,c~2))
+fn:maxgaps(2 fn:unordered(a b))	Q	MAXGAPS/2(UNORDERED(a,b))	IntervalQuery(MAXGAPS/2(UNORDERED(a,b)))
+fn:maxGaps(1 fn:ordered(a b))	Q	MAXGAPS/1(ORDERED(a,b))	IntervalQuery(MAXGAPS/1(ORDERED(a,b)))
+fn:maxwidth(3 fn:ordered(a b))	Q	MAXWIDTH/3(ORDERED(a,b))	IntervalQuery(MAXWIDTH/3(ORDERED(a,b)))
+fn:maxWidth(3 a)	Q	MAXWIDTH/3(a)	IntervalQuery(MAXWIDTH/3(a))
+fn:wildcard(a*)	Q	MultiTerm(a*)	IntervalQuery(MultiTerm(a*))
+fn:wildcard(a* 5)	Q	MultiTerm(a*)	IntervalQuery(MultiTerm(a*))
+fn:fuzzyTerm(abc 2)	Q	MultiTerm(abc~2)	IntervalQuery(MultiTerm(abc~2))
+fn:fuzzyterm(abc)	Q	MultiTerm(abc~2)	IntervalQuery(MultiTerm(abc~2))
+fn:or(a b c)	Q	or(a,b,c)	IntervalQuery(or(a,b,c))
+fn:phrase(a b)	Q	BLOCK(a,b)	IntervalQuery(BLOCK(a,b))
+fn:within(a 3 b)	Q	CONTAINED_BY(a,EXTEND(b,3,3))	IntervalQuery(CONTAINED_BY(a,EXTEND(b,3,3)))
+fn:notWithin(a 3 b)	Q	NON_OVERLAPPING(a,EXTEND(b,3,3))	IntervalQuery(NON_OVERLAPPING(a,EXTEND(b,3,3)))
+fn:notwithin(a 3 b)	Q	NON_OVERLAPPING(a,EXTEND(b,3,3))	IntervalQuery(NON_OVERLAPPING(a,EXTEND(b,3,3)))
+fn:containedBy(a b)	Q	CONTAINED_BY(a,b)	IntervalQuery(CONTAINED_BY(a,b))
+fn:containedby(a b)	Q	CONTAINED_BY(a,b)	IntervalQuery(CONTAINED_BY(a,b))
+fn:notContainedBy(a b)	Q	NOT_CONTAINED_BY(a,b)	IntervalQuery(NOT_CONTAINED_BY(a,b))
+fn:containing(a b)	Q	CONTAINING(a,b)	IntervalQuery(CONTAINING(a,b))
+fn:notContaining(a b)	Q	NOT_CONTAINING(a,b)	IntervalQuery(NOT_CONTAINING(a,b))
+fn:extend(a 2 3)	Q	EXTEND(a,2,3)	IntervalQuery(EXTEND(a,2,3))
+fn:before(a b)	Q	CONTAINED_BY(a,EXTEND(PRECEDING(b),2147483647,0))	IntervalQuery(CONTAINED_BY(a,EXTEND(PRECEDING(b),2147483647,0)))
+fn:after(a b)	Q	CONTAINED_BY(a,EXTEND(FOLLOWING(b),0,2147483647))	IntervalQuery(CONTAINED_BY(a,EXTEND(FOLLOWING(b),0,2147483647)))
+fn:overlapping(a b)	Q	OVERLAPPING(a,b)	IntervalQuery(OVERLAPPING(a,b))
+fn:nonOverlapping(a b)	Q	NON_OVERLAPPING(a,b)	IntervalQuery(NON_OVERLAPPING(a,b))
+fn:nonoverlapping(a b)	Q	NON_OVERLAPPING(a,b)	IntervalQuery(NON_OVERLAPPING(a,b))
+fn:unorderedNoOverlaps(a b)	Q	or(ORDERED(a,b),ORDERED(b,a))	IntervalQuery(or(ORDERED(a,b),ORDERED(b,a)))
+fn:unorderednooverlaps(a b)	Q	or(ORDERED(a,b),ORDERED(b,a))	IntervalQuery(or(ORDERED(a,b),ORDERED(b,a)))
+field:fn:ordered(a b)	Q	field:ORDERED(a,b)	IntervalQuery(field:ORDERED(a,b))
+fn:ordered("a b" c)	Q	ORDERED(BLOCK(a,b),c)	IntervalQuery(ORDERED(BLOCK(a,b),c))
+fn:ordered(fn:or(a b) c)	Q	ORDERED(or(a,b),c)	IntervalQuery(ORDERED(or(a,b),c))
+fn:bogus(a)	X	org.apache.lucene.queryparser.flexible.core.QueryNodeParseException: Syntax Error, cannot parse fn:bogus(a): Lexical error at line 1, column 5.  Encountered: '111' (111), after prefix "b" 
+fn:ordered(a	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse fn:ordered(a:  
+fn:	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse fn::  
+fn	Q	fn	TermQuery(fn)
+fnx	Q	fnx	TermQuery(fnx)
+a:"unterminated	X	org.apache.lucene.queryparser.flexible.core.QueryNodeParseException: Syntax Error, cannot parse a:"unterminated: Lexical error at line 1, column 16.  Encountered: <EOF> after prefix "\\"unterminated" (in lexical state 2) 
+\\	X	org.apache.lucene.queryparser.flexible.core.QueryNodeParseException: Syntax Error, cannot parse \\: Lexical error at line 1, column 2.  Encountered: <EOF> (in lexical state 2) 
+a\\	X	org.apache.lucene.queryparser.flexible.core.QueryNodeParseException: Syntax Error, cannot parse a\\: Lexical error at line 1, column 3.  Encountered: <EOF> (in lexical state 2) 
+[a TO	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse [a TO:  
+a b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\tb	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a	Q	a	TermQuery(a)
+b	Q	b	TermQuery(b)
+a　b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+a\\:b	Q	a:b	TermQuery(a:b)
+a\\ b	Q	a b	Boolean(TermQuery(a) TermQuery(b))
+\\+a	Q	a	TermQuery(a)
+-a +b	Q	-a +b	Boolean(-TermQuery(a) +TermQuery(b))
+a:(b c)	Q	a:b a:c	Boolean(TermQuery(a:b) TermQuery(a:c))
+a:b^2 c:d~2	Q	(a:b)^2.0 c:d~2	Boolean(Boost(TermQuery(a:b)^2.0) FuzzyQuery(c:d~2))
+"a\\"b"	Q	"a b"	PhraseQuery("a b")
+1.5	Q	1.5	TermQuery(1.5)
+.5	Q	5	TermQuery(5)
+1.	Q	1	TermQuery(1)
+a^	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse a^:  
+~a	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse ~a:  
+a@b	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse a@b:  
+@	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse @:  
+<	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse <:  
+>	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse >:  
+=	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse =:  
+<=	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse <=:  
+>=	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse >=:  
+:	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse ::  
+)	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse ):  
+(	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse (:  
+*	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Leading wildcard is not allowed: f:*
+?	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Leading wildcard is not allowed: f:?
+a*b?c	Q	a*b?c	WildcardQuery(a*b?c)
+*:*	Q	*:*	MatchAllDocsQuery(*:*)
+"" 	Q	MatchNoDocsQuery("")	MatchNoDocsQuery(MatchNoDocsQuery(""))
+a)	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse a):  
++-a	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse +-a:  
+fast	Q	fast	TermQuery(fast)
+fast car	Q	fast car	Boolean(TermQuery(fast) TermQuery(car))
+"fast car"	Q	"fast car"	PhraseQuery("fast car")
+"fast car"~2	Q	"fast car"~2	PhraseQuery("fast car"~2)
+"x fast y"	Q	"x fast y"	PhraseQuery("x fast y")
+x fast	Q	x fast	Boolean(TermQuery(x) TermQuery(fast))
+car~1	Q	car~1	FuzzyQuery(car~1)
+fast*	Q	fast*	PrefixQuery(fast*)
+fast^2	Q	(fast)^2.0	Boost(TermQuery(fast)^2.0)
+"fast"	Q	fast	TermQuery(fast)
+"the car"	Q	"the car"	PhraseQuery("the car")
+the	Q	the	TermQuery(the)
+"the the"	Q	"the the"	PhraseQuery("the the")
+f:fast OR car	Q	fast car	Boolean(TermQuery(fast) TermQuery(car))
+a~1	Q	a~1	FuzzyQuery(a~1)
+"a b"~1	Q	"a b"~1	PhraseQuery("a b"~1)
+a*b	Q	a*b	WildcardQuery(a*b)
+a\\\\*b*	Q	a\\*b*	WildcardQuery(a\\*b*)
+a\\\\?b	Q	a\\?b	WildcardQuery(a\\?b)
+x\\\\*y*z	Q	x\\*y*z	WildcardQuery(x\\*y*z)
+A\\\\*B?	Q	a\\*b?	WildcardQuery(a\\*b?)
+Foo~1	Q	foo~1	FuzzyQuery(foo~1)
+F*~	Q	f*	PrefixQuery(f*)
+/Foo.*/	Q	/foo.*/	RegexpQuery(/foo.*/)
+[A TO B]	Q	[a TO b]	TermRangeQuery([a TO b])
+{ÀB TO É}	Q	{àb TO é}	TermRangeQuery({àb TO é})
+f>=ABC	Q	[abc TO *]	TermRangeQuery([abc TO *])
+f<ÀB	Q	[* TO àb}	TermRangeQuery([* TO àb})
+(a)@2	X	java.lang.ClassCastException: class org.apache.lucene.search.TermQuery cannot be cast to class org.apache.lucene.search.BooleanQuery (org.apache.lucene.search.TermQuery and org.apache.lucene.search.BooleanQuery are in unnamed module of loader 'app')
+(a)^2@1	X	java.lang.ClassCastException: class org.apache.lucene.search.BoostQuery cannot be cast to class org.apache.lucene.search.BooleanQuery (org.apache.lucene.search.BoostQuery and org.apache.lucene.search.BooleanQuery are in unnamed module of loader 'app')
+(fast car)@2	Q	(fast car)~2	Boolean(msm=2 TermQuery(fast) TermQuery(car))
+(the a)@2	Q	(the a)~2	Boolean(msm=2 TermQuery(the) TermQuery(a))
+(the)@2	X	java.lang.ClassCastException: class org.apache.lucene.search.TermQuery cannot be cast to class org.apache.lucene.search.BooleanQuery (org.apache.lucene.search.TermQuery and org.apache.lucene.search.BooleanQuery are in unnamed module of loader 'app')
+(a b)@-1	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse (a b)@-1:  
