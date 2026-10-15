@@ -1669,3 +1669,12 @@ committed fixture. Two were added by `c43-final-cleanup`:
   and all of it is invisible on a single segment — which is why every other
   fuzzy fixture here (all over `blocktree_index`) agrees with a per-segment
   implementation.
+
+- `GenMonitor.java` (M13 T13.5a) -- `QueryDecomposer`, `QueryAnalyzer` and the
+  `TermWeightor`s over `corpus/monitor-queries.txt`: `monitor/decompose.tsv`,
+  `monitor/tree.tsv`, `monitor/weights.tsv`. `MonitorFixtureAccess.java` is the
+  package-private bridge (Lucene's `QueryAnalyzer` is package-private); the
+  Rust side is `crates/lucene-search/tests/monitor_fixtures.rs`.
+- `GenMemoryIndex.java` (M13 T13.5) -- `MemoryIndex` over
+  `corpus/memory-index-{docs,queries}.txt` under eight configurations, plus named
+  scenarios: `memory_index/*.tsv`. Rust side: `memory_index_fixtures.rs`.
