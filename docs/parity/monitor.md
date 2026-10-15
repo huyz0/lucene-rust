@@ -2,8 +2,8 @@
 
 [Index](../parity.md). `org.apache.lucene.monitor`: queries registered once, a document batch
 matched against all of them through a presearcher over each query's term tree. Four sub-tasks
-(T13.5a-d, [m13](../milestones/m13-search-application-modules.md)); this file covers T13.5a, the
-query analysis the presearcher is built from.
+(T13.5a-d, [m13](../milestones/m13-search-application-modules.md)); T13.5a is the query analysis
+and T13.5b the presearcher built from it.
 
 | Java | Rust | Status |
 |---|---|---|
@@ -11,4 +11,6 @@ query analysis the presearcher is built from.
 | `monitor/TermWeightor` | `lucene-search/src/monitor/tree.rs::TermWeightor` | **ported** T13.5a: `combine`, `fieldWeightor`, `termWeightor`, `termFreqWeightor`, `lengthWeightor`, `DEFAULT`; weights bit-equal (`weights.tsv`). Differs: `termAndFieldWeightor` is not ported (no caller in the core path). |
 | `monitor/QueryAnalyzer` | `lucene-search/src/monitor/analyzer.rs::QueryAnalyzer` | **ported** T13.5a: `QueryBuilder`'s rules over `Clause` (`MUST`/`FILTER` conjunction children, `SHOULD` disjunction children unless a required clause makes them redundant, `MUST_NOT` only in a pure negative boolean, boosts as a `MUST` child, leaves through `consumeTerms` in visit order). Differs: the `CustomQueryHandler` mapper is not wired in (`unknownQueryMapper` is always null); equally weighted siblings come in the port's order, not Java's `HashMap`-by-`Class.hashCode()` order, which varies between JVM runs. Tests: `monitor_fixtures.rs` (`tree.tsv`). |
 | `monitor/QueryDecomposer` | `lucene-search/src/monitor/analyzer.rs::QueryDecomposer` | **ported** T13.5a: disjunction-max, boost, boolean (mandatory, exclusions, minimum-should-match) decomposition with `LinkedHashSet` order. Tests: `monitor_fixtures.rs` (`decompose.tsv`). |
+| `monitor/TermFilteredPresearcher`, `MultipassTermFilteredPresearcher`, `Presearcher` | `lucene-search/src/monitor/presearcher.rs::{TermFilteredPresearcher, field_for_pass, batch_string}` | **ported** T13.5b: the document a query is indexed as (`index_query`: per-field terms in sorted order; the multipass `field_<pass>` names and `advancePhase` between passes), the batch query (`build_query`: one `TermInSetQuery` per field, ORed with the any-token marker; multipass as one `MUST` group per pass under the same `SHOULD`), filter clauses (`build_filter_clause` with Java's same-value check, `build_filter_fields`), `NO_FILTERING` (`no_filtering`). `batch_string` prints a query as `BooleanQuery.toString` does. Differs: the presearcher returns its query as a `Clause` and T13.5c's query index runs it; custom query handlers are not wired in; Java's field order follows a `HashMap`, which varies between runs, so fields and clause order are compared as sorted lists. Tests: `monitor_fixtures.rs` (`presearch.tsv`, `batch.tsv`) and `presearcher.rs` printer unit test. |
+| `monitor/QueryTree.advancePhase` | `lucene-search/src/monitor/tree.rs::QueryTree::advance_phase` | **ported** T13.5b: a conjunction advances its heaviest child or drops it when the next clears `minWeight`; a disjunction advances every child and re-sorts. |
 | `monitor/package-info` | `lucene-search/src/monitor/mod.rs` | not a class: the module's documentation and re-exports. |

@@ -90,7 +90,7 @@ fn disjunction(mut children: Vec<QueryTree>) -> Result<QueryTree, String> {
 }
 
 /// `QueryAnalyzer`: a query to its term tree.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct QueryAnalyzer;
 
 impl QueryAnalyzer {

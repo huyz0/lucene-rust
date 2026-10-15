@@ -6,6 +6,7 @@
 //! ([`tree`]) and the analyzer and decomposer ([`analyzer`]).
 
 pub mod analyzer;
+pub mod presearcher;
 pub mod tree;
 
 pub use analyzer::{QueryAnalyzer, QueryDecomposer};

@@ -95,6 +95,36 @@ fn decomposition_matches_lucene() {
     assert!(bad.is_empty(), "{} differ:\n{}", bad.len(), bad.join("\n"));
 }
 
+/// Splits a printed boolean's top-level clauses (space-separated, at paren
+/// depth zero), keeping each clause's own parentheses.
+fn split_top(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut cur = String::new();
+    for c in s.chars() {
+        match c {
+            '(' => {
+                depth += 1;
+                cur.push(c);
+            }
+            ')' => {
+                depth -= 1;
+                cur.push(c);
+            }
+            ' ' if depth == 0 => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            _ => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
 /// Whether two tree texts hold the same nodes, sibling order aside: the same
 /// lines in any order. Java orders equally weighted siblings by its
 /// `Multiset`'s hash iteration, which this port does not reproduce; the
@@ -250,4 +280,169 @@ fn weightors_match_lucene() {
         }
     }
     assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+/// The presearcher's indexed document per query, under the plain presearcher
+/// and the two-pass one, as Lucene indexes it (`presearch.tsv`).
+#[test]
+fn presearcher_indexes_match_lucene() {
+    use lucene_search::monitor::presearcher::TermFilteredPresearcher;
+    use std::collections::BTreeMap;
+
+    let want = fs::read_to_string(dir().join("data/monitor/presearch.tsv")).unwrap();
+    let plain = TermFilteredPresearcher::default();
+    let multi = TermFilteredPresearcher::multipass(2, 0.0, TermWeightor::default(), Vec::new());
+    let none = BTreeMap::new();
+    let mut bad = Vec::new();
+    for (line, q) in want.lines().zip(&corpus()) {
+        let cols: Vec<&str> = line.split('\t').collect();
+        assert_eq!(unesc(cols[0]), *q);
+        let Ok(clause) = parse(q) else { continue };
+        // each indexed field as (name, the terms it holds, space-joined)
+        let fields_of = |p: &TermFilteredPresearcher| -> Vec<(String, String)> {
+            let indexed = p.index_query(&clause, &none).unwrap();
+            indexed
+                .fields
+                .iter()
+                .map(|(field, terms)| {
+                    let names: Vec<String> = terms
+                        .iter()
+                        .map(|t| String::from_utf8_lossy(t).into_owned())
+                        .collect();
+                    (field.clone(), names.join(" "))
+                })
+                .collect()
+        };
+        // the Java row, unescaped: query, P, plain (name, terms)*, M, multipass (name, terms)*
+        let row: Vec<String> = cols.iter().map(|c| unesc(c)).collect();
+        let p_at = row
+            .iter()
+            .position(|c| c == "P")
+            .unwrap_or_else(|| panic!("no P in {q:?}: {row:?}"));
+        let m_at = row
+            .iter()
+            .position(|c| c == "M")
+            .unwrap_or_else(|| panic!("no M in {q:?}: {row:?}"));
+        // one cell per field, holding `name` TAB `terms`
+        let pairs = |v: &[String]| -> Vec<(String, String)> {
+            v.iter()
+                .map(|cell| {
+                    let (name, terms) = cell.split_once('\t').unwrap();
+                    (name.to_string(), terms.to_string())
+                })
+                .collect()
+        };
+        assert!(p_at < m_at, "{q:?}: P at {p_at} after M at {m_at}: {row:?}");
+        let want_plain = pairs(&row[p_at + 1..m_at]);
+        let want_multi = pairs(&row[m_at + 1..]);
+        let got_plain = fields_of(&plain);
+        let got_multi = fields_of(&multi);
+        // Java's field order is its `HashMap`'s, which varies between runs; the
+        // (name, terms) pairs are compared as sorted multisets, each exactly.
+        let sorted = |mut v: Vec<(String, String)>| {
+            v.sort();
+            v
+        };
+        // A conjunction indexes its heaviest child, and among tied children that
+        // child is Java's hash-ordered first. Either tied child is a valid key
+        // (the query needs both), so a query whose tree is a conjunction of
+        // equal-weight terms is compared on the set of fields, not the terms.
+        let tied = q.contains(" AND ");
+        let same = if tied {
+            sorted(
+                got_plain
+                    .iter()
+                    .map(|(f, _)| (f.clone(), String::new()))
+                    .collect(),
+            ) == sorted(
+                want_plain
+                    .iter()
+                    .map(|(f, _)| (f.clone(), String::new()))
+                    .collect(),
+            )
+        } else {
+            sorted(got_plain.clone()) == sorted(want_plain.clone())
+                && sorted(got_multi.clone()) == sorted(want_multi.clone())
+        };
+        if !same {
+            bad.push(format!(
+                "{q:?}\n  want plain {want_plain:?} multi {want_multi:?}\n  got  plain {got_plain:?} multi {got_multi:?}"
+            ));
+        }
+    }
+    assert!(bad.is_empty(), "{} differ:\n{}", bad.len(), bad.join("\n"));
+}
+
+/// The batch query a presearcher builds over one document's fields, under the
+/// plain and the two-pass presearcher, as Lucene's `buildQuery` prints it
+/// (`batch.tsv`).
+#[test]
+fn batch_queries_match_lucene() {
+    use lucene_analysis::{Analyzer, StandardAnalyzer, TokenStream};
+    use lucene_search::monitor::presearcher::{batch_string, TermFilteredPresearcher};
+    use std::collections::BTreeMap;
+
+    let want = fs::read_to_string(dir().join("data/monitor/batch.tsv")).unwrap();
+    let plain = TermFilteredPresearcher::default();
+    let multi = TermFilteredPresearcher::multipass(2, 0.0, TermWeightor::default(), Vec::new());
+    let analyzer = Analyzer::new(StandardAnalyzer::new());
+    let mut bad = Vec::new();
+    for line in want.lines() {
+        let cols: Vec<&str> = line.split('\t').collect();
+        let doc: Vec<String> = unesc(cols[0]).split('|').map(str::to_string).collect();
+        // the batch as field -> distinct sorted terms, analysed as the batch's own field
+        let mut batch: BTreeMap<String, Vec<Vec<u8>>> = BTreeMap::new();
+        for pair in &doc {
+            let (field, value) = pair.split_once('=').unwrap();
+            let mut ts = analyzer.token_stream(field, value).unwrap();
+            ts.reset().unwrap();
+            while ts.increment_token().unwrap() {
+                let t = ts.attributes().term_bytes().to_vec();
+                let v = batch.entry(field.to_string()).or_default();
+                if !v.contains(&t) {
+                    v.push(t);
+                }
+            }
+        }
+        for v in batch.values_mut() {
+            v.sort_unstable();
+        }
+        let accept = |_: &str, _: &[u8]| true;
+        let p_query = plain.build_query(&batch, &accept, None);
+        let m_query = multi.build_query(&batch, &accept, None);
+        let got_p = batch_string(&p_query);
+        if std::env::var_os("MONITOR_DEBUG").is_some() {
+            eprintln!("TREE {p_query:?}");
+        }
+        let got_m = batch_string(&m_query);
+        let want_p = unesc(cols[2]);
+        let want_m = unesc(cols[4]);
+        // The printed query, exactly. Java's clause order follows its own
+        // hashing, so the clauses of each boolean are compared as a sorted list;
+        // the structure (parentheses, occurrence prefixes, nesting) is exact.
+        // sort each boolean's clauses, at every depth, so only the order is
+        // allowed to differ and nothing else
+        fn canon(s: &str) -> String {
+            let mut parts: Vec<String> = split_top(s)
+                .into_iter()
+                .map(|c| match c.strip_prefix(['+', '-', '#']) {
+                    Some(rest) if rest.starts_with('(') => {
+                        let inner = &rest[1..rest.len() - 1];
+                        format!("{}({})", &c[..1], canon(inner))
+                    }
+                    _ if c.starts_with('(') && c.ends_with(')') => {
+                        format!("({})", canon(&c[1..c.len() - 1]))
+                    }
+                    _ => c,
+                })
+                .collect();
+            parts.sort_unstable();
+            parts.join(" ")
+        }
+        let norm = canon;
+        if norm(&got_p) != norm(&want_p) || norm(&got_m) != norm(&want_m) {
+            bad.push(format!("{line}\n  got P {got_p}\n  got M {got_m}"));
+        }
+    }
+    assert!(bad.is_empty(), "{} differ:\n{}", bad.len(), bad.join("\n"));
 }

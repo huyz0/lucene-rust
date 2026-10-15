@@ -77,6 +77,47 @@ public class GenMonitor {
     Files.writeString(out.resolve("decompose.tsv"), decompose.toString(), StandardCharsets.UTF_8);
     Files.writeString(out.resolve("tree.tsv"), tree.toString(), StandardCharsets.UTF_8);
 
+    // T13.5b: the presearcher's indexed document per query, and a batch's query
+    StringBuilder presearch = new StringBuilder();
+    org.apache.lucene.monitor.Presearcher plain = new org.apache.lucene.monitor.TermFilteredPresearcher();
+    org.apache.lucene.monitor.Presearcher multi =
+        new org.apache.lucene.monitor.MultipassTermFilteredPresearcher(2);
+    for (String text : qs) {
+      presearch.append(esc(text));
+      try {
+        Query q = parser.parse(text);
+        presearch.append("	P");
+        for (String f : MonitorFixtureAccess.indexedFields(plain, q, java.util.Map.of())) {
+          presearch.append('	').append(esc(f));
+        }
+        presearch.append("	M");
+        for (String f : MonitorFixtureAccess.indexedFields(multi, q, java.util.Map.of())) {
+          presearch.append('	').append(esc(f));
+        }
+      } catch (Exception e) {
+        presearch.append("	X	").append(esc(e.getClass().getName() + ": " + e.getMessage()));
+      }
+      presearch.append('\n');
+    }
+    Files.writeString(out.resolve("presearch.tsv"), presearch.toString(), StandardCharsets.UTF_8);
+
+    // the batch query: one document, its fields analysed, under both presearchers
+    StringBuilder batches = new StringBuilder();
+    String[][] docs = {
+      {"body=the quick brown fox"},
+      {"body=a b", "title=quick"},
+      {"body=fox fox fox", "title=brown"},
+      {"body=zzzz extraordinarily"},
+    };
+    StandardAnalyzer batchAnalyzer = new StandardAnalyzer();
+    for (String[] doc : docs) {
+      batches.append(esc(String.join("|", doc))).append('	');
+      batches.append("P	").append(esc(MonitorFixtureAccess.batchQuery(plain, batchAnalyzer, doc)));
+      batches.append("	M	").append(esc(MonitorFixtureAccess.batchQuery(multi, batchAnalyzer, doc)));
+      batches.append('\n');
+    }
+    Files.writeString(out.resolve("batch.tsv"), batches.toString(), StandardCharsets.UTF_8);
+
     StringBuilder weights = new StringBuilder();
     Term[] probes = {
       new Term("body", "fox"), new Term("body", "a"), new Term("title", "quick"),

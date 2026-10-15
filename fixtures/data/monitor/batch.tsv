@@ -1,0 +1,4 @@
+body=the quick brown fox	P	(body:(brown fox quick the)) __anytokenfield:__ANYTOKEN__	M	(+(body_0:(brown fox quick the)) +(body_1:(brown fox quick the))) __anytokenfield:__ANYTOKEN__
+body=a b|title=quick	P	(title:(quick) body:(a b)) __anytokenfield:__ANYTOKEN__	M	(+(title_0:(quick) body_0:(a b)) +(title_1:(quick) body_1:(a b))) __anytokenfield:__ANYTOKEN__
+body=fox fox fox|title=brown	P	(title:(brown) body:(fox)) __anytokenfield:__ANYTOKEN__	M	(+(title_0:(brown) body_0:(fox)) +(title_1:(brown) body_1:(fox))) __anytokenfield:__ANYTOKEN__
+body=zzzz extraordinarily	P	(body:(extraordinarily zzzz)) __anytokenfield:__ANYTOKEN__	M	(+(body_0:(extraordinarily zzzz)) +(body_1:(extraordinarily zzzz))) __anytokenfield:__ANYTOKEN__
