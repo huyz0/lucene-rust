@@ -1,0 +1,138 @@
+a AND b
+a && b
+a || b OR c
+!a NOT b
+a:b
+a=b
+f:<3
+f:<=3
+f:>3
+f:>=3
+f<3
+f<=abc
+f>"x y"
+f>=1.5
+"phrase here"~3
+term^2
+term^2.5
+term~0.5
+term~
+[a TO b]
+{a TO b}
+[a TO "b c"]
+{* TO *}
+[a TO b}
+/reg.*/
+/a\/b/
+(a b c)@2
+(a b)@
+fn:ordered(a b)
+fn:unordered(a b)
+fn:atleast(2 a b c)
+fn:atLeast(2 a b c)
+fn:maxgaps(2 fn:unordered(a b))
+fn:maxGaps(1 fn:ordered(a b))
+fn:maxwidth(3 fn:ordered(a b))
+fn:maxWidth(3 a)
+fn:wildcard(a*)
+fn:wildcard(a* 5)
+fn:fuzzyTerm(abc 2)
+fn:fuzzyterm(abc)
+fn:or(a b c)
+fn:phrase(a b)
+fn:within(a 3 b)
+fn:notWithin(a 3 b)
+fn:notwithin(a 3 b)
+fn:containedBy(a b)
+fn:containedby(a b)
+fn:notContainedBy(a b)
+fn:containing(a b)
+fn:notContaining(a b)
+fn:extend(a 2 3)
+fn:before(a b)
+fn:after(a b)
+fn:overlapping(a b)
+fn:nonOverlapping(a b)
+fn:nonoverlapping(a b)
+fn:unorderedNoOverlaps(a b)
+fn:unorderednooverlaps(a b)
+field:fn:ordered(a b)
+fn:ordered("a b" c)
+fn:ordered(fn:or(a b) c)
+fn:bogus(a)
+fn:ordered(a
+fn:
+fn
+fnx
+a:"unterminated
+\
+a\
+[a TO
+a b
+a	b
+a
+b
+a　b
+a\:b
+a\ b
+\+a
+-a +b
+a:(b c)
+a:b^2 c:d~2
+"a\"b"
+1.5
+.5
+1.
+a^
+~a
+a@b
+@
+<
+>
+=
+<=
+>=
+:
+)
+(
+*
+?
+a*b?c
+*:*
+"" 
+a)
++-a
+fast
+fast car
+"fast car"
+"fast car"~2
+"x fast y"
+x fast
+car~1
+fast*
+fast^2
+"fast"
+"the car"
+the
+"the the"
+f:fast OR car
+a~1
+"a b"~1
+a*b
+a\\*b*
+a\\?b
+x\\*y*z
+A\\*B?
+Foo~1
+F*~
+/Foo.*/
+[A TO B]
+{ÀB TO É}
+f>=ABC
+f<ÀB
+(a)@2
+(a)^2@1
+(fast car)@2
+(the a)@2
+(the)@2
+(a b)@-1

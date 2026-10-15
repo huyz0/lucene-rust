@@ -9,7 +9,7 @@
 | **Effort** | XL |
 | **Depends on** | [M10](m10-joins-grouping-queries.md), [M11](m11-analysis-common.md) |
 | **Unblocks** | native `highlight`, completion suggesters, `query_string`/`simple_query_string` parsing |
-| **Status** | in progress, 0 of 4 criteria -- T13.1: the classic `QueryParser`, `MultiFieldQueryParser`, `SimpleQueryParser`, the `ext` package, the surround language, `ComplexPhraseQueryParser` and `CoreParser` (the `xml` package's core builders) are ported (every fixture row equal); `flexible`, `CorePlusQueriesParser` and `CorePlusExtensionsParser` are not |
+| **Status** | in progress, 0 of 4 criteria -- T13.1: the classic `QueryParser`, `MultiFieldQueryParser`, `SimpleQueryParser`, the `ext` package, the surround language, `ComplexPhraseQueryParser`, `CoreParser` (the `xml` package's core builders) and the `flexible` framework (`StandardQueryParser`, `PrecedenceQueryParser`, `QueryParserUtil`) are ported (every fixture row equal); `CorePlusQueriesParser` and `CorePlusExtensionsParser` are not |
 
 ---
 
@@ -30,6 +30,11 @@ modules themselves are much larger:
 
 OpenSearch highlights, parses `query_string` and serves completion suggesters
 through these modules; each of those falls back to Lucene today.
+
+Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
+(`queryparser`, `highlighter`, `suggest`, `facet`, `monitor`, `memory`);
+`scripts/check-port-inventory.py --module <module> --milestone M13
+--summary` lists what M13 still owes in it.
 
 ---
 
@@ -80,9 +85,12 @@ through these modules; each of those falls back to Lucene today.
   runtime (`queryparser/javacc.rs`), and the XML query parser's core builders
   (`GenQueryParserXml`: 104 documents, each's tree and hits over an index with
   an `IntPoint` field, or its exception, through `quick-xml`). Remaining:
-  date-resolution ranges, the `flexible` parser, and the `xml` package's
-  `LikeThisQuery` and `FuzzyLikeThisQuery` builders (`CorePlusQueriesParser`,
-  `CorePlusExtensionsParser`)
+  date-resolution ranges, and the `xml` package's `LikeThisQuery` and
+  `FuzzyLikeThisQuery` builders (`CorePlusQueriesParser`,
+  `CorePlusExtensionsParser`). The `flexible` framework is ported
+  (`GenQueryParserFlexible`: its lexer token for token over 8,246 queries,
+  352 queries parsed under eleven configurations and 7,894 fragment joins); its points
+  and date-resolution configuration is deferred to M14
   (`docs/inventory/lucene-queryparser.tsv`).
 - **T13.2** — Highlighting, including term vectors in `DirectoryReader`.
 - **T13.3** — Suggesters and the completion postings format.

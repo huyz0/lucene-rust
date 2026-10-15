@@ -115,6 +115,9 @@ jobs:
           python3 scripts/check-port-inventory.py --module grouping --require-jar
           python3 scripts/check-port-inventory.py --module queries --require-jar
           python3 scripts/check-port-inventory.py --module queryparser --require-jar
+          for m in highlighter suggest facet monitor memory; do
+            python3 scripts/check-port-inventory.py --module "$m" --require-jar
+          done
           python3 scripts/check-port-inventory.py --module analysis-common --require-jar
           for m in icu kuromoji nori smartcn stempel morfologik phonetic opennlp; do
             python3 scripts/check-port-inventory.py --module "analysis-$m" --require-jar

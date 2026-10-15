@@ -46,7 +46,7 @@ fn from_clause_keeps_every_query_class() {
                 MultiTermSource::Prefix(PrefixQuery::new("f", b"x".to_vec())),
                 RewriteMethod::ConstantScore,
             )))),
-            "Query",
+            "PrefixQuery",
         ),
         (
             Clause::MatchNoDocs(MatchNoDocsQuery::new()),

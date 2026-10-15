@@ -1,0 +1,93 @@
+# Lucene 10.5.0 lucene-highlighter: every top-level class of the jar, and what became of it.
+# Checked by scripts/check-port-inventory.py --module highlighter (see its docstring for the statuses).
+# class	status	detail
+search/highlight/DefaultEncoder	todo:M13	Simple Encoder implementation that does not modify the output
+search/highlight/Encoder	todo:M13	Encodes original text.
+search/highlight/Formatter	todo:M13	Processes terms found in the original text, typically by applying some form of mark-up to highlight terms in HTML search results pages.
+search/highlight/Fragmenter	todo:M13	Implements the policy for breaking text into multiple fragments for consideration by the Highlighter class.
+search/highlight/GradientFormatter	todo:M13	Formats text with different color intensity depending on the score of the term.
+search/highlight/Highlighter	todo:M13	Marks up highlighted terms found in the best sections of text, using configurable Fragmenter, Scorer, Formatter, Encoder and tokenizers.
+search/highlight/InvalidTokenOffsetsException	todo:M13	Exception thrown if TokenStream Tokens are incompatible with provided text
+search/highlight/LimitTokenOffsetFilter	todo:M13	This is a simplified version of org.apache.lucene.analysis.miscellaneous.LimitTokenOffsetFilter to prevent a dependency on analysis-common.jar.
+search/highlight/NullFragmenter	todo:M13	Fragmenter implementation which does not fragment the text.
+search/highlight/OffsetLimitTokenFilter	todo:M13	This TokenFilter limits the number of tokens while indexing by adding up the current offset.
+search/highlight/PositionSpan	todo:M13	Utility class to record Positions Spans
+search/highlight/QueryScorer	todo:M13	Scorer implementation which scores text fragments by the number of unique query terms found.
+search/highlight/QueryTermExtractor	todo:M13	Utility class used to extract the terms used in a query, plus any weights.
+search/highlight/QueryTermScorer	todo:M13	QueryTermScorer
+search/highlight/Scorer	todo:M13	A Scorer is responsible for scoring a stream of tokens.
+search/highlight/SimpleFragmenter	todo:M13	Fragmenter implementation which breaks text up into same-size fragments with no concerns over spotting sentence boundaries.
+search/highlight/SimpleHTMLEncoder	todo:M13	Simple Encoder implementation to escape text for HTML output
+search/highlight/SimpleHTMLFormatter	todo:M13	Simple Formatter implementation to highlight terms with a pre and post tag.
+search/highlight/SimpleSpanFragmenter	todo:M13	Fragmenter implementation which breaks text up into same-size fragments but does not split up Spans.
+search/highlight/SpanGradientFormatter	todo:M13	Formats text with different color intensity depending on the score of the term using the span tag.
+search/highlight/TermVectorLeafReader	todo:M13	Wraps a Terms with a org.apache.lucene.index.LeafReader, typically from term vectors.
+search/highlight/TextFragment	todo:M13	Low-level class used to record information about a section of a document with a score.
+search/highlight/TokenGroup	todo:M13	One, or several overlapping tokens, along with the score(s) and the scope of the original text.
+search/highlight/TokenSources	todo:M13	Convenience methods for obtaining a TokenStream for use with the Highlighter - can obtain from term vectors with offsets and positions or from an Analyzer re-pa
+search/highlight/TokenStreamFromTermVector	todo:M13	TokenStream created from a term vector field.
+search/highlight/WeightedSpanTerm	todo:M13	Lightweight class to hold term, weight, and positions used for scoring this term.
+search/highlight/WeightedSpanTermExtractor	todo:M13	Class used to extract WeightedSpanTerms from a Query based on whether Terms from the Query are contained in a supplied TokenStream.
+search/highlight/WeightedTerm	todo:M13	Lightweight class to hold term and a weight value used for scoring this term
+search/matchhighlight/BreakIteratorShrinkingAdjuster	todo:M13	A PassageAdjuster that adjusts the Passage range to word boundaries hinted by the given BreakIterator.
+search/matchhighlight/CharSequenceIterator	todo:M13	A CharacterIterator over a CharSequence.
+search/matchhighlight/FieldValueHighlighters	todo:M13	A factory of org.apache.lucene.search.matchhighlight.MatchHighlighter.FieldValueHighlighter classes that cover typical use cases (verbatim values, highlights, a
+search/matchhighlight/MatchHighlighter	todo:M13	An example highlighter that combines several lower-level utility classes in this package into a fully featured, ready-to-use component.
+search/matchhighlight/MatchRegionRetriever	todo:M13	Utility class to compute a list of "match regions" for a given query, searcher and document(s) using Matches API.
+search/matchhighlight/OffsetRange	todo:M13	A non-empty range of offset positions.
+search/matchhighlight/OffsetsFromMatchIterator	todo:M13	This strategy retrieves offsets directly from MatchesIterator, if they are available, otherwise it falls back to using OffsetsFromPositions.
+search/matchhighlight/OffsetsFromPositions	todo:M13	This strategy applies to fields with stored positions but no offsets.
+search/matchhighlight/OffsetsFromTokens	todo:M13	This strategy works for fields where we know the match occurred but there are no known positions or offsets.
+search/matchhighlight/OffsetsFromValues	todo:M13	This strategy works for fields where we know the match occurred but there are no known positions or offsets.
+search/matchhighlight/OffsetsRetrievalStrategy	todo:M13	Determines how match offset regions are computed from MatchesIterator.
+search/matchhighlight/OffsetsRetrievalStrategySupplier	todo:M13	A per-field supplier of OffsetsRetrievalStrategy.
+search/matchhighlight/Passage	todo:M13	A passage is a fragment of source text, scored and possibly with a list of sub-offsets (markers) to be highlighted.
+search/matchhighlight/PassageAdjuster	todo:M13	Adjusts the range of one or more passages over a given value.
+search/matchhighlight/PassageFormatter	todo:M13	Formats a collection of Passage passages over a given string, cleaning up and resolving restrictions concerning overlaps, allowed sub-ranges over the input stri
+search/matchhighlight/PassageSelector	todo:M13	Selects fragments of text that score best for the given set of highlight markers.
+search/uhighlight/AnalysisOffsetStrategy	partial	crates/lucene-search/src/highlighter.rs::offsets_from_analysis -- M13: the class itself, as T13.2 ports the unified highlighter
+search/uhighlight/CharArrayMatcher	todo:M13	Matches a character array
+search/uhighlight/CustomSeparatorBreakIterator	todo:M13	A BreakIterator that breaks the text whenever a certain separator, provided as a constructor argument, is found.
+search/uhighlight/DefaultPassageFormatter	partial	crates/lucene-search/src/highlighter.rs::format_fragments -- M13: the class itself, as T13.2 ports the unified highlighter
+search/uhighlight/FieldHighlighter	todo:M13	Internal highlighter abstraction that operates on a per field basis.
+search/uhighlight/FieldOffsetStrategy	todo:M13	Ultimately returns an OffsetsEnum yielding potentially highlightable words in the text.
+search/uhighlight/LabelledCharArrayMatcher	todo:M13	Associates a label with a CharArrayMatcher to distinguish different sources for terms in highlighting
+search/uhighlight/LengthGoalBreakIterator	todo:M13	Wraps another BreakIterator to skip past breaks that would result in passages that are too short.
+search/uhighlight/MemoryIndexOffsetStrategy	todo:M13	Uses an Analyzer on content to get offsets and then populates a MemoryIndex.
+search/uhighlight/MultiFieldsOffsetStrategy	todo:M13	FieldOffsetStrategy that combines offsets from multiple fields.
+search/uhighlight/MultiTermHighlighting	todo:M13	Support for highlighting multi-term queries.
+search/uhighlight/NoOpOffsetStrategy	todo:M13	Never returns offsets.
+search/uhighlight/OffsetsEnum	todo:M13	An enumeration/iterator of a term and its offsets for use by FieldHighlighter.
+search/uhighlight/OverlaySingleDocTermsLeafReader	todo:M13	Overlays a 2nd LeafReader for the terms of one field, otherwise the primary reader is consulted.
+search/uhighlight/Passage	partial	crates/lucene-search/src/highlighter.rs::Fragment -- M13: the class itself, as T13.2 ports the unified highlighter
+search/uhighlight/PassageFormatter	todo:M13	Creates a formatted snippet from the top passages.
+search/uhighlight/PassageScorer	partial	crates/lucene-search/src/highlighter.rs::PassageScorer -- M13: the class itself, as T13.2 ports the unified highlighter
+search/uhighlight/PhraseHelper	partial	crates/lucene-search/src/highlighter.rs::phrase_match_offsets -- M13: the class itself, as T13.2 ports the unified highlighter
+search/uhighlight/PostingsOffsetStrategy	partial	crates/lucene-search/src/highlighter.rs::offsets_from_postings -- M13: the class itself, as T13.2 ports the unified highlighter
+search/uhighlight/PostingsWithTermVectorsOffsetStrategy	todo:M13	Like PostingsOffsetStrategy but also uses term vectors (only terms needed) for multi-term queries.
+search/uhighlight/SplittingBreakIterator	partial	crates/lucene-search/src/highlighter.rs::split_sentence_boundaries -- M13: the class itself, as T13.2 ports the unified highlighter
+search/uhighlight/TermVectorFilteredLeafReader	todo:M13	A filtered LeafReader that only includes the terms that are also in a provided set of terms.
+search/uhighlight/TermVectorOffsetStrategy	todo:M13	Uses term vectors that contain offsets.
+search/uhighlight/TokenStreamOffsetStrategy	todo:M13	Analyzes the text, producing a single OffsetsEnum wrapping the TokenStream filtered to terms in the query, including wildcards.
+search/uhighlight/UHComponents	todo:M13	A parameter object to hold the components a FieldOffsetStrategy needs.
+search/uhighlight/UnifiedHighlighter	todo:M13	A Highlighter that can get offsets from either postings (DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS), term vectors (setStoreTermVectorOffsets(boolean)), or via re
+search/uhighlight/WholeBreakIterator	todo:M13	Just produces one single fragment for the entire text
+search/vectorhighlight/BaseFragListBuilder	todo:M13	A abstract implementation of FragListBuilder.
+search/vectorhighlight/BaseFragmentsBuilder	todo:M13	Base FragmentsBuilder implementation that supports colored pre/post tags and multivalued fields.
+search/vectorhighlight/BoundaryScanner	todo:M13	Finds fragment boundaries: pluggable into BaseFragmentsBuilder
+search/vectorhighlight/BreakIteratorBoundaryScanner	todo:M13	A BoundaryScanner implementation that uses BreakIterator to find boundaries in the text.
+search/vectorhighlight/FastVectorHighlighter	todo:M13	Another highlighter implementation.
+search/vectorhighlight/FieldFragList	todo:M13	FieldFragList has a list of "frag info" that is used by FragmentsBuilder class to create fragments (snippets).
+search/vectorhighlight/FieldPhraseList	todo:M13	FieldPhraseList has a list of WeightedPhraseInfo that is used by FragListBuilder to create a FieldFragList object.
+search/vectorhighlight/FieldQuery	todo:M13	FieldQuery breaks down query object into terms/phrases and keeps them in a QueryPhraseMap structure.
+search/vectorhighlight/FieldTermStack	todo:M13	FieldTermStack is a stack that keeps query terms in the specified field of the document to be highlighted.
+search/vectorhighlight/FragListBuilder	todo:M13	FragListBuilder is an interface for FieldFragList builder classes.
+search/vectorhighlight/FragmentsBuilder	todo:M13	org.apache.lucene.search.vectorhighlight.FragmentsBuilder is an interface for fragments (snippets) builder classes.
+search/vectorhighlight/ScoreOrderFragmentsBuilder	todo:M13	An implementation of FragmentsBuilder that outputs score-order fragments.
+search/vectorhighlight/SimpleBoundaryScanner	todo:M13	Simple boundary scanner implementation that divides fragments based on a set of separator characters.
+search/vectorhighlight/SimpleFieldFragList	todo:M13	A simple implementation of FieldFragList.
+search/vectorhighlight/SimpleFragListBuilder	todo:M13	A simple implementation of FragListBuilder.
+search/vectorhighlight/SimpleFragmentsBuilder	todo:M13	A simple implementation of FragmentsBuilder.
+search/vectorhighlight/SingleFragListBuilder	todo:M13	An implementation class of FragListBuilder that generates one WeightedFragInfo object.
+search/vectorhighlight/WeightedFieldFragList	todo:M13	A weighted implementation of FieldFragList.
+search/vectorhighlight/WeightedFragListBuilder	todo:M13	A weighted implementation of FragListBuilder.
