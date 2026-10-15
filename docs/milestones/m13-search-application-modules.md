@@ -100,8 +100,30 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
   score bit for bit, `toStringDebug`, the refusals), searched in memory over
   the codec's own encoding: 1.08x Lucene to build, 1.8x to search. Its
   benchmark moved `FuzzyQuery` onto Lucene's parametric Levenshtein
-  automata, 4x cheaper to build per query. `monitor` is not started.
+  automata, 4x cheaper to build per query.
+  `monitor` (41 classes, 5,374 lines) is planned as four sub-tasks, in order:
+  - **T13.5a** `QueryAnalyzer`, `QueryTree`, `QueryDecomposer`,
+    `TermWeightor`, `TermsEnumTokenStream`, `TermsHashBuilder`: each query's
+    term tree, the input to the presearcher.
+  - **T13.5b** `TermFilteredPresearcher`, `MultipassTermFilteredPresearcher`,
+    `Presearcher`, `PresearcherMatch(es)`: the term-filter index that narrows
+    a document batch to candidate queries.
+  - **T13.5c** `Monitor`, `MonitorQuery`, `MonitorConfiguration`,
+    `QueryIndex` and its readonly/writable forms, `MatchingQueries`,
+    `CandidateMatcher`, `CollectingMatcher`, `ParallelMatcher`,
+    `PartitionMatcher`, `MatcherFactory`, `QueryMatch`, `ScoringMatch`,
+    `ExplainingMatch`, `HighlightsMatch`: the matching path, end to end.
+  - **T13.5d** `MonitorQuerySerializer`, `ConcurrentQueryLoader`, `SlowLog`,
+    `QueryTimeListener`, `MonitorUpdateListener`, `CustomQueryHandler`,
+    `RegexpQueryHandler`, `SuffixingNGramTokenFilter`: persistence and
+    operations.
+  Each sub-task is a port with its own differential fixtures (queries and
+  documents from `GenMonitor.java`), and its own inventory rows.
 - **T13.6** — Plugin wiring for the OpenSearch features above.
+
+**Status by task:** T13.1 done; T13.5 `MemoryIndex` done, `monitor` in
+progress (none of T13.5a-d committed yet); T13.2, T13.3, T13.4 and T13.6
+not started. M13 closes when all four acceptance criteria hold.
 
 ## Acceptance criteria
 
