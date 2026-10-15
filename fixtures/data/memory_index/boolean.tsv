@@ -1,0 +1,864 @@
+D	0	body:\n\t'[62 72 6f 77 6e]':1: [(2)]\n\t'[64 6f 67]':1: [(8)]\n\t'[66 6f 78]':1: [(3)]\n\t'[6a 75 6d 70 73]':1: [(4)]\n\t'[6c 61 7a 79]':1: [(7)]\n\t'[6f 76 65 72]':1: [(5)]\n\t'[71 75 69 63 6b]':1: [(1)]\n\t'[74 68 65]':2: [(0), (6)]\n\tterms=8, positions=9\n\nfields=1, terms=8, positions=9
+S	0	quick	3f800000
+S	0	fox	3f800000
+S	0	the	3f800000
+S	0	dog OR cat	3f800000
+S	0	+quick +fox	40000000
+S	0	+quick -fox	0
+S	0	quick AND brown AND fox	40400000
+S	0	"quick brown"	3f800000
+S	0	"quick fox"~2	3f800000
+S	0	"brown quick"~3	3f800000
+S	0	"fox jumps"	3f800000
+S	0	qui*	3f800000
+S	0	f?x	3f800000
+S	0	fishing~1	0
+S	0	salmon~2	0
+S	0	title:alaska	0
+S	0	title:fishing body:fishing	0
+S	0	a	0
+S	0	a^3 b	0
+S	0	b c	0
+S	0	"a b"	0
+S	0	title:empty	0
+S	0	body:empty	0
+S	0	title:title	0
+S	0	ölmühle	0
+S	0	über	0
+S	0	cafe	0
+S	0	café	0
+S	0	payload	0
+S	0	quick|5	3f800000
+S	0	brown	3f800000
+S	0	"new york"	0
+S	0	york^0.5 city	0
+S	0	report	0
+S	0	growth	0
+S	0	"report second"	0
+S	0	"report second"~200	0
+S	0	apple	0
+S	0	apple banana cherry	0
+S	0	tags:fruit	0
+S	0	lucene AND (memory OR monitor)	0
+S	0	x y z	0
+S	0	title:y author:z	0
+S	0	"values values"~150	0
+S	0	"values join"	0
+S	0	upper	0
+S	0	mixed	0
+S	0	*:*	3f800000
+S	0	[a TO c]	3f800000
+S	0	{apple TO cherry}	3f800000
+S	0	/ap+le/	0
+S	0	-nothing	0
+S	0	nothing	0
+D	1	body:\n\t'[61 62 6f 75 74]':1: [(1)]\n\t'[61 6c 61 73 6b 61]':1: [(6)]\n\t'[61 6e 64]':1: [(3)]\n\t'[66 69 73 68 69 6e 67]':1: [(7)]\n\t'[6d 61 6e 75 61 6c 73]':1: [(8)]\n\t'[6f 74 68 65 72]':1: [(4)]\n\t'[72 65 61 64 69 6e 67 73]':1: [(0)]\n\t'[73 61 6c 6d 6f 6e 73]':1: [(2)]\n\t'[73 65 6c 65 63 74]':1: [(5)]\n\tterms=9, positions=9\ntitle:\n\t'[61 6c 61 73 6b 61]':1: [(2)]\n\t'[66 69 73 68 69 6e 67]':1: [(0)]\n\t'[69 6e]':1: [(1)]\n\tterms=3, positions=3\n\nfields=2, terms=12, positions=12
+S	1	quick	0
+S	1	fox	0
+S	1	the	0
+S	1	dog OR cat	0
+S	1	+quick +fox	0
+S	1	+quick -fox	0
+S	1	quick AND brown AND fox	0
+S	1	"quick brown"	0
+S	1	"quick fox"~2	0
+S	1	"brown quick"~3	0
+S	1	"fox jumps"	0
+S	1	qui*	0
+S	1	f?x	0
+S	1	fishing~1	3f800000
+S	1	salmon~2	3f555555
+S	1	title:alaska	3f800000
+S	1	title:fishing body:fishing	40000000
+S	1	a	0
+S	1	a^3 b	0
+S	1	b c	0
+S	1	"a b"	0
+S	1	title:empty	0
+S	1	body:empty	0
+S	1	title:title	0
+S	1	ölmühle	0
+S	1	über	0
+S	1	cafe	0
+S	1	café	0
+S	1	payload	0
+S	1	quick|5	0
+S	1	brown	0
+S	1	"new york"	0
+S	1	york^0.5 city	0
+S	1	report	0
+S	1	growth	0
+S	1	"report second"	0
+S	1	"report second"~200	0
+S	1	apple	0
+S	1	apple banana cherry	0
+S	1	tags:fruit	0
+S	1	lucene AND (memory OR monitor)	0
+S	1	x y z	0
+S	1	title:y author:z	0
+S	1	"values values"~150	0
+S	1	"values join"	0
+S	1	upper	0
+S	1	mixed	0
+S	1	*:*	3f800000
+S	1	[a TO c]	3f800000
+S	1	{apple TO cherry}	0
+S	1	/ap+le/	0
+S	1	-nothing	0
+S	1	nothing	0
+D	2	body:\n\t'[61]':3: [(0), (1), (2)]\n\t'[62]':2: [(3), (4)]\n\t'[63]':1: [(5)]\n\tterms=3, positions=6\ntitle:\n\t'[61]':1: [(0)]\n\tterms=1, positions=1\n\nfields=2, terms=4, positions=7
+S	2	quick	0
+S	2	fox	0
+S	2	the	0
+S	2	dog OR cat	0
+S	2	+quick +fox	0
+S	2	+quick -fox	0
+S	2	quick AND brown AND fox	0
+S	2	"quick brown"	0
+S	2	"quick fox"~2	0
+S	2	"brown quick"~3	0
+S	2	"fox jumps"	0
+S	2	qui*	0
+S	2	f?x	0
+S	2	fishing~1	0
+S	2	salmon~2	0
+S	2	title:alaska	0
+S	2	title:fishing body:fishing	0
+S	2	a	3f800000
+S	2	a^3 b	40800000
+S	2	b c	40000000
+S	2	"a b"	3f800000
+S	2	title:empty	0
+S	2	body:empty	0
+S	2	title:title	0
+S	2	ölmühle	0
+S	2	über	0
+S	2	cafe	0
+S	2	café	0
+S	2	payload	0
+S	2	quick|5	0
+S	2	brown	0
+S	2	"new york"	0
+S	2	york^0.5 city	0
+S	2	report	0
+S	2	growth	0
+S	2	"report second"	0
+S	2	"report second"~200	0
+S	2	apple	0
+S	2	apple banana cherry	0
+S	2	tags:fruit	0
+S	2	lucene AND (memory OR monitor)	0
+S	2	x y z	0
+S	2	title:y author:z	0
+S	2	"values values"~150	0
+S	2	"values join"	0
+S	2	upper	0
+S	2	mixed	0
+S	2	*:*	3f800000
+S	2	[a TO c]	3f800000
+S	2	{apple TO cherry}	3f800000
+S	2	/ap+le/	0
+S	2	-nothing	0
+S	2	nothing	0
+D	3	body:\n\t'[62 72 6f 77 6e]':1: [(2)]\n\t'[66 6f 78]':1: [(3)]\n\t'[6a 75 6d 70 73]':1: [(4)]\n\t'[71 75 69 63 6b]':1: [(1)]\n\t'[74 68 65]':1: [(0)]\n\tterms=5, positions=5\n\nfields=1, terms=5, positions=5
+S	3	quick	3f800000
+S	3	fox	3f800000
+S	3	the	3f800000
+S	3	dog OR cat	0
+S	3	+quick +fox	40000000
+S	3	+quick -fox	0
+S	3	quick AND brown AND fox	40400000
+S	3	"quick brown"	3f800000
+S	3	"quick fox"~2	3f800000
+S	3	"brown quick"~3	3f800000
+S	3	"fox jumps"	3f800000
+S	3	qui*	3f800000
+S	3	f?x	3f800000
+S	3	fishing~1	0
+S	3	salmon~2	0
+S	3	title:alaska	0
+S	3	title:fishing body:fishing	0
+S	3	a	0
+S	3	a^3 b	0
+S	3	b c	0
+S	3	"a b"	0
+S	3	title:empty	0
+S	3	body:empty	0
+S	3	title:title	0
+S	3	ölmühle	0
+S	3	über	0
+S	3	cafe	0
+S	3	café	0
+S	3	payload	0
+S	3	quick|5	3f800000
+S	3	brown	3f800000
+S	3	"new york"	0
+S	3	york^0.5 city	0
+S	3	report	0
+S	3	growth	0
+S	3	"report second"	0
+S	3	"report second"~200	0
+S	3	apple	0
+S	3	apple banana cherry	0
+S	3	tags:fruit	0
+S	3	lucene AND (memory OR monitor)	0
+S	3	x y z	0
+S	3	title:y author:z	0
+S	3	"values values"~150	0
+S	3	"values join"	0
+S	3	upper	0
+S	3	mixed	0
+S	3	*:*	3f800000
+S	3	[a TO c]	3f800000
+S	3	{apple TO cherry}	3f800000
+S	3	/ap+le/	0
+S	3	-nothing	0
+S	3	nothing	0
+D	4	body:\n\tterms=0, positions=0\ntitle:\n\t'[62 6f 64 79]':1: [(1)]\n\t'[65 6d 70 74 79]':1: [(0)]\n\tterms=2, positions=2\n\nfields=2, terms=2, positions=2
+S	4	quick	0
+S	4	fox	0
+S	4	the	0
+S	4	dog OR cat	0
+S	4	+quick +fox	0
+S	4	+quick -fox	0
+S	4	quick AND brown AND fox	0
+S	4	"quick brown"	0
+S	4	"quick fox"~2	0
+S	4	"brown quick"~3	0
+S	4	"fox jumps"	0
+S	4	qui*	0
+S	4	f?x	0
+S	4	fishing~1	0
+S	4	salmon~2	0
+S	4	title:alaska	0
+S	4	title:fishing body:fishing	0
+S	4	a	0
+S	4	a^3 b	0
+S	4	b c	0
+S	4	"a b"	0
+S	4	title:empty	3f800000
+S	4	body:empty	0
+S	4	title:title	0
+S	4	ölmühle	0
+S	4	über	0
+S	4	cafe	0
+S	4	café	0
+S	4	payload	0
+S	4	quick|5	0
+S	4	brown	0
+S	4	"new york"	0
+S	4	york^0.5 city	0
+S	4	report	0
+S	4	growth	0
+S	4	"report second"	0
+S	4	"report second"~200	0
+S	4	apple	0
+S	4	apple banana cherry	0
+S	4	tags:fruit	0
+S	4	lucene AND (memory OR monitor)	0
+S	4	x y z	0
+S	4	title:y author:z	0
+S	4	"values values"~150	0
+S	4	"values join"	0
+S	4	upper	0
+S	4	mixed	0
+S	4	*:*	3f800000
+S	4	[a TO c]	0
+S	4	{apple TO cherry}	0
+S	4	/ap+le/	0
+S	4	-nothing	0
+S	4	nothing	0
+D	5	title:\n\t'[61]':1: [(1)]\n\t'[68 65 72 65]':1: [(3)]\n\t'[6f 6e 6c 79]':1: [(0)]\n\t'[74 69 74 6c 65]':1: [(2)]\n\tterms=4, positions=4\n\nfields=1, terms=4, positions=4
+S	5	quick	0
+S	5	fox	0
+S	5	the	0
+S	5	dog OR cat	0
+S	5	+quick +fox	0
+S	5	+quick -fox	0
+S	5	quick AND brown AND fox	0
+S	5	"quick brown"	0
+S	5	"quick fox"~2	0
+S	5	"brown quick"~3	0
+S	5	"fox jumps"	0
+S	5	qui*	0
+S	5	f?x	0
+S	5	fishing~1	0
+S	5	salmon~2	0
+S	5	title:alaska	0
+S	5	title:fishing body:fishing	0
+S	5	a	0
+S	5	a^3 b	0
+S	5	b c	0
+S	5	"a b"	0
+S	5	title:empty	0
+S	5	body:empty	0
+S	5	title:title	3f800000
+S	5	ölmühle	0
+S	5	über	0
+S	5	cafe	0
+S	5	café	0
+S	5	payload	0
+S	5	quick|5	0
+S	5	brown	0
+S	5	"new york"	0
+S	5	york^0.5 city	0
+S	5	report	0
+S	5	growth	0
+S	5	"report second"	0
+S	5	"report second"~200	0
+S	5	apple	0
+S	5	apple banana cherry	0
+S	5	tags:fruit	0
+S	5	lucene AND (memory OR monitor)	0
+S	5	x y z	0
+S	5	title:y author:z	0
+S	5	"values values"~150	0
+S	5	"values join"	0
+S	5	upper	0
+S	5	mixed	0
+S	5	*:*	3f800000
+S	5	[a TO c]	0
+S	5	{apple TO cherry}	0
+S	5	/ap+le/	0
+S	5	-nothing	0
+S	5	nothing	0
+D	6	body:\n\t'[63 61 66 c3 a9]':1: [(3)]\n\t'[6e 61 c3 af 76 65]':1: [(4)]\n\t'[72 c3 a9 73 75 6d c3 a9]':1: [(5)]\n\t'[73 74 72 61 c3 9f 65]':1: [(2)]\n\t'[c3 b6 6c 6d c3 bc 68 6c 65]':1: [(0)]\n\t'[c3 bc 62 65 72]':1: [(1)]\n\tterms=6, positions=6\ntitle:\n\t'[75 6e 69 63 6f 64 65]':1: [(0)]\n\tterms=1, positions=1\n\nfields=2, terms=7, positions=7
+S	6	quick	0
+S	6	fox	0
+S	6	the	0
+S	6	dog OR cat	0
+S	6	+quick +fox	0
+S	6	+quick -fox	0
+S	6	quick AND brown AND fox	0
+S	6	"quick brown"	0
+S	6	"quick fox"~2	0
+S	6	"brown quick"~3	0
+S	6	"fox jumps"	0
+S	6	qui*	0
+S	6	f?x	0
+S	6	fishing~1	0
+S	6	salmon~2	0
+S	6	title:alaska	0
+S	6	title:fishing body:fishing	0
+S	6	a	0
+S	6	a^3 b	0
+S	6	b c	0
+S	6	"a b"	0
+S	6	title:empty	0
+S	6	body:empty	0
+S	6	title:title	0
+S	6	ölmühle	3f800000
+S	6	über	3f800000
+S	6	cafe	0
+S	6	café	3f800000
+S	6	payload	0
+S	6	quick|5	0
+S	6	brown	0
+S	6	"new york"	0
+S	6	york^0.5 city	0
+S	6	report	0
+S	6	growth	0
+S	6	"report second"	0
+S	6	"report second"~200	0
+S	6	apple	0
+S	6	apple banana cherry	0
+S	6	tags:fruit	0
+S	6	lucene AND (memory OR monitor)	0
+S	6	x y z	0
+S	6	title:y author:z	0
+S	6	"values values"~150	0
+S	6	"values join"	0
+S	6	upper	0
+S	6	mixed	0
+S	6	*:*	3f800000
+S	6	[a TO c]	0
+S	6	{apple TO cherry}	3f800000
+S	6	/ap+le/	0
+S	6	-nothing	0
+S	6	nothing	0
+D	7	body:\n\t'[35]':1: [(1)]\n\t'[61 62 63]':1: [(5)]\n\t'[62 72 6f 77 6e]':1: [(2)]\n\t'[64 6f 67]':1: [(6)]\n\t'[66 6f 78]':1: [(4)]\n\t'[71 75 69 63 6b]':1: [(0)]\n\t'[78]':1: [(3)]\n\tterms=7, positions=7\ntitle:\n\t'[31]':1: [(1)]\n\t'[70 61 79 6c 6f 61 64]':1: [(0)]\n\t'[77 6f 72 64 73]':1: [(2)]\n\tterms=3, positions=3\n\nfields=2, terms=10, positions=10
+S	7	quick	3f800000
+S	7	fox	3f800000
+S	7	the	0
+S	7	dog OR cat	3f800000
+S	7	+quick +fox	40000000
+S	7	+quick -fox	0
+S	7	quick AND brown AND fox	40400000
+S	7	"quick brown"	0
+S	7	"quick fox"~2	0
+S	7	"brown quick"~3	3f800000
+S	7	"fox jumps"	0
+S	7	qui*	3f800000
+S	7	f?x	3f800000
+S	7	fishing~1	0
+S	7	salmon~2	0
+S	7	title:alaska	0
+S	7	title:fishing body:fishing	0
+S	7	a	0
+S	7	a^3 b	0
+S	7	b c	0
+S	7	"a b"	0
+S	7	title:empty	0
+S	7	body:empty	0
+S	7	title:title	0
+S	7	ölmühle	0
+S	7	über	0
+S	7	cafe	0
+S	7	café	0
+S	7	payload	0
+S	7	quick|5	40000000
+S	7	brown	3f800000
+S	7	"new york"	0
+S	7	york^0.5 city	0
+S	7	report	0
+S	7	growth	0
+S	7	"report second"	0
+S	7	"report second"~200	0
+S	7	apple	0
+S	7	apple banana cherry	0
+S	7	tags:fruit	0
+S	7	lucene AND (memory OR monitor)	0
+S	7	x y z	3f800000
+S	7	title:y author:z	0
+S	7	"values values"~150	0
+S	7	"values join"	0
+S	7	upper	0
+S	7	mixed	0
+S	7	*:*	3f800000
+S	7	[a TO c]	3f800000
+S	7	{apple TO cherry}	3f800000
+S	7	/ap+le/	0
+S	7	-nothing	0
+S	7	nothing	0
+D	8	body:\n\t'[65 69 67 68 74]':1: [(7)]\n\t'[66 69 76 65]':1: [(4)]\n\t'[66 6f 75 72]':1: [(3)]\n\t'[6e 69 6e 65]':1: [(8)]\n\t'[6f 6e 65]':2: [(0), (10)]\n\t'[73 65 76 65 6e]':1: [(6)]\n\t'[73 69 78]':1: [(5)]\n\t'[74 65 6e]':1: [(9)]\n\t'[74 68 72 65 65]':2: [(2), (12)]\n\t'[74 77 6f]':2: [(1), (11)]\n\tterms=10, positions=13\n\nfields=1, terms=10, positions=13
+S	8	quick	0
+S	8	fox	0
+S	8	the	0
+S	8	dog OR cat	0
+S	8	+quick +fox	0
+S	8	+quick -fox	0
+S	8	quick AND brown AND fox	0
+S	8	"quick brown"	0
+S	8	"quick fox"~2	0
+S	8	"brown quick"~3	0
+S	8	"fox jumps"	0
+S	8	qui*	0
+S	8	f?x	0
+S	8	fishing~1	0
+S	8	salmon~2	0
+S	8	title:alaska	0
+S	8	title:fishing body:fishing	0
+S	8	a	0
+S	8	a^3 b	0
+S	8	b c	0
+S	8	"a b"	0
+S	8	title:empty	0
+S	8	body:empty	0
+S	8	title:title	0
+S	8	ölmühle	0
+S	8	über	0
+S	8	cafe	0
+S	8	café	0
+S	8	payload	0
+S	8	quick|5	0
+S	8	brown	0
+S	8	"new york"	0
+S	8	york^0.5 city	0
+S	8	report	0
+S	8	growth	0
+S	8	"report second"	0
+S	8	"report second"~200	0
+S	8	apple	0
+S	8	apple banana cherry	0
+S	8	tags:fruit	0
+S	8	lucene AND (memory OR monitor)	0
+S	8	x y z	0
+S	8	title:y author:z	0
+S	8	"values values"~150	0
+S	8	"values join"	0
+S	8	upper	0
+S	8	mixed	0
+S	8	*:*	3f800000
+S	8	[a TO c]	0
+S	8	{apple TO cherry}	0
+S	8	/ap+le/	0
+S	8	-nothing	0
+S	8	nothing	0
+D	9	body:\n\t'[61]':1: [(3)]\n\t'[62 69 67]':1: [(4)]\n\t'[62 6f 72 6f 75 67 68 73]':1: [(10)]\n\t'[63 69 74 79]':1: [(5)]\n\t'[68 61 73]':1: [(8)]\n\t'[69 73]':1: [(2)]\n\t'[6d 61 6e 79]':1: [(9)]\n\t'[6e 65 77]':2: [(0), (6)]\n\t'[79 6f 72 6b]':2: [(1), (7)]\n\tterms=9, positions=11\ntitle:\n\t'[6e 65 77]':1: [(0)]\n\t'[79 6f 72 6b]':1: [(1)]\n\tterms=2, positions=2\n\nfields=2, terms=11, positions=13
+S	9	quick	0
+S	9	fox	0
+S	9	the	0
+S	9	dog OR cat	0
+S	9	+quick +fox	0
+S	9	+quick -fox	0
+S	9	quick AND brown AND fox	0
+S	9	"quick brown"	0
+S	9	"quick fox"~2	0
+S	9	"brown quick"~3	0
+S	9	"fox jumps"	0
+S	9	qui*	0
+S	9	f?x	0
+S	9	fishing~1	0
+S	9	salmon~2	0
+S	9	title:alaska	0
+S	9	title:fishing body:fishing	0
+S	9	a	3f800000
+S	9	a^3 b	40400000
+S	9	b c	0
+S	9	"a b"	0
+S	9	title:empty	0
+S	9	body:empty	0
+S	9	title:title	0
+S	9	ölmühle	0
+S	9	über	0
+S	9	cafe	0
+S	9	café	0
+S	9	payload	0
+S	9	quick|5	0
+S	9	brown	0
+S	9	"new york"	3f800000
+S	9	york^0.5 city	3fc00000
+S	9	report	0
+S	9	growth	0
+S	9	"report second"	0
+S	9	"report second"~200	0
+S	9	apple	0
+S	9	apple banana cherry	0
+S	9	tags:fruit	0
+S	9	lucene AND (memory OR monitor)	0
+S	9	x y z	0
+S	9	title:y author:z	0
+S	9	"values values"~150	0
+S	9	"values join"	0
+S	9	upper	0
+S	9	mixed	0
+S	9	*:*	3f800000
+S	9	[a TO c]	3f800000
+S	9	{apple TO cherry}	3f800000
+S	9	/ap+le/	0
+S	9	-nothing	0
+S	9	nothing	0
+D	10	body:\n\t'[32 30 32 34]':1: [(1)]\n\t'[33 2e 35]':1: [(3)]\n\t'[65]':1: [(5)]\n\t'[65 78 61 6d 70 6c 65 2e 63 6f 6d]':1: [(8)]\n\t'[66 6f 6f]':1: [(7)]\n\t'[67 72 6f 77 74 68]':1: [(4)]\n\t'[6d 61 69 6c]':1: [(6)]\n\t'[6f 66]':1: [(11)]\n\t'[72 65 70 6f 72 74]':2: [(2), (13)]\n\t'[73 65 63 6f 6e 64]':1: [(9)]\n\t'[74 68 65]':2: [(0), (12)]\n\t'[76 61 6c 75 65]':1: [(10)]\n\tterms=12, positions=14\n\nfields=1, terms=12, positions=14
+S	10	quick	0
+S	10	fox	0
+S	10	the	3f800000
+S	10	dog OR cat	0
+S	10	+quick +fox	0
+S	10	+quick -fox	0
+S	10	quick AND brown AND fox	0
+S	10	"quick brown"	0
+S	10	"quick fox"~2	0
+S	10	"brown quick"~3	0
+S	10	"fox jumps"	0
+S	10	qui*	0
+S	10	f?x	0
+S	10	fishing~1	0
+S	10	salmon~2	0
+S	10	title:alaska	0
+S	10	title:fishing body:fishing	0
+S	10	a	0
+S	10	a^3 b	0
+S	10	b c	0
+S	10	"a b"	0
+S	10	title:empty	0
+S	10	body:empty	0
+S	10	title:title	0
+S	10	ölmühle	0
+S	10	über	0
+S	10	cafe	0
+S	10	café	0
+S	10	payload	0
+S	10	quick|5	0
+S	10	brown	0
+S	10	"new york"	0
+S	10	york^0.5 city	0
+S	10	report	3f800000
+S	10	growth	3f800000
+S	10	"report second"	0
+S	10	"report second"~200	3f800000
+S	10	apple	0
+S	10	apple banana cherry	0
+S	10	tags:fruit	0
+S	10	lucene AND (memory OR monitor)	0
+S	10	x y z	0
+S	10	title:y author:z	0
+S	10	"values values"~150	0
+S	10	"values join"	0
+S	10	upper	0
+S	10	mixed	0
+S	10	*:*	3f800000
+S	10	[a TO c]	0
+S	10	{apple TO cherry}	0
+S	10	/ap+le/	0
+S	10	-nothing	0
+S	10	nothing	0
+D	11	body:\n\t'[61 70 70 6c 65]':3: [(0), (2), (4)]\n\t'[62 61 6e 61 6e 61]':2: [(1), (5)]\n\t'[63 68 65 72 72 79]':1: [(3)]\n\tterms=3, positions=6\ntags:\n\t'[66 6f 6f 64]':1: [(1)]\n\t'[66 72 75 69 74]':2: [(0), (2)]\n\tterms=2, positions=3\n\nfields=2, terms=5, positions=9
+S	11	quick	0
+S	11	fox	0
+S	11	the	0
+S	11	dog OR cat	0
+S	11	+quick +fox	0
+S	11	+quick -fox	0
+S	11	quick AND brown AND fox	0
+S	11	"quick brown"	0
+S	11	"quick fox"~2	0
+S	11	"brown quick"~3	0
+S	11	"fox jumps"	0
+S	11	qui*	0
+S	11	f?x	0
+S	11	fishing~1	0
+S	11	salmon~2	0
+S	11	title:alaska	0
+S	11	title:fishing body:fishing	0
+S	11	a	0
+S	11	a^3 b	0
+S	11	b c	0
+S	11	"a b"	0
+S	11	title:empty	0
+S	11	body:empty	0
+S	11	title:title	0
+S	11	ölmühle	0
+S	11	über	0
+S	11	cafe	0
+S	11	café	0
+S	11	payload	0
+S	11	quick|5	0
+S	11	brown	0
+S	11	"new york"	0
+S	11	york^0.5 city	0
+S	11	report	0
+S	11	growth	0
+S	11	"report second"	0
+S	11	"report second"~200	0
+S	11	apple	3f800000
+S	11	apple banana cherry	40400000
+S	11	tags:fruit	3f800000
+S	11	lucene AND (memory OR monitor)	0
+S	11	x y z	0
+S	11	title:y author:z	0
+S	11	"values values"~150	0
+S	11	"values join"	0
+S	11	upper	0
+S	11	mixed	0
+S	11	*:*	3f800000
+S	11	[a TO c]	3f800000
+S	11	{apple TO cherry}	3f800000
+S	11	/ap+le/	3f800000
+S	11	-nothing	0
+S	11	nothing	0
+D	12	body:\n\t'[68 69 67 68 6c 69 67 68 74 65 72]':1: [(3)]\n\t'[69 6e 64 65 78]':1: [(2)]\n\t'[6c 75 63 65 6e 65]':1: [(0)]\n\t'[6d 65 6d 6f 72 79]':1: [(1)]\n\t'[6d 6f 6e 69 74 6f 72]':1: [(4)]\n\t'[70 65 72 63 6f 6c 61 74 6f 72]':1: [(5)]\n\tterms=6, positions=6\n\nfields=1, terms=6, positions=6
+S	12	quick	0
+S	12	fox	0
+S	12	the	0
+S	12	dog OR cat	0
+S	12	+quick +fox	0
+S	12	+quick -fox	0
+S	12	quick AND brown AND fox	0
+S	12	"quick brown"	0
+S	12	"quick fox"~2	0
+S	12	"brown quick"~3	0
+S	12	"fox jumps"	0
+S	12	qui*	0
+S	12	f?x	0
+S	12	fishing~1	0
+S	12	salmon~2	0
+S	12	title:alaska	0
+S	12	title:fishing body:fishing	0
+S	12	a	0
+S	12	a^3 b	0
+S	12	b c	0
+S	12	"a b"	0
+S	12	title:empty	0
+S	12	body:empty	0
+S	12	title:title	0
+S	12	ölmühle	0
+S	12	über	0
+S	12	cafe	0
+S	12	café	0
+S	12	payload	0
+S	12	quick|5	0
+S	12	brown	0
+S	12	"new york"	0
+S	12	york^0.5 city	0
+S	12	report	0
+S	12	growth	0
+S	12	"report second"	0
+S	12	"report second"~200	0
+S	12	apple	0
+S	12	apple banana cherry	0
+S	12	tags:fruit	0
+S	12	lucene AND (memory OR monitor)	40400000
+S	12	x y z	0
+S	12	title:y author:z	0
+S	12	"values values"~150	0
+S	12	"values join"	0
+S	12	upper	0
+S	12	mixed	0
+S	12	*:*	3f800000
+S	12	[a TO c]	0
+S	12	{apple TO cherry}	0
+S	12	/ap+le/	0
+S	12	-nothing	0
+S	12	nothing	0
+D	13	author:\n\t'[7a]':1: [(0)]\n\tterms=1, positions=1\nbody:\n\t'[78]':1: [(0)]\n\tterms=1, positions=1\ntitle:\n\t'[79]':1: [(0)]\n\tterms=1, positions=1\n\nfields=3, terms=3, positions=3
+S	13	quick	0
+S	13	fox	0
+S	13	the	0
+S	13	dog OR cat	0
+S	13	+quick +fox	0
+S	13	+quick -fox	0
+S	13	quick AND brown AND fox	0
+S	13	"quick brown"	0
+S	13	"quick fox"~2	0
+S	13	"brown quick"~3	0
+S	13	"fox jumps"	0
+S	13	qui*	0
+S	13	f?x	0
+S	13	fishing~1	0
+S	13	salmon~2	0
+S	13	title:alaska	0
+S	13	title:fishing body:fishing	0
+S	13	a	0
+S	13	a^3 b	0
+S	13	b c	0
+S	13	"a b"	0
+S	13	title:empty	0
+S	13	body:empty	0
+S	13	title:title	0
+S	13	ölmühle	0
+S	13	über	0
+S	13	cafe	0
+S	13	café	0
+S	13	payload	0
+S	13	quick|5	0
+S	13	brown	0
+S	13	"new york"	0
+S	13	york^0.5 city	0
+S	13	report	0
+S	13	growth	0
+S	13	"report second"	0
+S	13	"report second"~200	0
+S	13	apple	0
+S	13	apple banana cherry	0
+S	13	tags:fruit	0
+S	13	lucene AND (memory OR monitor)	0
+S	13	x y z	3f800000
+S	13	title:y author:z	40000000
+S	13	"values values"~150	0
+S	13	"values join"	0
+S	13	upper	0
+S	13	mixed	0
+S	13	*:*	3f800000
+S	13	[a TO c]	0
+S	13	{apple TO cherry}	0
+S	13	/ap+le/	0
+S	13	-nothing	0
+S	13	nothing	0
+D	14	body:\n\t'[61 63 72 6f 73 73]':1: [(3)]\n\t'[68 65 72 65]':1: [(7)]\n\t'[6a 6f 69 6e]':1: [(6)]\n\t'[6d 75 6c 74 69]':1: [(0)]\n\t'[70 68 72 61 73 65]':1: [(2)]\n\t'[76 61 6c 75 65 73]':2: [(4), (5)]\n\t'[77 6f 72 64]':1: [(1)]\n\tterms=7, positions=8\n\nfields=1, terms=7, positions=8
+S	14	quick	0
+S	14	fox	0
+S	14	the	0
+S	14	dog OR cat	0
+S	14	+quick +fox	0
+S	14	+quick -fox	0
+S	14	quick AND brown AND fox	0
+S	14	"quick brown"	0
+S	14	"quick fox"~2	0
+S	14	"brown quick"~3	0
+S	14	"fox jumps"	0
+S	14	qui*	0
+S	14	f?x	0
+S	14	fishing~1	0
+S	14	salmon~2	0
+S	14	title:alaska	0
+S	14	title:fishing body:fishing	0
+S	14	a	0
+S	14	a^3 b	0
+S	14	b c	0
+S	14	"a b"	0
+S	14	title:empty	0
+S	14	body:empty	0
+S	14	title:title	0
+S	14	ölmühle	0
+S	14	über	0
+S	14	cafe	0
+S	14	café	0
+S	14	payload	0
+S	14	quick|5	0
+S	14	brown	0
+S	14	"new york"	0
+S	14	york^0.5 city	0
+S	14	report	0
+S	14	growth	0
+S	14	"report second"	0
+S	14	"report second"~200	0
+S	14	apple	0
+S	14	apple banana cherry	0
+S	14	tags:fruit	0
+S	14	lucene AND (memory OR monitor)	0
+S	14	x y z	0
+S	14	title:y author:z	0
+S	14	"values values"~150	3f800000
+S	14	"values join"	3f800000
+S	14	upper	0
+S	14	mixed	0
+S	14	*:*	3f800000
+S	14	[a TO c]	3f800000
+S	14	{apple TO cherry}	0
+S	14	/ap+le/	0
+S	14	-nothing	0
+S	14	nothing	0
+D	15	body:\n\t'[63 61 73 65]':1: [(3)]\n\t'[6c 6f 77 65 72]':1: [(1)]\n\t'[6d 69 78 65 64]':1: [(2)]\n\t'[75 70 70 65 72]':1: [(0)]\n\tterms=4, positions=4\n\nfields=1, terms=4, positions=4
+S	15	quick	0
+S	15	fox	0
+S	15	the	0
+S	15	dog OR cat	0
+S	15	+quick +fox	0
+S	15	+quick -fox	0
+S	15	quick AND brown AND fox	0
+S	15	"quick brown"	0
+S	15	"quick fox"~2	0
+S	15	"brown quick"~3	0
+S	15	"fox jumps"	0
+S	15	qui*	0
+S	15	f?x	0
+S	15	fishing~1	0
+S	15	salmon~2	0
+S	15	title:alaska	0
+S	15	title:fishing body:fishing	0
+S	15	a	0
+S	15	a^3 b	0
+S	15	b c	0
+S	15	"a b"	0
+S	15	title:empty	0
+S	15	body:empty	0
+S	15	title:title	0
+S	15	ölmühle	0
+S	15	über	0
+S	15	cafe	0
+S	15	café	0
+S	15	payload	0
+S	15	quick|5	0
+S	15	brown	0
+S	15	"new york"	0
+S	15	york^0.5 city	0
+S	15	report	0
+S	15	growth	0
+S	15	"report second"	0
+S	15	"report second"~200	0
+S	15	apple	0
+S	15	apple banana cherry	0
+S	15	tags:fruit	0
+S	15	lucene AND (memory OR monitor)	0
+S	15	x y z	0
+S	15	title:y author:z	0
+S	15	"values values"~150	0
+S	15	"values join"	0
+S	15	upper	3f800000
+S	15	mixed	3f800000
+S	15	*:*	3f800000
+S	15	[a TO c]	0
+S	15	{apple TO cherry}	3f800000
+S	15	/ap+le/	0
+S	15	-nothing	0
+S	15	nothing	0

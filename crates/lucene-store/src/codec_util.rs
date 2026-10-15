@@ -62,8 +62,11 @@ pub fn check_header_no_magic(
     min_version: i32,
     max_version: i32,
 ) -> Result<Header> {
-    let actual_codec = input.read_string()?;
-    if actual_codec != expected_codec {
+    // Compared in place: a match is the common case, and needs no copy.
+    let actual_codec = read_string_bytes(input)?;
+    if actual_codec != expected_codec.as_bytes() {
+        let actual_codec = std::str::from_utf8(actual_codec)
+            .map_err(|_| Error::Corrupted("invalid UTF-8 string".into()))?;
         return Err(corrupt(format!(
             "codec mismatch: actual codec={actual_codec} vs expected codec={expected_codec}"
         )));
@@ -80,6 +83,17 @@ pub fn check_header_no_magic(
         )));
     }
     Ok(Header { version })
+}
+
+/// `DataInput.readString`'s bytes, borrowed from the input rather than
+/// copied: the same length checks, no UTF-8 check (the caller compares).
+fn read_string_bytes<'a>(input: &mut SliceInput<'a>) -> Result<&'a [u8]> {
+    let len = input.read_length("string")?;
+    let start = input.position();
+    let end = start.saturating_add(len);
+    let bytes = input.slice(start, end)?;
+    input.seek(end)?;
+    Ok(bytes)
 }
 
 /// The codec name a header-carrying file starts with, without validating
@@ -136,15 +150,16 @@ pub fn check_index_header_id(
 /// Port of `CodecUtil.checkIndexHeaderSuffix`.
 pub fn check_index_header_suffix(input: &mut SliceInput, expected_suffix: &str) -> Result<String> {
     let len = input.read_byte()? as usize;
-    let mut buf = vec![0u8; len];
-    input.read_bytes(&mut buf)?;
-    let suffix = String::from_utf8(buf).map_err(|_| corrupt("invalid UTF-8 suffix"))?;
-    if suffix != expected_suffix {
-        return Err(corrupt(format!(
-            "file mismatch: suffix={suffix} vs expected suffix={expected_suffix}"
-        )));
+    let start = input.position();
+    let bytes = input.slice(start, start.saturating_add(len))?;
+    input.seek(start.saturating_add(len))?;
+    if bytes == expected_suffix.as_bytes() {
+        return Ok(expected_suffix.to_string());
     }
-    Ok(suffix)
+    let suffix = std::str::from_utf8(bytes).map_err(|_| corrupt("invalid UTF-8 suffix"))?;
+    Err(corrupt(format!(
+        "file mismatch: suffix={suffix} vs expected suffix={expected_suffix}"
+    )))
 }
 
 /// Port of `CodecUtil.headerLength`: `9 + codec.length()` — 4 magic bytes,
@@ -204,10 +219,54 @@ pub fn write_index_header(
         suffix.is_ascii() && suffix.len() < 256,
         "suffix must be simple ASCII, less than 256 characters in length [got {suffix}]"
     );
-    write_header(out, codec, version);
-    out.write_bytes(id);
-    out.write_byte(suffix.len() as u8);
-    out.write_bytes(suffix.as_bytes());
+    // Assembled in one buffer and written once: a header usually opens an
+    // empty buffer, which would otherwise regrow at every field of it. The
+    // stack holds every header the `debug_assert`s allow.
+    const MAX: usize = 4 + 5 + 127 + 4 + ID_LENGTH + 1 + 255;
+    let mut stack = [0u8; MAX];
+    let mut heap = Vec::new();
+    let len = header_len(codec, suffix);
+    let buf: &mut [u8] = if len <= MAX {
+        &mut stack
+    } else {
+        heap.resize(len, 0);
+        &mut heap
+    };
+    let mut cursor = HeaderCursor { buf, len: 0 };
+    write_header(&mut cursor, codec, version);
+    cursor.write_bytes(id);
+    cursor.write_byte(suffix.len() as u8);
+    cursor.write_bytes(suffix.as_bytes());
+    let HeaderCursor { buf, len } = cursor;
+    out.write_bytes(&buf[..len]);
+}
+
+/// The bytes [`write_index_header`] writes, the codec's length vint taken
+/// at its widest.
+fn header_len(codec: &str, suffix: &str) -> usize {
+    [4, 5, codec.len(), 4, ID_LENGTH, 1, suffix.len()]
+        .iter()
+        .fold(0usize, |a, &b| a.saturating_add(b))
+}
+
+/// [`write_index_header`]'s buffer, as a [`DataOutput`]: sized by
+/// [`header_len`] for the header it receives.
+struct HeaderCursor<'a> {
+    buf: &'a mut [u8],
+    len: usize,
+}
+
+impl DataOutput for HeaderCursor<'_> {
+    fn write_byte(&mut self, b: u8) {
+        self.write_bytes(&[b]);
+    }
+
+    fn write_bytes(&mut self, b: &[u8]) {
+        // `header_len` sized the buffer for every write the header makes
+        let end = self.len.saturating_add(b.len());
+        self.buf[self.len..end].copy_from_slice(b);
+        self.len = end;
+    }
 }
 
 /// Port of `CodecUtil.writeFooter`: `Magic(BEi32=~CODEC_MAGIC), AlgorithmID(BEi32=0),

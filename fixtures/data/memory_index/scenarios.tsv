@@ -1,0 +1,17 @@
+empty_match_all	3f800000
+frozen_add	X	java.lang.IllegalArgumentException: Cannot call addField() when MemoryIndex is frozen
+frozen_similarity	X	java.lang.IllegalArgumentException: Cannot set Similarity when MemoryIndex is frozen
+numeric_twice	X	java.lang.IllegalArgumentException: Only one value per field allowed for [NUMERIC] doc values field [n]
+binary_twice	X	java.lang.IllegalArgumentException: Only one value per field allowed for [BINARY] doc values field [b]
+doc_values_type_change	X	java.lang.IllegalArgumentException: cannot change DocValues type from NUMERIC to BINARY for field "d"
+point_in_range	3f800000
+point_out_of_range	0
+string_field	3e85e726
+same_field_twice	3e85e726
+keyword_stream	3e05e726
+exists_text	3f800000
+exists_missing	0
+exists_doc_values	3f800000
+text_beside_doc_values	3ec8dab9
+payloads_beside_doc_values	3ec8dab9
+similarity_after_reset	3e381dd5
