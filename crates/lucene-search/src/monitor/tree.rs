@@ -186,6 +186,48 @@ impl QueryTree {
         }
     }
 
+    /// `advancePhase(minWeight)`: moves to the next-most-weighted path below
+    /// this node, if one is above `min_weight`. A conjunction advances its
+    /// heaviest child, or drops it when the next child clears `min_weight`; a
+    /// disjunction advances every child. `false` when nothing changed.
+    pub fn advance_phase(&mut self, min_weight: f64) -> bool {
+        match self {
+            QueryTree::Term { .. } | QueryTree::AnyTerm { .. } => false,
+            QueryTree::Conjunction(children) => {
+                if children[0].advance_phase(min_weight) {
+                    children.sort_by(|a, b| {
+                        b.weight()
+                            .unwrap_or(0.0)
+                            .total_cmp(&a.weight().unwrap_or(0.0))
+                    });
+                    return true;
+                }
+                if children.len() == 1 {
+                    return false;
+                }
+                if children[1].weight().unwrap_or(0.0) <= min_weight {
+                    return false;
+                }
+                children.remove(0);
+                true
+            }
+            QueryTree::Disjunction(children) => {
+                let mut changed = false;
+                for c in children.iter_mut() {
+                    changed |= c.advance_phase(min_weight);
+                }
+                if changed {
+                    children.sort_by(|a, b| {
+                        a.weight()
+                            .unwrap_or(0.0)
+                            .total_cmp(&b.weight().unwrap_or(0.0))
+                    });
+                }
+                changed
+            }
+        }
+    }
+
     /// `toString(depth)`: Java's indented layout, two spaces a level. A
     /// term weighted `0` or less is an error, as `weight()` throws for it.
     pub fn to_string_at(&self, depth: usize) -> Result<String, String> {
