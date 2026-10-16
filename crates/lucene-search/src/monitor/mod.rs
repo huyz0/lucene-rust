@@ -6,6 +6,7 @@
 //! ([`tree`]) and the analyzer and decomposer ([`analyzer`]).
 
 pub mod analyzer;
+pub mod batch;
 pub mod facade;
 pub mod index;
 pub mod presearcher;

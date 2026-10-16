@@ -159,9 +159,11 @@ fn matches_match_real_lucene() {
     }
     assert!(named_docs > 50);
 
-    // What is not ported says so.
+    // A fuzzy query's matches are those of the terms its rewrite keeps (checked
+    // against Lucene's hits by `monitor_fixtures.rs`).
     let fuzzy = lucene_search::Clause::Fuzzy(lucene_search::FuzzyQuery::new("body", "w1"));
-    assert!(matches::matches(&searcher, &fuzzy, 1).is_err());
+    assert!((0..max_doc).any(|d| matches!(matches::matches(&searcher, &fuzzy, d), Ok(Some(_)))));
+    // What is not ported says so.
     assert!(matches::matches(&searcher, &GRAMMAR.clause("(t w0)"), max_doc).is_err());
     let no_positions = GRAMMAR.clause("(pf tag 0 w1 w2)");
     let err = (0..max_doc).find_map(|d| matches::matches(&searcher, &no_positions, d).err());
