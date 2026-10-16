@@ -110,7 +110,9 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
     owed in T13.3a: `UnsortedInputIterator`, `InMemorySorter`, `ExternalRefSorter`,
     `FileDictionary`, `DocumentDictionary`, `DocumentValueSourceDictionary`, `Dictionary`,
     `BitsProducer`.
-  - **T13.3b** — TST and FST lookups (`TSTLookup`, `FSTCompletion*`, `WFSTCompletionLookup` in full).
+  - **T13.3b** — TST and FST lookups. **TST done** (`TSTLookup`: 792 queries, `get`, and
+    `store()` bytes equal Lucene's, `GenSuggest.java`). Owed: `FSTCompletion*`,
+    `WFSTCompletionLookup` in full.
   - **T13.3c** — analyzing suggesters (`AnalyzingSuggester`, `FuzzySuggester`, `FreeTextSuggester`, `AnalyzingInfixSuggester`, `BlendedInfixSuggester`, `SuggestStopFilter`).
   - **T13.3d** — `suggest.document`: the completion postings format and its queries (what OpenSearch uses; prioritised).
   - **T13.3e** — `spell`.
