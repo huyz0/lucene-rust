@@ -177,6 +177,11 @@ impl<'s, 'a> TrainingIndex<'s, 'a> {
     pub(crate) fn stored_values(&self, doc: i32, field: &str) -> Result<Vec<String>> {
         stored_values(self.reader, doc, field)
     }
+
+    /// [`Self::stored_values`] for each of `fields`, one decoding of `doc`.
+    pub(crate) fn stored_values_of(&self, doc: i32, fields: &[&str]) -> Result<Vec<Vec<String>>> {
+        stored_values_of(self.reader, doc, fields)
+    }
 }
 
 /// `Document.getValues(field)` of global document `doc`'s stored fields.
@@ -185,17 +190,35 @@ pub(crate) fn stored_values(
     doc: i32,
     field: &str,
 ) -> Result<Vec<String>> {
+    Ok(stored_values_of(reader, doc, &[field])?.remove(0))
+}
+
+/// [`stored_values`] for each of `fields`, from one decoding of the document.
+pub(crate) fn stored_values_of(
+    reader: &DirectoryReader,
+    doc: i32,
+    fields: &[&str],
+) -> Result<Vec<Vec<String>>> {
     let (seg, local) = crate::mlt::locate(reader, doc)?;
-    let Some(number) = seg.field_infos().field_by_name(field).map(|f| f.number) else {
-        return Ok(Vec::new());
-    };
-    let document = seg.stored_document(local)?.unwrap_or_default();
-    Ok(document
-        .fields
+    let numbers: Vec<Option<i32>> = fields
         .iter()
-        .filter(|f| f.field_number == number)
-        .filter_map(|f| crate::mlt::stored_string_value(&f.value))
-        .collect())
+        .map(|f| seg.field_infos().field_by_name(f).map(|i| i.number))
+        .collect();
+    let mut out = vec![Vec::new(); fields.len()];
+    if numbers.iter().all(Option::is_none) {
+        return Ok(out);
+    }
+    let document = seg.stored_document(local)?.unwrap_or_default();
+    for f in &document.fields {
+        for (slot, number) in out.iter_mut().zip(&numbers) {
+            if *number == Some(f.field_number) {
+                if let Some(v) = crate::mlt::stored_string_value(&f.value) {
+                    slot.push(v);
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// An analyzer error, as this crate reports it.
