@@ -202,6 +202,7 @@ mod bit_set_pool;
 pub mod bucket_aggs;
 mod bulk_scorer;
 pub mod cardinality_sketch;
+pub mod classification;
 pub mod collector;
 pub mod collectors;
 pub mod common_terms;

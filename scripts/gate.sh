@@ -56,7 +56,7 @@ python3 scripts/check-port-inventory.py --module join --require-jar
 python3 scripts/check-port-inventory.py --module grouping --require-jar
 python3 scripts/check-port-inventory.py --module queries --require-jar
 python3 scripts/check-port-inventory.py --module queryparser --require-jar
-for m in highlighter suggest facet monitor memory expressions; do
+for m in highlighter suggest facet monitor memory expressions classification; do
   python3 scripts/check-port-inventory.py --module "$m" --require-jar
 done
 python3 scripts/check-port-inventory.py --module analysis-common --require-jar

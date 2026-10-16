@@ -1,0 +1,18 @@
+# Lucene 10.5.0 lucene-classification: every top-level class of the jar, and what became of it.
+# Checked by scripts/check-port-inventory.py --module classification (see its docstring for the statuses).
+# class	status	detail
+classification/BM25NBClassifier	ported	crates/lucene-search/src/classification/naive_bayes.rs::Bm25NbClassifier
+classification/BooleanPerceptronClassifier	ported	crates/lucene-search/src/classification/perceptron.rs::BooleanPerceptronClassifier
+classification/CachingNaiveBayesClassifier	ported	crates/lucene-search/src/classification/naive_bayes.rs::CachingNaiveBayesClassifier
+classification/ClassificationResult	ported	crates/lucene-search/src/classification/mod.rs::ClassificationResult
+classification/Classifier	ported	crates/lucene-search/src/classification/mod.rs::Classifier
+classification/KNearestFuzzyClassifier	ported	crates/lucene-search/src/classification/knn.rs::KNearestFuzzyClassifier
+classification/KNearestNeighborClassifier	ported	crates/lucene-search/src/classification/knn.rs::KNearestNeighborClassifier
+classification/SimpleNaiveBayesClassifier	ported	crates/lucene-search/src/classification/naive_bayes.rs::SimpleNaiveBayesClassifier
+classification/document/DocumentClassifier	ported	crates/lucene-search/src/classification/document.rs::DocumentClassifier
+classification/document/KNearestNeighborDocumentClassifier	ported	crates/lucene-search/src/classification/document.rs::KNearestNeighborDocumentClassifier
+classification/document/SimpleNaiveBayesDocumentClassifier	ported	crates/lucene-search/src/classification/document.rs::SimpleNaiveBayesDocumentClassifier
+classification/utils/ConfusionMatrixGenerator	ported	crates/lucene-search/src/classification/utils.rs::ConfusionMatrixGenerator
+classification/utils/DatasetSplitter	ported	crates/lucene-search/src/classification/utils.rs::DatasetSplitter
+classification/utils/DocToDoubleVectorUtils	ported	crates/lucene-search/src/classification/utils.rs::DocToDoubleVectorUtils
+classification/utils/NearestFuzzyQuery	ported	crates/lucene-search/src/classification/nearest_fuzzy.rs::NearestFuzzyQuery
