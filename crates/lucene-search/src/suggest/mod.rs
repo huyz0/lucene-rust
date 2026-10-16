@@ -4,6 +4,7 @@
 //! (`InputIterator` and its buffering and sorting wrappers); T13.3b adds [`tst`]
 //! (`TSTLookup`); T13.3d adds [`fst_util`] (`FSTUtil`) and [`document`] (the completion lookup).
 
+pub mod completion_query;
 pub mod document;
 pub mod fst_util;
 pub mod input;
