@@ -10,8 +10,8 @@ misc/TermStats	ported	crates/lucene-search/src/misc/high_freq.rs::TermStats
 misc/document/LazyDocument	ported	crates/lucene-search/src/misc/lazy_document.rs::LazyDocument
 misc/index/BPIndexReorderer	todo:M14	M14.c: the bipartite partitioning doc-id reorderer
 misc/index/BPReorderingMergePolicy	todo:M14	M14.c: a merge policy that reorders merged segments with BPIndexReorderer, skipping it without RAM
-misc/index/BinaryDocValueSelector	todo:M14	M14.c: a document selector keyed by a BinaryDocValues field, for IndexRearranger
-misc/index/IndexRearranger	todo:M14	M14.c: copies an index into another, rearranged by document selectors
+misc/index/BinaryDocValueSelector	ported	crates/lucene-search/src/misc/index/rearranger.rs::BinaryDocValueSelector
+misc/index/IndexRearranger	ported	crates/lucene-search/src/misc/index/rearranger.rs::IndexRearranger
 misc/index/IndexSplitter	todo:M14	M14.c: the CLI listing, copying and deleting an index's segments
 misc/index/MultiPassIndexSplitter	ported	crates/lucene-search/src/misc/index/multi_pass.rs::MultiPassIndexSplitter
 misc/index/PKIndexSplitter	ported	crates/lucene-search/src/misc/index/pk.rs::PkIndexSplitter

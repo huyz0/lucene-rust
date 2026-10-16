@@ -242,6 +242,10 @@ misc/high_freq/segments_3 0cb845d4c3648c52899f0a016593c717
 misc/lazy/_0.si 5d9741e0a3771a2c9be249113c9ec091
 misc/lazy/_1.si 5d9741e0a3771a2c9be249113c9ec095
 misc/lazy/segments_2 5d9741e0a3771a2c9be249113c9ec098
+misc/rearrange_src/_0.si c41a398d597b8ac2f15670b15c341ffb
+misc/rearrange_src/_1.si c41a398d597b8ac2f15670b15c341fff
+misc/rearrange_src/_2.si c41a398d597b8ac2f15670b15c342003
+misc/rearrange_src/segments_4 c41a398d597b8ac2f15670b15c34200a
 misc/split_a/_0.si 8208d809f90d960eec4e971ed156c49c
 misc/split_a/_1.si 8208d809f90d960eec4e971ed156c4a0
 misc/split_a/_2.si 8208d809f90d960eec4e971ed156c4a4
