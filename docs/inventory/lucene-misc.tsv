@@ -8,8 +8,8 @@ misc/IndexMergeTool	todo:M14	M14.i: the CLI merging the indices named on its com
 misc/SweetSpotSimilarity	ported	crates/lucene-search/src/misc/sweet_spot.rs::SweetSpotSimilarity
 misc/TermStats	ported	crates/lucene-search/src/misc/high_freq.rs::TermStats
 misc/document/LazyDocument	ported	crates/lucene-search/src/misc/lazy_document.rs::LazyDocument
-misc/index/BPIndexReorderer	todo:M14	M14.c: the bipartite partitioning doc-id reorderer
-misc/index/BPReorderingMergePolicy	todo:M14	M14.c: a merge policy that reorders merged segments with BPIndexReorderer, skipping it without RAM
+misc/index/BPIndexReorderer	ported	crates/lucene-search/src/misc/index/bp.rs::BpIndexReorderer
+misc/index/BPReorderingMergePolicy	ported	crates/lucene-search/src/misc/index/bp_merge_policy.rs::BpReorderingMergePolicy
 misc/index/BinaryDocValueSelector	ported	crates/lucene-search/src/misc/index/rearranger.rs::BinaryDocValueSelector
 misc/index/IndexRearranger	ported	crates/lucene-search/src/misc/index/rearranger.rs::IndexRearranger
 misc/index/IndexSplitter	ported	crates/lucene-search/src/misc/index/splitter.rs::IndexSplitter
