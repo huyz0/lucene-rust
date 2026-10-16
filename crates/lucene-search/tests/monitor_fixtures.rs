@@ -566,3 +566,124 @@ fn the_monitor_facade_scores_as_lucene_does() {
     }
     assert!(bad.is_empty(), "{} differ:\n{}", bad.len(), bad.join("\n"));
 }
+
+/// `Monitor.match(docs, matcher)` over whole batches under the four matchers
+/// (`batch_match.tsv`): per document, the simple matches, the score bits, the
+/// explanation text and the hits, as Lucene's real `Monitor` returns them.
+#[test]
+fn batches_match_under_every_matcher_as_lucene_does() {
+    use lucene_search::monitor::facade::{Matcher, Monitor};
+    use lucene_search::monitor::index::MonitorQuery;
+    use std::collections::BTreeMap;
+
+    let analyzer = Arc::new(Analyzer::new(StandardAnalyzer::new()));
+    let mut monitor = Monitor::new(Arc::clone(&analyzer));
+    let queries: Vec<MonitorQuery> = corpus()
+        .iter()
+        .enumerate()
+        .map(|(i, q)| {
+            MonitorQuery::new(
+                format!("q{i}"),
+                parse(q).unwrap(),
+                Some(q.clone()),
+                BTreeMap::new(),
+            )
+            .unwrap()
+        })
+        .collect();
+    monitor.register(queries).unwrap();
+
+    let want = fs::read_to_string(dir().join("data/monitor/batch_match.tsv")).unwrap();
+    // a batch's rows are consecutive; run each batch once
+    let mut results: BTreeMap<String, [lucene_search::monitor::facade::MultiMatchingQueries; 4]> =
+        BTreeMap::new();
+    let mut bad = Vec::new();
+    for line in want.lines() {
+        let cols: Vec<&str> = line.split('\t').collect();
+        let label = unesc(cols[0]);
+        let doc_index: usize = cols[1].parse().unwrap();
+        let docs_text: Vec<Vec<(String, String)>> = label
+            .trim_end_matches('|')
+            .split('|')
+            .map(|d| {
+                d.split('+')
+                    .map(|p| {
+                        let (f, v) = p.split_once('=').unwrap();
+                        (f.to_string(), v.to_string())
+                    })
+                    .collect()
+            })
+            .collect();
+        let entry = results.entry(label.clone()).or_insert_with(|| {
+            let docs: Vec<Vec<(&str, &str)>> = docs_text
+                .iter()
+                .map(|d| d.iter().map(|(f, v)| (f.as_str(), v.as_str())).collect())
+                .collect();
+            let refs: Vec<&[(&str, &str)]> = docs.iter().map(Vec::as_slice).collect();
+            [
+                monitor.match_docs(&refs, &Matcher::Simple).unwrap(),
+                monitor.match_docs(&refs, &Matcher::Scoring(None)).unwrap(),
+                monitor.match_docs(&refs, &Matcher::Explaining).unwrap(),
+                monitor.match_docs(&refs, &Matcher::Highlights).unwrap(),
+            ]
+        });
+        let mut got: Vec<String> = Vec::new();
+        for m in entry[0].matches[doc_index].values() {
+            got.push(format!("S:{}", m.query_id));
+        }
+        for m in entry[1].matches[doc_index].values() {
+            got.push(format!("C:{}={:x}", m.query_id, m.score.unwrap().to_bits()));
+        }
+        for m in entry[2].matches[doc_index].values() {
+            got.push(format!(
+                "E:{}={}",
+                m.query_id,
+                m.explanation.as_ref().unwrap()
+            ));
+        }
+        for m in entry[3].matches[doc_index].values() {
+            let hits = m.hits.as_ref().unwrap();
+            let fields: Vec<String> = hits
+                .iter()
+                .map(|(f, set)| {
+                    let hs: Vec<String> = set.iter().map(ToString::to_string).collect();
+                    format!("{f}=[{}]", hs.join(", "))
+                })
+                .collect();
+            got.push(format!("H:{}={{{}}}", m.query_id, fields.join(", ")));
+        }
+        // An explanation lists a boolean's clauses in Java's `Multiset` order (a
+        // `HashMap` keyed on identity hashes), so its lines are compared sorted:
+        // every value, description and depth exact, sibling order free.
+        // A fuzzy query's explanation is Lucene's scoring-rewrite breakdown, which
+        // `explain` does not give (it reports a flat match: see the ledger), so for
+        // `quick~1` (q22) only the match itself is compared.
+        let canon = |c: &str| -> String {
+            if c.starts_with("E:q22=") {
+                "E:q22".to_string()
+            } else if c.starts_with("E:") {
+                let mut lines: Vec<&str> = c.split('\n').collect();
+                lines.sort_unstable();
+                lines.join("\n")
+            } else {
+                c.to_string()
+            }
+        };
+        let mut got: Vec<String> = got.iter().map(|c| canon(c)).collect();
+        got.sort();
+        let mut want_cells: Vec<String> = unesc(cols.get(2).copied().unwrap_or(""))
+            .split('\t')
+            .filter(|s| !s.is_empty())
+            .map(canon)
+            .collect();
+        want_cells.sort();
+        if got != want_cells {
+            let missing: Vec<&String> = want_cells.iter().filter(|c| !got.contains(c)).collect();
+            let extra: Vec<&String> = got.iter().filter(|c| !want_cells.contains(c)).collect();
+            bad.push(format!(
+                "{label:?} doc {doc_index}\n  missing {missing:?}\n  extra   {extra:?}"
+            ));
+        }
+    }
+    assert!(bad.is_empty(), "{} differ:\n{}", bad.len(), bad.join("\n"));
+}

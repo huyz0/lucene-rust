@@ -236,6 +236,30 @@ fn matches_presearcher(query: &Clause, indexed: &IndexedEntry) -> bool {
     }
 }
 
+/// A query as a searcher runs it: rewritten, and as the boolean `search` takes.
+pub struct SearchQuery {
+    /// The rewritten clause (what a weight's `matches` is asked of).
+    pub clause: Clause,
+    /// The same, as the boolean the searcher takes.
+    pub boolean: BooleanQuery,
+}
+
+/// `IndexSearcher.rewrite(query)`, then the boolean `search` takes; `None` for
+/// a query that matches nothing.
+pub fn as_search_query(query: &Clause) -> Option<SearchQuery> {
+    let clause = query.clone().rewrite();
+    let boolean = match &clause {
+        Clause::MatchNoDocs(_) => return None,
+        Clause::Boolean(b) => (**b).clone(),
+        other => {
+            let mut b = BooleanQuery::new();
+            b.must.push(other.clone());
+            b
+        }
+    };
+    Some(SearchQuery { clause, boolean })
+}
+
 /// `BooleanQuery` with no clauses, the empty batch's query.
 pub fn empty_query() -> Clause {
     Clause::Boolean(Box::new(BooleanQuery::new()))
