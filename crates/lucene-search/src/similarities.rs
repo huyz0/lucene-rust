@@ -279,7 +279,7 @@ impl SimScorer for Bm25Scorer {
 
 /// `idfExplain(collectionStats, termStats[])`'s value: one term's idf, or
 /// the float idfs of several summed as a `double` and narrowed once.
-fn summed_idf(idf: impl Fn(&TermStatistics) -> f32, terms: &[TermStatistics]) -> f32 {
+pub(crate) fn summed_idf(idf: impl Fn(&TermStatistics) -> f32, terms: &[TermStatistics]) -> f32 {
     match terms {
         [one] => idf(one),
         many => many.iter().map(|t| f64::from(idf(t))).sum::<f64>() as f32,
