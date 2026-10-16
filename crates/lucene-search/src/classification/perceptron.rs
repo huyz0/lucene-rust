@@ -151,7 +151,7 @@ impl BooleanPerceptronClassifier {
             let (Some(text), Some(class)) = (values[0].first(), values[1].first()) else {
                 continue;
             };
-            let assigned = c.classify(&text)?.assigned_class;
+            let assigned = c.classify(text)?.assigned_class;
             let correct = class.eq_ignore_ascii_case("true");
             // `Math.signum(correct.compareTo(assigned))`.
             let modifier = f64::from(i32::from(correct) - i32::from(assigned));
