@@ -239,6 +239,9 @@ misc/high_freq/_0.si 0cb845d4c3648c52899f0a016593c70c
 misc/high_freq/_1.si 0cb845d4c3648c52899f0a016593c710
 misc/high_freq/_2.si 0cb845d4c3648c52899f0a016593c714
 misc/high_freq/segments_3 0cb845d4c3648c52899f0a016593c717
+misc/lazy/_0.si 5d9741e0a3771a2c9be249113c9ec091
+misc/lazy/_1.si 5d9741e0a3771a2c9be249113c9ec095
+misc/lazy/segments_2 5d9741e0a3771a2c9be249113c9ec098
 mixed_boolean_scoring_index/_0.si 0ba3a9ad8347db8f94cdc176bb846071
 mixed_boolean_scoring_index/_1.si 0ba3a9ad8347db8f94cdc176bb846075
 mixed_boolean_scoring_index/segments_3 0ba3a9ad8347db8f94cdc176bb84607a
