@@ -239,6 +239,18 @@ impl<O: FstOutputs> TypedFst<O> {
         ))
     }
 
+    /// `FST.save(out, out)`: the bytes [`read`](Self::read) takes back.
+    pub fn save(&self) -> Vec<u8> {
+        CompiledFst {
+            input_type: self.input_type,
+            empty_output: self.empty_output.clone(),
+            start_node: self.start_node,
+            version: self.version,
+            bytes: self.bytes.clone(),
+        }
+        .save::<O>()
+    }
+
     /// `inputType`.
     pub fn input_type(&self) -> InputType {
         self.input_type

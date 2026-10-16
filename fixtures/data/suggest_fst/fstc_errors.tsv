@@ -1,0 +1,8 @@
+contexts	X	IllegalArgumentException	this suggester doesn't support contexts
+weight_-9223372036854775808	UnsupportedOperationException	cannot encode value: -9223372036854775808
+weight_2147483648	UnsupportedOperationException	cannot encode value: 2147483648
+buckets_0	IllegalArgumentException	Buckets must be >= 1 and <= 255: 0
+buckets_256	IllegalArgumentException	Buckets must be >= 1 and <= 255: 256
+buckets_-1	IllegalArgumentException	Buckets must be >= 1 and <= 255: -1
+add_bucket_-1	IllegalArgumentException	Bucket outside of the allowed range [0, 4): -1
+add_bucket_4	IllegalArgumentException	Bucket outside of the allowed range [0, 4): 4
