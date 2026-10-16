@@ -70,7 +70,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
     DocValuesFieldConfig, DocumentBuffer, Error, IndexWriter, IndexingConfig, PointsFieldConfig,
-    Result, DOC_VALUES_FORMAT_NAME, POSTINGS_FORMAT_NAME,
+    Result, DOC_VALUES_FORMAT_NAME,
 };
 use crate::segment_infos::SegmentCommitInfo;
 use crate::segment_writer;
@@ -727,13 +727,14 @@ impl IndexingConfig {
                     groups
                         .iter()
                         .find(|g| g.field_numbers.contains(&f.number))
-                        .map(|g| g.suffix)
+                        .map(|g| (g.format_name, g.suffix))
                 });
-                if let (true, Some(suffix)) = (postings_fields.contains(&f.number), postings_suffix)
+                if let (true, Some((format_name, suffix))) =
+                    (postings_fields.contains(&f.number), postings_suffix)
                 {
                     f.attributes.push((
                         "PerFieldPostingsFormat.format".to_string(),
-                        POSTINGS_FORMAT_NAME.to_string(),
+                        format_name.to_string(),
                     ));
                     f.attributes.push((
                         "PerFieldPostingsFormat.suffix".to_string(),
@@ -1249,6 +1250,7 @@ mod tests {
     use crate::buffered_updates::{DocValuesUpdate, Term};
     use crate::index_file_deleter::DeletionPolicy;
     use crate::index_writer::SoftDeletesRetention;
+    use crate::index_writer::POSTINGS_FORMAT_NAME;
     use crate::segment_info::LuceneVersion;
     use lucene_store::directory::FsDirectory;
     use lucene_util::test_support::TempDir;
