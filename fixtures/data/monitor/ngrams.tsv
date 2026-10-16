@@ -1,0 +1,11 @@
+abc	abc|abcXX|abXX|aXX|bcXX|bXX|cXX|XX
+abcd|abcd	abcd|abcdXX|abcXX|abXX|aXX|bcdXX|bcXX|bXX|cdXX|cXX|dXX|XX|abcd
+a	a|aXX|XX
+ab|b	ab|abXX|aXX|bXX|XX|b
+hello|help|helm	hello|helloXX|hellXX|helXX|heXX|hXX|elloXX|ellXX|elXX|eXX|lloXX|llXX|lXX|loXX|oXX|XX|help|helpXX|elpXX|lpXX|pXX|helm|helmXX|elmXX|lmXX|mXX
+café|cafe	café|caféXX|cafXX|caXX|cXX|aféXX|afXX|aXX|féXX|fXX|éXX|XX|cafe|cafeXX|afeXX|feXX|eXX
+abcdefghijklmnopqrstuvwxyzabcdefghij|short	abcdefghijklmnopqrstuvwxyzabcdefghij|__WILDCARD__|short|shortXX|shorXX|shoXX|shXX|sXX|hortXX|horXX|hoXX|hXX|ortXX|orXX|oXX|rtXX|rXX|tXX|XX
+	
+aaaa	aaaa|aaaaXX|aaaXX|aaXX|aXX|XX
+xyz|xyz|yz	xyz|xyzXX|xyXX|xXX|yzXX|yXX|zXX|XX|xyz|yz
+😀x	😀x

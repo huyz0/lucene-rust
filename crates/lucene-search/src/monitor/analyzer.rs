@@ -8,6 +8,9 @@
 //! redundant), a `MUST_NOT` clause none, and a leaf query its terms or, for an
 //! unknown leaf, the any-token marker.
 
+use std::sync::Arc;
+
+use crate::monitor::handlers::CustomQueryHandler;
 use crate::monitor::tree::{QueryTree, Term, TermWeightor};
 use crate::query::{BooleanQuery, Clause};
 
@@ -16,6 +19,8 @@ use crate::query::{BooleanQuery, Clause};
 enum Child {
     Term(Term),
     Any(String),
+    /// A tree a custom handler built.
+    Tree(QueryTree),
     Node(Node),
 }
 
@@ -33,6 +38,7 @@ impl Node {
             .map(|c| match c {
                 Child::Term(t) => Ok(QueryTree::term(t, weightor)),
                 Child::Any(reason) => Ok(QueryTree::any_term(reason)),
+                Child::Tree(t) => Ok(t),
                 Child::Node(n) => n.apply(weightor),
             })
             .collect::<Result<_, String>>()?;
@@ -90,10 +96,25 @@ fn disjunction(mut children: Vec<QueryTree>) -> Result<QueryTree, String> {
 }
 
 /// `QueryAnalyzer`: a query to its term tree.
-#[derive(Debug, Clone, Default)]
-pub struct QueryAnalyzer;
+#[derive(Clone, Default)]
+pub struct QueryAnalyzer {
+    /// `unknownQueryMapper`'s handlers, asked in order for a leaf no term
+    /// names.
+    handlers: Vec<Arc<dyn CustomQueryHandler>>,
+}
+
+impl std::fmt::Debug for QueryAnalyzer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "QueryAnalyzer({} handlers)", self.handlers.len())
+    }
+}
 
 impl QueryAnalyzer {
+    /// `new QueryAnalyzer(queryTreeBuilders)`.
+    pub fn new(handlers: Vec<Arc<dyn CustomQueryHandler>>) -> Self {
+        QueryAnalyzer { handlers }
+    }
+
     /// `buildTree(luceneQuery, weightor)`.
     pub fn build_tree(&self, query: &Clause, weightor: &TermWeightor) -> Result<QueryTree, String> {
         // `QueryBuilder.apply`: a conjunction over the query's children -- but
@@ -107,49 +128,15 @@ impl QueryAnalyzer {
             disjunction,
             children: Vec::new(),
         };
-        collect(query, &mut root);
+        self.collect(query, weightor, &mut root);
         root.apply(weightor)
     }
-}
 
-/// `QueryBuilder.visit`: a query's children added to `node`. A boolean adds
-/// one child per clause, by its occurrence (`getSubVisitor`); any other query
-/// is a leaf, which contributes its terms (`consumeTerms`), or, when it has
-/// none, the any-token marker (`visitLeaf` with no mapped tree).
-fn collect(query: &Clause, node: &mut Node) {
-    match query {
-        Clause::Boolean(b) => {
-            for c in &b.must {
-                add_clause(c, b, Occur::Must, node);
-            }
-            for c in &b.filter {
-                add_clause(c, b, Occur::Must, node);
-            }
-            for c in &b.must_not {
-                add_clause(c, b, Occur::MustNot, node);
-            }
-            for c in &b.should {
-                add_clause(c, b, Occur::Should, node);
-            }
-        }
-        Clause::Boost(b) => {
-            // `BoostQuery.visit`: the wrapped query, through a `MUST` child
-            let mut n = Node {
-                disjunction: is_shoulds_only(&b.inner),
-                children: Vec::new(),
-            };
-            collect(&b.inner, &mut n);
-            node.children.push(Child::Node(n));
-        }
-        leaf => {
-            let terms = visit_order_terms(leaf);
-            if terms.is_empty() {
-                node.children.push(Child::Any(leaf_string(leaf)));
-            }
-            for t in terms {
-                node.children.push(Child::Term(t));
-            }
-        }
+    /// `unknownQueryMapper.apply(query, weightor)`: the first handler's tree.
+    fn handle(&self, query: &Clause, weightor: &TermWeightor) -> Option<QueryTree> {
+        self.handlers
+            .iter()
+            .find_map(|h| h.handle_query(query, weightor))
     }
 }
 
@@ -159,37 +146,91 @@ enum Occur {
     Should,
 }
 
-/// `getSubVisitor(occur, parent)`: where one clause of `parent` goes.
-fn add_clause(clause: &Clause, parent: &BooleanQuery, occur: Occur, node: &mut Node) {
-    match occur {
-        Occur::Must => {
-            let mut n = Node {
-                disjunction: is_shoulds_only(clause),
-                children: Vec::new(),
-            };
-            collect(clause, &mut n);
-            node.children.push(Child::Node(n));
-        }
-        Occur::MustNot => {
-            // a pure negative boolean matches every document: the marker
-            if parent.should.is_empty() && parent.must.is_empty() && parent.filter.is_empty() {
-                node.children.push(Child::Any(format!(
-                    "PURE NEGATIVE QUERY[{}]",
-                    leaf_string(&Clause::Boolean(Box::new(parent.clone())))
-                )));
+impl QueryAnalyzer {
+    /// `QueryBuilder.visit`: a query's children added to `node`. A boolean
+    /// adds one child per clause, by its occurrence (`getSubVisitor`); any
+    /// other query is a leaf, which contributes its terms (`consumeTerms`), or,
+    /// when it has none, what a custom handler maps it to (`visitLeaf`), or
+    /// the any-token marker.
+    fn collect(&self, query: &Clause, weightor: &TermWeightor, node: &mut Node) {
+        match query {
+            Clause::Boolean(b) => {
+                for c in &b.must {
+                    self.add_clause(c, b, Occur::Must, weightor, node);
+                }
+                for c in &b.filter {
+                    self.add_clause(c, b, Occur::Must, weightor, node);
+                }
+                for c in &b.must_not {
+                    self.add_clause(c, b, Occur::MustNot, weightor, node);
+                }
+                for c in &b.should {
+                    self.add_clause(c, b, Occur::Should, weightor, node);
+                }
+            }
+            Clause::Boost(b) => {
+                // `BoostQuery.visit`: the wrapped query, through a `MUST` child
+                let mut n = Node {
+                    disjunction: is_shoulds_only(&b.inner),
+                    children: Vec::new(),
+                };
+                self.collect(&b.inner, weightor, &mut n);
+                node.children.push(Child::Node(n));
+            }
+            leaf => {
+                let terms = visit_order_terms(leaf);
+                if terms.is_empty() {
+                    match self.handle(leaf, weightor) {
+                        Some(tree) => node.children.push(Child::Tree(tree)),
+                        None => node.children.push(Child::Any(leaf_string(leaf))),
+                    }
+                }
+                for t in terms {
+                    node.children.push(Child::Term(t));
+                }
             }
         }
-        Occur::Should => {
-            // beside a required clause a SHOULD adds nothing to the tree
-            if !parent.must.is_empty() || !parent.filter.is_empty() {
-                return;
+    }
+
+    /// `getSubVisitor(occur, parent)`: where one clause of `parent` goes.
+    fn add_clause(
+        &self,
+        clause: &Clause,
+        parent: &BooleanQuery,
+        occur: Occur,
+        weightor: &TermWeightor,
+        node: &mut Node,
+    ) {
+        match occur {
+            Occur::Must => {
+                let mut n = Node {
+                    disjunction: is_shoulds_only(clause),
+                    children: Vec::new(),
+                };
+                self.collect(clause, weightor, &mut n);
+                node.children.push(Child::Node(n));
             }
-            let mut n = Node {
-                disjunction: is_shoulds_only(clause),
-                children: Vec::new(),
-            };
-            collect(clause, &mut n);
-            node.children.push(Child::Node(n));
+            Occur::MustNot => {
+                // a pure negative boolean matches every document: the marker
+                if parent.should.is_empty() && parent.must.is_empty() && parent.filter.is_empty() {
+                    node.children.push(Child::Any(format!(
+                        "PURE NEGATIVE QUERY[{}]",
+                        leaf_string(&Clause::Boolean(Box::new(parent.clone())))
+                    )));
+                }
+            }
+            Occur::Should => {
+                // beside a required clause a SHOULD adds nothing to the tree
+                if !parent.must.is_empty() || !parent.filter.is_empty() {
+                    return;
+                }
+                let mut n = Node {
+                    disjunction: is_shoulds_only(clause),
+                    children: Vec::new(),
+                };
+                self.collect(clause, weightor, &mut n);
+                node.children.push(Child::Node(n));
+            }
         }
     }
 }

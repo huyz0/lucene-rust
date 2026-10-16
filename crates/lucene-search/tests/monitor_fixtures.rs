@@ -170,7 +170,7 @@ fn term_trees_match_lucene() {
     for (line, q) in want.lines().zip(&corpus()) {
         let cols: Vec<&str> = line.split('\t').collect();
         let got = match parse(q) {
-            Ok(clause) => match QueryAnalyzer.build_tree(&clause, &weightor) {
+            Ok(clause) => match QueryAnalyzer::default().build_tree(&clause, &weightor) {
                 Ok(tree) => {
                     let mut terms: Vec<Term> = Vec::new();
                     tree.collect_terms(&mut terms);
@@ -830,4 +830,204 @@ fn a_query_index_written_by_lucene_opens_and_matches() {
         .unwrap_err()
         .to_string()
         .contains("readOnly"));
+}
+
+/// `SuffixingNGramTokenFilter`'s stream over a list of terms, as Lucene emits it.
+#[test]
+fn the_suffixing_ngram_filter_emits_lucenes_tokens() {
+    use lucene_search::monitor::handlers::suffixing_ngrams;
+    let want = fs::read_to_string(dir().join("data/monitor/ngrams.tsv")).unwrap();
+    let mut seen = 0;
+    for line in want.lines() {
+        let (input, output) = line.split_once('\t').unwrap();
+        let terms: Vec<Vec<u8>> = unesc(input)
+            .split('|')
+            .map(|t| t.as_bytes().to_vec())
+            .collect();
+        let got: Vec<String> = suffixing_ngrams(&terms, "XX", "__WILDCARD__", 30)
+            .into_iter()
+            .map(|b| String::from_utf8(b).unwrap())
+            .collect();
+        assert_eq!(got.join("|"), unesc(output), "terms {input:?}");
+        seen += 1;
+    }
+    assert_eq!(seen, 11);
+}
+
+fn regexp_handlers() -> Vec<Arc<dyn lucene_search::monitor::handlers::CustomQueryHandler>> {
+    vec![Arc::new(
+        lucene_search::monitor::handlers::RegexpQueryHandler::default(),
+    )]
+}
+
+#[test]
+fn regexp_queries_are_indexed_as_lucene_does() {
+    use lucene_search::monitor::presearcher::TermFilteredPresearcher;
+    use std::collections::BTreeMap;
+
+    let handlers = regexp_handlers();
+    let presearcher =
+        TermFilteredPresearcher::with_handlers(TermWeightor::default(), handlers.clone(), vec![]);
+    let want = fs::read_to_string(dir().join("data/monitor/regexp_trees.tsv")).unwrap();
+    let mut rows = 0;
+    for line in want.lines() {
+        let cols: Vec<&str> = line.split('\t').collect();
+        let q = unesc(cols[0]);
+        let clause = parse(&q).unwrap();
+        let tree = QueryAnalyzer::new(handlers.clone())
+            .build_tree(&clause, &TermWeightor::default())
+            .unwrap();
+        assert_eq!(tree.to_string_at(0).unwrap(), unesc(cols[1]), "tree of {q}");
+        let mut found = Vec::new();
+        tree.collect_terms(&mut found);
+        let terms: Vec<String> = found
+            .iter()
+            .map(|t| format!("{}:{}", t.field, String::from_utf8_lossy(&t.bytes)))
+            .collect();
+        assert_eq!(terms.join(" "), unesc(cols[2]), "terms of {q}");
+        let indexed = presearcher.index_query(&clause, &BTreeMap::new()).unwrap();
+        let got: Vec<String> = indexed
+            .fields
+            .iter()
+            .map(|(f, ts)| {
+                let names: Vec<String> = ts
+                    .iter()
+                    .map(|t| String::from_utf8_lossy(t).into_owned())
+                    .collect();
+                format!("{f}\t{}", names.join(" "))
+            })
+            .collect();
+        assert_eq!(got.join("|"), unesc(cols[3]), "indexed fields of {q}");
+        rows += 1;
+    }
+    assert_eq!(rows, 10);
+}
+
+#[test]
+fn regexp_queries_match_with_the_handler_as_lucene_does() {
+    use lucene_search::monitor::config::MonitorConfiguration;
+    use lucene_search::monitor::facade::{Matcher, Monitor};
+    use lucene_search::monitor::index::MonitorQuery;
+    use lucene_search::monitor::presearcher::TermFilteredPresearcher;
+    use std::collections::BTreeMap;
+
+    let analyzer = Arc::new(Analyzer::new(StandardAnalyzer::new()));
+    let presearcher =
+        TermFilteredPresearcher::with_handlers(TermWeightor::default(), regexp_handlers(), vec![]);
+    let mut monitor = Monitor::with_configuration(
+        analyzer,
+        presearcher,
+        Vec::new(),
+        &MonitorConfiguration::default(),
+    )
+    .unwrap();
+    let queries: Vec<String> = fs::read_to_string(dir().join("corpus/monitor-regexp.txt"))
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    monitor
+        .register(
+            queries
+                .iter()
+                .enumerate()
+                .map(|(i, q)| {
+                    MonitorQuery::new(
+                        format!("r{i}"),
+                        parse(q).unwrap(),
+                        Some(q.clone()),
+                        BTreeMap::new(),
+                    )
+                    .unwrap()
+                })
+                .collect(),
+        )
+        .unwrap();
+    let want = fs::read_to_string(dir().join("data/monitor/regexp_matches.tsv")).unwrap();
+    let mut rows = 0;
+    for line in want.lines() {
+        let (text, ids) = line.split_once('\t').unwrap();
+        let text = unesc(text);
+        let result = monitor
+            .match_docs(&[&[("body", text.as_str())]], &Matcher::Simple)
+            .unwrap();
+        let mut got: Vec<String> = result.matches[0].keys().cloned().collect();
+        got.sort();
+        let mut expected: Vec<String> = unesc(ids)
+            .split(' ')
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+        expected.sort();
+        assert_eq!(got, expected, "document {text:?}");
+        rows += 1;
+    }
+    assert_eq!(rows, 9);
+}
+
+#[test]
+fn debug_explains_the_presearcher_as_lucene_does() {
+    use lucene_search::monitor::config::MonitorConfiguration;
+    use lucene_search::monitor::facade::{Matcher, Monitor};
+    use lucene_search::monitor::index::MonitorQuery;
+    use lucene_search::monitor::presearcher::TermFilteredPresearcher;
+    use std::collections::BTreeMap;
+
+    let mut monitor = Monitor::with_configuration(
+        Arc::new(Analyzer::new(StandardAnalyzer::new())),
+        TermFilteredPresearcher::default(),
+        Vec::new(),
+        &MonitorConfiguration::default(),
+    )
+    .unwrap();
+    let queries = corpus();
+    let registered: Vec<MonitorQuery> = queries
+        .iter()
+        .enumerate()
+        .filter_map(|(i, q)| {
+            Some(
+                MonitorQuery::new(
+                    format!("q{i}"),
+                    parse(q).ok()?,
+                    Some(q.clone()),
+                    BTreeMap::new(),
+                )
+                .unwrap(),
+            )
+        })
+        .collect();
+    monitor.register(registered).unwrap();
+    let want = fs::read_to_string(dir().join("data/monitor/debug.tsv")).unwrap();
+    let mut explained = 0;
+    for line in want.lines() {
+        let cols: Vec<&str> = line.split('\t').collect();
+        let doc = unesc(cols[0]);
+        let pairs: Vec<(String, String)> = doc
+            .split('|')
+            .map(|f| {
+                let (a, b) = f.split_once('=').unwrap();
+                (a.to_string(), b.to_string())
+            })
+            .collect();
+        let fields: Vec<(&str, &str)> = pairs
+            .iter()
+            .map(|(a, b)| (a.as_str(), b.as_str()))
+            .collect();
+        let dbg = monitor.debug_docs(&[&fields], &Matcher::Simple).unwrap();
+        let mut want_cells: Vec<String> = unesc(cols[1]).split('\t').map(str::to_string).collect();
+        want_cells.retain(|c| !c.is_empty());
+        let mut got_cells = Vec::new();
+        for qi in 0..queries.len() {
+            if let Some(pm) = dbg.match_query(&format!("q{qi}"), 0) {
+                got_cells.push(format!(
+                    "q{qi}={}={}",
+                    pm.presearcher_matches,
+                    pm.query_match.is_some()
+                ));
+            }
+        }
+        assert_eq!(got_cells, want_cells, "document {doc:?}");
+        explained += got_cells.len();
+    }
+    assert!(explained >= 50, "{explained}");
 }

@@ -398,6 +398,29 @@ impl QueryIndex {
             .map(|(_, entry)| entry)
             .collect()
     }
+
+    /// The entries `select` picks, each with why: the presearcher query's
+    /// matches on its indexed document, as `Monitor.debug` writes them -- a
+    /// space and the matching query for every matched token.
+    pub fn select_debug(
+        &self,
+        batch: &BatchTerms,
+        accept: &dyn TermAcceptor,
+    ) -> Vec<(&QueryCacheEntry, String)> {
+        let query = self.presearcher.build_query(batch, accept, None);
+        self.entries
+            .iter()
+            .filter_map(|(indexed, entry)| {
+                let fields = presearcher_matches(&query, indexed)?;
+                let why: String = fields
+                    .iter()
+                    .flat_map(|(_, hits)| hits.iter())
+                    .map(|(_, q)| format!(" {q}"))
+                    .collect();
+                Some((entry, why))
+            })
+            .collect()
+    }
 }
 
 /// Whether the presearcher's batch query selects an entry's indexed document.
@@ -416,15 +439,113 @@ fn matches_presearcher(query: &Clause, indexed: &IndexedEntry) -> bool {
             .fields
             .iter()
             .any(|(f, terms)| *f == t.field && terms.contains(&t.term)),
+        // a `BooleanQuery`: every `MUST` and `FILTER` clause, no `MUST_NOT`, and
+        // -- with no required clause -- at least one `SHOULD`; with none at all
+        // it matches nothing
         Clause::Boolean(b) => {
-            let must_ok = b.must.iter().all(|c| matches_presearcher(c, indexed));
-            let filter_ok = b.filter.iter().all(|c| matches_presearcher(c, indexed));
-            let not_ok = b.must_not.iter().all(|c| !matches_presearcher(c, indexed));
-            let should_ok =
-                b.should.is_empty() || b.should.iter().any(|c| matches_presearcher(c, indexed));
-            must_ok && filter_ok && not_ok && should_ok
+            let required = !b.must.is_empty() || !b.filter.is_empty();
+            if !required && b.should.is_empty() {
+                return false;
+            }
+            b.must.iter().all(|c| matches_presearcher(c, indexed))
+                && b.filter.iter().all(|c| matches_presearcher(c, indexed))
+                && b.must_not.iter().all(|c| !matches_presearcher(c, indexed))
+                && (required || b.should.iter().any(|c| matches_presearcher(c, indexed)))
         }
         _ => false,
+    }
+}
+
+/// One field's presearcher matches on an indexed document: each is the
+/// position of the matched token and the query (`MatchesIterator.getQuery()`)
+/// that matched it.
+type FieldHits = (String, Vec<(usize, String)>);
+
+/// `weight.matches(ctx, doc)` of the presearcher's batch query on an entry's
+/// indexed document, as `BooleanWeight`, `MatchesUtils.fromSubMatches` and
+/// `TermInSetQuery`'s per-term iterators give it: the fields in clause order,
+/// each field's hits by position. `None` when the query does not match.
+fn presearcher_matches(query: &Clause, indexed: &IndexedEntry) -> Option<Vec<FieldHits>> {
+    // a term set (or one term) over a field: a hit per token of the field
+    // whose term is in it
+    let leaf = |field: &str, wanted: &dyn Fn(&[u8]) -> bool, shown: String| {
+        let mut hits = Vec::new();
+        let mut pos = 0;
+        for (f, terms) in &indexed.fields {
+            if f == field {
+                for t in terms {
+                    if wanted(t) {
+                        hits.push((pos, shown.clone()));
+                    }
+                    pos += 1;
+                }
+            }
+        }
+        (!hits.is_empty()).then(|| vec![(field.to_string(), hits)])
+    };
+    match query {
+        Clause::TermInSet(t) => {
+            let names: Vec<String> = t
+                .terms
+                .iter()
+                .map(|b| String::from_utf8_lossy(b).into_owned())
+                .collect();
+            let shown = format!("{}:({})", t.field, names.join(" "));
+            leaf(&t.field, &|x| t.terms.iter().any(|y| y == x), shown)
+        }
+        Clause::Term(t) => {
+            let shown = format!("{}:{}", t.field, String::from_utf8_lossy(&t.term));
+            leaf(&t.field, &|x| x == t.term.as_slice(), shown)
+        }
+        Clause::Boolean(b) => {
+            let mut subs = Vec::new();
+            for c in b.must.iter().chain(&b.filter) {
+                subs.push(presearcher_matches(c, indexed)?);
+            }
+            if b.must_not
+                .iter()
+                .any(|c| presearcher_matches(c, indexed).is_some())
+            {
+                return None;
+            }
+            for c in &b.should {
+                if let Some(m) = presearcher_matches(c, indexed) {
+                    subs.push(m);
+                }
+            }
+            if subs.is_empty() {
+                return None;
+            }
+            if subs.len() == 1 {
+                return subs.pop();
+            }
+            // `fromSubMatches`: the distinct fields in order, each field's
+            // sub-iterators merged by position
+            let mut fields: Vec<String> = Vec::new();
+            for sub in &subs {
+                for (f, _) in sub {
+                    if !fields.contains(f) {
+                        fields.push(f.clone());
+                    }
+                }
+            }
+            Some(
+                fields
+                    .into_iter()
+                    .map(|f| {
+                        let mut hits: Vec<(usize, String)> = subs
+                            .iter()
+                            .flatten()
+                            .filter(|(g, _)| *g == f)
+                            .flat_map(|(_, h)| h.iter().cloned())
+                            .collect();
+                        hits.sort_by_key(|(pos, _)| *pos);
+                        (f, hits)
+                    })
+                    .collect(),
+            )
+        }
+        _ => None,
     }
 }
 

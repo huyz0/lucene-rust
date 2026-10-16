@@ -242,6 +242,80 @@ public class GenMonitor {
           pm.getQueryCount() + " " + pm.getDisjunctCount() + "\n",
           StandardCharsets.UTF_8);
     }
+    // T13.5d slice 4: the n-gram filter, the regexp handler, and debug()
+    StringBuilder ngramRows = new StringBuilder();
+    String[][] ngramInputs = {
+      {"abc"}, {"abcd", "abcd"}, {"a"}, {"ab", "b"}, {"hello", "help", "helm"},
+      {"café", "cafe"}, {"abcdefghijklmnopqrstuvwxyzabcdefghij", "short"}, {""},
+      {"aaaa"}, {"xyz", "xyz", "yz"},
+      {"😀x"},
+    };
+    for (String[] in : ngramInputs) {
+      java.util.List<String> got = MonitorFixtureAccess.ngrams(java.util.Arrays.asList(in), "XX", "__WILDCARD__", 30);
+      ngramRows.append(esc(String.join("|", in))).append((char) 9).append(esc(String.join("|", got))).append((char) 10);
+    }
+    Files.writeString(out.resolve("ngrams.tsv"), ngramRows.toString(), StandardCharsets.UTF_8);
+
+    java.util.List<org.apache.lucene.monitor.CustomQueryHandler> handlers =
+        java.util.List.of(new org.apache.lucene.monitor.RegexpQueryHandler());
+    org.apache.lucene.monitor.Presearcher regexpPresearcher =
+        new org.apache.lucene.monitor.TermFilteredPresearcher(
+            TermWeightor.DEFAULT, handlers, java.util.Set.of());
+    List<String> regexpQueries = AnalysisRows.corpus("monitor-regexp.txt");
+    org.apache.lucene.monitor.Monitor regexpMonitor =
+        new org.apache.lucene.monitor.Monitor(new StandardAnalyzer(), regexpPresearcher);
+    List<org.apache.lucene.monitor.MonitorQuery> regexpRegistered = new ArrayList<>();
+    StringBuilder regexpRows = new StringBuilder();
+    for (int i = 0; i < regexpQueries.size(); i++) {
+      Query rq = parser.parse(regexpQueries.get(i));
+      regexpRegistered.add(new org.apache.lucene.monitor.MonitorQuery("r" + i, rq, regexpQueries.get(i), java.util.Map.of()));
+      QueryTree rt = MonitorFixtureAccess.buildTreeWith(handlers, rq, TermWeightor.DEFAULT);
+      List<String> rterms = new ArrayList<>();
+      rt.collectTerms((f, b) -> rterms.add(f + ":" + b.utf8ToString()));
+      regexpRows.append(esc(regexpQueries.get(i))).append((char) 9).append(esc(rt.toString())).append((char) 9)
+          .append(esc(String.join(" ", rterms))).append((char) 9)
+          .append(esc(String.join("|", MonitorFixtureAccess.indexedFields(regexpPresearcher, rq, java.util.Map.of()))))
+          .append((char) 10);
+    }
+    regexpMonitor.register(regexpRegistered);
+    Files.writeString(out.resolve("regexp_trees.tsv"), regexpRows.toString(), StandardCharsets.UTF_8);
+    String[] regexpDocs = {
+      "the quick brown fox", "foobar baz", "foo123bar", "abc", "hello world", "xay bz", "aaaa", "abcabc",
+      "a very long token abcdefghijklmnopqrstuvwxyzabcdefghij here",
+    };
+    StringBuilder regexpMatches = new StringBuilder();
+    for (String text : regexpDocs) {
+      org.apache.lucene.document.Document d = new org.apache.lucene.document.Document();
+      d.add(new org.apache.lucene.document.TextField("body", text, org.apache.lucene.document.Field.Store.NO));
+      List<String> ids = new ArrayList<>();
+      for (var m : regexpMonitor.match(d, org.apache.lucene.monitor.QueryMatch.SIMPLE_MATCHER).getMatches()) {
+        ids.add(m.getQueryId());
+      }
+      java.util.Collections.sort(ids);
+      regexpMatches.append(esc(text)).append((char) 9).append(esc(String.join(" ", ids))).append((char) 10);
+    }
+    Files.writeString(out.resolve("regexp_matches.tsv"), regexpMatches.toString(), StandardCharsets.UTF_8);
+    regexpMonitor.close();
+
+    // debug(): which presearcher terms matched each query that the presearcher selected
+    StringBuilder debugRows = new StringBuilder();
+    for (String[] doc : docs) {
+      org.apache.lucene.document.Document d = new org.apache.lucene.document.Document();
+      for (String f : doc) {
+        int eq = f.indexOf('=');
+        d.add(new org.apache.lucene.document.TextField(f.substring(0, eq), f.substring(eq + 1), org.apache.lucene.document.Field.Store.NO));
+      }
+      var dbg = monitor.debug(d, org.apache.lucene.monitor.QueryMatch.SIMPLE_MATCHER);
+      List<String> cells = new ArrayList<>();
+      for (int qi = 0; qi < qs.size(); qi++) {
+        var pm = dbg.match("q" + qi, 0);
+        if (pm != null) {
+          cells.add("q" + qi + "=" + pm.presearcherMatches + "=" + (pm.queryMatch != null));
+        }
+      }
+      debugRows.append(esc(String.join("|", doc))).append((char) 9).append(esc(String.join(String.valueOf((char) 9), cells))).append((char) 10);
+    }
+    Files.writeString(out.resolve("debug.tsv"), debugRows.toString(), StandardCharsets.UTF_8);
     // the monitor's purge thread keeps the JVM alive until it is closed
     monitor.close();
 

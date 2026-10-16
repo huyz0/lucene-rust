@@ -168,6 +168,38 @@ impl MultiMatchingQueries {
     }
 }
 
+/// `PresearcherMatches`: a match, with why the presearcher selected each query.
+#[derive(Debug, Clone)]
+pub struct PresearcherMatches {
+    matching_terms: BTreeMap<String, String>,
+    /// The batch's matches.
+    pub matcher: MultiMatchingQueries,
+}
+
+/// `PresearcherMatch`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PresearcherMatch {
+    /// The presearcher's matches on the query's indexed document(s): a space
+    /// and the matching query for each matched token.
+    pub presearcher_matches: String,
+    /// The matcher's match, if the query matched the document.
+    pub query_match: Option<QueryMatch>,
+    pub query_id: String,
+}
+
+impl PresearcherMatches {
+    /// `match(queryId, doc)`: `None` when the presearcher did not select the
+    /// query.
+    pub fn match_query(&self, query_id: &str, doc: usize) -> Option<PresearcherMatch> {
+        let found = self.matching_terms.get(query_id)?;
+        Some(PresearcherMatch {
+            presearcher_matches: found.clone(),
+            query_match: self.matcher.matches(query_id, doc).cloned(),
+            query_id: query_id.to_string(),
+        })
+    }
+}
+
 /// `MatchingQueries`: one document's matches and the work done to find them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MatchingQueries {
@@ -326,6 +358,36 @@ impl Monitor {
         let terms = batch_terms(batch.terms(), &self.filter_fields);
         let candidates = self.index.select(&terms, &AcceptAll);
         self.run_candidates(&batch, matcher, &candidates, Some(listener))
+    }
+
+    /// `debug(docs, matcher)`: the match, and for every query the presearcher
+    /// selected, which of its indexed tokens did.
+    pub fn debug_docs(
+        &self,
+        docs: &[DocFields<'_>],
+        matcher: &Matcher,
+    ) -> Result<PresearcherMatches> {
+        let similarity = match matcher {
+            Matcher::Scoring(s) => s.clone(),
+            _ => None,
+        };
+        let batch = DocumentBatch::of(&self.analyzer, docs, similarity)?;
+        let terms = batch_terms(batch.terms(), &self.filter_fields);
+        let selected = self.index.select_debug(&terms, &AcceptAll);
+        let mut matching_terms: BTreeMap<String, String> = BTreeMap::new();
+        for (entry, why) in &selected {
+            matching_terms
+                .entry(entry.query_id.clone())
+                .or_default()
+                .push_str(why);
+        }
+        let candidates: Vec<&crate::monitor::index::QueryCacheEntry> =
+            selected.iter().map(|(e, _)| *e).collect();
+        let matcher = self.run_candidates(&batch, matcher, &candidates, None)?;
+        Ok(PresearcherMatches {
+            matching_terms,
+            matcher,
+        })
     }
 
     /// `match(docs, matcher)`: the presearcher selects the candidate entries

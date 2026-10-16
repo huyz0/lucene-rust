@@ -1,0 +1,10 @@
+/foo.*bar/
+/ab?c/
+/hello/
+/x.y.z/
+/(abc)+/
+fox AND /qu.*k/
+/a.*/
+/abcdefghijklmnopqrstuvwxyzabcdefghij.*/
+/h[ae]llo/
+/ab.cd.ef/
