@@ -166,6 +166,8 @@ m7_queries_index/segments_4 7b812c1f085f90d0d3441caea822af0c
 matches_index/_0.si 610f46067443987c4c9f584d5b253190
 matches_index/_1.si 610f46067443987c4c9f584d5b253194
 matches_index/segments_3 610f46067443987c4c9f584d5b253199
+matchhighlight/index/_0.si b73c4fb14bceaab5e217e4ff7d3d5c44
+matchhighlight/index/segments_1 b73c4fb14bceaab5e217e4ff7d3d5c47
 merge_metadata/_0.si 434edb964a98508280018ab8780714da
 merge_metadata/_1.si 434edb964a98508280018ab8780714de
 merge_metadata/_2.si 434edb964a98508280018ab8780714e2

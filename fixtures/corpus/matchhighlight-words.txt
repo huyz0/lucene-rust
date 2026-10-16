@@ -1,0 +1,16 @@
+Hello, world!
+can't stop
+don't you e-mail me at a.b@example.com?
+3.14 is pi, 1,000 and 2.5%
+foo_bar baz-qux
+  leading   spaces  
+日本語のテキスト
+Café Müller's
+quick-brown fox's tail
+a.b.c d,e,f
+it's 10:30 o'clock
+x
+
+tab	here
+newline
+MiXed123Case 45abc

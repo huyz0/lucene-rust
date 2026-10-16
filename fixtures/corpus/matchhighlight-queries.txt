@@ -1,0 +1,25 @@
+offs:fox
+offs:quick
+offs:fox offs:dog
+offs:"quick brown"
+offs:"quick brown"~2
++offs:fox -offs:cat
+offs:qu*
+offs:f?x
+offs:fox~1
+offs:/qu.*k/
+pos:fox
+pos:"quick brown"
+pos:quick pos:fox
+pos:qu*
+docs:fox
+docs:quick docs:dog
+docs:qu*
+offs:fox pos:quick docs:dog
+title:foxes
+offs:zzz
+offs:lazy offs:sleeping
+(offs:fox OR pos:fox) AND docs:fox
+offs:"lazy dog"
+offs:the
+offs:fox^2 offs:dog
