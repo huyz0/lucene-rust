@@ -23,11 +23,11 @@ misc/search/DocValuesStatsCollectorManager	todo:M14	M14.d: the manager of DocVal
 misc/search/HumanReadableQuery	todo:M14	M14.d: a debug wrapper whose string form prepends a description
 misc/search/MemoryAccountingBitsetCollector	todo:M14	M14.d: a bitset collector that reports its memory to a MemoryTracker
 misc/search/MemoryAccountingBitsetCollectorManager	todo:M14	M14.d: the manager of MemoryAccountingBitsetCollector
-misc/store/ByteTrackingIndexOutput	todo:M14	M14.d: an IndexOutput that counts the bytes written through it
-misc/store/ByteWritesTrackingDirectoryWrapper	todo:M14	M14.d: a FilterDirectory tracking the write amplification factor
-misc/store/DirectIODirectory	todo:M14	M14.d: an FSDirectory using direct I/O to bypass the OS cache when merging
-misc/store/HardlinkCopyDirectoryWrapper	todo:M14	M14.d: copyFrom optionally hard-links a file instead of copying its bytes
-misc/store/RAFDirectory	todo:M14	M14.d: an FSDirectory over java.io.RandomAccessFile, with poor concurrency
+misc/store/ByteTrackingIndexOutput	ported	crates/lucene-search/src/misc/store.rs::ByteTrackingIndexOutput
+misc/store/ByteWritesTrackingDirectoryWrapper	ported	crates/lucene-search/src/misc/store.rs::ByteWritesTrackingDirectory
+misc/store/DirectIODirectory	ported	crates/lucene-search/src/misc/store.rs::DirectIoDirectory
+misc/store/HardlinkCopyDirectoryWrapper	ported	crates/lucene-search/src/misc/store.rs::HardlinkCopyDirectory
+misc/store/RAFDirectory	ported	crates/lucene-search/src/misc/store.rs::RafDirectory
 misc/util/MemoryTracker	ported	crates/lucene-search/src/misc/memory.rs::MemoryTracker
 misc/util/fst/ListOfOutputs	ported	crates/lucene-search/src/misc/fst.rs::ListOfOutputs
 misc/util/fst/UpToTwoPositiveIntOutputs	ported	crates/lucene-search/src/misc/fst.rs::UpToTwoPositiveIntOutputs
