@@ -89,7 +89,7 @@ set -euo pipefail
 # lucene-join is required by GenBlockJoin (org.apache.lucene.search.join).
 # lucene-grouping is required by GenGrouping (org.apache.lucene.search.grouping).
 # lucene-queryparser is required by GenQueryParser* (org.apache.lucene.queryparser).
-LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-facet lucene-highlighter lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join lucene-grouping)
+LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-facet lucene-highlighter lucene-suggest lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join lucene-grouping)
 
 cd "$(git rev-parse --show-toplevel)"
 FIXTURES="$PWD/fixtures"
