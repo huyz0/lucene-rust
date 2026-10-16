@@ -312,22 +312,6 @@ pub(crate) fn java_string_cmp(a: &str, b: &str) -> Ordering {
     a.encode_utf16().cmp(b.encode_utf16())
 }
 
-/// A `String` ordered as Java orders it ([`java_string_cmp`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct JavaString(pub(crate) String);
-
-impl PartialOrd for JavaString {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for JavaString {
-    fn cmp(&self, other: &Self) -> Ordering {
-        java_string_cmp(&self.0, &other.0)
-    }
-}
-
 /// `termVectors().get(doc, field)` of global document `doc`.
 pub fn term_vector(
     reader: &DirectoryReader,
@@ -422,12 +406,9 @@ mod tests {
     fn java_strings_order_by_utf16_code_unit() {
         // U+FF61 sorts after U+1F600 as UTF-16 (the emoji is the surrogate
         // pair 0xD83D 0xDE00), before it as UTF-8 bytes.
-        let (bmp, astral) = (
-            JavaString("\u{ff61}".into()),
-            JavaString("\u{1f600}".into()),
-        );
-        assert!(bmp.0.as_bytes() < astral.0.as_bytes());
-        assert_eq!(astral.partial_cmp(&bmp), Some(Ordering::Less));
+        let (bmp, astral) = ("\u{ff61}", "\u{1f600}");
+        assert!(bmp.as_bytes() < astral.as_bytes());
+        assert_eq!(java_string_cmp(astral, bmp), Ordering::Less);
         assert_eq!(parse_boost(" 2.5 ").unwrap(), 2.5);
     }
 }

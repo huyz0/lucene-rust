@@ -1,0 +1,33 @@
+# Lucene 10.5.0 lucene-misc: every top-level class of the jar, and what became of it.
+# Checked by scripts/check-port-inventory.py --module misc (see its docstring for the statuses).
+# class	status	detail
+misc/CollectorMemoryTracker	todo:M14	M14.b: the default MemoryTracker, with a memory limit per collector
+misc/GetTermInfo	todo:M14	M14.i: the CLI printing one term's totalTermFreq and docFreq, with the tools
+misc/HighFreqTerms	ported	crates/lucene-search/src/misc/high_freq.rs::get_high_freq_terms
+misc/IndexMergeTool	todo:M14	M14.i: the CLI merging the indices named on its command line into the first
+misc/SweetSpotSimilarity	todo:M14	M14.b: a similarity with a length norm that plateaus over the good lengths, and tf helpers
+misc/TermStats	ported	crates/lucene-search/src/misc/high_freq.rs::TermStats
+misc/document/LazyDocument	todo:M14	M14.b: defers loading a stored field's value until it is asked for
+misc/index/BPIndexReorderer	todo:M14	M14.c: the bipartite partitioning doc-id reorderer
+misc/index/BPReorderingMergePolicy	todo:M14	M14.c: a merge policy that reorders merged segments with BPIndexReorderer, skipping it without RAM
+misc/index/BinaryDocValueSelector	todo:M14	M14.c: a document selector keyed by a BinaryDocValues field, for IndexRearranger
+misc/index/IndexRearranger	todo:M14	M14.c: copies an index into another, rearranged by document selectors
+misc/index/IndexSplitter	todo:M14	M14.c: the CLI listing, copying and deleting an index's segments
+misc/index/MultiPassIndexSplitter	todo:M14	M14.c: splits an index into equal parts with addIndexes
+misc/index/PKIndexSplitter	todo:M14	M14.c: splits an index into the documents matching a query and the rest
+misc/search/DiversifiedTopDocsCollector	todo:M14	M14.d: a top-docs collector allowing at most maxHitsPerKey hits per key
+misc/search/DiversifiedTopDocsCollectorManager	todo:M14	M14.d: the manager of DiversifiedTopDocsCollector
+misc/search/DocValuesStats	todo:M14	M14.d: the statistics of a DocValues field over the hits (abstract holder)
+misc/search/DocValuesStatsCollector	todo:M14	M14.d: the collector computing DocValuesStats
+misc/search/DocValuesStatsCollectorManager	todo:M14	M14.d: the manager of DocValuesStatsCollector
+misc/search/HumanReadableQuery	todo:M14	M14.d: a debug wrapper whose string form prepends a description
+misc/search/MemoryAccountingBitsetCollector	todo:M14	M14.d: a bitset collector that reports its memory to a MemoryTracker
+misc/search/MemoryAccountingBitsetCollectorManager	todo:M14	M14.d: the manager of MemoryAccountingBitsetCollector
+misc/store/ByteTrackingIndexOutput	todo:M14	M14.d: an IndexOutput that counts the bytes written through it
+misc/store/ByteWritesTrackingDirectoryWrapper	todo:M14	M14.d: a FilterDirectory tracking the write amplification factor
+misc/store/DirectIODirectory	todo:M14	M14.d: an FSDirectory using direct I/O to bypass the OS cache when merging
+misc/store/HardlinkCopyDirectoryWrapper	todo:M14	M14.d: copyFrom optionally hard-links a file instead of copying its bytes
+misc/store/RAFDirectory	todo:M14	M14.d: an FSDirectory over java.io.RandomAccessFile, with poor concurrency
+misc/util/MemoryTracker	todo:M14	M14.b: the interface tracking dynamic allocations of transient objects
+misc/util/fst/ListOfOutputs	todo:M14	M14.b: an Outputs wrapper encoding one or more of another Outputs' values, in order
+misc/util/fst/UpToTwoPositiveIntOutputs	todo:M14	M14.b: FST outputs of one or two non-negative longs (a single long, else a pair)

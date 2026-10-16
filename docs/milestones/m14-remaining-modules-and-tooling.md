@@ -79,7 +79,7 @@ or ledger row in the same commit. Order is by dependency and size.
 | Sub | Scope | Size (Java lines) | Lives in | Status |
 |---|---|---|---|---|
 | M14.a | `classification` (naive Bayes, kNN, fuzzy kNN, perceptron) | 1,961 | `lucene-search::classification` | ported; `cls_bm25nb` and `cls_perceptron_train` below parity (see the ledger) |
-| M14.b | `misc` utilities: `TermStats`, `GetTermInfo`, `HighFreqTerms`, `CollectorMemoryTracker`, `SweetSpotSimilarity`, `MemoryTracker`, `document/LazyDocument`, `util/fst/*` | ~1,100 | `lucene-search::misc` | planned |
+| M14.b | `misc` utilities: `TermStats`, `GetTermInfo`, `HighFreqTerms`, `CollectorMemoryTracker`, `SweetSpotSimilarity`, `MemoryTracker`, `document/LazyDocument`, `util/fst/*` | ~1,100 | `lucene-search::misc` | in progress: `HighFreqTerms` and `TermStats` ported and equal to Lucene (`misc_fixtures.rs`); the rest of M14.b (`CollectorMemoryTracker`, `SweetSpotSimilarity`, `MemoryTracker`, `LazyDocument`, `ListOfOutputs`, `UpToTwoPositiveIntOutputs`) stays `todo:M14` in `docs/inventory/lucene-misc.tsv` |
 | M14.c | `misc` index tools: `IndexSplitter`, `MultiPassIndexSplitter`, `PKIndexSplitter`, `IndexRearranger`, `IndexMergeTool`, `BinaryDocValueSelector`, `BPIndexReorderer`, `BPReorderingMergePolicy` | ~3,000 | `lucene-search::misc` | planned |
 | M14.d | `misc` search and store: `DiversifiedTopDocsCollector`(+manager), `DocValuesStats`(+collectors), `HumanReadableQuery`, memory-accounting bitset collectors, `DirectIODirectory`, `RAFDirectory`, `HardlinkCopyDirectoryWrapper`, byte-tracking wrappers | ~2,400 | `lucene-search::misc`, `lucene-store` for directories | planned |
 | M14.e | `replicator` (index and taxonomy replication) | 1,526 | `lucene-search::replicator` | planned |
