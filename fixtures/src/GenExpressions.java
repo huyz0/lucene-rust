@@ -47,7 +47,8 @@ import org.apache.lucene.store.FSDirectory;
 /**
  * M14 T14.2 ({@code expressions}): what {@code JavascriptCompiler} makes of every expression of
  * {@code fixtures/corpus/expressions.txt} (the expressions of Lucene's own expression tests) and of
- * 4000 random ones (a fixed seed), compiled with the default functions ({@code D}) and with two
+ * 4000 random ones, 1500 random token soups and 65 long runs of one precedence level's operators
+ * (a fixed seed), compiled with the default functions ({@code D}) and with two
  * custom ones added ({@code C}); and what {@code VariableContext.parse} makes of every variable.
  *
  * <p>{@code expressions.tsv}: {@code E}, the function set, the expression, then {@code OK}, the
@@ -146,6 +147,25 @@ public class GenExpressions {
     }
   }
 
+  /** The binary operators by precedence level, for chains of one level. */
+  static final String[][] LEVELS = {
+    {"*", "/", "%"}, {"+", "-"}, {"<<", ">>", ">>>"}, {"<", "<=", ">", ">="}, {"==", "!="},
+    {"&"}, {"^"}, {"|"}, {"&&"}, {"||"}
+  };
+
+  /**
+   * A flat run of {@code n} operators of one precedence level over operands at most {@code depth}
+   * deep (at depth 0, literals and variables only: no call that might fail its arity).
+   */
+  static String randomChain(Random r, String[] level, int n, int depth) {
+    StringBuilder b = new StringBuilder(randomExpr(r, r.nextInt(depth + 1)));
+    for (int i = 0; i < n; i++) {
+      b.append(' ').append(level[r.nextInt(level.length)]).append(' ');
+      b.append(randomExpr(r, r.nextInt(depth + 1)));
+    }
+    return b.toString();
+  }
+
   static final String[] SOUP = {
     "(", ")", ",", "!", "~", "*", "/", "%", "+", "-", "<<", ">>", ">>>", "<", "<=", ">", ">=",
     "==", "!=", "&", "^", "|", "&&", "||", "?", ":", " ", "a", "b.c", "1", "0x", "08", "1e", "@",
@@ -225,6 +245,13 @@ public class GenExpressions {
     Random r = new Random(0x5eed1234L);
     for (int i = 0; i < 4000; i++) inputs.add(randomExpr(r, 1 + r.nextInt(5)));
     for (int i = 0; i < 1500; i++) inputs.add(randomSoup(r));
+    // chains longer than the Rust port's nesting bound, which it folds flat
+    for (int i = 0; i < 60; i++) {
+      inputs.add(randomChain(r, LEVELS[i % LEVELS.length], 17 + r.nextInt(100), 1));
+    }
+    for (String[] level : new String[][] {{"+", "-"}, {"|"}, {"&&"}, {"*", "/"}, {"<", ">="}}) {
+      inputs.add(randomChain(r, level, 400, 0));
+    }
 
     StringBuilder rows = new StringBuilder();
     Set<String> vars = new LinkedHashSet<>();

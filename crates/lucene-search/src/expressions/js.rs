@@ -616,11 +616,21 @@ const COND_PREC: u8 = 2;
 /// At 256 the deepest tree compiles and evaluates in under 256 KiB of stack
 /// in an optimised build, a quarter of a JVM thread's default 1 MiB (the
 /// FFI's calls run on JVM threads); `nesting_is_bounded` runs it there.
+/// A run of a left-associative operator (`a + b + c ...`) longer than
+/// [`CHAIN`] counts one level whatever its length, so a flat sum of
+/// thousands of terms compiles as in Java.
 pub const MAX_DEPTH: u32 = 256;
+
+/// The longest run of operators of one precedence level kept as nested
+/// binary nodes; a longer one is a chain, evaluated by a loop.
+const CHAIN: usize = 16;
 
 #[derive(Debug, Clone)]
 enum Ast {
     Paren(Box<Ast>),
+    /// More than [`CHAIN`] left-associative operators of one level: the
+    /// first operand, then each operator with its right operand.
+    Chain(Box<Ast>, Vec<(Bin, Ast)>),
     Number(Tok, String),
     External {
         name: String,
@@ -727,17 +737,26 @@ impl Parser {
 
     fn expression_inner(&mut self, min_prec: u8) -> Result<(Ast, u32), ExprError> {
         let (mut lhs, mut depth) = self.prefix()?;
+        // the operators of one precedence level that follow `lhs`, each with
+        // its right operand and that operand's depth
+        let mut run: Vec<(Bin, Ast, u32)> = Vec::new();
+        let mut run_prec = 0;
         loop {
             let kind = self.peek()?.kind;
             if let Some((op, prec)) = binary(kind) {
-                if prec < min_prec {
-                    return Ok((lhs, depth));
+                if prec >= min_prec {
+                    if !run.is_empty() && prec != run_prec {
+                        (lhs, depth) = self.chain(lhs, depth, std::mem::take(&mut run))?;
+                    }
+                    self.next();
+                    let (rhs, d) = self.expression(prec + 1)?;
+                    run.push((op, rhs, d));
+                    run_prec = prec;
+                    continue;
                 }
-                self.next();
-                let (rhs, d) = self.expression(prec + 1)?;
-                depth = self.deepen(depth.max(d) + 1)?;
-                lhs = Ast::Binary(op, Box::new(lhs), Box::new(rhs));
-            } else if kind == Tok::Cond && COND_PREC >= min_prec {
+            }
+            (lhs, depth) = self.chain(lhs, depth, std::mem::take(&mut run))?;
+            if kind == Tok::Cond && COND_PREC >= min_prec {
                 self.next();
                 let (then, d1) = self.expression(0)?;
                 self.expect(Tok::Colon, "':'")?;
@@ -748,6 +767,29 @@ impl Parser {
                 return Ok((lhs, depth));
             }
         }
+    }
+
+    /// `lhs` followed by a run of left-associative operators of one
+    /// precedence level. A short run is the nested binary nodes Java's parse
+    /// tree has; a longer one is a single [`Ast::Chain`], one level deep
+    /// however many operands it has, evaluated by a loop.
+    fn chain(
+        &self,
+        lhs: Ast,
+        depth: u32,
+        run: Vec<(Bin, Ast, u32)>,
+    ) -> Result<(Ast, u32), ExprError> {
+        if run.len() > CHAIN {
+            let deepest = run.iter().fold(depth, |m, (_, _, d)| m.max(*d));
+            let steps = run.into_iter().map(|(op, a, _)| (op, a)).collect();
+            return Ok((Ast::Chain(Box::new(lhs), steps), self.deepen(deepest + 1)?));
+        }
+        let (mut lhs, mut depth) = (lhs, depth);
+        for (op, rhs, d) in run {
+            depth = self.deepen(depth.max(d) + 1)?;
+            lhs = Ast::Binary(op, Box::new(lhs), Box::new(rhs));
+        }
+        Ok((lhs, depth))
     }
 
     /// A prefix expression and its tree's depth. `expression` and `prefix`
@@ -830,6 +872,14 @@ fn ast_text(a: &Ast) -> String {
         Ast::External { text, .. } => text.clone(),
         Ast::Unary(op, e) => format!("{}{}", tok_text(*op), ast_text(e)),
         Ast::Binary(op, l, r) => format!("{}{}{}", ast_text(l), bin_text(*op), ast_text(r)),
+        Ast::Chain(first, steps) => {
+            let mut text = ast_text(first);
+            for (op, a) in steps {
+                text.push_str(bin_text(*op));
+                text.push_str(&ast_text(a));
+            }
+            text
+        }
         Ast::Conditional(c, a, b) => {
             format!("{}?{}:{}", ast_text(c), ast_text(a), ast_text(b))
         }
@@ -892,6 +942,138 @@ enum Node {
     And(Box<Node>, Box<Node>),
     Or(Box<Node>, Box<Node>),
     Conditional(Box<Node>, Box<Node>, Box<Node>),
+    /// [`Ast::Chain`]: `((first op1 a1) op2 a2) ...`, each step typed as its
+    /// binary node would be.
+    Chain(Box<Node>, Vec<(Bin, Node)>),
+}
+
+/// What a chain's operators compute, and in which JVM type.
+#[derive(Clone, Copy, PartialEq)]
+enum ChainKind {
+    /// `double`
+    Arith,
+    /// `long`, the counts `int`
+    Shift,
+    /// `double` operands, an `int` result
+    Compare,
+    /// `long`
+    Bitwise,
+    /// `int`, short-circuiting
+    And,
+    Or,
+}
+
+fn chain_kind(steps: &[(Bin, Node)]) -> ChainKind {
+    match steps[0].0 {
+        Bin::Mul | Bin::Div | Bin::Rem | Bin::Add | Bin::Sub => ChainKind::Arith,
+        Bin::Lsh | Bin::Rsh | Bin::Ush => ChainKind::Shift,
+        Bin::Lt | Bin::Lte | Bin::Gt | Bin::Gte | Bin::Eq | Bin::Ne => ChainKind::Compare,
+        Bin::BwAnd | Bin::BwXor | Bin::BwOr => ChainKind::Bitwise,
+        Bin::And => ChainKind::And,
+        Bin::Or => ChainKind::Or,
+    }
+}
+
+/// An arithmetic chain, as a `double`.
+fn arith_chain(first: &Node, steps: &[(Bin, Node)]) -> Compiled<f64> {
+    let first = to_double(first);
+    let steps: Vec<(Bin, Compiled<f64>)> =
+        steps.iter().map(|(op, a)| (*op, to_double(a))).collect();
+    compiled(move |r| {
+        let mut v = first(r);
+        for (op, a) in &steps {
+            let b = a(r);
+            v = match op {
+                Bin::Mul => v * b,
+                Bin::Div => v / b,
+                Bin::Rem => v % b,
+                Bin::Add => v + b,
+                _ => v - b,
+            };
+        }
+        v
+    })
+}
+
+/// A shift or bitwise chain, as a `long`.
+fn long_chain(first: &Node, steps: &[(Bin, Node)]) -> Compiled<i64> {
+    let first = to_long(first);
+    if chain_kind(steps) == ChainKind::Shift {
+        let steps: Vec<(Bin, Compiled<i32>)> =
+            steps.iter().map(|(op, a)| (*op, to_int(a))).collect();
+        return compiled(move |r| {
+            let mut v = first(r);
+            for (op, n) in &steps {
+                // Java masks a long shift's count to its low six bits
+                let n = (n(r) & 63) as u32;
+                v = match op {
+                    Bin::Lsh => v.wrapping_shl(n),
+                    Bin::Rsh => v >> n,
+                    _ => ((v as u64) >> n) as i64,
+                };
+            }
+            v
+        });
+    }
+    let steps: Vec<(Bin, Compiled<i64>)> = steps.iter().map(|(op, a)| (*op, to_long(a))).collect();
+    compiled(move |r| {
+        let mut v = first(r);
+        for (op, a) in &steps {
+            let b = a(r);
+            v = match op {
+                Bin::BwAnd => v & b,
+                Bin::BwXor => v ^ b,
+                _ => v | b,
+            };
+        }
+        v
+    })
+}
+
+/// A comparison or logical chain, as an `int`.
+fn int_chain(first: &Node, steps: &[(Bin, Node)]) -> Compiled<i32> {
+    match chain_kind(steps) {
+        ChainKind::Compare => {
+            let first = to_double(first);
+            let steps: Vec<(Bin, Compiled<f64>)> =
+                steps.iter().map(|(op, a)| (*op, to_double(a))).collect();
+            compiled(move |r| {
+                // each comparison's `int` the next one's left `double`
+                let mut v = first(r);
+                let mut result = 0;
+                for (op, a) in &steps {
+                    let b = a(r);
+                    result = i32::from(match op {
+                        Bin::Lt => v < b,
+                        Bin::Lte => v <= b,
+                        Bin::Gt => v > b,
+                        Bin::Gte => v >= b,
+                        Bin::Eq => v == b,
+                        _ => v != b,
+                    });
+                    v = f64::from(result);
+                }
+                result
+            })
+        }
+        kind => {
+            // `((a && b) && c) ...` is `0` at its first `0` operand, the rest
+            // unevaluated; `||` is `1` at its first non-zero one
+            let stop_at_zero = kind == ChainKind::And;
+            let operands: Vec<Compiled<i32>> = std::iter::once(first)
+                .chain(steps.iter().map(|(_, a)| a))
+                .map(to_int)
+                .collect();
+            compiled(move |r| {
+                for a in &operands {
+                    if (a(r) == 0) == stop_at_zero {
+                        return i32::from(!stop_at_zero);
+                    }
+                }
+                i32::from(stop_at_zero)
+            })
+        }
+    }
 }
 
 // The tree evaluated: `Node` compiled once more, into closures, each
@@ -1017,6 +1199,17 @@ fn to_double(node: &Node) -> Compiled<f64> {
             compiled(move |r| if c(r) != 0 { a(r) } else { e(r) })
         }
         Node::Plus(e) => to_double(e),
+        Node::Chain(first, steps) => match chain_kind(steps) {
+            ChainKind::Arith => arith_chain(first, steps),
+            ChainKind::Shift | ChainKind::Bitwise => {
+                let f = long_chain(first, steps);
+                compiled(move |r| f(r) as f64)
+            }
+            _ => {
+                let f = int_chain(first, steps);
+                compiled(move |r| f64::from(f(r)))
+            }
+        },
         // the leaves, above
         Node::Integer(_) | Node::Decimal(_) | Node::Variable(_) => unreachable!("a leaf"),
     }
@@ -1125,6 +1318,17 @@ fn to_long(node: &Node) -> Compiled<i64> {
             let (c, a, e) = (to_int(c), to_long(a), to_long(e));
             compiled(move |r| if c(r) != 0 { a(r) } else { e(r) })
         }
+        Node::Chain(first, steps) => match chain_kind(steps) {
+            ChainKind::Arith => {
+                let f = arith_chain(first, steps);
+                compiled(move |r| f(r) as i64)
+            }
+            ChainKind::Shift | ChainKind::Bitwise => long_chain(first, steps),
+            _ => {
+                let f = int_chain(first, steps);
+                compiled(move |r| i64::from(f(r)))
+            }
+        },
     }
 }
 
@@ -1166,6 +1370,17 @@ fn to_int(node: &Node) -> Compiled<i32> {
             let (c, a, e) = (to_int(c), to_int(a), to_int(e));
             compiled(move |r| if c(r) != 0 { a(r) } else { e(r) })
         }
+        Node::Chain(first, steps) => match chain_kind(steps) {
+            ChainKind::Arith => {
+                let f = arith_chain(first, steps);
+                compiled(move |r| f(r) as i32)
+            }
+            ChainKind::Shift | ChainKind::Bitwise => {
+                let f = long_chain(first, steps);
+                compiled(move |r| f(r) as i32)
+            }
+            _ => int_chain(first, steps),
+        },
     }
 }
 
@@ -1302,6 +1517,13 @@ impl Lower<'_> {
                     Bin::Or => Node::Or(l, r),
                 }
             }
+            Ast::Chain(first, steps) => Node::Chain(
+                Box::new(self.node(first)?),
+                steps
+                    .iter()
+                    .map(|(op, a)| Ok((*op, self.node(a)?)))
+                    .collect::<Result<Vec<_>, ExprError>>()?,
+            ),
             Ast::Conditional(c, a, b) => Node::Conditional(
                 Box::new(self.node(c)?),
                 Box::new(self.node(a)?),
@@ -1581,13 +1803,14 @@ mod tests {
             [
                 format!("{}1{}", "(".repeat(n), ")".repeat(n)),
                 format!("{}1", "-".repeat(n)),
-                format!("1{}", "+1".repeat(n)),
+                format!("{}1{}", "1-(".repeat(n), ")".repeat(n)),
                 format!("{}1{}", "abs(".repeat(n), ")".repeat(n)),
                 format!("{}1{}", "1?".repeat(n), ":0".repeat(n)),
             ]
         };
-        // a parenthesis or a conditional's branch opens two parser frames
-        for text in deep(MAX_DEPTH as usize / 2 - 1) {
+        // a parenthesis or a conditional's branch opens two parser frames, a
+        // parenthesised right operand three
+        for text in deep(MAX_DEPTH as usize / 3 - 1) {
             run(&text, &[]);
         }
         for text in deep(MAX_DEPTH as usize + 1)
@@ -1623,6 +1846,57 @@ mod tests {
             .unwrap()
             .join()
             .unwrap();
+    }
+
+    #[test]
+    fn long_chains_are_flat_and_typed_as_nested_operators() {
+        // each level's run, past `CHAIN`, equals the left-nested parenthesised
+        // form (binary nodes) under several assignments
+        let vars = ["a", "b", "c"];
+        let values = [[3.0, -2.5, 7.0], [0.0, 1.0, -1.0], [f64::NAN, 1e300, 0.5]];
+        for ops in [
+            &["*", "/", "%"][..],
+            &["+", "-"],
+            &["<<", ">>", ">>>"],
+            &["<", "<=", ">", ">="],
+            &["==", "!="],
+            &["&"],
+            &["^"],
+            &["|"],
+            &["&&"],
+            &["||"],
+        ] {
+            for n in [CHAIN, CHAIN + 1, 40] {
+                let mut flat = String::from("a");
+                let mut nested = String::from("a");
+                for i in 0..n {
+                    let (op, v) = (ops[i % ops.len()], vars[(i + 1) % vars.len()]);
+                    flat = format!("{flat} {op} {v}");
+                    nested = format!("({nested} {op} {v})");
+                }
+                for vals in values {
+                    for wrap in ["{}", "-({})", "!({})", "~({})", "({}) ? 2 : 3"] {
+                        let (f, g) = (wrap.replace("{}", &flat), wrap.replace("{}", &nested));
+                        assert_eq!(
+                            run(&f, &vals).to_bits(),
+                            run(&g, &vals).to_bits(),
+                            "{f} at {vals:?}"
+                        );
+                    }
+                }
+            }
+        }
+        // a chain is one level, however long, so only real nesting is bounded
+        let sum = format!("a{}", " + a".repeat(100_000));
+        assert_eq!(run(&sum, &[1.0]), 100_001.0);
+        let nested = format!("{}{}{}", "(".repeat(100), sum, ")".repeat(100));
+        assert_eq!(run(&nested, &[0.5]), 50_000.5);
+        // `&&` and `||` chains stop at their first deciding operand
+        let mut counting: Vec<BoxDoubleValues<'_>> = vec![Box::new(Failing)];
+        let and = compile(&format!("0{} && x", " && 1".repeat(CHAIN))).unwrap();
+        assert_eq!(and.evaluate(&mut counting).unwrap(), 0.0);
+        let or = compile(&format!("1{} || x", " || 0".repeat(CHAIN))).unwrap();
+        assert_eq!(or.evaluate(&mut counting).unwrap(), 1.0);
     }
 
     #[test]
