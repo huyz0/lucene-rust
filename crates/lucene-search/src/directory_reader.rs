@@ -1127,6 +1127,18 @@ impl SegmentReader {
         Ok(None)
     }
 
+    /// `CompletionTerms.getType()` for `field`: the type byte its suggestions
+    /// were indexed with (`SuggestField.TYPE`, `ContextSuggestField.TYPE`),
+    /// or `None` when the field is not a completion field of this segment.
+    pub fn completion_type(&self, field: &str) -> Option<u8> {
+        let info = self.field_infos.field_by_name(field)?;
+        self.completion
+            .iter()
+            .flat_map(|c| c.fields.iter())
+            .find(|(number, _)| *number == info.number)
+            .map(|(_, reader)| reader.type_byte)
+    }
+
     /// The segment's parsed `.dvm`, or `None` if it has no doc-values files
     /// at all. Each entry (`NumericEntry`/`BinaryEntry`/`SortedEntry`/etc.)
     /// already self-describes dense vs. sparse (`IndexedDISI`-backed); feed

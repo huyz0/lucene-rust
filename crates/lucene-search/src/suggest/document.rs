@@ -117,7 +117,7 @@ impl SuggestQueue {
         } else if self.size > 0
             && self.heap[1]
                 .as_ref()
-                .is_some_and(|top| !less_than(&element, top))
+                .is_some_and(|top| less_than(top, &element))
         {
             self.heap[1] = Some(element);
             self.down_heap(1);
@@ -280,11 +280,47 @@ fn surface_form(output: &[u8]) -> String {
     String::from_utf8_lossy(output).into_owned()
 }
 
+/// What `NRTSuggester.lookup` asks of a `CompletionWeight`: for each matched
+/// path prefix `setNextMatch`, then the `boost()` and `context()` it set.
+pub trait MatchWeight {
+    /// `setNextMatch(pathPrefix)`.
+    fn set_next_match(&mut self, path_prefix: &[i32]);
+    /// `boost()`.
+    fn boost(&self) -> f32;
+    /// `context()`.
+    fn context(&self) -> Option<String>;
+}
+
+/// A weight with boost 0 and no context: a query without contexts.
+struct NoBoost;
+
+impl MatchWeight for NoBoost {
+    fn set_next_match(&mut self, _: &[i32]) {}
+    fn boost(&self) -> f32 {
+        0.0
+    }
+    fn context(&self) -> Option<String> {
+        None
+    }
+}
+
 /// `NRTSuggester.lookup(scorer, acceptDocs, collector)` for a query without
 /// context (boost 0, no context).
 pub fn lookup(
     suggester: &NrtSuggester,
     automaton: &Automaton,
+    view: &SegmentView<'_>,
+    collector: &mut TopSuggestDocsCollector,
+) -> Result<()> {
+    lookup_weighted(suggester, automaton, &mut NoBoost, view, collector)
+}
+
+/// `NRTSuggester.lookup(scorer, acceptDocs, collector)`: `weight` sets the
+/// boost and context of each matched path prefix.
+pub fn lookup_weighted(
+    suggester: &NrtSuggester,
+    automaton: &Automaton,
+    weight: &mut dyn MatchWeight,
     view: &SegmentView<'_>,
     collector: &mut TopSuggestDocsCollector,
 ) -> Result<()> {
@@ -378,6 +414,7 @@ pub fn lookup(
     }));
 
     for path in prefix_paths {
+        weight.set_next_match(&path.input);
         let payload = if skip {
             path.output
                 .second
@@ -393,8 +430,8 @@ pub fn lookup(
                 path.output.clone(),
                 false,
                 path.input.clone(),
-                0.0,
-                None,
+                weight.boost(),
+                weight.context(),
                 payload,
             )
             .map_err(|e| Error::Corrupted(e.to_string()))?;
@@ -525,6 +562,21 @@ mod tests {
         let accept = |_: i32| true;
         let v = view(4, 4, &accept);
         assert_eq!(run(&s, "a", 1, false, &v), vec![("a1".into(), 0, 9)]);
+    }
+
+    /// `PriorityQueue.insertWithOverflow` replaces the top only with a
+    /// strictly greater element: a hit equal to the last one that fit (the
+    /// same document and key under another context) overflows and ends the
+    /// segment, so the first of equals stays.
+    #[test]
+    fn an_equal_hit_does_not_replace_the_last_that_fit() {
+        let mut c = TopSuggestDocsCollector::new(1, false).unwrap();
+        c.set_next_reader(0);
+        c.collect(7, "x", Some("first"), 2.0);
+        assert!(!c.is_terminated());
+        c.collect(7, "x", Some("second"), 2.0);
+        assert!(c.is_terminated());
+        assert_eq!(c.get()[0].context.as_deref(), Some("first"));
     }
 
     #[test]

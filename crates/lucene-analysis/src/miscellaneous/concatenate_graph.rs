@@ -79,6 +79,15 @@ impl<I: TokenStream> ConcatenateGraphFilter<I> {
 
     /// `toAutomaton()`: the determinized graph, separators replaced.
     pub fn to_automaton(&mut self) -> Result<Automaton, AnalysisError> {
+        self.to_automaton_unicode(false)
+    }
+
+    /// `toAutomaton(unicodeAware)`: with `unicode_aware` the arcs are code
+    /// points, not UTF-8 bytes.
+    pub fn to_automaton_unicode(
+        &mut self,
+        unicode_aware: bool,
+    ) -> Result<Automaton, AnalysisError> {
         let mut tsta = TokenStreamToAutomaton::new();
         if let Some(sep) = self.token_separator {
             // Java: EscapingTokenStreamToAutomaton doubles a separator byte;
@@ -96,7 +105,7 @@ impl<I: TokenStream> ConcatenateGraphFilter<I> {
             });
         }
         tsta.set_preserve_position_increments(self.preserve_position_increments);
-        tsta.set_unicode_arcs(false);
+        tsta.set_unicode_arcs(unicode_aware);
         let automaton = tsta.to_automaton(&mut self.input)?;
         let automaton = replace_sep(&automaton, self.token_separator)?;
         operations::determinize(&automaton, self.max_graph_expansions).map_err(illegal)

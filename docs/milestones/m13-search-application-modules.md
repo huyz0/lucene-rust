@@ -121,10 +121,11 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
     `SegmentReader::suggester`) and `SuggestField`; the flushed and force-merged `.lkp`/`.cmp` equal
     Lucene's, and `VerifyCompletion` has Lucene answer every prefix and regex suggestion over the
     Rust-written index as over its own. It moved `forceMerge(1)` to Lucene's largest-first merge order.
-    Ported, not yet benchmarked: a `bench-micro.sh` pair (completion lookup) is owed. Owed: **D3**, the
-    query side: `CompletionQuery`/`PrefixCompletionQuery`/`RegexCompletionQuery`/`FuzzyCompletionQuery`,
-    `CompletionWeight`/`CompletionScorer`, `SuggestIndexSearcher`, `CompletionAnalyzer`, and
-    `ContextSuggestField`/`ContextQuery`.
+    **D3 done**: `PrefixCompletionQuery`/`RegexCompletionQuery`/`FuzzyCompletionQuery`/`ContextQuery`,
+    `CompletionWeight`, `SuggestIndexSearcher`, `CompletionAnalyzer`, `ContextSuggestField`, `BitsProducer`:
+    2960 queries equal Lucene's key, doc, score bits and context (`GenCompletionQuery.java`). It fixed
+    `SuggestQueue::insert_with_overflow` to Java's strict `lessThan`.
+    Ported, not yet benchmarked: a `bench-micro.sh` pair (completion lookup) is owed.
   - **T13.3e** — `spell`.
 - **T13.4** — Taxonomy facets and drill-sideways.
 - **T13.5** — `MemoryIndex` and `monitor`. `MemoryIndex` is ported
