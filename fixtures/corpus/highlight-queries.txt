@@ -1,0 +1,31 @@
+quick
+fox
+quick fox
+"quick brown"
+"quick fox"~2
++quick -dog
+quick^3 fox
+(quick OR dog) AND fox
+qui*
+f?x
+fox~1
+/qu.*k/
+title:fox
+"brown fox"~1
+lazy dog
+dog* OR jum*
+quick OR "lazy dog"
+fox^0.5
+zzz
+-dog
+*:*
+"the quick"
+"quick brown fox"
+("quick brown" OR "lazy dog")
+body:quick title:fox
+span: (term quick)
+span: (near 1 true (term quick) (term fox))
+span: (near 3 false (term fox) (term quick))
+span: (or (term lazy) (near 0 true (term brown) (term fox)))
+span: (first 4 (term quick))
+span: (not (near 2 false (term quick) (term fox)) (term brown))
