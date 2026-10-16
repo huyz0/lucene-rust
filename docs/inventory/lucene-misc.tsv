@@ -7,7 +7,7 @@ misc/HighFreqTerms	ported	crates/lucene-search/src/misc/high_freq.rs::get_high_f
 misc/IndexMergeTool	todo:M14	M14.i: the CLI merging the indices named on its command line into the first
 misc/SweetSpotSimilarity	ported	crates/lucene-search/src/misc/sweet_spot.rs::SweetSpotSimilarity
 misc/TermStats	ported	crates/lucene-search/src/misc/high_freq.rs::TermStats
-misc/document/LazyDocument	todo:M14	M14.b: defers loading a stored field's value until it is asked for
+misc/document/LazyDocument	ported	crates/lucene-search/src/misc/lazy_document.rs::LazyDocument
 misc/index/BPIndexReorderer	todo:M14	M14.c: the bipartite partitioning doc-id reorderer
 misc/index/BPReorderingMergePolicy	todo:M14	M14.c: a merge policy that reorders merged segments with BPIndexReorderer, skipping it without RAM
 misc/index/BinaryDocValueSelector	todo:M14	M14.c: a document selector keyed by a BinaryDocValues field, for IndexRearranger
