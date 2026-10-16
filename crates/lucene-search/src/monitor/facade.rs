@@ -12,7 +12,10 @@ use lucene_analysis::Analyzer;
 use crate::explain::Explanation;
 use crate::matches;
 use crate::monitor::batch::{DocFields, DocumentBatch};
-use crate::monitor::index::{as_search_query, batch_terms, AcceptAll, MonitorQuery, QueryIndex};
+use crate::monitor::config::{MonitorConfiguration, MonitorUpdateListener, QueryTimeListener};
+use crate::monitor::index::{
+    as_search_query, batch_terms, AcceptAll, MonitorQuery, QueryCacheStats, QueryIndex,
+};
 use crate::monitor::presearcher::TermFilteredPresearcher;
 use crate::similarities::Similarity;
 use crate::{Error, Result};
@@ -220,16 +223,48 @@ impl Monitor {
         self.index.register(queries).map_err(Error::IllegalArgument)
     }
 
+    /// `new Monitor(analyzer, presearcher, configuration)`: with an index path
+    /// the monitor persists its queries there and reloads those already
+    /// there.
+    pub fn with_configuration(
+        analyzer: Arc<Analyzer>,
+        presearcher: TermFilteredPresearcher,
+        filter_fields: Vec<String>,
+        config: &MonitorConfiguration,
+    ) -> Result<Self> {
+        let index =
+            QueryIndex::with_configuration(presearcher, config).map_err(Error::IllegalState)?;
+        Ok(Monitor {
+            analyzer,
+            index,
+            filter_fields,
+        })
+    }
+
+    /// `purgeCache()`.
+    pub fn purge_cache(&mut self) -> Result<()> {
+        self.index.purge_cache().map_err(Error::IllegalState)
+    }
+
+    /// `getQueryCacheStats()`.
+    pub fn query_cache_stats(&self) -> QueryCacheStats {
+        self.index.cache_stats()
+    }
+
+    /// `addQueryIndexUpdateListener(listener)`.
+    pub fn add_query_index_update_listener(&mut self, listener: Arc<dyn MonitorUpdateListener>) {
+        self.index.add_listener(listener);
+    }
+
     /// `deleteById(ids)`.
-    pub fn delete_by_id(&mut self, ids: &[&str]) {
-        for id in ids {
-            self.index.delete(id);
-        }
+    pub fn delete_by_id(&mut self, ids: &[&str]) -> Result<()> {
+        let ids: Vec<String> = ids.iter().map(|s| (*s).to_string()).collect();
+        self.index.delete(&ids).map_err(Error::IllegalState)
     }
 
     /// `clear()`.
-    pub fn clear(&mut self) {
-        self.index.clear();
+    pub fn clear(&mut self) -> Result<()> {
+        self.index.clear().map_err(Error::IllegalState)
     }
 
     /// `getQuery(id)`.
@@ -275,6 +310,24 @@ impl Monitor {
             .singleton())
     }
 
+    /// `match(docs, QueryTimeListener.timingMatcher(matcher, listener))`: the
+    /// same match, with each selected query's time told to `listener`.
+    pub fn match_docs_timed(
+        &self,
+        docs: &[DocFields<'_>],
+        matcher: &Matcher,
+        listener: &mut dyn QueryTimeListener,
+    ) -> Result<MultiMatchingQueries> {
+        let similarity = match matcher {
+            Matcher::Scoring(s) => s.clone(),
+            _ => None,
+        };
+        let batch = DocumentBatch::of(&self.analyzer, docs, similarity)?;
+        let terms = batch_terms(batch.terms(), &self.filter_fields);
+        let candidates = self.index.select(&terms, &AcceptAll);
+        self.run_candidates(&batch, matcher, &candidates, Some(listener))
+    }
+
     /// `match(docs, matcher)`: the presearcher selects the candidate entries
     /// for the batch, each candidate's query runs against it, and the matcher
     /// says what a match holds.
@@ -290,7 +343,7 @@ impl Monitor {
         let batch = DocumentBatch::of(&self.analyzer, docs, similarity)?;
         let terms = batch_terms(batch.terms(), &self.filter_fields);
         let candidates = self.index.select(&terms, &AcceptAll);
-        self.run_candidates(&batch, matcher, &candidates)
+        self.run_candidates(&batch, matcher, &candidates, None)
     }
 
     /// Runs each candidate's query against the batch, under `matcher`.
@@ -299,6 +352,7 @@ impl Monitor {
         batch: &DocumentBatch,
         matcher: &Matcher,
         candidates: &[&crate::monitor::index::QueryCacheEntry],
+        mut timer: Option<&mut dyn QueryTimeListener>,
     ) -> Result<MultiMatchingQueries> {
         let max_doc = batch.max_doc();
         let mut per_doc: Vec<BTreeMap<String, QueryMatch>> = vec![BTreeMap::new(); max_doc];
@@ -321,6 +375,7 @@ impl Monitor {
                         }
                     }
                 };
+                let started = std::time::Instant::now();
                 let outcome: Result<()> = (|| {
                     match matcher {
                         Matcher::Simple | Matcher::Scoring(_) => {
@@ -357,6 +412,11 @@ impl Monitor {
                     }
                     Ok(())
                 })();
+                // `QueryTimeListener.timingMatcher`: each query's time, failed or not
+                if let Some(t) = timer.as_deref_mut() {
+                    let nanos = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                    t.log_query_time(&entry.query_id, nanos);
+                }
                 if let Err(e) = outcome {
                     errors.insert(entry.query_id.clone(), e.to_string());
                 }
@@ -478,7 +538,7 @@ impl Monitor {
             .into_iter()
             .filter(|e| ids.contains(&e.query_id))
             .collect();
-        self.run_candidates(&batch, matcher, &candidates)
+        self.run_candidates(&batch, matcher, &candidates, None)
     }
 }
 
@@ -662,9 +722,9 @@ mod tests {
         assert_eq!((m.query_count(), m.disjunct_count()), (2, 2));
         assert_eq!(m.query_ids(), vec!["a".to_string(), "b".to_string()]);
         assert!(m.get_query("a").is_some());
-        m.delete_by_id(&["a"]);
+        m.delete_by_id(&["a"]).unwrap();
         assert_eq!(m.query_count(), 1);
-        m.clear();
+        m.clear().unwrap();
         assert_eq!(m.query_count(), 0);
         let m = monitor_with(&[("a", term("fox"))]);
         let sim: Arc<dyn Similarity> = Arc::new(crate::similarities::ClassicSimilarity::default());
@@ -750,5 +810,94 @@ mod partition_tests {
                 assert_eq!(parts.matches, whole.matches, "threads {threads}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod cache_and_timing_tests {
+    use super::*;
+    use crate::monitor::config::SlowLog;
+    use crate::query::{Clause, TermQuery};
+    use lucene_analysis::StandardAnalyzer;
+
+    fn mq(id: &str, text: &str) -> MonitorQuery {
+        MonitorQuery::new(
+            id,
+            Clause::Term(TermQuery::new("f", text.as_bytes().to_vec())),
+            Some(text.to_string()),
+            BTreeMap::new(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn the_cache_stats_count_pieces_and_a_purge_stamps_the_time() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct Purges(AtomicUsize);
+        impl MonitorUpdateListener for Purges {
+            fn on_purge(&self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let purges = Arc::new(Purges(AtomicUsize::new(0)));
+        let mut m = Monitor::new(Arc::new(Analyzer::new(StandardAnalyzer::new())));
+        m.add_query_index_update_listener(purges.clone());
+        m.register(vec![mq("a", "fox"), mq("b", "dog")]).unwrap();
+        let before = m.query_cache_stats();
+        assert_eq!((before.queries, before.cached_queries), (2, 2));
+        assert!(before.last_purged.is_none());
+        m.purge_cache().unwrap();
+        assert!(m.query_cache_stats().last_purged.is_some());
+        assert_eq!(purges.0.load(Ordering::SeqCst), 1);
+        assert_eq!(m.query_count(), 2);
+    }
+
+    #[test]
+    fn a_purge_of_a_persisted_index_reloads_it() {
+        let tmp = lucene_util::test_support::TempDir::new("monitor-purge");
+        let path: &std::path::Path = &tmp;
+        let ser =
+            crate::monitor::serializer::MonitorQuerySerializer::from_parser(Arc::new(|t: &str| {
+                Ok(Clause::Term(TermQuery::new("f", t.as_bytes().to_vec())))
+            }));
+        let config = MonitorConfiguration::default().set_directory(path, ser, false);
+        let analyzer = Arc::new(Analyzer::new(StandardAnalyzer::new()));
+        let mut m = Monitor::with_configuration(
+            Arc::clone(&analyzer),
+            TermFilteredPresearcher::default(),
+            Vec::new(),
+            &config,
+        )
+        .unwrap();
+        m.register(vec![mq("a", "fox"), mq("b", "dog")]).unwrap();
+        // a second monitor deletes a query behind the first one's back
+        let mut other = Monitor::with_configuration(
+            analyzer,
+            TermFilteredPresearcher::default(),
+            Vec::new(),
+            &config,
+        )
+        .unwrap();
+        other.delete_by_id(&["b"]).unwrap();
+        assert_eq!(m.query_count(), 2);
+        m.purge_cache().unwrap();
+        assert_eq!(m.query_ids(), vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn each_selected_query_is_timed() {
+        let mut m = Monitor::new(Arc::new(Analyzer::new(StandardAnalyzer::new())));
+        m.register(vec![mq("a", "fox"), mq("b", "dog"), mq("c", "cat")])
+            .unwrap();
+        let mut log = SlowLog::new();
+        let docs: [DocFields<'_>; 1] = [&[("f", "fox dog")]];
+        let result = m
+            .match_docs_timed(&docs, &Matcher::Simple, &mut log)
+            .unwrap();
+        let timed: Vec<&str> = log.iter().map(|e| e.query_id.as_str()).collect();
+        assert_eq!(result.queries_run, 2);
+        assert_eq!(timed.len(), 2);
+        assert!(timed.contains(&"a") && timed.contains(&"b"));
+        assert!(log.to_string().contains("a ["));
     }
 }

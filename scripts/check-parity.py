@@ -65,7 +65,11 @@ PARITY_DIR = os.path.join(ROOT, "docs", "parity")
 # file; do not raise them to fit.
 MAX_ROW = 2_000
 MAX_FILE = 80_000
-MAX_TOTAL = 400_000
+# The total grew with the port: 400 KB held until M13, which adds six modules'
+# worth of rows (highlighter, suggest, facet, monitor, memory, queryparser) and
+# M14 more. The per-row and per-file budgets are what keep a row short; the
+# total only says how many rows there may be.
+MAX_TOTAL = 450_000
 
 # A line of the index's area table: its link and its row count.
 AREA_ROW = re.compile(r"^\|\s*\[[^\]]*\]\(([^)]+\.md)\)\s*\|.*\|\s*(\d+)\s*\|\s*$")
