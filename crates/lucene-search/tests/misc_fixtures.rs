@@ -71,3 +71,92 @@ fn a_named_field_that_does_not_exist_is_refused() {
         "{err:?}"
     );
 }
+
+/// `GenMiscSweetSpot`: `misc/sweet_spot.tsv`'s `F` (a function's value), `T`
+/// (`toString`) and `S` (a hit's score) rows, for the default and a tuned
+/// `SweetSpotSimilarity`.
+mod sweet_spot {
+    use super::data;
+    use lucene_search::directory_reader::DirectoryReader;
+    use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
+    use lucene_search::misc::SweetSpotSimilarity;
+    use lucene_search::query::{BooleanQuery, Clause, TermQuery};
+    use lucene_search::similarities::TfIdfSimilarity;
+    use lucene_store::FsDirectory;
+
+    fn make(config: &str) -> SweetSpotSimilarity {
+        let mut s = SweetSpotSimilarity::default();
+        if config == "tuned" {
+            s.set_baseline_tf_factors(0.5, 2.0);
+            s.set_hyperbolic_tf_factors(0.5, 3.0, 1.7, 6.0);
+            s.set_length_norm_factors(3, 9, 0.7);
+        }
+        s
+    }
+
+    fn query(q: &str) -> BooleanQuery {
+        let mut b = BooleanQuery::new();
+        for part in q.split(' ') {
+            let (f, t) = part.split_once(':').unwrap_or(("body", part));
+            b.should.push(Clause::Term(TermQuery::new(f, t)));
+        }
+        b
+    }
+
+    #[test]
+    fn functions_strings_and_scores_match_lucene() {
+        let tsv = std::fs::read_to_string(data().join("sweet_spot.tsv")).unwrap();
+        let reader = DirectoryReader::open(&FsDirectory::open(data().join("high_freq"))).unwrap();
+        let opened = reader.open_segments().unwrap();
+        let segments = opened.as_open_segments();
+        let owned = reader.field_norms_by_field(&["body".to_string(), "title".to_string()]);
+        let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
+        let (mut functions, mut hits, mut strings) = (0, 0, 0);
+        // The hits of each (config, query) in rank order, as Java listed them.
+        let mut ranked: std::collections::BTreeMap<(String, String), Vec<(i32, u32)>> =
+            Default::default();
+        for line in tsv.lines() {
+            let c: Vec<&str> = line.split('\t').collect();
+            let s = make(c[1]);
+            match c[0] {
+                "F" => {
+                    let bits = |v: f32| v.to_bits().to_string();
+                    let got = match c[2] {
+                        "baselineTf" => bits(s.baseline_tf(c[3].parse().unwrap())),
+                        "hyperbolicTf" => bits(s.hyperbolic_tf(c[3].parse().unwrap())),
+                        "tf" => bits(TfIdfSimilarity::tf(&s, c[3].parse().unwrap())),
+                        "lengthNorm" => bits(s.length_norm(c[3].parse().unwrap())),
+                        other => panic!("unknown function {other}"),
+                    };
+                    assert_eq!(got, c[4], "{line}");
+                    functions += 1;
+                }
+                "T" => {
+                    assert_eq!(s.to_string(), c[2], "{line}");
+                    strings += 1;
+                }
+                "S" => {
+                    ranked
+                        .entry((c[1].to_string(), c[2].to_string()))
+                        .or_default()
+                        .push((c[4].parse().unwrap(), c[5].parse::<i32>().unwrap() as u32));
+                    hits += 1;
+                }
+                other => panic!("unknown row {other}"),
+            }
+        }
+        assert!(functions == 84 && strings == 2 && hits == 72);
+        for ((config, q), expected) in &ranked {
+            let sim = make(config);
+            let mut searcher = IndexSearcher::new(&segments, &norms).unwrap();
+            searcher.set_similarity(&sim);
+            let td = searcher.search(&query(q), 10).unwrap();
+            let got: Vec<(i32, u32)> = td
+                .score_docs
+                .iter()
+                .map(|d| (d.doc, d.score.to_bits()))
+                .collect();
+            assert_eq!(&got, expected, "{config} {q}");
+        }
+    }
+}

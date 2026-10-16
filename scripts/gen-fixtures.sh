@@ -249,6 +249,8 @@ generator_jvm_opts() {
     # BytesRef.hashCode (StringHelper.GOOD_FAST_HASH_SEED, else the clock), so
     # the HashMap order of equal-scored classes and of NearestFuzzyQuery's
     # clauses is the same on every run.
+    # SweetSpotSimilarity's hyperbolic tf is Math.pow, ClassicSimilarity's idf Math.log.
+    GenMiscSweetSpot) echo "-XX:+UnlockDiagnosticVMOptions -XX:DisableIntrinsic=_dexp,_dlog,_dlog10,_dpow" ;;
     GenClassification) echo "-Dtests.seed=C1A55 -XX:+UnlockDiagnosticVMOptions -XX:DisableIntrinsic=_dexp,_dlog,_dlog10,_dpow" ;;
   esac
 }

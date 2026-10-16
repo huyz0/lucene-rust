@@ -1,11 +1,11 @@
 # Lucene 10.5.0 lucene-misc: every top-level class of the jar, and what became of it.
 # Checked by scripts/check-port-inventory.py --module misc (see its docstring for the statuses).
 # class	status	detail
-misc/CollectorMemoryTracker	todo:M14	M14.b: the default MemoryTracker, with a memory limit per collector
+misc/CollectorMemoryTracker	ported	crates/lucene-search/src/misc/memory.rs::CollectorMemoryTracker
 misc/GetTermInfo	todo:M14	M14.i: the CLI printing one term's totalTermFreq and docFreq, with the tools
 misc/HighFreqTerms	ported	crates/lucene-search/src/misc/high_freq.rs::get_high_freq_terms
 misc/IndexMergeTool	todo:M14	M14.i: the CLI merging the indices named on its command line into the first
-misc/SweetSpotSimilarity	todo:M14	M14.b: a similarity with a length norm that plateaus over the good lengths, and tf helpers
+misc/SweetSpotSimilarity	ported	crates/lucene-search/src/misc/sweet_spot.rs::SweetSpotSimilarity
 misc/TermStats	ported	crates/lucene-search/src/misc/high_freq.rs::TermStats
 misc/document/LazyDocument	todo:M14	M14.b: defers loading a stored field's value until it is asked for
 misc/index/BPIndexReorderer	todo:M14	M14.c: the bipartite partitioning doc-id reorderer
@@ -28,6 +28,6 @@ misc/store/ByteWritesTrackingDirectoryWrapper	todo:M14	M14.d: a FilterDirectory 
 misc/store/DirectIODirectory	todo:M14	M14.d: an FSDirectory using direct I/O to bypass the OS cache when merging
 misc/store/HardlinkCopyDirectoryWrapper	todo:M14	M14.d: copyFrom optionally hard-links a file instead of copying its bytes
 misc/store/RAFDirectory	todo:M14	M14.d: an FSDirectory over java.io.RandomAccessFile, with poor concurrency
-misc/util/MemoryTracker	todo:M14	M14.b: the interface tracking dynamic allocations of transient objects
+misc/util/MemoryTracker	ported	crates/lucene-search/src/misc/memory.rs::MemoryTracker
 misc/util/fst/ListOfOutputs	todo:M14	M14.b: an Outputs wrapper encoding one or more of another Outputs' values, in order
 misc/util/fst/UpToTwoPositiveIntOutputs	todo:M14	M14.b: FST outputs of one or two non-negative longs (a single long, else a pair)
