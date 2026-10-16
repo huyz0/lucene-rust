@@ -765,7 +765,7 @@ type Expansion = Vec<(Vec<u8>, f32)>;
 
 /// The terms (and their boosts) a multi-term clause matches among a
 /// document's `terms`, as `SCORING_BOOLEAN_REWRITE` finds them.
-fn expand_clause(query: &Clause, terms: &[Vec<u8>]) -> Result<Option<Expansion>> {
+pub(crate) fn expand_clause(query: &Clause, terms: &[Vec<u8>]) -> Result<Option<Expansion>> {
     let plain = |keep: &dyn Fn(&[u8]) -> bool| -> Expansion {
         terms
             .iter()
