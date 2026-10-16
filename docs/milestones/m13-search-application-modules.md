@@ -106,13 +106,13 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
   - **T13.3a** — the base layer: `Lookup`, `LookupResult`, the `CHARSEQUENCE_COMPARATOR`,
     `LookupPriorityQueue` (Java's heap, so ties match), `InputIterator` and its
     wrapper, `BufferedInputIterator`, `SortedInputIterator` (in memory). **Done**
-    (unit-tested; no Java fixture yet, since no concrete suggester uses it). Still
-    owed in T13.3a: `UnsortedInputIterator`, `InMemorySorter`, `ExternalRefSorter`,
-    `FileDictionary`, `DocumentDictionary`, `DocumentValueSourceDictionary`, `Dictionary`,
-    `BitsProducer`.
-  - **T13.3b** — TST and FST lookups. **TST done** (`TSTLookup`: 792 queries, `get`, and
-    `store()` bytes equal Lucene's, `GenSuggest.java`). Owed: `FSTCompletion*`,
-    `WFSTCompletionLookup` in full.
+    (the dictionaries and `UnsortedInputIterator` have Java fixtures, `GenSuggestFst.java`:
+    `FileDictionary`, `DocumentDictionary`, `DocumentValueSourceDictionary`, `java.util.Random`).
+    Owed: `BitsProducer`.
+  - **T13.3b** — TST and FST lookups, **ported; the WFST/FSTCompletion benchmark pair is owed**. `TSTLookup` (792 queries, `get`, and
+    `store()` bytes equal Lucene's, `GenSuggest.java`); `WFSTCompletionLookup` and
+    `FSTCompletionLookup` (396 and 792 lookups, `store()` bytes equal Lucene's and Lucene's
+    bytes load, `GenSuggestFst.java`). Sorting is in memory, so `ExternalRefSorter` is `InMemorySorter`.
   - **T13.3c** — analyzing suggesters (`AnalyzingSuggester`, `FuzzySuggester`, `FreeTextSuggester`, `AnalyzingInfixSuggester`, `BlendedInfixSuggester`, `SuggestStopFilter`).
   - **T13.3d** — `suggest.document`: the completion postings format and its queries (what OpenSearch uses; prioritised).
     **D1 done**: the `.cmp`/`.lkp` writer (bytes equal Lucene's), the reader, `FSTUtil` and `NRTSuggester.lookup`

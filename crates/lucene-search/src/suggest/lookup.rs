@@ -214,6 +214,24 @@ fn less_than(a: &LookupResult, b: &LookupResult) -> bool {
     a.value < b.value
 }
 
+/// Java's `IllegalStateException(message)`: the store `Error` has no such
+/// variant, so it travels as an `io::Error` of kind `Other` whose text names it.
+pub fn illegal_state(message: impl Into<String>) -> lucene_store::Error {
+    lucene_store::Error::Io(std::io::Error::other(format!(
+        "IllegalStateException: {}",
+        message.into()
+    )))
+}
+
+/// Java's `UnsupportedOperationException(message)`, as an `io::Error` of kind
+/// `Unsupported`.
+pub fn unsupported_operation(message: impl Into<String>) -> lucene_store::Error {
+    lucene_store::Error::Io(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        message.into(),
+    ))
+}
+
 /// `org.apache.lucene.search.suggest.Lookup`: a suggester built from an
 /// [`InputIterator`] and asked for the top completions of a key.
 pub trait Lookup {
