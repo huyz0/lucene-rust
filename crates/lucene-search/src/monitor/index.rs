@@ -18,7 +18,10 @@
 use std::collections::BTreeMap;
 
 use crate::monitor::analyzer::QueryDecomposer;
+use crate::monitor::config::{MonitorConfiguration, MonitorUpdateListener};
+use crate::monitor::persist::{EntryDoc, PersistentStore};
 use crate::monitor::presearcher::{TermAcceptor, TermFilteredPresearcher};
+use crate::monitor::serializer::MonitorQuerySerializer;
 use crate::query::{BooleanQuery, Clause};
 
 /// `MonitorQuery`: an id, the query, its source text and its metadata.
@@ -123,6 +126,29 @@ pub struct QueryIndex {
     queries: BTreeMap<String, MonitorQuery>,
     /// Each entry's id, its presearcher document, and the entry.
     entries: Vec<(IndexedEntry, QueryCacheEntry)>,
+    /// The on-disk index and the serializer that fills it, when persisted.
+    persist: Option<Persist>,
+    listeners: Vec<std::sync::Arc<dyn MonitorUpdateListener>>,
+    /// `getLastPurged()`: when the cache was last rebuilt from the index.
+    last_purged: Option<std::time::SystemTime>,
+}
+
+/// `Monitor.QueryCacheStats`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueryCacheStats {
+    /// `numDocs()`: documents in the query index (the pieces of the queries).
+    pub queries: usize,
+    /// `cacheSize()`: pieces held in the query cache.
+    pub cached_queries: usize,
+    /// When the cache was last purged; `None` before the first purge (Java's -1).
+    pub last_purged: Option<std::time::SystemTime>,
+}
+
+/// A persisted query index: where it lives and how queries are stored in it.
+struct Persist {
+    store: PersistentStore,
+    serializer: MonitorQuerySerializer,
+    read_only: bool,
 }
 
 /// One entry's presearcher document: the fields and terms the presearcher's
@@ -130,24 +156,148 @@ pub struct QueryIndex {
 #[derive(Debug, Clone)]
 struct IndexedEntry {
     fields: Vec<(String, Vec<Vec<u8>>)>,
+    metadata: Vec<(String, String)>,
 }
 
 impl QueryIndex {
-    /// `new Monitor(analyzer, presearcher)`'s query index.
+    /// `new Monitor(analyzer, presearcher)`'s query index, in memory.
     pub fn new(presearcher: TermFilteredPresearcher) -> Self {
         QueryIndex {
             presearcher,
             decomposer: QueryDecomposer,
             queries: BTreeMap::new(),
             entries: Vec::new(),
+            persist: None,
+            listeners: Vec::new(),
+            last_purged: None,
         }
     }
 
+    /// `new Monitor(analyzer, presearcher, configuration)`'s query index. With
+    /// an index path, the queries already in the directory are loaded
+    /// (`populateQueryCache`); a non-empty directory needs a serializer.
+    pub fn with_configuration(
+        presearcher: TermFilteredPresearcher,
+        config: &MonitorConfiguration,
+    ) -> Result<Self, String> {
+        let mut index = QueryIndex::new(presearcher);
+        index.decomposer = config.query_decomposer.clone();
+        let Some(path) = &config.index_path else {
+            return Ok(index);
+        };
+        let store = PersistentStore::open(path).map_err(|e| e.to_string())?;
+        let stored = store.load().map_err(|e| e.to_string())?;
+        let Some(serializer) = config.serializer.clone() else {
+            if store.num_docs().map_err(|e| e.to_string())? != 0 {
+                return Err(
+                    "Attempting to open a non-empty monitor query index with no MonitorQuerySerializer"
+                        .to_string(),
+                );
+            }
+            return Ok(index);
+        };
+        let mut errors = Vec::new();
+        for (_, bytes) in &stored {
+            match serializer.deserialize(bytes) {
+                Ok(mq) => index.register_in_memory(vec![mq])?,
+                Err(e) => errors.push(e),
+            }
+        }
+        if !errors.is_empty() {
+            return Err(format!(
+                "Couldn't parse some queries from the index: {}",
+                errors.join("; ")
+            ));
+        }
+        index.persist = Some(Persist {
+            store,
+            serializer,
+            read_only: config.read_only,
+        });
+        Ok(index)
+    }
+
+    /// `purgeCache()`: the cache rebuilt from the query index. A persisted
+    /// index is read again, so a piece that left the index leaves the cache;
+    /// an in-memory index is its own cache and only records the purge.
+    pub fn purge_cache(&mut self) -> Result<(), String> {
+        if let Some(p) = &self.persist {
+            let stored = p.store.load().map_err(|e| e.to_string())?;
+            let mut fresh = Vec::new();
+            for (_, bytes) in &stored {
+                fresh.push(p.serializer.deserialize(bytes)?);
+            }
+            self.queries.clear();
+            self.entries.clear();
+            self.register_in_memory(fresh)?;
+        }
+        self.last_purged = Some(std::time::SystemTime::now());
+        for l in &self.listeners {
+            l.on_purge();
+        }
+        Ok(())
+    }
+
+    /// `getQueryCacheStats()`.
+    pub fn cache_stats(&self) -> QueryCacheStats {
+        QueryCacheStats {
+            queries: self.entries.len(),
+            cached_queries: self.entries.len(),
+            last_purged: self.last_purged,
+        }
+    }
+
+    /// `addListener(listener)`.
+    pub fn add_listener(&mut self, listener: std::sync::Arc<dyn MonitorUpdateListener>) {
+        self.listeners.push(listener);
+    }
+
     /// `Monitor.register`: each query replaces any of the same id, its entries
-    /// are rebuilt, and the presearcher indexes them.
+    /// are rebuilt and the presearcher indexes them; a persisted index writes
+    /// them out and commits.
     pub fn register(&mut self, queries: Vec<MonitorQuery>) -> Result<(), String> {
+        if let Some(p) = &self.persist {
+            if p.read_only {
+                return Err(
+                    "java.lang.UnsupportedOperationException: Monitor is readOnly cannot commit"
+                        .into(),
+                );
+            }
+            if queries.iter().any(|q| q.query_string.is_none()) {
+                return Err("Cannot add a MonitorQuery with a null string representation to a non-ephemeral Monitor".into());
+            }
+        }
+        let updates = queries.clone();
+        self.register_in_memory(queries)?;
+        if let Some(p) = &self.persist {
+            let mut docs = Vec::new();
+            let mut ids = Vec::new();
+            for mq in &updates {
+                ids.push(mq.id.clone());
+                let mq_bytes = p.serializer.serialize(mq)?;
+                for (indexed, entry) in &self.entries {
+                    if entry.query_id == mq.id {
+                        docs.push(EntryDoc {
+                            query_id: entry.query_id.clone(),
+                            cache_id: entry.cache_id.clone(),
+                            mq: mq_bytes.clone(),
+                            fields: indexed.fields.clone(),
+                            metadata: indexed.metadata.clone(),
+                        });
+                    }
+                }
+            }
+            p.store.commit(&ids, &docs).map_err(|e| e.to_string())?;
+        }
+        for l in &self.listeners {
+            l.after_update(&updates);
+        }
+        Ok(())
+    }
+
+    fn register_in_memory(&mut self, queries: Vec<MonitorQuery>) -> Result<(), String> {
         for mq in queries {
-            self.delete(&mq.id);
+            self.remove(&mq.id);
             for entry in QueryCacheEntry::decompose(&mq, &self.decomposer) {
                 let indexed = self
                     .presearcher
@@ -155,6 +305,7 @@ impl QueryIndex {
                 self.entries.push((
                     IndexedEntry {
                         fields: indexed.fields,
+                        metadata: indexed.metadata,
                     },
                     entry,
                 ));
@@ -164,26 +315,67 @@ impl QueryIndex {
         Ok(())
     }
 
-    /// `Monitor.deleteById`: the query and its entries, if registered.
-    pub fn delete(&mut self, query_id: &str) {
+    fn remove(&mut self, query_id: &str) {
         self.queries.remove(query_id);
         self.entries.retain(|(_, e)| e.query_id != query_id);
     }
 
+    /// `Monitor.deleteById`: the queries and their entries, if registered.
+    pub fn delete(&mut self, query_ids: &[String]) -> Result<(), String> {
+        if self.persist.as_ref().is_some_and(|p| p.read_only) {
+            return Err("java.lang.UnsupportedOperationException: Monitor is readOnly cannot delete queries".into());
+        }
+        for id in query_ids {
+            self.remove(id);
+        }
+        if let Some(p) = &self.persist {
+            p.store.commit(query_ids, &[]).map_err(|e| e.to_string())?;
+        }
+        for l in &self.listeners {
+            l.after_delete(query_ids);
+        }
+        Ok(())
+    }
+
     /// `Monitor.clear`.
-    pub fn clear(&mut self) {
+    pub fn clear(&mut self) -> Result<(), String> {
+        if self.persist.as_ref().is_some_and(|p| p.read_only) {
+            return Err(
+                "java.lang.UnsupportedOperationException: Monitor is readOnly cannot clear".into(),
+            );
+        }
         self.queries.clear();
         self.entries.clear();
+        if let Some(p) = &self.persist {
+            p.store.clear().map_err(|e| e.to_string())?;
+        }
+        for l in &self.listeners {
+            l.after_clear();
+        }
+        Ok(())
     }
 
-    /// `Monitor.getQuery(id)`.
+    /// `Monitor.getQuery(id)`. Lucene reads the query back from its index
+    /// documents, so a query whose decomposition is empty has none.
     pub fn get_query(&self, query_id: &str) -> Option<&MonitorQuery> {
-        self.queries.get(query_id)
+        if self.entries.iter().any(|(_, e)| e.query_id == query_id) {
+            self.queries.get(query_id)
+        } else {
+            None
+        }
     }
 
-    /// `Monitor.getQueryIds()`.
+    /// `Monitor.getQueryIds()`: the ids that have a document, sorted (Lucene
+    /// scans the index).
     pub fn query_ids(&self) -> Vec<String> {
-        self.queries.keys().cloned().collect()
+        let mut ids: Vec<String> = self
+            .entries
+            .iter()
+            .map(|(_, e)| e.query_id.clone())
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
     }
 
     /// `Monitor.getDisjunctCount()`: the entries, one per decomposed piece.
@@ -394,11 +586,11 @@ mod tests {
         index.register(vec![mq("one", term("f", "z"))]).unwrap();
         assert_eq!(index.disjunct_count(), 2);
         assert_eq!(index.get_query("one").unwrap().query, term("f", "z"));
-        index.delete("two");
-        index.delete("absent");
+        index.delete(&["two".to_string()]).unwrap();
+        index.delete(&["absent".to_string()]).unwrap();
         assert_eq!(index.query_ids(), vec!["one".to_string()]);
         assert!(index.get_query("two").is_none());
-        index.clear();
+        index.clear().unwrap();
         assert_eq!(index.disjunct_count(), 0);
         assert!(index.query_ids().is_empty());
     }

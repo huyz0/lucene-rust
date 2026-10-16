@@ -7,9 +7,13 @@
 
 pub mod analyzer;
 pub mod batch;
+pub mod config;
 pub mod facade;
 pub mod index;
+pub mod loader;
+pub mod persist;
 pub mod presearcher;
+pub mod serializer;
 pub mod tree;
 
 pub use analyzer::{QueryAnalyzer, QueryDecomposer};

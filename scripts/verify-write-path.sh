@@ -19,7 +19,7 @@
 # T3.1, see docs/milestones/m3-write-path-proven.md.
 set -euo pipefail
 
-LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-spatial3d lucene-spatial-extras lucene-join)
+LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join)
 
 cd "$(git rev-parse --show-toplevel)"
 FIXTURES="$PWD/fixtures"
@@ -193,6 +193,10 @@ CASES=(
   # decode *identically* but wrongly (a mis-encoded norm scores the same in
   # both) -- only CheckIndex and the occurrence walk see those.
   "lucene-search|write_verify_index_fixture|verify-index|VerifyIndex"
+  # M13 T13.5d: a monitor query index written by this port, opened by Lucene's
+  # own Monitor (a writable WritableQueryIndex), CheckIndex-clean, with the same
+  # queries, pieces and matches as the index Lucene writes for the corpus.
+  "lucene-search|write_monitor_index_fixture|monitor-index|VerifyMonitorIndex"
   # And a merge whose *sources real Lucene wrote*, disagreeing about the two
   # facts `SegmentMerger` derives from its readers rather than from the merging
   # writer: `minVersion` (the minimum across the sources) and `hasBlocks` (their

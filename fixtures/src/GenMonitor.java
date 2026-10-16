@@ -188,6 +188,60 @@ public class GenMonitor {
       }
     }
     Files.writeString(out.resolve("batch_match.tsv"), batchMatch.toString(), StandardCharsets.UTF_8);
+    // T13.5d: MonitorQuerySerializer's bytes for queries with and without metadata
+    org.apache.lucene.monitor.MonitorQuerySerializer ser =
+        org.apache.lucene.monitor.MonitorQuerySerializer.fromParser(t -> {
+          try {
+            return parser.parse(t);
+          } catch (Exception e) {
+            throw new RuntimeException(e);
+          }
+        });
+    StringBuilder serial = new StringBuilder();
+    String[][] serialCases = {
+      {"q1", "fox", ""},
+      {"q2", "title:quick AND body:fox", "a=1"},
+      {"q3", "\"quick brown\"~2", "owner=ann,team=search"},
+      {"id with spaces", "café OR naïve", "k=v"},
+      {"", "x", ""},
+    };
+    for (String[] c : serialCases) {
+      java.util.Map<String, String> md = new java.util.TreeMap<>();
+      if (!c[2].isEmpty()) {
+        for (String kv : c[2].split(",")) {
+          md.put(kv.split("=")[0], kv.split("=")[1]);
+        }
+      }
+      org.apache.lucene.monitor.MonitorQuery mq =
+          new org.apache.lucene.monitor.MonitorQuery(c[0], parser.parse(c[1]), c[1], md);
+      org.apache.lucene.util.BytesRef bytes = ser.serialize(mq);
+      StringBuilder hex = new StringBuilder();
+      for (int i = 0; i < bytes.length; i++) {
+        hex.append(String.format("%02x", bytes.bytes[bytes.offset + i] & 0xff));
+      }
+      serial.append(esc(c[0])).append((char) 9).append(esc(c[1])).append((char) 9)
+          .append(esc(c[2])).append((char) 9).append(hex).append((char) 10);
+    }
+    Files.writeString(out.resolve("serialized.tsv"), serial.toString(), StandardCharsets.UTF_8);
+    // a persisted monitor: Lucene writes the query index, Rust opens it
+    Path persisted = out.resolve("index");
+    if (Files.exists(persisted)) {
+      try (var walk = Files.walk(persisted)) {
+        for (Path f : (Iterable<Path>) walk.sorted(java.util.Comparator.reverseOrder())::iterator) {
+          Files.delete(f);
+        }
+      }
+    }
+    try (org.apache.lucene.monitor.Monitor pm =
+        new org.apache.lucene.monitor.Monitor(
+            new StandardAnalyzer(),
+            new org.apache.lucene.monitor.MonitorConfiguration().setIndexPath(persisted, ser))) {
+      pm.register(registered);
+      Files.writeString(
+          out.resolve("persisted.txt"),
+          pm.getQueryCount() + " " + pm.getDisjunctCount() + "\n",
+          StandardCharsets.UTF_8);
+    }
     // the monitor's purge thread keeps the JVM alive until it is closed
     monitor.close();
 

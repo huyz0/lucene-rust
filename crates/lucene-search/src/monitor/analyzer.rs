@@ -229,7 +229,7 @@ pub(crate) fn leaf_string(query: &Clause) -> String {
 
 /// `QueryDecomposer`: a query as the set of simpler queries that together
 /// match what it does, for the presearcher to index each on its own.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct QueryDecomposer;
 
 impl QueryDecomposer {
