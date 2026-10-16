@@ -1,22 +1,22 @@
 # Lucene 10.5.0 lucene-monitor: every top-level class of the jar, and what became of it.
 # Checked by scripts/check-port-inventory.py --module monitor (see its docstring for the statuses).
 # class	status	detail
-monitor/CandidateMatcher	todo:M13	Class used to match candidate queries selected by a Presearcher from a Monitor query index.
-monitor/CollectingMatcher	todo:M13	CollectingMatcher
+monitor/CandidateMatcher	ported	crates/lucene-search/src/monitor/facade.rs::Monitor -- match_docs runs each selected entry against the batch; resolve is QueryMatch::resolve
+monitor/CollectingMatcher	ported	crates/lucene-search/src/monitor/facade.rs::Monitor -- the Simple and Scoring arms of match_docs
 monitor/ConcurrentQueryLoader	todo:M13	Utility class for concurrently loading queries into a Monitor.
 monitor/CustomQueryHandler	todo:M13	Builds a QueryTree for a query that needs custom treatment The default query analyzers will use the QueryVisitor API to extract terms from queries.
-monitor/DocumentBatch	todo:M13	DocumentBatch
-monitor/ExplainingMatch	todo:M13	A query match containing the score explanation of the match
+monitor/DocumentBatch	ported	crates/lucene-search/src/monitor/batch.rs::DocumentBatch -- a MemoryIndex for one document, an IndexWriter segment for several
+monitor/ExplainingMatch	ported	crates/lucene-search/src/monitor/facade.rs::QueryMatch -- Matcher::Explaining; the explanation of a fuzzy query is a flat match (see the ledger)
 monitor/ForceNoBulkScoringQuery	todo:M13	Query wrapper that forces its wrapped Query to use the default doc-by-doc BulkScorer.
-monitor/HighlightsMatch	todo:M13	QueryMatch object that contains the hit positions of a matching Query If the Query does not support interval iteration (eg, if it gets re-written to a Filter),
-monitor/MatcherFactory	todo:M13	Interface for the creation of new CandidateMatcher objects
+monitor/HighlightsMatch	ported	crates/lucene-search/src/monitor/facade.rs::QueryMatch -- Matcher::Highlights, with Hit ordered by position alone as Java's compareTo has it
+monitor/MatcherFactory	ported	crates/lucene-search/src/monitor/facade.rs::Matcher -- the enum of the four matchers
 monitor/MatchingQueries	partial	crates/lucene-search/src/monitor/facade.rs::MatchingQueries -- M13: build/search timings; MultiMatchingQueries (a batch of documents) is match_batch's MatchResult
 monitor/Monitor	partial	crates/lucene-search/src/monitor/facade.rs::Monitor -- M13: MonitorConfiguration, the read-only mode, update listeners, getQueryCacheStats/purgeCache and debug() (T13.5d)
 monitor/MonitorConfiguration	todo:M13	Encapsulates various configuration settings for a Monitor's query index
 monitor/MonitorQuery	ported	crates/lucene-search/src/monitor/index.rs::MonitorQuery -- Defines a query to be stored in a Monitor
 monitor/MonitorQuerySerializer	todo:M13	Serializes and deserializes MonitorQuery objects into byte streams Use this for persistent query indexes
 monitor/MonitorUpdateListener	todo:M13	For reporting events on a Monitor's query index
-monitor/MultiMatchingQueries	todo:M13	Class to hold the results of matching a batch of org.apache.lucene.document.Documents against queries held in the Monitor
+monitor/MultiMatchingQueries	ported	crates/lucene-search/src/monitor/facade.rs::MultiMatchingQueries -- per-document matches, errors, queries run (no timings)
 monitor/MultipassTermFilteredPresearcher	ported	crates/lucene-search/src/monitor/presearcher.rs::TermFilteredPresearcher::multipass -- the multipass indexing (field_<pass> names, advancePhase between passes) and batch query (one MUST group per pass)
 monitor/ParallelMatcher	todo:M13	Matcher class that runs matching queries in parallel.
 monitor/PartitionMatcher	todo:M13	A multi-threaded matcher that collects all possible matches in one pass, and then partitions them amongst a number of worker threads to perform the actual match

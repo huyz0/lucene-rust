@@ -152,6 +152,42 @@ public class GenMonitor {
     }
     Files.writeString(out.resolve("match.tsv"), matchRows.toString(), StandardCharsets.UTF_8);
     Files.writeString(out.resolve("score.tsv"), scoreRows.toString(), StandardCharsets.UTF_8);
+    // T13.5d: whole batches under each matcher; per batch and matcher, per document, the
+    // matched query ids with their detail (score bits, explanation, hits)
+    String[][][] batchSets = {
+      {{"body=the quick brown fox"}, {"body=a b", "title=quick"}},
+      {{"body=the quick brown fox"}, {"body=a b", "title=quick"}, {"body=fox fox fox", "title=brown"}, {"body=zzzz extraordinarily"}},
+      {{"body=quick quick brown"}, {"body=fox jumps over the lazy dog"}},
+    };
+    StringBuilder batchMatch = new StringBuilder();
+    for (String[][] batchDocs : batchSets) {
+      org.apache.lucene.document.Document[] arr = new org.apache.lucene.document.Document[batchDocs.length];
+      for (int di = 0; di < batchDocs.length; di++) {
+        org.apache.lucene.document.Document d = new org.apache.lucene.document.Document();
+        for (String f : batchDocs[di]) {
+          int eq = f.indexOf('=');
+          d.add(new org.apache.lucene.document.TextField(f.substring(0, eq), f.substring(eq + 1), org.apache.lucene.document.Field.Store.NO));
+        }
+        arr[di] = d;
+      }
+      StringBuilder label = new StringBuilder();
+      for (String[] bd : batchDocs) label.append(String.join("+", bd)).append("|");
+      var simple = monitor.match(arr, org.apache.lucene.monitor.QueryMatch.SIMPLE_MATCHER);
+      var scoring = monitor.match(arr, org.apache.lucene.monitor.ScoringMatch.DEFAULT_MATCHER);
+      var explaining = monitor.match(arr, org.apache.lucene.monitor.ExplainingMatch.MATCHER);
+      var highlights = monitor.match(arr, org.apache.lucene.monitor.HighlightsMatch.MATCHER);
+      for (int di = 0; di < arr.length; di++) {
+        List<String> cells = new ArrayList<>();
+        for (var m : simple.getMatches(di)) cells.add("S:" + m.getQueryId());
+        for (var m : scoring.getMatches(di)) cells.add("C:" + m.getQueryId() + "=" + Integer.toHexString(Float.floatToIntBits(m.getScore())));
+        for (var m : explaining.getMatches(di)) cells.add("E:" + m.getQueryId() + "=" + m.getExplanation().toString());
+        for (var m : highlights.getMatches(di)) cells.add("H:" + m.getQueryId() + "=" + m.getHits());
+        java.util.Collections.sort(cells);
+        batchMatch.append(esc(label.toString())).append((char) 9).append(di).append((char) 9)
+            .append(esc(String.join(String.valueOf((char) 9), cells))).append((char) 10);
+      }
+    }
+    Files.writeString(out.resolve("batch_match.tsv"), batchMatch.toString(), StandardCharsets.UTF_8);
     // the monitor's purge thread keeps the JVM alive until it is closed
     monitor.close();
 

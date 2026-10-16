@@ -759,9 +759,39 @@ fn multi_term_matches(
     let Some((field, terms, _)) = crate::expanded_terms(seg.fields, &clause)? else {
         return Ok(None);
     };
+    let terms: Vec<Vec<u8>> = terms.into_iter().map(|(t, _)| t).collect();
+    term_set_matches(seg, clause, &field, &terms, doc)
+}
+
+/// `FuzzyQuery`'s weight, through its `TopTermsBlendedFreqScoringRewrite`: the
+/// matches of the terms the rewrite keeps (`maxExpansions` of them, the most
+/// similar first), a disjunction of term matches as for the other multi-term
+/// queries.
+fn fuzzy_matches(
+    seg: &OpenSegment<'_>,
+    clause: Arc<Clause>,
+    query: &crate::query::FuzzyQuery,
+    doc: i32,
+) -> Result<Option<BoxMatches>> {
+    let Some(field_terms) = seg.fields.field(&query.field) else {
+        return Ok(None);
+    };
+    let expansion = crate::fuzzy_expanded_terms(field_terms, query)?;
+    let terms: Vec<Vec<u8>> = expansion.terms.into_iter().map(|e| e.term).collect();
+    term_set_matches(seg, clause, &query.field, &terms, doc)
+}
+
+/// The disjunction of the per-term matches of `terms` in `doc`.
+fn term_set_matches(
+    seg: &OpenSegment<'_>,
+    clause: Arc<Clause>,
+    field: &str,
+    terms: &[Vec<u8>],
+    doc: i32,
+) -> Result<Option<BoxMatches>> {
     let mut per_term: Vec<Arc<[Position]>> = Vec::new();
-    for (term, _) in &terms {
-        if let Some(o) = occurrences(seg, &field, term, doc)? {
+    for term in terms {
+        if let Some(o) = occurrences(seg, field, term, doc)? {
             per_term.push(o.into());
         }
     }
@@ -770,7 +800,7 @@ fn multi_term_matches(
     }
     let per_term: Arc<[Arc<[Position]>]> = per_term.into();
     for_field(
-        &field,
+        field,
         Box::new(move || {
             let subs = per_term
                 .iter()
@@ -897,7 +927,8 @@ pub fn leaf_matches(
             Arc::new(clause.clone()),
             doc,
         ),
-        Clause::Fuzzy(_) | Clause::MultiPhrase(_) => Err(Error::IllegalArgument(format!(
+        Clause::Fuzzy(q) => fuzzy_matches(seg, Arc::new(clause.clone()), q, doc),
+        Clause::MultiPhrase(_) => Err(Error::IllegalArgument(format!(
             "Weight.matches is not ported for {}",
             clause_name(clause)
         ))),
