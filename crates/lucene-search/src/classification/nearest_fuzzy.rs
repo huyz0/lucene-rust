@@ -151,6 +151,26 @@ fn score_term_less(a: &ScoreTerm, b: &ScoreTerm) -> bool {
     }
 }
 
+/// A `ScoreTerm` of one token's variants, borrowing the matched term and the
+/// token: most candidates lose their place in the queue, and an owned copy
+/// is made only for the ones that keep it.
+struct Candidate<'a> {
+    field: &'a str,
+    term: &'a [u8],
+    score: f32,
+    source: &'a [u8],
+}
+
+/// `score_term_less` over borrowed candidates.
+fn candidate_less(a: &Candidate<'_>, b: &Candidate<'_>) -> bool {
+    if a.score == b.score {
+        let by_field = super::java_string_cmp(a.field, b.field);
+        by_field.then_with(|| a.term.cmp(b.term)) == std::cmp::Ordering::Greater
+    } else {
+        a.score < b.score
+    }
+}
+
 /// `Term.hashCode()`: `31 * (31 + field.hashCode()) + bytes.hashCode()`.
 fn term_hash(index: &TrainingIndex<'_, '_>, field: &str, bytes: &[u8]) -> i32 {
     31i32
@@ -276,8 +296,10 @@ impl NearestFuzzyQuery {
                     e.1 = e.1.wrapping_add(stats.doc_freq);
                 }
             }
-            let mut variants: JavaPriorityQueue<ScoreTerm, fn(&ScoreTerm, &ScoreTerm) -> bool> =
-                JavaPriorityQueue::new(MAX_VARIANTS_PER_TERM, score_term_less);
+            let mut variants: JavaPriorityQueue<
+                Candidate<'_>,
+                fn(&Candidate<'_>, &Candidate<'_>) -> bool,
+            > = JavaPriorityQueue::new(MAX_VARIANTS_PER_TERM, candidate_less);
             let mut min_score = 0f32;
             let mut df = index.reader.doc_freq(field, token.as_bytes())? as i32;
             let mut num_variants = 0i32;
@@ -313,11 +335,11 @@ impl NearestFuzzyQuery {
                 total_variant_doc_freqs = total_variant_doc_freqs.wrapping_add(term_df);
                 let score = pattern.boost_from_edits(term, ed);
                 if variants.size() < MAX_VARIANTS_PER_TERM || score > min_score {
-                    variants.insert_with_overflow(ScoreTerm {
-                        field: field.to_string(),
-                        term: term.clone(),
+                    variants.insert_with_overflow(Candidate {
+                        field,
+                        term,
                         score,
-                        source: token.as_bytes().to_vec(),
+                        source: token.as_bytes(),
                     });
                     min_score = variants.top().map_or(min_score, |t| t.score);
                 }
@@ -333,9 +355,13 @@ impl NearestFuzzyQuery {
                     df = avg_df;
                 }
                 let idf = idf(df, corpus_num_docs);
-                while let Some(mut st) = variants.pop() {
-                    st.score = (st.score * st.score) * idf;
-                    q.insert_with_overflow(st);
+                while let Some(st) = variants.pop() {
+                    q.insert_with_overflow(ScoreTerm {
+                        field: st.field.to_string(),
+                        term: st.term.to_vec(),
+                        score: (st.score * st.score) * idf,
+                        source: st.source.to_vec(),
+                    });
                 }
             }
         }
