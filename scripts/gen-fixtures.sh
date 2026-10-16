@@ -89,7 +89,7 @@ set -euo pipefail
 # lucene-join is required by GenBlockJoin (org.apache.lucene.search.join).
 # lucene-grouping is required by GenGrouping (org.apache.lucene.search.grouping).
 # lucene-queryparser is required by GenQueryParser* (org.apache.lucene.queryparser).
-LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-facet lucene-highlighter lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join lucene-grouping)
+LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-facet lucene-highlighter lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join lucene-grouping lucene-classification)
 
 cd "$(git rev-parse --show-toplevel)"
 FIXTURES="$PWD/fixtures"
@@ -244,6 +244,11 @@ generator_jvm_opts() {
     # `Math.sin`..`Math.pow` are what an expression's functions call: with the
     # intrinsics off they are StrictMath's fdlibm on every CPU, as the port is.
     GenExpressions) echo "-XX:+UnlockDiagnosticVMOptions -XX:DisableIntrinsic=_dsin,_dcos,_dtan,_dexp,_dlog,_dlog10,_dpow" ;;
+    # The naive Bayes classifiers score with Math.log/exp. `tests.seed` seeds
+    # BytesRef.hashCode (StringHelper.GOOD_FAST_HASH_SEED, else the clock), so
+    # the HashMap order of equal-scored classes and of NearestFuzzyQuery's
+    # clauses is the same on every run.
+    GenClassification) echo "-Dtests.seed=C1A55 -XX:+UnlockDiagnosticVMOptions -XX:DisableIntrinsic=_dexp,_dlog,_dlog10,_dpow" ;;
   esac
 }
 

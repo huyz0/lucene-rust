@@ -144,6 +144,12 @@ case "$BENCH" in
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-expressions"
     EXPRESSIONS_THIRDPARTY=1 ;;
+  # M14 T14.3: each classifier's assignClass over forty stored texts.
+  classification)
+    MAIN=ClassificationMicro
+    SRC=benchmarks/micro/java/ClassificationMicro.java
+    EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-analysis-common lucene-queries lucene-grouping lucene-classification" ;;
   # M11 T11.3: SnowballFilter per language over the fixture vocabularies.
   snowball)
     MAIN=SnowballMicro

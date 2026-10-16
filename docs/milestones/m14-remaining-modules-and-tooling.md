@@ -10,7 +10,7 @@
 | **Effort** | L |
 | **Depends on** | [M7](m7-core-complete.md)–[M13](m13-search-application-modules.md) |
 | **Unblocks** | "fully ported", as the inventory gate defines it |
-| **Status** | not started |
+| **Status** | in progress: T14.2 and T14.3's `classification` done |
 
 ---
 
@@ -61,8 +61,10 @@ After M7–M13 what is left is either self-contained or tooling:
 ## Tasks
 
 - **T14.1** — The non-default codecs.
-- **T14.2** — `expressions`.
+- **T14.2** — `expressions`. **Done**: [`docs/parity/expressions.md`](../parity/expressions.md).
 - **T14.3** — `classification`, `replicator`, `misc`, `sandbox`.
+  `classification` **done**: [`docs/parity/classification.md`](../parity/classification.md)
+  (its `DatasetSplitter` brought term vectors to the explicit writer).
 - **T14.4** — Test framework utilities, then a first batch of ported Lucene
   tests chosen by the bugs they historically caught.
 - **T14.5** — Index inspector CLI, demo, benchmark scripts.
@@ -72,7 +74,7 @@ After M7–M13 what is left is either self-contained or tooling:
 
 - [ ] Every ported module passes Java-fixture differential tests.
 - [ ] Real Lucene reads indices written with each non-default codec.
-- [ ] `expressions` evaluates Lucene's expression test corpus to the same
+- [x] `expressions` evaluates Lucene's expression test corpus to the same
       doubles.
 - [ ] `check-port-inventory.py` passes with an **empty allowlist**: every
       class of the 10.5.0 distribution is `ported` or `not needed` with a
