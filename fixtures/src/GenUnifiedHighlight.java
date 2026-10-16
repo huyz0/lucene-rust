@@ -44,6 +44,10 @@ public class GenUnifiedHighlight {
   }
 
   static FieldType type(IndexOptions o, boolean tv) {
+    return type(o, tv, true);
+  }
+
+  static FieldType type(IndexOptions o, boolean tv, boolean tvOffsets) {
     FieldType t = new FieldType();
     t.setIndexOptions(o);
     t.setTokenized(true);
@@ -51,13 +55,13 @@ public class GenUnifiedHighlight {
     if (tv) {
       t.setStoreTermVectors(true);
       t.setStoreTermVectorPositions(true);
-      t.setStoreTermVectorOffsets(true);
+      t.setStoreTermVectorOffsets(tvOffsets);
     }
     t.freeze();
     return t;
   }
 
-  static final String[] FIELDS = {"offs", "pos", "docs", "tv", "both"};
+  static final String[] FIELDS = {"offs", "pos", "docs", "tv", "both", "tvpos"};
 
   public static void main(String[] args) throws Exception {
     Path out = Path.of(args[0]).resolve("uhighlight");
@@ -74,6 +78,8 @@ public class GenUnifiedHighlight {
     FieldType pos = type(IndexOptions.DOCS_AND_FREQS_AND_POSITIONS, false);
     FieldType docs = type(IndexOptions.DOCS, false);
     FieldType tv = type(IndexOptions.DOCS_AND_FREQS_AND_POSITIONS, true);
+    // term vectors with positions but no offsets: highlighting must refuse
+    FieldType tvpos = type(IndexOptions.DOCS_AND_FREQS_AND_POSITIONS, true, false);
     FieldType both = type(IndexOptions.DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS, true);
     try (FSDirectory fs = FSDirectory.open(indexDir);
         IndexWriter w = new IndexWriter(fs, new IndexWriterConfig(analyzer).setUseCompoundFile(false))) {
@@ -85,6 +91,7 @@ public class GenUnifiedHighlight {
           d.add(new Field("offs", v, offs));
           d.add(new Field("tv", v, tv));
           d.add(new Field("both", v, both));
+          d.add(new Field("tvpos", v, tvpos));
         }
         for (String v : c[2].split("\u0001")) d.add(new Field("pos", v, pos));
         for (String v : c[3].split("\u0001")) d.add(new Field("docs", v, docs));

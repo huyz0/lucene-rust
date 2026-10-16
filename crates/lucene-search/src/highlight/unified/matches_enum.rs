@@ -4,7 +4,7 @@
 
 use crate::matches::BoxMatchesIterator;
 use crate::query::Clause;
-use crate::query_visitor::{self, Occur, QueryVisitor, SubVisitor, Term};
+use crate::query_visitor::{self, QueryVisitor, Term};
 
 use super::super::Result;
 use super::passage::OffsetsEnum;
@@ -20,10 +20,6 @@ pub(super) fn query_to_term(query: &Clause) -> Vec<u8> {
                 }
                 self.0.extend_from_slice(&t.bytes);
             }
-        }
-        // `QueryVisitor`'s default: every clause, a `MUST_NOT` one too
-        fn sub_visitor(&mut self, _occur: Occur, _parent: &Clause) -> SubVisitor {
-            SubVisitor::Same
         }
     }
     let mut v = Terms(Vec::new());

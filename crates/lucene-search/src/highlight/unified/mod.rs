@@ -11,9 +11,15 @@
 //! Differences from Lucene, each a reach of the port rather than a choice:
 //!
 //! - `PhraseHelper` takes the phrase and span clauses of the query (and the
-//!   terms that need no positions), not a multi-term query inside a span:
-//!   Java ignores a query it must rewrite as well, but also expands the
-//!   automata of a span query for the memory-index pre-filter.
+//!   terms that need no positions) as phrase matches whose occurrences are
+//!   those inside a match's offsets, not Java's `SpanNearQuery` (an
+//!   unordered sloppy phrase differs). It leaves out a `SynonymQuery`, a
+//!   `MultiPhraseQuery`, the lucene-queries span nodes and a multi-term
+//!   query inside a span (Java also expands the automata of a span query
+//!   for the memory-index pre-filter), and `retarget` remaps only term,
+//!   phrase and multi-term leaves onto the field being highlighted.
+//! - `with_max_length` and the fragment-alignment constructor panic where
+//!   Java throws `IllegalArgumentException`; see their `# Panics`.
 //! - An `ANALYSIS` or `TERM_VECTORS` field is read through a one-document
 //!   index of the field alone (Lucene overlays it on the real reader), so a
 //!   clause of the query on another field is taken as the hit it must have
