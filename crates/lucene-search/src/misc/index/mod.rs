@@ -3,11 +3,15 @@
 //! over a `FilterCodecReader` that hides documents is built here on
 //! [`lucene_index::index_writer::IndexWriter::add_indexes_filtered`].
 
+pub mod bp;
+pub mod bp_merge_policy;
 pub mod multi_pass;
 pub mod pk;
 pub mod rearranger;
 pub mod splitter;
 
+pub use bp::{BpIndexReorderer, ReorderError};
+pub use bp_merge_policy::BpReorderingMergePolicy;
 pub use multi_pass::MultiPassIndexSplitter;
 pub use pk::PkIndexSplitter;
 pub use rearranger::{BinaryDocValueSelector, DocumentSelector, IndexRearranger};
