@@ -1115,7 +1115,7 @@ impl SegmentReader {
     pub fn suggester(
         &self,
         field: &str,
-    ) -> Result<Option<lucene_codecs::completion::NrtSuggester>> {
+    ) -> Result<Option<std::sync::Arc<lucene_codecs::completion::NrtSuggester>>> {
         let Some(info) = self.field_infos.field_by_name(field) else {
             return Ok(None);
         };

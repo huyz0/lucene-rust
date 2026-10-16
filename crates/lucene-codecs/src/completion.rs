@@ -497,6 +497,9 @@ pub struct CompletionFields {
     /// Field number to its reader, in file order.
     pub fields: Vec<(i32, CompletionsTermsReader)>,
     dict: Vec<u8>,
+    /// `CompletionsTermsReader.suggester`: each field's FST, loaded on first
+    /// use and kept, as Java's lazily-set field is.
+    loaded: Vec<std::sync::OnceLock<std::sync::Arc<NrtSuggester>>>,
 }
 
 impl CompletionFields {
@@ -555,19 +558,29 @@ impl CompletionFields {
             ));
         }
         codec_util::check_footer(&mut index, cmp.len())?;
+        let loaded = fields.iter().map(|_| std::sync::OnceLock::new()).collect();
         Ok(Self {
             delegate_format,
             fields,
             dict: lkp,
+            loaded,
         })
     }
 
     /// `CompletionsTermsReader.suggester()` for a field number.
-    pub fn suggester(&self, field_number: i32) -> Result<Option<NrtSuggester>> {
-        let Some((_, reader)) = self.fields.iter().find(|(n, _)| *n == field_number) else {
+    /// Loaded once per field; a load that fails is not kept.
+    pub fn suggester(&self, field_number: i32) -> Result<Option<std::sync::Arc<NrtSuggester>>> {
+        let Some(i) = self.fields.iter().position(|(n, _)| *n == field_number) else {
             return Ok(None);
         };
-        NrtSuggester::load(&self.dict[reader.offset..]).map(Some)
+        let (Some((_, reader)), Some(slot)) = (self.fields.get(i), self.loaded.get(i)) else {
+            return Ok(None);
+        };
+        if let Some(loaded) = slot.get() {
+            return Ok(Some(std::sync::Arc::clone(loaded)));
+        }
+        let loaded = std::sync::Arc::new(NrtSuggester::load(&self.dict[reader.offset..])?);
+        Ok(Some(std::sync::Arc::clone(slot.get_or_init(|| loaded))))
     }
 }
 
