@@ -1,0 +1,12 @@
+R	geometry	0	7	k000,k002,k003,k004,k005,k006
+R	geometry	1	6	k007,k009,k010,k011,k012
+R	geometry	2	5	k013,k015,k016,k017
+R	even_odd	0	9	k000,k002,k004,k006,k008,k010,k012,k014,k016
+R	even_odd	1	9	k001,k003,k005,k007,k009,k011,k013,k015,k017
+R	even_odd_deletes	0	9	k000,k002,k004,k006,k010,k012,k016
+R	even_odd_deletes	1	9	k003,k005,k007,k009,k011,k013,k015,k017
+R	three_ways	0	6	k012,k013,k014,k015,k016,k017
+R	three_ways	1	5	k000,k001,k002,k004
+R	three_ways	2	7	k005,k006,k008,k009,k010
+E	overlap	Document selector # has matched more than 1 segments. Matched segments order: 0, 1
+R	whole_segment_deleted	0	11	k007,k008,k009,k010,k011,k012,k013,k014,k015,k016,k017
