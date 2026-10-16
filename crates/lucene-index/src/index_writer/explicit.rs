@@ -52,7 +52,12 @@
 //! documents gave it a non-empty payload; the registered schema never
 //! carries the flag, since Lucene's global `FieldNumbers` does not either.
 //!
-//! Not supported, and refused when a field is registered: term vectors.
+//! **Term vectors** arrive built, one [`TermVectorField`] per document and
+//! field registered `store_term_vectors` (the document API builds them as
+//! `TermVectorsConsumerPerField` does), and are written by the same
+//! `.tvd`/`.tvx`/`.tvm` writer the native path uses, each document's fields
+//! in name order. A segment gets the files when one of its documents inverts
+//! such a field, even into no term, as Java's consumer opens its writer then.
 //!
 //! # Index sorting and blocks
 //!
@@ -79,6 +84,7 @@ use lucene_codecs::norms;
 use lucene_codecs::per_field_doc_values;
 use lucene_codecs::postings_writer::{self, FieldPostingsInput, TermPostings};
 use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
+use lucene_codecs::term_vectors::{self, TermVectorField, TermVectorsDocument};
 use lucene_store::codec_util::ID_LENGTH;
 use lucene_store::directory::Directory;
 
@@ -109,6 +115,11 @@ pub struct ExplicitFields {
     /// column's `FieldInfo` before reading a cell, so a batch column that
     /// yields nothing is still a field of the segment.
     pub registered: Vec<i32>,
+    /// This document's term vectors (`TermVectorsConsumerPerField`), one per
+    /// field registered `store_term_vectors` that produced a term, terms in
+    /// byte order. A flush writes them in field-name order, as
+    /// `TermVectorsConsumer.finishDocument` sorts them.
+    pub term_vectors: Vec<TermVectorField>,
 }
 
 /// One document's inverted occurrence of one field.
@@ -174,7 +185,29 @@ impl ExplicitFields {
                 })
                 .fold(0usize, usize::saturating_add)
         };
+        let term_vectors: usize = self
+            .term_vectors
+            .iter()
+            .flat_map(|f| &f.terms)
+            .map(|t| {
+                let ints = [&t.positions, &t.start_offsets, &t.end_offsets]
+                    .iter()
+                    .map(|v| v.as_ref().map_or(0, |v| v.capacity().saturating_mul(4)))
+                    .fold(0usize, usize::saturating_add);
+                let payloads = t.payloads.as_ref().map_or(0, |p| {
+                    p.iter()
+                        .map(|p| p.capacity().saturating_add(24))
+                        .fold(0usize, usize::saturating_add)
+                });
+                t.term
+                    .capacity()
+                    .saturating_add(ints)
+                    .saturating_add(payloads)
+                    .saturating_add(96)
+            })
+            .fold(0usize, usize::saturating_add);
         inverted
+            .saturating_add(term_vectors)
             .saturating_add(values(&self.doc_values))
             .saturating_add(values(&self.points))
     }
@@ -296,6 +329,7 @@ impl IndexingConfig {
                 || fields.inverted.iter().any(|f| f.field_number == parent)
                 || fields.doc_values.iter().any(|f| f.field_number == parent)
                 || fields.points.iter().any(|f| f.field_number == parent)
+                || fields.term_vectors.iter().any(|f| f.field_number == parent)
                 || fields.registered.contains(&parent);
             if touches {
                 return Err(reserved_parent_field(
@@ -394,6 +428,65 @@ impl IndexingConfig {
                 }
             }
         }
+        let mut seen = BTreeSet::new();
+        for tv in &doc.fields.term_vectors {
+            let f = self.explicit_field(tv.field_number)?;
+            if !f.store_term_vectors {
+                return Err(explicit_error(format!(
+                    "field {:?} does not store term vectors",
+                    f.name
+                )));
+            }
+            if !seen.insert(tv.field_number) {
+                return Err(explicit_error(format!(
+                    "field {:?} has two term vectors in one document",
+                    f.name
+                )));
+            }
+            // A vector is a view of the document's own inversion.
+            if !doc
+                .fields
+                .inverted
+                .iter()
+                .any(|inv| inv.field_number == tv.field_number)
+            {
+                return Err(explicit_error(format!(
+                    "field {:?} has a term vector but is not inverted in this document",
+                    f.name
+                )));
+            }
+            if tv.has_payloads && !tv.has_positions {
+                return Err(explicit_error(format!(
+                    "field {:?}: term vector payloads need term vector positions",
+                    f.name
+                )));
+            }
+            if tv.terms.windows(2).any(|w| w[0].term >= w[1].term) {
+                return Err(explicit_error(format!(
+                    "field {:?}: term vector terms must be distinct and in byte order",
+                    f.name
+                )));
+            }
+            for t in &tv.terms {
+                let n = usize::try_from(t.freq).unwrap_or(0);
+                let shaped = |present: bool, v: Option<usize>| match v {
+                    Some(len) => present && len == n,
+                    None => !present,
+                };
+                if n == 0
+                    || !shaped(tv.has_positions, t.positions.as_ref().map(Vec::len))
+                    || !shaped(tv.has_offsets, t.start_offsets.as_ref().map(Vec::len))
+                    || !shaped(tv.has_offsets, t.end_offsets.as_ref().map(Vec::len))
+                    || !shaped(tv.has_payloads, t.payloads.as_ref().map(Vec::len))
+                {
+                    return Err(explicit_error(format!(
+                        "field {:?}: a term vector term needs freq >= 1 and one position, \
+                         offset and payload per occurrence for each axis the vector has",
+                        f.name
+                    )));
+                }
+            }
+        }
         let mut single = BTreeSet::new();
         for dv in &doc.fields.doc_values {
             let f = self.explicit_field(dv.field_number)?;
@@ -471,6 +564,7 @@ impl IndexingConfig {
             present.extend(fields.inverted.iter().map(|f| f.field_number));
             present.extend(fields.doc_values.iter().map(|f| f.field_number));
             present.extend(fields.points.iter().map(|f| f.field_number));
+            present.extend(fields.term_vectors.iter().map(|f| f.field_number));
             present.extend(fields.registered.iter().copied());
         }
 
@@ -708,6 +802,37 @@ impl IndexingConfig {
                 &segment_id,
             )?
         };
+        // Term vectors: each document's fields in name order
+        // (`TermVectorsConsumer.finishDocument` sorts its `perFields` by
+        // name). Written when some document inverts a field that stores term
+        // vectors, even one that produced no term: that is when
+        // `TermVectorsConsumer.hasVectors` opens the writer.
+        let has_vectors = explicit.iter().any(|f| {
+            !f.term_vectors.is_empty()
+                || f.inverted.iter().any(|inv| {
+                    self.explicit_field(inv.field_number)
+                        .is_ok_and(|info| info.store_term_vectors)
+                })
+        });
+        let term_vectors_output = if !has_vectors {
+            None
+        } else {
+            let docs = explicit
+                .iter()
+                .map(|f| {
+                    let mut fields = f.term_vectors.clone();
+                    let mut named = Vec::with_capacity(fields.len());
+                    for tv in fields.drain(..) {
+                        named.push((self.explicit_field(tv.field_number)?.name.as_str(), tv));
+                    }
+                    named.sort_by(|a, b| a.0.cmp(b.0));
+                    Ok(TermVectorsDocument {
+                        fields: named.into_iter().map(|(_, tv)| tv).collect(),
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Some(term_vectors::write_best_speed(&docs, &segment_id, ""))
+        };
         let vector_fields_written: Vec<super::WrittenVectorField> = vectors_output
             .as_ref()
             .map(|o| o.written.clone())
@@ -807,6 +932,15 @@ impl IndexingConfig {
         if let Some(output) = &vectors_output {
             record(IndexWriter::write_vector_files(dir, segment_name, output)?);
         }
+        if let Some((tvd, tvx, tvm)) = &term_vectors_output {
+            record(IndexWriter::write_term_vector_files(
+                dir,
+                segment_name,
+                tvd,
+                tvx,
+                tvm,
+            )?);
+        }
         // The buffer was put in sort order before this build (`sort_buffer`);
         // the `.si` records the sort, as the native path's does.
         if let Some(sort) = &self.index_sort {
@@ -862,9 +996,16 @@ impl<'d> IndexWriter<'d> {
                 "register_field needs explicit documents enabled",
             ));
         }
-        if info.store_term_vectors || info.store_payloads {
+        if info.store_payloads {
             return Err(explicit_error(format!(
-                "field {:?}: term vectors and payloads are not supported",
+                "field {:?}: payloads are a segment's, not a registered schema's",
+                info.name
+            )));
+        }
+        // `FieldInfo.checkConsistency`.
+        if info.store_term_vectors && info.index_options == IndexOptions::None {
+            return Err(explicit_error(format!(
+                "non-indexed field {:?} cannot have term vectors",
                 info.name
             )));
         }
@@ -927,6 +1068,8 @@ impl<'d> IndexWriter<'d> {
         let same_schema = |a: &FieldInfo, b: &FieldInfo| {
             a.index_options == b.index_options
                 && a.omit_norms == b.omit_norms
+                // `FieldInfo.verifySameStoreTermVectors`.
+                && a.store_term_vectors == b.store_term_vectors
                 && a.doc_values_type == b.doc_values_type
                 // `FieldInfo.verifySameDocValuesSkipIndex`.
                 && a.doc_values_skip_index_type == b.doc_values_skip_index_type
@@ -1371,6 +1514,7 @@ mod tests {
             ],
             points: Vec::new(),
             registered: Vec::new(),
+            term_vectors: Vec::new(),
         };
         if i % 3 != 0 {
             fields.doc_values.push(StoredField {
@@ -1564,7 +1708,107 @@ mod tests {
         let changed = text.clone().with_omit_norms(true);
         assert!(w.register_field(changed).is_err());
         let vectors = FieldInfo::new("v", 0).with_store_term_vectors(true);
-        assert!(w.register_field(vectors).is_err());
+        assert!(
+            w.register_field(vectors).is_err(),
+            "vectors on an unindexed field"
+        );
+        let vectors = text.clone().with_store_term_vectors(true);
+        assert!(
+            w.register_field(vectors).is_err(),
+            "storeTermVectors changed"
+        );
+        let mut payloads = FieldInfo::new("p", 0).with_index_options(IndexOptions::DocsAndFreqs);
+        payloads.store_payloads = true;
+        assert!(w.register_field(payloads).is_err());
+    }
+
+    /// Term vectors arrive built; `validate_explicit` checks their shape
+    /// against the registered schema.
+    #[test]
+    fn term_vectors_are_checked_at_add_time() {
+        use lucene_codecs::term_vectors::TermVectorTerm;
+        let dir = lucene_store::ByteBuffersDirectory::new();
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        w.enable_explicit_documents().unwrap();
+        let indexed = |name: &str| {
+            FieldInfo::new(name, 0)
+                .with_index_options(IndexOptions::DocsAndFreqs)
+                .with_omit_norms(true)
+        };
+        let tv = w
+            .register_field(indexed("tv").with_store_term_vectors(true))
+            .unwrap();
+        let plain = w.register_field(indexed("plain")).unwrap();
+        let term = |t: &str| TermVectorTerm {
+            term: t.as_bytes().to_vec(),
+            freq: 1,
+            positions: Some(vec![0]),
+            start_offsets: None,
+            end_offsets: None,
+            payloads: None,
+        };
+        let field = |n: i32, terms: Vec<TermVectorTerm>| TermVectorField {
+            field_number: n,
+            has_positions: true,
+            has_offsets: false,
+            has_payloads: false,
+            terms,
+        };
+        let with = |fields: Vec<TermVectorField>| {
+            let mut numbers: Vec<i32> = fields.iter().map(|f| f.field_number).collect();
+            numbers.dedup();
+            ExplicitDocument {
+                stored: Vec::new(),
+                fields: ExplicitFields {
+                    inverted: numbers
+                        .into_iter()
+                        .map(|n| InvertedField {
+                            field_number: n,
+                            terms: vec![term_docs("a")],
+                            norm: None,
+                        })
+                        .collect(),
+                    term_vectors: fields,
+                    ..ExplicitFields::default()
+                },
+            }
+        };
+        let mut not_inverted = with(vec![field(tv, vec![term("a")])]);
+        not_inverted.fields.inverted.clear();
+        let err = w.add_explicit_documents(vec![not_inverted]).unwrap_err();
+        assert!(matches!(err, Error::Explicit(_)), "{err}");
+        w.add_explicit_documents(vec![with(vec![field(tv, vec![term("a")])])])
+            .unwrap();
+        let mut payloads_alone = field(tv, vec![term("a")]);
+        payloads_alone.has_positions = false;
+        payloads_alone.has_payloads = true;
+        let mut no_positions = term("a");
+        no_positions.positions = None;
+        let mut zero = term("a");
+        zero.freq = 0;
+        let cases = [
+            ("unregistered", vec![field(99, vec![term("a")])]),
+            ("no term vectors", vec![field(plain, vec![term("a")])]),
+            (
+                "twice",
+                vec![field(tv, vec![term("a")]), field(tv, vec![term("b")])],
+            ),
+            ("payloads without positions", vec![payloads_alone]),
+            ("unsorted", vec![field(tv, vec![term("b"), term("a")])]),
+            ("duplicate", vec![field(tv, vec![term("a"), term("a")])]),
+            ("missing positions", vec![field(tv, vec![no_positions])]),
+            ("freq 0", vec![field(tv, vec![zero])]),
+        ];
+        for (what, fields) in cases {
+            let err = w
+                .add_explicit_documents(vec![with(fields)])
+                .expect_err(what);
+            assert!(matches!(err, Error::Explicit(_)), "{what}: {err}");
+        }
+        w.commit().unwrap();
+        for r in crate::check_index::check_directory(&dir).unwrap() {
+            assert!(r.all_passed(), "{:?}", r.failures());
+        }
     }
 
     #[test]
@@ -2438,6 +2682,7 @@ mod tests {
                 doc_values: Vec::new(),
                 points: Vec::new(),
                 registered: Vec::new(),
+                term_vectors: Vec::new(),
             },
         };
         w.add_explicit_documents(vec![one("a")]).unwrap();

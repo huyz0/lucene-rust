@@ -346,6 +346,7 @@ fn document(c: &mut Cursor<'_>) -> Result<ExplicitDocument, FfiStatus> {
             doc_values,
             points,
             registered: Vec::new(),
+            term_vectors: Vec::new(),
         },
     })
 }
