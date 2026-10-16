@@ -29,5 +29,5 @@ misc/store/DirectIODirectory	todo:M14	M14.d: an FSDirectory using direct I/O to 
 misc/store/HardlinkCopyDirectoryWrapper	todo:M14	M14.d: copyFrom optionally hard-links a file instead of copying its bytes
 misc/store/RAFDirectory	todo:M14	M14.d: an FSDirectory over java.io.RandomAccessFile, with poor concurrency
 misc/util/MemoryTracker	ported	crates/lucene-search/src/misc/memory.rs::MemoryTracker
-misc/util/fst/ListOfOutputs	todo:M14	M14.b: an Outputs wrapper encoding one or more of another Outputs' values, in order
-misc/util/fst/UpToTwoPositiveIntOutputs	todo:M14	M14.b: FST outputs of one or two non-negative longs (a single long, else a pair)
+misc/util/fst/ListOfOutputs	ported	crates/lucene-search/src/misc/fst.rs::ListOfOutputs
+misc/util/fst/UpToTwoPositiveIntOutputs	ported	crates/lucene-search/src/misc/fst.rs::UpToTwoPositiveIntOutputs
