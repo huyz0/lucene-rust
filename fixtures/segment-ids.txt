@@ -166,8 +166,8 @@ m7_queries_index/segments_4 7b812c1f085f90d0d3441caea822af0c
 matches_index/_0.si 610f46067443987c4c9f584d5b253190
 matches_index/_1.si 610f46067443987c4c9f584d5b253194
 matches_index/segments_3 610f46067443987c4c9f584d5b253199
-matchhighlight/index/_0.si b73c4fb14bceaab5e217e4ff7d3d5c44
-matchhighlight/index/segments_1 b73c4fb14bceaab5e217e4ff7d3d5c47
+matchhighlight/index/_0.si 7174adcdd0457a76d023582de9076ccf
+matchhighlight/index/segments_1 7174adcdd0457a76d023582de9076cd2
 merge_metadata/_0.si 434edb964a98508280018ab8780714da
 merge_metadata/_1.si 434edb964a98508280018ab8780714de
 merge_metadata/_2.si 434edb964a98508280018ab8780714e2
@@ -387,6 +387,8 @@ token_attributes/flushed/_0.si ec404e8971c38c9d1061330c8be47665
 token_attributes/flushed/segments_1 ec404e8971c38c9d1061330c8be47668
 token_attributes/merged/_2.si ec404e8971c38c9d1061330c8be47671
 token_attributes/merged/segments_3 ec404e8971c38c9d1061330c8be47674
+uhighlight/index/_0.si 60f28f93cad2b37222ff35b124e3eb1c
+uhighlight/index/segments_1 60f28f93cad2b37222ff35b124e3eb1f
 values_rescore_index/_0.si 8e0c6c5cf16161d932cc173cc3c30179
 values_rescore_index/_1.si 8e0c6c5cf16161d932cc173cc3c3017d
 values_rescore_index/segments_3 8e0c6c5cf16161d932cc173cc3c30182
@@ -404,3 +406,5 @@ vectors_seeded_index/_1.si 2af5ef5226dbdd656068a88a04ab02a7
 vectors_seeded_index/_2.si 2af5ef5226dbdd656068a88a04ab02ab
 vectors_seeded_index/_3.si 2af5ef5226dbdd656068a88a04ab02af
 vectors_seeded_index/segments_4 2af5ef5226dbdd656068a88a04ab02b2
+vhighlight/index/_0.si 05cdd11a9bc92d1b103c5242cc409392
+vhighlight/index/segments_1 05cdd11a9bc92d1b103c5242cc409395

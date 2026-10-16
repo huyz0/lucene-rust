@@ -1,0 +1,3000 @@
+0	a	p0=-1 L1 N-1 C1 P0
+1	\n,1a. é 	N2 N8 P2 N8 L8 L8
+2	.. . xb!1,ébbaé!	F0 L16 C16
+3	foxfox;\nb. ?\nfox fox1;; . \n.1.é?	L32 p5=0 L32 N-1 N-1 p18=0 p16=0
+4	quickfox1bb.1fox	f0=16
+5	fox,a . éé.quickquickquick	L26 C26 p2=0 C0 p7=-1 N8 F0 f25=26
+6	fox;.,bfox \n\n \n,a!b é;?fox?	N27 f13=-1 p24=4 F0
+0	éb. , \na,a !?, 	C0 p9=0 N15 N-1 N-1 F0 C0 C0 p1=0
+1	\n. ;éfox	C0 L8 F0 f5=8 P0 N8 f0=8 P0
+2	x,\n. ., 	N8 P0 L8 C8
+3	xfoxfox	N7 F0 F0
+4	a;a.é.ab ?\n	F0 p9=0 p10=0 L11 F0 f6=11 C11
+5		F0 L0 F0 f0=-1 f0=-1 C0 L0 F0
+6	. ,a	p0=-1 F0
+0	?    bé;?11;??fox.!?	p5=0 L20 F0 f5=20 L20 f17=20 N-1 L20 L20
+1	. fox,\n;foxx. bé1	p14=6 f1=6 L17 p0=-1 C0 L17 L17
+2	bquick .	C0 F0 p4=0 f8=-1 p4=0 p1=0 N8 p0=-1 F0 L8
+3	quickb fox. b .  x,.fox	f15=23 f14=-1 N-1 f6=17 N23 p8=0 L23
+4	.!!fox	F0 N6 C6 N-1 F0 L6 F0 f4=6 F0
+5	..b;1foxfoxfoxé!. 	C0 C0 F0 C0 f14=15
+6	x b	L3 N-1 C3
+0	.\n;\nfoxfoxb1,. ? fox	C0 N20
+1	?é	L2 P0 P-1 f2=-1 L2
+2		f0=-1 p0=-1
+3	ba . ,quick fox\nx1	F0 p8=-1 L18 p2=0 f0=18 L18 f2=18 N-1 f0=18 p13=0
+4	quicka;a.quick!aé;quick. 1!x. \n.. fox\n?	C0
+5	. baé ,ba?b  ;?. x??	F0
+6	b\n\n!équick,quickfox,;;é.,fox.é1	f5=31 p29=21 C21 L31
+0	axb .a!é!\n ; !	f4=14 P0 P-1
+1	xa?1fox!b ;;	C0
+2	,. .. axa\n;x1\n,é? 	P-1 F0 P-1 L18 C18
+3	!!1x,éx ,é\n1..\n. . b1;a 	p17=2 F0 L24 C24 L24 N-1 L24 F0 p0=-1
+4	;foxéa\né	L8 F0 p6=0 p3=0 F0 f0=8 p5=0 p3=0 N8 F0
+5	\n\nx!quick aafox,x?	C0 f7=9 L18
+6	 é!. xx ,!\n .quické. \n. é.;!x	F0 N29 f2=26 N29 F0 p16=5
+0	a!\nquickbquick,équick,éfox.	P-1 N27 f15=27 L27 L27 L27
+1	bfox. !éfox?b é;a. 1,;xquick?	L29 f5=21 L29 P21 L29 p27=21
+2	\nxb. \n;foxquick;b\n1,;	f2=6 L21
+3	fox!b1b.\n?.	C0 L11 p6=0
+4	. bxé1	N6 p3=0 N6 C6 F0 N6 f3=-1 L6
+5	!.. !\n\na;,x1; b.11,?a	N10 C10 F0 L21 L21 p16=5 F0 f15=18 N21
+6	 fox\n \n,quické;foxquickéxfox! a	C0 p11=0 C0 N30 f29=31 N-1 L31 N-1 f18=-1 C31
+0	 é1foxquick,ba aquick, 1foxbb,fox?	P-1 f25=34 N-1 N-1 C34 p18=0 C0 P-1
+1	1;	C0 N2 p1=0 p1=0 P-1 P-1 N2
+2	b\na. . baquick. 	f14=16 C16 C16 N-1 P0 L16 N-1 P0 P-1 C0
+3	a.; .  .  	f5=10 p4=0 f8=10 L10 F0 f4=10 C10 C10 L10
+4	x.?,é;.foxx..quick\n x?fox.!x 	C0 N22 F0 N22 F0 f13=29 L29 f24=-1 N-1 L29
+5	1 b quick. \nb?é.xquickfoxbxfox! b 	f18=30 C30 C30 p15=4 F0 L34
+6	xquick. é	p6=-1 p3=-1
+0	,11ax!?.1?1!aéb;a	F0 p8=0 C0 F0 F0 P-1
+1	 . 1 aé. a,a; ,.. foxé\né !.  	p25=15 C15 C15 C15 N29 F0 p11=11 P0
+2	,b?;.\n , a,é\n. 	p15=4 p1=0 p7=4
+3	 xbxbéééquickfox !!é..quick	L27 F0 C0 p6=-1 L27 L27 N-1 p24=0 L27 N-1
+4	 fox1quick.b1\n? bfox,!. é!.é. 	f19=30 L30 p0=0
+5	;x, . ?b1!	C0 C0 C0 L10 F0 p1=-1 F0 f7=9 f9=10 C10
+6	\n;\nbx .;xé,1. aafoxquick. b aquick,	p20=8 L35 C35 p22=8 F0 F0 N35 C35 C35 p17=8
+0	. \n.!!!,x1.?1é. .. ,quick	F0 F0 N25 p21=0 F0 f10=25
+1	é,quicka.. xa.  quicka.x!a	p3=2 L26 p21=2 N26 L26 N-1 P2
+2	 \n	P-1 N2 p0=-1 L2 P0 C0 C0 f0=2 N-1 f1=2
+3	.?é\nbfox ,é1  .1	F0 L16 N-1 F0 f2=16
+4	,\n?!?.b.;éb?;fox;fox;aéfoxb 	p1=-1 C0
+5	 ? fox 	p0=-1 C0 N7
+6	 éb\n.. 1	N8 N-1 C8 f3=-1
+0	 !?	p3=0
+1	;,!a1!a;;a	p10=2 p10=2 C2 N10 C10 N-1 P2 L10 N-1 N-1
+2		p0=-1
+3	b;;é1!!a,x,quick?bbquick\n.bfoxquick 	N36 p36=17 L36 C36 L36 F0 f16=36
+4	x	C0 p1=-1 p1=-1
+5	xx,!,1 ? 1quick!?	p4=-1 L17 N-1 N-1 f14=15 L17
+6	1,fox\n. é. .xbx!.	p17=0 L17 C17 p13=0 C0 C0
+0	 é\n x. . quickquickx quick?1,\nx!ébxquick	f19=40 F0 P-1 N40 F0 C0 F0 P-1
+1		p0=-1 p0=-1 f0=-1 p0=-1 p0=-1 N-1 C0 f0=-1 F0
+2	!	N1 N-1 f1=-1 C1 F0 N1 N-1 L1 L1
+3	 ; !bé!. x ;!. quick ,fox . 	f19=28 f18=-1 C28 F0 p23=9 f15=28 p22=9 f13=28 L28
+4	 .  .	f2=5 C5
+5	équické\né!é,	F0 p9=-1 f5=7 F0 F0 f3=7 f9=10 F0
+6	quick 1éé;; quick1x; !!? ..!a	L29 L29 C29 L29 L29 F0 p21=11
+0	, .	F0 N3 L3 F0 P-1 P-1 L3 f1=3
+1	!quick;;a.  x\n! !.xx,aé\n , 	N21 p22=21 L27 P26 p22=21
+2	 .11. .\n?fox a !é?;	f16=18 F0 F0 N9 p2=0
+3	?	L1 L1 p1=0 f1=1 f0=-1 N-1 C1 F0 f0=1 f1=-1
+4	,aquick ?x?. bé .  bx? ! 1	N19 F0 f11=26
+5	a. quick é. fox !\n?,\nfox.	p3=-1
+6	 b, x;?. . !quickaquick\nx.?1	F0 C0 C0 L28 f19=-1 N-1 p27=12 L28
+0	. ,?quick1,quickb 	N18 C18 P0 P-1 F0 f6=18 F0
+1	 é;? ,	f2=6 P0 p1=0 f3=6 f0=6
+2	quickquick x\nquickquick\n. a. a;. .  	C0 C0 p12=0 P-1 f27=30 f19=30 N31 F0
+3	aquickfoxaquické1!;a	f20=20 p0=0 F0 p1=-1 L20
+4	1x é!é	p1=-1 L6 p4=0 N6 C6 L6 F0
+5	;x1\n xaquick. quick .quickquickfox;.   ;	C0 C0 C0
+6	\n é? 11. éfoxfoxax\n\n???,fox xquick	N34 N-1
+0	,;\néab1 fox;	f0=12 p11=0 P-1 f7=12 N-1 N-1 F0 p11=0 F0
+1	\n\n.?fox\n,1quicka. ;1.	N9 p1=0 p4=0 N9 f8=21 P9 F0
+2	b. .fox;b?!x?1 a\nb, 	p5=0 N7 f6=7 C7
+3	??fox?fox.b\nfox .. x1?.1?, 	p20=6 N27 p27=6
+4	ab!?éb	N6 F0 N6 p6=4 f5=6 F0 p6=4
+5	\n. ?.  quick?.  foxquick quick;!.\nfoxx	f7=12 L38
+6	quickéé,\nfox,.? quickx;fox,1xaa 1 . 	f6=36 C36 f36=-1 L36 N-1 F0 f26=36 L36
+0	quick.é!	f8=-1 P0 C0 p3=0 P-1 p0=-1 C0 F0 P-1
+1	1?	N2 F0 N2 p1=0 N2 N-1 C2
+2	. !\n!b\n.é,.foxquick?? ,,1fox.?,é	F0 p17=5
+3	 	L1 L1 F0 p1=-1 p0=-1 F0 L1 F0
+4	\n. x	C0 p1=-1 p3=0 L4 L4 p1=0
+5	 !?;	f2=3
+6	. . quick1x;;.  !,. . xquick	F0 f6=28 F0 C0 f1=28 f28=-1 L28 C28 N-1
+0	é\n. fox;,b.\n\né	P-1 F0 p6=0 F0 N14 p14=0 N14 C14 L14
+1	quick quick  quicka  	F0 F0 C0 N21 F0 C0 p21=0 F0 p9=0
+2	?bxfox.x1é;  . foxa	N1 p11=10 N11
+3	\n	C0 F0 f0=1
+4	 a. quickéax,	p12=0 L13 C13 F0 F0 L13 F0 N13
+5	 	L1 f0=-1 f0=-1 p1=0 f0=1 N-1
+6	,. x;fox. ? aé. .! quick;	F0 L25 N-1 F0 L25 F0 N25 N-1 f11=-1 L25
+0	b? ?;x1  . .	P-1 N12 p7=0
+1	!fox1 ;.  	f10=-1
+2	x éa ,a.. 	F0
+3	11	N2 C2
+4	x1é. !a?fox	C0 p9=8 F0 N11 p6=0 p7=6 F0 f0=11 f9=-1
+5	.?1béx1,quick ?. b?	C0
+6	?\n. quick1éb 1. \n\n;	F0 L19 f15=-1 F0 N19
+0	x.   \na!;xa!bb?	C0 C0 F0 N15 N-1 F0
+1	x;x. é? 	p5=0 C0
+2	1!!,;,;? fox1	N3 C3 F0 C0 P-1 L13 f12=13 P9
+3	? foxquickbfoxquick,1!,;quick b! 1 é?	N22
+4	1. x,?fox\n fox,\nx	L17 L17 F0 F0
+5	 ,abquick 	C0 N10 N-1
+6	aéquick\n \n!1	f9=12 C12 f8=-1 f1=-1 p5=0
+0	,	p1=0 f0=1 L1 F0 p0=-1 F0 L1
+1	quickfoxxx!1axfoxfoxb \n? .	P-1 P-1 C0 P-1 C0 C0 L26 f15=26 P0 p20=0
+2	  ;quick. ! . x ?	f6=12 p2=0
+3	\n,... . équick.. .	p18=0 p13=0 N18 F0
+4	x a.quick fox	N13 f5=-1 f4=-1 p9=0 f2=13 N-1
+5	xaxaquickfox\n. 1. foxquick	C0 C0
+6	bquick!1?fox;? xbx	L18 f3=-1 N-1 N-1
+0	foxa\n,quick ;fox  bquick  !.	P-1 N28 p6=0 C0 P-1 N28 C28 F0 P-1
+1	,.,b..quick!aé.. x?fox quické?1. \nfox	P-1 F0
+2	! .  1; é?,b!.quické;	f15=20 F0 F0 F0 F0 P-1 F0 N2
+3	é 	F0 p0=-1 f1=2
+4	; \n\na? ?;x. x.foxb\n!	F0 p9=8 f8=20 f18=-1 p19=8 L20
+5	,.é. ,1!.! fox?,fox.\n 	C0 p4=-1 N10 L22 p10=0 p9=-1
+6	!,. \n?	p5=-1 N6 F0
+0	,éé \nbquick  	p5=0 F0 L13
+1	;  a.!	f1=6 L6 F0 L6 N-1 N-1 L6
+2	1,?1 quickfox\nafoxé. . ,1	f15=25 N-1 f23=25 p7=3 N25 f7=25 C25 F0 p21=3 C3
+3	 ébfoxa. \n	N10 L10 N-1 p7=0 N10 L10 F0
+4	.quick	C0 F0 C0 p1=-1 C0
+5	.quick	L6 p0=0 L6 C6 p4=0 f5=6
+6	quick1.b,1.	L11 f4=-1 p4=0 N11
+0	. quick\na. quick;	N17 L17 N-1 N-1
+1	. . quick?. foxé. !!1.x..a fox?	P-1
+2	1éé\n.é?\na 	f10=-1 F0
+3	!,	F0
+4	 \n!.,	f2=5 C5
+5	,1 xquick,a;!;\n  . é	F0 N10 L20
+6	foxé! ,quick1. é\nfox\n a;1fox\naé	f6=31
+0	b ;quick!  b	p5=0 f8=12 P0 C0
+1	 	C0 L1 L1
+2	;\né??	F0 f5=-1 C5 L5
+3	quickbxquick.bquickbé \naxé a\nquick1b	f14=36 C36 C36 p11=0 C0 F0 F0 F0
+4	quick?. x?!, aéfox, x. ;,a\n.quick	f25=33 C33 L33 C33 f4=21 F0 p28=21 L33
+5	b\n1	p1=-1 N3 C3
+6	;?11 . . quicka	p9=1 F0 N15 f3=-1 C15 p5=0 C0
+0	1foxéfoxquick?1!!   a	f11=21
+1	 fox. xa  !!x	F0 P-1 N13 N-1 P0
+2	. quickaaé a?quickéquicka,a fox; fox	f22=31 N32 N36 F0
+3	b;foxfox?,	L10 C10 F0 C0
+4	fox?quickfoxx?b;;b!.1. ?	p10=4 L24 f11=-1 F0 N20 C20 C20 L24 N-1 C24
+5		N-1 L0 N-1 F0 N-1 f0=-1 f0=-1 N-1 p0=-1 f0=-1
+6	!é\n?é,?foxb fox\n	p0=-1 f11=16 N-1 C16 C16 N-1 L16 f2=-1 N-1
+0	. 1quick1fox!!1! aquickbx	f22=25 f8=25 P0 L25 F0 p5=0
+1	. éb\n \n,.;1!bbba?!!.	C0 C0 L20 N-1 F0 P-1 N8 p3=0 N8 C8
+2	1;éab1éb. x,quicka1quick	N1 P0 C0 N1 L24 N-1 L24 p12=2 F0
+3	1é	F0 F0 F0 f0=2 C2 L2 L2
+4	1éb	N3 L3 C3 p3=0 N3 p2=0 N3 C3
+5	éfox 	C0 C0 F0 F0 f4=5 C5 N-1
+6	1,fox\n,. é\n;bquickafox; é  . ;,é,	L33
+0	foxé\n afox. quick\n1	C0 C0
+1	b.  aa.x	p5=0 L8 f3=8 C8 f7=8 N-1 N-1
+2	; quick.fox\n;é xaé. ,?!quick!éé,.1	f31=34
+3		f0=-1 F0
+4	xfox?\nquick.1bx	F0 N15
+5	xfox1!\n;?b ab1b; quickquick,1	N10 C10 N17 L29 L29 p13=0 p6=-1 F0 L29
+6	\n abé?;	N7 N-1
+0	11	N2 P0 C0
+1	\n. quick. a1	f5=12 f1=12
+2	quick,1quick. a\nfoxquick!!fox;, 	N26 N29 F0 C0 L32 N-1 F0 F0
+3	.. 1 1. .., ;, \n	f2=16 F0 f15=16 L16 N-1
+4	;fox	N4
+5	quick?,,.xé\nafoxfox , 11x; xx;	f20=21 p0=0 L30
+6	 x;\n.!1quicka?xb!;\n 	f18=20 f17=-1
+0	foxb?1  \n!axfox??;xa	N20 L20 L20 L20 C20 N-1
+1	,;!11	L5 N-1 f5=-1 P1 N5 p0=-1 f4=5 f0=5 P1
+2	b\n;\n	f0=2 P0 F0 F0 C0 L4 p2=0 F0
+3	, \n fox,.?\n\nx!\n\n éa	p12=0 f17=19 C19 f2=17 L19
+4	éfox;, 	f6=7 C7 f6=-1 N-1 C7 C7 N-1
+5	?.xééfoxé.foxquick\nfoxfox1.!quickfox	L36 L36 C36
+6	!,b!\nb?fox\n 1.é  quick bfox	p18=7 F0 f8=27 f8=-1 p1=0 F0 p26=7 L27
+0	!a\n?aéb.bquick\n	C0 P-1 C0 C0 C0 N15
+1	1bx .\n\n\n!?é. é	F0 f2=14 P0 F0
+2	b. ! aafox	P-1 P-1
+3	é. b! fox.a.  é\n ,éé?;	F0 L22 f10=21 L22 p4=0 F0 L22 N-1 L22 p3=0
+4	1,bé. \n;quickbquick. \n!., x.	L28
+5	.  ?;,b!  !é1x,.  fox!é. fox!	C0 C0 N10
+6	fox. ,!\néa.,?foxquické. éb;;,x	F0
+0	?,1 ,! .\nquickx b	F0 P-1 P-1 L17 f6=17 P0 N17 F0 N17 L17
+1	,équickxa? 1éx.!\n,.;.b;,quick	f0=18 F0 f10=18 P1 P-1 C1 P-1 F0 C0 C0
+2	b	P-1 C0 f1=-1 N-1 f0=1 N-1 P0 f1=-1 C1
+3	?;\n,.1? !;foxa \n?xé.fox\nx1	F0 p21=9 p13=1 C1 p14=1 N26 p6=0 N26
+4	xxfoxé\n\n; x. ?? .. x ;fox	N16 f17=25 C25
+5	b??\n,. fox\nxa!? fox..!.	f13=14 C14 f19=20 C20 F0 f23=23 N-1 C23
+6	!. a\n.,ax  ,\né\nx !quicka.x.	f22=27 p8=0 N27 p8=0 N27 F0 F0 L27
+0	?1 ,.;fox !a\n é1xbxfoxfoxa 	C0 C0 C0 f24=27 f17=27 f7=27 L27 L27 L27 N-1
+1	?? ,foxfox 	f6=11 C11 f4=11 C11 N-1 L11 F0 p7=4 F0
+2	 foxb. !x;fox quick 	P-1
+3		N-1 N-1 p0=-1 F0 F0 N-1 N-1 F0
+4	?.;. xx?a1é. ; x1	F0 p12=8 F0 p7=2 C2 L17 L17
+5	 !;!.\nquicka. ,;fox. !aa	L24 f13=14 p24=13 F0 C0 L24 f21=22
+6	\nquickbxquick!. b\n. . \nx?fox,bfox	F0 C0 p7=-1 L33
+0	?.. quickquickb. ,fox;aa. ?. 	C0 f21=29 P0 f26=29 F0
+1	 . . 	p5=0 N5 P0 C0 P-1 L5 p1=0 N5
+2	b. fox quick	L12 P0 p5=0 C0 C0 F0 f2=12
+3	foxé.foxbééafoxé	L16 L16 p14=0 p14=0 N16 f7=-1
+4	 1a. a!;quick	L13 f7=-1 f9=-1 p0=0 L13 N-1
+5	ax;;?.1!	L8 C8 F0 L8 f1=2 F0 C0
+6	\n?;. 1\nfox. x\n;\n,fox	C0 F0 F0 L20
+0	a!? bquick,;x.  1.?a	P-1 p11=0 P-1 N20 P0 p4=0 N20 C20 N-1 F0
+1	 \néa. . 1! a!quickba	F0 f9=20 f11=20 f20=-1 P0 P-1 N20 C20
+2	 quickéé .quickx \n; éa 1?!équick!a	f26=33 N34 C34 L34 F0 p25=19 f32=33 N34 f10=18 F0
+3	\n x	L3 p3=0 L3 C3 f0=-1 p1=0 F0
+4	. x1aé\na.\n\n1;quick! ! . quickquick	F0 p26=22 p26=22
+5	! ;	F0 C0 f0=1
+6	1	f0=1 p1=0 f1=1 L1
+0	!,!; ??;fox,. ;1\n.foxbquick 	p20=0 N28 L28
+1	 b. ?	L5 L5 N-1 N-1 f5=-1
+2	,1?b?b,x1!1\n?!\n\nx;fox 	C0 N3 f3=5 C5 L22 f17=18 P17 L22 N-1 P18
+3	?é,\né.;foxa quickquick !foxx . xb,\n;	L36 N-1
+4	??!,éa   foxa	N13 F0 p7=3 L13 C13 C13 N-1 L13
+5	a. a,b,éa1x1!?. .;..éfox!b	f2=3 L26 p8=0
+6	quick1;bquick?. , 1? ?11	N24
+0	. 	P-1 F0 p1=0
+1	.é 1,a;\n,foxab!	L15
+2	foxa ab\n b. a!éx\n;	f10=14 p12=0 f15=17 N18 L18 F0 N14 P0
+3	a? ? quické\nquickfox. quick . , quick\nabfox	N43
+4	 !.é. . 1,.x\naax\n	p7=3 C3 f9=17 N-1 N-1 p6=3
+5	\n\na;a\n\n bé..   a	f15=16 N-1 N-1
+6	quick .;quick. ;!.éé. ;	F0 F0 f3=23 p12=0 F0 F0 C0 L23
+0	foxbfox1quick.quick . 	F0 N22 C22 N-1 p10=0 p16=0 f7=22 f0=22
+1	é	N1 L1 F0 C0 F0 L1 N-1 F0
+2	b,\n;,b.x . fox1xfox ,xfox!	N3 P0 L26 P4 L26 f11=26 L26 L26
+3	;foxaxxfox,.\n,foxquick;.quickfox	f23=32 C32 N-1 L32 C32
+4	éfoxb; quick;,. . 	p2=0 f3=18 F0 N18 N-1
+5		L0 F0 f0=-1 f0=-1 L0 f0=-1 f0=-1
+6	fox	L3 F0 p0=-1 L3 p3=0 L3 p0=0 p2=-1 C0 C0
+0	quické ?!x.,béx!aé\n	F0 N19 C19 F0 F0 C0 p5=0 p17=0 C0 N19
+1	quick;fox\n	f10=-1 F0
+2	quick.	P-1 C0 P-1 C0 C0 f3=6
+3		N-1
+4	 !é!; foxx é ?xxxa\nx!	p13=4 C4 F0 C0 F0 L21 F0 F0 f20=21
+5	 xéxa?\n1b. ,?quick. foxx !\n 1	L29 p26=13 C13 N24 F0 L29 N-1
+6	. bfox foxéquick\n1 é;\n 	N23 p19=0 L23 f2=-1 L23 p16=0 f1=23 p11=0
+0	\n. . 1éfox. a. quick.  x é\na,b.,	N32 p9=0 C0 L32 F0 L32 p25=0
+1	... é,,quickfoxbb1 !. ;!quick	P-1 L29
+2	a!,ba!bxa. !quick	p11=6 C6 C6 N12 P6 p8=6 C6 P2
+3	. quick.. a.éb a1!. .	L21
+4	. foxb. quickb,. 	p7=0 L17
+5	béx\nx.;é1fox1 a1 1;;	N13
+6	quick. ?,;.	f0=11 f8=-1 p2=0 p1=-1 L11 L11 F0 N11 p0=0
+0		p0=-1 f0=-1
+1	!é;x,,xx\nb!éé	C0 f6=13 F0 L13 f3=5 L13 N-1 L13 f10=13
+2	fox. ,?,xb. . é!,	f13=16 P7
+3	b1xé,, 1é? 1é;	F0 C0
+4	.b;,a ;quick	N12 F0 p11=0 N12 C12
+5	. quickbb1xx. ;!?	L17 p8=0 F0 L17 F0 p9=-1 p8=-1 f10=12 p4=0 p9=-1
+6	x quick?	f5=8 L8
+0	quickx.. 	f1=9 f2=9 p6=0 C0 N9
+1	!b,;quick;.	C0 F0 L11 p6=3 F0 F0 F0 f5=11 C11
+2	!quickfoxx. équickbé! x ! ;é; .b	p28=27 F0 C0 p18=1 P0 C0 L32 L32
+3	. b . quické\n!.!é;?	p0=-1 L19
+4	quick \nfox é,. !,;;!, éa!aquick	N20 N31
+5	?\n\n ;!?xquick\nfox;. ;aquickaéx.	C0 L31 C31 C31 p1=0 f1=2 N13
+6	équick. a ? 	C0 F0 F0 L12 F0
+0	quick;fox\n?xfox!?	p15=0 C0 L17 F0
+1		L0 p0=-1 C0 N-1 L0 f0=-1 F0
+2	 ,foxquick 	P-1
+3	 \nba!quick?.foxéquick ,, b ;,1.b,	C0 N33 L33
+4	??quick\nx	p9=2 p6=2 N9 F0 N9 F0 f0=9 f5=-1 N-1 F0
+5	quick; 	C0 L7 F0 f3=5 N7 C7 p4=0
+6	?;foxb 1\n 	p5=-1 C0 f3=10 p9=1 f3=10 N-1 F0 F0
+0	1 bquick1	p8=0
+1	 ,xéaxa	C0 p4=2 p0=-1 N2 p7=2 f7=-1 P2 N7 f1=7
+2	\nxfox	N5 f3=5 P0
+3	1\n	C0 L2 f1=-1 F0
+4	é é	N3 L3
+5	\n , ..é;quickx,,?,???quickéb\n!	N8 C8 p4=0 L30 L30 p23=14 N21
+6	;x,\n1!;	f6=7 F0
+0	aéb1   ??quicka? 	P-1 p3=0 N17 N-1 L17 F0 L17 L17 C17
+1	.;\n\n  . . bé?\n1a!équick?	f24=-1 N-1 P0 p12=0 P-1 P-1 p23=0 C0 F0
+2	 . quick \n	P-1
+3	quicka\n?\nfoxa\nfox,x  quickéa  	f17=30 L30 L30 C30 p27=9 f15=30 N-1
+4	fox\nquick\n. .;. !quick ;;quick;a, .\n	N17 C17 p24=17 L36 N-1 F0 p35=17 F0 p6=0 C0
+5	!?aquick	f8=8 F0 p6=-1
+6	xbé1b? \n  quickfox\né	F0 L20 C20 f14=-1 p2=0
+0	b\n,??!quick ,bfoxxé?\n?fox\n.\n,\n 	p26=0 N31 p19=0 f13=31
+1	 \n1\n?a!	C0 C0 N7 P0 P-1 L7 L7 N-1 C7 L7
+2	1. ?1a; . 	F0 L10 f9=10 f1=4
+3	 ébquick!quick?b? ,1?.quick,?quick!	F0 C0 p28=15 p13=0
+4	1é foxquick a,éb ,!?\n b.quickfoxa,	N22 F0 N22 C22 f18=34 C34 N-1
+5	xx!\né.?!. fox.	p5=-1 f0=2 L14 L14 N-1 p1=0 F0 p3=-1 f5=6
+6	,.fox\n	C0 f6=6
+0	quickquick. ?fox. \n fox, 1foxquické! 	f3=37
+1	x;1.x,foxquickb\nax 1fox\n,	p1=0 N6
+2	b. ,x . \n . quickx.é.foxquick ?	N31 C31 P0 p29=0 p5=0 p13=0
+3	xbé \n?x	F0 L7 L7 f1=-1 F0 f4=7 f2=-1
+4		p0=-1 L0 L0 C0 L0
+5	 	f1=1 p0=0 C0 N1 p0=0 N1 F0 N1
+6	1	F0 L1 L1 p0=0
+0	bé?béb;é. . ;. .  xb. x	L23 f19=23 N-1 N-1 N-1 L23 P0 f0=23 F0
+1	a\n;1.x .quickquickxb\nb.ab,a	P-1 F0 P-1
+2	bquick,\nfox !,é	C0 L15 P13 N15 f14=15
+3	x! xa..1.b.bquick!	f5=18 F0 p3=-1 F0 N18
+4	; ;quick.b foxfox! x!xb;;bfox\nx	L31 N-1 p23=21 F0 C0 f24=31 p30=21
+5	 ?. 	f2=3 p4=0 N4 f2=3 p1=0 p1=-1 F0 p2=-1 f2=3
+6	fox;1quickfoxquick?\na équick. é	p16=4 C4 F0 N31 f22=-1
+0		p0=-1 F0 f0=-1 f0=-1 C0 p0=-1 L0 f0=-1 P-1
+1		f0=-1
+2	. ,. éabb. !. x.quick!. ;a ?; .	L31 C31 L31 C31 L31 p6=0
+3	 quick.	F0 p4=-1 p5=-1 F0 N7 L7 L7 F0
+4	.!quick.. . !,fox..  	p6=2 F0 C0 N21
+5	a; ?foxfox quickxx. a,?éé	f1=2 F0 p13=2 L25 p24=11 N21 p16=4 N11
+6	.quickfox?fox,b..1quick.x,	L26
+0	a. é,éx	P-1 N7 P0 f3=7 L7 C7
+1	.quick!. é\n;xx  	L16 f6=16 p5=0 F0 C0 N16 P0 P-1
+2	?1	P-1 f1=2 p1=0 N1 p2=1 L2 p0=-1 P-1 L2
+3	b,!a!fox!1fox	f4=13 L13 C13 C13 f11=-1 F0
+4	.; fox;!x. éb?x?. ,b!  1	L24 C24
+5	 b,	p0=-1 f0=1 p2=0 C0
+6		p0=-1 f0=-1 f0=-1 N-1 C0 L0 N-1 C0 p0=-1
+0	,;a. quickfox! a. quick11fox. !.. ;	f17=35 C35 C35 p32=0 p34=0 C0
+1		F0
+2	1;?. . . b!\n,;!\n xaxé;!	F0 p6=5 F0 F0 N1 P0 L23 N-1
+3	 1;;b!1quicka. quick,béquick  !a1quick.	F0 L39 C39 p31=6 N31 p36=6 p34=6 C6
+4	;é! quick.!xquick;,.1. 1; 1?!?!é	p2=0 p8=4 L32 F0 C0
+5	 ?.quick\n .a;foxquick\nquickquick?1	L34 N-1 N-1 p5=0 f18=21 f17=21 L34
+6	. ?é ?;.aé;é ;.. 1;	N19 p8=0 N19 f13=-1 C19 N-1
+0	x .,\nx! .	F0 F0 f0=9 L9
+1	bébéé\n,;fox , a.quick	N7
+2	 .11!,.aéfoxquickfox?!.quick!\n	f25=30 C30 p1=0 f8=23 L30 P23
+3	1\n1,b	N5 L5 L5 L5 N-1 f1=-1 C5 F0 f0=5 F0
+4	; 	p1=-1 C0 L2 F0 L2 F0 C0 F0 f2=2
+5	 quick.?1	p0=-1
+6	!\nx ; ?!!.,\n\nx fox\nb1;fox. 	F0 f10=27 C27 F0 F0
+0	 aé. 1.??,,. ;quick?	L20 f9=20 F0 L20 F0
+1	é;. foxa\na;quickfox quick. . ,	L30 N-1 N-1 f3=30 p1=0 L30 F0 P-1 F0
+2	b?ax	C0 N2
+3	. é1.?éa 1quické.;;	p7=-1 L19 F0 N19 L19 p10=0 C0
+4	b.   quickx  é.1\n ; . ?;. !foxfoxb	F0 f25=34 N-1 C34 C34 F0 N23
+5	fox?1\n,1a; \né, .1;	C0 f4=5 F0 L18 f14=15 L18 F0 N10 f6=7
+6	;!.  .\n  bbafoxquick ;quicka	C0 f20=28 N-1 f10=-1 f9=-1 f25=-1 F0 f17=28
+0	!?1. ; . x\n,. \n\néfox	p20=0 p17=0 F0 f18=20 C20 F0
+1	x\n éafox quick x. \n	N19 p13=0 F0 p1=0 C0 p15=0 C0 N19 p17=0 C0
+2	a!quick  . , quickbfox é!. 	P-1 L27 F0 N2 P0 C0 P-1
+3	 quick!. ,a;?fox  \nquick;.\n  ! x\n	F0
+4	quick,1;?fox. axquick,.;. 1\nba \n;b	C0 L34 f12=34 C34 C34 N-1 F0 f6=22 N34
+5	aa,. ;é!\n\néé\n,bb	L16 L16 F0 L16 N-1 p7=0 N10 N16 N-1
+6	foxxx1 ;1 fox\n quick é,!. 	C0 N26 f18=-1 f26=-1
+0	.a x 11	P-1 F0 F0 f4=7 P0 F0 p2=0 N7 L7
+1	x,,b,a.,quickfoxé  ,!?é1fox1	p26=20 P8 p8=8 C8 F0 C0 C0 C0 P-1
+2	quick;fox,1quick1b1x!?,?	F0 C0 P-1
+3	quické!,,a.,foxéquick;xx?1,.x	C0 N25 p15=0
+4	;!;xfoxé,. é\n?,é é .équické	L27 C27 f2=27 F0 p13=2 f18=27
+5	;;.. !éxfox .quick.   é\n. quick \n	N11 f10=11 F0
+6	,;quick 1x. 1x. 	C0 C0 f11=16 C16 F0
+0		p0=-1 F0
+1	. .b,b,,b1	C0 f5=7 f1=5
+2		P-1 L0 L0 L0 L0 p0=-1 P-1 L0 P-1
+3	\nbx	F0 p2=-1 f3=3
+4	\nxx \n	p0=-1 p1=-1
+5	\na\na\n!  b. 	N10 F0 C0 N10 C10
+6	. ?x?!. ,	L9 F0 L9 f5=-1 L9 p0=0 N9
+0	;quickfox	p8=0 P-1 N9 C9 N-1 C9 C9 P0
+1	\n; fox! ;	C0 f6=9
+2	x1\nb b1!éé?afox	L15 F0 P-1 C0
+3	?? 1éa	F0 C0 F0 L6 C6 L6
+4	 foxquick?	C0 C0 N10 p10=0 N10 L10
+5	 quickfox bb .  ;é;é .quickxé quick1.	p8=-1
+6	foxfox,1!x bx1b  quick ,fox\n fox. é	f30=35 f14=-1 C35 p16=0 L35 N-1 L35 F0 C0 p33=9
+0		P-1 F0 F0 F0 p0=-1 L0 C0
+1	\n.fox,éaé. 	p6=6 p7=6 C6 p3=0 N6 P0 C0 F0 P-1 L11
+2	b.éba. .;b?aé,. a. é	P-1 L20 p17=11 L20 F0 P-1 N8 C8 N9 p6=0
+3	. b; . ;quick,. 	C0 F0 F0 L16 p13=0 f0=16
+4		f0=-1 L0 N-1 L0 p0=-1 C0 N-1 p0=-1 C0
+5	ébb xfox.;quickb!x b ;?	N10 f8=9
+6	?;.a. !1	p7=-1 F0 p3=-1 F0
+0	; ,.,1 x	C0 f4=8 F0 p1=0 F0 P-1 f1=8 P0 F0
+1	. é. !. ,1, 	N9 F0 C0 p2=0 P-1 P-1
+2	a, . x?quick	N7
+3	,...1aquickquickfox!. 1fox;	C0 C0
+4	;, x	f2=4 f1=-1 p4=0 F0 p0=-1 f4=4 F0 C0 p1=-1 p4=0
+5	. ,\né?.!?. 	N10 p3=0 F0 f3=4
+6	x.\n??!1a,;quick.! 1 foxquick;xaab	C0 p12=0 f22=33 f10=-1 f17=-1 F0 C0 L33 f22=-1 p2=0
+0	a;. ?xa!b?	p10=0 f10=-1 p2=0 N10 N-1
+1	,x ?!,fox;1x;!. b,\n,b?	N6 F0 C0 f9=18 L22 C22 f0=6 C6 f13=18 N20
+2	. fox?afoxb ,quick\n!?é  \n;éé foxab	C0 C0 f26=34 C34
+3	quickfox,!\n.\n;éa\naé??! ?	f0=11 L24 f6=23 C23 N24 p5=0 C0 f9=23 F0
+4	é;1afox11;! foxé.;foxé	F0 p2=0 L22 C22 f14=-1 p8=0 C0 L22 f13=-1
+5	! ;1?fox;;.x	L12 f7=8
+6	\n. b1,	N6
+0	  !  bquickquick!bquickab. 	p3=0 C0 P-1 F0 L27 C27 N-1 P0
+1	x. x. éé.  ,.. équick?	L22 P12 P0
+2	!x,éé,\nbx.  	P-1 P-1 L12 P1
+3	é,é? quick!.  quickquick.?xa. é. !	F0 f12=26 N34 C34
+4	quickafox1	p0=-1 N10 L10 f1=-1 C10 C10 p1=0 p8=0 F0 p7=0
+5	!1quickb!quick\n.?x .. fox;. quick?..	C0 N9 C9 N19 L36 N-1 L36 C36 N-1
+6	é\n.x. éééxab . aé, ?	N20 L20 N-1 p18=0 f18=20
+0	b  ? ;1\nfox.é??. 	F0 f10=17 p17=0 F0 F0 P-1 F0 p7=0 C0
+1	. b!quickfox\na? a	P-1
+2	b\n\nb;	P-1 F0 f5=-1 N-1 p1=0 L5 f3=4 p1=0
+3	bquickquicka.b ?;;\n!!!\n\n	L24 f16=-1 C24 p5=0 C0 f15=24 p7=0 f17=24 p11=0 f22=24
+4	;?quick;éfox.  ! \nquick 1x!b	F0 N18 p10=2 N18 f4=27 f19=28 F0 f15=28 p7=2 C2
+5	. 1!x. fox. 	f0=1 L12 f3=4 p5=0
+6	bb??x.?quickfoxb!1 	N19
+0	 ?	C0 F0 p0=-1 C0 f0=2 F0 L2 F0 C0 C0
+1	é.fox.a?quick1 xé??;quické,!bb. a	F0 C0 P-1
+2	a.x?x éé ;quické,.	p18=10 F0 p15=10 F0 L18 L18 C18 C18 L18 F0
+3	1!	N2 F0 f2=2 L2 N-1 C2 C2
+4	 \n. 1 \n  foxx 1ab!! fox! ; a	C0 L28 p14=0 N20 L28 C28
+5	. ,\n;	p3=-1 C0 F0 F0 L5 N-1 p0=0 C0 F0
+6	aquick	f5=6 f6=-1 L6 N-1 f5=-1
+0		F0 N-1 F0
+1	aaa\n!!. ;	C0 L9 L9 P0 p8=0 C0 L9 N-1
+2	.\n,1quickfoxbx;? !?foxb	C0 C0 P-1 N14 F0
+3	b,,;\nx  xbfox quickab? ;,,é. 	C0 L29 L29 F0 p10=-1 C0 F0 N23
+4	;quickquickquickb, 1\n 	f15=22 N-1 F0 F0 f14=22 C22 L22
+5	 a! .	f0=1 p2=0 N5
+6	;,\n.1a\n;	C0 N8 p0=0 F0
+0	\na	C0 P-1 N2 p2=0 C0
+1	 ?ba! quickquickb.;;. 	P-1 C0 F0 p19=0 C0 N22
+2	.quickquick	C0 F0 F0 C0 L11 f7=11 f8=11 f1=11
+3	1aa. é1! . é. . fox 	F0 C0 p6=-1 F0 N20 N-1 F0 f1=20 p1=0
+4	a\nbquickx ?éa . 1,x	f0=19 C19 f0=-1 N-1 f1=-1 F0 N19
+5		C0 L0 L0
+6	. ;1 \nx.	C0 F0 N8 L8
+0	?.  b1xééquickfox?x.ax;!b	p22=0 C0
+1	b	f1=-1 C1 P0
+2	?quick!b1!x!!,!\n?. x11	N1 P0 N1
+3	\nb1?;. ;1bbfoxa; x 	L19 f6=19 f19=-1 f9=-1 f0=19 N-1 p4=0 N19
+4	 1quick,a,ab.	N13 L13 N-1 p10=0 L13 F0
+5	!. .  xaéa !;1équickb ?! \nfoxquick?	f4=6 L35 f14=21 F0 f28=34 p4=0
+6	.?,\n	f4=4 L4 F0 F0 f1=4 f0=-1 C4 N-1 L4 N-1
+0	 ! . !xquick? b1a1a. ?1  . ,	p5=0 P-1 L28
+1	. ? fox,quick;fox1bx!., b , quick!éé	P-1 N8 p35=27 F0
+2	! !1quick!b!b;é. xb quickfox	P-1 p24=14 C14 P13 f11=12 L28
+3	a?b	L3 N-1 C3 p1=0 F0 F0 C0
+4	é? ;	f1=4 F0 p4=3 p1=0 N4 F0 f2=4 L4 L4
+5	 . \n	p2=-1 C0 p1=-1 f3=4 C4 L4 N-1
+6	1. 	F0 p0=-1 C0 L3 f3=-1 N-1 N-1 p1=0 C0
+0	é!foxquicka.  .  \n . xbéquickquick ,é1	F0 C0 P-1 N38 C38 C38 C38 p36=0 p2=0
+1	 a.,xé!\n \n\nafox!. .foxb	F0 P-1 P-1 C0 f3=23 L23 C23 N-1 N-1
+2	!x fox1!?! ?.  . é. . fox.  . 1é?	C0 f22=33 F0 N1 p14=11 P1
+3	,b1.. ;\n 1\n1	f1=12 f9=-1
+4		p0=-1 f0=-1 F0 p0=-1 N-1 L0 F0 L0 p0=-1
+5		N-1 F0 N-1 N-1 C0 N-1
+6	,!, \n 1,a	C0 p7=-1
+0		C0 C0 p0=-1 P-1 N-1 p0=-1 C0
+1	,bax b\n!bfox;a?fox quick \n!. x1!	P-1 N32 L32 N-1 p21=1
+2	.aé!foxfox;1!équick;fox,a;	N4
+3	quick,\né!x. quick,quicka;b	L26 p11=0 L26 p5=0 f20=26 C26
+4	x	f0=1 L1 F0
+5	!quick 1quickxfox ?1quicka,	F0 F0 N7 N17 f7=17 C17 C17 F0 C0
+6	.fox!?fox	L9 p9=0 F0 N9 C9 F0 C0 L9
+0		f0=-1 N-1
+1	! . 	p3=0 p3=0 F0
+2	. .  ! !	P-1 p6=0 N7 L8 f7=8 p2=0
+3	é\né bfoxb? 1quickb	C0 p3=-1 L18 L18 f3=18 p6=0 F0 F0
+4	 	f1=1 L1 L1 C1 p1=0 f1=1 f1=-1 L1 L1
+5	\n!;.\n fox aa1\n!b!  b é1	C0 C0 C0 L23 N-1
+6	!1	f2=2 F0 C0 L2 N-1 p2=0 N2 N-1 F0 C0
+0		f0=-1 P-1 f0=-1 N-1 L0 C0 N-1 P-1
+1	!.  .  	L7 p2=0
+2	 ;?  é  ?. a1b\n?é	C0 p5=2 P1 F0 P-1 f6=11 P5 F0 L17
+3	b!é? x ?.;1	p9=-1 f5=11 L11 p4=0
+4	x quick;;bbquick,?1b..?b\n 	f21=26 C26 p9=0 F0 L26 F0
+5	. ,1fox. 1!x; ,,1	F0 C0 f2=3 C3 F0 F0
+6	;?aa\n1?. \n	p6=-1 f10=10 C10 C10 L10 C10 F0 F0
+0	11fox;; a1	F0 f7=10 f2=10 p5=0 P-1 p3=0 N10 C10 F0 N10
+1	1x. ;x. x\n xfoxb1!a.éé1foxfox	F0
+2	b;!; . a...\nquick,\n1?.1. quick..,	F0 L33 P22 C22
+3	. 1 . ;.!bé fox. quick ,baba é?!	F0 C0 p5=-1 C0 F0 f25=32 N-1 N-1 f10=32
+4	axé.  fox;\nquick  xxb	F0
+5	,	N1 L1 f0=-1
+6	\n. fox!	p6=-1 L7 C7 N-1
+0	b?.\n !\n,é bé?	P-1 p3=0 L13 P0 F0 P-1 L13 N-1
+1	!	f0=1 f0=1 F0 N1 F0
+2	b!é ;!éa;!?,1é!quickquick; \n\n\nx	F0 F0 N2 f18=25 f7=8 L31
+3	.  fox.;xafox. \n!é. x?b	L23 N-1 C23 L23 F0 p12=0 L23 N-1 C23
+4	a\nb1;quickfoxaquickquickafox! x?quick? ?1	C0 C0 f8=30 p2=0 F0 C0 C0 f0=30
+5	;é\nxa . x,fox. . 	N10
+6	fox . quick\n  quickx\nquickbquick\n\nbé.	p34=0 N37 F0 C0 N37 N-1 p16=0 f20=37 p8=0
+0	é;foxb	P-1 P-1 P-1 P-1 N6 p3=0 C0
+1	?; a,quick \nquick? 	F0 C0
+2	xa?é . , . fox.	C0
+3	fox bxfox ?.  quick!b;é;b?	N20 f1=14 C14 f20=26 p25=14
+4	!	C0 p1=-1 f0=1 f1=-1 L1 L1 L1 p1=0 L1
+5	,	L1 N-1
+6	ba;quick1?fox\n a,	L17 f16=-1 N-1 p14=3
+0	 . ,  	C0 F0 P-1
+1		L0
+2	?équick é. fox?;\nb.\nfox é . quickfox ?	C0 p30=16
+3	éa	N2 N-1 F0 p1=-1 L2 F0 F0 p1=-1 C0
+4	,xquick	F0
+5	 1ba \n,!;éx,.;fox ?;	L20 C20 L20 f4=6 N17 p8=0
+6	;11.! xé. . ;. ,. 	N18 F0 p7=-1 N18 f15=-1 L18 p5=0 N18 f7=-1
+0	b,quické.. ?quick a\n11fox	P-1 f8=25 f22=25 p7=0 L25 P0 p15=0 L25
+1	 fox.. \n,aa;!bx\n ?x\nx\na	f18=23 F0 p12=9 L23 f7=9 C9 p14=9
+2	,? ;,fox 	N3 C3 L9 C9 F0 p4=3 C3 p5=4 F0 F0
+3	. a\n\n x.. ;?b1?	p3=-1 L15
+4	. x.x. !\né.é! a.ébbfox;!,!	F0 C0
+5	 fox1! ;fox?,éfoxquick. 	N11 f13=22 f23=24 L24
+6	.quickabaabb x?aé	f8=17 F0 F0 L17 p3=0 N17 p4=0 F0 N17
+0	afoxé	p1=0 P-1 N5 P0 N5 C5 C5 P0 L5
+1	.quickfox?..,b1\n  !	f6=13
+2	 . !. !.,,,é. \nx. b	P-1 f7=8 p1=0 f1=6 p19=15 L19 P15 P8 p9=8
+3	?,;quick b?x111x,é,. 1. ,1.,	p25=11 L28 F0 C0 N28
+4	afox; ,fox1 .  b 	C0
+5	foxx. . ??,!quick,	L18 f7=8 C8
+6	b\n11éafox.x;é\n	F0 F0 F0 f11=14 C14 p11=0 L14 p11=0 L14 L14
+0	 x;!quick	f9=-1 L9 N-1
+1	,	f0=1 L1 p0=-1 L1
+2	. . x	P-1 C0 C0
+3	xé1,,!1?\n1  \n éfox;fox!é	p4=-1 p15=0 f3=23 N24
+4	 a. ;fox,. b?	f11=13 C13 F0 C0 f4=13 p3=0 C0 N13 p9=4 C4
+5	xéquické?1x.é,foxx\n;,., ;	p2=-1 N9 L25 C25 p20=9 N19 F0
+6		L0 p0=-1 f0=-1 f0=-1
+0	. éxfox1?é,.bbx	p5=0 F0 L15 P0 p8=0 F0 F0 N15 N-1 N-1
+1	 xaquick	f0=8 N-1 C8 f0=8 F0 C0 f2=8 f1=8 C8
+2	!1x aquick!é?, ;?1!x,.xéb?x	C0 N1
+3	x.. 	p0=-1 N4 L4 F0 C0
+4	; éfox;,a?équickfox1é!. \nfox.afoxé;	F0 C0 N25 f8=25 f25=35 f2=25
+5	\nxfox. quick!?1,  ?11,a,quickfox	F0 N12 N22 F0 C0 F0 p16=5 F0 N12
+6	;,.  1é;,1	C0 N10 F0 N10
+0	;a\n,\n. aéé. x .?,quick!1	L24 p16=0 N24 F0
+1	\n?quick	p5=0 L7 C7 F0 L7 P0 N7 C7 F0
+2	1 ?\n\nx,,quickquick??é.b;;	f18=20 p3=0 p2=0 f1=5 p5=0
+3	b\nxquick?aa\né;!	C0 L15
+4	\n fox,.!1a!. 	f0=13
+5	é,fox\n?b\naquick. ba ?\n \n	N9 N19 N24 L24
+6	 quick;;,1fox,. ;!!;é 	p15=7 f17=22 f1=-1
+0	fox	N3 p3=0 L3 P0 L3 p2=0 f1=3 f1=3 f2=3 p0=-1
+1	bb?béquick!xfox\n  	f3=18 p12=0 p13=0 F0 P-1 C0 C0 p0=-1
+2	 ;1\n1. ;;!, 	F0 C0 N1 L12 P10 F0
+3	. ,!?quick?. . \n!\n quickx;é;,	F0 N29 C29 p28=13 N29
+4	, . a\nb.a?11. 	L14 p3=0 p0=-1 C0 L14 C14
+5	é1b1	f1=4 f0=4 f0=4
+6	. b.?abxxb. é!x	p5=-1 f3=15 p1=0 N15 N-1 f6=-1
+0		F0 N-1 L0
+1	,!!?xx;éfox, , ,;a?\n a.b	f5=12 L24 C24 P16 p21=16
+2	\n\nfox; b	N5
+3	. \né!a;b1.. .	p3=-1 F0 f3=13
+4	 quick,é 	f3=9 C9 F0 L9 f4=-1 p2=0 C0 C0
+5	 fox1\n .é;. x ?!aa;,éé1..,	F0 C0 p15=5 p14=1 f12=13 F0 L26 p11=0 C0 L26
+6	.,.a?, aa ?!? \n\n11. 	L20 p4=0 L20 N-1 C20 p14=5 f2=20
+0	quick \n?bx x1.ab ;bquick ,  ab.	p12=0 C0 p23=0
+1	,x!fox1.;quick??x,b	p10=1 C1 L19 L19 F0 N18 N19 L19
+2	a!b. afoxé !\nbquick.;é\n;	f19=20 f18=20 p19=13 C13 N20
+3	!b1	L3 F0 p3=-1 p2=-1 F0 N3 L3 N-1 L3 F0
+4	?x a?quickxbquick;;.;éé	F0 C0 L23 p22=20 f3=23 L23 F0 f7=23 L23
+5	; ;?\n. 	N7 L7 N-1 f6=-1 p6=0 f3=4 F0 N7
+6	x. ;;,.?  	C0 F0 F0 N10 N-1 p4=0 L10 f7=-1 L10
+0	 	p0=-1 C0 F0 p0=-1 p0=-1 p0=-1 p0=-1 P-1
+1	\n. \na\n	C0 C0 L6 P0 C0 P-1 L6 C6 f4=6
+2	 b x\n	P-1 L5 p3=0 P-1
+3	\nx x\néx\n 1foxquick;bb!bfox\n x. 	p17=0
+4	é?!.b.	F0 F0 N6 F0 C0
+5	aquick	f1=6 F0 p6=-1 p1=-1 N6 p6=0 N6 p4=0 f6=6
+6	. x1 ?quick	N11 L11 C11 f0=-1 f11=-1 f5=-1 p7=0 p7=-1
+0	quickquick,1	F0 P-1 F0 C0 F0 C0
+1	quick ?,. . . b;	f13=16 f2=8 N16 F0
+2	quick?é. 1;,!,,b?	F0
+3	?bfoxfoxa.;?1,,. 	N17 L17 f17=-1 L17 N-1 f0=12 F0 p10=-1 f16=17 C17
+4		N-1 F0 f0=-1
+5	x 1 quickaxéxquick\n1	F0 C0 C0 L20 f5=18 f6=18 p5=0 f7=18
+6	b, ,;. bé\néb,\n!. bb	L19 f11=-1 C19 p17=5 F0 f16=19
+0	quick quick\n1ax	N15 p10=0 f12=15 L15
+1	\n,?1b,;;quickfox.  ,xé	p7=6 p15=6 F0 P-1 p22=20 N22 L22
+2	foxquick? \né\na ;1;? ;!. \n	F0 L25 N-1
+3	a!. ,	L5 f3=-1 F0 N5 L5 N-1 F0
+4	éb. !!foxb!quick;1\n?!a\n;1.  ,	L29 F0 p1=-1 f18=29 C29
+5	 1. !	C0 L5
+6	axx	C0 N3 N-1
+0	 é.;é	P-1 f0=5
+1	a\n11foxaaquick . \nxfoxb. fox. 1. . 	P-1 P-1
+2	 	N1 p1=0 N1 C1 N-1 F0 f0=1 p0=-1 f0=1
+3	a	N1 F0 L1 L1 F0 F0
+4	foxx ?	C0 L6 L6 L6 N-1 p5=0 F0 L6 L6 C6
+5	quickquick! a  	L15 C15 F0 p4=-1 F0
+6	. , ?quickx!   ?b !	p12=0
+0	. é. fox;! 1.   bé, éa!!x	f2=25 f3=25 F0 p24=0 F0 f6=25 L25 N-1 f23=25
+1	 quick,	p0=-1 P-1 F0 L7 N-1 C7
+2		C0 P-1 C0 p0=-1 f0=-1 C0 N-1 f0=-1 C0 F0
+3	. !x	F0 L4
+4	foxéfox1.11..fox;,b1 	N21 C21 C21 p16=0
+5	a;,,  xaquick.;	f4=6 p4=0 f10=13 N15 L15 N-1 N-1
+6	é.;fox fox ,.  ,\n\n;	p8=-1 F0
+0	;,?aa!quick	P-1 N11 p7=0 C0
+1	\n. bx\nquick.  ;foxx.b,. ,x; \n	C0
+2	?. x ,1 !!;b;bé	L15 P13
+3	\n  b;  aquickfox,x?é . ;é;é;	f27=28 f22=-1
+4	 !.x1 !xquick,\n,. ;fox,1;!a.,. 	C0 L31 N-1 L31 C31 N-1 C31 L31 p21=18 C18
+5	éx fox ?x;quick1  ?afox,;;	L26 N-1 f20=23 F0 p10=-1 p16=6
+6	1!;é!.aa; ?!. quick . axéé	C0 p11=3 F0 C0 f10=26 f0=26
+0	\n; ?. ?. ;b,  ,.	f5=16 f12=16 F0 L16 L16
+1	 ?	L2 F0 N2
+2	 ,xb. ,b.?	f5=10 p7=0 F0 P-1 f2=10 P0 f3=10 P0 p5=0
+3	\nfox	f3=4 L4 C4
+4	,b.xb,x!quick;;;	C0 p8=0
+5	quick. quick b1. a,;\n 	C0 F0
+6	fox.. quick	N11 C11 L11 N-1 L11 p9=0 C0
+0	!1 a. ; a . !!a!	L16
+1		p0=-1 L0 C0 N-1 F0 L0 P-1
+2	;quickx\n 11a!.	C0
+3	1b;é,1quick. ,é	F0 p7=-1 f0=15 N-1 F0 L15 f12=-1 L15
+4	.1;1x,foxquick	N14 p9=0 C0 p6=0 F0
+5	! b.ab.. quick\n. ;,;\n ,a\nx	L26 L26 N-1 N-1 p0=0 f24=25 f15=16
+6	a	f1=1 N-1 f0=-1 C1 N-1 N-1 C1 L1 L1 C1
+0	1 a!1,; foxx,é!	p1=0 L15 F0 N15 N-1 C15 C15 F0
+1	;.,é, é;! !x!	C0 L13 f0=3 F0 L13
+2	baafox; 1afox1quick;	L20 F0 P-1 C0 L20 p1=0 F0 P-1
+3	fox;.ax	N7 p3=0 p0=-1 F0 F0 F0 p3=-1 C0 p3=-1 f6=7
+4	 ?!!quickfox 	C0 N13 C13
+5	x. quick!	f1=2 F0 C0 L9 L9 F0 L9 F0
+6	b.  !?	L6 F0 L6 L6 L6 C6 F0 N6
+0	!quick,\n\n fox \nb .\n,quick1	F0 F0 P-1 N26 F0 N26
+1	!\n1	P-1 N3 P0 C0 f2=3
+2	;,,1x.. !quick; abéfox	p12=9 f8=9 P1 F0 p8=1
+3	.;!!x!ééfox?!fox. quick !	F0 f15=25
+4	?fox1foxéaquick\n. 	L18 C18 p12=1 C1 C1 L18 p0=0 N18
+5	quick? ?quick	C0 p12=0 p8=-1 N8
+6	b foxé?. ?fox	p10=0 p4=-1 F0 L13 N-1 L13 F0 C0 F0 C0
+0	foxx. 1?! é11	N13 P0 p3=0 p10=0 p3=0 F0
+1	fox	f0=3 p2=0 F0 F0
+2	quick;x?1b .\n,?,	F0 p16=15 F0 p3=0 N5 F0 P-1 L16 L16 C16
+3	?!quick. . éax1!\n.fox.  quick . quick	L37 L37 L37 f16=37 F0 L37 C37 F0 N24
+4	.éb ,,?fox1..,.	N15 p7=0 F0 f11=15 L15 p5=0 C0
+5	,. ?quick.  quickfox., 1é1foxé ;fox	F0 L35
+6	. b!?1..  .. b.  ?éé?.	p8=-1 f7=22 f4=-1 L22 C22
+0	foxaquickaxa. ,,\n!?fox,\nquickfox.  1	F0
+1	?quick?é1quick. 1. x ? 	F0 F0 p16=0
+2	fox. ,a,. !fox.! ?\n,b !	f2=11 f6=11 C11 L23 N-1 L23 N-1 F0
+3	,fox	f1=4 L4
+4	 ; é x?1;.!x	L12 N-1 f6=-1 F0
+5	é..quickb	f4=9 C9 F0 L9 N-1 C9 N-1 f8=-1
+6	\n.?;	p1=-1 N4 F0 L4 f1=-1 C4 p2=0 f4=4 f4=-1
+0	 quick,. ,b,1quickfox\nfox?a?é1 	N31 P0 N31 P0 p8=0
+1	1\né	L3 N-1 N-1 F0 p0=-1 F0 C0 P-1 N3
+2	fox,quick!1é! bafox,quickx1fox.  quick 	f15=33 P14 p11=10 p22=14 C14 N33 p39=33
+3	.	L1 f0=-1 f1=-1 L1 L1
+4	a1éé	N4 L4 N-1 N-1 F0 N4 F0
+5	quick;\n!\n x\na1?quick;foxx	C0 f23=25 C25 f20=21 C21 C21 L25 f3=5
+6	\né;1éxb.,. .  fox.;quick1 	f4=26 L26 p15=3 N26 p18=3
+0	éba.1\n.\n\n  .1 \n?!quick.quick!	L29 p0=-1 F0 p4=0 L29 P0
+1	xaxé;b! !fox.quick x;.! \nfox1	F0 f0=29 N-1 C29 N-1
+2	. !1;quick ?fox foxquick ? 	F0 C0 N3 C3 N4 C4
+3	,xb, quick\n. ?a	F0 F0 L15 L15 L15 L15 F0 F0 L15 N-1
+4	b?!aa. ,fox .  quickba,quick,.?!	f17=32
+5	.x	C0 L2
+6	quickquicka1?;\n .\nquick	L23 C23 f14=-1 p10=0
+0	?;?. é  	F0 C0 F0 L8 F0 N8 p7=0 p5=0
+1	b. ?. !,b??.	P-1 p3=0 N8 P0 C0
+2	\n 	P-1 F0 P-1 f2=-1 L2 C2
+3	 ;,!quickbxéb,. .ba\né1é,;	F0 L25 F0 C0 C0 f5=25 L25 C25 N-1 F0
+4	,afoxx!\n. !fox!.	L16 L16 f11=-1 p7=0 N16 F0 C0
+5	b .é	L4 N-1 N-1 p0=0 p3=-1 F0 C0
+6	. ,! !\nxquické. foxa	p7=-1 C0 L20
+0	1!1 quick?1!!bb?	F0 N16 L16 C16 F0
+1	bé?a,,\n?b.. 	C0 L12
+2		N-1 C0 L0 P-1 f0=-1 C0 L0
+3	\nb. x,.. ,1,	f8=12 N-1 L12 p2=0 p4=-1 F0 L12 p10=0
+4	fox?a!b1é ,fox	C0 N14 p2=0 N14
+5	foxa	f0=4 L4 p1=0 L4 N-1 f2=4
+6	  	f1=2 N-1 C2 N-1 p1=0 N2 f2=-1 L2 F0
+0	. quick1éaéquick.!1é ?1!.,quickxb	P-1
+1	é1é1afox?a. fox1!foxb?foxé,1. 	N27 F0 P-1 C0
+2	?. ,.?1 ?	p6=3 L9 N-1 p2=0
+3	é1	L2 f0=-1 L2 L2 f1=-1 F0 F0 C0
+4	1.,,quick\n,b,fox,quick	C0 p22=0 F0 p10=0 f4=22 L22 N-1
+5	! 	C0 N2
+6	foxquickfoxquick\n; \né \n!.	C0 C0 C0 p0=-1 L25 C25 F0
+0	\n  1a,. x\n?b .fox,xquick.xéquick\n	L33 F0 f8=33 N-1 p18=0 P-1 L33 f30=33 F0 F0
+1		C0 N-1
+2	. x !.  \n\nquick . 	p6=0 P-1
+3	x\néaa!a\n	C0 F0
+4	x,x;,	F0 f1=5 L5
+5	x\nquick\n. b1a1\nfox.?	p15=2 L20 F0 p14=2 C2 N14 C14 C14 C14 F0
+6	x\n;x;,;é	C0 p1=-1 N8
+0	;,quick1b.?!x;é?\n quick. ,  . ;a	N32 N-1 f11=32 C32 f31=32 L32
+1	 ; .  \nb,,! afoxx1a.fox!b.	N9 N10 C10 f16=26
+2	. 1.!. 	f3=7
+3	,aquick.. 	L10 C10 L10 N-1 p0=0 N10 f4=-1 C10 L10
+4	     !1\n,;b	f7=11 f10=-1 f5=-1 F0 f11=11 F0 F0 L11 N-1 f9=-1
+5	b\n ;a ?,	N8 p1=0 N8 C8 C8 f6=7 p8=0 N8 F0 L8
+6		p0=-1 F0 L0 p0=-1
+0	fox .  !;x  ;,.. 1b\n?foxbb ;	C0 F0 L28 f6=28 f5=28 f5=28 p27=0 L28
+1	 ,a. 	p1=0 p0=-1 p3=2 L5 C5
+2	\n	P-1 f1=-1 N-1 L1 N-1 C1
+3	1	C0
+4	!a!!,?, 	N8 f6=-1 F0
+5	aéé. \n a!a ; !x.aé	F0 f10=11
+6	 b	F0 L2 C2 N-1 p1=0
+0	quick	P-1 f4=5 f4=5 L5 F0 P-1 f1=5 f2=5
+1	. ...b!,. 1 \n!,	C0 L15
+2	éfox?	C0 N5 f4=5 f4=5
+3	fox!\n.  b!foxa	f5=14 C14 F0 F0 p10=-1 F0 F0 f7=14 f8=-1 C14
+4	?\né. . foxa!x.?fox. x!!éb?bquick 	F0
+5	quickquick!1!?é.\n,?  1. ?quickb?. ,	L35 f32=33 f8=10
+6		N-1 N-1 N-1 p0=-1 f0=-1 N-1 C0 L0 F0 F0
+0	1fox\n.éx;1?b,;1b. quick.;quické;foxa	F0 f18=36 N-1 p33=0 p8=0 L36 L36 L36
+1	;.1;é\n!1,	P-1 f4=9
+2	\néb. é?\nb  1x .  	P-1
+3	?. aé xquick 1b	C0 N15 F0 p6=-1 N15 L15
+4	1x1fox\n. quickquick. \nquickbé;bx. ;.\n !	C0 C0 f14=32 L39 L39 f29=-1
+5	1?1;! 	C0 f6=6 C6 C6 p4=0
+6	; !b, .axéa. ; ,fox.!. bx?é	C0 N27 L27
+0	 1quick a b\n1a?quick1.	P-1 F0
+1	xb 	f0=3 p2=0
+2	!1!é1!.  . 1!\na1b.1?!é. 	C0 p19=14 N21 f2=3 C3 N9 P3
+3	. ?xfoxé	L8 p6=0 N8 C8 p8=0
+4	?? é,quickquickx!é quick \n	C0 N17
+5	1 a??x. ?	p0=-1 L9 p0=0 N9
+6	!fox ;é	L7 p1=0 f7=7
+0	 afoxbb,foxxé . , 	F0 N18 N-1 p16=0 p1=0 f12=18 P0 F0 p9=0
+1	 .1quick b?foxquick\nquick, !éé	p18=0 L30 p3=0 C0 N26 L30 C30 p29=26
+2	a ,,quick!a,a!1	L15 L15 p4=0 N10 p0=-1 F0
+3	1. ?aé  ;é,a,b,quick	p6=-1 F0 C0 p18=4 F0 C0 F0 L20
+4	!.	L2 F0 C0 F0 f0=2 p0=0 N2 C2 N-1 f2=-1
+5	;a?aafox	C0 N8 N-1 p3=0 N8 F0 L8 L8
+6	foxé!a;\n .   1 \nb1a 	N20 p10=0 p1=-1
+0	1	F0 N1 N-1 F0 f1=-1 f0=1 L1
+1	fox. x?b;1foxé;éé b;!	C0 C0 P-1 P-1 N21
+2	;é?xx1x.   quickquick,.1;1.  .	C0 N1 f25=30
+3	;1 aa!. !fox. ab! x.. ;!\n	F0 p22=9 p10=0 N25
+4	. ?\n. .1 ??b,  aquick1	F0 N22 f12=-1 F0 f12=22 N-1 N-1 N-1
+5	,	F0 N1 F0
+6	\n,!b?1\nb! é,b\n,1 1x!. ,	L23 C23 C23 f9=-1 C23 L23 N-1
+0	. ;fox.fox;?! 1éx	L17 p1=0
+1	éx,quick 1!ba!??!a . \nfoxx	P-1 p21=3 P0 P-1 P-1 p13=3 N26 F0 f22=26 N-1
+2	 quicka	L7 N-1 F0 C0 F0 C0 f6=7
+3	,é 	N3 f2=-1
+4	,x!	p0=-1 N3 F0 p2=0
+5	fox,xé!é é !!.a!aa	N10
+6	!a ??quicka,quickbx	p19=5 C5 F0 N19
+0	?. .. foxé; a, \n?!quick?1a 	N27 P0 C0 f5=27 C27 p9=0 P-1
+1	x!. quickquick,.,;;\n  ;xéx;	P-1 F0 L27 N-1 f21=27 P17 P15
+2	b 	C0 p2=0 L2 f0=2
+3		f0=-1 f0=-1
+4	..\n?a!?é;\n,	C0 N11 p5=4 C4
+5	 1,.fox,xa a1 ! , foxx !fox??	F0 f19=22 F0 p4=-1 C0 f7=8 f3=4
+6	fox foxquickfoxb,.?quick ?, . ,quické.1	f9=39 p36=26 C26 N39 f9=39 N-1
+0	.. .x éx1.. !,1x? ;1;quick	F0
+1	x\nfox. .?	P-1 C0 L9 F0 L9 P0 f9=-1
+2	éé?1ab	P-1 F0 C0
+3	;bé? b. . ?x1 quick1éx,!?;xa	f20=28
+4	quick!. !bfoxb;. ??!bquick! ?afox!quick 	p35=34 C34 p13=9 N29 F0 f15=34 N40 C40 N-1
+5	;a?x a\nbfoxé;\nfox	F0 f13=14 N17
+6	.a	C0 C0 C0 F0 L2 f2=-1 F0 F0 F0 C0
+0	a\n. x  . \n .é  	P-1 f2=15 P0 N15 L15 f4=15
+1	,quickxb. 1fox...  é. xxfoxx;	N29 p1=1 L29 f11=29 p11=1 f29=-1 C29 C29 P1
+2		N-1 F0 N-1 p0=-1 L0 L0
+3	bé. x! .;quick  \n,é;, . 	F0 L24 F0 C0 F0 L24 p4=0 N24 p12=0 N24
+4	;.x.?; !!bxxbx.foxfox?,;!é\n	L27 f23=-1 C27 p18=9
+5	;;fox!1x?a.xa  1 a,fox ax	f11=13 f6=8 C8 C8 F0 p11=-1 p17=6 F0 F0 p10=-1
+6	. ?1;quick1 . ,quick.?;quick?.	F0 C0 L30 N-1 p14=5 N30 F0 N30
+0	foxx!;11 quick. ,1a	F0 f9=19 P0 L19 f3=19 N-1 C19 F0
+1	11? .  ?bfoxxx.x!;é!.. !	L24 L24
+2	b1!fox x xaéaa.fox.,b é	N3 F0 N3 F0 N3 p6=3 L23 P3 N23
+3	. !;xfox.xquick1quick;1.é!. ? ,. ;quick,	C0 C0 N28 C28 F0 L40
+4	..a 1b\n! 	f8=9 L9 C9 L9 p9=0 f3=9 p4=0
+5	   afox,1quick,	f11=14 C14 F0 p0=-1 p4=-1 F0 N8 F0 C0 F0
+6	?,! 	f1=4 p2=0 C0 N4 L4 F0
+0	, ab,;fox fox.  1, ?éb 	C0 C0 L23 N-1 f3=23 p2=0 f2=23 N-1 p0=-1
+1	a;bb. !1. ;.a. \na\n?quick;?	F0 F0 f6=26 L26
+2	ax.quickfox. ?.. fox.;.	N17 C17 N21
+3	;!;?b x; ?, \n	f1=13 C13 C13 L13 C13 F0 p12=0 F0
+4	.  \né,1fox1a. ?foxa!xquick?foxbb	f14=32 F0 F0 p21=20 C20 L32 p16=15
+5	fox;,,foxfoxa!xxé x!x. ?;x,!	p22=13 C13 f10=13 p19=6 N17 f16=17 F0 f23=24 p19=6 F0
+6	x a\nfoxéa, \n\n. a?bx?;x\n.	L24
+0	;.bé,,bx.!é.?quick éab.xx!?	f10=27 F0 p13=0 p3=0 F0 L27
+1	? \n x x;	N8 L8
+2	fox1\nquickquickb?éb;bxa	C0 F0 F0
+3	1quickxé?\n.é1. b1\n1 ? 1,ax	F0 N22
+4	foxa !.\nb,bquick	p4=0
+5	x . ab,\n\n?bx,1 !aé	p11=-1
+6	b  ,?11quick . . quickaxfox1,	C0 N29 L29 L29 C29 f5=29 F0 f24=29 p21=5
+0	bquickxquick!..  quick?\n.1é\nquick??quickquick;\n!	P-1 p46=0 F0 C0 F0 f47=48
+1	b,;. foxfoxquickxa	P-1 N2 P0 L18 N-1 L18
+2	 \n1\n	C0 F0 f4=-1 P0 N4 L4 f0=4
+3	quickquick  1b \n1quickb,baxquick!a \n	N33 N36 C36 L36 p19=0 p21=0 f22=33 f34=36 L36 p32=0
+4	 ;1,;éb?,1,1quickx\n, quick\nb	p4=0 p10=8
+5	é;b?\nquickx\na ,.a.fox,b\nb. 	F0 f26=27 C27 N-1 N-1 p10=0 C0
+6	 ;a\n x;1a.  ;.	F0 L14 f3=-1 N-1 p1=0 F0 L14
+0	foxéx	C0 f5=-1 P0 p3=0 F0 N5
+1		C0 P-1 p0=-1 p0=-1 N-1 f0=-1
+2	\nquick	f5=6 L6 P0 C0
+3	a\nb\n quicka.xfox.; ;xfox;\n.	C0 N27 f22=-1 F0
+4	ba	p1=-1 f1=2 F0
+5	x1.  ,.	L7 p3=0 f3=5
+6	b!;\nfoxx\n1,fox  !.	p1=-1 N18 F0 f2=18 F0
+0	.!?	C0 P-1 P-1
+1	a1a!quick !! b;b 1;quick,. \n!quick 	N25 N35 F0 N25 N35 P25
+2	é;fox1 quické. quickéa, quick1,. 	P-1
+3	x,?	f0=3
+4	. é	N3 L3 C3 f2=-1 p3=0 p0=-1
+5	  . b?ébab	p5=-1
+6	,.foxé.fox1quick! a\naéaa! ,?	F0 F0 F0 p12=0 N28 F0 p6=-1
+0	.!é\nfoxb.\nfox1a\nxb!?!b é?	F0 C0 f20=25 f24=25
+1		f0=-1
+2	foxax. a\n. 	p5=0 p0=-1 f4=11 f2=11 L11 N-1 N-1 F0 P-1 N11
+3		N-1 f0=-1 N-1 L0 C0 L0 p0=-1
+4	. a;;xéx x?é\nquick!\n	L20 L20 F0 F0 f0=20
+5	,a;é!?	F0 L6 p1=0 N6 f4=5
+6	é?; 	p4=-1 L4 N-1 p3=0 N4 C4
+0	 b1foxxa\n. 	p1=0 f9=11 f4=11 F0 N11 p6=0 p6=0 f1=11 N-1
+1	,quick;xb!foxquick1	p11=1 f12=19
+2	 ? ?foxa. \nfoxa	N3 C3
+3	,?!é. b. 1\n	p7=-1 F0 p8=-1 C0 L11
+4	?\nx!aquick .x  ?1?ax  . . 1	L27
+5	 . xa,quickfox\nxa,?,fox1	C0 f3=5 F0 L24 f22=24
+6	\nquick. ;!!. ..b!	f8=17 p10=0
+0	;quickfox 1! ?a;!bb	p2=0 p17=0 L19 f10=19 p11=0
+1	quick !é? x?béaxquick	P-1 f8=21 P0
+2	11x,\néquickx1..  é1?1xab, 	P-1 N17 N20 L26 L26 L26 P20 N26
+3	?quick ;,. ,;x;a\n. .aquick!. ,	F0 L30 p24=1 F0 F0 f3=29 p9=0
+4	x,é;quickfox;b	F0 N14 p1=0 N14
+5	. 	C0 C0 f2=2
+6	fox  a	L6 F0 p4=-1 N6 C6
+0	.quick?? .b	p2=0 F0
+1	    1éx . ?1x\n.\n?,. .	p7=0 P-1 f17=21 P18 L21 f15=18 C18 N21
+2	quick 	F0
+3	  . . fox\né?a !\n!. 	C0 N19 N-1 F0 L19 F0
+4	  ?!?\n\n ?foxfoxfox	F0 F0 L18 C18
+5	 a; xfox. 1é,é!a!!\nfox. ?	N10 C10 F0 p21=10 L25 f24=-1
+6	;. \n xb1!. .foxba	C0 C0 F0 C0 L17 F0 F0 C0 C0 N17
+0	 b. bfox,ab	p8=0 p5=0 p4=0
+1	xéé\nx	p5=0 p4=0
+2	xxfox. éxquick	p11=0 C0
+3		F0 f0=-1 p0=-1 f0=-1 C0 N-1 F0 L0
+4	.!.\n!;\nébquick?1\n	f7=17 C17 N-1 N-1 f13=-1
+5	éfox 1.1x?bb!  \n! foxbaa!	p18=5 C5 N16 f9=10 F0 F0 f23=24 C24 C24
+6		f0=-1 C0 f0=-1 L0
+0	fox !foxé. quick. ?. b\n é.x	P-1
+1	.. é1.  !éb fox;\n,fox?quickbé,foxx1	P-1 P-1 L35 N-1 f0=18 N30 C30 C30
+2	1é 1foxba\n\nx!abbb1é;é1	p21=20 p19=13
+3	b;x. 1. 	F0 L8 f7=-1 F0 N8 N-1 f5=-1 f1=-1
+4	x. !bquick!x!quickafox\n ,a  quickfoxquickx	F0 N13 f39=42 C42 F0 f27=42
+5	.!?é fox aquick.	F0 f2=3 C3 F0 L16 p15=4 C4
+6	;aquick. . foxab!é\nx,baa	f5=24 C24
+0	éb. ?!quickb;foxfox. afoxx\n!\n  	C0 C0 f15=31 F0 p25=0 N31 N-1 N-1 f6=31 P0
+1	ébafox ;foxquickb .,?  1 .  é\n	f26=30 C30
+2	. .	p0=-1 p1=0 f3=-1 F0 L3 F0 L3 F0
+3	?x?\n quick.?.!	L14 C14 C14 C14 f6=-1 F0 C0 N14
+4	.a;;x. quick	C0 C0 p0=-1 f9=12 f4=-1 L12
+5		p0=-1 f0=-1
+6	xx?.,	C0 N5
+0	quickquicka ?.? \n ..quick 1	P-1 L27 C27 p10=0 L27 C27 P0 p16=0 N27
+1	 x. b.ax . foxfox é. 	N21 N-1 p10=0 P-1 L21 P0 f1=21 p18=0 f8=21
+2	b \n!;a1;ax;;ba!;1,;,	P-1
+3	?,. quick.. ;;.quickquick?!.  \n?é!? 	F0 L36 N-1 f14=31
+4	 b.  quick1.1;é;!x??	p14=5 C5 L20 F0 N20 L20
+5	;xbfox\n\n1 ?é!!.. 1!,..	F0 N10 N20 C20 f0=1
+6	xx	f2=2 C2 F0 C0 p0=-1 F0 N2 p1=0 f2=2 L2
+0	?x. é!.!?a !quickfox  , . 	N26 C26
+1	 	N1
+2	quick é  quick;xfox! 1?1x. ,!\nb,b;	F0
+3	b\n	p2=-1 L2 F0 f1=2 C2 F0 p2=-1 L2 f1=-1
+4	. . aabxb\n,; b;1!	f6=17 p3=0 F0 F0 N17 C17 N-1
+5	;; !. ?!\n1a; x. quick!1b	p6=-1 C0 f12=13
+6	 	N1 C1 F0 C0 N1 p1=0 L1 L1
+0	?,fox\nx\n\na?fox,!b\n;. ,fox,a	f11=27 F0 f26=27 N-1
+1	é. x;	f5=-1 N-1 L5 N-1 P0 P-1 p5=0 F0
+2	quick?a, \n;a	f8=10 f7=10 f7=10 F0 P-1 f6=10 L12 P11
+3	;. ;b. ,1	p4=-1 F0 p2=-1 p0=-1 f3=9
+4	é 1\nfoxb. .  . quick?xfox. ;!\n. a	N21 C21 p4=0 p11=0 f27=33
+5	.. xaé	L6 C6 F0 C0
+6	 ,quick,,.  !11;	N16 N-1 f10=-1 C16 L16 p2=0 p6=-1 F0
+0	\na,. \nab.quick;bquick\n?. ,b;é.quické	F0 p13=0 p5=0 F0 L36 C36 L36 L36 p28=0
+1	 x.  \néb éfox 	C0 F0 f12=14 f12=14 N-1 C14 f3=14 L14
+2	fox . quické,bab;éfox. \nb . .;1,é	p29=24 N29 p33=30
+3		L0 N-1 F0 F0
+4	b\nb\n. quick.b1\nbx?1	p5=0 f5=19
+5	. x,éfox!;b.béquick?quick!1a.	p7=-1 p5=-1 p10=-1 N10 p1=0 F0 L29
+6	!?\nquickquické1. ?\n ,. 	F0 F0 L23 N-1 N-1 F0 L23
+0	,quick\nfox ;?1équick?\n1 xé?1afoxé\nfox	L37 C37 L37 f9=37 L37
+1	 \na!fox fox! ?1;?,; . \n,,	L25 p8=0 C0 N18
+2	 .\n1!;\nb. x1x foxfox	p15=6 C6 f14=20 p7=6 p17=6 P5
+3	a. x\na\nx	C0
+4	!quickfox?,;x.  quickfox\nfox	N16 f12=28 F0 p3=1 C1 N16
+5	\nb1,1;	F0
+6	;x.?quick	L9 p7=0 F0
+0	quick??a,é;1a  	P-1 f12=15 L15 F0 f4=15 F0
+1	b. .foxa	L8 L8 P0
+2	. 11..\n!. fox1bx\nb 	F0 f16=19
+3	\né  !,a1éé1,.\n?é!x	F0 p3=-1 C0 F0 f6=17 N18 L18 L18
+4	a.. éfox1 ? aquickxquickb?\nxfox !xé. 	F0 N27 C27 N37 F0 C0 L37
+5	;fox 1	L6 f1=4 C4 N6 f1=4 f6=6 f1=4 C4
+6	fox?xfox.!	p2=-1 N10 N-1 N-1 p8=0 C0
+0	x; x,?	L6 C6 C6 p0=-1 N6
+1	 ,!   !foxé;! ?  ;, ,,x 	f16=19 C19 P2 C2 p9=2 N19 L24 f24=-1 C24
+2	!xxafoxquicka;quickquick?;1!é. \nquick ,. ,quick	F0 P-1 L47 f38=47 F0 C0 C0 N1 F0 P-1
+3	b ,;x. !!x;1. 	L14 L14 f13=-1 L14 f3=-1 L14 F0 C0 f11=14
+4	 ,xé?	p1=-1 C0 C0 F0
+5	xéa?1fox! ,?1 	p1=-1 N10 p9=0 f4=8 p10=0 F0 N10 L14 f8=9
+6	;  .quickxb	F0 F0
+0	.!x. !fox\n	P-1 f5=10 f5=10 F0 f2=10 C10
+1	xa1? bx xa. 	F0 F0 p4=0 F0 P-1 p4=0 f9=12 N-1 L12
+2	; béquickx\n \nfoxfox\n.  b	F0 F0 F0 L24 L24 F0 P-1
+3	ab	N2 L2 F0 C0 F0 f0=2
+4	 fox\n;aquickquick .,a.	N22 f6=-1 p1=0 L22 f20=-1
+5	.;	f1=2 L2 N-1 F0 f0=1 C1 p1=0 C0 C0
+6	x .é \n; !éb quick .	F0 p10=0 L19
+0	\n   ;fox !. . 1foxxquickquick\nquick.b1b.	C0 p11=0 p35=0 f19=40 p4=0 P-1 N40 C40 C40
+1	x?	F0 p0=-1 f2=-1 N-1
+2	1.. ?é. ?a\n!;	N5 L13 N-1 P12 N13 f6=9 f5=9 p0=-1 F0
+3	  !x?,!a;. b,.   1quicka b,fox	p28=7 L30 L30
+4	???,?quick  é.b;!\né	N19 L19 p11=5 f18=19 p7=5 f3=19 L19 f6=-1 F0 p3=0
+5		C0 L0 C0
+6	  é,.1??\nx?\nb,quick foxfoxé	L27 F0 f9=27 p12=0 L27 F0
+0	.fox;x	p5=0 L6 p3=0 P-1 L6 f2=6
+1	.;.  ,éb,1a .,a.. é;ba	P-1 F0 N6 P0 N6 p5=0 p22=14 F0 C0
+2	\nquick?. éxx. xb; b!? !éa. quick 	p2=0 N9 C9 N16 N17 p4=0
+3	é?quick bx. . \n. béquick. ;?	p25=2 F0 L28 F0 C0 F0 N28 f27=-1 f8=28 L28
+4	.	C0
+5	   \na. ;\nfox1a\n .!	p18=7
+6	fox\n.,;.!ba. ,é	N15 C15 F0 p7=-1 p15=7 N15 C15 L15 N-1
+0	bab;fox. 11é. ;é?. éfox;fox,\n	f17=29 f22=29 f5=29 P0 N29 L29 F0 f12=29 N-1 F0
+1	1 foxquick;?,. quick.baquick;quick1fox;	F0 F0
+2	foxbb?,. 	p0=-1 f1=6 F0
+3	afoxfox,bé!!!!	F0 L14 p1=0 N14 F0 C0
+4		L0 N-1 L0 C0 L0 N-1 C0 N-1 p0=-1
+5	;!1quick;.xb. ,..\n!é!;foxx	N10 f15=16 L26 f23=26 N-1 f13=14 f6=8 N18 L26
+6	. 1é;a.  . équick.  quickfox?é,;\nfoxfoxé	L40 f37=-1 C40 L40 N-1
+0	éxquick1 ,quick	C0 L15 C15 L15 C15 N-1
+1	quick,.?b!.  a,foxa?;b\n	L23 N-1 L23 P15
+2	.!. !1?x.1  !,. ?foxquick. quick1	C0 L33 F0
+3	1.1foxx\nxb;. ; quickx;	C0 N22 N-1 C22 F0
+4	. . .,;	p1=-1
+5	;quickquické b,,	C0 N12 F0 f14=15
+6	fox quicka?quickquick,?1?;quick;;	L33 L33 F0 L33 N-1 f21=-1 L33 p30=11
+0	 \né;\n!quick1.foxquick?b. !quick quick;!fox	P-1 F0 N42
+1	1quick fox \nxb. ?. .xfox.\n	C0 f3=26 N-1 C26
+2	?a\n\n1\n,	f4=7 p6=1 L7 N-1
+3	?b 	F0 f2=3 N-1 f0=-1 L3 p0=0 p0=-1 C0
+4	xquick;,? ;!	C0 F0 C0 p5=0 N12 L12
+5	.?1quick,quick \nbquick bé a;.foxx ;	p25=14 N25 p9=0 L35 F0 C0 f16=22 N33
+6	x;\n ;	F0 f0=5 L5 L5 p1=0
+0	é,? .ax1x1   b!.foxa,;x	p0=-1 L23 F0
+1	. éa é?a  \n.. fox!1; ,é .	F0 L25 p25=22 P0 L25
+2	. fox.aéfox .;x. é11quick	p20=14 P13 L25 N-1 C25 p14=13 P13 f0=13 N14
+3	. foxé?. 1!quickquickafox1quick.xb quickéfox	N44 f29=44 C44 N-1 f5=44
+4	b.?a ax1,?.quick1é?.;;	L22 F0 f18=22 L22 C22 p15=11 f7=22
+5	quick 	L6 p5=0
+6	 ;x. .;;b1;.  b.  x \n.quickx. .	L31
+0	1.!x . quick?  aé.  1fox 	P-1 L25 P0 N25 N-1 F0 P-1
+1	bx?foxéquicka ?éa,fox , é. 	P-1 F0 P-1
+2		L0 F0 f0=-1 P-1
+3	quickfoxx.	C0 p7=-1 f1=10 F0 C0 p7=-1 f6=10 L10
+4	 . quick;bfox	p5=0 C0 f5=13 L13 L13 N-1 F0 p2=0 C0
+5		p0=-1 p0=-1 f0=-1 L0 F0 L0 F0
+6	,	L1 C1 F0 p0=-1
+0	  b1b!. éxa.\na.1b;!\n!a;	p1=0 p7=0 N23 f19=23 F0 P-1 C0 f2=23
+1	 .a. é?  ,	N10 F0
+2	,?.. 	f1=5 f5=-1 p3=0 P-1
+3		p0=-1 F0 p0=-1 p0=-1 L0 C0 f0=-1
+4	é 	L2 C2 N-1
+5	?x x\n1afox	p1=-1 L10 N-1 N-1
+6	. 1;;	L5
+0	!x,é é\nb.?fox?a!!.   . . . ?	N28 N-1 f11=28 P0 f22=28 f25=28 p22=0 f4=28 L28 F0
+1	.   x.x 1.a! , a\na	N14 F0
+2	 ; quick,,x. ?  ;. ;quick.;	p8=2 N16 L27 P26 C26
+3	quick??\n  bx.quick; ,?a ,	p11=-1 N22
+4	 x? 	L4 C4 F0 f1=4 f2=-1
+5	x é\n b \n?1 !é!b;x!\n	F0
+6	?x1, ?!	C0 N7 f3=-1 C7 L7 N-1 F0 F0 N7 F0
+0		p0=-1 p0=-1 p0=-1 N-1 C0
+1	é.	p0=-1 N2 P0 N2 N-1 C2 p0=-1 N2
+2	fox,a11;?éx\n.aéb. 	L18 N-1 N-1 L18 F0 L18 N-1
+3	quickéquick. ..? quick  . fox. . quick	p10=-1 L38 F0 p10=-1 F0 L38 C38 p4=0 p29=17
+4	 .  	p1=-1 N4 L4 C4
+5	. ;b\n1x;	F0 p6=-1
+6	fox,?foxbx	p3=-1
+0	xé , !\n?\n  a!x!équick	L21 F0 F0 L21 L21 C21 F0 L21 f20=21
+1	1quickax.. ,? quick1afox ?,. ?,.fox	P-1 f29=31 F0 P-1 L35 N-1 f15=27 F0 N12
+2	quick?a.,x	F0 L10 C10
+3	\n\n é	f4=4 f1=-1 L4
+4	quickbx. ,11;é!.,a,;!1;a 1	N21 p0=0 N21 L26 C26 C26 F0 f13=26 F0
+5	1. b;bbquick 	f9=12 L13
+6	x.,! 1.	N7 N-1 p4=0 p4=-1 p5=-1 F0
+0	équick.\nb.xé1quick.. .,\nx	C0 C0 F0 C0 L25 f2=25 N-1
+1	é bbé.	C0 N6
+2	fox ?;quick!quick ;!b, !é , 	P-1 L28 f3=5 f28=-1 p3=0 N5
+3	 !é;?  ,,é  !x; ébx	C0 p14=2 N19 F0 C0 N19 L19 N-1 p2=0
+4	\n!é!? \n;	p2=0 F0 p6=2 p4=2
+5	afox;\n\n\n. x,!x?!. quick	F0 F0 N10
+6		p0=-1 p0=-1 p0=-1 L0 L0
+0	. ,quick	P-1 f0=8 N-1
+1	 \n;\n?b1\n1.b. é;quick;??	F0 C0 N23 F0 p21=0 F0
+2	xb bquickxx . fox!x;.,quickfox?é	f31=32 p3=0 N18 F0 L32
+3	.éx. ;é!b	F0 C0 N9 F0 C0 L9 C9 N-1 p6=0
+4	 . ?b,fox bx1,1?;quick  ; a	f14=27 L27 L27 L27 C27 L27 N-1
+5	b,..\n x  a;	L11 F0 L11 p3=0 F0 f2=3 p6=0 N10 p11=0 N10
+6	11;. b	C0 f1=6 C6
+0	é,. . !!a b1ébfox a1.;,fox! 	p23=0 f27=28
+1	b\n\n!\nx;. .  ?!,quick,.quick;	L28 L28 C28 f13=15 C15 F0
+2	1	L1 P0 P-1 p1=0 f1=-1 f0=1 N-1 p0=-1 p0=-1
+3	?;ébquickb. 	F0 F0 p8=-1 L12 N-1 f4=-1 N-1
+4	 \n. 	N4 C4 C4 F0 L4 p4=0 N4 L4 C4
+5	quickbfoxfox.	p0=-1 F0 N12 p13=0 N12
+6	xx.é..!	N7 f7=-1 F0 N7
+0	?fox,fox\n\n? b\nquick?	L20 F0 L20 N-1 f13=20 N-1
+1	fox. ax	P-1 f2=7 p6=0 F0 C0 f5=7 f1=7 L7
+2	.  x1b!foxb;1 a x quick\n1.	N3 F0 L26 F0 F0 p20=12 f8=11
+3	fox!! \n;quick! ;é!ax \nfoxax1	f22=28 N-1 C28 N-1 C28 F0 F0 L28
+4	? b. fox. foxxquické  , ,	N25 F0
+5	1 ,é. . x ? x. éba	L18 f6=7 N18 F0 f6=7 C7 C7 N18 F0 N10
+6		L0 L0 N-1 p0=-1 F0 f0=-1 f0=-1
+0	?quick,	N7 C7 N-1 L7 p1=0 C0 f7=-1
+1	 ,. ?	P-1 N2 L5 P2 F0 P-1 N2
+2	x. x. ?  a\nfoxa	F0 p3=0 N9 f12=15 p13=9 P0 p6=0
+3	bb;x	N4 f3=-1 F0 p1=-1 f0=4 C4 N-1 p2=0 L4 C4
+4	. ;x,é. ;\na?. b1, éfox!.  	C0 F0 C0
+5	 1 \nfox.bquick fox?\n,fox	L24 p13=2 p15=4 C4 C4 f5=14 L24
+6	aa	L2 p1=0 N2 L2 f2=-1 F0 F0
+0	a	C0 P-1 f0=1 L1 f1=-1 F0 N1
+1	quick quick\n	L12 C12 p5=0 F0 P-1 L12 N-1 f9=12 C12 F0
+2	quick?	L6 N-1 F0 f5=6 F0 f0=6
+3	!é,;a ;quick,x!	p6=-1 F0 p1=-1
+4	,	L1 N-1 L1 C1
+5	x\n,, xa ? xfox1 fox	p6=-1 L19
+6	quickb,b?a. ;,. .x,b1	f15=21 f11=-1 L21
+0	x,b 1?fox\n,  bfox!. éb\n!ab	f24=26 p13=0 P-1 N26 L26 F0
+1	  ;?. ?!!.quick	C0 L15 P0 P-1
+2	a. fox,x;!	p8=0 f8=9 p5=0
+3	b	p1=-1 N1
+4	ax\n\n1;fox.;;1 fox;	N18
+5	\n!. fox	p4=-1 C0 p3=-1 C0 F0 F0 N7 C7
+6	éba,. . x!a\n . 1fox.\né.\na. \n;	p7=-1 C0 F0
+0	x. fox xéb	p9=0 L10 N-1 C10 F0
+1	?, 	F0 C0 F0 C0 p1=0
+2	,aaxxéb b!	C0 L10 P0 f3=10 F0 f0=10 p4=0 F0 L10
+3	?ééfox;!;x,b.é!bxé11 ;!	F0 N23
+4	a. foxé;é	F0 N9 L9 p2=0 C0 F0 p3=0 f6=9
+5	foxa?a ?. 	N10
+6		L0
+0		F0 L0 F0 f0=-1 C0 N-1
+1	b . é ,?.  1 ;quick1,é1fox.quick. 	C0
+2	\n;.x;é\n1!? ,xb!	L15 P11 p7=5 p0=-1 f10=11 L15 C15
+3	 aa\na. 	L7 F0 N7 F0 C0 F0 F0 f2=7
+4	fox !?\n\nx1!b\n?. ab.!,éé,!.	f11=26 p2=0 N20 F0 C0 f18=26 N-1
+5	 bquick?éx,x1	F0 N10 C10 f5=7 L13
+6	 .a? xéaquickb  fox;	C0 F0 F0 F0
+0	é  é!foxa x;	L12 p6=0 P-1 C0 f9=12 C12 P0
+1	\nquickfox.?,xa; 1quick	L22 p4=0 L22 C22 F0 F0
+2	b. .1?é. x1b. x. . 1\n!quick	P-1 P-1 p26=22 L27 f1=6
+3	x  \n. x \nb?ébx?quick	F0 C0
+4	?b?bfoxa. quick\na1quicka	F0 F0 N24 N-1 C24 L24 C24 L24 C24 f21=-1
+5	fox	C0 C0 f3=3 N-1 C3 f3=-1 C3 N-1
+6	quick;, xb1  é.;!foxx. 	p19=6 F0 F0 L23 C23 f22=-1
+0	.,b fox,fox  	C0 P-1 F0 p11=0 F0 p10=0 F0
+1	a,a1.  ,,quick xquickb?foxfoxafox,; a;	f20=34 F0 P-1 f12=34 C34 p34=34 L38 F0
+2	. .quickéé. x! ?fox. . fox?,fox1fox\n	L36 C36 F0 p15=0 p23=16 L36 L36
+3		C0 L0 f0=-1 F0 F0 L0 N-1 F0 N-1 L0
+4	. \n ébé,x1fox;bquick?.\néébfox éb	p6=4 f20=32 f18=-1 p8=4 C4 p2=0
+5	fox 	p1=-1 C0 C0 F0 p3=-1 p4=-1 f2=3 p3=0 L4 N-1
+6	? ;.1é1!, ?a?éé!b\n?éaquick	p21=13 F0 p10=2 f13=26 f16=-1 N-1 f23=-1 f7=-1
+0	a?. \nx??a. xquickx?.  ;	f7=23 N-1 F0 P-1
+1	1quick. \nquick. ,fox!.  ?	N17 F0 C0 L25
+2	a\n?	p0=-1 p2=0 p1=0
+3	. foxx!béé\n 1fox;,a	C0 F0 L19 p9=0 f13=19 F0 L19 C19 f16=-1 N-1
+4	xfox	L4 C4 f3=-1
+5	;.!é??.,fox\n	p9=-1 C0 N11 N12 N-1 f9=11
+6	??	p2=-1 f0=2 N-1 F0 F0 p1=-1
+0	b. ?; ;;\n? \n1 	N14
+1	.  fox!1foxxquicka,quick 	N19 f14=19 L25
+2	a foxb.	F0 N7 F0 N7 C7 f2=7
+3	x.fox? 	p6=-1 f0=7 p1=0 f7=7 N-1 p7=0 p2=-1 p6=-1 p4=-1
+4	b;!aa1.  xab.?1 é	N17 p0=0 N17
+5	!.;.x\néé . bé,x\n!! b	f9=10 C10 F0 N10 p7=0 C0 f7=8 F0
+6	,b.a	L4 C4 F0 f2=4 f4=-1 L4 C4
+0	ba?. 1x é!	f5=10 L10 F0
+1	b quick	f1=7
+2	.\néa. 1b?. \n	C0 f11=12 f4=12 L12 F0 N12 L12 C12 N-1 F0
+3	 ,;??,1.   	p10=-1 L11 C11 f2=-1 L11 C11 F0
+4	1é?!\n1 \n.,. a . 	F0 f11=16
+5	x 	f0=1 F0 p0=-1 f0=1 p1=0 C0 p0=-1 p2=-1 L2
+6	\nébb;a é1	f8=9 C9 p8=0 F0 L9 F0 f3=9 p4=0
+0	.\né. ,fox	P-1 p5=0 p8=0
+1	x;. fox. a\n\n?a!fox	P-1 L18 L18
+2	.  ?\n !1;11	P-1 F0 F0 N6 p9=8
+3	;quick. quick\n 	p4=-1
+4	!.x? ?!bquickfoxab 	f0=19 L19 F0 F0 p3=2 L19 p19=7
+5	x;fox,;xba1!aa;	p6=-1 N11 f10=11 N15 f15=-1 N-1 f11=12 f11=12 L15 p6=0
+6	a	p0=-1
+0	bquickx?. bba;,\nb;. 	f17=20
+1	aa;!;.,. . a,\nb1afoxb;x. 	P-1 f14=25 f17=25 f22=25 p1=0
+2	 é.. \n b,; ?!équické quickb? 	N7 f15=29 L29 F0 F0
+3	1	f1=1 C1
+4	foxb ,!	f1=7 N-1 f3=-1 F0 F0 L7 C7 N-1 N-1 F0
+5	1b?!a,b a\n?  . !. \n1	f12=13 f14=15 p11=0 p18=7 p1=0 f16=17
+6	x!.. b,b,;é,x ,?x xb\n 	F0 p2=-1
+0	1x.;b! \n	P-1
+1	quick\n1;quick	P-1 N13 F0 C0 C0 L13 p6=0
+2	 ;1bb;x!.quické 	f15=16 N-1 f15=16
+3	?.foxx,,quick \n;!.!..é. 1xfox?	N21 F0 p17=2 p22=2 f12=30 N-1 f2=21 C21 N30 N-1
+4	\n!foxxb. foxxquickquick ; ;?. x1 fox; ?	f19=39 L39 F0
+5	b.  é. . .;é. . . \n. fox.  quick	F0 f20=21 N32 N-1
+6	,; !  . équickb11 \n	N19 N-1 N-1 N-1 C19 F0 N19 f12=-1 L19
+0	!b?;a;quicka\n . x	N17 L17 p2=0 f0=17 P0 f2=17 L17 F0
+1	. quick,!\n?xé;;quick?,x!éx;! 	F0 L29 N-1 C29 F0 p29=22 p25=22
+2	!b\n	f0=1 p3=1 F0 F0 C0 L3
+3	.    ,\n !é;a;é	F0 C0 L14 L14
+4	?x a	F0 p0=-1 p4=1 F0 F0 C0 L4 F0
+5		p0=-1
+6	,quickx?!quick\nb !xéfox  foxé quick	f25=35 C35 f5=35
+0	; quick? \n	N10 P0 P-1 N10
+1	quickx fox\nquick.1b, !.; ??;	P-1 F0 f15=20 f15=20 F0 L28
+2	b! x 1quickb.foxx;quickquickx 	F0 N3 P0 P-1 p25=18
+3	! fox\nb quickquickquick. !éfox!bx	f10=26 L33 p7=0 p21=2 N26
+4	. b!.;x;;foxéa!!\nb.b?!aé	N22 F0 p15=5 L24 p6=5 L24
+5	. \n 	C0 p2=-1 f3=4 N-1 f2=3 C3
+6	quickaquick	C0 C0 p8=-1 N11 C11 p6=0 F0 N11 p0=0 F0
+0	. ;\nax;fox1 quick	F0
+1	b;ba. \n,a?. quick,11foxé	L24 N-1 P18 f15=18 C18 N24 p21=18 N24
+2		p0=-1 N-1 C0 F0 C0 C0
+3	 quick ; fox.quick. \n1!!quickéxbquick	p11=-1 f30=37 N-1 p11=0 N24 F0 L37 F0 N24
+4	!é1.x!,	N7
+5	 bfoxb;\né.1ab; ,,. fox!,! 	N9 C9 L26 C26
+6	. a\n.  	C0 f5=7 f2=-1 f7=-1 C7 f1=-1 F0 C0 F0
+0	foxx1;,é;  é. .. 	p0=-1
+1	fox.x x. . 1	P-1 N12 C12 f4=12 N-1
+2	?. a, ;! ax?1;. 	f16=-1 P14 C14 L16
+3	;	L1 p0=0 F0 f1=1 C1 f0=-1 f1=-1
+4	.?1é	F0 F0 f0=4
+5	1;1quick	L8 L8 L8 C8 F0 L8 C8 F0
+6	axa?aé	L6 L6 C6 f4=-1 f1=-1 f5=-1 C6 L6 L6
+0		P-1 N-1 F0 F0
+1	;!!foxb.1;   ..bb\n	f15=18 C18 F0 C0 f4=18 C18 N-1 C18 N-1
+2	foxfox!  ,. 	L12 f12=-1 C12 p11=9 L12
+3	é!!	C0 F0 F0 N3 L3 p0=0 F0 p3=-1 C0 L3
+4	,!ba1b quick1\na. foxa;xxbfox\n. b 	N33 f22=-1 f31=-1 C33 p28=2 p13=2
+5	é!;a!?!!\n,;x;,fox;, ;1; 	N10 L24 C24 L24 N-1 f5=6 F0 L24 f2=3
+6	a. a,. ,\n1,.. xfox!;foxfox;\n ?	N30 F0 N30 F0 p8=-1 F0
+0	 é	N2 N-1 C2 N-1
+1		f0=-1 F0 P-1 C0 C0 f0=-1 p0=-1 N-1 N-1 N-1
+2	ba?éé.!fox	F0 F0 f9=10 L10 L10 F0 F0
+3	1 ,b. . a!fox! !	p8=-1 p3=-1 F0 p15=0 f10=16 f13=-1 C16 C16 F0
+4	foxxéx.?b;;é1. a? b?ééx,	p15=8
+5	foxquick;b ;fox?, b; ;	C0 C0 p5=-1 f19=20
+6	é1b?fox,?\n!	L11 F0 f0=11 L11 L11 L11 N-1 F0 N11
+0	?. fox1!\n    x\n1quicka	F0 P-1 F0 C0 F0 f21=22 P0 N22
+1	, fox\n !a ! ,foxbxé. fox \n ,	C0 P-1 F0 C0 p9=1 P-1 P-1 L28 p10=1
+2	;bxaa..  !;!	P-1 N1 p7=1 N10 f5=10 C10 F0 f7=10 L12
+3	. é	L3 L3 L3 F0 F0 L3 N-1 C3 f0=-1
+4	,\n .é?a,fox,. x?1b. a	f21=21 F0 C0 L21
+5	aquick ? !1.?;	C0 L14
+6	!,foxbaxa;  quick1?foxquick	f14=27 C27 f27=-1 N-1 N-1 C27 N-1 C27
+0	aquickquickfox1quick. ?xaa é  fox1	P-1 C0 f16=34 L34 p22=0 L34 N-1 P0
+1	x,aquick, é?1x1;;xx;é;	f20=22 N-1 P9 F0 F0
+2	;. x 1éxfoxfoxé. x	N1 f12=18 C18 P1 p9=1 N18 N-1
+3	 quickx.. ?b1fox!	L17 C17 N-1
+4	. é?x . ?.a\n,fox!xé	f19=19 N-1 f8=-1
+5	 a?; !1,\n\n1;!! ; é 	f10=11 L19 f6=7 N17
+6	1.,foxafox,fox ;é 	p16=0 N18 F0 L18 C18 L18 f10=-1 F0 N18 f3=-1
+0		N-1 L0 p0=-1 N-1 F0 f0=-1 C0
+1	 éx1 ;1 . é;. 	L14 N-1 N-1 F0 p6=0 L14 f4=14 N-1
+2	1\nfox!?.  1a\nbquickfox.éab;	L27 N-1 L27 C27 F0 C0 f13=26 C26 N27
+3	.quick!!. afoxfoxa\n	N19 N-1
+4	\né 	N3 C3 L3 F0 F0 f1=3 F0 f3=3 F0 F0
+5	xéé;quick\n	f7=9 p6=0 C0 N10 L10 C10 F0 N10 C10 N-1
+6	éfoxbxbxéx???é	C0
+0	x;.x	P-1 P-1 p4=0 C0 P-1
+1	 x?\n?x, baa fox	F0 p14=7 F0 N7 C7 P0 f6=15
+2	\na. a ba 	F0 p3=0 p1=0 N9 F0 F0
+3	. é.x,1. ;.. é.!.  . x;!;quick	F0
+4	..;x?é1 ?é1fox. ,	C0 F0 F0 F0 p3=2 N17 F0 p13=9 L17 L17
+5	quick,quick.fox ?quickx ?; !!\nfox\nfox	p8=-1 C0 f22=23 F0 p20=6 C6
+6	?x	F0 L2 N-1 C2 F0 N2 p2=0 F0
+0	!b! fox. bx\n;\n  1,! ..	p2=0 F0 N22 L22 F0 p6=0
+1	quick a;. . \nb?1quick. 	P-1 p16=0 L23 C23 p22=0 F0 N23 C23 P0 P-1
+2	é.  ?	L5 F0
+3	aquick,,foxx,,x\n	N16 L16 f0=16 p15=0 N16 p3=0 p2=-1 C0 f2=16
+4	 	L1 C1 p1=0
+5	.!fox abé \nquickx!!quickfoxfox?\n	F0 C0 f26=30 f11=17 N30
+6	xéquick!é1é?; 1. ?,bfoxfox .	C0 L28 F0 f8=28 C28 p12=0 L28
+0	 é?	p3=0 C0 C0 N3 F0 L3 N-1
+1	 . 1;. ?éaéfox.aquick\nquick! é?x	N32 f21=32 P0 N32 f23=32 p13=0 L32 F0
+2	. !x\n?bquickbfox	N3 P0 P-1 N3 P0
+3	  ?\nbquickquick !é.;b quickb !\n.  x	C0 f23=34 p17=4 f5=17 N35 C35 p21=4 f10=31 p23=4 L35
+4	. . abb xx;?b  foxfox.quickx. . fox;	N12 N36 F0 F0
+5	a	f1=1 f0=-1 F0 p0=-1 p1=-1
+6	?.1. . ,, ,quick. ,;x1;,é	C0 N25 L25 N-1 N-1 N-1 N-1
+0	1\nbxxx1;x\nquick	L15 p9=0 F0 P-1 f7=15
+1	?. ,?a;;xa	N4 N10 F0
+2	é.!1 ;1;é	P-1 p7=6 N7 P6 N7 p1=0 L9 f7=8 N9 C9
+3	a!a	p2=-1 f1=3 L3 C3 C3 F0
+4	aa	F0 p2=0
+5	ba quickaé,	L11 F0 F0 N10 F0 p2=-1 L11 f1=2
+6	. ,x  ,a. \nfoxbb!fox?x,foxé\né	L29 p29=21 C21 f10=29 p28=17 F0 f20=29 L29 C29
+0	.foxfox1. . x,!. foxfox. ,,fox!. .1	F0 C0
+1	quickx foxé!é1.!éé\né?quickx. . 	N31
+2	?é!	p3=1 f2=3 f1=3 N-1 C3 C3 N-1 P1
+3	 ;	N2 C2 F0 p1=-1
+4	1 ;. bbfox1\n!!b\n,. fox! \n \n	F0 L27 F0
+5	;xé.fox,a  . .\n!é; ,	N11 C11 F0 p4=-1 L20 F0 f8=9 F0 L20 p13=1
+6	. afox. !;	F0
+0	\n.quick 1fox	p7=0 f8=12 C12 C12 N-1 f9=12
+1	a!\n. 1.é1éé.xfoxa?!quick,1	L26 L26 C26 P25
+2	fox fox quickb	F0 F0 f1=14 N-1 F0
+3	quick. x!éa,	N12 F0 F0
+4	é?1a ;	f4=6 f3=-1 C6 f2=-1 L6
+5	;,b1;. 	f7=7 C7
+6	quickxb?! x;1\n,1!,!quicka1quick 	f18=32 N-1 C32
+0	b.x!,é1..équick,??	P-1 N18
+1	quickab; 1é éax;1fox	L20 F0 N20 F0 L20 N-1 f19=20 N-1 p10=0 F0
+2	1 . bé?;a1\nx?foxb	F0 N7 P0 L17 p0=-1 L17 P13 f7=8
+3	,? !aé;\nquick?x  	L17 L17 f4=17 p2=0 f3=14 F0
+4	\nb. ,quick.quick.éx x,!quickéfox	p22=0 L32
+5	!1!  . .foxfox,?	p8=-1
+6	\n;,!	N4 p0=0 F0 F0 f0=4 p0=0 C0 N4 C4
+0	. ???\nb  \n?;,fox?\n?xé a1	F0 L24 f3=24 F0
+1	!\nx,bquick\n. 1xbquick;afoxfox, !	N4 P0 F0
+2	foxa \n quickfox,!	N17 L17 L17
+3	 ?\n\n1\n.. 1ax,!b!. . .. 	L23 F0 F0 F0
+4	!fox. foxxquickab?b?.; 	F0 C0 p21=18 f16=23 C23 C23
+5	;\néafox1!bafox	N9 N14 F0 C0 F0 N9
+6	!béb.b\nx,..!x!	f11=14 L14 F0 p8=-1 L14 L14
+0		F0 L0 L0 p0=-1 C0
+1	.,x. ,bbquickaa	L15 N-1 N-1 L15 P6
+2	bb?. é	N5 P0 C0 f6=-1 C6
+3	11é,ébx!?	C0 L9 F0 p4=-1 f8=9
+4	. b?   ;x?a?1!	N14
+5	x \nxbb  a.,é!. a.  x	F0 F0 L20 L20 p8=0 L20 F0 L20 N-1
+6	fox\nfoxbéquick.aéab. é quické 	p25=0 f20=30 C30 p14=0
+0	!quickfoxx; a	N13 p10=0 L13
+1		F0 F0 p0=-1
+2		p0=-1 L0 f0=-1 N-1
+3	 \nb\nfox\n	p1=-1 f6=8 F0 f2=8 N-1 f7=-1
+4	;;. fox. x . foxbaquick!xbb.éa	p16=0
+5	,. 1a,xa. 	f1=2 C2 F0 p8=-1 L10 f10=-1 N-1 L10 C10 F0
+6	!;aba	C0 F0
+0	\nx;? x? ,quick 	p15=0 L15 L15 P0 p7=0 N15 C15 P0 C0 P-1
+1	;foxb\n,quick,1;afox  aa !1foxx	p15=13 P7 N13 N30 N-1 N-1 f13=30 C30
+2	b! é,;! \n,quickéb ?1\nfox,. .	C0
+3	;? quickfox. .  quick,?\n. 	F0 p1=-1 p16=3 f23=26 N-1
+4	quick1;quick ! 	f11=15 N-1 C15 F0 p6=0 f7=15 L15
+5	?!	L2 p1=0 C0 C0 F0
+6	\n;ééx	p3=-1 L5 f5=-1
+0	a.\nfox\néx?éfox fox;	C0 p14=0 C0 P-1 P-1 C0 L19 L19 f1=19
+1	1,a . foxfoxb,quick xa !fox	F0 F0 N2 p3=2
+2	fox .! \néfoxaquickx! 1a	F0 p5=0 N8 f23=-1 C23 P21 C21 C21 F0
+3	!,é	L3 p2=0 f3=3 f3=-1 p2=0 C0 p0=-1
+4	xbab	F0 C0 N4 F0 C0 p2=0 p1=-1
+5	1?\n\nabbafox. équick1?b;	N11 F0 F0 N11
+6	!  . fox bfoxx1a	N16 p10=0 N16 f12=-1 p9=0
+0	 a1\nab!quick?  . .  !é1\nx.é!	C0 N28
+1	\nx xéé 1b1a\né,!foxé;!. quick  	p26=14
+2	a. 	C0 L3
+3	a. é, . . 1b b quickquick \naéxé. \n	C0 C0
+4	x,é\n x?fox ;	L12 L12 L12 L12 L12 L12 f3=-1 p6=0
+5	 x.!, .  bxaquicka,!quick. \n,x. \n?	L34 p24=9
+6	fox!\nx?quick b b a, \n	C0 p7=-1
+0	;1. . éfoxaquick;quick. quick b. . .a.b\n!	F0 f13=41 p34=0 C0 f33=41 F0 P-1 L41
+1	b, .quick bb	F0 N2 p11=2 F0 p9=2 f10=12 f9=12 N-1 L12
+2	\nbx. 	L5 f0=5 N-1 L5 N-1 L5 P0 P-1 L5
+3	 .é b1\n. !?a.?a b .\n1b\n	N23 F0 p17=0 F0 f13=23 L23
+4		N-1 N-1 N-1 C0 F0
+5	x ?1xé!xéquick.foxfox!1a!x? a;	p15=3 f25=26 N30 p18=7 C7 C7
+6	. !quick  1;	p6=-1 N12
+0	aééfoxquick. é	F0 L14 C14 f8=14 F0 C0 N14
+1	;; .?b	L6 P0 f0=6 P0 f0=6 P0 f3=6 p1=0 L6
+2		F0 L0 f0=-1 f0=-1 P-1
+3	 \n.; . 1abbbé 	N14 L14 F0 f12=14 C14 L14
+4	quick	L5 F0 f1=5 p2=0 L5
+5	 1aé. \n	N7 L7
+6	. ,;?!,,foxb	N12 L12 N-1 C12 f11=-1 F0 p5=-1 N12 F0 p0=-1
+0	;. .  b1a! quickafox!!;	F0 L23 P0 L23 C23 p6=0
+1	é	f0=1 N-1 p0=-1 P-1 P-1 F0 L1
+2		N-1 N-1
+3	quick?é	L7
+4	1?foxxbquick;x\n. équickxa1 . axxé	C0 F0 L33 f33=-1 F0
+5	.  ... 1;\n,fox ébquick,1.éfox.,	C0 f2=3 F0 f11=14 F0 N10 C10 L31 N-1 N-1
+6	fox  a..1;quick!??;	f18=19 p14=0 L19 F0 N19
+0	éx	L2 L2 N-1 F0 p1=0 f2=-1 N-1 N-1 P0
+1	.x ? ax?,quickx1.\nquicka  ,	C0 L27
+2	1!a? ?éba,!fox . 	p9=6 C6 P5 F0 C0
+3	. x. ;b. quick!	F0 C0 C0
+4	!quick quickx ?.xxquick;\n.	F0 C0 N16 N26 L26 L26 F0 p8=1 L26 N-1
+5	\nquickb\nb. fox?. b;. x b1. 	F0 f3=7 C7 p5=0 C0 L27 f9=10 C10 f13=14
+6	xa1!,é x.. 	C0 p10=0 N11 C11 L11
+0	 .,,foxfoxé\nx. quickb	p16=0 C0 L21 p19=0 N21 C21 f12=21 N-1 P0 F0
+1	. ,;!. a	F0 f6=8 F0
+2	;x!,quick\n1,1 	P-1 P-1 L14 N-1 L14 P3
+3	éx?quické.fox\n.\n;,,	L19 L19 F0 F0 f11=19 L19 f14=-1 f0=19 C19
+4	x a	f3=3 L3 L3 F0 p3=0 C0 f3=3 N-1 C3 C3
+5	. b;!;b.  \n!\n??.? . fox1	F0 F0 N11 L24 p11=0
+6	?? b é!a!	C0 C0 L9
+0	xa;1fox\nfoxquickfoxx	f7=20 L20 f13=20 N-1 F0 f9=20 F0
+1	 fox, ?fox ?,fox;b\na,?,fox;	N5
+2	 	P-1
+3	xé;!.x.,éfox. 	f0=14
+4	!foxquick1,bé foxb!?! xquickfox!.\nfoxb	L38 F0 p24=22 f23=38 N-1 L38 p25=22 L38
+5	b .! afox quickfoxx\n!éb quick.  a1	F0 f25=29 L34 p11=0 f5=9 p29=19 f27=29 L34 L34
+6	\n\nfoxx;;x\né!;b 11quickfox	L25 f14=-1
+0	. 	F0
+1	..  éa. quickx 	C0
+2	?foxé \n ;?!;. b. fox.;quickx 	p11=9 C9 p27=22 f0=1 C1 C1 F0
+3		f0=-1 N-1 C0 C0 F0 N-1
+4	foxb1.?!;b é;foxx!	F0 L18 f1=-1 f13=-1 p8=0 C0 F0 L18 F0 C0
+5	,\nfoxfox1ébbquick,aé. 	L22 N-1 F0 C0 L22
+6	;x.fox,.a\n. ; a	p5=-1 p14=1 f3=15 f12=-1 f3=-1 C15 C15 L15 L15
+0		F0
+1	a! a\n!bb!?b 1quick,;	f4=19 N20 N-1 f0=19 F0
+2	b\n1quick; x  quick?b	N8 F0
+3	x	C0 f0=1 C1 f0=-1 L1 f0=-1 p1=0 C0 C0 C0
+4	quick!x équick x b !é.. ;x.baaa	C0
+5		p0=-1 N-1
+6	aéa?. \na.!\n;a,b	F0 f0=15 p6=0 f13=15 N-1 p9=0 p13=0 N15 F0 f15=15
+0	fox1 	L5 p1=0 N5 F0 F0 L5 f2=5
+1		N-1
+2	 quick ;.a x?	F0
+3	x . x.bquick;!;b,!b;.;x 	C0 L24 C24 F0 L24 F0 L24 p21=0
+4	; !b.quickfox;b	p5=3 N15 p6=3 C3 C3 C3 f9=15 L15 C15 F0
+5	!baquickxb,a. 	f0=1 L14 F0
+6	?. . é.  .	C0 C0 f7=10 F0 N10 C10 N-1
+0	. éx,?x!. .xfox!quick;b\n?;	p8=0 F0 P-1 N26 N-1 N-1
+1		N-1 C0 p0=-1 f0=-1
+2	;\n,1;;a;. ,. aquick.?. ;quick?1 ,	p18=8 L33 N-1
+3	 \n\nb\n	N5 p5=0 p2=-1 N5 f3=-1 N-1 N-1 L5 C5 L5
+4	é!1;éa. 1quick!!a.! ?, !.!!	F0 N20 L27 p25=21 F0 p26=21 F0 p0=-1 p26=21 p19=16
+5	\n1. 	p1=-1
+6	b!! quick  1	C0 N12 F0 C0 p10=0 C0 N12 p0=0 p11=0 L12
+0	1xa	P-1 L3 C3 P0 N3 N-1 P0 p1=0
+1	!xx	N3 C3 P0 C0 N3 L3 L3
+2	1. .baéfoxquickbb;	f11=17 C17 C17 N18 P17 C17 C17 P0 P-1 L18
+3	.  é;quick??b	p4=-1 C0 p10=-1 F0 F0 p0=-1 p0=-1 F0
+4	\n. !b	N5 p0=0 F0
+5	\n x.   fox . ,  	F0 L16 L16 C16 f10=11 C11 f12=13 p3=0 f11=12 N16
+6	. a ?!!fox,. \n 	N15
+0	é !xxquick?	L11
+1	,x. bquick.!quick ,,x.,b	L24 L24 L24 F0 L24 L24 N-1 P23
+2	1.foxa1. quickquick,,!!é.é 11 équicka	L37 f11=23 C23 F0
+3	\néfox;!;a quick\nbquick	L22 f5=22 f16=-1 F0 N22 f10=22
+4	xb;xfox	F0
+5	111,!\n. 1	N9 L9 N-1
+6	. ; quick1 xx?quickquickb	L25 f14=-1 L25 N-1 F0 C0 p3=-1 L25 L25
+0	.éé !\nb?aé  a1. ?. quicka\n!	p15=0 C0 F0 p26=0 C0 N27
+1	,quick ééé,!b x x . é?é?. \n	F0 L27 N-1 f9=11 f3=11 N27 p2=1 L27 P11
+2	 \n 	N3 L3 N-1 C3 C3 p1=0
+3	1	F0 f0=1 N-1 C1 f0=-1 L1 F0
+4	b quick.bx. .  .. x ?\n? ; \n, 	p25=24 N29 p18=0 N22 C22 N29 N-1
+5		F0 f0=-1 F0 L0 N-1 F0 p0=-1 p0=-1 f0=-1 f0=-1
+6	quick?a1quick\n !, !, fox xb.. quickx;1	L38 C38 C38 L38
+0	quick,a!quickb	F0 p10=0 f12=14 f6=14 C14 f2=14
+1	quick!, !?. quick! 	P-1 p5=0 C0 N7 f14=19
+2	.  éxéaé.quicka.	C0 C0 p5=3 p4=3 C3 N16
+3	.a. x\n. ;?	F0 f10=10 p9=0 N10 p5=0 L10 F0
+4	 fox,\nx	L7 F0 p7=0 F0 f0=7 C7 N-1 L7
+5	1.  !.b. 	L9 p6=0 f0=1 f2=4 p0=0 p5=-1 N9
+6	!quick?,!;,. . béquick .quické quick\n  a	f32=40 L40
+0	;!?!. ;b\n. ,;fox?quicka\n	p7=0
+1		f0=-1 p0=-1 F0 C0 N-1
+2	 ;1\n;bb!?ab , ;. é axquické	P-1 N1 f1=2 P1 F0
+3	1. x\nb. . é 1é  quick	f4=21 F0 L21 F0 f13=21 N-1 p20=0 f21=21 C21 N-1
+4	,!; 1	C0 N5 f1=-1 N-1 C5 L5 C5 f2=-1 L5 p5=2
+5	. é ,b\n,?	L9 L9 f5=6 C6 C6
+6	\nfox. é,quick1;  x. \nquické?	p4=-1 F0 C0 N28
+0	\n?!;?;quick\nx !;??;x!b!1	N24 f24=-1 C24 f3=24 P0 p6=0 C0 N24 N-1 C24
+1	;,.,foxa;a.fox;,11\n!	P-1
+2	1. ,.a 1quick.xx.!\n1?.;a;quick. 	f25=32 f17=19 P0 N19 C19 L32 C32
+3	1xéa,.,\n?quick	C0 p5=-1 L14 f4=-1 f5=-1 L14 C14 f9=-1
+4	!x! quick\n 1?1?\naé.  	N21 p17=16 N21 C21 F0 F0
+5	éa?quickfox?x. x1fox111	p6=-1 f21=23 F0
+6	quick!!;b!x. bfox  .quickx1; é	N30 p22=10 F0 p28=10 f6=30 C30 L30
+0	?b;.1 !1x	F0 p9=0 f9=-1 C9 N-1 p2=0 f4=9
+1	,b\nxfox?fox?b. x;;?. 	L21 f14=21 C21 F0 N21
+2	quick 	p4=0 L6 N-1 C6 f3=6 F0 L6
+3	?quickfoxfox xé\n. 1,  1	p10=-1 C0 C0 p21=1 F0 L23 N-1 f7=23
+4	 ,.;ébx.;,?.	f7=12 f9=-1 L12 N-1 L12
+5	   . ;é	f5=6 f7=7 N-1 C7 p1=0
+6	quicka.?.a!foxafoxa .bé	f16=23 p3=0 N23 f13=-1 F0 L23 C23 N-1
+0	;?éxéx!1a.quickx1\n. . ?	p20=0 L23 P0 p19=0
+1	xb.  . .  1,	C0 N12 f12=-1 F0 C0 L12
+2	!x	L2 L2
+3	 . fox é,	F0 f9=9 C9 p7=0 C0 L9 f5=-1
+4	.	L1 C1 p0=0 f1=1 C1 p0=0 C0 p1=-1
+5	,fox.fox!é.;1!quick;,ab	L23 p12=1 F0 f1=8 f20=21
+6		F0
+0	foxxb1quicka.é	f13=14 C14 C14
+1		P-1 f0=-1 f0=-1
+2	quick,. .b quickquick?,1?é!éfox. 	C0
+3	\n;!fox!x.quickx;;	F0 L17 p0=0 p7=-1 f13=17 C17 N-1 F0
+4	. foxéquick!,1foxx,  1quick	F0 f4=27 N-1 C27 C27 L27 F0 f4=27 f20=-1 p5=0
+5	fox ,x\n	L7 p3=0 L7 F0 p3=-1 N7
+6		F0 N-1 L0 f0=-1 f0=-1 N-1 L0 p0=-1 f0=-1
+0	.1!. quick. . quickx!foxb 1	p9=0 f22=27
+1	 foxquick \n\n?\n;.;. quick;1;. 	F0 P-1 P-1 f24=29 C29
+2	 fox quick1foxba \n!	p8=0 p1=0 P-1 f6=19 L19 N-1 f13=19 p4=0 P-1 C0
+3	b . 	C0
+4	 !b.fox	N7 p0=0 L7 F0 C0 f0=7 C7 C7 F0 N7
+5	,1b\n 	N5 F0 f3=4 L5 F0 f5=5
+6	?;b! !   .?. bfox?	L18 f15=-1 F0 p3=-1 F0 f14=18 C18 N-1 p14=5
+0	!bbquick;aé\nquickba;é1fox;aa éb	P-1 C0 L31 C31 F0 f27=31 f12=31 p4=0
+1	;	f1=-1 F0 F0 F0 p1=0 N1
+2	?b;1. b	L7 f3=7 N-1 C7 P3 N7 N-1 P3 C3
+3	 ;. !é . a!!quick!	C0 p8=-1 C0
+4	quicka,\n. é,!1abfoxéfoxé,!!	N27
+5	. a ?. ?!afox1bé!!1x,quick. quick	C0
+6	 \néx? ?x;. 1 quick. b!a	L23 f14=-1 F0 C0
+0	a1?,,\n;fox. !	f0=13 L13 p6=0 p3=0 p1=0 F0 p9=0
+1	x quick;.ba?! x ? ;	N19 F0 f17=19 F0 P-1 P-1 P-1 p18=0
+2	foxaquickfox. b\n1\nb1  fox??	L27 L27 P0
+3	 ?quick..x\n;1.,.. !. ! quick. ?	C0
+4	fox. \n ;1 x\naé	F0
+5	\nx; ;. b\nquickxfox. 1quick1. foxb . bx!	N9 f36=38 F0 F0 L39 N-1 p27=18
+6	fox fox\n\n,fox;?. ;,xfox	F0 C0 f20=23 N-1 L23 C23
+0	fox	N3 F0 f1=3 N-1 p1=0
+1	\nx1b   ;1	N9 f4=9 L9 P0 N9 F0 p3=0 P-1 F0
+2	b?! ?quick	P-1 N4 L10 L10 L10 p10=5 p5=4 P0
+3	fox,,quickxfox?,;a. a? foxx;1!	F0 L30 p7=0 C0
+4		C0 C0 C0 F0 p0=-1 p0=-1 C0 N-1 L0 f0=-1
+5		N-1 F0 f0=-1 p0=-1 p0=-1 C0 F0 p0=-1 p0=-1
+6	foxfoxx!x\n	f3=10 C10
+0	b\né,a,quick.!?,!. \n	f14=19 N-1 N-1 C19 p10=0 P-1 L19
+1	!!b;?x	N6 N-1 f1=6 F0 L6 C6
+2	x,\n.,1quickb1 ébfox1b a!\n;x,	p5=0 N25 F0
+3	1x. \né.a\n	F0 C0 L9 N-1 p9=0 C0 f5=9 L9
+4	?\nbx;x\n?b\n!,. !é?xx?foxé. 	F0 p2=0 F0 f3=26 C26 F0
+5	.  quick\n\n	F0 C0 f8=9 p7=0 C0 C0
+6	fox!\n.a,?quick!quick. ,. .é?  1\né	N30
+0	;. ;!équick	N11 L11 f8=11 f5=11 p10=0 f4=11 L11 F0
+1	foxquick?  \n	f6=12 N-1 f12=-1 P0 F0 f4=12 F0
+2	.quickfoxéfoxxx\nxquick !,é;,a;fox.;	P-1 p17=0 F0 N24 F0 f0=24 p13=0 P-1
+3	 . a xfoxé1quick!! 	L19 F0 f5=19 F0 f4=19 f19=-1
+4	  . b;\n	C0 f6=7 N-1 C7 p4=0 L7 C7 N-1 F0
+5	\n??1?fox?,aa,, a !xxfox	C0 N10 C10
+6	x,?x!a	C0 L6 F0 F0
+0	\n?. bafox  x;aa;.?1é ! b1 	C0 P-1 C0 N26
+1	?;!.  \n,!é\na. fox! x \n,. 	C0 L25 C25 C25 f12=23 C23 C23 p25=23 f4=8
+2	 .?.aquickfox;!é. fox . .  ?;fox quick	N4 N13 p29=28
+3	?quickquick,b!b. 	N17 F0 f12=17 N-1 F0
+4	bquick,1;\n!. ;	C0 N14 f7=-1
+5	  a,1!! ;,b\n quick	F0 N10 N18 f17=-1 C18 f4=5 f8=9 C9 F0
+6	 xx;!1. é?,;é\n\n?.1. b	C0 L21
+0	b é;foxxaa1 . é,quick1?1ax é	F0 C0 N28 p21=0 C0
+1	.. ;quickquick!quick	N20 F0 F0 f14=20 p13=0 F0 P-1 N20
+2	ax. é, axé11 xx. é1. x . 	p7=0 F0
+3	ab\nfox quick.  1? . a1?b\nx	p21=0 N23 L26 F0 L26 F0 p13=0 N23 f10=23 N26
+4	,;foxquick	L10 N-1 L10 F0 L10 f8=-1 C10 f4=-1 p5=0 F0
+5	 ? 1x.quick\n. 1	L15 C15 p8=0 C0 p5=-1 p2=-1
+6	b !foxx,.é,. quick;,foxx é. b.;?.	p27=19 C19
+0	,foxa ;xquick ?, !xx	F0 F0 F0 F0 f2=20 p0=-1
+1	,é	L2 C2 f2=-1 f2=-1 F0 N2 F0 N2 f2=-1
+2	é\nfox!;afox!.1foxfox ?a.	F0 F0 C0 N6 N7
+3	axquicka	C0 f4=8 L8 C8 C8 F0 C0 p8=-1 N8 N-1
+4	xfox. x\n;x\n	L11 F0 N11 C11 p9=0
+5	?fox.,b 	N8 f4=5 p3=0
+6	,quick.;bé\nquick. ;?a\n..a!é..11	p24=8 N31 L31 F0
+0	\nbfox bx;?é?!\n	L14 p2=0 C0 C0 p12=0 C0
+1	x?  fox.fox. éfoxb!!!?1quick 	N29 P0 p11=0 p17=0 C0 P-1
+2	.a,x.é\nx,;fox?,aéab!. x	C0 P-1 L23
+3	,. ?a ?!bquickbx;fox. fox.  	f9=28 N-1
+4		L0 L0 f0=-1 f0=-1 L0
+5	\nfoxaéé?.a,fox	N10 N14 L14 C14
+6	 a;. ba	f1=7
+0	1éxé;.. quickquick. é	L21 F0 C0 C0 p16=0 F0 f5=21 N-1 N-1
+1	\n. 	L3 C3 f1=3 N-1
+2	. 	f2=-1 f2=-1 L2 C2 L2
+3	.quick x aaquick1,b1quick. ,;. ?fox ;b	p14=0 C0 F0 L38
+4	\n \n !?éaab?	f0=11 F0 L11 L11 p10=6 f1=11
+5	bb.x	L4 C4 N-1 p1=0 C0 f4=4 C4 F0 F0
+6	!; ?1\nx,? quick!,!a;. x!x	p14=4 L25 L25 N-1 N-1 L25 L25 N-1 N-1 C25
+0	b. 1 fox 	f2=9 f9=-1 F0 p5=0 N9 F0 L9
+1	\n\n,quickfox,;é	P-1 f3=12 F0 N3 F0 F0
+2	. ; ;?fox. ,bquickbaéb,x?\n	F0 p13=6 f2=3 p9=6 F0
+3	fox ; ?	L7
+4	. a!?!b, é	f0=10 p1=0 p4=0 C0 f7=10
+5	x 1b, . 1quick  éfox?. fox.,éafox.	N8 p17=6 F0 C0 N8 F0 L34
+6	quick!foxx,!	C0
+0	é?abé,?1é\né.?. a. a..bx;.	L25 C25 L25 F0 p8=0 F0
+1	a	p0=-1 F0 N1 C1
+2		F0 p0=-1 L0 P-1 C0 N-1 p0=-1
+3	?. b ba1quické1 quické 1	F0 F0 f17=24 p17=3 F0 C0 p16=3 p12=0
+4	!,. bb . 1,1	p7=1 f1=12 L12
+5	.a 1béx 	L8 f0=1 L8 f8=-1 N-1 F0 N8 L8 C8
+6	a.    ?fox\n	F0 C0 F0 C0 p6=-1 F0 F0 F0 F0 C0
+0	 ;,quickfox;!?a,quick	f6=21 F0 f2=21
+1	 ,a1bb quick. aquick b\n\n. é?,. \n;	N2 C2 N29 C29 p16=2
+2	fox! xfoxb,?quicka ;. é ! afox  a	p7=5 N12 f18=19 p23=20 N26
+3	\n,x?;;	p6=-1 f2=6 f5=-1
+4	.bx.;\n\né. !; b	p2=0 p3=0 C0 L14 f11=-1 N-1
+5	é,é 	p0=-1 p4=-1 N4 f4=-1 p2=0 N4 p0=0 f3=4 f1=2 L4
+6	;b ?	F0 N4 L4 f1=-1
+0		F0
+1	a	F0 F0 C0 f1=-1 F0 F0 f1=-1 P0
+2	 ?,xxa b. fox;;. !	C0 N2 f6=13
+3	.fox!. ?b.b	F0 C0 F0 f0=11 F0 f5=11 F0 p1=-1 C0 C0
+4	 a!. . aquick!.1;quickquick xquickfoxxé!	N15 N40 f10=40 F0 C0 p29=15 p8=5 f38=40 f0=15 f27=40
+5	  a1,.!!a?bfox	N10 p3=0 L14 p9=0
+6	fox?!	p3=-1
+0	xfox . . xfox?!  x	P-1 P-1 f7=18 C18 F0 L18 L18 L18 L18
+1	 fox. xééé.,.!fox. ; . xx?foxé	C0 F0 f23=30 p16=12 P0 N12 p27=12
+2	éfox\n.b1!1!abé! ;;x. ;	L22 L22 C22
+3	 111b    bquickéx\n?b;;quick,,;quick	p9=-1 p4=-1
+4	\nx\né!,	C0
+5	, quick 1a\n?	C0 C0 L12 C12 F0 F0 p1=-1
+6	a 	L2
+0	?quick\n ;xa;b. \n	p13=0 L16 F0 N16 L16 F0 L16
+1	.aé é..11b\n é ;;!;1	L19 p13=0 C0 C0 L19
+2	quick  !??..fox1quick,foxa!b. !,	f25=27 f24=27 P12
+3	; , !;fox. x\né!a,,é;.	f15=21 F0 F0 L21 N-1 C21 L21 N-1 F0
+4	fox,!.. a !!. ! .1é. !a!quick	f16=29 N-1 F0 N22 N29
+5	.	f0=1 f1=-1 f0=-1 f0=-1 L1 N-1 C1 p0=0 p0=-1 L1
+6	a . quickxaa1\n,?,	C0 N17 F0 F0 N17 C17 f10=-1
+0	;1 ax?\n 1,aa .quickfox	p15=0
+1	fox xxx é.a	C0 P-1 P-1 C0 C0 F0 P-1 f6=11
+2	.?fox\nquick ?é.	N2 N13 L15 F0 N2 F0 f2=13 C13 p6=2 f6=13
+3	équickbfoxfoxa 1é,. é	f8=21 L21 p19=0 f14=21 C21 p11=0 L21 f12=-1 p14=0
+4	\n;équick,;1bquick?!x;!x,. é xbé;	p10=0 L32 N-1 f6=32 L32 f17=-1 p32=22
+5	. ?. a.  1x x,éé;?ax.?quick	L27
+6	,x x;b\n;,. ,! ,quickx	L21 f4=-1
+0	?b?!a1, foxquick,!\n. 	C0 C0 p4=0 p8=0 f15=21 f18=21 p8=0 N21
+1	axfoxéé1!;!. . ; ax! bé. a	N26 L26 L26 p0=-1 L26 P0 f25=26 p0=-1 L26 L26
+2	é	F0 p1=0 p1=0 N1 L1
+3	!a	f0=2 N-1 N-1 L2
+4	aé\n1	p1=-1
+5	;é. ?xfoxb;?\nx1?quick,b	C0 p8=-1 C0 C0 L23 L23 C23
+6	  \néfox1.é	F0 F0 N10 N-1 C10 p7=0 C0
+0	;a;é	P-1
+1	1foxquick;,!. ax.aquicka éb1quick	p22=11 P0 f1=11
+2	!;,;;ax.,	p0=-1 f0=1 F0 F0 N1 N2 C2
+3	1\n;; ?!!éxquick? éafox	L22 F0 F0 N22 L22 p21=8 F0 C0 N22
+4	1quick;,,;!x;, ?x;bb..,. ? 	C0 N16 C16 f17=27
+5	  x?foxquick	L12 F0 f6=12
+6	bab1éx1.  . ,..!1\n?a!,!	f4=23 C23 p13=0 F0 f12=23
+0	\nx?\n\nx\n.	C0 N8 p6=0 N8
+1	b,fox;1quick1.;b;x. 	N2 p9=2
+2	?x.1a?;quick;	N1 f3=6 F0 P-1
+3	.fox1;;1!	L9
+4	afox	L4 f0=-1 F0 p1=-1 f3=4 p0=0 L4 C4 f2=-1 p1=0
+5	. . ?quickéquick?..  b \n!quick\n	F0 p25=16 F0 N5 F0 L31
+6	fox. ? foxb;xxfoxa ?aé1foxfoxquick!.1!	L38 C38 L38 F0 N36 C36
+0	x;foxx.,b.. 	p8=0 C0 N12 P0
+1	!;x.!	C0 C0 L5 P0 f3=5 L5 p1=0
+2	 . quické!!fox	N11 L14 F0 C0 F0
+3	  ?.\nquick,;	f4=12
+4	aaa?x\né,,.x\n\nquick?b?. . quick. fox.	L36 F0 L36 L36 L36
+5	bfox. 1;x b 	N10 N12
+6	.    ;. \n. ,fox ,. 11quick! ?. afox	C0 F0 f33=35 L35
+0	éxx.  xba\n?x.;\n quick.bab	L25 p6=0 p7=0 p10=0 N25
+1	; quickb ,;éfox; x1	L19 F0 L19 f18=19 N-1 f2=10 p0=-1
+2	,bb é \n	f1=7 L7 p6=0 F0 C0 F0 C0 C0 p6=0
+3	quick\nabxéaéquick .! éxb!	C0 L25 C25
+4	 ; 1x.;!xx ax. 	N15 f10=-1
+5	;;1fox.!;,	F0 F0 F0 p4=-1 f6=7 p0=0 L10 L10
+6		p0=-1 f0=-1 C0 f0=-1 L0
+0	? !. 1!.   1.bfoxfox?aaa 	P-1 N25 L25 C25 L25 L25 L25
+1	é\n\n ;b	P-1 N6 F0 P-1 P-1 P-1 N6
+2	,\n\n?éfoxb? é b	N4 L14 p7=4 L14 f9=11 p5=4 C4
+3	é;, a1bé . ,1x\n\n	p12=0 C0 L16 f11=-1 f0=16 N-1 C16
+4	1 ?bb1,?; 	N10 f7=-1 N-1 f0=-1 p4=3 F0 F0
+5	xab.\n!?,. ;	f10=11 p11=0 F0 p8=-1
+6	!. 1,quicka.\n, é?!\n!	p2=-1 C0 f20=20 F0 N20 f1=-1 C20
+0	fox,\nxéa?a	F0 p8=0 C0 P-1 f2=10 F0 L10
+1	1é . ,a1;a x1b,a,, a?bx	F0 N6 P0 N6
+2	;foxé.b\n!\n ?.é?.b,fox	F0 N1
+3	quick\n!.xfox,aquick?,. 	N20 C20 p11=0 f17=23 N-1 L23 p22=8
+4	,x?fox? équick;	L15 p7=3 p1=0 f3=15 C15 L15
+5	,,. foxx a; . . aquick?	p5=-1 C0 f6=8
+6	?a.é1!?;	N8 N-1 f3=-1 f5=-1 N-1 L8
+0	!!é	L3 L3 F0 F0 C0
+1	,.?\nquick. bquick.fox.  bé	F0 P-1 N26 P1
+2	,x1 foxxfoxb\n	f7=13 P0 L13
+3	 .. .fox,quické? 	F0 N17 F0 p16=0 p5=-1 f17=17 C17 f2=17
+4	?1\n	F0 C0 p0=-1 L3 F0 F0 L3 N-1 C3
+5	,??b!?foxx\na.!fox;1?b	F0 L21
+6	b,quickfox 	p7=-1 L11 F0 C0 L11 F0 N11
+0	. 11 ,1,x!xébquick?;!a\n !	p20=0 N25 F0
+1	 \n. !xquick\n,	C0 P-1 p3=0 C0 F0
+2	;aa. ?!quick.!  ,équickquickb.xxé	p12=7 p3=1 P0 f23=33 f18=33 N-1 L33
+3	;.é\n;!\n xfox?,1 x\n	L18 C18 f9=-1 L18 f7=-1 f0=13 p4=0 N18 N-1
+4	\nfox,aa?x,	L10 C10 L10 N-1 L10 C10 p10=8 C8 f7=10
+5	quick. \n fox1béxfox,x1?\n	L24 F0 F0 p17=6 C6
+6	 . ! 	f2=5 f4=-1 L5
+0	;?;. 1fox 	p2=0 C0 F0
+1	éfox;x,	P-1 L7 P7 C7 P0 P-1 C0 P-1
+2	;. ,a!xéa??a ,ab\n	C0 P-1 N1 F0 p7=6 C6 P1 L17 F0
+3	b1éfox1?	f5=8 p3=0 p8=-1 L8
+4	.x?	C0 f3=3
+5	1,foxfoxfoxéb. fox	F0 F0 f14=15 F0 L18 F0
+6	 .  \n?!;éb	N10 L10 F0 p9=0 F0
+0	,xé1aquick;é . ,;.  éxquickx	F0 L28 f23=28 f3=28 F0
+1	quick.?1b1.,b  x\nquick. 	p24=12 p1=0 p20=12 L24 N-1 f2=12 P0 N12
+2	é1 	P-1 N3 F0 F0 L3
+3	 ;!\nquick,,.  a . foxa	p9=-1 L22 f6=22 F0 C0 N22 p5=0 p4=-1 f17=22
+4	;équickfoxquick!;\n !quick é,b quickx!?	F0 C0 N20 p32=20 N38 F0 F0 f33=38 C38 L38
+5	fox ;. quick\n	N12 L13 p9=0
+6		f0=-1 p0=-1 p0=-1 p0=-1 L0 C0 p0=-1 L0
+0	foxé;;;!\n!quicka,quickb\n	C0 N24 p16=0 C0 L24
+1	fox. quick..  !é x\nquickx.	F0 p3=0 F0 L26 N-1 N-1
+2	 \n;aé\n ;,x. foxb ?	p9=8 F0 f9=18 f4=7 F0 p2=0 F0 L18 f11=18
+3	1; 1fox 1aaquickquick\nquické	L28 f8=28 f7=28 N-1 f26=-1 p19=0
+4	équickx\nquickbba;xx.é.   	f18=25 L25 F0 F0 C0 p4=0 C0
+5	a\nquick!1\n;quick\n1xa,bax. éa! 	f17=20 p15=2
+6	?quick	f3=6 f0=-1 F0 p6=-1 F0 p0=-1 f5=6 p5=0 p2=-1
+0	aéxb	C0 P-1 F0 L4 F0
+1	b?  	L4 f3=4
+2	\nx . quick.	F0 p8=0 L11 f5=11
+3	;é,x;\né!xquickquickéfox, é	C0
+4	;b.quick;;a;\n!b!a.11!b	L22 C22 f5=-1 p2=0 C0 C0 C0 p16=14 F0
+5	\n.;quick é1!	F0 C0
+6	é?\n..  1foxxfoxéx1;	F0 f11=19 C19 f12=-1 F0 C0 p0=-1 L19 f10=-1
+0	; x.x1quickx1;?x.x.  	F0 L21
+1	 !\nxquicka fox!b. x\n.1fox.	p2=0 N26 N-1 P0 N26 N-1 N-1 C26 F0 f15=26
+2	1. . aé;,quick\n. . b1.\né!a; 	P-1 C0 L28 p27=26 N28 p18=8 C8 L28
+3	fox.a\n ;. foxafox  x!;quick1!?	p4=-1 p16=0 f22=30 N-1 f15=30 p28=0 f27=30 N-1
+4	fox;bb\n. 1\n.1b.. 11b;fox\nbééb	p13=0 C0 F0 f16=29
+5	quickbb1quick1éé!b?aé. quickx\n.b1,fox	C0 f31=33 p4=0 N16 F0 L37
+6	fox. a é;?,quick\n ab	f9=20 N-1 f5=-1 F0 N20
+0	quick!;a;?fox?  !xquick ?	L25 p0=-1 C0 N25 L25 F0 N25 N-1 p5=0 p10=0
+1	bfox	F0 f3=4 P0 C0 p2=0
+2	éa!!.;quick,quick!.bxquick	p3=0 p11=6 P5 P0 C0 f11=19 N26
+3	 , équick1, aquickx	f10=19 F0 F0 C0 L19 f5=19 p16=0
+4	 \nquick	p4=0 C0 N7 C7 C7 N-1 N-1
+5	 fox.b??\nxa1xb!foxxaé	f16=21 p7=0 C0 L21 p13=1 f5=6 C6 N15
+6	1b ;;quickx ?quickbquick\néfoxb\n!.;x	p8=-1 C0 C0 C0
+0	é.é\néb.  ,fox	P-1 N13 f1=13 p2=0 N13
+1	?ax!?quick; x\n,;	f8=15 P0 L16 p5=0 F0 F0 L16 p16=15
+2	1x1\n\nb é ;é .é!xx . a!é 	N9
+3	.  	C0 N3 f1=-1
+4	.; ?!x\n\na\n\n é, ?1b 	L19 N-1 F0 p1=-1 L19 F0 p19=16 C16
+5		N-1
+6	. b,;x	F0 N6
+0	11 .\n ;a b quickéa  quick	C0 f17=25 L25 F0 F0 f16=25 N-1
+1	. é!1!;1,.  1.;quickquickba	C0 F0 P-1 F0 N9 f27=-1
+2	\nquickba!quickfox;	L18 L18 N-1 P17 P9 L18 N-1 N-1 f4=9
+3	. quick1b!quicka. x. \n,b bx. foxx,. 	F0
+4	x\n.;	p0=-1 N4 F0 f0=4 F0 f3=4
+5	foxquickx\n?;1!é	N10 p5=0 N10
+6	;;x?1. \n!quick.?;xquick. .x?quick1. 	C0 F0 f25=36 C36 p19=9 L36 L36 L36 f32=-1
+0	\n é fox	C0 N7 F0 N7 N-1 p1=0 P-1 p2=0 N7
+1	!. 1;éxfox b?\nquick !quick?! , 	C0 F0 p6=0 C0 P-1 f17=30 L31 f31=-1 F0 f8=30
+2	ba.!1. !?quickfoxquick ?.fox\n. !x\n	P-1
+3	 afoxaquick  quick\nfoxébfox.,!\n;!	L33 L33
+4	!?b1bquick1xé;. ?,x! !. ;x	F0
+5	bab ;foxquick\n !é. bx;;	f14=15 F0 p12=0 F0 f17=18 F0 L23 F0
+6	. b 	F0 L4 p2=0 N4 p1=0 L4
+0	 , !1quick. b	N13 F0
+1	  ,  . quickxa?bé;	f0=3 F0 L18 p15=3 N18 f3=18 f16=18 N-1
+2	 aé	C0 N3 L3 f1=3 L3 N-1 f3=-1
+3	 foxéa.  équick,!é quick\né.  ?bxbbquick	f23=39 L39 f26=39 F0 p17=0 L39 L39 F0 C0 F0
+4	quick;é;	N8 L8 L8 p1=0 p5=0 C0 f3=8 p6=0
+5	  .  	F0 L5 f4=-1 C5 f4=-1 C5 F0 p5=-1 N5
+6	quickx\nfox\n. . \né. 1fox .!\n1;..	p14=0 C0 p18=0 F0 C0 F0 L31
+0	. aa,.;;	C0 C0 C0 p5=0 N8 C8 P0 p2=0 L8 F0
+1	b?.éx1,a	F0 f2=7 p7=7 F0 P-1 L8 C8 N-1 F0 N7
+2	é xbfoxé?;	C0 L10 F0 L10 C10 P9 C9 N10 f8=9 N10
+3	foxquick?,?xquick;a\n !.  bébfox	C0
+4	,éxbé \n.  fox	N13 L13 F0 L13 C13
+5		N-1 C0 f0=-1 f0=-1 p0=-1 C0
+6	aquickafox xé1.a aaéquické. ?fox;	L33 p31=0 N32 L33 N-1 p32=0
+0	!,. foxba\né 	P-1 N12 f0=12 C12
+1	,!,quickxa\n!1!	L14 L14 P3 f14=-1 P3 F0
+2	quick. fox\nb.b . !fox!aax \nfox x. 1 	P-1 f28=36 f28=36 N-1 F0 P-1 N18
+3	xquickxquickfox.. x,bfox.1é1	f12=28 F0 C0 N28 L28
+4	,a ? é.	C0 N7 p1=0
+5	 .é !. .  \né !a,;foxxx	N11 f16=17 L22 f18=22 N-1 N-1 F0
+6	 a1xéfoxquickx  éx. xa1,xfoxé 	C0 N30 L30 N-1 C30 L30 L30 C30 F0 F0
+0	,quickxb,;x xfox. .bquick!fox fox,	F0 f9=34 f32=34 p2=0 p10=0 L34 P0 P-1 N34
+1	!	F0 p0=-1 P-1 L1 L1 p0=-1 P-1 P-1
+2	fox\n ;;?1b. .?é1	L16 f3=5 C5
+3	.,	f2=2 f1=-1
+4	équick	L6 p2=0 f2=6 N-1
+5	fox;\n	F0 f1=3 F0 C0
+6	 é .xa?!foxba  ;	C0 f0=16
+0	é,!foxfox	F0 p0=-1
+1	\néafoxquick !fox;?!.;.!.é1 	L27 f22=27 N-1 N-1
+2	\n\n\n,	F0 F0 N4 F0
+3	. \nfox?b;;é. .fox?b. ,é!\n.quick?1	N25 f13=25 f12=25
+4	\nx	N2 C2
+5	1!\n.a;.	C0 p0=-1
+6	. quick!,. b. !!?xquick	C0 L23 N-1 f15=-1
+0	a? \nbé	F0 P-1 N6 L6 C6 N-1 F0
+1	fox1. ..??b .quickfoxx; x.	f10=26 P0
+2	\n a!,fox.	L9 C9
+3	!,.é1quick. é équick  quick. b ?a bb	F0 f0=32 L36 C36 L36 N-1 p12=1
+4	1a	F0 L2 C2 F0 F0 N2 p2=0 F0 N2 F0
+5	\n. !quick	F0
+6	.bquickb.	F0 f3=9 f4=-1 N-1 N-1 F0 N9 f4=-1
+0	?fox,.. 1équicka;foxquick;  1!quick;bé	f26=38 P0 L38
+1	\n ;a,béquickb!a. ,quick1,fox!;\n;!	f30=33 p2=0 N5 p32=25 p0=-1 P-1
+2	\n1quickfoxfox quické!,!bé. . a11\nfox 	C0 P-1 f0=21 N23
+3	 \na. ;!afoxfoxa1	F0
+4	fox.,,!fox;. a . 1. b	p14=7 N21 F0 f19=21 N-1 p17=7
+5	b \n quick	f7=9 p1=0 L9 f6=9 f9=-1 N-1 C9
+6	\nb fox\n1	N8 L8
+0	,a. !quicka	L11 C11 p8=0 N11
+1	quick. éxbquicka1!quick..fox!.fox ,	P-1 C0 L35 f19=35 N35 f13=35 P0 f35=-1
+2	. ?quick. ,	p3=0 p1=0 N3 p2=0 P-1
+3	xxquickb x,. .\n .,. 11;a é	p17=0 p3=-1 f22=26
+4	.  xéa?.é\nquick\né b .afox. ?a	p18=8 F0 f6=28 L29 F0 N28 C28 f27=29 C29
+5	xafox;1b	C0 C0 N8 F0 F0 C0 L8
+6	quick?11b. 1,.?.?x1\n,foxquick11 a 	C0 C0 N34
+0	;!	N2 F0
+1	1\n?!!1.é\n. ;aéa??	N17 P0 C0 C0 N17 N-1 f17=-1 p10=0 P-1
+2	.  \n\né?fox	P-1 L10 f5=7 F0
+3		C0 N-1 f0=-1 N-1 N-1 F0 N-1 f0=-1 C0
+4	a!bb  quickfoxa!abé .!,. 	p18=16 f12=25 N-1 C25 f5=-1 f20=-1
+5	;\nquick;!foxb,,?,	p4=-1 N9 p0=0 f15=16 L17 f14=15 N17 C17
+6	 foxquick\n!b ?  1, ?\na;	p9=0 p3=-1 L23 N-1 C23 p16=0 F0 L23 p5=0 p21=11
+0	.	C0 P-1 F0 P-1 F0 p0=-1 f0=1 P0
+1	 .1\n,. !é.xba? a quick\n11\n	L26 p14=5 L26
+2	!.b?1;afoxquickbb,,\n;1  \n!. 	P-1 F0 L28 L28 P21 N28 F0 p7=6 N20
+3	. ? b	C0 p3=-1 f4=5 N-1 N-1 p3=0 F0
+4	fox	p3=0 C0 C0 f2=3
+5	bx 1quick. é . ?;.11 \n b é. 	C0 N10 f17=20 L28 F0
+6	.. 1quicka 	f9=11 L11 L11
+0	 !;a \n1quick!	P-1 L13 P0 C0 P-1
+1	.. b..quickquick?\n1. !éfox\n,xquickxéa!fox	F0 N28 F0 f11=28 N41
+2	!!!quickéquick!é fox	L20 F0 P-1
+3	.éfox??.quick	N13 L13 N-1 N-1 f9=-1 N-1 N-1 C13
+4	bxaéx.;ab!;\n	p4=0 p0=-1 f11=12 f12=-1 C12 F0
+5	  a;b\n..é!\nfox 	C0 L15 L15 L15 F0 C0 N10 C10 C10 N15
+6	quickquick  x?quické,quick!	F0 N27
+0	.  ,?. a\nx1?	L12 L12
+1	é..  \nxb.éfoxbé. \n.;	f17=20 p10=0 L20 f2=20 F0 F0
+2	\n!a\nax?1;,quickquick1b,bb	N2 p13=9 C9 L25 p21=9 N25
+3	.  \n;. ? xxfoxa.ax\n1.	F0 N21 L21 f14=-1 L21 F0 p1=-1 L21 f14=-1
+4	x;b ,.x, b;? !. .fox	L20 N-1 N-1 p17=16 F0 C0 N20
+5	?. ,. .quick	N12 F0 L12 C12 L12 C12 f11=-1 p6=0 F0 L12
+6	\n. ;,aa 1quickéquické,quick! !.!x . ?	F0 p17=4 L37 L37 p37=29
+0	1\n 	L3 f3=-1 P0 p3=0 f2=3
+1	;; bfox. a bx;x\nquickquick,aquick	C0 C0
+2	quickx!1,1foxx	p4=0 p1=0 p8=7 C7 P0 C0
+3	\nb1é. .,!éfox!!?  x x\n;é\n	f18=25 p22=9 F0 C0 C0 f2=18 F0 F0 p0=-1 C0
+4	é\n;é\n;a;. .x.1,b?bfoxfoxb!b1	F0 F0 F0 F0 F0
+5	;foxfoxx11 ;quickbx 	C0
+6	b!foxfox,\n,. ,!é ?.  .,. ,!1é	C0 N29 p28=15 C15 N29 p12=2 L29 F0 p27=15
+0	  foxé? .  éfox a,b?.quick\nx,quickquicka	C0 L40 P0 f25=40 F0 F0
+1	fox. quick!.quick.é,	C0 C0 P-1 N20 F0 p10=0 p16=0 F0 C0
+2	,b. éé,a?? 	F0 F0 N11
+3	?.xb. !xaa,béé ;?bfox. ?.b.	L27 p25=7 N27 p23=7 f18=27 f13=25 p12=0 N25 L27
+4	.. 1a, a\n1?. xxb;é1quickbafox 	L30 N-1 f28=-1
+5	b !;?a.;! 	L10 f4=5 C5 N10 L10 F0 p7=-1 p5=-1 C0
+6	\n. ,\na;?é.  xfox.éb;foxa	C0 L24 p19=8 p9=0 p4=-1
+0	 	P-1 p0=-1 C0 P-1 L1
+1	. . x.. !. \n!fox.\n\n \néx1x	C0 P-1 N25 L25 N-1 p11=0
+2	\n\n,1éfox, 1\nb,axx;. . éx1. 	f0=17 P0 C0 p16=0 L27 C27
+3	1,a;. 1x;	L9
+4	a,x!b?,quickx . 	p10=6
+5	afox;,b ;; 1\nfox!. é1éxb?.	N10 F0 C0 N10 L26 N-1 N-1 f21=24
+6	ab? !fox.xb, 1	C0 F0 N14 f7=-1 F0 F0
+0	!1? \nx. a,a 1  a?.,quicka quick	L31 f30=31 N-1 P0 P-1 F0 p22=0 f12=31
+1	aaafox !b?foxx??fox. \nb;	L24 C24
+2	. é.fox1quickx,?a . . ,fox. .. !1quick1	N16 P0 L39 C39 C39 L39 C39
+3	1 ,é?\n\n?\n ! ,fox ?!. ,	f7=21 f16=22 N-1
+4	é?;b,. .;quick?.  . ?quick	N21 F0 f13=26 L26 L26 L26 C26 f9=-1 p25=21
+5	é	F0 C0 f0=1 N-1 p1=0 f0=1 L1
+6	?1fox	p0=-1 F0 L5 C5 F0 N5 p4=0 f5=5 C5
+0	quick . . 	L10 L10 L10 L10 p5=0 N10 L10 F0
+1	a ?quickxa\nx !fox	N17 C17 P0 L17 C17
+2	;,foxé1é ?. b .	N1 F0 P-1 f3=12 N15 F0 L15 p11=1
+3	. b,!.\n\n !;. ..	N15 p8=0 F0 C0 N15 C15 p3=0 C0 L15 N-1
+4	quick;,;é,,!bb!	p2=0 L15 C15 p2=0 C0 C0 p13=12 N15 N-1 N-1
+5	x.\n.é 	N6 N-1 N-1 L6 F0 L6
+6	\n \n;1 fox. quick. ,fox,b. 	f0=26
+0	?1é.\né1é\nfoxquick?!bxfox,;?quick	p19=0 P-1 L32 f17=32
+1	foxfox;,\n !quick\n? \nb	F0 P-1 L21 f18=21 N-1
+2	1fox!!quick	C0
+3	xfox   é?quick\nquick1 \n?	F0 F0 N24 F0 L24 L24 C24 F0 f12=24 F0
+4	quick1éa\n. ;fox	C0 f14=15 L15 p10=0 f15=15
+5	; ,1   a;?a?fox;\n\n.1\n\n	L22 L22
+6	?\n;quickaé bquick	C0 N17 F0 L17 F0 F0 p3=-1 f14=17 F0 N17
+0	foxquickfox,a ax. b	P-1
+1	! a . fox \nfoxébfoxfox!,	P-1 f14=24 N24 C24 C24 P24
+2	;fox ? 1	f5=7
+3	,a. ;fox11foxé?,	N16 F0 p1=-1 F0 p4=-1 p13=0
+4	.quick ?ba\nb1a?\né	C0 C0 L17 L17 F0 p1=-1 p17=16 N17 F0
+5	?fox a; ba1\n;. 	p10=-1 L15 p8=0
+6	foxéb;xaquick1éx!!	f12=18 p6=0 p7=-1 L18 N-1
+0	;?\nb  ;quick;	p5=0 L13 N-1 f5=13 F0 P-1 p5=0
+1	! é\na	p4=0
+2	?..éé!\nfox;quick. fox;;b 1!	N3 P0 C0 f3=7 f11=21 P11 f17=21 p3=0 P-1 p6=3
+3	a quicka. bfox ,xfox! x	F0 C0 C0 f15=23
+4	quickb, \néfoxfox..fox1a,	C0 p16=0 p3=0 C0 F0 f2=24
+5	 ,;. ,\n ;1  1?\na	L16 p15=4 N14
+6	x éxfox\nx !. !1;é,. é\nx;quick	L29 f28=-1 C29
+0	.xfoxéfoxfoxfox.;\n;;1\n, 	f18=24 C24 N-1 C24 C24 f5=24 f16=24
+1	\n1aé11.;afox\nbfoxb?éa1\nfoxa	N27 L27 P0 L27 p23=0 L27 P0 L27 C27 P0
+2	.bé,,1. quickéébquick	L21 F0
+3	x 11 !.!?. xx.b!quické1	N23 F0
+4	! x??1. fox1x. foxba.foxquick\n.x	N32 L32 p1=0 L32
+5	, x!aéé?!bé.1 . ?!é;\n;quick\n	N11 L28 C28 L28 C28 N-1 f15=16 C16 C16 L28
+6	1x\n?x quick\n..afox\n. \n	C0 N22 p18=4
+0	quick?,fox,afoxx b;fox. . 	L26 f25=26
+1	. b fox1x, ,;. 1  !;? fox	F0 P-1 N10 L25 F0 P-1 p21=12 P10
+2	1x1?	F0 C0 L4 C4 P0 f4=-1 L4 P0 p0=-1 F0
+3	1é\n. \n?? aa. a1 b b	p12=0 p2=-1 C0 L19 C19 p14=0 F0 C0 F0
+4	 b. .fox\nfoxéafoxfoxaquick.!	F0 p20=0 L28 N-1 C28 f25=-1 N-1 f26=-1
+5	foxb\n fox	F0 f5=6
+6	!?!	N3 N-1 C3 p1=0 f2=3
+0	.x. ! \n..?b. b;!1,\nfoxé	F0 F0 L23 N-1 f11=23
+1	, ?a  ?a.  quickfox. 1  .?x?b	f16=29 P1 F0
+2	;\né1é1éfox  . xab	p6=1 p7=1 C1 N17 P1 P0 p5=1
+3	fox,  , \n11	F0 N11 C11 F0
+4	quick\n.  	F0 p0=-1 N9 p0=0 p8=0 f4=9 F0
+5	quickfoxx.1quick 	f3=9 N17 L17 f4=9 C9 f2=9 C9 N17 L17
+6	 !?quickbx.  foxquicka fox!b.,x, quick	L38 F0
+0	\n;?,;quick\n	N11 L11 L11 F0 F0 P-1 N11 p4=0 P-1
+1	;?. ,.1 	f1=5 C5 p3=0 N5 f3=5 F0 N5
+2	 b. 1x	p1=0 P-1 p1=0 L6 P0 L6 L6 F0 P-1 N6
+3	. \n;. quick a;!é?;1\n. ;foxquick ,;!	p2=-1 f6=17 N35 F0 F0
+4	;foxfox.xfox 1b.?1.,bxxfox\néquickbx	N17 N35 C35 C35 f17=-1 p0=0 F0 F0 F0 L35
+5	bfox; 1  .é,;fox\n1	L18 N-1 p17=6
+6	quick,.. . 11. ;1 fox?	C0 p16=0 f2=22 L22 L22 L22
+0	?. afox ?a	p10=0 N10 N-1 P0 L10
+1	? !1fox1xx	C0 C0 N10 P0 p9=0 F0 C0 L10 F0 L10
+2	a.?;foxquick!!b x\n;  \n?x? . . 	L30
+3	.quick?b	F0 C0 F0 C0 N8
+4	?a?11é	C0 f3=6 C6 F0 N6
+5	a . !;.. é1. b \nfox\nb,éfox	L26 F0 N11 L26
+6	;. . . !é\na;;quickxfox!?b!	p1=-1 L26
+0	. afoxx. 	L9 p4=0
+1	bfoxax?1quicka!x!!. bquick!	P-1 F0 N27 N-1 N-1 N-1
+2	.,!.  ?;	F0 C0 F0 P-1 f5=6 N7 P6 P0
+3	,!xx?!;. ;quickbfox! abquick  ?,	C0 C0 F0 N21 p15=2
+4	!,	L2 f2=-1
+5	x; foxx1.?1	N10 p4=0 f11=11 C11 N-1 N-1 N-1 F0
+6	  ? 	F0 L4
+0	bb;;x?foxéaxxéa\nfoxfox;quick;;	C0 p7=0 F0 L30 C30 p30=0
+1	?fox. 	f4=6 p2=0 F0 N6 P0 f4=6
+2	;1a 1x?é  fox?  foxxquickquick , fox 	L37 f0=1 f3=7
+3	1?	f1=2 N-1 f0=-1
+4	 \n!\n?!\n. quick1,quick!fox?bé	L28 p10=7 C7 F0 N22
+5	. . quickquick 	f6=14 f1=2 L15 N-1
+6	!a?;1!.é!a\n 1 b. b	F0 p5=-1 F0
+0	fox	f3=-1 F0 f0=3 f3=-1 f3=-1 P0 C0 L3 f3=-1 P0
+1	; équick;a!a!. x	f16=-1 F0
+2	foxé, fox?1,a,. 	P-1 F0 L16 f3=10 F0 p13=10 L16 P10 L16
+3	 1ba	N4
+4	\nfoxquické?;a. é.é quicka; .quické	L34 C34 N-1
+5	ab;;. ,;1\nx.é	f8=9 N13 p7=0 F0 N10 C10 F0 f9=10 f0=2 C2
+6	. b!.fox.!;,.é;a x.  ,	f10=22 p15=5 p14=5 f13=22 F0 C0 f15=22
+0	éxquickb ?1.quick .?x, 1!	f8=25 P0 p25=0 P-1 F0 F0 F0 f4=25
+1		f0=-1 C0 f0=-1 f0=-1
+2	?. 	P-1 L3
+3	.b1é , . 	f3=9 N-1 N-1 L9 F0 p6=-1 N9 N-1
+4	!. ;éb ,,fox\n a1\n!. . 	F0 F0 C0
+5	 1 quickfox1.xx\né.quickb;1!é  foxfox	f3=12 L36 L36 p22=12
+6	quick quickquick fox	p18=0 C0 N20 L20 p12=0
+0	b?1,, 1\n!?quick;?\n\n\n . foxa b	F0
+1		L0 P-1
+2	xxfox!; béquickfox?foxquickquick	p4=0 L32 p2=0
+3	?a. foxa\n,b? aé!fox,a?	C0 f0=13 F0 p14=1 C1
+4	é b	f0=3 N-1 C3 C3 F0 p1=-1 F0 f2=3
+5	 b;. é.!quické?fox?1!?,, 1.	N8 p11=0 f7=8 F0 F0 f24=25 L27
+6	?a,	F0 C0 p1=-1 f3=3 L3 L3 p2=0 C0 p3=-1 N3
+0	xé  ;. \n.	N9 f9=-1 f8=9 L9 P0
+1	?. , !bé  b\n\nx. 	C0 L16 N-1 L16 C16 C16 N-1 P4 N16
+2	\n	f0=1 p1=0 N1 N-1 f0=1
+3	,a?x!\n? ! .. .a!? fox\nquické	N28 p8=0 F0 N28 f17=-1
+4	\n. fox. xfox\na1b. \n	p9=0 f9=19
+5	.a \n , . a1,\n?aé	C0 f5=6
+6	?xx \n.x?!\nx,a\né	C0 F0 F0 p0=-1
+0	 ?  ,\n.   . \n. é!quické	p8=0 F0 L23
+1	quickquick.\nfoxa1;foxafox;? \n!.\nquick	p5=0 P-1 f6=37 F0 N37
+2	foxb,quick!afox,\nb	P-1 N11
+3	é,?. foxb?. . bquick, .x. ,	f7=27 f8=27 F0 p15=0 f10=27 N-1 f16=-1
+4	 !a,  .  1	C0 C0 f10=10 L10 F0
+5	!	N1 N-1 f1=-1 C1 C1 C1 p1=0
+6	.	p1=-1 C0 p1=-1 L1
+0	.  ; ,fox. .;foxb ..;,;fox	L26 N-1 C26 f12=26 F0
+1	!  xb. ax foxa\n;quick1. 	p5=0 f5=24 P0 f20=24
+2	ax\n!\n	C0 N5 L5 C5 L5
+3	.	L1 F0 p0=-1 L1 L1
+4	b;,quick\n	f7=9 C9 C9 f9=-1
+5	 . ?!x	C0 F0 f1=2 N6 p3=0 L6 F0 C0
+6	a!  1	N5 L5
+0	!ab??; a1\nb.,1.,.\n  .?quick	L27
+1	1foxbquicka\nba? ;?. !quickx;a1x.	N32 P0 f9=32 p27=0 f7=32 p8=0 N32 C32 p5=0 p7=0
+2	,!b! ;fox1?1 1quick .. 1fox.	p13=11
+3	1.;bfox?!; quickfox. b 	p6=-1 f20=23 L23 f12=-1 L23 F0 p17=2 p20=9
+4	1.abb!quick éfoxx.   \néé . 	N22
+5		C0 f0=-1 L0 F0 F0 L0 C0 f0=-1 C0 N-1
+6	a1,?!. é	N8 f7=-1 C8 L8 p0=0
+0	; quick	C0 P-1 N7 p0=-1
+1	1.,x? 	C0 N3 N6 f5=6 f6=-1 L6 F0
+2	b.;.;!.  fox, ?b;fox	f14=15
+3	;?,a  quick. ?x;quickquick quickquickx?x	F0 F0 L40 N-1 f21=39 F0 C0 p18=2 f14=39 N40
+4	?x1foxb?!. 	L11 N-1 N-1
+5	fox,\nquickéfox,.fox\n,1\n !xéé????1	p0=-1 L33 N-1 L33 L33 f15=16 C16 f19=20 F0
+6	foxé\n fox,!!;.1!b;?quickfox é!	N30 f14=-1 p28=19 F0 f10=30 f16=-1 p26=18 C18 N30 f10=-1
+0	\n	C0 C0 f1=-1 L1 P0 f0=1 L1 L1 L1 C1
+1	xquick bb  !,\n 	F0 C0 p0=-1 F0 p10=0 F0 N13 C13
+2	. ?.quickx1;!,abquick..	f10=11 N12 P11 L23 P13 C13 F0
+3	quick!x?\n!\n.	C0 p11=-1 N12 N-1 f3=-1 C12 C12 F0 f7=12 f5=-1
+4	,.\né,	p3=0 p5=0 p4=0 p2=0
+5	 fox.  	C0 L7 C7 f6=-1
+6	foxa,	N5 C5 N-1 N-1 N-1 C5 C5 N-1 L5
+0	. fox!quick..b bbb;? 	p7=0 P-1 f12=21 C21 C21 F0 F0 f21=-1 C21
+1	1,.  	C0
+2		P-1 L0
+3	;	L1 f0=-1 N-1 C1 F0 F0 p0=-1 p1=-1 F0 p1=-1
+4	;bquickb xfoxa1a??fox. xé?xafox1;	L33 f17=-1 L33 L33 L33 C33 N-1 F0
+5	;1éx?	L5 L5
+6	1fox\nfox; ;,\né\nx;1aéfox 	F0 C0
+0	é;	P-1 F0
+1	 ;?1.afox;? . fox 	p17=0 P-1 C0
+2	\nx quick\nquickx.,!1	P-1 N18 F0 L19 N-1 L19 F0 p18=0 N18 N19
+3	1é1,é\na;.;xxquick;.ba.?!	C0 C0 F0 p6=-1
+4	xfox ,équické ? ,	L17 f15=-1 p16=0 f11=17 p0=0
+5	x1b 	L4 L4 N-1 F0 N4
+6	?1fox .b! fox\nquick!. . \nx1x	p9=1 F0 C0 p22=10 f6=28
+0	aéfoxafoxa? é	F0
+1	. . quick,  quick b	L19 N-1 p9=0 P-1 C0 P-1 F0
+2	b1  x;?.\n	C0
+3	é1x. 1\n fox;,?bé,; ba,;é? 	L26 f22=-1 L26 F0 N26
+4	b.!b!;\nxfox. 1;.  \nxbbé.	p4=3 F0 N19 F0 N19 F0 p6=5 N24
+5	quick,x\nb.  b ? .  quick!.  	F0 F0 f14=15
+6	,1 , .\nfox. b,\n\n. a	p18=0 f6=19 p16=0
+0	. b. ?é., .xfox, .	F0 P-1 F0 N18 L18 L18 L18 L18
+1	?!,quick. quickxquick	P-1 L21 N-1 p12=3 p6=3 L21 L21
+2	ba\n.1afoxfoxx?quické ;! x.quick	C0 F0 N14 P0
+3	. ,,;???\nx	C0 N10 F0 C0 L10 L10
+4	b;quick. foxx?,quick. 1x	L24 p13=0 f17=24 N-1 f15=-1 p19=14 N24 p0=0 C0 L24
+5	  fox éa1,.?\nb ,,\n?\n	f9=10 C10 f11=12 p19=9 C9
+6	.	L1 L1 C1 F0
+0	,1  xé?x\né ?é !\n.11	p14=0 L19 C19
+1		P-1 C0 f0=-1 p0=-1 N-1 P-1 L0 p0=-1
+2	xbxquick,1é1! foxfox\n	p16=14 L21 f1=14 L21 N-1 C21 F0
+3	aé;. xa;;éfoxquick?! \na,1	C0 C0 p24=0 L25 N-1 f3=22 N25 F0 N22 L25
+4	;béb. ;.xé .éb;	N15 N-1 f4=-1 f4=-1 L15
+5	 \nfoxxéaé1\n	f4=10 F0 p5=-1 C0 C0 F0 C0 L11 p9=0 L11
+6	 1 x  .??. ,\n. a\n;,afox\n	C0
+0	,	C0 L1 P0 F0 L1 P0 p0=-1 P-1
+1	x!?!,; 	f0=5 F0 f6=7 P5 N7 C7 L7 p5=5 N7
+2	,é ba quickquick	f3=16 L16 C16 N-1 p13=0 C0 P-1
+3	1x!;. ?!é1fox?!ba?x, xx	F0 L23 L23 N-1 p18=3 L23 L23 f8=23 L23 C23
+4	?a!!,?a fox\n. é;  ;1 ?!!	p19=6 F0 C0 f13=24 N-1 F0 p16=6 C6 f6=24
+5	 é. \n bquick b.?é! ..   bbb?\n	L29 L29 F0 f4=5 N15 C15 F0
+6	.. éb?,x. 	p7=-1 p1=-1 L10 N-1 p0=0 p2=-1 C0
+0	 quickquick \nfoxa quickfox1bafox	P-1 L32 p18=0 F0 P-1 F0 L32
+1	;?? quick!b.bxquick.. 	f13=22 N-1 N-1 F0 F0 L22
+2	bquické. ,;.1b 1x. 1?1!éb	F0 F0 C0
+3	.;fox1b\nquickaaquickquick.1!.    \n. ?	f36=37 N-1 N-1 L37 L37
+4	,\n? quicka;x?\nx	f5=15 N-1 L15 f3=-1 p3=0 C0 N15 L15 L15
+5	 ,.  quick	p7=-1 f6=10 L10 p5=0 N10 p5=0 p3=-1 N10
+6	\n	F0 C0 N1 N-1 F0
+0	 ,;quicka;!!	p6=0 f1=12 F0
+1	,. , ?éé. 1\n1a1xa. quick 	p19=4 P1 P-1
+2	. . ! . ,xx;1.;\na1?11	L21 F0 P-1 f14=15
+3	b \n. . xb!x\na .	F0 F0 N15 C15 C15 p3=0 C0
+4	!!.;\n,\n.!	p5=2 p1=0 f7=9 f6=-1
+5	?quicka \n1 \né. x,	C0 f3=7 L17 F0
+6	\n?a ,axfoxé,;?. !é1	p18=2 L19
+0	b,a1quick  . ,,	C0 L15 N-1
+1	foxa ;.x? ?.!fox	L16 f2=16 F0 L16 F0 p14=0 L16 f13=16 f5=16
+2	1foxa \nfox	P-1 f3=10 N-1 F0 N10 L10 P0 f6=10 N-1 f1=10
+3	?. 1;?	p6=-1 C0 L6 L6 C6 C6 L6
+4	a quick?;. a,quick. 1,b.\n1,. 	C0 F0 p25=8 f26=29 N-1
+5	a..  .;1\n;foxfox!bé!quick	p23=10 p0=0 C0 C0 N10 L25 C25 f17=19
+6	?!é.. !?!quick ?;aquick;. , \nbxfox	f19=34 N-1 C34
+0	1x. !1! 	P-1 F0 f8=-1 p3=0 F0 p5=0 f0=8
+1	!;!..x,?.  	C0 C0 N7 f8=11 f6=11 L11 L11 P7 p1=0 F0
+2	\n\né   ;xé!fox. ;!fox. \n .	f17=25 P17 P16 N17
+3	.	N1
+4	é!xx;bafox ;! ,.; 	L18 L18
+5	, .b\n,.?b	f4=5 N9 f0=1 p2=0 N9
+6		F0 N-1 F0 F0 C0 f0=-1 F0 F0
+0	;a?!1quické!a1a , ?aquické .	p4=0 f12=28 L28 f5=28 F0 L28 C28
+1	!.  ;!.,!b.é!?;	P-1 P-1 C0 C0 f11=15 L15 L15
+2	 x\n	C0 N3 N-1 p1=0 P-1
+3	. fox fox. xx. ;;;\nb1foxfoxa?	p29=13 p16=0 F0 F0 f6=29 C29 p22=0 N29 L29
+4	?foxb	N5 p3=1 p2=1 F0 f1=5 f0=-1 N-1
+5	 quickfoxquick	C0 L14 C14 f8=14 f11=14 N-1 f6=14
+6	quickéa\né	N9 C9 N-1 F0 C0 f7=9 L9 C9
+0	\nfoxa 	N6 N-1 P0 F0 C0
+1	a;;?bx\né1 foxfox.,a.	N18 p2=0
+2	quickbfox.. é,  , \n\na; 	C0 p8=0 C0 F0 F0 p15=0
+3	é.foxquick\n! ? bb;1\nfox, 	C0 C0 F0 N25
+4	!. x;	L5 N-1 L5 f4=-1 L5 C5 f2=-1 L5
+5	é11,b;!	C0 N7 N-1
+6	bquick.  é!fox a .  ?fox	p24=11 F0 N24 L24 N-1 f23=-1 f24=-1
+0	xfoxb!xé\n! a?foxba a;\n?x	L24 L24 N-1
+1	quické.fox; ;\n;! foxbfox\nfoxb1	P-1 f9=30
+2	;éé .; ; b?;	p7=6 N7 C7 F0 p2=1 N5 P1
+3	 é aé,. !fox\n.!b,,? !; x	N20 C20 F0 F0 p14=0 p11=-1 L24 f3=15
+4	1foxé;.quick.quicka 1 \nb. 	L26 C26 N-1 f19=-1 f17=-1 F0
+5	 !a .é. 	N8 L8 F0 f5=6 L8 N-1 L8
+6	; \nfox??;fox?\n? fox,?1a1.   	C0 C0 f12=28 p18=9
+0	x!. quick équick!1;. quick a 11aéab	f10=35 C35 C35 f19=35 N-1 p13=0 F0 F0 N35
+1	quick!. ,fox. ;.a	p8=0 F0 L17 C17 f13=17 N-1 L17
+2	 1x! a?b 1;	p10=7 L11 C11 f0=5 P0
+3	? ,\n!.!x.x? 	f5=12 L12 F0 L12 p0=0 N12 f9=-1 N-1 C12
+4	,. 	F0 L3 F0 f2=3 C3
+5	. ;!?,b!;1,quickquickquickéé. quick?	N10 N28 f5=6
+6		p0=-1 F0 f0=-1 F0 N-1
+0	foxfox b !quick!,;!,.\néb	f6=24 C24 C24 N-1 N-1 p16=0
+1	x!?1!11b	P-1 C0 C0 F0 f6=8 L8 P0 P-1 N8
+2	  quick1. aé!a?!.  	P-1 C0 p12=0 F0 F0 p5=0
+3	. ?1xquick! . quickquick. .;abfoxxéb	L36 C36
+4	 . 1b?é ;!é	p10=6 N11 N-1 f9=-1 F0 p10=6 F0
+5	.fox.  quick,!;	F0 f6=7 L15 f4=5 N15 C15 L15 N-1 N-1 p9=0
+6	é!!bé,;afoxfox? ,. , !; .	p3=-1 N25 p8=0 N25 N-1 p12=3 p24=16 p17=7 f15=25 L25
+0	\n!\néaaquickquickxb. quicka.,a b1\n	p2=0
+1	11afox.. fox	L12
+2	quickquickxx ; fox\nbquick.a foxafox	N13
+3	a?fox\n,?quick! quickfox	f16=23 N-1 C23 p13=2
+4	é!foxa ?a;\n\nquickb?. !éxfox.b	C0 N21 N29 p5=2 L29
+5	\né ,ab	p3=-1 C0 L6 N-1
+6	!. .x,.b . ,fox. . 	p13=3 f2=19 F0 F0
+0	fox1	C0
+1	1 ?. ; . é1.?.  	P-1 p0=-1 f10=16 N-1 C16 f0=16 L16 N-1 F0
+2	bfox!afoxéfox,xx?	N5 L17 C17 P5 p9=5 p6=5 L17 p13=5 F0 F0
+3	. xx	L4 N-1 f2=-1 N-1 L4 L4 C4 F0 p1=-1
+4	x!,? ??  x..1b\n,; 	L18 F0 C0
+5	;.. 	p0=-1 L4 C4 L4
+6	é!x,,b. !ab. ;. . ,b	L20 p16=2 C2 f14=20 C20 N-1 C20
+0	aé. \n \nxafoxfox;?;fox. ;a	N25 C25 F0
+1	quick. 	C0 N7 f2=7 N-1 p4=0 L7 C7 L7 L7
+2	.xxéb1 ;.,x.1aba!!	f13=18 L18 N-1 L18
+3	b? quick!.	f2=10 F0 C0 f7=10 C10 F0 C0 f9=10 N-1
+4	foxquickx.quick \nquickx. .   	N29 L29 F0 C0 F0 L29 p27=0 C0
+5	ax.éa!. aé? bbquick. !fox\n\n?. \n	N10
+6	.;1b,,\nb?,aa. ?1!,a 	f11=20 f17=-1 f15=-1 F0 p19=9 N20 F0
+0	 x,. !?x quick. .?quick,1ax\nb!?quick	f6=36 P0 p16=0 L36
+1	.?1fox;?a\n	F0 F0 C0 F0 L10 C10 p8=0 F0 N10 F0
+2	,xfox\n quick. !\nfox.é\nquickbquick ?\n.1;	C0 L39 N-1 L39 F0 C0 P-1 N16 F0
+3	?fox\n	p2=-1 F0 f1=5 F0 f5=5 f3=-1 N-1 f0=-1 N-1 C5
+4	éé;;fox	N7
+5	 ?éfox\nquick!1fox,fox a;quick\n,é	L32
+6	,é\né1a; .;!bquick! 1	F0 C0 C0 p20=11 L20
+0	x;,,b, quick!é ?!?x quick. 	C0 L27 P0 N27 N-1 P0 F0 L27 f8=27
+1	a,. \néé. x1	p5=2 L11 p7=2 F0 p11=2 C2 C2 C2 F0 P-1
+2	1quick. ;ééquick foxa. .foxquickaquick	F0
+3	b. 	C0 p0=-1 p1=-1 f3=3 L3 C3
+4	?,a. ?. quick	f1=13 p7=1 F0 f5=13 L13 p9=8 C8 C8
+5	é? x . 1quickx	N7 N14 L14 p14=3 F0
+6	1?quick. fox b.xx,x;é\néfox	F0 p10=2
+0	 a1 b1aéé; ,?b\n!. ;.quick. 	L27 f8=27 f9=27 C27 F0 p17=0 P-1 C0
+1	;x1  !fox;; 	F0 P-1 f4=12 L12 f7=12 p1=0 f12=-1 F0
+2	!	C0 p1=0 p1=0 p0=-1
+3	,é\n. \n;fox;b. ?;	L16 L16
+4	.x .\n. \nquicka	L14 C14 F0 C0 p8=0 L14 L14
+5	éé;a. x. ?!?foxx?1\nfoxfox\né \nx	N10 L30 p16=5 f3=4 C4 L30 N-1 p17=6 F0 N10
+6	quick,. x;b! . ;b	p17=9 p0=0 N17 F0 C0 p17=9 C9 F0
+0	!foxx1	P-1 P-1 P-1 p2=0 C0 N6 F0 P-1
+1	\nafox ,. fox	f4=7 C7 L12 C12 L12 P7 F0 L12 P7
+2	 ?éfox1a.1 ax. aé1!bx éa  	C0 p7=2 N19 f11=19 L26 F0 P-1 f23=26
+3	.fox	f3=4 N-1 F0 F0 f0=4 N-1
+4	?fox!,,  éb;1!éa !, !\n. 1	N22 F0 p2=1 f2=22 F0 N22
+5	;?	f2=2 L2 C2 F0 p1=-1 C0 N2 p1=0
+6	;1\n	F0 f2=3 N-1 N-1 L3 p2=0 L3
+0	fox 1  ,..;b? ?a,.  quick é ?	C0 f23=29
+1	x; .  \n. ,!. 	C0 p6=0 p2=0
+2	é \n1quické	C0 F0 L10 C10 F0 N10 F0 p8=0
+3	quickquickx!. !.   ;?. ! 11fox	F0 F0 F0 F0
+4	é. 	C0 F0 f3=3 f1=-1 f0=-1 F0 C0 p2=0 p3=0 f1=3
+5	;1!1 ?;,é.  fox1é,a	C0 C0 N10 p5=0
+6	 	N1 F0 C0
+0	;\n\nfoxx. aé.  a;	N16 N-1 p3=0 L16 f11=16
+1	!aa ,. b b1b;éé;.;b!	F0 C0 f12=20 P5 F0 C0
+2		L0 L0 F0 C0 P-1
+3	x	C0 p1=-1 p0=-1 C0 f0=1 F0 f1=1
+4	.é\nfox. bxééa fox a;;.a.. b	C0 C0 f13=27 f18=-1 L27
+5	é!quickx!quick.\n	p10=-1 p14=2 C2 N14 L16 p13=2 F0 p7=-1 N9 f11=14
+6	\n. 1  quick 1,1é?. . b éfox	C0 p10=0 F0 L27 f21=-1 F0
+0	quick quickquick	C0 L16 p8=0 P-1 N16 N-1
+1	;éfox . \nxfox, quick,\n\n	F0 F0 f16=21 p7=0 L23 F0 P-1 F0 P-1
+2	éx.  . foxx ?1. é. a1,quick	N13 p7=0 N13 p0=-1 C0 C0
+3	x?!	f2=3 L3 f2=-1 F0 F0 f2=3 F0 f0=3 C3
+4	quickxx 	C0
+5	é?quickx	C0 L8 L8 f7=-1
+6	  ,	p0=-1 N3 f1=-1 F0 f2=3 f2=-1
+0	foxquick\né	F0 f1=10 C10 F0
+1	11 ;a\n. quicka\n,\n  	L19 F0 F0 p8=0
+2	.fox\n;quick?;a,foxéxquick	C0 C0 C0
+3	;?éxb  ;fox 1	f10=13 L13 f1=13 N-1
+4	1quick!!é?1	C0 f3=11 p1=0 p11=10 f3=11
+5	xquickx	f0=7 p2=0 p1=-1 N7 C7 f0=7
+6	1. ,b. ,xquickfoxé\n	N19 C19 N-1 p12=0 f12=19
+0		F0 N-1 C0 L0 L0 p0=-1 C0 f0=-1 C0 p0=-1
+1	b quick\n,.. \n. \n?;b.foxé\n\na	C0
+2	a;..;,1\nb;é.  	p2=1 F0 F0 f13=14 N-1
+3	a!équick;aéb ,xa;.,a\nfox	p24=2 p19=2 L24 C24 f3=24 C24 C24 C24 L24
+4	. \n fox\nx quick;	p12=4 f13=16 N-1
+5	quickafox?b; fox.fox\n!?.\n; !\n\n	L30
+6	. x,?.b. 	L9 f1=-1
+0	! x!ab\n.afox,é 	F0 P-1 f8=15 F0 L15 f2=15
+1	;éfox.,éfoxxfox!.  !éfoxaé	C0 C0 f3=7 p2=0 L26 N-1
+2	x1!b;	N3 p3=0 p1=0 C0 P-1 L5 L5 L5
+3	\n,,? \n.; ax 	p0=-1 F0 L12 f7=-1 L12 L12 F0
+4	 . ?.b1?1foxquick . éax  \nquick; .?	N8 p8=5 F0 f17=35 C35 C35
+5		f0=-1 p0=-1 f0=-1 N-1 L0 p0=-1 p0=-1
+6	;!	L2
+0	\n1.  .?	N7 L7 F0 C0 F0 P-1 N7 f4=7 P0 p2=0
+1	 \n\n 1 	L6 C6 p6=0 p5=0 C0 L6 F0 f5=6 N-1
+2		N-1 p0=-1 f0=-1 P-1 L0 C0
+3	!!.?x!,.!?  fox; 	N17 f9=-1 N-1 N-1 C17 f8=-1 p2=0 p16=4 L17
+4	. quick ;!xquick x 	f5=19 f13=-1
+5	!?.;.\nx	N7 L7
+6	;quick.a.1	f8=10 p8=0 C0 L10 N-1 L10 N-1 N-1
+0	fox. 1;,é? xb?a!\nxxba!	P-1 f15=22
+1	fox. ?? ,quick11?.?..quick?;,,?	P-1 F0 L31 N-1
+2	1 quick,é,xfox;	p14=0 P-1 p12=0
+3	!; quickbb	p1=-1 C0 N10 F0 F0 p5=-1 p9=-1 p7=-1
+4	. . 1abb	L8
+5	1xb \nab.  bquickbfox\n .;x\nbquickfox. 	N10 N20 f36=37
+6	. 	C0 F0
+0	fox\nx; fox. !é    1ax. b	C0 L24 f20=24 C24 P0 C0 N24 f2=24
+1	!,? ? \n afoxa, fox1quickfoxquick.xfox?. 	f29=40 L40 F0
+2		L0 N-1 F0 F0 C0 f0=-1
+3	ba,1! ? . .é.1é \n	L17 p9=0 p8=-1 C0 N17 C17 F0 C0 f6=17 N-1
+4	,;ééxquicka \n?.a,.\nfoxbb,. 1	L28 N-1 f28=-1 f12=-1 F0 L28
+5	x aa1\naquickbfox.fox\n	f7=20 L21
+6	;b1\nfox. !axaé. \n.,! xquick	L27 f1=27 F0 C0 f2=27 p20=10
+0	 \nafox,,	N8 F0 P-1 p7=0 P-1 C0
+1	,?é\nquickx!bquick?\n. 	P-1 P-1 C0 p3=1 L21 F0 F0 C0 f2=21
+2	\nb. 1é\n!quick1xquick;1\nfoxba1b	P-1 f1=8 L30 F0 F0 F0 L30 f16=20 F0
+3	quick\n xa,?x.   é fox;.a.  1fox;	L32 N-1 N-1 L32 p26=11 p2=0 L32
+4	,?! ,quick. é	p12=4 F0 N13 N-1 F0 L13
+5	1quick. b x	L11
+6	a,   b,a.  \n. a,éfox.fox?\n 	F0 F0 C0 C0 L27
+0	1\nquickquickquickbx;;é!.quick\n. foxfox. 	f27=40 f3=40 F0 F0 P-1 P-1 N40 p24=0 p12=0 L40
+1	\n	N1 C1 P0
+2	ax! fox\n.1x!a	f6=12 L13 C13 C13
+3	\nquickfox. ,?. b	L16 p12=0 N16 F0 L16
+4	,?? a.foxé	L10 N-1 f8=-1 f9=-1 L10 p2=0
+5	\nfox1.,!a. !bb,é?a1. 1.	N10 L23 N-1 f0=1 C1 C1 f11=12 N22 N23 C23
+6	é..,. .. .quické...quickx?	C0 f11=26 p11=0 F0 p6=-1 p6=-1 L26
+0	1,!quickbéxquick.  !	P-1 p18=0 C0 F0 C0 C0 N20
+1	fox ?. . ab!  bquick;?xé	N24 C24 P0 L24 N-1 F0 P-1 p7=0 f17=24
+2	x,\n. ?	F0 f2=6 N-1 L6 L6 F0 L6 F0 C0
+3	b	N1 f1=-1 C1 f0=-1 L1 C1 L1 f0=-1 L1 L1
+4	é	C0 C0 p0=-1 F0 F0 N1 F0
+5	 1 . ,quickaéxb. fox\n.	L22
+6	 b\n	C0 F0 N3 F0 N3 F0
+0	. équick,!1b!.\n,	L16 C16 f4=16 C16 p9=0
+1	. !?\n.quickx 	L13 N-1 f11=13 P0
+2	1b!bb1 xb?1aquick. .\n,	C0 f22=-1 C22 F0 N3 p20=10 P3 p12=10
+3	 équick. . foxé.ab. 	f9=20 L20 N-1 C20
+4	a;  foxfox,?	p3=0 p1=-1 p1=-1 C0 C0 p11=0 C0 N12 f3=-1 L12
+5	a?fox\n?fox11fox. a?foxé . 	L26
+6	a??x;.quick,fox. !foxb1 aa\né!	f24=29 N-1 C29 f8=-1 f21=-1 C29 L29
+0	!!.. \néfox1 ,b\n;a\nx ab;	N23 L23 L23 P0 F0 f15=23 L23 N-1 N-1
+1	éa axa;?	L8 F0 p1=0 P-1 p2=0
+2	\n. . !quické\na 1xéquickx;1éaa! fox?	C0
+3	 quickaé ??éfox	f8=15
+4	x\n;!\n1éfox!. !,.fox1\n!	L22 f14=-1 F0 L22 N-1
+5	x. ;foxquické.!x1. ,\n.  .x !x?	f10=13 F0 L30
+6	équickfox ;1 quickquick?;1	f15=26 F0 F0
+0	a,!bx. é;?\n!1!\nb.	F0 C0
+1	. bxfoxquick ,fox  \n	p6=0 f5=14 C14 P0 C0
+2	.!?. . . éxba;	P-1 F0 F0 L14 f3=5 p8=5 L14 p1=0
+3	!?;?x\né\nquicka. . 	F0 p10=-1 f4=18
+4	é?b\n?b!1b,!.fox.1aquick !, 	L27 N-1 p9=7
+5	fox\n. \néquické!bquickfox?quick!?é	F0 C0 N7
+6	bbquickfoxb? foxx?. \nb.fox1 .x 	F0 f10=31
+0	1	p0=-1 N1 L1
+1	quick.fox. . ;?. !,!	P-1
+2	,!;fox	P-1 C0 L6 N-1 p0=-1 f3=6 P3 C3 N6 N-1
+3	, \n?,,.  ? x. . ?. 	p17=4
+4	é??? a!fox1;b!;quicka.. \n a\n?é	F0 N26 p3=0 N26 N30
+5	, ? a\nx  !ba,a?b;1foxfox?	L25 N-1 N-1 p1=0 f3=4 N14 F0 L25
+6	,!!x	N4 F0 p1=-1 f0=4 F0 L4 N-1 N-1 F0
+0	1. xxaxa  fox	P-1 N13 C13 F0 C0
+1	;fox1fox1\n;quick11fox. quick!!\n . . \n;?fox	C0
+2	fox.  quick.,bb 1quick. .  ,!a!1! ; 	p31=29
+3	\nbb bb,  1,\n xquickfox\né1	L25 f23=-1 F0 C0
+4	é!. ,quickquick. ax . 	C0 F0 L22
+5		N-1 f0=-1 f0=-1 f0=-1 p0=-1 F0 N-1 L0
+6	b	F0 F0
+0	.axa;. xfox équickfoxa\n,quickx;b!?	C0 N34 L34
+1	;1  1\nquickb\n.fox ;1	N20 p16=0 P-1 C0 F0 F0
+2	b.. éa!b. . 1xa1.é,? !	P-1 F0 L22 f11=21 L22 F0 f19=21
+3	quickb	F0 F0 N6 N-1 C6 F0 f4=6 C6
+4		p0=-1 F0 p0=-1 F0 p0=-1 F0 p0=-1
+5	 ;? bxxquick. !\nxxquickxé!\nbquicka 	F0 F0 L35 C35 L35 F0 L35 F0 p18=4
+6		f0=-1 f0=-1 f0=-1 F0 p0=-1 L0 p0=-1 F0 F0 f0=-1
+0	. a; . ;fox\n.é. a,	C0 f6=18 C18 P0 N18 P0 P-1 C0 F0
+1	quick1fox. quick\n x11 \n	F0 N23 F0 p10=0 f23=-1
+2	fox	N3 P0 L3 C3
+3	\n;aquick,;quick,	C0 p13=0 N16 f6=-1 F0 f11=16 L16
+4	!\n\nquické ; ,!,?. ;	L19 F0 p2=0 p9=3
+5	 	C0
+6	afoxfoxbx\n  éx,.;a fox.  b.	C0 p20=0 C0 N27
+0	bquick.b! x,!,.\n! !fox?!\nquickbfoxé	f10=35 P0 F0 P-1 L35
+1	,?.\nxbaa1. ?a ;;. . 	L20 P1 C1 p18=1 N20 F0
+2	fox   quick fox?\nb,??.  b1quick;,quickbx	p16=0 L40 F0
+3		N-1 N-1 N-1 L0 L0 f0=-1 L0 F0
+4	fox.;foxxfox. , ;aéfoxb	F0 F0 L23 p8=4 p0=0
+5	quickx?.ba \n. \nquickquick1b;   fox	L34 f18=27 p14=0 L34
+6	é\n.b. .,\n .  aa,.quick 	N23 C23 N-1 C23 p22=13 N23
+0	!x,quick  !fox. é;?\n	f11=20 C20
+1	 ;. ;\na?!quick;;quick,x	F0 N22 P0
+2	;. ,\n fox.;	N1 L11 p3=1
+3	quick\n. 1b;.?,?b? 	C0 f6=18 N-1 L18
+4	 .	F0 f2=2 N-1
+5	;foxaxquick\n1.\n\n?1;.quick x.	C0 N11 p25=14 f18=19 N28
+6	 . ! 	p5=-1 F0 p1=-1 F0
+0	\n, ,,a1	p7=0 p1=0 f2=7 P0
+1	x1!;quick;1fox!	p14=0 P-1 F0
+2	. ,1. équické ?;!quick. éb  quick	L33 N-1 C33 C33 F0 C0 L33 L33
+3	.quick1. é!	N11 F0 C0 C0 f10=11 C11 L11 C11
+4	.  b. é.	L8 L8 L8 C8 p1=0 f0=8
+5	. .b	F0 f1=2 f3=4 f4=-1 C4 F0 p1=-1 N4 N-1
+6	,,quick\n ;;é. . !,é.	F0 f17=20 N-1 f3=-1 F0 F0 C0 L20
+0	afox; ??!.!? ?. \n	N17 N-1
+1	x,\n.fox. , 1. .	N2 F0 F0 L15 F0 N2 p2=2 L15 C15
+2	1 ab1é xb;,a	N9 L12 P10 N12 f3=9 N10 f4=9 L12
+3	 bquickquick	F0
+4	;. x,b,x ;. ? . ;fox quickquickquick!x	p18=16 N37 C37
+5	é quickbfox;.bafox,,x!	N11 F0 N11 C11 f3=11
+6	.,\n,foxb fox,,?.. ;? quick!,1x1 	C0 L32 f11=-1 F0 L32 f20=-1 F0 p12=0
+0	bxax	C0 N4 L4 N-1 p2=0 C0 f2=4 C4 N-1 P0
+1	.x\n1?.,	f6=7 F0 L7 f3=7
+2	1 x,!aquick?fox!. \na	f20=-1 C20 L20 p1=0 f11=12 F0 N5 L20 p18=12
+3	bfox  é;b1. ?!é\n.. . foxa \n?1	N28 C28 C28 p29=14
+4	. 	f2=2 N-1 L2 F0 L2
+5	 . !	p2=-1 p1=-1 F0 L4 C4 p0=0 L4
+6	. a !bax	p7=-1 L8 L8 f4=-1 f3=-1 f8=-1 L8 L8 L8
+0	;. quickbé . , 	F0 F0 f9=15 F0 F0
+1	 .b1 ,. !fox é,éé. xquick\n1;;.	P-1 P-1 N6 N15 N30 f4=6 N15
+2	x. \nquickfox.a. ?.\nba1?	N4 N19
+3	;quick.x..?a,b.;;!1b1;foxquické	F0 F0 N31 L31 C31 C31 p20=0
+4	quick 	C0 F0 L6 L6 F0 f2=6
+5	;.;;	f3=4 f2=3 f3=4 p1=0 F0 C0 C0 F0
+6	. ?	p1=-1
+0	. quickx!??;é	N13 f6=13 F0 N13
+1	 ;	F0 L2 p0=-1 p2=0 L2 P0 F0 N2
+2	1é1. ?\n.a,.?. quick\n;bé. 	L25 P21 f2=7 C7 P0 N7 N14 L25 F0
+3	 ;quick,quick!,,quickquick. afox?fox \n\n!	L40 f33=-1 p5=0 F0 C0 f14=33 F0 p14=0 f31=40
+4	.a \n   bé.. afox;bbb	C0 N20 p2=0 C0 F0 C0 F0 p1=-1 L20 f4=-1
+5	 !.é??1b!b,fox\n  fox. . b,x 	F0 L28 p4=0 f15=17 N27 F0 f17=20 L28 C28 N-1
+6	\n1	f2=2 p1=0 f2=2 f0=-1 f0=-1 L2 L2 f2=-1
+0	\n! 1fox..a	L10 C10 L10 L10 f2=10 f5=10 F0 L10
+1	, \na. éfox?éxfox,.	C0 f1=17 N18 P17 N18 f1=17 C17 p15=1
+2	.1,\néxé. fox. ?b  b;x\n.?a\n	f21=24 F0 N15
+3	a;	C0 p2=-1 C0
+4	1xxéx. é.b.  quick \n	F0 f14=20 C20 F0 f17=20
+5	;a. \n. b	f4=5 C5 N8
+6	quicka\n1?;x!1 ;1a?x.. \n1;\n	p7=-1 p13=0 p3=-1 f17=26 N-1 F0 C0 N26 C26
+0	xéa?xfoxbbb1;quick	P-1 C0 f4=18 F0 C0 P-1 C0 N18
+1	fox?b	N5 C5 P0 L5 N-1 f1=5 C5 L5 N-1
+2	!\n!quicka?fox 1\n 1aa,a xb	p1=0 N2 f1=2 N3 f13=25
+3	 ;x ,!fox?1x?quick,\n.quick1fox\n. ??	F0 C0 p18=6 p23=10 p33=13 f32=35
+4	\n.quickx équick\n	F0 N16 N-1 F0 f2=16 f6=-1 p14=0
+5	béquick!. x. ,	C0 N10 f14=14 C14 N-1
+6	xé?.	f2=4 L4 C4 N-1 p1=0 p2=-1 N4 N-1
+0	!x!?,x.  1	C0 N10 p7=0 p0=-1 f10=-1
+1	..fox.... .   éfox;. ?é?	f18=24 P0 f22=24 N-1 L24 L24 L24 f9=24 F0
+2	ba\n 	f4=-1 N-1 L4 f2=4 f0=4 P0 C0 P-1
+3	?!, bquick?x;fox	L16 N-1 N-1 f12=-1 f10=-1 f9=-1 N-1 L16 p5=0 C0
+4	!!bx  .1;x\néfox;;. !quick. !1;	N20 C20 p13=2 N20 F0
+5	b. x;	F0 p1=-1
+6	\n;\n. \nbfox;1a?quick 	F0 F0 L20 N-1 C20 N-1 f14=-1 p13=2 f14=20
+0	fox!quick 1éb\n1. .. b!1 quickb1	L31 L31 F0 C0 f29=31 p2=0 C0 f6=31 C31 P0
+1	x\nquick1foxb;11x  a!?fox\n ?	C0 f11=27 N-1 P0 P-1 F0 P-1 N27
+2	?a;fox?.quick .	p8=3 f6=8 p14=8 L15 C15 f2=3
+3	?bafox1.,.1	C0 F0 N11 C11 L11 F0
+4	b;fox. fox	C0 p3=0 p5=0 f0=10 N-1 f2=-1 p1=0 f1=10 F0 F0
+5	. 	L2 p2=0 L2
+6	.?\néb?1.1foxa\n	C0 N14 L14 f7=-1 f3=-1 L14 f2=-1 F0 N14 f10=-1
+0	b!. bfox ,. éé; ,!bx!\nquickx?	P-1 p13=0 C0 f2=29
+1	!?;ébé  é,?éa?.quick	p11=10 L20 P10 f16=20
+2	.xaaé	C0 N5 C5 p0=-1 C0 p0=-1 f0=5 C5
+3	. xbé,?!..b\nquickquick	p17=0 C0 L22 F0 L22 p13=0 N22 C22 F0 C0
+4	fox? \n,.. ?afox	f6=15 p6=0 N15 C15
+5	!xéquick!;!.!?a.  . 	C0 p5=-1 L20 f17=18 C18 L20 p2=0 F0 C0 C0
+6	x?;xfox. ba,	f7=12 N-1 C12 F0 C0 F0
+0	\n?;\n.. 1;!foxé,xquickb	F0 F0 L22 f8=22 f18=22 C22
+1	a. foxquické?,foxé\n.	N14 P0 F0 F0 N14 p5=0 P-1 P-1 F0 L20
+2	.fox . ébx!.. bxxa\n; 	f7=14 F0 F0 P-1 N14 p6=0 L21
+3	?\n. ;;;. 	C0 C0 N9 L9 p1=0 p2=-1 F0 F0 N9
+4	..  ,?fox!  xxé;!1é 1?,fox	F0 C0 N22 C22
+5	b .x1,. ;\nb	F0 N10 C10 f4=5 f10=11 p0=0 p0=-1
+6	 . . bfoxa . \n équick?;! é	p22=0 L26 L26
+0	équickéx1?.é. \n	C0 C0 N15 p15=0 N15 p14=0 L15 p15=0 f9=15
+1	quickquickb,b,. é?;?!?foxb,,quick?	L34 L34 f16=27 N28 P27 p10=0 p4=0 C0 L34
+2	.,,a. x	L7 F0
+3	. x;; ? 1quick\n1	p16=0
+4	fox?.1. .1? \n 	N14 p4=0 p6=5 L14 L14 N-1 F0
+5	foxb quickquick  quickxb	f2=4 C4
+6	.quick\n bbquickxb.\n ?!\n.xé	L26 F0 C0 F0 L26 C26 f21=-1 f26=-1 N-1 N-1
+0	b 1foxé 1 ;,éb! quick1. . é a?	L30 F0
+1	1,fox	P-1 C0 P-1 L5 N-1 P2 f2=5
+2	 é\n. aquick1!b1é11quickfoxbé. aquick	f21=36 C36
+3	;\nquick xaxfoxfoxfox. . x\nb?	f15=28 f17=-1 p24=0 L28 F0 C0 L28 p28=0
+4	x, ,,;.a.b\n\n,, ab	C0 F0 p9=0 p2=0 N17 C17 p15=0
+5	, xaéb1 1a,;	L12 p0=0 L12 p2=0
+6	,quick!quickbfoxxquick  . .  a . \n quicka,éa	L44
+0	,?., afox!!béfox!a!b, 	N22 C22 C22 f5=22 p8=0 f19=22 N-1 C22 f17=22
+1	foxquick;;b.;,. ?é,?a??  	p15=14 f3=14
+2	b, \n?,bfoxé.,	N5 P0
+3	fox,!b;?é?\nx b. .quick,,	F0 F0 p19=8
+4	?	L1 F0 C0 N1
+5	éx?quick fox \n1!;!b	L19 L19 N-1
+6	;,bbé11x1x!?,\nquicka?é	L22 F0 F0 L22 L22 C22
+0	;fox;\n\n\na ba;;!	L15 N-1 C15 N-1 P0 N15 p6=0
+1	quick!xx;?1.. foxfox  1	P-1 P-1 f12=23 p3=0 N23 f16=23 F0 f18=23
+2	;quick?	N1 P0 P-1 F0 N1 C1 F0 P-1
+3	\n.  \na;,?!foxb	N14 N-1 f5=-1 N-1 F0 L14 L14 f3=-1 N-1
+4	!1quick. ;!a. fox,1foxab;quickx\n.x	N11 N34 f28=-1 N-1
+5	 \n1	C0 p1=-1 L3 N-1 p0=0 F0 N3 L3 F0 L3
+6	,xé. éébbfoxbb1 quick;.x a?	C0
+0	ba	L2 F0 p2=0 L2
+1	.éb!\nfox1 	N10 L10 f6=10 F0
+2	.   é1;quické. b1	f9=17 F0 C0 L17 F0 P-1 F0 L17 p10=7
+3	  a.x quick	F0 C0 N11 L11 F0 p8=-1
+4	!foxfox ,a    ,a,!é?fox  quick	p11=1 L30 N-1 L30 p1=0
+5	x1x. quickéx1fox;?!quick,	F0 N5 p1=0 F0 C0 f19=24 f17=18 L25 L25 p15=4
+6	quick,x\nfoxxxéxquick.\nfox!é;foxb\n. 	f10=35 F0 F0 F0
+0	,a quick.,.	f1=11 P0 f9=11 F0 P-1 f3=11 L11
+1	éxfox,quickéx!quickxfoxfox\nb,?1a	N6
+2		F0 L0 L0 f0=-1 L0 N-1
+3	. ; . 	N6 f5=-1 C6 f0=-1 f3=-1 f4=-1 p1=0 F0 C0
+4	,. quické,x  ;.a. !\n !quick\n;	N21 N29 F0
+5	,x;? é \nbbb	f3=4 F0 F0 F0 C0 f2=3 L11 F0
+6	 	p0=-1 L1 C1 F0
+0	,.!a,.! ?1a	C0 p9=0 F0 N11 C11 f0=11 f11=-1 F0
+1	fox	p0=-1 C0 p2=0 P-1 f0=3 p3=0 N3
+2	!\nquickquick?,	P-1 N2 f1=2 f9=13 N14 f14=-1 f13=14 F0
+3	\n?é ;quick\n1fox?b	f10=17 f10=-1 N-1 F0 p16=2 N17 p2=0 L17
+4	quick aquickfox!\n.bfox?a	p11=0
+5	\n b,quick, !aéaaquick!x1b\nb;quickfox	N10 f1=2 f32=36
+6	. fox1b;;. . ,!	L15 F0 N15 N-1 L15 f10=-1
+0	quick	N5 F0 P-1 N5
+1	fox\n  quick\n ;x ;1a.;b;quick!. !? 	L34 P0 L34 P0 C0 F0 P-1 N34
+2	!,bquick? a?1;;aquick\n? 	L24
+3	!1;.\n.\nb\n1bx	f6=12 C12 f9=-1 N-1 N-1 L12 f7=-1 L12 L12
+4	foxxaaé b! ,aaquick 	L20 F0 C0 p1=-1 L20 F0 N20 F0 f5=20 N-1
+5	b\n! aa,,afox!1quickx.  .fox, . 	L31 F0 C0 F0 L31 F0 f16=20 L31 N-1 F0
+6	é;?. .. quickb1b	N16 f2=-1 p16=5 f16=16
+0	.,..1 ?1\n.x quick .?!. .b,1	P-1 N27 L27 N-1 p6=0 f25=27
+1	a . ??;	L7 L7 f1=7 C7 F0 C0
+2	;	N1 F0 C0 P-1 N1 N-1 F0 P-1 N1
+3	quick,\n;. ,\n;;xfox .1.b fox1 	p12=0 N29 f27=-1 L29 N-1
+4	quick\n 	C0 C0 F0 L7 F0 L7 F0 p1=-1
+5	éb\n! \nb. 	N9 C9 p7=0 N9
+6	 quick	L6 p4=0 L6 C6 p5=0 F0 F0
+0	.quick. . . !;quick ?1b!,fox;quick?,. .!quick	L45 p23=0 F0 L45 C45
+1	 quickxa foxfox1 !..\n;;!. a;ébfox	L33 N-1 C33 C33 f2=33 f14=33 f14=33 C33
+2	 ?! b.  !fox!foxquick,, 	P-1 L24 P13 f2=4 N9 C9 P4 F0 f4=9 C9
+3	x?1	L3 C3 p0=0 p3=-1
+4	.  . . ;,quick1fox!. foxb\n xfox\n1	N21 f3=21 L33 C33 p23=21 C21 f21=33 N-1 f11=33
+5	1,. ,?1éb;. \nquick. fox\n?	C0 p11=-1 p10=-1 C0 p15=4 N13 C13 L25 C25 L25
+6	\n a!xquick,  ,.. .   quickéquick1\n	C0 N34
+0	1 1foxfoxx ,,  xxaquické.ba 1	P-1 f22=29 L29 L29 C29 P0
+1	! \n\nb,.,,foxfoxxbquickb;;?	L26
+2	 b?;? \n;a. fox,quické  fox\né\n	f18=29 N-1 L29 f25=29 P8
+3	é,quickxfox  bx??	N17 N-1 C17 C17
+4	é?!. . ! . ;a. ?béb1 é;	N23 F0 p20=16 p5=0 C0 F0 N23
+5	a	L1 C1 F0 p0=-1 F0 p1=-1 f1=1 p0=0
+6	;équick;a.quick1quickquick1quick \nbquick. 	C0 F0 p31=8 F0 f24=42 L42 L42 f2=42
+0	..\n	F0 C0 F0 P-1 N3 C3 F0 C0 L3
+1	 1 b	p3=0
+2	quick 	C0 F0 L6 p3=0 F0
+3	\nquick 1 \n xb1,b;b\n! ?;	F0 p19=0 N21 F0 f18=23 C23 C23 f3=21 F0
+4	\n11x é1 \n	f8=9 f1=-1 F0 F0 p7=0 F0 N9
+5	\nbquick,quicka. x?quickquick?b?aa ?	C0 C0 p24=14 L35 f2=7 L35 p24=14
+6	\n\n,é\n.,é. b\n  	F0
+0	. , .a.équicka1b!? quick\nquickfox	f16=33 F0 L33 p31=0 p1=0 p11=0 P-1 N33
+1	x quick éx;a	N12 F0 C0
+2	\n x\naquick	L10 L10 C10 C10 P0 F0
+3	a\nquick	L7
+4	\nx quickquick. ? é\n,?	N21 L21 N-1 f0=-1 L21 f10=-1 N-1 p17=0 F0
+5	b? 1. fox	N9 f5=6
+6	 ; ?b.1. quickx ; ;fox\n	N23
+0	a!	N2 F0 C0 L2 N-1 f2=-1
+1	!éx11! é,quick	L14 f10=14
+2	; ,xxéb!fox1.!\n.xfox??1é	p11=8 C8 N15 N22 F0 f23=24 N-1
+3	.\n1 a. !quick,fox1	p4=-1 N18 C18 N-1
+4	\n. 1?. 	F0 L7 f2=-1 N-1 p4=0 C0 p1=-1 C0 C0 F0
+5	é!quickfox;fox  ;.;	L19 F0 C0 f1=2 L19 L19 N-1
+6	 ,.fox. !\n\n.. !;	f5=16 f3=-1 p0=0 C0 F0 F0
+0	quick,;	P-1 C0 F0 f1=7 L7 P0 p0=-1 C0
+1	\nquicka; . a?. ,bax?\nx,! x1	p19=16 C16 N23 N27 p18=16 f21=23 p8=0 f8=16
+2	a;bxfox?1?	L10 p0=-1 F0 L10 p3=2 C2 F0 F0
+3	éa. aa; 	N8 p6=0 N8 C8 L8 N-1 N-1 p0=0 N8
+4	!a.	L3 L3 F0 p3=1 C1 N3 N-1 L3
+5		f0=-1 L0
+6	? é éaa  ?\n\nééé	C0 F0 F0 f1=15 p7=0 C0 C0 f9=15 C15 C15
+0	..foxéa. 	C0 N9 p9=0 C0 N9 P0 F0 p7=0
+1		C0 f0=-1 C0 N-1 N-1 F0
+2	foxx quickquick afox!,a\nfox;quick	C0 F0 C0 P-1 P-1 L33 N-1 F0 C0
+3	.1,,?x!ax foxbfox . .fox	f6=24 f3=24 f14=-1 f23=-1
+4	quick;éa??.;. .\nquick. \nfox	f7=27 C27
+5	 é\n;	L4 N-1
+6	é quickfox?x 1a.. éfox	f8=22 F0
+0	fox  bbx	P-1 N8 C8 f2=8 P0 N8 N-1 F0 N8 P0
+1	fox!  1?b	P-1 C0 p2=0 f9=-1
+2	 . fox;; b. ,. \nbquickx	C0
+3	x 	F0 N2
+4	!aé;,.	L6 f5=-1 L6
+5	. ;é,équick?bx.quick	N11 F0 N11
+6	aaé,a\nx,bfoxba	L14 C14 L14 f12=-1 F0
+0	. ,.  !,.x? ,? ?	N16 L16 f16=-1 L16 P0 p13=0 C0 C0 p2=0
+1	a; fox\n1 quické;	F0 F0 F0 p13=0 N16 p14=0 C0 p3=0
+2	x.. é;x\n; ax1 a	F0 f0=5 P0
+3	1,b\né !.1 a;quick?quickb	f1=18 C18 p23=8 f12=24
+4	bx?x;? é,a. . équickfoxfoxfox .;	C0 f27=32 C32
+5	 a	p1=-1 f1=2 L2 C2 f1=-1 f0=1 N2 F0
+6	,. é!b	L6 F0 L6 p2=0 p0=-1 L6 C6
+0	1. fox \n. ?fox! .	N17 f12=17 P0
+1	x,quick,quicka. a1	p15=8 N18 f10=18 N-1 p5=2 F0
+2	,\n?é. 	F0 L6 f1=3 F0
+3	foxfox;é é1 , x \n\n1éxé ;?	N25 N-1 F0 p18=0
+4	;xa\n,	p2=0 f4=5 L5
+5	a	F0 p1=-1 p1=-1 F0 f1=1 p0=0
+6	fox !  !?. 	N11 C11 C11 f5=-1
+0	;. quickbfox!. . quickaquick .\n,	F0
+1	afox?\n;x ;fox\n?1 x,x b1	L23 F0 P-1 L23 P19 f1=19
+2	foxxb.;; !,	F0 N6 F0
+3	!1a é ?x\nbfoxa fox!	L19 N-1 F0 C0 F0
+4	!\n;abquickquickquick	p14=2 C2 f10=20
+5	1é ?. b. ! ,é..?	N10 C10 C10 p12=0
+6	 .a \nfox ba!é\né 1.\n	p17=0 f6=19 F0 F0 F0 f10=19 F0
+0	?  b, 	C0 p3=0 P-1 F0 P-1 p4=0 P-1
+1	,foxa é	N7
+2	x \n b1,  1,?	N12
+3	1;quick.aquick\n;?ba\n; ,!xé.?b,	N24
+4	?,;.\né!,	N8 p6=1 F0 f1=8
+5	1. 	L3 C3 N-1 C3 C3 p0=0 F0 F0 N3
+6	!axaquick1. !xé\n,é .aéfox!1	C0 L27 N-1 F0 L27 N-1 f27=-1 L27 L27
+0	foxé\nb\n\n1a?quick. 	L18 C18 p4=0 L18 C18 C18 p8=0 N18 L18
+1	,,\n\n.!.b.	L9 F0 f5=9 F0 P-1 p1=1
+2	!;?fox	p1=0 f2=3
+3	 . \n.,	p0=-1 L6 F0 p1=-1 C0 f1=6
+4	b1?;é,é	N7 p4=3 p4=3
+5	1b.foxxé 1	C0 N10
+6	a1,. .b	f5=7 F0 C0 f4=7 L7 N-1 N-1 N-1 L7
+0	 \nx?quickquické,... \n;\n	N23 L23
+1	 \nx1	L4 N-1 L4 L4 C4 p0=-1 p1=0 P-1 L4 F0
+2	?!.1 quick \n!x,quick. ?b;é; ,	p12=3 f18=23 F0 C0 f18=23 F0
+3	béquick,xéquick!b	C0 C0 f16=17 N-1 C17 f13=-1 F0 f3=16
+4	1 ,?xfoxéfox!1foxxfox.	L22 L22 F0 F0 N22 F0 f15=22
+5	,xé. 	L5
+6	\nb1?. é fox!foxaé. 	N19 C19
+0	 quickxé1é?,éba1,foxx	L21 N-1 P0 f18=21 F0
+1		F0 F0 P-1 P-1 p0=-1 F0 p0=-1
+2	!,.;\n;quickquickbquick. quickbé!1	C0 C0
+3	!foxquickquick?.   . ;	C0
+4	a quickfoxfox?,. bx	N19 C19 f13=-1 F0
+5	quick;;foxx1.quick\n\n; é,é \n	p8=-1 p24=13 L27 N-1 F0
+6	 ééax. \n1a	L10 f1=-1 p0=0 F0
+0	;fox.  . \n;b\nb . . \néafox? quickquick,	C0 F0 C0 f0=38 p15=0 N38
+1	x\nbééb \n\n	C0 L9 F0 f9=-1 N-1
+2	xbxb,.quickx.  ;	L16 C16 P15 F0 L16 C16 p8=0 C0 L16 F0
+3	   ;a... .b ,1 	N15 C15 p13=0 N15 L15 L15
+4	1\nbquickfox	L11 L11 L11 f9=-1 p2=0 L11 C11
+5	.	F0 L1 C1 N-1 f1=-1 L1 N-1 f1=-1
+6	é.,	F0 F0 N3 p3=0 C0 F0 C0 F0 p1=-1
+0	1	C0 N1
+1	 !b	p0=-1 F0 p2=0 L3
+2	\n	C0 P-1 f0=1 C1 p1=0
+3	 ;\n é\n	C0 L6 p2=0 L6 N-1
+4	??\nfox?éb	f1=9 F0 L9 F0 L9 F0 F0
+5	!	F0
+6	fox11 ? 	C0 L8 L8 F0 F0 F0 f7=8 F0
+0	1.!quickxquick \né xé;	p16=0 C0 F0
+1	,\n 1bfoxfox	f11=-1 C11 p5=1 P-1 F0 C0 f7=11
+2	. quick,b.fox!.quické? .;\nb	F0 N15 C15 F0 F0 C0 F0 f6=15 f15=23 N24
+3	 ?1é,;bx\n. . .. fox.a;foxquick!1 	p7=-1 p31=2 C2 p21=2 F0
+4	,?foxb1a  quickfoxé?. 1x!x	f12=26
+5	.1. b b 	N8 F0 F0 F0
+6	é. fox\n. . ;x\n?\n. ?foxquickfox!\n. quick	F0 p3=-1 F0 C0
+0	x .,é,fox. ..x	L14 C14 L14 L14 f4=14 C14 C14 f12=14 p6=0
+1	1 . 	N4
+2		C0 N-1 P-1 p0=-1 F0 L0 F0
+3	a;!;quickx; ;. b1ax aé?\n b?quick	L32 F0 F0
+4	bfoxé1;?\n;1quick  1éxx?.. 	f26=26 f17=-1
+5	.x.!1?é \n;;xx\n1	F0 L15 p11=0 p5=-1 F0
+6	é b\n!éé.é;\n	C0 F0
+0	foxé?1. b	f1=9 f2=9 P0 f8=9 P0
+1	.	F0 L1 P0 C0
+2		f0=-1 F0
+3	? a?,	p2=-1 p1=-1 f0=5 L5 L5 p0=0 F0 F0 p1=-1 f2=5
+4	. 	N2 N-1 C2 p2=0
+5	!?x \n.. foxfoxé? 	p6=-1
+6	quick1,\n. x; quickx!. 	N22 L22 F0 f2=22 L22 L22 F0 L22 C22 F0
+0	afox,b1 \nquick;quick quick? ?quick	f31=34 f18=34
+1	fox \n .é\n;x	p6=0 f5=11 p0=-1 f9=11
+2	.x	f1=2 f1=2 N-1 N-1 F0 C0
+3	?;1\nquick?quick	p3=-1 f2=15 F0 C0 f3=15 C15 f6=-1 C15 C15
+4	.éfox1,,bé	N10 F0 L10 C10
+5	.é1	p2=-1 C0 F0 f1=3 C3 L3
+6	 . 1, 	F0 N6 p1=0 f5=6 p1=0
+0	.b .quick !,;,. \nfoxaé!	L23 F0 p3=0 C0 F0 P-1 C0 p6=0 P-1 f8=23
+1	 quick\n,.!?a,quick,?. ,;b;b	P-1 N8 p9=8 p12=8
+2	1a ,,quick xquickquickquick;.?1!	C0 C0 C0 f26=27 F0 p32=30
+3	.   x.	C0 L6 f1=-1 L6 L6 F0 f0=6 L6 N-1 N-1
+4	foxa éaéa1. ?baxéquickb	F0 f11=23 p20=13 p0=0 p2=0 L23 F0 F0
+5	!. b;. !\n;!;?x\n?.	N10 F0 F0 C0 p8=-1 C0 L17
+6		L0 L0 p0=-1 f0=-1 L0
+0	bé	p0=-1 L2 L2 F0 f2=-1 L2 C2
+1	 \n. !a ;!,é1. , ,bééfox!\n. 	F0 C0 C0 P-1 F0 C0 N10 p10=10 F0 P-1
+2	b quick;quick. a	p12=8 N16 N-1 p2=0
+3	,. ..!	N6 f6=-1 f0=-1 F0 p0=-1 C0 f4=6 p5=0 F0
+4	foxfox;?1,\nquick	F0
+5	foxfox,éa\n. quickquickquick1b	f3=6 F0 f8=9 f10=11 f2=6 L29 f5=6 f23=29 F0 f3=6
+6	;quick!;	f4=8 L8 p3=0 F0 N8 L8
+0	.;\n; 1b,x	L9 L9 C9 C9 F0
+1	fox quicka\n.!x.  fox	P-1 P-1 f9=20
+2	?;. .!\n\n!. !1!..\na.x .?; 	L25 P24 F0 p15=12 p20=17 P12 F0
+3	1quick\nx\nxx?.?x xquicka éé	L26 L26 N-1 F0 C0
+4	; 1 x.\n!;é,	L11
+5	 b?;éé !. é!!é,a\n?quicka,.!!	N10 C10 p7=0 L28 f18=24 N28 N-1 F0 p11=-1 N10
+6	1ab. a1 ;,	C0 p9=0
+0	b .  bfox1,!.quick x!. \néb 1fox. \n	C0 L34
+1	quicka. ??b,,!1a 	f3=12 L17 C17 F0 N12 P0 N12 f7=12 p5=0 F0
+2	xquick\n\nfox quick1?a	f15=19
+3	!,. 	L4 C4 L4 L4
+4	?é	C0
+5	1a1foxé? 	F0 C0 L9 N-1
+6	\n!1;a. ?;!!;!fox,. . 	L21
+0	x.éfox?!fox.. éé?\n, ;bfox.;a1.	p17=0 L30 L30 p26=0 f13=30 L30 F0 C0 P-1 F0
+1	;\n1 ?a.	F0 p3=0 f6=7
+2	b.éé1é.é.;,\nfoxquické 	N9 P0 p15=10 p0=-1 C0 P-1 L22 f0=9 L22 F0
+3	\n. . ??.b;	F0 C0 p8=-1 p0=-1 p10=-1
+4	! x ,b. . bé??quické1é;	N23 C23 L23 F0 F0
+5	fox 1?é,xxx!, ?x?é	p11=-1
+6	 bfox?;foxquick1fox	C0 p18=7
+0	.	C0 p1=0
+1	xa,;;,x,b !1fox1bquick\nafoxquickquickx\n	f14=39 P8 C8 p38=8 C8
+2	. ;\né	N2 P0
+3	.  !. xafox	p1=-1 p10=-1 F0 L11 C11 C11 N-1 F0 F0
+4	abb1foxxx;\n. bquicka\n!	F0 f1=22 N-1 C22 C22 L22 C22 L22 L22
+5	é 1. b1;  .!\n.	C0 p9=-1 F0 C0 f7=8 C8 p10=0
+6	?.!. x;. 	N9 C9
+0	foxa\na.quickéfoxbquick \n ;fox b. 1foxquick,é	p25=0 P-1 L44
+1	. é?fox1fox  fox!;. quickx	P-1 N26
+2	quick.,b.fox1;. ..,	f0=13 F0 p8=0 L19 f19=-1 P14 L19 C19 p13=0 N13
+3		C0 N-1
+4	éé\n!é\n.1 .!	f10=11 L11 L11 C11 p8=4 C4 F0 F0 f8=11 C11
+5		F0 f0=-1 L0 p0=-1 C0 C0
+6	 é	C0 L2 C2 p1=0 N2
+0	quick;	L6 f1=6 N-1 C6 P0 f3=6 F0 P-1
+1	1?;fox. ?!;?aa	p0=-1 f5=14 P0 f7=14
+2	éx!?ax\n\nx\nb	P-1 f5=11 F0 f5=11 P4
+3	,;x?quick;,?	p0=-1 f5=12 L12 F0 N12 F0 F0 F0 p10=-1 p6=-1
+4	 ,. \n,	N6 F0 N6 p4=0 N6 F0 p2=0 N6 C6
+5	!é!!éé;xquick,1!;	C0 N13 f8=13 C13 C13 N17 C17 N-1
+6	 a .foxfox11;quick? . 1a\n1b 	f6=28 L28 F0 L28 f4=28 f21=-1
+0	,  é;é??\n\nfox.é	N15 f13=15 P0 F0 L15 L15 P0
+1	a.\n;.	p3=0 N5 f0=5 f4=5 f5=-1 F0 p2=0 f5=-1 f4=5 p1=0
+2	éé! a;a,.b1fox. \né?.é\n1x	F0
+3	éa\n,!1\né!!!,. ;xb. .  	N22 L22 C22
+4	\n	p1=-1 C0 p0=-1 C0 p1=-1 p1=-1 p0=-1 L1 C1 p1=0
+5	,;1!a,\n ?b x	F0 N10 L12
+6	. 1.!! quickx!.\n?\n\n \na;. . a fox	p2=-1 N32
+0	\né.xbfox.,?1éb;,;!quické\n;é	N27 N-1 N-1 P0
+1	b\n. . ;xx1	p1=0 C0 C0 p1=0 L10 p9=0
+2	\n?1	L3 f0=2 f3=-1 P2 L3 P2 P0 C0 p1=0
+3	?é?..?fox.?é\na1.	N16
+4	x???.1a axfox	L13 C13 L13
+5	 éx \n. aé.	C0 C0 C0 p5=-1 L10 p5=0 N10
+6	a?a\nb!!;,.. 	L12 N-1 F0 L12 p2=0 L12
+0	b; afox!aa?? ,\n;\n,	f4=18 C18 p12=0 P-1 F0 C0
+1	éé;fox fox\n?1	p6=0 f4=13 F0 P-1 N13 N-1
+2	ééfoxquickxfoxfoxb;,. ..foxfoxfoxb1a	L36 N-1 L36 F0 C0 P-1 L36 F0 F0 p9=0
+3	fox \n!foxfox, b?1	C0 f2=16 N17 F0 p16=0 f17=17 F0 L17
+4	\nx?.é,\nx bquick b1?;bquick.  é\n	L31 L31
+5	 é foxfox\nfox	C0 N10 f11=13 N-1 L13 N-1 C13 N-1 C13 L13
+6	quick \n \n ;b\nb quick.?	L22 C22 p7=0 L22 f16=-1 f7=-1 F0 f7=22 p9=0
+0	. ?	p3=0
+1	foxaab;!;quické\nb ,b;!1	C0 f1=19 L23 C23 L23
+2	 fox;fox. 	C0 F0 L10 f6=10
+3	quickbé1fox\n!\n;;,;\nbé	F0 C0 C0 N21 p13=0 N21 F0 F0 F0 p9=-1
+4	quickx!!quicka1!. quick.! !bquické? .quick.é	f24=44
+5	!foxfox	p5=-1 f6=7 N-1 C7 C7 L7 f1=7 F0 L7
+6	 1\nb?fox;é fox!  ;\n	L19 C19 f0=-1 F0 F0
+0	x . \n\n  ,éfox.,;bquickquick !é	F0 C0
+1	xé\né\nx?. a.	F0 P-1 C0 C0 L11 p10=0 C0
+2	.a. .bébx;. !. ;. ;foxafoxé!!	F0 C0 C0 f26=29 N-1 N-1 P19
+3	quickx\n.x\n a;quickb1;foxquick!quicka,b.foxx	N30 C30 C30 N43 N-1 p25=0
+4	quick\n\n ,  fox éé\n; b !.	F0 C0 f0=24 N-1
+5	x!fox.!foxaé 	C0 p9=-1 C0
+6	é;bé. 	p3=-1
+0	.quick1 ?. aquick?! quick. 1 fox, 	C0 N34 C34 p22=0 f31=34 L34 N-1 L34 f16=34
+1	1é!! é..xa??b!,ab	N15 p13=0
+2	quick , quick11ax fox 	N22 C22 N-1 N-1 f22=-1 L22 p17=0
+3	.\nfox foxé!1. .	F0 C0 p0=-1 N15 L15 C15 L15 C15 C15 C15
+4	  quick. b?fox.\n	L16
+5	?fox \n,  .  !1 ;.x.	F0 N10 f15=16 F0 p0=-1
+6	\n  éfoxbfoxaquickb1,\n? 	p22=0 L23 f17=-1 p14=0 C0
+0	1b, !quick\na!é1.x. .quickb!!quick,	F0 P-1
+1	,é b   !?1.ba 	p6=1 f3=14
+2	,\n?é 1!.?x1	p4=3 C3 C3 F0
+3	éfoxaba1. fox,?1quick1xbé\n\n	f6=27 f5=27 L27 p10=0 N27 f23=-1 C27 p10=0 N27
+4	 ;fox.!quick\n; ?1?quick,quick\nb é1  	p22=18 L36 L36 F0 p33=18 L36 L36 N-1
+5	é.éfox?bquick. ?;é!équick.. foxéquickb\nxé	p37=26 f22=25 L41 F0 F0 L41 f24=25 p34=25 f30=38
+6	b?,,! x?,;,quické1 ba\n	F0 F0 N22 N-1
+0	ax\n; éxé,1.. ?? 	p9=0 P-1 C0 F0 N16 C16
+1	foxquick1;é foxé1,;x?x!,! \n.a	N18 F0
+2	,a. a.,?é.,\n.;é!;fox1quick1a	P-1 P-1 f13=14 p21=17 P16 p17=16 p5=0 P-1 p9=8
+3	é...\n\n.fox. !!	f10=14 C14 F0 f0=14 f3=-1 p1=0 p9=-1
+4	? ! ;\n.a?\nfox1!x .\n	f15=19 f6=-1 C19 p1=0 C0 F0
+5	x! . . xbé1	N11
+6	a  1quick!??,;;1\n!. xquickéafoxa,;	N33 C33 p0=0 p11=0 C0 L34 p27=15
+0	é!,bb.a?é..a!é	C0 C0 F0
+1	 !.!x. fox.!quickx x.ab	p3=0 L23 C23 f6=23 L23 C23
+2	,fox,.xb,x..b?é?x.. 1é	f13=14 L22 f21=22 L22 C22 f0=14
+3	foxa ,!,!quick??;;!bquick\n.	N27 p3=0 N27
+4	a,é; ?1;	f3=8 C8 C8 N-1 f6=-1 L8
+5	fox!	F0 C0 L4 p3=0 C0 F0 L4 f3=-1
+6	!?xéb!é !fox b!;!fox. .	N23 C23 N-1 f6=-1 p5=0 L23 C23 p5=0 C0 L23
+0	xquick,1!\na!fox!.;.b aquick quick x, 	L37 P0
+1	b, ?b??quickxquicka	C0 C0 C0 C0 F0
+2	1 	C0 N2 N-1 L2 P0 F0 L2 C2 F0 f2=-1
+3	fox1xfox\nx a!x \na b.	N20 f7=20 L20
+4	.a \n,?1  x,fox\n;; ;fox. é?quick 	L32 F0 L32 F0 F0 f25=32
+5	?	p0=-1 p1=-1 F0 F0 f0=1 N-1 L1 N-1 f1=-1 F0
+6	a1éfox. x ?! b?a??. \n é	F0 C0 C0
+0	\na. fox.! . bb;.b a1ax fox. . 	L30 p17=0 P-1 f19=30 L30
+1	,. . ,;x?éa	L11 C11 N-1 f8=11 f1=6 F0 F0 L11 L11
+2	. 	P-1 P-1 F0 L2 p1=0 F0 L2 p1=0 L2 P0
+3	1é. ?1	L6 F0 C0
+4	 ?foxquickb;;\n 	C0 L15 p3=2 N15 p5=2 C2 L15 f6=-1 C15
+5	!  ;quickx\n. ba;quick. 	F0 L23 f19=21 p8=0 N10 L23 p9=0 C0 L23 f15=16
+6	,!x	C0 p2=-1 f2=3
+0	1!fox. foxfoxaba?ab.x1quick!\nquickx.  \n	P-1 N39
+1	x. aééfox é b?	f13=14 F0 P-1 f3=14 P0 C0 N14
+2	1?quick1 \n; a!,quickb\n!quickquickbfox.	L38 F0 C0 N2 L38 P23
+3	b;;quick	C0 p8=-1 C0 f7=8 C8 p1=0 F0 F0 F0 p1=-1
+4	.b? é .	N7 L7 L7 f4=-1 f6=-1 F0 f6=7 F0 p2=0 p5=4
+5	fox1!1xx1  bfox	f15=15 N-1 C15 L15 N-1 F0
+6	!,quick,,	N9 N-1 C9 p2=0 C0
+0	xquick	f2=6 p0=-1 p0=-1
+1	;x,.   ?fox	L11 L11 f3=11 P3 C3 C3
+2	 ébquickfoxfox	L14 L14 L14 f4=14 f8=14 p1=0 f0=14
+3	b1.. ,xb1aquick. b,.b ;\n,x	f9=26 p24=0 N26 p8=0 N26 F0 F0 L26 f4=26
+4	. !. ! ,? ?;\nquick. 	L20 L20 f19=-1 N-1 C20
+5	é	N1 p0=0 F0 C0 L1 L1
+6		N-1 F0 L0 N-1 F0 N-1
+0	quicka	P-1 p5=0 F0 L6 f5=6 L6 C6 C6 p4=0 N6
+1	!\nfoxé. !	P-1
+2	\né, 1. 	F0 L7 F0 L7 N-1 N-1 P0
+3	bfox\nquickb é\n éa,a.a1	N22 L22 N-1 L22
+4	,fox.é;; ;aé 	f11=13 N-1 F0
+5	?ééb.,b;;xfox?x	L15 F0 N9 f12=13 f8=9 L15 f6=7 p14=4 L15
+6	; é?b !!;1é;\n. ;x. .	p9=1 L20 C20 F0 C0 N20 L20 F0
+0	,é?bé, ?é a?,fox	N16 C16 N-1 N-1 C16 F0 C0 F0 p13=0
+1	é ?!??fox;quick. 	f14=17 P0
+2	.1\nfox	N6 L6 f0=6 N-1 p0=-1 f4=6 f5=6 f0=6 p0=-1 C0
+3	axquick1ax; ?quick	f18=18 C18 L18 f3=18 N-1 N-1
+4	; . ,, 	F0 f0=7 C7 F0
+5	 	F0 C0 f1=1 N-1 p1=0 f1=1 N-1
+6	b. fox!?x	N9 f9=-1 p5=0 L9 C9
+0	1. ;\n;quick	p2=0 C0
+1	\nb é !aaé1x1;quicka;! 	f3=22 N-1 p6=0 f7=22
+2	?11!! é,. 1!b 	P-1 C0 f3=6 F0 p5=1 C1 N6 f12=14 f9=12 p6=1
+3	. ;. foxfox?.? fox . ,?\n!quicka !xfoxa	p0=-1 f35=38 p13=0 C0 p15=0 f1=15 f15=33 p38=25 N38
+4	a!,foxaquicka\n  !!	F0 L18
+5	quick a é\n.quick\nquickquick  	L29 F0 L29 f13=16 p18=7 f16=17 f10=11
+6	é !	N3
+0	. 1fox;?quick \n	f10=15 F0 p8=0 f9=15 P0
+1		P-1
+2	foxa;..!	C0 N4
+3	b!béaéa \n\néé! 	F0 C0 L14 f8=-1 f6=-1 f11=-1 C14 C14 p14=2 f12=14
+4	ééx	f3=3 p1=0 f2=3 L3 f0=-1 C3 C3 F0 F0
+5	.  .  . 	C0 N8 N-1 L8
+6	1,quick11;?...,1 . ,	C0 N20
+0	.;!,. é.fox\n?. \n b!é. 	F0 P-1
+1	 ;éxxfox\n. x.\n aa. quick	P-1 C0 f4=24 N-1 C24 C24 f1=24 N-1 N-1
+2	, b  quick.	P-1 F0 C0 f1=11 p4=0
+3	\n?\na. !\nbb1é !!aa;!x	p7=-1 L20 p16=3 L20 F0
+4	1quickaé;x\nfox,éé11?	p1=-1 F0 C0 f3=20 F0 N20 L20 p8=0 C0 F0
+5	\nquick? b;foxxa.  ,!bé, .;b;	f12=15 L28 F0 f19=20 L28
+6	foxfoxquick?..  fox1 é;b quick.  \na!b. 	C0 L39 F0 f0=23 p1=0 L39 p31=23 p16=0
+0	; ?fox  ;. ? 1;a!quickéaa!é	F0 L27 p4=0 L27 p22=0
+1	   1; xfoxéx;,	F0 F0 F0 C0 L14 P14 N14 P14 P0
+2	1, .abx,. 1 é,.\nquick.1!	f6=24
+3	a	F0 C0 f1=1 p0=0 F0
+4	quické?. 11!b ??\n\n. b 	C0 f16=22 N-1 C22 L22
+5	fox\n. ..xaa,;quick ;!x,	f3=4 N13 p15=4 p5=0 f17=18 L23 L23 L23
+6	!;bé	N4 F0 C0 F0 L4 f0=-1 f1=-1 L4 F0 F0
+0	bxa.   quick. !ébxa,;	N21 F0 C0 L21 p15=0 p17=0
+1	1,1!b quick,\n. b\n.a 	L20 F0 N2 L20 C20 C20 f18=20 f20=-1
+2	quick!fox. é;ééquickx?a1xquick,!\na	p2=0 P-1 f18=22 P13 L34 C34 F0 N6 p14=13
+3	!;\nx,	L5 L5 C5 N-1 L5 f3=-1 L5
+4	.!x,!	L5 N-1 L5
+5	a\nb; ?ab ;quick\n1!?. .  a	N10 f23=24 C24 L25 F0 f20=21 f16=17
+6	; ?quick,b!\n foxé éb;é,é  	p22=13 f7=26
+0	quick	F0 f3=5 F0 C0
+1	.,. ,a;.;;!quick. . .	L21 N-1 N-1 N-1 P5 F0 p5=5 p3=2 N5
+2	. éaé. x?\n,éa?. é ?!x	p11=10 p0=-1 p4=0 C0
+3	é \n !	f5=5 F0
+4	  . ?1	L6 L6 F0 N6 p2=0 L6 C6 N-1
+5	é1.;quickxfox foxa\n  ;. fox,. ,fox	p7=-1 F0 C0 f10=13
+6	foxb quick!?quickbx?x?  ,;bquick	L32 f22=-1
+0	! fox . !?,\n,\n.?.	L17 f11=17 F0 p0=-1 F0
+1	. bx,.;bquickfox,;; !fox ,. aquick! ,	p23=17
+2	;x,	L3
+3	xbquick..  abfox?fox!	N21 N-1 C21 F0 p6=-1 C0 N21 L21 F0
+4	; 	N2 C2 f1=-1 F0
+5	. \n\n?bbxa !é;;;équick fox	C0 f10=11 p22=11 N21 N25
+6	 , !\n	F0 p1=-1 L5 F0 p1=-1 F0 F0 p2=-1
+0	bb!;\n. ;\nx  	F0 C0 N12 C12 L12 C12
+1	,. 1  ?quické. foxxbx 	N22 C22 N-1 P1 f5=22 F0 p19=1 p7=1 P-1 F0
+2	,quickxbquick quick,	p4=0 C0 f10=20
+3	.b axfoxa é ,.!!;	p7=-1 C0 f9=17 L17 C17 p0=0
+4	?\n; fox.   . 1?a1;. a. \n.. ;. 	F0 N15 C15
+5	bb!fox	f6=6 f2=3 C3 N6 F0 f1=2 p2=0 N6 p6=0 L6
+6	é.\n;,..équickb;	f3=15 p14=4 N15 F0 C0 f2=15 C15
+0	1!;  !,a,1,é\n?. quick!. quick.?	C0 F0 p21=0 P-1 f10=31 F0 C0 P-1 N31 N-1
+1	;!é b.fox;1!1,fox.  bquick	C0 F0 p9=0 P-1 f4=14 N26 N-1 f23=26
+2	. é,\nquick!équick  .;..quick	C0 L28 f28=-1 P21 f26=28 p4=0 f23=28 P21 L28 f16=20
+3	,;quick,  a1quickquick.?.,x ? x\n	C0 p16=0 C0 N25 C25 f18=30 C30 L32 f24=-1
+4	 ,.foxb. a,; b ;équick.quickx;a	F0 N31
+5	x!foxb!1x\nb!\n ,,	C0 f14=15 f11=12 p5=0 f9=10 N16 N-1
+6	1bquick,ax11b 	p5=-1 C0 F0 f5=14 F0 C0 C0 f14=14 F0
+0	!?,, ... éxquick	L16 P0 F0 C0 F0 P-1 F0 f5=16 p5=0
+1	éa.?fox?11quickquick, a\n. . 1bx\n 	C0 L33 p33=21 C21 C21 N33 F0
+2	fox a?! ?. ??b,a,.. b\n	F0 P-1 p11=8 C8 f2=8 p7=0
+3	!bab?foxa\né!quick x;équick b?!quick.,	f35=37 f11=30 F0 C0 L37
+4	 !.a,?. quickéfox ..  ,  !1	p10=8 f19=27 p3=0 N26 f26=27 C27 p8=3
+5	,!quick . ,.	p12=1 f8=9 f4=7 C7 C7 f4=7 C7
+6	;équickb. ;. foxquick.!	N23 L23 p3=0
+0	x.;?1?  a?b,.xa1\n?aquickx	f19=25 p1=0
+1	;11?fox \nquickaxquicka. quickx?a.\n!a 	p23=0 p3=0 C0 P-1 f28=37 P0 F0
+2	.  1x!	L6 P0
+3	quick 1afox1!quickbquick	C0 F0 f10=24 N-1 p23=0 C0 F0 f5=24
+4		N-1 C0 C0 p0=-1 f0=-1 N-1 N-1
+5	? \n! .1,.  é. bx\n. x,. 	L23 F0 C0
+6	;é1b	N4
+0	xx.  .  foxa?a 1a!x . 	f22=-1 N-1 p6=0 N22 f16=22 C22 P0 F0 N22 f20=22
+1	éx .?,?\nfox quickfox1	p6=6 N21 p12=6 C6
+2	,!?!bb. . aa,!  .xquick. ,  1	F0
+3	é?éfoxquick1!xé.! .	p19=2 f5=18
+4	x!!..?\na,,x!;?é1\n;é?fox 	N20
+5	,\n!	f3=3 C3 F0 C0 C0
+6	 x;	f2=3 N-1 L3 L3 L3 C3 F0
+0	!foxé!x\nx;. a ?  ?1é;!. 	F0 N24 p4=0 N24 F0
+1	.? . é?	C0 F0 C0 f3=7 N-1 f2=7 p3=0 L7 C7 C7
+2	. ;?	C0 C0 p0=-1 N2 N3 L4 N-1 p0=-1
+3	,	L1 L1 C1 C1 F0 N1 L1 N-1
+4	. x!fox1quick. quick?1,fox?. . ,,b;\n	L36 p36=29 N36 p27=21 F0 N21 f13=36
+5	.!1fox11!a.  ,x. bquick . quick	C0 N10
+6	 . b1éa? aé1?,?ébx	F0 C0 N18 L18 p8=0 F0 p3=-1 N18 p15=0
+0	?quick1\n;1quick.foxfoxé  ?,1a.b;é	C0 L33 P0 F0 P-1 P-1 N33 f11=33 F0
+1	,b 	C0 F0 L3 L3 C3 p0=-1 L3
+2	  ;;xbé1 ... \n;foxa! fox .,	N2 N3 f20=21 N27 C27 P21 N27
+3	x!,x!,1 !;fox.,  b!1	f4=19 C19 f13=20 F0 p8=-1 p6=-1
+4	éx .11; ébb!\n !1fox!1	C0 C0 p12=0 F0 F0 p9=0 f10=21
+5	\n.  ?fox.	N9 N-1 C9
+6	fox,?quickfoxquick;. . 1\n1fox x .  é	F0 N35
+0	x;, ,quicka;1 	f13=14
+1	,x!;ab;. . fox1 1!b!?.!a;	F0 F0 C0 f20=25
+2	aé!1!. 1?quick1.foxb	P-1 P-1 N3 N7 p13=9 L20 f17=20 f13=20
+3	!,?xb?b	L7 L7 F0 L7 F0 C0 C0 p3=-1
+4	 ?afox	N6 L6 p1=0 N6 L6 N-1 N-1 C6 F0
+5	;,,é,?.x1 ?é. aquick!b  .,	f25=26 N-1 F0 F0 C0
+6	!1éé a	p3=-1 p1=-1 f6=6 p6=0 N6 L6 C6 C6
+0	1. !fox!équickb?b?é é?foxb?	N27 C27 C27 F0 P-1 N27 p15=0
+1	é.xfox. ,a?. x.! quick  fox. .fox	L33 L33 N-1 N-1 p15=9 F0 f31=33 f15=33
+2	1?é é é !1  1ba	p0=-1
+3	;.a?\nax\nabé.!a	F0 L14
+4	quickbb;!b??. ;, 	F0
+5	 quicka.. b!,b.afox\nquickb. ; .	f7=8 F0 N10 f17=19 L31 N-1 C31 f31=-1 C31
+6	\n?é. 	N5 C5 F0 p5=-1 C0
+0	équick;,!;!a.?1b ;? quickquickquick!quick	P-1 P-1 L41
+1	b  ?quické.  fox é ;é\n. 	L24 C24 f18=24 P0 N24 C24 L24 F0 F0
+2	b1afox1quick1x\na é fox	P-1 N22
+3	x\n,quick.	L9 N-1
+4	 1 !. foxbé. éfoxquickfoxé1 	N28 L28 p11=6
+5	,;aa1;a.quickx\né.!\n;	N14 L20 F0 N14 F0 f8=14 N20 F0
+6	 x\n?1,x\n x. ,é;  foxquickaé	C0
+0	;	N1 P0 N1 C1 p1=0 f0=1 P0 F0 L1
+1	 !!quick;,xx!1é  aéx!1b ?1	P-1 p0=-1 L26 N-1
+2	fox \n bfox,é	F0
+3	!! ?quick\n1quick	C0 N16 C16
+4	afox.;é1\n;!? é1 bx!fox. .	F0 F0 f7=25 p0=0 N19 N25 p5=0 f9=25
+5	x.  .é?xb1! !;;;1.	F0 F0 L18 F0 N10 f12=13 p10=0
+6	\n.éé1.foxbéb!1,quické. 	L23 N-1 p6=0 p6=-1 C0
+0	x ! é1\nquickquickquick ,\n! .b.1x	F0 P-1 f17=32 p3=0 F0 P-1 N32 f13=32
+1	 aa. quick1x;1?x	P-1 L16 F0 f13=16 p10=0
+2	fox?foxé. x	C0 C0 p5=4 N11 L11 p11=4 f4=11 N-1 P4 P0
+3	   .\nb ..?! b,quick.	p19=0 f17=20 N-1 L20 F0
+4	\nfoxx!?. !1	C0 N11 F0 N11 F0 L11 F0 C0 p10=9 p4=0
+5	quick?,éab\nx? 	L14 C14 L14
+6	é,   quickfox b1 é?a 1. 1,!,	N28
+0	!1xa!. x1a. ??	N14 P0 p4=0 C0 N14 N-1 C14
+1	aéafox? . ! éx\n1.ééx \n,xa	L25 C25 N-1
+2	. . b\n;b\n , \n. ,fox	P-1 C0 F0 N6
+3	x;. 	N4 F0 f2=4 f0=-1
+4	 . x1	N5 f5=-1 f1=-1
+5	 x1?é \n,. .x é; 	C0 F0 p13=1 f4=5 L16 F0 f0=1 f8=9
+6	quick	p4=-1 F0 p0=-1 C0 L5 F0 C0 p0=-1
+0	,é quick ba.b.;. xéé1b	p7=0 P-1 C0 F0 N22
+1	 ,x,quick .fox!xx1.b. .	p7=4 P2 C2 p4=4 C4 p2=2 p2=2
+2	?a\nquickfoxquickxaquick;? quickb?,  b?!foxfox	P-1
+3	!?!éx!quické1x1;\n	p5=-1 L17 p16=3 f14=17
+4	fox	N3 f1=-1 C3 N-1 C3
+5	a.. a\n?	p4=-1 f2=3 p1=0 F0 p6=-1 N7 N-1
+6	 quické,bx;éaé ;quick1\n. ;fox ;  	f8=31 L33 L33
+0	. ;!quick	f4=9 P0 L9 p7=0 P-1 p0=-1
+1		F0 f0=-1 P-1 N-1 C0 C0 f0=-1
+2	. \n.fox. quick. 1	N17 C17 N-1 F0 f3=17 p9=0 p3=0
+3	!b ,quick ,\nquickfoxx!1;!bbfox quickxquickb	F0 F0
+4	.. éfoxfoxb. !,quick.aé!1aquickéfox1?	N24 F0 L37 f37=-1 F0 f17=37 F0 L37 F0
+5	\n.,ébb1 ; 	L10 C10 N-1 F0
+6	?quicka!\n. é;	f0=13 F0
+0	 ?	N2 P0 p0=-1 C0 N2
+1	é;1b;?.quick? x	L15 L15 f11=15
+2	xé,	P-1 f0=3
+3	xé. !;?\n ;;!,x\n\n\n? xb?!\n	F0 L24 L24 p23=12 F0
+4	ba.x,	C0 f0=5 F0 N5 L5
+5	a1 b\n;,\n\n   ébéfox	C0 C0 C0
+6	a!b	f3=3 f0=-1 p0=0 f3=3 F0 f2=3 p1=0
+0	fox1 . ! ! .xb.\nxfoxx;	F0 N22 L22 P0 N22 f18=22 f21=22 L22
+1	,b  a;. .x\n. x;!;a,fox	C0 C0 P-1 F0
+2		F0 F0 F0 N-1 N-1 C0 N-1 f0=-1 P-1 P-1
+3	1 . fox!	C0 C0 p8=-1
+4	\n.foxa ,!1,bé;	L14 p11=9 L14 F0
+5	b \n.\n ?\n;,x.,fox. 	f3=4 L18 F0 f7=8 L18 C18 f8=9 L18
+6	éé. ,é\n, 	L9 p6=0 F0 F0 p5=-1 C0
+0	aquick1a?b? é	F0 N13 f13=-1 F0 C0 f0=13 N-1 C13
+1	\n?;xxfoxfox1	C0 P-1 f6=12 p1=0 f1=12 F0 L12 N-1 F0
+2	\n\n,. ,quickb . \n ;b. x . b1?	N17 C17 N18 f21=28 L28 F0 P-1 N17 P0 N17
+3	ébbxfox?,béxé ,ba	f9=17 f9=-1 L17
+4	quicka!x?bquick;,1!a1é.xa,	F0 C0 p5=0
+5	1?!quickfox	F0 F0 N11
+6	ax!. ;1  fox.,\n fox.	L20 L20
+0	. ! foxa! 	C0 C0 L10 f2=10 f10=-1 p0=-1 L10 p5=0
+1	!?\n1,é1quick!.  aé. ;!1  ,a 	C0
+2	 . fox..1 !xa! quickb	C0 C0 P-1 f21=-1 C21 N-1
+3		C0
+4	. b;;.  \na?x1	p0=-1 p5=0 L13 f2=-1
+5	a\n\n \nxquick; ?!? ,	L18 C18 f9=11 N18 L18 p9=0 p11=-1
+6	fox.quick1.    éb,??é. bé !x?fox.	C0 F0 p5=-1 C0 C0 N33 C33 p19=0 N33
+0	xx,. .  fox?!??!;? b\n 	p4=0
+1	fox?xéfox; \n.. ,a; foxéfox	L26 C26 L26 P16 L26 P16 F0 F0
+2	b; !.é\n..quick\n\n	L16 f5=16 C16 F0 p0=-1 C0 P-1 p11=5 p8=5
+3	 quick?fox;.x  1 .  ;?,\nx	F0 f1=17 C17 N25 p8=0 L25 f9=22
+4	fox?; fox.  a. . 1	N18 p6=4 N18 f16=-1
+5	!é. ;!	L6 L6 f1=2 p6=0 p4=-1 F0
+6	quick?bquick. \né,\nbquick?	L25 L25 p8=0 L25
+0	..quick,fox bfox1b.b éb11\n fox	P-1 P-1 F0 N30 L30 C30
+1	; é.	P-1 N4 F0 P-1 N4 f1=4 p4=0 P-1
+2	. 1 quickx\nfox 1ab..!,é	f15=21 L23 L23
+3	,,;a1\na ?a, 	p10=-1 C0 C0 C0
+4	\n;	p2=0 F0 F0
+5	b.fox.,\n.quickx  	F0 L17 F0 F0 F0 F0 N9 L17 p3=0 L17
+6	,x.x.b;!fox\nb\né	p11=0 N15 N-1 p3=0
+0	 \né   ;1  ,	N11 f2=11 C11 P0 P-1 f8=11 L11
+1	.,!quick!afox!.!?\n	f11=18 F0 C0
+2	.,a .é,a!a! . 1a;é1 .,\n;	P-1 N9 p4=0 P-1 P-1 L24 p7=0 P-1 N9 C9
+3	a!!é. \né	F0 N8 L8 C8 p0=0
+4	x quick 11. quick;.fox!.?  	f25=27 L27 N-1 p13=0 N27 N-1 F0 L27 C27 C27
+5	afox;! quick ?fox; ,1foxquickquick  \n	N12 F0 L37 F0 F0 f27=34 C34 C34
+6	foxquick,;é;	C0 f7=12 f5=-1 F0 p4=-1 C0
+0	. !;\n,1?fox  quickquick!1,!b	C0 C0 p16=0 C0 f27=28 C28 P0
+1	1b!. 1 	F0 L7
+2	fox?.,. aquick. .\n \na;	F0 f1=5 F0 C0 N5 F0 N5 F0 N5
+3	x1. x,,éb!x?.\néx	C0 f4=16 p6=0 f12=16 N-1 N-1
+4	quick  fox\na. ;foxb\n\n. foxéafox	p30=14 N31 f17=-1 f17=-1
+5	,?ééé ,quick.,b\na	L17 N-1 F0 L17 f10=12
+6	quickx\n xfox\n , .  x.axéfoxbb	L29 F0 F0 N29 N-1 F0 F0
+0		L0 N-1 F0 C0 L0 N-1 f0=-1 L0 N-1 N-1
+1	fox?b	N5 P0 L5 F0 p5=0 f5=-1 C5 N-1
+2	 .?.\naxa1,.,quick. aquicka\n	F0 L27 N-1 N-1
+3	aéquick?\n a a;,é 1 quick,?,x	N26 F0 C0 C0 C0 p11=-1 N26
+4	quickfox quick. .. . \né1,!\néb	C0 L29 N-1 C29 f1=22 C22 C22
+5	quick1;?quicka.  quick !fox. b	L30 F0 F0 p17=6 p28=17 F0 N8 f25=27
+6	 \n	F0
+0	b. .1\n111quick é éxfox?éfox. ;afox.	p10=0 L35 C35 F0 C0
+1	é.éé. ;b\na!\n. xé1 .?.b	F0 f17=22 p13=0 p3=0 f12=22 L22 L22
+2	?	f0=1 P0 N1 f0=1 C1
+3	\nax ;,fox,  ! . 	L16 F0 p0=-1 p13=0 F0 L16 L16 L16 C16
+4	foxxx	L5 p1=0 p0=-1 p3=0
+5	ax;!??quick \n ,,!  \n quick. 	p28=17 p20=11 p8=0 F0 L28 L28 f14=15 L28 N-1 L28
+6	;é,xb. quick!a. \n,quick éb. .\n	F0 N30 L30 N-1 f17=-1 C30
+0	\n,fox fox!b	P-1 P-1 F0 F0 F0 p5=0
+1	 1.quickb?quick.\nfox1	f0=21 C21 F0 F0 f7=21 F0 f1=21 f7=21
+2	,;	N1 p0=-1
+3	xfox;?,;;xé1;bb!foxfox,b éé\n	L28 p9=0 f25=28 N-1 N-1 C28 p5=0 L28 N-1
+4	. foxaquick,quick;1\na.1foxb!quick	p27=0 C0 L33 N-1
+5	é	N1 L1 p0=0 N1
+6	? quick\na,!a é ,\n;b. quickfoxb	F0 L30 L30 N-1 F0
+0	é.! 11;quick.éfoxquick,xb, a	L28 C28 L28
+1	a é?; quick ,1  x; quick	L24 N-1 P13 f6=13 N24 f9=13 F0 C0 C0
+2	 \n?quick.\na x.é,!.quicka1foxquick1;!	F0 p4=3
+3	 , x\n!xfox\n ;.	f14=14 C14 C14 L14 f13=-1 N-1
+4	fox1éb,1aa1b\n!b\nquick	f0=21 p13=0 L21 f18=-1 F0 F0 F0 L21 L21
+5	;éa. ;.b. .  a,!aéa. !fox\na	C0 F0 F0 f19=20
+6	, . ! 	f5=6 L6 N-1
+0	.\n!1a?xfox,,fox;!foxa! 1?	L25 N-1 f22=25 C25 N-1 P0 L25 L25
+1		f0=-1 p0=-1 P-1
+2	\né? . fox1quickquick!\n;1. ,	f0=4 p8=4 N22 L27 C27
+3	\n fox,1foxééfox!;,. ? b.\n.	F0 F0 C0 N22 N26 p25=0 f0=16 L26
+4	 x?quick?bx!?a.. 	f2=17 C17 N-1 L17 N-1 p13=9
+5	! a ;x é.!bfox1	C0 C0 N10 L15 p15=4 N15 N-1
+6	1	f1=1 N-1 p1=0 f0=1 p1=0 f1=1 p0=0 L1 f0=-1
+0	xb.fox11aa!\n	f7=12 f11=12
+1	!.!;quick? ;1? !x.;  ,1	C0 L23 P22 C22 p18=0 p7=0 N22 F0 F0
+2	b b,fox, foxéxé,!,1!., é!fox	F0 N17 f21=25 C25 P21 P17 p24=21 p25=21 f18=21 p21=17
+3	fox. !quick\nquick ,fox  . fox1,.,a	C0 F0
+4	.\nx . \n.?foxxb.1!b;\nquick .  	F0
+5	;axquickquick. ,\né.	N13 L19
+6	?!;éaé	C0 f3=6 F0 F0 C0
+0	!,	C0 P-1 N2 C2 f1=2 F0 N2 p0=-1 L2
+1	 fox	p2=0
+2	é!a xfox!;é??. ;.;. a;;	p23=22 P22 C22 N23 F0
+3	quickbfoxba,quick	f10=17
+4	?x . b ?éfox	L12 L12 L12 C12 L12 F0 N12 L12 f12=-1
+5	.a,b	N4 L4 F0 N4 C4 N-1 F0 F0
+6	\nxa?quick!x. 	p13=4 C4 p3=0 f6=13
+0	\n \nquick,	C0 p6=0 C0 f5=9 f6=9 f0=9 P0 P-1 L9
+1	fox1 \n. b. 1 éx. 	p15=0 p7=0 f14=17 f11=17
+2	! ?foxa??é\n, ;foxxbquick	C0
+3	!foxb!fox?!.?!b1 ,1fox x,x	p17=6 N26 C26 p19=6 F0
+4	b\n1é11.bquické!,quick\nx,.,;	F0 p7=0 F0 F0
+5	\n,.;b	f1=2 p5=0
+6	b.,xé1ab,x x1quickb	F0 F0 N19 f19=-1 f1=-1 C19 C19 p14=0 f13=19 C19
+0	!;  ,fox.\n\n,.abx quické	p21=0
+1	!a a a. .   foxquickfox1. 	C0 p18=0 N26 f15=26 C26
+2	é foxa? 	F0 C0 F0
+3	b. ..?!bé\n.  quickxé\n\n x;fox	C0 F0 f23=28 C28 f18=-1
+4	,; 1??a.  b!a	L13
+5	. x1\nééx,éb. x ?  . é,quick	C0 C0
+6	.\nx\n?,, x,quick,fox;é	p1=-1 C0 F0
+0	.;!\nbéb1xaa	L11 C11 F0 f0=11 P0 P-1 F0
+1		p0=-1 L0 L0 F0
+2		L0 P-1 F0 p0=-1 P-1 f0=-1 L0 C0 f0=-1 f0=-1
+3	fox. fox? 	F0 C0 F0 f6=10 N-1 N-1 f2=-1
+4	.; a?fox1b. \né	F0 N14 L14 p8=5
+5	é?\n!quickéé\n;quick quick ;éfox	f8=11 L30 N-1 L30 L30 F0 p0=-1 L30
+6	,x,!a! ,quick \na?fox. a1b.	C0 C0
+0	! bfoxb;é.,!fox;xx! .xx 1\n	f17=26 L26 p24=0 f1=26
+1	fox. \n. x	F0 F0 p2=0 p0=-1 p5=0 f8=9 f6=9
+2		P-1 P-1 F0 N-1 p0=-1 F0 N-1 F0 F0
+3	b. quick .quick. ;;fox 	F0 N23 F0 L23 C23 N-1 C23 f7=23 f10=23 N-1
+4	quickquick?x.	L13 F0 f0=13 F0 p1=-1 L13 p2=0 f3=13 L13 N-1
+5	é!!;;\nquick\n; fox ,,?;fox1 	L27 C27 C27 N-1 F0 F0 f16=17 f25=26
+6	. ;?a\n. b\nfox	F0 f13=13 L13 L13
+0	b, fox.quick	L12 f4=12 L12 p10=0 N12 C12 p7=0
+1	 ; . b !,;	L10 F0 p2=0
+2	. ;..1. !b.?.. 	N2 C2
+3	?.fox?1fox,quick?bfox?\n. éé1béx1?	C0 p12=0 N23 L33 F0 L33 L33 p23=6 L33 C33
+4	é;!1 1??;\n,?	L12 L12 C12 p3=0 f0=12 F0 L12 F0
+5	\na..;b 	F0 f5=6 N7 C7 C7 N-1 N-1 L7
+6	 bfoxbéé1quick1é .fox.,quickxb. ;	C0 f19=33
+0	 ; a	P-1 N4 f4=-1 L4 F0 f2=4
+1	xquickquickxaabé.a?\naquickéb	P-1 N28 C28 F0 F0
+2	.xé,! quick\n?;!.b  .\n\na\nx	p4=0 N6 p9=6 C6 P0 F0 C0 f18=22 C22
+3	,?	F0 p0=-1
+4	.  !éaa?\n	F0 F0 F0 L9 N-1 L9 C9
+5	é. b !ab	p0=-1 N8
+6	é1; bfox	C0 C0 F0 p6=-1 f5=8 p2=0 L8 F0
+0	.. ;. b!,. ;,a fox. . 	N22 N-1 C22 C22 f3=22 F0
+1	! ,,!	P-1
+2	.quick !;fox;. !,b1xéé  	C0 L24
+3	, ? .	N5 L5 L5 p1=0 F0 p3=-1 F0 F0
+4	 . .. a fox \n. ?, afox;!;,.	C0 F0 N24 F0 L27 N-1 L27
+5	,foxé?é ;,.?;é ;b	C0 p13=1 N11 f8=9 N17 f1=5
+6	é!fox.b, ?.\n.  x;;??équick	p26=18 p3=0 f18=26
+0	quick. ;éé.quick. \na?	N21 C21 f4=21 C21 C21 N-1 L21
+1	.. \né;\n?\n,.	C0 F0 N10 L11
+2	?!!a x.	f0=3 C3 N7 L7 C7 f5=7 N-1
+3	quick	N5 N-1 N-1 p1=0 L5 F0 f5=5
+4	bfox . .\n,.;?;quick	L19 C19 C19 C19 f17=-1 L19 L19 p1=0
+5	é.b ;;!\n. équick\n\n ;é,é?!	p18=7 C7 F0
+6	, . ;fox	N8 p1=0 F0
+0	foxa1é;;	f8=-1 P0
+1	,!x. é?\nx.,.x!!	p13=11
+2	?fox a,,,  .,\n,b  afox1	L23 P1 C1 P0 N1 N23
+3	é.  é.  ! \n.??fox.; é;? 	N24 f2=14 N24 f22=-1
+4	,;\n,. .. ,bquick	N16 N-1 p10=0 C0 p8=0 F0
+5	 !b1\n!1?a\n,;é,fox! ,\n?	f9=10 L22 L22 N-1 L22
+6	?\n,\n,xfox!quick.,,,. 	N21
+0	x1fox!quick\n\nx?,é\nfox 1\nb	f2=25 f24=25 N-1 C25 f1=25 f4=25 f25=-1
+1	a?quickfox,fox??a!	F0 P-1 N11 C11 P0 F0 F0 L18 C18
+2	!! 1	N3 F0 p1=0 L4
+3	b	L1 N-1
+4		p0=-1 p0=-1 f0=-1 F0 C0 L0
+5		C0
+6	 1,quick1é  . !? ! ,é quickfox;fox	L34 p29=19 L34 N-1 N-1 L34 f2=30 N34
+0	foxéb.	L6 P0 L6 N-1 f5=6 L6
+1	 éb	N3 p0=-1 N3
+2	xé b	f3=4 C4 f0=4 P0 P-1 C0 N4 p0=-1
+3	!	p0=-1 F0 L1 C1 L1 C1 p0=0 F0 N1
+4	quick.!1b1a\n.!fox;\nquick	C0 F0
+5	quick  é. .	N10 N11 F0 p8=-1 F0 F0 C0 N10
+6	quick	p5=-1 p0=-1 F0 f3=5 N-1 L5 f0=-1 C5
+0	; .,\n1quick.. quickbéquick;é  b. ?	F0 F0 N34 P0 L34
+1	b.aa,b\nquické\n. 1. .,	F0 P-1 P-1 f17=21 p17=5 L21 C21 P21
+2	é. ;,a1 	p5=4 N8 P4 L8 F0
+3	\nfox.a! fox! éaé\n,\nb	C0 C0 f7=20 C20 p12=0
+4	!\nquick a!quickbfox.,.!.!xé ,	p9=2 N25 L29 F0 C0 f28=29 N-1 L29 L29
+5	1 foxb\n. \n !;b1\nquické	p6=-1
+6	 1. .quick?éé?b1?	F0
+0	é 1é 1  ?	p5=0
+1	b?. foxb ? 	f9=11 p9=0 F0 f0=11 f0=11 p11=0 p0=-1 f2=11 N-1 P0
+2	 1;é1quick. x	f11=13 p9=3 L13 N-1 p4=3 f2=3 f3=13 f6=13 p8=3
+3	 .	L2 L2 f2=-1 C2 p1=0
