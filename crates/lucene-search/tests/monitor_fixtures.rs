@@ -531,7 +531,11 @@ fn the_monitor_facade_scores_as_lucene_does() {
         })
         .collect();
     monitor.register(queries).unwrap();
-    assert_eq!(monitor.query_count(), 41);
+    assert_eq!(
+        monitor.query_count(),
+        40,
+        "Lucene counts the queries that have a document"
+    );
 
     let want = fs::read_to_string(dir().join("data/monitor/score.tsv")).unwrap();
     let mut bad = Vec::new();
@@ -686,4 +690,144 @@ fn batches_match_under_every_matcher_as_lucene_does() {
         }
     }
     assert!(bad.is_empty(), "{} differ:\n{}", bad.len(), bad.join("\n"));
+}
+
+/// `MonitorQuerySerializer.fromParser`: Lucene's bytes for a query, equal to
+/// ours, and read back to the same query (`serialized.tsv`).
+#[test]
+fn the_serializer_writes_and_reads_lucenes_bytes() {
+    use lucene_search::monitor::index::MonitorQuery;
+    use lucene_search::monitor::serializer::MonitorQuerySerializer;
+    use std::collections::BTreeMap;
+
+    let analyzer = Arc::new(Analyzer::new(StandardAnalyzer::new()));
+    let parser = QueryParser::new("body", analyzer);
+    let ser = MonitorQuerySerializer::from_parser(Arc::new(move |t: &str| {
+        parser
+            .parse(t)
+            .map(|p| p.to_clause(1))
+            .map_err(|e| e.message)
+    }));
+    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    let want = fs::read_to_string(dir().join("data/monitor/serialized.tsv")).unwrap();
+    let mut rows = 0;
+    for line in want.lines() {
+        let cols: Vec<&str> = line.split('\t').collect();
+        let (id, text, md, bytes) = (unesc(cols[0]), unesc(cols[1]), unesc(cols[2]), cols[3]);
+        let mut metadata = BTreeMap::new();
+        for kv in md.split(',').filter(|s| !s.is_empty()) {
+            let (k, v) = kv.split_once('=').unwrap();
+            metadata.insert(k.to_string(), Some(v.to_string()));
+        }
+        let clause = ser_parse(&ser, &text);
+        let mq =
+            MonitorQuery::new(id.clone(), clause.clone(), Some(text.clone()), metadata).unwrap();
+        assert_eq!(hex(&ser.serialize(&mq).unwrap()), bytes, "serialize {id:?}");
+        let raw: Vec<u8> = (0..bytes.len() / 2)
+            .map(|i| u8::from_str_radix(&bytes[2 * i..2 * i + 2], 16).unwrap())
+            .collect();
+        let back = ser.deserialize(&raw).unwrap();
+        assert_eq!(back, mq, "deserialize {id:?}");
+        rows += 1;
+    }
+    assert_eq!(rows, 5);
+}
+
+fn ser_parse(
+    ser: &lucene_search::monitor::serializer::MonitorQuerySerializer,
+    text: &str,
+) -> Clause {
+    // a serializer's parser is private; round-trip through its own bytes
+    let mq = lucene_search::monitor::index::MonitorQuery::new(
+        "x",
+        parse("a").unwrap(),
+        Some(text.to_string()),
+        std::collections::BTreeMap::new(),
+    )
+    .unwrap();
+    ser.deserialize(&ser.serialize(&mq).unwrap()).unwrap().query
+}
+
+fn persisted_serializer() -> lucene_search::monitor::serializer::MonitorQuerySerializer {
+    let parser = QueryParser::new("body", Arc::new(Analyzer::new(StandardAnalyzer::new())));
+    lucene_search::monitor::serializer::MonitorQuerySerializer::from_parser(Arc::new(
+        move |t: &str| {
+            parser
+                .parse(t)
+                .map(|p| p.to_clause(1))
+                .map_err(|e| e.message)
+        },
+    ))
+}
+
+/// A query index Lucene's `Monitor` wrote to disk, opened by ours read-only:
+/// the same queries and pieces, and the same matches (`index/`, `persisted.txt`).
+#[test]
+fn a_query_index_written_by_lucene_opens_and_matches() {
+    use lucene_search::monitor::config::MonitorConfiguration;
+    use lucene_search::monitor::facade::Monitor;
+    use lucene_search::monitor::presearcher::TermFilteredPresearcher;
+
+    let analyzer = Arc::new(Analyzer::new(StandardAnalyzer::new()));
+    let config = MonitorConfiguration::default().set_directory(
+        dir().join("data/monitor/index"),
+        persisted_serializer(),
+        true,
+    );
+    let monitor = Monitor::with_configuration(
+        Arc::clone(&analyzer),
+        TermFilteredPresearcher::default(),
+        Vec::new(),
+        &config,
+    )
+    .unwrap();
+    let counts = fs::read_to_string(dir().join("data/monitor/persisted.txt")).unwrap();
+    let (queries, disjuncts) = counts.trim().split_once(' ').unwrap();
+    assert_eq!(monitor.query_count(), queries.parse::<usize>().unwrap());
+    assert_eq!(
+        monitor.disjunct_count(),
+        disjuncts.parse::<usize>().unwrap()
+    );
+
+    let want = fs::read_to_string(dir().join("data/monitor/match.tsv")).unwrap();
+    for line in want.lines() {
+        let cols: Vec<&str> = line.split('\t').collect();
+        let doc_text = unesc(cols[0]);
+        let doc: Vec<(&str, &str)> = doc_text
+            .split('|')
+            .map(|p| p.split_once('=').unwrap())
+            .collect();
+        let mut got: Vec<String> = monitor
+            .match_doc(&doc)
+            .unwrap()
+            .matches
+            .into_iter()
+            .map(|m| m.query_id)
+            .collect();
+        got.sort();
+        let mut want_ids: Vec<String> = unesc(cols.get(1).copied().unwrap_or(""))
+            .split(' ')
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+        want_ids.sort();
+        assert_eq!(got, want_ids, "{doc:?}");
+    }
+    // a read-only monitor refuses to change
+    let mut monitor = monitor;
+    assert!(monitor
+        .delete_by_id(&["q0"])
+        .unwrap_err()
+        .to_string()
+        .contains("readOnly"));
+    assert!(monitor
+        .clear()
+        .unwrap_err()
+        .to_string()
+        .contains("readOnly"));
+    assert!(monitor
+        .register(Vec::new())
+        .unwrap_err()
+        .to_string()
+        .contains("readOnly"));
 }

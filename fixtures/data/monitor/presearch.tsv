@@ -1,7 +1,7 @@
 fox	P	body\tfox	M	body_0\tfox	body\tfox	body_1\tfox	body\tfox
 quick brown	P	body\tbrown quick	M	body_0\tbrown quick	body\tbrown quick	body_1\tbrown quick	body\tbrown quick
 "quick brown fox"	P	body\tquick	M	body_0\tquick	body\tquick	body_1\tbrown	body\tbrown
-quick AND brown	P	body\tbrown	M	body_0\tbrown	body\tbrown	body_1\tquick	body\tquick
+quick AND brown	P	body\tquick	M	body_0\tquick	body\tquick	body_1\tbrown	body\tbrown
 quick OR brown	P	body\tbrown quick	M	body_0\tbrown quick	body\tbrown quick	body_1\tbrown quick	body\tbrown quick
 +quick -brown	P	body\tquick	M	body_0\tquick	body\tquick	body_1\tquick	body\tquick
 quick -brown	P	body\tquick	M	body_0\tquick	body\tquick	body_1\tquick	body\tquick
@@ -37,5 +37,5 @@ a -a	P	body\ta	M	body_0\ta	body\ta	body_1\ta	body\ta
 (quick -quick) AND brown	P	body\tbrown	M	body_0\tbrown	body\tbrown	body_1\tquick	body\tquick
 quick brown fox jumps over lazy dog	P	body\tbrown dog fox jumps lazy over quick	M	body_0\tbrown dog fox jumps lazy over quick	body\tbrown dog fox jumps lazy over quick	body_1\tbrown dog fox jumps lazy over quick	body\tbrown dog fox jumps lazy over quick
 +(fox quick) -brown	P	body\tfox quick	M	body_0\tfox quick	body\tfox quick	body_1\tfox quick	body\tfox quick
-fox AND (quick AND brown)	P	body\tbrown	M	body_0\tbrown	body\tbrown	body_1\tquick	body\tquick
+fox AND (quick AND brown)	P	body\tquick	M	body_0\tquick	body\tquick	body_1\tbrown	body\tbrown
 fox || quick	P	body\tfox quick	M	body_0\tfox quick	body\tfox quick	body_1\tfox quick	body\tfox quick
