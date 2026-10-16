@@ -125,7 +125,13 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
     `CompletionWeight`, `SuggestIndexSearcher`, `CompletionAnalyzer`, `ContextSuggestField`, `BitsProducer`:
     2960 queries equal Lucene's key, doc, score bits and context (`GenCompletionQuery.java`). It fixed
     `SuggestQueue::insert_with_overflow` to Java's strict `lessThan`.
-    Ported, not yet benchmarked: a `bench-micro.sh` pair (completion lookup) is owed.
+    Benchmarked (`bench-micro.sh --bench completion`, 3 reps, noisy shared machine): prefix 1.08x (inside
+    the noise), fuzzy 1.32x, regex 0.89x, context 0.79x of Lucene 10.5.0 (noise floor 1.15x). Optimised from
+    0.82x/0.68x/0.74x: the `TopNSearcher` queue is a deque, queued paths drop their arc output, sequence
+    outputs append in place, and `NrtSuggester` loads once per field (Java's cache). What remains in the
+    context and regex cases is automaton construction (`concatenate`/`determinize`/`union`) and the
+    per-start-path copies of the FST's `Vec` outputs; both are cases where Java shares the `BytesRef`.
+    Written up rather than closed: a query takes 4-40 us either way.
   - **T13.3e** — `spell`.
 - **T13.4** — Taxonomy facets and drill-sideways.
 - **T13.5** — `MemoryIndex` and `monitor`. `MemoryIndex` is ported

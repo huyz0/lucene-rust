@@ -14,6 +14,7 @@
 //! contexts in insertion order rather than `HashMap` order, which the union's
 //! `determinize` makes immaterial.
 
+use std::rc::Rc;
 use std::sync::Arc;
 
 use lucene_analysis::miscellaneous::{
@@ -662,7 +663,7 @@ pub enum CompletionWeight {
         /// `currentBoost`.
         current_boost: f32,
         /// `currentContext`.
-        current_context: Option<String>,
+        current_context: Option<Rc<str>>,
     },
 }
 
@@ -748,7 +749,7 @@ impl MatchWeight for CompletionWeight {
     }
 
     /// `context()`.
-    fn context(&self) -> Option<String> {
+    fn context(&self) -> Option<Rc<str>> {
         match self {
             CompletionWeight::Context {
                 current_context, ..
@@ -764,7 +765,7 @@ impl MatchWeight for CompletionWeight {
 /// changes, as in Java.
 fn set_inner_weight(
     inner: &mut CompletionWeight,
-    current_context: &mut Option<String>,
+    current_context: &mut Option<Rc<str>>,
     path: &[i32],
     offset: usize,
 ) {
@@ -781,7 +782,7 @@ fn set_inner_weight(
     *current_context = if i > 0 {
         // `Util.toBytesRef`: each int is a byte
         let bytes: Vec<u8> = path[..i].iter().map(|&c| c as u8).collect();
-        Some(String::from_utf8_lossy(&bytes).into_owned())
+        Some(Rc::from(String::from_utf8_lossy(&bytes).as_ref()))
     } else {
         None
     };
@@ -823,6 +824,8 @@ impl<'a> SuggestIndexSearcher<'a> {
     ) -> Result<()> {
         let query = query.rewrite(self.reader)?;
         let mut weight = query.create_weight()?;
+        // the automaton is fixed; only the weight's match state changes
+        let automaton = weight.automaton().clone();
         for segment in self.reader.segment_readers() {
             let Some(suggester) = completion_suggester(segment, query.field())? else {
                 continue;
@@ -846,7 +849,6 @@ impl<'a> SuggestIndexSearcher<'a> {
                 accept: &accept,
             };
             collector.set_next_reader(segment.doc_base);
-            let automaton = weight.automaton().clone();
             lookup_weighted(&suggester, &automaton, &mut weight, &view, collector)?;
             collector.finish();
         }
@@ -860,7 +862,7 @@ impl<'a> SuggestIndexSearcher<'a> {
 fn completion_suggester(
     segment: &SegmentReader,
     field: &str,
-) -> Result<Option<lucene_codecs::completion::NrtSuggester>> {
+) -> Result<Option<std::sync::Arc<lucene_codecs::completion::NrtSuggester>>> {
     if segment.completion_type(field).is_none() {
         let indexed_elsewhere = segment
             .field_infos()

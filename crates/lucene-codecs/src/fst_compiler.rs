@@ -71,6 +71,11 @@ pub trait FstOutputs {
     fn subtract(output: &Self::Value, inc: &Self::Value) -> Self::Value;
     /// `add(prefix, output)`.
     fn add(prefix: &Self::Value, output: &Self::Value) -> Self::Value;
+    /// `prefix = add(prefix, output)`, in place: a sequence output appends
+    /// rather than copying `prefix`.
+    fn add_assign(prefix: &mut Self::Value, output: &Self::Value) {
+        *prefix = Self::add(prefix, output);
+    }
     /// `write(output, out)`.
     fn write(value: &Self::Value, out: &mut Vec<u8>);
     /// `writeFinalOutput(output, out)`.
@@ -192,7 +197,9 @@ fn seq_subtract<T: Clone + PartialEq>(output: &[T], inc: &[T]) -> Vec<T> {
 }
 
 fn seq_add<T: Clone>(prefix: &[T], output: &[T]) -> Vec<T> {
-    let mut v = prefix.to_vec();
+    // one allocation, sized for both
+    let mut v = Vec::with_capacity(prefix.len().saturating_add(output.len()));
+    v.extend_from_slice(prefix);
     v.extend_from_slice(output);
     v
 }
@@ -215,6 +222,9 @@ impl FstOutputs for ByteSequenceOutputs {
     }
     fn add(prefix: &Vec<u8>, output: &Vec<u8>) -> Vec<u8> {
         seq_add(prefix, output)
+    }
+    fn add_assign(prefix: &mut Vec<u8>, output: &Vec<u8>) {
+        prefix.extend_from_slice(output);
     }
     fn write(value: &Vec<u8>, out: &mut Vec<u8>) {
         write_vint(out, value.len() as i32);
@@ -359,6 +369,10 @@ impl<A: FstOutputs, B: FstOutputs> FstOutputs for PairOutputs<A, B> {
             first: A::add(&prefix.first, &output.first),
             second: B::add(&prefix.second, &output.second),
         }
+    }
+    fn add_assign(prefix: &mut Self::Value, output: &Self::Value) {
+        A::add_assign(&mut prefix.first, &output.first);
+        B::add_assign(&mut prefix.second, &output.second);
     }
     fn write(value: &Self::Value, out: &mut Vec<u8>) {
         A::write(&value.first, out);
