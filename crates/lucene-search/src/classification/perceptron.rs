@@ -147,9 +147,8 @@ impl BooleanPerceptronClassifier {
         let vectors = TermVectors::new(index.reader)?;
         let mut batch_count = 0i32;
         for sd in &hits.score_docs {
-            let text = index.stored_values(sd.doc, text_field)?.into_iter().next();
-            let class = index.stored_values(sd.doc, class_field)?.into_iter().next();
-            let (Some(text), Some(class)) = (text, class) else {
+            let values = index.stored_values_of(sd.doc, &[text_field, class_field])?;
+            let (Some(text), Some(class)) = (values[0].first(), values[1].first()) else {
                 continue;
             };
             let assigned = c.classify(&text)?.assigned_class;
