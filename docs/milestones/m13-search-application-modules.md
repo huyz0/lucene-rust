@@ -117,10 +117,14 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
   - **T13.3d** — `suggest.document`: the completion postings format and its queries (what OpenSearch uses; prioritised).
     **D1 done**: the `.cmp`/`.lkp` writer (bytes equal Lucene's), the reader, `FSTUtil` and `NRTSuggester.lookup`
     with `TopSuggestDocsCollector` (180 prefix and 96 regex queries equal Lucene's, `GenCompletion.java`).
-    Ported, not yet benchmarked: a `bench-micro.sh` pair (completion lookup) is owed. Owed: **D2**, the
-    `IndexWriter`/`DirectoryReader` hook (`PerFieldPostingsFormat` for `Completion104`) so Lucene reads a
-    Rust-written index and the reverse; `SuggestField`/`ContextSuggestField`, `CompletionAnalyzer`,
-    `ContextQuery`, `FuzzyCompletionQuery`, `RegexCompletionQuery`, `SuggestIndexSearcher`.
+    **D2 done**: `Completion104` routed through `PerFieldPostingsFormat` (`IndexWriter` flush and merge,
+    `SegmentReader::suggester`) and `SuggestField`; the flushed and force-merged `.lkp`/`.cmp` equal
+    Lucene's, and `VerifyCompletion` has Lucene answer every prefix and regex suggestion over the
+    Rust-written index as over its own. It moved `forceMerge(1)` to Lucene's largest-first merge order.
+    Ported, not yet benchmarked: a `bench-micro.sh` pair (completion lookup) is owed. Owed: **D3**, the
+    query side: `CompletionQuery`/`PrefixCompletionQuery`/`RegexCompletionQuery`/`FuzzyCompletionQuery`,
+    `CompletionWeight`/`CompletionScorer`, `SuggestIndexSearcher`, `CompletionAnalyzer`, and
+    `ContextSuggestField`/`ContextQuery`.
   - **T13.3e** — `spell`.
 - **T13.4** — Taxonomy facets and drill-sideways.
 - **T13.5** — `MemoryIndex` and `monitor`. `MemoryIndex` is ported

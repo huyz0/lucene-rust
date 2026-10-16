@@ -30,21 +30,21 @@ search/suggest/analyzing/SuggestStopFilterFactory	todo:M13	Factory for SuggestSt
 search/suggest/BitsProducer	todo:M13	A producer of Bits per segment.
 search/suggest/BufferedInputIterator	ported	crates/lucene-search/src/suggest/input.rs::BufferedInputIterator
 search/suggest/document/Completion101PostingsFormat	todo:M13	CompletionPostingsFormat for org.apache.lucene.backward_codecs.lucene103.Lucene103PostingsFormat.
-search/suggest/document/Completion104PostingsFormat	partial	crates/lucene-codecs/src/completion.rs::CompletionFilesWriter -- M13: file level only (D2 registers the format)
+search/suggest/document/Completion104PostingsFormat	ported	crates/lucene-codecs/src/per_field_postings.rs::Lucene104PostingsFormat::completion104
 search/suggest/document/Completion50PostingsFormat	todo:M13	org.apache.lucene.search.suggest.document.CompletionPostingsFormat for org.apache.lucene.backward_codecs.lucene50.Lucene50PostingsFormat.
 search/suggest/document/Completion84PostingsFormat	todo:M13	org.apache.lucene.search.suggest.document.CompletionPostingsFormat for org.apache.lucene.backward_codecs.lucene84.Lucene84PostingsFormat.
 search/suggest/document/Completion90PostingsFormat	todo:M13	org.apache.lucene.search.suggest.document.CompletionPostingsFormat for org.apache.lucene.backward_codecs.lucene90.Lucene90PostingsFormat.
 search/suggest/document/Completion912PostingsFormat	todo:M13	org.apache.lucene.search.suggest.document.CompletionPostingsFormat for org.apache.lucene.backward_codecs.lucene912.Lucene912PostingsFormat.
 search/suggest/document/Completion99PostingsFormat	todo:M13	org.apache.lucene.search.suggest.document.CompletionPostingsFormat for org.apache.lucene.backward_codecs.lucene99.Lucene99PostingsFormat.
 search/suggest/document/CompletionAnalyzer	todo:M13	Wraps an org.apache.lucene.analysis.Analyzer to provide additional completion-only tuning (e.g.
-search/suggest/document/CompletionFieldsConsumer	partial	crates/lucene-codecs/src/completion.rs::CompletionFilesWriter -- M13: the .lkp/.cmp bytes (equal to Lucene's); the IndexWriter hook (D2)
-search/suggest/document/CompletionFieldsProducer	partial	crates/lucene-codecs/src/completion.rs::CompletionFields -- M13: opens .cmp/.lkp; the DirectoryReader hook (D2)
+search/suggest/document/CompletionFieldsConsumer	ported	crates/lucene-codecs/src/completion.rs::CompletionFilesWriter
+search/suggest/document/CompletionFieldsProducer	ported	crates/lucene-codecs/src/completion.rs::CompletionFields
 search/suggest/document/CompletionPostingsFormat	todo:M13	A PostingsFormat which supports document suggestion based on indexed SuggestFields.
 search/suggest/document/CompletionQuery	todo:M13	Abstract Query that match documents containing terms with a specified prefix filtered by BitsProducer.
 search/suggest/document/CompletionScorer	partial	crates/lucene-search/src/suggest/document.rs::SegmentView -- M13: the accept/score hooks; the BulkScorer shell waits for the searcher integration (D2)
 search/suggest/document/CompletionsTermsReader	ported	crates/lucene-codecs/src/completion.rs::CompletionsTermsReader
-search/suggest/document/CompletionTerms	todo:M13	Wrapped org.apache.lucene.index.Terms used by SuggestField and ContextSuggestField to access corresponding suggester and their attributes
-search/suggest/document/CompletionTokenStream	todo:M13	A ConcatenateGraphFilter but we can set the payload and provide access to config options.
+search/suggest/document/CompletionTerms	partial	crates/lucene-search/src/directory_reader.rs::SegmentReader::suggester -- M13: suggester(); the min/max weight and type accessors arrive with the query classes
+search/suggest/document/CompletionTokenStream	partial	crates/lucene-search/src/suggest/suggest_field.rs::SuggestField -- M13: inside SuggestField's token stream, default options only; the configurable stream arrives with CompletionAnalyzer
 search/suggest/document/CompletionWeight	todo:M13	Expert: the Weight for CompletionQuery, used to score and explain these queries.
 search/suggest/document/ContextQuery	todo:M13	A CompletionQuery that matches documents specified by a wrapped CompletionQuery supporting boosting and/or filtering by specified contexts.
 search/suggest/document/ContextSuggestField	todo:M13	SuggestField which additionally takes in a set of contexts.
@@ -53,7 +53,7 @@ search/suggest/document/NRTSuggester	ported	crates/lucene-search/src/suggest/doc
 search/suggest/document/NRTSuggesterBuilder	ported	crates/lucene-codecs/src/completion.rs::NrtSuggesterBuilder
 search/suggest/document/PrefixCompletionQuery	todo:M13	A CompletionQuery which takes an Analyzer to analyze the prefix of the query term.
 search/suggest/document/RegexCompletionQuery	todo:M13	A CompletionQuery which takes a regular expression as the prefix of the query term.
-search/suggest/document/SuggestField	todo:M13	Field that indexes a string value and a weight as a weighted completion against a named suggester.
+search/suggest/document/SuggestField	ported	crates/lucene-search/src/suggest/suggest_field.rs::SuggestField
 search/suggest/document/SuggestIndexSearcher	todo:M13	Adds document suggest capabilities to IndexSearcher.
 search/suggest/document/SuggestScoreDocPriorityQueue	ported	crates/lucene-search/src/suggest/document.rs::SuggestQueue
 search/suggest/document/TopSuggestDocs	partial	crates/lucene-search/src/suggest/document.rs::SuggestScoreDoc -- M13: SuggestScoreDoc only; the TopDocs wrapper and merge()

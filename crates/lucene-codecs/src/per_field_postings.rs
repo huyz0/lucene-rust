@@ -22,16 +22,25 @@
 //! [`BlockTreeFields::combine`]). Only a segment with more than one group
 //! pays for the copy.
 //!
+//! A field may also be routed to `Completion104PostingsFormat`
+//! ([`Lucene104PostingsFormat::completion104`]): its group is written as
+//! the default `Lucene104` files under the suffix `Completion104_<n>`, plus
+//! the `.lkp`/`.cmp` that `CompletionFieldsConsumer` builds from the same
+//! terms and payloads ([`CompletionOutput`]).
+//!
 //! What this does not model: Java groups by format *instance* identity, so
 //! two distinct but equal instances get two suffixes; here a format is its
-//! block sizes, and equal sizes share a group.
+//! block sizes and kind, and equal ones share a group.
 
 use lucene_store::codec_util::ID_LENGTH;
 
 use crate::blocktree::{self, BlockTreeFields};
+use crate::completion::{CompletionFieldWriter, CompletionFilesWriter, TermDoc};
 use crate::field_infos::FieldInfos;
 use crate::postings::{DocInput, PayInput, PosInput};
-use crate::postings_writer::{self, FieldNorms, FieldPostingsInput, Output, WriteOptions};
+use crate::postings_writer::{
+    self, FieldNorms, FieldPostingsInput, Output, TermPostings, WriteOptions,
+};
 
 /// `PerFieldPostingsFormat.PER_FIELD_FORMAT_KEY`.
 pub const PER_FIELD_FORMAT_KEY: &str = "PerFieldPostingsFormat.format";
@@ -39,6 +48,20 @@ pub const PER_FIELD_FORMAT_KEY: &str = "PerFieldPostingsFormat.format";
 pub const PER_FIELD_SUFFIX_KEY: &str = "PerFieldPostingsFormat.suffix";
 /// `Lucene104PostingsFormat.getName()`.
 pub const FORMAT_NAME: &str = "Lucene104";
+/// `Completion104PostingsFormat.getName()`, also the codec name of its
+/// `.lkp`/`.cmp` headers.
+pub const COMPLETION_FORMAT_NAME: &str = "Completion104";
+
+/// Which postings format a field is routed to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PostingsFormatKind {
+    /// `Lucene104PostingsFormat`.
+    #[default]
+    Lucene104,
+    /// `Completion104PostingsFormat`: a default `Lucene104PostingsFormat`
+    /// delegate plus the suggester files.
+    Completion104,
+}
 
 /// `PerFieldPostingsFormat.getSuffix(formatName, suffix)`: the codec suffix
 /// a group's files and headers carry.
@@ -53,6 +76,7 @@ pub fn codec_suffix(format_name: &str, suffix: u32) -> String {
 pub struct Lucene104PostingsFormat {
     pub min_term_block_size: usize,
     pub max_term_block_size: usize,
+    pub kind: PostingsFormatKind,
 }
 
 impl Default for Lucene104PostingsFormat {
@@ -61,6 +85,7 @@ impl Default for Lucene104PostingsFormat {
         Lucene104PostingsFormat {
             min_term_block_size: options.min_items_in_block,
             max_term_block_size: options.max_items_in_block,
+            kind: PostingsFormatKind::Lucene104,
         }
     }
 }
@@ -75,9 +100,28 @@ impl Lucene104PostingsFormat {
         let format = Lucene104PostingsFormat {
             min_term_block_size,
             max_term_block_size,
+            kind: PostingsFormatKind::Lucene104,
         };
         format.write_options().validate()?;
         Ok(format)
+    }
+
+    /// `new Completion104PostingsFormat()`: its delegate is
+    /// `new Lucene104PostingsFormat()`, the default block sizes.
+    pub fn completion104() -> Self {
+        Lucene104PostingsFormat {
+            kind: PostingsFormatKind::Completion104,
+            ..Self::default()
+        }
+    }
+
+    /// `getName()`: the name recorded in a field's
+    /// [`PER_FIELD_FORMAT_KEY`] and the stem of its codec suffix.
+    pub fn name(&self) -> &'static str {
+        match self.kind {
+            PostingsFormatKind::Lucene104 => FORMAT_NAME,
+            PostingsFormatKind::Completion104 => COMPLETION_FORMAT_NAME,
+        }
     }
 
     /// The writer options this format's files are written with.
@@ -90,13 +134,32 @@ impl Lucene104PostingsFormat {
     }
 }
 
-/// One written group: the suffix number its fields record, their numbers,
-/// and its files.
+/// One written group: its format's name, the suffix number its fields
+/// record, their numbers, and its files.
 #[derive(Debug)]
 pub struct GroupOutput {
+    pub format_name: &'static str,
     pub suffix: u32,
     pub field_numbers: Vec<i32>,
     pub output: Output,
+    /// A `Completion104` group's suggester files.
+    pub completion: Option<CompletionOutput>,
+}
+
+impl GroupOutput {
+    /// The group's codec suffix (`Completion104_0`).
+    pub fn codec_suffix(&self) -> String {
+        codec_suffix(self.format_name, self.suffix)
+    }
+}
+
+/// `CompletionFieldsConsumer`'s own files.
+#[derive(Debug, Clone)]
+pub struct CompletionOutput {
+    /// `.lkp`: every completion field's FST.
+    pub lkp: Vec<u8>,
+    /// `.cmp`: the delegate's name and the field table.
+    pub cmp: Vec<u8>,
 }
 
 /// `FieldsWriter.write`: groups `inputs` by `format_for(field name)` in
@@ -120,7 +183,8 @@ pub fn write(
         .collect();
     let groups = group(&named, format_for);
     let mut out = Vec::with_capacity(groups.len());
-    for (suffix, (format, members)) in (0u32..).zip(groups) {
+    for (format, suffix, members) in groups {
+        let codec_suffix = codec_suffix(format.name(), suffix);
         // Each group keeps its fields in name order: `FreqProxFields` (the
         // flush, `FreqProxTermsWriter.flush` sorts its fields by name) and
         // `MultiFields` (a merge) both iterate that way, and the blocktree
@@ -137,48 +201,131 @@ pub fn write(
             norms,
             &options,
             segment_id,
-            &codec_suffix(FORMAT_NAME, suffix),
+            &codec_suffix,
         )?;
+        let completion = match format.kind {
+            PostingsFormatKind::Lucene104 => None,
+            PostingsFormatKind::Completion104 => Some(
+                write_completion(&group_inputs, &members, &named, segment_id, &codec_suffix)
+                    .map_err(postings_writer::Error::Completion)?,
+            ),
+        };
         out.push(GroupOutput {
+            format_name: format.name(),
             suffix,
             field_numbers: group_inputs.iter().map(|i| i.field_number).collect(),
             output,
+            completion,
         });
     }
     Ok(out)
 }
 
+/// `CompletionFieldsConsumer.write` after its delegate: each field of the
+/// group, in name order, through a [`CompletionFieldWriter`], every
+/// occurrence's payload a `SuggestField` payload.
+fn write_completion(
+    group_inputs: &[FieldPostingsInput<'_>],
+    members: &[usize],
+    names: &[String],
+    segment_id: &[u8; ID_LENGTH],
+    codec_suffix: &str,
+) -> lucene_store::Result<CompletionOutput> {
+    let mut files = CompletionFilesWriter::new(
+        COMPLETION_FORMAT_NAME,
+        FORMAT_NAME,
+        *segment_id,
+        codec_suffix,
+    );
+    for (input, &member) in group_inputs.iter().zip(members) {
+        let mut writer = CompletionFieldWriter::new();
+        for term in input.terms {
+            writer.write_term(&term.term, &term_docs(term)?)?;
+        }
+        files.add_field(&names[member], input.field_number, writer)?;
+    }
+    let (lkp, cmp) = files.finish();
+    Ok(CompletionOutput { lkp, cmp })
+}
+
+/// A term's documents with the payload of each occurrence, split out of the
+/// flat doc-major run ([`TermPostings::payload_lengths`] holds one length
+/// per occurrence).
+fn term_docs(term: &TermPostings) -> lucene_store::Result<Vec<TermDoc>> {
+    let inconsistent = || {
+        lucene_store::Error::Corrupted(
+            "completion term's payload lengths do not match its occurrences".to_string(),
+        )
+    };
+    let mut rest: &[u8] = &term.payload_bytes;
+    let mut lengths = term.payload_lengths.iter();
+    let mut docs = Vec::with_capacity(term.docs.len());
+    for &(doc_id, freq) in &term.docs {
+        let mut payloads = Vec::new();
+        for _ in 0..freq {
+            let length = *lengths.next().ok_or_else(inconsistent)? as usize;
+            // `assert postingsEnum.getPayload() != null`: an occurrence
+            // without one is not a suggestion.
+            if length == 0 {
+                return Err(lucene_store::Error::Corrupted(
+                    "completion field occurrence has no payload".to_string(),
+                ));
+            }
+            let (payload, tail) = rest.split_at_checked(length).ok_or_else(inconsistent)?;
+            payloads.push(payload.to_vec());
+            rest = tail;
+        }
+        docs.push(TermDoc { doc_id, payloads });
+    }
+    if !rest.is_empty() || lengths.next().is_some() {
+        return Err(inconsistent());
+    }
+    Ok(docs)
+}
+
 /// `formatToGroupBuilders`: the indexes of `names` grouped by format,
 /// groups in the order their first field appears in name order
-/// (`FreqProxFields`' and `MultiFields`' iteration order).
+/// (`FreqProxFields`' and `MultiFields`' iteration order), each with its
+/// suffix number: `buildFieldsGroupMapping` numbers a format *name*'s
+/// instances from 0, so `Lucene104_0` and `Completion104_0` coexist.
 fn group(
     names: &[String],
     format_for: &dyn Fn(&str) -> Lucene104PostingsFormat,
-) -> Vec<(Lucene104PostingsFormat, Vec<usize>)> {
+) -> Vec<(Lucene104PostingsFormat, u32, Vec<usize>)> {
     let mut order: Vec<usize> = (0..names.len()).collect();
     order.sort_by(|&a, &b| names[a].cmp(&names[b]));
-    let mut groups: Vec<(Lucene104PostingsFormat, Vec<usize>)> = Vec::new();
+    let mut groups: Vec<(Lucene104PostingsFormat, u32, Vec<usize>)> = Vec::new();
     for i in order {
         let format = format_for(&names[i]);
-        match groups.iter_mut().find(|(f, _)| *f == format) {
-            Some((_, members)) => members.push(i),
-            None => groups.push((format, vec![i])),
+        match groups.iter_mut().find(|(f, _, _)| *f == format) {
+            Some((_, _, members)) => members.push(i),
+            None => {
+                let suffix = groups
+                    .iter()
+                    .filter(|(f, _, _)| f.name() == format.name())
+                    .count();
+                groups.push((format, u32::try_from(suffix).unwrap_or(u32::MAX), vec![i]));
+            }
         }
     }
     groups
 }
 
-/// The suffix number [`write()`] gives each of `fields` (`(number, name)`),
-/// for a caller that records the `.fnm` attributes before writing the files
-/// (`SegmentMerger` via `PerFieldMergeState`).
+/// The format name and suffix number [`write()`] gives each of `fields`
+/// (`(number, name)`), for a caller that records the `.fnm` attributes
+/// before writing the files (`SegmentMerger` via `PerFieldMergeState`).
 pub fn field_suffixes(
     fields: &[(i32, String)],
     format_for: &dyn Fn(&str) -> Lucene104PostingsFormat,
-) -> Vec<(i32, u32)> {
+) -> Vec<(i32, &'static str, u32)> {
     let names: Vec<String> = fields.iter().map(|(_, name)| name.clone()).collect();
     let mut out = Vec::with_capacity(fields.len());
-    for (suffix, (_, members)) in (0u32..).zip(group(&names, format_for)) {
-        out.extend(members.into_iter().map(|i| (fields[i].0, suffix)));
+    for (format, suffix, members) in group(&names, format_for) {
+        out.extend(
+            members
+                .into_iter()
+                .map(|i| (fields[i].0, format.name(), suffix)),
+        );
     }
     out.sort_unstable();
     out
@@ -362,7 +509,11 @@ mod tests {
             } else {
                 Lucene104PostingsFormat::default()
             }),
-            [(0, 1), (1, 0), (2, 0)]
+            [
+                (0, FORMAT_NAME, 1),
+                (1, FORMAT_NAME, 0),
+                (2, FORMAT_NAME, 0)
+            ]
         );
 
         // Read back: every field from its own group, at its own offsets.
@@ -415,5 +566,161 @@ mod tests {
             ),
             ["", "Lucene104_0", "Lucene104_1"]
         );
+    }
+
+    /// A suggestion payload: vint surface length, surface, vint weight + 1,
+    /// type 0 (`SuggestField.buildSuggestPayload`).
+    fn suggestion(surface: &str, weight: u8) -> Vec<u8> {
+        let mut p = vec![surface.len() as u8];
+        p.extend_from_slice(surface.as_bytes());
+        p.extend_from_slice(&[weight + 1, 0]);
+        p
+    }
+
+    fn suggest_terms(words: &[&str]) -> Vec<TermPostings> {
+        words
+            .iter()
+            .enumerate()
+            .map(|(i, w)| {
+                let payloads = [suggestion(w, i as u8), suggestion(w, 9)];
+                TermPostings {
+                    term: w.as_bytes().to_vec(),
+                    docs: vec![(i as i32, 1), (i as i32 + 10, 1)],
+                    positions: vec![vec![0], vec![0]],
+                    payload_lengths: payloads.iter().map(|p| p.len() as u32).collect(),
+                    payload_bytes: payloads.concat(),
+                    ..Default::default()
+                }
+            })
+            .collect()
+    }
+
+    /// Completion fields get their own `Completion104_0` group, numbered
+    /// apart from `Lucene104_0`, with `.lkp`/`.cmp` that open as Lucene's
+    /// reader opens them.
+    #[test]
+    fn completion_fields_are_their_own_format() {
+        let completion = Lucene104PostingsFormat::completion104();
+        assert_eq!(completion.name(), COMPLETION_FORMAT_NAME);
+        assert_eq!(Lucene104PostingsFormat::default().name(), FORMAT_NAME);
+        assert_eq!(
+            completion.write_options().min_items_in_block,
+            Lucene104PostingsFormat::default().min_term_block_size
+        );
+        let (s, t) = (suggest_terms(&["car", "cat"]), suggest_terms(&["dog"]));
+        let text = terms(3, 0);
+        let input = |field_number, index_options, has_payloads, terms| FieldPostingsInput {
+            field_number,
+            index_options,
+            doc_count: 2,
+            has_payloads,
+            terms,
+        };
+        let inputs = [
+            input(0, IndexOptions::DocsAndFreqsAndPositions, true, &s[..]),
+            input(1, IndexOptions::Docs, false, &text[..]),
+            input(2, IndexOptions::DocsAndFreqsAndPositions, true, &t[..]),
+        ];
+        let names = ["suggest", "body", "title"];
+        let route = |name: &str| {
+            if name == "body" {
+                Lucene104PostingsFormat::default()
+            } else {
+                completion
+            }
+        };
+        let id = [7; ID_LENGTH];
+        let groups = write(
+            &inputs,
+            &[],
+            &|n| names.get(n as usize).map(|s| s.to_string()),
+            &route,
+            &id,
+        )
+        .unwrap();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].codec_suffix(), "Lucene104_0");
+        assert!(groups[0].completion.is_none());
+        assert_eq!(groups[1].codec_suffix(), "Completion104_0");
+        assert_eq!(groups[1].field_numbers, [0, 2]);
+        let fields: Vec<(i32, String)> =
+            (0..3).map(|n| (n, names[n as usize].to_string())).collect();
+        assert_eq!(
+            field_suffixes(&fields, &route),
+            [
+                (0, COMPLETION_FORMAT_NAME, 0),
+                (1, FORMAT_NAME, 0),
+                (2, COMPLETION_FORMAT_NAME, 0)
+            ]
+        );
+        let files = groups[1].completion.clone().unwrap();
+        let opened = crate::completion::CompletionFields::open(
+            COMPLETION_FORMAT_NAME,
+            &id,
+            "Completion104_0",
+            &files.cmp,
+            files.lkp,
+        )
+        .unwrap();
+        assert_eq!(opened.delegate_format, FORMAT_NAME);
+        for number in [0, 2] {
+            assert!(opened.suggester(number).unwrap().is_some(), "{number}");
+        }
+        assert!(opened.suggester(1).unwrap().is_none());
+    }
+
+    /// `assert postingsEnum.getPayload() != null`: an occurrence of a
+    /// completion field with no payload is refused rather than indexed as no
+    /// suggestion, and so are mixed suggestion types in one field.
+    #[test]
+    fn a_completion_occurrence_without_a_payload_is_refused() {
+        let mut empty = suggest_terms(&["car"]);
+        let second = empty[0].payload_lengths[1] as usize;
+        empty[0].payload_lengths[1] = 0;
+        let keep = empty[0].payload_bytes.len() - second;
+        empty[0].payload_bytes.truncate(keep);
+        let mut mixed = suggest_terms(&["car"]);
+        // the second occurrence's type byte: 1, beside the first's 0
+        *mixed[0].payload_bytes.last_mut().unwrap() = 1;
+        for terms in [empty, mixed] {
+            let inputs = [FieldPostingsInput {
+                field_number: 0,
+                index_options: IndexOptions::DocsAndFreqsAndPositions,
+                doc_count: 2,
+                has_payloads: true,
+                terms: &terms,
+            }];
+            let err = write(
+                &inputs,
+                &[],
+                &|_| Some("suggest".to_string()),
+                &|_| Lucene104PostingsFormat::completion104(),
+                &[7; ID_LENGTH],
+            );
+            assert!(
+                matches!(err, Err(postings_writer::Error::Completion(_))),
+                "{err:?}"
+            );
+        }
+    }
+
+    /// A term whose payload lengths disagree with its occurrences or its
+    /// payload bytes is an internal inconsistency, not a missing payload.
+    #[test]
+    fn inconsistent_payload_runs_are_refused() {
+        let good = suggest_terms(&["car"]).remove(0);
+        assert!(term_docs(&good).is_ok());
+        let mut short = good.clone();
+        short.payload_lengths.pop();
+        let mut extra_length = good.clone();
+        extra_length.payload_lengths.push(1);
+        let mut overlong = good.clone();
+        *overlong.payload_lengths.last_mut().unwrap() += 1;
+        let mut trailing = good.clone();
+        trailing.payload_bytes.push(0);
+        for term in [short, extra_length, overlong, trailing] {
+            let err = term_docs(&term).unwrap_err().to_string();
+            assert!(err.contains("do not match"), "{err}");
+        }
     }
 }

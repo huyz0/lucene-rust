@@ -129,8 +129,45 @@ public class GenCompletion {
         Files.writeString(out.resolve("regex.tsv"), re.toString(), StandardCharsets.UTF_8);
       }
     }
+    mergedIndex(out, docs);
     hashMapOrders(out);
     System.out.println("GenCompletion: " + docs.size() + " docs");
+  }
+
+  /**
+   * The same documents committed after 60 and 90 of them and force-merged into one segment ({@code
+   * merged.lkp}/{@code merged.cmp}): {@code CompletionFieldsConsumer.merge} rebuilds the FST from
+   * the merged postings, whose doc order is the merge's (largest segment first).
+   */
+  static void mergedIndex(Path out, List<Doc> docs) throws IOException {
+    Path idx = Files.createTempDirectory("gencompletion-merged");
+    IndexWriterConfig cfg = new IndexWriterConfig(new KeywordAnalyzer());
+    cfg.setUseCompoundFile(false);
+    cfg.setCodec(new Lucene104Codec() {
+      @Override
+      public PostingsFormat getPostingsFormatForField(String field) {
+        return new Completion104PostingsFormat();
+      }
+    });
+    try (Directory dir = FSDirectory.open(idx); IndexWriter w = new IndexWriter(dir, cfg)) {
+      for (int i = 0; i < docs.size(); i++) {
+        Document doc = new Document();
+        doc.add(new SuggestField("suggest", docs.get(i).surface(), docs.get(i).weight()));
+        w.addDocument(doc);
+        if (i + 1 == 60 || i + 1 == 90) w.commit();
+      }
+      w.commit();
+      w.forceMerge(1);
+      w.commit();
+    }
+    try (Directory dir = FSDirectory.open(idx)) {
+      SegmentInfos sis = SegmentInfos.readLatestCommit(dir);
+      if (sis.size() != 1) throw new IllegalStateException("merged segments " + sis.size());
+      for (String f : sis.info(0).files()) {
+        if (f.endsWith(".cmp")) Files.copy(idx.resolve(f), out.resolve("merged.cmp"), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        if (f.endsWith(".lkp")) Files.copy(idx.resolve(f), out.resolve("merged.lkp"), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+      }
+    }
   }
 
   /**
