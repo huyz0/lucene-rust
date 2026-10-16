@@ -360,6 +360,23 @@ pub fn visit(clause: &Clause, visitor: &mut dyn QueryVisitor) {
             }
         }
         Clause::Span(s) => visit_span(s, clause, visitor),
+        Clause::Extended(e) => match e.as_ref() {
+            // `SynonymQuery.visit`
+            crate::extended_query::ExtendedQuery::Synonym(q) => {
+                if visitor.accept_field(&q.field) {
+                    let terms: Vec<Term> = q
+                        .terms
+                        .iter()
+                        .map(|(t, _)| Term::new(q.field.clone(), t.clone()))
+                        .collect();
+                    visitor.consume_terms(clause, &terms);
+                }
+            }
+            crate::extended_query::ExtendedQuery::Span(node) => {
+                visit_span_node(node, clause, visitor);
+            }
+            _ => visitor.visit_leaf(clause),
+        },
         Clause::PointsRange(q) => {
             if visitor.accept_field(&q.field) {
                 visitor.visit_leaf(clause);
@@ -413,6 +430,67 @@ fn visit_span(s: &SpanQuery, clause: &Clause, visitor: &mut dyn QueryVisitor) {
                 }
             });
         }
+    }
+}
+
+/// The `visit` of the span queries of `lucene-queries` (`SpanTermQuery`,
+/// `SpanNearQuery`, `SpanOrQuery`, `SpanPositionCheckQuery`, `SpanNotQuery`,
+/// `SpanContainQuery`, `FieldMaskingSpanQuery`, `SpanMultiTermQueryWrapper`).
+fn visit_span_node(node: &crate::spans::SpanNode, clause: &Clause, visitor: &mut dyn QueryVisitor) {
+    use crate::spans::SpanNode as N;
+    let sub = |n: &N| Clause::from(n.clone());
+    match node {
+        N::Term { field, term } => {
+            if visitor.accept_field(field) {
+                visitor.consume_terms(clause, &[Term::new(field.clone(), term.clone())]);
+            }
+        }
+        N::Near { clauses, .. } | N::Or { clauses } => {
+            if !node.field().is_some_and(|f| visitor.accept_field(f)) {
+                return;
+            }
+            let occur = if matches!(node, N::Near { .. }) {
+                Occur::Must
+            } else {
+                Occur::Should
+            };
+            with_sub(visitor, occur, clause, &mut |v| {
+                for c in clauses {
+                    visit_span_node(c, &sub(c), v);
+                }
+            });
+        }
+        N::First { inner, .. } | N::PositionRange { inner, .. } => {
+            if node.field().is_some_and(|f| visitor.accept_field(f)) {
+                with_sub(visitor, Occur::Must, clause, &mut |v| {
+                    visit_span_node(inner, &sub(inner), v);
+                });
+            }
+        }
+        N::Not {
+            include, exclude, ..
+        } => {
+            if !node.field().is_some_and(|f| visitor.accept_field(f)) {
+                return;
+            }
+            with_sub(visitor, Occur::Must, clause, &mut |v| {
+                visit_span_node(include, &sub(include), v);
+            });
+            with_sub(visitor, Occur::MustNot, clause, &mut |v| {
+                visit_span_node(exclude, &sub(exclude), v);
+            });
+        }
+        N::Containing { big, little } | N::Within { big, little } => {
+            if !node.field().is_some_and(|f| visitor.accept_field(f)) {
+                return;
+            }
+            with_sub(visitor, Occur::Must, clause, &mut |v| {
+                visit_span_node(big, &sub(big), v);
+                visit_span_node(little, &sub(little), v);
+            });
+        }
+        N::FieldMasking { inner, .. } => visit_span_node(inner, &sub(inner), visitor),
+        _ => visitor.visit_leaf(clause),
     }
 }
 

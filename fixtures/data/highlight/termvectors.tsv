@@ -1,0 +1,108 @@
+tv_full	0	-1	R	the@0-3+1 quick@4-9+1 brown@10-15+1 fox@16-19+1 jumps@20-25+1 over@26-30+1 the@31-34+1 lazy@35-39+1 dog@40-43+1 the@45-48+1 quick@49-54+1 brown@55-60+1 fox@61-64+1 is@65-67+1 quick@68-73+1 and@75-78+1 the@79-82+1 dog@83-86+1 is@87-89+1 lazy@90-94+1
+tv_full	0	20	R	the@0-3+1 quick@4-9+1 brown@10-15+1 fox@16-19+1 jumps@20-25+1
+tv_full	0	0	R	the@0-3+1
+tv_full	0	only	stream
+tv_full	1	-1	R	in@0-2+1 the@3-6+1 beginning@7-16+1 the@17-20+1 quick@21-26+1 brown@27-32+1 fox@33-36+1 was@37-40+1 a@41-42+1 very@43-47+1 small@48-53+1 fox@54-57+1 and@59-62+1 nobody@63-69+1 noticed@70-77+1 the@78-81+1 fox@82-85+1 at@86-88+1 all@89-92+1 years@94-99+1 passed@100-106+1 and@107-110+1 the@111-114+1 fox@115-118+1 grew@119-123+1 the@125-128+1 lazy@129-133+1 dog@134-137+1 slept@138-143+1 through@144-151+1 every@152-157+1 one@158-161+1 of@162-164+1 them@165-169+1 dreaming@171-179+1 of@180-182+1 a@183-184+1 quick@185-190+1 brown@191-196+1 rabbit@197-203+1 it@204-206+1 would@207-212+1 never@213-218+1 catch@219-224+1 then@226-230+1 one@231-234+1 winter@235-241+1 morning@242-249+1 the@250-253+1 fox@254-257+1 jumped@258-264+1 over@265-269+1 the@270-273+1 dog@274-277+1 and@278-281+1 everything@282-292+1 changed@293-300+1 the@302-305+1 dog@306-309+1 woke@310-314+1 the@316-319+1 fox@320-323+1 ran@324-327+1 and@329-332+1 the@333-336+1 quick@337-342+1 chase@343-348+1 across@349-355+1 the@356-359+1 frozen@360-366+1 field@367-372+1 became@373-379+1 a@380-381+1 story@382-387+1 told@388-392+1 in@393-395+1 every@396-401+1 barn@402-406+1 for@407-410+1 a@411-412+1 hundred@413-420+1 miles@421-426+1
+tv_full	1	20	R	in@0-2+1 the@3-6+1 beginning@7-16+1 the@17-20+1
+tv_full	1	0	R	in@0-2+1
+tv_full	1	only	stream
+tv_full	2	-1	R	a@0-1+1 b@3-4+1 bold@5-9+1 b@11-12+1 quoted@17-23+1 fox@25-28+1 dog's@29-34+1 tale@36-40+1 is@42-44+1 quick@45-50+1 slow@53-57+1
+tv_full	2	20	R	a@0-1+1 b@3-4+1 bold@5-9+1 b@11-12+1 quoted@17-23+1
+tv_full	2	0	R	a@0-1+1
+tv_full	2	only	stream
+tv_full	3	-1	R	café@0-4+1 müller's@5-13+1 fox@14-17+1 naïve@20-25+1 quick@27-32+1 jumps@35-40+1 over@41-45+1 日@46-47+1 本@47-48+1 語@48-49+1 the@50-53+1 lazy@54-58+1 dog@59-62+1
+tv_full	3	20	R	café@0-4+1 müller's@5-13+1 fox@14-17+1 naïve@20-25+1
+tv_full	3	0	R	café@0-4+1
+tv_full	3	only	stream
+tv_full	4	-1	R	quick@0-5+1 quick@6-11+1 quick@12-17+1 fox@18-21+1 fox@22-25+1 dog@26-29+1
+tv_full	4	20	R	quick@0-5+1 quick@6-11+1 quick@12-17+1 fox@18-21+1
+tv_full	4	0	R	quick@0-5+1
+tv_full	4	only	stream
+tv_full	5	-1	R	fox@0-3+1
+tv_full	5	20	R	fox@0-3+1
+tv_full	5	0	R	fox@0-3+1
+tv_full	5	only	stream
+tv_full	6	-1	R	
+tv_full	6	20	R	
+tv_full	6	0	R	
+tv_full	6	only	null
+tv_full	7	-1	R	dog@0-3+1 lazy@4-8+1 fox@9-12+1 quick@13-18+1 brown@19-24+1 the@25-28+1 over@29-33+1 jumps@34-39+1
+tv_full	7	20	R	dog@0-3+1 lazy@4-8+1 fox@9-12+1 quick@13-18+1 brown@19-24+1
+tv_full	7	0	R	dog@0-3+1
+tv_full	7	only	stream
+tv_full	8	-1	R	quick@0-5+1 brown@6-11+1 fox@12-15+1 quick@17-22+1 brown@23-28+1 fox@29-32+1 quick@34-39+1 brown@40-45+1 fox@46-49+1 quick@51-56+1 brown@57-62+1 fox@63-66+1 quick@68-73+1 brown@74-79+1 fox@80-83+1 quick@85-90+1 brown@91-96+1 fox@97-100+1 quick@102-107+1 brown@108-113+1 fox@114-117+1 quick@119-124+1 brown@125-130+1 fox@131-134+1
+tv_full	8	20	R	quick@0-5+1 brown@6-11+1 fox@12-15+1 quick@17-22+1
+tv_full	8	0	R	quick@0-5+1
+tv_full	8	only	stream
+tv_off	0	-1	R	the@0-3+1 quick@4-9+1 brown@10-15+1 fox@16-19+1 jumps@20-25+1 over@26-30+1 the@31-34+1 lazy@35-39+1 dog@40-43+1 the@45-48+1 quick@49-54+1 brown@55-60+1 fox@61-64+1 is@65-67+1 quick@68-73+1 and@75-78+1 the@79-82+1 dog@83-86+1 is@87-89+1 lazy@90-94+1
+tv_off	0	20	R	the@0-3+1 quick@4-9+1 brown@10-15+1 fox@16-19+1 jumps@20-25+1
+tv_off	0	0	R	the@0-3+1
+tv_off	0	only	stream
+tv_off	1	-1	R	in@0-2+1 the@3-6+1 beginning@7-16+1 the@17-20+1 quick@21-26+1 brown@27-32+1 fox@33-36+1 was@37-40+1 a@41-42+1 very@43-47+1 small@48-53+1 fox@54-57+1 and@59-62+1 nobody@63-69+1 noticed@70-77+1 the@78-81+1 fox@82-85+1 at@86-88+1 all@89-92+1 years@94-99+1 passed@100-106+1 and@107-110+1 the@111-114+1 fox@115-118+1 grew@119-123+1 the@125-128+1 lazy@129-133+1 dog@134-137+1 slept@138-143+1 through@144-151+1 every@152-157+1 one@158-161+1 of@162-164+1 them@165-169+1 dreaming@171-179+1 of@180-182+1 a@183-184+1 quick@185-190+1 brown@191-196+1 rabbit@197-203+1 it@204-206+1 would@207-212+1 never@213-218+1 catch@219-224+1 then@226-230+1 one@231-234+1 winter@235-241+1 morning@242-249+1 the@250-253+1 fox@254-257+1 jumped@258-264+1 over@265-269+1 the@270-273+1 dog@274-277+1 and@278-281+1 everything@282-292+1 changed@293-300+1 the@302-305+1 dog@306-309+1 woke@310-314+1 the@316-319+1 fox@320-323+1 ran@324-327+1 and@329-332+1 the@333-336+1 quick@337-342+1 chase@343-348+1 across@349-355+1 the@356-359+1 frozen@360-366+1 field@367-372+1 became@373-379+1 a@380-381+1 story@382-387+1 told@388-392+1 in@393-395+1 every@396-401+1 barn@402-406+1 for@407-410+1 a@411-412+1 hundred@413-420+1 miles@421-426+1
+tv_off	1	20	R	in@0-2+1 the@3-6+1 beginning@7-16+1 the@17-20+1
+tv_off	1	0	R	in@0-2+1
+tv_off	1	only	stream
+tv_off	2	-1	R	a@0-1+1 b@3-4+1 bold@5-9+1 b@11-12+1 quoted@17-23+1 fox@25-28+1 dog's@29-34+1 tale@36-40+1 is@42-44+1 quick@45-50+1 slow@53-57+1
+tv_off	2	20	R	a@0-1+1 b@3-4+1 bold@5-9+1 b@11-12+1 quoted@17-23+1
+tv_off	2	0	R	a@0-1+1
+tv_off	2	only	stream
+tv_off	3	-1	R	café@0-4+1 müller's@5-13+1 fox@14-17+1 naïve@20-25+1 quick@27-32+1 jumps@35-40+1 over@41-45+1 日@46-47+1 本@47-48+1 語@48-49+1 the@50-53+1 lazy@54-58+1 dog@59-62+1
+tv_off	3	20	R	café@0-4+1 müller's@5-13+1 fox@14-17+1 naïve@20-25+1
+tv_off	3	0	R	café@0-4+1
+tv_off	3	only	stream
+tv_off	4	-1	R	quick@0-5+1 quick@6-11+1 quick@12-17+1 fox@18-21+1 fox@22-25+1 dog@26-29+1
+tv_off	4	20	R	quick@0-5+1 quick@6-11+1 quick@12-17+1 fox@18-21+1
+tv_off	4	0	R	quick@0-5+1
+tv_off	4	only	stream
+tv_off	5	-1	R	fox@0-3+1
+tv_off	5	20	R	fox@0-3+1
+tv_off	5	0	R	fox@0-3+1
+tv_off	5	only	stream
+tv_off	6	-1	R	
+tv_off	6	20	R	
+tv_off	6	0	R	
+tv_off	6	only	null
+tv_off	7	-1	R	dog@0-3+1 lazy@4-8+1 fox@9-12+1 quick@13-18+1 brown@19-24+1 the@25-28+1 over@29-33+1 jumps@34-39+1
+tv_off	7	20	R	dog@0-3+1 lazy@4-8+1 fox@9-12+1 quick@13-18+1 brown@19-24+1
+tv_off	7	0	R	dog@0-3+1
+tv_off	7	only	stream
+tv_off	8	-1	R	quick@0-5+1 brown@6-11+1 fox@12-15+1 quick@17-22+1 brown@23-28+1 fox@29-32+1 quick@34-39+1 brown@40-45+1 fox@46-49+1 quick@51-56+1 brown@57-62+1 fox@63-66+1 quick@68-73+1 brown@74-79+1 fox@80-83+1 quick@85-90+1 brown@91-96+1 fox@97-100+1 quick@102-107+1 brown@108-113+1 fox@114-117+1 quick@119-124+1 brown@125-130+1 fox@131-134+1
+tv_off	8	20	R	quick@0-5+1 brown@6-11+1 fox@12-15+1 quick@17-22+1
+tv_off	8	0	R	quick@0-5+1
+tv_off	8	only	stream
+tv_pos	0	-1	R	the@0-3+1 quick@4-9+1 brown@10-15+1 fox@16-19+1 jumps@20-25+1 over@26-30+1 the@31-34+1 lazy@35-39+1 dog@40-43+1 the@45-48+1 quick@49-54+1 brown@55-60+1 fox@61-64+1 is@65-67+1 quick@68-73+1 and@75-78+1 the@79-82+1 dog@83-86+1 is@87-89+1 lazy@90-94+1
+tv_pos	0	20	R	the@0-3+1 quick@4-9+1 brown@10-15+1 fox@16-19+1 jumps@20-25+1
+tv_pos	0	0	R	the@0-3+1
+tv_pos	0	only	null
+tv_pos	1	-1	R	in@0-2+1 the@3-6+1 beginning@7-16+1 the@17-20+1 quick@21-26+1 brown@27-32+1 fox@33-36+1 was@37-40+1 a@41-42+1 very@43-47+1 small@48-53+1 fox@54-57+1 and@59-62+1 nobody@63-69+1 noticed@70-77+1 the@78-81+1 fox@82-85+1 at@86-88+1 all@89-92+1 years@94-99+1 passed@100-106+1 and@107-110+1 the@111-114+1 fox@115-118+1 grew@119-123+1 the@125-128+1 lazy@129-133+1 dog@134-137+1 slept@138-143+1 through@144-151+1 every@152-157+1 one@158-161+1 of@162-164+1 them@165-169+1 dreaming@171-179+1 of@180-182+1 a@183-184+1 quick@185-190+1 brown@191-196+1 rabbit@197-203+1 it@204-206+1 would@207-212+1 never@213-218+1 catch@219-224+1 then@226-230+1 one@231-234+1 winter@235-241+1 morning@242-249+1 the@250-253+1 fox@254-257+1 jumped@258-264+1 over@265-269+1 the@270-273+1 dog@274-277+1 and@278-281+1 everything@282-292+1 changed@293-300+1 the@302-305+1 dog@306-309+1 woke@310-314+1 the@316-319+1 fox@320-323+1 ran@324-327+1 and@329-332+1 the@333-336+1 quick@337-342+1 chase@343-348+1 across@349-355+1 the@356-359+1 frozen@360-366+1 field@367-372+1 became@373-379+1 a@380-381+1 story@382-387+1 told@388-392+1 in@393-395+1 every@396-401+1 barn@402-406+1 for@407-410+1 a@411-412+1 hundred@413-420+1 miles@421-426+1
+tv_pos	1	20	R	in@0-2+1 the@3-6+1 beginning@7-16+1 the@17-20+1
+tv_pos	1	0	R	in@0-2+1
+tv_pos	1	only	null
+tv_pos	2	-1	R	a@0-1+1 b@3-4+1 bold@5-9+1 b@11-12+1 quoted@17-23+1 fox@25-28+1 dog's@29-34+1 tale@36-40+1 is@42-44+1 quick@45-50+1 slow@53-57+1
+tv_pos	2	20	R	a@0-1+1 b@3-4+1 bold@5-9+1 b@11-12+1 quoted@17-23+1
+tv_pos	2	0	R	a@0-1+1
+tv_pos	2	only	null
+tv_pos	3	-1	R	café@0-4+1 müller's@5-13+1 fox@14-17+1 naïve@20-25+1 quick@27-32+1 jumps@35-40+1 over@41-45+1 日@46-47+1 本@47-48+1 語@48-49+1 the@50-53+1 lazy@54-58+1 dog@59-62+1
+tv_pos	3	20	R	café@0-4+1 müller's@5-13+1 fox@14-17+1 naïve@20-25+1
+tv_pos	3	0	R	café@0-4+1
+tv_pos	3	only	null
+tv_pos	4	-1	R	quick@0-5+1 quick@6-11+1 quick@12-17+1 fox@18-21+1 fox@22-25+1 dog@26-29+1
+tv_pos	4	20	R	quick@0-5+1 quick@6-11+1 quick@12-17+1 fox@18-21+1
+tv_pos	4	0	R	quick@0-5+1
+tv_pos	4	only	null
+tv_pos	5	-1	R	fox@0-3+1
+tv_pos	5	20	R	fox@0-3+1
+tv_pos	5	0	R	fox@0-3+1
+tv_pos	5	only	null
+tv_pos	6	-1	R	
+tv_pos	6	20	R	
+tv_pos	6	0	R	
+tv_pos	6	only	null
+tv_pos	7	-1	R	dog@0-3+1 lazy@4-8+1 fox@9-12+1 quick@13-18+1 brown@19-24+1 the@25-28+1 over@29-33+1 jumps@34-39+1
+tv_pos	7	20	R	dog@0-3+1 lazy@4-8+1 fox@9-12+1 quick@13-18+1 brown@19-24+1
+tv_pos	7	0	R	dog@0-3+1
+tv_pos	7	only	null
+tv_pos	8	-1	R	quick@0-5+1 brown@6-11+1 fox@12-15+1 quick@17-22+1 brown@23-28+1 fox@29-32+1 quick@34-39+1 brown@40-45+1 fox@46-49+1 quick@51-56+1 brown@57-62+1 fox@63-66+1 quick@68-73+1 brown@74-79+1 fox@80-83+1 quick@85-90+1 brown@91-96+1 fox@97-100+1 quick@102-107+1 brown@108-113+1 fox@114-117+1 quick@119-124+1 brown@125-130+1 fox@131-134+1
+tv_pos	8	20	R	quick@0-5+1 brown@6-11+1 fox@12-15+1 quick@17-22+1
+tv_pos	8	0	R	quick@0-5+1
+tv_pos	8	only	null
