@@ -71,7 +71,7 @@ search/suggest/InMemorySorter	todo:M13	An BytesRefSorter that keeps all the entr
 search/suggest/InputIterator	ported	crates/lucene-search/src/suggest/input.rs::InputIterator
 search/suggest/Lookup	ported	crates/lucene-search/src/suggest/lookup.rs::Lookup
 search/suggest/SortedInputIterator	ported	crates/lucene-search/src/suggest/input.rs::SortedInputIterator
-search/suggest/tst/TernaryTreeNode	todo:M13	The class creates a TST node.
-search/suggest/tst/TSTAutocomplete	todo:M13	Ternary Search Trie implementation.
-search/suggest/tst/TSTLookup	todo:M13	Suggest implementation based on a Ternary Search Tree
+search/suggest/tst/TernaryTreeNode	ported	crates/lucene-search/src/suggest/tst.rs
+search/suggest/tst/TSTAutocomplete	ported	crates/lucene-search/src/suggest/tst.rs
+search/suggest/tst/TSTLookup	ported	crates/lucene-search/src/suggest/tst.rs::TstLookup
 search/suggest/UnsortedInputIterator	todo:M13	This wrapper buffers the incoming elements and makes sure they are in random order.
