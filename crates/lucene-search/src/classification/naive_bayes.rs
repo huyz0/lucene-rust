@@ -200,10 +200,12 @@ impl Classifier<Vec<u8>> for SimpleNaiveBayesClassifier<'_, '_> {
 pub struct CachingNaiveBayesClassifier<'s, 'a> {
     base: SimpleNaiveBayesClassifier<'s, 'a>,
     classes: Vec<Vec<u8>>,
-    /// `termCClassHitCache`: a cached word's hits per class, empty until it
-    /// is first searched.
-    hit_cache: Mutex<HashMap<String, HashMap<Vec<u8>, i32>>>,
-    class_term_freq: HashMap<Vec<u8>, f64>,
+    /// `termCClassHitCache`: a cached word's hits per class (indexed as
+    /// `classes`), empty -- or all zero, which Java's empty map also is --
+    /// until it is first searched with a hit.
+    hit_cache: Mutex<HashMap<String, Vec<i32>>>,
+    /// `classTermFreq`, indexed as `classes`.
+    class_term_freq: Vec<f64>,
     just_cached_terms: bool,
     docs_with_class: i32,
 }
@@ -225,7 +227,7 @@ impl<'s, 'a> CachingNaiveBayesClassifier<'s, 'a> {
             base: SimpleNaiveBayesClassifier::new(index, analyzer, query, class_field, text_fields),
             classes: Vec::new(),
             hit_cache: Mutex::new(HashMap::new()),
-            class_term_freq: HashMap::new(),
+            class_term_freq: Vec::new(),
             just_cached_terms: true,
             docs_with_class: 0,
         };
@@ -258,10 +260,10 @@ impl<'s, 'a> CachingNaiveBayesClassifier<'s, 'a> {
                 *frequency.entry(text).or_insert(0) += df;
             }
         }
-        let cache: HashMap<String, HashMap<Vec<u8>, i32>> = frequency
+        let cache: HashMap<String, Vec<i32>> = frequency
             .into_iter()
             .filter(|&(_, f)| f > i64::from(min_term_occurrence))
-            .map(|(w, _)| (w, HashMap::new()))
+            .map(|(w, _)| (w, Vec::new()))
             .collect();
         *self.hit_cache.lock().unwrap_or_else(|e| e.into_inner()) = cache;
         self.classes = field_terms(&index, &self.base.class_field)?.ok_or_else(|| {
@@ -271,8 +273,7 @@ impl<'s, 'a> CachingNaiveBayesClassifier<'s, 'a> {
         for class in &self.classes {
             let avg = avg_unique_terms(&index, &self.base.text_fields)?;
             let docs_with_c = doc_freq(&index, &self.base.class_field, class)?;
-            self.class_term_freq
-                .insert(class.clone(), avg * f64::from(docs_with_c));
+            self.class_term_freq.push(avg * f64::from(docs_with_c));
         }
         Ok(())
     }
@@ -289,47 +290,46 @@ impl<'s, 'a> CachingNaiveBayesClassifier<'s, 'a> {
     /// the list each time it adds a word's term to it, and the list's order
     /// decides the order of equal scores, so this does the same.
     fn log_likelihood(&self, tokens: &[String]) -> Result<Vec<ClassificationResult<Vec<u8>>>> {
-        let mut ret: Vec<ClassificationResult<Vec<u8>>> = self
-            .classes
-            .iter()
-            .map(|c| ClassificationResult::new(c.clone(), 0.0))
-            .collect();
+        // (class index, score), in Java's list order.
+        let mut ret: Vec<(usize, f64)> = (0..self.classes.len()).map(|c| (c, 0.0)).collect();
+        let mut hits = Vec::with_capacity(self.classes.len());
         for word in tokens {
-            let hits_in_classes = self.word_freq_for_classes(word)?;
-            for class in &self.classes {
-                let hits = hits_in_classes.get(class).copied().unwrap_or(0);
-                let num = f64::from(hits + 1);
-                let den = self.class_term_freq.get(class).copied().unwrap_or(f64::NAN)
-                    + f64::from(self.docs_with_class);
+            self.word_freq_for_classes(word, &mut hits)?;
+            for (class, &n) in hits.iter().enumerate() {
+                let num = f64::from(n + 1);
+                let den = self.class_term_freq[class] + f64::from(self.docs_with_class);
                 let probability = num / den;
-                if let Some(at) = ret.iter().position(|r| &r.assigned_class == class) {
-                    let old = ret.remove(at);
-                    ret.push(ClassificationResult::new(
-                        old.assigned_class,
-                        old.score + log(probability),
-                    ));
+                if let Some(at) = ret.iter().position(|&(c, _)| c == class) {
+                    let (_, score) = ret.remove(at);
+                    ret.push((class, score + log(probability)));
                 }
             }
         }
-        Ok(ret)
+        Ok(ret
+            .into_iter()
+            .map(|(c, score)| ClassificationResult::new(self.classes[c].clone(), score))
+            .collect())
     }
 
-    /// `getWordFreqForClassess`: `word`'s hits per class, from the cache or
-    /// searched (and then cached, when `word` is a cached term).
-    fn word_freq_for_classes(&self, word: &str) -> Result<HashMap<Vec<u8>, i32>> {
+    /// `getWordFreqForClassess`: `word`'s hits per class into `hits`, from
+    /// the cache or searched (and then cached, when `word` is a cached term).
+    fn word_freq_for_classes(&self, word: &str, hits: &mut Vec<i32>) -> Result<()> {
+        hits.clear();
         let cached = {
             let cache = self.hit_cache.lock().unwrap_or_else(|e| e.into_inner());
-            cache.get(word).cloned()
-        };
-        if let Some(hits) = &cached {
-            if !hits.is_empty() {
-                return Ok(hits.clone());
+            match cache.get(word) {
+                Some(h) if h.iter().any(|&n| n != 0) => {
+                    hits.extend_from_slice(h);
+                    return Ok(());
+                }
+                Some(_) => true,
+                None => false,
             }
-        }
-        let mut searched = HashMap::new();
-        if cached.is_some() || !self.just_cached_terms {
+        };
+        hits.resize(self.classes.len(), 0);
+        if cached || !self.just_cached_terms {
             let searcher = self.base.index.searcher(None)?;
-            for class in &self.classes {
+            for (class, n) in self.classes.iter().zip(hits.iter_mut()) {
                 let sub = BooleanQuery {
                     should: self
                         .base
@@ -352,19 +352,16 @@ impl<'s, 'a> CachingNaiveBayesClassifier<'s, 'a> {
                     },
                     &self.base.query,
                 );
-                let n = searcher.count(&q)? as i32;
-                if n != 0 {
-                    searched.insert(class.clone(), n);
+                *n = searcher.count(&q)? as i32;
+            }
+            if cached {
+                let mut cache = self.hit_cache.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(e) = cache.get_mut(word) {
+                    e.clone_from(hits);
                 }
             }
-            if cached.is_some() {
-                self.hit_cache
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(word.to_string(), searched.clone());
-            }
         }
-        Ok(searched)
+        Ok(())
     }
 }
 

@@ -1,13 +1,16 @@
 //! `BooleanPerceptronClassifier`: a perceptron over term weights, trained on
 //! the index's documents through their term vectors.
 
-use std::collections::BTreeMap;
+use std::borrow::Cow;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use lucene_analysis::Analyzer;
 use lucene_util::strict_math::exp;
 
-use super::{analyze, term_vector, ClassificationResult, Classifier, JavaString, TrainingIndex};
+use super::{
+    for_each_token, java_string_cmp, ClassificationResult, Classifier, TermVectors, TrainingIndex,
+};
 use crate::multi_terms::MultiTerms;
 use crate::query::{BooleanQuery, Clause};
 use crate::{Error, Result};
@@ -19,13 +22,32 @@ use crate::{Error, Result};
 /// with are a snapshot taken every `batch_size`th training document.
 ///
 /// Java keeps the snapshot in an `FST<Long>` (rebuilt from the weights, a
-/// map); here it is the same map of terms to truncated weights.
+/// sorted map); here it is a hash map of terms to truncated weights, updated
+/// in place from the weights changed since the last snapshot. The FST's one
+/// refusal -- terms whose string order is not their byte order -- depends
+/// only on the set of terms, so it is checked when that set changes.
 pub struct BooleanPerceptronClassifier {
     bias: f64,
     analyzer: Arc<Analyzer>,
     text_field: String,
     /// `fst`: term bytes to `weight.longValue()`.
-    weights_snapshot: BTreeMap<Vec<u8>, i64>,
+    weights_snapshot: HashMap<Vec<u8>, i64>,
+}
+
+/// `weights`: each term (as `utf8ToString()` then `new BytesRef(term)`
+/// re-encode it) to its weight, and the terms changed since the snapshot.
+struct Weights {
+    weights: HashMap<Vec<u8>, f64>,
+    dirty: Vec<Vec<u8>>,
+    new_terms: bool,
+}
+
+/// A term's bytes as a Java `String` round trip leaves them.
+fn java_bytes(term: &[u8]) -> Cow<'_, [u8]> {
+    match String::from_utf8_lossy(term) {
+        Cow::Borrowed(s) => Cow::Borrowed(s.as_bytes()),
+        Cow::Owned(s) => Cow::Owned(s.into_bytes()),
+    }
 }
 
 impl BooleanPerceptronClassifier {
@@ -68,20 +90,25 @@ impl BooleanPerceptronClassifier {
                 t
             }
         };
-        let mut weights: BTreeMap<JavaString, f64> = BTreeMap::new();
+        let mut weights = Weights {
+            weights: HashMap::new(),
+            dirty: Vec::new(),
+            new_terms: true,
+        };
         let mut te = text_terms.iterator()?;
         while let Some(t) = te.next()? {
-            let s = String::from_utf8_lossy(t).into_owned();
+            let key = java_bytes(t).into_owned();
             let ttf = te.total_term_freq()?;
-            weights.insert(JavaString(s), ttf as f64);
+            weights.weights.insert(key.clone(), ttf as f64);
+            weights.dirty.push(key);
         }
         let mut c = Self {
             bias,
             analyzer,
             text_field: text_field.to_string(),
-            weights_snapshot: BTreeMap::new(),
+            weights_snapshot: HashMap::new(),
         };
-        c.weights_snapshot = snapshot(&weights)?;
+        c.update_snapshot(&mut weights)?;
 
         let mut q = BooleanQuery {
             must: vec![super::knn::any_class(class_field)],
@@ -92,6 +119,7 @@ impl BooleanPerceptronClassifier {
         }
         let max_doc = usize::try_from(index.reader.max_doc()).unwrap_or(0);
         let hits = index.searcher(None)?.search(&q, max_doc.max(1))?;
+        let vectors = TermVectors::new(index.reader)?;
         let mut batch_count = 0i32;
         for sd in &hits.score_docs {
             let text = index.stored_values(sd.doc, text_field)?.into_iter().next();
@@ -108,7 +136,7 @@ impl BooleanPerceptronClassifier {
                     return Err(Error::IllegalArgument("/ by zero".into()));
                 }
                 let update = batch_count.wrapping_rem(batch_size) == 0;
-                c.update_weights(index, sd.doc, &mut weights, modifier, update)?;
+                c.update_weights(&vectors, sd.doc, &mut weights, modifier, update)?;
             }
             batch_count = batch_count.wrapping_add(1);
         }
@@ -120,13 +148,13 @@ impl BooleanPerceptronClassifier {
     /// than zero; a term missing from the snapshot to zero).
     fn update_weights(
         &mut self,
-        index: TrainingIndex<'_, '_>,
+        vectors: &TermVectors<'_>,
         doc: i32,
-        weights: &mut BTreeMap<JavaString, f64>,
+        weights: &mut Weights,
         modifier: f64,
         update_snapshot: bool,
     ) -> Result<()> {
-        let vector = term_vector(index.reader, doc, &self.text_field)?.ok_or_else(|| {
+        let vector = vectors.get(doc, &self.text_field)?.ok_or_else(|| {
             Error::IllegalState(format!(
                 "term vectors must be stored for field {}",
                 self.text_field
@@ -134,51 +162,69 @@ impl BooleanPerceptronClassifier {
         })?;
         for t in &vector.terms {
             let previous = self.weights_snapshot.get(&t.term);
-            let term = String::from_utf8_lossy(&t.term).into_owned();
             let freq = i64::from(t.freq);
             let w = match previous {
                 None => 0.0,
                 Some(&p) => f64::max(0.0, p as f64 + modifier * freq as f64),
             };
-            weights.insert(JavaString(term), w);
+            let key = java_bytes(&t.term);
+            match weights.weights.get_mut(key.as_ref()) {
+                Some(v) => *v = w,
+                None => {
+                    weights.weights.insert(key.to_vec(), w);
+                    weights.new_terms = true;
+                }
+            }
+            weights.dirty.push(key.into_owned());
         }
         if update_snapshot {
-            self.weights_snapshot = snapshot(weights)?;
+            self.update_snapshot(weights)?;
+        }
+        Ok(())
+    }
+
+    /// `updateFST(weights)`: the changed weights into the snapshot.
+    fn update_snapshot(&mut self, weights: &mut Weights) -> Result<()> {
+        if weights.new_terms {
+            check_order(weights.weights.keys().map(Vec::as_slice))?;
+            weights.new_terms = false;
+        }
+        for k in weights.dirty.drain(..) {
+            let w = weights.weights.get(&k).copied().unwrap_or(0.0);
+            self.weights_snapshot.insert(k, w as i64);
         }
         Ok(())
     }
 
     fn classify(&self, text: &str) -> Result<ClassificationResult<bool>> {
         let mut output = 0i64;
-        for token in analyze(&self.analyzer, &self.text_field, text)? {
+        for_each_token(&self.analyzer, &self.text_field, text, |token| {
             if let Some(&w) = self.weights_snapshot.get(token.as_bytes()) {
                 output = output.wrapping_add(w);
             }
-        }
+        })?;
         let score = 1.0 - exp(-(self.bias - output as f64).abs() / self.bias);
         Ok(ClassificationResult::new(output as f64 >= self.bias, score))
     }
 }
 
-/// `updateFST(weights)`: the weights as the FST stores them, keyed by UTF-8
-/// bytes and truncated to `long`. The FST takes its inputs in byte order, so
-/// a string order that disagrees is its "inputs are added out of order".
-fn snapshot(weights: &BTreeMap<JavaString, f64>) -> Result<BTreeMap<Vec<u8>, i64>> {
-    let mut out = BTreeMap::new();
-    let mut last: Option<&[u8]> = None;
-    for (k, &v) in weights {
-        let bytes = k.0.as_bytes();
-        if last.is_some_and(|l| l >= bytes) {
+/// The FST builder's refusal: the terms, taken in `String` order (the
+/// weights' sorted map), must come in strictly ascending byte order -- else
+/// "inputs are added out of order".
+fn check_order<'k>(keys: impl Iterator<Item = &'k [u8]>) -> Result<()> {
+    let mut keys: Vec<&str> = keys
+        .map(|k| std::str::from_utf8(k).unwrap_or_default())
+        .collect();
+    keys.sort_unstable_by(|a, b| java_string_cmp(a, b));
+    for w in keys.windows(2) {
+        let (last, input) = (w[0].as_bytes(), w[1].as_bytes());
+        if last >= input {
             return Err(Error::IllegalArgument(format!(
-                "inputs are added out of order lastInput={:?} vs input={:?}",
-                last.unwrap_or_default(),
-                bytes
+                "inputs are added out of order lastInput={last:?} vs input={input:?}"
             )));
         }
-        last = Some(bytes);
-        out.insert(bytes.to_vec(), v as i64);
     }
-    Ok(out)
+    Ok(())
 }
 
 impl Classifier<bool> for BooleanPerceptronClassifier {
@@ -197,17 +243,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn snapshot_truncates_and_rejects_string_order_unlike_byte_order() {
-        let mut w = BTreeMap::new();
-        w.insert(JavaString("a".into()), 2.9);
-        w.insert(JavaString("b".into()), 0.0);
-        let s = snapshot(&w).unwrap();
-        assert_eq!(s.get(b"a".as_slice()), Some(&2));
-        assert_eq!(s.get(b"b".as_slice()), Some(&0));
+    fn the_fst_refuses_string_order_unlike_byte_order() {
+        check_order([b"b".as_slice(), b"a".as_slice()].into_iter()).unwrap();
         // U+10000 sorts before U+FFFD as UTF-16 units, after it as bytes.
-        let mut w = BTreeMap::new();
-        w.insert(JavaString("\u{fffd}".into()), 1.0);
-        w.insert(JavaString("\u{10000}".into()), 1.0);
-        assert!(snapshot(&w).is_err());
+        let (a, b) = ("\u{fffd}", "\u{10000}");
+        assert!(check_order([a.as_bytes(), b.as_bytes()].into_iter()).is_err());
     }
 }
