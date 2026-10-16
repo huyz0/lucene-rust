@@ -160,6 +160,19 @@ impl ByteDfa {
     pub fn num_states(&self) -> usize {
         self.accept.len()
     }
+
+    /// Bytes this automaton holds on the heap, for a cache's budget.
+    pub(crate) fn heap_bytes(&self) -> usize {
+        [
+            self.table.len().saturating_mul(size_of::<u32>()),
+            self.accept.len(),
+            self.live_ranges.len().saturating_mul(size_of::<(u8, u8)>()),
+            self.live_offsets.len().saturating_mul(size_of::<u32>()),
+            self.classes.len(),
+        ]
+        .iter()
+        .fold(0usize, |total, &n| total.saturating_add(n))
+    }
 }
 
 /// Walks a [`ByteDfa`] over terms in ascending order, reusing the states of
@@ -1393,7 +1406,6 @@ fn prune(trans: &[(u32, u8, u8, u32)], accept: Vec<bool>) -> ByteDfa {
             count += 1;
         }
     }
-    let mut out = vec![DEAD; (count as usize) << 8];
     let mut out_accept = vec![false; count as usize];
     for s in 0..n {
         if remap[s] != DEAD {
@@ -1411,8 +1423,6 @@ fn prune(trans: &[(u32, u8, u8, u32)], accept: Vec<bool>) -> ByteDfa {
         if ns == DEAD || nt == DEAD {
             continue;
         }
-        let row = (ns as usize) << 8;
-        out[row + lo as usize..=row + hi as usize].fill(nt);
         if ns != current {
             // Offsets are filled for every state up to this one: states
             // with no live transition get an empty run list.
@@ -1431,7 +1441,7 @@ fn prune(trans: &[(u32, u8, u8, u32)], accept: Vec<bool>) -> ByteDfa {
     for o in &mut live_offsets[(current.wrapping_add(1)) as usize..] {
         *o = live_ranges.len() as u32;
     }
-    let (table, classes, stride) = byte_classes(&out, count as usize);
+    let (table, classes, stride) = byte_classes_of_ranges(trans, &remap, count as usize);
     ByteDfa {
         table,
         classes,
@@ -1443,46 +1453,75 @@ fn prune(trans: &[(u32, u8, u8, u32)], accept: Vec<bool>) -> ByteDfa {
     }
 }
 
-/// Compresses a dense `states x 256` table into byte classes: two bytes share
-/// a class when every state sends them to the same place. Returns the
-/// compressed table, the byte-to-class map and the class count.
-// ARITH: `states <= MAX_DFA_STATES` and `b < 256`, so `s << 8 | b` and
-// `s * stride + c` stay inside tables of `states * 256` entries; at most 256
-// distinct columns exist, so a class id fits a `u8`.
+/// Compresses the dense `states x 256` table `prune`'s range transitions
+/// describe into byte classes -- two bytes share a class when every state
+/// sends them to the same place -- without building it: the table is 256
+/// entries per state, most of it one fill per range that the compression
+/// then reads back. Returns the compressed table, the byte-to-class map and
+/// the class count. A byte starts a run
+/// where some live range begins or ends, each run's column is filled from the
+/// ranges covering it, and runs with equal columns share a class -- the
+/// classes, in the same order, that scanning the dense table would find.
+// ARITH: `states <= MAX_DFA_STATES`, `runs <= 256` and a class id is below
+// `runs`, so `run * states + s` stays inside `runs * states` entries and a
+// class id fits a `u8`; `hi + 1` is guarded by `hi < 255`.
 #[allow(clippy::arithmetic_side_effects)]
-fn byte_classes(dense: &[u32], states: usize) -> (Vec<u32>, Box<[u8; 256]>, usize) {
-    let mut classes = Box::new([0u8; 256]);
-    let mut reps: Vec<usize> = Vec::new();
-    let mut ids: HashMap<Vec<u32>, u8, BuildHasherDefault<SetHasher>> = HashMap::default();
-    // `starts[b]`: some state sends `b` somewhere other than `b - 1`. Bytes
-    // between two such starts have equal columns, so only a run's first byte
-    // needs its column built and hashed -- a row-order scan rather than 256
-    // strided column gathers.
+fn byte_classes_of_ranges(
+    trans: &[(u32, u8, u8, u32)],
+    remap: &[u32],
+    states: usize,
+) -> (Vec<u32>, Box<[u8; 256]>, usize) {
+    let live = |&&(s, _, _, t): &&(u32, u8, u8, u32)| {
+        remap[s as usize] != DEAD && remap[t as usize] != DEAD
+    };
     let mut starts = [false; 256];
     starts[0] = true;
-    for row in dense.chunks_exact(256).take(states) {
-        for (b, pair) in row.windows(2).enumerate() {
-            starts[b + 1] |= pair[0] != pair[1];
+    for &(_, lo, hi, _) in trans.iter().filter(live) {
+        starts[lo as usize] = true;
+        if hi < 255 {
+            starts[hi as usize + 1] = true;
         }
     }
+    let mut run_of = [0u16; 256];
+    let mut run_start: Vec<u8> = Vec::new();
     for b in 0..256usize {
-        if !starts[b] {
-            classes[b] = classes[b - 1];
-            continue;
+        if starts[b] {
+            run_start.push(b as u8);
         }
-        let column: Vec<u32> = (0..states).map(|s| dense[s << 8 | b]).collect();
+        run_of[b] = (run_start.len() - 1) as u16;
+    }
+    let runs = run_start.len();
+    // `columns[run * states + state]`: where `state` sends the run's bytes.
+    let mut columns = vec![DEAD; runs * states];
+    for &(s, lo, hi, t) in trans.iter().filter(live) {
+        let (ns, nt) = (remap[s as usize] as usize, remap[t as usize]);
+        let mut run = run_of[lo as usize] as usize;
+        while run < runs && run_start[run] <= hi {
+            columns[run * states + ns] = nt;
+            run += 1;
+        }
+    }
+    let mut classes = Box::new([0u8; 256]);
+    let mut run_class = vec![0u8; runs];
+    let mut reps: Vec<usize> = Vec::new();
+    let mut ids: HashMap<&[u32], u8, BuildHasherDefault<SetHasher>> = HashMap::default();
+    for run in 0..runs {
         let next = reps.len();
-        let id = *ids.entry(column).or_insert_with(|| {
-            reps.push(b);
-            next as u8
-        });
-        classes[b] = id;
+        run_class[run] = *ids
+            .entry(&columns[run * states..(run + 1) * states])
+            .or_insert_with(|| {
+                reps.push(run);
+                next as u8
+            });
+    }
+    for b in 0..256usize {
+        classes[b] = run_class[run_of[b] as usize];
     }
     let stride = reps.len().max(1);
     let mut table = Vec::with_capacity(states * stride);
     for s in 0..states {
-        for &b in &reps {
-            table.push(dense[s << 8 | b]);
+        for &run in &reps {
+            table.push(columns[run * states + s]);
         }
     }
     (table, classes, stride)
