@@ -2942,11 +2942,11 @@ impl IndexingConfig {
         vector_fields_written: &[WrittenVectorField],
         points_fields_written: &[String],
     ) -> Vec<FieldInfo> {
-        let postings_suffix = |number: i32| -> Option<u32> {
+        let postings_suffix = |number: i32| -> Option<(&'static str, u32)> {
             postings?
                 .iter()
                 .find(|g| g.field_numbers.contains(&number))
-                .map(|g| g.suffix)
+                .map(|g| (g.format_name, g.suffix))
         };
         let dv_suffix = |number: i32| -> Option<u32> {
             doc_values?
@@ -2992,10 +2992,10 @@ impl IndexingConfig {
                 {
                     f.index_options = IndexOptions::None;
                 }
-                if let Some(suffix) = postings_suffix(f.number) {
+                if let Some((format_name, suffix)) = postings_suffix(f.number) {
                     f.attributes.push((
                         per_field_postings::PER_FIELD_FORMAT_KEY.to_string(),
-                        POSTINGS_FORMAT_NAME.to_string(),
+                        format_name.to_string(),
                     ));
                     f.attributes.push((
                         per_field_postings::PER_FIELD_SUFFIX_KEY.to_string(),
@@ -9262,12 +9262,17 @@ impl IndexWriter<'_> {
     ) -> Result<Vec<String>> {
         let mut names = Vec::new();
         for group in groups {
-            let suffix = per_field_postings::codec_suffix(POSTINGS_FORMAT_NAME, group.suffix);
-            names.extend(Self::write_postings_group_files(
-                dir,
-                &format!("{segment_name}_{suffix}"),
-                &group.output,
-            )?);
+            let seg = format!("{segment_name}_{}", group.codec_suffix());
+            names.extend(Self::write_postings_group_files(dir, &seg, &group.output)?);
+            if let Some(completion) = &group.completion {
+                // `CompletionFieldsConsumer`: `.lkp` opened with the
+                // delegate, `.cmp` written at close.
+                for (ext, bytes) in [("lkp", &completion.lkp), ("cmp", &completion.cmp)] {
+                    let name = format!("{seg}.{ext}");
+                    write_file(dir, &name, bytes)?;
+                    names.push(name);
+                }
+            }
         }
         Ok(names)
     }
@@ -9487,14 +9492,16 @@ impl IndexWriter<'_> {
         }
     }
 
-    /// `IndexWriter.forceMerge(maxNumSegments)` over the committed segments,
-    /// `TieredMergePolicy.findForcedMerges`' outcome without its size cap:
-    /// while more than `max_num_segments` remain, the smallest are merged into
-    /// one, and a lone segment left with hard deletes is rewritten when
-    /// `max_num_segments` is 1. Each merge publishes its own commit carrying
-    /// the current commit data. Buffered and flushed-but-uncommitted
-    /// documents are not part of it -- commit first, as OpenSearch's engine
-    /// does before a force merge.
+    /// `IndexWriter.forceMerge(maxNumSegments)` over the committed segments.
+    /// Down to one segment it is `TieredMergePolicy.findForcedMerges`
+    /// itself: every segment merged at once, largest first (which fixes the
+    /// merged document order). Otherwise it is that function's outcome
+    /// without its size cap: while more than `max_num_segments` remain, the
+    /// smallest are merged into one. A lone segment left with hard deletes
+    /// is rewritten when `max_num_segments` is 1. Each merge publishes its
+    /// own commit carrying the current commit data. Buffered and
+    /// flushed-but-uncommitted documents are not part of it -- commit
+    /// first, as OpenSearch's engine does before a force merge.
     pub fn force_merge(&mut self, max_num_segments: usize) -> Result<()> {
         if max_num_segments == 0 {
             return Err(Error::InvalidMaxNumSegments(max_num_segments));
@@ -9511,6 +9518,18 @@ impl IndexWriter<'_> {
                     }
                 }
                 return Ok(());
+            }
+            if max_num_segments == 1 {
+                // `findForcedMerges` itself, whose merge-down-to-one case
+                // has no size cap: every segment in one merge, largest
+                // first -- the merged segment's document order.
+                let config = merge_policy::MergePolicyConfig::default();
+                let names: Vec<String> = merge_policy::find_forced_merges(&stats, 1, &config)
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                self.execute_merge(&names)?;
+                continue;
             }
             stats.sort_by_key(|s| s.size_bytes);
             // ARITH: `stats.len() > max_num_segments >= 1` here, so the

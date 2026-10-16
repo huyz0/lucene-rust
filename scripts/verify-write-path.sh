@@ -19,7 +19,7 @@
 # T3.1, see docs/milestones/m3-write-path-proven.md.
 set -euo pipefail
 
-LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join)
+LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join lucene-suggest)
 
 cd "$(git rev-parse --show-toplevel)"
 FIXTURES="$PWD/fixtures"
@@ -324,6 +324,14 @@ CASES=(
   # checks again. What it cannot catch: a block intact but holding the wrong
   # field values -- the stored ids are all it reads besides the structure.
   "lucene-index|write_block_join_fixture|block-join|VerifyJoin"
+  # Completion104PostingsFormat through IndexWriter (M13 T13.3d):
+  # SuggestFields routed to Completion104 beside a Lucene104 TextField, one
+  # flushed segment and a force-merge of three. Lucene must find each field
+  # under its own format, pass CheckIndex, and give every prefix and regex
+  # suggestion (key, doc, score) it gives over the index it builds itself
+  # from the same documents. What it cannot catch: a defect Lucene's own
+  # index shares -- both are read by the same SuggestIndexSearcher.
+  "lucene-search|write_completion_fixture|completion|VerifyCompletion"
 )
 
 echo "verify-write-path: compiling verifiers"

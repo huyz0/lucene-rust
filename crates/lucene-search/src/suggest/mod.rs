@@ -8,4 +8,5 @@ pub mod document;
 pub mod fst_util;
 pub mod input;
 pub mod lookup;
+pub mod suggest_field;
 pub mod tst;

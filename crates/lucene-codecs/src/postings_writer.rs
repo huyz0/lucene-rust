@@ -186,6 +186,11 @@ pub enum Error {
         occurrence: usize,
         length: u32,
     },
+    /// `CompletionFieldsConsumer.write`: a completion field's payload that is
+    /// not a `SuggestField` payload, mixed suggestion types in one field, or
+    /// a weight out of range.
+    #[error("completion postings: {0}")]
+    Completion(#[source] lucene_store::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
