@@ -487,6 +487,19 @@ impl IndexingConfig {
                 }
             }
         }
+        // Java records a vector for every term-vector field the document
+        // inverts into terms; a caller that sends none would write empty ones.
+        for inv in &doc.fields.inverted {
+            if !inv.terms.is_empty()
+                && !seen.contains(&inv.field_number)
+                && self.explicit_field(inv.field_number)?.store_term_vectors
+            {
+                return Err(explicit_error(format!(
+                    "field {:?} stores term vectors but this document gives none",
+                    self.explicit_field(inv.field_number)?.name
+                )));
+            }
+        }
         let mut single = BTreeSet::new();
         for dv in &doc.fields.doc_values {
             let f = self.explicit_field(dv.field_number)?;
@@ -825,7 +838,8 @@ impl IndexingConfig {
                     for tv in fields.drain(..) {
                         named.push((self.explicit_field(tv.field_number)?.name.as_str(), tv));
                     }
-                    named.sort_by(|a, b| a.0.cmp(b.0));
+                    // `String.compareTo`: UTF-16 code units, not bytes.
+                    named.sort_by(|a, b| a.0.encode_utf16().cmp(b.0.encode_utf16()));
                     Ok(TermVectorsDocument {
                         fields: named.into_iter().map(|(_, tv)| tv).collect(),
                     })
@@ -1777,6 +1791,11 @@ mod tests {
         not_inverted.fields.inverted.clear();
         let err = w.add_explicit_documents(vec![not_inverted]).unwrap_err();
         assert!(matches!(err, Error::Explicit(_)), "{err}");
+        // Inverted into terms without the vector Java would have recorded.
+        let mut no_vector = with(vec![field(tv, vec![term("a")])]);
+        no_vector.fields.term_vectors.clear();
+        let err = w.add_explicit_documents(vec![no_vector]).unwrap_err();
+        assert!(err.to_string().contains("gives none"), "{err}");
         w.add_explicit_documents(vec![with(vec![field(tv, vec![term("a")])])])
             .unwrap();
         let mut payloads_alone = field(tv, vec![term("a")]);

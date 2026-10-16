@@ -1084,6 +1084,34 @@ fn term_vectors_are_recorded_as_term_vectors_consumer_records_them() {
         .is_none_or(|d| d.fields.is_empty()));
 }
 
+/// A document's vector fields in `String.compareTo` order: U+1F600 (the
+/// surrogate pair 0xD83D 0xDE00) before U+FF61, though its UTF-8 sorts after.
+#[test]
+fn term_vector_fields_are_written_in_utf16_name_order() {
+    let dir = ByteBuffersDirectory::new();
+    let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+    let ft = vector_type(IndexOptions::DocsAndFreqs, false, false, false);
+    w.add_fields_document(&doc(vec![
+        Box::new(Field::from_string("\u{ff61}", "a", ft.clone()).unwrap()),
+        Box::new(Field::from_string("\u{1f600}", "b", ft).unwrap()),
+    ]))
+    .unwrap();
+    let infos = w.commit().unwrap().clone();
+    let sci = &infos.segments[0];
+    let read = |ext: &str| dir.open(&format!("{}.{ext}", sci.segment_name)).unwrap();
+    let (tvd, tvx, tvm) = (read("tvd"), read("tvx"), read("tvm"));
+    let reader = lucene_codecs::term_vectors::open(&tvd, &tvx, &tvm, &sci.segment_id, "").unwrap();
+    let terms: Vec<Vec<u8>> = reader
+        .document(0)
+        .unwrap()
+        .unwrap()
+        .fields
+        .iter()
+        .map(|f| f.terms[0].term.clone())
+        .collect();
+    assert_eq!(terms, [b"b".to_vec(), b"a".to_vec()]);
+}
+
 /// A segment whose documents invert a term-vector field into no term still
 /// gets the vector files, as `TermVectorsConsumer` opens its writer then.
 #[test]
