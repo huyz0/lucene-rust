@@ -29,22 +29,22 @@ search/highlight/TokenStreamFromTermVector	ported	crates/lucene-search/src/highl
 search/highlight/WeightedSpanTerm	ported	crates/lucene-search/src/highlight/extractor.rs::WeightedSpanTerm
 search/highlight/WeightedSpanTermExtractor	ported	crates/lucene-search/src/highlight/extractor.rs::WeightedSpanTermExtractor
 search/highlight/WeightedTerm	ported	crates/lucene-search/src/highlight/extractor.rs::WeightedTerm
-search/matchhighlight/BreakIteratorShrinkingAdjuster	todo:M13	A PassageAdjuster that adjusts the Passage range to word boundaries hinted by the given BreakIterator.
-search/matchhighlight/CharSequenceIterator	todo:M13	A CharacterIterator over a CharSequence.
-search/matchhighlight/FieldValueHighlighters	todo:M13	A factory of org.apache.lucene.search.matchhighlight.MatchHighlighter.FieldValueHighlighter classes that cover typical use cases (verbatim values, highlights, a
-search/matchhighlight/MatchHighlighter	todo:M13	An example highlighter that combines several lower-level utility classes in this package into a fully featured, ready-to-use component.
-search/matchhighlight/MatchRegionRetriever	todo:M13	Utility class to compute a list of "match regions" for a given query, searcher and document(s) using Matches API.
-search/matchhighlight/OffsetRange	todo:M13	A non-empty range of offset positions.
-search/matchhighlight/OffsetsFromMatchIterator	todo:M13	This strategy retrieves offsets directly from MatchesIterator, if they are available, otherwise it falls back to using OffsetsFromPositions.
-search/matchhighlight/OffsetsFromPositions	todo:M13	This strategy applies to fields with stored positions but no offsets.
-search/matchhighlight/OffsetsFromTokens	todo:M13	This strategy works for fields where we know the match occurred but there are no known positions or offsets.
-search/matchhighlight/OffsetsFromValues	todo:M13	This strategy works for fields where we know the match occurred but there are no known positions or offsets.
-search/matchhighlight/OffsetsRetrievalStrategy	todo:M13	Determines how match offset regions are computed from MatchesIterator.
-search/matchhighlight/OffsetsRetrievalStrategySupplier	todo:M13	A per-field supplier of OffsetsRetrievalStrategy.
-search/matchhighlight/Passage	todo:M13	A passage is a fragment of source text, scored and possibly with a list of sub-offsets (markers) to be highlighted.
-search/matchhighlight/PassageAdjuster	todo:M13	Adjusts the range of one or more passages over a given value.
-search/matchhighlight/PassageFormatter	todo:M13	Formats a collection of Passage passages over a given string, cleaning up and resolving restrictions concerning overlaps, allowed sub-ranges over the input stri
-search/matchhighlight/PassageSelector	todo:M13	Selects fragments of text that score best for the given set of highlight markers.
+search/matchhighlight/BreakIteratorShrinkingAdjuster	ported	crates/lucene-search/src/highlight/match_highlight.rs::BreakIteratorShrinkingAdjuster
+search/matchhighlight/CharSequenceIterator	ported	crates/lucene-search/src/highlight/word_break.rs::WordBreakIterator -- the cursor the iterator keeps
+search/matchhighlight/FieldValueHighlighters	ported	crates/lucene-search/src/highlight/match_highlight.rs::FieldValueHighlighters
+search/matchhighlight/MatchHighlighter	ported	crates/lucene-search/src/highlight/match_highlight.rs::MatchHighlighter
+search/matchhighlight/MatchRegionRetriever	ported	crates/lucene-search/src/highlight/match_highlight.rs::MatchRegionRetriever
+search/matchhighlight/OffsetRange	ported	crates/lucene-search/src/highlight/match_highlight.rs::OffsetRange
+search/matchhighlight/OffsetsFromMatchIterator	ported	crates/lucene-search/src/highlight/match_highlight.rs::OffsetsFromMatchIterator
+search/matchhighlight/OffsetsFromPositions	ported	crates/lucene-search/src/highlight/match_highlight.rs::OffsetsFromPositions
+search/matchhighlight/OffsetsFromTokens	ported	crates/lucene-search/src/highlight/match_highlight.rs::OffsetsFromTokens
+search/matchhighlight/OffsetsFromValues	ported	crates/lucene-search/src/highlight/match_highlight.rs::OffsetsFromValues
+search/matchhighlight/OffsetsRetrievalStrategy	ported	crates/lucene-search/src/highlight/match_highlight.rs::OffsetsRetrievalStrategy
+search/matchhighlight/OffsetsRetrievalStrategySupplier	ported	crates/lucene-search/src/highlight/match_highlight.rs::OffsetsRetrievalStrategySupplier
+search/matchhighlight/Passage	ported	crates/lucene-search/src/highlight/match_highlight.rs::Passage
+search/matchhighlight/PassageAdjuster	ported	crates/lucene-search/src/highlight/match_highlight.rs::PassageAdjuster
+search/matchhighlight/PassageFormatter	ported	crates/lucene-search/src/highlight/match_highlight.rs::PassageFormatter
+search/matchhighlight/PassageSelector	ported	crates/lucene-search/src/highlight/match_highlight.rs::PassageSelector
 search/uhighlight/AnalysisOffsetStrategy	partial	crates/lucene-search/src/highlighter.rs::offsets_from_analysis -- M13: the class itself, as T13.2 ports the unified highlighter
 search/uhighlight/CharArrayMatcher	todo:M13	Matches a character array
 search/uhighlight/CustomSeparatorBreakIterator	todo:M13	A BreakIterator that breaks the text whenever a certain separator, provided as a constructor argument, is found.

@@ -54,7 +54,7 @@ Milestones (M1-M12, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [search-queries.md](parity/search-queries.md) | `lucene-search`: query types, rewrites, parser, vector queries | 38 |
 | [queryparser.md](parity/queryparser.md) | `lucene-queryparser`: the classic, multi-field, simple, extendable, surround and complex-phrase, XML and flexible query parsers (M13 T13.1) | 15 |
 | [search-execution.md](parity/search-execution.md) | `lucene-search`: scorer tree, bulk scorers, similarities, multi-segment fan-out | 29 |
-| [highlighter.md](parity/highlighter.md) | `lucene-highlighter`: the classic `Highlighter` (M13 T13.2) | 4 |
+| [highlighter.md](parity/highlighter.md) | `lucene-highlighter`: the classic `Highlighter` (M13 T13.2) | 7 |
 | [search-collectors.md](parity/search-collectors.md) | `lucene-search`: collectors, sorting, facets, aggregations, highlighting, fetch | 33 |
 | [search-readers.md](parity/search-readers.md) | `lucene-search`: `DirectoryReader`, NRT readers, `CheckIndex`, searcher management | 27 |
 | [monitor.md](parity/monitor.md) | `lucene-search`: the percolator: query analysis, presearcher, query index and facade (M13 T13.5a-d) | 11 |
