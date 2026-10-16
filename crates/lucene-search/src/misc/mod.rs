@@ -3,6 +3,7 @@
 
 pub mod fst;
 pub mod high_freq;
+pub mod index;
 pub mod lazy_document;
 pub mod memory;
 pub mod sweet_spot;
