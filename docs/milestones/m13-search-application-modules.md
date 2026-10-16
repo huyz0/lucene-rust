@@ -102,7 +102,18 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
   (`GenVectorHighlight`: 10,036 rows, eight configurations, term vectors with
   and without offsets or positions, matched fields, multi-valued and discrete
   fields), every fixture row equal.
-- **T13.3** — Suggesters and the completion postings format.
+- **T13.3** — Suggesters and the completion postings format, five sub-tasks in order:
+  - **T13.3a** — the base layer: `Lookup`, `LookupResult`, the `CHARSEQUENCE_COMPARATOR`,
+    `LookupPriorityQueue` (Java's heap, so ties match), `InputIterator` and its
+    wrapper, `BufferedInputIterator`, `SortedInputIterator` (in memory). **Done**
+    (unit-tested; no Java fixture yet, since no concrete suggester uses it). Still
+    owed in T13.3a: `UnsortedInputIterator`, `InMemorySorter`, `ExternalRefSorter`,
+    `FileDictionary`, `DocumentDictionary`, `DocumentValueSourceDictionary`, `Dictionary`,
+    `BitsProducer`.
+  - **T13.3b** — TST and FST lookups (`TSTLookup`, `FSTCompletion*`, `WFSTCompletionLookup` in full).
+  - **T13.3c** — analyzing suggesters (`AnalyzingSuggester`, `FuzzySuggester`, `FreeTextSuggester`, `AnalyzingInfixSuggester`, `BlendedInfixSuggester`, `SuggestStopFilter`).
+  - **T13.3d** — `suggest.document`: the completion postings format and its queries (what OpenSearch uses; prioritised).
+  - **T13.3e** — `spell`.
 - **T13.4** — Taxonomy facets and drill-sideways.
 - **T13.5** — `MemoryIndex` and `monitor`. `MemoryIndex` is ported
   (`GenMemoryIndex`: 16 documents under eight configurations, every query's

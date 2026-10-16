@@ -28,7 +28,7 @@ search/suggest/analyzing/FuzzySuggester	todo:M13	Implements a fuzzy AnalyzingSug
 search/suggest/analyzing/SuggestStopFilter	todo:M13	Like StopFilter except it will not remove the last token if that token was not followed by some token separator.
 search/suggest/analyzing/SuggestStopFilterFactory	todo:M13	Factory for SuggestStopFilter.
 search/suggest/BitsProducer	todo:M13	A producer of Bits per segment.
-search/suggest/BufferedInputIterator	todo:M13	This wrapper buffers incoming elements.
+search/suggest/BufferedInputIterator	ported	crates/lucene-search/src/suggest/input.rs::BufferedInputIterator
 search/suggest/document/Completion101PostingsFormat	todo:M13	CompletionPostingsFormat for org.apache.lucene.backward_codecs.lucene103.Lucene103PostingsFormat.
 search/suggest/document/Completion104PostingsFormat	todo:M13	CompletionPostingsFormat for Lucene104PostingsFormat.
 search/suggest/document/Completion50PostingsFormat	todo:M13	org.apache.lucene.search.suggest.document.CompletionPostingsFormat for org.apache.lucene.backward_codecs.lucene50.Lucene50PostingsFormat.
@@ -68,9 +68,9 @@ search/suggest/fst/FSTCompletionBuilder	todo:M13	Finite state automata based imp
 search/suggest/fst/FSTCompletionLookup	todo:M13	An adapter from Lookup API to FSTCompletion.
 search/suggest/fst/WFSTCompletionLookup	partial	crates/lucene-codecs/src/suggest.rs::build_suggester_fst -- M13: the Lookup API (build from an InputIterator, store/load, exactFirst), as T13.3 ports lucene-suggest
 search/suggest/InMemorySorter	todo:M13	An BytesRefSorter that keeps all the entries in memory.
-search/suggest/InputIterator	todo:M13	Interface for enumerating term,weight,payload triples for suggester consumption; currently only AnalyzingSuggester, FuzzySuggester and AnalyzingInfixSuggester s
-search/suggest/Lookup	todo:M13	Simple Lookup interface for CharSequence suggestions.
-search/suggest/SortedInputIterator	todo:M13	This wrapper buffers incoming elements and makes sure they are sorted based on given comparator.
+search/suggest/InputIterator	ported	crates/lucene-search/src/suggest/input.rs::InputIterator
+search/suggest/Lookup	ported	crates/lucene-search/src/suggest/lookup.rs::Lookup
+search/suggest/SortedInputIterator	ported	crates/lucene-search/src/suggest/input.rs::SortedInputIterator
 search/suggest/tst/TernaryTreeNode	todo:M13	The class creates a TST node.
 search/suggest/tst/TSTAutocomplete	todo:M13	Ternary Search Trie implementation.
 search/suggest/tst/TSTLookup	todo:M13	Suggest implementation based on a Ternary Search Tree
