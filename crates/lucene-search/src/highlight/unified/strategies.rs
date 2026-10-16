@@ -136,9 +136,6 @@ fn clause_fields(c: &Clause) -> BTreeSet<String> {
             self.0.insert(field.to_string());
         }
         fn visit_leaf(&mut self, _q: &Clause) {}
-        fn sub_visitor(&mut self, _o: Occur, _p: &Clause) -> SubVisitor {
-            SubVisitor::Same
-        }
     }
     let mut r = Rec(BTreeSet::new());
     query_visitor::visit(c, &mut r);
@@ -293,12 +290,16 @@ impl QueryVisitor for AutomataCollector<'_> {
     fn accept_field(&self, field: &str) -> bool {
         (self.field_matcher)(field)
     }
-    fn sub_visitor(&mut self, _occur: Occur, parent: &Clause) -> SubVisitor {
+    fn sub_visitor(&mut self, occur: Occur, parent: &Clause) -> SubVisitor {
         if !self.look_in_span && is_span(parent) {
             return SubVisitor::Empty;
         }
-        // `QueryVisitor`'s default: this, whatever the occurrence
-        SubVisitor::Same
+        // `super.getSubVisitor`: this, but not for a `MUST_NOT` clause
+        if occur == Occur::MustNot {
+            SubVisitor::Empty
+        } else {
+            SubVisitor::Same
+        }
     }
     fn consume_terms_matching(&mut self, query: &Clause, _field: &str, matcher: &dyn TermMatcher) {
         (self.on_automaton)(&crate::explain::describe_clause(query), matcher);
@@ -331,9 +332,6 @@ pub fn has_unrecognized_query(field_matcher: &dyn Fn(&str) -> bool, query: &Clau
         fn accept_field(&self, field: &str) -> bool {
             // checking `unknown` is a trick to exit early
             !self.unknown && (self.field_matcher)(field)
-        }
-        fn sub_visitor(&mut self, _occur: Occur, _parent: &Clause) -> SubVisitor {
-            SubVisitor::Same
         }
         fn visit_leaf(&mut self, query: &Clause) {
             // `canExtractAutomataFromLeafQuery`: an `AutomatonQuery` or a
@@ -511,7 +509,13 @@ impl Strategy {
                 };
                 let mut stream = super::super::TokenStreamFromTermVector::new(vector, -1)?;
                 let tokens = drain_tokens(&mut stream)?;
-                self.enums_from_memory_index(&tokens, Some(ctx), false)
+                let found = self.enums_from_memory_index(&tokens, Some(ctx), false)?;
+                if vector.has_offsets {
+                    return Ok(found);
+                }
+                // `TermVectorLeafReader` postings report offset -1 without
+                // offsets, which `FieldHighlighter` refuses at the first match
+                Ok(found.map(|e| Box::new(NoOffsets(e)) as Box<dyn OffsetsEnum>))
             }
             OffsetSource::Analysis => {
                 let analyzer = self.analyzer.as_ref().expect("checked at construction");
@@ -996,4 +1000,29 @@ pub fn analyze_content(analyzer: &Analyzer, field: &str, content: &[u16]) -> Res
         final_offset,
         end_attributes: None,
     })
+}
+
+/// The matches of a term vector without offsets: offset -1, as Java's
+/// `TermVectorLeafReader` postings report them.
+struct NoOffsets(Box<dyn OffsetsEnum>);
+
+impl OffsetsEnum for NoOffsets {
+    fn next_position(&mut self) -> Result<bool> {
+        self.0.next_position()
+    }
+    fn freq(&self) -> i32 {
+        self.0.freq()
+    }
+    fn term(&self) -> Option<&[u8]> {
+        self.0.term()
+    }
+    // SENTINEL: `-1` = no offsets, `OffsetsEnum.startOffset`'s contract;
+    // `FieldHighlighter` compares it and refuses.
+    fn start_offset(&self) -> i32 {
+        -1
+    }
+    // SENTINEL: `-1` = no offsets, as `start_offset`; compared only.
+    fn end_offset(&self) -> i32 {
+        -1
+    }
 }

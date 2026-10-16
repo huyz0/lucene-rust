@@ -37,7 +37,7 @@ fn with_index<R>(body: impl FnOnce(&DirectoryReader, &IndexSearcher<'_, '_>, Vec
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
     let mut owned: Vec<HashMap<String, FieldNorms<'_>>> = Vec::new();
-    for field in ["id", "offs", "pos", "docs", "tv", "both"] {
+    for field in ["id", "offs", "pos", "docs", "tv", "both", "tvpos"] {
         for (i, n) in reader.field_norms(field).into_iter().enumerate() {
             if owned.len() <= i {
                 owned.push(HashMap::new());
@@ -357,4 +357,26 @@ fn a_query_it_cannot_take_apart_is_highlighted_by_its_matches() {
         got.contains("<b>quick</b>") && got.contains("<b>lazy</b>"),
         "{got}"
     );
+}
+
+#[test]
+fn a_match_needs_room_for_a_passage() {
+    with_index(|reader, searcher, all| {
+        let uh = UnifiedHighlighter::new(Some(reader), Some(analyzer()));
+        let q = query("offs:fox", reader.max_doc());
+        // Java: a `NullPointerException` (0) or an `IllegalArgumentException`
+        // (below 0) from the passage queue, at the first match
+        for max in [0, -1, -5] {
+            assert!(
+                matches!(
+                    uh.highlight(searcher, "offs", &q, &all, max),
+                    Err(Error::IllegalArgument(m)) if m.contains("maxPassages")
+                ),
+                "{max}"
+            );
+        }
+        // a query that matches nothing never reaches the queue
+        let none = query("offs:zzzzz", reader.max_doc());
+        assert!(uh.highlight(searcher, "offs", &none, &all, 0).is_ok());
+    });
 }

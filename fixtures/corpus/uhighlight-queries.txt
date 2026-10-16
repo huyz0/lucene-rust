@@ -20,3 +20,6 @@ F:caf*
 offs:fox pos:quick docs:dog
 +offs:fox +pos:quick
 offs:fox -pos:cat
++F:fox -F:qu*
++F:"quick brown" -F:/do.*/
++F:fox -F:foo~1

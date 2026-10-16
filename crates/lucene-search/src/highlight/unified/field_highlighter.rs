@@ -66,6 +66,15 @@ impl FieldHighlighter {
         if !off.next_position()? {
             return Ok(Vec::new());
         }
+        // Java: `new PriorityQueue<>(min(64, maxPassages + 1))` refuses a
+        // `maxPassages` below 0, and the queue's `peek()` of a zero-length
+        // queue is null, a `NullPointerException` at the first passage
+        if self.max_passages < 1 {
+            return Err(Error::IllegalArgument(format!(
+                "maxPassages must be at least 1 to highlight a match, got {}",
+                self.max_passages
+            )));
+        }
         // the queue keeps the `max_passages` best; the head is the weakest
         let mut queue: Vec<Passage> = Vec::new();
         // the current passage in progress: reset or added to the queue
