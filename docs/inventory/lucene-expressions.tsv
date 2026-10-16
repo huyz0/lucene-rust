@@ -1,0 +1,19 @@
+# Lucene 10.5.0 lucene-expressions: every top-level class of the jar, and what became of it.
+# Checked by scripts/check-port-inventory.py --module expressions (see its docstring for the statuses).
+# class	status	detail
+expressions/Bindings	ported	crates/lucene-search/src/expressions/mod.rs::Bindings
+expressions/CachingExpressionValueSource	ported	crates/lucene-search/src/expressions/mod.rs::ExpressionValueSource -- the `caching` flavour of one type: `ExpressionValueSource::caching`
+expressions/Expression	ported	crates/lucene-search/src/expressions/js.rs::Expression
+expressions/ExpressionFunctionValues	ported	crates/lucene-search/src/expressions/mod.rs::ExpressionFunctionValues
+expressions/ExpressionRescorer	ported	crates/lucene-search/src/expressions/mod.rs::ExpressionRescorer
+expressions/ExpressionValueSource	ported	crates/lucene-search/src/expressions/mod.rs::ExpressionValueSource
+expressions/SimpleBindings	ported	crates/lucene-search/src/expressions/mod.rs::SimpleBindings
+expressions/js/ExpressionMath	ported	crates/lucene-search/src/expressions/js.rs::haversin_kilometers
+expressions/js/JavascriptBaseVisitor	not-needed	ANTLR's generated visitor base; the lowering pass in js.rs walks the parse tree directly
+expressions/js/JavascriptCompiler	ported	crates/lucene-search/src/expressions/js.rs::compile_with
+expressions/js/JavascriptErrorHandlingLexer	ported	crates/lucene-search/src/expressions/js.rs::unexpected_char
+expressions/js/JavascriptLexer	ported	crates/lucene-search/src/expressions/js.rs::lex
+expressions/js/JavascriptParser	ported	crates/lucene-search/src/expressions/js.rs::Parser
+expressions/js/JavascriptParserErrorStrategy	ported	crates/lucene-search/src/expressions/js.rs::Parser
+expressions/js/JavascriptVisitor	not-needed	ANTLR's generated visitor interface; the lowering pass in js.rs walks the parse tree directly
+expressions/js/VariableContext	ported	crates/lucene-search/src/expressions/variable_context.rs::VariableContext

@@ -211,6 +211,7 @@ pub mod docid_set;
 pub mod document;
 mod exec;
 pub mod explain;
+pub mod expressions;
 pub mod extended_query;
 pub mod facets;
 pub mod field_norms;

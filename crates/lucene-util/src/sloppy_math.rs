@@ -134,7 +134,7 @@ fn tables() -> &'static Tables {
 #[inline(always)]
 pub fn haversin_meters(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     let t = tables();
-    meters_with(t, sort_key_with(t, lat1, lon1, lat2, lon2))
+    meters_with(t, sort_key_with::<false>(t, lat1, lon1, lat2, lon2))
 }
 
 /// `SloppyMath.haversinMeters(sortKey)`: the distance for a value of
@@ -155,32 +155,47 @@ fn meters_with(t: &Tables, sort_key: f64) -> f64 {
 /// `SloppyMath.haversinSortKey`: compares like the distance, cheaper.
 #[inline(always)]
 pub fn haversin_sort_key(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
-    sort_key_with(tables(), lat1, lon1, lat2, lon2)
+    sort_key_with::<false>(tables(), lat1, lon1, lat2, lon2)
+}
+
+/// [`haversin_sort_key`] where a cosine past the table's reach is
+/// `StrictMath.cos` (fdlibm) rather than the platform's: what `Math.cos`
+/// is on a JVM without the HotSpot intrinsic, which `lucene-expressions`'
+/// fixtures are generated on.
+#[inline(always)]
+pub fn haversin_sort_key_fdlibm(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    sort_key_with::<true>(tables(), lat1, lon1, lat2, lon2)
 }
 
 #[inline(always)]
-fn sort_key_with(t: &Tables, lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+fn sort_key_with<const STRICT: bool>(
+    t: &Tables,
+    lat1: f64,
+    lon1: f64,
+    lat2: f64,
+    lon2: f64,
+) -> f64 {
     let x1 = lat1.to_radians();
     let x2 = lat2.to_radians();
-    let h1 = 1.0 - cos_with(t, x1 - x2);
-    let h2 = 1.0 - cos_with(t, (lon1 - lon2).to_radians());
-    let h = h1 + cos_with(t, x1) * cos_with(t, x2) * h2;
+    let h1 = 1.0 - cos_with::<STRICT>(t, x1 - x2);
+    let h2 = 1.0 - cos_with::<STRICT>(t, (lon1 - lon2).to_radians());
+    let h = h1 + cos_with::<STRICT>(t, x1) * cos_with::<STRICT>(t, x2) * h2;
     // clobber crazy precision so subsequent rounding does not create ties.
     f64::from_bits(h.to_bits() & 0xFFFF_FFFF_FFFF_FFF8)
 }
 
 /// `SloppyMath.cos`: error around 1e-15.
 pub fn cos(a: f64) -> f64 {
-    cos_with(tables(), a)
+    cos_with::<false>(tables(), a)
 }
 
 /// `cos` with the tables already in hand (`haversin_sort_key` makes four
 /// calls; one `OnceLock` read serves them all).
 #[inline(always)]
-fn cos_with(t: &Tables, a: f64) -> f64 {
+fn cos_with<const STRICT: bool>(t: &Tables, a: f64) -> f64 {
     let a = if a < 0.0 { -a } else { a };
     if a.is_nan() || a > SIN_COS_MAX_VALUE_FOR_INT_MODULO {
-        return cos_far(t, a);
+        return cos_far::<STRICT>(t, a);
     }
     // Java's `(int)` cast, which saturates; the argument is in range here, so
     // the cast need not clamp -- a clamping `as` puts a `maxsd`/`minsd` pair
@@ -203,9 +218,9 @@ fn cos_with(t: &Tables, a: f64) -> f64 {
 /// arithmetic at Java's `(int) NaN == 0`, which yields NaN through `delta`.
 #[cold]
 #[inline(never)]
-fn cos_far(t: &Tables, a: f64) -> f64 {
+fn cos_far<const STRICT: bool>(t: &Tables, a: f64) -> f64 {
     if a > SIN_COS_MAX_VALUE_FOR_INT_MODULO {
-        return libm_cos(a);
+        return libm_cos::<STRICT>(a);
     }
     let delta = (a - 0.0 * SIN_COS_DELTA_HI) - 0.0 * SIN_COS_DELTA_LO;
     let [index_cos, index_sin] = t.sin_cos[0];
@@ -217,11 +232,16 @@ fn cos_far(t: &Tables, a: f64) -> f64 {
                         + delta * (index_sin * ONE_DIV_F3 + delta * index_cos * ONE_DIV_F4)))
 }
 
-/// `Math.cos`, off the hot path.
+/// `Math.cos`, off the hot path: the platform's (what HotSpot's intrinsic
+/// is, to the last bit in practice), or with `STRICT` fdlibm's.
 #[cold]
 #[inline(never)]
-fn libm_cos(a: f64) -> f64 {
-    a.cos()
+fn libm_cos<const STRICT: bool>(a: f64) -> f64 {
+    if STRICT {
+        crate::strict_math::cos(a)
+    } else {
+        a.cos()
+    }
 }
 
 /// `SloppyMath.sin`, as `cos(a - pi/2)` (so `sin(0) != 0`).
