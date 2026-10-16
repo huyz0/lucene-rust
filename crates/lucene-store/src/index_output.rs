@@ -321,7 +321,9 @@ pub(crate) fn create_output(root: &Path, name: &str) -> Result<FsIndexOutput> {
 /// that support directory fsync).
 pub(crate) fn sync(root: &Path, names: &[String]) -> Result<()> {
     for name in names {
-        let file = OpenOptions::new().read(true).open(root.join(name))?;
+        // Write access (never truncating): Windows refuses `FlushFileBuffers`
+        // on a read-only handle, as Java's `FileChannel.open(path, WRITE)` implies.
+        let file = OpenOptions::new().write(true).open(root.join(name))?;
         file.sync_all()?;
     }
     // Best-effort directory fsync so the new file names themselves survive a
