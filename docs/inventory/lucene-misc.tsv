@@ -13,8 +13,8 @@ misc/index/BPReorderingMergePolicy	todo:M14	M14.c: a merge policy that reorders 
 misc/index/BinaryDocValueSelector	todo:M14	M14.c: a document selector keyed by a BinaryDocValues field, for IndexRearranger
 misc/index/IndexRearranger	todo:M14	M14.c: copies an index into another, rearranged by document selectors
 misc/index/IndexSplitter	todo:M14	M14.c: the CLI listing, copying and deleting an index's segments
-misc/index/MultiPassIndexSplitter	todo:M14	M14.c: splits an index into equal parts with addIndexes
-misc/index/PKIndexSplitter	todo:M14	M14.c: splits an index into the documents matching a query and the rest
+misc/index/MultiPassIndexSplitter	ported	crates/lucene-search/src/misc/index/multi_pass.rs::MultiPassIndexSplitter
+misc/index/PKIndexSplitter	ported	crates/lucene-search/src/misc/index/pk.rs::PkIndexSplitter
 misc/search/DiversifiedTopDocsCollector	todo:M14	M14.d: a top-docs collector allowing at most maxHitsPerKey hits per key
 misc/search/DiversifiedTopDocsCollectorManager	todo:M14	M14.d: the manager of DiversifiedTopDocsCollector
 misc/search/DocValuesStats	todo:M14	M14.d: the statistics of a DocValues field over the hits (abstract holder)
