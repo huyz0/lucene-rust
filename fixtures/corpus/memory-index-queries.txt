@@ -51,3 +51,6 @@ mixed
 /ap+le/
 -nothing
 nothing
+fox AND fox^2
+fox AND fox
++quick +quick^3

@@ -357,7 +357,7 @@ fn the_in_memory_form_and_the_segment_score_alike() {
             let reader = mi.create_reader().unwrap();
             for (q, clause) in queries.iter().zip(&clauses) {
                 let fast = reader.search(clause).unwrap();
-                let segment = match reader::as_boolean(clause) {
+                let segment = match reader::as_boolean(&clause.clone().rewrite()) {
                     Some(bq) => reader.search_segment(&bq).unwrap(),
                     None => 0.0,
                 };

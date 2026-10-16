@@ -10,10 +10,10 @@ monitor/ExplainingMatch	todo:M13	A query match containing the score explanation 
 monitor/ForceNoBulkScoringQuery	todo:M13	Query wrapper that forces its wrapped Query to use the default doc-by-doc BulkScorer.
 monitor/HighlightsMatch	todo:M13	QueryMatch object that contains the hit positions of a matching Query If the Query does not support interval iteration (eg, if it gets re-written to a Filter),
 monitor/MatcherFactory	todo:M13	Interface for the creation of new CandidateMatcher objects
-monitor/MatchingQueries	todo:M13	Class to hold the results of matching a single org.apache.lucene.document.Document against queries held in the Monitor
-monitor/Monitor	todo:M13	A Monitor contains a set of Query objects with associated IDs, and efficiently matches them against sets of Document objects.
+monitor/MatchingQueries	partial	crates/lucene-search/src/monitor/facade.rs::MatchingQueries -- M13: build/search timings; MultiMatchingQueries (a batch of documents) is match_batch's MatchResult
+monitor/Monitor	partial	crates/lucene-search/src/monitor/facade.rs::Monitor -- M13: MonitorConfiguration, the read-only mode, update listeners, getQueryCacheStats/purgeCache and debug() (T13.5d)
 monitor/MonitorConfiguration	todo:M13	Encapsulates various configuration settings for a Monitor's query index
-monitor/MonitorQuery	todo:M13	Defines a query to be stored in a Monitor
+monitor/MonitorQuery	ported	crates/lucene-search/src/monitor/index.rs::MonitorQuery -- Defines a query to be stored in a Monitor
 monitor/MonitorQuerySerializer	todo:M13	Serializes and deserializes MonitorQuery objects into byte streams Use this for persistent query indexes
 monitor/MonitorUpdateListener	todo:M13	For reporting events on a Monitor's query index
 monitor/MultiMatchingQueries	todo:M13	Class to hold the results of matching a batch of org.apache.lucene.document.Documents against queries held in the Monitor
@@ -24,19 +24,19 @@ monitor/Presearcher	ported	crates/lucene-search/src/monitor/presearcher.rs::Term
 monitor/PresearcherMatch	todo:M13	Wraps a QueryMatch with information about which queries were selected by the presearcher
 monitor/PresearcherMatches	todo:M13	Wraps a MultiMatchingQueries with information on which presearcher queries were selected
 monitor/QueryAnalyzer	ported	crates/lucene-search/src/monitor/analyzer.rs::QueryAnalyzer -- Class to analyze and extract terms from a lucene query, to be used by a Presearcher in indexing.
-monitor/QueryCacheEntry	todo:M13	QueryCacheEntry
+monitor/QueryCacheEntry	ported	crates/lucene-search/src/monitor/index.rs::QueryCacheEntry -- QueryCacheEntry
 monitor/QueryDecomposer	ported	crates/lucene-search/src/monitor/analyzer.rs::QueryDecomposer -- Split a disjunction query into its consituent parts, so that they can be indexed and run separately in the Monitor.
-monitor/QueryIndex	todo:M13	QueryIndex
-monitor/QueryMatch	todo:M13	Represents a match for a specific query and document Derived classes may contain more information (such as scores, highlights, etc)
+monitor/QueryIndex	partial	crates/lucene-search/src/monitor/index.rs::QueryIndex -- M13: the on-disk index, its SearcherManager and cache purge (T13.5d); entries are kept in memory
+monitor/QueryMatch	ported	crates/lucene-search/src/monitor/facade.rs::QueryMatch -- Represents a match for a specific query and document Derived classes may contain more information (s
 monitor/QueryTimeListener	todo:M13	Notified of the time it takes to run individual queries against a set of documents
 monitor/QueryTree	ported	crates/lucene-search/src/monitor/tree.rs::QueryTree -- A representation of a node in a query tree Queries are analyzed and converted into an abstract tree, consisting of conjunction and disjunction nodes, and leaf n
 monitor/ReadonlyQueryIndex	todo:M13	ReadonlyQueryIndex
 monitor/RegexpQueryHandler	todo:M13	A query handler implementation that matches Regexp queries by indexing regex terms by their longest static substring, and generates ngrams from Document tokens
-monitor/ScoringMatch	todo:M13	A QueryMatch that reports scores for each match
+monitor/ScoringMatch	ported	crates/lucene-search/src/monitor/facade.rs::QueryMatch -- ScoringMatch is QueryMatch with a score; pieces of one query add up (resolve)
 monitor/SlowLog	todo:M13	Reports on slow queries in a given match run
 monitor/SuffixingNGramTokenFilter	todo:M13	SuffixingNGramTokenFilter
 monitor/TermFilteredPresearcher	ported	crates/lucene-search/src/monitor/presearcher.rs::TermFilteredPresearcher -- index_query (the document), build_query (the batch query), build_filter_clause, build_filter_fields. Differs: returns the query as a Clause, run by the query index (T13.5c); custom query handlers are not wired in
 monitor/TermsEnumTokenStream	todo:M13	A TokenStream created from a org.apache.lucene.index.TermsEnum
 monitor/TermsHashBuilder	todo:M13	TermsHashBuilder
 monitor/TermWeightor	ported	crates/lucene-search/src/monitor/tree.rs::TermWeightor -- Calculates the weight of a Term
-monitor/WritableQueryIndex	todo:M13	WritableQueryIndex
+monitor/WritableQueryIndex	partial	crates/lucene-search/src/monitor/index.rs::QueryIndex -- M13: commit batching and persistence through an IndexWriter (T13.5d)
