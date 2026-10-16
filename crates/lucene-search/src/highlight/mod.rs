@@ -16,9 +16,11 @@
 
 mod extractor;
 mod formatters;
+mod match_highlight;
 mod term_vector;
 #[cfg(test)]
 mod tests;
+mod word_break;
 
 pub use extractor::{
     DocFreqSource, PositionSpan, QueryScorer, QueryTermExtractor, QueryTermScorer,
@@ -29,7 +31,16 @@ pub use formatters::{
     SimpleHtmlFormatter, SimpleSpanFragmenter, SpanGradientFormatter,
 };
 
+pub use match_highlight::{
+    compute_offset_retrieval_strategies, default_scorer, BreakIteratorShrinkingAdjuster,
+    DocHighlights, FieldValueHighlighter, FieldValueHighlighters, FieldValueProvider,
+    MatchHighlighter, MatchRegionRetriever, OffsetRange, OffsetsFromMatchIterator,
+    OffsetsFromPositions, OffsetsFromTokens, OffsetsFromValues, OffsetsRetrievalStrategy,
+    OffsetsRetrievalStrategySupplier, OrHighlighter, Passage, PassageAdjuster, PassageFormatter,
+    PassageSelector, QueryOffsetRange, StoredValues,
+};
 pub use term_vector::{TokenSources, TokenStreamFromTermVector};
+pub use word_break::WordBreakIterator;
 
 use std::sync::Arc;
 
@@ -46,6 +57,10 @@ pub enum Error {
     Search(crate::Error),
     /// `IllegalArgumentException`.
     IllegalArgument(String),
+    /// `IOException`, with Java's message.
+    Io(String),
+    /// `RuntimeException`.
+    Runtime(String),
 }
 
 impl Error {
@@ -58,13 +73,18 @@ impl Error {
             Error::Analysis(_) => "java.io.IOException",
             Error::Search(_) => "java.io.IOException",
             Error::IllegalArgument(_) => "java.lang.IllegalArgumentException",
+            Error::Io(_) => "java.io.IOException",
+            Error::Runtime(_) => "java.lang.RuntimeException",
         }
     }
 
     /// The exception's message.
     pub fn message(&self) -> String {
         match self {
-            Error::InvalidTokenOffsets(m) | Error::IllegalArgument(m) => m.clone(),
+            Error::InvalidTokenOffsets(m)
+            | Error::IllegalArgument(m)
+            | Error::Io(m)
+            | Error::Runtime(m) => m.clone(),
             Error::Analysis(e) => e.to_string(),
             Error::Search(e) => e.to_string(),
         }

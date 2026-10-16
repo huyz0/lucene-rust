@@ -1,0 +1,8 @@
+d0	The quick brown fox jumps over the lazy dog. The fox is quick and the dog is lazy, so the fox jumps again and again over the same lazy dog until the evening comes.	A quick brown fox. Another fox here, quick as ever, jumped.	fox and dog and cat	Foxes and dogs
+d1	Nothing to see here, just a plain sentence about cats and mice that goes on for a while without any animals of interest, followed by a late fox appearing at the very end of the sentence.	cats mice rats	mouse rat cat	Cats
+d2	First value mentions a fox.Second value is about a quick brown dog, and a quick brown fox follows.Third has nothing.	one foxtwo quick foxesthree	foxdogquick	Many values
+d3	Café Müller's naïve fox — it jumps over 日本語 text, quick quick quick, then the lazy dog.	Café fox, ünïcode quick.	fox quick	Unicode
+d4	fox	fox	fox	Short
+d5	the quick brown fox. the quick brown fox. the quick brown fox. the quick brown fox. the quick brown fox. the quick brown fox. the quick brown fox. the quick brown fox.	quick brown quick brown quick brown	quick brown	Repeated
+d6	lazy dog sleeping while a quick fox watches the brown dog sleeping on and on in the sun	lazy dog quick fox	lazy	Lazy
+d7	a <b>bold</b> & "quoted" fox/dog's 'tale' is quick > slow	x	y	Markup

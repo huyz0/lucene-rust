@@ -7,6 +7,7 @@ use crate::extended_query::{MultiTermQuery, MultiTermSource, RewriteMethod};
 use crate::query::{Clause, PrefixQuery, TermQuery, WildcardQuery};
 use crate::spans::SpanNode;
 use lucene_analysis::{Analyzer, StandardAnalyzer, TokenStream};
+use std::sync::Arc;
 
 fn stream<'a>(analyzer: &'a Analyzer, text: &str) -> DynStream<'a> {
     DynStream::new(analyzer.token_stream("f", text).unwrap())
@@ -517,4 +518,319 @@ fn token_sources_choose_between_the_vector_and_the_text() {
     );
     let ts = TokenSources::get_token_stream_from_text("f", "x y z", &analyzer).unwrap();
     assert_eq!(tokens(ts).len(), 3);
+}
+
+// ---------------------------------------------------------------------------
+// matchhighlight
+// ---------------------------------------------------------------------------
+
+fn utf16(s: &str) -> Vec<u16> {
+    s.encode_utf16().collect()
+}
+
+#[test]
+fn passages_are_windows_around_sorted_markers() {
+    // markers given out of order are still each put in a window of their own
+    let value = utf16(&"x".repeat(40));
+    let mut selector = PassageSelector::default();
+    let markers = [OffsetRange::new(30, 33), OffsetRange::new(4, 7)];
+    let got = selector.pick_best_whole(&value, &markers, 10, 5);
+    assert_eq!(
+        got,
+        vec![
+            Passage::new(0, 10, vec![OffsetRange::new(4, 7)]),
+            Passage::new(26, 36, vec![OffsetRange::new(30, 33)]),
+        ]
+    );
+    assert_eq!(got[0].length(), 10);
+    // the nearer the passages, the fewer: adjacent ones keep the better
+    let near = [OffsetRange::new(10, 12), OffsetRange::new(14, 20)];
+    let got = selector.pick_best_whole(&value, &near, 12, 5);
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].markers, vec![OffsetRange::new(14, 20)]);
+    // nothing to pick in an empty value or with no window
+    assert!(selector.pick_best_whole(&[], &markers, 10, 5).is_empty());
+    assert!(selector.pick_best_whole(&value, &markers, 0, 5).is_empty());
+    // no markers: the start of each permitted range
+    let permitted = [OffsetRange::new(0, 15), OffsetRange::new(20, 40)];
+    let got = selector.pick_best(&value, &[], 8, 5, &permitted);
+    assert_eq!(
+        got,
+        vec![Passage::new(0, 8, vec![]), Passage::new(20, 28, vec![])]
+    );
+    assert_eq!(selector.pick_best(&value, &[], 8, 1, &permitted).len(), 1);
+    // a marker beyond the permitted range is cut to it, one longer than the
+    // window to the window
+    let cut = selector.pick_best(&value, &[OffsetRange::new(8, 30)], 6, 1, &permitted);
+    assert_eq!(cut[0].markers, vec![OffsetRange::new(8, 14)]);
+    let ctx = OffsetRange::new(2, 4);
+    assert!(ctx.contains(&OffsetRange::new(2, 3)) && !ctx.contains(&OffsetRange::new(1, 3)));
+    assert_eq!(ctx.to_string(), "[from=2, to=4]");
+}
+
+#[test]
+fn passages_are_formatted_with_nested_markers() {
+    let value = utf16("abcdefghij");
+    let f =
+        PassageFormatter::with_markers("..", |r| format!("({}-{}:", r.from, r.to), |_| ")".into());
+    let mut out = String::new();
+    // nested: the inner marker closes inside the outer one
+    f.format_passage(
+        &mut out,
+        &value,
+        &Passage::new(0, 10, vec![OffsetRange::new(0, 10), OffsetRange::new(2, 5)]),
+    );
+    assert_eq!(out, "(0-10:ab(2-5:cde)fghij)");
+    // two starting together: the longer opens first
+    let mut out = String::new();
+    f.format_passage(
+        &mut out,
+        &value,
+        &Passage::new(0, 10, vec![OffsetRange::new(0, 5), OffsetRange::new(0, 10)]),
+    );
+    assert_eq!(out, "(0-10:(0-5:abcde)fghij)");
+    // overlapping, neither inside the other: the first closes, the second
+    // is closed and reopened around it
+    let mut out = String::new();
+    f.format_passage(
+        &mut out,
+        &value,
+        &Passage::new(0, 10, vec![OffsetRange::new(1, 6), OffsetRange::new(4, 8)]),
+    );
+    assert_eq!(out, "a(1-6:bcd(4-8:ef))(4-8:gh)ij");
+    // no markers, one marker
+    let mut out = String::new();
+    f.format_passage(&mut out, &value, &Passage::new(2, 6, vec![]));
+    assert_eq!(out, "cdef");
+    let mut out = String::new();
+    f.format_passage(
+        &mut out,
+        &value,
+        &Passage::new(2, 6, vec![OffsetRange::new(3, 4)]),
+    );
+    assert_eq!(out, "c(3-4:d)ef");
+    // ellipses where a passage stops short of its range; none for no ranges
+    let ranges = [OffsetRange::new(0, 10)];
+    let got = f.format(&value, &[Passage::new(2, 6, vec![])], &ranges);
+    assert_eq!(got, ["..cdef.."]);
+    assert!(f
+        .format(&value, &[Passage::new(2, 6, vec![])], &[])
+        .is_empty());
+    // passages in a later range, and passages past the last range
+    let two = [OffsetRange::new(0, 4), OffsetRange::new(6, 10)];
+    let got = f.format(
+        &value,
+        &[Passage::new(0, 4, vec![]), Passage::new(6, 8, vec![])],
+        &two,
+    );
+    assert_eq!(got, ["abcd", "gh.."]);
+    let got = f.format(
+        &value,
+        &[Passage::new(0, 4, vec![]), Passage::new(8, 10, vec![])],
+        &two[..1],
+    );
+    assert_eq!(got, ["abcd"]);
+}
+
+#[test]
+fn the_shrinking_adjuster_keeps_passages_on_words() {
+    let mut a = BreakIteratorShrinkingAdjuster::default();
+    let value = utf16("foo  ");
+    a.current_value(&value);
+    // an edge that cannot move forward past the end stays where it was
+    assert_eq!(
+        a.adjust(&Passage::new(4, 5, vec![])),
+        OffsetRange::new(4, 5)
+    );
+    let value = utf16("alpha beta gamma delta");
+    a.current_value(&value);
+    // both edges drawn in to word boundaries, past the white space
+    assert_eq!(
+        a.adjust(&Passage::new(3, 14, vec![])),
+        OffsetRange::new(6, 10)
+    );
+    // a marker the new edges would cut is kept whole
+    let marked = Passage::new(3, 14, vec![OffsetRange::new(4, 12)]);
+    assert_eq!(a.adjust(&marked), OffsetRange::new(4, 12));
+    // an edge already on a word stays
+    assert_eq!(
+        a.adjust(&Passage::new(0, 22, vec![])),
+        OffsetRange::new(0, 22)
+    );
+}
+
+struct NoMatches(Clause);
+
+impl crate::matches::MatchesIterator for NoMatches {
+    fn next(&mut self) -> crate::Result<bool> {
+        Ok(false)
+    }
+    // SENTINEL: -1 is `MatchesIterator`'s "no positions/offsets" -- this stub has none
+    fn start_position(&self) -> i32 {
+        -1
+    }
+    // SENTINEL: -1 is `MatchesIterator`'s "no positions/offsets" -- this stub has none
+    fn end_position(&self) -> i32 {
+        -1
+    }
+    // SENTINEL: -1 is `MatchesIterator`'s "no positions/offsets" -- this stub has none
+    fn start_offset(&self) -> i32 {
+        -1
+    }
+    // SENTINEL: -1 is `MatchesIterator`'s "no positions/offsets" -- this stub has none
+    fn end_offset(&self) -> i32 {
+        -1
+    }
+    fn query(&self) -> &Clause {
+        &self.0
+    }
+}
+
+/// A match list the iterator replays: positions and optional offsets.
+struct Listed {
+    matches: Vec<(i32, i32, i32, i32)>,
+    at: usize,
+    query: Clause,
+}
+
+impl crate::matches::MatchesIterator for Listed {
+    fn next(&mut self) -> crate::Result<bool> {
+        self.at += 1;
+        Ok(self.at <= self.matches.len())
+    }
+    fn start_position(&self) -> i32 {
+        self.matches[self.at - 1].0
+    }
+    fn end_position(&self) -> i32 {
+        self.matches[self.at - 1].1
+    }
+    fn start_offset(&self) -> i32 {
+        self.matches[self.at - 1].2
+    }
+    fn end_offset(&self) -> i32 {
+        self.matches[self.at - 1].3
+    }
+    fn query(&self) -> &Clause {
+        &self.query
+    }
+}
+
+fn values_of(field: &str, values: &[&str]) -> StoredValues {
+    let mut s = StoredValues::default();
+    s.push_for_test(field, values);
+    s
+}
+
+#[test]
+fn offsets_come_from_matches_positions_tokens_or_values() {
+    let analyzer = Arc::new(Analyzer::new(StandardAnalyzer::new()));
+    let doc = values_of("f", &["one two three", "four five"]);
+    assert_eq!(doc.fields(), ["f"]);
+    assert!(doc.get_values("g").is_empty());
+    let none = || NoMatches(term("x"));
+    let listed = |m: Vec<(i32, i32, i32, i32)>| Listed {
+        matches: m,
+        at: 0,
+        query: term("two"),
+    };
+
+    // positions are looked up in the re-analyzed values, across values
+    let strategy = OffsetsFromPositions::new("f", Arc::clone(&analyzer));
+    let got = strategy
+        .get(&mut listed(vec![(1, 2, -1, -1), (3, 3, -1, -1)]), &doc)
+        .unwrap();
+    assert_eq!(got, [OffsetRange::new(4, 13), OffsetRange::new(14, 18)]);
+    assert!(strategy.get(&mut none(), &doc).unwrap().is_empty());
+    let err = strategy
+        .get(&mut listed(vec![(-1, 2, 0, 0)]), &doc)
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "java.io.IOException: Matches API returned negative positions for field: f"
+    );
+    // a position past every token has no offsets
+    let err = strategy
+        .get(&mut listed(vec![(40, 41, -1, -1)]), &doc)
+        .unwrap_err();
+    assert!(
+        err.message().starts_with("One of the offsets missing"),
+        "{err}"
+    );
+
+    // matches that carry offsets are used as they are; the first without
+    // sends the lot to the positions
+    let from_matches =
+        OffsetsFromMatchIterator::new("f", OffsetsFromPositions::new("f", Arc::clone(&analyzer)));
+    let got = from_matches
+        .get(&mut listed(vec![(1, 1, 4, 7)]), &doc)
+        .unwrap();
+    assert_eq!(got, [OffsetRange::new(4, 7)]);
+    let got = from_matches
+        .get(&mut listed(vec![(1, 1, 4, 7), (3, 3, -1, -1)]), &doc)
+        .unwrap();
+    assert_eq!(got, [OffsetRange::new(4, 7), OffsetRange::new(14, 18)]);
+    assert!(from_matches
+        .get(&mut listed(vec![(-1, 1, 0, 1)]), &doc)
+        .is_err());
+
+    // tokens whose term the matched queries name
+    let tokens = OffsetsFromTokens::new("f", Arc::clone(&analyzer));
+    let got = tokens.get(&mut listed(vec![(1, 1, -1, -1)]), &doc).unwrap();
+    assert_eq!(got, [OffsetRange::new(4, 7)]);
+    let other = OffsetsFromTokens::new("g", Arc::clone(&analyzer));
+    assert!(other
+        .get(&mut listed(vec![(1, 1, -1, -1)]), &doc)
+        .unwrap()
+        .is_empty());
+
+    // each whole value
+    let whole = OffsetsFromValues::new("f", analyzer);
+    let got = whole.get(&mut none(), &doc).unwrap();
+    assert_eq!(got, [OffsetRange::new(0, 13), OffsetRange::new(14, 23)]);
+}
+
+#[test]
+fn field_highlighters_combine_and_name_what_they_fetch() {
+    let always = FieldValueHighlighters::verbatim_value(&["id", "name"]);
+    let mut fetched = always.always_fetched_fields();
+    fetched.sort();
+    assert_eq!(fetched, ["id", "name"]);
+    assert!(always.is_applicable("id", false) && !always.is_applicable("body", true));
+    let skip = FieldValueHighlighters::skip_remaining();
+    assert!(skip.is_applicable("anything", false));
+    assert!(skip.always_fetched_fields().is_empty());
+    let both = OrHighlighter::new(always, skip);
+    assert!(both.is_applicable("body", false));
+    assert_eq!(both.always_fetched_fields().len(), 2);
+    let values = vec!["v".to_string()];
+    assert_eq!(
+        both.format("id", &values, &utf16("v"), &[OffsetRange::new(0, 1)], None),
+        Some(values.clone())
+    );
+    assert_eq!(
+        both.format(
+            "body",
+            &values,
+            &utf16("v"),
+            &[OffsetRange::new(0, 1)],
+            Some(&[])
+        ),
+        None
+    );
+    // the leading characters of a field, whether or not it matched
+    let lead = FieldValueHighlighters::max_leading_characters(
+        6,
+        "..",
+        ["f".to_string()].into_iter().collect(),
+    );
+    assert_eq!(lead.always_fetched_fields(), ["f"]);
+    let text = utf16("alpha beta gamma");
+    let got = lead.format(
+        "f",
+        &["alpha beta gamma".into()],
+        &text,
+        &[OffsetRange::new(0, 16)],
+        None,
+    );
+    assert_eq!(got, Some(vec!["alpha..".to_string()]));
 }
