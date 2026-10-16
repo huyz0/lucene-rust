@@ -131,6 +131,12 @@ case "$BENCH" in
     SRC=benchmarks/micro/java/MemoryIndexMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-memory" ;;
+  # M13 T13.2: the unified and fast vector highlighters.
+  highlight)
+    MAIN=HighlightMicro
+    SRC=benchmarks/micro/java/HighlightMicro.java
+    EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-memory lucene-highlighter" ;;
   # M13 T13.5c: the Monitor -- register the corpus, match four documents.
   monitor)
     MAIN=MonitorMicro
