@@ -145,12 +145,11 @@ fn same_nodes(want: &str, got: &str) -> bool {
 fn same_terms(want: &str, got: &str, tree: &str) -> bool {
     let mut w: Vec<&str> = want.split(' ').filter(|t| !t.is_empty()).collect();
     let mut g: Vec<&str> = got.split(' ').filter(|t| !t.is_empty()).collect();
-    // a conjunction whose heaviest child is a term collects that one term
-    let heaviest_is_term = tree.split('\n').nth(1).is_some_and(|l| {
-        !l.trim_start().starts_with("Conjunction") && !l.trim_start().starts_with("Disjunction")
-    });
-    if tree.starts_with("Conjunction") && heaviest_is_term {
-        return g.len() == 1 && w.len() == 1 && tree_has_term(tree, g[0]);
+    // a conjunction collects the terms of its first child; where that child is
+    // a term (or a conjunction of tied terms) both sides collect one term, and
+    // which one is Java's hash order, so any term of the tree is accepted
+    if tree.starts_with("Conjunction") && g.len() == 1 && w.len() == 1 {
+        return tree_has_term(tree, g[0]);
     }
     w.sort_unstable();
     g.sort_unstable();
@@ -443,6 +442,127 @@ fn batch_queries_match_lucene() {
         if norm(&got_p) != norm(&want_p) || norm(&got_m) != norm(&want_m) {
             bad.push(format!("{line}\n  got P {got_p}\n  got M {got_m}"));
         }
+    }
+    assert!(bad.is_empty(), "{} differ:\n{}", bad.len(), bad.join("\n"));
+}
+
+/// `Monitor.match` over the registered corpus: the ids of the queries that
+/// match each batch document, as Lucene's real `Monitor` returns them
+/// (`match.tsv`).
+#[test]
+fn monitor_matches_agree_with_lucene() {
+    use lucene_analysis::TokenStream;
+    use lucene_search::memory::MemoryIndex;
+    use lucene_search::monitor::index::{match_batch, MonitorQuery, QueryIndex};
+    use lucene_search::monitor::presearcher::TermFilteredPresearcher;
+    use std::collections::BTreeMap;
+
+    let analyzer = Analyzer::new(StandardAnalyzer::new());
+    let mut index = QueryIndex::new(TermFilteredPresearcher::default());
+    let mut registered = Vec::new();
+    for (i, q) in corpus().iter().enumerate() {
+        let clause = parse(q).unwrap();
+        registered.push(
+            MonitorQuery::new(format!("q{i}"), clause, Some(q.clone()), BTreeMap::new()).unwrap(),
+        );
+    }
+    index.register(registered).unwrap();
+
+    let want = fs::read_to_string(dir().join("data/monitor/match.tsv")).unwrap();
+    let mut bad = Vec::new();
+    for line in want.lines() {
+        let cols: Vec<&str> = line.split('\t').collect();
+        let doc: Vec<String> = unesc(cols[0]).split('|').map(str::to_string).collect();
+        let mut mi = MemoryIndex::new();
+        let mut fields: Vec<(String, Vec<Vec<u8>>)> = Vec::new();
+        for pair in &doc {
+            let (field, value) = pair.split_once('=').unwrap();
+            mi.add_field_text(field, value, &analyzer).unwrap();
+            let mut ts = analyzer.token_stream(field, value).unwrap();
+            ts.reset().unwrap();
+            let mut terms = Vec::new();
+            while ts.increment_token().unwrap() {
+                terms.push(ts.attributes().term_bytes().to_vec());
+            }
+            fields.push((field.to_string(), terms));
+        }
+        mi.freeze().unwrap();
+        let mi = std::cell::RefCell::new(mi);
+        let result = match_batch(&index, &[fields], &[], &|entry, _| {
+            mi.borrow_mut().search(&entry.match_query).unwrap_or(0.0) > 0.0
+        });
+        let mut got = result.matches[0].clone();
+        got.sort();
+        let mut want_ids: Vec<String> = unesc(cols.get(1).copied().unwrap_or(""))
+            .split(' ')
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+        want_ids.sort();
+        if got != want_ids {
+            bad.push(format!("{doc:?}\n  want {want_ids:?}\n  got  {got:?}"));
+        }
+    }
+    assert!(bad.is_empty(), "{} differ:\n{}", bad.len(), bad.join("\n"));
+}
+
+/// `Monitor.match(doc, ScoringMatch.DEFAULT_MATCHER)` through the facade: each
+/// matched query's id and score bits, as Lucene's `Monitor` returns them
+/// (`score.tsv`), and the plain matcher's ids (`match.tsv`).
+#[test]
+fn the_monitor_facade_scores_as_lucene_does() {
+    use lucene_search::monitor::facade::Monitor;
+    use lucene_search::monitor::index::MonitorQuery;
+    use std::collections::BTreeMap;
+
+    let analyzer = Arc::new(Analyzer::new(StandardAnalyzer::new()));
+    let mut monitor = Monitor::new(Arc::clone(&analyzer));
+    let queries: Vec<MonitorQuery> = corpus()
+        .iter()
+        .enumerate()
+        .map(|(i, q)| {
+            MonitorQuery::new(
+                format!("q{i}"),
+                parse(q).unwrap(),
+                Some(q.clone()),
+                BTreeMap::new(),
+            )
+            .unwrap()
+        })
+        .collect();
+    monitor.register(queries).unwrap();
+    assert_eq!(monitor.query_count(), 41);
+
+    let want = fs::read_to_string(dir().join("data/monitor/score.tsv")).unwrap();
+    let mut bad = Vec::new();
+    for line in want.lines() {
+        let cols: Vec<&str> = line.split('\t').collect();
+        let doc_text = unesc(cols[0]);
+        let doc: Vec<(&str, &str)> = doc_text
+            .split('|')
+            .map(|p| p.split_once('=').unwrap())
+            .collect();
+        let got = monitor.match_doc_scored(&doc).unwrap();
+        let mut got_cells: Vec<String> = got
+            .matches
+            .iter()
+            .map(|m| format!("{}={:x}", m.query_id, m.score.unwrap().to_bits()))
+            .collect();
+        got_cells.sort();
+        let mut want_cells: Vec<String> = unesc(cols.get(1).copied().unwrap_or(""))
+            .split(' ')
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+        want_cells.sort();
+        if got_cells != want_cells {
+            bad.push(format!(
+                "{doc:?}\n  want {want_cells:?}\n  got  {got_cells:?}"
+            ));
+        }
+        let plain = monitor.match_doc(&doc).unwrap();
+        assert_eq!(plain.match_count(), got.match_count());
+        assert!(plain.matches.iter().all(|m| m.score.is_none()));
     }
     assert!(bad.is_empty(), "{} differ:\n{}", bad.len(), bad.join("\n"));
 }

@@ -30,6 +30,7 @@ mod micro_analysis_icu_parts;
 mod micro_analysis_opennlp;
 mod micro_analysis_misc;
 mod micro_memory_index;
+mod micro_monitor;
 mod micro_queryparser;
 mod micro_hunspell;
 mod micro_snowball;
@@ -2081,6 +2082,7 @@ fn main() {
         }
         "analysis_opennlp" => micro_analysis_opennlp::bench_analysis_opennlp(warmup, measure),
         "queryparser" => micro_queryparser::bench_queryparser(warmup, measure),
+        "monitor" => micro_monitor::bench_monitor(warmup, measure),
         "memory_index" => micro_memory_index::bench_memory_index(warmup, measure),
         "snowball" => micro_snowball::bench_snowball(warmup, measure),
         "hunspell" => micro_hunspell::bench_hunspell(warmup, measure),

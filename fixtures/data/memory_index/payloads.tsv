@@ -52,6 +52,9 @@ S	0	{apple TO cherry}	3f800000
 S	0	/ap+le/	0
 S	0	-nothing	0
 S	0	nothing	0
+S	0	fox AND fox^2	3ec8daba
+S	0	fox AND fox	3e85e726
+S	0	+quick +quick^3	3f05e726
 D	1	body:\n\t'[41 6c 61 73 6b 61]':1: [(6, 40, 46)]\n\t'[4d 61 6e 75 61 6c 73]':1: [(8, 55, 62)]\n\t'[52 65 61 64 69 6e 67 73]':1: [(0, 0, 8)]\n\t'[53 61 6c 6d 6f 6e 73]':1: [(2, 15, 22)]\n\t'[61 62 6f 75 74]':1: [(1, 9, 14)]\n\t'[61 6e 64]':1: [(3, 23, 26)]\n\t'[66 69 73 68 69 6e 67]':1: [(7, 47, 54)]\n\t'[6f 74 68 65 72]':1: [(4, 27, 32)]\n\t'[73 65 6c 65 63 74]':1: [(5, 33, 39)]\n\tterms=9, positions=9\ntitle:\n\t'[41 6c 61 73 6b 61]':1: [(2, 11, 17)]\n\t'[46 69 73 68 69 6e 67]':1: [(0, 0, 7)]\n\t'[69 6e]':1: [(1, 8, 10)]\n\tterms=3, positions=3\n\nfields=2, terms=12, positions=12
 S	1	quick	0
 S	1	fox	0
@@ -106,6 +109,9 @@ S	1	{apple TO cherry}	0
 S	1	/ap+le/	0
 S	1	-nothing	0
 S	1	nothing	0
+S	1	fox AND fox^2	0
+S	1	fox AND fox	0
+S	1	+quick +quick^3	0
 D	2	body:\n\t'[61]':3: [(0, 0, 1), (1, 2, 3), (2, 4, 5)]\n\t'[62]':2: [(3, 6, 7), (4, 8, 9)]\n\t'[63]':1: [(5, 10, 11)]\n\tterms=3, positions=6\ntitle:\n\t'[61]':1: [(0, 0, 1)]\n\tterms=1, positions=1\n\nfields=2, terms=4, positions=7
 S	2	quick	0
 S	2	fox	0
@@ -160,6 +166,9 @@ S	2	{apple TO cherry}	3f800000
 S	2	/ap+le/	0
 S	2	-nothing	0
 S	2	nothing	0
+S	2	fox AND fox^2	0
+S	2	fox AND fox	0
+S	2	+quick +quick^3	0
 D	3	body:\n\t'[62 72 6f 77 6e]':1: [(2, 10, 15)]\n\t'[66 6f 78]':1: [(3, 16, 19)]\n\t'[6a 75 6d 70 73]':1: [(4, 20, 25)]\n\t'[71 75 69 63 6b]':1: [(1, 4, 9)]\n\t'[74 68 65]':1: [(0, 0, 3)]\n\tterms=5, positions=5\n\nfields=1, terms=5, positions=5
 S	3	quick	3e05e726
 S	3	fox	3e05e726
@@ -214,6 +223,9 @@ S	3	{apple TO cherry}	3f800000
 S	3	/ap+le/	0
 S	3	-nothing	0
 S	3	nothing	0
+S	3	fox AND fox^2	3ec8daba
+S	3	fox AND fox	3e85e726
+S	3	+quick +quick^3	3f05e726
 D	4	body:\n\tterms=0, positions=0\ntitle:\n\t'[62 6f 64 79]':1: [(1, 6, 10)]\n\t'[65 6d 70 74 79]':1: [(0, 0, 5)]\n\tterms=2, positions=2\n\nfields=2, terms=2, positions=2
 S	4	quick	0
 S	4	fox	0
@@ -268,6 +280,9 @@ S	4	{apple TO cherry}	0
 S	4	/ap+le/	0
 S	4	-nothing	0
 S	4	nothing	0
+S	4	fox AND fox^2	0
+S	4	fox AND fox	0
+S	4	+quick +quick^3	0
 D	5	title:\n\t'[61]':1: [(1, 5, 6)]\n\t'[68 65 72 65]':1: [(3, 13, 17)]\n\t'[6f 6e 6c 79]':1: [(0, 0, 4)]\n\t'[74 69 74 6c 65]':1: [(2, 7, 12)]\n\tterms=4, positions=4\n\nfields=1, terms=4, positions=4
 S	5	quick	0
 S	5	fox	0
@@ -322,6 +337,9 @@ S	5	{apple TO cherry}	0
 S	5	/ap+le/	0
 S	5	-nothing	0
 S	5	nothing	0
+S	5	fox AND fox^2	0
+S	5	fox AND fox	0
+S	5	+quick +quick^3	0
 D	6	body:\n\t'[53 74 72 61 c3 9f 65]':1: [(2, 13, 19)]\n\t'[63 61 66 c3 a9]':1: [(3, 20, 24)]\n\t'[6e 61 c3 af 76 65]':1: [(4, 25, 30)]\n\t'[72 c3 a9 73 75 6d c3 a9]':1: [(5, 31, 37)]\n\t'[c3 96 6c 6d c3 bc 68 6c 65]':1: [(0, 0, 7)]\n\t'[c3 bc 62 65 72]':1: [(1, 8, 12)]\n\tterms=6, positions=6\ntitle:\n\t'[55 6e 69 63 6f 64 65]':1: [(0, 0, 7)]\n\tterms=1, positions=1\n\nfields=2, terms=7, positions=7
 S	6	quick	0
 S	6	fox	0
@@ -376,6 +394,9 @@ S	6	{apple TO cherry}	3f800000
 S	6	/ap+le/	0
 S	6	-nothing	0
 S	6	nothing	0
+S	6	fox AND fox^2	0
+S	6	fox AND fox	0
+S	6	+quick +quick^3	0
 D	7	body:\n\t'[62 72 6f 77 6e]':1: [(1, 8, 15, [78])]\n\t'[64 6f 67]':1: [(3, 24, 27)]\n\t'[66 6f 78]':1: [(2, 16, 23, [61 62 63])]\n\t'[71 75 69 63 6b]':1: [(0, 0, 7, [35])]\n\tterms=4, positions=4\ntitle:\n\t'[70 61 79 6c 6f 61 64]':1: [(0, 0, 9, [31])]\n\t'[77 6f 72 64 73]':1: [(1, 10, 15)]\n\tterms=2, positions=2\n\nfields=2, terms=6, positions=6
 S	7	quick	3e05e726
 S	7	fox	3e05e726
@@ -430,6 +451,9 @@ S	7	{apple TO cherry}	3f800000
 S	7	/ap+le/	0
 S	7	-nothing	0
 S	7	nothing	0
+S	7	fox AND fox^2	3ec8daba
+S	7	fox AND fox	3e85e726
+S	7	+quick +quick^3	3f05e726
 D	8	body:\n\t'[65 69 67 68 74]':1: [(7, 34, 39)]\n\t'[66 69 76 65]':1: [(4, 19, 23)]\n\t'[66 6f 75 72]':1: [(3, 14, 18)]\n\t'[6e 69 6e 65]':1: [(8, 40, 44)]\n\t'[6f 6e 65]':2: [(0, 0, 3), (10, 49, 52)]\n\t'[73 65 76 65 6e]':1: [(6, 28, 33)]\n\t'[73 69 78]':1: [(5, 24, 27)]\n\t'[74 65 6e]':1: [(9, 45, 48)]\n\t'[74 68 72 65 65]':2: [(2, 8, 13), (12, 57, 62)]\n\t'[74 77 6f]':2: [(1, 4, 7), (11, 53, 56)]\n\tterms=10, positions=13\n\nfields=1, terms=10, positions=13
 S	8	quick	0
 S	8	fox	0
@@ -484,6 +508,9 @@ S	8	{apple TO cherry}	0
 S	8	/ap+le/	0
 S	8	-nothing	0
 S	8	nothing	0
+S	8	fox AND fox^2	0
+S	8	fox AND fox	0
+S	8	+quick +quick^3	0
 D	9	body:\n\t'[4e 65 77]':1: [(0, 0, 3)]\n\t'[59 6f 72 6b]':1: [(1, 4, 8)]\n\t'[61]':1: [(3, 12, 13)]\n\t'[62 69 67]':1: [(4, 14, 17)]\n\t'[62 6f 72 6f 75 67 68 73]':1: [(10, 42, 50)]\n\t'[63 69 74 79 3b]':1: [(5, 18, 23)]\n\t'[68 61 73]':1: [(8, 33, 36)]\n\t'[69 73]':1: [(2, 9, 11)]\n\t'[6d 61 6e 79]':1: [(9, 37, 41)]\n\t'[6e 65 77]':1: [(6, 24, 27)]\n\t'[79 6f 72 6b]':1: [(7, 28, 32)]\n\tterms=11, positions=11\ntitle:\n\t'[4e 65 77]':1: [(0, 0, 3)]\n\t'[59 6f 72 6b]':1: [(1, 4, 8)]\n\tterms=2, positions=2\n\nfields=2, terms=13, positions=13
 S	9	quick	0
 S	9	fox	0
@@ -538,6 +565,9 @@ S	9	{apple TO cherry}	3f800000
 S	9	/ap+le/	0
 S	9	-nothing	0
 S	9	nothing	0
+S	9	fox AND fox^2	0
+S	9	fox AND fox	0
+S	9	+quick +quick^3	0
 D	10	body:\n\t'[32 30 32 34]':1: [(1, 4, 8)]\n\t'[33 2e 35 25]':1: [(3, 17, 21)]\n\t'[54 68 65]':1: [(0, 0, 3)]\n\t'[65 2d 6d 61 69 6c]':1: [(5, 30, 36)]\n\t'[66 6f 6f 40 65 78 61 6d 70 6c 65 2e 63 6f 6d]':1: [(6, 37, 52)]\n\t'[67 72 6f 77 74 68 2c]':1: [(4, 22, 29)]\n\t'[6f 66]':1: [(9, 66, 68)]\n\t'[72 65 70 6f 72 74]':1: [(11, 73, 79)]\n\t'[72 65 70 6f 72 74 3a]':1: [(2, 9, 16)]\n\t'[73 65 63 6f 6e 64]':1: [(7, 53, 59)]\n\t'[74 68 65]':1: [(10, 69, 72)]\n\t'[76 61 6c 75 65]':1: [(8, 60, 65)]\n\tterms=12, positions=12\n\nfields=1, terms=12, positions=12
 S	10	quick	0
 S	10	fox	0
@@ -592,6 +622,9 @@ S	10	{apple TO cherry}	0
 S	10	/ap+le/	0
 S	10	-nothing	0
 S	10	nothing	0
+S	10	fox AND fox^2	0
+S	10	fox AND fox	0
+S	10	+quick +quick^3	0
 D	11	body:\n\t'[61 70 70 6c 65]':3: [(0, 0, 5), (2, 13, 18), (4, 26, 31)]\n\t'[62 61 6e 61 6e 61]':2: [(1, 6, 12), (5, 32, 38)]\n\t'[63 68 65 72 72 79]':1: [(3, 19, 25)]\n\tterms=3, positions=6\ntags:\n\t'[66 6f 6f 64]':1: [(1, 6, 10)]\n\t'[66 72 75 69 74]':2: [(0, 0, 5), (2, 11, 16)]\n\tterms=2, positions=3\n\nfields=2, terms=5, positions=9
 S	11	quick	0
 S	11	fox	0
@@ -646,6 +679,9 @@ S	11	{apple TO cherry}	3f800000
 S	11	/ap+le/	3f800000
 S	11	-nothing	0
 S	11	nothing	0
+S	11	fox AND fox^2	0
+S	11	fox AND fox	0
+S	11	+quick +quick^3	0
 D	12	body:\n\t'[68 69 67 68 6c 69 67 68 74 65 72]':1: [(3, 20, 31)]\n\t'[69 6e 64 65 78]':1: [(2, 14, 19)]\n\t'[6c 75 63 65 6e 65]':1: [(0, 0, 6)]\n\t'[6d 65 6d 6f 72 79]':1: [(1, 7, 13)]\n\t'[6d 6f 6e 69 74 6f 72]':1: [(4, 32, 39)]\n\t'[70 65 72 63 6f 6c 61 74 6f 72]':1: [(5, 40, 50)]\n\tterms=6, positions=6\n\nfields=1, terms=6, positions=6
 S	12	quick	0
 S	12	fox	0
@@ -700,6 +736,9 @@ S	12	{apple TO cherry}	0
 S	12	/ap+le/	0
 S	12	-nothing	0
 S	12	nothing	0
+S	12	fox AND fox^2	0
+S	12	fox AND fox	0
+S	12	+quick +quick^3	0
 D	13	author:\n\t'[7a]':1: [(0, 0, 1)]\n\tterms=1, positions=1\nbody:\n\t'[78]':1: [(0, 0, 1)]\n\tterms=1, positions=1\ntitle:\n\t'[79]':1: [(0, 0, 1)]\n\tterms=1, positions=1\n\nfields=3, terms=3, positions=3
 S	13	quick	0
 S	13	fox	0
@@ -754,6 +793,9 @@ S	13	{apple TO cherry}	0
 S	13	/ap+le/	0
 S	13	-nothing	0
 S	13	nothing	0
+S	13	fox AND fox^2	0
+S	13	fox AND fox	0
+S	13	+quick +quick^3	0
 D	14	body:\n\t'[61 63 72 6f 73 73]':1: [(3, 18, 24)]\n\t'[68 65 72 65]':1: [(7, 44, 48)]\n\t'[6a 6f 69 6e]':1: [(6, 39, 43)]\n\t'[6d 75 6c 74 69]':1: [(0, 0, 5)]\n\t'[70 68 72 61 73 65]':1: [(2, 11, 17)]\n\t'[76 61 6c 75 65 73]':2: [(4, 25, 31), (5, 32, 38)]\n\t'[77 6f 72 64]':1: [(1, 6, 10)]\n\tterms=7, positions=8\n\nfields=1, terms=7, positions=8
 S	14	quick	0
 S	14	fox	0
@@ -808,6 +850,9 @@ S	14	{apple TO cherry}	0
 S	14	/ap+le/	0
 S	14	-nothing	0
 S	14	nothing	0
+S	14	fox AND fox^2	0
+S	14	fox AND fox	0
+S	14	+quick +quick^3	0
 D	15	body:\n\t'[43 61 73 65]':1: [(3, 18, 22)]\n\t'[4d 69 58 65 44]':1: [(2, 12, 17)]\n\t'[55 50 50 45 52]':1: [(0, 0, 5)]\n\t'[6c 6f 77 65 72]':1: [(1, 6, 11)]\n\tterms=4, positions=4\n\nfields=1, terms=4, positions=4
 S	15	quick	0
 S	15	fox	0
@@ -862,3 +907,6 @@ S	15	{apple TO cherry}	0
 S	15	/ap+le/	0
 S	15	-nothing	0
 S	15	nothing	0
+S	15	fox AND fox^2	0
+S	15	fox AND fox	0
+S	15	+quick +quick^3	0

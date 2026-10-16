@@ -127,7 +127,7 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
 - **T13.6** — Plugin wiring for the OpenSearch features above.
 
 **Status by task:** T13.1 done; T13.5 `MemoryIndex` done, `monitor` in
-progress (T13.5a and T13.5b done; T13.5c-d not started); T13.2, T13.3, T13.4 and T13.6
+progress (T13.5a-b done; T13.5c's matching path done, in memory -- the on-disk query index is T13.5d); T13.2, T13.3, T13.4 and T13.6
 not started. M13 closes when all four acceptance criteria hold.
 
 ## Acceptance criteria
