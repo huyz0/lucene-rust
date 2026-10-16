@@ -1,0 +1,558 @@
+tv_full	0	0	R	The <B>quick</B> brown fox jumps over the lazy dog. The <B>quick</B> brown fox is <B>quick</B>, and the dog is lazy.
+tv_off	0	0	R	The <B>quick</B> brown fox jumps over the lazy dog. The <B>quick</B> brown fox is <B>quick</B>, and the dog is lazy.
+tv_full	0	1	R	In the beginning the <B>quick</B> brown fox<|> one of them, dreaming of a <B>quick</B> brown<|> fox ran, and the <B>quick</B> chase across the
+tv_off	0	1	R	In the beginning the <B>quick</B> brown fox<|> one of them, dreaming of a <B>quick</B> brown<|> fox ran, and the <B>quick</B> chase across the
+tv_full	0	2	R	a <b>bold</b> & "quoted" fox/dog's 'tale' is <B>quick</B> > slow
+tv_off	0	2	R	a <b>bold</b> & "quoted" fox/dog's 'tale' is <B>quick</B> > slow
+tv_full	0	3	R	Café Müller's fox — naïve, <B>quick</B> — jumps over 日本語 the lazy dog
+tv_off	0	3	R	Café Müller's fox — naïve, <B>quick</B> — jumps over 日本語 the lazy dog
+tv_full	0	4	R	<B>quick</B> <B>quick</B> <B>quick</B> fox fox dog
+tv_off	0	4	R	<B>quick</B> <B>quick</B> <B>quick</B> fox fox dog
+tv_full	0	5	R	
+tv_off	0	5	R	
+tv_full	0	6	R	
+tv_off	0	6	R	
+tv_full	0	7	R	dog lazy fox <B>quick</B> brown the over jumps
+tv_off	0	7	R	dog lazy fox <B>quick</B> brown the over jumps
+tv_full	0	8	R	<B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox
+tv_off	0	8	R	<B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox
+tv_full	1	0	R	The quick brown <B>fox</B> jumps over the lazy dog. The quick brown <B>fox</B> is quick, and the dog is lazy.
+tv_off	1	0	R	The quick brown <B>fox</B> jumps over the lazy dog. The quick brown <B>fox</B> is quick, and the dog is lazy.
+tv_full	1	1	R	In the beginning the quick brown <B>fox</B> was a very small <B>fox</B>, and nobody noticed the <B>fox</B> at all. Years passed and the <B>fox</B>
+tv_off	1	1	R	In the beginning the quick brown <B>fox</B> was a very small <B>fox</B>, and nobody noticed the <B>fox</B> at all. Years passed and the <B>fox</B>
+tv_full	1	2	R	a <b>bold</b> & "quoted" <B>fox</B>/dog's 'tale' is quick > slow
+tv_off	1	2	R	a <b>bold</b> & "quoted" <B>fox</B>/dog's 'tale' is quick > slow
+tv_full	1	3	R	Café Müller's <B>fox</B> — naïve, quick — jumps over 日本語 the lazy dog
+tv_off	1	3	R	Café Müller's <B>fox</B> — naïve, quick — jumps over 日本語 the lazy dog
+tv_full	1	4	R	quick quick quick <B>fox</B> <B>fox</B> dog
+tv_off	1	4	R	quick quick quick <B>fox</B> <B>fox</B> dog
+tv_full	1	5	R	<B>fox</B>
+tv_off	1	5	R	<B>fox</B>
+tv_full	1	6	R	
+tv_off	1	6	R	
+tv_full	1	7	R	dog lazy <B>fox</B> quick brown the over jumps
+tv_off	1	7	R	dog lazy <B>fox</B> quick brown the over jumps
+tv_full	1	8	R	quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>
+tv_off	1	8	R	quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>
+tv_full	2	0	R	The <B>quick</B> brown <B>fox</B> jumps over the lazy dog. The <B>quick</B> brown <B>fox</B> is <B>quick</B>, and the dog is lazy.
+tv_off	2	0	R	The <B>quick</B> brown <B>fox</B> jumps over the lazy dog. The <B>quick</B> brown <B>fox</B> is <B>quick</B>, and the dog is lazy.
+tv_full	2	1	R	In the beginning the <B>quick</B> brown <B>fox</B> was a very small <B>fox</B>, and nobody noticed<|> <B>fox</B> ran, and the <B>quick</B> chase across the
+tv_off	2	1	R	In the beginning the <B>quick</B> brown <B>fox</B> was a very small <B>fox</B>, and nobody noticed<|> <B>fox</B> ran, and the <B>quick</B> chase across the
+tv_full	2	2	R	a <b>bold</b> & "quoted" <B>fox</B>/dog's 'tale' is <B>quick</B> > slow
+tv_off	2	2	R	a <b>bold</b> & "quoted" <B>fox</B>/dog's 'tale' is <B>quick</B> > slow
+tv_full	2	3	R	Café Müller's <B>fox</B> — naïve, <B>quick</B> — jumps over 日本語 the lazy dog
+tv_off	2	3	R	Café Müller's <B>fox</B> — naïve, <B>quick</B> — jumps over 日本語 the lazy dog
+tv_full	2	4	R	<B>quick</B> <B>quick</B> <B>quick</B> <B>fox</B> <B>fox</B> dog
+tv_off	2	4	R	<B>quick</B> <B>quick</B> <B>quick</B> <B>fox</B> <B>fox</B> dog
+tv_full	2	5	R	<B>fox</B>
+tv_off	2	5	R	<B>fox</B>
+tv_full	2	6	R	
+tv_off	2	6	R	
+tv_full	2	7	R	dog lazy <B>fox</B> <B>quick</B> brown the over jumps
+tv_off	2	7	R	dog lazy <B>fox</B> <B>quick</B> brown the over jumps
+tv_full	2	8	R	<B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>
+tv_off	2	8	R	<B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>
+tv_full	3	0	R	The <B>quick</B> <B>brown</B> fox jumps over the lazy dog. The <B>quick</B> <B>brown</B> fox is quick, and the dog is lazy.
+tv_off	3	0	R	The <B>quick</B> <B>brown</B> fox jumps over the lazy dog. The <B>quick</B> <B>brown</B> fox is quick, and the dog is lazy.
+tv_full	3	1	R	In the beginning the <B>quick</B> <B>brown</B> fox was a very small fox, and nobody noticed<|> one of them, dreaming of a <B>quick</B> <B>brown</B>
+tv_off	3	1	R	In the beginning the <B>quick</B> <B>brown</B> fox was a very small fox, and nobody noticed<|> one of them, dreaming of a <B>quick</B> <B>brown</B>
+tv_full	3	2	R	
+tv_off	3	2	R	
+tv_full	3	3	R	
+tv_off	3	3	R	
+tv_full	3	4	R	
+tv_off	3	4	R	
+tv_full	3	5	R	
+tv_off	3	5	R	
+tv_full	3	6	R	
+tv_off	3	6	R	
+tv_full	3	7	R	dog lazy fox <B>quick</B> <B>brown</B> the over jumps
+tv_off	3	7	R	dog lazy fox <B>quick</B> <B>brown</B> the over jumps
+tv_full	3	8	R	<B>quick</B> <B>brown</B> fox. <B>quick</B> <B>brown</B> fox. <B>quick</B> <B>brown</B> fox. <B>quick</B> <B>brown</B> fox. <B>quick</B> <B>brown</B> fox. <B>quick</B> <B>brown</B> fox. <B>quick</B> <B>brown</B> fox
+tv_off	3	8	R	<B>quick</B> <B>brown</B> fox. <B>quick</B> <B>brown</B> fox. <B>quick</B> <B>brown</B> fox. <B>quick</B> <B>brown</B> fox. <B>quick</B> <B>brown</B> fox. <B>quick</B> <B>brown</B> fox. <B>quick</B> <B>brown</B> fox
+tv_full	4	0	R	The <B>quick</B> brown <B>fox</B> jumps over the lazy dog. The <B>quick</B> brown <B>fox</B> is <B>quick</B>, and the dog is lazy.
+tv_off	4	0	R	The <B>quick</B> brown <B>fox</B> jumps over the lazy dog. The <B>quick</B> brown <B>fox</B> is <B>quick</B>, and the dog is lazy.
+tv_full	4	1	R	In the beginning the <B>quick</B> brown <B>fox</B> was a very small fox, and nobody noticed the fox at all. Years passed and the fox
+tv_off	4	1	R	In the beginning the <B>quick</B> brown <B>fox</B> was a very small fox, and nobody noticed the fox at all. Years passed and the fox
+tv_full	4	2	R	
+tv_off	4	2	R	
+tv_full	4	3	R	Café Müller's <B>fox</B> — naïve, <B>quick</B> — jumps over 日本語 the lazy dog
+tv_off	4	3	R	Café Müller's <B>fox</B> — naïve, <B>quick</B> — jumps over 日本語 the lazy dog
+tv_full	4	4	R	<B>quick</B> <B>quick</B> <B>quick</B> <B>fox</B> fox dog
+tv_off	4	4	R	<B>quick</B> <B>quick</B> <B>quick</B> <B>fox</B> fox dog
+tv_full	4	5	R	
+tv_off	4	5	R	
+tv_full	4	6	R	
+tv_off	4	6	R	
+tv_full	4	7	R	dog lazy <B>fox</B> <B>quick</B> brown the over jumps
+tv_off	4	7	R	dog lazy <B>fox</B> <B>quick</B> brown the over jumps
+tv_full	4	8	R	<B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>
+tv_off	4	8	R	<B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>
+tv_full	5	0	R	The <B>quick</B> brown fox jumps over the lazy dog. The <B>quick</B> brown fox is <B>quick</B>, and the dog is lazy.
+tv_off	5	0	R	The <B>quick</B> brown fox jumps over the lazy dog. The <B>quick</B> brown fox is <B>quick</B>, and the dog is lazy.
+tv_full	5	1	R	In the beginning the <B>quick</B> brown fox<|> one of them, dreaming of a <B>quick</B> brown<|> fox ran, and the <B>quick</B> chase across the
+tv_off	5	1	R	In the beginning the <B>quick</B> brown fox<|> one of them, dreaming of a <B>quick</B> brown<|> fox ran, and the <B>quick</B> chase across the
+tv_full	5	2	R	a <b>bold</b> & "quoted" fox/dog's 'tale' is <B>quick</B> > slow
+tv_off	5	2	R	a <b>bold</b> & "quoted" fox/dog's 'tale' is <B>quick</B> > slow
+tv_full	5	3	R	Café Müller's fox — naïve, <B>quick</B> — jumps over 日本語 the lazy dog
+tv_off	5	3	R	Café Müller's fox — naïve, <B>quick</B> — jumps over 日本語 the lazy dog
+tv_full	5	4	R	<B>quick</B> <B>quick</B> <B>quick</B> fox fox dog
+tv_off	5	4	R	<B>quick</B> <B>quick</B> <B>quick</B> fox fox dog
+tv_full	5	5	R	
+tv_off	5	5	R	
+tv_full	5	6	R	
+tv_off	5	6	R	
+tv_full	5	7	R	dog lazy fox <B>quick</B> brown the over jumps
+tv_off	5	7	R	dog lazy fox <B>quick</B> brown the over jumps
+tv_full	5	8	R	<B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox
+tv_off	5	8	R	<B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox
+tv_full	6	0	R	The <B>quick</B> brown <B>fox</B> jumps over the lazy dog. The <B>quick</B> brown <B>fox</B> is <B>quick</B>, and the dog is lazy.
+tv_off	6	0	R	The <B>quick</B> brown <B>fox</B> jumps over the lazy dog. The <B>quick</B> brown <B>fox</B> is <B>quick</B>, and the dog is lazy.
+tv_full	6	1	R	In the beginning the <B>quick</B> brown <B>fox</B><|> <B>fox</B> ran, and the <B>quick</B> chase across the<|> one of them, dreaming of a <B>quick</B> brown
+tv_off	6	1	R	In the beginning the <B>quick</B> brown <B>fox</B><|> <B>fox</B> ran, and the <B>quick</B> chase across the<|> one of them, dreaming of a <B>quick</B> brown
+tv_full	6	2	R	a <b>bold</b> & "quoted" <B>fox</B>/dog's 'tale' is <B>quick</B> > slow
+tv_off	6	2	R	a <b>bold</b> & "quoted" <B>fox</B>/dog's 'tale' is <B>quick</B> > slow
+tv_full	6	3	R	Café Müller's <B>fox</B> — naïve, <B>quick</B> — jumps over 日本語 the lazy dog
+tv_off	6	3	R	Café Müller's <B>fox</B> — naïve, <B>quick</B> — jumps over 日本語 the lazy dog
+tv_full	6	4	R	<B>quick</B> <B>quick</B> <B>quick</B> <B>fox</B> <B>fox</B> dog
+tv_off	6	4	R	<B>quick</B> <B>quick</B> <B>quick</B> <B>fox</B> <B>fox</B> dog
+tv_full	6	5	R	<B>fox</B>
+tv_off	6	5	R	<B>fox</B>
+tv_full	6	6	R	
+tv_off	6	6	R	
+tv_full	6	7	R	dog lazy <B>fox</B> <B>quick</B> brown the over jumps
+tv_off	6	7	R	dog lazy <B>fox</B> <B>quick</B> brown the over jumps
+tv_full	6	8	R	<B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>
+tv_off	6	8	R	<B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>
+tv_full	7	0	R	The <B>quick</B> brown <B>fox</B> jumps over the lazy <B>dog</B>. The <B>quick</B> brown <B>fox</B> is <B>quick</B>, and the <B>dog</B> is lazy.
+tv_off	7	0	R	The <B>quick</B> brown <B>fox</B> jumps over the lazy <B>dog</B>. The <B>quick</B> brown <B>fox</B> is <B>quick</B>, and the <B>dog</B> is lazy.
+tv_full	7	1	R	In the beginning the <B>quick</B> brown <B>fox</B><|> winter morning the <B>fox</B> jumped over the <B>dog</B><|> <B>fox</B> ran, and the <B>quick</B> chase across the
+tv_off	7	1	R	In the beginning the <B>quick</B> brown <B>fox</B><|> winter morning the <B>fox</B> jumped over the <B>dog</B><|> <B>fox</B> ran, and the <B>quick</B> chase across the
+tv_full	7	2	R	a <b>bold</b> & "quoted" <B>fox</B>/dog's 'tale' is <B>quick</B> > slow
+tv_off	7	2	R	a <b>bold</b> & "quoted" <B>fox</B>/dog's 'tale' is <B>quick</B> > slow
+tv_full	7	3	R	Café Müller's <B>fox</B> — naïve, <B>quick</B> — jumps over 日本語 the lazy <B>dog</B>
+tv_off	7	3	R	Café Müller's <B>fox</B> — naïve, <B>quick</B> — jumps over 日本語 the lazy <B>dog</B>
+tv_full	7	4	R	<B>quick</B> <B>quick</B> <B>quick</B> <B>fox</B> <B>fox</B> <B>dog</B>
+tv_off	7	4	R	<B>quick</B> <B>quick</B> <B>quick</B> <B>fox</B> <B>fox</B> <B>dog</B>
+tv_full	7	5	R	<B>fox</B>
+tv_off	7	5	R	<B>fox</B>
+tv_full	7	6	R	
+tv_off	7	6	R	
+tv_full	7	7	R	<B>dog</B> lazy <B>fox</B> <B>quick</B> brown the over jumps
+tv_off	7	7	R	<B>dog</B> lazy <B>fox</B> <B>quick</B> brown the over jumps
+tv_full	7	8	R	<B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>
+tv_off	7	8	R	<B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>
+tv_full	8	0	R	The <B>quick</B> brown fox jumps over the lazy dog. The <B>quick</B> brown fox is <B>quick</B>, and the dog is lazy.
+tv_off	8	0	R	The <B>quick</B> brown fox jumps over the lazy dog. The <B>quick</B> brown fox is <B>quick</B>, and the dog is lazy.
+tv_full	8	1	R	In the beginning the <B>quick</B> brown fox<|> one of them, dreaming of a <B>quick</B> brown<|> fox ran, and the <B>quick</B> chase across the
+tv_off	8	1	R	In the beginning the <B>quick</B> brown fox<|> one of them, dreaming of a <B>quick</B> brown<|> fox ran, and the <B>quick</B> chase across the
+tv_full	8	2	R	a <b>bold</b> & "quoted" fox/dog's 'tale' is <B>quick</B> > slow
+tv_off	8	2	R	a <b>bold</b> & "quoted" fox/dog's 'tale' is <B>quick</B> > slow
+tv_full	8	3	R	Café Müller's fox — naïve, <B>quick</B> — jumps over 日本語 the lazy dog
+tv_off	8	3	R	Café Müller's fox — naïve, <B>quick</B> — jumps over 日本語 the lazy dog
+tv_full	8	4	R	<B>quick</B> <B>quick</B> <B>quick</B> fox fox dog
+tv_off	8	4	R	<B>quick</B> <B>quick</B> <B>quick</B> fox fox dog
+tv_full	8	5	R	
+tv_off	8	5	R	
+tv_full	8	6	R	
+tv_off	8	6	R	
+tv_full	8	7	R	dog lazy fox <B>quick</B> brown the over jumps
+tv_off	8	7	R	dog lazy fox <B>quick</B> brown the over jumps
+tv_full	8	8	R	<B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox
+tv_off	8	8	R	<B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox
+tv_full	9	0	R	The quick brown <B>fox</B> jumps over the lazy dog. The quick brown <B>fox</B> is quick, and the dog is lazy.
+tv_off	9	0	R	The quick brown <B>fox</B> jumps over the lazy dog. The quick brown <B>fox</B> is quick, and the dog is lazy.
+tv_full	9	1	R	In the beginning the quick brown <B>fox</B> was a very small <B>fox</B>, and nobody noticed the <B>fox</B> at all. Years passed and the <B>fox</B>
+tv_off	9	1	R	In the beginning the quick brown <B>fox</B> was a very small <B>fox</B>, and nobody noticed the <B>fox</B> at all. Years passed and the <B>fox</B>
+tv_full	9	2	R	a <b>bold</b> & "quoted" <B>fox</B>/dog's 'tale' is quick > slow
+tv_off	9	2	R	a <b>bold</b> & "quoted" <B>fox</B>/dog's 'tale' is quick > slow
+tv_full	9	3	R	Café Müller's <B>fox</B> — naïve, quick — jumps over 日本語 the lazy dog
+tv_off	9	3	R	Café Müller's <B>fox</B> — naïve, quick — jumps over 日本語 the lazy dog
+tv_full	9	4	R	quick quick quick <B>fox</B> <B>fox</B> dog
+tv_off	9	4	R	quick quick quick <B>fox</B> <B>fox</B> dog
+tv_full	9	5	R	<B>fox</B>
+tv_off	9	5	R	<B>fox</B>
+tv_full	9	6	R	
+tv_off	9	6	R	
+tv_full	9	7	R	dog lazy <B>fox</B> quick brown the over jumps
+tv_off	9	7	R	dog lazy <B>fox</B> quick brown the over jumps
+tv_full	9	8	R	quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>
+tv_off	9	8	R	quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>
+tv_full	10	0	R	The quick brown <B>fox</B> jumps over the lazy dog. The quick brown <B>fox</B> is quick, and the dog is lazy.
+tv_off	10	0	R	The quick brown <B>fox</B> jumps over the lazy dog. The quick brown <B>fox</B> is quick, and the dog is lazy.
+tv_full	10	1	R	In the beginning the quick brown <B>fox</B> was a very small <B>fox</B>, and nobody noticed the <B>fox</B> at all. Years passed and the <B>fox</B>
+tv_off	10	1	R	In the beginning the quick brown <B>fox</B> was a very small <B>fox</B>, and nobody noticed the <B>fox</B> at all. Years passed and the <B>fox</B>
+tv_full	10	2	R	a <b>bold</b> & "quoted" <B>fox</B>/dog's 'tale' is quick > slow
+tv_off	10	2	R	a <b>bold</b> & "quoted" <B>fox</B>/dog's 'tale' is quick > slow
+tv_full	10	3	R	Café Müller's <B>fox</B> — naïve, quick — jumps over 日本語 the lazy dog
+tv_off	10	3	R	Café Müller's <B>fox</B> — naïve, quick — jumps over 日本語 the lazy dog
+tv_full	10	4	R	quick quick quick <B>fox</B> <B>fox</B> dog
+tv_off	10	4	R	quick quick quick <B>fox</B> <B>fox</B> dog
+tv_full	10	5	R	<B>fox</B>
+tv_off	10	5	R	<B>fox</B>
+tv_full	10	6	R	
+tv_off	10	6	R	
+tv_full	10	7	R	dog lazy <B>fox</B> quick brown the over jumps
+tv_off	10	7	R	dog lazy <B>fox</B> quick brown the over jumps
+tv_full	10	8	R	quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>
+tv_off	10	8	R	quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>
+tv_full	11	0	R	The <B>quick</B> brown fox jumps over the lazy dog. The <B>quick</B> brown fox is <B>quick</B>, and the dog is lazy.
+tv_off	11	0	R	The <B>quick</B> brown fox jumps over the lazy dog. The <B>quick</B> brown fox is <B>quick</B>, and the dog is lazy.
+tv_full	11	1	R	In the beginning the <B>quick</B> brown fox<|> one of them, dreaming of a <B>quick</B> brown<|> fox ran, and the <B>quick</B> chase across the
+tv_off	11	1	R	In the beginning the <B>quick</B> brown fox<|> one of them, dreaming of a <B>quick</B> brown<|> fox ran, and the <B>quick</B> chase across the
+tv_full	11	2	R	a <b>bold</b> & "quoted" fox/dog's 'tale' is <B>quick</B> > slow
+tv_off	11	2	R	a <b>bold</b> & "quoted" fox/dog's 'tale' is <B>quick</B> > slow
+tv_full	11	3	R	Café Müller's fox — naïve, <B>quick</B> — jumps over 日本語 the lazy dog
+tv_off	11	3	R	Café Müller's fox — naïve, <B>quick</B> — jumps over 日本語 the lazy dog
+tv_full	11	4	R	<B>quick</B> <B>quick</B> <B>quick</B> fox fox dog
+tv_off	11	4	R	<B>quick</B> <B>quick</B> <B>quick</B> fox fox dog
+tv_full	11	5	R	
+tv_off	11	5	R	
+tv_full	11	6	R	
+tv_off	11	6	R	
+tv_full	11	7	R	dog lazy fox <B>quick</B> brown the over jumps
+tv_off	11	7	R	dog lazy fox <B>quick</B> brown the over jumps
+tv_full	11	8	R	<B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox
+tv_off	11	8	R	<B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox
+tv_full	12	0	R	
+tv_off	12	0	R	
+tv_full	12	1	R	
+tv_off	12	1	R	
+tv_full	12	2	R	
+tv_off	12	2	R	
+tv_full	12	3	R	
+tv_off	12	3	R	
+tv_full	12	4	R	
+tv_off	12	4	R	
+tv_full	12	5	R	
+tv_off	12	5	R	
+tv_full	12	6	R	
+tv_off	12	6	R	
+tv_full	12	7	R	
+tv_off	12	7	R	
+tv_full	12	8	R	
+tv_off	12	8	R	
+tv_full	13	0	R	The quick <B>brown</B> <B>fox</B> jumps over the lazy dog. The quick <B>brown</B> <B>fox</B> is quick, and the dog is lazy.
+tv_off	13	0	R	The quick <B>brown</B> <B>fox</B> jumps over the lazy dog. The quick <B>brown</B> <B>fox</B> is quick, and the dog is lazy.
+tv_full	13	1	R	In the beginning the quick <B>brown</B> <B>fox</B> was a very small fox, and nobody noticed the fox at all. Years passed and the fox
+tv_off	13	1	R	In the beginning the quick <B>brown</B> <B>fox</B> was a very small fox, and nobody noticed the fox at all. Years passed and the fox
+tv_full	13	2	R	
+tv_off	13	2	R	
+tv_full	13	3	R	
+tv_off	13	3	R	
+tv_full	13	4	R	
+tv_off	13	4	R	
+tv_full	13	5	R	
+tv_off	13	5	R	
+tv_full	13	6	R	
+tv_off	13	6	R	
+tv_full	13	7	R	dog lazy <B>fox</B> quick <B>brown</B> the over jumps
+tv_off	13	7	R	dog lazy <B>fox</B> quick <B>brown</B> the over jumps
+tv_full	13	8	R	quick <B>brown</B> <B>fox</B>. quick <B>brown</B> <B>fox</B>. quick <B>brown</B> <B>fox</B>. quick <B>brown</B> <B>fox</B>. quick <B>brown</B> <B>fox</B>. quick <B>brown</B> <B>fox</B>. quick <B>brown</B> <B>fox</B>
+tv_off	13	8	R	quick <B>brown</B> <B>fox</B>. quick <B>brown</B> <B>fox</B>. quick <B>brown</B> <B>fox</B>. quick <B>brown</B> <B>fox</B>. quick <B>brown</B> <B>fox</B>. quick <B>brown</B> <B>fox</B>. quick <B>brown</B> <B>fox</B>
+tv_full	14	0	R	The quick brown fox jumps over the <B>lazy</B> <B>dog</B>. The quick brown fox is quick, and the <B>dog</B> is <B>lazy</B>.
+tv_off	14	0	R	The quick brown fox jumps over the <B>lazy</B> <B>dog</B>. The quick brown fox is quick, and the <B>dog</B> is <B>lazy</B>.
+tv_full	14	1	R	 grew; the <B>lazy</B> <B>dog</B> slept through every<|> winter morning the fox jumped over the <B>dog</B> and everything changed: the <B>dog</B> woke, the
+tv_off	14	1	R	 grew; the <B>lazy</B> <B>dog</B> slept through every<|> winter morning the fox jumped over the <B>dog</B> and everything changed: the <B>dog</B> woke, the
+tv_full	14	2	R	
+tv_off	14	2	R	
+tv_full	14	3	R	Café Müller's fox — naïve, quick — jumps over 日本語 the <B>lazy</B> <B>dog</B>
+tv_off	14	3	R	Café Müller's fox — naïve, quick — jumps over 日本語 the <B>lazy</B> <B>dog</B>
+tv_full	14	4	R	quick quick quick fox fox <B>dog</B>
+tv_off	14	4	R	quick quick quick fox fox <B>dog</B>
+tv_full	14	5	R	
+tv_off	14	5	R	
+tv_full	14	6	R	
+tv_off	14	6	R	
+tv_full	14	7	R	<B>dog</B> <B>lazy</B> fox quick brown the over jumps
+tv_off	14	7	R	<B>dog</B> <B>lazy</B> fox quick brown the over jumps
+tv_full	14	8	R	
+tv_off	14	8	R	
+tv_full	15	0	R	The quick brown fox <B>jumps</B> over the lazy <B>dog</B>. The quick brown fox is quick, and the <B>dog</B> is lazy.
+tv_off	15	0	R	The quick brown fox <B>jumps</B> over the lazy <B>dog</B>. The quick brown fox is quick, and the <B>dog</B> is lazy.
+tv_full	15	1	R	 winter morning the fox <B>jumped</B> over the <B>dog</B> and everything changed: the <B>dog</B> woke, the<|> grew; the lazy <B>dog</B> slept through every
+tv_off	15	1	R	 winter morning the fox <B>jumped</B> over the <B>dog</B> and everything changed: the <B>dog</B> woke, the<|> grew; the lazy <B>dog</B> slept through every
+tv_full	15	2	R	a <b>bold</b> & "quoted" fox/<B>dog's</B> 'tale' is quick > slow
+tv_off	15	2	R	a <b>bold</b> & "quoted" fox/<B>dog's</B> 'tale' is quick > slow
+tv_full	15	3	R	Café Müller's fox — naïve, quick — <B>jumps</B> over 日本語 the lazy <B>dog</B>
+tv_off	15	3	R	Café Müller's fox — naïve, quick — <B>jumps</B> over 日本語 the lazy <B>dog</B>
+tv_full	15	4	R	quick quick quick fox fox <B>dog</B>
+tv_off	15	4	R	quick quick quick fox fox <B>dog</B>
+tv_full	15	5	R	
+tv_off	15	5	R	
+tv_full	15	6	R	
+tv_off	15	6	R	
+tv_full	15	7	R	<B>dog</B> lazy fox quick brown the over <B>jumps</B>
+tv_off	15	7	R	<B>dog</B> lazy fox quick brown the over <B>jumps</B>
+tv_full	15	8	R	
+tv_off	15	8	R	
+tv_full	16	0	R	The <B>quick</B> brown fox jumps over the <B>lazy</B> <B>dog</B>. The <B>quick</B> brown fox is <B>quick</B>, and the dog is lazy.
+tv_off	16	0	R	The <B>quick</B> brown fox jumps over the <B>lazy</B> <B>dog</B>. The <B>quick</B> brown fox is <B>quick</B>, and the dog is lazy.
+tv_full	16	1	R	 grew; the <B>lazy</B> <B>dog</B> slept through every one of them, dreaming of a <B>quick</B> brown<|>In the beginning the <B>quick</B> brown fox
+tv_off	16	1	R	 grew; the <B>lazy</B> <B>dog</B> slept through every one of them, dreaming of a <B>quick</B> brown<|>In the beginning the <B>quick</B> brown fox
+tv_full	16	2	R	a <b>bold</b> & "quoted" fox/dog's 'tale' is <B>quick</B> > slow
+tv_off	16	2	R	a <b>bold</b> & "quoted" fox/dog's 'tale' is <B>quick</B> > slow
+tv_full	16	3	R	Café Müller's fox — naïve, <B>quick</B> — jumps over 日本語 the <B>lazy</B> <B>dog</B>
+tv_off	16	3	R	Café Müller's fox — naïve, <B>quick</B> — jumps over 日本語 the <B>lazy</B> <B>dog</B>
+tv_full	16	4	R	<B>quick</B> <B>quick</B> <B>quick</B> fox fox dog
+tv_off	16	4	R	<B>quick</B> <B>quick</B> <B>quick</B> fox fox dog
+tv_full	16	5	R	
+tv_off	16	5	R	
+tv_full	16	6	R	
+tv_off	16	6	R	
+tv_full	16	7	R	dog lazy fox <B>quick</B> brown the over jumps
+tv_off	16	7	R	dog lazy fox <B>quick</B> brown the over jumps
+tv_full	16	8	R	<B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox
+tv_off	16	8	R	<B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox
+tv_full	17	0	R	The quick brown <B>fox</B> jumps over the lazy dog. The quick brown <B>fox</B> is quick, and the dog is lazy.
+tv_off	17	0	R	The quick brown <B>fox</B> jumps over the lazy dog. The quick brown <B>fox</B> is quick, and the dog is lazy.
+tv_full	17	1	R	In the beginning the quick brown <B>fox</B> was a very small <B>fox</B>, and nobody noticed the <B>fox</B> at all. Years passed and the <B>fox</B>
+tv_off	17	1	R	In the beginning the quick brown <B>fox</B> was a very small <B>fox</B>, and nobody noticed the <B>fox</B> at all. Years passed and the <B>fox</B>
+tv_full	17	2	R	a <b>bold</b> & "quoted" <B>fox</B>/dog's 'tale' is quick > slow
+tv_off	17	2	R	a <b>bold</b> & "quoted" <B>fox</B>/dog's 'tale' is quick > slow
+tv_full	17	3	R	Café Müller's <B>fox</B> — naïve, quick — jumps over 日本語 the lazy dog
+tv_off	17	3	R	Café Müller's <B>fox</B> — naïve, quick — jumps over 日本語 the lazy dog
+tv_full	17	4	R	quick quick quick <B>fox</B> <B>fox</B> dog
+tv_off	17	4	R	quick quick quick <B>fox</B> <B>fox</B> dog
+tv_full	17	5	R	<B>fox</B>
+tv_off	17	5	R	<B>fox</B>
+tv_full	17	6	R	
+tv_off	17	6	R	
+tv_full	17	7	R	dog lazy <B>fox</B> quick brown the over jumps
+tv_off	17	7	R	dog lazy <B>fox</B> quick brown the over jumps
+tv_full	17	8	R	quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>
+tv_off	17	8	R	quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>. quick brown <B>fox</B>
+tv_full	18	0	R	
+tv_off	18	0	R	
+tv_full	18	1	R	
+tv_off	18	1	R	
+tv_full	18	2	R	
+tv_off	18	2	R	
+tv_full	18	3	R	
+tv_off	18	3	R	
+tv_full	18	4	R	
+tv_off	18	4	R	
+tv_full	18	5	R	
+tv_off	18	5	R	
+tv_full	18	6	R	
+tv_off	18	6	R	
+tv_full	18	7	R	
+tv_off	18	7	R	
+tv_full	18	8	R	
+tv_off	18	8	R	
+tv_full	19	0	R	
+tv_off	19	0	R	
+tv_full	19	1	R	
+tv_off	19	1	R	
+tv_full	19	2	R	
+tv_off	19	2	R	
+tv_full	19	3	R	
+tv_off	19	3	R	
+tv_full	19	4	R	
+tv_off	19	4	R	
+tv_full	19	5	R	
+tv_off	19	5	R	
+tv_full	19	6	R	
+tv_off	19	6	R	
+tv_full	19	7	R	
+tv_off	19	7	R	
+tv_full	19	8	R	
+tv_off	19	8	R	
+tv_full	20	0	R	
+tv_off	20	0	R	
+tv_full	20	1	R	
+tv_off	20	1	R	
+tv_full	20	2	R	
+tv_off	20	2	R	
+tv_full	20	3	R	
+tv_off	20	3	R	
+tv_full	20	4	R	
+tv_off	20	4	R	
+tv_full	20	5	R	
+tv_off	20	5	R	
+tv_full	20	6	R	
+tv_off	20	6	R	
+tv_full	20	7	R	
+tv_off	20	7	R	
+tv_full	20	8	R	
+tv_off	20	8	R	
+tv_full	21	0	R	<B>The</B> <B>quick</B> brown fox jumps over the lazy dog. <B>The</B> <B>quick</B> brown fox is quick, and the dog is lazy.
+tv_off	21	0	R	<B>The</B> <B>quick</B> brown fox jumps over the lazy dog. <B>The</B> <B>quick</B> brown fox is quick, and the dog is lazy.
+tv_full	21	1	R	In the beginning <B>the</B> <B>quick</B> brown fox was a very small fox, and nobody noticed<|> fox ran, and <B>the</B> <B>quick</B> chase across the
+tv_off	21	1	R	In the beginning <B>the</B> <B>quick</B> brown fox was a very small fox, and nobody noticed<|> fox ran, and <B>the</B> <B>quick</B> chase across the
+tv_full	21	2	R	
+tv_off	21	2	R	
+tv_full	21	3	R	
+tv_off	21	3	R	
+tv_full	21	4	R	
+tv_off	21	4	R	
+tv_full	21	5	R	
+tv_off	21	5	R	
+tv_full	21	6	R	
+tv_off	21	6	R	
+tv_full	21	7	R	
+tv_off	21	7	R	
+tv_full	21	8	R	
+tv_off	21	8	R	
+tv_full	22	0	R	The <B>quick</B> <B>brown</B> <B>fox</B> jumps over the lazy dog. The <B>quick</B> <B>brown</B> <B>fox</B> is quick, and the dog is lazy.
+tv_off	22	0	R	The <B>quick</B> <B>brown</B> <B>fox</B> jumps over the lazy dog. The <B>quick</B> <B>brown</B> <B>fox</B> is quick, and the dog is lazy.
+tv_full	22	1	R	In the beginning the <B>quick</B> <B>brown</B> <B>fox</B> was a very small fox, and nobody noticed the fox at all. Years passed and the fox
+tv_off	22	1	R	In the beginning the <B>quick</B> <B>brown</B> <B>fox</B> was a very small fox, and nobody noticed the fox at all. Years passed and the fox
+tv_full	22	2	R	
+tv_off	22	2	R	
+tv_full	22	3	R	
+tv_off	22	3	R	
+tv_full	22	4	R	
+tv_off	22	4	R	
+tv_full	22	5	R	
+tv_off	22	5	R	
+tv_full	22	6	R	
+tv_off	22	6	R	
+tv_full	22	7	R	
+tv_off	22	7	R	
+tv_full	22	8	R	<B>quick</B> <B>brown</B> <B>fox</B>. <B>quick</B> <B>brown</B> <B>fox</B>. <B>quick</B> <B>brown</B> <B>fox</B>. <B>quick</B> <B>brown</B> <B>fox</B>. <B>quick</B> <B>brown</B> <B>fox</B>. <B>quick</B> <B>brown</B> <B>fox</B>. <B>quick</B> <B>brown</B> <B>fox</B>
+tv_off	22	8	R	<B>quick</B> <B>brown</B> <B>fox</B>. <B>quick</B> <B>brown</B> <B>fox</B>. <B>quick</B> <B>brown</B> <B>fox</B>. <B>quick</B> <B>brown</B> <B>fox</B>. <B>quick</B> <B>brown</B> <B>fox</B>. <B>quick</B> <B>brown</B> <B>fox</B>. <B>quick</B> <B>brown</B> <B>fox</B>
+tv_full	23	0	R	The <B>quick</B> <B>brown</B> fox jumps over the <B>lazy</B> <B>dog</B>. The <B>quick</B> <B>brown</B> fox is quick, and the dog is lazy.
+tv_off	23	0	R	The <B>quick</B> <B>brown</B> fox jumps over the <B>lazy</B> <B>dog</B>. The <B>quick</B> <B>brown</B> fox is quick, and the dog is lazy.
+tv_full	23	1	R	In the beginning the <B>quick</B> <B>brown</B> fox<|> grew; the <B>lazy</B> <B>dog</B> slept through every one of them, dreaming of a <B>quick</B> <B>brown</B>
+tv_off	23	1	R	In the beginning the <B>quick</B> <B>brown</B> fox<|> grew; the <B>lazy</B> <B>dog</B> slept through every one of them, dreaming of a <B>quick</B> <B>brown</B>
+tv_full	23	2	R	
+tv_off	23	2	R	
+tv_full	23	3	R	Café Müller's fox — naïve, quick — jumps over 日本語 the <B>lazy</B> <B>dog</B>
+tv_off	23	3	R	Café Müller's fox — naïve, quick — jumps over 日本語 the <B>lazy</B> <B>dog</B>
+tv_full	23	4	R	
+tv_off	23	4	R	
+tv_full	23	5	R	
+tv_off	23	5	R	
+tv_full	23	6	R	
+tv_off	23	6	R	
+tv_full	23	7	R	dog lazy fox <B>quick</B> <B>brown</B> the over jumps
+tv_off	23	7	R	dog lazy fox <B>quick</B> <B>brown</B> the over jumps
+tv_full	23	8	R	<B>quick</B> <B>brown</B> fox. <B>quick</B> <B>brown</B> fox. <B>quick</B> <B>brown</B> fox. <B>quick</B> <B>brown</B> fox. <B>quick</B> <B>brown</B> fox. <B>quick</B> <B>brown</B> fox. <B>quick</B> <B>brown</B> fox
+tv_off	23	8	R	<B>quick</B> <B>brown</B> fox. <B>quick</B> <B>brown</B> fox. <B>quick</B> <B>brown</B> fox. <B>quick</B> <B>brown</B> fox. <B>quick</B> <B>brown</B> fox. <B>quick</B> <B>brown</B> fox. <B>quick</B> <B>brown</B> fox
+tv_full	24	0	R	The <B>quick</B> brown fox jumps over the lazy dog. The <B>quick</B> brown fox is <B>quick</B>, and the dog is lazy.
+tv_off	24	0	R	The <B>quick</B> brown fox jumps over the lazy dog. The <B>quick</B> brown fox is <B>quick</B>, and the dog is lazy.
+tv_full	24	1	R	In the beginning the <B>quick</B> brown fox<|> one of them, dreaming of a <B>quick</B> brown<|> fox ran, and the <B>quick</B> chase across the
+tv_off	24	1	R	In the beginning the <B>quick</B> brown fox<|> one of them, dreaming of a <B>quick</B> brown<|> fox ran, and the <B>quick</B> chase across the
+tv_full	24	2	R	a <b>bold</b> & "quoted" fox/dog's 'tale' is <B>quick</B> > slow
+tv_off	24	2	R	a <b>bold</b> & "quoted" fox/dog's 'tale' is <B>quick</B> > slow
+tv_full	24	3	R	Café Müller's fox — naïve, <B>quick</B> — jumps over 日本語 the lazy dog
+tv_off	24	3	R	Café Müller's fox — naïve, <B>quick</B> — jumps over 日本語 the lazy dog
+tv_full	24	4	R	<B>quick</B> <B>quick</B> <B>quick</B> fox fox dog
+tv_off	24	4	R	<B>quick</B> <B>quick</B> <B>quick</B> fox fox dog
+tv_full	24	5	R	
+tv_off	24	5	R	
+tv_full	24	6	R	
+tv_off	24	6	R	
+tv_full	24	7	R	dog lazy fox <B>quick</B> brown the over jumps
+tv_off	24	7	R	dog lazy fox <B>quick</B> brown the over jumps
+tv_full	24	8	R	<B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox
+tv_off	24	8	R	<B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox
+tv_full	25	0	R	The <B>quick</B> brown fox jumps over the lazy dog. The <B>quick</B> brown fox is <B>quick</B>, and the dog is lazy.
+tv_off	25	0	R	The <B>quick</B> brown fox jumps over the lazy dog. The <B>quick</B> brown fox is <B>quick</B>, and the dog is lazy.
+tv_full	25	1	R	In the beginning the <B>quick</B> brown fox<|> one of them, dreaming of a <B>quick</B> brown<|> fox ran, and the <B>quick</B> chase across the
+tv_off	25	1	R	In the beginning the <B>quick</B> brown fox<|> one of them, dreaming of a <B>quick</B> brown<|> fox ran, and the <B>quick</B> chase across the
+tv_full	25	2	R	a <b>bold</b> & "quoted" fox/dog's 'tale' is <B>quick</B> > slow
+tv_off	25	2	R	a <b>bold</b> & "quoted" fox/dog's 'tale' is <B>quick</B> > slow
+tv_full	25	3	R	Café Müller's fox — naïve, <B>quick</B> — jumps over 日本語 the lazy dog
+tv_off	25	3	R	Café Müller's fox — naïve, <B>quick</B> — jumps over 日本語 the lazy dog
+tv_full	25	4	R	<B>quick</B> <B>quick</B> <B>quick</B> fox fox dog
+tv_off	25	4	R	<B>quick</B> <B>quick</B> <B>quick</B> fox fox dog
+tv_full	25	5	R	
+tv_off	25	5	R	
+tv_full	25	6	R	
+tv_off	25	6	R	
+tv_full	25	7	R	dog lazy fox <B>quick</B> brown the over jumps
+tv_off	25	7	R	dog lazy fox <B>quick</B> brown the over jumps
+tv_full	25	8	R	<B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox
+tv_off	25	8	R	<B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox. <B>quick</B> brown fox
+tv_full	26	0	R	The <B>quick</B> brown <B>fox</B> jumps over the lazy dog. The <B>quick</B> brown <B>fox</B> is quick, and the dog is lazy.
+tv_off	26	0	R	The <B>quick</B> brown <B>fox</B> jumps over the lazy dog. The <B>quick</B> brown <B>fox</B> is quick, and the dog is lazy.
+tv_full	26	1	R	In the beginning the <B>quick</B> brown <B>fox</B> was a very small fox, and nobody noticed the fox at all. Years passed and the fox
+tv_off	26	1	R	In the beginning the <B>quick</B> brown <B>fox</B> was a very small fox, and nobody noticed the fox at all. Years passed and the fox
+tv_full	26	2	R	
+tv_off	26	2	R	
+tv_full	26	3	R	
+tv_off	26	3	R	
+tv_full	26	4	R	quick <B>quick</B> <B>quick</B> <B>fox</B> fox dog
+tv_off	26	4	R	quick <B>quick</B> <B>quick</B> <B>fox</B> fox dog
+tv_full	26	5	R	
+tv_off	26	5	R	
+tv_full	26	6	R	
+tv_off	26	6	R	
+tv_full	26	7	R	
+tv_off	26	7	R	
+tv_full	26	8	R	<B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>
+tv_off	26	8	R	<B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>
+tv_full	27	0	R	The <B>quick</B> brown <B>fox</B> jumps over the lazy dog. The <B>quick</B> brown <B>fox</B> is <B>quick</B>, and the dog is lazy.
+tv_off	27	0	R	The <B>quick</B> brown <B>fox</B> jumps over the lazy dog. The <B>quick</B> brown <B>fox</B> is <B>quick</B>, and the dog is lazy.
+tv_full	27	1	R	In the beginning the <B>quick</B> brown <B>fox</B> was a very small fox, and nobody noticed<|> <B>fox</B> ran, and the <B>quick</B> chase across the
+tv_off	27	1	R	In the beginning the <B>quick</B> brown <B>fox</B> was a very small fox, and nobody noticed<|> <B>fox</B> ran, and the <B>quick</B> chase across the
+tv_full	27	2	R	a <b>bold</b> & "quoted" <B>fox</B>/dog's 'tale' is <B>quick</B> > slow
+tv_off	27	2	R	a <b>bold</b> & "quoted" <B>fox</B>/dog's 'tale' is <B>quick</B> > slow
+tv_full	27	3	R	Café Müller's <B>fox</B> — naïve, <B>quick</B> — jumps over 日本語 the lazy dog
+tv_off	27	3	R	Café Müller's <B>fox</B> — naïve, <B>quick</B> — jumps over 日本語 the lazy dog
+tv_full	27	4	R	<B>quick</B> <B>quick</B> <B>quick</B> <B>fox</B> fox dog
+tv_off	27	4	R	<B>quick</B> <B>quick</B> <B>quick</B> <B>fox</B> fox dog
+tv_full	27	5	R	
+tv_off	27	5	R	
+tv_full	27	6	R	
+tv_off	27	6	R	
+tv_full	27	7	R	dog lazy <B>fox</B> <B>quick</B> brown the over jumps
+tv_off	27	7	R	dog lazy <B>fox</B> <B>quick</B> brown the over jumps
+tv_full	27	8	R	<B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>
+tv_off	27	8	R	<B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>
+tv_full	28	0	R	The quick <B>brown</B> <B>fox</B> jumps over the <B>lazy</B> dog. The quick <B>brown</B> <B>fox</B> is quick, and the dog is <B>lazy</B>.
+tv_off	28	0	R	The quick <B>brown</B> <B>fox</B> jumps over the <B>lazy</B> dog. The quick <B>brown</B> <B>fox</B> is quick, and the dog is <B>lazy</B>.
+tv_full	28	1	R	In the beginning the quick <B>brown</B> <B>fox</B> was a very small fox, and nobody noticed<|> grew; the <B>lazy</B> dog slept through every
+tv_off	28	1	R	In the beginning the quick <B>brown</B> <B>fox</B> was a very small fox, and nobody noticed<|> grew; the <B>lazy</B> dog slept through every
+tv_full	28	2	R	
+tv_off	28	2	R	
+tv_full	28	3	R	Café Müller's fox — naïve, quick — jumps over 日本語 the <B>lazy</B> dog
+tv_off	28	3	R	Café Müller's fox — naïve, quick — jumps over 日本語 the <B>lazy</B> dog
+tv_full	28	4	R	
+tv_off	28	4	R	
+tv_full	28	5	R	
+tv_off	28	5	R	
+tv_full	28	6	R	
+tv_off	28	6	R	
+tv_full	28	7	R	dog <B>lazy</B> fox quick brown the over jumps
+tv_off	28	7	R	dog <B>lazy</B> fox quick brown the over jumps
+tv_full	28	8	R	quick <B>brown</B> <B>fox</B>. quick <B>brown</B> <B>fox</B>. quick <B>brown</B> <B>fox</B>. quick <B>brown</B> <B>fox</B>. quick <B>brown</B> <B>fox</B>. quick <B>brown</B> <B>fox</B>. quick <B>brown</B> <B>fox</B>
+tv_off	28	8	R	quick <B>brown</B> <B>fox</B>. quick <B>brown</B> <B>fox</B>. quick <B>brown</B> <B>fox</B>. quick <B>brown</B> <B>fox</B>. quick <B>brown</B> <B>fox</B>. quick <B>brown</B> <B>fox</B>. quick <B>brown</B> <B>fox</B>
+tv_full	29	0	R	The <B>quick</B> brown fox jumps over the lazy dog. The quick brown fox is quick, and the dog is lazy.
+tv_off	29	0	R	The <B>quick</B> brown fox jumps over the lazy dog. The quick brown fox is quick, and the dog is lazy.
+tv_full	29	1	R	
+tv_off	29	1	R	
+tv_full	29	2	R	
+tv_off	29	2	R	
+tv_full	29	3	R	
+tv_off	29	3	R	
+tv_full	29	4	R	<B>quick</B> <B>quick</B> <B>quick</B> fox fox dog
+tv_off	29	4	R	<B>quick</B> <B>quick</B> <B>quick</B> fox fox dog
+tv_full	29	5	R	
+tv_off	29	5	R	
+tv_full	29	6	R	
+tv_off	29	6	R	
+tv_full	29	7	R	dog lazy fox <B>quick</B> brown the over jumps
+tv_off	29	7	R	dog lazy fox <B>quick</B> brown the over jumps
+tv_full	29	8	R	<B>quick</B> brown fox. <B>quick</B> brown fox. quick brown fox. quick brown fox. quick brown fox. quick brown fox. quick brown fox
+tv_off	29	8	R	<B>quick</B> brown fox. <B>quick</B> brown fox. quick brown fox. quick brown fox. quick brown fox. quick brown fox. quick brown fox
+tv_full	30	0	R	The quick brown fox jumps over the lazy dog. The quick brown <B>fox</B> is <B>quick</B>, and the dog is lazy.
+tv_off	30	0	R	The quick brown fox jumps over the lazy dog. The quick brown <B>fox</B> is <B>quick</B>, and the dog is lazy.
+tv_full	30	1	R	
+tv_off	30	1	R	
+tv_full	30	2	R	
+tv_off	30	2	R	
+tv_full	30	3	R	Café Müller's <B>fox</B> — naïve, <B>quick</B> — jumps over 日本語 the lazy dog
+tv_off	30	3	R	Café Müller's <B>fox</B> — naïve, <B>quick</B> — jumps over 日本語 the lazy dog
+tv_full	30	4	R	<B>quick</B> <B>quick</B> <B>quick</B> <B>fox</B> fox dog
+tv_off	30	4	R	<B>quick</B> <B>quick</B> <B>quick</B> <B>fox</B> fox dog
+tv_full	30	5	R	
+tv_off	30	5	R	
+tv_full	30	6	R	
+tv_off	30	6	R	
+tv_full	30	7	R	dog lazy <B>fox</B> <B>quick</B> brown the over jumps
+tv_off	30	7	R	dog lazy <B>fox</B> <B>quick</B> brown the over jumps
+tv_full	30	8	R	quick brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>
+tv_off	30	8	R	quick brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>. <B>quick</B> brown <B>fox</B>

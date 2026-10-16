@@ -1721,7 +1721,7 @@ fn near_subs_with<C, T>(
 /// `getTermStates(weights)` as `buildSimWeight` sees them: the `(field,
 /// term)`s whose statistics the query's similarity takes (`extractTermStates`:
 /// a not query's include side, both sides of a containment).
-pub(crate) fn weight_terms(q: &SpanNode, out: &mut Vec<(String, Vec<u8>)>) {
+pub fn weight_terms(q: &SpanNode, out: &mut Vec<(String, Vec<u8>)>) {
     match q {
         SpanNode::Term { field, term } => out.push((field.clone(), term.clone())),
         SpanNode::Near { clauses, .. } | SpanNode::Or { clauses } => {

@@ -216,6 +216,7 @@ pub mod facets;
 pub mod field_norms;
 pub mod function;
 pub mod grouping;
+pub mod highlight;
 pub mod highlighter;
 pub mod index_searcher;
 pub mod intervals;
