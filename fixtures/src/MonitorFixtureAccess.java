@@ -56,4 +56,52 @@ public final class MonitorFixtureAccess {
         mi.createSearcher().getIndexReader().leaves().get(0).reader();
     return presearcher.buildQuery(reader, (field, term) -> true).toString();
   }
+
+  /** {@code QueryAnalyzer(handlers).buildTree(query, weightor)}. */
+  public static QueryTree buildTreeWith(
+      java.util.List<CustomQueryHandler> handlers, Query query, TermWeightor weightor) {
+    return new QueryAnalyzer(handlers).buildTree(query, weightor);
+  }
+
+  /**
+   * {@code SuffixingNGramTokenFilter} over {@code terms}, as one stream: every token it emits, in
+   * order.
+   */
+  public static java.util.List<String> ngrams(
+      java.util.List<String> terms, String suffix, String wildcard, int maxTokenLength)
+      throws Exception {
+    final java.util.Iterator<String> it = terms.iterator();
+    org.apache.lucene.analysis.TokenStream in =
+        new org.apache.lucene.analysis.TokenStream() {
+          final org.apache.lucene.analysis.tokenattributes.CharTermAttribute term =
+              addAttribute(org.apache.lucene.analysis.tokenattributes.CharTermAttribute.class);
+          final org.apache.lucene.analysis.tokenattributes.PositionIncrementAttribute inc =
+              addAttribute(org.apache.lucene.analysis.tokenattributes.PositionIncrementAttribute.class);
+          final org.apache.lucene.analysis.tokenattributes.OffsetAttribute off =
+              addAttribute(org.apache.lucene.analysis.tokenattributes.OffsetAttribute.class);
+
+          @Override
+          public boolean incrementToken() {
+            if (!it.hasNext()) return false;
+            clearAttributes();
+            String t = it.next();
+            term.append(t);
+            inc.setPositionIncrement(1);
+            off.setOffset(0, t.length());
+            return true;
+          }
+        };
+    org.apache.lucene.analysis.TokenStream out =
+        new SuffixingNGramTokenFilter(in, suffix, wildcard, maxTokenLength);
+    org.apache.lucene.analysis.tokenattributes.CharTermAttribute t =
+        out.addAttribute(org.apache.lucene.analysis.tokenattributes.CharTermAttribute.class);
+    java.util.List<String> result = new java.util.ArrayList<>();
+    out.reset();
+    while (out.incrementToken()) {
+      result.add(t.toString());
+    }
+    out.end();
+    out.close();
+    return result;
+  }
 }

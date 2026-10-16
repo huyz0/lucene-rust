@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::monitor::analyzer::QueryAnalyzer;
+use crate::monitor::handlers::CustomQueryHandler;
 use crate::monitor::tree::{QueryTree, TermWeightor, ANYTOKEN, ANYTOKEN_FIELD};
 use crate::query::{BooleanQuery, Clause, MatchAllDocsQuery, TermInSetQuery, TermQuery};
 
@@ -57,6 +58,8 @@ impl<F: Fn(&str, &[u8]) -> bool> TermAcceptor for F {
 #[derive(Clone)]
 pub struct TermFilteredPresearcher {
     extractor: QueryAnalyzer,
+    /// `queryHandlers`: each wraps a field's batch terms (`wrapTermStream`).
+    handlers: Vec<Arc<dyn CustomQueryHandler>>,
     weightor: TermWeightor,
     filter_fields: Vec<String>,
     /// `MultipassTermFilteredPresearcher`'s passes; `1` is the plain one.
@@ -86,8 +89,19 @@ impl TermFilteredPresearcher {
     /// `new TermFilteredPresearcher(weightor, customQueryHandlers, filterFields)`.
     /// The custom handlers are not ported (see the ledger), so there are none.
     pub fn new(weightor: TermWeightor, filter_fields: Vec<String>) -> Self {
+        Self::with_handlers(weightor, Vec::new(), filter_fields)
+    }
+
+    /// `new TermFilteredPresearcher(weightor, customQueryHandlers,
+    /// filterFields)`.
+    pub fn with_handlers(
+        weightor: TermWeightor,
+        handlers: Vec<Arc<dyn CustomQueryHandler>>,
+        filter_fields: Vec<String>,
+    ) -> Self {
         TermFilteredPresearcher {
-            extractor: QueryAnalyzer,
+            extractor: QueryAnalyzer::new(handlers.clone()),
+            handlers,
             weightor,
             filter_fields,
             passes: 1,
@@ -96,17 +110,29 @@ impl TermFilteredPresearcher {
     }
 
     /// `new MultipassTermFilteredPresearcher(passes, minWeight, weightor,
-    /// customQueryHandlers, filterFields)`.
+    /// customQueryHandlers, filterFields)` without handlers.
     pub fn multipass(
         passes: usize,
         min_weight: f64,
         weightor: TermWeightor,
         filter_fields: Vec<String>,
     ) -> Self {
+        Self::multipass_with_handlers(passes, min_weight, weightor, Vec::new(), filter_fields)
+    }
+
+    /// `new MultipassTermFilteredPresearcher(passes, minWeight, weightor,
+    /// customQueryHandlers, filterFields)`.
+    pub fn multipass_with_handlers(
+        passes: usize,
+        min_weight: f64,
+        weightor: TermWeightor,
+        handlers: Vec<Arc<dyn CustomQueryHandler>>,
+        filter_fields: Vec<String>,
+    ) -> Self {
         TermFilteredPresearcher {
             passes,
             min_weight,
-            ..Self::new(weightor, filter_fields)
+            ..Self::with_handlers(weightor, handlers, filter_fields)
         }
     }
 
@@ -175,23 +201,38 @@ impl TermFilteredPresearcher {
         batch: &BTreeMap<String, Vec<Vec<u8>>>,
         accept: &dyn TermAcceptor,
     ) -> Clause {
+        // `buildQuery`: each field's terms through the handlers' wrappers, then
+        // the filter fields and the acceptor; only a field that kept a term
+        // reaches the builder
+        let mut kept_by_field: Vec<(&String, Vec<Vec<u8>>)> = Vec::new();
+        for (field, terms) in batch {
+            if self.filter_fields.contains(field) {
+                continue;
+            }
+            let mut stream = terms.clone();
+            for handler in &self.handlers {
+                stream = handler.wrap_term_stream(field, stream);
+            }
+            let mut kept: Vec<Vec<u8>> = stream
+                .into_iter()
+                .filter(|t| accept.accept(field, t))
+                .collect();
+            // a `TermInSetQuery` holds its terms sorted and distinct
+            kept.sort_unstable();
+            kept.dedup();
+            if !kept.is_empty() {
+                kept_by_field.push((field, kept));
+            }
+        }
         let mut query = BooleanQuery::new();
         if self.passes > 1 {
             let mut parent = BooleanQuery::new();
             for pass in 0..self.passes {
                 let mut child = BooleanQuery::new();
-                for (field, terms) in batch {
-                    if self.filter_fields.contains(field) {
-                        continue;
-                    }
-                    let kept: Vec<Vec<u8>> = terms
-                        .iter()
-                        .filter(|t| accept.accept(field, t))
-                        .cloned()
-                        .collect();
+                for (field, kept) in &kept_by_field {
                     child.should.push(Clause::TermInSet(TermInSetQuery {
                         field: field_for_pass(field, pass, self.passes),
-                        terms: kept,
+                        terms: kept.clone(),
                     }));
                 }
                 parent.must.push(Clause::Boolean(Box::new(child)));
@@ -201,18 +242,10 @@ impl TermFilteredPresearcher {
             query.should.push(Clause::Boolean(Box::new(parent)));
         } else {
             let mut shoulds = BooleanQuery::new();
-            for (field, terms) in batch {
-                if self.filter_fields.contains(field) {
-                    continue;
-                }
-                let kept: Vec<Vec<u8>> = terms
-                    .iter()
-                    .filter(|t| accept.accept(field, t))
-                    .cloned()
-                    .collect();
+            for (field, kept) in &kept_by_field {
                 shoulds.should.push(Clause::TermInSet(TermInSetQuery {
-                    field: field.clone(),
-                    terms: kept,
+                    field: (*field).clone(),
+                    terms: kept.clone(),
                 }));
             }
             query.should.push(Clause::Boolean(Box::new(shoulds)));

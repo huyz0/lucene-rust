@@ -9,6 +9,7 @@ pub mod analyzer;
 pub mod batch;
 pub mod config;
 pub mod facade;
+pub mod handlers;
 pub mod index;
 pub mod loader;
 pub mod persist;

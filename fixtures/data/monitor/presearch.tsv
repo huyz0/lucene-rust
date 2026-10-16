@@ -7,7 +7,7 @@ quick OR brown	P	body\tbrown quick	M	body_0\tbrown quick	body\tbrown quick	body_
 quick -brown	P	body\tquick	M	body_0\tquick	body\tquick	body_1\tquick	body\tquick
 -quick	P	__anytokenfield\t__ANYTOKEN__	M	__anytokenfield_0\t__ANYTOKEN__	__anytokenfield\t__ANYTOKEN__	__anytokenfield_1\t__ANYTOKEN__	__anytokenfield\t__ANYTOKEN__
 quick NOT brown	P	body\tquick	M	body_0\tquick	body\tquick	body_1\tquick	body\tquick
-a AND b	P	body\ta	M	body_0\ta	body\ta	body_1\tb	body\tb
+a AND b	P	body\tb	M	body_0\tb	body\tb	body_1\ta	body\ta
 title:quick	P	title\tquick	M	title_0\tquick	title\tquick	title_1\tquick	title\tquick
 title:quick AND body:fox	P	title\tquick	M	title_0\tquick	title\tquick	body_1\tfox	body\tfox
 body:fox^2 title:quick	P	title\tquick	body\tfox	M	title_0\tquick	title\tquick	body_0\tfox	body\tfox	title_1\tquick	title\tquick	body_1\tfox	body\tfox
@@ -34,7 +34,7 @@ zzzz AND quick	P	body\tquick	M	body_0\tquick	body\tquick	body_1\tzzzz	body\tzzzz
 zzzz OR quick	P	body\tquick zzzz	M	body_0\tquick zzzz	body\tquick zzzz	body_1\tquick zzzz	body\tquick zzzz
 -zzzz OR quick	P	body\tquick	M	body_0\tquick	body\tquick	body_1\tquick	body\tquick
 a -a	P	body\ta	M	body_0\ta	body\ta	body_1\ta	body\ta
-(quick -quick) AND brown	P	body\tbrown	M	body_0\tbrown	body\tbrown	body_1\tquick	body\tquick
+(quick -quick) AND brown	P	body\tquick	M	body_0\tquick	body\tquick	body_1\tbrown	body\tbrown
 quick brown fox jumps over lazy dog	P	body\tbrown dog fox jumps lazy over quick	M	body_0\tbrown dog fox jumps lazy over quick	body\tbrown dog fox jumps lazy over quick	body_1\tbrown dog fox jumps lazy over quick	body\tbrown dog fox jumps lazy over quick
 +(fox quick) -brown	P	body\tfox quick	M	body_0\tfox quick	body\tfox quick	body_1\tfox quick	body\tfox quick
 fox AND (quick AND brown)	P	body\tquick	M	body_0\tquick	body\tquick	body_1\tbrown	body\tbrown

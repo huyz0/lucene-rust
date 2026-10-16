@@ -4,14 +4,14 @@
 monitor/CandidateMatcher	ported	crates/lucene-search/src/monitor/facade.rs::Monitor -- match_docs runs each selected entry against the batch; resolve is QueryMatch::resolve
 monitor/CollectingMatcher	ported	crates/lucene-search/src/monitor/facade.rs::Monitor -- the Simple and Scoring arms of match_docs
 monitor/ConcurrentQueryLoader	ported	crates/lucene-search/src/monitor/loader.rs::ConcurrentQueryLoader
-monitor/CustomQueryHandler	todo:M13	Builds a QueryTree for a query that needs custom treatment The default query analyzers will use the QueryVisitor API to extract terms from queries.
+monitor/CustomQueryHandler	ported	crates/lucene-search/src/monitor/handlers.rs::CustomQueryHandler
 monitor/DocumentBatch	ported	crates/lucene-search/src/monitor/batch.rs::DocumentBatch -- a MemoryIndex for one document, an IndexWriter segment for several
 monitor/ExplainingMatch	ported	crates/lucene-search/src/monitor/facade.rs::QueryMatch -- Matcher::Explaining; the explanation of a fuzzy query is a flat match (see the ledger)
-monitor/ForceNoBulkScoringQuery	todo:M13	Query wrapper that forces its wrapped Query to use the default doc-by-doc BulkScorer.
+monitor/ForceNoBulkScoringQuery	ported	crates/lucene-search/src/monitor/index.rs::select_debug -- the wrapper only forces doc-by-doc scoring; the presearcher query is evaluated directly, so it has no counterpart
 monitor/HighlightsMatch	ported	crates/lucene-search/src/monitor/facade.rs::QueryMatch -- Matcher::Highlights, with Hit ordered by position alone as Java's compareTo has it
 monitor/MatcherFactory	ported	crates/lucene-search/src/monitor/facade.rs::Matcher -- the enum of the four matchers
 monitor/MatchingQueries	partial	crates/lucene-search/src/monitor/facade.rs::MatchingQueries -- M13: build/search timings; MultiMatchingQueries (a batch of documents) is match_batch's MatchResult
-monitor/Monitor	partial	crates/lucene-search/src/monitor/facade.rs::Monitor -- M13: debug() and the presearcher-debug matchers (T13.5d slice 4)
+monitor/Monitor	ported	crates/lucene-search/src/monitor/facade.rs::Monitor
 monitor/MonitorConfiguration	ported	crates/lucene-search/src/monitor/config.rs::MonitorConfiguration -- an index path for the directory provider
 monitor/MonitorQuery	ported	crates/lucene-search/src/monitor/index.rs::MonitorQuery -- Defines a query to be stored in a Monitor
 monitor/MonitorQuerySerializer	ported	crates/lucene-search/src/monitor/serializer.rs::MonitorQuerySerializer -- fromParser's bytes, equal to Lucene's both ways
@@ -21,8 +21,8 @@ monitor/MultipassTermFilteredPresearcher	ported	crates/lucene-search/src/monitor
 monitor/ParallelMatcher	ported	crates/lucene-search/src/monitor/facade.rs::Monitor::match_docs_partitioned -- threads over the selected queries, merged in order; the executor is std threads, not a caller-supplied ExecutorService
 monitor/PartitionMatcher	ported	crates/lucene-search/src/monitor/facade.rs::partition, Monitor::match_docs_partitioned -- the exact Java split of the queries
 monitor/Presearcher	ported	crates/lucene-search/src/monitor/presearcher.rs::TermFilteredPresearcher -- the abstract presearcher: its buildQuery/indexQuery pair, ported as the TermFilteredPresearcher methods; NO_FILTERING is presearcher::no_filtering
-monitor/PresearcherMatch	todo:M13	Wraps a QueryMatch with information about which queries were selected by the presearcher
-monitor/PresearcherMatches	todo:M13	Wraps a MultiMatchingQueries with information on which presearcher queries were selected
+monitor/PresearcherMatch	ported	crates/lucene-search/src/monitor/facade.rs::PresearcherMatch
+monitor/PresearcherMatches	ported	crates/lucene-search/src/monitor/facade.rs::PresearcherMatches -- debug() text equal to Lucene's
 monitor/QueryAnalyzer	ported	crates/lucene-search/src/monitor/analyzer.rs::QueryAnalyzer -- Class to analyze and extract terms from a lucene query, to be used by a Presearcher in indexing.
 monitor/QueryCacheEntry	ported	crates/lucene-search/src/monitor/index.rs::QueryCacheEntry -- QueryCacheEntry
 monitor/QueryDecomposer	ported	crates/lucene-search/src/monitor/analyzer.rs::QueryDecomposer -- Split a disjunction query into its consituent parts, so that they can be indexed and run separately in the Monitor.
@@ -31,12 +31,12 @@ monitor/QueryMatch	ported	crates/lucene-search/src/monitor/facade.rs::QueryMatch
 monitor/QueryTimeListener	ported	crates/lucene-search/src/monitor/config.rs::QueryTimeListener -- timingMatcher is Monitor::match_docs_timed
 monitor/QueryTree	ported	crates/lucene-search/src/monitor/tree.rs::QueryTree -- A representation of a node in a query tree Queries are analyzed and converted into an abstract tree, consisting of conjunction and disjunction nodes, and leaf n
 monitor/ReadonlyQueryIndex	ported	crates/lucene-search/src/monitor/index.rs::QueryIndex -- a read-only configuration opens the persisted index and refuses changes
-monitor/RegexpQueryHandler	todo:M13	A query handler implementation that matches Regexp queries by indexing regex terms by their longest static substring, and generates ngrams from Document tokens
+monitor/RegexpQueryHandler	ported	crates/lucene-search/src/monitor/handlers.rs::RegexpQueryHandler -- tree, indexed terms and matches equal to Lucene's
 monitor/ScoringMatch	ported	crates/lucene-search/src/monitor/facade.rs::QueryMatch -- ScoringMatch is QueryMatch with a score; pieces of one query add up (resolve)
 monitor/SlowLog	ported	crates/lucene-search/src/monitor/config.rs::SlowLog
-monitor/SuffixingNGramTokenFilter	todo:M13	SuffixingNGramTokenFilter
+monitor/SuffixingNGramTokenFilter	ported	crates/lucene-search/src/monitor/handlers.rs::suffixing_ngrams -- the token stream as a function over the batch terms
 monitor/TermFilteredPresearcher	ported	crates/lucene-search/src/monitor/presearcher.rs::TermFilteredPresearcher -- index_query (the document), build_query (the batch query), build_filter_clause, build_filter_fields. Differs: returns the query as a Clause, run by the query index (T13.5c); custom query handlers are not wired in
-monitor/TermsEnumTokenStream	todo:M13	A TokenStream created from a org.apache.lucene.index.TermsEnum
-monitor/TermsHashBuilder	todo:M13	TermsHashBuilder
+monitor/TermsEnumTokenStream	ported	crates/lucene-search/src/monitor/presearcher.rs::TermFilteredPresearcher -- batch terms are lists, not a TermsEnum stream
+monitor/TermsHashBuilder	ported	crates/lucene-search/src/monitor/index.rs::QueryIndex -- cache ids are the entry ids; no hash of the terms is needed
 monitor/TermWeightor	ported	crates/lucene-search/src/monitor/tree.rs::TermWeightor -- Calculates the weight of a Term
 monitor/WritableQueryIndex	ported	crates/lucene-search/src/monitor/persist.rs::PersistentStore -- the on-disk layout, verified both ways against Lucene

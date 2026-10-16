@@ -113,6 +113,15 @@ pub enum QueryTree {
     /// `QueryTree.anyTerm(reason)`: a query no term can narrow; indexed under
     /// the any-token marker, weight `0`.
     AnyTerm { reason: String },
+    /// A node a [`crate::monitor::handlers::CustomQueryHandler`] builds for a
+    /// query no term names: the anonymous `QueryTree` of
+    /// `RegexpQueryHandler`. `terms` are what it indexes, `description` its
+    /// `toString` (without indentation).
+    Custom {
+        weight: f64,
+        terms: Vec<Term>,
+        description: String,
+    },
     /// `ConjunctionQueryTree`: children sorted by descending weight.
     Conjunction(Vec<QueryTree>),
     /// `DisjunctionQueryTree`: children sorted by ascending weight.
@@ -162,6 +171,7 @@ impl QueryTree {
                 }
             }
             QueryTree::AnyTerm { .. } => Ok(0.0),
+            QueryTree::Custom { weight, .. } => Ok(*weight),
             QueryTree::Conjunction(children) | QueryTree::Disjunction(children) => {
                 children[0].weight()
             }
@@ -173,6 +183,7 @@ impl QueryTree {
     pub fn collect_terms(&self, out: &mut Vec<Term>) {
         match self {
             QueryTree::Term { term, .. } => out.push(term.clone()),
+            QueryTree::Custom { terms, .. } => out.extend(terms.iter().cloned()),
             QueryTree::AnyTerm { .. } => out.push(Term {
                 field: ANYTOKEN_FIELD.to_string(),
                 bytes: ANYTOKEN.to_vec(),
@@ -192,7 +203,7 @@ impl QueryTree {
     /// disjunction advances every child. `false` when nothing changed.
     pub fn advance_phase(&mut self, min_weight: f64) -> bool {
         match self {
-            QueryTree::Term { .. } | QueryTree::AnyTerm { .. } => false,
+            QueryTree::Term { .. } | QueryTree::AnyTerm { .. } | QueryTree::Custom { .. } => false,
             QueryTree::Conjunction(children) => {
                 if children[0].advance_phase(min_weight) {
                     children.sort_by(|a, b| {
@@ -243,6 +254,7 @@ impl QueryTree {
                 )
             }
             QueryTree::AnyTerm { reason } => format!("{pad}ANY[{reason}]"),
+            QueryTree::Custom { description, .. } => format!("{pad}{description}"),
             QueryTree::Conjunction(children) | QueryTree::Disjunction(children) => {
                 let kind = if matches!(self, QueryTree::Conjunction(_)) {
                     "Conjunction"

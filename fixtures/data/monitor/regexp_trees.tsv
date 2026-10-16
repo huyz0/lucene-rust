@@ -1,0 +1,10 @@
+/foo.*bar/	WILDCARD_NGRAM[body:fooXX]^3.3306095600128174	body:fooXX body:__WILDCARD__	body\t__WILDCARD__ fooXX
+/ab?c/	WILDCARD_NGRAM[body:aXX]^2.7802910804748535	body:aXX body:__WILDCARD__	body\t__WILDCARD__ aXX
+/hello/	body:hello^3.3306095600128174	body:hello	body\thello
+/x.y.z/	WILDCARD_NGRAM[body:xXX]^2.7802910804748535	body:xXX body:__WILDCARD__	body\t__WILDCARD__ xXX
+/(abc)+/	WILDCARD_NGRAM[body:(abc)+XX]^3.727846175432205	body:(abc)+XX body:__WILDCARD__	body\t(abc)+XX __WILDCARD__
+fox AND /qu.*k/	Conjunction[2]^3.0964174270629883\n  WILDCARD_NGRAM[body:quXX]^3.0964174270629883\n  body:fox^2.7802910804748535\n	body:quXX body:__WILDCARD__	body\t__WILDCARD__ quXX
+/a.*/	WILDCARD_NGRAM[body:aXX]^2.7802910804748535	body:aXX body:__WILDCARD__	body\t__WILDCARD__ aXX
+/abcdefghijklmnopqrstuvwxyzabcdefghij.*/	WILDCARD_NGRAM[body:abcdefghijklmnopqrstuvwxyzabcdefghijXX]^3.9997257273935247	body:abcdefghijklmnopqrstuvwxyzabcdefghijXX body:__WILDCARD__	body\t__WILDCARD__ abcdefghijklmnopqrstuvwxyzabcdefghijXX
+/h[ae]llo/	WILDCARD_NGRAM[body:h[ae]lloXX]^3.8506388068199158	body:h[ae]lloXX body:__WILDCARD__	body\t__WILDCARD__ h[ae]lloXX
+/ab.cd.ef/	WILDCARD_NGRAM[body:abXX]^3.0964174270629883	body:abXX body:__WILDCARD__	body\t__WILDCARD__ abXX
