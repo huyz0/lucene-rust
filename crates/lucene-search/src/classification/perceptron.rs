@@ -35,11 +35,35 @@ pub struct BooleanPerceptronClassifier {
 }
 
 /// `weights`: each term (as `utf8ToString()` then `new BytesRef(term)`
-/// re-encode it) to its weight, and the terms changed since the snapshot.
+/// re-encode it) to its weight. A term has an index, so the terms changed
+/// since the snapshot are indices and an update allocates only a new term.
 struct Weights {
-    weights: HashMap<Vec<u8>, f64>,
-    dirty: Vec<Vec<u8>>,
+    index: HashMap<Vec<u8>, usize>,
+    keys: Vec<Vec<u8>>,
+    values: Vec<f64>,
+    dirty: Vec<usize>,
     new_terms: bool,
+}
+
+impl Weights {
+    /// `weights.put(term, weight)`, recording the term as changed.
+    fn put(&mut self, term: &[u8], weight: f64) {
+        let i = match self.index.get(term) {
+            Some(&i) => {
+                self.values[i] = weight;
+                i
+            }
+            None => {
+                let i = self.keys.len();
+                self.index.insert(term.to_vec(), i);
+                self.keys.push(term.to_vec());
+                self.values.push(weight);
+                self.new_terms = true;
+                i
+            }
+        };
+        self.dirty.push(i);
+    }
 }
 
 /// A term's bytes as a Java `String` round trip leaves them.
@@ -91,7 +115,9 @@ impl BooleanPerceptronClassifier {
             }
         };
         let mut weights = Weights {
-            weights: HashMap::new(),
+            index: HashMap::new(),
+            keys: Vec::new(),
+            values: Vec::new(),
             dirty: Vec::new(),
             new_terms: true,
         };
@@ -99,8 +125,7 @@ impl BooleanPerceptronClassifier {
         while let Some(t) = te.next()? {
             let key = java_bytes(t).into_owned();
             let ttf = te.total_term_freq()?;
-            weights.weights.insert(key.clone(), ttf as f64);
-            weights.dirty.push(key);
+            weights.put(&key, ttf as f64);
         }
         let mut c = Self {
             bias,
@@ -167,15 +192,7 @@ impl BooleanPerceptronClassifier {
                 None => 0.0,
                 Some(&p) => f64::max(0.0, p as f64 + modifier * freq as f64),
             };
-            let key = java_bytes(&t.term);
-            match weights.weights.get_mut(key.as_ref()) {
-                Some(v) => *v = w,
-                None => {
-                    weights.weights.insert(key.to_vec(), w);
-                    weights.new_terms = true;
-                }
-            }
-            weights.dirty.push(key.into_owned());
+            weights.put(&java_bytes(&t.term), w);
         }
         if update_snapshot {
             self.update_snapshot(weights)?;
@@ -186,12 +203,17 @@ impl BooleanPerceptronClassifier {
     /// `updateFST(weights)`: the changed weights into the snapshot.
     fn update_snapshot(&mut self, weights: &mut Weights) -> Result<()> {
         if weights.new_terms {
-            check_order(weights.weights.keys().map(Vec::as_slice))?;
+            check_order(weights.keys.iter().map(Vec::as_slice))?;
             weights.new_terms = false;
         }
-        for k in weights.dirty.drain(..) {
-            let w = weights.weights.get(&k).copied().unwrap_or(0.0);
-            self.weights_snapshot.insert(k, w as i64);
+        for i in weights.dirty.drain(..) {
+            let w = weights.values[i] as i64;
+            match self.weights_snapshot.get_mut(&weights.keys[i]) {
+                Some(v) => *v = w,
+                None => {
+                    self.weights_snapshot.insert(weights.keys[i].clone(), w);
+                }
+            }
         }
         Ok(())
     }
