@@ -1,0 +1,180 @@
+c	1	0	care599
+c	1	1	care599
+c	3	0	care599card1887cat4681
+c	3	1	care599card1887cat4681
+c	4	0	care599card1887cat4681card2679
+c	4	1	care599card1887cat4681car4060
+c	10	0	care599card1887cat4681card2679card5179cat1475car4060car3759care3546cat1143
+c	10	1	care599card1887cat4681car4060cart4324café1007
+c	200	0	care599card1887cat4681card2679card5179cat1475car4060car3759care3546cat1143card5437car4536car130car1026cart4324cat2316car4815care610café1007car227cart164
+c	200	1	care599card1887cat4681car4060cart4324café1007
+ca	1	0	care599
+ca	1	1	care599
+ca	3	0	care599card1887cat4681
+ca	3	1	care599card1887cat4681
+ca	4	0	care599card1887cat4681card2679
+ca	4	1	care599card1887cat4681car4060
+ca	10	0	care599card1887cat4681card2679card5179cat1475car4060car3759care3546cat1143
+ca	10	1	care599card1887cat4681car4060cart4324café1007
+ca	200	0	care599card1887cat4681card2679card5179cat1475car4060car3759care3546cat1143card5437car4536car130car1026cart4324cat2316car4815care610café1007car227cart164
+ca	200	1	care599card1887cat4681car4060cart4324café1007
+car	1	0	care599
+car	1	1	care599
+car	3	0	care599card1887card2679
+car	3	1	care599card1887car4060
+car	4	0	care599card1887card2679card5179
+car	4	1	care599card1887car4060cart4324
+car	10	0	care599card1887card2679card5179car4060car3759care3546card5437car4536car130
+car	10	1	care599card1887car4060cart4324
+car	200	0	care599card1887card2679card5179car4060car3759care3546card5437car4536car130car1026cart4324car4815care610car227cart164
+car	200	1	care599card1887car4060cart4324
+cat	1	0	cat4681
+cat	1	1	cat4681
+cat	3	0	cat4681cat1475cat1143
+cat	3	1	cat4681
+cat	4	0	cat4681cat1475cat1143cat2316
+cat	4	1	cat4681
+cat	10	0	cat4681cat1475cat1143cat2316
+cat	10	1	cat4681
+cat	200	0	cat4681cat1475cat1143cat2316
+cat	200	1	cat4681
+d	1	0	dot2596
+d	1	1	dot2596
+d	3	0	dot2596door774door2765
+d	3	1	dot2596door774dog1354
+d	4	0	dot2596door774door2765door1560
+d	4	1	dot2596door774dog1354
+d	10	0	dot2596door774door2765door1560door2858dog1354dog1250dot3450dot5238dog336
+d	10	1	dot2596door774dog1354
+d	200	0	dot2596door774door2765door1560door2858dog1354dog1250dot3450dot5238dog336door3634dot4134door832dot5629dog5920door303
+d	200	1	dot2596door774dog1354
+do	1	0	dot2596
+do	1	1	dot2596
+do	3	0	dot2596door774door2765
+do	3	1	dot2596door774dog1354
+do	4	0	dot2596door774door2765door1560
+do	4	1	dot2596door774dog1354
+do	10	0	dot2596door774door2765door1560door2858dog1354dog1250dot3450dot5238dog336
+do	10	1	dot2596door774dog1354
+do	200	0	dot2596door774door2765door1560door2858dog1354dog1250dot3450dot5238dog336door3634dot4134door832dot5629dog5920door303
+do	200	1	dot2596door774dog1354
+e	1	0	eat2092
+e	1	1	eat2092
+e	3	0	eat2092e3991ea2981
+e	3	1	eat2092e3991ea2981
+e	4	0	eat2092e3991ea2981eat478
+e	4	1	eat2092e3991ea2981
+e	10	0	eat2092e3991ea2981eat478ea5876ea3864ea957ea2457eat3354eat4452
+e	10	1	eat2092e3991ea2981
+e	200	0	eat2092e3991ea2981eat478ea5876ea3864ea957ea2457eat3354eat4452e5545e5044ea3241ea238e4931ea1730e4725e4221ea1912ea218
+e	200	1	eat2092e3991ea2981
+ea	1	0	eat2092
+ea	1	1	eat2092
+ea	3	0	eat2092ea2981eat478
+ea	3	1	eat2092ea2981
+ea	4	0	eat2092ea2981eat478ea5876
+ea	4	1	eat2092ea2981
+ea	10	0	eat2092ea2981eat478ea5876ea3864ea957ea2457eat3354eat4452ea3241
+ea	10	1	eat2092ea2981
+ea	200	0	eat2092ea2981eat478ea5876ea3864ea957ea2457eat3354eat4452ea3241ea238ea1730ea1912ea218
+ea	200	1	eat2092ea2981
+m	1	0	many6714
+m	1	1	many6714
+m	3	0	many6714many7014many7214
+m	3	1	many6714
+m	4	0	many6714many7014many7214many7814
+m	4	1	many6714
+m	10	0	many6714many7014many7214many7814many7914many8714many6213many6813many8413many8513
+m	10	1	many6714
+m	200	0	many6714many7014many7214many7814many7914many8714many6213many6813many7313many8413many8513many6012many6912many7612many8612many8912many6411many6511many7111many7411many8211many8311many6110many6310many6610many7510many7710many8010many8110many8810
+m	200	1	many6714
+many	1	0	many6714
+many	1	1	many6714
+many	3	0	many6714many7014many7214
+many	3	1	many6714
+many	4	0	many6714many7014many7214many7814
+many	4	1	many6714
+many	10	0	many6714many7014many7214many7814many7914many8714many6213many6813many8413many8513
+many	10	1	many6714
+many	200	0	many6714many7014many7214many7814many7914many8714many6213many6813many7313many8413many8513many6012many6912many7612many8612many8912many6411many6511many7111many7411many8211many8311many6110many6310many6610many7510many7710many8010many8110many8810
+many	200	1	many6714
+h	1	0	heavy982147483648
+h	1	1	heavy982147483648
+h	3	0	heavy982147483648
+h	3	1	heavy982147483648
+h	4	0	heavy982147483648
+h	4	1	heavy982147483648
+h	10	0	heavy982147483648
+h	10	1	heavy982147483648
+h	200	0	heavy982147483648
+h	200	1	heavy982147483648
+l	1	0	light990
+l	1	1	light990
+l	3	0	light990
+l	3	1	light990
+l	4	0	light990
+l	4	1	light990
+l	10	0	light990
+l	10	1	light990
+l	200	0	light990
+l	200	1	light990
+z	1	0	zebra5399
+z	1	1	zebra5399
+z	3	0	zebra5399zebra5794zebra3171
+z	3	1	zebra5399
+z	4	0	zebra5399zebra5794zebra3171zebra050
+z	4	1	zebra5399
+z	10	0	zebra5399zebra5794zebra3171zebra050
+z	10	1	zebra5399
+z	200	0	zebra5399zebra5794zebra3171zebra050
+z	200	1	zebra5399
+caf	1	0	café1007
+caf	1	1	café1007
+caf	3	0	café1007
+caf	3	1	café1007
+caf	4	0	café1007
+caf	4	1	café1007
+caf	10	0	café1007
+caf	10	1	café1007
+caf	200	0	café1007
+caf	200	1	café1007
+日	1	0	日本1018
+日	1	1	日本1018
+日	3	0	日本1018
+日	3	1	日本1018
+日	4	0	日本1018
+日	4	1	日本1018
+日	10	0	日本1018
+日	10	1	日本1018
+日	200	0	日本1018
+日	200	1	日本1018
+x	1	0	
+x	1	1	
+x	3	0	
+x	3	1	
+x	4	0	
+x	4	1	
+x	10	0	
+x	10	1	
+x	200	0	
+x	200	1	
+t	1	0	tie919
+t	1	1	tie919
+t	3	0	tie919tie955tie901
+t	3	1	tie919
+t	4	0	tie919tie955tie901tie931
+t	4	1	tie919
+t	10	0	tie919tie955tie901tie921tie931tie941tie961tie971
+t	10	1	tie919
+t	200	0	tie919tie955tie901tie921tie931tie941tie961tie971
+t	200	1	tie919
+tie	1	0	tie919
+tie	1	1	tie919
+tie	3	0	tie919tie955tie901
+tie	3	1	tie919
+tie	4	0	tie919tie955tie901tie931
+tie	4	1	tie919
+tie	10	0	tie919tie955tie901tie921tie931tie941tie961tie971
+tie	10	1	tie919
+tie	200	0	tie919tie955tie901tie921tie931tie941tie961tie971
+tie	200	1	tie919

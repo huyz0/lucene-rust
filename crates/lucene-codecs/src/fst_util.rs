@@ -173,6 +173,12 @@ impl<O: FstOutputs> TypedFst<O> {
 
     /// `FST.readMetadata` + the on-heap body (`FST.save(out, out)` bytes).
     pub fn read(saved: &[u8]) -> Result<Self> {
+        Self::read_prefix(saved).map(|(fst, _)| fst)
+    }
+
+    /// [`read`](Self::read) of an FST that is followed by other data, with the
+    /// number of bytes the FST took (Java's `skipBytes(store.size())`).
+    pub fn read_prefix(saved: &[u8]) -> Result<(Self, usize)> {
         let mut input = SliceInput::new(saved);
         let store = |e: lucene_store::error::Error| corrupt(e.to_string());
         let version = codec_util::check_header(
@@ -209,13 +215,17 @@ impl<O: FstOutputs> TypedFst<O> {
             .ok_or_else(|| corrupt(format!("numBytes {num_bytes} past the end")))?;
         let mut bytes = vec![0u8; n];
         input.read_bytes(&mut bytes).map_err(store)?;
-        Ok(TypedFst {
-            input_type,
-            empty_output,
-            start_node,
-            version,
-            bytes,
-        })
+        let used = input.position();
+        Ok((
+            TypedFst {
+                input_type,
+                empty_output,
+                start_node,
+                version,
+                bytes,
+            },
+            used,
+        ))
     }
 
     /// `inputType`.
@@ -950,10 +960,14 @@ pub struct TopNSearcher<'f, 'c, O: FstOutputs> {
     pub accept_result: Option<AcceptResult<'c, O::Value>>,
 }
 
-/// `TopNSearcher.acceptPartialPath`'s override.
-pub type AcceptPartialPath<'c, V> = Box<dyn FnMut(&FstPath<V>) -> bool + 'c>;
-/// `TopNSearcher.acceptResult(IntsRef, T)`'s override.
-pub type AcceptResult<'c, V> = Box<dyn FnMut(&[i32], &V) -> bool + 'c>;
+/// `TopNSearcher.acceptPartialPath`'s override. It may change the path
+/// (`NRTSuggester` caches the payload separator's position in
+/// `FSTPath.payload`).
+pub type AcceptPartialPath<'c, V> = Box<dyn FnMut(&mut FstPath<V>) -> bool + 'c>;
+/// `TopNSearcher.acceptResult(FSTPath)`'s override: the whole path, so a
+/// caller can read its boost, context and payload as well as its input and
+/// output.
+pub type AcceptResult<'c, V> = Box<dyn FnMut(&FstPath<V>) -> bool + 'c>;
 
 impl<'f, 'c, O: FstOutputs + 'c> TopNSearcher<'f, 'c, O> {
     /// `new TopNSearcher(fst, topN, maxQueueDepth, comparator)`: ties broken
@@ -965,21 +979,34 @@ impl<'f, 'c, O: FstOutputs + 'c> TopNSearcher<'f, 'c, O> {
         comparator: impl Fn(&O::Value, &O::Value) -> Ordering + Clone + 'c,
     ) -> Self {
         let c2 = comparator.clone();
+        Self::with_path_comparator(fst, top_n, max_queue_depth, comparator, move |a, b| {
+            c2(&a.output, &b.output).then_with(|| a.input.cmp(&b.input))
+        })
+    }
+
+    /// `new TopNSearcher(fst, topN, maxQueueDepth, comparator, pathComparator)`:
+    /// the queue is ordered by `path_comparator`, which sees the whole path
+    /// (its boost as well as its output).
+    pub fn with_path_comparator(
+        fst: &'f TypedFst<O>,
+        top_n: usize,
+        max_queue_depth: usize,
+        comparator: impl Fn(&O::Value, &O::Value) -> Ordering + 'c,
+        path_comparator: impl Fn(&FstPath<O::Value>, &FstPath<O::Value>) -> Ordering + 'c,
+    ) -> Self {
         TopNSearcher {
             fst,
             top_n,
             max_queue_depth,
             comparator: Box::new(comparator),
-            path_comparator: Box::new(move |a, b| {
-                c2(&a.output, &b.output).then_with(|| a.input.cmp(&b.input))
-            }),
+            path_comparator: Box::new(path_comparator),
             queue: Some(Vec::new()),
             accept_partial_path: None,
             accept_result: None,
         }
     }
 
-    fn accept_partial(&mut self, path: &FstPath<O::Value>) -> bool {
+    fn accept_partial(&mut self, path: &mut FstPath<O::Value>) -> bool {
         self.accept_partial_path.as_mut().is_none_or(|f| f(path))
     }
 
@@ -1005,7 +1032,7 @@ impl<'f, 'c, O: FstOutputs + 'c> TopNSearcher<'f, 'c, O> {
         }
         let mut new_input = path.input.clone();
         new_input.push(path.arc.label);
-        let new_path = FstPath {
+        let mut new_path = FstPath {
             arc: path.arc.clone(),
             output,
             input: new_input,
@@ -1013,7 +1040,7 @@ impl<'f, 'c, O: FstOutputs + 'c> TopNSearcher<'f, 'c, O> {
             context: path.context.clone(),
             payload: path.payload,
         };
-        if self.accept_partial(&new_path) {
+        if self.accept_partial(&mut new_path) {
             let cmp = &self.path_comparator;
             let Some(queue) = &mut self.queue else { return };
             match queue.binary_search_by(|p| cmp(p, &new_path)) {
@@ -1089,7 +1116,7 @@ impl<'f, 'c, O: FstOutputs + 'c> TopNSearcher<'f, 'c, O> {
                 break;
             }
             let mut path = queue.remove(0);
-            if !self.accept_partial(&path) {
+            if !self.accept_partial(&mut path) {
                 continue;
             }
             if path.arc.label == END_LABEL {
@@ -1141,7 +1168,7 @@ impl<'f, 'c, O: FstOutputs + 'c> TopNSearcher<'f, 'c, O> {
                 if path.arc.label == END_LABEL {
                     path.output = O::add(&path.output, &path.arc.output);
                     let accept = match &mut self.accept_result {
-                        Some(f) => f(&path.input, &path.output),
+                        Some(f) => f(&path),
                         None => true,
                     };
                     if accept {
@@ -1156,7 +1183,7 @@ impl<'f, 'c, O: FstOutputs + 'c> TopNSearcher<'f, 'c, O> {
                 } else {
                     path.input.push(path.arc.label);
                     path.output = O::add(&path.output, &path.arc.output);
-                    if !self.accept_partial(&path) {
+                    if !self.accept_partial(&mut path) {
                         break;
                     }
                 }
