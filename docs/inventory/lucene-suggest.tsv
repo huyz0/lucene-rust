@@ -27,7 +27,7 @@ search/suggest/analyzing/FSTUtil	ported	crates/lucene-search/src/suggest/fst_uti
 search/suggest/analyzing/FuzzySuggester	todo:M13	Implements a fuzzy AnalyzingSuggester.
 search/suggest/analyzing/SuggestStopFilter	todo:M13	Like StopFilter except it will not remove the last token if that token was not followed by some token separator.
 search/suggest/analyzing/SuggestStopFilterFactory	todo:M13	Factory for SuggestStopFilter.
-search/suggest/BitsProducer	todo:M13	A producer of Bits per segment.
+search/suggest/BitsProducer	ported	crates/lucene-search/src/suggest/completion_query.rs::BitsProducer
 search/suggest/BufferedInputIterator	ported	crates/lucene-search/src/suggest/input.rs::BufferedInputIterator
 search/suggest/document/Completion101PostingsFormat	todo:M13	CompletionPostingsFormat for org.apache.lucene.backward_codecs.lucene103.Lucene103PostingsFormat.
 search/suggest/document/Completion104PostingsFormat	ported	crates/lucene-codecs/src/per_field_postings.rs::Lucene104PostingsFormat::completion104
@@ -36,25 +36,25 @@ search/suggest/document/Completion84PostingsFormat	todo:M13	org.apache.lucene.se
 search/suggest/document/Completion90PostingsFormat	todo:M13	org.apache.lucene.search.suggest.document.CompletionPostingsFormat for org.apache.lucene.backward_codecs.lucene90.Lucene90PostingsFormat.
 search/suggest/document/Completion912PostingsFormat	todo:M13	org.apache.lucene.search.suggest.document.CompletionPostingsFormat for org.apache.lucene.backward_codecs.lucene912.Lucene912PostingsFormat.
 search/suggest/document/Completion99PostingsFormat	todo:M13	org.apache.lucene.search.suggest.document.CompletionPostingsFormat for org.apache.lucene.backward_codecs.lucene99.Lucene99PostingsFormat.
-search/suggest/document/CompletionAnalyzer	todo:M13	Wraps an org.apache.lucene.analysis.Analyzer to provide additional completion-only tuning (e.g.
+search/suggest/document/CompletionAnalyzer	ported	crates/lucene-search/src/suggest/completion_query.rs::CompletionAnalyzer
 search/suggest/document/CompletionFieldsConsumer	ported	crates/lucene-codecs/src/completion.rs::CompletionFilesWriter
 search/suggest/document/CompletionFieldsProducer	ported	crates/lucene-codecs/src/completion.rs::CompletionFields
 search/suggest/document/CompletionPostingsFormat	todo:M13	A PostingsFormat which supports document suggestion based on indexed SuggestFields.
-search/suggest/document/CompletionQuery	todo:M13	Abstract Query that match documents containing terms with a specified prefix filtered by BitsProducer.
-search/suggest/document/CompletionScorer	partial	crates/lucene-search/src/suggest/document.rs::SegmentView -- M13: the accept/score hooks; the BulkScorer shell waits for the searcher integration (D2)
+search/suggest/document/CompletionQuery	ported	crates/lucene-search/src/suggest/completion_query.rs::CompletionQuery
+search/suggest/document/CompletionScorer	ported	crates/lucene-search/src/suggest/document.rs::SegmentView
 search/suggest/document/CompletionsTermsReader	ported	crates/lucene-codecs/src/completion.rs::CompletionsTermsReader
-search/suggest/document/CompletionTerms	partial	crates/lucene-search/src/directory_reader.rs::SegmentReader::suggester -- M13: suggester(); the min/max weight and type accessors arrive with the query classes
-search/suggest/document/CompletionTokenStream	partial	crates/lucene-search/src/suggest/suggest_field.rs::SuggestField -- M13: inside SuggestField's token stream, default options only; the configurable stream arrives with CompletionAnalyzer
-search/suggest/document/CompletionWeight	todo:M13	Expert: the Weight for CompletionQuery, used to score and explain these queries.
-search/suggest/document/ContextQuery	todo:M13	A CompletionQuery that matches documents specified by a wrapped CompletionQuery supporting boosting and/or filtering by specified contexts.
-search/suggest/document/ContextSuggestField	todo:M13	SuggestField which additionally takes in a set of contexts.
-search/suggest/document/FuzzyCompletionQuery	todo:M13	A CompletionQuery that match documents containing terms within an edit distance of the specified prefix.
+search/suggest/document/CompletionTerms	partial	crates/lucene-search/src/directory_reader.rs::SegmentReader::suggester -- M13: suggester() and the type (SegmentReader::completion_type); the min/max weight accessors are owed.
+search/suggest/document/CompletionTokenStream	ported	crates/lucene-search/src/suggest/suggest_field.rs::SuggestField
+search/suggest/document/CompletionWeight	ported	crates/lucene-search/src/suggest/completion_query.rs::CompletionWeight
+search/suggest/document/ContextQuery	ported	crates/lucene-search/src/suggest/completion_query.rs::ContextQuery
+search/suggest/document/ContextSuggestField	ported	crates/lucene-search/src/suggest/suggest_field.rs::ContextSuggestField
+search/suggest/document/FuzzyCompletionQuery	ported	crates/lucene-search/src/suggest/completion_query.rs::FuzzyCompletionQuery
 search/suggest/document/NRTSuggester	ported	crates/lucene-search/src/suggest/document.rs::lookup (load: crates/lucene-codecs/src/completion.rs::NrtSuggester)
 search/suggest/document/NRTSuggesterBuilder	ported	crates/lucene-codecs/src/completion.rs::NrtSuggesterBuilder
-search/suggest/document/PrefixCompletionQuery	todo:M13	A CompletionQuery which takes an Analyzer to analyze the prefix of the query term.
-search/suggest/document/RegexCompletionQuery	todo:M13	A CompletionQuery which takes a regular expression as the prefix of the query term.
+search/suggest/document/PrefixCompletionQuery	ported	crates/lucene-search/src/suggest/completion_query.rs::PrefixCompletionQuery
+search/suggest/document/RegexCompletionQuery	ported	crates/lucene-search/src/suggest/completion_query.rs::RegexCompletionQuery
 search/suggest/document/SuggestField	ported	crates/lucene-search/src/suggest/suggest_field.rs::SuggestField
-search/suggest/document/SuggestIndexSearcher	todo:M13	Adds document suggest capabilities to IndexSearcher.
+search/suggest/document/SuggestIndexSearcher	ported	crates/lucene-search/src/suggest/completion_query.rs::SuggestIndexSearcher
 search/suggest/document/SuggestScoreDocPriorityQueue	ported	crates/lucene-search/src/suggest/document.rs::SuggestQueue
 search/suggest/document/TopSuggestDocs	partial	crates/lucene-search/src/suggest/document.rs::SuggestScoreDoc -- M13: SuggestScoreDoc only; the TopDocs wrapper and merge()
 search/suggest/document/TopSuggestDocsCollector	ported	crates/lucene-search/src/suggest/document.rs::TopSuggestDocsCollector
