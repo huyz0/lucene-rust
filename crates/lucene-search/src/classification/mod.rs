@@ -206,13 +206,8 @@ pub(crate) fn analysis(e: lucene_analysis::AnalysisError) -> Error {
 /// The terms `analyzer` makes of `text` as `field`
 /// (`CharTermAttribute.toString()` per token).
 pub(crate) fn analyze(analyzer: &Analyzer, field: &str, text: &str) -> Result<Vec<String>> {
-    let mut ts = analyzer.token_stream(field, text).map_err(analysis)?;
-    ts.reset().map_err(analysis)?;
     let mut out = Vec::new();
-    while ts.increment_token().map_err(analysis)? {
-        out.push(ts.attributes().term().to_string());
-    }
-    ts.end().map_err(analysis)?;
+    for_each_token(analyzer, field, text, |t| out.push(t.to_string()))?;
     Ok(out)
 }
 
@@ -323,6 +318,66 @@ pub fn term_vector(
         }
         None => Ok(None),
     }
+}
+
+/// `indexReader.termVectors()`: [`term_vector`] with each segment's reader
+/// opened once.
+pub(crate) struct TermVectors<'r> {
+    reader: &'r DirectoryReader,
+    segments: Vec<Option<lucene_codecs::term_vectors::TermVectorsReader<'r>>>,
+}
+
+impl<'r> TermVectors<'r> {
+    pub(crate) fn new(reader: &'r DirectoryReader) -> Result<Self> {
+        let segments = reader
+            .segment_readers()
+            .iter()
+            .map(|s| s.term_vectors_reader())
+            .collect::<Result<_>>()?;
+        Ok(Self { reader, segments })
+    }
+
+    /// `get(doc, field)` of global document `doc`.
+    pub(crate) fn get(
+        &self,
+        doc: i32,
+        field: &str,
+    ) -> Result<Option<lucene_codecs::term_vectors::TermVectorField>> {
+        let mut base = 0i32;
+        for (seg, tv) in self.reader.segment_readers().iter().zip(&self.segments) {
+            if doc >= base && doc < base.saturating_add(seg.max_doc) {
+                return match tv {
+                    Some(tv) => crate::term_vectors_query::term_vector_for_doc(
+                        tv,
+                        seg.field_infos(),
+                        doc - base,
+                        field,
+                    ),
+                    None => Ok(None),
+                };
+            }
+            base = base.saturating_add(seg.max_doc);
+        }
+        Err(Error::IllegalArgument(format!(
+            "doc {doc} is in no segment"
+        )))
+    }
+}
+
+/// [`analyze`] without collecting: `f` sees each token's term in turn.
+pub(crate) fn for_each_token(
+    analyzer: &Analyzer,
+    field: &str,
+    text: &str,
+    mut f: impl FnMut(&str),
+) -> Result<()> {
+    let mut ts = analyzer.token_stream(field, text).map_err(analysis)?;
+    ts.reset().map_err(analysis)?;
+    while ts.increment_token().map_err(analysis)? {
+        f(ts.attributes().term());
+    }
+    ts.end().map_err(analysis)?;
+    Ok(())
 }
 
 /// `Float.parseFloat(boost)`.
