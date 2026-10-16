@@ -7,7 +7,7 @@ quick OR brown	Q	Disjunction[2]^3.3306095600128174\n  body:quick^3.3306095600128
 quick -brown	Q	body:quick^3.3306095600128174	body:quick
 -quick	Q	ANY[PURE NEGATIVE QUERY[-body:quick]]	__anytokenfield:__ANYTOKEN__
 quick NOT brown	Q	body:quick^3.3306095600128174	body:quick
-a AND b	Q	Conjunction[2]^1.77754545211792\n  body:a^1.77754545211792\n  body:b^1.77754545211792\n	body:a
+a AND b	Q	Conjunction[2]^1.77754545211792\n  body:b^1.77754545211792\n  body:a^1.77754545211792\n	body:b
 title:quick	Q	title:quick^3.3306095600128174	title:quick
 title:quick AND body:fox	Q	Conjunction[2]^3.3306095600128174\n  title:quick^3.3306095600128174\n  body:fox^2.7802910804748535\n	title:quick
 body:fox^2 title:quick	Q	Disjunction[2]^2.7802910804748535\n  body:fox^2.7802910804748535\n  title:quick^3.3306095600128174\n	body:fox title:quick
@@ -24,18 +24,18 @@ quick~1	Q	ANY[body:quick~1]	__anytokenfield:__ANYTOKEN__
 body:extraordinarily	Q	body:extraordinarily^3.9666730165481567	body:extraordinarily
 the	Q	body:the^2.7802910804748535	body:the
 a	Q	body:a^1.77754545211792	body:a
-x y z	Q	Disjunction[3]^1.77754545211792\n  body:z^1.77754545211792\n  body:x^1.77754545211792\n  body:y^1.77754545211792\n	body:z body:x body:y
+x y z	Q	Disjunction[3]^1.77754545211792\n  body:y^1.77754545211792\n  body:z^1.77754545211792\n  body:x^1.77754545211792\n	body:y body:z body:x
 "quick the fox"	Q	Conjunction[3]^3.3306095600128174\n  body:quick^3.3306095600128174\n  body:the^2.7802910804748535\n  body:fox^2.7802910804748535\n	body:quick
 fox AND fox	Q	Conjunction[2]^2.7802910804748535\n  body:fox^2.7802910804748535\n  body:fox^2.7802910804748535\n	body:fox
 fox AND fox^2	Q	Conjunction[2]^2.7802910804748535\n  body:fox^2.7802910804748535\n  body:fox^2.7802910804748535\n	body:fox
-(fox AND quick) OR (fox AND brown)	Q	Disjunction[2]^3.3306095600128174\n  Conjunction[2]^3.3306095600128174\n    body:brown^3.3306095600128174\n    body:fox^2.7802910804748535\n\n  Conjunction[2]^3.3306095600128174\n    body:quick^3.3306095600128174\n    body:fox^2.7802910804748535\n\n	body:brown body:quick
+(fox AND quick) OR (fox AND brown)	Q	Disjunction[2]^3.3306095600128174\n  Conjunction[2]^3.3306095600128174\n    body:quick^3.3306095600128174\n    body:fox^2.7802910804748535\n\n  Conjunction[2]^3.3306095600128174\n    body:brown^3.3306095600128174\n    body:fox^2.7802910804748535\n\n	body:quick body:brown
 title:fox^2 AND title:quick	Q	Conjunction[2]^3.3306095600128174\n  title:quick^3.3306095600128174\n  title:fox^2.7802910804748535\n	title:quick
 zzzz AND quick	Q	Conjunction[2]^3.3306095600128174\n  body:quick^3.3306095600128174\n  body:zzzz^3.0964174270629883\n	body:quick
 zzzz OR quick	Q	Disjunction[2]^3.0964174270629883\n  body:zzzz^3.0964174270629883\n  body:quick^3.3306095600128174\n	body:zzzz body:quick
 -zzzz OR quick	Q	body:quick^3.3306095600128174	body:quick
 a -a	Q	body:a^1.77754545211792	body:a
-(quick -quick) AND brown	Q	Conjunction[2]^3.3306095600128174\n  body:quick^3.3306095600128174\n  body:brown^3.3306095600128174\n	body:quick
-quick brown fox jumps over lazy dog	Q	Disjunction[7]^2.7802910804748535\n  body:fox^2.7802910804748535\n  body:dog^2.7802910804748535\n  body:lazy^3.0964174270629883\n  body:over^3.0964174270629883\n  body:quick^3.3306095600128174\n  body:jumps^3.3306095600128174\n  body:brown^3.3306095600128174\n	body:fox body:dog body:lazy body:over body:quick body:jumps body:brown
+(quick -quick) AND brown	Q	Conjunction[2]^3.3306095600128174\n  body:brown^3.3306095600128174\n  body:quick^3.3306095600128174\n	body:brown
+quick brown fox jumps over lazy dog	Q	Disjunction[7]^2.7802910804748535\n  body:dog^2.7802910804748535\n  body:fox^2.7802910804748535\n  body:over^3.0964174270629883\n  body:lazy^3.0964174270629883\n  body:quick^3.3306095600128174\n  body:brown^3.3306095600128174\n  body:jumps^3.3306095600128174\n	body:dog body:fox body:over body:lazy body:quick body:brown body:jumps
 +(fox quick) -brown	Q	Disjunction[2]^2.7802910804748535\n  body:fox^2.7802910804748535\n  body:quick^3.3306095600128174\n	body:fox body:quick
 fox AND (quick AND brown)	Q	Conjunction[2]^3.3306095600128174\n  Conjunction[2]^3.3306095600128174\n    body:quick^3.3306095600128174\n    body:brown^3.3306095600128174\n\n  body:fox^2.7802910804748535\n	body:quick
 fox || quick	Q	Disjunction[2]^2.7802910804748535\n  body:fox^2.7802910804748535\n  body:quick^3.3306095600128174\n	body:fox body:quick

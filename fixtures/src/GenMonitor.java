@@ -118,6 +118,43 @@ public class GenMonitor {
     }
     Files.writeString(out.resolve("batch.tsv"), batches.toString(), StandardCharsets.UTF_8);
 
+    // T13.5c: a real Monitor -- register the corpus, match a batch of documents,
+    // and dump each document's matched query ids, in Java's order
+    org.apache.lucene.monitor.Monitor monitor =
+        new org.apache.lucene.monitor.Monitor(new StandardAnalyzer());
+    List<org.apache.lucene.monitor.MonitorQuery> registered = new ArrayList<>();
+    for (int i = 0; i < qs.size(); i++) {
+      registered.add(new org.apache.lucene.monitor.MonitorQuery("q" + i, parser.parse(qs.get(i)), qs.get(i), java.util.Map.of()));
+    }
+    monitor.register(registered);
+    StringBuilder matchRows = new StringBuilder();
+    StringBuilder scoreRows = new StringBuilder();
+    for (String[] doc : docs) {
+      org.apache.lucene.document.Document d = new org.apache.lucene.document.Document();
+      for (String f : doc) {
+        int eq = f.indexOf('=');
+        d.add(new org.apache.lucene.document.TextField(f.substring(0, eq), f.substring(eq + 1), org.apache.lucene.document.Field.Store.NO));
+      }
+      var result = monitor.match(d, org.apache.lucene.monitor.QueryMatch.SIMPLE_MATCHER);
+      java.util.List<String> ids = new ArrayList<>();
+      for (var m : result.getMatches()) {
+        ids.add(m.getQueryId());
+      }
+      java.util.Collections.sort(ids);
+      var scored = monitor.match(d, org.apache.lucene.monitor.ScoringMatch.DEFAULT_MATCHER);
+      java.util.List<String> scoreCells = new ArrayList<>();
+      for (var m : scored.getMatches()) {
+        scoreCells.add(m.getQueryId() + "=" + Integer.toHexString(Float.floatToIntBits(m.getScore())));
+      }
+      java.util.Collections.sort(scoreCells);
+      scoreRows.append(esc(String.join("|", doc))).append((char) 9).append(esc(String.join(" ", scoreCells))).append((char) 10);
+      matchRows.append(esc(String.join("|", doc))).append('\t').append(esc(String.join(" ", ids))).append('\n');
+    }
+    Files.writeString(out.resolve("match.tsv"), matchRows.toString(), StandardCharsets.UTF_8);
+    Files.writeString(out.resolve("score.tsv"), scoreRows.toString(), StandardCharsets.UTF_8);
+    // the monitor's purge thread keeps the JVM alive until it is closed
+    monitor.close();
+
     StringBuilder weights = new StringBuilder();
     Term[] probes = {
       new Term("body", "fox"), new Term("body", "a"), new Term("title", "quick"),

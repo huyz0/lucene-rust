@@ -223,7 +223,7 @@ fn visit_order_terms(query: &Clause) -> Vec<Term> {
 
 /// `Query.toString()` with no default field: how the marker reads a query it
 /// could not index.
-fn leaf_string(query: &Clause) -> String {
+pub(crate) fn leaf_string(query: &Clause) -> String {
     crate::queryparser::ParsedQuery::from_clause(query.clone()).to_string("\u{0}")
 }
 

@@ -367,7 +367,9 @@ impl MemoryIndexReader {
 
     /// `MemoryIndex.search(query)` over this reader.
     pub fn search(&self, query: &Clause) -> Result<f32> {
-        let Some(bq) = as_boolean(query) else {
+        // `IndexSearcher.search` rewrites the query first (merging duplicate
+        // clauses, dropping redundant ones)
+        let Some(bq) = as_boolean(&query.clone().rewrite()) else {
             return Ok(0.0);
         };
         if let Some(m) = &self.memory {

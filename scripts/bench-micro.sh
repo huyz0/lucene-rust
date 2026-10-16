@@ -131,6 +131,12 @@ case "$BENCH" in
     SRC=benchmarks/micro/java/MemoryIndexMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-memory" ;;
+  # M13 T13.5c: the Monitor -- register the corpus, match four documents.
+  monitor)
+    MAIN=MonitorMicro
+    SRC=benchmarks/micro/java/MonitorMicro.java
+    EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-memory lucene-monitor" ;;
   # M11 T11.3: SnowballFilter per language over the fixture vocabularies.
   snowball)
     MAIN=SnowballMicro
