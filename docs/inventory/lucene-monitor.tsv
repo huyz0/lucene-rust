@@ -18,8 +18,8 @@ monitor/MonitorQuerySerializer	todo:M13	Serializes and deserializes MonitorQuery
 monitor/MonitorUpdateListener	todo:M13	For reporting events on a Monitor's query index
 monitor/MultiMatchingQueries	ported	crates/lucene-search/src/monitor/facade.rs::MultiMatchingQueries -- per-document matches, errors, queries run (no timings)
 monitor/MultipassTermFilteredPresearcher	ported	crates/lucene-search/src/monitor/presearcher.rs::TermFilteredPresearcher::multipass -- the multipass indexing (field_<pass> names, advancePhase between passes) and batch query (one MUST group per pass)
-monitor/ParallelMatcher	todo:M13	Matcher class that runs matching queries in parallel.
-monitor/PartitionMatcher	todo:M13	A multi-threaded matcher that collects all possible matches in one pass, and then partitions them amongst a number of worker threads to perform the actual match
+monitor/ParallelMatcher	ported	crates/lucene-search/src/monitor/facade.rs::Monitor::match_docs_partitioned -- threads over the selected queries, merged in order; the executor is std threads, not a caller-supplied ExecutorService
+monitor/PartitionMatcher	ported	crates/lucene-search/src/monitor/facade.rs::partition, Monitor::match_docs_partitioned -- the exact Java split of the queries
 monitor/Presearcher	ported	crates/lucene-search/src/monitor/presearcher.rs::TermFilteredPresearcher -- the abstract presearcher: its buildQuery/indexQuery pair, ported as the TermFilteredPresearcher methods; NO_FILTERING is presearcher::no_filtering
 monitor/PresearcherMatch	todo:M13	Wraps a QueryMatch with information about which queries were selected by the presearcher
 monitor/PresearcherMatches	todo:M13	Wraps a MultiMatchingQueries with information on which presearcher queries were selected
