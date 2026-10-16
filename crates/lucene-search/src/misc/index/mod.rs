@@ -6,10 +6,12 @@
 pub mod multi_pass;
 pub mod pk;
 pub mod rearranger;
+pub mod splitter;
 
 pub use multi_pass::MultiPassIndexSplitter;
 pub use pk::PkIndexSplitter;
 pub use rearranger::{BinaryDocValueSelector, DocumentSelector, IndexRearranger};
+pub use splitter::IndexSplitter;
 
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::segment_info::LuceneVersion;

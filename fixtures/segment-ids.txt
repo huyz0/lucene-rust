@@ -239,6 +239,11 @@ misc/high_freq/_0.si 0cb845d4c3648c52899f0a016593c70c
 misc/high_freq/_1.si 0cb845d4c3648c52899f0a016593c710
 misc/high_freq/_2.si 0cb845d4c3648c52899f0a016593c714
 misc/high_freq/segments_3 0cb845d4c3648c52899f0a016593c717
+misc/index_splitter_src/_0.si 90a66fd01134168fb8c4ed06a0e2ae15
+misc/index_splitter_src/_1.si 90a66fd01134168fb8c4ed06a0e2ae19
+misc/index_splitter_src/_2.si 90a66fd01134168fb8c4ed06a0e2ae1d
+misc/index_splitter_src/_3.si 90a66fd01134168fb8c4ed06a0e2ae21
+misc/index_splitter_src/segments_5 90a66fd01134168fb8c4ed06a0e2ae26
 misc/lazy/_0.si 5d9741e0a3771a2c9be249113c9ec091
 misc/lazy/_1.si 5d9741e0a3771a2c9be249113c9ec095
 misc/lazy/segments_2 5d9741e0a3771a2c9be249113c9ec098

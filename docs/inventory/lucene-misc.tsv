@@ -12,7 +12,7 @@ misc/index/BPIndexReorderer	todo:M14	M14.c: the bipartite partitioning doc-id re
 misc/index/BPReorderingMergePolicy	todo:M14	M14.c: a merge policy that reorders merged segments with BPIndexReorderer, skipping it without RAM
 misc/index/BinaryDocValueSelector	ported	crates/lucene-search/src/misc/index/rearranger.rs::BinaryDocValueSelector
 misc/index/IndexRearranger	ported	crates/lucene-search/src/misc/index/rearranger.rs::IndexRearranger
-misc/index/IndexSplitter	todo:M14	M14.c: the CLI listing, copying and deleting an index's segments
+misc/index/IndexSplitter	ported	crates/lucene-search/src/misc/index/splitter.rs::IndexSplitter
 misc/index/MultiPassIndexSplitter	ported	crates/lucene-search/src/misc/index/multi_pass.rs::MultiPassIndexSplitter
 misc/index/PKIndexSplitter	ported	crates/lucene-search/src/misc/index/pk.rs::PkIndexSplitter
 misc/search/DiversifiedTopDocsCollector	todo:M14	M14.d: a top-docs collector allowing at most maxHitsPerKey hits per key
