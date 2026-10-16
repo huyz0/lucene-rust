@@ -90,7 +90,9 @@ fn extend<O: FstOutputs>(
     arc: Arc<O::Value>,
     label: i32,
 ) -> Path<O::Value> {
-    let mut input = path.input.clone();
+    // one allocation, sized for the label
+    let mut input = Vec::with_capacity(path.input.len().saturating_add(1));
+    input.extend_from_slice(&path.input);
     input.push(label);
     Path {
         state: dest,

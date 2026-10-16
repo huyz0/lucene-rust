@@ -288,7 +288,7 @@ pub trait MatchWeight {
     /// `boost()`.
     fn boost(&self) -> f32;
     /// `context()`.
-    fn context(&self) -> Option<String>;
+    fn context(&self) -> Option<std::rc::Rc<str>>;
 }
 
 /// A weight with boost 0 and no context: a query without contexts.
@@ -299,7 +299,7 @@ impl MatchWeight for NoBoost {
     fn boost(&self) -> f32 {
         0.0
     }
-    fn context(&self) -> Option<String> {
+    fn context(&self) -> Option<std::rc::Rc<str>> {
         None
     }
 }
@@ -361,19 +361,21 @@ pub fn lookup_weighted(
         }
         if skip {
             if path.payload == -1 {
-                let arc_output = &path.arc.output().second;
-                if let Some(i) = arc_output.iter().position(|&b| b == payload_sep) {
-                    // the index lies within `output`, as Java asserts
-                    path.payload = (path.output.second.len() - arc_output.len() + i) as i32;
+                // Java searches the last arc's output, the rest of `output`
+                // being known to hold no separator; the arc's output is not
+                // kept here, so the search covers `output`, to the same
+                // first separator
+                if let Some(i) = path.output.second.iter().position(|&b| b == payload_sep) {
+                    path.payload = i as i32;
                 }
             }
             if path.payload != -1 {
-                let surface = surface_form(&path.output.second[..path.payload as usize]);
+                let surface = String::from_utf8_lossy(&path.output.second[..path.payload as usize]);
                 if state
                     .borrow()
                     .seen_surface_forms
                     .as_ref()
-                    .is_some_and(|s| s.contains(&surface))
+                    .is_some_and(|s| s.contains(surface.as_ref()))
                 {
                     return false;
                 }
@@ -427,9 +429,9 @@ pub fn lookup_weighted(
         searcher
             .add_start_paths_with(
                 &path.fst_node,
-                path.output.clone(),
+                path.output,
                 false,
-                path.input.clone(),
+                path.input,
                 weight.boost(),
                 weight.context(),
                 payload,

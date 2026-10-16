@@ -29,6 +29,7 @@ mod micro_analysis_icu;
 mod micro_analysis_icu_parts;
 mod micro_analysis_opennlp;
 mod micro_analysis_misc;
+mod micro_completion;
 mod micro_highlight;
 mod micro_memory_index;
 mod micro_monitor;
@@ -2086,6 +2087,7 @@ fn main() {
         "monitor" => micro_monitor::bench_monitor(warmup, measure),
         "memory_index" => micro_memory_index::bench_memory_index(warmup, measure),
         "highlight" => micro_highlight::bench_highlight(warmup, measure),
+        "completion" => micro_completion::bench_completion(warmup, measure),
         "snowball" => micro_snowball::bench_snowball(warmup, measure),
         "hunspell" => micro_hunspell::bench_hunspell(warmup, measure),
         "vectors" => bench_vectors(warmup, measure),
