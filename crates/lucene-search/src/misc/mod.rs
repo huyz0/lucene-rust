@@ -6,6 +6,7 @@ pub mod high_freq;
 pub mod index;
 pub mod lazy_document;
 pub mod memory;
+pub mod search;
 pub mod store;
 pub mod sweet_spot;
 

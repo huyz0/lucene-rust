@@ -271,6 +271,9 @@ misc/rearrange_src/_0.si c41a398d597b8ac2f15670b15c341ffb
 misc/rearrange_src/_1.si c41a398d597b8ac2f15670b15c341fff
 misc/rearrange_src/_2.si c41a398d597b8ac2f15670b15c342003
 misc/rearrange_src/segments_4 c41a398d597b8ac2f15670b15c34200a
+misc/search_src/_0.si dc2d5b1c255bd54eab02ddf4ef64b537
+misc/search_src/_1.si dc2d5b1c255bd54eab02ddf4ef64b53b
+misc/search_src/segments_2 dc2d5b1c255bd54eab02ddf4ef64b53e
 misc/split_a/_0.si 8208d809f90d960eec4e971ed156c49c
 misc/split_a/_1.si 8208d809f90d960eec4e971ed156c4a0
 misc/split_a/_2.si 8208d809f90d960eec4e971ed156c4a4
