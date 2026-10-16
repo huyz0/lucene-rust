@@ -15,14 +15,14 @@ misc/index/IndexRearranger	ported	crates/lucene-search/src/misc/index/rearranger
 misc/index/IndexSplitter	ported	crates/lucene-search/src/misc/index/splitter.rs::IndexSplitter
 misc/index/MultiPassIndexSplitter	ported	crates/lucene-search/src/misc/index/multi_pass.rs::MultiPassIndexSplitter
 misc/index/PKIndexSplitter	ported	crates/lucene-search/src/misc/index/pk.rs::PkIndexSplitter
-misc/search/DiversifiedTopDocsCollector	todo:M14	M14.d: a top-docs collector allowing at most maxHitsPerKey hits per key
-misc/search/DiversifiedTopDocsCollectorManager	todo:M14	M14.d: the manager of DiversifiedTopDocsCollector
-misc/search/DocValuesStats	todo:M14	M14.d: the statistics of a DocValues field over the hits (abstract holder)
-misc/search/DocValuesStatsCollector	todo:M14	M14.d: the collector computing DocValuesStats
-misc/search/DocValuesStatsCollectorManager	todo:M14	M14.d: the manager of DocValuesStatsCollector
-misc/search/HumanReadableQuery	todo:M14	M14.d: a debug wrapper whose string form prepends a description
-misc/search/MemoryAccountingBitsetCollector	todo:M14	M14.d: a bitset collector that reports its memory to a MemoryTracker
-misc/search/MemoryAccountingBitsetCollectorManager	todo:M14	M14.d: the manager of MemoryAccountingBitsetCollector
+misc/search/DiversifiedTopDocsCollector	ported	crates/lucene-search/src/misc/search.rs::DiversifiedTopDocsCollector
+misc/search/DiversifiedTopDocsCollectorManager	ported	crates/lucene-search/src/misc/search.rs::DiversifiedTopDocsCollectorManager
+misc/search/DocValuesStats	ported	crates/lucene-search/src/misc/search.rs::DocValuesStats
+misc/search/DocValuesStatsCollector	ported	crates/lucene-search/src/misc/search.rs::DocValuesStatsCollector
+misc/search/DocValuesStatsCollectorManager	ported	crates/lucene-search/src/misc/search.rs::DocValuesStatsCollectorManager
+misc/search/HumanReadableQuery	ported	crates/lucene-search/src/misc/search.rs::HumanReadableQuery
+misc/search/MemoryAccountingBitsetCollector	ported	crates/lucene-search/src/misc/search.rs::MemoryAccountingBitsetCollector
+misc/search/MemoryAccountingBitsetCollectorManager	ported	crates/lucene-search/src/misc/search.rs::MemoryAccountingBitsetCollectorManager
 misc/store/ByteTrackingIndexOutput	ported	crates/lucene-search/src/misc/store.rs::ByteTrackingIndexOutput
 misc/store/ByteWritesTrackingDirectoryWrapper	ported	crates/lucene-search/src/misc/store.rs::ByteWritesTrackingDirectory
 misc/store/DirectIODirectory	ported	crates/lucene-search/src/misc/store.rs::DirectIoDirectory
