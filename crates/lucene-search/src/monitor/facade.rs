@@ -290,11 +290,21 @@ impl Monitor {
         let batch = DocumentBatch::of(&self.analyzer, docs, similarity)?;
         let terms = batch_terms(batch.terms(), &self.filter_fields);
         let candidates = self.index.select(&terms, &AcceptAll);
+        self.run_candidates(&batch, matcher, &candidates)
+    }
+
+    /// Runs each candidate's query against the batch, under `matcher`.
+    fn run_candidates(
+        &self,
+        batch: &DocumentBatch,
+        matcher: &Matcher,
+        candidates: &[&crate::monitor::index::QueryCacheEntry],
+    ) -> Result<MultiMatchingQueries> {
         let max_doc = batch.max_doc();
         let mut per_doc: Vec<BTreeMap<String, QueryMatch>> = vec![BTreeMap::new(); max_doc];
         let mut errors = BTreeMap::new();
         batch.with_searcher(|searcher| {
-            for entry in &candidates {
+            for entry in candidates {
                 let Some(query) = as_search_query(&entry.match_query) else {
                     continue;
                 };
@@ -358,6 +368,117 @@ impl Monitor {
             queries_run: candidates.len(),
             batch_size: max_doc,
         })
+    }
+}
+
+/// `PartitionMatcher.partition`: `items` cut into `slices` runs of as equal a
+/// size as a whole number allows, the last run taking the remainder.
+pub fn partition<T>(items: &[T], slices: usize) -> Vec<&[T]> {
+    let size = items.len() as f64 / slices as f64;
+    let mut accum = 0f64;
+    let mut start = 0usize;
+    let mut out = Vec::with_capacity(slices);
+    for i in 0..slices {
+        let mut end = (accum + size).floor() as usize;
+        if i + 1 == slices {
+            end = items.len();
+        }
+        out.push(&items[start..end]);
+        accum += size;
+        start = accum.floor() as usize;
+    }
+    out
+}
+
+impl Monitor {
+    /// `match(docs, PartitionMatcher.factory(executor, matcher, threads))`: the
+    /// selected entries are split across `threads` workers, each running its
+    /// share against the batch, and the per-document matches merge into one
+    /// result. Equal to [`Monitor::match_docs`] for any thread count: a query
+    /// sits in exactly one partition, and `resolve` combines its pieces the
+    /// same way whichever partition they land in.
+    pub fn match_docs_partitioned(
+        &self,
+        docs: &[DocFields<'_>],
+        matcher: &Matcher,
+        threads: usize,
+    ) -> Result<MultiMatchingQueries> {
+        let threads = threads.max(1);
+        let whole = self.match_docs(docs, matcher)?;
+        // The partitions run over the selected entries; the result is the
+        // single-pass result, so the workers are the run's own parts. Each
+        // part's matches are computed on its own thread and merged.
+        let ids = self.index.query_ids();
+        let parts: Vec<Vec<String>> = partition(&ids, threads)
+            .into_iter()
+            .map(|p| p.to_vec())
+            .collect();
+        let mut merged: Vec<BTreeMap<String, QueryMatch>> = vec![BTreeMap::new(); docs.len()];
+        let mut errors = BTreeMap::new();
+        std::thread::scope(|scope| -> Result<()> {
+            let handles: Vec<_> = parts
+                .iter()
+                .map(|part| {
+                    scope.spawn(move || -> Result<MultiMatchingQueries> {
+                        // a worker's own match, over only its queries
+                        let mut own = self.match_docs_for(docs, matcher, part)?;
+                        own.queries_run = part.len();
+                        Ok(own)
+                    })
+                })
+                .collect();
+            for h in handles {
+                let part = h
+                    .join()
+                    .map_err(|_| Error::IllegalState("a matcher worker panicked".into()))??;
+                for (doc, found) in part.matches.into_iter().enumerate() {
+                    for (id, m) in found {
+                        // Partitions hold whole queries (`PartitionMatcher` splits
+                        // its tasks), so one query's pieces share a partition and
+                        // this merge sees a query once; it is kept for a partition
+                        // that splits a query's entries.
+                        match merged[doc].remove(&id) {
+                            Some(old) => {
+                                merged[doc].insert(id, old.resolve(m));
+                            }
+                            None => {
+                                merged[doc].insert(id, m);
+                            }
+                        }
+                    }
+                }
+                errors.extend(part.errors);
+            }
+            Ok(())
+        })?;
+        Ok(MultiMatchingQueries {
+            matches: merged,
+            errors,
+            queries_run: whole.queries_run,
+            batch_size: docs.len(),
+        })
+    }
+
+    /// [`Monitor::match_docs`] restricted to the queries named in `ids`.
+    fn match_docs_for(
+        &self,
+        docs: &[DocFields<'_>],
+        matcher: &Matcher,
+        ids: &[String],
+    ) -> Result<MultiMatchingQueries> {
+        let similarity = match matcher {
+            Matcher::Scoring(s) => s.clone(),
+            _ => None,
+        };
+        let batch = DocumentBatch::of(&self.analyzer, docs, similarity)?;
+        let terms = batch_terms(batch.terms(), &self.filter_fields);
+        let candidates: Vec<_> = self
+            .index
+            .select(&terms, &AcceptAll)
+            .into_iter()
+            .filter(|e| ids.contains(&e.query_id))
+            .collect();
+        self.run_candidates(&batch, matcher, &candidates)
     }
 }
 
@@ -552,5 +673,82 @@ mod tests {
             .unwrap();
         let bm25 = m.match_doc_scored(&[("f", "fox fox")]).unwrap();
         assert_ne!(classic.matches[0].score, bm25.matches[0].score);
+    }
+}
+
+#[cfg(test)]
+mod partition_tests {
+    use super::*;
+
+    #[test]
+    fn partition_splits_as_java_does() {
+        let items: Vec<u32> = (0..10).collect();
+        let runs: Vec<Vec<u32>> = partition(&items, 3)
+            .into_iter()
+            .map(|r| r.to_vec())
+            .collect();
+        // size 10/3: runs of 3, 3, then the remainder
+        assert_eq!(runs, vec![vec![0, 1, 2], vec![3, 4, 5], vec![6, 7, 8, 9]]);
+        let one: Vec<&[u32]> = partition(&items, 1);
+        assert_eq!(one, vec![&items[..]]);
+        let empty: Vec<u32> = Vec::new();
+        assert_eq!(
+            partition(&empty, 4).iter().map(|r| r.len()).sum::<usize>(),
+            0
+        );
+    }
+
+    #[test]
+    fn partitioned_matching_equals_single_pass_for_any_thread_count() {
+        use lucene_analysis::StandardAnalyzer;
+        let mut m = Monitor::new(Arc::new(Analyzer::new(StandardAnalyzer::new())));
+        // `fox AND quick` is two pieces on one query; the partitioned result must
+        // equal the single pass's, whichever thread runs the query
+        let mut both = crate::query::BooleanQuery::new();
+        both.must
+            .push(crate::query::Clause::Term(crate::query::TermQuery::new(
+                "f",
+                b"fox".to_vec(),
+            )));
+        both.must
+            .push(crate::query::Clause::Term(crate::query::TermQuery::new(
+                "f",
+                b"quick".to_vec(),
+            )));
+        let mut queries: Vec<MonitorQuery> = ["fox", "dog", "quick"]
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                MonitorQuery::new(
+                    format!("q{i}"),
+                    crate::query::Clause::Term(crate::query::TermQuery::new(
+                        "f",
+                        t.as_bytes().to_vec(),
+                    )),
+                    None,
+                    BTreeMap::new(),
+                )
+                .unwrap()
+            })
+            .collect();
+        queries.push(
+            MonitorQuery::new(
+                "both",
+                crate::query::Clause::Boolean(Box::new(both)),
+                None,
+                BTreeMap::new(),
+            )
+            .unwrap(),
+        );
+        m.register(queries).unwrap();
+        let docs: [DocFields<'_>; 3] =
+            [&[("f", "the quick fox")], &[("f", "dog")], &[("f", "zzz")]];
+        for matcher in [Matcher::Simple, Matcher::Scoring(None)] {
+            let whole = m.match_docs(&docs, &matcher).unwrap();
+            for threads in [1, 2, 3, 8] {
+                let parts = m.match_docs_partitioned(&docs, &matcher, threads).unwrap();
+                assert_eq!(parts.matches, whole.matches, "threads {threads}");
+            }
+        }
     }
 }
