@@ -273,6 +273,134 @@ impl InputIterator for SortedInputIterator {
     }
 }
 
+/// `java.util.Random`, as much of it as `UnsortedInputIterator` uses: the
+/// 48-bit linear congruential generator and `nextInt(bound)`.
+#[derive(Debug, Clone)]
+pub struct JavaRandom {
+    seed: u64,
+}
+
+impl JavaRandom {
+    const MULTIPLIER: u64 = 0x5DEECE66D;
+    const MASK: u64 = (1 << 48) - 1;
+
+    /// `new Random(seed)`.
+    pub fn new(seed: i64) -> Self {
+        Self {
+            seed: (seed as u64 ^ Self::MULTIPLIER) & Self::MASK,
+        }
+    }
+
+    fn next_bits(&mut self, bits: u32) -> i32 {
+        self.seed = self.seed.wrapping_mul(Self::MULTIPLIER).wrapping_add(0xB) & Self::MASK;
+        (self.seed >> (48 - bits)) as i32
+    }
+
+    /// `nextInt(bound)`; a `bound` below 1 is refused, as Java's
+    /// `IllegalArgumentException`.
+    pub fn next_int(&mut self, bound: i32) -> lucene_store::Result<i32> {
+        if bound <= 0 {
+            return Err(lucene_store::Error::IllegalArgument(
+                "bound must be positive".into(),
+            ));
+        }
+        Ok(self.next_int_positive(bound))
+    }
+
+    fn next_int_positive(&mut self, bound: i32) -> i32 {
+        let mut r = self.next_bits(31);
+        let m = bound.wrapping_sub(1);
+        if bound & m == 0 {
+            return ((i64::from(bound) * i64::from(r)) >> 31) as i32;
+        }
+        let mut u = r;
+        loop {
+            r = u % bound;
+            if u.wrapping_sub(r).wrapping_add(m) >= 0 {
+                return r;
+            }
+            u = self.next_bits(31);
+        }
+    }
+}
+
+/// `UnsortedInputIterator`: a [`BufferedInputIterator`] replayed in a random
+/// order. Java seeds `new Random()` from the clock; [`new`](Self::new) does the
+/// same and [`with_seed`](Self::with_seed) fixes the shuffle.
+#[derive(Debug, Clone)]
+pub struct UnsortedInputIterator {
+    inner: BufferedInputIterator,
+    ords: Vec<usize>,
+}
+
+impl UnsortedInputIterator {
+    /// `new UnsortedInputIterator(source)`.
+    pub fn new(source: &mut dyn InputIterator) -> Self {
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as i64);
+        Self::with_seed(source, seed)
+    }
+
+    /// `new UnsortedInputIterator(source)` with `new Random(seed)`: the same
+    /// swap-with-a-random-position shuffle as Java.
+    pub fn with_seed(source: &mut dyn InputIterator, seed: i64) -> Self {
+        let inner = BufferedInputIterator::new(source);
+        let n = inner.entries.len();
+        let mut ords: Vec<usize> = (0..n).collect();
+        let mut random = JavaRandom::new(seed);
+        for i in 0..n {
+            let pos = random.next_int_positive(n as i32) as usize;
+            ords.swap(i, pos);
+        }
+        Self { inner, ords }
+    }
+
+    fn ord(&self) -> Option<usize> {
+        usize::try_from(self.inner.cur)
+            .ok()
+            .and_then(|i| self.ords.get(i))
+            .copied()
+    }
+}
+
+impl InputIterator for UnsortedInputIterator {
+    fn next(&mut self) -> Option<Vec<u8>> {
+        self.inner.cur += 1;
+        self.ord().map(|o| self.inner.entries[o].clone())
+    }
+
+    fn weight(&self) -> i64 {
+        self.ord().map_or(0, |o| self.inner.freqs[o])
+    }
+
+    fn payload(&self) -> Option<&[u8]> {
+        if !self.inner.has_payloads {
+            return None;
+        }
+        self.ord()
+            .and_then(|o| self.inner.payloads.get(o))
+            .map(Vec::as_slice)
+    }
+
+    fn has_payloads(&self) -> bool {
+        self.inner.has_payloads
+    }
+
+    fn contexts(&self) -> Option<&BTreeSet<Vec<u8>>> {
+        if !self.inner.has_contexts {
+            return None;
+        }
+        self.ord()
+            .and_then(|o| self.inner.context_sets.get(o))
+            .and_then(Option::as_ref)
+    }
+
+    fn has_contexts(&self) -> bool {
+        self.inner.has_contexts
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

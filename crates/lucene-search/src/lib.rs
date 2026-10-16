@@ -256,6 +256,7 @@ pub mod soft_deletes;
 pub mod spans;
 mod sparse_docs_cache;
 pub mod spatial;
+pub mod spell;
 pub mod suggest;
 pub mod term_vectors_query;
 pub mod terminate;

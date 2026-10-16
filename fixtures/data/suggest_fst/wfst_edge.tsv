@@ -1,0 +1,19 @@
+dup	1	R	dup9
+dup	2	R	dup9dupx9
+dup	5	R	dup9dupx9
+d	1	R	dup9
+d	2	R	dup9dupx9
+d	5	R	dup9dupx9
+zero	1	R	zero0
+zero	2	R	zero0
+zero	5	R	zero0
+max	1	R	max2147483647
+max	2	R	max2147483647
+max	5	R	max2147483647
+m	1	R	max2147483647
+m	2	R	max2147483647
+m	5	R	max2147483647
+z	1	R	zero0
+z	2	R	zero0
+z	5	R	zero0
+count	4

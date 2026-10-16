@@ -1,0 +1,792 @@
+c	0	1	R	ca9
+c	0	3	R	ca9ca8ca7
+c	0	50	R	ca9ca8ca7ca6ca4ca3ca2ca0cacane3caduline0cadupapa0cafe6cafi8cafi2café1cali9cali1califi1calirere8camoton0cane6capa7capa0capafi8care1carecasa5casamosa9caton4catondu9catonresa8
+c	1	1	R	ca9
+c	1	3	R	ca9cali9casamosa9
+c	1	50	R	ca9cali9casamosa9catondu9ca8cafi8calirere8capafi8catonresa8ca7capa7ca6cafe6cane6carecasa5ca4caton4ca3cacane3ca2cafi2café1cali1califi1care1ca0caduline0cadupapa0camoton0capa0
+ca	0	1	R	ca9
+ca	0	3	R	ca9cacane3caduline0
+ca	0	50	R	ca9cacane3caduline0cadupapa0cafe6cafi8cafi2café1cali9cali1califi1calirere8camoton0cane6capa7capa0capafi8care1carecasa5casamosa9caton4catondu9catonresa8
+ca	1	1	R	ca9
+ca	1	3	R	ca9cali9casamosa9
+ca	1	50	R	ca9cali9casamosa9catondu9cafi8calirere8capafi8catonresa8capa7cafe6cane6carecasa5caton4cacane3cafi2café1cali1califi1care1caduline0cadupapa0camoton0capa0
+cap	0	1	R	capa7
+cap	0	3	R	capa7capa0capafi8
+cap	0	50	R	capa7capa0capafi8
+cap	1	1	R	capafi8
+cap	1	3	R	capafi8capa7capa0
+cap	1	50	R	capafi8capa7capa0
+s	0	1	R	sa9
+s	0	3	R	sa9sa8sa7
+s	0	50	R	sa9sa8sa7sadu7sadumomo6safipa1sali9salifi5samodu5samotonton6sane1sanere3sapa4sapaca2sapatonmo8sare4saremosa6sasa7sasane0satonne0
+s	1	1	R	sa9
+s	1	3	R	sa9sali9sa8
+s	1	50	R	sa9sali9sa8sapatonmo8sa7sadu7sasa7sadumomo6samotonton6saremosa6salifi5samodu5sapa4sare4sanere3sapaca2safipa1sane1sasane0satonne0
+sa	0	1	R	sa9
+sa	0	3	R	sa9sadu7sadumomo6
+sa	0	50	R	sa9sadu7sadumomo6safipa1sali9salifi5samodu5samotonton6sane1sanere3sapa4sapaca2sapatonmo8sare4saremosa6sasa7sasane0satonne0
+sa	1	1	R	sa9
+sa	1	3	R	sa9sali9sapatonmo8
+sa	1	50	R	sa9sali9sapatonmo8sadu7sasa7sadumomo6samotonton6saremosa6salifi5samodu5sapa4sare4sanere3sapaca2safipa1sane1sasane0satonne0
+sal	0	1	R	sali9
+sal	0	3	R	sali9salifi5
+sal	0	50	R	sali9salifi5
+sal	1	1	R	sali9
+sal	1	3	R	sali9salifi5
+sal	1	50	R	sali9salifi5
+t	0	1	R	ton7
+t	0	3	R	ton7ton5ton4
+t	0	50	R	ton7ton5ton4ton3ton2ton0toncadu2toncadufi1toncapali5tondufi1tonfiredu8tonli7tonlifi7tonmo6tonmofipa3tonmomo2tonnecaton1tonnedu8tonnepane2tonpa0tonpapa2tonpaton5tonre9tonre8tonsadufi0tonsalire4tonton4tontonfi4
+t	1	1	R	tonre9
+t	1	3	R	tonre9tonfiredu8tonnedu8
+t	1	50	R	tonre9tonfiredu8tonnedu8tonre8ton7tonli7tonlifi7tonmo6ton5toncapali5tonpaton5ton4tonsalire4tonton4tontonfi4ton3tonmofipa3ton2toncadu2tonmomo2tonnepane2tonpapa2toncadufi1tondufi1tonnecaton1ton0tonpa0tonsadufi0
+to	0	1	R	ton7
+to	0	3	R	ton7ton5ton4
+to	0	50	R	ton7ton5ton4ton3ton2ton0toncadu2toncadufi1toncapali5tondufi1tonfiredu8tonli7tonlifi7tonmo6tonmofipa3tonmomo2tonnecaton1tonnedu8tonnepane2tonpa0tonpapa2tonpaton5tonre9tonre8tonsadufi0tonsalire4tonton4tontonfi4
+to	1	1	R	tonre9
+to	1	3	R	tonre9tonfiredu8tonnedu8
+to	1	50	R	tonre9tonfiredu8tonnedu8tonre8ton7tonli7tonlifi7tonmo6ton5toncapali5tonpaton5ton4tonsalire4tonton4tontonfi4ton3tonmofipa3ton2toncadu2tonmomo2tonnepane2tonpapa2toncadufi1tondufi1tonnecaton1ton0tonpa0tonsadufi0
+ton	0	1	R	ton7
+ton	0	3	R	ton7toncadu2toncadufi1
+ton	0	50	R	ton7toncadu2toncadufi1toncapali5tondufi1tonfiredu8tonli7tonlifi7tonmo6tonmofipa3tonmomo2tonnecaton1tonnedu8tonnepane2tonpa0tonpapa2tonpaton5tonre9tonre8tonsadufi0tonsalire4tonton4tontonfi4
+ton	1	1	R	ton7
+ton	1	3	R	ton7tonre9tonfiredu8
+ton	1	50	R	ton7tonre9tonfiredu8tonnedu8tonre8tonli7tonlifi7tonmo6toncapali5tonpaton5tonsalire4tonton4tontonfi4tonmofipa3toncadu2tonmomo2tonnepane2tonpapa2toncadufi1tondufi1tonnecaton1tonpa0tonsadufi0
+d	0	1	R	du6
+d	0	3	R	du6du5du3
+d	0	50	R	du6du5du3du2du1duca0ducamofi8ducasali5dududu6dudumo3dudupa9dudure4dufica3duli2dulica7duline7dulisa5dumo1dumofica6dumomo4dunedu0dupaliton6dupane3dupareca9dure8dure6dure2durefili6dusa1dusapa8dutonfine3
+d	1	1	R	dudupa9
+d	1	3	R	dudupa9dupareca9ducamofi8
+d	1	50	R	dudupa9dupareca9ducamofi8dure8dusapa8dulica7duline7du6dududu6dumofica6dupaliton6dure6durefili6du5ducasali5dulisa5dudure4dumomo4du3dudumo3dufica3dupane3dutonfine3du2duli2dure2du1dumo1dusa1duca0dunedu0
+du	0	1	R	du6
+du	0	3	R	du6duca0ducamofi8
+du	0	50	R	du6duca0ducamofi8ducasali5dududu6dudumo3dudupa9dudure4dufica3duli2dulica7duline7dulisa5dumo1dumofica6dumomo4dunedu0dupaliton6dupane3dupareca9dure8dure6dure2durefili6dusa1dusapa8dutonfine3
+du	1	1	R	du6
+du	1	3	R	du6dudupa9dupareca9
+du	1	50	R	du6dudupa9dupareca9ducamofi8dure8dusapa8dulica7duline7dududu6dumofica6dupaliton6dure6durefili6ducasali5dulisa5dudure4dumomo4dudumo3dufica3dupane3dutonfine3duli2dure2dumo1dusa1duca0dunedu0
+duc	0	1	R	duca0
+duc	0	3	R	duca0ducamofi8ducasali5
+duc	0	50	R	duca0ducamofi8ducasali5
+duc	1	1	R	ducamofi8
+duc	1	3	R	ducamofi8ducasali5duca0
+duc	1	50	R	ducamofi8ducasali5duca0
+dul	0	1	R	duli2
+dul	0	3	R	duli2dulica7duline7
+dul	0	50	R	duli2dulica7duline7dulisa5
+dul	1	1	R	dulica7
+dul	1	3	R	dulica7duline7dulisa5
+dul	1	50	R	dulica7duline7dulisa5duli2
+dud	0	1	R	dududu6
+dud	0	3	R	dududu6dudumo3dudupa9
+dud	0	50	R	dududu6dudumo3dudupa9dudure4
+dud	1	1	R	dudupa9
+dud	1	3	R	dudupa9dududu6dudure4
+dud	1	50	R	dudupa9dududu6dudure4dudumo3
+n	0	1	R	naïve7
+n	0	3	R	naïve7ne9ne7
+n	0	50	R	naïve7ne9ne7ne6ne5ne2ne1necadu3necamomo3necaton8nedu6nedu4neducasa5neduli9nedune0nefica6nefidudu0nelidu8nemoca1nemocapa7nemofi6nene5nenepa0nenetonre9nepa9nepaca5nesa9nesafimo1neton3netonsadu4netonsapa4
+n	1	1	R	ne9
+n	1	3	R	ne9neduli9nenetonre9
+n	1	50	R	ne9neduli9nenetonre9nepa9nesa9necaton8nelidu8naïve7ne7nemocapa7ne6nedu6nefica6nemofi6ne5neducasa5nene5nepaca5nedu4netonsadu4netonsapa4necadu3necamomo3neton3ne2ne1nemoca1nesafimo1nedune0nefidudu0nenepa0
+ne	0	1	R	ne9
+ne	0	3	R	ne9necadu3necamomo3
+ne	0	50	R	ne9necadu3necamomo3necaton8nedu6nedu4neducasa5neduli9nedune0nefica6nefidudu0nelidu8nemoca1nemocapa7nemofi6nene5nenepa0nenetonre9nepa9nepaca5nesa9nesafimo1neton3netonsadu4netonsapa4
+ne	1	1	R	ne9
+ne	1	3	R	ne9neduli9nenetonre9
+ne	1	50	R	ne9neduli9nenetonre9nepa9nesa9necaton8nelidu8nemocapa7nedu6nefica6nemofi6neducasa5nene5nepaca5nedu4netonsadu4netonsapa4necadu3necamomo3neton3nemoca1nesafimo1nedune0nefidudu0nenepa0
+ned	0	1	R	nedu6
+ned	0	3	R	nedu6nedu4neducasa5
+ned	0	50	R	nedu6nedu4neducasa5neduli9nedune0
+ned	1	1	R	neduli9
+ned	1	3	R	neduli9nedu6neducasa5
+ned	1	50	R	neduli9nedu6neducasa5nedu4nedune0
+l	0	1	R	li9
+l	0	3	R	li9li4li2
+l	0	50	R	li9li4li2lidupasa5lifidu8lifipamo0lili7lili6lililiton2lilineli0lilinesa6limo7limocasa1limonere4limopa3linemomo4linetondu4linetonsa3lipa6lipa4lipadufi3lipane6lipane2lipasafi0lire3lirenere7lirepaton7lisamo1lisarefi6litonfi7litontonli6
+l	1	1	R	li9
+l	1	3	R	li9lifidu8lili7
+l	1	50	R	li9lifidu8lili7limo7lirenere7lirepaton7litonfi7lili6lilinesa6lipa6lipane6lisarefi6litontonli6lidupasa5li4limonere4linemomo4linetondu4lipa4limopa3linetonsa3lipadufi3lire3li2lililiton2lipane2limocasa1lisamo1lifipamo0lilineli0lipasafi0
+li	0	1	R	li9
+li	0	3	R	li9lidupasa5lifidu8
+li	0	50	R	li9lidupasa5lifidu8lifipamo0lili7lili6lililiton2lilineli0lilinesa6limo7limocasa1limonere4limopa3linemomo4linetondu4linetonsa3lipa6lipa4lipadufi3lipane6lipane2lipasafi0lire3lirenere7lirepaton7lisamo1lisarefi6litonfi7litontonli6
+li	1	1	R	li9
+li	1	3	R	li9lifidu8lili7
+li	1	50	R	li9lifidu8lili7limo7lirenere7lirepaton7litonfi7lili6lilinesa6lipa6lipane6lisarefi6litontonli6lidupasa5limonere4linemomo4linetondu4lipa4limopa3linetonsa3lipadufi3lire3lililiton2lipane2limocasa1lisamo1lifipamo0lilineli0lipasafi0
+lin	0	1	R	linemomo4
+lin	0	3	R	linemomo4linetondu4linetonsa3
+lin	0	50	R	linemomo4linetondu4linetonsa3
+lin	1	1	R	linemomo4
+lin	1	3	R	linemomo4linetondu4linetonsa3
+lin	1	50	R	linemomo4linetondu4linetonsa3
+m	0	1	R	mo9
+m	0	3	R	mo9mo7mo5
+m	0	50	R	mo9mo7mo5mo4mo3mo2moca9modu6modumo9mofi6molica5moliton8mone6monene7monene0mopa8mopali2mopane8mopasa2morelifi5morenepa1moresane5mosadu8motonmoton4motonre9
+m	1	1	R	mo9
+m	1	3	R	mo9moca9modumo9
+m	1	50	R	mo9moca9modumo9motonre9moliton8mopa8mopane8mosadu8mo7monene7modu6mofi6mone6mo5molica5morelifi5moresane5mo4motonmoton4mo3mo2mopali2mopasa2morenepa1monene0
+mo	0	1	R	mo9
+mo	0	3	R	mo9moca9modu6
+mo	0	50	R	mo9moca9modu6modumo9mofi6molica5moliton8mone6monene7monene0mopa8mopali2mopane8mopasa2morelifi5morenepa1moresane5mosadu8motonmoton4motonre9
+mo	1	1	R	mo9
+mo	1	3	R	mo9moca9modumo9
+mo	1	50	R	mo9moca9modumo9motonre9moliton8mopa8mopane8mosadu8monene7modu6mofi6mone6molica5morelifi5moresane5motonmoton4mopali2mopasa2morenepa1monene0
+mon	0	1	R	mone6
+mon	0	3	R	mone6monene7monene0
+mon	0	50	R	mone6monene7monene0
+mon	1	1	R	monene7
+mon	1	3	R	monene7mone6monene0
+mon	1	50	R	monene7mone6monene0
+r	0	1	R	re8
+r	0	3	R	re8re7re5
+r	0	50	R	re8re7re5re3re2re0recasa9redu0redusa3reficaton7refisasa3refiton5remofi6remorepa9rene8rene6rene2renesa4renesa2reneton7repa4repareton7reredu2resatondu2reton9reton0retonfimo0
+r	1	1	R	recasa9
+r	1	3	R	recasa9remorepa9reton9
+r	1	50	R	recasa9remorepa9reton9re8rene8re7reficaton7reneton7repareton7remofi6rene6re5refiton5renesa4repa4re3redusa3refisasa3re2rene2renesa2reredu2resatondu2re0redu0reton0retonfimo0
+re	0	1	R	re8
+re	0	3	R	re8recasa9redu0
+re	0	50	R	re8recasa9redu0redusa3reficaton7refisasa3refiton5remofi6remorepa9rene8rene6rene2renesa4renesa2reneton7repa4repareton7reredu2resatondu2reton9reton0retonfimo0
+re	1	1	R	re8
+re	1	3	R	re8recasa9remorepa9
+re	1	50	R	re8recasa9remorepa9reton9rene8reficaton7reneton7repareton7remofi6rene6refiton5renesa4repa4redusa3refisasa3rene2renesa2reredu2resatondu2redu0reton0retonfimo0
+ren	0	1	R	rene8
+ren	0	3	R	rene8rene6rene2
+ren	0	50	R	rene8rene6rene2renesa4renesa2reneton7
+ren	1	1	R	rene8
+ren	1	3	R	rene8reneton7rene6
+ren	1	50	R	rene8reneton7rene6renesa4rene2renesa2
+mos	0	1	R	mosadu8
+mos	0	3	R	mosadu8
+mos	0	50	R	mosadu8
+mos	1	1	R	mosadu8
+mos	1	3	R	mosadu8
+mos	1	50	R	mosadu8
+can	0	1	R	cane6
+can	0	3	R	cane6
+can	0	50	R	cane6
+can	1	1	R	cane6
+can	1	3	R	cane6
+can	1	50	R	cane6
+f	0	1	R	fi6
+f	0	3	R	fi6fi5fi4
+f	0	50	R	fi6fi5fi4fi3fica9fica7fidufi0fidufili8fidumosa2fidusa9fifi1fifitonmo7filicare6filimoton5filinefi9filipa5fimolifi7fimone4fimosa8fimotonfi6fipadune9fire4fire0firefisa1fireli4fireton1fisare5fisaremo7fiton4fiton2fitonfidu2fitontondu3
+f	1	1	R	fica9
+f	1	3	R	fica9fidusa9filinefi9
+f	1	50	R	fica9fidusa9filinefi9fipadune9fidufili8fimosa8fica7fifitonmo7fimolifi7fisaremo7fi6filicare6fimotonfi6fi5filimoton5filipa5fisare5fi4fimone4fire4fireli4fiton4fi3fitontondu3fidumosa2fiton2fitonfidu2fifi1firefisa1fireton1fidufi0fire0
+fi	0	1	R	fi6
+fi	0	3	R	fi6fica9fica7
+fi	0	50	R	fi6fica9fica7fidufi0fidufili8fidumosa2fidusa9fifi1fifitonmo7filicare6filimoton5filinefi9filipa5fimolifi7fimone4fimosa8fimotonfi6fipadune9fire4fire0firefisa1fireli4fireton1fisare5fisaremo7fiton4fiton2fitonfidu2fitontondu3
+fi	1	1	R	fi6
+fi	1	3	R	fi6fica9fidusa9
+fi	1	50	R	fi6fica9fidusa9filinefi9fipadune9fidufili8fimosa8fica7fifitonmo7fimolifi7fisaremo7filicare6fimotonfi6filimoton5filipa5fisare5fimone4fire4fireli4fiton4fitontondu3fidumosa2fiton2fitonfidu2fifi1firefisa1fireton1fidufi0fire0
+fir	0	1	R	fire4
+fir	0	3	R	fire4fire0firefisa1
+fir	0	50	R	fire4fire0firefisa1fireli4fireton1
+fir	1	1	R	fire4
+fir	1	3	R	fire4fireli4firefisa1
+fir	1	50	R	fire4fireli4firefisa1fireton1fire0
+lip	0	1	R	lipa6
+lip	0	3	R	lipa6lipa4lipadufi3
+lip	0	50	R	lipa6lipa4lipadufi3lipane6lipane2lipasafi0
+lip	1	1	R	lipa6
+lip	1	3	R	lipa6lipane6lipa4
+lip	1	50	R	lipa6lipane6lipa4lipadufi3lipane2lipasafi0
+fim	0	1	R	fimolifi7
+fim	0	3	R	fimolifi7fimone4fimosa8
+fim	0	50	R	fimolifi7fimone4fimosa8fimotonfi6
+fim	1	1	R	fimosa8
+fim	1	3	R	fimosa8fimolifi7fimotonfi6
+fim	1	50	R	fimosa8fimolifi7fimotonfi6fimone4
+mop	0	1	R	mopa8
+mop	0	3	R	mopa8mopali2mopane8
+mop	0	50	R	mopa8mopali2mopane8mopasa2
+mop	1	1	R	mopa8
+mop	1	3	R	mopa8mopane8mopali2
+mop	1	50	R	mopa8mopane8mopali2mopasa2
+p	0	1	R	pa9
+p	0	3	R	pa9pa8pa7
+p	0	50	R	pa9pa8pa7pa4pa2pa1paca5paca0pacane1pacatonpa7padu5palicaton2palifi2palire7pamo0pamoca2pamone2pane1panene1pareneca1pareneton5parepa7pasa9pasadudu5
+p	1	1	R	pa9
+p	1	3	R	pa9pasa9pa8
+p	1	50	R	pa9pasa9pa8pa7pacatonpa7palire7parepa7paca5padu5pareneton5pasadudu5pa4pa2palicaton2palifi2pamoca2pamone2pa1pacane1pane1panene1pareneca1paca0pamo0
+pa	0	1	R	pa9
+pa	0	3	R	pa9paca5paca0
+pa	0	50	R	pa9paca5paca0pacane1pacatonpa7padu5palicaton2palifi2palire7pamo0pamoca2pamone2pane1panene1pareneca1pareneton5parepa7pasa9pasadudu5
+pa	1	1	R	pa9
+pa	1	3	R	pa9pasa9pacatonpa7
+pa	1	50	R	pa9pasa9pacatonpa7palire7parepa7paca5padu5pareneton5pasadudu5palicaton2palifi2pamoca2pamone2pacane1pane1panene1pareneca1paca0pamo0
+pad	0	1	R	padu5
+pad	0	3	R	padu5
+pad	0	50	R	padu5
+pad	1	1	R	padu5
+pad	1	3	R	padu5
+pad	1	50	R	padu5
+dur	0	1	R	dure8
+dur	0	3	R	dure8dure6dure2
+dur	0	50	R	dure8dure6dure2durefili6
+dur	1	1	R	dure8
+dur	1	3	R	dure8dure6durefili6
+dur	1	50	R	dure8dure6durefili6dure2
+sas	0	1	R	sasa7
+sas	0	3	R	sasa7sasane0
+sas	0	50	R	sasa7sasane0
+sas	1	1	R	sasa7
+sas	1	3	R	sasa7sasane0
+sas	1	50	R	sasa7sasane0
+caf	0	1	R	cafe6
+caf	0	3	R	cafe6cafi8cafi2
+caf	0	50	R	cafe6cafi8cafi2café1
+caf	1	1	R	cafi8
+caf	1	3	R	cafi8cafe6cafi2
+caf	1	50	R	cafi8cafe6cafi2café1
+res	0	1	R	resatondu2
+res	0	3	R	resatondu2
+res	0	50	R	resatondu2
+res	1	1	R	resatondu2
+res	1	3	R	resatondu2
+res	1	50	R	resatondu2
+sar	0	1	R	sare4
+sar	0	3	R	sare4saremosa6
+sar	0	50	R	sare4saremosa6
+sar	1	1	R	saremosa6
+sar	1	3	R	saremosa6sare4
+sar	1	50	R	saremosa6sare4
+pac	0	1	R	paca5
+pac	0	3	R	paca5paca0pacane1
+pac	0	50	R	paca5paca0pacane1pacatonpa7
+pac	1	1	R	pacatonpa7
+pac	1	3	R	pacatonpa7paca5pacane1
+pac	1	50	R	pacatonpa7paca5pacane1paca0
+lil	0	1	R	lili7
+lil	0	3	R	lili7lili6lililiton2
+lil	0	50	R	lili7lili6lililiton2lilineli0lilinesa6
+lil	1	1	R	lili7
+lil	1	3	R	lili7lili6lilinesa6
+lil	1	50	R	lili7lili6lilinesa6lililiton2lilineli0
+fis	0	1	R	fisare5
+fis	0	3	R	fisare5fisaremo7
+fis	0	50	R	fisare5fisaremo7
+fis	1	1	R	fisaremo7
+fis	1	3	R	fisaremo7fisare5
+fis	1	50	R	fisaremo7fisare5
+dum	0	1	R	dumo1
+dum	0	3	R	dumo1dumofica6dumomo4
+dum	0	50	R	dumo1dumofica6dumomo4
+dum	1	1	R	dumofica6
+dum	1	3	R	dumofica6dumomo4dumo1
+dum	1	50	R	dumofica6dumomo4dumo1
+pan	0	1	R	pane1
+pan	0	3	R	pane1panene1
+pan	0	50	R	pane1panene1
+pan	1	1	R	pane1
+pan	1	3	R	pane1panene1
+pan	1	50	R	pane1panene1
+ref	0	1	R	reficaton7
+ref	0	3	R	reficaton7refisasa3refiton5
+ref	0	50	R	reficaton7refisasa3refiton5
+ref	1	1	R	reficaton7
+ref	1	3	R	reficaton7refiton5refisasa3
+ref	1	50	R	reficaton7refiton5refisasa3
+sad	0	1	R	sadu7
+sad	0	3	R	sadu7sadumomo6
+sad	0	50	R	sadu7sadumomo6
+sad	1	1	R	sadu7
+sad	1	3	R	sadu7sadumomo6
+sad	1	50	R	sadu7sadumomo6
+sap	0	1	R	sapa4
+sap	0	3	R	sapa4sapaca2sapatonmo8
+sap	0	50	R	sapa4sapaca2sapatonmo8
+sap	1	1	R	sapatonmo8
+sap	1	3	R	sapatonmo8sapa4sapaca2
+sap	1	50	R	sapatonmo8sapa4sapaca2
+fil	0	1	R	filicare6
+fil	0	3	R	filicare6filimoton5filinefi9
+fil	0	50	R	filicare6filimoton5filinefi9filipa5
+fil	1	1	R	filinefi9
+fil	1	3	R	filinefi9filicare6filimoton5
+fil	1	50	R	filinefi9filicare6filimoton5filipa5
+lif	0	1	R	lifidu8
+lif	0	3	R	lifidu8lifipamo0
+lif	0	50	R	lifidu8lifipamo0
+lif	1	1	R	lifidu8
+lif	1	3	R	lifidu8lifipamo0
+lif	1	50	R	lifidu8lifipamo0
+saf	0	1	R	safipa1
+saf	0	3	R	safipa1
+saf	0	50	R	safipa1
+saf	1	1	R	safipa1
+saf	1	3	R	safipa1
+saf	1	50	R	safipa1
+nec	0	1	R	necadu3
+nec	0	3	R	necadu3necamomo3necaton8
+nec	0	50	R	necadu3necamomo3necaton8
+nec	1	1	R	necaton8
+nec	1	3	R	necaton8necadu3necamomo3
+nec	1	50	R	necaton8necadu3necamomo3
+cal	0	1	R	cali9
+cal	0	3	R	cali9cali1califi1
+cal	0	50	R	cali9cali1califi1calirere8
+cal	1	1	R	cali9
+cal	1	3	R	cali9calirere8cali1
+cal	1	50	R	cali9calirere8cali1califi1
+lir	0	1	R	lire3
+lir	0	3	R	lire3lirenere7lirepaton7
+lir	0	50	R	lire3lirenere7lirepaton7
+lir	1	1	R	lirenere7
+lir	1	3	R	lirenere7lirepaton7lire3
+lir	1	50	R	lirenere7lirepaton7lire3
+cam	0	1	R	camoton0
+cam	0	3	R	camoton0
+cam	0	50	R	camoton0
+cam	1	1	R	camoton0
+cam	1	3	R	camoton0
+cam	1	50	R	camoton0
+cat	0	1	R	caton4
+cat	0	3	R	caton4catondu9catonresa8
+cat	0	50	R	caton4catondu9catonresa8
+cat	1	1	R	catondu9
+cat	1	3	R	catondu9catonresa8caton4
+cat	1	50	R	catondu9catonresa8caton4
+net	0	1	R	neton3
+net	0	3	R	neton3netonsadu4netonsapa4
+net	0	50	R	neton3netonsadu4netonsapa4
+net	1	1	R	netonsadu4
+net	1	3	R	netonsadu4netonsapa4neton3
+net	1	50	R	netonsadu4netonsapa4neton3
+pam	0	1	R	pamo0
+pam	0	3	R	pamo0pamoca2pamone2
+pam	0	50	R	pamo0pamoca2pamone2
+pam	1	1	R	pamoca2
+pam	1	3	R	pamoca2pamone2pamo0
+pam	1	50	R	pamoca2pamone2pamo0
+red	0	1	R	redu0
+red	0	3	R	redu0redusa3
+red	0	50	R	redu0redusa3
+red	1	1	R	redusa3
+red	1	3	R	redusa3redu0
+red	1	50	R	redusa3redu0
+dus	0	1	R	dusa1
+dus	0	3	R	dusa1dusapa8
+dus	0	50	R	dusa1dusapa8
+dus	1	1	R	dusapa8
+dus	1	3	R	dusapa8dusa1
+dus	1	50	R	dusapa8dusa1
+rep	0	1	R	repa4
+rep	0	3	R	repa4repareton7
+rep	0	50	R	repa4repareton7
+rep	1	1	R	repareton7
+rep	1	3	R	repareton7repa4
+rep	1	50	R	repareton7repa4
+lim	0	1	R	limo7
+lim	0	3	R	limo7limocasa1limonere4
+lim	0	50	R	limo7limocasa1limonere4limopa3
+lim	1	1	R	limo7
+lim	1	3	R	limo7limonere4limopa3
+lim	1	50	R	limo7limonere4limopa3limocasa1
+mof	0	1	R	mofi6
+mof	0	3	R	mofi6
+mof	0	50	R	mofi6
+mof	1	1	R	mofi6
+mof	1	3	R	mofi6
+mof	1	50	R	mofi6
+lis	0	1	R	lisamo1
+lis	0	3	R	lisamo1lisarefi6
+lis	0	50	R	lisamo1lisarefi6
+lis	1	1	R	lisarefi6
+lis	1	3	R	lisarefi6lisamo1
+lis	1	50	R	lisarefi6lisamo1
+pas	0	1	R	pasa9
+pas	0	3	R	pasa9pasadudu5
+pas	0	50	R	pasa9pasadudu5
+pas	1	1	R	pasa9
+pas	1	3	R	pasa9pasadudu5
+pas	1	50	R	pasa9pasadudu5
+car	0	1	R	care1
+car	0	3	R	care1carecasa5
+car	0	50	R	care1carecasa5
+car	1	1	R	carecasa5
+car	1	3	R	carecasa5care1
+car	1	50	R	carecasa5care1
+nen	0	1	R	nene5
+nen	0	3	R	nene5nenepa0nenetonre9
+nen	0	50	R	nene5nenepa0nenetonre9
+nen	1	1	R	nenetonre9
+nen	1	3	R	nenetonre9nene5nenepa0
+nen	1	50	R	nenetonre9nene5nenepa0
+fic	0	1	R	fica9
+fic	0	3	R	fica9fica7
+fic	0	50	R	fica9fica7
+fic	1	1	R	fica9
+fic	1	3	R	fica9fica7
+fic	1	50	R	fica9fica7
+rem	0	1	R	remofi6
+rem	0	3	R	remofi6remorepa9
+rem	0	50	R	remofi6remorepa9
+rem	1	1	R	remorepa9
+rem	1	3	R	remorepa9remofi6
+rem	1	50	R	remorepa9remofi6
+cad	0	1	R	caduline0
+cad	0	3	R	caduline0cadupapa0
+cad	0	50	R	caduline0cadupapa0
+cad	1	1	R	caduline0
+cad	1	3	R	caduline0cadupapa0
+cad	1	50	R	caduline0cadupapa0
+moc	0	1	R	moca9
+moc	0	3	R	moca9
+moc	0	50	R	moca9
+moc	1	1	R	moca9
+moc	1	3	R	moca9
+moc	1	50	R	moca9
+par	0	1	R	pareneca1
+par	0	3	R	pareneca1pareneton5parepa7
+par	0	50	R	pareneca1pareneton5parepa7
+par	1	1	R	parepa7
+par	1	3	R	parepa7pareneton5pareneca1
+par	1	50	R	parepa7pareneton5pareneca1
+fid	0	1	R	fidufi0
+fid	0	3	R	fidufi0fidufili8fidumosa2
+fid	0	50	R	fidufi0fidufili8fidumosa2fidusa9
+fid	1	1	R	fidusa9
+fid	1	3	R	fidusa9fidufili8fidumosa2
+fid	1	50	R	fidusa9fidufili8fidumosa2fidufi0
+pal	0	1	R	palicaton2
+pal	0	3	R	palicaton2palifi2palire7
+pal	0	50	R	palicaton2palifi2palire7
+pal	1	1	R	palire7
+pal	1	3	R	palire7palicaton2palifi2
+pal	1	50	R	palire7palicaton2palifi2
+dup	0	1	R	dupaliton6
+dup	0	3	R	dupaliton6dupane3dupareca9
+dup	0	50	R	dupaliton6dupane3dupareca9
+dup	1	1	R	dupareca9
+dup	1	3	R	dupareca9dupaliton6dupane3
+dup	1	50	R	dupareca9dupaliton6dupane3
+mol	0	1	R	molica5
+mol	0	3	R	molica5moliton8
+mol	0	50	R	molica5moliton8
+mol	1	1	R	moliton8
+mol	1	3	R	moliton8molica5
+mol	1	50	R	moliton8molica5
+nem	0	1	R	nemoca1
+nem	0	3	R	nemoca1nemocapa7nemofi6
+nem	0	50	R	nemoca1nemocapa7nemofi6
+nem	1	1	R	nemocapa7
+nem	1	3	R	nemocapa7nemofi6nemoca1
+nem	1	50	R	nemocapa7nemofi6nemoca1
+mod	0	1	R	modu6
+mod	0	3	R	modu6modumo9
+mod	0	50	R	modu6modumo9
+mod	1	1	R	modumo9
+mod	1	3	R	modumo9modu6
+mod	1	50	R	modumo9modu6
+san	0	1	R	sane1
+san	0	3	R	sane1sanere3
+san	0	50	R	sane1sanere3
+san	1	1	R	sanere3
+san	1	3	R	sanere3sane1
+san	1	50	R	sanere3sane1
+cas	0	1	R	casamosa9
+cas	0	3	R	casamosa9
+cas	0	50	R	casamosa9
+cas	1	1	R	casamosa9
+cas	1	3	R	casamosa9
+cas	1	50	R	casamosa9
+sam	0	1	R	samodu5
+sam	0	3	R	samodu5samotonton6
+sam	0	50	R	samodu5samotonton6
+sam	1	1	R	samotonton6
+sam	1	3	R	samotonton6samodu5
+sam	1	50	R	samotonton6samodu5
+fit	0	1	R	fiton4
+fit	0	3	R	fiton4fiton2fitonfidu2
+fit	0	50	R	fiton4fiton2fitonfidu2fitontondu3
+fit	1	1	R	fiton4
+fit	1	3	R	fiton4fitontondu3fiton2
+fit	1	50	R	fiton4fitontondu3fiton2fitonfidu2
+cac	0	1	R	cacane3
+cac	0	3	R	cacane3
+cac	0	50	R	cacane3
+cac	1	1	R	cacane3
+cac	1	3	R	cacane3
+cac	1	50	R	cacane3
+dun	0	1	R	dunedu0
+dun	0	3	R	dunedu0
+dun	0	50	R	dunedu0
+dun	1	1	R	dunedu0
+dun	1	3	R	dunedu0
+dun	1	50	R	dunedu0
+mot	0	1	R	motonmoton4
+mot	0	3	R	motonmoton4motonre9
+mot	0	50	R	motonmoton4motonre9
+mot	1	1	R	motonre9
+mot	1	3	R	motonre9motonmoton4
+mot	1	50	R	motonre9motonmoton4
+nes	0	1	R	nesa9
+nes	0	3	R	nesa9nesafimo1
+nes	0	50	R	nesa9nesafimo1
+nes	1	1	R	nesa9
+nes	1	3	R	nesa9nesafimo1
+nes	1	50	R	nesa9nesafimo1
+nef	0	1	R	nefica6
+nef	0	3	R	nefica6nefidudu0
+nef	0	50	R	nefica6nefidudu0
+nef	1	1	R	nefica6
+nef	1	3	R	nefica6nefidudu0
+nef	1	50	R	nefica6nefidudu0
+nep	0	1	R	nepa9
+nep	0	3	R	nepa9nepaca5
+nep	0	50	R	nepa9nepaca5
+nep	1	1	R	nepa9
+nep	1	3	R	nepa9nepaca5
+nep	1	50	R	nepa9nepaca5
+duf	0	1	R	dufica3
+duf	0	3	R	dufica3
+duf	0	50	R	dufica3
+duf	1	1	R	dufica3
+duf	1	3	R	dufica3
+duf	1	50	R	dufica3
+mor	0	1	R	morelifi5
+mor	0	3	R	morelifi5morenepa1moresane5
+mor	0	50	R	morelifi5morenepa1moresane5
+mor	1	1	R	morelifi5
+mor	1	3	R	morelifi5moresane5morenepa1
+mor	1	50	R	morelifi5moresane5morenepa1
+rer	0	1	R	reredu2
+rer	0	3	R	reredu2
+rer	0	50	R	reredu2
+rer	1	1	R	reredu2
+rer	1	3	R	reredu2
+rer	1	50	R	reredu2
+lit	0	1	R	litonfi7
+lit	0	3	R	litonfi7litontonli6
+lit	0	50	R	litonfi7litontonli6
+lit	1	1	R	litonfi7
+lit	1	3	R	litonfi7litontonli6
+lit	1	50	R	litonfi7litontonli6
+sat	0	1	R	satonne0
+sat	0	3	R	satonne0
+sat	0	50	R	satonne0
+sat	1	1	R	satonne0
+sat	1	3	R	satonne0
+sat	1	50	R	satonne0
+ret	0	1	R	reton9
+ret	0	3	R	reton9reton0retonfimo0
+ret	0	50	R	reton9reton0retonfimo0
+ret	1	1	R	reton9
+ret	1	3	R	reton9reton0retonfimo0
+ret	1	50	R	reton9reton0retonfimo0
+fif	0	1	R	fifi1
+fif	0	3	R	fifi1fifitonmo7
+fif	0	50	R	fifi1fifitonmo7
+fif	1	1	R	fifitonmo7
+fif	1	3	R	fifitonmo7fifi1
+fif	1	50	R	fifitonmo7fifi1
+nel	0	1	R	nelidu8
+nel	0	3	R	nelidu8
+nel	0	50	R	nelidu8
+nel	1	1	R	nelidu8
+nel	1	3	R	nelidu8
+nel	1	50	R	nelidu8
+fip	0	1	R	fipadune9
+fip	0	3	R	fipadune9
+fip	0	50	R	fipadune9
+fip	1	1	R	fipadune9
+fip	1	3	R	fipadune9
+fip	1	50	R	fipadune9
+rec	0	1	R	recasa9
+rec	0	3	R	recasa9
+rec	0	50	R	recasa9
+rec	1	1	R	recasa9
+rec	1	3	R	recasa9
+rec	1	50	R	recasa9
+lid	0	1	R	lidupasa5
+lid	0	3	R	lidupasa5
+lid	0	50	R	lidupasa5
+lid	1	1	R	lidupasa5
+lid	1	3	R	lidupasa5
+lid	1	50	R	lidupasa5
+dut	0	1	R	dutonfine3
+dut	0	3	R	dutonfine3
+dut	0	50	R	dutonfine3
+dut	1	1	R	dutonfine3
+dut	1	3	R	dutonfine3
+dut	1	50	R	dutonfine3
+a	0	1	R	a9
+a	0	3	R	a9ab4abc1
+a	0	50	R	a9ab4abc1
+a	1	1	R	a9
+a	1	3	R	a9ab4abc1
+a	1	50	R	a9ab4abc1
+ab	0	1	R	ab4
+ab	0	3	R	ab4abc1
+ab	0	50	R	ab4abc1
+ab	1	1	R	ab4
+ab	1	3	R	ab4abc1
+ab	1	50	R	ab4abc1
+abc	0	1	R	abc1
+abc	0	3	R	abc1
+abc	0	50	R	abc1
+abc	1	1	R	abc1
+abc	1	3	R	abc1
+abc	1	50	R	abc1
+na	0	1	R	naïve7
+na	0	3	R	naïve7
+na	0	50	R	naïve7
+na	1	1	R	naïve7
+na	1	3	R	naïve7
+na	1	50	R	naïve7
+naï	0	1	R	naïve7
+naï	0	3	R	naïve7
+naï	0	50	R	naïve7
+naï	1	1	R	naïve7
+naï	1	3	R	naïve7
+naï	1	50	R	naïve7
+日	0	1	R	日本2
+日	0	3	R	日本2日本語0日本語学校1
+日	0	50	R	日本2日本語0日本語学校1
+日	1	1	R	日本2
+日	1	3	R	日本2日本語学校1日本語0
+日	1	50	R	日本2日本語学校1日本語0
+日本	0	1	R	日本2
+日本	0	3	R	日本2日本語0日本語学校1
+日本	0	50	R	日本2日本語0日本語学校1
+日本	1	1	R	日本2
+日本	1	3	R	日本2日本語学校1日本語0
+日本	1	50	R	日本2日本語学校1日本語0
+日本語	0	1	R	日本語0
+日本語	0	3	R	日本語0日本語学校1
+日本語	0	50	R	日本語0日本語学校1
+日本語	1	1	R	日本語0
+日本語	1	3	R	日本語0日本語学校1
+日本語	1	50	R	日本語0日本語学校1
+😀	0	1	R	😀4
+😀	0	3	R	😀4😀smile5
+😀	0	50	R	😀4😀smile5
+😀	1	1	R	😀4
+😀	1	3	R	😀4😀smile5
+😀	1	50	R	😀4😀smile5
+😀s	0	1	R	😀smile5
+😀s	0	3	R	😀smile5
+😀s	0	50	R	😀smile5
+😀s	1	1	R	😀smile5
+😀s	1	3	R	😀smile5
+😀s	1	50	R	😀smile5
+😀sm	0	1	R	😀smile5
+😀sm	0	3	R	😀smile5
+😀sm	0	50	R	😀smile5
+😀sm	1	1	R	😀smile5
+😀sm	1	3	R	😀smile5
+😀sm	1	50	R	😀smile5
+�	0	1	R	�0
+�	0	3	R	�0
+�	0	50	R	�0
+�	1	1	R	�0
+�	1	3	R	�0
+�	1	50	R	�0
+	0	1	R	5
+	0	3	R	5x3
+	0	50	R	5x3
+	1	1	R	5
+	1	3	R	5x3
+	1	50	R	5x3
+x	0	1	R	x3
+x	0	3	R	x3
+x	0	50	R	x3
+x	1	1	R	x3
+x	1	3	R	x3
+x	1	50	R	x3
+￮	0	1	R	￮x7
+￮	0	3	R	￮x7
+￮	0	50	R	￮x7
+￮	1	1	R	￮x7
+￮	1	3	R	￮x7
+￮	1	50	R	￮x7
+￮x	0	1	R	￮x7
+￮x	0	3	R	￮x7
+￮x	0	50	R	￮x7
+￮x	1	1	R	￮x7
+￮x	1	3	R	￮x7
+￮x	1	50	R	￮x7
+x	0	1	R	x😀y8
+x	0	3	R	x😀y8
+x	0	50	R	x😀y8
+x	1	1	R	x😀y8
+x	1	3	R	x😀y8
+x	1	50	R	x😀y8
+x😀	0	1	R	x😀y8
+x😀	0	3	R	x😀y8
+x😀	0	50	R	x😀y8
+x😀	1	1	R	x😀y8
+x😀	1	3	R	x😀y8
+x😀	1	50	R	x😀y8
+x😀y	0	1	R	x😀y8
+x😀y	0	3	R	x😀y8
+x😀y	0	50	R	x😀y8
+x😀y	1	1	R	x😀y8
+x😀y	1	3	R	x😀y8
+x😀y	1	50	R	x😀y8
+Z	0	1	R	ZED8
+Z	0	3	R	ZED8Zed9
+Z	0	50	R	ZED8Zed9
+Z	1	1	R	Zed9
+Z	1	3	R	Zed9ZED8
+Z	1	50	R	Zed9ZED8
+Ze	0	1	R	Zed9
+Ze	0	3	R	Zed9
+Ze	0	50	R	Zed9
+Ze	1	1	R	Zed9
+Ze	1	3	R	Zed9
+Ze	1	50	R	Zed9
+Zed	0	1	R	Zed9
+Zed	0	3	R	Zed9
+Zed	0	50	R	Zed9
+Zed	1	1	R	Zed9
+Zed	1	3	R	Zed9
+Zed	1	50	R	Zed9
+z	0	1	R	zed0
+z	0	3	R	zed0
+z	0	50	R	zed0
+z	1	1	R	zed0
+z	1	3	R	zed0
+z	1	50	R	zed0
+ze	0	1	R	zed0
+ze	0	3	R	zed0
+ze	0	50	R	zed0
+ze	1	1	R	zed0
+ze	1	3	R	zed0
+ze	1	50	R	zed0
+zed	0	1	R	zed0
+zed	0	3	R	zed0
+zed	0	50	R	zed0
+zed	1	1	R	zed0
+zed	1	3	R	zed0
+zed	1	50	R	zed0
+ZE	0	1	R	ZED8
+ZE	0	3	R	ZED8
+ZE	0	50	R	ZED8
+ZE	1	1	R	ZED8
+ZE	1	3	R	ZED8
+ZE	1	50	R	ZED8
+ZED	0	1	R	ZED8
+ZED	0	3	R	ZED8
+ZED	0	50	R	ZED8
+ZED	1	1	R	ZED8
+ZED	1	3	R	ZED8
+ZED	1	50	R	ZED8
+zzz	0	1	R	
+zzz	0	3	R	
+zzz	0	50	R	
+zzz	1	1	R	
+zzz	1	3	R	
+zzz	1	50	R	
+capaX	0	1	R	
+capaX	0	3	R	
+capaX	0	50	R	
+capaX	1	1	R	
+capaX	1	3	R	
+capaX	1	50	R	
+	0	1	R	
+	0	3	R	
+	0	50	R	
+	1	1	R	
+	1	3	R	
+	1	50	R	
