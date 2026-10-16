@@ -137,6 +137,13 @@ case "$BENCH" in
     SRC=benchmarks/micro/java/MonitorMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-memory lucene-monitor" ;;
+  # M14 T14.2: expressions compiled from the corpus and evaluated per document.
+  expressions)
+    MAIN=ExpressionsMicro
+    SRC=benchmarks/micro/java/ExpressionsMicro.java
+    EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-expressions"
+    EXPRESSIONS_THIRDPARTY=1 ;;
   # M11 T11.3: SnowballFilter per language over the fixture vocabularies.
   snowball)
     MAIN=SnowballMicro
@@ -325,6 +332,8 @@ if [ -n "${SPATIAL_JARS:-}" ]; then CP="$CP:$(thirdparty_classpath "${SPATIAL_EX
 # The M12 modules' third-party jars (Commons Codec, Morfologik).
 if [ -n "${ICU_THIRDPARTY:-}" ]; then CP="$CP:$(thirdparty_classpath "${ICU_DEPS[@]}")"; fi
 if [ -n "${OPENNLP_THIRDPARTY:-}" ]; then CP="$CP:$(thirdparty_classpath "${OPENNLP_DEPS[@]}")"; fi
+# lucene-expressions' ANTLR runtime and ASM.
+if [ -n "${EXPRESSIONS_THIRDPARTY:-}" ]; then CP="$CP:$(thirdparty_classpath "${EXPRESSIONS_DEPS[@]}")"; fi
 if [ -n "${M12_THIRDPARTY:-}" ]; then
   CP="$CP:$(thirdparty_classpath "${PHONETIC_DEPS[@]}" "${MORFOLOGIK_DEPS[@]}")"
 fi
