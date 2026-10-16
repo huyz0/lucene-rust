@@ -139,7 +139,7 @@ fn unified_highlighting_equals_lucenes() {
         DirectoryReader::open(&lucene_store::FsDirectory::open(dir().join("index"))).unwrap();
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
-    let names: Vec<String> = ["id", "offs", "pos", "docs", "tv", "both"]
+    let names: Vec<String> = ["id", "offs", "pos", "docs", "tv", "both", "tvpos"]
         .iter()
         .map(|s| (*s).to_string())
         .collect();
@@ -222,7 +222,8 @@ fn unified_highlighting_equals_lucenes() {
                     .collect();
                 format!("R\t{}", joined.join("\u{1f}"))
             }
-            Err(e) => format!("X\t{e}"),
+            // the fixture records the exception's class, not its message
+            Err(e) => format!("X\t{}", e.to_string().split(": ").next().unwrap_or("")),
         };
         let expected = format!("{}\t{}", c[3], unesc(c[4]));
         checked += 1;
@@ -243,5 +244,5 @@ fn unified_highlighting_equals_lucenes() {
 "
         )
     );
-    assert_eq!(checked, 588);
+    assert_eq!(checked, 810);
 }

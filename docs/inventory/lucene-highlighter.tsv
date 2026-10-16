@@ -62,7 +62,7 @@ search/uhighlight/OverlaySingleDocTermsLeafReader	partial	crates/lucene-search/s
 search/uhighlight/Passage	ported	crates/lucene-search/src/highlight/unified/passage.rs::Passage
 search/uhighlight/PassageFormatter	ported	crates/lucene-search/src/highlight/unified/passage.rs::PassageFormatter
 search/uhighlight/PassageScorer	ported	crates/lucene-search/src/highlight/unified/passage.rs::PassageScorer
-search/uhighlight/PhraseHelper	partial	crates/lucene-search/src/highlight/unified/strategies.rs::PhraseHelper -- M14: phrase and span clauses, not the multi-term queries inside a span
+search/uhighlight/PhraseHelper	partial	crates/lucene-search/src/highlight/unified/strategies.rs::PhraseHelper -- M14: phrase and span clauses by offset containment (not SpanNear), not SynonymQuery, MultiPhraseQuery, lucene-queries spans or multi-term queries inside a span
 search/uhighlight/PostingsOffsetStrategy	ported	crates/lucene-search/src/highlight/unified/strategies.rs::Strategy
 search/uhighlight/PostingsWithTermVectorsOffsetStrategy	partial	crates/lucene-search/src/highlight/unified/strategies.rs::Strategy -- M14: reads the postings alone
 search/uhighlight/SplittingBreakIterator	ported	crates/lucene-search/src/highlight/unified/break_iterators.rs::SplittingBreakIterator

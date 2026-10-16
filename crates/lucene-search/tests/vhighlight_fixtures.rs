@@ -273,5 +273,5 @@ fn fast_vector_highlighting_equals_lucenes() {
         bad.len(),
         bad.iter().take(6).cloned().collect::<Vec<_>>().join("\n")
     );
-    assert!(checked > 0);
+    assert_eq!(checked, 10_036);
 }

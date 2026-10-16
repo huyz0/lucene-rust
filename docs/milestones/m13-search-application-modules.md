@@ -93,7 +93,7 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
   and date-resolution configuration is deferred to M14
   (`docs/inventory/lucene-queryparser.tsv`).
 - **T13.2** — Highlighting, including term vectors in `DirectoryReader`.
-  **Done**: the classic `Highlighter` (`GenHighlight`), the
+  **Ported, not yet benchmarked** (invariant 3: the ratio against Lucene is owed): the classic `Highlighter` (`GenHighlight`), the
   `matchhighlight` package (`GenMatchHighlight`, with the JDK's word and
   sentence breaks fuzzed against `BreakIterator`), the `UnifiedHighlighter`
   (`GenUnifiedHighlight`: every offset source, passage and break option;
@@ -136,7 +136,7 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
 - **T13.6** — Plugin wiring for the OpenSearch features above.
 
 **Status by task:** T13.1 done; T13.5 `MemoryIndex` done, `monitor` in
-progress (T13.5a-c done; T13.5d done -- batches, the four matchers, partitioned matching, persistence verified both ways against Lucene, the regexp handler and debug()); T13.2 done; T13.3, T13.4 and T13.6
+progress (T13.5a-c done; T13.5d done -- batches, the four matchers, partitioned matching, persistence verified both ways against Lucene, the regexp handler and debug()); T13.2 ported (benchmark owed); T13.3, T13.4 and T13.6
 not started. M13 closes when all four acceptance criteria hold.
 
 ## Acceptance criteria
@@ -144,7 +144,7 @@ not started. M13 closes when all four acceptance criteria hold.
 - [ ] Every parser yields Lucene's query tree for the whole T13.1 corpus,
       including its syntax errors (same failure, same position).
 - [x] Highlighters return Lucene's fragments and offsets on a fixture corpus
-      (T13.2).
+      (T13.2; the benchmark against Lucene is still owed).
 - [ ] Real Lucene reads a Rust-written completion field and taxonomy index.
 - [ ] OpenSearch's highlighting and suggester YAML suites fail identically
       with and without native execution.
