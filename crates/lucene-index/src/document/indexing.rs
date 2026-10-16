@@ -24,6 +24,7 @@ use std::collections::BTreeMap;
 
 use lucene_codecs::field_infos::FieldInfo;
 use lucene_codecs::stored_fields::StoredField;
+use lucene_codecs::term_vectors::{TermVectorField, TermVectorTerm};
 
 use super::{
     illegal, index_options_subsumes, DocValuesSkipIndexType, DocValuesType, Document, FieldTokens,
@@ -255,6 +256,96 @@ struct TermAcc {
     /// Parallel to `positions`: each occurrence's `PayloadAttribute`, empty
     /// for none.
     payloads: Vec<Vec<u8>>,
+    /// The term vector's own copy (`TermVectorsPostingsArray`), kept per the
+    /// vector's axes rather than the postings' index options.
+    vector: VectorAcc,
+}
+
+/// One term's occurrences as `TermVectorsConsumerPerField` records them.
+#[derive(Debug, Default)]
+struct VectorAcc {
+    freq: i32,
+    positions: Vec<i32>,
+    start_offsets: Vec<i32>,
+    end_offsets: Vec<i32>,
+    payloads: Vec<Vec<u8>>,
+}
+
+/// `TermVectorsConsumerPerField`'s `doVectorPositions`/`Offsets`/`Payloads`,
+/// fixed by a document's first instance of the field.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct VectorAxes {
+    positions: bool,
+    offsets: bool,
+    payloads: bool,
+}
+
+impl VectorAxes {
+    /// `TermVectorsConsumerPerField.start`: the axes of a field's first
+    /// instance in a document (`None` without term vectors), or the check
+    /// that a later instance agrees with them.
+    fn start(
+        name: &str,
+        ft: &super::FieldType,
+        first: Option<Option<VectorAxes>>,
+    ) -> super::Result<Option<VectorAxes>> {
+        let Some(current) = first else {
+            if ft.store_term_vectors() {
+                if !ft.store_term_vector_positions() && ft.store_term_vector_payloads() {
+                    return Err(illegal(format!(
+                        "cannot index term vector payloads without term vector positions \
+                         (field=\"{name}\")"
+                    )));
+                }
+                return Ok(Some(VectorAxes {
+                    positions: ft.store_term_vector_positions(),
+                    offsets: ft.store_term_vector_offsets(),
+                    payloads: ft.store_term_vector_positions() && ft.store_term_vector_payloads(),
+                }));
+            }
+            let refuse = |what: &str| {
+                Err(illegal(format!(
+                    "cannot index term vector {what} when term vectors are not indexed \
+                     (field=\"{name}\")"
+                )))
+            };
+            if ft.store_term_vector_offsets() {
+                return refuse("offsets");
+            }
+            if ft.store_term_vector_positions() {
+                return refuse("positions");
+            }
+            if ft.store_term_vector_payloads() {
+                return refuse("payloads");
+            }
+            return Ok(None);
+        };
+        let refuse = |what: &str| {
+            Err(illegal(format!(
+                "all instances of a given field name must have the same term vectors settings \
+                 ({what} changed for field=\"{name}\")"
+            )))
+        };
+        // Java's flags stay `false` once a field has no vectors.
+        let axes = current.unwrap_or(VectorAxes {
+            positions: false,
+            offsets: false,
+            payloads: false,
+        });
+        if current.is_some() != ft.store_term_vectors() {
+            return refuse("storeTermVectors");
+        }
+        if axes.positions != ft.store_term_vector_positions() {
+            return refuse("storeTermVectorPositions");
+        }
+        if axes.offsets != ft.store_term_vector_offsets() {
+            return refuse("storeTermVectorOffsets");
+        }
+        if axes.payloads != ft.store_term_vector_payloads() {
+            return refuse("storeTermVectorPayloads");
+        }
+        Ok(current)
+    }
 }
 
 /// `FieldInvertState` plus the per-document half of `TermsHashPerField`.
@@ -276,6 +367,11 @@ struct InvertState {
     /// it; `None` after a binary term.
     attribute_source: Option<lucene_analysis::AttributeSource>,
     terms: BTreeMap<Vec<u8>, TermAcc>,
+    /// The term vector's axes, `None` for a field without one.
+    vector: Option<VectorAxes>,
+    /// `TermVectorsConsumerPerField.hasPayloads`: some occurrence gave the
+    /// vector a non-empty payload.
+    vector_saw_payloads: bool,
 }
 
 impl InvertState {
@@ -294,6 +390,8 @@ impl InvertState {
             saw_payloads: false,
             attribute_source: None,
             terms: BTreeMap::new(),
+            vector: None,
+            vector_saw_payloads: false,
         }
     }
 
@@ -415,7 +513,94 @@ impl InvertState {
                 }
             }
         }
+        if let Some(axes) = self.vector {
+            self.add_to_vector(field, term, axes, freq, offsets, payload)?;
+        }
         Ok(())
+    }
+
+    /// `TermVectorsConsumerPerField.newTerm`/`addTerm` -> `writeProx`: the
+    /// occurrence in the term vector, after the postings took it.
+    fn add_to_vector(
+        &mut self,
+        field: &str,
+        term: &[u8],
+        axes: VectorAxes,
+        freq: i32,
+        offsets: (i32, i32),
+        payload: Option<&[u8]>,
+    ) -> super::Result<()> {
+        // `getTermFreq`.
+        if freq != 1 {
+            let refuse = |what: &str| {
+                Err(illegal(format!(
+                    "field \"{field}\": cannot index term vector {what} while using custom \
+                     TermFrequencyAttribute"
+                )))
+            };
+            if axes.positions {
+                return refuse("positions");
+            }
+            if axes.offsets {
+                return refuse("offsets");
+            }
+        }
+        let position = self.position;
+        let Some(acc) = self.terms.get_mut(term) else {
+            return Ok(());
+        };
+        let acc = &mut acc.vector;
+        // Java's `int +=`.
+        acc.freq = acc.freq.wrapping_add(freq);
+        if axes.offsets {
+            acc.start_offsets.push(offsets.0);
+            acc.end_offsets.push(offsets.1);
+        }
+        if axes.positions {
+            acc.positions.push(position);
+            let payload = if axes.payloads {
+                payload.unwrap_or_default()
+            } else {
+                &[]
+            };
+            if !payload.is_empty() {
+                self.vector_saw_payloads = true;
+            }
+            acc.payloads.push(payload.to_vec());
+        }
+        Ok(())
+    }
+
+    /// `TermVectorsConsumerPerField.finishDocument`'s field: its terms in
+    /// byte order, `None` without vectors or without a term.
+    fn term_vector(&self, field_number: i32) -> Option<TermVectorField> {
+        let axes = self.vector?;
+        if self.terms.is_empty() {
+            return None;
+        }
+        let has_payloads = self.vector_saw_payloads;
+        let terms = self
+            .terms
+            .iter()
+            .map(|(term, acc)| {
+                let v = &acc.vector;
+                TermVectorTerm {
+                    term: term.clone(),
+                    freq: v.freq,
+                    positions: axes.positions.then(|| v.positions.clone()),
+                    start_offsets: axes.offsets.then(|| v.start_offsets.clone()),
+                    end_offsets: axes.offsets.then(|| v.end_offsets.clone()),
+                    payloads: has_payloads.then(|| v.payloads.clone()),
+                }
+            })
+            .collect();
+        Some(TermVectorField {
+            field_number,
+            has_positions: axes.positions,
+            has_offsets: axes.offsets,
+            has_payloads,
+            terms,
+        })
     }
 
     /// `PerField.invertTokenStream`.
@@ -693,9 +878,16 @@ impl IndexWriter<'_> {
             let ft = field.field_type();
             if ft.index_options() != IndexOptions::None {
                 let state = match inverted.iter().position(|(n, _)| *n == number) {
-                    Some(i) => &mut inverted[i].1,
+                    Some(i) => {
+                        let state = &mut inverted[i].1;
+                        state.vector =
+                            VectorAxes::start(name, ft, Some(state.vector)).map_err(doc_error)?;
+                        state
+                    }
                     None => {
-                        inverted.push((number, InvertState::new(index_options)));
+                        let mut state = InvertState::new(index_options);
+                        state.vector = VectorAxes::start(name, ft, None).map_err(doc_error)?;
+                        inverted.push((number, state));
                         &mut inverted.last_mut().expect("just pushed").1
                     }
                 };
@@ -821,6 +1013,7 @@ impl IndexWriter<'_> {
                 }
                 Some(norm)
             };
+            out.fields.term_vectors.extend(state.term_vector(number));
             out.fields.inverted.push(InvertedField {
                 field_number: number,
                 terms: state
@@ -892,5 +1085,6 @@ impl ExplicitFields {
             && self.doc_values.is_empty()
             && self.points.is_empty()
             && self.registered.is_empty()
+            && self.term_vectors.is_empty()
     }
 }
