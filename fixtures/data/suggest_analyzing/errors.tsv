@@ -1,0 +1,24 @@
+only_more_popular	X	IllegalArgumentException	this suggester only works with onlyMorePopular=false
+contexts	X	IllegalArgumentException	this suggester doesn't support contexts
+hole_key	X	IllegalArgumentException	lookup key cannot contain HOLE character U+001E; this character is reserved
+sep_key	X	IllegalArgumentException	lookup key cannot contain unit separator character U+001F; this character is reserved
+options_4	IllegalArgumentException	options should only contain EXACT_FIRST and PRESERVE_SEP; got 4
+options_-1	IllegalArgumentException	options should only contain EXACT_FIRST and PRESERVE_SEP; got -1
+options_3	ok
+surfaces_0	IllegalArgumentException	maxSurfaceFormsPerAnalyzedForm must be > 0 and < 256 (got: 0)
+surfaces_257	IllegalArgumentException	maxSurfaceFormsPerAnalyzedForm must be > 0 and < 256 (got: 257)
+surfaces_256	ok
+surfaces_1	ok
+graph_0	IllegalArgumentException	maxGraphExpansions must -1 (no limit) or > 0 (got: 0)
+graph_-2	IllegalArgumentException	maxGraphExpansions must -1 (no limit) or > 0 (got: -2)
+graph_-1	ok
+graph_1	ok
+fuzzy_edits_3	IllegalArgumentException	maxEdits must be between 0 and 2
+fuzzy_edits_-1	IllegalArgumentException	maxEdits must be between 0 and 2
+fuzzy_prefix_-1	IllegalArgumentException	nonFuzzyPrefix must not be >= 0 (got -1)
+fuzzy_min_-1	IllegalArgumentException	minFuzzyLength must not be >= 0 (got -1)
+get	UnsupportedOperationException	null
+negative_weight	UnsupportedOperationException	cannot encode value: -1
+big_weight	UnsupportedOperationException	cannot encode value: 2147483648
+sep_in_surface	IllegalArgumentException	surface form cannot contain unit separator character U+001F; this character is reserved
+sep_in_surface_no_payload	built	R	

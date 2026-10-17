@@ -983,6 +983,10 @@ pub struct TopNSearcher<'f, 'c, O: FstOutputs> {
     pub accept_partial_path: Option<AcceptPartialPath<'c, O::Value>>,
     /// `acceptResult(input, output)`.
     pub accept_result: Option<AcceptResult<'c, O::Value>>,
+    /// An override of `addIfCompetitive` that drops every path whose arc
+    /// carries this label before it is queued (`FreeTextSuggester` skips its
+    /// separator).
+    pub skip_label: Option<i32>,
 }
 
 /// `TopNSearcher.acceptPartialPath`'s override. It may change the path
@@ -1029,6 +1033,7 @@ impl<'f, 'c, O: FstOutputs + 'c> TopNSearcher<'f, 'c, O> {
             queue: Some(std::collections::VecDeque::new()),
             accept_partial_path: None,
             accept_result: None,
+            skip_label: None,
         }
     }
 
@@ -1040,6 +1045,9 @@ impl<'f, 'c, O: FstOutputs + 'c> TopNSearcher<'f, 'c, O> {
     // ARITH: `max_queue_depth + 1` for a caller-chosen in-memory depth.
     #[allow(clippy::arithmetic_side_effects)]
     fn add_if_competitive(&mut self, path: &FstPath<O::Value>) {
+        if self.skip_label == Some(path.arc.label) {
+            return;
+        }
         let Some(queue) = &self.queue else { return };
         if queue.len() == self.max_queue_depth {
             if let Some(bottom) = queue.back() {
