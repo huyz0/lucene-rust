@@ -43,7 +43,7 @@ use std::hash::{BuildHasherDefault, Hasher};
 /// module, so the default SipHash buys nothing -- it was most of what
 /// determinizing `t1[0-9]` cost, once per query.
 #[derive(Default)]
-struct SetHasher(u64);
+pub(crate) struct SetHasher(u64);
 
 impl Hasher for SetHasher {
     // `[u32]` hashes as one `write` of its bytes: eight at a time.

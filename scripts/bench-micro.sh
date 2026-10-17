@@ -161,6 +161,12 @@ case "$BENCH" in
     SRC=benchmarks/micro/java/SpellMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-suggest" ;;
+  # The document API's indexing: IndexWriter.addDocument over three document shapes.
+  doc_index)
+    MAIN=DocIndexMicro
+    SRC=benchmarks/micro/java/DocIndexMicro.java
+    EXTRA_SRC="benchmarks/micro/java/SweepMicro.java benchmarks/micro/java/SpellMicro.java"
+    JAR_MODULES="lucene-core lucene-analysis-common lucene-suggest" ;;
   # M13 T13.3b: WFSTCompletionLookup and FSTCompletionLookup, lookups and builds.
   fst_lookup)
     MAIN=FstLookupMicro

@@ -39,7 +39,7 @@ use crate::completion::{CompletionFieldWriter, CompletionFilesWriter, TermDoc};
 use crate::field_infos::FieldInfos;
 use crate::postings::{DocInput, PayInput, PosInput};
 use crate::postings_writer::{
-    self, FieldNorms, FieldPostingsInput, Output, TermPostings, WriteOptions,
+    self, FieldNorms, FieldPostingsInput, Output, TermSource, WriteOptions,
 };
 
 /// `PerFieldPostingsFormat.PER_FIELD_FORMAT_KEY`.
@@ -195,8 +195,8 @@ pub struct CompletionOutput {
 /// name order and writes each group. `name_of` names a field number.
 /// `.pos`/`.pay` presence is decided over *all* `inputs`, the segment's
 /// postings fields.
-pub fn write(
-    inputs: &[FieldPostingsInput<'_>],
+pub fn write<T: TermSource>(
+    inputs: &[FieldPostingsInput<'_, T>],
     norms: &[FieldNorms<'_>],
     name_of: &dyn Fn(i32) -> Option<String>,
     format_for: &dyn Fn(&str) -> Lucene104PostingsFormat,
@@ -218,7 +218,7 @@ pub fn write(
         // flush, `FreqProxTermsWriter.flush` sorts its fields by name) and
         // `MultiFields` (a merge) both iterate that way, and the blocktree
         // writes fields in iteration order.
-        let group_inputs: Vec<FieldPostingsInput<'_>> =
+        let group_inputs: Vec<FieldPostingsInput<'_, T>> =
             members.iter().map(|&i| inputs[i]).collect();
         let options = WriteOptions {
             has_prox: Some(has_prox),
@@ -253,8 +253,8 @@ pub fn write(
 /// `CompletionFieldsConsumer.write` after its delegate: each field of the
 /// group, in name order, through a [`CompletionFieldWriter`], every
 /// occurrence's payload a `SuggestField` payload.
-fn write_completion(
-    group_inputs: &[FieldPostingsInput<'_>],
+fn write_completion<T: TermSource>(
+    group_inputs: &[FieldPostingsInput<'_, T>],
     members: &[usize],
     names: &[String],
     segment_id: &[u8; ID_LENGTH],
@@ -269,7 +269,7 @@ fn write_completion(
     for (input, &member) in group_inputs.iter().zip(members) {
         let mut writer = CompletionFieldWriter::new();
         for term in input.terms {
-            writer.write_term(&term.term, &term_docs(term)?)?;
+            writer.write_term(term.term(), &term_docs(term)?)?;
         }
         files.add_field(&names[member], input.field_number, writer)?;
     }
@@ -278,18 +278,18 @@ fn write_completion(
 }
 
 /// A term's documents with the payload of each occurrence, split out of the
-/// flat doc-major run ([`TermPostings::payload_lengths`] holds one length
+/// flat doc-major run ([`postings_writer::TermPostings::payload_lengths`] holds one length
 /// per occurrence).
-fn term_docs(term: &TermPostings) -> lucene_store::Result<Vec<TermDoc>> {
+fn term_docs(term: &impl TermSource) -> lucene_store::Result<Vec<TermDoc>> {
     let inconsistent = || {
         lucene_store::Error::Corrupted(
             "completion term's payload lengths do not match its occurrences".to_string(),
         )
     };
-    let mut rest: &[u8] = &term.payload_bytes;
-    let mut lengths = term.payload_lengths.iter();
-    let mut docs = Vec::with_capacity(term.docs.len());
-    for &(doc_id, freq) in &term.docs {
+    let mut rest: &[u8] = term.payload_bytes();
+    let mut lengths = term.payload_lengths().iter();
+    let mut docs = Vec::with_capacity(term.docs().len());
+    for &(doc_id, freq) in term.docs() {
         let mut payloads = Vec::new();
         for _ in 0..freq {
             let length = *lengths.next().ok_or_else(inconsistent)? as usize;

@@ -443,6 +443,63 @@ fn the_index_sort_range_search_equals_its_fallback_on_every_sort_shape() {
     }
 }
 
+/// A sorted flush moves each document's positions with it: every document
+/// shares the terms `a` and `b`, in one order or the other at a varying
+/// position, so a phrase finds a document only if its own positions came
+/// along when the buffered postings were remapped into sort order.
+#[test]
+fn a_sorted_flush_keeps_each_documents_positions() {
+    use lucene_index::document::{Document, NumericDocValuesField, Store, StringField, TextField};
+    use lucene_index::index_writer::IndexWriter;
+    use lucene_index::segment_info::{IndexSortField, LuceneVersion};
+    use lucene_search::index_searcher::IndexSearcher;
+    use lucene_search::query::{BooleanQuery, PhraseQuery, TermQuery};
+    use lucene_util::test_support::TempDir;
+
+    let tmp = TempDir::new("sorted-flush-positions");
+    let dir = FsDirectory::open(tmp.path());
+    let version = LuceneVersion {
+        major: 10,
+        minor: 5,
+        bugfix: 0,
+    };
+    let n = 60;
+    {
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", version).unwrap();
+        w.enable_explicit_documents().unwrap();
+        w.set_index_sort(Some(&[IndexSortField::long("v", true, None)]))
+            .unwrap();
+        for i in 0..n {
+            let mut d = Document::new();
+            d.add(NumericDocValuesField::new("v", (i * 37) % 41));
+            d.add(StringField::new("id", i.to_string(), Store::No));
+            let pad = "x ".repeat((i % 5) as usize);
+            let body = if i % 2 == 0 { "a b" } else { "b a" };
+            d.add(TextField::new("body", format!("{pad}{body}"), Store::No));
+            w.add_fields_document(&d).unwrap();
+        }
+        w.commit().unwrap();
+    }
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let opened = reader.open_segments().unwrap();
+    let segments = opened.as_open_segments();
+    let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = vec![None; segments.len()];
+    let searcher = IndexSearcher::new(&segments, &norms).unwrap();
+    let hits = |phrase: [&str; 2], id: i64| {
+        let mut q = BooleanQuery::new();
+        q.filter
+            .push(Clause::Phrase(PhraseQuery::new("body", phrase)));
+        q.filter
+            .push(Clause::Term(TermQuery::new("id", id.to_string())));
+        searcher.search(&q, 10).unwrap().score_docs.len()
+    };
+    for i in 0..n {
+        let even = usize::from(i % 2 == 0);
+        assert_eq!(hits(["a", "b"], i), even, "doc {i}");
+        assert_eq!(hits(["b", "a"], i), 1 - even, "doc {i}");
+    }
+}
+
 /// Doc-values rewrites and point queries over an index this port writes with
 /// the shapes `m7_queries_index` lacks: a `SORTED` and a single-valued
 /// `SORTED_SET` keyword (`DOC_VALUES_REWRITE` against

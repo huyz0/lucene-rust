@@ -39,7 +39,7 @@ use crate::indexing_chain::MAX_POSITION;
 const FX_K: u64 = 0x517c_c1b7_2722_0a95;
 
 #[inline]
-fn hash_bytes(bytes: &[u8]) -> u64 {
+pub(crate) fn hash_bytes(bytes: &[u8]) -> u64 {
     let mut h: u64 = bytes.len() as u64;
     let mut chunks = bytes.chunks_exact(8);
     for c in &mut chunks {
@@ -96,12 +96,32 @@ impl TermHash {
         self.hashes.len()
     }
 
-    fn term(&self, id: u32) -> &[u8] {
+    pub(crate) fn term(&self, id: u32) -> &[u8] {
         let (a, b) = (
             self.starts[id as usize],
             self.starts[(id as usize).wrapping_add(1)],
         );
         &self.arena[a as usize..b as usize]
+    }
+
+    /// Heap bytes held.
+    pub(crate) fn ram_bytes(&self) -> usize {
+        self.arena
+            .capacity()
+            .saturating_add(self.starts.capacity().saturating_mul(4))
+            .saturating_add(self.table.capacity().saturating_mul(4))
+            .saturating_add(self.hashes.capacity().saturating_mul(8))
+    }
+
+    /// Forgets every term from id `len` on, as if never added.
+    pub(crate) fn truncate(&mut self, len: usize) {
+        if len >= self.len() {
+            return;
+        }
+        self.arena.truncate(self.starts[len] as usize);
+        self.starts.truncate(len.saturating_add(1));
+        self.hashes.truncate(len);
+        self.rehash(self.table.len());
     }
 
     /// The id of `bytes`, adding it if new; `true` when it was added.
@@ -135,7 +155,11 @@ impl TermHash {
     }
 
     fn grow(&mut self) {
-        let size = self.table.len().saturating_mul(2);
+        self.rehash(self.table.len().saturating_mul(2));
+    }
+
+    /// Rebuilds the table at `size` slots over every term.
+    fn rehash(&mut self, size: usize) {
         let mut table = vec![0u32; size];
         let mask = size.wrapping_sub(1);
         for (id, &h) in self.hashes.iter().enumerate() {
@@ -149,11 +173,38 @@ impl TermHash {
     }
 
     /// Every term id, sorted by term bytes -- `BytesRefHash.sort`.
-    fn sorted_ids(&self) -> Vec<u32> {
-        let mut ids: Vec<u32> = (0..self.len() as u32).collect();
-        ids.sort_unstable_by(|&a, &b| self.term(a).cmp(self.term(b)));
-        ids
+    ///
+    /// Java's sort is an MSB radix sort; this sorts each id under its first
+    /// eight bytes as one big-endian integer, which orders every pair of
+    /// terms differing there without touching the arena, and compares full
+    /// bytes only within a run of equal prefixes.
+    pub(crate) fn sorted_ids(&self) -> Vec<u32> {
+        let mut keyed: Vec<(u64, u32)> = (0..self.len() as u32)
+            .map(|id| (prefix_key(self.term(id)), id))
+            .collect();
+        keyed.sort_unstable();
+        let mut start = 0;
+        while start < keyed.len() {
+            let key = keyed[start].0;
+            let run = keyed[start..].iter().take_while(|(k, _)| *k == key).count();
+            let end = start.saturating_add(run);
+            if run > 1 {
+                keyed[start..end].sort_unstable_by(|a, b| self.term(a.1).cmp(self.term(b.1)));
+            }
+            start = end;
+        }
+        keyed.into_iter().map(|(_, id)| id).collect()
     }
+}
+
+/// A term's first eight bytes as a big-endian integer, zero-padded: the
+/// integers order as the prefixes do, and equal integers leave the order to
+/// the bytes past them (or to the length, for a zero-padded short term).
+fn prefix_key(term: &[u8]) -> u64 {
+    let mut b = [0u8; 8];
+    let n = term.len().min(8);
+    b[..n].copy_from_slice(&term[..n]);
+    u64::from_be_bytes(b)
 }
 
 /// One term's buffered postings.
@@ -664,6 +715,37 @@ mod tests {
         want.sort();
         let got: Vec<&[u8]> = sorted.iter().map(|&id| h.term(id)).collect();
         let want: Vec<&[u8]> = want.iter().map(|s| s.as_bytes()).collect();
+        assert_eq!(got, want);
+    }
+
+    /// The prefix-key sort against a plain byte sort where the eight-byte
+    /// key alone cannot decide: the empty term, zero bytes (which the key's
+    /// padding also produces), high bytes, and terms sharing a prefix of
+    /// eight bytes or more.
+    #[test]
+    fn sorted_ids_order_by_bytes_past_the_prefix_key() {
+        let terms: Vec<&[u8]> = vec![
+            b"abcdefghij",
+            b"abcdefgh",
+            b"",
+            b"abcdefgh\0",
+            b"a",
+            b"a\0",
+            b"\0",
+            b"\xff\xff",
+            b"abcdefghi",
+            b"abcdefgha",
+            b"abcdefgh\xff",
+            b"abcdefg",
+            b"b",
+        ];
+        let mut h = TermHash::new();
+        for t in &terms {
+            h.add(t);
+        }
+        let got: Vec<&[u8]> = h.sorted_ids().iter().map(|&id| h.term(id)).collect();
+        let mut want = terms.clone();
+        want.sort();
         assert_eq!(got, want);
     }
 }

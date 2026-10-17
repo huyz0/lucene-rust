@@ -34,6 +34,7 @@ mod micro_analyzing;
 mod micro_freetext;
 mod micro_infix;
 mod micro_spell;
+mod micro_doc_index;
 mod micro_fst_lookup;
 mod micro_highlight;
 mod micro_memory_index;
@@ -2097,6 +2098,7 @@ fn main() {
         "freetext" => micro_freetext::bench_freetext(warmup, measure),
         "infix" => micro_infix::bench_infix(warmup, measure),
         "spell" => micro_spell::bench_spell(warmup, measure),
+        "doc_index" => micro_doc_index::bench_doc_index(warmup, measure),
         "fst_lookup" => micro_fst_lookup::bench_fst_lookup(warmup, measure),
         "snowball" => micro_snowball::bench_snowball(warmup, measure),
         "hunspell" => micro_hunspell::bench_hunspell(warmup, measure),

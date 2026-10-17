@@ -1015,6 +1015,8 @@ impl<'d> ConcurrentIndexWriter<'d> {
             custom_freq_terms: &custom_freq_terms,
             vectors: &vectors,
             explicit: &explicit,
+            postings: None,
+            old_to_new: None,
             has_blocks,
         };
         // This segment's own deletes are resolved here, with no lock held --
