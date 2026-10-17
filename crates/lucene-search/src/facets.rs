@@ -64,11 +64,38 @@
 //! [`FacetsConfig::build`] indexes a document's [`FacetField`]s as those
 //! ordinals (and its [`SortedSetDocValuesFacetField`]s as above), and a
 //! [`taxonomy::DirectoryTaxonomyReader`] maps ordinals back to paths.
+//!
+//! **The counting layer is Java's too** (M13 T13.4b). [`Facets`] is the
+//! `Facets` contract (every method returns Java's errors as
+//! `Err(IllegalArgument)`); a result's numbers are [`FacetValue`]s, Java's
+//! `Number` (`Integer` for counts and int sums, `Float` for float sums).
+//! [`FacetsCollector`]/[`FacetsCollectorManager`] gather the matching
+//! documents per segment, [`taxonomy::FastTaxonomyFacetCounts`] and the
+//! association facets count or aggregate them, and [`MultiFacets`] routes
+//! dims to the facets that hold them.
 
+mod facet_counts_with_filter_query;
 mod facet_field;
+mod facet_result;
+mod facet_utils;
+mod facets_collector;
+mod facets_trait;
+mod multi_facets;
 pub mod taxonomy;
+#[cfg(test)]
+pub(crate) mod test_index;
+mod top_ord_and_number_queue;
 
+pub use facet_counts_with_filter_query::FacetCountsWithFilterQuery;
 pub use facet_field::{verify_label, FacetEntry, FacetField, SortedSetDocValuesFacetField};
+pub use facet_result::{FacetResult, FacetValue, LabelAndValue};
+pub use facet_utils::{live_docs_disi, ConjunctionIterator, LiveDocsIterator};
+pub use facets_collector::{
+    DocIdSet, DocIdSetIter, FacetsCollector, FacetsCollectorManager, FacetsResult, MatchingDocs,
+};
+pub use facets_trait::{validate_top_n, Facets};
+pub use multi_facets::MultiFacets;
+pub use top_ord_and_number_queue::{OrdAndValue, TopOrdAndNumberQueue};
 
 use lucene_codecs::doc_values::{self, NumericEntry, SortedNumericEntry};
 use lucene_codecs::terms_dict::{self, TermsDictEntry};
@@ -154,50 +181,6 @@ pub fn resolve_labels(
     Ok(labelled)
 }
 
-/// Real `Facets.getTopChildren`'s return shape (`FacetResult`), for the
-/// SORTED_SET string-facet case: the top-`n` children plus the two aggregate
-/// numbers Java reports alongside them.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FacetResult {
-    /// `FacetResult.dim` — the dimension these children live under. Empty for
-    /// the dim-less primitives [`top_children`]/[`all_children`], which count
-    /// one flat field's ordinals with no [`FacetsState`] above them; set by
-    /// every [`SortedSetFacetCounts`] method.
-    pub dim: String,
-    /// `FacetResult.path` — the path within [`Self::dim`] whose children these
-    /// are. Always empty for a non-hierarchical dim.
-    pub path: Vec<String>,
-    /// `FacetResult.labelValues` — the top children, count descending, ties
-    /// broken by ascending ordinal. Only children with a **non-zero** count
-    /// ever appear (`AbstractSortedSetDocValueFacetCounts.computeTopChildren`
-    /// skips `count == 0` entirely).
-    ///
-    /// `FacetCount::label` is the child's **last** path component
-    /// (`stringToPath(term)[parts.length - 1]`) when the result came from a
-    /// [`SortedSetFacetCounts`], and the raw term when it came from
-    /// [`resolve_labels`] + [`top_children`].
-    pub label_values: Vec<FacetCount>,
-    /// `FacetResult.value` — the sum of **every** non-zero child's count, not
-    /// just the ones that fit in the top `n` (Java accumulates `pathCount`
-    /// over the full child iteration, before the priority queue truncates).
-    ///
-    /// **`-1` is a real Lucene value, not an error.** For a dim configured
-    /// multi-valued *without* `requireDimCount`, summing children would
-    /// double-count a document carrying two values of the same dim and no
-    /// accurate count is obtainable, so `adjustPathCountIfNecessary` returns
-    /// `-1`. For a hierarchical dim, or a multi-valued one with
-    /// `requireDimCount`, the dim/path ordinal was itself indexed and its own
-    /// count is reported instead of the sum. Which of the three applies is
-    /// decided by [`DimConfig`] — see [`SortedSetFacetCounts`].
-    ///
-    /// The dim-less [`top_children`]/[`all_children`] have no config to
-    /// consult and always report the plain sum.
-    pub value: i64,
-    /// `FacetResult.childCount` — how many children had a non-zero count,
-    /// which can exceed `label_values.len()` when `n` truncated the list.
-    pub child_count: usize,
-}
-
 /// Real `AbstractSortedSetDocValueFacetCounts.getTopChildren(topN, dim)`:
 /// keeps only children with a **non-zero** count, orders them by count
 /// descending with ties broken by ascending ordinal
@@ -223,17 +206,31 @@ pub fn top_children(facets: Vec<FacetCount>, n: usize) -> Option<FacetResult> {
     if non_zero.is_empty() {
         return None;
     }
-    let child_count = non_zero.len();
-    let value: i64 = non_zero.iter().map(|f| f.count as i64).sum();
     non_zero.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.ord.cmp(&b.ord)));
-    non_zero.truncate(n);
-    Some(FacetResult {
-        dim: String::new(),
-        path: Vec::new(),
-        label_values: non_zero,
-        value,
+    Some(dimless_result(non_zero, Some(n)))
+}
+
+/// A dim-less [`FacetResult`] of `non_zero` (already in result order), its
+/// labels cut to `keep`: `value` sums every count, `childCount` counts every
+/// child, as Java's `int`s.
+fn dimless_result(non_zero: Vec<FacetCount>, keep: Option<usize>) -> FacetResult {
+    let as_int = |c: u64| i32::try_from(c).unwrap_or(i32::MAX);
+    let child_count = i32::try_from(non_zero.len()).unwrap_or(i32::MAX);
+    let value = non_zero
+        .iter()
+        .fold(0i32, |sum, f| sum.wrapping_add(as_int(f.count)));
+    let label_values = non_zero
+        .into_iter()
+        .take(keep.unwrap_or(usize::MAX))
+        .map(|f| LabelAndValue::new(f.label, FacetValue::Int(as_int(f.count))))
+        .collect();
+    FacetResult::new(
+        String::new(),
+        Vec::new(),
+        FacetValue::Int(value),
+        label_values,
         child_count,
-    })
+    )
 }
 
 /// Real `AbstractSortedSetDocValueFacetCounts.getAllChildren(dim)`: every
@@ -246,7 +243,8 @@ pub fn top_children(facets: Vec<FacetCount>, n: usize) -> Option<FacetResult> {
 /// `getAllChildren` has no `childCount == 0` guard and returns a
 /// `FacetResult` with an empty `labelValues` array once
 /// `prepareChildIteration` and `hasCounts` pass — only `getTopChildren`'s
-/// `createFacetResult` nulls. [`SortedSetFacetCounts::all_children`], which
+/// `createFacetResult` nulls. [`SortedSetFacetCounts`]'s
+/// [`Facets::get_all_children`], which
 /// *does* have a dim and a state, follows Java and returns `Some` with an
 /// empty child list.
 pub fn all_children(facets: Vec<FacetCount>) -> Option<FacetResult> {
@@ -254,15 +252,7 @@ pub fn all_children(facets: Vec<FacetCount>) -> Option<FacetResult> {
     if non_zero.is_empty() {
         return None;
     }
-    let child_count = non_zero.len();
-    let value: i64 = non_zero.iter().map(|f| f.count as i64).sum();
-    Some(FacetResult {
-        dim: String::new(),
-        path: Vec::new(),
-        label_values: non_zero,
-        value,
-        child_count,
-    })
+    Some(dimless_result(non_zero, None))
 }
 
 /// Sorts `facets` descending by count, ties broken by ascending ordinal, then
@@ -667,11 +657,51 @@ impl Default for DimConfig {
 /// [`FacetsConfig::build_sorted_set_facet_fields`], the sorted-set half as
 /// plain values.
 ///
-/// **Not ported yet**: `AssociationFacetField` in `build` (M13 T13.4b).
+/// `build` also records, per index field, the type of the
+/// [`taxonomy::AssociationFacetField`]s indexed into it (`assocDimTypes`), to
+/// refuse mixing them -- state that lives as long as the config, as in Java.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FacetsConfig {
     dims: std::collections::BTreeMap<String, DimConfig>,
+    pub(crate) assoc_dim_types: AssocDimTypes,
 }
+
+/// `FacetsConfig.assocDimTypes`: index field name to association type
+/// (`"int"`, `"float"` or `"bytes"`), filled by `build`.
+#[derive(Debug, Default)]
+pub(crate) struct AssocDimTypes(std::sync::Mutex<std::collections::BTreeMap<String, &'static str>>);
+
+impl AssocDimTypes {
+    fn snapshot(&self) -> std::collections::BTreeMap<String, &'static str> {
+        self.0.lock().map(|m| m.clone()).unwrap_or_default()
+    }
+
+    /// The type recorded for `index_field_name`, recording `kind` when there
+    /// is none yet.
+    pub(crate) fn get_or_record(&self, index_field_name: &str, kind: &'static str) -> &'static str {
+        match self.0.lock() {
+            Ok(mut m) => {
+                let recorded: &&'static str = m.entry(index_field_name.to_string()).or_insert(kind);
+                recorded
+            }
+            Err(_) => kind,
+        }
+    }
+}
+
+impl Clone for AssocDimTypes {
+    fn clone(&self) -> Self {
+        AssocDimTypes(std::sync::Mutex::new(self.snapshot()))
+    }
+}
+
+impl PartialEq for AssocDimTypes {
+    fn eq(&self, other: &Self) -> bool {
+        self.snapshot() == other.snapshot()
+    }
+}
+
+impl Eq for AssocDimTypes {}
 
 impl FacetsConfig {
     /// An empty config: every dim gets `DEFAULT_DIM_CONFIG`.
@@ -1327,9 +1357,9 @@ pub struct SortedSetFacetCounts<'a> {
 /// `AbstractSortedSetDocValueFacetCounts.TopChildrenForPath` -- the
 /// intermediate result before ordinals are resolved to labels.
 struct TopChildrenForPath {
-    path_count: i64,
+    path_count: i32,
     child_count: usize,
-    top: Vec<(i64, u64)>,
+    top: Vec<(i64, i32)>,
 }
 
 impl<'a> SortedSetFacetCounts<'a> {
@@ -1358,45 +1388,58 @@ impl<'a> SortedSetFacetCounts<'a> {
     /// `prepareChildIteration(dim, dimConfig, path)`: the path's own ordinal
     /// plus its immediate children, or `None` when the path was never indexed.
     ///
-    /// # Panics
-    ///
-    /// With Java's `IllegalArgumentException` message when `path` is non-empty
-    /// for a dim that is not configured hierarchical -- a caller bug, exactly
-    /// as in Java.
+    /// A non-empty `path` for a dim that is not configured hierarchical is
+    /// Java's `IllegalArgumentException`, as is an empty path component.
     fn prepare_child_iteration(
         &self,
         dim: &str,
         dim_config: &DimConfig,
         path: &[&str],
-    ) -> Option<(i64, ChildOrds<'a>)> {
+    ) -> Result<Option<(i64, ChildOrds<'a>)>> {
         if dim_config.hierarchical {
-            let tree = self.state.dim_tree(dim)?;
+            let Some(tree) = self.state.dim_tree(dim) else {
+                return Ok(None);
+            };
             let path_ord = if path.is_empty() {
                 tree.dim_start_ord
             } else {
-                self.state.lookup_term(&path_to_string(dim, path).ok()?)?
+                let term = path_to_string(dim, path)
+                    .map_err(|e| crate::Error::IllegalArgument(e.to_string()))?;
+                match self.state.lookup_term(&term) {
+                    Some(ord) => ord,
+                    // The path was never indexed.
+                    None => return Ok(None),
+                }
             };
-            Some((path_ord, ChildOrds::Tree(tree.children(path_ord))))
+            Ok(Some((path_ord, ChildOrds::Tree(tree.children(path_ord)))))
         } else {
-            assert!(
-                path.is_empty(),
-                "Field is not configured as hierarchical, path should be 0 length"
-            );
-            let range = *self.state.ord_range(dim)?;
+            if !path.is_empty() {
+                return Err(crate::Error::IllegalArgument(
+                    "Field is not configured as hierarchical, path should be 0 length".to_string(),
+                ));
+            }
+            let Some(range) = self.state.ord_range(dim).copied() else {
+                return Ok(None);
+            };
             let mut start = range.start;
             if dim_config.multi_valued && dim_config.require_dim_count {
                 // The dim's own ordinal was indexed and leads the range; skip
                 // past it so the iteration starts on the first real child.
                 start += 1;
             }
-            Some((
+            Ok(Some((
                 range.start,
                 ChildOrds::Range {
                     next: start,
                     end: range.end,
                 },
-            ))
+            )))
         }
+    }
+
+    /// `getCount(ord)` as Java's `int`.
+    fn count_i32(&self, ord: i64) -> i32 {
+        i32::try_from(self.count(ord)).unwrap_or(i32::MAX)
     }
 
     /// `adjustPathCountIfNecessary` -- `-1` is Java's "no accurate count is
@@ -1404,9 +1447,9 @@ impl<'a> SortedSetFacetCounts<'a> {
     //
     // SENTINEL: `-1` = "no accurate count obtainable", outside the domain of
     // a count.
-    fn adjust_path_count(&self, dim_config: &DimConfig, path_ord: i64, computed: i64) -> i64 {
+    fn adjust_path_count(&self, dim_config: &DimConfig, path_ord: i64, computed: i32) -> i32 {
         if dim_config.hierarchical || (dim_config.multi_valued && dim_config.require_dim_count) {
-            self.count(path_ord) as i64
+            self.count_i32(path_ord)
         } else if dim_config.multi_valued {
             -1
         } else {
@@ -1429,12 +1472,12 @@ impl<'a> SortedSetFacetCounts<'a> {
         dim_config: &DimConfig,
         path_ord: i64,
     ) -> TopChildrenForPath {
-        let mut path_count: i64 = 0;
-        let mut top: Vec<(i64, u64)> = Vec::new();
+        let mut path_count: i32 = 0;
+        let mut top: Vec<(i64, i32)> = Vec::new();
         for ord in children {
-            let count = self.count(ord);
+            let count = self.count_i32(ord);
             if count > 0 {
-                path_count += count as i64;
+                path_count = path_count.wrapping_add(count);
                 top.push((ord, count));
             }
         }
@@ -1460,21 +1503,18 @@ impl<'a> SortedSetFacetCounts<'a> {
         if top.child_count == 0 {
             return None;
         }
-        Some(FacetResult {
-            dim: dim.to_string(),
-            path: path.iter().map(|s| s.to_string()).collect(),
-            label_values: top
-                .top
+        Some(FacetResult::new(
+            dim,
+            path.iter().map(|s| s.to_string()).collect(),
+            FacetValue::Int(top.path_count),
+            top.top
                 .into_iter()
-                .map(|(ord, count)| FacetCount {
-                    ord,
-                    label: self.leaf_label(ord),
-                    count,
+                .map(|(ord, count)| {
+                    LabelAndValue::new(self.leaf_label(ord), FacetValue::Int(count))
                 })
                 .collect(),
-            value: top.path_count,
-            child_count: top.child_count,
-        })
+            i32::try_from(top.child_count).unwrap_or(i32::MAX),
+        ))
     }
 
     /// `FacetsConfig.stringToPath(term)[parts.length - 1]`.
@@ -1485,126 +1525,144 @@ impl<'a> SortedSetFacetCounts<'a> {
             .unwrap_or_default()
     }
 
-    /// `Facets.getTopChildren(topN, dim, path...)`.
-    ///
-    /// # Panics
-    ///
-    /// `Facets.validateTopN`'s message when `top_n == 0`; see
-    /// [`top_children`].
-    pub fn top_children(&self, top_n: usize, dim: &str, path: &[&str]) -> Option<FacetResult> {
-        assert!(top_n > 0, "topN must be > 0 (got: {top_n})");
-        if !self.has_counts() {
-            return None;
-        }
+    /// `getTopChildrenForPath(topN, dim, path...)`.
+    fn top_children_for_path(
+        &self,
+        top_n: usize,
+        dim: &str,
+        path: &[&str],
+    ) -> Result<Option<TopChildrenForPath>> {
         let dim_config = self.state.config().dim_config(dim);
-        let (path_ord, children) = self.prepare_child_iteration(dim, &dim_config, path)?;
-        let top = self.compute_top_children(children, top_n, &dim_config, path_ord);
-        self.create_facet_result(Some(top), dim, path)
+        let Some((path_ord, children)) = self.prepare_child_iteration(dim, &dim_config, path)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(self.compute_top_children(
+            children,
+            top_n,
+            &dim_config,
+            path_ord,
+        )))
     }
+}
 
-    /// `Facets.getAllChildren(dim, path...)`: every non-zero child in
-    /// **ordinal** order (no priority queue at all), plus the same
-    /// `value`/`childCount` aggregates.
-    pub fn all_children(&self, dim: &str, path: &[&str]) -> Option<FacetResult> {
+impl Facets for SortedSetFacetCounts<'_> {
+    /// `getAllChildren(dim, path...)`: every non-zero child in **ordinal**
+    /// order (no priority queue at all), plus the same `value`/`childCount`
+    /// aggregates.
+    fn get_all_children(&self, dim: &str, path: &[&str]) -> Result<Option<FacetResult>> {
         let dim_config = self.state.config().dim_config(dim);
-        let (path_ord, children) = self.prepare_child_iteration(dim, &dim_config, path)?;
+        let Some((path_ord, children)) = self.prepare_child_iteration(dim, &dim_config, path)?
+        else {
+            return Ok(None);
+        };
         if !self.has_counts() {
-            return None;
+            return Ok(None);
         }
-        let mut path_count: i64 = 0;
+        let mut path_count: i32 = 0;
         let mut label_values = Vec::new();
         for ord in children {
-            let count = self.count(ord);
+            let count = self.count_i32(ord);
             if count > 0 {
-                path_count += count as i64;
-                label_values.push(FacetCount {
-                    ord,
-                    label: self.leaf_label(ord),
-                    count,
-                });
+                path_count = path_count.wrapping_add(count);
+                label_values.push(LabelAndValue::new(
+                    self.leaf_label(ord),
+                    FacetValue::Int(count),
+                ));
             }
         }
-        let child_count = label_values.len();
-        Some(FacetResult {
-            dim: dim.to_string(),
-            path: path.iter().map(|s| s.to_string()).collect(),
+        let child_count = i32::try_from(label_values.len()).unwrap_or(i32::MAX);
+        Ok(Some(FacetResult::new(
+            dim,
+            path.iter().map(|s| s.to_string()).collect(),
+            FacetValue::Int(self.adjust_path_count(&dim_config, path_ord, path_count)),
             label_values,
-            value: self.adjust_path_count(&dim_config, path_ord, path_count),
             child_count,
-        })
+        )))
     }
 
-    /// `Facets.getSpecificValue(dim, path...)`: the count for one exact path,
-    /// or `-1` when the path was never indexed. `0` when nothing was counted
-    /// at all (Java's `hasCounts() == false` branch).
-    ///
-    /// # Panics
-    ///
-    /// Java's `IllegalArgumentException` -- `"<dim> is not configured as
-    /// hierarchical, path must be length=1"` -- for a non-hierarchical dim
-    /// addressed with anything but a single path component.
+    /// `getTopChildren(topN, dim, path...)`.
+    fn get_top_children(
+        &self,
+        top_n: i32,
+        dim: &str,
+        path: &[&str],
+    ) -> Result<Option<FacetResult>> {
+        validate_top_n(top_n)?;
+        if !self.has_counts() {
+            return Ok(None);
+        }
+        let top_n = usize::try_from(top_n).unwrap_or(usize::MAX);
+        let top = self.top_children_for_path(top_n, dim, path)?;
+        Ok(self.create_facet_result(top, dim, path))
+    }
+
+    /// `getSpecificValue(dim, path...)`: the count for one exact path, or
+    /// `-1` when the path was never indexed. `0` when nothing was counted at
+    /// all (Java's `hasCounts() == false` branch).
     //
     // SENTINEL: `-1` = "this path was never indexed", outside the domain of a
     // count. Java's own `Facets.getSpecificValue` contract.
-    pub fn specific_value(&self, dim: &str, path: &[&str]) -> i64 {
+    fn get_specific_value(&self, dim: &str, path: &[&str]) -> Result<FacetValue> {
         let dim_config = self.state.config().dim_config(dim);
-        assert!(
-            dim_config.hierarchical || path.len() == 1,
-            "{dim} is not configured as hierarchical, path must be length=1"
-        );
-        let Ok(term) = path_to_string(dim, path) else {
-            return -1;
-        };
+        if !dim_config.hierarchical && path.len() != 1 {
+            return Err(crate::Error::IllegalArgument(format!(
+                "{dim} is not configured as hierarchical, path must be length=1"
+            )));
+        }
+        let term =
+            path_to_string(dim, path).map_err(|e| crate::Error::IllegalArgument(e.to_string()))?;
         let Some(ord) = self.state.lookup_term(&term) else {
-            return -1;
+            return Ok(FacetValue::Int(-1));
         };
-        if self.has_counts() {
-            self.count(ord) as i64
+        Ok(FacetValue::Int(if self.has_counts() {
+            self.count_i32(ord)
         } else {
             0
-        }
+        }))
     }
 
-    /// `AbstractSortedSetDocValueFacetCounts.getAllDims(topN)`: every dim that
-    /// had a hit, each with its top `topN` children, sorted by `value`
-    /// descending with ties broken by ascending dim name.
-    ///
-    /// # Panics
-    ///
-    /// `Facets.validateTopN`'s message when `top_n == 0`.
-    pub fn all_dims(&self, top_n: usize) -> Vec<FacetResult> {
-        assert!(top_n > 0, "topN must be > 0 (got: {top_n})");
+    /// `getAllDims(topN)`: every dim that had a hit, each with its top `topN`
+    /// children, sorted by `value` descending with ties broken by ascending
+    /// dim name.
+    fn get_all_dims(&self, top_n: i32) -> Result<Vec<FacetResult>> {
+        validate_top_n(top_n)?;
         if !self.has_counts() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
-        let mut results: Vec<FacetResult> = self
-            .state
-            .dims()
-            .filter_map(|dim| self.top_children(top_n, dim, &[]))
-            .collect();
-        results.sort_by(|a, b| b.value.cmp(&a.value).then_with(|| a.dim.cmp(&b.dim)));
-        results
+        let top_n = usize::try_from(top_n).unwrap_or(usize::MAX);
+        let mut results: Vec<FacetResult> = Vec::new();
+        for dim in self.state.dims() {
+            let top = self.top_children_for_path(top_n, dim, &[])?;
+            if let Some(r) = self.create_facet_result(top, dim, &[]) {
+                results.push(r);
+            }
+        }
+        results.sort_by(|a, b| {
+            b.value
+                .int_value()
+                .cmp(&a.value.int_value())
+                .then_with(|| taxonomy::facet_label::java_compare(&a.dim, &b.dim))
+        });
+        Ok(results)
     }
 
-    /// `Facets.getTopDims(topNDims, topNChildren)`.
+    /// `getTopDims(topNDims, topNChildren)`.
     ///
     /// This is the base-class contract verbatim -- "results should be the same
     /// as calling getAllDims and then only using the first topNDims" -- rather
     /// than `AbstractSortedSetDocValueFacetCounts`' override of it. That
     /// override exists to avoid computing children for dims that will not make
     /// the cut, by reading a dim's count directly where the encoding allows;
-    /// here [`Self::all_dims`] is already a single pass over the dims with no
-    /// per-dim I/O, so the optimization has nothing to buy and the two agree
-    /// by construction.
-    ///
-    /// # Panics
-    ///
-    /// `Facets.validateTopN`'s message when either argument is 0.
-    pub fn top_dims(&self, top_n_dims: usize, top_n_children: usize) -> Vec<FacetResult> {
-        assert!(top_n_dims > 0, "topN must be > 0 (got: {top_n_dims})");
-        let mut all = self.all_dims(top_n_children);
-        all.truncate(top_n_dims);
-        all
+    /// here [`Facets::get_all_dims`] is already a single pass over the dims
+    /// with no per-dim I/O, so the optimization has nothing to buy and the two
+    /// agree by construction.
+    fn get_top_dims(&self, top_n_dims: i32, top_n_children: i32) -> Result<Vec<FacetResult>> {
+        validate_top_n(top_n_dims)?;
+        validate_top_n(top_n_children)?;
+        let mut all = self.get_all_dims(top_n_children)?;
+        all.truncate(usize::try_from(top_n_dims).unwrap_or(usize::MAX));
+        Ok(all)
     }
 }
 
@@ -2172,37 +2230,57 @@ mod tests {
 
     // --- `SortedSetDocValuesFacetCounts` over a hand-built state ---
 
+    fn int(v: i32) -> FacetValue {
+        FacetValue::Int(v)
+    }
+
+    fn ia_message<T: std::fmt::Debug>(r: Result<T>) -> String {
+        match r {
+            Err(crate::Error::IllegalArgument(m)) => m,
+            other => panic!("expected IllegalArgument, got {other:?}"),
+        }
+    }
+
     #[test]
     fn no_counts_at_all_is_javas_has_counts_false() {
         let state = flat_state();
         let facets = SortedSetFacetCounts::new(&state, Vec::new());
-        assert!(facets.top_children(10, "Author", &[]).is_none());
-        assert!(facets.all_children("Author", &[]).is_none());
-        assert!(facets.all_dims(10).is_empty());
-        assert!(facets.top_dims(10, 10).is_empty());
+        assert!(facets
+            .get_top_children(10, "Author", &[])
+            .unwrap()
+            .is_none());
+        assert!(facets.get_all_children("Author", &[]).unwrap().is_none());
+        assert!(facets.get_all_dims(10).unwrap().is_empty());
+        assert!(facets.get_top_dims(10, 10).unwrap().is_empty());
         assert_eq!(
-            facets.specific_value("Author", &["Bob"]),
-            0,
+            facets.get_specific_value("Author", &["Bob"]).unwrap(),
+            int(0),
             "an indexed path with no counting done is 0, not -1"
         );
-        assert_eq!(facets.specific_value("Author", &["Nobody"]), -1);
+        assert_eq!(
+            facets.get_specific_value("Author", &["Nobody"]).unwrap(),
+            int(-1)
+        );
     }
 
     #[test]
     fn a_dim_whose_children_all_counted_zero_is_absent() {
         let state = flat_state();
         let facets = SortedSetFacetCounts::new(&state, vec![0, 0, 3]);
-        assert!(facets.top_children(10, "Author", &[]).is_none());
-        let tag = facets.top_children(10, "Tag", &[]).unwrap();
+        assert!(facets
+            .get_top_children(10, "Author", &[])
+            .unwrap()
+            .is_none());
+        let tag = facets.get_top_children(10, "Tag", &[]).unwrap().unwrap();
         assert_eq!(tag.dim, "Tag");
-        assert_eq!(tag.value, 3);
+        assert_eq!(tag.value, int(3));
         assert_eq!(tag.child_count, 1);
         // `getAllChildren` still returns a (child-less) result for the empty
         // dim -- it has no `childCount == 0 -> null` guard, unlike
         // `createFacetResult`.
-        let author = facets.all_children("Author", &[]).unwrap();
+        let author = facets.get_all_children("Author", &[]).unwrap().unwrap();
         assert!(author.label_values.is_empty());
-        assert_eq!(author.value, 0);
+        assert_eq!(author.value, int(0));
     }
 
     #[test]
@@ -2224,9 +2302,10 @@ mod tests {
         // 5 documents carry the dim; their per-year counts sum to 7 because
         // documents carry more than one year.
         let facets = SortedSetFacetCounts::new(&state, vec![5, 4, 3]);
-        let r = facets.top_children(10, "Year", &[]).unwrap();
+        let r = facets.get_top_children(10, "Year", &[]).unwrap().unwrap();
         assert_eq!(
-            r.value, 5,
+            r.value,
+            int(5),
             "the dim's own count, not the 7 its children sum to"
         );
         assert_eq!(
@@ -2249,53 +2328,56 @@ mod tests {
         let state =
             FacetsState::new(vec![label("Tag", &["x"]), label("Tag", &["y"])], config).unwrap();
         let facets = SortedSetFacetCounts::new(&state, vec![2, 1]);
-        assert_eq!(facets.top_children(10, "Tag", &[]).unwrap().value, -1);
-        assert_eq!(facets.all_children("Tag", &[]).unwrap().value, -1);
+        assert_eq!(
+            facets
+                .get_top_children(10, "Tag", &[])
+                .unwrap()
+                .unwrap()
+                .value,
+            int(-1)
+        );
+        assert_eq!(
+            facets.get_all_children("Tag", &[]).unwrap().unwrap().value,
+            int(-1)
+        );
     }
 
     #[test]
-    #[should_panic(expected = "topN must be > 0 (got: 0)")]
-    fn top_children_rejects_a_zero_top_n() {
+    fn a_zero_top_n_is_rejected_everywhere() {
         let state = flat_state();
-        SortedSetFacetCounts::new(&state, vec![1, 1, 1]).top_children(0, "Author", &[]);
+        let facets = SortedSetFacetCounts::new(&state, vec![1, 1, 1]);
+        let want = "topN must be > 0 (got: 0)";
+        assert_eq!(ia_message(facets.get_top_children(0, "Author", &[])), want);
+        assert_eq!(ia_message(facets.get_all_dims(0)), want);
+        assert_eq!(ia_message(facets.get_top_dims(0, 5)), want);
+        assert_eq!(ia_message(facets.get_top_dims(5, 0)), want);
     }
 
     #[test]
-    #[should_panic(expected = "topN must be > 0 (got: 0)")]
-    fn all_dims_rejects_a_zero_top_n() {
+    fn a_path_under_a_flat_dim_is_an_error() {
         let state = flat_state();
-        SortedSetFacetCounts::new(&state, vec![1, 1, 1]).all_dims(0);
+        let facets = SortedSetFacetCounts::new(&state, vec![1, 1, 1]);
+        assert!(ia_message(facets.get_top_children(10, "Author", &["Bob"]))
+            .contains("path should be 0 length"));
     }
 
     #[test]
-    #[should_panic(expected = "topN must be > 0 (got: 0)")]
-    fn top_dims_rejects_a_zero_top_n() {
-        let state = flat_state();
-        SortedSetFacetCounts::new(&state, vec![1, 1, 1]).top_dims(0, 5);
-    }
-
-    #[test]
-    #[should_panic(expected = "path should be 0 length")]
-    fn a_path_under_a_flat_dim_is_a_caller_bug() {
-        let state = flat_state();
-        SortedSetFacetCounts::new(&state, vec![1, 1, 1]).top_children(10, "Author", &["Bob"]);
-    }
-
-    #[test]
-    #[should_panic(expected = "is not configured as hierarchical, path must be length=1")]
     fn specific_value_on_a_flat_dim_needs_exactly_one_component() {
         let state = flat_state();
-        SortedSetFacetCounts::new(&state, vec![1, 1, 1]).specific_value("Author", &["a", "b"]);
+        let facets = SortedSetFacetCounts::new(&state, vec![1, 1, 1]);
+        assert!(ia_message(facets.get_specific_value("Author", &["a", "b"]))
+            .contains("is not configured as hierarchical, path must be length=1"));
     }
 
     #[test]
-    fn specific_value_rejects_an_unencodable_path_as_not_found() {
+    fn specific_value_rejects_an_unencodable_path() {
         let mut config = FacetsConfig::new();
         config.set_hierarchical("Path", true);
         let state = FacetsState::new(vec![label("Path", &[])], config).unwrap();
         let facets = SortedSetFacetCounts::new(&state, vec![1]);
-        // An empty component cannot be encoded, so it names no ordinal.
-        assert_eq!(facets.specific_value("Path", &[""]), -1);
+        // An empty component cannot be encoded: Java's `pathToString` throws.
+        assert!(facets.get_specific_value("Path", &[""]).is_err());
+        assert!(facets.get_all_children("Path", &[""]).is_err());
     }
 
     #[test]
@@ -2304,18 +2386,22 @@ mod tests {
         //         Path  a  a/b  a/c  d  d/e
         let counts = vec![6, 4, 3, 1, 2, 2];
         let facets = SortedSetFacetCounts::new(&state, counts);
-        let top = facets.top_children(10, "Path", &[]).unwrap();
-        assert_eq!(top.value, 6, "a hierarchical dim reports its own ordinal");
+        let top = facets.get_top_children(10, "Path", &[]).unwrap().unwrap();
+        assert_eq!(
+            top.value,
+            int(6),
+            "a hierarchical dim reports its own ordinal"
+        );
         assert_eq!(
             top.label_values
                 .iter()
-                .map(|lv| (lv.label.as_str(), lv.count))
+                .map(|lv| (lv.label.as_str(), lv.value))
                 .collect::<Vec<_>>(),
-            vec![("a", 4), ("d", 2)]
+            vec![("a", int(4)), ("d", int(2))]
         );
-        let under_a = facets.all_children("Path", &["a"]).unwrap();
+        let under_a = facets.get_all_children("Path", &["a"]).unwrap().unwrap();
         assert_eq!(under_a.path, vec!["a"]);
-        assert_eq!(under_a.value, 4);
+        assert_eq!(under_a.value, int(4));
         assert_eq!(
             under_a
                 .label_values
@@ -2324,9 +2410,18 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["b", "c"]
         );
-        assert_eq!(facets.specific_value("Path", &["a", "b"]), 3);
-        assert_eq!(facets.specific_value("Path", &["a", "zz"]), -1);
-        assert!(facets.top_children(10, "Path", &["zz"]).is_none());
+        assert_eq!(
+            facets.get_specific_value("Path", &["a", "b"]).unwrap(),
+            int(3)
+        );
+        assert_eq!(
+            facets.get_specific_value("Path", &["a", "zz"]).unwrap(),
+            int(-1)
+        );
+        assert!(facets
+            .get_top_children(10, "Path", &["zz"])
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -2344,11 +2439,14 @@ mod tests {
         .unwrap();
         // Author 5, Tag -1 (multi-valued, no dim count), Zed 5.
         let facets = SortedSetFacetCounts::new(&state, vec![5, 9, 5]);
-        let all = facets.all_dims(10);
-        let dims: Vec<(&str, i64)> = all.iter().map(|r| (r.dim.as_str(), r.value)).collect();
-        assert_eq!(dims, vec![("Author", 5), ("Zed", 5), ("Tag", -1)]);
+        let all = facets.get_all_dims(10).unwrap();
+        let dims: Vec<(&str, FacetValue)> = all.iter().map(|r| (r.dim.as_str(), r.value)).collect();
+        assert_eq!(
+            dims,
+            vec![("Author", int(5)), ("Zed", int(5)), ("Tag", int(-1))]
+        );
         // `getTopDims` is `getAllDims` truncated.
-        let top = facets.top_dims(2, 10);
+        let top = facets.get_top_dims(2, 10).unwrap();
         assert_eq!(top.len(), 2);
         assert_eq!(top[0].dim, "Author");
     }
@@ -2361,9 +2459,13 @@ mod tests {
         )
         .unwrap();
         let facets = SortedSetFacetCounts::new(&state, vec![1, 3, 2]);
-        let r = facets.top_children(2, "D", &[]).unwrap();
+        let r = facets.get_top_children(2, "D", &[]).unwrap().unwrap();
         assert_eq!(r.child_count, 3);
-        assert_eq!(r.value, 6, "value sums every non-zero child, not the top 2");
+        assert_eq!(
+            r.value,
+            int(6),
+            "value sums every non-zero child, not the top 2"
+        );
         assert_eq!(
             r.label_values
                 .iter()
@@ -2374,7 +2476,8 @@ mod tests {
         // `getAllChildren` is ordinal order, not count order.
         assert_eq!(
             facets
-                .all_children("D", &[])
+                .get_all_children("D", &[])
+                .unwrap()
                 .unwrap()
                 .label_values
                 .iter()
@@ -2556,7 +2659,8 @@ mod tests {
             vec!["c", "a"]
         );
         assert_eq!(result.child_count, 2);
-        assert_eq!(result.value, 8);
+        assert_eq!(result.value, FacetValue::Int(8));
+        assert_eq!(result.dim, "");
     }
 
     #[test]
@@ -2570,9 +2674,9 @@ mod tests {
             result
                 .label_values
                 .iter()
-                .map(|f| f.ord)
+                .map(|f| f.label.as_str())
                 .collect::<Vec<_>>(),
-            vec![1, 0, 2]
+            vec!["y", "x", "z"]
         );
     }
 
@@ -2582,7 +2686,13 @@ mod tests {
         let result = top_children(facets, 1).unwrap();
         assert_eq!(result.label_values.len(), 1);
         assert_eq!(result.child_count, 3);
-        assert_eq!(result.value, 6);
+        assert_eq!(result.value, FacetValue::Int(6));
+    }
+
+    #[test]
+    fn a_count_past_i32_saturates() {
+        let result = top_children(vec![fc(0, "a", u64::MAX)], 1).unwrap();
+        assert_eq!(result.label_values[0].value, FacetValue::Int(i32::MAX));
     }
 
     #[test]
@@ -2608,11 +2718,11 @@ mod tests {
             result
                 .label_values
                 .iter()
-                .map(|f| (f.ord, f.count))
+                .map(|f| (f.label.as_str(), f.value))
                 .collect::<Vec<_>>(),
-            vec![(0, 3), (2, 5)]
+            vec![("a", FacetValue::Int(3)), ("c", FacetValue::Int(5))]
         );
-        assert_eq!(result.value, 8);
+        assert_eq!(result.value, FacetValue::Int(8));
         assert_eq!(result.child_count, 2);
     }
 
@@ -2633,7 +2743,7 @@ mod tests {
         assert_eq!(labels.len(), 2);
         assert!(labels.contains(&"red") && labels.contains(&"blue"));
         assert!(!labels.contains(&"green"));
-        assert_eq!(result.value, 2);
+        assert_eq!(result.value, FacetValue::Int(2));
         assert_eq!(result.child_count, 2);
     }
 

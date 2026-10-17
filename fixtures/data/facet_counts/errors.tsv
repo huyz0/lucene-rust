@@ -1,0 +1,17 @@
+labels_out_of_order	IllegalArgumentException	docs out of order: previous docId=5 current docId=4
+labels_out_of_order_dim	IllegalArgumentException	docs out of order: previous docId=5 current docId=4
+labels_missing_dim	IllegalArgumentException	Category ordinal not found for facet dimension: Nope
+assoc_hierarchical	IllegalArgumentException	AssociationFacetField cannot be hierarchical (dim="H")
+assoc_require_dim_count	IllegalArgumentException	AssociationFacetField cannot requireDimCount (dim="R")
+assoc_not_multivalued	IllegalArgumentException	dimension "A" is not multiValued, but it appears more than once in this document
+assoc_first_int	none	
+assoc_mix_float	IllegalArgumentException	mixing incompatible types of AssociationFacetField (int and float) in indexed field "$facets"; use FacetsConfig to change the indexFieldName for each dimension
+assoc_mix_float_again	IllegalArgumentException	mixing incompatible types of AssociationFacetField (int and float) in indexed field "$facets"; use FacetsConfig to change the indexFieldName for each dimension
+assoc_first_float	none	
+assoc_mix_int	IllegalArgumentException	mixing incompatible types of AssociationFacetField (float and int) in indexed field "$facets"; use FacetsConfig to change the indexFieldName for each dimension
+assoc_no_taxo_writer	IllegalStateException	a non-null TaxonomyWriter must be provided when indexing FacetField or AssociationFacetField
+assoc_empty_path	IllegalArgumentException	path must have at least one element
+assoc_empty_label	IllegalArgumentException	empty or null components not allowed; got: 
+assoc_empty_dim	IllegalArgumentException	empty or null components not allowed; got: 
+int_to_string	IntAssociationFacetField(dim=A path=[a, b] value=-7)
+float_to_string	FloatAssociationFacetField(dim=A path=[a] value=1.5)

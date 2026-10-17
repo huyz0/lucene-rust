@@ -167,6 +167,20 @@ case "$BENCH" in
     SRC=benchmarks/micro/java/TaxonomyMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-facet" ;;
+  facet_counts)
+    # M13 T13.4b's pair (FacetCountsMicro.java / micro_facet_counts.rs):
+    # FacetsCollector, FastTaxonomyFacetCounts (dense and sparse),
+    # getTopChildren and the association sums over the 200 000-document index
+    # and taxonomy FacetCountsMicro builds (once) under
+    # benchmarks/.corpus/facet-counts.
+    MAIN=FacetCountsMicro
+    SRC=benchmarks/micro/java/FacetCountsMicro.java
+    EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-facet"
+    INDEX="${INDEX_ARG:-$PWD/benchmarks/.corpus/facet-counts}"
+    PREP_ARGS=(build "$INDEX")
+    JAVA_ARGS=(run)
+    NEEDS_INDEX=1 ;;
   # The document API's indexing: IndexWriter.addDocument over three document shapes.
   doc_index)
     MAIN=DocIndexMicro

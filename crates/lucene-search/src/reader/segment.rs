@@ -508,6 +508,11 @@ impl SortedNumericDocValues for SegSortedNumeric<'_> {
         self.upto += 1;
         Ok(v)
     }
+    fn take_values(&mut self) -> Option<&[i64]> {
+        let rest = self.values.get(self.upto..).unwrap_or_default();
+        self.upto = self.values.len();
+        Some(rest)
+    }
 }
 
 /// A SORTED_SET field, in either on-disk shape.

@@ -191,6 +191,35 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
     `FacetsCollector`/`FacetsCollectorManager`, `TaxonomyFacets`, `FastTaxonomyFacetCounts`,
     `IntTaxonomyFacets`/`FloatTaxonomyFacets`, the association fields and aggregations,
     `TaxonomyFacetLabels`, `FacetCountsWithFilterQuery`, `FacetUtils`.
+    **Done**: `GenFacetCounts` -> `facet_counts_fixtures.rs` (a 2,400-document multi-segment index
+    with deletions; every public `Facets` call of the counts, both association facets (SUM/MAX, by
+    field and by `DoubleValuesSource`) and `MultiFacets`, over match-all, selective and empty
+    queries, dense and sparse; `FacetsCollectorManager.search`/`searchAfter`;
+    `TaxonomyFacetLabels`; `FacetsConfig.build` of associations; Java's refusals), plus unit tests
+    after `TestTaxonomyFacetCounts`, `TestTaxonomyFacetAssociations`, `TestTaxonomyFacetLabels`,
+    `TestMultipleIndexFields` and `TestFacetsConfig`. The earlier sorted-set and range code returns the shared
+    `FacetResult` (values are `FacetValue`s) and `SortedSetFacetCounts` implements `Facets`; the
+    FFI's primitives are unchanged. Java's three taxonomy
+    base classes are one `TaxonomyFacets` told apart by `Aggregation`. Bench
+    `scripts/bench-micro.sh --bench facet_counts` (`FacetCountsMicro.java` / `micro_facet_counts.rs`:
+    200,000 documents in four segments, a 2,000-author flat dim, a three-level hierarchy, a
+    multi-valued tag dim, int and float associations; 3 reps, noise floor 1.09x):
+    `facet_count_rare` 1.28x (sparse counts over 1% of the documents), `facet_top_children` 0.91~
+    (from 0.55x), `facet_count_all` 0.86x (from 0.65x), `facet_int_assoc_sum` 0.70x and
+    `facet_float_assoc_sum` 0.70x (from 0.59x/0.65x), `facet_collect_all` 0.27x. The optimisation
+    pass: the hits walked directly (`facet_utils::for_each_hit`, led by the cheaper side as
+    `ConjunctionDISI` is), a segment's decoded values taken in bulk
+    (`SortedNumericDocValues::take_values`), the dense counts and association arrays borrowed once
+    per segment, and a full queue's least count short-circuiting `insertWithOverflow`. Why the rest
+    stays under 1.0: what is left in the three counting cases is the doc-values decode itself --
+    `SortedNumericReader::values` and `BinaryReader::value`, two `DirectMonotonic` address reads
+    per document re-deriving their block each call, where Lucene holds the `LongValues` -- which is
+    `lucene-codecs`' area, not the facet module's; and `facet_collect_all` is the generic
+    `IndexSearcher` driver (a must `MatchAllDocsQuery` clause through `search_slice_collector` and
+    `PerSegment`, a dispatched call per hit) against Lucene's `MatchAllDocsQuery` bulk scorer, while
+    `FacetsCollector`'s own per-hit work is one bit set. Both attributions are by reading the code: the
+    container has no profiler, and no measurement isolates the two yet. Both are recorded for the codecs and
+    searcher passes rather than worked around here.
   - **T13.4c** — drill-down: `DrillDownQuery`, `FacetQuery`, `MultiFacetQuery`, `DrillSideways`,
     `DrillSidewaysQuery`, `DrillSidewaysScorer`.
   - **T13.4d** — the rest of the package: `LongValueFacetCounts`, `StringValueFacetCounts`
@@ -232,7 +261,7 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
 - **T13.6** — Plugin wiring for the OpenSearch features above.
 
 **Status by task:** T13.1 done; T13.5 `MemoryIndex` done, `monitor` in
-progress (T13.5a-c done; T13.5d done -- batches, the four matchers, partitioned matching, persistence verified both ways against Lucene, the regexp handler and debug()); T13.2 ported and benchmarked (`uh_analysis`/`uh_tv` 0.36x, reason above); T13.3 done; T13.4a done (T13.4b-d not started); T13.6
+progress (T13.5a-c done; T13.5d done -- batches, the four matchers, partitioned matching, persistence verified both ways against Lucene, the regexp handler and debug()); T13.2 ported and benchmarked (`uh_analysis`/`uh_tv` 0.36x, reason above); T13.3 done; T13.4a-b done (T13.4c-d not started; T13.4b's counting below 1.0 in four of six cases, reasons above); T13.6
 not started. M13 closes when all four acceptance criteria hold.
 
 ## Acceptance criteria

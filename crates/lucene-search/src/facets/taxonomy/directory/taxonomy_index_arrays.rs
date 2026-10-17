@@ -98,7 +98,9 @@ impl ChunkedIntArray {
 
     fn len(&self) -> usize {
         match self.values.last() {
-            Some(last) => (self.values.len().saturating_sub(1) << CHUNK_SIZE_BITS).saturating_add(last.len()),
+            Some(last) => {
+                (self.values.len().saturating_sub(1) << CHUNK_SIZE_BITS).saturating_add(last.len())
+            }
             None => 0,
         }
     }
