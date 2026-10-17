@@ -163,7 +163,43 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
     noise floor), `spell_index` **0.42x** -- the `IndexWriter` document API's cost (per-document field registration and
     inversion), owed by the writer: the explicit-document flush now hashes terms (`TermHash`) instead of a `BTreeMap`
     per occurrence, from 0.29x.
-- **T13.4** — Taxonomy facets and drill-sideways.
+- **T13.4** — Taxonomy facets and drill-sideways, four sub-tasks in order (`lucene-facet`, 80 classes
+  `todo:M13` in `docs/inventory/lucene-facet.tsv`; the existing `crates/lucene-search/src/facets.rs`
+  holds the earlier sorted-set and range subset, folded into the real classes as each sub-task lands):
+  - **T13.4a** — the taxonomy index: `FacetLabel`, the `writercache` package, `TaxonomyWriter`,
+    `DirectoryTaxonomyWriter`, `DirectoryTaxonomyReader`, `TaxonomyIndexArrays`,
+    `ParallelTaxonomyArrays`, `Consts`, `FacetField`, and `FacetsConfig.build` for taxonomy
+    dimensions. Acceptance: Lucene reads a Rust-written taxonomy index and the Rust reader reads a
+    Lucene-written one (`CheckIndex` plus ordinals, parents and children equal).
+    **Done**: `GenTaxonomy` -> `taxonomy_fixtures.rs` (Java's taxonomies read; Rust's writer replaying
+    Java's calls under four caches to the same ordinals and dump (the segment layout is not compared); `addTaxonomy`,
+    `replaceTaxonomy`; `FacetsConfig.build`'s documents field for field; label hashes and order;
+    the refusals), and `write_taxonomy_fixture` -> `VerifyTaxonomy` (`scripts/verify-write-path.sh`:
+    CheckIndex, Lucene's reader dumps what this port's read, and Lucene's writer appends to the
+    Rust-written index keeping every ordinal and the epoch). Found on the way: `addIndexes` refused a
+    compound-file source (`check_addable` read the segment's field infos outside its `.cfs`).
+    Benchmark (`--bench taxonomy`, two runs, noise floor 1.39x/1.41x on a loaded host):
+    `taxo_add_new` 4.32x/3.92x, `taxo_add_lookup` 1.80x/1.93x, `taxo_ordinal` 2.88x/2.95x,
+    `taxo_path` 6.11x/5.14x, `taxo_add_cached` 1.05~/1.09~ (inside the noise floor), from 0.40x:
+    `FacetLabel` now caches each component's hashes as Java's `String` caches `hashCode`, a clone
+    compares equal by identity (Java's `HashMap` finds the key it was given by `==`), the LRU maps
+    hash with `FxHasher`, and the unbounded cache's `get` no longer reorders (Java builds a plain
+    `HashMap` for it). Partial: `FacetsConfig.build` without `AssociationFacetField` (T13.4b);
+    `SearcherTaxonomyManager`, `ReindexingEnrichedDirectoryTaxonomyWriter`, `TaxonomyMergeUtils`,
+    `OrdinalMappingLeafReader` and `PrintTaxonomyStats` stay with T13.4d.
+  - **T13.4b** — counting: `Facets`, `MultiFacets`, `FacetResult`/`LabelAndValue`,
+    `FacetsCollector`/`FacetsCollectorManager`, `TaxonomyFacets`, `FastTaxonomyFacetCounts`,
+    `IntTaxonomyFacets`/`FloatTaxonomyFacets`, the association fields and aggregations,
+    `TaxonomyFacetLabels`, `FacetCountsWithFilterQuery`, `FacetUtils`.
+  - **T13.4c** — drill-down: `DrillDownQuery`, `FacetQuery`, `MultiFacetQuery`, `DrillSideways`,
+    `DrillSidewaysQuery`, `DrillSidewaysScorer`.
+  - **T13.4d** — the rest of the package: `LongValueFacetCounts`, `StringValueFacetCounts`
+    (`StringDocValuesReaderState`), the `range` counters and `DynamicRangeUtil`, `rangeonrange`,
+    `facetset`, the sorted-set classes still `todo`, `Multi{Long,Double}Values[Source]`,
+    `RandomSamplingFacetsCollector`, `OrdinalMappingLeafReader`, `TaxonomyMergeUtils`,
+    `SearcherTaxonomyManager`, `PrintTaxonomyStats`, `ReindexingEnrichedDirectoryTaxonomyWriter`.
+  Each sub-task: fixture-first (a `Gen*.java` writes the index and the expected results), then the
+  port, tests, the ledger and inventory rows, and a benchmark pair for the counting paths.
 - **T13.5** — `MemoryIndex` and `monitor`. `MemoryIndex` is ported
   (`GenMemoryIndex`: 16 documents under eight configurations, every query's
   score bit for bit, `toStringDebug`, the refusals), searched in memory over
@@ -196,7 +232,7 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
 - **T13.6** — Plugin wiring for the OpenSearch features above.
 
 **Status by task:** T13.1 done; T13.5 `MemoryIndex` done, `monitor` in
-progress (T13.5a-c done; T13.5d done -- batches, the four matchers, partitioned matching, persistence verified both ways against Lucene, the regexp handler and debug()); T13.2 ported and benchmarked (`uh_analysis`/`uh_tv` 0.36x, reason above); T13.3 done; T13.4 and T13.6
+progress (T13.5a-c done; T13.5d done -- batches, the four matchers, partitioned matching, persistence verified both ways against Lucene, the regexp handler and debug()); T13.2 ported and benchmarked (`uh_analysis`/`uh_tv` 0.36x, reason above); T13.3 done; T13.4a done (T13.4b-d not started); T13.6
 not started. M13 closes when all four acceptance criteria hold.
 
 ## Acceptance criteria

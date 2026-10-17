@@ -354,3 +354,35 @@ fn add_indexes_limits_and_generations() {
     assert_eq!(committed_ids(&only), ["u0", "u1"]);
     assert_clean(&only);
 }
+
+/// A compound source segment's field infos are read through its `.cfs`:
+/// it is added (and checked against this writer's schema) like any other.
+#[test]
+fn add_indexes_reads_a_compound_source() {
+    let src_tmp = TempDir::new("add-cfs-src");
+    let src = FsDirectory::open(&src_tmp);
+    let mut w = writer(&src, DocValuesType::Numeric);
+    w.set_use_compound_file(true);
+    w.add_document(doc("c0", 1)).unwrap();
+    w.commit().unwrap();
+    drop(w);
+    assert!(src.list_all().unwrap().iter().any(|f| f.ends_with(".cfs")));
+
+    let tmp = TempDir::new("add-cfs-dst");
+    let dir = FsDirectory::open(&tmp);
+    let mut w = writer(&dir, DocValuesType::Numeric);
+    w.add_indexes(&[&src]).unwrap();
+    w.commit().unwrap();
+    assert_eq!(w.segment_infos().segments.len(), 1);
+    assert_clean(&dir);
+    drop(w);
+
+    let bad_tmp = TempDir::new("add-cfs-bad");
+    let bad = FsDirectory::open(&bad_tmp);
+    let mut w = writer(&bad, DocValuesType::Sorted);
+    let err = w.add_indexes(&[&src]).unwrap_err();
+    assert!(
+        matches!(err, Error::AddIndexes(ref m) if m.contains("doc values type")),
+        "{err:?}"
+    );
+}

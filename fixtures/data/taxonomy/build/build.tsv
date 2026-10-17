@@ -1,0 +1,121 @@
+0	$facets	string	AuthorBob
+0	$facets	string	Author
+0	$facets	string	Publish Date20101015
+0	$facets	string	Publish Date
+0	$facets	string	Publish Date2010
+0	$facets	string	Publish Date201010
+0	$facets	string	Tagsx
+0	$facets	string	Tags
+0	$facets	string	Tagsy
+0	$facets	string	Tags
+0	$facets	sndv	2
+0	$facets	sndv	6
+0	$facets	sndv	8
+0	$facets	sndv	9
+0	id	string_stored	d0
+1	$facets	string	Catabc
+1	$facets	string	Cat
+1	$facets	string	Cata
+1	$facets	string	Catab
+1	$facets	string	Catad
+1	$facets	string	Cat
+1	$facets	string	Cata
+1	$facets	string	Year2010
+1	$facets	string	Year
+1	$facets	string	Year2012
+1	$facets	string	Year
+1	$facets	sndv	11
+1	$facets	sndv	12
+1	$facets	sndv	13
+1	$facets	sndv	14
+1	$facets	sndv	15
+1	$facets	sndv	16
+1	$facets	sndv	17
+1	$loc	string	Loceufrparis
+1	$loc	string	Loc
+1	$loc	string	Loceu
+1	$loc	string	Loceufr
+1	$loc	string	Pricecheap
+1	$loc	string	Price
+1	$loc	sndv	18
+1	$loc	sndv	19
+1	$loc	sndv	20
+1	$loc	sndv	21
+1	$loc	sndv	23
+1	id	string_stored	d1
+2	$facets	string	Sizesml
+2	$facets	string	Size
+2	$facets	string	Shaperoundsmalltiny
+2	$facets	string	Shaperound
+2	$facets	string	Shaperoundsmall
+2	$facets	string	Flatab
+2	$facets	sndv	27
+2	$facets	sndv	31
+2	$facets	sndv	34
+2	$color	sndv	36
+2	id	string_stored	d2
+3	$z9	string	Z1v
+3	$z9	string	Z1
+3	$z9	sndv	38
+3	$facets	string	AuthorLisa
+3	$facets	string	Author
+3	$facets	sndv	39
+3	$€	string	E1€¢
+3	$€	string	E1
+3	$€	string	E1€
+3	$€	string	E1€£
+3	$€	string	E1
+3	$€	string	E1€
+3	$€	sndv	41
+3	$€	sndv	42
+3	$€	sndv	43
+3	$a	string	A1v
+3	$a	string	A1
+3	$a	sndv	45
+3	$b	string	B1v
+3	$b	string	B1
+3	$b	sndv	47
+3	$facets	ssdv	Kind
+3	$facets	ssdv	Kindk1
+3	$facets	string	Kindk1
+3	$facets	string	Kind
+3	$facets	ssdv	Kind
+3	$facets	ssdv	Kindk2
+3	$facets	string	Kindk2
+3	$facets	string	Kind
+3	$ssdv	ssdv	Brandacme
+3	$ssdv	string	Brandacme
+3	$ssdv	string	Brand
+3	$ssdv	ssdv	Region
+3	$ssdv	ssdv	Regioneu
+3	$ssdv	ssdv	Regioneude
+3	$ssdv	string	Regioneude
+3	$ssdv	string	Region
+3	$ssdv	string	Regioneu
+3	id	string_stored	d3
+4	$facets	string	AuthorBob
+4	$facets	string	Author
+4	$facets	string	Catabc
+4	$facets	string	Cat
+4	$facets	string	Cata
+4	$facets	string	Catab
+4	$facets	string	Catab
+4	$facets	string	Cat
+4	$facets	string	Cata
+4	$facets	string	sepdimab
+4	$facets	string	sepdim
+4	$facets	string	Ünïcødé😀
+4	$facets	string	Ünïcødé
+4	$facets	sndv	2
+4	$facets	sndv	11
+4	$facets	sndv	12
+4	$facets	sndv	13
+4	$facets	sndv	49
+4	$facets	sndv	51
+4	$loc	string	Loceufr
+4	$loc	string	Loc
+4	$loc	string	Loceu
+4	$loc	sndv	18
+4	$loc	sndv	19
+4	$loc	sndv	20
+5	id	string_stored	only

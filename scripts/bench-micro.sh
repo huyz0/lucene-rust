@@ -161,6 +161,12 @@ case "$BENCH" in
     SRC=benchmarks/micro/java/SpellMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-suggest" ;;
+  # M13 T13.4a: the facet taxonomy's writer (addCategory) and reader lookups.
+  taxonomy)
+    MAIN=TaxonomyMicro
+    SRC=benchmarks/micro/java/TaxonomyMicro.java
+    EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-facet" ;;
   # The document API's indexing: IndexWriter.addDocument over three document shapes.
   doc_index)
     MAIN=DocIndexMicro
