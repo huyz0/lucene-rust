@@ -137,6 +137,12 @@ case "$BENCH" in
     SRC=benchmarks/micro/java/HighlightMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-memory lucene-highlighter" ;;
+  # M13 T13.3c: AnalyzingSuggester and FuzzySuggester, lookups and builds.
+  analyzing)
+    MAIN=AnalyzingSuggestMicro
+    SRC=benchmarks/micro/java/AnalyzingSuggestMicro.java
+    EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-analysis-common lucene-suggest" ;;
   # M13 T13.3b: WFSTCompletionLookup and FSTCompletionLookup, lookups and builds.
   fst_lookup)
     MAIN=FstLookupMicro
