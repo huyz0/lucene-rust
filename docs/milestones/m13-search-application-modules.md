@@ -109,7 +109,7 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
     (the dictionaries and `UnsortedInputIterator` have Java fixtures, `GenSuggestFst.java`:
     `FileDictionary`, `DocumentDictionary`, `DocumentValueSourceDictionary`, `java.util.Random`).
     Owed: `BitsProducer`.
-  - **T13.3b** — TST and FST lookups, **ported; the WFST/FSTCompletion benchmark pair is owed**. `TSTLookup` (792 queries, `get`, and
+  - **T13.3b** — TST and FST lookups, **done**. Benchmark pair `fst_lookup` vs Lucene 10.5.0: `wfst_lookup` 1.29x (inside the noise floor), `fstc_lookup` 1.50x, `wfst_build` 2.16x, `fstc_build` 2.27x. `TSTLookup` (792 queries, `get`, and
     `store()` bytes equal Lucene's, `GenSuggest.java`); `WFSTCompletionLookup` and
     `FSTCompletionLookup` (396 and 792 lookups, `store()` bytes equal Lucene's and Lucene's
     bytes load, `GenSuggestFst.java`). Sorting is in memory, so `ExternalRefSorter` is `InMemorySorter`.
