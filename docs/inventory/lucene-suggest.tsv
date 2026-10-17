@@ -29,21 +29,21 @@ search/suggest/analyzing/SuggestStopFilter	ported	crates/lucene-search/src/sugge
 search/suggest/analyzing/SuggestStopFilterFactory	ported	crates/lucene-search/src/suggest/suggest_stop_factory.rs::SuggestStopFilterFactory
 search/suggest/BitsProducer	ported	crates/lucene-search/src/suggest/completion_query.rs::BitsProducer
 search/suggest/BufferedInputIterator	ported	crates/lucene-search/src/suggest/input.rs::BufferedInputIterator
-search/suggest/document/Completion101PostingsFormat	todo:M13	CompletionPostingsFormat for org.apache.lucene.backward_codecs.lucene103.Lucene103PostingsFormat.
+search/suggest/document/Completion101PostingsFormat	ported	crates/lucene-codecs/src/per_field_postings.rs::COMPLETION_FORMAT_NAMES -- M13: read, over Lucene101 (10.1-10.2) and Lucene103 (10.3); BwcCompletion fixtures from 10.2.2 and 10.3.2
 search/suggest/document/Completion104PostingsFormat	ported	crates/lucene-codecs/src/per_field_postings.rs::Lucene104PostingsFormat::completion104
-search/suggest/document/Completion50PostingsFormat	todo:M13	org.apache.lucene.search.suggest.document.CompletionPostingsFormat for org.apache.lucene.backward_codecs.lucene50.Lucene50PostingsFormat.
-search/suggest/document/Completion84PostingsFormat	todo:M13	org.apache.lucene.search.suggest.document.CompletionPostingsFormat for org.apache.lucene.backward_codecs.lucene84.Lucene84PostingsFormat.
-search/suggest/document/Completion90PostingsFormat	todo:M13	org.apache.lucene.search.suggest.document.CompletionPostingsFormat for org.apache.lucene.backward_codecs.lucene90.Lucene90PostingsFormat.
-search/suggest/document/Completion912PostingsFormat	todo:M13	org.apache.lucene.search.suggest.document.CompletionPostingsFormat for org.apache.lucene.backward_codecs.lucene912.Lucene912PostingsFormat.
-search/suggest/document/Completion99PostingsFormat	todo:M13	org.apache.lucene.search.suggest.document.CompletionPostingsFormat for org.apache.lucene.backward_codecs.lucene99.Lucene99PostingsFormat.
+search/suggest/document/Completion50PostingsFormat	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), and 9.x could not write it, so no segment such an index holds was written with it.
+search/suggest/document/Completion84PostingsFormat	not-needed	Lucene 8.x-or-earlier format: neither Lucene 10 nor OpenSearch 3.x opens an index created by Lucene 8 (IndexFormatTooOldException), and 9.x could not write it, so no segment such an index holds was written with it.
+search/suggest/document/Completion90PostingsFormat	ported	crates/lucene-codecs/src/per_field_postings.rs::COMPLETION_FORMAT_NAMES -- M13: read; BwcCompletion fixture from 9.0.0
+search/suggest/document/Completion912PostingsFormat	ported	crates/lucene-codecs/src/per_field_postings.rs::COMPLETION_FORMAT_NAMES -- M13: read; BwcCompletion fixture from 9.12.2
+search/suggest/document/Completion99PostingsFormat	ported	crates/lucene-codecs/src/per_field_postings.rs::COMPLETION_FORMAT_NAMES -- M13: read; BwcCompletion fixture from 9.11.1
 search/suggest/document/CompletionAnalyzer	ported	crates/lucene-search/src/suggest/completion_query.rs::CompletionAnalyzer
 search/suggest/document/CompletionFieldsConsumer	ported	crates/lucene-codecs/src/completion.rs::CompletionFilesWriter
 search/suggest/document/CompletionFieldsProducer	ported	crates/lucene-codecs/src/completion.rs::CompletionFields
-search/suggest/document/CompletionPostingsFormat	todo:M13	A PostingsFormat which supports document suggestion based on indexed SuggestFields.
+search/suggest/document/CompletionPostingsFormat	ported	crates/lucene-codecs/src/per_field_postings.rs::completion_format_of -- M13: the format name of a .cmp suffix; the files are lucene_codecs::completion, the delegate is read from the .cmp
 search/suggest/document/CompletionQuery	ported	crates/lucene-search/src/suggest/completion_query.rs::CompletionQuery
 search/suggest/document/CompletionScorer	ported	crates/lucene-search/src/suggest/document.rs::SegmentView
 search/suggest/document/CompletionsTermsReader	ported	crates/lucene-codecs/src/completion.rs::CompletionsTermsReader
-search/suggest/document/CompletionTerms	partial	crates/lucene-search/src/directory_reader.rs::SegmentReader::suggester -- M13: suggester() and the type (SegmentReader::completion_type); the min/max weight accessors are owed.
+search/suggest/document/CompletionTerms	ported	crates/lucene-search/src/directory_reader.rs::SegmentReader::completion_weights -- M13: getMinWeight/getMaxWeight; getType is SegmentReader::completion_type, suggester() SegmentReader::suggester
 search/suggest/document/CompletionTokenStream	ported	crates/lucene-search/src/suggest/suggest_field.rs::SuggestField
 search/suggest/document/CompletionWeight	ported	crates/lucene-search/src/suggest/completion_query.rs::CompletionWeight
 search/suggest/document/ContextQuery	ported	crates/lucene-search/src/suggest/completion_query.rs::ContextQuery
@@ -56,7 +56,7 @@ search/suggest/document/RegexCompletionQuery	ported	crates/lucene-search/src/sug
 search/suggest/document/SuggestField	ported	crates/lucene-search/src/suggest/suggest_field.rs::SuggestField
 search/suggest/document/SuggestIndexSearcher	ported	crates/lucene-search/src/suggest/completion_query.rs::SuggestIndexSearcher
 search/suggest/document/SuggestScoreDocPriorityQueue	ported	crates/lucene-search/src/suggest/document.rs::SuggestQueue
-search/suggest/document/TopSuggestDocs	partial	crates/lucene-search/src/suggest/document.rs::SuggestScoreDoc -- M13: SuggestScoreDoc only; the TopDocs wrapper and merge()
+search/suggest/document/TopSuggestDocs	ported	crates/lucene-search/src/suggest/document.rs::merge -- M13: merge(); the TopDocs wrapper is a Vec<SuggestScoreDoc> (totalHits = its length, EQUAL_TO)
 search/suggest/document/TopSuggestDocsCollector	ported	crates/lucene-search/src/suggest/document.rs::TopSuggestDocsCollector
 search/suggest/DocumentDictionary	ported	crates/lucene-search/src/suggest/dictionary.rs::DocumentDictionary
 search/suggest/DocumentValueSourceDictionary	ported	crates/lucene-search/src/suggest/dictionary.rs::DocumentValueSourceDictionary

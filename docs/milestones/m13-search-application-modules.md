@@ -108,7 +108,7 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
     wrapper, `BufferedInputIterator`, `SortedInputIterator` (in memory). **Done**
     (the dictionaries and `UnsortedInputIterator` have Java fixtures, `GenSuggestFst.java`:
     `FileDictionary`, `DocumentDictionary`, `DocumentValueSourceDictionary`, `java.util.Random`).
-    Owed: `BitsProducer`.
+    (`BitsProducer` came with T13.3d.)
   - **T13.3b** — TST and FST lookups, **done**. Benchmark pair `fst_lookup` vs Lucene 10.5.0: `wfst_lookup` 1.29x (inside the noise floor), `fstc_lookup` 1.50x, `wfst_build` 2.16x, `fstc_build` 2.27x. `TSTLookup` (792 queries, `get`, and
     `store()` bytes equal Lucene's, `GenSuggest.java`); `WFSTCompletionLookup` and
     `FSTCompletionLookup` (396 and 792 lookups, `store()` bytes equal Lucene's and Lucene's
@@ -142,6 +142,11 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
     context and regex cases is automaton construction (`concatenate`/`determinize`/`union`) and the
     per-start-path copies of the FST's `Vec` outputs; both are cases where Java shares the `BytesRef`.
     Written up rather than closed: a query takes 4-40 us either way.
+    **D4 done**: the completion formats of older indexes, read: `Completion90`, `Completion99`, `Completion912` and
+    `Completion101` (over `Lucene101` and `Lucene103`), each written by its own release (`gen-bwc-fixtures.sh
+    --completion`: 9.0.0, 9.11.1, 9.12.2, 10.2.2, 10.3.2), answer `GenCompletionQuery`'s 2960 queries as Lucene 10.5.0
+    does, and force-merge into `Completion104`; `CompletionTerms`' weights and `TopSuggestDocs.merge` equal Lucene's.
+    `Completion50`/`Completion84` are not needed (Lucene 8.x formats; a Lucene 8-created index does not open). **T13.3d done, and with it T13.3.**
   - **T13.3e** — `spell`, **done**: the string distances, `SuggestWord` and its queue and comparators,
     `PlainTextDictionary`, `LuceneDictionary`, `HighFrequencyDictionary`, `DirectSpellChecker`,
     `WordBreakSpellChecker` and `SpellChecker` (its n-gram index written by this port's `IndexWriter`, and Lucene's
@@ -183,7 +188,7 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
 - **T13.6** — Plugin wiring for the OpenSearch features above.
 
 **Status by task:** T13.1 done; T13.5 `MemoryIndex` done, `monitor` in
-progress (T13.5a-c done; T13.5d done -- batches, the four matchers, partitioned matching, persistence verified both ways against Lucene, the regexp handler and debug()); T13.2 ported (benchmark owed); T13.3, T13.4 and T13.6
+progress (T13.5a-c done; T13.5d done -- batches, the four matchers, partitioned matching, persistence verified both ways against Lucene, the regexp handler and debug()); T13.2 ported (benchmark owed); T13.3 done; T13.4 and T13.6
 not started. M13 closes when all four acceptance criteria hold.
 
 ## Acceptance criteria

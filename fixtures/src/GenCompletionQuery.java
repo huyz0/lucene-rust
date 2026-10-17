@@ -26,6 +26,7 @@ import org.apache.lucene.search.suggest.BitsProducer;
 import org.apache.lucene.search.suggest.document.Completion104PostingsFormat;
 import org.apache.lucene.search.suggest.document.CompletionAnalyzer;
 import org.apache.lucene.search.suggest.document.CompletionQuery;
+import org.apache.lucene.search.suggest.document.CompletionTerms;
 import org.apache.lucene.search.suggest.document.ContextQuery;
 import org.apache.lucene.search.suggest.document.ContextSuggestField;
 import org.apache.lucene.search.suggest.document.FuzzyCompletionQuery;
@@ -47,7 +48,11 @@ import org.apache.lucene.util.automaton.Operations;
  * have holes). {@code index/} is the index, {@code docs.tsv} its documents ({@code id TAB value
  * TAB weight TAB contexts}), and {@code queries.tsv} every query with Lucene's answer: {@code
  * kind TAB field TAB text TAB options TAB n TAB dedup TAB filter TAB hits}, hits {@code
- * \u001f}-separated, each {@code key \u001e doc \u001e score \u001e context}.
+ * \u001f}-separated, each {@code key \u001e doc \u001e score \u001e context}. {@code weights.tsv}
+ * is every segment's {@code CompletionTerms} min and max weight and type per field ({@code leaf
+ * TAB field TAB min TAB max TAB type}, or {@code -} for a field that is not a completion field),
+ * and {@code merges.tsv} {@code TopSuggestDocs.merge} of three answers at several sizes ({@code
+ * prefix TAB n TAB totalHits TAB relation TAB hits}).
  */
 public class GenCompletionQuery {
   static final CharArraySet STOPS = new CharArraySet(List.of("the", "of"), false);
@@ -136,8 +141,19 @@ public class GenCompletionQuery {
       w.commit();
     }
     Files.write(out.resolve("docs.tsv"), rows, StandardCharsets.UTF_8);
+    writeQueries(out);
+    System.out.println("GenCompletionQuery: ok");
+  }
 
+  /**
+   * {@code queries.tsv} for {@code out/index}: also what {@code fixtures/bwc/BwcCompletionDump}
+   * records over the same corpus written by an older release.
+   */
+  static void writeQueries(Path out) throws IOException {
+    Path index = out.resolve("index");
     StringBuilder q = new StringBuilder();
+    StringBuilder w = new StringBuilder();
+    StringBuilder m = new StringBuilder();
     try (Directory dir = FSDirectory.open(index);
         DirectoryReader reader = DirectoryReader.open(dir)) {
       if (reader.leaves().size() != 3) throw new IllegalStateException("segments");
@@ -198,9 +214,38 @@ public class GenCompletionQuery {
           run(q, s, "context-regex", "ctx", re, opts + "|even", cq);
         }
       }
+      // CompletionTerms: every segment's weights and type per field ("-": not one).
+      for (LeafReaderContext leaf : reader.leaves()) {
+        for (String field : new String[] {"suggest", "nosep", "ctx", "id"}) {
+          w.append(leaf.ord).append('\t').append(field).append('\t');
+          if (leaf.reader().terms(field) instanceof CompletionTerms ct) {
+            w.append(ct.getMinWeight()).append('\t').append(ct.getMaxWeight());
+            w.append('\t').append(ct.getType());
+          } else {
+            w.append('-');
+          }
+          w.append('\n');
+        }
+      }
+      // TopSuggestDocs.merge over three "shards", one answer from each field.
+      for (String p : new String[] {"b", "new", "n", "the", "x", "queen", "caf"}) {
+        TopSuggestDocs[] shards = {
+          s.suggest(new PrefixCompletionQuery(sep, new Term("suggest", p)), 10, false),
+          s.suggest(new PrefixCompletionQuery(nosep, new Term("nosep", p)), 5, true),
+          s.suggest(new FuzzyCompletionQuery(sep, new Term("ctx", p)), 10, false)
+        };
+        for (int n : new int[] {0, 1, 3, 10, 100}) {
+          TopSuggestDocs merged = TopSuggestDocs.merge(n, shards);
+          m.append(p).append('\t').append(n).append('\t').append(merged.totalHits.value());
+          m.append('\t').append(merged.totalHits.relation()).append('\t');
+          hits(m, merged);
+          m.append('\n');
+        }
+      }
     }
     Files.writeString(out.resolve("queries.tsv"), q.toString(), StandardCharsets.UTF_8);
-    System.out.println("GenCompletionQuery: ok");
+    Files.writeString(out.resolve("weights.tsv"), w.toString(), StandardCharsets.UTF_8);
+    Files.writeString(out.resolve("merges.tsv"), m.toString(), StandardCharsets.UTF_8);
   }
 
   /** {@code name}, {@code name:boost}, {@code prefix*:boost} or {@code *all}. */
@@ -232,16 +277,21 @@ public class GenCompletionQuery {
         TopSuggestDocs top = s.suggest(query, n, dedup);
         out.append(kind).append('\t').append(field).append('\t').append(text).append('\t');
         out.append(options).append('\t').append(n).append('\t').append(dedup ? 1 : 0).append('\t');
-        TopSuggestDocs.SuggestScoreDoc[] hits = top.scoreLookupDocs();
-        for (int i = 0; i < hits.length; i++) {
-          if (i > 0) out.append('\u001f');
-          var h = hits[i];
-          out.append(h.key).append('\u001e').append(h.doc).append('\u001e');
-          out.append(Float.floatToIntBits(h.score)).append('\u001e');
-          out.append(h.context == null ? "" : h.context);
-        }
+        hits(out, top);
         out.append('\n');
       }
+    }
+  }
+
+  /** {@code key \u001e doc \u001e score bits \u001e context}, {@code \u001f}-separated. */
+  static void hits(StringBuilder out, TopSuggestDocs top) {
+    TopSuggestDocs.SuggestScoreDoc[] hits = top.scoreLookupDocs();
+    for (int i = 0; i < hits.length; i++) {
+      if (i > 0) out.append('\u001f');
+      var h = hits[i];
+      out.append(h.key).append('\u001e').append(h.doc).append('\u001e');
+      out.append(Float.floatToIntBits(h.score)).append('\u001e');
+      out.append(h.context == null ? "" : h.context);
     }
   }
 }

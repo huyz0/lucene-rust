@@ -22,7 +22,7 @@ use lucene_analysis::miscellaneous::{
 };
 use lucene_analysis::Analyzer;
 use lucene_codecs::field_infos::IndexOptions;
-use lucene_codecs::per_field_postings::COMPLETION_FORMAT_NAME;
+use lucene_codecs::per_field_postings::{is_completion_format, PER_FIELD_FORMAT_KEY};
 use lucene_util::automaton::{
     automata, operations, Automaton, FiniteStringsIterator, LevenshteinAutomata, RegExp,
     Utf32ToUtf8, DEFAULT_DETERMINIZE_WORK_LIMIT,
@@ -869,9 +869,10 @@ fn completion_suggester(
             .field_by_name(field)
             .is_some_and(|info| {
                 info.index_options != IndexOptions::None
-                    && !info.attributes.iter().any(|(k, v)| {
-                        k == "PerFieldPostingsFormat.format" && v == COMPLETION_FORMAT_NAME
-                    })
+                    && !info
+                        .attributes
+                        .iter()
+                        .any(|(k, v)| k == PER_FIELD_FORMAT_KEY && is_completion_format(v))
             });
         if indexed_elsewhere {
             return Err(illegal(format!("{field} is not a SuggestField")));
