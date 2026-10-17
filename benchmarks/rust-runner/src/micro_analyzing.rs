@@ -19,7 +19,7 @@ use lucene_search::suggest::lookup::Lookup;
 use super::measure;
 
 /// The phrases with their weights, as an `InputIterator`.
-struct Entries<'a> {
+pub(super) struct Entries<'a> {
     rows: &'a [(String, i64)],
     next: usize,
 }
@@ -47,13 +47,13 @@ impl InputIterator for Entries<'_> {
     }
 }
 
-fn entries(rows: &[(String, i64)]) -> Entries<'_> {
+pub(super) fn entries(rows: &[(String, i64)]) -> Entries<'_> {
     Entries { rows, next: 0 }
 }
 
 /// Word prefixes of each phrase, and each phrase cut after four characters,
 /// first-seen order (`LinkedHashSet`).
-fn queries(rows: &[(String, i64)]) -> Vec<String> {
+pub(super) fn queries(rows: &[(String, i64)]) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     let mut add = |q: String| {
@@ -76,12 +76,12 @@ fn queries(rows: &[(String, i64)]) -> Vec<String> {
     out
 }
 
-fn analyzer() -> Arc<Analyzer> {
+pub(super) fn analyzer() -> Arc<Analyzer> {
     let stops: HashSet<String> = ["the", "of", "a"].iter().map(|s| s.to_string()).collect();
     Arc::new(Analyzer::standard(Some(&stops)))
 }
 
-fn lookups(name: &str, lk: &dyn Lookup, queries: &[String], w: Duration, m: Duration) {
+pub(super) fn lookups(name: &str, lk: &dyn Lookup, queries: &[String], w: Duration, m: Duration) {
     measure(name, w, m, || {
         for q in queries {
             black_box(lk.lookup(q, None, false, 5).unwrap().len());
@@ -90,16 +90,20 @@ fn lookups(name: &str, lk: &dyn Lookup, queries: &[String], w: Duration, m: Dura
     });
 }
 
+/// `GenAnalyzingSuggest`'s phrases with their weights.
+pub(super) fn phrases() -> Vec<(String, i64)> {
+    std::fs::read_to_string("fixtures/data/suggest_analyzing/phrases.tsv")
+        .unwrap()
+        .lines()
+        .map(|l| {
+            let c: Vec<&str> = l.split('\t').collect();
+            (c[0].to_string(), c[1].parse().unwrap())
+        })
+        .collect()
+}
+
 pub fn bench_analyzing(w: Duration, m: Duration) {
-    let rows: Vec<(String, i64)> =
-        std::fs::read_to_string("fixtures/data/suggest_analyzing/phrases.tsv")
-            .unwrap()
-            .lines()
-            .map(|l| {
-                let c: Vec<&str> = l.split('\t').collect();
-                (c[0].to_string(), c[1].parse().unwrap())
-            })
-            .collect();
+    let rows = phrases();
     let queries = queries(&rows);
     let mut a = AnalyzingSuggester::new(analyzer());
     a.build(&mut entries(&rows)).unwrap();

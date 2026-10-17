@@ -13,6 +13,7 @@ pub mod document;
 pub mod free_text;
 pub mod fst_completion;
 pub mod fst_util;
+pub mod infix;
 pub mod input;
 pub mod lookup;
 pub mod suggest_field;
