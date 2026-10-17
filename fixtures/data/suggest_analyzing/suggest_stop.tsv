@@ -1,0 +1,21 @@
+		0,0
+the	the,0,3,1,true	0,3
+the 		0,4
+of the	the,3,6,2,true	0,6
+of the 		0,7
+ghost of	ghost,0,5,1,false|of,6,8,1,true	0,8
+ghost of 	ghost,0,5,1,false	0,9
+ghost of the christmas	ghost,0,5,1,false|christmas,13,22,3,false	0,22
+a b a	b,2,3,2,false|a,4,5,1,true	0,5
+a b a 	b,2,3,2,false	0,6
+THE	the,0,3,1,true	0,3
+The  fast	fast,5,9,2,false	0,9
+fast of  	fast,0,4,1,false	0,9
+a	a,0,1,1,true	0,1
+a a a	a,4,5,3,true	0,5
+a a a 		0,6
+x the y of	x,0,1,1,false|y,6,7,2,false|of,8,10,1,true	0,10
+café of	café,0,4,1,false|of,5,7,1,true	0,7
+日本語 the	日,0,1,1,false|本,1,2,1,false|語,2,3,1,false|the,4,7,1,true	0,7
+the.		0,4
+the,		0,4

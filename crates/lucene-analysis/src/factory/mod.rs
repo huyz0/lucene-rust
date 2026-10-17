@@ -62,8 +62,8 @@ pub use filters_lang::*;
 pub use filters_misc::*;
 pub use filters_resource::*;
 pub use loader::{
-    decode_utf8, get_word_set, java_trim, ClasspathResourceLoader, FilesystemResourceLoader,
-    MapResourceLoader, ResourceLoader,
+    decode_utf8, get_snowball_word_set, get_word_set, java_trim, ClasspathResourceLoader,
+    FilesystemResourceLoader, MapResourceLoader, ResourceLoader,
 };
 pub use tokenizers::*;
 
