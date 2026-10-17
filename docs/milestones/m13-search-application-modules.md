@@ -142,7 +142,14 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
     context and regex cases is automaton construction (`concatenate`/`determinize`/`union`) and the
     per-start-path copies of the FST's `Vec` outputs; both are cases where Java shares the `BytesRef`.
     Written up rather than closed: a query takes 4-40 us either way.
-  - **T13.3e** — `spell`.
+  - **T13.3e** — `spell`, **done**: the string distances, `SuggestWord` and its queue and comparators,
+    `PlainTextDictionary`, `LuceneDictionary`, `HighFrequencyDictionary`, `DirectSpellChecker`,
+    `WordBreakSpellChecker` and `SpellChecker` (its n-gram index written by this port's `IndexWriter`, and Lucene's
+    read), against `GenSpellDistances`, `GenSpellChecker`, `GenSpellWordBreak` and `GenSpellCheckerIndex`, scores to the
+    bit. Benchmark (`--bench spell`): `direct_suggest` 11.66x, `word_break` 5.94x, `spell_suggest` 1.09x (inside the
+    noise floor), `spell_index` **0.42x** -- the `IndexWriter` document API's cost (per-document field registration and
+    inversion), owed by the writer: the explicit-document flush now hashes terms (`TermHash`) instead of a `BTreeMap`
+    per occurrence, from 0.29x.
 - **T13.4** — Taxonomy facets and drill-sideways.
 - **T13.5** — `MemoryIndex` and `monitor`. `MemoryIndex` is ported
   (`GenMemoryIndex`: 16 documents under eight configurations, every query's

@@ -1,0 +1,8 @@
+empty	false	false
+one	false	false	776f7264:1
+lf	false	false	616c706861:1	62657461:1	67616d6d61:1
+crlf	false	false	616c706861:1	62657461:1	:1	67616d6d61:1
+cr	false	false	616c706861:1	62657461:1	:1	67616d6d61:1
+blank_lines	false	false	:1	:1	:1	78:1	:1
+unicode	false	false	636166c3a9:1	e697a5e69cace8aa9e:1	f09f9880:1
+tabs	false	false	6109620963:1	642065:1

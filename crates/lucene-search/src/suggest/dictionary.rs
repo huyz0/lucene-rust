@@ -143,7 +143,7 @@ impl FileDictionary {
 
 /// `BufferedReader.readLine`: lines end at `\n`, `\r` or `\r\n`; a final
 /// terminator does not start another line.
-fn read_lines(text: &str) -> Vec<&str> {
+pub(crate) fn read_lines(text: &str) -> Vec<&str> {
     let mut lines = Vec::new();
     let bytes = text.as_bytes();
     let (mut start, mut i) = (0, 0);

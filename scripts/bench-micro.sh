@@ -155,6 +155,12 @@ case "$BENCH" in
     SRC=benchmarks/micro/java/InfixSuggestMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common lucene-suggest" ;;
+  # M13 T13.3e: DirectSpellChecker, SpellChecker and WordBreakSpellChecker.
+  spell)
+    MAIN=SpellMicro
+    SRC=benchmarks/micro/java/SpellMicro.java
+    EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-suggest" ;;
   # M13 T13.3b: WFSTCompletionLookup and FSTCompletionLookup, lookups and builds.
   fst_lookup)
     MAIN=FstLookupMicro
