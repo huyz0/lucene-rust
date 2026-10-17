@@ -1,0 +1,16 @@
+added_before_build	R	0
+lookup_unrefreshed	R	
+refresh	R	1
+lookup_refreshed	R	early bird<b>early</b> bird565726564
+add_no_contexts	R	3
+lookup_second_segment	R	early riser<b>early</b> riser972~nullearly start<b>early</b> start9~nullearly bird<b>early</b> bird565726564
+update	R	3
+lookup_updated	R	early bird<b>early</b> bird506532626c7565early riser<b>early</b> riser972~nullearly start<b>early</b> start9~null
+lookup_updated_blue	R	early bird<b>early</b> bird506532626c7565
+commit	R	ok
+rebuilt_count	26
+rebuilt_lookup	R	
+rebuilt_lookup_apple	R	Fast apple pieFast <b>app</b>le pie607034677265656eApple fast food<b>App</b>le fast food607035677265656e,726564Pineapple and apple juicePineapple and <b>app</b>le juice557036626c7565Big AppleBig <b>App</b>le557037726564Big Apple PieBig <b>App</b>le Pie55703234677265656e
+commit_after_close_on_build	R	ok
+refresh_after_build	R	26
+closed_count	0
