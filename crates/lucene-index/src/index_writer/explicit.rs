@@ -72,6 +72,7 @@ use super::{
     DocValuesFieldConfig, DocumentBuffer, Error, IndexWriter, IndexingConfig, PointsFieldConfig,
     Result, DOC_VALUES_FORMAT_NAME,
 };
+use crate::inverter::TermHash;
 use crate::segment_infos::SegmentCommitInfo;
 use crate::segment_writer;
 use lucene_codecs::field_infos::{DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions};
@@ -490,9 +491,14 @@ impl IndexingConfig {
             .collect();
 
         // Postings: one term dictionary per field, terms in byte order.
+        // Terms are hashed as they arrive (`TermHash`, the fast inverter's
+        // `BytesRefHash`) and sorted once per field below, rather than kept
+        // in order per occurrence.
         struct Building {
-            terms: BTreeMap<Vec<u8>, TermPostings>,
+            hash: TermHash,
+            terms: Vec<TermPostings>,
             docs: usize,
+            positions: bool,
         }
         let mut postings: BTreeMap<i32, Building> = BTreeMap::new();
         let mut norm_values: BTreeMap<i32, Vec<Option<i64>>> = BTreeMap::new();
@@ -506,18 +512,23 @@ impl IndexingConfig {
                 if inv.terms.is_empty() {
                     continue;
                 }
-                let b = postings
-                    .entry(inv.field_number)
-                    .or_insert_with(|| Building {
-                        terms: BTreeMap::new(),
+                let b = match postings.entry(inv.field_number) {
+                    std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
+                    std::collections::btree_map::Entry::Vacant(e) => e.insert(Building {
+                        hash: TermHash::new(),
+                        terms: Vec::new(),
                         docs: 0,
-                    });
+                        positions: self
+                            .explicit_field(inv.field_number)?
+                            .index_options
+                            .subsumes_positions(),
+                    }),
+                };
                 b.docs = b.docs.saturating_add(1);
                 for t in &inv.terms {
-                    let tp = b
-                        .terms
-                        .entry(t.term.clone())
-                        .or_insert_with(|| TermPostings {
+                    let (id, added) = b.hash.add(&t.term);
+                    if added {
+                        b.terms.push(TermPostings {
                             term: t.term.clone(),
                             docs: Vec::new(),
                             positions: Vec::new(),
@@ -525,9 +536,16 @@ impl IndexingConfig {
                             payload_bytes: Vec::new(),
                             payload_lengths: Vec::new(),
                         });
+                    }
+                    // `TermHash` ids are dense, in insertion order
+                    let tp = &mut b.terms[id as usize];
                     tp.docs.push((doc_id as i32, t.freq));
-                    tp.positions.push(t.positions.clone());
-                    tp.offsets.push(t.offsets.clone());
+                    // the postings writer reads positions and offsets only
+                    // for a field that indexes positions
+                    if b.positions {
+                        tp.positions.push(t.positions.clone());
+                        tp.offsets.push(t.offsets.clone());
+                    }
                     if payload_fields.contains(&inv.field_number) {
                         // Doc-major, one length per occurrence: the run
                         // `Lucene104PostingsWriter` accumulates.
@@ -554,7 +572,9 @@ impl IndexingConfig {
             .into_iter()
             .map(|(n, b)| {
                 let options = self.explicit_field(n).map(|f| f.index_options)?;
-                Ok((n, options, b.docs as i32, b.terms.into_values().collect()))
+                let mut terms = b.terms;
+                terms.sort_unstable_by(|x, y| x.term.cmp(&y.term));
+                Ok((n, options, b.docs as i32, terms))
             })
             .collect::<Result<_>>()?;
         let postings_fields: BTreeSet<i32> = term_lists.iter().map(|(n, ..)| *n).collect();
