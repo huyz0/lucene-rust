@@ -15,6 +15,7 @@
 #        scripts/gen-bwc-fixtures.sh --check
 #        scripts/gen-bwc-fixtures.sh --big <version>
 #        scripts/gen-bwc-fixtures.sh --quantized <version>
+#        scripts/gen-bwc-fixtures.sh --completion <version>
 #        scripts/gen-bwc-fixtures.sh --dump <fixture dir>
 #
 # --big writes fixtures/data/bwc-big/<version>/ instead: fixtures/bwc/BwcBig.java,
@@ -29,6 +30,15 @@
 # Lucene102(Hnsw)BinaryQuantizedVectorsFormat -- then BwcDump. Versions:
 # 9.9.2 (the scalar format's version 0), 9.12.2 (version 1: 4-bit, compressed,
 # flat), 10.2.2 (all of it plus the binary formats).
+#
+# --completion writes fixtures/data/bwc-completion/<version>/ instead:
+# fixtures/bwc/BwcCompletion.java (against that release's core, suggest and
+# analysis-common jars) writes GenCompletionQuery's corpus under the release's
+# CompletionXXPostingsFormat, then fixtures/bwc/BwcCompletionDump.java
+# (10.5.0 + backward-codecs) records GenCompletionQuery's queries over it.
+# Versions: 9.0.0 (Completion90), 9.11.1 (Completion99), 9.12.2
+# (Completion912), 10.2.2 (Completion101 over Lucene101), 10.3.2
+# (Completion101 over Lucene103).
 #
 # --dump re-runs only BwcDump over an existing fixture directory, rewriting
 # its expected.txt and nothing else (the index is not touched, so every line
@@ -52,11 +62,13 @@ cd "$(git rev-parse --show-toplevel)"
 
 VERSIONS=(9.0.0 9.1.0 9.3.0 9.4.2 9.8.0 9.11.1 9.12.2 10.0.0 10.2.2 10.4.0)
 QUANTIZED_VERSIONS=(9.9.2 9.12.2 10.2.2)
+COMPLETION_VERSIONS=(9.0.0 9.11.1 9.12.2 10.2.2 10.3.2)
 ONLY=""
 CHECK=0
 BIG=""
 QUANTIZED=""
 DUMP=""
+COMPLETION=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --only) ONLY="$2"; shift 2 ;;
@@ -64,7 +76,8 @@ while [ $# -gt 0 ]; do
     --big) BIG="$2"; shift 2 ;;
     --quantized) QUANTIZED="$2"; shift 2 ;;
     --dump) DUMP="$2"; shift 2 ;;
-    -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
+    --completion) COMPLETION="$2"; shift 2 ;;
+    -h|--help) sed -n '2,48p' "$0"; exit 0 ;;
     *) echo "gen-bwc-fixtures: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -80,6 +93,44 @@ if [ -n "$BIG" ]; then
   rm -f "$out/write.lock"
   python3 scripts/fixture-segment-ids.py fixtures/data > fixtures/segment-ids.txt
   echo "gen-bwc-fixtures: $BIG -> $out (segment-ids.txt refreshed)"
+  exit 0
+fi
+# BwcCompletionDump compiles against GenCompletionQuery (its query set) and
+# needs the suggest module beside backward-codecs.
+completion_dump() {
+  local cp="$1" work="$2" out="$3"
+  if [ ! -d "$work/cdump" ]; then
+    javac -nowarn -proc:none -cp "$cp" -d "$work/cdump" fixtures/src/GenCompletionQuery.java fixtures/bwc/BwcCompletionDump.java
+  fi
+  java "${LUCENE_FIXTURE_JVM_OPTS[@]}" -cp "$work/cdump:$cp" BwcCompletionDump "$out" 2>/dev/null
+}
+COMPLETION_MODULES=(lucene-core lucene-backward-codecs lucene-analysis-common lucene-suggest)
+if [ -n "$COMPLETION" ]; then
+  case " ${COMPLETION_VERSIONS[*]} " in
+    *" $COMPLETION "*) ;;
+    *) echo "gen-bwc-fixtures: --completion takes one of ${COMPLETION_VERSIONS[*]}" >&2; exit 2 ;;
+  esac
+  JARS="$PWD/fixtures/.jars"
+  # shellcheck source=scripts/lib-lucene-jars.sh
+  source "$(dirname "$0")/lib-lucene-jars.sh"
+  WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
+  old_cp=""
+  for m in lucene-core lucene-suggest lucene-analysis-common; do
+    jar="$JARS/bwc/$m-$COMPLETION.jar"
+    if [ ! -s "$jar" ]; then
+      mkdir -p "$JARS/bwc"
+      curl -fsSL --retry 5 -o "$jar" "$MAVEN_BASE/$m/$COMPLETION/$m-$COMPLETION.jar"
+    fi
+    old_cp="$old_cp${old_cp:+:}$jar"
+  done
+  out="fixtures/data/bwc-completion/$COMPLETION"
+  rm -rf "${out:?}"
+  javac -nowarn -proc:none -cp "$old_cp" -d "$WORK/c" fixtures/bwc/BwcCompletion.java
+  java -cp "$WORK/c:$old_cp" BwcCompletion "$out" 2>/dev/null
+  rm -f "$out/index/write.lock"
+  completion_dump "$(lucene_classpath "${COMPLETION_MODULES[@]}")" "$WORK" "$out"
+  python3 scripts/fixture-segment-ids.py fixtures/data > fixtures/segment-ids.txt
+  echo "gen-bwc-fixtures: $COMPLETION -> $out ($(tr '\t' ' ' < "$out/written_by.txt" | tr -d '\n'), $(wc -l < "$out/queries.tsv") queries)"
   exit 0
 fi
 if [ -n "$DUMP" ] || [ -n "$QUANTIZED" ]; then
@@ -159,6 +210,34 @@ if [ "$CHECK" = 1 ]; then
       diff "$src/expected.txt" "$chk/expected.txt" | head -10 | sed 's/^/      /' || true
       status=1
     fi
+  done
+  committed=$(cd fixtures/data/bwc-completion && find . -mindepth 1 -maxdepth 1 -type d | sed 's|^\./||' | sort)
+  listed=$(printf '%s\n' "${COMPLETION_VERSIONS[@]}" | sort)
+  if [ "$committed" != "$listed" ]; then
+    echo "  VERSION SET: fixtures/data/bwc-completion holds [$(echo $committed)], this script lists [$(echo $listed)]"
+    status=1
+  fi
+  COMPLETION_CP=$(lucene_classpath "${COMPLETION_MODULES[@]}")
+  for v in "${COMPLETION_VERSIONS[@]}"; do
+    src="fixtures/data/bwc-completion/$v"
+    [ -d "$src" ] || { echo "  MISSING: $src"; status=1; continue; }
+    if [ "$(cut -f1 "$src/written_by.txt")" != "$v" ]; then
+      echo "  WRITTEN_BY: $src/written_by.txt does not name $v"
+      status=1
+    fi
+    chk="$WORK/check-completion-$v"
+    cp -r "$src" "$chk"
+    rm -f "$chk/queries.tsv" "$chk/weights.tsv" "$chk/merges.tsv"
+    completion_dump "$COMPLETION_CP" "$WORK" "$chk"
+    ok=1
+    for f in queries.tsv weights.tsv merges.tsv; do
+      if ! cmp -s "$chk/$f" "$src/$f"; then
+        echo "  MISMATCH: $src/$f is not what BwcCompletionDump reads from the committed index"
+        ok=0
+        status=1
+      fi
+    done
+    [ "$ok" = 1 ] && echo "gen-bwc-fixtures: $src ok ($(wc -l < "$src/queries.tsv") queries)"
   done
   [ "$status" = 0 ] && echo "gen-bwc-fixtures: ok" || echo "gen-bwc-fixtures: FAILED"
   exit "$status"

@@ -253,6 +253,23 @@ impl TopSuggestDocsCollector {
     }
 }
 
+/// `TopSuggestDocs.merge(topN, shardHits)`: the best `top_n` hits of every
+/// shard's, best first. Each shard's hits (best first) are offered in turn
+/// until the queue turns one away, which ends that shard. Java's
+/// `TopSuggestDocs` is the returned `Vec`: its `totalHits` is the length,
+/// `EQUAL_TO`.
+pub fn merge(top_n: usize, shard_hits: &[&[SuggestScoreDoc]]) -> Vec<SuggestScoreDoc> {
+    let mut queue = SuggestQueue::new(top_n);
+    for shard in shard_hits {
+        for hit in shard.iter() {
+            if queue.insert_with_overflow(hit.clone()) {
+                break;
+            }
+        }
+    }
+    queue.results()
+}
+
 /// What `CompletionScorer` knows about the segment.
 pub struct SegmentView<'a> {
     /// `reader.numDocs()`.

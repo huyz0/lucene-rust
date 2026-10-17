@@ -725,10 +725,17 @@ impl SegmentReader {
             }
         }
 
-        // `CompletionFieldsProducer`: one per `Completion104` instance, under
-        // the same suffix as its delegate's postings files.
+        // `CompletionFieldsProducer`: one per `CompletionXX` instance, under
+        // the same suffix as its delegate's postings files. The suffix names
+        // the format, whose name is the files' codec name.
         let mut completion = Vec::new();
         for suffix in segment_codec_suffixes(&si.files, compound.as_ref(), &segment_name, ".cmp") {
+            let format = per_field_postings::completion_format_of(&suffix).ok_or_else(|| {
+                Error::Store(lucene_store::Error::IllegalArgument(format!(
+                    "segment {segment_name}: _{suffix}.cmp is not a completion postings format \
+                     Lucene 10.5.0 reads"
+                )))
+            })?;
             let open = |ext: &str| {
                 open_segment_file(
                     dir,
@@ -749,7 +756,7 @@ impl SegmentReader {
             let cmp = required(".cmp")?;
             let lkp = required(".lkp")?;
             completion.push(Arc::new(lucene_codecs::completion::CompletionFields::open(
-                per_field_postings::COMPLETION_FORMAT_NAME,
+                format,
                 &segment_id,
                 &suffix,
                 &cmp,
@@ -1137,6 +1144,21 @@ impl SegmentReader {
             .flat_map(|c| c.fields.iter())
             .find(|(number, _)| *number == info.number)
             .map(|(_, reader)| reader.type_byte)
+    }
+
+    /// `CompletionTerms.getMinWeight()` and `getMaxWeight()` for `field`:
+    /// the least and greatest weight its suggestions were indexed with in
+    /// this segment, or `None` when the field is not a completion field of
+    /// this segment. Differs: Java hands such a field a `CompletionTerms`
+    /// with no reader, whose weights are `0`/`0`; `None` keeps "no
+    /// suggestions here" apart from "every weight was 0".
+    pub fn completion_weights(&self, field: &str) -> Option<(i64, i64)> {
+        let info = self.field_infos.field_by_name(field)?;
+        self.completion
+            .iter()
+            .flat_map(|c| c.fields.iter())
+            .find(|(number, _)| *number == info.number)
+            .map(|(_, reader)| (reader.min_weight, reader.max_weight))
     }
 
     /// The segment's parsed `.dvm`, or `None` if it has no doc-values files
