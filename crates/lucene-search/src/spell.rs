@@ -2,6 +2,14 @@
 //! spell-checking package. This file starts with the package's interface,
 //! [`Dictionary`]; the suggest package's dictionaries implement it.
 
+pub mod direct;
+pub mod distance;
+pub mod index_dictionary;
+pub mod plain_text;
+pub mod spell_checker;
+pub mod suggest_word;
+pub mod word_break;
+
 use crate::suggest::input::InputIterator;
 use crate::Result;
 

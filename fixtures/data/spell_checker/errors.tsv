@@ -1,0 +1,11 @@
+max_edits	0	UnsupportedOperationException: Invalid maxEdits
+max_edits	3	UnsupportedOperationException: Invalid maxEdits
+max_edits	2	ok
+threshold_frequency	1.5	IllegalArgumentException: Fractional absolute document frequencies are not allowed
+threshold_frequency	2	ok
+threshold_frequency	0.5	ok
+max_query_frequency	2.5	IllegalArgumentException: Fractional absolute document frequencies are not allowed
+max_query_frequency	3	ok
+min_query_length	10_after_max_5	IllegalArgumentException: minQueryLength must not be greater than maxQueryLength
+max_query_length	2	IllegalArgumentException: maxQueryLength must not be smaller than minQueryLength
+max_query_length	4	ok
