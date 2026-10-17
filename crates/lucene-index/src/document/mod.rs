@@ -1333,6 +1333,12 @@ impl Document {
         &self.fields
     }
 
+    /// The fields, moved out -- what `FacetsConfig.build` hands on to the
+    /// document it returns (Java adds the same field objects to it).
+    pub fn into_fields(self) -> Vec<Box<dyn IndexableField>> {
+        self.fields
+    }
+
     /// `getValues(name)`.
     pub fn get_values(&self, name: &str) -> Vec<String> {
         self.fields

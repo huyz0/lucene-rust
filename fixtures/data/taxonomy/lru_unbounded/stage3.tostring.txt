@@ -1,0 +1,10 @@
+0: EMPTY STRING!! 
+1: FacetLabel: [Tag]
+2: FacetLabel: [Tag, tag1]
+3: FacetLabel: [Author]
+4: FacetLabel: [Author, author5]
+5: FacetLabel: [Pub Date]
+6: FacetLabel: [Pub Date, 1999]
+7: FacetLabel: [Pub Date, 1999, 12]
+8: FacetLabel: [Pub Date, 1999, 12, 31]
+9: FacetLabel: [Tag, tag2]

@@ -58,6 +58,17 @@
 //! takes an explicit matching-doc-ID slice; a caller wanting "count every
 //! doc in the segment" passes `0..max_doc` (every live doc ID) as that
 //! slice — no separate code path is needed or added.
+//!
+//! **The taxonomy index exists too** ([`taxonomy`], M13 T13.4a): a
+//! [`taxonomy::DirectoryTaxonomyWriter`] hands out category ordinals,
+//! [`FacetsConfig::build`] indexes a document's [`FacetField`]s as those
+//! ordinals (and its [`SortedSetDocValuesFacetField`]s as above), and a
+//! [`taxonomy::DirectoryTaxonomyReader`] maps ordinals back to paths.
+
+mod facet_field;
+pub mod taxonomy;
+
+pub use facet_field::{verify_label, FacetEntry, FacetField, SortedSetDocValuesFacetField};
 
 use lucene_codecs::doc_values::{self, NumericEntry, SortedNumericEntry};
 use lucene_codecs::terms_dict::{self, TermsDictEntry};
@@ -651,15 +662,12 @@ impl Default for DimConfig {
 ///
 /// The read side is the setters and `getDimConfig` plus
 /// [`path_to_string`]/[`string_to_path`]; the write side is
-/// [`FacetsConfig::build_sorted_set_facet_fields`], the
-/// `SortedSetDocValuesFacetField` half of `FacetsConfig.build(Document)`.
+/// [`FacetsConfig::build`] (`FacetsConfig.build(taxoWriter, doc)`, taxonomy
+/// and sorted-set facet fields) and
+/// [`FacetsConfig::build_sorted_set_facet_fields`], the sorted-set half as
+/// plain values.
 ///
-/// **Not ported**: the taxonomy half (`processFacetFields`, which needs a
-/// `TaxonomyWriter` to turn a path into an ordinal, and a taxonomy index this
-/// port does not have) and `AssociationFacetField` (which needs an
-/// association-reading facet source this port does not have either). Both are
-/// scope, not oversight -- this port's faceting is SSDV-only end to end, as
-/// this module's own doc comment says.
+/// **Not ported yet**: `AssociationFacetField` in `build` (M13 T13.4b).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FacetsConfig {
     dims: std::collections::BTreeMap<String, DimConfig>,

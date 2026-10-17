@@ -19,7 +19,7 @@
 # T3.1, see docs/milestones/m3-write-path-proven.md.
 set -euo pipefail
 
-LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join lucene-suggest)
+LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join lucene-suggest lucene-facet)
 
 cd "$(git rev-parse --show-toplevel)"
 FIXTURES="$PWD/fixtures"
@@ -332,6 +332,18 @@ CASES=(
   # from the same documents. What it cannot catch: a defect Lucene's own
   # index shares -- both are read by the same SuggestIndexSearcher.
   "lucene-search|write_completion_fixture|completion|VerifyCompletion"
+  # The taxonomy index (M13 T13.4a): three taxonomies written by this port's
+  # DirectoryTaxonomyWriter -- an LRU cache of 3 that sends nearly every add
+  # through the writer's near-real-time reader (a segment per refresh, merged
+  # by LogByteSizeMergePolicy), the default cache over two sessions, and a
+  # replaceTaxonomy -- each beside the dump this port's reader reads back.
+  # Lucene runs CheckIndex, must read the same dump (size, commit data, every
+  # ordinal's parent/child/sibling and path), map every path back to its
+  # ordinal, and append to the index with its own DirectoryTaxonomyWriter
+  # (every ordinal kept, the epoch too) and pass CheckIndex again. What it
+  # cannot catch: a defect both readers share -- the Java-written fixtures of
+  # `taxonomy_fixtures.rs` read through this port's reader cover that side.
+  "lucene-search|write_taxonomy_fixture|taxonomy|VerifyTaxonomy"
 )
 
 echo "verify-write-path: compiling verifiers"
