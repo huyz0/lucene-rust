@@ -35,6 +35,7 @@ mod micro_freetext;
 mod micro_infix;
 mod micro_spell;
 mod micro_taxonomy;
+mod micro_facet_counts;
 mod micro_doc_index;
 mod micro_fst_lookup;
 mod micro_highlight;
@@ -2175,6 +2176,12 @@ fn main() {
                 .nth(2)
                 .expect("grouping needs the GroupingMicro index directory");
             micro_grouping::bench_grouping(warmup, measure, &index);
+        }
+        "facet_counts" => {
+            let index = std::env::args()
+                .nth(2)
+                .expect("facet_counts needs the FacetCountsMicro corpus directory");
+            micro_facet_counts::bench_facet_counts(warmup, measure, &index);
         }
         "m7_fixture" => micro_m7::bench_m7_fixture(warmup, measure),
         "query_builder" => micro_m7::bench_query_builder(warmup, measure),

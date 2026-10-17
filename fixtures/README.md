@@ -1678,3 +1678,11 @@ committed fixture. Two were added by `c43-final-cleanup`:
 - `GenMemoryIndex.java` (M13 T13.5) -- `MemoryIndex` over
   `corpus/memory-index-{docs,queries}.txt` under eight configurations, plus named
   scenarios: `memory_index/*.tsv`. Rust side: `memory_index_fixtures.rs`.
+- `GenFacetCounts.java` (M13 T13.4b) -- a 2,400-document, multi-segment index with a
+  taxonomy (`facet_counts/index`, `facet_counts/taxo`; deletions, int and float
+  associations, dims in non-default index fields) and every public `Facets`
+  call of `FastTaxonomyFacetCounts`, `TaxonomyFacet{Int,Float}Associations`
+  and `MultiFacets` over match-all and selective queries: `calls.tsv`,
+  `search.tsv` (`FacetsCollectorManager.search`), `labels.tsv`
+  (`TaxonomyFacetLabels`), `build.tsv` (`FacetsConfig.build` of associations)
+  and `errors.tsv` (Java's refusals). Rust side: `facet_counts_fixtures.rs`.

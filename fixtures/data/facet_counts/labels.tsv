@@ -1,0 +1,116 @@
+0	0	all	Author/a0	Publish Date/2000/1/1	Tag/t0	Tag/t2	Path	Path/p0	Path/p0/q0	Loc/l0	Loc/l0/m0	Many/m0
+0	0	Publish Date	Publish Date/2000/1/1
+0	0	Tag+Path	Tag/t0	Path/p0
+0	0	color	Color/c0/s0
+0	97	all	Path	Cat	Cat/c1	Path/p1	Author/a12	Tag/t7	Tag/t8	Path/p1/q2	Publish Date/2002/2/14	Many/m97
+0	97	Publish Date	Publish Date/2002/2/14
+0	97	Tag+Path	Tag/t7	Path/p1/q2
+0	97	color	Color/c2/s1
+0	194	all	Path	Path/p0	Cat	Cat/c2	Path/p2	Loc/l2	Loc/l2/m2	Tag/t5	Tag/t7	Author/a1	Path/p2/q4	Publish Date/2004/3/27	Many/m194
+0	194	Publish Date	Publish Date/2004/3/27
+0	194	Tag+Path	Tag/t5	Path/p2/q4
+0	194	color	Color/c4/s2
+0	291	all	Path	Path/p0	Tag/t3	Path/p1	Loc/l3	Loc/l3/m0	Tag/t6	Path/p0/q1	Author/a13	Publish Date/2001/4/12	Many/m291
+0	291	Publish Date	Publish Date/2001/4/12
+0	291	Tag+Path	Tag/t3	Path/p1
+0	291	color	Color/c1/s0
+0	388	all	Path	Path/p0	Loc/l0	Tag/t1	Cat	Path/p1	Tag/t5	Cat/c0	Cat/c4	Loc/l0/m1	Path/p1/q3	Author/a2	Publish Date/2003/5/25	Many/m388
+0	388	Publish Date	Publish Date/2003/5/25
+0	388	Tag+Path	Tag/t1	Path/p1
+0	388	color	Color/c3/s1
+0	485	all	Path	Cat	Cat/c1	Path/p1	Author/a14	Tag/t4	Path/p2	Cat/c5	Path/p2/q0	Tag/t8	Publish Date/2000/6/10	Many/m485
+0	485	Publish Date	Publish Date/2000/6/10
+0	485	Tag+Path	Tag/t4	Path/p2
+0	485	color	Color/c0/s2
+0	582	all	Path	Path/p0	Tag/t3	Loc/l2	Tag/t6	Loc/l2/m0	Author/a3	Path/p0/q2	Publish Date/2002/7/23	Many/m582
+0	582	Publish Date	Publish Date/2002/7/23
+0	582	Tag+Path	Tag/t3	Path/p0/q2
+0	582	color	Color/c2/s0
+1	0	all	Path	Path/p0	Path/p0/q0	Loc/l0	Loc/l0/m0	Author/a14	Tag/t6	Tag/t7	Publish Date/2000/1/13	Many/m600
+1	0	Publish Date	Publish Date/2000/1/13
+1	0	Tag+Path	Tag/t6	null
+1	0	color	Color/c0/s0
+1	97	all	Path	Cat	Cat/c1	Path/p1	Tag/t4	Tag/t6	Author/a3	Path/p1/q2	Publish Date/2002/2/26	Many/m697
+1	97	Publish Date	Publish Date/2002/2/26
+1	97	Tag+Path	Tag/t4	Path/p1/q2
+1	97	color	Color/c2/s1
+1	194	all	Tag/t2	Path	Path/p0	Cat	Cat/c2	Path/p2	Loc/l2	Loc/l2/m2	Tag/t5	Author/a15	Path/p2/q4	Publish Date/2004/3/11	Many/m794
+1	194	Publish Date	Publish Date/2004/3/11
+1	194	Tag+Path	Tag/t2	Path/p0
+1	194	color	Color/c4/s2
+1	291	all	Tag/t0	Path	Path/p0	Path/p1	Tag/t4	Loc/l3	Loc/l3/m0	Path/p0/q1	Author/a4	Publish Date/2001/4/24	Many/m891
+1	291	Publish Date	Publish Date/2001/4/24
+1	291	Tag+Path	Tag/t0	Path/p0
+1	291	color	Color/c1/s0
+1	388	all	Path	Path/p0	Loc/l0	Tag/t3	Cat	Path/p1	Cat/c0	Cat/c4	Loc/l0/m1	Tag/t7	Path/p1/q3	Author/a16	Publish Date/2003/5/9	Many/m988
+1	388	Publish Date	Publish Date/2003/5/9
+1	388	Tag+Path	Tag/t3	Path/p1
+1	388	color	Color/c3/s1
+1	485	all	Tag/t2	Path	Cat	Cat/c1	Path/p1	Path/p2	Tag/t5	Author/a5	Cat/c5	Path/p2/q0	Publish Date/2000/6/22	Many/m1085
+1	485	Publish Date	Publish Date/2000/6/22
+1	485	Tag+Path	Tag/t2	Path/p1
+1	485	color	Color/c0/s2
+1	582	all	Path	Path/p0	Tag/t3	Loc/l2	Tag/t8	Loc/l2/m0	Author/a17	Path/p0/q2	Many/m82	Publish Date/2002/7/7
+1	582	Publish Date	Publish Date/2002/7/7
+1	582	Tag+Path	Tag/t3	Path/p0/q2
+1	582	color	Color/c2/s0
+2	0	all	Path	Path/p0	Path/p0/q0	Loc/l0	Loc/l0/m0	Tag/t3	Tag/t5	Author/a5	Many/m100	Publish Date/2000/1/25
+2	0	Publish Date	Publish Date/2000/1/25
+2	0	Tag+Path	Tag/t3	null
+2	0	color	Color/c0/s0
+2	97	all	Path	Tag/t1	Cat	Cat/c1	Path/p1	Tag/t4	Path/p1/q2	Author/a17	Publish Date/2002/2/10	Many/m197
+2	97	Publish Date	Publish Date/2002/2/10
+2	97	Tag+Path	Tag/t1	Path/p1
+2	97	color	Color/c2/s1
+2	194	all	Path	Path/p0	Tag/t3	Cat	Cat/c2	Path/p2	Loc/l2	Loc/l2/m2	Tag/t8	Author/a6	Path/p2/q4	Publish Date/2004/3/23	Many/m294
+2	194	Publish Date	Publish Date/2004/3/23
+2	194	Tag+Path	Tag/t3	Path/p2
+2	194	color	Color/c4/s2
+2	291	all	Tag/t2	Path	Path/p0	Path/p1	Loc/l3	Loc/l3/m0	Tag/t6	Path/p0/q1	Author/a18	Publish Date/2001/4/8	Many/m391
+2	291	Publish Date	Publish Date/2001/4/8
+2	291	Tag+Path	Tag/t2	Path/p0
+2	291	color	Color/c1/s0
+2	388	all	Path	Path/p0	Loc/l0	Author/a7	Cat	Path/p1	Tag/t4	Cat/c0	Cat/c4	Loc/l0/m1	Tag/t8	Path/p1/q3	Publish Date/2003/5/21	Many/m488
+2	388	Publish Date	Publish Date/2003/5/21
+2	388	Tag+Path	Tag/t4	Path/p1/q3
+2	388	color	Color/c3/s1
+2	485	all	Tag/t2	Path	Cat	Cat/c1	Path/p1	Path/p2	Publish Date/2000/6/6	Tag/t7	Cat/c5	Path/p2/q0	Author/a19	Many/m585
+2	485	Publish Date	Publish Date/2000/6/6
+2	485	Tag+Path	Tag/t2	Path/p1
+2	485	color	Color/c0/s2
+2	582	all	Tag/t0	Path	Path/p0	Loc/l2	Tag/t6	Loc/l2/m0	Author/a8	Path/p0/q2	Publish Date/2002/7/19	Many/m682
+2	582	Publish Date	Publish Date/2002/7/19
+2	582	Tag+Path	Tag/t0	Path/p0
+2	582	color	Color/c2/s0
+3	0	all	Tag/t0	Path	Path/p0	Path/p0/q0	Loc/l0	Loc/l0/m0	Tag/t3	Author/a19	Publish Date/2000/1/9	Many/m700
+3	0	Publish Date	Publish Date/2000/1/9
+3	0	Tag+Path	Tag/t0	Path/p0
+3	0	color	Color/c0/s0
+3	97	all	Tag/t2	Path	Cat	Cat/c1	Path/p1	Tag/t7	Path/p1/q2	Author/a8	Publish Date/2002/2/22	Many/m797
+3	97	Publish Date	Publish Date/2002/2/22
+3	97	Tag+Path	Tag/t2	Path/p1
+3	97	color	Color/c2/s1
+3	194	all	Path	Path/p0	Cat	Cat/c2	Path/p2	Loc/l2	Loc/l2/m2	Tag/t5	Tag/t8	Path/p2/q4	Author/a20	Publish Date/2004/3/7	Many/m894
+3	194	Publish Date	Publish Date/2004/3/7
+3	194	Tag+Path	Tag/t5	Path/p2/q4
+3	194	color	Color/c4/s2
+3	291	all	Path	Path/p0	Tag/t3	Path/p1	Loc/l3	Loc/l3/m0	Tag/t7	Path/p0/q1	Author/a9	Publish Date/2001/4/20	Many/m991
+3	291	Publish Date	Publish Date/2001/4/20
+3	291	Tag+Path	Tag/t3	Path/p1
+3	291	color	Color/c1/s0
+3	388	all	Path	Path/p0	Loc/l0	Tag/t1	Cat	Path/p1	Author/a21	Tag/t6	Cat/c0	Cat/c4	Loc/l0/m1	Path/p1/q3	Publish Date/2003/5/5	Many/m1088
+3	388	Publish Date	Publish Date/2003/5/5
+3	388	Tag+Path	Tag/t1	Path/p1
+3	388	color	Color/c3/s1
+3	485	all	Path	Cat	Cat/c1	Path/p1	Path/p2	Tag/t5	Cat/c5	Path/p2/q0	Tag/t8	Author/a10	Many/m85	Publish Date/2000/6/18
+3	485	Publish Date	Publish Date/2000/6/18
+3	485	Tag+Path	Tag/t5	Path/p2/q0
+3	485	color	Color/c0/s2
+3	582	all	Path	Path/p0	Tag/t4	Loc/l2	Tag/t6	Loc/l2/m0	Path/p0/q2	Author/a22	Many/m182	Publish Date/2002/7/3
+3	582	Publish Date	Publish Date/2002/7/3
+3	582	Tag+Path	Tag/t4	Path/p0/q2
+3	582	color	Color/c2/s0
+4	0	all
+4	0	Publish Date
+4	0	Tag+Path	null	null
+4	0	color

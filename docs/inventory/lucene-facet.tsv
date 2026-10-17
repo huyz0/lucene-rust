@@ -5,14 +5,14 @@ facet/DrillDownQuery	todo:M13	A Query for drill-down over facet categories.
 facet/DrillSideways	todo:M13	Computes drill down and sideways counts for the provided DrillDownQuery.
 facet/DrillSidewaysQuery	todo:M13	DrillSidewaysQuery
 facet/DrillSidewaysScorer	todo:M13	DrillSidewaysScorer
-facet/FacetCountsWithFilterQuery	todo:M13	Base class for facet counts.
+facet/FacetCountsWithFilterQuery	ported	crates/lucene-search/src/facets/facet_counts_with_filter_query.rs::FacetCountsWithFilterQuery
 facet/FacetField	ported	crates/lucene-search/src/facets/facet_field.rs::FacetField
 facet/FacetQuery	todo:M13	A term Query over a FacetField.
-facet/FacetResult	partial	crates/lucene-search/src/facets.rs::FacetResult -- M13: the class itself, as T13.4 ports lucene-facet
-facet/Facets	todo:M13	Common base class for all facets implementations.
-facet/FacetsCollector	todo:M13	Collects hits for subsequent faceting.
-facet/FacetsCollectorManager	todo:M13	A CollectorManager implementation which produces FacetsCollector and produces a merged FacetsCollector.
-facet/FacetsConfig	partial	crates/lucene-search/src/facets/facet_field.rs::FacetEntry -- M13: build() takes AssociationFacetField in T13.4b; the rest of FacetsConfig is crates/lucene-search/src/facets.rs::FacetsConfig
+facet/FacetResult	ported	crates/lucene-search/src/facets/facet_result.rs::FacetResult
+facet/Facets	ported	crates/lucene-search/src/facets/facets_trait.rs::Facets
+facet/FacetsCollector	ported	crates/lucene-search/src/facets/facets_collector.rs::FacetsCollector
+facet/FacetsCollectorManager	ported	crates/lucene-search/src/facets/facets_collector.rs::FacetsCollectorManager
+facet/FacetsConfig	ported	crates/lucene-search/src/facets.rs::FacetsConfig
 facet/facetset/DimRange	todo:M13	Defines a single range in a FacetSet dimension.
 facet/facetset/DoubleFacetSet	todo:M13	A FacetSet which encodes double dimension values.
 facet/facetset/ExactFacetSetMatcher	todo:M13	A FacetSetMatcher which considers a set as a match only if all dimension values are equal to the given one.
@@ -25,13 +25,13 @@ facet/facetset/IntFacetSet	todo:M13	A FacetSet which encodes integer dimension v
 facet/facetset/LongFacetSet	todo:M13	A FacetSet which encodes long dimension values.
 facet/facetset/MatchingFacetSetsCounts	todo:M13	Returns the counts for each given FacetSet
 facet/facetset/RangeFacetSetMatcher	todo:M13	A FacetSetMatcher which considers a set as a match if all dimensions fall within the given corresponding range.
-facet/FacetUtils	todo:M13	Utility class with a single method for getting a DocIdSetIterator that skips deleted docs
-facet/LabelAndValue	partial	crates/lucene-search/src/facets.rs::FacetCount -- M13: the class itself, as T13.4 ports lucene-facet
+facet/FacetUtils	ported	crates/lucene-search/src/facets/facet_utils.rs::live_docs_disi
+facet/LabelAndValue	ported	crates/lucene-search/src/facets/facet_result.rs::LabelAndValue
 facet/LongValueFacetCounts	todo:M13	Facets implementation that computes counts for all unique long values, more efficiently counting small values (0-1023) using an int array, and switching to a Ha
 facet/MultiDoubleValues	todo:M13	Per-segment, per-document double values, which can be calculated at search-time.
 facet/MultiDoubleValuesSource	todo:M13	Base class for producing MultiDoubleValues.
 facet/MultiFacetQuery	todo:M13	A multi-terms Query over a FacetField.
-facet/MultiFacets	todo:M13	Maps specified dims to provided Facets impls; else, uses the default Facets impl.
+facet/MultiFacets	ported	crates/lucene-search/src/facets/multi_facets.rs::MultiFacets
 facet/MultiLongValues	todo:M13	Per-segment, per-document long values, which can be calculated at search-time.
 facet/MultiLongValuesSource	todo:M13	Base class for producing MultiLongValues.
 facet/RandomSamplingFacetsCollector	todo:M13	Collects hits for subsequent faceting, using sampling if needed.
@@ -59,28 +59,28 @@ facet/sortedset/SortedSetDocValuesFacetField	ported	crates/lucene-search/src/fac
 facet/sortedset/SortedSetDocValuesReaderState	partial	crates/lucene-search/src/facets.rs::FacetsState -- M13: the class itself, as T13.4 ports lucene-facet
 facet/StringDocValuesReaderState	todo:M13	Stores an OrdinalMap created for a specific IndexReader (reader) + field.
 facet/StringValueFacetCounts	todo:M13	StringValueFacetCounts
-facet/taxonomy/AssociationAggregationFunction	todo:M13	Specify aggregation logic used in TaxonomyFacetIntAssociations and TaxonomyFacetFloatAssociations.
-facet/taxonomy/AssociationFacetField	todo:M13	Add an instance of this to your Document to add a facet label associated with an arbitrary byte[].
+facet/taxonomy/AssociationAggregationFunction	ported	crates/lucene-search/src/facets/taxonomy/association_aggregation_function.rs::AssociationAggregationFunction
+facet/taxonomy/AssociationFacetField	ported	crates/lucene-search/src/facets/taxonomy/association_facet_field.rs::AssociationFacetField
 facet/taxonomy/directory/Consts	ported	crates/lucene-search/src/facets/taxonomy/directory/consts.rs::FULL
 facet/taxonomy/directory/DirectoryTaxonomyReader	ported	crates/lucene-search/src/facets/taxonomy/directory/directory_taxonomy_reader.rs::DirectoryTaxonomyReader
 facet/taxonomy/directory/DirectoryTaxonomyWriter	ported	crates/lucene-search/src/facets/taxonomy/directory/directory_taxonomy_writer.rs::DirectoryTaxonomyWriter
 facet/taxonomy/directory/ReindexingEnrichedDirectoryTaxonomyWriter	todo:M13	Use this org.apache.lucene.facet.taxonomy.TaxonomyWriter to append arbitrary fields to the ordinal documents in the taxonomy.
 facet/taxonomy/directory/TaxonomyIndexArrays	ported	crates/lucene-search/src/facets/taxonomy/directory/taxonomy_index_arrays.rs::TaxonomyIndexArrays
 facet/taxonomy/FacetLabel	ported	crates/lucene-search/src/facets/taxonomy/facet_label.rs::FacetLabel
-facet/taxonomy/FastTaxonomyFacetCounts	todo:M13	Computes facets counts, assuming the default encoding into DocValues was used.
-facet/taxonomy/FloatAssociationFacetField	todo:M13	Add an instance of this to your Document to add a facet label associated with a float.
-facet/taxonomy/FloatTaxonomyFacets	todo:M13	Base class for all taxonomy-based facets that aggregate to float.
-facet/taxonomy/IntAssociationFacetField	todo:M13	Add an instance of this to your Document to add a facet label associated with an int.
-facet/taxonomy/IntTaxonomyFacets	todo:M13	Base class for all taxonomy-based facets that aggregate to int.
+facet/taxonomy/FastTaxonomyFacetCounts	ported	crates/lucene-search/src/facets/taxonomy/fast_taxonomy_facet_counts.rs::FastTaxonomyFacetCounts
+facet/taxonomy/FloatAssociationFacetField	ported	crates/lucene-search/src/facets/taxonomy/association_facet_field.rs::FloatAssociationFacetField
+facet/taxonomy/FloatTaxonomyFacets	ported	crates/lucene-search/src/facets/taxonomy/taxonomy_facets.rs::Aggregation
+facet/taxonomy/IntAssociationFacetField	ported	crates/lucene-search/src/facets/taxonomy/association_facet_field.rs::IntAssociationFacetField
+facet/taxonomy/IntTaxonomyFacets	ported	crates/lucene-search/src/facets/taxonomy/taxonomy_facets.rs::Aggregation
 facet/taxonomy/LRUHashMap	ported	crates/lucene-search/src/facets/taxonomy/lru_hash_map.rs::LruHashMap
 facet/taxonomy/OrdinalMappingLeafReader	todo:M13	A org.apache.lucene.index.FilterLeafReader for updating facets ordinal references, based on an ordinal map.
 facet/taxonomy/ParallelTaxonomyArrays	ported	crates/lucene-search/src/facets/taxonomy/parallel_taxonomy_arrays.rs::ParallelTaxonomyArrays
 facet/taxonomy/PrintTaxonomyStats	todo:M13	PrintTaxonomyStats
 facet/taxonomy/SearcherTaxonomyManager	todo:M13	Manages near-real-time reopen of both an IndexSearcher and a TaxonomyReader.
-facet/taxonomy/TaxonomyFacetFloatAssociations	todo:M13	Aggregates float values associated with facet fields.
-facet/taxonomy/TaxonomyFacetIntAssociations	todo:M13	Aggregates int values previously indexed with IntAssociationFacetField, assuming the default encoding.
-facet/taxonomy/TaxonomyFacetLabels	todo:M13	Utility class to easily retrieve previously indexed facet labels, allowing you to skip also adding stored fields for these values, reducing your index size.
-facet/taxonomy/TaxonomyFacets	todo:M13	Base class for all taxonomy-based facets impls.
+facet/taxonomy/TaxonomyFacetFloatAssociations	ported	crates/lucene-search/src/facets/taxonomy/taxonomy_facet_float_associations.rs::TaxonomyFacetFloatAssociations
+facet/taxonomy/TaxonomyFacetIntAssociations	ported	crates/lucene-search/src/facets/taxonomy/taxonomy_facet_int_associations.rs::TaxonomyFacetIntAssociations
+facet/taxonomy/TaxonomyFacetLabels	ported	crates/lucene-search/src/facets/taxonomy/taxonomy_facet_labels.rs::TaxonomyFacetLabels
+facet/taxonomy/TaxonomyFacets	ported	crates/lucene-search/src/facets/taxonomy/taxonomy_facets.rs::TaxonomyFacets
 facet/taxonomy/TaxonomyMergeUtils	todo:M13	Utility methods for merging index and taxonomy directories.
 facet/taxonomy/TaxonomyReader	ported	crates/lucene-search/src/facets/taxonomy/taxonomy_reader.rs::TaxonomyReader
 facet/taxonomy/TaxonomyWriter	ported	crates/lucene-search/src/facets/taxonomy/taxonomy_writer.rs::TaxonomyWriter
@@ -90,6 +90,6 @@ facet/taxonomy/writercache/LruTaxonomyWriterCache	ported	crates/lucene-search/sr
 facet/taxonomy/writercache/NameHashIntCacheLRU	ported	crates/lucene-search/src/facets/taxonomy/writercache/name_int_cache_lru.rs::NameHashIntCacheLru
 facet/taxonomy/writercache/NameIntCacheLRU	ported	crates/lucene-search/src/facets/taxonomy/writercache/name_int_cache_lru.rs::NameIntCacheLru
 facet/taxonomy/writercache/TaxonomyWriterCache	ported	crates/lucene-search/src/facets/taxonomy/writercache.rs::TaxonomyWriterCache
-facet/TopOrdAndFloatQueue	todo:M13	Keeps highest results, first by largest float value, then tie-break by smallest ord.
-facet/TopOrdAndIntQueue	todo:M13	Keeps highest results, first by largest int value, then tie-break by smallest ord.
-facet/TopOrdAndNumberQueue	todo:M13	Keeps highest results, first by largest value, then tie-break by smallest ord.
+facet/TopOrdAndFloatQueue	ported	crates/lucene-search/src/facets/top_ord_and_number_queue.rs::TopOrdAndNumberQueue
+facet/TopOrdAndIntQueue	ported	crates/lucene-search/src/facets/top_ord_and_number_queue.rs::TopOrdAndNumberQueue
+facet/TopOrdAndNumberQueue	ported	crates/lucene-search/src/facets/top_ord_and_number_queue.rs::TopOrdAndNumberQueue

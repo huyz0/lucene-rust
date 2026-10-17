@@ -5,18 +5,17 @@
 //! `FieldType` instance; here they are passed beside the document, as
 //! [`FacetEntry`]s in document order. The result is the same document Java
 //! builds: the taxonomy fields (per index field, in Java's `HashMap` order),
-//! then the sorted-set fields (likewise), then every other field of `doc` in
-//! its order.
-//!
-//! Not ported here: `AssociationFacetField` (M13 T13.4b).
+//! then the sorted-set fields, then the association fields (likewise), then
+//! every other field of `doc` in its order.
 
 use std::collections::HashSet;
 
 use lucene_index::document::{
-    Document, SortedNumericDocValuesField, SortedSetDocValuesField, Store, StringField,
+    BinaryDocValuesField, Document, SortedNumericDocValuesField, SortedSetDocValuesField, Store,
+    StringField,
 };
 
-use super::taxonomy::{FacetLabel, TaxonomyWriter};
+use super::taxonomy::{AssociationFacetField, FacetLabel, TaxonomyWriter};
 use super::{DimConfig, DrillDownTermsIndexing, FacetsConfig};
 use crate::{Error, Result};
 
@@ -102,6 +101,14 @@ pub enum FacetEntry {
     Taxonomy(FacetField),
     /// A [`SortedSetDocValuesFacetField`].
     SortedSet(SortedSetDocValuesFacetField),
+    /// An [`AssociationFacetField`] (taxonomy, with an associated value).
+    Association(AssociationFacetField),
+}
+
+impl From<AssociationFacetField> for FacetEntry {
+    fn from(f: AssociationFacetField) -> Self {
+        FacetEntry::Association(f)
+    }
 }
 
 impl From<FacetField> for FacetEntry {
@@ -134,6 +141,17 @@ fn in_java_order<'g, T>(groups: &'g [(String, Vec<&'g T>)]) -> Vec<&'g (String, 
         .collect()
 }
 
+/// `checkTaxoWriter(taxoWriter)`.
+fn check_taxo_writer(taxo_writer: Option<&dyn TaxonomyWriter>) -> Result<&dyn TaxonomyWriter> {
+    taxo_writer.ok_or_else(|| {
+        Error::IllegalState(
+            "a non-null TaxonomyWriter must be provided when indexing FacetField or \
+             AssociationFacetField"
+                .to_string(),
+        )
+    })
+}
+
 fn not_hierarchical(dim: &str, components: usize) -> Error {
     Error::IllegalArgument(format!(
         "dimension \"{dim}\" is not hierarchical yet has {components} components"
@@ -144,7 +162,7 @@ impl FacetsConfig {
     /// `FacetsConfig.build(taxoWriter, doc)`: `doc` with `facets` translated
     /// into the fields that get indexed (see the module docs for the order).
     /// `taxo_writer` may be `None` when `facets` holds no
-    /// [`FacetEntry::Taxonomy`].
+    /// [`FacetEntry::Taxonomy`] or [`FacetEntry::Association`].
     pub fn build(
         &self,
         taxo_writer: Option<&dyn TaxonomyWriter>,
@@ -153,11 +171,13 @@ impl FacetsConfig {
     ) -> Result<Document> {
         let mut by_field: Vec<(String, Vec<&FacetField>)> = Vec::new();
         let mut dv_by_field: Vec<(String, Vec<&SortedSetDocValuesFacetField>)> = Vec::new();
+        let mut assoc_by_field: Vec<(String, Vec<&AssociationFacetField>)> = Vec::new();
         let mut seen_dims: HashSet<&str> = HashSet::new();
         for entry in facets {
             let dim = match entry {
                 FacetEntry::Taxonomy(f) => &f.dim,
                 FacetEntry::SortedSet(f) => &f.dim,
+                FacetEntry::Association(f) => &f.dim,
             };
             let config = self.dim_config(dim);
             if !config.multi_valued && !seen_dims.insert(dim) {
@@ -170,12 +190,37 @@ impl FacetsConfig {
             match entry {
                 FacetEntry::Taxonomy(f) => group(&mut by_field, &config.index_field_name, f),
                 FacetEntry::SortedSet(f) => group(&mut dv_by_field, &config.index_field_name, f),
+                FacetEntry::Association(f) => {
+                    if config.hierarchical {
+                        return Err(Error::IllegalArgument(format!(
+                            "AssociationFacetField cannot be hierarchical (dim=\"{dim}\")"
+                        )));
+                    }
+                    if config.require_dim_count {
+                        return Err(Error::IllegalArgument(format!(
+                            "AssociationFacetField cannot requireDimCount (dim=\"{dim}\")"
+                        )));
+                    }
+                    let index_field_name = &config.index_field_name;
+                    group(&mut assoc_by_field, index_field_name, f);
+                    // Best effort: the types indexed into one field must agree.
+                    let kind = f.kind().type_name();
+                    let current = self.assoc_dim_types.get_or_record(index_field_name, kind);
+                    if current != kind {
+                        return Err(Error::IllegalArgument(format!(
+                            "mixing incompatible types of AssociationFacetField ({current} and \
+                             {kind}) in indexed field \"{index_field_name}\"; use FacetsConfig to \
+                             change the indexFieldName for each dimension"
+                        )));
+                    }
+                }
             }
         }
 
         let mut result = Document::new();
         self.process_facet_fields(taxo_writer, &by_field, &mut result)?;
         self.process_ssdv_facet_fields(&dv_by_field, &mut result)?;
+        self.process_assoc_facet_fields(taxo_writer, &assoc_by_field, &mut result)?;
         for field in doc.into_fields() {
             result.add_boxed(field);
         }
@@ -197,13 +242,7 @@ impl FacetsConfig {
                     return Err(not_hierarchical(&facet_field.dim, facet_field.path.len()));
                 }
                 let label = FacetLabel::from_dim_path(&facet_field.dim, &facet_field.path)?;
-                let taxo_writer = taxo_writer.ok_or_else(|| {
-                    Error::IllegalState(
-                        "a non-null TaxonomyWriter must be provided when indexing FacetField or \
-                         AssociationFacetField"
-                            .to_string(),
-                    )
-                })?;
+                let taxo_writer = check_taxo_writer(taxo_writer)?;
                 let ordinal = taxo_writer.add_category(&label)?;
                 ordinals.push(ordinal);
                 if config.multi_valued && (config.hierarchical || config.require_dim_count) {
@@ -233,6 +272,30 @@ impl FacetsConfig {
                     prev = ord;
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// `processAssocFacetFields(taxoWriter, byField, doc)`: per index field,
+    /// one binary doc-values field of big-endian `(ordinal, value)` pairs (no
+    /// parents), and each label's drill-down terms.
+    fn process_assoc_facet_fields(
+        &self,
+        taxo_writer: Option<&dyn TaxonomyWriter>,
+        by_field: &[(String, Vec<&AssociationFacetField>)],
+        doc: &mut Document,
+    ) -> Result<()> {
+        for (index_field_name, fields) in in_java_order(by_field) {
+            let mut bytes: Vec<u8> = Vec::with_capacity(16);
+            for field in fields {
+                let taxo_writer = check_taxo_writer(taxo_writer)?;
+                let label = FacetLabel::from_dim_path(&field.dim, &field.path)?;
+                let ordinal = taxo_writer.add_category(&label)?;
+                bytes.extend_from_slice(&ordinal.to_be_bytes());
+                bytes.extend_from_slice(&field.assoc);
+                index_drill_down_terms(doc, index_field_name, &self.dim_config(&field.dim), &label);
+            }
+            doc.add(BinaryDocValuesField::new(index_field_name.as_str(), bytes));
         }
         Ok(())
     }
