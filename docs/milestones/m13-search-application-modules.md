@@ -93,7 +93,15 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
   and date-resolution configuration is deferred to M14
   (`docs/inventory/lucene-queryparser.tsv`).
 - **T13.2** — Highlighting, including term vectors in `DirectoryReader`.
-  **Ported, not yet benchmarked** (invariant 3: the ratio against Lucene is owed): the classic `Highlighter` (`GenHighlight`), the
+  **Ported and benchmarked** (`scripts/bench-micro.sh --bench highlight`, pair `HighlightMicro`
+  vs Lucene 10.5.0; ratio > 1 is Rust faster): `uh_postings` 0.96x (inside the 1.18x noise
+  floor), `fvh` 0.75x (noise 2.06x), `uh_analysis` 0.36x, `uh_tv` 0.36x. Stage 3 so far: the
+  `MemoryIndex` strategies no longer write the one-document codec segment on the
+  weight-matches path (0.17x -> 0.36x). What remains is that same `MemoryIndex`: the Rust one
+  encodes each document's postings into a codec segment for `IndexSearcher` to read, where
+  Lucene searches the in-heap postings directly. A lightweight in-memory leaf reader is a
+  `MemoryIndex`-wide change (T13.5's, `memory/reader.rs`), recorded as the reason for the two
+  ratios below 1.0, not done here. The classic `Highlighter` (`GenHighlight`), the
   `matchhighlight` package (`GenMatchHighlight`, with the JDK's word and
   sentence breaks fuzzed against `BreakIterator`), the `UnifiedHighlighter`
   (`GenUnifiedHighlight`: every offset source, passage and break option;
@@ -188,7 +196,7 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
 - **T13.6** — Plugin wiring for the OpenSearch features above.
 
 **Status by task:** T13.1 done; T13.5 `MemoryIndex` done, `monitor` in
-progress (T13.5a-c done; T13.5d done -- batches, the four matchers, partitioned matching, persistence verified both ways against Lucene, the regexp handler and debug()); T13.2 ported (benchmark owed); T13.3 done; T13.4 and T13.6
+progress (T13.5a-c done; T13.5d done -- batches, the four matchers, partitioned matching, persistence verified both ways against Lucene, the regexp handler and debug()); T13.2 ported and benchmarked (`uh_analysis`/`uh_tv` 0.36x, reason above); T13.3 done; T13.4 and T13.6
 not started. M13 closes when all four acceptance criteria hold.
 
 ## Acceptance criteria
@@ -196,7 +204,7 @@ not started. M13 closes when all four acceptance criteria hold.
 - [ ] Every parser yields Lucene's query tree for the whole T13.1 corpus,
       including its syntax errors (same failure, same position).
 - [x] Highlighters return Lucene's fragments and offsets on a fixture corpus
-      (T13.2; the benchmark against Lucene is still owed).
+      (T13.2; benchmarked, the two `MemoryIndex`-bound ratios written up).
 - [ ] Real Lucene reads a Rust-written completion field and taxonomy index.
 - [ ] OpenSearch's highlighting and suggester YAML suites fail identically
       with and without native execution.

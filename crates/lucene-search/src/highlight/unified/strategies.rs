@@ -645,10 +645,6 @@ impl Strategy {
         let reader = index
             .create_reader()
             .map_err(|e| Error::IllegalArgument(e.to_string()))?;
-        let segments = reader
-            .directory_reader()
-            .map_err(|e| Error::IllegalArgument(e.to_string()))?;
-        let leaf: &dyn LeafReader = &segments.segment_readers()[0];
         let overlay = ctx.is_some();
         let own = |q: &Clause| -> Result<Option<BoxMatches>> {
             let q = retarget(q, &*c.field_matcher, &c.field);
@@ -659,8 +655,14 @@ impl Strategy {
                 .map_err(Into::into)
         };
         if c.flags.weight_matches {
+            // the in-memory searcher answers; the codec segment the
+            // reader-level APIs need is written only on the classic path
             return self.enums_from_matches(own(&c.query)?);
         }
+        let segments = reader
+            .directory_reader()
+            .map_err(|e| Error::IllegalArgument(e.to_string()))?;
+        let leaf: &dyn LeafReader = &segments.segment_readers()[0];
         self.enums_from_reader(leaf, 0, &own)
     }
 
