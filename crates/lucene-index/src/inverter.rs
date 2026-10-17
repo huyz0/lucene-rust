@@ -73,7 +73,7 @@ fn home_slot(h: u64, size: usize) -> usize {
 
 /// `BytesRefHash`: term bytes in one arena, dense ids, open addressing.
 #[derive(Debug, Default)]
-struct TermHash {
+pub(crate) struct TermHash {
     arena: Vec<u8>,
     /// Term `i` is `arena[starts[i]..starts[i + 1]]`.
     starts: Vec<u32>,
@@ -83,7 +83,7 @@ struct TermHash {
 }
 
 impl TermHash {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         TermHash {
             arena: Vec::new(),
             starts: vec![0],
@@ -106,7 +106,7 @@ impl TermHash {
 
     /// The id of `bytes`, adding it if new; `true` when it was added.
     #[inline]
-    fn add(&mut self, bytes: &[u8]) -> (u32, bool) {
+    pub(crate) fn add(&mut self, bytes: &[u8]) -> (u32, bool) {
         let h = hash_bytes(bytes);
         // `table.len()` is a power of two, at least 1024.
         let mask = self.table.len().wrapping_sub(1);
