@@ -31,6 +31,8 @@ mod micro_analysis_opennlp;
 mod micro_analysis_misc;
 mod micro_completion;
 mod micro_analyzing;
+mod micro_freetext;
+mod micro_infix;
 mod micro_fst_lookup;
 mod micro_highlight;
 mod micro_memory_index;
@@ -2091,6 +2093,8 @@ fn main() {
         "highlight" => micro_highlight::bench_highlight(warmup, measure),
         "completion" => micro_completion::bench_completion(warmup, measure),
         "analyzing" => micro_analyzing::bench_analyzing(warmup, measure),
+        "freetext" => micro_freetext::bench_freetext(warmup, measure),
+        "infix" => micro_infix::bench_infix(warmup, measure),
         "fst_lookup" => micro_fst_lookup::bench_fst_lookup(warmup, measure),
         "snowball" => micro_snowball::bench_snowball(warmup, measure),
         "hunspell" => micro_hunspell::bench_hunspell(warmup, measure),

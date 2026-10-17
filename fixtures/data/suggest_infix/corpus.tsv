@@ -1,0 +1,26 @@
+Lend me your ears	100	p0	red
+Mend and lend	90	p1	red,blue
+The lender of last resort	80	p2	blue
+Pretend to lend	70	p3	
+Fast apple pie	60	p4	green
+Apple fast food	60	p5	green,red
+Pineapple and apple juice	55	p6	blue
+Big Apple	55	p7	red
+apple	5	p8	green
+Apples	0	p9	blue
+quick brown fox	40	p10	red
+The quick brown dog	39	p11	red,green
+brown quick fox	38	p12	blue
+lazy dog sleeps	37	p13	green
+a b c d e f	36	p14	red
+f e d c b a	36	p15	red
+café au lait	35	p16	blue
+Cafeteria menu	34	p17	green
+日本語 text here	33	p18	red
+negative weight	-7	p19	red
+tiny weight	3	p20	blue
+tiny weights matter	-3	p21	blue
+Lend me your ears	100	p22	blue
+repeat repeat repeat	20	p23	green
+Big Apple Pie	55	p24	green
+of the of	19	p25	

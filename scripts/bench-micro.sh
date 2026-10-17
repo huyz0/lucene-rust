@@ -143,6 +143,18 @@ case "$BENCH" in
     SRC=benchmarks/micro/java/AnalyzingSuggestMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common lucene-suggest" ;;
+  # M13 T13.3c: FreeTextSuggester, lookups and builds.
+  freetext)
+    MAIN=FreeTextSuggestMicro
+    SRC=benchmarks/micro/java/FreeTextSuggestMicro.java
+    EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-analysis-common lucene-suggest" ;;
+  # M13 T13.3c: AnalyzingInfixSuggester, lookups and builds.
+  infix)
+    MAIN=InfixSuggestMicro
+    SRC=benchmarks/micro/java/InfixSuggestMicro.java
+    EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-analysis-common lucene-suggest" ;;
   # M13 T13.3b: WFSTCompletionLookup and FSTCompletionLookup, lookups and builds.
   fst_lookup)
     MAIN=FstLookupMicro
