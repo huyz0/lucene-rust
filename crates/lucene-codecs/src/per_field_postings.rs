@@ -51,6 +51,35 @@ pub const FORMAT_NAME: &str = "Lucene104";
 /// `Completion104PostingsFormat.getName()`, also the codec name of its
 /// `.lkp`/`.cmp` headers.
 pub const COMPLETION_FORMAT_NAME: &str = "Completion104";
+/// Every `CompletionPostingsFormat` subclass a Lucene 10.5.0 index can hold,
+/// oldest first: `Completion90PostingsFormat` (Lucene 9.0-9.8),
+/// `Completion99` (9.9-9.11), `Completion912` (9.12-10.0), `Completion101`
+/// (10.1-10.3) and `Completion104`. They differ only in their name (the
+/// `.cmp`/`.lkp` codec name) and their delegate, which the `.cmp` names
+/// itself. `Completion50` (`"completion"`) and `Completion84` are Lucene
+/// 8.x formats: neither Lucene 10 nor OpenSearch 3.x opens an index created
+/// by Lucene 8 (`IndexFormatTooOldException`), and 9.x could not write them.
+pub const COMPLETION_FORMAT_NAMES: [&str; 5] = [
+    "Completion90",
+    "Completion99",
+    "Completion912",
+    "Completion101",
+    COMPLETION_FORMAT_NAME,
+];
+
+/// The completion format a group's codec suffix names (`Completion912_0` ->
+/// `Completion912`), or `None` for a suffix of any other format
+/// (`PostingsFormat.forName`'s lookup of the per-field format attribute).
+pub fn completion_format_of(suffix: &str) -> Option<&'static str> {
+    let (name, _) = suffix.rsplit_once('_')?;
+    COMPLETION_FORMAT_NAMES.into_iter().find(|n| *n == name)
+}
+
+/// Whether `name`, a field's `PerFieldPostingsFormat.format` attribute, is a
+/// completion format.
+pub fn is_completion_format(name: &str) -> bool {
+    COMPLETION_FORMAT_NAMES.contains(&name)
+}
 
 /// Which postings format a field is routed to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -441,6 +470,54 @@ mod tests {
                 ..Default::default()
             })
             .collect()
+    }
+
+    /// A suffix names its completion format by everything before its last
+    /// `_`; Lucene 8's formats and every other format are none.
+    #[test]
+    fn completion_suffixes_name_their_format() {
+        assert_eq!(completion_format_of("Completion90_0"), Some("Completion90"));
+        assert_eq!(
+            completion_format_of("Completion912_3"),
+            Some("Completion912")
+        );
+        assert_eq!(
+            completion_format_of("Completion104_0"),
+            Some("Completion104")
+        );
+        for other in [
+            "Completion84_0",
+            "completion_0",
+            "Lucene104_0",
+            "",
+            "Completion90",
+        ] {
+            assert_eq!(completion_format_of(other), None, "{other}");
+        }
+        assert!(is_completion_format("Completion101"));
+        assert!(!is_completion_format("Lucene101"));
+        let delegates: Vec<&str> = COMPLETION_FORMAT_NAMES
+            .iter()
+            .map(|n| {
+                crate::postings::PostingsFormat::completion_delegate(n)
+                    .unwrap()
+                    .name()
+            })
+            .collect();
+        assert_eq!(
+            delegates,
+            [
+                "Lucene90",
+                "Lucene99",
+                "Lucene912",
+                "Lucene101",
+                "Lucene104"
+            ]
+        );
+        assert_eq!(
+            crate::postings::PostingsFormat::completion_delegate("Completion84"),
+            None
+        );
     }
 
     /// Two fields to the small format, one to the default: two groups,
