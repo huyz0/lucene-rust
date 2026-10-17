@@ -113,7 +113,13 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
     `store()` bytes equal Lucene's, `GenSuggest.java`); `WFSTCompletionLookup` and
     `FSTCompletionLookup` (396 and 792 lookups, `store()` bytes equal Lucene's and Lucene's
     bytes load, `GenSuggestFst.java`). Sorting is in memory, so `ExternalRefSorter` is `InMemorySorter`.
-  - **T13.3c** — analyzing suggesters (`AnalyzingSuggester`, `FuzzySuggester`, `FreeTextSuggester`, `AnalyzingInfixSuggester`, `BlendedInfixSuggester`, `SuggestStopFilter`).
+  - **T13.3c** — analyzing suggesters. **C1 done**: `AnalyzingSuggester`, `FuzzySuggester`, `SuggestStopFilter` and its factory
+    (11 configurations x 480 lookups, `store()` bytes and `load()` equal Lucene's, `GenAnalyzingSuggest.java`).
+    Benchmark (`scripts/bench-micro.sh analyzing`, Rust vs Lucene 10.5.0, ratio > 1 is faster): `analyzing_build` 1.96x,
+    `analyzing_lookup` 1.14x (inside the noise floor), `fuzzy_build` 1.86x, `fuzzy_lookup` 2.81x.
+    **C2 done**: `FreeTextSuggester` (7 configurations, `store()` bytes and `load()` equal Lucene's, `GenFreeTextSuggest.java`);
+    `TopNSearcher` gained `skip_label` (Java's `addIfCompetitive` override). Owed: the C2 benchmark pair,
+    `AnalyzingInfixSuggester` and `BlendedInfixSuggester` (C3).
   - **T13.3d** — `suggest.document`: the completion postings format and its queries (what OpenSearch uses; prioritised).
     **D1 done**: the `.cmp`/`.lkp` writer (bytes equal Lucene's), the reader, `FSTUtil` and `NRTSuggester.lookup`
     with `TopSuggestDocsCollector` (180 prefix and 96 regex queries equal Lucene's, `GenCompletion.java`).

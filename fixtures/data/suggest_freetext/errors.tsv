@@ -1,0 +1,19 @@
+grams_0	IllegalArgumentException	grams must be >= 1
+grams_-1	IllegalArgumentException	grams must be >= 1
+separator_high	IllegalArgumentException	separator must be simple ascii character
+separator_nul	ok
+payloads	IllegalArgumentException	this suggester doesn't support payloads
+contexts	IllegalArgumentException	this suggester doesn't support contexts
+no_input	IllegalArgumentException	need at least one suggestion
+no_tokens	IllegalArgumentException	need at least one suggestion
+single_token	built	1	R	a9223372036854775807
+separator_in_token	built	1	R	
+separator_in_tokens	IllegalArgumentException	tokens must not contain separator byte; got token=[61 1e 62 1e 63 20 64] but gramCount=3, which is greater than expected max ngram size=2
+unbuilt	X	IllegalStateException	Lookup not supported at this time
+unbuilt_count	0
+lookup_contexts	X	IllegalArgumentException	this suggester doesn't support contexts
+get	UnsupportedOperationException	null
+separator_in_query	X	IllegalArgumentException	tokens must not contain separator byte; got token=[78 1e 79 20 7a] but gramCount=1 does not match recalculated count=2
+lookup_zero	X	NoSuchElementException	null
+load_grams	IllegalStateException	grams=3 is incorrect: original model was built with grams=2
+load_separator	IllegalStateException	separator=124 is incorrect: original model was built with separator=30
