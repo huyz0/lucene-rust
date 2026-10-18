@@ -396,6 +396,19 @@ fn default_score<C: ScoringCollector + ?Sized>(
             }
         }
     }
+    // A scorer whose first run is short (any but a dense iterator) never
+    // reaches the range path: it stays on the loop below.
+    if !two_phase
+        && !prune
+        && live_docs.is_none()
+        && doc < max
+        && scorer.doc_id_run_end().min(max).saturating_sub(doc) >= DENSE_RUN_MIN
+    {
+        if let Some(score) = scorer.constant_score() {
+            let score = if needs_scores { score } else { 0.0 };
+            return constant_runs_score(scorer, collector, score, doc, max);
+        }
+    }
     if needs_scores && doc < max && scorer.prefers_batches() && super::batches_on() {
         return batch_score(scorer, published, prune, live_docs, collector, doc, max);
     }
@@ -411,6 +424,41 @@ fn default_score<C: ScoringCollector + ?Sized>(
     }
     Ok(doc)
 }
+
+/// [`default_score`] over a constant-score scorer with no deleted documents
+/// and no threshold to publish: `DenseConjunctionBulkScorer.scoreWindow`'s
+/// `acceptDocs == null` path -- each run of consecutive matches
+/// ([`super::Scorer::doc_id_run_end`]) at least `WINDOW_SIZE / 2` long goes to
+/// the collector as one `collectRange`; from the first shorter one on, the
+/// rest is collected document by document, as `DefaultBulkScorer` would (a
+/// sparse tail would otherwise pay a `docIDRunEnd` per document, which Java
+/// avoids by choosing the dense scorer on cost). `doc` is the scorer's
+/// current document, below `max`. Returns the next document to score.
+fn constant_runs_score<C: ScoringCollector + ?Sized>(
+    scorer: &mut dyn super::Scorer,
+    collector: &mut C,
+    score: f32,
+    mut doc: i32,
+    max: i32,
+) -> Result<i32> {
+    while doc < max {
+        let end = scorer.doc_id_run_end().min(max);
+        if end.saturating_sub(doc) < DENSE_RUN_MIN {
+            break;
+        }
+        collector.collect_range(doc, end, score);
+        doc = scorer.advance(end)?;
+    }
+    while doc < max {
+        collector.collect(doc, score);
+        doc = scorer.next_doc()?;
+    }
+    Ok(doc)
+}
+
+/// `DenseConjunctionBulkScorer.WINDOW_SIZE / 2`: the shortest run of
+/// matches handed over as a range.
+const DENSE_RUN_MIN: i32 = 2048;
 
 /// [`default_score`] over a scorer that [prefers
 /// batches](super::Scorer::prefers_batches): its matches below `max` a

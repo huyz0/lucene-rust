@@ -72,6 +72,17 @@ impl<V: Clone> Arc<V> {
             presence_index: 0,
         }
     }
+    /// A copy positioned as this arc, for following it, without its own
+    /// output (`no_output` in its place): reading the arcs it leads to needs
+    /// only its target, flags and next-final output, and leaving the output
+    /// out saves copying it.
+    pub fn without_output(&self, no_output: V) -> Self {
+        Arc {
+            output: no_output,
+            next_final_output: self.next_final_output.clone(),
+            ..*self
+        }
+    }
     /// `label()`.
     pub fn label(&self) -> i32 {
         self.label
@@ -173,6 +184,12 @@ impl<O: FstOutputs> TypedFst<O> {
 
     /// `FST.readMetadata` + the on-heap body (`FST.save(out, out)` bytes).
     pub fn read(saved: &[u8]) -> Result<Self> {
+        Self::read_prefix(saved).map(|(fst, _)| fst)
+    }
+
+    /// [`read`](Self::read) of an FST that is followed by other data, with the
+    /// number of bytes the FST took (Java's `skipBytes(store.size())`).
+    pub fn read_prefix(saved: &[u8]) -> Result<(Self, usize)> {
         let mut input = SliceInput::new(saved);
         let store = |e: lucene_store::error::Error| corrupt(e.to_string());
         let version = codec_util::check_header(
@@ -209,13 +226,29 @@ impl<O: FstOutputs> TypedFst<O> {
             .ok_or_else(|| corrupt(format!("numBytes {num_bytes} past the end")))?;
         let mut bytes = vec![0u8; n];
         input.read_bytes(&mut bytes).map_err(store)?;
-        Ok(TypedFst {
-            input_type,
-            empty_output,
-            start_node,
-            version,
-            bytes,
-        })
+        let used = input.position();
+        Ok((
+            TypedFst {
+                input_type,
+                empty_output,
+                start_node,
+                version,
+                bytes,
+            },
+            used,
+        ))
+    }
+
+    /// `FST.save(out, out)`: the bytes [`read`](Self::read) takes back.
+    pub fn save(&self) -> Vec<u8> {
+        CompiledFst {
+            input_type: self.input_type,
+            empty_output: self.empty_output.clone(),
+            start_node: self.start_node,
+            version: self.version,
+            bytes: self.bytes.clone(),
+        }
+        .save::<O>()
     }
 
     /// `inputType`.
@@ -905,8 +938,8 @@ pub struct FstPath<V> {
     pub input: Vec<i32>,
     /// `boost`.
     pub boost: f32,
-    /// `context`.
-    pub context: Option<String>,
+    /// `context`, shared by every path grown from the same start path.
+    pub context: Option<std::rc::Rc<str>>,
     /// `payload`.
     pub payload: i32,
 }
@@ -943,17 +976,28 @@ pub struct TopNSearcher<'f, 'c, O: FstOutputs> {
     path_comparator: PathCmp<'c, O::Value>,
     /// `TreeSet<FSTPath>` ordered by `path_comparator`; `None` once Java sets
     /// it to null.
-    queue: Option<Vec<FstPath<O::Value>>>,
+    /// A deque: the best path leaves from the front, the worst from the
+    /// back, each in O(1) as from Java's red-black tree.
+    queue: Option<std::collections::VecDeque<FstPath<O::Value>>>,
     /// `acceptPartialPath(path)`.
     pub accept_partial_path: Option<AcceptPartialPath<'c, O::Value>>,
     /// `acceptResult(input, output)`.
     pub accept_result: Option<AcceptResult<'c, O::Value>>,
+    /// An override of `addIfCompetitive` that drops every path whose arc
+    /// carries this label before it is queued (`FreeTextSuggester` skips its
+    /// separator).
+    pub skip_label: Option<i32>,
 }
 
-/// `TopNSearcher.acceptPartialPath`'s override.
-pub type AcceptPartialPath<'c, V> = Box<dyn FnMut(&FstPath<V>) -> bool + 'c>;
-/// `TopNSearcher.acceptResult(IntsRef, T)`'s override.
-pub type AcceptResult<'c, V> = Box<dyn FnMut(&[i32], &V) -> bool + 'c>;
+/// `TopNSearcher.acceptPartialPath`'s override. It may change the path
+/// (`NRTSuggester` caches the payload separator's position in
+/// `FSTPath.payload`). The path's arc carries no output: it is summed into
+/// the path's `output`.
+pub type AcceptPartialPath<'c, V> = Box<dyn FnMut(&mut FstPath<V>) -> bool + 'c>;
+/// `TopNSearcher.acceptResult(FSTPath)`'s override: the whole path, so a
+/// caller can read its boost, context and payload as well as its input and
+/// output.
+pub type AcceptResult<'c, V> = Box<dyn FnMut(&FstPath<V>) -> bool + 'c>;
 
 impl<'f, 'c, O: FstOutputs + 'c> TopNSearcher<'f, 'c, O> {
     /// `new TopNSearcher(fst, topN, maxQueueDepth, comparator)`: ties broken
@@ -965,21 +1009,35 @@ impl<'f, 'c, O: FstOutputs + 'c> TopNSearcher<'f, 'c, O> {
         comparator: impl Fn(&O::Value, &O::Value) -> Ordering + Clone + 'c,
     ) -> Self {
         let c2 = comparator.clone();
+        Self::with_path_comparator(fst, top_n, max_queue_depth, comparator, move |a, b| {
+            c2(&a.output, &b.output).then_with(|| a.input.cmp(&b.input))
+        })
+    }
+
+    /// `new TopNSearcher(fst, topN, maxQueueDepth, comparator, pathComparator)`:
+    /// the queue is ordered by `path_comparator`, which sees the whole path
+    /// (its boost as well as its output).
+    pub fn with_path_comparator(
+        fst: &'f TypedFst<O>,
+        top_n: usize,
+        max_queue_depth: usize,
+        comparator: impl Fn(&O::Value, &O::Value) -> Ordering + 'c,
+        path_comparator: impl Fn(&FstPath<O::Value>, &FstPath<O::Value>) -> Ordering + 'c,
+    ) -> Self {
         TopNSearcher {
             fst,
             top_n,
             max_queue_depth,
             comparator: Box::new(comparator),
-            path_comparator: Box::new(move |a, b| {
-                c2(&a.output, &b.output).then_with(|| a.input.cmp(&b.input))
-            }),
-            queue: Some(Vec::new()),
+            path_comparator: Box::new(path_comparator),
+            queue: Some(std::collections::VecDeque::new()),
             accept_partial_path: None,
             accept_result: None,
+            skip_label: None,
         }
     }
 
-    fn accept_partial(&mut self, path: &FstPath<O::Value>) -> bool {
+    fn accept_partial(&mut self, path: &mut FstPath<O::Value>) -> bool {
         self.accept_partial_path.as_mut().is_none_or(|f| f(path))
     }
 
@@ -987,33 +1045,41 @@ impl<'f, 'c, O: FstOutputs + 'c> TopNSearcher<'f, 'c, O> {
     // ARITH: `max_queue_depth + 1` for a caller-chosen in-memory depth.
     #[allow(clippy::arithmetic_side_effects)]
     fn add_if_competitive(&mut self, path: &FstPath<O::Value>) {
-        let output = O::add(&path.output, &path.arc.output);
+        if self.skip_label == Some(path.arc.label) {
+            return;
+        }
         let Some(queue) = &self.queue else { return };
         if queue.len() == self.max_queue_depth {
-            if let Some(bottom) = queue.last() {
+            if let Some(bottom) = queue.back() {
                 let comp = (self.path_comparator)(path, bottom);
                 if comp == Ordering::Greater {
                     return;
                 } else if comp == Ordering::Equal {
-                    let mut extended = path.input.clone();
-                    extended.push(path.arc.label);
-                    if bottom.input.as_slice() < extended.as_slice() {
+                    // the path's input with the arc's label appended
+                    let extended = path.input.iter().chain(std::iter::once(&path.arc.label));
+                    if bottom.input.iter().cmp(extended) == Ordering::Less {
                         return;
                     }
                 }
             }
         }
-        let mut new_input = path.input.clone();
+        // Java sums the output first; it is not read until the path is
+        // known to be competitive, so it is summed here.
+        let output = O::add(&path.output, &path.arc.output);
+        let mut new_input = Vec::with_capacity(path.input.len() + 1);
+        new_input.extend_from_slice(&path.input);
         new_input.push(path.arc.label);
-        let new_path = FstPath {
-            arc: path.arc.clone(),
+        // a queued path's arc output is already summed into `output` and is
+        // never read again: only the arc's position is kept
+        let mut new_path = FstPath {
+            arc: path.arc.without_output(O::no_output()),
             output,
             input: new_input,
             boost: path.boost,
             context: path.context.clone(),
             payload: path.payload,
         };
-        if self.accept_partial(&new_path) {
+        if self.accept_partial(&mut new_path) {
             let cmp = &self.path_comparator;
             let Some(queue) = &mut self.queue else { return };
             match queue.binary_search_by(|p| cmp(p, &new_path)) {
@@ -1021,7 +1087,7 @@ impl<'f, 'c, O: FstOutputs + 'c> TopNSearcher<'f, 'c, O> {
                 Err(pos) => queue.insert(pos, new_path),
             }
             if queue.len() == self.max_queue_depth + 1 {
-                queue.pop();
+                queue.pop_back();
             }
         }
     }
@@ -1047,7 +1113,7 @@ impl<'f, 'c, O: FstOutputs + 'c> TopNSearcher<'f, 'c, O> {
         allow_empty_string: bool,
         input: Vec<i32>,
         boost: f32,
-        context: Option<String>,
+        context: Option<std::rc::Rc<str>>,
         payload: i32,
     ) -> Result<()> {
         let mut path = FstPath {
@@ -1084,12 +1150,10 @@ impl<'f, 'c, O: FstOutputs + 'c> TopNSearcher<'f, 'c, O> {
         let mut reject_count = 0usize;
         let mut scratch_arc = Arc::new(no.clone());
         while results.len() < self.top_n {
-            let Some(queue) = &mut self.queue else { break };
-            if queue.is_empty() {
+            let Some(mut path) = self.queue.as_mut().and_then(|q| q.pop_front()) else {
                 break;
-            }
-            let mut path = queue.remove(0);
-            if !self.accept_partial(&path) {
+            };
+            if !self.accept_partial(&mut path) {
                 continue;
             }
             if path.arc.label == END_LABEL {
@@ -1104,7 +1168,7 @@ impl<'f, 'c, O: FstOutputs + 'c> TopNSearcher<'f, 'c, O> {
                 self.queue = None;
             }
             loop {
-                let follow = path.arc.clone();
+                let follow = path.arc.without_output(O::no_output());
                 self.fst
                     .read_first_target_arc(&follow, &mut path.arc, &mut r)?;
                 let mut found_zero = false;
@@ -1139,15 +1203,16 @@ impl<'f, 'c, O: FstOutputs + 'c> TopNSearcher<'f, 'c, O> {
                     path.arc = scratch_arc.clone();
                 }
                 if path.arc.label == END_LABEL {
-                    path.output = O::add(&path.output, &path.arc.output);
+                    O::add_assign(&mut path.output, &path.arc.output);
                     let accept = match &mut self.accept_result {
-                        Some(f) => f(&path.input, &path.output),
+                        Some(f) => f(&path),
                         None => true,
                     };
                     if accept {
+                        // the path ends here: its input and output move
                         results.push(TopResult {
-                            input: path.input.clone(),
-                            output: path.output.clone(),
+                            input: path.input,
+                            output: path.output,
                         });
                     } else {
                         reject_count += 1;
@@ -1155,8 +1220,8 @@ impl<'f, 'c, O: FstOutputs + 'c> TopNSearcher<'f, 'c, O> {
                     break;
                 } else {
                     path.input.push(path.arc.label);
-                    path.output = O::add(&path.output, &path.arc.output);
-                    if !self.accept_partial(&path) {
+                    O::add_assign(&mut path.output, &path.arc.output);
+                    if !self.accept_partial(&mut path) {
                         break;
                     }
                 }

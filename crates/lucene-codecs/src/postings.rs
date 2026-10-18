@@ -248,14 +248,34 @@ impl PostingsFormat {
     /// The format a field's `FieldInfo` names
     /// (`PerFieldPostingsFormat.format`), defaulting to `Lucene104` for a
     /// field without the attribute -- this port's own writer records none.
+    /// A completion field's postings are in its format's delegate.
     pub fn of_field(field: &crate::field_infos::FieldInfo) -> Option<PostingsFormat> {
         match field
             .attributes
             .iter()
             .find(|(k, _)| k == "PerFieldPostingsFormat.format")
         {
-            Some((_, v)) => Self::from_name(v),
+            Some((_, v)) => Self::from_name(v).or_else(|| Self::completion_delegate(v)),
             None => Some(PostingsFormat::Lucene104),
+        }
+    }
+
+    /// `CompletionXXPostingsFormat.delegatePostingsFormat()` of the release
+    /// that wrote a completion field under `name`
+    /// ([`crate::per_field_postings::COMPLETION_FORMAT_NAMES`]), as the
+    /// `Lucene90` block tree reader -- the only one that asks -- needs it.
+    /// Java reads the delegate's name out of the `.cmp` instead, which
+    /// matters for `Completion101` alone: Lucene 10.1-10.2 wrote it over
+    /// `Lucene101`, 10.3 over `Lucene103`, whose dictionary the current
+    /// block tree reader opens without asking.
+    pub fn completion_delegate(name: &str) -> Option<PostingsFormat> {
+        match name {
+            "Completion90" => Some(PostingsFormat::Lucene90),
+            "Completion99" => Some(PostingsFormat::Lucene99),
+            "Completion912" => Some(PostingsFormat::Lucene912),
+            "Completion101" => Some(PostingsFormat::Lucene101),
+            "Completion104" => Some(PostingsFormat::Lucene104),
+            _ => None,
         }
     }
 

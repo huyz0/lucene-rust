@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use lucene_search::highlight::WordBreakIterator;
+use lucene_search::highlight::{BreakKind as Kind, RuleBreakIterator};
 
 fn dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data/matchhighlight")
@@ -49,7 +49,7 @@ fn word_boundaries_match_the_jdk() {
     for line in text.split('\n').filter(|l| !l.is_empty()) {
         let (t, b) = line.split_once('\t').unwrap();
         let t = unesc(t);
-        assert_eq!(WordBreakIterator::new(&t).boundaries(), bounds(b), "{t:?}");
+        assert_eq!(RuleBreakIterator::word(&t).boundaries(), bounds(b), "{t:?}");
         n += 1;
     }
     assert_eq!(n, 16);
@@ -57,25 +57,54 @@ fn word_boundaries_match_the_jdk() {
 
 #[test]
 fn random_strings_break_as_the_jdk_breaks_them() {
-    let text = fs::read_to_string(dir().join("wordfuzz.tsv")).unwrap();
-    let (mut rows, mut bad) = (0, Vec::new());
-    for line in text.split('\n').filter(|l| !l.is_empty()) {
-        let c: Vec<&str> = line.split('\t').collect();
-        let t = unesc(c[0]);
-        // lone surrogates survive only as UTF-16: the generator wrote them
-        // as the escape `unesc` turns into U+FFFD, so skip those rows
-        if c[0].contains("\\ud8") || c[0].contains("\\udc") {
+    assert!(fuzz("wordfuzz.tsv", Kind::Word) > 3800);
+}
+
+#[test]
+fn random_strings_split_into_sentences_as_the_jdk_splits_them() {
+    assert!(fuzz("sentencefuzz.tsv", Kind::Sentence) > 3800);
+}
+
+/// `AnalysisRows.esc` undone, to UTF-16 (a lone surrogate survives).
+fn unesc16(s: &str) -> Vec<u16> {
+    let mut out: Vec<u16> = Vec::new();
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            let mut buf = [0u16; 2];
+            out.extend_from_slice(c.encode_utf16(&mut buf));
             continue;
         }
-        let fresh = || WordBreakIterator::new(&t);
-        let mut it = fresh();
+        match it.next() {
+            Some('u') => {
+                let h: String = it.by_ref().take(4).collect();
+                out.push(u16::from_str_radix(&h, 16).unwrap());
+            }
+            Some('t') => out.push(9),
+            Some('n') => out.push(10),
+            Some('r') => out.push(13),
+            Some(o) => out.push(o as u16),
+            None => out.push(u16::from(b'\\')),
+        }
+    }
+    out
+}
+
+fn fuzz(file: &str, kind: Kind) -> usize {
+    let text = fs::read_to_string(dir().join(file)).unwrap();
+    let (mut rows, mut bad) = (0, Vec::new());
+    // one iterator reused across rows, as the Java generator reuses its own
+    let mut shared = RuleBreakIterator::from_utf16(kind, Vec::new());
+    let opt = |v: Option<usize>| v.map_or(-1, |x| i64::try_from(x).unwrap());
+    for line in text.split('\n').filter(|l| !l.is_empty()) {
+        let c: Vec<&str> = line.split('\t').collect();
+        let t = unesc16(c[0]);
+        let fresh = || RuleBreakIterator::from_utf16(kind, t.clone());
         let mut problems = Vec::new();
-        let got_bounds = it.boundaries();
+        let got_bounds = fresh().boundaries();
         if got_bounds != bounds(c[1]) {
             problems.push(format!("boundaries {got_bounds:?} want {}", c[1]));
         }
-        let mut it = fresh();
-        let opt = |v: Option<usize>| v.map_or(-1, |x| i64::try_from(x).unwrap());
         for cell in c[2].split(' ').filter(|x| !x.is_empty()) {
             let (off, rest) = cell.split_once(':').unwrap();
             let off: usize = off.parse().unwrap();
@@ -89,13 +118,14 @@ fn random_strings_break_as_the_jdk_breaks_them() {
                 problems.push(format!("offset {off}: got {want} want {rest}"));
             }
         }
+        shared.set_text(t.clone());
         for cell in c[3].split(' ').filter(|x| !x.is_empty()) {
             let k = cell.find(['b', 'f', 'p']).unwrap();
             let off: usize = cell[..k].parse().unwrap();
             let got = match &cell[k..=k] {
-                "b" => format!("b{}", it.is_boundary(off)),
-                "f" => format!("f{}", opt(it.following(off))),
-                _ => format!("p{}", opt(it.preceding(off))),
+                "b" => format!("b{}", shared.is_boundary(off)),
+                "f" => format!("f{}", opt(shared.following(off))),
+                _ => format!("p{}", opt(shared.preceding(off))),
             };
             if got != cell[k..] {
                 problems.push(format!("shared {cell}: got {got}"));
@@ -103,7 +133,7 @@ fn random_strings_break_as_the_jdk_breaks_them() {
         }
         rows += 1;
         if !problems.is_empty() {
-            bad.push(format!("{t:?}: {}", problems.join("; ")));
+            bad.push(format!("{:?}: {}", c[0], problems.join("; ")));
         }
     }
     assert!(
@@ -112,7 +142,7 @@ fn random_strings_break_as_the_jdk_breaks_them() {
         bad.len(),
         bad.iter().take(10).cloned().collect::<Vec<_>>().join("\n")
     );
-    assert!(rows > 3800, "{rows}");
+    rows
 }
 
 mod highlighting {

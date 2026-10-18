@@ -29,6 +29,18 @@ mod micro_analysis_icu;
 mod micro_analysis_icu_parts;
 mod micro_analysis_opennlp;
 mod micro_analysis_misc;
+mod micro_completion;
+mod micro_analyzing;
+mod micro_freetext;
+mod micro_infix;
+mod micro_spell;
+mod micro_taxonomy;
+mod micro_facet_counts;
+mod micro_value_facets;
+mod micro_drill_sideways;
+mod micro_doc_index;
+mod micro_fst_lookup;
+mod micro_highlight;
 mod micro_memory_index;
 mod micro_classification;
 mod micro_replicator;
@@ -2090,6 +2102,15 @@ fn main() {
         "classification" => micro_classification::bench_classification(warmup, measure),
         "replicator" => micro_replicator::bench_replicator(warmup, measure),
         "memory_index" => micro_memory_index::bench_memory_index(warmup, measure),
+        "highlight" => micro_highlight::bench_highlight(warmup, measure),
+        "completion" => micro_completion::bench_completion(warmup, measure),
+        "analyzing" => micro_analyzing::bench_analyzing(warmup, measure),
+        "freetext" => micro_freetext::bench_freetext(warmup, measure),
+        "infix" => micro_infix::bench_infix(warmup, measure),
+        "spell" => micro_spell::bench_spell(warmup, measure),
+        "taxonomy" => micro_taxonomy::bench_taxonomy(warmup, measure),
+        "doc_index" => micro_doc_index::bench_doc_index(warmup, measure),
+        "fst_lookup" => micro_fst_lookup::bench_fst_lookup(warmup, measure),
         "snowball" => micro_snowball::bench_snowball(warmup, measure),
         "hunspell" => micro_hunspell::bench_hunspell(warmup, measure),
         "vectors" => bench_vectors(warmup, measure),
@@ -2163,6 +2184,24 @@ fn main() {
                 .nth(2)
                 .expect("grouping needs the GroupingMicro index directory");
             micro_grouping::bench_grouping(warmup, measure, &index);
+        }
+        "facet_counts" => {
+            let index = std::env::args()
+                .nth(2)
+                .expect("facet_counts needs the FacetCountsMicro corpus directory");
+            micro_facet_counts::bench_facet_counts(warmup, measure, &index);
+        }
+        "drill_sideways" => {
+            let index = std::env::args()
+                .nth(2)
+                .expect("drill_sideways needs the FacetCountsMicro corpus directory");
+            micro_drill_sideways::bench_drill_sideways(warmup, measure, &index);
+        }
+        "value_facets" => {
+            let index = std::env::args()
+                .nth(2)
+                .expect("value_facets needs the ValueFacetsMicro corpus directory");
+            micro_value_facets::bench_value_facets(warmup, measure, &index);
         }
         "m7_fixture" => micro_m7::bench_m7_fixture(warmup, measure),
         "query_builder" => micro_m7::bench_query_builder(warmup, measure),

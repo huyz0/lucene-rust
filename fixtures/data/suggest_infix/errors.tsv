@@ -1,0 +1,13 @@
+unbuilt_lookup	X	IllegalStateException	suggester was not built
+unbuilt_refresh	X	IllegalStateException	suggester was not built
+unbuilt_commit	X	IllegalStateException	Cannot commit on an closed writer. Add documents first
+unbuilt_count	0
+negative_min_prefix	X	IllegalArgumentException	minPrefixChars must be >= 0; got: -1
+num_0	X	IllegalArgumentException	numHits must be > 0; please use TotalHitCountCollector if you just need the total hit count
+num_negative	X	IllegalArgumentException	numHits must be > 0; please use TotalHitCountCollector if you just need the total hit count
+store	R	false
+load	R	false
+blended_num_0	X	IllegalArgumentException	numHits must be > 0; please use TotalHitCountCollector if you just need the total hit count
+count_after_build	26
+bare	R	Fast apple pieFast <b>apple</b> pie60~null~nullApple fast food<b>Apple</b> fast food60~null~nullPineapple and apple juicePineapple and <b>apple</b> juice55~null~null
+bare_ctx	R	

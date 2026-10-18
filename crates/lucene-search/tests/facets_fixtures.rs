@@ -19,7 +19,7 @@ use lucene_codecs::doc_values::{self, DocValuesMeta, SortedNumericEntry, SortedS
 use lucene_codecs::terms_dict::{self, TermsDictEntry};
 use lucene_search::facets::{
     self, path_components_to_string, string_to_path, DrillDownTermsIndexing, FacetBuildError,
-    FacetResult, FacetsConfig, FacetsState, NumericRange, SortedSetFacetCounts,
+    FacetResult, FacetValue, Facets, FacetsConfig, FacetsState, NumericRange, SortedSetFacetCounts,
 };
 use lucene_search::ordinal_map::{OrdinalMap, TermCursor};
 
@@ -260,11 +260,11 @@ fn global_counts(m: &Manifest) -> (FacetsState, Vec<u64>, OrdinalMap, Vec<Vec<St
 /// `FacetResult`, rendered the way `GenFacets.appendResult` renders Lucene's.
 fn render(r: &FacetResult) -> (i64, usize, Vec<(String, u64)>) {
     (
-        r.value,
-        r.child_count,
+        i64::from(r.value.int_value()),
+        r.child_count as usize,
         r.label_values
             .iter()
-            .map(|lv| (lv.label.clone(), lv.count))
+            .map(|lv| (lv.label.clone(), lv.value.int_value() as u64))
             .collect(),
     )
 }
@@ -378,7 +378,7 @@ fn get_all_dims_matches_real_lucene() {
     let (state, counts, _, _) = global_counts(&m);
     let facets = SortedSetFacetCounts::new(&state, counts);
 
-    let got = facets.all_dims(10);
+    let got = facets.get_all_dims(10).unwrap();
     assert_eq!(got.len(), m.num("alldims.count") as usize);
     for (i, r) in got.iter().enumerate() {
         assert_eq!(render(r), expected(&m, &format!("alldims.{i}")), "dim #{i}");
@@ -391,7 +391,7 @@ fn get_all_dims_matches_real_lucene() {
     // `Tag` is multi-valued without `requireDimCount`: Lucene reports -1, not
     // the sum of its children (4 + 3 + 2 == 9, which would look plausible).
     let tag = got.iter().find(|r| r.dim == "Tag").unwrap();
-    assert_eq!(tag.value, -1);
+    assert_eq!(tag.value, FacetValue::Int(-1));
     assert_eq!(tag.child_count, 3);
 }
 
@@ -403,17 +403,17 @@ fn get_top_children_and_get_all_children_match_real_lucene() {
 
     for dim in ["Author", "Publish Year", "Tag"] {
         assert_eq!(
-            render(&facets.top_children(10, dim, &[]).unwrap()),
+            render(&facets.get_top_children(10, dim, &[]).unwrap().unwrap()),
             expected(&m, &format!("top.{dim}")),
             "getTopChildren(10, {dim})"
         );
         assert_eq!(
-            render(&facets.top_children(2, dim, &[]).unwrap()),
+            render(&facets.get_top_children(2, dim, &[]).unwrap().unwrap()),
             expected(&m, &format!("top2.{dim}")),
             "getTopChildren(2, {dim}) -- the truncation must not change childCount"
         );
         assert_eq!(
-            render(&facets.all_children(dim, &[]).unwrap()),
+            render(&facets.get_all_children(dim, &[]).unwrap().unwrap()),
             expected(&m, &format!("all.{dim}")),
             "getAllChildren({dim}) -- ordinal order, not count order"
         );
@@ -427,22 +427,33 @@ fn hierarchical_dims_walk_the_dim_tree_like_real_lucene() {
     let facets = SortedSetFacetCounts::new(&state, counts);
 
     assert_eq!(
-        render(&facets.top_children(10, "Path", &[]).unwrap()),
+        render(&facets.get_top_children(10, "Path", &[]).unwrap().unwrap()),
         expected(&m, "top.Path"),
         "the dim's own children"
     );
     assert_eq!(
-        render(&facets.top_children(10, "Path", &["a"]).unwrap()),
+        render(
+            &facets
+                .get_top_children(10, "Path", &["a"])
+                .unwrap()
+                .unwrap()
+        ),
         expected(&m, "top.Path.a"),
         "one level down"
     );
     assert_eq!(
-        render(&facets.all_children("Path", &["d"]).unwrap()),
+        render(&facets.get_all_children("Path", &["d"]).unwrap().unwrap()),
         expected(&m, "all.Path.d")
     );
     // A path that was never indexed is `null` in Java, not an empty result.
-    assert!(facets.top_children(10, "Path", &["nope"]).is_none());
-    assert!(facets.all_children("Path", &["a", "b", "c"]).is_none());
+    assert!(facets
+        .get_top_children(10, "Path", &["nope"])
+        .unwrap()
+        .is_none());
+    assert!(facets
+        .get_all_children("Path", &["a", "b", "c"])
+        .unwrap()
+        .is_none());
 }
 
 #[test]
@@ -452,20 +463,40 @@ fn get_specific_value_matches_real_lucene_including_its_minus_one() {
     let facets = SortedSetFacetCounts::new(&state, counts);
 
     assert_eq!(
-        facets.specific_value("Author", &["Bob"]),
+        i64::from(
+            facets
+                .get_specific_value("Author", &["Bob"])
+                .unwrap()
+                .int_value()
+        ),
         m.num("specific.Author.Bob")
     );
     assert_eq!(
-        facets.specific_value("Author", &["Nobody"]),
+        i64::from(
+            facets
+                .get_specific_value("Author", &["Nobody"])
+                .unwrap()
+                .int_value()
+        ),
         m.num("specific.Author.Nobody"),
         "a path that was never indexed is -1, not 0"
     );
     assert_eq!(
-        facets.specific_value("Path", &["a"]),
+        i64::from(
+            facets
+                .get_specific_value("Path", &["a"])
+                .unwrap()
+                .int_value()
+        ),
         m.num("specific.Path.a")
     );
     assert_eq!(
-        facets.specific_value("Path", &["a", "b"]),
+        i64::from(
+            facets
+                .get_specific_value("Path", &["a", "b"])
+                .unwrap()
+                .int_value()
+        ),
         m.num("specific.Path.a.b")
     );
 }
@@ -475,9 +506,20 @@ fn a_dim_that_was_never_indexed_is_absent_everywhere() {
     let m = Manifest::load();
     let (state, counts, _, _) = global_counts(&m);
     let facets = SortedSetFacetCounts::new(&state, counts);
-    assert!(facets.top_children(10, "NoSuchDim", &[]).is_none());
-    assert!(facets.all_children("NoSuchDim", &[]).is_none());
-    assert_eq!(facets.specific_value("NoSuchDim", &["x"]), -1);
+    assert!(facets
+        .get_top_children(10, "NoSuchDim", &[])
+        .unwrap()
+        .is_none());
+    assert!(facets.get_all_children("NoSuchDim", &[]).unwrap().is_none());
+    assert_eq!(
+        i64::from(
+            facets
+                .get_specific_value("NoSuchDim", &["x"])
+                .unwrap()
+                .int_value()
+        ),
+        -1
+    );
 }
 
 #[test]
@@ -485,9 +527,9 @@ fn top_dims_is_get_all_dims_truncated() {
     let m = Manifest::load();
     let (state, counts, _, _) = global_counts(&m);
     let facets = SortedSetFacetCounts::new(&state, counts);
-    let all = facets.all_dims(10);
-    assert_eq!(facets.top_dims(2, 10), all[..2].to_vec());
-    assert_eq!(facets.top_dims(99, 10), all);
+    let all = facets.get_all_dims(10).unwrap();
+    assert_eq!(facets.get_top_dims(2, 10).unwrap(), all[..2].to_vec());
+    assert_eq!(facets.get_top_dims(99, 10).unwrap(), all);
 }
 
 #[test]
@@ -536,7 +578,7 @@ fn summing_raw_per_segment_counts_would_conflate_unrelated_terms() {
     // And the correct counts are the ones Lucene reports.
     let facets = SortedSetFacetCounts::new(&state, correct);
     assert_eq!(
-        render(&facets.top_children(10, "Author", &[]).unwrap()),
+        render(&facets.get_top_children(10, "Author", &[]).unwrap().unwrap()),
         expected(&m, "top.Author")
     );
 }

@@ -468,7 +468,7 @@ pub enum Decoder {
 }
 
 impl Decoder {
-    fn apply(&self, v: i64) -> f64 {
+    pub(crate) fn apply(&self, v: i64) -> f64 {
         match self {
             Decoder::Long => v as f64,
             Decoder::Double => f64::from_bits(v as u64),
