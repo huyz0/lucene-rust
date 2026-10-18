@@ -1979,6 +1979,54 @@ pub struct BinaryReader<'a> {
     /// is not inside `data` (a lookup then falls through to [`binary_value`],
     /// which raises the error).
     docs: Option<indexed_disi::DisiCursor<'a>>,
+    /// The values' bytes and a variable-width field's addresses, resolved
+    /// once as `getBinary` slices them once (`bytesSlice`, `addresses`);
+    /// `None` when a region is not inside `data`, and each lookup then takes
+    /// [`binary_value_at_ordinal`], which reports it.
+    resolved: Option<ResolvedBinary<'a>>,
+}
+
+/// [`BinaryReader`]'s per-iterator state.
+struct ResolvedBinary<'a> {
+    bytes: &'a [u8],
+    /// `None` for a fixed-width field.
+    addresses: Option<direct_monotonic::Reader<'a>>,
+}
+
+impl<'a> ResolvedBinary<'a> {
+    fn new(data: &'a [u8], entry: &'a BinaryEntry) -> Option<Self> {
+        let bytes = region(data, entry.data_offset, entry.data_length).ok()?;
+        let addresses = match &entry.addresses {
+            Some(addrs) => Some(direct_monotonic::Reader::new(
+                region(data, addrs.offset, addrs.length).ok()?,
+                &addrs.meta,
+            )),
+            None => None,
+        };
+        Some(ResolvedBinary { bytes, addresses })
+    }
+
+    /// [`binary_value_at_ordinal`] over the resolved regions.
+    #[inline]
+    fn value_at_ordinal(&self, entry: &BinaryEntry, ordinal: i64) -> Result<&'a [u8]> {
+        let (start, end) = match &self.addresses {
+            Some(addrs) => {
+                let start = addrs.get(ordinal)?;
+                // ARITH: as in `binary_value_at_ordinal`: `ordinal` is
+                // `i32`-bounded.
+                #[allow(clippy::arithmetic_side_effects)]
+                let end = addrs.get(ordinal + 1)?;
+                (start, end)
+            }
+            // ARITH: as in `binary_value_at_ordinal`.
+            #[allow(clippy::arithmetic_side_effects)]
+            None => {
+                let length = entry.max_length as i64;
+                (ordinal * length, ordinal * length + length)
+            }
+        };
+        slice_at(self.bytes, start, end)
+    }
 }
 
 impl<'a> BinaryReader<'a> {
@@ -2000,7 +2048,17 @@ impl<'a> BinaryReader<'a> {
                     )
                 })
         };
-        Self { data, entry, docs }
+        let resolved = if entry.is_empty_field() {
+            None
+        } else {
+            ResolvedBinary::new(data, entry)
+        };
+        Self {
+            data,
+            entry,
+            docs,
+            resolved,
+        }
     }
 
     /// This document's value, or `None` when it legitimately has none.
@@ -2039,7 +2097,10 @@ impl<'a> BinaryReader<'a> {
                 None => return Ok(None),
             }
         };
-        binary_value_at_ordinal(self.data, self.entry, ordinal).map(Some)
+        match &self.resolved {
+            Some(r) => r.value_at_ordinal(self.entry, ordinal).map(Some),
+            None => binary_value_at_ordinal(self.data, self.entry, ordinal).map(Some),
+        }
     }
 }
 
@@ -2149,6 +2210,14 @@ pub struct SortedNumericReader<'a> {
     /// The values array read by ordinal with one load each, when its shape
     /// allows ([`FastDense::values`]); `None` decodes each value in full.
     fast: Option<FastDense<'a>>,
+    /// The addresses, resolved once as `getSortedNumeric` builds its
+    /// `DirectMonotonicReader` once; `None` for a singleton field and when
+    /// the region is not inside `data` (each lookup then resolves it, and
+    /// reports that).
+    addresses: Option<direct_monotonic::Reader<'a>>,
+    /// The address at a rank already read (the last document's end), so a
+    /// forward scan reads one address per document.
+    next_address: Option<(i64, i64)>,
 }
 
 impl<'a> SortedNumericReader<'a> {
@@ -2174,11 +2243,18 @@ impl<'a> SortedNumericReader<'a> {
             })
         };
         let fast = FastDense::values(data, numeric);
+        let addresses = entry.addresses.as_ref().and_then(|addrs| {
+            region(data, addrs.offset, addrs.length)
+                .ok()
+                .map(|r| direct_monotonic::Reader::new(r, &addrs.meta))
+        });
         Self {
             data,
             entry,
             docs,
             fast,
+            addresses,
+            next_address: None,
         }
     }
 
@@ -2224,12 +2300,30 @@ impl<'a> SortedNumericReader<'a> {
                 });
             }
             Some(addrs) => {
-                let addr_region = region(self.data, addrs.offset, addrs.length)?;
-                let start = direct_monotonic::get(addr_region, &addrs.meta, rank)?;
-                // ARITH: `rank` is a doc id or an `IndexedDISI` ordinal, both
-                // `i32`-bounded, so `rank + 1` cannot overflow.
-                #[allow(clippy::arithmetic_side_effects)]
-                let end = direct_monotonic::get(addr_region, &addrs.meta, rank + 1)?;
+                let (start, end) = match &self.addresses {
+                    // ARITH: `rank` is a doc id or an `IndexedDISI` ordinal,
+                    // both `i32`-bounded, so `rank + 1` cannot overflow.
+                    #[allow(clippy::arithmetic_side_effects)]
+                    Some(reader) => {
+                        // The previous document's end is this one's start
+                        // when the ranks run on (a forward scan).
+                        let start = match self.next_address {
+                            Some((r, address)) if r == rank => address,
+                            _ => reader.get(rank)?,
+                        };
+                        let end = reader.get(rank + 1)?;
+                        self.next_address = Some((rank + 1, end));
+                        (start, end)
+                    }
+                    None => {
+                        let addr_region = region(self.data, addrs.offset, addrs.length)?;
+                        let start = direct_monotonic::get(addr_region, &addrs.meta, rank)?;
+                        // ARITH: as above.
+                        #[allow(clippy::arithmetic_side_effects)]
+                        let end = direct_monotonic::get(addr_region, &addrs.meta, rank + 1)?;
+                        (start, end)
+                    }
+                };
                 // Same bound as `sorted_numeric_values`: the range must lie in
                 // the flat value array, or a constant-encoded field would
                 // "decode" an address-chosen number of values.
@@ -2241,14 +2335,23 @@ impl<'a> SortedNumericReader<'a> {
                         num_values: numeric.num_values,
                     });
                 }
-                for i in start..end {
-                    let fast = i32::try_from(i)
-                        .ok()
-                        .and_then(|i| self.fast.as_ref()?.get(i));
-                    out.push(match fast {
-                        Some(v) => v,
-                        None => decode_value(self.data, numeric, i)?,
-                    });
+                // `end <= num_values`, so every index is an `i32` whenever
+                // `end` is; each value through the resolved values array
+                // when its shape allows, decoded in full otherwise.
+                match (&self.fast, i32::try_from(end)) {
+                    (Some(fast), Ok(_)) => {
+                        for i in start..end {
+                            out.push(match fast.get(i as i32) {
+                                Some(v) => v,
+                                None => decode_value(self.data, numeric, i)?,
+                            });
+                        }
+                    }
+                    _ => {
+                        for i in start..end {
+                            out.push(decode_value(self.data, numeric, i)?);
+                        }
+                    }
                 }
             }
         }
@@ -10010,6 +10113,13 @@ mod tests {
             assert_eq!(got, dense_multi[doc as usize], "doc {doc}");
         }
         assert!(r.values(5000, &mut got).is_err() || got.is_empty());
+        // Consecutive documents (each start the previous end, cached), then
+        // steps back and over (looked up afresh).
+        let mut r = SortedNumericReader::new(&ddvd, dentry);
+        for doc in (10..40).chain([12, 13, 5, 4999, 0]) {
+            r.values(doc, &mut got).unwrap();
+            assert_eq!(got, dense_multi[doc as usize], "doc {doc}");
+        }
         for (lo, hi) in [(0, 5000), (123, 4567)] {
             let mut seen = Vec::new();
             SortedNumericReader::new(&ddvd, dentry)
@@ -10104,6 +10214,18 @@ mod tests {
         let mut r = BinaryReader::new(&bdvd, bentry);
         for doc in (0..3000).step_by(11).chain((0..3000).rev().step_by(17)) {
             assert_eq!(r.value(doc).unwrap(), Some(&dense_bins[doc as usize][..]));
+        }
+
+        // BINARY, dense and of one length: addressed by `doc * length`.
+        let fixed: Vec<Vec<u8>> = (0..3000)
+            .map(|d| format!("f{}", d % 10).into_bytes())
+            .collect();
+        let (fdvm, fdvd, _) = write_single_dense_binary_field(0, &fixed, 3000, &id, "").unwrap();
+        let (_, fmeta) = parse_meta(&fdvm, &id, "", &binary_field_infos()).unwrap();
+        let fentry = fmeta.binary_entry(0).unwrap();
+        let mut r = BinaryReader::new(&fdvd, fentry);
+        for doc in [0, 1, 2999, 1234] {
+            assert_eq!(r.value(doc).unwrap(), Some(&fixed[doc as usize][..]));
         }
 
         // BINARY, sparse.

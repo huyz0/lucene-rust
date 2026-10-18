@@ -99,13 +99,20 @@ impl ComponentHash {
     }
 }
 
+/// A label's shared array and its hashes.
+struct Parts {
+    components: Vec<String>,
+    hashes: Vec<ComponentHash>,
+}
+
 /// `FacetLabel`.
 #[derive(Clone)]
 pub struct FacetLabel {
-    /// `components`: shared with every [`FacetLabel::subpath`] taken of it.
-    components: Arc<[String]>,
-    /// Each component's hashes, shared the same way.
-    hashes: Arc<[ComponentHash]>,
+    /// `components` and each component's hashes, shared with every
+    /// [`FacetLabel::subpath`] taken of it. One `Arc` for both: the reader's
+    /// category cache hands out a clone per `getBulkPath` label, and each
+    /// shared pointer is an atomic increment and decrement.
+    parts: Arc<Parts>,
     /// `length`: how many of `components` this label uses.
     length: usize,
 }
@@ -117,13 +124,12 @@ impl FacetLabel {
 
     /// `new FacetLabel(String... components)`.
     pub fn new<S: Into<String>>(components: impl IntoIterator<Item = S>) -> Result<Self> {
-        let components: Arc<[String]> = components.into_iter().map(Into::into).collect();
+        let components: Vec<String> = components.into_iter().map(Into::into).collect();
         check_components(&components)?;
         let length = components.len();
         let hashes = components.iter().map(|c| ComponentHash::of(c)).collect();
         Ok(FacetLabel {
-            components,
-            hashes,
+            parts: Arc::new(Parts { components, hashes }),
             length,
         })
     }
@@ -136,8 +142,10 @@ impl FacetLabel {
     /// `new FacetLabel()`: the root, with no components.
     pub fn root() -> Self {
         FacetLabel {
-            components: Arc::from(Vec::<String>::new()),
-            hashes: Arc::from(Vec::<ComponentHash>::new()),
+            parts: Arc::new(Parts {
+                components: Vec::new(),
+                hashes: Vec::new(),
+            }),
             length: 0,
         }
     }
@@ -145,12 +153,17 @@ impl FacetLabel {
     /// `components`: the whole shared array, which for a subpath is longer
     /// than [`FacetLabel::len`].
     pub fn components(&self) -> &[String] {
-        &self.components
+        &self.parts.components
     }
 
     /// The components this label uses (`components[0..length]`).
     pub fn path(&self) -> &[String] {
-        &self.components[..self.length]
+        &self.parts.components[..self.length]
+    }
+
+    /// The hashes of the components this label uses.
+    fn hashes(&self) -> &[ComponentHash] {
+        &self.parts.hashes[..self.length]
     }
 
     /// `length`.
@@ -181,7 +194,7 @@ impl FacetLabel {
             return 0;
         }
         let mut hash = i32::try_from(self.length).unwrap_or(i32::MAX);
-        for c in &self.hashes[..self.length] {
+        for c in self.hashes() {
             hash = hash.wrapping_mul(31).wrapping_add(c.java);
         }
         hash
@@ -193,7 +206,7 @@ impl FacetLabel {
             return 0;
         }
         let mut hash = i64::try_from(self.length).unwrap_or(i64::MAX);
-        for c in &self.hashes[..self.length] {
+        for c in self.hashes() {
             hash = hash.wrapping_mul(65599).wrapping_add(i64::from(c.java));
         }
         hash
@@ -206,8 +219,7 @@ impl FacetLabel {
             self.clone()
         } else {
             FacetLabel {
-                components: Arc::clone(&self.components),
-                hashes: Arc::clone(&self.hashes),
+                parts: Arc::clone(&self.parts),
                 length,
             }
         }
@@ -216,7 +228,8 @@ impl FacetLabel {
     /// `lastComponent()`: the last of `components` -- the whole shared
     /// array's, as in Java, so a subpath answers its parent's.
     pub fn last_component(&self) -> Result<&str> {
-        self.components
+        self.parts
+            .components
             .last()
             .map(String::as_str)
             .ok_or_else(|| Error::Unsupported("components is empty".to_string()))
@@ -286,12 +299,13 @@ impl PartialEq for FacetLabel {
         if self.length != other.length {
             return false;
         }
-        if Arc::ptr_eq(&self.components, &other.components) {
+        if Arc::ptr_eq(&self.parts, &other.parts) {
             return true;
         }
-        let same_words = self.hashes[..self.length]
+        let same_words = self
+            .hashes()
             .iter()
-            .zip(&other.hashes[..other.length])
+            .zip(other.hashes())
             .all(|(a, b)| a.word == b.word);
         same_words && self.path() == other.path()
     }
@@ -305,7 +319,7 @@ impl Hash for FacetLabel {
     /// strings themselves each time was most of a cached `addCategory`.
     fn hash<H: Hasher>(&self, state: &mut H) {
         let mut h = self.length as u64;
-        for c in &self.hashes[..self.length] {
+        for c in self.hashes() {
             h = mix(h, c.word);
         }
         state.write_u64(h);

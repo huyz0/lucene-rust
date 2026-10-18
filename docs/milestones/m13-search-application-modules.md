@@ -204,22 +204,39 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
     `scripts/bench-micro.sh --bench facet_counts` (`FacetCountsMicro.java` / `micro_facet_counts.rs`:
     200,000 documents in four segments, a 2,000-author flat dim, a three-level hierarchy, a
     multi-valued tag dim, int and float associations; 3 reps, noise floor 1.09x):
-    `facet_count_rare` 1.28x (sparse counts over 1% of the documents), `facet_top_children` 0.91~
-    (from 0.55x), `facet_count_all` 0.86x (from 0.65x), `facet_int_assoc_sum` 0.70x and
-    `facet_float_assoc_sum` 0.70x (from 0.59x/0.65x), `facet_collect_all` 0.27x. The optimisation
-    pass: the hits walked directly (`facet_utils::for_each_hit`, led by the cheaper side as
-    `ConjunctionDISI` is), a segment's decoded values taken in bulk
+    `facet_count_rare` 1.33x (sparse counts over 1% of the documents), `facet_top_children` 1.40x,
+    `facet_count_all` 1.04~, `facet_int_assoc_sum` 1.31x, `facet_float_assoc_sum` 1.39x,
+    `facet_collect_all` 352x (first pass: 1.28x, 0.91~, 0.86x, 0.70x, 0.70x, 0.27x). The first
+    optimisation pass: the hits walked directly (`facet_utils::for_each_hit`, led by the cheaper side
+    as `ConjunctionDISI` is), a segment's decoded values taken in bulk
     (`SortedNumericDocValues::take_values`), the dense counts and association arrays borrowed once
-    per segment, and a full queue's least count short-circuiting `insertWithOverflow`. Why the rest
-    stays under 1.0: what is left in the three counting cases is the doc-values decode itself --
-    `SortedNumericReader::values` and `BinaryReader::value`, two `DirectMonotonic` address reads
-    per document re-deriving their block each call, where Lucene holds the `LongValues` -- which is
-    `lucene-codecs`' area, not the facet module's; and `facet_collect_all` is the generic
-    `IndexSearcher` driver (a must `MatchAllDocsQuery` clause through `search_slice_collector` and
-    `PerSegment`, a dispatched call per hit) against Lucene's `MatchAllDocsQuery` bulk scorer, while
-    `FacetsCollector`'s own per-hit work is one bit set. Both attributions are by reading the code: the
-    container has no profiler, and no measurement isolates the two yet. Both are recorded for the codecs and
-    searcher passes rather than worked around here.
+    per segment, and a full queue's least count short-circuiting `insertWithOverflow`. The second,
+    each cause measured first with temporary per-step cases (`tmp_*`, both engines, since removed):
+    - `facet_collect_all` was the driver, not the collector: a match-all called the collector once
+      per hit through `LeafCollector` and `PerSegment`. Ported Lucene's path --
+      `ConstantScoreScorerSupplier.matchAll` -> `DenseConjunctionBulkScorer` -> `collectRange` --
+      as `ScoringCollector::collect_range`/`SegmentCollector::collect_range` (default: a `collect`
+      per document, Java's), `Scorer::constant_score` and `exec::bulk::constant_runs_score` (runs of
+      at least `WINDOW_SIZE / 2` documents, no deletions, no pruning); `FacetsCollector` sets a run
+      in its `DocIdSetBuilder` at once (the result is the per-document one). Java's own
+      `FacetsCollector` takes the default, so the Rust side now skips work Java does: the ratio is
+      not a like-for-like collector comparison.
+    - The association sums were the `BINARY` decode (`tmp_bin_decode` 0.34x): each value re-derived
+      its `DirectMonotonic` block from the meta. `direct_monotonic::Reader` resolves the blocks once
+      (`DirectMonotonicReader.getInstance`); `BinaryReader` and `SortedNumericReader` hold one,
+      and the latter reuses the previous document's end address as the next start. 0.66-0.72x ->
+      1.31-1.39x.
+    - `facet_top_children` was the sibling walk (`tmp_walk` 0.71x: a virtual `IntArray::get` and
+      two dependent loads per step) and the labels (`getBulkPath` 0.24x: two `Arc` counts per
+      cached `FacetLabel` clone and drop, a second `Vec`, a `DimConfig` copy per call).
+      `IntArray::chunks` lets the walk read `ChunkedIntArray`'s chunks directly, one slice when
+      the taxonomy is one chunk (`IntArrayReader`); `FacetLabel` keeps one `Arc`; a fully cached
+      `get_bulk_path` returns its hits as they are; `FacetsConfig::dim_config` returns the shared
+      config as `getDimConfig` does. 0.76x -> 1.40x.
+    - `facet_count_all` 0.81x -> 1.04~: the same address resolution and the label and walk
+      changes. What is left is the per-document `SORTED_NUMERIC` iteration (`tmp_sn_decode` 0.82x:
+      a dispatched `next_doc` and `take_values` and a `Vec` refill per document, where the JIT
+      inlines `nextValue` into the counting loop); the case sits inside the noise floor (1.05x).
   - **T13.4c** — drill-down: `DrillDownQuery`, `FacetQuery`, `MultiFacetQuery`, `DrillSideways`,
     `DrillSidewaysQuery`, `DrillSidewaysScorer`.
   - **T13.4d** — the rest of the package: `LongValueFacetCounts`, `StringValueFacetCounts`

@@ -440,7 +440,25 @@ impl TaxonomyReader for DirectoryTaxonomyReader<'_> {
         self.check_ordinal_bounds(ordinals)?;
         let mut bulk: Vec<Option<FacetLabel>> = {
             let mut cache = lock(&self.category_cache);
-            ordinals.iter().map(|o| cache.get(o).cloned()).collect()
+            // Every label cached (the common case): the answer as is. At
+            // the first miss the hits so far carry over and the lookups go
+            // on from there, so each ordinal is looked up (and touched in
+            // the LRU order) once, as in Java.
+            let mut hits = Vec::with_capacity(ordinals.len());
+            for o in ordinals {
+                match cache.get(o) {
+                    Some(label) => hits.push(label.clone()),
+                    None => break,
+                }
+            }
+            if hits.len() == ordinals.len() {
+                return Ok(hits);
+            }
+            let rest = ordinals.get(hits.len()..).unwrap_or_default();
+            hits.into_iter()
+                .map(Some)
+                .chain(rest.iter().map(|o| cache.get(o).cloned()))
+                .collect()
         };
         let mut uncached: Vec<(i32, usize)> = bulk
             .iter()

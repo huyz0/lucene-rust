@@ -27,6 +27,7 @@ use crate::facets::facet_result::{float_to_int_bits, FacetResult, FacetValue, La
 use crate::facets::facets_collector::FacetsCollector;
 use crate::facets::facets_trait::{validate_top_n, Facets};
 use crate::facets::taxonomy::facet_label::java_compare;
+use crate::facets::taxonomy::parallel_taxonomy_arrays::IntArrayReader;
 use crate::facets::taxonomy::{
     AssociationAggregationFunction, FacetLabel, IntArray, ParallelTaxonomyArrays, TaxonomyReader,
     INVALID_ORDINAL, ROOT_ORDINAL,
@@ -358,7 +359,7 @@ impl<'t> TaxonomyFacets<'t> {
     }
 
     /// `verifyDim(dim)`.
-    fn verify_dim(&self, dim: &str) -> Result<DimConfig> {
+    fn verify_dim(&self, dim: &str) -> Result<&'t DimConfig> {
         let dim_config = self.config.dim_config(dim);
         if self.config.is_dim_configured(dim)
             && dim_config.index_field_name != self.index_field_name
@@ -515,7 +516,7 @@ impl<'t> TaxonomyFacets<'t> {
                 }
             }
             _ => {
-                let siblings = self.siblings();
+                let siblings = IntArrayReader::new(self.siblings());
                 let mut ord = self.children().get(path_ord);
                 while ord != INVALID_ORDINAL {
                     let count = self.get_count(ord)?;
@@ -542,7 +543,7 @@ impl<'t> TaxonomyFacets<'t> {
         if let (Aggregation::Count, OrdValues::Dense(counts)) = (self.aggregation, &self.counts) {
             // The plain-count walk with the counts borrowed once: the same
             // children, sum and queue as the general loop below.
-            let siblings = self.siblings();
+            let siblings = IntArrayReader::new(self.siblings());
             let mut sum = 0i32;
             let mut ord = self.children().get(path_ord);
             while ord != INVALID_ORDINAL {
@@ -673,7 +674,7 @@ impl<'t> TaxonomyFacets<'t> {
                         }
                     } else {
                         let top =
-                            self.get_top_children_for_path(&dim_config, dim_ord, top_n_children)?;
+                            self.get_top_children_for_path(dim_config, dim_ord, top_n_children)?;
                         let value = top.path_value;
                         intermediate.insert(dim.clone(), top);
                         value
@@ -712,7 +713,7 @@ impl<'t> TaxonomyFacets<'t> {
                 Some(top) => top,
                 None => {
                     let dim_config = self.config.dim_config(&dim_value.dim);
-                    self.get_top_children_for_path(&dim_config, dim_value.dim_ord, top_n_children)?
+                    self.get_top_children_for_path(dim_config, dim_value.dim_ord, top_n_children)?
                 }
             };
             results.push(self.create_facet_result(top, &dim_value.dim, &[])?);
@@ -830,7 +831,7 @@ impl Facets for TaxonomyFacets<'_> {
         if dim_ord == INVALID_ORDINAL || !self.initialized {
             return Ok(None);
         }
-        let top = self.get_top_children_for_path(&dim_config, dim_ord, top_n)?;
+        let top = self.get_top_children_for_path(dim_config, dim_ord, top_n)?;
         self.create_facet_result(top, dim, path)
     }
 
