@@ -15,11 +15,23 @@ use lucene_search::misc::index::{BinaryDocValueSelector, DocumentSelector, Index
 use lucene_store::FsDirectory;
 use lucene_util::test_support::TempDir;
 
-/// `addIndexes` write-locks its source, which every test shares.
-static SOURCE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 fn data() -> PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data/misc")
+}
+
+/// A private copy of the committed fixture index `name` under `tmp`:
+/// `addIndexes` write-locks its sources, and a test must never write into
+/// `fixtures/`.
+fn source(name: &str, tmp: &TempDir) -> FsDirectory {
+    let to = tmp.path().join(name);
+    std::fs::create_dir_all(&to).unwrap();
+    for entry in std::fs::read_dir(data().join(name)).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_name() != "write.lock" {
+            std::fs::copy(entry.path(), to.join(entry.file_name())).unwrap();
+        }
+    }
+    FsDirectory::open(to)
 }
 
 fn id(n: usize) -> String {
@@ -111,9 +123,9 @@ fn boxed(v: Vec<BinaryDocValueSelector>) -> Vec<Box<dyn DocumentSelector>> {
 
 #[test]
 fn index_rearranger_matches_lucene() {
-    let _guard = SOURCE.lock().unwrap_or_else(|e| e.into_inner());
     let want = expected();
-    let input = FsDirectory::open(data().join("rearrange_src"));
+    let src = TempDir::new("rearrange-src");
+    let input = source("rearrange_src", &src);
     let delete_from_index = || {
         Some(Box::new(
             BinaryDocValueSelector::create_delete_selector_from_index("key", &input).unwrap(),
@@ -177,8 +189,8 @@ fn index_rearranger_matches_lucene() {
 
 #[test]
 fn binary_doc_value_selector_edges() {
-    let _guard = SOURCE.lock().unwrap_or_else(|e| e.into_inner());
-    let input = FsDirectory::open(data().join("rearrange_src"));
+    let src = TempDir::new("rearrange-src");
+    let input = source("rearrange_src", &src);
     // A field the segment has no binary doc values for selects nothing.
     let reader = DirectoryReader::open(&input).unwrap();
     let none = BinaryDocValueSelector::new("absent", keys(0, 18, 1));
