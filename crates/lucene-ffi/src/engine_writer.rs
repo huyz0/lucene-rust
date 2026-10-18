@@ -1602,8 +1602,10 @@ mod tests {
         let tmp = empty_index("engine-writer-failures");
         let h = open(&tmp, 1);
         let f = setup(h);
-        // Term vectors are refused at registration, as the mapping's problem.
-        let mut tv = field("tv", 4, 0, 0, 0);
+        // A schema Lucene refuses -- term vectors on a field that is not
+        // indexed (`FieldInfo.checkConsistency`) -- is refused at
+        // registration, as the mapping's problem.
+        let mut tv = field("tv", 0, 0, 0, 0);
         tv[2 + 4 + 2] = 1;
         assert_eq!(register(h, &tv), Err(FfiStatus::InvalidArgument.code()));
         // A document naming an unregistered field is refused; the writer
