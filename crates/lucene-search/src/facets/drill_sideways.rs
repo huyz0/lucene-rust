@@ -12,7 +12,7 @@
 //! Differs:
 //! * only taxonomy facets are counted: the `SortedSetDocValuesReaderState`
 //!   constructors wait for the sorted-set facet counts over a
-//!   `FacetsCollector` (T13.4d);
+//!   `FacetsCollector` (T13.4d2);
 //! * the executor's searches run one after the other on the calling thread
 //!   (the results are the same);
 //! * `search` with a `Sort` (`TopFieldCollectorManager`) is not ported:
