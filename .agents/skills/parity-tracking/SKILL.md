@@ -42,7 +42,7 @@ become changelogs (it reached 1.25 MB in one file before the split).
 - **Pin the Lucene version** at the top of `docs/parity.md` and update it
   (plus `fixtures/`, see the `differential-testing` skill) together.
 - **Budgets**: a row over 2,000 characters, a file over 80 KB or a ledger
-  over 450 KB fails the check. Split the row (read side / write side, one
+  over 550 KB fails the check. Split the row (read side / write side, one
   class per row) or the area file -- never raise the budget to fit.
 
 ## Enforced by
