@@ -2016,6 +2016,13 @@ fn check_integrity_and_skippers() {
         rank
     );
     assert!(p.doc_values_skipper("nope").unwrap().is_none());
+    // The views answer `unwrapSingleton` as the segment they wrap.
+    for field in ["nums", "rank", "nope"] {
+        let want = s.sorted_numeric_is_singleton(field);
+        assert_eq!(f.sorted_numeric_is_singleton(field), want, "{field}");
+        assert_eq!(w.sorted_numeric_is_singleton(field), want, "{field}");
+        assert_eq!(p.sorted_numeric_is_singleton(field), want, "{field}");
+    }
     SlowCompositeCodecReaderWrapper::wrap(vec![codec(&m, 0), codec(&m, 1)])
         .unwrap()
         .check_integrity()

@@ -186,7 +186,7 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
     hash with `FxHasher`, and the unbounded cache's `get` no longer reorders (Java builds a plain
     `HashMap` for it). Partial: `FacetsConfig.build` without `AssociationFacetField` (T13.4b);
     `SearcherTaxonomyManager`, `ReindexingEnrichedDirectoryTaxonomyWriter`, `TaxonomyMergeUtils`,
-    `OrdinalMappingLeafReader` and `PrintTaxonomyStats` stay with T13.4d.
+    `OrdinalMappingLeafReader` and `PrintTaxonomyStats` stay with T13.4d2.
   - **T13.4b** — counting: `Facets`, `MultiFacets`, `FacetResult`/`LabelAndValue`,
     `FacetsCollector`/`FacetsCollectorManager`, `TaxonomyFacets`, `FastTaxonomyFacetCounts`,
     `IntTaxonomyFacets`/`FloatTaxonomyFacets`, the association fields and aggregations,
@@ -246,15 +246,37 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
     Java's refusals, matched byte for byte. Every fixture segment has deletions, so the advance
     path's skipped two-phase check on dim 1 (no deletions) is covered by the scorer's unit tests
     against a brute-force reference only. Deviations (ledger rows): taxonomy only (the
-    `SortedSetDocValuesReaderState` constructors are T13.4d); the executor form runs its queries
+    `SortedSetDocValuesReaderState` constructors are T13.4d2); the executor form runs its queries
     in turn; no `Sort` overloads; the `buildFacetsResult`/`scoreSubDocsAtOnce` hooks are not
     overridable. `drill_sideways` bench (noise 1.07x): advance 1.36x, query-first 1.21x, union
     0.97~, `#check` digests equal. Union is inside the noise: its time is the sideways
     `FastTaxonomyFacetCounts` over ~200k docs, the per-document `SORTED_NUMERIC` iteration
     `facet_count_all` already measures (above), not the scorer.
-  - **T13.4d** — the rest of the package: `LongValueFacetCounts`, `StringValueFacetCounts`
-    (`StringDocValuesReaderState`), the `range` counters and `DynamicRangeUtil`, `rangeonrange`,
-    `facetset`, the sorted-set classes still `todo`, `Multi{Long,Double}Values[Source]`,
+  - **T13.4d1** — value and range counting: `LongValueFacetCounts`, `StringValueFacetCounts`
+    (`StringDocValuesReaderState`), the `range` package (`LongRange`/`DoubleRange` with `getQuery`
+    and the values-source forms, `RangeFacetCounts`, the exclusive and overlapping
+    `LongRangeCounter`s, `DynamicRangeUtil`), `rangeonrange`, `facetset`,
+    `Multi{Long,Double}Values[Source]`.
+    **Done.** Fixture `GenValueFacets.java` -> `value_facets_fixtures.rs` (`facets.tsv`,
+    `queries.tsv`, `dynamic.tsv`, `errors.tsv`), a single- and a multi-segment index each, every
+    count, top-N, `getQuery` hit list and refusal matched exactly. Deviations (ledger rows): the
+    hash-table orders of `LongValueFacetCounts`/`StringValueFacetCounts` (`getAllChildren`,
+    `toString`) come out sorted (Java's are seeded per process); `DynamicRangeUtil` reads segments
+    in turn, not on an executor; `getQuery`'s fast-match is a filter beside the range check, not
+    the leading scorer; `rangeonrange` refuses an empty or mixed-dimension range list with
+    `IllegalArgument` (Java: `ArrayIndexOutOfBoundsException`). No form needs an `Expression`
+    source, so none is deferred to M14. The FFI keeps calling the older dim-less range
+    primitives in `facets.rs`. `value_facets` bench (noise 1.08x, `#check`
+    digests equal): long 1.40x, long multi 0.96~, string 1.13x, long range 1.37x, overlapping
+    long range 1.06~, double range 1.73x. The faithful port first measured string 0.48x and
+    long range 0.50x: both read a `SORTED`/`NUMERIC` field through the multi-valued adapter
+    (two dispatches a document) where Java takes `unwrapSingleton`'s single-valued values, and
+    the range counter's branchy binary search cost the rest; the fix reads the single-valued
+    form, walks the hits as a set and finds the interval with `partition_point`. Long multi is
+    inside the noise: per document it is the `SORTED_NUMERIC` iteration `facet_count_all`
+    already measures (above).
+  - **T13.4d2** — the rest of the package: the sorted-set classes still `todo` (the abstract and
+    concurrent SSDV counts) and the SSDV `DrillSideways` constructors,
     `RandomSamplingFacetsCollector`, `OrdinalMappingLeafReader`, `TaxonomyMergeUtils`,
     `SearcherTaxonomyManager`, `PrintTaxonomyStats`, `ReindexingEnrichedDirectoryTaxonomyWriter`.
   Each sub-task: fixture-first (a `Gen*.java` writes the index and the expected results), then the
@@ -291,7 +313,7 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
 - **T13.6** — Plugin wiring for the OpenSearch features above.
 
 **Status by task:** T13.1 done; T13.5 `MemoryIndex` done, `monitor` in
-progress (T13.5a-c done; T13.5d done -- batches, the four matchers, partitioned matching, persistence verified both ways against Lucene, the regexp handler and debug()); T13.2 ported and benchmarked (`uh_analysis`/`uh_tv` 0.36x, reason above); T13.3 done; T13.4a-c done (T13.4d not started; `facet_count_all` 1.04~ and `drill_sideways_union` 0.97~ inside the noise, reasons above); T13.6
+progress (T13.5a-c done; T13.5d done -- batches, the four matchers, partitioned matching, persistence verified both ways against Lucene, the regexp handler and debug()); T13.2 ported and benchmarked (`uh_analysis`/`uh_tv` 0.36x, reason above); T13.3 done; T13.4a-c and T13.4d1 done (T13.4d2 not started; `facet_count_all` 1.04~ and `drill_sideways_union` 0.97~ inside the noise, reasons above); T13.6
 not started. M13 closes when all four acceptance criteria hold.
 
 ## Acceptance criteria

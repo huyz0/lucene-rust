@@ -1,0 +1,46 @@
+longrange:minexcl	IAE:range "x" matches nothing
+longrange:maxexcl	IAE:range "x" matches nothing
+longrange:empty	IAE:range "x" matches nothing
+longrange:ok	ok:LongRange(x: 6 to 6)
+doublerange:minnan	IAE:min cannot be NaN
+doublerange:maxnan	IAE:max cannot be NaN
+doublerange:empty	IAE:range "x" matches nothing
+ror:long:minexcl	IAE:range "x" matches nothing
+ror:long:maxexcl	IAE:range "x" matches nothing
+ror:long:inverted	IAE:range "x" matches nothing
+ror:long:emptydims	IAE:range "x" matches nothing
+ror:long:mismatch	IAE:range "x" matches nothing
+ror:long:invertdim	IAE:range "x" matches nothing
+ror:double:minnan	IAE:min cannot be NaN
+ror:double:maxnan	IAE:max cannot be NaN
+ror:double:inverted	IAE:range "x" matches nothing
+ror:double:emptydims	IAE:range "x" matches nothing
+ror:double:mismatch	IAE:range "x" matches nothing
+ror:double:invertdim	IAE:range "x" matches nothing
+ror:double:nanarray	IAE:invalid min value (NaN) in DoubleRange
+ror:double:nanmax	IAE:invalid max value (NaN) in DoubleRange
+fs:long:empty	IAE:values cannot be null or empty
+fs:int:empty	IAE:values cannot be null or empty
+fs:float:empty	IAE:values cannot be null or empty
+fs:double:empty	IAE:values cannot be null or empty
+fs:field:empty	IAE:FacetSets cannot be null or empty!
+fs:field:dims	IAE:All FacetSets must have the same number of dimensions. Expected 2 found 1
+fs:field:type	IAE:All FacetSets must be the same type. Expected class org.apache.lucene.facet.facetset.LongFacetSet found class org.apache.lucene.facet.facetset.DoubleFacetSet
+fs:dim:minexcl	IAE:Invalid min input: 9223372036854775807
+fs:dim:maxexcl	IAE:Invalid max input: -9223372036854775808
+fs:dim:inverted	IAE:Minimum cannot be greater than maximum, max=4, min=5
+fs:dim:dminnan	IAE:min cannot be NaN
+fs:dim:dmaxnan	IAE:max cannot be NaN
+fs:dim:dinverted	IAE:Minimum cannot be greater than maximum
+fs:dim:fminnan	IAE:min cannot be NaN
+fs:dim:fmaxnan	IAE:max cannot be NaN
+fs:dim:finverted	IAE:Minimum cannot be greater than maximum
+fs:dim:dvalues	IAE:Minimum cannot be greater than maximum
+fs:dim:fvalues	ok:DimRange[min=-1069547520, max=1075838976]
+fs:matcher:empty	IAE:dimRanges cannot be null or empty
+fs:counts:nomatchers	IAE:facetSetMatchers cannot be null or empty
+fs:counts:dims	IAE:All facet set matchers must be the same dimensionality
+sv:state	ISE:the SortedSetDocValuesReaderState provided to this class does not match the reader being searched; you must create a new SortedSetDocValuesReaderState every time you open a new IndexReader
+sv:state:multi	ISE:the SortedSetDocValuesReaderState provided to this class does not match the reader being searched; you must create a new SortedSetDocValuesReaderState every time you open a new IndexReader
+lv:wrongtype	ISE:unexpected docvalues type SORTED for field 'str' (expected one of [SORTED_NUMERIC, NUMERIC]). Re-index with correct docvalues type.
+sv:wrongtype	ISE:unexpected docvalues type NUMERIC for field 'long1' (expected one of [SORTED, SORTED_SET]). Re-index with correct docvalues type.

@@ -93,6 +93,17 @@ impl FacetIndex {
     }
 }
 
+/// Documents without facet fields, indexed as [`build`] does.
+pub(crate) fn plain_index(docs: Vec<Document>, flush_after: &[usize]) -> FacetIndex {
+    let docs = docs.into_iter().map(|d| (Vec::new(), d)).collect();
+    build(&FacetsConfig::new(), docs, flush_after, &[])
+}
+
+/// A document with an `id` of `id`.
+pub(crate) fn id_doc(id: &str) -> Document {
+    doc(id, Vec::new()).1
+}
+
 /// `MatchAllDocsQuery`.
 pub(crate) fn match_all(reader: &DirectoryReader) -> BooleanQuery {
     BooleanQuery {

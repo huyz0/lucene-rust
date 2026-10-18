@@ -87,6 +87,14 @@ pub trait LeafFilter: Send + Sync {
     ) -> Result<Box<dyn SortedNumericDocValues + 'a>> {
         Ok(values)
     }
+    /// Whether `DocValues.unwrapSingleton` still sees the inner reader's
+    /// one-value-per-document form (`inner`) through
+    /// [`LeafFilter::wrap_sorted_numeric`]. A filter that replaces those
+    /// values answers `false` unless its own stay one per document, as a
+    /// Java wrapper around them is not a singleton.
+    fn keeps_sorted_numeric_singleton(&self, field: &str, inner: bool) -> bool {
+        inner
+    }
     /// `getSortedSetDocValues(field)`.
     fn wrap_sorted_set<'a>(
         &'a self,
@@ -307,6 +315,10 @@ impl<R: ?Sized + LeafReader + AsDynLeaf> LeafReader for FilterLeafReader<R> {
         field: &str,
     ) -> Result<Option<lucene_codecs::doc_values::DocValuesSkipper<'_>>> {
         self.in_.doc_values_skipper(field)
+    }
+    fn sorted_numeric_is_singleton(&self, field: &str) -> bool {
+        self.filter
+            .keeps_sorted_numeric_singleton(field, self.in_.sorted_numeric_is_singleton(field))
     }
     fn check_integrity(&self) -> Result<()> {
         self.in_.check_integrity()
