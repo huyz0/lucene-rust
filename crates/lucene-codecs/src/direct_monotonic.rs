@@ -176,6 +176,82 @@ pub fn get(data: &[u8], meta: &Meta, index: i64) -> Result<i64> {
         .wrapping_add(delta))
 }
 
+/// `DirectMonotonicReader.getInstance(meta, data)`: [`get`] over one
+/// `data` slice with each block's packed reader resolved once, as Java
+/// builds a `DirectReader` per block up front -- a lookup is then the
+/// block's header, one comparison and one 8-byte load. For a reader of many
+/// values of one sequence (a doc-values iterator's addresses). Allocates one
+/// entry per block.
+#[derive(Debug, Clone)]
+pub struct Reader<'a> {
+    data: &'a [u8],
+    meta: &'a Meta,
+    blocks: Vec<ResolvedBlock<'a>>,
+}
+
+/// One block of a [`Reader`].
+#[derive(Debug, Clone, Copy)]
+struct ResolvedBlock<'a> {
+    min: i64,
+    avg: f32,
+    /// `bpv == 0`: every delta is 0.
+    zero: bool,
+    /// The block's packed deltas; `None` when they cannot be read with one
+    /// load (a block whose bytes are not inside `data`), and [`get`] answers.
+    packed: Option<lucene_util::packed_longs::PackedLongs<'a>>,
+}
+
+impl<'a> Reader<'a> {
+    /// Resolves `meta`'s blocks against `data` (the slice [`get`] would be
+    /// handed).
+    pub fn new(data: &'a [u8], meta: &'a Meta) -> Self {
+        let blocks = meta
+            .blocks
+            .iter()
+            .map(|b| ResolvedBlock {
+                min: b.min,
+                avg: b.avg,
+                zero: b.bpv == 0,
+                packed: usize::try_from(b.offset)
+                    .ok()
+                    .and_then(|o| data.get(o..))
+                    .and_then(|slice| {
+                        lucene_util::packed_longs::PackedLongs::new(slice, u32::from(b.bpv))
+                    }),
+            })
+            .collect();
+        Reader { data, meta, blocks }
+    }
+
+    /// `get(index)`: what [`get`] answers for `index`, errors included.
+    #[inline]
+    pub fn get(&self, index: i64) -> Result<i64> {
+        let shift = self.meta.block_shift;
+        // A negative index lands on no block and [`get`] reports it.
+        let Some(block) = usize::try_from(index >> shift)
+            .ok()
+            .and_then(|b| self.blocks.get(b))
+        else {
+            return get(self.data, self.meta, index);
+        };
+        // ARITH: `block_shift <= 22` (see `get`), so the mask is in range.
+        #[allow(clippy::arithmetic_side_effects)]
+        let block_index = index & ((1i64 << shift) - 1);
+        let delta = if block.zero {
+            0
+        } else {
+            match block.packed.and_then(|p| p.get(block_index as u64)) {
+                Some(v) => v as i64,
+                None => return get(self.data, self.meta, index),
+            }
+        };
+        Ok(block
+            .min
+            .wrapping_add((block.avg * block_index as f32) as i64)
+            .wrapping_add(delta))
+    }
+}
+
 /// [`get`] for the indexes `from..from + out.len()`, in order: each block's
 /// parameters looked up once and its packed deltas decoded a run at a time
 /// (`PackedLongs::decode_range`), each value the same expression [`get`]
@@ -640,5 +716,33 @@ mod tests {
         assert_eq!(f32::from_bits(input.read_i32().unwrap() as u32), 3.0); // avgInc
         assert_eq!(input.read_i64().unwrap(), 0); // offset
         assert_eq!(input.read_byte().unwrap(), 0); // bpv
+    }
+
+    /// `Reader` answers what the free `get` answers, value or error: over
+    /// several blocks (constant and packed), past the last block, for a
+    /// negative index, and over data cut short (no resolved packed reader).
+    #[test]
+    fn reader_agrees_with_get() {
+        let values: Vec<i64> = (0..37i64).map(|i| i * 7 + (i * i) % 5).collect();
+        let mut with_constant = values.clone();
+        with_constant.splice(0..4, [0, 3, 6, 9]); // a bpv-0 block
+        for vals in [values, with_constant] {
+            let (meta_bytes, data) = write(&vals, 2);
+            let meta = load_meta(&mut SliceInput::new(&meta_bytes), vals.len() as i64, 2).unwrap();
+            for data in [&data[..], &data[..data.len() / 2], &[][..]] {
+                let reader = Reader::new(data, &meta);
+                for i in [-1i64, 0, 1, 3, 4, 17, 35, 36, 40, i64::MAX] {
+                    let (want, got) = (get(data, &meta, i), reader.get(i));
+                    assert_eq!(want.is_ok(), got.is_ok(), "index {i}");
+                    if let (Ok(w), Ok(g)) = (want, got) {
+                        assert_eq!(w, g, "index {i}");
+                    }
+                }
+            }
+            let reader = Reader::new(&data, &meta);
+            for (i, &v) in vals.iter().enumerate() {
+                assert_eq!(reader.get(i as i64).unwrap(), v);
+            }
+        }
     }
 }

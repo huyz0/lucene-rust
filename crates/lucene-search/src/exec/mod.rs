@@ -159,6 +159,14 @@ pub(crate) trait Scorer {
     fn constant_bits(&self) -> Option<(std::sync::Arc<cache::CachedSet>, f32)> {
         None
     }
+    /// The one score every document of this scorer gets, for a
+    /// constant-score scorer (`ConstantScoreScorer`); `None` for any other.
+    /// With [`Self::doc_id_run_end`] it lets a bulk scorer hand a run of
+    /// consecutive matches to the collector as one range
+    /// (`DenseConjunctionBulkScorer`'s `collectRange`).
+    fn constant_score(&self) -> Option<f32> {
+        None
+    }
     /// Random access, for an iterator backed by a bit set (or matching every
     /// document): whether `doc` matches, without moving. `None` for an
     /// iterator that can only be advanced. `ConjunctionDISI` checks such

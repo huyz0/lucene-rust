@@ -2312,7 +2312,7 @@ enum LeafKey<'a> {
     Numeric(Box<LeafNumeric<'a>>),
     Str(Box<LeafStr<'a>>),
     /// A `STRING_VAL` key's `BINARY` column (`None`: `DocValues.emptyBinary`).
-    Bytes(Option<lucene_codecs::doc_values::BinaryReader<'a>>),
+    Bytes(Box<Option<lucene_codecs::doc_values::BinaryReader<'a>>>),
     /// A `CUSTOM` key's leaf comparator.
     Custom(Box<dyn LeafFieldComparator + 'a>),
 }
@@ -3056,7 +3056,7 @@ fn open_leaf<'a>(
             SortType::Score => LeafKey::Score,
             SortType::Doc => LeafKey::Doc,
             SortType::String => LeafKey::Str(Box::new(open_str(reader, seg, c)?)),
-            SortType::StringVal => LeafKey::Bytes(open_binary(reader, f)?),
+            SortType::StringVal => LeafKey::Bytes(Box::new(open_binary(reader, f)?)),
             SortType::Custom(id) => {
                 let cs = c
                     .custom

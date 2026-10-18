@@ -194,6 +194,38 @@ impl DocIdSetBuilder {
         }
     }
 
+    /// `add` of each document in `[min, max)`, ascending: a run set in the
+    /// bitset at once, the buffer upgraded first when the run would take it
+    /// past the threshold.
+    pub(crate) fn add_range(&mut self, min: i32, max: i32) {
+        // From document 0: a run below it holds no document of the segment
+        // (where `add` would buffer such an id, a range keeps none).
+        let (lo, Ok(hi)) = (usize::try_from(min).unwrap_or(0), usize::try_from(max)) else {
+            return;
+        };
+        if hi <= lo {
+            return;
+        }
+        let n = hi.saturating_sub(lo);
+        if self.bits.is_none() && self.buffer.len().saturating_add(n) > self.threshold {
+            self.upgrade();
+        }
+        match &mut self.bits {
+            Some(bits) => {
+                // FBS: clamped to this bitset's `len()`, as `add` drops a
+                // stray id.
+                let hi_in = hi.min(bits.len());
+                if lo < hi_in {
+                    bits.set_range(lo, hi_in);
+                }
+                self.counter = self
+                    .counter
+                    .saturating_add(i64::try_from(n).unwrap_or(i64::MAX));
+            }
+            None => self.buffer.extend(min.max(0)..max),
+        }
+    }
+
     /// `add(DocIdSetIterator)`.
     pub(crate) fn add_all(&mut self, it: &mut dyn DocIdSetIterator) -> Result<()> {
         loop {
@@ -348,6 +380,27 @@ impl<'a> SegmentCollector<'a> for FacetsCollector<'a> {
             }
         }
         self.total_hits = self.total_hits.wrapping_add(1);
+        Ok(())
+    }
+
+    /// `collectRange(min, max)` (Java's default, a `collect` per document),
+    /// with the run handed to the builder at once.
+    fn collect_range(&mut self, min: i32, max: i32, score: f32) -> Result<()> {
+        if max <= min {
+            return Ok(());
+        }
+        if let Some(b) = &mut self.builder {
+            b.add_range(min, max);
+        }
+        if let Some(scores) = &mut self.scores {
+            if let (lo, Ok(hi)) = (usize::try_from(min).unwrap_or(0), usize::try_from(max)) {
+                if hi > scores.len() {
+                    scores.resize(hi, 0.0);
+                }
+                scores[lo..hi].fill(score);
+            }
+        }
+        self.total_hits = self.total_hits.wrapping_add(max.saturating_sub(min));
         Ok(())
     }
 

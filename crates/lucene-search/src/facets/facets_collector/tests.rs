@@ -229,3 +229,88 @@ fn finish_without_a_segment_is_an_error() {
     assert_eq!(fc.score_mode(), ScoreMode::CompleteNoScores);
     assert_eq!(FacetsCollector::new(true).score_mode(), ScoreMode::Complete);
 }
+
+/// `add_range` leaves the builder as an `add` per document would: buffered
+/// under the threshold, upgraded on the run that crosses it, set in the
+/// bits after; an empty, inverted or negative range adds nothing.
+#[test]
+fn a_range_builds_what_its_documents_one_by_one_build() {
+    // 1024 documents: buffered up to 1024 >>> 7 = 8 ids.
+    let runs: [&[(i32, i32)]; 4] = [
+        &[(1, 4), (6, 9)],
+        &[(0, 3), (3, 20), (30, 31)],
+        &[(2, 2), (5, 1), (-3, 2), (100, 1000)],
+        &[(1000, 1030)],
+    ];
+    for ranges in runs {
+        let (mut by_doc, mut by_range) = (DocIdSetBuilder::new(1024), DocIdSetBuilder::new(1024));
+        for &(min, max) in ranges {
+            by_range.add_range(min, max);
+            for d in min.max(0)..max {
+                by_doc.add(d);
+            }
+        }
+        let (want, got) = (by_doc.build(), by_range.build());
+        assert_eq!(
+            matches!(want, DocIdSet::Bits { .. }),
+            matches!(got, DocIdSet::Bits { .. }),
+            "{ranges:?}"
+        );
+        assert_eq!(want.len(), got.len(), "{ranges:?}");
+        assert_eq!(docs_of(&mut want.iterator()), docs_of(&mut got.iterator()));
+    }
+}
+
+/// A [`FacetsCollector`] without its own `collect_range`.
+struct ByDoc<'a>(FacetsCollector<'a>);
+
+impl<'a> SegmentCollector<'a> for ByDoc<'a> {
+    fn score_mode(&self) -> ScoreMode {
+        self.0.score_mode()
+    }
+    fn set_next_reader(&mut self, ord: usize, leaf: &OpenSegment<'a>) -> Result<()> {
+        self.0.set_next_reader(ord, leaf)
+    }
+    fn collect(&mut self, doc: i32, score: f32) -> Result<()> {
+        self.0.collect(doc, score)
+    }
+    fn finish(&mut self) -> Result<()> {
+        self.0.finish()
+    }
+}
+
+/// A global range handed to the per-segment driver is split at the segment
+/// boundaries and collects what a `collect` per document does: hits,
+/// counts and scores.
+#[test]
+fn a_range_collects_like_its_documents_one_by_one() {
+    let index = basic_index();
+    index.with(|searcher, _, _| {
+        for keep in [false, true] {
+            // Collecting through `SegmentCollector::collect_range`'s
+            // default: a `collect` per document.
+            let mut by_doc = ByDoc(FacetsCollector::new(keep));
+            let mut by_range = FacetsCollector::new(keep);
+            let mut driver = PerSegment::new(searcher.segments(), &mut by_doc);
+            driver.collect(0, 1.5);
+            driver.collect_range(1, 5, 1.5);
+            driver.close().unwrap();
+            let by_doc = by_doc.0;
+            let mut driver = PerSegment::new(searcher.segments(), &mut by_range);
+            driver.collect_range(0, 1, 1.5);
+            driver.collect_range(1, 5, 1.5);
+            driver.collect_range(5, 5, 1.5);
+            driver.close().unwrap();
+            let (want, got) = (by_doc.matching_docs(), by_range.matching_docs());
+            assert_eq!(want.len(), got.len());
+            for (w, g) in want.iter().zip(got) {
+                assert_eq!(w.total_hits, g.total_hits);
+                assert_eq!(w.scores, g.scores);
+                assert_eq!(
+                    docs_of(&mut w.bits.iterator()),
+                    docs_of(&mut g.bits.iterator())
+                );
+            }
+        }
+    });
+}

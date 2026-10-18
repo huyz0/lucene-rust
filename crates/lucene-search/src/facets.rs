@@ -710,9 +710,14 @@ impl FacetsConfig {
     }
 
     /// `FacetsConfig.getDimConfig(dimName)`: the dim's configuration, or the
-    /// default when it was never configured.
-    pub fn dim_config(&self, dim: &str) -> DimConfig {
-        self.dims.get(dim).cloned().unwrap_or_default()
+    /// default when it was never configured -- shared, as Java returns the
+    /// one `DEFAULT_DIM_CONFIG` (a per-call copy was an allocation per
+    /// `getTopChildren`).
+    pub fn dim_config(&self, dim: &str) -> &DimConfig {
+        static DEFAULT_DIM_CONFIG: std::sync::OnceLock<DimConfig> = std::sync::OnceLock::new();
+        self.dims
+            .get(dim)
+            .unwrap_or_else(|| DEFAULT_DIM_CONFIG.get_or_init(DimConfig::default))
     }
 
     /// `FacetsConfig.isDimConfigured(dimName)`.
@@ -1533,15 +1538,12 @@ impl<'a> SortedSetFacetCounts<'a> {
         path: &[&str],
     ) -> Result<Option<TopChildrenForPath>> {
         let dim_config = self.state.config().dim_config(dim);
-        let Some((path_ord, children)) = self.prepare_child_iteration(dim, &dim_config, path)?
+        let Some((path_ord, children)) = self.prepare_child_iteration(dim, dim_config, path)?
         else {
             return Ok(None);
         };
         Ok(Some(self.compute_top_children(
-            children,
-            top_n,
-            &dim_config,
-            path_ord,
+            children, top_n, dim_config, path_ord,
         )))
     }
 }
@@ -1552,7 +1554,7 @@ impl Facets for SortedSetFacetCounts<'_> {
     /// aggregates.
     fn get_all_children(&self, dim: &str, path: &[&str]) -> Result<Option<FacetResult>> {
         let dim_config = self.state.config().dim_config(dim);
-        let Some((path_ord, children)) = self.prepare_child_iteration(dim, &dim_config, path)?
+        let Some((path_ord, children)) = self.prepare_child_iteration(dim, dim_config, path)?
         else {
             return Ok(None);
         };
@@ -1575,7 +1577,7 @@ impl Facets for SortedSetFacetCounts<'_> {
         Ok(Some(FacetResult::new(
             dim,
             path.iter().map(|s| s.to_string()).collect(),
-            FacetValue::Int(self.adjust_path_count(&dim_config, path_ord, path_count)),
+            FacetValue::Int(self.adjust_path_count(dim_config, path_ord, path_count)),
             label_values,
             child_count,
         )))

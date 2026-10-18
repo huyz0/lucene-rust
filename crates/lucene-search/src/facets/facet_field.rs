@@ -257,7 +257,7 @@ impl FacetsConfig {
                         ordinals.pop();
                     }
                 }
-                index_drill_down_terms(doc, index_field_name, &config, &label);
+                index_drill_down_terms(doc, index_field_name, config, &label);
             }
             // Sorted to drop duplicates (`SortedNumericDocValuesField` keeps
             // them).
@@ -293,7 +293,7 @@ impl FacetsConfig {
                 let ordinal = taxo_writer.add_category(&label)?;
                 bytes.extend_from_slice(&ordinal.to_be_bytes());
                 bytes.extend_from_slice(&field.assoc);
-                index_drill_down_terms(doc, index_field_name, &self.dim_config(&field.dim), &label);
+                index_drill_down_terms(doc, index_field_name, self.dim_config(&field.dim), &label);
             }
             doc.add(BinaryDocValuesField::new(index_field_name.as_str(), bytes));
         }
@@ -333,7 +333,7 @@ impl FacetsConfig {
                         label.to_term(),
                     ));
                 }
-                index_drill_down_terms(doc, index_field_name, &config, &label);
+                index_drill_down_terms(doc, index_field_name, config, &label);
             }
         }
         Ok(())

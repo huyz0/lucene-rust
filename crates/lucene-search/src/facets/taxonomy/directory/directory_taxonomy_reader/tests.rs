@@ -67,6 +67,22 @@ fn ordinals_and_paths() {
             label(&["c"])
         ]
     );
+    // A hit, then misses: the hit carried over, the misses read, each
+    // ordinal touched once and in order (Java's one pass), so the LRU order
+    // is the request's.
+    lock(&r.category_cache).clear();
+    r.get_bulk_path(&[2]).unwrap();
+    assert_eq!(
+        r.get_bulk_path(&[2, 1, 3]).unwrap(),
+        [label(&["a", "b"]), label(&["a"]), label(&["c"])]
+    );
+    assert_eq!(lock(&r.category_cache).keys(), [&2, &1, &3]);
+    // Every label cached: straight from the cache, touched the same way.
+    assert_eq!(
+        r.get_bulk_path(&[3, 2]).unwrap(),
+        [label(&["c"]), label(&["a", "b"])]
+    );
+    assert_eq!(lock(&r.category_cache).keys(), [&1, &3, &2]);
     let m = err_message(r.get_path(4));
     assert!(
         m.starts_with(

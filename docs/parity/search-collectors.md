@@ -6,7 +6,7 @@ aggregations, `terminate_after`, highlighting and fetch. Grouping:
 
 | Java | Rust | Status |
 |---|---|---|
-| `search/Collector`/`LeafCollector` | `lucene-search/src/collector.rs::Collector` | **ported**, collapsed to one generic trait (`collect(doc_id)`); per-segment `SegmentCollector` exists for the M10 collectors ([joins.md](joins.md)). |
+| `search/Collector`/`LeafCollector` | `lucene-search/src/collector.rs::Collector` | **ported**, one generic trait (`collect`; `collect_range`, a match-all's runs, default per doc); per-segment `SegmentCollector` for the M10 collectors ([joins.md](joins.md)). |
 | `search/TotalHitCountCollector` | `lucene-search/src/collector.rs::CountCollector` | **ported**. |
 | *(no Java class)* collect matching doc ids | `lucene-search/src/collector.rs::VecCollector` | **rust-only**. |
 | `search/LeafCollector` (scored variant) | `lucene-search/src/collector.rs::ScoringCollector` | **ported** as a separate trait (`collect(doc_id, score)`, `collect` + `setScorer` collapsed). |
