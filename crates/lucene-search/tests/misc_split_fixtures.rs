@@ -19,11 +19,23 @@ use lucene_store::directory::Directory;
 use lucene_store::FsDirectory;
 use lucene_util::test_support::TempDir;
 
-/// `addIndexes` write-locks its sources, which every test shares.
-static SOURCES: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 fn data() -> PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data/misc")
+}
+
+/// A private copy of the committed fixture index `name` under `tmp`:
+/// `addIndexes` write-locks its sources, and a test must never write into
+/// `fixtures/`.
+fn source(name: &str, tmp: &TempDir) -> FsDirectory {
+    let to = tmp.path().join(name);
+    std::fs::create_dir_all(&to).unwrap();
+    for entry in std::fs::read_dir(data().join(name)).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_name() != "write.lock" {
+            std::fs::copy(entry.path(), to.join(entry.file_name())).unwrap();
+        }
+    }
+    FsDirectory::open(to)
 }
 
 /// `(segments, ids)` per `(case, output)`.
@@ -99,9 +111,9 @@ fn dirs(n: usize, tmp: &TempDir) -> Vec<FsDirectory> {
 
 #[test]
 fn pk_index_splitter_matches_lucene() {
-    let _guard = SOURCES.lock().unwrap_or_else(|e| e.into_inner());
     let want = expected();
-    let src = FsDirectory::open(data().join("split_a"));
+    let sources = TempDir::new("split-src");
+    let src = source("split_a", &sources);
     for case in ["pk_mid", "pk_mid_low", "pk_mid_high", "pk_range"] {
         let tmp = TempDir::new("split-pk");
         let o = dirs(2, &tmp);
@@ -126,10 +138,10 @@ fn pk_index_splitter_matches_lucene() {
 
 #[test]
 fn multi_pass_index_splitter_matches_lucene() {
-    let _guard = SOURCES.lock().unwrap_or_else(|e| e.into_inner());
     let want = expected();
-    let a = FsDirectory::open(data().join("split_a"));
-    let b = FsDirectory::open(data().join("split_b"));
+    let sources = TempDir::new("split-src");
+    let a = source("split_a", &sources);
+    let b = source("split_b", &sources);
     let mut checked = 0;
     for seq in [true, false] {
         for parts in [2usize, 3, 5] {
@@ -156,8 +168,8 @@ fn multi_pass_index_splitter_matches_lucene() {
 
 #[test]
 fn multi_pass_index_splitter_refuses_what_java_refuses() {
-    let _guard = SOURCES.lock().unwrap_or_else(|e| e.into_inner());
-    let a = FsDirectory::open(data().join("split_a"));
+    let sources = TempDir::new("split-src");
+    let a = source("split_a", &sources);
     let tmp = TempDir::new("split-refuse");
     let o = dirs(2, &tmp);
     let one: Vec<&dyn Directory> = vec![&o[0]];
