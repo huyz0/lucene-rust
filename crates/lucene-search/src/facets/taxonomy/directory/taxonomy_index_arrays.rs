@@ -13,7 +13,9 @@ use std::sync::{Arc, OnceLock};
 
 use super::consts::FIELD_PARENT_ORDINAL_NDV;
 use crate::directory_reader::DirectoryReader;
-use crate::facets::taxonomy::parallel_taxonomy_arrays::{IntArray, ParallelTaxonomyArrays};
+use crate::facets::taxonomy::parallel_taxonomy_arrays::{
+    IntArray, IntChunks, ParallelTaxonomyArrays,
+};
 use crate::facets::taxonomy::taxonomy_reader::INVALID_ORDINAL;
 use crate::reader::IndexReader;
 use crate::{Error, Result};
@@ -49,7 +51,10 @@ pub(crate) fn oversize_ints(min_target_size: usize) -> usize {
 /// `TaxonomyIndexArrays.ChunkedIntArray`.
 #[derive(Debug, Clone)]
 pub struct ChunkedIntArray {
-    values: Vec<Arc<Vec<i32>>>,
+    /// `Arc<[i32]>`, not `Arc<Vec<i32>>`: a read is one load for the chunk's
+    /// pointer and one for the value, as Java's `values[i >> 13][i & mask]`
+    /// -- the walks down `children`/`siblings` are a chain of these.
+    values: Vec<Arc<[i32]>>,
 }
 
 impl ChunkedIntArray {
@@ -63,7 +68,7 @@ impl ChunkedIntArray {
             } else {
                 CHUNK_SIZE
             };
-            values.push(Arc::new(vec![0; len]));
+            values.push(Arc::from(vec![0; len]));
         }
         ChunkedIntArray { values }
     }
@@ -91,7 +96,7 @@ impl ChunkedIntArray {
                 let n = last.len().min(len);
                 chunk[..n].copy_from_slice(&last[..n]);
             }
-            values.push(Arc::new(chunk));
+            values.push(Arc::from(chunk));
         }
         ChunkedIntArray { values }
     }
@@ -105,17 +110,20 @@ impl ChunkedIntArray {
         }
     }
 
+    #[inline]
     fn at(&self, i: usize) -> i32 {
         self.values[i >> CHUNK_SIZE_BITS][i & CHUNK_MASK]
     }
 
     /// `set(i, val)`.
     fn set(&mut self, i: usize, val: i32) {
+        // Copy on write: a chunk shared with another reader is copied first.
         Arc::make_mut(&mut self.values[i >> CHUNK_SIZE_BITS])[i & CHUNK_MASK] = val;
     }
 }
 
 impl IntArray for ChunkedIntArray {
+    #[inline]
     fn get(&self, i: i32) -> i32 {
         let i = usize::try_from(i).expect("negative taxonomy array index");
         self.at(i)
@@ -123,6 +131,10 @@ impl IntArray for ChunkedIntArray {
 
     fn length(&self) -> i32 {
         i32::try_from(self.len()).unwrap_or(i32::MAX)
+    }
+
+    fn chunks(&self) -> Option<IntChunks<'_>> {
+        Some(IntChunks::new(CHUNK_SIZE_BITS, &self.values))
     }
 }
 

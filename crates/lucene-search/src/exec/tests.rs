@@ -1356,6 +1356,87 @@ fn a_match_all_needs_some_max_doc() {
     assert_eq!(all.0.len(), 3);
 }
 
+/// A collector that records the ranges handed to it apart from the single
+/// documents, both expanded into the hits a per-document walk gives.
+#[derive(Default)]
+struct Ranges {
+    hits: Vec<(i32, f32)>,
+    ranges: Vec<(i32, i32)>,
+}
+
+impl ScoringCollector for Ranges {
+    fn collect(&mut self, doc_id: i32, score: f32) {
+        self.hits.push((doc_id, score));
+    }
+    fn collect_range(&mut self, min: i32, max: i32, score: f32) {
+        self.ranges.push((min, max));
+        self.hits.extend((min..max).map(|d| (d, score)));
+    }
+}
+
+/// A match-all (`ConstantScoreScorer` over every document) hands its
+/// documents over as one `collectRange` when the run is at least half a
+/// window, as Java's `DenseConjunctionBulkScorer` does -- and never with
+/// deleted documents, under `TOP_SCORES`, or for a short segment.
+#[test]
+fn a_match_all_collects_its_documents_as_ranges() {
+    use super::build::LeafContext;
+    use crate::query::{Clause, MatchAllDocsQuery};
+    let fields = lucene_codecs::blocktree::BlockTreeFields::default();
+    let ctx = LeafContext {
+        fields: &fields,
+        doc_in: None,
+        pos_in: None,
+        pay_in: None,
+        live_docs: None,
+        points: None,
+        norms: None,
+        global: None,
+        max_doc: None,
+        cache: None,
+        reader: None,
+        similarity: None,
+    };
+    let run = |max_doc: i32, mode: Mode, live: Option<&lucene_util::fixed_bit_set::FixedBitSet>| {
+        let q = Clause::MatchAllDocs(MatchAllDocsQuery::new(max_doc));
+        let s = super::build::build(&ctx, &q, 2.0, mode, true)
+            .unwrap()
+            .unwrap();
+        let mut got = Ranges::default();
+        score_segment(&mut Bulk::scorer(s), mode, live, &mut got).unwrap();
+        got
+    };
+    for (mode, score) in [(Mode::Complete, 2.0), (Mode::NoScores, 0.0)] {
+        let got = run(5000, mode, None);
+        assert_eq!(got.ranges, vec![(0, 5000)], "{mode:?}");
+        assert_eq!(got.hits, (0..5000).map(|d| (d, score)).collect::<Vec<_>>());
+    }
+    // Too short a run: a document at a time.
+    let short = run(100, Mode::Complete, None);
+    assert!(short.ranges.is_empty());
+    assert_eq!(short.hits.len(), 100);
+    // Deleted documents: each live one, alone.
+    let mut live = lucene_util::fixed_bit_set::FixedBitSet::new(5000);
+    for d in (0..5000).filter(|d| d % 7 != 0) {
+        // FBS: `d < 5000`, the bitset's size.
+        live.set(d);
+    }
+    let deleted = run(5000, Mode::Complete, Some(&live));
+    assert!(deleted.ranges.is_empty());
+    assert_eq!(
+        deleted.hits.iter().map(|h| h.0).collect::<Vec<_>>(),
+        (0..5000).filter(|d| d % 7 != 0).collect::<Vec<_>>()
+    );
+    // Top scores: the scorer's own walk.
+    let mut top = TopDocsCollector::new(3);
+    let q = Clause::MatchAllDocs(MatchAllDocsQuery::new(5000));
+    let s = super::build::build(&ctx, &q, 2.0, Mode::TopScores, true)
+        .unwrap()
+        .unwrap();
+    score_segment(&mut Bulk::scorer(s), Mode::TopScores, None, &mut top).unwrap();
+    assert_eq!(pairs(top.top_docs()), vec![(0, 2.0), (1, 2.0), (2, 2.0)]);
+}
+
 fn node_is_bool(node: &Node) -> bool {
     matches!(node, Node::Bool { .. })
 }

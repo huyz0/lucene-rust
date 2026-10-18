@@ -249,6 +249,19 @@ pub trait ScoringCollector {
     fn collect_many(&mut self, _docs: &[i32], _scores: &[f32], _doc_base: i32) -> usize {
         0
     }
+
+    /// `LeafCollector.collectRange(min, max)`: every document in
+    /// `[min, max)` matches, each scoring `score` (a constant-score bulk
+    /// scorer's run of consecutive matches, `DenseConjunctionBulkScorer`'s
+    /// `collectRange`). The default is Java's: [`Self::collect`] for each
+    /// document in order, so a collector that does not override it collects
+    /// exactly what the document-at-a-time loop would.
+    #[inline]
+    fn collect_range(&mut self, min: i32, max: i32, score: f32) {
+        for doc in min..max {
+            self.collect(doc, score);
+        }
+    }
 }
 
 /// `Collector.getLeafCollector(context)` for a collector shared by every
@@ -320,6 +333,15 @@ impl<C: ScoringCollector + ?Sized> ScoringCollector for LeafCollector<'_, C> {
     fn collect_many(&mut self, docs: &[i32], scores: &[f32], doc_base: i32) -> usize {
         self.inner
             .collect_many(docs, scores, self.doc_base.saturating_add(doc_base))
+    }
+
+    #[inline]
+    fn collect_range(&mut self, min: i32, max: i32, score: f32) {
+        // ARITH: as in `collect`: both ends are global doc ids at most the
+        // reader's `max_doc`, itself an `i32`.
+        #[allow(clippy::arithmetic_side_effects)]
+        self.inner
+            .collect_range(self.doc_base + min, self.doc_base + max, score);
     }
 }
 
@@ -1380,6 +1402,22 @@ impl CollapsingCollector {
 
 #[cfg(test)]
 mod tests {
+
+    /// `collect_range`'s default is a `collect` per document, and a
+    /// `LeafCollector` hands its range on shifted by the doc base.
+    #[test]
+    fn a_range_is_a_collect_per_document() {
+        struct Docs(Vec<(i32, f32)>);
+        impl ScoringCollector for Docs {
+            fn collect(&mut self, doc_id: i32, score: f32) {
+                self.0.push((doc_id, score));
+            }
+        }
+        let mut docs = Docs(Vec::new());
+        LeafCollector::new(&mut docs, 10).collect_range(0, 3, 0.5);
+        docs.collect_range(4, 4, 1.0);
+        assert_eq!(docs.0, vec![(10, 0.5), (11, 0.5), (12, 0.5)]);
+    }
 
     /// `collect_many` against `collect` one document at a time, from the same
     /// state: the kept hits, the total and its relation, and how far the

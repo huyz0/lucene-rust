@@ -88,6 +88,29 @@ fn spans_chunks_and_grows() {
     let a4 = TaxonomyIndexArrays::copy_from(&r2, &TaxonomyIndexArrays::new(&r1).unwrap()).unwrap();
     assert!(a4.children_siblings.get().is_none());
     assert_eq!(a4.children().get(0), len);
+
+    // Read through its chunks, as a walk does: the same values.
+    use crate::facets::taxonomy::parallel_taxonomy_arrays::IntArrayReader;
+    let siblings = IntArrayReader::new(a2.siblings());
+    assert!(matches!(siblings, IntArrayReader::Chunks(_)));
+    for i in [0, 1, 2, len - 1, len, len + 1] {
+        assert_eq!(siblings.get(i), a2.siblings().get(i), "ordinal {i}");
+    }
+    let small = TaxonomyIndexArrays::new(
+        &DirectoryReader::open(&plain_index(&[Some(-1), Some(0)])).unwrap(),
+    )
+    .unwrap();
+    let one = IntArrayReader::new(small.parents());
+    assert!(matches!(one, IntArrayReader::Single(_)));
+    assert_eq!((one.get(0), one.get(1)), (INVALID_ORDINAL, 0));
+
+    // A write to a chunk shared with another reader's arrays copies it
+    // first: the other arrays keep their value.
+    let mut a5 = TaxonomyIndexArrays::copy_from(&r2, &a2).unwrap();
+    assert!(Arc::ptr_eq(&a2.parents.values[0], &a5.parents.values[0]));
+    a5.add(1, 7);
+    assert!(!Arc::ptr_eq(&a2.parents.values[0], &a5.parents.values[0]));
+    assert_eq!((a5.parents().get(1), a2.parents().get(1)), (7, 0));
 }
 
 /// The writer's `add`: grows by `ArrayUtil.oversize`, forgets children.
