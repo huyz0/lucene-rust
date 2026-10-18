@@ -35,13 +35,13 @@ use lucene_store::FsDirectory;
 use super::measure;
 
 /// FNV-1a over 64-bit words, identical to `FacetCountsMicro.Fnv`.
-struct Fnv(u64);
+pub(crate) struct Fnv(u64);
 
 impl Fnv {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Fnv(0xcbf2_9ce4_8422_2325)
     }
-    fn add(&mut self, x: i64) {
+    pub(crate) fn add(&mut self, x: i64) {
         self.0 ^= x as u64;
         self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
     }
@@ -60,7 +60,7 @@ impl Fnv {
             FacetValue::Int(i) => self.add(i64::from(i)),
         }
     }
-    fn result(&mut self, r: Option<FacetResult>) {
+    pub(crate) fn result(&mut self, r: Option<FacetResult>) {
         let Some(r) = r else {
             self.add(-2);
             return;
@@ -79,7 +79,7 @@ impl Fnv {
 }
 
 /// `FacetCountsMicro.config()`.
-fn config() -> FacetsConfig {
+pub(crate) fn config() -> FacetsConfig {
     let mut c = FacetsConfig::new();
     c.set_hierarchical("Category", true);
     c.set_multi_valued("Tag", true);
@@ -90,7 +90,7 @@ fn config() -> FacetsConfig {
     c
 }
 
-fn cases(name: &str, w: Duration, m: Duration, run: &dyn Fn(&mut Fnv) -> u64) {
+pub(crate) fn cases(name: &str, w: Duration, m: Duration, run: &dyn Fn(&mut Fnv) -> u64) {
     // `MICRO_CASE`: the one case alone, its check included.
     if std::env::var("MICRO_CASE").is_ok_and(|only| only != name) {
         return;

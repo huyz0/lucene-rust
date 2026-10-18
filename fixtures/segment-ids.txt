@@ -125,6 +125,13 @@ document_fields_sorted_kw/index/segments_3 5181aafd9410bc2ba50029fad5887bf1
 document_fields_sorted_num/index/_0.si 5181aafd9410bc2ba50029fad5887bdc
 document_fields_sorted_num/index/_1.si 5181aafd9410bc2ba50029fad5887be0
 document_fields_sorted_num/index/segments_3 5181aafd9410bc2ba50029fad5887be6
+drill_down/index/_0.si e0ea16ce0c5f9bd668171ffffbb9d5c3
+drill_down/index/_1.si e0ea16ce0c5f9bd668171ffffbb9d5c6
+drill_down/index/_2.si e0ea16ce0c5f9bd668171ffffbb9d5c9
+drill_down/index/segments_1 e0ea16ce0c5f9bd668171ffffbb9d5cf
+drill_down/taxo/_0.si e0ea16ce0c5f9bd668171ffffbb9d5bf
+drill_down/taxo/_1.si e0ea16ce0c5f9bd668171ffffbb9d5c2
+drill_down/taxo/segments_1 e0ea16ce0c5f9bd668171ffffbb9d5d2
 facet_counts/index/_0.si d2b31c555ce02c34ca138693b7535419
 facet_counts/index/_1.si d2b31c555ce02c34ca138693b753541c
 facet_counts/index/_2.si d2b31c555ce02c34ca138693b753541f

@@ -312,7 +312,13 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
         crate::rescorer::rewrite_rescore_clauses(query, &ctx)
     }
 
-    fn prepare(&self, query: &BooleanQuery) -> Result<(Option<BooleanQuery>, crate::GlobalStats)> {
+    /// The query rewritten against the segments (and its rescore clauses),
+    /// `None` when nothing changed, with its reader-wide statistics: what
+    /// every search here does before scoring a segment.
+    pub(crate) fn prepare(
+        &self,
+        query: &BooleanQuery,
+    ) -> Result<(Option<BooleanQuery>, crate::GlobalStats)> {
         let rescored = self.rewrite_rescore(query)?;
         let query = rescored.as_ref().unwrap_or(query);
         let rewritten = rewrite_points_ranges(query, self.segments).or(rescored.clone());

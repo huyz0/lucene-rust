@@ -1,13 +1,13 @@
 # Lucene 10.5.0 lucene-facet: every top-level class of the jar, and what became of it.
 # Checked by scripts/check-port-inventory.py --module facet (see its docstring for the statuses).
 # class	status	detail
-facet/DrillDownQuery	todo:M13	A Query for drill-down over facet categories.
-facet/DrillSideways	todo:M13	Computes drill down and sideways counts for the provided DrillDownQuery.
-facet/DrillSidewaysQuery	todo:M13	DrillSidewaysQuery
-facet/DrillSidewaysScorer	todo:M13	DrillSidewaysScorer
+facet/DrillDownQuery	ported	crates/lucene-search/src/facets/drill_down_query.rs::DrillDownQuery
+facet/DrillSideways	partial	crates/lucene-search/src/facets/drill_sideways.rs::DrillSideways -- M13: the SortedSetDocValuesReaderState constructors (T13.4d) and the Sort overloads
+facet/DrillSidewaysQuery	ported	crates/lucene-search/src/facets/drill_sideways_query.rs::DrillSidewaysQuery
+facet/DrillSidewaysScorer	ported	crates/lucene-search/src/facets/drill_sideways_scorer.rs::DrillSidewaysScorer
 facet/FacetCountsWithFilterQuery	ported	crates/lucene-search/src/facets/facet_counts_with_filter_query.rs::FacetCountsWithFilterQuery
 facet/FacetField	ported	crates/lucene-search/src/facets/facet_field.rs::FacetField
-facet/FacetQuery	todo:M13	A term Query over a FacetField.
+facet/FacetQuery	ported	crates/lucene-search/src/facets/facet_query.rs::FacetQuery
 facet/FacetResult	ported	crates/lucene-search/src/facets/facet_result.rs::FacetResult
 facet/Facets	ported	crates/lucene-search/src/facets/facets_trait.rs::Facets
 facet/FacetsCollector	ported	crates/lucene-search/src/facets/facets_collector.rs::FacetsCollector
@@ -30,7 +30,7 @@ facet/LabelAndValue	ported	crates/lucene-search/src/facets/facet_result.rs::Labe
 facet/LongValueFacetCounts	todo:M13	Facets implementation that computes counts for all unique long values, more efficiently counting small values (0-1023) using an int array, and switching to a Ha
 facet/MultiDoubleValues	todo:M13	Per-segment, per-document double values, which can be calculated at search-time.
 facet/MultiDoubleValuesSource	todo:M13	Base class for producing MultiDoubleValues.
-facet/MultiFacetQuery	todo:M13	A multi-terms Query over a FacetField.
+facet/MultiFacetQuery	ported	crates/lucene-search/src/facets/facet_query.rs::MultiFacetQuery
 facet/MultiFacets	ported	crates/lucene-search/src/facets/multi_facets.rs::MultiFacets
 facet/MultiLongValues	todo:M13	Per-segment, per-document long values, which can be calculated at search-time.
 facet/MultiLongValuesSource	todo:M13	Base class for producing MultiLongValues.

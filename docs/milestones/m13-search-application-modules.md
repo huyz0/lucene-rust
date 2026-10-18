@@ -239,6 +239,19 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
       inlines `nextValue` into the counting loop); the case sits inside the noise floor (1.05x).
   - **T13.4c** — drill-down: `DrillDownQuery`, `FacetQuery`, `MultiFacetQuery`, `DrillSideways`,
     `DrillSidewaysQuery`, `DrillSidewaysScorer`.
+    **Done.** Fixture `GenDrillDown.java` -> `drill_down_fixtures.rs` (`sideways.tsv`,
+    `paging.tsv`, `queries.tsv`, `errors.tsv`): workloads whose costs pick each scorer strategy
+    (query-first, drill-down-advance, union; the choice itself is not asserted), the
+    concurrent (per-dim query) form, paging, custom collector managers, `toString`/rewrite and
+    Java's refusals, matched byte for byte. Every fixture segment has deletions, so the advance
+    path's skipped two-phase check on dim 1 (no deletions) is covered by the scorer's unit tests
+    against a brute-force reference only. Deviations (ledger rows): taxonomy only (the
+    `SortedSetDocValuesReaderState` constructors are T13.4d); the executor form runs its queries
+    in turn; no `Sort` overloads; the `buildFacetsResult`/`scoreSubDocsAtOnce` hooks are not
+    overridable. `drill_sideways` bench (noise 1.07x): advance 1.36x, query-first 1.21x, union
+    0.97~, `#check` digests equal. Union is inside the noise: its time is the sideways
+    `FastTaxonomyFacetCounts` over ~200k docs, the per-document `SORTED_NUMERIC` iteration
+    `facet_count_all` already measures (above), not the scorer.
   - **T13.4d** — the rest of the package: `LongValueFacetCounts`, `StringValueFacetCounts`
     (`StringDocValuesReaderState`), the `range` counters and `DynamicRangeUtil`, `rangeonrange`,
     `facetset`, the sorted-set classes still `todo`, `Multi{Long,Double}Values[Source]`,
@@ -278,7 +291,7 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
 - **T13.6** — Plugin wiring for the OpenSearch features above.
 
 **Status by task:** T13.1 done; T13.5 `MemoryIndex` done, `monitor` in
-progress (T13.5a-c done; T13.5d done -- batches, the four matchers, partitioned matching, persistence verified both ways against Lucene, the regexp handler and debug()); T13.2 ported and benchmarked (`uh_analysis`/`uh_tv` 0.36x, reason above); T13.3 done; T13.4a-b done (T13.4c-d not started; T13.4b's counting below 1.0 in four of six cases, reasons above); T13.6
+progress (T13.5a-c done; T13.5d done -- batches, the four matchers, partitioned matching, persistence verified both ways against Lucene, the regexp handler and debug()); T13.2 ported and benchmarked (`uh_analysis`/`uh_tv` 0.36x, reason above); T13.3 done; T13.4a-c done (T13.4d not started; `facet_count_all` 1.04~ and `drill_sideways_union` 0.97~ inside the noise, reasons above); T13.6
 not started. M13 closes when all four acceptance criteria hold.
 
 ## Acceptance criteria
