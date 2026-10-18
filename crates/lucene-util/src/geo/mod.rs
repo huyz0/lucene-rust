@@ -203,10 +203,15 @@ pub fn java_double_string(v: f64) -> String {
     if v.is_infinite() {
         return if v > 0.0 { "Infinity" } else { "-Infinity" }.into();
     }
-    let sci = java_tie_even(
-        format!("{:e}", v.abs()),
-        || format!("{:.800e}", v.abs()),
-        |s| s.parse::<f64>().ok() == Some(v.abs()),
+    let round_trips = |s: &str| s.parse::<f64>().ok() == Some(v.abs());
+    let sci = java_two_digits(
+        java_tie_even(
+            format!("{:e}", v.abs()),
+            || format!("{:.800e}", v.abs()),
+            round_trips,
+        ),
+        || format!("{:.1e}", v.abs()),
+        round_trips,
     );
     java_layout(
         v.is_sign_negative(),
@@ -224,10 +229,15 @@ pub fn java_float_string(v: f32) -> String {
     if v.is_infinite() {
         return if v > 0.0 { "Infinity" } else { "-Infinity" }.into();
     }
-    let sci = java_tie_even(
-        format!("{:e}", v.abs()),
-        || format!("{:.200e}", v.abs()),
-        |s| s.parse::<f32>().ok() == Some(v.abs()),
+    let round_trips = |s: &str| s.parse::<f32>().ok() == Some(v.abs());
+    let sci = java_two_digits(
+        java_tie_even(
+            format!("{:e}", v.abs()),
+            || format!("{:.200e}", v.abs()),
+            round_trips,
+        ),
+        || format!("{:.1e}", v.abs()),
+        round_trips,
     );
     java_layout(
         v.is_sign_negative(),
@@ -235,6 +245,36 @@ pub fn java_float_string(v: f32) -> String {
         v.abs() >= 1e-3 && v.abs() < 1e7,
         &sci,
     )
+}
+
+/// Java's rule for a one-digit shortest decimal: `Double.toString` (and
+/// `Float.toString`) then choose among every decimal of length 1 *or 2*
+/// that rounds to the value, taking the one closest to it. Only where the
+/// spacing between adjacent values is wide -- the smallest subnormals --
+/// does a two-digit decimal beat the one-digit one: `Double.MIN_VALUE`
+/// is `4.9E-324`, not `5.0E-324`. `two` is the `{:.1e}` rendering, the
+/// value correctly rounded to two digits.
+fn java_two_digits(
+    shortest: String,
+    two: impl FnOnce() -> String,
+    round_trips: impl Fn(&str) -> bool,
+) -> String {
+    let one_digit = shortest
+        .split_once('e')
+        .is_some_and(|(mant, _)| !mant.contains('.'));
+    if !one_digit {
+        return shortest;
+    }
+    let candidate = two();
+    // `d.0` is the one-digit decimal again, printed the same way.
+    if candidate.starts_with(|c: char| c.is_ascii_digit())
+        && !candidate[1..].starts_with(".0e")
+        && round_trips(&candidate)
+    {
+        candidate
+    } else {
+        shortest
+    }
 }
 
 /// Re-resolves a tie between two equally short, equally close decimals to
@@ -534,6 +574,23 @@ mod tests {
         assert_eq!(java_double_string(f64::MAX), "1.7976931348623157E308");
         assert_eq!(java_float_string(f32::MAX), "3.4028235E38");
         assert_eq!(java_float_string(f32::INFINITY), "Infinity");
+        // A one-digit shortest decimal yields to a closer two-digit one.
+        assert_eq!(java_double_string(4.9e-324), "4.9E-324");
+        assert_eq!(java_double_string(-4.9e-324), "-4.9E-324");
+        assert_eq!(java_double_string(2.0 * 4.9e-324), "9.9E-324");
+        assert_eq!(java_double_string(3.0 * 4.9e-324), "1.5E-323");
+        assert_eq!(java_float_string(f32::from_bits(1)), "1.4E-45");
+        assert_eq!(java_double_string(3.0), "3.0");
+        assert_eq!(java_double_string(1e23), "1.0E23");
+        assert_eq!(java_double_string(1e-5), "1.0E-5");
+        assert_eq!(
+            java_two_digits("5e0".into(), || "x".into(), |_| true),
+            "5e0"
+        );
+        assert_eq!(
+            java_two_digits("5e0".into(), || "4.9e0".into(), |_| false),
+            "5e0"
+        );
         assert_eq!(java_float_string(0.1), "0.1");
         assert_eq!(java_float_string(-1e-4), "-1.0E-4");
         // A tie between two shortest decimals resolves to the even digit.

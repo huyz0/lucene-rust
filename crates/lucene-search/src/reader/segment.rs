@@ -508,6 +508,11 @@ impl SortedNumericDocValues for SegSortedNumeric<'_> {
         self.upto += 1;
         Ok(v)
     }
+    fn take_values(&mut self) -> Option<&[i64]> {
+        let rest = self.values.get(self.upto..).unwrap_or_default();
+        self.upto = self.values.len();
+        Some(rest)
+    }
 }
 
 /// A SORTED_SET field, in either on-disk shape.
@@ -1028,6 +1033,13 @@ impl LeafReader for SegmentReader {
         Ok(self
             .doc_values_skip_index(fi.number)?
             .map(doc_values::DocValuesSkipper::new))
+    }
+
+    fn sorted_numeric_is_singleton(&self, field: &str) -> bool {
+        self.dv_field(field, DocValuesType::SortedNumeric, |m, n| {
+            m.sorted_numeric_entry(n)
+        })
+        .is_some_and(|(e, _)| e.addresses.is_none())
     }
 
     fn check_integrity(&self) -> Result<()> {

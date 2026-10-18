@@ -73,16 +73,17 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::pending_postings::PendingPostings;
 use super::{
     DocValuesFieldConfig, DocumentBuffer, Error, IndexWriter, IndexingConfig, PointsFieldConfig,
-    Result, DOC_VALUES_FORMAT_NAME, POSTINGS_FORMAT_NAME,
+    Result, DOC_VALUES_FORMAT_NAME,
 };
 use crate::segment_infos::SegmentCommitInfo;
 use crate::segment_writer;
 use lucene_codecs::field_infos::{DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions};
 use lucene_codecs::norms;
 use lucene_codecs::per_field_doc_values;
-use lucene_codecs::postings_writer::{self, FieldPostingsInput, TermPostings};
+use lucene_codecs::postings_writer::{self, FieldPostingsInput};
 use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
 use lucene_codecs::term_vectors::{self, TermVectorField, TermVectorsDocument};
 use lucene_store::codec_util::ID_LENGTH;
@@ -213,7 +214,7 @@ impl ExplicitFields {
     }
 }
 
-fn explicit_error(message: impl Into<String>) -> Error {
+pub(crate) fn explicit_error(message: impl Into<String>) -> Error {
     Error::Explicit(message.into())
 }
 
@@ -566,42 +567,58 @@ impl IndexingConfig {
         }
 
         // The fields this segment carries, in any role.
-        let mut present: BTreeSet<i32> = BTreeSet::new();
+        let mut present = FieldNumberSet::default();
         for doc_vectors in buf.vectors {
             for v in doc_vectors {
                 present.insert(self.explicit_vector_field(&v.field_name)?.number);
             }
         }
         for (doc, fields) in buf.docs.iter().zip(explicit) {
-            present.extend(doc.fields.iter().map(|f| f.field_number));
-            present.extend(fields.inverted.iter().map(|f| f.field_number));
-            present.extend(fields.doc_values.iter().map(|f| f.field_number));
-            present.extend(fields.points.iter().map(|f| f.field_number));
-            present.extend(fields.term_vectors.iter().map(|f| f.field_number));
-            present.extend(fields.registered.iter().copied());
+            doc.fields
+                .iter()
+                .for_each(|f| present.insert(f.field_number));
+            let roles = [&fields.doc_values, &fields.points];
+            fields
+                .inverted
+                .iter()
+                .for_each(|f| present.insert(f.field_number));
+            roles
+                .into_iter()
+                .flatten()
+                .for_each(|f| present.insert(f.field_number));
+            fields
+                .term_vectors
+                .iter()
+                .for_each(|f| present.insert(f.field_number));
+            fields.registered.iter().for_each(|&n| present.insert(n));
         }
 
+        // Postings: one term dictionary per field, terms in byte order. The
+        // writer inverted them as each document was buffered
+        // (`pending_postings`); a buffer that still carries its terms is
+        // inverted here the same way.
+        let inverted_here;
+        let pending = match buf.postings {
+            Some(p) => p,
+            None => {
+                let mut p = PendingPostings::default();
+                for (doc_id, fields) in explicit.iter().enumerate() {
+                    let doc_id = i32::try_from(doc_id)
+                        .map_err(|_| explicit_error("too many buffered documents"))?;
+                    for inv in &fields.inverted {
+                        let options = self.explicit_field(inv.field_number)?.index_options;
+                        p.add_field(doc_id, inv, options)?;
+                    }
+                }
+                inverted_here = p;
+                &inverted_here
+            }
+        };
         // `FieldInfo.setStorePayloads`: the fields a document of this segment
         // gave a non-empty payload. Every occurrence of such a field then
         // carries a payload length, zero where it has none -- what
         // `FreqProxTermsWriterPerField.writeProx` records once the flag is on.
-        let payload_fields: BTreeSet<i32> = explicit
-            .iter()
-            .flat_map(|fields| &fields.inverted)
-            .filter(|inv| {
-                inv.terms
-                    .iter()
-                    .any(|t| t.payloads.iter().any(|p| !p.is_empty()))
-            })
-            .map(|inv| inv.field_number)
-            .collect();
-
-        // Postings: one term dictionary per field, terms in byte order.
-        struct Building {
-            terms: BTreeMap<Vec<u8>, TermPostings>,
-            docs: usize,
-        }
-        let mut postings: BTreeMap<i32, Building> = BTreeMap::new();
+        let payload_fields: BTreeSet<i32> = pending.payload_fields().collect();
         let mut norm_values: BTreeMap<i32, Vec<Option<i64>>> = BTreeMap::new();
         for (doc_id, fields) in explicit.iter().enumerate() {
             for inv in &fields.inverted {
@@ -609,44 +626,6 @@ impl IndexingConfig {
                     norm_values
                         .entry(inv.field_number)
                         .or_insert_with(|| vec![None; max_doc])[doc_id] = Some(norm);
-                }
-                if inv.terms.is_empty() {
-                    continue;
-                }
-                let b = postings
-                    .entry(inv.field_number)
-                    .or_insert_with(|| Building {
-                        terms: BTreeMap::new(),
-                        docs: 0,
-                    });
-                b.docs = b.docs.saturating_add(1);
-                for t in &inv.terms {
-                    let tp = b
-                        .terms
-                        .entry(t.term.clone())
-                        .or_insert_with(|| TermPostings {
-                            term: t.term.clone(),
-                            docs: Vec::new(),
-                            positions: Vec::new(),
-                            offsets: Vec::new(),
-                            payload_bytes: Vec::new(),
-                            payload_lengths: Vec::new(),
-                        });
-                    tp.docs.push((doc_id as i32, t.freq));
-                    tp.positions.push(t.positions.clone());
-                    tp.offsets.push(t.offsets.clone());
-                    if payload_fields.contains(&inv.field_number) {
-                        // Doc-major, one length per occurrence: the run
-                        // `Lucene104PostingsWriter` accumulates.
-                        for i in 0..t.positions.len() {
-                            let payload = t.payloads.get(i).map_or(&[][..], Vec::as_slice);
-                            tp.payload_bytes.extend_from_slice(payload);
-                            tp.payload_lengths
-                                .push(u32::try_from(payload.len()).map_err(|_| {
-                                    explicit_error("a payload longer than u32::MAX bytes")
-                                })?);
-                        }
-                    }
                 }
             }
         }
@@ -657,18 +636,20 @@ impl IndexingConfig {
             .iter()
             .map(|(&n, col)| (n, col.iter().map(|v| v.unwrap_or(1)).collect()))
             .collect();
-        let term_lists: Vec<(i32, IndexOptions, i32, Vec<TermPostings>)> = postings
+        let remapped = buf.old_to_new.map(|map| pending.remap(map)).transpose()?;
+        let term_lists: Vec<(i32, IndexOptions, i32, Vec<_>)> = pending
+            .term_lists(remapped.as_ref())
             .into_iter()
-            .map(|(n, b)| {
+            .map(|(n, docs, terms)| {
                 let options = self.explicit_field(n).map(|f| f.index_options)?;
-                Ok((n, options, b.docs as i32, b.terms.into_values().collect()))
+                Ok((n, options, docs, terms))
             })
             .collect::<Result<_>>()?;
         let postings_fields: BTreeSet<i32> = term_lists.iter().map(|(n, ..)| *n).collect();
         let postings_output = if term_lists.is_empty() {
             None
         } else {
-            let inputs: Vec<FieldPostingsInput<'_>> = term_lists
+            let inputs: Vec<FieldPostingsInput<'_, _>> = term_lists
                 .iter()
                 .map(|(n, options, docs, terms)| FieldPostingsInput {
                     field_number: *n,
@@ -727,15 +708,10 @@ impl IndexingConfig {
             )?)
         };
 
-        // Doc values and points through the native builders, over one
-        // synthetic value list per document.
-        let synthetic = |pick: fn(&ExplicitFields) -> &Vec<StoredField>| -> Vec<Document> {
-            explicit
-                .iter()
-                .map(|f| Document {
-                    fields: pick(f).clone(),
-                })
-                .collect()
+        // Doc values and points through the native builders, each
+        // document's values read in place.
+        let in_place = |pick: fn(&ExplicitFields) -> &[StoredField]| -> Vec<&[StoredField]> {
+            explicit.iter().map(pick).collect()
         };
         let dv_configs: Vec<DocValuesFieldConfig> = self
             .fields
@@ -758,7 +734,7 @@ impl IndexingConfig {
                 .map(|f| f.name.as_str())
                 .collect();
             Some(self.build_doc_values_groups(
-                &synthetic(|f| &f.doc_values),
+                &in_place(|f| &f.doc_values),
                 &dv_configs,
                 &names,
                 &segment_id,
@@ -785,11 +761,7 @@ impl IndexingConfig {
         let points_output = if point_configs.is_empty() {
             None
         } else {
-            IndexWriter::build_points_output(
-                &synthetic(|f| &f.points),
-                &point_configs,
-                &segment_id,
-            )?
+            IndexWriter::build_points_output(&in_place(|f| &f.points), &point_configs, &segment_id)?
         };
 
         let vector_configs: Vec<super::VectorFieldConfig> = self
@@ -866,13 +838,14 @@ impl IndexingConfig {
                     groups
                         .iter()
                         .find(|g| g.field_numbers.contains(&f.number))
-                        .map(|g| g.suffix)
+                        .map(|g| (g.format_name, g.suffix))
                 });
-                if let (true, Some(suffix)) = (postings_fields.contains(&f.number), postings_suffix)
+                if let (true, Some((format_name, suffix))) =
+                    (postings_fields.contains(&f.number), postings_suffix)
                 {
                     f.attributes.push((
                         "PerFieldPostingsFormat.format".to_string(),
-                        POSTINGS_FORMAT_NAME.to_string(),
+                        format_name.to_string(),
                     ));
                     f.attributes.push((
                         "PerFieldPostingsFormat.suffix".to_string(),
@@ -981,21 +954,9 @@ impl<'d> IndexWriter<'d> {
                 "explicit documents must be enabled before any document is buffered",
             ));
         }
-        if let Some(sort) = self.cfg.index_sort.clone() {
-            // Explicit documents register their fields as they arrive; the
-            // sort's fields are checked against them then.
-            for sf in &sort {
-                if let Some(info) = self.cfg.fields.iter().find(|f| f.name == sf.field) {
-                    let wanted = super::sort_doc_values_type(sf);
-                    if info.doc_values_type != wanted {
-                        return Err(Error::UnsupportedIndexSortField(
-                            sf.field.clone(),
-                            info.doc_values_type,
-                        ));
-                    }
-                }
-            }
-        }
+        // An index sort's fields were checked against the registered ones by
+        // `set_index_sort`; fields registered from here are checked by
+        // `register_field`.
         self.cfg_mut().explicit = true;
         Ok(())
     }
@@ -1118,6 +1079,11 @@ impl<'d> IndexWriter<'d> {
         info.attributes.clear();
         self.cfg_mut().fields.push(info);
         Ok(number)
+    }
+
+    /// The registered field named `name`, if any.
+    pub(crate) fn registered_field(&self, name: &str) -> Option<&FieldInfo> {
+        self.cfg.fields.iter().find(|f| f.name == name)
     }
 
     /// `IndexWriterConfig.setParentField(name)`: from here on the last
@@ -1301,7 +1267,14 @@ impl<'d> IndexWriter<'d> {
         docs: Vec<ExplicitDocument>,
         vectors: Vec<Vec<super::DocumentVector>>,
     ) -> Result<super::SeqNo> {
-        self.explicit_documents_check(&docs)?;
+        // The document API builds these documents itself, from fields it has
+        // just registered: they hold by construction what
+        // `validate_explicit` checks of a caller's, so the check runs only
+        // in debug builds, where the debug test run still exercises it (the
+        // release run of `lucene-search`'s tests does not).
+        if cfg!(debug_assertions) {
+            self.explicit_documents_check(&docs)?;
+        }
         if vectors.len() != docs.len() {
             return Err(explicit_error("one vector list per document"));
         }
@@ -1373,9 +1346,23 @@ impl<'d> IndexWriter<'d> {
             self.pending_has_blocks = true;
         }
         let mut vectors = vectors.map(Vec::into_iter);
-        for doc in docs {
+        for mut doc in docs {
             let mut extra = doc.fields.ram_bytes();
             self.buffer_document(Document { fields: doc.stored });
+            // `IndexingChain.processDocument` inverts into the segment's
+            // term hash as the document arrives: see `pending_postings`.
+            let doc_id = i32::try_from(self.pending_docs.len().saturating_sub(1))
+                .map_err(|_| explicit_error("too many buffered documents"))?;
+            for inv in &mut doc.fields.inverted {
+                if inv.terms.is_empty() {
+                    // the document API's are in the postings already
+                    continue;
+                }
+                let options = self.cfg.explicit_field(inv.field_number)?.index_options;
+                self.pending_postings.add_field(doc_id, inv, options)?;
+                // the hash holds them now; the document keeps its norm
+                inv.terms = Vec::new();
+            }
             *self
                 .pending_explicit
                 .last_mut()
@@ -1397,6 +1384,28 @@ impl<'d> IndexWriter<'d> {
     }
 }
 
+/// The field numbers a flushed segment carries: a flag per number, which
+/// field numbers (dense from 0) make cheaper than an ordered set that every
+/// field of every buffered document is inserted into.
+#[derive(Default)]
+struct FieldNumberSet(Vec<bool>);
+
+impl FieldNumberSet {
+    fn insert(&mut self, number: i32) {
+        // field numbers are never negative
+        if let Ok(i) = usize::try_from(number) {
+            if i >= self.0.len() {
+                self.0.resize(i.saturating_add(1), false);
+            }
+            self.0[i] = true;
+        }
+    }
+
+    fn contains(&self, number: &i32) -> bool {
+        usize::try_from(*number).is_ok_and(|i| self.0.get(i).copied().unwrap_or(false))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // Test fixtures' own arithmetic, not values read off disk -- see
@@ -1406,6 +1415,7 @@ mod tests {
     use crate::buffered_updates::{DocValuesUpdate, Term};
     use crate::index_file_deleter::DeletionPolicy;
     use crate::index_writer::SoftDeletesRetention;
+    use crate::index_writer::POSTINGS_FORMAT_NAME;
     use crate::segment_info::LuceneVersion;
     use lucene_store::directory::FsDirectory;
     use lucene_util::test_support::TempDir;
@@ -1856,6 +1866,7 @@ mod tests {
         let dir = FsDirectory::open(tmp.path());
         let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
         let f = register(&mut w);
+        assert_eq!(w.register_parent_field().unwrap(), None);
         let base = || doc(&f, 1);
         let mut cases: Vec<(&str, ExplicitDocument)> = Vec::new();
         let mut d = base();
@@ -1886,6 +1897,12 @@ mod tests {
         let mut d = base();
         d.fields.inverted[0].terms[0].positions = vec![0];
         cases.push(("positions on a docs-only field", d));
+        let mut d = base();
+        d.fields.inverted[1].terms[0].positions.pop();
+        cases.push(("positions out of step with freq", d));
+        let mut d = base();
+        d.fields.inverted[1].terms[0].offsets.pop();
+        cases.push(("offsets out of step with freq", d));
         let mut d = base();
         d.fields.inverted[1].terms[0].offsets = vec![(5, 1)];
         cases.push(("end before start", d));
@@ -1924,6 +1941,200 @@ mod tests {
             &[],
         );
         assert!(matches!(soft, Err(Error::NoSoftDeletesSupplied)));
+    }
+
+    /// Every refusal `validate_explicit_vectors` makes, and the vector-list
+    /// count check, on both the add and the soft-update entry points.
+    #[test]
+    fn invalid_vectors_are_refused_at_add_time() {
+        use crate::index_writer::DocumentVector;
+        use lucene_codecs::field_infos::{VectorEncoding, VectorSimilarityFunction};
+        let tmp = TempDir::new("explicit-vectors-invalid");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        let f = register(&mut w);
+        w.register_field(
+            FieldInfo::new("v", 0)
+                .with_index_options(IndexOptions::None)
+                .with_vectors(2, VectorEncoding::Float32, VectorSimilarityFunction::Cosine),
+        )
+        .unwrap();
+        let ok = || DocumentVector::float32("v", vec![1.0, 2.0]);
+        let cases: Vec<(&str, Vec<DocumentVector>)> = vec![
+            (
+                "unregistered vector field",
+                vec![DocumentVector::float32("nope", vec![1.0, 2.0])],
+            ),
+            (
+                "registered but not a vector",
+                vec![DocumentVector::float32("_id", vec![1.0, 2.0])],
+            ),
+            (
+                "encoding mismatch",
+                vec![DocumentVector::byte("v", vec![1, 2])],
+            ),
+            (
+                "dimension mismatch",
+                vec![DocumentVector::float32("v", vec![1.0])],
+            ),
+            ("repeated field", vec![ok(), ok()]),
+        ];
+        for (what, vectors) in cases {
+            let err = w.cfg.validate_explicit_vectors(&vectors).expect_err(what);
+            assert!(matches!(err, Error::Explicit(_)), "{what}: {err}");
+            let err = w
+                .add_explicit_documents_with_vectors(None, vec![doc(&f, 1)], vec![vectors])
+                .expect_err(what);
+            assert!(matches!(err, Error::Explicit(_)), "{what}: {err}");
+        }
+        w.cfg.validate_explicit_vectors(&[ok()]).unwrap();
+        let err = w
+            .add_explicit_documents_with_vectors(None, vec![doc(&f, 1)], Vec::new())
+            .expect_err("vector list count");
+        assert!(matches!(err, Error::Explicit(_)), "{err}");
+        let err = w
+            .soft_update_explicit_documents_with_vectors(
+                Term {
+                    field: "_id".to_string(),
+                    bytes: b"d1".to_vec(),
+                },
+                vec![doc(&f, 1)],
+                vec![vec![DocumentVector::byte("v", vec![1, 2])]],
+                &[soft_delete(1)],
+            )
+            .expect_err("soft update encoding");
+        assert!(matches!(err, Error::Explicit(_)), "{err}");
+    }
+
+    /// The refusals `register_field` and `set_parent_field` make: schema
+    /// shapes Lucene rejects, and the parent field's rules.
+    #[test]
+    fn field_registration_and_parent_field_refusals() {
+        use crate::segment_info::IndexSortField;
+        let explicit = |what: &str, r: Result<()>| {
+            assert!(matches!(r, Err(Error::Explicit(_))), "{what}: {r:?}");
+        };
+        let tmp = TempDir::new("explicit-field-refusals");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        // Before explicit mode: both refused or switched on.
+        explicit(
+            "register before enabling",
+            w.register_field(FieldInfo::new("a", 0)).map(drop),
+        );
+        w.enable_explicit_documents().unwrap();
+        explicit(
+            "term vectors",
+            w.register_field(FieldInfo::new("a", 0).with_store_term_vectors(true))
+                .map(drop),
+        );
+        explicit(
+            "skip index on binary doc values",
+            w.register_field(FieldInfo::new("a", 0).with_doc_values(
+                DocValuesType::Binary,
+                DocValuesSkipIndexType::Range,
+                -1,
+            ))
+            .map(drop),
+        );
+        explicit(
+            "parent field without a configured parent",
+            w.register_field(FieldInfo::new("a", 0).with_parent_field(true))
+                .map(drop),
+        );
+        // A conflicting schema for a known name.
+        w.register_field(FieldInfo::new("c", 0).with_doc_values(
+            DocValuesType::Numeric,
+            DocValuesSkipIndexType::None,
+            -1,
+        ))
+        .unwrap();
+        explicit(
+            "changed doc values type",
+            w.register_field(FieldInfo::new("c", 0).with_doc_values(
+                DocValuesType::Sorted,
+                DocValuesSkipIndexType::None,
+                -1,
+            ))
+            .map(drop),
+        );
+        // set_parent_field against what is registered.
+        explicit(
+            "parent named as a registered non-parent field",
+            w.set_parent_field(Some("c")),
+        );
+        w.register_field(
+            FieldInfo::new("soft", 0)
+                .with_doc_values(DocValuesType::Numeric, DocValuesSkipIndexType::None, -1)
+                .with_soft_deletes_field(true),
+        )
+        .unwrap();
+        explicit(
+            "parent named as the soft-deletes field",
+            w.set_parent_field(Some("soft")),
+        );
+        explicit(
+            "parent added to an index that has other fields",
+            w.set_parent_field(Some("p")),
+        );
+
+        // A fresh writer: the parent field proper.
+        let tmp2 = TempDir::new("explicit-parent-field");
+        let dir2 = FsDirectory::open(tmp2.path());
+        let mut w = IndexWriter::open(&dir2, Vec::new(), "Lucene104", VERSION).unwrap();
+        w.set_parent_field(Some("p")).unwrap();
+        assert_eq!(w.parent_field(), Some("p"));
+        explicit(
+            "another field as the parent",
+            w.register_field(FieldInfo::new("q", 0).with_parent_field(true))
+                .map(drop),
+        );
+        explicit(
+            "the parent name as an ordinary field",
+            w.register_field(FieldInfo::new("p", 0)).map(drop),
+        );
+        w.register_parent_field().unwrap();
+        explicit(
+            "another parent over a registered one",
+            w.set_parent_field(Some("r")),
+        );
+        explicit("clearing a registered parent", w.set_parent_field(None));
+        let f = register(&mut w);
+        w.add_explicit_documents(vec![doc(&f, 1)]).unwrap();
+        explicit(
+            "setting the parent with documents buffered",
+            w.set_parent_field(Some("p")),
+        );
+
+        // Clearing a parent that was never registered.
+        let tmp3 = TempDir::new("explicit-parent-clear");
+        let dir3 = FsDirectory::open(tmp3.path());
+        let mut w = IndexWriter::open(&dir3, Vec::new(), "Lucene104", VERSION).unwrap();
+        w.set_parent_field(Some("p")).unwrap();
+        w.set_parent_field(None).unwrap();
+        assert_eq!(w.parent_field(), None);
+
+        // An index sort names a field; registering it with other doc values
+        // is refused.
+        let tmp4 = TempDir::new("explicit-sort-mismatch");
+        let dir4 = FsDirectory::open(tmp4.path());
+        let mut w = IndexWriter::open(&dir4, Vec::new(), "Lucene104", VERSION).unwrap();
+        w.enable_explicit_documents().unwrap();
+        w.set_index_sort(Some(&[IndexSortField::long("v", true, None)]))
+            .unwrap();
+        explicit(
+            "sort field with the wrong doc values",
+            w.register_field(FieldInfo::new("v", 0).with_doc_values(
+                DocValuesType::Sorted,
+                DocValuesSkipIndexType::None,
+                -1,
+            ))
+            .map(drop),
+        );
+        let err = w
+            .set_index_sort(Some(&[IndexSortField::long("v", true, None)]))
+            .map(drop);
+        assert!(err.is_ok(), "{err:?}");
     }
 
     /// `update_explicit_documents` hard-deletes the earlier document.

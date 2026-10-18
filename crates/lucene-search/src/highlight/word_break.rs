@@ -1,4 +1,5 @@
-//! `BreakIterator.getWordInstance(Locale.ROOT)` of the JDK -- the legacy
+//! `BreakIterator.getWordInstance(Locale.ROOT)` and `getSentenceInstance(Locale.ROOT)`
+//! of the JDK -- the legacy
 //! rule-based word iterator, which is not UAX #29's: `e-mail`, `foo_bar`,
 //! `a.b` and `2.5%` are each one word, a run of white space is one segment,
 //! and a number takes a trailing `%`. Lucene's `BreakIteratorShrinkingAdjuster`
@@ -167,6 +168,48 @@ const PREVIOUS: [[u8; CLASSES]; 15] = [
     ],
 ];
 
+/// Which of the JDK's two rule sets an iterator reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// `getWordInstance`.
+    Word,
+    /// `getSentenceInstance`.
+    Sentence,
+}
+
+/// One rule set: the automata and the classifier.
+struct Rules {
+    classes: usize,
+    next: &'static [u8],
+    ends: &'static [bool],
+    lookahead: &'static [bool],
+    previous: &'static [u8],
+    class_of: fn(u32) -> Option<usize>,
+}
+
+impl Kind {
+    fn rules(self) -> Rules {
+        match self {
+            Kind::Word => Rules {
+                classes: CLASSES,
+                next: NEXT.as_flattened(),
+                ends: &ENDS,
+                lookahead: &[false; 20],
+                previous: PREVIOUS.as_flattened(),
+                class_of,
+            },
+            Kind::Sentence => Rules {
+                classes: SENTENCE_CLASSES,
+                next: SENTENCE_NEXT.as_flattened(),
+                ends: &SENTENCE_ENDS,
+                lookahead: &SENTENCE_LOOKAHEAD,
+                previous: SENTENCE_PREVIOUS.as_flattened(),
+                class_of: sentence_class_of,
+            },
+        }
+    }
+}
+
 /// The class of one code point. `None` is a character the rules skip
 /// (an invisible format character inside a segment).
 fn class_of(cp: u32) -> Option<usize> {
@@ -211,9 +254,85 @@ fn class_of(cp: u32) -> Option<usize> {
     })
 }
 
+/// The sentence iterator's classes: 0 `,`, 1 U+2029, 2 `.` (and U+FF0E),
+/// 3 `"` and `'`, 4 `!` `?` and the ideographic full stop (and full-width
+/// forms), 5 upper-case, titlecase, modifier and other letters, 6 lower-case
+/// letters, 7 danda, 8 anything else, 9 digits, 10 closing punctuation and
+/// final quotes, 11 opening punctuation and initial quotes, 12 white space
+/// and line breaks; marks and format characters are skipped.
+const SENTENCE_CLASSES: usize = 13;
+
+/// Forward automaton of the sentence rules, as [`NEXT`].
+const SENTENCE_NEXT: [[u8; SENTENCE_CLASSES]; 13] = [
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [1, 2, 5, 1, 11, 1, 1, 3, 1, 1, 1, 1, 1],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [1, 2, 5, 9, 11, 1, 1, 8, 8, 1, 5, 8, 6],
+    [1, 2, 5, 8, 11, 4, 1, 8, 8, 1, 1, 8, 7],
+    [1, 2, 5, 10, 11, 4, 4, 10, 10, 1, 1, 10, 7],
+    [1, 2, 5, 8, 11, 4, 4, 8, 8, 1, 1, 8, 1],
+    [1, 2, 5, 9, 11, 4, 4, 10, 10, 1, 5, 10, 6],
+    [0, 0, 0, 8, 0, 4, 4, 8, 8, 0, 0, 8, 0],
+    [0, 2, 11, 11, 11, 0, 0, 0, 0, 0, 11, 0, 12],
+    [0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 12],
+];
+
+const SENTENCE_ENDS: [bool; 13] = [
+    false, true, true, true, true, false, false, false, false, false, false, true, true,
+];
+
+/// States that only mark a possible end: the break is taken when a later
+/// state ends (`handleNext`'s lookahead).
+const SENTENCE_LOOKAHEAD: [bool; 13] = [
+    false, false, false, false, true, true, true, true, false, true, false, false, false,
+];
+
+const SENTENCE_PREVIOUS: [[u8; SENTENCE_CLASSES]; 11] = [
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [9, 10, 10, 10, 10, 9, 3, 4, 4, 3, 10, 9, 10],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [9, 10, 10, 3, 2, 9, 3, 4, 4, 3, 7, 3, 5],
+    [9, 10, 2, 4, 2, 9, 3, 4, 4, 3, 8, 4, 6],
+    [9, 10, 10, 7, 2, 9, 3, 4, 4, 3, 7, 9, 5],
+    [9, 10, 2, 8, 2, 9, 3, 4, 4, 3, 8, 9, 6],
+    [9, 10, 10, 7, 2, 9, 3, 4, 4, 3, 7, 9, 10],
+    [9, 10, 2, 8, 2, 9, 3, 4, 4, 3, 8, 9, 10],
+    [9, 0, 10, 10, 0, 9, 3, 4, 4, 3, 10, 9, 10],
+    [9, 0, 10, 10, 10, 9, 3, 4, 4, 3, 10, 9, 10],
+];
+
+/// The sentence class of one code point; `None` is skipped.
+fn sentence_class_of(cp: u32) -> Option<usize> {
+    match cp {
+        0x2C => return Some(0),
+        0x2029 => return Some(1),
+        0x2E | 0xFF0E => return Some(2),
+        0x22 | 0x27 => return Some(3),
+        0x21 | 0x3F | 0x3002 | 0xFF01 | 0xFF1F => return Some(4),
+        0x964 | 0x965 => return Some(7),
+        0x09 | 0x0A | 0x0C | 0x0D | 0x2028 => return Some(12),
+        _ => {}
+    }
+    match jc::get_type(cp) {
+        jc::UPPERCASE_LETTER | jc::TITLECASE_LETTER | jc::MODIFIER_LETTER | jc::OTHER_LETTER => {
+            Some(5)
+        }
+        jc::LOWERCASE_LETTER => Some(6),
+        jc::DECIMAL_DIGIT_NUMBER | jc::LETTER_NUMBER | jc::OTHER_NUMBER => Some(9),
+        jc::END_PUNCTUATION | jc::FINAL_QUOTE_PUNCTUATION => Some(10),
+        jc::START_PUNCTUATION | jc::INITIAL_QUOTE_PUNCTUATION => Some(11),
+        jc::SPACE_SEPARATOR => Some(12),
+        jc::NON_SPACING_MARK | jc::ENCLOSING_MARK | jc::FORMAT => None,
+        _ => Some(8),
+    }
+}
+
 /// `BreakIterator.getWordInstance(Locale.ROOT)` over one text.
 #[derive(Debug, Clone)]
-pub struct WordBreakIterator {
+pub struct RuleBreakIterator {
+    kind: Kind,
     text: Vec<u16>,
     /// The `CharacterIterator`'s position.
     pos: usize,
@@ -221,19 +340,44 @@ pub struct WordBreakIterator {
     cached_last_known_break: i64,
 }
 
-impl WordBreakIterator {
+impl RuleBreakIterator {
     /// `setText(text)`.
-    pub fn new(text: &str) -> Self {
-        Self::from_utf16(text.encode_utf16().collect())
+    pub fn word(text: &str) -> Self {
+        Self::from_utf16(Kind::Word, text.encode_utf16().collect())
+    }
+
+    /// `BreakIterator.getSentenceInstance(Locale.ROOT).setText(text)`.
+    pub fn sentence(text: &str) -> Self {
+        Self::from_utf16(Kind::Sentence, text.encode_utf16().collect())
     }
 
     /// `setText` over UTF-16 code units.
-    pub fn from_utf16(text: Vec<u16>) -> Self {
-        WordBreakIterator {
+    pub fn from_utf16(kind: Kind, text: Vec<u16>) -> Self {
+        RuleBreakIterator {
+            kind,
             text,
             pos: 0,
             cached_last_known_break: DONE,
         }
+    }
+
+    /// `setText(text)` on an iterator already in use: back to the start with
+    /// no break remembered.
+    pub fn set_text(&mut self, text: Vec<u16>) {
+        self.text = text;
+        self.pos = 0;
+        self.cached_last_known_break = DONE;
+    }
+
+    /// `current()`: the cursor.
+    pub fn current(&self) -> usize {
+        self.pos
+    }
+
+    /// `last()`: the end of the text.
+    pub fn last(&mut self) -> usize {
+        self.pos = self.text.len();
+        self.pos
     }
 
     /// The text's length in code units.
@@ -336,17 +480,28 @@ impl WordBreakIterator {
         if self.pos == self.text.len() {
             return DONE;
         }
+        let rules = self.kind.rules();
         let mut result = self.get_next_index();
+        let mut lookahead_result = 0usize;
         let mut state = 1usize;
         let mut c = self.get_current();
         while c != END_CHAR && state != 0 {
-            if let Some(class) = class_of(c) {
-                state = usize::from(NEXT[state][class]);
+            if let Some(class) = (rules.class_of)(c) {
+                state = usize::from(rules.next[state * rules.classes + class]);
             }
-            if ENDS[state] {
+            if rules.lookahead[state] {
+                if rules.ends[state] {
+                    result = lookahead_result;
+                } else {
+                    lookahead_result = self.get_next_index();
+                }
+            } else if rules.ends[state] {
                 result = self.get_next_index();
             }
             c = self.get_next();
+        }
+        if c == END_CHAR && lookahead_result == self.text.len() {
+            result = lookahead_result;
         }
         self.pos = result;
         i64::try_from(result).unwrap_or(i64::MAX)
@@ -354,15 +509,16 @@ impl WordBreakIterator {
 
     /// `handlePrevious()`: a boundary at or before the cursor.
     fn handle_previous(&mut self) -> i64 {
+        let rules = self.kind.rules();
         let mut state = 1usize;
         let mut category: Option<usize> = Some(0);
         let mut last_category: Option<usize> = Some(0);
         let mut c = self.get_current();
         while c != END_CHAR && state != 0 {
             last_category = category;
-            category = class_of(c);
+            category = (rules.class_of)(c);
             if let Some(class) = category {
-                state = usize::from(PREVIOUS[state][class]);
+                state = usize::from(rules.previous[state * rules.classes + class]);
             }
             c = self.get_previous();
         }

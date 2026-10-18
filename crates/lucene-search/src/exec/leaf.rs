@@ -198,6 +198,10 @@ impl Scorer for ConstantScorer<'_> {
         self.inner.contains(doc)
     }
 
+    fn constant_score(&self) -> Option<f32> {
+        (!self.emptied).then_some(self.score)
+    }
+
     fn batch_matches(&self) -> bool {
         !self.emptied && self.inner.batch_matches()
     }

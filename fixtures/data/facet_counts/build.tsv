@@ -1,0 +1,159 @@
+0	$facets	string	Authora0
+0	$facets	string	Author
+0	$facets	string	Publish Date200011
+0	$facets	string	Publish Date
+0	$facets	string	Publish Date2000
+0	$facets	string	Publish Date20001
+0	$facets	string	Tagt0
+0	$facets	string	Tag
+0	$facets	string	Tagt2
+0	$facets	string	Tag
+0	$facets	string	Pathp0q0
+0	$facets	string	Path
+0	$facets	string	Pathp0
+0	$facets	string	Pathp0
+0	$facets	string	Path
+0	$facets	string	Locl0m0
+0	$facets	string	Loc
+0	$facets	string	Locl0
+0	$facets	string	Manym0
+0	$facets	string	Many
+0	$facets	sndv	2
+0	$facets	sndv	6
+0	$facets	sndv	8
+0	$facets	sndv	9
+0	$facets	sndv	10
+0	$facets	sndv	11
+0	$facets	sndv	12
+0	$facets	sndv	14
+0	$facets	sndv	15
+0	$facets	sndv	17
+0	$color	string	Colorc0s0
+0	$color	string	Color
+0	$color	string	Colorc0
+0	$color	sndv	20
+0	$int_assoc	string	IntAx0
+0	$int_assoc	string	IntA
+0	$int_assoc	string	IntAx1
+0	$int_assoc	string	IntA
+0	$int_assoc	string	IntBz0
+0	$int_assoc	string	IntB
+0	$int_assoc	bdv	00000016fffffffd00000017fffffffc0000001900000001
+0	$float_assoc	string	FloatAy0
+0	$float_assoc	string	FloatA
+0	$float_assoc	string	FloatAy2
+0	$float_assoc	string	FloatA
+0	$float_assoc	string	FloatBw0
+0	$float_assoc	string	FloatB
+0	$float_assoc	bdv	0000001bbf8ccccd0000001c000000000000001e3f000000
+0	q	string	all
+0	q	string	even
+1	$facets	string	Authora7
+1	$facets	string	Author
+1	$facets	string	Publish Date200122
+1	$facets	string	Publish Date
+1	$facets	string	Publish Date2001
+1	$facets	string	Publish Date20012
+1	$facets	string	Tagt1
+1	$facets	string	Tag
+1	$facets	string	Tagt3
+1	$facets	string	Tag
+1	$facets	string	Catc1
+1	$facets	string	Cat
+1	$facets	string	Catc1
+1	$facets	string	Cat
+1	$facets	string	Pathp1q1
+1	$facets	string	Path
+1	$facets	string	Pathp1
+1	$facets	string	Pathp1
+1	$facets	string	Path
+1	$facets	string	Manym1
+1	$facets	string	Many
+1	$facets	sndv	10
+1	$facets	sndv	31
+1	$facets	sndv	34
+1	$facets	sndv	35
+1	$facets	sndv	36
+1	$facets	sndv	37
+1	$facets	sndv	38
+1	$facets	sndv	39
+1	$facets	sndv	40
+1	$facets	sndv	41
+1	$color	string	Colorc1s1
+1	$color	string	Color
+1	$color	string	Colorc1
+1	$color	sndv	43
+1	$int_assoc	string	IntAx1
+1	$int_assoc	string	IntA
+1	$int_assoc	string	IntAx2
+1	$int_assoc	string	IntA
+1	$int_assoc	string	IntBz1
+1	$int_assoc	string	IntB
+1	$int_assoc	bdv	00000017fffffffe0000002cffffffff0000002d00000002
+1	$float_assoc	string	FloatAy1
+1	$float_assoc	string	FloatA
+1	$float_assoc	string	FloatAy3
+1	$float_assoc	string	FloatA
+1	$float_assoc	string	FloatBw1
+1	$float_assoc	string	FloatB
+1	$float_assoc	bdv	0000002ebf3ae1480000002f3c54fdf4000000303f0353f8
+1	q	string	all
+1	num	ndv	1
+2	$facets	string	Authora14
+2	$facets	string	Author
+2	$facets	string	Publish Date200233
+2	$facets	string	Publish Date
+2	$facets	string	Publish Date2002
+2	$facets	string	Publish Date20023
+2	$facets	string	Tagt2
+2	$facets	string	Tag
+2	$facets	string	Tagt4
+2	$facets	string	Tag
+2	$facets	string	Catc2
+2	$facets	string	Cat
+2	$facets	string	Catc2
+2	$facets	string	Cat
+2	$facets	string	Pathp2q2
+2	$facets	string	Path
+2	$facets	string	Pathp2
+2	$facets	string	Pathp0
+2	$facets	string	Path
+2	$facets	string	Locl2m2
+2	$facets	string	Loc
+2	$facets	string	Locl2
+2	$facets	string	Manym2
+2	$facets	string	Many
+2	$facets	sndv	9
+2	$facets	sndv	10
+2	$facets	sndv	11
+2	$facets	sndv	37
+2	$facets	sndv	49
+2	$facets	sndv	52
+2	$facets	sndv	53
+2	$facets	sndv	54
+2	$facets	sndv	55
+2	$facets	sndv	56
+2	$facets	sndv	57
+2	$facets	sndv	58
+2	$facets	sndv	59
+2	$color	string	Colorc2s2
+2	$color	string	Color
+2	$color	string	Colorc2
+2	$color	sndv	61
+2	$int_assoc	string	IntAx2
+2	$int_assoc	string	IntA
+2	$int_assoc	string	IntAx3
+2	$int_assoc	string	IntA
+2	$int_assoc	string	IntBz2
+2	$int_assoc	string	IntB
+2	$int_assoc	bdv	0000002cffffffff0000003e000000020000003f00000003
+2	$float_assoc	string	FloatAy2
+2	$float_assoc	string	FloatA
+2	$float_assoc	string	FloatAy4
+2	$float_assoc	string	FloatA
+2	$float_assoc	string	FloatBw2
+2	$float_assoc	string	FloatB
+2	$float_assoc	bdv	0000001cbeb851ec000000403cd4fdf4000000413f06a7f0
+2	q	string	all
+2	q	string	even
+2	num	ndv	2

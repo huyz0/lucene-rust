@@ -22,6 +22,7 @@
 
 use std::collections::BTreeMap;
 
+use lucene_analysis::Analyzer;
 use lucene_codecs::field_infos::FieldInfo;
 use lucene_codecs::stored_fields::StoredField;
 use lucene_codecs::term_vectors::{TermVectorField, TermVectorTerm};
@@ -32,12 +33,23 @@ use super::{
     VectorSimilarityFunction,
 };
 use crate::buffered_updates::{SeqNo, Term};
+use crate::index_writer::pending_postings::FieldRuns;
 use crate::index_writer::{
-    DocumentVector, Error, ExplicitDocument, ExplicitFields, IndexWriter, InvertedField,
-    InvertedTerm, Result,
+    DocumentVector, Error, ExplicitDocument, ExplicitFields, IndexWriter, InvertedField, Result,
 };
 use crate::indexing_chain::MAX_POSITION;
 use crate::similarity::FieldInvertState;
+
+/// The attributes `IndexingChain.invertTokenStream` reads off one token.
+#[derive(Debug, Clone, Copy)]
+struct TokenAttrs<'a> {
+    term: &'a [u8],
+    start_offset: i32,
+    end_offset: i32,
+    position_increment: i32,
+    term_frequency: i32,
+    payload: Option<&'a [u8]>,
+}
 
 /// `IndexWriter.MAX_TERM_LENGTH`: the longest term, in bytes.
 pub const MAX_TERM_LENGTH: usize = 32766;
@@ -51,8 +63,8 @@ fn doc_error(e: super::Error) -> Error {
 
 /// `IndexingChain.FieldSchema`: one field name's structures in one document.
 #[derive(Debug, Clone)]
-struct FieldSchema {
-    name: String,
+struct FieldSchema<'n> {
+    name: &'n str,
     omit_norms: bool,
     store_term_vector: bool,
     index_options: IndexOptions,
@@ -67,10 +79,14 @@ struct FieldSchema {
     attributes: BTreeMap<String, String>,
 }
 
-impl FieldSchema {
-    fn new(name: &str) -> Self {
+/// The registered schemas of one document's fields, with each field's
+/// global field number, as [`IndexWriter::register_field_slots`] returns them.
+type RegisteredSchemas<'n> = Vec<(FieldSchema<'n>, i32)>;
+
+impl<'n> FieldSchema<'n> {
+    fn new(name: &'n str) -> Self {
         FieldSchema {
-            name: name.to_string(),
+            name,
             omit_norms: false,
             store_term_vector: false,
             index_options: IndexOptions::None,
@@ -124,7 +140,7 @@ impl FieldSchema {
                 )?;
             }
         } else {
-            verify_unindexed_field_type(&self.name, ft)?;
+            verify_unindexed_field_type(self.name, ft)?;
         }
         if ft.doc_values_type() != DocValuesType::None {
             if self.doc_values_type == DocValuesType::None {
@@ -203,9 +219,30 @@ impl FieldSchema {
         Ok(())
     }
 
+    /// Whether `registered` is the field [`Self::field_info`] would
+    /// register -- the schema `register_field` accepts for an existing
+    /// field, with nothing for it to refuse -- so the document can take its
+    /// number without building a `FieldInfo`.
+    fn matches(&self, registered: &FieldInfo) -> bool {
+        let indexed = self.index_options != IndexOptions::None;
+        !(indexed && self.store_term_vector)
+            && registered.index_options == self.index_options
+            && registered.omit_norms == (indexed && self.omit_norms)
+            && registered.doc_values_type == self.doc_values_type
+            && registered.doc_values_skip_index_type == self.doc_values_skip_index
+            && registered.point_dimension_count == self.point_dimension_count
+            && registered.point_index_dimension_count == self.point_index_dimension_count
+            && registered.point_num_bytes == self.point_num_bytes
+            && registered.vector_dimension == self.vector_dimension
+            && registered.vector_encoding == self.vector_encoding
+            && registered.vector_similarity_function == self.vector_similarity_function
+            && !registered.soft_deletes_field
+            && !registered.parent_field
+    }
+
     /// The `FieldInfo` `initializeFieldInfo` builds from this schema.
     fn field_info(&self) -> FieldInfo {
-        let mut info = FieldInfo::new(self.name.clone(), 0);
+        let mut info = FieldInfo::new(self.name, 0);
         info.index_options = self.index_options;
         if self.index_options != IndexOptions::None {
             info.omit_norms = self.omit_norms;
@@ -245,20 +282,6 @@ fn verify_unindexed_field_type(name: &str, ft: &super::FieldType) -> super::Resu
         return refuse("payloads ");
     }
     Ok(())
-}
-
-/// One term's occurrences in one document's field.
-#[derive(Debug, Default)]
-struct TermAcc {
-    freq: i32,
-    positions: Vec<i32>,
-    offsets: Vec<(i32, i32)>,
-    /// Parallel to `positions`: each occurrence's `PayloadAttribute`, empty
-    /// for none.
-    payloads: Vec<Vec<u8>>,
-    /// The term vector's own copy (`TermVectorsPostingsArray`), kept per the
-    /// vector's axes rather than the postings' index options.
-    vector: VectorAcc,
 }
 
 /// One term's occurrences as `TermVectorsConsumerPerField` records them.
@@ -360,13 +383,18 @@ struct InvertState {
     last_position: i32,
     unique_term_count: i32,
     max_term_frequency: i32,
-    /// `FreqProxTermsWriterPerField.sawPayloads`: some occurrence carried a
-    /// non-empty payload.
-    saw_payloads: bool,
+    /// Some term of this document was new to the buffered segment:
+    /// `newTerm`, the only call that sets a `DOCS` field's
+    /// `maxTermFrequency` (to 1).
+    new_to_segment: bool,
     /// `setAttributeSource`: the last value's stream, as its `end()` left
     /// it; `None` after a binary term.
     attribute_source: Option<lucene_analysis::AttributeSource>,
-    terms: BTreeMap<Vec<u8>, TermAcc>,
+    /// The term vector's own copy of each term (`TermVectorsPostingsArray`),
+    /// kept per the vector's axes rather than the postings' index options;
+    /// empty for a field without one. The postings themselves are in the
+    /// buffered segment's dictionary already.
+    vector_terms: BTreeMap<Vec<u8>, VectorAcc>,
     /// The term vector's axes, `None` for a field without one.
     vector: Option<VectorAxes>,
     /// `TermVectorsConsumerPerField.hasPayloads`: some occurrence gave the
@@ -387,22 +415,12 @@ impl InvertState {
             last_position: 0,
             unique_term_count: 0,
             max_term_frequency: 0,
-            saw_payloads: false,
+            new_to_segment: false,
             attribute_source: None,
-            terms: BTreeMap::new(),
+            vector_terms: BTreeMap::new(),
             vector: None,
             vector_saw_payloads: false,
         }
-    }
-
-    /// `writeProx`'s payload half: an occurrence's payload, recorded when
-    /// the field indexes positions. Empty is none.
-    fn push_payload(saw: &mut bool, acc: &mut TermAcc, payload: Option<&[u8]>) {
-        let payload = payload.unwrap_or_default();
-        if !payload.is_empty() {
-            *saw = true;
-        }
-        acc.payloads.push(payload.to_vec());
     }
 
     fn has_freq(&self) -> bool {
@@ -432,10 +450,14 @@ impl InvertState {
         Ok(freq)
     }
 
-    /// `TermsHashPerField.add` -> `newTerm`/`addTerm` for this document,
+    /// `TermsHashPerField.add` -> `newTerm`/`addTerm` for document `doc`,
+    /// into the buffered segment's dictionary for this field (`sink`),
     /// `maxTermFrequency` kept as they keep it.
+    #[allow(clippy::too_many_arguments)]
     fn add(
         &mut self,
+        sink: &mut FieldRuns,
+        doc: i32,
         field: &str,
         term: &[u8],
         freq: i32,
@@ -452,33 +474,26 @@ impl InvertState {
         let has_freq = self.has_freq();
         let has_prox = self.has_prox();
         let has_offsets = self.has_offsets();
-        let is_term_doc = self.is_term_doc();
-        let position = self.position;
-        match self.terms.get_mut(term) {
+        let slot = sink.occurrence(doc, term);
+        match slot.freq {
             None => {
                 let freq = if has_freq {
                     self.term_freq(field, freq)?
                 } else {
                     1
                 };
-                let mut acc = TermAcc {
-                    freq,
-                    ..TermAcc::default()
-                };
+                sink.first_in_doc(slot, doc, freq);
                 if has_prox {
-                    acc.positions.push(position);
-                    Self::push_payload(&mut self.saw_payloads, &mut acc, payload);
-                    if has_offsets {
-                        acc.offsets.push(offsets);
-                    }
+                    let offsets = if has_offsets { offsets } else { (0, 0) };
+                    sink.prox(slot, self.position, offsets, payload.unwrap_or_default());
                 }
                 // `newTerm`: `max(1, ...)` without frequencies, the term's
                 // frequency with them.
-                self.max_term_frequency = self.max_term_frequency.max(acc.freq);
-                self.terms.insert(term.to_vec(), acc);
+                self.max_term_frequency = self.max_term_frequency.max(freq);
+                self.new_to_segment |= slot.new_to_segment;
                 self.unique_term_count = self.unique_term_count.saturating_add(1);
             }
-            Some(acc) => {
+            Some(current) => {
                 if !has_freq {
                     if freq != 1 {
                         return Err(super::Error::IllegalState(format!(
@@ -487,7 +502,7 @@ impl InvertState {
                         )));
                     }
                 } else {
-                    if is_term_doc {
+                    if self.is_term_doc() {
                         return Err(illegal(
                             "Document update skipped due to duplicate termdoc term",
                         ));
@@ -498,17 +513,14 @@ impl InvertState {
                              TermFrequencyAttribute"
                         )));
                     }
-                    acc.freq = acc
-                        .freq
+                    let freq = current
                         .checked_add(freq)
                         .ok_or_else(|| illegal("integer overflow"))?;
-                    self.max_term_frequency = self.max_term_frequency.max(acc.freq);
+                    sink.set_freq(slot, freq);
+                    self.max_term_frequency = self.max_term_frequency.max(freq);
                     if has_prox {
-                        acc.positions.push(position);
-                        Self::push_payload(&mut self.saw_payloads, acc, payload);
-                        if has_offsets {
-                            acc.offsets.push(offsets);
-                        }
+                        let offsets = if has_offsets { offsets } else { (0, 0) };
+                        sink.prox(slot, self.position, offsets, payload.unwrap_or_default());
                     }
                 }
             }
@@ -546,10 +558,14 @@ impl InvertState {
             }
         }
         let position = self.position;
-        let Some(acc) = self.terms.get_mut(term) else {
-            return Ok(());
-        };
-        let acc = &mut acc.vector;
+        if !self.vector_terms.contains_key(term) {
+            self.vector_terms
+                .insert(term.to_vec(), VectorAcc::default());
+        }
+        let acc = self
+            .vector_terms
+            .get_mut(term)
+            .expect("the term was just inserted");
         // Java's `int +=`.
         acc.freq = acc.freq.wrapping_add(freq);
         if axes.offsets {
@@ -573,25 +589,21 @@ impl InvertState {
 
     /// `TermVectorsConsumerPerField.finishDocument`'s field: its terms in
     /// byte order, `None` without vectors or without a term.
-    fn term_vector(&self, field_number: i32) -> Option<TermVectorField> {
+    fn term_vector(&mut self, field_number: i32) -> Option<TermVectorField> {
         let axes = self.vector?;
-        if self.terms.is_empty() {
+        if self.vector_terms.is_empty() {
             return None;
         }
         let has_payloads = self.vector_saw_payloads;
-        let terms = self
-            .terms
-            .iter()
-            .map(|(term, acc)| {
-                let v = &acc.vector;
-                TermVectorTerm {
-                    term: term.clone(),
-                    freq: v.freq,
-                    positions: axes.positions.then(|| v.positions.clone()),
-                    start_offsets: axes.offsets.then(|| v.start_offsets.clone()),
-                    end_offsets: axes.offsets.then(|| v.end_offsets.clone()),
-                    payloads: has_payloads.then(|| v.payloads.clone()),
-                }
+        let terms = std::mem::take(&mut self.vector_terms)
+            .into_iter()
+            .map(|(term, v)| TermVectorTerm {
+                term,
+                freq: v.freq,
+                positions: axes.positions.then_some(v.positions),
+                start_offsets: axes.offsets.then_some(v.start_offsets),
+                end_offsets: axes.offsets.then_some(v.end_offsets),
+                payloads: has_payloads.then_some(v.payloads),
             })
             .collect();
         Some(TermVectorField {
@@ -606,82 +618,167 @@ impl InvertState {
     /// `PerField.invertTokenStream`.
     fn invert_tokens(
         &mut self,
+        sink: &mut FieldRuns,
+        doc: i32,
         field: &str,
         tokens: &FieldTokens,
+        analyzer: &Analyzer,
         analyzed: bool,
-        gaps: (i32, i32),
     ) -> super::Result<()> {
         for tok in &tokens.tokens {
-            let pos_incr = tok.position_increment;
-            self.position = self.position.wrapping_add(pos_incr);
-            if self.position < self.last_position {
-                if pos_incr == 0 {
-                    return Err(illegal(format!(
-                        "first position increment must be > 0 (got 0) for field '{field}'"
-                    )));
-                } else if pos_incr < 0 {
-                    return Err(illegal(format!(
-                        "position increment must be >= 0 (got {pos_incr}) for field '{field}'"
-                    )));
-                } else {
-                    return Err(illegal(format!(
-                        "position overflowed Integer.MAX_VALUE (got posIncr={pos_incr} \
-                         lastPosition={} position={}) for field '{field}'",
-                        self.last_position, self.position
-                    )));
-                }
-            } else if self.position > MAX_POSITION {
-                return Err(illegal(format!(
-                    "position {} is too large for field '{field}': max allowed position is \
-                     {MAX_POSITION}",
-                    self.position
-                )));
-            }
-            self.last_position = self.position;
-            if pos_incr == 0 {
-                self.num_overlap = self.num_overlap.saturating_add(1);
-            }
-            let start = self.offset.wrapping_add(tok.start_offset);
-            let end = self.offset.wrapping_add(tok.end_offset);
-            if start < self.last_start_offset || end < start {
-                return Err(illegal(format!(
-                    "startOffset must be non-negative, and endOffset must be >= startOffset, \
-                     and offsets must not go backwards startOffset={start},endOffset={end},\
-                     lastStartOffset={} for field '{field}'",
-                    self.last_start_offset
-                )));
-            }
-            self.last_start_offset = start;
-            let add = if self.is_term_doc() {
-                1
-            } else {
-                tok.term_frequency
+            let attrs = TokenAttrs {
+                term: &tok.term,
+                start_offset: tok.start_offset,
+                end_offset: tok.end_offset,
+                position_increment: tok.position_increment,
+                term_frequency: tok.term_frequency,
+                payload: tok.payload.as_deref(),
             };
-            self.length = self
-                .length
-                .checked_add(add)
-                .ok_or_else(|| illegal(format!("too many tokens for field \"{field}\"")))?;
-            self.add(
-                field,
-                &tok.term,
-                tok.term_frequency,
-                (start, end),
-                tok.payload.as_deref(),
-            )?;
+            self.token(sink, doc, field, attrs)?;
         }
-        self.attribute_source = Some(tokens.attributes_at_end());
-        self.position = self.position.wrapping_add(tokens.final_position_increment);
-        self.offset = self.offset.wrapping_add(tokens.final_offset);
+        let end = tokens.attributes_at_end();
+        let ends = (tokens.final_position_increment, tokens.final_offset);
+        self.end_stream(field, end, ends, analyzer, analyzed);
+        Ok(())
+    }
+
+    /// [`Self::invert_tokens`] over `analyzer.tokenStream(field, text)`,
+    /// each token inverted as the stream produces it.
+    fn invert_analyzed(
+        &mut self,
+        sink: &mut FieldRuns,
+        doc: i32,
+        field: &str,
+        analyzer: &Analyzer,
+        text: &str,
+        analyzed: bool,
+    ) -> super::Result<()> {
+        use lucene_analysis::TokenStream;
+        let analysis = |e: lucene_analysis::AnalysisError| illegal(e.to_string());
+        // dropped unclosed on an error, the stream closes itself
+        let mut ts = analyzer.token_stream(field, text).map_err(analysis)?;
+        ts.reset().map_err(analysis)?;
+        while ts.increment_token().map_err(analysis)? {
+            let a = ts.attributes();
+            let attrs = TokenAttrs {
+                term: a.term_bytes(),
+                start_offset: a.start_offset(),
+                end_offset: a.end_offset(),
+                position_increment: a.position_increment(),
+                term_frequency: a.term_frequency(),
+                payload: a.payload(),
+            };
+            self.token(sink, doc, field, attrs)?;
+        }
+        ts.end().map_err(analysis)?;
+        let end = ts.attributes().clone();
+        ts.close().map_err(analysis)?;
+        let ends = (end.position_increment(), end.end_offset());
+        self.end_stream(field, end, ends, analyzer, analyzed);
+        Ok(())
+    }
+
+    /// `end()`'s attributes and final increment and offset, then -- for an
+    /// analyzed value -- `getPositionIncrementGap`/`getOffsetGap` before the
+    /// field's next value.
+    fn end_stream(
+        &mut self,
+        field: &str,
+        end: lucene_analysis::AttributeSource,
+        (final_position_increment, final_offset): (i32, i32),
+        analyzer: &Analyzer,
+        analyzed: bool,
+    ) {
+        self.attribute_source = Some(end);
+        self.position = self.position.wrapping_add(final_position_increment);
+        self.offset = self.offset.wrapping_add(final_offset);
         if analyzed {
-            self.position = self.position.wrapping_add(gaps.0);
-            self.offset = self.offset.wrapping_add(gaps.1);
+            self.position = self
+                .position
+                .wrapping_add(analyzer.position_increment_gap_for_field(field));
+            self.offset = self
+                .offset
+                .wrapping_add(analyzer.offset_gap_for_field(field));
         }
+    }
+
+    /// One token of the stream: `invertTokenStream`'s loop body.
+    fn token(
+        &mut self,
+        sink: &mut FieldRuns,
+        doc: i32,
+        field: &str,
+        tok: TokenAttrs<'_>,
+    ) -> super::Result<()> {
+        let pos_incr = tok.position_increment;
+        self.position = self.position.wrapping_add(pos_incr);
+        if self.position < self.last_position {
+            if pos_incr == 0 {
+                return Err(illegal(format!(
+                    "first position increment must be > 0 (got 0) for field '{field}'"
+                )));
+            } else if pos_incr < 0 {
+                return Err(illegal(format!(
+                    "position increment must be >= 0 (got {pos_incr}) for field '{field}'"
+                )));
+            } else {
+                return Err(illegal(format!(
+                    "position overflowed Integer.MAX_VALUE (got posIncr={pos_incr} \
+                     lastPosition={} position={}) for field '{field}'",
+                    self.last_position, self.position
+                )));
+            }
+        } else if self.position > MAX_POSITION {
+            return Err(illegal(format!(
+                "position {} is too large for field '{field}': max allowed position is \
+                 {MAX_POSITION}",
+                self.position
+            )));
+        }
+        self.last_position = self.position;
+        if pos_incr == 0 {
+            self.num_overlap = self.num_overlap.saturating_add(1);
+        }
+        let start = self.offset.wrapping_add(tok.start_offset);
+        let end = self.offset.wrapping_add(tok.end_offset);
+        if start < self.last_start_offset || end < start {
+            return Err(illegal(format!(
+                "startOffset must be non-negative, and endOffset must be >= startOffset, \
+                 and offsets must not go backwards startOffset={start},endOffset={end},\
+                 lastStartOffset={} for field '{field}'",
+                self.last_start_offset
+            )));
+        }
+        self.last_start_offset = start;
+        let add = if self.is_term_doc() {
+            1
+        } else {
+            tok.term_frequency
+        };
+        self.length = self
+            .length
+            .checked_add(add)
+            .ok_or_else(|| illegal(format!("too many tokens for field \"{field}\"")))?;
+        self.add(
+            sink,
+            doc,
+            field,
+            tok.term,
+            tok.term_frequency,
+            (start, end),
+            tok.payload,
+        )?;
         Ok(())
     }
 
     /// `PerField.invertTerm`: the binary value is the one term. Java counts
     /// the length twice here (`length++` and `addExact(length, 1)`).
-    fn invert_term(&mut self, field: &dyn IndexableField) -> super::Result<()> {
+    fn invert_term(
+        &mut self,
+        sink: &mut FieldRuns,
+        doc: i32,
+        field: &dyn IndexableField,
+    ) -> super::Result<()> {
         let name = field.name();
         let Some(value) = field.binary_value() else {
             return Err(illegal(format!(
@@ -707,7 +804,7 @@ impl InvertState {
             .length
             .checked_add(2)
             .ok_or_else(|| illegal(format!("too many tokens for field \"{name}\"")))?;
-        self.add(name, &value, 1, (0, 0), None)
+        self.add(sink, doc, name, &value, 1, (0, 0), None)
     }
 }
 
@@ -740,8 +837,9 @@ impl IndexWriter<'_> {
         soft_deletes: &[crate::buffered_updates::DocValuesUpdate],
     ) -> Result<SeqNo> {
         self.enable_explicit_documents()?;
-        let (explicit, vectors) = self.invert_fields_block(docs, Vec::new())?;
-        self.soft_update_explicit_documents_with_vectors(term, explicit, vectors, soft_deletes)
+        self.buffer_inverted_block(docs, Vec::new(), |w, explicit, vectors| {
+            w.soft_update_explicit_documents_with_vectors(term, explicit, vectors, soft_deletes)
+        })
     }
 
     /// The shared tail of the document and column-batch entry points.
@@ -763,8 +861,42 @@ impl IndexWriter<'_> {
         registered: Vec<i32>,
     ) -> Result<SeqNo> {
         self.enable_explicit_documents()?;
-        let (explicit, vectors) = self.invert_fields_block(docs, registered)?;
-        self.add_explicit_documents_with_vectors(delete, explicit, vectors)
+        self.buffer_inverted_block(docs, registered, |w, explicit, vectors| {
+            w.add_explicit_documents_with_vectors(delete, explicit, vectors)
+        })
+    }
+
+    /// Inverts `docs` into the buffered postings, then has `buffer` buffer
+    /// them. The postings they grew count toward the RAM buffer; a block that
+    /// fails before any of its documents is buffered takes them out again,
+    /// so a refused block leaves no trace.
+    fn buffer_inverted_block(
+        &mut self,
+        docs: &[Document],
+        registered: Vec<i32>,
+        buffer: impl FnOnce(&mut Self, Vec<ExplicitDocument>, Vec<Vec<DocumentVector>>) -> Result<SeqNo>,
+    ) -> Result<SeqNo> {
+        let base = self.pending_doc_id_upto();
+        let checkpoint = self.pending_postings.checkpoint(base);
+        let before = self.pending_postings.bytes();
+        let (explicit, vectors) = match self.invert_fields_block(docs, registered) {
+            Ok(inverted) => inverted,
+            Err(e) => {
+                self.pending_postings.rollback(checkpoint);
+                return Err(e);
+            }
+        };
+        let grown = self.pending_postings.bytes().saturating_sub(before);
+        self.charge_ram_bytes(grown, true);
+        let added = buffer(self, explicit, vectors);
+        // `buffer` takes the whole block or none of it (its refusals all come
+        // before the first document is buffered), so a failure leaves either
+        // nothing to undo or nothing undone.
+        if added.is_err() && self.pending_doc_id_upto() == base {
+            self.pending_postings.rollback(checkpoint);
+            self.charge_ram_bytes(grown, false);
+        }
+        added
     }
 
     /// `DocumentsWriterPerThread.updateDocuments`' loop: each document of a
@@ -791,11 +923,13 @@ impl IndexWriter<'_> {
         let mut explicit = Vec::with_capacity(docs.len());
         let mut vectors = Vec::with_capacity(docs.len());
         let last = docs.len().saturating_sub(1);
+        let mut doc_id = self.pending_doc_id_upto();
         for (i, doc) in docs.iter().enumerate() {
             if i == last {
                 self.register_parent_field()?;
             }
-            let (e, v) = self.invert_fields_document(doc)?;
+            let (e, v) = self.invert_fields_document_at(doc, doc_id)?;
+            doc_id = doc_id.saturating_add(1);
             explicit.push(e);
             vectors.push(v);
         }
@@ -808,11 +942,22 @@ impl IndexWriter<'_> {
     /// `updateDocFieldSchema` over `types` (one field instance each, in
     /// order), then `initializeFieldInfo` for each name in first-appearance
     /// order: the schemas and their global numbers.
-    fn register_field_types(
+    fn register_field_types<'n>(
         &mut self,
-        types: &[(&str, &super::FieldType)],
-    ) -> Result<Vec<(FieldSchema, i32)>> {
+        types: &[(&'n str, &super::FieldType)],
+    ) -> Result<Vec<(FieldSchema<'n>, i32)>> {
+        Ok(self.register_field_slots(types)?.0)
+    }
+
+    /// [`Self::register_field_types`], with each entry of `types`' index
+    /// into the returned schemas: what the inverting loop looks a field up
+    /// by, rather than by name.
+    fn register_field_slots<'n>(
+        &mut self,
+        types: &[(&'n str, &super::FieldType)],
+    ) -> Result<(RegisteredSchemas<'n>, Vec<usize>)> {
         let mut schemas: Vec<FieldSchema> = Vec::new();
+        let mut slots = Vec::with_capacity(types.len());
         for (name, ft) in types {
             let i = match schemas.iter().position(|s| s.name == *name) {
                 Some(i) => i,
@@ -822,14 +967,19 @@ impl IndexWriter<'_> {
                 }
             };
             schemas[i].update(ft).map_err(doc_error)?;
+            slots.push(i);
         }
-        schemas
+        let schemas = schemas
             .into_iter()
             .map(|s| {
-                let n = self.register_field(s.field_info())?;
+                let n = match self.registered_field(s.name) {
+                    Some(f) if s.matches(f) => f.number,
+                    _ => self.register_field(s.field_info())?,
+                };
                 Ok((s, n))
             })
-            .collect()
+            .collect::<Result<_>>()?;
+        Ok((schemas, slots))
     }
 
     /// `IndexingChain.processBatch`'s first pass: every column's schema,
@@ -847,10 +997,45 @@ impl IndexWriter<'_> {
             .collect())
     }
 
-    /// `IndexingChain.processDocument` for one document; see the module doc.
+    /// [`Self::invert_fields_document_at`] for the next buffered document,
+    /// its terms read back out of the buffered postings into each
+    /// [`InvertedField`](crate::index_writer::InvertedField) -- and then
+    /// discarded, the document never being buffered.
+    #[cfg(test)]
     pub(crate) fn invert_fields_document(
         &mut self,
         doc: &Document,
+    ) -> Result<(ExplicitDocument, Vec<DocumentVector>)> {
+        let doc_id = self.pending_doc_id_upto();
+        let checkpoint = self.pending_postings.checkpoint(doc_id);
+        let (mut e, vectors) = self.invert_fields_document_at(doc, doc_id)?;
+        for inv in &mut e.fields.inverted {
+            inv.terms = self.pending_postings.doc_terms(inv.field_number, doc_id);
+        }
+        self.pending_postings.rollback(checkpoint);
+        Ok((e, vectors))
+    }
+
+    /// `IndexingChain.processDocument` for one document, which will be
+    /// buffered as `doc_id`; see the module doc. Its terms go straight into
+    /// the buffered postings, and out again if it fails.
+    fn invert_fields_document_at(
+        &mut self,
+        doc: &Document,
+        doc_id: i32,
+    ) -> Result<(ExplicitDocument, Vec<DocumentVector>)> {
+        let checkpoint = self.pending_postings.checkpoint(doc_id);
+        let inverted = self.invert_fields_into_postings(doc, doc_id);
+        if inverted.is_err() {
+            self.pending_postings.rollback(checkpoint);
+        }
+        inverted
+    }
+
+    fn invert_fields_into_postings(
+        &mut self,
+        doc: &Document,
+        doc_id: i32,
     ) -> Result<(ExplicitDocument, Vec<DocumentVector>)> {
         // 1. Per-document schemas, first appearance first; 2. global field
         // numbers.
@@ -859,27 +1044,24 @@ impl IndexWriter<'_> {
             .iter()
             .map(|f| (f.name(), f.field_type()))
             .collect();
-        let schemas = self.register_field_types(&types)?;
-        let numbers: BTreeMap<String, (i32, IndexOptions)> = schemas
-            .iter()
-            .map(|(s, n)| (s.name.clone(), (*n, s.index_options)))
-            .collect();
-        let schemas: Vec<FieldSchema> = schemas.into_iter().map(|(s, _)| s).collect();
+        let (schemas, slots) = self.register_field_slots(&types)?;
         // 3. Invert, store, doc values, points -- in document order.
         let analyzer = self.writer_analyzer();
         let mut out = ExplicitDocument::default();
-        let mut inverted: Vec<(i32, InvertState)> = Vec::new();
+        // `(number, schema slot, state)`, first appearance first.
+        let mut inverted: Vec<(i32, usize, InvertState)> = Vec::new();
         let mut single_dv: Vec<i32> = Vec::new();
         let mut vectors: Vec<DocumentVector> = Vec::new();
-        for field in doc.fields() {
+        for (field, &slot) in doc.fields().iter().zip(&slots) {
             let field = field.as_ref();
             let name = field.name();
-            let (number, index_options) = numbers[name];
+            let (schema, number) = &schemas[slot];
+            let (number, index_options) = (*number, schema.index_options);
             let ft = field.field_type();
             if ft.index_options() != IndexOptions::None {
-                let state = match inverted.iter().position(|(n, _)| *n == number) {
+                let state = match inverted.iter().position(|(n, ..)| *n == number) {
                     Some(i) => {
-                        let state = &mut inverted[i].1;
+                        let state = &mut inverted[i].2;
                         state.vector =
                             VectorAxes::start(name, ft, Some(state.vector)).map_err(doc_error)?;
                         state
@@ -887,30 +1069,34 @@ impl IndexWriter<'_> {
                     None => {
                         let mut state = InvertState::new(index_options);
                         state.vector = VectorAxes::start(name, ft, None).map_err(doc_error)?;
-                        inverted.push((number, state));
-                        &mut inverted.last_mut().expect("just pushed").1
+                        inverted.push((number, slot, state));
+                        &mut inverted.last_mut().expect("just pushed").2
                     }
                 };
+                let sink = self.pending_postings.field(number, index_options);
                 match field.invertable_type() {
-                    InvertableType::Binary => state.invert_term(field).map_err(doc_error)?,
+                    InvertableType::Binary => {
+                        state.invert_term(sink, doc_id, field).map_err(doc_error)?
+                    }
                     InvertableType::TokenStream => {
-                        let tokens = field
-                            .token_stream(&analyzer)
-                            .map_err(doc_error)?
-                            .ok_or_else(|| {
-                                doc_error(illegal(format!(
-                                    "field {name} is indexed but produced no token stream"
-                                )))
-                            })?;
                         let analyzed = ft.tokenized();
-                        // `analyzer.getPositionIncrementGap(fieldInfo.name)`.
-                        let gaps = (
-                            analyzer.position_increment_gap_for_field(name),
-                            analyzer.offset_gap_for_field(name),
-                        );
-                        state
-                            .invert_tokens(name, &tokens, analyzed, gaps)
-                            .map_err(doc_error)?;
+                        if let Some(text) = field.analyzed_text() {
+                            state
+                                .invert_analyzed(sink, doc_id, name, &analyzer, text, analyzed)
+                                .map_err(doc_error)?;
+                        } else {
+                            let tokens = field
+                                .token_stream(&analyzer)
+                                .map_err(doc_error)?
+                                .ok_or_else(|| {
+                                    doc_error(illegal(format!(
+                                        "field {name} is indexed but produced no token stream"
+                                    )))
+                                })?;
+                            state
+                                .invert_tokens(sink, doc_id, name, &tokens, &analyzer, analyzed)
+                                .map_err(doc_error)?;
+                        }
                     }
                 }
             }
@@ -973,24 +1159,16 @@ impl IndexWriter<'_> {
         // held apart from the writer the `DOCS` term hash below mutates.
         let cfg = self.config_snapshot();
         let similarity = cfg.norm_similarity();
-        for (number, state) in inverted {
-            let (name, omit_norms) = numbers
-                .iter()
-                .find(|(_, (n, _))| *n == number)
-                .map(|(name, _)| {
-                    let omit = schemas
-                        .iter()
-                        .find(|s| &s.name == name)
-                        .is_some_and(|s| s.omit_norms);
-                    (name.clone(), omit)
-                })
-                .expect("every inverted field was registered");
+        for (number, slot, mut state) in inverted {
+            out.fields.term_vectors.extend(state.term_vector(number));
+            let schema = &schemas[slot].0;
+            let (name, omit_norms) = (schema.name, schema.omit_norms);
             let docs_only = state.index_options == IndexOptions::Docs;
             let mut max_term_frequency = state.max_term_frequency;
             if docs_only && !omit_norms {
                 // Without frequencies only `newTerm` -- a term new to the
                 // buffered segment -- sets it (to 1).
-                max_term_frequency = i32::from(self.note_docs_terms(number, state.terms.keys()));
+                max_term_frequency = i32::from(state.new_to_segment);
             }
             let norm = if omit_norms {
                 None
@@ -1005,32 +1183,18 @@ impl IndexWriter<'_> {
                     offset: state.offset,
                     max_term_frequency,
                     unique_term_count: state.unique_term_count,
-                    attribute_source: state.attribute_source.clone(),
+                    attribute_source: state.attribute_source,
                 };
-                let norm = similarity.compute_norm(&name, &invert_state);
+                let norm = similarity.compute_norm(name, &invert_state);
                 if norm == 0 {
-                    return Err(Error::ZeroNorm(name));
+                    return Err(Error::ZeroNorm(name.to_string()));
                 }
                 Some(norm)
             };
-            out.fields.term_vectors.extend(state.term_vector(number));
+            // the terms are in the buffered postings already
             out.fields.inverted.push(InvertedField {
                 field_number: number,
-                terms: state
-                    .terms
-                    .into_iter()
-                    .map(|(term, acc)| InvertedTerm {
-                        term,
-                        freq: acc.freq,
-                        positions: acc.positions,
-                        offsets: acc.offsets,
-                        payloads: if state.saw_payloads {
-                            acc.payloads
-                        } else {
-                            Vec::new()
-                        },
-                    })
-                    .collect(),
+                terms: Vec::new(),
                 norm,
             });
         }

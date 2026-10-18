@@ -91,7 +91,7 @@ set -euo pipefail
 # lucene-queryparser is required by GenQueryParser* (org.apache.lucene.queryparser).
 # lucene-misc is required by GenMisc (HighFreqTerms).
 # lucene-replicator is required by GenReplicator (org.apache.lucene.replicator.nrt).
-LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-facet lucene-highlighter lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join lucene-grouping lucene-classification lucene-misc lucene-replicator)
+LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-facet lucene-highlighter lucene-suggest lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join lucene-grouping lucene-classification lucene-misc lucene-replicator)
 
 cd "$(git rev-parse --show-toplevel)"
 FIXTURES="$PWD/fixtures"

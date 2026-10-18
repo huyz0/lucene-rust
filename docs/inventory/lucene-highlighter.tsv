@@ -30,7 +30,7 @@ search/highlight/WeightedSpanTerm	ported	crates/lucene-search/src/highlight/extr
 search/highlight/WeightedSpanTermExtractor	ported	crates/lucene-search/src/highlight/extractor.rs::WeightedSpanTermExtractor
 search/highlight/WeightedTerm	ported	crates/lucene-search/src/highlight/extractor.rs::WeightedTerm
 search/matchhighlight/BreakIteratorShrinkingAdjuster	ported	crates/lucene-search/src/highlight/match_highlight.rs::BreakIteratorShrinkingAdjuster
-search/matchhighlight/CharSequenceIterator	ported	crates/lucene-search/src/highlight/word_break.rs::WordBreakIterator -- the cursor the iterator keeps
+search/matchhighlight/CharSequenceIterator	ported	crates/lucene-search/src/highlight/word_break.rs::RuleBreakIterator -- the cursor the iterator keeps
 search/matchhighlight/FieldValueHighlighters	ported	crates/lucene-search/src/highlight/match_highlight.rs::FieldValueHighlighters
 search/matchhighlight/MatchHighlighter	ported	crates/lucene-search/src/highlight/match_highlight.rs::MatchHighlighter
 search/matchhighlight/MatchRegionRetriever	ported	crates/lucene-search/src/highlight/match_highlight.rs::MatchRegionRetriever
@@ -45,49 +45,49 @@ search/matchhighlight/Passage	ported	crates/lucene-search/src/highlight/match_hi
 search/matchhighlight/PassageAdjuster	ported	crates/lucene-search/src/highlight/match_highlight.rs::PassageAdjuster
 search/matchhighlight/PassageFormatter	ported	crates/lucene-search/src/highlight/match_highlight.rs::PassageFormatter
 search/matchhighlight/PassageSelector	ported	crates/lucene-search/src/highlight/match_highlight.rs::PassageSelector
-search/uhighlight/AnalysisOffsetStrategy	partial	crates/lucene-search/src/highlighter.rs::offsets_from_analysis -- M13: the class itself, as T13.2 ports the unified highlighter
-search/uhighlight/CharArrayMatcher	todo:M13	Matches a character array
-search/uhighlight/CustomSeparatorBreakIterator	todo:M13	A BreakIterator that breaks the text whenever a certain separator, provided as a constructor argument, is found.
-search/uhighlight/DefaultPassageFormatter	partial	crates/lucene-search/src/highlighter.rs::format_fragments -- M13: the class itself, as T13.2 ports the unified highlighter
-search/uhighlight/FieldHighlighter	todo:M13	Internal highlighter abstraction that operates on a per field basis.
-search/uhighlight/FieldOffsetStrategy	todo:M13	Ultimately returns an OffsetsEnum yielding potentially highlightable words in the text.
-search/uhighlight/LabelledCharArrayMatcher	todo:M13	Associates a label with a CharArrayMatcher to distinguish different sources for terms in highlighting
-search/uhighlight/LengthGoalBreakIterator	todo:M13	Wraps another BreakIterator to skip past breaks that would result in passages that are too short.
-search/uhighlight/MemoryIndexOffsetStrategy	todo:M13	Uses an Analyzer on content to get offsets and then populates a MemoryIndex.
-search/uhighlight/MultiFieldsOffsetStrategy	todo:M13	FieldOffsetStrategy that combines offsets from multiple fields.
-search/uhighlight/MultiTermHighlighting	todo:M13	Support for highlighting multi-term queries.
-search/uhighlight/NoOpOffsetStrategy	todo:M13	Never returns offsets.
-search/uhighlight/OffsetsEnum	todo:M13	An enumeration/iterator of a term and its offsets for use by FieldHighlighter.
-search/uhighlight/OverlaySingleDocTermsLeafReader	todo:M13	Overlays a 2nd LeafReader for the terms of one field, otherwise the primary reader is consulted.
-search/uhighlight/Passage	partial	crates/lucene-search/src/highlighter.rs::Fragment -- M13: the class itself, as T13.2 ports the unified highlighter
-search/uhighlight/PassageFormatter	todo:M13	Creates a formatted snippet from the top passages.
-search/uhighlight/PassageScorer	partial	crates/lucene-search/src/highlighter.rs::PassageScorer -- M13: the class itself, as T13.2 ports the unified highlighter
-search/uhighlight/PhraseHelper	partial	crates/lucene-search/src/highlighter.rs::phrase_match_offsets -- M13: the class itself, as T13.2 ports the unified highlighter
-search/uhighlight/PostingsOffsetStrategy	partial	crates/lucene-search/src/highlighter.rs::offsets_from_postings -- M13: the class itself, as T13.2 ports the unified highlighter
-search/uhighlight/PostingsWithTermVectorsOffsetStrategy	todo:M13	Like PostingsOffsetStrategy but also uses term vectors (only terms needed) for multi-term queries.
-search/uhighlight/SplittingBreakIterator	partial	crates/lucene-search/src/highlighter.rs::split_sentence_boundaries -- M13: the class itself, as T13.2 ports the unified highlighter
-search/uhighlight/TermVectorFilteredLeafReader	todo:M13	A filtered LeafReader that only includes the terms that are also in a provided set of terms.
-search/uhighlight/TermVectorOffsetStrategy	todo:M13	Uses term vectors that contain offsets.
-search/uhighlight/TokenStreamOffsetStrategy	todo:M13	Analyzes the text, producing a single OffsetsEnum wrapping the TokenStream filtered to terms in the query, including wildcards.
-search/uhighlight/UHComponents	todo:M13	A parameter object to hold the components a FieldOffsetStrategy needs.
-search/uhighlight/UnifiedHighlighter	todo:M13	A Highlighter that can get offsets from either postings (DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS), term vectors (setStoreTermVectorOffsets(boolean)), or via re
-search/uhighlight/WholeBreakIterator	todo:M13	Just produces one single fragment for the entire text
-search/vectorhighlight/BaseFragListBuilder	todo:M13	A abstract implementation of FragListBuilder.
-search/vectorhighlight/BaseFragmentsBuilder	todo:M13	Base FragmentsBuilder implementation that supports colored pre/post tags and multivalued fields.
-search/vectorhighlight/BoundaryScanner	todo:M13	Finds fragment boundaries: pluggable into BaseFragmentsBuilder
-search/vectorhighlight/BreakIteratorBoundaryScanner	todo:M13	A BoundaryScanner implementation that uses BreakIterator to find boundaries in the text.
-search/vectorhighlight/FastVectorHighlighter	todo:M13	Another highlighter implementation.
-search/vectorhighlight/FieldFragList	todo:M13	FieldFragList has a list of "frag info" that is used by FragmentsBuilder class to create fragments (snippets).
-search/vectorhighlight/FieldPhraseList	todo:M13	FieldPhraseList has a list of WeightedPhraseInfo that is used by FragListBuilder to create a FieldFragList object.
-search/vectorhighlight/FieldQuery	todo:M13	FieldQuery breaks down query object into terms/phrases and keeps them in a QueryPhraseMap structure.
-search/vectorhighlight/FieldTermStack	todo:M13	FieldTermStack is a stack that keeps query terms in the specified field of the document to be highlighted.
-search/vectorhighlight/FragListBuilder	todo:M13	FragListBuilder is an interface for FieldFragList builder classes.
-search/vectorhighlight/FragmentsBuilder	todo:M13	org.apache.lucene.search.vectorhighlight.FragmentsBuilder is an interface for fragments (snippets) builder classes.
-search/vectorhighlight/ScoreOrderFragmentsBuilder	todo:M13	An implementation of FragmentsBuilder that outputs score-order fragments.
-search/vectorhighlight/SimpleBoundaryScanner	todo:M13	Simple boundary scanner implementation that divides fragments based on a set of separator characters.
-search/vectorhighlight/SimpleFieldFragList	todo:M13	A simple implementation of FieldFragList.
-search/vectorhighlight/SimpleFragListBuilder	todo:M13	A simple implementation of FragListBuilder.
-search/vectorhighlight/SimpleFragmentsBuilder	todo:M13	A simple implementation of FragmentsBuilder.
-search/vectorhighlight/SingleFragListBuilder	todo:M13	An implementation class of FragListBuilder that generates one WeightedFragInfo object.
-search/vectorhighlight/WeightedFieldFragList	todo:M13	A weighted implementation of FieldFragList.
-search/vectorhighlight/WeightedFragListBuilder	todo:M13	A weighted implementation of FragListBuilder.
+search/uhighlight/AnalysisOffsetStrategy	ported	crates/lucene-search/src/highlight/unified/strategies.rs::Strategy
+search/uhighlight/CharArrayMatcher	ported	crates/lucene-search/src/highlight/unified/strategies.rs::AutomataCollector -- the terms are tested as bytes through query_visitor::TermMatcher
+search/uhighlight/CustomSeparatorBreakIterator	ported	crates/lucene-search/src/highlight/unified/break_iterators.rs::CustomSeparatorBreakIterator
+search/uhighlight/DefaultPassageFormatter	ported	crates/lucene-search/src/highlight/unified/passage.rs::DefaultPassageFormatter
+search/uhighlight/FieldHighlighter	ported	crates/lucene-search/src/highlight/unified/field_highlighter.rs::FieldHighlighter
+search/uhighlight/FieldOffsetStrategy	ported	crates/lucene-search/src/highlight/unified/strategies.rs::Strategy
+search/uhighlight/LabelledCharArrayMatcher	ported	crates/lucene-search/src/highlight/unified/strategies.rs::AutomataCollector -- the label is the query's toString
+search/uhighlight/LengthGoalBreakIterator	ported	crates/lucene-search/src/highlight/unified/break_iterators.rs::LengthGoalBreakIterator
+search/uhighlight/MemoryIndexOffsetStrategy	ported	crates/lucene-search/src/highlight/unified/strategies.rs::Strategy -- the keep-word pre-filter included
+search/uhighlight/MultiFieldsOffsetStrategy	ported	crates/lucene-search/src/highlight/unified/strategies.rs::multi_fields_enum
+search/uhighlight/MultiTermHighlighting	ported	crates/lucene-search/src/highlight/unified/strategies.rs::AutomataCollector
+search/uhighlight/NoOpOffsetStrategy	ported	crates/lucene-search/src/highlight/unified/strategies.rs::Strategy
+search/uhighlight/OffsetsEnum	ported	crates/lucene-search/src/highlight/unified/passage.rs::OffsetsEnum
+search/uhighlight/OverlaySingleDocTermsLeafReader	partial	crates/lucene-search/src/highlight/unified/strategies.rs::memory_index_query -- M14: the other fields of the query are answered as the hit they must have been rather than overlaid
+search/uhighlight/Passage	ported	crates/lucene-search/src/highlight/unified/passage.rs::Passage
+search/uhighlight/PassageFormatter	ported	crates/lucene-search/src/highlight/unified/passage.rs::PassageFormatter
+search/uhighlight/PassageScorer	ported	crates/lucene-search/src/highlight/unified/passage.rs::PassageScorer
+search/uhighlight/PhraseHelper	partial	crates/lucene-search/src/highlight/unified/strategies.rs::PhraseHelper -- M14: phrase and span clauses by offset containment (not SpanNear), not SynonymQuery, MultiPhraseQuery, lucene-queries spans or multi-term queries inside a span
+search/uhighlight/PostingsOffsetStrategy	ported	crates/lucene-search/src/highlight/unified/strategies.rs::Strategy
+search/uhighlight/PostingsWithTermVectorsOffsetStrategy	partial	crates/lucene-search/src/highlight/unified/strategies.rs::Strategy -- M14: reads the postings alone
+search/uhighlight/SplittingBreakIterator	ported	crates/lucene-search/src/highlight/unified/break_iterators.rs::SplittingBreakIterator
+search/uhighlight/TermVectorFilteredLeafReader	not-needed	the term vector goes through a one-document memory index
+search/uhighlight/TermVectorOffsetStrategy	partial	crates/lucene-search/src/highlight/unified/strategies.rs::Strategy -- M14: through a one-document memory index
+search/uhighlight/TokenStreamOffsetStrategy	ported	crates/lucene-search/src/highlight/unified/strategies.rs::Strategy
+search/uhighlight/UHComponents	ported	crates/lucene-search/src/highlight/unified/strategies.rs::Components
+search/uhighlight/UnifiedHighlighter	partial	crates/lucene-search/src/highlight/unified/mod.rs::UnifiedHighlighter -- M14: no batching of the stored fields, no highlightFieldsAsObjects
+search/uhighlight/WholeBreakIterator	ported	crates/lucene-search/src/highlight/unified/break_iterators.rs::WholeBreakIterator
+search/vectorhighlight/BaseFragListBuilder	ported	crates/lucene-search/src/highlight/vectorhighlight/frag_list.rs::BaseFragListBuilder
+search/vectorhighlight/BaseFragmentsBuilder	ported	crates/lucene-search/src/highlight/vectorhighlight/fragments.rs::FragmentsBuilder
+search/vectorhighlight/BoundaryScanner	ported	crates/lucene-search/src/highlight/vectorhighlight/fragments.rs::BoundaryScanner
+search/vectorhighlight/BreakIteratorBoundaryScanner	ported	crates/lucene-search/src/highlight/vectorhighlight/fragments.rs::BreakIteratorBoundaryScanner
+search/vectorhighlight/FastVectorHighlighter	ported	crates/lucene-search/src/highlight/vectorhighlight/mod.rs::FastVectorHighlighter
+search/vectorhighlight/FieldFragList	ported	crates/lucene-search/src/highlight/vectorhighlight/frag_list.rs::FieldFragList
+search/vectorhighlight/FieldPhraseList	ported	crates/lucene-search/src/highlight/vectorhighlight/field_phrase_list.rs::FieldPhraseList
+search/vectorhighlight/FieldQuery	ported	crates/lucene-search/src/highlight/vectorhighlight/field_query.rs::FieldQuery
+search/vectorhighlight/FieldTermStack	ported	crates/lucene-search/src/highlight/vectorhighlight/field_term_stack.rs::FieldTermStack
+search/vectorhighlight/FragListBuilder	ported	crates/lucene-search/src/highlight/vectorhighlight/frag_list.rs::FragListBuilder
+search/vectorhighlight/FragmentsBuilder	ported	crates/lucene-search/src/highlight/vectorhighlight/fragments.rs::FragmentsBuilder
+search/vectorhighlight/ScoreOrderFragmentsBuilder	ported	crates/lucene-search/src/highlight/vectorhighlight/fragments.rs::FragmentsOrder
+search/vectorhighlight/SimpleBoundaryScanner	ported	crates/lucene-search/src/highlight/vectorhighlight/fragments.rs::SimpleBoundaryScanner
+search/vectorhighlight/SimpleFieldFragList	ported	crates/lucene-search/src/highlight/vectorhighlight/frag_list.rs::FragListKind
+search/vectorhighlight/SimpleFragListBuilder	ported	crates/lucene-search/src/highlight/vectorhighlight/frag_list.rs::SimpleFragListBuilder
+search/vectorhighlight/SimpleFragmentsBuilder	ported	crates/lucene-search/src/highlight/vectorhighlight/fragments.rs::FragmentsOrder
+search/vectorhighlight/SingleFragListBuilder	ported	crates/lucene-search/src/highlight/vectorhighlight/frag_list.rs::SingleFragListBuilder
+search/vectorhighlight/WeightedFieldFragList	ported	crates/lucene-search/src/highlight/vectorhighlight/frag_list.rs::FragListKind
+search/vectorhighlight/WeightedFragListBuilder	ported	crates/lucene-search/src/highlight/vectorhighlight/frag_list.rs::WeightedFragListBuilder

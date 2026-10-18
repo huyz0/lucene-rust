@@ -582,8 +582,14 @@ fn segment_doc_values_positioning() {
     let mut sn = s.sorted_numeric_doc_values("nums").unwrap().unwrap();
     assert_eq!(sn.next_doc().unwrap(), 0);
     assert_eq!(sn.doc_value_count(), 2);
-    sn.next_value().unwrap();
-    sn.next_value().unwrap();
+    let first = sn.next_value().unwrap();
+    let second = sn.next_value().unwrap();
+    assert!(matches!(sn.next_value(), Err(Error::IllegalState(_))));
+    // `take_values`: what `next_value` has not handed out, then nothing.
+    assert_eq!(sn.take_values(), Some(&[][..]));
+    assert!(sn.advance_exact(0).unwrap());
+    assert_eq!(sn.next_value().unwrap(), first);
+    assert_eq!(sn.take_values(), Some(&[second][..]));
     assert!(matches!(sn.next_value(), Err(Error::IllegalState(_))));
     assert!(!sn.advance_exact(2).unwrap());
     let mut ss = s.sorted_set_doc_values("tags").unwrap().unwrap();
@@ -2010,6 +2016,13 @@ fn check_integrity_and_skippers() {
         rank
     );
     assert!(p.doc_values_skipper("nope").unwrap().is_none());
+    // The views answer `unwrapSingleton` as the segment they wrap.
+    for field in ["nums", "rank", "nope"] {
+        let want = s.sorted_numeric_is_singleton(field);
+        assert_eq!(f.sorted_numeric_is_singleton(field), want, "{field}");
+        assert_eq!(w.sorted_numeric_is_singleton(field), want, "{field}");
+        assert_eq!(p.sorted_numeric_is_singleton(field), want, "{field}");
+    }
     SlowCompositeCodecReaderWrapper::wrap(vec![codec(&m, 0), codec(&m, 1)])
         .unwrap()
         .check_integrity()

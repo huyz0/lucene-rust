@@ -224,6 +224,7 @@ impl IndexWriter<'_> {
                 });
             }
         }
+        // Through the segment's compound file when it has one.
         let incoming = super::segment_field_infos(src, sci)?;
         for theirs in &incoming.fields {
             let Some(ours) = self.cfg.fields.iter().find(|f| f.name == theirs.name) else {

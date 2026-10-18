@@ -35,6 +35,15 @@ pub trait SegmentCollector<'a> {
     /// score (`Scorable.score()`; meaningless under
     /// [`ScoreMode::CompleteNoScores`]).
     fn collect(&mut self, doc: i32, score: f32) -> Result<()>;
+    /// `LeafCollector.collectRange(min, max)`: every segment-local document
+    /// in `[min, max)` matches, each scoring `score`. The default is Java's,
+    /// [`Self::collect`] for each in order.
+    fn collect_range(&mut self, min: i32, max: i32, score: f32) -> Result<()> {
+        for doc in min..max {
+            self.collect(doc, score)?;
+        }
+        Ok(())
+    }
     /// `LeafCollector.finish()`: the search leaves the current segment.
     fn finish(&mut self) -> Result<()> {
         Ok(())
@@ -118,6 +127,24 @@ impl<'c, 's, 'a, C: SegmentCollector<'a> + ?Sized> PerSegment<'c, 's, 'a, C> {
         self.inner.collect(doc.saturating_sub(self.base), score)
     }
 
+    /// [`Self::collect_global`] for every global document in `[min, max)`:
+    /// each segment's share handed over as one range.
+    fn collect_global_range(&mut self, mut min: i32, max: i32, score: f32) -> Result<()> {
+        while min < max {
+            if self.at.is_none() || min >= self.end {
+                self.enter(min)?;
+            }
+            let to = max.min(self.end);
+            self.inner.collect_range(
+                min.saturating_sub(self.base),
+                to.saturating_sub(self.base),
+                score,
+            )?;
+            min = to;
+        }
+        Ok(())
+    }
+
     /// Moves on to the segment holding global `doc`.
     #[inline(never)]
     fn enter(&mut self, doc: i32) -> Result<()> {
@@ -151,6 +178,15 @@ impl<'a, C: SegmentCollector<'a> + ?Sized> ScoringCollector for PerSegment<'_, '
             return;
         }
         if let Err(e) = self.collect_global(doc_id, score) {
+            self.error = Some(e);
+        }
+    }
+
+    fn collect_range(&mut self, min: i32, max: i32, score: f32) {
+        if self.error.is_some() {
+            return;
+        }
+        if let Err(e) = self.collect_global_range(min, max, score) {
             self.error = Some(e);
         }
     }

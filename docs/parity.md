@@ -50,11 +50,11 @@ Milestones (M1-M12, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [backward-codecs.md](parity/backward-codecs.md) | `lucene-backward-codecs`: Lucene 9.0-10.4 formats (M8) | 18 |
 | [analysis.md](parity/analysis.md) | `lucene-analysis`: analyzers, tokenizers, filters | 18 |
 | [analysis-common.md](parity/analysis-common.md) | `lucene-analysis-common` (M11) | 22 |
-| [index.md](parity/index.md) | `lucene-index`: documents, `IndexWriter`, flush, merge, deletes, segment files, NRT snapshots | 46 |
+| [index.md](parity/index.md) | `lucene-index`: documents, `IndexWriter`, flush, merge, deletes, segment files, NRT snapshots | 47 |
 | [search-queries.md](parity/search-queries.md) | `lucene-search`: query types, rewrites, parser, vector queries | 38 |
 | [queryparser.md](parity/queryparser.md) | `lucene-queryparser`: the classic, multi-field, simple, extendable, surround and complex-phrase, XML and flexible query parsers (M13 T13.1) | 15 |
 | [search-execution.md](parity/search-execution.md) | `lucene-search`: scorer tree, bulk scorers, similarities, multi-segment fan-out | 29 |
-| [highlighter.md](parity/highlighter.md) | `lucene-highlighter`: the classic `Highlighter` (M13 T13.2) | 7 |
+| [highlighter.md](parity/highlighter.md) | `lucene-highlighter`: the classic `Highlighter`, the unified highlighter and the `FastVectorHighlighter` (M13 T13.2) | 11 |
 | [search-collectors.md](parity/search-collectors.md) | `lucene-search`: collectors, sorting, facets, aggregations, highlighting, fetch | 33 |
 | [search-readers.md](parity/search-readers.md) | `lucene-search`: `DirectoryReader`, NRT readers, `CheckIndex`, searcher management | 27 |
 | [monitor.md](parity/monitor.md) | `lucene-search`: the percolator: query analysis, presearcher, query index and facade (M13 T13.5a-d) | 11 |
@@ -62,12 +62,14 @@ Milestones (M1-M12, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [classification.md](parity/classification.md) | `lucene-classification`: naive Bayes, k-NN and perceptron classifiers, their evaluation and dataset splitting (M14 T14.3) | 5 |
 | [replicator.md](parity/replicator.md) | `lucene-replicator`: near-real-time replication -- primary and replica nodes, copy jobs, file ref-counting (M14 T14.3) | 9 |
 | [misc.md](parity/misc.md) | `lucene-misc`: index and search utilities (M14 T14.3; the rest of the jar is M14.b-i) | 25 |
+| [suggest.md](parity/suggest.md) | `lucene-search`: the suggester base layer (`Lookup`, `InputIterator`, the dictionaries), `TSTLookup`, `WFSTCompletionLookup` and `FSTCompletionLookup` (M13 T13.3a-b, d: the completion postings format through `IndexWriter`, `SuggestField` and the completion queries; the analyzing suggesters `AnalyzingSuggester`/`FuzzySuggester` and `SuggestStopFilter` (T13.3c); `FreeTextSuggester` (T13.3c); `AnalyzingInfixSuggester` and `BlendedInfixSuggester` (T13.3c, in memory); the spell checkers `DirectSpellChecker`, `WordBreakSpellChecker`, `SpellChecker`, their distances and dictionaries (T13.3e); the completion formats of Lucene 9.0-10.4 (read)) | 34 |
 | [geo-points.md](parity/geo-points.md) | Geo point fields and queries (M9 T9.2) | 9 |
 | [geo-shapes.md](parity/geo-shapes.md) | Geo shape fields and queries (M9 T9.3) | 8 |
 | [spatial3d.md](parity/spatial3d.md) | `lucene-spatial3d` (M9 T9.4) | 16 |
 | [spatial-extras.md](parity/spatial-extras.md) | `lucene-spatial-extras` (M9 T9.5) | 25 |
 | [joins.md](parity/joins.md) | Document blocks and block joins, `lucene-join` (M10) | 11 |
 | [grouping.md](parity/grouping.md) | `lucene-grouping` (M10 T10.4) | 11 |
+| [facet.md](parity/facet.md) | `lucene-facet`'s taxonomy index (T13.4a), counting (T13.4b), drill-down (T13.4c) and value, range and facet-set counting (T13.4d1) | 32 |
 | [functions.md](parity/functions.md) | `lucene-queries` function queries (M10 T10.5) | 11 |
 | [queries.md](parity/queries.md) | `lucene-queries` intervals, payloads, more-like-this, common terms, spans (M10 T10.6) | 12 |
 | [analysis-lang.md](parity/analysis-lang.md) | `lucene-analysis-common` synonyms, classic, language packages (M11 part 3), Thai, collation, `SegmentingTokenizerBase` | 14 |

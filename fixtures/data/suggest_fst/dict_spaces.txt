@@ -1,0 +1,6 @@
+one	  5  
+two	7d
+three	8.5f
+four	NaN
+five	Infinity
+six	-Infinity
