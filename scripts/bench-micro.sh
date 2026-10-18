@@ -150,6 +150,13 @@ case "$BENCH" in
     SRC=benchmarks/micro/java/ClassificationMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common lucene-queries lucene-grouping lucene-classification" ;;
+  # M14 T14.3: the replicator's per-file work -- reading a file's metadata and
+  # copying it into a replica -- over fixtures/data/replicator/plain.
+  replicator)
+    MAIN=ReplicatorMicro
+    SRC=benchmarks/micro/java/ReplicatorMicro.java
+    EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-replicator" ;;
   # M11 T11.3: SnowballFilter per language over the fixture vocabularies.
   snowball)
     MAIN=SnowballMicro

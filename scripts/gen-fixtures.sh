@@ -90,7 +90,8 @@ set -euo pipefail
 # lucene-grouping is required by GenGrouping (org.apache.lucene.search.grouping).
 # lucene-queryparser is required by GenQueryParser* (org.apache.lucene.queryparser).
 # lucene-misc is required by GenMisc (HighFreqTerms).
-LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-facet lucene-highlighter lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join lucene-grouping lucene-classification lucene-misc)
+# lucene-replicator is required by GenReplicator (org.apache.lucene.replicator.nrt).
+LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-facet lucene-highlighter lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join lucene-grouping lucene-classification lucene-misc lucene-replicator)
 
 cd "$(git rev-parse --show-toplevel)"
 FIXTURES="$PWD/fixtures"

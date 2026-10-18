@@ -40,7 +40,7 @@ RUN mkdir -p "$LUCENE_JARS" && cd "$LUCENE_JARS" \
     && for m in lucene-core lucene-analysis-common lucene-queryparser \
                 lucene-facet lucene-highlighter lucene-suggest lucene-codecs \
                 lucene-monitor lucene-memory lucene-expressions lucene-classification \
-                lucene-backward-codecs lucene-misc lucene-queries lucene-spatial3d \
+                lucene-backward-codecs lucene-misc lucene-replicator lucene-queries lucene-spatial3d \
                 lucene-spatial-extras lucene-join lucene-grouping \
                 lucene-analysis-icu lucene-analysis-kuromoji lucene-analysis-nori \
                 lucene-analysis-smartcn lucene-analysis-stempel \
