@@ -30,7 +30,7 @@ to describe a defect that got past it.
 | [`blocktree-infallible`](#blocktree-infallible) | `check-port-invariants.py` | `seek_exact`/`seek_ceil`/`current` in a module that consumes `blocktree` | the same call on a receiver in a module that never names `blocktree` |
 | [`doc-values-per-doc`](#doc-values-per-doc) | `check-port-invariants.py` | a *new* per-document `doc_values::numeric_value`/`binary_value` call | a per-document call hidden behind a helper fn; the ten already on the burn-down list |
 | [`parity ::item`](#parity-item) | `check-parity.py` | a ledger row (`docs/parity/*.md`) naming a Rust item its own file does not define, or a backticked `scripts/..`/`tools/..` path in its Status column that does not exist | other prose outside a row's Rust column; an item that exists but no longer does what the row says; a tool path written without backticks or outside `scripts/`/`tools/` |
-| [`parity-layout`](#parity-layout) | `check-parity.py` | an area file the index does not link; a relative link to a missing file; a stated row count that is wrong; a row over 2,000 characters, a file over 80 KB, a ledger over 450 KB; a `## ` heading in two files | history written *within* budget; a row filed in the wrong area; a stale fact; a link to a file that exists but no longer says what the link claims |
+| [`parity-layout`](#parity-layout) | `check-parity.py` | an area file the index does not link; a relative link to a missing file; a stated row count that is wrong; a row over 2,000 characters, a file over 80 KB, a ledger over 550 KB; a `## ` heading in two files | history written *within* budget; a row filed in the wrong area; a stale fact; a link to a file that exists but no longer says what the link claims |
 | [`parity bench-clause`](#parity-bench-clause) | `check-parity.py` | a **ported** row of a `lucene-analysis-<module>` crate naming an item `benchmarks/rust-runner/src` imports (`use lucene_analysis_<module>::..`) with no `Bench` clause | a clause whose ratio is stale or wrong; a bench case that reaches the port through an item no row names; every crate outside the M12 language modules |
 | [`ledger-single-list`](#ledger-single-list) | `check-port-invariants.py` | an unticked `- [ ]` anywhere in `docs/sweep/m2/LEDGER.md` | whether a `- [x]` is *true*, or whether a `- [->]` names the right item |
 | [`block-guard`](#block-guard) | `check-port-invariants.py` | a `lucene-index` fn setting `pending_has_blocks`/`dwpt.has_blocks = true` with no earlier `check_block(` call in the same fn | a guard that is called but whose result is ignored, or that sits on a branch the flag's line does not follow; a block flag spelled any other way |
@@ -297,7 +297,7 @@ areas' bench ratios are still a review item.
 area in `docs/parity/`. `check-parity.py` fails when the index does not link
 an area file or states its row count wrongly; when any relative Markdown link
 in the ledger points at a file that does not exist; when a table row is over
-2,000 characters, a file over 80 KB or the whole ledger over 450 KB; and when
+2,000 characters, a file over 80 KB or the whole ledger over 550 KB; and when
 one `## ` heading appears in two files.
 
 The ledger was one 1.25 MB file whose largest row was 39,508 characters: every
