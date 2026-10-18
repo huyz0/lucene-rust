@@ -24,6 +24,7 @@ pub mod blocktree;
 mod blocktree_writer;
 pub mod codec;
 pub mod codecs;
+pub mod completion;
 pub mod compound_format;
 mod deflate;
 pub(crate) mod deflater;

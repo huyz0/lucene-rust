@@ -834,3 +834,18 @@ fn field_highlighters_combine_and_name_what_they_fetch() {
     );
     assert_eq!(got, Some(vec!["alpha..".to_string()]));
 }
+
+#[test]
+fn stored_values_read_as_their_java_strings() {
+    use lucene_codecs::stored_fields::FieldValue;
+    let read = match_highlight::stored_string_value;
+    assert_eq!(read(&FieldValue::String("a".into())).as_deref(), Some("a"));
+    assert_eq!(read(&FieldValue::Int(-3)).as_deref(), Some("-3"));
+    assert_eq!(
+        read(&FieldValue::Long(1 << 40)).as_deref(),
+        Some("1099511627776")
+    );
+    assert_eq!(read(&FieldValue::Float(1.5)).as_deref(), Some("1.5"));
+    assert_eq!(read(&FieldValue::Double(2.0)).as_deref(), Some("2.0"));
+    assert_eq!(read(&FieldValue::Binary(vec![1])), None);
+}

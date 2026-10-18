@@ -186,6 +186,11 @@ pub enum Error {
         occurrence: usize,
         length: u32,
     },
+    /// `CompletionFieldsConsumer.write`: a completion field's payload that is
+    /// not a `SuggestField` payload, mixed suggestion types in one field, or
+    /// a weight out of range.
+    #[error("completion postings: {0}")]
+    Completion(#[source] lucene_store::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -250,6 +255,59 @@ pub struct TermPostings {
     pub offsets: Vec<Vec<(i32, i32)>>,
     pub payload_bytes: Vec<u8>,
     pub payload_lengths: Vec<u32>,
+}
+
+/// One term's postings as the writer reads them: what a [`TermPostings`]
+/// holds, borrowed from wherever the caller keeps it. A flush's buffered
+/// postings keep each term's positions in one run across its documents, the
+/// way `FreqProxTermsWriterPerField` keeps them in its byte slices; reading
+/// that run in place spares the flush a copy of every term.
+pub trait TermSource {
+    /// The term's bytes.
+    fn term(&self) -> &[u8];
+    /// `(doc, freq)` per document, doc ascending.
+    fn docs(&self) -> &[(i32, i32)];
+    /// How many documents carry a positions list: `docs().len()` when the
+    /// field indexes positions.
+    fn position_lists(&self) -> usize;
+    /// Document `doc`'s positions, `doc < position_lists()`.
+    fn positions(&self, doc: usize) -> &[i32];
+    /// How many documents carry an offsets list: `docs().len()` when the
+    /// field indexes offsets.
+    fn offset_lists(&self) -> usize;
+    /// Document `doc`'s offsets, `doc < offset_lists()`.
+    fn offsets(&self, doc: usize) -> &[(i32, i32)];
+    /// See [`TermPostings::payload_bytes`].
+    fn payload_bytes(&self) -> &[u8];
+    /// See [`TermPostings::payload_bytes`].
+    fn payload_lengths(&self) -> &[u32];
+}
+
+impl TermSource for TermPostings {
+    fn term(&self) -> &[u8] {
+        &self.term
+    }
+    fn docs(&self) -> &[(i32, i32)] {
+        &self.docs
+    }
+    fn position_lists(&self) -> usize {
+        self.positions.len()
+    }
+    fn positions(&self, doc: usize) -> &[i32] {
+        self.positions.get(doc).map_or(&[], Vec::as_slice)
+    }
+    fn offset_lists(&self) -> usize {
+        self.offsets.len()
+    }
+    fn offsets(&self, doc: usize) -> &[(i32, i32)] {
+        self.offsets.get(doc).map_or(&[], Vec::as_slice)
+    }
+    fn payload_bytes(&self) -> &[u8] {
+        &self.payload_bytes
+    }
+    fn payload_lengths(&self) -> &[u32] {
+        &self.payload_lengths
+    }
 }
 
 /// Reorders a [`TermPostings`] flat payload run to follow a permutation of
@@ -540,8 +598,7 @@ pub struct FieldNorms<'a> {
 
 /// Input to [`write_single_field`]: one field's whole term dictionary,
 /// already fully materialized and sorted.
-#[derive(Clone, Copy)]
-pub struct FieldPostingsInput<'a> {
+pub struct FieldPostingsInput<'a, T = TermPostings> {
     pub field_number: i32,
     pub index_options: IndexOptions,
     /// `docCount`: number of distinct docs this field occurs in at least
@@ -558,8 +615,16 @@ pub struct FieldPostingsInput<'a> {
     /// `payload_lengths` entries must line up when this is set (see
     /// [`TermPostings::payload_bytes`]).
     pub has_payloads: bool,
-    pub terms: &'a [TermPostings],
+    pub terms: &'a [T],
 }
+
+impl<T> Clone for FieldPostingsInput<'_, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for FieldPostingsInput<'_, T> {}
 
 /// The files this writer produces for one field. `pos` is empty when
 /// `index_options` doesn't index positions (`IndexOptions::Docs`/
@@ -588,8 +653,8 @@ pub struct Output {
 /// Writes `.doc`/`.tim`/`.tip`/`.tmd` bytes for `input`'s single field — a
 /// thin one-element-slice wrapper over [`write_fields`], kept so existing
 /// single-field callers/tests are unaffected.
-pub fn write_single_field(
-    input: &FieldPostingsInput<'_>,
+pub fn write_single_field<T: TermSource>(
+    input: &FieldPostingsInput<'_, T>,
     segment_id: &[u8; ID_LENGTH],
     segment_suffix: &str,
 ) -> Result<Output> {
@@ -598,8 +663,8 @@ pub fn write_single_field(
 
 /// [`write_single_field`] with the field's norms, so its impacts are real --
 /// see [`write_fields_with_norms`].
-pub fn write_single_field_with_norms(
-    input: &FieldPostingsInput<'_>,
+pub fn write_single_field_with_norms<T: TermSource>(
+    input: &FieldPostingsInput<'_, T>,
     norms: &[FieldNorms<'_>],
     segment_id: &[u8; ID_LENGTH],
     segment_suffix: &str,
@@ -622,8 +687,8 @@ pub fn write_single_field_with_norms(
 /// real multi-field segment. `segment_id`/`segment_suffix` must match what
 /// the caller will later open the files with (`blocktree::open`/
 /// `postings::DocInput::open` both check them).
-pub fn write_fields(
-    inputs: &[FieldPostingsInput<'_>],
+pub fn write_fields<T: TermSource>(
+    inputs: &[FieldPostingsInput<'_, T>],
     segment_id: &[u8; ID_LENGTH],
     segment_suffix: &str,
 ) -> Result<Output> {
@@ -646,8 +711,8 @@ pub fn write_fields(
 /// silently drops hits under MAXSCORE. That is why the accumulator is a
 /// straight port of Java's rather than a shortcut, and why
 /// `bm25_scoring_fixtures.rs` compares hit *sets* and not just scores.
-pub fn write_fields_with_norms(
-    inputs: &[FieldPostingsInput<'_>],
+pub fn write_fields_with_norms<T: TermSource>(
+    inputs: &[FieldPostingsInput<'_, T>],
     norms: &[FieldNorms<'_>],
     segment_id: &[u8; ID_LENGTH],
     segment_suffix: &str,
@@ -721,8 +786,8 @@ impl WriteOptions {
 
 /// [`write_fields_with_norms`] for one `Lucene104PostingsFormat` instance
 /// of a segment -- see [`WriteOptions`].
-pub fn write_fields_with_options(
-    inputs: &[FieldPostingsInput<'_>],
+pub fn write_fields_with_options<T: TermSource>(
+    inputs: &[FieldPostingsInput<'_, T>],
     norms: &[FieldNorms<'_>],
     options: &WriteOptions,
     segment_id: &[u8; ID_LENGTH],
@@ -887,10 +952,7 @@ pub fn write_fields_with_options(
                 let layout = write_position_tail(
                     &mut pos,
                     &mut pay,
-                    &t.positions,
-                    &t.offsets,
-                    &t.payload_bytes,
-                    &t.payload_lengths,
+                    t,
                     index_has_offsets,
                     index_has_payloads,
                 );
@@ -914,6 +976,7 @@ pub fn write_fields_with_options(
             if singletons[i] != -1 {
                 continue;
             }
+            let docs = t.docs();
 
             // Zero or more full 256-doc `ForUtil`/`PForUtil` blocks
             // (`write_full_block`) followed by at most one group-varint tail
@@ -933,11 +996,11 @@ pub fn write_fields_with_options(
             // `doc_count_left >= LEVEL1_NUM_DOCS` loop exactly.
             // ARITH: `start` only ever advances by the very amount the loop
             // condition just proved is left (`len - start >= N` before
-            // `start += N`), so `start <= t.docs.len()` holds at every test
+            // `start += N`), so `start <= docs.len()` holds at every test
             // and `start + N <= len` at every slice.
             #[allow(clippy::arithmetic_side_effects)]
-            while t.docs.len() - start >= LEVEL1_NUM_DOCS as usize {
-                let span = &t.docs[start..start + LEVEL1_NUM_DOCS as usize];
+            while docs.len() - start >= LEVEL1_NUM_DOCS as usize {
+                let span = &docs[start..start + LEVEL1_NUM_DOCS as usize];
                 prev_doc_id = write_level1_span(
                     &mut doc,
                     span,
@@ -954,8 +1017,8 @@ pub fn write_fields_with_options(
             }
             // ARITH: same invariant as the level-1 loop above.
             #[allow(clippy::arithmetic_side_effects)]
-            while t.docs.len() - start >= BLOCK_SIZE as usize {
-                let block = &t.docs[start..start + BLOCK_SIZE as usize];
+            while docs.len() - start >= BLOCK_SIZE as usize {
+                let block = &docs[start..start + BLOCK_SIZE as usize];
                 prev_doc_id = write_full_block(
                     &mut doc,
                     block,
@@ -969,8 +1032,8 @@ pub fn write_fields_with_options(
                 );
                 start += BLOCK_SIZE as usize;
             }
-            if start < t.docs.len() {
-                write_tail_block(&mut doc, &t.docs[start..], prev_doc_id, index_has_freq);
+            if start < docs.len() {
+                write_tail_block(&mut doc, &docs[start..], prev_doc_id, index_has_freq);
             }
         }
 
@@ -1015,10 +1078,10 @@ pub fn write_fields_with_options(
         }
         tmd.write_vlong(sum_doc_freq);
         tmd.write_vint(input.doc_count);
-        let min_term = &input.terms[0].term;
+        let min_term = input.terms[0].term();
         // ARITH: `validate_field` rejected an empty `terms`.
         #[allow(clippy::arithmetic_side_effects)]
-        let max_term = &input.terms[input.terms.len() - 1].term;
+        let max_term = input.terms[input.terms.len() - 1].term();
         tmd.write_vint(min_term.len() as i32);
         tmd.write_bytes(min_term);
         tmd.write_vint(max_term.len() as i32);
@@ -1087,7 +1150,7 @@ pub fn write_fields_with_options(
 /// `totalTermFreq` bounds, positions shape) — the exact same checks
 /// `write_single_field` ran inline before this became a per-field helper
 /// shared by [`write_fields`]'s loop.
-fn validate_field<'a>(input: &FieldPostingsInput<'a>) -> Result<FieldStats<'a>> {
+fn validate_field<'a, T: TermSource>(input: &FieldPostingsInput<'a, T>) -> Result<FieldStats<'a>> {
     if !matches!(
         input.index_options,
         IndexOptions::Docs
@@ -1102,7 +1165,7 @@ fn validate_field<'a>(input: &FieldPostingsInput<'a>) -> Result<FieldStats<'a>> 
         return Err(Error::EmptyTerms);
     }
     for (i, w) in input.terms.windows(2).enumerate() {
-        if w[0].term >= w[1].term {
+        if w[0].term() >= w[1].term() {
             // ARITH: `i` indexes `terms.windows(2)`, so `i + 1 < terms.len()`.
             #[allow(clippy::arithmetic_side_effects)]
             let at = i + 1;
@@ -1116,15 +1179,16 @@ fn validate_field<'a>(input: &FieldPostingsInput<'a>) -> Result<FieldStats<'a>> 
         singletons: Vec::with_capacity(input.terms.len()),
     };
     for (i, t) in input.terms.iter().enumerate() {
-        if t.docs.is_empty() {
+        let docs = t.docs();
+        if docs.is_empty() {
             return Err(Error::EmptyPostings(i));
         }
         stats.block_terms.push(blocktree_writer::BlockTerm {
-            bytes: &t.term,
-            doc_freq: t.docs.len() as i32,
-            total_term_freq: t.docs.iter().map(|&(_, f)| i64::from(f)).sum(),
+            bytes: t.term(),
+            doc_freq: docs.len() as i32,
+            total_term_freq: docs.iter().map(|&(_, f)| i64::from(f)).sum(),
         });
-        stats.singletons.push(match t.docs.as_slice() {
+        stats.singletons.push(match docs {
             [(only, _)] => *only,
             _ => -1,
         });
@@ -1132,28 +1196,29 @@ fn validate_field<'a>(input: &FieldPostingsInput<'a>) -> Result<FieldStats<'a>> 
         // to the rest. This is what bounds every `docID - lastDocID` delta
         // below to `1..=i32::MAX`, and it is the same rejection
         // `Lucene104PostingsWriter.startDoc` makes.
-        if t.docs[0].0 < 0 {
+        if docs[0].0 < 0 {
             return Err(Error::NegativeDocId { index: i });
         }
-        for (j, &(_, freq)) in t.docs.iter().enumerate() {
+        for (j, &(_, freq)) in docs.iter().enumerate() {
             if freq < 1 {
                 return Err(Error::NonPositiveFreq { index: i });
             }
             // ARITH: guarded by `j > 0`.
             #[allow(clippy::arithmetic_side_effects)]
-            let out_of_order = j > 0 && t.docs[j - 1].0 >= t.docs[j].0;
+            let out_of_order = j > 0 && docs[j - 1].0 >= docs[j].0;
             if out_of_order {
                 return Err(Error::DocIdsNotSorted { index: i });
             }
         }
         if index_has_positions {
-            if t.positions.len() != t.docs.len() {
+            if t.position_lists() != docs.len() {
                 return Err(Error::MissingPositions {
                     index: i,
-                    doc_index: t.positions.len(),
+                    doc_index: t.position_lists(),
                 });
             }
-            for (j, (&(_, freq), positions)) in t.docs.iter().zip(&t.positions).enumerate() {
+            for (j, &(_, freq)) in docs.iter().enumerate() {
+                let positions = t.positions(j);
                 if positions.len() != freq as usize {
                     return Err(Error::PositionsFreqMismatch {
                         index: i,
@@ -1181,13 +1246,14 @@ fn validate_field<'a>(input: &FieldPostingsInput<'a>) -> Result<FieldStats<'a>> 
                 }
             }
             if index_has_offsets {
-                if t.offsets.len() != t.docs.len() {
+                if t.offset_lists() != docs.len() {
                     return Err(Error::MissingOffsets {
                         index: i,
-                        doc_index: t.offsets.len(),
+                        doc_index: t.offset_lists(),
                     });
                 }
-                for (j, (&(_, freq), doc_offsets)) in t.docs.iter().zip(&t.offsets).enumerate() {
+                for (j, &(_, freq)) in docs.iter().enumerate() {
+                    let doc_offsets = t.offsets(j);
                     if doc_offsets.len() != freq as usize {
                         return Err(Error::OffsetsFreqMismatch {
                             index: i,
@@ -1215,11 +1281,11 @@ fn validate_field<'a>(input: &FieldPostingsInput<'a>) -> Result<FieldStats<'a>> 
                 // count of one term -- a `usize` cannot overflow summing
                 // counts over a structure that is already in memory.
                 #[allow(clippy::arithmetic_side_effects)]
-                let total_term_freq: usize = t.docs.iter().map(|&(_, freq)| freq as usize).sum();
-                if t.payload_lengths.len() != total_term_freq {
+                let total_term_freq: usize = docs.iter().map(|&(_, freq)| freq as usize).sum();
+                if t.payload_lengths().len() != total_term_freq {
                     return Err(Error::PayloadsFreqMismatch {
                         index: i,
-                        payload_lengths: t.payload_lengths.len(),
+                        payload_lengths: t.payload_lengths().len(),
                         total_term_freq,
                     });
                 }
@@ -1228,9 +1294,9 @@ fn validate_field<'a>(input: &FieldPostingsInput<'a>) -> Result<FieldStats<'a>> 
                 // -- more than the address space holds -- and the sum is
                 // checked against `payload_bytes.len()` immediately below.
                 #[allow(clippy::arithmetic_side_effects)]
-                let expected: usize = t.payload_lengths.iter().map(|&l| l as usize).sum();
+                let expected: usize = t.payload_lengths().iter().map(|&l| l as usize).sum();
                 if let Some((k, &length)) = t
-                    .payload_lengths
+                    .payload_lengths()
                     .iter()
                     .enumerate()
                     .find(|&(_, &l)| l > i32::MAX as u32)
@@ -1241,10 +1307,10 @@ fn validate_field<'a>(input: &FieldPostingsInput<'a>) -> Result<FieldStats<'a>> 
                         length,
                     });
                 }
-                if t.payload_bytes.len() != expected {
+                if t.payload_bytes().len() != expected {
                     return Err(Error::PayloadBytesMismatch {
                         index: i,
-                        payload_bytes: t.payload_bytes.len(),
+                        payload_bytes: t.payload_bytes().len(),
                         expected,
                     });
                 }
@@ -1751,16 +1817,14 @@ fn write_tail_block(
 /// position walk too, which jumps into the middle of `.pos` and so cannot
 /// re-derive the split from a running occurrence count.
 #[allow(clippy::too_many_arguments)]
-fn write_position_tail(
+fn write_position_tail<T: TermSource>(
     pos_out: &mut Vec<u8>,
     pay_out: &mut Vec<u8>,
-    positions: &[Vec<i32>],
-    offsets: &[Vec<(i32, i32)>],
-    payload_bytes: &[u8],
-    payload_lengths: &[u32],
+    term: &T,
     has_offsets: bool,
     has_payloads: bool,
 ) -> PositionLayout {
+    let (payload_bytes, payload_lengths) = (term.payload_bytes(), term.payload_lengths());
     let pos_out_start = pos_out.len();
     let pay_out_start = pay_out.len();
     let has_offsets_or_payloads = has_offsets || has_payloads;
@@ -1777,7 +1841,13 @@ fn write_position_tail(
     // exactly the layout this function consumes -- the whole term's payloads
     // concatenated, one length per occurrence -- so there is nothing to
     // flatten here any more.
-    for (doc_idx, doc_positions) in positions.iter().enumerate() {
+    for doc_idx in 0..term.position_lists() {
+        let doc_positions = term.positions(doc_idx);
+        let doc_offsets = if has_offsets {
+            term.offsets(doc_idx)
+        } else {
+            &[]
+        };
         let mut prev = 0i32;
         let mut prev_start_offset = 0i32;
         for (occ_idx, &p) in doc_positions.iter().enumerate() {
@@ -1789,7 +1859,7 @@ fn write_position_tail(
             deltas.push(pos_delta);
             prev = p;
             if has_offsets {
-                let (start_offset, end_offset) = offsets[doc_idx][occ_idx];
+                let (start_offset, end_offset) = doc_offsets[occ_idx];
                 // ARITH: `validate_field` requires `start_offset >=
                 // last_start_offset` (from a base of 0, so every offset is
                 // non-negative) and `end_offset >= start_offset`, so both
@@ -3079,7 +3149,7 @@ mod tests {
 
     #[test]
     fn rejects_empty_terms() {
-        let input = FieldPostingsInput {
+        let input: FieldPostingsInput<'_> = FieldPostingsInput {
             field_number: 0,
             index_options: IndexOptions::DocsAndFreqs,
             doc_count: 0,
@@ -4097,7 +4167,7 @@ mod tests {
     #[test]
     fn write_fields_rejects_an_empty_inputs_slice() {
         assert!(matches!(
-            write_fields(&[], &SEG_ID, SUFFIX),
+            write_fields::<TermPostings>(&[], &SEG_ID, SUFFIX),
             Err(Error::EmptyTerms)
         ));
     }

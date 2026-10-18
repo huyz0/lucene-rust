@@ -745,6 +745,124 @@ fn token_streams_are_checked_as_invert_token_stream_checks_them() {
     assert_eq!(e.fields.inverted[0].norm, Some(0));
 }
 
+/// `FieldSchema.raiseNotSame` for each facet of a schema two instances of
+/// one field name can disagree on.
+#[test]
+fn one_field_name_cannot_carry_two_schemas() {
+    let tmp = TempDir::new("document-schema-conflicts");
+    let dir = FsDirectory::open(tmp.path());
+    let mut w = writer(&dir);
+    w.enable_explicit_documents().unwrap();
+    let float = |sim| -> Box<dyn IndexableField> {
+        Box::new(KnnFloatVectorField::new("v", vec![1.0], sim).unwrap())
+    };
+    let cases: Vec<(&str, Vec<Box<dyn IndexableField>>)> = vec![
+        (
+            "point dimension",
+            vec![
+                Box::new(IntPoint::new("p", &[1]).unwrap()),
+                Box::new(IntPoint::new("p", &[1, 2]).unwrap()),
+            ],
+        ),
+        (
+            "point num bytes",
+            vec![
+                Box::new(IntPoint::new("p", &[1]).unwrap()),
+                Box::new(LongPoint::new("p", &[1]).unwrap()),
+            ],
+        ),
+        (
+            "vector encoding",
+            vec![
+                float(VectorSimilarityFunction::Cosine),
+                Box::new(
+                    KnnByteVectorField::new("v", vec![1], VectorSimilarityFunction::Cosine)
+                        .unwrap(),
+                ),
+            ],
+        ),
+        (
+            "vector similarity function",
+            vec![
+                float(VectorSimilarityFunction::Cosine),
+                float(VectorSimilarityFunction::Euclidean),
+            ],
+        ),
+        (
+            "doc values type",
+            vec![
+                Box::new(NumericDocValuesField::new("d", 1)),
+                Box::new(SortedNumericDocValuesField::new("d", 1)),
+            ],
+        ),
+    ];
+    for (what, fields) in cases {
+        let e = w
+            .invert_fields_document(&doc(fields))
+            .expect_err(what)
+            .to_string();
+        assert!(e.contains(what), "{what}: {e}");
+    }
+}
+
+/// The schema facets `updateDocFieldSchema` checks that the earlier conflict
+/// test does not reach: index options, omit norms, term vectors, skip index.
+#[test]
+fn one_field_name_cannot_change_its_index_options_or_norms() {
+    let tmp = TempDir::new("document-schema-facets");
+    let dir = FsDirectory::open(tmp.path());
+    let mut w = writer(&dir);
+    w.enable_explicit_documents().unwrap();
+    let raw = |opts: IndexOptions, omit: bool, tv: bool| -> Box<dyn IndexableField> {
+        let mut ft = FieldType::copy_of(&StringField::type_not_stored());
+        ft.set_index_options(opts).unwrap();
+        ft.set_omit_norms(omit).unwrap();
+        ft.set_store_term_vectors(tv).unwrap();
+        Box::new(Field::raw(
+            "k",
+            ft.frozen(),
+            FieldData::String("v".to_string()),
+        ))
+    };
+    let cases: Vec<(&str, Vec<Box<dyn IndexableField>>)> = vec![
+        (
+            "index options",
+            vec![
+                raw(IndexOptions::Docs, true, false),
+                raw(IndexOptions::DocsAndFreqs, true, false),
+            ],
+        ),
+        (
+            "omit norms",
+            vec![
+                raw(IndexOptions::Docs, false, false),
+                raw(IndexOptions::Docs, true, false),
+            ],
+        ),
+        (
+            "store term vector",
+            vec![
+                raw(IndexOptions::Docs, true, false),
+                raw(IndexOptions::Docs, true, true),
+            ],
+        ),
+        (
+            "doc values skip index type",
+            vec![
+                Box::new(NumericDocValuesField::new("d", 1)),
+                Box::new(NumericDocValuesField::indexed_field("d", 1)),
+            ],
+        ),
+    ];
+    for (what, fields) in cases {
+        let e = w
+            .invert_fields_document(&doc(fields))
+            .expect_err(what)
+            .to_string();
+        assert!(e.contains(what), "{what}: {e}");
+    }
+}
+
 #[test]
 fn a_zero_norm_for_a_non_empty_field_is_refused() {
     #[derive(Debug)]

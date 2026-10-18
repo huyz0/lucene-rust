@@ -471,6 +471,14 @@ pub trait SortedNumericDocValues: DocValuesIterator {
     fn doc_value_count(&self) -> i32;
     /// `nextValue()`: the current document's values, ascending, one per call.
     fn next_value(&mut self) -> Result<i64>;
+    /// The current document's values `next_value` has not handed out yet,
+    /// all at once, which then count as read -- when the implementation
+    /// holds them decoded. `None` (the default) means read them one
+    /// `next_value` at a time. A bulk read for the hot loops (facet
+    /// counting); no Java counterpart.
+    fn take_values(&mut self) -> Option<&[i64]> {
+        None
+    }
 }
 
 /// `SortedSetDocValues`.
@@ -849,6 +857,14 @@ pub trait LeafReader: IndexReader {
         _field: &str,
     ) -> Result<Option<lucene_codecs::doc_values::DocValuesSkipper<'_>>> {
         Ok(None)
+    }
+
+    /// Whether `DocValues.unwrapSingleton(getSortedNumericDocValues(field))`
+    /// is not `null`: the leaf's `SORTED_NUMERIC` field is in the codec's
+    /// one-value-per-document form. `false` for a field without
+    /// `SORTED_NUMERIC` values, and, by default, for a view.
+    fn sorted_numeric_is_singleton(&self, _field: &str) -> bool {
+        false
     }
 
     /// `checkIntegrity()`: verifies the checksums of the files behind this

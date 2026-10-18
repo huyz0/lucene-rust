@@ -693,6 +693,15 @@ pub trait IndexableField: fmt::Debug + Send + Sync {
     /// `tokenStream(analyzer, reuse)`: `None` for a field that is not
     /// indexed.
     fn token_stream(&self, analyzer: &Analyzer) -> Result<Option<FieldTokens>>;
+    /// The text [`Self::token_stream`] would hand the analyzer --
+    /// `analyzer.tokenStream(name, text)` -- when that is the whole of its
+    /// stream. The indexing chain then inverts each token as the analyzer
+    /// produces it, as `IndexingChain.invertTokenStream` does, instead of
+    /// collecting them first. `None`, the default, has it read
+    /// [`Self::token_stream`].
+    fn analyzed_text(&self) -> Option<&str> {
+        None
+    }
     /// The KNN vector of a vector field (`KnnFloatVectorField.vectorValue()`
     /// / `KnnByteVectorField.vectorValue()`).
     fn vector_value(&self) -> Option<crate::index_writer::VectorValue> {
@@ -1017,6 +1026,17 @@ impl IndexableField for Field {
             },
         }
     }
+
+    /// [`Self::token_stream`]'s analyzed-text branch.
+    fn analyzed_text(&self) -> Option<&str> {
+        if self.field_type.index_options() == IndexOptions::None || !self.field_type.tokenized() {
+            return None;
+        }
+        match &self.data {
+            FieldData::Reader(text) | FieldData::String(text) => Some(text),
+            _ => None,
+        }
+    }
 }
 
 /// `Field.StringTokenStream`: the whole value as one token, offsets
@@ -1311,6 +1331,12 @@ impl Document {
     /// `getFields()`.
     pub fn fields(&self) -> &[Box<dyn IndexableField>] {
         &self.fields
+    }
+
+    /// The fields, moved out -- what `FacetsConfig.build` hands on to the
+    /// document it returns (Java adds the same field objects to it).
+    pub fn into_fields(self) -> Vec<Box<dyn IndexableField>> {
+        self.fields
     }
 
     /// `getValues(name)`.

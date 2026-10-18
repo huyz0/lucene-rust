@@ -1,0 +1,18 @@
+all	search	0	2212	EQUAL_TO		Author=i2182;Many=i2182;Path=i2182;Publish Date=i2182;Cat=i1455;Loc=i-1;Tag=i-1;
+all	search	1	2212	EQUAL_TO	0:3f800000	Author=i2182;Many=i2182;Path=i2182;Publish Date=i2182;Cat=i1455;Loc=i-1;Tag=i-1;
+all	search	7	2212	EQUAL_TO	0:3f800000,1:3f800000,2:3f800000,4:3f800000,5:3f800000,6:3f800000,7:3f800000	Author=i2182;Many=i2182;Path=i2182;Publish Date=i2182;Cat=i1455;Loc=i-1;Tag=i-1;
+all	after	2	3f800000	2212	EQUAL_TO	4:3f800000,5:3f800000,6:3f800000,7:3f800000,8:3f800000
+even	search	0	1106	EQUAL_TO		Author=i1091;Many=i1091;Path=i1091;Publish Date=i1091;Cat=i727;Loc=i-1;Tag=i-1;
+even	search	1	1106	EQUAL_TO	0:3ebbd2f8	Author=i1091;Many=i1091;Path=i1091;Publish Date=i1091;Cat=i727;Loc=i-1;Tag=i-1;
+even	search	7	1106	EQUAL_TO	0:3ebbd2f8,2:3ebbd2f8,4:3ebbd2f8,6:3ebbd2f8,8:3ebbd2f8,10:3ebbd2f8,12:3ebbd2f8	Author=i1091;Many=i1091;Path=i1091;Publish Date=i1091;Cat=i727;Loc=i-1;Tag=i-1;
+even	after	4	3ebbd2f8	1106	EQUAL_TO	6:3ebbd2f8,8:3ebbd2f8,10:3ebbd2f8,12:3ebbd2f8,16:3ebbd2f8
+rare	search	0	59	EQUAL_TO		Author=i59;Many=i59;Path=i59;Publish Date=i59;Cat=i39;Loc=i-1;Tag=i-1;
+rare	search	1	59	EQUAL_TO	5:3ff4d315	Author=i59;Many=i59;Path=i59;Publish Date=i59;Cat=i39;Loc=i-1;Tag=i-1;
+rare	search	7	59	EQUAL_TO	5:3ff4d315,42:3ff4d315,79:3ff4d315,116:3ff4d315,153:3ff4d315,227:3ff4d315,264:3ff4d315	Author=i59;Many=i59;Path=i59;Publish Date=i59;Cat=i39;Loc=i-1;Tag=i-1;
+rare	search	100000	59	EQUAL_TO	5:3ff4d315,42:3ff4d315,79:3ff4d315,116:3ff4d315,153:3ff4d315,227:3ff4d315,264:3ff4d315,301:3ff4d315,338:3ff4d315,375:3ff4d315,412:3ff4d315,449:3ff4d315,486:3ff4d315,523:3ff4d315,560:3ff4d315,634:3ff4d315,671:3ff4d315,708:3ff4d315,745:3ff4d315,782:3ff4d315,819:3ff4d315,856:3ff4d315,893:3ff4d315,930:3ff4d315,967:3ff4d315,1041:3ff4d315,1078:3ff4d315,1115:3ff4d315,1152:3ff4d315,1189:3ff4d315,1226:3ff4d315,1263:3ff4d315,1300:3ff4d315,1337:3ff4d315,1374:3ff4d315,1448:3ff4d315,1485:3ff4d315,1522:3ff4d315,1559:3ff4d315,1596:3ff4d315,1633:3ff4d315,1670:3ff4d315,1707:3ff4d315,1744:3ff4d315,1781:3ff4d315,1855:3ff4d315,1892:3ff4d315,1929:3ff4d315,1966:3ff4d315,2003:3ff4d315,2040:3ff4d315,2077:3ff4d315,2114:3ff4d315,2151:3ff4d315,2188:3ff4d315,2262:3ff4d315,2299:3ff4d315,2336:3ff4d315,2373:3ff4d315	Author=i59;Many=i59;Path=i59;Publish Date=i59;Cat=i39;Loc=i-1;Tag=i-1;
+rare	after	79	3ff4d315	59	EQUAL_TO	116:3ff4d315,153:3ff4d315,227:3ff4d315,264:3ff4d315,301:3ff4d315
+none	search	0	0	EQUAL_TO		
+none	search	1	0	EQUAL_TO		
+none	search	7	0	EQUAL_TO		
+none	search	100000	0	EQUAL_TO		
+error	after.doc exceeds the number of documents in the reader: after.doc=2430 limit=2430

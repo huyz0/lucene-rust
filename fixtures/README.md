@@ -1678,3 +1678,33 @@ committed fixture. Two were added by `c43-final-cleanup`:
 - `GenMemoryIndex.java` (M13 T13.5) -- `MemoryIndex` over
   `corpus/memory-index-{docs,queries}.txt` under eight configurations, plus named
   scenarios: `memory_index/*.tsv`. Rust side: `memory_index_fixtures.rs`.
+- `GenFacetCounts.java` (M13 T13.4b) -- a 2,400-document, multi-segment index with a
+  taxonomy (`facet_counts/index`, `facet_counts/taxo`; deletions, int and float
+  associations, dims in non-default index fields) and every public `Facets`
+  call of `FastTaxonomyFacetCounts`, `TaxonomyFacet{Int,Float}Associations`
+  and `MultiFacets` over match-all and selective queries: `calls.tsv`,
+  `search.tsv` (`FacetsCollectorManager.search`), `labels.tsv`
+  (`TaxonomyFacetLabels`), `build.tsv` (`FacetsConfig.build` of associations)
+  and `errors.tsv` (Java's refusals). Rust side: `facet_counts_fixtures.rs`.
+- `GenDrillDown.java` (M13 T13.4c) -- a 4,500-document index in three segments
+  (the first wider than `DrillSidewaysScorer`'s 2,048-document window;
+  deletions; a dim in its own index field) with a taxonomy (`drill_down/index`,
+  `drill_down/taxo`), and `DrillSideways.search` for nine base queries and
+  sixteen drill-downs, sequentially, with an executor, with
+  `scoreSubDocsAtOnce` and with a `TotalHitCountCollectorManager`:
+  `sideways.tsv`; `search(after, ..)`, a filter and topN past `maxDoc`:
+  `paging.tsv`; `toString`, rewrite and hits of `DrillDownQuery`,
+  `FacetQuery` and `MultiFacetQuery`: `queries.tsv`; Java's refusals:
+  `errors.tsv`. Rust side: `drill_down_fixtures.rs`.
+- `GenValueFacets.java` (M13 T13.4d1) -- a 1,560-document index in four
+  segments with deletions (`value_facets/multi`) and a 250-document
+  one-segment index (`value_facets/single`), holding single- and
+  multi-valued long, double, float and string doc values, long/double range
+  fields and `FacetSetsField`s. Every `Facets` call of
+  `LongValueFacetCounts`, `StringValueFacetCounts`, `Long`/`DoubleRangeFacetCounts`
+  (field, `ValuesSource`, multi-valued and single-wrapped forms, with and
+  without a fast-match query), the range-on-range counters for every
+  `QueryType` and `MatchingFacetSetsCounts` over four queries: `facets.tsv`;
+  `LongRange`/`DoubleRange.getQuery` (`toString` and hits): `queries.tsv`;
+  `DynamicRangeUtil` over the indexes and hand-built arrays: `dynamic.tsv`;
+  Java's refusals: `errors.tsv`. Rust side: `value_facets_fixtures.rs`.

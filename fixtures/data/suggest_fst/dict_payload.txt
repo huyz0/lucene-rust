@@ -1,0 +1,11 @@
+apple	10	red
+banana	7	yellow
+cherry	3
+fig
+long	12345678901	big
+floaty	12.9	f
+grape	1e3	g
+negfloat	-2.5	n
+日本	5	語
+	7	leading
+trail	4	

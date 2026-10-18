@@ -1,0 +1,4 @@
+only_more_popular	X	IllegalArgumentException	this suggester only works with onlyMorePopular=false
+contexts	X	IllegalArgumentException	this suggester doesn't support contexts
+weight_-1	UnsupportedOperationException	cannot encode value: -1
+weight_2147483648	UnsupportedOperationException	cannot encode value: 2147483648

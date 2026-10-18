@@ -50,10 +50,14 @@
 //! As with [`crate::norms`], docs-with-a-value is one of empty/dense/sparse
 //! (dense: implicit by doc id; sparse: via [`crate::indexed_disi`]).
 
+use std::collections::{HashMap, HashSet};
+use std::hash::BuildHasherDefault;
+
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
 use lucene_store::DataOutput;
 
+use crate::automaton::SetHasher;
 use crate::direct_monotonic;
 use crate::direct_reader;
 use crate::field_infos::FieldInfos;
@@ -1975,6 +1979,54 @@ pub struct BinaryReader<'a> {
     /// is not inside `data` (a lookup then falls through to [`binary_value`],
     /// which raises the error).
     docs: Option<indexed_disi::DisiCursor<'a>>,
+    /// The values' bytes and a variable-width field's addresses, resolved
+    /// once as `getBinary` slices them once (`bytesSlice`, `addresses`);
+    /// `None` when a region is not inside `data`, and each lookup then takes
+    /// [`binary_value_at_ordinal`], which reports it.
+    resolved: Option<ResolvedBinary<'a>>,
+}
+
+/// [`BinaryReader`]'s per-iterator state.
+struct ResolvedBinary<'a> {
+    bytes: &'a [u8],
+    /// `None` for a fixed-width field.
+    addresses: Option<direct_monotonic::Reader<'a>>,
+}
+
+impl<'a> ResolvedBinary<'a> {
+    fn new(data: &'a [u8], entry: &'a BinaryEntry) -> Option<Self> {
+        let bytes = region(data, entry.data_offset, entry.data_length).ok()?;
+        let addresses = match &entry.addresses {
+            Some(addrs) => Some(direct_monotonic::Reader::new(
+                region(data, addrs.offset, addrs.length).ok()?,
+                &addrs.meta,
+            )),
+            None => None,
+        };
+        Some(ResolvedBinary { bytes, addresses })
+    }
+
+    /// [`binary_value_at_ordinal`] over the resolved regions.
+    #[inline]
+    fn value_at_ordinal(&self, entry: &BinaryEntry, ordinal: i64) -> Result<&'a [u8]> {
+        let (start, end) = match &self.addresses {
+            Some(addrs) => {
+                let start = addrs.get(ordinal)?;
+                // ARITH: as in `binary_value_at_ordinal`: `ordinal` is
+                // `i32`-bounded.
+                #[allow(clippy::arithmetic_side_effects)]
+                let end = addrs.get(ordinal + 1)?;
+                (start, end)
+            }
+            // ARITH: as in `binary_value_at_ordinal`.
+            #[allow(clippy::arithmetic_side_effects)]
+            None => {
+                let length = entry.max_length as i64;
+                (ordinal * length, ordinal * length + length)
+            }
+        };
+        slice_at(self.bytes, start, end)
+    }
 }
 
 impl<'a> BinaryReader<'a> {
@@ -1996,7 +2048,17 @@ impl<'a> BinaryReader<'a> {
                     )
                 })
         };
-        Self { data, entry, docs }
+        let resolved = if entry.is_empty_field() {
+            None
+        } else {
+            ResolvedBinary::new(data, entry)
+        };
+        Self {
+            data,
+            entry,
+            docs,
+            resolved,
+        }
     }
 
     /// This document's value, or `None` when it legitimately has none.
@@ -2035,7 +2097,10 @@ impl<'a> BinaryReader<'a> {
                 None => return Ok(None),
             }
         };
-        binary_value_at_ordinal(self.data, self.entry, ordinal).map(Some)
+        match &self.resolved {
+            Some(r) => r.value_at_ordinal(self.entry, ordinal).map(Some),
+            None => binary_value_at_ordinal(self.data, self.entry, ordinal).map(Some),
+        }
     }
 }
 
@@ -2145,6 +2210,14 @@ pub struct SortedNumericReader<'a> {
     /// The values array read by ordinal with one load each, when its shape
     /// allows ([`FastDense::values`]); `None` decodes each value in full.
     fast: Option<FastDense<'a>>,
+    /// The addresses, resolved once as `getSortedNumeric` builds its
+    /// `DirectMonotonicReader` once; `None` for a singleton field and when
+    /// the region is not inside `data` (each lookup then resolves it, and
+    /// reports that).
+    addresses: Option<direct_monotonic::Reader<'a>>,
+    /// The address at a rank already read (the last document's end), so a
+    /// forward scan reads one address per document.
+    next_address: Option<(i64, i64)>,
 }
 
 impl<'a> SortedNumericReader<'a> {
@@ -2170,11 +2243,18 @@ impl<'a> SortedNumericReader<'a> {
             })
         };
         let fast = FastDense::values(data, numeric);
+        let addresses = entry.addresses.as_ref().and_then(|addrs| {
+            region(data, addrs.offset, addrs.length)
+                .ok()
+                .map(|r| direct_monotonic::Reader::new(r, &addrs.meta))
+        });
         Self {
             data,
             entry,
             docs,
             fast,
+            addresses,
+            next_address: None,
         }
     }
 
@@ -2220,12 +2300,30 @@ impl<'a> SortedNumericReader<'a> {
                 });
             }
             Some(addrs) => {
-                let addr_region = region(self.data, addrs.offset, addrs.length)?;
-                let start = direct_monotonic::get(addr_region, &addrs.meta, rank)?;
-                // ARITH: `rank` is a doc id or an `IndexedDISI` ordinal, both
-                // `i32`-bounded, so `rank + 1` cannot overflow.
-                #[allow(clippy::arithmetic_side_effects)]
-                let end = direct_monotonic::get(addr_region, &addrs.meta, rank + 1)?;
+                let (start, end) = match &self.addresses {
+                    // ARITH: `rank` is a doc id or an `IndexedDISI` ordinal,
+                    // both `i32`-bounded, so `rank + 1` cannot overflow.
+                    #[allow(clippy::arithmetic_side_effects)]
+                    Some(reader) => {
+                        // The previous document's end is this one's start
+                        // when the ranks run on (a forward scan).
+                        let start = match self.next_address {
+                            Some((r, address)) if r == rank => address,
+                            _ => reader.get(rank)?,
+                        };
+                        let end = reader.get(rank + 1)?;
+                        self.next_address = Some((rank + 1, end));
+                        (start, end)
+                    }
+                    None => {
+                        let addr_region = region(self.data, addrs.offset, addrs.length)?;
+                        let start = direct_monotonic::get(addr_region, &addrs.meta, rank)?;
+                        // ARITH: as above.
+                        #[allow(clippy::arithmetic_side_effects)]
+                        let end = direct_monotonic::get(addr_region, &addrs.meta, rank + 1)?;
+                        (start, end)
+                    }
+                };
                 // Same bound as `sorted_numeric_values`: the range must lie in
                 // the flat value array, or a constant-encoded field would
                 // "decode" an address-chosen number of values.
@@ -2237,14 +2335,23 @@ impl<'a> SortedNumericReader<'a> {
                         num_values: numeric.num_values,
                     });
                 }
-                for i in start..end {
-                    let fast = i32::try_from(i)
-                        .ok()
-                        .and_then(|i| self.fast.as_ref()?.get(i));
-                    out.push(match fast {
-                        Some(v) => v,
-                        None => decode_value(self.data, numeric, i)?,
-                    });
+                // `end <= num_values`, so every index is an `i32` whenever
+                // `end` is; each value through the resolved values array
+                // when its shape allows, decoded in full otherwise.
+                match (&self.fast, i32::try_from(end)) {
+                    (Some(fast), Ok(_)) => {
+                        for i in start..end {
+                            out.push(match fast.get(i as i32) {
+                                Some(v) => v,
+                                None => decode_value(self.data, numeric, i)?,
+                            });
+                        }
+                    }
+                    _ => {
+                        for i in start..end {
+                            out.push(decode_value(self.data, numeric, i)?);
+                        }
+                    }
                 }
             }
         }
@@ -3844,44 +3951,40 @@ fn write_dense_sorted_set_entry_body(
     data: &mut Vec<u8>,
     values: &[Vec<Vec<u8>>],
 ) {
-    let mut dict: Vec<Vec<u8>> = values.iter().flatten().cloned().collect();
-    dict.sort_unstable();
-    dict.dedup();
+    let all_values: Vec<&[u8]> = values.iter().flatten().map(Vec::as_slice).collect();
+    let (dict, value_ords) = sorted_dict_and_ords(&all_values);
 
-    let per_doc_ords: Vec<Vec<i64>> = values
-        .iter()
-        .map(|per_doc| {
-            let mut ords: Vec<i64> = per_doc
-                .iter()
-                .map(|v| dict.binary_search(v).unwrap() as i64)
-                .collect();
-            ords.sort_unstable();
-            ords.dedup();
-            ords
-        })
-        .collect();
+    // Each document's ordinals, ascending and distinct, one run after
+    // another; `ends[d + 1]` is where document `d`'s run ends.
+    let mut flat: Vec<i64> = Vec::with_capacity(value_ords.len());
+    let mut ends: Vec<i64> = Vec::with_capacity(values.len().saturating_add(1));
+    ends.push(0);
+    let mut all_single = true;
+    let mut doc_ords: Vec<i64> = Vec::new();
+    let mut rest = value_ords.as_slice();
+    for per_doc in values {
+        let (this_doc, tail) = rest.split_at(per_doc.len().min(rest.len()));
+        rest = tail;
+        doc_ords.clear();
+        doc_ords.extend_from_slice(this_doc);
+        doc_ords.sort_unstable();
+        doc_ords.dedup();
+        all_single &= doc_ords.len() == 1;
+        flat.extend_from_slice(&doc_ords);
+        ends.push(flat.len() as i64);
+    }
 
-    let num_docs_with_field = per_doc_ords.len() as i32;
-    let all_single = per_doc_ords.iter().all(|ords| ords.len() == 1);
+    let num_docs_with_field = values.len() as i32;
 
     if all_single {
         meta.push(0); // multiValued = false: plain SORTED shape.
-        let single_ords: Vec<i64> = per_doc_ords.iter().map(|ords| ords[0]).collect();
-        write_dense_numeric_entry_body(meta, data, &single_ords);
+        write_dense_numeric_entry_body(meta, data, &flat);
     } else {
         meta.push(1); // multiValued = true.
-        let flat: Vec<i64> = per_doc_ords.iter().flatten().copied().collect();
         write_dense_numeric_entry_body(meta, data, &flat);
 
         meta.write_i32(num_docs_with_field);
         if num_docs_with_field as i64 != flat.len() as i64 {
-            let mut end = 0i64;
-            let mut ends: Vec<i64> = Vec::with_capacity(per_doc_ords.len() + 1);
-            ends.push(0);
-            for ords in &per_doc_ords {
-                end += ords.len() as i64;
-                ends.push(end);
-            }
             let block_shift = DIRECT_MONOTONIC_BLOCK_SHIFT;
             let (addr_meta, addr_data) = direct_monotonic::write(&ends, block_shift);
             let addresses_offset = data.len() as i64;
@@ -4121,8 +4224,10 @@ fn write_numeric_values_body(meta: &mut Vec<u8>, data: &mut Vec<u8>, values: &[i
     }
 
     // Distinct-value set, capped at 256 entries (table compression's max
-    // table size), same as Java's `uniqueValues`.
-    let mut unique: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+    // table size), same as Java's `uniqueValues` -- a hash set, as Java's
+    // `LongHashSet`; sorted only if it becomes the table.
+    let mut unique: HashSet<i64, BuildHasherDefault<SetHasher>> =
+        HashSet::with_capacity_and_hasher(512, BuildHasherDefault::default());
     let mut unique_tracked = true;
     for &v in values {
         if !unique_tracked {
@@ -4154,7 +4259,8 @@ fn write_numeric_values_body(meta: &mut Vec<u8>, data: &mut Vec<u8>, values: &[i
     };
 
     let (bits_per_value, min, gcd, table): (u8, i64, i64, Option<Vec<i64>>) = if use_table {
-        let sorted_unique: Vec<i64> = unique.into_iter().collect();
+        let mut sorted_unique: Vec<i64> = unique.into_iter().collect();
+        sorted_unique.sort_unstable();
         let bpv = direct_reader::unsigned_bits_required(sorted_unique.len() as i64 - 1);
         (bpv, 0, 1, Some(sorted_unique))
     } else if do_blocks {
@@ -4658,7 +4764,8 @@ fn common_prefix_len(a: &[u8], b: &[u8]) -> usize {
 // exercise both claims rather than leaving them as prose. Everything else is
 // a `Vec` length or an offset recorded from an earlier `data.len()`.
 #[allow(clippy::arithmetic_side_effects)]
-fn write_terms_dict(meta: &mut Vec<u8>, data: &mut Vec<u8>, terms: &[Vec<u8>]) {
+fn write_terms_dict<T: AsRef<[u8]>>(meta: &mut Vec<u8>, data: &mut Vec<u8>, terms: &[T]) {
+    let terms: Vec<&[u8]> = terms.iter().map(AsRef::as_ref).collect();
     let size = terms.len() as i64;
     meta.write_vlong(size);
     meta.write_i32(TERMS_DICT_DIRECT_MONOTONIC_BLOCK_SHIFT as i32);
@@ -4829,15 +4936,35 @@ pub fn write_single_dense_sorted_field(
 /// only the present docs' terms, in doc-id order, so the returned `ords`
 /// align with those docs' *ranks*, exactly what
 /// [`write_sparse_numeric_entry_body`] expects.
-fn build_sorted_dict_and_ords(values: &[Vec<u8>]) -> (Vec<Vec<u8>>, Vec<i64>) {
-    let mut dict: Vec<Vec<u8>> = values.to_vec();
-    dict.sort_unstable();
-    dict.dedup();
+fn build_sorted_dict_and_ords(values: &[Vec<u8>]) -> (Vec<&[u8]>, Vec<i64>) {
+    let values: Vec<&[u8]> = values.iter().map(Vec::as_slice).collect();
+    sorted_dict_and_ords(&values)
+}
 
-    let ords: Vec<i64> = values
+/// [`build_sorted_dict_and_ords`] over borrowed values, as
+/// `SortedDocValuesWriter` builds it: the distinct values hashed in first
+/// (its `BytesRefHash`), only those sorted, every value then numbered by its
+/// distinct value's place -- no value copied, none searched for.
+fn sorted_dict_and_ords<'v>(values: &[&'v [u8]]) -> (Vec<&'v [u8]>, Vec<i64>) {
+    let mut ids: HashMap<&[u8], u32, BuildHasherDefault<SetHasher>> = HashMap::default();
+    let mut distinct: Vec<&[u8]> = Vec::new();
+    let value_ids: Vec<u32> = values
         .iter()
-        .map(|v| dict.binary_search(v).unwrap() as i64)
+        .map(|&v| {
+            *ids.entry(v).or_insert_with(|| {
+                distinct.push(v);
+                u32::try_from(distinct.len().saturating_sub(1)).unwrap_or(u32::MAX)
+            })
+        })
         .collect();
+    let mut order: Vec<usize> = (0..distinct.len()).collect();
+    order.sort_unstable_by(|&a, &b| distinct[a].cmp(distinct[b]));
+    let mut ord_of = vec![0i64; distinct.len()];
+    for (ord, &id) in order.iter().enumerate() {
+        ord_of[id] = ord as i64;
+    }
+    let dict = order.iter().map(|&id| distinct[id]).collect();
+    let ords = value_ids.iter().map(|&id| ord_of[id as usize]).collect();
     (dict, ords)
 }
 
@@ -9824,7 +9951,7 @@ mod tests {
         assert!(terms_dict::TermsDict::open(&data, &no_index).is_err());
         // An empty dictionary has no term to land on.
         let (mut meta, mut data) = (Vec::new(), Vec::new());
-        write_terms_dict(&mut meta, &mut data, &[]);
+        write_terms_dict::<Vec<u8>>(&mut meta, &mut data, &[]);
         let empty = terms_dict::read_term_dict_entry(&mut SliceInput::new(&meta)).unwrap();
         if let Ok(mut d) = terms_dict::TermsDict::open(&data, &empty) {
             assert_eq!(d.seek_ceil(b"a").unwrap(), SeekStatus::End);
@@ -9986,6 +10113,13 @@ mod tests {
             assert_eq!(got, dense_multi[doc as usize], "doc {doc}");
         }
         assert!(r.values(5000, &mut got).is_err() || got.is_empty());
+        // Consecutive documents (each start the previous end, cached), then
+        // steps back and over (looked up afresh).
+        let mut r = SortedNumericReader::new(&ddvd, dentry);
+        for doc in (10..40).chain([12, 13, 5, 4999, 0]) {
+            r.values(doc, &mut got).unwrap();
+            assert_eq!(got, dense_multi[doc as usize], "doc {doc}");
+        }
         for (lo, hi) in [(0, 5000), (123, 4567)] {
             let mut seen = Vec::new();
             SortedNumericReader::new(&ddvd, dentry)
@@ -10080,6 +10214,18 @@ mod tests {
         let mut r = BinaryReader::new(&bdvd, bentry);
         for doc in (0..3000).step_by(11).chain((0..3000).rev().step_by(17)) {
             assert_eq!(r.value(doc).unwrap(), Some(&dense_bins[doc as usize][..]));
+        }
+
+        // BINARY, dense and of one length: addressed by `doc * length`.
+        let fixed: Vec<Vec<u8>> = (0..3000)
+            .map(|d| format!("f{}", d % 10).into_bytes())
+            .collect();
+        let (fdvm, fdvd, _) = write_single_dense_binary_field(0, &fixed, 3000, &id, "").unwrap();
+        let (_, fmeta) = parse_meta(&fdvm, &id, "", &binary_field_infos()).unwrap();
+        let fentry = fmeta.binary_entry(0).unwrap();
+        let mut r = BinaryReader::new(&fdvd, fentry);
+        for doc in [0, 1, 2999, 1234] {
+            assert_eq!(r.value(doc).unwrap(), Some(&fixed[doc as usize][..]));
         }
 
         // BINARY, sparse.

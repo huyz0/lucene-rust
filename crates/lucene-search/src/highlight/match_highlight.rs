@@ -22,7 +22,7 @@ use std::sync::Arc;
 use lucene_analysis::{Analyzer, TokenStream};
 use lucene_codecs::field_infos::IndexOptions;
 
-use super::{Error, Result, WordBreakIterator};
+use super::{BreakKind, Error, Result, RuleBreakIterator};
 use crate::directory_reader::DirectoryReader;
 use crate::index_searcher::IndexSearcher;
 use crate::matches::{BoxMatchesIterator, MatchesIterator};
@@ -110,14 +110,14 @@ pub trait PassageAdjuster {
 /// (`BreakIterator.getWordInstance(Locale.ROOT)`) without losing a marker.
 pub struct BreakIteratorShrinkingAdjuster {
     value: Vec<u16>,
-    bi: WordBreakIterator,
+    bi: RuleBreakIterator,
 }
 
 impl Default for BreakIteratorShrinkingAdjuster {
     fn default() -> Self {
         BreakIteratorShrinkingAdjuster {
             value: Vec::new(),
-            bi: WordBreakIterator::from_utf16(Vec::new()),
+            bi: RuleBreakIterator::from_utf16(BreakKind::Word, Vec::new()),
         }
     }
 }
@@ -129,7 +129,7 @@ fn is_whitespace_unit(u: u16) -> bool {
 impl PassageAdjuster for BreakIteratorShrinkingAdjuster {
     fn current_value(&mut self, value: &[u16]) {
         self.value = value.to_vec();
-        self.bi = WordBreakIterator::from_utf16(value.to_vec());
+        self.bi = RuleBreakIterator::from_utf16(BreakKind::Word, value.to_vec());
     }
 
     fn adjust(&mut self, passage: &Passage) -> OffsetRange {
@@ -1245,7 +1245,9 @@ impl MatchRegionRetriever {
 }
 
 /// `StoredFieldsVisitor.addField`.
-fn stored_string_value(value: &lucene_codecs::stored_fields::FieldValue) -> Option<String> {
+pub(crate) fn stored_string_value(
+    value: &lucene_codecs::stored_fields::FieldValue,
+) -> Option<String> {
     use lucene_codecs::stored_fields::FieldValue;
     match value {
         FieldValue::String(s) => Some(s.clone()),

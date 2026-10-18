@@ -10,7 +10,7 @@ use std::cmp::Ordering;
 
 use lucene_codecs::fst::{ByteSequenceOutputs, Pair, PairOutputs, PositiveIntOutputs};
 use lucene_codecs::fst_compiler::FstOutputs;
-use lucene_codecs::fst_util::{self, TopNSearcher, TopResults, TypedFst};
+use lucene_codecs::fst_util::{self, FstPath, TopNSearcher, TopResults, TypedFst};
 
 fn dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data/fst_util")
@@ -93,7 +93,7 @@ fn replay<O: FstOutputs>(
                 let (arc, out) = walk(f, &unhex(p[1])).expect("prefix walk");
                 let mut s = TopNSearcher::new(f, 4, 12, cmp.clone());
                 let mut calls = 0u32;
-                s.accept_result = Some(Box::new(move |_: &[i32], _: &O::Value| {
+                s.accept_result = Some(Box::new(move |_: &FstPath<O::Value>| {
                     let keep = calls & 1 == 0;
                     calls += 1;
                     keep

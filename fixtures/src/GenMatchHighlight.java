@@ -145,35 +145,43 @@ public class GenMatchHighlight {
     }
     Files.writeString(out.resolve("words.tsv"), words.toString(), StandardCharsets.UTF_8);
 
-    // random strings over an alphabet of every class of character the word rules tell apart: all
-    // boundaries by next(), then for every offset isBoundary / following / preceding on a fresh
-    // iterator, then the same questions asked of one iterator in a shuffled order
     String[] alphabet = {
       "a", "Z", "q", "\u00e9", "\u65e5", "\u3005", "\u3042", "\u30a2", "1", "7", "\u0663", ".", ",", "'", "\"", "-", "_",
       "%", "$", "#", "&", " ", " ", "\t", "\n", "\r", "\f", "\u0301", "\u00ad", "\u200b", "\u3099", "\u30fb", "\u30fc",
       ":", "!", "\u20ac", "\u0964", "\u2028", "\u00a0", "\u066b", "\u00a2", "@", "\u0000", "\ud83d\ude00", "\ud835\udc00",
       "\ud801\udc00", "\ud835\udfce", "\u0e01", "\uac00", "\u1100", "\ud800", "\udc00", "\u0903", "(", "/"
     };
-    java.util.Random rnd = new java.util.Random(20251016L);
+    Files.writeString(out.resolve("wordfuzz.tsv"), fuzz(() -> BreakIterator.getWordInstance(Locale.ROOT), alphabet, 20251016L), StandardCharsets.UTF_8);
+    String[] sentenceAlphabet = {
+      "a", "B", "z", "\u00e9", "\u65e5", "1", "9", ".", "!", "?", ",", "'", "\"", " ", " ", "\n", "\t", "\r",
+      "\u2028", "\u2029", "\u3002", "\uff0e", "\uff01", "\uff1f", "\u0964", "(", ")", "[", "]", "\u201c", "\u201d",
+      "\u00ab", "\u00bb", "\u0301", "\u200b", "\u00a0", "-", ":", ";", "\ud83d\ude00", "\ud801\udc00", "\u0663", "\u3042", "\u01c5", "\u02b0"
+    };
+    Files.writeString(out.resolve("sentencefuzz.tsv"), fuzz(() -> BreakIterator.getSentenceInstance(Locale.ROOT), sentenceAlphabet, 77L), StandardCharsets.UTF_8);
+  }
+
+  static String fuzz(java.util.function.Supplier<BreakIterator> mk, String[] alphabet, long seed) {
+    java.util.Random rnd = new java.util.Random(seed);
     StringBuilder fuzz = new StringBuilder();
+    BreakIterator shared = mk.get();
     for (int n = 0; n < 4000; n++) {
       StringBuilder sb = new StringBuilder();
       int len = rnd.nextInt(n < 200 ? 4 : 22);
       for (int i = 0; i < len; i++) sb.append(alphabet[rnd.nextInt(alphabet.length)]);
       String text = sb.toString();
-      BreakIterator it = BreakIterator.getWordInstance(Locale.ROOT);
+      BreakIterator it = mk.get();
       it.setText(text);
       List<String> next = new ArrayList<>();
       for (int b = it.first(); b != BreakIterator.DONE; b = it.next()) next.add(Integer.toString(b));
       List<String> fresh = new ArrayList<>();
       for (int off = 0; off <= text.length(); off++) {
-        BreakIterator f = BreakIterator.getWordInstance(Locale.ROOT);
+        BreakIterator f = mk.get();
         f.setText(text);
         boolean isb = f.isBoundary(off);
-        BreakIterator g = BreakIterator.getWordInstance(Locale.ROOT);
+        BreakIterator g = mk.get();
         g.setText(text);
         int fol = g.following(off);
-        BreakIterator h = BreakIterator.getWordInstance(Locale.ROOT);
+        BreakIterator h = mk.get();
         h.setText(text);
         int pre = h.preceding(off);
         fresh.add(off + ":" + isb + "," + fol + "," + pre);
@@ -181,7 +189,6 @@ public class GenMatchHighlight {
       List<Integer> order = new ArrayList<>();
       for (int off = 0; off <= text.length(); off++) order.add(off);
       java.util.Collections.shuffle(order, rnd);
-      BreakIterator shared = BreakIterator.getWordInstance(Locale.ROOT);
       shared.setText(text);
       List<String> seq = new ArrayList<>();
       for (int off : order) {
@@ -193,6 +200,6 @@ public class GenMatchHighlight {
       fuzz.append(esc(text)).append((char) 9).append(String.join(",", next)).append((char) 9)
           .append(String.join(" ", fresh)).append((char) 9).append(String.join(" ", seq)).append((char) 10);
     }
-    Files.writeString(out.resolve("wordfuzz.tsv"), fuzz.toString(), StandardCharsets.UTF_8);
+    return fuzz.toString();
   }
 }

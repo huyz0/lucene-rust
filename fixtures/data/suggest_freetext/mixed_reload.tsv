@@ -1,0 +1,897 @@
+the	1	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+the	3	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+the	10	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+the 	1	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+the 	3	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+the 	10	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+th	1	R	the979473136657144320
+th	3	R	the979473136657144320that81622761388095360
+th	10	R	the979473136657144320that81622761388095360
+the quick	1	R	quick261192836441905184
+the quick	3	R	quick261192836441905184
+the quick	10	R	quick261192836441905184
+the quick 	1	R	quick|brown1844674407370955264
+the quick 	3	R	quick|brown1844674407370955264quick|quick922337203685477632quick|breakfast461168601842738816
+the quick 	10	R	quick|brown1844674407370955264quick|quick922337203685477632quick|breakfast461168601842738816quick|red461168601842738816
+the quic	1	R	quick261192836441905184
+the quic	3	R	quick261192836441905184
+the quic	10	R	quick261192836441905184
+the quick brown	1	R	quick|brown1844674407370955264
+the quick brown	3	R	quick|brown1844674407370955264
+the quick brown	10	R	quick|brown1844674407370955264
+the quick brown 	1	R	quick|brown|fox4611686018427387904
+the quick brown 	3	R	quick|brown|fox4611686018427387904quick|brown|dog2305843009213693952
+the quick brown 	10	R	quick|brown|fox4611686018427387904quick|brown|dog2305843009213693952
+the quick brow	1	R	quick|brown1844674407370955264
+the quick brow	3	R	quick|brown1844674407370955264
+the quick brow	10	R	quick|brown1844674407370955264
+the quick brown fox	1	R	quick|brown|fox4611686018427387904
+the quick brown fox	3	R	quick|brown|fox4611686018427387904
+the quick brown fox	10	R	quick|brown|fox4611686018427387904
+the quick brown fox 	1	R	brown|fox|jumps4611686018427387904
+the quick brown fox 	3	R	brown|fox|jumps4611686018427387904brown|fox|runs4611686018427387904
+the quick brown fox 	10	R	brown|fox|jumps4611686018427387904brown|fox|runs4611686018427387904
+the quick brown fo	1	R	quick|brown|fox4611686018427387904
+the quick brown fo	3	R	quick|brown|fox4611686018427387904
+the quick brown fo	10	R	quick|brown|fox4611686018427387904
+the quick brown fox jumps	1	R	brown|fox|jumps4611686018427387904
+the quick brown fox jumps	3	R	brown|fox|jumps4611686018427387904
+the quick brown fox jumps	10	R	brown|fox|jumps4611686018427387904
+the quick brown fox jumps 	1	R	fox|jumps|high4611686018427387904
+the quick brown fox jumps 	3	R	fox|jumps|high4611686018427387904fox|jumps|over4611686018427387904
+the quick brown fox jumps 	10	R	fox|jumps|high4611686018427387904fox|jumps|over4611686018427387904
+the quick brown fox jump	1	R	brown|fox|jumps4611686018427387904
+the quick brown fox jump	3	R	brown|fox|jumps4611686018427387904
+the quick brown fox jump	10	R	brown|fox|jumps4611686018427387904
+the quick brown fox jumps over	1	R	fox|jumps|over4611686018427387904
+the quick brown fox jumps over	3	R	fox|jumps|over4611686018427387904
+the quick brown fox jumps over	10	R	fox|jumps|over4611686018427387904
+the quick brown fox jumps over 	1	R	jumps|over|the9223372036854775807
+the quick brown fox jumps over 	3	R	jumps|over|the9223372036854775807
+the quick brown fox jumps over 	10	R	jumps|over|the9223372036854775807
+the quick brown fox jumps ove	1	R	fox|jumps|over4611686018427387904
+the quick brown fox jumps ove	3	R	fox|jumps|over4611686018427387904
+the quick brown fox jumps ove	10	R	fox|jumps|over4611686018427387904
+the quick brown fox jumps over the	1	R	
+the quick brown fox jumps over the	3	R	
+the quick brown fox jumps over the	10	R	
+the quick brown fox jumps over the 	1	R	
+the quick brown fox jumps over the 	3	R	
+the quick brown fox jumps over the 	10	R	
+the quick brown fox jumps over th	1	R	jumps|over|the9223372036854775807
+the quick brown fox jumps over th	3	R	jumps|over|the9223372036854775807that13059641822095260
+the quick brown fox jumps over th	10	R	jumps|over|the9223372036854775807that13059641822095260
+the quick brown fox jumps over the lazy	1	R	lazy39178925466285784
+the quick brown fox jumps over the lazy	3	R	lazy39178925466285784
+the quick brown fox jumps over the lazy	10	R	lazy39178925466285784
+the quick brown fox jumps over the lazy 	1	R	lazy|dog2459565876494606848
+the quick brown fox jumps over the lazy 	3	R	lazy|dog2459565876494606848lazy|cat1229782938247303424
+the quick brown fox jumps over the lazy 	10	R	lazy|dog2459565876494606848lazy|cat1229782938247303424
+the quick brown fox jumps over the laz	1	R	lazy39178925466285784
+the quick brown fox jumps over the laz	3	R	lazy39178925466285784
+the quick brown fox jumps over the laz	10	R	lazy39178925466285784
+the quick brown fox jumps over the lazy dog	1	R	lazy|dog2459565876494606848
+the quick brown fox jumps over the lazy dog	3	R	lazy|dog2459565876494606848
+the quick brown fox jumps over the lazy dog	10	R	lazy|dog2459565876494606848
+the quick brown fox jumps over the lazy dog 	1	R	lazy|dog|sleeps4611686018427387904
+the quick brown fox jumps over the lazy dog 	3	R	lazy|dog|sleeps4611686018427387904dog|barks1229782938247303424
+the quick brown fox jumps over the lazy dog 	10	R	lazy|dog|sleeps4611686018427387904dog|barks1229782938247303424
+the quick brown fox jumps over the lazy do	1	R	lazy|dog2459565876494606848
+the quick brown fox jumps over the lazy do	3	R	lazy|dog2459565876494606848do26119283644190520
+the quick brown fox jumps over the lazy do	10	R	lazy|dog2459565876494606848do26119283644190520
+the quick brown fox runs	1	R	brown|fox|runs4611686018427387904
+the quick brown fox runs	3	R	brown|fox|runs4611686018427387904
+the quick brown fox runs	10	R	brown|fox|runs4611686018427387904
+the quick brown fox runs 	1	R	fox|runs|away9223372036854775807
+the quick brown fox runs 	3	R	fox|runs|away9223372036854775807
+the quick brown fox runs 	10	R	fox|runs|away9223372036854775807
+the quick brown fox run	1	R	brown|fox|runs4611686018427387904
+the quick brown fox run	3	R	brown|fox|runs4611686018427387904
+the quick brown fox run	10	R	brown|fox|runs4611686018427387904
+the quick brown fox runs away	1	R	fox|runs|away9223372036854775807
+the quick brown fox runs away	3	R	fox|runs|away9223372036854775807
+the quick brown fox runs away	10	R	fox|runs|away9223372036854775807
+the quick brown fox runs away 	1	R	
+the quick brown fox runs away 	3	R	
+the quick brown fox runs away 	10	R	
+the quick brown fox runs awa	1	R	fox|runs|away9223372036854775807
+the quick brown fox runs awa	3	R	fox|runs|away9223372036854775807
+the quick brown fox runs awa	10	R	fox|runs|away9223372036854775807
+the quick red	1	R	quick|red461168601842738816
+the quick red	3	R	quick|red461168601842738816
+the quick red	10	R	quick|red461168601842738816
+the quick red 	1	R	quick|red|fox9223372036854775807
+the quick red 	3	R	quick|red|fox9223372036854775807
+the quick red 	10	R	quick|red|fox9223372036854775807
+the quick re	1	R	quick|red461168601842738816
+the quick re	3	R	quick|red461168601842738816
+the quick re	10	R	quick|red461168601842738816
+the quick red fox	1	R	quick|red|fox9223372036854775807
+the quick red fox	3	R	quick|red|fox9223372036854775807
+the quick red fox	10	R	quick|red|fox9223372036854775807
+the quick red fox 	1	R	red|fox|jumps9223372036854775807
+the quick red fox 	3	R	red|fox|jumps9223372036854775807fox|runs922337203685477632
+the quick red fox 	10	R	red|fox|jumps9223372036854775807fox|runs922337203685477632
+the quick red fo	1	R	quick|red|fox9223372036854775807
+the quick red fo	3	R	quick|red|fox9223372036854775807
+the quick red fo	10	R	quick|red|fox9223372036854775807
+the quick red fox jumps	1	R	red|fox|jumps9223372036854775807
+the quick red fox jumps	3	R	red|fox|jumps9223372036854775807
+the quick red fox jumps	10	R	red|fox|jumps9223372036854775807
+the quick red fox jumps 	1	R	fox|jumps|high4611686018427387904
+the quick red fox jumps 	3	R	fox|jumps|high4611686018427387904fox|jumps|over4611686018427387904
+the quick red fox jumps 	10	R	fox|jumps|high4611686018427387904fox|jumps|over4611686018427387904
+the quick red fox jump	1	R	red|fox|jumps9223372036854775807
+the quick red fox jump	3	R	red|fox|jumps9223372036854775807
+the quick red fox jump	10	R	red|fox|jumps9223372036854775807
+the quick red fox jumps high	1	R	fox|jumps|high4611686018427387904
+the quick red fox jumps high	3	R	fox|jumps|high4611686018427387904
+the quick red fox jumps high	10	R	fox|jumps|high4611686018427387904
+the quick red fox jumps high 	1	R	
+the quick red fox jumps high 	3	R	
+the quick red fox jumps high 	10	R	
+the quick red fox jumps hig	1	R	fox|jumps|high4611686018427387904
+the quick red fox jumps hig	3	R	fox|jumps|high4611686018427387904
+the quick red fox jumps hig	10	R	fox|jumps|high4611686018427387904
+a	1	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+a	3	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+a	10	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+a 	1	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+a 	3	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+a 	10	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+a quick	1	R	quick261192836441905184
+a quick	3	R	quick261192836441905184
+a quick	10	R	quick261192836441905184
+a quick 	1	R	quick|brown1844674407370955264
+a quick 	3	R	quick|brown1844674407370955264quick|quick922337203685477632quick|breakfast461168601842738816
+a quick 	10	R	quick|brown1844674407370955264quick|quick922337203685477632quick|breakfast461168601842738816quick|red461168601842738816
+a quic	1	R	quick261192836441905184
+a quic	3	R	quick261192836441905184
+a quic	10	R	quick261192836441905184
+a quick brown	1	R	quick|brown1844674407370955264
+a quick brown	3	R	quick|brown1844674407370955264
+a quick brown	10	R	quick|brown1844674407370955264
+a quick brown 	1	R	quick|brown|fox4611686018427387904
+a quick brown 	3	R	quick|brown|fox4611686018427387904quick|brown|dog2305843009213693952
+a quick brown 	10	R	quick|brown|fox4611686018427387904quick|brown|dog2305843009213693952
+a quick brow	1	R	quick|brown1844674407370955264
+a quick brow	3	R	quick|brown1844674407370955264
+a quick brow	10	R	quick|brown1844674407370955264
+a quick brown dog	1	R	quick|brown|dog2305843009213693952
+a quick brown dog	3	R	quick|brown|dog2305843009213693952
+a quick brown dog	10	R	quick|brown|dog2305843009213693952
+a quick brown dog 	1	R	brown|dog|barks9223372036854775807
+a quick brown dog 	3	R	brown|dog|barks9223372036854775807dog|sleeps1229782938247303424
+a quick brown dog 	10	R	brown|dog|barks9223372036854775807dog|sleeps1229782938247303424
+a quick brown do	1	R	quick|brown|dog2305843009213693952
+a quick brown do	3	R	quick|brown|dog2305843009213693952do26119283644190520
+a quick brown do	10	R	quick|brown|dog2305843009213693952do26119283644190520
+a quick brown dog barks	1	R	brown|dog|barks9223372036854775807
+a quick brown dog barks	3	R	brown|dog|barks9223372036854775807
+a quick brown dog barks	10	R	brown|dog|barks9223372036854775807
+a quick brown dog barks 	1	R	dog|barks|at9223372036854775807
+a quick brown dog barks 	3	R	dog|barks|at9223372036854775807
+a quick brown dog barks 	10	R	dog|barks|at9223372036854775807
+a quick brown dog bark	1	R	brown|dog|barks9223372036854775807
+a quick brown dog bark	3	R	brown|dog|barks9223372036854775807
+a quick brown dog bark	10	R	brown|dog|barks9223372036854775807
+a quick brown dog barks at	1	R	dog|barks|at9223372036854775807
+a quick brown dog barks at	3	R	dog|barks|at9223372036854775807
+a quick brown dog barks at	10	R	dog|barks|at9223372036854775807
+a quick brown dog barks at 	1	R	barks|at|the9223372036854775807
+a quick brown dog barks at 	3	R	barks|at|the9223372036854775807
+a quick brown dog barks at 	10	R	barks|at|the9223372036854775807
+a quick brown dog barks a	1	R	
+a quick brown dog barks a	3	R	
+a quick brown dog barks a	10	R	
+a quick brown dog barks at the	1	R	
+a quick brown dog barks at the	3	R	
+a quick brown dog barks at the	10	R	
+a quick brown dog barks at the 	1	R	
+a quick brown dog barks at the 	3	R	
+a quick brown dog barks at the 	10	R	
+a quick brown dog barks at th	1	R	barks|at|the9223372036854775807
+a quick brown dog barks at th	3	R	barks|at|the9223372036854775807that13059641822095260
+a quick brown dog barks at th	10	R	barks|at|the9223372036854775807that13059641822095260
+a quick brown dog barks at the fox	1	R	fox52238567288381040
+a quick brown dog barks at the fox	3	R	fox52238567288381040
+a quick brown dog barks at the fox	10	R	fox52238567288381040
+a quick brown dog barks at the fox 	1	R	fox|jumps1844674407370955264
+a quick brown dog barks at the fox 	3	R	fox|jumps1844674407370955264fox|runs922337203685477632
+a quick brown dog barks at the fox 	10	R	fox|jumps1844674407370955264fox|runs922337203685477632
+a quick brown dog barks at the fo	1	R	fox52238567288381040
+a quick brown dog barks at the fo	3	R	fox52238567288381040
+a quick brown dog barks at the fo	10	R	fox52238567288381040
+the lazy	1	R	lazy97947313665714448
+the lazy	3	R	lazy97947313665714448
+the lazy	10	R	lazy97947313665714448
+the lazy 	1	R	lazy|dog2459565876494606848
+the lazy 	3	R	lazy|dog2459565876494606848lazy|cat1229782938247303424
+the lazy 	10	R	lazy|dog2459565876494606848lazy|cat1229782938247303424
+the laz	1	R	lazy97947313665714448
+the laz	3	R	lazy97947313665714448
+the laz	10	R	lazy97947313665714448
+the lazy dog	1	R	lazy|dog2459565876494606848
+the lazy dog	3	R	lazy|dog2459565876494606848
+the lazy dog	10	R	lazy|dog2459565876494606848
+the lazy dog 	1	R	lazy|dog|sleeps4611686018427387904
+the lazy dog 	3	R	lazy|dog|sleeps4611686018427387904dog|barks1229782938247303424
+the lazy dog 	10	R	lazy|dog|sleeps4611686018427387904dog|barks1229782938247303424
+the lazy do	1	R	lazy|dog2459565876494606848
+the lazy do	3	R	lazy|dog2459565876494606848do26119283644190520
+the lazy do	10	R	lazy|dog2459565876494606848do26119283644190520
+the lazy dog sleeps	1	R	lazy|dog|sleeps4611686018427387904
+the lazy dog sleeps	3	R	lazy|dog|sleeps4611686018427387904
+the lazy dog sleeps	10	R	lazy|dog|sleeps4611686018427387904
+the lazy dog sleeps 	1	R	dog|sleeps|all9223372036854775807
+the lazy dog sleeps 	3	R	dog|sleeps|all9223372036854775807
+the lazy dog sleeps 	10	R	dog|sleeps|all9223372036854775807
+the lazy dog sleep	1	R	lazy|dog|sleeps4611686018427387904
+the lazy dog sleep	3	R	lazy|dog|sleeps4611686018427387904
+the lazy dog sleep	10	R	lazy|dog|sleeps4611686018427387904
+the lazy dog sleeps all	1	R	dog|sleeps|all9223372036854775807
+the lazy dog sleeps all	3	R	dog|sleeps|all9223372036854775807
+the lazy dog sleeps all	10	R	dog|sleeps|all9223372036854775807
+the lazy dog sleeps all 	1	R	sleeps|all|day4611686018427387904
+the lazy dog sleeps all 	3	R	sleeps|all|day4611686018427387904sleeps|all|night4611686018427387904
+the lazy dog sleeps all 	10	R	sleeps|all|day4611686018427387904sleeps|all|night4611686018427387904
+the lazy dog sleeps al	1	R	dog|sleeps|all9223372036854775807
+the lazy dog sleeps al	3	R	dog|sleeps|all9223372036854775807
+the lazy dog sleeps al	10	R	dog|sleeps|all9223372036854775807
+the lazy dog sleeps all day	1	R	sleeps|all|day4611686018427387904
+the lazy dog sleeps all day	3	R	sleeps|all|day4611686018427387904
+the lazy dog sleeps all day	10	R	sleeps|all|day4611686018427387904
+the lazy dog sleeps all day 	1	R	
+the lazy dog sleeps all day 	3	R	
+the lazy dog sleeps all day 	10	R	
+the lazy dog sleeps all da	1	R	sleeps|all|day4611686018427387904
+the lazy dog sleeps all da	3	R	sleeps|all|day4611686018427387904dark13059641822095260
+the lazy dog sleeps all da	10	R	sleeps|all|day4611686018427387904dark13059641822095260
+the lazy cat	1	R	lazy|cat1229782938247303424
+the lazy cat	3	R	lazy|cat1229782938247303424
+the lazy cat	10	R	lazy|cat1229782938247303424
+the lazy cat 	1	R	lazy|cat|sleeps9223372036854775807
+the lazy cat 	3	R	lazy|cat|sleeps9223372036854775807
+the lazy cat 	10	R	lazy|cat|sleeps9223372036854775807
+the lazy ca	1	R	lazy|cat1229782938247303424
+the lazy ca	3	R	lazy|cat1229782938247303424café13059641822095260
+the lazy ca	10	R	lazy|cat1229782938247303424café13059641822095260
+the lazy cat sleeps	1	R	lazy|cat|sleeps9223372036854775807
+the lazy cat sleeps	3	R	lazy|cat|sleeps9223372036854775807
+the lazy cat sleeps	10	R	lazy|cat|sleeps9223372036854775807
+the lazy cat sleeps 	1	R	cat|sleeps|all9223372036854775807
+the lazy cat sleeps 	3	R	cat|sleeps|all9223372036854775807
+the lazy cat sleeps 	10	R	cat|sleeps|all9223372036854775807
+the lazy cat sleep	1	R	lazy|cat|sleeps9223372036854775807
+the lazy cat sleep	3	R	lazy|cat|sleeps9223372036854775807
+the lazy cat sleep	10	R	lazy|cat|sleeps9223372036854775807
+the lazy cat sleeps all	1	R	cat|sleeps|all9223372036854775807
+the lazy cat sleeps all	3	R	cat|sleeps|all9223372036854775807
+the lazy cat sleeps all	10	R	cat|sleeps|all9223372036854775807
+the lazy cat sleeps all 	1	R	sleeps|all|day4611686018427387904
+the lazy cat sleeps all 	3	R	sleeps|all|day4611686018427387904sleeps|all|night4611686018427387904
+the lazy cat sleeps all 	10	R	sleeps|all|day4611686018427387904sleeps|all|night4611686018427387904
+the lazy cat sleeps al	1	R	cat|sleeps|all9223372036854775807
+the lazy cat sleeps al	3	R	cat|sleeps|all9223372036854775807
+the lazy cat sleeps al	10	R	cat|sleeps|all9223372036854775807
+the lazy cat sleeps all night	1	R	sleeps|all|night4611686018427387904
+the lazy cat sleeps all night	3	R	sleeps|all|night4611686018427387904
+the lazy cat sleeps all night	10	R	sleeps|all|night4611686018427387904
+the lazy cat sleeps all night 	1	R	
+the lazy cat sleeps all night 	3	R	
+the lazy cat sleeps all night 	10	R	
+the lazy cat sleeps all nigh	1	R	sleeps|all|night4611686018427387904
+the lazy cat sleeps all nigh	3	R	sleeps|all|night4611686018427387904
+the lazy cat sleeps all nigh	10	R	sleeps|all|night4611686018427387904
+purple	1	R	purple326491045552381440
+purple	3	R	purple326491045552381440
+purple	10	R	purple326491045552381440
+purple 	1	R	purple|mushroom6917529027641081856
+purple 	3	R	purple|mushroom6917529027641081856purple|mushrooms2305843009213693952
+purple 	10	R	purple|mushroom6917529027641081856purple|mushrooms2305843009213693952
+purpl	1	R	purple326491045552381440
+purpl	3	R	purple326491045552381440
+purpl	10	R	purple326491045552381440
+purple mushroom	1	R	purple|mushroom6917529027641081856
+purple mushroom	3	R	purple|mushroom6917529027641081856purple|mushrooms2305843009213693952
+purple mushroom	10	R	purple|mushroom6917529027641081856purple|mushrooms2305843009213693952
+purple mushroom 	1	R	purple|mushroom|soup9223372036854775807
+purple mushroom 	3	R	purple|mushroom|soup9223372036854775807
+purple mushroom 	10	R	purple|mushroom|soup9223372036854775807
+purple mushroo	1	R	purple|mushroom6917529027641081856
+purple mushroo	3	R	purple|mushroom6917529027641081856purple|mushrooms2305843009213693952
+purple mushroo	10	R	purple|mushroom6917529027641081856purple|mushrooms2305843009213693952
+purple mushroom soup	1	R	purple|mushroom|soup9223372036854775807
+purple mushroom soup	3	R	purple|mushroom|soup9223372036854775807
+purple mushroom soup	10	R	purple|mushroom|soup9223372036854775807
+purple mushroom soup 	1	R	mushroom|soup|is6148914691236516864
+purple mushroom soup 	3	R	mushroom|soup|is6148914691236516864
+purple mushroom soup 	10	R	mushroom|soup|is6148914691236516864
+purple mushroom sou	1	R	purple|mushroom|soup9223372036854775807
+purple mushroom sou	3	R	purple|mushroom|soup9223372036854775807
+purple mushroom sou	10	R	purple|mushroom|soup9223372036854775807
+purple mushroom soup is	1	R	
+purple mushroom soup is	3	R	
+purple mushroom soup is	10	R	
+purple mushroom soup is 	1	R	
+purple mushroom soup is 	3	R	
+purple mushroom soup is 	10	R	
+purple mushroom soup i	1	R	mushroom|soup|is6148914691236516864
+purple mushroom soup i	3	R	mushroom|soup|is6148914691236516864i13059641822095260in13059641822095260
+purple mushroom soup i	10	R	mushroom|soup|is6148914691236516864i13059641822095260in13059641822095260
+purple mushroom soup is good	1	R	good13059641822095260
+purple mushroom soup is good	3	R	good13059641822095260
+purple mushroom soup is good	10	R	good13059641822095260
+purple mushroom soup is good 	1	R	
+purple mushroom soup is good 	3	R	
+purple mushroom soup is good 	10	R	
+purple mushroom soup is goo	1	R	good13059641822095260
+purple mushroom soup is goo	3	R	good13059641822095260
+purple mushroom soup is goo	10	R	good13059641822095260
+purple mushroom soup is hot	1	R	hot13059641822095260
+purple mushroom soup is hot	3	R	hot13059641822095260
+purple mushroom soup is hot	10	R	hot13059641822095260
+purple mushroom soup is hot 	1	R	
+purple mushroom soup is hot 	3	R	
+purple mushroom soup is hot 	10	R	
+purple mushroom soup is ho	1	R	hot13059641822095260
+purple mushroom soup is ho	3	R	hot13059641822095260
+purple mushroom soup is ho	10	R	hot13059641822095260
+purple mushrooms	1	R	purple|mushrooms2305843009213693952
+purple mushrooms	3	R	purple|mushrooms2305843009213693952
+purple mushrooms	10	R	purple|mushrooms2305843009213693952
+purple mushrooms 	1	R	purple|mushrooms|grow9223372036854775807
+purple mushrooms 	3	R	purple|mushrooms|grow9223372036854775807
+purple mushrooms 	10	R	purple|mushrooms|grow9223372036854775807
+purple mushrooms grow	1	R	purple|mushrooms|grow9223372036854775807
+purple mushrooms grow	3	R	purple|mushrooms|grow9223372036854775807
+purple mushrooms grow	10	R	purple|mushrooms|grow9223372036854775807
+purple mushrooms grow 	1	R	mushrooms|grow|in9223372036854775807
+purple mushrooms grow 	3	R	mushrooms|grow|in9223372036854775807
+purple mushrooms grow 	10	R	mushrooms|grow|in9223372036854775807
+purple mushrooms gro	1	R	purple|mushrooms|grow9223372036854775807
+purple mushrooms gro	3	R	purple|mushrooms|grow9223372036854775807
+purple mushrooms gro	10	R	purple|mushrooms|grow9223372036854775807
+purple mushrooms grow in	1	R	mushrooms|grow|in9223372036854775807
+purple mushrooms grow in	3	R	mushrooms|grow|in9223372036854775807
+purple mushrooms grow in	10	R	mushrooms|grow|in9223372036854775807
+purple mushrooms grow in 	1	R	grow|in|the9223372036854775807
+purple mushrooms grow in 	3	R	grow|in|the9223372036854775807
+purple mushrooms grow in 	10	R	grow|in|the9223372036854775807
+purple mushrooms grow i	1	R	mushrooms|grow|in9223372036854775807
+purple mushrooms grow i	3	R	mushrooms|grow|in9223372036854775807is78357850932571568i13059641822095260
+purple mushrooms grow i	10	R	mushrooms|grow|in9223372036854775807is78357850932571568i13059641822095260
+purple mushrooms grow in the	1	R	
+purple mushrooms grow in the	3	R	
+purple mushrooms grow in the	10	R	
+purple mushrooms grow in the 	1	R	
+purple mushrooms grow in the 	3	R	
+purple mushrooms grow in the 	10	R	
+purple mushrooms grow in th	1	R	grow|in|the9223372036854775807
+purple mushrooms grow in th	3	R	grow|in|the9223372036854775807that13059641822095260
+purple mushrooms grow in th	10	R	grow|in|the9223372036854775807that13059641822095260
+purple mushrooms grow in the dark	1	R	dark13059641822095260
+purple mushrooms grow in the dark	3	R	dark13059641822095260
+purple mushrooms grow in the dark	10	R	dark13059641822095260
+purple mushrooms grow in the dark 	1	R	
+purple mushrooms grow in the dark 	3	R	
+purple mushrooms grow in the dark 	10	R	
+purple mushrooms grow in the dar	1	R	dark13059641822095260
+purple mushrooms grow in the dar	3	R	dark13059641822095260
+purple mushrooms grow in the dar	10	R	dark13059641822095260
+i	1	R	is489736568328572160
+i	3	R	is489736568328572160i81622761388095360in81622761388095360
+i	10	R	is489736568328572160i81622761388095360in81622761388095360
+i 	1	R	i|love9223372036854775807
+i 	3	R	i|love9223372036854775807
+i 	10	R	i|love9223372036854775807
+i love	1	R	i|love9223372036854775807
+i love	3	R	i|love9223372036854775807
+i love	10	R	i|love9223372036854775807
+i love 	1	R	i|love|purple9223372036854775807
+i love 	3	R	i|love|purple9223372036854775807
+i love 	10	R	i|love|purple9223372036854775807
+i lov	1	R	i|love9223372036854775807
+i lov	3	R	i|love9223372036854775807
+i lov	10	R	i|love9223372036854775807
+i love purple	1	R	i|love|purple9223372036854775807
+i love purple	3	R	i|love|purple9223372036854775807
+i love purple	10	R	i|love|purple9223372036854775807
+i love purple 	1	R	love|purple|mushroom9223372036854775807
+i love purple 	3	R	love|purple|mushroom9223372036854775807purple|mushrooms922337203685477632
+i love purple 	10	R	love|purple|mushroom9223372036854775807purple|mushrooms922337203685477632
+i love purpl	1	R	i|love|purple9223372036854775807
+i love purpl	3	R	i|love|purple9223372036854775807
+i love purpl	10	R	i|love|purple9223372036854775807
+i love purple mushroom	1	R	love|purple|mushroom9223372036854775807
+i love purple mushroom	3	R	love|purple|mushroom9223372036854775807purple|mushrooms922337203685477632
+i love purple mushroom	10	R	love|purple|mushroom9223372036854775807purple|mushrooms922337203685477632
+i love purple mushroom 	1	R	purple|mushroom|soup9223372036854775807
+i love purple mushroom 	3	R	purple|mushroom|soup9223372036854775807
+i love purple mushroom 	10	R	purple|mushroom|soup9223372036854775807
+i love purple mushroo	1	R	love|purple|mushroom9223372036854775807
+i love purple mushroo	3	R	love|purple|mushroom9223372036854775807purple|mushrooms922337203685477632
+i love purple mushroo	10	R	love|purple|mushroom9223372036854775807purple|mushrooms922337203685477632
+i love purple mushroom soup	1	R	purple|mushroom|soup9223372036854775807
+i love purple mushroom soup	3	R	purple|mushroom|soup9223372036854775807
+i love purple mushroom soup	10	R	purple|mushroom|soup9223372036854775807
+i love purple mushroom soup 	1	R	mushroom|soup|is6148914691236516864
+i love purple mushroom soup 	3	R	mushroom|soup|is6148914691236516864
+i love purple mushroom soup 	10	R	mushroom|soup|is6148914691236516864
+i love purple mushroom sou	1	R	purple|mushroom|soup9223372036854775807
+i love purple mushroom sou	3	R	purple|mushroom|soup9223372036854775807
+i love purple mushroom sou	10	R	purple|mushroom|soup9223372036854775807
+to	1	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+to	3	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+to	10	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+to 	1	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+to 	3	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+to 	10	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+t	1	R	the979473136657144320
+t	3	R	the979473136657144320to489736568328572160text163245522776190720
+t	10	R	the979473136657144320to489736568328572160text163245522776190720that81622761388095360
+to be	1	R	be130596418220952592
+to be	3	R	be130596418220952592
+to be	10	R	be130596418220952592
+to be 	1	R	be|is922337203685477632
+to be 	3	R	be|is922337203685477632be|or922337203685477632be|that922337203685477632
+to be 	10	R	be|is922337203685477632be|or922337203685477632be|that922337203685477632
+to b	1	R	be130596418220952592
+to b	3	R	be130596418220952592brown130596418220952592barks32649104555238148
+to b	10	R	be130596418220952592brown130596418220952592barks32649104555238148breakfast32649104555238148
+to be or	1	R	be|or922337203685477632
+to be or	3	R	be|or922337203685477632
+to be or	10	R	be|or922337203685477632
+to be or 	1	R	be|or|not9223372036854775807
+to be or 	3	R	be|or|not9223372036854775807
+to be or 	10	R	be|or|not9223372036854775807
+to be o	1	R	be|or922337203685477632
+to be o	3	R	be|or922337203685477632of39178925466285784over13059641822095260
+to be o	10	R	be|or922337203685477632of39178925466285784over13059641822095260
+to be or not	1	R	be|or|not9223372036854775807
+to be or not	3	R	be|or|not9223372036854775807
+to be or not	10	R	be|or|not9223372036854775807
+to be or not 	1	R	or|not|to9223372036854775807
+to be or not 	3	R	or|not|to9223372036854775807
+to be or not 	10	R	or|not|to9223372036854775807
+to be or no	1	R	be|or|not9223372036854775807
+to be or no	3	R	be|or|not9223372036854775807
+to be or no	10	R	be|or|not9223372036854775807
+to be or not to	1	R	
+to be or not to	3	R	
+to be or not to	10	R	
+to be or not to 	1	R	
+to be or not to 	3	R	
+to be or not to 	10	R	
+to be or not t	1	R	or|not|to9223372036854775807
+to be or not t	3	R	or|not|to9223372036854775807the156715701865143136text26119283644190520
+to be or not t	10	R	or|not|to9223372036854775807the156715701865143136text26119283644190520that13059641822095260
+to be or not to be	1	R	be52238567288381040
+to be or not to be	3	R	be52238567288381040
+to be or not to be	10	R	be52238567288381040
+to be or not to be 	1	R	be|is922337203685477632
+to be or not to be 	3	R	be|is922337203685477632be|or922337203685477632be|that922337203685477632
+to be or not to be 	10	R	be|is922337203685477632be|or922337203685477632be|that922337203685477632
+to be or not to b	1	R	be52238567288381040
+to be or not to b	3	R	be52238567288381040brown52238567288381040barks13059641822095260
+to be or not to b	10	R	be52238567288381040brown52238567288381040barks13059641822095260breakfast13059641822095260
+to be or not to be that	1	R	be|that922337203685477632
+to be or not to be that	3	R	be|that922337203685477632
+to be or not to be that	10	R	be|that922337203685477632
+to be or not to be that 	1	R	be|that|is9223372036854775807
+to be or not to be that 	3	R	be|that|is9223372036854775807
+to be or not to be that 	10	R	be|that|is9223372036854775807
+to be or not to be tha	1	R	be|that922337203685477632
+to be or not to be tha	3	R	be|that922337203685477632
+to be or not to be tha	10	R	be|that922337203685477632
+to be or not to be that is	1	R	
+to be or not to be that is	3	R	
+to be or not to be that is	10	R	
+to be or not to be that is 	1	R	
+to be or not to be that is 	3	R	
+to be or not to be that is 	10	R	
+to be or not to be that i	1	R	be|that|is9223372036854775807
+to be or not to be that i	3	R	be|that|is9223372036854775807i13059641822095260in13059641822095260
+to be or not to be that i	10	R	be|that|is9223372036854775807i13059641822095260in13059641822095260
+to be or not to be that is the	1	R	
+to be or not to be that is the	3	R	
+to be or not to be that is the	10	R	
+to be or not to be that is the 	1	R	
+to be or not to be that is the 	3	R	
+to be or not to be that is the 	10	R	
+to be or not to be that is th	1	R	the156715701865143136
+to be or not to be that is th	3	R	the156715701865143136that13059641822095260
+to be or not to be that is th	10	R	the156715701865143136that13059641822095260
+to be or not to be that is the question	1	R	question13059641822095260
+to be or not to be that is the question	3	R	question13059641822095260
+to be or not to be that is the question	10	R	question13059641822095260
+to be or not to be that is the question 	1	R	
+to be or not to be that is the question 	3	R	
+to be or not to be that is the question 	10	R	
+to be or not to be that is the questio	1	R	question13059641822095260
+to be or not to be that is the questio	3	R	question13059641822095260
+to be or not to be that is the questio	10	R	question13059641822095260
+to be is	1	R	
+to be is	3	R	
+to be is	10	R	
+to be is 	1	R	
+to be is 	3	R	
+to be is 	10	R	
+to be i	1	R	be|is922337203685477632
+to be i	3	R	be|is922337203685477632i13059641822095260in13059641822095260
+to be i	10	R	be|is922337203685477632i13059641822095260in13059641822095260
+to be is to	1	R	
+to be is to	3	R	
+to be is to	10	R	
+to be is to 	1	R	
+to be is to 	3	R	
+to be is to 	10	R	
+to be is t	1	R	the156715701865143136
+to be is t	3	R	the156715701865143136to78357850932571568text26119283644190520
+to be is t	10	R	the156715701865143136to78357850932571568text26119283644190520that13059641822095260
+to be is to do	1	R	dog39178925466285784
+to be is to do	3	R	dog39178925466285784do26119283644190520
+to be is to do	10	R	dog39178925466285784do26119283644190520
+to be is to do 	1	R	do|and1844674407370955264
+to be is to do 	3	R	do|and1844674407370955264do|is1844674407370955264
+to be is to do 	10	R	do|and1844674407370955264do|is1844674407370955264
+to be is to d	1	R	dog39178925466285784
+to be is to d	3	R	dog39178925466285784do26119283644190520dark13059641822095260
+to be is to d	10	R	dog39178925466285784do26119283644190520dark13059641822095260day13059641822095260
+to be is to do and	1	R	do|and1844674407370955264
+to be is to do and	3	R	do|and1844674407370955264
+to be is to do and	10	R	do|and1844674407370955264
+to be is to do and 	1	R	do|and|to9223372036854775807
+to be is to do and 	3	R	do|and|to9223372036854775807and|more1844674407370955264
+to be is to do and 	10	R	do|and|to9223372036854775807and|more1844674407370955264
+to be is to do an	1	R	do|and1844674407370955264
+to be is to do an	3	R	do|and1844674407370955264
+to be is to do an	10	R	do|and1844674407370955264
+to be is to do and to	1	R	
+to be is to do and to	3	R	
+to be is to do and to	10	R	
+to be is to do and to 	1	R	
+to be is to do and to 	3	R	
+to be is to do and to 	10	R	
+to be is to do and t	1	R	do|and|to9223372036854775807
+to be is to do and t	3	R	do|and|to9223372036854775807the156715701865143136text26119283644190520
+to be is to do and t	10	R	do|and|to9223372036854775807the156715701865143136text26119283644190520that13059641822095260
+to be is to do and to do	1	R	dog39178925466285784
+to be is to do and to do	3	R	dog39178925466285784do26119283644190520
+to be is to do and to do	10	R	dog39178925466285784do26119283644190520
+to be is to do and to do 	1	R	do|and1844674407370955264
+to be is to do and to do 	3	R	do|and1844674407370955264do|is1844674407370955264
+to be is to do and to do 	10	R	do|and1844674407370955264do|is1844674407370955264
+to be is to do and to d	1	R	dog39178925466285784
+to be is to do and to d	3	R	dog39178925466285784do26119283644190520dark13059641822095260
+to be is to do and to d	10	R	dog39178925466285784do26119283644190520dark13059641822095260day13059641822095260
+to be is to do and to do is	1	R	
+to be is to do and to do is	3	R	
+to be is to do and to do is	10	R	
+to be is to do and to do is 	1	R	
+to be is to do and to do is 	3	R	
+to be is to do and to do is 	10	R	
+to be is to do and to do i	1	R	do|is1844674407370955264
+to be is to do and to do i	3	R	do|is1844674407370955264i13059641822095260in13059641822095260
+to be is to do and to do i	10	R	do|is1844674407370955264i13059641822095260in13059641822095260
+to be is to do and to do is to	1	R	
+to be is to do and to do is to	3	R	
+to be is to do and to do is to	10	R	
+to be is to do and to do is to 	1	R	
+to be is to do and to do is to 	3	R	
+to be is to do and to do is to 	10	R	
+to be is to do and to do is t	1	R	the156715701865143136
+to be is to do and to do is t	3	R	the156715701865143136to78357850932571568text26119283644190520
+to be is to do and to do is t	10	R	the156715701865143136to78357850932571568text26119283644190520that13059641822095260
+to be is to do and to do is to be	1	R	be52238567288381040
+to be is to do and to do is to be	3	R	be52238567288381040
+to be is to do and to do is to be	10	R	be52238567288381040
+to be is to do and to do is to be 	1	R	be|is922337203685477632
+to be is to do and to do is to be 	3	R	be|is922337203685477632be|or922337203685477632be|that922337203685477632
+to be is to do and to do is to be 	10	R	be|is922337203685477632be|or922337203685477632be|that922337203685477632
+to be is to do and to do is to b	1	R	be52238567288381040
+to be is to do and to do is to b	3	R	be52238567288381040brown52238567288381040barks13059641822095260
+to be is to do and to do is to b	10	R	be52238567288381040brown52238567288381040barks13059641822095260breakfast13059641822095260
+Quick	1	R	quick652982091104762880
+Quick	3	R	quick652982091104762880
+Quick	10	R	quick652982091104762880
+Quick 	1	R	quick|brown4611686018427387904
+Quick 	3	R	quick|brown4611686018427387904quick|quick2305843009213693952quick|breakfast1152921504606846976
+Quick 	10	R	quick|brown4611686018427387904quick|quick2305843009213693952quick|breakfast1152921504606846976quick|red1152921504606846976
+Quic	1	R	quick652982091104762880
+Quic	3	R	quick652982091104762880
+Quic	10	R	quick652982091104762880
+Quick quick	1	R	quick|quick2305843009213693952
+Quick quick	3	R	quick|quick2305843009213693952
+Quick quick	10	R	quick|quick2305843009213693952
+Quick quick 	1	R	quick|quick|brown4611686018427387904
+Quick quick 	3	R	quick|quick|brown4611686018427387904quick|quick|quick4611686018427387904quick|breakfast461168601842738816
+Quick quick 	10	R	quick|quick|brown4611686018427387904quick|quick|quick4611686018427387904quick|breakfast461168601842738816quick|red461168601842738816
+Quick quic	1	R	quick|quick2305843009213693952
+Quick quic	3	R	quick|quick2305843009213693952
+Quick quic	10	R	quick|quick2305843009213693952
+Quick quick QUICK	1	R	quick|quick|quick4611686018427387904
+Quick quick QUICK	3	R	quick|quick|quick4611686018427387904
+Quick quick QUICK	10	R	quick|quick|quick4611686018427387904
+Quick quick QUICK 	1	R	quick|quick|brown4611686018427387904
+Quick quick QUICK 	3	R	quick|quick|brown4611686018427387904quick|quick|quick4611686018427387904quick|breakfast461168601842738816
+Quick quick QUICK 	10	R	quick|quick|brown4611686018427387904quick|quick|quick4611686018427387904quick|breakfast461168601842738816quick|red461168601842738816
+Quick quick QUIC	1	R	quick|quick|quick4611686018427387904
+Quick quick QUIC	3	R	quick|quick|quick4611686018427387904
+Quick quick QUIC	10	R	quick|quick|quick4611686018427387904
+Quick quick QUICK brown	1	R	quick|quick|brown4611686018427387904
+Quick quick QUICK brown	3	R	quick|quick|brown4611686018427387904
+Quick quick QUICK brown	10	R	quick|quick|brown4611686018427387904
+Quick quick QUICK brown 	1	R	quick|brown|fox4611686018427387904
+Quick quick QUICK brown 	3	R	quick|brown|fox4611686018427387904quick|brown|dog2305843009213693952
+Quick quick QUICK brown 	10	R	quick|brown|fox4611686018427387904quick|brown|dog2305843009213693952
+Quick quick QUICK brow	1	R	quick|quick|brown4611686018427387904
+Quick quick QUICK brow	3	R	quick|quick|brown4611686018427387904
+Quick quick QUICK brow	10	R	quick|quick|brown4611686018427387904
+café	1	R	café81622761388095360
+café	3	R	café81622761388095360
+café	10	R	café81622761388095360
+café 	1	R	café|au9223372036854775807
+café 	3	R	café|au9223372036854775807
+café 	10	R	café|au9223372036854775807
+caf	1	R	café81622761388095360
+caf	3	R	café81622761388095360
+caf	10	R	café81622761388095360
+café au	1	R	café|au9223372036854775807
+café au	3	R	café|au9223372036854775807
+café au	10	R	café|au9223372036854775807
+café au 	1	R	café|au|lait9223372036854775807
+café au 	3	R	café|au|lait9223372036854775807
+café au 	10	R	café|au|lait9223372036854775807
+café a	1	R	
+café a	3	R	
+café a	10	R	
+café au lait	1	R	café|au|lait9223372036854775807
+café au lait	3	R	café|au|lait9223372036854775807
+café au lait	10	R	café|au|lait9223372036854775807
+café au lait 	1	R	au|lait|is9223372036854775807
+café au lait 	3	R	au|lait|is9223372036854775807
+café au lait 	10	R	au|lait|is9223372036854775807
+café au lai	1	R	café|au|lait9223372036854775807
+café au lai	3	R	café|au|lait9223372036854775807
+café au lai	10	R	café|au|lait9223372036854775807
+café au lait is	1	R	
+café au lait is	3	R	
+café au lait is	10	R	
+café au lait is 	1	R	
+café au lait is 	3	R	
+café au lait is 	10	R	
+café au lait i	1	R	au|lait|is9223372036854775807
+café au lait i	3	R	au|lait|is9223372036854775807i13059641822095260in13059641822095260
+café au lait i	10	R	au|lait|is9223372036854775807i13059641822095260in13059641822095260
+café au lait is a	1	R	
+café au lait is a	3	R	
+café au lait is a	10	R	
+café au lait is a 	1	R	
+café au lait is a 	3	R	
+café au lait is a 	10	R	
+café au lait is a quick	1	R	quick104477134576762080
+café au lait is a quick	3	R	quick104477134576762080
+café au lait is a quick	10	R	quick104477134576762080
+café au lait is a quick 	1	R	quick|brown1844674407370955264
+café au lait is a quick 	3	R	quick|brown1844674407370955264quick|quick922337203685477632quick|breakfast461168601842738816
+café au lait is a quick 	10	R	quick|brown1844674407370955264quick|quick922337203685477632quick|breakfast461168601842738816quick|red461168601842738816
+café au lait is a quic	1	R	quick104477134576762080
+café au lait is a quic	3	R	quick104477134576762080
+café au lait is a quic	10	R	quick104477134576762080
+café au lait is a quick breakfast	1	R	quick|breakfast461168601842738816
+café au lait is a quick breakfast	3	R	quick|breakfast461168601842738816
+café au lait is a quick breakfast	10	R	quick|breakfast461168601842738816
+café au lait is a quick breakfast 	1	R	
+café au lait is a quick breakfast 	3	R	
+café au lait is a quick breakfast 	10	R	
+café au lait is a quick breakfas	1	R	quick|breakfast461168601842738816
+café au lait is a quick breakfas	3	R	quick|breakfast461168601842738816
+café au lait is a quick breakfas	10	R	quick|breakfast461168601842738816
+日本語	1	R	日|本|語9223372036854775807
+日本語	3	R	日|本|語9223372036854775807
+日本語	10	R	日|本|語9223372036854775807
+日本語 	1	R	本|語|text9223372036854775807
+日本語 	3	R	本|語|text9223372036854775807
+日本語 	10	R	本|語|text9223372036854775807
+日本	1	R	日|本9223372036854775807
+日本	3	R	日|本9223372036854775807
+日本	10	R	日|本9223372036854775807
+日本語 text	1	R	本|語|text9223372036854775807
+日本語 text	3	R	本|語|text9223372036854775807
+日本語 text	10	R	本|語|text9223372036854775807
+日本語 text 	1	R	語|text|and9223372036854775807
+日本語 text 	3	R	語|text|and9223372036854775807
+日本語 text 	10	R	語|text|and9223372036854775807
+日本語 tex	1	R	本|語|text9223372036854775807
+日本語 tex	3	R	本|語|text9223372036854775807
+日本語 tex	10	R	本|語|text9223372036854775807
+日本語 text and	1	R	語|text|and9223372036854775807
+日本語 text and	3	R	語|text|and9223372036854775807
+日本語 text and	10	R	語|text|and9223372036854775807
+日本語 text and 	1	R	text|and|more9223372036854775807
+日本語 text and 	3	R	text|and|more9223372036854775807and|to1844674407370955264
+日本語 text and 	10	R	text|and|more9223372036854775807and|to1844674407370955264
+日本語 text an	1	R	語|text|and9223372036854775807
+日本語 text an	3	R	語|text|and9223372036854775807
+日本語 text an	10	R	語|text|and9223372036854775807
+日本語 text and more	1	R	text|and|more9223372036854775807
+日本語 text and more	3	R	text|and|more9223372036854775807
+日本語 text and more	10	R	text|and|more9223372036854775807
+日本語 text and more 	1	R	and|more|text9223372036854775807
+日本語 text and more 	3	R	and|more|text9223372036854775807
+日本語 text and more 	10	R	and|more|text9223372036854775807
+日本語 text and mor	1	R	text|and|more9223372036854775807
+日本語 text and mor	3	R	text|and|more9223372036854775807
+日本語 text and mor	10	R	text|and|more9223372036854775807
+日本語 text and more text	1	R	and|more|text9223372036854775807
+日本語 text and more text	3	R	and|more|text9223372036854775807
+日本語 text and more text	10	R	and|more|text9223372036854775807
+日本語 text and more text 	1	R	text|and1844674407370955264
+日本語 text and more text 	3	R	text|and1844674407370955264
+日本語 text and more text 	10	R	text|and1844674407370955264
+日本語 text and more tex	1	R	and|more|text9223372036854775807
+日本語 text and more tex	3	R	and|more|text9223372036854775807
+日本語 text and more tex	10	R	and|more|text9223372036854775807
+new	1	R	new244868284164286080
+new	3	R	new244868284164286080
+new	10	R	new244868284164286080
+new 	1	R	new|york6148914691236516864
+new 	3	R	new|york6148914691236516864new|jersey3074457345618258432
+new 	10	R	new|york6148914691236516864new|jersey3074457345618258432
+ne	1	R	new244868284164286080
+ne	3	R	new244868284164286080
+ne	10	R	new244868284164286080
+new york	1	R	new|york6148914691236516864
+new york	3	R	new|york6148914691236516864
+new york	10	R	new|york6148914691236516864
+new york 	1	R	new|york|new9223372036854775807
+new york 	3	R	new|york|new9223372036854775807
+new york 	10	R	new|york|new9223372036854775807
+new yor	1	R	new|york6148914691236516864
+new yor	3	R	new|york6148914691236516864
+new yor	10	R	new|york6148914691236516864
+new york new	1	R	new|york|new9223372036854775807
+new york new	3	R	new|york|new9223372036854775807
+new york new	10	R	new|york|new9223372036854775807
+new york new 	1	R	york|new|jersey4611686018427387904
+new york new 	3	R	york|new|jersey4611686018427387904york|new|york4611686018427387904
+new york new 	10	R	york|new|jersey4611686018427387904york|new|york4611686018427387904
+new york ne	1	R	new|york|new9223372036854775807
+new york ne	3	R	new|york|new9223372036854775807
+new york ne	10	R	new|york|new9223372036854775807
+new york new york	1	R	york|new|york4611686018427387904
+new york new york	3	R	york|new|york4611686018427387904
+new york new york	10	R	york|new|york4611686018427387904
+new york new york 	1	R	new|york|new9223372036854775807
+new york new york 	3	R	new|york|new9223372036854775807
+new york new york 	10	R	new|york|new9223372036854775807
+new york new yor	1	R	york|new|york4611686018427387904
+new york new yor	3	R	york|new|york4611686018427387904
+new york new yor	10	R	york|new|york4611686018427387904
+new york new york new	1	R	new|york|new9223372036854775807
+new york new york new	3	R	new|york|new9223372036854775807
+new york new york new	10	R	new|york|new9223372036854775807
+new york new york new 	1	R	york|new|jersey4611686018427387904
+new york new york new 	3	R	york|new|jersey4611686018427387904york|new|york4611686018427387904
+new york new york new 	10	R	york|new|jersey4611686018427387904york|new|york4611686018427387904
+new york new york ne	1	R	new|york|new9223372036854775807
+new york new york ne	3	R	new|york|new9223372036854775807
+new york new york ne	10	R	new|york|new9223372036854775807
+new york new york new jersey	1	R	york|new|jersey4611686018427387904
+new york new york new jersey	3	R	york|new|jersey4611686018427387904
+new york new york new jersey	10	R	york|new|jersey4611686018427387904
+new york new york new jersey 	1	R	
+new york new york new jersey 	3	R	
+new york new york new jersey 	10	R	
+new york new york new jerse	1	R	york|new|jersey4611686018427387904
+new york new york new jerse	3	R	york|new|jersey4611686018427387904
+new york new york new jerse	10	R	york|new|jersey4611686018427387904
+of	1	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of	3	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of	10	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of 	1	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of 	3	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of 	10	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+o	1	R	of244868284164286080
+o	3	R	of244868284164286080or81622761388095360over81622761388095360
+o	10	R	of244868284164286080or81622761388095360over81622761388095360
+of the	1	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of the	3	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of the	10	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of the 	1	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of the 	3	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of the 	10	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of th	1	R	the391789254662857792
+of th	3	R	the391789254662857792that32649104555238148
+of th	10	R	the391789254662857792that32649104555238148
+of the of	1	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of the of	3	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of the of	10	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of the of 	1	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of the of 	3	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of the of 	10	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of the o	1	R	of39178925466285784
+of the o	3	R	of39178925466285784or13059641822095260over13059641822095260
+of the o	10	R	of39178925466285784or13059641822095260over13059641822095260
+of the of the	1	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of the of the	3	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of the of the	10	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of the of the 	1	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of the of the 	3	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of the of the 	10	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of the of th	1	R	the156715701865143136
+of the of th	3	R	the156715701865143136that13059641822095260
+of the of th	10	R	the156715701865143136that13059641822095260
+of the of the of	1	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of the of the of	3	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of the of the of	10	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of the of the of 	1	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of the of the of 	3	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of the of the of 	10	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of the of the o	1	R	of39178925466285784
+of the of the o	3	R	of39178925466285784or13059641822095260over13059641822095260
+of the of the o	10	R	of39178925466285784or13059641822095260over13059641822095260
+of the of the of the	1	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of the of the of the	3	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of the of the of the	10	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of the of the of the 	1	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of the of the of the 	3	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of the of the of the 	10	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+of the of the of th	1	R	the156715701865143136
+of the of the of th	3	R	the156715701865143136that13059641822095260
+of the of the of th	10	R	the156715701865143136that13059641822095260
+	1	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+	3	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+	10	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+ 	1	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+ 	3	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+ 	10	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+zzz	1	R	
+zzz	3	R	
+zzz	10	R	
+zzz 	1	R	
+zzz 	3	R	
+zzz 	10	R	
+!!!	1	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+!!!	3	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+!!!	10	X	IllegalArgumentException	no tokens produced by analyzer, or the only tokens were empty strings
+purple mush	1	R	purple|mushroom6917529027641081856
+purple mush	3	R	purple|mushroom6917529027641081856purple|mushrooms2305843009213693952
+purple mush	10	R	purple|mushroom6917529027641081856purple|mushrooms2305843009213693952
+quick brown fox 	1	R	brown|fox|jumps4611686018427387904
+quick brown fox 	3	R	brown|fox|jumps4611686018427387904brown|fox|runs4611686018427387904
+quick brown fox 	10	R	brown|fox|jumps4611686018427387904brown|fox|runs4611686018427387904
+a b c d	1	R	dog39178925466285784
+a b c d	3	R	dog39178925466285784do26119283644190520dark13059641822095260
+a b c d	10	R	dog39178925466285784do26119283644190520dark13059641822095260day13059641822095260
+NEW YORK	1	R	new|york6148914691236516864
+NEW YORK	3	R	new|york6148914691236516864
+NEW YORK	10	R	new|york6148914691236516864
+unseen words here	1	R	
+unseen words here	3	R	
+unseen words here	10	R	
+the unseen	1	R	
+the unseen	3	R	
+the unseen	10	R	
+unseen the	1	R	
+unseen the	3	R	
+unseen the	10	R	
+mushroom	1	R	mushroom244868284164286080
+mushroom	3	R	mushroom244868284164286080mushrooms81622761388095360
+mushroom	10	R	mushroom244868284164286080mushrooms81622761388095360
+mushroom s	1	R	mushroom|soup9223372036854775807
+mushroom s	3	R	mushroom|soup9223372036854775807sleeps65298209110476296
+mushroom s	10	R	mushroom|soup9223372036854775807sleeps65298209110476296
+x the	1	R	
+x the	3	R	
+x the	10	R	
+brown the 	1	R	
+brown the 	3	R	
+brown the 	10	R	
+fox  	1	R	fox|jumps4611686018427387904
+fox  	3	R	fox|jumps4611686018427387904fox|runs2305843009213693952
+fox  	10	R	fox|jumps4611686018427387904fox|runs2305843009213693952
+  fox	1	R	fox326491045552381440
+  fox	3	R	fox326491045552381440
+  fox	10	R	fox326491045552381440

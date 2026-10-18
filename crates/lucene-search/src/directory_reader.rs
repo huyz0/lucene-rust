@@ -266,6 +266,9 @@ pub struct SegmentReader {
     /// per `PerFieldKnnVectorsFormat` instance with its codec suffix, sorted
     /// by suffix -- the flat half of `SegmentCoreReaders.knnVectorsReader`.
     vectors: Vec<Arc<CodecFiles>>,
+    /// The segment's `Completion104PostingsFormat` field tables and FSTs
+    /// (`.cmp`/`.lkp`), one per instance -- `CompletionFieldsProducer`.
+    completion: Vec<Arc<lucene_codecs::completion::CompletionFields>>,
     /// `getCoreCacheHelper()`: shared by every reader over this segment core,
     /// across reopens that keep it.
     core_cache: crate::reader::CacheHelper,
@@ -722,9 +725,49 @@ impl SegmentReader {
             }
         }
 
+        // `CompletionFieldsProducer`: one per `CompletionXX` instance, under
+        // the same suffix as its delegate's postings files. The suffix names
+        // the format, whose name is the files' codec name.
+        let mut completion = Vec::new();
+        for suffix in segment_codec_suffixes(&si.files, compound.as_ref(), &segment_name, ".cmp") {
+            let format = per_field_postings::completion_format_of(&suffix).ok_or_else(|| {
+                Error::Store(lucene_store::Error::IllegalArgument(format!(
+                    "segment {segment_name}: _{suffix}.cmp is not a completion postings format \
+                     Lucene 10.5.0 reads"
+                )))
+            })?;
+            let open = |ext: &str| {
+                open_segment_file(
+                    dir,
+                    compound.as_ref(),
+                    &si.files,
+                    &format!("_{suffix}{ext}"),
+                )
+            };
+            // Java's producer opens both files and throws on either missing:
+            // a listed `.cmp` without its `.lkp` is a corrupt segment.
+            let required = |ext: &str| {
+                open(ext)?.ok_or_else(|| {
+                    Error::Store(lucene_store::Error::Corrupted(format!(
+                        "segment {segment_name} has no _{suffix}{ext} file"
+                    )))
+                })
+            };
+            let cmp = required(".cmp")?;
+            let lkp = required(".lkp")?;
+            completion.push(Arc::new(lucene_codecs::completion::CompletionFields::open(
+                format,
+                &segment_id,
+                &suffix,
+                &cmp,
+                lkp.to_vec(),
+            )?));
+        }
+
         Ok(SegmentReader {
             term_vectors,
             vectors,
+            completion,
             core_cache: crate::reader::CacheHelper::new(),
             reader_cache: crate::reader::CacheHelper::new(),
             query_cache: Arc::default(),
@@ -1071,6 +1114,51 @@ impl SegmentReader {
     /// name to the number [`Self::doc_values_meta`]'s entries are keyed by.
     pub fn field_infos(&self) -> &FieldInfos {
         &self.field_infos
+    }
+
+    /// `CompletionTerms.suggester()` for `field`: its FST, loaded from the
+    /// `Completion104` instance that holds it, or `None` when the field is
+    /// not a completion field of this segment or holds no suggestions.
+    pub fn suggester(
+        &self,
+        field: &str,
+    ) -> Result<Option<std::sync::Arc<lucene_codecs::completion::NrtSuggester>>> {
+        let Some(info) = self.field_infos.field_by_name(field) else {
+            return Ok(None);
+        };
+        for fields in &self.completion {
+            if let Some(suggester) = fields.suggester(info.number)? {
+                return Ok(Some(suggester));
+            }
+        }
+        Ok(None)
+    }
+
+    /// `CompletionTerms.getType()` for `field`: the type byte its suggestions
+    /// were indexed with (`SuggestField.TYPE`, `ContextSuggestField.TYPE`),
+    /// or `None` when the field is not a completion field of this segment.
+    pub fn completion_type(&self, field: &str) -> Option<u8> {
+        let info = self.field_infos.field_by_name(field)?;
+        self.completion
+            .iter()
+            .flat_map(|c| c.fields.iter())
+            .find(|(number, _)| *number == info.number)
+            .map(|(_, reader)| reader.type_byte)
+    }
+
+    /// `CompletionTerms.getMinWeight()` and `getMaxWeight()` for `field`:
+    /// the least and greatest weight its suggestions were indexed with in
+    /// this segment, or `None` when the field is not a completion field of
+    /// this segment. Differs: Java hands such a field a `CompletionTerms`
+    /// with no reader, whose weights are `0`/`0`; `None` keeps "no
+    /// suggestions here" apart from "every weight was 0".
+    pub fn completion_weights(&self, field: &str) -> Option<(i64, i64)> {
+        let info = self.field_infos.field_by_name(field)?;
+        self.completion
+            .iter()
+            .flat_map(|c| c.fields.iter())
+            .find(|(number, _)| *number == info.number)
+            .map(|(_, reader)| (reader.min_weight, reader.max_weight))
     }
 
     /// The segment's parsed `.dvm`, or `None` if it has no doc-values files

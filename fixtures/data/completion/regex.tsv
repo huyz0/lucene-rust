@@ -1,0 +1,96 @@
+c[a-z]	1	0	care599
+c[a-z]	1	1	care599
+c[a-z]	2	0	care599card1887
+c[a-z]	2	1	care599card1887
+c[a-z]	3	0	care599card1887cat4681
+c[a-z]	3	1	care599card1887cat4681
+c[a-z]	4	0	care599card1887cat4681card2679
+c[a-z]	4	1	care599card1887cat4681car4060
+c[a-z]	10	0	care599card1887cat4681card2679card5179cat1475car4060car3759care3546cat1143
+c[a-z]	10	1	care599card1887cat4681car4060cart4324café1007
+c[a-z]	200	0	care599card1887cat4681card2679card5179cat1475car4060car3759care3546cat1143card5437car4536car130car1026cart4324cat2316car4815care610café1007car227cart164
+c[a-z]	200	1	care599card1887cat4681car4060cart4324café1007
+[cd][a-z]	1	0	care599
+[cd][a-z]	1	1	care599
+[cd][a-z]	2	0	care599dot2596
+[cd][a-z]	2	1	care599dot2596
+[cd][a-z]	3	0	care599dot2596card1887
+[cd][a-z]	3	1	care599dot2596card1887
+[cd][a-z]	4	0	care599dot2596card1887cat4681
+[cd][a-z]	4	1	care599dot2596card1887cat4681
+[cd][a-z]	10	0	care599dot2596card1887cat4681card2679card5179cat1475door774door2765car4060
+[cd][a-z]	10	1	care599dot2596card1887cat4681door774car4060dog1354cart4324café1007
+[cd][a-z]	200	0	care599dot2596card1887cat4681card2679card5179cat1475door774door2765car4060door1560car3759door2858dog1354dog1250dot3450care3546cat1143dot5238card5437car4536dog336door3634dot4134door832car130dot5629car1026cart4324dog5920cat2316car4815care610café1007car227cart164door303
+[cd][a-z]	200	1	care599dot2596card1887cat4681door774car4060dog1354cart4324café1007
+[a-z]	1	0	heavy982147483648
+[a-z]	1	1	heavy982147483648
+[a-z]	2	0	heavy982147483648care599
+[a-z]	2	1	heavy982147483648care599
+[a-z]	3	0	heavy982147483648care599zebra5399
+[a-z]	3	1	heavy982147483648care599zebra5399
+[a-z]	4	0	heavy982147483648care599zebra5399dot2596
+[a-z]	4	1	heavy982147483648care599zebra5399dot2596
+[a-z]	10	0	heavy982147483648care599zebra5399dot2596zebra5794eat2092e3991card1887cat4681ea2981
+[a-z]	10	1	heavy982147483648care599zebra5399dot2596eat2092e3991card1887cat4681ea2981door774
+[a-z]	200	0	heavy982147483648care599zebra5399dot2596zebra5794eat2092e3991card1887cat4681ea2981card2679card5179eat478ea5876cat1475door774zebra3171door2765ea3864car4060door1560car3759door2858ea957ea2457dog1354eat3354eat4452dog1250dot3450zebra050care3546e5545e5044cat1143ea3241dot5238ea238card5437car4536dog336door3634dot4134door832e4931car130ea1730dot5629car1026e4725cart4324e4221dog5920cat2316car4815many6714many7014many7214many7814many7914many8714many6213many6813many7313many8413many8513ea1912many6012many6912many7612many8612many8912many6411many6511many7111many7411many8211many8311care610many6110many6310many6610many7510many7710many8010many8110many8810tie919ea218café1007car227tie955cart164door303tie901tie921tie931tie941tie961tie971light990
+[a-z]	200	1	heavy982147483648care599zebra5399dot2596eat2092e3991card1887cat4681ea2981door774car4060dog1354cart4324many6714tie919café1007light990
+ca[rt]	1	0	care599
+ca[rt]	1	1	care599
+ca[rt]	2	0	care599card1887
+ca[rt]	2	1	care599card1887
+ca[rt]	3	0	care599card1887cat4681
+ca[rt]	3	1	care599card1887cat4681
+ca[rt]	4	0	care599card1887cat4681card2679
+ca[rt]	4	1	care599card1887cat4681car4060
+ca[rt]	10	0	care599card1887cat4681card2679card5179cat1475car4060car3759care3546cat1143
+ca[rt]	10	1	care599card1887cat4681car4060cart4324
+ca[rt]	200	0	care599card1887cat4681card2679card5179cat1475car4060car3759care3546cat1143card5437car4536car130car1026cart4324cat2316car4815care610car227cart164
+ca[rt]	200	1	care599card1887cat4681car4060cart4324
+[a-z][a-z]r	1	0	care599
+[a-z][a-z]r	1	1	care599
+[a-z][a-z]r	2	0	care599card1887
+[a-z][a-z]r	2	1	care599card1887
+[a-z][a-z]r	3	0	care599card1887card2679
+[a-z][a-z]r	3	1	care599card1887car4060
+[a-z][a-z]r	4	0	care599card1887card2679card5179
+[a-z][a-z]r	4	1	care599card1887car4060cart4324
+[a-z][a-z]r	10	0	care599card1887card2679card5179car4060car3759care3546card5437car4536car130
+[a-z][a-z]r	10	1	care599card1887car4060cart4324
+[a-z][a-z]r	200	0	care599card1887card2679card5179car4060car3759care3546card5437car4536car130car1026cart4324car4815care610car227cart164
+[a-z][a-z]r	200	1	care599card1887car4060cart4324
+m[a-z]*	1	0	many6714
+m[a-z]*	1	1	many6714
+m[a-z]*	2	0	many6714many7014
+m[a-z]*	2	1	many6714
+m[a-z]*	3	0	many6714many7014many7214
+m[a-z]*	3	1	many6714
+m[a-z]*	4	0	many6714many7014many7214many7814
+m[a-z]*	4	1	many6714
+m[a-z]*	10	0	many6714many7014many7214many7814many7914many8714many6213many6813many8413many8513
+m[a-z]*	10	1	many6714
+m[a-z]*	200	0	many6714many7014many7214many7814many7914many8714many6213many6813many7313many8413many8513many6012many6912many7612many8612many8912many6411many6511many7111many7411many8211many8311many6110many6310many6610many7510many7710many8010many8110many8810
+m[a-z]*	200	1	many6714
+tie|light	1	0	tie919
+tie|light	1	1	tie919
+tie|light	2	0	tie919tie955
+tie|light	2	1	tie919light990
+tie|light	3	0	tie919tie955tie901
+tie|light	3	1	tie919light990
+tie|light	4	0	tie919tie955tie901tie931
+tie|light	4	1	tie919light990
+tie|light	10	0	tie919tie955tie901tie921tie931tie941tie961tie971light990
+tie|light	10	1	tie919light990
+tie|light	200	0	tie919tie955tie901tie921tie931tie941tie961tie971light990
+tie|light	200	1	tie919light990
+tie|zebra	1	0	zebra5399
+tie|zebra	1	1	zebra5399
+tie|zebra	2	0	zebra5399zebra5794
+tie|zebra	2	1	zebra5399tie919
+tie|zebra	3	0	zebra5399zebra5794zebra3171
+tie|zebra	3	1	zebra5399tie919
+tie|zebra	4	0	zebra5399zebra5794zebra3171zebra050
+tie|zebra	4	1	zebra5399tie919
+tie|zebra	10	0	zebra5399zebra5794zebra3171zebra050tie919tie955tie901tie921tie931tie941
+tie|zebra	10	1	zebra5399tie919
+tie|zebra	200	0	zebra5399zebra5794zebra3171zebra050tie919tie955tie901tie921tie931tie941tie961tie971
+tie|zebra	200	1	zebra5399tie919

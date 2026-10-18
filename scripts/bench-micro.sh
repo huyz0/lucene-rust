@@ -131,6 +131,99 @@ case "$BENCH" in
     SRC=benchmarks/micro/java/MemoryIndexMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
     JAR_MODULES="lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-memory" ;;
+  # M13 T13.2: the unified and fast vector highlighters.
+  highlight)
+    MAIN=HighlightMicro
+    SRC=benchmarks/micro/java/HighlightMicro.java
+    EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-memory lucene-highlighter" ;;
+  # M13 T13.3c: AnalyzingSuggester and FuzzySuggester, lookups and builds.
+  analyzing)
+    MAIN=AnalyzingSuggestMicro
+    SRC=benchmarks/micro/java/AnalyzingSuggestMicro.java
+    EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-analysis-common lucene-suggest" ;;
+  # M13 T13.3c: FreeTextSuggester, lookups and builds.
+  freetext)
+    MAIN=FreeTextSuggestMicro
+    SRC=benchmarks/micro/java/FreeTextSuggestMicro.java
+    EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-analysis-common lucene-suggest" ;;
+  # M13 T13.3c: AnalyzingInfixSuggester, lookups and builds.
+  infix)
+    MAIN=InfixSuggestMicro
+    SRC=benchmarks/micro/java/InfixSuggestMicro.java
+    EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-analysis-common lucene-suggest" ;;
+  # M13 T13.3e: DirectSpellChecker, SpellChecker and WordBreakSpellChecker.
+  spell)
+    MAIN=SpellMicro
+    SRC=benchmarks/micro/java/SpellMicro.java
+    EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-suggest" ;;
+  # M13 T13.4a: the facet taxonomy's writer (addCategory) and reader lookups.
+  taxonomy)
+    MAIN=TaxonomyMicro
+    SRC=benchmarks/micro/java/TaxonomyMicro.java
+    EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-facet" ;;
+  facet_counts)
+    # M13 T13.4b's pair (FacetCountsMicro.java / micro_facet_counts.rs):
+    # FacetsCollector, FastTaxonomyFacetCounts (dense and sparse),
+    # getTopChildren and the association sums over the 200 000-document index
+    # and taxonomy FacetCountsMicro builds (once) under
+    # benchmarks/.corpus/facet-counts.
+    MAIN=FacetCountsMicro
+    SRC=benchmarks/micro/java/FacetCountsMicro.java
+    EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-facet"
+    INDEX="${INDEX_ARG:-$PWD/benchmarks/.corpus/facet-counts}"
+    PREP_ARGS=(build "$INDEX")
+    JAVA_ARGS=(run)
+    NEEDS_INDEX=1 ;;
+  drill_sideways)
+    # M13 T13.4c's pair (DrillSidewaysMicro.java / micro_drill_sideways.rs):
+    # a sequential DrillSideways.search per DrillSidewaysScorer strategy, over
+    # facet_counts' corpus (built by FacetCountsMicro, which this prep calls).
+    MAIN=DrillSidewaysMicro
+    SRC=benchmarks/micro/java/DrillSidewaysMicro.java
+    EXTRA_SRC="benchmarks/micro/java/FacetCountsMicro.java benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-facet"
+    INDEX="${INDEX_ARG:-$PWD/benchmarks/.corpus/facet-counts}"
+    PREP_ARGS=(build "$INDEX")
+    JAVA_ARGS=(run)
+    NEEDS_INDEX=1 ;;
+  value_facets)
+    # M13 T13.4d1's pair (ValueFacetsMicro.java / micro_value_facets.rs):
+    # LongValueFacetCounts, StringValueFacetCounts and the long/double range
+    # counters over the 200 000-document index ValueFacetsMicro builds (once)
+    # under benchmarks/.corpus/value-facets.
+    MAIN=ValueFacetsMicro
+    SRC=benchmarks/micro/java/ValueFacetsMicro.java
+    EXTRA_SRC="benchmarks/micro/java/FacetCountsMicro.java benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-facet"
+    INDEX="${INDEX_ARG:-$PWD/benchmarks/.corpus/value-facets}"
+    PREP_ARGS=(build "$INDEX")
+    JAVA_ARGS=(run)
+    NEEDS_INDEX=1 ;;
+  # The document API's indexing: IndexWriter.addDocument over three document shapes.
+  doc_index)
+    MAIN=DocIndexMicro
+    SRC=benchmarks/micro/java/DocIndexMicro.java
+    EXTRA_SRC="benchmarks/micro/java/SweepMicro.java benchmarks/micro/java/SpellMicro.java"
+    JAR_MODULES="lucene-core lucene-analysis-common lucene-suggest" ;;
+  # M13 T13.3b: WFSTCompletionLookup and FSTCompletionLookup, lookups and builds.
+  fst_lookup)
+    MAIN=FstLookupMicro
+    SRC=benchmarks/micro/java/FstLookupMicro.java
+    EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-suggest" ;;
+  # M13 T13.3d: completion suggestions through SuggestIndexSearcher.
+  completion)
+    MAIN=CompletionMicro
+    SRC=benchmarks/micro/java/CompletionMicro.java
+    EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-analysis-common lucene-suggest" ;;
   # M13 T13.5c: the Monitor -- register the corpus, match four documents.
   monitor)
     MAIN=MonitorMicro

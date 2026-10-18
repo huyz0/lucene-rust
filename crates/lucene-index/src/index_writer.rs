@@ -174,6 +174,7 @@ mod add_indexes;
 mod block_tests;
 mod explicit;
 mod lifecycle;
+pub(crate) mod pending_postings;
 mod pluggable_merge;
 mod try_modify;
 pub use explicit::{ExplicitDocument, ExplicitFields, InvertedField, InvertedTerm};
@@ -526,7 +527,8 @@ pub enum Error {
     /// Java's `verifyOrCreateDvOnlyField` throws when the existing field's
     /// `DocValuesType` does not match the update's.
     #[error(
-        "update_doc_values: field {field:?} is declared with doc_values_type {declared}; only a          NUMERIC field accepts a numeric update and only a BINARY field a binary one"
+        "update_doc_values: field {field:?} is declared with doc_values_type {declared}; only a \
+         NUMERIC field accepts a numeric update and only a BINARY field a binary one"
     )]
     WrongDocValuesUpdateType { field: String, declared: String },
     /// A buffered delete or doc-values update named a field this writer's
@@ -1154,6 +1156,14 @@ pub(crate) struct DocumentBuffer<'b> {
     /// Aligned with `docs` when the writer takes explicit documents; read only
     /// then.
     pub(crate) explicit: &'b [ExplicitFields],
+    /// The explicit documents' postings, inverted as they were buffered;
+    /// their `InvertedField`s then hold no terms. `None` for a buffer whose
+    /// `explicit` still carries every term (the concurrent writer's).
+    pub(crate) postings: Option<&'b pending_postings::PendingPostings>,
+    /// Under an index sort, the flush's permutation: `old_to_new[d]` is
+    /// where buffered document `d` lands -- what `postings`' doc ids, in
+    /// insertion order, are remapped by. `explicit` is already permuted.
+    pub(crate) old_to_new: Option<&'b [usize]>,
     pub(crate) has_blocks: bool,
 }
 
@@ -1166,8 +1176,31 @@ impl DocumentBuffer<'_> {
             .iter()
             .map(document_ram_bytes)
             .chain(self.explicit.iter().map(ExplicitFields::ram_bytes))
+            .chain(
+                self.postings
+                    .map(pending_postings::PendingPostings::ram_bytes),
+            )
             .fold(0usize, usize::saturating_add);
         u64::try_from(docs).unwrap_or(u64::MAX)
+    }
+}
+
+/// One buffered document's doc-value (or point) fields, as the doc-values
+/// and points builders read them: a native [`Document`]'s fields, or an
+/// explicit document's borrowed in place.
+pub(crate) trait DocValueFields {
+    fn dv_fields(&self) -> &[lucene_codecs::stored_fields::StoredField];
+}
+
+impl DocValueFields for Document {
+    fn dv_fields(&self) -> &[lucene_codecs::stored_fields::StoredField] {
+        &self.fields
+    }
+}
+
+impl DocValueFields for &[lucene_codecs::stored_fields::StoredField] {
+    fn dv_fields(&self) -> &[lucene_codecs::stored_fields::StoredField] {
+        self
     }
 }
 
@@ -1346,9 +1379,9 @@ impl IndexingConfig {
 
     /// `PerFieldPostingsFormat.FieldsWriter.write`: this segment's postings,
     /// one set of files per postings format its fields are routed to.
-    pub(crate) fn write_postings_groups(
+    pub(crate) fn write_postings_groups<T: postings_writer::TermSource>(
         &self,
-        inputs: &[FieldPostingsInput<'_>],
+        inputs: &[FieldPostingsInput<'_, T>],
         norms: &[postings_writer::FieldNorms<'_>],
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<PostingsGroups> {
@@ -2877,9 +2910,9 @@ impl IndexingConfig {
     /// instance of the format they are routed to, instances numbered in
     /// that order; each instance's fields are written, in that order, into
     /// its own `.dvm`/`.dvd`/`.dvs`.
-    fn build_doc_values_groups(
+    fn build_doc_values_groups<D: DocValueFields>(
         &self,
-        docs: &[Document],
+        docs: &[D],
         configs: &[DocValuesFieldConfig],
         segment_fields: &[&str],
         segment_id: &[u8; ID_LENGTH],
@@ -2942,11 +2975,11 @@ impl IndexingConfig {
         vector_fields_written: &[WrittenVectorField],
         points_fields_written: &[String],
     ) -> Vec<FieldInfo> {
-        let postings_suffix = |number: i32| -> Option<u32> {
+        let postings_suffix = |number: i32| -> Option<(&'static str, u32)> {
             postings?
                 .iter()
                 .find(|g| g.field_numbers.contains(&number))
-                .map(|g| g.suffix)
+                .map(|g| (g.format_name, g.suffix))
         };
         let dv_suffix = |number: i32| -> Option<u32> {
             doc_values?
@@ -2992,10 +3025,10 @@ impl IndexingConfig {
                 {
                     f.index_options = IndexOptions::None;
                 }
-                if let Some(suffix) = postings_suffix(f.number) {
+                if let Some((format_name, suffix)) = postings_suffix(f.number) {
                     f.attributes.push((
                         per_field_postings::PER_FIELD_FORMAT_KEY.to_string(),
-                        POSTINGS_FORMAT_NAME.to_string(),
+                        format_name.to_string(),
                     ));
                     f.attributes.push((
                         per_field_postings::PER_FIELD_SUFFIX_KEY.to_string(),
@@ -3599,6 +3632,10 @@ pub struct IndexWriter<'d> {
     /// What every segment this writer builds is built with -- see
     /// [`IndexingConfig`].
     cfg: std::sync::Arc<IndexingConfig>,
+    /// The standard analyzer [`IndexWriter::writer_analyzer`] last built,
+    /// with the `(position_increment_gap, offset_gap)` it was built for:
+    /// built once, not once per document.
+    default_analyzer: Option<(i32, i32, std::sync::Arc<Analyzer>)>,
     segment_infos: SegmentInfos,
     pending_docs: Vec<Document>,
     /// Segments already flushed to `dir` (by [`IndexWriter::flush`], including
@@ -3714,12 +3751,9 @@ pub struct IndexWriter<'d> {
     /// `pending_docs` like [`Self::pending_vectors`]; empty for a document
     /// added through a native [`Document`] entry point.
     pending_explicit: Vec<ExplicitFields>,
-    /// The terms the pending documents gave each `DOCS` field that has
-    /// norms: the buffered segment's term hash, which decides a `DOCS`
-    /// field's `FieldInvertState.maxTermFrequency` (`newTerm` sets it to 1,
-    /// `addTerm` for a term the segment already holds leaves it at 0).
-    /// Cleared with the buffer.
-    pending_docs_terms: std::collections::HashMap<i32, std::collections::HashSet<Vec<u8>>>,
+    /// The buffered explicit documents' postings, inverted as each was
+    /// buffered -- see [`pending_postings`].
+    pub(crate) pending_postings: pending_postings::PendingPostings,
     /// `SegmentCommitInfo.softDelCount` as last computed, per segment, keyed by
     /// the `(del_gen, doc_values_gen, field_infos_gen)` it was computed at --
     /// see [`IndexWriter::stamp_soft_delete_counts`].
@@ -4416,10 +4450,18 @@ fn quantized_vector_files(
 
 impl<'d> IndexWriter<'d> {
     /// `IndexWriterConfig.getAnalyzer()` for the document API.
-    pub(crate) fn writer_analyzer(&self) -> std::sync::Arc<Analyzer> {
-        match &self.cfg.document_analyzer {
-            Some(a) => std::sync::Arc::clone(a),
-            None => std::sync::Arc::new(self.cfg.analyzer()),
+    pub(crate) fn writer_analyzer(&mut self) -> std::sync::Arc<Analyzer> {
+        if let Some(a) = &self.cfg.document_analyzer {
+            return std::sync::Arc::clone(a);
+        }
+        let gaps = (self.cfg.position_increment_gap, self.cfg.offset_gap);
+        match &self.default_analyzer {
+            Some((p, o, a)) if (*p, *o) == gaps => std::sync::Arc::clone(a),
+            _ => {
+                let a = std::sync::Arc::new(self.cfg.analyzer());
+                self.default_analyzer = Some((gaps.0, gaps.1, std::sync::Arc::clone(&a)));
+                a
+            }
         }
     }
 
@@ -4443,26 +4485,6 @@ impl<'d> IndexWriter<'d> {
     pub(crate) fn config_snapshot(&self) -> std::sync::Arc<IndexingConfig> {
         std::sync::Arc::clone(&self.cfg)
     }
-
-    /// Records `terms` in the buffered segment's term hash of `DOCS` field
-    /// `field`; whether one of them was new to it -- `newTerm`, which is
-    /// what sets such a field's `FieldInvertState.maxTermFrequency` (to 1).
-    pub(crate) fn note_docs_terms<'t>(
-        &mut self,
-        field: i32,
-        terms: impl Iterator<Item = &'t Vec<u8>>,
-    ) -> bool {
-        let seen = self.pending_docs_terms.entry(field).or_default();
-        let mut new = false;
-        for term in terms {
-            if !seen.contains(term) {
-                seen.insert(term.clone());
-                new = true;
-            }
-        }
-        new
-    }
-
     /// The configuration, to change it: copied first if a
     /// [`crate::concurrent_writer::ConcurrentIndexWriter`] shares it, so a
     /// change never reaches a segment already being built with the old one.
@@ -4745,6 +4767,8 @@ impl<'d> IndexWriter<'d> {
             custom_freq_terms: &self.pending_custom_freq_terms,
             vectors: &self.pending_vectors,
             explicit: &self.pending_explicit,
+            postings: Some(&self.pending_postings),
+            old_to_new: None,
             has_blocks: self.pending_has_blocks,
         }
     }
@@ -4849,6 +4873,7 @@ impl<'d> IndexWriter<'d> {
 
         Ok(IndexWriter {
             dir,
+            default_analyzer: None,
             cfg: std::sync::Arc::new(IndexingConfig {
                 fields,
                 codec_name: codec_name.into(),
@@ -4899,7 +4924,7 @@ impl<'d> IndexWriter<'d> {
             rollback_segments,
             pending_vectors: Vec::new(),
             pending_explicit: Vec::new(),
-            pending_docs_terms: std::collections::HashMap::new(),
+            pending_postings: pending_postings::PendingPostings::default(),
             soft_delete_counts,
             soft_deletes_retention: None,
             max_docs: MAX_DOCS,
@@ -6134,7 +6159,17 @@ impl IndexWriter<'_> {
     /// The `docIDUpto` a delete issued right now must carry: the number of
     /// documents already buffered for the next segment. Java's
     /// `docsInRamBefore`.
-    fn pending_doc_id_upto(&self) -> i32 {
+    /// Counts `bytes` toward (`true`) or back out of the RAM buffer: the
+    /// buffered postings a block of the document API grew.
+    pub(crate) fn charge_ram_bytes(&mut self, bytes: usize, charge: bool) {
+        self.ram_bytes_used = if charge {
+            self.ram_bytes_used.saturating_add(bytes)
+        } else {
+            self.ram_bytes_used.saturating_sub(bytes)
+        };
+    }
+
+    pub(crate) fn pending_doc_id_upto(&self) -> i32 {
         self.pending_docs.len() as i32
     }
 
@@ -7186,9 +7221,21 @@ impl IndexWriter<'_> {
         // no ambiguity about which one "wins".
         // One call site, so one error path -- see
         // `build_and_write_segment` on why that is load-bearing here.
+        // `pending_postings` holds insertion-order doc ids; the sort map is
+        // `new_to_old`.
+        let old_to_new = sort_map.as_ref().map(|new_to_old| {
+            let mut old_to_new = vec![0usize; new_to_old.len()];
+            for (new, &old) in new_to_old.iter().enumerate() {
+                old_to_new[old] = new;
+            }
+            old_to_new
+        });
         let written = self.cfg.build_and_write_segment(
             self.dir,
-            &self.document_buffer(),
+            &DocumentBuffer {
+                old_to_new: old_to_new.as_deref(),
+                ..self.document_buffer()
+            },
             &segment_name,
             segment_id,
             None,
@@ -7228,7 +7275,7 @@ impl IndexWriter<'_> {
         self.pending_custom_freq_terms.clear();
         self.pending_vectors.clear();
         self.pending_explicit.clear();
-        self.pending_docs_terms.clear();
+        self.pending_postings.clear();
         self.ram_bytes_used = 0;
         self.pending_has_blocks = false;
         let private = self.delete_queue.freeze_private_buffer(&segment_name);
@@ -8395,8 +8442,8 @@ impl IndexWriter<'_> {
     /// `Lucene90DocValuesFormat` segment looks like, one meta entry per field
     /// interleaved into the same buffers, each field dense or sparse as its
     /// values require.
-    fn build_doc_values_output(
-        docs: &[Document],
+    fn build_doc_values_output<D: DocValueFields>(
+        docs: &[D],
         configs: &[DocValuesFieldConfig],
         segment_id: &[u8; ID_LENGTH],
         suffix: u32,
@@ -8448,8 +8495,8 @@ impl IndexWriter<'_> {
     /// value, else the sparse variant of the same type, as
     /// `Lucene90DocValuesConsumer` writes a field with missing values
     /// (`writeValues`' `IndexedDISI` over the documents that have one).
-    fn collect_dense_column(
-        docs: &[Document],
+    fn collect_dense_column<D: DocValueFields>(
+        docs: &[D],
         config: &DocValuesFieldConfig,
     ) -> Result<DenseColumn> {
         let n = config.field_number;
@@ -8500,14 +8547,14 @@ impl IndexWriter<'_> {
     /// `config`, in doc order. Shared by the dense/sparse single-field
     /// writer and by [`Self::collect_dense_column`], so the two can never
     /// disagree about what a document's value is.
-    fn collect_numeric_values(
-        docs: &[Document],
+    fn collect_numeric_values<D: DocValueFields>(
+        docs: &[D],
         config: &DocValuesFieldConfig,
     ) -> Result<Vec<(i32, i64)>> {
         let mut present: Vec<(i32, i64)> = Vec::with_capacity(docs.len());
         for (doc_id, doc) in docs.iter().enumerate() {
             let Some(field) = doc
-                .fields
+                .dv_fields()
                 .iter()
                 .find(|f| f.field_number == config.field_number)
             else {
@@ -8531,14 +8578,14 @@ impl IndexWriter<'_> {
 
     /// `(doc_id, bytes)` for every doc carrying a single BINARY/SORTED value
     /// for `config`, in doc order.
-    fn collect_binary_values(
-        docs: &[Document],
+    fn collect_binary_values<D: DocValueFields>(
+        docs: &[D],
         config: &DocValuesFieldConfig,
     ) -> Result<Vec<(i32, Vec<u8>)>> {
         let mut present: Vec<(i32, Vec<u8>)> = Vec::with_capacity(docs.len());
         for (doc_id, doc) in docs.iter().enumerate() {
             let Some(field) = doc
-                .fields
+                .dv_fields()
                 .iter()
                 .find(|f| f.field_number == config.field_number)
             else {
@@ -8573,15 +8620,15 @@ impl IndexWriter<'_> {
     /// value" and "the last stored value" -- so an unsorted column makes a
     /// selector pick the wrong one rather than merely looking untidy. This
     /// port used to keep the caller's order.
-    fn collect_sorted_numeric_values(
-        docs: &[Document],
+    fn collect_sorted_numeric_values<D: DocValueFields>(
+        docs: &[D],
         config: &DocValuesFieldConfig,
     ) -> Result<Vec<(i32, Vec<i64>)>> {
         let mut present: Vec<(i32, Vec<i64>)> = Vec::with_capacity(docs.len());
         for (doc_id, doc) in docs.iter().enumerate() {
             let mut per_doc: Vec<i64> = Vec::new();
             for field in doc
-                .fields
+                .dv_fields()
                 .iter()
                 .filter(|f| f.field_number == config.field_number)
             {
@@ -8608,15 +8655,15 @@ impl IndexWriter<'_> {
 
     /// `(doc_id, values)` for every doc carrying at least one SORTED_SET
     /// value for `config`, in doc order.
-    fn collect_sorted_set_values(
-        docs: &[Document],
+    fn collect_sorted_set_values<D: DocValueFields>(
+        docs: &[D],
         config: &DocValuesFieldConfig,
     ) -> Result<Vec<(i32, Vec<Vec<u8>>)>> {
         let mut present: Vec<(i32, Vec<Vec<u8>>)> = Vec::with_capacity(docs.len());
         for (doc_id, doc) in docs.iter().enumerate() {
             let mut per_doc: Vec<Vec<u8>> = Vec::new();
             for field in doc
-                .fields
+                .dv_fields()
                 .iter()
                 .filter(|f| f.field_number == config.field_number)
             {
@@ -8643,8 +8690,8 @@ impl IndexWriter<'_> {
     /// [`Self::build_doc_values_output`]'s `DocValuesType::Numeric` branch --
     /// see that function's own doc comment for the shared dense-only/
     /// missing-value-fails-the-whole-commit contract.
-    fn build_numeric_doc_values_output(
-        docs: &[Document],
+    fn build_numeric_doc_values_output<D: DocValueFields>(
+        docs: &[D],
         config: &DocValuesFieldConfig,
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
@@ -8684,8 +8731,8 @@ impl IndexWriter<'_> {
     /// (raw bytes, real Lucene's own `SortedDocValuesField`/`BytesRef`
     /// convention) rather than numeric -- anything else fails with
     /// [`Error::NonBinaryDocValue`].
-    fn build_sorted_doc_values_output(
-        docs: &[Document],
+    fn build_sorted_doc_values_output<D: DocValueFields>(
+        docs: &[D],
         config: &DocValuesFieldConfig,
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
@@ -8724,8 +8771,8 @@ impl IndexWriter<'_> {
     /// [`Self::build_sorted_doc_values_output`] (BINARY has no terms
     /// dictionary/dedup/ordinals -- every doc's raw bytes are stored
     /// verbatim, unlike SORTED).
-    fn build_binary_doc_values_output(
-        docs: &[Document],
+    fn build_binary_doc_values_output<D: DocValueFields>(
+        docs: &[D],
         config: &DocValuesFieldConfig,
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
@@ -8767,8 +8814,8 @@ impl IndexWriter<'_> {
     /// `SortedNumericDocValuesField` requires at least one value per doc in
     /// this dense-only shape, same as [`doc_values::write_single_dense_sorted_numeric_field`]'s
     /// own `EmptyMultiValuedDoc` guard).
-    fn build_sorted_numeric_doc_values_output(
-        docs: &[Document],
+    fn build_sorted_numeric_doc_values_output<D: DocValueFields>(
+        docs: &[D],
         config: &DocValuesFieldConfig,
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
@@ -8811,8 +8858,8 @@ impl IndexWriter<'_> {
     /// fields fails the whole commit with [`Error::MissingDenseDocValue`] --
     /// same dense-only, "missing value fails the whole commit" contract as
     /// [`Self::build_sorted_doc_values_output`].
-    fn build_sorted_set_doc_values_output(
-        docs: &[Document],
+    fn build_sorted_set_doc_values_output<D: DocValueFields>(
+        docs: &[D],
         config: &DocValuesFieldConfig,
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
@@ -9086,8 +9133,8 @@ impl IndexWriter<'_> {
     /// Builds this flush's `.kdm`/`.kdi`/`.kdd` for every points field any
     /// pending document has a value for -- `PointValuesWriter.flush` into
     /// `Lucene90PointsWriter.writeField` -- or `None` when none has one.
-    fn build_points_output(
-        docs: &[Document],
+    fn build_points_output<D: DocValueFields>(
+        docs: &[D],
         configs: &[PointsFieldConfig],
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<Option<PointsOutput>> {
@@ -9105,7 +9152,7 @@ impl IndexWriter<'_> {
             })
             .collect();
         for (doc_id, doc) in docs.iter().enumerate() {
-            for field in &doc.fields {
+            for field in doc.dv_fields() {
                 let Some(slot) = configs
                     .iter()
                     .position(|c| c.field_number == field.field_number)
@@ -9262,12 +9309,17 @@ impl IndexWriter<'_> {
     ) -> Result<Vec<String>> {
         let mut names = Vec::new();
         for group in groups {
-            let suffix = per_field_postings::codec_suffix(POSTINGS_FORMAT_NAME, group.suffix);
-            names.extend(Self::write_postings_group_files(
-                dir,
-                &format!("{segment_name}_{suffix}"),
-                &group.output,
-            )?);
+            let seg = format!("{segment_name}_{}", group.codec_suffix());
+            names.extend(Self::write_postings_group_files(dir, &seg, &group.output)?);
+            if let Some(completion) = &group.completion {
+                // `CompletionFieldsConsumer`: `.lkp` opened with the
+                // delegate, `.cmp` written at close.
+                for (ext, bytes) in [("lkp", &completion.lkp), ("cmp", &completion.cmp)] {
+                    let name = format!("{seg}.{ext}");
+                    write_file(dir, &name, bytes)?;
+                    names.push(name);
+                }
+            }
         }
         Ok(names)
     }
@@ -9487,14 +9539,16 @@ impl IndexWriter<'_> {
         }
     }
 
-    /// `IndexWriter.forceMerge(maxNumSegments)` over the committed segments,
-    /// `TieredMergePolicy.findForcedMerges`' outcome without its size cap:
-    /// while more than `max_num_segments` remain, the smallest are merged into
-    /// one, and a lone segment left with hard deletes is rewritten when
-    /// `max_num_segments` is 1. Each merge publishes its own commit carrying
-    /// the current commit data. Buffered and flushed-but-uncommitted
-    /// documents are not part of it -- commit first, as OpenSearch's engine
-    /// does before a force merge.
+    /// `IndexWriter.forceMerge(maxNumSegments)` over the committed segments.
+    /// Down to one segment it is `TieredMergePolicy.findForcedMerges`
+    /// itself: every segment merged at once, largest first (which fixes the
+    /// merged document order). Otherwise it is that function's outcome
+    /// without its size cap: while more than `max_num_segments` remain, the
+    /// smallest are merged into one. A lone segment left with hard deletes
+    /// is rewritten when `max_num_segments` is 1. Each merge publishes its
+    /// own commit carrying the current commit data. Buffered and
+    /// flushed-but-uncommitted documents are not part of it -- commit
+    /// first, as OpenSearch's engine does before a force merge.
     pub fn force_merge(&mut self, max_num_segments: usize) -> Result<()> {
         if max_num_segments == 0 {
             return Err(Error::InvalidMaxNumSegments(max_num_segments));
@@ -9511,6 +9565,18 @@ impl IndexWriter<'_> {
                     }
                 }
                 return Ok(());
+            }
+            if max_num_segments == 1 {
+                // `findForcedMerges` itself, whose merge-down-to-one case
+                // has no size cap: every segment in one merge, largest
+                // first -- the merged segment's document order.
+                let config = merge_policy::MergePolicyConfig::default();
+                let names: Vec<String> = merge_policy::find_forced_merges(&stats, 1, &config)
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                self.execute_merge(&names)?;
+                continue;
             }
             stats.sort_by_key(|s| s.size_bytes);
             // ARITH: `stats.len() > max_num_segments >= 1` here, so the
@@ -10296,7 +10362,7 @@ impl IndexWriter<'_> {
         self.pending_custom_freq_terms.clear();
         self.pending_vectors.clear();
         self.pending_explicit.clear();
-        self.pending_docs_terms.clear();
+        self.pending_postings.clear();
         self.ram_bytes_used = 0;
         // Only ever `Some` inside `flush()`, and cleared at its end -- but a
         // `flush()` that fails *after* publishing the segment (in
@@ -10373,7 +10439,7 @@ impl IndexWriter<'_> {
         self.pending_custom_freq_terms.clear();
         self.pending_vectors.clear();
         self.pending_explicit.clear();
-        self.pending_docs_terms.clear();
+        self.pending_postings.clear();
         self.ram_bytes_used = 0;
         self.pending_has_blocks = false;
         // Java's `deleteAll`: `docWriter.lockAndAbortAll()` (which clears the

@@ -1,0 +1,9 @@
+search_topn_0	numHits must be > 0; please use TotalHitCountCollectorManager if you just need the total hit count
+search_topn_negative	numHits must be > 0; please use TotalHitCountCollectorManager if you just need the total hit count
+add_empty_component	each path component must have length > 0 (got: "")
+facet_query_empty	each path component must have length > 0 (got: "")
+multi_facet_query_empty	each path component must have length > 0 (got: "")
+managers_size	drillSidewaysCollectorManagers size must be equal to number of dimensions in the query.
+managers_null	The query requires not null drillSidewaysCollectorManagers
+managers_null_no_dims	ok
+managers_ok	ok

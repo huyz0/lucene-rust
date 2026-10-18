@@ -1,0 +1,33 @@
+F:fox
+F:quick
+F:fox F:dog
+F:"quick brown"
+F:"quick brown"~2
+F:"brown fox" F:"quick brown"
+F:"quick brown fox" F:"brown fox jumps"
+F:"quick brown" F:"brown fox" F:"fox jumps"
++F:fox -F:cat
+F:qu*
+F:f?x
+F:fox~1
+F:/qu.*k/
+F:fox^2 F:dog
+F:"lazy dog"^3 F:fox
+F:the
+F:zzz
+(F:fox OR F:dog) AND F:lazy
+F:caf*
+F:fox F:fox
+F:(fox OR quick)^0.5
+F:"fox jumps"~1 F:"jumps over"~1
+F:"dog until"~3
+F:fox F:foxes
+tv:fox tvb:quick
+tv:"quick brown" tvb:the
+tv:fox^3 tvb:fox
+F:qb F:quick
+F:"qb brown" F:"quick brown"
+F:"qb brown fox"
+F:"quick brown"~1 F:"brown fox"
+tv:"quick brown" tvb:"brown fox"
+F:t*

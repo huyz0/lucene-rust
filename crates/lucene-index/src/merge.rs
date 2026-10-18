@@ -346,7 +346,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::index_writer::{DOC_VALUES_FORMAT_NAME, POSTINGS_FORMAT_NAME};
+use crate::index_writer::DOC_VALUES_FORMAT_NAME;
 use crate::segment_info::{self, IndexSortField, LuceneVersion, SegmentInfo, SortKeyComparator};
 use crate::segment_infos::SegmentCommitInfo;
 use lucene_codecs::blocktree::{self, FieldTerms};
@@ -1023,7 +1023,12 @@ impl SegmentFormat {
         match self {
             SegmentFormat::StoredFields => &["fdt", "fdx", "fdm"],
             SegmentFormat::TermVectors => &["tvd", "tvx", "tvm"],
-            SegmentFormat::Postings => &["tim", "tip", "tmd", "doc", "psm", "pos", "pay"],
+            // `.lkp`/`.cmp` are `Completion104`'s suggester files: its
+            // `merge` rebuilds them from the merged postings' payloads, so
+            // the postings being opened is what they need.
+            SegmentFormat::Postings => &[
+                "tim", "tip", "tmd", "doc", "psm", "pos", "pay", "lkp", "cmp",
+            ],
             SegmentFormat::DocValues => &["dvd", "dvm", "dvs"],
             SegmentFormat::Norms => &["nvd", "nvm"],
             SegmentFormat::Points => &["kdd", "kdi", "kdm"],
@@ -1503,7 +1508,7 @@ fn concat_doc_order(per_source_live_ids: &[Vec<i32>]) -> Vec<(usize, i32)> {
 ///
 fn describe_written_files(
     merged_fields: &mut [FieldInfo],
-    postings_suffixes: &[(i32, u32)],
+    postings_suffixes: &[(i32, &'static str, u32)],
     doc_values_suffixes: &[(i32, u32)],
     wrote_term_vectors: bool,
     vector_fields: &[(i32, &'static str, u32)],
@@ -1518,10 +1523,12 @@ fn describe_written_files(
                 && key != "PerFieldKnnVectorsFormat.format"
                 && key != "PerFieldKnnVectorsFormat.suffix"
         });
-        if let Some((_, suffix)) = postings_suffixes.iter().find(|(n, _)| *n == f.number) {
+        if let Some((_, format_name, suffix)) =
+            postings_suffixes.iter().find(|(n, _, _)| *n == f.number)
+        {
             f.attributes.push((
                 "PerFieldPostingsFormat.format".to_string(),
-                POSTINGS_FORMAT_NAME.to_string(),
+                format_name.to_string(),
             ));
             f.attributes.push((
                 "PerFieldPostingsFormat.suffix".to_string(),
@@ -2419,7 +2426,11 @@ pub fn merge_segments_mapped(
             if !output.pay.is_empty() {
                 exts.push(("pay", &output.pay));
             }
-            let suffix = per_field_postings::codec_suffix(POSTINGS_FORMAT_NAME, group.suffix);
+            if let Some(completion) = &group.completion {
+                exts.push(("lkp", &completion.lkp));
+                exts.push(("cmp", &completion.cmp));
+            }
+            let suffix = group.codec_suffix();
             for (ext, bytes) in exts {
                 let name = format!("{merged_segment_name}_{suffix}.{ext}");
                 write_file(dir, &name, bytes)?;
@@ -4955,6 +4966,7 @@ mod tests {
     #![allow(clippy::arithmetic_side_effects)]
 
     use super::*;
+    use crate::index_writer::POSTINGS_FORMAT_NAME;
     use crate::index_writer::{per_field_codec_suffix, per_field_segment, PER_FIELD_SUFFIX};
     use crate::segment_writer;
     use lucene_codecs::field_infos::{
@@ -14704,7 +14716,7 @@ mod tests {
         fields[0]
             .attributes
             .push(("keep".to_string(), "me".to_string()));
-        describe_written_files(&mut fields, &[(0, 0)], &[], false, &[], &[]);
+        describe_written_files(&mut fields, &[(0, "Lucene104", 0)], &[], false, &[], &[]);
         assert!(fields[0]
             .attributes
             .contains(&("keep".to_string(), "me".to_string())));
@@ -14752,7 +14764,14 @@ mod tests {
             f.omit_norms = false;
         }
         fields[1].omit_norms = true;
-        describe_written_files(&mut fields, &[(0, 0), (1, 0)], &[], false, &[], &[]);
+        describe_written_files(
+            &mut fields,
+            &[(0, "Lucene104", 0), (1, "Lucene104", 0)],
+            &[],
+            false,
+            &[],
+            &[],
+        );
         assert!(!fields[0].omit_norms, "an indexed field keeps its norms");
         assert!(fields[1].omit_norms, "an opted-out field keeps its opt-out");
     }

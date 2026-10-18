@@ -20,6 +20,8 @@ mod match_highlight;
 mod term_vector;
 #[cfg(test)]
 mod tests;
+pub mod unified;
+pub mod vectorhighlight;
 mod word_break;
 
 pub use extractor::{
@@ -40,7 +42,7 @@ pub use match_highlight::{
     PassageSelector, QueryOffsetRange, StoredValues,
 };
 pub use term_vector::{TokenSources, TokenStreamFromTermVector};
-pub use word_break::WordBreakIterator;
+pub use word_break::{Kind as BreakKind, RuleBreakIterator};
 
 use std::sync::Arc;
 

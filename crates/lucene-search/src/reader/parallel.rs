@@ -280,6 +280,10 @@ impl LeafReader for ParallelLeafReader {
         self.reader_for(field)
             .map_or(Ok(None), |r| r.doc_values_skipper(field))
     }
+    fn sorted_numeric_is_singleton(&self, field: &str) -> bool {
+        self.reader_for(field)
+            .is_some_and(|r| r.sorted_numeric_is_singleton(field))
+    }
     /// Every reader, main and stored-fields alike (`completeReaderSet`).
     fn check_integrity(&self) -> Result<()> {
         for r in self
