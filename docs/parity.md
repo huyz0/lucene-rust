@@ -60,6 +60,7 @@ Milestones (M1-M12, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [monitor.md](parity/monitor.md) | `lucene-search`: the percolator: query analysis, presearcher, query index and facade (M13 T13.5a-d) | 11 |
 | [expressions.md](parity/expressions.md) | `lucene-expressions`: JavaScript expressions as `DoubleValuesSource`s (M14 T14.2) | 4 |
 | [classification.md](parity/classification.md) | `lucene-classification`: naive Bayes, k-NN and perceptron classifiers, their evaluation and dataset splitting (M14 T14.3) | 5 |
+| [replicator.md](parity/replicator.md) | `lucene-replicator`: near-real-time replication -- primary and replica nodes, copy jobs, file ref-counting (M14 T14.3) | 9 |
 | [misc.md](parity/misc.md) | `lucene-misc`: index and search utilities (M14 T14.3; the rest of the jar is M14.b-i) | 25 |
 | [geo-points.md](parity/geo-points.md) | Geo point fields and queries (M9 T9.2) | 9 |
 | [geo-shapes.md](parity/geo-shapes.md) | Geo shape fields and queries (M9 T9.3) | 8 |

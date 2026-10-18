@@ -10,7 +10,7 @@
 | **Effort** | L |
 | **Depends on** | [M7](m7-core-complete.md)–[M13](m13-search-application-modules.md) |
 | **Unblocks** | "fully ported", as the inventory gate defines it |
-| **Status** | in progress: T14.2 and T14.3's `classification` done |
+| **Status** | in progress: T14.2 and T14.3's `classification`, `misc` (bar the CLI tools) and `replicator` done |
 
 ---
 
@@ -23,7 +23,7 @@ After M7–M13 what is left is either self-contained or tooling:
 | `codecs` | 95 | 19,242 | `SimpleText`, bloom filters, `BlockTreeOrds`, `UniformSplit`, memory postings |
 | `expressions` | 19 | 2,697 | JavaScript expressions compiled to JVM bytecode |
 | `classification` | 19 | 1,961 | k-NN and naive Bayes text classifiers |
-| `replicator` | 13 | 1,526 | index and taxonomy replication |
+| `replicator` | 13 | 2,439 | near-real-time replication (`nrt`: 11 classes and two `package-info`s) |
 | `misc` | 39 | 4,107 | `IndexSplitter`, `HighFreqTerms`, sorting and store utilities |
 | `sandbox` | 113 | 11,849 | whatever M10 did not need |
 | `test-framework` | 237 | 60,830 | random indexing, asserting codecs, mock analyzers |
@@ -65,6 +65,7 @@ After M7–M13 what is left is either self-contained or tooling:
 - **T14.3** — `classification`, `replicator`, `misc`, `sandbox`.
   `classification` **done**: [`docs/parity/classification.md`](../parity/classification.md)
   (its `DatasetSplitter` brought term vectors to the explicit writer).
+  `replicator` **done**: [`docs/parity/replicator.md`](../parity/replicator.md).
 - **T14.4** — Test framework utilities, then a first batch of ported Lucene
   tests chosen by the bugs they historically caught.
 - **T14.5** — Index inspector CLI, demo, benchmark scripts.
@@ -82,7 +83,7 @@ or ledger row in the same commit. Order is by dependency and size.
 | M14.b | `misc` utilities: `TermStats`, `GetTermInfo`, `HighFreqTerms`, `CollectorMemoryTracker`, `SweetSpotSimilarity`, `MemoryTracker`, `document/LazyDocument`, `util/fst/*` | ~1,100 | `lucene-search::misc` | ported: `HighFreqTerms`, `TermStats`, `CollectorMemoryTracker`, `MemoryTracker`, `SweetSpotSimilarity`, `LazyDocument`, `ListOfOutputs` and `UpToTwoPositiveIntOutputs`, each equal to Lucene's where there is output to compare (`misc_fixtures.rs`, `misc_fst_fixtures.rs`, `misc_lazy_fixtures.rs`); `GetTermInfo` waits for the CLI tools (M14.i) |
 | M14.c | `misc` index tools: `IndexSplitter`, `MultiPassIndexSplitter`, `PKIndexSplitter`, `IndexRearranger`, `IndexMergeTool`, `BinaryDocValueSelector`, `BPIndexReorderer`, `BPReorderingMergePolicy` | ~3,000 | `lucene-search::misc` | done, but `IndexMergeTool`'s command line is M14.i |
 | M14.d | `misc` search and store: `DiversifiedTopDocsCollector`(+manager), `DocValuesStats`(+collectors), `HumanReadableQuery`, memory-accounting bitset collectors, `DirectIODirectory`, `RAFDirectory`, `HardlinkCopyDirectoryWrapper`, byte-tracking wrappers | ~2,400 | `lucene-search::misc`, `lucene-store` for directories | done |
-| M14.e | `replicator` (index and taxonomy replication) | 1,526 | `lucene-search::replicator` | planned |
+| M14.e | `replicator` (near-real-time replication; 10.5.0 has only the `nrt` package -- the revision replicator, its taxonomy flavour and HTTP service are gone from the jar) | 2,439 | `lucene-search::replicator` | done: all 11 classes ported ([`docs/parity/replicator.md`](../parity/replicator.md)); a Rust replica copies Java primaries' points and Java's `FileMetaData` and `infosBytes` read back equal, and Java bytes that are damaged or disagree with Java's checksum are refused (`replicator_nrt_fixtures.rs`) |
 | M14.f | `sandbox` (113 classes, many small; triaged to `ported` or `not needed` per class) | 11,849 | per area | planned |
 | M14.g | `codecs` non-default codecs (`SimpleText`, bloom, `BlockTreeOrds`, `UniformSplit`, memory postings) | 19,242 | `lucene-codecs` | planned |
 | M14.h | test framework: `RandomIndexWriter`, `MockAnalyzer`, `MockDirectoryWrapper`, asserting readers, plus the chosen batch of Lucene tests | 60,830 (batch by acceptance) | `lucene-util` / test support crate | planned |
