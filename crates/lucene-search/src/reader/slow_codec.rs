@@ -127,6 +127,9 @@ impl LeafReader for SlowCodecReaderWrapper {
     ) -> Result<Option<lucene_codecs::doc_values::DocValuesSkipper<'_>>> {
         self.in_.doc_values_skipper(field)
     }
+    fn sorted_numeric_is_singleton(&self, field: &str) -> bool {
+        self.in_.sorted_numeric_is_singleton(field)
+    }
     fn check_integrity(&self) -> Result<()> {
         self.in_.check_integrity()
     }

@@ -2,7 +2,7 @@
 # Checked by scripts/check-port-inventory.py --module facet (see its docstring for the statuses).
 # class	status	detail
 facet/DrillDownQuery	ported	crates/lucene-search/src/facets/drill_down_query.rs::DrillDownQuery
-facet/DrillSideways	partial	crates/lucene-search/src/facets/drill_sideways.rs::DrillSideways -- M13: the SortedSetDocValuesReaderState constructors (T13.4d) and the Sort overloads
+facet/DrillSideways	partial	crates/lucene-search/src/facets/drill_sideways.rs::DrillSideways -- M13: the SortedSetDocValuesReaderState constructors (T13.4d2) and the Sort overloads
 facet/DrillSidewaysQuery	ported	crates/lucene-search/src/facets/drill_sideways_query.rs::DrillSidewaysQuery
 facet/DrillSidewaysScorer	ported	crates/lucene-search/src/facets/drill_sideways_scorer.rs::DrillSidewaysScorer
 facet/FacetCountsWithFilterQuery	ported	crates/lucene-search/src/facets/facet_counts_with_filter_query.rs::FacetCountsWithFilterQuery
@@ -13,52 +13,52 @@ facet/Facets	ported	crates/lucene-search/src/facets/facets_trait.rs::Facets
 facet/FacetsCollector	ported	crates/lucene-search/src/facets/facets_collector.rs::FacetsCollector
 facet/FacetsCollectorManager	ported	crates/lucene-search/src/facets/facets_collector.rs::FacetsCollectorManager
 facet/FacetsConfig	ported	crates/lucene-search/src/facets.rs::FacetsConfig
-facet/facetset/DimRange	todo:M13	Defines a single range in a FacetSet dimension.
-facet/facetset/DoubleFacetSet	todo:M13	A FacetSet which encodes double dimension values.
-facet/facetset/ExactFacetSetMatcher	todo:M13	A FacetSetMatcher which considers a set as a match only if all dimension values are equal to the given one.
-facet/facetset/FacetSet	todo:M13	Holds a set of facet dimension values.
-facet/facetset/FacetSetDecoder	todo:M13	A functional interface for decoding facet set values into comparable `long` ones.
-facet/facetset/FacetSetMatcher	todo:M13	Matches the encoded FacetSet that was indexed in FacetSetsField.
-facet/facetset/FacetSetsField	todo:M13	A BinaryDocValuesField which encodes a list of FacetSet facet sets.
-facet/facetset/FloatFacetSet	todo:M13	A FacetSet which encodes float dimension values.
-facet/facetset/IntFacetSet	todo:M13	A FacetSet which encodes integer dimension values.
-facet/facetset/LongFacetSet	todo:M13	A FacetSet which encodes long dimension values.
-facet/facetset/MatchingFacetSetsCounts	todo:M13	Returns the counts for each given FacetSet
-facet/facetset/RangeFacetSetMatcher	todo:M13	A FacetSetMatcher which considers a set as a match if all dimensions fall within the given corresponding range.
+facet/facetset/DimRange	ported	crates/lucene-search/src/facets/facetset/matchers.rs::DimRange
+facet/facetset/DoubleFacetSet	ported	crates/lucene-search/src/facets/facetset/facet_set.rs::DoubleFacetSet
+facet/facetset/ExactFacetSetMatcher	ported	crates/lucene-search/src/facets/facetset/matchers.rs::ExactFacetSetMatcher
+facet/facetset/FacetSet	ported	crates/lucene-search/src/facets/facetset/facet_set.rs::FacetSet
+facet/facetset/FacetSetDecoder	ported	crates/lucene-search/src/facets/facetset/facet_set.rs::FacetSetDecoder
+facet/facetset/FacetSetMatcher	ported	crates/lucene-search/src/facets/facetset/matchers.rs::FacetSetMatcher
+facet/facetset/FacetSetsField	ported	crates/lucene-search/src/facets/facetset/facet_set.rs::FacetSetsField
+facet/facetset/FloatFacetSet	ported	crates/lucene-search/src/facets/facetset/facet_set.rs::FloatFacetSet
+facet/facetset/IntFacetSet	ported	crates/lucene-search/src/facets/facetset/facet_set.rs::IntFacetSet
+facet/facetset/LongFacetSet	ported	crates/lucene-search/src/facets/facetset/facet_set.rs::LongFacetSet
+facet/facetset/MatchingFacetSetsCounts	ported	crates/lucene-search/src/facets/facetset/matching_facet_sets_counts.rs::MatchingFacetSetsCounts
+facet/facetset/RangeFacetSetMatcher	ported	crates/lucene-search/src/facets/facetset/matchers.rs::RangeFacetSetMatcher
 facet/FacetUtils	ported	crates/lucene-search/src/facets/facet_utils.rs::live_docs_disi
 facet/LabelAndValue	ported	crates/lucene-search/src/facets/facet_result.rs::LabelAndValue
-facet/LongValueFacetCounts	todo:M13	Facets implementation that computes counts for all unique long values, more efficiently counting small values (0-1023) using an int array, and switching to a Ha
-facet/MultiDoubleValues	todo:M13	Per-segment, per-document double values, which can be calculated at search-time.
-facet/MultiDoubleValuesSource	todo:M13	Base class for producing MultiDoubleValues.
+facet/LongValueFacetCounts	ported	crates/lucene-search/src/facets/long_value_facet_counts.rs::LongValueFacetCounts
+facet/MultiDoubleValues	ported	crates/lucene-search/src/facets/multi_double_values_source.rs::MultiDoubleValues
+facet/MultiDoubleValuesSource	ported	crates/lucene-search/src/facets/multi_double_values_source.rs::MultiDoubleValuesSource
 facet/MultiFacetQuery	ported	crates/lucene-search/src/facets/facet_query.rs::MultiFacetQuery
 facet/MultiFacets	ported	crates/lucene-search/src/facets/multi_facets.rs::MultiFacets
-facet/MultiLongValues	todo:M13	Per-segment, per-document long values, which can be calculated at search-time.
-facet/MultiLongValuesSource	todo:M13	Base class for producing MultiLongValues.
+facet/MultiLongValues	ported	crates/lucene-search/src/facets/multi_long_values_source.rs::MultiLongValues
+facet/MultiLongValuesSource	ported	crates/lucene-search/src/facets/multi_long_values_source.rs::MultiLongValuesSource
 facet/RandomSamplingFacetsCollector	todo:M13	Collects hits for subsequent faceting, using sampling if needed.
-facet/range/DoubleRange	partial	crates/lucene-search/src/facets.rs::NumericRange -- M13: the class itself, as T13.4 ports lucene-facet
-facet/range/DoubleRangeFacetCounts	partial	crates/lucene-search/src/facets.rs::double_range_facet_counts -- M13: the class itself, as T13.4 ports lucene-facet
-facet/range/DynamicRangeUtil	todo:M13	Methods to create dynamic ranges for numeric fields.
-facet/range/ExclusiveLongRangeCounter	todo:M13	This implementation assumes the requested ranges do not overlap.
-facet/range/LongRange	partial	crates/lucene-search/src/facets.rs::NumericRange -- M13: the class itself, as T13.4 ports lucene-facet
-facet/range/LongRangeCounter	todo:M13	Counter for numeric ranges.
-facet/range/LongRangeFacetCounts	partial	crates/lucene-search/src/facets.rs::range_facet_counts -- M13: the class itself, as T13.4 ports lucene-facet
-facet/range/OverlappingLongRangeCounter	todo:M13	This implementation supports requested ranges that overlap.
-facet/range/Range	todo:M13	Base class for a single labeled range.
-facet/range/RangeFacetCounts	partial	crates/lucene-search/src/facets.rs::RangeCounts -- M13: the class itself, as T13.4 ports lucene-facet
-facet/rangeonrange/DoubleRange	todo:M13	Represents a double range for RangeOnRange faceting
-facet/rangeonrange/DoubleRangeOnRangeFacetCounts	todo:M13	Represents counts for double range on range faceting.
-facet/rangeonrange/LongRange	todo:M13	Represents a long range for RangeOnRange faceting
-facet/rangeonrange/LongRangeOnRangeFacetCounts	todo:M13	Represents counts for long range on range faceting.
-facet/rangeonrange/Range	todo:M13	Base class for a single labeled range.
-facet/rangeonrange/RangeOnRangeFacetCounts	todo:M13	RangeOnRangeFacetCounts
+facet/range/DoubleRange	ported	crates/lucene-search/src/facets/range/double_range.rs::DoubleRange
+facet/range/DoubleRangeFacetCounts	ported	crates/lucene-search/src/facets/range/double_range_facet_counts.rs::DoubleRangeFacetCounts
+facet/range/DynamicRangeUtil	ported	crates/lucene-search/src/facets/range/dynamic_range_util.rs::compute_dynamic_ranges
+facet/range/ExclusiveLongRangeCounter	ported	crates/lucene-search/src/facets/range/long_range_counter.rs::Exclusive
+facet/range/LongRange	ported	crates/lucene-search/src/facets/range/long_range.rs::LongRange
+facet/range/LongRangeCounter	ported	crates/lucene-search/src/facets/range/long_range_counter.rs::LongRangeCounter
+facet/range/LongRangeFacetCounts	ported	crates/lucene-search/src/facets/range/long_range_facet_counts.rs::LongRangeFacetCounts
+facet/range/OverlappingLongRangeCounter	ported	crates/lucene-search/src/facets/range/long_range_counter.rs::Overlapping
+facet/range/Range	ported	crates/lucene-search/src/facets/range.rs::Range
+facet/range/RangeFacetCounts	ported	crates/lucene-search/src/facets/range/range_facet_counts.rs::RangeFacetCounts
+facet/rangeonrange/DoubleRange	ported	crates/lucene-search/src/facets/rangeonrange/ranges.rs::DoubleRange
+facet/rangeonrange/DoubleRangeOnRangeFacetCounts	ported	crates/lucene-search/src/facets/rangeonrange/range_on_range_facet_counts.rs::DoubleRangeOnRangeFacetCounts
+facet/rangeonrange/LongRange	ported	crates/lucene-search/src/facets/rangeonrange/ranges.rs::LongRange
+facet/rangeonrange/LongRangeOnRangeFacetCounts	ported	crates/lucene-search/src/facets/rangeonrange/range_on_range_facet_counts.rs::LongRangeOnRangeFacetCounts
+facet/rangeonrange/Range	ported	crates/lucene-search/src/facets/rangeonrange/ranges.rs::label
+facet/rangeonrange/RangeOnRangeFacetCounts	ported	crates/lucene-search/src/facets/rangeonrange/range_on_range_facet_counts.rs::RangeOnRangeFacetCounts
 facet/sortedset/AbstractSortedSetDocValueFacetCounts	todo:M13	Base class for SSDV faceting implementations.
 facet/sortedset/ConcurrentSortedSetDocValuesFacetCounts	todo:M13	Like SortedSetDocValuesFacetCounts, but aggregates counts concurrently across segments.
 facet/sortedset/DefaultSortedSetDocValuesReaderState	partial	crates/lucene-search/src/facets.rs::FacetsState -- M13: the class itself, as T13.4 ports lucene-facet
 facet/sortedset/SortedSetDocValuesFacetCounts	partial	crates/lucene-search/src/facets.rs::SortedSetFacetCounts -- M13: the class itself, as T13.4 ports lucene-facet
 facet/sortedset/SortedSetDocValuesFacetField	ported	crates/lucene-search/src/facets/facet_field.rs::SortedSetDocValuesFacetField
 facet/sortedset/SortedSetDocValuesReaderState	partial	crates/lucene-search/src/facets.rs::FacetsState -- M13: the class itself, as T13.4 ports lucene-facet
-facet/StringDocValuesReaderState	todo:M13	Stores an OrdinalMap created for a specific IndexReader (reader) + field.
-facet/StringValueFacetCounts	todo:M13	StringValueFacetCounts
+facet/StringDocValuesReaderState	ported	crates/lucene-search/src/facets/string_value_facet_counts.rs::StringDocValuesReaderState
+facet/StringValueFacetCounts	ported	crates/lucene-search/src/facets/string_value_facet_counts.rs::StringValueFacetCounts
 facet/taxonomy/AssociationAggregationFunction	ported	crates/lucene-search/src/facets/taxonomy/association_aggregation_function.rs::AssociationAggregationFunction
 facet/taxonomy/AssociationFacetField	ported	crates/lucene-search/src/facets/taxonomy/association_facet_field.rs::AssociationFacetField
 facet/taxonomy/directory/Consts	ported	crates/lucene-search/src/facets/taxonomy/directory/consts.rs::FULL

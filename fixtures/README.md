@@ -1696,3 +1696,15 @@ committed fixture. Two were added by `c43-final-cleanup`:
   `paging.tsv`; `toString`, rewrite and hits of `DrillDownQuery`,
   `FacetQuery` and `MultiFacetQuery`: `queries.tsv`; Java's refusals:
   `errors.tsv`. Rust side: `drill_down_fixtures.rs`.
+- `GenValueFacets.java` (M13 T13.4d1) -- a 1,560-document index in four
+  segments with deletions (`value_facets/multi`) and a 250-document
+  one-segment index (`value_facets/single`), holding single- and
+  multi-valued long, double, float and string doc values, long/double range
+  fields and `FacetSetsField`s. Every `Facets` call of
+  `LongValueFacetCounts`, `StringValueFacetCounts`, `Long`/`DoubleRangeFacetCounts`
+  (field, `ValuesSource`, multi-valued and single-wrapped forms, with and
+  without a fast-match query), the range-on-range counters for every
+  `QueryType` and `MatchingFacetSetsCounts` over four queries: `facets.tsv`;
+  `LongRange`/`DoubleRange.getQuery` (`toString` and hits): `queries.tsv`;
+  `DynamicRangeUtil` over the indexes and hand-built arrays: `dynamic.tsv`;
+  Java's refusals: `errors.tsv`. Rust side: `value_facets_fixtures.rs`.

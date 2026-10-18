@@ -36,6 +36,7 @@ mod micro_infix;
 mod micro_spell;
 mod micro_taxonomy;
 mod micro_facet_counts;
+mod micro_value_facets;
 mod micro_drill_sideways;
 mod micro_doc_index;
 mod micro_fst_lookup;
@@ -2189,6 +2190,12 @@ fn main() {
                 .nth(2)
                 .expect("drill_sideways needs the FacetCountsMicro corpus directory");
             micro_drill_sideways::bench_drill_sideways(warmup, measure, &index);
+        }
+        "value_facets" => {
+            let index = std::env::args()
+                .nth(2)
+                .expect("value_facets needs the ValueFacetsMicro corpus directory");
+            micro_value_facets::bench_value_facets(warmup, measure, &index);
         }
         "m7_fixture" => micro_m7::bench_m7_fixture(warmup, measure),
         "query_builder" => micro_m7::bench_query_builder(warmup, measure),

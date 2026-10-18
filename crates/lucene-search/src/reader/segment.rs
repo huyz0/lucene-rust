@@ -1035,6 +1035,13 @@ impl LeafReader for SegmentReader {
             .map(doc_values::DocValuesSkipper::new))
     }
 
+    fn sorted_numeric_is_singleton(&self, field: &str) -> bool {
+        self.dv_field(field, DocValuesType::SortedNumeric, |m, n| {
+            m.sorted_numeric_entry(n)
+        })
+        .is_some_and(|(e, _)| e.addresses.is_none())
+    }
+
     fn check_integrity(&self) -> Result<()> {
         SegmentReader::check_integrity(self)
     }

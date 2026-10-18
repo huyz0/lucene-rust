@@ -78,6 +78,16 @@
 //! base query to chosen categories, [`FacetQuery`]/[`MultiFacetQuery`] are
 //! a category's term as a query, and [`DrillSideways`] counts, for each dim
 //! drilled into, the documents matching every other dim.
+//!
+//! **Value, range and facet-set counting are Java's too** (M13 T13.4d1).
+//! [`LongValueFacetCounts`] and [`StringValueFacetCounts`] count each
+//! distinct value of a field; [`range`] counts `long`/`double` values into
+//! ranges ([`range::LongRangeFacetCounts`], [`range::DoubleRangeFacetCounts`],
+//! [`range::dynamic_range_util`]), [`rangeonrange`] counts range fields into
+//! ranges, and [`facetset`] counts tuples by matcher. The multi-valued
+//! sources they read are [`multi_long_values_source`] and
+//! [`multi_double_values_source`]. The older range primitives here
+//! ([`NumericRange`], [`range_facet_counts`]) remain for the FFI layer.
 
 mod drill_down_query;
 mod drill_sideways;
@@ -90,7 +100,14 @@ mod facet_result;
 mod facet_utils;
 mod facets_collector;
 mod facets_trait;
+pub mod facetset;
+mod long_value_facet_counts;
+pub mod multi_double_values_source;
 mod multi_facets;
+pub mod multi_long_values_source;
+pub mod range;
+pub mod rangeonrange;
+mod string_value_facet_counts;
 pub mod taxonomy;
 #[cfg(test)]
 pub(crate) mod test_index;
@@ -109,7 +126,11 @@ pub use facets_collector::{
     DocIdSet, DocIdSetIter, FacetsCollector, FacetsCollectorManager, FacetsResult, MatchingDocs,
 };
 pub use facets_trait::{validate_top_n, Facets};
+pub use long_value_facet_counts::LongValueFacetCounts;
+pub use multi_double_values_source::{MultiDoubleValues, MultiDoubleValuesSource};
 pub use multi_facets::MultiFacets;
+pub use multi_long_values_source::{MultiLongValues, MultiLongValuesSource};
+pub use string_value_facet_counts::{StringDocValuesReaderState, StringValueFacetCounts};
 pub use top_ord_and_number_queue::{OrdAndValue, TopOrdAndNumberQueue};
 
 use lucene_codecs::doc_values::{self, NumericEntry, SortedNumericEntry};

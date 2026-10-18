@@ -859,6 +859,14 @@ pub trait LeafReader: IndexReader {
         Ok(None)
     }
 
+    /// Whether `DocValues.unwrapSingleton(getSortedNumericDocValues(field))`
+    /// is not `null`: the leaf's `SORTED_NUMERIC` field is in the codec's
+    /// one-value-per-document form. `false` for a field without
+    /// `SORTED_NUMERIC` values, and, by default, for a view.
+    fn sorted_numeric_is_singleton(&self, _field: &str) -> bool {
+        false
+    }
+
     /// `checkIntegrity()`: verifies the checksums of the files behind this
     /// leaf. A view with no files of its own checks its inner readers; the
     /// default, for a leaf holding none, has nothing to check.

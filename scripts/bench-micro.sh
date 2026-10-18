@@ -193,6 +193,19 @@ case "$BENCH" in
     PREP_ARGS=(build "$INDEX")
     JAVA_ARGS=(run)
     NEEDS_INDEX=1 ;;
+  value_facets)
+    # M13 T13.4d1's pair (ValueFacetsMicro.java / micro_value_facets.rs):
+    # LongValueFacetCounts, StringValueFacetCounts and the long/double range
+    # counters over the 200 000-document index ValueFacetsMicro builds (once)
+    # under benchmarks/.corpus/value-facets.
+    MAIN=ValueFacetsMicro
+    SRC=benchmarks/micro/java/ValueFacetsMicro.java
+    EXTRA_SRC="benchmarks/micro/java/FacetCountsMicro.java benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-facet"
+    INDEX="${INDEX_ARG:-$PWD/benchmarks/.corpus/value-facets}"
+    PREP_ARGS=(build "$INDEX")
+    JAVA_ARGS=(run)
+    NEEDS_INDEX=1 ;;
   # The document API's indexing: IndexWriter.addDocument over three document shapes.
   doc_index)
     MAIN=DocIndexMicro

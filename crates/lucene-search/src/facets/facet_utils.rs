@@ -5,8 +5,10 @@
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 use crate::facets::facets_collector::DocIdSet;
-use crate::reader::{DocIdSetIterator, DocValuesIterator, NO_MORE_DOCS};
-use crate::Result;
+use lucene_codecs::field_infos::DocValuesType;
+
+use crate::reader::{DocIdSetIterator, DocValuesIterator, LeafReader, NO_MORE_DOCS};
+use crate::{Error, Result};
 
 /// `FacetUtils.liveDocsDISI(it, liveDocs)`: `it` without the deleted
 /// documents.
@@ -194,6 +196,72 @@ where
                 next = bits.next_set_bit(i.saturating_add(1));
             }
         }
+    }
+    Ok(())
+}
+
+/// `DocValues.unwrapSingleton(DocValues.getSortedNumeric(reader, field)) !=
+/// null`: a field the leaf lacks (`emptySortedNumeric()` is a singleton), a
+/// `NUMERIC` field, or a `SORTED_NUMERIC` field in the codec's
+/// one-value-per-document form.
+pub(crate) fn sorted_numeric_is_single_valued<R: LeafReader + ?Sized>(
+    reader: &R,
+    field: &str,
+) -> bool {
+    match reader.field_infos().field_by_name(field) {
+        None => true,
+        Some(fi) => match fi.doc_values_type {
+            DocValuesType::SortedNumeric => reader.sorted_numeric_is_singleton(field),
+            _ => true,
+        },
+    }
+}
+
+/// The single-dim facets' `validateDimAndPathForGetChildren(dim, path)`.
+pub(crate) fn validate_dim_and_path(field: &str, dim: &str, path: &[&str]) -> Result<()> {
+    if dim != field {
+        return Err(Error::IllegalArgument(format!(
+            "invalid dim \"{dim}\"; should be \"{field}\""
+        )));
+    }
+    if !path.is_empty() {
+        return Err(Error::IllegalArgument("path.length should be 0".into()));
+    }
+    Ok(())
+}
+
+/// Each document of `set`, in order.
+pub(crate) fn for_each_doc(set: &DocIdSet, mut f: impl FnMut(i32) -> Result<()>) -> Result<()> {
+    match set {
+        DocIdSet::Empty => {}
+        DocIdSet::Array(docs) => {
+            for &doc in docs {
+                f(doc)?;
+            }
+        }
+        DocIdSet::Bits { bits, .. } => {
+            let mut next = bits.next_set_bit(0);
+            while let Some(i) = next {
+                let Ok(doc) = i32::try_from(i) else {
+                    break;
+                };
+                f(doc)?;
+                next = bits.next_set_bit(i.saturating_add(1));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Each document of `it`, in order.
+pub(crate) fn for_each_iter(
+    it: &mut (dyn DocIdSetIterator + '_),
+    mut f: impl FnMut(i32) -> Result<()>,
+) -> Result<()> {
+    let mut doc = it.next_doc()?;
+    while doc != NO_MORE_DOCS {
+        f(doc)?;
+        doc = it.next_doc()?;
     }
     Ok(())
 }
