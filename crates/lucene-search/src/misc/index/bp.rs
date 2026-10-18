@@ -232,8 +232,7 @@ impl BpIndexReorderer {
     ) -> std::result::Result<Forward, ReorderError> {
         let max_doc = reader.max_doc();
         let n = usize::try_from(max_doc).unwrap_or(0);
-        let max_num_terms = ((self.ram_budget_mb * 1024.0 * 1024.0
-            - doc_ram_requirements(max_doc))
+        let max_num_terms = ((self.ram_budget_mb * 1024.0 * 1024.0 - doc_ram_requirements(max_doc))
             / 1.0
             / TERM_RAM_PER_THREAD_PER_TERM as f64) as i32;
         let max_doc_freq = (f64::from(self.max_doc_freq) * f64::from(max_doc)) as i32;

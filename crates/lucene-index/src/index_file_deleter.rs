@@ -85,6 +85,47 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// `SegmentInfos.files(includeSegmentsFile)` for a caller with no deleter
+/// (the replicator's replica nodes): every file `infos` names, read off the
+/// segments' `.si` files in `dir`.
+///
+/// # Errors
+/// A segment's `.si` is missing or unreadable.
+pub fn files_of_infos(
+    dir: &dyn Directory,
+    infos: &SegmentInfos,
+    include_segments_file: bool,
+) -> Result<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    if include_segments_file {
+        if let Some(name) = lucene_store::directory::segments_file_name(infos.generation) {
+            seen.insert(name.clone());
+            out.push(name);
+        }
+    }
+    for sci in &infos.segments {
+        for f in segment_files(dir, sci)? {
+            if seen.insert(f.clone()) {
+                out.push(f);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// `SegmentCommitInfo.files()` for a caller with no deleter: the files of one
+/// segment, read off its `.si` in `dir`.
+///
+/// # Errors
+/// The `.si` is missing or unreadable.
+pub fn segment_files(dir: &dyn Directory, sci: &SegmentCommitInfo) -> Result<Vec<String>> {
+    let bytes = dir.open(&format!("{}.si", sci.segment_name))?.to_vec();
+    let si = segment_info::parse_for_codec(&bytes, &sci.segment_id, &sci.codec_name)?;
+    let si_files = IndexFileDeleter::with_self_listing(&sci.segment_name, si.files);
+    Ok(sci.files(&si_files))
+}
+
 /// Port of `IndexDeletionPolicy`, restricted to Lucene's two stateless
 /// built-ins.
 ///

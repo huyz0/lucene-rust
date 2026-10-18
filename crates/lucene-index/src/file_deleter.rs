@@ -36,12 +36,12 @@ struct RefCount {
 impl RefCount {
     fn inc_ref(&mut self) -> i32 {
         self.init_done = true;
-        self.count += 1;
+        self.count = self.count.wrapping_add(1);
         self.count
     }
 
     fn dec_ref(&mut self) -> i32 {
-        self.count -= 1;
+        self.count = self.count.wrapping_sub(1);
         self.count
     }
 }
