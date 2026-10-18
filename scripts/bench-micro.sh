@@ -181,6 +181,18 @@ case "$BENCH" in
     PREP_ARGS=(build "$INDEX")
     JAVA_ARGS=(run)
     NEEDS_INDEX=1 ;;
+  drill_sideways)
+    # M13 T13.4c's pair (DrillSidewaysMicro.java / micro_drill_sideways.rs):
+    # a sequential DrillSideways.search per DrillSidewaysScorer strategy, over
+    # facet_counts' corpus (built by FacetCountsMicro, which this prep calls).
+    MAIN=DrillSidewaysMicro
+    SRC=benchmarks/micro/java/DrillSidewaysMicro.java
+    EXTRA_SRC="benchmarks/micro/java/FacetCountsMicro.java benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-facet"
+    INDEX="${INDEX_ARG:-$PWD/benchmarks/.corpus/facet-counts}"
+    PREP_ARGS=(build "$INDEX")
+    JAVA_ARGS=(run)
+    NEEDS_INDEX=1 ;;
   # The document API's indexing: IndexWriter.addDocument over three document shapes.
   doc_index)
     MAIN=DocIndexMicro

@@ -1686,3 +1686,13 @@ committed fixture. Two were added by `c43-final-cleanup`:
   `search.tsv` (`FacetsCollectorManager.search`), `labels.tsv`
   (`TaxonomyFacetLabels`), `build.tsv` (`FacetsConfig.build` of associations)
   and `errors.tsv` (Java's refusals). Rust side: `facet_counts_fixtures.rs`.
+- `GenDrillDown.java` (M13 T13.4c) -- a 4,500-document index in three segments
+  (the first wider than `DrillSidewaysScorer`'s 2,048-document window;
+  deletions; a dim in its own index field) with a taxonomy (`drill_down/index`,
+  `drill_down/taxo`), and `DrillSideways.search` for nine base queries and
+  sixteen drill-downs, sequentially, with an executor, with
+  `scoreSubDocsAtOnce` and with a `TotalHitCountCollectorManager`:
+  `sideways.tsv`; `search(after, ..)`, a filter and topN past `maxDoc`:
+  `paging.tsv`; `toString`, rewrite and hits of `DrillDownQuery`,
+  `FacetQuery` and `MultiFacetQuery`: `queries.tsv`; Java's refusals:
+  `errors.tsv`. Rust side: `drill_down_fixtures.rs`.

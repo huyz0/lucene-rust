@@ -73,9 +73,19 @@
 //! documents per segment, [`taxonomy::FastTaxonomyFacetCounts`] and the
 //! association facets count or aggregate them, and [`MultiFacets`] routes
 //! dims to the facets that hold them.
+//!
+//! **Drill-down is Java's too** (M13 T13.4c). [`DrillDownQuery`] narrows a
+//! base query to chosen categories, [`FacetQuery`]/[`MultiFacetQuery`] are
+//! a category's term as a query, and [`DrillSideways`] counts, for each dim
+//! drilled into, the documents matching every other dim.
 
+mod drill_down_query;
+mod drill_sideways;
+mod drill_sideways_query;
+mod drill_sideways_scorer;
 mod facet_counts_with_filter_query;
 mod facet_field;
+mod facet_query;
 mod facet_result;
 mod facet_utils;
 mod facets_collector;
@@ -86,8 +96,13 @@ pub mod taxonomy;
 pub(crate) mod test_index;
 mod top_ord_and_number_queue;
 
+pub use drill_down_query::DrillDownQuery;
+pub use drill_sideways::{
+    DrillSideways, DrillSidewaysFacets, DrillSidewaysResult, DrillSidewaysSearchResult,
+};
 pub use facet_counts_with_filter_query::FacetCountsWithFilterQuery;
 pub use facet_field::{verify_label, FacetEntry, FacetField, SortedSetDocValuesFacetField};
+pub use facet_query::{FacetQuery, MultiFacetQuery};
 pub use facet_result::{FacetResult, FacetValue, LabelAndValue};
 pub use facet_utils::{live_docs_disi, ConjunctionIterator, LiveDocsIterator};
 pub use facets_collector::{
