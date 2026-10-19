@@ -1,0 +1,33 @@
+# Lucene 10.5.0 lucene-misc: every top-level class of the jar, and what became of it.
+# Checked by scripts/check-port-inventory.py --module misc (see its docstring for the statuses).
+# class	status	detail
+misc/CollectorMemoryTracker	ported	crates/lucene-search/src/misc/memory.rs::CollectorMemoryTracker
+misc/GetTermInfo	todo:M14	M14.i: the CLI printing one term's totalTermFreq and docFreq, with the tools
+misc/HighFreqTerms	ported	crates/lucene-search/src/misc/high_freq.rs::get_high_freq_terms
+misc/IndexMergeTool	todo:M14	M14.i: the CLI merging the indices named on its command line into the first
+misc/SweetSpotSimilarity	ported	crates/lucene-search/src/misc/sweet_spot.rs::SweetSpotSimilarity
+misc/TermStats	ported	crates/lucene-search/src/misc/high_freq.rs::TermStats
+misc/document/LazyDocument	ported	crates/lucene-search/src/misc/lazy_document.rs::LazyDocument
+misc/index/BPIndexReorderer	ported	crates/lucene-search/src/misc/index/bp.rs::BpIndexReorderer
+misc/index/BPReorderingMergePolicy	ported	crates/lucene-search/src/misc/index/bp_merge_policy.rs::BpReorderingMergePolicy
+misc/index/BinaryDocValueSelector	ported	crates/lucene-search/src/misc/index/rearranger.rs::BinaryDocValueSelector
+misc/index/IndexRearranger	ported	crates/lucene-search/src/misc/index/rearranger.rs::IndexRearranger
+misc/index/IndexSplitter	ported	crates/lucene-search/src/misc/index/splitter.rs::IndexSplitter
+misc/index/MultiPassIndexSplitter	ported	crates/lucene-search/src/misc/index/multi_pass.rs::MultiPassIndexSplitter
+misc/index/PKIndexSplitter	ported	crates/lucene-search/src/misc/index/pk.rs::PkIndexSplitter
+misc/search/DiversifiedTopDocsCollector	ported	crates/lucene-search/src/misc/search.rs::DiversifiedTopDocsCollector
+misc/search/DiversifiedTopDocsCollectorManager	ported	crates/lucene-search/src/misc/search.rs::DiversifiedTopDocsCollectorManager
+misc/search/DocValuesStats	ported	crates/lucene-search/src/misc/search.rs::DocValuesStats
+misc/search/DocValuesStatsCollector	ported	crates/lucene-search/src/misc/search.rs::DocValuesStatsCollector
+misc/search/DocValuesStatsCollectorManager	ported	crates/lucene-search/src/misc/search.rs::DocValuesStatsCollectorManager
+misc/search/HumanReadableQuery	ported	crates/lucene-search/src/misc/search.rs::HumanReadableQuery
+misc/search/MemoryAccountingBitsetCollector	ported	crates/lucene-search/src/misc/search.rs::MemoryAccountingBitsetCollector
+misc/search/MemoryAccountingBitsetCollectorManager	ported	crates/lucene-search/src/misc/search.rs::MemoryAccountingBitsetCollectorManager
+misc/store/ByteTrackingIndexOutput	ported	crates/lucene-search/src/misc/store.rs::ByteTrackingIndexOutput
+misc/store/ByteWritesTrackingDirectoryWrapper	ported	crates/lucene-search/src/misc/store.rs::ByteWritesTrackingDirectory
+misc/store/DirectIODirectory	ported	crates/lucene-search/src/misc/store.rs::DirectIoDirectory
+misc/store/HardlinkCopyDirectoryWrapper	ported	crates/lucene-search/src/misc/store.rs::HardlinkCopyDirectory
+misc/store/RAFDirectory	ported	crates/lucene-search/src/misc/store.rs::RafDirectory
+misc/util/MemoryTracker	ported	crates/lucene-search/src/misc/memory.rs::MemoryTracker
+misc/util/fst/ListOfOutputs	ported	crates/lucene-search/src/misc/fst.rs::ListOfOutputs
+misc/util/fst/UpToTwoPositiveIntOutputs	ported	crates/lucene-search/src/misc/fst.rs::UpToTwoPositiveIntOutputs

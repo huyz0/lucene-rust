@@ -43,6 +43,9 @@ mod micro_doc_index;
 mod micro_fst_lookup;
 mod micro_highlight;
 mod micro_memory_index;
+mod micro_classification;
+mod micro_replicator;
+mod micro_expressions;
 mod micro_monitor;
 mod micro_queryparser;
 mod micro_hunspell;
@@ -2096,6 +2099,9 @@ fn main() {
         "analysis_opennlp" => micro_analysis_opennlp::bench_analysis_opennlp(warmup, measure),
         "queryparser" => micro_queryparser::bench_queryparser(warmup, measure),
         "monitor" => micro_monitor::bench_monitor(warmup, measure),
+        "expressions" => micro_expressions::bench_expressions(warmup, measure),
+        "classification" => micro_classification::bench_classification(warmup, measure),
+        "replicator" => micro_replicator::bench_replicator(warmup, measure),
         "memory_index" => micro_memory_index::bench_memory_index(warmup, measure),
         "highlight" => micro_highlight::bench_highlight(warmup, measure),
         "completion" => micro_completion::bench_completion(warmup, measure),

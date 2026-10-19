@@ -69,6 +69,12 @@ ICU_DEPS=(com.ibm.icu:icu4j:77.1)
 # (MIT; no binding, so OpenNLP's logging is silent).
 OPENNLP_DEPS=(org.apache.opennlp:opennlp-tools:2.5.3 org.slf4j:slf4j-api:2.0.16)
 
+# lucene-expressions 10.5.0's pom names ANTLR 4.13.2's runtime (BSD-3-Clause),
+# which parses the expression language, and ASM 9.6 (BSD-3-Clause), which
+# compiles it to JVM bytecode; crates/lucene-search/src/expressions ports both
+# halves as a parser and an evaluator.
+EXPRESSIONS_DEPS=(org.antlr:antlr4-runtime:4.13.2 org.ow2.asm:asm:9.6 org.ow2.asm:asm-commons:9.6)
+
 thirdparty_resolve_jar() {
   local coord="$1" group artifact version jar found=""
   IFS=: read -r group artifact version <<< "$coord"

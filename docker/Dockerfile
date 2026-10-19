@@ -39,8 +39,8 @@ RUN mkdir -p "$LUCENE_JARS" && cd "$LUCENE_JARS" \
     && base=https://repo1.maven.org/maven2/org/apache/lucene \
     && for m in lucene-core lucene-analysis-common lucene-queryparser \
                 lucene-facet lucene-highlighter lucene-suggest lucene-codecs \
-                lucene-monitor lucene-memory \
-                lucene-backward-codecs lucene-misc lucene-queries lucene-spatial3d \
+                lucene-monitor lucene-memory lucene-expressions lucene-classification \
+                lucene-backward-codecs lucene-misc lucene-replicator lucene-queries lucene-spatial3d \
                 lucene-spatial-extras lucene-join lucene-grouping \
                 lucene-analysis-icu lucene-analysis-kuromoji lucene-analysis-nori \
                 lucene-analysis-smartcn lucene-analysis-stempel \
@@ -59,7 +59,10 @@ RUN mkdir -p "$LUCENE_JARS" && cd "$LUCENE_JARS" \
     && curl -fsSL -O https://repo1.maven.org/maven2/com/carrotsearch/hppc/0.7.2/hppc-0.7.2.jar \
     && curl -fsSL -O https://repo1.maven.org/maven2/com/ibm/icu/icu4j/77.1/icu4j-77.1.jar \
     && curl -fsSL -O https://repo1.maven.org/maven2/org/apache/opennlp/opennlp-tools/2.5.3/opennlp-tools-2.5.3.jar \
-    && curl -fsSL -O https://repo1.maven.org/maven2/org/slf4j/slf4j-api/2.0.16/slf4j-api-2.0.16.jar
+    && curl -fsSL -O https://repo1.maven.org/maven2/org/slf4j/slf4j-api/2.0.16/slf4j-api-2.0.16.jar \
+    && curl -fsSL -O https://repo1.maven.org/maven2/org/antlr/antlr4-runtime/4.13.2/antlr4-runtime-4.13.2.jar \
+    && curl -fsSL -O https://repo1.maven.org/maven2/org/ow2/asm/asm/9.6/asm-9.6.jar \
+    && curl -fsSL -O https://repo1.maven.org/maven2/org/ow2/asm/asm-commons/9.6/asm-commons-9.6.jar
 
 # The gate is not just `cargo test`: it includes an aarch64 check-only clippy
 # pass (c_char signedness differs by target, so a class of FFI defect is

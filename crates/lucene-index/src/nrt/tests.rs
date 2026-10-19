@@ -338,3 +338,30 @@ fn a_delete_only_snapshot_is_current() {
     let s2 = w.nrt_snapshot(true, false).unwrap();
     assert_eq!(live_docs(&s2.segment_infos, &dir), 8);
 }
+
+#[test]
+fn advancing_the_version_moves_the_next_snapshot_above_it() {
+    let tmp = TempDir::new("nrt-advance-version");
+    let dir = FsDirectory::open(tmp.path());
+    let mut w = writer(&dir);
+    w.add_document(doc("a")).unwrap();
+    let first = w.nrt_snapshot(true, false).unwrap().segment_infos.version;
+    // Unchanged view, unchanged version.
+    assert_eq!(
+        w.nrt_snapshot(true, false).unwrap().segment_infos.version,
+        first
+    );
+    // Java: `setVersion(100)` then `changed()`, so the next reader is 101.
+    w.advance_segment_infos_version(100);
+    let advanced = w.nrt_snapshot(true, false).unwrap().segment_infos.version;
+    assert_eq!(advanced, 101);
+    // A lower version changes nothing.
+    w.advance_segment_infos_version(50);
+    assert_eq!(
+        w.nrt_snapshot(true, false).unwrap().segment_infos.version,
+        advanced
+    );
+    // The next commit stays above every version handed out.
+    w.commit().unwrap();
+    assert!(w.segment_infos().version > advanced);
+}

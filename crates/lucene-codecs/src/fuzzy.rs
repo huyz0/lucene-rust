@@ -209,6 +209,61 @@ fn distance_chars(a: &[char], b: &[char], transpositions: bool, max: usize) -> O
     }
 }
 
+type DfaKey = (Vec<u8>, u8, usize, bool);
+
+/// Compiled Levenshtein automata of the terms recently fuzzy-matched, shared
+/// by every query in the process. Lucene rebuilds the automaton for every
+/// `FuzzyQuery`, and that build (the NFA, `UTF32ToUtf8`, the dense table) is
+/// most of what a short fuzzy query costs; the terms a workload fuzzes
+/// repeat, so a hit skips it. Bounded by the bytes its automata hold: a full
+/// cache is emptied, which suits a working set that fits and costs one
+/// rebuild per term when it does not.
+struct SharedDfas {
+    map: std::sync::Mutex<SharedDfaMap>,
+}
+
+/// A [`SharedDfas`]' automata, and the bytes they hold.
+#[derive(Default)]
+struct SharedDfaMap {
+    dfas: std::collections::HashMap<DfaKey, SharedDfa>,
+    bytes: usize,
+}
+
+/// A term's compiled automaton, `None` for a pattern that has none.
+type SharedDfa = Option<std::sync::Arc<crate::automaton::CompiledDfa>>;
+
+/// What [`SharedDfas`] may hold before it is emptied.
+const SHARED_DFA_BUDGET_BYTES: usize = 16 << 20;
+
+fn shared_dfas() -> &'static SharedDfas {
+    static CACHE: std::sync::OnceLock<SharedDfas> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| SharedDfas {
+        map: std::sync::Mutex::new(SharedDfaMap::default()),
+    })
+}
+
+impl SharedDfas {
+    fn get(&self, key: &DfaKey) -> Option<SharedDfa> {
+        let guard = self.map.lock().unwrap_or_else(|e| e.into_inner());
+        guard.dfas.get(key).cloned()
+    }
+
+    fn put(&self, key: DfaKey, dfa: SharedDfa) {
+        let weight = key
+            .0
+            .len()
+            .saturating_add(dfa.as_ref().map_or(0, |d| d.dfa.heap_bytes()));
+        let mut guard = self.map.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.bytes.saturating_add(weight) > SHARED_DFA_BUDGET_BYTES {
+            guard.dfas.clear();
+            guard.bytes = 0;
+        }
+        if guard.dfas.insert(key, dfa).is_none() {
+            guard.bytes = guard.bytes.saturating_add(weight);
+        }
+    }
+}
+
 /// A compiled `FuzzyQuery` match predicate: a target `term`, a maximum edit
 /// distance `max_edits`, a required exact-match `prefix_length` (in
 /// **codepoints**, as `FuzzyAutomatonBuilder`'s is), and whether
@@ -279,9 +334,20 @@ impl<'a> FuzzyMatch<'a> {
     ) -> Option<std::sync::Arc<crate::automaton::CompiledDfa>> {
         self.compiled
             .get_or_init(|| {
-                self.cached_dfa().map(|dfa| {
+                let key = (
+                    self.term.to_vec(),
+                    self.max_edits,
+                    self.prefix_chars,
+                    self.transpositions,
+                );
+                if let Some(hit) = shared_dfas().get(&key) {
+                    return hit;
+                }
+                let built = self.cached_dfa().map(|dfa| {
                     std::sync::Arc::new(crate::automaton::CompiledDfa::finite((*dfa).clone()))
-                })
+                });
+                shared_dfas().put(key, built.clone());
+                built
             })
             .clone()
     }
@@ -887,5 +953,54 @@ mod tests {
         assert!(bad.to_dfa(1).is_none());
         assert!(bad.cached_compiled_dfa().is_none());
         assert!(bad.cached_compiled_dfa_within(0).is_none());
+    }
+
+    #[test]
+    fn compiled_automata_are_shared_between_matchers_of_one_term() {
+        let a = FuzzyMatch::new(b"sharedterm", 2, 1, true);
+        let b = FuzzyMatch::new(b"sharedterm", 2, 1, true);
+        let first = a.cached_compiled_dfa().unwrap();
+        assert!(std::sync::Arc::ptr_eq(
+            &b.cached_compiled_dfa().unwrap(),
+            &first
+        ));
+        // Any difference in what the automaton is built from is a different one.
+        for other in [
+            FuzzyMatch::new(b"sharedterm", 1, 1, true),
+            FuzzyMatch::new(b"sharedterm", 2, 0, true),
+            FuzzyMatch::new(b"sharedterm", 2, 1, false),
+            FuzzyMatch::new(b"sharedterms", 2, 1, true),
+        ] {
+            assert!(!std::sync::Arc::ptr_eq(
+                &other.cached_compiled_dfa().unwrap(),
+                &first
+            ));
+        }
+        // A pattern without an automaton is remembered as having none.
+        let bad = FuzzyMatch::new(b"sh\xed\xa0\x80red", 1, 0, true);
+        assert!(bad.cached_compiled_dfa().is_none());
+        let key = (bad.term.to_vec(), 1, 0, true);
+        assert!(matches!(shared_dfas().get(&key), Some(None)));
+    }
+
+    #[test]
+    fn the_shared_automata_are_emptied_when_over_budget() {
+        let cache = SharedDfas {
+            map: std::sync::Mutex::new(SharedDfaMap::default()),
+        };
+        let m = FuzzyMatch::new(b"budget", 1, 0, true);
+        let dfa = m.cached_compiled_dfa();
+        let small = (b"small".to_vec(), 1u8, 0usize, true);
+        cache.put(small.clone(), dfa.clone());
+        cache.put(small.clone(), dfa.clone());
+        let weight = cache.map.lock().unwrap().bytes;
+        assert_eq!(
+            weight,
+            small.0.len() + dfa.as_ref().unwrap().dfa.heap_bytes()
+        );
+        // A key as big as the budget cannot sit beside anything else.
+        cache.put((vec![0; SHARED_DFA_BUDGET_BYTES], 1, 0, true), None);
+        assert!(cache.get(&small).is_none());
+        assert_eq!(cache.map.lock().unwrap().dfas.len(), 1);
     }
 }
