@@ -34,6 +34,7 @@ mod micro_analysis_misc;
 mod micro_analysis_opennlp;
 mod micro_analyzing;
 mod micro_classification;
+mod micro_codecs;
 mod micro_completion;
 mod micro_doc_index;
 mod micro_drill_sideways;
@@ -2166,6 +2167,12 @@ fn main() {
                 .nth(2)
                 .expect("aggs needs the benchmark corpus directory");
             micro_aggs::bench_aggs(warmup, measure, &index);
+        }
+        "codecs" => {
+            let index = std::env::args()
+                .nth(2)
+                .expect("codecs needs the CodecsMicro index directory");
+            micro_codecs::bench_codecs(warmup, measure, &index);
         }
         "sandbox" => {
             let index = std::env::args()

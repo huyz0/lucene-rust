@@ -93,7 +93,8 @@ set -euo pipefail
 # lucene-replicator is required by GenReplicator (org.apache.lucene.replicator.nrt).
 # lucene-sandbox is required by GenQueryParserXml (CorePlusExtensionsParser's
 # FuzzyLikeThisQuery) and the GenSandbox* generators (org.apache.lucene.sandbox).
-LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-facet lucene-highlighter lucene-suggest lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join lucene-grouping lucene-classification lucene-misc lucene-replicator lucene-sandbox)
+# lucene-codecs is required by the GenCodecs* generators (the non-default codecs, M14.g).
+LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-facet lucene-highlighter lucene-suggest lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join lucene-grouping lucene-classification lucene-misc lucene-replicator lucene-sandbox lucene-codecs)
 
 cd "$(git rev-parse --show-toplevel)"
 FIXTURES="$PWD/fixtures"
@@ -258,6 +259,9 @@ generator_jvm_opts() {
     # FuzzyLikeThisQuery groups its clauses in a HashMap<Term, _> (seeded
     # BytesRef.hashCode) and weighs them with ClassicSimilarity's Math.log idf.
     GenQueryParserXml) echo "-Dtests.seed=F1A7 -XX:+UnlockDiagnosticVMOptions -XX:DisableIntrinsic=_dlog" ;;
+    # BloomFilteringPostingsFormat sizes its filter with Math.log/Math.pow
+    # (FuzzySet.createOptimalSet): StrictMath's fdlibm, as the port computes.
+    GenCodecs*) echo "-XX:+UnlockDiagnosticVMOptions -XX:DisableIntrinsic=_dlog,_dpow" ;;
   esac
 }
 

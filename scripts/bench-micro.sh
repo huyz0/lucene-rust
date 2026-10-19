@@ -419,6 +419,18 @@ case "$BENCH" in
     PREP_ARGS=(build "$INDEX")
     JAVA_ARGS=(run)
     NEEDS_INDEX=1 ;;
+  codecs)
+    # M14.g's pair (CodecsMicro.java / micro_codecs.rs): lucene-codecs'
+    # non-default formats, each over the index CodecsMicro builds (once) in
+    # its own subdirectory of benchmarks/.corpus/codecs -- so far
+    # BloomFilteringPostingsFormat's filtered seekExact (bloom/).
+    MAIN=CodecsMicro
+    SRC=benchmarks/micro/java/CodecsMicro.java
+    JAR_MODULES="lucene-core lucene-codecs"
+    INDEX="${INDEX_ARG:-$PWD/benchmarks/.corpus/codecs}"
+    PREP_ARGS=(build "$INDEX")
+    JAVA_ARGS=(run)
+    NEEDS_INDEX=1 ;;
   sandbox)
     # M14.f's pair (SandboxMicro.java / micro_sandbox.rs): lucene-sandbox's
     # multi-range queries, FloatPointNearestNeighbor and (over its text/

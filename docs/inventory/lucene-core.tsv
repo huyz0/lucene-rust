@@ -464,9 +464,9 @@ index/SegmentInfo	ported	crates/lucene-index/src/segment_info.rs::SegmentInfo
 index/SegmentInfos	ported	crates/lucene-index/src/segment_infos.rs::SegmentInfos
 index/SegmentMerger	ported	crates/lucene-index/src/merge.rs::merge_segments
 index/SegmentOrder	ported	crates/lucene-search/src/segment_order.rs::SegmentOrder
-index/SegmentReadState	not-needed	parameter bundle passed to codec readers; Rust passes the directory, segment info and field infos directly.
+index/SegmentReadState	ported	crates/lucene-codecs/src/segment_state.rs::SegmentReadState
 index/SegmentReader	ported	crates/lucene-search/src/directory_reader.rs::SegmentReader
-index/SegmentWriteState	not-needed	parameter bundle passed to codec writers; Rust passes segment name, suffix and field infos directly.
+index/SegmentWriteState	ported	crates/lucene-codecs/src/segment_state.rs::SegmentWriteState
 index/SerialMergeScheduler	ported	crates/lucene-index/src/merge_scheduler.rs::SerialMergeScheduler
 index/SharedIndexingScratch	not-needed	lazily allocated scratch buffers shared by IndexingChain's per-field writers; allocation detail only.
 index/SimpleMergedSegmentWarmer	not-needed	NRT merged-segment warmer that only touches data structures to prime caches; no effect on results (and no NRT-from-writer here).

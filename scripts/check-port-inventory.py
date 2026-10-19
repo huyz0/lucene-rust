@@ -48,7 +48,7 @@ which makes a missing jar a failure: a membership check that silently did not
 run must not read as a pass.
 
 Usage:
-  scripts/check-port-inventory.py [--module core|backward-codecs|spatial3d|spatial-extras|join|grouping|queries|queryparser|highlighter|suggest|facet|monitor|memory|expressions|classification|misc|replicator|sandbox|analysis-common|analysis-<m12 module>] [--milestone M7] [--summary] [--require-jar]
+  scripts/check-port-inventory.py [--module core|backward-codecs|spatial3d|spatial-extras|join|grouping|queries|queryparser|highlighter|suggest|facet|monitor|memory|expressions|classification|misc|replicator|sandbox|codecs|analysis-common|analysis-<m12 module>] [--milestone M7] [--summary] [--require-jar]
 """
 
 from __future__ import annotations
@@ -85,6 +85,7 @@ MODULES = {
     "misc": "lucene-misc",
     "replicator": "lucene-replicator",
     "sandbox": "lucene-sandbox",
+    "codecs": "lucene-codecs",
     "analysis-common": "lucene-analysis-common",
     "analysis-icu": "lucene-analysis-icu",
     "analysis-kuromoji": "lucene-analysis-kuromoji",
