@@ -13,7 +13,9 @@ use lucene_analysis::{AnalysisError, Analyzer, AnalyzerDefinition, TokenStreamCo
 use super::{consume_stream, measure};
 
 /// `SnowballMicro.LANGUAGES`.
-const LANGUAGES: [&str; 6] = ["English", "German", "French", "Russian", "Arabic", "Turkish"];
+const LANGUAGES: [&str; 6] = [
+    "English", "German", "French", "Russian", "Arabic", "Turkish",
+];
 
 struct Chain(&'static str);
 

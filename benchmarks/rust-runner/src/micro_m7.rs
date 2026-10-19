@@ -23,7 +23,9 @@ use std::time::Duration;
 
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
-use lucene_search::multi_segment::{search_boolean_query_multi_segment_with_similarity, OpenSegment};
+use lucene_search::multi_segment::{
+    search_boolean_query_multi_segment_with_similarity, OpenSegment,
+};
 use lucene_search::query::{BooleanQuery, Clause};
 use lucene_search::similarities::{Bm25Similarity, Similarity};
 use lucene_store::MmapDirectory;
@@ -142,11 +144,8 @@ fn run_m7_cases(
     let mut opened = reader.open_segments().expect("open segments");
     opened.open_points().expect("open points");
     let segments: Vec<OpenSegment<'_>> = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&[
-        "body".to_string(),
-        "title".to_string(),
-        "gram".to_string(),
-    ]);
+    let owned =
+        reader.field_norms_by_field(&["body".to_string(), "title".to_string(), "gram".to_string()]);
     let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(Some).collect();
     let vectors = m7grammar::VectorFiles::read(dir, &reader);
@@ -238,12 +237,7 @@ fn fixture_lines(name: &str, top: usize) -> Vec<(String, String, usize)> {
 /// vectors, no index sort and one-dimensional points).
 pub fn bench_m7_fixture(w: Duration, m: Duration) {
     for (prefix, name, top, qvec) in [
-        (
-            "fx",
-            "m7_queries_index",
-            20,
-            &m7grammar::QVEC[..],
-        ),
+        ("fx", "m7_queries_index", 20, &m7grammar::QVEC[..]),
         ("fxknn", "m7_knn_index", 50, &QVEC8[..]),
         ("fxdv", "m7_dv_index", 50, &m7grammar::QVEC[..]),
     ] {
@@ -513,8 +507,8 @@ fn query_texts() -> Vec<String> {
 /// query's `toString("body")` digested.
 pub fn bench_query_builder(w: Duration, m: Duration) {
     use lucene_analysis::{Analyzer, StandardAnalyzer};
-    use lucene_search::query_visitor::Occur;
     use lucene_search::query_builder::{to_query_string, QueryBuilder};
+    use lucene_search::query_visitor::Occur;
     let analyzer = Analyzer::new(StandardAnalyzer::new());
     let qb = QueryBuilder::new(&analyzer);
     let texts = query_texts();
@@ -526,7 +520,10 @@ pub fn bench_query_builder(w: Duration, m: Duration) {
         ),
         (
             "qb_must",
-            Box::new(|t| qb.create_boolean_query_with("body", t, Occur::Must).unwrap()),
+            Box::new(|t| {
+                qb.create_boolean_query_with("body", t, Occur::Must)
+                    .unwrap()
+            }),
         ),
         (
             "qb_phrase",

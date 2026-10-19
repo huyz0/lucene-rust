@@ -17,9 +17,8 @@ use std::time::Duration;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::function::valuesource::{
     ConstValueSource, FloatFieldSource, IDFValueSource, IntFieldSource, JoinDocFreqValueSource,
-    LinearFloatFunction,
-    LongFieldSource, ProductFloatFunction, ReciprocalFloatFunction, SumFloatFunction,
-    TFValueSource, TermFreqValueSource,
+    LinearFloatFunction, LongFieldSource, ProductFloatFunction, ReciprocalFloatFunction,
+    SumFloatFunction, TFValueSource, TermFreqValueSource,
 };
 use lucene_search::function::{
     as_double_values_source, FunctionMatchQuery, FunctionQuery, FunctionRangeQuery,

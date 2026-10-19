@@ -13,16 +13,16 @@ use std::time::Duration;
 
 use lucene_search::common_terms::CommonTermsQuery;
 use lucene_search::directory_reader::DirectoryReader;
-use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
 use lucene_search::extended_query::{MultiTermQuery, MultiTermSource, RewriteMethod};
+use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
+use lucene_search::intervals::{IntervalQuery, Intervals, IntervalsSource, PayloadFilter};
 use lucene_search::mlt::MoreLikeThisQuery;
+use lucene_search::query::{BooleanQuery, Clause, PrefixQuery};
+use lucene_search::query_visitor::Occur;
 use lucene_search::spans::payloads::{
     PayloadDecoder, PayloadFunction, PayloadScoreQuery, SpanPayloadCheckQuery,
 };
 use lucene_search::spans::SpanNode;
-use lucene_search::intervals::{IntervalQuery, Intervals, IntervalsSource, PayloadFilter};
-use lucene_search::query::{BooleanQuery, Clause, PrefixQuery};
-use lucene_search::query_visitor::Occur;
 use lucene_search::top_docs::TopDocs;
 use lucene_store::FsDirectory;
 
@@ -66,7 +66,14 @@ fn t(w: &str) -> IntervalsSource {
 
 type Case = dyn Fn(&str, &str, &str) -> BooleanQuery;
 
-fn cases(name: &str, words: &[String], s: &IndexSearcher<'_, '_>, w: Duration, m: Duration, query: &Case) {
+fn cases(
+    name: &str,
+    words: &[String],
+    s: &IndexSearcher<'_, '_>,
+    w: Duration,
+    m: Duration,
+    query: &Case,
+) {
     if std::env::var("MICRO_CASE").is_ok_and(|only| only != name) {
         return;
     }
@@ -127,17 +134,26 @@ pub fn bench_queries(w: Duration, m: Duration, dir: &str) {
     cases("iv_containing", &words, &s, w, m, &|a, b, c| {
         iq(
             "body",
-            Intervals::containing(Intervals::maxwidth(6, Intervals::ordered(vec![t(a), t(c)])), t(b))
-                .unwrap(),
+            Intervals::containing(
+                Intervals::maxwidth(6, Intervals::ordered(vec![t(a), t(c)])),
+                t(b),
+            )
+            .unwrap(),
         )
     });
     cases("iv_atleast", &words, &s, w, m, &|a, b, c| {
-        iq("body", Intervals::maxwidth(5, Intervals::at_least(2, vec![t(a), t(b), t(c)])))
+        iq(
+            "body",
+            Intervals::maxwidth(5, Intervals::at_least(2, vec![t(a), t(b), t(c)])),
+        )
     });
     cases("iv_prefix", &words, &s, w, m, &|a, b, _| {
         iq(
             "body",
-            Intervals::ordered(vec![Intervals::prefix(&a.as_bytes()[..2], 128).unwrap(), t(b)]),
+            Intervals::ordered(vec![
+                Intervals::prefix(&a.as_bytes()[..2], 128).unwrap(),
+                t(b),
+            ]),
         )
     });
     cases("iv_payload", &words, &s, w, m, &|a, b, _| {
@@ -149,7 +165,9 @@ pub fn bench_queries(w: Duration, m: Duration, dir: &str) {
     });
     let st = |f: &str, w: &str| SpanNode::term(f, w);
     let sp = |q: SpanNode| one(q.into());
-    cases("sp_first", &words, &s, w, m, &move |a, _, _| sp(SpanNode::first(st("body", a), 3)));
+    cases("sp_first", &words, &s, w, m, &move |a, _, _| {
+        sp(SpanNode::first(st("body", a), 3))
+    });
     cases("sp_pos_range", &words, &s, w, m, &move |a, b, _| {
         let near = SpanNode::near(vec![st("body", a), st("body", b)], 1, true).unwrap();
         sp(SpanNode::position_range(near, 2, 10))
@@ -173,10 +191,9 @@ pub fn bench_queries(w: Duration, m: Duration, dir: &str) {
         sp(SpanNode::near(vec![prefix, st("body", b)], 2, true).unwrap())
     });
     cases("sp_check", &words, &s, w, m, &move |a, _, _| {
-        sp(SpanNode::PayloadCheck(Box::new(SpanPayloadCheckQuery::new(
-            st("pay", a),
-            vec![Some(vec![1])],
-        ))))
+        sp(SpanNode::PayloadCheck(Box::new(
+            SpanPayloadCheckQuery::new(st("pay", a), vec![Some(vec![1])]),
+        )))
     });
     cases("sp_pscore", &words, &s, w, m, &move |a, b, _| {
         let near = SpanNode::near(vec![st("pay", a), st("pay", b)], 2, true).unwrap();

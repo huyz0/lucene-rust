@@ -168,7 +168,8 @@ fn bench_tessellate(w: Duration, m: Duration) {
     let mut xy_polys = Vec::new();
     for (i, line) in lines.iter().enumerate() {
         let f: Vec<&str> = line.split('\t').collect();
-        if f[0] != "poly" || f[3] != "1" || i + 1 >= lines.len() || lines[i + 1].starts_with("ERR") {
+        if f[0] != "poly" || f[3] != "1" || i + 1 >= lines.len() || lines[i + 1].starts_with("ERR")
+        {
             continue;
         }
         let spec = unesc(f[4]);
@@ -201,7 +202,9 @@ fn bench_tessellate(w: Duration, m: Duration) {
         measure(name, w, m, || {
             let mut n = 0usize;
             for p in &latlon_polys {
-                n += tessellator::tessellate(black_box(p), check_self).unwrap().len();
+                n += tessellator::tessellate(black_box(p), check_self)
+                    .unwrap()
+                    .len();
             }
             black_box(n);
             latlon_polys.len() as u64
@@ -220,7 +223,9 @@ fn bench_tessellate(w: Duration, m: Duration) {
     measure("tessellate_xy_checked", w, m, || {
         let mut n = 0usize;
         for p in &xy_polys {
-            n += tessellator::tessellate_xy(black_box(p), true).unwrap().len();
+            n += tessellator::tessellate_xy(black_box(p), true)
+                .unwrap()
+                .len();
         }
         black_box(n);
         xy_polys.len() as u64
@@ -403,7 +408,9 @@ fn bench_components(w: Duration, m: Duration) {
     let mut q = 0u64;
     for (s, c) in shapes.iter().zip(&comps) {
         for t in &s.tris {
-            d.add(i64::from(c.intersects_triangle(t[0], t[1], t[2], t[3], t[4], t[5])));
+            d.add(i64::from(
+                c.intersects_triangle(t[0], t[1], t[2], t[3], t[4], t[5]),
+            ));
             q += 1;
         }
     }
@@ -413,7 +420,9 @@ fn bench_components(w: Duration, m: Duration) {
         for _ in 0..REPS {
             for (s, c) in shapes.iter().zip(&comps) {
                 for t in &s.tris {
-                    n += u64::from(black_box(c).intersects_triangle(t[0], t[1], t[2], t[3], t[4], t[5]));
+                    n += u64::from(
+                        black_box(c).intersects_triangle(t[0], t[1], t[2], t[3], t[4], t[5]),
+                    );
                 }
             }
         }

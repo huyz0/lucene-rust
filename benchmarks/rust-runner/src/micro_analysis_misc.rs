@@ -99,9 +99,8 @@ fn compound_docs() -> Vec<String> {
 /// `AnalysisMiscMicro.hyphenationXml`.
 fn hyphenation_xml() -> String {
     let mut r = Rng(0x4859_5048_4E41_5445);
-    let mut x = String::from(
-        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<hyphenation-info>\n<classes>\n",
-    );
+    let mut x =
+        String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<hyphenation-info>\n<classes>\n");
     for &c in ALPHA {
         x.push(char::from(c));
         x.push(char::from(c.to_ascii_uppercase()));
@@ -175,8 +174,11 @@ fn iso_date_docs() -> Vec<String> {
                     s.push(' ');
                 }
                 let x = r.next();
-                let (year, month, day) =
-                    (1900 + (x >> 8) % 200, 1 + (x >> 16) % 12, 1 + (x >> 24) % 28);
+                let (year, month, day) = (
+                    1900 + (x >> 8) % 200,
+                    1 + (x >> 16) % 12,
+                    1 + (x >> 24) % 28,
+                );
                 match x & 3 {
                     0 => s.push_str(&format!("{year:04}-{month:02}-{day:02}")),
                     1 => s.push_str(&format!("{year:04}-{month:02}")),
@@ -217,7 +219,18 @@ fn english_date_docs() -> Vec<String> {
 
 /// `AnalysisMiscMicro.RU_MONTHS`.
 const RU_MONTHS: [&str; 12] = [
-    "янв.", "февр.", "мар.", "апр.", "мая", "июн.", "июл.", "авг.", "сент.", "окт.", "нояб.", "дек.",
+    "янв.",
+    "февр.",
+    "мар.",
+    "апр.",
+    "мая",
+    "июн.",
+    "июл.",
+    "авг.",
+    "сент.",
+    "окт.",
+    "нояб.",
+    "дек.",
 ];
 
 /// `AnalysisMiscMicro.russianDateDocs`.
@@ -329,18 +342,34 @@ pub(super) fn bench_analysis_misc(w: Duration, mt: Duration) {
         ),
         (
             "wdf",
-            chain(move || comps(WordDelimiterFilter::new(WhitespaceTokenizer::new(), wdf, None))),
+            chain(move || {
+                comps(WordDelimiterFilter::new(
+                    WhitespaceTokenizer::new(),
+                    wdf,
+                    None,
+                ))
+            }),
             docs.clone(),
         ),
         (
             "wdf_all",
-            chain(move || comps(WordDelimiterFilter::new(WhitespaceTokenizer::new(), all, None))),
+            chain(move || {
+                comps(WordDelimiterFilter::new(
+                    WhitespaceTokenizer::new(),
+                    all,
+                    None,
+                ))
+            }),
             compound.clone(),
         ),
         (
             "wdgf_all",
             chain(move || {
-                comps(WordDelimiterGraphFilter::new(WhitespaceTokenizer::new(), all, None)?)
+                comps(WordDelimiterGraphFilter::new(
+                    WhitespaceTokenizer::new(),
+                    all,
+                    None,
+                )?)
             }),
             compound,
         ),
