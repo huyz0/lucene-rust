@@ -1,0 +1,16 @@
+sideways_extra_dim	IllegalArgumentException: There must be at least one collector manager
+sideways_two_managers	IllegalArgumentException: There must be at least one collector manager
+histogram 1 10	IllegalArgumentException: bucketWidth must be at least 2, got: 1
+histogram 10 0	IllegalArgumentException: maxBuckets must be at least 1, got: 0
+unconfigured_dim	IllegalArgumentException: Dimension config for Unconfigured is required. Call one of the FacetsConfig's setter with a default value.
+topn_zero	IllegalArgumentException: topN must be > 0 (got: 0)
+length_early	IllegalStateException: You can't request count before the ordinal iterator was consumed
+from_array	3,5 2
+agg_value_id -1	IllegalArgumentException: Invalid request for ordinal values
+agg_value_id 1	IllegalArgumentException: Invalid request for ordinal values
+multi_recorded_ords	UnsupportedOperationException: Not supported, call recordedOrds for sub-recorders instead
+multi_is_empty	UnsupportedOperationException: Not supported, call isEmpty for sub-recorders instead
+multi_contains	UnsupportedOperationException: Not supported, call contains for sub-recorders instead
+sum 9223372036854775807	ArithmeticException: long overflow
+sum 2147483647	2147483648 ArithmeticException: integer overflow
+max	7 2.5 NaN 0.30000000000000004

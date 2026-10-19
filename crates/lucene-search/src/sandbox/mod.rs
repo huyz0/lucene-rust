@@ -5,6 +5,8 @@
 //! - [`document`]: `org.apache.lucene.sandbox.document` -- `HalfFloatPoint`,
 //!   `BigIntegerPoint`, `LatLonBoundingBox`, `FloatPointNearestNeighbor` and
 //!   the four `*PointMultiRangeBuilder`s.
+//! - [`facet`]: `org.apache.lucene.sandbox.facet` -- cutters, recorders,
+//!   ordinal iterators, builders, orchestrators and histograms.
 //! - [`search`]: `org.apache.lucene.sandbox.search`'s queries and collectors.
 //! - [`payloads`]: `org.apache.lucene.payloads` -- `PayloadSpanUtil` and
 //!   `PayloadSpanCollector`.
@@ -16,5 +18,6 @@
 //! M13's `CorePlusExtensionsParser` needed it first.
 
 pub mod document;
+pub mod facet;
 pub mod payloads;
 pub mod search;

@@ -14,6 +14,7 @@
 //! `idv/`, and `KMeans.cluster` over the vectors in `kmeans/`.
 
 use std::hint::black_box;
+use std::sync::Arc;
 use std::time::Duration;
 
 use lucene_codecs::idversion::VersionBlockTreeTermsReader;
@@ -21,10 +22,21 @@ use lucene_codecs::quantization::{cluster, InMemoryFloatVectors};
 use lucene_search::collector::ScoreDoc;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::document::{search_top_docs, DocumentQuery};
+use lucene_search::facets::multi_long_values_source;
+use lucene_search::facets::range::LongRange;
+use lucene_search::grouping::search_manager;
 use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
 use lucene_search::multi_segment::OpenSegment;
+use lucene_search::query::MatchAllDocsQuery;
 use lucene_search::query::{BooleanQuery, Clause, PrefixQuery, TermQuery};
 use lucene_search::sandbox::document::{FloatPointNearestNeighbor, IntPointMultiRangeBuilder};
+use lucene_search::sandbox::facet::cutters::LongValueFacetCutter;
+use lucene_search::sandbox::facet::histogram::{histogram_search, HistogramCollectorManager};
+use lucene_search::sandbox::facet::ranges::LongRangeFacetCutter;
+use lucene_search::sandbox::facet::recorders::CountFacetRecorder;
+use lucene_search::sandbox::facet::{
+    FacetFieldCollectorManager, FacetRecorder, OrdinalIterator, NO_MORE_ORDS,
+};
 use lucene_search::sandbox::search::{
     CombinedFieldQuery, CoveringQuery, LargeNumHitsTopDocsCollectorManager, PhraseWildcardBuilder,
     SortedNumericStabbingBuilder, SortedSetStabbingBuilder, TermAutomatonQuery,
@@ -55,6 +67,9 @@ fn digest(f: &mut Fnv, docs: &[ScoreDoc]) {
 }
 
 type Ranges = Vec<(i64, i64)>;
+
+/// `SandboxMicro.DOCS`: the main index's documents.
+const DOCS: u64 = 200_000;
 
 fn term(t: i64) -> Vec<u8> {
     format!("t{t:05}").into_bytes()
@@ -313,6 +328,121 @@ fn bench_kmeans(w: Duration, m: Duration, dir: &str) {
     });
 }
 
+/// `SandboxMicro.facetRanges`: one match-all search counting a set's ten
+/// ranges over `sn`.
+fn facet_ranges(s: &IndexSearcher<'_, '_>, set: &Ranges, f: &mut Fnv) -> u64 {
+    let ranges: Vec<LongRange> = set
+        .iter()
+        .enumerate()
+        .map(|(i, &(lo, hi))| {
+            LongRange::new(&format!("r{i}"), lo, true, hi + 100_000, true).unwrap()
+        })
+        .collect();
+    let rec = Arc::new(CountFacetRecorder::new());
+    let cutter = Arc::new(LongRangeFacetCutter::create(
+        multi_long_values_source::from_long_field("sn"),
+        &ranges,
+    ));
+    let all = BooleanQuery::new().with_must([Clause::MatchAllDocs(MatchAllDocsQuery::new(0))]);
+    search_manager(
+        s,
+        &all,
+        &FacetFieldCollectorManager::new(cutter, rec.clone()),
+    )
+    .unwrap();
+    for i in 0..ranges.len() {
+        f.add(i64::from(rec.get_count(i as i32).unwrap()));
+    }
+    DOCS
+}
+
+/// `SandboxMicro.facetLongValues`: one search counting every `sn` value; the
+/// digest is order-free (ordinals are handed out in collection order).
+fn facet_long_values(s: &IndexSearcher<'_, '_>, set: &Ranges, f: &mut Fnv) -> u64 {
+    let lo = set[0].0 % 1_000;
+    let rec = Arc::new(CountFacetRecorder::new());
+    let cutter = Arc::new(LongValueFacetCutter::new("sn"));
+    let all = BooleanQuery::new().with_must([Clause::MatchAllDocs(MatchAllDocsQuery::new(0))]);
+    search_manager(
+        s,
+        &all,
+        &FacetFieldCollectorManager::new(cutter.clone(), rec.clone()),
+    )
+    .unwrap();
+    let (mut n, mut sum) = (0i64, 0i64);
+    let mut it = rec.recorded_ords().unwrap();
+    loop {
+        let ord = it.next_ord().unwrap();
+        if ord == NO_MORE_ORDS {
+            break;
+        }
+        n += 1;
+        sum = sum.wrapping_add(
+            (cutter.get_value(ord).unwrap() + lo)
+                .wrapping_mul(i64::from(rec.get_count(ord).unwrap())),
+        );
+    }
+    f.add(n);
+    f.add(sum);
+    DOCS
+}
+
+/// `SandboxMicro.histogram`: one match-all histogram of `sn` per set, its
+/// width off the set.
+fn histogram(s: &IndexSearcher<'_, '_>, set: &Ranges, f: &mut Fnv) -> u64 {
+    let width = 2_000 + set[0].0 % 8_000;
+    let all = BooleanQuery::new().with_must([Clause::MatchAllDocs(MatchAllDocsQuery::new(0))]);
+    let h = histogram_search(
+        s,
+        &all,
+        &HistogramCollectorManager::new("sn", width).unwrap(),
+    )
+    .unwrap();
+    for (k, v) in h {
+        f.add(k);
+        f.add(i64::from(v));
+    }
+    DOCS
+}
+
+type SetOp = fn(&IndexSearcher<'_, '_>, &Ranges, &mut Fnv) -> u64;
+
+fn facet_case(
+    name: &str,
+    s: &IndexSearcher<'_, '_>,
+    sets: &[Ranges],
+    w: Duration,
+    m: Duration,
+    op: SetOp,
+) {
+    if std::env::var("MICRO_CASE").is_ok_and(|only| only != name) {
+        return;
+    }
+    let mut f = Fnv::new();
+    for set in sets {
+        op(s, set, &mut f);
+    }
+    println!("#check	{name}	{:016x}	{}", f.0, sets.len());
+    measure(name, w, m, || {
+        let mut g = Fnv::new();
+        let mut units = 0;
+        for set in sets {
+            units += op(s, set, black_box(&mut g));
+        }
+        black_box(g.0);
+        units
+    });
+}
+
+/// The sandbox facet module's hot paths over the main index.
+fn bench_facets(w: Duration, m: Duration, segments: &[OpenSegment<'_>], sets: &[Ranges]) {
+    let norms: Vec<SegmentNorms<'_, '_>> = vec![None; segments.len()];
+    let s = IndexSearcher::new(segments, &norms).unwrap();
+    facet_case("sb_facet_ranges", &s, sets, w, m, facet_ranges);
+    facet_case("sb_histogram", &s, sets, w, m, histogram);
+    facet_case("sb_facet_long_values", &s, sets, w, m, facet_long_values);
+}
+
 fn origin(set: &Ranges) -> [f32; 3] {
     [
         (set[0].0 % 100) as f32,
@@ -369,6 +499,7 @@ pub fn bench_sandbox(w: Duration, m: Duration, dir: &str) {
         }
         b.build()
     });
+    bench_facets(w, m, &segments, &sets);
     bench_text(w, m, &format!("{dir}/text"), &sets);
     bench_idversion(w, m, &format!("{dir}/idv"));
     bench_kmeans(w, m, &format!("{dir}/kmeans"));

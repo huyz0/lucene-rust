@@ -24,48 +24,48 @@ sandbox/document/HalfFloatPoint	ported	crates/lucene-search/src/sandbox/document
 sandbox/document/IntPointMultiRangeBuilder	ported	crates/lucene-search/src/sandbox/document/multi_range_builders.rs::IntPointMultiRangeBuilder
 sandbox/document/LatLonBoundingBox	ported	crates/lucene-search/src/sandbox/document/lat_lon_bounding_box.rs::LatLonBoundingBox
 sandbox/document/LongPointMultiRangeBuilder	ported	crates/lucene-search/src/sandbox/document/multi_range_builders.rs::LongPointMultiRangeBuilder
-sandbox/facet/FacetFieldCollector	todo:M14	M14.f: the sandbox package sandbox/facet
-sandbox/facet/FacetFieldCollectorManager	todo:M14	M14.f: the sandbox package sandbox/facet
-sandbox/facet/FacetFieldLeafCollector	todo:M14	M14.f: the sandbox package sandbox/facet
-sandbox/facet/cutters/FacetCutter	todo:M14	M14.f: the sandbox package sandbox/facet/cutters
-sandbox/facet/cutters/LeafFacetCutter	todo:M14	M14.f: the sandbox package sandbox/facet/cutters
-sandbox/facet/cutters/LongValueFacetCutter	todo:M14	M14.f: the sandbox package sandbox/facet/cutters
-sandbox/facet/cutters/TaxonomyFacetsCutter	todo:M14	M14.f: the sandbox package sandbox/facet/cutters
-sandbox/facet/cutters/ranges/DoubleRangeFacetCutter	todo:M14	M14.f: the sandbox package sandbox/facet/cutters/ranges
-sandbox/facet/cutters/ranges/IntervalTracker	todo:M14	M14.f: the sandbox package sandbox/facet/cutters/ranges
-sandbox/facet/cutters/ranges/LongRangeFacetCutter	todo:M14	M14.f: the sandbox package sandbox/facet/cutters/ranges
-sandbox/facet/cutters/ranges/LongRangeNode	todo:M14	M14.f: the sandbox package sandbox/facet/cutters/ranges
-sandbox/facet/cutters/ranges/NonOverlappingLongRangeFacetCutter	todo:M14	M14.f: the sandbox package sandbox/facet/cutters/ranges
-sandbox/facet/cutters/ranges/OverlappingLongRangeFacetCutter	todo:M14	M14.f: the sandbox package sandbox/facet/cutters/ranges
-sandbox/facet/iterators/CandidateSetOrdinalIterator	todo:M14	M14.f: the sandbox package sandbox/facet/iterators
-sandbox/facet/iterators/ComparableSupplier	todo:M14	M14.f: the sandbox package sandbox/facet/iterators
-sandbox/facet/iterators/LengthOrdinalIterator	todo:M14	M14.f: the sandbox package sandbox/facet/iterators
-sandbox/facet/iterators/OrdinalIterator	todo:M14	M14.f: the sandbox package sandbox/facet/iterators
-sandbox/facet/iterators/TaxonomyChildrenOrdinalIterator	todo:M14	M14.f: the sandbox package sandbox/facet/iterators
-sandbox/facet/iterators/TopnOrdinalIterator	todo:M14	M14.f: the sandbox package sandbox/facet/iterators
-sandbox/facet/labels/LabelToOrd	todo:M14	M14.f: the sandbox package sandbox/facet/labels
-sandbox/facet/labels/OrdToLabel	todo:M14	M14.f: the sandbox package sandbox/facet/labels
-sandbox/facet/labels/RangeOrdToLabel	todo:M14	M14.f: the sandbox package sandbox/facet/labels
-sandbox/facet/labels/TaxonomyOrdLabelBiMap	todo:M14	M14.f: the sandbox package sandbox/facet/labels
-sandbox/facet/plain/histograms/HistogramCollector	todo:M14	M14.f: the sandbox package sandbox/facet/plain/histograms
-sandbox/facet/plain/histograms/HistogramCollectorManager	todo:M14	M14.f: the sandbox package sandbox/facet/plain/histograms
-sandbox/facet/plain/histograms/PointTreeBulkCollector	todo:M14	M14.f: the sandbox package sandbox/facet/plain/histograms
-sandbox/facet/recorders/CountFacetRecorder	todo:M14	M14.f: the sandbox package sandbox/facet/recorders
-sandbox/facet/recorders/FacetRecorder	todo:M14	M14.f: the sandbox package sandbox/facet/recorders
-sandbox/facet/recorders/LeafFacetRecorder	todo:M14	M14.f: the sandbox package sandbox/facet/recorders
-sandbox/facet/recorders/LongAggregationsFacetRecorder	todo:M14	M14.f: the sandbox package sandbox/facet/recorders
-sandbox/facet/recorders/MultiFacetsRecorder	todo:M14	M14.f: the sandbox package sandbox/facet/recorders
-sandbox/facet/recorders/Reducer	todo:M14	M14.f: the sandbox package sandbox/facet/recorders
-sandbox/facet/utils/BaseFacetBuilder	todo:M14	M14.f: the sandbox package sandbox/facet/utils
-sandbox/facet/utils/CommonFacetBuilder	todo:M14	M14.f: the sandbox package sandbox/facet/utils
-sandbox/facet/utils/ComparableUtils	todo:M14	M14.f: the sandbox package sandbox/facet/utils
-sandbox/facet/utils/DrillSidewaysFacetOrchestrator	todo:M14	M14.f: the sandbox package sandbox/facet/utils
-sandbox/facet/utils/FacetBuilder	todo:M14	M14.f: the sandbox package sandbox/facet/utils
-sandbox/facet/utils/FacetOrchestrator	todo:M14	M14.f: the sandbox package sandbox/facet/utils
-sandbox/facet/utils/LongValueFacetBuilder	todo:M14	M14.f: the sandbox package sandbox/facet/utils
-sandbox/facet/utils/PostCollectionFaceting	todo:M14	M14.f: the sandbox package sandbox/facet/utils
-sandbox/facet/utils/RangeFacetBuilderFactory	todo:M14	M14.f: the sandbox package sandbox/facet/utils
-sandbox/facet/utils/TaxonomyFacetBuilder	todo:M14	M14.f: the sandbox package sandbox/facet/utils
+sandbox/facet/FacetFieldCollector	ported	crates/lucene-search/src/sandbox/facet/mod.rs::FacetFieldCollector
+sandbox/facet/FacetFieldCollectorManager	ported	crates/lucene-search/src/sandbox/facet/mod.rs::FacetFieldCollectorManager
+sandbox/facet/FacetFieldLeafCollector	ported	crates/lucene-search/src/sandbox/facet/mod.rs::FacetFieldCollector
+sandbox/facet/cutters/FacetCutter	ported	crates/lucene-search/src/sandbox/facet/mod.rs::FacetCutter
+sandbox/facet/cutters/LeafFacetCutter	ported	crates/lucene-search/src/sandbox/facet/mod.rs::LeafFacetCutter
+sandbox/facet/cutters/LongValueFacetCutter	ported	crates/lucene-search/src/sandbox/facet/cutters.rs::LongValueFacetCutter
+sandbox/facet/cutters/TaxonomyFacetsCutter	ported	crates/lucene-search/src/sandbox/facet/cutters.rs::TaxonomyFacetsCutter
+sandbox/facet/cutters/ranges/DoubleRangeFacetCutter	ported	crates/lucene-search/src/sandbox/facet/ranges.rs::DoubleRangeFacetCutter
+sandbox/facet/cutters/ranges/IntervalTracker	ported	crates/lucene-search/src/sandbox/facet/ranges.rs::IntervalTracker
+sandbox/facet/cutters/ranges/LongRangeFacetCutter	ported	crates/lucene-search/src/sandbox/facet/ranges.rs::LongRangeFacetCutter
+sandbox/facet/cutters/ranges/LongRangeNode	ported	crates/lucene-search/src/sandbox/facet/ranges.rs::LongRangeNode
+sandbox/facet/cutters/ranges/NonOverlappingLongRangeFacetCutter	ported	crates/lucene-search/src/sandbox/facet/ranges.rs::disjoint_intervals
+sandbox/facet/cutters/ranges/OverlappingLongRangeFacetCutter	ported	crates/lucene-search/src/sandbox/facet/ranges.rs::overlapping_intervals
+sandbox/facet/iterators/CandidateSetOrdinalIterator	ported	crates/lucene-search/src/sandbox/facet/iterators.rs::CandidateSetOrdinalIterator
+sandbox/facet/iterators/ComparableSupplier	ported	crates/lucene-search/src/sandbox/facet/comparable.rs::ComparableSupplier
+sandbox/facet/iterators/LengthOrdinalIterator	ported	crates/lucene-search/src/sandbox/facet/iterators.rs::LengthOrdinalIterator
+sandbox/facet/iterators/OrdinalIterator	ported	crates/lucene-search/src/sandbox/facet/mod.rs::OrdinalIterator
+sandbox/facet/iterators/TaxonomyChildrenOrdinalIterator	ported	crates/lucene-search/src/sandbox/facet/iterators.rs::TaxonomyChildrenOrdinalIterator
+sandbox/facet/iterators/TopnOrdinalIterator	ported	crates/lucene-search/src/sandbox/facet/iterators.rs::TopnOrdinalIterator
+sandbox/facet/labels/LabelToOrd	ported	crates/lucene-search/src/sandbox/facet/labels.rs::LabelToOrd
+sandbox/facet/labels/OrdToLabel	ported	crates/lucene-search/src/sandbox/facet/labels.rs::OrdToLabel
+sandbox/facet/labels/RangeOrdToLabel	ported	crates/lucene-search/src/sandbox/facet/labels.rs::RangeOrdToLabel
+sandbox/facet/labels/TaxonomyOrdLabelBiMap	ported	crates/lucene-search/src/sandbox/facet/labels.rs::TaxonomyOrdLabelBiMap
+sandbox/facet/plain/histograms/HistogramCollector	ported	crates/lucene-search/src/sandbox/facet/histogram.rs::HistogramCollector
+sandbox/facet/plain/histograms/HistogramCollectorManager	ported	crates/lucene-search/src/sandbox/facet/histogram.rs::HistogramCollectorManager
+sandbox/facet/plain/histograms/PointTreeBulkCollector	ported	crates/lucene-search/src/sandbox/facet/histogram.rs::BucketManager
+sandbox/facet/recorders/CountFacetRecorder	ported	crates/lucene-search/src/sandbox/facet/recorders.rs::CountFacetRecorder
+sandbox/facet/recorders/FacetRecorder	ported	crates/lucene-search/src/sandbox/facet/mod.rs::FacetRecorder
+sandbox/facet/recorders/LeafFacetRecorder	ported	crates/lucene-search/src/sandbox/facet/mod.rs::LeafFacetRecorder
+sandbox/facet/recorders/LongAggregationsFacetRecorder	ported	crates/lucene-search/src/sandbox/facet/recorders.rs::LongAggregationsFacetRecorder
+sandbox/facet/recorders/MultiFacetsRecorder	ported	crates/lucene-search/src/sandbox/facet/recorders.rs::MultiFacetsRecorder
+sandbox/facet/recorders/Reducer	ported	crates/lucene-search/src/sandbox/facet/recorders.rs::Reducer
+sandbox/facet/utils/BaseFacetBuilder	ported	crates/lucene-search/src/sandbox/facet/builders.rs::FacetBuilder
+sandbox/facet/utils/CommonFacetBuilder	ported	crates/lucene-search/src/sandbox/facet/builders.rs::FacetBuilder
+sandbox/facet/utils/ComparableUtils	ported	crates/lucene-search/src/sandbox/facet/comparable.rs::sort
+sandbox/facet/utils/DrillSidewaysFacetOrchestrator	ported	crates/lucene-search/src/sandbox/facet/builders.rs::DrillSidewaysFacetOrchestrator
+sandbox/facet/utils/FacetBuilder	ported	crates/lucene-search/src/sandbox/facet/builders.rs::FacetBuilder
+sandbox/facet/utils/FacetOrchestrator	ported	crates/lucene-search/src/sandbox/facet/builders.rs::FacetOrchestrator
+sandbox/facet/utils/LongValueFacetBuilder	ported	crates/lucene-search/src/sandbox/facet/builders.rs::FacetBuilder
+sandbox/facet/utils/PostCollectionFaceting	ported	crates/lucene-search/src/sandbox/facet/post_collection.rs::PostCollectionFaceting
+sandbox/facet/utils/RangeFacetBuilderFactory	ported	crates/lucene-search/src/sandbox/facet/builders.rs::RangeFacetBuilderFactory
+sandbox/facet/utils/TaxonomyFacetBuilder	ported	crates/lucene-search/src/sandbox/facet/builders.rs::FacetBuilder
 sandbox/index/MergeOnFlushMergePolicy	ported	crates/lucene-index/src/merge_policy/merge_on_flush.rs::MergeOnFlushMergePolicy
 sandbox/queries/FuzzyLikeThisQuery	ported	crates/lucene-search/src/fuzzy_like_this.rs::FuzzyLikeThisQuery
 sandbox/search/AggregatedQueryLeafProfilerResult	not-needed	the query profiler wraps each Weight/Scorer/BulkScorer of a Java query tree, which this port does not build (queries execute as Rust enums); its nanosecond timings would not be comparable with Lucene's anyway, and OpenSearch profiles with its own org.opensearch.search.profile.query (QueryProfiler, ProfileWeight), never this class
