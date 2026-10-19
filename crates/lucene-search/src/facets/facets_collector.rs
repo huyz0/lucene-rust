@@ -23,12 +23,14 @@ use lucene_util::fixed_bit_set::FixedBitSet;
 
 use crate::collector::TotalHitsRelation;
 use crate::collector::{ScoreDoc, ScoreMode, ScoringCollector, TopDocsCollector, TotalHits};
+use crate::directory_reader::SegmentReader;
 use crate::index_searcher::IndexSearcher;
 use crate::leaf_collector::{search_slices, PerSegment, SegmentCollector};
 use crate::multi_segment::OpenSegment;
 use crate::query::BooleanQuery;
 use crate::reader::{DocIdSetIterator, IndexReader, LeafReaderContext, NO_MORE_DOCS};
 use crate::top_docs::{ShardScoreDoc, TopDocs};
+use crate::top_field::{FieldDoc, SortField, TopFieldDocs};
 use crate::{Error, Result};
 
 /// A set of a segment's document ids: what `DocIdSetBuilder.build()` hands
@@ -509,6 +511,164 @@ impl FacetsCollectorManager {
     ) -> Result<FacetsResult<'a>> {
         do_search(searcher, Some(after), query, n, fcm)
     }
+
+    /// `FacetsCollectorManager.search(searcher, q, n, sort, doDocScores,
+    /// fcm)`: the top `n` documents by `sort` and the facets collector.
+    /// `readers[i]` is segment `i`'s reader (its doc values).
+    ///
+    /// # Errors
+    /// [`Error::IllegalArgument`] for an empty `sort` (Java's `null`);
+    /// whatever the search reports.
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_sorted<'a>(
+        searcher: &IndexSearcher<'_, 'a>,
+        readers: &[SegmentReader],
+        query: &BooleanQuery,
+        n: i32,
+        sort: &[SortField],
+        do_doc_scores: bool,
+        fcm: &FacetsCollectorManager,
+    ) -> Result<SortedFacetsResult<'a>> {
+        do_search_sorted(searcher, readers, None, query, n, sort, do_doc_scores, fcm)
+    }
+
+    /// `FacetsCollectorManager.searchAfter(searcher, after, q, n, sort,
+    /// doDocScores, fcm)`.
+    ///
+    /// # Errors
+    /// As [`Self::search_sorted`], and [`Error::IllegalArgument`] when
+    /// `after.doc` is not below the reader's `maxDoc`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_after_sorted<'a>(
+        searcher: &IndexSearcher<'_, 'a>,
+        readers: &[SegmentReader],
+        after: &FieldDoc,
+        query: &BooleanQuery,
+        n: i32,
+        sort: &[SortField],
+        do_doc_scores: bool,
+        fcm: &FacetsCollectorManager,
+    ) -> Result<SortedFacetsResult<'a>> {
+        do_search_sorted(
+            searcher,
+            readers,
+            Some(after),
+            query,
+            n,
+            sort,
+            do_doc_scores,
+            fcm,
+        )
+    }
+}
+
+/// `FacetsCollectorManager.FacetsResult` of a sorted search: the hits, their
+/// scores (`populateScores`; `NaN` each without `doDocScores`) and the
+/// facets collector.
+#[derive(Debug)]
+pub struct SortedFacetsResult<'a> {
+    pub top_docs: TopFieldDocs,
+    /// `scoreDocs[i].score`, one per hit of [`Self::top_docs`].
+    pub scores: Vec<f32>,
+    pub facets_collector: FacetsCollector<'a>,
+}
+
+/// `FacetsCollectorManager.doSearch` with a sort. The hits and the facets
+/// collector come from two searches of the query (the same documents), and
+/// the scores from a third that keeps them.
+#[allow(clippy::too_many_arguments)]
+fn do_search_sorted<'a>(
+    searcher: &IndexSearcher<'_, 'a>,
+    readers: &[SegmentReader],
+    after: Option<&FieldDoc>,
+    query: &BooleanQuery,
+    n: i32,
+    sort: &[SortField],
+    do_doc_scores: bool,
+    fcm: &FacetsCollectorManager,
+) -> Result<SortedFacetsResult<'a>> {
+    if sort.is_empty() {
+        return Err(Error::IllegalArgument("sort must not be null".into()));
+    }
+    let mut limit = searcher.max_doc();
+    if limit == 0 {
+        limit = 1;
+    }
+    let n = n.min(limit);
+    if let Some(a) = after {
+        if a.doc >= limit {
+            return Err(Error::IllegalArgument(format!(
+                "after.doc exceeds the number of documents in the reader: after.doc={} limit={limit}",
+                a.doc
+            )));
+        }
+    }
+    let facets_collector = fcm.collect(searcher, query)?;
+    if n == 0 {
+        let total = facets_collector
+            .matching_docs()
+            .iter()
+            .fold(0i32, |t, m| t.wrapping_add(m.total_hits));
+        return Ok(SortedFacetsResult {
+            top_docs: TopFieldDocs {
+                hits: Vec::new(),
+                total: TotalHits {
+                    value: u64::try_from(total).unwrap_or(0),
+                    relation: TotalHitsRelation::EqualTo,
+                },
+                max_score: f32::NAN,
+            },
+            scores: Vec::new(),
+            facets_collector,
+        });
+    }
+    let Ok(top_n) = usize::try_from(n) else {
+        return Err(Error::IllegalArgument(
+            "numHits must be > 0; please use TotalHitCountCollectorManager if you just need the \
+             total hit count"
+                .into(),
+        ));
+    };
+    let top_docs = searcher.search_sorted_counting_all(readers, query, top_n, sort, after)?;
+    let scores = if do_doc_scores {
+        let scored = if fcm.keep_scores {
+            None
+        } else {
+            Some(FacetsCollectorManager::new(true).collect(searcher, query)?)
+        };
+        populate_scores(&top_docs.hits, scored.as_ref().unwrap_or(&facets_collector))
+    } else {
+        vec![f32::NAN; top_docs.hits.len()]
+    };
+    Ok(SortedFacetsResult {
+        top_docs,
+        scores,
+        facets_collector,
+    })
+}
+
+/// `TopFieldCollector.populateScores`: each hit's score, read off a
+/// collector that kept the query's scores (`0` for a hit it did not see,
+/// which a collector of the same query cannot miss).
+pub(crate) fn populate_scores(hits: &[FieldDoc], scored: &FacetsCollector<'_>) -> Vec<f32> {
+    hits.iter()
+        .map(|h| {
+            scored
+                .matching_docs()
+                .iter()
+                .find_map(|m| {
+                    let local = h.doc.checked_sub(m.context.doc_base)?;
+                    if local < 0 || local >= m.context.reader.max_doc() {
+                        return None;
+                    }
+                    m.scores
+                        .as_ref()?
+                        .get(usize::try_from(local).ok()?)
+                        .copied()
+                })
+                .unwrap_or(0.0)
+        })
+        .collect()
 }
 
 /// `FacetsCollectorManager.merge`: one segment's matching docs from two

@@ -286,6 +286,23 @@ fn refusals() {
                        need the total hit count";
         assert_eq!(ia_message(ds.search(&q, 0)), numhits);
         assert_eq!(ia_message(ds.search(&q, -1)), numhits);
+        // The sorted search: `TopFieldCollectorManager`'s wording.
+        let sort = [SortField::numeric(
+            "num",
+            crate::top_field::SortType::Long,
+            false,
+        )];
+        // An empty sort stands in for Java's `null`, refused after `numHits`.
+        assert_eq!(
+            ia_message(ds.search_sorted(&[], &q, None, None, 5, &[], false)),
+            "sort must not be null"
+        );
+        for (n, s) in [(0, &sort[..]), (-1, &sort[..]), (0, &[][..])] {
+            assert_eq!(
+                ia_message(ds.search_sorted(&[], &q, None, None, n, s, false)),
+                "numHits must be > 0; please use TotalHitCountCollector if you just need \n                 the total hit count"
+            );
+        }
 
         let fcm = FacetsCollectorManager::new(false);
         assert_eq!(

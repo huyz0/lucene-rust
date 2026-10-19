@@ -88,6 +88,18 @@
 //! sources they read are [`multi_long_values_source`] and
 //! [`multi_double_values_source`]. The older range primitives here
 //! ([`NumericRange`], [`range_facet_counts`]) remain for the FFI layer.
+//!
+//! **Sorted-set counting over a reader, and sampling, are Java's too** (M13
+//! T13.4d2). [`DefaultSortedSetDocValuesReaderState`] builds the
+//! [`FacetsState`] of an index reader's SORTED_SET facet field (through an
+//! [`crate::ordinal_map::OrdinalMap`] when it has several segments);
+//! [`SortedSetDocValuesFacetCounts`] and
+//! [`ConcurrentSortedSetDocValuesFacetCounts`] count a collector's hits, or
+//! every live document, into it; [`DrillSideways`] counts with either a
+//! taxonomy or such a state; [`RandomSamplingFacetsCollector`] samples the
+//! hits it collected and scales the counts back up. The taxonomy utilities
+//! (merging, ordinal remapping, the searcher-and-taxonomy manager, stats and
+//! the enriching writer) are under [`taxonomy`].
 
 mod drill_down_query;
 mod drill_sideways;
@@ -105,8 +117,10 @@ mod long_value_facet_counts;
 pub mod multi_double_values_source;
 mod multi_facets;
 pub mod multi_long_values_source;
+mod random_sampling;
 pub mod range;
 pub mod rangeonrange;
+mod sortedset;
 mod string_value_facet_counts;
 pub mod taxonomy;
 #[cfg(test)]
@@ -124,12 +138,18 @@ pub use facet_result::{FacetResult, FacetValue, LabelAndValue};
 pub use facet_utils::{live_docs_disi, ConjunctionIterator, LiveDocsIterator};
 pub use facets_collector::{
     DocIdSet, DocIdSetIter, FacetsCollector, FacetsCollectorManager, FacetsResult, MatchingDocs,
+    SortedFacetsResult,
 };
 pub use facets_trait::{validate_top_n, Facets};
 pub use long_value_facet_counts::LongValueFacetCounts;
 pub use multi_double_values_source::{MultiDoubleValues, MultiDoubleValuesSource};
 pub use multi_facets::MultiFacets;
 pub use multi_long_values_source::{MultiLongValues, MultiLongValuesSource};
+pub use random_sampling::{RandomSamplingFacetsCollector, RandomSamplingFacetsCollectorManager};
+pub use sortedset::{
+    ConcurrentSortedSetDocValuesFacetCounts, DefaultSortedSetDocValuesReaderState,
+    SortedSetDocValuesFacetCounts,
+};
 pub use string_value_facet_counts::{StringDocValuesReaderState, StringValueFacetCounts};
 pub use top_ord_and_number_queue::{OrdAndValue, TopOrdAndNumberQueue};
 
@@ -1392,7 +1412,8 @@ impl FacetsState {
 #[derive(Debug, Clone)]
 pub struct SortedSetFacetCounts<'a> {
     state: &'a FacetsState,
-    counts: Vec<u64>,
+    /// Java's `int[] counts`, `None` until a segment was counted.
+    counts: Option<Vec<i32>>,
 }
 
 /// `AbstractSortedSetDocValueFacetCounts.TopChildrenForPath` -- the
@@ -1408,20 +1429,38 @@ impl<'a> SortedSetFacetCounts<'a> {
     /// Java's `hasCounts() == false` (its `counts` array is allocated lazily
     /// and stays `null` when nothing matched): every accessor then reports
     /// "no results" rather than zeros.
+    ///
+    /// A count past `i32::MAX` saturates (Java's counts are `int`s).
     pub fn new(state: &'a FacetsState, counts: Vec<u64>) -> Self {
+        let counts = if counts.is_empty() {
+            None
+        } else {
+            Some(
+                counts
+                    .into_iter()
+                    .map(|c| i32::try_from(c).unwrap_or(i32::MAX))
+                    .collect(),
+            )
+        };
+        SortedSetFacetCounts { state, counts }
+    }
+
+    /// Over Java's own `int[] counts` (`None`: nothing was counted).
+    pub(crate) fn from_counts(state: &'a FacetsState, counts: Option<Vec<i32>>) -> Self {
         SortedSetFacetCounts { state, counts }
     }
 
     /// `AbstractSortedSetDocValueFacetCounts.hasCounts()`.
     fn has_counts(&self) -> bool {
-        !self.counts.is_empty()
+        self.counts.is_some()
     }
 
-    /// `AbstractSortedSetDocValueFacetCounts.getCount(ord)`.
-    fn count(&self, ord: i64) -> u64 {
+    /// `AbstractSortedSetDocValueFacetCounts.getCount(ord)`: `0` outside the
+    /// array, where Java would throw.
+    fn count_i32(&self, ord: i64) -> i32 {
         usize::try_from(ord)
             .ok()
-            .and_then(|i| self.counts.get(i))
+            .and_then(|i| self.counts.as_ref()?.get(i))
             .copied()
             .unwrap_or(0)
     }
@@ -1478,11 +1517,6 @@ impl<'a> SortedSetFacetCounts<'a> {
         }
     }
 
-    /// `getCount(ord)` as Java's `int`.
-    fn count_i32(&self, ord: i64) -> i32 {
-        i32::try_from(self.count(ord)).unwrap_or(i32::MAX)
-    }
-
     /// `adjustPathCountIfNecessary` -- `-1` is Java's "no accurate count is
     /// obtainable for this dim", not a sentinel this port invented.
     //
@@ -1523,8 +1557,14 @@ impl<'a> SortedSetFacetCounts<'a> {
             }
         }
         let child_count = top.len();
-        top.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        top.truncate(top_n);
+        let best_first = |a: &(i64, i32), b: &(i64, i32)| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0));
+        if top_n == 0 {
+            top.clear();
+        } else if top.len() > top_n {
+            top.select_nth_unstable_by(top_n.saturating_sub(1), best_first);
+            top.truncate(top_n);
+        }
+        top.sort_unstable_by(best_first);
         TopChildrenForPath {
             path_count: self.adjust_path_count(dim_config, path_ord, path_count),
             child_count,
@@ -1685,22 +1725,68 @@ impl Facets for SortedSetFacetCounts<'_> {
         Ok(results)
     }
 
-    /// `getTopDims(topNDims, topNChildren)`.
+    /// `getTopDims(topNDims, topNChildren)`: the dims ranked by their count
+    /// -- read off the dim's own ordinal where it was indexed, `-1` for a
+    /// multi-valued dim that does not require it, the children's sum for a
+    /// single-valued flat dim -- and the best `top_n_dims` of them (count
+    /// descending, then dim), each with its top children.
     ///
-    /// This is the base-class contract verbatim -- "results should be the same
-    /// as calling getAllDims and then only using the first topNDims" -- rather
-    /// than `AbstractSortedSetDocValueFacetCounts`' override of it. That
-    /// override exists to avoid computing children for dims that will not make
-    /// the cut, by reading a dim's count directly where the encoding allows;
-    /// here [`Facets::get_all_dims`] is already a single pass over the dims
-    /// with no per-dim I/O, so the optimization has nothing to buy and the two
-    /// agree by construction.
+    /// Differs: a ranked dim with no counted child (a multi-valued dim's
+    /// `-1`) is left out, where Java's list holds `null` for it.
     fn get_top_dims(&self, top_n_dims: i32, top_n_children: i32) -> Result<Vec<FacetResult>> {
         validate_top_n(top_n_dims)?;
         validate_top_n(top_n_children)?;
-        let mut all = self.get_all_dims(top_n_children)?;
-        all.truncate(usize::try_from(top_n_dims).unwrap_or(usize::MAX));
-        Ok(all)
+        if !self.has_counts() {
+            return Ok(Vec::new());
+        }
+        let top_n = usize::try_from(top_n_children).unwrap_or(usize::MAX);
+        let mut ranked: Vec<(&str, i32, Option<TopChildrenForPath>)> = Vec::new();
+        for dim in self.state.dims() {
+            let dim_config = self.state.config().dim_config(dim);
+            let (dim_count, intermediate) = if dim_config.hierarchical {
+                match self.state.dim_tree(dim) {
+                    Some(tree) => (self.count_i32(tree.dim_start_ord), None),
+                    None => continue,
+                }
+            } else {
+                let Some(range) = self.state.ord_range(dim).copied() else {
+                    continue;
+                };
+                if dim_config.multi_valued {
+                    if dim_config.require_dim_count {
+                        (self.count_i32(range.start), None)
+                    } else {
+                        (-1, None)
+                    }
+                } else {
+                    let children = ChildOrds::Range {
+                        next: range.start,
+                        end: range.end,
+                    };
+                    let top = self.compute_top_children(children, top_n, dim_config, range.start);
+                    (top.path_count, Some(top))
+                }
+            };
+            if dim_count != 0 {
+                ranked.push((dim, dim_count, intermediate));
+            }
+        }
+        ranked.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then_with(|| taxonomy::facet_label::java_compare(a.0, b.0))
+        });
+        ranked.truncate(usize::try_from(top_n_dims).unwrap_or(usize::MAX));
+        let mut results = Vec::with_capacity(ranked.len());
+        for (dim, _, intermediate) in ranked {
+            let top = match intermediate {
+                Some(top) => Some(top),
+                None => self.top_children_for_path(top_n, dim, &[])?,
+            };
+            if let Some(r) = self.create_facet_result(top, dim, &[]) {
+                results.push(r);
+            }
+        }
+        Ok(results)
     }
 }
 

@@ -312,3 +312,29 @@ fn a_snapshot_reports_a_failing_flush_merge_or_release() {
         dir.crash_point()
     );
 }
+
+/// A refresh after deletes alone (no document buffered) leaves the writer
+/// with nothing pending: the reader it opened is current, as Java's
+/// `nrtIsCurrent` says. Seen to fail before the flush dropped the private
+/// buffer's no-op entries.
+#[test]
+fn a_delete_only_snapshot_is_current() {
+    let tmp = TempDir::new("nrt-delete-only");
+    let dir = FsDirectory::open(&tmp);
+    let mut w = writer(&dir);
+    for i in 0..8 {
+        w.add_document(doc(&format!("d{i}"))).unwrap();
+    }
+    let s0 = w.nrt_snapshot(true, false).unwrap();
+    assert!(w.nrt_is_current(&s0.segment_infos));
+    w.delete_documents_by_term(&[Term::new("id", "d4")])
+        .unwrap();
+    assert!(!w.nrt_is_current(&s0.segment_infos));
+    let s1 = w.nrt_snapshot(true, false).unwrap();
+    assert_eq!(live_docs(&s1.segment_infos, &dir), 7);
+    assert!(w.nrt_is_current(&s1.segment_infos));
+    // The next document still lands, and is not deleted.
+    w.add_document(doc("d4")).unwrap();
+    let s2 = w.nrt_snapshot(true, false).unwrap();
+    assert_eq!(live_docs(&s2.segment_infos, &dir), 8);
+}

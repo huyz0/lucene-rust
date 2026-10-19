@@ -1,0 +1,308 @@
+map	0,3,19,5,21,22,8,35,18,20,26,28,36,17,16,6,33,37,15,14,25,38,12,11,27,9,4,32,24,30,31,23,29,34
+taxo	0	
+taxo	1	Other
+taxo	2	Other/o0
+taxo	3	Author
+taxo	4	Author/a5
+taxo	5	Publish Date
+taxo	6	Publish Date/2012
+taxo	7	Publish Date/2012/9
+taxo	8	Tag
+taxo	9	Tag/u4
+taxo	10	Other/o1
+taxo	11	Author/a4
+taxo	12	Tag/u3
+taxo	13	Other/o2
+taxo	14	Author/a3
+taxo	15	Tag/u2
+taxo	16	Author/a2
+taxo	17	Tag/u1
+taxo	18	Tag/u0
+taxo	19	Author/a0
+taxo	20	Author/a1
+taxo	21	Publish Date/2010
+taxo	22	Publish Date/2010/1
+taxo	23	Publish Date/2010/2
+taxo	24	Publish Date/2010/3
+taxo	25	Publish Date/2010/4
+taxo	26	Publish Date/2011
+taxo	27	Publish Date/2011/1
+taxo	28	Publish Date/2011/2
+taxo	29	Publish Date/2011/3
+taxo	30	Publish Date/2011/4
+taxo	31	Publish Date/2012/1
+taxo	32	Publish Date/2012/2
+taxo	33	Publish Date/2012/3
+taxo	34	Publish Date/2012/4
+taxo	35	Tag/t0
+taxo	36	Tag/t1
+taxo	37	Tag/t2
+taxo	38	Tag/t3
+leaf	0	30	30
+doc	0	0	$facets	2,4,7
+doc	0	1	$facets	10,11
+doc	0	2	$facets	7,13,14
+doc	0	3	$facets	2,16
+doc	0	4	$facets	4,7,10
+doc	0	5	$facets	11,13
+doc	0	6	$facets	2,7,14
+doc	0	7	$facets	10,16
+doc	0	8	$facets	4,7,13
+doc	0	9	$facets	2,11
+doc	0	10	$facets	7,10,14
+doc	0	11	$facets	13,16
+doc	0	12	$facets	2,4,7
+doc	0	13	$facets	10,11
+doc	0	14	$facets	7,13,14
+doc	0	15	$facets	2,16
+doc	0	16	$facets	4,7,10
+doc	0	17	$facets	11,13
+doc	0	18	$facets	2,7,14
+doc	0	19	$facets	10,16
+doc	0	20	$facets	4,7,13
+doc	0	21	$facets	2,11
+doc	0	22	$facets	7,10,14
+doc	0	23	$facets	13,16
+doc	0	24	$facets	2,4,7
+doc	0	25	$facets	10,11
+doc	0	26	$facets	7,13,14
+doc	0	27	$facets	2,16
+doc	0	28	$facets	4,7,10
+doc	0	29	$facets	11,13
+doc	0	0	$tags	9
+doc	0	1	$tags	12
+doc	0	2	$tags	15
+doc	0	3	$tags	17
+doc	0	4	$tags	18
+doc	0	5	$tags	9
+doc	0	6	$tags	12
+doc	0	7	$tags	15
+doc	0	8	$tags	17
+doc	0	9	$tags	18
+doc	0	10	$tags	9
+doc	0	11	$tags	12
+doc	0	12	$tags	15
+doc	0	13	$tags	17
+doc	0	14	$tags	18
+doc	0	15	$tags	9
+doc	0	16	$tags	12
+doc	0	17	$tags	15
+doc	0	18	$tags	17
+doc	0	19	$tags	18
+doc	0	20	$tags	9
+doc	0	21	$tags	12
+doc	0	22	$tags	15
+doc	0	23	$tags	17
+doc	0	24	$tags	18
+doc	0	25	$tags	9
+doc	0	26	$tags	12
+doc	0	27	$tags	15
+doc	0	28	$tags	17
+doc	0	29	$tags	18
+doc	0	0	num	1000
+doc	0	1	num	1001
+doc	0	2	num	1002
+doc	0	3	num	1003
+doc	0	4	num	1004
+doc	0	5	num	1005
+doc	0	6	num	1006
+doc	0	7	num	1007
+doc	0	8	num	1008
+doc	0	9	num	1009
+doc	0	10	num	1010
+doc	0	11	num	1011
+doc	0	12	num	1012
+doc	0	13	num	1013
+doc	0	14	num	1014
+doc	0	15	num	1015
+doc	0	16	num	1016
+doc	0	17	num	1017
+doc	0	18	num	1018
+doc	0	19	num	1019
+doc	0	20	num	1020
+doc	0	21	num	1021
+doc	0	22	num	1022
+doc	0	23	num	1023
+doc	0	24	num	1024
+doc	0	25	num	1025
+doc	0	26	num	1026
+doc	0	27	num	1027
+doc	0	28	num	1028
+doc	0	29	num	1029
+leaf	1	58	58
+doc	1	0	$facets	19,22
+doc	1	1	$facets	20,28
+doc	1	2	$facets	16,33
+doc	1	3	$facets	14,25
+doc	1	4	$facets	4,32
+doc	1	5	$facets	19,24
+doc	1	6	$facets	20,30
+doc	1	7	$facets	16,31
+doc	1	8	$facets	14,23
+doc	1	9	$facets	11,29
+doc	1	10	$facets	4,34
+doc	1	11	$facets	19,22
+doc	1	12	$facets	16,33
+doc	1	13	$facets	14,25
+doc	1	14	$facets	11,27
+doc	1	15	$facets	4,32
+doc	1	16	$facets	19,24
+doc	1	17	$facets	20,30
+doc	1	18	$facets	16,31
+doc	1	19	$facets	14,23
+doc	1	20	$facets	4,34
+doc	1	21	$facets	19,22
+doc	1	22	$facets	20,28
+doc	1	23	$facets	16,33
+doc	1	24	$facets	14,25
+doc	1	25	$facets	11,27
+doc	1	26	$facets	4,32
+doc	1	27	$facets	19,24
+doc	1	28	$facets	16,31
+doc	1	29	$facets	14,23
+doc	1	30	$facets	11,29
+doc	1	31	$facets	4,34
+doc	1	32	$facets	19,22
+doc	1	33	$facets	20,28
+doc	1	34	$facets	16,33
+doc	1	35	$facets	14,25
+doc	1	36	$facets	4,32
+doc	1	37	$facets	19,24
+doc	1	38	$facets	20,30
+doc	1	39	$facets	16,31
+doc	1	40	$facets	14,23
+doc	1	41	$facets	11,29
+doc	1	42	$facets	4,34
+doc	1	43	$facets	19,22
+doc	1	44	$facets	16,33
+doc	1	45	$facets	14,25
+doc	1	46	$facets	11,27
+doc	1	47	$facets	4,32
+doc	1	48	$facets	19,24
+doc	1	49	$facets	20,30
+doc	1	50	$facets	16,31
+doc	1	51	$facets	14,23
+doc	1	52	$facets	4,34
+doc	1	53	$facets	19,22
+doc	1	54	$facets	20,28
+doc	1	55	$facets	16,33
+doc	1	56	$facets	14,25
+doc	1	57	$facets	11,27
+doc	1	0	$tags	18,35
+doc	1	1	$tags	17,36
+doc	1	2	$tags	15,37
+doc	1	3	$tags	12,38
+doc	1	4	$tags	18,36
+doc	1	5	$tags	17,37
+doc	1	6	$tags	15,38
+doc	1	7	$tags	12,35
+doc	1	8	$tags	9,36
+doc	1	9	$tags	18,37
+doc	1	10	$tags	17,38
+doc	1	11	$tags	15,35
+doc	1	12	$tags	9,37
+doc	1	13	$tags	18,38
+doc	1	14	$tags	17,35
+doc	1	15	$tags	15,36
+doc	1	16	$tags	12,37
+doc	1	17	$tags	9,38
+doc	1	18	$tags	18,35
+doc	1	19	$tags	17,36
+doc	1	20	$tags	12,38
+doc	1	21	$tags	9,35
+doc	1	22	$tags	18,36
+doc	1	23	$tags	17,37
+doc	1	24	$tags	15,38
+doc	1	25	$tags	12,35
+doc	1	26	$tags	9,36
+doc	1	27	$tags	18,37
+doc	1	28	$tags	15,35
+doc	1	29	$tags	12,36
+doc	1	30	$tags	9,37
+doc	1	31	$tags	18,38
+doc	1	32	$tags	17,35
+doc	1	33	$tags	15,36
+doc	1	34	$tags	12,37
+doc	1	35	$tags	9,38
+doc	1	36	$tags	17,36
+doc	1	37	$tags	15,37
+doc	1	38	$tags	12,38
+doc	1	39	$tags	9,35
+doc	1	40	$tags	18,36
+doc	1	41	$tags	17,37
+doc	1	42	$tags	15,38
+doc	1	43	$tags	12,35
+doc	1	44	$tags	18,37
+doc	1	45	$tags	17,38
+doc	1	46	$tags	15,35
+doc	1	47	$tags	12,36
+doc	1	48	$tags	9,37
+doc	1	49	$tags	18,38
+doc	1	50	$tags	17,35
+doc	1	51	$tags	15,36
+doc	1	52	$tags	9,38
+doc	1	53	$tags	18,35
+doc	1	54	$tags	17,36
+doc	1	55	$tags	15,37
+doc	1	56	$tags	12,38
+doc	1	57	$tags	9,35
+doc	1	0	num	0,0
+doc	1	1	num	1,3
+doc	1	2	num	2,6
+doc	1	3	num	2,3
+doc	1	4	num	1,5
+doc	1	5	num	4,6
+doc	1	6	num	0,7
+doc	1	7	num	3,8
+doc	1	8	num	6,9
+doc	1	9	num	2,10
+doc	1	10	num	5,11
+doc	1	11	num	1,12
+doc	1	12	num	0,14
+doc	1	13	num	3,15
+doc	1	14	num	6,16
+doc	1	15	num	2,17
+doc	1	16	num	5,18
+doc	1	17	num	1,19
+doc	1	18	num	4,20
+doc	1	19	num	0,21
+doc	1	20	num	6,23
+doc	1	21	num	2,24
+doc	1	22	num	5,25
+doc	1	23	num	1,26
+doc	1	24	num	4,27
+doc	1	25	num	0,28
+doc	1	26	num	3,29
+doc	1	27	num	6,30
+doc	1	28	num	5,32
+doc	1	29	num	1,33
+doc	1	30	num	4,34
+doc	1	31	num	0,35
+doc	1	32	num	3,36
+doc	1	33	num	6,37
+doc	1	34	num	2,38
+doc	1	35	num	5,39
+doc	1	36	num	4,41
+doc	1	37	num	0,42
+doc	1	38	num	3,43
+doc	1	39	num	6,44
+doc	1	40	num	2,45
+doc	1	41	num	5,46
+doc	1	42	num	1,47
+doc	1	43	num	4,48
+doc	1	44	num	3,50
+doc	1	45	num	6,51
+doc	1	46	num	2,52
+doc	1	47	num	5,53
+doc	1	48	num	1,54
+doc	1	49	num	4,55
+doc	1	50	num	0,56
+doc	1	51	num	3,57
+doc	1	52	num	2,59
+doc	1	53	num	5,60
+doc	1	54	num	1,61
+doc	1	55	num	4,62
+doc	1	56	num	0,63
+doc	1	57	num	3,64
+counts	$facets	Author||88|6|a5=18=18,a3=18=18,a2=18=18,a4=15=15,a0=11=11,a1=8=8;Publish Date||73|3|2012=36=36,2010=22=22,2011=15=15;Other||30|3|o0=10=10,o1=10=10,o2=10=10
+counts	$tags	Tag||-1|9|u2=18=18,u1=18=18,u0=18=18,u4=17=17,u3=17=17,t0=15=15,t3=15=15,t1=14=14,t2=14=14

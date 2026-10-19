@@ -965,6 +965,9 @@ pub(crate) struct MergePlan {
         std::sync::Arc<dyn crate::merge_policy::MergeHooks>,
         crate::segment_infos::SegmentInfos,
     )>,
+    /// SORTED_NUMERIC values rewritten on the way through
+    /// ([`IndexWriter::add_indexes_merged_remapping`]).
+    sorted_numeric_remap: Option<std::sync::Arc<merge::SortedNumericRemap>>,
 }
 
 /// `SoftDeletesRetentionMergePolicy` with OpenSearch's retention query,
@@ -2553,6 +2556,7 @@ impl IndexingConfig {
                 knn_vectors_formats: self.knn_vectors_formats.clone(),
                 codec: self.codec.clone(),
                 reorder,
+                sorted_numeric_remap: plan.sorted_numeric_remap.clone(),
             },
             &plan.merged_name,
             plan.merged_id,
@@ -7170,6 +7174,11 @@ impl IndexWriter<'_> {
             // be resolved -- Java's `applyAllDeletes` is not conditional on a
             // segment having been produced.
             self.apply_all_deletes_and_updates()?;
+            // The private buffer's entries were issued against an empty
+            // document buffer (`docIDUpto` 0): they reach no document, and
+            // Java has no per-thread writer to hold them, so they must not
+            // keep `anyChanges` (and so `nrtIsCurrent`) true.
+            let _ = self.delete_queue.freeze_private_buffer("");
             // ...and the `.liv`/doc-values generations it just wrote are referenced
             // by this writer's in-memory view but by no commit yet, so the
             // deleter has to be told before anything can `refresh()` them away
@@ -9522,7 +9531,19 @@ impl IndexWriter<'_> {
         names: &[String],
         hooks: Option<std::sync::Arc<dyn crate::merge_policy::MergeHooks>>,
     ) -> Result<()> {
+        self.execute_merge_planned(names, hooks, None).map(|_| ())
+    }
+
+    /// [`Self::execute_merge_hooked`], with SORTED_NUMERIC values rewritten
+    /// through `remap`: whether the merge was published.
+    pub(crate) fn execute_merge_planned(
+        &mut self,
+        names: &[String],
+        hooks: Option<std::sync::Arc<dyn crate::merge_policy::MergeHooks>>,
+        remap: Option<std::sync::Arc<merge::SortedNumericRemap>>,
+    ) -> Result<bool> {
         let mut plan = self.begin_merge(names)?;
+        plan.sorted_numeric_remap = remap;
         if let Some(hooks) = hooks {
             let mut infos = self.segment_infos.clone();
             infos.segments = plan.sources.clone();
@@ -9530,7 +9551,7 @@ impl IndexWriter<'_> {
         }
         let cfg = std::sync::Arc::clone(&self.cfg);
         match cfg.run_merge(self.dir, &plan) {
-            Ok(outcome) => self.finish_merge(plan, outcome).map(|_| ()),
+            Ok(outcome) => self.finish_merge(plan, outcome),
             Err(e) => {
                 // Its own failure must not mask the merge's.
                 let _ = self.abort_merge(plan);
@@ -9680,6 +9701,7 @@ impl IndexWriter<'_> {
             held,
             retention: self.soft_deletes_retention.clone(),
             hooks: None,
+            sorted_numeric_remap: None,
         })
     }
 

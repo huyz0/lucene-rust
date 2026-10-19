@@ -1,0 +1,18 @@
+nrt	init	3	19	true	true	Author||3|3|a0=1=1,a1=1=1,a2=1=1;Publish Date||3|3|2010=1=1,2011=1=1,2012=1=1
+nrt	added	3	19	false	false	Author||3|3|a0=1=1,a1=1=1,a2=1=1;Publish Date||3|3|2010=1=1,2011=1=1,2012=1=1
+nrt	refresh	true
+nrt	refreshed	8	30	true	true	Author||8|6|a0=2=2,a1=2=2,a2=1=1,a3=1=1,a4=1=1,a5=1=1;Publish Date||8|3|2010=3=3,2011=3=3,2012=2=2
+nrt	changed	true
+nrt	refresh	true
+nrt	changed	false
+nrt	refresh	true
+nrt	deleted	7	30	true	true	Author||7|5|a0=2=2,a1=2=2,a2=1=1,a3=1=1,a5=1=1;Publish Date||7|3|2010=3=3,2011=2=2,2012=2=2
+nrt	replace	ISE:DirectoryTaxonomyWriter.replaceTaxonomy was called, which is not allowed when using SearcherTaxonomyManager
+dir	init	4	23	true	true	Author||4|4|a0=1=1,a1=1=1,a2=1=1,a3=1=1;Publish Date||4|3|2010=2=2,2011=1=1,2012=1=1
+dir	generation	1
+dir	refresh	true
+dir	uncommitted	4	23	true	true	Author||4|4|a0=1=1,a1=1=1,a2=1=1,a3=1=1;Publish Date||4|3|2010=2=2,2011=1=1,2012=1=1
+dir	committed	4	23	false	false	Author||4|4|a0=1=1,a1=1=1,a2=1=1,a3=1=1;Publish Date||4|3|2010=2=2,2011=1=1,2012=1=1
+dir	refresh	true
+dir	refreshed	10	32	true	true	Author||10|6|a0=2=2,a1=2=2,a2=2=2,a3=2=2,a4=1=1,a5=1=1;Publish Date||10|3|2010=4=4,2011=3=3,2012=3=3
+dir	generation	2

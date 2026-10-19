@@ -1,0 +1,33 @@
+epoch	before	1
+before	0		-	-
+before	1	A	1	-
+before	2	A/x	2	-
+before	3	A/y	2	-
+before	4	B	1	-
+before	5	B/p	2	-
+before	6	B/p/q	3	-
+before	7	C	1	-
+before_size	8
+epoch	after	2
+after	0		-	!
+after	1	A	-	A!
+after	2	A/x	-	A/x!
+after	3	A/y	-	A/y!
+after	4	B	-	B!
+after	5	B/p	-	B/p!
+after	6	B/p/q	-	B/p/q!
+after	7	C	-	C!
+after_size	8
+add	9
+add	2
+final	0		-	!
+final	1	A	-	A!
+final	2	A/x	-	A/x!
+final	3	A/y	-	A/y!
+final	4	B	-	B!
+final	5	B/p	-	B/p!
+final	6	B/p/q	-	B/p/q!
+final	7	C	-	C!
+final	8	D	-	D!
+final	9	D/z	-	D/z!
+final_size	10
