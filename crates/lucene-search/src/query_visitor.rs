@@ -203,6 +203,15 @@ fn wildcard_automaton(pattern: &[u8]) -> Option<automaton::Automaton> {
 pub(crate) fn wildcard_automaton_checked(
     pattern: &[u8],
 ) -> Result<automaton::Automaton, automaton::TooComplexToDeterminize> {
+    wildcard_automaton_within(pattern, automaton::DEFAULT_DETERMINIZE_WORK_LIMIT)
+}
+
+/// `WildcardQuery.toAutomaton(term, determinizeWorkLimit)`: the pattern's
+/// automaton, determinized within `work_limit`.
+pub(crate) fn wildcard_automaton_within(
+    pattern: &[u8],
+    work_limit: i32,
+) -> Result<automaton::Automaton, automaton::TooComplexToDeterminize> {
     let text = String::from_utf8_lossy(pattern);
     let chars: Vec<char> = text.chars().collect();
     let mut parts = Vec::new();
@@ -221,10 +230,7 @@ pub(crate) fn wildcard_automaton_checked(
         i += 1;
     }
     let refs: Vec<&automaton::Automaton> = parts.iter().collect();
-    automaton::operations::determinize(
-        &automaton::operations::concatenate(&refs),
-        automaton::DEFAULT_DETERMINIZE_WORK_LIMIT,
-    )
+    automaton::operations::determinize(&automaton::operations::concatenate(&refs), work_limit)
 }
 
 /// `Query.visit(visitor)` for `clause`.

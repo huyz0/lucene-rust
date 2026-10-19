@@ -271,6 +271,11 @@ a\\	E	Cannot parse 'a\\': Lexical error at line 1, column 3.  Encountered: <EOF>
 a^1.	Q	(a)^1.0 .	Boolean(Boost(TermQuery(a)^1.0) TermQuery(.))
 a^1.x	Q	(a)^1.0 .x	Boolean(Boost(TermQuery(a)^1.0) TermQuery(.x))
 a^.	E	Cannot parse 'a^.': Lexical error at line 1, column 4.  Encountered: <EOF>
+/(ab|cd|ef|gh)+x(ab|cd){2}/	Q	/(ab|cd|ef|gh)+x(ab|cd){2}/	RegexpQuery(/(ab|cd|ef|gh)+x(ab|cd){2}/)
+a?b?c?d?e?f*g	Q	a?b?c?d?e?f*g	WildcardQuery(a?b?c?d?e?f*g)
+/[abc]+[def]+[ghi]+[jkl]+/	Q	/[abc]+[def]+[ghi]+[jkl]+/	RegexpQuery(/[abc]+[def]+[ghi]+[jkl]+/)
+ab*c*d*e?f*g	Q	ab*c*d*e?f*g	WildcardQuery(ab*c*d*e?f*g)
+a*b?c*d?e*f?g	Q	a*b?c*d?e*f?g	WildcardQuery(a*b?c*d?e*f?g)
 (a)^2.5^3	E	Cannot parse '(a)^2.5^3': Encountered " "^" "^ "" at line 1, column 7.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
 a^2~	Q	(a~2)^2.0	Boost(FuzzyQuery(a~2)^2.0)
 "a b"~1.9	Q	"a b"~1	PhraseQuery("a b"~1)

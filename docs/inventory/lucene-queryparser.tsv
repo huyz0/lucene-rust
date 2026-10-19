@@ -6,7 +6,7 @@ queryparser/charstream/FastCharStream	ported	crates/lucene-search/src/queryparse
 queryparser/classic/MultiFieldQueryParser	ported	crates/lucene-search/src/queryparser/classic/mod.rs::multi_field
 queryparser/classic/ParseException	ported	crates/lucene-search/src/queryparser/javacc.rs::Runtime
 queryparser/classic/QueryParser	ported	crates/lucene-search/src/queryparser/classic/mod.rs::QueryParser
-queryparser/classic/QueryParserBase	partial	crates/lucene-search/src/queryparser/classic/parser.rs::add_clause -- M14: date-resolution ranges (setDateResolution/setLocale/setTimeZone), with the flexible parser's: a lenient GregorianCalendar in a time zone, which no crate models yet (date_recognizer.rs recognises dates, it does not compute them); the MultiTermQuery rewrite method and determinizeWorkLimit setters, with MultiTermRewriteMethodProcessor's (ParsedQuery carries no rewrite method). No T13.1 corpus query sets either: unset, Java ignores its failed date parse as this parser does
+queryparser/classic/QueryParserBase	partial	crates/lucene-search/src/queryparser/classic/parser.rs::add_clause -- M14: date-resolution ranges (setDateResolution/setLocale/setTimeZone), with the flexible parser's: a lenient GregorianCalendar in a time zone, which no crate models yet (date_recognizer.rs recognises dates, it does not compute them). Unset, Java ignores its failed date parse as this parser does
 queryparser/classic/QueryParserConstants	ported	crates/lucene-search/src/queryparser/classic/constants.rs::TOKEN_IMAGE
 queryparser/classic/QueryParserTokenManager	ported	crates/lucene-search/src/queryparser/classic/token_manager.rs::TokenManager
 queryparser/classic/Token	ported	crates/lucene-search/src/queryparser/javacc.rs::Token
@@ -157,7 +157,7 @@ queryparser/flexible/standard/processors/FuzzyQueryNodeProcessor	ported	crates/l
 queryparser/flexible/standard/processors/IntervalQueryNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::IntervalProc
 queryparser/flexible/standard/processors/MatchAllDocsQueryNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::MatchAllProc
 queryparser/flexible/standard/processors/MultiFieldQueryNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::MultiFieldProc
-queryparser/flexible/standard/processors/MultiTermRewriteMethodProcessor	partial	crates/lucene-search/src/queryparser/flexible/processors.rs::run -- M14: setMultiTermRewriteMethod; every multi-term query takes the default CONSTANT_SCORE_BLENDED_REWRITE
+queryparser/flexible/standard/processors/MultiTermRewriteMethodProcessor	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
 queryparser/flexible/standard/processors/OpenRangeQueryNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::OpenRangeProc
 queryparser/flexible/standard/processors/PhraseSlopQueryNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::PhraseSlopProc
 queryparser/flexible/standard/processors/PointQueryNodeProcessor	partial	crates/lucene-search/src/queryparser/flexible/processors.rs::PointProc -- M14: PointsConfig and date resolutions, which need Java's locale NumberFormat/DateFormat

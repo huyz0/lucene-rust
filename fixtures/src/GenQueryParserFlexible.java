@@ -23,6 +23,7 @@ import org.apache.lucene.queryparser.flexible.standard.QueryParserUtil;
 import org.apache.lucene.queryparser.flexible.standard.StandardQueryParser;
 import org.apache.lucene.queryparser.flexible.standard.config.StandardQueryConfigHandler;
 import org.apache.lucene.search.BooleanClause;
+import org.apache.lucene.search.MultiTermQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.queryparser.charstream.FastCharStream;
 import org.apache.lucene.queryparser.flexible.standard.parser.StandardSyntaxParserConstants;
@@ -168,7 +169,7 @@ public class GenQueryParserFlexible {
     return b.toString();
   }
 
-  static final String[] CONFIGS = {"std", "and", "noanalyzer", "multi", "options", "syn", "stop", "negative", "prec", "prec_and", "mapping"};
+  static final String[] CONFIGS = {"std", "and", "noanalyzer", "multi", "options", "syn", "stop", "negative", "prec", "prec_and", "mapping", "rewrite", "topterms"};
 
   /**
    * Whitespace, lower case, and a {@code MappingCharFilter} on both readers rewriting the two-char
@@ -236,6 +237,8 @@ public class GenQueryParserFlexible {
         boosts.put("f", -1f);
         p.setFieldsBoost(boosts);
       }
+      case "rewrite" -> p.setMultiTermRewriteMethod(MultiTermQuery.SCORING_BOOLEAN_REWRITE);
+      case "topterms" -> p.setMultiTermRewriteMethod(new MultiTermQuery.TopTermsBoostOnlyBooleanQueryRewrite(5));
       default -> {}
     }
     return p;

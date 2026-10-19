@@ -67,12 +67,118 @@ fn from_clause_keeps_every_query_class() {
     for (clause, class) in cases {
         let parsed = ParsedQuery::from_clause(clause.clone());
         assert_eq!(parsed.class_name(), class, "{clause:?}");
-        // back to the same query to run, the term range at the parser's
-        // rewrite
-        if class != "TermRangeQuery" {
-            assert_eq!(parsed.to_clause(7), clause);
-        }
+        // back to the same query to run, its rewrite method kept
+        assert_eq!(parsed.to_clause(7), clause);
     }
+}
+
+#[test]
+fn a_rewrite_method_wraps_only_when_not_the_default() {
+    let w = ParsedQuery::Wildcard(WildcardQuery::new("f", b"a*b".to_vec()));
+    assert_eq!(
+        ParsedQuery::with_rewrite(w.clone(), RewriteMethod::ConstantScoreBlended),
+        w
+    );
+    let names = [
+        (
+            RewriteMethod::ConstantScoreBlended,
+            "CONSTANT_SCORE_BLENDED_REWRITE",
+        ),
+        (RewriteMethod::ConstantScore, "CONSTANT_SCORE_REWRITE"),
+        (RewriteMethod::ScoringBoolean, "SCORING_BOOLEAN_REWRITE"),
+        (
+            RewriteMethod::ConstantScoreBoolean,
+            "CONSTANT_SCORE_BOOLEAN_REWRITE",
+        ),
+        (
+            RewriteMethod::TopTermsScoringBoolean(3),
+            "TopTermsScoringBooleanQueryRewrite(3)",
+        ),
+        (
+            RewriteMethod::TopTermsBoostOnlyBoolean(4),
+            "TopTermsBoostOnlyBooleanQueryRewrite(4)",
+        ),
+        (
+            RewriteMethod::TopTermsBlendedFreqScoring(5),
+            "TopTermsBlendedFreqScoringRewrite(5)",
+        ),
+        (RewriteMethod::DocValues, "DocValuesRewriteMethod"),
+    ];
+    for (m, name) in names {
+        assert_eq!(rewrite_name(m), name);
+    }
+    let r = ParsedQuery::with_rewrite(w, RewriteMethod::DocValues);
+    assert_eq!(r.class_name(), "WildcardQuery");
+    assert_eq!(r.to_string("f"), "a*b");
+    assert_eq!(r.describe("f"), "WildcardQuery(a*b)@DocValuesRewriteMethod");
+    assert_eq!(ParsedQuery::from_clause(r.to_clause(0)), r);
+    let re = ParsedQuery::with_rewrite(
+        ParsedQuery::Regexp(RegexpQuery::new("f", "a.")),
+        RewriteMethod::ScoringBoolean,
+    );
+    assert_eq!(ParsedQuery::from_clause(re.to_clause(0)), re);
+    // Anything else keeps its own query.
+    let t = ParsedQuery::Rewritten(
+        Box::new(ParsedQuery::Term(term("f", "a"))),
+        RewriteMethod::ScoringBoolean,
+    );
+    assert_eq!(t.to_clause(0), Clause::Term(term("f", "a")));
+    let syn = ParsedQuery::Rewritten(
+        Box::new(ParsedQuery::Synonym(
+            SynonymQuery::new("f", vec![(b"a".to_vec(), 1.0)]).unwrap(),
+        )),
+        RewriteMethod::ScoringBoolean,
+    );
+    assert!(matches!(syn.to_clause(0), Clause::Extended(_)));
+}
+
+#[test]
+fn the_parsers_build_with_their_rewrite_method() {
+    use crate::queryparser::classic::QueryParser;
+    use crate::queryparser::flexible::StandardQueryParser;
+    let analyzer = std::sync::Arc::new(lucene_analysis::Analyzer::keyword());
+    let mut p = QueryParser::new("f", std::sync::Arc::clone(&analyzer));
+    assert_eq!(
+        p.multi_term_rewrite_method(),
+        RewriteMethod::ConstantScoreBlended
+    );
+    assert_eq!(p.determinize_work_limit(), 10_000);
+    p.set_multi_term_rewrite_method(RewriteMethod::ConstantScore);
+    p.set_determinize_work_limit(100);
+    for q in ["a*", "a*b", "/a./", "[a TO b]"] {
+        let parsed = p.parse(q).unwrap();
+        assert!(
+            matches!(
+                parsed,
+                ParsedQuery::Rewritten(_, RewriteMethod::ConstantScore)
+            ),
+            "{q}: {parsed:?}"
+        );
+    }
+    // A complex phrase's words rewrite as booleans whatever is set; the
+    // words outside a phrase take the parser's method.
+    let mut c = QueryParser::complex_phrase("f", analyzer);
+    c.set_multi_term_rewrite_method(RewriteMethod::ConstantScore);
+    let parsed = c.parse("\"a* b\" c*").unwrap();
+    let ParsedQuery::Boolean(b) = parsed else {
+        panic!("{parsed:?}")
+    };
+    let ParsedQuery::ComplexPhrase(phrase) = &b.clauses[0].1 else {
+        panic!("{b:?}")
+    };
+    let ParsedQuery::Boolean(words) = phrase.contents.as_ref().unwrap() else {
+        panic!("{phrase:?}")
+    };
+    assert!(matches!(words.clauses[0].1, ParsedQuery::Prefix(_)));
+    assert!(matches!(b.clauses[1].1, ParsedQuery::Rewritten(..)));
+
+    let mut f = StandardQueryParser::new();
+    assert_eq!(
+        f.multi_term_rewrite_method(),
+        RewriteMethod::ConstantScoreBlended
+    );
+    f.set_multi_term_rewrite_method(RewriteMethod::ScoringBoolean);
+    assert_eq!(f.multi_term_rewrite_method(), RewriteMethod::ScoringBoolean);
 }
 
 #[test]

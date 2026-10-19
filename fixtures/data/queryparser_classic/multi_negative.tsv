@@ -271,6 +271,11 @@ a\\	E	Cannot parse 'a\\': Lexical error at line 1, column 3.  Encountered: <EOF>
 a^1.	Q	(title:a body:a)^1.0	Boost(Boolean(TermQuery(title:a) TermQuery(body:a))^1.0)
 a^1.x	Q	(title:a body:a)^1.0 (title:x body:x)	Boolean(Boost(Boolean(TermQuery(title:a) TermQuery(body:a))^1.0) Boolean(TermQuery(title:x) TermQuery(body:x)))
 a^.	E	Cannot parse 'a^.': Lexical error at line 1, column 4.  Encountered: <EOF>
+/(ab|cd|ef|gh)+x(ab|cd){2}/	Q	title:/(ab|cd|ef|gh)+x(ab|cd){2}/ body:/(ab|cd|ef|gh)+x(ab|cd){2}/	Boolean(RegexpQuery(title:/(ab|cd|ef|gh)+x(ab|cd){2}/) RegexpQuery(body:/(ab|cd|ef|gh)+x(ab|cd){2}/))
+a?b?c?d?e?f*g	Q	title:a?b?c?d?e?f*g body:a?b?c?d?e?f*g	Boolean(WildcardQuery(title:a?b?c?d?e?f*g) WildcardQuery(body:a?b?c?d?e?f*g))
+/[abc]+[def]+[ghi]+[jkl]+/	Q	title:/[abc]+[def]+[ghi]+[jkl]+/ body:/[abc]+[def]+[ghi]+[jkl]+/	Boolean(RegexpQuery(title:/[abc]+[def]+[ghi]+[jkl]+/) RegexpQuery(body:/[abc]+[def]+[ghi]+[jkl]+/))
+ab*c*d*e?f*g	Q	title:ab*c*d*e?f*g body:ab*c*d*e?f*g	Boolean(WildcardQuery(title:ab*c*d*e?f*g) WildcardQuery(body:ab*c*d*e?f*g))
+a*b?c*d?e*f?g	Q	title:a*b?c*d?e*f?g body:a*b?c*d?e*f?g	Boolean(WildcardQuery(title:a*b?c*d?e*f?g) WildcardQuery(body:a*b?c*d?e*f?g))
 (a)^2.5^3	E	Cannot parse '(a)^2.5^3': Encountered " "^" "^ "" at line 1, column 7.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
 a^2~	Q	(title:a~2 body:a~2)^2.0	Boost(Boolean(FuzzyQuery(title:a~2) FuzzyQuery(body:a~2))^2.0)
 "a b"~1.9	X	IllegalArgumentException: Slop must be >= 0, got -1
