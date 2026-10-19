@@ -6,7 +6,8 @@ use super::*;
 use crate::index_writer::{IndexWriter, VectorValue};
 use crate::segment_info::LuceneVersion;
 use crate::similarity::{FieldInvertState, NormSimilarity};
-use lucene_store::directory::FsDirectory;
+use lucene_store::directory::{Directory, FsDirectory};
+use lucene_store::ByteBuffersDirectory;
 use lucene_util::test_support::TempDir;
 
 const VERSION: LuceneVersion = LuceneVersion {
@@ -1066,4 +1067,281 @@ fn the_invert_state_carries_what_java_hands_compute_norm() {
     assert_eq!(states[1].0, "d");
     assert_eq!(states[1].1.max_term_frequency, 1, "x is new to the segment");
     assert_eq!(states[3].1.max_term_frequency, 0, "x is not any more");
+}
+
+/// A text field type storing term vectors with the given axes.
+fn vector_type(opts: IndexOptions, positions: bool, offsets: bool, payloads: bool) -> FieldType {
+    let mut ft = FieldType::copy_of(&TextField::type_not_stored());
+    ft.set_index_options(opts).unwrap();
+    ft.set_store_term_vectors(true).unwrap();
+    ft.set_store_term_vector_positions(positions).unwrap();
+    ft.set_store_term_vector_offsets(offsets).unwrap();
+    ft.set_store_term_vector_payloads(payloads).unwrap();
+    ft.frozen()
+}
+
+fn vector_term(
+    term: &str,
+    freq: i32,
+    positions: Option<Vec<i32>>,
+    offsets: Option<Vec<(i32, i32)>>,
+    payloads: Option<Vec<&[u8]>>,
+) -> lucene_codecs::term_vectors::TermVectorTerm {
+    lucene_codecs::term_vectors::TermVectorTerm {
+        term: term.as_bytes().to_vec(),
+        freq,
+        positions,
+        start_offsets: offsets.as_ref().map(|o| o.iter().map(|o| o.0).collect()),
+        end_offsets: offsets.as_ref().map(|o| o.iter().map(|o| o.1).collect()),
+        payloads: payloads.map(|p| p.into_iter().map(<[u8]>::to_vec).collect()),
+    }
+}
+
+/// `TermVectorsConsumerPerField`: a vector's axes are its field type's, not
+/// the postings' index options; instances of a field continue one another's
+/// positions and offsets; payloads are kept only once one is non-empty; a
+/// field without a term has no vector. A flush writes each document's
+/// vectors in field-name order into a segment `CheckIndex` accepts.
+#[test]
+fn term_vectors_are_recorded_as_term_vectors_consumer_records_them() {
+    let dir = ByteBuffersDirectory::new();
+    let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+    w.enable_explicit_documents().unwrap();
+    w.set_position_increment_gap(10);
+    // `DOCS` postings, vectors with every axis.
+    let all = vector_type(IndexOptions::Docs, true, true, true);
+    let mut first = tokens(vec![("b", 1, 0, 1, 1), ("a", 1, 2, 3, 1)]);
+    first.tokens[1].payload = Some(b"p".to_vec());
+    first.final_offset = 3;
+    let second = tokens(vec![("b", 1, 0, 1, 1)]);
+    let only_offsets = vector_type(IndexOptions::DocsAndFreqs, false, true, false);
+    let d0 = doc(vec![
+        Box::new(Field::from_token_stream("t", first, all.clone()).unwrap()),
+        Box::new(Field::from_token_stream("t", second, all.clone()).unwrap()),
+        Box::new(Field::from_string("o", "x y x", only_offsets.clone()).unwrap()),
+    ]);
+    let (e, _) = w.invert_fields_document(&d0).unwrap();
+    let t = e
+        .fields
+        .term_vectors
+        .iter()
+        .find(|v| v.field_number == 0)
+        .unwrap();
+    assert!(t.has_positions && t.has_offsets && t.has_payloads);
+    // "b a" at 0..1, gap 10, "b" at 12; offsets 3 + 1 on.
+    assert_eq!(
+        t.terms,
+        [
+            vector_term("a", 1, Some(vec![1]), Some(vec![(2, 3)]), Some(vec![b"p"])),
+            vector_term(
+                "b",
+                2,
+                Some(vec![0, 12]),
+                Some(vec![(0, 1), (4, 5)]),
+                Some(vec![b"", b""])
+            ),
+        ]
+    );
+    let o = e
+        .fields
+        .term_vectors
+        .iter()
+        .find(|v| v.field_number == 1)
+        .unwrap();
+    assert!(!o.has_positions && o.has_offsets && !o.has_payloads);
+    assert_eq!(
+        o.terms,
+        [
+            vector_term("x", 2, None, Some(vec![(0, 1), (4, 5)]), None),
+            vector_term("y", 1, None, Some(vec![(2, 3)]), None),
+        ]
+    );
+    // No payload seen: none kept. No token: no vector, but still inverted.
+    let d1 = doc(vec![
+        Box::new(Field::from_string("t", "c", all.clone()).unwrap()),
+        Box::new(Field::from_string("o", "", only_offsets.clone()).unwrap()),
+    ]);
+    let (e1, _) = w.invert_fields_document(&d1).unwrap();
+    assert_eq!(e1.fields.term_vectors.len(), 1);
+    assert_eq!(
+        e1.fields.term_vectors[0].terms,
+        [vector_term("c", 1, Some(vec![0]), Some(vec![(0, 1)]), None)]
+    );
+    assert!(!e1.fields.term_vectors[0].has_payloads);
+    assert_eq!(e1.fields.inverted.len(), 2);
+
+    let mut stored = FieldType::new();
+    stored.set_stored(true).unwrap();
+    let stored_only = doc(vec![Box::new(
+        Field::from_string("s", "v", stored.frozen()).unwrap(),
+    )]);
+    for d in [&d0, &d1, &stored_only] {
+        w.add_fields_document(d).unwrap();
+    }
+    let infos = w.commit().unwrap().clone();
+    for r in crate::check_index::check_directory(&dir).unwrap() {
+        assert!(r.all_passed(), "{:?}", r.failures());
+    }
+    let sci = &infos.segments[0];
+    let read = |ext: &str| dir.open(&format!("{}.{ext}", sci.segment_name)).unwrap();
+    let (tvd, tvx, tvm) = (read("tvd"), read("tvx"), read("tvm"));
+    let reader = lucene_codecs::term_vectors::open(&tvd, &tvx, &tvm, &sci.segment_id, "").unwrap();
+    assert_eq!(reader.max_doc(), 3);
+    let doc0 = reader.document(0).unwrap().unwrap();
+    let mut expected = e.fields.term_vectors.clone();
+    // Name order: "o" (number 1) before "t" (number 0).
+    expected.sort_by_key(|v| -v.field_number);
+    assert_eq!(doc0.fields, expected);
+    assert_eq!(
+        reader.document(1).unwrap().unwrap().fields,
+        e1.fields.term_vectors
+    );
+    assert!(reader
+        .document(2)
+        .unwrap()
+        .is_none_or(|d| d.fields.is_empty()));
+}
+
+/// A document's vector fields in `String.compareTo` order: U+1F600 (the
+/// surrogate pair 0xD83D 0xDE00) before U+FF61, though its UTF-8 sorts after.
+#[test]
+fn term_vector_fields_are_written_in_utf16_name_order() {
+    let dir = ByteBuffersDirectory::new();
+    let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+    let ft = vector_type(IndexOptions::DocsAndFreqs, false, false, false);
+    w.add_fields_document(&doc(vec![
+        Box::new(Field::from_string("\u{ff61}", "a", ft.clone()).unwrap()),
+        Box::new(Field::from_string("\u{1f600}", "b", ft).unwrap()),
+    ]))
+    .unwrap();
+    let infos = w.commit().unwrap().clone();
+    let sci = &infos.segments[0];
+    let read = |ext: &str| dir.open(&format!("{}.{ext}", sci.segment_name)).unwrap();
+    let (tvd, tvx, tvm) = (read("tvd"), read("tvx"), read("tvm"));
+    let reader = lucene_codecs::term_vectors::open(&tvd, &tvx, &tvm, &sci.segment_id, "").unwrap();
+    let terms: Vec<Vec<u8>> = reader
+        .document(0)
+        .unwrap()
+        .unwrap()
+        .fields
+        .iter()
+        .map(|f| f.terms[0].term.clone())
+        .collect();
+    assert_eq!(terms, [b"b".to_vec(), b"a".to_vec()]);
+}
+
+/// A segment whose documents invert a term-vector field into no term still
+/// gets the vector files, as `TermVectorsConsumer` opens its writer then.
+#[test]
+fn a_vector_field_without_terms_still_writes_the_vector_files() {
+    let dir = ByteBuffersDirectory::new();
+    let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+    let ft = vector_type(IndexOptions::DocsAndFreqsAndPositions, true, false, false);
+    w.add_fields_document(&doc(vec![
+        Box::new(Field::from_string("t", "", ft).unwrap()),
+        Box::new(StringField::new("id", "0", Store::No)),
+    ]))
+    .unwrap();
+    w.commit().unwrap();
+    for r in crate::check_index::check_directory(&dir).unwrap() {
+        assert!(r.all_passed(), "{:?}", r.failures());
+    }
+    let files = dir.list_all().unwrap();
+    assert!(files.iter().any(|f| f.ends_with(".tvd")), "{files:?}");
+}
+
+/// `TermVectorsConsumerPerField.start` and `getTermFreq`'s refusals.
+#[test]
+fn term_vector_settings_are_checked_as_java_checks_them() {
+    let dir = ByteBuffersDirectory::new();
+    let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+    w.enable_explicit_documents().unwrap();
+    let refuse = |w: &mut IndexWriter<'_>, fields: Vec<Box<dyn IndexableField>>| {
+        w.invert_fields_document(&doc(fields))
+            .unwrap_err()
+            .to_string()
+    };
+    let pos = IndexOptions::DocsAndFreqsAndPositions;
+    let text = |name: &str, ft: &FieldType| -> Box<dyn IndexableField> {
+        Box::new(Field::from_string(name, "a", ft.clone()).unwrap())
+    };
+    let e = refuse(
+        &mut w,
+        vec![text("p", &vector_type(pos, false, false, true))],
+    );
+    assert!(
+        e.contains("cannot index term vector payloads without term vector positions"),
+        "{e}"
+    );
+    // Axes without vectors.
+    for (i, what) in ["offsets", "positions", "payloads"].iter().enumerate() {
+        let mut ft = FieldType::copy_of(&TextField::type_not_stored());
+        match i {
+            0 => ft.set_store_term_vector_offsets(true).unwrap(),
+            1 => ft.set_store_term_vector_positions(true).unwrap(),
+            _ => ft.set_store_term_vector_payloads(true).unwrap(),
+        }
+        let e = refuse(&mut w, vec![text(&format!("n{i}"), &ft)]);
+        assert!(
+            e.contains(&format!(
+                "cannot index term vector {what} when term vectors are not indexed"
+            )),
+            "{e}"
+        );
+    }
+    // A later instance changing an axis.
+    let base = vector_type(pos, true, true, true);
+    for (i, (changed, what)) in [
+        (
+            vector_type(pos, false, true, false),
+            "storeTermVectorPositions",
+        ),
+        (
+            vector_type(pos, true, false, true),
+            "storeTermVectorOffsets",
+        ),
+        (
+            vector_type(pos, true, true, false),
+            "storeTermVectorPayloads",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let name = format!("c{i}");
+        let e = refuse(&mut w, vec![text(&name, &base), text(&name, &changed)]);
+        assert!(e.contains(&format!("({what} changed for field")), "{e}");
+    }
+    // Custom term frequencies with vector positions or offsets.
+    let freqs = IndexOptions::DocsAndFreqs;
+    for (i, (ft, what)) in [
+        (vector_type(freqs, true, false, false), "positions"),
+        (vector_type(freqs, false, true, false), "offsets"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let f =
+            Field::from_token_stream(format!("f{i}"), tokens(vec![("a", 1, 0, 1, 2)]), ft).unwrap();
+        let e = refuse(&mut w, vec![Box::new(f)]);
+        assert!(
+            e.contains(&format!(
+                "cannot index term vector {what} while using custom TermFrequencyAttribute"
+            )),
+            "{e}"
+        );
+    }
+    // Without either axis the frequencies add up.
+    let plain = vector_type(freqs, false, false, false);
+    let f = Field::from_token_stream(
+        "g",
+        tokens(vec![("a", 1, 0, 1, 2), ("a", 1, 2, 3, 3)]),
+        plain,
+    )
+    .unwrap();
+    let (e, _) = w.invert_fields_document(&doc(vec![Box::new(f)])).unwrap();
+    assert_eq!(
+        e.fields.term_vectors[0].terms,
+        [vector_term("a", 5, None, None, None)]
+    );
 }

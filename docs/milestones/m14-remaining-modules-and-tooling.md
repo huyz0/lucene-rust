@@ -10,7 +10,7 @@
 | **Effort** | L |
 | **Depends on** | [M7](m7-core-complete.md)–[M13](m13-search-application-modules.md) |
 | **Unblocks** | "fully ported", as the inventory gate defines it |
-| **Status** | not started |
+| **Status** | in progress: T14.2 and T14.3's `classification`, `misc` (bar the CLI tools) and `replicator` done |
 
 ---
 
@@ -23,7 +23,7 @@ After M7–M13 what is left is either self-contained or tooling:
 | `codecs` | 95 | 19,242 | `SimpleText`, bloom filters, `BlockTreeOrds`, `UniformSplit`, memory postings |
 | `expressions` | 19 | 2,697 | JavaScript expressions compiled to JVM bytecode |
 | `classification` | 19 | 1,961 | k-NN and naive Bayes text classifiers |
-| `replicator` | 13 | 1,526 | index and taxonomy replication |
+| `replicator` | 13 | 2,439 | near-real-time replication (`nrt`: 11 classes and two `package-info`s) |
 | `misc` | 39 | 4,107 | `IndexSplitter`, `HighFreqTerms`, sorting and store utilities |
 | `sandbox` | 113 | 11,849 | whatever M10 did not need |
 | `test-framework` | 237 | 60,830 | random indexing, asserting codecs, mock analyzers |
@@ -61,18 +61,44 @@ After M7–M13 what is left is either self-contained or tooling:
 ## Tasks
 
 - **T14.1** — The non-default codecs.
-- **T14.2** — `expressions`.
+- **T14.2** — `expressions`. **Done**: [`docs/parity/expressions.md`](../parity/expressions.md).
 - **T14.3** — `classification`, `replicator`, `misc`, `sandbox`.
+  `classification` **done**: [`docs/parity/classification.md`](../parity/classification.md)
+  (its `DatasetSplitter` brought term vectors to the explicit writer).
+  `replicator` **done**: [`docs/parity/replicator.md`](../parity/replicator.md).
 - **T14.4** — Test framework utilities, then a first batch of ported Lucene
   tests chosen by the bugs they historically caught.
 - **T14.5** — Index inspector CLI, demo, benchmark scripts.
 - **T14.6** — Empty the allowlist; publish the final `parity.md`.
 
+## Sub-milestones (M14 plan)
+
+Each batch follows the port workflow (port, differential fixtures against
+real Lucene 10.5.0 bytes, benchmark, optimise) and updates the inventory row
+or ledger row in the same commit. Order is by dependency and size.
+
+| Sub | Scope | Size (Java lines) | Lives in | Status |
+|---|---|---|---|---|
+| M14.a | `classification` (naive Bayes, kNN, fuzzy kNN, perceptron) | 1,961 | `lucene-search::classification` | ported; `cls_bm25nb` and `cls_perceptron_train` below parity (see the ledger) |
+| M14.b | `misc` utilities: `TermStats`, `GetTermInfo`, `HighFreqTerms`, `CollectorMemoryTracker`, `SweetSpotSimilarity`, `MemoryTracker`, `document/LazyDocument`, `util/fst/*` | ~1,100 | `lucene-search::misc` | ported: `HighFreqTerms`, `TermStats`, `CollectorMemoryTracker`, `MemoryTracker`, `SweetSpotSimilarity`, `LazyDocument`, `ListOfOutputs` and `UpToTwoPositiveIntOutputs`, each equal to Lucene's where there is output to compare (`misc_fixtures.rs`, `misc_fst_fixtures.rs`, `misc_lazy_fixtures.rs`); `GetTermInfo` waits for the CLI tools (M14.i) |
+| M14.c | `misc` index tools: `IndexSplitter`, `MultiPassIndexSplitter`, `PKIndexSplitter`, `IndexRearranger`, `IndexMergeTool`, `BinaryDocValueSelector`, `BPIndexReorderer`, `BPReorderingMergePolicy` | ~3,000 | `lucene-search::misc` | done, but `IndexMergeTool`'s command line is M14.i |
+| M14.d | `misc` search and store: `DiversifiedTopDocsCollector`(+manager), `DocValuesStats`(+collectors), `HumanReadableQuery`, memory-accounting bitset collectors, `DirectIODirectory`, `RAFDirectory`, `HardlinkCopyDirectoryWrapper`, byte-tracking wrappers | ~2,400 | `lucene-search::misc`, `lucene-store` for directories | done |
+| M14.e | `replicator` (near-real-time replication; 10.5.0 has only the `nrt` package -- the revision replicator, its taxonomy flavour and HTTP service are gone from the jar) | 2,439 | `lucene-search::replicator` | done: all 11 classes ported ([`docs/parity/replicator.md`](../parity/replicator.md)); a Rust replica copies Java primaries' points and Java's `FileMetaData` and `infosBytes` read back equal, and Java bytes that are damaged or disagree with Java's checksum are refused (`replicator_nrt_fixtures.rs`) |
+| M14.f | `sandbox` (113 classes, many small; triaged to `ported` or `not needed` per class) | 11,849 | per area | planned |
+| M14.g | `codecs` non-default codecs (`SimpleText`, bloom, `BlockTreeOrds`, `UniformSplit`, memory postings) | 19,242 | `lucene-codecs` | planned |
+| M14.h | test framework: `RandomIndexWriter`, `MockAnalyzer`, `MockDirectoryWrapper`, asserting readers, plus the chosen batch of Lucene tests | 60,830 (batch by acceptance) | `lucene-util` / test support crate | planned |
+| M14.i | tooling: index inspector CLI, demo, `byTask`-style bench scripts | ~11,800 (luke and benchmark are `not needed` as Swing/Java plumbing) | `tools/`, `benchmarks/` | planned |
+| M14.j | empty the inventory allowlist; publish `parity.md` | -- | `docs/` | planned |
+
+`misc` is not yet in `docs/inventory/`, so `check-port-inventory.py` cannot
+see it: M14.b adds `docs/inventory/lucene-misc.tsv` and the module choice,
+and the gate then counts its classes like the others.
+
 ## Acceptance criteria
 
 - [ ] Every ported module passes Java-fixture differential tests.
 - [ ] Real Lucene reads indices written with each non-default codec.
-- [ ] `expressions` evaluates Lucene's expression test corpus to the same
+- [x] `expressions` evaluates Lucene's expression test corpus to the same
       doubles.
 - [ ] `check-port-inventory.py` passes with an **empty allowlist**: every
       class of the 10.5.0 distribution is `ported` or `not needed` with a

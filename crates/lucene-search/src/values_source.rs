@@ -270,6 +270,14 @@ pub trait DoubleValuesSource: Send + Sync {
     /// `toString()`.
     fn describe(&self) -> String;
 
+    /// What `equals` compares, as a string: two sources with the same key
+    /// are equal. [`describe`](Self::describe) for every source whose
+    /// `toString()` names all it depends on; an expression's (`expr(a*2)`)
+    /// does not name what its variables are bound to, so it overrides this.
+    fn equality_key(&self) -> String {
+        self.describe()
+    }
+
     /// `rewrite(searcher)`: a source bound to the reader (`None`: this one
     /// as it is). [`crate::function::FunctionScoreQuery`] and
     /// [`crate::function::FunctionMatchQuery`] search through it, as their
@@ -292,6 +300,13 @@ pub trait DoubleValuesSource: Send + Sync {
     /// overridden.
     fn boosts_wrapped_query(&self) -> bool {
         false
+    }
+
+    /// This source as an [`crate::expressions::ExpressionValueSource`], when
+    /// it is one (`instanceof ExpressionValueSource`): a caching expression
+    /// shares the values of the expressions nested in it.
+    fn as_expression(&self) -> Option<&crate::expressions::ExpressionValueSource> {
+        None
     }
 
     /// The queries the source scores, whose reader-wide statistics a search
@@ -1604,6 +1619,21 @@ impl crate::top_field::FieldComparatorSource for ValuesSortSource {
             source: self.source.clone(),
             missing: self.missing,
         })
+    }
+
+    /// `DoubleValuesSortField.toString()` (and the long one's): `<source>`.
+    fn sort_field_string(&self, field: &str, reverse: bool) -> String {
+        format!("<{field}>{}", if reverse { "!" } else { "" })
+    }
+
+    /// A `Double` (or `Long`) sort value.
+    fn value_string(&self, value: i64) -> String {
+        match self.source {
+            ValuesSortKind::Double(_) => crate::function::java_double(
+                lucene_util::numeric_utils::sortable_long_to_double(value),
+            ),
+            ValuesSortKind::Long(_) => value.to_string(),
+        }
     }
 
     /// `DoubleValuesSortField.rewrite(searcher)` (and the long one's): a

@@ -186,6 +186,29 @@ fn add_indexes_merged_makes_one_segment() {
     assert_clean(&dir);
 }
 
+/// `addIndexes(CodecReader...)` over readers hiding documents: only the
+/// kept, still-live documents arrive; a deleted one stays deleted whatever
+/// the filter says; rejecting everything adds nothing.
+#[test]
+fn add_indexes_filtered_keeps_only_accepted_documents() {
+    let src_tmp = TempDir::new("add-filtered-src");
+    let src = source(&src_tmp);
+    let tmp = TempDir::new("add-filtered-dst");
+    let dir = FsDirectory::open(&tmp);
+    let mut w = writer(&dir, DocValuesType::Numeric);
+    w.set_index_sort(Some(&[IndexSortField::long("rank", false, None)]))
+        .unwrap();
+    w.add_indexes_filtered(&[&src], &|_, _, _| false).unwrap();
+    assert!(w.segment_infos().segments.is_empty());
+    // Accept the whole second segment and the first two documents of the first (the first, s1, deleted in the source, is live again).
+    w.add_indexes_filtered(&[&src], &|_, segment, doc| segment == 1 || doc <= 1)
+        .unwrap();
+    assert_eq!(w.segment_infos().segments.len(), 1);
+    w.commit().unwrap();
+    assert_eq!(committed_ids(&dir), ["s1", "s2", "s3", "s4"]);
+    assert_clean(&dir);
+}
+
 /// What `addIndexes` refuses: a source whose sort is not congruent with the
 /// writer's, and a field whose schema conflicts; either way nothing is
 /// added.

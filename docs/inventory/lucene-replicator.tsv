@@ -1,0 +1,15 @@
+# Lucene 10.5.0 lucene-replicator: every top-level class of the jar, and what became of it.
+# Checked by scripts/check-port-inventory.py --module replicator (see its docstring for the statuses).
+# Lucene 10.5.0's replicator is the nrt package alone: the revision replicator (Replicator, LocalReplicator, IndexRevision, ReplicationClient, SessionToken, http/*) was removed before 10.0 and is not in the jar.
+# class	status	detail
+replicator/nrt/CopyJob	ported	crates/lucene-search/src/replicator/nrt/copy.rs::CopyJob
+replicator/nrt/CopyOneFile	ported	crates/lucene-search/src/replicator/nrt/copy.rs::CopyOneFile
+replicator/nrt/CopyState	ported	crates/lucene-search/src/replicator/nrt/types.rs::CopyState
+replicator/nrt/FileMetaData	ported	crates/lucene-search/src/replicator/nrt/types.rs::FileMetaData
+replicator/nrt/Node	ported	crates/lucene-search/src/replicator/nrt/node.rs::NodeCore
+replicator/nrt/NodeCommunicationException	ported	crates/lucene-search/src/replicator/nrt/types.rs::NodeCommunicationError
+replicator/nrt/PreCopyMergedSegmentWarmer	ported	crates/lucene-search/src/replicator/nrt/primary.rs::PreCopyMergedSegmentWarmer
+replicator/nrt/PrimaryNode	ported	crates/lucene-search/src/replicator/nrt/primary.rs::PrimaryNode
+replicator/nrt/ReplicaFileDeleter	ported	crates/lucene-search/src/replicator/nrt/replica_file_deleter.rs::ReplicaFileDeleter
+replicator/nrt/ReplicaNode	ported	crates/lucene-search/src/replicator/nrt/replica.rs::ReplicaNode
+replicator/nrt/SegmentInfosSearcherManager	ported	crates/lucene-search/src/replicator/nrt/searcher_manager.rs::SegmentInfosSearcherManager

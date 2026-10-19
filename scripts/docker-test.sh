@@ -24,7 +24,11 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IMAGE="${IMAGE:-lucene-rust-test}"
+# Tagged by the Dockerfile's content, so a checkout whose Dockerfile adds a jar
+# or bumps a toolchain builds its own image instead of reusing a stale one (and
+# two checkouts on different Dockerfiles never overwrite each other's image).
+DOCKERFILE_TAG="$(sha256sum "$REPO/docker/Dockerfile" | cut -c1-12)"
+IMAGE="${IMAGE:-lucene-rust-test:$DOCKERFILE_TAG}"
 
 # Hard ceilings. `--memory-swap` equal to `--memory` disables swap for the
 # container: without it, a runaway allocates into swap and drags the host down
@@ -52,7 +56,7 @@ fi
 "$REPO/scripts/preflight.sh" host
 
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-  echo "docker-test: building $IMAGE (first run only)" >&2
+  echo "docker-test: building $IMAGE (first run for this Dockerfile)" >&2
   # Relative paths from the repo: under Git Bash with MSYS_NO_PATHCONV=1 (how
   # agents run this) an absolute /e/... path reaches docker.exe unconverted
   # and the build fails with "path not found".

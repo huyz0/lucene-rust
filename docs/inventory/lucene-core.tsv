@@ -951,7 +951,7 @@ util/Counter	not-needed	mutable long counter (optionally atomic); Rust i64/Atomi
 util/DenseLiveDocs	ported	crates/lucene-util/src/live_docs.rs::DenseLiveDocs
 util/DocBaseBitSetIterator	ported	crates/lucene-codecs/src/points.rs::read_bitset_ids
 util/DocIdSetBuilder	ported	crates/lucene-search/src/exec/multi_term.rs::UnionBuilder
-util/FileDeleter	ported	crates/lucene-index/src/index_file_deleter.rs::IndexFileDeleter
+util/FileDeleter	ported	crates/lucene-index/src/file_deleter.rs::FileDeleter
 util/FilterIterator	not-needed	filtering iterator adapter; Rust Iterator::filter
 util/FilteredDocIdSetIterator	not-needed	0..maxDoc iterator filtered by an IntPredicate; Rust (0..max_doc).filter(..)
 util/FixedBitSet	ported	crates/lucene-util/src/fixed_bit_set.rs::prev_set_bit

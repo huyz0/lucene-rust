@@ -203,6 +203,25 @@ impl IndexWriter<'_> {
             && segment_keys(&self.live_infos().segments) == segment_keys(&infos.segments)
     }
 
+    /// `IndexWriter.advanceSegmentInfosVersion(newVersion)`: the next NRT
+    /// snapshot and the next commit get a version above `new_version`; a
+    /// lower `new_version` changes nothing. A new primary of a replication
+    /// group uses it to continue above the version its replicas last saw.
+    ///
+    /// Java sets the version to `newVersion` and `changed()` bumps it, so
+    /// the next reader is `newVersion + 1`. Here versions are handed out by
+    /// the snapshot itself (see the module documentation): raising the
+    /// highest version handed out and forgetting the last snapshot's view
+    /// gives the same `newVersion + 1`. Differs: when `new_version` is not
+    /// above the writer's version, Java still bumps it by one and this does
+    /// not.
+    pub fn advance_segment_infos_version(&mut self, new_version: i64) {
+        if new_version > self.nrt.max_version {
+            self.nrt.max_version = new_version;
+            self.nrt.last = None;
+        }
+    }
+
     /// Releases every pin a dropped NRT reader handed back
     /// (`StandardDirectoryReader.doClose`'s `decRefDeleter`).
     pub(crate) fn release_nrt_holds(&mut self) -> Result<()> {

@@ -259,7 +259,8 @@ impl PartialEq for FunctionMatchQuery {
     /// The same source and the same predicate (by identity, as Java's
     /// lambdas compare).
     fn eq(&self, o: &Self) -> bool {
-        Arc::ptr_eq(&self.filter, &o.filter) && self.source.describe() == o.source.describe()
+        Arc::ptr_eq(&self.filter, &o.filter)
+            && self.source.equality_key() == o.source.equality_key()
     }
 }
 
@@ -335,7 +336,7 @@ impl fmt::Debug for FunctionScoreQuery {
 
 impl PartialEq for FunctionScoreQuery {
     fn eq(&self, o: &Self) -> bool {
-        self.in_query == o.in_query && self.source.describe() == o.source.describe()
+        self.in_query == o.in_query && self.source.equality_key() == o.source.equality_key()
     }
 }
 

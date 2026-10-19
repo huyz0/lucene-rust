@@ -435,7 +435,11 @@ fn replace_taxonomy_as_lucene_does() {
     let mut out = String::new();
     {
         let d = FsDirectory::open(&dest);
-        let src = FsDirectory::open(fixtures().join("lru_string_3/stage2"));
+        // `replaceTaxonomy` is `addIndexes`, which write-locks its source: a
+        // copy, so the committed fixture is never written.
+        let src_path = tmp.path().join("src");
+        copy_dir(&fixtures().join("lru_string_3/stage2"), &src_path);
+        let src = FsDirectory::open(&src_path);
         let w = DirectoryTaxonomyWriter::open(&d).unwrap();
         w.replace_taxonomy(&src).unwrap();
         writeln!(out, "epoch\t{:x}", w.taxonomy_epoch()).unwrap();

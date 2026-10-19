@@ -95,7 +95,7 @@ impl TermStatsReader for IndexSearcher<'_, '_> {
 }
 
 /// Java's `String.hashCode`.
-fn java_string_hash(s: &str) -> i32 {
+pub(crate) fn java_string_hash(s: &str) -> i32 {
     s.encode_utf16()
         .fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(i32::from(c)))
 }
@@ -110,16 +110,23 @@ fn java_string_hash(s: &str) -> i32 {
 /// (`MIN_TREEIFY_CAPACITY`) or turn the bucket into a tree bin with its own
 /// iteration order; for such adversarial key sets the order differs.
 pub fn java_hash_order(keys: &[&str]) -> Vec<usize> {
+    let hashes: Vec<i32> = keys.iter().map(|k| java_string_hash(k)).collect();
+    java_hash_order_of(&hashes)
+}
+
+/// [`java_hash_order`] for keys given by their `hashCode()`s, in insertion
+/// order (distinct keys).
+pub fn java_hash_order_of(hashes: &[i32]) -> Vec<usize> {
     let mut capacity: usize = 16;
-    while keys.len() > capacity / 4 * 3 {
+    while hashes.len() > capacity / 4 * 3 {
         capacity *= 2;
     }
     let mask = (capacity - 1) as u32;
-    let mut order: Vec<(u32, usize)> = keys
+    let mut order: Vec<(u32, usize)> = hashes
         .iter()
         .enumerate()
-        .map(|(i, k)| {
-            let h = java_string_hash(k) as u32;
+        .map(|(i, &h)| {
+            let h = h as u32;
             ((h ^ (h >> 16)) & mask, i)
         })
         .collect();
@@ -130,7 +137,9 @@ pub fn java_hash_order(keys: &[&str]) -> Vec<usize> {
 /// `Field.stringValue()` of a stored field as `DocumentStoredFieldVisitor`
 /// loads it: a string, or a number's `toString()` (`Integer`, `Long`,
 /// `Float`, `Double`); `null` for binary.
-fn stored_string_value(value: &lucene_codecs::stored_fields::FieldValue) -> Option<String> {
+pub(crate) fn stored_string_value(
+    value: &lucene_codecs::stored_fields::FieldValue,
+) -> Option<String> {
     use lucene_codecs::stored_fields::FieldValue;
     match value {
         FieldValue::String(s) => Some(s.clone()),
@@ -525,7 +534,7 @@ impl<'r> MoreLikeThis<'r> {
 }
 
 /// The segment holding global `doc`, and `doc` within it.
-fn locate(
+pub(crate) fn locate(
     reader: &DirectoryReader,
     doc: i32,
 ) -> Result<(&crate::directory_reader::SegmentReader, i32)> {

@@ -587,23 +587,32 @@ impl Rescorer for SortRescorer {
             .with_details(vec![first_pass.clone()])];
         if let Some(h) = hits.hits.first() {
             for (i, key) in self.sort.iter().enumerate() {
-                // A key's own value: a term (`null` without one), else its
-                // long -- whatever the other keys are.
-                let value = if key_is_bytes(key) {
-                    match h.fields.terms.get(i) {
-                        Some(Some(t)) => String::from_utf8_lossy(t).into_owned(),
-                        _ => "null".to_string(),
-                    }
-                } else {
-                    h.fields.values.get(i).copied().unwrap_or(0).to_string()
-                };
+                // A key's own value as Java prints the boxed `fields[i]`: a
+                // term (`null` without one), else from its long.
+                let term =
+                    key_is_bytes(key).then(|| h.fields.terms.get(i).and_then(|t| t.as_deref()));
+                let value = crate::top_field::sort_value_string(
+                    key,
+                    h.fields.values.get(i).copied().unwrap_or(0),
+                    term,
+                );
                 subs.push(Explanation::match_(
                     0.0,
-                    format!("sort field {} value={value}", key.field),
+                    format!(
+                        "sort field {} value={value}",
+                        crate::top_field::sort_field_string(key)
+                    ),
                 ));
             }
         }
-        Ok(Explanation::match_(0.0, "sort field values").with_details(subs))
+        Ok(Explanation::match_(
+            0.0,
+            format!(
+                "sort field values for sort={}",
+                crate::top_field::sort_string(&self.sort)
+            ),
+        )
+        .with_details(subs))
     }
 }
 

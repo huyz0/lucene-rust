@@ -1,0 +1,484 @@
+1
+sqrt(20)
+foo()
+foo(3)
+foo(3, 4, 5)
+foo() + bar(3)
+method()
+method.method(1)
+1 + method()
+foo(2)
+foo() + bar(7)
+foo.bar() + bar.foo(7)
+foo(3) + abs(-7)
+100
+valid0+100
+logn(2, 20+10-5.0)
+object.valid0
+object0.object1.valid1
+array0[1]
+array0[1].x
+multiarray[0][0]
+multiarray[0][0].x
+strindex['hello']
+strindex["hello"]
+empty['']
+empty[""]
+strindex['u304Au65E9u3046u3054u3056u3044u307Eu3059']
+strindex["u304Au65E9u3046u3054u3056u3044u307Eu3059"]
+escapes['\\\'']
+escapes["\\\""]
+mixed[23]['key'].sub.sub
+mixed[23]['key'].sub.sub[1]
+mixed[23]['key'].sub.sub[1].sub
+mixed[23]['key'].sub.sub[1].sub['abc']
+method.method()
+method.getMethod()
+method.METHOD()
+method['key'].method()
+method['key'].getMethod()
+method['key'].METHOD()
+method[23]["key"].method()
+method[23]["key"].getMethod()
+method[23]["key"].METHOD()
+object.0invalid
+0.invalid
+object..invalid
+.invalid
+negative[-1]
+float[1.0]
+missing_end['abc]
+missing_end["abc]
+missing_begin[abc']
+missing_begin[abc"]
+dot_needed[1]sub
+opposite_escape['\"']
+opposite_escape["\'"]
+100 100
+7*/-8
+0y1234
+500EE
+500.5EE
+
+()
+tan()
+tan(1, 1)
+ tan()
+1 + tan()
+foo["a"]["b"]
+foo['a']["b"]
+foo['\\\'"']
+foo["'"]
+foo["\""]
+foo['\\']["\\"]
+abs(0)
+abs(119)
+abs(1)
+abs(-1)
+acos(-1)
+acos(-0.8660254)
+acos(-0.7071068)
+acos(-0.5)
+acos(0)
+acos(0.5)
+acos(0.7071068)
+acos(0.8660254)
+acos(1)
+acosh(1)
+acosh(2.5)
+acosh(1234567.89)
+asin(-1)
+asin(-0.8660254)
+asin(-0.7071068)
+asin(-0.5)
+asin(0)
+asin(0.5)
+asin(0.7071068)
+asin(0.8660254)
+asin(1)
+asinh(-1234567.89)
+asinh(-2.5)
+asinh(-1)
+asinh(0)
+asinh(1)
+asinh(2.5)
+asinh(1234567.89)
+atan(-1.732050808)
+atan(-1)
+atan(-0.577350269)
+atan(0)
+atan(0.577350269)
+atan(1)
+atan(1.732050808)
+atan2(+0,+0)
+atan2(+0,-0)
+atan2(-0,+0)
+atan2(-0,-0)
+atan2(2,2)
+atan2(-2,2)
+atan2(2,-2)
+atan2(-2,-2)
+atanh(-1)
+atanh(-0.5)
+atanh(0)
+atanh(0.5)
+atanh(1)
+ceil(0)
+ceil(0.1)
+ceil(0.9)
+ceil(25.2)
+ceil(-0.1)
+ceil(-0.9)
+ceil(-1.1)
+cos(0)
+cos(
+cosh(0)
+cosh(-1)
+cosh(1)
+cosh(-0.5)
+cosh(0.5)
+cosh(-12.3456789)
+cosh(12.3456789)
+exp(0)
+exp(-1)
+exp(1)
+exp(-0.5)
+exp(0.5)
+exp(-12.3456789)
+exp(12.3456789)
+floor(0)
+floor(0.1)
+floor(0.9)
+floor(25.2)
+floor(-0.1)
+floor(-0.9)
+floor(-1.1)
+haversin(40.7143528,-74.0059731,40.759011,-73.9844722)
+ln(0)
+ln(
+ln(-1)
+ln(1)
+ln(0.5)
+ln(12.3456789)
+log10(0)
+log10(1)
+log10(-1)
+log10(0.5)
+log10(12.3456789)
+logn(2, 0)
+logn(2, 1)
+logn(2, -1)
+logn(2, 0.5)
+logn(2, 12.3456789)
+logn(2.5, 0)
+logn(2.5, 1)
+logn(2.5, -1)
+logn(2.5, 0.5)
+logn(2.5, 12.3456789)
+max(0, 0)
+max(1, 0)
+max(0, -1)
+max(-1, 0)
+max(25, 23)
+min(0, 0)
+min(1, 0)
+min(0, -1)
+min(-1, 0)
+min(25, 23)
+pow(0, 0)
+pow(0.1, 2)
+pow(0.9, -1)
+pow(2.2, -2.5)
+pow(5, 3)
+pow(-0.9, 5)
+pow(-1.1, 2)
+sin(0)
+sin(
+sinh(0)
+sinh(-1)
+sinh(1)
+sinh(-0.5)
+sinh(0.5)
+sinh(-12.3456789)
+sinh(12.3456789)
+sqrt(0)
+sqrt(-1)
+sqrt(0.49)
+sqrt(49)
+tan(0)
+tan(-1)
+tan(1)
+tan(-0.5)
+tan(0.5)
+tan(-1.3)
+tan(1.3)
+tanh(0)
+tanh(-1)
+tanh(1)
+tanh(-0.5)
+tanh(0.5)
+tanh(-12.3456789)
+tanh(12.3456789)
+sqrt(49) * abs(-2) * sqrt(25)
+-1
+--1
+-(-1)
+-0
+--0
+1+1
+1+0.5+0.5
+5+10
+1+1+2
+(1+1)+2
+1+(1+2)
+0+1
+1+0
+0+0
+1-1
+5-10
+1-0.5-0.5
+1-1-2
+(1-1)-2
+1-(1-2)
+0-1
+1-0
+0-0
+1*1
+5*10
+50*0.1
+1*1*2
+(1*1)*2
+1*(1*2)
+10*0
+0*0
+10/5
+10/0.5
+10/5/2
+(27/9)/3
+27/(9/3)
+1/0
+1%1
+10%3
+10%3%2
+(27%10)%4
+27%(9%5)
+1 < 1
+2 < 1
+1 < 2
+2 < 1 < 3
+2 < (1 < 3)
+(2 < 1) < 1
+-1 < -2
+-1 < 0
+1 <= 1
+2 <= 1
+1 <= 2
+1 <= 1 <= 0
+-1 <= -1
+-1 <= 0
+-1 <= -2
+1 > 1
+2 > 1
+1 > 2
+2 > 1 > 3
+2 > (1 > 3)
+(2 > 1) > 1
+-1 > -2
+-1 > 0
+1 >= 1
+2 >= 1
+1 >= 2
+1 >= 1 >= 0
+-1 >= -1
+-1 >= 0
+-1 >= -2
+1 == 1
+0 == 0
+-1 == -1
+1.1 == 1.1
+0.9 == 0.9
+-0 == 0
+0 == 1
+1 == 2
+-1 == 1
+-1 == 0
+-2 == 1
+-2 == -1
+1 != 1
+0 != 0
+-1 != -1
+1.1 != 1.1
+0.9 != 0.9
+-0 != 0
+0 != 1
+1 != 2
+-1 != 1
+-1 != 0
+-2 != 1
+-2 != -1
+!1
+!!1
+!0
+!!0
+!-1
+!2
+!-2
+1 && 1
+1 && 0
+0 && 1
+0 && 0
+-1 && -1
+-1 && 0
+0 && -1
+-0 && -0
+1 || 1
+1 || 0
+0 || 1
+0 || 0
+-1 || -1
+-1 || 0
+0 || -1
+-0 || -0
+1 ? 2 : 3
+-1 ? 2 : 3
+0 ? 2 : 3
+1 ? 2 ? 3 : 4 : 5
+0 ? 2 ? 3 : 4 : 5
+1 ? 0 ? 3 : 4 : 5
+1 ? 2 : 3 ? 4 : 5
+0 ? 2 : 3 ? 4 : 5
+0 ? 2 : 0 ? 4 : 5
+(1 ? 1 : 0) ? 3 : 4
+(0 ? 1 : 0) ? 3 : 4
+1 << 1
+2 << 1
+-1 << 31
+3 << 5
+-5 << 3
+4195 << 7
+4195 << 66
+4195 << 6
+4195 << 70
+-4195 << 70
+-15 << 62
+1 >> 1
+2 >> 1
+-1 >> 5
+-2 >> 30
+-5 >> 1
+536960 >> 7
+16780 >> 66
+268480 >> 6
+268480 >> 70
+-268480 >> 70
+-2147483646 >> 1
+1 >>> 1
+2 >>> 1
+-1 >>> 37
+-2 >>> 62
+-5 >>> 33
+536960 >>> 7
+16780 >>> 66
+268480 >>> 6
+268480 >>> 70
+-268480 >>> 102
+2147483648 >>> 1
+4 & 4
+3 & 2
+7 & 3
+-1 & -1
+-1 & 25
+3 & 7
+0 & 1
+1 & 0
+4 | 4
+5 | 2
+7 | 3
+-1 | -5
+-1 | 25
+-100 | 15
+0 | 1
+1 | 0
+4 ^ 4
+5 ^ 2
+15 ^ 3
+-1 ^ -5
+-1 ^ 25
+-100 ^ 15
+0 ^ 1
+1 ^ 0
+0 ^ 0
+~-5
+~25
+~0
+~-1
+0
+123456789
+5.6E2
+5.6E+2
+500E-2
+0x0
+0x1
+0xF
+0x1234ABCDEF
+1 << 0x1
+1 << 0xA
+0x1 << 2
+0xA << 2
+0X0
+0X1
+0XF
+0X1234ABCDEF
+00
+01
+010
+0123456777
+1 << 01
+1 << 010
+01 << 2
+010 << 2
+foo
+foo['']
+foo['\'\\']
+foo.bar
+foo.bar.baz
+foo.bar[1]
+m.m()
+member['blah'].getMethod()
+member[0].getMethod()
+sqrt(_score) + ln(popularity)
+sqrt(_score)
+_score + _score
+$0+$score
+_score
+2*expr1
+haversin(40.7143528,-74.0059731,latitude,longitude)
+haversinMeters(40.7143528,-74.0059731,latitude,longitude)
+doc["popularity"].value
+doc['popularity'].value + magicarray[0] + fourtytwo
+popularity/2
+intfield
+_score + 0
+intfield + 0
+a + 0
+e + 0
+b / c + e * g - sqrt(f)
+b / c + e * g
+valid0 - valid1 + valid2 + _score
+valide0 + valid0
+valide0 * valide1
+badreference
+valid + badreference
+cycle0
+cycle1
+cycle2
+cycle0 + cycle2
+cycle0 + cycle1
+cycle1 + cycle0 + cycle3
+cycle0 + cycle1 + cycle2
+2*popularity + count
+sqrt(a) + ln(b)
+f
+f0 == 1 ? f1 : f2
+(1 == 1 || f2) ? f1 : 0
+a

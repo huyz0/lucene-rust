@@ -89,7 +89,9 @@ set -euo pipefail
 # lucene-join is required by GenBlockJoin (org.apache.lucene.search.join).
 # lucene-grouping is required by GenGrouping (org.apache.lucene.search.grouping).
 # lucene-queryparser is required by GenQueryParser* (org.apache.lucene.queryparser).
-LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-facet lucene-highlighter lucene-suggest lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join lucene-grouping)
+# lucene-misc is required by GenMisc (HighFreqTerms).
+# lucene-replicator is required by GenReplicator (org.apache.lucene.replicator.nrt).
+LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-facet lucene-highlighter lucene-suggest lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join lucene-grouping lucene-classification lucene-misc lucene-replicator)
 
 cd "$(git rev-parse --show-toplevel)"
 FIXTURES="$PWD/fixtures"
@@ -213,7 +215,9 @@ NORI_CP=$(lucene_classpath lucene-analysis-nori)
 SMARTCN_CP=$(lucene_classpath lucene-analysis-smartcn)
 ICU_CP=$(lucene_classpath lucene-analysis-icu):$(thirdparty_classpath "${ICU_DEPS[@]}")
 OPENNLP_CP=$(lucene_classpath lucene-analysis-opennlp):$(thirdparty_classpath "${OPENNLP_DEPS[@]}")
-M12_COMPILE_CP="$PHONETIC_CP:$STEMPEL_CP:$MORFOLOGIK_CP:$KUROMOJI_CP:$NORI_CP:$SMARTCN_CP:$ICU_CP:$OPENNLP_CP"
+# M14's lucene-expressions and the ANTLR/ASM jars it runs on (EXPRESSIONS_DEPS).
+EXPRESSIONS_CP=$(lucene_classpath lucene-expressions):$(thirdparty_classpath "${EXPRESSIONS_DEPS[@]}")
+M12_COMPILE_CP="$PHONETIC_CP:$STEMPEL_CP:$MORFOLOGIK_CP:$KUROMOJI_CP:$NORI_CP:$SMARTCN_CP:$ICU_CP:$OPENNLP_CP:$EXPRESSIONS_CP"
 # Read as data, never put on the classpath (its SPI registrations name codecs
 # from modules the generators do not load): GenStandardTokenizerCorpus takes
 # its text from this jar's europarl.lines.txt.gz.
@@ -239,6 +243,16 @@ javac -nowarn -cp "$CP:$M12_COMPILE_CP" -d "$CLASSES" "$FIXTURES"/src/*.java
 generator_jvm_opts() {
   case "$1" in
     GenGeo3d*|GenSpatial*) echo "-XX:+UnlockDiagnosticVMOptions -XX:DisableIntrinsic=_dsin,_dcos,_dtan" ;;
+    # `Math.sin`..`Math.pow` are what an expression's functions call: with the
+    # intrinsics off they are StrictMath's fdlibm on every CPU, as the port is.
+    GenExpressions) echo "-XX:+UnlockDiagnosticVMOptions -XX:DisableIntrinsic=_dsin,_dcos,_dtan,_dexp,_dlog,_dlog10,_dpow" ;;
+    # The naive Bayes classifiers score with Math.log/exp. `tests.seed` seeds
+    # BytesRef.hashCode (StringHelper.GOOD_FAST_HASH_SEED, else the clock), so
+    # the HashMap order of equal-scored classes and of NearestFuzzyQuery's
+    # clauses is the same on every run.
+    # SweetSpotSimilarity's hyperbolic tf is Math.pow, ClassicSimilarity's idf Math.log.
+    GenMiscSweetSpot) echo "-XX:+UnlockDiagnosticVMOptions -XX:DisableIntrinsic=_dexp,_dlog,_dlog10,_dpow" ;;
+    GenClassification) echo "-Dtests.seed=C1A55 -XX:+UnlockDiagnosticVMOptions -XX:DisableIntrinsic=_dexp,_dlog,_dlog10,_dpow" ;;
   esac
 }
 
@@ -253,6 +267,7 @@ generator_classpath() {
     GenAnalysisSmartcn) echo ":$SMARTCN_CP" ;;
     GenAnalysisIcu|GenAnalysisIcuCollation|GenAnalysisIcuTransform|GenAnalysisIcuTries|GenAnalysisIcuBreaks|GenAnalysisIcuRules) echo ":$ICU_CP" ;;
     GenAnalysisOpenNLP) echo ":$OPENNLP_CP" ;;
+    GenExpressions*) echo ":$EXPRESSIONS_CP" ;;
   esac
 }
 
