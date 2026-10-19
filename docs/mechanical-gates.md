@@ -658,11 +658,18 @@ waiting on it waited for ever), and the drive filled -- Docker's virtual disk
 with it.
 
 `docker-test.sh` runs `preflight.sh host` before every container, and `gate.sh`
-runs `preflight.sh container` first. It deletes exactly two things, both
-reproducible: Docker's *build cache* above `BUILD_CACHE_MAX_GB` (pruned down to
+runs `preflight.sh container` first. It deletes only build output that
+regenerates: Docker's *build cache* above `BUILD_CACHE_MAX_GB` (pruned down to
 `BUILD_CACHE_KEEP_GB`; `DOCKER_AUTO_PRUNE=0` only warns) and cargo `incremental`
-directories above `INCREMENTAL_MAX_MB`. It never touches images, volumes or
-containers. `PREFLIGHT=0` skips it (CI runners are disposable VMs).
+directories above `INCREMENTAL_MAX_MB`, and, once the target volume passes
+`TARGET_MAX_GB` (60), every superseded build of an artifact in a `deps` directory (what `cargo sweep`
+does), then `llvm-cov-target` if that was not enough. That last rule exists
+because the volume was found at 151 GB, 123 GB of it instrumented test binaries
+rebuilt under new hashes and never deleted; the trim took it to 14 GB. It never
+touches images, volumes or containers. `PREFLIGHT=0` skips it (CI runners are
+disposable VMs).
+
+The target trim was run for real on the 151 GB volume, not on a stub.
 
 Seen to fail, each by forcing its input: an unreachable `DOCKER_HOST` (fails in
 the timeout, not a hang), `MIN_FREE_GB`/`MIN_REPO_FREE_GB` above the real free
