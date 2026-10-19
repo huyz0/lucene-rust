@@ -42,6 +42,7 @@ pub mod hnsw;
 pub mod hnsw_concurrent;
 pub mod hnsw_util;
 pub mod hnsw_vectors;
+pub mod idversion;
 pub mod indexed_disi;
 pub mod live_docs;
 pub mod lowercase_ascii;

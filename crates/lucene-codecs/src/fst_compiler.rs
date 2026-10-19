@@ -88,6 +88,16 @@ pub trait FstOutputs {
     fn read_final_output(input: &mut ReverseReader<'_>) -> Result<Self::Value, FstReadError> {
         Self::read(input)
     }
+    /// `skipOutput(in)`: moves past an output without building it.
+    fn skip_output(input: &mut ReverseReader<'_>) -> Result<(), FstReadError> {
+        Self::read(input).map(drop)
+    }
+    /// `skipFinalOutput(in)`: by default moves past what
+    /// [`read_final_output`](Self::read_final_output) reads; outputs whose
+    /// final output is an ordinary one skip it as one.
+    fn skip_final_output(input: &mut ReverseReader<'_>) -> Result<(), FstReadError> {
+        Self::read_final_output(input).map(drop)
+    }
     /// `merge(first, second)`: `None` where Java throws
     /// `UnsupportedOperationException` (every core `Outputs` but `NoOutputs`).
     fn merge(_first: &Self::Value, _second: &Self::Value) -> Option<Self::Value> {
@@ -133,6 +143,29 @@ impl<'a> ReverseReader<'a> {
     /// `skipBytes(n)`.
     pub fn skip_bytes(&mut self, n: i64) {
         self.pos = self.pos.wrapping_sub(n);
+    }
+    /// `readBytes(b, 0, len)`: the next `len` bytes, in reading order (the
+    /// body's bytes from the position downwards).
+    pub fn read_bytes_reversed(&mut self, len: usize) -> Result<Vec<u8>, FstReadError> {
+        if len == 0 {
+            // `readBytes(b, 0, 0)` reads nothing, wherever the reader is.
+            return Ok(Vec::new());
+        }
+        let end = usize::try_from(self.pos)
+            .ok()
+            .and_then(|p| p.checked_add(1))
+            .filter(|&e| e <= self.bytes.len());
+        let start = end.and_then(|e| e.checked_sub(len));
+        match (start, end) {
+            (Some(start), Some(end)) => {
+                self.pos = self.pos.wrapping_sub(len as i64);
+                Ok(self.bytes[start..end].iter().rev().copied().collect())
+            }
+            _ => Err(FstReadError(format!(
+                "read of {len} bytes past the body at {}",
+                self.pos
+            ))),
+        }
     }
     /// `readVInt()`.
     pub fn read_vint(&mut self) -> Result<i32, FstReadError> {
@@ -232,7 +265,17 @@ impl FstOutputs for ByteSequenceOutputs {
     }
     fn read(input: &mut ReverseReader<'_>) -> Result<Vec<u8>, FstReadError> {
         let len = read_len(input)?;
-        (0..len).map(|_| input.read_byte()).collect()
+        input.read_bytes_reversed(len)
+    }
+    fn skip_output(input: &mut ReverseReader<'_>) -> Result<(), FstReadError> {
+        let len = read_len(input)?;
+        // Unchecked, as Java's `skipBytes`: a length past the body leaves
+        // the reader out of range and the next read fails.
+        input.skip_bytes(len as i64);
+        Ok(())
+    }
+    fn skip_final_output(input: &mut ReverseReader<'_>) -> Result<(), FstReadError> {
+        Self::skip_output(input)
     }
 }
 
@@ -259,6 +302,12 @@ impl FstOutputs for PositiveIntOutputs {
     }
     fn read(input: &mut ReverseReader<'_>) -> Result<i64, FstReadError> {
         input.read_vlong()
+    }
+    fn skip_output(input: &mut ReverseReader<'_>) -> Result<(), FstReadError> {
+        input.read_vlong().map(drop)
+    }
+    fn skip_final_output(input: &mut ReverseReader<'_>) -> Result<(), FstReadError> {
+        Self::skip_output(input)
     }
 }
 
@@ -382,6 +431,13 @@ impl<A: FstOutputs, B: FstOutputs> FstOutputs for PairOutputs<A, B> {
         let first = A::read(input)?;
         let second = B::read(input)?;
         Ok(Pair { first, second })
+    }
+    fn skip_output(input: &mut ReverseReader<'_>) -> Result<(), FstReadError> {
+        A::skip_output(input)?;
+        B::skip_output(input)
+    }
+    fn skip_final_output(input: &mut ReverseReader<'_>) -> Result<(), FstReadError> {
+        Self::skip_output(input)
     }
 }
 
@@ -1395,6 +1451,29 @@ mod tests {
         // ... accepts-empty, len 2, reversed [len 1, 'e'], BYTE1, start 0, 1 byte, body.
         let saved = empty.save::<ByteSequenceOutputs>();
         assert!(saved.ends_with(&[1, 2, b'e', 1, 0, 0, 1, 0]), "{saved:?}");
+    }
+
+    #[test]
+    fn an_empty_input_with_an_empty_output_reopens() {
+        // The empty output's reversed bytes are just its length (0): reading
+        // it leaves the reader before the first byte, where a zero-length
+        // read must not underflow.
+        let mut c = FstCompilerBuilder::new(InputType::Byte1).build::<ByteSequenceOutputs>();
+        c.add_bytes(b"", Vec::new()).unwrap();
+        c.add_bytes(b"a", b"x".to_vec()).unwrap();
+        let saved = c.compile().unwrap().save::<ByteSequenceOutputs>();
+        let fst = crate::fst_util::TypedFst::<ByteSequenceOutputs>::read(&saved).unwrap();
+        assert_eq!(
+            crate::fst_util::get_bytes(&fst, b"").unwrap(),
+            Some(Vec::new())
+        );
+        assert_eq!(
+            crate::fst_util::get_bytes(&fst, b"a").unwrap(),
+            Some(b"x".to_vec())
+        );
+        let mut r = ReverseReader::new(&[]);
+        r.set_position(-1);
+        assert_eq!(r.read_bytes_reversed(0).unwrap(), Vec::<u8>::new());
     }
 
     #[test]

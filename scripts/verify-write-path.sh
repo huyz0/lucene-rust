@@ -19,7 +19,7 @@
 # T3.1, see docs/milestones/m3-write-path-proven.md.
 set -euo pipefail
 
-LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join lucene-suggest lucene-facet)
+LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join lucene-suggest lucene-facet lucene-sandbox)
 
 cd "$(git rev-parse --show-toplevel)"
 FIXTURES="$PWD/fixtures"
@@ -73,6 +73,13 @@ CASES=(
   # which must return for every query the exact top-10 (documents and score
   # bits) this port's reader computed over the same bytes.
   "lucene-codecs|write_scalar_quantized_fixture|scalar-quantized|VerifyScalarQuantized"
+  # lucene-sandbox's IDVersionPostingsFormat (M14.f): two .tiv/.tipv groups
+  # (default and 4/9 block sizes, deletes dropped at write) opened by real
+  # Lucene's own format, every term walked with its version, document and
+  # payload, and seekExact(id, version) / seekExact(id, version + 1) on fresh
+  # enums -- the second is decided by the terms index's per-prefix
+  # MAX_VALUE - maxVersion outputs, so a wrong FST output fails it.
+  "lucene-codecs|write_idversion_fixture|idversion|VerifyIdVersion"
   # Last, and unlike every case above: a whole index written by the real
   # IndexWriter, opened by DirectoryReader and run through CheckIndex. The
   # cases above each hand Lucene one codec file with a hand-built
