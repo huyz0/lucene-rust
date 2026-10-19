@@ -30,7 +30,12 @@ fn chain(filters: &[(&str, &[&str])]) -> Analyzer {
         .unwrap()
         .with_tokenizer(
             "openNlp",
-            &["sentenceModel", "en-sent.bin", "tokenizerModel", "en-token.bin"],
+            &[
+                "sentenceModel",
+                "en-sent.bin",
+                "tokenizerModel",
+                "en-token.bin",
+            ],
         )
         .unwrap();
     for (name, args) in filters {
@@ -70,7 +75,12 @@ pub(super) fn bench_analysis_opennlp(w: Duration, m: Duration) {
             pos,
             (
                 "openNlpLemmatizer",
-                &["dictionary", "en-lemmas.dict", "lemmatizerModel", "en-lemmatizer.bin"],
+                &[
+                    "dictionary",
+                    "en-lemmas.dict",
+                    "lemmatizerModel",
+                    "en-lemmatizer.bin",
+                ],
             ),
         ]),
         &docs,

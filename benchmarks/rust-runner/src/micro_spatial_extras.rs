@@ -129,8 +129,9 @@ fn round(v: f64) -> i64 {
 }
 
 pub fn bench_spatial_extras(w: Duration, m: Duration, dir: &str) {
-    let text = std::fs::read_to_string(format!("{dir}/spatial-queries.tsv"))
-        .expect("run SpatialExtrasMicro build first (scripts/bench-micro.sh --bench spatial_extras)");
+    let text = std::fs::read_to_string(format!("{dir}/spatial-queries.tsv")).expect(
+        "run SpatialExtrasMicro build first (scripts/bench-micro.sh --bench spatial_extras)",
+    );
     let geo = SpatialContext::geo_context();
     let mut args = BTreeMap::new();
     args.insert(
@@ -223,8 +224,11 @@ pub fn bench_spatial_extras(w: Duration, m: Duration, dir: &str) {
     let bq: Vec<Box<dyn DocumentQuery>> = boxes
         .iter()
         .map(|b| {
-            bb.make_query(&SpatialArgs::new(SpatialOperation::BBoxIntersects, b.clone()))
-                .unwrap()
+            bb.make_query(&SpatialArgs::new(
+                SpatialOperation::BBoxIntersects,
+                b.clone(),
+            ))
+            .unwrap()
         })
         .collect();
     let bs: Vec<Arc<dyn DoubleValuesSource>> = boxes
