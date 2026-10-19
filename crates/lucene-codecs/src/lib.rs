@@ -58,6 +58,7 @@ pub mod per_field_postings;
 pub mod points;
 pub mod postings;
 pub mod postings_writer;
+pub mod quantization;
 pub mod regexp;
 pub mod scalar_quantized_vectors;
 pub mod stored_fields;
