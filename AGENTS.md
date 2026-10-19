@@ -79,6 +79,16 @@ has repeatedly exhausted this project's WSL2 VM and killed the running session,
 which only a manual `wsl --shutdown` recovers. Inside the container the kernel
 kills the build instead, and the host never notices.
 
+Every run starts with `scripts/preflight.sh host`: it refuses (exit 1, with what to
+do) when the docker engine does not answer in 30 s, when the drive holding
+Docker's disk has under 25 GB free or Docker's virtual disk exceeds 300 GB, and
+it prunes Docker's *build cache* above 40 GB. `gate.sh` repeats the check inside
+the container for the target dir. **If it fails, stop and report it; do not set
+`PREFLIGHT=0` to push through, and never run two heavy jobs at once** (check
+`docker ps` for a `lucene-rust` container first). Docker Desktop's virtual disk
+never shrinks, and a full drive once killed rustc and then the engine. See
+[`docs/mechanical-gates.md`](docs/mechanical-gates.md#preflight).
+
 `.githooks/pre-commit` (install via `scripts/setup-hooks.sh`) runs the gate
 through the container automatically, falling back to a native run when Docker
 is unavailable. Run it before calling a task done.
