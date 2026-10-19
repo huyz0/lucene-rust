@@ -8,7 +8,8 @@
 //! its hits the report compares before it shows a ratio. The scoring
 //! queries -- the sandbox `CombinedFieldQuery` over three terms,
 //! `CoveringQuery`, `TermAutomatonQuery` and `PhraseWildcardQuery` -- run
-//! over its second index, `text/`, four words a range set.
+//! over its second index, `text/`, four words a range set, and so does
+//! `LargeNumHitsTopDocsCollectorManager`'s top 1000 of two of them.
 
 use std::hint::black_box;
 use std::time::Duration;
@@ -21,8 +22,8 @@ use lucene_search::multi_segment::OpenSegment;
 use lucene_search::query::{BooleanQuery, Clause, PrefixQuery, TermQuery};
 use lucene_search::sandbox::document::{FloatPointNearestNeighbor, IntPointMultiRangeBuilder};
 use lucene_search::sandbox::search::{
-    CombinedFieldQuery, CoveringQuery, PhraseWildcardBuilder, SortedNumericStabbingBuilder,
-    SortedSetStabbingBuilder, TermAutomatonQuery,
+    CombinedFieldQuery, CoveringQuery, LargeNumHitsTopDocsCollectorManager, PhraseWildcardBuilder,
+    SortedNumericStabbingBuilder, SortedSetStabbingBuilder, TermAutomatonQuery,
 };
 use lucene_search::values_source::long_from_long_field;
 use lucene_store::FsDirectory;
@@ -176,6 +177,39 @@ fn bench_text(w: Duration, m: Duration, dir: &str, sets: &[Ranges]) {
         b.add_multi_term(&Clause::Prefix(PrefixQuery::new("body", &t[1][..4])))
             .unwrap();
         b.build().into()
+    });
+    // `LargeNumHitsTopDocsCollector`: the top 1000 of two mid-frequency words.
+    if std::env::var("MICRO_CASE").is_ok_and(|only| only != "sb_large_num_hits") {
+        return;
+    }
+    let qs: Vec<BooleanQuery> = sets
+        .iter()
+        .map(|set| {
+            let t = words(set);
+            BooleanQuery::new().with_should(
+                [&t[1], &t[2]]
+                    .map(|w| Clause::Term(TermQuery::new("body", w.as_str())))
+                    .to_vec(),
+            )
+        })
+        .collect();
+    let run = |f: &mut Fnv| {
+        for q in &qs {
+            let m = LargeNumHitsTopDocsCollectorManager::new(1000).unwrap();
+            for sd in &s.search_manager(q, &m).unwrap().score_docs {
+                f.add(i64::from(sd.doc));
+                f.add(i64::from(sd.score.to_bits() as i32));
+            }
+        }
+    };
+    let mut f = Fnv::new();
+    run(&mut f);
+    println!("#check\tsb_large_num_hits\t{:016x}\t{}", f.0, sets.len());
+    measure("sb_large_num_hits", w, m, || {
+        let mut g = Fnv::new();
+        run(black_box(&mut g));
+        black_box(g.0);
+        sets.len() as u64
     });
 }
 

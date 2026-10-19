@@ -68,30 +68,30 @@ sandbox/facet/utils/RangeFacetBuilderFactory	todo:M14	M14.f: the sandbox package
 sandbox/facet/utils/TaxonomyFacetBuilder	todo:M14	M14.f: the sandbox package sandbox/facet/utils
 sandbox/index/MergeOnFlushMergePolicy	todo:M14	M14.f: the sandbox package sandbox/index
 sandbox/queries/FuzzyLikeThisQuery	ported	crates/lucene-search/src/fuzzy_like_this.rs::FuzzyLikeThisQuery
-sandbox/search/AggregatedQueryLeafProfilerResult	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/AggregatedQueryLeafProfilerResult	not-needed	the query profiler wraps each Weight/Scorer/BulkScorer of a Java query tree, which this port does not build (queries execute as Rust enums); its nanosecond timings would not be comparable with Lucene's anyway, and OpenSearch profiles with its own org.opensearch.search.profile.query (QueryProfiler, ProfileWeight), never this class
 sandbox/search/CombinedFieldQuery	ported	crates/lucene-search/src/extended_query.rs::CombinedFieldQuery
 sandbox/search/CoveringQuery	ported	crates/lucene-search/src/sandbox/search/covering.rs::CoveringQuery
 sandbox/search/CoveringScorer	ported	crates/lucene-search/src/sandbox/search/covering.rs::CoveringScorer
 sandbox/search/DocValuesMultiRangeQuery	ported	crates/lucene-search/src/sandbox/search/doc_values_multi_range.rs::SortedNumericStabbingBuilder
-sandbox/search/LargeNumHitsTopDocsCollector	todo:M14	M14.f: the sandbox package sandbox/search
-sandbox/search/LargeNumHitsTopDocsCollectorManager	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/LargeNumHitsTopDocsCollector	ported	crates/lucene-search/src/sandbox/search/large_num_hits.rs::LargeNumHitsTopDocsCollector
+sandbox/search/LargeNumHitsTopDocsCollectorManager	ported	crates/lucene-search/src/sandbox/search/large_num_hits.rs::LargeNumHitsTopDocsCollectorManager
 sandbox/search/MultiNormsLeafSimScorer	ported	crates/lucene-search/src/exec/extended.rs::FreqSumScorer
 sandbox/search/MultiRangeQuery	ported	crates/lucene-search/src/sandbox/search/multi_range_query.rs::MultiRangeQuery
 sandbox/search/PhraseWildcardQuery	ported	crates/lucene-search/src/sandbox/search/phrase_wildcard.rs::PhraseWildcardQuery
-sandbox/search/ProfilerCollector	todo:M14	M14.f: the sandbox package sandbox/search
-sandbox/search/ProfilerCollectorManager	todo:M14	M14.f: the sandbox package sandbox/search
-sandbox/search/ProfilerCollectorResult	todo:M14	M14.f: the sandbox package sandbox/search
-sandbox/search/ProfilerCollectorWrapper	todo:M14	M14.f: the sandbox package sandbox/search
-sandbox/search/QueryLeafProfilerBreakdown	todo:M14	M14.f: the sandbox package sandbox/search
-sandbox/search/QueryLeafProfilerThreadAggregator	todo:M14	M14.f: the sandbox package sandbox/search
-sandbox/search/QueryProfilerBreakdown	todo:M14	M14.f: the sandbox package sandbox/search
-sandbox/search/QueryProfilerIndexSearcher	todo:M14	M14.f: the sandbox package sandbox/search
-sandbox/search/QueryProfilerResult	todo:M14	M14.f: the sandbox package sandbox/search
-sandbox/search/QueryProfilerScorer	todo:M14	M14.f: the sandbox package sandbox/search
-sandbox/search/QueryProfilerTimer	todo:M14	M14.f: the sandbox package sandbox/search
-sandbox/search/QueryProfilerTimingType	todo:M14	M14.f: the sandbox package sandbox/search
-sandbox/search/QueryProfilerTree	todo:M14	M14.f: the sandbox package sandbox/search
-sandbox/search/QueryProfilerWeight	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/ProfilerCollector	ported	crates/lucene-search/src/sandbox/search/profiler_collector.rs::ProfilerCollector
+sandbox/search/ProfilerCollectorManager	ported	crates/lucene-search/src/sandbox/search/profiler_collector.rs::ProfilerCollectorManager
+sandbox/search/ProfilerCollectorResult	ported	crates/lucene-search/src/sandbox/search/profiler_collector.rs::ProfilerCollectorResult
+sandbox/search/ProfilerCollectorWrapper	ported	crates/lucene-search/src/sandbox/search/profiler_collector.rs::ProfilerCollector
+sandbox/search/QueryLeafProfilerBreakdown	not-needed	the query profiler wraps each Weight/Scorer/BulkScorer of a Java query tree, which this port does not build (queries execute as Rust enums); its nanosecond timings would not be comparable with Lucene's anyway, and OpenSearch profiles with its own org.opensearch.search.profile.query (QueryProfiler, ProfileWeight), never this class
+sandbox/search/QueryLeafProfilerThreadAggregator	not-needed	the query profiler wraps each Weight/Scorer/BulkScorer of a Java query tree, which this port does not build (queries execute as Rust enums); its nanosecond timings would not be comparable with Lucene's anyway, and OpenSearch profiles with its own org.opensearch.search.profile.query (QueryProfiler, ProfileWeight), never this class
+sandbox/search/QueryProfilerBreakdown	not-needed	the query profiler wraps each Weight/Scorer/BulkScorer of a Java query tree, which this port does not build (queries execute as Rust enums); its nanosecond timings would not be comparable with Lucene's anyway, and OpenSearch profiles with its own org.opensearch.search.profile.query (QueryProfiler, ProfileWeight), never this class
+sandbox/search/QueryProfilerIndexSearcher	not-needed	the query profiler wraps each Weight/Scorer/BulkScorer of a Java query tree, which this port does not build (queries execute as Rust enums); its nanosecond timings would not be comparable with Lucene's anyway, and OpenSearch profiles with its own org.opensearch.search.profile.query (QueryProfiler, ProfileWeight), never this class
+sandbox/search/QueryProfilerResult	not-needed	the query profiler wraps each Weight/Scorer/BulkScorer of a Java query tree, which this port does not build (queries execute as Rust enums); its nanosecond timings would not be comparable with Lucene's anyway, and OpenSearch profiles with its own org.opensearch.search.profile.query (QueryProfiler, ProfileWeight), never this class
+sandbox/search/QueryProfilerScorer	not-needed	the query profiler wraps each Weight/Scorer/BulkScorer of a Java query tree, which this port does not build (queries execute as Rust enums); its nanosecond timings would not be comparable with Lucene's anyway, and OpenSearch profiles with its own org.opensearch.search.profile.query (QueryProfiler, ProfileWeight), never this class
+sandbox/search/QueryProfilerTimer	not-needed	the query profiler wraps each Weight/Scorer/BulkScorer of a Java query tree, which this port does not build (queries execute as Rust enums); its nanosecond timings would not be comparable with Lucene's anyway, and OpenSearch profiles with its own org.opensearch.search.profile.query (QueryProfiler, ProfileWeight), never this class
+sandbox/search/QueryProfilerTimingType	not-needed	the query profiler wraps each Weight/Scorer/BulkScorer of a Java query tree, which this port does not build (queries execute as Rust enums); its nanosecond timings would not be comparable with Lucene's anyway, and OpenSearch profiles with its own org.opensearch.search.profile.query (QueryProfiler, ProfileWeight), never this class
+sandbox/search/QueryProfilerTree	not-needed	the query profiler wraps each Weight/Scorer/BulkScorer of a Java query tree, which this port does not build (queries execute as Rust enums); its nanosecond timings would not be comparable with Lucene's anyway, and OpenSearch profiles with its own org.opensearch.search.profile.query (QueryProfiler, ProfileWeight), never this class
+sandbox/search/QueryProfilerWeight	not-needed	the query profiler wraps each Weight/Scorer/BulkScorer of a Java query tree, which this port does not build (queries execute as Rust enums); its nanosecond timings would not be comparable with Lucene's anyway, and OpenSearch profiles with its own org.opensearch.search.profile.query (QueryProfiler, ProfileWeight), never this class
 sandbox/search/SortedNumericDocValuesMultiRangeQuery	ported	crates/lucene-search/src/sandbox/search/doc_values_multi_range.rs::SortedNumericDocValuesMultiRangeQuery
 sandbox/search/SortedSetDocValuesMultiRangeQuery	ported	crates/lucene-search/src/sandbox/search/doc_values_multi_range.rs::SortedSetDocValuesMultiRangeQuery
 sandbox/search/TermAutomatonQuery	ported	crates/lucene-search/src/sandbox/search/term_automaton.rs::TermAutomatonQuery
