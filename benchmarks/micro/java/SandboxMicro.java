@@ -1,10 +1,19 @@
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.FloatBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
+import org.apache.lucene.analysis.TokenStream;
+import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
+import org.apache.lucene.analysis.tokenattributes.PayloadAttribute;
+import org.apache.lucene.codecs.PostingsFormat;
+import org.apache.lucene.codecs.lucene104.Lucene104Codec;
 import org.apache.lucene.document.Document;
+import org.apache.lucene.document.FieldType;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.FloatPoint;
 import org.apache.lucene.document.IntPoint;
@@ -13,10 +22,16 @@ import org.apache.lucene.document.TextField;
 import org.apache.lucene.document.SortedNumericDocValuesField;
 import org.apache.lucene.document.SortedSetDocValuesField;
 import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.FloatVectorValues;
+import org.apache.lucene.index.IndexOptions;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.NoMergePolicy;
 import org.apache.lucene.index.Term;
+import org.apache.lucene.index.VectorSimilarityFunction;
+import org.apache.lucene.sandbox.codecs.idversion.IDVersionPostingsFormat;
+import org.apache.lucene.sandbox.codecs.idversion.IDVersionSegmentTermsEnum;
+import org.apache.lucene.sandbox.codecs.quantization.KMeans;
 import org.apache.lucene.sandbox.document.FloatPointNearestNeighbor;
 import org.apache.lucene.sandbox.document.IntPointMultiRangeBuilder;
 import org.apache.lucene.sandbox.search.CombinedFieldQuery;
@@ -279,6 +294,8 @@ public final class SandboxMicro {
             return b.build();
           });
       runText(dir.resolve("text"), sets);
+      runIdv(dir.resolve("idv"));
+      runKMeans(dir.resolve("kmeans"));
       Fnv f = new Fnv();
       for (long[][] set : sets) digest(f, FloatPointNearestNeighbor.nearest(s, "v", 10, origin(set)));
       System.out.printf("#check\t%s\t%016x\t%d%n", "sb_nearest", f.h, sets.size());
@@ -374,12 +391,190 @@ public final class SandboxMicro {
     }
   }
 
+  /** A single token with the version as its payload, as the sandbox tests index ids. */
+  static final class IdTokenStream extends TokenStream {
+    final CharTermAttribute termAtt = addAttribute(CharTermAttribute.class);
+    final PayloadAttribute payloadAtt = addAttribute(PayloadAttribute.class);
+    String id;
+    long version;
+    boolean done;
+
+    @Override
+    public boolean incrementToken() {
+      if (done) return false;
+      clearAttributes();
+      termAtt.append(id);
+      BytesRef payload = new BytesRef(8);
+      IDVersionPostingsFormat.longToBytes(version, payload);
+      payloadAtt.setPayload(payload);
+      done = true;
+      return true;
+    }
+
+    @Override
+    public void reset() throws IOException {
+      super.reset();
+      done = false;
+    }
+  }
+
+  /** Document {@code i}'s id: a scrambled base-36 number. */
+  static String idOf(long i) {
+    return Long.toString((i * 0x9E3779B97F4A7C15L) >>> 24, 36);
+  }
+
+  /**
+   * {@code idv/}: 200 000 documents whose {@code id} is routed to {@code IDVersionPostingsFormat},
+   * one segment, and {@code targets.tsv}: 100 000 lookups (an id, present or not, and a minimum
+   * version that half the present ones fail).
+   */
+  static void buildIdv(Path dir) throws IOException {
+    Random r = new Random(0x10_5_2026_1021L);
+    FieldType idType = new FieldType();
+    idType.setOmitNorms(true);
+    idType.setIndexOptions(IndexOptions.DOCS_AND_FREQS_AND_POSITIONS);
+    idType.setTokenized(true);
+    idType.freeze();
+    PostingsFormat idFormat = new IDVersionPostingsFormat();
+    IndexWriterConfig cfg = new IndexWriterConfig();
+    cfg.setRAMBufferSizeMB(512);
+    cfg.setMaxBufferedDocs(IndexWriterConfig.DISABLE_AUTO_FLUSH);
+    cfg.setMergePolicy(NoMergePolicy.INSTANCE);
+    cfg.setUseCompoundFile(false);
+    cfg.setOpenMode(IndexWriterConfig.OpenMode.CREATE);
+    cfg.setCodec(
+        new Lucene104Codec() {
+          @Override
+          public PostingsFormat getPostingsFormatForField(String field) {
+            return field.equals("id") ? idFormat : super.getPostingsFormatForField(field);
+          }
+        });
+    try (Directory d = FSDirectory.open(dir);
+        IndexWriter w = new IndexWriter(d, cfg)) {
+      for (int i = 0; i < DOCS; i++) {
+        IdTokenStream ts = new IdTokenStream();
+        ts.id = idOf(i);
+        ts.version = r.nextLong() & ((1L << 40) - 1);
+        Document doc = new Document();
+        doc.add(new Field("id", ts, idType));
+        w.addDocument(doc);
+      }
+      w.commit();
+    }
+    List<String> targets = new ArrayList<>();
+    for (int k = 0; k < 100_000; k++) {
+      long min = r.nextBoolean() ? 0 : r.nextLong() & ((1L << 40) - 1);
+      targets.add(idOf(r.nextInt(2 * DOCS)) + "	" + min);
+    }
+    Files.write(dir.resolve("targets.tsv"), targets);
+    Files.writeString(dir.resolve("built"), "");
+  }
+
+  /** {@code sb_idversion_seek}: {@code seekExact(id, minVersion)} on one enum, per target. */
+  static void runIdv(Path dir) throws IOException {
+    List<BytesRef> ids = new ArrayList<>();
+    List<Long> mins = new ArrayList<>();
+    for (String line : Files.readAllLines(dir.resolve("targets.tsv"))) {
+      String[] p = line.split("	");
+      ids.add(new BytesRef(p[0]));
+      mins.add(Long.parseLong(p[1]));
+    }
+    try (Directory d = FSDirectory.open(dir);
+        DirectoryReader reader = DirectoryReader.open(d)) {
+      var terms = reader.leaves().get(0).reader().terms("id");
+      Op op =
+          () -> {
+            IDVersionSegmentTermsEnum te = (IDVersionSegmentTermsEnum) terms.iterator();
+            Fnv g = new Fnv();
+            for (int i = 0; i < ids.size(); i++) {
+              g.add(te.seekExact(ids.get(i), mins.get(i)) ? te.getVersion() : -1);
+            }
+            sink += g.h;
+            return ids.size();
+          };
+      Fnv f = new Fnv();
+      IDVersionSegmentTermsEnum te = (IDVersionSegmentTermsEnum) terms.iterator();
+      for (int i = 0; i < ids.size(); i++) {
+        f.add(te.seekExact(ids.get(i), mins.get(i)) ? te.getVersion() : -1);
+      }
+      System.out.printf("#check	%s	%016x	%d%n", "sb_idversion_seek", f.h, ids.size());
+      measure("sb_idversion_seek", op);
+    }
+  }
+
+  static final int KM_N = 10_000;
+  static final int KM_DIM = 16;
+
+  /** {@code kmeans/vectors.bin}: 10 000 16-dimensional vectors around 40 centres, little-endian. */
+  static void buildKMeans(Path dir) throws IOException {
+    Random r = new Random(0x4B4D45414E53L);
+    float[][] centres = new float[40][KM_DIM];
+    for (float[] c : centres) {
+      for (int d = 0; d < KM_DIM; d++) {
+        c[d] = (r.nextFloat() - 0.5f) * 40;
+      }
+    }
+    ByteBuffer bb = ByteBuffer.allocate(KM_N * KM_DIM * 4).order(ByteOrder.LITTLE_ENDIAN);
+    for (int i = 0; i < KM_N; i++) {
+      float[] c = centres[r.nextInt(centres.length)];
+      for (int d = 0; d < KM_DIM; d++) {
+        bb.putFloat(c[d] + (float) r.nextGaussian() * 3);
+      }
+    }
+    Files.write(dir.resolve("vectors.bin"), bb.array());
+    Files.writeString(dir.resolve("built"), "");
+  }
+
+  /**
+   * {@code sb_kmeans}: {@code KMeans.cluster(vectors, EUCLIDEAN, 32)} -- k-means++, five restarts,
+   * ten iterations, the Kahan-summed final pass -- per vector.
+   */
+  static void runKMeans(Path dir) throws IOException {
+    FloatBuffer fb =
+        ByteBuffer.wrap(Files.readAllBytes(dir.resolve("vectors.bin")))
+            .order(ByteOrder.LITTLE_ENDIAN)
+            .asFloatBuffer();
+    List<float[]> vs = new ArrayList<>();
+    for (int i = 0; i < KM_N; i++) {
+      float[] v = new float[KM_DIM];
+      fb.get(v);
+      vs.add(v);
+    }
+    FloatVectorValues values = FloatVectorValues.fromFloats(vs, KM_DIM);
+    KMeans.Results res = KMeans.cluster(values, VectorSimilarityFunction.EUCLIDEAN, 32);
+    Fnv f = new Fnv();
+    for (float[] c : res.centroids()) {
+      for (float x : c) {
+        f.add(Float.floatToRawIntBits(x));
+      }
+    }
+    for (short a : res.vectorCentroids()) {
+      f.add(a);
+    }
+    System.out.printf("#check	%s	%016x	%d%n", "sb_kmeans", f.h, vs.size());
+    measure(
+        "sb_kmeans",
+        () -> {
+          KMeans.Results r = KMeans.cluster(values, VectorSimilarityFunction.EUCLIDEAN, 32);
+          sink += r.vectorCentroids()[0];
+          return vs.size();
+        });
+  }
+
   public static void main(String[] args) throws IOException {
     Path dir = Path.of(args[1]);
     if (args[0].equals("build")) {
       if (!Files.exists(dir.resolve("text").resolve("built"))) {
         Files.createDirectories(dir.resolve("text"));
         buildText(dir.resolve("text"));
+      }
+      if (!Files.exists(dir.resolve("idv").resolve("built"))) {
+        Files.createDirectories(dir.resolve("idv"));
+        buildIdv(dir.resolve("idv"));
+      }
+      if (!Files.exists(dir.resolve("kmeans").resolve("built"))) {
+        Files.createDirectories(dir.resolve("kmeans"));
+        buildKMeans(dir.resolve("kmeans"));
       }
       if (Files.exists(dir.resolve("sandbox-ranges.tsv"))) return;
       Files.createDirectories(dir);
