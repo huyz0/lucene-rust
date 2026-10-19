@@ -144,8 +144,8 @@ pub(crate) fn collect_terms(q: &ExtendedQuery, out: &mut Vec<(String, Vec<u8>)>)
             }
         }
         ExtendedQuery::CombinedField(c) => {
-            for (f, _) in &c.fields {
-                out.push((f.clone(), c.term.clone()));
+            for (f, _, t) in c.field_terms() {
+                out.push((f.to_string(), t.to_vec()));
             }
         }
         ExtendedQuery::Blended(b) => {
@@ -161,6 +161,12 @@ pub(crate) fn collect_terms(q: &ExtendedQuery, out: &mut Vec<(String, Vec<u8>)>)
         // `SpanWeight.buildSimWeight`: the terms the weight takes its
         // statistics from (and a not query's exclude side, built too).
         ExtendedQuery::Span(q) => crate::spans::all_terms(q, out),
+        // `TermAutomatonWeight`: every term the automaton names.
+        ExtendedQuery::TermAutomaton(q) => {
+            for t in q.terms() {
+                out.push((q.field().to_string(), t.to_vec()));
+            }
+        }
         _ => {}
     }
 }
@@ -234,6 +240,22 @@ pub(crate) fn build<'a>(
         ExtendedQuery::FunctionMatch(q) => super::function::function_match(ctx, q, boost, mode),
         ExtendedQuery::Interval(q) => super::intervals::interval(ctx, q, boost, mode),
         ExtendedQuery::Span(q) => super::spans::span_node(ctx, q, boost, mode),
+        ExtendedQuery::Covering(q) => {
+            crate::sandbox::search::covering::scorer(ctx, q, boost, mode, top_level)
+        }
+        ExtendedQuery::TermAutomaton(q) => {
+            crate::sandbox::search::term_automaton::scorer(ctx, q, boost, mode, top_level)
+        }
+        ExtendedQuery::PhraseWildcardWeight(q) => {
+            crate::sandbox::search::phrase_wildcard::scorer(ctx, q, boost, mode)
+        }
+        // `PhraseWildcardQuery.createWeight` expands its multi-terms over
+        // the whole reader.
+        ExtendedQuery::PhraseWildcard(_) => Err(crate::Error::IllegalState(
+            "PhraseWildcardQuery must be rewritten against the searcher \
+             (rescorer::rewrite_rescore_clauses) before it is searched"
+                .into(),
+        )),
         ExtendedQuery::FunctionScore(q) => {
             super::function::function_score(ctx, q, boost, mode, top_level)
         }
@@ -535,7 +557,7 @@ pub(crate) fn positional_phrase<'a>(
 /// A phrase's matches resolved up front, each slot a set of alternative terms
 /// (one term for a `PhraseQuery`), scored `simScorer.score(freq, norm)`.
 #[allow(clippy::too_many_arguments)]
-fn eager_phrase<'a>(
+pub(crate) fn eager_phrase<'a>(
     ctx: &LeafContext<'a>,
     pos_in: &lucene_codecs::postings::PosInput<'a>,
     field: &str,
@@ -1240,14 +1262,14 @@ fn combined_field<'a>(
     boost: f32,
     mode: Mode,
 ) -> Result<Option<BoxScorer<'a>>> {
-    if q.fields.is_empty() {
+    // `rewrite`: no fields, or (the sandbox's) no terms, matches nothing.
+    if q.fields.is_empty() || q.terms.is_empty() {
         return Ok(None);
     }
     if !mode.needs_scores() {
         let should: Vec<Clause> = q
-            .fields
-            .iter()
-            .map(|(f, _)| Clause::Term(TermQuery::new(f.clone(), q.term.clone())))
+            .field_terms()
+            .map(|(f, _, t)| Clause::Term(TermQuery::new(f, t)))
             .collect();
         let b = Clause::Boolean(Box::new(BooleanQuery::new().with_should(should)));
         return build::build(ctx, &b, boost, mode, false);
@@ -1274,20 +1296,29 @@ fn combined_parts<'a>(
     boost: f32,
 ) -> Result<Option<CombinedParts<'a>>> {
     // `CombinedFieldWeight`: docFreq the largest, totalTermFreq the
-    // weighted sum (`long += double`, a truncating cast each step).
+    // weighted sum (`long += double`, a truncating cast each step), over
+    // every `(field, term)`, field-major.
     let mut doc_freq = 0i64;
     let mut total_term_freq = 0i64;
-    // `mergeCollectionStatistics`.
+    // `mergeCollectionStatistics`: once per field.
     let (mut max_doc, mut doc_count, mut sum_ttf, mut sum_df) = (0i64, 0i64, 0i64, 0i64);
     for (field, weight) in &q.fields {
-        let Some(entry) = term_entry(ctx, field, &q.term)? else {
+        let mut field_entry = None;
+        for term in &q.terms {
+            let Some(entry) = term_entry(ctx, field, term)? else {
+                continue;
+            };
+            if entry.doc_freq > 0 {
+                doc_freq = doc_freq.max(entry.doc_freq);
+                total_term_freq = (total_term_freq as f64
+                    + f64::from(*weight) * entry.total_term_freq as f64)
+                    as i64;
+            }
+            field_entry = Some(entry);
+        }
+        let Some(entry) = field_entry else {
             continue;
         };
-        if entry.doc_freq > 0 {
-            doc_freq = doc_freq.max(entry.doc_freq);
-            total_term_freq =
-                (total_term_freq as f64 + f64::from(*weight) * entry.total_term_freq as f64) as i64;
-        }
         if entry.doc_count > 0 {
             max_doc = max_doc.max(entry.max_doc);
             doc_count = doc_count.max(entry.doc_count);
@@ -1312,14 +1343,13 @@ fn combined_parts<'a>(
     let scorer = sim_scorer(ctx, "pseudo_field", boost, &collection, &[pseudo]);
     let mut members = Vec::new();
     let mut weights = Vec::new();
-    for (field, weight) in &q.fields {
-        if let Some((cursor, seeked)) = cursor(ctx, field, &q.term, PostingsFlags::FreqsNoImpacts)?
-        {
+    for (field, weight, term) in q.field_terms() {
+        if let Some((cursor, seeked)) = cursor(ctx, field, term, PostingsFlags::FreqsNoImpacts)? {
             members.push(Member {
                 cursor,
                 cost: i64::from(seeked.stats.doc_freq),
             });
-            weights.push(*weight);
+            weights.push(weight);
         }
     }
     if members.is_empty() {
@@ -1356,7 +1386,7 @@ pub(crate) fn combined_field_bulk<'a>(
     boost: f32,
     mode: Mode,
 ) -> Result<Option<Option<Box<CombinedWindow<'a>>>>> {
-    if q.fields.is_empty() || !mode.needs_scores() {
+    if q.fields.is_empty() || q.terms.is_empty() || !mode.needs_scores() {
         return Ok(None);
     }
     Ok(match combined_parts(ctx, q, boost)? {

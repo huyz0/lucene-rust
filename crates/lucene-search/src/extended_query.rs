@@ -73,6 +73,14 @@ pub enum ExtendedQuery {
     FuzzyLikeThis(crate::fuzzy_like_this::FuzzyLikeThisQuery),
     /// `lucene-queries`' span and payload queries ([`crate::spans`]).
     Span(crate::spans::SpanNode),
+    /// `lucene-sandbox`'s scoring queries ([`crate::sandbox::search`]).
+    Covering(crate::sandbox::search::CoveringQuery),
+    TermAutomaton(crate::sandbox::search::TermAutomatonQuery),
+    /// Rewritten by the searcher, which expands its multi-terms per segment
+    /// ([`crate::sandbox::search::PhraseWildcardQuery::resolve`]), into a
+    /// [`ExtendedQuery::PhraseWildcardWeight`] before it is searched.
+    PhraseWildcard(crate::sandbox::search::PhraseWildcardQuery),
+    PhraseWildcardWeight(crate::sandbox::search::ResolvedPhraseWildcard),
 }
 
 macro_rules! into_clause {
@@ -129,6 +137,24 @@ impl From<crate::function::FunctionScoreQuery> for Clause {
     }
 }
 
+impl From<crate::sandbox::search::CoveringQuery> for Clause {
+    fn from(q: crate::sandbox::search::CoveringQuery) -> Self {
+        Clause::Extended(Box::new(ExtendedQuery::Covering(q)))
+    }
+}
+
+impl From<crate::sandbox::search::TermAutomatonQuery> for Clause {
+    fn from(q: crate::sandbox::search::TermAutomatonQuery) -> Self {
+        Clause::Extended(Box::new(ExtendedQuery::TermAutomaton(q)))
+    }
+}
+
+impl From<crate::sandbox::search::PhraseWildcardQuery> for Clause {
+    fn from(q: crate::sandbox::search::PhraseWildcardQuery) -> Self {
+        Clause::Extended(Box::new(ExtendedQuery::PhraseWildcard(q)))
+    }
+}
+
 impl From<crate::rescorer::RescoreTopNQuery> for Clause {
     fn from(q: crate::rescorer::RescoreTopNQuery) -> Self {
         Clause::Extended(Box::new(ExtendedQuery::RescoreTopN(q)))
@@ -172,6 +198,11 @@ impl ExtendedQuery {
             ExtendedQuery::FuzzyLikeThis(_) => "FuzzyLikeThisQuery",
             ExtendedQuery::Span(_) => "SpanQuery",
             ExtendedQuery::FunctionScore(_) => "FunctionScoreQuery",
+            ExtendedQuery::Covering(_) => "CoveringQuery",
+            ExtendedQuery::TermAutomaton(_) => "TermAutomatonQuery",
+            ExtendedQuery::PhraseWildcard(_) | ExtendedQuery::PhraseWildcardWeight(_) => {
+                "PhraseWildcardQuery"
+            }
         }
     }
 
@@ -191,6 +222,7 @@ impl ExtendedQuery {
             ExtendedQuery::GlobalOrdinals(q) => vec![q.to_query.as_ref()],
             ExtendedQuery::GlobalOrdinalsWithScore(q) => vec![q.to_query.as_ref()],
             ExtendedQuery::FunctionScore(q) => vec![q.in_query.as_ref()],
+            ExtendedQuery::Covering(q) => q.queries.iter().collect(),
             _ => Vec::new(),
         }
     }
@@ -240,9 +272,13 @@ impl SynonymQuery {
 
 /// `CombinedFieldQuery` (BM25F): one term searched across several fields as
 /// if they were one, each field's frequency and length scaled by its weight.
+/// lucene-sandbox's deprecated `CombinedFieldQuery` is the same query over
+/// several terms ([`CombinedFieldQuery::with_terms`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CombinedFieldQuery {
-    pub term: Vec<u8>,
+    /// Sorted and distinct: one for core's query, any number for the
+    /// sandbox's (none matches nothing).
+    pub terms: Vec<Vec<u8>>,
     /// `(field, weight)`, sorted by field (`TreeMap`), one entry per field.
     pub fields: Vec<(String, f32)>,
 }
@@ -268,8 +304,40 @@ impl CombinedFieldQuery {
             return Err(Error::InvalidQuery("too many clauses".into()));
         }
         Ok(Self {
-            term: term.into(),
+            terms: vec![term.into()],
             fields: map.into_iter().collect(),
+        })
+    }
+
+    /// lucene-sandbox's `CombinedFieldQuery.Builder`: `addTerm` for each of
+    /// `terms` (a set: duplicates collapse, and the terms are sorted), with
+    /// at most [`MAX_CLAUSE_COUNT`] `(field, term)` pairs (`TooManyClauses`).
+    pub fn with_terms(
+        terms: impl IntoIterator<Item = impl Into<Vec<u8>>>,
+        fields: impl IntoIterator<Item = (impl Into<String>, f32)>,
+    ) -> Result<Self> {
+        let mut set = std::collections::BTreeSet::new();
+        for t in terms {
+            // `addTerm`: `termsSet.size() >= getMaxClauseCount()` before adding.
+            if set.len() >= MAX_CLAUSE_COUNT {
+                return Err(Error::InvalidQuery("too many clauses".into()));
+            }
+            set.insert(t.into());
+        }
+        let mut q = Self::new(Vec::new(), fields)?;
+        if q.fields.len().saturating_mul(set.len()) > MAX_CLAUSE_COUNT {
+            return Err(Error::InvalidQuery("too many clauses".into()));
+        }
+        q.terms = set.into_iter().collect();
+        Ok(q)
+    }
+
+    /// `getTerms()`: every `(field, term)` pair, field-major.
+    pub fn field_terms(&self) -> impl Iterator<Item = (&str, f32, &[u8])> + '_ {
+        self.fields.iter().flat_map(move |(f, w)| {
+            self.terms
+                .iter()
+                .map(move |t| (f.as_str(), *w, t.as_slice()))
         })
     }
 }

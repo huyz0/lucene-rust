@@ -1,13 +1,23 @@
 //! `org.apache.lucene.sandbox.search`: the sandbox's queries.
 
+pub(crate) mod covering;
 mod doc_values_multi_range;
 mod multi_range_query;
+pub(crate) mod phrase_wildcard;
+pub(crate) mod term_automaton;
+
+pub use crate::extended_query::CombinedFieldQuery;
+pub use covering::CoveringQuery;
 
 pub use doc_values_multi_range::{
     ByteRange, LongRange, SortedNumericDocValuesMultiRangeQuery, SortedNumericStabbingBuilder,
     SortedSetDocValuesMultiRangeQuery, SortedSetStabbingBuilder,
 };
 pub use multi_range_query::{MultiRangeQuery, MultiRangeQueryBuilder, RangeClause};
+pub use phrase_wildcard::{
+    PhraseWildcardBuilder, PhraseWildcardQuery, PhraseWildcardTerm, ResolvedPhraseWildcard,
+};
+pub use term_automaton::{GraphToken, TermAutomatonQuery, TokenStreamToTermAutomatonQuery};
 
 use crate::collector::ScoringCollector;
 
