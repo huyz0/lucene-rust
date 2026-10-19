@@ -1,8 +1,8 @@
 # Lucene 10.5.0 lucene-sandbox: every top-level class of the jar, and what became of it.
 # Checked by scripts/check-port-inventory.py --module sandbox (see its docstring for the statuses).
 # class	status	detail
-payloads/PayloadSpanCollector	todo:M14	M14.f: the sandbox package payloads
-payloads/PayloadSpanUtil	todo:M14	M14.f: the sandbox package payloads
+payloads/PayloadSpanCollector	ported	crates/lucene-search/src/sandbox/payloads.rs::PayloadSpanCollector
+payloads/PayloadSpanUtil	ported	crates/lucene-search/src/sandbox/payloads.rs::PayloadSpanUtil
 sandbox/codecs/idversion/IDVersionPostingsFormat	todo:M14	M14.f: the sandbox package sandbox/codecs/idversion
 sandbox/codecs/idversion/IDVersionPostingsReader	todo:M14	M14.f: the sandbox package sandbox/codecs/idversion
 sandbox/codecs/idversion/IDVersionPostingsWriter	todo:M14	M14.f: the sandbox package sandbox/codecs/idversion
@@ -66,7 +66,7 @@ sandbox/facet/utils/LongValueFacetBuilder	todo:M14	M14.f: the sandbox package sa
 sandbox/facet/utils/PostCollectionFaceting	todo:M14	M14.f: the sandbox package sandbox/facet/utils
 sandbox/facet/utils/RangeFacetBuilderFactory	todo:M14	M14.f: the sandbox package sandbox/facet/utils
 sandbox/facet/utils/TaxonomyFacetBuilder	todo:M14	M14.f: the sandbox package sandbox/facet/utils
-sandbox/index/MergeOnFlushMergePolicy	todo:M14	M14.f: the sandbox package sandbox/index
+sandbox/index/MergeOnFlushMergePolicy	ported	crates/lucene-index/src/merge_policy/merge_on_flush.rs::MergeOnFlushMergePolicy
 sandbox/queries/FuzzyLikeThisQuery	ported	crates/lucene-search/src/fuzzy_like_this.rs::FuzzyLikeThisQuery
 sandbox/search/AggregatedQueryLeafProfilerResult	not-needed	the query profiler wraps each Weight/Scorer/BulkScorer of a Java query tree, which this port does not build (queries execute as Rust enums); its nanosecond timings would not be comparable with Lucene's anyway, and OpenSearch profiles with its own org.opensearch.search.profile.query (QueryProfiler, ProfileWeight), never this class
 sandbox/search/CombinedFieldQuery	ported	crates/lucene-search/src/extended_query.rs::CombinedFieldQuery

@@ -96,6 +96,7 @@ use crate::segment_info::SegmentInfo;
 pub mod api;
 pub mod filter;
 pub mod log;
+pub mod merge_on_flush;
 pub mod temporal;
 pub mod upgrade;
 
@@ -104,6 +105,7 @@ pub use api::{
     MergeSpecification, MergeTrigger, NoMergePolicy, OneMerge, PreparedMerge, TieredMergePolicy,
 };
 use lucene_store::directory::Directory;
+pub use merge_on_flush::MergeOnFlushMergePolicy;
 
 /// The stats [`find_merges`] needs about one segment -- the port of Java's
 /// `TieredMergePolicy.SegmentSizeAndDocs` input. Deliberately not
