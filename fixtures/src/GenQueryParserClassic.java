@@ -24,6 +24,9 @@ import org.apache.lucene.queryparser.classic.QueryParser;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.BoostQuery;
+import org.apache.lucene.search.FuzzyQuery;
+import org.apache.lucene.search.MultiTermQuery;
+import org.apache.lucene.search.TopTermsRewrite;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.util.CharsRef;
 
@@ -58,6 +61,10 @@ public class GenQueryParserClassic {
     "a\u0001(", "\u0007:", "'(", "a'", "\"a\u0008", "\"x\u000c", "\"'", "/\u0008", "&", "|", "&&&",
     "|||", "AN", "O", "NO", "N", "A", "TO", "AND)", "a OR)", "[T", "[TO", "[TOx TO y]", "[a TO T]",
     "[a TO TO]", "[a TO b c]", "\"a\n", "\"a\r", "a\\", "[a TO b]^é", "a^1.", "a^1.x", "a^.",
+    // Multi-term queries for the rewrite configurations; the last two
+    // determinize within the default work limit and past std_topterms' 8.
+    "/(ab|cd|ef|gh)+x(ab|cd){2}/", "a?b?c?d?e?f*g", "/[abc]+[def]+[ghi]+[jkl]+/", "ab*c*d*e?f*g",
+    "a*b?c*d?e*f?g",
     "(a)^2.5^3", "a^2~", "\"a b\"~1.9", "\"a b\"~-2", "\"a b\"~x", "a~-1", "a~1.0", "a~NaN",
     "a~Infinity", "a~1e0", "a~2f", "/[/", "/a{2,1}/", "/<foo>/", "é", "😀",
     "a😀*", "*:é*", "*:a", "*:*^2", "title:*", "\\u00e9\\u4E2D", "\\u00zz", "a\\u12",
@@ -141,6 +148,17 @@ public class GenQueryParserClassic {
     c.put("multi_and", () -> {
       QueryParser p = new MultiFieldQueryParser(fields, new StandardAnalyzer());
       p.setDefaultOperator(QueryParser.Operator.AND);
+      return p;
+    });
+    c.put("std_rewrite", () -> {
+      QueryParser p = new QueryParser("f", new StandardAnalyzer());
+      p.setMultiTermRewriteMethod(MultiTermQuery.SCORING_BOOLEAN_REWRITE);
+      return p;
+    });
+    c.put("std_topterms", () -> {
+      QueryParser p = new QueryParser("f", new StandardAnalyzer());
+      p.setMultiTermRewriteMethod(new MultiTermQuery.TopTermsScoringBooleanQueryRewrite(10));
+      p.setDeterminizeWorkLimit(8);
       return p;
     });
     List<String> corpus = new ArrayList<>(AnalysisRows.corpus("queryparser-classic.txt"));
@@ -244,6 +262,21 @@ public class GenQueryParserClassic {
     if (q instanceof BoostQuery bq) {
       return "Boost(" + describe(bq.getQuery()) + "^" + bq.getBoost() + ")";
     }
-    return q.getClass().getSimpleName() + "(" + q.toString("f") + ")";
+    String base = q.getClass().getSimpleName() + "(" + q.toString("f") + ")";
+    if (q instanceof MultiTermQuery m
+        && !(q instanceof FuzzyQuery)
+        && m.getRewriteMethod() != MultiTermQuery.CONSTANT_SCORE_BLENDED_REWRITE) {
+      base += "@" + rewriteName(m.getRewriteMethod());
+    }
+    return base;
+  }
+
+  /** A rewrite method: the {@code MultiTermQuery} constant's name, else the class (and a top-terms size). */
+  static String rewriteName(MultiTermQuery.RewriteMethod m) {
+    if (m == MultiTermQuery.CONSTANT_SCORE_REWRITE) return "CONSTANT_SCORE_REWRITE";
+    if (m == MultiTermQuery.SCORING_BOOLEAN_REWRITE) return "SCORING_BOOLEAN_REWRITE";
+    if (m == MultiTermQuery.CONSTANT_SCORE_BOOLEAN_REWRITE) return "CONSTANT_SCORE_BOOLEAN_REWRITE";
+    if (m instanceof TopTermsRewrite<?> t) return m.getClass().getSimpleName() + "(" + t.getSize() + ")";
+    return m.getClass().getSimpleName();
   }
 }

@@ -82,6 +82,11 @@ pub enum ParsedQuery {
     },
     /// Any other query an analysis chain made (a graph query's spans).
     Other(Clause),
+    /// A `PrefixQuery`, `WildcardQuery`, `RegexpQuery` or `TermRangeQuery`
+    /// (the boxed query) built with a rewrite method other than
+    /// `CONSTANT_SCORE_BLENDED_REWRITE`, the parsers' default
+    /// (`setMultiTermRewriteMethod`); see [`ParsedQuery::with_rewrite`].
+    Rewritten(Box<ParsedQuery>, RewriteMethod),
 }
 
 /// `BooleanQuery`, clause order kept.
@@ -92,6 +97,17 @@ pub struct ParsedBoolean {
 }
 
 impl ParsedQuery {
+    /// `q` (a prefix, wildcard, regexp or term range query) as built with
+    /// `rewrite`: itself under the default method, else
+    /// [`ParsedQuery::Rewritten`].
+    pub fn with_rewrite(q: ParsedQuery, rewrite: RewriteMethod) -> ParsedQuery {
+        if rewrite == RewriteMethod::default() {
+            q
+        } else {
+            ParsedQuery::Rewritten(Box::new(q), rewrite)
+        }
+    }
+
     /// The tree of a query `QueryBuilder` made. Its booleans hold clauses of
     /// one occur each (or `MUST` and `SHOULD` built in that order), so the
     /// buckets' order is their insertion order.
@@ -136,8 +152,20 @@ impl ParsedQuery {
                 ExtendedQuery::Synonym(s) => ParsedQuery::Synonym(s),
                 ExtendedQuery::MultiTerm(MultiTermQuery {
                     source: MultiTermSource::TermRange(r),
-                    ..
-                }) => ParsedQuery::TermRange(r),
+                    rewrite,
+                }) => ParsedQuery::with_rewrite(ParsedQuery::TermRange(r), rewrite),
+                ExtendedQuery::MultiTerm(MultiTermQuery {
+                    source: MultiTermSource::Prefix(p),
+                    rewrite,
+                }) => ParsedQuery::with_rewrite(ParsedQuery::Prefix(p), rewrite),
+                ExtendedQuery::MultiTerm(MultiTermQuery {
+                    source: MultiTermSource::Wildcard(w),
+                    rewrite,
+                }) => ParsedQuery::with_rewrite(ParsedQuery::Wildcard(w), rewrite),
+                ExtendedQuery::MultiTerm(MultiTermQuery {
+                    source: MultiTermSource::Regexp(r),
+                    rewrite,
+                }) => ParsedQuery::with_rewrite(ParsedQuery::Regexp(r), rewrite),
                 ExtendedQuery::Span(node) => ParsedQuery::SpanNode(node),
                 other => ParsedQuery::Other(Clause::Extended(Box::new(other))),
             },
@@ -204,6 +232,21 @@ impl ParsedQuery {
                 crate::query::ConstantScoreQuery::new(q.to_clause(max_doc), 1.0),
             )),
             ParsedQuery::Other(c) => c.clone(),
+            ParsedQuery::Rewritten(q, rewrite) => {
+                let source = match q.to_clause(max_doc) {
+                    Clause::Prefix(p) => MultiTermSource::Prefix(p),
+                    Clause::Wildcard(w) => MultiTermSource::Wildcard(w),
+                    Clause::Regexp(r) => MultiTermSource::Regexp(r),
+                    Clause::Extended(e) => match *e {
+                        ExtendedQuery::MultiTerm(m) => m.source,
+                        other => return Clause::Extended(Box::new(other)),
+                    },
+                    other => return other,
+                };
+                Clause::Extended(Box::new(ExtendedQuery::MultiTerm(MultiTermQuery::new(
+                    source, *rewrite,
+                ))))
+            }
         }
     }
 
@@ -282,6 +325,8 @@ impl ParsedQuery {
                 }
             }
             ParsedQuery::PointRange { query, kind } => point_range_string(query, *kind, field),
+            // The rewrite method is not part of a query's string.
+            ParsedQuery::Rewritten(q, _) => q.to_string(field),
             ParsedQuery::Term(t) => {
                 crate::query_builder::to_query_string(Some(&Clause::Term(t.clone())), field)
             }
@@ -320,6 +365,9 @@ impl ParsedQuery {
                     q.describe(field),
                     java_float_to_string(*boost)
                 )
+            }
+            ParsedQuery::Rewritten(q, rewrite) => {
+                format!("{}@{}", q.describe(field), rewrite_name(*rewrite))
             }
             other => format!("{}({})", other.class_name(), other.to_string(field)),
         }
@@ -364,7 +412,30 @@ impl ParsedQuery {
             ParsedQuery::Other(Clause::DisjunctionMax(_)) => "DisjunctionMaxQuery",
             ParsedQuery::Other(Clause::Extended(e)) => e.name(),
             ParsedQuery::Other(_) => "Query",
+            ParsedQuery::Rewritten(q, _) => q.class_name(),
         }
+    }
+}
+
+/// How the parser fixtures name a rewrite method: the `MultiTermQuery`
+/// constant's name, or the class's simple name (and a top-terms
+/// rewrite's size).
+pub fn rewrite_name(rewrite: RewriteMethod) -> String {
+    match rewrite {
+        RewriteMethod::ConstantScoreBlended => "CONSTANT_SCORE_BLENDED_REWRITE".to_string(),
+        RewriteMethod::ConstantScore => "CONSTANT_SCORE_REWRITE".to_string(),
+        RewriteMethod::ScoringBoolean => "SCORING_BOOLEAN_REWRITE".to_string(),
+        RewriteMethod::ConstantScoreBoolean => "CONSTANT_SCORE_BOOLEAN_REWRITE".to_string(),
+        RewriteMethod::TopTermsScoringBoolean(n) => {
+            format!("TopTermsScoringBooleanQueryRewrite({n})")
+        }
+        RewriteMethod::TopTermsBoostOnlyBoolean(n) => {
+            format!("TopTermsBoostOnlyBooleanQueryRewrite({n})")
+        }
+        RewriteMethod::TopTermsBlendedFreqScoring(n) => {
+            format!("TopTermsBlendedFreqScoringRewrite({n})")
+        }
+        RewriteMethod::DocValues => "DocValuesRewriteMethod".to_string(),
     }
 }
 

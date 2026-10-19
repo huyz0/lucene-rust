@@ -10,9 +10,7 @@
 //! Not ported: date ranges (`setDateResolution`, `setLocale`,
 //! `setTimeZone`): with no resolution set -- the default -- Lucene's date
 //! parse of a range bound fails and is ignored, which is what this parser
-//! does; `MultiTermQuery.RewriteMethod` and `determinizeWorkLimit` are not
-//! configurable: a wildcard or regular expression is determinized within
-//! the default limit, as Lucene's constructors do. `QueryParserBase`'s
+//! does. `QueryParserBase`'s
 //! protected extension points (`newBooleanClause`, `newFieldQuery`,
 //! `getBooleanQuery`, ...) cannot be overridden.
 
@@ -30,6 +28,7 @@ use std::sync::Arc;
 
 use lucene_analysis::{AnalysisError, Analyzer};
 
+use crate::extended_query::RewriteMethod;
 use crate::query_visitor::Occur;
 use crate::queryparser::ext::Extensions;
 use crate::queryparser::{ParsedBoolean, ParsedQuery};
@@ -157,6 +156,10 @@ pub struct QueryParser {
     enable_position_increments: bool,
     enable_graph_queries: bool,
     auto_generate_multi_term_synonyms_phrase_query: bool,
+    /// `multiTermRewriteMethod`.
+    multi_term_rewrite_method: RewriteMethod,
+    /// `determinizeWorkLimit`.
+    determinize_work_limit: i32,
 }
 
 impl QueryParser {
@@ -205,6 +208,8 @@ impl QueryParser {
             enable_position_increments: true,
             enable_graph_queries: true,
             auto_generate_multi_term_synonyms_phrase_query: false,
+            multi_term_rewrite_method: RewriteMethod::ConstantScoreBlended,
+            determinize_work_limit: lucene_util::automaton::DEFAULT_DETERMINIZE_WORK_LIMIT,
         }
     }
 
@@ -349,6 +354,30 @@ impl QueryParser {
     /// (`QueryBuilder`).
     pub fn set_auto_generate_multi_term_synonyms_phrase_query(&mut self, enable: bool) {
         self.auto_generate_multi_term_synonyms_phrase_query = enable;
+    }
+
+    /// `setMultiTermRewriteMethod(method)`: how the prefix, wildcard,
+    /// regexp and range queries the parser builds rewrite (a
+    /// `ComplexPhraseQueryParser`'s phrases rewrite theirs as booleans
+    /// whatever this is).
+    pub fn set_multi_term_rewrite_method(&mut self, method: RewriteMethod) {
+        self.multi_term_rewrite_method = method;
+    }
+
+    /// `getMultiTermRewriteMethod()`.
+    pub fn multi_term_rewrite_method(&self) -> RewriteMethod {
+        self.multi_term_rewrite_method
+    }
+
+    /// `setDeterminizeWorkLimit(limit)`: the most work determinizing a
+    /// wildcard or regular expression may take before the parse fails.
+    pub fn set_determinize_work_limit(&mut self, limit: i32) {
+        self.determinize_work_limit = limit;
+    }
+
+    /// `getDeterminizeWorkLimit()`.
+    pub fn determinize_work_limit(&self) -> i32 {
+        self.determinize_work_limit
     }
 
     /// `parse(query)`: the query, or `ParseException("Cannot parse

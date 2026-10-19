@@ -271,6 +271,11 @@ a\\	E	Cannot parse 'a\\': Lexical error at line 1, column 3.  Encountered: <EOF>
 a^1.	Q	((title:a)^2.0 (body:a)^0.5)^1.0	Boost(Boolean(Boost(TermQuery(title:a)^2.0) Boost(TermQuery(body:a)^0.5))^1.0)
 a^1.x	Q	((title:a)^2.0 (body:a)^0.5)^1.0 ((title:x)^2.0 (body:x)^0.5)	Boolean(Boost(Boolean(Boost(TermQuery(title:a)^2.0) Boost(TermQuery(body:a)^0.5))^1.0) Boolean(Boost(TermQuery(title:x)^2.0) Boost(TermQuery(body:x)^0.5)))
 a^.	E	Cannot parse 'a^.': Lexical error at line 1, column 4.  Encountered: <EOF>
+/(ab|cd|ef|gh)+x(ab|cd){2}/	Q	(title:/(ab|cd|ef|gh)+x(ab|cd){2}/)^2.0 (body:/(ab|cd|ef|gh)+x(ab|cd){2}/)^0.5	Boolean(Boost(RegexpQuery(title:/(ab|cd|ef|gh)+x(ab|cd){2}/)^2.0) Boost(RegexpQuery(body:/(ab|cd|ef|gh)+x(ab|cd){2}/)^0.5))
+a?b?c?d?e?f*g	Q	(title:a?b?c?d?e?f*g)^2.0 (body:a?b?c?d?e?f*g)^0.5	Boolean(Boost(WildcardQuery(title:a?b?c?d?e?f*g)^2.0) Boost(WildcardQuery(body:a?b?c?d?e?f*g)^0.5))
+/[abc]+[def]+[ghi]+[jkl]+/	Q	(title:/[abc]+[def]+[ghi]+[jkl]+/)^2.0 (body:/[abc]+[def]+[ghi]+[jkl]+/)^0.5	Boolean(Boost(RegexpQuery(title:/[abc]+[def]+[ghi]+[jkl]+/)^2.0) Boost(RegexpQuery(body:/[abc]+[def]+[ghi]+[jkl]+/)^0.5))
+ab*c*d*e?f*g	Q	(title:ab*c*d*e?f*g)^2.0 (body:ab*c*d*e?f*g)^0.5	Boolean(Boost(WildcardQuery(title:ab*c*d*e?f*g)^2.0) Boost(WildcardQuery(body:ab*c*d*e?f*g)^0.5))
+a*b?c*d?e*f?g	Q	(title:a*b?c*d?e*f?g)^2.0 (body:a*b?c*d?e*f?g)^0.5	Boolean(Boost(WildcardQuery(title:a*b?c*d?e*f?g)^2.0) Boost(WildcardQuery(body:a*b?c*d?e*f?g)^0.5))
 (a)^2.5^3	E	Cannot parse '(a)^2.5^3': Encountered " "^" "^ "" at line 1, column 7.\nWas expecting one of:\n    <EOF> \n    <AND> ...\n    <OR> ...\n    <NOT> ...\n    "+" ...\n    "-" ...\n    <BAREOPER> ...\n    "(" ...\n    "*" ...\n    <QUOTED> ...\n    <TERM> ...\n    <PREFIXTERM> ...\n    <WILDTERM> ...\n    <REGEXPTERM> ...\n    "[" ...\n    "{" ...\n    <NUMBER> ...\n    
 a^2~	Q	((title:a~2)^2.0 (body:a~2)^0.5)^2.0	Boost(Boolean(Boost(FuzzyQuery(title:a~2)^2.0) Boost(FuzzyQuery(body:a~2)^0.5))^2.0)
 "a b"~1.9	Q	(title:"a b"~1)^2.0 (body:"a b"~1)^0.5	Boolean(Boost(PhraseQuery(title:"a b"~1)^2.0) Boost(PhraseQuery(body:"a b"~1)^0.5))

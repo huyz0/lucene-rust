@@ -762,13 +762,22 @@ impl<'p> Parser<'p> {
             None => None,
             Some(p) => Some(self.normalize(field, &p)?),
         };
-        Ok(Some(ParsedQuery::TermRange(TermRangeQuery::new(
-            field,
-            start,
-            end,
-            start_inclusive,
-            end_inclusive,
+        Ok(Some(self.rewritten(ParsedQuery::TermRange(
+            TermRangeQuery::new(field, start, end, start_inclusive, end_inclusive),
         ))))
+    }
+
+    /// `q` as `newRangeQuery`/`newPrefixQuery`/`newWildcardQuery`/
+    /// `newRegexpQuery` build it with `multiTermRewriteMethod`. A
+    /// `ComplexPhraseQueryParser`'s second pass forces
+    /// `SCORING_BOOLEAN_REWRITE`; here it is left unwrapped, since
+    /// `complex_phrase.rs` expands every multi-term query of a phrase the
+    /// scoring-boolean way whatever its method.
+    fn rewritten(&self, q: ParsedQuery) -> ParsedQuery {
+        if self.phrase_field.is_some() {
+            return q;
+        }
+        ParsedQuery::with_rewrite(q, self.cfg.multi_term_rewrite_method)
     }
 
     /// `getBooleanQuery(clauses)`.
@@ -813,10 +822,12 @@ impl<'p> Parser<'p> {
             ));
         }
         let pattern = self.analyze_wildcard(field, term)?;
-        // `new WildcardQuery(...)` determinizes its automaton.
-        crate::query_visitor::wildcard_automaton_checked(&pattern).map_err(too_complex)?;
-        Ok(Some(ParsedQuery::Wildcard(WildcardQuery::new(
-            field, pattern,
+        // `new WildcardQuery(term, determinizeWorkLimit, ...)` determinizes
+        // its automaton.
+        crate::query_visitor::wildcard_automaton_within(&pattern, self.cfg.determinize_work_limit)
+            .map_err(too_complex)?;
+        Ok(Some(self.rewritten(ParsedQuery::Wildcard(
+            WildcardQuery::new(field, pattern),
         ))))
     }
 
@@ -848,13 +859,15 @@ impl<'p> Parser<'p> {
     fn get_regexp_query_single(&self, field: &str, term: &str) -> PResult<Option<ParsedQuery>> {
         let text = term_text(&self.normalize(field, term)?);
         // `new RegexpQuery(...)` parses the expression and determinizes its
-        // automaton within `DEFAULT_DETERMINIZE_WORK_LIMIT`.
+        // automaton within `determinizeWorkLimit`.
         let re = RegExp::with_flags(&text, RegExp::ALL, 0).map_err(|e| automaton_error(&e))?;
         let a = re
             .to_automaton_with_provider(&NoAutomata)
             .map_err(|e| automaton_error(&e))?;
-        operations::determinize(&a, DEFAULT_DETERMINIZE_WORK_LIMIT).map_err(too_complex)?;
-        Ok(Some(ParsedQuery::Regexp(RegexpQuery::new(field, text))))
+        operations::determinize(&a, self.cfg.determinize_work_limit).map_err(too_complex)?;
+        Ok(Some(self.rewritten(ParsedQuery::Regexp(RegexpQuery::new(
+            field, text,
+        )))))
     }
 
     /// `QueryParserBase.getPrefixQuery(field, termStr)`.
@@ -865,7 +878,9 @@ impl<'p> Parser<'p> {
             ));
         }
         let bytes = self.normalize(field, term)?;
-        Ok(Some(ParsedQuery::Prefix(PrefixQuery::new(field, bytes))))
+        Ok(Some(self.rewritten(ParsedQuery::Prefix(PrefixQuery::new(
+            field, bytes,
+        )))))
     }
 
     /// `QueryParserBase.getFuzzyQuery(field, termStr, minSimilarity)`

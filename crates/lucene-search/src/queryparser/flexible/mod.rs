@@ -22,6 +22,7 @@ use std::sync::Arc;
 
 use lucene_analysis::Analyzer;
 
+use crate::extended_query::RewriteMethod;
 use crate::queryparser::classic::QueryParserError;
 use crate::queryparser::ParsedQuery;
 
@@ -46,6 +47,9 @@ pub struct StandardQueryParser {
     pub(crate) field_boosts: Vec<(String, f32)>,
     /// `PrecedenceQueryParser`: AND binds tighter than OR, booleans nest.
     pub(crate) precedence: bool,
+    /// `MULTI_TERM_REWRITE_METHOD`, which `MultiTermRewriteMethodProcessor`
+    /// hands every wildcard, prefix, regexp and range node's builder.
+    pub(crate) multi_term_rewrite_method: RewriteMethod,
 }
 
 impl Default for StandardQueryParser {
@@ -70,6 +74,7 @@ impl StandardQueryParser {
             fuzzy_prefix_length: 0,
             field_boosts: Vec::new(),
             precedence: false,
+            multi_term_rewrite_method: RewriteMethod::ConstantScoreBlended,
         }
     }
 
@@ -89,6 +94,16 @@ impl StandardQueryParser {
         let mut p = Self::new();
         p.analyzer = Some(analyzer.into());
         p
+    }
+
+    /// `setMultiTermRewriteMethod(method)`.
+    pub fn set_multi_term_rewrite_method(&mut self, method: RewriteMethod) {
+        self.multi_term_rewrite_method = method;
+    }
+
+    /// `getMultiTermRewriteMethod()`.
+    pub fn multi_term_rewrite_method(&self) -> RewriteMethod {
+        self.multi_term_rewrite_method
     }
 
     /// `setAnalyzer(analyzer)`.

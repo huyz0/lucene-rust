@@ -19,6 +19,7 @@ use lucene_analysis::{
     english_stop_words, AnalysisError, Analyzer, AnalyzerDefinition, CharArraySet, LowerCaseFilter,
     StandardAnalyzer, TokenStreamComponents,
 };
+use lucene_search::extended_query::RewriteMethod;
 use lucene_search::query_visitor::Occur;
 use lucene_search::queryparser::classic::{Operator, QueryParser, QueryParserError};
 use lucene_search::queryparser::ParsedQuery;
@@ -148,6 +149,17 @@ fn parser(name: &str) -> QueryParser {
             p.set_default_operator(Operator::And);
             p
         }
+        "std_rewrite" => {
+            let mut p = QueryParser::new("f", standard());
+            p.set_multi_term_rewrite_method(RewriteMethod::ScoringBoolean);
+            p
+        }
+        "std_topterms" => {
+            let mut p = QueryParser::new("f", standard());
+            p.set_multi_term_rewrite_method(RewriteMethod::TopTermsScoringBoolean(10));
+            p.set_determinize_work_limit(8);
+            p
+        }
         other => panic!("unknown configuration {other}"),
     }
 }
@@ -210,6 +222,8 @@ fn classic_query_parser_matches_lucene() {
         "multi_perfield",
         "std_negative",
         "multi_negative",
+        "std_rewrite",
+        "std_topterms",
     ] {
         let (n, bad) = check(&format!("{config}.tsv"), config);
         total += n;
