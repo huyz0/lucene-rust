@@ -1,0 +1,4 @@
+collector 0	IllegalArgumentException: requestedHitCount must be > 0
+collector -3	IllegalArgumentException: requestedHitCount must be > 0
+manager 0	IllegalArgumentException: numHits must be > 0, got 0
+topDocs -1	IllegalArgumentException: Number of hits requested must not be negative but value was -1

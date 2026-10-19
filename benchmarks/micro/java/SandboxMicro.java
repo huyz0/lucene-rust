@@ -22,8 +22,11 @@ import org.apache.lucene.sandbox.document.IntPointMultiRangeBuilder;
 import org.apache.lucene.sandbox.search.CombinedFieldQuery;
 import org.apache.lucene.sandbox.search.CoveringQuery;
 import org.apache.lucene.sandbox.search.DocValuesMultiRangeQuery;
+import org.apache.lucene.sandbox.search.LargeNumHitsTopDocsCollectorManager;
 import org.apache.lucene.sandbox.search.PhraseWildcardQuery;
 import org.apache.lucene.sandbox.search.TermAutomatonQuery;
+import org.apache.lucene.search.BooleanClause;
+import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.FieldDoc;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.LongValuesSource;
@@ -343,6 +346,31 @@ public final class SandboxMicro {
             b.addMultiTerm(new PrefixQuery(new Term("body", w[1].substring(0, 4))));
             return b.build();
           });
+      // LargeNumHitsTopDocsCollector: the top 1000 of two mid-frequency words.
+      {
+        List<Query> qs = new ArrayList<>();
+        for (long[][] set : sets) {
+          String[] w = words(set);
+          qs.add(
+              new BooleanQuery.Builder()
+                  .add(new TermQuery(new Term("body", w[1])), BooleanClause.Occur.SHOULD)
+                  .add(new TermQuery(new Term("body", w[2])), BooleanClause.Occur.SHOULD)
+                  .build());
+        }
+        Fnv f = new Fnv();
+        for (Query q : qs) digest(f, s.search(q, new LargeNumHitsTopDocsCollectorManager(1000)));
+        System.out.printf("#check	%s	%016x	%d%n", "sb_large_num_hits", f.h, sets.size());
+        measure(
+            "sb_large_num_hits",
+            () -> {
+              Fnv g = new Fnv();
+              for (Query q : qs) {
+                digest(g, s.search(q, new LargeNumHitsTopDocsCollectorManager(1000)));
+              }
+              sink += g.h;
+              return sets.size();
+            });
+      }
     }
   }
 
