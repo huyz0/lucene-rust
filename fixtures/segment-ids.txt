@@ -400,6 +400,10 @@ replicator/plain/_0.si c14ed00cf8cc29b1829c363ca7472dd9
 replicator/plain/_1.si c14ed00cf8cc29b1829c363ca7472ddd
 replicator/plain/_2.si c14ed00cf8cc29b1829c363ca7472de1
 replicator/plain/segments_4 c14ed00cf8cc29b1829c363ca7472de6
+sandbox_collectors/index/_0.si 398d05431633183e79d2ca87b5aee457
+sandbox_collectors/index/_1.si 398d05431633183e79d2ca87b5aee45b
+sandbox_collectors/index/_2.si 398d05431633183e79d2ca87b5aee45f
+sandbox_collectors/index/segments_4 398d05431633183e79d2ca87b5aee466
 sandbox_document/index/_0.si baebb6b31df4ad187ed7d69fe371c6e7
 sandbox_document/index/_1.si baebb6b31df4ad187ed7d69fe371c6eb
 sandbox_document/index/_2.si baebb6b31df4ad187ed7d69fe371c6ef

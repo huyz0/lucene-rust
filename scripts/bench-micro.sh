@@ -422,7 +422,7 @@ case "$BENCH" in
   sandbox)
     # M14.f's pair (SandboxMicro.java / micro_sandbox.rs): lucene-sandbox's
     # multi-range queries, FloatPointNearestNeighbor and (over its text/
-    # index) the scoring queries, over the
+    # index) the scoring queries and the large-hits collector, over the
     # 200 000-document index SandboxMicro builds (once) under
     # benchmarks/.corpus/sandbox.
     MAIN=SandboxMicro

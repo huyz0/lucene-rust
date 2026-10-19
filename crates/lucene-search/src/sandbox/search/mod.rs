@@ -2,8 +2,10 @@
 
 pub(crate) mod covering;
 mod doc_values_multi_range;
+mod large_num_hits;
 mod multi_range_query;
 pub(crate) mod phrase_wildcard;
+mod profiler_collector;
 pub(crate) mod term_automaton;
 
 pub use crate::extended_query::CombinedFieldQuery;
@@ -13,9 +15,13 @@ pub use doc_values_multi_range::{
     ByteRange, LongRange, SortedNumericDocValuesMultiRangeQuery, SortedNumericStabbingBuilder,
     SortedSetDocValuesMultiRangeQuery, SortedSetStabbingBuilder,
 };
+pub use large_num_hits::{LargeNumHitsTopDocsCollector, LargeNumHitsTopDocsCollectorManager};
 pub use multi_range_query::{MultiRangeQuery, MultiRangeQueryBuilder, RangeClause};
 pub use phrase_wildcard::{
     PhraseWildcardBuilder, PhraseWildcardQuery, PhraseWildcardTerm, ResolvedPhraseWildcard,
+};
+pub use profiler_collector::{
+    ProfilerCollector, ProfilerCollectorManager, ProfilerCollectorResult, ProfilerHandle,
 };
 pub use term_automaton::{GraphToken, TermAutomatonQuery, TokenStreamToTermAutomatonQuery};
 
