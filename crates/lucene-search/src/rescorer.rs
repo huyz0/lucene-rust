@@ -701,6 +701,19 @@ pub fn rewrite_rescore_clauses(
                 ExtendedQuery::Span(q) if q.needs_rewrite() => {
                     Some(Clause::from(q.rewrite(ctx.searcher()?)?))
                 }
+                // `PhraseWildcardQuery.createWeight`: its multi-terms'
+                // expansions over the reader's segments.
+                ExtendedQuery::PhraseWildcard(q) => Some(q.resolve(ctx.searcher()?.segments())?),
+                // `CoveringQuery.rewrite`: its queries, each rewritten.
+                ExtendedQuery::Covering(q) => {
+                    let mut changed = false;
+                    let queries = list(&q.queries, ctx, &mut changed)?;
+                    changed.then(|| {
+                        let mut q = q.clone();
+                        q.queries = queries;
+                        Clause::from(q)
+                    })
+                }
                 _ => None,
             },
             Clause::Boolean(b) => boolean(b, ctx)?.map(|b| Clause::Boolean(Box::new(b))),
@@ -764,6 +777,7 @@ pub(crate) fn has_rescore_clauses(query: &BooleanQuery) -> bool {
                         | ExtendedQuery::CommonTerms(_)
                         | ExtendedQuery::MoreLikeThis(_)
                         | ExtendedQuery::FuzzyLikeThis(_)
+                        | ExtendedQuery::PhraseWildcard(_)
                 ) || matches!(e.as_ref(), ExtendedQuery::Span(q) if q.needs_rewrite())
                     || e.children().into_iter().any(clause)
             }

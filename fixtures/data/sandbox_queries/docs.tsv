@@ -1,0 +1,180 @@
+0	w9 w7 w0 w0 w18 w2 w10	w1 w5	1
+1	w3 w10 w7 w3 w11 w1 w13 w16 w0 w2 w2 w0 w1	-	0
+2	w8 w11 w0 w2	w0 w7 w6 w1	0
+3	w19 w0 w9 w12 w7 w5 w19 w0 w7 w4	-	3
+4	w12 w1 w0 w8 w8	w1 w7	2
+5	w14 w13 w0	w0	3
+6	w0 w12 w1 w18 w0 w14 w2	-	3
+7	w0 w2	w0	0
+8	w0 w19 w11	w0 w0 w0	0
+9	w9 w19 w0 w1 w12 w3 w8 w17	w1	-1
+10	w9 w0 w7 w12 w6 w19 w2 w0 w4 w0 w0 w6 w11 w11 w1 w13 w4 w9 w0 w8 w3 w1 w10 w8 w2 w2 w0 w1 w11 w8 w0	w2 w5 w1	0
+11	w0	w0 w0 w1 w5	3
+12	w11 w15 w3 w8 w7 w8 w1	w3 w2	2
+13	w15 w0 w0 w12 w0 w16 w0 w17 w0 w9	w6	1
+14	w0 w8 w17	w7 w0 w1 w0	1
+15	w17 w11 w12 w17 w0 w3 w0 w12 w18	w1 w4 w4	1
+16	w5 w0 w0 w10 w3 w16 w0 w7 w4 w17 w0 w2 w2 w1 w3 w14 w11 w9 w4 w3 w14 w10 w3 w13 w6 w0 w0	-	3
+17	w19 w3 w15 w10 w10 w19 w0 w0	w6 w6 w1 w0	0
+18	w0 w2	w7 w3	2
+19	w0	w0 w1 w0	-1
+20	w19 w4 w2 w7 w0 w0	w6 w4 w0 w5	2
+21	w15	w0 w3 w0	2
+22	w18 w4 w12 w15 w0 w0 w5 w4 w19 w2 w5 w2 w0 w18 w12 w14 w15 w18 w16 w14 w12	w5 w3 w5 w5	0
+23	w0 w0	-	0
+24	w7 w7 w6 w3 w2 w18 w5	-	1
+25	w2 w0 w0 w0 w4 w6 w9 w0 w10 w17 w3 w0 w6 w4 w3 w19 w0 w6 w0 w4 w6 w16 w0 w2 w5 w16 w5 w2 w7 w7 w11 w4 w9	w0	0
+26	w10 w15 w2 w10 w7 w2 w2 w7 w18 w2	-	3
+27	w1	w0 w4	1
+28	w0	w4 w2	2
+29	w5 w11	-	2
+30	w7 w19 w9 w5 w1 w1 w0 w5 w1 w1	-	1
+31	w14	-	-1
+32	w9 w11 w2 w2 w17	w4 w7 w4	1
+33	w0 w0 w0 w0 w6	w1 w6 w0 w0	2
+34	w0 w3 w6 w1 w17	w0 w0 w0	3
+35	w5 w2 w0 w7 w3 w7 w19 w8 w0 w0 w2 w0 w1 w8 w0 w8 w6 w0 w1 w11 w9 w0 w4 w7 w16 w18 w1 w4 w10	w0	0
+36	w2 w11	w5	2
+37	w0 w0 w11 w0	-	2
+38	w19 w0	w0	-1
+39	w11 w1 w0 w2 w5 w1	w5 w1	2
+40	w19 w0 w6 w8 w1 w0	w0	3
+41	w11	w0 w2	3
+42	w7 w1 w11 w9 w0 w8 w3 w4	w6	0
+43	w13 w3 w18 w12 w9 w3	-	3
+44	w15 w0 w0 w3 w13 w13	w2	2
+45	w14 w9 w10 w15 w4 w3 w8 w6 w0 w1 w1 w4 w2 w1 w9 w0 w6 w1 w4 w0 w0	w3	1
+46	w12 w2	w6	3
+47	w14 w1	w0 w2 w0 w7	0
+48	w11 w0 w2 w0 w5 w4 w3 w3 w0 w13	-	1
+49	w0 w18 w1 w10 w1 w16 w0 w11 w6	w1 w3 w1	-1
+50	w3 w4 w0 w2 w19 w0 w1 w1 w3 w11 w9 w17 w0 w3 w2 w19 w1 w1 w0 w15 w2 w19 w0 w1 w7	w4 w7 w2 w0	2
+51	w2 w8 w0 w1 w14	w6 w0	0
+52	w6 w9 w16 w3 w4 w0 w3 w10 w0 w0 w0 w2 w0 w3 w0 w0 w12 w5 w11 w14 w6 w1 w0 w4 w0 w2 w18 w15 w0 w4 w11 w10 w0 w12 w1 w0 w3 w0 w1	w1 w6 w0	-1
+53	w4 w2 w12 w7 w0 w11 w10 w3 w17	w2 w3 w6 w3	2
+54	w0 w0 w13 w4 w1	w0 w4	3
+55	w4 w7 w18 w14 w4	-	3
+56	w5 w12 w11 w15 w3 w0 w4 w5 w6 w3	w6 w5 w0	3
+57	w1 w8 w0 w5 w11 w17 w4	w5 w5 w3 w0	-1
+58	w2 w3 w9	w0 w2 w3	-1
+59	w17 w0 w0 w0 w15 w0 w1 w0	w0 w1	0
+60	w11 w0	w3 w0 w2 w5	1
+61	w9 w2 w18 w16 w2	w1	2
+62	w1	w2 w5 w6	3
+63	w10 w0 w8 w7 w1 w17 w0 w18 w5 w2 w13 w0	w0 w2 w6 w7	2
+64	w0 w13 w2 w2 w12 w15 w2 w2 w14 w4 w1 w0 w0 w0 w7 w5 w11 w16 w10 w18	w0	3
+65	w1 w5 w8 w7 w10	w6 w0 w7 w2	2
+66	w19 w1 w0 w4 w2 w1	w5 w5 w5	1
+67	w0 w17 w16 w10 w0	w0 w1 w0	3
+68	w0 w5 w3 w6 w14 w17 w19	w2 w0 w1 w1	1
+69	w14 w0 w6 w18 w15 w2 w5 w3 w6 w14	w7 w3	-1
+70	w6 w8 w17 w6 w6 w14	w6 w4 w4	0
+71	w15 w16	-	3
+72	w14 w4	w0 w1	1
+73	w18 w11 w19 w0 w0 w0 w4 w3 w4 w15	w3 w0 w2 w1	-1
+74	w7 w13 w3	w1	3
+75	w14 w9 w12 w0 w6	-	0
+76	w0 w8 w3	-	2
+77	w3 w18 w0 w1 w4 w9 w1	w6 w0	-1
+78	w6 w1 w0 w9 w7	-	0
+79	w12 w9	w1	3
+80	w3 w0 w9 w0	w3 w4 w3	2
+81	w0 w11 w16 w18 w0 w0 w0 w3	w0 w1 w0 w2	1
+82	w0 w2 w1 w17 w16 w18 w2 w0 w0 w11	w4	-1
+83	w7 w7 w2 w0 w8 w14	w7 w3 w2 w5	0
+84	w18 w15 w0 w16 w8 w19	w0	-1
+85	w0 w17 w5 w6 w0 w1 w5 w15 w0 w1 w0 w11 w12 w0 w19 w3 w6	w0 w2	1
+86	w3 w1 w15 w0 w0 w0	w7	-1
+87	w6 w0 w12 w17 w0	w1 w0 w0	2
+88	w18 w8 w2 w2 w5 w4 w0 w3 w0 w16 w12	w0 w4	2
+89	w10	w1 w0 w4	3
+90	w15 w0 w0 w2 w0 w11 w15 w12 w6 w1 w4 w11 w8 w2 w0 w9 w15 w6 w7 w18 w2 w5 w18	w6	2
+91	w16 w1 w1 w13 w4	w2	2
+92	w3 w6 w9 w2 w15 w2 w0 w1	w0	1
+93	w7 w6 w15 w0 w14 w2 w4	w0 w4 w0 w2	-1
+94	w4 w0 w0 w1 w13	-	3
+95	w9 w8 w3 w1	w1	2
+96	w19	w7 w0 w7	0
+97	w0 w1 w11	w1	0
+98	w14 w2 w0	w1 w0 w0	2
+99	w0 w0 w12 w0 w16 w1 w1 w12 w0	w1 w0	0
+100	w3 w6 w2 w0 w7 w0 w0 w3 w16	w2 w3	1
+101	w10 w3 w0 w1 w8 w5 w2 w7 w15	w2 w1	0
+102	w2	w2 w7	2
+103	w18 w5 w8 w17 w2 w4 w9	-	-1
+104	w12 w1 w0 w6 w2	-	1
+105	w6 w15 w0 w6 w10 w6 w4 w14 w12 w0 w5 w7 w0 w15 w2 w2 w8 w0 w15 w0 w16 w1 w3 w1 w12 w0 w0 w2 w6 w2 w5 w9 w0 w0 w7 w14 w6	w7	2
+106	w1 w1 w0 w12 w0 w1	-	0
+107	w16 w0 w0 w9 w14 w2 w19 w0	w7	-1
+108	w4 w11 w4 w1 w4 w19 w18 w6 w11 w3	w1	2
+109	w0 w1 w16 w13 w15 w0 w0 w16 w8 w3 w10 w1 w11 w6 w4 w3 w3 w1 w10 w0 w1 w13 w16 w5 w9 w1 w1 w17 w6 w0 w0	w7	1
+110	w4 w9 w5 w18	-	0
+111	w3 w10 w1 w3 w11 w3 w0 w2 w2 w0 w5 w2 w1 w8 w19 w0 w0 w0 w2 w6 w19 w3 w17 w3 w4 w2 w4 w12 w9 w15 w15 w14 w0 w5 w6 w0 w2 w4 w19	w0 w2	3
+112	w1 w3 w6 w1 w3	w0 w0	0
+113	w0 w12 w0 w17	-	-1
+114	w15 w9	w1	2
+115	w4 w0 w13 w18 w4 w8 w3 w10 w5 w1	w0 w0	-1
+116	w19 w4 w8 w3	w0 w2	0
+117	w16 w0 w0	w3	1
+118	w11 w0 w12 w7 w5 w18 w17 w6 w16	w5 w3	3
+119	w1 w1 w18 w7 w2 w0	w0 w7 w4 w0	3
+120	w9 w1 w5 w18 w0 w9 w7	w0 w0 w4 w0	0
+121	w16 w3 w9 w3 w1 w14	-	-1
+122	w7 w4 w2 w14 w18 w3 w0 w12 w1 w13 w10 w4 w1 w2 w6 w14 w6 w14 w0 w1 w18	w1 w6	2
+123	w8 w4 w0 w1	w0 w4	0
+124	w16 w6 w4 w3 w2 w2	w1 w2 w5	2
+125	w17 w6 w6 w14 w10 w1 w7 w8 w0 w14 w4 w10 w0 w3 w9 w7 w0 w3 w8 w7 w13 w17 w0 w2 w0 w0 w1 w10 w1 w0 w3 w4 w17 w7 w4 w0 w0 w2 w17 w2	w1 w4 w0 w6	2
+126	w1 w19 w10 w2 w3 w13 w19	w5	1
+127	w5	-	1
+128	w4 w10 w5 w0 w7 w0 w4 w4 w2 w0	w1	3
+129	w0 w13 w14 w0 w14 w0 w4	w3 w4	2
+130	w17 w6 w9 w7 w4 w0 w0 w6 w0 w12 w3 w10 w14 w3 w0 w11 w17 w0 w2 w9 w0 w12 w14 w0 w0	w0	1
+131	w3 w0 w19 w0 w4 w4 w1 w11	w6 w0 w6 w1	3
+132	w2 w0 w1 w19 w2 w14 w16 w14 w0 w0 w0 w4 w0 w0 w14	w2 w0 w1	1
+133	w15 w14 w4 w10 w11 w1 w16 w1 w8 w8 w0 w9 w7 w1 w10 w6 w1 w0 w8 w8 w9 w10 w8 w18 w3 w1 w1 w1 w8	w1 w0 w2 w0	3
+134	w1 w0 w1 w0 w0 w0 w18 w9	w1	2
+135	w18 w2 w8	w0	0
+136	w8 w6 w19 w18 w2 w8 w17 w1 w19 w0 w1 w2 w0 w1 w14 w7 w1 w17 w10 w9 w4 w3 w3 w11 w0 w0 w0 w3 w8 w6 w18 w0 w2	w3 w1 w0	2
+137	w5 w19 w1 w8 w10 w9 w6 w6	w0 w0 w0	1
+138	w18 w0 w11 w14 w14	w3	1
+139	w8 w0 w0 w11 w2 w1 w3 w10 w7 w6 w15 w0 w0 w1 w19 w11 w1 w4 w9 w0 w3 w6 w2 w17 w6 w14 w6 w7 w0 w9 w5 w0 w14 w18 w11	w4 w0 w0 w2	3
+140	w0 w0 w2 w15 w13 w13 w9 w16 w17 w12 w3 w0 w1 w17	w3	3
+141	w5 w14 w4 w0 w0 w6 w0	w0	-1
+142	w1 w8 w12 w15 w17 w1 w11 w2 w4	w0 w2	3
+143	w17 w7	w0 w0 w3 w3	1
+144	w0 w15 w0 w0 w7 w6 w1 w0	w4 w4 w0	2
+145	w0 w8 w2 w16 w4	w0 w0 w5	-1
+146	w19 w5 w2 w5 w15 w5 w3 w3 w5 w13 w6 w11 w1 w5 w2 w4 w19 w5 w6 w7 w17 w3 w1 w1 w18 w1 w4 w12 w12 w14 w12 w9 w3 w12 w0 w0 w9 w2 w2	w6 w0 w0	1
+147	w1 w16 w13	-	3
+148	w14 w7	w7 w2 w0 w6	1
+149	w3 w17 w4 w0 w8 w0 w0 w3 w8	w0 w3	3
+150	w13 w3 w10	w6 w5 w0 w4	-1
+151	w9 w9 w9 w0 w9 w7 w18 w5 w9 w6	w3 w0 w1	1
+152	w5 w13 w13 w4 w6 w9 w13 w0 w11 w1 w3 w19 w17 w0 w4 w5 w2 w0 w4 w0 w0 w0 w5 w9 w16 w3 w0 w10 w10 w16 w0 w9 w0 w7 w6 w1 w19	w2 w3 w1	-1
+153	w1 w4 w11 w18 w0 w5 w8 w4 w0	w0 w0 w0	2
+154	w6 w9 w5 w0 w2	w0 w0	2
+155	w4 w5 w6 w9 w0 w15 w1 w0 w11	-	1
+156	w15 w6 w15 w8 w11 w11 w9 w12 w3	w0 w4	2
+157	w12 w2 w4 w1 w9 w11 w6 w9 w1 w10 w12 w1 w0 w7 w0 w2 w17 w9 w1 w3 w0 w8 w7 w9 w0 w11 w2 w1 w5 w0 w1 w17	-	-1
+158	w1 w2 w9 w2	-	0
+159	w15	w4	-1
+160	w4 w3 w11 w7 w3 w11 w4 w9	w3 w0 w0	1
+161	w0 w16 w13 w7 w14 w11	w0 w4	-1
+162	w14 w5 w7 w4 w13 w4 w5 w10	w6 w0	0
+163	w19 w4 w4 w12 w0	w7	2
+164	w9 w11 w10 w7 w6 w0 w1 w0	-	0
+165	w15	-	1
+166	w0 w13 w7 w13 w8 w0 w4 w2 w2 w2 w0 w6 w5 w8 w5 w15 w1 w19 w19 w12 w6 w11 w1 w1 w0 w14 w4 w1 w17 w5 w7	w1 w0 w3	2
+167	w5 w2 w19 w11 w3 w6	-	0
+168	w5 w3 w16 w12 w4 w1 w1 w3 w9	w0	0
+169	w0 w0 w1 w11 w5 w7 w4 w5 w0 w0 w2 w0 w1 w0 w2 w5 w19 w1 w0	-	-1
+170	w10 w2 w2 w15 w9 w5 w0 w0 w7	w4	2
+171	w17 w12 w0 w19 w13 w6 w16 w1 w15	w7 w1	0
+172	w3 w0	w0	0
+173	w16 w12 w3 w3 w0 w1	w1 w7	3
+174	w12 w5	w1 w3 w5 w2	0
+175	w1	-	-1
+176	w1 w2 w2 w0 w1 w7 w15 w2 w1 w0 w2 w1 w12 w8 w1 w2 w0 w10 w8 w19 w17 w4 w0 w0 w0 w18 w0 w5 w2 w5 w5 w1	w3 w0 w6 w1	-1
+177	w5 w2 w6 w1 w3 w0 w2 w14 w12	w5	1
+178	w14 w19 w18 w11 w0 w13 w1 w8 w10 w0 w14 w5 w9 w14 w5 w0 w1 w13 w17 w0 w0 w0 w16 w9 w15 w4 w12 w3 w8 w0 w10 w17 w10 w4 w8 w3 w0	-	0
+179	w0 w0 w9 w3 w8	-	2

@@ -44,7 +44,7 @@ pub(crate) mod extended;
 pub(crate) mod function;
 pub(crate) mod intervals;
 pub(crate) mod join;
-mod leaf;
+pub(crate) mod leaf;
 pub(crate) mod multi_term;
 mod phrase;
 pub(crate) mod query_join;
