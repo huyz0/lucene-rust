@@ -3591,7 +3591,8 @@ fn wire_count(value: i64, what: &str) -> Result<usize> {
     }
     usize::try_from(value).map_err(|_| {
         Error::Unsupported(
-            "total_term_freq exceeds this platform's usize: a term with more occurrences              than a 32-bit target can count cannot be walked there",
+            "total_term_freq exceeds this platform's usize: a term with more occurrences \
+             than a 32-bit target can count cannot be walked there",
         )
     })
 }
@@ -3605,7 +3606,8 @@ fn wire_count(value: i64, what: &str) -> Result<usize> {
 fn stream_len(len: usize) -> Result<u32> {
     u32::try_from(len).map_err(|_| {
         Error::Unsupported(
-            "a materialised position stream past u32::MAX entries: walk the term with              PositionsCursor or per document instead",
+            "a materialised position stream past u32::MAX entries: walk the term with \
+             PositionsCursor or per document instead",
         )
     })
 }

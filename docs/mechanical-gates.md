@@ -38,6 +38,7 @@ to describe a defect that got past it.
 | [`occur-guard`](#occur-guard) | `check-port-invariants.py` | one condition testing `R.must.is_empty()` and `R.must_not.is_empty()` on a receiver `R` without naming `R.filter` | a guard split across statements or helper fns; a test on `should`/`filter` alone that forgets an occur; a `filter` named but treated wrongly |
 | [`table-fixed-len`](#table-fixed-len) | `check-port-invariants.py` | a non-test `static`/`const` in `lucene-analysis` typed as a slice literal (`&[T] = &[`) | a fixed-length type whose `N` was itself copied from the short transcription; a table built at runtime (`vec!`, `LazyLock`); a dropped or reordered entry in a table nothing indexes by position; every other crate |
 | [`alloc-from-parse`](#alloc-from-parse) | `check-port-invariants.py` | an allocation size (`vec![_; n]`, `with_capacity(n)`, `.resize(n, ..)`) mentioning a name its fn bound from a text parse (`parse_int(`, `parse_num(`, `.parse()`) or containing one, with no `min(` in the size and no `// ALLOC:` proof | a count reaching the size through a struct field, a parameter or another fn; a count decoded from bytes (`read_vint`) rather than parsed from text; a `min(` that does not actually cap it; a loop that pushes once per announced entry without reading one |
+| [`literal-space-run`](#literal-space-run) | `check-port-invariants.py` | a line in `crates/*/src` holding a string literal with a run of 8+ spaces between non-spaces, or a `\n` then 8+ spaces, with no `// SPACES-OK:` waiver | a run under eight spaces; a run only on a later line of a multi-line literal; `crates/*/tests` |
 | [`preflight`](#preflight) | `preflight.sh` | a docker engine that does not answer in 30 s; under 25 GB free where Docker keeps its disk; a Docker virtual disk over 300 GB; under 5 GB free on the repo's drive; (in the container) under 15 GB free under the target dir | a drive that fills *during* a run (it checks the start, not the trend); a second project's disk use between checks; free space that is real but fragmented |
 | [rustdoc links](#rustdoc) | `cargo doc` | a `[`link`]` that resolves to nothing | a symbol named in *plain backticks*, which is most of them |
 | [coverage objects](#coverage-objects) | `scripts/coverage.sh` | lucene-ffi's never-loaded cdylib standing in for the executed copy of a `#[no_mangle]` function in the line report | the same first-copy-wins rule between two *executed* copies; a file whose lines split between a crate's unit-test and integration-test builds, which the summary under-reports |
@@ -622,6 +623,28 @@ from a count parsed out of its input or configuration (`bucket_count as
 usize`)` and `ngram/mod.rs:101` (`size`). Blind to: a configured int that
 arrives as `usize` (or `i16`, `u64`), or through a struct field; sizes
 inside `configured_vec` itself, which the cap bounds.
+
+## literal-space-run
+
+`check-port-invariants.py --only=literal-space-run`. A `\`-continued string
+literal edited by a script that drops the `\` keeps the next line's
+indentation inside the string, and one that writes an escaped newline for it leaves a
+literal `\n` before that indentation: an error message no longer Java's.
+Review found it in `PhraseWildcardQuery`'s "must be rewritten" message, and
+the rule's first run found three more (two `Unsupported` messages in
+`lucene-codecs/src/postings.rs`, and `DrillSideways`' "numHits must be > 0"
+message together with the test asserting it). The rule: in `crates/*/src`,
+a line holding a string literal with a non-space, eight or more spaces and a
+non-space, or `\n` and eight or more spaces, fails unless a
+`// SPACES-OK: <why>` comment sits on it or within the two lines above (Java's
+column layouts in `replicator/nrt/node.rs`; an indented source text in a
+`lucene-ffi` test). **Seen to fail** on both shapes, reintroduced in
+`exec/extended.rs:255`: `a string literal holding a run of 8+ spaces (or
+`\n` then spaces): a lost `\` line continuation?`. Blind to: a run under
+eight spaces (a continuation from a shallow indent); a literal spanning
+lines (it reads one line at a time, so the run must sit on the line with
+the opening quote's part of the literal); `crates/*/tests`, where column
+layouts are common; raw strings with `#` delimiters holding a `"`.
 
 ## write-path verifiers of the geo modules (M9)
 

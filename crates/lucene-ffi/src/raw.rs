@@ -296,6 +296,7 @@ mod allocation_hazard_tests {
     /// the shape a first-`#[cfg(test)]`-wins split gets wrong.
     #[test]
     fn production_lines_skips_test_modules_wherever_they_sit() {
+        // SPACES-OK: an indented Rust source, the test's input.
         let source = "fn a() {\n    let x = 1;\n}\n\n#[cfg(test)]\nmod tests {\n    fn t() {\n                              let v = Vec::with_capacity(4);\n    }\n}\n\nfn b() {\n    let y = 2;\n}\n";
         let kept: Vec<&str> = production_lines(source)
             .into_iter()

@@ -300,7 +300,8 @@ fn refusals() {
         for (n, s) in [(0, &sort[..]), (-1, &sort[..]), (0, &[][..])] {
             assert_eq!(
                 ia_message(ds.search_sorted(&[], &q, None, None, n, s, false)),
-                "numHits must be > 0; please use TotalHitCountCollector if you just need \n                 the total hit count"
+                "numHits must be > 0; please use TotalHitCountCollector if you just need \
+                 the total hit count"
             );
         }
 
