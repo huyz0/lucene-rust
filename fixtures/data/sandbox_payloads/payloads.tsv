@@ -1,0 +1,24 @@
+T body w1	15	21,355473,567594,63,4362,4a6988,3756,51,5a,7c9b,8baa,ba,fc,c9,38
+T body w9	27	1a3958,6f,86a5c4,a7c6e5,537291,6786,82a1,8a,97b6,91b0,99,a7c6e5,cf,f6,11,d7f615,fe1d3c,0b,1f3e5d,0c2b,dffe,ec0b2a,ed,0e,0f2e,2b4a69,527190
+T body zz	0	
+T plain w1	IllegalStateException: field "plain" was indexed without position data; cannot run SpanTermQuery (term=w1)
+T id 3	IllegalStateException: field "id" was indexed without position data; cannot run SpanTermQuery (term=3)
+P 0 2 w1 w2	0	
+P 2 2 w2 w1	12	48,21,1b,355473,294867,4362,5d,4362,a0bf,ba,1e3d,38
+P 1 3 w0 w1 w3	7	6887a6,4e,45,5f7e9d,89a8c7,7c9b,a3c2
+P 0 1 w1	IllegalArgumentException: Less than 2 subSpans.size():1
+MP 0 2 0 2 w1 w2 1 1 w3	3	3756,446382,51
+MP 1 2 0 1 w0 2 2 w1 w4	15	6887a6,7190af,8baa,45,a1c0df,89a8c7,7c9b,98b7d6,8baa,d6f5,c9,eb0a,35,6b,44
+MP 0 3 0 1 w2 0 1 w3 3 1 w0	15	41607f,6887a6,4e,6887a6,5d,84,66,809fbe,809fbe,6887a6,75,e60524,f3,5170,6b
+MP 0 2 2 1 w1 0 1 w2	8	1b,355473,294867,4362,a0bf,ba,1e3d,38
+B 1 1 1 T body w4 T body w5 T body w6	27	2f4e6d,708f,7190af,8baa,a1c0df,a9c8,9f,ef0e2d,c2e100,254463,01203f,2a49,44,143352,7796b5,30,6483,a5,60,7695,b3d2f1,adcceb,db,b5d4,042342,1e3d,02
+B 0 2 0 P 0 2 w1 w2 T body w7	21	5b7a,6a89,7e,6b8aa9,ae,9c,6f,b8d7,bcdbfa,c3,d0ef,cae9,05,1231,e504,001f,072645,fb1a39,3c5b,0928,163554
+D 2 T body w8 SN 1 true 2 ST w1 ST w0	29	27,5574,2847,2241,36,3d5c,4c6b,9ab9,94b3,6180,6e8dac,c3,9ebddc,c5e403,e90827,0322,f21130,193857,26,133251,496887,23,2443,7c9b,89a8c7,8baa,98b7d6,c9,d6f5
+ST w2	21	48,1b,294867,5d,66,90,b7,cc,a6c5,a0bf,c1e0,ae,c8e706,f716,3f5e,f9,2e4d6c,1534,3d5c7b,1d,1e3d
+SN 0 false 2 ST w0 ST w1	8	6887a6,89a8c7,7c9b,98b7d6,8baa,d6f5,c9,eb0a
+SN 3 true 3 ST w1 SO 2 ST w2 ST w3 ST w0	3	4362,5d,84
+SO 2 SP w1 ST w5	29	143352,21,355473,567594,63,4362,7796b5,30,4a6988,6483,a5,3756,51,60,5a,7c9b,7695,8baa,b3d2f1,adcceb,ba,db,fc,b5d4,c9,042342,1e3d,02,38
+SN 1 true 2 SP w ST w2	58	2e4d,48,48,4362,5d,5d,4c6b,66,597897,66,66,75,82a1,b6d5f4,c3,7695,90,83a2c1,90,b7,aac9e8,b7,cc,bfdefd,cc,99,a6c5,a7c6e5,c1e0,b4,c1e0,ae,c8e706,bbda,c8e706,ddfc1b,f716,f716,254463,3f5e,3f5e,dffe,f9,ec0b2a,f9,2e4d6c,2140,2e4d6c,fb1a39,1534,08,1534,1534,23,3d5c7b,3d5c7b,102f4e,1d
+W body w1*	0	
+B 1 0 0 W body w*	0	
+BF 1 1 1 T body w4 P 0 2 w1 w2 T body w6	38	2f4e6d,708f,7190af,8baa,a1c0df,a9c8,9f,ef0e2d,c2e100,254463,01203f,2a49,44,0d2c,2e4d,7d9cbb,5271,7998,87,7493b2,b0cfee,dffe,d9f8,92b1d0,bbda,ddfc1b,e4,1837,d1f00f,de,fa19,f413,284766,08,2f,1c3b5a,102f4e,5e7d9c
