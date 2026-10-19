@@ -8,9 +8,12 @@
 # port's own reader cannot catch a misreading of the spec that the reader and
 # writer share; these can.
 #
-# Usage: scripts/verify-write-path.sh [--jars DIR] [--keep]
-#   --jars DIR  look for the Lucene jars here (default: fixtures/.jars)
-#   --keep      keep the generated fixtures instead of deleting them on exit
+# Usage: scripts/verify-write-path.sh [--jars DIR] [--keep] [--only VERIFIER]
+#   --jars DIR      look for the Lucene jars here (default: fixtures/.jars)
+#   --keep          keep the generated fixtures instead of deleting them on exit
+#   --only VERIFIER run only the case(s) checked by this verifier class, and
+#                   not the two non-write-path jobs at the end (for iterating
+#                   on one format; the gate and CI run everything)
 #
 # The postings/term-dictionary write path (.doc/.pos/.pay/.tim/.tip/.tmd) is
 # covered by the full-segment, merged-segment, sorted-segment and
@@ -19,18 +22,20 @@
 # T3.1, see docs/milestones/m3-write-path-proven.md.
 set -euo pipefail
 
-LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join lucene-suggest lucene-facet lucene-sandbox)
+LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join lucene-suggest lucene-facet lucene-sandbox lucene-codecs)
 
 cd "$(git rev-parse --show-toplevel)"
 FIXTURES="$PWD/fixtures"
 JARS="$FIXTURES/.jars"
 KEEP=0
+ONLY=
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --jars) JARS="$2"; shift 2 ;;
     --keep) KEEP=1; shift ;;
-    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+    --only) ONLY="$2"; shift 2 ;;
+    -h|--help) sed -n '2,21p' "$0"; exit 0 ;;
     *) echo "verify-write-path: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -80,6 +85,14 @@ CASES=(
   # enums -- the second is decided by the terms index's per-prefix
   # MAX_VALUE - maxVersion outputs, so a wrong FST output fails it.
   "lucene-codecs|write_idversion_fixture|idversion|VerifyIdVersion"
+  # lucene-codecs' BloomFilteringPostingsFormat (M14.g): two .blm groups over
+  # Lucene104PostingsFormat delegates (default and 4/9), one with a filter
+  # that saturates and is left out, opened by real Lucene's own format. Java
+  # checks each filter's toString, that it never refuses a written term, and
+  # that it answers MAYBE/NO for 3000 absent terms per field exactly as this
+  # port's does -- pinning the bit positions, not only their count -- then
+  # walks and seeks every term through the filtered enum.
+  "lucene-codecs|write_bloom_fixture|bloom|VerifyCodecsBloom"
   # Last, and unlike every case above: a whole index written by the real
   # IndexWriter, opened by DirectoryReader and run through CheckIndex. The
   # cases above each hand Lucene one codec file with a hand-built
@@ -365,6 +378,9 @@ echo "verify-write-path: writing fixtures from Rust and verifying with Lucene $L
 failed=0
 for case in "${CASES[@]}"; do
   IFS='|' read -r crate example subdir verifier extra <<<"$case"
+  if [ -n "$ONLY" ] && [ "$verifier" != "$ONLY" ]; then
+    continue
+  fi
   out="$WORK/$subdir"
   if ! cargo run --quiet -p "$crate" --example "$example" -- "$out" >/dev/null; then
     echo "  FAIL (rust write)   $example"; failed=$((failed+1)); continue
@@ -385,6 +401,11 @@ done
 # Rust and a Java IndexWriter could both open an index. The Rust test drives
 # fixtures/src/VerifyNativeLock.java; without the jar it would skip, so it is
 # handed the one resolved above.
+if [ -n "$ONLY" ]; then
+  echo
+  [ "$failed" -eq 0 ] && echo "verify-write-path: ok (--only $ONLY)" || echo "verify-write-path: FAILED (--only $ONLY)"
+  exit "$failed"
+fi
 total=$(( ${#CASES[@]} + 2 ))
 if LUCENE_CORE_JAR=$(lucene_resolve_jar lucene-core) \
     cargo test --quiet -p lucene-store --test native_lock_interop -- --nocapture 2>&1 \
