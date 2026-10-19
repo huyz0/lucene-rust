@@ -1,0 +1,19 @@
+BBox bb INTERSECTS 10,40,20,30	cannot have minLon [40.0] exceed maxLon [30.0].
+BBox bb WITHIN 30,10,20,40	cannot have minLat [30.0] exceed maxLat [20.0].
+BBox bb CONTAINS 95,10,96,20	invalid latitude 95.0; must be between -90.0 and 90.0
+BBox bb CROSSES -10,-190,10,0	invalid longitude -190.0; must be between -180.0 and 180.0
+IntMR i 1 1,2:3,4	Passed in range does not conform to specified dimensions
+IntMR i 1 5:4	Upper value of range should be greater than lower value of range
+LongMR l 2 1:2	Passed in range does not conform to specified dimensions
+FloatMR f 1 2:1	Upper value of range should be greater than lower value of range
+DoubleMR d 1 1:NaN	OK
+IntMR i2 1 0:1;2:3	field="i2" was indexed with numIndexDimensions=2 but this query has numDims=1
+IntMR i 2 0,0:1,1;2,2:3,3	field="i" was indexed with numIndexDimensions=1 but this query has numDims=2
+LongMR i 1 0:1;2:3	field="i" was indexed with bytesPerDim=4 but this query has bytesPerDim=8
+IntMR i 1	NullPointerException
+SNMR sn 10:2;30:20	NoSuchElementException
+HalfRange h 0,0 1	lowerPoint has length=4 but upperPoint has different length=2
+HalfRange h 0,0 1,1	field="h" was indexed with numIndexDimensions=1 but this query has numDims=2
+HalfRange h2 0 1	field="h2" was indexed with numIndexDimensions=2 but this query has numDims=1
+nearest 0 0,0,0	topN must be at least 1; got 0
+nearest -3 0,0,0	topN must be at least 1; got -3

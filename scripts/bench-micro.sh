@@ -419,6 +419,18 @@ case "$BENCH" in
     PREP_ARGS=(build "$INDEX")
     JAVA_ARGS=(run)
     NEEDS_INDEX=1 ;;
+  sandbox)
+    # M14.f's pair (SandboxMicro.java / micro_sandbox.rs): lucene-sandbox's
+    # multi-range queries and FloatPointNearestNeighbor over the
+    # 200 000-document index SandboxMicro builds (once) under
+    # benchmarks/.corpus/sandbox.
+    MAIN=SandboxMicro
+    SRC=benchmarks/micro/java/SandboxMicro.java
+    JAR_MODULES="lucene-core lucene-sandbox"
+    INDEX="${INDEX_ARG:-$PWD/benchmarks/.corpus/sandbox}"
+    PREP_ARGS=(build "$INDEX")
+    JAVA_ARGS=(run)
+    NEEDS_INDEX=1 ;;
   queries)
     # M10 T10.6's pair (QueriesMicro.java / micro_queries.rs): interval
     # queries over the 200 000-document index QueriesMicro builds (once)
