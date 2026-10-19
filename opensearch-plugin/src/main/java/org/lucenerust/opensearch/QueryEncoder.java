@@ -20,6 +20,7 @@ import org.apache.lucene.search.PrefixQuery;
 import org.apache.lucene.util.NumericUtils;
 import org.apache.lucene.search.QueryVisitor;
 import org.apache.lucene.search.TermInSetQuery;
+import org.apache.lucene.search.TermRangeQuery;
 import org.apache.lucene.index.IndexReaderContext;
 import org.apache.lucene.index.TermStates;
 import org.apache.lucene.search.FieldExistsQuery;
@@ -59,9 +60,10 @@ import java.util.function.Predicate;
  *       {@code range}, which only substitutes its approximation for sorted searches (never native):
  *       encoded as the original query it wraps, which scores identically;
  *   <li>the leaves: {@link PhraseQuery} without position gaps, {@link TermInSetQuery}, {@link
- *       PrefixQuery}, {@link WildcardQuery} without escapes and {@link RegexpQuery} with its default
- *       flags (under a constant-score rewrite), a one-dimension 8-byte {@code PointRangeQuery}, and
- *       {@link FieldExistsQuery};
+ *       PrefixQuery}, {@link WildcardQuery} without escapes, {@link RegexpQuery} with its default
+ *       flags and {@link TermRangeQuery} ({@code query_string}'s {@code [a TO b]}, a {@code range}
+ *       on a {@code keyword}) -- these five under a constant-score rewrite -- a one-dimension
+ *       8-byte {@code PointRangeQuery}, and {@link FieldExistsQuery};
  *   <li>the geo queries {@code geo_bounding_box}, {@code geo_distance}, {@code geo_polygon} and
  *       {@code geo_shape} build on {@code geo_point} and {@code geo_shape} fields ({@link GeoEncoder});
  *   <li>{@code nested}, the span queries, {@code intervals}, {@code combined_fields} and OpenSearch's
@@ -195,6 +197,8 @@ public final class QueryEncoder {
     private static final byte NODE_REGEXP = 12;
     private static final byte NODE_EXISTS = 13;
     private static final byte NODE_TERM_STATS = 14;
+    /** After the geo (15-19) and M10 (20-24) kinds: {@code NODE_TERM_RANGE} in {@code jvm_reader.rs}. */
+    private static final byte NODE_TERM_RANGE = 25;
 
     /** Appends one node (and its children); returns a fallback reason, or null. */
     private static String node(Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
@@ -406,7 +410,7 @@ public final class QueryEncoder {
         return inner[0];
     }
 
-    /** A term set, prefix or wildcard under a constant-score rewrite: scored as its boost. */
+    /** A term set, prefix, wildcard, regexp or term range under a constant-score rewrite: scored as its boost. */
     private static String multiTerm(Query q, ByteArrayOutputStream out, Predicate<String> fieldOk, int depth, int[] nodes) {
         if (q.getClass() == TermInSetQuery.class) {
             TermInSetQuery ts = (TermInSetQuery) q;
@@ -443,6 +447,24 @@ public final class QueryEncoder {
             out.write(NODE_WILDCARD);
             writeBytes(out, t.field().getBytes(StandardCharsets.UTF_8));
             writeBytes(out, t.bytes());
+            return null;
+        }
+        if (q.getClass() == TermRangeQuery.class) {
+            // `field`, a flags byte (1: a lower bound follows, 2: an upper bound, 4: the lower is
+            // inclusive, 8: the upper is), then the bounds present. An open end is null in Java.
+            TermRangeQuery tr = (TermRangeQuery) q;
+            BytesRef lower = tr.getLowerTerm();
+            BytesRef upper = tr.getUpperTerm();
+            int flags = (lower != null ? 1 : 0) | (upper != null ? 2 : 0) | (tr.includesLower() ? 4 : 0) | (tr.includesUpper() ? 8 : 0);
+            out.write(NODE_TERM_RANGE);
+            writeBytes(out, tr.getField().getBytes(StandardCharsets.UTF_8));
+            out.write(flags);
+            if (lower != null) {
+                writeBytes(out, lower);
+            }
+            if (upper != null) {
+                writeBytes(out, upper);
+            }
             return null;
         }
         if (q.getClass() == RegexpQuery.class) {
