@@ -1145,12 +1145,11 @@ fn explain_phrase(
         let term_query = TermQuery::new(query.field.clone(), query.terms[0].clone());
         return explain_term(fields, doc_in, live_docs, &term_query, doc, norms, global);
     }
-    let Some(pos_in) = pos_in else {
-        return Err(crate::Error::MissingPosInput);
-    };
-
     let Some(field_terms) = fields.field(&query.field) else {
         return Ok(Explanation::no_match("no matching terms"));
+    };
+    let Some(pos_in) = pos_in else {
+        return Err(crate::Error::MissingPosInput);
     };
 
     // `BM25Similarity.idfExplain(TermStatistics[])` sums in a double and
@@ -3813,6 +3812,24 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, crate::Error::MissingPosInput));
+    }
+
+    #[test]
+    fn phrase_explain_on_a_field_the_segment_lacks_is_no_match_without_pos_input() {
+        let (fields, _doc) = open_fixture();
+        let query = crate::PhraseQuery::new("nosuchfield", ["quick", "fox"]);
+        let e = explain_clause(
+            &fields,
+            None,
+            None,
+            None,
+            None,
+            &Clause::Phrase(query),
+            0,
+            None,
+        )
+        .unwrap();
+        assert!(!e.matched);
     }
 
     #[test]

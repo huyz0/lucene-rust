@@ -54,12 +54,26 @@ public final class NativeReaders {
      * The postings formats the Rust reader decodes: Lucene 10.5.0's default and every default an
      * older Lucene an OpenSearch 2.x/3.x cluster can hold segments of wrote (M8: {@code Lucene90} for
      * 9.0-9.10, {@code Lucene99} for 9.11, {@code Lucene912} for 9.12-10.0, {@code Lucene101} for
-     * 10.1-10.2, {@code Lucene103} for 10.3). A field written in any other -- OpenSearch's {@code
-     * completion} fields use {@code Completion104} -- makes the whole reader fall back, rather than
-     * failing (and falling back) on every query that opens it.
+     * 10.1-10.2, {@code Lucene103} for 10.3), and the completion formats OpenSearch's {@code
+     * completion} fields are written in ({@code Completion104} since 3.x, the older ones by the
+     * Lucene versions above; M13 T13.6): their postings are the default format's, which a query on
+     * the field reads, and the suggester itself stays OpenSearch's, on Lucene's reader. A field
+     * written in any other format makes the whole reader fall back, rather than failing (and
+     * falling back) on every query that opens it.
      */
-    static final java.util.Set<String> SUPPORTED_POSTINGS_FORMATS =
-        java.util.Set.of("Lucene90", "Lucene99", "Lucene912", "Lucene101", "Lucene103", "Lucene104");
+    static final java.util.Set<String> SUPPORTED_POSTINGS_FORMATS = java.util.Set.of(
+        "Lucene90",
+        "Lucene99",
+        "Lucene912",
+        "Lucene101",
+        "Lucene103",
+        "Lucene104",
+        "Completion90",
+        "Completion99",
+        "Completion912",
+        "Completion101",
+        "Completion104"
+    );
 
     private static final String POSTINGS_FORMAT_ATTRIBUTE = "PerFieldPostingsFormat.format";
 

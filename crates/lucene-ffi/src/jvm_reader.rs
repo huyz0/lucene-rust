@@ -52,6 +52,9 @@ use std::os::raw::c_char;
 
 use lucene_search::aggs::{MetricSpec, MetricState, Source, ValueKind, NEED_ALL};
 use lucene_search::directory_reader::DirectoryReader;
+use lucene_search::extended_query::{
+    MultiTermQuery, MultiTermSource, RewriteMethod, TermRangeQuery,
+};
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::multi_segment::OpenSegment;
 use lucene_search::query::{BooleanQuery, Clause, TermQuery};
@@ -107,8 +110,9 @@ use std::sync::Arc;
 /// 32, the aggregations' per-segment match counts
 /// ([`crate::ffm_bridge::ffi_jvm_reader_aggregate_alloc`]'s `out_seg_counts`);
 /// 33, the block-join, span, interval, combined-field and function-score
-/// nodes ([`crate::jvm_nodes`], M10 T10.7).
-pub const JVM_ABI_VERSION: u32 = 33;
+/// nodes ([`crate::jvm_nodes`], M10 T10.7); 34, the term-range node and
+/// segments with completion postings formats (M13 T13.6).
+pub const JVM_ABI_VERSION: u32 = 34;
 
 /// Blob tag for a single `TermQuery`.
 pub const QUERY_TERM: u8 = 0;
@@ -141,6 +145,15 @@ const NODE_GEO_DISTANCE: u8 = 16;
 const NODE_GEO_POINT: u8 = 17;
 const NODE_GEO_SHAPE: u8 = 18;
 const NODE_GEO_SHAPE_BOX: u8 = 19;
+/// After the M10 kinds ([`crate::jvm_nodes::NODE_LAST`]): `TermRangeQuery`
+/// under its constant-score rewrite (M13 T13.6).
+pub(crate) const NODE_TERM_RANGE: u8 = 25;
+const _: () = assert!(NODE_TERM_RANGE == crate::jvm_nodes::NODE_LAST + 1);
+/// [`NODE_TERM_RANGE`]'s flags: which bounds follow, and which are inclusive.
+const RANGE_HAS_LOWER: u8 = 1;
+const RANGE_HAS_UPPER: u8 = 2;
+const RANGE_INCLUDE_LOWER: u8 = 4;
+const RANGE_INCLUDE_UPPER: u8 = 8;
 
 /// Geometry tags inside the geo nodes ([`decode_geometry`]).
 const GEOMETRY_POINT: u8 = 0;
@@ -2364,6 +2377,41 @@ pub(crate) fn decode_node(
             let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
             Clause::Exists(FieldExistsQuery::new(field))
         }
+        NODE_TERM_RANGE => {
+            // `field`, the flags byte, then the bounds it says are present (a
+            // `null` bound in Java is an open end). `query_string`'s `[a TO
+            // b]` and a `keyword` `range`, under `CONSTANT_SCORE_BLENDED_REWRITE`.
+            let field = std::str::from_utf8(c.bytes()?).map_err(|_| FfiStatus::InvalidUtf8)?;
+            let flags = c.u8()?;
+            if flags
+                & !(RANGE_HAS_LOWER | RANGE_HAS_UPPER | RANGE_INCLUDE_LOWER | RANGE_INCLUDE_UPPER)
+                != 0
+            {
+                return Err(invalid(format!("query tree: term range flags {flags:#x}")));
+            }
+            let lower = if flags & RANGE_HAS_LOWER != 0 {
+                Some(c.bytes()?.to_vec())
+            } else {
+                None
+            };
+            let upper = if flags & RANGE_HAS_UPPER != 0 {
+                Some(c.bytes()?.to_vec())
+            } else {
+                None
+            };
+            let range = TermRangeQuery::new(
+                field,
+                lower,
+                upper,
+                flags & RANGE_INCLUDE_LOWER != 0,
+                flags & RANGE_INCLUDE_UPPER != 0,
+            );
+            MultiTermQuery::new(
+                MultiTermSource::TermRange(range),
+                RewriteMethod::ConstantScoreBlended,
+            )
+            .into()
+        }
         NODE_POINT_RANGE => {
             // A one-dimensional 8-byte `PointRangeQuery` (`long`, `date`,
             // `double`): its inclusive bounds as the sortable longs
@@ -2395,8 +2443,7 @@ pub(crate) fn decode_node(
         }
         other => {
             set_last_error(format!(
-                "query tree: unknown node kind {other} (expected 0..={})",
-                crate::jvm_nodes::NODE_LAST
+                "query tree: unknown node kind {other} (expected 0..={NODE_TERM_RANGE})"
             ));
             return Err(FfiStatus::InvalidArgument);
         }
@@ -2681,10 +2728,12 @@ pub(crate) mod tests {
     /// searcher's reader: its `segments_N` bytes, every segment's `maxDoc`
     /// and its live docs as words.
     fn open_bwc(version: &str) -> u64 {
-        let path = format!(
-            "{}/../../fixtures/data/bwc/{version}",
-            env!("CARGO_MANIFEST_DIR")
-        );
+        open_fixture(&format!("bwc/{version}"))
+    }
+
+    /// Opens `fixtures/data/<rel>` as [`open_bwc`] opens a version.
+    fn open_fixture(rel: &str) -> u64 {
+        let path = format!("{}/../../fixtures/data/{rel}", env!("CARGO_MANIFEST_DIR"));
         let dir = lucene_store::FsDirectory::open(&path);
         let files: Vec<String> = std::fs::read_dir(&path)
             .unwrap()
@@ -2721,7 +2770,7 @@ pub(crate) mod tests {
                 &mut handle,
             )
         };
-        assert_eq!(rc, 0, "{version}: {}", crate::error::last_error());
+        assert_eq!(rc, 0, "{rel}: {}", crate::error::last_error());
         handle
     }
 
@@ -2776,6 +2825,44 @@ pub(crate) mod tests {
             "9.0.0", "9.1.0", "9.3.0", "9.4.2", "9.8.0", "9.11.1", "9.12.2", "10.0.0", "10.2.2",
         ] {
             assert_eq!(answer(version), reference, "{version}");
+        }
+    }
+
+    /// M13 T13.6: an index whose fields are written in the completion
+    /// postings formats (OpenSearch's `completion` fields; `Completion104`,
+    /// and 9.0-10.3's under `bwc-completion`) opens through the plugin's entry
+    /// point and answers queries on its other fields, deletions applied --
+    /// the plugin's `NativeReaders` no longer falls back for these formats.
+    #[test]
+    fn completion_formats_are_served_natively() {
+        let answer = |rel: &str| {
+            let h = open_fixture(rel);
+            let mut out = Vec::new();
+            for id in ["0", "5", "41", "44", "89", "nosuch"] {
+                out.push(run(h, &term_blob("id", id), 10, true).unwrap());
+            }
+            let (_, live) = run(h, &tree(N::All), 0, true).unwrap();
+            // The completion field's own terms and postings: every live
+            // document holds a `suggest` value.
+            let (_, suggest) =
+                run(h, &tree(N::Tr("suggest", None, None, true, true)), 0, true).unwrap();
+            assert_eq!(suggest, live, "{rel}");
+            assert_eq!(ffi_close_jvm_reader(h), 0);
+            (out, live)
+        };
+        let (current, live) = answer("completion_query/index");
+        // 90 documents, ten of them deleted (41, 44, ..., 68).
+        assert_eq!(live, 80);
+        let hits = |i: usize| current[i].0.len();
+        assert_eq!(
+            (hits(0), hits(1), hits(2), hits(3), hits(4), hits(5)),
+            (1, 1, 0, 0, 1, 0)
+        );
+        for version in ["9.0.0", "9.11.1", "9.12.2", "10.2.2", "10.3.2"] {
+            let (got, got_live) = answer(&format!("bwc-completion/{version}/index"));
+            assert_eq!(got_live, live, "{version}");
+            let found: Vec<usize> = got.iter().map(|(h, _)| h.len()).collect();
+            assert_eq!(found, vec![1, 1, 0, 0, 1, 0], "{version}");
         }
     }
 
@@ -5249,6 +5336,8 @@ pub(crate) mod tests {
         Re(&'a str, &'a str),
         Ex(&'a str),
         Ts1(&'a str, &'a str, i64),
+        /// `(field, lower, upper, include_lower, include_upper)`.
+        Tr(&'a str, Option<&'a str>, Option<&'a str>, bool, bool),
     }
 
     fn enc(n: &N<'_>, b: &mut Vec<u8>) {
@@ -5329,6 +5418,18 @@ pub(crate) mod tests {
                 b.push(NODE_REGEXP);
                 bytes(b, field.as_bytes());
                 bytes(b, pattern.as_bytes());
+            }
+            N::Tr(field, lower, upper, include_lower, include_upper) => {
+                b.push(NODE_TERM_RANGE);
+                bytes(b, field.as_bytes());
+                let flags = u8::from(lower.is_some())
+                    | (u8::from(upper.is_some()) << 1)
+                    | (u8::from(*include_lower) << 2)
+                    | (u8::from(*include_upper) << 3);
+                b.push(flags);
+                for bound in [lower, upper].into_iter().flatten() {
+                    bytes(b, bound.as_bytes());
+                }
             }
             N::P(field, slop, terms) => {
                 b.push(NODE_PHRASE);
@@ -5497,6 +5598,33 @@ pub(crate) mod tests {
         assert_eq!(docs(&tree(N::Re("body", "d[aeiou]g"))), dog);
         assert_eq!(docs(&tree(N::Re("body", "(dog|nosuch)"))), dog);
         assert_eq!(docs(&tree(N::Re("body", "#"))), Vec::<i32>::new());
+        // M13 T13.6: a term range, each end open, closed or exclusive.
+        assert_eq!(
+            docs(&tree(N::Tr("body", Some("dog"), Some("dog"), true, true))),
+            dog
+        );
+        assert_eq!(
+            docs(&tree(N::Tr("body", Some("dog"), Some("dog"), false, true))),
+            Vec::<i32>::new()
+        );
+        assert_eq!(
+            docs(&tree(N::Tr("body", Some("do"), Some("doh"), false, false))),
+            dog
+        );
+        let all_body = docs(&tree(N::Tr("body", None, None, false, false)));
+        assert_eq!(all_body, docs(&tree(N::Ex("body"))));
+        let below = docs(&tree(N::Tr("body", None, Some("dog"), false, false)));
+        let above = docs(&tree(N::Tr("body", Some("dog"), None, true, false)));
+        assert!(below.iter().chain(&above).all(|d| all_body.contains(d)));
+        assert!(above.iter().any(|d| dog.contains(d)));
+        // An unknown flag bit fails the decode.
+        let mut bad = tree(N::Tr("body", None, None, false, false));
+        *bad.last_mut().unwrap() = 0x10;
+        assert_eq!(
+            decode_query(&bad).map(|_| ()),
+            Err(FfiStatus::InvalidArgument)
+        );
+        assert!(crate::error::last_error().contains("term range flags"));
         // exists: every document has a body (its norms, dense here); a field
         // no segment has matches nothing. The sparse and doc-values sources
         // are `weight_count_fixtures`' against real Lucene.

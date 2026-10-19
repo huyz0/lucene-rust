@@ -57,6 +57,17 @@ cannot be installed alongside `neural-search`.
 A native failure is logged, counted as `native_errors`, and the query is re-run
 on Lucene: it never fails a search Lucene can answer.
 
+Highlighters, suggesters and the query-string parsers stay OpenSearch's own:
+`NamedRegistry` refuses a plugin that registers a built-in name again, so
+they cannot be replaced (M13 T13.6, deferred with that reason). The query
+phase they ride on runs natively, `query_string` and `simple_query_string`
+included (but for the shapes that fall back by name: escaped wildcards,
+non-default regexp flags, phrases with position gaps), and so does an index
+with `completion` fields (the Completion90-104
+postings formats are read natively; the suggesters read Lucene's reader).
+Term vectors, which `fvh` and the unified highlighter may read, are Lucene's.
+See [`docs/opensearch-native-queries.md`](../docs/opensearch-native-queries.md#suggesters-and-highlighters-m13-t136).
+
 Native memory the JVM does not see, per segment of 10,000 documents or more:
 the query cache (at most 16 MB) and, for sorted searches, decoded sort columns
 (at most 32 MB per segment and 512 MB for the whole process; a column is

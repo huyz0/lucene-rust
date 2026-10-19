@@ -384,7 +384,7 @@ benchmark against Lucene, `parity.md` updated in the same commit):
 | M10 | [Joins, grouping, `queries`](milestones/m10-joins-grouping-queries.md) | `nested`, `has_child`, `collapse`, `function_score`, `intervals` natively | L |
 | M11 | [Text analysis](milestones/m11-analysis-common.md) | all of `analysis-common`: indexing text without a JVM | XL |
 | M12 | [Language analysis](milestones/m12-language-analysis.md) | ICU, Japanese, Korean, Chinese, Polish, phonetic, OpenNLP | L |
-| M13 | [Search-application modules](milestones/m13-search-application-modules.md) | query parsers, highlighting, suggesters, taxonomy facets, `memory`, `monitor` | XL |
+| M13 | [Search-application modules](milestones/m13-search-application-modules.md) | query parsers, highlighting, suggesters, taxonomy facets, `memory`, `monitor`. **Delivered (2026-10-19), all 4 criteria met:** every parser's query trees equal Lucene's on the T13.1 corpus; Lucene reads this port's completion fields and taxonomy indexes; OpenSearch's highlighting and suggester YAML suites fail identically with the plugin. The suggesters and highlighters themselves stay OpenSearch's (a plugin cannot replace them); the query phase around them, `query_string` included, runs natively | XL |
 | M14 | [Remaining modules and tooling](milestones/m14-remaining-modules-and-tooling.md) | non-default codecs, expressions, classification, replicator, `misc`, `sandbox`; test framework and tool equivalents; an empty inventory allowlist | L |
 
 "Fully ported" is defined by M14's last criterion: every class of the 10.5.0
@@ -403,6 +403,14 @@ These stay deferred *within* M0-M6; M7-M14 schedule each of them:
 - **`luke`, `benchmark`, `demo`, `monitor`, `replicator`, `expressions`,
   `classification`, `spatial3d`, `spatial-extras`** (M9, M13, M14).
 - **Similarities beyond BM25** (M7).
+
+Native execution of OpenSearch's suggesters and highlighters is deferred
+past M13 with a reason, not a schedule: OpenSearch's `NamedRegistry`
+refuses a plugin that re-registers a built-in highlighter, suggester or
+query parser, so the plugin cannot replace them. M13 T13.6 runs what
+surrounds them natively instead (`query_string` term ranges, the query
+phase on `completion`-field indexes); native term vectors, which only the
+highlighters would read, are deferred with it (see the M13 page).
 
 Two items this list used to carry are no longer deferred: HNSW vectors are
 read and written (`Lucene99HnswVectorsFormat`, `parity.md`), and

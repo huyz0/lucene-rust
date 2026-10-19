@@ -46,7 +46,8 @@ A request runs native when **all** of these hold:
   `terms` (`PrefixQuery`, `WildcardQuery`, `RegexpQuery` with its default
   flags, `TermInSetQuery` under Lucene's default
   constant-score rewrite, also as the index side of an
-  `IndexOrDocValuesQuery`), `range` on `long`, `date` and `double`
+  `IndexOrDocValuesQuery`), `TermRangeQuery` the same way (M13 T13.6: a
+  `range` on a `keyword`, `query_string`'s `[a TO b]`/`{a TO *]`), `range` on `long`, `date` and `double`
   fields (`PointRangeQuery` of 8-byte values), and `exists`
   (`FieldExistsQuery` over norms or doc values; a vector field is answered
   by Lucene), and the geo queries on `geo_point` and `geo_shape` fields
@@ -60,10 +61,13 @@ A request runs native when **all** of these hold:
   `TermStates`, as `multi_match` `cross_fields` builds);
 - every field in the index uses a default postings format some Lucene
   9.0-10.5 wrote (`Lucene90`, `Lucene99`, `Lucene912`, `Lucene101`,
-  `Lucene103`, `Lucene104`; M8 T8.5) -- so an index an OpenSearch 2.x node
-  wrote is served natively after the upgrade to 3.8.0
-  (`scripts/verify-opensearch-upgrade.sh`). An index with a `completion`
-  field does not, and neither does one the k-NN plugin wrote with
+  `Lucene103`, `Lucene104`; M8 T8.5) or a completion format
+  (`Completion90`-`Completion104`, a `completion` field's; M13 T13.6) -- so
+  an index an OpenSearch 2.x node wrote is served natively after the upgrade
+  to 3.8.0 (`scripts/verify-opensearch-upgrade.sh`), and so is one with
+  `completion` fields: its searches run native, while the suggesters
+  OpenSearch runs after the query phase stay OpenSearch's own, on Lucene's
+  reader (see "Suggesters and highlighters" below). An index the k-NN plugin wrote with
   `index.knn: true`: its segments carry the plugin's own codec
   (`KNN9120Codec` from 2.19), which the native reader does not open
   (`native_open_failed`, once per reader).
@@ -88,6 +92,8 @@ frequency when nothing is deleted, without counting.
 | `bool` with only `filter` | `BoostQuery(ConstantScoreQuery(…), 0)` | 1.29× |
 | nested `bool` | `BooleanQuery` in `BooleanQuery` | 1.01× |
 | `query_string` `a OR b` | `BooleanQuery` of `SHOULD` terms | 1.01× |
+| `query_string` / `simple_query_string` with ranges, fuzzy terms, prefixes, phrases, regexps (M13 T13.6) | `TermRangeQuery`, `FuzzyQuery`'s blended-statistics rewrite, and the shapes above | 1.05×-1.49× (seven rows; see below) |
+| `range` on a `keyword` (M13 T13.6) | `TermRangeQuery` (via `IndexOrDocValuesQuery`) | 1.08×-1.26× (1.24×-1.32× as a `bool` `filter`) |
 | `bool` `must` + `should`, `minimum_should_match: 1` | `BooleanQuery` `MUST` + `SHOULD` with a minimum | 1.01× |
 | any query with `boost` ≠ 1 | `BoostQuery` | 1.06× |
 | `bool` with a boosted clause | `BooleanQuery` of `BoostQuery` | 1.16× |
@@ -196,9 +202,47 @@ Each fallback is counted by reason at `GET /_plugins/lucene_rust/stats`.
 | `cancelled` | the task was cancelled before the native call |
 | `boost_invalid` | a negative or non-finite boost |
 | `slower_shape` | a correct native shape routed to Lucene by measurement; none since read path R1 |
-| `postings_format` | some field of the index uses a postings format outside `Lucene90`/`Lucene99`/`Lucene912`/`Lucene101`/`Lucene103`/`Lucene104` (M8 T8.5: the retired defaults are read natively) |
+| `postings_format` | some field of the index uses a postings format outside `Lucene90`/`Lucene99`/`Lucene912`/`Lucene101`/`Lucene103`/`Lucene104` and the completion formats `Completion90`-`Completion104` (M8 T8.5: the retired defaults are read natively; M13 T13.6: `completion` fields) |
 | `reader_*`, `directory_*` | the searcher's reader or directory is not a local, standard one (remote store, a wrapped reader the plugin cannot see through) |
 | `native_open_failed`, `native_error` | the native side refused the reader or the query; the node log has the message. Never a failed search: the query re-runs on Lucene |
+
+## Suggesters and highlighters (M13 T13.6)
+
+OpenSearch registers its highlighters (`plain`, `unified`, `fvh`), its
+suggesters (`completion`, `term`, `phrase`), `SuggestPhase` and its query
+parsers by name, and `NamedRegistry` refuses a plugin that registers a
+built-in name again: a plugin can add a highlighter or suggester, not
+replace one. So these stay OpenSearch's code, unchanged; what runs native
+around them is:
+
+- the query phase of the search they ride on, by the rules above --
+  including on an index with `completion` fields, which used to fall back
+  whole (`postings_format`);
+- the stored fields the highlighters read their text from (the fetch
+  phase's native stored-fields reader, R6); term vectors (`fvh`, `unified`
+  over term vectors) and the suggesters' own reads (the completion FST,
+  the term dictionary) are Lucene's, through the same reader;
+- `query_string` and `simple_query_string`: OpenSearch's parser builds the
+  Lucene query, and its shapes encode by the rules above (term ranges since
+  M13), except those that fall back by name: an escaped wildcard
+  (`wildcard_escape`), a regexp with non-default flags (`regexp_flags`),
+  and a phrase with position gaps (stopwords the analyzer removed).
+
+The M13 rows were measured on Docker Desktop (Windows host), the e2e
+`single` index, 60 interleaved rounds a mode over one keep-alive
+`TCP_NODELAY` connection, two runs (ranges are across them): `query_string`
+keyword range 1.13×-1.23×, open text range 1.13×-1.49×, fuzzy + prefix +
+sloppy phrase 1.18×-1.31×, several default fields 1.07×-1.08×, regexp +
+wildcard 1.05×-1.08×; `simple_query_string` 1.22×-1.27×, with a fuzzy term
+and a sloppy phrase 1.21×-1.36×. (`urllib`'s one-connection-per-request
+REST timing on that host adds a ~15 ms delayed-ACK floor to both modes and
+measures nothing.)
+
+`scripts/verify-opensearch.sh` checks each against the plugin switched off:
+the `completion` index's rows (suggesters, highlighters) and the
+`query_string`/`simple_query_string`/highlight rows of the matrix, and
+`--yaml` runs OpenSearch's `search.highlight` and `suggest` suites on both
+nodes.
 
 ## Known limits
 

@@ -183,6 +183,18 @@ def matrix():
         {"bool": {"must": [{"match": {"body": "alpha"}}, {"match": {"title": "gamma"}}]}},
         {"match": {"body": "omega"}}]}}}, "native")
     add("query_string OR", {"query": {"query_string": {"query": "body:(delta OR theta)"}}}, "native")
+    # M13 T13.6: query_string and simple_query_string shapes, term ranges among them.
+    add("query_string keyword range", {"query": {"query_string": {"query": "tag:[beta TO kappa}"}}}, "native")
+    add("query_string open text range", {"query": {"query_string": {"query": "body:{mu TO *] AND body:alpha"}}}, "native")
+    add("query_string fuzzy prefix phrase", {"query": {"query_string": {"query": "body:alpah~ OR body:be* OR \"gamma delta\"~2", "default_field": "body"}}}, "native")
+    add("query_string default fields", {"query": {"query_string": {"query": "alpha -tag:beta +(gamma OR title:delta)", "fields": ["body", "title"]}}}, "native")
+    add("query_string regexp wildcard", {"query": {"query_string": {"query": "body:/g.mma/ OR tag:del?a"}}}, "native")
+    add("range keyword", {"query": {"range": {"tag": {"gte": "delta", "lt": "omega"}}}}, "native")
+    add("bool range keyword filter", {"query": {"bool": {"must": [{"match": {"body": "alpha"}}], "filter": [{"range": {"tag": {"gt": "gamma"}}}]}}}, "native")
+    add("simple_query_string", {"query": {"simple_query_string": {"query": "alpha + (beta | gam*) -delta", "fields": ["body"]}}}, "native")
+    add("simple_query_string fuzzy phrase", {"query": {"simple_query_string": {"query": "alpah~1 | \"beta gamma\"~1", "fields": ["body", "title"]}}}, "native")
+    add("highlight plain", {"query": {"query_string": {"query": "body:(alpha OR be*)"}}, "highlight": {"type": "plain", "fields": {"body": {}}}}, "native")
+    add("highlight unified title", {"query": {"match": {"title": "gamma"}}, "highlight": {"type": "unified", "fields": {"title": {"number_of_fragments": 0}}}}, "native")
     add("size 0 count", {"size": 0, "query": {"match": {"body": "alpha"}}}, "native")
     add("track_total_hits false", {"track_total_hits": False, "query": {"match": {"body": "beta"}}}, "native")
     add("track_total_hits true", {"track_total_hits": True, "query": {"match": {"body": "alpha beta"}}}, "native")
@@ -462,6 +474,8 @@ def shape(resp, body):
     out["timed_out"] = resp.get("timed_out")
     if "highlight" in json.dumps(body):
         out["highlight"] = [h.get("highlight") for h in hits["hits"]]
+    if "suggest" in body:
+        out["suggest"] = resp.get("suggest")
     return out
 
 
@@ -471,7 +485,7 @@ def same(a, b):
         return f"failed shards: {a.get('failed_shards')} vs {b.get('failed_shards')}"
     if a["total"] != b["total"]:
         return f"total {a['total']} vs {b['total']}"
-    for k in ("aggs", "highlight", "terminated_early", "timed_out"):
+    for k in ("aggs", "highlight", "suggest", "terminated_early", "timed_out"):
         if a.get(k) != b.get(k):
             return f"{k} differ: {json.dumps(a.get(k), sort_keys=True)[:1500]} vs {json.dumps(b.get(k), sort_keys=True)[:1500]}"
     ma, mb = a["max_score"], b["max_score"]
@@ -672,30 +686,65 @@ def load_more(index, n):
     req("POST", f"/{index}/_refresh")
 
 
-def unsupported_format():
-    """An index with a field in a postings format the Rust reader does not
-    decode (a completion field): every search must fall back cleanly, with
-    the reason, and none may reach the native engine to fail there."""
+def completion_rows():
+    """M13 T13.6: searches over an index with completion fields, each with the
+    suggesters OpenSearch runs after the query phase (completion, term, phrase)
+    and the highlighters of the fetch phase: answered natively, every
+    suggestion and fragment equal to Lucene's."""
+    q = []
+    add = lambda name, body: q.append((name, body, "native"))
+    match = {"match": {"body": "alpha"}}
+    add("completion index match", {"query": match})
+    add("completion index query_string range", {"query": {"query_string": {"query": "body:[beta TO gamma] OR title:word*"}}})
+    add("completion suggester", {"query": match, "suggest": {"s": {"prefix": "wor", "completion": {"field": "suggest", "size": 7}}}})
+    add("completion suggester fuzzy", {"query": match, "suggest": {"s": {"prefix": "wrod", "completion": {"field": "suggest", "fuzzy": {"fuzziness": 1}}}}})
+    add("completion suggester regex dedup", {"query": match, "suggest": {"s": {"regex": "w[aeiou]r.d?1.*", "completion": {"field": "suggest", "skip_duplicates": True, "size": 10}}}})
+    add("completion suggester contexts", {"query": match, "suggest": {"s": {"prefix": "it", "completion": {"field": "ctx", "contexts": {"kind": ["odd"]}}}}})
+    add("completion suggester size 0", {"size": 0, "query": {"match_all": {}}, "suggest": {"s": {"prefix": "world", "completion": {"field": "suggest"}}}})
+    add("term suggester", {"query": match, "suggest": {"t": {"text": "alpah betta", "term": {"field": "body", "suggest_mode": "always"}}}})
+    add("phrase suggester", {"query": match, "suggest": {"p": {"text": "alpah betta gama", "phrase": {"field": "body", "size": 3, "highlight": {"pre_tag": "<b>", "post_tag": "</b>"}}}}})
+    add("highlight fvh", {"query": {"match": {"title": "word3 alpha"}}, "highlight": {"type": "fvh", "fields": {"title": {}}}})
+    add("highlight unified offsets", {"query": {"query_string": {"query": "title:(word1* OR beta)"}}, "highlight": {"type": "unified", "fields": {"title": {"number_of_fragments": 2, "fragment_size": 20}}}})
+    add("highlight plain body", {"query": {"match_phrase": {"body": "alpha beta"}}, "highlight": {"type": "plain", "fields": {"body": {}}}})
+    return q
+
+
+def completion_index():
+    """An index with completion fields (`Completion104`, M13 T13.6): read
+    natively since the postings-format fallback was lifted for them, while the
+    suggesters themselves stay OpenSearch's (they cannot be replaced by a
+    plugin) over Lucene's reader. Two segments and deletes; every row of
+    `completion_rows` runs native and answers as Lucene does."""
     index = "completion"
     try:
         req("DELETE", f"/{index}")
     except RuntimeError:
         pass
     req("PUT", f"/{index}", {"settings": {"number_of_shards": 1, "number_of_replicas": 0},
-                             "mappings": {"properties": {"body": {"type": "text"}, "suggest": {"type": "completion"}}}})
-    lines = []
-    for i in range(50):
-        lines.append(json.dumps({"index": {"_index": index, "_id": str(i)}}))
-        lines.append(json.dumps({"body": "alpha beta" if i % 2 else "gamma", "suggest": f"word{i}"}))
+                             "mappings": {"properties": {
+                                 "body": {"type": "text"},
+                                 "title": {"type": "text", "term_vector": "with_positions_offsets", "store": True},
+                                 "suggest": {"type": "completion"},
+                                 "ctx": {"type": "completion", "contexts": [{"name": "kind", "type": "category"}]}}}})
+    r = random.Random(23)
+    for start in (0, 120):
+        lines = []
+        for i in range(start, start + 120):
+            lines.append(json.dumps({"index": {"_index": index, "_id": str(i)}}))
+            lines.append(json.dumps({
+                "body": " ".join(word(r) for _ in range(r.randint(2, 12))),
+                "title": f"word{i} " + " ".join(word(r) for _ in range(r.randint(1, 6))),
+                "suggest": {"input": [f"word{i}", f"world {i % 9}", f"wired {i % 4}"], "weight": 1 + i % 17},
+                "ctx": {"input": f"item {i}", "contexts": {"kind": ["odd" if i % 2 else "even"]}}}))
+        req("POST", "/_bulk", "\n".join(lines) + "\n", ndjson=True)
+        req("POST", f"/{index}/_refresh")
+    lines = [json.dumps({"delete": {"_index": index, "_id": str(i)}}) for i in range(0, 240, 11)]
     req("POST", "/_bulk?refresh=true", "\n".join(lines) + "\n", ndjson=True)
     before = stats()
-    r = req("POST", f"/{index}/_search?request_cache=false", {"query": {"match": {"body": "alpha"}}})
+    run_matrix(index, 1, "completion", rows=completion_rows())
     after = stats()
-    check(r["hits"]["total"]["value"] == 25, f"completion index: {r['hits']['total']}")
     delta = fallback_delta(before, after)
-    check(delta.get("postings_format") == 1 and after["native_errors"] == before["native_errors"],
-          f"completion index: expected a clean 'postings_format' fallback, got {delta}, errors "
-          f"{after['native_errors'] - before['native_errors']}")
+    check("postings_format" not in delta, f"completion index: no postings_format fallback, got {delta}")
     req("DELETE", f"/{index}")
 
 
@@ -1081,7 +1130,7 @@ def main():
     run_fetch("multi", "fetch")
     run_scroll("single", 1, "scroll")
     run_scroll("multi", 3, "scroll")
-    unsupported_format()
+    completion_index()
     lifecycle("single", a.container)
     run_matrix("single", 1, "after merge")
     run_matrix("single", 1, "after merge", "all")
