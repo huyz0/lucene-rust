@@ -32,6 +32,11 @@ cargo clippy --workspace --all-targets --target aarch64-unknown-linux-gnu -- -D 
 echo "gate: cargo check (benchmarks/rust-runner, outside the workspace)"
 cargo check --manifest-path benchmarks/rust-runner/Cargo.toml --all-targets
 
+# `cargo fmt --all` stops at the workspace too: twice a batch has left the
+# runner unformatted and a later one had to reformat it by hand.
+echo "gate: cargo fmt --check (benchmarks/rust-runner)"
+cargo fmt --manifest-path benchmarks/rust-runner/Cargo.toml --check
+
 echo "gate: check-arith-allows (every #[allow] carries an // ARITH: proof)"
 python3 scripts/check-arith-allows.py
 

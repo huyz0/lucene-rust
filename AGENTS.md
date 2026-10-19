@@ -107,6 +107,7 @@ the hook, the container and this table cannot drift apart:
 | Port inventory (every `lucene-core` class has a status; `--milestone M7 --summary` shows what M7 still owes; `--module backward-codecs` the same for `lucene-backward-codecs`) | `python3 scripts/check-port-inventory.py` (and `--module backward-codecs`) |
 | Rustdoc link lints | `RUSTDOCFLAGS="-D warnings -A rustdoc::private_intra_doc_links" cargo doc --workspace --no-deps --document-private-items` |
 | Type-check the out-of-workspace benchmarks | `cargo check --manifest-path benchmarks/rust-runner/Cargo.toml --all-targets` |
+| Format of the out-of-workspace benchmarks (`fmt --all` stops at the workspace) | `cargo fmt --manifest-path benchmarks/rust-runner/Cargo.toml --check` |
 | Tests + coverage gate | `scripts/coverage.sh --workspace -- --fail-under-lines 95` (`cargo llvm-cov`, minus lucene-ffi's never-run cdylib -- see [`docs/mechanical-gates.md`](docs/mechanical-gates.md#coverage-objects)) |
 | Coverage report, per file | `scripts/coverage.sh --workspace -- --summary-only` |
 | `lucene-search`'s tests in release (bit-for-bit float fixtures under the profile the plugin ships) | `cargo test --release -p lucene-search` |
