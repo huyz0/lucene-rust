@@ -10,10 +10,14 @@
 //! `CoveringQuery`, `TermAutomatonQuery` and `PhraseWildcardQuery` -- run
 //! over its second index, `text/`, four words a range set, and so does
 //! `LargeNumHitsTopDocsCollectorManager`'s top 1000 of two of them.
+//! `IDVersionSegmentTermsEnum.seekExact(id, minVersion)` runs over a third,
+//! `idv/`, and `KMeans.cluster` over the vectors in `kmeans/`.
 
 use std::hint::black_box;
 use std::time::Duration;
 
+use lucene_codecs::idversion::VersionBlockTreeTermsReader;
+use lucene_codecs::quantization::{cluster, InMemoryFloatVectors};
 use lucene_search::collector::ScoreDoc;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::document::{search_top_docs, DocumentQuery};
@@ -213,6 +217,102 @@ fn bench_text(w: Duration, m: Duration, dir: &str, sets: &[Ranges]) {
     });
 }
 
+/// `sb_idversion_seek`: `seekExact(id, minVersion)` on one enum, for each
+/// of `idv/targets.tsv`'s lookups, over the `IDVersion` files Java wrote.
+fn bench_idversion(w: Duration, m: Duration, dir: &str) {
+    if std::env::var("MICRO_CASE").is_ok_and(|only| only != "sb_idversion_seek") {
+        return;
+    }
+    let targets: Vec<(Vec<u8>, i64)> = std::fs::read_to_string(format!("{dir}/targets.tsv"))
+        .expect("run SandboxMicro build first (scripts/bench-micro.sh --bench sandbox)")
+        .lines()
+        .map(|l| {
+            let (id, min) = l.split_once('\t').unwrap();
+            (id.as_bytes().to_vec(), min.parse().unwrap())
+        })
+        .collect();
+    let si = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .find(|n| n.ends_with(".si"))
+        .unwrap();
+    let name = si.trim_end_matches(".si");
+    let buf = std::fs::read(format!("{dir}/{si}")).unwrap();
+    // magic, codec name, version, then the id.
+    let at = 4 + 1 + usize::from(buf[4]) + 4;
+    let id: [u8; 16] = buf[at..at + 16].try_into().unwrap();
+    let fnm = std::fs::read(format!("{dir}/{name}.fnm")).unwrap();
+    let fis = lucene_codecs::field_infos::parse(&fnm, &id, "").unwrap();
+    let names = |n: i32| {
+        fis.fields
+            .iter()
+            .find(|f| f.number == n)
+            .map(|f| f.name.clone())
+    };
+    let suffix = "IDVersion_0";
+    let reader = VersionBlockTreeTermsReader::open(
+        std::fs::read(format!("{dir}/{name}_{suffix}.tiv")).unwrap(),
+        &std::fs::read(format!("{dir}/{name}_{suffix}.tipv")).unwrap(),
+        &id,
+        suffix,
+        i32::MAX,
+        &names,
+    )
+    .unwrap();
+    let run = |f: &mut Fnv| {
+        let mut te = reader.iterator("id").unwrap();
+        for (t, min) in &targets {
+            f.add(if te.seek_exact_with_version(t, *min).unwrap() {
+                te.version()
+            } else {
+                -1
+            });
+        }
+    };
+    let mut f = Fnv::new();
+    run(&mut f);
+    println!("#check\tsb_idversion_seek\t{:016x}\t{}", f.0, targets.len());
+    measure("sb_idversion_seek", w, m, || {
+        let mut g = Fnv::new();
+        run(black_box(&mut g));
+        black_box(g.0);
+        targets.len() as u64
+    });
+}
+
+/// `sb_kmeans`: `KMeans.cluster(vectors, EUCLIDEAN, 32)` over the Java
+/// side's 10 000 16-dimensional vectors, per vector.
+fn bench_kmeans(w: Duration, m: Duration, dir: &str) {
+    if std::env::var("MICRO_CASE").is_ok_and(|only| only != "sb_kmeans") {
+        return;
+    }
+    const DIM: usize = 16;
+    let raw = std::fs::read(format!("{dir}/vectors.bin")).unwrap();
+    let vs: Vec<Vec<f32>> = raw
+        .chunks_exact(DIM * 4)
+        .map(|v| {
+            v.chunks_exact(4)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect()
+        })
+        .collect();
+    let values = InMemoryFloatVectors::new(&vs, DIM);
+    let res = cluster(&values, false, 32).unwrap().unwrap();
+    let mut f = Fnv::new();
+    for x in res.centroids.iter().flatten() {
+        f.add(i64::from(x.to_bits() as i32));
+    }
+    for &a in res.vector_centroids.as_ref().unwrap() {
+        f.add(i64::from(a));
+    }
+    println!("#check\tsb_kmeans\t{:016x}\t{}", f.0, vs.len());
+    measure("sb_kmeans", w, m, || {
+        let r = cluster(black_box(&values), false, 32).unwrap().unwrap();
+        black_box(r.vector_centroids.unwrap()[0]);
+        vs.len() as u64
+    });
+}
+
 fn origin(set: &Ranges) -> [f32; 3] {
     [
         (set[0].0 % 100) as f32,
@@ -270,6 +370,8 @@ pub fn bench_sandbox(w: Duration, m: Duration, dir: &str) {
         b.build()
     });
     bench_text(w, m, &format!("{dir}/text"), &sets);
+    bench_idversion(w, m, &format!("{dir}/idv"));
+    bench_kmeans(w, m, &format!("{dir}/kmeans"));
     if std::env::var("MICRO_CASE").is_ok_and(|only| only != "sb_nearest") {
         return;
     }

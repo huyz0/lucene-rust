@@ -14,8 +14,8 @@ sandbox/codecs/idversion/SinglePostingsEnum	ported	crates/lucene-codecs/src/idve
 sandbox/codecs/idversion/VersionBlockTreeTermsReader	ported	crates/lucene-codecs/src/idversion/reader.rs::VersionBlockTreeTermsReader
 sandbox/codecs/idversion/VersionBlockTreeTermsWriter	ported	crates/lucene-codecs/src/idversion/writer.rs::write_fields
 sandbox/codecs/idversion/VersionFieldReader	ported	crates/lucene-codecs/src/idversion/reader.rs::VersionFieldReader
-sandbox/codecs/quantization/KMeans	todo:M14	M14.f: the sandbox package sandbox/codecs/quantization
-sandbox/codecs/quantization/SampleReader	todo:M14	M14.f: the sandbox package sandbox/codecs/quantization
+sandbox/codecs/quantization/KMeans	ported	crates/lucene-codecs/src/quantization/mod.rs::cluster_with
+sandbox/codecs/quantization/SampleReader	ported	crates/lucene-codecs/src/quantization/sample_reader.rs::SampleReader
 sandbox/document/BigIntegerPoint	ported	crates/lucene-search/src/sandbox/document/big_integer_point.rs::BigIntegerPoint
 sandbox/document/DoublePointMultiRangeBuilder	ported	crates/lucene-search/src/sandbox/document/multi_range_builders.rs::DoublePointMultiRangeBuilder
 sandbox/document/FloatPointMultiRangeBuilder	ported	crates/lucene-search/src/sandbox/document/multi_range_builders.rs::FloatPointMultiRangeBuilder
