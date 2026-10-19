@@ -202,6 +202,7 @@ mod bit_set_pool;
 pub mod bucket_aggs;
 mod bulk_scorer;
 pub mod cardinality_sketch;
+pub mod classification;
 pub mod collector;
 pub mod collectors;
 pub mod common_terms;
@@ -211,6 +212,7 @@ pub mod docid_set;
 pub mod document;
 mod exec;
 pub mod explain;
+pub mod expressions;
 pub mod extended_query;
 pub mod facets;
 pub mod field_norms;
@@ -220,11 +222,13 @@ pub mod highlight;
 pub mod highlighter;
 pub mod index_searcher;
 pub mod intervals;
+pub(crate) mod java_priority_queue;
 pub mod join;
 pub mod knn_collectors;
 pub mod leaf_collector;
 pub mod matches;
 pub mod memory;
+pub mod misc;
 pub mod mlt;
 pub mod monitor;
 pub mod multi_bits;
@@ -245,6 +249,7 @@ pub mod queryparser;
 pub mod reader;
 pub mod reader_manager;
 pub mod reference_manager;
+pub mod replicator;
 pub mod rescorer;
 pub mod segment_cacheable;
 pub mod segment_order;
@@ -484,6 +489,16 @@ pub enum Error {
     /// Java's class ([`lucene_util::spatial4j::Error::java_class`]).
     #[error(transparent)]
     Spatial(#[from] lucene_util::spatial4j::Error),
+    /// `NodeCommunicationException`: the other node of a replication group
+    /// could not be reached.
+    #[error(transparent)]
+    NodeCommunication(#[from] replicator::nrt::NodeCommunicationError),
+    /// Reading or writing a `segments_N`.
+    #[error(transparent)]
+    SegmentInfos(#[from] lucene_index::segment_infos::Error),
+    /// A file deleter's deletion failed.
+    #[error(transparent)]
+    FileDeleter(#[from] lucene_index::index_file_deleter::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

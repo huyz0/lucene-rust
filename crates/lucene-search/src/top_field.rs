@@ -208,6 +208,97 @@ pub trait FieldComparatorSource: Send + Sync {
         let _ = ctx;
         Ok(None)
     }
+
+    /// `toString()` of a key of this source, `reverse`'s `!` included.
+    /// `SortField`'s own prints `<custom:"field": comparatorSource>`, the
+    /// source by `Object.toString` (class and identity hash), which no port
+    /// reproduces: the default leaves the source out.
+    fn sort_field_string(&self, field: &str, reverse: bool) -> String {
+        format!("<custom:\"{field}\">{}", if reverse { "!" } else { "" })
+    }
+
+    /// A hit's `FieldDoc.fields[i]` for a key of this source, as Java's
+    /// `Object.toString` prints it, from the comparable long the hit carries
+    /// (a source whose values are bytes never gets here).
+    fn value_string(&self, value: i64) -> String {
+        value.to_string()
+    }
+}
+
+/// `SortField.toString()`. The `missingValue` Java appends when one was set
+/// is left out: a key here always holds one (`0` by default), so a set one
+/// is not told apart from the default.
+pub fn sort_field_string(key: &SortField) -> String {
+    let field = &key.field;
+    let mut out = match key.ty {
+        SortType::Score => "<score>".to_string(),
+        SortType::Doc => "<doc>".to_string(),
+        SortType::String => format!("<string: \"{field}\">"),
+        SortType::StringVal => format!("<string_val: \"{field}\">"),
+        SortType::Int => format!("<int: \"{field}\">"),
+        SortType::Long => format!("<long: \"{field}\">"),
+        SortType::Float => format!("<float: \"{field}\">"),
+        SortType::Double => format!("<double: \"{field}\">"),
+        SortType::Custom(id) => {
+            return match key_source(key, id) {
+                Some(source) => source.sort_field_string(field, key.reverse),
+                None => format!("<custom:\"{field}\">{}", if key.reverse { "!" } else { "" }),
+            }
+        }
+    };
+    if key.reverse {
+        out.push('!');
+    }
+    out
+}
+
+/// `Sort.toString()`: the keys' `toString()`, comma-separated.
+pub fn sort_string(sort: &[SortField]) -> String {
+    sort.iter()
+        .map(sort_field_string)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// A hit's `FieldDoc.fields[i]` under `key` as Java's `toString` prints the
+/// boxed value: `value` is the comparable long [`FieldDoc::values`] holds,
+/// `term` the [`FieldDoc::terms`] entry of a key whose values are bytes
+/// (`BytesRef.toString`'s hex, `null` without one).
+pub fn sort_value_string(key: &SortField, value: i64, term: Option<Option<&[u8]>>) -> String {
+    if let Some(term) = term {
+        return term.map_or_else(
+            || "null".to_string(),
+            |t| {
+                let hex: Vec<String> = t.iter().map(|b| format!("{b:x}")).collect();
+                format!("[{}]", hex.join(" "))
+            },
+        );
+    }
+    match key.ty {
+        // a score is carried as its `f32` bits
+        SortType::Score => {
+            crate::explain::java_float(f32::from_bits(u32::try_from(value).unwrap_or(0)))
+        }
+        SortType::Double => {
+            crate::function::java_double(lucene_util::numeric_utils::sortable_long_to_double(value))
+        }
+        SortType::Float => crate::explain::java_float(
+            lucene_util::numeric_utils::sortable_int_to_float(i32::try_from(value).unwrap_or(0)),
+        ),
+        SortType::Custom(id) => match key_source(key, id) {
+            Some(source) => source.value_string(value),
+            None => value.to_string(),
+        },
+        _ => value.to_string(),
+    }
+}
+
+/// A custom key's source: the registered one, else the one the key holds
+/// ([`SortField::with_source`]).
+fn key_source(key: &SortField, id: CustomSortId) -> Option<Arc<dyn FieldComparatorSource>> {
+    registered_source(id)
+        .ok()
+        .or_else(|| key.rewritten.as_ref().map(|r| Arc::clone(&r.0)))
 }
 
 /// A custom key's comparator source after [`rewrite_sort`]: held by the key
@@ -4700,6 +4791,87 @@ fn count_rest(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keys_and_values_print_as_java() {
+        use crate::values_source as vs;
+        let keys = [
+            (SortField::score(), "<score>"),
+            (SortField::doc(), "<doc>"),
+            (SortField::string("s", false), "<string: \"s\">"),
+            (SortField::string_val("s", true), "<string_val: \"s\">!"),
+            (
+                SortField::numeric("i", SortType::Int, false),
+                "<int: \"i\">",
+            ),
+            (
+                SortField::numeric("l", SortType::Long, true),
+                "<long: \"l\">!",
+            ),
+            (
+                SortField::numeric("f", SortType::Float, false),
+                "<float: \"f\">",
+            ),
+            (
+                SortField::numeric("d", SortType::Double, false),
+                "<double: \"d\">",
+            ),
+        ];
+        for (key, want) in &keys {
+            assert_eq!(sort_field_string(key), *want);
+        }
+        let all: Vec<SortField> = keys.iter().map(|(k, _)| k.clone()).collect();
+        assert!(sort_string(&all).starts_with("<score>,<doc>,<string: \"s\">,"));
+        assert_eq!(sort_string(&[]), "");
+
+        // Values from the comparable long each key carries.
+        let v = |key: &SortField, value: i64| sort_value_string(key, value, None);
+        assert_eq!(v(&keys[0].0, i64::from(1.5f32.to_bits())), "1.5");
+        assert_eq!(v(&keys[1].0, 7), "7");
+        assert_eq!(v(&keys[5].0, -3), "-3");
+        let d = crate::values_source::double_to_sortable_long(-2.0);
+        assert_eq!(v(&keys[7].0, d), "-2.0");
+        let f = i64::from(lucene_util::numeric_utils::float_to_sortable_int(0.25));
+        assert_eq!(v(&keys[6].0, f), "0.25");
+        assert_eq!(
+            sort_value_string(&keys[2].0, 0, Some(Some(b"a\x0f"))),
+            "[61 f]"
+        );
+        assert_eq!(sort_value_string(&keys[2].0, 0, Some(None)), "null");
+
+        // A values-source key: `<source>`, its value a `Double` or `Long`.
+        let double = vs::double_sort_field(vs::constant(1.0), true, 0.0);
+        assert_eq!(sort_field_string(&double), "<constant(1.0)>!");
+        assert_eq!(v(&double, vs::double_to_sortable_long(2.5)), "2.5");
+        let long = vs::long_sort_field(vs::long_constant(4), false, 0);
+        assert_eq!(sort_field_string(&long), "<constant(4)>");
+        assert_eq!(v(&long, 9), "9");
+
+        // A source without its own `toString`: the defaults; an unknown
+        // registration prints the field alone.
+        struct Plain(Arc<dyn FieldComparatorSource>);
+        impl FieldComparatorSource for Plain {
+            fn new_comparator(
+                &self,
+                field: &str,
+                num_hits: usize,
+                reverse: bool,
+            ) -> Box<dyn FieldComparator> {
+                self.0.new_comparator(field, num_hits, reverse)
+            }
+        }
+        let SortType::Custom(id) = double.ty else {
+            unreachable!()
+        };
+        let plain = Plain(registered_source(id).unwrap());
+        let _ = plain.new_comparator("x", 1, false);
+        let held = SortField::with_source("x", Arc::new(plain), true);
+        assert_eq!(sort_field_string(&held), "<custom:\"x\">!");
+        assert_eq!(v(&held, 5), "5");
+        let unknown = SortField::custom("u", CustomSortId(u32::MAX - 1), false);
+        assert_eq!(sort_field_string(&unknown), "<custom:\"u\">");
+        assert_eq!(v(&unknown, 6), "6");
+    }
 
     #[test]
     fn modes_pick_as_multi_value_mode_does() {

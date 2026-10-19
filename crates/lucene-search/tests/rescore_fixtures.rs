@@ -555,7 +555,7 @@ fn values_sources_and_rescorers_match_real_lucene() {
         let k = |f: &str| m.get(&format!("sort.{i}.{f}")).to_string();
         let fp = &firsts[k("fp").parse::<usize>().unwrap()];
         let (sort, kinds) = sort_of(&k("sort"));
-        let r = SortRescorer::new(sort);
+        let r = SortRescorer::new(sort.clone());
         let got = r
             .rescore_field_docs(&ctx, fp, k("top_n").parse().unwrap())
             .unwrap();
@@ -612,7 +612,14 @@ fn values_sources_and_rescorers_match_real_lucene() {
                 .unwrap();
             assert_eq!(
                 (e.value, e.description.as_str()),
-                (0.0, "sort field values")
+                (
+                    0.0,
+                    format!(
+                        "sort field values for sort={}",
+                        lucene_search::top_field::sort_string(&sort)
+                    )
+                    .as_str()
+                )
             );
             assert_eq!(e.details.len(), 1 + kinds.len(), "sort.{i}");
             assert_eq!(e.details[0].description, "first pass score");
@@ -798,7 +805,10 @@ fn rescorers_refuse_documents_and_keys_they_cannot_read() {
     let e = SortRescorer::new(vec![SortField::string("nosuch", false)])
         .explain(&ctx, &fp, 0)
         .unwrap();
-    assert_eq!(e.details[1].description, "sort field nosuch value=null");
+    assert_eq!(
+        e.details[1].description,
+        "sort field <string: \"nosuch\"> value=null"
+    );
 }
 
 mod vs_combine {

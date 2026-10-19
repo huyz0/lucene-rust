@@ -857,7 +857,10 @@ fn segments_file_name(segment_infos: &SegmentInfos) -> Result<String> {
     })
 }
 
-fn to_bytes(segment_infos: &SegmentInfos) -> Vec<u8> {
+/// `SegmentInfos.write(IndexOutput)`: the whole `segments_N` file as bytes,
+/// header and checksum footer included, for a caller that ships it (the
+/// replicator's `CopyState.infosBytes`) instead of writing it to a directory.
+pub fn to_bytes(segment_infos: &SegmentInfos) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::new();
     let suffix = lucene_util::base36::to_base36(segment_infos.generation);
     codec_util::write_index_header(

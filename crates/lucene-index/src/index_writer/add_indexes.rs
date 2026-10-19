@@ -53,7 +53,7 @@ impl IndexWriter<'_> {
     /// `IndexWriter.addIndexes(Directory...)`: see the module documentation.
     /// Returns the operation's sequence number.
     pub fn add_indexes(&mut self, sources: &[&dyn Directory]) -> Result<SeqNo> {
-        let added = self.copy_segments_in(sources)?;
+        let added = self.copy_segments_in(sources, None)?;
         self.segment_infos.segments.extend(added);
         self.prune_segment_versions();
         let live = self.live_infos();
@@ -65,7 +65,7 @@ impl IndexWriter<'_> {
     /// source's latest commit: one new segment holding all of their live
     /// documents. See the module documentation.
     pub fn add_indexes_merged(&mut self, sources: &[&dyn Directory]) -> Result<SeqNo> {
-        self.add_indexes_merged_with(sources, None)
+        self.add_merged(sources, None, None)
     }
 
     /// [`Self::add_indexes_merged`] over sources whose SORTED_NUMERIC
@@ -92,15 +92,35 @@ impl IndexWriter<'_> {
                 "cannot remap {field:?}, a field of the index sort"
             )));
         }
-        self.add_indexes_merged_with(sources, Some(std::sync::Arc::new(remap)))
+        self.add_merged(sources, None, Some(std::sync::Arc::new(remap)))
     }
 
-    fn add_indexes_merged_with(
+    /// `IndexWriter.addIndexes(CodecReader...)` over readers that hide some
+    /// documents (Java's `FilterCodecReader` overriding `getLiveDocs` /
+    /// `numDocs`, as `PKIndexSplitter` and `MultiPassIndexSplitter` do):
+    /// [`Self::add_indexes_merged`] keeping only the documents `keep` accepts.
+    /// `keep(source, segment, doc)` names the source (its place in `sources`),
+    /// the segment (its place in that source's latest commit) and the
+    /// segment-local document. `keep` is the reader's whole live set, as a
+    /// `FilterCodecReader.getLiveDocs` is: a document the source had deleted
+    /// is live again if `keep` accepts it (callers that must respect the
+    /// source's deletes say so in `keep`). The rest are deleted in the copy
+    /// before the merge, so the merged segment holds exactly the kept ones.
+    pub fn add_indexes_filtered(
         &mut self,
         sources: &[&dyn Directory],
+        keep: &dyn Fn(usize, usize, i32) -> bool,
+    ) -> Result<SeqNo> {
+        self.add_merged(sources, Some(keep), None)
+    }
+
+    fn add_merged(
+        &mut self,
+        sources: &[&dyn Directory],
+        keep: Option<&dyn Fn(usize, usize, i32) -> bool>,
         remap: Option<std::sync::Arc<crate::merge::SortedNumericRemap>>,
     ) -> Result<SeqNo> {
-        let added = self.copy_segments_in(sources)?;
+        let added = self.copy_segments_in(sources, keep)?;
         if added.is_empty() {
             return Ok(self.delete_queue.next_sequence_number());
         }
@@ -145,7 +165,11 @@ impl IndexWriter<'_> {
 
     /// Flushes, checks every source and copies its segments in under fresh
     /// names, returning their new `SegmentCommitInfo`s (not yet published).
-    fn copy_segments_in(&mut self, sources: &[&dyn Directory]) -> Result<Vec<SegmentCommitInfo>> {
+    fn copy_segments_in(
+        &mut self,
+        sources: &[&dyn Directory],
+        keep: Option<&dyn Fn(usize, usize, i32) -> bool>,
+    ) -> Result<Vec<SegmentCommitInfo>> {
         if self.prepared_commit.is_some() {
             return Err(Error::PreparedCommitPending("add_indexes"));
         }
@@ -157,9 +181,9 @@ impl IndexWriter<'_> {
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let mut plans = Vec::new();
         let mut total = self.live_doc_total()?;
-        for src in sources {
+        for (source, src) in sources.iter().enumerate() {
             let infos = segment_infos::read_latest(*src)?;
-            for sci in infos.segments {
+            for (segment, sci) in infos.segments.into_iter().enumerate() {
                 let si = segment_info::parse_for_codec(
                     &src.open(&format!("{}.si", sci.segment_name))?,
                     &sci.segment_id,
@@ -167,7 +191,7 @@ impl IndexWriter<'_> {
                 )?;
                 self.check_addable(*src, &sci, &si)?;
                 total = total.saturating_add(i64::from(si.doc_count));
-                plans.push((*src, sci, si));
+                plans.push((*src, (source, segment), sci, si));
             }
         }
         let limit = i64::try_from(self.max_docs).unwrap_or(i64::MAX);
@@ -175,10 +199,48 @@ impl IndexWriter<'_> {
             return Err(Error::TooManyDocs(self.max_docs));
         }
         let mut added = Vec::with_capacity(plans.len());
-        for (src, sci, si) in plans {
-            added.push(self.copy_segment_as_is(src, &sci, si)?);
+        for (src, (source, segment), sci, si) in plans {
+            let max_doc = usize::try_from(si.doc_count).unwrap_or(0);
+            let mut copy = self.copy_segment_as_is(src, &sci, si)?;
+            if let Some(keep) = keep {
+                copy = self.hide_documents(copy, max_doc, |doc| keep(source, segment, doc))?;
+            }
+            added.push(copy);
         }
         Ok(added)
+    }
+
+    /// Makes the freshly copied segment's live documents exactly those `keep`
+    /// accepts: a `FilterCodecReader` whose `getLiveDocs` is the filter, so a
+    /// document the source had deleted is live again when `keep` accepts it.
+    fn hide_documents(
+        &self,
+        mut sci: SegmentCommitInfo,
+        max_doc: usize,
+        keep: impl Fn(i32) -> bool,
+    ) -> Result<SegmentCommitInfo> {
+        let hidden: Vec<i32> = (0..max_doc)
+            .filter_map(|d| i32::try_from(d).ok())
+            .filter(|&d| !keep(d))
+            .collect();
+        if sci.del_gen >= 0 {
+            // Start from "everything live"; the next deletes generation is
+            // past the copied one, so its file is never overwritten.
+            let next = sci.next_write_del_gen();
+            self.dir.delete_file(&crate::deletes::liv_file_name(
+                &sci.segment_name,
+                sci.del_gen,
+            ))?;
+            sci.del_gen = -1;
+            sci.del_count = 0;
+            sci.set_next_write_del_gen(next);
+        }
+        if hidden.is_empty() {
+            return Ok(sci);
+        }
+        Ok(crate::deletes::apply_deletes(
+            self.dir, &sci, None, max_doc, hidden,
+        )?)
     }
 
     /// Every document (deleted or not) already in this writer's view.

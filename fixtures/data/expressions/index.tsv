@@ -1,0 +1,175 @@
+X	n * 2 + d	0	c01fb2a129552b9c
+X	n * 2 + d	1	402fc3b3d4815e34
+X	n * 2 + d	2	c06dc00000000000
+X	n * 2 + d	3	c075de4ece6eb1da
+X	n * 2 + d	4	40716872587fc9d0
+X	n * 2 + d	5	0
+X	n * 2 + d	6	4038f185cedb8966
+X	n * 2 + d	7	406fc643dba6e636
+X	n * 2 + d	8	c049000000000000
+X	n * 2 + d	9	c06d27081d2ba590
+X	n * 2 + d	10	c0285a980334c965
+X	n * 2 + d	11	c028000000000000
+X	n * 2 + d	12	4076820da6051090
+X	n * 2 + d	13	4071f6aac5e95849
+X	n * 2 + d	14	c075000000000000
+X	n * 2 + d	15	c029179b2c0c1bfc
+X	n * 2 + d	16	c07433f3b005c69d
+X	n * 2 + d	17	405e000000000000
+X	n * 2 + d	18	c07725c11ce7dd9e
+X	n * 2 + d	19	40630e5028fb3eb8
+X	n * 2 + d	20	0
+X	n * 2 + d	21	c0739db404723153
+X	n * 2 + d	22	c06eb244102a9811
+X	n * 2 + d	23	4071e00000000000
+X	n * 2 + d	24	c0781ef7239d3e13
+X	n * 2 + d	25	4025a976b43465b0
+X	n * 2 + d	26	c06c400000000000
+X	n * 2 + d	27	c075b0c1edd78891
+X	n * 2 + d	28	c05b4689394c66e5
+X	n * 2 + d	29	4063400000000000
+X	n * 2 + d	30	403234e56f8edc1e
+X	n * 2 + d	31	40758677f32330c2
+X	n * 2 + d	32	c043000000000000
+X	n * 2 + d	33	404d73f721dbfafa
+X	n * 2 + d	34	c0652a5b7b45bf8e
+X	n * 2 + d	35	0
+X	n * 2 + d	36	4073ab400cb05763
+X	n * 2 + d	37	405720acece93bc8
+X	n * 2 + d	38	c071600000000000
+X	n * 2 + d	39	40378551ffef4274
+X	n * 2 + d	40	c000ef9c67707db8
+X	n * 2 + d	41	c000000000000000
+X	n * 2 + d	42	40756256503e7472
+X	n * 2 + d	43	4075b9bb8b508440
+X	n * 2 + d	44	c072400000000000
+X	n * 2 + d	45	c035978fcd0c37fd
+X	n * 2 + d	46	c06e6537bfd3d134
+X	n * 2 + d	47	4067400000000000
+X	n * 2 + d	48	40795dd2d447ec2d
+X	n * 2 + d	49	40535eead7516493
+S	n * 2 + d	48:40795dd2d447ec2d,12:4076820da6051090,31:40758677f32330c2,36:4073ab400cb05763,13:4071f6aac5e95849,4:40716872587fc9d0,47:4067400000000000,19:40630e5028fb3eb8,17:405e000000000000,33:404d73f721dbfafa,6:4038f185cedb8966,39:40378551ffef4274,
+R	n * 2 + d	48:3e1fb017,12:3e0568b4,31:3e31223c,36:3e400766,13:3e46dbe9,4:3e115ed0,47:3e0568b4,19:3e46dbe9,17:3e59d3e2,33:3e0568b4,
+P	n * 2 + d	48	405.8639719781375 = n * 2 + d, computed from:\n  199.0 = double(n)\n  7.863971978137485 = double(d)\n
+P	n * 2 + d	12	360.128332156929 = n * 2 + d, computed from:\n  174.0 = double(n)\n  12.128332156929012 = double(d)\n
+P	n * 2 + d	31	344.40428460832857 = n * 2 + d, computed from:\n  175.0 = double(n)\n  -5.595715391671423 = double(d)\n
+X	inner - n + sqrt(abs(d))	0	c0147007a7c4008e
+X	inner - n + sqrt(abs(d))	1	40329bad9f76bd92
+X	inner - n + sqrt(abs(d))	2	c05dc00000000000
+X	inner - n + sqrt(abs(d))	3	c064ad46ea175d31
+X	inner - n + sqrt(abs(d))	4	4061c3c57f9d9198
+X	inner - n + sqrt(abs(d))	5	0
+X	inner - n + sqrt(abs(d))	6	4037cf22b9b82242
+X	inner - n + sqrt(abs(d))	7	405e04c88a13bdd0
+X	inner - n + sqrt(abs(d))	8	c039000000000000
+X	inner - n + sqrt(abs(d))	9	c0591c9993229465
+X	inner - n + sqrt(abs(d))	10	c0215ff20e786dcd
+X	inner - n + sqrt(abs(d))	11	c018000000000000
+X	inner - n + sqrt(abs(d))	12	4067b38c8e3a4b39
+X	inner - n + sqrt(abs(d))	13	4062336c10dd7792
+X	inner - n + sqrt(abs(d))	14	c065000000000000
+X	inner - n + sqrt(abs(d))	15	c0220213d3316e21
+X	inner - n + sqrt(abs(d))	16	c064aaf3bedc050b
+X	inner - n + sqrt(abs(d))	17	404e000000000000
+X	inner - n + sqrt(abs(d))	18	c0671a5a60eea381
+X	inner - n + sqrt(abs(d))	19	40521905c979f8ea
+X	inner - n + sqrt(abs(d))	20	0
+X	inner - n + sqrt(abs(d))	21	c0621ad55e084417
+X	inner - n + sqrt(abs(d))	22	c05f1e896619ebf1
+X	inner - n + sqrt(abs(d))	23	4061e00000000000
+X	inner - n + sqrt(abs(d))	24	c067cff33ee166c1
+X	inner - n + sqrt(abs(d))	25	402c3e7aaf5e8da4
+X	inner - n + sqrt(abs(d))	26	c05c400000000000
+X	inner - n + sqrt(abs(d))	27	c06655db4b988cff
+X	inner - n + sqrt(abs(d))	28	c0483ce53622faf8
+X	inner - n + sqrt(abs(d))	29	4053400000000000
+X	inner - n + sqrt(abs(d))	30	4036793a74a2d7fc
+X	inner - n + sqrt(abs(d))	31	406578a24acda2ca
+X	inner - n + sqrt(abs(d))	32	c033000000000000
+X	inner - n + sqrt(abs(d))	33	403b3c9b86e04111
+X	inner - n + sqrt(abs(d))	34	c0520f5c2b6e3a36
+X	inner - n + sqrt(abs(d))	35	0
+X	inner - n + sqrt(abs(d))	36	40631b963721ebde
+X	inner - n + sqrt(abs(d))	37	404c061720539d6b
+X	inner - n + sqrt(abs(d))	38	c061600000000000
+X	inner - n + sqrt(abs(d))	39	40339b3a57b62972
+X	inner - n + sqrt(abs(d))	40	bfe52f293fba5762
+X	inner - n + sqrt(abs(d))	41	bff0000000000000
+X	inner - n + sqrt(abs(d))	42	4065703ec5b8242b
+X	inner - n + sqrt(abs(d))	43	40668bbb2ef15447
+X	inner - n + sqrt(abs(d))	44	c062400000000000
+X	inner - n + sqrt(abs(d))	45	c030f200238e1c56
+X	inner - n + sqrt(abs(d))	46	c05e79033020d3b5
+X	inner - n + sqrt(abs(d))	47	4057400000000000
+X	inner - n + sqrt(abs(d))	48	406a35624c9c3f79
+X	inner - n + sqrt(abs(d))	49	4049d509ca8f2d09
+S	inner - n + sqrt(abs(d))	48:406a35624c9c3f79,12:4067b38c8e3a4b39,31:406578a24acda2ca,36:40631b963721ebde,13:4062336c10dd7792,4:4061c3c57f9d9198,47:4057400000000000,19:40521905c979f8ea,17:404e000000000000,33:403b3c9b86e04111,6:4037cf22b9b82242,39:40339b3a57b62972,
+R	inner - n + sqrt(abs(d))	48:3e1fb017,12:3e0568b4,31:3e31223c,36:3e400766,13:3e46dbe9,4:3e115ed0,47:3e0568b4,19:3e46dbe9,17:3e59d3e2,33:3e0568b4,
+P	inner - n + sqrt(abs(d))	48	209.6682494212835 = inner - n + sqrt(abs(d)), computed from:\n  405.8639719781375 = n * 2 + d, computed from:\n    199.0 = double(n)\n    7.863971978137485 = double(d)\n  199.0 = double(n)\n  7.863971978137485 = double(d)\n
+P	inner - n + sqrt(abs(d))	12	189.6109076632072 = inner - n + sqrt(abs(d)), computed from:\n  360.128332156929 = n * 2 + d, computed from:\n    174.0 = double(n)\n    12.128332156929012 = double(d)\n  174.0 = double(n)\n  12.128332156929012 = double(d)\n
+P	inner - n + sqrt(abs(d))	31	171.7698110596014 = inner - n + sqrt(abs(d)), computed from:\n  344.40428460832857 = n * 2 + d, computed from:\n    175.0 = double(n)\n    -5.595715391671423 = double(d)\n  175.0 = double(n)\n  -5.595715391671423 = double(d)\n
+S	_score * 2 + n	48:4068eb54b0400000,31:4065eebe45600000,12:4065c9fb01700000,36:4064cb1223c00000,13:4061e9fb01700000,4:40614d9d3e200000,47:4057562447800000,19:40551ae11ec00000,17:404e330772000000,33:4041bb465ac00000,39:401d983b90000000,6:4015624478000000,
+R	_score * 2 + n	48:3e1fb017,31:3e31223c,12:3e0568b4,36:3e400766,13:3e46dbe9,4:3e115ed0,47:3e0568b4,19:3e46dbe9,17:3e59d3e2,33:3e0568b4,
+P	_score * 2 + n	48	199.0 = _score * 2 + n, computed from:\n  0.0 = sort field values for sort=<expr(_score * 2 + n)>!\n    0.17704397 = first pass score\n      0.17704397 = weight(body:w1 in 18) [BM25Similarity], result of:\n        0.17704397 = score(freq=2.0), computed as boost * idf * tf from:\n          0.33451337 = idf, computed as log(1 + (N - n + 0.5) / (n + 0.5)) from:\n            36 = n, number of documents containing term\n            50 = N, total number of documents with field\n          0.52925825 = tf, computed as freq / (freq + k1 * (1 - b + b * dl / avgdl)) from:\n            2.0 = freq, occurrences of term within document\n            1.2 = k1, term saturation parameter\n            0.75 = b, length normalization parameter\n            7.0 = dl, length of field\n            4.26 = avgdl, average length of field\n    0.0 = sort field <expr(_score * 2 + n)>! value=199.35408794879913\n  199.0 = double(n)\n
+P	_score * 2 + n	31	175.0 = _score * 2 + n, computed from:\n  0.0 = sort field values for sort=<expr(_score * 2 + n)>!\n    0.23036322 = first pass score\n      0.23036322 = weight(body:w1 in 1) [BM25Similarity], result of:\n        0.23036322 = score(freq=3.0), computed as boost * idf * tf from:\n          0.33451337 = idf, computed as log(1 + (N - n + 0.5) / (n + 0.5)) from:\n            36 = n, number of documents containing term\n            50 = N, total number of documents with field\n          0.6886518 = tf, computed as freq / (freq + k1 * (1 - b + b * dl / avgdl)) from:\n            3.0 = freq, occurrences of term within document\n            1.2 = k1, term saturation parameter\n            0.75 = b, length normalization parameter\n            5.0 = dl, length of field\n            4.26 = avgdl, average length of field\n    0.0 = sort field <expr(_score * 2 + n)>! value=175.46072643995285\n  175.0 = double(n)\n
+P	_score * 2 + n	12	174.0 = _score * 2 + n, computed from:\n  0.0 = sort field values for sort=<expr(_score * 2 + n)>!\n    0.15594517 = first pass score\n      0.15594517 = weight(body:w1 in 12) [BM25Similarity], result of:\n        0.15594517 = score(freq=1.0), computed as boost * idf * tf from:\n          0.33451337 = idf, computed as log(1 + (N - n + 0.5) / (n + 0.5)) from:\n            36 = n, number of documents containing term\n            50 = N, total number of documents with field\n          0.46618515 = tf, computed as freq / (freq + k1 * (1 - b + b * dl / avgdl)) from:\n            1.0 = freq, occurrences of term within document\n            1.2 = k1, term saturation parameter\n            0.75 = b, length normalization parameter\n            4.0 = dl, length of field\n            4.26 = avgdl, average length of field\n    0.0 = sort field <expr(_score * 2 + n)>! value=174.31189033389091\n  174.0 = double(n)\n
+S	ln(1 + abs(d)) * inner + _score	12:408cfb3c78adcfc6,36:408c977075a8e809,48:408bae2958bf3b5a,31:40844f5f6634efca,19:407ac0f99ef5e4e4,4:4075f5add75ea4f6,13:406fb8b79fe0720b,33:40626225f80810be,6:40514f868756efc3,39:404bc6a8ce42317f,1:4045836974d3a1a3,25:403aea92315ba04d,
+R	ln(1 + abs(d)) * inner + _score	12:3e46dbe9,36:3e400766,48:3e1fb017,31:3e31223c,19:3e46dbe9,4:3e115ed0,13:3e59d3e2,33:3e0568b4,6:3e0568b4,39:3e0568b4,
+P	ln(1 + abs(d)) * inner + _score	12	927.2485818848879 = ln(1 + abs(d)) * inner + _score, computed from:\n  12.128332156929012 = double(d)\n  360.128332156929 = n * 2 + d, computed from:\n    174.0 = double(n)\n    12.128332156929012 = double(d)\n  0.0 = sort field values for sort=<expr(ln(1 + abs(d)) * inner + _score)>!\n    0.15594517 = first pass score\n      0.15594517 = weight(body:w1 in 12) [BM25Similarity], result of:\n        0.15594517 = score(freq=1.0), computed as boost * idf * tf from:\n          0.33451337 = idf, computed as log(1 + (N - n + 0.5) / (n + 0.5)) from:\n            36 = n, number of documents containing term\n            50 = N, total number of documents with field\n          0.46618515 = tf, computed as freq / (freq + k1 * (1 - b + b * dl / avgdl)) from:\n            1.0 = freq, occurrences of term within document\n            1.2 = k1, term saturation parameter\n            0.75 = b, length normalization parameter\n            4.0 = dl, length of field\n            4.26 = avgdl, average length of field\n    0.0 = sort field <expr(ln(1 + abs(d)) * inner + _score)>! value=927.4045270518334\n
+P	ln(1 + abs(d)) * inner + _score	36	914.756929761964 = ln(1 + abs(d)) * inner + _score, computed from:\n  -17.296862898985466 = double(d)\n  314.70313710101453 = n * 2 + d, computed from:\n    166.0 = double(n)\n    -17.296862898985466 = double(d)\n  0.0 = sort field values for sort=<expr(ln(1 + abs(d)) * inner + _score)>!\n    0.17298216 = first pass score\n      0.17298216 = weight(body:w1 in 6) [BM25Similarity], result of:\n        0.17298216 = score(freq=1.0), computed as boost * idf * tf from:\n          0.33451337 = idf, computed as log(1 + (N - n + 0.5) / (n + 0.5)) from:\n            36 = n, number of documents containing term\n            50 = N, total number of documents with field\n          0.51711583 = tf, computed as freq / (freq + k1 * (1 - b + b * dl / avgdl)) from:\n            1.0 = freq, occurrences of term within document\n            1.2 = k1, term saturation parameter\n            0.75 = b, length normalization parameter\n            3.0 = dl, length of field\n            4.26 = avgdl, average length of field\n    0.0 = sort field <expr(ln(1 + abs(d)) * inner + _score)>! value=914.9299119182407\n
+P	ln(1 + abs(d)) * inner + _score	48	885.5931448283184 = ln(1 + abs(d)) * inner + _score, computed from:\n  7.863971978137485 = double(d)\n  405.8639719781375 = n * 2 + d, computed from:\n    199.0 = double(n)\n    7.863971978137485 = double(d)\n  0.0 = sort field values for sort=<expr(ln(1 + abs(d)) * inner + _score)>!\n    0.17704397 = first pass score\n      0.17704397 = weight(body:w1 in 18) [BM25Similarity], result of:\n        0.17704397 = score(freq=2.0), computed as boost * idf * tf from:\n          0.33451337 = idf, computed as log(1 + (N - n + 0.5) / (n + 0.5)) from:\n            36 = n, number of documents containing term\n            50 = N, total number of documents with field\n          0.52925825 = tf, computed as freq / (freq + k1 * (1 - b + b * dl / avgdl)) from:\n            2.0 = freq, occurrences of term within document\n            1.2 = k1, term saturation parameter\n            0.75 = b, length normalization parameter\n            7.0 = dl, length of field\n            4.26 = avgdl, average length of field\n    0.0 = sort field <expr(ln(1 + abs(d)) * inner + _score)>! value=885.7701888027179\n
+X	n > 100 ? d : -n	0	8000000000000000
+X	n > 100 ? d : -n	1	bff0000000000000
+X	n > 100 ? d : -n	2	405dc00000000000
+X	n > 100 ? d : -n	3	4066a00000000000
+X	n > 100 ? d : -n	4	4004392c3fe4e7c8
+X	n > 100 ? d : -n	5	8000000000000000
+X	n > 100 ? d : -n	6	c014000000000000
+X	n > 100 ? d : -n	7	c037cde122c8ce50
+X	n > 100 ? d : -n	8	4039000000000000
+X	n > 100 ? d : -n	9	4060000000000000
+X	n > 100 ? d : -n	10	8000000000000000
+X	n > 100 ? d : -n	11	4018000000000000
+X	n > 100 ? d : -n	12	402841b4c0a2120c
+X	n > 100 ? d : -n	13	3ff6aac5e9584930
+X	n > 100 ? d : -n	14	4065000000000000
+X	n > 100 ? d : -n	15	8000000000000000
+X	n > 100 ? d : -n	16	4063400000000000
+X	n > 100 ? d : -n	17	c04e000000000000
+X	n > 100 ? d : -n	18	4067000000000000
+X	n > 100 ? d : -n	19	c055000000000000
+X	n > 100 ? d : -n	20	8000000000000000
+X	n > 100 ? d : -n	21	4064a00000000000
+X	n > 100 ? d : -n	22	405d800000000000
+X	n > 100 ? d : -n	23	0
+X	n > 100 ? d : -n	24	4068400000000000
+X	n > 100 ? d : -n	25	8000000000000000
+X	n > 100 ? d : -n	26	405c400000000000
+X	n > 100 ? d : -n	27	4064800000000000
+X	n > 100 ? d : -n	28	404d000000000000
+X	n > 100 ? d : -n	29	c053400000000000
+X	n > 100 ? d : -n	30	8000000000000000
+X	n > 100 ? d : -n	31	c01662033733cf74
+X	n > 100 ? d : -n	32	4033000000000000
+X	n > 100 ? d : -n	33	c041800000000000
+X	n > 100 ? d : -n	34	4057400000000000
+X	n > 100 ? d : -n	35	8000000000000000
+X	n > 100 ? d : -n	36	c0314bff34fa89d0
+X	n > 100 ? d : -n	37	c044000000000000
+X	n > 100 ? d : -n	38	4061600000000000
+X	n > 100 ? d : -n	39	c01c000000000000
+X	n > 100 ? d : -n	40	8000000000000000
+X	n > 100 ? d : -n	41	3ff0000000000000
+X	n > 100 ? d : -n	42	bffda9afc18b8df0
+X	n > 100 ? d : -n	43	401e6ee2d4211020
+X	n > 100 ? d : -n	44	4062400000000000
+X	n > 100 ? d : -n	45	8000000000000000
+X	n > 100 ? d : -n	46	405dc00000000000
+X	n > 100 ? d : -n	47	c057400000000000
+X	n > 100 ? d : -n	48	401f74b511fb0b30
+X	n > 100 ? d : -n	49	c03e000000000000
+S	n > 100 ? d : -n	24:4068400000000000,18:4067000000000000,3:4066a00000000000,16:4063400000000000,38:4061600000000000,2:405dc00000000000,46:405dc00000000000,22:405d800000000000,34:4057400000000000,8:4039000000000000,32:4033000000000000,12:402841b4c0a2120c,
+R	n > 100 ? d : -n	24:3e0568b4,18:3e46dbe9,3:3e0568b4,16:3e59d3e2,38:3e0568b4,2:3e115ed0,46:3e1fb017,22:3e31223c,34:3e400766,8:3e46dbe9,
+P	n > 100 ? d : -n	24	194.0 = n > 100 ? d : -n, computed from:\n  -194.0 = double(n)\n  2.064663301250068 = double(d)\n
+P	n > 100 ? d : -n	18	184.0 = n > 100 ? d : -n, computed from:\n  -184.0 = double(n)\n  -2.359646707272887 = double(d)\n
+P	n > 100 ? d : -n	3	181.0 = n > 100 ? d : -n, computed from:\n  -181.0 = double(n)\n  12.105760161970835 = double(d)\n
