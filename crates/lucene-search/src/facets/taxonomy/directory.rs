@@ -4,10 +4,12 @@
 pub mod consts;
 pub mod directory_taxonomy_reader;
 pub mod directory_taxonomy_writer;
+pub mod reindexing_enriched_directory_taxonomy_writer;
 pub mod taxonomy_index_arrays;
 
 pub use directory_taxonomy_reader::DirectoryTaxonomyReader;
 pub use directory_taxonomy_writer::{
-    DirectoryTaxonomyWriter, DiskOrdinalMap, MemoryOrdinalMap, OrdinalMap,
+    DirectoryTaxonomyWriter, DiskOrdinalMap, MemoryOrdinalMap, OrdinalDataAppender, OrdinalMap,
 };
+pub use reindexing_enriched_directory_taxonomy_writer::ReindexingEnrichedDirectoryTaxonomyWriter;
 pub use taxonomy_index_arrays::TaxonomyIndexArrays;

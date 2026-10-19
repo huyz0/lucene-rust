@@ -65,6 +65,41 @@ impl IndexWriter<'_> {
     /// source's latest commit: one new segment holding all of their live
     /// documents. See the module documentation.
     pub fn add_indexes_merged(&mut self, sources: &[&dyn Directory]) -> Result<SeqNo> {
+        self.add_indexes_merged_with(sources, None)
+    }
+
+    /// [`Self::add_indexes_merged`] over sources whose SORTED_NUMERIC
+    /// values, in `remap`'s fields, read through `remap` -- lucene-facet's
+    /// `addIndexes(SlowCodecReaderWrapper.wrap(new
+    /// OrdinalMappingLeafReader(leaf, ordinalMap, srcConfig)))`, which
+    /// `TaxonomyMergeUtils.merge` runs.
+    pub fn add_indexes_merged_remapping(
+        &mut self,
+        sources: &[&dyn Directory],
+        remap: crate::merge::SortedNumericRemap,
+    ) -> Result<SeqNo> {
+        // The merge orders documents by the index sort's keys before the
+        // remap rewrites any value, where Java sorts the wrapped (remapped)
+        // reader: refused rather than sorted by the unmapped values.
+        if let Some(field) = self
+            .cfg
+            .index_sort
+            .iter()
+            .flatten()
+            .find_map(|f| remap.fields.contains(&f.field).then(|| f.field.clone()))
+        {
+            return Err(Error::AddIndexes(format!(
+                "cannot remap {field:?}, a field of the index sort"
+            )));
+        }
+        self.add_indexes_merged_with(sources, Some(std::sync::Arc::new(remap)))
+    }
+
+    fn add_indexes_merged_with(
+        &mut self,
+        sources: &[&dyn Directory],
+        remap: Option<std::sync::Arc<crate::merge::SortedNumericRemap>>,
+    ) -> Result<SeqNo> {
         let added = self.copy_segments_in(sources)?;
         if added.is_empty() {
             return Ok(self.delete_queue.next_sequence_number());
@@ -77,10 +112,35 @@ impl IndexWriter<'_> {
         // Published in this writer's view, as `addIndexes` publishes: not a
         // commit of its own.
         let by_caller = std::mem::replace(&mut self.merges_by_caller, true);
-        let merged = self.execute_merge(&names);
+        let merged = self.execute_merge_planned(&names, None, remap);
         self.merges_by_caller = by_caller;
-        merged?;
-        Ok(self.delete_queue.next_sequence_number())
+        match merged {
+            Ok(true) => Ok(self.delete_queue.next_sequence_number()),
+            // Abandoned: Java's `addIndexes(CodecReader...)` returns without
+            // adding anything when its merge is aborted.
+            Ok(false) => {
+                self.withdraw_copies(&names)?;
+                Ok(self.delete_queue.next_sequence_number())
+            }
+            Err(e) => {
+                // Java's `addIndexes(CodecReader...)` publishes only the
+                // merged segment, so a failed merge adds nothing.
+                let _ = self.withdraw_copies(&names);
+                Err(e)
+            }
+        }
+    }
+
+    /// Takes the copies `names` back out of this writer's view, their files
+    /// left to the deleter.
+    fn withdraw_copies(&mut self, names: &[String]) -> Result<()> {
+        self.segment_infos
+            .segments
+            .retain(|s| !names.contains(&s.segment_name));
+        self.prune_segment_versions();
+        let live = self.live_infos();
+        self.deleter.checkpoint(&live, false)?;
+        Ok(())
     }
 
     /// Flushes, checks every source and copies its segments in under fresh

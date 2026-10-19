@@ -595,11 +595,24 @@ fn segment_doc_values_positioning() {
     let mut ss = s.sorted_set_doc_values("tags").unwrap().unwrap();
     assert!(ss.advance_exact(3).unwrap());
     assert_eq!(ss.doc_value_count(), 3);
+    let first = ss.next_ord().unwrap();
+    let rest: Vec<i64> = ss.take_ords().unwrap().to_vec();
+    assert_eq!(rest.len(), 2);
+    assert!(rest.iter().all(|&o| o > first));
+    assert_eq!(ss.take_ords(), Some(&[][..]));
+    assert!(ss.next_ord().is_err());
+    assert!(ss.advance_exact(3).unwrap());
     for _ in 0..3 {
         ss.next_ord().unwrap();
     }
     assert!(ss.next_ord().is_err());
     assert_eq!(ss.advance(4).unwrap(), 4);
+    // A `SORTED` field read as a set holds no decoded run: the default
+    // `take_ords` sends the caller to `next_ord`.
+    let mut one = super::doc_values::get_sorted_set(&*s, "kw").unwrap();
+    assert_ne!(one.next_doc().unwrap(), NO_MORE_DOCS);
+    assert_eq!(one.take_ords(), None);
+    assert!(one.next_ord().is_ok());
     let mut b = s.binary_doc_values("bin").unwrap().unwrap();
     assert!(b.advance_exact(2).unwrap());
     assert_eq!(b.binary_value(), [2, 253, 7]);

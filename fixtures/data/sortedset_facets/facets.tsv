@@ -1,0 +1,1120 @@
+multi	ssdv	$facets	countall	dims5	Big||i1545|1545|b0=i1=1,b1=i1=1,b1001=i1=1,b1003=i1=1,b1005=i1=1;Genre||i1545|6|g1=i387=387,g0=i386=386,g2=i386=386,g3=i386=386,g4=i258=258;Publish Date||i1545|4|2001=i387=387,2000=i386=386,2002=i386=386,2003=i386=386;Author||i1454|13|a3=i113=113,a9=i113=113,a0=i112=112,a1=i112=112,a10=i112=112;Tag||i-1|8|t5=i515=515,t6=i515=515,t7=i515=515,t0=i309=309,t1=i309=309
+multi	ssdv	$facets	countall	dims1	Big||i1545|1545|b0=i1=1;Genre||i1545|6|g1=i387=387;Publish Date||i1545|4|2001=i387=387;Author||i1454|13|a3=i113=113;Tag||i-1|8|t5=i515=515
+multi	ssdv	$facets	countall	topdims2_3	Big||i1545|1545|b0=i1=1,b1=i1=1,b1001=i1=1;Genre||i1545|6|g1=i387=387,g0=i386=386,g2=i386=386
+multi	ssdv	$facets	countall	topdims10_2	Big||i1545|1545|b0=i1=1,b1=i1=1;Genre||i1545|6|g1=i387=387,g0=i386=386;Publish Date||i1545|4|2001=i387=387,2000=i386=386;Author||i1454|13|a3=i113=113,a9=i113=113;Tag||i-1|8|t5=i515=515,t6=i515=515
+multi	ssdv	$facets	countall	topdims1_1	Big||i1545|1545|b0=i1=1
+multi	ssdv	$facets	countall	topdims4_5	Big||i1545|1545|b0=i1=1,b1=i1=1,b1001=i1=1,b1003=i1=1,b1005=i1=1;Genre||i1545|6|g1=i387=387,g0=i386=386,g2=i386=386,g3=i386=386,g4=i258=258;Publish Date||i1545|4|2001=i387=387,2000=i386=386,2002=i386=386,2003=i386=386;Author||i1454|13|a3=i113=113,a9=i113=113,a0=i112=112,a1=i112=112,a10=i112=112
+multi	ssdv	$facets	countall	top3:Author	Author||i1454|13|a3=i113=113,a9=i113=113,a0=i112=112
+multi	ssdv	$facets	countall	all:Author	Author||i1454|13|a0=i112=112,a1=i112=112,a10=i112=112,a11=i112=112,a12=i111=111,a2=i111=111,a3=i113=113,a4=i112=112,a5=i112=112,a6=i110=110,a7=i112=112,a8=i112=112,a9=i113=113
+multi	ssdv	$facets	countall	top3:Tag	Tag||i-1|8|t5=i515=515,t6=i515=515,t7=i515=515
+multi	ssdv	$facets	countall	all:Tag	Tag||i-1|8|t0=i309=309,t1=i309=309,t2=i309=309,t3=i309=309,t4=i309=309,t5=i515=515,t6=i515=515,t7=i515=515
+multi	ssdv	$facets	countall	top3:Genre	Genre||i1545|6|g1=i387=387,g0=i386=386,g2=i386=386
+multi	ssdv	$facets	countall	all:Genre	Genre||i1545|6|g0=i386=386,g1=i387=387,g2=i386=386,g3=i386=386,g4=i258=258,g7=i257=257
+multi	ssdv	$facets	countall	top3:Publish Date	Publish Date||i1545|4|2001=i387=387,2000=i386=386,2002=i386=386
+multi	ssdv	$facets	countall	all:Publish Date	Publish Date||i1545|4|2000=i386=386,2001=i387=387,2002=i386=386,2003=i386=386
+multi	ssdv	$facets	countall	top3:Nope	null
+multi	ssdv	$facets	countall	all:Nope	null
+multi	ssdv	$facets	countall	top3:Color	null
+multi	ssdv	$facets	countall	all:Color	null
+multi	ssdv	$facets	countall	top5:Big	Big||i1545|1545|b0=i1=1,b1=i1=1,b1001=i1=1,b1003=i1=1,b1005=i1=1
+multi	ssdv	$facets	countall	top1:Big	Big||i1545|1545|b0=i1=1
+multi	ssdv	$facets	countall	top1000:Tag	Tag||i-1|8|t5=i515=515,t6=i515=515,t7=i515=515,t0=i309=309,t1=i309=309,t2=i309=309,t3=i309=309,t4=i309=309
+multi	ssdv	$facets	countall	top3:Publish Date/2001	Publish Date|2001|i387|3|6=i130=130,2=i129=129,10=i128=128
+multi	ssdv	$facets	countall	all:Publish Date/2001	Publish Date|2001|i387|3|10=i128=128,2=i129=129,6=i130=130
+multi	ssdv	$facets	countall	top3:Publish Date/2001/3	null
+multi	ssdv	$facets	countall	all:Publish Date/2001/3	null
+multi	ssdv	$facets	countall	top3:Publish Date/2003/12	Publish Date|2003/12|i128|7|12=i16=16,24=i15=15,8=i15=15
+multi	ssdv	$facets	countall	all:Publish Date/2003/12	Publish Date|2003/12|i128|7|12=i16=16,16=i14=14,20=i14=14,24=i15=15,28=i14=14,4=i14=14,8=i15=15
+multi	ssdv	$facets	countall	top3:Publish Date/1999	null
+multi	ssdv	$facets	countall	all:Publish Date/1999	null
+multi	ssdv	$facets	countall	top3:Publish Date/2001/3/3	null
+multi	ssdv	$facets	countall	all:Publish Date/2001/3/3	null
+multi	ssdv	$facets	countall	spec:Author/a3	i113
+multi	ssdv	$facets	countall	spec:Tag/t1	i309
+multi	ssdv	$facets	countall	spec:Tag/zz	i-1
+multi	ssdv	$facets	countall	spec:Genre/g1	i387
+multi	ssdv	$facets	countall	spec:Genre/g9	i-1
+multi	ssdv	$facets	countall	spec:Genre	IAE:Genre is not configured as hierarchical, path must be length=1
+multi	ssdv	$facets	countall	spec:Publish Date	i1545
+multi	ssdv	$facets	countall	spec:Publish Date/2001	i387
+multi	ssdv	$facets	countall	spec:Publish Date/2001/3	i-1
+multi	ssdv	$facets	countall	spec:Publish Date/2001/3/15	i-1
+multi	ssdv	$facets	countall	spec:Big/b7	i-1
+multi	ssdv	$facets	countall	spec:Nope/x	i-1
+multi	ssdv	$facets	countall	err:top0	IAE:topN must be > 0 (got: 0)
+multi	ssdv	$facets	countall	err:dims0	IAE:topN must be > 0 (got: 0)
+multi	ssdv	$facets	countall	err:topdims0	IAE:topN must be > 0 (got: 0)
+multi	ssdv	$facets	countall	err:topdims_children0	IAE:topN must be > 0 (got: 0)
+multi	ssdv	$facets	countall	err:flatpath	IAE:Field is not configured as hierarchical, path should be 0 length
+multi	ssdv	$facets	countall	err:flatpath_all	IAE:Field is not configured as hierarchical, path should be 0 length
+multi	ssdv	$facets	countall	err:spec2	IAE:Author is not configured as hierarchical, path must be length=1
+multi	conc	$facets	countall	dims5	Big||i1545|1545|b0=i1=1,b1=i1=1,b1001=i1=1,b1003=i1=1,b1005=i1=1;Genre||i1545|6|g1=i387=387,g0=i386=386,g2=i386=386,g3=i386=386,g4=i258=258;Publish Date||i1545|4|2001=i387=387,2000=i386=386,2002=i386=386,2003=i386=386;Author||i1454|13|a3=i113=113,a9=i113=113,a0=i112=112,a1=i112=112,a10=i112=112;Tag||i-1|8|t5=i515=515,t6=i515=515,t7=i515=515,t0=i309=309,t1=i309=309
+multi	conc	$facets	countall	dims1	Big||i1545|1545|b0=i1=1;Genre||i1545|6|g1=i387=387;Publish Date||i1545|4|2001=i387=387;Author||i1454|13|a3=i113=113;Tag||i-1|8|t5=i515=515
+multi	conc	$facets	countall	topdims2_3	Big||i1545|1545|b0=i1=1,b1=i1=1,b1001=i1=1;Genre||i1545|6|g1=i387=387,g0=i386=386,g2=i386=386
+multi	conc	$facets	countall	topdims10_2	Big||i1545|1545|b0=i1=1,b1=i1=1;Genre||i1545|6|g1=i387=387,g0=i386=386;Publish Date||i1545|4|2001=i387=387,2000=i386=386;Author||i1454|13|a3=i113=113,a9=i113=113;Tag||i-1|8|t5=i515=515,t6=i515=515
+multi	conc	$facets	countall	topdims1_1	Big||i1545|1545|b0=i1=1
+multi	conc	$facets	countall	topdims4_5	Big||i1545|1545|b0=i1=1,b1=i1=1,b1001=i1=1,b1003=i1=1,b1005=i1=1;Genre||i1545|6|g1=i387=387,g0=i386=386,g2=i386=386,g3=i386=386,g4=i258=258;Publish Date||i1545|4|2001=i387=387,2000=i386=386,2002=i386=386,2003=i386=386;Author||i1454|13|a3=i113=113,a9=i113=113,a0=i112=112,a1=i112=112,a10=i112=112
+multi	conc	$facets	countall	top3:Author	Author||i1454|13|a3=i113=113,a9=i113=113,a0=i112=112
+multi	conc	$facets	countall	all:Author	Author||i1454|13|a0=i112=112,a1=i112=112,a10=i112=112,a11=i112=112,a12=i111=111,a2=i111=111,a3=i113=113,a4=i112=112,a5=i112=112,a6=i110=110,a7=i112=112,a8=i112=112,a9=i113=113
+multi	conc	$facets	countall	top3:Tag	Tag||i-1|8|t5=i515=515,t6=i515=515,t7=i515=515
+multi	conc	$facets	countall	all:Tag	Tag||i-1|8|t0=i309=309,t1=i309=309,t2=i309=309,t3=i309=309,t4=i309=309,t5=i515=515,t6=i515=515,t7=i515=515
+multi	conc	$facets	countall	top3:Genre	Genre||i1545|6|g1=i387=387,g0=i386=386,g2=i386=386
+multi	conc	$facets	countall	all:Genre	Genre||i1545|6|g0=i386=386,g1=i387=387,g2=i386=386,g3=i386=386,g4=i258=258,g7=i257=257
+multi	conc	$facets	countall	top3:Publish Date	Publish Date||i1545|4|2001=i387=387,2000=i386=386,2002=i386=386
+multi	conc	$facets	countall	all:Publish Date	Publish Date||i1545|4|2000=i386=386,2001=i387=387,2002=i386=386,2003=i386=386
+multi	conc	$facets	countall	top3:Nope	null
+multi	conc	$facets	countall	all:Nope	null
+multi	conc	$facets	countall	top3:Color	null
+multi	conc	$facets	countall	all:Color	null
+multi	conc	$facets	countall	top5:Big	Big||i1545|1545|b0=i1=1,b1=i1=1,b1001=i1=1,b1003=i1=1,b1005=i1=1
+multi	conc	$facets	countall	top1:Big	Big||i1545|1545|b0=i1=1
+multi	conc	$facets	countall	top1000:Tag	Tag||i-1|8|t5=i515=515,t6=i515=515,t7=i515=515,t0=i309=309,t1=i309=309,t2=i309=309,t3=i309=309,t4=i309=309
+multi	conc	$facets	countall	top3:Publish Date/2001	Publish Date|2001|i387|3|6=i130=130,2=i129=129,10=i128=128
+multi	conc	$facets	countall	all:Publish Date/2001	Publish Date|2001|i387|3|10=i128=128,2=i129=129,6=i130=130
+multi	conc	$facets	countall	top3:Publish Date/2001/3	null
+multi	conc	$facets	countall	all:Publish Date/2001/3	null
+multi	conc	$facets	countall	top3:Publish Date/2003/12	Publish Date|2003/12|i128|7|12=i16=16,24=i15=15,8=i15=15
+multi	conc	$facets	countall	all:Publish Date/2003/12	Publish Date|2003/12|i128|7|12=i16=16,16=i14=14,20=i14=14,24=i15=15,28=i14=14,4=i14=14,8=i15=15
+multi	conc	$facets	countall	top3:Publish Date/1999	null
+multi	conc	$facets	countall	all:Publish Date/1999	null
+multi	conc	$facets	countall	top3:Publish Date/2001/3/3	null
+multi	conc	$facets	countall	all:Publish Date/2001/3/3	null
+multi	conc	$facets	countall	spec:Author/a3	i113
+multi	conc	$facets	countall	spec:Tag/t1	i309
+multi	conc	$facets	countall	spec:Tag/zz	i-1
+multi	conc	$facets	countall	spec:Genre/g1	i387
+multi	conc	$facets	countall	spec:Genre/g9	i-1
+multi	conc	$facets	countall	spec:Genre	IAE:Genre is not configured as hierarchical, path must be length=1
+multi	conc	$facets	countall	spec:Publish Date	i1545
+multi	conc	$facets	countall	spec:Publish Date/2001	i387
+multi	conc	$facets	countall	spec:Publish Date/2001/3	i-1
+multi	conc	$facets	countall	spec:Publish Date/2001/3/15	i-1
+multi	conc	$facets	countall	spec:Big/b7	i-1
+multi	conc	$facets	countall	spec:Nope/x	i-1
+multi	conc	$facets	countall	err:top0	IAE:topN must be > 0 (got: 0)
+multi	conc	$facets	countall	err:dims0	IAE:topN must be > 0 (got: 0)
+multi	conc	$facets	countall	err:topdims0	IAE:topN must be > 0 (got: 0)
+multi	conc	$facets	countall	err:topdims_children0	IAE:topN must be > 0 (got: 0)
+multi	conc	$facets	countall	err:flatpath	IAE:Field is not configured as hierarchical, path should be 0 length
+multi	conc	$facets	countall	err:flatpath_all	IAE:Field is not configured as hierarchical, path should be 0 length
+multi	conc	$facets	countall	err:spec2	IAE:Author is not configured as hierarchical, path must be length=1
+multi	ssdv	$facets	all	dims5	Big||i1545|1545|b0=i1=1,b1=i1=1,b1001=i1=1,b1003=i1=1,b1005=i1=1;Genre||i1545|6|g1=i387=387,g0=i386=386,g2=i386=386,g3=i386=386,g4=i258=258;Publish Date||i1545|4|2001=i387=387,2000=i386=386,2002=i386=386,2003=i386=386;Author||i1454|13|a3=i113=113,a9=i113=113,a0=i112=112,a1=i112=112,a10=i112=112;Tag||i-1|8|t5=i515=515,t6=i515=515,t7=i515=515,t0=i309=309,t1=i309=309
+multi	ssdv	$facets	all	dims1	Big||i1545|1545|b0=i1=1;Genre||i1545|6|g1=i387=387;Publish Date||i1545|4|2001=i387=387;Author||i1454|13|a3=i113=113;Tag||i-1|8|t5=i515=515
+multi	ssdv	$facets	all	topdims2_3	Big||i1545|1545|b0=i1=1,b1=i1=1,b1001=i1=1;Genre||i1545|6|g1=i387=387,g0=i386=386,g2=i386=386
+multi	ssdv	$facets	all	topdims10_2	Big||i1545|1545|b0=i1=1,b1=i1=1;Genre||i1545|6|g1=i387=387,g0=i386=386;Publish Date||i1545|4|2001=i387=387,2000=i386=386;Author||i1454|13|a3=i113=113,a9=i113=113;Tag||i-1|8|t5=i515=515,t6=i515=515
+multi	ssdv	$facets	all	topdims1_1	Big||i1545|1545|b0=i1=1
+multi	ssdv	$facets	all	topdims4_5	Big||i1545|1545|b0=i1=1,b1=i1=1,b1001=i1=1,b1003=i1=1,b1005=i1=1;Genre||i1545|6|g1=i387=387,g0=i386=386,g2=i386=386,g3=i386=386,g4=i258=258;Publish Date||i1545|4|2001=i387=387,2000=i386=386,2002=i386=386,2003=i386=386;Author||i1454|13|a3=i113=113,a9=i113=113,a0=i112=112,a1=i112=112,a10=i112=112
+multi	ssdv	$facets	all	top3:Author	Author||i1454|13|a3=i113=113,a9=i113=113,a0=i112=112
+multi	ssdv	$facets	all	all:Author	Author||i1454|13|a0=i112=112,a1=i112=112,a10=i112=112,a11=i112=112,a12=i111=111,a2=i111=111,a3=i113=113,a4=i112=112,a5=i112=112,a6=i110=110,a7=i112=112,a8=i112=112,a9=i113=113
+multi	ssdv	$facets	all	top3:Tag	Tag||i-1|8|t5=i515=515,t6=i515=515,t7=i515=515
+multi	ssdv	$facets	all	all:Tag	Tag||i-1|8|t0=i309=309,t1=i309=309,t2=i309=309,t3=i309=309,t4=i309=309,t5=i515=515,t6=i515=515,t7=i515=515
+multi	ssdv	$facets	all	top3:Genre	Genre||i1545|6|g1=i387=387,g0=i386=386,g2=i386=386
+multi	ssdv	$facets	all	all:Genre	Genre||i1545|6|g0=i386=386,g1=i387=387,g2=i386=386,g3=i386=386,g4=i258=258,g7=i257=257
+multi	ssdv	$facets	all	top3:Publish Date	Publish Date||i1545|4|2001=i387=387,2000=i386=386,2002=i386=386
+multi	ssdv	$facets	all	all:Publish Date	Publish Date||i1545|4|2000=i386=386,2001=i387=387,2002=i386=386,2003=i386=386
+multi	ssdv	$facets	all	top3:Nope	null
+multi	ssdv	$facets	all	all:Nope	null
+multi	ssdv	$facets	all	top3:Color	null
+multi	ssdv	$facets	all	all:Color	null
+multi	ssdv	$facets	all	top5:Big	Big||i1545|1545|b0=i1=1,b1=i1=1,b1001=i1=1,b1003=i1=1,b1005=i1=1
+multi	ssdv	$facets	all	top1:Big	Big||i1545|1545|b0=i1=1
+multi	ssdv	$facets	all	top1000:Tag	Tag||i-1|8|t5=i515=515,t6=i515=515,t7=i515=515,t0=i309=309,t1=i309=309,t2=i309=309,t3=i309=309,t4=i309=309
+multi	ssdv	$facets	all	top3:Publish Date/2001	Publish Date|2001|i387|3|6=i130=130,2=i129=129,10=i128=128
+multi	ssdv	$facets	all	all:Publish Date/2001	Publish Date|2001|i387|3|10=i128=128,2=i129=129,6=i130=130
+multi	ssdv	$facets	all	top3:Publish Date/2001/3	null
+multi	ssdv	$facets	all	all:Publish Date/2001/3	null
+multi	ssdv	$facets	all	top3:Publish Date/2003/12	Publish Date|2003/12|i128|7|12=i16=16,24=i15=15,8=i15=15
+multi	ssdv	$facets	all	all:Publish Date/2003/12	Publish Date|2003/12|i128|7|12=i16=16,16=i14=14,20=i14=14,24=i15=15,28=i14=14,4=i14=14,8=i15=15
+multi	ssdv	$facets	all	top3:Publish Date/1999	null
+multi	ssdv	$facets	all	all:Publish Date/1999	null
+multi	ssdv	$facets	all	top3:Publish Date/2001/3/3	null
+multi	ssdv	$facets	all	all:Publish Date/2001/3/3	null
+multi	ssdv	$facets	all	spec:Author/a3	i113
+multi	ssdv	$facets	all	spec:Tag/t1	i309
+multi	ssdv	$facets	all	spec:Tag/zz	i-1
+multi	ssdv	$facets	all	spec:Genre/g1	i387
+multi	ssdv	$facets	all	spec:Genre/g9	i-1
+multi	ssdv	$facets	all	spec:Genre	IAE:Genre is not configured as hierarchical, path must be length=1
+multi	ssdv	$facets	all	spec:Publish Date	i1545
+multi	ssdv	$facets	all	spec:Publish Date/2001	i387
+multi	ssdv	$facets	all	spec:Publish Date/2001/3	i-1
+multi	ssdv	$facets	all	spec:Publish Date/2001/3/15	i-1
+multi	ssdv	$facets	all	spec:Big/b7	i-1
+multi	ssdv	$facets	all	spec:Nope/x	i-1
+multi	ssdv	$facets	all	err:top0	IAE:topN must be > 0 (got: 0)
+multi	ssdv	$facets	all	err:dims0	IAE:topN must be > 0 (got: 0)
+multi	ssdv	$facets	all	err:topdims0	IAE:topN must be > 0 (got: 0)
+multi	ssdv	$facets	all	err:topdims_children0	IAE:topN must be > 0 (got: 0)
+multi	ssdv	$facets	all	err:flatpath	IAE:Field is not configured as hierarchical, path should be 0 length
+multi	ssdv	$facets	all	err:flatpath_all	IAE:Field is not configured as hierarchical, path should be 0 length
+multi	ssdv	$facets	all	err:spec2	IAE:Author is not configured as hierarchical, path must be length=1
+multi	conc	$facets	all	dims5	Big||i1545|1545|b0=i1=1,b1=i1=1,b1001=i1=1,b1003=i1=1,b1005=i1=1;Genre||i1545|6|g1=i387=387,g0=i386=386,g2=i386=386,g3=i386=386,g4=i258=258;Publish Date||i1545|4|2001=i387=387,2000=i386=386,2002=i386=386,2003=i386=386;Author||i1454|13|a3=i113=113,a9=i113=113,a0=i112=112,a1=i112=112,a10=i112=112;Tag||i-1|8|t5=i515=515,t6=i515=515,t7=i515=515,t0=i309=309,t1=i309=309
+multi	conc	$facets	all	dims1	Big||i1545|1545|b0=i1=1;Genre||i1545|6|g1=i387=387;Publish Date||i1545|4|2001=i387=387;Author||i1454|13|a3=i113=113;Tag||i-1|8|t5=i515=515
+multi	conc	$facets	all	topdims2_3	Big||i1545|1545|b0=i1=1,b1=i1=1,b1001=i1=1;Genre||i1545|6|g1=i387=387,g0=i386=386,g2=i386=386
+multi	conc	$facets	all	topdims10_2	Big||i1545|1545|b0=i1=1,b1=i1=1;Genre||i1545|6|g1=i387=387,g0=i386=386;Publish Date||i1545|4|2001=i387=387,2000=i386=386;Author||i1454|13|a3=i113=113,a9=i113=113;Tag||i-1|8|t5=i515=515,t6=i515=515
+multi	conc	$facets	all	topdims1_1	Big||i1545|1545|b0=i1=1
+multi	conc	$facets	all	topdims4_5	Big||i1545|1545|b0=i1=1,b1=i1=1,b1001=i1=1,b1003=i1=1,b1005=i1=1;Genre||i1545|6|g1=i387=387,g0=i386=386,g2=i386=386,g3=i386=386,g4=i258=258;Publish Date||i1545|4|2001=i387=387,2000=i386=386,2002=i386=386,2003=i386=386;Author||i1454|13|a3=i113=113,a9=i113=113,a0=i112=112,a1=i112=112,a10=i112=112
+multi	conc	$facets	all	top3:Author	Author||i1454|13|a3=i113=113,a9=i113=113,a0=i112=112
+multi	conc	$facets	all	all:Author	Author||i1454|13|a0=i112=112,a1=i112=112,a10=i112=112,a11=i112=112,a12=i111=111,a2=i111=111,a3=i113=113,a4=i112=112,a5=i112=112,a6=i110=110,a7=i112=112,a8=i112=112,a9=i113=113
+multi	conc	$facets	all	top3:Tag	Tag||i-1|8|t5=i515=515,t6=i515=515,t7=i515=515
+multi	conc	$facets	all	all:Tag	Tag||i-1|8|t0=i309=309,t1=i309=309,t2=i309=309,t3=i309=309,t4=i309=309,t5=i515=515,t6=i515=515,t7=i515=515
+multi	conc	$facets	all	top3:Genre	Genre||i1545|6|g1=i387=387,g0=i386=386,g2=i386=386
+multi	conc	$facets	all	all:Genre	Genre||i1545|6|g0=i386=386,g1=i387=387,g2=i386=386,g3=i386=386,g4=i258=258,g7=i257=257
+multi	conc	$facets	all	top3:Publish Date	Publish Date||i1545|4|2001=i387=387,2000=i386=386,2002=i386=386
+multi	conc	$facets	all	all:Publish Date	Publish Date||i1545|4|2000=i386=386,2001=i387=387,2002=i386=386,2003=i386=386
+multi	conc	$facets	all	top3:Nope	null
+multi	conc	$facets	all	all:Nope	null
+multi	conc	$facets	all	top3:Color	null
+multi	conc	$facets	all	all:Color	null
+multi	conc	$facets	all	top5:Big	Big||i1545|1545|b0=i1=1,b1=i1=1,b1001=i1=1,b1003=i1=1,b1005=i1=1
+multi	conc	$facets	all	top1:Big	Big||i1545|1545|b0=i1=1
+multi	conc	$facets	all	top1000:Tag	Tag||i-1|8|t5=i515=515,t6=i515=515,t7=i515=515,t0=i309=309,t1=i309=309,t2=i309=309,t3=i309=309,t4=i309=309
+multi	conc	$facets	all	top3:Publish Date/2001	Publish Date|2001|i387|3|6=i130=130,2=i129=129,10=i128=128
+multi	conc	$facets	all	all:Publish Date/2001	Publish Date|2001|i387|3|10=i128=128,2=i129=129,6=i130=130
+multi	conc	$facets	all	top3:Publish Date/2001/3	null
+multi	conc	$facets	all	all:Publish Date/2001/3	null
+multi	conc	$facets	all	top3:Publish Date/2003/12	Publish Date|2003/12|i128|7|12=i16=16,24=i15=15,8=i15=15
+multi	conc	$facets	all	all:Publish Date/2003/12	Publish Date|2003/12|i128|7|12=i16=16,16=i14=14,20=i14=14,24=i15=15,28=i14=14,4=i14=14,8=i15=15
+multi	conc	$facets	all	top3:Publish Date/1999	null
+multi	conc	$facets	all	all:Publish Date/1999	null
+multi	conc	$facets	all	top3:Publish Date/2001/3/3	null
+multi	conc	$facets	all	all:Publish Date/2001/3/3	null
+multi	conc	$facets	all	spec:Author/a3	i113
+multi	conc	$facets	all	spec:Tag/t1	i309
+multi	conc	$facets	all	spec:Tag/zz	i-1
+multi	conc	$facets	all	spec:Genre/g1	i387
+multi	conc	$facets	all	spec:Genre/g9	i-1
+multi	conc	$facets	all	spec:Genre	IAE:Genre is not configured as hierarchical, path must be length=1
+multi	conc	$facets	all	spec:Publish Date	i1545
+multi	conc	$facets	all	spec:Publish Date/2001	i387
+multi	conc	$facets	all	spec:Publish Date/2001/3	i-1
+multi	conc	$facets	all	spec:Publish Date/2001/3/15	i-1
+multi	conc	$facets	all	spec:Big/b7	i-1
+multi	conc	$facets	all	spec:Nope/x	i-1
+multi	conc	$facets	all	err:top0	IAE:topN must be > 0 (got: 0)
+multi	conc	$facets	all	err:dims0	IAE:topN must be > 0 (got: 0)
+multi	conc	$facets	all	err:topdims0	IAE:topN must be > 0 (got: 0)
+multi	conc	$facets	all	err:topdims_children0	IAE:topN must be > 0 (got: 0)
+multi	conc	$facets	all	err:flatpath	IAE:Field is not configured as hierarchical, path should be 0 length
+multi	conc	$facets	all	err:flatpath_all	IAE:Field is not configured as hierarchical, path should be 0 length
+multi	conc	$facets	all	err:spec2	IAE:Author is not configured as hierarchical, path must be length=1
+multi	ssdv	$facets	even	dims5	Big||i772|772|b0=i1=1,b1006=i1=1,b1008=i1=1,b1010=i1=1,b1014=i1=1;Genre||i772|3|g0=i386=386,g2=i386=386,g4=i258=258;Publish Date||i772|2|2000=i386=386,2002=i386=386;Author||i727|13|a0=i57=57,a3=i57=57,a5=i57=57,a1=i56=56,a10=i56=56;Tag||i-1|8|t5=i258=258,t6=i257=257,t7=i257=257,t0=i155=155,t2=i155=155
+multi	ssdv	$facets	even	dims1	Big||i772|772|b0=i1=1;Genre||i772|3|g0=i386=386;Publish Date||i772|2|2000=i386=386;Author||i727|13|a0=i57=57;Tag||i-1|8|t5=i258=258
+multi	ssdv	$facets	even	topdims2_3	Big||i772|772|b0=i1=1,b1006=i1=1,b1008=i1=1;Genre||i772|3|g0=i386=386,g2=i386=386,g4=i258=258
+multi	ssdv	$facets	even	topdims10_2	Big||i772|772|b0=i1=1,b1006=i1=1;Genre||i772|3|g0=i386=386,g2=i386=386;Publish Date||i772|2|2000=i386=386,2002=i386=386;Author||i727|13|a0=i57=57,a3=i57=57;Tag||i-1|8|t5=i258=258,t6=i257=257
+multi	ssdv	$facets	even	topdims1_1	Big||i772|772|b0=i1=1
+multi	ssdv	$facets	even	topdims4_5	Big||i772|772|b0=i1=1,b1006=i1=1,b1008=i1=1,b1010=i1=1,b1014=i1=1;Genre||i772|3|g0=i386=386,g2=i386=386,g4=i258=258;Publish Date||i772|2|2000=i386=386,2002=i386=386;Author||i727|13|a0=i57=57,a3=i57=57,a5=i57=57,a1=i56=56,a10=i56=56
+multi	ssdv	$facets	even	top3:Author	Author||i727|13|a0=i57=57,a3=i57=57,a5=i57=57
+multi	ssdv	$facets	even	all:Author	Author||i727|13|a0=i57=57,a1=i56=56,a10=i56=56,a11=i55=55,a12=i55=55,a2=i56=56,a3=i57=57,a4=i56=56,a5=i57=57,a6=i55=55,a7=i55=55,a8=i56=56,a9=i56=56
+multi	ssdv	$facets	even	top3:Tag	Tag||i-1|8|t5=i258=258,t6=i257=257,t7=i257=257
+multi	ssdv	$facets	even	all:Tag	Tag||i-1|8|t0=i155=155,t1=i154=154,t2=i155=155,t3=i154=154,t4=i154=154,t5=i258=258,t6=i257=257,t7=i257=257
+multi	ssdv	$facets	even	top3:Genre	Genre||i772|3|g0=i386=386,g2=i386=386,g4=i258=258
+multi	ssdv	$facets	even	all:Genre	Genre||i772|3|g0=i386=386,g2=i386=386,g4=i258=258
+multi	ssdv	$facets	even	top3:Publish Date	Publish Date||i772|2|2000=i386=386,2002=i386=386
+multi	ssdv	$facets	even	all:Publish Date	Publish Date||i772|2|2000=i386=386,2002=i386=386
+multi	ssdv	$facets	even	top3:Nope	null
+multi	ssdv	$facets	even	all:Nope	null
+multi	ssdv	$facets	even	top3:Color	null
+multi	ssdv	$facets	even	all:Color	null
+multi	ssdv	$facets	even	top5:Big	Big||i772|772|b0=i1=1,b1006=i1=1,b1008=i1=1,b1010=i1=1,b1014=i1=1
+multi	ssdv	$facets	even	top1:Big	Big||i772|772|b0=i1=1
+multi	ssdv	$facets	even	top1000:Tag	Tag||i-1|8|t5=i258=258,t6=i257=257,t7=i257=257,t0=i155=155,t2=i155=155,t1=i154=154,t3=i154=154,t4=i154=154
+multi	ssdv	$facets	even	top3:Publish Date/2001	null
+multi	ssdv	$facets	even	all:Publish Date/2001	Publish Date|2001|i0|0|
+multi	ssdv	$facets	even	top3:Publish Date/2001/3	null
+multi	ssdv	$facets	even	all:Publish Date/2001/3	null
+multi	ssdv	$facets	even	top3:Publish Date/2003/12	null
+multi	ssdv	$facets	even	all:Publish Date/2003/12	Publish Date|2003/12|i0|0|
+multi	ssdv	$facets	even	top3:Publish Date/1999	null
+multi	ssdv	$facets	even	all:Publish Date/1999	null
+multi	ssdv	$facets	even	top3:Publish Date/2001/3/3	null
+multi	ssdv	$facets	even	all:Publish Date/2001/3/3	null
+multi	ssdv	$facets	even	spec:Author/a3	i57
+multi	ssdv	$facets	even	spec:Tag/t1	i154
+multi	ssdv	$facets	even	spec:Tag/zz	i-1
+multi	ssdv	$facets	even	spec:Genre/g1	i0
+multi	ssdv	$facets	even	spec:Genre/g9	i-1
+multi	ssdv	$facets	even	spec:Genre	IAE:Genre is not configured as hierarchical, path must be length=1
+multi	ssdv	$facets	even	spec:Publish Date	i772
+multi	ssdv	$facets	even	spec:Publish Date/2001	i0
+multi	ssdv	$facets	even	spec:Publish Date/2001/3	i-1
+multi	ssdv	$facets	even	spec:Publish Date/2001/3/15	i-1
+multi	ssdv	$facets	even	spec:Big/b7	i-1
+multi	ssdv	$facets	even	spec:Nope/x	i-1
+multi	ssdv	$facets	even	err:top0	IAE:topN must be > 0 (got: 0)
+multi	ssdv	$facets	even	err:dims0	IAE:topN must be > 0 (got: 0)
+multi	ssdv	$facets	even	err:topdims0	IAE:topN must be > 0 (got: 0)
+multi	ssdv	$facets	even	err:topdims_children0	IAE:topN must be > 0 (got: 0)
+multi	ssdv	$facets	even	err:flatpath	IAE:Field is not configured as hierarchical, path should be 0 length
+multi	ssdv	$facets	even	err:flatpath_all	IAE:Field is not configured as hierarchical, path should be 0 length
+multi	ssdv	$facets	even	err:spec2	IAE:Author is not configured as hierarchical, path must be length=1
+multi	conc	$facets	even	dims5	Big||i772|772|b0=i1=1,b1006=i1=1,b1008=i1=1,b1010=i1=1,b1014=i1=1;Genre||i772|3|g0=i386=386,g2=i386=386,g4=i258=258;Publish Date||i772|2|2000=i386=386,2002=i386=386;Author||i727|13|a0=i57=57,a3=i57=57,a5=i57=57,a1=i56=56,a10=i56=56;Tag||i-1|8|t5=i258=258,t6=i257=257,t7=i257=257,t0=i155=155,t2=i155=155
+multi	conc	$facets	even	dims1	Big||i772|772|b0=i1=1;Genre||i772|3|g0=i386=386;Publish Date||i772|2|2000=i386=386;Author||i727|13|a0=i57=57;Tag||i-1|8|t5=i258=258
+multi	conc	$facets	even	topdims2_3	Big||i772|772|b0=i1=1,b1006=i1=1,b1008=i1=1;Genre||i772|3|g0=i386=386,g2=i386=386,g4=i258=258
+multi	conc	$facets	even	topdims10_2	Big||i772|772|b0=i1=1,b1006=i1=1;Genre||i772|3|g0=i386=386,g2=i386=386;Publish Date||i772|2|2000=i386=386,2002=i386=386;Author||i727|13|a0=i57=57,a3=i57=57;Tag||i-1|8|t5=i258=258,t6=i257=257
+multi	conc	$facets	even	topdims1_1	Big||i772|772|b0=i1=1
+multi	conc	$facets	even	topdims4_5	Big||i772|772|b0=i1=1,b1006=i1=1,b1008=i1=1,b1010=i1=1,b1014=i1=1;Genre||i772|3|g0=i386=386,g2=i386=386,g4=i258=258;Publish Date||i772|2|2000=i386=386,2002=i386=386;Author||i727|13|a0=i57=57,a3=i57=57,a5=i57=57,a1=i56=56,a10=i56=56
+multi	conc	$facets	even	top3:Author	Author||i727|13|a0=i57=57,a3=i57=57,a5=i57=57
+multi	conc	$facets	even	all:Author	Author||i727|13|a0=i57=57,a1=i56=56,a10=i56=56,a11=i55=55,a12=i55=55,a2=i56=56,a3=i57=57,a4=i56=56,a5=i57=57,a6=i55=55,a7=i55=55,a8=i56=56,a9=i56=56
+multi	conc	$facets	even	top3:Tag	Tag||i-1|8|t5=i258=258,t6=i257=257,t7=i257=257
+multi	conc	$facets	even	all:Tag	Tag||i-1|8|t0=i155=155,t1=i154=154,t2=i155=155,t3=i154=154,t4=i154=154,t5=i258=258,t6=i257=257,t7=i257=257
+multi	conc	$facets	even	top3:Genre	Genre||i772|3|g0=i386=386,g2=i386=386,g4=i258=258
+multi	conc	$facets	even	all:Genre	Genre||i772|3|g0=i386=386,g2=i386=386,g4=i258=258
+multi	conc	$facets	even	top3:Publish Date	Publish Date||i772|2|2000=i386=386,2002=i386=386
+multi	conc	$facets	even	all:Publish Date	Publish Date||i772|2|2000=i386=386,2002=i386=386
+multi	conc	$facets	even	top3:Nope	null
+multi	conc	$facets	even	all:Nope	null
+multi	conc	$facets	even	top3:Color	null
+multi	conc	$facets	even	all:Color	null
+multi	conc	$facets	even	top5:Big	Big||i772|772|b0=i1=1,b1006=i1=1,b1008=i1=1,b1010=i1=1,b1014=i1=1
+multi	conc	$facets	even	top1:Big	Big||i772|772|b0=i1=1
+multi	conc	$facets	even	top1000:Tag	Tag||i-1|8|t5=i258=258,t6=i257=257,t7=i257=257,t0=i155=155,t2=i155=155,t1=i154=154,t3=i154=154,t4=i154=154
+multi	conc	$facets	even	top3:Publish Date/2001	null
+multi	conc	$facets	even	all:Publish Date/2001	Publish Date|2001|i0|0|
+multi	conc	$facets	even	top3:Publish Date/2001/3	null
+multi	conc	$facets	even	all:Publish Date/2001/3	null
+multi	conc	$facets	even	top3:Publish Date/2003/12	null
+multi	conc	$facets	even	all:Publish Date/2003/12	Publish Date|2003/12|i0|0|
+multi	conc	$facets	even	top3:Publish Date/1999	null
+multi	conc	$facets	even	all:Publish Date/1999	null
+multi	conc	$facets	even	top3:Publish Date/2001/3/3	null
+multi	conc	$facets	even	all:Publish Date/2001/3/3	null
+multi	conc	$facets	even	spec:Author/a3	i57
+multi	conc	$facets	even	spec:Tag/t1	i154
+multi	conc	$facets	even	spec:Tag/zz	i-1
+multi	conc	$facets	even	spec:Genre/g1	i0
+multi	conc	$facets	even	spec:Genre/g9	i-1
+multi	conc	$facets	even	spec:Genre	IAE:Genre is not configured as hierarchical, path must be length=1
+multi	conc	$facets	even	spec:Publish Date	i772
+multi	conc	$facets	even	spec:Publish Date/2001	i0
+multi	conc	$facets	even	spec:Publish Date/2001/3	i-1
+multi	conc	$facets	even	spec:Publish Date/2001/3/15	i-1
+multi	conc	$facets	even	spec:Big/b7	i-1
+multi	conc	$facets	even	spec:Nope/x	i-1
+multi	conc	$facets	even	err:top0	IAE:topN must be > 0 (got: 0)
+multi	conc	$facets	even	err:dims0	IAE:topN must be > 0 (got: 0)
+multi	conc	$facets	even	err:topdims0	IAE:topN must be > 0 (got: 0)
+multi	conc	$facets	even	err:topdims_children0	IAE:topN must be > 0 (got: 0)
+multi	conc	$facets	even	err:flatpath	IAE:Field is not configured as hierarchical, path should be 0 length
+multi	conc	$facets	even	err:flatpath_all	IAE:Field is not configured as hierarchical, path should be 0 length
+multi	conc	$facets	even	err:spec2	IAE:Author is not configured as hierarchical, path must be length=1
+multi	ssdv	$facets	rare	dims5	Big||i29|29|b108=i1=1,b1140=i1=1,b1210=i1=1,b1280=i1=1,b1350=i1=1;Genre||i29|6|g3=i8=8,g0=i7=7,g1=i7=7,g2=i7=7,g4=i5=5;Publish Date||i29|4|2003=i8=8,2000=i7=7,2001=i7=7,2002=i7=7;Author||i27|13|a10=i3=3,a11=i3=3,a12=i3=3,a4=i3=3,a0=i2=2;Tag||i-1|8|t5=i10=10,t6=i10=10,t7=i9=9,t0=i7=7,t2=i7=7
+multi	ssdv	$facets	rare	dims1	Big||i29|29|b108=i1=1;Genre||i29|6|g3=i8=8;Publish Date||i29|4|2003=i8=8;Author||i27|13|a10=i3=3;Tag||i-1|8|t5=i10=10
+multi	ssdv	$facets	rare	topdims2_3	Big||i29|29|b108=i1=1,b1140=i1=1,b1210=i1=1;Genre||i29|6|g3=i8=8,g0=i7=7,g1=i7=7
+multi	ssdv	$facets	rare	topdims10_2	Big||i29|29|b108=i1=1,b1140=i1=1;Genre||i29|6|g3=i8=8,g0=i7=7;Publish Date||i29|4|2003=i8=8,2000=i7=7;Author||i27|13|a10=i3=3,a11=i3=3;Tag||i-1|8|t5=i10=10,t6=i10=10
+multi	ssdv	$facets	rare	topdims1_1	Big||i29|29|b108=i1=1
+multi	ssdv	$facets	rare	topdims4_5	Big||i29|29|b108=i1=1,b1140=i1=1,b1210=i1=1,b1280=i1=1,b1350=i1=1;Genre||i29|6|g3=i8=8,g0=i7=7,g1=i7=7,g2=i7=7,g4=i5=5;Publish Date||i29|4|2003=i8=8,2000=i7=7,2001=i7=7,2002=i7=7;Author||i27|13|a10=i3=3,a11=i3=3,a12=i3=3,a4=i3=3,a0=i2=2
+multi	ssdv	$facets	rare	top3:Author	Author||i27|13|a10=i3=3,a11=i3=3,a12=i3=3
+multi	ssdv	$facets	rare	all:Author	Author||i27|13|a0=i2=2,a1=i2=2,a10=i3=3,a11=i3=3,a12=i3=3,a2=i2=2,a3=i2=2,a4=i3=3,a5=i2=2,a6=i1=1,a7=i1=1,a8=i1=1,a9=i2=2
+multi	ssdv	$facets	rare	top3:Tag	Tag||i-1|8|t5=i10=10,t6=i10=10,t7=i9=9
+multi	ssdv	$facets	rare	all:Tag	Tag||i-1|8|t0=i7=7,t1=i5=5,t2=i7=7,t3=i5=5,t4=i5=5,t5=i10=10,t6=i10=10,t7=i9=9
+multi	ssdv	$facets	rare	top3:Genre	Genre||i29|6|g3=i8=8,g0=i7=7,g1=i7=7
+multi	ssdv	$facets	rare	all:Genre	Genre||i29|6|g0=i7=7,g1=i7=7,g2=i7=7,g3=i8=8,g4=i5=5,g7=i5=5
+multi	ssdv	$facets	rare	top3:Publish Date	Publish Date||i29|4|2003=i8=8,2000=i7=7,2001=i7=7
+multi	ssdv	$facets	rare	all:Publish Date	Publish Date||i29|4|2000=i7=7,2001=i7=7,2002=i7=7,2003=i8=8
+multi	ssdv	$facets	rare	top3:Nope	null
+multi	ssdv	$facets	rare	all:Nope	null
+multi	ssdv	$facets	rare	top3:Color	null
+multi	ssdv	$facets	rare	all:Color	null
+multi	ssdv	$facets	rare	top5:Big	Big||i29|29|b108=i1=1,b1140=i1=1,b1210=i1=1,b1280=i1=1,b1350=i1=1
+multi	ssdv	$facets	rare	top1:Big	Big||i29|29|b108=i1=1
+multi	ssdv	$facets	rare	top1000:Tag	Tag||i-1|8|t5=i10=10,t6=i10=10,t7=i9=9,t0=i7=7,t2=i7=7,t1=i5=5,t3=i5=5,t4=i5=5
+multi	ssdv	$facets	rare	top3:Publish Date/2001	Publish Date|2001|i7|3|6=i3=3,10=i2=2,2=i2=2
+multi	ssdv	$facets	rare	all:Publish Date/2001	Publish Date|2001|i7|3|10=i2=2,2=i2=2,6=i3=3
+multi	ssdv	$facets	rare	top3:Publish Date/2001/3	null
+multi	ssdv	$facets	rare	all:Publish Date/2001/3	null
+multi	ssdv	$facets	rare	top3:Publish Date/2003/12	Publish Date|2003/12|i2|2|12=i1=1,4=i1=1
+multi	ssdv	$facets	rare	all:Publish Date/2003/12	Publish Date|2003/12|i2|2|12=i1=1,4=i1=1
+multi	ssdv	$facets	rare	top3:Publish Date/1999	null
+multi	ssdv	$facets	rare	all:Publish Date/1999	null
+multi	ssdv	$facets	rare	top3:Publish Date/2001/3/3	null
+multi	ssdv	$facets	rare	all:Publish Date/2001/3/3	null
+multi	ssdv	$facets	rare	spec:Author/a3	i2
+multi	ssdv	$facets	rare	spec:Tag/t1	i5
+multi	ssdv	$facets	rare	spec:Tag/zz	i-1
+multi	ssdv	$facets	rare	spec:Genre/g1	i7
+multi	ssdv	$facets	rare	spec:Genre/g9	i-1
+multi	ssdv	$facets	rare	spec:Genre	IAE:Genre is not configured as hierarchical, path must be length=1
+multi	ssdv	$facets	rare	spec:Publish Date	i29
+multi	ssdv	$facets	rare	spec:Publish Date/2001	i7
+multi	ssdv	$facets	rare	spec:Publish Date/2001/3	i-1
+multi	ssdv	$facets	rare	spec:Publish Date/2001/3/15	i-1
+multi	ssdv	$facets	rare	spec:Big/b7	i-1
+multi	ssdv	$facets	rare	spec:Nope/x	i-1
+multi	ssdv	$facets	rare	err:top0	IAE:topN must be > 0 (got: 0)
+multi	ssdv	$facets	rare	err:dims0	IAE:topN must be > 0 (got: 0)
+multi	ssdv	$facets	rare	err:topdims0	IAE:topN must be > 0 (got: 0)
+multi	ssdv	$facets	rare	err:topdims_children0	IAE:topN must be > 0 (got: 0)
+multi	ssdv	$facets	rare	err:flatpath	IAE:Field is not configured as hierarchical, path should be 0 length
+multi	ssdv	$facets	rare	err:flatpath_all	IAE:Field is not configured as hierarchical, path should be 0 length
+multi	ssdv	$facets	rare	err:spec2	IAE:Author is not configured as hierarchical, path must be length=1
+multi	conc	$facets	rare	dims5	Big||i29|29|b108=i1=1,b1140=i1=1,b1210=i1=1,b1280=i1=1,b1350=i1=1;Genre||i29|6|g3=i8=8,g0=i7=7,g1=i7=7,g2=i7=7,g4=i5=5;Publish Date||i29|4|2003=i8=8,2000=i7=7,2001=i7=7,2002=i7=7;Author||i27|13|a10=i3=3,a11=i3=3,a12=i3=3,a4=i3=3,a0=i2=2;Tag||i-1|8|t5=i10=10,t6=i10=10,t7=i9=9,t0=i7=7,t2=i7=7
+multi	conc	$facets	rare	dims1	Big||i29|29|b108=i1=1;Genre||i29|6|g3=i8=8;Publish Date||i29|4|2003=i8=8;Author||i27|13|a10=i3=3;Tag||i-1|8|t5=i10=10
+multi	conc	$facets	rare	topdims2_3	Big||i29|29|b108=i1=1,b1140=i1=1,b1210=i1=1;Genre||i29|6|g3=i8=8,g0=i7=7,g1=i7=7
+multi	conc	$facets	rare	topdims10_2	Big||i29|29|b108=i1=1,b1140=i1=1;Genre||i29|6|g3=i8=8,g0=i7=7;Publish Date||i29|4|2003=i8=8,2000=i7=7;Author||i27|13|a10=i3=3,a11=i3=3;Tag||i-1|8|t5=i10=10,t6=i10=10
+multi	conc	$facets	rare	topdims1_1	Big||i29|29|b108=i1=1
+multi	conc	$facets	rare	topdims4_5	Big||i29|29|b108=i1=1,b1140=i1=1,b1210=i1=1,b1280=i1=1,b1350=i1=1;Genre||i29|6|g3=i8=8,g0=i7=7,g1=i7=7,g2=i7=7,g4=i5=5;Publish Date||i29|4|2003=i8=8,2000=i7=7,2001=i7=7,2002=i7=7;Author||i27|13|a10=i3=3,a11=i3=3,a12=i3=3,a4=i3=3,a0=i2=2
+multi	conc	$facets	rare	top3:Author	Author||i27|13|a10=i3=3,a11=i3=3,a12=i3=3
+multi	conc	$facets	rare	all:Author	Author||i27|13|a0=i2=2,a1=i2=2,a10=i3=3,a11=i3=3,a12=i3=3,a2=i2=2,a3=i2=2,a4=i3=3,a5=i2=2,a6=i1=1,a7=i1=1,a8=i1=1,a9=i2=2
+multi	conc	$facets	rare	top3:Tag	Tag||i-1|8|t5=i10=10,t6=i10=10,t7=i9=9
+multi	conc	$facets	rare	all:Tag	Tag||i-1|8|t0=i7=7,t1=i5=5,t2=i7=7,t3=i5=5,t4=i5=5,t5=i10=10,t6=i10=10,t7=i9=9
+multi	conc	$facets	rare	top3:Genre	Genre||i29|6|g3=i8=8,g0=i7=7,g1=i7=7
+multi	conc	$facets	rare	all:Genre	Genre||i29|6|g0=i7=7,g1=i7=7,g2=i7=7,g3=i8=8,g4=i5=5,g7=i5=5
+multi	conc	$facets	rare	top3:Publish Date	Publish Date||i29|4|2003=i8=8,2000=i7=7,2001=i7=7
+multi	conc	$facets	rare	all:Publish Date	Publish Date||i29|4|2000=i7=7,2001=i7=7,2002=i7=7,2003=i8=8
+multi	conc	$facets	rare	top3:Nope	null
+multi	conc	$facets	rare	all:Nope	null
+multi	conc	$facets	rare	top3:Color	null
+multi	conc	$facets	rare	all:Color	null
+multi	conc	$facets	rare	top5:Big	Big||i29|29|b108=i1=1,b1140=i1=1,b1210=i1=1,b1280=i1=1,b1350=i1=1
+multi	conc	$facets	rare	top1:Big	Big||i29|29|b108=i1=1
+multi	conc	$facets	rare	top1000:Tag	Tag||i-1|8|t5=i10=10,t6=i10=10,t7=i9=9,t0=i7=7,t2=i7=7,t1=i5=5,t3=i5=5,t4=i5=5
+multi	conc	$facets	rare	top3:Publish Date/2001	Publish Date|2001|i7|3|6=i3=3,10=i2=2,2=i2=2
+multi	conc	$facets	rare	all:Publish Date/2001	Publish Date|2001|i7|3|10=i2=2,2=i2=2,6=i3=3
+multi	conc	$facets	rare	top3:Publish Date/2001/3	null
+multi	conc	$facets	rare	all:Publish Date/2001/3	null
+multi	conc	$facets	rare	top3:Publish Date/2003/12	Publish Date|2003/12|i2|2|12=i1=1,4=i1=1
+multi	conc	$facets	rare	all:Publish Date/2003/12	Publish Date|2003/12|i2|2|12=i1=1,4=i1=1
+multi	conc	$facets	rare	top3:Publish Date/1999	null
+multi	conc	$facets	rare	all:Publish Date/1999	null
+multi	conc	$facets	rare	top3:Publish Date/2001/3/3	null
+multi	conc	$facets	rare	all:Publish Date/2001/3/3	null
+multi	conc	$facets	rare	spec:Author/a3	i2
+multi	conc	$facets	rare	spec:Tag/t1	i5
+multi	conc	$facets	rare	spec:Tag/zz	i-1
+multi	conc	$facets	rare	spec:Genre/g1	i7
+multi	conc	$facets	rare	spec:Genre/g9	i-1
+multi	conc	$facets	rare	spec:Genre	IAE:Genre is not configured as hierarchical, path must be length=1
+multi	conc	$facets	rare	spec:Publish Date	i29
+multi	conc	$facets	rare	spec:Publish Date/2001	i7
+multi	conc	$facets	rare	spec:Publish Date/2001/3	i-1
+multi	conc	$facets	rare	spec:Publish Date/2001/3/15	i-1
+multi	conc	$facets	rare	spec:Big/b7	i-1
+multi	conc	$facets	rare	spec:Nope/x	i-1
+multi	conc	$facets	rare	err:top0	IAE:topN must be > 0 (got: 0)
+multi	conc	$facets	rare	err:dims0	IAE:topN must be > 0 (got: 0)
+multi	conc	$facets	rare	err:topdims0	IAE:topN must be > 0 (got: 0)
+multi	conc	$facets	rare	err:topdims_children0	IAE:topN must be > 0 (got: 0)
+multi	conc	$facets	rare	err:flatpath	IAE:Field is not configured as hierarchical, path should be 0 length
+multi	conc	$facets	rare	err:flatpath_all	IAE:Field is not configured as hierarchical, path should be 0 length
+multi	conc	$facets	rare	err:spec2	IAE:Author is not configured as hierarchical, path must be length=1
+multi	ssdv	$facets	none	dims5	
+multi	ssdv	$facets	none	dims1	
+multi	ssdv	$facets	none	topdims2_3	
+multi	ssdv	$facets	none	topdims10_2	
+multi	ssdv	$facets	none	topdims1_1	
+multi	ssdv	$facets	none	topdims4_5	
+multi	ssdv	$facets	none	top3:Author	null
+multi	ssdv	$facets	none	all:Author	null
+multi	ssdv	$facets	none	top3:Tag	null
+multi	ssdv	$facets	none	all:Tag	null
+multi	ssdv	$facets	none	top3:Genre	null
+multi	ssdv	$facets	none	all:Genre	null
+multi	ssdv	$facets	none	top3:Publish Date	null
+multi	ssdv	$facets	none	all:Publish Date	null
+multi	ssdv	$facets	none	top3:Nope	null
+multi	ssdv	$facets	none	all:Nope	null
+multi	ssdv	$facets	none	top3:Color	null
+multi	ssdv	$facets	none	all:Color	null
+multi	ssdv	$facets	none	top5:Big	null
+multi	ssdv	$facets	none	top1:Big	null
+multi	ssdv	$facets	none	top1000:Tag	null
+multi	ssdv	$facets	none	top3:Publish Date/2001	null
+multi	ssdv	$facets	none	all:Publish Date/2001	null
+multi	ssdv	$facets	none	top3:Publish Date/2001/3	null
+multi	ssdv	$facets	none	all:Publish Date/2001/3	null
+multi	ssdv	$facets	none	top3:Publish Date/2003/12	null
+multi	ssdv	$facets	none	all:Publish Date/2003/12	null
+multi	ssdv	$facets	none	top3:Publish Date/1999	null
+multi	ssdv	$facets	none	all:Publish Date/1999	null
+multi	ssdv	$facets	none	top3:Publish Date/2001/3/3	null
+multi	ssdv	$facets	none	all:Publish Date/2001/3/3	null
+multi	ssdv	$facets	none	spec:Author/a3	i0
+multi	ssdv	$facets	none	spec:Tag/t1	i0
+multi	ssdv	$facets	none	spec:Tag/zz	i-1
+multi	ssdv	$facets	none	spec:Genre/g1	i0
+multi	ssdv	$facets	none	spec:Genre/g9	i-1
+multi	ssdv	$facets	none	spec:Genre	IAE:Genre is not configured as hierarchical, path must be length=1
+multi	ssdv	$facets	none	spec:Publish Date	i0
+multi	ssdv	$facets	none	spec:Publish Date/2001	i0
+multi	ssdv	$facets	none	spec:Publish Date/2001/3	i-1
+multi	ssdv	$facets	none	spec:Publish Date/2001/3/15	i-1
+multi	ssdv	$facets	none	spec:Big/b7	i-1
+multi	ssdv	$facets	none	spec:Nope/x	i-1
+multi	ssdv	$facets	none	err:top0	IAE:topN must be > 0 (got: 0)
+multi	ssdv	$facets	none	err:dims0	IAE:topN must be > 0 (got: 0)
+multi	ssdv	$facets	none	err:topdims0	IAE:topN must be > 0 (got: 0)
+multi	ssdv	$facets	none	err:topdims_children0	IAE:topN must be > 0 (got: 0)
+multi	ssdv	$facets	none	err:flatpath	null
+multi	ssdv	$facets	none	err:flatpath_all	IAE:Field is not configured as hierarchical, path should be 0 length
+multi	ssdv	$facets	none	err:spec2	IAE:Author is not configured as hierarchical, path must be length=1
+multi	conc	$facets	none	dims5	
+multi	conc	$facets	none	dims1	
+multi	conc	$facets	none	topdims2_3	
+multi	conc	$facets	none	topdims10_2	
+multi	conc	$facets	none	topdims1_1	
+multi	conc	$facets	none	topdims4_5	
+multi	conc	$facets	none	top3:Author	null
+multi	conc	$facets	none	all:Author	Author||i0|0|
+multi	conc	$facets	none	top3:Tag	null
+multi	conc	$facets	none	all:Tag	Tag||i-1|0|
+multi	conc	$facets	none	top3:Genre	null
+multi	conc	$facets	none	all:Genre	Genre||i0|0|
+multi	conc	$facets	none	top3:Publish Date	null
+multi	conc	$facets	none	all:Publish Date	Publish Date||i0|0|
+multi	conc	$facets	none	top3:Nope	null
+multi	conc	$facets	none	all:Nope	null
+multi	conc	$facets	none	top3:Color	null
+multi	conc	$facets	none	all:Color	null
+multi	conc	$facets	none	top5:Big	null
+multi	conc	$facets	none	top1:Big	null
+multi	conc	$facets	none	top1000:Tag	null
+multi	conc	$facets	none	top3:Publish Date/2001	null
+multi	conc	$facets	none	all:Publish Date/2001	Publish Date|2001|i0|0|
+multi	conc	$facets	none	top3:Publish Date/2001/3	null
+multi	conc	$facets	none	all:Publish Date/2001/3	null
+multi	conc	$facets	none	top3:Publish Date/2003/12	null
+multi	conc	$facets	none	all:Publish Date/2003/12	Publish Date|2003/12|i0|0|
+multi	conc	$facets	none	top3:Publish Date/1999	null
+multi	conc	$facets	none	all:Publish Date/1999	null
+multi	conc	$facets	none	top3:Publish Date/2001/3/3	null
+multi	conc	$facets	none	all:Publish Date/2001/3/3	null
+multi	conc	$facets	none	spec:Author/a3	i0
+multi	conc	$facets	none	spec:Tag/t1	i0
+multi	conc	$facets	none	spec:Tag/zz	i-1
+multi	conc	$facets	none	spec:Genre/g1	i0
+multi	conc	$facets	none	spec:Genre/g9	i-1
+multi	conc	$facets	none	spec:Genre	IAE:Genre is not configured as hierarchical, path must be length=1
+multi	conc	$facets	none	spec:Publish Date	i0
+multi	conc	$facets	none	spec:Publish Date/2001	i0
+multi	conc	$facets	none	spec:Publish Date/2001/3	i-1
+multi	conc	$facets	none	spec:Publish Date/2001/3/15	i-1
+multi	conc	$facets	none	spec:Big/b7	i-1
+multi	conc	$facets	none	spec:Nope/x	i-1
+multi	conc	$facets	none	err:top0	IAE:topN must be > 0 (got: 0)
+multi	conc	$facets	none	err:dims0	IAE:topN must be > 0 (got: 0)
+multi	conc	$facets	none	err:topdims0	IAE:topN must be > 0 (got: 0)
+multi	conc	$facets	none	err:topdims_children0	IAE:topN must be > 0 (got: 0)
+multi	conc	$facets	none	err:flatpath	IAE:Field is not configured as hierarchical, path should be 0 length
+multi	conc	$facets	none	err:flatpath_all	IAE:Field is not configured as hierarchical, path should be 0 length
+multi	conc	$facets	none	err:spec2	IAE:Author is not configured as hierarchical, path must be length=1
+multi	ssdv	$color	countall	dims5	Color||i1545|3|c0=i515=515,c1=i515=515,c2=i515=515
+multi	ssdv	$color	countall	topdims2_3	Color||i1545|3|c0=i515=515,c1=i515=515,c2=i515=515
+multi	ssdv	$color	countall	top3:Color	Color||i1545|3|c0=i515=515,c1=i515=515,c2=i515=515
+multi	ssdv	$color	countall	all:Color	Color||i1545|3|c0=i515=515,c1=i515=515,c2=i515=515
+multi	ssdv	$color	countall	spec:Color/c1	i515
+multi	ssdv	$color	countall	top3:Author	null
+multi	conc	$color	countall	dims5	Color||i1545|3|c0=i515=515,c1=i515=515,c2=i515=515
+multi	conc	$color	countall	topdims2_3	Color||i1545|3|c0=i515=515,c1=i515=515,c2=i515=515
+multi	conc	$color	countall	top3:Color	Color||i1545|3|c0=i515=515,c1=i515=515,c2=i515=515
+multi	conc	$color	countall	all:Color	Color||i1545|3|c0=i515=515,c1=i515=515,c2=i515=515
+multi	conc	$color	countall	spec:Color/c1	i515
+multi	conc	$color	countall	top3:Author	null
+multi	ssdv	$color	all	dims5	Color||i1545|3|c0=i515=515,c1=i515=515,c2=i515=515
+multi	ssdv	$color	all	topdims2_3	Color||i1545|3|c0=i515=515,c1=i515=515,c2=i515=515
+multi	ssdv	$color	all	top3:Color	Color||i1545|3|c0=i515=515,c1=i515=515,c2=i515=515
+multi	ssdv	$color	all	all:Color	Color||i1545|3|c0=i515=515,c1=i515=515,c2=i515=515
+multi	ssdv	$color	all	spec:Color/c1	i515
+multi	ssdv	$color	all	top3:Author	null
+multi	conc	$color	all	dims5	Color||i1545|3|c0=i515=515,c1=i515=515,c2=i515=515
+multi	conc	$color	all	topdims2_3	Color||i1545|3|c0=i515=515,c1=i515=515,c2=i515=515
+multi	conc	$color	all	top3:Color	Color||i1545|3|c0=i515=515,c1=i515=515,c2=i515=515
+multi	conc	$color	all	all:Color	Color||i1545|3|c0=i515=515,c1=i515=515,c2=i515=515
+multi	conc	$color	all	spec:Color/c1	i515
+multi	conc	$color	all	top3:Author	null
+multi	ssdv	$color	even	dims5	Color||i772|3|c0=i258=258,c1=i257=257,c2=i257=257
+multi	ssdv	$color	even	topdims2_3	Color||i772|3|c0=i258=258,c1=i257=257,c2=i257=257
+multi	ssdv	$color	even	top3:Color	Color||i772|3|c0=i258=258,c1=i257=257,c2=i257=257
+multi	ssdv	$color	even	all:Color	Color||i772|3|c0=i258=258,c1=i257=257,c2=i257=257
+multi	ssdv	$color	even	spec:Color/c1	i257
+multi	ssdv	$color	even	top3:Author	null
+multi	conc	$color	even	dims5	Color||i772|3|c0=i258=258,c1=i257=257,c2=i257=257
+multi	conc	$color	even	topdims2_3	Color||i772|3|c0=i258=258,c1=i257=257,c2=i257=257
+multi	conc	$color	even	top3:Color	Color||i772|3|c0=i258=258,c1=i257=257,c2=i257=257
+multi	conc	$color	even	all:Color	Color||i772|3|c0=i258=258,c1=i257=257,c2=i257=257
+multi	conc	$color	even	spec:Color/c1	i257
+multi	conc	$color	even	top3:Author	null
+multi	ssdv	$color	rare	dims5	Color||i29|3|c0=i10=10,c1=i10=10,c2=i9=9
+multi	ssdv	$color	rare	topdims2_3	Color||i29|3|c0=i10=10,c1=i10=10,c2=i9=9
+multi	ssdv	$color	rare	top3:Color	Color||i29|3|c0=i10=10,c1=i10=10,c2=i9=9
+multi	ssdv	$color	rare	all:Color	Color||i29|3|c0=i10=10,c1=i10=10,c2=i9=9
+multi	ssdv	$color	rare	spec:Color/c1	i10
+multi	ssdv	$color	rare	top3:Author	null
+multi	conc	$color	rare	dims5	Color||i29|3|c0=i10=10,c1=i10=10,c2=i9=9
+multi	conc	$color	rare	topdims2_3	Color||i29|3|c0=i10=10,c1=i10=10,c2=i9=9
+multi	conc	$color	rare	top3:Color	Color||i29|3|c0=i10=10,c1=i10=10,c2=i9=9
+multi	conc	$color	rare	all:Color	Color||i29|3|c0=i10=10,c1=i10=10,c2=i9=9
+multi	conc	$color	rare	spec:Color/c1	i10
+multi	conc	$color	rare	top3:Author	null
+multi	ssdv	$color	none	dims5	
+multi	ssdv	$color	none	topdims2_3	
+multi	ssdv	$color	none	top3:Color	null
+multi	ssdv	$color	none	all:Color	null
+multi	ssdv	$color	none	spec:Color/c1	i0
+multi	ssdv	$color	none	top3:Author	null
+multi	conc	$color	none	dims5	
+multi	conc	$color	none	topdims2_3	
+multi	conc	$color	none	top3:Color	null
+multi	conc	$color	none	all:Color	Color||i0|0|
+multi	conc	$color	none	spec:Color/c1	i0
+multi	conc	$color	none	top3:Author	null
+single	ssdv	$facets	countall	dims5	Big||i300|300|b0=i1=1,b1006=i1=1,b1015=i1=1,b102=i1=1,b1024=i1=1;Genre||i300|6|g0=i75=75,g1=i75=75,g2=i75=75,g3=i75=75,g4=i50=50;Publish Date||i300|4|2000=i75=75,2001=i75=75,2002=i75=75,2003=i75=75;Author||i282|13|a0=i22=22,a1=i22=22,a10=i22=22,a11=i22=22,a12=i22=22;Tag||i-1|8|t5=i100=100,t6=i100=100,t7=i100=100,t0=i60=60,t1=i60=60
+single	ssdv	$facets	countall	dims1	Big||i300|300|b0=i1=1;Genre||i300|6|g0=i75=75;Publish Date||i300|4|2000=i75=75;Author||i282|13|a0=i22=22;Tag||i-1|8|t5=i100=100
+single	ssdv	$facets	countall	topdims2_3	Big||i300|300|b0=i1=1,b1006=i1=1,b1015=i1=1;Genre||i300|6|g0=i75=75,g1=i75=75,g2=i75=75
+single	ssdv	$facets	countall	topdims10_2	Big||i300|300|b0=i1=1,b1006=i1=1;Genre||i300|6|g0=i75=75,g1=i75=75;Publish Date||i300|4|2000=i75=75,2001=i75=75;Author||i282|13|a0=i22=22,a1=i22=22;Tag||i-1|8|t5=i100=100,t6=i100=100
+single	ssdv	$facets	countall	topdims1_1	Big||i300|300|b0=i1=1
+single	ssdv	$facets	countall	topdims4_5	Big||i300|300|b0=i1=1,b1006=i1=1,b1015=i1=1,b102=i1=1,b1024=i1=1;Genre||i300|6|g0=i75=75,g1=i75=75,g2=i75=75,g3=i75=75,g4=i50=50;Publish Date||i300|4|2000=i75=75,2001=i75=75,2002=i75=75,2003=i75=75;Author||i282|13|a0=i22=22,a1=i22=22,a10=i22=22,a11=i22=22,a12=i22=22
+single	ssdv	$facets	countall	top3:Author	Author||i282|13|a0=i22=22,a1=i22=22,a10=i22=22
+single	ssdv	$facets	countall	all:Author	Author||i282|13|a0=i22=22,a1=i22=22,a10=i22=22,a11=i22=22,a12=i22=22,a2=i21=21,a3=i22=22,a4=i21=21,a5=i22=22,a6=i21=21,a7=i22=22,a8=i21=21,a9=i22=22
+single	ssdv	$facets	countall	top3:Tag	Tag||i-1|8|t5=i100=100,t6=i100=100,t7=i100=100
+single	ssdv	$facets	countall	all:Tag	Tag||i-1|8|t0=i60=60,t1=i60=60,t2=i60=60,t3=i60=60,t4=i60=60,t5=i100=100,t6=i100=100,t7=i100=100
+single	ssdv	$facets	countall	top3:Genre	Genre||i300|6|g0=i75=75,g1=i75=75,g2=i75=75
+single	ssdv	$facets	countall	all:Genre	Genre||i300|6|g0=i75=75,g1=i75=75,g2=i75=75,g3=i75=75,g4=i50=50,g7=i50=50
+single	ssdv	$facets	countall	top3:Publish Date	Publish Date||i300|4|2000=i75=75,2001=i75=75,2002=i75=75
+single	ssdv	$facets	countall	all:Publish Date	Publish Date||i300|4|2000=i75=75,2001=i75=75,2002=i75=75,2003=i75=75
+single	ssdv	$facets	countall	top3:Nope	null
+single	ssdv	$facets	countall	all:Nope	null
+single	ssdv	$facets	countall	top3:Color	null
+single	ssdv	$facets	countall	all:Color	null
+single	ssdv	$facets	countall	top5:Big	Big||i300|300|b0=i1=1,b1006=i1=1,b1015=i1=1,b102=i1=1,b1024=i1=1
+single	ssdv	$facets	countall	top1:Big	Big||i300|300|b0=i1=1
+single	ssdv	$facets	countall	top1000:Tag	Tag||i-1|8|t5=i100=100,t6=i100=100,t7=i100=100,t0=i60=60,t1=i60=60,t2=i60=60,t3=i60=60,t4=i60=60
+single	ssdv	$facets	countall	top3:Publish Date/2001	Publish Date|2001|i75|3|10=i25=25,2=i25=25,6=i25=25
+single	ssdv	$facets	countall	all:Publish Date/2001	Publish Date|2001|i75|3|10=i25=25,2=i25=25,6=i25=25
+single	ssdv	$facets	countall	top3:Publish Date/2001/3	null
+single	ssdv	$facets	countall	all:Publish Date/2001/3	null
+single	ssdv	$facets	countall	top3:Publish Date/2003/12	Publish Date|2003/12|i25|7|12=i3=3,20=i3=3,24=i3=3
+single	ssdv	$facets	countall	all:Publish Date/2003/12	Publish Date|2003/12|i25|7|12=i3=3,16=i2=2,20=i3=3,24=i3=3,28=i3=3,4=i3=3,8=i3=3
+single	ssdv	$facets	countall	top3:Publish Date/1999	null
+single	ssdv	$facets	countall	all:Publish Date/1999	null
+single	ssdv	$facets	countall	top3:Publish Date/2001/3/3	null
+single	ssdv	$facets	countall	all:Publish Date/2001/3/3	null
+single	ssdv	$facets	countall	spec:Author/a3	i22
+single	ssdv	$facets	countall	spec:Tag/t1	i60
+single	ssdv	$facets	countall	spec:Tag/zz	i-1
+single	ssdv	$facets	countall	spec:Genre/g1	i75
+single	ssdv	$facets	countall	spec:Genre/g9	i-1
+single	ssdv	$facets	countall	spec:Genre	IAE:Genre is not configured as hierarchical, path must be length=1
+single	ssdv	$facets	countall	spec:Publish Date	i300
+single	ssdv	$facets	countall	spec:Publish Date/2001	i75
+single	ssdv	$facets	countall	spec:Publish Date/2001/3	i-1
+single	ssdv	$facets	countall	spec:Publish Date/2001/3/15	i-1
+single	ssdv	$facets	countall	spec:Big/b7	i-1
+single	ssdv	$facets	countall	spec:Nope/x	i-1
+single	ssdv	$facets	countall	err:top0	IAE:topN must be > 0 (got: 0)
+single	ssdv	$facets	countall	err:dims0	IAE:topN must be > 0 (got: 0)
+single	ssdv	$facets	countall	err:topdims0	IAE:topN must be > 0 (got: 0)
+single	ssdv	$facets	countall	err:topdims_children0	IAE:topN must be > 0 (got: 0)
+single	ssdv	$facets	countall	err:flatpath	IAE:Field is not configured as hierarchical, path should be 0 length
+single	ssdv	$facets	countall	err:flatpath_all	IAE:Field is not configured as hierarchical, path should be 0 length
+single	ssdv	$facets	countall	err:spec2	IAE:Author is not configured as hierarchical, path must be length=1
+single	conc	$facets	countall	dims5	Big||i300|300|b0=i1=1,b1006=i1=1,b1015=i1=1,b102=i1=1,b1024=i1=1;Genre||i300|6|g0=i75=75,g1=i75=75,g2=i75=75,g3=i75=75,g4=i50=50;Publish Date||i300|4|2000=i75=75,2001=i75=75,2002=i75=75,2003=i75=75;Author||i282|13|a0=i22=22,a1=i22=22,a10=i22=22,a11=i22=22,a12=i22=22;Tag||i-1|8|t5=i100=100,t6=i100=100,t7=i100=100,t0=i60=60,t1=i60=60
+single	conc	$facets	countall	dims1	Big||i300|300|b0=i1=1;Genre||i300|6|g0=i75=75;Publish Date||i300|4|2000=i75=75;Author||i282|13|a0=i22=22;Tag||i-1|8|t5=i100=100
+single	conc	$facets	countall	topdims2_3	Big||i300|300|b0=i1=1,b1006=i1=1,b1015=i1=1;Genre||i300|6|g0=i75=75,g1=i75=75,g2=i75=75
+single	conc	$facets	countall	topdims10_2	Big||i300|300|b0=i1=1,b1006=i1=1;Genre||i300|6|g0=i75=75,g1=i75=75;Publish Date||i300|4|2000=i75=75,2001=i75=75;Author||i282|13|a0=i22=22,a1=i22=22;Tag||i-1|8|t5=i100=100,t6=i100=100
+single	conc	$facets	countall	topdims1_1	Big||i300|300|b0=i1=1
+single	conc	$facets	countall	topdims4_5	Big||i300|300|b0=i1=1,b1006=i1=1,b1015=i1=1,b102=i1=1,b1024=i1=1;Genre||i300|6|g0=i75=75,g1=i75=75,g2=i75=75,g3=i75=75,g4=i50=50;Publish Date||i300|4|2000=i75=75,2001=i75=75,2002=i75=75,2003=i75=75;Author||i282|13|a0=i22=22,a1=i22=22,a10=i22=22,a11=i22=22,a12=i22=22
+single	conc	$facets	countall	top3:Author	Author||i282|13|a0=i22=22,a1=i22=22,a10=i22=22
+single	conc	$facets	countall	all:Author	Author||i282|13|a0=i22=22,a1=i22=22,a10=i22=22,a11=i22=22,a12=i22=22,a2=i21=21,a3=i22=22,a4=i21=21,a5=i22=22,a6=i21=21,a7=i22=22,a8=i21=21,a9=i22=22
+single	conc	$facets	countall	top3:Tag	Tag||i-1|8|t5=i100=100,t6=i100=100,t7=i100=100
+single	conc	$facets	countall	all:Tag	Tag||i-1|8|t0=i60=60,t1=i60=60,t2=i60=60,t3=i60=60,t4=i60=60,t5=i100=100,t6=i100=100,t7=i100=100
+single	conc	$facets	countall	top3:Genre	Genre||i300|6|g0=i75=75,g1=i75=75,g2=i75=75
+single	conc	$facets	countall	all:Genre	Genre||i300|6|g0=i75=75,g1=i75=75,g2=i75=75,g3=i75=75,g4=i50=50,g7=i50=50
+single	conc	$facets	countall	top3:Publish Date	Publish Date||i300|4|2000=i75=75,2001=i75=75,2002=i75=75
+single	conc	$facets	countall	all:Publish Date	Publish Date||i300|4|2000=i75=75,2001=i75=75,2002=i75=75,2003=i75=75
+single	conc	$facets	countall	top3:Nope	null
+single	conc	$facets	countall	all:Nope	null
+single	conc	$facets	countall	top3:Color	null
+single	conc	$facets	countall	all:Color	null
+single	conc	$facets	countall	top5:Big	Big||i300|300|b0=i1=1,b1006=i1=1,b1015=i1=1,b102=i1=1,b1024=i1=1
+single	conc	$facets	countall	top1:Big	Big||i300|300|b0=i1=1
+single	conc	$facets	countall	top1000:Tag	Tag||i-1|8|t5=i100=100,t6=i100=100,t7=i100=100,t0=i60=60,t1=i60=60,t2=i60=60,t3=i60=60,t4=i60=60
+single	conc	$facets	countall	top3:Publish Date/2001	Publish Date|2001|i75|3|10=i25=25,2=i25=25,6=i25=25
+single	conc	$facets	countall	all:Publish Date/2001	Publish Date|2001|i75|3|10=i25=25,2=i25=25,6=i25=25
+single	conc	$facets	countall	top3:Publish Date/2001/3	null
+single	conc	$facets	countall	all:Publish Date/2001/3	null
+single	conc	$facets	countall	top3:Publish Date/2003/12	Publish Date|2003/12|i25|7|12=i3=3,20=i3=3,24=i3=3
+single	conc	$facets	countall	all:Publish Date/2003/12	Publish Date|2003/12|i25|7|12=i3=3,16=i2=2,20=i3=3,24=i3=3,28=i3=3,4=i3=3,8=i3=3
+single	conc	$facets	countall	top3:Publish Date/1999	null
+single	conc	$facets	countall	all:Publish Date/1999	null
+single	conc	$facets	countall	top3:Publish Date/2001/3/3	null
+single	conc	$facets	countall	all:Publish Date/2001/3/3	null
+single	conc	$facets	countall	spec:Author/a3	i22
+single	conc	$facets	countall	spec:Tag/t1	i60
+single	conc	$facets	countall	spec:Tag/zz	i-1
+single	conc	$facets	countall	spec:Genre/g1	i75
+single	conc	$facets	countall	spec:Genre/g9	i-1
+single	conc	$facets	countall	spec:Genre	IAE:Genre is not configured as hierarchical, path must be length=1
+single	conc	$facets	countall	spec:Publish Date	i300
+single	conc	$facets	countall	spec:Publish Date/2001	i75
+single	conc	$facets	countall	spec:Publish Date/2001/3	i-1
+single	conc	$facets	countall	spec:Publish Date/2001/3/15	i-1
+single	conc	$facets	countall	spec:Big/b7	i-1
+single	conc	$facets	countall	spec:Nope/x	i-1
+single	conc	$facets	countall	err:top0	IAE:topN must be > 0 (got: 0)
+single	conc	$facets	countall	err:dims0	IAE:topN must be > 0 (got: 0)
+single	conc	$facets	countall	err:topdims0	IAE:topN must be > 0 (got: 0)
+single	conc	$facets	countall	err:topdims_children0	IAE:topN must be > 0 (got: 0)
+single	conc	$facets	countall	err:flatpath	IAE:Field is not configured as hierarchical, path should be 0 length
+single	conc	$facets	countall	err:flatpath_all	IAE:Field is not configured as hierarchical, path should be 0 length
+single	conc	$facets	countall	err:spec2	IAE:Author is not configured as hierarchical, path must be length=1
+single	ssdv	$facets	all	dims5	Big||i300|300|b0=i1=1,b1006=i1=1,b1015=i1=1,b102=i1=1,b1024=i1=1;Genre||i300|6|g0=i75=75,g1=i75=75,g2=i75=75,g3=i75=75,g4=i50=50;Publish Date||i300|4|2000=i75=75,2001=i75=75,2002=i75=75,2003=i75=75;Author||i282|13|a0=i22=22,a1=i22=22,a10=i22=22,a11=i22=22,a12=i22=22;Tag||i-1|8|t5=i100=100,t6=i100=100,t7=i100=100,t0=i60=60,t1=i60=60
+single	ssdv	$facets	all	dims1	Big||i300|300|b0=i1=1;Genre||i300|6|g0=i75=75;Publish Date||i300|4|2000=i75=75;Author||i282|13|a0=i22=22;Tag||i-1|8|t5=i100=100
+single	ssdv	$facets	all	topdims2_3	Big||i300|300|b0=i1=1,b1006=i1=1,b1015=i1=1;Genre||i300|6|g0=i75=75,g1=i75=75,g2=i75=75
+single	ssdv	$facets	all	topdims10_2	Big||i300|300|b0=i1=1,b1006=i1=1;Genre||i300|6|g0=i75=75,g1=i75=75;Publish Date||i300|4|2000=i75=75,2001=i75=75;Author||i282|13|a0=i22=22,a1=i22=22;Tag||i-1|8|t5=i100=100,t6=i100=100
+single	ssdv	$facets	all	topdims1_1	Big||i300|300|b0=i1=1
+single	ssdv	$facets	all	topdims4_5	Big||i300|300|b0=i1=1,b1006=i1=1,b1015=i1=1,b102=i1=1,b1024=i1=1;Genre||i300|6|g0=i75=75,g1=i75=75,g2=i75=75,g3=i75=75,g4=i50=50;Publish Date||i300|4|2000=i75=75,2001=i75=75,2002=i75=75,2003=i75=75;Author||i282|13|a0=i22=22,a1=i22=22,a10=i22=22,a11=i22=22,a12=i22=22
+single	ssdv	$facets	all	top3:Author	Author||i282|13|a0=i22=22,a1=i22=22,a10=i22=22
+single	ssdv	$facets	all	all:Author	Author||i282|13|a0=i22=22,a1=i22=22,a10=i22=22,a11=i22=22,a12=i22=22,a2=i21=21,a3=i22=22,a4=i21=21,a5=i22=22,a6=i21=21,a7=i22=22,a8=i21=21,a9=i22=22
+single	ssdv	$facets	all	top3:Tag	Tag||i-1|8|t5=i100=100,t6=i100=100,t7=i100=100
+single	ssdv	$facets	all	all:Tag	Tag||i-1|8|t0=i60=60,t1=i60=60,t2=i60=60,t3=i60=60,t4=i60=60,t5=i100=100,t6=i100=100,t7=i100=100
+single	ssdv	$facets	all	top3:Genre	Genre||i300|6|g0=i75=75,g1=i75=75,g2=i75=75
+single	ssdv	$facets	all	all:Genre	Genre||i300|6|g0=i75=75,g1=i75=75,g2=i75=75,g3=i75=75,g4=i50=50,g7=i50=50
+single	ssdv	$facets	all	top3:Publish Date	Publish Date||i300|4|2000=i75=75,2001=i75=75,2002=i75=75
+single	ssdv	$facets	all	all:Publish Date	Publish Date||i300|4|2000=i75=75,2001=i75=75,2002=i75=75,2003=i75=75
+single	ssdv	$facets	all	top3:Nope	null
+single	ssdv	$facets	all	all:Nope	null
+single	ssdv	$facets	all	top3:Color	null
+single	ssdv	$facets	all	all:Color	null
+single	ssdv	$facets	all	top5:Big	Big||i300|300|b0=i1=1,b1006=i1=1,b1015=i1=1,b102=i1=1,b1024=i1=1
+single	ssdv	$facets	all	top1:Big	Big||i300|300|b0=i1=1
+single	ssdv	$facets	all	top1000:Tag	Tag||i-1|8|t5=i100=100,t6=i100=100,t7=i100=100,t0=i60=60,t1=i60=60,t2=i60=60,t3=i60=60,t4=i60=60
+single	ssdv	$facets	all	top3:Publish Date/2001	Publish Date|2001|i75|3|10=i25=25,2=i25=25,6=i25=25
+single	ssdv	$facets	all	all:Publish Date/2001	Publish Date|2001|i75|3|10=i25=25,2=i25=25,6=i25=25
+single	ssdv	$facets	all	top3:Publish Date/2001/3	null
+single	ssdv	$facets	all	all:Publish Date/2001/3	null
+single	ssdv	$facets	all	top3:Publish Date/2003/12	Publish Date|2003/12|i25|7|12=i3=3,20=i3=3,24=i3=3
+single	ssdv	$facets	all	all:Publish Date/2003/12	Publish Date|2003/12|i25|7|12=i3=3,16=i2=2,20=i3=3,24=i3=3,28=i3=3,4=i3=3,8=i3=3
+single	ssdv	$facets	all	top3:Publish Date/1999	null
+single	ssdv	$facets	all	all:Publish Date/1999	null
+single	ssdv	$facets	all	top3:Publish Date/2001/3/3	null
+single	ssdv	$facets	all	all:Publish Date/2001/3/3	null
+single	ssdv	$facets	all	spec:Author/a3	i22
+single	ssdv	$facets	all	spec:Tag/t1	i60
+single	ssdv	$facets	all	spec:Tag/zz	i-1
+single	ssdv	$facets	all	spec:Genre/g1	i75
+single	ssdv	$facets	all	spec:Genre/g9	i-1
+single	ssdv	$facets	all	spec:Genre	IAE:Genre is not configured as hierarchical, path must be length=1
+single	ssdv	$facets	all	spec:Publish Date	i300
+single	ssdv	$facets	all	spec:Publish Date/2001	i75
+single	ssdv	$facets	all	spec:Publish Date/2001/3	i-1
+single	ssdv	$facets	all	spec:Publish Date/2001/3/15	i-1
+single	ssdv	$facets	all	spec:Big/b7	i-1
+single	ssdv	$facets	all	spec:Nope/x	i-1
+single	ssdv	$facets	all	err:top0	IAE:topN must be > 0 (got: 0)
+single	ssdv	$facets	all	err:dims0	IAE:topN must be > 0 (got: 0)
+single	ssdv	$facets	all	err:topdims0	IAE:topN must be > 0 (got: 0)
+single	ssdv	$facets	all	err:topdims_children0	IAE:topN must be > 0 (got: 0)
+single	ssdv	$facets	all	err:flatpath	IAE:Field is not configured as hierarchical, path should be 0 length
+single	ssdv	$facets	all	err:flatpath_all	IAE:Field is not configured as hierarchical, path should be 0 length
+single	ssdv	$facets	all	err:spec2	IAE:Author is not configured as hierarchical, path must be length=1
+single	conc	$facets	all	dims5	Big||i300|300|b0=i1=1,b1006=i1=1,b1015=i1=1,b102=i1=1,b1024=i1=1;Genre||i300|6|g0=i75=75,g1=i75=75,g2=i75=75,g3=i75=75,g4=i50=50;Publish Date||i300|4|2000=i75=75,2001=i75=75,2002=i75=75,2003=i75=75;Author||i282|13|a0=i22=22,a1=i22=22,a10=i22=22,a11=i22=22,a12=i22=22;Tag||i-1|8|t5=i100=100,t6=i100=100,t7=i100=100,t0=i60=60,t1=i60=60
+single	conc	$facets	all	dims1	Big||i300|300|b0=i1=1;Genre||i300|6|g0=i75=75;Publish Date||i300|4|2000=i75=75;Author||i282|13|a0=i22=22;Tag||i-1|8|t5=i100=100
+single	conc	$facets	all	topdims2_3	Big||i300|300|b0=i1=1,b1006=i1=1,b1015=i1=1;Genre||i300|6|g0=i75=75,g1=i75=75,g2=i75=75
+single	conc	$facets	all	topdims10_2	Big||i300|300|b0=i1=1,b1006=i1=1;Genre||i300|6|g0=i75=75,g1=i75=75;Publish Date||i300|4|2000=i75=75,2001=i75=75;Author||i282|13|a0=i22=22,a1=i22=22;Tag||i-1|8|t5=i100=100,t6=i100=100
+single	conc	$facets	all	topdims1_1	Big||i300|300|b0=i1=1
+single	conc	$facets	all	topdims4_5	Big||i300|300|b0=i1=1,b1006=i1=1,b1015=i1=1,b102=i1=1,b1024=i1=1;Genre||i300|6|g0=i75=75,g1=i75=75,g2=i75=75,g3=i75=75,g4=i50=50;Publish Date||i300|4|2000=i75=75,2001=i75=75,2002=i75=75,2003=i75=75;Author||i282|13|a0=i22=22,a1=i22=22,a10=i22=22,a11=i22=22,a12=i22=22
+single	conc	$facets	all	top3:Author	Author||i282|13|a0=i22=22,a1=i22=22,a10=i22=22
+single	conc	$facets	all	all:Author	Author||i282|13|a0=i22=22,a1=i22=22,a10=i22=22,a11=i22=22,a12=i22=22,a2=i21=21,a3=i22=22,a4=i21=21,a5=i22=22,a6=i21=21,a7=i22=22,a8=i21=21,a9=i22=22
+single	conc	$facets	all	top3:Tag	Tag||i-1|8|t5=i100=100,t6=i100=100,t7=i100=100
+single	conc	$facets	all	all:Tag	Tag||i-1|8|t0=i60=60,t1=i60=60,t2=i60=60,t3=i60=60,t4=i60=60,t5=i100=100,t6=i100=100,t7=i100=100
+single	conc	$facets	all	top3:Genre	Genre||i300|6|g0=i75=75,g1=i75=75,g2=i75=75
+single	conc	$facets	all	all:Genre	Genre||i300|6|g0=i75=75,g1=i75=75,g2=i75=75,g3=i75=75,g4=i50=50,g7=i50=50
+single	conc	$facets	all	top3:Publish Date	Publish Date||i300|4|2000=i75=75,2001=i75=75,2002=i75=75
+single	conc	$facets	all	all:Publish Date	Publish Date||i300|4|2000=i75=75,2001=i75=75,2002=i75=75,2003=i75=75
+single	conc	$facets	all	top3:Nope	null
+single	conc	$facets	all	all:Nope	null
+single	conc	$facets	all	top3:Color	null
+single	conc	$facets	all	all:Color	null
+single	conc	$facets	all	top5:Big	Big||i300|300|b0=i1=1,b1006=i1=1,b1015=i1=1,b102=i1=1,b1024=i1=1
+single	conc	$facets	all	top1:Big	Big||i300|300|b0=i1=1
+single	conc	$facets	all	top1000:Tag	Tag||i-1|8|t5=i100=100,t6=i100=100,t7=i100=100,t0=i60=60,t1=i60=60,t2=i60=60,t3=i60=60,t4=i60=60
+single	conc	$facets	all	top3:Publish Date/2001	Publish Date|2001|i75|3|10=i25=25,2=i25=25,6=i25=25
+single	conc	$facets	all	all:Publish Date/2001	Publish Date|2001|i75|3|10=i25=25,2=i25=25,6=i25=25
+single	conc	$facets	all	top3:Publish Date/2001/3	null
+single	conc	$facets	all	all:Publish Date/2001/3	null
+single	conc	$facets	all	top3:Publish Date/2003/12	Publish Date|2003/12|i25|7|12=i3=3,20=i3=3,24=i3=3
+single	conc	$facets	all	all:Publish Date/2003/12	Publish Date|2003/12|i25|7|12=i3=3,16=i2=2,20=i3=3,24=i3=3,28=i3=3,4=i3=3,8=i3=3
+single	conc	$facets	all	top3:Publish Date/1999	null
+single	conc	$facets	all	all:Publish Date/1999	null
+single	conc	$facets	all	top3:Publish Date/2001/3/3	null
+single	conc	$facets	all	all:Publish Date/2001/3/3	null
+single	conc	$facets	all	spec:Author/a3	i22
+single	conc	$facets	all	spec:Tag/t1	i60
+single	conc	$facets	all	spec:Tag/zz	i-1
+single	conc	$facets	all	spec:Genre/g1	i75
+single	conc	$facets	all	spec:Genre/g9	i-1
+single	conc	$facets	all	spec:Genre	IAE:Genre is not configured as hierarchical, path must be length=1
+single	conc	$facets	all	spec:Publish Date	i300
+single	conc	$facets	all	spec:Publish Date/2001	i75
+single	conc	$facets	all	spec:Publish Date/2001/3	i-1
+single	conc	$facets	all	spec:Publish Date/2001/3/15	i-1
+single	conc	$facets	all	spec:Big/b7	i-1
+single	conc	$facets	all	spec:Nope/x	i-1
+single	conc	$facets	all	err:top0	IAE:topN must be > 0 (got: 0)
+single	conc	$facets	all	err:dims0	IAE:topN must be > 0 (got: 0)
+single	conc	$facets	all	err:topdims0	IAE:topN must be > 0 (got: 0)
+single	conc	$facets	all	err:topdims_children0	IAE:topN must be > 0 (got: 0)
+single	conc	$facets	all	err:flatpath	IAE:Field is not configured as hierarchical, path should be 0 length
+single	conc	$facets	all	err:flatpath_all	IAE:Field is not configured as hierarchical, path should be 0 length
+single	conc	$facets	all	err:spec2	IAE:Author is not configured as hierarchical, path must be length=1
+single	ssdv	$facets	even	dims5	Big||i150|150|b0=i1=1,b1006=i1=1,b102=i1=1,b1024=i1=1,b1040=i1=1;Genre||i150|3|g0=i75=75,g2=i75=75,g4=i50=50;Publish Date||i150|2|2000=i75=75,2002=i75=75;Author||i141|13|a1=i12=12,a5=i12=12,a0=i11=11,a10=i11=11,a2=i11=11;Tag||i-1|8|t5=i50=50,t6=i50=50,t7=i50=50,t0=i30=30,t1=i30=30
+single	ssdv	$facets	even	dims1	Big||i150|150|b0=i1=1;Genre||i150|3|g0=i75=75;Publish Date||i150|2|2000=i75=75;Author||i141|13|a1=i12=12;Tag||i-1|8|t5=i50=50
+single	ssdv	$facets	even	topdims2_3	Big||i150|150|b0=i1=1,b1006=i1=1,b102=i1=1;Genre||i150|3|g0=i75=75,g2=i75=75,g4=i50=50
+single	ssdv	$facets	even	topdims10_2	Big||i150|150|b0=i1=1,b1006=i1=1;Genre||i150|3|g0=i75=75,g2=i75=75;Publish Date||i150|2|2000=i75=75,2002=i75=75;Author||i141|13|a1=i12=12,a5=i12=12;Tag||i-1|8|t5=i50=50,t6=i50=50
+single	ssdv	$facets	even	topdims1_1	Big||i150|150|b0=i1=1
+single	ssdv	$facets	even	topdims4_5	Big||i150|150|b0=i1=1,b1006=i1=1,b102=i1=1,b1024=i1=1,b1040=i1=1;Genre||i150|3|g0=i75=75,g2=i75=75,g4=i50=50;Publish Date||i150|2|2000=i75=75,2002=i75=75;Author||i141|13|a1=i12=12,a5=i12=12,a0=i11=11,a10=i11=11,a2=i11=11
+single	ssdv	$facets	even	top3:Author	Author||i141|13|a1=i12=12,a5=i12=12,a0=i11=11
+single	ssdv	$facets	even	all:Author	Author||i141|13|a0=i11=11,a1=i12=12,a10=i11=11,a11=i10=10,a12=i10=10,a2=i11=11,a3=i11=11,a4=i11=11,a5=i12=12,a6=i11=11,a7=i10=10,a8=i10=10,a9=i11=11
+single	ssdv	$facets	even	top3:Tag	Tag||i-1|8|t5=i50=50,t6=i50=50,t7=i50=50
+single	ssdv	$facets	even	all:Tag	Tag||i-1|8|t0=i30=30,t1=i30=30,t2=i30=30,t3=i30=30,t4=i30=30,t5=i50=50,t6=i50=50,t7=i50=50
+single	ssdv	$facets	even	top3:Genre	Genre||i150|3|g0=i75=75,g2=i75=75,g4=i50=50
+single	ssdv	$facets	even	all:Genre	Genre||i150|3|g0=i75=75,g2=i75=75,g4=i50=50
+single	ssdv	$facets	even	top3:Publish Date	Publish Date||i150|2|2000=i75=75,2002=i75=75
+single	ssdv	$facets	even	all:Publish Date	Publish Date||i150|2|2000=i75=75,2002=i75=75
+single	ssdv	$facets	even	top3:Nope	null
+single	ssdv	$facets	even	all:Nope	null
+single	ssdv	$facets	even	top3:Color	null
+single	ssdv	$facets	even	all:Color	null
+single	ssdv	$facets	even	top5:Big	Big||i150|150|b0=i1=1,b1006=i1=1,b102=i1=1,b1024=i1=1,b1040=i1=1
+single	ssdv	$facets	even	top1:Big	Big||i150|150|b0=i1=1
+single	ssdv	$facets	even	top1000:Tag	Tag||i-1|8|t5=i50=50,t6=i50=50,t7=i50=50,t0=i30=30,t1=i30=30,t2=i30=30,t3=i30=30,t4=i30=30
+single	ssdv	$facets	even	top3:Publish Date/2001	null
+single	ssdv	$facets	even	all:Publish Date/2001	Publish Date|2001|i0|0|
+single	ssdv	$facets	even	top3:Publish Date/2001/3	null
+single	ssdv	$facets	even	all:Publish Date/2001/3	null
+single	ssdv	$facets	even	top3:Publish Date/2003/12	null
+single	ssdv	$facets	even	all:Publish Date/2003/12	Publish Date|2003/12|i0|0|
+single	ssdv	$facets	even	top3:Publish Date/1999	null
+single	ssdv	$facets	even	all:Publish Date/1999	null
+single	ssdv	$facets	even	top3:Publish Date/2001/3/3	null
+single	ssdv	$facets	even	all:Publish Date/2001/3/3	null
+single	ssdv	$facets	even	spec:Author/a3	i11
+single	ssdv	$facets	even	spec:Tag/t1	i30
+single	ssdv	$facets	even	spec:Tag/zz	i-1
+single	ssdv	$facets	even	spec:Genre/g1	i0
+single	ssdv	$facets	even	spec:Genre/g9	i-1
+single	ssdv	$facets	even	spec:Genre	IAE:Genre is not configured as hierarchical, path must be length=1
+single	ssdv	$facets	even	spec:Publish Date	i150
+single	ssdv	$facets	even	spec:Publish Date/2001	i0
+single	ssdv	$facets	even	spec:Publish Date/2001/3	i-1
+single	ssdv	$facets	even	spec:Publish Date/2001/3/15	i-1
+single	ssdv	$facets	even	spec:Big/b7	i-1
+single	ssdv	$facets	even	spec:Nope/x	i-1
+single	ssdv	$facets	even	err:top0	IAE:topN must be > 0 (got: 0)
+single	ssdv	$facets	even	err:dims0	IAE:topN must be > 0 (got: 0)
+single	ssdv	$facets	even	err:topdims0	IAE:topN must be > 0 (got: 0)
+single	ssdv	$facets	even	err:topdims_children0	IAE:topN must be > 0 (got: 0)
+single	ssdv	$facets	even	err:flatpath	IAE:Field is not configured as hierarchical, path should be 0 length
+single	ssdv	$facets	even	err:flatpath_all	IAE:Field is not configured as hierarchical, path should be 0 length
+single	ssdv	$facets	even	err:spec2	IAE:Author is not configured as hierarchical, path must be length=1
+single	conc	$facets	even	dims5	Big||i150|150|b0=i1=1,b1006=i1=1,b102=i1=1,b1024=i1=1,b1040=i1=1;Genre||i150|3|g0=i75=75,g2=i75=75,g4=i50=50;Publish Date||i150|2|2000=i75=75,2002=i75=75;Author||i141|13|a1=i12=12,a5=i12=12,a0=i11=11,a10=i11=11,a2=i11=11;Tag||i-1|8|t5=i50=50,t6=i50=50,t7=i50=50,t0=i30=30,t1=i30=30
+single	conc	$facets	even	dims1	Big||i150|150|b0=i1=1;Genre||i150|3|g0=i75=75;Publish Date||i150|2|2000=i75=75;Author||i141|13|a1=i12=12;Tag||i-1|8|t5=i50=50
+single	conc	$facets	even	topdims2_3	Big||i150|150|b0=i1=1,b1006=i1=1,b102=i1=1;Genre||i150|3|g0=i75=75,g2=i75=75,g4=i50=50
+single	conc	$facets	even	topdims10_2	Big||i150|150|b0=i1=1,b1006=i1=1;Genre||i150|3|g0=i75=75,g2=i75=75;Publish Date||i150|2|2000=i75=75,2002=i75=75;Author||i141|13|a1=i12=12,a5=i12=12;Tag||i-1|8|t5=i50=50,t6=i50=50
+single	conc	$facets	even	topdims1_1	Big||i150|150|b0=i1=1
+single	conc	$facets	even	topdims4_5	Big||i150|150|b0=i1=1,b1006=i1=1,b102=i1=1,b1024=i1=1,b1040=i1=1;Genre||i150|3|g0=i75=75,g2=i75=75,g4=i50=50;Publish Date||i150|2|2000=i75=75,2002=i75=75;Author||i141|13|a1=i12=12,a5=i12=12,a0=i11=11,a10=i11=11,a2=i11=11
+single	conc	$facets	even	top3:Author	Author||i141|13|a1=i12=12,a5=i12=12,a0=i11=11
+single	conc	$facets	even	all:Author	Author||i141|13|a0=i11=11,a1=i12=12,a10=i11=11,a11=i10=10,a12=i10=10,a2=i11=11,a3=i11=11,a4=i11=11,a5=i12=12,a6=i11=11,a7=i10=10,a8=i10=10,a9=i11=11
+single	conc	$facets	even	top3:Tag	Tag||i-1|8|t5=i50=50,t6=i50=50,t7=i50=50
+single	conc	$facets	even	all:Tag	Tag||i-1|8|t0=i30=30,t1=i30=30,t2=i30=30,t3=i30=30,t4=i30=30,t5=i50=50,t6=i50=50,t7=i50=50
+single	conc	$facets	even	top3:Genre	Genre||i150|3|g0=i75=75,g2=i75=75,g4=i50=50
+single	conc	$facets	even	all:Genre	Genre||i150|3|g0=i75=75,g2=i75=75,g4=i50=50
+single	conc	$facets	even	top3:Publish Date	Publish Date||i150|2|2000=i75=75,2002=i75=75
+single	conc	$facets	even	all:Publish Date	Publish Date||i150|2|2000=i75=75,2002=i75=75
+single	conc	$facets	even	top3:Nope	null
+single	conc	$facets	even	all:Nope	null
+single	conc	$facets	even	top3:Color	null
+single	conc	$facets	even	all:Color	null
+single	conc	$facets	even	top5:Big	Big||i150|150|b0=i1=1,b1006=i1=1,b102=i1=1,b1024=i1=1,b1040=i1=1
+single	conc	$facets	even	top1:Big	Big||i150|150|b0=i1=1
+single	conc	$facets	even	top1000:Tag	Tag||i-1|8|t5=i50=50,t6=i50=50,t7=i50=50,t0=i30=30,t1=i30=30,t2=i30=30,t3=i30=30,t4=i30=30
+single	conc	$facets	even	top3:Publish Date/2001	null
+single	conc	$facets	even	all:Publish Date/2001	Publish Date|2001|i0|0|
+single	conc	$facets	even	top3:Publish Date/2001/3	null
+single	conc	$facets	even	all:Publish Date/2001/3	null
+single	conc	$facets	even	top3:Publish Date/2003/12	null
+single	conc	$facets	even	all:Publish Date/2003/12	Publish Date|2003/12|i0|0|
+single	conc	$facets	even	top3:Publish Date/1999	null
+single	conc	$facets	even	all:Publish Date/1999	null
+single	conc	$facets	even	top3:Publish Date/2001/3/3	null
+single	conc	$facets	even	all:Publish Date/2001/3/3	null
+single	conc	$facets	even	spec:Author/a3	i11
+single	conc	$facets	even	spec:Tag/t1	i30
+single	conc	$facets	even	spec:Tag/zz	i-1
+single	conc	$facets	even	spec:Genre/g1	i0
+single	conc	$facets	even	spec:Genre/g9	i-1
+single	conc	$facets	even	spec:Genre	IAE:Genre is not configured as hierarchical, path must be length=1
+single	conc	$facets	even	spec:Publish Date	i150
+single	conc	$facets	even	spec:Publish Date/2001	i0
+single	conc	$facets	even	spec:Publish Date/2001/3	i-1
+single	conc	$facets	even	spec:Publish Date/2001/3/15	i-1
+single	conc	$facets	even	spec:Big/b7	i-1
+single	conc	$facets	even	spec:Nope/x	i-1
+single	conc	$facets	even	err:top0	IAE:topN must be > 0 (got: 0)
+single	conc	$facets	even	err:dims0	IAE:topN must be > 0 (got: 0)
+single	conc	$facets	even	err:topdims0	IAE:topN must be > 0 (got: 0)
+single	conc	$facets	even	err:topdims_children0	IAE:topN must be > 0 (got: 0)
+single	conc	$facets	even	err:flatpath	IAE:Field is not configured as hierarchical, path should be 0 length
+single	conc	$facets	even	err:flatpath_all	IAE:Field is not configured as hierarchical, path should be 0 length
+single	conc	$facets	even	err:spec2	IAE:Author is not configured as hierarchical, path must be length=1
+single	ssdv	$facets	rare	dims5	Big||i6|6|b1140=i1=1,b1433=i1=1,b261=i1=1,b2968=i1=1,b554=i1=1;Genre||i6|6|g0=i2=2,g3=i2=2,g1=i1=1,g2=i1=1,g4=i1=1;Publish Date||i6|4|2000=i2=2,2003=i2=2,2001=i1=1,2002=i1=1;Author||i5|5|a10=i1=1,a11=i1=1,a12=i1=1,a4=i1=1,a5=i1=1;Tag||i-1|8|t2=i2=2,t5=i2=2,t6=i2=2,t7=i2=2,t0=i1=1
+single	ssdv	$facets	rare	dims1	Big||i6|6|b1140=i1=1;Genre||i6|6|g0=i2=2;Publish Date||i6|4|2000=i2=2;Author||i5|5|a10=i1=1;Tag||i-1|8|t2=i2=2
+single	ssdv	$facets	rare	topdims2_3	Big||i6|6|b1140=i1=1,b1433=i1=1,b261=i1=1;Genre||i6|6|g0=i2=2,g3=i2=2,g1=i1=1
+single	ssdv	$facets	rare	topdims10_2	Big||i6|6|b1140=i1=1,b1433=i1=1;Genre||i6|6|g0=i2=2,g3=i2=2;Publish Date||i6|4|2000=i2=2,2003=i2=2;Author||i5|5|a10=i1=1,a11=i1=1;Tag||i-1|8|t2=i2=2,t5=i2=2
+single	ssdv	$facets	rare	topdims1_1	Big||i6|6|b1140=i1=1
+single	ssdv	$facets	rare	topdims4_5	Big||i6|6|b1140=i1=1,b1433=i1=1,b261=i1=1,b2968=i1=1,b554=i1=1;Genre||i6|6|g0=i2=2,g3=i2=2,g1=i1=1,g2=i1=1,g4=i1=1;Publish Date||i6|4|2000=i2=2,2003=i2=2,2001=i1=1,2002=i1=1;Author||i5|5|a10=i1=1,a11=i1=1,a12=i1=1,a4=i1=1,a5=i1=1
+single	ssdv	$facets	rare	top3:Author	Author||i5|5|a10=i1=1,a11=i1=1,a12=i1=1
+single	ssdv	$facets	rare	all:Author	Author||i5|5|a10=i1=1,a11=i1=1,a12=i1=1,a4=i1=1,a5=i1=1
+single	ssdv	$facets	rare	top3:Tag	Tag||i-1|8|t2=i2=2,t5=i2=2,t6=i2=2
+single	ssdv	$facets	rare	all:Tag	Tag||i-1|8|t0=i1=1,t1=i1=1,t2=i2=2,t3=i1=1,t4=i1=1,t5=i2=2,t6=i2=2,t7=i2=2
+single	ssdv	$facets	rare	top3:Genre	Genre||i6|6|g0=i2=2,g3=i2=2,g1=i1=1
+single	ssdv	$facets	rare	all:Genre	Genre||i6|6|g0=i2=2,g1=i1=1,g2=i1=1,g3=i2=2,g4=i1=1,g7=i1=1
+single	ssdv	$facets	rare	top3:Publish Date	Publish Date||i6|4|2000=i2=2,2003=i2=2,2001=i1=1
+single	ssdv	$facets	rare	all:Publish Date	Publish Date||i6|4|2000=i2=2,2001=i1=1,2002=i1=1,2003=i2=2
+single	ssdv	$facets	rare	top3:Nope	null
+single	ssdv	$facets	rare	all:Nope	null
+single	ssdv	$facets	rare	top3:Color	null
+single	ssdv	$facets	rare	all:Color	null
+single	ssdv	$facets	rare	top5:Big	Big||i6|6|b1140=i1=1,b1433=i1=1,b261=i1=1,b2968=i1=1,b554=i1=1
+single	ssdv	$facets	rare	top1:Big	Big||i6|6|b1140=i1=1
+single	ssdv	$facets	rare	top1000:Tag	Tag||i-1|8|t2=i2=2,t5=i2=2,t6=i2=2,t7=i2=2,t0=i1=1,t1=i1=1,t3=i1=1,t4=i1=1
+single	ssdv	$facets	rare	top3:Publish Date/2001	Publish Date|2001|i1|1|6=i1=1
+single	ssdv	$facets	rare	all:Publish Date/2001	Publish Date|2001|i1|1|6=i1=1
+single	ssdv	$facets	rare	top3:Publish Date/2001/3	null
+single	ssdv	$facets	rare	all:Publish Date/2001/3	null
+single	ssdv	$facets	rare	top3:Publish Date/2003/12	null
+single	ssdv	$facets	rare	all:Publish Date/2003/12	Publish Date|2003/12|i0|0|
+single	ssdv	$facets	rare	top3:Publish Date/1999	null
+single	ssdv	$facets	rare	all:Publish Date/1999	null
+single	ssdv	$facets	rare	top3:Publish Date/2001/3/3	null
+single	ssdv	$facets	rare	all:Publish Date/2001/3/3	null
+single	ssdv	$facets	rare	spec:Author/a3	i0
+single	ssdv	$facets	rare	spec:Tag/t1	i1
+single	ssdv	$facets	rare	spec:Tag/zz	i-1
+single	ssdv	$facets	rare	spec:Genre/g1	i1
+single	ssdv	$facets	rare	spec:Genre/g9	i-1
+single	ssdv	$facets	rare	spec:Genre	IAE:Genre is not configured as hierarchical, path must be length=1
+single	ssdv	$facets	rare	spec:Publish Date	i6
+single	ssdv	$facets	rare	spec:Publish Date/2001	i1
+single	ssdv	$facets	rare	spec:Publish Date/2001/3	i-1
+single	ssdv	$facets	rare	spec:Publish Date/2001/3/15	i-1
+single	ssdv	$facets	rare	spec:Big/b7	i-1
+single	ssdv	$facets	rare	spec:Nope/x	i-1
+single	ssdv	$facets	rare	err:top0	IAE:topN must be > 0 (got: 0)
+single	ssdv	$facets	rare	err:dims0	IAE:topN must be > 0 (got: 0)
+single	ssdv	$facets	rare	err:topdims0	IAE:topN must be > 0 (got: 0)
+single	ssdv	$facets	rare	err:topdims_children0	IAE:topN must be > 0 (got: 0)
+single	ssdv	$facets	rare	err:flatpath	IAE:Field is not configured as hierarchical, path should be 0 length
+single	ssdv	$facets	rare	err:flatpath_all	IAE:Field is not configured as hierarchical, path should be 0 length
+single	ssdv	$facets	rare	err:spec2	IAE:Author is not configured as hierarchical, path must be length=1
+single	conc	$facets	rare	dims5	Big||i6|6|b1140=i1=1,b1433=i1=1,b261=i1=1,b2968=i1=1,b554=i1=1;Genre||i6|6|g0=i2=2,g3=i2=2,g1=i1=1,g2=i1=1,g4=i1=1;Publish Date||i6|4|2000=i2=2,2003=i2=2,2001=i1=1,2002=i1=1;Author||i5|5|a10=i1=1,a11=i1=1,a12=i1=1,a4=i1=1,a5=i1=1;Tag||i-1|8|t2=i2=2,t5=i2=2,t6=i2=2,t7=i2=2,t0=i1=1
+single	conc	$facets	rare	dims1	Big||i6|6|b1140=i1=1;Genre||i6|6|g0=i2=2;Publish Date||i6|4|2000=i2=2;Author||i5|5|a10=i1=1;Tag||i-1|8|t2=i2=2
+single	conc	$facets	rare	topdims2_3	Big||i6|6|b1140=i1=1,b1433=i1=1,b261=i1=1;Genre||i6|6|g0=i2=2,g3=i2=2,g1=i1=1
+single	conc	$facets	rare	topdims10_2	Big||i6|6|b1140=i1=1,b1433=i1=1;Genre||i6|6|g0=i2=2,g3=i2=2;Publish Date||i6|4|2000=i2=2,2003=i2=2;Author||i5|5|a10=i1=1,a11=i1=1;Tag||i-1|8|t2=i2=2,t5=i2=2
+single	conc	$facets	rare	topdims1_1	Big||i6|6|b1140=i1=1
+single	conc	$facets	rare	topdims4_5	Big||i6|6|b1140=i1=1,b1433=i1=1,b261=i1=1,b2968=i1=1,b554=i1=1;Genre||i6|6|g0=i2=2,g3=i2=2,g1=i1=1,g2=i1=1,g4=i1=1;Publish Date||i6|4|2000=i2=2,2003=i2=2,2001=i1=1,2002=i1=1;Author||i5|5|a10=i1=1,a11=i1=1,a12=i1=1,a4=i1=1,a5=i1=1
+single	conc	$facets	rare	top3:Author	Author||i5|5|a10=i1=1,a11=i1=1,a12=i1=1
+single	conc	$facets	rare	all:Author	Author||i5|5|a10=i1=1,a11=i1=1,a12=i1=1,a4=i1=1,a5=i1=1
+single	conc	$facets	rare	top3:Tag	Tag||i-1|8|t2=i2=2,t5=i2=2,t6=i2=2
+single	conc	$facets	rare	all:Tag	Tag||i-1|8|t0=i1=1,t1=i1=1,t2=i2=2,t3=i1=1,t4=i1=1,t5=i2=2,t6=i2=2,t7=i2=2
+single	conc	$facets	rare	top3:Genre	Genre||i6|6|g0=i2=2,g3=i2=2,g1=i1=1
+single	conc	$facets	rare	all:Genre	Genre||i6|6|g0=i2=2,g1=i1=1,g2=i1=1,g3=i2=2,g4=i1=1,g7=i1=1
+single	conc	$facets	rare	top3:Publish Date	Publish Date||i6|4|2000=i2=2,2003=i2=2,2001=i1=1
+single	conc	$facets	rare	all:Publish Date	Publish Date||i6|4|2000=i2=2,2001=i1=1,2002=i1=1,2003=i2=2
+single	conc	$facets	rare	top3:Nope	null
+single	conc	$facets	rare	all:Nope	null
+single	conc	$facets	rare	top3:Color	null
+single	conc	$facets	rare	all:Color	null
+single	conc	$facets	rare	top5:Big	Big||i6|6|b1140=i1=1,b1433=i1=1,b261=i1=1,b2968=i1=1,b554=i1=1
+single	conc	$facets	rare	top1:Big	Big||i6|6|b1140=i1=1
+single	conc	$facets	rare	top1000:Tag	Tag||i-1|8|t2=i2=2,t5=i2=2,t6=i2=2,t7=i2=2,t0=i1=1,t1=i1=1,t3=i1=1,t4=i1=1
+single	conc	$facets	rare	top3:Publish Date/2001	Publish Date|2001|i1|1|6=i1=1
+single	conc	$facets	rare	all:Publish Date/2001	Publish Date|2001|i1|1|6=i1=1
+single	conc	$facets	rare	top3:Publish Date/2001/3	null
+single	conc	$facets	rare	all:Publish Date/2001/3	null
+single	conc	$facets	rare	top3:Publish Date/2003/12	null
+single	conc	$facets	rare	all:Publish Date/2003/12	Publish Date|2003/12|i0|0|
+single	conc	$facets	rare	top3:Publish Date/1999	null
+single	conc	$facets	rare	all:Publish Date/1999	null
+single	conc	$facets	rare	top3:Publish Date/2001/3/3	null
+single	conc	$facets	rare	all:Publish Date/2001/3/3	null
+single	conc	$facets	rare	spec:Author/a3	i0
+single	conc	$facets	rare	spec:Tag/t1	i1
+single	conc	$facets	rare	spec:Tag/zz	i-1
+single	conc	$facets	rare	spec:Genre/g1	i1
+single	conc	$facets	rare	spec:Genre/g9	i-1
+single	conc	$facets	rare	spec:Genre	IAE:Genre is not configured as hierarchical, path must be length=1
+single	conc	$facets	rare	spec:Publish Date	i6
+single	conc	$facets	rare	spec:Publish Date/2001	i1
+single	conc	$facets	rare	spec:Publish Date/2001/3	i-1
+single	conc	$facets	rare	spec:Publish Date/2001/3/15	i-1
+single	conc	$facets	rare	spec:Big/b7	i-1
+single	conc	$facets	rare	spec:Nope/x	i-1
+single	conc	$facets	rare	err:top0	IAE:topN must be > 0 (got: 0)
+single	conc	$facets	rare	err:dims0	IAE:topN must be > 0 (got: 0)
+single	conc	$facets	rare	err:topdims0	IAE:topN must be > 0 (got: 0)
+single	conc	$facets	rare	err:topdims_children0	IAE:topN must be > 0 (got: 0)
+single	conc	$facets	rare	err:flatpath	IAE:Field is not configured as hierarchical, path should be 0 length
+single	conc	$facets	rare	err:flatpath_all	IAE:Field is not configured as hierarchical, path should be 0 length
+single	conc	$facets	rare	err:spec2	IAE:Author is not configured as hierarchical, path must be length=1
+single	ssdv	$facets	none	dims5	
+single	ssdv	$facets	none	dims1	
+single	ssdv	$facets	none	topdims2_3	
+single	ssdv	$facets	none	topdims10_2	
+single	ssdv	$facets	none	topdims1_1	
+single	ssdv	$facets	none	topdims4_5	
+single	ssdv	$facets	none	top3:Author	null
+single	ssdv	$facets	none	all:Author	null
+single	ssdv	$facets	none	top3:Tag	null
+single	ssdv	$facets	none	all:Tag	null
+single	ssdv	$facets	none	top3:Genre	null
+single	ssdv	$facets	none	all:Genre	null
+single	ssdv	$facets	none	top3:Publish Date	null
+single	ssdv	$facets	none	all:Publish Date	null
+single	ssdv	$facets	none	top3:Nope	null
+single	ssdv	$facets	none	all:Nope	null
+single	ssdv	$facets	none	top3:Color	null
+single	ssdv	$facets	none	all:Color	null
+single	ssdv	$facets	none	top5:Big	null
+single	ssdv	$facets	none	top1:Big	null
+single	ssdv	$facets	none	top1000:Tag	null
+single	ssdv	$facets	none	top3:Publish Date/2001	null
+single	ssdv	$facets	none	all:Publish Date/2001	null
+single	ssdv	$facets	none	top3:Publish Date/2001/3	null
+single	ssdv	$facets	none	all:Publish Date/2001/3	null
+single	ssdv	$facets	none	top3:Publish Date/2003/12	null
+single	ssdv	$facets	none	all:Publish Date/2003/12	null
+single	ssdv	$facets	none	top3:Publish Date/1999	null
+single	ssdv	$facets	none	all:Publish Date/1999	null
+single	ssdv	$facets	none	top3:Publish Date/2001/3/3	null
+single	ssdv	$facets	none	all:Publish Date/2001/3/3	null
+single	ssdv	$facets	none	spec:Author/a3	i0
+single	ssdv	$facets	none	spec:Tag/t1	i0
+single	ssdv	$facets	none	spec:Tag/zz	i-1
+single	ssdv	$facets	none	spec:Genre/g1	i0
+single	ssdv	$facets	none	spec:Genre/g9	i-1
+single	ssdv	$facets	none	spec:Genre	IAE:Genre is not configured as hierarchical, path must be length=1
+single	ssdv	$facets	none	spec:Publish Date	i0
+single	ssdv	$facets	none	spec:Publish Date/2001	i0
+single	ssdv	$facets	none	spec:Publish Date/2001/3	i-1
+single	ssdv	$facets	none	spec:Publish Date/2001/3/15	i-1
+single	ssdv	$facets	none	spec:Big/b7	i-1
+single	ssdv	$facets	none	spec:Nope/x	i-1
+single	ssdv	$facets	none	err:top0	IAE:topN must be > 0 (got: 0)
+single	ssdv	$facets	none	err:dims0	IAE:topN must be > 0 (got: 0)
+single	ssdv	$facets	none	err:topdims0	IAE:topN must be > 0 (got: 0)
+single	ssdv	$facets	none	err:topdims_children0	IAE:topN must be > 0 (got: 0)
+single	ssdv	$facets	none	err:flatpath	null
+single	ssdv	$facets	none	err:flatpath_all	IAE:Field is not configured as hierarchical, path should be 0 length
+single	ssdv	$facets	none	err:spec2	IAE:Author is not configured as hierarchical, path must be length=1
+single	conc	$facets	none	dims5	
+single	conc	$facets	none	dims1	
+single	conc	$facets	none	topdims2_3	
+single	conc	$facets	none	topdims10_2	
+single	conc	$facets	none	topdims1_1	
+single	conc	$facets	none	topdims4_5	
+single	conc	$facets	none	top3:Author	null
+single	conc	$facets	none	all:Author	Author||i0|0|
+single	conc	$facets	none	top3:Tag	null
+single	conc	$facets	none	all:Tag	Tag||i-1|0|
+single	conc	$facets	none	top3:Genre	null
+single	conc	$facets	none	all:Genre	Genre||i0|0|
+single	conc	$facets	none	top3:Publish Date	null
+single	conc	$facets	none	all:Publish Date	Publish Date||i0|0|
+single	conc	$facets	none	top3:Nope	null
+single	conc	$facets	none	all:Nope	null
+single	conc	$facets	none	top3:Color	null
+single	conc	$facets	none	all:Color	null
+single	conc	$facets	none	top5:Big	null
+single	conc	$facets	none	top1:Big	null
+single	conc	$facets	none	top1000:Tag	null
+single	conc	$facets	none	top3:Publish Date/2001	null
+single	conc	$facets	none	all:Publish Date/2001	Publish Date|2001|i0|0|
+single	conc	$facets	none	top3:Publish Date/2001/3	null
+single	conc	$facets	none	all:Publish Date/2001/3	null
+single	conc	$facets	none	top3:Publish Date/2003/12	null
+single	conc	$facets	none	all:Publish Date/2003/12	Publish Date|2003/12|i0|0|
+single	conc	$facets	none	top3:Publish Date/1999	null
+single	conc	$facets	none	all:Publish Date/1999	null
+single	conc	$facets	none	top3:Publish Date/2001/3/3	null
+single	conc	$facets	none	all:Publish Date/2001/3/3	null
+single	conc	$facets	none	spec:Author/a3	i0
+single	conc	$facets	none	spec:Tag/t1	i0
+single	conc	$facets	none	spec:Tag/zz	i-1
+single	conc	$facets	none	spec:Genre/g1	i0
+single	conc	$facets	none	spec:Genre/g9	i-1
+single	conc	$facets	none	spec:Genre	IAE:Genre is not configured as hierarchical, path must be length=1
+single	conc	$facets	none	spec:Publish Date	i0
+single	conc	$facets	none	spec:Publish Date/2001	i0
+single	conc	$facets	none	spec:Publish Date/2001/3	i-1
+single	conc	$facets	none	spec:Publish Date/2001/3/15	i-1
+single	conc	$facets	none	spec:Big/b7	i-1
+single	conc	$facets	none	spec:Nope/x	i-1
+single	conc	$facets	none	err:top0	IAE:topN must be > 0 (got: 0)
+single	conc	$facets	none	err:dims0	IAE:topN must be > 0 (got: 0)
+single	conc	$facets	none	err:topdims0	IAE:topN must be > 0 (got: 0)
+single	conc	$facets	none	err:topdims_children0	IAE:topN must be > 0 (got: 0)
+single	conc	$facets	none	err:flatpath	IAE:Field is not configured as hierarchical, path should be 0 length
+single	conc	$facets	none	err:flatpath_all	IAE:Field is not configured as hierarchical, path should be 0 length
+single	conc	$facets	none	err:spec2	IAE:Author is not configured as hierarchical, path must be length=1
+single	ssdv	$color	countall	dims5	Color||i300|3|c0=i100=100,c1=i100=100,c2=i100=100
+single	ssdv	$color	countall	topdims2_3	Color||i300|3|c0=i100=100,c1=i100=100,c2=i100=100
+single	ssdv	$color	countall	top3:Color	Color||i300|3|c0=i100=100,c1=i100=100,c2=i100=100
+single	ssdv	$color	countall	all:Color	Color||i300|3|c0=i100=100,c1=i100=100,c2=i100=100
+single	ssdv	$color	countall	spec:Color/c1	i100
+single	ssdv	$color	countall	top3:Author	null
+single	conc	$color	countall	dims5	Color||i300|3|c0=i100=100,c1=i100=100,c2=i100=100
+single	conc	$color	countall	topdims2_3	Color||i300|3|c0=i100=100,c1=i100=100,c2=i100=100
+single	conc	$color	countall	top3:Color	Color||i300|3|c0=i100=100,c1=i100=100,c2=i100=100
+single	conc	$color	countall	all:Color	Color||i300|3|c0=i100=100,c1=i100=100,c2=i100=100
+single	conc	$color	countall	spec:Color/c1	i100
+single	conc	$color	countall	top3:Author	null
+single	ssdv	$color	all	dims5	Color||i300|3|c0=i100=100,c1=i100=100,c2=i100=100
+single	ssdv	$color	all	topdims2_3	Color||i300|3|c0=i100=100,c1=i100=100,c2=i100=100
+single	ssdv	$color	all	top3:Color	Color||i300|3|c0=i100=100,c1=i100=100,c2=i100=100
+single	ssdv	$color	all	all:Color	Color||i300|3|c0=i100=100,c1=i100=100,c2=i100=100
+single	ssdv	$color	all	spec:Color/c1	i100
+single	ssdv	$color	all	top3:Author	null
+single	conc	$color	all	dims5	Color||i300|3|c0=i100=100,c1=i100=100,c2=i100=100
+single	conc	$color	all	topdims2_3	Color||i300|3|c0=i100=100,c1=i100=100,c2=i100=100
+single	conc	$color	all	top3:Color	Color||i300|3|c0=i100=100,c1=i100=100,c2=i100=100
+single	conc	$color	all	all:Color	Color||i300|3|c0=i100=100,c1=i100=100,c2=i100=100
+single	conc	$color	all	spec:Color/c1	i100
+single	conc	$color	all	top3:Author	null
+single	ssdv	$color	even	dims5	Color||i150|3|c0=i50=50,c1=i50=50,c2=i50=50
+single	ssdv	$color	even	topdims2_3	Color||i150|3|c0=i50=50,c1=i50=50,c2=i50=50
+single	ssdv	$color	even	top3:Color	Color||i150|3|c0=i50=50,c1=i50=50,c2=i50=50
+single	ssdv	$color	even	all:Color	Color||i150|3|c0=i50=50,c1=i50=50,c2=i50=50
+single	ssdv	$color	even	spec:Color/c1	i50
+single	ssdv	$color	even	top3:Author	null
+single	conc	$color	even	dims5	Color||i150|3|c0=i50=50,c1=i50=50,c2=i50=50
+single	conc	$color	even	topdims2_3	Color||i150|3|c0=i50=50,c1=i50=50,c2=i50=50
+single	conc	$color	even	top3:Color	Color||i150|3|c0=i50=50,c1=i50=50,c2=i50=50
+single	conc	$color	even	all:Color	Color||i150|3|c0=i50=50,c1=i50=50,c2=i50=50
+single	conc	$color	even	spec:Color/c1	i50
+single	conc	$color	even	top3:Author	null
+single	ssdv	$color	rare	dims5	Color||i6|3|c0=i2=2,c1=i2=2,c2=i2=2
+single	ssdv	$color	rare	topdims2_3	Color||i6|3|c0=i2=2,c1=i2=2,c2=i2=2
+single	ssdv	$color	rare	top3:Color	Color||i6|3|c0=i2=2,c1=i2=2,c2=i2=2
+single	ssdv	$color	rare	all:Color	Color||i6|3|c0=i2=2,c1=i2=2,c2=i2=2
+single	ssdv	$color	rare	spec:Color/c1	i2
+single	ssdv	$color	rare	top3:Author	null
+single	conc	$color	rare	dims5	Color||i6|3|c0=i2=2,c1=i2=2,c2=i2=2
+single	conc	$color	rare	topdims2_3	Color||i6|3|c0=i2=2,c1=i2=2,c2=i2=2
+single	conc	$color	rare	top3:Color	Color||i6|3|c0=i2=2,c1=i2=2,c2=i2=2
+single	conc	$color	rare	all:Color	Color||i6|3|c0=i2=2,c1=i2=2,c2=i2=2
+single	conc	$color	rare	spec:Color/c1	i2
+single	conc	$color	rare	top3:Author	null
+single	ssdv	$color	none	dims5	
+single	ssdv	$color	none	topdims2_3	
+single	ssdv	$color	none	top3:Color	null
+single	ssdv	$color	none	all:Color	null
+single	ssdv	$color	none	spec:Color/c1	i0
+single	ssdv	$color	none	top3:Author	null
+single	conc	$color	none	dims5	
+single	conc	$color	none	topdims2_3	
+single	conc	$color	none	top3:Color	null
+single	conc	$color	none	all:Color	Color||i0|0|
+single	conc	$color	none	spec:Color/c1	i0
+single	conc	$color	none	top3:Author	null

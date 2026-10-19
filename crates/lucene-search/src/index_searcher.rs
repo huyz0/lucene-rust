@@ -268,6 +268,36 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
         )
     }
 
+    /// [`Self::search_sorted`] counting every hit
+    /// (`TopFieldCollectorManager(sort, n, after, Integer.MAX_VALUE)`), as
+    /// the facet searches do.
+    pub(crate) fn search_sorted_counting_all(
+        &self,
+        readers: &[crate::directory_reader::SegmentReader],
+        query: &BooleanQuery,
+        n: usize,
+        sort: &[crate::top_field::SortField],
+        after: Option<&crate::top_field::FieldDoc>,
+    ) -> Result<crate::top_field::TopFieldDocs> {
+        let norms: Vec<SegmentNorms<'s, 'a>> =
+            (0..self.segments.len()).map(|i| self.norms(i)).collect();
+        crate::top_field::search_sorted_leaves(
+            self.segments,
+            readers,
+            query,
+            &norms,
+            sort,
+            n,
+            u64::MAX,
+            after,
+            false,
+            None,
+            None,
+            None,
+            self.similarity.filter(|s| !s.is_default_bm25()),
+        )
+    }
+
     /// `search(query, collector)`: every segment, in doc-base order, into
     /// one collector, which sees global document ids.
     pub fn search_collector<C: ScoringCollector + ?Sized>(

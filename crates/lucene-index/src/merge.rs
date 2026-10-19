@@ -415,6 +415,11 @@ pub enum Error {
     /// `OneMerge.reorder`'s doc map is not one the merge can apply.
     #[error("reorder: {0}")]
     InvalidReorder(String),
+    /// A [`SortedNumericRemap`] met a value outside its map: Java's
+    /// `ArrayIndexOutOfBoundsException` (or `Math.toIntExact`'s
+    /// `ArithmeticException`) in `OrdinalMappingLeafReader`.
+    #[error("sorted-numeric remap: {0}")]
+    InvalidRemap(String),
     #[error(
         "source {source_index}: live docs cover {live_docs_len} documents but the segment's maxDoc is {max_doc}"
     )]
@@ -2148,6 +2153,8 @@ pub fn merge_segments_mapped(
         &per_source_maps,
         &per_source_live_ids,
         &doc_order,
+        &merged_fields,
+        options.sorted_numeric_remap.as_deref(),
     )?);
     merged_doc_values.extend(merge_sorted_set_doc_values(
         sources,
@@ -3176,11 +3183,15 @@ fn merge_sorted_doc_values(
 /// SORTED_NUMERIC column for, in `doc_order` --
 /// `DocValuesConsumer.mergeSortedNumericField`. A document is missing when
 /// its source has no column or the column gives it no values.
+///
+/// A field `remap` names has each document's values rewritten through it.
 fn merge_sorted_numeric_doc_values(
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],
     per_source_live_ids: &[Vec<i32>],
     doc_order: &[(usize, i32)],
+    merged_fields: &[FieldInfo],
+    remap: Option<&SortedNumericRemap>,
 ) -> Result<Vec<MergedDocValuesField>> {
     let candidates = doc_values_candidates(
         sources,
@@ -3203,6 +3214,12 @@ fn merge_sorted_numeric_doc_values(
             .iter()
             .map(|e| e.map(|e| doc_values::SortedNumericReader::new(e.data, &e.entry)))
             .collect();
+        let field_remap = remap.filter(|r| {
+            merged_fields
+                .iter()
+                .find(|f| f.number == merged_field_number)
+                .is_some_and(|f| r.fields.contains(&f.name))
+        });
         let mut scratch: Vec<i64> = Vec::new();
         let mut column = doc_values::SortedNumericColumn::default();
         for (merged_doc_id, &(src_idx, doc_id)) in doc_order.iter().enumerate() {
@@ -3210,6 +3227,9 @@ fn merge_sorted_numeric_doc_values(
                 continue;
             };
             reader.values(doc_id, &mut scratch)?;
+            if let Some(r) = field_remap {
+                r.apply(&mut scratch)?;
+            }
             if !scratch.is_empty() {
                 column.docs.push(merged_doc_id as i32);
                 column.counts.push(scratch.len() as u32);
@@ -3702,6 +3722,42 @@ pub struct MergeOptions {
     /// over the merged view. Refused together with an index sort, and when
     /// it is not a permutation of the merged view's documents.
     pub reorder: Option<Vec<i32>>,
+    /// Values of the named SORTED_NUMERIC fields rewritten on the way
+    /// through -- see [`SortedNumericRemap`].
+    pub sorted_numeric_remap: Option<std::sync::Arc<SortedNumericRemap>>,
+}
+
+/// `OrdinalMappingLeafReader`'s view of a merge source (lucene-facet's
+/// `TaxonomyMergeUtils`): in each of `fields`, every SORTED_NUMERIC value
+/// `v` becomes `map[v]`, and each document's values are sorted again.
+/// Java wraps the source readers; this port's merge reads segments, not
+/// readers, so the rewrite rides along as a merge option.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SortedNumericRemap {
+    /// The fields whose values are rewritten.
+    pub fields: Vec<String>,
+    /// `map[old] = new`.
+    pub map: Vec<i32>,
+}
+
+impl SortedNumericRemap {
+    /// Rewrites one document's values in place and sorts them.
+    fn apply(&self, values: &mut [i64]) -> Result<()> {
+        for v in values.iter_mut() {
+            let mapped = usize::try_from(*v)
+                .ok()
+                .and_then(|i| self.map.get(i))
+                .ok_or_else(|| {
+                    Error::InvalidRemap(format!(
+                        "value {v} is outside the map of {} ordinals",
+                        self.map.len()
+                    ))
+                })?;
+            *v = i64::from(*mapped);
+        }
+        values.sort_unstable();
+        Ok(())
+    }
 }
 
 impl MergeOptions {
@@ -3761,6 +3817,7 @@ impl Default for MergeOptions {
             knn_vectors_formats: Vec::new(),
             codec: None,
             reorder: None,
+            sorted_numeric_remap: None,
         }
     }
 }

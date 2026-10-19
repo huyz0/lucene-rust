@@ -561,6 +561,11 @@ impl SortedSetDocValues for SegSortedSet<'_> {
         self.upto += 1;
         Ok(v)
     }
+    fn take_ords(&mut self) -> Option<&[i64]> {
+        let rest = self.values.get(self.upto..).unwrap_or_default();
+        self.upto = self.values.len();
+        Some(rest)
+    }
     fn lookup_ord(&mut self, ord: i64) -> Result<Vec<u8>> {
         Ok(self.terms.seek_ord(ord)?.to_vec())
     }

@@ -31,11 +31,15 @@ pub mod directory;
 pub mod facet_label;
 pub mod fast_taxonomy_facet_counts;
 pub mod lru_hash_map;
+pub mod ordinal_mapping_leaf_reader;
 pub mod parallel_taxonomy_arrays;
+pub mod print_taxonomy_stats;
+pub mod searcher_taxonomy_manager;
 pub mod taxonomy_facet_float_associations;
 pub mod taxonomy_facet_int_associations;
 pub mod taxonomy_facet_labels;
 pub mod taxonomy_facets;
+pub mod taxonomy_merge_utils;
 pub mod taxonomy_reader;
 pub mod taxonomy_writer;
 pub mod writercache;
@@ -44,11 +48,15 @@ pub use association_aggregation_function::AssociationAggregationFunction;
 pub use association_facet_field::{
     AssociationFacetField, AssociationKind, FloatAssociationFacetField, IntAssociationFacetField,
 };
-pub use directory::{DirectoryTaxonomyReader, DirectoryTaxonomyWriter};
+pub use directory::{
+    DirectoryTaxonomyReader, DirectoryTaxonomyWriter, ReindexingEnrichedDirectoryTaxonomyWriter,
+};
 pub use facet_label::FacetLabel;
 pub use fast_taxonomy_facet_counts::FastTaxonomyFacetCounts;
 pub use lru_hash_map::LruHashMap;
+pub use ordinal_mapping_leaf_reader::{ordinal_mapping_leaf_reader, OrdinalMappingFilter};
 pub use parallel_taxonomy_arrays::{IntArray, ParallelTaxonomyArrays};
+pub use searcher_taxonomy_manager::{SearcherAndTaxonomy, SearcherTaxonomyManager};
 pub use taxonomy_facet_float_associations::TaxonomyFacetFloatAssociations;
 pub use taxonomy_facet_int_associations::TaxonomyFacetIntAssociations;
 pub use taxonomy_facet_labels::{FacetLabelReader, TaxonomyFacetLabels};

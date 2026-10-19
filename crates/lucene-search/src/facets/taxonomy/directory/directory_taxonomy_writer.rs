@@ -262,7 +262,14 @@ struct Inner<'d> {
     taxo_arrays: Option<TaxonomyIndexArrays>,
     /// A [`DirectoryTaxonomyWriter::prepare_commit`] awaits its commit.
     prepared: bool,
+    /// `enrichOrdinalDocument(d, categoryPath)`: what
+    /// [`super::ReindexingEnrichedDirectoryTaxonomyWriter`] adds to each
+    /// category's document.
+    enrich: Option<OrdinalDataAppender>,
 }
+
+/// `BiConsumer<FacetLabel, Document>`: adds fields to a category's document.
+pub type OrdinalDataAppender = Box<dyn Fn(&FacetLabel, &mut Document) + Send + Sync>;
 
 /// `DirectoryTaxonomyWriter`.
 pub struct DirectoryTaxonomyWriter<'d> {
@@ -352,6 +359,7 @@ impl<'d> DirectoryTaxonomyWriter<'d> {
                 is_closed: false,
                 taxo_arrays: None,
                 prepared: false,
+                enrich: None,
             }),
         };
         if next_id == 0 {
@@ -362,6 +370,17 @@ impl<'d> DirectoryTaxonomyWriter<'d> {
 
     fn lock(&self) -> MutexGuard<'_, Inner<'d>> {
         self.inner.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// `ensureOpen()`.
+    pub(crate) fn ensure_open(&self) -> Result<()> {
+        self.lock().ensure_open()
+    }
+
+    /// Sets the `enrichOrdinalDocument` hook, for categories added from now
+    /// on.
+    pub(crate) fn set_enrich(&self, enrich: Option<OrdinalDataAppender>) {
+        self.lock().enrich = enrich;
     }
 
     /// `getDirectory()`.
@@ -474,7 +493,7 @@ impl<'d> DirectoryTaxonomyWriter<'d> {
 /// What a near-real-time [`super::DirectoryTaxonomyReader`] needs of its
 /// writer -- a trait so that the reader's one lifetime need not name the
 /// writer's directory lifetime too.
-pub(crate) trait TaxoNrtSource {
+pub(crate) trait TaxoNrtSource: Sync {
     /// `getTaxonomyEpoch()`.
     fn taxonomy_epoch(&self) -> i64;
     /// `DirectoryReader.open(getInternalIndexWriter())`: a near-real-time
@@ -483,6 +502,9 @@ pub(crate) trait TaxoNrtSource {
     /// `DirectoryReader.openIfChanged(reader)` for a reader from
     /// [`TaxoNrtSource::open_nrt_reader`].
     fn reopen_nrt_reader(&self, old: &DirectoryReader) -> Result<Option<DirectoryReader>>;
+    /// `DirectoryReader.isCurrent()` for a reader from
+    /// [`TaxoNrtSource::open_nrt_reader`]: it sees everything added.
+    fn is_current_nrt_reader(&self, reader: &DirectoryReader) -> Result<bool>;
 }
 
 impl TaxoNrtSource for DirectoryTaxonomyWriter<'_> {
@@ -500,6 +522,11 @@ impl TaxoNrtSource for DirectoryTaxonomyWriter<'_> {
         let mut inner = self.lock();
         let w = inner.writer_mut()?;
         refresh_nrt(w, self.dir, old, true)
+    }
+
+    fn is_current_nrt_reader(&self, reader: &DirectoryReader) -> Result<bool> {
+        let mut inner = self.lock();
+        Ok(inner.writer_mut()?.nrt_is_current(&reader.segment_infos))
     }
 }
 
@@ -685,6 +712,9 @@ impl<'d> Inner<'d> {
         ));
         d.add(BinaryDocValuesField::new(FULL, field_path.as_bytes()));
         d.add(StringField::new(FULL, field_path, Store::No));
+        if let Some(enrich) = &self.enrich {
+            enrich(category_path, &mut d);
+        }
         self.writer_mut()?
             .add_fields_document(&d)
             .map_err(iw_error)?;

@@ -206,6 +206,20 @@ case "$BENCH" in
     PREP_ARGS=(build "$INDEX")
     JAVA_ARGS=(run)
     NEEDS_INDEX=1 ;;
+  ssdv_facets)
+    # M13 T13.4d2's pair (SsdvFacetsMicro.java / micro_ssdv_facets.rs): the
+    # sorted-set reader state, SortedSetDocValuesFacetCounts (plain,
+    # concurrent, over a reader) and RandomSamplingFacetsCollector over the
+    # 200 000-document index SsdvFacetsMicro builds (once) under
+    # benchmarks/.corpus/ssdv-facets.
+    MAIN=SsdvFacetsMicro
+    SRC=benchmarks/micro/java/SsdvFacetsMicro.java
+    EXTRA_SRC="benchmarks/micro/java/FacetCountsMicro.java benchmarks/micro/java/SweepMicro.java"
+    JAR_MODULES="lucene-core lucene-facet"
+    INDEX="${INDEX_ARG:-$PWD/benchmarks/.corpus/ssdv-facets}"
+    PREP_ARGS=(build "$INDEX")
+    JAVA_ARGS=(run)
+    NEEDS_INDEX=1 ;;
   # The document API's indexing: IndexWriter.addDocument over three document shapes.
   doc_index)
     MAIN=DocIndexMicro

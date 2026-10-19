@@ -184,6 +184,21 @@ impl<'a> DirectoryTaxonomyReader<'a> {
         )))
     }
 
+    /// `getInternalIndexReader().isCurrent()`: a near-real-time reader sees
+    /// everything its writer added; any other, the directory's latest
+    /// commit.
+    pub(crate) fn is_current(&self) -> Result<bool> {
+        self.ensure_open()?;
+        match self.taxo_writer {
+            Some(w) => w.is_current_nrt_reader(&self.index_reader),
+            None => {
+                let latest = lucene_index::segment_infos::read_latest(self.dir)
+                    .map_err(crate::directory_reader::Error::from)?;
+                Ok(latest.generation == self.index_reader.segment_infos.generation)
+            }
+        }
+    }
+
     /// `getInternalIndexReader()`.
     pub fn internal_index_reader(&self) -> Result<&DirectoryReader> {
         self.ensure_open()?;

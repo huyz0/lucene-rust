@@ -487,6 +487,15 @@ pub trait SortedSetDocValues: DocValuesIterator {
     fn doc_value_count(&self) -> i32;
     /// `nextOrd()`: the current document's ordinals, ascending, one per call.
     fn next_ord(&mut self) -> Result<i64>;
+    /// The current document's ordinals `next_ord` has not handed out yet,
+    /// all at once, which then count as read -- when the implementation
+    /// holds them decoded. `None` (the default) means read them one
+    /// `next_ord` at a time. A bulk read for the hot loops (facet
+    /// counting, as [`SortedNumericDocValues::take_values`]); no Java
+    /// counterpart.
+    fn take_ords(&mut self) -> Option<&[i64]> {
+        None
+    }
     /// `lookupOrd(ord)`.
     fn lookup_ord(&mut self, ord: i64) -> Result<Vec<u8>>;
     /// `getValueCount()`.

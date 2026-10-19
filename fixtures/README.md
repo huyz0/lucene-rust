@@ -1708,3 +1708,26 @@ committed fixture. Two were added by `c43-final-cleanup`:
   `LongRange`/`DoubleRange.getQuery` (`toString` and hits): `queries.tsv`;
   `DynamicRangeUtil` over the indexes and hand-built arrays: `dynamic.tsv`;
   Java's refusals: `errors.tsv`. Rust side: `value_facets_fixtures.rs`.
+- `GenSortedSetFacets.java` (M13 T13.4d2) -- a 1,740-document index in four
+  segments with deletions, the last without a facet field
+  (`sortedset_facets/multi`), and a 300-document one-segment index
+  (`sortedset_facets/single`), facets through `SortedSetDocValuesFacetField`
+  (flat, multi-valued, hierarchical, a dim of about 3,000 values, a dim in its
+  own index field). `DefaultSortedSetDocValuesReaderState`'s dims, ranges and
+  trees: `state.tsv`; every `Facets` call of
+  `SortedSetDocValuesFacetCounts` and `ConcurrentSortedSetDocValuesFacetCounts`
+  over every document and four queries: `facets.tsv`; `DrillSideways` over the
+  state: `sideways.tsv`; the `Sort` overloads of
+  `FacetsCollectorManager.search`/`searchAfter` and `DrillSideways.search`:
+  `sorted.tsv`; `RandomSamplingFacetsCollector`'s samples per seed and its
+  `amortizeFacetCounts`: `sampling.tsv`; Java's refusals: `errors.tsv`. Rust
+  side: `sortedset_facets_fixtures.rs`.
+- `GenTaxonomyUtils.java` (M13 T13.4d2) -- a source index and taxonomy
+  (`taxonomy_utils/src`) and a destination whose ordinals all differ
+  (`taxonomy_utils/dest`). `TaxonomyMergeUtils.merge` of one into a copy of
+  the other: `merge.tsv`; `OrdinalMappingLeafReader` over each source leaf:
+  `mapping.tsv`; `PrintTaxonomyStats` of the merged taxonomy:
+  `stats.txt`, `stats_tree.txt`; `ReindexingEnrichedDirectoryTaxonomyWriter`
+  (`taxonomy_utils/enriched/taxo`): `enriched.tsv`; `SearcherTaxonomyManager`
+  near-real-time and over directories: `manager.tsv`. Rust side:
+  `taxonomy_utils_fixtures.rs`.
