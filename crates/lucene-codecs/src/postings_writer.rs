@@ -785,7 +785,9 @@ impl WriteOptions {
 }
 
 /// [`write_fields_with_norms`] for one `Lucene104PostingsFormat` instance
-/// of a segment -- see [`WriteOptions`].
+/// of a segment -- see [`WriteOptions`]: [`write_postings`] with the
+/// block-tree terms dictionary (`Lucene103BlockTreeTermsWriter`) as its
+/// terms writer.
 pub fn write_fields_with_options<T: TermSource>(
     inputs: &[FieldPostingsInput<'_, T>],
     norms: &[FieldNorms<'_>],
@@ -797,70 +799,10 @@ pub fn write_fields_with_options<T: TermSource>(
     if inputs.is_empty() {
         return Err(Error::EmptyTerms);
     }
-    // Each field's per-term statistics come out of its validation pass, the
-    // one walk over every term's `docs` (see [`FieldStats`]).
-    let mut field_stats = Vec::with_capacity(inputs.len());
-    for input in inputs {
-        field_stats.push(validate_field(input)?);
-    }
-
-    // ---- .doc ----
-    let mut maxima = PostingsMaxima::default();
     // Every file starts at a size a small segment fits: growing an empty
     // buffer through 8, 16, 32 ... bytes was a measurable share of a
     // one-document flush (`MemoryIndex`).
     let initial = 256usize;
-    let mut doc = Vec::with_capacity(initial);
-    codec_util::write_index_header(
-        &mut doc,
-        DOC_CODEC,
-        DOC_VERSION_CURRENT,
-        segment_id,
-        segment_suffix,
-    );
-
-    // ---- .pos ----
-    // Only written at all if at least one field indexes positions, exactly
-    // like a real segment has no `.pos` file when no field needs one.
-    let any_positions = options.has_prox.unwrap_or_else(|| {
-        inputs
-            .iter()
-            .any(|input| input.index_options.subsumes_positions())
-    });
-    let mut pos = Vec::new();
-    if any_positions {
-        pos.reserve(initial);
-        codec_util::write_index_header(
-            &mut pos,
-            POS_CODEC,
-            DOC_VERSION_CURRENT,
-            segment_id,
-            segment_suffix,
-        );
-    }
-
-    // ---- .pay ----
-    // Only written at all if at least one field indexes offsets and/or has
-    // payloads, same "no file needed" convention as `.pos`.
-    let any_offsets = options.has_payloads_or_offsets.unwrap_or_else(|| {
-        inputs
-            .iter()
-            .any(|input| input.index_options.subsumes_offsets())
-    });
-    let any_payloads = options
-        .has_payloads_or_offsets
-        .unwrap_or_else(|| inputs.iter().any(|input| input.has_payloads));
-    let mut pay = Vec::new();
-    if any_offsets || any_payloads {
-        pay.reserve(initial);
-        codec_util::write_index_header(
-            &mut pay,
-            PAY_CODEC,
-            DOC_VERSION_CURRENT,
-            segment_id,
-            segment_suffix,
-        );
-    }
 
     // ---- .tim / .tip headers ----
     let mut tim = Vec::with_capacity(initial);
@@ -889,15 +831,275 @@ pub fn write_fields_with_options<T: TermSource>(
         segment_id,
         segment_suffix,
     );
+    write_postings_terms_header(&mut tmd, segment_id, segment_suffix);
+    tmd.write_vint(inputs.len() as i32); // numFields
+
+    let postings = write_postings(
+        inputs,
+        norms,
+        options.has_prox,
+        options.has_payloads_or_offsets,
+        segment_id,
+        segment_suffix,
+        |field| -> Result<()> {
+            // ---- this field's .tim blocks + .tip trie ----
+            // `Lucene103BlockTreeTermsWriter`'s block splitting and
+            // `TrieBuilder`, in `crate::blocktree_writer`; each block's term
+            // metadata is encoded by the postings writer, against this
+            // field's per-term file pointers.
+            let block_terms = field.block_terms;
+            let trie = blocktree_writer::write_field_terms(
+                &mut tim,
+                &mut tip,
+                block_terms,
+                (options.min_items_in_block, options.max_items_in_block),
+                field.index_options != IndexOptions::Docs,
+                |meta, indices| field.encode_terms(meta, indices),
+            );
+
+            // ---- this field's .tmd record ----
+            tmd.write_vint(field.field_number);
+            tmd.write_vlong(block_terms.len() as i64);
+            let sum_doc_freq: i64 = block_terms.iter().map(|t| i64::from(t.doc_freq)).sum();
+            if field.index_options != IndexOptions::Docs {
+                let sum_total_term_freq: i64 = block_terms.iter().map(|t| t.total_term_freq).sum();
+                tmd.write_vlong(sum_total_term_freq);
+            }
+            tmd.write_vlong(sum_doc_freq);
+            tmd.write_vint(field.doc_count);
+            let min_term = block_terms[0].bytes;
+            // ARITH: `validate_field` rejected an empty `terms`.
+            #[allow(clippy::arithmetic_side_effects)]
+            let max_term = block_terms[block_terms.len() - 1].bytes;
+            tmd.write_vint(min_term.len() as i32);
+            tmd.write_bytes(min_term);
+            tmd.write_vint(max_term.len() as i32);
+            tmd.write_bytes(max_term);
+            tmd.write_vlong(trie.index_start as i64);
+            tmd.write_vlong(trie.root_fp as i64);
+            tmd.write_vlong(trie.index_end as i64);
+            Ok(())
+        },
+    )?;
+
+    codec_util::write_footer(&mut tim);
+    codec_util::write_footer(&mut tip);
+
+    // Both lengths are the *whole* file, footer included: Java writes each
+    // footer and only then records `getFilePointer()`, and its reader feeds
+    // these straight to `CodecUtil.retrieveChecksum`, which rejects any file
+    // whose real length disagrees.
+    tmd.write_i64(tip.len() as i64); // indexLength
+    tmd.write_i64(tim.len() as i64); // termsLength
+    codec_util::write_footer(&mut tmd);
+
+    Ok(Output {
+        doc: postings.doc,
+        psm: postings.psm,
+        pos: postings.pos,
+        pay: postings.pay,
+        tim,
+        tip,
+        tmd,
+    })
+}
+
+/// `Lucene104PostingsWriter.init(termsOut, state)`: the postings writer's
+/// own header (`Lucene104PostingsWriterTerms`) and `BLOCK_SIZE`, which every
+/// terms dictionary over these postings embeds in its own file.
+pub fn write_postings_terms_header(
+    out: &mut Vec<u8>,
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+) {
     codec_util::write_index_header(
-        &mut tmd,
+        out,
         POSTINGS_TERMS_CODEC,
         POSTINGS_VERSION_CURRENT,
         segment_id,
         segment_suffix,
     );
-    tmd.write_vint(POSTINGS_BLOCK_SIZE);
-    tmd.write_vint(inputs.len() as i32); // numFields
+    out.write_vint(POSTINGS_BLOCK_SIZE);
+}
+
+/// The postings files [`write_postings`] produces: everything of
+/// [`Output`] but the terms dictionary's.
+#[derive(Debug, Clone, Default)]
+pub struct PostingsFiles {
+    /// `.doc`.
+    pub doc: Vec<u8>,
+    /// `.psm`.
+    pub psm: Vec<u8>,
+    /// `.pos`, empty when the segment has no positions.
+    pub pos: Vec<u8>,
+    /// `.pay`, empty when the segment has no offsets or payloads.
+    pub pay: Vec<u8>,
+}
+
+/// One field's terms as `PostingsWriterBase.writeTerm` left them: each
+/// term's bytes, statistics and `BlockTermState`, which a terms dictionary
+/// writes with [`Self::encode_term`] (`encodeTerm`).
+#[derive(Debug, Clone, Copy)]
+pub struct FieldTermStates<'s> {
+    /// The field's number.
+    pub field_number: i32,
+    /// The field's `IndexOptions`.
+    pub index_options: IndexOptions,
+    /// `FieldInfo.hasPayloads()`.
+    pub has_payloads: bool,
+    /// `docsSeen.cardinality()`: the documents with the field.
+    pub doc_count: i32,
+    block_terms: &'s [blocktree_writer::BlockTerm<'s>],
+    singletons: &'s [i32],
+    doc_start_fp: &'s [u64],
+    pos_start_fp: &'s [u64],
+    pay_start_fp: &'s [u64],
+    last_pos_block_offset: &'s [i64],
+}
+
+impl FieldTermStates<'_> {
+    /// The number of terms.
+    pub fn len(&self) -> usize {
+        self.block_terms.len()
+    }
+
+    /// Whether the field has no terms (never, for a written field).
+    pub fn is_empty(&self) -> bool {
+        self.block_terms.is_empty()
+    }
+
+    /// Term `i`'s bytes.
+    pub fn term(&self, i: usize) -> &[u8] {
+        self.block_terms[i].bytes
+    }
+
+    /// Term `i`'s `docFreq`.
+    pub fn doc_freq(&self, i: usize) -> i32 {
+        self.block_terms[i].doc_freq
+    }
+
+    /// Term `i`'s `BlockTermState.totalTermFreq`: `-1` for a field without
+    /// frequencies, as `Lucene104PostingsWriter.finishTerm` leaves it.
+    // SENTINEL: `-1`, no frequencies (a terms dictionary writes it as such).
+    pub fn total_term_freq(&self, i: usize) -> i64 {
+        if self.index_options == IndexOptions::Docs {
+            -1
+        } else {
+            self.block_terms[i].total_term_freq
+        }
+    }
+
+    /// `encodeTerm(out, fieldInfo, state, absolute=true)` for term `i`.
+    pub fn encode_term(&self, out: &mut Vec<u8>, i: usize) {
+        self.encode_terms(out, std::slice::from_ref(&i));
+    }
+
+    /// `encodeTerm` for `indices` in order, the first `absolute` and each
+    /// later one against the one before -- a block-tree block's metadata.
+    pub(crate) fn encode_terms(&self, out: &mut Vec<u8>, indices: &[usize]) {
+        let has_positions = self.index_options.subsumes_positions();
+        write_term_metadata(
+            out,
+            self.block_terms,
+            self.singletons,
+            indices,
+            self.doc_start_fp,
+            self.pos_start_fp,
+            self.pay_start_fp,
+            self.last_pos_block_offset,
+            has_positions,
+            has_positions && (self.index_options.subsumes_offsets() || self.has_payloads),
+        );
+    }
+}
+
+/// `Lucene104PostingsWriter` for one postings format instance of a segment:
+/// writes every field's `.doc`/`.pos`/`.pay` and the `.psm`, handing each
+/// field's [`FieldTermStates`] to `terms_dict` -- the terms dictionary
+/// (`Lucene103BlockTreeTermsWriter`, `FSTTermsWriter`, ...) -- once the
+/// field's postings are laid out. `has_prox`/`has_payloads_or_offsets` are
+/// [`WriteOptions`]'.
+///
+/// # Errors
+/// What [`write_fields`] rejects in `inputs`, and what `terms_dict` fails
+/// with.
+pub fn write_postings<T, E, F>(
+    inputs: &[FieldPostingsInput<'_, T>],
+    norms: &[FieldNorms<'_>],
+    has_prox: Option<bool>,
+    has_payloads_or_offsets: Option<bool>,
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+    mut terms_dict: F,
+) -> std::result::Result<PostingsFiles, E>
+where
+    T: TermSource,
+    E: From<Error>,
+    F: FnMut(&FieldTermStates<'_>) -> std::result::Result<(), E>,
+{
+    if inputs.is_empty() {
+        return Err(Error::EmptyTerms.into());
+    }
+    // Each field's per-term statistics come out of its validation pass, the
+    // one walk over every term's `docs` (see [`FieldStats`]).
+    let mut field_stats = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        field_stats.push(validate_field(input)?);
+    }
+
+    // ---- .doc ----
+    let mut maxima = PostingsMaxima::default();
+    let initial = 256usize;
+    let mut doc = Vec::with_capacity(initial);
+    codec_util::write_index_header(
+        &mut doc,
+        DOC_CODEC,
+        DOC_VERSION_CURRENT,
+        segment_id,
+        segment_suffix,
+    );
+
+    // ---- .pos ----
+    // Only written at all if at least one field indexes positions, exactly
+    // like a real segment has no `.pos` file when no field needs one.
+    let any_positions = has_prox.unwrap_or_else(|| {
+        inputs
+            .iter()
+            .any(|input| input.index_options.subsumes_positions())
+    });
+    let mut pos = Vec::new();
+    if any_positions {
+        pos.reserve(initial);
+        codec_util::write_index_header(
+            &mut pos,
+            POS_CODEC,
+            DOC_VERSION_CURRENT,
+            segment_id,
+            segment_suffix,
+        );
+    }
+
+    // ---- .pay ----
+    // Only written at all if at least one field indexes offsets and/or has
+    // payloads, same "no file needed" convention as `.pos`.
+    let any_offsets = has_payloads_or_offsets.unwrap_or_else(|| {
+        inputs
+            .iter()
+            .any(|input| input.index_options.subsumes_offsets())
+    });
+    let any_payloads =
+        has_payloads_or_offsets.unwrap_or_else(|| inputs.iter().any(|input| input.has_payloads));
+    let mut pay = Vec::new();
+    if any_offsets || any_payloads {
+        pay.reserve(initial);
+        codec_util::write_index_header(
+            &mut pay,
+            PAY_CODEC,
+            DOC_VERSION_CURRENT,
+            segment_id,
+            segment_suffix,
+        );
+    }
 
     for (input, stats) in inputs.iter().zip(field_stats) {
         let FieldStats {
@@ -1037,58 +1239,18 @@ pub fn write_fields_with_options<T: TermSource>(
             }
         }
 
-        // ---- this field's .tim blocks + .tip trie ----
-        // `Lucene103BlockTreeTermsWriter`'s block splitting and `TrieBuilder`,
-        // in `crate::blocktree_writer`; each block's term metadata is encoded
-        // here, against this field's per-term file pointers.
-        let trie = blocktree_writer::write_field_terms(
-            &mut tim,
-            &mut tip,
-            &block_terms,
-            (options.min_items_in_block, options.max_items_in_block),
-            input.index_options != IndexOptions::Docs,
-            |meta, indices| {
-                write_term_metadata(
-                    meta,
-                    &block_terms,
-                    &singletons,
-                    indices,
-                    &doc_start_fp,
-                    &pos_start_fp,
-                    &pay_start_fp,
-                    &last_pos_block_offset,
-                    index_has_positions,
-                    index_has_offsets_or_payloads,
-                )
-            },
-        );
-
-        // ---- this field's .tmd record ----
-        tmd.write_vint(input.field_number);
-        let num_terms = input.terms.len() as i64;
-        tmd.write_vlong(num_terms);
-        let sum_doc_freq: i64 = block_terms.iter().map(|t| i64::from(t.doc_freq)).sum();
-        let sum_total_term_freq: i64 = if input.index_options == IndexOptions::Docs {
-            sum_doc_freq
-        } else {
-            block_terms.iter().map(|t| t.total_term_freq).sum()
-        };
-        if input.index_options != IndexOptions::Docs {
-            tmd.write_vlong(sum_total_term_freq);
-        }
-        tmd.write_vlong(sum_doc_freq);
-        tmd.write_vint(input.doc_count);
-        let min_term = input.terms[0].term();
-        // ARITH: `validate_field` rejected an empty `terms`.
-        #[allow(clippy::arithmetic_side_effects)]
-        let max_term = input.terms[input.terms.len() - 1].term();
-        tmd.write_vint(min_term.len() as i32);
-        tmd.write_bytes(min_term);
-        tmd.write_vint(max_term.len() as i32);
-        tmd.write_bytes(max_term);
-        tmd.write_vlong(trie.index_start as i64);
-        tmd.write_vlong(trie.root_fp as i64);
-        tmd.write_vlong(trie.index_end as i64);
+        terms_dict(&FieldTermStates {
+            field_number: input.field_number,
+            index_options: input.index_options,
+            has_payloads: input.has_payloads,
+            doc_count: input.doc_count,
+            block_terms: &block_terms,
+            singletons: &singletons,
+            doc_start_fp: &doc_start_fp,
+            pos_start_fp: &pos_start_fp,
+            pay_start_fp: &pay_start_fp,
+            last_pos_block_offset: &last_pos_block_offset,
+        })?;
     }
 
     codec_util::write_footer(&mut doc);
@@ -1098,17 +1260,6 @@ pub fn write_fields_with_options<T: TermSource>(
     if any_offsets || any_payloads {
         codec_util::write_footer(&mut pay);
     }
-    codec_util::write_footer(&mut tim);
-    codec_util::write_footer(&mut tip);
-
-    // Both lengths are the *whole* file, footer included: Java writes each
-    // footer and only then records `getFilePointer()`, and its reader feeds
-    // these straight to `CodecUtil.retrieveChecksum`, which rejects any file
-    // whose real length disagrees.
-    tmd.write_i64(tip.len() as i64); // indexLength
-    tmd.write_i64(tim.len() as i64); // termsLength
-    codec_util::write_footer(&mut tmd);
-
     // `.psm`, mirroring `Lucene104PostingsWriter.close()`: the impact maxima
     // first, then each postings file's length *including* its footer (Java
     // records `getFilePointer()` after writing the footer). Lucene sizes its
@@ -1135,15 +1286,7 @@ pub fn write_fields_with_options<T: TermSource>(
     }
     codec_util::write_footer(&mut psm);
 
-    Ok(Output {
-        doc,
-        psm,
-        pos,
-        pay,
-        tim,
-        tip,
-        tmd,
-    })
+    Ok(PostingsFiles { doc, psm, pos, pay })
 }
 
 /// Validates one field's structural invariants (sortedness, `docFreq`/

@@ -423,7 +423,8 @@ case "$BENCH" in
     # M14.g's pair (CodecsMicro.java / micro_codecs.rs): lucene-codecs'
     # non-default formats, each over the index CodecsMicro builds (once) in
     # its own subdirectory of benchmarks/.corpus/codecs -- so far
-    # BloomFilteringPostingsFormat's filtered seekExact (bloom/).
+    # BloomFilteringPostingsFormat's filtered seekExact (bloom/) and
+    # FSTPostingsFormat's and DirectPostingsFormat's seekExact (memory/).
     MAIN=CodecsMicro
     SRC=benchmarks/micro/java/CodecsMicro.java
     JAR_MODULES="lucene-core lucene-codecs"

@@ -93,6 +93,14 @@ CASES=(
   # port's does -- pinning the bit positions, not only their count -- then
   # walks and seeks every term through the filtered enum.
   "lucene-codecs|write_bloom_fixture|bloom|VerifyCodecsBloom"
+  # lucene-codecs' FSTPostingsFormat and DirectPostingsFormat (M14.g): an
+  # FST50 group (.tfp over Lucene104 postings) and a Direct group (Lucene104's
+  # files) opened by real Lucene's own formats; every term walked with its
+  # docFreq/totalTermFreq and every document's freq, positions, offsets and
+  # payloads, every term seeked, and Terms.intersect over five patterns and
+  # three start terms required to enumerate exactly what this port's own
+  # readers do.
+  "lucene-codecs|write_memory_fixture|memory|VerifyCodecsMemory"
   # Last, and unlike every case above: a whole index written by the real
   # IndexWriter, opened by DirectoryReader and run through CheckIndex. The
   # cases above each hand Lucene one codec file with a hand-built
