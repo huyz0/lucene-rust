@@ -1,0 +1,99 @@
+# Lucene 10.5.0 lucene-sandbox: every top-level class of the jar, and what became of it.
+# Checked by scripts/check-port-inventory.py --module sandbox (see its docstring for the statuses).
+# class	status	detail
+payloads/PayloadSpanCollector	todo:M14	M14.f: the sandbox package payloads
+payloads/PayloadSpanUtil	todo:M14	M14.f: the sandbox package payloads
+sandbox/codecs/idversion/IDVersionPostingsFormat	todo:M14	M14.f: the sandbox package sandbox/codecs/idversion
+sandbox/codecs/idversion/IDVersionPostingsReader	todo:M14	M14.f: the sandbox package sandbox/codecs/idversion
+sandbox/codecs/idversion/IDVersionPostingsWriter	todo:M14	M14.f: the sandbox package sandbox/codecs/idversion
+sandbox/codecs/idversion/IDVersionSegmentTermsEnum	todo:M14	M14.f: the sandbox package sandbox/codecs/idversion
+sandbox/codecs/idversion/IDVersionSegmentTermsEnumFrame	todo:M14	M14.f: the sandbox package sandbox/codecs/idversion
+sandbox/codecs/idversion/IDVersionTermState	todo:M14	M14.f: the sandbox package sandbox/codecs/idversion
+sandbox/codecs/idversion/SingleDocsEnum	todo:M14	M14.f: the sandbox package sandbox/codecs/idversion
+sandbox/codecs/idversion/SinglePostingsEnum	todo:M14	M14.f: the sandbox package sandbox/codecs/idversion
+sandbox/codecs/idversion/VersionBlockTreeTermsReader	todo:M14	M14.f: the sandbox package sandbox/codecs/idversion
+sandbox/codecs/idversion/VersionBlockTreeTermsWriter	todo:M14	M14.f: the sandbox package sandbox/codecs/idversion
+sandbox/codecs/idversion/VersionFieldReader	todo:M14	M14.f: the sandbox package sandbox/codecs/idversion
+sandbox/codecs/quantization/KMeans	todo:M14	M14.f: the sandbox package sandbox/codecs/quantization
+sandbox/codecs/quantization/SampleReader	todo:M14	M14.f: the sandbox package sandbox/codecs/quantization
+sandbox/document/BigIntegerPoint	ported	crates/lucene-search/src/sandbox/document/big_integer_point.rs::BigIntegerPoint
+sandbox/document/DoublePointMultiRangeBuilder	ported	crates/lucene-search/src/sandbox/document/multi_range_builders.rs::DoublePointMultiRangeBuilder
+sandbox/document/FloatPointMultiRangeBuilder	ported	crates/lucene-search/src/sandbox/document/multi_range_builders.rs::FloatPointMultiRangeBuilder
+sandbox/document/FloatPointNearestNeighbor	ported	crates/lucene-search/src/sandbox/document/float_point_nearest_neighbor.rs::FloatPointNearestNeighbor
+sandbox/document/HalfFloatPoint	ported	crates/lucene-search/src/sandbox/document/half_float_point.rs::HalfFloatPoint
+sandbox/document/IntPointMultiRangeBuilder	ported	crates/lucene-search/src/sandbox/document/multi_range_builders.rs::IntPointMultiRangeBuilder
+sandbox/document/LatLonBoundingBox	ported	crates/lucene-search/src/sandbox/document/lat_lon_bounding_box.rs::LatLonBoundingBox
+sandbox/document/LongPointMultiRangeBuilder	ported	crates/lucene-search/src/sandbox/document/multi_range_builders.rs::LongPointMultiRangeBuilder
+sandbox/facet/FacetFieldCollector	todo:M14	M14.f: the sandbox package sandbox/facet
+sandbox/facet/FacetFieldCollectorManager	todo:M14	M14.f: the sandbox package sandbox/facet
+sandbox/facet/FacetFieldLeafCollector	todo:M14	M14.f: the sandbox package sandbox/facet
+sandbox/facet/cutters/FacetCutter	todo:M14	M14.f: the sandbox package sandbox/facet/cutters
+sandbox/facet/cutters/LeafFacetCutter	todo:M14	M14.f: the sandbox package sandbox/facet/cutters
+sandbox/facet/cutters/LongValueFacetCutter	todo:M14	M14.f: the sandbox package sandbox/facet/cutters
+sandbox/facet/cutters/TaxonomyFacetsCutter	todo:M14	M14.f: the sandbox package sandbox/facet/cutters
+sandbox/facet/cutters/ranges/DoubleRangeFacetCutter	todo:M14	M14.f: the sandbox package sandbox/facet/cutters/ranges
+sandbox/facet/cutters/ranges/IntervalTracker	todo:M14	M14.f: the sandbox package sandbox/facet/cutters/ranges
+sandbox/facet/cutters/ranges/LongRangeFacetCutter	todo:M14	M14.f: the sandbox package sandbox/facet/cutters/ranges
+sandbox/facet/cutters/ranges/LongRangeNode	todo:M14	M14.f: the sandbox package sandbox/facet/cutters/ranges
+sandbox/facet/cutters/ranges/NonOverlappingLongRangeFacetCutter	todo:M14	M14.f: the sandbox package sandbox/facet/cutters/ranges
+sandbox/facet/cutters/ranges/OverlappingLongRangeFacetCutter	todo:M14	M14.f: the sandbox package sandbox/facet/cutters/ranges
+sandbox/facet/iterators/CandidateSetOrdinalIterator	todo:M14	M14.f: the sandbox package sandbox/facet/iterators
+sandbox/facet/iterators/ComparableSupplier	todo:M14	M14.f: the sandbox package sandbox/facet/iterators
+sandbox/facet/iterators/LengthOrdinalIterator	todo:M14	M14.f: the sandbox package sandbox/facet/iterators
+sandbox/facet/iterators/OrdinalIterator	todo:M14	M14.f: the sandbox package sandbox/facet/iterators
+sandbox/facet/iterators/TaxonomyChildrenOrdinalIterator	todo:M14	M14.f: the sandbox package sandbox/facet/iterators
+sandbox/facet/iterators/TopnOrdinalIterator	todo:M14	M14.f: the sandbox package sandbox/facet/iterators
+sandbox/facet/labels/LabelToOrd	todo:M14	M14.f: the sandbox package sandbox/facet/labels
+sandbox/facet/labels/OrdToLabel	todo:M14	M14.f: the sandbox package sandbox/facet/labels
+sandbox/facet/labels/RangeOrdToLabel	todo:M14	M14.f: the sandbox package sandbox/facet/labels
+sandbox/facet/labels/TaxonomyOrdLabelBiMap	todo:M14	M14.f: the sandbox package sandbox/facet/labels
+sandbox/facet/plain/histograms/HistogramCollector	todo:M14	M14.f: the sandbox package sandbox/facet/plain/histograms
+sandbox/facet/plain/histograms/HistogramCollectorManager	todo:M14	M14.f: the sandbox package sandbox/facet/plain/histograms
+sandbox/facet/plain/histograms/PointTreeBulkCollector	todo:M14	M14.f: the sandbox package sandbox/facet/plain/histograms
+sandbox/facet/recorders/CountFacetRecorder	todo:M14	M14.f: the sandbox package sandbox/facet/recorders
+sandbox/facet/recorders/FacetRecorder	todo:M14	M14.f: the sandbox package sandbox/facet/recorders
+sandbox/facet/recorders/LeafFacetRecorder	todo:M14	M14.f: the sandbox package sandbox/facet/recorders
+sandbox/facet/recorders/LongAggregationsFacetRecorder	todo:M14	M14.f: the sandbox package sandbox/facet/recorders
+sandbox/facet/recorders/MultiFacetsRecorder	todo:M14	M14.f: the sandbox package sandbox/facet/recorders
+sandbox/facet/recorders/Reducer	todo:M14	M14.f: the sandbox package sandbox/facet/recorders
+sandbox/facet/utils/BaseFacetBuilder	todo:M14	M14.f: the sandbox package sandbox/facet/utils
+sandbox/facet/utils/CommonFacetBuilder	todo:M14	M14.f: the sandbox package sandbox/facet/utils
+sandbox/facet/utils/ComparableUtils	todo:M14	M14.f: the sandbox package sandbox/facet/utils
+sandbox/facet/utils/DrillSidewaysFacetOrchestrator	todo:M14	M14.f: the sandbox package sandbox/facet/utils
+sandbox/facet/utils/FacetBuilder	todo:M14	M14.f: the sandbox package sandbox/facet/utils
+sandbox/facet/utils/FacetOrchestrator	todo:M14	M14.f: the sandbox package sandbox/facet/utils
+sandbox/facet/utils/LongValueFacetBuilder	todo:M14	M14.f: the sandbox package sandbox/facet/utils
+sandbox/facet/utils/PostCollectionFaceting	todo:M14	M14.f: the sandbox package sandbox/facet/utils
+sandbox/facet/utils/RangeFacetBuilderFactory	todo:M14	M14.f: the sandbox package sandbox/facet/utils
+sandbox/facet/utils/TaxonomyFacetBuilder	todo:M14	M14.f: the sandbox package sandbox/facet/utils
+sandbox/index/MergeOnFlushMergePolicy	todo:M14	M14.f: the sandbox package sandbox/index
+sandbox/queries/FuzzyLikeThisQuery	ported	crates/lucene-search/src/fuzzy_like_this.rs::FuzzyLikeThisQuery
+sandbox/search/AggregatedQueryLeafProfilerResult	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/CombinedFieldQuery	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/CoveringQuery	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/CoveringScorer	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/DocValuesMultiRangeQuery	ported	crates/lucene-search/src/sandbox/search/doc_values_multi_range.rs::SortedNumericStabbingBuilder
+sandbox/search/LargeNumHitsTopDocsCollector	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/LargeNumHitsTopDocsCollectorManager	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/MultiNormsLeafSimScorer	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/MultiRangeQuery	ported	crates/lucene-search/src/sandbox/search/multi_range_query.rs::MultiRangeQuery
+sandbox/search/PhraseWildcardQuery	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/ProfilerCollector	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/ProfilerCollectorManager	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/ProfilerCollectorResult	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/ProfilerCollectorWrapper	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/QueryLeafProfilerBreakdown	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/QueryLeafProfilerThreadAggregator	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/QueryProfilerBreakdown	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/QueryProfilerIndexSearcher	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/QueryProfilerResult	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/QueryProfilerScorer	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/QueryProfilerTimer	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/QueryProfilerTimingType	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/QueryProfilerTree	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/QueryProfilerWeight	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/SortedNumericDocValuesMultiRangeQuery	ported	crates/lucene-search/src/sandbox/search/doc_values_multi_range.rs::SortedNumericDocValuesMultiRangeQuery
+sandbox/search/SortedSetDocValuesMultiRangeQuery	ported	crates/lucene-search/src/sandbox/search/doc_values_multi_range.rs::SortedSetDocValuesMultiRangeQuery
+sandbox/search/TermAutomatonQuery	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/TermAutomatonScorer	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/TokenStreamToTermAutomatonQuery	todo:M14	M14.f: the sandbox package sandbox/search

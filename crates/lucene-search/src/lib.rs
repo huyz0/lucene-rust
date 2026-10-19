@@ -252,6 +252,7 @@ pub mod reader_manager;
 pub mod reference_manager;
 pub mod replicator;
 pub mod rescorer;
+pub mod sandbox;
 pub mod segment_cacheable;
 pub mod segment_order;
 pub mod similarities;
