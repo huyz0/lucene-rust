@@ -159,7 +159,7 @@ pub fn count_until(
 }
 
 /// `Weight.count(leaf)` for the queries it is ported for.
-enum LeafCount {
+pub(crate) enum LeafCount {
     /// Answered without iterating.
     Whole(u64),
     /// `-1`: the collector counts what reaches it.
@@ -173,7 +173,7 @@ enum LeafCount {
 /// wrappers whose weights hand `count` to the one they wrap
 /// (`ConstantScoreQuery`, a `BoostQuery`) -- and a boolean of one required
 /// clause, the form a lone clause arrives in here (Lucene rewrites it away).
-fn leaf_count(seg: &OpenSegment<'_>, query: &BooleanQuery) -> Result<LeafCount> {
+pub(crate) fn leaf_count(seg: &OpenSegment<'_>, query: &BooleanQuery) -> Result<LeafCount> {
     use crate::query::Clause;
     fn clause(seg: &OpenSegment<'_>, c: &Clause) -> Result<LeafCount> {
         Ok(match c {
@@ -196,19 +196,9 @@ fn leaf_count(seg: &OpenSegment<'_>, query: &BooleanQuery) -> Result<LeafCount> 
             _ => LeafCount::Unknown,
         })
     }
-    let lone = match (&query.must[..], &query.filter[..]) {
-        ([only], []) | ([], [only]) => Some(only),
-        _ => None,
-    };
-    match lone {
-        Some(only)
-            if query.should.is_empty()
-                && query.must_not.is_empty()
-                && query.minimum_should_match == 0 =>
-        {
-            clause(seg, only)
-        }
-        _ => Ok(LeafCount::Unknown),
+    match query.lone_clause() {
+        Some(only) => clause(seg, only),
+        None => Ok(LeafCount::Unknown),
     }
 }
 

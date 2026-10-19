@@ -1016,6 +1016,22 @@ fn unwrap_boost_chain(clause: &Clause) -> (Clause, f64) {
 }
 
 impl BooleanQuery {
+    /// The query `BooleanQuery.rewrite` collapses this one to when it has a
+    /// single clause: a lone `must` or `filter` with no minimum, or a lone
+    /// `should` with a minimum of 0 or 1. `None` otherwise (a lone
+    /// `must_not` rewrites to no match, not to its clause).
+    #[must_use]
+    pub fn lone_clause(&self) -> Option<&Clause> {
+        if !self.must_not.is_empty() {
+            return None;
+        }
+        match (&self.must[..], &self.filter[..], &self.should[..]) {
+            ([only], [], []) | ([], [only], []) if self.minimum_should_match == 0 => Some(only),
+            ([], [], [only]) if self.minimum_should_match <= 1 => Some(only),
+            _ => None,
+        }
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
