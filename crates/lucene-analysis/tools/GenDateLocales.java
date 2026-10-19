@@ -64,7 +64,10 @@ public class GenDateLocales {
     return out;
   }
 
-  /** A locale's record: the six name sets, then the default pattern and the number symbols. */
+  /**
+   * A locale's record: the six name sets, then the default pattern, the number symbols, the
+   * short pattern and whether the calendar is Gregorian.
+   */
   static List<Object> record(Locale l) {
     List<Object> r = new ArrayList<>();
     for (int k = 0; k < PATTERNS.length; k++) r.add(accepted(l, k));
@@ -77,6 +80,8 @@ public class GenDateLocales {
     r.add(df.getDecimalFormatSymbols().getInfinity());
     r.add(df.getDecimalFormatSymbols().getExponentSeparator());
     r.add(df.getNegativePrefix());
+    r.add(((SimpleDateFormat) DateFormat.getDateInstance(DateFormat.SHORT, l)).toPattern());
+    r.add(Calendar.getInstance(l).getCalendarType().equals("gregory"));
     return r;
   }
 
@@ -127,8 +132,9 @@ public class GenDateLocales {
         for (int i = 0; i < set.size(); i++) data.append(i == 0 ? "" : ", ").append(strings.computeIfAbsent(set.get(i), x -> strings.size()));
         data.append("],");
       }
-      String[] scalars = {"default_pattern", "nan", "infinity", "exponent", "minus"};
-      for (int k = 0; k < 5; k++) data.append(' ').append(scalars[k]).append(": ").append(strings.computeIfAbsent((String) r.get(PATTERNS.length + k), x -> strings.size())).append(',');
+      String[] scalars = {"default_pattern", "nan", "infinity", "exponent", "minus", "short_pattern"};
+      for (int k = 0; k < scalars.length; k++) data.append(' ').append(scalars[k]).append(": ").append(strings.computeIfAbsent((String) r.get(PATTERNS.length + k), x -> strings.size())).append(',');
+      data.append(" gregorian: ").append(r.get(PATTERNS.length + scalars.length)).append(',');
       data.append(" },\n");
     }
     StringBuilder o = new StringBuilder();
@@ -149,6 +155,8 @@ public class GenDateLocales {
     o.append("    /// `getInfinity()`.\n    pub(crate) infinity: u16,\n");
     o.append("    /// `getExponentSeparator()`.\n    pub(crate) exponent: u16,\n");
     o.append("    /// The negative prefix (the exponent's sign too).\n    pub(crate) minus: u16,\n");
+    o.append("    /// `DateFormat.getDateInstance(SHORT, locale)`'s pattern.\n    pub(crate) short_pattern: u16,\n");
+    o.append("    /// The locale's calendar is Gregorian (not Buddhist).\n    pub(crate) gregorian: bool,\n");
     o.append("}\n\n");
     o.append("/// The strings the records name.\n");
     o.append("pub(crate) static STRINGS: [&str; ").append(strings.size()).append("] = [\n");

@@ -2,20 +2,24 @@
 //! Lucene 10.5.0 (`fixtures/src/GenQueryParserFlexible.java`): every query of
 //! `fixtures/corpus/queryparser-classic.txt` and `queryparser-flexible.txt`,
 //! under eleven configurations, to the same query (`toString("f")` and the
-//! class tree) or the same exception class and message.
+//! class tree) or the same exception class and message; and the range
+//! bounds of `GenQueryParserClassic.DATES` read as dates (`date_*.tsv`).
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use lucene_analysis::charfilter::{MappingCharFilter, NormalizeCharMap, NormalizeCharMapBuilder};
 use lucene_analysis::core_analysis::StopAnalyzer;
+use lucene_analysis::miscellaneous::DateLocale;
 use lucene_analysis::synonym::{SynonymGraphFilter, SynonymMap, SynonymMapBuilder};
 use lucene_analysis::util::WhitespaceTokenizer;
 use lucene_analysis::{
     english_stop_words, AnalysisError, Analyzer, AnalyzerDefinition, CharArraySet, CharReader,
     LowerCaseFilter, StandardAnalyzer, TokenStream, TokenStreamComponents,
 };
+use lucene_index::document::Resolution;
 use lucene_search::extended_query::RewriteMethod;
 use lucene_search::queryparser::flexible::{Operator, StandardQueryParser};
 
@@ -220,6 +224,69 @@ fn standard_query_parser_matches_lucene() {
         "{} of {total} differ:\n{}",
         bad.len(),
         shown.join("\n")
+    );
+}
+
+/// `GenQueryParserFlexible.writeDates`' configurations, in its default
+/// time zone (GMT-05:00) and locale (`en-US`), at its clock
+/// (`date_clock.txt`), which its two-digit years were read against.
+#[test]
+fn date_ranges_match_lucene() {
+    const HOUR: i32 = 3_600_000;
+    let clock: i64 = fs::read_to_string(dir().join("date_clock.txt"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let mut total = 0;
+    let mut bad = Vec::new();
+    for config in ["us_day", "de_map", "root_ms", "none"] {
+        let mut p = StandardQueryParser::with_analyzer(standard());
+        p.set_default_time_zone(-5 * HOUR);
+        p.set_date_clock(Some(clock));
+        let locale = |tag: &str| DateLocale::for_language_tag(tag).unwrap();
+        match config {
+            "us_day" => {
+                p.set_date_resolution(Some(Resolution::Day));
+                p.set_time_zone(2 * HOUR);
+            }
+            "de_map" => {
+                p.set_locale(locale("de-DE"));
+                p.set_date_resolution_map(HashMap::from([("d".to_string(), Resolution::Minute)]));
+            }
+            "root_ms" => {
+                p.set_locale(locale("und"));
+                p.set_date_resolution(Some(Resolution::Millisecond));
+                p.set_time_zone(5 * HOUR + HOUR / 2);
+            }
+            _ => {}
+        }
+        let tsv = fs::read_to_string(dir().join(format!("date_{config}.tsv"))).unwrap();
+        for line in tsv.lines() {
+            let cols: Vec<&str> = line.splitn(4, '\t').collect();
+            let query = unesc(cols[0]);
+            let want = match cols[1] {
+                "Q" => format!("Q\t{}\t{}", unesc(cols[2]), unesc(cols[3])),
+                _ => format!("X\t{}", unesc(cols[2])),
+            };
+            let got = match p.parse(&query, Some("f")) {
+                Ok(q) => format!("Q\t{}\t{}", q.to_string("f"), q.describe("f")),
+                Err(e) => format!("X\t{}: {}", e.class, e.message),
+            };
+            total += 1;
+            if got != want {
+                bad.push(format!(
+                    "{config} {query:?}\n  want {want:?}\n  got  {got:?}"
+                ));
+            }
+        }
+    }
+    assert!(total > 150, "only {total} rows");
+    assert!(
+        bad.is_empty(),
+        "{} of {total} differ:\n{}",
+        bad.len(),
+        bad.join("\n")
     );
 }
 

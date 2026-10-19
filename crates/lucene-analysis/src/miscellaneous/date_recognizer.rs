@@ -129,6 +129,17 @@ impl DateLocale {
     pub fn default_pattern(&self) -> &'static str {
         STRINGS[usize::from(self.data.default_pattern)]
     }
+
+    /// `DateFormat.getDateInstance(DateFormat.SHORT, locale)`'s pattern.
+    pub fn short_pattern(&self) -> &'static str {
+        STRINGS[usize::from(self.data.short_pattern)]
+    }
+
+    /// `Calendar.getInstance(locale)` is a `GregorianCalendar` (the table's
+    /// other locales are Buddhist).
+    pub fn is_gregorian(&self) -> bool {
+        self.data.gregorian
+    }
 }
 
 /// `Locale.Builder.setLanguageTag(tag).build().toLanguageTag()` for a
@@ -312,11 +323,43 @@ impl SimpleDateFormat {
         )
     }
 
+    /// `DateFormat.getDateInstance(DateFormat.SHORT, locale)`.
+    pub fn short_date_instance(locale: DateLocale) -> Self {
+        // The table's patterns are the JDK's own and compile.
+        SimpleDateFormat::with_locale(locale.short_pattern(), locale).unwrap_or(SimpleDateFormat {
+            elements: Vec::new(),
+            alone: false,
+            symbols: Arc::new(Symbols::of(locale.data)),
+        })
+    }
+
+    /// The pattern has only numeric fields (`yyyy`, `MM`, `d`, ...), the
+    /// fields whose values [`Self::parse_fields`] reports.
+    pub fn is_numeric(&self) -> bool {
+        self.elements.iter().all(|e| match *e {
+            Element::Field { letter, count } => is_numeric(letter, count),
+            Element::Literal(_) => true,
+        })
+    }
+
     /// `parse(text, new ParsePosition(0))`: the UTF-16 index the parse ended
     /// at, or `None` where Java returns `null` (and `parse(String)` throws
     /// `ParseException`).
     pub fn parse(&self, text: &str) -> Option<usize> {
         let t: Vec<u16> = text.encode_utf16().collect();
+        self.run(&t, None)
+    }
+
+    /// [`Self::parse`], with the value `subParse` reads for each numeric
+    /// field, in pattern order (a text field's is not reported).
+    pub fn parse_fields(&self, text: &str) -> Option<ParsedFields> {
+        let t: Vec<u16> = text.encode_utf16().collect();
+        let mut numeric = Vec::new();
+        let end = self.run(&t, Some(&mut numeric))?;
+        Some(ParsedFields { end, numeric })
+    }
+
+    fn run(&self, t: &[u16], mut values: Option<&mut Vec<NumericField>>) -> Option<usize> {
         let alone = self.alone;
         let mut pos = 0;
         for (i, e) in self.elements.iter().enumerate() {
@@ -330,12 +373,49 @@ impl SimpleDateFormat {
                         self.elements.get(i + 1),
                         Some(&Element::Field { letter, count }) if is_numeric(letter, count)
                     );
-                    parse_field(&self.symbols, alone, &t, pos, letter, count, abutting)?
+                    let end = parse_field(&self.symbols, alone, t, pos, letter, count, abutting)?;
+                    if let Some(v) = values.as_deref_mut() {
+                        if is_numeric(letter, count) {
+                            let from = skip_blanks(t, pos);
+                            let digits = &t[from..end];
+                            v.push(NumericField {
+                                letter,
+                                count,
+                                value: number_value(&self.symbols, digits),
+                                two_digits: digits.len() == 2
+                                    && digits.iter().all(|&c| is_digit(c)),
+                            });
+                        }
+                    }
+                    end
                 }
             };
         }
         Some(pos)
     }
+}
+
+/// What [`SimpleDateFormat::parse_fields`] read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedFields {
+    /// Where the parse ended (`ParsePosition.getIndex()`).
+    pub end: usize,
+    /// Each numeric field, in pattern order.
+    pub numeric: Vec<NumericField>,
+}
+
+/// A numeric field as `SimpleDateFormat.subParse` reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NumericField {
+    /// The pattern letter.
+    pub letter: u8,
+    /// How many times the pattern repeats it.
+    pub count: usize,
+    /// `DecimalFormat.parse(...).intValue()`.
+    pub value: i32,
+    /// The field's text (after its blanks) is two `char`s, both
+    /// `Character.isDigit`: the test that makes a `y`/`yy` year ambiguous.
+    pub two_digits: bool,
 }
 
 impl SimpleDateFormat {
@@ -512,6 +592,84 @@ fn parse_number(sy: &Symbols, t: &[u16], pos: usize) -> Option<usize> {
     Some(p)
 }
 
+/// `Number.intValue()` of what `DecimalFormat.parse` returns for `t`, the
+/// text [`parse_number`] consumed: NaN is 0 and an infinity saturates; the
+/// significant digits, shifted by the exponent (JDK 25 saturates it; pinned
+/// by `analysis_date_locales/numbers_jdk25.tsv`), are a
+/// `Long` when integral and within its range -- its low 32 bits taken --
+/// and otherwise a `Double`, cast to `int` (saturating).
+fn number_value(sy: &Symbols, t: &[u16]) -> i32 {
+    let starts =
+        |i: usize, s: &[u16]| !s.is_empty() && t.get(i..).is_some_and(|r| r.starts_with(s));
+    if starts(0, &sy.nan) {
+        return 0;
+    }
+    let negative = starts(0, &sy.minus);
+    let mut p = if negative { sy.minus.len() } else { 0 };
+    if starts(p, &sy.infinity) {
+        return if negative { i32::MIN } else { i32::MAX };
+    }
+    let digit = |c: u16| {
+        java_character::decimal_digit_value(u32::from(c)).and_then(|d| u8::try_from(d).ok())
+    };
+    let mut digits: Vec<u8> = Vec::new();
+    while let Some(d) = t.get(p).copied().and_then(digit) {
+        // Leading zeros are not significant (nor counted in `decimalAt`).
+        if d != 0 || !digits.is_empty() {
+            digits.push(d);
+        }
+        p += 1;
+    }
+    let mut decimal_at = i64::try_from(digits.len()).unwrap_or(i64::MAX);
+    if starts(p, &sy.exponent) {
+        let mut q = p + sy.exponent.len();
+        let exp_negative = starts(q, &sy.minus);
+        if exp_negative {
+            q += sy.minus.len();
+        }
+        let mut exponent: i64 = 0;
+        while let Some(d) = t.get(q).copied().and_then(digit) {
+            exponent = exponent.saturating_mul(10).saturating_add(i64::from(d));
+            q += 1;
+        }
+        let exponent = if exp_negative {
+            exponent.saturating_neg()
+        } else {
+            exponent
+        };
+        decimal_at = decimal_at.saturating_add(exponent);
+    }
+    let decimal_at = decimal_at.clamp(i64::from(i32::MIN), i64::from(i32::MAX));
+    while digits.last() == Some(&0) {
+        digits.pop();
+    }
+    if digits.is_empty() {
+        return 0;
+    }
+    let count = i64::try_from(digits.len()).unwrap_or(i64::MAX);
+    if decimal_at >= count && decimal_at <= 19 {
+        // Integral and at most 19 digits: a `long` unless past its range.
+        let mut v: i128 = 0;
+        for i in 0..decimal_at {
+            let d = usize::try_from(i)
+                .ok()
+                .and_then(|i| digits.get(i))
+                .copied()
+                .unwrap_or(0);
+            v = v * 10 + i128::from(d);
+        }
+        let v = if negative { -v } else { v };
+        if let Ok(long) = i64::try_from(v) {
+            // `Long.intValue()`: the low 32 bits.
+            return long as i32;
+        }
+    }
+    let text: String = digits.iter().map(|&d| char::from(b'0' + d)).collect();
+    let double: f64 = format!(".{text}E{decimal_at}").parse().unwrap_or(0.0);
+    // `(int) double`: Rust's `as` saturates and maps NaN to 0, as Java does.
+    (if negative { -double } else { double }) as i32
+}
+
 /// An ISO 8601 zone (`X`, `XX`, `XXX`) at `pos`.
 fn parse_iso_zone(t: &[u16], pos: usize, count: usize) -> Option<usize> {
     let ch = |i: usize| t.get(i).copied();
@@ -637,6 +795,82 @@ mod tests {
         let nbsp = SimpleDateFormat::new("d\u{A0}M").unwrap();
         assert!(nbsp.parses("5 1") && nbsp.parses("5\u{202F}1") && !nbsp.parses("5\t1"));
         assert!(!SimpleDateFormat::new("d-M").unwrap().parses("5\u{A0}-1"));
+    }
+
+    /// `DecimalFormat.parse(...).intValue()` of each field of `M/d/yy` over
+    /// these texts. The JDK's answers for them (JDK 25's; JDK 21 reads the
+    /// two twenty-digit exponents otherwise) are pinned, as the dates they
+    /// make, by the generated `analysis_date_locales/numbers_jdk25.tsv`,
+    /// which `lucene-search`'s `queryparser::date_range` tests read.
+    #[test]
+    fn numeric_fields_carry_java_values() {
+        let us = DateLocale::for_language_tag("en-US").unwrap();
+        let f = SimpleDateFormat::short_date_instance(us);
+        assert_eq!(us.short_pattern(), "M/d/yy");
+        assert!(us.is_gregorian() && f.is_numeric());
+        assert!(!SimpleDateFormat::english_default().is_numeric());
+        let values = |text: &str| -> Vec<(i32, bool)> {
+            f.parse_fields(text)
+                .unwrap()
+                .numeric
+                .iter()
+                .map(|n| (n.value, n.two_digits))
+                .collect()
+        };
+        assert_eq!(values("1/2/20"), [(1, false), (2, false), (20, true)]);
+        assert_eq!(
+            values("01/ 2/2020x"),
+            [(1, true), (2, false), (2020, false)]
+        );
+        // Leading zeros are not significant; trailing ones are.
+        assert_eq!(values("007/10/046"), [(7, false), (10, true), (46, false)]);
+        // Exponents shift, a fraction goes through a double.
+        assert_eq!(
+            values("1E1/15E-1/2E0"),
+            [(10, false), (1, false), (2, false)]
+        );
+        assert_eq!(values("NaN/-1/-0"), [(0, false), (-1, false), (0, false)]);
+        assert_eq!(
+            values("\u{221E}/-\u{221E}/1E30"),
+            [(i32::MAX, false), (i32::MIN, false), (i32::MAX, false)]
+        );
+        // A `long` keeps its low 32 bits; past a `long`, a double saturates.
+        assert_eq!(
+            values("4294969296/1/99999999999999999999"),
+            [(2000, false), (1, false), (i32::MAX, false)]
+        );
+        assert_eq!(
+            values("1/1/-9223372036854775808"),
+            [(1, false), (1, false), (0, false)]
+        );
+        assert_eq!(
+            values("1/1/9223372036854775807"),
+            [(1, false), (1, false), (-1, false)]
+        );
+        assert_eq!(
+            values("1/1/9223372036854775808"),
+            [(1, false), (1, false), (i32::MAX, false)]
+        );
+        assert_eq!(
+            values("1/1/1E-99999999999999999999"),
+            [(1, false), (1, false), (0, false)]
+        );
+        assert_eq!(
+            values("1/1/1E99999999999999999999"),
+            [(1, false), (1, false), (i32::MAX, false)]
+        );
+        // Any decimal digit: Arabic-Indic two digits are a two-digit year.
+        assert_eq!(
+            values("1/2/\u{661}\u{662}"),
+            [(1, false), (2, false), (12, true)]
+        );
+        assert_eq!(f.parse_fields("1/2"), None);
+        // Text fields report no value.
+        let mixed = SimpleDateFormat::new("MMM d").unwrap();
+        let p = mixed.parse_fields("Jan 5").unwrap();
+        assert_eq!((p.end, p.numeric.len()), (5, 1));
+        let thai = DateLocale::for_language_tag("th-TH").unwrap();
+        assert!(!thai.is_gregorian());
     }
 
     #[test]

@@ -356,7 +356,7 @@ RUST_WRITTEN='^sparse_numeric_doc_values/'
 BWC_OWNED='^bwc(-big|-quantized)?/'
 # Written under JDK 25 only (GenAnalysisDateLocales --jdk25), and verified by
 # scripts/check-date-locales-jdk25.sh in CI's JDK 25 step.
-JDK25_OWNED='^analysis_date_locales/dates_jdk25\.txt$'
+JDK25_OWNED='^analysis_date_locales/(dates_jdk25\.txt|numbers_jdk25\.tsv)$'
 while IFS= read -r rel; do
   [ -e "$TMP_A/$rel" ] && continue
   if [[ "$rel" =~ $GENERATED_NOISE ]]; then continue; fi

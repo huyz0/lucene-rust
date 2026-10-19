@@ -742,9 +742,10 @@ impl<'p> Parser<'p> {
     }
 
     /// `getRangeQuery(field, part1, part2, startInclusive, endInclusive)`:
-    /// with no date resolution set (the default), the date parse's
-    /// `DateTools.dateToString` fails and is ignored, so it is
-    /// `newRangeQuery`.
+    /// each bound the date format reads becomes its date at the field's
+    /// resolution (the upper one at the end of its day when inclusive), the
+    /// others stay -- with no resolution, all of them -- and both are
+    /// normalized by `newRangeQuery`.
     fn get_range_query_single(
         &self,
         field: &str,
@@ -754,13 +755,27 @@ impl<'p> Parser<'p> {
         end_inclusive: bool,
     ) -> PResult<Option<ParsedQuery>> {
         self.check_phrase_field(field)?;
+        let resolution = self.cfg.date_resolution(field);
+        let dates = &self.cfg.dates;
         let start = match part1 {
             None => None,
-            Some(p) => Some(self.normalize(field, &p)?),
+            Some(p) => {
+                let p = dates
+                    .bound(&p, resolution, false)
+                    .map_err(illegal)?
+                    .unwrap_or(p);
+                Some(self.normalize(field, &p)?)
+            }
         };
         let end = match part2 {
             None => None,
-            Some(p) => Some(self.normalize(field, &p)?),
+            Some(p) => {
+                let p = dates
+                    .bound(&p, resolution, end_inclusive)
+                    .map_err(illegal)?
+                    .unwrap_or(p);
+                Some(self.normalize(field, &p)?)
+            }
         };
         Ok(Some(self.rewritten(ParsedQuery::TermRange(
             TermRangeQuery::new(field, start, end, start_inclusive, end_inclusive),
