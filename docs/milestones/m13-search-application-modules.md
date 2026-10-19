@@ -279,6 +279,40 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
     concurrent SSDV counts) and the SSDV `DrillSideways` constructors,
     `RandomSamplingFacetsCollector`, `OrdinalMappingLeafReader`, `TaxonomyMergeUtils`,
     `SearcherTaxonomyManager`, `PrintTaxonomyStats`, `ReindexingEnrichedDirectoryTaxonomyWriter`.
+    **Done.** Fixtures `GenSortedSetFacets.java` -> `sortedset_facets_fixtures.rs` (`state.tsv`,
+    `facets.tsv`, `errors.tsv`, `sideways.tsv`, `sorted.tsv`, `sampling.tsv`; a single- and a
+    multi-segment index with deletions) and `GenTaxonomyUtils.java` -> `taxonomy_utils_fixtures.rs`
+    (`merge.tsv`, `mapping.tsv`, `manager.tsv`, `enriched.tsv`, `stats.txt`, `stats_tree.txt`),
+    every count, sample, hit list and refusal matched exactly; every `lucene-facet` inventory class
+    is now `ported` (92). `DefaultSortedSetDocValuesReaderState`,
+    `SortedSetDocValuesFacetCounts` and `ConcurrentSortedSetDocValuesFacetCounts` count over a
+    reader or a collector (remapping or migrating ordinals as Java chooses), the abstract counts
+    being the existing `SortedSetFacetCounts`; `DrillSideways` takes a state;
+    `RandomSamplingFacetsCollector` draws Java's samples (seed `0` is Java's sign-extended
+    `0xdeadbeef` int literal, the one bug the fixture found); `FacetsCollectorManager` and
+    `DrillSideways` gained their `Sort` overloads. `TaxonomyMergeUtils` applies the ordinal map
+    inside the merge (`IndexWriter::add_indexes_merged_remapping`), as this port's `addIndexes`
+    merges segments rather than readers; `OrdinalMappingLeafReader` is a `LeafFilter`.
+    `SearcherTaxonomyManager` found a writer defect: a refresh that only applied deletes left the
+    delete queue's private buffer holding them, so the writer never read as current again
+    (Java's `nrtIsCurrent` is `true`); `flush` now clears it (`a_delete_only_snapshot_is_current`).
+    Deviations (ledger rows): sorted searches take their hits, facets and scores from separate
+    searches of the same query; the concurrent counts run on rayon; `SearcherTaxonomyManager`
+    borrows its sources and has no listeners. A failed or aborted remapping merge adds nothing (the copies are withdrawn), and a field of the
+    index sort is refused for remapping (Java sorts the remapped reader; this merge would order by
+    the unmapped values). Bench `ssdv_facets` (`SsdvFacetsMicro.java` / `micro_ssdv_facets.rs`,
+    200k documents in 4 segments, noise 1.04x): count all 1.12x, count rare 1.06x, count
+    concurrent 1.13x, count reader 0.97~, top children 2.23x, sampling collect 1.26x, sampling
+    count + amortize 1.01~; `#check` digests agree.
+    - The counts started at 0.77x-0.93x: a dispatched `doc_value_count` and `next_ord` per
+      ordinal, each through a `Result`. `SortedSetDocValues::take_ords` (as `take_values`) hands
+      a document's decoded ordinals over at once.
+    - `ssdv_state` 0.69x -> 0.82x (one allocation per term, the labels moved rather than
+      cloned), left there with a reason: `SortedSetDocValues::lookup_ord` returns an owned `Vec`,
+      so every segment's terms are materialised (11k strings where Java copies terms into reused
+      `BytesRef`s and decodes only the ~2.7k global labels). The state is built once per reader
+      (Java's javadoc: create it once and reuse it), so this is not a per-query cost; a
+      borrowing `lookup_ord` is a reader-API change for its own area.
   Each sub-task: fixture-first (a `Gen*.java` writes the index and the expected results), then the
   port, tests, the ledger and inventory rows, and a benchmark pair for the counting paths.
 - **T13.5** — `MemoryIndex` and `monitor`. `MemoryIndex` is ported
@@ -313,7 +347,7 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
 - **T13.6** — Plugin wiring for the OpenSearch features above.
 
 **Status by task:** T13.1 done; T13.5 `MemoryIndex` done, `monitor` in
-progress (T13.5a-c done; T13.5d done -- batches, the four matchers, partitioned matching, persistence verified both ways against Lucene, the regexp handler and debug()); T13.2 ported and benchmarked (`uh_analysis`/`uh_tv` 0.36x, reason above); T13.3 done; T13.4a-c and T13.4d1 done (T13.4d2 not started; `facet_count_all` 1.04~ and `drill_sideways_union` 0.97~ inside the noise, reasons above); T13.6
+progress (T13.5a-c done; T13.5d done -- batches, the four matchers, partitioned matching, persistence verified both ways against Lucene, the regexp handler and debug()); T13.2 ported and benchmarked (`uh_analysis`/`uh_tv` 0.36x, reason above); T13.3 done; T13.4 done (`facet_count_all` 1.04~ and `drill_sideways_union` 0.97~ inside the noise, reasons above); T13.6
 not started. M13 closes when all four acceptance criteria hold.
 
 ## Acceptance criteria

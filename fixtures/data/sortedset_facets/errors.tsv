@@ -1,0 +1,8 @@
+state:absent	IAE:field "$nope" was not indexed with SortedSetDocValues
+state:sorted	IAE:field "sorted" was not indexed with SortedSetDocValues
+state:sorted_single	IAE:field "sorted" was not indexed with SortedSetDocValues
+state:id	IAE:field "id" was not indexed with SortedSetDocValues
+count:mismatch	ISE:the SortedSetDocValuesReaderState provided to this class does not match the reader being searched; you must create a new SortedSetDocValuesReaderState every time you open a new IndexReader
+conc:mismatch	ISE:the SortedSetDocValuesReaderState provided to this class does not match the reader being searched; you must create a new SortedSetDocValuesReaderState every time you open a new IndexReader
+fcm:nullsort	IAE:sort must not be null
+fcm:after_past_limit	IAE:after.doc exceeds the number of documents in the reader: after.doc=1740 limit=1740

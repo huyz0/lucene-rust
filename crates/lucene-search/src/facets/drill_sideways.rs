@@ -10,13 +10,14 @@
 //! from separate searches.
 //!
 //! Differs:
-//! * only taxonomy facets are counted: the `SortedSetDocValuesReaderState`
-//!   constructors wait for the sorted-set facet counts over a
-//!   `FacetsCollector` (T13.4d2);
 //! * the executor's searches run one after the other on the calling thread
 //!   (the results are the same);
-//! * `search` with a `Sort` (`TopFieldCollectorManager`) is not ported:
-//!   [`DrillSideways::search_filtered`] sorts by score;
+//! * `search(query, filter, after, topN, sort, doDocScores)` is
+//!   [`DrillSideways::search_sorted`]: the facets come from the drill-sideways
+//!   search, the sorted hits from a second search of the drill-down query
+//!   (the same documents), and `populateScores` from a third that keeps
+//!   scores; a `null` sort (Java's fall-back to the score search) is
+//!   [`DrillSideways::search_filtered`], so an empty sort is refused;
 //! * the `create*FacetsCollectorManager` and `buildFacetsResult` hooks are
 //!   not overridable; [`DrillSideways::with_score_sub_docs_at_once`] is the
 //!   `scoreSubDocsAtOnce` one;
@@ -27,10 +28,11 @@
 use lucene_codecs::completion::java_hash_map_order;
 
 use crate::collector::{ScoreDoc, ScoreMode, ScoringCollector, TopDocsCollector};
+use crate::directory_reader::SegmentReader;
 use crate::facets::taxonomy::{FastTaxonomyFacetCounts, TaxonomyReader};
 use crate::facets::{
-    FacetResult, FacetValue, Facets, FacetsCollector, FacetsCollectorManager, FacetsConfig,
-    MultiFacets,
+    DefaultSortedSetDocValuesReaderState, FacetResult, FacetValue, Facets, FacetsCollector,
+    FacetsCollectorManager, FacetsConfig, MultiFacets, SortedSetDocValuesFacetCounts,
 };
 use crate::grouping::{search_manager, GroupingCollectorManager};
 use crate::index_searcher::IndexSearcher;
@@ -38,6 +40,7 @@ use crate::leaf_collector::SegmentCollector;
 use crate::multi_segment::OpenSegment;
 use crate::query::{Clause, MatchAllDocsQuery};
 use crate::top_docs::{self, ShardScoreDoc, TieBreaker, TopDocs};
+use crate::top_field::{FieldDoc, SortField, TopFieldDocs};
 use crate::{Error, Result};
 
 use super::drill_down_query::DrillDownQuery;
@@ -47,7 +50,10 @@ use super::drill_sideways_query::DrillSidewaysQuery;
 pub struct DrillSideways<'r, 's, 'a, 't> {
     searcher: &'r IndexSearcher<'s, 'a>,
     config: &'t FacetsConfig,
-    taxo_reader: &'t dyn TaxonomyReader,
+    /// `taxoReader`: counts the facets when set.
+    taxo_reader: Option<&'t dyn TaxonomyReader>,
+    /// `state`: counts the facets when there is no taxonomy reader.
+    state: Option<&'t DefaultSortedSetDocValuesReaderState<'t>>,
     /// Whether an executor was given.
     executor: bool,
     score_sub_docs_at_once: bool,
@@ -84,22 +90,22 @@ pub struct DrillSidewaysSearchResult<T, R> {
 /// was drilled into, else a `MultiFacets` sending each drilled dim to its
 /// sideways counts.
 pub struct DrillSidewaysFacets<'t> {
-    drill_down: FastTaxonomyFacetCounts<'t>,
+    drill_down: Box<dyn Facets + 't>,
     /// In Java's `HashMap` iteration order, which `getAllDims` walks.
-    sideways: Vec<(String, FastTaxonomyFacetCounts<'t>)>,
+    sideways: Vec<(String, Box<dyn Facets + 't>)>,
 }
 
 impl DrillSidewaysFacets<'_> {
     fn with<T>(&self, f: impl FnOnce(&dyn Facets) -> Result<T>) -> Result<T> {
         if self.sideways.is_empty() {
-            return f(&self.drill_down);
+            return f(self.drill_down.as_ref());
         }
         let dims: Vec<(String, &dyn Facets)> = self
             .sideways
             .iter()
-            .map(|(d, f)| (d.clone(), f as &dyn Facets))
+            .map(|(d, f)| (d.clone(), f.as_ref()))
             .collect();
-        f(&MultiFacets::new(dims, Some(&self.drill_down)))
+        f(&MultiFacets::new(dims, Some(self.drill_down.as_ref())))
     }
 }
 
@@ -133,10 +139,35 @@ impl<'r, 's, 'a, 't> DrillSideways<'r, 's, 'a, 't> {
         config: &'t FacetsConfig,
         taxo_reader: &'t dyn TaxonomyReader,
     ) -> Self {
+        Self::with_taxo_and_state(searcher, config, Some(taxo_reader), None)
+    }
+
+    /// `new DrillSideways(searcher, config, state)`: categories indexed with
+    /// [`crate::facets::SortedSetDocValuesFacetField`], counted by
+    /// [`SortedSetDocValuesFacetCounts`].
+    pub fn with_state(
+        searcher: &'r IndexSearcher<'s, 'a>,
+        config: &'t FacetsConfig,
+        state: &'t DefaultSortedSetDocValuesReaderState<'t>,
+    ) -> Self {
+        Self::with_taxo_and_state(searcher, config, None, Some(state))
+    }
+
+    /// `new DrillSideways(searcher, config, taxoReader, state)`: the taxonomy
+    /// reader counts the facets when given, else the sorted-set state (as
+    /// Java's `buildFacetsResult`); with neither, building the facets is
+    /// refused.
+    pub fn with_taxo_and_state(
+        searcher: &'r IndexSearcher<'s, 'a>,
+        config: &'t FacetsConfig,
+        taxo_reader: Option<&'t dyn TaxonomyReader>,
+        state: Option<&'t DefaultSortedSetDocValuesReaderState<'t>>,
+    ) -> Self {
         DrillSideways {
             searcher,
             config,
             taxo_reader,
+            state,
             executor: false,
             score_sub_docs_at_once: false,
         }
@@ -210,6 +241,71 @@ impl<'r, 's, 'a, 't> DrillSideways<'r, 's, 'a, 't> {
             }
             None => self.search_after(after, query, top_n),
         }
+    }
+
+    /// `search(query, filter, after, topN, sort, doDocScores)` with a sort:
+    /// the top `top_n` hits by `sort` (below `after`), every hit counted,
+    /// and the facets. The hits' scores (`populateScores`) are the
+    /// drill-down query's when `do_doc_scores`, else `NaN`, one per hit.
+    /// `readers[i]` is segment `i`'s reader (its doc values).
+    ///
+    /// # Errors
+    /// [`Error::IllegalArgument`] for an empty `sort` (`sort must not be
+    /// null`: use [`Self::search_filtered`]); whatever the search or the
+    /// counting reports.
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_sorted(
+        &self,
+        readers: &[SegmentReader],
+        query: &DrillDownQuery<'_>,
+        filter: Option<Clause>,
+        after: Option<&FieldDoc>,
+        top_n: i32,
+        sort: &[SortField],
+        do_doc_scores: bool,
+    ) -> Result<DrillSidewaysResult<'t, 'a, (TopFieldDocs, Vec<f32>)>> {
+        let filtered;
+        let query = match filter {
+            Some(filter) => {
+                filtered = DrillDownQuery::with_filter(self.config, filter, query);
+                &filtered
+            }
+            None => query,
+        };
+        let mut limit = self.searcher.max_doc();
+        if limit == 0 {
+            // The collector does not allow `numHits = 0`.
+            limit = 1;
+        }
+        // `new TopFieldCollectorManager(sort, fTopN, ..)`'s refusal.
+        let Some(top_n) = usize::try_from(top_n.min(limit)).ok().filter(|&n| n > 0) else {
+            return Err(Error::IllegalArgument(
+                "numHits must be > 0; please use TotalHitCountCollector if you just need \n                 the total hit count"
+                    .into(),
+            ));
+        };
+        // After `numHits`, as `TopFieldCollectorManager` checks it first.
+        if sort.is_empty() {
+            return Err(Error::IllegalArgument("sort must not be null".into()));
+        }
+        let result = self.search_with(query, &NoHitsManager)?;
+        let rewritten = query.rewrite();
+        let top = self
+            .searcher
+            .search_sorted_counting_all(readers, &rewritten, top_n, sort, after)?;
+        let scores = if do_doc_scores {
+            let scored = FacetsCollectorManager::new(true).collect(self.searcher, &rewritten)?;
+            super::facets_collector::populate_scores(&top.hits, &scored)
+        } else {
+            vec![f32::NAN; top.hits.len()]
+        };
+        Ok(DrillSidewaysResult {
+            facets: result.facets,
+            hits: (top, scores),
+            drill_down_facets_collector: result.drill_down_facets_collector,
+            drill_sideways_facets_collector: result.drill_sideways_facets_collector,
+            drill_sideways_dims: result.drill_sideways_dims,
+        })
     }
 
     /// `search(query, hitCollectorManager)`: the hit manager's result, and
@@ -293,15 +389,34 @@ impl<'r, 's, 'a, 't> DrillSideways<'r, 's, 'a, 't> {
         }
     }
 
-    /// `buildFacetsResult`: `FastTaxonomyFacetCounts` over the drill-down
-    /// documents, and over each dim's sideways documents.
+    /// `buildFacetsResult`'s counter: `FastTaxonomyFacetCounts` with a
+    /// taxonomy reader, else `SortedSetDocValuesFacetCounts`.
+    fn counts(&self, hits: &FacetsCollector<'_>) -> Result<Box<dyn Facets + 't>> {
+        match (self.taxo_reader, self.state) {
+            (Some(taxo), _) => Ok(Box::new(FastTaxonomyFacetCounts::new(
+                taxo,
+                self.config,
+                hits,
+            )?)),
+            (None, Some(state)) => Ok(Box::new(SortedSetDocValuesFacetCounts::with_hits(
+                state, hits,
+            )?)),
+            (None, None) => Err(Error::IllegalState(
+                "DrillSideways has neither a taxonomy reader nor a SortedSetDocValuesReaderState"
+                    .into(),
+            )),
+        }
+    }
+
+    /// `buildFacetsResult`: the counts of the drill-down documents, and of
+    /// each dim's sideways documents.
     fn build_facets_result(
         &self,
         drill_downs: &FacetsCollector<'_>,
         drill_sideways: Option<&[FacetsCollector<'_>]>,
         dims: Option<&[String]>,
     ) -> Result<DrillSidewaysFacets<'t>> {
-        let drill_down = FastTaxonomyFacetCounts::new(self.taxo_reader, self.config, drill_downs)?;
+        let drill_down = self.counts(drill_downs)?;
         let mut sideways = Vec::new();
         if let (Some(collectors), Some(dims)) = (drill_sideways, dims) {
             let keys: Vec<&str> = dims.iter().map(String::as_str).collect();
@@ -309,8 +424,7 @@ impl<'r, 's, 'a, 't> DrillSideways<'r, 's, 'a, 't> {
                 let (Some(dim), Some(fc)) = (dims.get(i), collectors.get(i)) else {
                     continue;
                 };
-                let counts = FastTaxonomyFacetCounts::new(self.taxo_reader, self.config, fc)?;
-                sideways.push((dim.clone(), counts));
+                sideways.push((dim.clone(), self.counts(fc)?));
             }
         }
         Ok(DrillSidewaysFacets {
@@ -492,6 +606,40 @@ where
         let (firsts, seconds): (Vec<_>, Vec<_>) =
             collectors.into_iter().map(|p| (p.first, p.second)).unzip();
         Ok((self.first.reduce(firsts)?, self.second.reduce(seconds)?))
+    }
+}
+
+/// A hit manager that keeps nothing: [`DrillSideways::search_sorted`] takes
+/// its hits from a sorted search of its own.
+struct NoHitsManager;
+
+/// [`NoHitsManager`]'s collector.
+struct NoHits;
+
+impl<'a> SegmentCollector<'a> for NoHits {
+    fn score_mode(&self) -> ScoreMode {
+        ScoreMode::CompleteNoScores
+    }
+
+    fn set_next_reader(&mut self, _ord: usize, _leaf: &OpenSegment<'a>) -> Result<()> {
+        Ok(())
+    }
+
+    fn collect(&mut self, _doc: i32, _score: f32) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> GroupingCollectorManager<'a> for NoHitsManager {
+    type Collector = NoHits;
+    type Output = ();
+
+    fn new_collector(&self) -> Result<NoHits> {
+        Ok(NoHits)
+    }
+
+    fn reduce(&self, _collectors: Vec<NoHits>) -> Result<()> {
+        Ok(())
     }
 }
 

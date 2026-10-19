@@ -1,0 +1,32 @@
+multi	$facets	size	1829
+multi	$facets	range	Author	0-12
+multi	$facets	dimTree	Author	UOE:This operation is only supported for hierarchical facets
+multi	$facets	range	Big	13-1712
+multi	$facets	dimTree	Big	UOE:This operation is only supported for hierarchical facets
+multi	$facets	range	Genre	1713-1719
+multi	$facets	dimTree	Genre	UOE:This operation is only supported for hierarchical facets
+multi	$facets	tree	Publish Date	1720 1720:1721,1746,1771,1796 1721:1722,1730,1738 1722:1723,1724,1725,1726,1727,1728,1729 1730:1731,1732,1733,1734,1735,1736,1737 1738:1739,1740,1741,1742,1743,1744,1745 1746:1747,1755,1763 1747:1748,1749,1750,1751,1752,1753,1754 1755:1756,1757,1758,1759,1760,1761,1762 1763:1764,1765,1766,1767,1768,1769,1770 1771:1772,1780,1788 1772:1773,1774,1775,1776,1777,1778,1779 1780:1781,1782,1783,1784,1785,1786,1787 1788:1789,1790,1791,1792,1793,1794,1795 1796:1797,1805,1813 1797:1798,1799,1800,1801,1802,1803,1804 1805:1806,1807,1808,1809,1810,1811,1812 1813:1814,1815,1816,1817,1818,1819,1820
+multi	$facets	ordRange	Publish Date	UOE:This operation is only supported for flat dimensions
+multi	$facets	range	Tag	1821-1828
+multi	$facets	dimTree	Tag	UOE:This operation is only supported for hierarchical facets
+multi	$facets	absentRange	null
+multi	$color	size	3
+multi	$color	range	Color	0-2
+multi	$color	dimTree	Color	UOE:This operation is only supported for hierarchical facets
+multi	$color	absentRange	null
+single	$facets	size	429
+single	$facets	range	Author	0-12
+single	$facets	dimTree	Author	UOE:This operation is only supported for hierarchical facets
+single	$facets	range	Big	13-312
+single	$facets	dimTree	Big	UOE:This operation is only supported for hierarchical facets
+single	$facets	range	Genre	313-319
+single	$facets	dimTree	Genre	UOE:This operation is only supported for hierarchical facets
+single	$facets	tree	Publish Date	320 320:321,346,371,396 321:322,330,338 322:323,324,325,326,327,328,329 330:331,332,333,334,335,336,337 338:339,340,341,342,343,344,345 346:347,355,363 347:348,349,350,351,352,353,354 355:356,357,358,359,360,361,362 363:364,365,366,367,368,369,370 371:372,380,388 372:373,374,375,376,377,378,379 380:381,382,383,384,385,386,387 388:389,390,391,392,393,394,395 396:397,405,413 397:398,399,400,401,402,403,404 405:406,407,408,409,410,411,412 413:414,415,416,417,418,419,420
+single	$facets	ordRange	Publish Date	UOE:This operation is only supported for flat dimensions
+single	$facets	range	Tag	421-428
+single	$facets	dimTree	Tag	UOE:This operation is only supported for hierarchical facets
+single	$facets	absentRange	null
+single	$color	size	3
+single	$color	range	Color	0-2
+single	$color	dimTree	Color	UOE:This operation is only supported for hierarchical facets
+single	$color	absentRange	null

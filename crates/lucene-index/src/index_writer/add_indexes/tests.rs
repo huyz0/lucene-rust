@@ -386,3 +386,73 @@ fn add_indexes_reads_a_compound_source() {
         "{err:?}"
     );
 }
+
+/// `addIndexes(CodecReader...)` over remapped SORTED_NUMERIC values
+/// (lucene-facet's `OrdinalMappingLeafReader`): a value outside the map
+/// fails the merge, and then nothing of the source is added -- not even the
+/// raw copies, whose values were never rewritten.
+#[test]
+fn a_failed_remapping_merge_adds_nothing() {
+    let src_tmp = TempDir::new("add-remap-src");
+    let src = FsDirectory::open(&src_tmp);
+    {
+        let mut w = writer(&src, DocValuesType::SortedNumeric);
+        for (id, rank) in [("s0", 5), ("s1", 1), ("s2", 3)] {
+            w.add_document(doc(id, rank)).unwrap();
+        }
+        w.commit().unwrap();
+    }
+    let tmp = TempDir::new("add-remap-dst");
+    let dir = FsDirectory::open(&tmp);
+    let mut w = writer(&dir, DocValuesType::SortedNumeric);
+    w.add_document(doc("own", 0)).unwrap();
+    w.commit().unwrap();
+    let short = crate::merge::SortedNumericRemap {
+        fields: vec!["rank".into()],
+        map: vec![0; 3],
+    };
+    match w.add_indexes_merged_remapping(&[&src], short) {
+        Err(Error::Merge(crate::merge::Error::InvalidRemap(m))) => {
+            assert_eq!(m, "value 5 is outside the map of 3 ordinals")
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(w.segment_infos().segments.len(), 1, "only the own segment");
+    w.commit().unwrap();
+    assert_eq!(committed_ids(&dir), ["own"]);
+    assert_clean(&dir);
+    // A map that covers every value: one merged segment of the source.
+    let full = crate::merge::SortedNumericRemap {
+        fields: vec!["rank".into()],
+        map: (0..6).rev().collect(),
+    };
+    w.add_indexes_merged_remapping(&[&src], full).unwrap();
+    w.commit().unwrap();
+    assert_eq!(committed_ids(&dir), ["own", "s0", "s1", "s2"]);
+    assert_eq!(w.segment_infos().segments.len(), 2);
+    assert_clean(&dir);
+}
+
+/// A remap of an index-sort field is refused: the merge would order the
+/// documents by the values before the remap rewrote them.
+#[test]
+fn a_remap_of_the_index_sort_is_refused() {
+    let src_tmp = TempDir::new("add-remap-sort-src");
+    let src = FsDirectory::open(&src_tmp);
+    let tmp = TempDir::new("add-remap-sort-dst");
+    let dir = FsDirectory::open(&tmp);
+    // The check reads only the sort's field names.
+    let mut w = writer(&dir, DocValuesType::Numeric);
+    w.set_index_sort(Some(&[IndexSortField::long("rank", false, None)]))
+        .unwrap();
+    let remap = crate::merge::SortedNumericRemap {
+        fields: vec!["rank".into()],
+        map: vec![0],
+    };
+    match w.add_indexes_merged_remapping(&[&src], remap) {
+        Err(Error::AddIndexes(m)) => {
+            assert_eq!(m, "cannot remap \"rank\", a field of the index sort")
+        }
+        other => panic!("{other:?}"),
+    }
+}
