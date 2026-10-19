@@ -357,10 +357,10 @@ impl<O: FstOutputs> TypedFst<O> {
             while !arc.is_last() {
                 self.read_label(input)?;
                 if arc.flag(BIT_ARC_HAS_OUTPUT) {
-                    O::read(input)?;
+                    O::skip_output(input)?;
                 }
                 if arc.flag(BIT_ARC_HAS_FINAL_OUTPUT) {
-                    O::read_final_output(input)?;
+                    O::skip_final_output(input)?;
                 }
                 if !arc.flag(BIT_STOP_NODE) && !arc.flag(BIT_TARGET_NEXT) {
                     input.read_vlong()?;
@@ -784,10 +784,10 @@ impl<O: FstOutputs> TypedFst<O> {
                 return Ok(None);
             }
             if flags & BIT_ARC_HAS_OUTPUT != 0 {
-                O::read(input)?;
+                O::skip_output(input)?;
             }
             if flags & BIT_ARC_HAS_FINAL_OUTPUT != 0 {
-                O::read_final_output(input)?;
+                O::skip_final_output(input)?;
             }
             if flags & BIT_STOP_NODE == 0 && flags & BIT_TARGET_NEXT == 0 {
                 input.read_vlong()?;
@@ -800,10 +800,10 @@ impl<O: FstOutputs> TypedFst<O> {
             let flags = input.read_byte()?;
             self.read_label(input)?;
             if flags & BIT_ARC_HAS_OUTPUT != 0 {
-                O::read(input)?;
+                O::skip_output(input)?;
             }
             if flags & BIT_ARC_HAS_FINAL_OUTPUT != 0 {
-                O::read_final_output(input)?;
+                O::skip_final_output(input)?;
             }
             if flags & BIT_STOP_NODE == 0 && flags & BIT_TARGET_NEXT == 0 {
                 input.read_vlong()?;
