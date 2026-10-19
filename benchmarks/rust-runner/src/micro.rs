@@ -54,6 +54,7 @@ mod micro_geo;
 mod micro_geo3d;
 mod micro_geo3d_points;
 mod micro_geo_points;
+mod micro_sandbox;
 mod micro_geo_shapes;
 mod micro_aggs;
 mod micro_function;
@@ -2167,6 +2168,12 @@ fn main() {
                 .nth(2)
                 .expect("aggs needs the benchmark corpus directory");
             micro_aggs::bench_aggs(warmup, measure, &index);
+        }
+        "sandbox" => {
+            let index = std::env::args()
+                .nth(2)
+                .expect("sandbox needs the SandboxMicro index directory");
+            micro_sandbox::bench_sandbox(warmup, measure, &index);
         }
         "function" => {
             let index = std::env::args()

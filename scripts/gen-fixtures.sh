@@ -92,8 +92,7 @@ set -euo pipefail
 # lucene-misc is required by GenMisc (HighFreqTerms).
 # lucene-replicator is required by GenReplicator (org.apache.lucene.replicator.nrt).
 # lucene-sandbox is required by GenQueryParserXml (CorePlusExtensionsParser's
-# FuzzyLikeThisQuery); the test image does not bake it, so it is found in
-# fixtures/.jars, the Gradle cache or Maven Central like any other.
+# FuzzyLikeThisQuery) and the GenSandbox* generators (org.apache.lucene.sandbox).
 LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-facet lucene-highlighter lucene-suggest lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join lucene-grouping lucene-classification lucene-misc lucene-replicator lucene-sandbox)
 
 cd "$(git rev-parse --show-toplevel)"

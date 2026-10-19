@@ -31,7 +31,7 @@
 //!   ported.
 
 mod distance_feature;
-mod doc_values_queries;
+pub(crate) mod doc_values_queries;
 mod feature;
 pub mod geo;
 mod point_queries;
