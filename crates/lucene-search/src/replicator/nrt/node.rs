@@ -58,6 +58,7 @@ fn thread_name() -> String {
 pub fn node_message(printer: Option<&Printer>, message: &str) {
     if let Some(p) = printer {
         p(&format!(
+            // SPACES-OK: Java's column layout.
             "{:5.3}s {:5.1}s:           [{:>11}] {}",
             secs_since(global_start()),
             secs_since(local_start()),
@@ -71,6 +72,7 @@ pub fn node_message(printer: Option<&Printer>, message: &str) {
 pub fn node_message_id(printer: Option<&Printer>, id: i32, message: &str) {
     if let Some(p) = printer {
         p(&format!(
+            // SPACES-OK: Java's column layout.
             "{:5.3}s {:5.1}s:         N{} [{:>11}] {}",
             secs_since(global_start()),
             secs_since(local_start()),

@@ -953,6 +953,37 @@ def rule_alloc_from_parse(files, problems, stats):
                     )
 
 
+# --------------------------------------------------------------------------
+# Rule: a string literal's line continuation stays a continuation
+# --------------------------------------------------------------------------
+#
+# A `\`-continued literal edited by a script that does not keep the `\`
+# leaves the next line's indentation inside the string (or a literal `\n`
+# before it): an error message with a run of spaces where Java has one. It
+# was found by review twice (sandbox's PhraseWildcardQuery, then
+# `drill_sideways` and `postings.rs` once this rule looked).
+
+SPACE_RUN = re.compile(r'"(?:[^"\\]|\\.)*?(?:[^ "\\] {8,}[^ "]|\\n {8,})(?:[^"\\]|\\.)*"')
+SPACE_WAIVER = "// SPACES-OK:"
+
+
+def rule_literal_space_run(files, problems, stats):
+    for rel, raw in files:
+        for k, line in enumerate(raw):
+            if line.lstrip().startswith("//") or not SPACE_RUN.search(line):
+                continue
+            stats["space_run_sites"] += 1
+            window = raw[max(0, k - 2) : k + 1]
+            if any(SPACE_WAIVER in w for w in window):
+                continue
+            problems.append(
+                f"{rel}:{k + 1}: a string literal holding a run of 8+ spaces "
+                "(or `\\n` then spaces): a lost `\\` line continuation? "
+                f"Restore it, or waive with `{SPACE_WAIVER} <why>`. "
+                f"(docs/mechanical-gates.md#literal-space-run)"
+            )
+
+
 RULES = (
     ("fixed-bitset-bound", rule_fixed_bitset_bound),
     ("sentinel-callers", rule_sentinel_callers),
@@ -966,6 +997,7 @@ RULES = (
     ("occur-guard", rule_occur_guard),
     ("table-fixed-len", rule_table_fixed_len),
     ("alloc-from-parse", rule_alloc_from_parse),
+    ("literal-space-run", rule_literal_space_run),
 )
 
 
@@ -992,6 +1024,7 @@ def main(argv):
         "occur_guard_sites": 0,
         "slice_tables": 0,
         "alloc_parse_sites": 0,
+        "space_run_sites": 0,
     }
     for name, rule in RULES:
         if only and name != only:
@@ -1013,6 +1046,7 @@ def main(argv):
         print(f"must+must_not guards (name filter)  : {stats['occur_guard_sites']}")
         print(f"slice-typed analysis tables         : {stats['slice_tables']}")
         print(f"allocations sized from a parse      : {stats['alloc_parse_sites']}")
+        print(f"literal space runs (all waived)     : {stats['space_run_sites']}")
 
     if problems:
         for p in problems:

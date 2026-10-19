@@ -280,7 +280,8 @@ impl<'r, 's, 'a, 't> DrillSideways<'r, 's, 'a, 't> {
         // `new TopFieldCollectorManager(sort, fTopN, ..)`'s refusal.
         let Some(top_n) = usize::try_from(top_n.min(limit)).ok().filter(|&n| n > 0) else {
             return Err(Error::IllegalArgument(
-                "numHits must be > 0; please use TotalHitCountCollector if you just need \n                 the total hit count"
+                "numHits must be > 0; please use TotalHitCountCollector if you just need \
+                 the total hit count"
                     .into(),
             ));
         };
