@@ -38,6 +38,8 @@
 #                              only warns
 #   DOCKER_TIMEOUT=30          seconds to wait for the engine
 #   MIN_TARGET_FREE_GB=15      (container) hard floor under the target dir
+#   TARGET_MAX_GB=60           (container) a target dir above this loses superseded
+#                              build artifacts, then llvm-cov-target
 #   INCREMENTAL_MAX_MB=20480   (container) incremental dirs above this are cleared
 set -euo pipefail
 
@@ -52,6 +54,7 @@ BUILD_CACHE_MAX_GB="${BUILD_CACHE_MAX_GB:-40}"
 BUILD_CACHE_KEEP_GB="${BUILD_CACHE_KEEP_GB:-20}"
 DOCKER_TIMEOUT="${DOCKER_TIMEOUT:-30}"
 MIN_TARGET_FREE_GB="${MIN_TARGET_FREE_GB:-15}"
+TARGET_MAX_GB="${TARGET_MAX_GB:-60}"
 INCREMENTAL_MAX_MB="${INCREMENTAL_MAX_MB:-20480}"
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -63,6 +66,12 @@ note() { echo "preflight: $*" >&2; }
 # Free gibibytes on the filesystem holding $1 (integer, rounded down).
 free_gb() {
   df -Pk "$1" 2>/dev/null | awk 'NR==2 { printf "%d", $4 / 1048576 }'
+}
+
+# Size in gibibytes of the directory tree at $1 (0 if absent).
+dir_gb() {
+  [ -d "$1" ] || { echo 0; return; }
+  du -sk "$1" 2>/dev/null | awk '{ printf "%d", $1 / 1048576 }'
 }
 
 # Size in mebibytes of the directory tree at $1 (0 if absent).
@@ -149,6 +158,59 @@ host_checks() {
   note "ok (docker answers; ${free} GB free at $data)"
 }
 
+# Keeps the target volume under TARGET_MAX_GB. It was found at 147 GB, 123 GB
+# of it `llvm-cov-target/debug/deps`: every instrumented test binary (about 70 MB
+# each, a few hundred integration tests) is rebuilt under a new hash whenever
+# its dependencies change, and cargo never deletes the old ones. Two steps, the
+# cheaper first, each only while the target is still over the cap:
+#   1. keep only the newest build of each artifact in every `deps` directory
+#      (what `cargo sweep` does; older hashes are unreferenced leftovers);
+#   2. drop `llvm-cov-target` outright (the next coverage run rebuilds it).
+# Only build outputs are removed, and all of them regenerate.
+trim_target() {
+  local target="$1" size
+  size="$(dir_gb "$target")"
+  [ "$size" -gt "$TARGET_MAX_GB" ] || { note "target dir is ${size} GB (cap ${TARGET_MAX_GB})"; return 0; }
+  note "target dir is ${size} GB (cap ${TARGET_MAX_GB}); removing superseded build artifacts"
+  python3 - "$target" <<'PY'
+import os, re, sys
+newest = {}
+doomed = []
+hash_re = re.compile(r"^(.*)-([0-9a-f]{16})(\..*)?$")
+for root, dirs, files in os.walk(sys.argv[1]):
+    if os.path.basename(root) != "deps":
+        continue
+    dirs[:] = []
+    groups = {}
+    for name in files:
+        m = hash_re.match(name)
+        if not m:
+            continue
+        path = os.path.join(root, name)
+        groups.setdefault((m.group(1), m.group(3) or ""), []).append((os.path.getmtime(path), m.group(2), path))
+    for entries in groups.values():
+        entries.sort(reverse=True)
+        keep = entries[0][1]
+        doomed += [p for _, h, p in entries if h != keep]
+freed = 0
+for p in doomed:
+    try:
+        freed += os.path.getsize(p)
+        os.remove(p)
+    except OSError:
+        pass
+print(f"preflight: removed {len(doomed)} superseded artifacts ({freed // 2**30} GB)", file=sys.stderr)
+PY
+  size="$(dir_gb "$target")"
+  if [ "$size" -gt "$TARGET_MAX_GB" ] && [ -d "$target/llvm-cov-target" ]; then
+    note "still ${size} GB; removing llvm-cov-target"
+    rm -rf "$target/llvm-cov-target"
+    size="$(dir_gb "$target")"
+  fi
+  [ "$size" -gt "$TARGET_MAX_GB" ] && warn "target dir is still ${size} GB (cap ${TARGET_MAX_GB})"
+  return 0
+}
+
 container_checks() {
   local target="${CARGO_TARGET_DIR:-$REPO/target}"
   mkdir -p "$target" 2>/dev/null || true
@@ -167,6 +229,8 @@ container_checks() {
       while IFS= read -r d; do rm -rf "$d"; done <<<"$inc"
     fi
   fi
+
+  trim_target "$target"
 
   local free
   free="$(free_gb "$target")"
