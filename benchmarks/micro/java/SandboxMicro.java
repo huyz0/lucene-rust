@@ -29,6 +29,15 @@ import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.NoMergePolicy;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.index.VectorSimilarityFunction;
+import org.apache.lucene.facet.MultiLongValuesSource;
+import org.apache.lucene.facet.range.LongRange;
+import org.apache.lucene.internal.hppc.LongIntHashMap;
+import org.apache.lucene.sandbox.facet.FacetFieldCollectorManager;
+import org.apache.lucene.sandbox.facet.cutters.LongValueFacetCutter;
+import org.apache.lucene.sandbox.facet.cutters.ranges.LongRangeFacetCutter;
+import org.apache.lucene.sandbox.facet.plain.histograms.HistogramCollectorManager;
+import org.apache.lucene.sandbox.facet.iterators.OrdinalIterator;
+import org.apache.lucene.sandbox.facet.recorders.CountFacetRecorder;
 import org.apache.lucene.sandbox.codecs.idversion.IDVersionPostingsFormat;
 import org.apache.lucene.sandbox.codecs.idversion.IDVersionSegmentTermsEnum;
 import org.apache.lucene.sandbox.codecs.quantization.KMeans;
@@ -45,6 +54,7 @@ import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.FieldDoc;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.LongValuesSource;
+import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.PrefixQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.TermQuery;
@@ -293,6 +303,7 @@ public final class SandboxMicro {
             }
             return b.build();
           });
+      runFacets(s, sets);
       runText(dir.resolve("text"), sets);
       runIdv(dir.resolve("idv"));
       runKMeans(dir.resolve("kmeans"));
@@ -500,6 +511,84 @@ public final class SandboxMicro {
       System.out.printf("#check	%s	%016x	%d%n", "sb_idversion_seek", f.h, ids.size());
       measure("sb_idversion_seek", op);
     }
+  }
+
+  /** {@code sb_facet_ranges}: one match-all search counting a set's ten ranges over {@code sn}. */
+  static long facetRanges(IndexSearcher s, long[][] set, Fnv f) throws IOException {
+    LongRange[] ranges = new LongRange[set.length];
+    for (int i = 0; i < set.length; i++) {
+      ranges[i] = new LongRange("r" + i, set[i][0], true, set[i][1] + 100_000, true);
+    }
+    CountFacetRecorder rec = new CountFacetRecorder();
+    LongRangeFacetCutter cutter =
+        LongRangeFacetCutter.create(MultiLongValuesSource.fromLongField("sn"), ranges);
+    s.search(new MatchAllDocsQuery(), new FacetFieldCollectorManager<>(cutter, rec));
+    for (int i = 0; i < ranges.length; i++) {
+      f.add(rec.getCount(i));
+    }
+    return DOCS;
+  }
+
+  /**
+   * {@code sb_facet_long_values}: one search counting every {@code sn} value, over the set's first
+   * range of documents; the digest is order-free (ordinals are handed out in collection order).
+   */
+  static long facetLongValues(IndexSearcher s, long[][] set, Fnv f) throws IOException {
+    long lo = set[0][0] % 1_000;
+    CountFacetRecorder rec = new CountFacetRecorder();
+    LongValueFacetCutter cutter = new LongValueFacetCutter("sn");
+    s.search(
+        new MatchAllDocsQuery(), new FacetFieldCollectorManager<>(cutter, rec));
+    long n = 0, sum = 0;
+    for (OrdinalIterator it = rec.recordedOrds(); ; ) {
+      int ord = it.nextOrd();
+      if (ord == OrdinalIterator.NO_MORE_ORDS) break;
+      n++;
+      sum += (cutter.getValue(ord) + lo) * rec.getCount(ord);
+    }
+    f.add(n);
+    f.add(sum);
+    return DOCS;
+  }
+
+  /** {@code sb_histogram}: one match-all histogram of {@code sn} per set, its width off the set. */
+  static long histogram(IndexSearcher s, long[][] set, Fnv f) throws IOException {
+    long width = 2_000 + set[0][0] % 8_000;
+    LongIntHashMap h = s.search(new MatchAllDocsQuery(), new HistogramCollectorManager("sn", width));
+    long[] keys = h.keys().toArray();
+    java.util.Arrays.sort(keys);
+    for (long k : keys) {
+      f.add(k);
+      f.add(h.get(k));
+    }
+    return DOCS;
+  }
+
+  interface SetOp {
+    long run(IndexSearcher s, long[][] set, Fnv f) throws IOException;
+  }
+
+  static void facetCase(String name, IndexSearcher s, List<long[][]> sets, SetOp op)
+      throws IOException {
+    Fnv f = new Fnv();
+    for (long[][] set : sets) op.run(s, set, f);
+    System.out.printf("#check	%s	%016x	%d%n", name, f.h, sets.size());
+    measure(
+        name,
+        () -> {
+          Fnv g = new Fnv();
+          long units = 0;
+          for (long[][] set : sets) units += op.run(s, set, g);
+          sink += g.h;
+          return units;
+        });
+  }
+
+  /** The sandbox facet module's hot paths over the main index. */
+  static void runFacets(IndexSearcher s, List<long[][]> sets) throws IOException {
+    facetCase("sb_facet_ranges", s, sets, SandboxMicro::facetRanges);
+    facetCase("sb_histogram", s, sets, SandboxMicro::histogram);
+    facetCase("sb_facet_long_values", s, sets, SandboxMicro::facetLongValues);
   }
 
   static final int KM_N = 10_000;

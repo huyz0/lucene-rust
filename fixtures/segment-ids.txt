@@ -410,6 +410,13 @@ sandbox_document/index/_2.si f82cbf8fac3a72b7489e8e90037ee3d9
 sandbox_document/index/segments_4 f82cbf8fac3a72b7489e8e90037ee3df
 sandbox_document/large/index/_0.si f82cbf8fac3a72b7489e8e90037ee3e0
 sandbox_document/large/index/segments_2 f82cbf8fac3a72b7489e8e90037ee3e5
+sandbox_facet/index/_0.si c43832fe4914366d7a406f897f613dd3
+sandbox_facet/index/_1.si c43832fe4914366d7a406f897f613dd6
+sandbox_facet/index/_2.si c43832fe4914366d7a406f897f613dd9
+sandbox_facet/index/segments_1 c43832fe4914366d7a406f897f613dde
+sandbox_facet/taxo/_0.si c43832fe4914366d7a406f897f613dcf
+sandbox_facet/taxo/_1.si c43832fe4914366d7a406f897f613dd2
+sandbox_facet/taxo/segments_1 c43832fe4914366d7a406f897f613de1
 sandbox_idversion/flush/index/_0.si 5d061474d15afbbb6fc1a7609f02f735
 sandbox_idversion/flush/index/segments_1 5d061474d15afbbb6fc1a7609f02f739
 sandbox_idversion/merged/index/_5.si 5d061474d15afbbb6fc1a7609f02f74f

@@ -424,11 +424,12 @@ case "$BENCH" in
     # multi-range queries, FloatPointNearestNeighbor and (over its text/
     # index) the scoring queries and the large-hits collector, and (over
     # its idv/ index) IDVersionSegmentTermsEnum.seekExact(id, minVersion),
-    # and KMeans.cluster over kmeans/vectors.bin, over the 200 000-document
-    # index SandboxMicro builds (once) under benchmarks/.corpus/sandbox.
+    # and KMeans.cluster over kmeans/vectors.bin, and the facet package's
+    # range counts and histograms, over the 200 000-document index
+    # SandboxMicro builds (once) under benchmarks/.corpus/sandbox.
     MAIN=SandboxMicro
     SRC=benchmarks/micro/java/SandboxMicro.java
-    JAR_MODULES="lucene-core lucene-sandbox"
+    JAR_MODULES="lucene-core lucene-sandbox lucene-facet lucene-queries"
     INDEX="${INDEX_ARG:-$PWD/benchmarks/.corpus/sandbox}"
     PREP_ARGS=(build "$INDEX")
     JAVA_ARGS=(run)
