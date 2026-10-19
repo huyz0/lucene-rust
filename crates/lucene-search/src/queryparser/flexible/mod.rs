@@ -18,12 +18,16 @@ pub(crate) mod processors;
 mod tests;
 pub(crate) mod token_manager;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
+use lucene_analysis::miscellaneous::DateLocale;
 use lucene_analysis::Analyzer;
+use lucene_index::document::Resolution;
 
 use crate::extended_query::RewriteMethod;
 use crate::queryparser::classic::QueryParserError;
+use crate::queryparser::date_range::DateParsing;
 use crate::queryparser::ParsedQuery;
 
 /// `StandardQueryConfigHandler.Operator`.
@@ -50,6 +54,12 @@ pub struct StandardQueryParser {
     /// `MULTI_TERM_REWRITE_METHOD`, which `MultiTermRewriteMethodProcessor`
     /// hands every wildcard, prefix, regexp and range node's builder.
     pub(crate) multi_term_rewrite_method: RewriteMethod,
+    /// `LOCALE`, `TIMEZONE` and what `DateFormat` reads with.
+    pub(crate) dates: DateParsing,
+    /// `DATE_RESOLUTION`.
+    pub(crate) date_resolution: Option<Resolution>,
+    /// `FIELD_DATE_RESOLUTION_MAP`.
+    pub(crate) field_date_resolutions: HashMap<String, Resolution>,
 }
 
 impl Default for StandardQueryParser {
@@ -75,6 +85,9 @@ impl StandardQueryParser {
             field_boosts: Vec::new(),
             precedence: false,
             multi_term_rewrite_method: RewriteMethod::ConstantScoreBlended,
+            dates: DateParsing::default(),
+            date_resolution: None,
+            field_date_resolutions: HashMap::new(),
         }
     }
 
@@ -104,6 +117,67 @@ impl StandardQueryParser {
     /// `getMultiTermRewriteMethod()`.
     pub fn multi_term_rewrite_method(&self) -> RewriteMethod {
         self.multi_term_rewrite_method
+    }
+
+    /// `setLocale(locale)`: the locale whose
+    /// `DateFormat.getDateInstance(SHORT, locale)` reads a range bound as a
+    /// date (by default `en-US`, standing for `Locale.getDefault()`). A
+    /// locale whose calendar is not Gregorian (Thai's Buddhist), which this
+    /// port does not compute, makes a parse fail with
+    /// `IllegalArgumentException` once a bound is read as a date (a
+    /// resolution is set for its field).
+    pub fn set_locale(&mut self, locale: DateLocale) {
+        self.dates.set_locale(locale);
+    }
+
+    /// `getLocale()`.
+    pub fn locale(&self) -> DateLocale {
+        self.dates.locale()
+    }
+
+    /// `setTimeZone(timeZone)`, a fixed offset from GMT in milliseconds:
+    /// the zone an inclusive upper date bound ends its day in. Unset, it is
+    /// [`Self::set_default_time_zone`]'s.
+    pub fn set_time_zone(&mut self, offset_millis: i32) {
+        self.dates.time_zone = Some(offset_millis);
+    }
+
+    /// `getTimeZone()`'s offset.
+    pub fn time_zone(&self) -> i32 {
+        self.dates.time_zone.unwrap_or(self.dates.default_time_zone)
+    }
+
+    /// `TimeZone.getDefault()`, which Java's date format parses in: a fixed
+    /// offset in milliseconds, GMT (`0`) unless set.
+    pub fn set_default_time_zone(&mut self, offset_millis: i32) {
+        self.dates.default_time_zone = offset_millis;
+    }
+
+    /// The time (milliseconds since the epoch) a two-digit year's century
+    /// is chosen from, as `SimpleDateFormat` chooses it from the clock:
+    /// `None` (the default) reads the system clock.
+    pub fn set_date_clock(&mut self, now_millis: Option<i64>) {
+        self.dates.now = now_millis;
+    }
+
+    /// `setDateResolution(dateResolution)`: every field's, unless the map
+    /// has the field.
+    pub fn set_date_resolution(&mut self, resolution: Option<Resolution>) {
+        self.date_resolution = resolution;
+    }
+
+    /// `setDateResolutionMap(dateRes)`.
+    pub fn set_date_resolution_map(&mut self, map: HashMap<String, Resolution>) {
+        self.field_date_resolutions = map;
+    }
+
+    /// `FieldDateResolutionFCListener`: the map's resolution for the field,
+    /// else the default one.
+    pub fn date_resolution(&self, field: &str) -> Option<Resolution> {
+        self.field_date_resolutions
+            .get(field)
+            .copied()
+            .or(self.date_resolution)
     }
 
     /// `setAnalyzer(analyzer)`.

@@ -421,20 +421,52 @@ impl Processor for PointRangeProc {
     }
 }
 
-/// `TermRangeQueryNodeProcessor`: with no date resolution, the bounds'
-/// date parse ends in its `catch` every time (`DateTools.dateToString(d,
-/// null)` throws), which normalises both bounds.
+/// `TermRangeQueryNodeProcessor`: one `try` over both bounds, each
+/// non-empty one replaced by its date at the field's resolution (the upper
+/// one at the end of its day when inclusive); the first bound that is not a
+/// date -- with no resolution, the first non-empty one -- ends it in the
+/// `catch`, which normalises both bounds as they then are (a lower bound
+/// already a date's string included).
 struct TermRangeProc<'a> {
     cfg: &'a StandardQueryParser,
 }
 
 impl Processor for TermRangeProc<'_> {
     fn post(&mut self, mut node: Node, _parent: Option<&Kind>) -> Result<Node> {
-        if !matches!(node.kind, Kind::TermRange { .. }) {
+        let Kind::TermRange {
+            upper_inclusive, ..
+        } = node.kind
+        else {
+            return Ok(node);
+        };
+        let field = node.get_field();
+        check_field_config(field.as_deref())?;
+        if node.children.len() != 2 {
             return Ok(node);
         }
-        check_field_config(node.get_field().as_deref())?;
-        if self.cfg.analyzer.is_some() && node.children.len() == 2 {
+        let resolution = self.cfg.date_resolution(field.as_deref().unwrap_or("null"));
+        let mut caught = false;
+        for (i, bound) in node.children.iter_mut().enumerate() {
+            if let Some(d) = bound.field_data_mut() {
+                let text = d.text.as_string();
+                if text.is_empty() {
+                    continue;
+                }
+                match self
+                    .cfg
+                    .dates
+                    .bound(&text, resolution, i == 1 && upper_inclusive)
+                    .map_err(|e| illegal(&e))?
+                {
+                    Some(date) => d.text = Text::plain(&date),
+                    None => {
+                        caught = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if caught && self.cfg.analyzer.is_some() {
             let lower_field = node.children[0]
                 .field_data()
                 .map(field_str)

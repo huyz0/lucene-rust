@@ -12,6 +12,7 @@
 
 pub mod classic;
 pub mod complex_phrase;
+pub(crate) mod date_range;
 pub mod ext;
 pub mod flexible;
 mod javacc;

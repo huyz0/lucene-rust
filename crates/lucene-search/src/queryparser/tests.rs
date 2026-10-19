@@ -339,3 +339,59 @@ fn spans_print_and_name_as_lucene_does() {
     });
     assert_eq!(empty.class_name(), "BooleanQuery");
 }
+
+#[test]
+fn the_parsers_hold_their_date_settings() {
+    use crate::queryparser::classic::QueryParser;
+    use crate::queryparser::flexible::StandardQueryParser;
+    use lucene_analysis::miscellaneous::DateLocale;
+    use lucene_index::document::Resolution;
+    let analyzer = std::sync::Arc::new(lucene_analysis::Analyzer::keyword());
+    let de = DateLocale::for_language_tag("de-DE").unwrap();
+    let thai = DateLocale::for_language_tag("th-TH").unwrap();
+
+    let mut p = QueryParser::new("f", std::sync::Arc::clone(&analyzer));
+    assert_eq!(p.locale().tag(), "en-US");
+    assert_eq!((p.time_zone(), p.date_resolution("d")), (0, None));
+    p.set_default_time_zone(3_600_000);
+    assert_eq!(p.time_zone(), 3_600_000);
+    p.set_time_zone(-7_200_000);
+    assert_eq!(p.time_zone(), -7_200_000);
+    p.set_locale(thai);
+    assert_eq!(p.locale().tag(), "th-TH");
+    // Refused once a bound is a date, not before.
+    assert!(p.parse("d:[1/2/2563 TO 3/4/2564]").is_ok());
+    p.set_date_resolution(Some(Resolution::Day));
+    let err = p.parse("d:[1/2/2563 TO 3/4/2564]").unwrap_err();
+    assert!(err.message.contains("th-TH"), "{err:?}");
+    p.set_locale(de);
+    assert_eq!(p.locale().tag(), "de-DE");
+    p.set_date_resolution(Some(Resolution::Year));
+    p.set_field_date_resolution("d", Resolution::Day);
+    assert_eq!(p.date_resolution("d"), Some(Resolution::Day));
+    assert_eq!(p.date_resolution("e"), Some(Resolution::Year));
+    p.set_date_clock(None);
+    let q = p.parse("d:[1.2.20 TO 3.4.21]").unwrap();
+    assert_eq!(q.to_string("f"), "d:[20200131 TO 20210403]");
+
+    let mut f = StandardQueryParser::with_analyzer(std::sync::Arc::clone(&analyzer));
+    assert_eq!((f.locale().tag(), f.time_zone()), ("en-US", 0));
+    f.set_default_time_zone(3_600_000);
+    f.set_time_zone(0);
+    f.set_locale(thai);
+    assert!(f.parse("d:[1/2/2563 TO 3/4/2564]", Some("f")).is_ok());
+    f.set_date_resolution(Some(Resolution::Day));
+    let err = f.parse("d:[1/2/2563 TO 3/4/2564]", Some("f")).unwrap_err();
+    assert!(err.message.contains("th-TH"), "{err:?}");
+    f.set_locale(de);
+    f.set_date_clock(None);
+    f.set_date_resolution(Some(Resolution::Year));
+    f.set_date_resolution_map(std::collections::HashMap::from([(
+        "d".to_string(),
+        Resolution::Day,
+    )]));
+    assert_eq!(f.date_resolution("d"), Some(Resolution::Day));
+    assert_eq!(f.date_resolution("e"), Some(Resolution::Year));
+    let q = f.parse("d:[1.2.20 TO 3.4.21]", Some("f")).unwrap();
+    assert_eq!(q.to_string("f"), "d:[20200131 TO 20210402]");
+}
