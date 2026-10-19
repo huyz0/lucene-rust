@@ -7,10 +7,10 @@
 //! one fails with Lucene's message (token, column and expected tokens).
 //! `QueryParserBase`'s query building is in [`parser`] too.
 //!
-//! Not ported: date ranges (`setDateResolution`, `setLocale`,
-//! `setTimeZone`): with no resolution set -- the default -- Lucene's date
-//! parse of a range bound fails and is ignored, which is what this parser
-//! does. `QueryParserBase`'s
+//! Range bounds are read as dates as `getRangeQuery` reads them
+//! ([`date_range`](crate::queryparser::date_range)): with a date resolution
+//! set for the field, a bound the locale's short date format parses becomes
+//! `DateTools.dateToString` of its date. `QueryParserBase`'s
 //! protected extension points (`newBooleanClause`, `newFieldQuery`,
 //! `getBooleanQuery`, ...) cannot be overridden.
 
@@ -26,10 +26,13 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
+use lucene_analysis::miscellaneous::DateLocale;
 use lucene_analysis::{AnalysisError, Analyzer};
+use lucene_index::document::Resolution;
 
 use crate::extended_query::RewriteMethod;
 use crate::query_visitor::Occur;
+use crate::queryparser::date_range::DateParsing;
 use crate::queryparser::ext::Extensions;
 use crate::queryparser::{ParsedBoolean, ParsedQuery};
 
@@ -160,6 +163,12 @@ pub struct QueryParser {
     multi_term_rewrite_method: RewriteMethod,
     /// `determinizeWorkLimit`.
     determinize_work_limit: i32,
+    /// `locale`, `timeZone` and what `DateFormat` reads with.
+    pub(crate) dates: DateParsing,
+    /// `dateResolution`.
+    date_resolution: Option<Resolution>,
+    /// `fieldToDateResolution`.
+    field_date_resolutions: HashMap<String, Resolution>,
 }
 
 impl QueryParser {
@@ -210,6 +219,9 @@ impl QueryParser {
             auto_generate_multi_term_synonyms_phrase_query: false,
             multi_term_rewrite_method: RewriteMethod::ConstantScoreBlended,
             determinize_work_limit: lucene_util::automaton::DEFAULT_DETERMINIZE_WORK_LIMIT,
+            dates: DateParsing::default(),
+            date_resolution: None,
+            field_date_resolutions: HashMap::new(),
         }
     }
 
@@ -378,6 +390,67 @@ impl QueryParser {
     /// `getDeterminizeWorkLimit()`.
     pub fn determinize_work_limit(&self) -> i32 {
         self.determinize_work_limit
+    }
+
+    /// `setLocale(locale)`: the locale whose
+    /// `DateFormat.getDateInstance(SHORT, locale)` reads a range bound as a
+    /// date (by default `en-US`, standing for `Locale.getDefault()`). A
+    /// locale whose calendar is not Gregorian (Thai's Buddhist), which this
+    /// port does not compute, makes a parse fail with
+    /// `IllegalArgumentException` once a bound is read as a date (a
+    /// resolution is set for its field).
+    pub fn set_locale(&mut self, locale: DateLocale) {
+        self.dates.set_locale(locale);
+    }
+
+    /// `getLocale()`.
+    pub fn locale(&self) -> DateLocale {
+        self.dates.locale()
+    }
+
+    /// `setTimeZone(timeZone)`, a fixed offset from GMT in milliseconds:
+    /// the zone an inclusive upper date bound ends its day in. Unset, it is
+    /// [`Self::set_default_time_zone`]'s.
+    pub fn set_time_zone(&mut self, offset_millis: i32) {
+        self.dates.time_zone = Some(offset_millis);
+    }
+
+    /// `getTimeZone()`'s offset.
+    pub fn time_zone(&self) -> i32 {
+        self.dates.time_zone.unwrap_or(self.dates.default_time_zone)
+    }
+
+    /// `TimeZone.getDefault()`, which Java's date format parses in: a fixed
+    /// offset in milliseconds, GMT (`0`) unless set.
+    pub fn set_default_time_zone(&mut self, offset_millis: i32) {
+        self.dates.default_time_zone = offset_millis;
+    }
+
+    /// The time (milliseconds since the epoch) a two-digit year's century
+    /// is chosen from, as `SimpleDateFormat` chooses it from the clock:
+    /// `None` (the default) reads the system clock.
+    pub fn set_date_clock(&mut self, now_millis: Option<i64>) {
+        self.dates.now = now_millis;
+    }
+
+    /// `setDateResolution(dateResolution)`: every field's, unless set for
+    /// the field. Unset (`None`, the default), no bound is a date.
+    pub fn set_date_resolution(&mut self, resolution: Option<Resolution>) {
+        self.date_resolution = resolution;
+    }
+
+    /// `setDateResolution(fieldName, dateResolution)`.
+    pub fn set_field_date_resolution(&mut self, field: impl Into<String>, resolution: Resolution) {
+        self.field_date_resolutions.insert(field.into(), resolution);
+    }
+
+    /// `getDateResolution(fieldName)`: the field's resolution, else the
+    /// default one.
+    pub fn date_resolution(&self, field: &str) -> Option<Resolution> {
+        self.field_date_resolutions
+            .get(field)
+            .copied()
+            .or(self.date_resolution)
     }
 
     /// `parse(query)`: the query, or `ParseException("Cannot parse

@@ -89,11 +89,11 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
   through both, each's `LikeThisQuery`/`FuzzyLikeThisQuery` rewrite and every
   hit's score bits; the sandbox `FuzzyLikeThisQuery` they need is ported here,
   sharing `NearestFuzzyQuery`'s engine). The classic parser's date-resolution
-  ranges and rewrite-method setters are deferred to M14 with the flexible
-  parser's (no corpus query sets them; see `QueryParserBase`'s inventory row). The `flexible` framework is ported
+  ranges and rewrite-method setters were deferred to M14 with the flexible
+  parser's (no corpus query sets them; both ported in M14.f). The `flexible` framework is ported
   (`GenQueryParserFlexible`: its lexer token for token over 8,246 queries,
   352 queries parsed under eleven configurations and 7,894 fragment joins); its points
-  and date-resolution configuration is deferred to M14
+  configuration is deferred (date resolutions ported in M14.f)
   (`docs/inventory/lucene-queryparser.tsv`).
 - **T13.2** — Highlighting, including term vectors in `DirectoryReader`.
   **Ported and benchmarked** (`scripts/bench-micro.sh --bench highlight`, pair `HighlightMicro`
@@ -391,7 +391,8 @@ above). All four acceptance criteria hold: M13 is delivered.
 - [x] Every parser yields Lucene's query tree for the whole T13.1 corpus,
       including its syntax errors (same failure, same position). (The
       classic and flexible parsers' date-resolution and rewrite-method
-      settings, which no corpus query sets, are deferred to M14.)
+      settings, which no corpus query sets, were deferred to M14 and ported
+      in M14.f.)
 - [x] Highlighters return Lucene's fragments and offsets on a fixture corpus
       (T13.2; benchmarked, the two `MemoryIndex`-bound ratios written up).
 - [x] Real Lucene reads a Rust-written completion field and taxonomy index

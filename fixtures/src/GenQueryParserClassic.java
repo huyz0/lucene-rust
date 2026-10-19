@@ -182,6 +182,130 @@ public class GenQueryParserClassic {
     }
     write(out, "frag_", f, lines);
     writeStatic(out);
+    writeDates(out);
+  }
+
+  /**
+   * Range bounds as dates ({@code getRangeQuery}). A two-digit year's century comes from the
+   * clock (the window starts 80 years before now), so {@link #writeDates} records the clock in
+   * {@code date_clock.txt} and the Rust tests read the rows at it; the two-digit years are also
+   * kept away from the window's edge, so a regeneration (and {@code gen-fixtures.sh --check})
+   * reproduces the rows until about 2055, when {@code 1/2/75} enters the window's next century.
+   */
+  public static final String[] DATES = {
+    "[1/2/20 TO 3/4/21]", "{1/2/20 TO 3/4/21}", "[1/2/20 TO 3/4/21}", "{12/31/1999 TO 1/1/2000]",
+    "d:[1/2/20 TO 3/4/21]", "d:{1/2/20 TO 3/4/21]", "[13/40/20 TO 0/0/0]", "[1/2/2020x TO *]",
+    "[* TO 2/29/2021]", "{* TO 1/2/20}", "[1/2/20 TO *]", "[\"1/2/20\" TO \"3/4/21\"]",
+    "[a TO 1/2/20]", "[1/2/20 TO b]", "[1.2.20 TO 31.12.2021]", "d:[1.2.20 TO 31.12.2021]",
+    "[2020-01-02 TO 2021-3-4]", "[2020/01/02 TO 21/3/4]", "[20/1/2 TO 2021/12/31]",
+    "[1/2/5 TO 1/2/0]", "[1/2/-5 TO 1E1/2/20]", "[15E-1/2/20 TO NaN/2/20]",
+    "[1/2/4294969296 TO 1/2/046]", "[1/2/05 TO 1/2/99]", "[1/2/30 TO 1/2/75]", "[1/2/45 TO 1/2/00]",
+    "[10/15/1582 TO 10/4/1582]", "[15.10.1582 TO 4.10.1582]", "[2/29/2000 TO 2/29/1900]",
+    "[1/2/20 TO 3/4/21] AND x", "d:[1/2/20 TO 3/4/21] f:[1/2/20 TO 3/4/21]",
+    "[2020.01.02 TO 02.01.2020]", "[\u0661/\u0662/\u0662\u0660 TO 3/4/21]", "[1-2-20 TO 2020-1-2]",
+    "[Jan TO 1/2/20]", "[1/2 TO 3/4]", "[1//2/20 TO x]", "[-1/-2/-2020 TO 12/31/99999]",
+    "[1/2/\u221e TO \u221e/1/2]", "[2019-12-31 TO 2020-12-31]", "[31/12/2019 TO 2020/12/31]",
+    "[1/2/20 TO 1/2/20]", "{1/2/20 TO 1/2/20}", "d:[2020-01-02 TO 2021-3-4}",
+    "[13/1/2147483647 TO 0/1/-2147483648]", "[13/1/∞ TO 1/2/20]",
+  };
+
+  /** A date configuration: the locale, the default and per-field resolutions, the zone. */
+  static QueryParser dateParser(String name) {
+    QueryParser p = new QueryParser("f", new StandardAnalyzer());
+    switch (name) {
+      case "us_day" -> {
+        p.setLocale(java.util.Locale.US);
+        p.setDateResolution(org.apache.lucene.document.DateTools.Resolution.DAY);
+        p.setTimeZone(java.util.TimeZone.getTimeZone("GMT+02:00"));
+      }
+      case "us_ms" -> {
+        p.setLocale(java.util.Locale.US);
+        p.setDateResolution(org.apache.lucene.document.DateTools.Resolution.MILLISECOND);
+      }
+      case "de_field" -> {
+        p.setLocale(java.util.Locale.GERMANY);
+        p.setDateResolution("d", org.apache.lucene.document.DateTools.Resolution.MINUTE);
+        p.setTimeZone(java.util.TimeZone.getTimeZone("GMT-03:00"));
+      }
+      case "root_year" -> {
+        p.setLocale(java.util.Locale.ROOT);
+        p.setDateResolution(org.apache.lucene.document.DateTools.Resolution.YEAR);
+        p.setDateResolution("d", org.apache.lucene.document.DateTools.Resolution.SECOND);
+        p.setTimeZone(java.util.TimeZone.getTimeZone("GMT+05:30"));
+      }
+      case "ja_month" -> {
+        p.setLocale(java.util.Locale.JAPAN);
+        p.setDateResolution(org.apache.lucene.document.DateTools.Resolution.MONTH);
+      }
+      case "fr_hour" -> {
+        p.setLocale(java.util.Locale.FRANCE);
+        p.setDateResolution(org.apache.lucene.document.DateTools.Resolution.HOUR);
+        p.setTimeZone(java.util.TimeZone.getTimeZone("GMT-03:00"));
+      }
+      case "none" -> p.setLocale(java.util.Locale.US);
+      default -> throw new IllegalArgumentException(name);
+    }
+    return p;
+  }
+
+  static final String[] DATE_CONFIGS = {"us_day", "us_ms", "de_field", "root_year", "ja_month", "fr_hour", "none"};
+
+  /**
+   * {@code date_*.tsv}: {@link #DATES} under each date configuration, the JVM's default zone
+   * (which the date format parses in) GMT-05:00 unless the configuration's own; and
+   * {@code date_parse.tsv}: {@code DateFormat.getDateInstance(SHORT, locale).parse} in GMT over
+   * a sample of locales.
+   */
+  static void writeDates(Path out) throws Exception {
+    java.util.TimeZone saved = java.util.TimeZone.getDefault();
+    Files.writeString(out.resolve("date_clock.txt"), System.currentTimeMillis() + "\n", StandardCharsets.UTF_8);
+    try {
+      java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("GMT-05:00"));
+      Map<String, Supplier<QueryParser>> c = new LinkedHashMap<>();
+      for (String name : DATE_CONFIGS) c.put(name, () -> dateParser(name));
+      write(out, "date_", c, List.of(DATES));
+      java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("GMT"));
+      writeDateParse(out);
+    } finally {
+      java.util.TimeZone.setDefault(saved);
+    }
+  }
+
+  static void writeDateParse(Path out) throws Exception {
+    java.util.TreeMap<String, java.util.Locale> locales = new java.util.TreeMap<>();
+    for (java.util.Locale l : java.text.DateFormat.getAvailableLocales()) {
+      if (!l.getVariant().isEmpty() || !l.getUnicodeLocaleKeys().isEmpty()) continue;
+      if (!java.util.Calendar.getInstance(l).getCalendarType().equals("gregory")) continue;
+      locales.put(l.toLanguageTag(), l);
+    }
+    long[] times = {1577923200000L, 946598400000L, 2381097600000L, 163555200000L, 951782400000L, 1732924800000L};
+    StringBuilder b = new StringBuilder();
+    int i = 0;
+    for (var e : locales.entrySet()) {
+      if (i++ % 17 != 0 && !List.of("en-US", "de-DE", "fr-FR", "ja-JP", "und", "ar-EG", "fa-IR", "hi-IN").contains(e.getKey())) continue;
+      java.text.DateFormat df = java.text.DateFormat.getDateInstance(java.text.DateFormat.SHORT, e.getValue());
+      df.setLenient(true);
+      String pattern = ((java.text.SimpleDateFormat) df).toPattern();
+      List<String> texts = new ArrayList<>();
+      for (long t : times) {
+        String s = df.format(new java.util.Date(t));
+        texts.add(s);
+        texts.add(s + "x");
+        texts.add(" " + s);
+        texts.add(s.replace("1", "13"));
+      }
+      for (String text : texts) {
+        String got;
+        try {
+          got = Long.toString(df.parse(text).getTime());
+        } catch (java.text.ParseException ex) {
+          got = "-";
+        }
+        b.append(e.getKey()).append('\t').append(AnalysisRows.esc(pattern)).append('\t')
+            .append(AnalysisRows.esc(text)).append('\t').append(got).append('\n');
+      }
+    }
+    Files.writeString(out.resolve("date_parse.tsv"), b.toString(), StandardCharsets.UTF_8);
   }
 
   /** {@code MultiFieldQueryParser}'s static {@code parse} helpers ({@code static.tsv}). */

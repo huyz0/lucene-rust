@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Regenerates fixtures/data/analysis_date_locales/dates_jdk25.txt under JDK 25
-# and diffs it with the committed file (--write replaces it instead).
+# Regenerates fixtures/data/analysis_date_locales/dates_jdk25.txt and
+# numbers_jdk25.tsv under JDK 25 and diffs them with the committed files
+# (--write replaces them instead).
 #
 #   scripts/check-date-locales-jdk25.sh [--write]
 #
@@ -25,14 +26,17 @@ trap 'rm -rf "$WORK"' EXIT
 javac -nowarn -cp "$CP" -sourcepath fixtures/src -d "$WORK/classes" \
     fixtures/src/GenAnalysisDateLocales.java
 FIXTURES_CORPUS="$PWD/fixtures/corpus" java -cp "$WORK/classes:$CP" GenAnalysisDateLocales "$WORK/out" --jdk25
-FILE=analysis_date_locales/dates_jdk25.txt
-if [ "${1:-}" = "--write" ]; then
-    cp "$WORK/out/$FILE" "fixtures/data/$FILE"
-    echo "check-date-locales-jdk25: wrote fixtures/data/$FILE ($(wc -l < "fixtures/data/$FILE") rows)"
-elif diff -q "$WORK/out/$FILE" "fixtures/data/$FILE" >/dev/null; then
-    echo "check-date-locales-jdk25: ok ($(wc -l < "fixtures/data/$FILE") rows)"
-else
-    diff "$WORK/out/$FILE" "fixtures/data/$FILE" | head -20 || true
-    echo "check-date-locales-jdk25: fixtures/data/$FILE is not what JDK 25 writes" >&2
-    exit 1
-fi
+status=0
+for FILE in analysis_date_locales/dates_jdk25.txt analysis_date_locales/numbers_jdk25.tsv; do
+    if [ "${1:-}" = "--write" ]; then
+        cp "$WORK/out/$FILE" "fixtures/data/$FILE"
+        echo "check-date-locales-jdk25: wrote fixtures/data/$FILE ($(wc -l < "fixtures/data/$FILE") rows)"
+    elif diff -q "$WORK/out/$FILE" "fixtures/data/$FILE" >/dev/null; then
+        echo "check-date-locales-jdk25: ok $FILE ($(wc -l < "fixtures/data/$FILE") rows)"
+    else
+        diff "$WORK/out/$FILE" "fixtures/data/$FILE" | head -20 || true
+        echo "check-date-locales-jdk25: fixtures/data/$FILE is not what JDK 25 writes" >&2
+        status=1
+    fi
+done
+exit "$status"

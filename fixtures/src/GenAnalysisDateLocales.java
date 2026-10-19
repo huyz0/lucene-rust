@@ -99,7 +99,7 @@ public class GenAnalysisDateLocales {
    * With {@code --jdk25} (JDK 25 only): {@code dates_jdk25.txt}, the same batteries over every
    * locale {@code date_locales.rs} holds (all 1,151) with no text left out for its spaces -- the
    * JDK-25-only behaviour the table was generated from (CI's {@code fixtures} job regenerates and
-   * diffs it).
+   * diffs it); and {@code numbers_jdk25.tsv}, {@link #numbers}.
    */
   public static void main(String[] args) throws Exception {
     Path out = Path.of(args[0]).resolve("analysis_date_locales");
@@ -109,9 +109,47 @@ public class GenAnalysisDateLocales {
         throw new IllegalStateException("--jdk25 needs JDK 25, not " + Runtime.version());
       }
       Files.writeString(out.resolve("dates_jdk25.txt"), generate(availableTags(), false), StandardCharsets.UTF_8);
+      Files.writeString(out.resolve("numbers_jdk25.tsv"), numbers(), StandardCharsets.UTF_8);
     } else {
       Files.writeString(out.resolve("dates.txt"), generate(AnalysisRows.corpus("date-locales.txt"), true), StandardCharsets.UTF_8);
     }
+  }
+
+  /**
+   * {@code numbers_jdk25.tsv}: {@code DateFormat.getDateInstance(SHORT, Locale.US)}, lenient, in
+   * GMT, over numeric extremes ({@code text<TAB>getTime()}, {@code -} for a {@code
+   * ParseException}): exponents, infinities, {@code long} and {@code int} wraps, months and days
+   * rolling into the year. JDK 21 reads the two twenty-digit exponents otherwise (it does not
+   * saturate them). No year has two digits, so no row depends on the clock. Read by {@code
+   * crates/lucene-search/src/queryparser/date_range.rs}.
+   */
+  static String numbers() throws Exception {
+    String[] texts = {
+      "1E1/15E-1/2E0", "NaN/-1/-0", "∞/-∞/1E30", "4294969296/1/99999999999999999999",
+      "1/1/-9223372036854775808", "1/1/9223372036854775807", "1/1/9223372036854775808",
+      "1/1/1E-99999999999999999999", "1/1/1E99999999999999999999", "13/1/2147483647",
+      "0/1/-2147483648", "1/0/0", "0/0/0", "0/-1/0", "007/10/046", "13/40/2020", "1/2/∞",
+      "10/15/1582", "10/4/1582", "10/5/1582", "2/29/1900", "x", "1/2",
+    };
+    TimeZone saved = TimeZone.getDefault();
+    StringBuilder b = new StringBuilder();
+    try {
+      TimeZone.setDefault(TimeZone.getTimeZone("GMT"));
+      DateFormat df = DateFormat.getDateInstance(DateFormat.SHORT, Locale.US);
+      df.setLenient(true);
+      for (String t : texts) {
+        String got;
+        try {
+          got = Long.toString(df.parse(t).getTime());
+        } catch (java.text.ParseException e) {
+          got = "-";
+        }
+        b.append(AnalysisRows.esc(t)).append('\t').append(got).append('\n');
+      }
+    } finally {
+      TimeZone.setDefault(saved);
+    }
+    return b.toString();
   }
 
   /** The rows over {@code tags}; {@code filter}: leave out {@link #kept}'s rejects. */

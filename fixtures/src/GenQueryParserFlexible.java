@@ -120,6 +120,59 @@ public class GenQueryParserFlexible {
       }
       Files.writeString(out.resolve(config + ".tsv"), rows.toString(), StandardCharsets.UTF_8);
     }
+    writeDates(out);
+  }
+
+  /**
+   * {@code date_*.tsv}: {@code GenQueryParserClassic.DATES} through
+   * {@code TermRangeQueryNodeProcessor}, the JVM's default zone GMT-05:00; {@code date_clock.txt}:
+   * the clock the two-digit years were read against.
+   */
+  static void writeDates(Path out) throws Exception {
+    java.util.TimeZone saved = java.util.TimeZone.getDefault();
+    Files.writeString(out.resolve("date_clock.txt"), System.currentTimeMillis() + "\n", StandardCharsets.UTF_8);
+    java.util.Locale savedLocale = java.util.Locale.getDefault();
+    try {
+      java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("GMT-05:00"));
+      java.util.Locale.setDefault(java.util.Locale.US);
+      for (String config : List.of("us_day", "de_map", "root_ms", "none")) {
+        StandardQueryParser p = new StandardQueryParser(new StandardAnalyzer());
+        switch (config) {
+          case "us_day" -> {
+            p.setDateResolution(org.apache.lucene.document.DateTools.Resolution.DAY);
+            p.setTimeZone(java.util.TimeZone.getTimeZone("GMT+02:00"));
+          }
+          case "de_map" -> {
+            p.setLocale(java.util.Locale.GERMANY);
+            Map<CharSequence, org.apache.lucene.document.DateTools.Resolution> m = new java.util.HashMap<>();
+            m.put("d", org.apache.lucene.document.DateTools.Resolution.MINUTE);
+            p.setDateResolutionMap(m);
+          }
+          case "root_ms" -> {
+            p.setLocale(java.util.Locale.ROOT);
+            p.setDateResolution(org.apache.lucene.document.DateTools.Resolution.MILLISECOND);
+            p.setTimeZone(java.util.TimeZone.getTimeZone("GMT+05:30"));
+          }
+          default -> {}
+        }
+        StringBuilder rows = new StringBuilder();
+        for (String q : GenQueryParserClassic.DATES) {
+          rows.append(AnalysisRows.esc(q)).append('\t');
+          try {
+            Query parsed = p.parse(q, "f");
+            rows.append("Q\t").append(AnalysisRows.esc(parsed.toString("f")))
+                .append('\t').append(AnalysisRows.esc(GenQueryParserClassic.describe(parsed)));
+          } catch (QueryNodeException | RuntimeException e) {
+            rows.append("X\t").append(AnalysisRows.esc(e.getClass().getName() + ": " + e.getMessage()));
+          }
+          rows.append('\n');
+        }
+        Files.writeString(out.resolve("date_" + config + ".tsv"), rows.toString(), StandardCharsets.UTF_8);
+      }
+    } finally {
+      java.util.TimeZone.setDefault(saved);
+      java.util.Locale.setDefault(savedLocale);
+    }
   }
 
   /** The flexible syntax's own pieces: every function name and its prefixes, the comparisons. */

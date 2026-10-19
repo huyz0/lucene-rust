@@ -195,7 +195,10 @@ fn time_of(f: Fields) -> i64 {
     let year = f.year + month0.div_euclid(12);
     let month = month0.rem_euclid(12) + 1;
     let day = calendar_days(year, month, f.day);
-    day * MS_PER_DAY + f.hour * 3_600_000 + f.minute * 60_000 + f.second * 1000 + f.milli
+    // A time near the ends of `long` rounds past them and wraps, as Java's
+    // `long` arithmetic does.
+    day.wrapping_mul(MS_PER_DAY)
+        .wrapping_add(f.hour * 3_600_000 + f.minute * 60_000 + f.second * 1000 + f.milli)
 }
 
 impl DateTools {
@@ -274,6 +277,50 @@ impl DateTools {
         }))
     }
 
+    /// `GregorianCalendar`'s lenient epoch day of a year, a 0-based month and
+    /// a day of month, the month and day possibly out of range (they roll
+    /// on). Java picks the Julian or the Gregorian reading by the year as set,
+    /// before the month rolls into it: before 1582 the Julian one, from 1582
+    /// on the Gregorian one unless that falls before the cutover. The month
+    /// rolls into the year in `int` arithmetic (`getFixedDate`'s
+    /// `year += month / 12`), which wraps as Java's does.
+    // ARITH: the rolled year is an `int` and the day an `int`: every
+    // intermediate of the day count stays below 2^45.
+    #[allow(clippy::arithmetic_side_effects)]
+    pub fn lenient_epoch_day(year: i32, month0: i32, day: i32) -> i64 {
+        let y = i64::from(year.wrapping_add(month0.div_euclid(12)));
+        let m = i64::from(month0.rem_euclid(12)) + 1;
+        let day = i64::from(day);
+        let gregorian = gregorian_days(y, m, 1) + day - 1;
+        if year >= 1582 && gregorian >= GREGORIAN_CUTOVER_DAY {
+            gregorian
+        } else {
+            julian_days(y, m, 1) + day - 1
+        }
+    }
+
+    /// `GregorianCalendar.computeFields`' local epoch day and millisecond of
+    /// the day of `time` in a zone `zone` milliseconds from GMT. Like Java,
+    /// it divides the time and the offset separately and carries their
+    /// remainders, so no sum of the two wraps.
+    // ARITH: each quotient is below 2^37 and the remainders below 2 days.
+    #[allow(clippy::arithmetic_side_effects)]
+    pub fn local_epoch_day(time: i64, zone: i64) -> (i64, i64) {
+        let ms = time.rem_euclid(MS_PER_DAY) + zone.rem_euclid(MS_PER_DAY);
+        let day =
+            time.div_euclid(MS_PER_DAY) + zone.div_euclid(MS_PER_DAY) + ms.div_euclid(MS_PER_DAY);
+        (day, ms.rem_euclid(MS_PER_DAY))
+    }
+
+    /// The `GregorianCalendar` fields of `time` in a zone `zone` milliseconds
+    /// from GMT ([`Self::local_epoch_day`]): its year (astronomical: 1 BC is
+    /// `0`), month `1..=12`, day of month and millisecond of the day.
+    pub fn calendar_fields(time: i64, zone: i64) -> (i64, i64, i64, i64) {
+        let (day, ms) = Self::local_epoch_day(time, zone);
+        let (year, month, d) = calendar_date(day);
+        (year, month, d, ms)
+    }
+
     /// `round(Date, resolution)` over a millisecond time is [`Self::round`];
     /// `dateToString` is [`Self::time_to_string`].
     pub fn date_to_string(time: i64, resolution: Resolution) -> String {
@@ -344,6 +391,53 @@ mod tests {
         assert!(DateTools::string_to_time("abcd").is_err());
         assert!(DateTools::string_to_time("").is_err());
         assert_eq!(DateTools::string_to_time("1970").unwrap(), 0);
+    }
+
+    /// `GregorianCalendar`'s lenient reading. The JDK's own answers for
+    /// rolled dates (`13/40/2020`, `0/0/0`, a wrapping year) are pinned end to
+    /// end by `analysis_date_locales/numbers_jdk25.tsv` and the queryparser
+    /// `date_*.tsv` fixtures; these check the calendar choice and the wrap.
+    #[test]
+    fn lenient_epoch_days_roll_and_pick_a_calendar_by_the_year_set() {
+        let day = DateTools::lenient_epoch_day;
+        assert_eq!(day(1970, 0, 1), 0);
+        assert_eq!(day(2020, 12, 40), gregorian_days(2021, 1, 40));
+        assert_eq!(day(0, -1, 0), julian_days(-1, 12, 0));
+        // 1582-10-04 (Julian) is the day before 1582-10-15 (Gregorian).
+        assert_eq!(day(1582, 9, 15), GREGORIAN_CUTOVER_DAY);
+        assert_eq!(day(1582, 9, 4), GREGORIAN_CUTOVER_DAY - 1);
+        // A year before 1582 stays Julian however far its days roll.
+        assert_eq!(day(1581, 0, 1000), julian_days(1581, 1, 1) + 999);
+        // From 1582, a date rolling back before the cutover is Julian.
+        assert_eq!(day(1583, 0, -400), julian_days(1583, 1, 1) - 401);
+        // The rolled year wraps in `int`, the calendar still chosen by the
+        // year as set.
+        assert_eq!(day(i32::MAX, 12, 1), julian_days(i64::from(i32::MIN), 1, 1));
+        assert_eq!(
+            day(i32::MIN, -1, 1),
+            julian_days(i64::from(i32::MAX), 12, 1)
+        );
+    }
+
+    #[test]
+    fn local_days_carry_the_zone_without_wrapping() {
+        assert_eq!(
+            DateTools::calendar_fields(-1, 0),
+            (1969, 12, 31, 86_399_999)
+        );
+        assert_eq!(DateTools::local_epoch_day(-1, 1), (0, 0));
+        assert_eq!(DateTools::local_epoch_day(0, -1), (-1, MS_PER_DAY - 1));
+        let hour = 3_600_000;
+        let (day, ms) = DateTools::local_epoch_day(i64::MAX - hour, 2 * hour);
+        assert_eq!(
+            i128::from(day) * i128::from(MS_PER_DAY) + i128::from(ms),
+            i128::from(i64::MAX) + i128::from(hour)
+        );
+        let (day, ms) = DateTools::local_epoch_day(i64::MIN, -hour);
+        assert_eq!(
+            i128::from(day) * i128::from(MS_PER_DAY) + i128::from(ms),
+            i128::from(i64::MIN) - i128::from(hour)
+        );
     }
 
     #[test]

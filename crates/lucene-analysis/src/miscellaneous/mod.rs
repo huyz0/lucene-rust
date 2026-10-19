@@ -24,7 +24,8 @@ pub use conditional::{
     ProtectedTermFilter, ShouldFilter,
 };
 pub use date_recognizer::{
-    DateLocale, DateRecognizerFilter, SimpleDateFormat, DATE_TYPE, ENGLISH_DEFAULT_DATE_PATTERN,
+    DateLocale, DateRecognizerFilter, NumericField, ParsedFields, SimpleDateFormat, DATE_TYPE,
+    ENGLISH_DEFAULT_DATE_PATTERN,
 };
 pub use filtering::{CodepointCountFilter, DropIfFlaggedFilter, KeepWordFilter, LengthFilter};
 pub use keyword::{

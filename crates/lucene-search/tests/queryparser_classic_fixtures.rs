@@ -4,7 +4,9 @@
 //! seeded joins of syntax fragments, under sixteen parser configurations, to
 //! the same query tree (`toString("f")` and the class tree) or the same
 //! exception message (a `ParseException`'s token, column and expected
-//! tokens included); and `MultiFieldQueryParser`'s static `parse` helpers.
+//! tokens included); `MultiFieldQueryParser`'s static `parse` helpers; and
+//! range bounds read as dates (`date_*.tsv`) under seven locale, resolution
+//! and time zone configurations.
 
 use std::collections::HashMap;
 use std::fs;
@@ -12,13 +14,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use lucene_analysis::core_analysis::{StopAnalyzer, WhitespaceAnalyzer};
-use lucene_analysis::miscellaneous::PerFieldAnalyzerWrapper;
+use lucene_analysis::miscellaneous::{DateLocale, PerFieldAnalyzerWrapper};
 use lucene_analysis::synonym::{SynonymGraphFilter, SynonymMap, SynonymMapBuilder};
 use lucene_analysis::util::WhitespaceTokenizer;
 use lucene_analysis::{
     english_stop_words, AnalysisError, Analyzer, AnalyzerDefinition, CharArraySet, LowerCaseFilter,
     StandardAnalyzer, TokenStreamComponents,
 };
+use lucene_index::document::Resolution;
 use lucene_search::extended_query::RewriteMethod;
 use lucene_search::query_visitor::Occur;
 use lucene_search::queryparser::classic::{Operator, QueryParser, QueryParserError};
@@ -162,6 +165,90 @@ fn parser(name: &str) -> QueryParser {
         }
         other => panic!("unknown configuration {other}"),
     }
+}
+
+/// An hour in milliseconds, for the fixed time zone offsets.
+const HOUR: i32 = 3_600_000;
+
+/// `GenQueryParserClassic.dateParser(name)`, in the generator's default
+/// time zone (GMT-05:00) and at its clock (`date_clock.txt`), which its
+/// two-digit years were read against.
+fn date_parser(name: &str) -> QueryParser {
+    let mut p = QueryParser::new("f", standard());
+    p.set_default_time_zone(-5 * HOUR);
+    let clock = fs::read_to_string(dir().join("date_clock.txt")).unwrap();
+    p.set_date_clock(Some(clock.trim().parse().unwrap()));
+    let locale = |tag: &str| DateLocale::for_language_tag(tag).unwrap();
+    match name {
+        "us_day" => {
+            p.set_locale(locale("en-US"));
+            p.set_date_resolution(Some(Resolution::Day));
+            p.set_time_zone(2 * HOUR);
+        }
+        "us_ms" => {
+            p.set_locale(locale("en-US"));
+            p.set_date_resolution(Some(Resolution::Millisecond));
+        }
+        "de_field" => {
+            p.set_locale(locale("de-DE"));
+            p.set_field_date_resolution("d", Resolution::Minute);
+            p.set_time_zone(-3 * HOUR);
+        }
+        "root_year" => {
+            p.set_locale(locale("und"));
+            p.set_date_resolution(Some(Resolution::Year));
+            p.set_field_date_resolution("d", Resolution::Second);
+            p.set_time_zone(5 * HOUR + HOUR / 2);
+        }
+        "ja_month" => {
+            p.set_locale(locale("ja-JP"));
+            p.set_date_resolution(Some(Resolution::Month));
+        }
+        "fr_hour" => {
+            p.set_locale(locale("fr-FR"));
+            p.set_date_resolution(Some(Resolution::Hour));
+            p.set_time_zone(-3 * HOUR);
+        }
+        "none" => p.set_locale(locale("en-US")),
+        other => panic!("unknown date configuration {other}"),
+    }
+    p
+}
+
+#[test]
+fn date_ranges_match_lucene() {
+    let mut total = 0;
+    let mut bad = Vec::new();
+    for config in [
+        "us_day",
+        "us_ms",
+        "de_field",
+        "root_year",
+        "ja_month",
+        "fr_hour",
+        "none",
+    ] {
+        let p = date_parser(config);
+        let file = format!("date_{config}.tsv");
+        let text = fs::read_to_string(dir().join(&file)).unwrap();
+        for line in text.lines() {
+            let cols: Vec<&str> = line.split('\t').collect();
+            let query = unesc(cols[0]);
+            total += 1;
+            let got = row(p.parse(&query));
+            let want = want(&cols);
+            if got != want {
+                bad.push(format!("{file} {query:?}\n  want {want:?}\n  got  {got:?}"));
+            }
+        }
+    }
+    assert!(total > 300, "only {total} rows compared");
+    assert!(
+        bad.is_empty(),
+        "{} of {total} rows differ:\n{}",
+        bad.len(),
+        bad.join("\n")
+    );
 }
 
 /// A parse's outcome as a fixture row prints it.
