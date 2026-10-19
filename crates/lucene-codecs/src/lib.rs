@@ -48,6 +48,7 @@ pub mod indexed_disi;
 pub mod live_docs;
 pub mod lowercase_ascii;
 pub mod lz4;
+pub mod memory;
 pub mod monotonic_block_packed;
 pub mod norms;
 pub mod offline_sorter;

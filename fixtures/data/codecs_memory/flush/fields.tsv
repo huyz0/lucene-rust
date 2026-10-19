@@ -1,0 +1,7 @@
+id	0	DOCS	false	1600	1600	1600	1600	FSTTerms(terms=1600,postings=1600,positions=1600,docs=1600)
+tag	2	DOCS_AND_FREQS	false	6	3929	3320	1600	FSTTerms(terms=6,postings=3320,positions=3929,docs=1600)
+body	3	DOCS_AND_FREQS_AND_POSITIONS	false	2545	16000	15964	1600	FSTTerms(terms=2545,postings=15964,positions=16000,docs=1600)
+pay	5	DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS	true	379	6400	6360	1600	FSTTerms(terms=379,postings=6360,positions=6400,docs=1600)
+did	1	DOCS	false	1600	1600	1600	1600	DirectTerms(terms=1600,postings=1600,positions=1600,docs=1600)
+dbody	4	DOCS_AND_FREQS_AND_POSITIONS	false	2545	16000	15964	1600	DirectTerms(terms=2545,postings=15964,positions=16000,docs=1600)
+dpay	6	DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS	true	379	6400	6360	1600	DirectTerms(terms=379,postings=6360,positions=6400,docs=1600)

@@ -5,11 +5,16 @@
 //! `cx_bloom_seek`: `seekExact` through `BloomFilteringPostingsFormat`'s
 //! filtered terms, for each of `bloom/targets.tsv`'s 200 000 ids (a quarter
 //! present), over the files Java wrote.
+//!
+//! `cx_fst_seek`/`cx_direct_seek`: `seekExact` on the same kind of ids
+//! (half present) through `FSTPostingsFormat` and `DirectPostingsFormat`,
+//! over `memory/`'s files.
 
 use std::hint::black_box;
 use std::time::Duration;
 
 use lucene_codecs::bloom::BloomFilteredFieldsProducer;
+use lucene_codecs::memory::{DirectFiles, DirectPostingsFormat, FstPostingsFormat};
 use lucene_codecs::segment_state::SegmentReadState;
 
 use super::measure;
@@ -95,6 +100,92 @@ fn bench_bloom(w: Duration, m: Duration, dir: &str) {
     });
 }
 
+fn read_targets(dir: &str) -> Vec<Vec<u8>> {
+    std::fs::read_to_string(format!("{dir}/targets.tsv"))
+        .expect("run CodecsMicro build first (scripts/bench-micro.sh --bench codecs)")
+        .lines()
+        .map(|l| l.as_bytes().to_vec())
+        .collect()
+}
+
+/// Times `seek` (`Some(docFreq)` for a present term) over every target.
+fn bench_seek(
+    w: Duration,
+    m: Duration,
+    name: &str,
+    targets: &[Vec<u8>],
+    mut seek: impl FnMut(&[u8]) -> Option<i32>,
+) {
+    let mut run = |f: &mut Fnv| {
+        for t in targets {
+            f.add(seek(t).map_or(-1, i64::from));
+        }
+    };
+    let mut f = Fnv::new();
+    run(&mut f);
+    println!("#check\t{name}\t{:016x}\t{}", f.0, targets.len());
+    measure(name, w, m, || {
+        let mut g = Fnv::new();
+        run(black_box(&mut g));
+        black_box(g.0);
+        targets.len() as u64
+    });
+}
+
+fn bench_memory(w: Duration, m: Duration, dir: &str) {
+    if !selected("cx_fst_seek") && !selected("cx_direct_seek") {
+        return;
+    }
+    let targets = read_targets(dir);
+    let (name, id, fis) = segment(dir);
+    let file =
+        |suffix: &str, ext: &str| std::fs::read(format!("{dir}/{name}_{suffix}.{ext}")).unwrap();
+    let state = |suffix| SegmentReadState {
+        max_doc: 200_000,
+        segment_id: &id,
+        segment_suffix: suffix,
+        field_infos: &fis,
+    };
+    if selected("cx_fst_seek") {
+        let tfp = file("FST50_0", "tfp");
+        let reader = FstPostingsFormat.open(&tfp, &state("FST50_0")).unwrap();
+        let terms = reader.terms("fid").unwrap();
+        // One enum, as Java's case reuses one `TermsEnum`.
+        let mut e = terms.iter();
+        bench_seek(w, m, "cx_fst_seek", &targets, |t| {
+            e.seek_exact(t).unwrap().then(|| e.doc_freq())
+        });
+    }
+    if selected("cx_direct_seek") {
+        let suffix = "Direct_0";
+        let (tim, tip, tmd, doc) = (
+            file(suffix, "tim"),
+            file(suffix, "tip"),
+            file(suffix, "tmd"),
+            file(suffix, "doc"),
+        );
+        let fields = DirectPostingsFormat::default()
+            .open(
+                &DirectFiles {
+                    tim: &tim,
+                    tip: &tip,
+                    tmd: &tmd,
+                    doc: &doc,
+                    pos: None,
+                    pay: None,
+                },
+                &state(suffix),
+            )
+            .unwrap();
+        let terms = fields.terms("did").unwrap();
+        let mut e = terms.iter();
+        bench_seek(w, m, "cx_direct_seek", &targets, |t| {
+            e.seek_exact(t).then(|| e.doc_freq())
+        });
+    }
+}
+
 pub fn bench_codecs(w: Duration, m: Duration, dir: &str) {
     bench_bloom(w, m, &format!("{dir}/bloom"));
+    bench_memory(w, m, &format!("{dir}/memory"));
 }

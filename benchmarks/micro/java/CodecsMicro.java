@@ -9,6 +9,8 @@ import org.apache.lucene.codecs.PostingsFormat;
 import org.apache.lucene.codecs.bloom.BloomFilteringPostingsFormat;
 import org.apache.lucene.codecs.lucene104.Lucene104Codec;
 import org.apache.lucene.codecs.lucene104.Lucene104PostingsFormat;
+import org.apache.lucene.codecs.memory.DirectPostingsFormat;
+import org.apache.lucene.codecs.memory.FSTPostingsFormat;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.StringField;
@@ -31,6 +33,10 @@ import org.apache.lucene.util.BytesRef;
  * BloomFilteringPostingsFormat} over the default {@code Lucene104PostingsFormat}, and {@code
  * targets.tsv}: 200 000 lookups, a quarter of them present -- the primary-key lookup the format
  * exists for, where most misses are answered by the filter without touching the terms index.
+ *
+ * <p>{@code memory/}: the same 200 000 ids twice, {@code fid} routed to {@code FSTPostingsFormat}
+ * and {@code did} to {@code DirectPostingsFormat}, and the same kind of {@code targets.tsv}:
+ * {@code cx_fst_seek} and {@code cx_direct_seek} are {@code seekExact} on each.
  */
 public final class CodecsMicro {
   static long warmupMs = Long.getLong("warmupMs", 1500);
@@ -124,9 +130,38 @@ public final class CodecsMicro {
     Files.writeString(dir.resolve("built"), "");
   }
 
+  static void buildMemory(Path dir) throws IOException {
+    Random r = new Random(0x14_7_2026_1020L);
+    Map<String, PostingsFormat> formats =
+        Map.of("fid", new FSTPostingsFormat(), "did", new DirectPostingsFormat());
+    try (Directory d = FSDirectory.open(dir);
+        IndexWriter w = new IndexWriter(d, config(formats))) {
+      for (int i = 0; i < DOCS; i++) {
+        Document doc = new Document();
+        doc.add(new StringField("fid", idOf(i), Field.Store.NO));
+        doc.add(new StringField("did", idOf(i), Field.Store.NO));
+        w.addDocument(doc);
+      }
+      w.commit();
+    }
+    List<String> targets = new ArrayList<>();
+    for (int k = 0; k < 200_000; k++) {
+      // Half present, half absent.
+      targets.add(idOf(r.nextInt(2) == 0 ? r.nextInt(DOCS) : DOCS + r.nextInt(10 * DOCS)));
+    }
+    Files.write(dir.resolve("targets.tsv"), targets);
+    Files.writeString(dir.resolve("built"), "");
+  }
+
   /** {@code cx_bloom_seek}: {@code seekExact} on one filtered enum, per target. */
   static void runBloom(Path dir) throws IOException {
     runSeek(dir, "cx_bloom_seek", "id");
+  }
+
+  /** {@code cx_fst_seek}/{@code cx_direct_seek}: {@code seekExact} on FST50 and Direct. */
+  static void runMemory(Path dir) throws IOException {
+    runSeek(dir, "cx_fst_seek", "fid");
+    runSeek(dir, "cx_direct_seek", "did");
   }
 
   static void runSeek(Path dir, String name, String field) throws IOException {
@@ -165,8 +200,13 @@ public final class CodecsMicro {
         Files.createDirectories(dir.resolve("bloom"));
         buildBloom(dir.resolve("bloom"));
       }
+      if (!Files.exists(dir.resolve("memory").resolve("built"))) {
+        Files.createDirectories(dir.resolve("memory"));
+        buildMemory(dir.resolve("memory"));
+      }
     } else {
       runBloom(dir.resolve("bloom"));
+      runMemory(dir.resolve("memory"));
     }
   }
 }

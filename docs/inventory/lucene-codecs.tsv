@@ -24,11 +24,11 @@ codecs/bloom/BloomFilterFactory	ported	crates/lucene-codecs/src/bloom/mod.rs::Bl
 codecs/bloom/BloomFilteringPostingsFormat	ported	crates/lucene-codecs/src/bloom/mod.rs::BloomFilteringPostingsFormat
 codecs/bloom/DefaultBloomFilterFactory	ported	crates/lucene-codecs/src/bloom/mod.rs::DefaultBloomFilterFactory
 codecs/bloom/FuzzySet	ported	crates/lucene-codecs/src/bloom/fuzzy_set.rs::FuzzySet
-codecs/memory/DirectPostingsFormat	todo:M14	the in-memory FST and direct postings formats (M14.g)
-codecs/memory/FSTPostingsFormat	todo:M14	the in-memory FST and direct postings formats (M14.g)
-codecs/memory/FSTTermOutputs	todo:M14	the in-memory FST and direct postings formats (M14.g)
-codecs/memory/FSTTermsReader	todo:M14	the in-memory FST and direct postings formats (M14.g)
-codecs/memory/FSTTermsWriter	todo:M14	the in-memory FST and direct postings formats (M14.g)
+codecs/memory/DirectPostingsFormat	ported	crates/lucene-codecs/src/memory/direct.rs::DirectPostingsFormat
+codecs/memory/FSTPostingsFormat	ported	crates/lucene-codecs/src/memory/mod.rs::FstPostingsFormat
+codecs/memory/FSTTermOutputs	ported	crates/lucene-codecs/src/memory/fst_term_outputs.rs::FstTermOutputs
+codecs/memory/FSTTermsReader	ported	crates/lucene-codecs/src/memory/fst_terms.rs::FstTermsReader
+codecs/memory/FSTTermsWriter	ported	crates/lucene-codecs/src/memory/fst_terms.rs::FstTermsWriter
 codecs/simpletext/SimpleTextBKDReader	todo:M14	the plain-text debugging codec (M14.g)
 codecs/simpletext/SimpleTextBKDWriter	todo:M14	the plain-text debugging codec (M14.g)
 codecs/simpletext/SimpleTextCodec	todo:M14	the plain-text debugging codec (M14.g)
