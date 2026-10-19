@@ -30,6 +30,7 @@
 //! - `QueryVisitor`, `equals`/`hashCode`/`toString` and query caching are not
 //!   ported.
 
+pub(crate) mod dense_bulk;
 mod distance_feature;
 pub(crate) mod doc_values_queries;
 mod feature;

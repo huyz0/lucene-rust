@@ -25,13 +25,9 @@ pub use profiler_collector::{
 };
 pub use term_automaton::{GraphToken, TermAutomatonQuery, TokenStreamToTermAutomatonQuery};
 
-use crate::collector::ScoringCollector;
-
 /// `ConstantScoreScorer.setMinCompetitiveScore(minScore)` with `minScore >
 /// score`: the collector's queue is full and its count past the threshold,
 /// so no later document at this constant score can enter it, and Java's
 /// scorer ends there. The sandbox's constant-score queries stop collecting
 /// (or skip a segment) at the same point.
-pub(crate) fn saturated(collector: &dyn ScoringCollector, score: f32) -> bool {
-    crate::bulk_scorer::min_competitive_score(collector) > score
-}
+pub(crate) use crate::document::dense_bulk::saturated;

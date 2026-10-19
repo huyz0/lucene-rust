@@ -32,13 +32,11 @@
 
 use std::collections::BTreeMap;
 
-use lucene_codecs::doc_values::{
-    DocValuesSkipIndex, DocValuesSkipper, NumericReader, SortedNumericReader,
-};
+use lucene_codecs::doc_values::{NumericReader, SortedNumericReader};
 use lucene_codecs::terms_dict::{SeekStatus, TermsDict};
 
-use super::saturated;
 use crate::collector::ScoringCollector;
+use crate::document::dense_bulk::{saturated, Bulk, SkipBlocks, Step};
 use crate::document::doc_values_queries::{
     numeric_column, ords_column, skip_index, store_err, NumericColumn, OrdsColumn,
 };
@@ -432,148 +430,6 @@ impl Ranges {
             }
         }
         Ok(false)
-    }
-}
-
-/// What the bulk scorer does with a candidate.
-enum Step {
-    Stop,
-    Skip,
-    Check,
-}
-
-/// The numeric query goes through `ConstantScoreScorerSupplier`, whose bulk
-/// scorer decides when `matches()` runs -- which, with a stale iterator,
-/// decides the hits -- and when the search stops:
-///
-/// * `DenseConjunctionBulkScorer` (a segment of at least 2048 documents whose
-///   approximation costs at least `maxDoc / 32`): windows of 4096 documents
-///   from a candidate on, every candidate confirmed before the live
-///   documents are masked, the collector's threshold checked only between
-///   windows;
-/// * `ConstantScoreBulkScorer` (no scores needed): every candidate
-///   confirmed, then masked; nothing to stop for;
-/// * `DefaultBulkScorer` (otherwise): only live candidates confirmed, the
-///   search ending at the hit that saturates the collector.
-struct Bulk {
-    windows: bool,
-    live_first: bool,
-    window_end: i32,
-}
-
-impl Bulk {
-    fn new(needs_scores: bool, max_doc: i32, cost: i64) -> Self {
-        let windows = max_doc >= 2048 && cost >= i64::from(max_doc / 32);
-        Bulk {
-            windows,
-            live_first: needs_scores && !windows,
-            window_end: -1,
-        }
-    }
-
-    fn candidate(
-        &mut self,
-        leaf: &OpenSegment<'_>,
-        doc: i32,
-        boost: f32,
-        collector: &dyn ScoringCollector,
-    ) -> Step {
-        if self.windows && doc >= self.window_end {
-            if saturated(collector, boost) {
-                return Step::Stop;
-            }
-            self.window_end = doc.saturating_add(4096);
-        }
-        if self.live_first && leaf.live_docs.is_some_and(|b| !b.get_doc(doc)) {
-            return Step::Skip;
-        }
-        Step::Check
-    }
-
-    /// Candidates `first..=last` that cannot match: only a window starting
-    /// among them checks the collector. Whether to stop.
-    fn pass(
-        &mut self,
-        first: i32,
-        last: i32,
-        boost: f32,
-        collector: &dyn ScoringCollector,
-    ) -> bool {
-        if !self.windows {
-            return false;
-        }
-        loop {
-            let start = first.max(self.window_end);
-            if start > last {
-                return false;
-            }
-            if saturated(collector, boost) {
-                return true;
-            }
-            self.window_end = start.saturating_add(4096);
-        }
-    }
-
-    /// Collects a confirmed candidate if it is live; whether to stop.
-    fn hit(
-        &self,
-        leaf: &OpenSegment<'_>,
-        doc: i32,
-        boost: f32,
-        collector: &mut dyn ScoringCollector,
-    ) -> bool {
-        collect_live(leaf, doc, boost, collector);
-        !self.windows && saturated(collector, boost)
-    }
-}
-
-/// `SkipBlockRangeIterator`'s documents: every document of the skip blocks
-/// whose value range meets `[min, max]`.
-struct SkipBlocks<'a> {
-    skipper: DocValuesSkipper<'a>,
-    min: i64,
-    max: i64,
-    doc: i32,
-}
-
-impl<'a> SkipBlocks<'a> {
-    fn new(index: &'a DocValuesSkipIndex, min: i64, max: i64) -> Self {
-        SkipBlocks {
-            skipper: DocValuesSkipper::new(index),
-            min,
-            max,
-            doc: -1,
-        }
-    }
-
-    /// The current level-0 block: its last document and its value range.
-    fn block(&self) -> (i32, i64, i64) {
-        (
-            self.skipper.max_doc_id(0),
-            self.skipper.min_value(0),
-            self.skipper.max_value(0),
-        )
-    }
-
-    /// Moves to `doc`, a document of the current block.
-    fn skip_to(&mut self, doc: i32) {
-        self.doc = doc;
-    }
-
-    /// `nextDoc()`: `advance(doc + 1)`.
-    fn next_doc(&mut self) -> i32 {
-        let target = self.doc.saturating_add(1);
-        if target <= self.skipper.max_doc_id(0) {
-            if self.doc > -1 {
-                self.doc = target;
-                return target;
-            }
-        } else {
-            self.skipper.advance(target);
-        }
-        self.skipper.advance_range(self.min, self.max);
-        self.doc = target.max(self.skipper.min_doc_id(0));
-        self.doc
     }
 }
 

@@ -26,6 +26,7 @@ use lucene_codecs::terms_dict::{TermsDict, TermsDictEntry};
 use lucene_index::segment_info::IndexSortField;
 use lucene_util::fixed_bit_set::FixedBitSet;
 
+use super::dense_bulk::{saturated, Bulk, SkipBlocks, Step};
 use super::{collect_live, field_info, reader, DocumentQuery, FieldExists, MatchNoDocs};
 use crate::collector::{ScoringCollector, VecCollector};
 use crate::multi_segment::OpenSegment;
@@ -55,6 +56,14 @@ impl NumericColumn<'_> {
         match self {
             NumericColumn::Numeric(_) => true,
             NumericColumn::SortedNumeric(e) => e.addresses.is_none(),
+        }
+    }
+
+    /// `cost()` of the column's iterator: its documents with a value.
+    fn docs_with_field(&self) -> i64 {
+        match self {
+            NumericColumn::Numeric(e) => e.num_values,
+            NumericColumn::SortedNumeric(e) => i64::from(e.num_docs_with_field),
         }
     }
 
@@ -186,14 +195,28 @@ impl DocumentQuery for SortedNumericDocValuesRangeQuery {
         let r = reader(leaf)?;
         let (lo, hi) = (self.lower_value, self.upper_value);
         let skip = skip_index(leaf, info)?;
+        let needs_scores = collector.score_mode().needs_scores();
         // `docCountIgnoringDeletes`.
         if let Some(s) = skip {
             if s.min_value > hi || s.max_value < lo {
                 return Ok(());
             }
             if s.doc_count == r.max_doc && s.min_value >= lo && s.max_value <= hi {
+                // `ConstantScoreScorerSupplier.matchAll`: `DocIdSetIterator.all`,
+                // one run to `maxDoc`.
+                if saturated(collector, boost) {
+                    return Ok(());
+                }
+                let mut bulk = Bulk::new(needs_scores, r.max_doc, i64::from(r.max_doc));
                 for doc in 0..r.max_doc {
-                    collect_live(leaf, doc, boost, collector);
+                    match bulk.candidate_run(leaf, doc, r.max_doc, boost, collector) {
+                        Step::Stop => return Ok(()),
+                        Step::Skip => continue,
+                        Step::Check => {}
+                    }
+                    if bulk.hit(leaf, doc, boost, collector) {
+                        return Ok(());
+                    }
                 }
                 return Ok(());
             }
@@ -215,17 +238,52 @@ impl DocumentQuery for SortedNumericDocValuesRangeQuery {
                 }
             }
         }
-        // `DocValuesRangeIterator.forRange`: the skip index only decides which
-        // blocks to read; the matches are the values in range.
+        if saturated(collector, boost) {
+            return Ok(());
+        }
+        // `DocValuesRangeIterator.forRange` under `ConstantScoreScorerSupplier`:
+        // the approximation is the skip blocks meeting the range (cost
+        // `NO_MORE_DOCS`) or else the column's documents; the matches are the
+        // values in range, the first one not below `lo` deciding (values
+        // ascend).
         let mut values = Vec::new();
-        for doc in 0..r.max_doc {
+        let in_range = |values: &[i64]| values.iter().find(|&&v| v >= lo).is_some_and(|&v| v <= hi);
+        let Some(s) = skip else {
+            let mut bulk = Bulk::new(needs_scores, r.max_doc, column.docs_with_field());
+            for doc in 0..r.max_doc {
+                column.values(data, doc, &mut values)?;
+                if values.is_empty() {
+                    continue;
+                }
+                match bulk.candidate(leaf, doc, boost, collector) {
+                    Step::Stop => return Ok(()),
+                    Step::Skip => continue,
+                    Step::Check => {}
+                }
+                if in_range(&values) && bulk.hit(leaf, doc, boost, collector) {
+                    return Ok(());
+                }
+            }
+            return Ok(());
+        };
+        let mut bulk = Bulk::new(needs_scores, r.max_doc, i64::from(i32::MAX));
+        let mut approximation = SkipBlocks::new(s, lo, hi);
+        loop {
+            let doc = approximation.next_doc();
+            if doc >= r.max_doc {
+                return Ok(());
+            }
+            let run_end = approximation.doc_id_run_end();
+            match bulk.candidate_run(leaf, doc, run_end, boost, collector) {
+                Step::Stop => return Ok(()),
+                Step::Skip => continue,
+                Step::Check => {}
+            }
             column.values(data, doc, &mut values)?;
-            // Values are ascending: the first one not below `lo` decides.
-            if values.iter().find(|&&v| v >= lo).is_some_and(|&v| v <= hi) {
-                collect_live(leaf, doc, boost, collector);
+            if in_range(&values) && bulk.hit(leaf, doc, boost, collector) {
+                return Ok(());
             }
         }
-        Ok(())
     }
 }
 

@@ -589,6 +589,18 @@ public class GenSandboxDocument {
     "SNMR gx 0:3;5:6000",
     "SNMR hx 0:3;5:6000",
     "SNMR ux 0:500;502:999",
+    // One range: the builder returns core's SortedNumericDocValuesField.newSlowRangeQuery,
+    // scored by ConstantScoreScorerSupplier -- a match-all over a skip index that covers the
+    // whole range, YES skip blocks whose docIDRunEnd shapes the windows, MAYBE ones, no skip
+    // index (dense and sparse), a multi-valued field.
+    "SNMR dx 0:999",
+    "SNMR dx 100:600",
+    "SNMR kx 0:4500",
+    "SNMR kx 1000:8999",
+    "SNMR kx 2000:2100",
+    "SNMR ux 0:999",
+    "SNMR vx 0:999",
+    "SNMR gx 0:6000",
   };
 
   /**
