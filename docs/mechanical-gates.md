@@ -38,6 +38,7 @@ to describe a defect that got past it.
 | [`occur-guard`](#occur-guard) | `check-port-invariants.py` | one condition testing `R.must.is_empty()` and `R.must_not.is_empty()` on a receiver `R` without naming `R.filter` | a guard split across statements or helper fns; a test on `should`/`filter` alone that forgets an occur; a `filter` named but treated wrongly |
 | [`table-fixed-len`](#table-fixed-len) | `check-port-invariants.py` | a non-test `static`/`const` in `lucene-analysis` typed as a slice literal (`&[T] = &[`) | a fixed-length type whose `N` was itself copied from the short transcription; a table built at runtime (`vec!`, `LazyLock`); a dropped or reordered entry in a table nothing indexes by position; every other crate |
 | [`alloc-from-parse`](#alloc-from-parse) | `check-port-invariants.py` | an allocation size (`vec![_; n]`, `with_capacity(n)`, `.resize(n, ..)`) mentioning a name its fn bound from a text parse (`parse_int(`, `parse_num(`, `.parse()`) or containing one, with no `min(` in the size and no `// ALLOC:` proof | a count reaching the size through a struct field, a parameter or another fn; a count decoded from bytes (`read_vint`) rather than parsed from text; a `min(` that does not actually cap it; a loop that pushes once per announced entry without reading one |
+| [`preflight`](#preflight) | `preflight.sh` | a docker engine that does not answer in 30 s; under 25 GB free where Docker keeps its disk; a Docker virtual disk over 300 GB; under 5 GB free on the repo's drive; (in the container) under 15 GB free under the target dir | a drive that fills *during* a run (it checks the start, not the trend); a second project's disk use between checks; free space that is real but fragmented |
 | [rustdoc links](#rustdoc) | `cargo doc` | a `[`link`]` that resolves to nothing | a symbol named in *plain backticks*, which is most of them |
 | [coverage objects](#coverage-objects) | `scripts/coverage.sh` | lucene-ffi's never-loaded cdylib standing in for the executed copy of a `#[no_mangle]` function in the line report | the same first-copy-wins rule between two *executed* copies; a file whose lines split between a crate's unit-test and integration-test builds, which the summary under-reports |
 
@@ -645,6 +646,35 @@ while `every_geo3d_point_is_indexed_as_lucene_indexes_it` failed on it. The
 byte-level Rust tests (`every_geo3d_point_is_indexed_as_lucene_indexes_it`,
 `every_spatial_strategy_makes_the_fields_lucene_makes`) are what pin the
 encoding; the verifiers pin that Lucene reads the result and answers alike.
+
+## preflight
+
+`scripts/preflight.sh` is not a correctness gate; it keeps the other gates from
+starting on a machine that cannot finish them. Two failures motivated it: Docker
+Desktop's engine stopped answering (every `docker run` then hung, and the agents
+waiting on it waited for ever), and the drive filled -- Docker's virtual disk
+(`docker_data.vhdx`) only grows and had reached 696 GB of a 931 GB drive, so
+`C:` had 1.5 GB free, rustc died with SIGBUS mid-build and the engine went down
+with it.
+
+`docker-test.sh` runs `preflight.sh host` before every container, and `gate.sh`
+runs `preflight.sh container` first. It deletes exactly two things, both
+reproducible: Docker's *build cache* above `BUILD_CACHE_MAX_GB` (pruned down to
+`BUILD_CACHE_KEEP_GB`; `DOCKER_AUTO_PRUNE=0` only warns) and cargo `incremental`
+directories above `INCREMENTAL_MAX_MB`. It never touches images, volumes or
+containers. `PREFLIGHT=0` skips it (CI runners are disposable VMs).
+
+Seen to fail, each by forcing its input: an unreachable `DOCKER_HOST` (fails in
+the timeout, not a hang), `MIN_FREE_GB`/`MIN_REPO_FREE_GB` above the real free
+space, `DOCKER_VHDX_MAX_GB=0`, and a stub `docker` reporting a 57 GB build cache
+(pruned to the keep size; with `DOCKER_AUTO_PRUNE=0`, not pruned) and an
+over-cap `incremental` directory (cleared; one under the cap is kept).
+
+Blind to: a drive that fills *during* a run, since it checks the start and not
+the trend; another project using the same engine's disk between two checks; and
+the virtual disk's high-water mark when the engine is stopped (the file is
+measured, not the data inside it). Thresholds are ceilings chosen for a 931 GB
+drive; lower the ceilings, do not set `PREFLIGHT=0`, on a smaller one.
 
 ## rustdoc
 
