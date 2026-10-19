@@ -154,7 +154,7 @@ fn postings_terms_codec(
     .ok()?;
     codec_util::peek_codec_name(r.as_slice())
 }
-const POSTINGS_VERSION_START: i32 = 0;
+pub(crate) const POSTINGS_VERSION_START: i32 = 0;
 pub(crate) const POSTINGS_VERSION_CURRENT: i32 = 0;
 /// `Lucene104PostingsFormat.BLOCK_SIZE` (= `ForUtil.BLOCK_SIZE`), the postings
 /// block size the `.tmd` stream's `indexBlockSize` field must match.

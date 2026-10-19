@@ -1,0 +1,7 @@
+id	0	DOCS	false	1441	1441	1441	1441	FSTTerms(terms=1441,postings=1441,positions=1441,docs=1441)
+tag	2	DOCS_AND_FREQS	false	6	3612	3044	1441	FSTTerms(terms=6,postings=3044,positions=3612,docs=1441)
+body	3	DOCS_AND_FREQS_AND_POSITIONS	false	2494	14410	14378	1441	FSTTerms(terms=2494,postings=14378,positions=14410,docs=1441)
+pay	5	DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS	true	376	5764	5717	1441	FSTTerms(terms=376,postings=5717,positions=5764,docs=1441)
+did	1	DOCS	false	1441	1441	1441	1441	DirectTerms(terms=1441,postings=1441,positions=1441,docs=1441)
+dbody	4	DOCS_AND_FREQS_AND_POSITIONS	false	2494	14410	14378	1441	DirectTerms(terms=2494,postings=14378,positions=14410,docs=1441)
+dpay	6	DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS	true	376	5764	5717	1441	DirectTerms(terms=376,postings=5717,positions=5764,docs=1441)

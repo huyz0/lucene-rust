@@ -98,6 +98,10 @@ codecs_bloom/flush/index/_0.si 313c811b7424ac4e46e5d0d7fe56eac3
 codecs_bloom/flush/index/segments_1 313c811b7424ac4e46e5d0d7fe56eac7
 codecs_bloom/merged/index/_3.si 313c811b7424ac4e46e5d0d7fe56ead7
 codecs_bloom/merged/index/segments_1 313c811b7424ac4e46e5d0d7fe56eada
+codecs_memory/flush/index/_0.si 7ce2b92a008669f77287823f6672ec63
+codecs_memory/flush/index/segments_1 7ce2b92a008669f77287823f6672ec67
+codecs_memory/merged/index/_3.si 7ce2b92a008669f77287823f6672ec77
+codecs_memory/merged/index/segments_1 7ce2b92a008669f77287823f6672ec7a
 completion_query/index/_0.si 706d24ae0bdd6dac35cd19d3a0d2ac1b
 completion_query/index/_1.si 706d24ae0bdd6dac35cd19d3a0d2ac1f
 completion_query/index/_2.si 706d24ae0bdd6dac35cd19d3a0d2ac23

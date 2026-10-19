@@ -78,6 +78,7 @@ pub const MAX_ITEMS_IN_BLOCK: usize = 48;
 /// One term as the block writer needs it: its bytes and the two statistics
 /// the block's stats stream carries. The term's postings metadata is not
 /// here -- it is encoded by the caller's callback, by index.
+#[derive(Debug)]
 pub(crate) struct BlockTerm<'a> {
     pub(crate) bytes: &'a [u8],
     pub(crate) doc_freq: i32,
