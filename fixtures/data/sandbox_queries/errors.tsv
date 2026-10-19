@@ -1,0 +1,8 @@
+CFS 1 w1 1 body 0.5	IllegalArgumentException: weight must be greater or equal to 1
+TAQ body 3 2 2 0>1>* 1>2>w1	IllegalStateException: automaton cannot lead with an ANY transition
+TAQ body 3 2 2 0>1>w0 1>2>*	IllegalStateException: automaton cannot end with an ANY transition
+TAQ body 2 0,1 1 0>1>w0	IllegalStateException: cannot accept the empty string
+TS body 1 2 w0/1/1 w1/2/1	IllegalArgumentException: cannot handle holes; to accept any term, use '*' term
+PW body 100 0 0	OK
+PW body 100 -1 2 t:w0 t:w1	IllegalArgumentException: slop value cannot be negative
+COV c 1 0	OK

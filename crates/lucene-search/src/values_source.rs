@@ -368,6 +368,11 @@ pub trait LongValuesSource: Send + Sync {
     ) -> Result<Option<Arc<dyn LongValuesSource>>> {
         Ok(None)
     }
+    /// `instanceof ConstantLongValuesSource`'s `getValue()`: `None` for any
+    /// other source.
+    fn constant_value(&self) -> Option<i64> {
+        None
+    }
 }
 
 impl std::fmt::Debug for dyn DoubleValuesSource {
@@ -864,6 +869,9 @@ impl LongValues for ConstantLongValues {
 }
 
 impl LongValuesSource for ConstantLongSource {
+    fn constant_value(&self) -> Option<i64> {
+        Some(self.0)
+    }
     fn get_values<'c>(
         &self,
         _ctx: &ValuesContext<'c>,

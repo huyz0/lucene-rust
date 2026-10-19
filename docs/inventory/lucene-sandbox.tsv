@@ -69,15 +69,15 @@ sandbox/facet/utils/TaxonomyFacetBuilder	todo:M14	M14.f: the sandbox package san
 sandbox/index/MergeOnFlushMergePolicy	todo:M14	M14.f: the sandbox package sandbox/index
 sandbox/queries/FuzzyLikeThisQuery	ported	crates/lucene-search/src/fuzzy_like_this.rs::FuzzyLikeThisQuery
 sandbox/search/AggregatedQueryLeafProfilerResult	todo:M14	M14.f: the sandbox package sandbox/search
-sandbox/search/CombinedFieldQuery	todo:M14	M14.f: the sandbox package sandbox/search
-sandbox/search/CoveringQuery	todo:M14	M14.f: the sandbox package sandbox/search
-sandbox/search/CoveringScorer	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/CombinedFieldQuery	ported	crates/lucene-search/src/extended_query.rs::CombinedFieldQuery
+sandbox/search/CoveringQuery	ported	crates/lucene-search/src/sandbox/search/covering.rs::CoveringQuery
+sandbox/search/CoveringScorer	ported	crates/lucene-search/src/sandbox/search/covering.rs::CoveringScorer
 sandbox/search/DocValuesMultiRangeQuery	ported	crates/lucene-search/src/sandbox/search/doc_values_multi_range.rs::SortedNumericStabbingBuilder
 sandbox/search/LargeNumHitsTopDocsCollector	todo:M14	M14.f: the sandbox package sandbox/search
 sandbox/search/LargeNumHitsTopDocsCollectorManager	todo:M14	M14.f: the sandbox package sandbox/search
-sandbox/search/MultiNormsLeafSimScorer	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/MultiNormsLeafSimScorer	ported	crates/lucene-search/src/exec/extended.rs::FreqSumScorer
 sandbox/search/MultiRangeQuery	ported	crates/lucene-search/src/sandbox/search/multi_range_query.rs::MultiRangeQuery
-sandbox/search/PhraseWildcardQuery	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/PhraseWildcardQuery	ported	crates/lucene-search/src/sandbox/search/phrase_wildcard.rs::PhraseWildcardQuery
 sandbox/search/ProfilerCollector	todo:M14	M14.f: the sandbox package sandbox/search
 sandbox/search/ProfilerCollectorManager	todo:M14	M14.f: the sandbox package sandbox/search
 sandbox/search/ProfilerCollectorResult	todo:M14	M14.f: the sandbox package sandbox/search
@@ -94,6 +94,6 @@ sandbox/search/QueryProfilerTree	todo:M14	M14.f: the sandbox package sandbox/sea
 sandbox/search/QueryProfilerWeight	todo:M14	M14.f: the sandbox package sandbox/search
 sandbox/search/SortedNumericDocValuesMultiRangeQuery	ported	crates/lucene-search/src/sandbox/search/doc_values_multi_range.rs::SortedNumericDocValuesMultiRangeQuery
 sandbox/search/SortedSetDocValuesMultiRangeQuery	ported	crates/lucene-search/src/sandbox/search/doc_values_multi_range.rs::SortedSetDocValuesMultiRangeQuery
-sandbox/search/TermAutomatonQuery	todo:M14	M14.f: the sandbox package sandbox/search
-sandbox/search/TermAutomatonScorer	todo:M14	M14.f: the sandbox package sandbox/search
-sandbox/search/TokenStreamToTermAutomatonQuery	todo:M14	M14.f: the sandbox package sandbox/search
+sandbox/search/TermAutomatonQuery	ported	crates/lucene-search/src/sandbox/search/term_automaton.rs::TermAutomatonQuery
+sandbox/search/TermAutomatonScorer	ported	crates/lucene-search/src/sandbox/search/term_automaton.rs::MatchCounter
+sandbox/search/TokenStreamToTermAutomatonQuery	ported	crates/lucene-search/src/sandbox/search/term_automaton.rs::TokenStreamToTermAutomatonQuery
