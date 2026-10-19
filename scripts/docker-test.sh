@@ -19,6 +19,8 @@
 #
 # Env knobs (all have defensible defaults, none need setting):
 #   MEM=16g CPUS=8 PIDS=512 TMPFS=1g  scripts/docker-test.sh ...
+#   PREFLIGHT=0 skips the engine and disk checks (scripts/preflight.sh lists
+#   their own knobs: MIN_FREE_GB, DOCKER_VHDX_MAX_GB, BUILD_CACHE_MAX_GB, ...)
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -44,6 +46,10 @@ if [ "${1:-}" = "gate" ]; then
 else
   CMD=("${@:-cargo test --workspace}")
 fi
+
+# Refuse to start on a wedged engine or a nearly full drive: a build that fills
+# the disk kills rustc and then Docker itself (scripts/preflight.sh says how).
+"$REPO/scripts/preflight.sh" host
 
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   echo "docker-test: building $IMAGE (first run only)" >&2

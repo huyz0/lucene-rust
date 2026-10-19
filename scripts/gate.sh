@@ -8,6 +8,9 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
+echo "gate: preflight (room under the target dir; runaway incremental dirs trimmed)"
+scripts/preflight.sh container
+
 echo "gate: cargo fmt --check"
 cargo fmt --all --check
 
