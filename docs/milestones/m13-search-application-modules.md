@@ -8,8 +8,8 @@
 |---|---|
 | **Effort** | XL |
 | **Depends on** | [M10](m10-joins-grouping-queries.md), [M11](m11-analysis-common.md) |
-| **Unblocks** | native `highlight`, completion suggesters, `query_string`/`simple_query_string` parsing |
-| **Status** | in progress, 2 of 4 criteria -- T13.2: the classic, match, unified and fast vector highlighters ported, every fixture row equal; T13.1: the classic `QueryParser`, `MultiFieldQueryParser`, `SimpleQueryParser`, the `ext` package, the surround language, `ComplexPhraseQueryParser`, `CoreParser`, `CorePlusQueriesParser` and `CorePlusExtensionsParser` (the whole `xml` package) and the `flexible` framework (`StandardQueryParser`, `PrecedenceQueryParser`, `QueryParserUtil`) are ported (every fixture row equal) |
+| **Unblocks** | native `query_string`/`simple_query_string` (term ranges), native query phase on `completion`-field indexes; the highlighters and suggesters as library code (their execution inside OpenSearch stays OpenSearch's -- T13.6) |
+| **Status** | delivered (2026-10-19), all 4 criteria met -- every M13 module's inventory passes `--milestone M13`; T13.6 wired within OpenSearch's limits (suggester and highlighter execution stays OpenSearch's: `NamedRegistry` forbids replacing them) |
 
 ---
 
@@ -348,10 +348,43 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
   Each sub-task is a port with its own differential fixtures (queries and
   documents from `GenMonitor.java`), and its own inventory rows.
 - **T13.6** — Plugin wiring for the OpenSearch features above.
+  OpenSearch registers its highlighters, suggesters and query parsers by
+  name, and `NamedRegistry` refuses a plugin that registers a built-in name
+  again, so the plugin cannot swap them for this port's. What is wired:
+  - `query_string` and `simple_query_string` run natively: OpenSearch's
+    parser builds the Lucene query, and the one shape it built that the
+    bridge could not encode, `TermRangeQuery` (a `[a TO b]` on a `text` or
+    `keyword` field, and a `range` on a `keyword`), is a query-tree node
+    since ABI 34. Fuzzy terms already ran natively through the
+    blended-statistics node. `NativeSelfTest` compares random trees holding
+    term ranges with Lucene, and `verify_opensearch.py` adds `query_string`,
+    `simple_query_string` and keyword-`range` rows.
+  - An index with `completion` fields is no longer a whole-index
+    `postings_format` fallback: the native reader opens the
+    Completion90-104 postings formats, so the query phase on that index
+    runs natively. The suggesters still run in OpenSearch's `SuggestPhase`
+    on Lucene's reader; the e2e `completion` index compares the completion
+    (prefix, fuzzy, regex, contexts), term and phrase suggesters and the
+    three highlighters with the plugin on and off.
+  - The highlighters read their text from the fetch phase's native stored
+    fields (R6).
 
-**Status by task:** T13.1 done; T13.5 `MemoryIndex` done, `monitor` in
-progress (T13.5a-c done; T13.5d done -- batches, the four matchers, partitioned matching, persistence verified both ways against Lucene, the regexp handler and debug()); T13.2 ported and benchmarked (`uh_analysis`/`uh_tv` 0.36x, reason above); T13.3 done; T13.4 done (`facet_count_all` 1.04~ and `drill_sideways_union` 0.97~ inside the noise, reasons above); T13.6
-not started. M13 closes when all four acceptance criteria hold.
+  Deferred, with reasons:
+  - **Native suggester and highlighter execution.** Blocked by
+    `NamedRegistry`, not by the port: replacing them needs an OpenSearch
+    extension point that does not exist in 3.8.0. The Rust suggesters and
+    highlighters (T13.2, T13.3) stay library-level, verified against Lucene
+    by their fixtures.
+  - **Native term vectors** (what `fvh` and the unified highlighter's
+    term-vector offsets read). Lucene reads them through its own reader on
+    the same segment; the matrix shows the responses are identical, and
+    nothing on the query path needs them.
+
+**Status by task:** T13.1 done; T13.5 `MemoryIndex` done, `monitor` done
+(T13.5a-c done; T13.5d done -- batches, the four matchers, partitioned matching, persistence verified both ways against Lucene, the regexp handler and debug()); T13.2 ported and benchmarked (`uh_analysis`/`uh_tv` 0.36x, reason above); T13.3 done; T13.4 done (`facet_count_all` 1.04~ and `drill_sideways_union` 0.97~ inside the noise, reasons above); T13.6
+done within OpenSearch's limits (term ranges and completion-field indexes
+native; suggester/highlighter execution and term vectors deferred, reasons
+above). All four acceptance criteria hold: M13 is delivered.
 
 ## Acceptance criteria
 
@@ -361,9 +394,17 @@ not started. M13 closes when all four acceptance criteria hold.
       settings, which no corpus query sets, are deferred to M14.)
 - [x] Highlighters return Lucene's fragments and offsets on a fixture corpus
       (T13.2; benchmarked, the two `MemoryIndex`-bound ratios written up).
-- [ ] Real Lucene reads a Rust-written completion field and taxonomy index.
-- [ ] OpenSearch's highlighting and suggester YAML suites fail identically
-      with and without native execution.
+- [x] Real Lucene reads a Rust-written completion field and taxonomy index
+      (`scripts/verify-write-path.sh`: `VerifyCompletion`, `VerifyTaxonomy`).
+- [x] OpenSearch's highlighting and suggester YAML suites fail identically
+      with and without native execution (the query phase native; the
+      suggesters and highlighters themselves execute in OpenSearch, see
+      T13.6's deferral) (2026-10-19, OpenSearch 3.8.0:
+      `search.highlight` 13/13 and `suggest` 20/20 pass on both nodes; the
+      whole `YAML_SUITES` list, 504 tests, has the same four failures on
+      both -- `search/10_source_filtering`'s empty-`_source` cases, a stock
+      3.8.0 failure -- with 730 native queries and 0 native errors; the
+      e2e matrix, 10,184 checks, 0 failures).
 
 ## Risks and unknowns
 

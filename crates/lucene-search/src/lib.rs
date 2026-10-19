@@ -4308,7 +4308,9 @@ pub(crate) fn span_leaf_positions(
 ) -> Result<Option<(Vec<i32>, Vec<(SpanLeafKey, HashMap<i32, Vec<i32>>)>)>> {
     let mut leaves: Vec<SpanLeafKey> = Vec::new();
     collect_span_leaves(query, &mut leaves);
-    if leaves.is_empty() {
+    // A segment without any leaf's field has no spans (`SpanTermWeight`
+    // returns none), `.pos` file or not.
+    if !leaves.iter().any(|(f, _)| fields.field(f).is_some()) {
         return Ok(None);
     }
     let Some(pos_in) = pos_in else {
@@ -4483,12 +4485,11 @@ pub fn search_phrase_query<C: Collector>(
         let term_query = TermQuery::new(query.field.clone(), query.terms[0].clone());
         return search_term_query(fields, doc_in, live_docs, &term_query, collector);
     }
-    let Some(pos_in) = pos_in else {
-        return Err(Error::MissingPosInput);
-    };
-
     let Some(field_terms) = fields.field(&query.field) else {
         return Ok(());
+    };
+    let Some(pos_in) = pos_in else {
+        return Err(Error::MissingPosInput);
     };
 
     // Documents first, positions second -- the same order (and for the same
@@ -4655,12 +4656,11 @@ pub fn search_phrase_query_scored_with_stats<C: ScoringCollector>(
             collector,
         );
     }
-    let Some(pos_in) = pos_in else {
-        return Err(Error::MissingPosInput);
-    };
-
     let Some(field_terms) = fields.field(&query.field) else {
         return Ok(());
+    };
+    let Some(pos_in) = pos_in else {
+        return Err(Error::MissingPosInput);
     };
 
     // Real BM25's phrase idf is the sum of every constituent term's own idf --
@@ -8585,6 +8585,40 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, Error::MissingPosInput));
+    }
+
+    #[test]
+    fn span_leaves_on_fields_the_segment_lacks_have_no_positions_without_pos_input() {
+        let fields = BlockTreeFields::empty();
+        let q = SpanQuery::span_near(
+            [
+                SpanQuery::span_term("f", "a"),
+                SpanQuery::span_term("f", "b"),
+            ],
+            1,
+            true,
+        );
+        assert!(span_leaf_positions(&fields, None, None, None, None, &q)
+            .unwrap()
+            .is_none());
+    }
+
+    /// `PhraseWeight.getPhraseMatcher`: a segment without the field has no
+    /// matcher, whether or not it has a `.pos` file -- an OpenSearch
+    /// tombstone segment (only `_id` and the sequence fields) is one.
+    #[test]
+    fn phrase_query_on_a_field_the_segment_lacks_matches_nothing_without_pos_input() {
+        let (fields, doc) = open_fixture();
+        let doc = doc.unwrap();
+        let doc_in = doc.open();
+        let q = PhraseQuery::new("nosuchfield", ["alpha", "beta"]);
+        let mut c = VecCollector::default();
+        search_phrase_query(&fields, Some(&doc_in), None, None, None, &q, &mut c).unwrap();
+        assert!(c.docs.is_empty());
+        let mut top = TopDocsCollector::new(10);
+        search_phrase_query_scored(&fields, Some(&doc_in), None, None, None, &q, None, &mut top)
+            .unwrap();
+        assert!(top.top_docs().is_empty());
     }
 
     #[test]

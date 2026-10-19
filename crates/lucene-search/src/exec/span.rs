@@ -666,6 +666,14 @@ pub(crate) fn span_doc_scores(
     // approximation (`SpanNearQuery`'s conjunction, `SpanOrQuery`'s
     // disjunction), so only the documents the query can match are visited
     // and only their positions are decoded.
+    //
+    // `SpanTermQuery.SpanTermWeight.getSpans`: a segment without a leaf's
+    // field has no spans for it, so one without any leaf's field (an
+    // OpenSearch tombstone segment, say, which has no `.pos` at all) matches
+    // nothing -- however many documents the reader-wide statistics count.
+    if !leaves.iter().any(|(f, _)| ctx.fields.field(f).is_some()) {
+        return Ok(None);
+    }
     let Some(pos_in) = ctx.pos_in else {
         return Err(crate::Error::MissingPosInput);
     };
@@ -933,6 +941,28 @@ mod tests {
         assert_eq!(span_field(&or), Some("g"));
         assert_eq!(span_field(&SpanQuery::span_or(std::iter::empty())), None);
     }
+    /// A segment without the query's field and without a `.pos` file (an
+    /// OpenSearch tombstone segment) matches nothing, although the
+    /// reader-wide statistics say other segments have the terms.
+    #[test]
+    fn a_segment_without_the_field_matches_nothing_without_pos_input() {
+        let fields = lucene_codecs::blocktree::BlockTreeFields::empty();
+        let mut global = crate::GlobalStats::new();
+        let stats = crate::CollectionStats {
+            doc_freq: 3,
+            doc_count: 5,
+            total_term_freq: 4,
+            max_doc: 9,
+            sum_total_term_freq: 20,
+            sum_doc_freq: 12,
+        };
+        global.insert_term("f", "a", stats);
+        global.insert_term("f", "b", stats);
+        let q = SpanQuery::span_near([term("a"), term("b")], 1, true);
+        let hits = resolve_span(&fields, None, None, None, None, None, Some(&global), &q).unwrap();
+        assert!(hits.is_empty());
+    }
+
     /// A leaf's positions, payloads and occurrences, over the spans
     /// fixture's real postings: a lazy cursor's, a pulsed singleton's and an
     /// absent term's.

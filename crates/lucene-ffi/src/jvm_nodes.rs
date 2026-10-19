@@ -1490,21 +1490,22 @@ pub(crate) mod tests {
         // An unknown score mode, and kinds past the last.
         let (_, msg) = fails(h, &Blob::tree().u8(NODE_TO_PARENT).u8(9));
         assert!(msg.contains("score mode 9"), "{msg}");
-        let (_, msg) = fails(h, &Blob::tree().u8(NODE_LAST + 1));
+        let (_, msg) = fails(h, &Blob::tree().u8(crate::jvm_reader::NODE_TERM_RANGE + 1));
         assert!(msg.contains("unknown node kind"), "{msg}");
         // The decode on its own: the nodes are extended clauses.
         assert!(matches!(decode(&spans(st("a"))), Ok(Clause::Extended(_))));
         ffi_close_jvm_reader(h);
     }
 
-    /// The fuzz target's M10 seeds are well-formed blobs.
+    /// The fuzz target's M10 seeds (and M13's term range) are well-formed blobs.
     #[test]
     fn the_fuzz_seeds_decode() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/fuzz/seeds/jvm_search");
         let mut seen = 0;
         for e in std::fs::read_dir(dir).unwrap() {
             let e = e.unwrap();
-            if e.file_name().to_string_lossy().starts_with("m10_") {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with("m10_") || name.starts_with("m13_") {
                 let data = std::fs::read(e.path()).unwrap();
                 crate::jvm_reader::decode_request(&data[2..]).unwrap_or_else(|s| {
                     panic!("{:?}: {s:?} {}", e.path(), crate::error::last_error())
@@ -1512,6 +1513,6 @@ pub(crate) mod tests {
                 seen += 1;
             }
         }
-        assert_eq!(seen, 5);
+        assert_eq!(seen, 6);
     }
 }

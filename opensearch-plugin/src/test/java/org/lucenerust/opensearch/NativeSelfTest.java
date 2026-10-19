@@ -35,6 +35,7 @@ import org.apache.lucene.search.TotalHits;
 import org.apache.lucene.search.WildcardQuery;
 import org.apache.lucene.search.PrefixQuery;
 import org.apache.lucene.search.TermInSetQuery;
+import org.apache.lucene.search.TermRangeQuery;
 import org.apache.lucene.index.MultiReader;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.store.FSDirectory;
@@ -75,6 +76,24 @@ public final class NativeSelfTest {
     private static int sortedMinScoreChecks;
     private static int terminateChecks;
     private static int minScoreChecks;
+    private static int termRangesCompared;
+
+    /** Whether a {@link TermRangeQuery} is among {@code q}'s leaves (inside its rewrite's wrapper). */
+    private static boolean holdsTermRange(Query q) {
+        boolean[] found = new boolean[1];
+        q.visit(new org.apache.lucene.search.QueryVisitor() {
+            @Override
+            public void consumeTermsMatching(Query query, String field, java.util.function.Supplier<org.apache.lucene.util.automaton.ByteRunAutomaton> automaton) {
+                found[0] |= query instanceof TermRangeQuery;
+            }
+
+            @Override
+            public org.apache.lucene.search.QueryVisitor getSubVisitor(Occur occur, Query parent) {
+                return this;
+            }
+        });
+        return found[0];
+    }
     private static int aggChecks;
     private static int termsChecks;
     private static int geoEncoded;
@@ -119,6 +138,18 @@ public final class NativeSelfTest {
             // M8 T8.5: every index an older Lucene 9.x/10.x wrote opens natively.
             check(old == false || ok, "backward-codecs fixture served natively: " + fixture);
         }
+        // M13 T13.6: indexes with a completion field (Completion104, and the formats of 9.0-10.3)
+        // are read natively; their fixtures sit one level down.
+        int completion = 0;
+        List<Path> completionIndexes = new ArrayList<>(List.of(Path.of(args[0], "completion_query", "index")));
+        try (Stream<Path> versions = Files.list(Path.of(args[0], "bwc-completion"))) {
+            versions.sorted().forEach(v -> completionIndexes.add(v.resolve("index")));
+        }
+        for (Path index : completionIndexes) {
+            check(fixture(index), "completion fixture served natively: " + index);
+            completion++;
+        }
+        check(completion >= 6, "completion fixtures found: " + completion);
         // A regression that stopped fixtures opening natively would otherwise pass silently.
         check(compared >= 20, "fixtures compared natively: " + compared);
         check(bwc >= 17, "backward-codecs fixtures found: " + bwc);
@@ -135,6 +166,7 @@ public final class NativeSelfTest {
         check(termsChecks >= 300, "terms aggregations compared: " + termsChecks);
         check(terminateChecks >= 100, "terminate_after searches compared: " + terminateChecks);
         check(minScoreChecks >= 100, "min_score searches compared: " + minScoreChecks);
+        check(termRangesCompared >= 50, "queries holding a term range compared: " + termRangesCompared);
         check(geoEncoded >= 600, "geo queries encoded and compared: " + geoEncoded);
         check(geoSortPages >= 300, "sorted pages with a _geo_distance key compared: " + geoSortPages);
         check(geoAfterFallbacks >= 10, "Lucene geo-distance pages after a hit, left to Lucene: " + geoAfterFallbacks);
@@ -267,6 +299,16 @@ public final class NativeSelfTest {
             "a 4-byte points range falls back"
         );
         check(QueryEncoder.encode(LongPoint.newRangeQuery("n", 1, 5), f -> true).blob() != null, "a long range encodes");
+        // M13 T13.6: query_string's [a TO b] and a keyword range, under the searcher's rewrite.
+        IndexSearcher empty = new IndexSearcher(new MultiReader());
+        check(
+            QueryEncoder.encode(empty.rewrite(TermRangeQuery.newStringRange("tag", "a", "m", true, false)), f -> true).blob() != null,
+            "a term range encodes"
+        );
+        check(
+            QueryEncoder.encode(empty.rewrite(TermRangeQuery.newStringRange("tag", null, null, false, false)), f -> true).blob() != null,
+            "an open term range encodes"
+        );
         check(SortEncoder.encode(new Sort(SortField.FIELD_SCORE, SortField.FIELD_DOC), null).blob() != null, "score, doc sort encodes");
         check(
             SortEncoder.encode(new Sort(new org.apache.lucene.search.SortedSetSortField("k", false)), null).blob() != null,
@@ -346,6 +388,11 @@ public final class NativeSelfTest {
                 case 7 -> r.nextInt(2) == 0
                     ? new WildcardQuery(new Term(field, word(r).charAt(0) + "?" + "*"))
                     : new TermInSetQuery(field, List.of(new BytesRef(word(r)), new BytesRef(word(r)), new BytesRef(word(r))));
+                // M13 T13.6: a term range, either end open or exclusive (query_string's {a TO *]).
+                case 9 -> {
+                    String a = r.nextInt(5) == 0 ? null : word(r), b = r.nextInt(5) == 0 ? null : word(r);
+                    yield TermRangeQuery.newStringRange(field, a, b, r.nextBoolean(), r.nextBoolean());
+                }
                 default -> t;
             };
         }
@@ -378,6 +425,7 @@ public final class NativeSelfTest {
             if (enc.blob() == null) {
                 continue;
             }
+            termRangesCompared += holdsTermRange(rewritten) ? 1 : 0;
             // size: 0 -- no collector, so the count takes its own path (bounds, then counting).
             long[] zero = new long[3];
             long exactCount = searcher.count(rewritten);
