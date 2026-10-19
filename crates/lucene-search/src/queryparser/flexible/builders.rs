@@ -78,22 +78,31 @@ pub(crate) fn build(cfg: &StandardQueryParser, node: &Node) -> Result<Option<Par
                     .with_prefix_length(*prefix_length as usize),
             )
         }
-        Kind::Wildcard(d) => ParsedQuery::Wildcard(WildcardQuery::new(
-            field(d),
-            d.text.as_string().into_bytes(),
-        )),
+        Kind::Wildcard(d) => ParsedQuery::with_rewrite(
+            ParsedQuery::Wildcard(WildcardQuery::new(
+                field(d),
+                d.text.as_string().into_bytes(),
+            )),
+            cfg.multi_term_rewrite_method,
+        ),
         Kind::PrefixWildcard(d) => {
             let mut units = d.text.units.clone();
             units.pop();
-            ParsedQuery::Prefix(PrefixQuery::new(
-                field(d),
-                String::from_utf16_lossy(&units).into_bytes(),
-            ))
+            ParsedQuery::with_rewrite(
+                ParsedQuery::Prefix(PrefixQuery::new(
+                    field(d),
+                    String::from_utf16_lossy(&units).into_bytes(),
+                )),
+                cfg.multi_term_rewrite_method,
+            )
         }
         Kind::Regexp { field, text } => {
             let text = text.as_string();
             check_regexp(&text)?;
-            ParsedQuery::Regexp(RegexpQuery::new(field.clone().unwrap_or_default(), text))
+            ParsedQuery::with_rewrite(
+                ParsedQuery::Regexp(RegexpQuery::new(field.clone().unwrap_or_default(), text)),
+                cfg.multi_term_rewrite_method,
+            )
         }
         Kind::TermRange {
             lower_inclusive,
@@ -106,13 +115,16 @@ pub(crate) fn build(cfg: &StandardQueryParser, node: &Node) -> Result<Option<Par
                     .unwrap_or_default();
                 (!t.is_empty()).then(|| t.into_bytes())
             };
-            ParsedQuery::TermRange(TermRangeQuery::new(
-                node.get_field().unwrap_or_default(),
-                bound(&node.children[0]),
-                bound(&node.children[1]),
-                *lower_inclusive,
-                *upper_inclusive,
-            ))
+            ParsedQuery::with_rewrite(
+                ParsedQuery::TermRange(TermRangeQuery::new(
+                    node.get_field().unwrap_or_default(),
+                    bound(&node.children[0]),
+                    bound(&node.children[1]),
+                    *lower_inclusive,
+                    *upper_inclusive,
+                )),
+                cfg.multi_term_rewrite_method,
+            )
         }
         Kind::MatchAll => ParsedQuery::MatchAll,
         Kind::MatchNoDocs => ParsedQuery::MatchNoDocs(String::new()),

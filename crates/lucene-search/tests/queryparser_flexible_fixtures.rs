@@ -16,6 +16,7 @@ use lucene_analysis::{
     english_stop_words, AnalysisError, Analyzer, AnalyzerDefinition, CharArraySet, CharReader,
     LowerCaseFilter, StandardAnalyzer, TokenStream, TokenStreamComponents,
 };
+use lucene_search::extended_query::RewriteMethod;
 use lucene_search::queryparser::flexible::{Operator, StandardQueryParser};
 
 fn dir() -> PathBuf {
@@ -142,6 +143,8 @@ fn parser(config: &str) -> StandardQueryParser {
             p.set_phrase_slop(-1);
             p.set_fields_boost(&[("f", -1.0)]);
         }
+        "rewrite" => p.set_multi_term_rewrite_method(RewriteMethod::ScoringBoolean),
+        "topterms" => p.set_multi_term_rewrite_method(RewriteMethod::TopTermsBoostOnlyBoolean(5)),
         _ => {}
     }
     p
@@ -160,6 +163,8 @@ fn standard_query_parser_matches_lucene() {
         "syn",
         "stop",
         "negative",
+        "rewrite",
+        "topterms",
         "prec",
         "prec_and",
         "mapping",

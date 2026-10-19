@@ -137,7 +137,8 @@ pub(crate) enum Kind {
 }
 
 /// The tags the processors leave on a node: `BooleanQuery2ModifierNodeProcessor`'s
-/// three, and `MultiTermRewriteMethodProcessor`'s.
+/// three (`MultiTermRewriteMethodProcessor`'s is folded into the builders,
+/// which read the parser's method).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct Tags {
     pub remove: bool,
