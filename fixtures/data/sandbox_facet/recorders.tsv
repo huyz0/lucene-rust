@@ -1,0 +1,96 @@
+all	taxo_empty	false
+all	taxo_all	Publish Date=3120/1248688/899/6746865,Publish Date/2000=780/312040/896/1683700,Publish Date/2000/1=259/103256/896/428984,Tag/t0=935/375230/895/2026693,Rating=3120/1248688/899/6746865,Rating/r0=1039/418065/899/1686638,Author=3020/1208062/899/6536973,Author/a7=179/72645/899/389390,Publish Date/2001=780/309004/897/1686885,Publish Date/2001/2=261/103481/897/646069,Tag/t1=936/377572/899/2018289,Tag/t3=937/373644/897/2028847,Rating/r1=1041/414243/899/2532607,Author/a14=178/71652/893/385298,Publish Date/2002=780/312216/898/1686742,Publish Date/2002/3=260/104388/898/634812,Tag/t2=937/377544/899/2036208,Tag/t6=390/155020/894/839196,Rating/r2=1040/416380/899/2527620,Author/a4=179/72294/898/388003,Publish Date/2003=780/315428/899/1689538,Publish Date/2003/4=260/106220/899/419546,Author/a11=179/69559/899/385591,Publish Date/2000/5=261/104768/896/622332,Tag/t4=937/375141/898/2018824,Author/a1=176/70310/891/389444,Publish Date/2001/6=260/102452/897/616348,Tag/t7=390/153062/893/833651,Author/a8=178/72947/896/382934,Publish Date/2002/7=261/105518/898/413640,Author/a15=178/71595/899/383477,Publish Date/2003/8=260/103684/899/625916,Tag/t5=390/157978/895/845524,Author/a5=177/67714/887/379307,Publish Date/2000/9=260/104016/896/632384,Author/a12=177/71073/894/384559,Publish Date/2001/10=259/103071/897/424468,Author/a2=178/74351/899/399245,Publish Date/2002/11=259/102310/898/638290,Author/a9=176/70800/898/384353,Publish Date/2003/12=260/105524/899/644076,Author/a16=178/69301/892/379034,Author/a6=178/72755/897/373579,Author/a13=177/72362/898/394062,Author/a3=177/70269/890/386395,Author/a10=177/69622/895/383155,Author/a0=178/68813/883/369147,
+all	top_agg0:Author	Author/a2,Author/a8,Author/a6,Author/a7,
+all	top_agg1:Author	Author/a7,Author/a11,Author/a15,Author/a2,
+all	top_agg2:Author	Author/a2,Author/a13,Author/a1,Author/a7,
+all	by_ordinal:Author	Author/a7,Author/a14,Author/a4,Author/a11,Author/a1,Author/a8,Author/a15,Author/a5,Author/a12,Author/a2,Author/a9,Author/a16,Author/a6,Author/a13,Author/a3,Author/a10,Author/a0,
+all	top_agg0:Tag	Tag/t1,Tag/t2,Tag/t0,Tag/t4,
+all	top_agg1:Tag	Tag/t2,Tag/t1,Tag/t4,Tag/t3,
+all	top_agg2:Tag	Tag/t2,Tag/t3,Tag/t0,Tag/t4,
+all	by_ordinal:Tag	Tag/t0,Tag/t1,Tag/t3,Tag/t2,Tag/t6,Tag/t4,Tag/t7,Tag/t5,
+all	top_agg0:Publish Date	Publish Date/2003,Publish Date/2002,Publish Date/2000,Publish Date/2001,
+all	top_agg1:Publish Date	Publish Date/2003,Publish Date/2002,Publish Date/2001,Publish Date/2000,
+all	top_agg2:Publish Date	Publish Date/2003,Publish Date/2001,Publish Date/2002,Publish Date/2000,
+all	by_ordinal:Publish Date	Publish Date/2000,Publish Date/2001,Publish Date/2002,Publish Date/2003,
+all	top_agg0:Rating	Rating/r0,Rating/r2,Rating/r1,
+all	top_agg1:Rating	Rating/r1,Rating/r2,Rating/r0,
+all	top_agg2:Rating	Rating/r1,Rating/r2,Rating/r0,
+all	by_ordinal:Rating	Rating/r0,Rating/r1,Rating/r2,
+all	candidates	Author/a1=176,Tag/t3=937,Author/a1=176,
+all	no_rollup	Author=0,Publish Date=0,Rating=3120,Tag=0,2001=0
+all	long_ords	0:-13=31/991,1:1=91/993,2:-6=33/992,3:2=90/996,4:3=89/999,5:4=89/954,6:8=91/994,7:5=81/955,8:15=84/995,9:6=89/958,10:22=90/996,11:7=90/981,12:29=90/997,13:36=90/998,14:9=90/997,15:43=90/999,16:10=85/960,17:50=33/990,18:12=89/962,19:64=33/992,20:-12=31/994,21:14=87/982,22:-5=32/995,23:16=89/998,24:17=90/967,25:18=91/968,26:19=89/969,27:23=91/999,28:20=82/970,29:30=83/980,30:21=88/983,31:37=90/991,32:51=32/993,33:24=91/974,34:58=34/994,35:25=84/975,36:65=33/995,37:-11=32/997,38:27=88/977,39:-4=32/998,40:28=88/984,41:31=89/981,42:32=91/982,43:34=90/984,44:38=89/988,45:35=84/985,46:45=85/995,47:52=32/926,48:59=34/937,49:66=33/938,50:-10=31/940,51:40=82/990,52:-3=32/941,53:41=88/991,54:42=88/992,55:11=90/961,56:46=91/996,57:39=89/989,58:47=88/997,59:48=89/998,60:49=89/999,61:53=31/939,62:0=83/980,63:60=33/950,64:67=33/951,65:-9=33/953,66:-2=32/954,67:26=89/976,68:33=90/983,69:54=31/952,70:13=87/969,71:61=32/963,72:68=33/964,73:-1=32/967,74:55=31/965,75:62=32/976,76:-7=32/969,77:63=32/989,78:-20=32/980,79:44=90/994,80:57=34/991,81:-19=32/993,82:-18=33/996,83:-17=33/939,84:-16=33/952,85:-15=32/965,86:69=31/977,87:-14=32/978,88:56=32/978,89:-8=31/966,
+all	long_by_count_value	1,8,18,23,24,32,46,2,7,9,11,17,22,29,33,34,36,37,43,44,3,4,6,12,16,19,26,31,38,39,48,49,21,27,28,41,42,47,13,14,10,45,15,25,35,0,30,20,40,5,57,58,59,-18,-17,-16,-9,-6,50,60,64,65,66,67,68,-20,-19,-15,-14,-11,-7,-5,-4,-3,-2,-1,51,52,56,61,62,63,-13,-12,-10,-8,53,54,55,69,
+all	long_by_value	-20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,
+all	range_labels	neg,top,null,null,
+even	taxo_empty	false
+even	taxo_all	Publish Date=1560/624256/898/3370442,Publish Date/2000=780/312040/896/1683700,Publish Date/2000/1=259/103256/896/428984,Tag/t0=623/249990/892/1352258,Rating=1560/624256/898/3370442,Rating/r0=520/208774/898/842624,Author=1510/602650/898/3261958,Author/a7=88/37342/888/190794,Tag/t1=312/125644/892/679974,Tag/t3=313/124878/896/676662,Rating/r1=520/207078/898/1260622,Author/a14=90/36284/876/192648,Publish Date/2002=780/312216/898/1686742,Publish Date/2002/3=260/104388/898/634812,Tag/t2=625/251366/898/1355370,Tag/t6=390/155020/894/839196,Rating/r2=520/208404/898/1267196,Author/a4=89/37066/898/197422,Author/a11=90/35166/886/192518,Publish Date/2000/5=261/104768/896/622332,Tag/t4=624/250452/898/1344068,Author/a1=88/33232/874/199222,Author/a8=89/37258/896/198308,Publish Date/2002/7=261/105518/898/413640,Author/a15=89/35016/884/180676,Author/a5=89/32906/872/199474,Publish Date/2000/9=260/104016/896/632384,Author/a12=88/36840/894/183422,Author/a2=89/36554/882/202412,Publish Date/2002/11=259/102310/898/638290,Author/a9=88/35930/898/197748,Author/a16=89/36856/892/178554,Author/a6=89/34772/880/185876,Author/a13=89/35310/898/193774,Author/a3=88/34632/890/194014,Author/a10=89/32958/876/194114,Author/a0=89/34528/866/180982,
+even	top_agg0:Author	Author/a7,Author/a8,Author/a4,Author/a16,
+even	top_agg1:Author	Author/a4,Author/a13,Author/a9,Author/a8,
+even	top_agg2:Author	Author/a2,Author/a5,Author/a1,Author/a8,
+even	by_ordinal:Author	Author/a7,Author/a14,Author/a4,Author/a11,Author/a1,Author/a8,Author/a15,Author/a5,Author/a12,Author/a2,Author/a9,Author/a16,Author/a6,Author/a13,Author/a3,Author/a10,Author/a0,
+even	top_agg0:Tag	Tag/t2,Tag/t4,Tag/t0,Tag/t6,
+even	top_agg1:Tag	Tag/t2,Tag/t4,Tag/t3,Tag/t6,
+even	top_agg2:Tag	Tag/t2,Tag/t0,Tag/t4,Tag/t6,
+even	by_ordinal:Tag	Tag/t0,Tag/t1,Tag/t3,Tag/t2,Tag/t6,Tag/t4,
+even	top_agg0:Publish Date	Publish Date/2002,Publish Date/2000,
+even	top_agg1:Publish Date	Publish Date/2002,Publish Date/2000,
+even	top_agg2:Publish Date	Publish Date/2002,Publish Date/2000,
+even	by_ordinal:Publish Date	Publish Date/2000,Publish Date/2002,
+even	top_agg0:Rating	Rating/r0,Rating/r2,Rating/r1,
+even	top_agg1:Rating	Rating/r0,Rating/r1,Rating/r2,
+even	top_agg2:Rating	Rating/r2,Rating/r1,Rating/r0,
+even	by_ordinal:Rating	Rating/r0,Rating/r1,Rating/r2,
+even	candidates	Author/a1=88,Tag/t3=313,Author/a1=88,
+even	no_rollup	Author=0,Publish Date=0,Rating=1560,Tag=0,2001=0
+even	long_ords	0:-6=33/992,1:2=90/996,2:4=89/954,3:8=91/994,4:6=89/958,5:22=90/996,6:36=90/998,7:10=85/960,8:50=33/990,9:12=89/962,10:64=33/992,11:-12=31/994,12:14=87/982,13:16=89/998,14:18=91/968,15:20=82/970,16:30=83/980,17:24=91/974,18:58=34/994,19:-4=32/998,20:28=88/984,21:32=91/982,22:34=90/984,23:38=89/988,24:52=32/926,25:66=33/938,26:-10=31/940,27:40=82/990,28:42=88/992,29:46=91/996,30:48=89/998,31:0=83/980,32:60=33/950,33:-2=32/954,34:26=89/976,35:54=31/952,36:68=33/964,37:62=32/976,38:-20=32/980,39:44=90/994,40:-18=33/996,41:-16=33/952,42:-14=32/978,43:56=32/978,44:-8=31/966,
+even	long_by_count_value	8,18,24,32,46,2,22,34,36,44,4,6,12,16,26,38,48,28,42,14,10,0,30,20,40,58,-18,-16,-6,50,60,64,66,68,-20,-14,-4,-2,52,56,62,-12,-10,-8,54,
+even	long_by_value	-20,-18,-16,-14,-12,-10,-8,-6,-4,-2,0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32,34,36,38,40,42,44,46,48,50,52,54,56,58,60,62,64,66,68,
+even	range_labels	neg,top,null,null,
+rare	taxo_empty	false
+rare	taxo_all	Publish Date=33/12676/858/58330,Publish Date/2000=8/3016/748/1584,Publish Date/2000/1=2/4/36/396,Tag/t0=10/5965/845/13285,Rating=33/12676/858/58330,Rating/r0=11/4522/803/16584,Author=32/12517/858/54239,Author/a7=2/1593/803/2610,Publish Date/2001=9/3217/845/11584,Publish Date/2001/2=3/1671/625/4179,Tag/t1=9/4408/803/15147,Tag/t3=11/2001/625/17200,Rating/r1=12/4490/858/24810,Author/a14=2/1347/680/4003,Publish Date/2002=9/3518/858/21584,Publish Date/2002/3=3/438/214/7962,Tag/t2=9/3463/858/20587,Tag/t6=5/1510/790/10792,Rating/r2=10/3664/845/16936,Author/a4=2/1127/570/4223,Publish Date/2003=7/2925/803/23578,Publish Date/2003/4=3/2205/803/7698,Author/a11=2/881/447/6569,Publish Date/2000/5=3/972/392/528,Tag/t4=10/3719/858/11584,Author/a1=2/661/337/1789,Publish Date/2001/6=3/739/845/4311,Tag/t7=4/1652/845/5748,Author/a8=2/415/214/2786,Publish Date/2002/7=3/1506/570/5396,Author/a15=2/169/91/6481,Publish Date/2003/8=3/273/159/11877,Tag/t5=4/1364/735/15836,Author/a5=2/-51/0/1701,Publish Date/2000/9=3/2040/748/660,Author/a12=2/1703/858/4047,Publish Date/2001/10=3/807/337/3094,Author/a2=2/1483/748/4267,Publish Date/2002/11=3/1574/858/8226,Author/a9=2/1237/625/1613,Publish Date/2003/12=1/447/447/4003,Author/a16=2/991/502/1261,Author/a6=1/392/392/308,Author/a13=2/525/269/1525,Author/a3=1/146/146/2654,Author/a10=2/59/36/4091,Author/a0=2/-161/0/4311,
+rare	top_agg0:Author	Author/a12,Author/a7,Author/a2,Author/a14,
+rare	top_agg1:Author	Author/a12,Author/a7,Author/a2,Author/a14,
+rare	top_agg2:Author	Author/a11,Author/a15,Author/a0,Author/a2,
+rare	by_ordinal:Author	Author/a7,Author/a14,Author/a4,Author/a11,Author/a1,Author/a8,Author/a15,Author/a5,Author/a12,Author/a2,Author/a9,Author/a16,Author/a6,Author/a13,Author/a3,Author/a10,Author/a0,
+rare	top_agg0:Tag	Tag/t0,Tag/t1,Tag/t4,Tag/t2,
+rare	top_agg1:Tag	Tag/t4,Tag/t2,Tag/t0,Tag/t7,
+rare	top_agg2:Tag	Tag/t2,Tag/t3,Tag/t5,Tag/t1,
+rare	by_ordinal:Tag	Tag/t0,Tag/t1,Tag/t3,Tag/t2,Tag/t6,Tag/t4,Tag/t7,Tag/t5,
+rare	top_agg0:Publish Date	Publish Date/2002,Publish Date/2001,Publish Date/2000,Publish Date/2003,
+rare	top_agg1:Publish Date	Publish Date/2002,Publish Date/2001,Publish Date/2003,Publish Date/2000,
+rare	top_agg2:Publish Date	Publish Date/2003,Publish Date/2002,Publish Date/2001,Publish Date/2000,
+rare	by_ordinal:Publish Date	Publish Date/2000,Publish Date/2001,Publish Date/2002,Publish Date/2003,
+rare	top_agg0:Rating	Rating/r0,Rating/r1,Rating/r2,
+rare	top_agg1:Rating	Rating/r1,Rating/r2,Rating/r0,
+rare	top_agg2:Rating	Rating/r1,Rating/r2,Rating/r0,
+rare	by_ordinal:Rating	Rating/r0,Rating/r1,Rating/r2,
+rare	candidates	Author/a1=2,Tag/t3=11,Author/a1=2,
+rare	no_rollup	Author=0,Publish Date=0,Rating=33,Tag=0,2001=0
+rare	long_ords	0:29=2/679,1:47=1/97,2:-12=1/194,3:44=2/552,4:37=2/291,5:41=1/291,6:-4=1/388,7:38=1/388,8:35=2/485,9:45=1/485,10:4=2/582,11:32=1/582,12:53=1/679,13:12=1/776,14:26=2/776,15:23=1/873,16:61=1/873,17:20=1/970,18:14=1/164,19:28=2/328,20:8=1/358,21:36=1/358,22:-5=1/455,23:5=1/455,24:2=2/716,25:3=1/649,26:49=1/649,27:46=1/746,28:52=1/746,29:11=1/843,30:43=2/843,31:40=1/940,32:60=1/940,33:19=2/619,34:34=1/134,35:68=1/134,36:27=1/231,37:31=1/231,38:-14=1/328,39:25=1/425,40:16=1/716,41:13=1/813,42:51=1/813,43:10=1/910,44:7=1/7,45:59=1/7,46:18=1/104,47:1=1/201,48:67=1/201,49:48=1/298,
+rare	long_by_count_value	2,4,19,26,28,29,35,37,43,44,-14,-12,-5,-4,1,3,5,7,8,10,11,12,13,14,16,18,20,23,25,27,31,32,34,36,38,40,41,45,46,47,48,49,51,52,53,59,60,61,67,68,
+rare	long_by_value	-14,-12,-5,-4,1,2,3,4,5,7,8,10,11,12,13,14,16,18,19,20,23,25,26,27,28,29,31,32,34,35,36,37,38,40,41,43,44,45,46,47,48,49,51,52,53,59,60,61,67,68,
+rare	range_labels	neg,top,null,null,
+none	taxo_empty	true
+none	taxo_all	
+none	top_agg0:Author	
+none	top_agg1:Author	
+none	top_agg2:Author	
+none	by_ordinal:Author	
+none	top_agg0:Tag	
+none	top_agg1:Tag	
+none	top_agg2:Tag	
+none	by_ordinal:Tag	
+none	top_agg0:Publish Date	
+none	top_agg1:Publish Date	
+none	top_agg2:Publish Date	
+none	by_ordinal:Publish Date	
+none	top_agg0:Rating	
+none	top_agg1:Rating	
+none	top_agg2:Rating	
+none	by_ordinal:Rating	
+none	candidates	
+none	no_rollup	Author=-1,Publish Date=-1,Rating=-1,Tag=-1,2001=-1
+none	long_ords	
+none	long_by_count_value	
+none	long_by_value	
+none	range_labels	neg,top,null,null,

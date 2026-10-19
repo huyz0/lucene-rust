@@ -1,0 +1,88 @@
+all	#hits	3120
+all	author	Author||3020|17|a7=179/179,a4=179/179,a11=179/179,a14=178/178,a8=178/178,a15=178/178,a2=178/178,a16=178/178,a6=178/178,a0=178/178,a5=177/177,a12=177/177,a13=177/177,a3=177/177,a10=177/177,a1=176/176,a9=176/176
+all	author_top3	Author||3020|17|a7=179/179,a4=179/179,a11=179/179
+all	date	Publish Date||3120|4|2000=780/780,2001=780/780,2002=780/780,2003=780/780
+all	date_2001	Publish Date|2001|780|3|2=261/261,6=260/260,10=259/259
+all	tag	Tag||-1|8|t3=937/937,t2=937/937,t4=937/937,t1=936/936,t0=935/935,t6=390/390,t7=390/390,t5=390/390
+all	rating	Rating||3120|3|r1=1041/1041,r2=1040/1040,r0=1039/1039
+all	color	Color||3120|3|c1=1041/1041,c2=1040/1040,c0=1039/1039
+all	color_c1	Color|c1|1041|2|s1=521/521,s0=520/520
+all	price	price||-1|90|-20=32/32,-19=32/32,-18=33/33,-17=33/33,-16=33/33,-15=32/32,-14=32/32,-13=31/31,-12=31/31,-11=32/32,-10=31/31,-9=33/33,-8=31/31,-7=32/32,-6=33/33,-5=32/32,-4=32/32,-3=32/32,-2=32/32,-1=32/32,0=83/83,1=91/91,2=90/90,3=89/89,4=89/89,5=81/81,6=89/89,7=90/90,8=91/91,9=90/90,10=85/85,11=90/90,12=89/89,13=87/87,14=87/87,15=84/84,16=89/89,17=90/90,18=91/91,19=89/89,20=82/82,21=88/88,22=90/90,23=91/91,24=91/91,25=84/84,26=89/89,27=88/88,28=88/88,29=90/90,30=83/83,31=89/89,32=91/91,33=90/90,34=90/90,35=84/84,36=90/90,37=90/90,38=89/89,39=89/89,40=82/82,41=88/88,42=88/88,43=90/90,44=90/90,45=85/85,46=91/91,47=88/88,48=89/89,49=89/89,50=33/33,51=32/32,52=32/32,53=31/31,54=31/31,55=31/31,56=32/32,57=34/34,58=34/34,59=34/34,60=33/33,61=32/32,62=32/32,63=32/32,64=33/33,65=33/33,66=33/33,67=33/33,68=33/33,69=31/31
+all	price_count_top4	price||-1|90|1=91/91,8=91/91,18=91/91,23=91/91
+all	single	single||-1|1000|-100=3/3,-99=3/3,-98=2/2,-97=3/3,-96=3/3,-95=3/3
+all	skp_count	skp||-1|2774|13=1/1,26=1/1,39=1/1,52=1/1,65=1/1
+all	range_disjoint	price||-1|4|neg=641/641,low=830/830,mid=1590/1590,top=1282/1282
+all	range_overlap	price||-1|6|all=2881/2881,a=1589/1589,b=2156/2156,c=82/82,d=576/576,f=84/84
+all	range_single_disjoint	single_dim||-1|4|neg=57/57,low=36/36,mid=62/62,top=2684/2684
+all	range_single_overlap	single_dim||-1|7|all=3120/3120,a=69/69,b=92/92,c=3/3,d=32/32,e=1248/1248,f=3/3
+all	range_multi_on_single	single||-1|7|all=3120/3120,a=69/69,b=92/92
+all	range_none	price||-1|0|
+all	double_multi	weight||-1|4|neg=627/627,zero_two=856/856,one_five=1518/1518,big=1034/1034
+all	double_single	dweight||-1|4|neg=953/953,zero_two=272/272,one_five=408/408,big=1623/1623
+all	common	custom||-1|1000|-26=4/4,48=4/4,85=4/4,122=4/4
+even	#hits	1560
+even	author	Author||1510|17|a14=90/90,a11=90/90,a4=89/89,a8=89/89,a15=89/89,a5=89/89,a2=89/89,a16=89/89,a6=89/89,a13=89/89,a10=89/89,a0=89/89,a7=88/88,a1=88/88,a12=88/88,a9=88/88,a3=88/88
+even	author_top3	Author||1510|17|a14=90/90,a11=90/90,a4=89/89
+even	date	Publish Date||1560|2|2000=780/780,2002=780/780
+even	date_2001	Publish Date|2001|0|0|
+even	tag	Tag||-1|6|t2=625/625,t4=624/624,t0=623/623,t6=390/390,t3=313/313,t1=312/312
+even	rating	Rating||1560|3|r0=520/520,r1=520/520,r2=520/520
+even	color	Color||1560|3|c0=520/520,c1=520/520,c2=520/520
+even	color_c1	Color|c1|520|1|s0=520/520
+even	price	price||-1|45|-20=32/32,-18=33/33,-16=33/33,-14=32/32,-12=31/31,-10=31/31,-8=31/31,-6=33/33,-4=32/32,-2=32/32,0=83/83,2=90/90,4=89/89,6=89/89,8=91/91,10=85/85,12=89/89,14=87/87,16=89/89,18=91/91,20=82/82,22=90/90,24=91/91,26=89/89,28=88/88,30=83/83,32=91/91,34=90/90,36=90/90,38=89/89,40=82/82,42=88/88,44=90/90,46=91/91,48=89/89,50=33/33,52=32/32,54=31/31,56=32/32,58=34/34,60=33/33,62=32/32,64=33/33,66=33/33,68=33/33
+even	price_count_top4	price||-1|45|8=91/91,18=91/91,24=91/91,32=91/91
+even	single	single||-1|500|-100=3/3,-98=2/2,-96=3/3,-94=3/3,-92=3/3,-90=3/3
+even	skp_count	skp||-1|1387|26=1/1,52=1/1,78=1/1,104=1/1,130=1/1
+even	range_disjoint	price||-1|4|neg=320/320,low=416/416,mid=823/823,top=606/606
+even	range_overlap	price||-1|5|all=1441/1441,a=823/823,b=1099/1099,c=82/82,d=313/313
+even	range_single_disjoint	single_dim||-1|4|neg=28/28,low=18/18,mid=33/33,top=1342/1342
+even	range_single_overlap	single_dim||-1|6|all=1560/1560,a=36/36,b=48/48,c=3/3,d=15/15,e=625/625
+even	range_multi_on_single	single||-1|6|all=1560/1560,a=36/36,b=48/48
+even	range_none	price||-1|0|
+even	double_multi	weight||-1|4|neg=314/314,zero_two=542/542,one_five=894/894,big=568/568
+even	double_single	dweight||-1|4|neg=477/477,zero_two=136/136,one_five=204/204,big=811/811
+even	common	custom||-1|500|-26=4/4,48=4/4,122=4/4,196=4/4
+rare	#hits	33
+rare	author	Author||32|17|a7=2/2,a14=2/2,a4=2/2,a11=2/2,a1=2/2,a8=2/2,a15=2/2,a5=2/2,a12=2/2,a2=2/2,a9=2/2,a16=2/2,a13=2/2,a10=2/2,a0=2/2,a6=1/1,a3=1/1
+rare	author_top3	Author||32|17|a7=2/2,a14=2/2,a4=2/2
+rare	date	Publish Date||33|4|2001=9/9,2002=9/9,2000=8/8,2003=7/7
+rare	date_2001	Publish Date|2001|9|3|2=3/3,6=3/3,10=3/3
+rare	tag	Tag||-1|8|t3=11/11,t0=10/10,t4=10/10,t1=9/9,t2=9/9,t6=5/5,t7=4/4,t5=4/4
+rare	rating	Rating||33|3|r1=12/12,r0=11/11,r2=10/10
+rare	color	Color||33|3|c1=12/12,c0=11/11,c2=10/10
+rare	color_c1	Color|c1|12|2|s1=6/6,s0=6/6
+rare	price	price||-1|50|-14=1/1,-12=1/1,-5=1/1,-4=1/1,1=1/1,2=2/2,3=1/1,4=2/2,5=1/1,7=1/1,8=1/1,10=1/1,11=1/1,12=1/1,13=1/1,14=1/1,16=1/1,18=1/1,19=2/2,20=1/1,23=1/1,25=1/1,26=2/2,27=1/1,28=2/2,29=2/2,31=1/1,32=1/1,34=1/1,35=2/2,36=1/1,37=2/2,38=1/1,40=1/1,41=1/1,43=2/2,44=2/2,45=1/1,46=1/1,47=1/1,48=1/1,49=1/1,51=1/1,52=1/1,53=1/1,59=1/1,60=1/1,61=1/1,67=1/1,68=1/1
+rare	price_count_top4	price||-1|50|29=2/2,44=2/2,37=2/2,35=2/2
+rare	single	single||-1|33|-87=1/1,-74=1/1,-32=1/1,-19=1/1,23=1/1,36=1/1
+rare	skp_count	skp||-1|30|1261=1/1,2522=1/1,3783=1/1,44=1/1,1305=1/1
+rare	range_disjoint	price||-1|4|neg=4/4,low=9/9,mid=17/17,top=17/17
+rare	range_overlap	price||-1|5|all=31/31,a=17/17,b=24/24,c=1/1,d=8/8
+rare	range_single_disjoint	single_dim||-1|3|neg=1/1,mid=1/1,top=27/27
+rare	range_single_overlap	single_dim||-1|3|all=33/33,b=2/2,e=13/13
+rare	range_multi_on_single	single||-1|3|all=33/33,b=2/2,e=13/13
+rare	range_none	price||-1|0|
+rare	double_multi	weight||-1|4|neg=6/6,zero_two=10/10,one_five=16/16,big=10/10
+rare	double_single	dweight||-1|4|neg=10/10,zero_two=3/3,one_five=4/4,big=17/17
+rare	common	custom||-1|33|489=1/1,78=1/1,667=1/1,256=1/1
+none	#hits	0
+none	author	Author||0|0|
+none	author_top3	Author||0|0|
+none	date	Publish Date||0|0|
+none	date_2001	Publish Date|2001|0|0|
+none	tag	Tag||-1|0|
+none	rating	Rating||0|0|
+none	color	Color||0|0|
+none	color_c1	Color|c1|0|0|
+none	price	price||-1|0|
+none	price_count_top4	price||-1|0|
+none	single	single||-1|0|
+none	skp_count	skp||-1|0|
+none	range_disjoint	price||-1|0|
+none	range_overlap	price||-1|0|
+none	range_single_disjoint	single_dim||-1|0|
+none	range_single_overlap	single_dim||-1|0|
+none	range_multi_on_single	single||-1|0|
+none	range_none	price||-1|0|
+none	double_multi	weight||-1|0|
+none	double_single	dweight||-1|0|
+none	common	custom||-1|0|
