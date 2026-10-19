@@ -14,9 +14,13 @@ import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.NoMergePolicy;
 import org.apache.lucene.queryparser.xml.CoreParser;
+import org.apache.lucene.queryparser.xml.CorePlusExtensionsParser;
+import org.apache.lucene.queryparser.xml.CorePlusQueriesParser;
 import org.apache.lucene.queryparser.xml.ParserException;
 import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.BoostQuery;
 import org.apache.lucene.search.Query;
+import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.store.FSDirectory;
 
 /**
@@ -27,6 +31,14 @@ import org.apache.lucene.store.FSDirectory;
  * documents; or {@code X} and the exception's class and message. A syntax error is recorded by its
  * class alone: Xerces' wording is not reproduced. {@code
  * crates/lucene-search/tests/queryparser_xml_fixtures.rs} compares.
+ *
+ * <p>{@code xml-plus.tsv} is {@code fixtures/corpus/queryparser-xml-plus.txt} through {@code
+ * CorePlusQueriesParser} and {@code CorePlusExtensionsParser} (a row each, the parser named in the
+ * second column): after the class tree, a {@code LikeThisQuery}'s or {@code FuzzyLikeThisQuery}'s
+ * one-step {@code rewrite(searcher)} as {@code toString("body")} ({@code -} for any other query),
+ * then every hit as {@code doc:scoreBits}. Run with {@code -Dtests.seed=F1A7} (the {@code BytesRef}
+ * hash seed, hence the order of a {@code FuzzyLikeThisQuery}'s clauses) and {@code Math.log}'s
+ * intrinsic off (its idf).
  */
 public class GenQueryParserXml {
 
@@ -75,6 +87,58 @@ public class GenQueryParserXml {
       }
     }
     Files.writeString(out.resolve("xml.tsv"), b.toString(), StandardCharsets.UTF_8);
+
+    List<String> plus = AnalysisRows.corpus("queryparser-xml-plus.txt");
+    CoreParser[] parsers = {
+      new CorePlusQueriesParser("body", new StandardAnalyzer()),
+      new CorePlusExtensionsParser("body", new StandardAnalyzer())
+    };
+    String[] names = {"queries", "extensions"};
+    StringBuilder p = new StringBuilder();
+    try (FSDirectory dir = FSDirectory.open(indexDir);
+        DirectoryReader reader = DirectoryReader.open(dir)) {
+      IndexSearcher searcher = new IndexSearcher(reader);
+      for (String xml : plus) {
+        for (int i = 0; i < parsers.length; i++) {
+          p.append(AnalysisRows.esc(xml)).append('\t').append(names[i]).append('\t');
+          try {
+            Query q = parsers[i].parse(new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)));
+            // a FuzzyLikeThisQuery's toString is null
+            p.append("Q\t").append(AnalysisRows.esc(String.valueOf(q.toString("body")))).append('\t')
+                .append(AnalysisRows.esc(GenQueryParserClassic.describe(q))).append('\t');
+            try {
+              Query inner = q instanceof BoostQuery bq ? bq.getQuery() : q;
+              String rewritten = "-";
+              if (inner.getClass().getSimpleName().endsWith("LikeThisQuery")) {
+                rewritten = q.rewrite(searcher).toString("body");
+              }
+              String hits = scoredHits(searcher, q);
+              p.append(AnalysisRows.esc(rewritten)).append('\t').append(hits);
+            } catch (RuntimeException e) {
+              p.append("X\t").append(AnalysisRows.esc(exception(e)));
+            }
+          } catch (ParserException e) {
+            p.append("X\t").append(AnalysisRows.esc(parserException(e)));
+          } catch (RuntimeException e) {
+            p.append("X\t").append(AnalysisRows.esc(exception(e)));
+          }
+          p.append('\n');
+        }
+      }
+    }
+    Files.writeString(out.resolve("xml-plus.tsv"), p.toString(), StandardCharsets.UTF_8);
+  }
+
+  /** Every hit of {@code q} in document order, as {@code doc:scoreBits}, or {@code -}. */
+  static String scoredHits(IndexSearcher searcher, Query q) throws java.io.IOException {
+    ScoreDoc[] docs = searcher.search(q, 100).scoreDocs;
+    java.util.Arrays.sort(docs, (a, c) -> Integer.compare(a.doc, c.doc));
+    StringBuilder b = new StringBuilder();
+    for (ScoreDoc d : docs) {
+      if (b.length() > 0) b.append(',');
+      b.append(d.doc).append(':').append(Integer.toHexString(Float.floatToIntBits(d.score)));
+    }
+    return b.length() == 0 ? "-" : b.toString();
   }
 
   /** The class and message of a runtime exception: {@code class: message}. */

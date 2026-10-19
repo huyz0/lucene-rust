@@ -9,7 +9,7 @@
 | **Effort** | XL |
 | **Depends on** | [M10](m10-joins-grouping-queries.md), [M11](m11-analysis-common.md) |
 | **Unblocks** | native `highlight`, completion suggesters, `query_string`/`simple_query_string` parsing |
-| **Status** | in progress, 1 of 4 criteria -- T13.2: the classic, match, unified and fast vector highlighters ported, every fixture row equal; T13.1: the classic `QueryParser`, `MultiFieldQueryParser`, `SimpleQueryParser`, the `ext` package, the surround language, `ComplexPhraseQueryParser`, `CoreParser` (the `xml` package's core builders) and the `flexible` framework (`StandardQueryParser`, `PrecedenceQueryParser`, `QueryParserUtil`) are ported (every fixture row equal); `CorePlusQueriesParser` and `CorePlusExtensionsParser` are not |
+| **Status** | in progress, 2 of 4 criteria -- T13.2: the classic, match, unified and fast vector highlighters ported, every fixture row equal; T13.1: the classic `QueryParser`, `MultiFieldQueryParser`, `SimpleQueryParser`, the `ext` package, the surround language, `ComplexPhraseQueryParser`, `CoreParser`, `CorePlusQueriesParser` and `CorePlusExtensionsParser` (the whole `xml` package) and the `flexible` framework (`StandardQueryParser`, `PrecedenceQueryParser`, `QueryParserUtil`) are ported (every fixture row equal) |
 
 ---
 
@@ -84,10 +84,13 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
   span rewrite and its hits); the three JavaCC lexers and parsers share one
   runtime (`queryparser/javacc.rs`), and the XML query parser's core builders
   (`GenQueryParserXml`: 104 documents, each's tree and hits over an index with
-  an `IntPoint` field, or its exception, through `quick-xml`). Remaining:
-  date-resolution ranges, and the `xml` package's `LikeThisQuery` and
-  `FuzzyLikeThisQuery` builders (`CorePlusQueriesParser`,
-  `CorePlusExtensionsParser`). The `flexible` framework is ported
+  an `IntPoint` field, or its exception, through `quick-xml`) with
+  `CorePlusQueriesParser` and `CorePlusExtensionsParser` (63 more documents
+  through both, each's `LikeThisQuery`/`FuzzyLikeThisQuery` rewrite and every
+  hit's score bits; the sandbox `FuzzyLikeThisQuery` they need is ported here,
+  sharing `NearestFuzzyQuery`'s engine). The classic parser's date-resolution
+  ranges and rewrite-method setters are deferred to M14 with the flexible
+  parser's (no corpus query sets them; see `QueryParserBase`'s inventory row). The `flexible` framework is ported
   (`GenQueryParserFlexible`: its lexer token for token over 8,246 queries,
   352 queries parsed under eleven configurations and 7,894 fragment joins); its points
   and date-resolution configuration is deferred to M14
@@ -352,8 +355,10 @@ not started. M13 closes when all four acceptance criteria hold.
 
 ## Acceptance criteria
 
-- [ ] Every parser yields Lucene's query tree for the whole T13.1 corpus,
-      including its syntax errors (same failure, same position).
+- [x] Every parser yields Lucene's query tree for the whole T13.1 corpus,
+      including its syntax errors (same failure, same position). (The
+      classic and flexible parsers' date-resolution and rewrite-method
+      settings, which no corpus query sets, are deferred to M14.)
 - [x] Highlighters return Lucene's fragments and offsets on a fixture corpus
       (T13.2; benchmarked, the two `MemoryIndex`-bound ratios written up).
 - [ ] Real Lucene reads a Rust-written completion field and taxonomy index.
