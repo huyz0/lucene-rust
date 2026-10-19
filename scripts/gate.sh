@@ -45,6 +45,10 @@ echo "gate: check-java-refs (comments cite Java that exists in the *pinned* tree
 python3 scripts/check-java-refs.py
 
 echo "gate: check-licences (every shipped dependency is under an allowed licence)"
+# `cargo metadata --offline` needs every crate in the lock file, including
+# target-specific ones no build here downloads (wasm-bindgen, windows-sys):
+# on a fresh cargo registry volume, fetch them once instead of failing.
+cargo metadata --format-version 1 --offline >/dev/null 2>&1 || cargo fetch --locked
 python3 scripts/check-licences.py
 
 echo "gate: check-vendored-licences (every embedded third-party file's licence ships in LICENSE)"
