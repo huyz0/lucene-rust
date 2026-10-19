@@ -1,0 +1,4 @@
+group	BloomFilter_0	Lucene104	1
+field	BloomFilter_0	1	FuzzySet(k=4, bits=653/2048)
+group	BloomFilter_1	Lucene104	1
+field	BloomFilter_1	0	FuzzySet(k=4, bits=4166/8192)
