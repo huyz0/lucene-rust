@@ -53,7 +53,10 @@ fi
 
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   echo "docker-test: building $IMAGE (first run only)" >&2
-  docker build -t "$IMAGE" -f "$REPO/docker/Dockerfile" "$REPO/docker"
+  # Relative paths from the repo: under Git Bash with MSYS_NO_PATHCONV=1 (how
+  # agents run this) an absolute /e/... path reaches docker.exe unconverted
+  # and the build fails with "path not found".
+  (cd "$REPO" && docker build -t "$IMAGE" -f docker/Dockerfile docker)
 fi
 
 # Named volumes for the cargo registry and target dir: without them every run
