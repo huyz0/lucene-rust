@@ -135,7 +135,9 @@ pub enum Matcher {
 }
 
 /// `MultiMatchingQueries`: each document's matches, and the work done.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Equality leaves out the two timings, which no two runs share.
+#[derive(Debug, Clone)]
 pub struct MultiMatchingQueries {
     /// Per document, the matches by query id.
     pub matches: Vec<BTreeMap<String, QueryMatch>>,
@@ -144,6 +146,22 @@ pub struct MultiMatchingQueries {
     /// The queries the presearcher selected.
     pub queries_run: usize,
     pub batch_size: usize,
+    /// `getQueryBuildTime()`: nanoseconds spent building the presearcher's
+    /// query from the batch's terms (0 for a partition's own run, as
+    /// `PartitionMatcher`'s workers `finish(0, 0)`).
+    pub query_build_time: u64,
+    /// `getSearchTime()`: milliseconds from the matcher's creation to the
+    /// end of the run.
+    pub search_time: u64,
+}
+
+impl PartialEq for MultiMatchingQueries {
+    fn eq(&self, other: &Self) -> bool {
+        self.matches == other.matches
+            && self.errors == other.errors
+            && self.queries_run == other.queries_run
+            && self.batch_size == other.batch_size
+    }
 }
 
 impl MultiMatchingQueries {
@@ -164,6 +182,8 @@ impl MultiMatchingQueries {
             matches,
             queries_run: self.queries_run,
             errors: self.errors,
+            query_build_time: self.query_build_time,
+            search_time: self.search_time,
         }
     }
 }
@@ -201,7 +221,9 @@ impl PresearcherMatches {
 }
 
 /// `MatchingQueries`: one document's matches and the work done to find them.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Equality leaves out the two timings, which no two runs share.
+#[derive(Debug, Clone)]
 pub struct MatchingQueries {
     /// Sorted by query id.
     pub matches: Vec<QueryMatch>,
@@ -209,6 +231,35 @@ pub struct MatchingQueries {
     pub queries_run: usize,
     /// Queries that failed to run, by id, with the message.
     pub errors: BTreeMap<String, String>,
+    /// `getQueryBuildTime()`: nanoseconds (see [`MultiMatchingQueries`]).
+    pub query_build_time: u64,
+    /// `getSearchTime()`: milliseconds (see [`MultiMatchingQueries`]).
+    pub search_time: u64,
+}
+
+impl PartialEq for MatchingQueries {
+    fn eq(&self, other: &Self) -> bool {
+        self.matches == other.matches
+            && self.queries_run == other.queries_run
+            && self.errors == other.errors
+    }
+}
+
+/// `System.nanoTime() - since` as a Java `long` would hold it.
+fn nanos_since(since: std::time::Instant) -> u64 {
+    u64::try_from(since.elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
+
+/// `CandidateMatcher.finish(buildTime, queryCount)`: the build time, and the
+/// search time in milliseconds since the matcher was made.
+fn finish(
+    mut run: MultiMatchingQueries,
+    build_nanos: u64,
+    matcher_made: std::time::Instant,
+) -> MultiMatchingQueries {
+    run.query_build_time = build_nanos;
+    run.search_time = nanos_since(matcher_made) / 1_000_000;
+    run
 }
 
 impl MatchingQueries {
@@ -355,9 +406,13 @@ impl Monitor {
             _ => None,
         };
         let batch = DocumentBatch::of(&self.analyzer, docs, similarity)?;
+        let made = std::time::Instant::now();
+        let built = std::time::Instant::now();
         let terms = batch_terms(batch.terms(), &self.filter_fields);
+        let build = nanos_since(built);
         let candidates = self.index.select(&terms, &AcceptAll);
-        self.run_candidates(&batch, matcher, &candidates, Some(listener))
+        let run = self.run_candidates(&batch, matcher, &candidates, Some(listener))?;
+        Ok(finish(run, build, made))
     }
 
     /// `debug(docs, matcher)`: the match, and for every query the presearcher
@@ -372,7 +427,10 @@ impl Monitor {
             _ => None,
         };
         let batch = DocumentBatch::of(&self.analyzer, docs, similarity)?;
+        let made = std::time::Instant::now();
+        let built = std::time::Instant::now();
         let terms = batch_terms(batch.terms(), &self.filter_fields);
+        let build = nanos_since(built);
         let selected = self.index.select_debug(&terms, &AcceptAll);
         let mut matching_terms: BTreeMap<String, String> = BTreeMap::new();
         for (entry, why) in &selected {
@@ -383,7 +441,11 @@ impl Monitor {
         }
         let candidates: Vec<&crate::monitor::index::QueryCacheEntry> =
             selected.iter().map(|(e, _)| *e).collect();
-        let matcher = self.run_candidates(&batch, matcher, &candidates, None)?;
+        let matcher = finish(
+            self.run_candidates(&batch, matcher, &candidates, None)?,
+            build,
+            made,
+        );
         Ok(PresearcherMatches {
             matching_terms,
             matcher,
@@ -403,9 +465,13 @@ impl Monitor {
             _ => None,
         };
         let batch = DocumentBatch::of(&self.analyzer, docs, similarity)?;
+        let made = std::time::Instant::now();
+        let built = std::time::Instant::now();
         let terms = batch_terms(batch.terms(), &self.filter_fields);
+        let build = nanos_since(built);
         let candidates = self.index.select(&terms, &AcceptAll);
-        self.run_candidates(&batch, matcher, &candidates, None)
+        let run = self.run_candidates(&batch, matcher, &candidates, None)?;
+        Ok(finish(run, build, made))
     }
 
     /// Runs each candidate's query against the batch, under `matcher`.
@@ -489,6 +555,8 @@ impl Monitor {
             errors,
             queries_run: candidates.len(),
             batch_size: max_doc,
+            query_build_time: 0,
+            search_time: 0,
         })
     }
 }
@@ -526,6 +594,7 @@ impl Monitor {
         threads: usize,
     ) -> Result<MultiMatchingQueries> {
         let threads = threads.max(1);
+        let made = std::time::Instant::now();
         let whole = self.match_docs(docs, matcher)?;
         // The partitions run over the selected entries; the result is the
         // single-pass result, so the workers are the run's own parts. Each
@@ -578,6 +647,8 @@ impl Monitor {
             errors,
             queries_run: whole.queries_run,
             batch_size: docs.len(),
+            query_build_time: whole.query_build_time,
+            search_time: nanos_since(made) / 1_000_000,
         })
     }
 
@@ -961,5 +1032,32 @@ mod cache_and_timing_tests {
         assert_eq!(timed.len(), 2);
         assert!(timed.contains(&"a") && timed.contains(&"b"));
         assert!(log.to_string().contains("a ["));
+    }
+
+    #[test]
+    fn a_run_reports_its_times_and_equality_ignores_them() {
+        let mut m = Monitor::new(Arc::new(Analyzer::new(StandardAnalyzer::new())));
+        m.register(vec![mq("a", "fox")]).unwrap();
+        let docs: [DocFields<'_>; 1] = [&[("f", "fox")]];
+        let mut first = m.match_docs(&docs, &Matcher::Simple).unwrap();
+        // the build is measured on a monotonic clock; a run of a few
+        // microseconds may read 0 milliseconds of search
+        assert!(first.search_time < 60_000);
+        let partitioned = m
+            .match_docs_partitioned(&docs, &Matcher::Simple, 2)
+            .unwrap();
+        first.query_build_time = first.query_build_time.wrapping_add(1);
+        first.search_time = first.search_time.wrapping_add(1);
+        assert_eq!(first, partitioned);
+        let mut one = m.match_doc(&[("f", "fox")]).unwrap();
+        let other = one.clone();
+        one.query_build_time = one.query_build_time.wrapping_add(1);
+        one.search_time = one.search_time.wrapping_add(1);
+        assert_eq!(one, other);
+        one.queries_run += 1;
+        assert_ne!(one, other);
+        let debug = m.debug_docs(&docs, &Matcher::Simple).unwrap();
+        assert_eq!(debug.matcher, partitioned);
+        assert_eq!(nanos_since(std::time::Instant::now()) / 1_000_000_000, 0);
     }
 }

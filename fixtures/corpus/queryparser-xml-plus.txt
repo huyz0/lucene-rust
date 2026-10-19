@@ -1,0 +1,63 @@
+<LikeThisQuery fieldNames="body">quick brown fox</LikeThisQuery>
+<LikeThisQuery fieldNames="body" minDocFreq="1">quick brown fox jumps</LikeThisQuery>
+<LikeThisQuery fieldNames="body,title" minDocFreq="1" percentTermsToMatch="50">quick fox story dog</LikeThisQuery>
+<LikeThisQuery minDocFreq="1">quick fox</LikeThisQuery>
+<LikeThisQuery fieldNames=" body , title " minDocFreq="1" stopWords="the quick">the quick brown dog</LikeThisQuery>
+<LikeThisQuery fieldNames=",">fox</LikeThisQuery>
+<LikeThisQuery fieldNames=" , , ">fox</LikeThisQuery>
+<LikeThisQuery fieldNames=",body" minDocFreq="1">fox dog</LikeThisQuery>
+<LikeThisQuery fieldNames="body,," minDocFreq="1">fox dog</LikeThisQuery>
+<LikeThisQuery fieldNames="body" maxQueryTerms="2" minDocFreq="1">quick brown fox lazy dog sphinx</LikeThisQuery>
+<LikeThisQuery fieldNames="body" maxQueryTerms="-1">fox</LikeThisQuery>
+<LikeThisQuery fieldNames="body" minTermFrequency="2" minDocFreq="1">quick quick fox</LikeThisQuery>
+<LikeThisQuery fieldNames="body" minTermFrequency="0" minDocFreq="0">quick fox</LikeThisQuery>
+<LikeThisQuery fieldNames="body" boost="2" minDocFreq="1">lazy dog</LikeThisQuery>
+<LikeThisQuery fieldNames="body" boost="1">lazy dog</LikeThisQuery>
+<LikeThisQuery fieldNames="body" maxQueryTerms="x">dog</LikeThisQuery>
+<LikeThisQuery fieldNames="body" percentTermsToMatch="y">dog</LikeThisQuery>
+<LikeThisQuery fieldNames="body" percentTermsToMatch="100" minDocFreq="1">quick brown dog</LikeThisQuery>
+<LikeThisQuery fieldNames="body" percentTermsToMatch="-50" minDocFreq="1">quick brown dog</LikeThisQuery>
+<LikeThisQuery fieldNames="body" percentTermsToMatch="Infinity" minDocFreq="1">quick brown dog</LikeThisQuery>
+<LikeThisQuery fieldNames="body" boost="-1">dog</LikeThisQuery>
+<LikeThisQuery fieldNames="body"/>
+<LikeThisQuery fieldNames="body" minDocFreq="1">qu<b>ick</b> fox<![CDATA[ dog]]></LikeThisQuery>
+<LikeThisQuery fieldNames="title" minDocFreq="1" stopWords="story">fox story</LikeThisQuery>
+<BooleanQuery><Clause occurs="must"><LikeThisQuery fieldNames="body" minDocFreq="1">fox</LikeThisQuery></Clause><Clause occurs="should"><TermQuery fieldName="body">dog</TermQuery></Clause></BooleanQuery>
+<FuzzyLikeThisQuery><Field fieldName="body">quikc borwn</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery fieldName="body"><Field>quick fxo</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery><Field>quick</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery maxNumTerms="3"><Field fieldName="body" minSimilarity="1">dog fox box</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery ignoreTF="true"><Field fieldName="body">lazzy dgo</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery ignoreTF="TRUE" boost="2"><Field fieldName="body">quartz</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery><Field fieldName="body" minSimilarity="1.5">dog</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery><Field fieldName="body" minSimilarity="3">dog</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery><Field fieldName="body" minSimilarity="-1">dog</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery><Field fieldName="body" minSimilarity="NaN">dog</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery><Field fieldName="body" minSimilarity="0">dog fox</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery><Field fieldName="body" prefixLength="0">jumq</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery><Field fieldName="body" prefixLength="-1">jump</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery><Field fieldName="body" prefixLength="9">jump</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery><Field fieldName="body" prefixLength="z">jump</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery maxNumTerms="0"><Field fieldName="body">dog</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery maxNumTerms="-2"><Field fieldName="body">dog</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery maxNumTerms="z"><Field fieldName="body">dog</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery boost="3"><Field fieldName="body">quartz</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery boost="-3"><Field fieldName="body">quartz</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery><Field fieldName="body">dog</Field><Field fieldName="title">storry</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery><Group fieldName="title"><Field>stroy fox</Field></Group></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery fieldName="body"><Field fieldName="title">sotry<Field>dgo</Field></Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery><Field fieldName="body">dog dog dgo</Field><Field fieldName="body">dog</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery/>
+<FuzzyLikeThisQuery><Field fieldName="nosuch">dog</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery><Field fieldName="n">1</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery><Field fieldName="body">the quick brown fox jumps over lazy dogs</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery maxNumTerms="5"><Field fieldName="body">the quick brown fox jumps over lazy dogs</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery><Field fieldName="body">a</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery><Field fieldName="body" minSimilarity="2" prefixLength="0">ox</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery><Field fieldName="body" minSimilarity="2" prefixLength="0">jugs box vow</Field><Field fieldName="title" minSimilarity="2" prefixLength="0">jugs fox</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery><Field fieldName="body">quick</Field><Field fieldName="body" minSimilarity="7">x</Field></FuzzyLikeThisQuery>
+<FuzzyLikeThisQuery><Field fieldName="body">naïve cafè dög</Field></FuzzyLikeThisQuery>
+<ConstantScoreQuery><FuzzyLikeThisQuery><Field fieldName="body">dgo</Field></FuzzyLikeThisQuery></ConstantScoreQuery>
+<BooleanQuery><Clause occurs="should"><FuzzyLikeThisQuery><Field fieldName="body">sphnix</Field></FuzzyLikeThisQuery></Clause><Clause occurs="should"><LikeThisQuery fieldNames="body" minDocFreq="1">quartz</LikeThisQuery></Clause></BooleanQuery>
+<TermQuery fieldName="body">fox</TermQuery>
+<Unknown/>

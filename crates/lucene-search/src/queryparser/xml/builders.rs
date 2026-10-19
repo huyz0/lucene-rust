@@ -169,6 +169,75 @@ pub(crate) struct Builders {
     /// `new UserInputQueryBuilder(parser)`: the one parser every `UserQuery`
     /// uses. `None` makes a parser per query, on the query's field.
     pub(crate) parser: Option<QueryParser>,
+    /// The builders beyond the core set the parser registers.
+    pub(crate) level: Level,
+    /// `StringHelper.GOOD_FAST_HASH_SEED`, for a `FuzzyLikeThisQuery`'s
+    /// rewrite (see [`crate::fuzzy_like_this`]).
+    pub(crate) hash_seed: i32,
+}
+
+/// Which parser the builders are: `CoreParser`, `CorePlusQueriesParser`
+/// (adds `LikeThisQuery`) or `CorePlusExtensionsParser` (adds
+/// `FuzzyLikeThisQuery` too).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Level {
+    Core,
+    PlusQueries,
+    PlusExtensions,
+}
+
+/// `LikeThisQueryBuilder`'s `DEFAULT_MAX_QUERY_TERMS`.
+const DEFAULT_MAX_QUERY_TERMS: i32 = 20;
+/// `DEFAULT_MIN_TERM_FREQUENCY`.
+const DEFAULT_MIN_TERM_FREQUENCY: i32 = 1;
+/// `DEFAULT_PERCENT_TERMS_TO_MATCH`: a third of the terms must match.
+const DEFAULT_PERCENT_TERMS_TO_MATCH: f32 = 30.0;
+/// `CorePlusQueriesParser`'s default fields for `LikeThisQuery`.
+const LIKE_THIS_DEFAULT_FIELDS: &[&str] = &["contents"];
+/// `FuzzyLikeThisQueryBuilder`'s `DEFAULT_MAX_NUM_TERMS`.
+const DEFAULT_MAX_NUM_TERMS: i32 = 50;
+/// `DEFAULT_MIN_SIMILARITY`: `FuzzyQuery.defaultMaxEdits`.
+const DEFAULT_MIN_SIMILARITY: f32 = 2.0;
+/// `DEFAULT_PREFIX_LENGTH`.
+const DEFAULT_PREFIX_LENGTH: i32 = 1;
+
+/// Java's `String.trim`: what is `<= ' '` off both ends.
+pub(crate) fn java_trim(s: &str) -> &str {
+    s.trim_matches(|c: char| c <= ' ')
+}
+
+/// Java's `String.split(",")`: the parts, trailing empty ones dropped (so a
+/// string of commas alone has none).
+pub(crate) fn java_split_comma(s: &str) -> Vec<&str> {
+    let mut parts: Vec<&str> = s.split(',').collect();
+    while parts.last().is_some_and(|p| p.is_empty()) {
+        parts.pop();
+    }
+    parts
+}
+
+/// `Element.getElementsByTagName(name)`: the descendants of `e` named
+/// `name` in document order, each with the elements from `anc`'s root down
+/// to its parent (for `getAttributeWithInheritance`).
+fn descendants_named<'x>(
+    e: &'x Element,
+    anc: &Ancestors<'x>,
+    name: &str,
+    out: &mut Vec<(&'x Element, Ancestors<'x>)>,
+) {
+    let mut next = anc.clone();
+    next.push(e);
+    for c in e.elements() {
+        if c.name == name {
+            out.push((c, next.clone()));
+        }
+        descendants_named(c, &next, name, out);
+    }
+}
+
+/// A query's `IllegalArgumentException`, as the builder lets it through.
+fn illegal_argument(e: crate::Error) -> QueryParserError {
+    QueryParserError::illegal_argument(error_text(e))
 }
 
 impl Builders {
@@ -188,6 +257,10 @@ impl Builders {
             "DisjunctionMaxQuery" => self.disjunction_max_query(e, anc),
             "UserQuery" => self.user_query(e),
             "ConstantScoreQuery" => self.constant_score_query(e, anc),
+            "LikeThisQuery" if self.level >= Level::PlusQueries => self.like_this_query(e),
+            "FuzzyLikeThisQuery" if self.level >= Level::PlusExtensions => {
+                self.fuzzy_like_this_query(e, anc)
+            }
             name if is_span(name) => {
                 // `SpanBuilderBase.getQuery` reads the boost first
                 let boost = float_attr(e, "boost", 1.0)?;
@@ -455,6 +528,82 @@ impl Builders {
             ParsedQuery::ConstantScore(Box::new(inner)),
             float_attr(e, "boost", 1.0)?,
         )
+    }
+
+    /// `LikeThisQueryBuilder.getQuery`.
+    fn like_this_query(&self, e: &Element) -> Result<ParsedQuery, QueryParserError> {
+        let fields_list = java_trim(e.attribute("fieldNames"));
+        let fields: Vec<String> = if fields_list.is_empty() {
+            LIKE_THIS_DEFAULT_FIELDS
+                .iter()
+                .map(|f| (*f).to_string())
+                .collect()
+        } else {
+            java_split_comma(fields_list)
+                .into_iter()
+                .map(|f| java_trim(f).to_string())
+                .collect()
+        };
+        // `getAttribute` is never `null`: an absent list analyses to no
+        // words, still a set
+        let stop_words_text = e.attribute("stopWords");
+        let mut stop_words = std::collections::HashSet::new();
+        for field in &fields {
+            for t in analyzed_terms(&self.analyzer, field, stop_words_text)? {
+                stop_words.insert(String::from_utf8_lossy(&t).into_owned());
+            }
+        }
+        // `fields[0]` of a list of commas alone
+        let Some(first) = fields.first().cloned() else {
+            return Err(QueryParserError::runtime_class(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                "Index 0 out of bounds for length 0",
+            ));
+        };
+        let mut mlt =
+            crate::mlt::MoreLikeThisQuery::new(e.text(), fields, Arc::clone(&self.analyzer), first);
+        mlt.max_query_terms = int_attr(e, "maxQueryTerms", DEFAULT_MAX_QUERY_TERMS)?;
+        mlt.min_term_frequency = int_attr(e, "minTermFrequency", DEFAULT_MIN_TERM_FREQUENCY)?;
+        mlt.percent_terms_to_match =
+            float_attr(e, "percentTermsToMatch", DEFAULT_PERCENT_TERMS_TO_MATCH)? / 100.0;
+        mlt.stop_words = Some(stop_words);
+        let min_doc_freq = int_attr(e, "minDocFreq", -1)?;
+        if min_doc_freq >= 0 {
+            mlt.min_doc_freq = min_doc_freq;
+        }
+        let q = ParsedQuery::Other(crate::query::Clause::from(mlt));
+        boosted_unless_one(q, float_attr(e, "boost", 1.0)?)
+    }
+
+    /// `FuzzyLikeThisQueryBuilder.getQuery`.
+    fn fuzzy_like_this_query<'x>(
+        &self,
+        e: &'x Element,
+        anc: &Ancestors<'x>,
+    ) -> Result<ParsedQuery, QueryParserError> {
+        let mut fields = Vec::new();
+        descendants_named(e, anc, "Field", &mut fields);
+        let max_num_terms = int_attr(e, "maxNumTerms", DEFAULT_MAX_NUM_TERMS)?;
+        let mut flt = crate::fuzzy_like_this::FuzzyLikeThisQuery::new(
+            max_num_terms,
+            Arc::clone(&self.analyzer),
+        );
+        flt.hash_seed = self.hash_seed;
+        flt.ignore_tf = bool_attr(e, "ignoreTF", false);
+        for (field, field_anc) in &fields {
+            let min_similarity = float_attr(field, "minSimilarity", DEFAULT_MIN_SIMILARITY)?;
+            let prefix_length = int_attr(field, "prefixLength", DEFAULT_PREFIX_LENGTH)?;
+            let field_name = inherited(field, field_anc, "fieldName");
+            flt.add_terms(
+                &field.text(),
+                field_name.as_deref(),
+                min_similarity,
+                prefix_length,
+            )
+            .map_err(illegal_argument)?;
+        }
+        let q = ParsedQuery::Other(crate::query::Clause::from(flt));
+        boosted_unless_one(q, float_attr(e, "boost", 1.0)?)
     }
 
     fn span_near<'x>(

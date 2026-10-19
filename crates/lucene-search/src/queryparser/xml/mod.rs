@@ -4,9 +4,15 @@
 //! [`CoreParser`] is the core set (`TermQuery`, `TermsQuery`,
 //! `MatchAllDocsQuery`, `BooleanQuery`, `RangeQuery`, `PointRangeQuery`,
 //! `DisjunctionMaxQuery`, `UserQuery`, `ConstantScoreQuery`, and the span
-//! queries). Java's `CorePlusQueriesParser` (`LikeThisQuery`) and
-//! `CorePlusExtensionsParser` (`FuzzyLikeThisQuery`) are not ported, and a
-//! caller cannot register its own builders as Java's `addQueryBuilder` does.
+//! queries). [`CorePlusQueriesParser`] adds `LikeThisQuery` (a
+//! [`crate::mlt::MoreLikeThisQuery`]) and [`CorePlusExtensionsParser`]
+//! `FuzzyLikeThisQuery` too (a [`crate::fuzzy_like_this::FuzzyLikeThisQuery`]).
+//! A caller cannot register its own builders as Java's `addQueryBuilder`
+//! does.
+//!
+//! **Differs:** a `FuzzyLikeThisQuery`'s clause order follows the JVM's
+//! `BytesRef` hash seed, which Rust has no clock-seeded copy of:
+//! [`CorePlusExtensionsParser::with_hash_seed`] sets it (default `0`).
 //!
 //! **Differs:** a document type declaration is refused (Java accepts an
 //! internal subset and refuses external entities); the XML reader is
@@ -25,7 +31,7 @@ use lucene_analysis::Analyzer;
 
 use crate::queryparser::classic::{QueryParser, QueryParserError};
 use crate::queryparser::ParsedQuery;
-use builders::{parser_error, Ancestors, Builders};
+use builders::{parser_error, Ancestors, Builders, Level};
 
 /// `org.apache.lucene.queryparser.xml.ParserException`, the class of every
 /// error the parser reports as Java would.
@@ -45,6 +51,8 @@ impl CoreParser {
                 default_field: default_field.map(str::to_string),
                 analyzer: analyzer.into(),
                 parser: None,
+                level: Level::Core,
+                hash_seed: 0,
             },
         }
     }
@@ -57,6 +65,8 @@ impl CoreParser {
                 default_field: None,
                 analyzer: analyzer.into(),
                 parser: Some(parser),
+                level: Level::Core,
+                hash_seed: 0,
             },
         }
     }
@@ -74,6 +84,74 @@ impl CoreParser {
         self.builders
             .query(&root, &ancestors)
             .map_err(java_exception)
+    }
+}
+
+/// `CorePlusQueriesParser`: the core builders and `LikeThisQuery`, whose
+/// fields default to `contents`.
+pub struct CorePlusQueriesParser {
+    core: CoreParser,
+}
+
+impl CorePlusQueriesParser {
+    /// `new CorePlusQueriesParser(defaultField, analyzer)`.
+    pub fn new(default_field: Option<&str>, analyzer: impl Into<Arc<Analyzer>>) -> Self {
+        let mut core = CoreParser::new(default_field, analyzer);
+        core.builders.level = Level::PlusQueries;
+        CorePlusQueriesParser { core }
+    }
+
+    /// `new CorePlusQueriesParser(analyzer, parser)`.
+    pub fn with_parser(analyzer: impl Into<Arc<Analyzer>>, parser: QueryParser) -> Self {
+        let mut core = CoreParser::with_parser(analyzer, parser);
+        core.builders.level = Level::PlusQueries;
+        CorePlusQueriesParser { core }
+    }
+
+    /// `parse(xmlStream)`, as [`CoreParser::parse`].
+    ///
+    /// # Errors
+    /// As [`CoreParser::parse`].
+    pub fn parse(&self, xml: &str) -> Result<ParsedQuery, QueryParserError> {
+        self.core.parse(xml)
+    }
+}
+
+/// `CorePlusExtensionsParser`: [`CorePlusQueriesParser`]'s builders and
+/// `FuzzyLikeThisQuery`.
+pub struct CorePlusExtensionsParser {
+    core: CoreParser,
+}
+
+impl CorePlusExtensionsParser {
+    /// `new CorePlusExtensionsParser(defaultField, analyzer)`.
+    pub fn new(default_field: Option<&str>, analyzer: impl Into<Arc<Analyzer>>) -> Self {
+        let mut core = CoreParser::new(default_field, analyzer);
+        core.builders.level = Level::PlusExtensions;
+        CorePlusExtensionsParser { core }
+    }
+
+    /// `new CorePlusExtensionsParser(analyzer, parser)`.
+    pub fn with_parser(analyzer: impl Into<Arc<Analyzer>>, parser: QueryParser) -> Self {
+        let mut core = CoreParser::with_parser(analyzer, parser);
+        core.builders.level = Level::PlusExtensions;
+        CorePlusExtensionsParser { core }
+    }
+
+    /// This parser with `FuzzyLikeThisQuery`s rewritten under the JVM hash
+    /// seed `seed` (`StringHelper.GOOD_FAST_HASH_SEED`; see the module's
+    /// `Differs`).
+    pub fn with_hash_seed(mut self, seed: i32) -> Self {
+        self.core.builders.hash_seed = seed;
+        self
+    }
+
+    /// `parse(xmlStream)`, as [`CoreParser::parse`].
+    ///
+    /// # Errors
+    /// As [`CoreParser::parse`].
+    pub fn parse(&self, xml: &str) -> Result<ParsedQuery, QueryParserError> {
+        self.core.parse(xml)
     }
 }
 

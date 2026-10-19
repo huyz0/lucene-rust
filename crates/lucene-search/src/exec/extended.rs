@@ -251,6 +251,12 @@ pub(crate) fn build<'a>(
              (rescorer::rewrite_rescore_clauses) before it is searched"
                 .into(),
         )),
+        // And `FuzzyLikeThisQuery`: its rewrite finds the tokens' variants.
+        ExtendedQuery::FuzzyLikeThis(_) => Err(crate::Error::IllegalState(
+            "FuzzyLikeThisQuery must be rewritten against the searcher \
+             (rescorer::rewrite_rescore_clauses) before it is searched"
+                .into(),
+        )),
         // `RescoreTopNQuery` has no weight of its own: `rewrite(searcher)`
         // turns it into a `DocAndScoreQuery` first.
         ExtendedQuery::RescoreTopN(_) => Err(crate::Error::IllegalState(
@@ -2761,6 +2767,13 @@ mod tests {
         for (q, name) in [
             (ExtendedQuery::CommonTerms(ct), "CommonTermsQuery"),
             (ExtendedQuery::MoreLikeThis(mlt), "MoreLikeThisQuery"),
+            (
+                ExtendedQuery::FuzzyLikeThis(crate::fuzzy_like_this::FuzzyLikeThisQuery::new(
+                    50,
+                    std::sync::Arc::new(lucene_analysis::Analyzer::standard(None)),
+                )),
+                "FuzzyLikeThisQuery",
+            ),
         ] {
             let built = build(&ctx, &q, 1.0, Mode::Complete, true);
             assert!(

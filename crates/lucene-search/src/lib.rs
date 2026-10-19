@@ -217,6 +217,7 @@ pub mod extended_query;
 pub mod facets;
 pub mod field_norms;
 pub mod function;
+pub mod fuzzy_like_this;
 pub mod grouping;
 pub mod highlight;
 pub mod highlighter;

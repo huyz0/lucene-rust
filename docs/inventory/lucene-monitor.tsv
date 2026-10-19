@@ -10,13 +10,13 @@ monitor/ExplainingMatch	ported	crates/lucene-search/src/monitor/facade.rs::Query
 monitor/ForceNoBulkScoringQuery	ported	crates/lucene-search/src/monitor/index.rs::select_debug -- the wrapper only forces doc-by-doc scoring; the presearcher query is evaluated directly, so it has no counterpart
 monitor/HighlightsMatch	ported	crates/lucene-search/src/monitor/facade.rs::QueryMatch -- Matcher::Highlights, with Hit ordered by position alone as Java's compareTo has it
 monitor/MatcherFactory	ported	crates/lucene-search/src/monitor/facade.rs::Matcher -- the enum of the four matchers
-monitor/MatchingQueries	partial	crates/lucene-search/src/monitor/facade.rs::MatchingQueries -- M13: build/search timings; MultiMatchingQueries (a batch of documents) is match_batch's MatchResult
+monitor/MatchingQueries	ported	crates/lucene-search/src/monitor/facade.rs::MatchingQueries -- one document's matches, errors, queries run, build and search times
 monitor/Monitor	ported	crates/lucene-search/src/monitor/facade.rs::Monitor
 monitor/MonitorConfiguration	ported	crates/lucene-search/src/monitor/config.rs::MonitorConfiguration -- an index path for the directory provider
 monitor/MonitorQuery	ported	crates/lucene-search/src/monitor/index.rs::MonitorQuery -- Defines a query to be stored in a Monitor
 monitor/MonitorQuerySerializer	ported	crates/lucene-search/src/monitor/serializer.rs::MonitorQuerySerializer -- fromParser's bytes, equal to Lucene's both ways
 monitor/MonitorUpdateListener	ported	crates/lucene-search/src/monitor/config.rs::MonitorUpdateListener
-monitor/MultiMatchingQueries	ported	crates/lucene-search/src/monitor/facade.rs::MultiMatchingQueries -- per-document matches, errors, queries run (no timings)
+monitor/MultiMatchingQueries	ported	crates/lucene-search/src/monitor/facade.rs::MultiMatchingQueries -- per-document matches, errors, queries run, build and search times
 monitor/MultipassTermFilteredPresearcher	ported	crates/lucene-search/src/monitor/presearcher.rs::TermFilteredPresearcher::multipass -- the multipass indexing (field_<pass> names, advancePhase between passes) and batch query (one MUST group per pass)
 monitor/ParallelMatcher	ported	crates/lucene-search/src/monitor/facade.rs::Monitor::match_docs_partitioned -- threads over the selected queries, merged in order; the executor is std threads, not a caller-supplied ExecutorService
 monitor/PartitionMatcher	ported	crates/lucene-search/src/monitor/facade.rs::partition, Monitor::match_docs_partitioned -- the exact Java split of the queries

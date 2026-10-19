@@ -604,7 +604,9 @@ pub struct MoreLikeThisQuery {
     pub field_name: String,
     pub percent_terms_to_match: f32,
     pub min_term_frequency: i32,
-    pub max_query_terms: usize,
+    /// `maxQueryTerms`, a Java `int`: a negative one fails the rewrite as
+    /// `PriorityQueue`'s constructor does.
+    pub max_query_terms: i32,
     pub stop_words: Option<std::collections::HashSet<String>>,
     pub min_doc_freq: i32,
 }
@@ -673,10 +675,24 @@ impl MoreLikeThisQuery {
         if self.min_doc_freq >= 0 {
             mlt.min_doc_freq = self.min_doc_freq;
         }
-        mlt.max_query_terms = self.max_query_terms;
+        // `new FreqQ(min(maxQueryTerms, termCount))`: a negative size is
+        // refused once the text is analysed, whatever it holds
+        mlt.max_query_terms = usize::try_from(self.max_query_terms).unwrap_or(0);
         mlt.stop_words = self.stop_words.clone();
         let mut bq = mlt.like_texts(&self.field_name, &[&self.like_text])?;
-        bq.minimum_should_match = (bq.should.len() as f32 * self.percent_terms_to_match) as usize;
+        if self.max_query_terms < 0 {
+            return Err(Error::IllegalArgument(format!(
+                "maxSize must be >= 0 and < {}; got: {}",
+                i32::MAX - 16,
+                self.max_query_terms
+            )));
+        }
+        // `(int) (clauses * percentTermsToMatch)`, saturating; a negative
+        // minimum fails here, where Java's `BooleanScorerSupplier` refuses it
+        let msm = (bq.should.len() as f32 * self.percent_terms_to_match) as i32;
+        bq.minimum_should_match = usize::try_from(msm).map_err(|_| {
+            Error::IllegalArgument(format!("minShouldMatch must be positive, but got: {msm}"))
+        })?;
         Ok(Clause::Boolean(Box::new(bq)))
     }
 }

@@ -559,6 +559,8 @@ fn clause_string(q: &Clause, field: &str) -> String {
                 format!("{}:{}", t.field, text(&t.term))
             }
         }
+        // `ConstantScoreQuery.toString(field)`
+        Clause::ConstantScore(c) => format!("ConstantScore({})", clause_string(&c.inner, field)),
         Clause::Boost(b) => format!(
             "({})^{}",
             clause_string(&b.inner, field),
@@ -679,6 +681,10 @@ fn clause_string(q: &Clause, field: &str) -> String {
                     .collect();
                 format!("Synonym({})", terms.join(" "))
             }
+            // `MoreLikeThisQuery.toString(field)`
+            crate::extended_query::ExtendedQuery::MoreLikeThis(q) => q.to_string(),
+            // `FuzzyLikeThisQuery.toString(field)` is `null`
+            crate::extended_query::ExtendedQuery::FuzzyLikeThis(q) => q.to_string(),
             other => format!("{other:?}"),
         },
         other => format!("{other:?}"),

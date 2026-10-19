@@ -91,7 +91,10 @@ set -euo pipefail
 # lucene-queryparser is required by GenQueryParser* (org.apache.lucene.queryparser).
 # lucene-misc is required by GenMisc (HighFreqTerms).
 # lucene-replicator is required by GenReplicator (org.apache.lucene.replicator.nrt).
-LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-facet lucene-highlighter lucene-suggest lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join lucene-grouping lucene-classification lucene-misc lucene-replicator)
+# lucene-sandbox is required by GenQueryParserXml (CorePlusExtensionsParser's
+# FuzzyLikeThisQuery); the test image does not bake it, so it is found in
+# fixtures/.jars, the Gradle cache or Maven Central like any other.
+LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-facet lucene-highlighter lucene-suggest lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join lucene-grouping lucene-classification lucene-misc lucene-replicator lucene-sandbox)
 
 cd "$(git rev-parse --show-toplevel)"
 FIXTURES="$PWD/fixtures"
@@ -253,6 +256,9 @@ generator_jvm_opts() {
     # SweetSpotSimilarity's hyperbolic tf is Math.pow, ClassicSimilarity's idf Math.log.
     GenMiscSweetSpot) echo "-XX:+UnlockDiagnosticVMOptions -XX:DisableIntrinsic=_dexp,_dlog,_dlog10,_dpow" ;;
     GenClassification) echo "-Dtests.seed=C1A55 -XX:+UnlockDiagnosticVMOptions -XX:DisableIntrinsic=_dexp,_dlog,_dlog10,_dpow" ;;
+    # FuzzyLikeThisQuery groups its clauses in a HashMap<Term, _> (seeded
+    # BytesRef.hashCode) and weighs them with ClassicSimilarity's Math.log idf.
+    GenQueryParserXml) echo "-Dtests.seed=F1A7 -XX:+UnlockDiagnosticVMOptions -XX:DisableIntrinsic=_dlog" ;;
   esac
 }
 

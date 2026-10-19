@@ -203,3 +203,48 @@ fn xml_1_0_characters_and_attribute_rules_are_enforced() {
     let root = dom::parse("<a>1\r\n2\u{85}3</a>").unwrap();
     assert_eq!(root.text(), "1\n2\u{85}3");
 }
+
+/// The plus parsers' builders, through a `UserQuery` parser of their own and
+/// by name only on the parser that registers them.
+#[test]
+fn the_plus_builders_belong_to_their_parsers() {
+    let like = "<LikeThisQuery fieldNames=\"body\">fox</LikeThisQuery>";
+    let fuzzy = "<FuzzyLikeThisQuery><Field fieldName=\"body\">fox</Field></FuzzyLikeThisQuery>";
+    assert_eq!(
+        message(like),
+        "No QueryObjectBuilder defined for node LikeThisQuery"
+    );
+    let user = "<UserQuery>fox</UserQuery>";
+    let qp = || QueryParser::new("title", analyzer());
+    let queries = CorePlusQueriesParser::with_parser(analyzer(), qp());
+    assert_eq!(
+        queries.parse(like).unwrap().class_name(),
+        "MoreLikeThisQuery"
+    );
+    assert_eq!(
+        queries.parse(fuzzy).unwrap_err().message,
+        "No QueryObjectBuilder defined for node FuzzyLikeThisQuery"
+    );
+    assert_eq!(queries.parse(user).unwrap().to_string("title"), "(fox)^1.0");
+    let extensions = CorePlusExtensionsParser::with_parser(analyzer(), qp()).with_hash_seed(3);
+    assert_eq!(
+        extensions.parse(fuzzy).unwrap().class_name(),
+        "FuzzyLikeThisQuery"
+    );
+    assert_eq!(
+        extensions.parse(like).unwrap().to_string("body"),
+        "like:fox"
+    );
+    assert_eq!(
+        extensions.parse(user).unwrap().to_string("title"),
+        "(fox)^1.0"
+    );
+}
+
+#[test]
+fn a_like_this_field_list_splits_as_java_splits() {
+    assert_eq!(builders::java_split_comma("a,,b,,"), vec!["a", "", "b"]);
+    assert_eq!(builders::java_split_comma(","), Vec::<&str>::new());
+    assert_eq!(builders::java_split_comma(",a"), vec!["", "a"]);
+    assert_eq!(builders::java_trim("\t a \n"), "a");
+}

@@ -68,6 +68,9 @@ pub enum ExtendedQuery {
     /// `lucene-queries`' `MoreLikeThisQuery` ([`crate::mlt`]), rewritten by
     /// the searcher before it is searched.
     MoreLikeThis(crate::mlt::MoreLikeThisQuery),
+    /// `lucene-sandbox`'s `FuzzyLikeThisQuery` ([`crate::fuzzy_like_this`]),
+    /// rewritten by the searcher before it is searched.
+    FuzzyLikeThis(crate::fuzzy_like_this::FuzzyLikeThisQuery),
     /// `lucene-queries`' span and payload queries ([`crate::spans`]).
     Span(crate::spans::SpanNode),
 }
@@ -166,6 +169,7 @@ impl ExtendedQuery {
             ExtendedQuery::Interval(_) => "IntervalQuery",
             ExtendedQuery::CommonTerms(_) => "CommonTermsQuery",
             ExtendedQuery::MoreLikeThis(_) => "MoreLikeThisQuery",
+            ExtendedQuery::FuzzyLikeThis(_) => "FuzzyLikeThisQuery",
             ExtendedQuery::Span(_) => "SpanQuery",
             ExtendedQuery::FunctionScore(_) => "FunctionScoreQuery",
         }

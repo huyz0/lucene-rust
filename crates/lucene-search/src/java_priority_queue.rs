@@ -13,9 +13,12 @@ pub(crate) struct JavaPriorityQueue<T, F: Fn(&T, &T) -> bool> {
 }
 
 impl<T, F: Fn(&T, &T) -> bool> JavaPriorityQueue<T, F> {
+    /// `new PriorityQueue(maxSize)`. The heap grows as elements arrive
+    /// rather than being allocated at `max_size` up front: a size read off
+    /// a request (`FuzzyLikeThisQuery`'s `maxNumTerms`) must not allocate
+    /// what it never fills.
     pub(crate) fn new(max_size: usize, less_than: F) -> Self {
-        let mut heap = Vec::with_capacity(max_size + 1);
-        heap.resize_with(max_size + 1, || None);
+        let heap = vec![None];
         Self {
             heap,
             size: 0,
@@ -38,7 +41,11 @@ impl<T, F: Fn(&T, &T) -> bool> JavaPriorityQueue<T, F> {
     /// `add(element)`; the queue must have room.
     fn add(&mut self, element: T) {
         self.size += 1;
-        self.heap[self.size] = Some(element);
+        if self.size == self.heap.len() {
+            self.heap.push(Some(element));
+        } else {
+            self.heap[self.size] = Some(element);
+        }
         self.up_heap(self.size);
     }
 

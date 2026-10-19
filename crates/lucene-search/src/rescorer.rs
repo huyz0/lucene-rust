@@ -659,7 +659,8 @@ impl PartialEq for RescoreTopNQuery {
 /// `rewrite(searcher)` returns, a
 /// [`crate::common_terms::CommonTermsQuery`] its boolean of rare and
 /// frequent terms, a [`crate::mlt::MoreLikeThisQuery`] its text's
-/// interesting terms, a span query holding a multi-term wrapper its terms'
+/// interesting terms, a [`crate::fuzzy_like_this::FuzzyLikeThisQuery`] its
+/// tokens' fuzzy variants, a span query holding a multi-term wrapper its terms'
 /// span disjunction. `None` when there are none.
 ///
 /// # Errors
@@ -689,6 +690,12 @@ pub fn rewrite_rescore_clauses(
                 // the reader's term statistics.
                 ExtendedQuery::CommonTerms(q) => Some(q.rewrite(ctx.searcher()?)?),
                 ExtendedQuery::MoreLikeThis(q) => Some(q.rewrite(ctx.searcher()?)?),
+                // `IndexSearcher.rewrite` rewrites the boolean it returns in
+                // turn: duplicate variants (one token in two field values)
+                // merge, their boosts summed
+                ExtendedQuery::FuzzyLikeThis(q) => {
+                    Some(Clause::Boolean(Box::new(q.rewrite(ctx.searcher()?)?)).rewrite())
+                }
                 // `SpanMultiTermQueryWrapper.rewrite`: a span disjunction of
                 // the terms the reader holds.
                 ExtendedQuery::Span(q) if q.needs_rewrite() => {
@@ -756,6 +763,7 @@ pub(crate) fn has_rescore_clauses(query: &BooleanQuery) -> bool {
                     ExtendedQuery::RescoreTopN(_)
                         | ExtendedQuery::CommonTerms(_)
                         | ExtendedQuery::MoreLikeThis(_)
+                        | ExtendedQuery::FuzzyLikeThis(_)
                 ) || matches!(e.as_ref(), ExtendedQuery::Span(q) if q.needs_rewrite())
                     || e.children().into_iter().any(clause)
             }

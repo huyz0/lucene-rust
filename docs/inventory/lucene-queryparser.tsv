@@ -6,7 +6,7 @@ queryparser/charstream/FastCharStream	ported	crates/lucene-search/src/queryparse
 queryparser/classic/MultiFieldQueryParser	ported	crates/lucene-search/src/queryparser/classic/mod.rs::multi_field
 queryparser/classic/ParseException	ported	crates/lucene-search/src/queryparser/javacc.rs::Runtime
 queryparser/classic/QueryParser	ported	crates/lucene-search/src/queryparser/classic/mod.rs::QueryParser
-queryparser/classic/QueryParserBase	partial	crates/lucene-search/src/queryparser/classic/parser.rs::add_clause -- M13: date-resolution ranges (setDateResolution/setLocale/setTimeZone); the MultiTermQuery rewrite method and determinizeWorkLimit setters
+queryparser/classic/QueryParserBase	partial	crates/lucene-search/src/queryparser/classic/parser.rs::add_clause -- M14: date-resolution ranges (setDateResolution/setLocale/setTimeZone), with the flexible parser's: a lenient GregorianCalendar in a time zone, which no crate models yet (date_recognizer.rs recognises dates, it does not compute them); the MultiTermQuery rewrite method and determinizeWorkLimit setters, with MultiTermRewriteMethodProcessor's (ParsedQuery carries no rewrite method). No T13.1 corpus query sets either: unset, Java ignores its failed date parse as this parser does
 queryparser/classic/QueryParserConstants	ported	crates/lucene-search/src/queryparser/classic/constants.rs::TOKEN_IMAGE
 queryparser/classic/QueryParserTokenManager	ported	crates/lucene-search/src/queryparser/classic/token_manager.rs::TokenManager
 queryparser/classic/Token	ported	crates/lucene-search/src/queryparser/javacc.rs::Token
@@ -194,8 +194,8 @@ queryparser/surround/query/SrndTermQuery	ported	crates/lucene-search/src/querypa
 queryparser/surround/query/SrndTruncQuery	ported	crates/lucene-search/src/queryparser/surround/query.rs::SrndQuery
 queryparser/surround/query/TooManyBasicQueries	ported	crates/lucene-search/src/queryparser/surround/query.rs::too_many_basic_queries
 queryparser/xml/CoreParser	ported	crates/lucene-search/src/queryparser/xml/mod.rs::CoreParser
-queryparser/xml/CorePlusExtensionsParser	todo:M13	CorePlusExtensionsParser: FuzzyLikeThisQuery over the core set; not ported
-queryparser/xml/CorePlusQueriesParser	todo:M13	CorePlusQueriesParser: LikeThisQuery over the core set; not ported
+queryparser/xml/CorePlusExtensionsParser	ported	crates/lucene-search/src/queryparser/xml/mod.rs::CorePlusExtensionsParser
+queryparser/xml/CorePlusQueriesParser	ported	crates/lucene-search/src/queryparser/xml/mod.rs::CorePlusQueriesParser
 queryparser/xml/DOMUtils	ported	crates/lucene-search/src/queryparser/xml/builders.rs::inherited
 queryparser/xml/ParserException	ported	crates/lucene-search/src/queryparser/xml/mod.rs::PARSER_EXCEPTION
 queryparser/xml/QueryBuilder	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::query
@@ -204,8 +204,8 @@ queryparser/xml/builders/BooleanQueryBuilder	ported	crates/lucene-search/src/que
 queryparser/xml/builders/BoostingTermBuilder	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::boosting_term
 queryparser/xml/builders/ConstantScoreQueryBuilder	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::constant_score_query
 queryparser/xml/builders/DisjunctionMaxQueryBuilder	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::disjunction_max_query
-queryparser/xml/builders/FuzzyLikeThisQueryBuilder	todo:M13	FuzzyLikeThisQuery builder (CorePlusExtensionsParser); the query is not ported
-queryparser/xml/builders/LikeThisQueryBuilder	todo:M13	LikeThisQuery builder (CorePlusQueriesParser); not ported
+queryparser/xml/builders/FuzzyLikeThisQueryBuilder	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::fuzzy_like_this_query
+queryparser/xml/builders/LikeThisQueryBuilder	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::like_this_query
 queryparser/xml/builders/MatchAllDocsQueryBuilder	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::query
 queryparser/xml/builders/PointRangeQueryBuilder	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::point_range_query
 queryparser/xml/builders/RangeQueryBuilder	ported	crates/lucene-search/src/queryparser/xml/builders.rs::Builders::range_query
