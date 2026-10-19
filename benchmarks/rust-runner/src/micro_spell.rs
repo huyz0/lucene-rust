@@ -27,13 +27,17 @@ use super::measure;
 pub(super) fn words() -> Vec<String> {
     let mut state: u64 = 42;
     let mut next = |bound: u64| {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (state >> 33) % bound
     };
     (0..5000)
         .map(|_| {
             let len = 4 + next(7);
-            (0..len).map(|_| char::from(b'a' + next(26) as u8)).collect()
+            (0..len)
+                .map(|_| char::from(b'a' + next(26) as u8))
+                .collect()
         })
         .collect()
 }
@@ -88,7 +92,9 @@ pub fn bench_spell(w: Duration, m: Duration) {
     let text: String = words.iter().map(|w| format!("{w}\n")).collect();
     let spell_dir = ByteBuffersDirectory::new();
     let mut spell = SpellChecker::new(&spell_dir).unwrap();
-    spell.index_dictionary(&PlainTextDictionary::from_text(&text), true).unwrap();
+    spell
+        .index_dictionary(&PlainTextDictionary::from_text(&text), true)
+        .unwrap();
     measure("spell_suggest", w, m, || {
         for q in &queries {
             black_box(spell.suggest_similar(q, 5).unwrap().len());
@@ -98,19 +104,29 @@ pub fn bench_spell(w: Duration, m: Duration) {
     measure("spell_index", w, m, || {
         let d = ByteBuffersDirectory::new();
         let mut s = SpellChecker::new(&d).unwrap();
-        s.index_dictionary(&PlainTextDictionary::from_text(&text), true).unwrap();
+        s.index_dictionary(&PlainTextDictionary::from_text(&text), true)
+            .unwrap();
         black_box(s.exist(&words[0]).unwrap());
         words.len() as u64
     });
 
     let pairs: Vec<Term> = (0..500)
-        .map(|i| Term::new("body", format!("{}{}", words[i * 7], words[i * 7 + 3]).as_bytes()))
+        .map(|i| {
+            Term::new(
+                "body",
+                format!("{}{}", words[i * 7], words[i * 7 + 3]).as_bytes(),
+            )
+        })
         .collect();
     let mut wb = WordBreakSpellChecker::new();
     wb.set_max_changes(2);
     measure("word_break", w, m, || {
         for t in &pairs {
-            black_box(wb.suggest_word_breaks(t, 5, &reader, None, None).unwrap().len());
+            black_box(
+                wb.suggest_word_breaks(t, 5, &reader, None, None)
+                    .unwrap()
+                    .len(),
+            );
         }
         pairs.len() as u64
     });

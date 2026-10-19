@@ -65,7 +65,12 @@ pub fn bench_replicator(w: Duration, m: Duration) {
     node.set_verbose_files(false);
     measure("repl_file_meta", w, m, || {
         for name in &names {
-            black_box(node.read_local_file_metadata(name).unwrap().unwrap().checksum);
+            black_box(
+                node.read_local_file_metadata(name)
+                    .unwrap()
+                    .unwrap()
+                    .checksum,
+            );
         }
         names.len() as u64
     });

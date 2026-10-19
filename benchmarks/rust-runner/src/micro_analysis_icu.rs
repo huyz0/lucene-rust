@@ -111,7 +111,12 @@ pub(super) fn bench_analysis_icu(w: Duration, m: Duration) {
         let t = Transliterator::get_instance(id, 0).unwrap();
         run(
             name,
-            &chain(move || comps(ICUTransformFilter::new(WhitespaceTokenizer::new(), t.clone()))),
+            &chain(move || {
+                comps(ICUTransformFilter::new(
+                    WhitespaceTokenizer::new(),
+                    t.clone(),
+                ))
+            }),
             &docs,
             w,
             m,

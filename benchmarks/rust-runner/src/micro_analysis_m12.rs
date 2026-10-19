@@ -5,16 +5,24 @@
 use std::hint::black_box;
 use std::time::Duration;
 
-use lucene_analysis::pattern::{PatternCaptureGroupTokenFilter, PatternReplaceFilter, PatternTokenizer};
-use lucene_analysis::util::{JavaPattern, SegmentingBase, SegmentingTokenizer, Segmenter, WhitespaceTokenizer};
-use lucene_analysis::{AnalysisError, Analyzer, AnalyzerDefinition, TokenStream, TokenStreamComponents};
-use lucene_analysis_phonetic::bm::{NameType, PhoneticEngine, RuleType};
-use lucene_analysis_phonetic::encoder::{Encoder, LANGUAGE_PACKAGE};
+use lucene_analysis::pattern::{
+    PatternCaptureGroupTokenFilter, PatternReplaceFilter, PatternTokenizer,
+};
+use lucene_analysis::util::{
+    JavaPattern, Segmenter, SegmentingBase, SegmentingTokenizer, WhitespaceTokenizer,
+};
+use lucene_analysis::{
+    AnalysisError, Analyzer, AnalyzerDefinition, TokenStream, TokenStreamComponents,
+};
 use lucene_analysis_kuromoji::{JapaneseAnalyzer, JapaneseTokenizer, Mode};
-use lucene_analysis_nori::{DecompoundMode, KoreanAnalyzer, KoreanTokenizer};
 use lucene_analysis_morfologik::analyzer::polish_dictionary;
 use lucene_analysis_morfologik::{MorfologikFilter, UkrainianMorfologikAnalyzer};
-use lucene_analysis_phonetic::{BeiderMorseFilter, DaitchMokotoffSoundexFilter, DoubleMetaphoneFilter, PhoneticFilter};
+use lucene_analysis_nori::{DecompoundMode, KoreanAnalyzer, KoreanTokenizer};
+use lucene_analysis_phonetic::bm::{NameType, PhoneticEngine, RuleType};
+use lucene_analysis_phonetic::encoder::{Encoder, LANGUAGE_PACKAGE};
+use lucene_analysis_phonetic::{
+    BeiderMorseFilter, DaitchMokotoffSoundexFilter, DoubleMetaphoneFilter, PhoneticFilter,
+};
 use lucene_analysis_smartcn::tokenizer::hmm_chinese_tokenizer;
 use lucene_analysis_smartcn::SmartChineseAnalyzer;
 use lucene_analysis_stempel::stemmer::default_table;
@@ -53,9 +61,9 @@ fn run(name: &str, a: &Analyzer, docs: &[String], w: Duration, m: Duration) {
 
 /// `AnalysisM12Micro.SYLLABLES`.
 const SYLLABLES: [&str; 50] = [
-    "an", "ber", "schm", "idt", "ko", "wal", "ski", "mc", "don", "ald", "ph", "ough", "tz", "sch", "ch", "cz", "rz",
-    "ei", "ie", "ou", "th", "gh", "w", "y", "ss", "ll", "tt", "n", "m", "r", "l", "k", "s", "t", "d", "b", "g", "p",
-    "f", "v", "z", "x", "q", "j", "h", "a", "e", "i", "o", "u",
+    "an", "ber", "schm", "idt", "ko", "wal", "ski", "mc", "don", "ald", "ph", "ough", "tz", "sch",
+    "ch", "cz", "rz", "ei", "ie", "ou", "th", "gh", "w", "y", "ss", "ll", "tt", "n", "m", "r", "l",
+    "k", "s", "t", "d", "b", "g", "p", "f", "v", "z", "x", "q", "j", "h", "a", "e", "i", "o", "u",
 ];
 
 /// `AnalysisM12Micro.names`.
@@ -87,30 +95,77 @@ fn encoder(simple: &str) -> Encoder {
 }
 
 fn phonetic(simple: &'static str, inject: bool) -> Analyzer {
-    chain(move || comps(PhoneticFilter::new(WhitespaceTokenizer::new(), encoder(simple), inject)))
+    chain(move || {
+        comps(PhoneticFilter::new(
+            WhitespaceTokenizer::new(),
+            encoder(simple),
+            inject,
+        ))
+    })
 }
 
 pub(super) fn bench_analysis_m12(w: Duration, m: Duration) {
     let names = names(0x9E37_79B9_7F4A_7C15, 100);
     let few = names_few();
     run("ph_soundex", &phonetic("Soundex", true), &names, w, m);
-    run("ph_refined_soundex", &phonetic("RefinedSoundex", false), &names, w, m);
+    run(
+        "ph_refined_soundex",
+        &phonetic("RefinedSoundex", false),
+        &names,
+        w,
+        m,
+    );
     run("ph_metaphone", &phonetic("Metaphone", true), &names, w, m);
-    run("ph_double_metaphone", &phonetic("DoubleMetaphone", true), &names, w, m);
-    run("ph_caverphone2", &phonetic("Caverphone2", false), &names, w, m);
-    run("ph_cologne", &phonetic("ColognePhonetic", true), &names, w, m);
+    run(
+        "ph_double_metaphone",
+        &phonetic("DoubleMetaphone", true),
+        &names,
+        w,
+        m,
+    );
+    run(
+        "ph_caverphone2",
+        &phonetic("Caverphone2", false),
+        &names,
+        w,
+        m,
+    );
+    run(
+        "ph_cologne",
+        &phonetic("ColognePhonetic", true),
+        &names,
+        w,
+        m,
+    );
     run("ph_nysiis", &phonetic("Nysiis", true), &names, w, m);
-    run("ph_mra", &phonetic("MatchRatingApproachEncoder", true), &names, w, m);
+    run(
+        "ph_mra",
+        &phonetic("MatchRatingApproachEncoder", true),
+        &names,
+        w,
+        m,
+    );
     run(
         "double_metaphone_filter",
-        &chain(|| comps(DoubleMetaphoneFilter::new(WhitespaceTokenizer::new(), 4, true)?)),
+        &chain(|| {
+            comps(DoubleMetaphoneFilter::new(
+                WhitespaceTokenizer::new(),
+                4,
+                true,
+            )?)
+        }),
         &names,
         w,
         m,
     );
     run(
         "daitch_mokotoff",
-        &chain(|| comps(DaitchMokotoffSoundexFilter::new(WhitespaceTokenizer::new(), true))),
+        &chain(|| {
+            comps(DaitchMokotoffSoundexFilter::new(
+                WhitespaceTokenizer::new(),
+                true,
+            ))
+        }),
         &names,
         w,
         m,
@@ -119,7 +174,12 @@ pub(super) fn bench_analysis_m12(w: Duration, m: Duration) {
     let exact = PhoneticEngine::new(NameType::Ashkenazi, RuleType::Exact, true).unwrap();
     run(
         "beider_morse_gen_approx",
-        &chain(move || comps(BeiderMorseFilter::new(WhitespaceTokenizer::new(), approx.clone()))),
+        &chain(move || {
+            comps(BeiderMorseFilter::new(
+                WhitespaceTokenizer::new(),
+                approx.clone(),
+            ))
+        }),
         &few,
         w,
         m,
@@ -138,12 +198,23 @@ pub(super) fn bench_analysis_m12(w: Duration, m: Duration) {
         w,
         m,
     );
-    run("polish_analyzer", &Analyzer::new(PolishAnalyzer::default()), &polish, w, m);
+    run(
+        "polish_analyzer",
+        &Analyzer::new(PolishAnalyzer::default()),
+        &polish,
+        w,
+        m,
+    );
     let morf = fixture_docs("fixtures/data/analysis_morfologik/lookups_polish.tsv");
     let dict = polish_dictionary();
     run(
         "morfologik_filter",
-        &chain(move || comps(MorfologikFilter::new(WhitespaceTokenizer::new(), std::sync::Arc::clone(&dict)))),
+        &chain(move || {
+            comps(MorfologikFilter::new(
+                WhitespaceTokenizer::new(),
+                std::sync::Arc::clone(&dict),
+            ))
+        }),
         &morf,
         w,
         m,
@@ -163,21 +234,73 @@ pub(super) fn bench_analysis_m12(w: Duration, m: Duration) {
             comps(t)
         })
     };
-    run("kuromoji_normal", &kuromoji(Mode::Normal, true, 0), &ja, w, m);
-    run("kuromoji_search", &kuromoji(Mode::Search, false, 0), &ja, w, m);
-    run("kuromoji_extended", &kuromoji(Mode::Extended, true, 0), &ja, w, m);
-    run("kuromoji_nbest", &kuromoji(Mode::Normal, true, 2000), &ja, w, m);
-    run("japanese_analyzer", &Analyzer::new(JapaneseAnalyzer::default()), &ja, w, m);
-    let ko = line_docs(&["fixtures/corpus/analysis-korean.txt", "fixtures/data/analysis_nori/stress.txt"]);
-    run("nori_discard", &chain(|| comps(KoreanTokenizer::default())), &ko, w, m);
     run(
-        "nori_mixed",
-        &chain(|| comps(KoreanTokenizer::new(None, DecompoundMode::Mixed, true, false))),
+        "kuromoji_normal",
+        &kuromoji(Mode::Normal, true, 0),
+        &ja,
+        w,
+        m,
+    );
+    run(
+        "kuromoji_search",
+        &kuromoji(Mode::Search, false, 0),
+        &ja,
+        w,
+        m,
+    );
+    run(
+        "kuromoji_extended",
+        &kuromoji(Mode::Extended, true, 0),
+        &ja,
+        w,
+        m,
+    );
+    run(
+        "kuromoji_nbest",
+        &kuromoji(Mode::Normal, true, 2000),
+        &ja,
+        w,
+        m,
+    );
+    run(
+        "japanese_analyzer",
+        &Analyzer::new(JapaneseAnalyzer::default()),
+        &ja,
+        w,
+        m,
+    );
+    let ko = line_docs(&[
+        "fixtures/corpus/analysis-korean.txt",
+        "fixtures/data/analysis_nori/stress.txt",
+    ]);
+    run(
+        "nori_discard",
+        &chain(|| comps(KoreanTokenizer::default())),
         &ko,
         w,
         m,
     );
-    run("korean_analyzer", &Analyzer::new(KoreanAnalyzer::default()), &ko, w, m);
+    run(
+        "nori_mixed",
+        &chain(|| {
+            comps(KoreanTokenizer::new(
+                None,
+                DecompoundMode::Mixed,
+                true,
+                false,
+            ))
+        }),
+        &ko,
+        w,
+        m,
+    );
+    run(
+        "korean_analyzer",
+        &Analyzer::new(KoreanAnalyzer::default()),
+        &ko,
+        w,
+        m,
+    );
     let zh = line_docs(&["fixtures/corpus/analysis-chinese.txt"]);
     // texts.txt holds escapes (`\n`); both sides read the escaped lines.
     let sentences = line_docs(&["fixtures/data/analysis_segmenting/texts.txt"]);
@@ -188,27 +311,56 @@ pub(super) fn bench_analysis_m12(w: Duration, m: Duration) {
         w,
         m,
     );
-    run("smartcn_tokenizer", &chain(|| comps(hmm_chinese_tokenizer())), &zh, w, m);
-    run("smartcn_analyzer", &Analyzer::new(SmartChineseAnalyzer::default()), &zh, w, m);
+    run(
+        "smartcn_tokenizer",
+        &chain(|| comps(hmm_chinese_tokenizer())),
+        &zh,
+        w,
+        m,
+    );
+    run(
+        "smartcn_analyzer",
+        &Analyzer::new(SmartChineseAnalyzer::default()),
+        &zh,
+        w,
+        m,
+    );
     // java.util.regex constructs the regex-crate shim refuses (the backtracking matcher's).
     let around = JavaPattern::compile("(?<=[aeiou])([bcdfgklmnprstvz])(?=[aeiou])").unwrap();
     assert!(around.is_backtracking());
     run(
         "regex_lookaround_replace",
-        &chain(move || comps(PatternReplaceFilter::new(WhitespaceTokenizer::new(), around.clone(), Some("$1$1"), true))),
+        &chain(move || {
+            comps(PatternReplaceFilter::new(
+                WhitespaceTokenizer::new(),
+                around.clone(),
+                Some("$1$1"),
+                true,
+            ))
+        }),
         &names,
         w,
         m,
     );
     let backref = JavaPattern::compile(r"(\w)\1+|\s+").unwrap();
     assert!(backref.is_backtracking());
-    run("regex_backref_split", &chain(move || comps(PatternTokenizer::new(&backref, -1)?)), &names, w, m);
+    run(
+        "regex_backref_split",
+        &chain(move || comps(PatternTokenizer::new(&backref, -1)?)),
+        &names,
+        w,
+        m,
+    );
     let bound = JavaPattern::compile(r"\b(\w{2})(\w*?)(?:ski|ald|idt)?\b").unwrap();
     assert!(bound.is_backtracking());
     run(
         "regex_boundary_capture",
         &chain(move || {
-            comps(PatternCaptureGroupTokenFilter::new(WhitespaceTokenizer::new(), true, std::slice::from_ref(&bound)))
+            comps(PatternCaptureGroupTokenFilter::new(
+                WhitespaceTokenizer::new(),
+                true,
+                std::slice::from_ref(&bound),
+            ))
         }),
         &names,
         w,
@@ -216,7 +368,12 @@ pub(super) fn bench_analysis_m12(w: Duration, m: Duration) {
     );
     run(
         "beider_morse_ash_exact",
-        &chain(move || comps(BeiderMorseFilter::new(WhitespaceTokenizer::new(), exact.clone()))),
+        &chain(move || {
+            comps(BeiderMorseFilter::new(
+                WhitespaceTokenizer::new(),
+                exact.clone(),
+            ))
+        }),
         &few,
         w,
         m,
@@ -237,7 +394,10 @@ fn fixture_docs(file: &str) -> Vec<String> {
 
 /// `AnalysisM12Micro.japaneseDocs`.
 fn japanese_docs() -> Vec<String> {
-    line_docs(&["fixtures/corpus/analysis-japanese.txt", "fixtures/data/analysis_kuromoji/stress.txt"])
+    line_docs(&[
+        "fixtures/corpus/analysis-japanese.txt",
+        "fixtures/data/analysis_kuromoji/stress.txt",
+    ])
 }
 
 /// `AnalysisM12Micro.lineDocs`: every non-empty line of the files.
@@ -266,7 +426,12 @@ struct WholeSentence {
 }
 
 impl Segmenter for WholeSentence {
-    fn set_next_sentence(&mut self, _: &SegmentingBase, start: usize, end: usize) -> Result<(), AnalysisError> {
+    fn set_next_sentence(
+        &mut self,
+        _: &SegmentingBase,
+        start: usize,
+        end: usize,
+    ) -> Result<(), AnalysisError> {
         self.bounds = Some((start, end));
         Ok(())
     }

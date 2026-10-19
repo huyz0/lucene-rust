@@ -70,14 +70,22 @@ pub fn bench_drill_sideways(w: Duration, m: Duration, dir: &str) {
         let mut q = DrillDownQuery::with_base(&config, all());
         q.add("Author", &["a5"]).unwrap();
         q.add("Tag", &["t7"]).unwrap();
-        digest(f, &ds.search(&q, 10).unwrap(), &["Author", "Tag", "Category"]);
+        digest(
+            f,
+            &ds.search(&q, 10).unwrap(),
+            &["Author", "Tag", "Category"],
+        );
         1
     });
     cases("drill_sideways_query_first", w, m, &|f| {
         let mut q = DrillDownQuery::with_base(&config, rare());
         q.add("Category", &["c3"]).unwrap();
         q.add("Tag", &["t7"]).unwrap();
-        digest(f, &ds.search(&q, 10).unwrap(), &["Category", "Tag", "Author"]);
+        digest(
+            f,
+            &ds.search(&q, 10).unwrap(),
+            &["Category", "Tag", "Author"],
+        );
         1
     });
 }

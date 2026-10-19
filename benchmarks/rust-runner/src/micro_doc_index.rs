@@ -48,9 +48,17 @@ fn string_docs(words: &[String]) -> Vec<Document> {
                 }
                 d.add(StringField::new(format!("start{n}"), &w[..n], Store::No));
                 for k in 0..=w.len() - n {
-                    d.add(StringField::new(format!("gram{n}"), &w[k..k + n], Store::No));
+                    d.add(StringField::new(
+                        format!("gram{n}"),
+                        &w[k..k + n],
+                        Store::No,
+                    ));
                 }
-                d.add(StringField::new(format!("end{n}"), &w[w.len() - n..], Store::No));
+                d.add(StringField::new(
+                    format!("end{n}"),
+                    &w[w.len() - n..],
+                    Store::No,
+                ));
             }
             d
         })

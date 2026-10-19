@@ -12,15 +12,17 @@ use lucene_analysis::core_analysis::{SimpleAnalyzer, WhitespaceAnalyzer};
 use lucene_analysis::email::UAX29URLEmailAnalyzer;
 use lucene_analysis::en::{EnglishAnalyzer, KStemFilter};
 use lucene_analysis::factory::CustomAnalyzer;
-use lucene_analysis::miscellaneous::{self as m, AsciiFoldingTokenFilter, WordDelimiterGraphFilter};
+use lucene_analysis::miscellaneous::{
+    self as m, AsciiFoldingTokenFilter, WordDelimiterGraphFilter,
+};
 use lucene_analysis::ngram::NGramTokenizer;
 use lucene_analysis::pattern::PatternTokenizer;
 use lucene_analysis::reader::CharReader;
 use lucene_analysis::shingle::ShingleFilter;
 use lucene_analysis::util::{JavaPattern, WhitespaceTokenizer};
 use lucene_analysis::{
-    AnalysisError, Analyzer, AnalyzerDefinition, LowerCaseFilter, StandardTokenizer,
-    TokenStream, TokenStreamComponents,
+    AnalysisError, Analyzer, AnalyzerDefinition, LowerCaseFilter, StandardTokenizer, TokenStream,
+    TokenStreamComponents,
 };
 
 use super::{analysis_docs, consume_stream, measure, multilingual_docs};
@@ -48,7 +50,10 @@ impl AnalyzerDefinition for Chain {
 }
 
 fn chain(char_filter: bool, f: impl Fn() -> Sink + Send + Sync + 'static) -> Analyzer {
-    Analyzer::new(Chain { components: Box::new(f), char_filter })
+    Analyzer::new(Chain {
+        components: Box::new(f),
+        char_filter,
+    })
 }
 
 fn comps(sink: impl TokenStream + 'static) -> Sink {
@@ -77,19 +82,43 @@ pub(super) fn bench_analysis_common(w: Duration, mt: Duration) {
         | m::STEM_ENGLISH_POSSESSIVE;
     let pattern = Arc::new(JavaPattern::compile("[ ,.]+").unwrap());
     let cases: Vec<(&str, Analyzer, &Vec<String>)> = vec![
-        ("whitespace", Analyzer::new(WhitespaceAnalyzer::default()), &docs),
+        (
+            "whitespace",
+            Analyzer::new(WhitespaceAnalyzer::default()),
+            &docs,
+        ),
         ("simple", Analyzer::new(SimpleAnalyzer), &docs),
         ("english", Analyzer::new(EnglishAnalyzer::default()), &docs),
         (
             "wdgf",
-            chain(false, move || comps(WordDelimiterGraphFilter::new(WhitespaceTokenizer::new(), wdgf, None)?)),
+            chain(false, move || {
+                comps(WordDelimiterGraphFilter::new(
+                    WhitespaceTokenizer::new(),
+                    wdgf,
+                    None,
+                )?)
+            }),
             &docs,
         ),
-        ("ngram_2_3", chain(false, || comps(NGramTokenizer::new(2, 3)?)), &docs),
-        ("shingle", chain(false, || comps(ShingleFilter::new(StandardTokenizer::new(), 2, 2)?)), &docs),
+        (
+            "ngram_2_3",
+            chain(false, || comps(NGramTokenizer::new(2, 3)?)),
+            &docs,
+        ),
+        (
+            "shingle",
+            chain(false, || {
+                comps(ShingleFilter::new(StandardTokenizer::new(), 2, 2)?)
+            }),
+            &docs,
+        ),
         (
             "kstem",
-            chain(false, || comps(KStemFilter::new(LowerCaseFilter::new(StandardTokenizer::new())))),
+            chain(false, || {
+                comps(KStemFilter::new(LowerCaseFilter::new(
+                    StandardTokenizer::new(),
+                )))
+            }),
             &docs,
         ),
         (
@@ -97,14 +126,31 @@ pub(super) fn bench_analysis_common(w: Duration, mt: Duration) {
             chain(false, move || comps(PatternTokenizer::new(&pattern, -1)?)),
             &docs,
         ),
-        ("html_strip", chain(true, || comps(WhitespaceTokenizer::new())), &html),
+        (
+            "html_strip",
+            chain(true, || comps(WhitespaceTokenizer::new())),
+            &html,
+        ),
         (
             "ascii_folding_multilingual",
-            chain(false, || comps(AsciiFoldingTokenFilter::new(StandardTokenizer::new(), false))),
+            chain(false, || {
+                comps(AsciiFoldingTokenFilter::new(
+                    StandardTokenizer::new(),
+                    false,
+                ))
+            }),
             &multi,
         ),
-        ("cjk_multilingual", Analyzer::new(CJKAnalyzer::default()), &multi),
-        ("uax29_url_email_multilingual", Analyzer::new(UAX29URLEmailAnalyzer::default()), &multi),
+        (
+            "cjk_multilingual",
+            Analyzer::new(CJKAnalyzer::default()),
+            &multi,
+        ),
+        (
+            "uax29_url_email_multilingual",
+            Analyzer::new(UAX29URLEmailAnalyzer::default()),
+            &multi,
+        ),
         (
             "custom_analyzer",
             CustomAnalyzer::builder()
