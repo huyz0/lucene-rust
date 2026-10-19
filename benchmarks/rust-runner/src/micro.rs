@@ -22,51 +22,51 @@ use lucene_search::directory_reader::DirectoryReader;
 use lucene_store::data_input::SliceInput;
 use lucene_store::MmapDirectory;
 
+#[path = "../../../crates/lucene-search/tests/m7grammar/mod.rs"]
+mod m7grammar;
+mod micro_aggs;
 mod micro_analysis_common;
-mod micro_analysis_lang;
-mod micro_analysis_m12;
 mod micro_analysis_icu;
 mod micro_analysis_icu_parts;
-mod micro_analysis_opennlp;
+mod micro_analysis_lang;
+mod micro_analysis_m12;
 mod micro_analysis_misc;
-mod micro_completion;
+mod micro_analysis_opennlp;
 mod micro_analyzing;
-mod micro_freetext;
-mod micro_infix;
-mod micro_spell;
-mod micro_taxonomy;
-mod micro_facet_counts;
-mod micro_value_facets;
-mod micro_ssdv_facets;
-mod micro_drill_sideways;
-mod micro_doc_index;
-mod micro_fst_lookup;
-mod micro_highlight;
-mod micro_memory_index;
 mod micro_classification;
-mod micro_replicator;
+mod micro_completion;
+mod micro_doc_index;
+mod micro_drill_sideways;
 mod micro_expressions;
-mod micro_monitor;
-mod micro_queryparser;
-mod micro_hunspell;
-mod micro_snowball;
+mod micro_facet_counts;
+mod micro_freetext;
+mod micro_fst_lookup;
+mod micro_function;
 mod micro_geo;
 mod micro_geo3d;
 mod micro_geo3d_points;
 mod micro_geo_points;
-mod micro_sandbox;
 mod micro_geo_shapes;
-mod micro_aggs;
-mod micro_function;
-mod micro_queries;
 mod micro_grouping;
+mod micro_highlight;
+mod micro_hunspell;
+mod micro_infix;
 mod micro_join;
 mod micro_m7;
+mod micro_memory_index;
+mod micro_monitor;
+mod micro_queries;
 mod micro_query_join;
+mod micro_queryparser;
+mod micro_replicator;
+mod micro_sandbox;
+mod micro_snowball;
 mod micro_spatial_extras;
+mod micro_spell;
+mod micro_ssdv_facets;
+mod micro_taxonomy;
+mod micro_value_facets;
 mod sexpr;
-#[path = "../../../crates/lucene-search/tests/m7grammar/mod.rs"]
-mod m7grammar;
 #[path = "../../../crates/lucene-search/tests/simgrammar/mod.rs"]
 mod simgrammar;
 
@@ -2094,9 +2094,7 @@ fn main() {
         "analysis_misc" => micro_analysis_misc::bench_analysis_misc(warmup, measure),
         "analysis_m12" => micro_analysis_m12::bench_analysis_m12(warmup, measure),
         "analysis_icu" => micro_analysis_icu::bench_analysis_icu(warmup, measure),
-        "analysis_icu_parts" => {
-            micro_analysis_icu_parts::bench_analysis_icu_parts(warmup, measure)
-        }
+        "analysis_icu_parts" => micro_analysis_icu_parts::bench_analysis_icu_parts(warmup, measure),
         "analysis_opennlp" => micro_analysis_opennlp::bench_analysis_opennlp(warmup, measure),
         "queryparser" => micro_queryparser::bench_queryparser(warmup, measure),
         "monitor" => micro_monitor::bench_monitor(warmup, measure),
