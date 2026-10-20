@@ -426,7 +426,8 @@ case "$BENCH" in
     # BloomFilteringPostingsFormat's filtered seekExact (bloom/) and
     # FSTPostingsFormat's and DirectPostingsFormat's seekExact (memory/) and
     # HnswBitVectorsFormat's top-10 graph search (bitvectors/) and
-    # BlockTreeOrdsPostingsFormat's seekExact by term and by ord (ords/).
+    # BlockTreeOrdsPostingsFormat's seekExact by term and by ord (ords/) and
+    # UniformSplitPostingsFormat's seekExact (usplit/).
     MAIN=CodecsMicro
     SRC=benchmarks/micro/java/CodecsMicro.java
     JAR_MODULES="lucene-core lucene-codecs"

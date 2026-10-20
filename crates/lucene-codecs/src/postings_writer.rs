@@ -989,6 +989,29 @@ impl FieldTermStates<'_> {
         }
     }
 
+    /// Term `i`'s `IntBlockTermState` pointers as
+    /// `Lucene104PostingsWriter.finishTerm` leaves them: `lastPosBlockOffset`
+    /// is `-1` unless the field has positions and `totalTermFreq >
+    /// BLOCK_SIZE`; `.pos`/`.pay` pointers of a field without them are `0`.
+    /// For a terms dictionary with its own term-state encoding
+    /// (`uniformsplit`'s `DeltaBaseTermStateSerializer`).
+    pub(crate) fn term_metadata(&self, i: usize) -> crate::postings::TermMetadata {
+        let has_positions = self.index_options.subsumes_positions();
+        let ttf = self.block_terms[i].total_term_freq;
+        crate::postings::TermMetadata {
+            doc_start_fp: self.doc_start_fp.get(i).copied().unwrap_or(0),
+            singleton_doc_id: self.singletons.get(i).copied().unwrap_or(-1),
+            pos_start_fp: self.pos_start_fp.get(i).copied().unwrap_or(0),
+            pay_start_fp: self.pay_start_fp.get(i).copied().unwrap_or(0),
+            last_pos_block_offset: if has_positions && ttf > i64::from(BLOCK_SIZE) {
+                self.last_pos_block_offset.get(i).copied().unwrap_or(-1)
+            } else {
+                -1
+            },
+            skip_offset: -1,
+        }
+    }
+
     /// `encodeTerm(out, fieldInfo, state, absolute=true)` for term `i`.
     pub fn encode_term(&self, out: &mut Vec<u8>, i: usize) {
         self.encode_terms(out, std::slice::from_ref(&i));

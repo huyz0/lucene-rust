@@ -71,5 +71,6 @@ pub mod suggest;
 pub mod term_ngram;
 pub mod term_vectors;
 pub mod terms_dict;
+pub mod uniformsplit;
 pub mod vectors;
 pub mod wildcard;
