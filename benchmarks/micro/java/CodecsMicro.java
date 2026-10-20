@@ -10,6 +10,7 @@ import org.apache.lucene.codecs.KnnVectorsFormat;
 import org.apache.lucene.codecs.KnnVectorsReader;
 import org.apache.lucene.codecs.PostingsFormat;
 import org.apache.lucene.codecs.bitvectors.HnswBitVectorsFormat;
+import org.apache.lucene.codecs.blocktreeords.BlockTreeOrdsPostingsFormat;
 import org.apache.lucene.codecs.bloom.BloomFilteringPostingsFormat;
 import org.apache.lucene.codecs.lucene104.Lucene104Codec;
 import org.apache.lucene.codecs.lucene104.Lucene104PostingsFormat;
@@ -53,6 +54,11 @@ import org.apache.lucene.util.BytesRef;
  * <p>{@code bitvectors/}: 100 000 documents, each with a 32-byte (256-bit) vector {@code bv} routed
  * to {@code HnswBitVectorsFormat}, and {@code queries.tsv}: 2 000 random queries; {@code
  * cx_bitvec_search} is a top-10 {@code searchNearestVectors} per query.
+ *
+ * <p>{@code ords/}: the same 200 000 ids, {@code oid} routed to {@code BlockTreeOrdsPostingsFormat},
+ * the same kind of {@code targets.tsv} (half present) and {@code ords.tsv}, one random ord per
+ * target: {@code cx_ords_seek} is, per target, {@code seekExact(term)} (and its {@code ord()})
+ * then {@code seekExact(ord)} (and its term).
  */
 public final class CodecsMicro {
   static long warmupMs = Long.getLong("warmupMs", 1500);
@@ -169,6 +175,29 @@ public final class CodecsMicro {
     Files.writeString(dir.resolve("built"), "");
   }
 
+  static void buildOrds(Path dir) throws IOException {
+    Random r = new Random(0x0d_5_2026_1020L);
+    try (Directory d = FSDirectory.open(dir);
+        IndexWriter w = new IndexWriter(d, config("oid", new BlockTreeOrdsPostingsFormat()))) {
+      for (int i = 0; i < DOCS; i++) {
+        Document doc = new Document();
+        doc.add(new StringField("oid", idOf(i), Field.Store.NO));
+        w.addDocument(doc);
+      }
+      w.commit();
+    }
+    List<String> targets = new ArrayList<>();
+    List<String> ords = new ArrayList<>();
+    for (int k = 0; k < 200_000; k++) {
+      // Half present, half absent; every ord below the term count.
+      targets.add(idOf(r.nextInt(2) == 0 ? r.nextInt(DOCS) : DOCS + r.nextInt(10 * DOCS)));
+      ords.add(Integer.toString(r.nextInt(DOCS)));
+    }
+    Files.write(dir.resolve("targets.tsv"), targets);
+    Files.write(dir.resolve("ords.tsv"), ords);
+    Files.writeString(dir.resolve("built"), "");
+  }
+
   static void buildBitVectors(Path dir) throws IOException {
     Random r = new Random(0x14_8_2026_1020L);
     KnnVectorsFormat format = new HnswBitVectorsFormat();
@@ -255,6 +284,46 @@ public final class CodecsMicro {
     runSeek(dir, "cx_direct_seek", "did");
   }
 
+  /**
+   * {@code cx_ords_seek}: per target, {@code seekExact(term)} hashing its {@code ord()} (-1 when
+   * absent), then {@code seekExact(ord)} hashing the term's length and last byte, on one enum.
+   */
+  static void runOrds(Path dir) throws IOException {
+    if (!selected("cx_ords_seek")) return;
+    List<BytesRef> ids = new ArrayList<>();
+    for (String line : Files.readAllLines(dir.resolve("targets.tsv"))) {
+      ids.add(new BytesRef(line));
+    }
+    List<String> ordLines = Files.readAllLines(dir.resolve("ords.tsv"));
+    long[] ords = new long[ordLines.size()];
+    for (int i = 0; i < ords.length; i++) ords[i] = Long.parseLong(ordLines.get(i));
+    try (Directory d = FSDirectory.open(dir);
+        DirectoryReader reader = DirectoryReader.open(d)) {
+      Terms terms = reader.leaves().get(0).reader().terms("oid");
+      Op op =
+          () -> {
+            Fnv g = new Fnv();
+            ordsPass(terms, ids, ords, g);
+            sink += g.h;
+            return ids.size();
+          };
+      Fnv f = new Fnv();
+      ordsPass(terms, ids, ords, f);
+      System.out.printf("#check	%s	%016x	%d%n", "cx_ords_seek", f.h, ids.size());
+      measure("cx_ords_seek", op);
+    }
+  }
+
+  static void ordsPass(Terms terms, List<BytesRef> ids, long[] ords, Fnv f) throws IOException {
+    TermsEnum te = terms.iterator();
+    for (int i = 0; i < ords.length; i++) {
+      f.add(te.seekExact(ids.get(i)) ? te.ord() : -1);
+      te.seekExact(ords[i]);
+      BytesRef t = te.term();
+      f.add(((long) t.length << 8) | (t.bytes[t.offset + t.length - 1] & 0xff));
+    }
+  }
+
   static void runSeek(Path dir, String name, String field) throws IOException {
     if (!selected(name)) return;
     List<BytesRef> ids = new ArrayList<>();
@@ -299,10 +368,15 @@ public final class CodecsMicro {
         Files.createDirectories(dir.resolve("bitvectors"));
         buildBitVectors(dir.resolve("bitvectors"));
       }
+      if (!Files.exists(dir.resolve("ords").resolve("built"))) {
+        Files.createDirectories(dir.resolve("ords"));
+        buildOrds(dir.resolve("ords"));
+      }
     } else {
       runBloom(dir.resolve("bloom"));
       runMemory(dir.resolve("memory"));
       runBitVectors(dir.resolve("bitvectors"));
+      runOrds(dir.resolve("ords"));
     }
   }
 }

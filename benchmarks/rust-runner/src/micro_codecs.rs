@@ -12,11 +12,17 @@
 //!
 //! `cx_bitvec_search`: a top-10 search of `HnswBitVectorsFormat`'s graph
 //! for each of `bitvectors/queries.tsv`'s 2 000 random 256-bit queries.
+//!
+//! `cx_ords_seek`: per target of `ords/`, `seekExact` on the id (half
+//! present) hashing its `ord()`, then `seekExact(ord)` on `ords.tsv`'s ord
+//! hashing the term's length and last byte, through
+//! `BlockTreeOrdsPostingsFormat`'s enum.
 
 use std::hint::black_box;
 use std::time::Duration;
 
 use lucene_codecs::bitvectors::{BitVectorsFiles, BitVectorsReader};
+use lucene_codecs::blocktreeords::{BlockTreeOrdsPostingsFormat, OrdsFieldReader};
 use lucene_codecs::bloom::BloomFilteredFieldsProducer;
 use lucene_codecs::hnsw_vectors::SearchOptions;
 use lucene_codecs::memory::{DirectFiles, DirectPostingsFormat, FstPostingsFormat};
@@ -237,8 +243,58 @@ fn bench_bitvectors(w: Duration, m: Duration, dir: &str) {
     });
 }
 
+/// One `cx_ords_seek` pass, on one enum as Java's `ordsPass`.
+fn ords_pass(terms: &OrdsFieldReader, ids: &[Vec<u8>], ords: &[i64], f: &mut Fnv) {
+    let mut e = terms.iter();
+    for (id, &ord) in ids.iter().zip(ords) {
+        f.add(if e.seek_exact(id).unwrap() {
+            e.ord()
+        } else {
+            -1
+        });
+        e.seek_exact_ord(ord).unwrap();
+        let t = e.term();
+        f.add(((t.len() as i64) << 8) | i64::from(t[t.len() - 1]));
+    }
+}
+
+fn bench_ords(w: Duration, m: Duration, dir: &str) {
+    if !selected("cx_ords_seek") {
+        return;
+    }
+    let ids = read_targets(dir);
+    let ords: Vec<i64> = std::fs::read_to_string(format!("{dir}/ords.tsv"))
+        .unwrap()
+        .lines()
+        .map(|l| l.parse().unwrap())
+        .collect();
+    let (name, id, fis) = segment(dir);
+    let suffix = "BlockTreeOrds_0";
+    let file = |ext: &str| std::fs::read(format!("{dir}/{name}_{suffix}.{ext}")).unwrap();
+    let state = SegmentReadState {
+        max_doc: 200_000,
+        segment_id: &id,
+        segment_suffix: suffix,
+        field_infos: &fis,
+    };
+    let reader = BlockTreeOrdsPostingsFormat::default()
+        .open(file("tio"), &file("tipo"), &state)
+        .unwrap();
+    let terms = reader.terms("oid").unwrap();
+    let mut f = Fnv::new();
+    ords_pass(terms, &ids, &ords, &mut f);
+    println!("#check\tcx_ords_seek\t{:016x}\t{}", f.0, ids.len());
+    measure("cx_ords_seek", w, m, || {
+        let mut g = Fnv::new();
+        ords_pass(terms, &ids, black_box(&ords), &mut g);
+        black_box(g.0);
+        ids.len() as u64
+    });
+}
+
 pub fn bench_codecs(w: Duration, m: Duration, dir: &str) {
     bench_bloom(w, m, &format!("{dir}/bloom"));
     bench_memory(w, m, &format!("{dir}/memory"));
     bench_bitvectors(w, m, &format!("{dir}/bitvectors"));
+    bench_ords(w, m, &format!("{dir}/ords"));
 }

@@ -107,6 +107,13 @@ CASES=(
   # bit scorer walking the Rust-built graph -- required to return exactly
   # this port's hits and score bits for 270 searches.
   "lucene-codecs|write_bitvectors_fixture|bitvectors|VerifyCodecsBitVectors"
+  # lucene-codecs' BlockTreeOrdsPostingsFormat (M14.g): two groups (25/48
+  # and 10/20 blocks) opened by real Lucene's own format; every term walked
+  # with its ord, docFreq/totalTermFreq and every document's freq,
+  # positions, offsets and payloads, every term seeked by bytes and by ord
+  # (Java's seekExact(long) walking the Rust-built index's ord ranges), and
+  # Terms.intersect required to enumerate exactly what this port's reader does.
+  "lucene-codecs|write_blocktreeords_fixture|blocktreeords|VerifyCodecsBlockTreeOrds"
   # Last, and unlike every case above: a whole index written by the real
   # IndexWriter, opened by DirectoryReader and run through CheckIndex. The
   # cases above each hand Lucene one codec file with a hand-built
