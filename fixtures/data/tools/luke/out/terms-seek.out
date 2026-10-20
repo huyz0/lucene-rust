@@ -1,0 +1,503 @@
+first term: text:a
+current field: text
+  doc freq: 2
+  doc 0: 
+  doc 1: 
+  next doc: --
+next term: text:accompanied
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: text:acknowledged
+  doc freq: 1
+  doc 0: 
+  next doc: --
+next term: text:alice
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: text:always
+  doc freq: 1
+  doc 4: 
+  next doc: --
+next term: text:an
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: text:and
+  doc freq: 3
+  doc 1: 
+  doc 2: 
+  doc 4: 
+  next doc: --
+next term: text:any
+  doc freq: 1
+  doc 4: 
+  next doc: --
+next term: text:arrived
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: text:assure
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: text:bank
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: text:be
+  doc freq: 1
+  doc 0: 
+  next doc: --
+next term: text:beginning
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: text:blick
+  doc freq: 1
+  doc 5: 
+  next doc: --
+next term: text:book
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: text:but
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: text:by
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: text:commencement
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: text:confidence
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: text:conversations
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: text:dear
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: text:dem
+  doc freq: 1
+  doc 5: 
+  next doc: --
+next term: text:die
+  doc freq: 1
+  doc 5: 
+  next doc: --
+next term: text:disaster
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: text:do
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: text:eclipses
+  doc freq: 1
+  doc 4: 
+  next doc: --
+next term: text:einst
+  doc freq: 1
+  doc 5: 
+  next doc: --
+next term: text:enterprise
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: text:euch
+  doc freq: 1
+  doc 5: 
+  next doc: --
+next term: text:evil
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: text:eyes
+  doc freq: 1
+  doc 4: 
+  next doc: --
+next term: text:first
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: text:forebodings
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: text:fortune
+  doc freq: 1
+  doc 0: 
+  next doc: --
+next term: text:früh
+  doc freq: 1
+  doc 5: 
+  next doc: --
+next term: text:gestalten
+  doc freq: 1
+  doc 5: 
+  next doc: --
+next term: text:get
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: text:gezeigt
+  doc freq: 1
+  doc 5: 
+  next doc: --
+next term: text:good
+  doc freq: 1
+  doc 0: 
+  next doc: --
+next term: text:had
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: text:has
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: text:have
+  doc freq: 2
+  doc 2: 
+  doc 4: 
+  next doc: --
+next term: text:having
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: text:hear
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: text:heard
+  doc freq: 1
+  doc 4: 
+  next doc: --
+next term: text:her
+  doc freq: 2
+  doc 1: 
+  doc 4: 
+  next doc: --
+next term: text:here
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: text:him
+  doc freq: 1
+  doc 4: 
+  next doc: --
+next term: text:his
+  doc freq: 1
+  doc 4: 
+  next doc: --
+next term: text:holmes
+  doc freq: 1
+  doc 4: 
+  next doc: --
+next term: text:i
+  doc freq: 2
+  doc 2: 
+  doc 4: 
+  next doc: --
+next term: text:ihr
+  doc freq: 1
+  doc 5: 
+  next doc: --
+next term: text:in
+  doc freq: 4
+  doc 0: 
+  doc 1: 
+  doc 2: 
+  doc 4: 
+  next doc: --
+next term: text:increasing
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: text:into
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: text:is
+  doc freq: 4
+  doc 0: 
+  doc 1: 
+  doc 2: 
+  doc 4: 
+  next doc: --
+next term: text:it
+  doc freq: 2
+  doc 0: 
+  doc 1: 
+  next doc: --
+next term: text:man
+  doc freq: 1
+  doc 0: 
+  next doc: --
+next term: text:mention
+  doc freq: 1
+  doc 4: 
+  next doc: --
+next term: text:must
+  doc freq: 1
+  doc 0: 
+  next doc: --
+next term: text:my
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: text:naht
+  doc freq: 1
+  doc 5: 
+  next doc: --
+next term: text:name
+  doc freq: 1
+  doc 4: 
+  next doc: --
+next term: text:no
+  doc freq: 2
+  doc 1: 
+  doc 2: 
+  next doc: --
+next term: text:nothing
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: text:of
+  doc freq: 4
+  doc 0: 
+  doc 1: 
+  doc 2: 
+  doc 4: 
+  next doc: --
+next term: text:on
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: text:once
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: text:or
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: text:other
+  doc freq: 1
+  doc 4: 
+  next doc: --
+next term: text:peeped
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: text:pictures
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: text:possession
+  doc freq: 1
+  doc 0: 
+  next doc: --
+next term: text:predominates
+  doc freq: 1
+  doc 4: 
+  next doc: --
+next term: text:reading
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: text:regarded
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: text:rejoice
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: text:schwankende
+  doc freq: 1
+  doc 5: 
+  next doc: --
+next term: text:seldom
+  doc freq: 1
+  doc 4: 
+  next doc: --
+next term: text:sex
+  doc freq: 1
+  doc 4: 
+  next doc: --
+next term: text:she
+  doc freq: 2
+  doc 1: 
+  doc 4: 
+  next doc: --
+next term: text:sherlock
+  doc freq: 1
+  doc 4: 
+  next doc: --
+next term: text:sich
+  doc freq: 1
+  doc 5: 
+  next doc: --
+next term: text:single
+  doc freq: 1
+  doc 0: 
+  next doc: --
+next term: text:sister
+  doc freq: 2
+  doc 1: 
+  doc 2: 
+  next doc: --
+next term: text:sitting
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: text:success
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: text:such
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: text:task
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: text:that
+  doc freq: 2
+  doc 0: 
+  doc 2: 
+  next doc: --
+next term: text:the
+  doc freq: 3
+  doc 1: 
+  doc 2: 
+  doc 4: 
+  next doc: --
+next term: text:thought
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: text:tired
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: text:to
+  doc freq: 3
+  doc 1: 
+  doc 2: 
+  doc 4: 
+  next doc: --
+next term: text:truth
+  doc freq: 1
+  doc 0: 
+  next doc: --
+next term: text:trüben
+  doc freq: 1
+  doc 5: 
+  next doc: --
+next term: text:twice
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: text:under
+  doc freq: 1
+  doc 4: 
+  next doc: --
+next term: text:undertaking
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: text:universally
+  doc freq: 1
+  doc 0: 
+  next doc: --
+next term: text:use
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: text:very
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: text:want
+  doc freq: 1
+  doc 0: 
+  next doc: --
+next term: text:was
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: text:welfare
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: text:what
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: text:which
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: text:whole
+  doc freq: 1
+  doc 4: 
+  next doc: --
+next term: text:wieder
+  doc freq: 1
+  doc 5: 
+  next doc: --
+next term: text:wife
+  doc freq: 1
+  doc 0: 
+  next doc: --
+next term: text:will
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: text:with
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: text:without
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: text:woman
+  doc freq: 1
+  doc 4: 
+  next doc: --
+next term: text:yesterday
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: text:you
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: --
+doc freq: --
+first doc: --
+positions: []
+seek sister: text:sister
+  doc freq: 2
+  doc 1: 
+  doc 2: 
+  next doc: --
+seek zzz: --
+seek b: text:bank
+  doc freq: 1
+  doc 1: 
+  next doc: --

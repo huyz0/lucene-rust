@@ -1,0 +1,7 @@
+analyzer: org.apache.lucene.analysis.core.WhitespaceAnalyzer
+token a
+  PackedTokenAttributeImpl {bytes=[61], endOffset=1, positionIncrement=1, positionLength=1, startOffset=0, term=a, termFrequency=1, type=word}
+token B
+  PackedTokenAttributeImpl {bytes=[42], endOffset=4, positionIncrement=1, positionLength=1, startOffset=3, term=B, termFrequency=1, type=word}
+token c
+  PackedTokenAttributeImpl {bytes=[63], endOffset=6, positionIncrement=1, positionLength=1, startOffset=5, term=c, termFrequency=1, type=word}

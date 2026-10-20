@@ -19,6 +19,7 @@ use std::io::Write;
 
 pub mod cli;
 pub mod demo;
+pub mod luke;
 pub mod misc;
 
 use cli::{Io, Tool};
@@ -30,6 +31,7 @@ pub const TOOLS: &[(&str, Tool)] = &[
     ("IndexFiles", demo::index_files::main),
     ("IndexMergeTool", misc::index_merge_tool::main),
     ("IndexSplitter", misc::index_splitter::main),
+    ("Luke", luke::cli::main),
     (
         "MultiPassIndexSplitter",
         misc::multi_pass_index_splitter::main,

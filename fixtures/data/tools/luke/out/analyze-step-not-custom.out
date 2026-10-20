@@ -1,0 +1,4 @@
+analyzer: org.apache.lucene.analysis.core.WhitespaceAnalyzer
+token x
+  PackedTokenAttributeImpl {bytes=[78], endOffset=1, positionIncrement=1, positionLength=1, startOffset=0, term=x, termFrequency=1, type=word}
+error: LukeException: Analyzer is not CustomAnalyzer.

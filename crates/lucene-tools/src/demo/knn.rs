@@ -20,7 +20,7 @@ use lucene_store::directory::Directory;
 use lucene_store::{DataOutput, FsIndexOutput};
 use lucene_util::vector_util;
 
-use crate::cli::{exception, Error};
+use crate::cli::{exception, java_lines, Error};
 
 /// A word-vector dictionary written by [`KnnVectorDict::build`]
 /// (`KnnVectorDict`).
@@ -226,27 +226,6 @@ fn create_new(directory: &dyn Directory, name: &str) -> Result<FsIndexOutput, Er
         return Err(Box::new(FileAlreadyExists(name.to_string())));
     }
     Ok(directory.create_output(name)?)
-}
-
-/// `BufferedReader.readLine` over `text`: lines end at `\n`, `\r` or
-/// `\r\n`, and a final empty line is not one.
-fn java_lines(text: &str) -> impl Iterator<Item = &str> {
-    let mut rest = text;
-    std::iter::from_fn(move || {
-        if rest.is_empty() {
-            return None;
-        }
-        let end = rest.find(['\n', '\r']).unwrap_or(rest.len());
-        let line = &rest[..end];
-        let mut next = end;
-        if rest[end..].starts_with("\r\n") {
-            next += 2;
-        } else if end < rest.len() {
-            next += 1;
-        }
-        rest = &rest[next..];
-        Some(line)
-    })
 }
 
 /// `Pattern.compile(" ").split(line, 0)`: split at every space, trailing
