@@ -96,7 +96,10 @@ set -euo pipefail
 # lucene-codecs is required by the GenCodecs* generators (the non-default codecs, M14.g).
 LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-facet lucene-highlighter lucene-suggest lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join lucene-grouping lucene-classification lucene-misc lucene-replicator lucene-sandbox lucene-codecs)
 
-cd "$(git rev-parse --show-toplevel)"
+# The repository root. `git rev-parse` fails inside the container when this
+# is a git worktree: its `.git` file names the gitdir by a host path the
+# container never mounts. The script's own location is the root then.
+cd "$(git rev-parse --show-toplevel 2>/dev/null || { cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd; })"
 FIXTURES="$PWD/fixtures"
 OUT="$FIXTURES/data"
 JARS="$FIXTURES/.jars"
