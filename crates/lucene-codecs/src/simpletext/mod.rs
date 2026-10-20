@@ -13,6 +13,10 @@
 //!   (`.scf`, [`compound`]) and stored fields (`.fld`,
 //!   [`stored_fields_writer`] and [`stored_fields_reader`]) formats, each
 //!   with its own line constants and a note on what it does differently;
+//! - doc values (`.dat`, [`doc_values_writer`], [`doc_values_reader`], with
+//!   `DecimalFormat`'s parsing in [`decimal_format`]), norms (`.len`,
+//!   [`norms`]) and term vectors (`.tvc`, [`term_vectors_writer`] and
+//!   [`term_vectors_reader`]), each module noting what it does differently;
 //! - the line, escape and checksum primitives ([`util`]).
 //!
 //! # The `.pst` file
@@ -75,14 +79,20 @@
 //!   [`Error::IllegalState`], as Java's.
 
 pub mod compound;
+pub mod decimal_format;
+pub mod doc_values_reader;
+pub mod doc_values_writer;
 pub mod field_infos;
 pub mod fields_reader;
 pub mod fields_writer;
 pub mod live_docs;
+pub mod norms;
 pub mod segment_info;
 pub mod skip;
 pub mod stored_fields_reader;
 pub mod stored_fields_writer;
+pub mod term_vectors_reader;
+pub mod term_vectors_writer;
 pub mod util;
 
 #[cfg(test)]

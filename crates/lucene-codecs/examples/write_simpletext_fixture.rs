@@ -22,11 +22,16 @@
 //!
 //! `codec/` holds a SimpleText index without a segments file: `_0`
 //! (`.si` with diagnostics, attributes and a three-provider index sort;
-//! `.inf`; `.fld` with every stored type; `_0_1.liv`) and the compound `_1`
-//! (`.si` + `.scf` holding its `.inf`/`.fld`), plus `infos/_2.inf` with every
-//! kind of field. Java reads each through SimpleTextCodec's own formats
-//! against the `*.tsv` manifests here, re-writes them with its own writers,
-//! commits a `segments_N` over `_0`/`_1` and opens it with `DirectoryReader`.
+//! `.inf`; `.fld` with every stored type; `_0_1.liv`; `.dat` with every doc
+//! values type, sorted as the index sort says, skip indexes on three; `.len`
+//! norms and `.pst` postings for two indexed fields; `.tvc` vectors of both,
+//! with positions, offsets and payloads matching the postings) and the
+//! compound `_1` (`.si` + `.scf` holding its `.inf`/`.fld`/`.dat`, the
+//! last its parent field), plus `infos/_2.inf` with every kind of field.
+//! Java reads each through SimpleTextCodec's own formats against the `*.tsv`
+//! manifests here, re-writes them with its own writers, commits a
+//! `segments_N` over `_0`/`_1`, opens it with `DirectoryReader` and runs
+//! `CheckIndex` over it at its slowest level.
 //!
 //! Run: `cargo run -p lucene-codecs --example write_simpletext_fixture -- <dir>`
 // Test-support code opts out of the arithmetic gate at the file boundary:
@@ -37,6 +42,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::Path;
 
+use lucene_codecs::doc_values::{
+    BinaryColumn, SortedNumericColumn, SortedOrdsColumn, SortedSetOrdsColumn,
+};
 use lucene_codecs::field_infos::{
     DocValuesSkipIndexType, DocValuesType, FieldInfo, FieldInfos, IndexOptions, VectorEncoding,
     VectorSimilarityFunction,
@@ -44,15 +52,23 @@ use lucene_codecs::field_infos::{
 use lucene_codecs::postings_writer::{FieldNorms, FieldPostingsInput, TermPostings};
 use lucene_codecs::segment_state::{SegmentReadState, SegmentWriteState};
 use lucene_codecs::simpletext::compound::{self as st_compound, SimpleTextCompoundReader};
+use lucene_codecs::simpletext::doc_values_reader::SimpleTextDocValuesReader;
+use lucene_codecs::simpletext::doc_values_writer::{
+    doc_values_file_name, SimpleTextDocValuesWriter, DOC_VALUES_EXTENSION,
+};
 use lucene_codecs::simpletext::field_infos as st_infos;
 use lucene_codecs::simpletext::fields_reader::SimpleTextFieldsReader;
 use lucene_codecs::simpletext::fields_writer::{postings_file_name, write as write_pst};
+use lucene_codecs::simpletext::norms::{norms_file_name, SimpleTextNormsConsumer};
 use lucene_codecs::simpletext::segment_info::{
     self as st_si, SimpleTextSegmentInfo, SortFieldEntry,
 };
 use lucene_codecs::simpletext::stored_fields_reader::SimpleTextStoredFieldsReader;
+use lucene_codecs::simpletext::term_vectors_reader::SimpleTextTermVectorsReader;
+use lucene_codecs::simpletext::term_vectors_writer::{self as st_tv, term_vectors_file_name};
 use lucene_codecs::simpletext::{live_docs, stored_fields_writer, ALL, NO_MORE_DOCS};
 use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
+use lucene_codecs::term_vectors::{TermVectorField, TermVectorTerm, TermVectorsDocument};
 use lucene_util::fixed_bit_set::FixedBitSet;
 use lucene_util::geo::{java_double_string, java_float_string};
 use lucene_util::version::Version;
@@ -657,6 +673,487 @@ fn index_sort() -> Vec<SortFieldEntry> {
     ]
 }
 
+/// A segment's fields: the stored ones, then `_0`'s doc values and indexed
+/// fields (the index sort's `num`/`snum`/`sset` among them) or `_1`'s
+/// parent field.
+fn segment_infos(compound: bool) -> FieldInfos {
+    use DocValuesSkipIndexType as Skip;
+    use DocValuesType as Dv;
+    let mut fields = stored_infos().fields;
+    if compound {
+        fields.push(
+            FieldInfo::new("parent", 7)
+                .with_doc_values(Dv::Numeric, Skip::None, -1)
+                .with_parent_field(true),
+        );
+    } else {
+        fields.extend([
+            FieldInfo::new("num", 7).with_doc_values(Dv::Numeric, Skip::None, -1),
+            FieldInfo::new("snum", 8).with_doc_values(Dv::SortedNumeric, Skip::Range, -1),
+            FieldInfo::new("sset", 9).with_doc_values(Dv::SortedSet, Skip::None, -1),
+            FieldInfo::new("bin", 10).with_doc_values(Dv::Binary, Skip::None, -1),
+            FieldInfo::new("sorted", 11).with_doc_values(Dv::Sorted, Skip::Range, -1),
+            FieldInfo::new("dvneg", 12).with_doc_values(Dv::Numeric, Skip::Range, -1),
+            FieldInfo::new("body", 13)
+                .with_index_options(IndexOptions::DocsAndFreqsAndPositionsAndOffsets)
+                .with_store_payloads(true)
+                .with_store_term_vectors(true),
+            FieldInfo::new("tag", 14)
+                .with_index_options(IndexOptions::DocsAndFreqs)
+                .with_store_term_vectors(true),
+        ]);
+    }
+    FieldInfos::new(fields).unwrap()
+}
+
+/// Sorted-set and sorted terms: the empty term, `\n`, `\`, `0xff`.
+fn dv_term(n: u64) -> Vec<u8> {
+    match n {
+        0 => Vec::new(),
+        1 => b"a\nb".to_vec(),
+        2 => b"c\\".to_vec(),
+        3 => vec![0xff, b'\n'],
+        _ => format!("t{n:02}").into_bytes(),
+    }
+}
+
+/// `GenCodecsSimpleTextCodec`'s `dv` lines for one field's values (the
+/// subset `VerifyCodecsSimpleText` dumps: values, dictionary, skipper).
+enum DvValues {
+    Numeric(Vec<(i32, i64)>),
+    Binary(BinaryColumn),
+    Sorted(SortedOrdsColumn),
+    SortedNumeric(SortedNumericColumn),
+    SortedSet(SortedSetOrdsColumn),
+}
+
+/// `_0`'s doc values (or `_1`'s parent field): `num` strictly descending
+/// over docs 0..37 and missing after, `snum`'s maximum then ascending, so
+/// the documents are in index-sort order.
+fn dv_columns(name: &str, max_doc: i32) -> Vec<(&'static str, DvValues)> {
+    let mut rng = Rng(0xD0C5 ^ max_doc as u64);
+    if name == "_1" {
+        let parents = (0..max_doc).filter(|d| d % 3 == 2 || *d == max_doc - 1);
+        return vec![(
+            "parent",
+            DvValues::Numeric(parents.map(|d| (d, -1)).collect()),
+        )];
+    }
+    let num = (0..37).map(|d| (d, 100 - 3 * i64::from(d))).collect();
+    let mut snum = SortedNumericColumn::default();
+    for d in 0..max_doc {
+        let mut vs: Vec<i64> = match d {
+            37 => vec![1, 5],
+            38 => vec![7],
+            39 => vec![-2, 9],
+            _ => (0..d % 3).map(|_| rng.below(101) as i64 - 50).collect(),
+        };
+        if vs.is_empty() {
+            continue;
+        }
+        vs.sort();
+        snum.docs.push(d);
+        snum.counts.push(vs.len() as u32);
+        snum.values.extend(vs);
+    }
+    let mut dict: Vec<Vec<u8>> = (0..24).map(dv_term).collect();
+    dict.sort();
+    let mut sset = SortedSetOrdsColumn {
+        dict: dict.clone(),
+        ..SortedSetOrdsColumn::default()
+    };
+    for d in (0..max_doc).filter(|d| d % 5 != 2) {
+        let ords: BTreeSet<i64> = (0..rng.below(6)).map(|_| rng.below(24) as i64).collect();
+        if ords.is_empty() {
+            continue;
+        }
+        sset.docs.push(d);
+        sset.counts.push(ords.len() as u32);
+        sset.ords.extend(ords);
+    }
+    let blobs: [&[u8]; 6] = [
+        b"",
+        b"\n",
+        b"\\",
+        &[0xff],
+        b"x\ny\\z",
+        &[0, 0x0a, 0x5c, 0xff],
+    ];
+    let mut bin = BinaryColumn::default();
+    for d in (0..max_doc).filter(|d| d % 4 != 1) {
+        let b = blobs[d as usize % blobs.len()];
+        bin.docs.push(d);
+        bin.lengths.push(b.len() as u32);
+        bin.bytes.extend_from_slice(b);
+    }
+    // `sorted`'s dictionary is the terms some document uses.
+    let picks: Vec<(i32, Vec<u8>)> = (0..max_doc)
+        .filter(|d| d % 6 != 4)
+        .map(|d| (d, dv_term(rng.below(9))))
+        .collect();
+    let sdict: Vec<Vec<u8>> = picks
+        .iter()
+        .map(|p| p.1.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let sorted = SortedOrdsColumn {
+        docs: picks.iter().map(|p| p.0).collect(),
+        ords: picks
+            .iter()
+            .map(|p| sdict.binary_search(&p.1).unwrap() as i64)
+            .collect(),
+        dict: sdict,
+    };
+    let extremes = [i64::MIN, i64::MAX, 0, -1, 1 << 53];
+    let dvneg = (0..max_doc)
+        .filter(|d| d % 3 != 0)
+        .map(|d| (d, extremes[d as usize % extremes.len()]))
+        .collect();
+    vec![
+        ("num", DvValues::Numeric(num)),
+        ("snum", DvValues::SortedNumeric(snum)),
+        ("sset", DvValues::SortedSet(sset)),
+        ("bin", DvValues::Binary(bin)),
+        ("sorted", DvValues::Sorted(sorted)),
+        ("dvneg", DvValues::Numeric(dvneg)),
+    ]
+}
+
+fn csv<T: ToString>(v: &[T]) -> String {
+    v.iter().map(T::to_string).collect::<Vec<_>>().join(",")
+}
+
+/// Writes the segment's `.dat` (fields in number order, as Java's re-write
+/// adds them) and `dv.NAME.dat.tsv`; returns the file after reading it back.
+fn write_doc_values(root: &Path, name: &str, fis: &FieldInfos, max_doc: i32) -> Vec<u8> {
+    let columns = dv_columns(name, max_doc);
+    let mut w = SimpleTextDocValuesWriter::new(max_doc);
+    let mut blocks = Vec::new();
+    for (field, values) in &columns {
+        let fi = fis.field_by_name(field).unwrap();
+        let ty = st_infos::doc_values_type_name(fi.doc_values_type);
+        let mut tsv = String::new();
+        writeln!(tsv, "field\t{}\t{ty}", hexs(field)).unwrap();
+        match values {
+            DvValues::Numeric(v) => {
+                w.add_numeric_field(fi, v).unwrap();
+                for (d, x) in v {
+                    writeln!(tsv, "d\t{d}\t{x}").unwrap();
+                }
+            }
+            DvValues::Binary(c) => {
+                w.add_binary_field(fi, c).unwrap();
+                let mut at = 0;
+                for (d, len) in c.docs.iter().zip(&c.lengths) {
+                    let end = at + *len as usize;
+                    writeln!(tsv, "d\t{d}\t{}", hex(&c.bytes[at..end])).unwrap();
+                    at = end;
+                }
+            }
+            DvValues::Sorted(c) => {
+                w.add_sorted_field(fi, c).unwrap();
+                for (d, o) in c.docs.iter().zip(&c.ords) {
+                    writeln!(tsv, "d\t{d}\t{o}\t{}", hex(&c.dict[*o as usize])).unwrap();
+                }
+                for (o, t) in c.dict.iter().enumerate() {
+                    writeln!(tsv, "ord\t{o}\t{}", hex(t)).unwrap();
+                }
+            }
+            DvValues::SortedNumeric(c) => {
+                w.add_sorted_numeric_field(fi, c).unwrap();
+                let mut at = 0;
+                for (d, n) in c.docs.iter().zip(&c.counts) {
+                    let end = at + *n as usize;
+                    writeln!(tsv, "d\t{d}\t{}", csv(&c.values[at..end])).unwrap();
+                    at = end;
+                }
+            }
+            DvValues::SortedSet(c) => {
+                w.add_sorted_set_field(fi, c).unwrap();
+                let mut at = 0;
+                for (d, n) in c.docs.iter().zip(&c.counts) {
+                    let end = at + *n as usize;
+                    writeln!(tsv, "d\t{d}\t{}", csv(&c.ords[at..end])).unwrap();
+                    at = end;
+                }
+                for (o, t) in c.dict.iter().enumerate() {
+                    writeln!(tsv, "ord\t{o}\t{}", hex(t)).unwrap();
+                }
+            }
+        }
+        blocks.push(tsv);
+    }
+    let dat = w.finish().unwrap();
+    // Read back: every value as written, then the skipper as this port
+    // reads it (checked against Java's own reader by the fixture tests).
+    let r = SimpleTextDocValuesReader::open(&dat, max_doc).unwrap();
+    r.check_integrity().unwrap();
+    assert_eq!(r.num_fields(), columns.len());
+    let mut tsv = String::new();
+    for ((field, values), block) in columns.iter().zip(&blocks) {
+        tsv.push_str(block);
+        let fi = fis.field_by_name(field).unwrap();
+        if fi.doc_values_skip_index_type != DocValuesSkipIndexType::None {
+            let mut s = r.skipper(field, fi.doc_values_type).unwrap();
+            writeln!(
+                tsv,
+                "skipall\t{}\t{}\t{}\t{}",
+                s.min_value(),
+                s.max_value(),
+                s.doc_count(),
+                s.max_value_count()
+            )
+            .unwrap();
+            let mut t = 0;
+            loop {
+                s.advance(t);
+                if s.min_doc_id(0) == NO_MORE_DOCS {
+                    break;
+                }
+                writeln!(
+                    tsv,
+                    "skip\t{}\t{}\t{}\t{}\t{}",
+                    s.min_doc_id(0),
+                    s.max_doc_id(0),
+                    s.min_value_at(0),
+                    s.max_value_at(0),
+                    s.doc_count_at(0)
+                )
+                .unwrap();
+                t = s.max_doc_id(0) + 1;
+            }
+        }
+        if let DvValues::Numeric(v) = values {
+            let mut it = r.numeric(field).unwrap();
+            for (d, x) in v {
+                assert_eq!(it.next_doc().unwrap(), *d);
+                assert_eq!(it.long_value().unwrap(), *x);
+            }
+            assert_eq!(it.next_doc().unwrap(), NO_MORE_DOCS);
+        }
+    }
+    std::fs::write(root.join(format!("dv.{name}.dat.tsv")), tsv).unwrap();
+    dat
+}
+
+/// `_0`'s indexed fields from one corpus, so postings, norms and vectors
+/// agree as CheckIndex requires: `body` (positions, offsets, payloads
+/// holding `\n`, `\`, `0xff` or none) and `tag` (freqs only). Writes the
+/// `.pst`, `.len`, `.tvc` and the `norms`/`tv` manifests; returns the file
+/// names.
+fn write_indexed(
+    root: &Path,
+    index: &Path,
+    name: &str,
+    fis: &FieldInfos,
+    id: &[u8; 16],
+    max_doc: i32,
+) -> Vec<String> {
+    let mut rng = Rng(0x7E57_0B0D ^ max_doc as u64);
+    let words: [&[u8]; 8] = [
+        b"a",
+        b"b\nc",
+        b"d\\",
+        "\u{e9}".as_bytes(),
+        "\u{1f600}".as_bytes(),
+        "\u{ff5a}".as_bytes(),
+        b"zz",
+        b"",
+    ];
+    let mut body = Postings::new();
+    let mut tag = Postings::new();
+    let mut body_norms = Vec::new();
+    let mut tag_norms = Vec::new();
+    let mut tv_docs = Vec::new();
+    for doc in 0..max_doc {
+        let mut offset = 0;
+        let n = 1 + rng.below(7) as i32;
+        let mut doc_body: BTreeMap<Vec<u8>, Vec<Occ>> = BTreeMap::new();
+        for pos in 0..n {
+            let w = words[rng.below(words.len() as u64) as usize];
+            let payload = match rng.below(3) {
+                0 => Vec::new(),
+                1 => vec![b'\n', b'\\', 0xff],
+                _ => vec![rng.below(256) as u8],
+            };
+            let end = offset + w.len() as i32;
+            doc_body
+                .entry(w.to_vec())
+                .or_default()
+                .push((pos, offset, end, payload));
+            offset = end + 1;
+        }
+        let mut doc_tag: BTreeMap<Vec<u8>, Vec<Occ>> = BTreeMap::new();
+        let m = 1 + rng.below(3);
+        for _ in 0..m {
+            let t = format!("t{}", rng.below(4)).into_bytes();
+            doc_tag.entry(t).or_default().push((0, 0, 0, Vec::new()));
+        }
+        body_norms.push(i64::from(n));
+        tag_norms.push(m as i64);
+        let body_field = TermVectorField {
+            field_number: 13,
+            has_positions: true,
+            has_offsets: true,
+            has_payloads: true,
+            terms: doc_body
+                .iter()
+                .map(|(t, occ)| TermVectorTerm {
+                    term: t.clone(),
+                    freq: occ.len() as i32,
+                    positions: Some(occ.iter().map(|o| o.0).collect()),
+                    start_offsets: Some(occ.iter().map(|o| o.1).collect()),
+                    end_offsets: Some(occ.iter().map(|o| o.2).collect()),
+                    payloads: Some(occ.iter().map(|o| o.3.clone()).collect()),
+                })
+                .collect(),
+        };
+        let tag_field = TermVectorField {
+            field_number: 14,
+            has_positions: false,
+            has_offsets: false,
+            has_payloads: false,
+            terms: doc_tag
+                .iter()
+                .map(|(t, occ)| TermVectorTerm {
+                    term: t.clone(),
+                    freq: occ.len() as i32,
+                    positions: None,
+                    start_offsets: None,
+                    end_offsets: None,
+                    payloads: None,
+                })
+                .collect(),
+        };
+        tv_docs.push(TermVectorsDocument {
+            fields: vec![body_field, tag_field],
+        });
+        for (t, occ) in doc_body {
+            body.entry(t).or_default().insert(doc, occ);
+        }
+        for (t, occ) in doc_tag {
+            tag.entry(t).or_default().insert(doc, occ);
+        }
+    }
+
+    // Postings, in field-name order.
+    let fields: [(i32, IndexOptions, bool, &Postings); 2] = [
+        (
+            13,
+            IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
+            true,
+            &body,
+        ),
+        (14, IndexOptions::DocsAndFreqs, false, &tag),
+    ];
+    let built: Vec<Vec<TermPostings>> = fields
+        .iter()
+        .map(|(_, io, _, p)| term_postings(p, *io))
+        .collect();
+    let inputs: Vec<FieldPostingsInput<'_>> = fields
+        .iter()
+        .zip(&built)
+        .map(|((number, io, payloads, _), terms)| FieldPostingsInput {
+            field_number: *number,
+            index_options: *io,
+            doc_count: max_doc,
+            has_payloads: *payloads,
+            terms,
+        })
+        .collect();
+    let norms = [
+        FieldNorms {
+            field_number: 13,
+            values: &body_norms,
+        },
+        FieldNorms {
+            field_number: 14,
+            values: &tag_norms,
+        },
+    ];
+    let state = SegmentWriteState {
+        max_doc,
+        segment_id: id,
+        segment_suffix: "",
+        field_infos: fis,
+    };
+    let pst = write_pst(&inputs, &norms, &state).unwrap();
+    let pst_name = postings_file_name(name, "");
+
+    // Norms, in field-number order.
+    let mut consumer = SimpleTextNormsConsumer::new(max_doc);
+    let mut norms_tsv = String::new();
+    for (field, values) in [("body", &body_norms), ("tag", &tag_norms)] {
+        let dense: Vec<(i32, i64)> = values
+            .iter()
+            .enumerate()
+            .map(|(d, v)| (d as i32, *v))
+            .collect();
+        consumer
+            .add_norms_field(fis.field_by_name(field).unwrap(), &dense)
+            .unwrap();
+        writeln!(norms_tsv, "field\t{}", hexs(field)).unwrap();
+        for (d, v) in &dense {
+            writeln!(norms_tsv, "d\t{d}\t{v}").unwrap();
+        }
+    }
+    let len = consumer.finish().unwrap();
+    let len_name = norms_file_name(name, "");
+
+    // Term vectors, read back before Java is asked to.
+    let tvc = st_tv::write(&tv_docs, fis).unwrap();
+    let tv_reader = SimpleTextTermVectorsReader::open(&tvc, max_doc).unwrap();
+    let mut tv_tsv = String::new();
+    for (d, want) in tv_docs.iter().enumerate() {
+        writeln!(tv_tsv, "doc\t{d}").unwrap();
+        let got = tv_reader.get(d as i32).unwrap().unwrap();
+        assert_eq!(got.len(), want.fields.len());
+        for ((field, g), w) in got.iter().zip(&want.fields) {
+            assert_eq!(g, w);
+            writeln!(
+                tv_tsv,
+                "field\t{}\t{}\t{}\t{}\t{}",
+                hexs(field),
+                w.has_positions,
+                w.has_offsets,
+                w.has_payloads,
+                w.terms.len()
+            )
+            .unwrap();
+            for t in &w.terms {
+                writeln!(tv_tsv, "term\t{}\t{}", hex(&t.term), t.freq).unwrap();
+                if !(w.has_positions || w.has_offsets) {
+                    continue;
+                }
+                for k in 0..t.freq as usize {
+                    let at = |v: &Option<Vec<i32>>| v.as_ref().map_or(-1, |v| v[k]);
+                    let pay = match t.payloads.as_ref().map(|p| &p[k]) {
+                        Some(p) if !p.is_empty() => hex(p),
+                        _ => "-".to_string(),
+                    };
+                    writeln!(
+                        tv_tsv,
+                        "pos\t{}\t{}\t{}\t{pay}",
+                        at(&t.positions),
+                        at(&t.start_offsets),
+                        at(&t.end_offsets)
+                    )
+                    .unwrap();
+                }
+            }
+        }
+    }
+    let tvc_name = term_vectors_file_name(name);
+
+    for (file, bytes) in [(&pst_name, &pst), (&len_name, &len), (&tvc_name, &tvc)] {
+        std::fs::write(index.join(file), bytes).unwrap();
+    }
+    std::fs::write(root.join(format!("norms.{name}.tsv")), norms_tsv).unwrap();
+    std::fs::write(root.join(format!("tv.{name}.tsv")), tv_tsv).unwrap();
+    vec![pst_name, len_name, tvc_name]
+}
+
 /// `codec/`: segment `_0` (non-compound, sorted, deletes), `_1` (compound)
 /// and a standalone `_2.inf`, each read back by this port first.
 fn write_codec(root: &Path) {
@@ -665,23 +1162,25 @@ fn write_codec(root: &Path) {
     std::fs::create_dir_all(&index).unwrap();
     std::fs::create_dir_all(&infos_dir).unwrap();
     let version = Version::parse("10.5.0").unwrap();
-    let fis = stored_infos();
-    let inf = st_infos::write(&fis.fields);
-    assert_eq!(st_infos::read(&inf).unwrap().fields.len(), fis.fields.len());
     let mut segments = String::new();
     for (name, max_doc, compound) in [("_0", 40usize, false), ("_1", 11, true)] {
         let id: [u8; 16] = *format!("rustsimpletext{name}")
             .as_bytes()
             .first_chunk()
             .unwrap();
+        let fis = segment_infos(compound);
+        let inf = st_infos::write(&fis.fields);
+        assert_eq!(st_infos::read(&inf).unwrap().fields.len(), fis.fields.len());
         let docs = stored_docs(max_doc, 0x5eed ^ max_doc as u64);
         let fld = stored_fields_writer::write(&docs, &fis).unwrap();
         let reader = SimpleTextStoredFieldsReader::open(&fld, max_doc as i32).unwrap();
         assert_eq!(reader.max_doc(), max_doc);
         let fld_name = stored_fields_writer::stored_fields_file_name(name);
         let inf_name = st_infos::field_infos_file_name(name, "");
+        let dat_name = doc_values_file_name(name, "", DOC_VALUES_EXTENSION);
+        let dat = write_doc_values(root, name, &fis, max_doc as i32);
         let files = if compound {
-            let sub = vec![(fld_name, fld), (inf_name, inf.clone())];
+            let sub = vec![(fld_name, fld), (inf_name, inf.clone()), (dat_name, dat)];
             let scf = st_compound::write(&sub);
             let cfs = SimpleTextCompoundReader::open(&scf, name).unwrap();
             let mut cfs_tsv = String::new();
@@ -695,7 +1194,10 @@ fn write_codec(root: &Path) {
         } else {
             std::fs::write(index.join(&fld_name), fld).unwrap();
             std::fs::write(index.join(&inf_name), &inf).unwrap();
-            vec![inf_name, fld_name]
+            std::fs::write(index.join(&dat_name), dat).unwrap();
+            let mut files = vec![inf_name, fld_name, dat_name];
+            files.extend(write_indexed(root, &index, name, &fis, &id, max_doc as i32));
+            files
         };
         let mut si = SimpleTextSegmentInfo {
             name: name.into(),

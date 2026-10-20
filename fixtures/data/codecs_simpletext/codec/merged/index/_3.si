@@ -4,6 +4,10 @@
     uses compound file true
     has blocks false
     diagnostics 10
+      key mergeMaxNumSegments
+      value 1
+      key lucene.version
+      value 10.5.0
       key source
       value merge
       key os.arch
@@ -19,11 +23,7 @@
       key os.version
       value 6.18.33.2-microsoft-standard-WSL2
       key timestamp
-      value 1792497436526
-      key mergeMaxNumSegments
-      value 1
-      key lucene.version
-      value 10.5.0
+      value 1792505164964
     attributes 1
       key gen.note
       value line\
@@ -31,6 +31,6 @@ break \\ é
     files 2
       file _3.si
       file _3.scf
-    id [77 3a 6f 5d 78 cf 9b 14 b2 6c 13 e9 ae e8 96 b9]
+    id [37 fc 1e 4 b3 9a 5f d c4 9f e9 89 ef 30 d 24]
     sort 0
-checksum 00000000004115244548
+checksum 00000000002001451370

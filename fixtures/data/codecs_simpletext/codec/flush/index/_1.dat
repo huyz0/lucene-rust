@@ -1,22 +1,3 @@
-field sdv
-  type SORTED
-  doccount 1
-  maxvaluecount 1
-  numvalues 1
-  maxlength 2
-  pattern 0
-  ordpattern 0
-length 2
-s0
-1
-  skipdata
-    interval
-      minDocID 0
-      maxDocID 0
-      minValue 0
-      maxValue 0
-      docCount 1
-  skipend
 field num
   type NUMERIC
   minalue 17
@@ -52,6 +33,38 @@ v0
       maxDocID 0
       minValue 0
       maxValue 0
+      docCount 1
+  skipend
+field dvsset
+  type SORTED_SET
+  doccount 1
+  maxvaluecount 7
+  numvalues 7
+  maxlength 3
+  pattern 0
+  ordpattern XXXXXXXXXXXXX
+length 3
+a
+b
+length 3
+t08
+length 3
+t18
+length 3
+t19
+length 3
+t24
+length 3
+t27
+length 3
+t38
+0,1,2,3,4,5,6
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 0
+      minValue 0
+      maxValue 6
       docCount 1
   skipend
 field upd
@@ -90,6 +103,24 @@ T
       maxValue -1
       docCount 1
   skipend
+field dvbig
+  type NUMERIC
+  minalue 9223372036854775342
+  maxvalue 9223372036854775342
+  doccount 1
+  maxvaluecount 1
+  origin 9223372036854775342
+  pattern 0
+0
+T
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 0
+      minValue 9223372036854775342
+      maxValue 9223372036854775342
+      docCount 1
+  skipend
 field snum
   type SORTED_NUMERIC
   minalue 1
@@ -107,6 +138,73 @@ T
       maxDocID 0
       minValue 1
       maxValue 9
+      docCount 1
+  skipend
+field dvbin
+  type BINARY
+  doccount 1
+  maxvaluecount 1
+  maxlength 28
+  pattern 00
+length 28
+[80 44 e5 d1 27 68 35 b8 91]
+T
+field sdv
+  type SORTED
+  doccount 1
+  maxvaluecount 1
+  numvalues 1
+  maxlength 2
+  pattern 0
+  ordpattern 0
+length 2
+s0
+1
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 0
+      minValue 0
+      maxValue 0
+      docCount 1
+  skipend
+field dvsnum
+  type SORTED_NUMERIC
+  minalue 9007199254740992
+  maxvalue 9007199254740992
+  doccount 1
+  maxvaluecount 1
+  maxlength 49
+  pattern 00
+length 49
+[39 30 30 37 31 39 39 32 35 34 37 34 30 39 39 32]
+T
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 0
+      minValue 9007199254740992
+      maxValue 9007199254740992
+      docCount 1
+  skipend
+field dvsorted
+  type SORTED
+  doccount 1
+  maxvaluecount 1
+  numvalues 1
+  maxlength 3
+  pattern 0
+  ordpattern 0
+length 3
+\
+\
+1
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 0
+      minValue 0
+      maxValue 0
       docCount 1
   skipend
 field bdv
@@ -137,4 +235,4 @@ T
       docCount 1
   skipend
 END
-checksum 00000000000885942081
+checksum 00000000002419530108

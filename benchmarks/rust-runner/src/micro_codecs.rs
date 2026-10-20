@@ -37,6 +37,18 @@
 //! `cx_stext_seek`: per target of `stext/`, `seekExact` on the word through
 //! `simpletext`'s `SimpleTextFieldsReader`, then a hit's postings (docs and
 //! freqs) walked to the end, over Java's `SimpleTextBench_0` `.pst`.
+//!
+//! `cx_stext_dv`: every doc-values iterator of `sdv/` (20 000 documents
+//! under `SimpleTextCodec`; NUMERIC, BINARY, SORTED, SORTED_NUMERIC,
+//! SORTED_SET) walked to the end through `simpletext`'s
+//! `SimpleTextDocValuesReader` over Java's `.dat`, each value hashed, then
+//! every SORTED and SORTED_SET term by `lookup_ord`.
+//!
+//! `cx_stext_tv`: per target document of `stv/` (5 000 documents under
+//! `SimpleTextCodec`, vectors with positions, offsets and payloads on
+//! `body`, without on `tag`), `get` through `simpletext`'s
+//! `SimpleTextTermVectorsReader` over Java's `.tvc`, every field, term,
+//! position, offset and payload hashed.
 
 use std::hint::black_box;
 use std::time::Duration;
@@ -48,9 +60,13 @@ use lucene_codecs::bloom::BloomFilteredFieldsProducer;
 use lucene_codecs::hnsw_vectors::SearchOptions;
 use lucene_codecs::memory::{DirectFiles, DirectPostingsFormat, FstPostingsFormat};
 use lucene_codecs::segment_state::SegmentReadState;
+use lucene_codecs::simpletext::doc_values_reader::SimpleTextDocValuesReader;
 use lucene_codecs::simpletext::fields_reader::{SimpleTextFieldsReader, SimpleTextTerms};
 use lucene_codecs::simpletext::stored_fields_reader::SimpleTextStoredFieldsReader;
-use lucene_codecs::simpletext::{FREQS, NO_MORE_DOCS};
+use lucene_codecs::simpletext::term_vectors_reader::{
+    SimpleTextTermVectorsReader, SimpleTextTvTermsEnum,
+};
+use lucene_codecs::simpletext::{ALL, FREQS, NO_MORE_DOCS};
 use lucene_codecs::stored_fields::{self, StoredFieldVisitor, VisitStatus};
 use lucene_codecs::uniformsplit::sharedterms::StUniformSplitPostingsFormat;
 use lucene_codecs::uniformsplit::UniformSplitPostingsFormat;
@@ -519,6 +535,141 @@ fn bench_stext_stored(w: Duration, m: Duration, dir: &str) {
     });
 }
 
+/// One `cx_stext_dv` pass, as Java's `dvPass`: the documents and terms seen.
+fn dv_pass(r: &SimpleTextDocValuesReader<'_>, f: &mut Fnv) -> u64 {
+    let mut n = 0u64;
+    let mut num = r.numeric("n").unwrap();
+    let mut doc = num.next_doc().unwrap();
+    while doc != NO_MORE_DOCS {
+        f.add(i64::from(doc));
+        f.add(num.long_value().unwrap());
+        n += 1;
+        doc = num.next_doc().unwrap();
+    }
+    let mut bin = r.binary("b").unwrap();
+    let mut doc = bin.next_doc().unwrap();
+    while doc != NO_MORE_DOCS {
+        let v = bin.binary_value().unwrap();
+        f.add(i64::from(doc));
+        f.add(v.len() as i64);
+        f.add(v.first().map_or(-1, |&b| i64::from(b as i8)));
+        n += 1;
+        doc = bin.next_doc().unwrap();
+    }
+    let mut sorted = r.sorted("s").unwrap();
+    let mut doc = sorted.next_doc().unwrap();
+    while doc != NO_MORE_DOCS {
+        f.add(i64::from(doc));
+        f.add(i64::from(sorted.ord_value()));
+        n += 1;
+        doc = sorted.next_doc().unwrap();
+    }
+    let mut sn = r.sorted_numeric("sn").unwrap();
+    let mut doc = sn.next_doc().unwrap();
+    while doc != NO_MORE_DOCS {
+        f.add(i64::from(doc));
+        for _ in 0..sn.doc_value_count() {
+            f.add(sn.next_value().unwrap());
+        }
+        n += 1;
+        doc = sn.next_doc().unwrap();
+    }
+    let mut ss = r.sorted_set("ss").unwrap();
+    let mut doc = ss.next_doc().unwrap();
+    while doc != NO_MORE_DOCS {
+        f.add(i64::from(doc));
+        for _ in 0..ss.doc_value_count() {
+            f.add(ss.next_ord().unwrap());
+        }
+        n += 1;
+        doc = ss.next_doc().unwrap();
+    }
+    for ord in 0..sorted.value_count() {
+        let t = sorted.lookup_ord(ord).unwrap();
+        f.add(t.len() as i64);
+        f.add(i64::from(t[t.len() - 1] as i8));
+        n += 1;
+    }
+    for ord in 0..ss.value_count() {
+        let t = ss.lookup_ord(ord).unwrap();
+        f.add(t.len() as i64);
+        f.add(i64::from(t[t.len() - 1] as i8));
+        n += 1;
+    }
+    n
+}
+
+fn bench_stext_dv(w: Duration, m: Duration, dir: &str) {
+    if !selected("cx_stext_dv") {
+        return;
+    }
+    let dat = std::fs::read(format!("{dir}/_0.dat"))
+        .expect("run CodecsMicro build first (scripts/bench-micro.sh --bench codecs)");
+    let reader = SimpleTextDocValuesReader::open(&dat, 20_000).unwrap();
+    let mut f = Fnv::new();
+    let n = dv_pass(&reader, &mut f);
+    println!("#check\tcx_stext_dv\t{:016x}\t{n}", f.0);
+    measure("cx_stext_dv", w, m, || {
+        let mut g = Fnv::new();
+        let c = dv_pass(&reader, black_box(&mut g));
+        black_box(g.0);
+        c
+    });
+}
+
+/// One `cx_stext_tv` pass, as Java's `tvPass`.
+fn tv_pass(reader: &SimpleTextTermVectorsReader<'_>, docs: &[i32], f: &mut Fnv) {
+    for &doc in docs {
+        f.add(i64::from(doc));
+        let fields = reader.get(doc).unwrap().unwrap_or_default();
+        for (name, field) in &fields {
+            // ASCII names: Java's `length()` is this.
+            f.add(name.len() as i64);
+            let positions = field.has_positions || field.has_offsets;
+            let mut te = SimpleTextTvTermsEnum::new(field);
+            while let Some(t) = te.next() {
+                f.add(t.len() as i64);
+                f.add(i64::from(t[t.len() - 1] as i8));
+                f.add(te.total_term_freq().unwrap());
+                let mut pe = te.postings(ALL).unwrap();
+                pe.next_doc();
+                let freq = pe.freq();
+                f.add(i64::from(freq));
+                if !positions {
+                    continue;
+                }
+                for _ in 0..freq {
+                    f.add(i64::from(pe.next_position().unwrap()));
+                    f.add(i64::from(pe.start_offset()));
+                    f.add(i64::from(pe.end_offset()));
+                    f.add(pe.payload().map_or(-1, |p| p.len() as i64));
+                }
+            }
+        }
+    }
+}
+
+fn bench_stext_tv(w: Duration, m: Duration, dir: &str) {
+    if !selected("cx_stext_tv") {
+        return;
+    }
+    let docs: Vec<i32> = read_targets(dir)
+        .iter()
+        .map(|t| std::str::from_utf8(t).unwrap().parse().unwrap())
+        .collect();
+    let tvc = std::fs::read(format!("{dir}/_0.tvc")).unwrap();
+    let reader = SimpleTextTermVectorsReader::open(&tvc, 5_000).unwrap();
+    let mut f = Fnv::new();
+    tv_pass(&reader, &docs, &mut f);
+    println!("#check\tcx_stext_tv\t{:016x}\t{}", f.0, docs.len());
+    measure("cx_stext_tv", w, m, || {
+        let mut g = Fnv::new();
+        tv_pass(&reader, &docs, black_box(&mut g));
+        black_box(g.0);
+        docs.len() as u64
+    });
+}
+
 pub fn bench_codecs(w: Duration, m: Duration, dir: &str) {
     bench_bloom(w, m, &format!("{dir}/bloom"));
     bench_memory(w, m, &format!("{dir}/memory"));
@@ -529,4 +680,6 @@ pub fn bench_codecs(w: Duration, m: Duration, dir: &str) {
     bench_bterms(w, m, &format!("{dir}/bterms"));
     bench_stext(w, m, &format!("{dir}/stext"));
     bench_stext_stored(w, m, &format!("{dir}/sstored"));
+    bench_stext_dv(w, m, &format!("{dir}/sdv"));
+    bench_stext_tv(w, m, &format!("{dir}/stv"));
 }

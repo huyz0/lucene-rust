@@ -1,5 +1,5 @@
 doc 0
-  numfields 1
+  numfields 6
   field 9
     name tv
     positions true
@@ -14,5 +14,56 @@ doc 0
       position 1
         startoffset 3
         endoffset 5
+  field 32
+    name tvall
+    positions true
+    offsets   true
+    payloads  true
+    numterms 1
+    term a
+      freq 1
+      position 0
+        payload \
+\\ÿ
+        startoffset 0
+        endoffset 1
+  field 30
+    name tvoff
+    positions false
+    offsets   true
+    payloads  false
+    numterms 1
+    term a
+      freq 1
+        startoffset 0
+        endoffset 1
+  field 31
+    name tvpay
+    positions true
+    offsets   false
+    payloads  true
+    numterms 1
+    term a
+      freq 1
+      position 0
+        payload \
+\\ÿ
+  field 28
+    name tvplain
+    positions false
+    offsets   false
+    payloads  false
+    numterms 1
+    term a
+      freq 1
+  field 29
+    name tvpos
+    positions true
+    offsets   false
+    payloads  false
+    numterms 1
+    term a
+      freq 1
+      position 0
 END
-checksum 00000000000029632561
+checksum 00000000002109759661

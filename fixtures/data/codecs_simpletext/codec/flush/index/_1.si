@@ -4,14 +4,6 @@
     uses compound file false
     has blocks false
     diagnostics 8
-      key timestamp
-      value 1792497436027
-      key source
-      value flush
-      key lucene.version
-      value 10.5.0
-      key os.version
-      value 6.18.33.2-microsoft-standard-WSL2
       key os.arch
       value amd64
       key os
@@ -20,6 +12,14 @@
       value Eclipse Adoptium
       key java.runtime.version
       value 21.0.12.1+1-LTS
+      key timestamp
+      value 1792505164144
+      key source
+      value flush
+      key lucene.version
+      value 10.5.0
+      key os.version
+      value 6.18.33.2-microsoft-standard-WSL2
     attributes 1
       key gen.note
       value line\
@@ -36,7 +36,7 @@ break \\ é
       file _1.dii
       file _1.vec
       file _1.dat
-    id [77 3a 6f 5d 78 cf 9b 14 b2 6c 13 e9 ae e8 96 a5]
+    id [37 fc 1e 4 b3 9a 5f d c4 9f e9 89 ef 30 d 10]
     sort 3
       name SortField
       type <long: "num">! missingValue=-9223372036854775808
@@ -47,4 +47,4 @@ break \\ é
       name SortedSetSortField
       type <sortedset: "sset">! selector=MIN
       bytes [4 73 73 65 74 1 0 0 0 0 0 0 0 0 0 0 0]
-checksum 00000000002694280558
+checksum 00000000003961840653

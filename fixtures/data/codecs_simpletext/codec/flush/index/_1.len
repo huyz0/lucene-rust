@@ -70,5 +70,95 @@ T
       maxValue 2
       docCount 1
   skipend
+field tvplain
+  type NUMERIC
+  minalue 1
+  maxvalue 1
+  doccount 1
+  maxvaluecount 1
+  origin 1
+  pattern 0
+0
+T
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 0
+      minValue 1
+      maxValue 1
+      docCount 1
+  skipend
+field tvpos
+  type NUMERIC
+  minalue 1
+  maxvalue 1
+  doccount 1
+  maxvaluecount 1
+  origin 1
+  pattern 0
+0
+T
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 0
+      minValue 1
+      maxValue 1
+      docCount 1
+  skipend
+field tvoff
+  type NUMERIC
+  minalue 1
+  maxvalue 1
+  doccount 1
+  maxvaluecount 1
+  origin 1
+  pattern 0
+0
+T
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 0
+      minValue 1
+      maxValue 1
+      docCount 1
+  skipend
+field tvpay
+  type NUMERIC
+  minalue 1
+  maxvalue 1
+  doccount 1
+  maxvaluecount 1
+  origin 1
+  pattern 0
+0
+T
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 0
+      minValue 1
+      maxValue 1
+      docCount 1
+  skipend
+field tvall
+  type NUMERIC
+  minalue 1
+  maxvalue 1
+  doccount 1
+  maxvaluecount 1
+  origin 1
+  pattern 0
+0
+T
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 0
+      minValue 1
+      maxValue 1
+      docCount 1
+  skipend
 END
-checksum 00000000002739757568
+checksum 00000000002360940001

@@ -2,6 +2,20 @@ import org.apache.lucene.codecs.Codec;
 import org.apache.lucene.codecs.CompoundDirectory;
 import org.apache.lucene.codecs.StoredFieldsReader;
 import org.apache.lucene.codecs.StoredFieldsWriter;
+import org.apache.lucene.codecs.DocValuesConsumer;
+import org.apache.lucene.codecs.DocValuesProducer;
+import org.apache.lucene.codecs.NormsConsumer;
+import org.apache.lucene.codecs.TermVectorsReader;
+import org.apache.lucene.codecs.TermVectorsWriter;
+import org.apache.lucene.index.BinaryDocValues;
+import org.apache.lucene.index.CheckIndex;
+import org.apache.lucene.index.DocValuesSkipper;
+import org.apache.lucene.index.Fields;
+import org.apache.lucene.index.SortedDocValues;
+import org.apache.lucene.index.SortedNumericDocValues;
+import org.apache.lucene.index.SortedSetDocValues;
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexFileNames;
 import org.apache.lucene.index.LeafReaderContext;
@@ -79,20 +93,23 @@ import java.util.Map;
  * </ul>
  *
  * <p>Then {@code codec/}: a Rust-written SimpleText index with no segments file -- {@code _0}
- * (index sort, diagnostics, attributes, every stored type, a {@code .liv}) and the compound
- * {@code _1} -- plus a {@code _2.inf} holding every kind of field. Each {@code .si}, {@code .inf},
- * {@code .liv}, {@code .scf} and {@code .fld} is read by SimpleTextCodec's own format and must
- * match Rust's manifest, then re-written by Java's writer: byte for byte equal, except the {@code
- * .si}, whose hash-ordered maps only compare as line sets. Java then commits a {@code segments_N}
- * over the Rust segments and opens them through {@link DirectoryReader}: max/num docs, live docs
- * and every stored value.
+ * (index sort, diagnostics, attributes, every stored type, a {@code .liv}, every doc-values type
+ * with skip indexes, norms, postings and term vectors) and the compound {@code _1} (blocks and
+ * their parent field) -- plus a {@code _2.inf} holding every kind of field. Each {@code .si},
+ * {@code .inf}, {@code .liv}, {@code .scf}, {@code .fld}, {@code .dat}, {@code .len}, {@code .pst}
+ * and {@code .tvc} is read by SimpleTextCodec's own format and must match Rust's manifest (doc
+ * values, dictionaries and skipper intervals; norms; every vector occurrence), then re-written by
+ * Java's writer: byte for byte equal, except the {@code .si}, whose hash-ordered maps only compare
+ * as line sets. Java then commits a {@code segments_N} over the Rust segments, opens them through
+ * {@link DirectoryReader} (max/num docs, live docs, every stored value) and runs {@link
+ * CheckIndex} at its slowest level: index-sort order, vectors against postings, impacts against
+ * norms.
  *
- * <p>What it cannot catch: anything that binds the {@code .pst} into a segment ({@code
- * PerFieldPostingsFormat} attributes), since this port's IndexWriter does not route a field to
- * SimpleText; nor an {@code .si} whose maps are right but in an order Java would not write. The
- * Rust-written segments are not CheckIndex-consistent either: {@code _0}'s index sort names fields
- * absent from its {@code .inf}, and {@code _1} has blocks with no parent field -- the formats store
- * both as given, and only CheckIndex or an IndexWriter would object.
+ * <p>What it cannot catch: anything that binds the {@code _0_SimpleText_0.pst} into a segment
+ * ({@code PerFieldPostingsFormat} attributes), since this port's IndexWriter does not route a field
+ * to SimpleText; nor an {@code .si} whose maps are right but in an order Java would not write; nor
+ * a doc-values file whose fields are in an order other than field-number order (Java's re-write
+ * adds them in that order, where a flush adds them in hash order).
  */
 public class VerifyCodecsSimpleText {
   static final String[] NAMES = {"id", "bin", "tag", "body"};
@@ -480,6 +497,181 @@ public class VerifyCodecsSimpleText {
     }
   }
 
+  /** A doc-values field as {@code GenCodecsSimpleTextCodec} dumps it: values, dictionary, skipper. */
+  static void dvLines(List<String> lines, DocValuesProducer p, FieldInfo fi) throws IOException {
+    final int end = DocIdSetIterator.NO_MORE_DOCS;
+    lines.add("field\t" + hexs(fi.name) + "\t" + fi.getDocValuesType());
+    switch (fi.getDocValuesType()) {
+      case NUMERIC -> {
+        NumericDocValues v = p.getNumeric(fi);
+        for (int d = v.nextDoc(); d != end; d = v.nextDoc()) {
+          lines.add("d\t" + d + "\t" + v.longValue());
+        }
+      }
+      case BINARY -> {
+        BinaryDocValues v = p.getBinary(fi);
+        for (int d = v.nextDoc(); d != end; d = v.nextDoc()) {
+          lines.add("d\t" + d + "\t" + hex(v.binaryValue()));
+        }
+      }
+      case SORTED -> {
+        SortedDocValues v = p.getSorted(fi);
+        for (int d = v.nextDoc(); d != end; d = v.nextDoc()) {
+          lines.add("d\t" + d + "\t" + v.ordValue() + "\t" + hex(v.lookupOrd(v.ordValue())));
+        }
+        for (int o = 0; o < v.getValueCount(); o++) {
+          lines.add("ord\t" + o + "\t" + hex(v.lookupOrd(o)));
+        }
+      }
+      case SORTED_NUMERIC -> {
+        SortedNumericDocValues v = p.getSortedNumeric(fi);
+        for (int d = v.nextDoc(); d != end; d = v.nextDoc()) {
+          StringBuilder sb = new StringBuilder();
+          for (int k = 0; k < v.docValueCount(); k++) sb.append(k == 0 ? "" : ",").append(v.nextValue());
+          lines.add("d\t" + d + "\t" + sb);
+        }
+      }
+      case SORTED_SET -> {
+        SortedSetDocValues v = p.getSortedSet(fi);
+        for (int d = v.nextDoc(); d != end; d = v.nextDoc()) {
+          StringBuilder sb = new StringBuilder();
+          for (int k = 0; k < v.docValueCount(); k++) sb.append(k == 0 ? "" : ",").append(v.nextOrd());
+          lines.add("d\t" + d + "\t" + sb);
+        }
+        for (long o = 0; o < v.getValueCount(); o++) {
+          lines.add("ord\t" + o + "\t" + hex(v.lookupOrd(o)));
+        }
+      }
+      default -> throw new AssertionError(fi.getDocValuesType());
+    }
+    if (fi.docValuesSkipIndexType() != DocValuesSkipIndexType.NONE) {
+      DocValuesSkipper s = p.getSkipper(fi);
+      lines.add("skipall\t" + s.minValue() + "\t" + s.maxValue() + "\t" + s.docCount() + "\t"
+          + s.maxValueCount());
+      for (int t = 0; ; ) {
+        s.advance(t);
+        if (s.minDocID(0) == end) break;
+        lines.add("skip\t" + s.minDocID(0) + "\t" + s.maxDocID(0) + "\t" + s.minValue(0) + "\t"
+            + s.maxValue(0) + "\t" + s.docCount(0));
+        t = s.maxDocID(0) + 1;
+      }
+    }
+  }
+
+  /** Rust's {@code .dat}: read against its manifest, re-written by Java's consumer in field order. */
+  static int verifyDocValues(Path root, Directory core, Directory out, SegmentInfo si,
+      FieldInfos fis, String name) throws Exception {
+    Codec codec = new SimpleTextCodec();
+    List<String> lines = new ArrayList<>();
+    try (DocValuesProducer p =
+            codec.docValuesFormat().fieldsProducer(new SegmentReadState(core, si, fis, CTX));
+        DocValuesConsumer c = codec.docValuesFormat().fieldsConsumer(
+            new SegmentWriteState(InfoStream.NO_OUTPUT, out, si, fis, null, CTX))) {
+      p.checkIntegrity();
+      for (FieldInfo fi : fis) {
+        switch (fi.getDocValuesType()) {
+          case NONE -> {
+            continue;
+          }
+          case NUMERIC -> c.addNumericField(fi, p);
+          case BINARY -> c.addBinaryField(fi, p);
+          case SORTED -> c.addSortedField(fi, p);
+          case SORTED_NUMERIC -> c.addSortedNumericField(fi, p);
+          case SORTED_SET -> c.addSortedSetField(fi, p);
+        }
+        dvLines(lines, p, fi);
+      }
+    }
+    return expect(root.resolve("dv." + name + ".dat.tsv"), lines)
+        + sameBytes(core, name + ".dat", out, name + ".dat");
+  }
+
+  /**
+   * Rust's {@code .len}, {@code .pst} and {@code .tvc}: norms and vectors read against their
+   * manifests; each file re-written by Java's writer (the postings with the norms Rust wrote).
+   */
+  static int verifyIndexed(Path root, Directory core, Directory out, SegmentInfo si,
+      FieldInfos fis, String name) throws Exception {
+    Codec codec = new SimpleTextCodec();
+    int failures = 0;
+    final int end = DocIdSetIterator.NO_MORE_DOCS;
+    SegmentReadState read = new SegmentReadState(core, si, fis, CTX);
+    SegmentWriteState write = new SegmentWriteState(InfoStream.NO_OUTPUT, out, si, fis, null, CTX);
+    try (NormsProducer norms = codec.normsFormat().normsProducer(read)) {
+      norms.checkIntegrity();
+      List<String> lines = new ArrayList<>();
+      try (NormsConsumer c = codec.normsFormat().normsConsumer(write)) {
+        for (FieldInfo fi : fis) {
+          if (!fi.hasNorms()) continue;
+          lines.add("field\t" + hexs(fi.name));
+          NumericDocValues v = norms.getNorms(fi);
+          for (int d = v.nextDoc(); d != end; d = v.nextDoc()) {
+            lines.add("d\t" + d + "\t" + v.longValue());
+          }
+          c.addNormsField(fi, norms);
+        }
+      }
+      failures += expect(root.resolve("norms." + name + ".tsv"), lines);
+      failures += sameBytes(core, name + ".len", out, name + ".len");
+      try (FieldsProducer fields = codec.postingsFormat().fieldsProducer(read)) {
+        fields.checkIntegrity();
+        try (FieldsConsumer c = codec.postingsFormat().fieldsConsumer(write)) {
+          c.write(fields, norms);
+        }
+      }
+      failures += sameBytes(core, name + ".pst", out, name + ".pst");
+    }
+    List<String> lines = new ArrayList<>();
+    try (TermVectorsReader tv = codec.termVectorsFormat().vectorsReader(core, si, fis, CTX);
+        TermVectorsWriter w = codec.termVectorsFormat().vectorsWriter(out, si, CTX)) {
+      tv.checkIntegrity();
+      for (int d = 0; d < si.maxDoc(); d++) {
+        lines.add("doc\t" + d);
+        Fields f = tv.get(d);
+        if (f == null) {
+          lines.add("none");
+          w.startDocument(0);
+          w.finishDocument();
+          continue;
+        }
+        w.startDocument(f.size());
+        for (String field : f) {
+          Terms terms = f.terms(field);
+          boolean pos = terms.hasPositions();
+          boolean off = terms.hasOffsets();
+          boolean pay = terms.hasPayloads();
+          lines.add("field\t" + hexs(field) + "\t" + pos + "\t" + off + "\t" + pay + "\t"
+              + terms.size());
+          w.startField(fis.fieldInfo(field), (int) terms.size(), pos, off, pay);
+          TermsEnum te = terms.iterator();
+          for (BytesRef t = te.next(); t != null; t = te.next()) {
+            int freq = (int) te.totalTermFreq();
+            lines.add("term\t" + hex(t) + "\t" + freq);
+            w.startTerm(t, freq);
+            if (pos || off) {
+              PostingsEnum pe = te.postings(null, PostingsEnum.ALL);
+              pe.nextDoc();
+              for (int k = 0; k < freq; k++) {
+                int position = pe.nextPosition();
+                BytesRef payload = pe.getPayload();
+                lines.add("pos\t" + position + "\t" + pe.startOffset() + "\t" + pe.endOffset()
+                    + "\t" + (payload == null ? "-" : hex(payload)));
+                w.addPosition(position, pe.startOffset(), pe.endOffset(), payload);
+              }
+            }
+            w.finishTerm();
+          }
+          w.finishField();
+        }
+        w.finishDocument();
+      }
+      w.finish(si.maxDoc());
+    }
+    failures += expect(root.resolve("tv." + name + ".tsv"), lines);
+    failures += sameBytes(core, name + ".tvc", out, name + ".tvc");
+    return failures;
+  }
+
   static String bitString(Bits live) {
     StringBuilder sb = new StringBuilder();
     for (int d = 0; d < live.length(); d++) sb.append(live.get(d) ? '1' : '0');
@@ -572,6 +764,8 @@ public class VerifyCodecsSimpleText {
         }
         failures += expect(root.resolve("stored." + name + ".tsv"), stored);
         failures += sameBytes(core, name + ".fld", out, name + ".fld");
+        failures += verifyDocValues(root, core, out, si, fis, name);
+        if (fis.hasNorms()) failures += verifyIndexed(root, core, out, si, fis, name);
 
         SegmentCommitInfo sci =
             new SegmentCommitInfo(si, delCount, 0, delGen, -1, -1, StringHelper.randomId());
@@ -624,6 +818,19 @@ public class VerifyCodecsSimpleText {
         }
         System.out.println("codec: " + reader.leaves().size() + " segments, " + reader.maxDoc()
             + " docs (" + reader.numDocs() + " live) opened through DirectoryReader");
+      }
+      ByteArrayOutputStream log = new ByteArrayOutputStream();
+      try (CheckIndex ci = new CheckIndex(dir)) {
+        ci.setLevel(CheckIndex.Level.MIN_LEVEL_FOR_SLOW_CHECKS);
+        ci.setInfoStream(new PrintStream(log, true, StandardCharsets.UTF_8));
+        CheckIndex.Status status = ci.checkIndex();
+        if (!status.clean) {
+          System.out.println(log.toString(StandardCharsets.UTF_8));
+          System.out.println("codec: CheckIndex found problems");
+          failures++;
+        } else {
+          System.out.println("codec: CheckIndex clean (slow checks)");
+        }
       }
     }
 
