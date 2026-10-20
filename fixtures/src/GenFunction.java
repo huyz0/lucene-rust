@@ -526,7 +526,7 @@ public class GenFunction {
     "mfloat(mf,MAX)", "mdouble(md,MIN)", "mdouble(md,MAX)",
     "bytes(s)", "bytes(b)", "bytes(nosuch)", "sset(ss,MIN)", "sset(ss,MAX)", "sset(ss,MIDDLE_MIN)",
     "sset(ss,MIDDLE_MAX)", "enum(e)", "joindf(k,body)",
-    "const(1.5)", "const(-2.0)", "dconst(2.25)", "dconst(1.0E10)", "literal(hello)",
+    "const(1.5)", "const(-2.0)", "dconst(2.25)", "dconst(1.0E10)", "dconst(-4.9E-324)", "literal(hello)",
     "sum(int(i),float(f),const(0.5))", "product(float(f),double(d))", "max(int(i),float(f))",
     "min(int(i),float(f),long(l))", "max(long(nosuch),int(i))", "div(float(f),int(i))",
     "pow(float(f),const(0.5))", "pow(int(i),const(2.5))", "linear(float(f),2.5,-1.0)",
