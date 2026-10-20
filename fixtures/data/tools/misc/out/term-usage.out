@@ -1,0 +1,6 @@
+
+
+usage:
+	java org.apache.lucene.misc.GetTermInfo <index dir> field term 
+
+

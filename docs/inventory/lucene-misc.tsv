@@ -2,9 +2,9 @@
 # Checked by scripts/check-port-inventory.py --module misc (see its docstring for the statuses).
 # class	status	detail
 misc/CollectorMemoryTracker	ported	crates/lucene-search/src/misc/memory.rs::CollectorMemoryTracker
-misc/GetTermInfo	todo:M14	M14.i: the CLI printing one term's totalTermFreq and docFreq, with the tools
+misc/GetTermInfo	ported	crates/lucene-tools/src/misc/get_term_info.rs::get_term_info
 misc/HighFreqTerms	ported	crates/lucene-search/src/misc/high_freq.rs::get_high_freq_terms
-misc/IndexMergeTool	todo:M14	M14.i: the CLI merging the indices named on its command line into the first
+misc/IndexMergeTool	ported	crates/lucene-tools/src/misc/index_merge_tool.rs::main
 misc/SweetSpotSimilarity	ported	crates/lucene-search/src/misc/sweet_spot.rs::SweetSpotSimilarity
 misc/TermStats	ported	crates/lucene-search/src/misc/high_freq.rs::TermStats
 misc/document/LazyDocument	ported	crates/lucene-search/src/misc/lazy_document.rs::LazyDocument
