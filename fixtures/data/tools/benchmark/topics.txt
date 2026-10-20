@@ -1,0 +1,78 @@
+<top>
+<num> Number: 12
+
+<title> baba lada
+
+<desc> Description:
+documents about lada
+
+<narr> Narrative:
+razu fami
+
+</top>
+
+<top>
+<num> Number: 3
+
+<title> dage fima
+
+<desc> Description:
+dage
+
+<narr> Narrative:
+lido
+
+</top>
+
+<top>
+<num> Number: 7
+
+<title> fami-vipa (garo)
+
+<desc> Description:
+garo: fomu
+
+<narr> Narrative:
+n/a
+
+</top>
+
+<top>
+<num> Number: 25
+
+<title> melen
+
+<desc> Description:
+a rare word
+
+<narr> Narrative:
+nepin peton
+
+</top>
+
+<top>
+<num> Number: b2
+
+<title> nani paso meka
+
+<desc> Description:
+nene
+
+<narr> Narrative:
+kavu
+
+</top>
+
+<top>
+<num> Number: 8
+
+<title> tale
+
+<desc> Description:
+never judged
+
+<narr> Narrative:
+vapi
+
+</top>
+
