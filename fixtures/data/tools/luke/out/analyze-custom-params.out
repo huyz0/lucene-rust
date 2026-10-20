@@ -1,0 +1,92 @@
+analyzer: org.apache.lucene.analysis.custom.CustomAnalyzer
+token c0ts
+  PackedTokenAttributeImpl {bytes=[63 30 74 73], endOffset=4, positionIncrement=1, positionLength=1, startOffset=0, term=c0ts, termFrequency=1, type=word}
+token c0t
+  PackedTokenAttributeImpl {bytes=[63 30 74], endOffset=4, positionIncrement=0, positionLength=1, startOffset=0, term=c0t, termFrequency=1, type=word}
+token runn
+  PackedTokenAttributeImpl {bytes=[72 75 6e 6e], endOffset=9, positionIncrement=1, positionLength=1, startOffset=5, term=runn, termFrequency=1, type=word}
+token ing
+  PackedTokenAttributeImpl {bytes=[69 6e 67], endOffset=12, positionIncrement=1, positionLength=1, startOffset=9, term=ing, termFrequency=1, type=word}
+token 0bcd
+  PackedTokenAttributeImpl {bytes=[30 62 63 64], endOffset=17, positionIncrement=1, positionLength=1, startOffset=13, term=0bcd, termFrequency=1, type=word}
+token efgh
+  PackedTokenAttributeImpl {bytes=[65 66 67 68], endOffset=21, positionIncrement=1, positionLength=1, startOffset=17, term=efgh, termFrequency=1, type=word}
+char filter patternReplace: Cots running obcdefgh
+char filter patternReplace: C0ts running 0bcdefgh
+stage whitespace:
+  token Cats
+    PackedTokenAttributeImpl {bytes=[43 61 74 73], endOffset=4, positionIncrement=1, positionLength=1, startOffset=0, term=Cats, termFrequency=1, type=word}
+  token runn
+    PackedTokenAttributeImpl {bytes=[72 75 6e 6e], endOffset=9, positionIncrement=1, positionLength=1, startOffset=5, term=runn, termFrequency=1, type=word}
+  token ing
+    PackedTokenAttributeImpl {bytes=[69 6e 67], endOffset=12, positionIncrement=1, positionLength=1, startOffset=9, term=ing, termFrequency=1, type=word}
+  token abcd
+    PackedTokenAttributeImpl {bytes=[61 62 63 64], endOffset=17, positionIncrement=1, positionLength=1, startOffset=13, term=abcd, termFrequency=1, type=word}
+  token efgh
+    PackedTokenAttributeImpl {bytes=[65 66 67 68], endOffset=21, positionIncrement=1, positionLength=1, startOffset=17, term=efgh, termFrequency=1, type=word}
+stage lowercase:
+  token cats
+    PackedTokenAttributeImpl {bytes=[63 61 74 73], endOffset=4, positionIncrement=1, positionLength=1, startOffset=0, term=cats, termFrequency=1, type=word}
+  token runn
+    PackedTokenAttributeImpl {bytes=[72 75 6e 6e], endOffset=9, positionIncrement=1, positionLength=1, startOffset=5, term=runn, termFrequency=1, type=word}
+  token ing
+    PackedTokenAttributeImpl {bytes=[69 6e 67], endOffset=12, positionIncrement=1, positionLength=1, startOffset=9, term=ing, termFrequency=1, type=word}
+  token abcd
+    PackedTokenAttributeImpl {bytes=[61 62 63 64], endOffset=17, positionIncrement=1, positionLength=1, startOffset=13, term=abcd, termFrequency=1, type=word}
+  token efgh
+    PackedTokenAttributeImpl {bytes=[65 66 67 68], endOffset=21, positionIncrement=1, positionLength=1, startOffset=17, term=efgh, termFrequency=1, type=word}
+stage keywordRepeat:
+  token cats
+    PackedTokenAttributeImpl {bytes=[63 61 74 73], endOffset=4, positionIncrement=1, positionLength=1, startOffset=0, term=cats, termFrequency=1, type=word}
+  token cats
+    PackedTokenAttributeImpl {bytes=[63 61 74 73], endOffset=4, positionIncrement=0, positionLength=1, startOffset=0, term=cats, termFrequency=1, type=word}
+  token runn
+    PackedTokenAttributeImpl {bytes=[72 75 6e 6e], endOffset=9, positionIncrement=1, positionLength=1, startOffset=5, term=runn, termFrequency=1, type=word}
+  token runn
+    PackedTokenAttributeImpl {bytes=[72 75 6e 6e], endOffset=9, positionIncrement=0, positionLength=1, startOffset=5, term=runn, termFrequency=1, type=word}
+  token ing
+    PackedTokenAttributeImpl {bytes=[69 6e 67], endOffset=12, positionIncrement=1, positionLength=1, startOffset=9, term=ing, termFrequency=1, type=word}
+  token ing
+    PackedTokenAttributeImpl {bytes=[69 6e 67], endOffset=12, positionIncrement=0, positionLength=1, startOffset=9, term=ing, termFrequency=1, type=word}
+  token abcd
+    PackedTokenAttributeImpl {bytes=[61 62 63 64], endOffset=17, positionIncrement=1, positionLength=1, startOffset=13, term=abcd, termFrequency=1, type=word}
+  token abcd
+    PackedTokenAttributeImpl {bytes=[61 62 63 64], endOffset=17, positionIncrement=0, positionLength=1, startOffset=13, term=abcd, termFrequency=1, type=word}
+  token efgh
+    PackedTokenAttributeImpl {bytes=[65 66 67 68], endOffset=21, positionIncrement=1, positionLength=1, startOffset=17, term=efgh, termFrequency=1, type=word}
+  token efgh
+    PackedTokenAttributeImpl {bytes=[65 66 67 68], endOffset=21, positionIncrement=0, positionLength=1, startOffset=17, term=efgh, termFrequency=1, type=word}
+stage porterStem:
+  token cats
+    PackedTokenAttributeImpl {bytes=[63 61 74 73], endOffset=4, positionIncrement=1, positionLength=1, startOffset=0, term=cats, termFrequency=1, type=word}
+  token cat
+    PackedTokenAttributeImpl {bytes=[63 61 74], endOffset=4, positionIncrement=0, positionLength=1, startOffset=0, term=cat, termFrequency=1, type=word}
+  token runn
+    PackedTokenAttributeImpl {bytes=[72 75 6e 6e], endOffset=9, positionIncrement=1, positionLength=1, startOffset=5, term=runn, termFrequency=1, type=word}
+  token runn
+    PackedTokenAttributeImpl {bytes=[72 75 6e 6e], endOffset=9, positionIncrement=0, positionLength=1, startOffset=5, term=runn, termFrequency=1, type=word}
+  token ing
+    PackedTokenAttributeImpl {bytes=[69 6e 67], endOffset=12, positionIncrement=1, positionLength=1, startOffset=9, term=ing, termFrequency=1, type=word}
+  token ing
+    PackedTokenAttributeImpl {bytes=[69 6e 67], endOffset=12, positionIncrement=0, positionLength=1, startOffset=9, term=ing, termFrequency=1, type=word}
+  token abcd
+    PackedTokenAttributeImpl {bytes=[61 62 63 64], endOffset=17, positionIncrement=1, positionLength=1, startOffset=13, term=abcd, termFrequency=1, type=word}
+  token abcd
+    PackedTokenAttributeImpl {bytes=[61 62 63 64], endOffset=17, positionIncrement=0, positionLength=1, startOffset=13, term=abcd, termFrequency=1, type=word}
+  token efgh
+    PackedTokenAttributeImpl {bytes=[65 66 67 68], endOffset=21, positionIncrement=1, positionLength=1, startOffset=17, term=efgh, termFrequency=1, type=word}
+  token efgh
+    PackedTokenAttributeImpl {bytes=[65 66 67 68], endOffset=21, positionIncrement=0, positionLength=1, startOffset=17, term=efgh, termFrequency=1, type=word}
+stage removeDuplicates:
+  token cats
+    PackedTokenAttributeImpl {bytes=[63 61 74 73], endOffset=4, positionIncrement=1, positionLength=1, startOffset=0, term=cats, termFrequency=1, type=word}
+  token cat
+    PackedTokenAttributeImpl {bytes=[63 61 74], endOffset=4, positionIncrement=0, positionLength=1, startOffset=0, term=cat, termFrequency=1, type=word}
+  token runn
+    PackedTokenAttributeImpl {bytes=[72 75 6e 6e], endOffset=9, positionIncrement=1, positionLength=1, startOffset=5, term=runn, termFrequency=1, type=word}
+  token ing
+    PackedTokenAttributeImpl {bytes=[69 6e 67], endOffset=12, positionIncrement=1, positionLength=1, startOffset=9, term=ing, termFrequency=1, type=word}
+  token abcd
+    PackedTokenAttributeImpl {bytes=[61 62 63 64], endOffset=17, positionIncrement=1, positionLength=1, startOffset=13, term=abcd, termFrequency=1, type=word}
+  token efgh
+    PackedTokenAttributeImpl {bytes=[65 66 67 68], endOffset=21, positionIncrement=1, positionLength=1, startOffset=17, term=efgh, termFrequency=1, type=word}

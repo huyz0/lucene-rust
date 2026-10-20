@@ -30,7 +30,7 @@ use lucene_util::geo::java_float_string;
 
 use super::index_files::KNN_DICT;
 use super::knn::{DemoEmbeddings, KnnVectorDict};
-use crate::cli::{arg, exception, parse_int, Error, Io, ToolResult};
+use crate::cli::{arg, exception, java_trim, parse_int, Error, Io, ToolResult};
 
 /// `main`'s usage text.
 pub const USAGE: &str = "Usage:\tjava org.apache.lucene.demo.SearchFiles [-index dir] [-field f] [-repeat n] [-queries file] [-query string] [-raw] [-paging hitsPerPage] [-knn_vector knnHits]\n\nSee http://lucene.apache.org/core/9_0_0/demo/ for details.";
@@ -221,11 +221,6 @@ fn read_line(input: &mut dyn BufRead) -> Result<Option<String>, Error> {
         line.pop();
     }
     Ok(Some(line))
-}
-
-/// `String.trim()`: drops leading and trailing characters up to `' '`.
-fn java_trim(s: &str) -> &str {
-    s.trim_matches(|c: char| c <= ' ')
 }
 
 /// The index and its searcher.

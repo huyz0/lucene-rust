@@ -1,0 +1,25 @@
+first term: summary:a
+current field: summary
+  doc freq: 1
+  doc 6: TermPosting{position=0, startOffset=-1, endOffset=-1, payload=null}
+  next doc: --
+next term: summary:cities
+  doc freq: 1
+  doc 6: TermPosting{position=4, startOffset=-1, endOffset=-1, payload=null}
+  next doc: --
+next term: summary:of
+  doc freq: 1
+  doc 6: TermPosting{position=2, startOffset=-1, endOffset=-1, payload=null}
+  next doc: --
+next term: summary:tale
+  doc freq: 1
+  doc 6: TermPosting{position=1, startOffset=-1, endOffset=-1, payload=null}
+  next doc: --
+next term: summary:two
+  doc freq: 1
+  doc 6: TermPosting{position=3, startOffset=-1, endOffset=-1, payload=null}
+  next doc: --
+next term: --
+doc freq: --
+first doc: --
+positions: []

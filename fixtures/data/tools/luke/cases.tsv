@@ -1,0 +1,73 @@
+overview	overview	{fixture}/index
+overview-top	overview	{fixture}/index	author	3	text	5	title	2
+overview-top-cached	overview	{fixture}/index	text	4	text	2	text	6
+overview-top-negative	overview	{fixture}/index	text	-1
+overview-top-unknown	overview	{fixture}/index	nofield	3
+documents	documents	{fixture}/index
+terms-author	terms	{fixture}/index	author
+terms-notes	terms	{fixture}/index	notes
+terms-title	terms	{fixture}/index	title
+terms-seek	terms	{fixture}/index	text	seek	sister	seek	zzz	seek	b
+terms-none	terms	{fixture}/index	subject	seek	x
+commits	commits	{fixture}/index
+commits-missing	commit	{fixture}/index	99
+fields	fields	{fixture}/index
+search-classic	search	{fixture}/index	-field	text	sister OR alice
+search-standard	search	{fixture}/index	-standard	-field	text	sister alice
+search-and	search	{fixture}/index	-and	-field	text	sister alice
+search-phrase	search	{fixture}/index	-slop	2	-field	author	"jane austen"
+search-rewrite	search	{fixture}/index	-rewrite	-field	text	sis*
+search-leading-wildcard	search	{fixture}/index	-leading-wildcard	-field	text	*ster
+search-leading-refused	search	{fixture}/index	-field	text	*ster
+search-syntax	search	{fixture}/index	-field	text	(alice
+search-syntax-standard	search	{fixture}/index	-standard	-field	text	(alice
+search-pages	search	{fixture}/index	-page	2	-field	text	-nav	n,n,n,p,p,p,n	the OR of OR a OR sister
+search-classic-sim	search	{fixture}/index	-classic-sim	-no-discount	-field	text	sister
+search-bm25-params	search	{fixture}/index	-k1	2.0	-b	0.5	-field	text	sister
+search-load	search	{fixture}/index	-load	title,id	-field	text	sister
+search-sort-int	search	{fixture}/index	-sort	year	INT	-field	id	*:*
+search-sort-int-rev	search	{fixture}/index	-sort	year	INT	-reverse	-field	id	*:*
+search-sort-numeric	search	{fixture}/index	-sort	rating	LONG	-field	id	*:*
+search-sort-string	search	{fixture}/index	-sort	lang	STRING	-page	3	-nav	n	-field	id	*:*
+search-sort-set	search	{fixture}/index	-sort	subject	STRING	-reverse	-field	id	*:*
+search-sort-none	search	{fixture}/index	-sort	year	STRING	-field	id	*:*
+search-explain	search	{fixture}/index	-explain	1	-field	text	sister alice
+search-explain-miss	search	{fixture}/index	-explain	0	-field	text	sister
+search-negative-page	search	{fixture}/index	-page	-1	-field	text	sister
+search-empty	search	{fixture}/index	-nav	n,p	-field	text	nomatch
+mlt	mlt	{fixture}/index	1	text	1	1
+mlt-two-fields	mlt	{fixture}/index	2	text,author	1	1
+mlt-defaults	mlt	{fixture}/index	2	text
+components	components
+analyze-standard	analyze	-analyzer	org.apache.lucene.analysis.standard.StandardAnalyzer	The Quick-Brown fox's 2 e-mails
+analyze-whitespace	analyze	-analyzer	org.apache.lucene.analysis.core.WhitespaceAnalyzer	a  B c
+analyze-unknown	analyze	-analyzer	org.example.NoSuchAnalyzer	x
+analyze-custom	analyze	-tokenizer	standard	-cf	htmlStrip	-tf	lowercase	-tf	stop	<b>The</b> Quick brown Fox
+analyze-custom-params	analyze	-tokenizer	whitespace	maxTokenLen=4	-cf	patternReplace	pattern=a	replacement=o	-cf	patternReplace	pattern=o+	replacement=0	-tf	lowercase	-tf	keywordRepeat	-tf	porterStem	-tf	removeDuplicates	Cats running abcdefgh
+analyze-custom-bad	analyze	-tokenizer	noSuchTokenizer	x
+analyze-step-not-custom	analyze	-step	-analyzer	org.apache.lucene.analysis.core.WhitespaceAnalyzer	x
+export	export	{fixture}/index	author	,	{tmp}
+export-tab	export	{fixture}/index	id	\t	{tmp}
+export-no-terms	export	{fixture}/index	subject	,	{tmp}
+check	check	{fixture}/index
+copy-optimize	copy	{fixture}/index	{tmp}/opt
+optimize	optimize	{tmp}/opt	1
+optimize-overview	overview	{tmp}/opt
+optimize-documents	documents	{tmp}/opt
+copy-expunge	copy	{fixture}/index	{tmp}/exp
+expunge	optimize	{tmp}/exp	expunge
+expunge-overview	overview	{tmp}/exp
+copy-delete	copy	{fixture}/index	{tmp}/del
+delete	delete	{tmp}/del	id	2
+delete-overview	overview	{tmp}/del
+delete-documents	documents	{tmp}/del
+copy-add	copy	{fixture}/index	{tmp}/add
+add	add	{tmp}/add	summary	A Tale of Two Cities
+add-overview	overview	{tmp}/add
+add-terms	terms	{tmp}/add	summary
+create	create	{tmp}/news	{fixture}/news
+create-overview	overview	{tmp}/news	body	5	from	10
+create-stored	stored	{tmp}/news	messageId
+create-again	create	{tmp}/news	{fixture}/news
+create-empty	create	{tmp}/empty
+create-empty-overview	overview	{tmp}/empty

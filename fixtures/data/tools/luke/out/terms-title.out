@@ -1,0 +1,87 @@
+first term: title:a
+current field: title
+  doc freq: 1
+  doc 3: 
+  next doc: --
+next term: title:adventures
+  doc freq: 2
+  doc 1: 
+  doc 4: 
+  next doc: --
+next term: title:alice's
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: title:and
+  doc freq: 1
+  doc 0: 
+  next doc: --
+next term: title:doll's
+  doc freq: 1
+  doc 3: 
+  next doc: --
+next term: title:faust
+  doc freq: 1
+  doc 5: 
+  next doc: --
+next term: title:frankenstein
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: title:holmes
+  doc freq: 1
+  doc 4: 
+  next doc: --
+next term: title:house
+  doc freq: 1
+  doc 3: 
+  next doc: --
+next term: title:in
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: title:modern
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: title:of
+  doc freq: 1
+  doc 4: 
+  next doc: --
+next term: title:or
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: title:play
+  doc freq: 1
+  doc 3: 
+  next doc: --
+next term: title:prejudice
+  doc freq: 1
+  doc 0: 
+  next doc: --
+next term: title:pride
+  doc freq: 1
+  doc 0: 
+  next doc: --
+next term: title:prometheus
+  doc freq: 1
+  doc 2: 
+  next doc: --
+next term: title:sherlock
+  doc freq: 1
+  doc 4: 
+  next doc: --
+next term: title:the
+  doc freq: 2
+  doc 2: 
+  doc 4: 
+  next doc: --
+next term: title:wonderland
+  doc freq: 1
+  doc 1: 
+  next doc: --
+next term: --
+doc freq: --
+first doc: --
+positions: []

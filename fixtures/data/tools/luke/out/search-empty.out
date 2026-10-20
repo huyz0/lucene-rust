@@ -1,0 +1,5 @@
+query: text:nomatch
+page: total=0 hits offset=0 size=0
+next: --
+previous: total=0 hits offset=0 size=0
+current query: text:nomatch

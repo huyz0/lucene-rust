@@ -1,0 +1,29 @@
+query: text:sister text:alice
+page: total=2 hits offset=0 size=2
+  doc=1 score=1.2068286 author=[Lewis Carroll] downloads=[] id=[2] isbn=[] notes=[rabbit|animal hole] pages=[137] rating=[4.25] title=[Alice's Adventures in Wonderland] weight=[0.75] year=[1865]
+  doc=2 score=0.34448564 author=[Mary Wollstonecraft Shelley] downloads=[] id=[3] isbn=[] pages=[174] rating=[3.75] title=[Frankenstein; Or, The Modern Prometheus] weight=[1.0] year=[1818]
+current query: text:sister text:alice
+explain 1:
+1.2068286 = sum of:
+  0.46713144 = weight(text:sister in 1) [BM25Similarity], result of:
+    0.46713144 = score(freq=2.0), computed as boost * idf * tf from:
+      0.87546873 = idf, computed as log(1 + (N - n + 0.5) / (n + 0.5)) from:
+        2 = n, number of documents containing term
+        5 = N, total number of documents with field
+      0.53357863 = tf, computed as freq / (freq + k1 * (1 - b + b * dl / avgdl)) from:
+        2.0 = freq, occurrences of term within document
+        1.2 = k1, term saturation parameter
+        0.75 = b, length normalization parameter
+        56.0 = dl, length of field (approximate)
+        34.8 = avgdl, average length of field
+  0.7396971 = weight(text:alice in 1) [BM25Similarity], result of:
+    0.7396971 = score(freq=2.0), computed as boost * idf * tf from:
+      1.3862944 = idf, computed as log(1 + (N - n + 0.5) / (n + 0.5)) from:
+        1 = n, number of documents containing term
+        5 = N, total number of documents with field
+      0.53357863 = tf, computed as freq / (freq + k1 * (1 - b + b * dl / avgdl)) from:
+        2.0 = freq, occurrences of term within document
+        1.2 = k1, term saturation parameter
+        0.75 = b, length normalization parameter
+        56.0 = dl, length of field (approximate)
+        34.8 = avgdl, average length of field

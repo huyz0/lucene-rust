@@ -94,8 +94,9 @@ set -euo pipefail
 # lucene-sandbox is required by GenQueryParserXml (CorePlusExtensionsParser's
 # FuzzyLikeThisQuery) and the GenSandbox* generators (org.apache.lucene.sandbox).
 # lucene-codecs is required by the GenCodecs* generators (the non-default codecs, M14.g).
-# lucene-demo is required by GenToolsDemo (org.apache.lucene.demo, M14.i).
-LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-facet lucene-highlighter lucene-suggest lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join lucene-grouping lucene-classification lucene-misc lucene-replicator lucene-sandbox lucene-codecs lucene-demo)
+# lucene-demo is required by GenToolsDemo (org.apache.lucene.demo, M14.i), lucene-luke by
+# GenToolsLuke (org.apache.lucene.luke.models, M14.i).
+LUCENE_MODULES=(lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-facet lucene-highlighter lucene-suggest lucene-memory lucene-monitor lucene-spatial3d lucene-spatial-extras lucene-join lucene-grouping lucene-classification lucene-misc lucene-replicator lucene-sandbox lucene-codecs lucene-demo lucene-luke)
 
 # The repository root. `git rev-parse` fails inside the container when this
 # is a git worktree: its `.git` file names the gitdir by a host path the

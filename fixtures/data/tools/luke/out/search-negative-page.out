@@ -1,0 +1,2 @@
+query: text:sister
+error: LukeException: java.lang.IllegalArgumentException: Negative integer is not acceptable for page size.

@@ -1,0 +1,20 @@
+query: text:the text:of text:a text:sister
+page: total=4 hits offset=0 size=2
+  doc=1 score=1.3079858 author=[Lewis Carroll] downloads=[] id=[2] isbn=[] notes=[rabbit|animal hole] pages=[137] rating=[4.25] title=[Alice's Adventures in Wonderland] weight=[0.75] year=[1865]
+  doc=0 score=0.91417944 author=[Jane Austen] downloads=[] id=[1] isbn=[] notes=[quick|fast brown fox|animal] pages=[100] rating=[4.5] title=[Pride and Prejudice] weight=[0.5] year=[1813]
+next: total=4 hits offset=2 size=2
+  doc=2 score=0.83892536 author=[Mary Wollstonecraft Shelley] downloads=[] id=[3] isbn=[] pages=[174] rating=[3.75] title=[Frankenstein; Or, The Modern Prometheus] weight=[1.0] year=[1818]
+  doc=4 score=0.4844255 author=[Arthur Conan Doyle] downloads=[] id=[5] isbn=[] notes=[pipe violin|music] pages=[248] rating=[4.75] title=[The Adventures of Sherlock Holmes] weight=[1.5] year=[1892]
+next: --
+next: --
+previous: total=4 hits offset=0 size=0
+previous: total=4 hits offset=2 size=2
+  doc=2 score=0.83892536 author=[Mary Wollstonecraft Shelley] downloads=[] id=[3] isbn=[] pages=[174] rating=[3.75] title=[Frankenstein; Or, The Modern Prometheus] weight=[1.0] year=[1818]
+  doc=4 score=0.4844255 author=[Arthur Conan Doyle] downloads=[] id=[5] isbn=[] notes=[pipe violin|music] pages=[248] rating=[4.75] title=[The Adventures of Sherlock Holmes] weight=[1.5] year=[1892]
+previous: total=4 hits offset=0 size=2
+  doc=1 score=1.3079858 author=[Lewis Carroll] downloads=[] id=[2] isbn=[] notes=[rabbit|animal hole] pages=[137] rating=[4.25] title=[Alice's Adventures in Wonderland] weight=[0.75] year=[1865]
+  doc=0 score=0.91417944 author=[Jane Austen] downloads=[] id=[1] isbn=[] notes=[quick|fast brown fox|animal] pages=[100] rating=[4.5] title=[Pride and Prejudice] weight=[0.5] year=[1813]
+next: total=4 hits offset=2 size=2
+  doc=2 score=0.83892536 author=[Mary Wollstonecraft Shelley] downloads=[] id=[3] isbn=[] pages=[174] rating=[3.75] title=[Frankenstein; Or, The Modern Prometheus] weight=[1.0] year=[1818]
+  doc=4 score=0.4844255 author=[Arthur Conan Doyle] downloads=[] id=[5] isbn=[] notes=[pipe violin|music] pages=[248] rating=[4.75] title=[The Adventures of Sherlock Holmes] weight=[1.5] year=[1892]
+current query: text:the text:of text:a text:sister

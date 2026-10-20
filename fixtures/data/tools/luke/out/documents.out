@@ -1,0 +1,268 @@
+max doc: 6
+field names: [id, title, author, text, subject, lang, year, notes, downloads, rating, isbn, pages, weight, vec]
+doc 0 live=true
+  DocumentField{name='id', idxOptions=DOCS, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=1 binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='title', idxOptions=DOCS_AND_FREQS, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=Pride and Prejudice binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='author', idxOptions=DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=true norm=2 string=Jane Austen binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='text', idxOptions=DOCS_AND_FREQS, hasTermVectors=true, isStored=false, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=true norm=23 string=null binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='subject', idxOptions=NONE, hasTermVectors=false, isStored=false, dvType=SORTED_SET, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=null binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='lang', idxOptions=NONE, hasTermVectors=false, isStored=false, dvType=SORTED, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=null binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='year', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=SORTED_NUMERIC, pointDimensionCount=1, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=1813 binary=null numeric=1813 pointNumBytes=4 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='notes', idxOptions=DOCS_AND_FREQS_AND_POSITIONS, hasTermVectors=true, isStored=true, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=true hasNorms=true norm=3 string=quick|fast brown fox|animal binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='downloads', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=1, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=null binary=[80 0 6f 75] numeric=null pointNumBytes=4 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='rating', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=NUMERIC, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=4.5 binary=null numeric=4.5 pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='isbn', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=BINARY, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=null binary=[97 80 0 f0] numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='pages', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=100 binary=null numeric=100 pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='weight', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=0.5 binary=null numeric=0.5 pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='vec', idxOptions=NONE, hasTermVectors=false, isStored=false, dvType=NONE, pointDimensionCount=0, vectorDimension=3} hasPayloads=false hasNorms=false norm=0 string=null binary=null numeric=null pointNumBytes=0 vectorSimilarity=COSINE
+  term vector text:
+    TermVectorEntry{termText='a', freq=4, positions=}
+    TermVectorEntry{termText='acknowledged', freq=1, positions=}
+    TermVectorEntry{termText='be', freq=1, positions=}
+    TermVectorEntry{termText='fortune', freq=1, positions=}
+    TermVectorEntry{termText='good', freq=1, positions=}
+    TermVectorEntry{termText='in', freq=2, positions=}
+    TermVectorEntry{termText='is', freq=1, positions=}
+    TermVectorEntry{termText='it', freq=1, positions=}
+    TermVectorEntry{termText='man', freq=1, positions=}
+    TermVectorEntry{termText='must', freq=1, positions=}
+    TermVectorEntry{termText='of', freq=2, positions=}
+    TermVectorEntry{termText='possession', freq=1, positions=}
+    TermVectorEntry{termText='single', freq=1, positions=}
+    TermVectorEntry{termText='that', freq=1, positions=}
+    TermVectorEntry{termText='truth', freq=1, positions=}
+    TermVectorEntry{termText='universally', freq=1, positions=}
+    TermVectorEntry{termText='want', freq=1, positions=}
+    TermVectorEntry{termText='wife', freq=1, positions=}
+  doc values subject: DocValues{dvType=SORTED_SET, values=[[46 69 63 74 69 6f 6e], [4c 6f 76 65 20 73 74 6f 72 69 65 73]], numericValues=[]}
+  doc values lang: DocValues{dvType=SORTED, values=[[65 6e]], numericValues=[]}
+  doc values year: DocValues{dvType=SORTED_NUMERIC, values=[], numericValues=[1813]}
+  term vector notes:
+    TermVectorEntry{termText='brown', freq=1, positions=TermVectorPosition{position=1, startOffset=11, endOffset=16}}
+    TermVectorEntry{termText='fox', freq=1, positions=TermVectorPosition{position=2, startOffset=17, endOffset=27}}
+    TermVectorEntry{termText='quick', freq=1, positions=TermVectorPosition{position=0, startOffset=0, endOffset=10}}
+  doc values rating: DocValues{dvType=NUMERIC, values=[], numericValues=[450]}
+  doc values isbn: DocValues{dvType=BINARY, values=[[97 80 0 f0]], numericValues=[]}
+doc 1 live=true
+  DocumentField{name='id', idxOptions=DOCS, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=2 binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='title', idxOptions=DOCS_AND_FREQS, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=Alice's Adventures in Wonderland binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='author', idxOptions=DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=true norm=2 string=Lewis Carroll binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='text', idxOptions=DOCS_AND_FREQS, hasTermVectors=true, isStored=false, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=true norm=48 string=null binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='subject', idxOptions=NONE, hasTermVectors=false, isStored=false, dvType=SORTED_SET, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=null binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='lang', idxOptions=NONE, hasTermVectors=false, isStored=false, dvType=SORTED, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=null binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='year', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=SORTED_NUMERIC, pointDimensionCount=1, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=1865 binary=null numeric=1865 pointNumBytes=4 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='notes', idxOptions=DOCS_AND_FREQS_AND_POSITIONS, hasTermVectors=true, isStored=true, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=true hasNorms=true norm=2 string=rabbit|animal hole binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='downloads', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=1, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=null binary=[80 0 49 18] numeric=null pointNumBytes=4 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='rating', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=NUMERIC, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=4.25 binary=null numeric=4.25 pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='isbn', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=BINARY, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=null binary=[97 80 1 f1] numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='pages', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=137 binary=null numeric=137 pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='weight', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=0.75 binary=null numeric=0.75 pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='vec', idxOptions=NONE, hasTermVectors=false, isStored=false, dvType=NONE, pointDimensionCount=0, vectorDimension=3} hasPayloads=false hasNorms=false norm=0 string=null binary=null numeric=null pointNumBytes=0 vectorSimilarity=COSINE
+  term vector text:
+    TermVectorEntry{termText='a', freq=1, positions=}
+    TermVectorEntry{termText='alice', freq=2, positions=}
+    TermVectorEntry{termText='and', freq=2, positions=}
+    TermVectorEntry{termText='bank', freq=1, positions=}
+    TermVectorEntry{termText='beginning', freq=1, positions=}
+    TermVectorEntry{termText='book', freq=2, positions=}
+    TermVectorEntry{termText='but', freq=1, positions=}
+    TermVectorEntry{termText='by', freq=1, positions=}
+    TermVectorEntry{termText='conversations', freq=2, positions=}
+    TermVectorEntry{termText='do', freq=1, positions=}
+    TermVectorEntry{termText='get', freq=1, positions=}
+    TermVectorEntry{termText='had', freq=2, positions=}
+    TermVectorEntry{termText='having', freq=1, positions=}
+    TermVectorEntry{termText='her', freq=2, positions=}
+    TermVectorEntry{termText='in', freq=1, positions=}
+    TermVectorEntry{termText='into', freq=1, positions=}
+    TermVectorEntry{termText='is', freq=1, positions=}
+    TermVectorEntry{termText='it', freq=2, positions=}
+    TermVectorEntry{termText='no', freq=1, positions=}
+    TermVectorEntry{termText='nothing', freq=1, positions=}
+    TermVectorEntry{termText='of', freq=3, positions=}
+    TermVectorEntry{termText='on', freq=1, positions=}
+    TermVectorEntry{termText='once', freq=1, positions=}
+    TermVectorEntry{termText='or', freq=3, positions=}
+    TermVectorEntry{termText='peeped', freq=1, positions=}
+    TermVectorEntry{termText='pictures', freq=2, positions=}
+    TermVectorEntry{termText='reading', freq=1, positions=}
+    TermVectorEntry{termText='she', freq=1, positions=}
+    TermVectorEntry{termText='sister', freq=2, positions=}
+    TermVectorEntry{termText='sitting', freq=1, positions=}
+    TermVectorEntry{termText='the', freq=3, positions=}
+    TermVectorEntry{termText='thought', freq=1, positions=}
+    TermVectorEntry{termText='tired', freq=1, positions=}
+    TermVectorEntry{termText='to', freq=2, positions=}
+    TermVectorEntry{termText='twice', freq=1, positions=}
+    TermVectorEntry{termText='use', freq=1, positions=}
+    TermVectorEntry{termText='very', freq=1, positions=}
+    TermVectorEntry{termText='was', freq=2, positions=}
+    TermVectorEntry{termText='what', freq=1, positions=}
+    TermVectorEntry{termText='without', freq=1, positions=}
+  doc values subject: DocValues{dvType=SORTED_SET, values=[[46 61 6e 74 61 73 79 20 6c 69 74 65 72 61 74 75 72 65]], numericValues=[]}
+  doc values lang: DocValues{dvType=SORTED, values=[[65 6e]], numericValues=[]}
+  doc values year: DocValues{dvType=SORTED_NUMERIC, values=[], numericValues=[1865]}
+  term vector notes:
+    TermVectorEntry{termText='hole', freq=1, positions=TermVectorPosition{position=1, startOffset=14, endOffset=18}}
+    TermVectorEntry{termText='rabbit', freq=1, positions=TermVectorPosition{position=0, startOffset=0, endOffset=13}}
+  doc values rating: DocValues{dvType=NUMERIC, values=[], numericValues=[425]}
+  doc values isbn: DocValues{dvType=BINARY, values=[[97 80 1 f1]], numericValues=[]}
+doc 2 live=true
+  DocumentField{name='id', idxOptions=DOCS, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=3 binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='title', idxOptions=DOCS_AND_FREQS, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=Frankenstein; Or, The Modern Prometheus binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='author', idxOptions=DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=true norm=3 string=Mary Wollstonecraft Shelley binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='text', idxOptions=DOCS_AND_FREQS, hasTermVectors=true, isStored=false, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=true norm=44 string=null binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='subject', idxOptions=NONE, hasTermVectors=false, isStored=false, dvType=SORTED_SET, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=null binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='lang', idxOptions=NONE, hasTermVectors=false, isStored=false, dvType=SORTED, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=null binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='year', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=SORTED_NUMERIC, pointDimensionCount=1, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=1818 binary=null numeric=1818 pointNumBytes=4 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='notes', idxOptions=DOCS_AND_FREQS_AND_POSITIONS, hasTermVectors=true, isStored=false, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=true hasNorms=true norm=0 string=null binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='downloads', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=1, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=null binary=[80 0 39 91] numeric=null pointNumBytes=4 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='rating', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=NUMERIC, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=3.75 binary=null numeric=3.75 pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='isbn', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=BINARY, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=null binary=[97 80 2 f2] numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='pages', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=174 binary=null numeric=174 pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='weight', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=1.0 binary=null numeric=1.0 pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='vec', idxOptions=NONE, hasTermVectors=false, isStored=false, dvType=NONE, pointDimensionCount=0, vectorDimension=3} hasPayloads=false hasNorms=false norm=0 string=null binary=null numeric=null pointNumBytes=0 vectorSimilarity=COSINE
+  term vector text:
+    TermVectorEntry{termText='accompanied', freq=1, positions=}
+    TermVectorEntry{termText='an', freq=1, positions=}
+    TermVectorEntry{termText='and', freq=2, positions=}
+    TermVectorEntry{termText='arrived', freq=1, positions=}
+    TermVectorEntry{termText='assure', freq=1, positions=}
+    TermVectorEntry{termText='commencement', freq=1, positions=}
+    TermVectorEntry{termText='confidence', freq=1, positions=}
+    TermVectorEntry{termText='dear', freq=1, positions=}
+    TermVectorEntry{termText='disaster', freq=1, positions=}
+    TermVectorEntry{termText='enterprise', freq=1, positions=}
+    TermVectorEntry{termText='evil', freq=1, positions=}
+    TermVectorEntry{termText='first', freq=1, positions=}
+    TermVectorEntry{termText='forebodings', freq=1, positions=}
+    TermVectorEntry{termText='has', freq=1, positions=}
+    TermVectorEntry{termText='have', freq=1, positions=}
+    TermVectorEntry{termText='hear', freq=1, positions=}
+    TermVectorEntry{termText='here', freq=1, positions=}
+    TermVectorEntry{termText='i', freq=1, positions=}
+    TermVectorEntry{termText='in', freq=1, positions=}
+    TermVectorEntry{termText='increasing', freq=1, positions=}
+    TermVectorEntry{termText='is', freq=1, positions=}
+    TermVectorEntry{termText='my', freq=4, positions=}
+    TermVectorEntry{termText='no', freq=1, positions=}
+    TermVectorEntry{termText='of', freq=3, positions=}
+    TermVectorEntry{termText='regarded', freq=1, positions=}
+    TermVectorEntry{termText='rejoice', freq=1, positions=}
+    TermVectorEntry{termText='sister', freq=1, positions=}
+    TermVectorEntry{termText='success', freq=1, positions=}
+    TermVectorEntry{termText='such', freq=1, positions=}
+    TermVectorEntry{termText='task', freq=1, positions=}
+    TermVectorEntry{termText='that', freq=1, positions=}
+    TermVectorEntry{termText='the', freq=2, positions=}
+    TermVectorEntry{termText='to', freq=2, positions=}
+    TermVectorEntry{termText='undertaking', freq=1, positions=}
+    TermVectorEntry{termText='welfare', freq=1, positions=}
+    TermVectorEntry{termText='which', freq=1, positions=}
+    TermVectorEntry{termText='will', freq=1, positions=}
+    TermVectorEntry{termText='with', freq=1, positions=}
+    TermVectorEntry{termText='yesterday', freq=1, positions=}
+    TermVectorEntry{termText='you', freq=2, positions=}
+  doc values subject: DocValues{dvType=SORTED_SET, values=[[48 6f 72 72 6f 72 20 74 61 6c 65 73], [4d 6f 6e 73 74 65 72 73], [53 63 69 65 6e 63 65 20 66 69 63 74 69 6f 6e]], numericValues=[]}
+  doc values lang: DocValues{dvType=SORTED, values=[[65 6e]], numericValues=[]}
+  doc values year: DocValues{dvType=SORTED_NUMERIC, values=[], numericValues=[1818]}
+  doc values rating: DocValues{dvType=NUMERIC, values=[], numericValues=[375]}
+  doc values isbn: DocValues{dvType=BINARY, values=[[97 80 2 f2]], numericValues=[]}
+doc 3 live=false
+  doc values subject: DocValues{dvType=SORTED_SET, values=[[44 72 61 6d 61]], numericValues=[]}
+  doc values lang: DocValues{dvType=SORTED, values=[[6e 6f]], numericValues=[]}
+  doc values year: DocValues{dvType=SORTED_NUMERIC, values=[], numericValues=[1879]}
+  term vector notes:
+    TermVectorEntry{termText='door', freq=1, positions=TermVectorPosition{position=0, startOffset=0, endOffset=9}}
+  doc values rating: DocValues{dvType=NUMERIC, values=[], numericValues=[350]}
+  doc values isbn: DocValues{dvType=BINARY, values=[[97 80 3 f3]], numericValues=[]}
+doc 4 live=true
+  DocumentField{name='id', idxOptions=DOCS, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=5 binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='title', idxOptions=DOCS_AND_FREQS, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=The Adventures of Sherlock Holmes binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='author', idxOptions=DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=true norm=3 string=Arthur Conan Doyle binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='text', idxOptions=DOCS_AND_FREQS, hasTermVectors=true, isStored=false, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=true norm=31 string=null binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='subject', idxOptions=NONE, hasTermVectors=false, isStored=false, dvType=SORTED_SET, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=null binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='lang', idxOptions=NONE, hasTermVectors=false, isStored=false, dvType=SORTED, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=null binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='year', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=SORTED_NUMERIC, pointDimensionCount=1, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=1892 binary=null numeric=1892 pointNumBytes=4 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='notes', idxOptions=DOCS_AND_FREQS_AND_POSITIONS, hasTermVectors=true, isStored=true, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=true hasNorms=true norm=2 string=pipe violin|music binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='downloads', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=1, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=null binary=[80 0 32 1c] numeric=null pointNumBytes=4 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='rating', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=NUMERIC, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=4.75 binary=null numeric=4.75 pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='isbn', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=BINARY, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=null binary=[97 80 4 f4] numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='pages', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=248 binary=null numeric=248 pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='weight', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=1.5 binary=null numeric=1.5 pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='vec', idxOptions=NONE, hasTermVectors=false, isStored=false, dvType=NONE, pointDimensionCount=0, vectorDimension=3} hasPayloads=false hasNorms=false norm=0 string=null binary=null numeric=null pointNumBytes=0 vectorSimilarity=COSINE
+  term vector text:
+    TermVectorEntry{termText='always', freq=1, positions=}
+    TermVectorEntry{termText='and', freq=1, positions=}
+    TermVectorEntry{termText='any', freq=1, positions=}
+    TermVectorEntry{termText='eclipses', freq=1, positions=}
+    TermVectorEntry{termText='eyes', freq=1, positions=}
+    TermVectorEntry{termText='have', freq=1, positions=}
+    TermVectorEntry{termText='heard', freq=1, positions=}
+    TermVectorEntry{termText='her', freq=2, positions=}
+    TermVectorEntry{termText='him', freq=1, positions=}
+    TermVectorEntry{termText='his', freq=1, positions=}
+    TermVectorEntry{termText='holmes', freq=1, positions=}
+    TermVectorEntry{termText='i', freq=1, positions=}
+    TermVectorEntry{termText='in', freq=1, positions=}
+    TermVectorEntry{termText='is', freq=1, positions=}
+    TermVectorEntry{termText='mention', freq=1, positions=}
+    TermVectorEntry{termText='name', freq=1, positions=}
+    TermVectorEntry{termText='of', freq=1, positions=}
+    TermVectorEntry{termText='other', freq=1, positions=}
+    TermVectorEntry{termText='predominates', freq=1, positions=}
+    TermVectorEntry{termText='seldom', freq=1, positions=}
+    TermVectorEntry{termText='sex', freq=1, positions=}
+    TermVectorEntry{termText='she', freq=2, positions=}
+    TermVectorEntry{termText='sherlock', freq=1, positions=}
+    TermVectorEntry{termText='the', freq=2, positions=}
+    TermVectorEntry{termText='to', freq=1, positions=}
+    TermVectorEntry{termText='under', freq=1, positions=}
+    TermVectorEntry{termText='whole', freq=1, positions=}
+    TermVectorEntry{termText='woman', freq=1, positions=}
+  doc values subject: DocValues{dvType=SORTED_SET, values=[[44 65 74 65 63 74 69 76 65 20 61 6e 64 20 6d 79 73 74 65 72 79 20 73 74 6f 72 69 65 73], [46 69 63 74 69 6f 6e]], numericValues=[]}
+  doc values lang: DocValues{dvType=SORTED, values=[[65 6e]], numericValues=[]}
+  doc values year: DocValues{dvType=SORTED_NUMERIC, values=[], numericValues=[1892]}
+  term vector notes:
+    TermVectorEntry{termText='pipe', freq=1, positions=TermVectorPosition{position=0, startOffset=0, endOffset=4}}
+    TermVectorEntry{termText='violin', freq=1, positions=TermVectorPosition{position=1, startOffset=5, endOffset=17}}
+  doc values rating: DocValues{dvType=NUMERIC, values=[], numericValues=[475]}
+  doc values isbn: DocValues{dvType=BINARY, values=[[97 80 4 f4]], numericValues=[]}
+doc 5 live=true
+  DocumentField{name='id', idxOptions=DOCS, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=6 binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='title', idxOptions=DOCS_AND_FREQS, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=Faust binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='author', idxOptions=DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=true norm=4 string=Johann Wolfgang von Goethe binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='text', idxOptions=DOCS_AND_FREQS, hasTermVectors=true, isStored=false, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=true norm=14 string=null binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='subject', idxOptions=NONE, hasTermVectors=false, isStored=false, dvType=SORTED_SET, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=null binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='lang', idxOptions=NONE, hasTermVectors=false, isStored=false, dvType=SORTED, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=null binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='year', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=SORTED_NUMERIC, pointDimensionCount=1, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=1808 binary=null numeric=1808 pointNumBytes=4 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='notes', idxOptions=DOCS_AND_FREQS_AND_POSITIONS, hasTermVectors=true, isStored=true, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=true hasNorms=true norm=2 string=devil|myth pact binary=null numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='downloads', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=1, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=null binary=[80 0 23 29] numeric=null pointNumBytes=4 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='rating', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=NUMERIC, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=4.0 binary=null numeric=4.0 pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='isbn', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=BINARY, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=null binary=[97 80 5 f5] numeric=null pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='pages', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=285 binary=null numeric=285 pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='weight', idxOptions=NONE, hasTermVectors=false, isStored=true, dvType=NONE, pointDimensionCount=0, vectorDimension=0} hasPayloads=false hasNorms=false norm=0 string=1.75 binary=null numeric=1.75 pointNumBytes=0 vectorSimilarity=EUCLIDEAN
+  DocumentField{name='vec', idxOptions=NONE, hasTermVectors=false, isStored=false, dvType=NONE, pointDimensionCount=0, vectorDimension=3} hasPayloads=false hasNorms=false norm=0 string=null binary=null numeric=null pointNumBytes=0 vectorSimilarity=COSINE
+  term vector text:
+    TermVectorEntry{termText='blick', freq=1, positions=}
+    TermVectorEntry{termText='dem', freq=1, positions=}
+    TermVectorEntry{termText='die', freq=1, positions=}
+    TermVectorEntry{termText='einst', freq=1, positions=}
+    TermVectorEntry{termText='euch', freq=1, positions=}
+    TermVectorEntry{termText='früh', freq=1, positions=}
+    TermVectorEntry{termText='gestalten', freq=1, positions=}
+    TermVectorEntry{termText='gezeigt', freq=1, positions=}
+    TermVectorEntry{termText='ihr', freq=1, positions=}
+    TermVectorEntry{termText='naht', freq=1, positions=}
+    TermVectorEntry{termText='schwankende', freq=1, positions=}
+    TermVectorEntry{termText='sich', freq=1, positions=}
+    TermVectorEntry{termText='trüben', freq=1, positions=}
+    TermVectorEntry{termText='wieder', freq=1, positions=}
+  doc values subject: DocValues{dvType=SORTED_SET, values=[[44 72 61 6d 61], [54 72 61 67 65 64 79]], numericValues=[]}
+  doc values lang: DocValues{dvType=SORTED, values=[[64 65]], numericValues=[]}
+  doc values year: DocValues{dvType=SORTED_NUMERIC, values=[], numericValues=[1808]}
+  term vector notes:
+    TermVectorEntry{termText='devil', freq=1, positions=TermVectorPosition{position=0, startOffset=0, endOffset=10}}
+    TermVectorEntry{termText='pact', freq=1, positions=TermVectorPosition{position=1, startOffset=11, endOffset=15}}
+  doc values rating: DocValues{dvType=NUMERIC, values=[], numericValues=[400]}
+  doc values isbn: DocValues{dvType=BINARY, values=[[97 80 5 f5]], numericValues=[]}

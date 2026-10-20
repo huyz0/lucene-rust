@@ -1,0 +1,15 @@
+fields: 0
+documents: 0
+terms: 0
+deletions: false
+deleted documents: 0
+optimized: false
+version: 2
+format: Lucene 8.6 or later
+commit: segments_1 (generation=1, segs=0)
+user data: {}
+field names: []
+term counts NAME_ASC: {}
+term counts NAME_DESC: {}
+term counts COUNT_ASC: {}
+term counts COUNT_DESC: {}

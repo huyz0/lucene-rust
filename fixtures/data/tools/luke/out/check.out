@@ -1,0 +1,4 @@
+clean: true
+segments: 3
+bad segments: 0
+lost documents: 0

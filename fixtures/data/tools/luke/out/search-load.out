@@ -1,0 +1,5 @@
+query: text:sister
+page: total=2 hits offset=0 size=2
+  doc=1 score=0.46713144 id=[2] title=[Alice's Adventures in Wonderland]
+  doc=2 score=0.34448564 id=[3] title=[Frankenstein; Or, The Modern Prometheus]
+current query: text:sister

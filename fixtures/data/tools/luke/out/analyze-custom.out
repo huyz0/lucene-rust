@@ -1,0 +1,33 @@
+analyzer: org.apache.lucene.analysis.custom.CustomAnalyzer
+token quick
+  PackedTokenAttributeImpl {bytes=[71 75 69 63 6b], endOffset=16, positionIncrement=2, positionLength=1, startOffset=11, term=quick, termFrequency=1, type=<ALPHANUM>}
+token brown
+  PackedTokenAttributeImpl {bytes=[62 72 6f 77 6e], endOffset=22, positionIncrement=1, positionLength=1, startOffset=17, term=brown, termFrequency=1, type=<ALPHANUM>}
+token fox
+  PackedTokenAttributeImpl {bytes=[66 6f 78], endOffset=26, positionIncrement=1, positionLength=1, startOffset=23, term=fox, termFrequency=1, type=<ALPHANUM>}
+char filter htmlStrip: The Quick brown Fox
+stage standard:
+  token The
+    PackedTokenAttributeImpl {bytes=[54 68 65], endOffset=10, positionIncrement=1, positionLength=1, startOffset=3, term=The, termFrequency=1, type=<ALPHANUM>}
+  token Quick
+    PackedTokenAttributeImpl {bytes=[51 75 69 63 6b], endOffset=16, positionIncrement=1, positionLength=1, startOffset=11, term=Quick, termFrequency=1, type=<ALPHANUM>}
+  token brown
+    PackedTokenAttributeImpl {bytes=[62 72 6f 77 6e], endOffset=22, positionIncrement=1, positionLength=1, startOffset=17, term=brown, termFrequency=1, type=<ALPHANUM>}
+  token Fox
+    PackedTokenAttributeImpl {bytes=[46 6f 78], endOffset=26, positionIncrement=1, positionLength=1, startOffset=23, term=Fox, termFrequency=1, type=<ALPHANUM>}
+stage lowercase:
+  token the
+    PackedTokenAttributeImpl {bytes=[74 68 65], endOffset=10, positionIncrement=1, positionLength=1, startOffset=3, term=the, termFrequency=1, type=<ALPHANUM>}
+  token quick
+    PackedTokenAttributeImpl {bytes=[71 75 69 63 6b], endOffset=16, positionIncrement=1, positionLength=1, startOffset=11, term=quick, termFrequency=1, type=<ALPHANUM>}
+  token brown
+    PackedTokenAttributeImpl {bytes=[62 72 6f 77 6e], endOffset=22, positionIncrement=1, positionLength=1, startOffset=17, term=brown, termFrequency=1, type=<ALPHANUM>}
+  token fox
+    PackedTokenAttributeImpl {bytes=[66 6f 78], endOffset=26, positionIncrement=1, positionLength=1, startOffset=23, term=fox, termFrequency=1, type=<ALPHANUM>}
+stage stop:
+  token quick
+    PackedTokenAttributeImpl {bytes=[71 75 69 63 6b], endOffset=16, positionIncrement=2, positionLength=1, startOffset=11, term=quick, termFrequency=1, type=<ALPHANUM>}
+  token brown
+    PackedTokenAttributeImpl {bytes=[62 72 6f 77 6e], endOffset=22, positionIncrement=1, positionLength=1, startOffset=17, term=brown, termFrequency=1, type=<ALPHANUM>}
+  token fox
+    PackedTokenAttributeImpl {bytes=[66 6f 78], endOffset=26, positionIncrement=1, positionLength=1, startOffset=23, term=fox, termFrequency=1, type=<ALPHANUM>}

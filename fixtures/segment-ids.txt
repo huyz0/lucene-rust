@@ -708,6 +708,12 @@ token_attributes/merged/_2.si ec404e8971c38c9d1061330c8be47671
 token_attributes/merged/segments_3 ec404e8971c38c9d1061330c8be47674
 tools/demo/index/_0.si 8d0fab216d983f9419af740fa7c3208c
 tools/demo/index/segments_1 8d0fab216d983f9419af740fa7c3208f
+tools/luke/index/_0.si 092872171996e457de8e970322c55e48
+tools/luke/index/_1.si 092872171996e457de8e970322c55e4c
+tools/luke/index/_2.si 092872171996e457de8e970322c55e50
+tools/luke/index/segments_1 092872171996e457de8e970322c55e4b
+tools/luke/index/segments_2 092872171996e457de8e970322c55e4f
+tools/luke/index/segments_3 092872171996e457de8e970322c55e54
 tools/misc/index/_0.si 29b51789089bbef5bb6edbf4cf9124c4
 tools/misc/index/_1.si 29b51789089bbef5bb6edbf4cf9124c8
 tools/misc/index/_2.si 29b51789089bbef5bb6edbf4cf9124cc

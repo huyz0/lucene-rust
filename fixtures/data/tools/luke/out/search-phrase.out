@@ -1,0 +1,4 @@
+query: author:"jane austen"~2
+page: total=1 hits offset=0 size=1
+  doc=0 score=1.5599444 author=[Jane Austen] downloads=[] id=[1] isbn=[] notes=[quick|fast brown fox|animal] pages=[100] rating=[4.5] title=[Pride and Prejudice] weight=[0.5] year=[1813]
+current query: author:"jane austen"~2

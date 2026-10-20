@@ -1,0 +1,45 @@
+first term: notes:brown
+current field: notes
+  doc freq: 1
+  doc 0: TermPosting{position=1, startOffset=-1, endOffset=-1, payload=null}
+  next doc: --
+next term: notes:devil
+  doc freq: 1
+  doc 5: TermPosting{position=0, startOffset=-1, endOffset=-1, payload=[6d 79 74 68]}
+  next doc: --
+next term: notes:door
+  doc freq: 1
+  doc 3: TermPosting{position=0, startOffset=-1, endOffset=-1, payload=[65 78 69 74]}
+  next doc: --
+next term: notes:fox
+  doc freq: 1
+  doc 0: TermPosting{position=2, startOffset=-1, endOffset=-1, payload=[61 6e 69 6d 61 6c]}
+  next doc: --
+next term: notes:hole
+  doc freq: 1
+  doc 1: TermPosting{position=1, startOffset=-1, endOffset=-1, payload=null}
+  next doc: --
+next term: notes:pact
+  doc freq: 1
+  doc 5: TermPosting{position=1, startOffset=-1, endOffset=-1, payload=null}
+  next doc: --
+next term: notes:pipe
+  doc freq: 1
+  doc 4: TermPosting{position=0, startOffset=-1, endOffset=-1, payload=null}
+  next doc: --
+next term: notes:quick
+  doc freq: 1
+  doc 0: TermPosting{position=0, startOffset=-1, endOffset=-1, payload=[66 61 73 74]}
+  next doc: --
+next term: notes:rabbit
+  doc freq: 1
+  doc 1: TermPosting{position=0, startOffset=-1, endOffset=-1, payload=[61 6e 69 6d 61 6c]}
+  next doc: --
+next term: notes:violin
+  doc freq: 1
+  doc 4: TermPosting{position=1, startOffset=-1, endOffset=-1, payload=[6d 75 73 69 63]}
+  next doc: --
+next term: --
+doc freq: --
+first doc: --
+positions: []

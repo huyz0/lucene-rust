@@ -1,0 +1,15 @@
+analyzer: org.apache.lucene.analysis.standard.StandardAnalyzer
+token the
+  PackedTokenAttributeImpl {bytes=[74 68 65], endOffset=3, positionIncrement=1, positionLength=1, startOffset=0, term=the, termFrequency=1, type=<ALPHANUM>}
+token quick
+  PackedTokenAttributeImpl {bytes=[71 75 69 63 6b], endOffset=9, positionIncrement=1, positionLength=1, startOffset=4, term=quick, termFrequency=1, type=<ALPHANUM>}
+token brown
+  PackedTokenAttributeImpl {bytes=[62 72 6f 77 6e], endOffset=15, positionIncrement=1, positionLength=1, startOffset=10, term=brown, termFrequency=1, type=<ALPHANUM>}
+token fox's
+  PackedTokenAttributeImpl {bytes=[66 6f 78 27 73], endOffset=21, positionIncrement=1, positionLength=1, startOffset=16, term=fox's, termFrequency=1, type=<ALPHANUM>}
+token 2
+  PackedTokenAttributeImpl {bytes=[32], endOffset=23, positionIncrement=1, positionLength=1, startOffset=22, term=2, termFrequency=1, type=<NUM>}
+token e
+  PackedTokenAttributeImpl {bytes=[65], endOffset=25, positionIncrement=1, positionLength=1, startOffset=24, term=e, termFrequency=1, type=<ALPHANUM>}
+token mails
+  PackedTokenAttributeImpl {bytes=[6d 61 69 6c 73], endOffset=31, positionIncrement=1, positionLength=1, startOffset=26, term=mails, termFrequency=1, type=<ALPHANUM>}

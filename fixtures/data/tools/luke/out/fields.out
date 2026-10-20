@@ -1,0 +1,54 @@
+sortable: [subject, lang, year, rating, isbn]
+searchable: [id, title, author, text, notes]
+range searchable: [downloads, year]
+sort types id: []
+sort types title: []
+sort types author: []
+sort types text: []
+sort types subject: [<sortedset: "subject"> selector=MIN]
+  INT: <sortedset: "subject"> selector=MIN
+  INT reverse: <sortedset: "subject">! selector=MIN
+  LONG: <sortedset: "subject"> selector=MIN
+  LONG reverse: <sortedset: "subject">! selector=MIN
+  FLOAT: <sortedset: "subject"> selector=MIN
+  FLOAT reverse: <sortedset: "subject">! selector=MIN
+  DOUBLE: <sortedset: "subject"> selector=MIN
+  DOUBLE reverse: <sortedset: "subject">! selector=MIN
+  STRING: <sortedset: "subject"> selector=MIN
+  STRING reverse: <sortedset: "subject">! selector=MIN
+  STRING_VAL: <sortedset: "subject"> selector=MIN
+  STRING_VAL reverse: <sortedset: "subject">! selector=MIN
+  DOC: <sortedset: "subject"> selector=MIN
+  DOC reverse: <sortedset: "subject">! selector=MIN
+sort types lang: [<string: "lang">, <string_val: "lang">]
+  STRING: <string: "lang">
+  STRING reverse: <string: "lang">!
+  STRING_VAL: <string_val: "lang">
+  STRING_VAL reverse: <string_val: "lang">!
+sort types year: [<sortednumeric: "year"> selector=MIN type=INT, <sortednumeric: "year"> selector=MIN type=LONG, <sortednumeric: "year"> selector=MIN type=FLOAT, <sortednumeric: "year"> selector=MIN type=DOUBLE]
+  INT: <sortednumeric: "year"> selector=MIN type=INT
+  INT reverse: <sortednumeric: "year">! selector=MIN type=INT
+  LONG: <sortednumeric: "year"> selector=MIN type=LONG
+  LONG reverse: <sortednumeric: "year">! selector=MIN type=LONG
+  FLOAT: <sortednumeric: "year"> selector=MIN type=FLOAT
+  FLOAT reverse: <sortednumeric: "year">! selector=MIN type=FLOAT
+  DOUBLE: <sortednumeric: "year"> selector=MIN type=DOUBLE
+  DOUBLE reverse: <sortednumeric: "year">! selector=MIN type=DOUBLE
+sort types notes: []
+sort types downloads: []
+sort types rating: [<int: "rating">, <long: "rating">, <float: "rating">, <double: "rating">]
+  INT: <int: "rating">
+  INT reverse: <int: "rating">!
+  LONG: <long: "rating">
+  LONG reverse: <long: "rating">!
+  FLOAT: <float: "rating">
+  FLOAT reverse: <float: "rating">!
+  DOUBLE: <double: "rating">
+  DOUBLE reverse: <double: "rating">!
+sort types isbn: [<doc>]
+  DOC: <doc>
+  DOC reverse: <doc>!
+sort types pages: []
+sort types weight: []
+sort types vec: []
+nofield: LukeException: No such field: nofield
