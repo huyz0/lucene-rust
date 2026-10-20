@@ -6,14 +6,24 @@ import java.util.List;
 import java.util.Map;
 import java.util.HexFormat;
 import java.util.Random;
+import org.apache.lucene.codecs.FieldsConsumer;
+import org.apache.lucene.codecs.FieldsProducer;
 import org.apache.lucene.codecs.KnnVectorsFormat;
 import org.apache.lucene.codecs.KnnVectorsReader;
 import org.apache.lucene.codecs.PostingsFormat;
+import org.apache.lucene.codecs.PostingsReaderBase;
+import org.apache.lucene.codecs.PostingsWriterBase;
 import org.apache.lucene.codecs.bitvectors.HnswBitVectorsFormat;
+import org.apache.lucene.codecs.blockterms.BlockTermsReader;
+import org.apache.lucene.codecs.blockterms.BlockTermsWriter;
+import org.apache.lucene.codecs.blockterms.FixedGapTermsIndexReader;
+import org.apache.lucene.codecs.blockterms.FixedGapTermsIndexWriter;
 import org.apache.lucene.codecs.blocktreeords.BlockTreeOrdsPostingsFormat;
 import org.apache.lucene.codecs.bloom.BloomFilteringPostingsFormat;
 import org.apache.lucene.codecs.lucene104.Lucene104Codec;
 import org.apache.lucene.codecs.lucene104.Lucene104PostingsFormat;
+import org.apache.lucene.codecs.lucene104.Lucene104PostingsReader;
+import org.apache.lucene.codecs.lucene104.Lucene104PostingsWriter;
 import org.apache.lucene.codecs.memory.DirectPostingsFormat;
 import org.apache.lucene.codecs.memory.FSTPostingsFormat;
 import org.apache.lucene.codecs.uniformsplit.UniformSplitPostingsFormat;
@@ -24,10 +34,15 @@ import org.apache.lucene.document.KnnByteVectorField;
 import org.apache.lucene.document.StringField;
 import org.apache.lucene.index.CodecReader;
 import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.FieldInfos;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.NoMergePolicy;
+import org.apache.lucene.index.SegmentInfo;
+import org.apache.lucene.index.SegmentInfos;
+import org.apache.lucene.index.SegmentReadState;
+import org.apache.lucene.index.SegmentWriteState;
 import org.apache.lucene.index.Terms;
 import org.apache.lucene.index.TermsEnum;
 import org.apache.lucene.index.VectorSimilarityFunction;
@@ -37,6 +52,7 @@ import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.TopKnnCollector;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.store.IOContext;
 import org.apache.lucene.util.BytesRef;
 
 /**
@@ -71,6 +87,12 @@ import org.apache.lucene.util.BytesRef;
  * dictionary), and the same kind of {@code targets.tsv} (half present in {@code sa}): {@code
  * cx_stsplit_seek} is {@code seekExact} on {@code sb} for each, most hits landing on a line only
  * {@code sa} has.
+ *
+ * <p>{@code bterms/}: the same 200 000 ids, {@code bid} routed to {@link BlockTermsBenchFormat}
+ * ({@code BlockTermsWriter} over the default {@code FixedGapTermsIndexWriter}, interval 32, and
+ * {@code Lucene104} postings; Lucene ships no postings format over this package), and the same
+ * kind of {@code targets.tsv} (half present): {@code cx_bterms_seek} is {@code seekExact} on each,
+ * through a {@code BlockTermsReader} opened by hand over the segment's files.
  */
 public final class CodecsMicro {
   static long warmupMs = Long.getLong("warmupMs", 1500);
@@ -306,6 +328,50 @@ public final class CodecsMicro {
     Files.writeString(dir.resolve("built"), "");
   }
 
+  /**
+   * {@code blockterms}' writer over the default fixed-gap index (interval 32) and {@code Lucene104}
+   * postings: Lucene ships no postings format over the package, and none is registered by SPI, so
+   * {@link #runBlockTerms} opens the reader by hand rather than through {@code DirectoryReader}.
+   */
+  static final class BlockTermsBenchFormat extends PostingsFormat {
+    BlockTermsBenchFormat() {
+      super("BlockTermsBench");
+    }
+
+    @Override
+    public FieldsConsumer fieldsConsumer(SegmentWriteState state) throws IOException {
+      PostingsWriterBase docs = new Lucene104PostingsWriter(state);
+      return new BlockTermsWriter(new FixedGapTermsIndexWriter(state), state, docs);
+    }
+
+    @Override
+    public FieldsProducer fieldsProducer(SegmentReadState state) throws IOException {
+      PostingsReaderBase docs = new Lucene104PostingsReader(state);
+      return new BlockTermsReader(new FixedGapTermsIndexReader(state), docs, state);
+    }
+  }
+
+  /** Builds {@code bterms/}: {@code cx_bterms_seek}'s ids under {@link BlockTermsBenchFormat}. */
+  static void buildBlockTerms(Path dir) throws IOException {
+    Random r = new Random(0x15_5_2026_1022L);
+    try (Directory d = FSDirectory.open(dir);
+        IndexWriter w = new IndexWriter(d, config("bid", new BlockTermsBenchFormat()))) {
+      for (int i = 0; i < DOCS; i++) {
+        Document doc = new Document();
+        doc.add(new StringField("bid", idOf(i), Field.Store.NO));
+        w.addDocument(doc);
+      }
+      w.commit();
+    }
+    List<String> targets = new ArrayList<>();
+    for (int k = 0; k < 200_000; k++) {
+      // Half present, half absent.
+      targets.add(idOf(r.nextInt(2) == 0 ? r.nextInt(DOCS) : DOCS + r.nextInt(10 * DOCS)));
+    }
+    Files.write(dir.resolve("targets.tsv"), targets);
+    Files.writeString(dir.resolve("built"), "");
+  }
+
   /** Builds {@code stsplit/}: {@code cx_stsplit_seek}'s ids under SharedTermsUniformSplit. */
   static void buildSharedTerms(Path dir) throws IOException {
     Random r = new Random(0x15_5_2026_1021L);
@@ -384,31 +450,52 @@ public final class CodecsMicro {
 
   static void runSeek(Path dir, String name, String field) throws IOException {
     if (!selected(name)) return;
+    try (Directory d = FSDirectory.open(dir);
+        DirectoryReader reader = DirectoryReader.open(d)) {
+      timeSeek(dir, name, reader.leaves().get(0).reader().terms(field));
+    }
+  }
+
+  /**
+   * {@code cx_bterms_seek}: {@code seekExact} on {@code bid}, through a {@code BlockTermsReader}
+   * opened over the one segment's {@code BlockTermsBench_0} files.
+   */
+  static void runBlockTerms(Path dir) throws IOException {
+    if (!selected("cx_bterms_seek")) return;
+    try (Directory d = FSDirectory.open(dir)) {
+      SegmentInfo si = SegmentInfos.readLatestCommit(d).info(0).info;
+      FieldInfos fis = si.getCodec().fieldInfosFormat().read(d, si, "", IOContext.DEFAULT);
+      SegmentReadState state =
+          new SegmentReadState(d, si, fis, IOContext.DEFAULT, "BlockTermsBench_0");
+      try (FieldsProducer fields = new BlockTermsBenchFormat().fieldsProducer(state)) {
+        timeSeek(dir, "cx_bterms_seek", fields.terms("bid"));
+      }
+    }
+  }
+
+  /** Times {@code seekExact} (hashing {@code docFreq}, -1 when absent) on each of the targets. */
+  static void timeSeek(Path dir, String name, Terms terms) throws IOException {
     List<BytesRef> ids = new ArrayList<>();
     for (String line : Files.readAllLines(dir.resolve("targets.tsv"))) {
       ids.add(new BytesRef(line));
     }
-    try (Directory d = FSDirectory.open(dir);
-        DirectoryReader reader = DirectoryReader.open(d)) {
-      Terms terms = reader.leaves().get(0).reader().terms(field);
-      Op op =
-          () -> {
-            TermsEnum te = terms.iterator();
-            Fnv g = new Fnv();
-            for (BytesRef id : ids) {
-              g.add(te.seekExact(id) ? te.docFreq() : -1);
-            }
-            sink += g.h;
-            return ids.size();
-          };
-      Fnv f = new Fnv();
-      TermsEnum te = terms.iterator();
-      for (BytesRef id : ids) {
-        f.add(te.seekExact(id) ? te.docFreq() : -1);
-      }
-      System.out.printf("#check\t%s\t%016x\t%d%n", name, f.h, ids.size());
-      measure(name, op);
+    Op op =
+        () -> {
+          TermsEnum te = terms.iterator();
+          Fnv g = new Fnv();
+          for (BytesRef id : ids) {
+            g.add(te.seekExact(id) ? te.docFreq() : -1);
+          }
+          sink += g.h;
+          return ids.size();
+        };
+    Fnv f = new Fnv();
+    TermsEnum te = terms.iterator();
+    for (BytesRef id : ids) {
+      f.add(te.seekExact(id) ? te.docFreq() : -1);
     }
+    System.out.printf("#check\t%s\t%016x\t%d%n", name, f.h, ids.size());
+    measure(name, op);
   }
 
   public static void main(String[] args) throws IOException {
@@ -438,6 +525,10 @@ public final class CodecsMicro {
         Files.createDirectories(dir.resolve("stsplit"));
         buildSharedTerms(dir.resolve("stsplit"));
       }
+      if (!Files.exists(dir.resolve("bterms").resolve("built"))) {
+        Files.createDirectories(dir.resolve("bterms"));
+        buildBlockTerms(dir.resolve("bterms"));
+      }
     } else {
       runBloom(dir.resolve("bloom"));
       runMemory(dir.resolve("memory"));
@@ -445,6 +536,7 @@ public final class CodecsMicro {
       runOrds(dir.resolve("ords"));
       runSeek(dir.resolve("usplit"), "cx_usplit_seek", "uid");
       runSeek(dir.resolve("stsplit"), "cx_stsplit_seek", "sb");
+      runBlockTerms(dir.resolve("bterms"));
     }
   }
 }
