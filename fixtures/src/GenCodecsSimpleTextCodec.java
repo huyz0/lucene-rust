@@ -20,6 +20,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -33,17 +34,24 @@ import org.apache.lucene.codecs.Codec;
 import org.apache.lucene.codecs.DocValuesProducer;
 import org.apache.lucene.codecs.FilterCodec;
 import org.apache.lucene.codecs.NormsProducer;
+import org.apache.lucene.codecs.PointsFormat;
+import org.apache.lucene.codecs.PointsReader;
+import org.apache.lucene.codecs.PointsWriter;
 import org.apache.lucene.codecs.SegmentInfoFormat;
 import org.apache.lucene.codecs.StoredFieldsReader;
 import org.apache.lucene.codecs.TermVectorsReader;
 import org.apache.lucene.codecs.simpletext.SimpleTextCodec;
 import org.apache.lucene.document.BinaryDocValuesField;
+import org.apache.lucene.document.BinaryPoint;
 import org.apache.lucene.document.Document;
+import org.apache.lucene.document.DoublePoint;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.FieldType;
+import org.apache.lucene.document.FloatPoint;
 import org.apache.lucene.document.IntPoint;
 import org.apache.lucene.document.KnnByteVectorField;
 import org.apache.lucene.document.KnnFloatVectorField;
+import org.apache.lucene.document.LongPoint;
 import org.apache.lucene.document.NumericDocValuesField;
 import org.apache.lucene.document.SortedDocValuesField;
 import org.apache.lucene.document.SortedNumericDocValuesField;
@@ -64,11 +72,13 @@ import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.NoMergePolicy;
 import org.apache.lucene.index.NumericDocValues;
+import org.apache.lucene.index.PointValues;
 import org.apache.lucene.index.PostingsEnum;
 import org.apache.lucene.index.SegmentCommitInfo;
 import org.apache.lucene.index.SegmentInfo;
 import org.apache.lucene.index.SegmentInfos;
 import org.apache.lucene.index.SegmentReadState;
+import org.apache.lucene.index.SegmentWriteState;
 import org.apache.lucene.index.SortFieldProvider;
 import org.apache.lucene.index.SortedDocValues;
 import org.apache.lucene.index.SortedNumericDocValues;
@@ -144,6 +154,14 @@ import org.apache.lucene.util.BytesRef;
  *                            positions offsets payloads size, per term "term" hex freq, per
  *                            occurrence "pos" position start end payload hex (or "-"), per
  *                            probe "ceil" hex status term hex
+ *     pin.SEG.tsv            what SimpleTextPointsWriter.writeField was handed, in call order:
+ *                            per field "field" name size, per point "p" doc packed hex
+ *     points.SEG.tsv         per points field "field" name dims indexDims bytes size docCount
+ *                            min max, per tree node (pre-order) "node" depth min max size
+ *                            leaf, "all"/"ids" count hash of visitDocValues/visitDocIDs from the
+ *                            root, per box "box" lower upper estimatePointCount, the relations
+ *                            compare returned in intersect's order (I/O/C), visit(doc) and
+ *                            visit(doc, value) counts, matches and the ordered hash
  * </pre>
  */
 public class GenCodecsSimpleTextCodec {
@@ -171,7 +189,71 @@ public class GenCodecsSimpleTextCodec {
           }
         };
       }
+
+      @Override
+      public PointsFormat pointsFormat() {
+        return new LoggingPoints(simpleText.pointsFormat());
+      }
     };
+  }
+
+  /** Per segment, what its points writer was handed (pin.SEG.tsv). */
+  static final Map<String, List<String>> POINT_INPUTS = new TreeMap<>();
+
+  /** SimpleText's points format, logging each writeField's input before writing it. */
+  static final class LoggingPoints extends PointsFormat {
+    final PointsFormat in;
+
+    LoggingPoints(PointsFormat in) {
+      this.in = in;
+    }
+
+    @Override
+    public PointsWriter fieldsWriter(SegmentWriteState state) throws IOException {
+      PointsWriter w = in.fieldsWriter(state);
+      List<String> log = new ArrayList<>();
+      POINT_INPUTS.put(state.segmentInfo.name, log);
+      return new PointsWriter() {
+        @Override
+        public void writeField(FieldInfo fi, PointsReader reader) throws IOException {
+          PointValues.PointTree t = reader.getValues(fi.name).getPointTree();
+          log.add("field\t" + hex(fi.name) + "\t" + t.size());
+          t.visitDocValues(
+              new PointValues.IntersectVisitor() {
+                @Override
+                public void visit(int doc) {
+                  throw new IllegalStateException();
+                }
+
+                @Override
+                public void visit(int doc, byte[] packed) {
+                  log.add("p\t" + doc + "\t" + HEX.formatHex(packed));
+                }
+
+                @Override
+                public PointValues.Relation compare(byte[] min, byte[] max) {
+                  return PointValues.Relation.CELL_CROSSES_QUERY;
+                }
+              });
+          w.writeField(fi, reader);
+        }
+
+        @Override
+        public void finish() throws IOException {
+          w.finish();
+        }
+
+        @Override
+        public void close() throws IOException {
+          w.close();
+        }
+      };
+    }
+
+    @Override
+    public PointsReader fieldsReader(SegmentReadState state) throws IOException {
+      return in.fieldsReader(state);
+    }
   }
 
   public static void main(String[] args) throws IOException {
@@ -322,6 +404,7 @@ public class GenCodecsSimpleTextCodec {
   static final FieldType TV_PAY = new FieldType(TextField.TYPE_NOT_STORED);
   static final FieldType TV_ALL = new FieldType(TextField.TYPE_NOT_STORED);
   static final FieldType DIMS = new FieldType();
+  static final FieldType DIMS8 = new FieldType();
   static final FieldType ATTRS = new FieldType(StringField.TYPE_NOT_STORED);
 
   static {
@@ -350,6 +433,8 @@ public class GenCodecsSimpleTextCodec {
     }
     DIMS.setDimensions(3, 2, 4);
     DIMS.freeze();
+    DIMS8.setDimensions(8, 4, 4);
+    DIMS8.freeze();
     ATTRS.putAttribute("k1", "v\n1");
     ATTRS.putAttribute("k2\\", "");
     ATTRS.putAttribute("a0", "x");
@@ -379,6 +464,7 @@ public class GenCodecsSimpleTextCodec {
     byte[] dims = new byte[12];
     r.nextBytes(dims);
     doc.add(new Field("dims", new BytesRef(dims), DIMS));
+    points(doc, i, new Random(i * 131L + 3));
     doc.add(
         new KnnFloatVectorField(
             "fvec", new float[] {1 + i, 2, -3, 0.5f}, VectorSimilarityFunction.COSINE));
@@ -391,6 +477,67 @@ public class GenCodecsSimpleTextCodec {
     docValues(doc, i, new Random(i * 31L + 7));
     termVectors(doc, i);
     return doc;
+  }
+
+  /**
+   * Points of every kind: 1-D int (several leaf levels), sparse 1-D long extremes, 2-D float
+   * with signed zeros and infinities, 3-D double, 2-D binary 16-byte, 8 data dims over 4 index
+   * dims with heavy duplicates; one document each holds exactly 512, 513, 1024 and 1025 1-D
+   * points, and 513 and 1025 2-D ones (the leaf-size boundaries).
+   */
+  static void points(Document doc, int i, Random r) {
+    for (int k = 0; k < 20; k++) {
+      doc.add(new IntPoint("p1i", r.nextInt(400) - 200));
+    }
+    if (i % 3 == 0) {
+      doc.add(new LongPoint("p1l", LONGS[i % LONGS.length]));
+      doc.add(new LongPoint("p1l", r.nextLong()));
+    }
+    float[] fs = {-0f, 0f, Float.NEGATIVE_INFINITY, Float.POSITIVE_INFINITY, Float.MIN_VALUE};
+    for (int k = 0; k < 6; k++) {
+      float a = k == 0 ? fs[i % fs.length] : randomFloat(r);
+      doc.add(new FloatPoint("p2f", a, k % 2 == 0 ? r.nextInt(5) : -a));
+    }
+    for (int k = 0; k < 12; k++) {
+      doc.add(
+          new DoublePoint(
+              "p3d",
+              r.nextInt(20) * 0.5,
+              k == 0 ? Double.MAX_VALUE : r.nextGaussian(),
+              k % 4 == 0 ? -0.0 : r.nextInt(3)));
+    }
+    if (i % 2 == 0) {
+      for (int k = 0; k < 8; k++) {
+        byte[] a = new byte[16];
+        byte[] b = new byte[16];
+        r.nextBytes(a);
+        r.nextBytes(b);
+        a[0] = (byte) (k % 3 == 0 ? 0x0a : k % 3 == 1 ? 0x5c : 0xff);
+        doc.add(new BinaryPoint("pbin", a, b));
+      }
+    }
+    for (int k = 0; k < 6; k++) {
+      byte[] v = new byte[32];
+      for (int d = 0; d < 8; d++) {
+        v[d * 4 + 3] = (byte) r.nextInt(d < 4 ? 3 : 2);
+      }
+      doc.add(new Field("p8", new BytesRef(v), DIMS8));
+      if (k == 0) doc.add(new Field("p8", new BytesRef(v), DIMS8));
+    }
+    int[][] edges = {{2, 512}, {4, 513}, {6, 1024}, {8, 1025}};
+    for (int[] e : edges) {
+      if (i == e[0]) {
+        for (int k = 0; k < e[1]; k++) {
+          doc.add(new IntPoint("e" + e[1], r.nextInt(1000)));
+        }
+      }
+    }
+    if (i == 2 || i == 6) {
+      int n = i == 2 ? 513 : 1025;
+      for (int k = 0; k < n; k++) {
+        doc.add(new IntPoint("f" + n, r.nextInt(50), r.nextInt(50)));
+      }
+    }
   }
 
   static final long[] LONGS = {Long.MIN_VALUE, Long.MAX_VALUE, 0, -1, 1L << 53};
@@ -448,6 +595,7 @@ public class GenCodecsSimpleTextCodec {
 
   static void flush(Path out) throws IOException {
     clean(out);
+    POINT_INPUTS.clear();
     Path idx = out.resolve("index");
     Random r = new Random(0x51_2026_1020L);
     IndexWriterConfig cfg = new IndexWriterConfig();
@@ -497,6 +645,7 @@ public class GenCodecsSimpleTextCodec {
 
   static void merged(Path out) throws IOException {
     clean(out);
+    POINT_INPUTS.clear();
     Path idx = out.resolve("index");
     Random r = new Random(0x52_2026_1020L);
     IndexWriterConfig cfg = new IndexWriterConfig();
@@ -607,10 +756,209 @@ public class GenCodecsSimpleTextCodec {
             Files.write(out.resolve("tv." + si.name + ".tsv"), lines);
           }
         }
+        if (fis.hasPointValues()) {
+          Files.write(out.resolve("pin." + si.name + ".tsv"), POINT_INPUTS.get(si.name));
+          try (PointsReader pr =
+              codec.pointsFormat().fieldsReader(new SegmentReadState(core, si, fis, CTX))) {
+            pr.checkIntegrity();
+            List<String> lines = new ArrayList<>();
+            for (FieldInfo fi : fis) {
+              if (fi.getPointDimensionCount() == 0) continue;
+              pointsField(lines, fi.name, pr.getValues(fi.name));
+            }
+            Files.write(out.resolve("points." + si.name + ".tsv"), lines);
+          }
+        }
         if (cfs != null) cfs.close();
       }
     }
     Files.write(out.resolve("segments.tsv"), segments);
+  }
+
+  /** One points field of points.SEG.tsv. */
+  static void pointsField(List<String> lines, String name, PointValues v) throws IOException {
+    int idims = v.getNumIndexDimensions();
+    int bpd = v.getBytesPerDimension();
+    lines.add(
+        String.join(
+            "\t",
+            "field",
+            hex(name),
+            Integer.toString(v.getNumDimensions()),
+            Integer.toString(idims),
+            Integer.toString(bpd),
+            Long.toString(v.size()),
+            Integer.toString(v.getDocCount()),
+            HEX.formatHex(v.getMinPackedValue()),
+            HEX.formatHex(v.getMaxPackedValue())));
+    walk(lines, v.getPointTree(), 0);
+    List<byte[]> all = new ArrayList<>();
+    long[] h = new long[2];
+    v.getPointTree()
+        .visitDocValues(
+            new PointValues.IntersectVisitor() {
+              @Override
+              public void visit(int doc) {
+                throw new IllegalStateException();
+              }
+
+              @Override
+              public void visit(int doc, byte[] packed) {
+                all.add(packed.clone());
+                h[0]++;
+                h[1] = h[1] * 1_000_003L + doc;
+                for (byte b : packed) h[1] = h[1] * 31 + (b & 0xff);
+              }
+
+              @Override
+              public PointValues.Relation compare(byte[] min, byte[] max) {
+                return PointValues.Relation.CELL_CROSSES_QUERY;
+              }
+            });
+    lines.add("all\t" + h[0] + "\t" + h[1]);
+    long[] g = new long[2];
+    v.getPointTree()
+        .visitDocIDs(
+            new PointValues.IntersectVisitor() {
+              @Override
+              public void visit(int doc) {
+                g[0]++;
+                g[1] = g[1] * 1_000_003L + doc;
+              }
+
+              @Override
+              public void visit(int doc, byte[] packed) {
+                throw new IllegalStateException();
+              }
+
+              @Override
+              public PointValues.Relation compare(byte[] min, byte[] max) {
+                throw new IllegalStateException();
+              }
+            });
+    lines.add("ids\t" + g[0] + "\t" + g[1]);
+    // Boxes over the index dims: the whole range, above it, one point, random ones.
+    int ilen = idims * bpd;
+    Random r = new Random(name.hashCode());
+    List<byte[][]> boxes = new ArrayList<>();
+    boxes.add(new byte[][] {v.getMinPackedValue(), v.getMaxPackedValue()});
+    byte[] top = new byte[ilen];
+    Arrays.fill(top, (byte) 0xff);
+    boxes.add(new byte[][] {top, top});
+    byte[] one = Arrays.copyOf(all.get(r.nextInt(all.size())), ilen);
+    boxes.add(new byte[][] {one, one});
+    for (int k = 0; k < 6; k++) {
+      byte[] a = all.get(r.nextInt(all.size()));
+      byte[] b = all.get(r.nextInt(all.size()));
+      byte[] lo = new byte[ilen];
+      byte[] hi = new byte[ilen];
+      for (int d = 0; d < idims; d++) {
+        int o = d * bpd;
+        boolean less = Arrays.compareUnsigned(a, o, o + bpd, b, o, o + bpd) <= 0;
+        System.arraycopy(less ? a : b, o, lo, o, bpd);
+        System.arraycopy(less ? b : a, o, hi, o, bpd);
+      }
+      boxes.add(new byte[][] {lo, hi});
+    }
+    for (byte[][] box : boxes) {
+      long estimate = v.estimatePointCount(new BoxVisitor(box[0], box[1], idims, bpd));
+      BoxVisitor bv = new BoxVisitor(box[0], box[1], idims, bpd);
+      v.intersect(bv);
+      lines.add(
+          String.join(
+              "\t",
+              "box",
+              HEX.formatHex(box[0]),
+              HEX.formatHex(box[1]),
+              Long.toString(estimate),
+              bv.relations.toString(),
+              Long.toString(bv.visits),
+              Long.toString(bv.valueVisits),
+              Long.toString(bv.matches),
+              Long.toString(bv.hash)));
+    }
+  }
+
+  /** Pre-order: every node's depth, cell, size and whether it is a leaf. */
+  static void walk(List<String> lines, PointValues.PointTree t, int depth) throws IOException {
+    boolean leaf = !t.moveToChild();
+    if (!leaf) t.moveToParent();
+    lines.add(
+        String.join(
+            "\t",
+            "node",
+            Integer.toString(depth),
+            HEX.formatHex(t.getMinPackedValue()),
+            HEX.formatHex(t.getMaxPackedValue()),
+            Long.toString(t.size()),
+            leaf ? "1" : "0"));
+    if (t.moveToChild()) {
+      do {
+        walk(lines, t, depth + 1);
+      } while (t.moveToSibling());
+      t.moveToParent();
+    }
+  }
+
+  /** A box over the index dims, recording what intersect asked and handed over. */
+  static final class BoxVisitor implements PointValues.IntersectVisitor {
+    final byte[] lo;
+    final byte[] hi;
+    final int idims;
+    final int bpd;
+    final StringBuilder relations = new StringBuilder();
+    long visits;
+    long valueVisits;
+    long matches;
+    long hash;
+
+    BoxVisitor(byte[] lo, byte[] hi, int idims, int bpd) {
+      this.lo = lo;
+      this.hi = hi;
+      this.idims = idims;
+      this.bpd = bpd;
+    }
+
+    @Override
+    public void visit(int doc) {
+      visits++;
+      hash = hash * 1_000_003L + doc;
+    }
+
+    @Override
+    public void visit(int doc, byte[] packed) {
+      valueVisits++;
+      boolean m = true;
+      for (int d = 0; d < idims; d++) {
+        int o = d * bpd;
+        if (Arrays.compareUnsigned(packed, o, o + bpd, lo, o, o + bpd) < 0
+            || Arrays.compareUnsigned(packed, o, o + bpd, hi, o, o + bpd) > 0) {
+          m = false;
+        }
+      }
+      if (m) matches++;
+      hash = hash * 1_000_003L + 2L * doc + (m ? 1 : 0);
+    }
+
+    @Override
+    public PointValues.Relation compare(byte[] min, byte[] max) {
+      boolean crosses = false;
+      for (int d = 0; d < idims; d++) {
+        int o = d * bpd;
+        if (Arrays.compareUnsigned(min, o, o + bpd, hi, o, o + bpd) > 0
+            || Arrays.compareUnsigned(max, o, o + bpd, lo, o, o + bpd) < 0) {
+          relations.append('O');
+          return PointValues.Relation.CELL_OUTSIDE_QUERY;
+        }
+        crosses |=
+            Arrays.compareUnsigned(min, o, o + bpd, lo, o, o + bpd) < 0
+                || Arrays.compareUnsigned(max, o, o + bpd, hi, o, o + bpd) > 0;
+      }
+      relations.append(crosses ? 'C' : 'I');
+      return crosses
+          ? PointValues.Relation.CELL_CROSSES_QUERY
+          : PointValues.Relation.CELL_INSIDE_QUERY;
+    }
   }
 
   interface Open<T> {

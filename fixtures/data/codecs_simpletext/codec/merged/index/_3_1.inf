@@ -1,4 +1,4 @@
-number of fields 37
+number of fields 49
   name id
   number 0
   index options DOCS
@@ -384,8 +384,116 @@ number of fields 37
   vector similarity EUCLIDEAN
   soft-deletes false
   parent false
-  name fvec
+  name p1i
   number 21
+  index options NONE
+  term vectors false
+  payloads false
+  norms true
+  doc values NONE
+  doc values skip indexNONE
+  doc values gen -1
+  attributes 0
+  data dimensional count 1
+  index dimensional count 1
+  dimensional num bytes 4
+  vector number of dimensions 0
+  vector encoding FLOAT32
+  vector similarity EUCLIDEAN
+  soft-deletes false
+  parent false
+  name p1l
+  number 22
+  index options NONE
+  term vectors false
+  payloads false
+  norms true
+  doc values NONE
+  doc values skip indexNONE
+  doc values gen -1
+  attributes 0
+  data dimensional count 1
+  index dimensional count 1
+  dimensional num bytes 8
+  vector number of dimensions 0
+  vector encoding FLOAT32
+  vector similarity EUCLIDEAN
+  soft-deletes false
+  parent false
+  name p2f
+  number 23
+  index options NONE
+  term vectors false
+  payloads false
+  norms true
+  doc values NONE
+  doc values skip indexNONE
+  doc values gen -1
+  attributes 0
+  data dimensional count 2
+  index dimensional count 2
+  dimensional num bytes 4
+  vector number of dimensions 0
+  vector encoding FLOAT32
+  vector similarity EUCLIDEAN
+  soft-deletes false
+  parent false
+  name p3d
+  number 24
+  index options NONE
+  term vectors false
+  payloads false
+  norms true
+  doc values NONE
+  doc values skip indexNONE
+  doc values gen -1
+  attributes 0
+  data dimensional count 3
+  index dimensional count 3
+  dimensional num bytes 8
+  vector number of dimensions 0
+  vector encoding FLOAT32
+  vector similarity EUCLIDEAN
+  soft-deletes false
+  parent false
+  name pbin
+  number 25
+  index options NONE
+  term vectors false
+  payloads false
+  norms true
+  doc values NONE
+  doc values skip indexNONE
+  doc values gen -1
+  attributes 0
+  data dimensional count 2
+  index dimensional count 2
+  dimensional num bytes 16
+  vector number of dimensions 0
+  vector encoding FLOAT32
+  vector similarity EUCLIDEAN
+  soft-deletes false
+  parent false
+  name p8
+  number 26
+  index options NONE
+  term vectors false
+  payloads false
+  norms true
+  doc values NONE
+  doc values skip indexNONE
+  doc values gen -1
+  attributes 0
+  data dimensional count 8
+  index dimensional count 4
+  dimensional num bytes 4
+  vector number of dimensions 0
+  vector encoding FLOAT32
+  vector similarity EUCLIDEAN
+  soft-deletes false
+  parent false
+  name fvec
+  number 27
   index options NONE
   term vectors false
   payloads false
@@ -403,7 +511,7 @@ number of fields 37
   soft-deletes false
   parent false
   name bvec
-  number 22
+  number 28
   index options NONE
   term vectors false
   payloads false
@@ -421,7 +529,7 @@ number of fields 37
   soft-deletes false
   parent false
   name mvec
-  number 23
+  number 29
   index options NONE
   term vectors false
   payloads false
@@ -439,7 +547,7 @@ number of fields 37
   soft-deletes false
   parent false
   name dvbig
-  number 24
+  number 30
   index options NONE
   term vectors false
   payloads false
@@ -457,7 +565,7 @@ number of fields 37
   soft-deletes false
   parent false
   name dvbin
-  number 25
+  number 31
   index options NONE
   term vectors false
   payloads false
@@ -475,7 +583,7 @@ number of fields 37
   soft-deletes false
   parent false
   name dvsorted
-  number 26
+  number 32
   index options NONE
   term vectors false
   payloads false
@@ -493,7 +601,7 @@ number of fields 37
   soft-deletes false
   parent false
   name dvsset
-  number 27
+  number 33
   index options NONE
   term vectors false
   payloads false
@@ -511,7 +619,7 @@ number of fields 37
   soft-deletes false
   parent false
   name tvplain
-  number 28
+  number 34
   index options DOCS_AND_FREQS_AND_POSITIONS
   term vectors true
   payloads true
@@ -529,7 +637,7 @@ number of fields 37
   soft-deletes false
   parent false
   name tvpos
-  number 29
+  number 35
   index options DOCS_AND_FREQS_AND_POSITIONS
   term vectors true
   payloads true
@@ -547,7 +655,7 @@ number of fields 37
   soft-deletes false
   parent false
   name tvoff
-  number 30
+  number 36
   index options DOCS_AND_FREQS_AND_POSITIONS
   term vectors true
   payloads true
@@ -565,7 +673,7 @@ number of fields 37
   soft-deletes false
   parent false
   name tvpay
-  number 31
+  number 37
   index options DOCS_AND_FREQS_AND_POSITIONS
   term vectors true
   payloads true
@@ -583,7 +691,7 @@ number of fields 37
   soft-deletes false
   parent false
   name tvall
-  number 32
+  number 38
   index options DOCS_AND_FREQS_AND_POSITIONS
   term vectors true
   payloads true
@@ -601,7 +709,7 @@ number of fields 37
   soft-deletes false
   parent false
   name tvxｚ
-  number 33
+  number 39
   index options DOCS_AND_FREQS_AND_POSITIONS
   term vectors true
   payloads false
@@ -619,7 +727,7 @@ number of fields 37
   soft-deletes false
   parent false
   name tvx😀
-  number 34
+  number 40
   index options DOCS_AND_FREQS_AND_POSITIONS
   term vectors true
   payloads false
@@ -636,8 +744,44 @@ number of fields 37
   vector similarity EUCLIDEAN
   soft-deletes false
   parent false
+  name e512
+  number 41
+  index options NONE
+  term vectors false
+  payloads false
+  norms true
+  doc values NONE
+  doc values skip indexNONE
+  doc values gen -1
+  attributes 0
+  data dimensional count 1
+  index dimensional count 1
+  dimensional num bytes 4
+  vector number of dimensions 0
+  vector encoding FLOAT32
+  vector similarity EUCLIDEAN
+  soft-deletes false
+  parent false
+  name f513
+  number 42
+  index options NONE
+  term vectors false
+  payloads false
+  norms true
+  doc values NONE
+  doc values skip indexNONE
+  doc values gen -1
+  attributes 0
+  data dimensional count 2
+  index dimensional count 2
+  dimensional num bytes 4
+  vector number of dimensions 0
+  vector encoding FLOAT32
+  vector similarity EUCLIDEAN
+  soft-deletes false
+  parent false
   name dvneg
-  number 35
+  number 43
   index options NONE
   term vectors false
   payloads false
@@ -655,7 +799,7 @@ number of fields 37
   soft-deletes false
   parent false
   name dvsnum
-  number 36
+  number 44
   index options NONE
   term vectors false
   payloads false
@@ -672,4 +816,76 @@ number of fields 37
   vector similarity EUCLIDEAN
   soft-deletes false
   parent false
-checksum 00000000001601517952
+  name e513
+  number 45
+  index options NONE
+  term vectors false
+  payloads false
+  norms true
+  doc values NONE
+  doc values skip indexNONE
+  doc values gen -1
+  attributes 0
+  data dimensional count 1
+  index dimensional count 1
+  dimensional num bytes 4
+  vector number of dimensions 0
+  vector encoding FLOAT32
+  vector similarity EUCLIDEAN
+  soft-deletes false
+  parent false
+  name e1024
+  number 46
+  index options NONE
+  term vectors false
+  payloads false
+  norms true
+  doc values NONE
+  doc values skip indexNONE
+  doc values gen -1
+  attributes 0
+  data dimensional count 1
+  index dimensional count 1
+  dimensional num bytes 4
+  vector number of dimensions 0
+  vector encoding FLOAT32
+  vector similarity EUCLIDEAN
+  soft-deletes false
+  parent false
+  name f1025
+  number 47
+  index options NONE
+  term vectors false
+  payloads false
+  norms true
+  doc values NONE
+  doc values skip indexNONE
+  doc values gen -1
+  attributes 0
+  data dimensional count 2
+  index dimensional count 2
+  dimensional num bytes 4
+  vector number of dimensions 0
+  vector encoding FLOAT32
+  vector similarity EUCLIDEAN
+  soft-deletes false
+  parent false
+  name e1025
+  number 48
+  index options NONE
+  term vectors false
+  payloads false
+  norms true
+  doc values NONE
+  doc values skip indexNONE
+  doc values gen -1
+  attributes 0
+  data dimensional count 1
+  index dimensional count 1
+  dimensional num bytes 4
+  vector number of dimensions 0
+  vector encoding FLOAT32
+  vector similarity EUCLIDEAN
+  soft-deletes false
+  parent false
+checksum 00000000001613319444

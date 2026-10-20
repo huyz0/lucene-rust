@@ -25,7 +25,9 @@
 //! `.inf`; `.fld` with every stored type; `_0_1.liv`; `.dat` with every doc
 //! values type, sorted as the index sort says, skip indexes on three; `.len`
 //! norms and `.pst` postings for two indexed fields; `.tvc` vectors of both,
-//! with positions, offsets and payloads matching the postings) and the
+//! with positions, offsets and payloads matching the postings; `.dim`/`.dii`
+//! points, one field past the tree writer's heap budget so it spills to
+//! temp files) and the
 //! compound `_1` (`.si` + `.scf` holding its `.inf`/`.fld`/`.dat`, the
 //! last its parent field), plus `infos/_2.inf` with every kind of field.
 //! Java reads each through SimpleTextCodec's own formats against the `*.tsv`
@@ -49,6 +51,7 @@ use lucene_codecs::field_infos::{
     DocValuesSkipIndexType, DocValuesType, FieldInfo, FieldInfos, IndexOptions, VectorEncoding,
     VectorSimilarityFunction,
 };
+use lucene_codecs::points::{IntersectVisitor, Relation};
 use lucene_codecs::postings_writer::{FieldNorms, FieldPostingsInput, TermPostings};
 use lucene_codecs::segment_state::{SegmentReadState, SegmentWriteState};
 use lucene_codecs::simpletext::compound::{self as st_compound, SimpleTextCompoundReader};
@@ -60,6 +63,10 @@ use lucene_codecs::simpletext::field_infos as st_infos;
 use lucene_codecs::simpletext::fields_reader::SimpleTextFieldsReader;
 use lucene_codecs::simpletext::fields_writer::{postings_file_name, write as write_pst};
 use lucene_codecs::simpletext::norms::{norms_file_name, SimpleTextNormsConsumer};
+use lucene_codecs::simpletext::points_reader::SimpleTextPointsReader;
+use lucene_codecs::simpletext::points_writer::{
+    points_file_name, points_index_file_name, SimpleTextPointsWriter,
+};
 use lucene_codecs::simpletext::segment_info::{
     self as st_si, SimpleTextSegmentInfo, SortFieldEntry,
 };
@@ -69,6 +76,7 @@ use lucene_codecs::simpletext::term_vectors_writer::{self as st_tv, term_vectors
 use lucene_codecs::simpletext::{live_docs, stored_fields_writer, ALL, NO_MORE_DOCS};
 use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
 use lucene_codecs::term_vectors::{TermVectorField, TermVectorTerm, TermVectorsDocument};
+use lucene_store::FsDirectory;
 use lucene_util::fixed_bit_set::FixedBitSet;
 use lucene_util::geo::{java_double_string, java_float_string};
 use lucene_util::version::Version;
@@ -701,6 +709,9 @@ fn segment_infos(compound: bool) -> FieldInfos {
             FieldInfo::new("tag", 14)
                 .with_index_options(IndexOptions::DocsAndFreqs)
                 .with_store_term_vectors(true),
+            FieldInfo::new("pi", 15).with_points(1, 1, 4),
+            FieldInfo::new("p3", 16).with_points(3, 2, 4),
+            FieldInfo::new("pbig", 17).with_points(16, 8, 16),
         ]);
     }
     FieldInfos::new(fields).unwrap()
@@ -1154,6 +1165,114 @@ fn write_indexed(
     vec![pst_name, len_name, tvc_name]
 }
 
+/// A doc id and its packed value.
+type Point = (i32, Vec<u8>);
+
+/// Every point handed over by `visitDocValues`.
+struct Collect(Vec<Point>);
+
+impl IntersectVisitor for Collect {
+    fn compare(&mut self, _: &[u8], _: &[u8]) -> Relation {
+        Relation::CellCrossesQuery
+    }
+    fn visit(&mut self, _: i32) {
+        unreachable!("visitDocValues hands over values");
+    }
+    fn visit_with_value(&mut self, doc: i32, packed: &[u8]) {
+        self.0.push((doc, packed.to_vec()));
+    }
+}
+
+/// `_0`'s points: `pi` (1-D, two leaves, many duplicates), `p3` (3 data
+/// dims over 2 index dims, sparse) and `pbig` (16 dims of 16 bytes over 8
+/// index dims; 4,400 points, past the 4,032 the tree writer sorts in heap,
+/// so it builds through temp files). Writes the `.dim`/`.dii`, read back
+/// first, and `points.SEG.tsv`: per field its stats then each point in the
+/// order the writer was handed it, which Java's writer is handed too.
+fn write_points(
+    root: &Path,
+    index: &Path,
+    name: &str,
+    fis: &FieldInfos,
+    max_doc: usize,
+) -> Vec<String> {
+    let mut rng = Rng(0x0D1D_5EED ^ max_doc as u64);
+    let mut fields: Vec<(&str, Vec<Point>)> = Vec::new();
+    let mut pi = Vec::new();
+    let mut p3 = Vec::new();
+    let mut pbig = Vec::new();
+    for doc in 0..max_doc as i32 {
+        if doc % 5 != 4 {
+            for _ in 0..30 {
+                pi.push((doc, (rng.below(50) as u32 * 7_919).to_be_bytes().to_vec()));
+            }
+        }
+        if doc % 3 == 0 {
+            for _ in 0..45 {
+                p3.push((doc, (0..12).map(|_| rng.below(4) as u8).collect()));
+            }
+        }
+        for _ in 0..110 {
+            pbig.push((doc, (0..256).map(|_| rng.next() as u8).collect()));
+        }
+    }
+    // `p3` newest document first: Java's writer is handed the same reversed
+    // order; ties would make the bytes order-dependent.
+    p3.reverse();
+    fields.push(("pi", pi));
+    fields.push(("p3", p3));
+    fields.push(("pbig", pbig));
+    let temp = FsDirectory::open(index);
+    let mut w = SimpleTextPointsWriter::new(name, max_doc, Some(&temp));
+    for (field, points) in &fields {
+        w.write_field(
+            fis.field_by_name(field).unwrap(),
+            points.len() as u64,
+            points.iter().map(|(d, v)| (v.as_slice(), *d)),
+        )
+        .unwrap();
+    }
+    let (dim, dii) = w.finish();
+    for f in std::fs::read_dir(index).unwrap() {
+        let f = f.unwrap().file_name().into_string().unwrap();
+        assert!(!f.ends_with(".tmp"), "temp file {f} left behind");
+    }
+    let reader = SimpleTextPointsReader::open(&dim, &dii).unwrap();
+    reader.check_integrity().unwrap();
+    let mut tsv = String::new();
+    for (field, points) in &fields {
+        let v = reader.values(fis, field).unwrap().unwrap();
+        let mut got = Collect(Vec::new());
+        v.point_tree().visit_doc_values(&mut got).unwrap();
+        let mut want = points.clone();
+        want.sort();
+        got.0.sort();
+        assert_eq!(got.0, want, "{field}");
+        writeln!(
+            tsv,
+            "field\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            hexs(field),
+            v.num_dimensions(),
+            v.num_index_dimensions(),
+            v.bytes_per_dimension(),
+            v.size(),
+            v.doc_count(),
+            hex(v.min_packed_value()),
+            hex(v.max_packed_value())
+        )
+        .unwrap();
+        for (d, p) in points {
+            writeln!(tsv, "p\t{d}\t{}", hex(p)).unwrap();
+        }
+    }
+    let dim_name = points_file_name(name, "");
+    let dii_name = points_index_file_name(name, "");
+    std::fs::write(index.join(&dim_name), dim).unwrap();
+    std::fs::write(index.join(&dii_name), dii).unwrap();
+    std::fs::write(root.join(format!("points.{name}.tsv")), tsv).unwrap();
+    vec![dim_name, dii_name]
+}
+
 /// `codec/`: segment `_0` (non-compound, sorted, deletes), `_1` (compound)
 /// and a standalone `_2.inf`, each read back by this port first.
 fn write_codec(root: &Path) {
@@ -1197,6 +1316,7 @@ fn write_codec(root: &Path) {
             std::fs::write(index.join(&dat_name), dat).unwrap();
             let mut files = vec![inf_name, fld_name, dat_name];
             files.extend(write_indexed(root, &index, name, &fis, &id, max_doc as i32));
+            files.extend(write_points(root, &index, name, &fis, max_doc));
             files
         };
         let mut si = SimpleTextSegmentInfo {

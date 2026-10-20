@@ -5,6 +5,9 @@ import org.apache.lucene.codecs.StoredFieldsWriter;
 import org.apache.lucene.codecs.DocValuesConsumer;
 import org.apache.lucene.codecs.DocValuesProducer;
 import org.apache.lucene.codecs.NormsConsumer;
+import org.apache.lucene.codecs.PointsReader;
+import org.apache.lucene.codecs.PointsWriter;
+import org.apache.lucene.index.PointValues;
 import org.apache.lucene.codecs.TermVectorsReader;
 import org.apache.lucene.codecs.TermVectorsWriter;
 import org.apache.lucene.index.BinaryDocValues;
@@ -96,12 +99,14 @@ import java.util.Map;
  * (index sort, diagnostics, attributes, every stored type, a {@code .liv}, every doc-values type
  * with skip indexes, norms, postings and term vectors) and the compound {@code _1} (blocks and
  * their parent field) -- plus a {@code _2.inf} holding every kind of field. Each {@code .si},
- * {@code .inf}, {@code .liv}, {@code .scf}, {@code .fld}, {@code .dat}, {@code .len}, {@code .pst}
- * and {@code .tvc} is read by SimpleTextCodec's own format and must match Rust's manifest (doc
- * values, dictionaries and skipper intervals; norms; every vector occurrence), then re-written by
- * Java's writer: byte for byte equal, except the {@code .si}, whose hash-ordered maps only compare
+ * {@code .inf}, {@code .liv}, {@code .scf}, {@code .fld}, {@code .dat}, {@code .len}, {@code .pst},
+ * {@code .tvc} and {@code .dim}/{@code .dii} (points; one field built through temp files) is read by SimpleTextCodec's own format and must match Rust's manifest (doc
+ * values, dictionaries and skipper intervals; norms; every vector occurrence; each points field's
+ * stats and its points as a multiset), then re-written by Java's writer (points from Rust's
+ * input, in Rust's order): byte for byte equal, except the {@code .si}, whose hash-ordered maps only compare
  * as line sets. Java then commits a {@code segments_N} over the Rust segments, opens them through
- * {@link DirectoryReader} (max/num docs, live docs, every stored value) and runs {@link
+ * {@link DirectoryReader} (max/num docs, live docs, every stored value, points stats and a full
+ * intersect) and runs {@link
  * CheckIndex} at its slowest level: index-sort order, vectors against postings, impacts against
  * norms.
  *
@@ -672,6 +677,202 @@ public class VerifyCodecsSimpleText {
     return failures;
   }
 
+  /** Each segment/field's points stats line, as Rust's manifest has it. */
+  static final Map<String, String> POINT_HEADS = new HashMap<>();
+
+  static String pointsHead(String field, PointValues v) throws IOException {
+    return String.join("\t", "field", hexs(field), Integer.toString(v.getNumDimensions()),
+        Integer.toString(v.getNumIndexDimensions()), Integer.toString(v.getBytesPerDimension()),
+        Long.toString(v.size()), Integer.toString(v.getDocCount()),
+        HEX.formatHex(v.getMinPackedValue()), HEX.formatHex(v.getMaxPackedValue()));
+  }
+
+  /**
+   * Rust's {@code .dim}/{@code .dii}: each field's stats against {@code points.SEG.tsv} and its
+   * points against the manifest's as a multiset; then Java's writer is handed the manifest's
+   * points in Rust's order and must write both files byte for byte.
+   */
+  static int verifyPoints(Path root, Directory core, Directory out, SegmentInfo si,
+      FieldInfos fis, String name) throws Exception {
+    Codec codec = new SimpleTextCodec();
+    Map<String, List<String>> manifest = new TreeMap<>();
+    Map<String, String> heads = new TreeMap<>();
+    String current = null;
+    for (String line : Files.readAllLines(root.resolve("points." + name + ".tsv"))) {
+      String[] r = line.split("\t");
+      if (r[0].equals("field")) {
+        current = new String(HEX.parseHex(r[1]), StandardCharsets.UTF_8);
+        heads.put(current, line);
+        manifest.put(current, new ArrayList<>());
+      } else {
+        manifest.get(current).add(r[1] + "\t" + r[2]);
+      }
+    }
+    int failures = 0;
+    Map<String, PointValues> replay = new HashMap<>();
+    try (PointsReader pr =
+        codec.pointsFormat().fieldsReader(new SegmentReadState(core, si, fis, CTX))) {
+      pr.checkIntegrity();
+      for (FieldInfo fi : fis) {
+        if (fi.getPointDimensionCount() == 0) continue;
+        PointValues v = pr.getValues(fi.name);
+        String head = pointsHead(fi.name, v);
+        POINT_HEADS.put(name + "/" + fi.name, head);
+        if (!head.equals(heads.get(fi.name))) {
+          System.out.println(name + "/" + fi.name + ": got " + head + "\n  want " + heads.get(fi.name));
+          failures++;
+        }
+        List<String> got = new ArrayList<>();
+        v.getPointTree().visitDocValues(
+            new PointValues.IntersectVisitor() {
+              @Override
+              public void visit(int doc) {
+                throw new IllegalStateException();
+              }
+
+              @Override
+              public void visit(int doc, byte[] packed) {
+                got.add(doc + "\t" + HEX.formatHex(packed));
+              }
+
+              @Override
+              public PointValues.Relation compare(byte[] min, byte[] max) {
+                return PointValues.Relation.CELL_CROSSES_QUERY;
+              }
+            });
+        List<String> want = new ArrayList<>(manifest.get(fi.name));
+        Collections.sort(got);
+        Collections.sort(want);
+        if (!got.equals(want)) {
+          System.out.println(name + "/" + fi.name + ": Java reads other points than Rust wrote");
+          failures++;
+        }
+        replay.put(fi.name, new Replay(v, manifest.get(fi.name)));
+      }
+    }
+    try (PointsWriter w = codec.pointsFormat().fieldsWriter(
+        new SegmentWriteState(InfoStream.NO_OUTPUT, out, si, fis, null, CTX))) {
+      PointsReader in = new PointsReader() {
+        @Override
+        public void checkIntegrity() {}
+
+        @Override
+        public PointValues getValues(String field) {
+          return replay.get(field);
+        }
+
+        @Override
+        public void close() {}
+      };
+      for (FieldInfo fi : fis) {
+        if (fi.getPointDimensionCount() != 0) w.writeField(fi, in);
+      }
+      w.finish();
+    }
+    return failures + sameBytes(core, name + ".dim", out, name + ".dim")
+        + sameBytes(core, name + ".dii", out, name + ".dii");
+  }
+
+  /** A field's points as one leaf, visited in the manifest's order. */
+  static final class Replay extends PointValues implements PointValues.PointTree {
+    final PointValues like;
+    final int[] docs;
+    final byte[][] packed;
+
+    Replay(PointValues like, List<String> points) {
+      this.like = like;
+      docs = new int[points.size()];
+      packed = new byte[points.size()][];
+      for (int i = 0; i < docs.length; i++) {
+        String[] r = points.get(i).split("\t");
+        docs[i] = Integer.parseInt(r[0]);
+        packed[i] = HEX.parseHex(r[1]);
+      }
+    }
+
+    @Override
+    public PointTree getPointTree() {
+      return this;
+    }
+
+    @Override
+    public Replay clone() {
+      return this;
+    }
+
+    @Override
+    public boolean moveToChild() {
+      return false;
+    }
+
+    @Override
+    public boolean moveToSibling() {
+      return false;
+    }
+
+    @Override
+    public boolean moveToParent() {
+      return false;
+    }
+
+    @Override
+    public byte[] getMinPackedValue() {
+      try {
+        return like.getMinPackedValue();
+      } catch (IOException e) {
+        throw new java.io.UncheckedIOException(e);
+      }
+    }
+
+    @Override
+    public byte[] getMaxPackedValue() {
+      try {
+        return like.getMaxPackedValue();
+      } catch (IOException e) {
+        throw new java.io.UncheckedIOException(e);
+      }
+    }
+
+    @Override
+    public void visitDocIDs(PointValues.IntersectVisitor visitor) throws IOException {
+      for (int d : docs) visitor.visit(d);
+    }
+
+    @Override
+    public void visitDocValues(PointValues.IntersectVisitor visitor) throws IOException {
+      for (int i = 0; i < docs.length; i++) visitor.visit(docs[i], packed[i]);
+    }
+
+    @Override
+    public int getNumDimensions() throws IOException {
+      return like.getNumDimensions();
+    }
+
+    @Override
+    public int getNumIndexDimensions() throws IOException {
+      return like.getNumIndexDimensions();
+    }
+
+    @Override
+    public int getBytesPerDimension() throws IOException {
+      return like.getBytesPerDimension();
+    }
+
+    @Override
+    public long size() {
+      return docs.length;
+    }
+
+    @Override
+    public int getDocCount() {
+      try {
+        return like.getDocCount();
+      } catch (Exception e) {
+        throw new IllegalStateException(e);
+      }
+    }
+  }
+
   static String bitString(Bits live) {
     StringBuilder sb = new StringBuilder();
     for (int d = 0; d < live.length(); d++) sb.append(live.get(d) ? '1' : '0');
@@ -766,6 +967,7 @@ public class VerifyCodecsSimpleText {
         failures += sameBytes(core, name + ".fld", out, name + ".fld");
         failures += verifyDocValues(root, core, out, si, fis, name);
         if (fis.hasNorms()) failures += verifyIndexed(root, core, out, si, fis, name);
+        if (fis.hasPointValues()) failures += verifyPoints(root, core, out, si, fis, name);
 
         SegmentCommitInfo sci =
             new SegmentCommitInfo(si, delCount, 0, delGen, -1, -1, StringHelper.randomId());
@@ -815,6 +1017,33 @@ public class VerifyCodecsSimpleText {
             sf.document(d, new Dump(stored, null));
           }
           failures += expect(root.resolve("stored." + name + ".tsv"), stored);
+          for (FieldInfo fi : sr.getFieldInfos()) {
+            if (fi.getPointDimensionCount() == 0) continue;
+            PointValues pv = sr.getPointValues(fi.name);
+            long[] seen = new long[1];
+            pv.intersect(
+                new PointValues.IntersectVisitor() {
+                  @Override
+                  public void visit(int doc) {
+                    seen[0]++;
+                  }
+
+                  @Override
+                  public void visit(int doc, byte[] packed) {
+                    seen[0]++;
+                  }
+
+                  @Override
+                  public PointValues.Relation compare(byte[] min, byte[] max) {
+                    return PointValues.Relation.CELL_CROSSES_QUERY;
+                  }
+                });
+            String head = pointsHead(fi.name, pv);
+            if (!head.equals(POINT_HEADS.get(name + "/" + fi.name)) || seen[0] != pv.size()) {
+              System.out.println(name + "/" + fi.name + ": DirectoryReader's points differ: " + head);
+              failures++;
+            }
+          }
         }
         System.out.println("codec: " + reader.leaves().size() + " segments, " + reader.maxDoc()
             + " docs (" + reader.numDocs() + " live) opened through DirectoryReader");
