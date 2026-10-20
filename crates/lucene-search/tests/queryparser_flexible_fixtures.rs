@@ -3,7 +3,11 @@
 //! `fixtures/corpus/queryparser-classic.txt` and `queryparser-flexible.txt`,
 //! under eleven configurations, to the same query (`toString("f")` and the
 //! class tree) or the same exception class and message; and the range
-//! bounds of `GenQueryParserClassic.DATES` read as dates (`date_*.tsv`).
+//! bounds of `GenQueryParserClassic.DATES` read as dates (`date_*.tsv`);
+//! `NumberFormat`'s number and integer instances of seven locales
+//! (`numbers.tsv`); fields indexed as points (`points.tsv`); and every
+//! node's `toQueryString`, escaped in three default locales, through the
+//! message of a boolean one clause past the limit (`escape_*.tsv`).
 
 use std::collections::HashMap;
 use std::fs;
@@ -12,7 +16,7 @@ use std::sync::Arc;
 
 use lucene_analysis::charfilter::{MappingCharFilter, NormalizeCharMap, NormalizeCharMapBuilder};
 use lucene_analysis::core_analysis::StopAnalyzer;
-use lucene_analysis::miscellaneous::DateLocale;
+use lucene_analysis::miscellaneous::{DateLocale, DecimalFormat, JavaNumber};
 use lucene_analysis::synonym::{SynonymGraphFilter, SynonymMap, SynonymMapBuilder};
 use lucene_analysis::util::WhitespaceTokenizer;
 use lucene_analysis::{
@@ -21,7 +25,10 @@ use lucene_analysis::{
 };
 use lucene_index::document::Resolution;
 use lucene_search::extended_query::RewriteMethod;
-use lucene_search::queryparser::flexible::{Operator, StandardQueryParser};
+use lucene_search::queryparser::flexible::{
+    CaseLocale, NumberDateFormat, Operator, PointType, PointsConfig, PointsFormat,
+    StandardQueryParser,
+};
 
 fn dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data/queryparser_flexible")
@@ -326,5 +333,196 @@ fn query_parser_util_matches_lucene() {
     assert_eq!(
         util::escape("a+b-c!(d):e^[f]\"g{h}~i*j?k|l&m/n\\o p"),
         escape
+    );
+}
+
+/// `GenQueryParserFlexible.writeNumbers`: each locale's number and integer
+/// instance parsing from index 0, and formatting longs and doubles.
+#[test]
+fn number_formats_match_java() {
+    let tsv = fs::read_to_string(dir().join("numbers.tsv")).unwrap();
+    let mut total = 0;
+    let mut bad = Vec::new();
+    for line in tsv.lines() {
+        let cols: Vec<&str> = line.split('\t').collect();
+        let locale = DateLocale::for_language_tag(cols[0]).unwrap();
+        let f = match cols[1] {
+            "I" => DecimalFormat::integer_instance(locale),
+            _ => DecimalFormat::number_instance(locale),
+        };
+        let input = unesc(cols[3]);
+        let got = match cols[2] {
+            "P" => {
+                let units: Vec<u16> = input.encode_utf16().collect();
+                match f.parse_at(&units, 0) {
+                    None => "E".to_string(),
+                    Some((JavaNumber::Long(v), at)) => format!("L{v}@{at}"),
+                    Some((JavaNumber::Double(v), at)) => format!("D{}@{at}", v.to_bits() as i64),
+                }
+            }
+            "FL" => f.format_long(input.parse().unwrap()),
+            _ => f.format_double(f64::from_bits(input.parse::<i64>().unwrap() as u64)),
+        };
+        let want = unesc(cols[4]);
+        total += 1;
+        if got != want {
+            bad.push(format!("{line}\n  got {got:?}"));
+        }
+    }
+    assert!(total > 1200, "only {total} rows");
+    let shown: Vec<&str> = bad.iter().take(40).map(String::as_str).collect();
+    assert!(
+        bad.is_empty(),
+        "{} of {total} differ:\n{}",
+        bad.len(),
+        shown.join("\n")
+    );
+}
+
+/// `GenQueryParserFlexible.pointsConfigs()`, in the default zone GMT-05:00.
+fn points_parser() -> StandardQueryParser {
+    let locale = |tag: &str| DateLocale::for_language_tag(tag).unwrap();
+    let decimal = |f: DecimalFormat, t: PointType| PointsConfig::new(PointsFormat::Decimal(f), t);
+    let clock: i64 = fs::read_to_string(dir().join("date_clock.txt"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let mut dates = NumberDateFormat::short_date_instance(locale("en-US"), -5 * 3_600_000).unwrap();
+    dates.set_date_clock(Some(clock));
+    let map = HashMap::from([
+        (
+            "i".to_string(),
+            decimal(
+                DecimalFormat::number_instance(locale("en-US")),
+                PointType::Int,
+            ),
+        ),
+        (
+            "l".to_string(),
+            decimal(
+                DecimalFormat::integer_instance(locale("de-DE")),
+                PointType::Long,
+            ),
+        ),
+        (
+            "fl".to_string(),
+            decimal(
+                DecimalFormat::number_instance(locale("fr-FR")),
+                PointType::Float,
+            ),
+        ),
+        (
+            "d".to_string(),
+            decimal(
+                DecimalFormat::number_instance(locale("sv-SE")),
+                PointType::Double,
+            ),
+        ),
+        (
+            "dt".to_string(),
+            PointsConfig::new(PointsFormat::Date(dates), PointType::Long),
+        ),
+    ]);
+    let mut p = StandardQueryParser::with_analyzer(standard());
+    p.set_points_config_map(Some(map));
+    assert!(p.points_config_map().is_some_and(|m| m.len() == 5));
+    p
+}
+
+/// One row's want and got: `Q`, the query and its class tree, or `X` and
+/// the exception, its `fill` compressed to `<FILL>`.
+fn compare(p: &StandardQueryParser, query: &str, cols: &[&str], fill: &str) -> (String, String) {
+    let want = match cols[0] {
+        "Q" => format!("Q\t{}\t{}", unesc(cols[1]), unesc(cols[2])),
+        _ => format!("X\t{}", unesc(cols[1])),
+    };
+    let got = match p.parse(query, Some("f")) {
+        Ok(q) => format!("Q\t{}\t{}", q.to_string("f"), q.describe("f")),
+        Err(e) => {
+            let m = format!("X\t{}: {}", e.class, e.message);
+            if fill.is_empty() {
+                m
+            } else {
+                m.replace(fill, "<FILL>")
+            }
+        }
+    };
+    (want, got)
+}
+
+/// `GenQueryParserFlexible.POINT_QUERIES` under its points configs.
+#[test]
+fn point_fields_match_lucene() {
+    let p = points_parser();
+    let tsv = fs::read_to_string(dir().join("points.tsv")).unwrap();
+    let mut total = 0;
+    let mut bad = Vec::new();
+    for line in tsv.lines() {
+        let cols: Vec<&str> = line.split('\t').collect();
+        let query = unesc(cols[0]);
+        let (want, got) = compare(&p, &query, &cols[1..], "");
+        total += 1;
+        if got != want {
+            bad.push(format!("{query:?}\n  want {want:?}\n  got  {got:?}"));
+        }
+    }
+    assert!(total > 70, "only {total} rows");
+    assert!(
+        bad.is_empty(),
+        "{} of {total} differ:\n{}",
+        bad.len(),
+        bad.join("\n")
+    );
+}
+
+/// `GenQueryParserFlexible.ESCAPE_PIECES`, each after 1024 terms: the
+/// message of the boolean one clause past the limit prints the query
+/// through `toQueryString`, its terms escaped in the default locale.
+#[test]
+fn escaped_messages_match_lucene() {
+    let fill = "z ".repeat(1024);
+    let message_fill = "f:z ".repeat(1024);
+    let mut total = 0;
+    let mut bad = Vec::new();
+    for config in [
+        "noanalyzer",
+        "noanalyzer_tr",
+        "noanalyzer_lt",
+        "std",
+        "syn",
+        "prec",
+        "points",
+    ] {
+        let mut p = match config {
+            "points" => points_parser(),
+            "noanalyzer_tr" | "noanalyzer_lt" => parser("noanalyzer"),
+            _ => parser(config),
+        };
+        p.set_default_case_locale(match config {
+            "noanalyzer_tr" => CaseLocale::of_tag("tr-TR"),
+            "noanalyzer_lt" => CaseLocale::of_tag("lt"),
+            _ => CaseLocale::Root,
+        });
+        let tsv = fs::read_to_string(dir().join(format!("escape_{config}.tsv"))).unwrap();
+        for line in tsv.lines() {
+            let cols: Vec<&str> = line.split('\t').collect();
+            let piece = unesc(cols[0]);
+            let (want, got) = compare(&p, &format!("{fill}{piece}"), &cols[1..], &message_fill);
+            total += 1;
+            if got != want {
+                bad.push(format!(
+                    "{config} {piece:?}\n  want {want:?}\n  got  {got:?}"
+                ));
+            }
+        }
+    }
+    assert!(total > 500, "only {total} rows");
+    let shown: Vec<&str> = bad.iter().take(40).map(String::as_str).collect();
+    assert!(
+        bad.is_empty(),
+        "{} of {total} differ:\n{}",
+        bad.len(),
+        shown.join("\n")
     );
 }

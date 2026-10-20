@@ -3,10 +3,13 @@
 //! (`QuotedFieldQueryNode` builds as a `FieldQueryNode`, `BooleanModifierNode`
 //! as a `ModifierQueryNode`); the match below keeps that lookup.
 
+use lucene_util::numeric_utils::{double_to_sortable_long, float_to_sortable_int};
+
 use super::nodes::{IntervalFn, Kind, Modifier, Node};
+use super::points::{PointType, PointValue};
 use super::processors::{Result, QUERY_NODE_EXCEPTION};
 use super::StandardQueryParser;
-use crate::extended_query::{ExtendedQuery, TermRangeQuery};
+use crate::extended_query::{ExtendedQuery, PointRangeQuery, TermRangeQuery};
 use crate::intervals::{IntervalQuery, Intervals, IntervalsSource, DEFAULT_MAX_EXPANSIONS};
 use crate::query::{
     Clause, FuzzyQuery, MultiPhraseQuery, PhraseQuery, PrefixQuery, RegexpQuery, TermQuery,
@@ -16,7 +19,7 @@ use crate::query_visitor::Occur;
 use crate::queryparser::classic::{
     check_regexp, float_to_edits, QueryParserError, MAX_CLAUSE_COUNT,
 };
-use crate::queryparser::{ParsedBoolean, ParsedQuery};
+use crate::queryparser::{ParsedBoolean, ParsedQuery, PointKind};
 
 fn illegal(message: impl Into<String>) -> QueryParserError {
     QueryParserError::runtime_class("java.lang.IllegalArgumentException", message)
@@ -50,14 +53,19 @@ fn class_cast_to_boolean(q: &ParsedQuery) -> String {
 const MIN_SHOULD_MATCH_NPE: &str =
     "Cannot invoke \"org.apache.lucene.search.BooleanQuery.clauses()\" because \"booleanQuery\" is null";
 
-/// `QueryTreeBuilder.build(node)`: the query, or `None` where Java's
-/// builder returns `null`.
-pub(crate) fn build(cfg: &StandardQueryParser, node: &Node) -> Result<Option<ParsedQuery>> {
+/// `QueryTreeBuilder.build(node)` of a node whose parent is `parent`: the
+/// query, or `None` where Java's builder returns `null`.
+pub(crate) fn build(
+    cfg: &StandardQueryParser,
+    node: &Node,
+    parent: Option<&Kind>,
+) -> Result<Option<ParsedQuery>> {
     let field = |d: &super::nodes::FieldData| d.field.clone().unwrap_or_default();
+    let child = |c: &Node| build(cfg, c, Some(&node.kind));
     Ok(Some(match &node.kind {
         // `GroupQueryNodeBuilder`, `ModifierQueryNodeBuilder`: the child's
         Kind::Group | Kind::Modifier(_) | Kind::BooleanModifier(_) => {
-            return build(cfg, &node.children[0]);
+            return child(&node.children[0]);
         }
         Kind::Field(d) | Kind::Quoted(d) => {
             ParsedQuery::Term(TermQuery::new(field(d), d.text.as_string().into_bytes()))
@@ -129,22 +137,32 @@ pub(crate) fn build(cfg: &StandardQueryParser, node: &Node) -> Result<Option<Par
         Kind::MatchAll => ParsedQuery::MatchAll,
         Kind::MatchNoDocs => ParsedQuery::MatchNoDocs(String::new()),
         Kind::Boolean | Kind::And | Kind::Or => {
+            // `QueryTreeBuilder` builds every child before the node
+            let built = node
+                .children
+                .iter()
+                .map(|c| Ok((c, child(c)?)))
+                .collect::<Result<Vec<_>>>()?;
             let mut clauses = Vec::new();
-            for child in &node.children {
-                if let Some(q) = build(cfg, child)? {
-                    if clauses.len() >= MAX_CLAUSE_COUNT {
-                        return Err(QueryParserError::runtime_class(
-                            QUERY_NODE_EXCEPTION,
-                            "Too many boolean clauses, the maximum supported is 1,024".to_string(),
-                        ));
-                    }
-                    let occur = match child.modifier() {
-                        Some(Modifier::Req) => Occur::Must,
-                        Some(Modifier::Not) => Occur::MustNot,
-                        _ => Occur::Should,
-                    };
-                    clauses.push((occur, q));
+            for (c, q) in built {
+                let Some(q) = q else {
+                    continue;
+                };
+                if clauses.len() >= MAX_CLAUSE_COUNT {
+                    return Err(QueryParserError::runtime_class(
+                        QUERY_NODE_EXCEPTION,
+                        format!(
+                            "Too many boolean clauses, the maximum supported is 1,024: {}",
+                            node.to_query_string(parent, cfg.default_case_locale)?
+                        ),
+                    ));
                 }
+                let occur = match c.modifier() {
+                    Some(Modifier::Req) => Occur::Must,
+                    Some(Modifier::Not) => Occur::MustNot,
+                    _ => Occur::Should,
+                };
+                clauses.push((occur, q));
             }
             ParsedQuery::Boolean(ParsedBoolean {
                 clauses,
@@ -153,8 +171,8 @@ pub(crate) fn build(cfg: &StandardQueryParser, node: &Node) -> Result<Option<Par
         }
         Kind::Synonym => {
             let mut clauses = Vec::new();
-            for child in &node.children {
-                if let Some(q) = build(cfg, child)? {
+            for c in &node.children {
+                if let Some(q) = child(c)? {
                     clauses.push((Occur::Should, q));
                 }
             }
@@ -164,10 +182,10 @@ pub(crate) fn build(cfg: &StandardQueryParser, node: &Node) -> Result<Option<Par
             })
         }
         Kind::Boost(value) => {
-            let Some(child) = node.children.first() else {
+            let Some(c) = node.children.first() else {
                 return Ok(None);
             };
-            let Some(q) = build(cfg, child)? else {
+            let Some(q) = child(c)? else {
                 return Err(QueryParserError::runtime_class(
                     "java.lang.NullPointerException",
                     "null",
@@ -198,7 +216,7 @@ pub(crate) fn build(cfg: &StandardQueryParser, node: &Node) -> Result<Option<Par
         }
         Kind::MinShouldMatch(n) => {
             let group = &node.children[0];
-            match build(cfg, group)? {
+            match child(group)? {
                 Some(ParsedQuery::Boolean(b)) => ParsedQuery::Boolean(ParsedBoolean {
                     clauses: b.clauses,
                     minimum_should_match: usize::try_from(*n)
@@ -230,17 +248,132 @@ pub(crate) fn build(cfg: &StandardQueryParser, node: &Node) -> Result<Option<Par
                 IntervalQuery::new(field.clone(), source),
             ))))
         }
+        // `DummyQueryNodeBuilder`
+        Kind::Point { .. } => return Ok(None),
+        Kind::PointRange {
+            lower_inclusive,
+            upper_inclusive,
+            config,
+        } => point_range(
+            node,
+            *lower_inclusive,
+            *upper_inclusive,
+            config.point_type(),
+        )?,
         Kind::Deleted | Kind::NoTokenFound => {
             return Err(QueryParserError::runtime_class(
                 QUERY_NODE_EXCEPTION,
                 format!(
                     "Cannot convert query to lucene syntax: {} error: {}",
-                    node.to_query_string(),
+                    node.to_query_string(parent, cfg.default_case_locale)?,
                     node.class_name()
                 ),
             ))
         }
     }))
+}
+
+/// `PointRangeQueryNodeBuilder`: an open bound the type's extreme, an
+/// exclusive one moved inwards by one (an `int` or `long` wrapping, as
+/// Java's boxed arithmetic does) or to the next float.
+fn point_range(
+    node: &Node,
+    lower_inclusive: bool,
+    upper_inclusive: bool,
+    point_type: PointType,
+) -> Result<ParsedQuery> {
+    let field = node.get_field().unwrap_or_default();
+    let value = |i: usize| match node.children.get(i).map(|c| &c.kind) {
+        Some(Kind::Point { value, .. }) => *value,
+        _ => None,
+    };
+    let (lower, upper) = (value(0), value(1));
+    let (query, kind) = match point_type {
+        PointType::Int => {
+            let get = |v: Option<PointValue>, open: i32| match v {
+                Some(PointValue::Int(v)) => v,
+                _ => open,
+            };
+            let mut lo = get(lower, i32::MIN);
+            let mut hi = get(upper, i32::MAX);
+            if !lower_inclusive {
+                lo = lo.wrapping_add(1);
+            }
+            if !upper_inclusive {
+                hi = hi.wrapping_sub(1);
+            }
+            (
+                PointRangeQuery::int_range(field, &[lo], &[hi]),
+                PointKind::Int,
+            )
+        }
+        PointType::Long => {
+            let get = |v: Option<PointValue>, open: i64| match v {
+                Some(PointValue::Long(v)) => v,
+                _ => open,
+            };
+            let mut lo = get(lower, i64::MIN);
+            let mut hi = get(upper, i64::MAX);
+            if !lower_inclusive {
+                lo = lo.wrapping_add(1);
+            }
+            if !upper_inclusive {
+                hi = hi.wrapping_sub(1);
+            }
+            (
+                PointRangeQuery::long_range(field, &[lo], &[hi]),
+                PointKind::Long,
+            )
+        }
+        PointType::Float => {
+            let get = |v: Option<PointValue>, open: f32| match v {
+                Some(PointValue::Float(v)) => v,
+                _ => open,
+            };
+            let mut lo = get(lower, f32::NEG_INFINITY);
+            let mut hi = get(upper, f32::INFINITY);
+            if !lower_inclusive {
+                lo = lo.next_up();
+            }
+            if !upper_inclusive {
+                hi = hi.next_down();
+            }
+            (
+                PointRangeQuery::int_range(
+                    field,
+                    &[float_to_sortable_int(lo)],
+                    &[float_to_sortable_int(hi)],
+                ),
+                PointKind::Float,
+            )
+        }
+        PointType::Double => {
+            let get = |v: Option<PointValue>, open: f64| match v {
+                Some(PointValue::Double(v)) => v,
+                _ => open,
+            };
+            let mut lo = get(lower, f64::NEG_INFINITY);
+            let mut hi = get(upper, f64::INFINITY);
+            if !lower_inclusive {
+                lo = lo.next_up();
+            }
+            if !upper_inclusive {
+                hi = hi.next_down();
+            }
+            (
+                PointRangeQuery::long_range(
+                    field,
+                    &[double_to_sortable_long(lo)],
+                    &[double_to_sortable_long(hi)],
+                ),
+                PointKind::Double,
+            )
+        }
+    };
+    Ok(ParsedQuery::PointRange {
+        query: query.map_err(QueryParserError::from_search)?,
+        kind,
+    })
 }
 
 /// `PhraseQueryNodeBuilder` (and `SlopQueryNodeBuilder` over it).
