@@ -118,6 +118,10 @@ codecs_sharedterms/flush/index/_0.si 71a2f7bf981b125a05b8405c5ca96cc8
 codecs_sharedterms/flush/index/segments_1 71a2f7bf981b125a05b8405c5ca96ccc
 codecs_sharedterms/merged/index/_3.si 71a2f7bf981b125a05b8405c5ca96cdc
 codecs_sharedterms/merged/index/segments_1 71a2f7bf981b125a05b8405c5ca96cdf
+codecs_simpletext/postings/flush/index/_0.si b0fc8212bca34f5b11778679be0f7453
+codecs_simpletext/postings/flush/index/segments_1 b0fc8212bca34f5b11778679be0f7457
+codecs_simpletext/postings/merged/index/_3.si b0fc8212bca34f5b11778679be0f7467
+codecs_simpletext/postings/merged/index/segments_1 b0fc8212bca34f5b11778679be0f746a
 codecs_uniformsplit/flush/index/_0.si 9811f0fcd64e1be568e4e35a7f072128
 codecs_uniformsplit/flush/index/segments_1 9811f0fcd64e1be568e4e35a7f07212c
 codecs_uniformsplit/merged/index/_3.si 9811f0fcd64e1be568e4e35a7f07213b
