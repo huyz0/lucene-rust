@@ -71,6 +71,32 @@ pub fn parse_int(s: &str) -> Result<i32, String> {
         .map_err(|_| format!("For input string: \"{s}\""))
 }
 
+/// `String.trim()`: drops leading and trailing characters up to `' '`.
+pub fn java_trim(s: &str) -> &str {
+    s.trim_matches(|c: char| c <= ' ')
+}
+
+/// `BufferedReader.readLine` over `text`: lines end at `\n`, `\r` or
+/// `\r\n`, and a final empty line is not one.
+pub fn java_lines(text: &str) -> impl Iterator<Item = &str> {
+    let mut rest = text;
+    std::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let end = rest.find(['\n', '\r']).unwrap_or(rest.len());
+        let line = &rest[..end];
+        let mut next = end;
+        if rest[end..].starts_with("\r\n") {
+            next += 2;
+        } else if end < rest.len() {
+            next += 1;
+        }
+        rest = &rest[next..];
+        Some(line)
+    })
+}
+
 /// `args[i]`, or the `ArrayIndexOutOfBoundsException` Java's `args[++i]`
 /// throws past the end.
 pub fn arg(args: &[String], i: usize) -> Result<&str, Error> {

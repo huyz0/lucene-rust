@@ -1,0 +1,28 @@
+fields: 11
+documents: 3
+terms: 53
+deletions: false
+deleted documents: 0
+optimized: true
+version: 4
+format: Lucene 8.6 or later
+commit: segments_1 (generation=1, segs=1)
+user data: {}
+field names: [from, newsgroup, newsgroup_sort, subject, messageId, date_raw, organization, lines_range, lines_sort, lines_raw, body]
+term counts NAME_ASC: {body=29, date_raw=0, from=6, lines_range=0, lines_raw=0, lines_sort=0, messageId=3, newsgroup=3, newsgroup_sort=0, organization=3, subject=9}
+term counts NAME_DESC: {subject=9, organization=3, newsgroup_sort=0, newsgroup=3, messageId=3, lines_sort=0, lines_raw=0, lines_range=0, from=6, date_raw=0, body=29}
+term counts COUNT_ASC: {date_raw=0, lines_raw=0, lines_range=0, newsgroup_sort=0, lines_sort=0, organization=3, messageId=3, newsgroup=3, from=6, subject=9, body=29}
+term counts COUNT_DESC: {body=29, subject=9, from=6, organization=3, messageId=3, newsgroup=3, date_raw=0, lines_raw=0, lines_range=0, newsgroup_sort=0, lines_sort=0}
+top body 5:
+  TermStats{decodedTermText='the', field='body', docFreq=2}
+  TermStats{decodedTermText='what', field='body', docFreq=1}
+  TermStats{decodedTermText='v', field='body', docFreq=1}
+  TermStats{decodedTermText='tried', field='body', docFreq=1}
+  TermStats{decodedTermText='tracer', field='body', docFreq=1}
+top from 10:
+  TermStats{decodedTermText='smith', field='from', docFreq=1}
+  TermStats{decodedTermText='carol@example.net', field='from', docFreq=1}
+  TermStats{decodedTermText='carol', field='from', docFreq=1}
+  TermStats{decodedTermText='bob@space.example.org', field='from', docFreq=1}
+  TermStats{decodedTermText='alice@example.com', field='from', docFreq=1}
+  TermStats{decodedTermText='alice', field='from', docFreq=1}

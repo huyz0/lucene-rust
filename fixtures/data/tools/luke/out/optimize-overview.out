@@ -1,0 +1,15 @@
+fields: 14
+documents: 5
+terms: 160
+deletions: false
+deleted documents: 0
+optimized: true
+version: 17
+format: Lucene 8.6 or later
+commit: segments_4 (generation=4, segs=1)
+user data: {note=a deletion, source=GenToolsLuke, step=3}
+field names: [id, title, author, text, subject, lang, year, notes, downloads, rating, isbn, pages, weight, vec]
+term counts NAME_ASC: {author=14, downloads=0, id=5, isbn=0, lang=0, notes=9, pages=0, rating=0, subject=0, text=116, title=16, vec=0, weight=0, year=0}
+term counts NAME_DESC: {year=0, weight=0, vec=0, title=16, text=116, subject=0, rating=0, pages=0, notes=9, lang=0, isbn=0, id=5, downloads=0, author=14}
+term counts COUNT_ASC: {year=0, subject=0, isbn=0, rating=0, weight=0, pages=0, downloads=0, vec=0, lang=0, id=5, notes=9, author=14, title=16, text=116}
+term counts COUNT_DESC: {text=116, title=16, author=14, notes=9, id=5, year=0, subject=0, isbn=0, rating=0, weight=0, pages=0, downloads=0, vec=0, lang=0}

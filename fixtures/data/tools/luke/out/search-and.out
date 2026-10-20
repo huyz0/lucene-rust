@@ -1,0 +1,4 @@
+query: +text:sister +text:alice
+page: total=1 hits offset=0 size=1
+  doc=1 score=1.2068286 author=[Lewis Carroll] downloads=[] id=[2] isbn=[] notes=[rabbit|animal hole] pages=[137] rating=[4.25] title=[Alice's Adventures in Wonderland] weight=[0.75] year=[1865]
+current query: +text:sister +text:alice

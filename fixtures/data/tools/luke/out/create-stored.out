@@ -1,0 +1,26 @@
+doc <1001@example.com>
+  from=alice@example.com (Alice Smith)
+  newsgroup=comp.graphics
+  newsgroup=comp.sys.mac
+  subject=Re: Ray tracing on the cheap
+  messageId=<1001@example.com>
+  date_raw=5 Apr 93 10:00:00 GMT
+  organization=Example University
+  lines_raw=3
+  body= Has anyone tried a ray tracer on a small machine? Thanks. 
+doc <2001@space.example.org>
+  from=bob@space.example.org
+  newsgroup=sci.space
+  subject=Orbital mechanics question
+  messageId=<2001@space.example.org>
+  lines_raw=0
+  body= What is the delta-v to reach low orbit? 
+doc <2002@example.net>
+  from=carol@example.net (Carol)
+  newsgroup=sci.space
+  subject=Re: Orbital mechanics question
+  messageId=<2002@example.net>
+  date_raw=6 Apr 93 12:30:00 GMT
+  organization=None
+  lines_raw=2
+  body= About 9.4 km/s, counting losses. See the FAQ: http://example.net/faq 

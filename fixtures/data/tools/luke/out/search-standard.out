@@ -1,0 +1,5 @@
+query: text:sister text:alice
+page: total=2 hits offset=0 size=2
+  doc=1 score=1.2068286 author=[Lewis Carroll] downloads=[] id=[2] isbn=[] notes=[rabbit|animal hole] pages=[137] rating=[4.25] title=[Alice's Adventures in Wonderland] weight=[0.75] year=[1865]
+  doc=2 score=0.34448564 author=[Mary Wollstonecraft Shelley] downloads=[] id=[3] isbn=[] pages=[174] rating=[3.75] title=[Frankenstein; Or, The Modern Prometheus] weight=[1.0] year=[1818]
+current query: text:sister text:alice
