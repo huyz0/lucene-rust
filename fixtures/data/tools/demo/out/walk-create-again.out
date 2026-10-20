@@ -1,0 +1,4 @@
+Indexing to directory '{tmp}/knn'...
+adding {fixture}/docs/sub/i.txt
+adding {fixture}/docs/sub/j.txt
+Indexed 2 documents in {ms} ms

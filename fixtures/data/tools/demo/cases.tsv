@@ -1,0 +1,44 @@
+index-usage	-	IndexFiles	-index	{tmp}/x
+index-unknown	-	IndexFiles	-bogus
+index-missing-docs	-	IndexFiles	-index	{tmp}/x	-docs	{tmp}/nowhere
+index-a	-	IndexFiles	-index	{tmp}/idx	-docs	{fixture}/docs/a.txt
+index-b	-	IndexFiles	-update	-index	{tmp}/idx	-docs	{fixture}/docs/b.txt
+index-c	-	IndexFiles	-update	-index	{tmp}/idx	-docs	{fixture}/docs/c.txt
+index-d	-	IndexFiles	-update	-index	{tmp}/idx	-docs	{fixture}/docs/d.txt
+index-e	-	IndexFiles	-update	-index	{tmp}/idx	-docs	{fixture}/docs/e.txt
+index-f	-	IndexFiles	-update	-index	{tmp}/idx	-docs	{fixture}/docs/f.txt
+index-g	-	IndexFiles	-update	-index	{tmp}/idx	-docs	{fixture}/docs/g.txt
+index-i	-	IndexFiles	-index	{tmp}/idx	-update	-docs	{fixture}/docs/sub//i.txt/
+index-again-a	-	IndexFiles	-update	-index	{tmp}/idx	-docs	{fixture}/docs/a.txt
+search-fox	-	SearchFiles	-index	{tmp}/idx	-query	fox
+search-raw	-	SearchFiles	-index	{tmp}/idx	-query	the	-raw
+search-bool	-	SearchFiles	-index	{tmp}/idx	-query	+search engine -java
+search-phrase	-	SearchFiles	-index	{tmp}/idx	-query	"lazy dog"
+search-wild	-	SearchFiles	-index	{tmp}/idx	-query	do*	-paging	3
+search-none	-	SearchFiles	-index	{tmp}/idx	-query	zebra
+search-path	-	SearchFiles	-index	{tmp}/idx	-field	path	-query	nothing
+search-blank	-	SearchFiles	-index	{tmp}/idx	-query	  
+search-repeat	-	SearchFiles	-index	{tmp}/idx	-query	cat	-repeat	3
+search-parse-error	-	SearchFiles	-index	{tmp}/idx	-query	fox AND
+search-queries	-	SearchFiles	-index	{tmp}/idx	-queries	{fixture}/queries.txt	-paging	2
+search-help	-	SearchFiles	-h
+search-unknown	-	SearchFiles	-index	{tmp}/idx	-bogus
+search-paging-zero	-	SearchFiles	-paging	0
+search-interactive	fox\nq\ndog\n\n	SearchFiles	-index	{tmp}/idx
+search-pages	the\nn\nn\np\n2\n9\nn\nq\n	SearchFiles	-index	{tmp}/idx	-paging	2
+search-collect-more	the is\nn\nn\nn\nn\nn\ny\nn\nn\n\n	SearchFiles	-index	{tmp}/idx	-paging	1
+search-collect-no	the is\nn\nn\nn\nn\nn\nn\n	SearchFiles	-index	{tmp}/idx	-paging	1
+search-bad-page	the\nx\n	SearchFiles	-index	{tmp}/idx	-paging	2
+java-fox	-	SearchFiles	-index	{fixture}/index	-query	fox
+java-knn	-	SearchFiles	-index	{fixture}/index	-query	lazy dog	-knn_vector	3
+java-knn-raw	-	SearchFiles	-index	{fixture}/index	-query	+cat -sun	-knn_vector	4	-raw
+java-knn-no-terms	-	SearchFiles	-index	{fixture}/index	-query	path:docs -contents:fox	-knn_vector	2
+java-knn-path	-	SearchFiles	-index	{fixture}/index	-field	path	-query	docs	-knn_vector	2
+java-knn-unknown-words	-	SearchFiles	-index	{fixture}/index	-query	zebra	-knn_vector	2
+walk-knn	-	IndexFiles	-index	{tmp}/knn	-docs	{fixture}/docs	-knn_dict	{fixture}/vectors.txt
+walk-knn-search	-	SearchFiles	-index	{tmp}/knn	-query	brown fox	-knn_vector	3
+walk-knn-search-engine	-	SearchFiles	-index	{tmp}/knn	-query	engine	-knn_vector	5
+walk-knn-again	-	IndexFiles	-index	{tmp}/knn	-docs	{fixture}/docs	-knn_dict	{fixture}/vectors.txt
+walk-create-again	-	IndexFiles	-index	{tmp}/knn	-create	-docs	{fixture}/docs/sub
+walk-create-again-knn	-	SearchFiles	-index	{tmp}/knn	-query	dog	-knn_vector	2
+walk-create-again-search	-	SearchFiles	-index	{tmp}/knn	-query	dog	-raw

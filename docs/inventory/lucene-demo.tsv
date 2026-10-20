@@ -1,0 +1,19 @@
+# Lucene 10.5.0 lucene-demo: every top-level class of the jar, and what became of it.
+# Checked by scripts/check-port-inventory.py --module demo (see its docstring for the statuses).
+# class	status	detail
+demo/IndexFiles	ported	crates/lucene-tools/src/demo/index_files.rs::main
+demo/SearchFiles	ported	crates/lucene-tools/src/demo/search_files.rs::search_files
+demo/facet/AssociationsFacetsExample	not-needed	an example program printing what the taxonomy association facets compute; those facets are ported and fixture-tested (docs/parity/facet.md)
+demo/facet/CustomFacetSetExample	not-needed	an example program for the facetset matchers; the facetset API it walks through is ported and fixture-tested (docs/parity/facet.md)
+demo/facet/DistanceFacetsExample	not-needed	an example program for range facets over a distance expression; range facets and expressions are ported and fixture-tested (docs/parity/facet.md, docs/parity/expressions.md)
+demo/facet/DynamicRangeFacetsExample	not-needed	an example program for dynamic range faceting; the API it walks through is ported and fixture-tested (docs/parity/facet.md)
+demo/facet/ExpressionAggregationFacetsExample	not-needed	an example program for expression-valued taxonomy facets; the facets and expressions are ported and fixture-tested (docs/parity/facet.md, docs/parity/expressions.md)
+demo/facet/MultiCategoryListsFacetsExample	not-needed	an example program for taxonomy facets over several index fields; the API it walks through is ported and fixture-tested (docs/parity/facet.md)
+demo/facet/RangeFacetsExample	not-needed	an example program for long range facets and drill-down; the API it walks through is ported and fixture-tested (docs/parity/facet.md)
+demo/facet/SandboxFacetsExample	not-needed	an example program for the sandbox facet cutters and recorders; that API is ported and fixture-tested (docs/parity/sandbox.md)
+demo/facet/SimpleFacetsExample	not-needed	an example program for taxonomy facets, drill-down and drill-sideways; the API it walks through is ported and fixture-tested (docs/parity/facet.md)
+demo/facet/SimpleSortedSetFacetsExample	not-needed	an example program for sorted-set doc-values facets; the API it walks through is ported and fixture-tested (docs/parity/facet.md)
+demo/facet/StringValueFacetCountsExample	not-needed	an example program for string-value facet counts; the API it walks through is ported and fixture-tested (docs/parity/facet.md)
+demo/knn/DemoEmbeddings	ported	crates/lucene-tools/src/demo/knn.rs::DemoEmbeddings
+demo/knn/KnnVectorDict	ported	crates/lucene-tools/src/demo/knn.rs::KnnVectorDict
+demo/knn/KnnVectorDictFilter	ported	crates/lucene-tools/src/demo/knn.rs::KnnVectorDictFilter

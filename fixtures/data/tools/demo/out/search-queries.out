@@ -1,0 +1,11 @@
+Searching for: fox
+3 total matching documents
+1. {fixture}/docs/a.txt
+2. {fixture}/docs/b.txt
+Searching for: quick brown
+2 total matching documents
+1. {fixture}/docs/a.txt
+2. {fixture}/docs/b.txt
+Searching for: cat
+1 total matching documents
+1. {fixture}/docs/f.txt
