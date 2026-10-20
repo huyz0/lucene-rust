@@ -12,6 +12,7 @@ use lucene_util::automaton::{AutomatonType, CompiledAutomaton};
 
 use super::dictionary::FstDictionary;
 use super::field_metadata::{has_freqs, FieldMetadata};
+use super::sharedterms::SharedFieldInfos;
 use super::{
     corrupt, length, BlockDecoder, BlockReader, Error, IntersectBlockReader, Result,
     UniformSplitTermState, NAME, VERSION_CURRENT, VERSION_ENCODABLE_FIELDS_METADATA, VERSION_START,
@@ -46,10 +47,15 @@ pub struct UniformSplitTerms {
     pub(crate) ustb: Arc<[u8]>,
     /// `fieldMetadata`.
     pub(crate) metadata: FieldMetadata,
-    /// The dictionary `dictionaryBrowserSupplier` reads.
-    pub(crate) dictionary: FstDictionary,
+    /// The dictionary `dictionaryBrowserSupplier` reads (`sharedterms`: one
+    /// for every field).
+    pub(crate) dictionary: Arc<FstDictionary>,
     /// `blockDecoder`.
     pub(crate) decoder: Option<Arc<dyn BlockDecoder>>,
+    /// `sharedterms`' `fieldInfos`: set, each block line lists the fields
+    /// that have its term, and the field's term state is read from that
+    /// list (`STBlockLine.Serializer.readTermStateForField`).
+    pub(crate) shared: Option<Arc<SharedFieldInfos>>,
 }
 
 impl fmt::Debug for UniformSplitTerms {
@@ -95,11 +101,123 @@ impl UniformSplitTermsReader {
         state: &SegmentReadState<'_>,
         decoder: Option<Arc<dyn BlockDecoder>>,
     ) -> Result<Self> {
+        let opened = OpenedFiles::open(ustb, ustd, state, decoder.as_deref(), NAME)?;
+        // `fillFieldMap`: a later field of the same name replaces the
+        // earlier one, as `HashMap.put` does.
+        let mut fields = BTreeMap::new();
+        for metadata in opened.metadata {
+            let dictionary = read_dictionary(
+                ustd,
+                opened.ustd_end,
+                metadata.dictionary_start_fp,
+                &metadata.field_info.name,
+                decoder.as_deref(),
+            )?;
+            fields.insert(
+                metadata.field_info.name.clone(),
+                UniformSplitTerms {
+                    ustb: Arc::clone(&opened.ustb),
+                    metadata,
+                    dictionary: Arc::new(dictionary),
+                    decoder: decoder.clone(),
+                    shared: None,
+                },
+            );
+        }
+        Ok(UniformSplitTermsReader {
+            ustb: opened.ustb,
+            version: opened.version,
+            fields,
+        })
+    }
+
+    /// `terms(field)`.
+    pub fn terms(&self, field: &str) -> Option<&UniformSplitTerms> {
+        self.fields.get(field)
+    }
+
+    /// `iterator()`: `sortedFieldNames`.
+    pub fn field_names(&self) -> impl Iterator<Item = &str> {
+        self.fields.keys().map(String::as_str)
+    }
+
+    /// `size()`.
+    pub fn size(&self) -> usize {
+        self.fields.len()
+    }
+
+    /// `version`.
+    pub fn version(&self) -> i32 {
+        self.version
+    }
+
+    /// `checkIntegrity()`'s terms dictionary half: the whole `.ustb`'s
+    /// checksum (the `.ustd`'s was checked at open; the postings' are the
+    /// caller's).
+    ///
+    /// # Errors
+    /// `Corrupted` when the checksum does not match.
+    pub fn check_integrity(&self) -> Result<()> {
+        check_blocks_integrity(&self.ustb)
+    }
+}
+
+/// `checkIntegrity()`: the whole blocks file's checksum.
+pub(crate) fn check_blocks_integrity(ustb: &[u8]) -> Result<()> {
+    let end = ustb
+        .len()
+        .checked_sub(FOOTER_LENGTH)
+        .ok_or_else(|| corrupt("file too small to contain a codec footer"))?;
+    codec_util::check_whole_file_footer(ustb, end)?;
+    Ok(())
+}
+
+/// `FSTDictionary.read` at a field's `dictionaryStartFP`, inside the
+/// dictionary file's checksummed bytes.
+pub(crate) fn read_dictionary(
+    ustd: &[u8],
+    ustd_end: usize,
+    dictionary_start_fp: i64,
+    field: &str,
+    decoder: Option<&dyn BlockDecoder>,
+) -> Result<FstDictionary> {
+    let dictionary_start = usize::try_from(dictionary_start_fp)
+        .ok()
+        .filter(|&s| s <= ustd_end)
+        .ok_or_else(|| {
+            corrupt(format!(
+                "invalid dictionary start {dictionary_start_fp} for field {field}"
+            ))
+        })?;
+    FstDictionary::read(&ustd[dictionary_start..ustd_end], decoder)
+}
+
+/// What `UniformSplitTermsReader`'s constructor reads before `fillFieldMap`.
+pub(crate) struct OpenedFiles {
+    /// `blockInput`.
+    pub(crate) ustb: Arc<[u8]>,
+    /// `version`.
+    pub(crate) version: i32,
+    /// Where the dictionary file's footer starts.
+    pub(crate) ustd_end: usize,
+    /// `fieldMetadataCollection`.
+    pub(crate) metadata: Vec<FieldMetadata>,
+}
+
+impl OpenedFiles {
+    /// The constructor up to `fillFieldMap`, for the codec `codec_name`.
+    pub(crate) fn open(
+        ustb: Vec<u8>,
+        ustd: &[u8],
+        state: &SegmentReadState<'_>,
+        decoder: Option<&dyn BlockDecoder>,
+        codec_name: &str,
+    ) -> Result<Self> {
         let ustb: Arc<[u8]> = ustb.into();
         let mut input = SliceInput::new(&ustb);
         let version = codec_util::check_index_header(
             &mut input,
-            NAME,
+            codec_name,
             VERSION_START,
             VERSION_CURRENT,
             state.segment_id,
@@ -109,7 +227,7 @@ impl UniformSplitTermsReader {
         let mut dictionary_input = SliceInput::new(ustd);
         codec_util::check_index_header(
             &mut dictionary_input,
-            NAME,
+            codec_name,
             version,
             version,
             state.segment_id,
@@ -142,7 +260,7 @@ impl UniformSplitTermsReader {
         if num_fields < 0 {
             return Err(corrupt(format!("Illegal number of fields= {num_fields}")));
         }
-        let metadata = match decoder.as_deref() {
+        let metadata = match decoder {
             Some(decoder) if version >= VERSION_ENCODABLE_FIELDS_METADATA => {
                 let encoded_length = input.read_vlong()?;
                 if encoded_length < 0 {
@@ -156,72 +274,12 @@ impl UniformSplitTermsReader {
             }
             _ => read_unencoded_fields_metadata(num_fields, &ustb, input.position(), state)?,
         };
-        // `fillFieldMap`: a later field of the same name replaces the
-        // earlier one, as `HashMap.put` does.
-        let mut fields = BTreeMap::new();
-        for metadata in metadata {
-            let dictionary_start = usize::try_from(metadata.dictionary_start_fp)
-                .ok()
-                .filter(|&s| s <= ustd_end)
-                .ok_or_else(|| {
-                    corrupt(format!(
-                        "invalid dictionary start {} for field {}",
-                        metadata.dictionary_start_fp, metadata.field_info.name
-                    ))
-                })?;
-            let dictionary =
-                FstDictionary::read(&ustd[dictionary_start..ustd_end], decoder.as_deref())?;
-            fields.insert(
-                metadata.field_info.name.clone(),
-                UniformSplitTerms {
-                    ustb: Arc::clone(&ustb),
-                    metadata,
-                    dictionary,
-                    decoder: decoder.clone(),
-                },
-            );
-        }
-        Ok(UniformSplitTermsReader {
+        Ok(OpenedFiles {
             ustb,
             version,
-            fields,
+            ustd_end,
+            metadata,
         })
-    }
-
-    /// `terms(field)`.
-    pub fn terms(&self, field: &str) -> Option<&UniformSplitTerms> {
-        self.fields.get(field)
-    }
-
-    /// `iterator()`: `sortedFieldNames`.
-    pub fn field_names(&self) -> impl Iterator<Item = &str> {
-        self.fields.keys().map(String::as_str)
-    }
-
-    /// `size()`.
-    pub fn size(&self) -> usize {
-        self.fields.len()
-    }
-
-    /// `version`.
-    pub fn version(&self) -> i32 {
-        self.version
-    }
-
-    /// `checkIntegrity()`'s terms dictionary half: the whole `.ustb`'s
-    /// checksum (the `.ustd`'s was checked at open; the postings' are the
-    /// caller's).
-    ///
-    /// # Errors
-    /// `Corrupted` when the checksum does not match.
-    pub fn check_integrity(&self) -> Result<()> {
-        let end = self
-            .ustb
-            .len()
-            .checked_sub(FOOTER_LENGTH)
-            .ok_or_else(|| corrupt("file too small to contain a codec footer"))?;
-        codec_util::check_whole_file_footer(&self.ustb, end)?;
-        Ok(())
     }
 }
 
@@ -356,18 +414,28 @@ impl UniformSplitTerms {
         doc_in: &DocInput<'_>,
         flags: PostingsFlags,
     ) -> Result<Postings> {
-        if state.doc_freq == 1 {
-            return Ok(postings::singleton_postings(
-                state.meta,
-                state.total_term_freq,
-            )?);
-        }
-        Ok(doc_in.read_postings_with_flags(
-            state.meta,
-            state.doc_freq,
-            self.metadata.field_info.index_options,
-            self.metadata.field_info.store_payloads,
-            flags,
-        )?)
+        field_postings(&self.metadata.field_info, state, doc_in, flags)
     }
+}
+
+/// `postingsReader.postings(fieldInfo, state, reuse, flags)`.
+pub(crate) fn field_postings(
+    field_info: &FieldInfo,
+    state: &UniformSplitTermState,
+    doc_in: &DocInput<'_>,
+    flags: PostingsFlags,
+) -> Result<Postings> {
+    if state.doc_freq == 1 {
+        return Ok(postings::singleton_postings(
+            state.meta,
+            state.total_term_freq,
+        )?);
+    }
+    Ok(doc_in.read_postings_with_flags(
+        state.meta,
+        state.doc_freq,
+        field_info.index_options,
+        field_info.store_payloads,
+        flags,
+    )?)
 }

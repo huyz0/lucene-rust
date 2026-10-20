@@ -27,7 +27,7 @@ enum BlockIteration {
 /// `IntersectBlockReader`: a `TermsEnum` over the terms of one field an
 /// automaton accepts.
 pub struct IntersectBlockReader<'a> {
-    base: BlockReader<'a>,
+    pub(super) base: BlockReader<'a>,
     byte_runnable: &'a dyn ByteRunnable,
     /// `commonSuffix`.
     common_suffix: Option<&'a [u8]>,

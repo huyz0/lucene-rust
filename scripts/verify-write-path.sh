@@ -121,6 +121,11 @@ CASES=(
   # seekCeil just past it, and Terms.intersect required to enumerate exactly
   # what this port's reader does.
   "lucene-codecs|write_uniformsplit_fixture|uniformsplit|VerifyCodecsUniformSplit"
+  # lucene-codecs' STUniformSplitPostingsFormat (M14.g): the same three
+  # groups with every field's terms in one shared dictionary (body and tag
+  # sharing many lines), opened by real Lucene's own format and checked the
+  # same way.
+  "lucene-codecs|write_sharedterms_fixture|sharedterms|VerifyCodecsSharedTerms"
   # Last, and unlike every case above: a whole index written by the real
   # IndexWriter, opened by DirectoryReader and run through CheckIndex. The
   # cases above each hand Lucene one codec file with a hand-built
