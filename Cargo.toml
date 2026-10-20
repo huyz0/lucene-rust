@@ -20,6 +20,7 @@ members = [
     "crates/lucene-search",
     "crates/lucene-core",
     "crates/lucene-ffi",
+    "crates/lucene-tools",
 ]
 
 [workspace.package]

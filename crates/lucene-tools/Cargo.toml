@@ -1,0 +1,22 @@
+[package]
+name = "lucene-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The command-line tools of Lucene's `misc`, `demo`, `luke` and `benchmark`
+# modules, behind one `lucene-tools` binary. The top of the dependency order:
+# nothing depends on this crate.
+[[bin]]
+name = "lucene-tools"
+path = "src/main.rs"
+
+[dependencies]
+lucene-util = { path = "../lucene-util" }
+lucene-store = { path = "../lucene-store" }
+lucene-index = { path = "../lucene-index" }
+lucene-search = { path = "../lucene-search" }
+
+[dev-dependencies]
+# The shared RAII scratch-directory guard (`lucene_util::test_support::TempDir`).
+lucene-util = { path = "../lucene-util", features = ["test-support"] }

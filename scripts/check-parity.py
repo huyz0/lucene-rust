@@ -71,10 +71,11 @@ MAX_FILE = 80_000
 # rows; the rest of lucene-facet and M14's modules need room for their rows,
 # so it was 550 KB. M14.g's lucene-codecs (bloom, memory, bitvectors,
 # SimpleText, blocktreeords, uniformsplit, blockterms: a row or two each)
-# found it full, with rows trimmed to fit, so it is 560 KB. The per-row and
-# per-file budgets are what keep a row short; the total only says how many
-# rows there may be.
-MAX_TOTAL = 560_000
+# found it full, with rows trimmed to fit, so it is 560 KB. M14.i's
+# command-line tools (`tools.md`: misc, demo, luke, benchmark) need room for
+# theirs, so it is 590 KB. The per-row and per-file budgets are what keep a
+# row short; the total only says how many rows there may be.
+MAX_TOTAL = 590_000
 
 # A line of the index's area table: its link and its row count.
 AREA_ROW = re.compile(r"^\|\s*\[[^\]]*\]\(([^)]+\.md)\)\s*\|.*\|\s*(\d+)\s*\|\s*$")

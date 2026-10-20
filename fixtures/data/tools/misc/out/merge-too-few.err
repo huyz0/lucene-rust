@@ -1,0 +1,11 @@
+not enough parameters.
+Usage: IndexMergeTool [OPTION...] <mergedIndex> <index1> <index2> [index3] ...
+Merges source indexes 'index1' .. 'indexN' into 'mergedIndex'
+
+OPTIONS:
+ -merge-policy ClassName  specifies MergePolicy class (must be in CLASSPATH).The default is
+                          'org.apache.lucene.index.TieredMergePolicy.TieredMergePolicy'
+ -max-segments N          force-merge's the index to a maximum of N segments. Default is
+                          to execute only the merges according to the merge policy.
+ -verbose                 print additional details.
+

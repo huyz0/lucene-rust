@@ -1,0 +1,48 @@
+term-common	GetTermInfo	{fixture}/index	body	common
+term-rare	GetTermInfo	{fixture}/index	title	upsilon
+term-absent	GetTermInfo	{fixture}/index	body	absent
+term-no-field	GetTermInfo	{fixture}/index	nofield	x
+term-usage	GetTermInfo	{fixture}/index	body
+high-default	HighFreqTerms	{fixture}/index
+high-ttf-body	HighFreqTerms	{fixture}/index	-t	5	body
+high-title-ttf	HighFreqTerms	{fixture}/index	3	title	-t
+high-too-many	HighFreqTerms	{fixture}/index	body	4	title	2
+high-last-field-wins	HighFreqTerms	{fixture}/index	body	4	title
+high-last-count-wins	HighFreqTerms	{fixture}/index	7	body	3
+high-zero	HighFreqTerms	{fixture}/index	0
+high-negative	HighFreqTerms	{fixture}/index	-5	body
+high-no-field	HighFreqTerms	{fixture}/index	nofield
+high-usage	HighFreqTerms
+split-list	IndexSplitter	{fixture}/index	-l
+split-list2	IndexSplitter	{fixture}/index2	-l
+split-usage	IndexSplitter	{fixture}/index
+split-copy	IndexSplitter	{fixture}/index	{tmp}/split	_0	_2
+split-copy-list	IndexSplitter	{tmp}/split	-l
+split-copy-terms	HighFreqTerms	{tmp}/split	-t	1000
+remove-copy	copy	{fixture}/index	{tmp}/removed
+remove	IndexSplitter	{tmp}/removed	-d	_1	_9
+remove-list	IndexSplitter	{tmp}/removed	-l
+remove-terms	HighFreqTerms	{tmp}/removed	1000
+merge	IndexMergeTool	{tmp}/merged	{fixture}/index	{fixture}/index2
+merge-list	IndexSplitter	{tmp}/merged	-l
+merge-terms	HighFreqTerms	{tmp}/merged	-t	1000
+merge-again	IndexMergeTool	-max-segments	1	{tmp}/merged	{fixture}/index2	{fixture}/index
+merge-again-list	IndexSplitter	{tmp}/merged	-l
+merge-again-terms	HighFreqTerms	{tmp}/merged	1000	-t
+merge-again-term	GetTermInfo	{tmp}/merged	body	common
+merge-logdoc	IndexMergeTool	-merge-policy	org.apache.lucene.index.LogDocMergePolicy	-max-segments	2	{tmp}/merged2	{fixture}/index	{fixture}/index2
+merge-logdoc-list	IndexSplitter	{tmp}/merged2	-l
+merge-logdoc-terms	HighFreqTerms	{tmp}/merged2	1000
+merge-unknown-option	IndexMergeTool	-x	{tmp}/m	a	b
+merge-too-few	IndexMergeTool	-verbose	{tmp}/m	a
+merge-bad-number	IndexMergeTool	-max-segments	two	{tmp}/m	a	b
+multipass-seq	MultiPassIndexSplitter	-out	{tmp}/seq	-num	3	-seq	{fixture}/index
+multipass-seq-0	HighFreqTerms	{tmp}/seq/part-0	1000
+multipass-seq-1	HighFreqTerms	{tmp}/seq/part-1	1000
+multipass-seq-2	HighFreqTerms	{tmp}/seq/part-2	1000
+multipass-rr	MultiPassIndexSplitter	-num	2	{fixture}/index	-out	{tmp}/rr	{fixture}/index2
+multipass-rr-0	HighFreqTerms	{tmp}/rr/part-0	1000	-t
+multipass-rr-1	HighFreqTerms	{tmp}/rr/part-1	1000	-t
+multipass-no-out	MultiPassIndexSplitter	-num	2	{fixture}/index	{fixture}/index2	-seq
+multipass-num-1	MultiPassIndexSplitter	-out	{tmp}/mp1	-num	1	{fixture}/index
+multipass-no-input	MultiPassIndexSplitter	-out	{tmp}/mp2	-num	2	no-such-input-dir
