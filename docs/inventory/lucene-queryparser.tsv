@@ -55,7 +55,7 @@ queryparser/flexible/core/nodes/SlopQueryNode	ported	crates/lucene-search/src/qu
 queryparser/flexible/core/nodes/TextableQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Node
 queryparser/flexible/core/nodes/TokenizedPhraseQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
 queryparser/flexible/core/nodes/ValueQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Node
-queryparser/flexible/core/parser/EscapeQuerySyntax	partial	crates/lucene-search/src/queryparser/flexible/parser.rs::discard_escape_char -- M14: escape(), which only a message about a too-large boolean prints
+queryparser/flexible/core/parser/EscapeQuerySyntax	ported	crates/lucene-search/src/queryparser/flexible/escape.rs::escape
 queryparser/flexible/core/parser/SyntaxParser	ported	crates/lucene-search/src/queryparser/flexible/parser.rs::Parser
 queryparser/flexible/core/processors/NoChildOptimizationQueryNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::NoChildOptimizationProc
 queryparser/flexible/core/processors/QueryNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::Processor
@@ -78,7 +78,7 @@ queryparser/flexible/standard/StandardQueryParser	ported	crates/lucene-search/sr
 queryparser/flexible/standard/builders/AnyQueryNodeBuilder	not-supported	-- -- builds AnyQueryNode, which no syntax this port parses makes; StandardQueryTreeBuilder does not register it
 queryparser/flexible/standard/builders/BooleanQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
 queryparser/flexible/standard/builders/BoostQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
-queryparser/flexible/standard/builders/DummyQueryNodeBuilder	deferred:M14	the points builders: PointsConfig, which needs Java's locale NumberFormat (and NumberDateFormat its DateFormat formatting)
+queryparser/flexible/standard/builders/DummyQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
 queryparser/flexible/standard/builders/FieldQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
 queryparser/flexible/standard/builders/FuzzyQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
 queryparser/flexible/standard/builders/GroupQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
@@ -89,7 +89,7 @@ queryparser/flexible/standard/builders/MinShouldMatchNodeBuilder	ported	crates/l
 queryparser/flexible/standard/builders/ModifierQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
 queryparser/flexible/standard/builders/MultiPhraseQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::multi_phrase
 queryparser/flexible/standard/builders/PhraseQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::phrase
-queryparser/flexible/standard/builders/PointRangeQueryNodeBuilder	deferred:M14	the points builders: PointsConfig, which needs Java's locale NumberFormat (and NumberDateFormat its DateFormat formatting)
+queryparser/flexible/standard/builders/PointRangeQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::point_range
 queryparser/flexible/standard/builders/PrefixWildcardQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
 queryparser/flexible/standard/builders/RegexpQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
 queryparser/flexible/standard/builders/SlopQueryNodeBuilder	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
@@ -101,17 +101,17 @@ queryparser/flexible/standard/builders/WildcardQueryNodeBuilder	ported	crates/lu
 queryparser/flexible/standard/config/FieldBoostMapFCListener	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::BoostProc
 queryparser/flexible/standard/config/FieldDateResolutionFCListener	ported	crates/lucene-search/src/queryparser/flexible/mod.rs::StandardQueryParser
 queryparser/flexible/standard/config/FuzzyConfig	ported	crates/lucene-search/src/queryparser/flexible/mod.rs::StandardQueryParser
-queryparser/flexible/standard/config/NumberDateFormat	deferred:M14	PointsConfig, which needs Java's locale NumberFormat (and NumberDateFormat its DateFormat formatting)
-queryparser/flexible/standard/config/PointsConfig	deferred:M14	PointsConfig, which needs Java's locale NumberFormat (and NumberDateFormat its DateFormat formatting)
-queryparser/flexible/standard/config/PointsConfigListener	deferred:M14	PointsConfig, which needs Java's locale NumberFormat (and NumberDateFormat its DateFormat formatting)
+queryparser/flexible/standard/config/NumberDateFormat	ported	crates/lucene-search/src/queryparser/flexible/points.rs::NumberDateFormat
+queryparser/flexible/standard/config/PointsConfig	ported	crates/lucene-search/src/queryparser/flexible/points.rs::PointsConfig
+queryparser/flexible/standard/config/PointsConfigListener	ported	crates/lucene-search/src/queryparser/flexible/mod.rs::points_config
 queryparser/flexible/standard/config/StandardQueryConfigHandler	ported	crates/lucene-search/src/queryparser/flexible/mod.rs::StandardQueryParser
 queryparser/flexible/standard/nodes/AbstractRangeQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
 queryparser/flexible/standard/nodes/BooleanModifierNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
 queryparser/flexible/standard/nodes/IntervalQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
 queryparser/flexible/standard/nodes/MinShouldMatchNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
 queryparser/flexible/standard/nodes/MultiPhraseQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
-queryparser/flexible/standard/nodes/PointQueryNode	deferred:M14	the points nodes: PointsConfig, which needs Java's locale NumberFormat (and NumberDateFormat its DateFormat formatting)
-queryparser/flexible/standard/nodes/PointRangeQueryNode	deferred:M14	the points nodes: PointsConfig, which needs Java's locale NumberFormat (and NumberDateFormat its DateFormat formatting)
+queryparser/flexible/standard/nodes/PointQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Point
+queryparser/flexible/standard/nodes/PointRangeQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::PointRange
 queryparser/flexible/standard/nodes/PrefixWildcardQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
 queryparser/flexible/standard/nodes/RegexpQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
 queryparser/flexible/standard/nodes/SynonymQueryNode	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::Kind
@@ -140,7 +140,7 @@ queryparser/flexible/standard/nodes/intervalfn/Unordered	ported	crates/lucene-se
 queryparser/flexible/standard/nodes/intervalfn/UnorderedNoOverlaps	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::IntervalFn
 queryparser/flexible/standard/nodes/intervalfn/Wildcard	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::IntervalFn
 queryparser/flexible/standard/nodes/intervalfn/Within	ported	crates/lucene-search/src/queryparser/flexible/nodes.rs::IntervalFn
-queryparser/flexible/standard/parser/EscapeQuerySyntaxImpl	partial	crates/lucene-search/src/queryparser/flexible/parser.rs::discard_escape_char -- M14: escape(), which only a message about a too-large boolean prints
+queryparser/flexible/standard/parser/EscapeQuerySyntaxImpl	ported	crates/lucene-search/src/queryparser/flexible/escape.rs::escape_ignoring_case
 queryparser/flexible/standard/parser/ParseException	ported	crates/lucene-search/src/queryparser/flexible/mod.rs::syntax_error
 queryparser/flexible/standard/parser/StandardSyntaxParser	ported	crates/lucene-search/src/queryparser/flexible/parser.rs::Parser
 queryparser/flexible/standard/parser/StandardSyntaxParserConstants	ported	crates/lucene-search/src/queryparser/flexible/constants.rs::TOKEN_IMAGE
@@ -160,8 +160,8 @@ queryparser/flexible/standard/processors/MultiFieldQueryNodeProcessor	ported	cra
 queryparser/flexible/standard/processors/MultiTermRewriteMethodProcessor	ported	crates/lucene-search/src/queryparser/flexible/builders.rs::build
 queryparser/flexible/standard/processors/OpenRangeQueryNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::OpenRangeProc
 queryparser/flexible/standard/processors/PhraseSlopQueryNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::PhraseSlopProc
-queryparser/flexible/standard/processors/PointQueryNodeProcessor	partial	crates/lucene-search/src/queryparser/flexible/processors.rs::PointProc -- M14: PointsConfig, which needs Java's locale NumberFormat (and NumberDateFormat its DateFormat formatting)
-queryparser/flexible/standard/processors/PointRangeQueryNodeProcessor	partial	crates/lucene-search/src/queryparser/flexible/processors.rs::PointRangeProc -- M14: PointsConfig, which needs Java's locale NumberFormat (and NumberDateFormat its DateFormat formatting)
+queryparser/flexible/standard/processors/PointQueryNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::PointProc
+queryparser/flexible/standard/processors/PointRangeQueryNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::PointRangeProc
 queryparser/flexible/standard/processors/RegexpQueryNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::RegexpProc
 queryparser/flexible/standard/processors/RemoveEmptyNonLeafQueryNodeProcessor	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::RemoveEmptyNonLeafProc
 queryparser/flexible/standard/processors/StandardQueryNodeProcessorPipeline	ported	crates/lucene-search/src/queryparser/flexible/processors.rs::run

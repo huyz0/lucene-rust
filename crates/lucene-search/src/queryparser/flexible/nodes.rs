@@ -5,6 +5,12 @@
 //! methods answer those tests class by class, so a processor reads as its
 //! Java original.
 
+use lucene_analysis::attributes::java_float_to_string;
+
+use super::escape::{escape, CaseLocale, EscapeType};
+use super::points::{PointValue, PointsConfig, PointsFormat};
+use super::processors::Result;
+
 /// `UnescapedCharSequence`: text as UTF-16 units and, when the parser made
 /// it from a query string, which units were escaped there. Text a processor
 /// sets (`setText(String)`) has no escape record.
@@ -134,6 +140,19 @@ pub(crate) enum Kind {
         field: Option<String>,
         source: IntervalFn,
     },
+    /// `PointQueryNode`: a bound of a `PointRangeQueryNode`, `None` an open
+    /// one.
+    Point {
+        field: Option<String>,
+        value: Option<PointValue>,
+        format: PointsFormat,
+    },
+    /// `PointRangeQueryNode`: its two children are the `Point` bounds.
+    PointRange {
+        lower_inclusive: bool,
+        upper_inclusive: bool,
+        config: PointsConfig,
+    },
 }
 
 /// The tags the processors leave on a node: `BooleanQuery2ModifierNodeProcessor`'s
@@ -196,6 +215,7 @@ impl Node {
                 | Kind::Deleted
                 | Kind::NoTokenFound
                 | Kind::Interval { .. }
+                | Kind::Point { .. }
         )
     }
 
@@ -241,6 +261,8 @@ impl Node {
                     | Kind::TermRange { .. }
                     | Kind::Regexp { .. }
                     | Kind::Interval { .. }
+                    | Kind::Point { .. }
+                    | Kind::PointRange { .. }
             )
     }
 
@@ -271,7 +293,9 @@ impl Node {
             return d.field.clone();
         }
         match &self.kind {
-            Kind::Regexp { field, .. } | Kind::Interval { field, .. } => field.clone(),
+            Kind::Regexp { field, .. }
+            | Kind::Interval { field, .. }
+            | Kind::Point { field, .. } => field.clone(),
             // `SlopQueryNode`: its child's
             Kind::Slop(_) => self
                 .children
@@ -286,7 +310,7 @@ impl Node {
                 .and_then(Node::get_field),
             Kind::MultiPhrase => self.children.first().and_then(Node::get_field),
             // `AbstractRangeQueryNode`: the lower bound's, else the upper's
-            Kind::TermRange { .. } => match self.children.first() {
+            Kind::TermRange { .. } | Kind::PointRange { .. } => match self.children.first() {
                 Some(lower) => lower.get_field(),
                 None => self.children.get(1).and_then(Node::get_field),
             },
@@ -301,15 +325,18 @@ impl Node {
             return;
         }
         match &mut self.kind {
-            Kind::Regexp { field: f, .. } | Kind::Interval { field: f, .. } => {
-                *f = Some(field.to_string())
-            }
+            Kind::Regexp { field: f, .. }
+            | Kind::Interval { field: f, .. }
+            | Kind::Point { field: f, .. } => *f = Some(field.to_string()),
             Kind::Slop(_) => {
                 if let Some(c) = self.children.first_mut().filter(|c| c.is_fieldable()) {
                     c.set_field(field);
                 }
             }
-            Kind::TokenizedPhrase | Kind::MultiPhrase | Kind::TermRange { .. } => {
+            Kind::TokenizedPhrase
+            | Kind::MultiPhrase
+            | Kind::TermRange { .. }
+            | Kind::PointRange { .. } => {
                 for c in self.children.iter_mut().filter(|c| c.is_fieldable()) {
                     c.set_field(field);
                 }
@@ -386,25 +413,164 @@ impl Node {
             Kind::Interval { .. } => {
                 "org.apache.lucene.queryparser.flexible.standard.nodes.IntervalQueryNode"
             }
+            Kind::Point { .. } => {
+                "org.apache.lucene.queryparser.flexible.standard.nodes.PointQueryNode"
+            }
+            Kind::PointRange { .. } => {
+                "org.apache.lucene.queryparser.flexible.standard.nodes.PointRangeQueryNode"
+            }
         }
     }
 
-    /// `toQueryString(new EscapeQuerySyntaxImpl())` of the nodes a message
-    /// prints here: a wildcard (`LEADING_WILDCARD_NOT_ALLOWED`), its text as
-    /// is behind its field unless that is the default; and the deleted nodes
-    /// no builder takes (`LUCENE_QUERY_CONVERSION_ERROR`).
-    pub(crate) fn to_query_string(&self) -> String {
+    /// `toQueryString(new EscapeQuerySyntaxImpl())`, the node's parent
+    /// `parent` (a boolean prints parentheses but at the root or in a
+    /// group), the terms escaped in `locale` (`Locale.getDefault()`'s case
+    /// mapping; a point's in `Locale.ROOT`). `Err` for what Java throws:
+    /// an open point bound, which its format refuses
+    /// (`IllegalArgumentException`), and the escaping's
+    /// `IndexOutOfBoundsException` (see `escape.rs`).
+    pub(crate) fn to_query_string(
+        &self,
+        parent: Option<&Kind>,
+        locale: CaseLocale,
+    ) -> Result<String> {
+        let child_string = |c: &Node| c.to_query_string(Some(&self.kind), locale);
+        let first =
+            || -> Result<Option<String>> { self.children.first().map(child_string).transpose() };
+        let join = |filler: &str| -> Result<String> {
+            Ok(self
+                .children
+                .iter()
+                .map(child_string)
+                .collect::<Result<Vec<_>>>()?
+                .join(filler))
+        };
+        // `isDefaultField`: no field, or `_plain`
         let with_field = |field: &Option<String>, text: String| match field {
-            // `isDefaultField`: no field, or `_plain`
             Some(f) if f != "_plain" => format!("{f}:{text}"),
             _ => text,
         };
-        match &self.kind {
+        let escaped = |text: &Text, ty: EscapeType| -> Result<String> {
+            Ok(String::from_utf16_lossy(&escape(text, locale, ty)?))
+        };
+        Ok(match &self.kind {
+            Kind::Boolean | Kind::And | Kind::Or | Kind::Synonym => {
+                if self.children.is_empty() {
+                    return Ok(String::new());
+                }
+                let filler = match self.kind {
+                    Kind::And => " AND ",
+                    Kind::Or => " OR ",
+                    _ => " ",
+                };
+                let s = join(filler)?;
+                if parent.is_none() || parent == Some(&Kind::Group) {
+                    s
+                } else {
+                    format!("( {s} )")
+                }
+            }
+            Kind::Group => match first()? {
+                Some(c) => format!("( {c} )"),
+                None => String::new(),
+            },
+            Kind::Modifier(m) | Kind::BooleanModifier(m) => {
+                let Some(child) = self.children.first() else {
+                    return Ok(String::new());
+                };
+                let (open, close) = if child.is_modifier() {
+                    ("(", ")")
+                } else {
+                    ("", "")
+                };
+                let prefix = match (m, child.is_boolean()) {
+                    (Modifier::None, _) => "",
+                    (Modifier::Not, true) => "NOT ",
+                    (Modifier::Not, false) => "-",
+                    (Modifier::Req, _) => "+",
+                };
+                format!("{prefix}{open}{}{close}", child_string(child)?)
+            }
+            Kind::Boost(v) => match first()? {
+                Some(c) => format!("{c}^{}", value_string(*v)),
+                None => String::new(),
+            },
+            // the `int` slop as a `Float`
+            Kind::Slop(v) => match first()? {
+                Some(c) => format!("{c}~{}", value_string(*v as f32)),
+                None => String::new(),
+            },
+            Kind::MinShouldMatch(n) => format!("{}@{n}", first()?.unwrap_or_default()),
+            Kind::TokenizedPhrase | Kind::MultiPhrase if self.children.is_empty() => String::new(),
+            Kind::TokenizedPhrase => format!("[TP[{}]]", join(",")?),
+            Kind::MultiPhrase => format!("[MTP[{}]]", join(",")?),
+            Kind::Field(d) => with_field(&d.field, escaped(&d.text, EscapeType::Normal)?),
+            Kind::Quoted(d) => with_field(
+                &d.field,
+                format!("\"{}\"", escaped(&d.text, EscapeType::String)?),
+            ),
+            Kind::Fuzzy {
+                data, similarity, ..
+            } => with_field(
+                &data.field,
+                format!(
+                    "{}~{}",
+                    escaped(&data.text, EscapeType::Normal)?,
+                    java_float_to_string(*similarity)
+                ),
+            ),
             Kind::Wildcard(d) | Kind::PrefixWildcard(d) => with_field(&d.field, d.text.as_string()),
-            Kind::Deleted => "[DELETEDCHILD]".to_string(),
+            Kind::Regexp { field, text } => with_field(field, format!("/{}/", text.as_string())),
+            Kind::TermRange {
+                lower_inclusive,
+                upper_inclusive,
+            }
+            | Kind::PointRange {
+                lower_inclusive,
+                upper_inclusive,
+                ..
+            } => {
+                let bound = |i: usize| -> Result<String> {
+                    match self.children.get(i) {
+                        Some(c) => child_string(c),
+                        None => Ok("...".to_string()),
+                    }
+                };
+                format!(
+                    "{}{} {}{}",
+                    if *lower_inclusive { '[' } else { '{' },
+                    bound(0)?,
+                    bound(1)?,
+                    if *upper_inclusive { ']' } else { '}' }
+                )
+            }
+            Kind::MatchAll => "*:*".to_string(),
+            Kind::MatchNoDocs | Kind::Deleted => "[DELETEDCHILD]".to_string(),
             Kind::NoTokenFound => "[NTF]".to_string(),
-            _ => String::new(),
-        }
+            Kind::Interval { field, source } => {
+                super::builders::interval_node_string(field.as_deref(), source)
+            }
+            Kind::Point {
+                field,
+                value,
+                format,
+            } => {
+                let text = Text::plain(&format.format(*value)?);
+                let term = escape(&text, CaseLocale::Root, EscapeType::Normal)?;
+                with_field(field, String::from_utf16_lossy(&term))
+            }
+        })
+    }
+}
+
+/// `BoostQueryNode.getValueString()` (and `SlopQueryNode`'s): the `Float`'s
+/// `long` value when equal to it, else `Float.toString`.
+fn value_string(v: f32) -> String {
+    let long = v as i64;
+    if long as f32 == v {
+        long.to_string()
+    } else {
+        java_float_to_string(v)
     }
 }
 

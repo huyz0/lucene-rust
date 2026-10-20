@@ -103,8 +103,11 @@ mod parse {
     use lucene_analysis::{Analyzer, StandardAnalyzer};
 
     use super::super::builders::build;
+    use super::super::escape::CaseLocale;
     use super::super::nodes::{FieldData, IntervalFn, Kind, Modifier, Node, Text};
+    use super::super::points::{PointType, PointsConfig, PointsFormat};
     use super::super::{Operator, StandardQueryParser};
+    use lucene_analysis::miscellaneous::{DateLocale, DecimalFormat};
 
     fn std_parser() -> StandardQueryParser {
         StandardQueryParser::with_analyzer(Arc::new(Analyzer::new(StandardAnalyzer::new())))
@@ -157,7 +160,7 @@ mod parse {
     #[test]
     fn nodes_the_builders_cannot_build_fail_as_java_does() {
         let p = std_parser();
-        let e = build(&p, &Node::leaf(Kind::Deleted)).unwrap_err();
+        let e = build(&p, &Node::leaf(Kind::Deleted), None).unwrap_err();
         assert_eq!(
             e.message,
             "Cannot convert query to lucene syntax: [DELETEDCHILD] error: org.apache.lucene.queryparser.flexible.core.nodes.DeletedQueryNode"
@@ -167,7 +170,7 @@ mod parse {
             source: IntervalFn::AnalyzedText("a".into()),
         });
         assert_eq!(
-            build(&p, &interval).unwrap_err().class,
+            build(&p, &interval, None).unwrap_err().class,
             "java.lang.NullPointerException"
         );
         // `@` over a group that is not a boolean
@@ -180,25 +183,36 @@ mod parse {
             vec![Node::with(Kind::Group, vec![term.clone()])],
         );
         assert_eq!(
-            build(&p, &msm).unwrap_err().class,
+            build(&p, &msm, None).unwrap_err().class,
             "java.lang.ClassCastException"
         );
         // a boolean past the clause limit
         let many = Node::with(Kind::Boolean, vec![term.clone(); 1025]);
-        assert!(build(&p, &many)
+        assert!(build(&p, &many, None)
             .unwrap_err()
             .message
             .starts_with("Too many boolean clauses, the maximum supported is 1,024"));
         // a boost with no child builds nothing
-        assert_eq!(build(&p, &Node::leaf(Kind::Boost(2.0))).unwrap(), None);
+        assert_eq!(
+            build(&p, &Node::leaf(Kind::Boost(2.0)), None).unwrap(),
+            None
+        );
         // ... and `@` over that null dereferences it
         let msm = Node::with(Kind::MinShouldMatch(1), vec![Node::leaf(Kind::Boost(2.0))]);
-        let e = build(&p, &msm).unwrap_err();
+        let e = build(&p, &msm, None).unwrap_err();
         assert_eq!(e.class, "java.lang.NullPointerException");
         assert_eq!(
             e.message,
             "Cannot invoke \"org.apache.lucene.search.BooleanQuery.clauses()\" because \"booleanQuery\" is null"
         );
+    }
+
+    fn config() -> PointsConfig {
+        let us = DateLocale::for_language_tag("en-US").unwrap();
+        PointsConfig::new(
+            PointsFormat::Decimal(DecimalFormat::number_instance(us)),
+            PointType::Int,
+        )
     }
 
     #[test]
@@ -242,6 +256,16 @@ mod parse {
                 field: None,
                 source: IntervalFn::AnalyzedText("x".into()),
             },
+            Kind::Point {
+                field: None,
+                value: None,
+                format: config().number_format().clone(),
+            },
+            Kind::PointRange {
+                lower_inclusive: true,
+                upper_inclusive: true,
+                config: config(),
+            },
         ];
         let mut names = std::collections::HashSet::new();
         for k in kinds {
@@ -252,8 +276,13 @@ mod parse {
             );
             names.insert(name);
         }
-        assert_eq!(names.len(), 24, "one class each");
+        assert_eq!(names.len(), 26, "one class each");
         // only a wildcard prints itself for a message
-        assert_eq!(Node::leaf(Kind::MatchAll).to_query_string(), "");
+        assert_eq!(
+            Node::leaf(Kind::MatchAll)
+                .to_query_string(None, CaseLocale::Root)
+                .unwrap(),
+            "*:*"
+        );
     }
 }

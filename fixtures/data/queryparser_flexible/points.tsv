@@ -1,0 +1,71 @@
+i:5	Q	i:[5 TO 5]	(i:[5 TO 5])
+i:-5	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse i:-5:  
+i:1,234	Q	i:[1234 TO 1234]	(i:[1234 TO 1234])
+i:1,234.9	Q	i:[1234 TO 1234]	(i:[1234 TO 1234])
+i:2147483648	Q	i:[-2147483648 TO -2147483648]	(i:[-2147483648 TO -2147483648])
+i:-2147483649	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse i:-2147483649:  
+i:abc	X	org.apache.lucene.queryparser.flexible.core.QueryNodeParseException: Could not parse text "abc" using java.text.DecimalFormat
+i:5abc	Q	i:[5 TO 5]	(i:[5 TO 5])
+i:"5"	Q	i:[5 TO 5]	(i:[5 TO 5])
+i:5*	Q	i:[5 TO 5]	(i:[5 TO 5])
+i:5~	Q	i:[5 TO 5]	(i:[5 TO 5])
+i:5^2	Q	(i:[5 TO 5])^2.0	Boost((i:[5 TO 5])^2.0)
++i:5 -i:6	Q	+i:[5 TO 5] -i:[6 TO 6]	Boolean(+(i:[5 TO 5]) -(i:[6 TO 6]))
+i:(5 6)	Q	i:[5 TO 5] i:[6 TO 6]	Boolean((i:[5 TO 5]) (i:[6 TO 6]))
+i:[1 TO 10]	Q	i:[1 TO 10]	(i:[1 TO 10])
+i:{1 TO 10}	Q	i:[2 TO 9]	(i:[2 TO 9])
+i:[1 TO 10}	Q	i:[1 TO 9]	(i:[1 TO 9])
+i:{1 TO 10]	Q	i:[2 TO 10]	(i:[2 TO 10])
+i:[* TO 10]	Q	i:[-2147483648 TO 10]	(i:[-2147483648 TO 10])
+i:{* TO 10}	Q	i:[-2147483647 TO 9]	(i:[-2147483647 TO 9])
+i:[1 TO *]	Q	i:[1 TO 2147483647]	(i:[1 TO 2147483647])
+i:{1 TO *}	Q	i:[2 TO 2147483646]	(i:[2 TO 2147483646])
+i:[* TO *]	Q	i:[-2147483648 TO 2147483647]	(i:[-2147483648 TO 2147483647])
+i:{2147483647 TO *]	Q	i:[-2147483648 TO 2147483647]	(i:[-2147483648 TO 2147483647])
+i:[* TO -2147483648}	Q	i:[-2147483648 TO 2147483647]	(i:[-2147483648 TO 2147483647])
+i:[x TO 5]	X	org.apache.lucene.queryparser.flexible.core.QueryNodeParseException: Could not parse text "x" using java.text.DecimalFormat
+i:[5 TO x]	X	org.apache.lucene.queryparser.flexible.core.QueryNodeParseException: Could not parse text "x" using java.text.DecimalFormat
+i:>5	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse i:>5:  
+i:>=5	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse i:>=5:  
+i:<5	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse i:<5:  
+i:<=5	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse i:<=5:  
+i:\\-5	Q	i:[-5 TO -5]	(i:[-5 TO -5])
+i:""	X	org.apache.lucene.queryparser.flexible.core.QueryNodeParseException: Field "i" is numeric and cannot have an empty value.
+i:["" TO 5]	X	org.apache.lucene.queryparser.flexible.core.QueryNodeParseException: Could not parse text """" using java.text.DecimalFormat
+i:{"1" TO "2"}	Q	i:[2 TO 1]	(i:[2 TO 1])
+l:1.234.567	Q	l:[1234567 TO 1234567]	(l:[1234567 TO 1234567])
+l:1,5	Q	l:[1 TO 1]	(l:[1 TO 1])
+l:-9223372036854775808	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse l:-9223372036854775808:  
+l:{-9223372036854775808 TO 9223372036854775807}	Q	l:[-9223372036854775807 TO 9223372036854775806]	(l:[-9223372036854775807 TO 9223372036854775806])
+l:[1.000 TO 2.000]	Q	l:[1000 TO 2000]	(l:[1000 TO 2000])
+l:9223372036854775808	Q	l:[9223372036854775807 TO 9223372036854775807]	(l:[9223372036854775807 TO 9223372036854775807])
+l:x	X	org.apache.lucene.queryparser.flexible.core.QueryNodeParseException: Could not parse text "x" using java.text.DecimalFormat
+fl:1,5	Q	fl:[1.5 TO 1.5]	(fl:[1.5 TO 1.5])
+fl:-1,5	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse fl:-1,5:  
+fl:{1,5 TO 2,5}	Q	fl:[1.5000001 TO 2.4999998]	(fl:[1.5000001 TO 2.4999998])
+fl:[* TO 0]	Q	fl:[-Infinity TO 0.0]	(fl:[-Infinity TO 0.0])
+fl:{* TO *}	Q	fl:[-3.4028235E38 TO 3.4028235E38]	(fl:[-3.4028235E38 TO 3.4028235E38])
+fl:1 000	Q	fl:[1000.0 TO 1000.0]	(fl:[1000.0 TO 1000.0])
+fl:1 000	Q	fl:[1.0 TO 1.0] 000	Boolean((fl:[1.0 TO 1.0]) TermQuery(000))
+fl:1.5	Q	fl:[1.0 TO 1.0]	(fl:[1.0 TO 1.0])
+fl:3,4028236E38	Q	fl:[Infinity TO Infinity]	(fl:[Infinity TO Infinity])
+fl:{0 TO 1}	Q	fl:[1.4E-45 TO 0.99999994]	(fl:[1.4E-45 TO 0.99999994])
+d:1,5	Q	d:[1.5 TO 1.5]	(d:[1.5 TO 1.5])
+d:−1,5	Q	d:[-1.5 TO -1.5]	(d:[-1.5 TO -1.5])
+d:-1,5	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse d:-1,5:  
+d:{1,5 TO *}	Q	d:[1.5000000000000002 TO 1.7976931348623157E308]	(d:[1.5000000000000002 TO 1.7976931348623157E308])
+d:{* TO 0}	Q	d:[-1.7976931348623157E308 TO -4.9E-324]	(d:[-1.7976931348623157E308 TO -4.9E-324])
+d:1 000,25	Q	d:[1000.25 TO 1000.25]	(d:[1000.25 TO 1000.25])
+d:1e3	Q	d:[1.0 TO 1.0]	(d:[1.0 TO 1.0])
+d:x	X	org.apache.lucene.queryparser.flexible.core.QueryNodeParseException: Could not parse text "x" using java.text.DecimalFormat
+dt:"1/2/2020"	Q	dt:[1577941200000 TO 1577941200000]	(dt:[1577941200000 TO 1577941200000])
+dt:["1/1/2020" TO "12/31/2020"]	Q	dt:[1577854800000 TO 1609390800000]	(dt:[1577854800000 TO 1609390800000])
+dt:{"1/1/2020" TO *}	Q	dt:[1577854800001 TO 9223372036854775806]	(dt:[1577854800001 TO 9223372036854775806])
+dt:{* TO "1/1/2020"}	Q	dt:[-9223372036854775807 TO 1577854799999]	(dt:[-9223372036854775807 TO 1577854799999])
+dt:1/2/2020	X	org.apache.lucene.queryparser.flexible.core.QueryNodeParseException: Could not parse text "1" using org.apache.lucene.queryparser.flexible.standard.config.NumberDateFormat
+dt:foo	X	org.apache.lucene.queryparser.flexible.core.QueryNodeParseException: Could not parse text "foo" using org.apache.lucene.queryparser.flexible.standard.config.NumberDateFormat
+dt:"13/45/2020"	Q	dt:[1613278800000 TO 1613278800000]	(dt:[1613278800000 TO 1613278800000])
+dt:"1/2/2020x"	Q	dt:[1577941200000 TO 1577941200000]	(dt:[1577941200000 TO 1577941200000])
+x:5	Q	x:5	TermQuery(x:5)
+i:5 x:6	Q	i:[5 TO 5] x:6	Boolean((i:[5 TO 5]) TermQuery(x:6))
+f:[1 TO 2]	Q	[1 TO 2]	TermRangeQuery([1 TO 2])

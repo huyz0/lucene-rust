@@ -121,6 +121,210 @@ public class GenQueryParserFlexible {
       Files.writeString(out.resolve(config + ".tsv"), rows.toString(), StandardCharsets.UTF_8);
     }
     writeDates(out);
+    writeNumbers(out);
+    writePoints(out);
+  }
+
+  /**
+   * The locales whose {@code NumberFormat}s {@code numbers.tsv} reads and writes: those whose
+   * symbols JDK 21 (this generator) and JDK 25 (the Rust table, {@code GenDateLocales}) agree on --
+   * not {@code ar-EG}, whose exponent and NaN CLDR changed.
+   */
+  static final String[] NUMBER_LOCALES = {"en-US", "de-DE", "fr-FR", "und", "sv-SE", "de-CH", "fa"};
+
+  /**
+   * {@code numbers.tsv}: each of {@link #NUMBER_LOCALES}' number ({@code N}) and integer ({@code
+   * I}) instance parsing {@link #numberInputs} from index 0 ({@code P}: the input, then {@code
+   * L<long>@<index>}, {@code D<raw bits>@<index>} or {@code E}) and formatting longs ({@code FL})
+   * and doubles ({@code FD}, by raw bits).
+   */
+  static void writeNumbers(Path out) throws Exception {
+    long[] longs = {0, -5, 7, 1000, 1234567, -1234567, Long.MAX_VALUE, Long.MIN_VALUE};
+    double[] doubles = {
+      0.0, -0.0, 1.5, -1.5, 0.0025, 0.0625, 0.5, 2.5, 1234.5678, 1e20, 1e-5, 123456789.123,
+      Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, 1.1f, 3.4028234663852886E38,
+      Double.MIN_VALUE, 999.9995, 0.1 + 0.2
+    };
+    StringBuilder rows = new StringBuilder();
+    for (String tag : NUMBER_LOCALES) {
+      java.util.Locale locale = java.util.Locale.forLanguageTag(tag);
+      for (String kind : List.of("N", "I")) {
+        java.text.NumberFormat f = kind.equals("I")
+            ? java.text.NumberFormat.getIntegerInstance(locale)
+            : java.text.NumberFormat.getNumberInstance(locale);
+        java.text.DecimalFormatSymbols sym = ((java.text.DecimalFormat) f).getDecimalFormatSymbols();
+        for (String text : numberInputs(sym)) {
+          java.text.ParsePosition pos = new java.text.ParsePosition(0);
+          Number n = f.parse(text, pos);
+          String got = n == null ? "E"
+              : (n instanceof Long ? "L" + n : "D" + Double.doubleToRawLongBits(n.doubleValue()))
+                  + "@" + pos.getIndex();
+          rows.append(tag).append('\t').append(kind).append("\tP\t").append(AnalysisRows.esc(text))
+              .append('\t').append(got).append('\n');
+        }
+        for (long v : longs) {
+          rows.append(tag).append('\t').append(kind).append("\tFL\t").append(v)
+              .append('\t').append(AnalysisRows.esc(f.format(v))).append('\n');
+        }
+        for (double v : doubles) {
+          rows.append(tag).append('\t').append(kind).append("\tFD\t").append(Double.doubleToRawLongBits(v))
+              .append('\t').append(AnalysisRows.esc(f.format(v))).append('\n');
+        }
+      }
+    }
+    Files.writeString(out.resolve("numbers.tsv"), rows.toString(), StandardCharsets.UTF_8);
+  }
+
+  /**
+   * The texts a format parses: templates over its symbols ({@code {d}} decimal, {@code {g}}
+   * grouping, {@code {-}} minus, {@code {e}} exponent, {@code {i}} infinity, {@code {n}} NaN),
+   * each again in the locale's digits when they are not ASCII.
+   */
+  static List<String> numberInputs(java.text.DecimalFormatSymbols sym) {
+    String[] templates = {
+      "0", "12", "-12", "{-}12", "+5", " 5", "5 ", "1{g}234{g}567", "1{g}2{g}3", "1{g}", "{g}1",
+      "1{d}5", "{d}5", "-{d}5", "{-}1{d}5", "1{d}5{d}6", "1{d}", "1{d}0", "0{d}000", "-0", "{-}0",
+      "12abc", "abc", "", "1E3", "1{e}3", "1{e}-3", "1{e}{-}3", "2{d}5{e}2", "9223372036854775807",
+      "9223372036854775808", "-9223372036854775808", "-9223372036854775809",
+      "123456789012345678901234567890", "0{d}1", "{i}", "{-}{i}", "{n}", "1 234", "1\u00a0234",
+      "1\u202f234", "1'234", "1\u2019234", "1.234", "1,234", "1,5", "1.5", "1.234,5", "1,234.5",
+      "\u2212" + "7", "1{g}234{d}5", "12{g}34"
+    };
+    List<String> out = new ArrayList<>();
+    char zero = sym.getZeroDigit();
+    for (String t : templates) {
+      String text = t.replace("{d}", String.valueOf(sym.getDecimalSeparator()))
+          .replace("{g}", String.valueOf(sym.getGroupingSeparator()))
+          .replace("{-}", String.valueOf(sym.getMinusSign()))
+          .replace("{e}", sym.getExponentSeparator())
+          .replace("{i}", sym.getInfinity())
+          .replace("{n}", sym.getNaN());
+      out.add(text);
+      if (zero != '0') {
+        StringBuilder local = new StringBuilder();
+        for (char c : text.toCharArray()) {
+          local.append(c >= '0' && c <= '9' ? (char) (zero + (c - '0')) : c);
+        }
+        out.add(local.toString());
+      }
+    }
+    return out;
+  }
+
+  /** The point fields of {@code points*.tsv}. */
+  static Map<String, org.apache.lucene.queryparser.flexible.standard.config.PointsConfig> pointsConfigs() {
+    Map<String, org.apache.lucene.queryparser.flexible.standard.config.PointsConfig> m = new LinkedHashMap<>();
+    m.put("i", new org.apache.lucene.queryparser.flexible.standard.config.PointsConfig(
+        java.text.NumberFormat.getNumberInstance(java.util.Locale.US), Integer.class));
+    m.put("l", new org.apache.lucene.queryparser.flexible.standard.config.PointsConfig(
+        java.text.NumberFormat.getIntegerInstance(java.util.Locale.GERMANY), Long.class));
+    m.put("fl", new org.apache.lucene.queryparser.flexible.standard.config.PointsConfig(
+        java.text.NumberFormat.getNumberInstance(java.util.Locale.FRANCE), Float.class));
+    m.put("d", new org.apache.lucene.queryparser.flexible.standard.config.PointsConfig(
+        java.text.NumberFormat.getNumberInstance(java.util.Locale.forLanguageTag("sv-SE")), Double.class));
+    m.put("dt", new org.apache.lucene.queryparser.flexible.standard.config.PointsConfig(
+        new org.apache.lucene.queryparser.flexible.standard.config.NumberDateFormat(
+            java.text.DateFormat.getDateInstance(java.text.DateFormat.SHORT, java.util.Locale.US)),
+        Long.class));
+    return m;
+  }
+
+  /** The queries of {@code points.tsv}. */
+  static final String[] POINT_QUERIES = {
+    "i:5", "i:-5", "i:1,234", "i:1,234.9", "i:2147483648", "i:-2147483649", "i:abc", "i:5abc",
+    "i:\"5\"", "i:5*", "i:5~", "i:5^2", "+i:5 -i:6", "i:(5 6)", "i:[1 TO 10]", "i:{1 TO 10}",
+    "i:[1 TO 10}", "i:{1 TO 10]", "i:[* TO 10]", "i:{* TO 10}", "i:[1 TO *]", "i:{1 TO *}",
+    "i:[* TO *]", "i:{2147483647 TO *]", "i:[* TO -2147483648}", "i:[x TO 5]", "i:[5 TO x]",
+    "i:>5", "i:>=5", "i:<5", "i:<=5", "i:\\-5", "i:\"\"", "i:[\"\" TO 5]", "i:{\"1\" TO \"2\"}",
+    "l:1.234.567", "l:1,5", "l:-9223372036854775808", "l:{-9223372036854775808 TO 9223372036854775807}",
+    "l:[1.000 TO 2.000]", "l:9223372036854775808", "l:x",
+    "fl:1,5", "fl:-1,5", "fl:{1,5 TO 2,5}", "fl:[* TO 0]", "fl:{* TO *}", "fl:1\u202f000", "fl:1 000",
+    "fl:1.5", "fl:3,4028236E38", "fl:{0 TO 1}",
+    "d:1,5", "d:\u22121,5", "d:-1,5", "d:{1,5 TO *}", "d:{* TO 0}", "d:1\u00a0000,25",
+    "d:1e3", "d:x",
+    "dt:\"1/2/2020\"", "dt:[\"1/1/2020\" TO \"12/31/2020\"]", "dt:{\"1/1/2020\" TO *}", "dt:{* TO \"1/1/2020\"}", "dt:1/2/2020",
+    "dt:foo", "dt:\"13/45/2020\"", "dt:\"1/2/2020x\"",
+    "x:5", "i:5 x:6", "f:[1 TO 2]"
+  };
+
+  /**
+   * The rows of the escaping: each piece after 1024 terms {@code z}, so that the boolean has one
+   * clause too many and its message prints the whole query through {@code toQueryString}; the
+   * message's 1024 {@code f:z } compressed to {@code <FILL>}.
+   */
+  static final String[] ESCAPE_PIECES = {
+    "a\\:b", "\"a:b\\\"c\"", "a\\ b", "\\+a", "\\-a", "\\@a", "and", "\\AND", "Within",
+    "within", "notx", "İNORDER", "wıthİn", "İn","a\\(b\\)", "a\\*b*", "a?\\?", "\\*a", "a\\\\b", "a\\u3000b", "a\u3000b",
+    "a\\~b", "a\\^b", "a\\/b", "a\\<b", "a\\=b", "a\\!b", "a\\[b\\]", "a\\{b\\}", "a\\>b",
+    "\u0130\\:", "\u0130\\:a", "\u0130a\\:", "a\\:\u0130", "I\u0307\\:", "\u00cc\\:", "\u00cc",
+    "I\u0300\\:", "J\u0301\\:", "\u0128\\:", "\u03a3\\:", "K\\:",
+    "(a b)", "+a -b", "a AND b", "a OR b", "NOT a", "a && b", "a^2", "a^2.5", "a^0.1", "(a b)^3",
+    "\"a b\"~3", "\"a\"", "\"a:b c\"", "a~", "a~0.5", "a~1", "a~2", "[a TO b]", "{a TO *]",
+    "[* TO *]", "[\\: TO b\\:]", "/a.b/", "/a\\/b/", "*:*", "(a b)@2", "g:a", "_plain:a",
+    "a*", "a*b?c", "f:(a b)", "((a))", "+(a b)", "-(a b)", "!a", "+(+a)", "-(-a)", "a\\ AND",
+    "fn:ordered(a b)", "\"fast car\"", "fast", "car", "the", "a b c",
+    "i:5", "i:1234", "i:[1 TO 10]", "i:[1 TO *]", "i:{* TO 5}", "l:1234567", "fl:1,5", "d:-1,25",
+    "d:{* TO 1}", "dt:\"1/2/2020\"", "dt:[\"1/1/2020\" TO \"12/31/2020\"]", "dt:[* TO \"1/1/2020\"]"
+  };
+
+  /** Escaping's configurations: the parser and {@code Locale.getDefault()}. */
+  static final String[] ESCAPE_CONFIGS = {"noanalyzer", "noanalyzer_tr", "noanalyzer_lt", "std", "syn", "prec", "points"};
+
+  /**
+   * {@code points.tsv} ({@link #POINT_QUERIES} under {@link #pointsConfigs}) and {@code
+   * escape_<config>.tsv} ({@link #ESCAPE_PIECES}), in the default zone GMT-05:00 the date format
+   * was made in.
+   */
+  static void writePoints(Path out) throws Exception {
+    java.util.TimeZone saved = java.util.TimeZone.getDefault();
+    java.util.Locale savedLocale = java.util.Locale.getDefault();
+    try {
+      java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("GMT-05:00"));
+      java.util.Locale.setDefault(java.util.Locale.US);
+      StandardQueryParser points = new StandardQueryParser(new StandardAnalyzer());
+      points.setPointsConfigMap(pointsConfigs());
+      StringBuilder rows = new StringBuilder();
+      for (String q : POINT_QUERIES) {
+        rows.append(AnalysisRows.esc(q)).append('\t').append(parseRow(points, q, null)).append('\n');
+      }
+      Files.writeString(out.resolve("points.tsv"), rows.toString(), StandardCharsets.UTF_8);
+      String fill = "z ".repeat(1024);
+      for (String config : ESCAPE_CONFIGS) {
+        StandardQueryParser p = switch (config) {
+          case "points" -> points;
+          case "noanalyzer_tr", "noanalyzer_lt" -> parser("noanalyzer");
+          default -> parser(config);
+        };
+        java.util.Locale.setDefault(switch (config) {
+          case "noanalyzer_tr" -> java.util.Locale.forLanguageTag("tr-TR");
+          case "noanalyzer_lt" -> java.util.Locale.forLanguageTag("lt");
+          case "noanalyzer" -> java.util.Locale.ROOT;
+          default -> java.util.Locale.US;
+        });
+        StringBuilder esc = new StringBuilder();
+        for (String piece : ESCAPE_PIECES) {
+          esc.append(AnalysisRows.esc(piece)).append('\t').append(parseRow(p, fill + piece, "f:z ".repeat(1024)))
+              .append('\n');
+        }
+        java.util.Locale.setDefault(java.util.Locale.US);
+        Files.writeString(out.resolve("escape_" + config + ".tsv"), esc.toString(), StandardCharsets.UTF_8);
+      }
+    } finally {
+      java.util.TimeZone.setDefault(saved);
+      java.util.Locale.setDefault(savedLocale);
+    }
+  }
+
+  /** {@code Q}, the query and its class tree, or {@code X} and the exception; {@code fill} compressed. */
+  static String parseRow(StandardQueryParser p, String q, String fill) {
+    try {
+      Query parsed = p.parse(q, "f");
+      return "Q\t" + AnalysisRows.esc(parsed.toString("f")) + "\t" + AnalysisRows.esc(GenQueryParserClassic.describe(parsed));
+    } catch (QueryNodeException | RuntimeException e) {
+      String m = e.getClass().getName() + ": " + e.getMessage();
+      if (fill != null) m = m.replace(fill, "<FILL>");
+      return "X\t" + AnalysisRows.esc(m);
+    }
   }
 
   /**
