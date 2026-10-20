@@ -1,0 +1,7 @@
+Usage: QueryDriver <topicsFile> <qrelsFile> <submissionFile> <indexDir> [querySpec]
+topicsFile: input file containing queries
+qrelsFile: input file containing relevance judgements
+submissionFile: output submission file for trec_eval
+indexDir: index directory
+querySpec: string composed of fields to use in query consisting of T=title,D=description,N=narrative:
+	example: TD (query on Title + Description). The default is T (title only)

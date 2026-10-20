@@ -17,6 +17,7 @@
 
 use std::io::Write;
 
+pub mod benchmark;
 pub mod cli;
 pub mod demo;
 pub mod luke;
@@ -36,6 +37,11 @@ pub const TOOLS: &[(&str, Tool)] = &[
         "MultiPassIndexSplitter",
         misc::multi_pass_index_splitter::main,
     ),
+    (
+        "QualityQueriesFinder",
+        benchmark::quality_utils::quality_queries_finder,
+    ),
+    ("QueryDriver", benchmark::trec::query_driver),
     ("SearchFiles", demo::search_files::main),
 ];
 

@@ -1,0 +1,340 @@
+1.   word:  4   baden
+2.   word:  4   befenn
+3.   word:  4   muki
+4.   word:  4   mulon
+5.   word:  4   nipen
+6.   word:  4   gosen
+7.   word:  4   verin
+8.   word:  4   feme
+9.   word:  4   zazann
+10.   word:  4   bedan
+11.   word:  4   fenin
+12.   word:  4   kuva
+13.   word:  4   deken
+14.   word:  4   finen
+15.   word:  4   bobi
+16.   word:  4   legenn
+17.   word:  4   lofon
+18.   word:  5   zutu
+19.   word:  5   fumo
+20.   word:  5   malin
+21.   word:  5   pitin
+22.   word:  5   gatann
+23.   word:  5   viren
+24.   word:  5   geson
+25.   word:  5   tanonn
+26.   word:  5   sofi
+27.   word:  5   peton
+28.   word:  5   nepin
+29.   word:  5   tamin
+30.   word:  5   gora
+31.   word:  5   nuno
+32.   word:  5   tomun
+33.   word:  5   roze
+34.   word:  5   dakin
+35.   word:  5   kevo
+36.   word:  5   zeti
+37.   word:  5   lodi
+38.   word:  5   poten
+39.   word:  5   lude
+40.   word:  6   ruza
+41.   word:  6   miku
+42.   word:  6   zite
+43.   word:  6   lifun
+44.   word:  6   lido
+45.   word:  6   vipa
+46.   word:  6   milan
+47.   word:  6   dalonn
+48.   word:  6   zota
+49.   word:  6   kuzen
+50.   word:  6   fomu
+51.   word:  6   zivin
+52.   word:  6   delinn
+53.   word:  6   digu
+54.   word:  7   lafen
+55.   word:  7   tela
+56.   word:  7   sefu
+57.   word:  7   gusan
+58.   word:  7   nina
+59.   word:  7   vepe
+60.   word:  7   pusu
+61.   word:  7   fima
+62.   word:  7   tuli
+63.   word:  7   sigun
+64.   word:  7   posa
+65.   word:  7   bube
+66.   word:  7   dogo
+67.   word:  7   laginn
+68.   word:  8   rizi
+69.   word:  8   kivi
+70.   word:  8   ledu
+71.   word:  8   kove
+72.   word:  8   sifo
+73.   word:  9   dugi
+74.   word:  9   geri
+75.   word:  9   vupo
+76.   word:  9   tilu
+77.   word:  10   pise
+78.   word:  10   bibo
+79.   word:  10   tolo
+80.   word:  11   gire
+
+<top>
+<num> Number: 0
+
+<title> baden pitin  pusu gire
+
+<desc> Description:
+
+
+<narr> Narrative:
+
+
+</top>
+
+<top>
+<num> Number: 1
+
+<title> befenn gatann  vepe tolo
+
+<desc> Description:
+
+
+<narr> Narrative:
+
+
+</top>
+
+<top>
+<num> Number: 2
+
+<title> muki viren  nina bibo
+
+<desc> Description:
+
+
+<narr> Narrative:
+
+
+</top>
+
+<top>
+<num> Number: 3
+
+<title> mulon geson  gusan pise
+
+<desc> Description:
+
+
+<narr> Narrative:
+
+
+</top>
+
+<top>
+<num> Number: 4
+
+<title> nipen tanonn  sefu tilu
+
+<desc> Description:
+
+
+<narr> Narrative:
+
+
+</top>
+
+<top>
+<num> Number: 5
+
+<title> gosen sofi  tela vupo
+
+<desc> Description:
+
+
+<narr> Narrative:
+
+
+</top>
+
+<top>
+<num> Number: 6
+
+<title> verin peton  lafen geri
+
+<desc> Description:
+
+
+<narr> Narrative:
+
+
+</top>
+
+<top>
+<num> Number: 7
+
+<title> feme nepin  digu dugi
+
+<desc> Description:
+
+
+<narr> Narrative:
+
+
+</top>
+
+<top>
+<num> Number: 8
+
+<title> zazann tamin  delinn sifo
+
+<desc> Description:
+
+
+<narr> Narrative:
+
+
+</top>
+
+<top>
+<num> Number: 9
+
+<title> bedan gora  zivin kove
+
+<desc> Description:
+
+
+<narr> Narrative:
+
+
+</top>
+
+<top>
+<num> Number: 10
+
+<title> fenin nuno  fomu ledu
+
+<desc> Description:
+
+
+<narr> Narrative:
+
+
+</top>
+
+<top>
+<num> Number: 11
+
+<title> kuva tomun  kuzen kivi
+
+<desc> Description:
+
+
+<narr> Narrative:
+
+
+</top>
+
+<top>
+<num> Number: 12
+
+<title> deken roze  zota rizi
+
+<desc> Description:
+
+
+<narr> Narrative:
+
+
+</top>
+
+<top>
+<num> Number: 13
+
+<title> finen dakin  dalonn laginn
+
+<desc> Description:
+
+
+<narr> Narrative:
+
+
+</top>
+
+<top>
+<num> Number: 14
+
+<title> bobi kevo  milan dogo
+
+<desc> Description:
+
+
+<narr> Narrative:
+
+
+</top>
+
+<top>
+<num> Number: 15
+
+<title> legenn zeti  vipa bube
+
+<desc> Description:
+
+
+<narr> Narrative:
+
+
+</top>
+
+<top>
+<num> Number: 16
+
+<title> lofon lodi  lido posa
+
+<desc> Description:
+
+
+<narr> Narrative:
+
+
+</top>
+
+<top>
+<num> Number: 17
+
+<title> zutu poten  lifun sigun
+
+<desc> Description:
+
+
+<narr> Narrative:
+
+
+</top>
+
+<top>
+<num> Number: 18
+
+<title> fumo lude  zite tuli
+
+<desc> Description:
+
+
+<narr> Narrative:
+
+
+</top>
+
+<top>
+<num> Number: 19
+
+<title> malin ruza  miku fima
+
+<desc> Description:
+
+
+<narr> Narrative:
+
+
+</top>
