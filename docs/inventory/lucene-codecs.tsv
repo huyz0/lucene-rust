@@ -11,15 +11,15 @@ codecs/blockterms/TermsIndexReaderBase	todo:M14	the block-terms dictionary and i
 codecs/blockterms/TermsIndexWriterBase	todo:M14	the block-terms dictionary and its fixed/variable-gap terms indexes (M14.g)
 codecs/blockterms/VariableGapTermsIndexReader	todo:M14	the block-terms dictionary and its fixed/variable-gap terms indexes (M14.g)
 codecs/blockterms/VariableGapTermsIndexWriter	todo:M14	the block-terms dictionary and its fixed/variable-gap terms indexes (M14.g)
-codecs/blocktreeords/BlockTreeOrdsPostingsFormat	todo:M14	the ord-aware block-tree terms dictionary (M14.g)
-codecs/blocktreeords/FSTOrdsOutputs	todo:M14	the ord-aware block-tree terms dictionary (M14.g)
-codecs/blocktreeords/OrdsBlockTreeTermsReader	todo:M14	the ord-aware block-tree terms dictionary (M14.g)
-codecs/blocktreeords/OrdsBlockTreeTermsWriter	todo:M14	the ord-aware block-tree terms dictionary (M14.g)
-codecs/blocktreeords/OrdsFieldReader	todo:M14	the ord-aware block-tree terms dictionary (M14.g)
-codecs/blocktreeords/OrdsIntersectTermsEnum	todo:M14	the ord-aware block-tree terms dictionary (M14.g)
-codecs/blocktreeords/OrdsIntersectTermsEnumFrame	todo:M14	the ord-aware block-tree terms dictionary (M14.g)
-codecs/blocktreeords/OrdsSegmentTermsEnum	todo:M14	the ord-aware block-tree terms dictionary (M14.g)
-codecs/blocktreeords/OrdsSegmentTermsEnumFrame	todo:M14	the ord-aware block-tree terms dictionary (M14.g)
+codecs/blocktreeords/BlockTreeOrdsPostingsFormat	ported	crates/lucene-codecs/src/blocktreeords/mod.rs::BlockTreeOrdsPostingsFormat
+codecs/blocktreeords/FSTOrdsOutputs	ported	crates/lucene-codecs/src/blocktreeords/outputs.rs::FstOrdsOutputs
+codecs/blocktreeords/OrdsBlockTreeTermsReader	ported	crates/lucene-codecs/src/blocktreeords/reader.rs::OrdsBlockTreeTermsReader
+codecs/blocktreeords/OrdsBlockTreeTermsWriter	ported	crates/lucene-codecs/src/blocktreeords/writer.rs::OrdsBlockTreeTermsWriter
+codecs/blocktreeords/OrdsFieldReader	ported	crates/lucene-codecs/src/blocktreeords/reader.rs::OrdsFieldReader
+codecs/blocktreeords/OrdsIntersectTermsEnum	ported	crates/lucene-codecs/src/blocktreeords/intersect.rs::OrdsIntersectTermsEnum
+codecs/blocktreeords/OrdsIntersectTermsEnumFrame	ported	crates/lucene-codecs/src/blocktreeords/intersect.rs::Frame
+codecs/blocktreeords/OrdsSegmentTermsEnum	ported	crates/lucene-codecs/src/blocktreeords/segment_enum.rs::OrdsSegmentTermsEnum
+codecs/blocktreeords/OrdsSegmentTermsEnumFrame	ported	crates/lucene-codecs/src/blocktreeords/segment_enum.rs::Frame
 codecs/bloom/BloomFilterFactory	ported	crates/lucene-codecs/src/bloom/mod.rs::BloomFilterFactory
 codecs/bloom/BloomFilteringPostingsFormat	ported	crates/lucene-codecs/src/bloom/mod.rs::BloomFilteringPostingsFormat
 codecs/bloom/DefaultBloomFilterFactory	ported	crates/lucene-codecs/src/bloom/mod.rs::DefaultBloomFilterFactory

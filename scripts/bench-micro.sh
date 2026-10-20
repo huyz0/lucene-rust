@@ -425,7 +425,8 @@ case "$BENCH" in
     # its own subdirectory of benchmarks/.corpus/codecs -- so far
     # BloomFilteringPostingsFormat's filtered seekExact (bloom/) and
     # FSTPostingsFormat's and DirectPostingsFormat's seekExact (memory/) and
-    # HnswBitVectorsFormat's top-10 graph search (bitvectors/).
+    # HnswBitVectorsFormat's top-10 graph search (bitvectors/) and
+    # BlockTreeOrdsPostingsFormat's seekExact by term and by ord (ords/).
     MAIN=CodecsMicro
     SRC=benchmarks/micro/java/CodecsMicro.java
     JAR_MODULES="lucene-core lucene-codecs"

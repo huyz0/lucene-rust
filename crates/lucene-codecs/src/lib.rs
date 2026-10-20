@@ -23,6 +23,7 @@ pub mod bkd_writer;
 pub mod block_packed;
 pub mod blocktree;
 mod blocktree_writer;
+pub mod blocktreeords;
 pub mod bloom;
 pub mod codec;
 pub mod codecs;

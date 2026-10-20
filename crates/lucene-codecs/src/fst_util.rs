@@ -130,6 +130,10 @@ impl<V: Clone> Arc<V> {
     pub fn arc_idx(&self) -> i32 {
         self.arc_idx
     }
+    /// `posArcsStart()`: where a fixed-length node's arcs start.
+    pub fn pos_arcs_start(&self) -> i64 {
+        self.pos_arcs_start
+    }
     fn flag(&self, bit: u8) -> bool {
         self.flags & bit != 0
     }
@@ -565,6 +569,48 @@ impl<O: FstOutputs> TypedFst<O> {
         arc.presence_index = presence_index;
         arc.flags = input.read_byte()?;
         self.read_arc(arc, input)
+    }
+
+    /// How many arcs a direct-addressing node holds: its presence bits.
+    pub(crate) fn presence_count(
+        &self,
+        arc: &Arc<O::Value>,
+        input: &mut ReverseReader<'_>,
+    ) -> Result<i32> {
+        self.bit_count(arc, input)
+    }
+
+    /// The arc in slot `presence_index` of a direct-addressing node -- the
+    /// `presence_index`-th set presence bit's label (`FST` has no such
+    /// call; it reads by label).
+    // ARITH: byte and bit indices over the node's presence table.
+    #[allow(clippy::arithmetic_side_effects)]
+    pub(crate) fn read_arc_by_presence_index(
+        &self,
+        arc: &mut Arc<O::Value>,
+        input: &mut ReverseReader<'_>,
+        presence_index: i32,
+    ) -> Result<()> {
+        input.set_position(arc.bit_table_start);
+        let mut seen = 0i32;
+        for byte_index in 0..Self::num_presence_bytes(arc.num_arcs) {
+            let mut b = input.read_byte()?;
+            let ones = b.count_ones() as i32;
+            if seen + ones > presence_index {
+                for _ in 0..presence_index - seen {
+                    b &= b - 1;
+                }
+                let range_index = byte_index as i32 * 8 + b.trailing_zeros() as i32;
+                return self.read_arc_by_direct_addressing_at(
+                    arc,
+                    input,
+                    range_index,
+                    presence_index,
+                );
+            }
+            seen += ones;
+        }
+        Err(corrupt("presence index past the node's arcs"))
     }
 
     /// `readLastArcByDirectAddressing(arc, in)`.
