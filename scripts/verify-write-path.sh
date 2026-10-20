@@ -101,6 +101,12 @@ CASES=(
   # three start terms required to enumerate exactly what this port's own
   # readers do.
   "lucene-codecs|write_memory_fixture|memory|VerifyCodecsMemory"
+  # lucene-codecs' HnswBitVectorsFormat (M14.g): two groups (default and
+  # 6/30, one field too small for a graph) opened by real Lucene's own
+  # format; every vector read back, and KnnVectorsReader.search -- Java's
+  # bit scorer walking the Rust-built graph -- required to return exactly
+  # this port's hits and score bits for 270 searches.
+  "lucene-codecs|write_bitvectors_fixture|bitvectors|VerifyCodecsBitVectors"
   # Last, and unlike every case above: a whole index written by the real
   # IndexWriter, opened by DirectoryReader and run through CheckIndex. The
   # cases above each hand Lucene one codec file with a hand-built
