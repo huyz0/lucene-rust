@@ -950,6 +950,39 @@ impl<O: FstOutputs> TypedFst<O> {
         }
         Ok(i.trailing_zeros() as i32 + (byte_index as i32) * 8)
     }
+
+    /// `BitTable.previousBitSet(bitIndex, arc, in)`
+    /// (`BitTableUtil.previousBitSet`): the last set bit before `bit`, or -1.
+    //
+    // SENTINEL: `-1` = "no present arc before `bit`"; `seekFloor`'s callers
+    // turn it into an error or keep the arc they have.
+    // ARITH: `bit >= 0` (a target index inside the node's label range), so
+    // `byte_index` counts down from `bit >> 3` and stops at 0; `31 -
+    // leading_zeros` of a non-zero byte is 0..=7.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn bit_previous_set(
+        &self,
+        bit: i32,
+        arc: &Arc<O::Value>,
+        input: &mut ReverseReader<'_>,
+    ) -> Result<i32> {
+        input.set_position(arc.bit_table_start);
+        let mut byte_index = bit >> 3;
+        input.skip_bytes(i64::from(byte_index));
+        let mask = (1i32 << (bit & 7)) - 1;
+        let mut i = i32::from(input.read_byte()?) & mask;
+        while i == 0 {
+            if byte_index == 0 {
+                return Ok(-1);
+            }
+            byte_index -= 1;
+            // The reader runs backwards: -2 steps back over the byte just
+            // read and onto the one before it in the table.
+            input.skip_bytes(-2);
+            i = i32::from(input.read_byte()?);
+        }
+        Ok(31 - i.leading_zeros() as i32 + (byte_index << 3))
+    }
 }
 
 // --- Util ------------------------------------------------------------------

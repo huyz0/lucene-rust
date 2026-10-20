@@ -114,6 +114,13 @@ CASES=(
   # (Java's seekExact(long) walking the Rust-built index's ord ranges), and
   # Terms.intersect required to enumerate exactly what this port's reader does.
   "lucene-codecs|write_blocktreeords_fixture|blocktreeords|VerifyCodecsBlockTreeOrds"
+  # lucene-codecs' UniformSplitPostingsFormat (M14.g): three groups (32/3,
+  # 8/2, and 16/3 through an XOR block encoder Java is handed too) opened by
+  # real Lucene's own format; every term walked with its docFreq/
+  # totalTermFreq and every document's postings, seekExact on every term and
+  # seekCeil just past it, and Terms.intersect required to enumerate exactly
+  # what this port's reader does.
+  "lucene-codecs|write_uniformsplit_fixture|uniformsplit|VerifyCodecsUniformSplit"
   # Last, and unlike every case above: a whole index written by the real
   # IndexWriter, opened by DirectoryReader and run through CheckIndex. The
   # cases above each hand Lucene one codec file with a hand-built
