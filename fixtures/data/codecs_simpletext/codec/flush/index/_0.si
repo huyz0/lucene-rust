@@ -1,0 +1,50 @@
+    version 10.5.0
+    min version 10.5.0
+    number of documents 150
+    uses compound file false
+    has blocks true
+    diagnostics 8
+      key timestamp
+      value 1792497435908
+      key source
+      value flush
+      key lucene.version
+      value 10.5.0
+      key os.version
+      value 6.18.33.2-microsoft-standard-WSL2
+      key os.arch
+      value amd64
+      key os
+      value Linux
+      key java.vendor
+      value Eclipse Adoptium
+      key java.runtime.version
+      value 21.0.12.1+1-LTS
+    attributes 1
+      key gen.note
+      value line\
+break \\ é
+    files 11
+      file _0.vec
+      file _0.dii
+      file _0.si
+      file _0.pst
+      file _0.tvc
+      file _0.inf
+      file _0.gri
+      file _0.fld
+      file _0.dim
+      file _0.dat
+      file _0.len
+    id [77 3a 6f 5d 78 cf 9b 14 b2 6c 13 e9 ae e8 96 a1]
+    sort 3
+      name SortField
+      type <long: "num">! missingValue=-9223372036854775808
+      bytes [3 6e 75 6d 4 4c 4f 4e 47 1 0 0 0 1 0 0 0 0 0 0 0 0 0 0 80]
+      name SortedNumericSortField
+      type <sortednumeric: "snum"> selector=MAX type=INT
+      bytes [4 73 6e 75 6d 3 49 4e 54 0 0 0 0 1 0 0 0 0 0 0 0]
+      name SortedSetSortField
+      type <sortedset: "sset">! selector=MIN
+      bytes [4 73 73 65 74 1 0 0 0 0 0 0 0 0 0 0 0]
+checksum 00000000001865112939

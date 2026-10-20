@@ -6,7 +6,41 @@
 //! Every file ends `checksum ` + the CRC32 of everything before that line,
 //! zero-padded to 20 decimal digits, + `\n`, and nothing after it.
 
+use std::collections::HashMap;
+
 use super::{corrupt, Result};
+
+/// A Java `HashMap<String, String>` the readers fill with `put`, kept in
+/// file order (Java's hash order cannot be reproduced): a repeated key keeps
+/// its first slot and takes the last value. The side index keeps each `put`
+/// constant-time, as Java's is.
+#[derive(Debug, Default)]
+pub struct OrderedMap {
+    entries: Vec<(String, String)>,
+    slots: HashMap<String, usize>,
+}
+
+impl OrderedMap {
+    /// `map.put(key, value)`.
+    pub fn put(&mut self, key: String, value: String) {
+        match self.slots.get(&key) {
+            Some(&slot) => {
+                if let Some(entry) = self.entries.get_mut(slot) {
+                    entry.1 = value;
+                }
+            }
+            None => {
+                self.slots.insert(key.clone(), self.entries.len());
+                self.entries.push((key, value));
+            }
+        }
+    }
+
+    /// The entries, in the order their keys first appeared.
+    pub fn into_entries(self) -> Vec<(String, String)> {
+        self.entries
+    }
+}
 
 /// `SimpleTextUtil.NEWLINE`.
 pub const NEWLINE: u8 = 10;
@@ -109,6 +143,13 @@ pub fn check_footer(input: &[u8], start: usize, pos: &mut usize) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// `BytesRef.toString()`: `[` then each byte as unpadded lowercase hex
+/// (`Integer.toHexString(b & 0xff)`), space-separated, then `]`.
+pub fn bytes_ref_to_string(b: &[u8]) -> String {
+    let parts: Vec<String> = b.iter().map(|x| format!("{x:x}")).collect();
+    format!("[{}]", parts.join(" "))
 }
 
 /// `SimpleTextUtil.fromBytesRefString`: the inverse of `BytesRef.toString`

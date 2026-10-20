@@ -26,6 +26,7 @@ import org.apache.lucene.codecs.lucene104.Lucene104PostingsReader;
 import org.apache.lucene.codecs.lucene104.Lucene104PostingsWriter;
 import org.apache.lucene.codecs.memory.DirectPostingsFormat;
 import org.apache.lucene.codecs.memory.FSTPostingsFormat;
+import org.apache.lucene.codecs.StoredFieldsReader;
 import org.apache.lucene.codecs.simpletext.SimpleTextCodec;
 import org.apache.lucene.codecs.uniformsplit.UniformSplitPostingsFormat;
 import org.apache.lucene.codecs.uniformsplit.sharedterms.STUniformSplitPostingsFormat;
@@ -33,6 +34,7 @@ import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.FieldType;
 import org.apache.lucene.document.KnnByteVectorField;
+import org.apache.lucene.document.StoredField;
 import org.apache.lucene.document.StringField;
 import org.apache.lucene.document.TextField;
 import org.apache.lucene.index.CodecReader;
@@ -48,6 +50,7 @@ import org.apache.lucene.index.SegmentInfo;
 import org.apache.lucene.index.SegmentInfos;
 import org.apache.lucene.index.SegmentReadState;
 import org.apache.lucene.index.SegmentWriteState;
+import org.apache.lucene.index.StoredFieldVisitor;
 import org.apache.lucene.index.Terms;
 import org.apache.lucene.index.TermsEnum;
 import org.apache.lucene.index.VectorSimilarityFunction;
@@ -99,6 +102,11 @@ import org.apache.lucene.util.BytesRef;
  * {@code Lucene104} postings; Lucene ships no postings format over this package), and the same
  * kind of {@code targets.tsv} (half present): {@code cx_bterms_seek} is {@code seekExact} on each,
  * through a {@code BlockTermsReader} opened by hand over the segment's files.
+ *
+ * <p>{@code sstored/}: 20 000 documents under {@code SimpleTextCodec} itself, each with stored
+ * values of every type (an id and ASCII text strings, an int, a long, a float, a double, binary on
+ * every fourth), and 4 000 random {@code targets.tsv} documents: {@code cx_stext_stored} visits
+ * each through the segment's {@code SimpleTextStoredFieldsReader}, hashing every value.
  *
  * <p>{@code stext/}: 50 000 documents of 1-8 skewed words ({@code w0}..{@code w2999}, freqs) in
  * {@code st}, routed to {@code SimpleTextCodec}'s postings format, and 4 000 {@code targets.tsv}
@@ -407,6 +415,141 @@ public final class CodecsMicro {
     }
   }
 
+  static final int SS_DOCS = 20_000;
+
+  /** Builds {@code sstored/}: {@code cx_stext_stored}'s documents under SimpleTextCodec. */
+  static void buildStoredText(Path dir) throws IOException {
+    Random r = new Random(0x17_5_2026_1020L);
+    IndexWriterConfig config = new IndexWriterConfig();
+    config.setCodec(new SimpleTextCodec());
+    config.setUseCompoundFile(false);
+    config.setMergePolicy(NoMergePolicy.INSTANCE);
+    config.setMaxBufferedDocs(SS_DOCS + 1);
+    config.setRAMBufferSizeMB(512);
+    try (Directory d = FSDirectory.open(dir);
+        IndexWriter w = new IndexWriter(d, config)) {
+      for (int i = 0; i < SS_DOCS; i++) {
+        Document doc = new Document();
+        doc.add(new StoredField("id", idOf(i)));
+        StringBuilder sb = new StringBuilder();
+        for (int j = 0, n = 3 + r.nextInt(10); j < n; j++) {
+          sb.append(j == 0 ? "" : " ").append('w').append(r.nextInt(5000));
+        }
+        doc.add(new StoredField("text", sb.toString()));
+        doc.add(new StoredField("int", r.nextInt()));
+        doc.add(new StoredField("long", r.nextLong()));
+        doc.add(new StoredField("float", r.nextFloat() * 1000));
+        doc.add(new StoredField("double", r.nextGaussian()));
+        if (i % 4 == 0) {
+          byte[] b = new byte[r.nextInt(17)];
+          r.nextBytes(b);
+          doc.add(new StoredField("bin", new BytesRef(b)));
+        }
+        if (i % 3 == 0) {
+          doc.add(new StoredField("text", "second line\nof " + i));
+        }
+        w.addDocument(doc);
+      }
+      w.commit();
+    }
+    List<String> targets = new ArrayList<>();
+    for (int k = 0; k < 4_000; k++) {
+      targets.add(Integer.toString(r.nextInt(SS_DOCS)));
+    }
+    Files.write(dir.resolve("targets.tsv"), targets);
+    Files.writeString(dir.resolve("built"), "");
+  }
+
+  /** {@code cx_stext_stored}'s visitor: every value hashed, strings by length and first char. */
+  static final class HashVisitor extends StoredFieldVisitor {
+    final Fnv f;
+
+    HashVisitor(Fnv f) {
+      this.f = f;
+    }
+
+    @Override
+    public Status needsField(org.apache.lucene.index.FieldInfo fi) {
+      return Status.YES;
+    }
+
+    @Override
+    public void stringField(org.apache.lucene.index.FieldInfo fi, String value) {
+      f.add(fi.number);
+      f.add(value.length());
+      f.add(value.isEmpty() ? -1 : value.charAt(0));
+    }
+
+    @Override
+    public void binaryField(org.apache.lucene.index.FieldInfo fi, byte[] value) {
+      f.add(fi.number);
+      f.add(value.length);
+      f.add(value.length == 0 ? -1 : value[0]);
+    }
+
+    @Override
+    public void intField(org.apache.lucene.index.FieldInfo fi, int value) {
+      f.add(fi.number);
+      f.add(value);
+    }
+
+    @Override
+    public void longField(org.apache.lucene.index.FieldInfo fi, long value) {
+      f.add(fi.number);
+      f.add(value);
+    }
+
+    @Override
+    public void floatField(org.apache.lucene.index.FieldInfo fi, float value) {
+      f.add(fi.number);
+      f.add(Float.floatToRawIntBits(value));
+    }
+
+    @Override
+    public void doubleField(org.apache.lucene.index.FieldInfo fi, double value) {
+      f.add(fi.number);
+      f.add(Double.doubleToRawLongBits(value));
+    }
+  }
+
+  /**
+   * {@code cx_stext_stored}: per target, {@code document(doc, visitor)} through the one segment's
+   * {@code SimpleTextStoredFieldsReader}, every value hashed.
+   */
+  static void runStoredText(Path dir) throws IOException {
+    if (!selected("cx_stext_stored")) return;
+    List<Integer> docs = new ArrayList<>();
+    for (String line : Files.readAllLines(dir.resolve("targets.tsv"))) {
+      docs.add(Integer.parseInt(line));
+    }
+    try (Directory d = FSDirectory.open(dir)) {
+      SegmentInfo si = SegmentInfos.readLatestCommit(d).info(0).info;
+      FieldInfos fis = si.getCodec().fieldInfosFormat().read(d, si, "", IOContext.DEFAULT);
+      try (StoredFieldsReader reader =
+          si.getCodec().storedFieldsFormat().fieldsReader(d, si, fis, IOContext.DEFAULT)) {
+        Op pass =
+            () -> {
+              Fnv g = new Fnv();
+              HashVisitor v = new HashVisitor(g);
+              for (int doc : docs) {
+                g.add(doc);
+                reader.document(doc, v);
+              }
+              sink += g.h;
+              return docs.size();
+            };
+        Fnv f = new Fnv();
+        HashVisitor v = new HashVisitor(f);
+        for (int doc : docs) {
+          f.add(doc);
+          reader.document(doc, v);
+        }
+        System.out.printf("#check\t%s\t%016x\t%d%n", "cx_stext_stored", f.h, docs.size());
+        measure("cx_stext_stored", pass);
+      }
+    }
+  }
+
   /** Builds {@code stext/}: {@code cx_stext_seek}'s skewed words under SimpleText. */
   static void buildSimpleText(Path dir) throws IOException {
     Random r = new Random(0x16_5_2026_1020L);
@@ -646,6 +789,10 @@ public final class CodecsMicro {
         Files.createDirectories(dir.resolve("stext"));
         buildSimpleText(dir.resolve("stext"));
       }
+      if (!Files.exists(dir.resolve("sstored").resolve("built"))) {
+        Files.createDirectories(dir.resolve("sstored"));
+        buildStoredText(dir.resolve("sstored"));
+      }
     } else {
       runBloom(dir.resolve("bloom"));
       runMemory(dir.resolve("memory"));
@@ -655,6 +802,7 @@ public final class CodecsMicro {
       runSeek(dir.resolve("stsplit"), "cx_stsplit_seek", "sb");
       runBlockTerms(dir.resolve("bterms"));
       runSimpleText(dir.resolve("stext"));
+      runStoredText(dir.resolve("sstored"));
     }
   }
 }

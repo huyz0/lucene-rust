@@ -1,0 +1,140 @@
+field sdv
+  type SORTED
+  doccount 1
+  maxvaluecount 1
+  numvalues 1
+  maxlength 2
+  pattern 0
+  ordpattern 0
+length 2
+s0
+1
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 0
+      minValue 0
+      maxValue 0
+      docCount 1
+  skipend
+field num
+  type NUMERIC
+  minalue 17
+  maxvalue 17
+  doccount 1
+  maxvaluecount 1
+  origin 17
+  pattern 0
+0
+T
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 0
+      minValue 17
+      maxValue 17
+      docCount 1
+  skipend
+field sset
+  type SORTED_SET
+  doccount 1
+  maxvaluecount 1
+  numvalues 1
+  maxlength 2
+  pattern 0
+  ordpattern X
+length 2
+v0
+0
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 0
+      minValue 0
+      maxValue 0
+      docCount 1
+  skipend
+field upd
+  type NUMERIC
+  minalue 9
+  maxvalue 9
+  doccount 1
+  maxvaluecount 1
+  origin 9
+  pattern 0
+0
+T
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 0
+      minValue 9
+      maxValue 9
+      docCount 1
+  skipend
+field parent
+  type NUMERIC
+  minalue -1
+  maxvalue -1
+  doccount 1
+  maxvaluecount 1
+  origin -1
+  pattern 0
+0
+T
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 0
+      minValue -1
+      maxValue -1
+      docCount 1
+  skipend
+field snum
+  type SORTED_NUMERIC
+  minalue 1
+  maxvalue 9
+  doccount 1
+  maxvaluecount 2
+  maxlength 10
+  pattern 00
+length 10
+[31 2c 39]
+T
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 0
+      minValue 1
+      maxValue 9
+      docCount 1
+  skipend
+field bdv
+  type BINARY
+  doccount 1
+  maxvaluecount 1
+  maxlength 5
+  pattern 0
+length 5
+[9 a]
+T
+field skip
+  type NUMERIC
+  minalue 9
+  maxvalue 9
+  doccount 1
+  maxvaluecount 1
+  origin 9
+  pattern 0
+0
+T
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 0
+      minValue 9
+      maxValue 9
+      docCount 1
+  skipend
+END
+checksum 00000000000885942081

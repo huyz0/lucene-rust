@@ -1,0 +1,444 @@
+field upd
+  type NUMERIC
+  minalue -7
+  maxvalue 178
+  doccount 90
+  maxvaluecount 1
+  origin -7
+  pattern 000
+127
+T
+007
+F
+129
+T
+007
+F
+131
+T
+007
+F
+133
+T
+007
+F
+135
+T
+007
+F
+137
+T
+007
+F
+139
+T
+007
+F
+141
+T
+007
+F
+143
+T
+007
+F
+145
+T
+007
+F
+147
+T
+007
+F
+149
+T
+007
+F
+151
+T
+007
+F
+153
+T
+007
+F
+155
+T
+007
+F
+157
+T
+007
+F
+159
+T
+007
+F
+161
+T
+007
+F
+163
+T
+007
+F
+165
+T
+007
+F
+167
+T
+007
+F
+169
+T
+007
+F
+171
+T
+007
+F
+173
+T
+007
+F
+175
+T
+007
+F
+177
+T
+007
+F
+179
+T
+007
+F
+181
+T
+007
+F
+183
+T
+007
+F
+185
+T
+007
+F
+067
+T
+007
+F
+069
+T
+007
+F
+071
+T
+007
+F
+073
+T
+007
+F
+075
+T
+007
+F
+077
+T
+007
+F
+079
+T
+007
+F
+081
+T
+007
+F
+083
+T
+007
+F
+085
+T
+007
+F
+087
+T
+007
+F
+089
+T
+007
+F
+091
+T
+007
+F
+093
+T
+007
+F
+095
+T
+007
+F
+097
+T
+007
+F
+099
+T
+007
+F
+101
+T
+007
+F
+103
+T
+007
+F
+105
+T
+007
+F
+107
+T
+007
+F
+109
+T
+007
+F
+111
+T
+007
+F
+113
+T
+007
+F
+115
+T
+007
+F
+117
+T
+007
+F
+119
+T
+007
+F
+121
+T
+007
+F
+123
+T
+007
+F
+125
+T
+007
+F
+007
+T
+007
+F
+009
+T
+007
+F
+000
+T
+007
+F
+013
+T
+007
+F
+015
+T
+007
+F
+017
+T
+007
+F
+019
+T
+007
+F
+021
+T
+007
+F
+023
+T
+007
+F
+025
+T
+007
+F
+027
+T
+007
+F
+029
+T
+007
+F
+031
+T
+007
+F
+033
+T
+007
+F
+035
+T
+007
+F
+037
+T
+007
+F
+039
+T
+007
+F
+041
+T
+007
+F
+043
+T
+007
+F
+045
+T
+007
+F
+047
+T
+007
+F
+049
+T
+007
+F
+051
+T
+007
+F
+053
+T
+007
+F
+055
+T
+007
+F
+057
+T
+007
+F
+059
+T
+007
+F
+061
+T
+007
+F
+063
+T
+007
+F
+065
+T
+007
+F
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 14
+      minValue 120
+      maxValue 134
+      docCount 8
+    interval
+      minDocID 16
+      maxDocID 30
+      minValue 136
+      maxValue 150
+      docCount 8
+    interval
+      minDocID 32
+      maxDocID 46
+      minValue 152
+      maxValue 166
+      docCount 8
+    interval
+      minDocID 48
+      maxDocID 62
+      minValue 60
+      maxValue 178
+      docCount 8
+    interval
+      minDocID 64
+      maxDocID 78
+      minValue 64
+      maxValue 78
+      docCount 8
+    interval
+      minDocID 80
+      maxDocID 94
+      minValue 80
+      maxValue 94
+      docCount 8
+    interval
+      minDocID 96
+      maxDocID 110
+      minValue 96
+      maxValue 110
+      docCount 8
+    interval
+      minDocID 112
+      maxDocID 126
+      minValue -7
+      maxValue 118
+      docCount 8
+    interval
+      minDocID 128
+      maxDocID 142
+      minValue 8
+      maxValue 22
+      docCount 8
+    interval
+      minDocID 144
+      maxDocID 158
+      minValue 24
+      maxValue 38
+      docCount 8
+    interval
+      minDocID 160
+      maxDocID 174
+      minValue 40
+      maxValue 54
+      docCount 8
+    interval
+      minDocID 176
+      maxDocID 178
+      minValue 56
+      maxValue 58
+      docCount 2
+  skipend
+END
+checksum 00000000001417806412

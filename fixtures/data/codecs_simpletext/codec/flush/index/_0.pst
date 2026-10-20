@@ -1,0 +1,5262 @@
+field attr
+  term a0
+    doc 0
+    doc 1
+    doc 2
+    doc 4
+    doc 6
+    doc 7
+    doc 9
+    doc 11
+    doc 13
+    doc 14
+    doc 15
+    doc 17
+    doc 18
+    doc 19
+    doc 22
+    doc 23
+    doc 26
+    doc 28
+    doc 30
+    doc 32
+    doc 35
+    doc 39
+    doc 42
+    doc 46
+    doc 48
+    doc 50
+    doc 51
+    doc 53
+    doc 57
+    doc 58
+    doc 61
+    doc 63
+    doc 68
+    doc 71
+    doc 74
+    doc 76
+    doc 77
+    doc 79
+    doc 82
+    doc 84
+    doc 90
+    doc 91
+    doc 92
+    doc 94
+    doc 95
+    doc 97
+    doc 101
+    doc 102
+    doc 103
+    doc 105
+    doc 106
+    doc 108
+    doc 109
+    doc 111
+    doc 112
+    doc 113
+    doc 114
+    doc 116
+    doc 117
+    doc 119
+    doc 120
+    doc 125
+    doc 127
+    doc 128
+    doc 130
+    doc 132
+    doc 133
+    doc 134
+    doc 136
+    doc 137
+    doc 140
+    doc 142
+    skipList 
+      levelLength 174
+      level 2
+        skipDoc 142
+        skipDocFP 736
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        childPointer 468
+      levelLength 494
+      level 1
+        skipDoc 46
+        skipDocFP 190
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        childPointer 415
+        skipDoc 102
+        skipDocFP 454
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        childPointer 818
+        skipDoc 142
+        skipDocFP 736
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        childPointer 1223
+      level 0
+        skipDoc 11
+        skipDocFP 21
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        skipDoc 23
+        skipDocFP 102
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        skipDoc 46
+        skipDocFP 190
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        skipDoc 63
+        skipDocFP 278
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        skipDoc 84
+        skipDocFP 366
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        skipDoc 102
+        skipDocFP 454
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        skipDoc 113
+        skipDocFP 544
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        skipDoc 128
+        skipDocFP 640
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        skipDoc 142
+        skipDocFP 736
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+  term a1
+    doc 3
+    doc 5
+    doc 8
+    doc 10
+    doc 12
+    doc 16
+    doc 20
+    doc 21
+    doc 24
+    doc 25
+    doc 27
+    doc 29
+    doc 31
+    doc 33
+    doc 34
+    doc 36
+    doc 37
+    doc 38
+    doc 40
+    doc 41
+    doc 43
+    doc 44
+    doc 45
+    doc 47
+    doc 49
+    doc 52
+    doc 54
+    doc 55
+    doc 56
+    doc 59
+    doc 60
+    doc 62
+    doc 64
+    doc 65
+    doc 66
+    doc 67
+    doc 69
+    doc 70
+    doc 72
+    doc 73
+    doc 75
+    doc 78
+    doc 80
+    doc 81
+    doc 83
+    doc 85
+    doc 86
+    doc 87
+    doc 88
+    doc 89
+    doc 93
+    doc 96
+    doc 98
+    doc 99
+    doc 100
+    doc 104
+    doc 107
+    doc 110
+    doc 115
+    doc 118
+    doc 121
+    doc 122
+    doc 123
+    doc 124
+    doc 126
+    doc 129
+    doc 131
+    doc 135
+    doc 138
+    doc 139
+    doc 141
+    doc 143
+    skipList 
+      levelLength 175
+      level 2
+        skipDoc 143
+        skipDocFP 3502
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        childPointer 470
+      levelLength 496
+      level 1
+        skipDoc 47
+        skipDocFP 2964
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        childPointer 419
+        skipDoc 87
+        skipDocFP 3228
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        childPointer 824
+        skipDoc 143
+        skipDocFP 3502
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        childPointer 1232
+      level 0
+        skipDoc 21
+        skipDocFP 2791
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        skipDoc 36
+        skipDocFP 2876
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        skipDoc 47
+        skipDocFP 2964
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        skipDoc 62
+        skipDocFP 3052
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        skipDoc 73
+        skipDocFP 3140
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        skipDoc 87
+        skipDocFP 3228
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        skipDoc 104
+        skipDocFP 3316
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        skipDoc 124
+        skipDocFP 3406
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        skipDoc 143
+        skipDocFP 3502
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+field freqs
+  term w0
+    doc 1
+      freq 1
+    doc 2
+      freq 1
+    doc 4
+      freq 1
+    doc 5
+      freq 1
+    doc 7
+      freq 1
+    doc 8
+      freq 1
+    doc 10
+      freq 1
+    doc 12
+      freq 2
+    doc 14
+      freq 1
+    doc 16
+      freq 1
+    doc 19
+      freq 1
+    doc 25
+      freq 1
+    doc 26
+      freq 1
+    doc 27
+      freq 1
+    doc 30
+      freq 1
+    doc 32
+      freq 1
+    doc 34
+      freq 1
+    doc 36
+      freq 1
+    doc 39
+      freq 1
+    doc 40
+      freq 1
+    doc 41
+      freq 1
+    doc 44
+      freq 2
+    doc 47
+      freq 1
+    doc 48
+      freq 1
+    doc 49
+      freq 1
+    doc 52
+      freq 1
+    doc 53
+      freq 1
+    doc 55
+      freq 2
+    doc 56
+      freq 1
+    doc 58
+      freq 2
+    doc 60
+      freq 1
+    doc 61
+      freq 1
+    doc 64
+      freq 1
+    doc 65
+      freq 1
+    doc 67
+      freq 2
+    doc 74
+      freq 1
+    doc 76
+      freq 1
+    doc 77
+      freq 1
+    doc 81
+      freq 1
+    doc 82
+      freq 1
+    doc 83
+      freq 1
+    doc 86
+      freq 1
+    doc 87
+      freq 1
+    doc 88
+      freq 1
+    doc 91
+      freq 1
+    doc 94
+      freq 1
+    doc 97
+      freq 1
+    doc 98
+      freq 1
+    doc 104
+      freq 1
+    doc 106
+      freq 1
+    doc 110
+      freq 1
+    doc 111
+      freq 1
+    doc 112
+      freq 2
+    doc 113
+      freq 1
+    doc 114
+      freq 2
+    doc 117
+      freq 1
+    doc 127
+      freq 2
+    doc 131
+      freq 1
+    doc 132
+      freq 1
+    doc 133
+      freq 1
+    doc 135
+      freq 1
+    doc 137
+      freq 1
+    doc 140
+      freq 1
+    skipList 
+      levelLength 334
+      level 1
+        skipDoc 48
+        skipDocFP 5959
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        childPointer 419
+        skipDoc 98
+        skipDocFP 6535
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        childPointer 824
+      level 0
+        skipDoc 12
+        skipDocFP 5581
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        skipDoc 32
+        skipDocFP 5767
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 48
+        skipDocFP 5959
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        skipDoc 61
+        skipDocFP 6151
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        skipDoc 82
+        skipDocFP 6343
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        skipDoc 98
+        skipDocFP 6535
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 117
+        skipDocFP 6727
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+  term w1
+    doc 5
+      freq 1
+    doc 6
+      freq 1
+    doc 8
+      freq 1
+    doc 9
+      freq 1
+    doc 10
+      freq 1
+    doc 13
+      freq 2
+    doc 15
+      freq 1
+    doc 17
+      freq 1
+    doc 18
+      freq 1
+    doc 24
+      freq 1
+    doc 26
+      freq 1
+    doc 28
+      freq 1
+    doc 36
+      freq 1
+    doc 37
+      freq 1
+    doc 39
+      freq 1
+    doc 40
+      freq 1
+    doc 42
+      freq 1
+    doc 46
+      freq 1
+    doc 47
+      freq 1
+    doc 48
+      freq 1
+    doc 51
+      freq 2
+    doc 57
+      freq 1
+    doc 61
+      freq 1
+    doc 62
+      freq 1
+    doc 66
+      freq 1
+    doc 68
+      freq 1
+    doc 69
+      freq 1
+    doc 70
+      freq 1
+    doc 73
+      freq 1
+    doc 74
+      freq 1
+    doc 75
+      freq 1
+    doc 78
+      freq 1
+    doc 80
+      freq 1
+    doc 84
+      freq 2
+    doc 85
+      freq 1
+    doc 89
+      freq 1
+    doc 92
+      freq 1
+    doc 95
+      freq 1
+    doc 98
+      freq 1
+    doc 99
+      freq 2
+    doc 100
+      freq 1
+    doc 101
+      freq 1
+    doc 102
+      freq 1
+    doc 105
+      freq 1
+    doc 107
+      freq 1
+    doc 108
+      freq 1
+    doc 111
+      freq 1
+    doc 115
+      freq 2
+    doc 118
+      freq 1
+    doc 121
+      freq 2
+    doc 123
+      freq 1
+    doc 125
+      freq 1
+    doc 128
+      freq 2
+    doc 129
+      freq 1
+    doc 130
+      freq 1
+    doc 131
+      freq 1
+    doc 134
+      freq 1
+    doc 136
+      freq 1
+    doc 138
+      freq 1
+    doc 139
+      freq 1
+    doc 141
+      freq 1
+    skipList 
+      levelLength 335
+      level 1
+        skipDoc 62
+        skipDocFP 8822
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        childPointer 419
+        skipDoc 115
+        skipDocFP 9398
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        childPointer 825
+      level 0
+        skipDoc 17
+        skipDocFP 8442
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        skipDoc 40
+        skipDocFP 8630
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 62
+        skipDocFP 8822
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        skipDoc 78
+        skipDocFP 9014
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 99
+        skipDocFP 9206
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        skipDoc 115
+        skipDocFP 9398
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        skipDoc 131
+        skipDocFP 9598
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+  term w2
+    doc 0
+      freq 2
+    doc 3
+      freq 2
+    doc 4
+      freq 1
+    doc 6
+      freq 1
+    doc 9
+      freq 1
+    doc 11
+      freq 1
+    doc 14
+      freq 1
+    doc 19
+      freq 1
+    doc 20
+      freq 1
+    doc 21
+      freq 2
+    doc 22
+      freq 2
+    doc 23
+      freq 1
+    doc 25
+      freq 1
+    doc 28
+      freq 1
+    doc 29
+      freq 1
+    doc 31
+      freq 1
+    doc 32
+      freq 1
+    doc 33
+      freq 1
+    doc 35
+      freq 1
+    doc 38
+      freq 1
+    doc 43
+      freq 2
+    doc 45
+      freq 1
+    doc 49
+      freq 1
+    doc 50
+      freq 1
+    doc 54
+      freq 1
+    doc 59
+      freq 1
+    doc 62
+      freq 1
+    doc 63
+      freq 1
+    doc 65
+      freq 1
+    doc 68
+      freq 1
+    doc 69
+      freq 1
+    doc 71
+      freq 1
+    doc 72
+      freq 1
+    doc 75
+      freq 1
+    doc 76
+      freq 1
+    doc 77
+      freq 1
+    doc 79
+      freq 1
+    doc 85
+      freq 1
+    doc 87
+      freq 1
+    doc 88
+      freq 1
+    doc 90
+      freq 2
+    doc 93
+      freq 1
+    doc 96
+      freq 1
+    doc 101
+      freq 1
+    doc 103
+      freq 1
+    doc 106
+      freq 1
+    doc 108
+      freq 1
+    doc 109
+      freq 1
+    doc 116
+      freq 2
+    doc 119
+      freq 1
+    doc 120
+      freq 1
+    doc 122
+      freq 1
+    doc 124
+      freq 1
+    doc 126
+      freq 1
+    doc 129
+      freq 1
+    doc 130
+      freq 1
+    doc 134
+      freq 1
+    doc 135
+      freq 1
+    doc 138
+      freq 1
+    doc 142
+      freq 1
+    doc 143
+      freq 2
+    skipList 
+      levelLength 337
+      level 1
+        skipDoc 50
+        skipDocFP 11644
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        childPointer 422
+        skipDoc 109
+        skipDocFP 12220
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        childPointer 831
+      level 0
+        skipDoc 19
+        skipDocFP 11265
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        skipDoc 31
+        skipDocFP 11452
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        skipDoc 50
+        skipDocFP 11644
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        skipDoc 71
+        skipDocFP 11836
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 88
+        skipDocFP 12028
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 109
+        skipDocFP 12220
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        skipDoc 130
+        skipDocFP 12417
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+  term w3
+    doc 27
+      freq 1
+    doc 29
+      freq 1
+    doc 34
+      freq 1
+    doc 35
+      freq 1
+    doc 41
+      freq 1
+    doc 42
+      freq 1
+    doc 63
+      freq 1
+    doc 72
+      freq 1
+    doc 73
+      freq 1
+    doc 78
+      freq 1
+    doc 86
+      freq 1
+    doc 91
+      freq 1
+    doc 95
+      freq 1
+    doc 103
+      freq 1
+    doc 122
+      freq 1
+    doc 132
+      freq 1
+    doc 136
+      freq 1
+    doc 139
+      freq 1
+    doc 140
+      freq 1
+    skipList 
+      level 0
+        skipDoc 72
+        skipDocFP 14093
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 132
+        skipDocFP 14285
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+  term w4
+    doc 17
+      freq 1
+    doc 23
+      freq 1
+    doc 30
+      freq 1
+    doc 31
+      freq 1
+    doc 45
+      freq 1
+    doc 46
+      freq 1
+    doc 50
+      freq 1
+    doc 52
+      freq 1
+    doc 56
+      freq 1
+    doc 66
+      freq 1
+    doc 70
+      freq 1
+    doc 79
+      freq 1
+    doc 92
+      freq 1
+    doc 96
+      freq 1
+    doc 102
+      freq 1
+    doc 104
+      freq 1
+    doc 113
+      freq 1
+    doc 117
+      freq 1
+    doc 124
+      freq 1
+    doc 133
+      freq 1
+    doc 141
+      freq 1
+    skipList 
+      level 0
+        skipDoc 52
+        skipDocFP 14866
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 104
+        skipDocFP 15058
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+  term w5
+    doc 2
+      freq 1
+    doc 15
+      freq 1
+    doc 16
+      freq 1
+    doc 33
+      freq 1
+    doc 38
+      freq 1
+    doc 59
+      freq 1
+    doc 60
+      freq 1
+    doc 64
+      freq 1
+    doc 82
+      freq 1
+    doc 93
+      freq 1
+    doc 97
+      freq 1
+    doc 100
+      freq 1
+    doc 105
+      freq 1
+    doc 107
+      freq 1
+    doc 109
+      freq 1
+    doc 118
+      freq 1
+    doc 120
+      freq 1
+    doc 123
+      freq 1
+    doc 125
+      freq 1
+    doc 137
+      freq 1
+    skipList 
+      level 0
+        skipDoc 64
+        skipDocFP 15688
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 118
+        skipDocFP 15879
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+  term w6
+    doc 1
+      freq 1
+    doc 7
+      freq 1
+    doc 11
+      freq 1
+    doc 18
+      freq 1
+    doc 20
+      freq 1
+    doc 24
+      freq 1
+    doc 37
+      freq 1
+    doc 53
+      freq 1
+    doc 54
+      freq 1
+    doc 57
+      freq 1
+    doc 71
+      freq 1
+    doc 80
+      freq 1
+    doc 81
+      freq 1
+    doc 83
+      freq 1
+    doc 89
+      freq 1
+    doc 94
+      freq 1
+    doc 110
+      freq 1
+    doc 119
+      freq 1
+    doc 126
+      freq 1
+    doc 142
+      freq 1
+    skipList 
+      level 0
+        skipDoc 53
+        skipDocFP 16487
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 94
+        skipDocFP 16677
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+field id
+  term id0
+    doc 114
+  term id1
+    doc 115
+  term id10
+    doc 95
+  term id100
+    doc 28
+  term id101
+    doc 29
+  term id102
+    doc 30
+  term id103
+    doc 100
+  term id104
+    doc 142
+  term id105
+    doc 67
+  term id106
+    doc 128
+  term id107
+    doc 43
+  term id108
+    doc 91
+  term id109
+    doc 70
+  term id11
+    doc 96
+  term id110
+    doc 109
+  term id111
+    doc 110
+  term id112
+    doc 111
+  term id113
+    doc 138
+  term id114
+    doc 14
+  term id115
+    doc 73
+  term id116
+    doc 23
+  term id117
+    doc 60
+  term id118
+    doc 57
+  term id119
+    doc 148
+  term id12
+    doc 97
+  term id120
+    doc 61
+  term id121
+    doc 62
+  term id122
+    doc 63
+  term id123
+    doc 52
+  term id124
+    doc 15
+  term id125
+    doc 20
+  term id126
+    doc 112
+  term id127
+    doc 121
+  term id128
+    doc 0
+  term id129
+    doc 34
+  term id13
+    doc 24
+  term id130
+    doc 92
+  term id131
+    doc 93
+  term id132
+    doc 94
+  term id133
+    doc 131
+  term id134
+    doc 101
+  term id135
+    doc 88
+  term id136
+    doc 149
+  term id137
+    doc 124
+  term id138
+    doc 137
+  term id139
+    doc 37
+  term id14
+    doc 106
+  term id140
+    doc 4
+  term id141
+    doc 5
+  term id142
+    doc 6
+  term id143
+    doc 72
+  term id144
+    doc 133
+  term id145
+    doc 123
+  term id146
+    doc 71
+  term id147
+    doc 44
+  term id148
+    doc 84
+  term id149
+    doc 143
+  term id15
+    doc 10
+  term id16
+    doc 68
+  term id17
+    doc 144
+  term id18
+    doc 113
+  term id19
+    doc 107
+  term id2
+    doc 116
+  term id20
+    doc 11
+  term id21
+    doc 12
+  term id22
+    doc 13
+  term id23
+    doc 21
+  term id24
+    doc 140
+  term id25
+    doc 66
+  term id26
+    doc 120
+  term id27
+    doc 81
+  term id28
+    doc 48
+  term id29
+    doc 69
+  term id3
+    doc 27
+  term id30
+    doc 77
+  term id31
+    doc 78
+  term id32
+    doc 79
+  term id33
+    doc 64
+  term id34
+    doc 145
+  term id35
+    doc 49
+  term id36
+    doc 26
+  term id37
+    doc 85
+  term id38
+    doc 35
+  term id39
+    doc 56
+  term id4
+    doc 17
+  term id40
+    doc 125
+  term id41
+    doc 126
+  term id42
+    doc 127
+  term id43
+    doc 99
+  term id44
+    doc 90
+  term id45
+    doc 41
+  term id46
+    doc 46
+  term id47
+    doc 38
+  term id48
+    doc 53
+  term id49
+    doc 98
+  term id5
+    doc 33
+  term id50
+    doc 134
+  term id51
+    doc 135
+  term id52
+    doc 136
+  term id53
+    doc 45
+  term id54
+    doc 2
+  term id55
+    doc 80
+  term id56
+    doc 19
+  term id57
+    doc 47
+  term id58
+    doc 130
+  term id59
+    doc 122
+  term id6
+    doc 1
+  term id60
+    doc 117
+  term id61
+    doc 118
+  term id62
+    doc 119
+  term id63
+    doc 55
+  term id64
+    doc 51
+  term id65
+    doc 3
+  term id66
+    doc 132
+  term id67
+    doc 141
+  term id68
+    doc 146
+  term id69
+    doc 83
+  term id7
+    doc 36
+  term id70
+    doc 74
+  term id71
+    doc 75
+  term id72
+    doc 76
+  term id73
+    doc 139
+  term id74
+    doc 50
+  term id75
+    doc 16
+  term id76
+    doc 18
+  term id77
+    doc 25
+  term id78
+    doc 39
+  term id79
+    doc 129
+  term id8
+    doc 108
+  term id80
+    doc 103
+  term id81
+    doc 104
+  term id82
+    doc 105
+  term id83
+    doc 54
+  term id84
+    doc 58
+  term id85
+    doc 147
+  term id86
+    doc 22
+  term id87
+    doc 86
+  term id88
+    doc 102
+  term id89
+    doc 59
+  term id9
+    doc 65
+  term id90
+    doc 7
+  term id91
+    doc 8
+  term id92
+    doc 9
+  term id93
+    doc 87
+  term id94
+    doc 42
+  term id95
+    doc 31
+  term id96
+    doc 82
+  term id97
+    doc 89
+  term id98
+    doc 32
+  term id99
+    doc 40
+field offs
+  term o0
+    doc 3
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 4
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 7
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 10
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 11
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 16
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 20
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 28
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 31
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 33
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 41
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 49
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 61
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 66
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 67
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 73
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 74
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 77
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 80
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 88
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 92
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 95
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 103
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 109
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 114
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 117
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 123
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 125
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 134
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    skipList 
+      levelLength 176
+      level 1
+        skipDoc 109
+        skipDocFP 22010
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        childPointer 423
+      level 0
+        skipDoc 28
+        skipDocFP 20829
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        skipDoc 73
+        skipDocFP 21418
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        skipDoc 109
+        skipDocFP 22010
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+  term o1
+    doc 1
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 5
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 8
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 12
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 18
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 19
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 22
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 23
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 26
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 29
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 46
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 62
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 68
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 71
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 75
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 78
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 82
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 93
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 96
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 104
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 110
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 112
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 115
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 118
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 120
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 126
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 128
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 132
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 135
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    skipList 
+      levelLength 176
+      level 1
+        skipDoc 118
+        skipDocFP 24805
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        childPointer 423
+      level 0
+        skipDoc 23
+        skipDocFP 23624
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        skipDoc 78
+        skipDocFP 24213
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        skipDoc 118
+        skipDocFP 24805
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+  term o2
+    doc 6
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 9
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 13
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 25
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 30
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 36
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 38
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 43
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 44
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 47
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 60
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 63
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 76
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 79
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 81
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 85
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 86
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 89
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 94
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 97
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 105
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 111
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 116
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 119
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 121
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 124
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 127
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 136
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 141
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    skipList 
+      levelLength 176
+      level 1
+        skipDoc 119
+        skipDocFP 27604
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        childPointer 423
+      level 0
+        skipDoc 43
+        skipDocFP 26422
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        skipDoc 85
+        skipDocFP 27012
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        skipDoc 119
+        skipDocFP 27604
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+  term o3
+    doc 0
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 21
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 24
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 27
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 32
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 35
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 39
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 45
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 48
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 52
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 53
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 54
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 55
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 57
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 64
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 72
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 84
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 87
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 91
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 99
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 100
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 102
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 108
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 113
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 130
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 131
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 137
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 138
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 139
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    skipList 
+      levelLength 176
+      level 1
+        skipDoc 113
+        skipDocFP 30403
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        childPointer 423
+      level 0
+        skipDoc 45
+        skipDocFP 29220
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        skipDoc 72
+        skipDocFP 29811
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        skipDoc 113
+        skipDocFP 30403
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+  term o4
+    doc 2
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 14
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 15
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 17
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 34
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 37
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 40
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 42
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 50
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 51
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 56
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 58
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 59
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 65
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 69
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 70
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 83
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 90
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 98
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 101
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 106
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 107
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 122
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 129
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 133
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 140
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 142
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    doc 143
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+    skipList 
+      levelLength 176
+      level 1
+        skipDoc 129
+        skipDocFP 33202
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        childPointer 423
+      level 0
+        skipDoc 42
+        skipDocFP 32019
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        skipDoc 70
+        skipDocFP 32610
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+        skipDoc 129
+        skipDocFP 33202
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+field pay
+  term p0
+    doc 1
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 2
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 5
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 7
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 10
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 12
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 14
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 16
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 26
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 27
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 30
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 34
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 39
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 40
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 41
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 44
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 47
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 52
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 53
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 55
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 56
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 58
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 60
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 61
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 64
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 65
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 67
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 76
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 77
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 81
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 82
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 83
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 86
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 87
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 88
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 91
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 94
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 97
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 104
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 110
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 112
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 113
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 114
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 117
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 127
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 132
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 133
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 135
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 137
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 140
+      freq 1
+      pos 0
+        payload \
+\\
+    skipList 
+      levelLength 337
+      level 1
+        skipDoc 61
+        skipDocFP 35678
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        childPointer 422
+        skipDoc 135
+        skipDocFP 37072
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        childPointer 832
+      level 0
+        skipDoc 16
+        skipDocFP 34754
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 44
+        skipDocFP 35214
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 61
+        skipDocFP 35678
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 83
+        skipDocFP 36142
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 110
+        skipDocFP 36606
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 135
+        skipDocFP 37072
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+  term p1
+    doc 6
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 8
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 13
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 15
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 17
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 18
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 24
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 28
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 36
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 37
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 42
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 46
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 48
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 51
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 57
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 62
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 66
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 68
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 70
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 73
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 74
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 78
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 80
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 84
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 85
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 89
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 92
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 95
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 98
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 99
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 100
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 102
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 105
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 107
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 111
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 115
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 118
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 121
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 123
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 125
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 128
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 129
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 130
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 131
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 136
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 139
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 141
+      freq 1
+      pos 0
+        payload \
+\\
+    skipList 
+      levelLength 175
+      level 1
+        skipDoc 84
+        skipDocFP 39803
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        childPointer 422
+      level 0
+        skipDoc 28
+        skipDocFP 38877
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 62
+        skipDocFP 39339
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 84
+        skipDocFP 39803
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 102
+        skipDocFP 40267
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 125
+        skipDocFP 40733
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+  term p2
+    doc 0
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 3
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 4
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 9
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 11
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 19
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 20
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 21
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 22
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 23
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 25
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 29
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 31
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 32
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 33
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 35
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 38
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 43
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 45
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 49
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 50
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 54
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 59
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 63
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 69
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 71
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 72
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 75
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 79
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 90
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 93
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 96
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 101
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 103
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 106
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 108
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 109
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 116
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 119
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 120
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 122
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 124
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 126
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 134
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 138
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 142
+      freq 1
+      pos 0
+        payload \
+\\
+    doc 143
+      freq 1
+      pos 0
+        payload \
+\\
+    skipList 
+      levelLength 175
+      level 1
+        skipDoc 63
+        skipDocFP 43459
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        childPointer 422
+      level 0
+        skipDoc 21
+        skipDocFP 42535
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 35
+        skipDocFP 42995
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 63
+        skipDocFP 43459
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 96
+        skipDocFP 43923
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 120
+        skipDocFP 44387
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+  term q
+    doc 0
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 1
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 2
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 3
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 4
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 5
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 6
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 7
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 8
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 9
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 10
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 11
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 12
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 13
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 14
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 15
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 16
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 17
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 18
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 19
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 20
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 21
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 22
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 23
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 24
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 25
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 26
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 27
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 28
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 29
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 30
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 31
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 32
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 33
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 34
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 35
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 36
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 37
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 38
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 39
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 40
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 41
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 42
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 43
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 44
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 45
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 46
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 47
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 48
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 49
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 50
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 51
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 52
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 53
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 54
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 55
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 56
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 57
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 58
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 59
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 60
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 61
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 62
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 63
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 64
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 65
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 66
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 67
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 68
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 69
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 70
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 71
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 72
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 73
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 74
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 75
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 76
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 77
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 78
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 79
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 80
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 81
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 82
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 83
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 84
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 85
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 86
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 87
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 88
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 89
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 90
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 91
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 92
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 93
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 94
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 95
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 96
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 97
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 98
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 99
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 100
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 101
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 102
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 103
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 104
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 105
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 106
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 107
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 108
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 109
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 110
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 111
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 112
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 113
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 114
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 115
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 116
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 117
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 118
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 119
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 120
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 121
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 122
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 123
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 124
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 125
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 126
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 127
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 128
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 129
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 130
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 131
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 132
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 133
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 134
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 135
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 136
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 137
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 138
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 139
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 140
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 141
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 142
+      freq 1
+      pos 1
+        payload \
+\\
+    doc 143
+      freq 1
+      pos 1
+        payload \
+\\
+    skipList 
+      levelLength 337
+      level 2
+        skipDoc 71
+        skipDocFP 49889
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        childPointer 472
+        skipDoc 143
+        skipDocFP 54101
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        childPointer 960
+      levelLength 986
+      level 1
+        skipDoc 23
+        skipDocFP 47105
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        childPointer 421
+        skipDoc 47
+        skipDocFP 48497
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        childPointer 829
+        skipDoc 71
+        skipDocFP 49889
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        childPointer 1237
+        skipDoc 95
+        skipDocFP 51281
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        childPointer 1645
+        skipDoc 119
+        skipDocFP 52685
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        childPointer 2056
+        skipDoc 143
+        skipDocFP 54101
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        childPointer 2467
+      level 0
+        skipDoc 7
+        skipDocFP 46187
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 15
+        skipDocFP 46643
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 23
+        skipDocFP 47105
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 31
+        skipDocFP 47569
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 39
+        skipDocFP 48033
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 47
+        skipDocFP 48497
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 55
+        skipDocFP 48961
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 63
+        skipDocFP 49425
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 71
+        skipDocFP 49889
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 79
+        skipDocFP 50353
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 87
+        skipDocFP 50817
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 95
+        skipDocFP 51281
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 103
+        skipDocFP 51745
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 111
+        skipDocFP 52213
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 119
+        skipDocFP 52685
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 127
+        skipDocFP 53157
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 135
+        skipDocFP 53629
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 143
+        skipDocFP 54101
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+field tv
+  term t0
+    doc 0
+      freq 1
+      pos 0
+    doc 4
+      freq 1
+      pos 0
+    doc 9
+      freq 1
+      pos 0
+    doc 11
+      freq 1
+      pos 0
+    doc 15
+      freq 1
+      pos 0
+    doc 17
+      freq 1
+      pos 0
+    doc 18
+      freq 1
+      pos 0
+    doc 19
+      freq 1
+      pos 0
+    doc 23
+      freq 1
+      pos 0
+    doc 26
+      freq 1
+      pos 0
+    doc 28
+      freq 1
+      pos 0
+    doc 48
+      freq 1
+      pos 0
+    doc 51
+      freq 1
+      pos 0
+    doc 53
+      freq 1
+      pos 0
+    doc 58
+      freq 1
+      pos 0
+    doc 61
+      freq 1
+      pos 0
+    doc 68
+      freq 1
+      pos 0
+    doc 76
+      freq 1
+      pos 0
+    doc 79
+      freq 1
+      pos 0
+    doc 82
+      freq 1
+      pos 0
+    doc 84
+      freq 1
+      pos 0
+    doc 90
+      freq 1
+      pos 0
+    doc 91
+      freq 1
+      pos 0
+    doc 94
+      freq 1
+      pos 0
+    doc 97
+      freq 1
+      pos 0
+    doc 102
+      freq 1
+      pos 0
+    doc 103
+      freq 1
+      pos 0
+    doc 108
+      freq 1
+      pos 0
+    doc 111
+      freq 1
+      pos 0
+    doc 114
+      freq 1
+      pos 0
+    doc 117
+      freq 1
+      pos 0
+    doc 125
+      freq 1
+      pos 0
+    doc 133
+      freq 1
+      pos 0
+    doc 136
+      freq 1
+      pos 0
+    doc 140
+      freq 1
+      pos 0
+    doc 142
+      freq 1
+      pos 0
+    skipList 
+      levelLength 175
+      level 1
+        skipDoc 94
+        skipDocFP 59013
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        childPointer 422
+      level 0
+        skipDoc 19
+        skipDocFP 58440
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 61
+        skipDocFP 58725
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 94
+        skipDocFP 59013
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 125
+        skipDocFP 59301
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+  term t1
+    doc 0
+      freq 1
+      pos 1
+    doc 1
+      freq 1
+      pos 1
+    doc 2
+      freq 1
+      pos 1
+    doc 3
+      freq 2
+      pos 0
+      pos 1
+    doc 4
+      freq 1
+      pos 1
+    doc 5
+      freq 2
+      pos 0
+      pos 1
+    doc 6
+      freq 1
+      pos 1
+    doc 7
+      freq 1
+      pos 1
+    doc 8
+      freq 1
+      pos 1
+    doc 9
+      freq 1
+      pos 1
+    doc 10
+      freq 1
+      pos 1
+    doc 11
+      freq 1
+      pos 1
+    doc 12
+      freq 2
+      pos 0
+      pos 1
+    doc 13
+      freq 1
+      pos 1
+    doc 14
+      freq 1
+      pos 1
+    doc 15
+      freq 1
+      pos 1
+    doc 16
+      freq 1
+      pos 1
+    doc 17
+      freq 1
+      pos 1
+    doc 18
+      freq 1
+      pos 1
+    doc 19
+      freq 1
+      pos 1
+    doc 20
+      freq 2
+      pos 0
+      pos 1
+    doc 21
+      freq 1
+      pos 1
+    doc 22
+      freq 1
+      pos 1
+    doc 23
+      freq 1
+      pos 1
+    doc 24
+      freq 2
+      pos 0
+      pos 1
+    doc 25
+      freq 2
+      pos 0
+      pos 1
+    doc 26
+      freq 1
+      pos 1
+    doc 27
+      freq 1
+      pos 1
+    doc 28
+      freq 1
+      pos 1
+    doc 29
+      freq 2
+      pos 0
+      pos 1
+    doc 30
+      freq 1
+      pos 1
+    doc 31
+      freq 1
+      pos 1
+    doc 32
+      freq 1
+      pos 1
+    doc 33
+      freq 2
+      pos 0
+      pos 1
+    doc 34
+      freq 2
+      pos 0
+      pos 1
+    doc 35
+      freq 1
+      pos 1
+    doc 36
+      freq 1
+      pos 1
+    doc 37
+      freq 1
+      pos 1
+    doc 38
+      freq 1
+      pos 1
+    doc 39
+      freq 1
+      pos 1
+    doc 40
+      freq 1
+      pos 1
+    doc 41
+      freq 2
+      pos 0
+      pos 1
+    doc 42
+      freq 1
+      pos 1
+    doc 43
+      freq 1
+      pos 1
+    doc 44
+      freq 1
+      pos 1
+    doc 45
+      freq 2
+      pos 0
+      pos 1
+    doc 46
+      freq 1
+      pos 1
+    doc 47
+      freq 2
+      pos 0
+      pos 1
+    doc 48
+      freq 1
+      pos 1
+    doc 49
+      freq 1
+      pos 1
+    doc 50
+      freq 1
+      pos 1
+    doc 51
+      freq 1
+      pos 1
+    doc 52
+      freq 1
+      pos 1
+    doc 53
+      freq 1
+      pos 1
+    doc 54
+      freq 1
+      pos 1
+    doc 55
+      freq 1
+      pos 1
+    doc 56
+      freq 1
+      pos 1
+    doc 57
+      freq 1
+      pos 1
+    doc 58
+      freq 1
+      pos 1
+    doc 59
+      freq 2
+      pos 0
+      pos 1
+    doc 60
+      freq 2
+      pos 0
+      pos 1
+    doc 61
+      freq 1
+      pos 1
+    doc 62
+      freq 2
+      pos 0
+      pos 1
+    doc 63
+      freq 1
+      pos 1
+    doc 64
+      freq 2
+      pos 0
+      pos 1
+    doc 65
+      freq 2
+      pos 0
+      pos 1
+    doc 66
+      freq 2
+      pos 0
+      pos 1
+    doc 67
+      freq 2
+      pos 0
+      pos 1
+    doc 68
+      freq 1
+      pos 1
+    doc 69
+      freq 2
+      pos 0
+      pos 1
+    doc 70
+      freq 2
+      pos 0
+      pos 1
+    doc 71
+      freq 1
+      pos 1
+    doc 72
+      freq 1
+      pos 1
+    doc 73
+      freq 1
+      pos 1
+    doc 74
+      freq 1
+      pos 1
+    doc 75
+      freq 1
+      pos 1
+    doc 76
+      freq 1
+      pos 1
+    doc 77
+      freq 1
+      pos 1
+    doc 78
+      freq 1
+      pos 1
+    doc 79
+      freq 1
+      pos 1
+    doc 80
+      freq 1
+      pos 1
+    doc 81
+      freq 1
+      pos 1
+    doc 82
+      freq 1
+      pos 1
+    doc 83
+      freq 2
+      pos 0
+      pos 1
+    doc 84
+      freq 1
+      pos 1
+    doc 85
+      freq 2
+      pos 0
+      pos 1
+    doc 86
+      freq 1
+      pos 1
+    doc 87
+      freq 2
+      pos 0
+      pos 1
+    doc 88
+      freq 1
+      pos 1
+    doc 89
+      freq 2
+      pos 0
+      pos 1
+    doc 90
+      freq 1
+      pos 1
+    doc 91
+      freq 1
+      pos 1
+    doc 92
+      freq 1
+      pos 1
+    doc 93
+      freq 1
+      pos 1
+    doc 94
+      freq 1
+      pos 1
+    doc 95
+      freq 1
+      pos 1
+    doc 96
+      freq 1
+      pos 1
+    doc 97
+      freq 1
+      pos 1
+    doc 98
+      freq 2
+      pos 0
+      pos 1
+    doc 99
+      freq 1
+      pos 1
+    doc 100
+      freq 1
+      pos 1
+    doc 101
+      freq 1
+      pos 1
+    doc 102
+      freq 1
+      pos 1
+    doc 103
+      freq 1
+      pos 1
+    doc 104
+      freq 2
+      pos 0
+      pos 1
+    doc 105
+      freq 1
+      pos 1
+    doc 106
+      freq 1
+      pos 1
+    doc 107
+      freq 1
+      pos 1
+    doc 108
+      freq 1
+      pos 1
+    doc 109
+      freq 1
+      pos 1
+    doc 110
+      freq 1
+      pos 1
+    doc 111
+      freq 1
+      pos 1
+    doc 112
+      freq 1
+      pos 1
+    doc 113
+      freq 1
+      pos 1
+    doc 114
+      freq 1
+      pos 1
+    doc 115
+      freq 2
+      pos 0
+      pos 1
+    doc 116
+      freq 1
+      pos 1
+    doc 117
+      freq 1
+      pos 1
+    doc 118
+      freq 2
+      pos 0
+      pos 1
+    doc 119
+      freq 1
+      pos 1
+    doc 120
+      freq 1
+      pos 1
+    doc 121
+      freq 1
+      pos 1
+    doc 122
+      freq 1
+      pos 1
+    doc 123
+      freq 2
+      pos 0
+      pos 1
+    doc 124
+      freq 2
+      pos 0
+      pos 1
+    doc 125
+      freq 1
+      pos 1
+    doc 126
+      freq 2
+      pos 0
+      pos 1
+    doc 127
+      freq 1
+      pos 1
+    doc 128
+      freq 1
+      pos 1
+    doc 129
+      freq 1
+      pos 1
+    doc 130
+      freq 1
+      pos 1
+    doc 131
+      freq 2
+      pos 0
+      pos 1
+    doc 132
+      freq 1
+      pos 1
+    doc 133
+      freq 1
+      pos 1
+    doc 134
+      freq 1
+      pos 1
+    doc 135
+      freq 1
+      pos 1
+    doc 136
+      freq 1
+      pos 1
+    doc 137
+      freq 1
+      pos 1
+    doc 138
+      freq 2
+      pos 0
+      pos 1
+    doc 139
+      freq 2
+      pos 0
+      pos 1
+    doc 140
+      freq 1
+      pos 1
+    doc 141
+      freq 1
+      pos 1
+    doc 142
+      freq 1
+      pos 1
+    doc 143
+      freq 2
+      pos 0
+      pos 1
+    skipList 
+      levelLength 337
+      level 2
+        skipDoc 71
+        skipDocFP 62998
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        childPointer 472
+        skipDoc 143
+        skipDocFP 65842
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        childPointer 960
+      levelLength 986
+      level 1
+        skipDoc 23
+        skipDocFP 61126
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        childPointer 421
+        skipDoc 47
+        skipDocFP 62062
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        childPointer 829
+        skipDoc 71
+        skipDocFP 62998
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        childPointer 1237
+        skipDoc 95
+        skipDocFP 63970
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        childPointer 1645
+        skipDoc 119
+        skipDocFP 64882
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        childPointer 2056
+        skipDoc 143
+        skipDocFP 65842
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        childPointer 2467
+      level 0
+        skipDoc 7
+        skipDocFP 60524
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        skipDoc 15
+        skipDocFP 60828
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        skipDoc 23
+        skipDocFP 61126
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        skipDoc 31
+        skipDocFP 61426
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        skipDoc 39
+        skipDocFP 61750
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        skipDoc 47
+        skipDocFP 62062
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        skipDoc 55
+        skipDocFP 62386
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 63
+        skipDocFP 62674
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        skipDoc 71
+        skipDocFP 62998
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        skipDoc 79
+        skipDocFP 63358
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 87
+        skipDocFP 63646
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        skipDoc 95
+        skipDocFP 63970
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        skipDoc 103
+        skipDocFP 64270
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        skipDoc 111
+        skipDocFP 64574
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        skipDoc 119
+        skipDocFP 64882
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        skipDoc 127
+        skipDocFP 65202
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        skipDoc 135
+        skipDocFP 65534
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+        skipDoc 143
+        skipDocFP 65842
+        impacts 
+          impact 
+            freq 2
+            norm 2
+        impactsEnd 
+  term t2
+    doc 1
+      freq 1
+      pos 0
+    doc 2
+      freq 1
+      pos 0
+    doc 6
+      freq 1
+      pos 0
+    doc 7
+      freq 1
+      pos 0
+    doc 13
+      freq 1
+      pos 0
+    doc 14
+      freq 1
+      pos 0
+    doc 22
+      freq 1
+      pos 0
+    doc 30
+      freq 1
+      pos 0
+    doc 32
+      freq 1
+      pos 0
+    doc 35
+      freq 1
+      pos 0
+    doc 39
+      freq 1
+      pos 0
+    doc 42
+      freq 1
+      pos 0
+    doc 46
+      freq 1
+      pos 0
+    doc 50
+      freq 1
+      pos 0
+    doc 57
+      freq 1
+      pos 0
+    doc 63
+      freq 1
+      pos 0
+    doc 71
+      freq 1
+      pos 0
+    doc 74
+      freq 1
+      pos 0
+    doc 77
+      freq 1
+      pos 0
+    doc 92
+      freq 1
+      pos 0
+    doc 95
+      freq 1
+      pos 0
+    doc 101
+      freq 1
+      pos 0
+    doc 105
+      freq 1
+      pos 0
+    doc 106
+      freq 1
+      pos 0
+    doc 109
+      freq 1
+      pos 0
+    doc 112
+      freq 1
+      pos 0
+    doc 113
+      freq 1
+      pos 0
+    doc 116
+      freq 1
+      pos 0
+    doc 119
+      freq 1
+      pos 0
+    doc 120
+      freq 1
+      pos 0
+    doc 127
+      freq 1
+      pos 0
+    doc 128
+      freq 1
+      pos 0
+    doc 130
+      freq 1
+      pos 0
+    doc 132
+      freq 1
+      pos 0
+    doc 134
+      freq 1
+      pos 0
+    doc 137
+      freq 1
+      pos 0
+    skipList 
+      levelLength 176
+      level 1
+        skipDoc 106
+        skipDocFP 70604
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        childPointer 423
+      level 0
+        skipDoc 30
+        skipDocFP 70032
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 63
+        skipDocFP 70316
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 106
+        skipDocFP 70604
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 128
+        skipDocFP 70895
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+  term t3
+    doc 8
+      freq 1
+      pos 0
+    doc 10
+      freq 1
+      pos 0
+    doc 16
+      freq 1
+      pos 0
+    doc 21
+      freq 1
+      pos 0
+    doc 27
+      freq 1
+      pos 0
+    doc 31
+      freq 1
+      pos 0
+    doc 36
+      freq 1
+      pos 0
+    doc 37
+      freq 1
+      pos 0
+    doc 38
+      freq 1
+      pos 0
+    doc 40
+      freq 1
+      pos 0
+    doc 43
+      freq 1
+      pos 0
+    doc 44
+      freq 1
+      pos 0
+    doc 49
+      freq 1
+      pos 0
+    doc 52
+      freq 1
+      pos 0
+    doc 54
+      freq 1
+      pos 0
+    doc 55
+      freq 1
+      pos 0
+    doc 56
+      freq 1
+      pos 0
+    doc 72
+      freq 1
+      pos 0
+    doc 73
+      freq 1
+      pos 0
+    doc 75
+      freq 1
+      pos 0
+    doc 78
+      freq 1
+      pos 0
+    doc 80
+      freq 1
+      pos 0
+    doc 81
+      freq 1
+      pos 0
+    doc 86
+      freq 1
+      pos 0
+    doc 88
+      freq 1
+      pos 0
+    doc 93
+      freq 1
+      pos 0
+    doc 96
+      freq 1
+      pos 0
+    doc 99
+      freq 1
+      pos 0
+    doc 100
+      freq 1
+      pos 0
+    doc 107
+      freq 1
+      pos 0
+    doc 110
+      freq 1
+      pos 0
+    doc 121
+      freq 1
+      pos 0
+    doc 122
+      freq 1
+      pos 0
+    doc 129
+      freq 1
+      pos 0
+    doc 135
+      freq 1
+      pos 0
+    doc 141
+      freq 1
+      pos 0
+    skipList 
+      levelLength 175
+      level 1
+        skipDoc 86
+        skipDocFP 72696
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        childPointer 422
+      level 0
+        skipDoc 37
+        skipDocFP 72121
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 55
+        skipDocFP 72408
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 86
+        skipDocFP 72696
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+        skipDoc 121
+        skipDocFP 72984
+        impacts 
+          impact 
+            freq 1
+            norm 2
+        impactsEnd 
+END
+checksum 00000000000603875630

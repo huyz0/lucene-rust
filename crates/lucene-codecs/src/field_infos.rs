@@ -573,6 +573,12 @@ impl FieldInfos {
         let mut soft_deletes: Option<&str> = None;
         let mut parent: Option<&str> = None;
         for (i, f) in self.fields.iter().enumerate() {
+            if f.number < 0 {
+                return Err(Error::InvalidFieldInfos(format!(
+                    "illegal field number: {} for field {}",
+                    f.number, f.name
+                )));
+            }
             for previous in &self.fields[..i] {
                 if previous.name == f.name {
                     return Err(Error::InvalidFieldInfos(format!(

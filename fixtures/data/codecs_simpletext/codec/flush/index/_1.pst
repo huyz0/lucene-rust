@@ -1,0 +1,41 @@
+field attr
+  term a1
+    doc 0
+field freqs
+  term w0
+    doc 0
+      freq 1
+  term w2
+    doc 0
+      freq 1
+field id
+  term id9
+    doc 0
+field offs
+  term o4
+    doc 0
+      freq 1
+      pos 0
+      startOffset 0
+      endOffset 2
+field pay
+  term p0
+    doc 0
+      freq 1
+      pos 0
+        payload \
+\\
+  term q
+    doc 0
+      freq 1
+      pos 1
+        payload \
+\\
+field tv
+  term t1
+    doc 0
+      freq 2
+      pos 0
+      pos 1
+END
+checksum 00000000002434478745

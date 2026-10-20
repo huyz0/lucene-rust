@@ -1,0 +1,23 @@
+field-number 21
+field-name fvec
+vector-data-offset 0
+vector-data-length 23
+vector-dimension 4
+size 1
+0
+field-number 22
+field-name bvec
+vector-data-offset 23
+vector-data-length 11
+vector-dimension 3
+size 1
+0
+field-number 23
+field-name mvec
+vector-data-offset 34
+vector-data-length 11
+vector-dimension 2
+size 1
+0
+field-number -1
+checksum 00000000002566572015

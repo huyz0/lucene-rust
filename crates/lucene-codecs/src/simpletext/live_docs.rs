@@ -43,6 +43,7 @@ pub fn live_docs_file_name(segment: &str, del_gen: i64) -> Option<String> {
 /// a `size` outside `0..=max_doc`, a doc outside `0..size` or a bad
 /// checksum; `Eof` for a short file.
 pub fn read(data: &[u8], max_doc: i32) -> Result<FixedBitSet> {
+    // Java: SimpleTextLiveDocsFormat.readLiveDocs
     let mut pos = 0usize;
     let mut scratch = Vec::new();
     let size = parse_int(read_value(data, &mut pos, &mut scratch, SIZE)?)?;
@@ -50,6 +51,8 @@ pub fn read(data: &[u8], max_doc: i32) -> Result<FixedBitSet> {
         .ok()
         .filter(|_| size <= max_doc)
         .ok_or_else(|| corrupt(format!("invalid live docs size {size} (maxDoc={max_doc})")))?;
+    // ALLOC: `size` was just checked against the caller's `max_doc`, the
+    // segment's document count, not a number the file chose.
     let mut bits = FixedBitSet::new(size);
     read_line(data, &mut pos, &mut scratch)?;
     while scratch != END {
@@ -74,6 +77,7 @@ pub fn read(data: &[u8], max_doc: i32) -> Result<FixedBitSet> {
 /// `SimpleTextLiveDocsFormat.writeLiveDocs`: the `.liv` file for `bits`
 /// (a set bit is a live document).
 pub fn write(bits: &FixedBitSet) -> Vec<u8> {
+    // Java: SimpleTextLiveDocsFormat.writeLiveDocs
     let mut out = Vec::new();
     util::write_line(&mut out, SIZE, bits.len().to_string().as_bytes());
     for i in 0..bits.len() {
@@ -85,4 +89,60 @@ pub fn write(bits: &FixedBitSet) -> Vec<u8> {
     util::write_newline(&mut out);
     util::write_checksum(&mut out);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bits() -> FixedBitSet {
+        let mut b = FixedBitSet::new(5);
+        b.set(0);
+        b.set(3);
+        b.set(4);
+        b
+    }
+
+    fn reseal(body: &str) -> Vec<u8> {
+        let mut out = body.as_bytes().to_vec();
+        util::write_checksum(&mut out);
+        out
+    }
+
+    #[test]
+    fn round_trip_and_text() {
+        let out = write(&bits());
+        let text = String::from_utf8(out.clone()).unwrap();
+        assert!(text.starts_with("size 5\n  doc 0\n  doc 3\n  doc 4\nEND\nchecksum "));
+        let back = read(&out, 5).unwrap();
+        assert_eq!(back.len(), 5);
+        assert!((0..5).all(|i| back.get(i) == bits().get(i)));
+        assert_eq!(write(&back), out);
+        assert_eq!(live_docs_file_name("_0", 1).as_deref(), Some("_0_1.liv"));
+        assert_eq!(live_docs_file_name("_0", 36).as_deref(), Some("_0_10.liv"));
+        assert_eq!(live_docs_file_name("_0", 0).as_deref(), Some("_0.liv"));
+        assert_eq!(live_docs_file_name("_0", -1), None);
+    }
+
+    #[test]
+    fn damaged_files_are_refused() {
+        for body in [
+            "size 6\n  doc 0\nEND\n",
+            "size -1\nEND\n",
+            "size x\nEND\n",
+            "size 5\n  doc 5\nEND\n",
+            "size 5\n  doc -1\nEND\n",
+            "size 5\n  dok 1\nEND\n",
+            "size 5\n  doc +1\nEND\n",
+            "sise 5\nEND\n",
+        ] {
+            assert!(read(&reseal(body), 5).is_err(), "{body}");
+        }
+        let out = write(&bits());
+        assert!(read(&out[..out.len() - 3], 5).is_err());
+        let mut flipped = out.clone();
+        flipped[8] = b'1';
+        assert!(read(&flipped, 5).is_err());
+        assert!(read(&reseal("size 5\n  doc 1\n"), 5).is_err());
+    }
 }
