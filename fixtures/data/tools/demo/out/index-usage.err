@@ -1,0 +1,4 @@
+Usage: java org.apache.lucene.demo.IndexFiles [-index INDEX_PATH] [-docs DOCS_PATH] [-update] [-knn_dict DICT_PATH]
+
+This indexes the documents in DOCS_PATH, creating a Lucene index in INDEX_PATH that can be searched with SearchFiles
+IF DICT_PATH contains a KnnVector dictionary, the index will also support KnnVector search

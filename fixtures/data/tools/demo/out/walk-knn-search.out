@@ -1,0 +1,7 @@
+Searching for: (brown fox) KnnFloatVectorQuery:contents-vector[-0.45723742,...][3]
+5 total matching documents
+1. {fixture}/docs/a.txt
+2. {fixture}/docs/b.txt
+3. {fixture}/docs/g.txt
+4. {fixture}/docs/c.txt
+5. {fixture}/docs/sub/i.txt

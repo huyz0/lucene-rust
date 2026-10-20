@@ -1,0 +1,3 @@
+Usage:	java org.apache.lucene.demo.SearchFiles [-index dir] [-field f] [-repeat n] [-queries file] [-query string] [-raw] [-paging hitsPerPage] [-knn_vector knnHits]
+
+See http://lucene.apache.org/core/9_0_0/demo/ for details.

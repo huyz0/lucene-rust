@@ -18,6 +18,7 @@
 use std::io::Write;
 
 pub mod cli;
+pub mod demo;
 pub mod misc;
 
 use cli::{Io, Tool};
@@ -26,12 +27,14 @@ use cli::{Io, Tool};
 pub const TOOLS: &[(&str, Tool)] = &[
     ("GetTermInfo", misc::get_term_info::main),
     ("HighFreqTerms", misc::high_freq_terms::main),
+    ("IndexFiles", demo::index_files::main),
     ("IndexMergeTool", misc::index_merge_tool::main),
     ("IndexSplitter", misc::index_splitter::main),
     (
         "MultiPassIndexSplitter",
         misc::multi_pass_index_splitter::main,
     ),
+    ("SearchFiles", demo::search_files::main),
 ];
 
 /// The tool called `name`.

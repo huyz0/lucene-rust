@@ -45,7 +45,7 @@ RUN mkdir -p "$LUCENE_JARS" && cd "$LUCENE_JARS" \
                 lucene-analysis-icu lucene-analysis-kuromoji lucene-analysis-nori \
                 lucene-analysis-smartcn lucene-analysis-stempel \
                 lucene-analysis-morfologik lucene-analysis-phonetic \
-                lucene-analysis-opennlp; do \
+                lucene-analysis-opennlp lucene-demo lucene-luke lucene-benchmark; do \
          curl -fsSL -O "$base/$m/$LUCENE_VERSION/$m-$LUCENE_VERSION.jar" || \
            echo "note: $m not published for $LUCENE_VERSION, skipping"; \
        done \
