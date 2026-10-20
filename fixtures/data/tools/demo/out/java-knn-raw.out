@@ -1,0 +1,7 @@
+Searching for: (+cat -sun) KnnFloatVectorQuery:contents-vector[0.12876701,...][4]
+5 total matching documents
+doc=4 score=0.9575993
+doc=7 score=0.94881874
+doc=0 score=0.9262726
+doc=1 score=0.8593433
+doc=5 score=0.6268327

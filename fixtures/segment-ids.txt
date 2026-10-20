@@ -706,6 +706,8 @@ token_attributes/flushed/_0.si ec404e8971c38c9d1061330c8be47665
 token_attributes/flushed/segments_1 ec404e8971c38c9d1061330c8be47668
 token_attributes/merged/_2.si ec404e8971c38c9d1061330c8be47671
 token_attributes/merged/segments_3 ec404e8971c38c9d1061330c8be47674
+tools/demo/index/_0.si 8d0fab216d983f9419af740fa7c3208c
+tools/demo/index/segments_1 8d0fab216d983f9419af740fa7c3208f
 tools/misc/index/_0.si 29b51789089bbef5bb6edbf4cf9124c4
 tools/misc/index/_1.si 29b51789089bbef5bb6edbf4cf9124c8
 tools/misc/index/_2.si 29b51789089bbef5bb6edbf4cf9124cc
