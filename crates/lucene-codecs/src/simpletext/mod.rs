@@ -17,6 +17,8 @@
 //!   `DecimalFormat`'s parsing in [`decimal_format`]), norms (`.len`,
 //!   [`norms`]) and term vectors (`.tvc`, [`term_vectors_writer`] and
 //!   [`term_vectors_reader`]), each module noting what it does differently;
+//! - points (`.dim`/`.dii`, [`points_writer`] with the line constants,
+//!   [`bkd_writer`], [`points_reader`], [`bkd_reader`]);
 //! - the line, escape and checksum primitives ([`util`]).
 //!
 //! # The `.pst` file
@@ -77,7 +79,18 @@
 //!   `docFreq <= 8` is the `Slow` variant) instead of `PostingsEnum`
 //!   subclasses; on a field with no terms (`TermsEnum.EMPTY`) they are
 //!   [`Error::IllegalState`], as Java's.
+//! - Points: [`points_writer::SimpleTextPointsWriter::write_field`] takes a
+//!   field's `(packedValue, docID)`s in `visitDocValues` order and its
+//!   `size()`, and builds the tree only through `SimpleTextBKDWriter.add` and
+//!   `finish`, the one path Java's `writeField` takes (its
+//!   `writeField(MutablePointTree)`, `OneDimensionBKDWriter` and
+//!   `rotateToTree` are unreachable from this codec and not ported). The tree
+//!   writer reuses [`crate::bkd_writer`]'s point stores, radix selector and
+//!   sorter; a `too many nodes` failure is [`Error::Runtime`]. The readers'
+//!   refusals of corrupt input are in [`points_reader`] and [`bkd_reader`].
 
+pub mod bkd_reader;
+pub mod bkd_writer;
 pub mod compound;
 pub mod decimal_format;
 pub mod doc_values_reader;
@@ -87,6 +100,8 @@ pub mod fields_reader;
 pub mod fields_writer;
 pub mod live_docs;
 pub mod norms;
+pub mod points_reader;
+pub mod points_writer;
 pub mod segment_info;
 pub mod skip;
 pub mod stored_fields_reader;

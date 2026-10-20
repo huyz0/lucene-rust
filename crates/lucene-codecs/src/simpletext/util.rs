@@ -145,6 +145,35 @@ pub fn check_footer(input: &[u8], start: usize, pos: &mut usize) -> Result<()> {
     Ok(())
 }
 
+/// `SimpleTextUtil.CHECKSUM.length + 21`: the checksum line's length
+/// (`checksum `, 20 digits, a newline).
+const FOOTER_LENGTH: i64 = 30;
+
+/// The readers' shared `checkIntegrity()` (doc values, points): every line
+/// up to where the checksum line must start, then the checksum.
+///
+/// # Errors
+/// `Corrupted` for a footer elsewhere or a wrong checksum.
+pub fn check_integrity(data: &[u8]) -> Result<()> {
+    let footer_start = i64::try_from(data.len())
+        .unwrap_or(i64::MAX)
+        .saturating_sub(FOOTER_LENGTH);
+    let mut scratch = Vec::new();
+    let mut pos = 0usize;
+    loop {
+        read_line(data, &mut pos, &mut scratch)?;
+        let fp = i64::try_from(pos).unwrap_or(i64::MAX);
+        if fp >= footer_start {
+            if fp != footer_start {
+                return Err(corrupt(format!(
+                    "SimpleText failure: footer does not start at expected position current={fp} vs expected={footer_start}"
+                )));
+            }
+            return check_footer(data, 0, &mut pos);
+        }
+    }
+}
+
 /// `BytesRef.toString()`: `[` then each byte as unpadded lowercase hex
 /// (`Integer.toHexString(b & 0xff)`), space-separated, then `]`.
 pub fn bytes_ref_to_string(b: &[u8]) -> String {

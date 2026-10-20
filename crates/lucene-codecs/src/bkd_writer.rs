@@ -406,7 +406,7 @@ impl MutablePointTree {
 
 /// `HeapPointWriter`: points as `packed value + big-endian doc id` records.
 #[derive(Debug)]
-struct HeapPoints {
+pub(crate) struct HeapPoints {
     block: Vec<u8>,
     size: usize,
     next_write: usize,
@@ -431,9 +431,13 @@ impl HeapPoints {
         self.block[pos..pos + self.bpd].copy_from_slice(packed_value_doc);
         self.next_write += 1;
     }
+    /// `HeapPointWriter.count()`: the records written so far.
+    pub(crate) fn count(&self) -> usize {
+        self.next_write
+    }
     // ARITH: i < size.
     #[allow(clippy::arithmetic_side_effects)]
-    fn record(&self, i: usize) -> &[u8] {
+    pub(crate) fn record(&self, i: usize) -> &[u8] {
         &self.block[i * self.bpd..(i + 1) * self.bpd]
     }
     // ARITH: i < size, k < bpd.
@@ -455,25 +459,25 @@ impl HeapPoints {
 }
 
 /// `OfflinePointWriter`: a temp file of records, closed by a codec footer.
-struct OfflinePoints {
+pub(crate) struct OfflinePoints {
     name: String,
     out: Option<FsIndexOutput>,
     count: u64,
 }
 
-enum PointStore {
+pub(crate) enum PointStore {
     Heap(HeapPoints),
     Offline(OfflinePoints),
 }
 
-type SharedStore = std::rc::Rc<std::cell::RefCell<PointStore>>;
+pub(crate) type SharedStore = std::rc::Rc<std::cell::RefCell<PointStore>>;
 
 /// `BKDRadixSelector.PathSlice`.
 #[derive(Clone)]
-struct PathSlice {
-    writer: SharedStore,
-    start: u64,
-    count: u64,
+pub(crate) struct PathSlice {
+    pub(crate) writer: SharedStore,
+    pub(crate) start: u64,
+    pub(crate) count: u64,
 }
 
 fn shared(store: PointStore) -> SharedStore {
@@ -517,6 +521,8 @@ pub struct BkdWriter<'d> {
     temp_dir: Option<&'d dyn Directory>,
     temp_prefix: String,
     next_temp: u64,
+    /// Every temp file this writer created, for [`Self::delete_temp_files`].
+    temp_files: Vec<String>,
     docs_seen: FixedBitSet,
     min_packed: Vec<u8>,
     max_packed: Vec<u8>,
@@ -565,6 +571,7 @@ impl<'d> BkdWriter<'d> {
             temp_dir,
             temp_prefix: temp_prefix.to_string(),
             next_temp: 0,
+            temp_files: Vec::new(),
             docs_seen: FixedBitSet::new(max_doc),
             min_packed: vec![0; config.packed_index_bytes_length()],
             max_packed: vec![0; config.packed_index_bytes_length()],
@@ -579,6 +586,68 @@ impl<'d> BkdWriter<'d> {
     /// The number of points written.
     pub fn point_count(&self) -> u64 {
         self.point_count
+    }
+
+    /// `SimpleTextBKDWriter`'s constructor, which forks an older
+    /// `BKDWriter`: the same `add` and `BKDRadixSelector`, under its own heap
+    /// budget (`maxPointsSortInHeap`, checked by the caller).
+    pub(crate) fn for_simple_text(
+        max_doc: usize,
+        temp_dir: Option<&'d dyn Directory>,
+        temp_prefix: &str,
+        config: BkdConfig,
+        max_points_sort_in_heap: usize,
+        total_point_count: u64,
+    ) -> Self {
+        BkdWriter {
+            config,
+            version: VERSION_CURRENT,
+            total_point_count,
+            max_points_sort_in_heap,
+            temp_dir,
+            temp_prefix: temp_prefix.to_string(),
+            next_temp: 0,
+            temp_files: Vec::new(),
+            docs_seen: FixedBitSet::new(max_doc),
+            min_packed: vec![0; config.packed_index_bytes_length()],
+            max_packed: vec![0; config.packed_index_bytes_length()],
+            point_count: 0,
+            finished: false,
+            point_writer: None,
+            common_prefix_lengths: vec![0; config.num_dims],
+            random: SplittableRandom::new(0x5eed),
+        }
+    }
+
+    /// Whether `finish` already ran.
+    pub(crate) fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    /// The per-dim minimum and maximum of the added points' index dims.
+    pub(crate) fn bounds(&self) -> (&[u8], &[u8]) {
+        (&self.min_packed, &self.max_packed)
+    }
+
+    /// `docsSeen.cardinality()`.
+    pub(crate) fn docs_seen_count(&self) -> usize {
+        self.docs_seen.cardinality()
+    }
+
+    /// The first half of `finish`: marks the writer finished, closes the
+    /// point writer and hands its points over as one slice.
+    pub(crate) fn take_points(&mut self) -> Result<PathSlice> {
+        self.finished = true;
+        let mut writer = self
+            .point_writer
+            .take()
+            .ok_or_else(|| illegal("no points"))?;
+        self.close_store(&mut writer)?;
+        Ok(PathSlice {
+            writer: shared(writer),
+            start: 0,
+            count: self.point_count,
+        })
     }
 
     // --- temp files ------------------------------------------------------
@@ -597,12 +666,28 @@ impl<'d> BkdWriter<'d> {
             let name = format!("{}_bkd_{desc}_{}.tmp", self.temp_prefix, base36(n));
             if !existing.contains(&name) {
                 let out = dir.create_output(&name)?;
+                self.temp_files.push(name.clone());
                 return Ok(OfflinePoints {
                     name,
                     out: Some(out),
                     count: 0,
                 });
             }
+        }
+    }
+
+    /// Deletes whichever of this writer's temp files still exist, ignoring
+    /// failures: the cleanup Java's `TrackingDirectoryWrapper` and `close`
+    /// do when a build fails part way.
+    pub(crate) fn delete_temp_files(&self) {
+        let (Some(dir), false) = (self.temp_dir, self.temp_files.is_empty()) else {
+            return;
+        };
+        let Ok(existing) = dir.list_all() else {
+            return;
+        };
+        for name in self.temp_files.iter().filter(|n| existing.contains(n)) {
+            let _ = dir.delete_file(name);
         }
     }
 
@@ -828,27 +913,7 @@ impl<'d> BkdWriter<'d> {
     ) -> Result<()> {
         let c = self.config;
         if num_leaves == 1 {
-            // switchToHeap when the slice lives in a temp file.
-            let is_heap = matches!(&*points.writer.borrow(), PointStore::Heap(_));
-            let (heap_rc, from, to) = if is_heap {
-                (
-                    points.writer.clone(),
-                    points.start as usize,
-                    (points.start + points.count) as usize,
-                )
-            } else {
-                let name = match &*points.writer.borrow() {
-                    PointStore::Offline(o) => o.name.clone(),
-                    PointStore::Heap(_) => unreachable!("checked above"),
-                };
-                let bytes = self.read_offline(&name, points.start, points.count)?;
-                let mut heap = HeapPoints::new(&c, points.count as usize);
-                for r in bytes.chunks(c.bytes_per_doc()) {
-                    heap.append(r);
-                }
-                self.destroy_store(&points.writer.borrow())?;
-                (shared(PointStore::Heap(heap)), 0, points.count as usize)
-            };
+            let (heap_rc, from, to) = self.switch_to_heap(&points)?;
             let mut store = heap_rc.borrow_mut();
             let PointStore::Heap(heap) = &mut *store else {
                 unreachable!("a heap store");
@@ -990,6 +1055,33 @@ impl<'d> BkdWriter<'d> {
         )?;
         parent_splits[split_dim] -= 1;
         Ok(())
+    }
+
+    /// `switchToHeap` when the slice lives in a temp file: the heap store
+    /// holding `points` and its records' range in it.
+    // ARITH: the slice's own record range.
+    #[allow(clippy::arithmetic_side_effects)]
+    pub(crate) fn switch_to_heap(&self, points: &PathSlice) -> Result<(SharedStore, usize, usize)> {
+        let c = self.config;
+        let is_heap = matches!(&*points.writer.borrow(), PointStore::Heap(_));
+        if is_heap {
+            return Ok((
+                points.writer.clone(),
+                points.start as usize,
+                (points.start + points.count) as usize,
+            ));
+        }
+        let name = match &*points.writer.borrow() {
+            PointStore::Offline(o) => o.name.clone(),
+            PointStore::Heap(_) => unreachable!("checked above"),
+        };
+        let bytes = self.read_offline(&name, points.start, points.count)?;
+        let mut heap = HeapPoints::new(&c, points.count as usize);
+        for r in bytes.chunks(c.bytes_per_doc()) {
+            heap.append(r);
+        }
+        self.destroy_store(&points.writer.borrow())?;
+        Ok((shared(PointStore::Heap(heap)), 0, points.count as usize))
     }
 
     /// `computePackedValueBounds(PathSlice, ...)`.
@@ -1199,7 +1291,7 @@ impl<'d> BkdWriter<'d> {
     /// `BKDRadixSelector.heapRadixSort`.
     // ARITH: key offsets.
     #[allow(clippy::arithmetic_side_effects)]
-    fn heap_radix_sort(
+    pub(crate) fn heap_radix_sort(
         &self,
         heap: &mut HeapPoints,
         from: usize,
@@ -1241,7 +1333,7 @@ impl<'d> BkdWriter<'d> {
     /// halves.
     // ARITH: point counts of the slice.
     #[allow(clippy::arithmetic_side_effects)]
-    fn select(
+    pub(crate) fn select(
         &mut self,
         points: PathSlice,
         from: u64,

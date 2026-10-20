@@ -413,7 +413,7 @@ fn damaged_field_infos_are_refused() {
     for (from, to) in [
         ("  number 1\n", "  number 0\n"),
         ("  index options DOCS\n", "  index options DOCZ\n"),
-        ("number of fields 38\n", "number of fields 39\n"),
+        ("number of fields 50\n", "number of fields 51\n"),
         ("  vector similarity COSINE\n", "  vector similarity COS\n"),
     ] {
         assert!(b.contains(from), "{from}");

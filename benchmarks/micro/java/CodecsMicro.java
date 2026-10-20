@@ -6,11 +6,14 @@ import org.apache.lucene.analysis.tokenattributes.PayloadAttribute;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.HexFormat;
 import java.util.Random;
 import org.apache.lucene.codecs.DocValuesProducer;
+import org.apache.lucene.codecs.PointsReader;
+import org.apache.lucene.codecs.PointsWriter;
 import org.apache.lucene.codecs.FieldsConsumer;
 import org.apache.lucene.codecs.FieldsProducer;
 import org.apache.lucene.codecs.KnnVectorsFormat;
@@ -39,6 +42,7 @@ import org.apache.lucene.codecs.uniformsplit.sharedterms.STUniformSplitPostingsF
 import org.apache.lucene.document.BinaryDocValuesField;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
+import org.apache.lucene.document.IntPoint;
 import org.apache.lucene.document.FieldType;
 import org.apache.lucene.document.KnnByteVectorField;
 import org.apache.lucene.document.NumericDocValuesField;
@@ -57,6 +61,7 @@ import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.NoMergePolicy;
+import org.apache.lucene.index.PointValues;
 import org.apache.lucene.index.PostingsEnum;
 import org.apache.lucene.index.SegmentInfo;
 import org.apache.lucene.index.SegmentInfos;
@@ -71,10 +76,13 @@ import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.TopKnnCollector;
+import org.apache.lucene.store.ByteBuffersDirectory;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.store.IOContext;
+import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.InfoStream;
 
 /**
  * Java side of the lucene-codecs benchmark pair (M14.g); the Rust side is {@code
@@ -137,6 +145,13 @@ import org.apache.lucene.util.BytesRef;
  * (1-4 of 50 values, no positions), and 2 000 random {@code targets.tsv} documents: {@code
  * cx_stext_tv} is {@code get(doc)} on each through the segment's {@code
  * SimpleTextTermVectorsReader}, every field, term, position, offset and payload hashed.
+ *
+ * <p>{@code spts/}: 20 000 documents under {@code SimpleTextCodec}, each with 1-3 two-dimensional
+ * {@code IntPoint}s in {@code p} (a multi-leaf tree), and 300 random {@code boxes.tsv} boxes:
+ * {@code cx_stext_points} is {@code intersect} with each through the segment's {@code
+ * SimpleTextPointsReader}, hashing every doc handed over inside the box; {@code
+ * cx_stext_points_write} rebuilds its {@code .dim}/{@code .dii} from that reader through {@code
+ * SimpleTextPointsWriter}, the bytes hashed.
  */
 public final class CodecsMicro {
   static long warmupMs = Long.getLong("warmupMs", 1500);
@@ -577,6 +592,182 @@ public final class CodecsMicro {
               tvPass(reader, docs, g);
               sink += g.h;
               return docs.size();
+            });
+      }
+    }
+  }
+
+  /** Builds {@code spts/}: {@code cx_stext_points}'s documents and boxes under SimpleTextCodec. */
+  static void buildPointsText(Path dir) throws IOException {
+    Random r = new Random(0x9_2026_1021L);
+    IndexWriterConfig config = new IndexWriterConfig();
+    config.setCodec(new SimpleTextCodec());
+    config.setUseCompoundFile(false);
+    config.setMergePolicy(NoMergePolicy.INSTANCE);
+    config.setMaxBufferedDocs(SS_DOCS + 1);
+    config.setRAMBufferSizeMB(512);
+    try (Directory d = FSDirectory.open(dir);
+        IndexWriter w = new IndexWriter(d, config)) {
+      for (int i = 0; i < SS_DOCS; i++) {
+        Document doc = new Document();
+        for (int j = 0, n = 1 + r.nextInt(3); j < n; j++) {
+          doc.add(new IntPoint("p", r.nextInt(1_000_000), r.nextInt(1_000_000) - 500_000));
+        }
+        w.addDocument(doc);
+      }
+      w.commit();
+    }
+    List<String> boxes = new ArrayList<>();
+    HexFormat hex = HexFormat.of();
+    for (int i = 0; i < 300; i++) {
+      byte[] lo = new byte[8];
+      byte[] hi = new byte[8];
+      int x = r.nextInt(1_000_000);
+      int y = r.nextInt(1_000_000) - 500_000;
+      IntPoint.encodeDimension(x, lo, 0);
+      IntPoint.encodeDimension(y, lo, 4);
+      IntPoint.encodeDimension(x + r.nextInt(150_000), hi, 0);
+      IntPoint.encodeDimension(y + r.nextInt(150_000), hi, 4);
+      boxes.add(hex.formatHex(lo) + "\t" + hex.formatHex(hi));
+    }
+    Files.write(dir.resolve("boxes.tsv"), boxes);
+    Files.writeString(dir.resolve("built"), "");
+  }
+
+  /** {@code cx_stext_points}'s visitor: docs inside the box hashed, as Rust's {@code BoxHash}. */
+  static final class BoxHash implements PointValues.IntersectVisitor {
+    final byte[] lo;
+    final byte[] hi;
+    final Fnv f;
+    long n;
+
+    BoxHash(byte[] lo, byte[] hi, Fnv f) {
+      this.lo = lo;
+      this.hi = hi;
+      this.f = f;
+    }
+
+    @Override
+    public void visit(int doc) {
+      f.add(doc);
+      n++;
+    }
+
+    @Override
+    public void visit(int doc, byte[] packed) {
+      for (int o = 0; o < 8; o += 4) {
+        if (Arrays.compareUnsigned(packed, o, o + 4, lo, o, o + 4) < 0
+            || Arrays.compareUnsigned(packed, o, o + 4, hi, o, o + 4) > 0) {
+          return;
+        }
+      }
+      f.add(doc);
+      n++;
+    }
+
+    @Override
+    public PointValues.Relation compare(byte[] min, byte[] max) {
+      boolean crosses = false;
+      for (int o = 0; o < 8; o += 4) {
+        if (Arrays.compareUnsigned(min, o, o + 4, hi, o, o + 4) > 0
+            || Arrays.compareUnsigned(max, o, o + 4, lo, o, o + 4) < 0) {
+          return PointValues.Relation.CELL_OUTSIDE_QUERY;
+        }
+        crosses |=
+            Arrays.compareUnsigned(min, o, o + 4, lo, o, o + 4) < 0
+                || Arrays.compareUnsigned(max, o, o + 4, hi, o, o + 4) > 0;
+      }
+      return crosses
+          ? PointValues.Relation.CELL_CROSSES_QUERY
+          : PointValues.Relation.CELL_INSIDE_QUERY;
+    }
+  }
+
+  /** One {@code cx_stext_points} pass: every box intersected; docs handed over inside. */
+  static long pointsPass(PointValues v, List<byte[][]> boxes, Fnv f) throws IOException {
+    long n = 0;
+    for (byte[][] box : boxes) {
+      BoxHash b = new BoxHash(box[0], box[1], f);
+      v.intersect(b);
+      n += b.n;
+    }
+    return n;
+  }
+
+  /** {@code cx_stext_points}: {@link #pointsPass} through the one segment's points reader. */
+  static void runPointsText(Path dir) throws IOException {
+    if (!selected("cx_stext_points")) return;
+    HexFormat hex = HexFormat.of();
+    List<byte[][]> boxes = new ArrayList<>();
+    for (String line : Files.readAllLines(dir.resolve("boxes.tsv"))) {
+      String[] t = line.split("\t");
+      boxes.add(new byte[][] {hex.parseHex(t[0]), hex.parseHex(t[1])});
+    }
+    try (Directory d = FSDirectory.open(dir)) {
+      SegmentInfo si = SegmentInfos.readLatestCommit(d).info(0).info;
+      FieldInfos fis = si.getCodec().fieldInfosFormat().read(d, si, "", IOContext.DEFAULT);
+      try (PointsReader p =
+          si.getCodec()
+              .pointsFormat()
+              .fieldsReader(new SegmentReadState(d, si, fis, IOContext.DEFAULT))) {
+        PointValues v = p.getValues("p");
+        Fnv f = new Fnv();
+        long n = pointsPass(v, boxes, f);
+        System.out.printf("#check\t%s\t%016x\t%d%n", "cx_stext_points", f.h, n);
+        measure(
+            "cx_stext_points",
+            () -> {
+              Fnv g = new Fnv();
+              long c = pointsPass(v, boxes, g);
+              sink += g.h;
+              return c;
+            });
+      }
+    }
+  }
+
+  /** One {@code cx_stext_points_write} build: field {@code p} of {@code p} written into {@code out}. */
+  static void pointsWrite(SegmentInfo si, FieldInfos fis, PointsReader p, Directory out)
+      throws IOException {
+    SegmentWriteState state =
+        new SegmentWriteState(InfoStream.NO_OUTPUT, out, si, fis, null, IOContext.DEFAULT);
+    try (PointsWriter w = si.getCodec().pointsFormat().fieldsWriter(state)) {
+      w.writeField(fis.fieldInfo("p"), p);
+      w.finish();
+    }
+  }
+
+  /** {@code cx_stext_points_write}: the one segment's points rebuilt; both files' bytes hashed. */
+  static void runPointsTextWrite(Path dir) throws IOException {
+    if (!selected("cx_stext_points_write")) return;
+    try (Directory d = FSDirectory.open(dir)) {
+      SegmentInfo si = SegmentInfos.readLatestCommit(d).info(0).info;
+      FieldInfos fis = si.getCodec().fieldInfosFormat().read(d, si, "", IOContext.DEFAULT);
+      try (PointsReader p =
+          si.getCodec()
+              .pointsFormat()
+              .fieldsReader(new SegmentReadState(d, si, fis, IOContext.DEFAULT))) {
+        Fnv f = new Fnv();
+        long n = 0;
+        try (Directory out = new ByteBuffersDirectory()) {
+          pointsWrite(si, fis, p, out);
+          for (String ext : new String[] {".dim", ".dii"}) {
+            try (IndexInput in = out.openInput(si.name + ext, IOContext.DEFAULT)) {
+              for (long i = 0; i < in.length(); i++) {
+                f.add(in.readByte());
+              }
+              n += in.length();
+            }
+          }
+        }
+        System.out.printf("#check\t%s\t%016x\t%d%n", "cx_stext_points_write", f.h, n);
+        measure(
+            "cx_stext_points_write",
+            () -> {
+              try (Directory out = new ByteBuffersDirectory()) {
+                pointsWrite(si, fis, p, out);
+                return out.fileLength(si.name + ".dim") + out.fileLength(si.name + ".dii");
+              }
             });
       }
     }
@@ -1078,6 +1269,10 @@ public final class CodecsMicro {
         Files.createDirectories(dir.resolve("stv"));
         buildTermVectorsText(dir.resolve("stv"));
       }
+      if (!Files.exists(dir.resolve("spts").resolve("built"))) {
+        Files.createDirectories(dir.resolve("spts"));
+        buildPointsText(dir.resolve("spts"));
+      }
     } else {
       runBloom(dir.resolve("bloom"));
       runMemory(dir.resolve("memory"));
@@ -1090,6 +1285,8 @@ public final class CodecsMicro {
       runStoredText(dir.resolve("sstored"));
       runDocValuesText(dir.resolve("sdv"));
       runTermVectorsText(dir.resolve("stv"));
+      runPointsText(dir.resolve("spts"));
+      runPointsTextWrite(dir.resolve("spts"));
     }
   }
 }
