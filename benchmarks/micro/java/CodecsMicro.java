@@ -45,6 +45,7 @@ import org.apache.lucene.document.Field;
 import org.apache.lucene.document.IntPoint;
 import org.apache.lucene.document.FieldType;
 import org.apache.lucene.document.KnnByteVectorField;
+import org.apache.lucene.document.KnnFloatVectorField;
 import org.apache.lucene.document.NumericDocValuesField;
 import org.apache.lucene.document.SortedDocValuesField;
 import org.apache.lucene.document.SortedNumericDocValuesField;
@@ -152,6 +153,12 @@ import org.apache.lucene.util.InfoStream;
  * SimpleTextPointsReader}, hashing every doc handed over inside the box; {@code
  * cx_stext_points_write} rebuilds its {@code .dim}/{@code .dii} from that reader through {@code
  * SimpleTextPointsWriter}, the bytes hashed.
+ *
+ * <p>{@code sknn/}: 3 000 documents under {@code SimpleTextCodec}, each with a 16-dimensional
+ * EUCLIDEAN {@code KnnFloatVectorField} {@code v} of integers in [-8, 8], and 50 random {@code
+ * queries.tsv} targets: {@code cx_stext_knn} is a top-10 exhaustive {@code search} with each
+ * through the segment's {@code SimpleTextKnnVectorsReader} (which parses every vector of the
+ * field per search), every hit's doc and score bits hashed.
  */
 public final class CodecsMicro {
   static long warmupMs = Long.getLong("warmupMs", 1500);
@@ -1222,6 +1229,87 @@ public final class CodecsMicro {
     measure(name, op);
   }
 
+  static final int KNN_DOCS = 3_000;
+
+  /** Builds {@code sknn/}: {@code cx_stext_knn}'s vectors and queries under SimpleTextCodec. */
+  static void buildKnnText(Path dir) throws IOException {
+    Random r = new Random(0x9_2026_1022L);
+    IndexWriterConfig config = new IndexWriterConfig();
+    config.setCodec(new SimpleTextCodec());
+    config.setUseCompoundFile(false);
+    config.setMergePolicy(NoMergePolicy.INSTANCE);
+    config.setMaxBufferedDocs(KNN_DOCS + 1);
+    config.setRAMBufferSizeMB(512);
+    try (Directory d = FSDirectory.open(dir);
+        IndexWriter w = new IndexWriter(d, config)) {
+      for (int i = 0; i < KNN_DOCS; i++) {
+        float[] v = new float[16];
+        for (int j = 0; j < v.length; j++) v[j] = r.nextInt(17) - 8;
+        Document doc = new Document();
+        doc.add(new KnnFloatVectorField("v", v, VectorSimilarityFunction.EUCLIDEAN));
+        w.addDocument(doc);
+      }
+      w.commit();
+    }
+    List<String> queries = new ArrayList<>();
+    for (int i = 0; i < 50; i++) {
+      StringBuilder sb = new StringBuilder();
+      for (int j = 0; j < 16; j++) {
+        sb.append(String.format("%08x", Float.floatToRawIntBits(r.nextInt(17) - 8)));
+      }
+      queries.add(sb.toString());
+    }
+    Files.write(dir.resolve("queries.tsv"), queries);
+    Files.writeString(dir.resolve("built"), "");
+  }
+
+  /** One {@code cx_stext_knn} pass: a top-10 search per query, each hit's doc and score hashed. */
+  static long knnPass(KnnVectorsReader kr, List<float[]> queries, int maxDoc, Fnv f)
+      throws IOException {
+    for (float[] q : queries) {
+      TopKnnCollector c = new TopKnnCollector(10, Integer.MAX_VALUE);
+      kr.search("v", q, c, AcceptDocs.fromLiveDocs(null, maxDoc));
+      for (ScoreDoc sd : c.topDocs().scoreDocs) {
+        f.add(sd.doc);
+        f.add(Float.floatToRawIntBits(sd.score));
+      }
+    }
+    return queries.size();
+  }
+
+  /** {@code cx_stext_knn}: {@link #knnPass} through the one segment's vectors reader. */
+  static void runKnnText(Path dir) throws IOException {
+    if (!selected("cx_stext_knn")) return;
+    List<float[]> queries = new ArrayList<>();
+    for (String line : Files.readAllLines(dir.resolve("queries.tsv"))) {
+      float[] q = new float[line.length() / 8];
+      for (int j = 0; j < q.length; j++) {
+        q[j] = Float.intBitsToFloat(Integer.parseUnsignedInt(line.substring(8 * j, 8 * j + 8), 16));
+      }
+      queries.add(q);
+    }
+    try (Directory d = FSDirectory.open(dir)) {
+      SegmentInfo si = SegmentInfos.readLatestCommit(d).info(0).info;
+      FieldInfos fis = si.getCodec().fieldInfosFormat().read(d, si, "", IOContext.DEFAULT);
+      try (KnnVectorsReader kr =
+          si.getCodec()
+              .knnVectorsFormat()
+              .fieldsReader(new SegmentReadState(d, si, fis, IOContext.DEFAULT))) {
+        Fnv f = new Fnv();
+        knnPass(kr, queries, si.maxDoc(), f);
+        System.out.printf("#check\t%s\t%016x\t%d%n", "cx_stext_knn", f.h, queries.size());
+        measure(
+            "cx_stext_knn",
+            () -> {
+              Fnv g = new Fnv();
+              long c = knnPass(kr, queries, si.maxDoc(), g);
+              sink += g.h;
+              return c;
+            });
+      }
+    }
+  }
+
   public static void main(String[] args) throws IOException {
     Path dir = Path.of(args[1]);
     if (args[0].equals("build")) {
@@ -1273,6 +1361,10 @@ public final class CodecsMicro {
         Files.createDirectories(dir.resolve("spts"));
         buildPointsText(dir.resolve("spts"));
       }
+      if (!Files.exists(dir.resolve("sknn").resolve("built"))) {
+        Files.createDirectories(dir.resolve("sknn"));
+        buildKnnText(dir.resolve("sknn"));
+      }
     } else {
       runBloom(dir.resolve("bloom"));
       runMemory(dir.resolve("memory"));
@@ -1287,6 +1379,7 @@ public final class CodecsMicro {
       runTermVectorsText(dir.resolve("stv"));
       runPointsText(dir.resolve("spts"));
       runPointsTextWrite(dir.resolve("spts"));
+      runKnnText(dir.resolve("sknn"));
     }
   }
 }

@@ -147,7 +147,7 @@ pub fn check_footer(input: &[u8], start: usize, pos: &mut usize) -> Result<()> {
 
 /// `SimpleTextUtil.CHECKSUM.length + 21`: the checksum line's length
 /// (`checksum `, 20 digits, a newline).
-const FOOTER_LENGTH: i64 = 30;
+pub(crate) const FOOTER_LENGTH: i64 = 30;
 
 /// The readers' shared `checkIntegrity()` (doc values, points): every line
 /// up to where the checksum line must start, then the checksum.

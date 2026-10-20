@@ -1,4 +1,4 @@
-number of fields 40
+number of fields 46
   name id
   number 0
   index options DOCS
@@ -690,8 +690,116 @@ number of fields 40
   vector similarity EUCLIDEAN
   soft-deletes false
   parent false
-  name dvsnum
+  name f1euc
+  number 41
+  index options NONE
+  term vectors false
+  payloads false
+  norms true
+  doc values NONE
+  doc values skip indexNONE
+  doc values gen -1
+  attributes 0
+  data dimensional count 0
+  index dimensional count 0
+  dimensional num bytes 0
+  vector number of dimensions 1
+  vector encoding FLOAT32
+  vector similarity EUCLIDEAN
+  soft-deletes false
+  parent false
+  name feuc
   number 42
+  index options NONE
+  term vectors false
+  payloads false
+  norms true
+  doc values NONE
+  doc values skip indexNONE
+  doc values gen -1
+  attributes 0
+  data dimensional count 0
+  index dimensional count 0
+  dimensional num bytes 0
+  vector number of dimensions 5
+  vector encoding FLOAT32
+  vector similarity EUCLIDEAN
+  soft-deletes false
+  parent false
+  name fbig
+  number 45
+  index options NONE
+  term vectors false
+  payloads false
+  norms true
+  doc values NONE
+  doc values skip indexNONE
+  doc values gen -1
+  attributes 0
+  data dimensional count 0
+  index dimensional count 0
+  dimensional num bytes 0
+  vector number of dimensions 48
+  vector encoding FLOAT32
+  vector similarity EUCLIDEAN
+  soft-deletes false
+  parent false
+  name beuc
+  number 46
+  index options NONE
+  term vectors false
+  payloads false
+  norms true
+  doc values NONE
+  doc values skip indexNONE
+  doc values gen -1
+  attributes 0
+  data dimensional count 0
+  index dimensional count 0
+  dimensional num bytes 0
+  vector number of dimensions 6
+  vector encoding BYTE
+  vector similarity EUCLIDEAN
+  soft-deletes false
+  parent false
+  name bcos
+  number 47
+  index options NONE
+  term vectors false
+  payloads false
+  norms true
+  doc values NONE
+  doc values skip indexNONE
+  doc values gen -1
+  attributes 0
+  data dimensional count 0
+  index dimensional count 0
+  dimensional num bytes 0
+  vector number of dimensions 2
+  vector encoding BYTE
+  vector similarity COSINE
+  soft-deletes false
+  parent false
+  name bmip
+  number 48
+  index options NONE
+  term vectors false
+  payloads false
+  norms true
+  doc values NONE
+  doc values skip indexNONE
+  doc values gen -1
+  attributes 0
+  data dimensional count 0
+  index dimensional count 0
+  dimensional num bytes 0
+  vector number of dimensions 4
+  vector encoding BYTE
+  vector similarity MAXIMUM_INNER_PRODUCT
+  soft-deletes false
+  parent false
+  name dvsnum
+  number 50
   index options NONE
   term vectors false
   payloads false
@@ -709,7 +817,7 @@ number of fields 40
   soft-deletes false
   parent false
   name parent
-  number 43
+  number 51
   index options NONE
   term vectors false
   payloads false
@@ -726,4 +834,4 @@ number of fields 40
   vector similarity EUCLIDEAN
   soft-deletes false
   parent true
-checksum 00000000000739526749
+checksum 00000000003041938308
