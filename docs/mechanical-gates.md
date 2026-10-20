@@ -706,6 +706,31 @@ the virtual disk's high-water mark when the engine is stopped (the file is
 measured, not the data inside it). Thresholds are ceilings chosen for a 931 GB
 drive; lower the ceilings, do not set `PREFLIGHT=0`, on a smaller one.
 
+### One job at a time
+
+`docker-test.sh` also serialises its containers across every checkout and
+session on the machine. Two concurrent runs share the `lucene-rust-target`
+volume, where cargo corrupts its own state, and each may take 16 GiB, which can
+exhaust the WSL2 VM -- and parallel agent sessions made "check `docker ps`
+first" a rule nobody could follow reliably. The lock is a directory under
+`$HOME` (`mkdir` is atomic; Git Bash has no `flock`) holding an `owner` line,
+removed by an EXIT trap. A holder killed without its trap leaves it behind: it
+is reclaimed once older than `DOCKER_LOCK_STALE_S` (300) *and* no
+`lucene-rust-test` container runs. After taking the lock, the script also waits
+for any running `lucene-rust-test` container, which covers a checkout whose
+script predates the lock.
+
+Seen to work (and so to fail the second job's start): a run on a hand-made
+fresh lock printed "waiting", reclaimed it past `DOCKER_LOCK_STALE_S=20`, ran,
+and left no lock; a second run on the same lock as a `sleep 30` run waited 33 s;
+a run on a *different* lock waited 34 s for the other's container.
+
+Blind to: a container started by a bare `docker run` with a different image
+(the container check matches the `lucene-rust-test` image name); a stale lock
+whose holder's container is still running under another name; and jobs of
+other projects on the same engine. It serialises, it does not schedule -- a
+waiting gate waits the whole of the running one.
+
 ## rustdoc
 
 `rustdoc::broken_intra_doc_links` and its neighbours are warn-by-default and

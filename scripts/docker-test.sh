@@ -19,6 +19,8 @@
 #
 # Env knobs (all have defensible defaults, none need setting):
 #   MEM=16g CPUS=8 PIDS=512 TMPFS=1g  scripts/docker-test.sh ...
+#   DOCKER_LOCK=0 skips the one-job-at-a-time lock (DOCKER_TEST_LOCK,
+#   DOCKER_LOCK_STALE_S: where it lives, when a dead holder's lock is reclaimed)
 #   PREFLIGHT=0 skips the engine and disk checks (scripts/preflight.sh lists
 #   their own knobs: MIN_FREE_GB, DOCKER_VHDX_MAX_GB, BUILD_CACHE_MAX_GB, ...)
 set -euo pipefail
@@ -79,7 +81,48 @@ docker volume create lucene-rust-corpus >/dev/null
 TTY_FLAGS=()
 [ -t 0 ] && [ -t 1 ] && TTY_FLAGS=(-it)
 
-exec docker run --rm "${TTY_FLAGS[@]}" \
+# One heavy job at a time, across every checkout and session on this machine.
+# Two containers share the target volume (cargo then corrupts it) and each may
+# take 16 GiB (two can exhaust the VM). The lock is a directory -- `mkdir` is
+# atomic and Git Bash has no `flock` -- under $HOME, so worktrees share it. A
+# holder that died without its EXIT trap (kill -9) leaves a stale lock; it is
+# reclaimed once it is older than DOCKER_LOCK_STALE_S *and* no lucene-rust-test
+# container is running. After taking the lock we also wait out any such
+# container, which covers a checkout whose script predates the lock.
+# DOCKER_LOCK=0 skips all of this (CI does not use this script anyway).
+LOCK="${DOCKER_TEST_LOCK:-$HOME/.lucene-rust-docker-test.lock}"
+LOCK_STALE_S="${DOCKER_LOCK_STALE_S:-300}"
+running_jobs() {
+  docker ps --format '{{.Image}}' 2>/dev/null | grep -c '^lucene-rust-test' || true
+}
+if [ "${DOCKER_LOCK:-1}" != "0" ]; then
+  waited=0
+  until mkdir "$LOCK" 2>/dev/null; do
+    age=$(( $(date +%s) - $(stat -c %Y "$LOCK" 2>/dev/null || date +%s) ))
+    if [ "$age" -gt "$LOCK_STALE_S" ] && [ "$(running_jobs)" = "0" ]; then
+      echo "docker-test: reclaiming stale lock $LOCK (${age}s old, no job running)" >&2
+      rm -rf "$LOCK"
+      continue
+    fi
+    if [ "$waited" = 0 ]; then
+      echo "docker-test: waiting for the other job to finish ($(cat "$LOCK/owner" 2>/dev/null || echo unknown owner))" >&2
+      waited=1
+    fi
+    sleep 15
+  done
+  trap 'rm -rf "$LOCK"' EXIT
+  echo "$REPO pid $$ since $(date '+%F %T'): ${CMD[*]}" > "$LOCK/owner"
+  while [ "$(running_jobs)" != "0" ]; do
+    if [ "$waited" != 2 ]; then
+      echo "docker-test: lock held, waiting for a running lucene-rust-test container to exit" >&2
+      waited=2
+    fi
+    sleep 15
+  done
+fi
+
+# Not `exec`: the shell must stay to release the lock on exit.
+docker run --rm "${TTY_FLAGS[@]}" \
   --memory="$MEM" --memory-swap="$MEM" \
   --cpus="$CPUS" --pids-limit="$PIDS" \
   --tmpfs "/tmp:rw,size=$TMPFS,mode=1777" \
