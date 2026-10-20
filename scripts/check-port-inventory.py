@@ -85,6 +85,7 @@ MODULES = {
     "misc": "lucene-misc",
     "demo": "lucene-demo",
     "luke": "lucene-luke",
+    "benchmark": "lucene-benchmark",
     "replicator": "lucene-replicator",
     "sandbox": "lucene-sandbox",
     "codecs": "lucene-codecs",

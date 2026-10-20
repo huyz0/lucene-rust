@@ -1,0 +1,187 @@
+WARNING: 6 queries have no judgments! - 
+   3
+   7
+   8
+   12
+   25
+   b2
+WARNING: 2 judgments match no query! - 
+   99
+   98
+3  -  (body:dage body:fima)
+
+3 Stats:
+  Search Seconds: {s}
+  DocName Seconds: {s}
+  Num Points:            53.000
+  Num Good Points:        0.000
+  Max Good Points:        0.000
+  Average Precision:      0.000
+  MRR:                    0.000
+  Recall:                 0.000
+  Precision At 1:         0.000
+  Precision At 2:         0.000
+  Precision At 3:         0.000
+  Precision At 4:         0.000
+  Precision At 5:         0.000
+  Precision At 6:         0.000
+  Precision At 7:         0.000
+  Precision At 8:         0.000
+  Precision At 9:         0.000
+  Precision At 10:        0.000
+  Precision At 11:        0.000
+  Precision At 12:        0.000
+  Precision At 13:        0.000
+  Precision At 14:        0.000
+  Precision At 15:        0.000
+  Precision At 16:        0.000
+  Precision At 17:        0.000
+  Precision At 18:        0.000
+  Precision At 19:        0.000
+  Precision At 20:        0.000
+
+7  -  (body:fami body:vipa body:garo)
+
+7 Stats:
+  Search Seconds: {s}
+  DocName Seconds: {s}
+  Num Points:            56.000
+  Num Good Points:        0.000
+  Max Good Points:        0.000
+  Average Precision:      0.000
+  MRR:                    0.000
+  Recall:                 0.000
+  Precision At 1:         0.000
+  Precision At 2:         0.000
+  Precision At 3:         0.000
+  Precision At 4:         0.000
+  Precision At 5:         0.000
+  Precision At 6:         0.000
+  Precision At 7:         0.000
+  Precision At 8:         0.000
+  Precision At 9:         0.000
+  Precision At 10:        0.000
+  Precision At 11:        0.000
+  Precision At 12:        0.000
+  Precision At 13:        0.000
+  Precision At 14:        0.000
+  Precision At 15:        0.000
+  Precision At 16:        0.000
+  Precision At 17:        0.000
+  Precision At 18:        0.000
+  Precision At 19:        0.000
+  Precision At 20:        0.000
+
+8  -  body:tale
+
+8 Stats:
+  Search Seconds: {s}
+  DocName Seconds: {s}
+  Num Points:            19.000
+  Num Good Points:        0.000
+  Max Good Points:        0.000
+  Average Precision:      0.000
+  MRR:                    0.000
+  Recall:                 0.000
+  Precision At 1:         0.000
+  Precision At 2:         0.000
+  Precision At 3:         0.000
+  Precision At 4:         0.000
+  Precision At 5:         0.000
+  Precision At 6:         0.000
+  Precision At 7:         0.000
+  Precision At 8:         0.000
+  Precision At 9:         0.000
+  Precision At 10:        0.000
+  Precision At 11:        0.000
+  Precision At 12:        0.000
+  Precision At 13:        0.000
+  Precision At 14:        0.000
+  Precision At 15:        0.000
+  Precision At 16:        0.000
+  Precision At 17:        0.000
+  Precision At 18:        0.000
+
+12  -  (body:baba body:lada)
+
+12 Stats:
+  Search Seconds: {s}
+  DocName Seconds: {s}
+  Num Points:           107.000
+  Num Good Points:        0.000
+  Max Good Points:        0.000
+  Average Precision:      0.000
+  MRR:                    0.000
+  Recall:                 0.000
+  Precision At 1:         0.000
+  Precision At 2:         0.000
+  Precision At 3:         0.000
+  Precision At 4:         0.000
+  Precision At 5:         0.000
+  Precision At 6:         0.000
+  Precision At 7:         0.000
+  Precision At 8:         0.000
+  Precision At 9:         0.000
+  Precision At 10:        0.000
+  Precision At 11:        0.000
+  Precision At 12:        0.000
+  Precision At 13:        0.000
+  Precision At 14:        0.000
+  Precision At 15:        0.000
+  Precision At 16:        0.000
+  Precision At 17:        0.000
+  Precision At 18:        0.000
+  Precision At 19:        0.000
+  Precision At 20:        0.000
+
+25  -  body:melen
+
+25 Stats:
+  Search Seconds: {s}
+  DocName Seconds: {s}
+  Num Points:             3.000
+  Num Good Points:        0.000
+  Max Good Points:        0.000
+  Average Precision:      0.000
+  MRR:                    0.000
+  Recall:                 0.000
+  Precision At 1:         0.000
+  Precision At 2:         0.000
+
+b2  -  (body:nani body:paso body:meka)
+
+b2 Stats:
+  Search Seconds: {s}
+  DocName Seconds: {s}
+  Num Points:            36.000
+  Num Good Points:        0.000
+  Max Good Points:        0.000
+  Average Precision:      0.000
+  MRR:                    0.000
+  Recall:                 0.000
+  Precision At 1:         0.000
+  Precision At 2:         0.000
+  Precision At 3:         0.000
+  Precision At 4:         0.000
+  Precision At 5:         0.000
+  Precision At 6:         0.000
+  Precision At 7:         0.000
+  Precision At 8:         0.000
+  Precision At 9:         0.000
+  Precision At 10:        0.000
+  Precision At 11:        0.000
+  Precision At 12:        0.000
+  Precision At 13:        0.000
+  Precision At 14:        0.000
+  Precision At 15:        0.000
+  Precision At 16:        0.000
+  Precision At 17:        0.000
+  Precision At 18:        0.000
+  Precision At 19:        0.000
+  Precision At 20:        0.000
+
+
+
+SUMMARY
+  Search Seconds: {s}
+  DocName Seconds: {s}

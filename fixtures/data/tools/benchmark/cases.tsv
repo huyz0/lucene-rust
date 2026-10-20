@@ -1,0 +1,11 @@
+qd-usage	QueryDriver	a	b	c
+qd-usage-long	QueryDriver	a	b	c	d	e	f
+qd-title	QueryDriver	{fixture}/topics.txt	{fixture}/qrels.txt	{tmp}/title.sub	{fixture}/index
+qd-td	QueryDriver	{fixture}/topics.txt	{fixture}/qrels.txt	{tmp}/td.sub	{fixture}/index	TD
+qd-tdn	QueryDriver	{fixture}/topics.txt	{fixture}/qrels.txt	{tmp}/tdn.sub	{fixture}/index	NDT
+qd-narrative	QueryDriver	{fixture}/topics.txt	{fixture}/qrels.txt	{tmp}/n.sub	{fixture}/index	N
+qd-no-part	QueryDriver	{fixture}/topics.txt	{fixture}/qrels.txt	{tmp}/x.sub	{fixture}/index	x
+qd-unjudged	QueryDriver	{fixture}/topics.txt	{fixture}/qrels-none.txt	{tmp}/none.sub	{fixture}/index
+qd-parse-error	QueryDriver	{fixture}/topics-bad.txt	{fixture}/qrels.txt	{tmp}/bad.sub	{fixture}/index
+qqf-usage	QualityQueriesFinder
+qqf-index	QualityQueriesFinder	{fixture}/index

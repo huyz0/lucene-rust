@@ -706,6 +706,9 @@ token_attributes/flushed/_0.si ec404e8971c38c9d1061330c8be47665
 token_attributes/flushed/segments_1 ec404e8971c38c9d1061330c8be47668
 token_attributes/merged/_2.si ec404e8971c38c9d1061330c8be47671
 token_attributes/merged/segments_3 ec404e8971c38c9d1061330c8be47674
+tools/benchmark/index/_0.si cc6eee25b7f7b400aeb0406357c613f5
+tools/benchmark/index/_1.si cc6eee25b7f7b400aeb0406357c613f9
+tools/benchmark/index/segments_2 cc6eee25b7f7b400aeb0406357c613fc
 tools/demo/index/_0.si 8d0fab216d983f9419af740fa7c3208c
 tools/demo/index/segments_1 8d0fab216d983f9419af740fa7c3208f
 tools/luke/index/_0.si 092872171996e457de8e970322c55e48

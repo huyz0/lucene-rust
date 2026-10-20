@@ -1,0 +1,89 @@
+WARNING: 1 queries have no judgments! - 
+   8
+WARNING: 1 judgments match no query! - 
+   99
+3  -  
+
+3 Stats:
+  Search Seconds: {s}
+  DocName Seconds: {s}
+  Num Points:             0.000
+  Num Good Points:        0.000
+  Max Good Points:       30.000
+  Average Precision:      0.000
+  MRR:                    0.000
+  Recall:                 0.000
+
+7  -  
+
+7 Stats:
+  Search Seconds: {s}
+  DocName Seconds: {s}
+  Num Points:             0.000
+  Num Good Points:        0.000
+  Max Good Points:       23.000
+  Average Precision:      0.000
+  MRR:                    0.000
+  Recall:                 0.000
+
+8  -  
+
+8 Stats:
+  Search Seconds: {s}
+  DocName Seconds: {s}
+  Num Points:             0.000
+  Num Good Points:        0.000
+  Max Good Points:        0.000
+  Average Precision:      0.000
+  MRR:                    0.000
+  Recall:                 0.000
+
+12  -  
+
+12 Stats:
+  Search Seconds: {s}
+  DocName Seconds: {s}
+  Num Points:             0.000
+  Num Good Points:        0.000
+  Max Good Points:       71.000
+  Average Precision:      0.000
+  MRR:                    0.000
+  Recall:                 0.000
+
+25  -  
+
+25 Stats:
+  Search Seconds: {s}
+  DocName Seconds: {s}
+  Num Points:             0.000
+  Num Good Points:        0.000
+  Max Good Points:        2.000
+  Average Precision:      0.000
+  MRR:                    0.000
+  Recall:                 0.000
+
+b2  -  
+
+b2 Stats:
+  Search Seconds: {s}
+  DocName Seconds: {s}
+  Num Points:             0.000
+  Num Good Points:        0.000
+  Max Good Points:        8.000
+  Average Precision:      0.000
+  MRR:                    0.000
+  Recall:                 0.000
+
+
+
+SUMMARY
+  Search Seconds: {s}
+  DocName Seconds: {s}
+  Num Points:             0.000
+  Num Good Points:        0.000
+  Max Good Points:       26.800
+  Average Precision:      0.000
+  MRR:                    0.000
+  Recall:                 0.000
+
+
