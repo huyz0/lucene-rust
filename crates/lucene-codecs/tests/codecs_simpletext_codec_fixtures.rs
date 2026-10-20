@@ -413,7 +413,7 @@ fn damaged_field_infos_are_refused() {
     for (from, to) in [
         ("  number 1\n", "  number 0\n"),
         ("  index options DOCS\n", "  index options DOCZ\n"),
-        ("number of fields 25\n", "number of fields 26\n"),
+        ("number of fields 38\n", "number of fields 39\n"),
         ("  vector similarity COSINE\n", "  vector similarity COS\n"),
     ] {
         assert!(b.contains(from), "{from}");
@@ -499,7 +499,9 @@ fn damaged_compound_file_is_refused() {
     assert!(!ok(&unlatin1(&far)));
     // A flipped byte in the table's keywords.
     let mut flipped = data.clone();
-    let k = text.find("table of contents, size").unwrap();
+    // A byte offset: `text` is Latin-1 widened to UTF-8.
+    let key = b"table of contents, size";
+    let k = data.windows(key.len()).position(|w| w == key).unwrap();
     flipped[k] ^= 0x01;
     assert!(!ok(&flipped));
 }
