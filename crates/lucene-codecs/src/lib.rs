@@ -18,6 +18,7 @@
 // items. See `docs/rustdoc-gate.md`.
 pub mod automaton;
 pub mod backward_codecs;
+pub mod bitvectors;
 pub mod bkd_writer;
 pub mod block_packed;
 pub mod blocktree;

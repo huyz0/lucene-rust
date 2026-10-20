@@ -1,8 +1,8 @@
 # Lucene 10.5.0 lucene-codecs: every top-level class of the jar, and what became of it.
 # Checked by scripts/check-port-inventory.py --module codecs (see its docstring for the statuses).
 # class	status	detail
-codecs/bitvectors/FlatBitVectorsScorer	todo:M14	the bit-vector HNSW format and its Hamming scorer (M14.g)
-codecs/bitvectors/HnswBitVectorsFormat	todo:M14	the bit-vector HNSW format and its Hamming scorer (M14.g)
+codecs/bitvectors/FlatBitVectorsScorer	ported	crates/lucene-codecs/src/bitvectors/mod.rs::FlatBitVectorsScorer
+codecs/bitvectors/HnswBitVectorsFormat	ported	crates/lucene-codecs/src/bitvectors/mod.rs::HnswBitVectorsFormat
 codecs/blockterms/BlockTermsReader	todo:M14	the block-terms dictionary and its fixed/variable-gap terms indexes (M14.g)
 codecs/blockterms/BlockTermsWriter	todo:M14	the block-terms dictionary and its fixed/variable-gap terms indexes (M14.g)
 codecs/blockterms/FixedGapTermsIndexReader	todo:M14	the block-terms dictionary and its fixed/variable-gap terms indexes (M14.g)

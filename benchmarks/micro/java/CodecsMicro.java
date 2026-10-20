@@ -4,8 +4,12 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.HexFormat;
 import java.util.Random;
+import org.apache.lucene.codecs.KnnVectorsFormat;
+import org.apache.lucene.codecs.KnnVectorsReader;
 import org.apache.lucene.codecs.PostingsFormat;
+import org.apache.lucene.codecs.bitvectors.HnswBitVectorsFormat;
 import org.apache.lucene.codecs.bloom.BloomFilteringPostingsFormat;
 import org.apache.lucene.codecs.lucene104.Lucene104Codec;
 import org.apache.lucene.codecs.lucene104.Lucene104PostingsFormat;
@@ -13,13 +17,21 @@ import org.apache.lucene.codecs.memory.DirectPostingsFormat;
 import org.apache.lucene.codecs.memory.FSTPostingsFormat;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
+import org.apache.lucene.document.KnnByteVectorField;
 import org.apache.lucene.document.StringField;
+import org.apache.lucene.index.CodecReader;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.NoMergePolicy;
 import org.apache.lucene.index.Terms;
 import org.apache.lucene.index.TermsEnum;
+import org.apache.lucene.index.VectorSimilarityFunction;
+import org.apache.lucene.search.AcceptDocs;
+import org.apache.lucene.search.ScoreDoc;
+import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.TopKnnCollector;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.BytesRef;
@@ -37,6 +49,10 @@ import org.apache.lucene.util.BytesRef;
  * <p>{@code memory/}: the same 200 000 ids twice, {@code fid} routed to {@code FSTPostingsFormat}
  * and {@code did} to {@code DirectPostingsFormat}, and the same kind of {@code targets.tsv}:
  * {@code cx_fst_seek} and {@code cx_direct_seek} are {@code seekExact} on each.
+ *
+ * <p>{@code bitvectors/}: 100 000 documents, each with a 32-byte (256-bit) vector {@code bv} routed
+ * to {@code HnswBitVectorsFormat}, and {@code queries.tsv}: 2 000 random queries; {@code
+ * cx_bitvec_search} is a top-10 {@code searchNearestVectors} per query.
  */
 public final class CodecsMicro {
   static long warmupMs = Long.getLong("warmupMs", 1500);
@@ -153,6 +169,81 @@ public final class CodecsMicro {
     Files.writeString(dir.resolve("built"), "");
   }
 
+  static void buildBitVectors(Path dir) throws IOException {
+    Random r = new Random(0x14_8_2026_1020L);
+    KnnVectorsFormat format = new HnswBitVectorsFormat();
+    IndexWriterConfig cfg = config(Map.of());
+    cfg.setCodec(
+        new Lucene104Codec() {
+          @Override
+          public KnnVectorsFormat getKnnVectorsFormatForField(String f) {
+            return format;
+          }
+        });
+    try (Directory d = FSDirectory.open(dir);
+        IndexWriter w = new IndexWriter(d, cfg)) {
+      for (int i = 0; i < 100_000; i++) {
+        byte[] v = new byte[32];
+        r.nextBytes(v);
+        Document doc = new Document();
+        doc.add(new KnnByteVectorField("bv", v, VectorSimilarityFunction.EUCLIDEAN));
+        w.addDocument(doc);
+      }
+      w.commit();
+    }
+    List<String> queries = new ArrayList<>();
+    for (int k = 0; k < 2_000; k++) {
+      byte[] q = new byte[32];
+      r.nextBytes(q);
+      queries.add(HexFormat.of().formatHex(q));
+    }
+    Files.write(dir.resolve("queries.tsv"), queries);
+    Files.writeString(dir.resolve("built"), "");
+  }
+
+  /** {@code cx_bitvec_search}: a top-10 graph search per query. */
+  static void runBitVectors(Path dir) throws IOException {
+    if (!selected("cx_bitvec_search")) return;
+    List<byte[]> queries = new ArrayList<>();
+    for (String line : Files.readAllLines(dir.resolve("queries.tsv"))) {
+      queries.add(HexFormat.of().parseHex(line));
+    }
+    try (Directory d = FSDirectory.open(dir);
+        DirectoryReader reader = DirectoryReader.open(d)) {
+      LeafReader leaf = reader.leaves().get(0).reader();
+      AcceptDocs all = AcceptDocs.fromLiveDocs(null, leaf.maxDoc());
+      // The per-field vectors reader, as the Rust side calls its reader.
+      KnnVectorsReader vectors = ((CodecReader) leaf).getVectorReader();
+      Op op =
+          () -> {
+            Fnv g = new Fnv();
+            for (byte[] q : queries) {
+              TopKnnCollector c = new TopKnnCollector(10, Integer.MAX_VALUE);
+        vectors.search("bv", q, c, all);
+        TopDocs top = c.topDocs();
+              for (ScoreDoc sd : top.scoreDocs) {
+                g.add(sd.doc);
+                g.add(Float.floatToIntBits(sd.score));
+              }
+            }
+            sink += g.h;
+            return queries.size();
+          };
+      Fnv f = new Fnv();
+      for (byte[] q : queries) {
+        TopKnnCollector c = new TopKnnCollector(10, Integer.MAX_VALUE);
+        vectors.search("bv", q, c, all);
+        TopDocs top = c.topDocs();
+        for (ScoreDoc sd : top.scoreDocs) {
+          f.add(sd.doc);
+          f.add(Float.floatToIntBits(sd.score));
+        }
+      }
+      System.out.printf("#check	cx_bitvec_search	%016x	%d%n", f.h, queries.size());
+      measure("cx_bitvec_search", op);
+    }
+  }
+
   /** {@code cx_bloom_seek}: {@code seekExact} on one filtered enum, per target. */
   static void runBloom(Path dir) throws IOException {
     runSeek(dir, "cx_bloom_seek", "id");
@@ -204,9 +295,14 @@ public final class CodecsMicro {
         Files.createDirectories(dir.resolve("memory"));
         buildMemory(dir.resolve("memory"));
       }
+      if (!Files.exists(dir.resolve("bitvectors").resolve("built"))) {
+        Files.createDirectories(dir.resolve("bitvectors"));
+        buildBitVectors(dir.resolve("bitvectors"));
+      }
     } else {
       runBloom(dir.resolve("bloom"));
       runMemory(dir.resolve("memory"));
+      runBitVectors(dir.resolve("bitvectors"));
     }
   }
 }

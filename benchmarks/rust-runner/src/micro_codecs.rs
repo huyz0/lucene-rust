@@ -9,11 +9,16 @@
 //! `cx_fst_seek`/`cx_direct_seek`: `seekExact` on the same kind of ids
 //! (half present) through `FSTPostingsFormat` and `DirectPostingsFormat`,
 //! over `memory/`'s files.
+//!
+//! `cx_bitvec_search`: a top-10 search of `HnswBitVectorsFormat`'s graph
+//! for each of `bitvectors/queries.tsv`'s 2 000 random 256-bit queries.
 
 use std::hint::black_box;
 use std::time::Duration;
 
+use lucene_codecs::bitvectors::{BitVectorsFiles, BitVectorsReader};
 use lucene_codecs::bloom::BloomFilteredFieldsProducer;
+use lucene_codecs::hnsw_vectors::SearchOptions;
 use lucene_codecs::memory::{DirectFiles, DirectPostingsFormat, FstPostingsFormat};
 use lucene_codecs::segment_state::SegmentReadState;
 
@@ -185,7 +190,55 @@ fn bench_memory(w: Duration, m: Duration, dir: &str) {
     }
 }
 
+fn bench_bitvectors(w: Duration, m: Duration, dir: &str) {
+    if !selected("cx_bitvec_search") {
+        return;
+    }
+    let queries: Vec<Vec<u8>> = std::fs::read_to_string(format!("{dir}/queries.tsv"))
+        .expect("run CodecsMicro build first (scripts/bench-micro.sh --bench codecs)")
+        .lines()
+        .map(|l| {
+            (0..l.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&l[i..i + 2], 16).unwrap())
+                .collect()
+        })
+        .collect();
+    let (name, id, fis) = segment(dir);
+    let suffix = "HnswBitVectorsFormat_0";
+    let file = |ext: &str| std::fs::read(format!("{dir}/{name}_{suffix}.{ext}")).unwrap();
+    let files = BitVectorsFiles {
+        vec: file("vec"),
+        vemf: file("vemf"),
+        vex: file("vex"),
+        vem: file("vem"),
+    };
+    let reader = BitVectorsReader::open(&files, &id, suffix).unwrap();
+    let field = fis.field_by_name("bv").unwrap().number;
+    let run = |f: &mut Fnv| {
+        for q in &queries {
+            let (hits, _) = reader
+                .search(field, q, 10, i32::MAX as u64, SearchOptions::default())
+                .unwrap();
+            for (doc, score) in hits {
+                f.add(i64::from(doc));
+                f.add(i64::from(score.to_bits() as i32));
+            }
+        }
+    };
+    let mut f = Fnv::new();
+    run(&mut f);
+    println!("#check\tcx_bitvec_search\t{:016x}\t{}", f.0, queries.len());
+    measure("cx_bitvec_search", w, m, || {
+        let mut g = Fnv::new();
+        run(black_box(&mut g));
+        black_box(g.0);
+        queries.len() as u64
+    });
+}
+
 pub fn bench_codecs(w: Duration, m: Duration, dir: &str) {
     bench_bloom(w, m, &format!("{dir}/bloom"));
     bench_memory(w, m, &format!("{dir}/memory"));
+    bench_bitvectors(w, m, &format!("{dir}/bitvectors"));
 }

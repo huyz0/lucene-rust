@@ -94,6 +94,10 @@ classification/random/segments_1 27eacf7144e74f53597e83816e6203e9
 classification/sample/_0.si 27eacf7144e74f53597e83816e6203de
 classification/sample/_1.si 27eacf7144e74f53597e83816e6203e2
 classification/sample/segments_2 27eacf7144e74f53597e83816e6203e5
+codecs_bitvectors/flush/index/_0.si ebcdf3edbbe3afd23f0bd9cadaffb8e8
+codecs_bitvectors/flush/index/segments_1 ebcdf3edbbe3afd23f0bd9cadaffb8eb
+codecs_bitvectors/merged/index/_3.si ebcdf3edbbe3afd23f0bd9cadaffb8f5
+codecs_bitvectors/merged/index/segments_1 ebcdf3edbbe3afd23f0bd9cadaffb8f8
 codecs_bloom/flush/index/_0.si 313c811b7424ac4e46e5d0d7fe56eac3
 codecs_bloom/flush/index/segments_1 313c811b7424ac4e46e5d0d7fe56eac7
 codecs_bloom/merged/index/_3.si 313c811b7424ac4e46e5d0d7fe56ead7
