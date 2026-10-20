@@ -27,7 +27,8 @@
 //! norms and `.pst` postings for two indexed fields; `.tvc` vectors of both,
 //! with positions, offsets and payloads matching the postings; `.dim`/`.dii`
 //! points, one field past the tree writer's heap budget so it spills to
-//! temp files) and the
+//! temp files; `.vec`/`.gri` vectors of both encodings and every
+//! similarity, searched with and without accept bits) and the
 //! compound `_1` (`.si` + `.scf` holding its `.inf`/`.fld`/`.dat`, the
 //! last its parent field), plus `infos/_2.inf` with every kind of field.
 //! Java reads each through SimpleTextCodec's own formats against the `*.tsv`
@@ -51,6 +52,7 @@ use lucene_codecs::field_infos::{
     DocValuesSkipIndexType, DocValuesType, FieldInfo, FieldInfos, IndexOptions, VectorEncoding,
     VectorSimilarityFunction,
 };
+use lucene_codecs::hnsw::KnnCollector;
 use lucene_codecs::points::{IntersectVisitor, Relation};
 use lucene_codecs::postings_writer::{FieldNorms, FieldPostingsInput, TermPostings};
 use lucene_codecs::segment_state::{SegmentReadState, SegmentWriteState};
@@ -62,6 +64,10 @@ use lucene_codecs::simpletext::doc_values_writer::{
 use lucene_codecs::simpletext::field_infos as st_infos;
 use lucene_codecs::simpletext::fields_reader::SimpleTextFieldsReader;
 use lucene_codecs::simpletext::fields_writer::{postings_file_name, write as write_pst};
+use lucene_codecs::simpletext::knn_vectors_reader::SimpleTextKnnVectorsReader;
+use lucene_codecs::simpletext::knn_vectors_writer::{
+    meta_file_name, vector_data_file_name, SimpleTextKnnVectorsWriter,
+};
 use lucene_codecs::simpletext::norms::{norms_file_name, SimpleTextNormsConsumer};
 use lucene_codecs::simpletext::points_reader::SimpleTextPointsReader;
 use lucene_codecs::simpletext::points_writer::{
@@ -77,6 +83,7 @@ use lucene_codecs::simpletext::{live_docs, stored_fields_writer, ALL, NO_MORE_DO
 use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
 use lucene_codecs::term_vectors::{TermVectorField, TermVectorTerm, TermVectorsDocument};
 use lucene_store::FsDirectory;
+use lucene_util::bits::Bits;
 use lucene_util::fixed_bit_set::FixedBitSet;
 use lucene_util::geo::{java_double_string, java_float_string};
 use lucene_util::version::Version;
@@ -712,6 +719,31 @@ fn segment_infos(compound: bool) -> FieldInfos {
             FieldInfo::new("pi", 15).with_points(1, 1, 4),
             FieldInfo::new("p3", 16).with_points(3, 2, 4),
             FieldInfo::new("pbig", 17).with_points(16, 8, 16),
+            FieldInfo::new("vf", 18).with_vectors(
+                4,
+                VectorEncoding::Float32,
+                VectorSimilarityFunction::Cosine,
+            ),
+            FieldInfo::new("vb", 19).with_vectors(
+                3,
+                VectorEncoding::Byte,
+                VectorSimilarityFunction::DotProduct,
+            ),
+            FieldInfo::new("vm", 20).with_vectors(
+                2,
+                VectorEncoding::Float32,
+                VectorSimilarityFunction::MaximumInnerProduct,
+            ),
+            FieldInfo::new("ve", 21).with_vectors(
+                5,
+                VectorEncoding::Byte,
+                VectorSimilarityFunction::Euclidean,
+            ),
+            FieldInfo::new("vx", 22).with_vectors(
+                3,
+                VectorEncoding::Float32,
+                VectorSimilarityFunction::Euclidean,
+            ),
         ]);
     }
     FieldInfos::new(fields).unwrap()
@@ -1273,6 +1305,187 @@ fn write_points(
     vec![dim_name, dii_name]
 }
 
+/// Segment `_0`'s deleted docs.
+fn is_deleted(d: usize, max_doc: usize) -> bool {
+    d % 7 == 3 || d == max_doc - 1
+}
+
+/// `f32` bits as `GenCodecsSimpleTextCodec.floatsHex` writes them.
+fn floats_hex(v: &[f32]) -> String {
+    v.iter().fold(String::new(), |mut s, f| {
+        let _ = write!(s, "{:08x}", f.to_bits());
+        s
+    })
+}
+
+/// A float in `[-4, 4)` with a mantissa that needs most of its digits.
+fn rand_float(rng: &mut Rng) -> f32 {
+    (rng.below(1 << 24) as f32 / (1 << 21) as f32) - 4.0
+}
+
+/// One vectors field to write: name, which docs hold a vector, dimension,
+/// whether bytes.
+type KnnSpec = (&'static str, fn(usize) -> bool, usize, bool);
+
+/// One vectors field written: name, whether bytes, its byte or float vectors.
+type KnnField = (
+    &'static str,
+    bool,
+    Vec<(i32, Vec<u8>)>,
+    Vec<(i32, Vec<f32>)>,
+);
+
+/// `_0`'s vectors: `vf` (every doc but those `% 3 == 1`), `vb` (all), `vm`
+/// (even docs), `ve` (`% 4 != 2`), `vx` (`% 5 == 0`, values of every text
+/// shape). Writes the `.vec`/`.gri`, read back first, and `knn.SEG.tsv` in
+/// `GenCodecsSimpleTextCodec`'s layout: each ord's doc and vector, then the
+/// hits of searches through this port's `TopKnnCollector` (filters `none`,
+/// `live`, `odd`; one with a visit limit).
+fn write_knn(
+    root: &Path,
+    index: &Path,
+    name: &str,
+    fis: &FieldInfos,
+    max_doc: usize,
+) -> Vec<String> {
+    let mut rng = Rng(0x0CEC_7095 ^ max_doc as u64);
+    let shapes = [
+        1e-3f32,
+        9_999_999.0,
+        1e7,
+        1.5e-45,
+        0.1,
+        -0.0,
+        3.4e38,
+        123_456.79,
+    ];
+    let mut w = SimpleTextKnnVectorsWriter::new();
+    let mut fields: Vec<KnnField> = Vec::new();
+    let specs: [KnnSpec; 5] = [
+        ("vf", |d| d % 3 != 1, 4, false),
+        ("vb", |_| true, 3, true),
+        ("vm", |d| d % 2 == 0, 2, false),
+        ("ve", |d| d % 4 != 2, 5, true),
+        ("vx", |d| d % 5 == 0, 3, false),
+    ];
+    for (field, keep, dims, bytes) in specs {
+        let (mut b, mut f) = (Vec::new(), Vec::new());
+        for d in (0..max_doc).filter(|&d| keep(d)) {
+            if bytes {
+                let mut v: Vec<u8> = (0..dims).map(|_| rng.next() as u8).collect();
+                v[0] |= 1;
+                b.push((d as i32, v));
+            } else {
+                let mut v: Vec<f32> = (0..dims).map(|_| rand_float(&mut rng)).collect();
+                if field == "vx" {
+                    v[d % dims] = shapes[d % shapes.len()];
+                }
+                if v[0] == 0.0 {
+                    v[0] = 1.0;
+                }
+                f.push((d as i32, v));
+            }
+        }
+        let fi = fis.field_by_name(field).unwrap();
+        if bytes {
+            w.write_byte_field(fi, b.iter().map(|(d, v)| (*d, v.as_slice())))
+                .unwrap();
+        } else {
+            w.write_float_field(fi, f.iter().map(|(d, v)| (*d, v.as_slice())))
+                .unwrap();
+        }
+        fields.push((field, bytes, b, f));
+    }
+    let (vec, gri) = w.finish();
+    let reader = SimpleTextKnnVectorsReader::open(&gri, &vec, fis).unwrap();
+    reader.check_integrity().unwrap();
+    let mut live = FixedBitSet::new(max_doc);
+    let mut odd = FixedBitSet::new(max_doc);
+    for d in 0..max_doc {
+        if !is_deleted(d, max_doc) {
+            live.set(d);
+        }
+        if d % 2 == 1 {
+            odd.set(d);
+        }
+    }
+    let mut tsv = String::new();
+    for (field, bytes, b, f) in &fields {
+        let fi = fis.field_by_name(field).unwrap();
+        let size = if *bytes { b.len() } else { f.len() };
+        writeln!(
+            tsv,
+            "field\t{}\t{}\t{}\t{}\t{size}",
+            hexs(field),
+            st_infos::vector_encoding_name(fi.vector_encoding),
+            st_infos::similarity_name(fi.vector_similarity_function),
+            fi.vector_dimension
+        )
+        .unwrap();
+        if *bytes {
+            let v = reader.byte_vector_values(field).unwrap().unwrap();
+            for (ord, (d, x)) in b.iter().enumerate() {
+                assert_eq!(v.ord_to_doc(ord), Some(*d));
+                assert_eq!(v.vector_value(ord), Some(&x[..]));
+                writeln!(tsv, "v\t{ord}\t{d}\t{}", hex(x)).unwrap();
+            }
+        } else {
+            let v = reader.float_vector_values(field).unwrap().unwrap();
+            for (ord, (d, x)) in f.iter().enumerate() {
+                let bits = |v: &[f32]| v.iter().map(|g| g.to_bits()).collect::<Vec<_>>();
+                assert_eq!(v.ord_to_doc(ord), Some(*d));
+                assert_eq!(bits(v.vector_value(ord).unwrap()), bits(x));
+                writeln!(tsv, "v\t{ord}\t{d}\t{}", floats_hex(x)).unwrap();
+            }
+        }
+        let dims = fi.vector_dimension as usize;
+        for (k, limit, filter) in [
+            (1usize, i32::MAX, "none"),
+            (5, i32::MAX, "live"),
+            (10, i32::MAX, "odd"),
+            (1000, i32::MAX, "live"),
+            (4, 7, "none"),
+        ] {
+            let bits: Option<&dyn Bits> = match filter {
+                "none" => None,
+                "live" => Some(&live),
+                _ => Some(&odd),
+            };
+            let mut c = KnnCollector::new(k, limit as u64);
+            let target = if *bytes {
+                let mut t: Vec<u8> = (0..dims).map(|_| rng.next() as u8).collect();
+                t[0] |= 1;
+                reader.search(field, &t, &mut c, bits).unwrap();
+                hex(&t)
+            } else {
+                let mut t: Vec<f32> = (0..dims).map(|_| rand_float(&mut rng)).collect();
+                if t[0] == 0.0 {
+                    t[0] = 1.0;
+                }
+                reader.search(field, &t, &mut c, bits).unwrap();
+                floats_hex(&t)
+            };
+            writeln!(tsv, "q\t{k}\t{limit}\t{filter}\t{target}").unwrap();
+            let relation = if c.early_terminated() {
+                "GREATER_THAN_OR_EQUAL_TO"
+            } else {
+                "EQUAL_TO"
+            };
+            let visited = c.visited_count();
+            for (d, score) in c.top_docs() {
+                writeln!(tsv, "hit\t{d}\t{:08x}", score.to_bits()).unwrap();
+            }
+            writeln!(tsv, "visited\t{visited}\t{relation}").unwrap();
+        }
+    }
+    let vec_name = vector_data_file_name(name, "");
+    let gri_name = meta_file_name(name, "");
+    std::fs::write(index.join(&vec_name), vec).unwrap();
+    std::fs::write(index.join(&gri_name), gri).unwrap();
+    std::fs::write(root.join(format!("knn.{name}.tsv")), tsv).unwrap();
+    vec![vec_name, gri_name]
+}
+
 /// `codec/`: segment `_0` (non-compound, sorted, deletes), `_1` (compound)
 /// and a standalone `_2.inf`, each read back by this port first.
 fn write_codec(root: &Path) {
@@ -1317,6 +1530,7 @@ fn write_codec(root: &Path) {
             let mut files = vec![inf_name, fld_name, dat_name];
             files.extend(write_indexed(root, &index, name, &fis, &id, max_doc as i32));
             files.extend(write_points(root, &index, name, &fis, max_doc));
+            files.extend(write_knn(root, &index, name, &fis, max_doc));
             files
         };
         let mut si = SimpleTextSegmentInfo {
@@ -1353,7 +1567,7 @@ fn write_codec(root: &Path) {
             let mut live = FixedBitSet::new(max_doc);
             let mut deleted = 0;
             for d in 0..max_doc {
-                if d % 7 == 3 || d == max_doc - 1 {
+                if is_deleted(d, max_doc) {
                     deleted += 1;
                 } else {
                     live.set(d);

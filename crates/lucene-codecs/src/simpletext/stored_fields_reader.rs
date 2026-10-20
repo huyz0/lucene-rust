@@ -15,6 +15,8 @@
 //!   document count above `maxDoc` or a document outside it are `Corrupted`
 //!   (`IllegalArgument` for the document number).
 
+use std::borrow::Cow;
+
 use super::stored_fields_writer::{
     DOC, END, FIELD, NAME, TYPE, TYPE_BINARY, TYPE_DOUBLE, TYPE_FLOAT, TYPE_INT, TYPE_LONG,
     TYPE_STRING, VALUE,
@@ -153,7 +155,7 @@ fn read_field(
 /// The decimal text `Float.parseFloat`/`Double.parseDouble` take, in the
 /// shape Rust's `parse` takes: trimmed, without an `f`/`d` suffix, with
 /// `NaN`/`Infinity` spelled exactly (Rust also takes `inf`, `nan`).
-fn java_fp_text(bytes: &[u8]) -> Result<String> {
+fn java_fp_text(bytes: &[u8]) -> Result<Cow<'_, str>> {
     let bad = || {
         corrupt(format!(
             "For input string: \"{}\"",
@@ -165,11 +167,10 @@ fn java_fp_text(bytes: &[u8]) -> Result<String> {
     let s = s.trim_matches(|c: char| c <= ' ');
     let unsigned = s.strip_prefix(['+', '-']).unwrap_or(s);
     if unsigned == "NaN" || unsigned == "Infinity" {
-        return Ok(s.to_string());
+        return Ok(Cow::Borrowed(s));
     }
-    let body = unsigned
-        .strip_suffix(['f', 'F', 'd', 'D'])
-        .unwrap_or(unsigned);
+    let suffixed = unsigned.strip_suffix(['f', 'F', 'd', 'D']);
+    let body = suffixed.unwrap_or(unsigned);
     let well_formed = !body.is_empty()
         && body
             .bytes()
@@ -178,8 +179,11 @@ fn java_fp_text(bytes: &[u8]) -> Result<String> {
     if !well_formed {
         return Err(bad());
     }
+    if suffixed.is_none() {
+        return Ok(Cow::Borrowed(s));
+    }
     let sign = s.len().saturating_sub(unsigned.len());
-    Ok(format!("{}{body}", s.get(..sign).unwrap_or("")))
+    Ok(Cow::Owned(format!("{}{body}", s.get(..sign).unwrap_or(""))))
 }
 
 /// `Float.parseFloat(String)`.

@@ -58,6 +58,12 @@
 //! `cx_stext_points_write`: `spts/`'s `p` read back through that reader
 //! (`intersect`, every cell crossing, as Java's `writeField` does) and
 //! rebuilt through `SimpleTextPointsWriter`; both files' bytes hashed.
+//!
+//! `cx_stext_knn`: per query of `sknn/` (3 000 16-dimensional EUCLIDEAN
+//! vectors under `SimpleTextCodec`, 50 queries), a top-10 exhaustive
+//! `search` through `simpletext`'s `SimpleTextKnnVectorsReader` over Java's
+//! `.vec`/`.gri` (every vector parsed per search, as Java's), every hit's
+//! doc and score bits hashed.
 
 use std::hint::black_box;
 use std::time::Duration;
@@ -66,13 +72,16 @@ use lucene_codecs::bitvectors::{BitVectorsFiles, BitVectorsReader};
 use lucene_codecs::blockterms::{BlockTermsReader, FixedGapTermsIndexReader};
 use lucene_codecs::blocktreeords::{BlockTreeOrdsPostingsFormat, OrdsFieldReader};
 use lucene_codecs::bloom::BloomFilteredFieldsProducer;
+use lucene_codecs::hnsw::KnnCollector;
 use lucene_codecs::hnsw_vectors::SearchOptions;
 use lucene_codecs::memory::{DirectFiles, DirectPostingsFormat, FstPostingsFormat};
 use lucene_codecs::points::{IntersectVisitor, Relation};
 use lucene_codecs::segment_state::SegmentReadState;
 use lucene_codecs::simpletext::bkd_reader::SimpleTextBkdReader;
 use lucene_codecs::simpletext::doc_values_reader::SimpleTextDocValuesReader;
+use lucene_codecs::simpletext::field_infos as st_infos;
 use lucene_codecs::simpletext::fields_reader::{SimpleTextFieldsReader, SimpleTextTerms};
+use lucene_codecs::simpletext::knn_vectors_reader::SimpleTextKnnVectorsReader;
 use lucene_codecs::simpletext::points_reader::SimpleTextPointsReader;
 use lucene_codecs::simpletext::points_writer::SimpleTextPointsWriter;
 use lucene_codecs::simpletext::stored_fields_reader::SimpleTextStoredFieldsReader;
@@ -829,6 +838,47 @@ fn bench_stext_points_write(w: Duration, m: Duration, dir: &str) {
     });
 }
 
+/// One `cx_stext_knn` pass, as Java's `knnPass`.
+fn knn_pass(r: &SimpleTextKnnVectorsReader<'_>, queries: &[Vec<f32>], f: &mut Fnv) -> u64 {
+    for q in queries {
+        let mut c = KnnCollector::new(10, i32::MAX as u64);
+        r.search("v", q.as_slice(), &mut c, None).unwrap();
+        for (doc, score) in c.top_docs() {
+            f.add(i64::from(doc));
+            f.add(i64::from(score.to_bits() as i32));
+        }
+    }
+    queries.len() as u64
+}
+
+fn bench_stext_knn(w: Duration, m: Duration, dir: &str) {
+    if !selected("cx_stext_knn") {
+        return;
+    }
+    let queries: Vec<Vec<f32>> = std::fs::read_to_string(format!("{dir}/queries.tsv"))
+        .expect("run CodecsMicro build first (scripts/bench-micro.sh --bench codecs)")
+        .lines()
+        .map(|l| {
+            (0..l.len() / 8)
+                .map(|j| f32::from_bits(u32::from_str_radix(&l[8 * j..8 * j + 8], 16).unwrap()))
+                .collect()
+        })
+        .collect();
+    let fis = st_infos::read(&std::fs::read(format!("{dir}/_0.inf")).unwrap()).unwrap();
+    let vec = std::fs::read(format!("{dir}/_0.vec")).unwrap();
+    let gri = std::fs::read(format!("{dir}/_0.gri")).unwrap();
+    let reader = SimpleTextKnnVectorsReader::open(&gri, &vec, &fis).unwrap();
+    let mut f = Fnv::new();
+    let n = knn_pass(&reader, &queries, &mut f);
+    println!("#check\tcx_stext_knn\t{:016x}\t{n}", f.0);
+    measure("cx_stext_knn", w, m, || {
+        let mut g = Fnv::new();
+        let c = knn_pass(&reader, &queries, black_box(&mut g));
+        black_box(g.0);
+        c
+    });
+}
+
 pub fn bench_codecs(w: Duration, m: Duration, dir: &str) {
     bench_bloom(w, m, &format!("{dir}/bloom"));
     bench_memory(w, m, &format!("{dir}/memory"));
@@ -843,4 +893,5 @@ pub fn bench_codecs(w: Duration, m: Duration, dir: &str) {
     bench_stext_tv(w, m, &format!("{dir}/stv"));
     bench_stext_points(w, m, &format!("{dir}/spts"));
     bench_stext_points_write(w, m, &format!("{dir}/spts"));
+    bench_stext_knn(w, m, &format!("{dir}/sknn"));
 }

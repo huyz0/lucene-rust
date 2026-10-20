@@ -28,6 +28,18 @@ import org.apache.lucene.index.SegmentReader;
 import org.apache.lucene.index.SortFieldProvider;
 import org.apache.lucene.index.StoredFieldVisitor;
 import org.apache.lucene.index.StoredFields;
+import org.apache.lucene.codecs.KnnFieldVectorsWriter;
+import org.apache.lucene.codecs.KnnVectorsReader;
+import org.apache.lucene.codecs.KnnVectorsWriter;
+import org.apache.lucene.index.ByteVectorValues;
+import org.apache.lucene.index.FloatVectorValues;
+import org.apache.lucene.index.KnnVectorValues;
+import org.apache.lucene.index.LeafReader;
+import org.apache.lucene.search.AcceptDocs;
+import org.apache.lucene.search.ScoreDoc;
+import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.TopKnnCollector;
+import org.apache.lucene.util.FixedBitSet;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.SortField;
 import org.apache.lucene.store.ByteBuffersDataOutput;
@@ -100,13 +112,15 @@ import java.util.Map;
  * with skip indexes, norms, postings and term vectors) and the compound {@code _1} (blocks and
  * their parent field) -- plus a {@code _2.inf} holding every kind of field. Each {@code .si},
  * {@code .inf}, {@code .liv}, {@code .scf}, {@code .fld}, {@code .dat}, {@code .len}, {@code .pst},
- * {@code .tvc} and {@code .dim}/{@code .dii} (points; one field built through temp files) is read by SimpleTextCodec's own format and must match Rust's manifest (doc
+ * {@code .tvc}, {@code .dim}/{@code .dii} (points; one field built through temp files) and
+ * {@code .vec}/{@code .gri} (vectors: every value, then searches with and without accept bits,
+ * hits, scores and visited counts) is read by SimpleTextCodec's own format and must match Rust's manifest (doc
  * values, dictionaries and skipper intervals; norms; every vector occurrence; each points field's
  * stats and its points as a multiset), then re-written by Java's writer (points from Rust's
  * input, in Rust's order): byte for byte equal, except the {@code .si}, whose hash-ordered maps only compare
  * as line sets. Java then commits a {@code segments_N} over the Rust segments, opens them through
  * {@link DirectoryReader} (max/num docs, live docs, every stored value, points stats and a full
- * intersect) and runs {@link
+ * intersect, vector counts and the live-docs searches) and runs {@link
  * CheckIndex} at its slowest level: index-sort order, vectors against postings, impacts against
  * norms.
  *
@@ -680,6 +694,173 @@ public class VerifyCodecsSimpleText {
   /** Each segment/field's points stats line, as Rust's manifest has it. */
   static final Map<String, String> POINT_HEADS = new HashMap<>();
 
+  /** Per segment/field: the vector count, then the {@code live} searches' lines. */
+  static final Map<String, List<String>> KNN_LIVE = new HashMap<>();
+
+  static String floatsHex(float[] v) {
+    StringBuilder sb = new StringBuilder();
+    for (float f : v) sb.append(String.format("%08x", Float.floatToRawIntBits(f)));
+    return sb.toString();
+  }
+
+  static float[] parseFloats(String hex) {
+    float[] v = new float[hex.length() / 8];
+    for (int i = 0; i < v.length; i++) {
+      v[i] = Float.intBitsToFloat(Integer.parseUnsignedInt(hex.substring(8 * i, 8 * i + 8), 16));
+    }
+    return v;
+  }
+
+  /** One search's {@code hit}/{@code visited} lines. */
+  static void hitLines(List<String> lines, TopDocs td) {
+    for (ScoreDoc sd : td.scoreDocs) {
+      lines.add("hit\t" + sd.doc + "\t" + String.format("%08x", Float.floatToRawIntBits(sd.score)));
+    }
+    lines.add("visited\t" + td.totalHits.value() + "\t" + td.totalHits.relation());
+  }
+
+  /**
+   * knn.SEG.tsv: Java's SimpleTextKnnVectorsReader must read every vector Rust wrote and its
+   * searches must hit the same docs with the same score bits and visit as many; its writer,
+   * handed the same vectors, must write the same .vec and .gri.
+   */
+  static int verifyKnn(Path root, Directory core, Directory out, SegmentInfo si, FieldInfos fis,
+      String name) throws Exception {
+    Codec codec = new SimpleTextCodec();
+    int maxDoc = si.maxDoc();
+    FixedBitSet live = new FixedBitSet(maxDoc);
+    Path liveTsv = root.resolve("live." + name + ".tsv");
+    String bitsLine = Files.exists(liveTsv) ? Files.readAllLines(liveTsv).get(1) : null;
+    FixedBitSet odd = new FixedBitSet(maxDoc);
+    for (int d = 0; d < maxDoc; d++) {
+      if (bitsLine == null || bitsLine.charAt(d) == '1') live.set(d);
+      if (d % 2 == 1) odd.set(d);
+    }
+    List<String> want = Files.readAllLines(root.resolve("knn." + name + ".tsv"));
+    List<String> got = new ArrayList<>();
+    Map<String, List<Object>> vectors = new java.util.LinkedHashMap<>();
+    try (KnnVectorsReader kr =
+        codec.knnVectorsFormat().fieldsReader(new SegmentReadState(core, si, fis, CTX))) {
+      kr.checkIntegrity();
+      String field = null;
+      boolean bytes = false;
+      List<String> liveLines = null;
+      for (int i = 0; i < want.size(); i++) {
+        String[] r = want.get(i).split("\t");
+        if (r[0].equals("field")) {
+          field = new String(HEX.parseHex(r[1]), StandardCharsets.UTF_8);
+          FieldInfo fi = fis.fieldInfo(field);
+          bytes = fi.getVectorEncoding() == VectorEncoding.BYTE;
+          KnnVectorValues values =
+              bytes ? kr.getByteVectorValues(field) : kr.getFloatVectorValues(field);
+          got.add(String.join("\t", "field", r[1], fi.getVectorEncoding().name(),
+              fi.getVectorSimilarityFunction().name(), Integer.toString(values.dimension()),
+              Integer.toString(values.size())));
+          List<Object> vs = new ArrayList<>();
+          vectors.put(field, vs);
+          for (int ord = 0; ord < values.size(); ord++) {
+            int doc = values.ordToDoc(ord);
+            String v;
+            if (bytes) {
+              byte[] b = ((ByteVectorValues) values).vectorValue(ord).clone();
+              v = HEX.formatHex(b);
+              vs.add(new Object[] {doc, b});
+            } else {
+              float[] f = ((FloatVectorValues) values).vectorValue(ord).clone();
+              v = floatsHex(f);
+              vs.add(new Object[] {doc, f});
+            }
+            got.add("v\t" + ord + "\t" + doc + "\t" + v);
+          }
+          liveLines = new ArrayList<>();
+          liveLines.add(Integer.toString(values.size()));
+          KNN_LIVE.put(name + "/" + field, liveLines);
+        } else if (r[0].equals("q")) {
+          got.add(want.get(i));
+          int k = Integer.parseInt(r[1]);
+          int limit = Integer.parseInt(r[2]);
+          Bits bits = r[3].equals("none") ? null : r[3].equals("live") ? live : odd;
+          TopKnnCollector c = new TopKnnCollector(k, limit);
+          AcceptDocs accept = AcceptDocs.fromLiveDocs(bits, maxDoc);
+          if (bytes) {
+            kr.search(field, HEX.parseHex(r[4]), c, accept);
+          } else {
+            kr.search(field, parseFloats(r[4]), c, accept);
+          }
+          int from = got.size();
+          hitLines(got, c.topDocs());
+          if (r[3].equals("live")) {
+            liveLines.add(want.get(i));
+            liveLines.addAll(got.subList(from, got.size()));
+          }
+        }
+      }
+    }
+    int failures = expect(root.resolve("knn." + name + ".tsv"), got);
+
+    try (KnnVectorsWriter w = codec.knnVectorsFormat().fieldsWriter(
+        new SegmentWriteState(InfoStream.NO_OUTPUT, out, si, fis, null, CTX))) {
+      for (Map.Entry<String, List<Object>> e : vectors.entrySet()) {
+        KnnFieldVectorsWriter<?> fw = w.addField(fis.fieldInfo(e.getKey()));
+        for (Object o : e.getValue()) {
+          Object[] dv = (Object[]) o;
+          if (dv[1] instanceof byte[] b) {
+            @SuppressWarnings("unchecked")
+            KnnFieldVectorsWriter<byte[]> bw = (KnnFieldVectorsWriter<byte[]>) fw;
+            bw.addValue((Integer) dv[0], b);
+          } else {
+            @SuppressWarnings("unchecked")
+            KnnFieldVectorsWriter<float[]> f = (KnnFieldVectorsWriter<float[]>) fw;
+            f.addValue((Integer) dv[0], (float[]) dv[1]);
+          }
+        }
+      }
+      w.flush(maxDoc, null);
+      w.finish();
+    }
+    failures += sameBytes(core, name + ".vec", out, name + ".vec");
+    failures += sameBytes(core, name + ".gri", out, name + ".gri");
+    System.out.println(name + ": " + vectors.size() + " vector fields read, searched, re-written");
+    return failures;
+  }
+
+  /** Through the DirectoryReader: each vector field's count and its {@code live} searches. */
+  static int knnThroughReader(LeafReader leaf, String name) throws Exception {
+    int failures = 0;
+    for (FieldInfo fi : leaf.getFieldInfos()) {
+      if (fi.getVectorDimension() == 0) continue;
+      List<String> want = KNN_LIVE.get(name + "/" + fi.name);
+      if (want == null) {
+        System.out.println(name + "/" + fi.name + ": a vector field Java never read");
+        failures++;
+        continue;
+      }
+      boolean bytes = fi.getVectorEncoding() == VectorEncoding.BYTE;
+      KnnVectorValues values =
+          bytes ? leaf.getByteVectorValues(fi.name) : leaf.getFloatVectorValues(fi.name);
+      List<String> got = new ArrayList<>();
+      got.add(Integer.toString(values.size()));
+      for (String q : want) {
+        if (!q.startsWith("q\t")) continue;
+        String[] r = q.split("\t");
+        got.add(q);
+        TopKnnCollector c = new TopKnnCollector(Integer.parseInt(r[1]), Integer.parseInt(r[2]));
+        AcceptDocs accept = AcceptDocs.fromLiveDocs(leaf.getLiveDocs(), leaf.maxDoc());
+        if (bytes) {
+          leaf.searchNearestVectors(fi.name, HEX.parseHex(r[4]), c, accept);
+        } else {
+          leaf.searchNearestVectors(fi.name, parseFloats(r[4]), c, accept);
+        }
+        hitLines(got, c.topDocs());
+      }
+      if (!got.equals(want)) {
+        System.out.println(name + "/" + fi.name + ": DirectoryReader's vectors differ: " + got);
+        failures++;
+      }
+    }
+    return failures;
+  }
+
   static String pointsHead(String field, PointValues v) throws IOException {
     return String.join("\t", "field", hexs(field), Integer.toString(v.getNumDimensions()),
         Integer.toString(v.getNumIndexDimensions()), Integer.toString(v.getBytesPerDimension()),
@@ -968,6 +1149,7 @@ public class VerifyCodecsSimpleText {
         failures += verifyDocValues(root, core, out, si, fis, name);
         if (fis.hasNorms()) failures += verifyIndexed(root, core, out, si, fis, name);
         if (fis.hasPointValues()) failures += verifyPoints(root, core, out, si, fis, name);
+        if (fis.hasVectorValues()) failures += verifyKnn(root, core, out, si, fis, name);
 
         SegmentCommitInfo sci =
             new SegmentCommitInfo(si, delCount, 0, delGen, -1, -1, StringHelper.randomId());
@@ -1017,6 +1199,7 @@ public class VerifyCodecsSimpleText {
             sf.document(d, new Dump(stored, null));
           }
           failures += expect(root.resolve("stored." + name + ".tsv"), stored);
+          failures += knnThroughReader(sr, name);
           for (FieldInfo fi : sr.getFieldInfos()) {
             if (fi.getPointDimensionCount() == 0) continue;
             PointValues pv = sr.getPointValues(fi.name);

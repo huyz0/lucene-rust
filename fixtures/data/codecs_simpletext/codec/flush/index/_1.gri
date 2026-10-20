@@ -19,5 +19,47 @@ vector-data-length 11
 vector-dimension 2
 size 1
 0
+field-number 41
+field-name f1euc
+vector-data-offset 45
+vector-data-length 6
+vector-dimension 1
+size 1
+0
+field-number 42
+field-name feuc
+vector-data-offset 51
+vector-data-length 62
+vector-dimension 5
+size 1
+0
+field-number 45
+field-name fbig
+vector-data-offset 113
+vector-data-length 267
+vector-dimension 48
+size 1
+0
+field-number 46
+field-name beuc
+vector-data-offset 380
+vector-data-length 31
+vector-dimension 6
+size 1
+0
+field-number 47
+field-name bcos
+vector-data-offset 411
+vector-data-length 7
+vector-dimension 2
+size 1
+0
+field-number 48
+field-name bmip
+vector-data-offset 418
+vector-data-length 20
+vector-dimension 4
+size 1
+0
 field-number -1
-checksum 00000000002503172852
+checksum 00000000002543464349
