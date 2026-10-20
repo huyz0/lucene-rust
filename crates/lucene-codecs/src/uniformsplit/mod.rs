@@ -2,12 +2,11 @@
 //! `UniformSplitPostingsFormat`, a terms dictionary that cuts a field's
 //! sorted terms into blocks of about the same number of lines and indexes
 //! each block by the shortest prefix that tells its first term from the
-//! term before it, over `Lucene104PostingsWriter`'s postings. (The
-//! `sharedterms` subpackage is not ported here. `BlockHeader`,
-//! `BlockLineReader`, `TermBytes` and the term-state serializer are
-//! `pub(crate)` for it; the block writer and reader keep one field's term
-//! state per line, so its per-line field lists need a term-state hook in
-//! them.)
+//! term before it, over `Lucene104PostingsWriter`'s postings. The
+//! [`sharedterms`] subpackage shares one dictionary among a group's fields;
+//! the block writer is generic over a line's term states ([`writer`]'s
+//! `BlockSink`) and the block reader reads a line's term state from its
+//! field list when the terms are shared, for it.
 //!
 //! # The files
 //!
@@ -86,6 +85,7 @@ mod dictionary;
 mod field_metadata;
 mod intersect;
 mod reader;
+pub mod sharedterms;
 mod term_state;
 #[cfg(test)]
 mod tests;

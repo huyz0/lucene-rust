@@ -17,6 +17,7 @@ import org.apache.lucene.codecs.lucene104.Lucene104PostingsFormat;
 import org.apache.lucene.codecs.memory.DirectPostingsFormat;
 import org.apache.lucene.codecs.memory.FSTPostingsFormat;
 import org.apache.lucene.codecs.uniformsplit.UniformSplitPostingsFormat;
+import org.apache.lucene.codecs.uniformsplit.sharedterms.STUniformSplitPostingsFormat;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.KnnByteVectorField;
@@ -64,6 +65,12 @@ import org.apache.lucene.util.BytesRef;
  * <p>{@code usplit/}: the same 200 000 ids, {@code uid} routed to {@code
  * UniformSplitPostingsFormat} (default 32/3 block lines, no encoder), and the same kind of {@code
  * targets.tsv} (half present): {@code cx_usplit_seek} is {@code seekExact} on each.
+ *
+ * <p>{@code stsplit/}: the same 200 000 ids in {@code sa}, every third one also in {@code sb},
+ * both routed to one {@code STUniformSplitPostingsFormat} (default 32/3 block lines, one shared
+ * dictionary), and the same kind of {@code targets.tsv} (half present in {@code sa}): {@code
+ * cx_stsplit_seek} is {@code seekExact} on {@code sb} for each, most hits landing on a line only
+ * {@code sa} has.
  */
 public final class CodecsMicro {
   static long warmupMs = Long.getLong("warmupMs", 1500);
@@ -299,6 +306,31 @@ public final class CodecsMicro {
     Files.writeString(dir.resolve("built"), "");
   }
 
+  /** Builds {@code stsplit/}: {@code cx_stsplit_seek}'s ids under SharedTermsUniformSplit. */
+  static void buildSharedTerms(Path dir) throws IOException {
+    Random r = new Random(0x15_5_2026_1021L);
+    PostingsFormat shared = new STUniformSplitPostingsFormat();
+    try (Directory d = FSDirectory.open(dir);
+        IndexWriter w = new IndexWriter(d, config(Map.of("sa", shared, "sb", shared)))) {
+      for (int i = 0; i < DOCS; i++) {
+        Document doc = new Document();
+        doc.add(new StringField("sa", idOf(i), Field.Store.NO));
+        if (i % 3 == 0) {
+          doc.add(new StringField("sb", idOf(i), Field.Store.NO));
+        }
+        w.addDocument(doc);
+      }
+      w.commit();
+    }
+    List<String> targets = new ArrayList<>();
+    for (int k = 0; k < 200_000; k++) {
+      // Half present (in sa), half absent.
+      targets.add(idOf(r.nextInt(2) == 0 ? r.nextInt(DOCS) : DOCS + r.nextInt(10 * DOCS)));
+    }
+    Files.write(dir.resolve("targets.tsv"), targets);
+    Files.writeString(dir.resolve("built"), "");
+  }
+
   /** {@code cx_bloom_seek}: {@code seekExact} on one filtered enum, per target. */
   static void runBloom(Path dir) throws IOException {
     runSeek(dir, "cx_bloom_seek", "id");
@@ -402,12 +434,17 @@ public final class CodecsMicro {
         Files.createDirectories(dir.resolve("usplit"));
         buildUniformSplit(dir.resolve("usplit"));
       }
+      if (!Files.exists(dir.resolve("stsplit").resolve("built"))) {
+        Files.createDirectories(dir.resolve("stsplit"));
+        buildSharedTerms(dir.resolve("stsplit"));
+      }
     } else {
       runBloom(dir.resolve("bloom"));
       runMemory(dir.resolve("memory"));
       runBitVectors(dir.resolve("bitvectors"));
       runOrds(dir.resolve("ords"));
       runSeek(dir.resolve("usplit"), "cx_usplit_seek", "uid");
+      runSeek(dir.resolve("stsplit"), "cx_stsplit_seek", "sb");
     }
   }
 }
