@@ -13,6 +13,8 @@ lucene-util = { path = "../lucene-util" }
 lucene-store = { path = "../lucene-store" }
 lz4_flex.workspace = true
 miniz_oxide.workspace = true
+# The SimpleText codec's `checksum` line (`SimpleTextUtil.writeChecksum`).
+crc32fast.workspace = true
 
 [features]
 # Exposes a block-decode counter to the benchmark runner -- see
@@ -25,7 +27,6 @@ test-support = []
 # A `[dev-dependencies]` edge, so resolver-2 feature unification keeps the
 # module out of this crate's production build.
 lucene-util = { path = "../lucene-util", features = ["test-support"] }
-crc32fast.workspace = true
 criterion.workspace = true
 
 [[bench]]

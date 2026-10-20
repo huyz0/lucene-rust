@@ -93,6 +93,14 @@ CASES=(
   # port's does -- pinning the bit positions, not only their count -- then
   # walks and seeks every term through the filtered enum.
   "lucene-codecs|write_bloom_fixture|bloom|VerifyCodecsBloom"
+  # lucene-codecs' SimpleTextPostingsFormat (M14.g): one .pst (docs-only
+  # fields with the empty term and binary terms holding 0x0a and 0x5c, freqs,
+  # and positions/offsets/payloads, the last two with norms) opened by real
+  # Lucene's own format: checksum line, every term walked with every
+  # document's freq/positions/offsets/payloads, every term seeked -- then
+  # Lucene's own writer re-writes it from its reader with the same norms and
+  # the two files must be equal byte for byte, skip lists and impacts too.
+  "lucene-codecs|write_simpletext_fixture|simpletext|VerifyCodecsSimpleText"
   # lucene-codecs' FSTPostingsFormat and DirectPostingsFormat (M14.g): an
   # FST50 group (.tfp over Lucene104 postings) and a Direct group (Lucene104's
   # files) opened by real Lucene's own formats; every term walked with its

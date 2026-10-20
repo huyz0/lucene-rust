@@ -393,7 +393,7 @@ pub fn permute_payload_run(
 /// more than one byte per norm -- and a `Vec` keeps the ordering invariant
 /// visible at the one place that maintains it.
 #[derive(Debug, Clone)]
-struct CompetitiveImpactAccumulator {
+pub(crate) struct CompetitiveImpactAccumulator {
     /// `maxFreqs[Byte.toUnsignedInt((byte) norm)]`: the highest freq seen for
     /// each byte-valued norm. Index `i` stands for norm `i as u8 as i8`.
     max_freqs: [i32; 256],
@@ -421,8 +421,24 @@ impl Default for CompetitiveImpactAccumulator {
 }
 
 impl CompetitiveImpactAccumulator {
+    /// `CompetitiveImpactAccumulator.clear()`.
+    pub(crate) fn clear(&mut self) {
+        self.max_freqs = [0i32; 256];
+        self.other.clear();
+    }
+
+    /// `CompetitiveImpactAccumulator.addAll(acc)`: the frontier of the union.
+    pub(crate) fn add_all(&mut self, acc: &CompetitiveImpactAccumulator) {
+        for (mine, &theirs) in self.max_freqs.iter_mut().zip(acc.max_freqs.iter()) {
+            *mine = (*mine).max(theirs);
+        }
+        for &entry in &acc.other {
+            Self::add_to_set(entry, &mut self.other);
+        }
+    }
+
     /// `CompetitiveImpactAccumulator.add(int freq, long norm)`.
-    fn add(&mut self, freq: i32, norm: i64) {
+    pub(crate) fn add(&mut self, freq: i32, norm: i64) {
         if (i64::from(i8::MIN)..=i64::from(i8::MAX)).contains(&norm) {
             let index = (norm as i8) as u8 as usize;
             self.max_freqs[index] = self.max_freqs[index].max(freq);
@@ -435,7 +451,7 @@ impl CompetitiveImpactAccumulator {
     }
 
     /// Java's `getCompetitiveFreqNormPairs()`.
-    fn get_competitive_freq_norm_pairs(&self) -> Vec<Impact> {
+    pub(crate) fn get_competitive_freq_norm_pairs(&self) -> Vec<Impact> {
         let mut impacts: Vec<Impact> = Vec::new();
         let mut max_freq_for_lower_norms = 0i32;
         for (i, &max_freq) in self.max_freqs.iter().enumerate() {

@@ -26,19 +26,24 @@ import org.apache.lucene.codecs.lucene104.Lucene104PostingsReader;
 import org.apache.lucene.codecs.lucene104.Lucene104PostingsWriter;
 import org.apache.lucene.codecs.memory.DirectPostingsFormat;
 import org.apache.lucene.codecs.memory.FSTPostingsFormat;
+import org.apache.lucene.codecs.simpletext.SimpleTextCodec;
 import org.apache.lucene.codecs.uniformsplit.UniformSplitPostingsFormat;
 import org.apache.lucene.codecs.uniformsplit.sharedterms.STUniformSplitPostingsFormat;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
+import org.apache.lucene.document.FieldType;
 import org.apache.lucene.document.KnnByteVectorField;
 import org.apache.lucene.document.StringField;
+import org.apache.lucene.document.TextField;
 import org.apache.lucene.index.CodecReader;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.FieldInfos;
+import org.apache.lucene.index.IndexOptions;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.NoMergePolicy;
+import org.apache.lucene.index.PostingsEnum;
 import org.apache.lucene.index.SegmentInfo;
 import org.apache.lucene.index.SegmentInfos;
 import org.apache.lucene.index.SegmentReadState;
@@ -47,6 +52,7 @@ import org.apache.lucene.index.Terms;
 import org.apache.lucene.index.TermsEnum;
 import org.apache.lucene.index.VectorSimilarityFunction;
 import org.apache.lucene.search.AcceptDocs;
+import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.search.TopKnnCollector;
@@ -93,6 +99,11 @@ import org.apache.lucene.util.BytesRef;
  * {@code Lucene104} postings; Lucene ships no postings format over this package), and the same
  * kind of {@code targets.tsv} (half present): {@code cx_bterms_seek} is {@code seekExact} on each,
  * through a {@code BlockTermsReader} opened by hand over the segment's files.
+ *
+ * <p>{@code stext/}: 50 000 documents of 1-8 skewed words ({@code w0}..{@code w2999}, freqs) in
+ * {@code st}, routed to {@code SimpleTextCodec}'s postings format, and 4 000 {@code targets.tsv}
+ * words (about half present): {@code cx_stext_seek} is {@code seekExact} on each, then a hit's
+ * postings walked to the end with {@code postings(FREQS)}.
  */
 public final class CodecsMicro {
   static long warmupMs = Long.getLong("warmupMs", 1500);
@@ -372,6 +383,58 @@ public final class CodecsMicro {
     Files.writeString(dir.resolve("built"), "");
   }
 
+  static final int ST_DOCS = 50_000;
+
+  /**
+   * {@code SimpleTextCodec}'s postings format under a name of its own: the format itself is
+   * package-private and not registered by SPI, so {@link #runSimpleText} opens it by hand.
+   */
+  static final class SimpleTextBenchFormat extends PostingsFormat {
+    final PostingsFormat delegate = new SimpleTextCodec().postingsFormat();
+
+    SimpleTextBenchFormat() {
+      super("SimpleTextBench");
+    }
+
+    @Override
+    public FieldsConsumer fieldsConsumer(SegmentWriteState state) throws IOException {
+      return delegate.fieldsConsumer(state);
+    }
+
+    @Override
+    public FieldsProducer fieldsProducer(SegmentReadState state) throws IOException {
+      return delegate.fieldsProducer(state);
+    }
+  }
+
+  /** Builds {@code stext/}: {@code cx_stext_seek}'s skewed words under SimpleText. */
+  static void buildSimpleText(Path dir) throws IOException {
+    Random r = new Random(0x16_5_2026_1020L);
+    FieldType freqs = new FieldType(TextField.TYPE_NOT_STORED);
+    freqs.setIndexOptions(IndexOptions.DOCS_AND_FREQS);
+    freqs.freeze();
+    try (Directory d = FSDirectory.open(dir);
+        IndexWriter w = new IndexWriter(d, config("st", new SimpleTextBenchFormat()))) {
+      for (int i = 0; i < ST_DOCS; i++) {
+        StringBuilder sb = new StringBuilder();
+        for (int j = 0, n = 1 + r.nextInt(8); j < n; j++) {
+          sb.append('w').append(r.nextInt(1 + r.nextInt(3000))).append(' ');
+        }
+        Document doc = new Document();
+        doc.add(new Field("st", sb.toString(), freqs));
+        w.addDocument(doc);
+      }
+      w.commit();
+    }
+    List<String> targets = new ArrayList<>();
+    for (int k = 0; k < 4_000; k++) {
+      // Mostly present (some words never drawn), and half absent.
+      targets.add("w" + (r.nextInt(2) == 0 ? r.nextInt(3000) : 3000 + r.nextInt(100_000)));
+    }
+    Files.write(dir.resolve("targets.tsv"), targets);
+    Files.writeString(dir.resolve("built"), "");
+  }
+
   /** Builds {@code stsplit/}: {@code cx_stsplit_seek}'s ids under SharedTermsUniformSplit. */
   static void buildSharedTerms(Path dir) throws IOException {
     Random r = new Random(0x15_5_2026_1021L);
@@ -473,6 +536,56 @@ public final class CodecsMicro {
     }
   }
 
+  /** One {@code cx_stext_seek} pass on one enum: seekExact, then every posting of a hit. */
+  static void stextPass(Terms terms, List<BytesRef> ids, Fnv f) throws IOException {
+    TermsEnum te = terms.iterator();
+    for (BytesRef id : ids) {
+      if (!te.seekExact(id)) {
+        f.add(-1);
+        continue;
+      }
+      f.add(te.docFreq());
+      PostingsEnum pe = te.postings(null, PostingsEnum.FREQS);
+      long s = 0;
+      for (int doc = pe.nextDoc(); doc != DocIdSetIterator.NO_MORE_DOCS; doc = pe.nextDoc()) {
+        s += doc * 31L + pe.freq();
+      }
+      f.add(s);
+    }
+  }
+
+  /**
+   * {@code cx_stext_seek}: per target, {@code seekExact} on {@code st}, then a hit's postings
+   * (docs and freqs) walked to the end, through the one segment's {@code SimpleTextBench_0} file.
+   */
+  static void runSimpleText(Path dir) throws IOException {
+    if (!selected("cx_stext_seek")) return;
+    List<BytesRef> ids = new ArrayList<>();
+    for (String line : Files.readAllLines(dir.resolve("targets.tsv"))) {
+      ids.add(new BytesRef(line));
+    }
+    try (Directory d = FSDirectory.open(dir)) {
+      SegmentInfo si = SegmentInfos.readLatestCommit(d).info(0).info;
+      FieldInfos fis = si.getCodec().fieldInfosFormat().read(d, si, "", IOContext.DEFAULT);
+      SegmentReadState state =
+          new SegmentReadState(d, si, fis, IOContext.DEFAULT, "SimpleTextBench_0");
+      try (FieldsProducer fields = new SimpleTextBenchFormat().fieldsProducer(state)) {
+        Terms terms = fields.terms("st");
+        Fnv f = new Fnv();
+        stextPass(terms, ids, f);
+        System.out.printf("#check\t%s\t%016x\t%d%n", "cx_stext_seek", f.h, ids.size());
+        measure(
+            "cx_stext_seek",
+            () -> {
+              Fnv g = new Fnv();
+              stextPass(terms, ids, g);
+              sink += g.h;
+              return ids.size();
+            });
+      }
+    }
+  }
+
   /** Times {@code seekExact} (hashing {@code docFreq}, -1 when absent) on each of the targets. */
   static void timeSeek(Path dir, String name, Terms terms) throws IOException {
     List<BytesRef> ids = new ArrayList<>();
@@ -529,6 +642,10 @@ public final class CodecsMicro {
         Files.createDirectories(dir.resolve("bterms"));
         buildBlockTerms(dir.resolve("bterms"));
       }
+      if (!Files.exists(dir.resolve("stext").resolve("built"))) {
+        Files.createDirectories(dir.resolve("stext"));
+        buildSimpleText(dir.resolve("stext"));
+      }
     } else {
       runBloom(dir.resolve("bloom"));
       runMemory(dir.resolve("memory"));
@@ -537,6 +654,7 @@ public final class CodecsMicro {
       runSeek(dir.resolve("usplit"), "cx_usplit_seek", "uid");
       runSeek(dir.resolve("stsplit"), "cx_stsplit_seek", "sb");
       runBlockTerms(dir.resolve("bterms"));
+      runSimpleText(dir.resolve("stext"));
     }
   }
 }

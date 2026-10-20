@@ -67,6 +67,7 @@ pub mod quantization;
 pub mod regexp;
 pub mod scalar_quantized_vectors;
 pub mod segment_state;
+pub mod simpletext;
 pub mod stored_fields;
 pub mod suggest;
 pub mod term_ngram;
