@@ -28,6 +28,10 @@
 //! `cx_bterms_seek`: `seekExact` on the same kind of ids (half present)
 //! through `blockterms`' `BlockTermsReader` over its default fixed-gap index
 //! (interval 32), over `bterms/`'s files (Java's `BlockTermsBenchFormat`).
+//!
+//! `cx_stext_seek`: per target of `stext/`, `seekExact` on the word through
+//! `simpletext`'s `SimpleTextFieldsReader`, then a hit's postings (docs and
+//! freqs) walked to the end, over Java's `SimpleTextBench_0` `.pst`.
 
 use std::hint::black_box;
 use std::time::Duration;
@@ -39,6 +43,8 @@ use lucene_codecs::bloom::BloomFilteredFieldsProducer;
 use lucene_codecs::hnsw_vectors::SearchOptions;
 use lucene_codecs::memory::{DirectFiles, DirectPostingsFormat, FstPostingsFormat};
 use lucene_codecs::segment_state::SegmentReadState;
+use lucene_codecs::simpletext::fields_reader::{SimpleTextFieldsReader, SimpleTextTerms};
+use lucene_codecs::simpletext::{FREQS, NO_MORE_DOCS};
 use lucene_codecs::uniformsplit::sharedterms::StUniformSplitPostingsFormat;
 use lucene_codecs::uniformsplit::UniformSplitPostingsFormat;
 
@@ -380,6 +386,53 @@ fn bench_bterms(w: Duration, m: Duration, dir: &str) {
     });
 }
 
+/// One `cx_stext_seek` pass on one enum, as Java's `stextPass`.
+fn stext_pass(terms: &SimpleTextTerms, ids: &[Vec<u8>], f: &mut Fnv) {
+    let mut te = terms.iterator();
+    for id in ids {
+        if !te.seek_exact(id).unwrap() {
+            f.add(-1);
+            continue;
+        }
+        f.add(i64::from(te.doc_freq()));
+        let mut pe = te.postings(FREQS).unwrap();
+        let mut s: i64 = 0;
+        let mut doc = pe.next_doc().unwrap();
+        while doc != NO_MORE_DOCS {
+            s = s.wrapping_add(i64::from(doc) * 31 + i64::from(pe.freq()));
+            doc = pe.next_doc().unwrap();
+        }
+        f.add(s);
+    }
+}
+
+fn bench_stext(w: Duration, m: Duration, dir: &str) {
+    if !selected("cx_stext_seek") {
+        return;
+    }
+    let ids = read_targets(dir);
+    let (name, id, fis) = segment(dir);
+    let suffix = "SimpleTextBench_0";
+    let state = SegmentReadState {
+        max_doc: 50_000,
+        segment_id: &id,
+        segment_suffix: suffix,
+        field_infos: &fis,
+    };
+    let pst = std::fs::read(format!("{dir}/{name}_{suffix}.pst")).unwrap();
+    let reader = SimpleTextFieldsReader::open(pst, &state).unwrap();
+    let terms = reader.terms("st").unwrap().unwrap();
+    let mut f = Fnv::new();
+    stext_pass(terms, &ids, &mut f);
+    println!("#check\tcx_stext_seek\t{:016x}\t{}", f.0, ids.len());
+    measure("cx_stext_seek", w, m, || {
+        let mut g = Fnv::new();
+        stext_pass(terms, &ids, black_box(&mut g));
+        black_box(g.0);
+        ids.len() as u64
+    });
+}
+
 pub fn bench_codecs(w: Duration, m: Duration, dir: &str) {
     bench_bloom(w, m, &format!("{dir}/bloom"));
     bench_memory(w, m, &format!("{dir}/memory"));
@@ -388,4 +441,5 @@ pub fn bench_codecs(w: Duration, m: Duration, dir: &str) {
     bench_usplit(w, m, &format!("{dir}/usplit"));
     bench_stsplit(w, m, &format!("{dir}/stsplit"));
     bench_bterms(w, m, &format!("{dir}/bterms"));
+    bench_stext(w, m, &format!("{dir}/stext"));
 }

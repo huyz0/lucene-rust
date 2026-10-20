@@ -37,8 +37,8 @@ codecs/simpletext/SimpleTextDocValuesFormat	todo:M14	the plain-text debugging co
 codecs/simpletext/SimpleTextDocValuesReader	todo:M14	the plain-text debugging codec (M14.g)
 codecs/simpletext/SimpleTextDocValuesWriter	todo:M14	the plain-text debugging codec (M14.g)
 codecs/simpletext/SimpleTextFieldInfosFormat	todo:M14	the plain-text debugging codec (M14.g)
-codecs/simpletext/SimpleTextFieldsReader	todo:M14	the plain-text debugging codec (M14.g)
-codecs/simpletext/SimpleTextFieldsWriter	todo:M14	the plain-text debugging codec (M14.g)
+codecs/simpletext/SimpleTextFieldsReader	ported	crates/lucene-codecs/src/simpletext/fields_reader.rs::SimpleTextFieldsReader
+codecs/simpletext/SimpleTextFieldsWriter	ported	crates/lucene-codecs/src/simpletext/fields_writer.rs::SimpleTextFieldsWriter
 codecs/simpletext/SimpleTextKnnVectorsFormat	todo:M14	the plain-text debugging codec (M14.g)
 codecs/simpletext/SimpleTextKnnVectorsReader	todo:M14	the plain-text debugging codec (M14.g)
 codecs/simpletext/SimpleTextKnnVectorsWriter	todo:M14	the plain-text debugging codec (M14.g)
@@ -47,17 +47,17 @@ codecs/simpletext/SimpleTextNormsFormat	todo:M14	the plain-text debugging codec 
 codecs/simpletext/SimpleTextPointsFormat	todo:M14	the plain-text debugging codec (M14.g)
 codecs/simpletext/SimpleTextPointsReader	todo:M14	the plain-text debugging codec (M14.g)
 codecs/simpletext/SimpleTextPointsWriter	todo:M14	the plain-text debugging codec (M14.g)
-codecs/simpletext/SimpleTextPostingsFormat	todo:M14	the plain-text debugging codec (M14.g)
+codecs/simpletext/SimpleTextPostingsFormat	ported	crates/lucene-codecs/src/simpletext/fields_writer.rs::write
 codecs/simpletext/SimpleTextSegmentInfoFormat	todo:M14	the plain-text debugging codec (M14.g)
-codecs/simpletext/SimpleTextSkipReader	todo:M14	the plain-text debugging codec (M14.g)
-codecs/simpletext/SimpleTextSkipWriter	todo:M14	the plain-text debugging codec (M14.g)
+codecs/simpletext/SimpleTextSkipReader	ported	crates/lucene-codecs/src/simpletext/skip.rs::SimpleTextSkipReader
+codecs/simpletext/SimpleTextSkipWriter	ported	crates/lucene-codecs/src/simpletext/skip.rs::SimpleTextSkipWriter
 codecs/simpletext/SimpleTextStoredFieldsFormat	todo:M14	the plain-text debugging codec (M14.g)
 codecs/simpletext/SimpleTextStoredFieldsReader	todo:M14	the plain-text debugging codec (M14.g)
 codecs/simpletext/SimpleTextStoredFieldsWriter	todo:M14	the plain-text debugging codec (M14.g)
 codecs/simpletext/SimpleTextTermVectorsFormat	todo:M14	the plain-text debugging codec (M14.g)
 codecs/simpletext/SimpleTextTermVectorsReader	todo:M14	the plain-text debugging codec (M14.g)
 codecs/simpletext/SimpleTextTermVectorsWriter	todo:M14	the plain-text debugging codec (M14.g)
-codecs/simpletext/SimpleTextUtil	todo:M14	the plain-text debugging codec (M14.g)
+codecs/simpletext/SimpleTextUtil	ported	crates/lucene-codecs/src/simpletext/util.rs::check_footer
 codecs/uniformsplit/BlockDecoder	ported	crates/lucene-codecs/src/uniformsplit/mod.rs::BlockDecoder
 codecs/uniformsplit/BlockEncoder	ported	crates/lucene-codecs/src/uniformsplit/mod.rs::BlockEncoder
 codecs/uniformsplit/BlockHeader	ported	crates/lucene-codecs/src/uniformsplit/block_header.rs::BlockHeader
