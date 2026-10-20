@@ -146,9 +146,13 @@ fn java_subnormal_float(v: f32) -> Option<String> {
     Some(format!("{sign}{}.{}E{e}", m / 10, m % 10))
 }
 
-/// `Double.toString(d)`, as [`java_float`].
+/// `Double.toString(d)`, as [`java_float`]: lucene-util's
+/// [`java_double_string`](lucene_util::geo::java_double_string), which also
+/// takes Java's two-digit choice for the smallest subnormals
+/// (`Double.MIN_VALUE` is `4.9E-324`, not the shortest `5.0E-324`) and its
+/// tie-to-even between equally close decimals.
 pub fn java_double(v: f64) -> String {
-    java_fp(v, format!("{v:?}"), format!("{v:e}"))
+    lucene_util::geo::java_double_string(v)
 }
 
 fn java_fp(v: f64, plain: String, sci: String) -> String {
