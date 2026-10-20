@@ -16,6 +16,7 @@ import org.apache.lucene.codecs.lucene104.Lucene104Codec;
 import org.apache.lucene.codecs.lucene104.Lucene104PostingsFormat;
 import org.apache.lucene.codecs.memory.DirectPostingsFormat;
 import org.apache.lucene.codecs.memory.FSTPostingsFormat;
+import org.apache.lucene.codecs.uniformsplit.UniformSplitPostingsFormat;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.KnnByteVectorField;
@@ -59,6 +60,10 @@ import org.apache.lucene.util.BytesRef;
  * the same kind of {@code targets.tsv} (half present) and {@code ords.tsv}, one random ord per
  * target: {@code cx_ords_seek} is, per target, {@code seekExact(term)} (and its {@code ord()})
  * then {@code seekExact(ord)} (and its term).
+ *
+ * <p>{@code usplit/}: the same 200 000 ids, {@code uid} routed to {@code
+ * UniformSplitPostingsFormat} (default 32/3 block lines, no encoder), and the same kind of {@code
+ * targets.tsv} (half present): {@code cx_usplit_seek} is {@code seekExact} on each.
  */
 public final class CodecsMicro {
   static long warmupMs = Long.getLong("warmupMs", 1500);
@@ -273,6 +278,27 @@ public final class CodecsMicro {
     }
   }
 
+  /** Builds {@code usplit/}: {@code cx_usplit_seek}'s ids under UniformSplit. */
+  static void buildUniformSplit(Path dir) throws IOException {
+    Random r = new Random(0x15_5_2026_1020L);
+    try (Directory d = FSDirectory.open(dir);
+        IndexWriter w = new IndexWriter(d, config("uid", new UniformSplitPostingsFormat()))) {
+      for (int i = 0; i < DOCS; i++) {
+        Document doc = new Document();
+        doc.add(new StringField("uid", idOf(i), Field.Store.NO));
+        w.addDocument(doc);
+      }
+      w.commit();
+    }
+    List<String> targets = new ArrayList<>();
+    for (int k = 0; k < 200_000; k++) {
+      // Half present, half absent.
+      targets.add(idOf(r.nextInt(2) == 0 ? r.nextInt(DOCS) : DOCS + r.nextInt(10 * DOCS)));
+    }
+    Files.write(dir.resolve("targets.tsv"), targets);
+    Files.writeString(dir.resolve("built"), "");
+  }
+
   /** {@code cx_bloom_seek}: {@code seekExact} on one filtered enum, per target. */
   static void runBloom(Path dir) throws IOException {
     runSeek(dir, "cx_bloom_seek", "id");
@@ -372,11 +398,16 @@ public final class CodecsMicro {
         Files.createDirectories(dir.resolve("ords"));
         buildOrds(dir.resolve("ords"));
       }
+      if (!Files.exists(dir.resolve("usplit").resolve("built"))) {
+        Files.createDirectories(dir.resolve("usplit"));
+        buildUniformSplit(dir.resolve("usplit"));
+      }
     } else {
       runBloom(dir.resolve("bloom"));
       runMemory(dir.resolve("memory"));
       runBitVectors(dir.resolve("bitvectors"));
       runOrds(dir.resolve("ords"));
+      runSeek(dir.resolve("usplit"), "cx_usplit_seek", "uid");
     }
   }
 }

@@ -58,23 +58,23 @@ codecs/simpletext/SimpleTextTermVectorsFormat	todo:M14	the plain-text debugging 
 codecs/simpletext/SimpleTextTermVectorsReader	todo:M14	the plain-text debugging codec (M14.g)
 codecs/simpletext/SimpleTextTermVectorsWriter	todo:M14	the plain-text debugging codec (M14.g)
 codecs/simpletext/SimpleTextUtil	todo:M14	the plain-text debugging codec (M14.g)
-codecs/uniformsplit/BlockDecoder	todo:M14	the uniform-split terms dictionary (M14.g)
-codecs/uniformsplit/BlockEncoder	todo:M14	the uniform-split terms dictionary (M14.g)
-codecs/uniformsplit/BlockHeader	todo:M14	the uniform-split terms dictionary (M14.g)
-codecs/uniformsplit/BlockLine	todo:M14	the uniform-split terms dictionary (M14.g)
-codecs/uniformsplit/BlockReader	todo:M14	the uniform-split terms dictionary (M14.g)
-codecs/uniformsplit/BlockWriter	todo:M14	the uniform-split terms dictionary (M14.g)
-codecs/uniformsplit/DeltaBaseTermStateSerializer	todo:M14	the uniform-split terms dictionary (M14.g)
-codecs/uniformsplit/FSTDictionary	todo:M14	the uniform-split terms dictionary (M14.g)
-codecs/uniformsplit/FieldMetadata	todo:M14	the uniform-split terms dictionary (M14.g)
-codecs/uniformsplit/IndexDictionary	todo:M14	the uniform-split terms dictionary (M14.g)
-codecs/uniformsplit/IntersectBlockReader	todo:M14	the uniform-split terms dictionary (M14.g)
-codecs/uniformsplit/RamUsageUtil	todo:M14	the uniform-split terms dictionary (M14.g)
-codecs/uniformsplit/TermBytes	todo:M14	the uniform-split terms dictionary (M14.g)
-codecs/uniformsplit/UniformSplitPostingsFormat	todo:M14	the uniform-split terms dictionary (M14.g)
-codecs/uniformsplit/UniformSplitTerms	todo:M14	the uniform-split terms dictionary (M14.g)
-codecs/uniformsplit/UniformSplitTermsReader	todo:M14	the uniform-split terms dictionary (M14.g)
-codecs/uniformsplit/UniformSplitTermsWriter	todo:M14	the uniform-split terms dictionary (M14.g)
+codecs/uniformsplit/BlockDecoder	ported	crates/lucene-codecs/src/uniformsplit/mod.rs::BlockDecoder
+codecs/uniformsplit/BlockEncoder	ported	crates/lucene-codecs/src/uniformsplit/mod.rs::BlockEncoder
+codecs/uniformsplit/BlockHeader	ported	crates/lucene-codecs/src/uniformsplit/block_header.rs::BlockHeader
+codecs/uniformsplit/BlockLine	ported	crates/lucene-codecs/src/uniformsplit/block_line.rs::BlockLineReader
+codecs/uniformsplit/BlockReader	ported	crates/lucene-codecs/src/uniformsplit/block_reader.rs::BlockReader
+codecs/uniformsplit/BlockWriter	ported	crates/lucene-codecs/src/uniformsplit/writer.rs::BlockWriter
+codecs/uniformsplit/DeltaBaseTermStateSerializer	ported	crates/lucene-codecs/src/uniformsplit/term_state.rs::DeltaBaseTermStateSerializer
+codecs/uniformsplit/FSTDictionary	ported	crates/lucene-codecs/src/uniformsplit/dictionary.rs::FstDictionary
+codecs/uniformsplit/FieldMetadata	ported	crates/lucene-codecs/src/uniformsplit/field_metadata.rs::FieldMetadata
+codecs/uniformsplit/IndexDictionary	ported	crates/lucene-codecs/src/uniformsplit/dictionary.rs::FstDictionary
+codecs/uniformsplit/IntersectBlockReader	ported	crates/lucene-codecs/src/uniformsplit/intersect.rs::IntersectBlockReader
+codecs/uniformsplit/RamUsageUtil	not-needed	heap-size accounting for Accountable.ramBytesUsed; this port reports no RAM usage for the format
+codecs/uniformsplit/TermBytes	ported	crates/lucene-codecs/src/uniformsplit/block_line.rs::TermBytes
+codecs/uniformsplit/UniformSplitPostingsFormat	ported	crates/lucene-codecs/src/uniformsplit/mod.rs::UniformSplitPostingsFormat
+codecs/uniformsplit/UniformSplitTerms	ported	crates/lucene-codecs/src/uniformsplit/reader.rs::UniformSplitTerms
+codecs/uniformsplit/UniformSplitTermsReader	ported	crates/lucene-codecs/src/uniformsplit/reader.rs::UniformSplitTermsReader
+codecs/uniformsplit/UniformSplitTermsWriter	ported	crates/lucene-codecs/src/uniformsplit/writer.rs::UniformSplitTermsWriter
 codecs/uniformsplit/sharedterms/FieldMetadataTermState	todo:M14	the shared-terms uniform-split terms dictionary (M14.g)
 codecs/uniformsplit/sharedterms/STBlockLine	todo:M14	the shared-terms uniform-split terms dictionary (M14.g)
 codecs/uniformsplit/sharedterms/STBlockReader	todo:M14	the shared-terms uniform-split terms dictionary (M14.g)
