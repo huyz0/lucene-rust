@@ -149,25 +149,6 @@ field dvbin
 length 28
 [80 44 e5 d1 27 68 35 b8 91]
 T
-field sdv
-  type SORTED
-  doccount 1
-  maxvaluecount 1
-  numvalues 1
-  maxlength 2
-  pattern 0
-  ordpattern 0
-length 2
-s0
-1
-  skipdata
-    interval
-      minDocID 0
-      maxDocID 0
-      minValue 0
-      maxValue 0
-      docCount 1
-  skipend
 field dvsnum
   type SORTED_NUMERIC
   minalue 9007199254740992
@@ -185,6 +166,25 @@ T
       maxDocID 0
       minValue 9007199254740992
       maxValue 9007199254740992
+      docCount 1
+  skipend
+field sdv
+  type SORTED
+  doccount 1
+  maxvaluecount 1
+  numvalues 1
+  maxlength 2
+  pattern 0
+  ordpattern 0
+length 2
+s0
+1
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 0
+      minValue 0
+      maxValue 0
       docCount 1
   skipend
 field dvsorted
@@ -235,4 +235,4 @@ T
       docCount 1
   skipend
 END
-checksum 00000000002419530108
+checksum 00000000002725174488

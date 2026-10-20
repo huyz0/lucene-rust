@@ -153,10 +153,6 @@ fn check_max_length(max_length: i32) -> Result<()> {
     Ok(())
 }
 
-/// `SimpleTextUtil.CHECKSUM.length + 21`: the checksum line's length
-/// (`checksum `, 20 digits, a newline).
-const FOOTER_LENGTH: i64 = 30;
-
 /// `SimpleTextDocValuesReader` over the whole file.
 #[derive(Debug, Clone)]
 pub struct SimpleTextDocValuesReader<'d> {
@@ -370,24 +366,7 @@ impl<'d> SimpleTextDocValuesReader<'d> {
     /// `Corrupted` for a footer elsewhere or a wrong checksum.
     pub fn check_integrity(&self) -> Result<()> {
         // Java: SimpleTextDocValuesReader.checkIntegrity
-        let data = self.data;
-        let footer_start = i64::try_from(data.len())
-            .unwrap_or(i64::MAX)
-            .saturating_sub(FOOTER_LENGTH);
-        let mut scratch = Vec::new();
-        let mut pos = 0usize;
-        loop {
-            read_line(data, &mut pos, &mut scratch)?;
-            let fp = i64::try_from(pos).unwrap_or(i64::MAX);
-            if fp >= footer_start {
-                if fp != footer_start {
-                    return Err(corrupt(format!(
-                        "SimpleText failure: footer does not start at expected position current={fp} vs expected={footer_start}"
-                    )));
-                }
-                return util::check_footer(data, 0, &mut pos);
-            }
-        }
+        util::check_integrity(self.data)
     }
 }
 

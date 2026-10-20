@@ -2,7 +2,6 @@ size 180
   doc 0
   doc 1
   doc 2
-  doc 3
   doc 4
   doc 5
   doc 6
@@ -99,6 +98,7 @@ size 180
   doc 97
   doc 98
   doc 99
+  doc 100
   doc 101
   doc 102
   doc 103
@@ -121,6 +121,7 @@ size 180
   doc 120
   doc 121
   doc 122
+  doc 123
   doc 124
   doc 125
   doc 126
@@ -157,7 +158,6 @@ size 180
   doc 157
   doc 158
   doc 159
-  doc 160
   doc 161
   doc 162
   doc 163
@@ -178,4 +178,4 @@ size 180
   doc 178
   doc 179
 END
-checksum 00000000004195997816
+checksum 00000000002151331691

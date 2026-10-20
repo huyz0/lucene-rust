@@ -49,6 +49,15 @@
 //! `body`, without on `tag`), `get` through `simpletext`'s
 //! `SimpleTextTermVectorsReader` over Java's `.tvc`, every field, term,
 //! position, offset and payload hashed.
+//!
+//! `cx_stext_points`: per box of `spts/` (20 000 documents under
+//! `SimpleTextCodec`, 1-3 two-dimensional `IntPoint`s each, 300 boxes),
+//! `intersect` through `simpletext`'s `SimpleTextBkdReader` over Java's
+//! `.dim`/`.dii`, every doc handed over inside the box hashed.
+//!
+//! `cx_stext_points_write`: `spts/`'s `p` read back through that reader
+//! (`intersect`, every cell crossing, as Java's `writeField` does) and
+//! rebuilt through `SimpleTextPointsWriter`; both files' bytes hashed.
 
 use std::hint::black_box;
 use std::time::Duration;
@@ -59,9 +68,13 @@ use lucene_codecs::blocktreeords::{BlockTreeOrdsPostingsFormat, OrdsFieldReader}
 use lucene_codecs::bloom::BloomFilteredFieldsProducer;
 use lucene_codecs::hnsw_vectors::SearchOptions;
 use lucene_codecs::memory::{DirectFiles, DirectPostingsFormat, FstPostingsFormat};
+use lucene_codecs::points::{IntersectVisitor, Relation};
 use lucene_codecs::segment_state::SegmentReadState;
+use lucene_codecs::simpletext::bkd_reader::SimpleTextBkdReader;
 use lucene_codecs::simpletext::doc_values_reader::SimpleTextDocValuesReader;
 use lucene_codecs::simpletext::fields_reader::{SimpleTextFieldsReader, SimpleTextTerms};
+use lucene_codecs::simpletext::points_reader::SimpleTextPointsReader;
+use lucene_codecs::simpletext::points_writer::SimpleTextPointsWriter;
 use lucene_codecs::simpletext::stored_fields_reader::SimpleTextStoredFieldsReader;
 use lucene_codecs::simpletext::term_vectors_reader::{
     SimpleTextTermVectorsReader, SimpleTextTvTermsEnum,
@@ -670,6 +683,152 @@ fn bench_stext_tv(w: Duration, m: Duration, dir: &str) {
     });
 }
 
+/// `cx_stext_points`' visitor, as Java's `BoxHash`.
+struct BoxHash<'f> {
+    lo: [u8; 8],
+    hi: [u8; 8],
+    f: &'f mut Fnv,
+    n: u64,
+}
+
+impl IntersectVisitor for BoxHash<'_> {
+    fn compare(&mut self, min: &[u8], max: &[u8]) -> Relation {
+        let mut crosses = false;
+        for o in [0, 4] {
+            let r = o..o + 4;
+            if min[r.clone()] > self.hi[r.clone()] || max[r.clone()] < self.lo[r.clone()] {
+                return Relation::CellOutsideQuery;
+            }
+            crosses |= min[r.clone()] < self.lo[r.clone()] || max[r.clone()] > self.hi[r];
+        }
+        if crosses {
+            Relation::CellCrossesQuery
+        } else {
+            Relation::CellInsideQuery
+        }
+    }
+    fn visit(&mut self, doc: i32) {
+        self.f.add(i64::from(doc));
+        self.n += 1;
+    }
+    fn visit_with_value(&mut self, doc: i32, packed: &[u8]) {
+        for o in [0, 4] {
+            let r = o..o + 4;
+            if packed[r.clone()] < self.lo[r.clone()] || packed[r.clone()] > self.hi[r] {
+                return;
+            }
+        }
+        self.f.add(i64::from(doc));
+        self.n += 1;
+    }
+}
+
+/// One `cx_stext_points` pass, as Java's `pointsPass`.
+fn points_pass(v: &SimpleTextBkdReader<'_>, boxes: &[([u8; 8], [u8; 8])], f: &mut Fnv) -> u64 {
+    let mut n = 0;
+    for (lo, hi) in boxes {
+        let mut b = BoxHash {
+            lo: *lo,
+            hi: *hi,
+            f: &mut *f,
+            n: 0,
+        };
+        v.intersect(&mut b).unwrap();
+        n += b.n;
+    }
+    n
+}
+
+fn bench_stext_points(w: Duration, m: Duration, dir: &str) {
+    if !selected("cx_stext_points") {
+        return;
+    }
+    let unhex = |s: &str| -> [u8; 8] {
+        std::array::from_fn(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap())
+    };
+    let boxes: Vec<([u8; 8], [u8; 8])> = std::fs::read_to_string(format!("{dir}/boxes.tsv"))
+        .expect("run CodecsMicro build first (scripts/bench-micro.sh --bench codecs)")
+        .lines()
+        .map(|l| {
+            let (lo, hi) = l.split_once('\t').unwrap();
+            (unhex(lo), unhex(hi))
+        })
+        .collect();
+    let dim = std::fs::read(format!("{dir}/_0.dim")).unwrap();
+    let dii = std::fs::read(format!("{dir}/_0.dii")).unwrap();
+    let reader = SimpleTextPointsReader::open(&dim, &dii).unwrap();
+    let v = reader.field("p").unwrap();
+    let mut f = Fnv::new();
+    let n = points_pass(v, &boxes, &mut f);
+    println!("#check\tcx_stext_points\t{:016x}\t{n}", f.0);
+    measure("cx_stext_points", w, m, || {
+        let mut g = Fnv::new();
+        let c = points_pass(v, &boxes, black_box(&mut g));
+        black_box(g.0);
+        c
+    });
+}
+
+/// `cx_stext_points_write`'s source visitor, as Java's `writeField`'s:
+/// every cell crosses, so every point arrives with its value.
+#[derive(Default)]
+struct Gather {
+    packed: Vec<u8>,
+    docs: Vec<i32>,
+}
+
+impl IntersectVisitor for Gather {
+    fn compare(&mut self, _min: &[u8], _max: &[u8]) -> Relation {
+        Relation::CellCrossesQuery
+    }
+    fn visit(&mut self, _doc: i32) {
+        unreachable!("every cell crosses")
+    }
+    fn visit_with_value(&mut self, doc: i32, packed: &[u8]) {
+        self.packed.extend_from_slice(packed);
+        self.docs.push(doc);
+    }
+}
+
+/// One `cx_stext_points_write` build, as Java's `pointsWrite`.
+fn points_write(
+    v: &SimpleTextBkdReader<'_>,
+    fi: &lucene_codecs::field_infos::FieldInfo,
+) -> (Vec<u8>, Vec<u8>) {
+    let mut g = Gather::default();
+    v.intersect(&mut g).unwrap();
+    let mut w = SimpleTextPointsWriter::new("_0", 20_000, None);
+    let points = g.packed.chunks_exact(8).zip(g.docs.iter().copied());
+    w.write_field(fi, v.size() as u64, points).unwrap();
+    w.finish()
+}
+
+fn bench_stext_points_write(w: Duration, m: Duration, dir: &str) {
+    if !selected("cx_stext_points_write") {
+        return;
+    }
+    // Java's `p`: two 4-byte dimensions (the `.inf` is not needed).
+    let fi = &lucene_codecs::field_infos::FieldInfo::new("p", 0).with_points(2, 2, 4);
+    let dim = std::fs::read(format!("{dir}/_0.dim")).unwrap();
+    let dii = std::fs::read(format!("{dir}/_0.dii")).unwrap();
+    let reader = SimpleTextPointsReader::open(&dim, &dii).unwrap();
+    let v = reader.field("p").unwrap();
+    let (d, i) = points_write(v, fi);
+    let mut f = Fnv::new();
+    for b in d.iter().chain(&i) {
+        f.add(i64::from(*b as i8));
+    }
+    println!(
+        "#check\tcx_stext_points_write\t{:016x}\t{}",
+        f.0,
+        d.len() + i.len()
+    );
+    measure("cx_stext_points_write", w, m, || {
+        let (d, i) = points_write(v, fi);
+        black_box((d.len() + i.len()) as u64)
+    });
+}
+
 pub fn bench_codecs(w: Duration, m: Duration, dir: &str) {
     bench_bloom(w, m, &format!("{dir}/bloom"));
     bench_memory(w, m, &format!("{dir}/memory"));
@@ -682,4 +841,6 @@ pub fn bench_codecs(w: Duration, m: Duration, dir: &str) {
     bench_stext_stored(w, m, &format!("{dir}/sstored"));
     bench_stext_dv(w, m, &format!("{dir}/sdv"));
     bench_stext_tv(w, m, &format!("{dir}/stv"));
+    bench_stext_points(w, m, &format!("{dir}/spts"));
+    bench_stext_points_write(w, m, &format!("{dir}/spts"));
 }
