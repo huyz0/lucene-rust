@@ -1,0 +1,6 @@
+
+
+java org.apache.lucene.misc.HighFreqTerms <index dir> [-t] [number_terms] [field]
+	 -t: order by totalTermFreq
+
+

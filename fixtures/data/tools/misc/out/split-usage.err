@@ -1,0 +1,3 @@
+Usage: IndexSplitter <srcDir> -l (list the segments and their sizes)
+IndexSplitter <srcDir> <destDir> <segments>+
+IndexSplitter <srcDir> -d (delete the following segments)
