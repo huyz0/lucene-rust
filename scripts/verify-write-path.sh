@@ -126,6 +126,14 @@ CASES=(
   # sharing many lines), opened by real Lucene's own format and checked the
   # same way.
   "lucene-codecs|write_sharedterms_fixture|sharedterms|VerifyCodecsSharedTerms"
+  # lucene-codecs' blockterms (M14.g): four groups (fixed-gap index of 32
+  # and 3, variable-gap over every 5th term and over every 9th or docFreq
+  # >= 30) opened by real Lucene's own BlockTermsReader over its own terms
+  # index readers; every term walked with its docFreq/totalTermFreq, every
+  # document's postings and (fixed gap) its ord, seekExact on every term,
+  # seekCeil just past it on a reused enum, and seekExact(ord) on every 7th
+  # ord.
+  "lucene-codecs|write_blockterms_fixture|blockterms|VerifyCodecsBlockTerms"
   # Last, and unlike every case above: a whole index written by the real
   # IndexWriter, opened by DirectoryReader and run through CheckIndex. The
   # cases above each hand Lucene one codec file with a hand-built

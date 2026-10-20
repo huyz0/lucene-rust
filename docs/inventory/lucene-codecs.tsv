@@ -3,14 +3,14 @@
 # class	status	detail
 codecs/bitvectors/FlatBitVectorsScorer	ported	crates/lucene-codecs/src/bitvectors/mod.rs::FlatBitVectorsScorer
 codecs/bitvectors/HnswBitVectorsFormat	ported	crates/lucene-codecs/src/bitvectors/mod.rs::HnswBitVectorsFormat
-codecs/blockterms/BlockTermsReader	todo:M14	the block-terms dictionary and its fixed/variable-gap terms indexes (M14.g)
-codecs/blockterms/BlockTermsWriter	todo:M14	the block-terms dictionary and its fixed/variable-gap terms indexes (M14.g)
-codecs/blockterms/FixedGapTermsIndexReader	todo:M14	the block-terms dictionary and its fixed/variable-gap terms indexes (M14.g)
-codecs/blockterms/FixedGapTermsIndexWriter	todo:M14	the block-terms dictionary and its fixed/variable-gap terms indexes (M14.g)
-codecs/blockterms/TermsIndexReaderBase	todo:M14	the block-terms dictionary and its fixed/variable-gap terms indexes (M14.g)
-codecs/blockterms/TermsIndexWriterBase	todo:M14	the block-terms dictionary and its fixed/variable-gap terms indexes (M14.g)
-codecs/blockterms/VariableGapTermsIndexReader	todo:M14	the block-terms dictionary and its fixed/variable-gap terms indexes (M14.g)
-codecs/blockterms/VariableGapTermsIndexWriter	todo:M14	the block-terms dictionary and its fixed/variable-gap terms indexes (M14.g)
+codecs/blockterms/BlockTermsReader	ported	crates/lucene-codecs/src/blockterms/reader.rs::BlockTermsReader
+codecs/blockterms/BlockTermsWriter	ported	crates/lucene-codecs/src/blockterms/writer.rs::BlockTermsWriter
+codecs/blockterms/FixedGapTermsIndexReader	ported	crates/lucene-codecs/src/blockterms/fixed_gap.rs::FixedGapTermsIndexReader
+codecs/blockterms/FixedGapTermsIndexWriter	ported	crates/lucene-codecs/src/blockterms/fixed_gap.rs::FixedGapTermsIndexWriter
+codecs/blockterms/TermsIndexReaderBase	ported	crates/lucene-codecs/src/blockterms/reader.rs::TermsIndexReader
+codecs/blockterms/TermsIndexWriterBase	ported	crates/lucene-codecs/src/blockterms/mod.rs::TermsIndexWriterBase
+codecs/blockterms/VariableGapTermsIndexReader	ported	crates/lucene-codecs/src/blockterms/variable_gap.rs::VariableGapTermsIndexReader
+codecs/blockterms/VariableGapTermsIndexWriter	ported	crates/lucene-codecs/src/blockterms/variable_gap.rs::VariableGapTermsIndexWriter
 codecs/blocktreeords/BlockTreeOrdsPostingsFormat	ported	crates/lucene-codecs/src/blocktreeords/mod.rs::BlockTreeOrdsPostingsFormat
 codecs/blocktreeords/FSTOrdsOutputs	ported	crates/lucene-codecs/src/blocktreeords/outputs.rs::FstOrdsOutputs
 codecs/blocktreeords/OrdsBlockTreeTermsReader	ported	crates/lucene-codecs/src/blocktreeords/reader.rs::OrdsBlockTreeTermsReader

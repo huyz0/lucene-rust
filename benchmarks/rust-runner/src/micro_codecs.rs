@@ -24,11 +24,16 @@
 //! `cx_stsplit_seek`: `seekExact` on the same kind of ids through
 //! `STUniformSplitPostingsFormat`'s enum of `sb`, whose ids (every third)
 //! share `stsplit/`'s blocks and dictionary with `sa`'s (all).
+//!
+//! `cx_bterms_seek`: `seekExact` on the same kind of ids (half present)
+//! through `blockterms`' `BlockTermsReader` over its default fixed-gap index
+//! (interval 32), over `bterms/`'s files (Java's `BlockTermsBenchFormat`).
 
 use std::hint::black_box;
 use std::time::Duration;
 
 use lucene_codecs::bitvectors::{BitVectorsFiles, BitVectorsReader};
+use lucene_codecs::blockterms::{BlockTermsReader, FixedGapTermsIndexReader};
 use lucene_codecs::blocktreeords::{BlockTreeOrdsPostingsFormat, OrdsFieldReader};
 use lucene_codecs::bloom::BloomFilteredFieldsProducer;
 use lucene_codecs::hnsw_vectors::SearchOptions;
@@ -351,6 +356,30 @@ fn bench_stsplit(w: Duration, m: Duration, dir: &str) {
     });
 }
 
+fn bench_bterms(w: Duration, m: Duration, dir: &str) {
+    if !selected("cx_bterms_seek") {
+        return;
+    }
+    let targets = read_targets(dir);
+    let (name, id, fis) = segment(dir);
+    let suffix = "BlockTermsBench_0";
+    let file = |ext: &str| std::fs::read(format!("{dir}/{name}_{suffix}.{ext}")).unwrap();
+    let state = SegmentReadState {
+        max_doc: 200_000,
+        segment_id: &id,
+        segment_suffix: suffix,
+        field_infos: &fis,
+    };
+    let index = FixedGapTermsIndexReader::open(&file("tii"), &state).unwrap();
+    let reader = BlockTermsReader::open(file("tib"), index, &state).unwrap();
+    let terms = reader.terms("bid").unwrap();
+    // One enum, as Java's case reuses one `TermsEnum` per pass.
+    let mut e = terms.iterator();
+    bench_seek(w, m, "cx_bterms_seek", &targets, |t| {
+        e.seek_exact(t).unwrap().then(|| e.doc_freq().unwrap())
+    });
+}
+
 pub fn bench_codecs(w: Duration, m: Duration, dir: &str) {
     bench_bloom(w, m, &format!("{dir}/bloom"));
     bench_memory(w, m, &format!("{dir}/memory"));
@@ -358,4 +387,5 @@ pub fn bench_codecs(w: Duration, m: Duration, dir: &str) {
     bench_ords(w, m, &format!("{dir}/ords"));
     bench_usplit(w, m, &format!("{dir}/usplit"));
     bench_stsplit(w, m, &format!("{dir}/stsplit"));
+    bench_bterms(w, m, &format!("{dir}/bterms"));
 }
