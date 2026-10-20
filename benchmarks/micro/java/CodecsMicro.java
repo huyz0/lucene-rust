@@ -1,4 +1,8 @@
 import java.io.IOException;
+import org.apache.lucene.analysis.TokenStream;
+import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
+import org.apache.lucene.analysis.tokenattributes.OffsetAttribute;
+import org.apache.lucene.analysis.tokenattributes.PayloadAttribute;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -6,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.HexFormat;
 import java.util.Random;
+import org.apache.lucene.codecs.DocValuesProducer;
 import org.apache.lucene.codecs.FieldsConsumer;
 import org.apache.lucene.codecs.FieldsProducer;
 import org.apache.lucene.codecs.KnnVectorsFormat;
@@ -27,19 +32,26 @@ import org.apache.lucene.codecs.lucene104.Lucene104PostingsWriter;
 import org.apache.lucene.codecs.memory.DirectPostingsFormat;
 import org.apache.lucene.codecs.memory.FSTPostingsFormat;
 import org.apache.lucene.codecs.StoredFieldsReader;
+import org.apache.lucene.codecs.TermVectorsReader;
 import org.apache.lucene.codecs.simpletext.SimpleTextCodec;
 import org.apache.lucene.codecs.uniformsplit.UniformSplitPostingsFormat;
 import org.apache.lucene.codecs.uniformsplit.sharedterms.STUniformSplitPostingsFormat;
+import org.apache.lucene.document.BinaryDocValuesField;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.FieldType;
 import org.apache.lucene.document.KnnByteVectorField;
+import org.apache.lucene.document.NumericDocValuesField;
+import org.apache.lucene.document.SortedDocValuesField;
+import org.apache.lucene.document.SortedNumericDocValuesField;
+import org.apache.lucene.document.SortedSetDocValuesField;
 import org.apache.lucene.document.StoredField;
 import org.apache.lucene.document.StringField;
 import org.apache.lucene.document.TextField;
 import org.apache.lucene.index.CodecReader;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.FieldInfos;
+import org.apache.lucene.index.Fields;
 import org.apache.lucene.index.IndexOptions;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
@@ -112,6 +124,19 @@ import org.apache.lucene.util.BytesRef;
  * {@code st}, routed to {@code SimpleTextCodec}'s postings format, and 4 000 {@code targets.tsv}
  * words (about half present): {@code cx_stext_seek} is {@code seekExact} on each, then a hit's
  * postings walked to the end with {@code postings(FREQS)}.
+ *
+ * <p>{@code sdv/}: 20 000 documents under {@code SimpleTextCodec}, with doc values {@code n}
+ * (NUMERIC, 4 in 5 documents), {@code b} (BINARY, every other), {@code s} (SORTED, 1 000 terms),
+ * {@code sn} (SORTED_NUMERIC, 0-3 values) and {@code ss} (SORTED_SET, 0-3 of 2 000 terms):
+ * {@code cx_stext_dv} walks every field's iterator to the end through the segment's {@code
+ * SimpleTextDocValuesReader}, hashing each value, then every term of {@code s} and {@code ss} by
+ * {@code lookupOrd}.
+ *
+ * <p>{@code stv/}: 5 000 documents under {@code SimpleTextCodec}, with term vectors on {@code
+ * body} (5-30 of 500 words; positions, offsets, payloads on two tokens in three) and {@code tag}
+ * (1-4 of 50 values, no positions), and 2 000 random {@code targets.tsv} documents: {@code
+ * cx_stext_tv} is {@code get(doc)} on each through the segment's {@code
+ * SimpleTextTermVectorsReader}, every field, term, position, offset and payload hashed.
  */
 public final class CodecsMicro {
   static long warmupMs = Long.getLong("warmupMs", 1500);
@@ -416,6 +441,258 @@ public final class CodecsMicro {
   }
 
   static final int SS_DOCS = 20_000;
+
+  static final int TV_DOCS = 5_000;
+
+  /** {@code stv/}'s {@code body} tokens: offsets one apart, a payload on two in three. */
+  static final class TvBenchStream extends TokenStream {
+    final CharTermAttribute term = addAttribute(CharTermAttribute.class);
+    final OffsetAttribute offset = addAttribute(OffsetAttribute.class);
+    final PayloadAttribute payload = addAttribute(PayloadAttribute.class);
+    final String[] words;
+    int upto;
+    int start;
+
+    TvBenchStream(String[] words) {
+      this.words = words;
+    }
+
+    @Override
+    public boolean incrementToken() {
+      if (upto == words.length) return false;
+      clearAttributes();
+      String w = words[upto++];
+      term.setEmpty().append(w);
+      offset.setOffset(start, start + w.length());
+      start += w.length() + 1;
+      payload.setPayload(upto % 3 == 0 ? null : new BytesRef(new byte[] {(byte) upto, 7}));
+      return true;
+    }
+
+    @Override
+    public void reset() throws IOException {
+      super.reset();
+      upto = 0;
+      start = 0;
+    }
+  }
+
+  /** Builds {@code stv/}: {@code cx_stext_tv}'s documents under SimpleTextCodec. */
+  static void buildTermVectorsText(Path dir) throws IOException {
+    Random r = new Random(0x7f_2026_1021L);
+    FieldType body = new FieldType();
+    body.setIndexOptions(IndexOptions.DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS);
+    body.setTokenized(true);
+    body.setStoreTermVectors(true);
+    body.setStoreTermVectorPositions(true);
+    body.setStoreTermVectorOffsets(true);
+    body.setStoreTermVectorPayloads(true);
+    body.freeze();
+    FieldType tag = new FieldType(StringField.TYPE_NOT_STORED);
+    tag.setStoreTermVectors(true);
+    tag.freeze();
+    IndexWriterConfig config = new IndexWriterConfig();
+    config.setCodec(new SimpleTextCodec());
+    config.setUseCompoundFile(false);
+    config.setMergePolicy(NoMergePolicy.INSTANCE);
+    config.setMaxBufferedDocs(TV_DOCS + 1);
+    config.setRAMBufferSizeMB(512);
+    try (Directory d = FSDirectory.open(dir);
+        IndexWriter w = new IndexWriter(d, config)) {
+      for (int i = 0; i < TV_DOCS; i++) {
+        Document doc = new Document();
+        String[] words = new String[5 + r.nextInt(26)];
+        for (int j = 0; j < words.length; j++) {
+          words[j] = "w" + r.nextInt(500);
+        }
+        doc.add(new Field("body", new TvBenchStream(words), body));
+        for (int j = 0, n = 1 + r.nextInt(4); j < n; j++) {
+          doc.add(new Field("tag", "t" + r.nextInt(50), tag));
+        }
+        w.addDocument(doc);
+      }
+      w.commit();
+    }
+    List<String> targets = new ArrayList<>();
+    for (int k = 0; k < 2_000; k++) {
+      targets.add(Integer.toString(r.nextInt(TV_DOCS)));
+    }
+    Files.write(dir.resolve("targets.tsv"), targets);
+    Files.writeString(dir.resolve("built"), "");
+  }
+
+  /** One {@code cx_stext_tv} pass: every target's vectors walked and hashed. */
+  static void tvPass(TermVectorsReader reader, List<Integer> docs, Fnv f) throws IOException {
+    for (int doc : docs) {
+      f.add(doc);
+      Fields fields = reader.get(doc);
+      for (String name : fields) {
+        f.add(name.length());
+        Terms terms = fields.terms(name);
+        boolean positions = terms.hasPositions() || terms.hasOffsets();
+        TermsEnum te = terms.iterator();
+        for (BytesRef t = te.next(); t != null; t = te.next()) {
+          f.add(t.length);
+          f.add(t.bytes[t.offset + t.length - 1]);
+          f.add(te.totalTermFreq());
+          PostingsEnum pe = te.postings(null, PostingsEnum.ALL);
+          pe.nextDoc();
+          int freq = pe.freq();
+          f.add(freq);
+          if (!positions) continue;
+          for (int k = 0; k < freq; k++) {
+            f.add(pe.nextPosition());
+            f.add(pe.startOffset());
+            f.add(pe.endOffset());
+            BytesRef p = pe.getPayload();
+            f.add(p == null ? -1 : p.length);
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * {@code cx_stext_tv}: {@link #tvPass} through the one segment's {@code
+   * SimpleTextTermVectorsReader}.
+   */
+  static void runTermVectorsText(Path dir) throws IOException {
+    if (!selected("cx_stext_tv")) return;
+    List<Integer> docs = new ArrayList<>();
+    for (String line : Files.readAllLines(dir.resolve("targets.tsv"))) {
+      docs.add(Integer.parseInt(line));
+    }
+    try (Directory d = FSDirectory.open(dir)) {
+      SegmentInfo si = SegmentInfos.readLatestCommit(d).info(0).info;
+      FieldInfos fis = si.getCodec().fieldInfosFormat().read(d, si, "", IOContext.DEFAULT);
+      try (TermVectorsReader reader =
+          si.getCodec().termVectorsFormat().vectorsReader(d, si, fis, IOContext.DEFAULT)) {
+        Fnv f = new Fnv();
+        tvPass(reader, docs, f);
+        System.out.printf("#check\t%s\t%016x\t%d%n", "cx_stext_tv", f.h, docs.size());
+        measure(
+            "cx_stext_tv",
+            () -> {
+              Fnv g = new Fnv();
+              tvPass(reader, docs, g);
+              sink += g.h;
+              return docs.size();
+            });
+      }
+    }
+  }
+
+  /** Builds {@code sdv/}: {@code cx_stext_dv}'s documents under SimpleTextCodec. */
+  static void buildDocValuesText(Path dir) throws IOException {
+    Random r = new Random(0x5d_2026_1021L);
+    IndexWriterConfig config = new IndexWriterConfig();
+    config.setCodec(new SimpleTextCodec());
+    config.setUseCompoundFile(false);
+    config.setMergePolicy(NoMergePolicy.INSTANCE);
+    config.setMaxBufferedDocs(SS_DOCS + 1);
+    config.setRAMBufferSizeMB(512);
+    try (Directory d = FSDirectory.open(dir);
+        IndexWriter w = new IndexWriter(d, config)) {
+      for (int i = 0; i < SS_DOCS; i++) {
+        Document doc = new Document();
+        if (i % 5 != 0) {
+          doc.add(new NumericDocValuesField("n", r.nextLong() >> r.nextInt(64)));
+        }
+        if (i % 2 == 0) {
+          byte[] b = new byte[r.nextInt(20)];
+          r.nextBytes(b);
+          doc.add(new BinaryDocValuesField("b", new BytesRef(b)));
+        }
+        doc.add(new SortedDocValuesField("s", new BytesRef("t" + r.nextInt(1000))));
+        for (int j = 0, n = r.nextInt(4); j < n; j++) {
+          doc.add(new SortedNumericDocValuesField("sn", r.nextInt(1_000_000) - 500_000));
+        }
+        for (int j = 0, n = r.nextInt(4); j < n; j++) {
+          doc.add(new SortedSetDocValuesField("ss", new BytesRef("u" + r.nextInt(2000))));
+        }
+        w.addDocument(doc);
+      }
+      w.commit();
+    }
+    Files.writeString(dir.resolve("built"), "");
+  }
+
+  /** One {@code cx_stext_dv} pass: every iterator to the end, then every term; documents seen. */
+  static long dvPass(DocValuesProducer p, FieldInfos fis, Fnv f) throws IOException {
+    long n = 0;
+    var num = p.getNumeric(fis.fieldInfo("n"));
+    for (int doc = num.nextDoc(); doc != DocIdSetIterator.NO_MORE_DOCS; doc = num.nextDoc(), n++) {
+      f.add(doc);
+      f.add(num.longValue());
+    }
+    var bin = p.getBinary(fis.fieldInfo("b"));
+    for (int doc = bin.nextDoc(); doc != DocIdSetIterator.NO_MORE_DOCS; doc = bin.nextDoc(), n++) {
+      BytesRef v = bin.binaryValue();
+      f.add(doc);
+      f.add(v.length);
+      f.add(v.length == 0 ? -1 : v.bytes[v.offset]);
+    }
+    var sorted = p.getSorted(fis.fieldInfo("s"));
+    for (int doc = sorted.nextDoc();
+        doc != DocIdSetIterator.NO_MORE_DOCS;
+        doc = sorted.nextDoc(), n++) {
+      f.add(doc);
+      f.add(sorted.ordValue());
+    }
+    var sn = p.getSortedNumeric(fis.fieldInfo("sn"));
+    for (int doc = sn.nextDoc(); doc != DocIdSetIterator.NO_MORE_DOCS; doc = sn.nextDoc(), n++) {
+      f.add(doc);
+      for (int k = 0, c = sn.docValueCount(); k < c; k++) {
+        f.add(sn.nextValue());
+      }
+    }
+    var ss = p.getSortedSet(fis.fieldInfo("ss"));
+    for (int doc = ss.nextDoc(); doc != DocIdSetIterator.NO_MORE_DOCS; doc = ss.nextDoc(), n++) {
+      f.add(doc);
+      for (int k = 0, c = ss.docValueCount(); k < c; k++) {
+        f.add(ss.nextOrd());
+      }
+    }
+    for (int ord = 0; ord < sorted.getValueCount(); ord++, n++) {
+      BytesRef t = sorted.lookupOrd(ord);
+      f.add(t.length);
+      f.add(t.bytes[t.offset + t.length - 1]);
+    }
+    for (long ord = 0; ord < ss.getValueCount(); ord++, n++) {
+      BytesRef t = ss.lookupOrd(ord);
+      f.add(t.length);
+      f.add(t.bytes[t.offset + t.length - 1]);
+    }
+    return n;
+  }
+
+  /**
+   * {@code cx_stext_dv}: {@link #dvPass} through the one segment's {@code
+   * SimpleTextDocValuesReader}.
+   */
+  static void runDocValuesText(Path dir) throws IOException {
+    if (!selected("cx_stext_dv")) return;
+    try (Directory d = FSDirectory.open(dir)) {
+      SegmentInfo si = SegmentInfos.readLatestCommit(d).info(0).info;
+      FieldInfos fis = si.getCodec().fieldInfosFormat().read(d, si, "", IOContext.DEFAULT);
+      try (DocValuesProducer p =
+          si.getCodec()
+              .docValuesFormat()
+              .fieldsProducer(new SegmentReadState(d, si, fis, IOContext.DEFAULT))) {
+        Fnv f = new Fnv();
+        long n = dvPass(p, fis, f);
+        System.out.printf("#check\t%s\t%016x\t%d%n", "cx_stext_dv", f.h, n);
+        measure(
+            "cx_stext_dv",
+            () -> {
+              Fnv g = new Fnv();
+              long c = dvPass(p, fis, g);
+              sink += g.h;
+              return c;
+            });
+      }
+    }
+  }
 
   /** Builds {@code sstored/}: {@code cx_stext_stored}'s documents under SimpleTextCodec. */
   static void buildStoredText(Path dir) throws IOException {
@@ -793,6 +1070,14 @@ public final class CodecsMicro {
         Files.createDirectories(dir.resolve("sstored"));
         buildStoredText(dir.resolve("sstored"));
       }
+      if (!Files.exists(dir.resolve("sdv").resolve("built"))) {
+        Files.createDirectories(dir.resolve("sdv"));
+        buildDocValuesText(dir.resolve("sdv"));
+      }
+      if (!Files.exists(dir.resolve("stv").resolve("built"))) {
+        Files.createDirectories(dir.resolve("stv"));
+        buildTermVectorsText(dir.resolve("stv"));
+      }
     } else {
       runBloom(dir.resolve("bloom"));
       runMemory(dir.resolve("memory"));
@@ -803,6 +1088,8 @@ public final class CodecsMicro {
       runBlockTerms(dir.resolve("bterms"));
       runSimpleText(dir.resolve("stext"));
       runStoredText(dir.resolve("sstored"));
+      runDocValuesText(dir.resolve("sdv"));
+      runTermVectorsText(dir.resolve("stv"));
     }
   }
 }
