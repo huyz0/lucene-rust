@@ -21,6 +21,7 @@ pub mod backward_codecs;
 pub mod bitvectors;
 pub mod bkd_writer;
 pub mod block_packed;
+pub mod blockterms;
 pub mod blocktree;
 mod blocktree_writer;
 pub mod blocktreeords;

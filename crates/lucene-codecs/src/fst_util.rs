@@ -198,9 +198,43 @@ impl<O: FstOutputs> TypedFst<O> {
     /// number of bytes the FST took (Java's `skipBytes(store.size())`).
     pub fn read_prefix(saved: &[u8]) -> Result<(Self, usize)> {
         let mut input = SliceInput::new(saved);
+        let (meta, n) = Self::read_metadata(&mut input)?;
+        let start = input.position();
+        // `read_metadata` bounded `n` by what follows the metadata.
+        let bytes = saved.get(start..).and_then(|b| b.get(..n)).unwrap_or(&[]);
+        let fst = meta.with_body(bytes.to_vec());
+        Ok((fst, saved.len().min(start.saturating_add(n))))
+    }
+
+    /// `new FST<>(FST.readMetadata(metaIn, outputs), dataIn)`: the metadata
+    /// at the start of `meta`, the body at the start of `body` -- the split
+    /// `FST.save(metaOut, out)` writes. Returns the FST and the bytes it took
+    /// from each.
+    pub fn read_split_prefix(meta: &[u8], body: &[u8]) -> Result<(Self, usize, usize)> {
+        let mut input = SliceInput::new(meta);
+        let (header, n) = Self::read_metadata_unbounded(&mut input)?;
+        let bytes = body
+            .get(..n)
+            .ok_or_else(|| corrupt(format!("numBytes {n} past the end of the FST body")))?;
+        Ok((header.with_body(bytes.to_vec()), input.position(), n))
+    }
+
+    /// `FST.readMetadata(in, outputs)`, with the body's length checked
+    /// against what is left of `input`.
+    fn read_metadata(input: &mut SliceInput<'_>) -> Result<(Self, usize)> {
+        let (fst, n) = Self::read_metadata_unbounded(input)?;
+        if n > input.len().saturating_sub(input.position()) {
+            return Err(corrupt(format!("numBytes {n} past the end")));
+        }
+        Ok((fst, n))
+    }
+
+    /// `FST.readMetadata(in, outputs)`: an FST with an empty body, and the
+    /// body's length (`numBytes`).
+    fn read_metadata_unbounded(input: &mut SliceInput<'_>) -> Result<(Self, usize)> {
         let store = |e: lucene_store::error::Error| corrupt(e.to_string());
         let version = codec_util::check_header(
-            &mut input,
+            input,
             FILE_FORMAT_NAME,
             VERSION_LITTLE_ENDIAN,
             VERSION_CONTINUOUS_ARCS,
@@ -226,24 +260,23 @@ impl<O: FstOutputs> TypedFst<O> {
         };
         let start_node = input.read_vlong().map_err(store)?;
         let num_bytes = input.read_vlong().map_err(store)?;
-        let remaining = input.len().saturating_sub(input.position());
         let n = usize::try_from(num_bytes)
-            .ok()
-            .filter(|&n| n <= remaining)
-            .ok_or_else(|| corrupt(format!("numBytes {num_bytes} past the end")))?;
-        let mut bytes = vec![0u8; n];
-        input.read_bytes(&mut bytes).map_err(store)?;
-        let used = input.position();
+            .map_err(|_| corrupt(format!("numBytes {num_bytes} past the end")))?;
         Ok((
             TypedFst {
                 input_type,
                 empty_output,
                 start_node,
                 version,
-                bytes,
+                bytes: Vec::new(),
             },
-            used,
+            n,
         ))
+    }
+
+    /// This metadata over `bytes`.
+    fn with_body(self, bytes: Vec<u8>) -> Self {
+        TypedFst { bytes, ..self }
     }
 
     /// `FST.save(out, out)`: the bytes [`read`](Self::read) takes back.
@@ -256,6 +289,14 @@ impl<O: FstOutputs> TypedFst<O> {
             bytes: self.bytes.clone(),
         }
         .save::<O>()
+    }
+
+    /// `FST.save(metaOut, out)`: the metadata and the body apart, the
+    /// bytes [`read_split_prefix`](Self::read_split_prefix) takes back.
+    pub fn save_split(&self) -> (Vec<u8>, Vec<u8>) {
+        let mut meta = self.save();
+        let body = meta.split_off(meta.len().saturating_sub(self.bytes.len()));
+        (meta, body)
     }
 
     /// `inputType`.
