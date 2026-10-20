@@ -4,8 +4,6 @@
     uses compound file false
     has blocks true
     diagnostics 8
-      key os.arch
-      value amd64
       key os
       value Linux
       key java.vendor
@@ -13,13 +11,15 @@
       key java.runtime.version
       value 21.0.12.1+1-LTS
       key timestamp
-      value 1792521487082
+      value 1792533765264
       key source
       value flush
       key lucene.version
       value 10.5.0
       key os.version
       value 6.18.33.2-microsoft-standard-WSL2
+      key os.arch
+      value amd64
     attributes 1
       key gen.note
       value line\
@@ -36,7 +36,7 @@ break \\ é
       file _0.dim
       file _0.dat
       file _0.len
-    id [2e 5 f3 42 9b 34 8a 1a f7 89 bc 7a a8 f2 be f0]
+    id [31 2 f2 1 1 c3 9c 66 78 23 25 56 9a 45 d 8a]
     sort 3
       name SortField
       type <long: "num">! missingValue=-9223372036854775808
@@ -47,4 +47,4 @@ break \\ é
       name SortedSetSortField
       type <sortedset: "sset">! selector=MIN
       bytes [4 73 73 65 74 1 0 0 0 0 0 0 0 0 0 0 0]
-checksum 00000000000462589633
+checksum 00000000002186777699

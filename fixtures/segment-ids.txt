@@ -120,9 +120,9 @@ codecs_sharedterms/merged/index/_3.si 71a2f7bf981b125a05b8405c5ca96cdc
 codecs_sharedterms/merged/index/segments_1 71a2f7bf981b125a05b8405c5ca96cdf
 codecs_simpletext/codec/flush/index/_0.si <unreadable: not a Lucene codec header>
 codecs_simpletext/codec/flush/index/_1.si <unreadable: not a Lucene codec header>
-codecs_simpletext/codec/flush/index/segments_2 2e05f3429b348a1af789bc7aa8f2befb
+codecs_simpletext/codec/flush/index/segments_2 3102f20101c39c66782325569a450d95
 codecs_simpletext/codec/merged/index/_3.si <unreadable: not a Lucene codec header>
-codecs_simpletext/codec/merged/index/segments_5 2e05f3429b348a1af789bc7aa8f2bf0f
+codecs_simpletext/codec/merged/index/segments_5 3102f20101c39c66782325569a450da9
 codecs_simpletext/postings/flush/index/_0.si b0fc8212bca34f5b11778679be0f7453
 codecs_simpletext/postings/flush/index/segments_1 b0fc8212bca34f5b11778679be0f7457
 codecs_simpletext/postings/merged/index/_3.si b0fc8212bca34f5b11778679be0f7467

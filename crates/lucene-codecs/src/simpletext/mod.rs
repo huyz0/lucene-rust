@@ -19,6 +19,8 @@
 //!   [`term_vectors_reader`]), each module noting what it does differently;
 //! - points (`.dim`/`.dii`, [`points_writer`] with the line constants,
 //!   [`bkd_writer`], [`points_reader`], [`bkd_reader`]);
+//! - vectors (`.vec`/`.gri`, [`knn_vectors_writer`], [`knn_vectors_reader`]
+//!   with the exhaustive search) and the codec ([`codec`]);
 //! - the line, escape and checksum primitives ([`util`]).
 //!
 //! # The `.pst` file
@@ -88,9 +90,17 @@
 //!   writer reuses [`crate::bkd_writer`]'s point stores, radix selector and
 //!   sorter; a `too many nodes` failure is [`Error::Runtime`]. The readers'
 //!   refusals of corrupt input are in [`points_reader`] and [`bkd_reader`].
+//! - Vectors: the writer takes each field's `(docID, vector)`s in ord order;
+//!   values of the other encoding are `IllegalArgument`. The reader's
+//!   refusals (non-finite values and scores, zero COSINE vectors: Java's
+//!   `VectorUtil` asserts), its search's handling of a field without an
+//!   entry and of docs outside the accept bits are in [`knn_vectors_reader`].
+//!   [`codec::SimpleTextCodec`] is a thin aggregator naming the formats:
+//!   `IndexWriter`/`DirectoryReader` do not route through it.
 
 pub mod bkd_reader;
 pub mod bkd_writer;
+pub mod codec;
 pub mod compound;
 pub mod decimal_format;
 pub mod doc_values_reader;
@@ -98,6 +108,8 @@ pub mod doc_values_writer;
 pub mod field_infos;
 pub mod fields_reader;
 pub mod fields_writer;
+pub mod knn_vectors_reader;
+pub mod knn_vectors_writer;
 pub mod live_docs;
 pub mod norms;
 pub mod points_reader;

@@ -31,7 +31,7 @@ codecs/memory/FSTTermsReader	ported	crates/lucene-codecs/src/memory/fst_terms.rs
 codecs/memory/FSTTermsWriter	ported	crates/lucene-codecs/src/memory/fst_terms.rs::FstTermsWriter
 codecs/simpletext/SimpleTextBKDReader	ported	crates/lucene-codecs/src/simpletext/bkd_reader.rs::SimpleTextBkdReader
 codecs/simpletext/SimpleTextBKDWriter	ported	crates/lucene-codecs/src/simpletext/bkd_writer.rs::SimpleTextBkdWriter
-codecs/simpletext/SimpleTextCodec	todo:M14	the plain-text debugging codec (M14.g)
+codecs/simpletext/SimpleTextCodec	partial	crates/lucene-codecs/src/simpletext/codec.rs::SimpleTextCodec -- M14: names its formats only; IndexWriter/DirectoryReader do not route through it
 codecs/simpletext/SimpleTextCompoundFormat	ported	crates/lucene-codecs/src/simpletext/compound.rs::SimpleTextCompoundReader
 codecs/simpletext/SimpleTextDocValuesFormat	ported	crates/lucene-codecs/src/simpletext/doc_values_writer.rs::doc_values_file_name
 codecs/simpletext/SimpleTextDocValuesReader	ported	crates/lucene-codecs/src/simpletext/doc_values_reader.rs::SimpleTextDocValuesReader
@@ -39,9 +39,9 @@ codecs/simpletext/SimpleTextDocValuesWriter	ported	crates/lucene-codecs/src/simp
 codecs/simpletext/SimpleTextFieldInfosFormat	ported	crates/lucene-codecs/src/simpletext/field_infos.rs::read
 codecs/simpletext/SimpleTextFieldsReader	ported	crates/lucene-codecs/src/simpletext/fields_reader.rs::SimpleTextFieldsReader
 codecs/simpletext/SimpleTextFieldsWriter	ported	crates/lucene-codecs/src/simpletext/fields_writer.rs::SimpleTextFieldsWriter
-codecs/simpletext/SimpleTextKnnVectorsFormat	todo:M14	the plain-text debugging codec (M14.g)
-codecs/simpletext/SimpleTextKnnVectorsReader	todo:M14	the plain-text debugging codec (M14.g)
-codecs/simpletext/SimpleTextKnnVectorsWriter	todo:M14	the plain-text debugging codec (M14.g)
+codecs/simpletext/SimpleTextKnnVectorsFormat	ported	crates/lucene-codecs/src/simpletext/codec.rs::SimpleTextKnnVectorsFormat
+codecs/simpletext/SimpleTextKnnVectorsReader	ported	crates/lucene-codecs/src/simpletext/knn_vectors_reader.rs::SimpleTextKnnVectorsReader
+codecs/simpletext/SimpleTextKnnVectorsWriter	ported	crates/lucene-codecs/src/simpletext/knn_vectors_writer.rs::SimpleTextKnnVectorsWriter
 codecs/simpletext/SimpleTextLiveDocsFormat	ported	crates/lucene-codecs/src/simpletext/live_docs.rs::read
 codecs/simpletext/SimpleTextNormsFormat	ported	crates/lucene-codecs/src/simpletext/norms.rs::SimpleTextNormsProducer
 codecs/simpletext/SimpleTextPointsFormat	ported	crates/lucene-codecs/src/simpletext/points_writer.rs::points_file_name

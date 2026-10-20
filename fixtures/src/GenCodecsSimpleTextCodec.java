@@ -39,6 +39,7 @@ import org.apache.lucene.codecs.PointsReader;
 import org.apache.lucene.codecs.PointsWriter;
 import org.apache.lucene.codecs.SegmentInfoFormat;
 import org.apache.lucene.codecs.StoredFieldsReader;
+import org.apache.lucene.codecs.KnnVectorsReader;
 import org.apache.lucene.codecs.TermVectorsReader;
 import org.apache.lucene.codecs.simpletext.SimpleTextCodec;
 import org.apache.lucene.document.BinaryDocValuesField;
@@ -88,7 +89,15 @@ import org.apache.lucene.index.Term;
 import org.apache.lucene.index.Terms;
 import org.apache.lucene.index.TermsEnum;
 import org.apache.lucene.index.TieredMergePolicy;
+import org.apache.lucene.index.ByteVectorValues;
+import org.apache.lucene.index.FloatVectorValues;
+import org.apache.lucene.index.KnnVectorValues;
+import org.apache.lucene.index.VectorEncoding;
 import org.apache.lucene.index.VectorSimilarityFunction;
+import org.apache.lucene.search.AcceptDocs;
+import org.apache.lucene.search.ScoreDoc;
+import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.TopKnnCollector;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.SortField;
@@ -100,8 +109,10 @@ import org.apache.lucene.store.ByteBuffersDataOutput;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.store.IOContext;
+import org.apache.lucene.store.IndexInput;
 import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.FixedBitSet;
 
 /**
  * lucene-codecs' {@code org.apache.lucene.codecs.simpletext}: the per-segment formats of a whole
@@ -162,6 +173,11 @@ import org.apache.lucene.util.BytesRef;
  *                            root, per box "box" lower upper estimatePointCount, the relations
  *                            compare returned in intersect's order (I/O/C), visit(doc) and
  *                            visit(doc, value) counts, matches and the ordered hash
+ *     knn.SEG.tsv            per vectors field in the .gri's order "field" name encoding
+ *                            similarity dimension size, per ord "v" ord doc vector (floats as
+ *                            raw int bits, 8 hex digits each; bytes hex), per query "q" k
+ *                            visitLimit filter (none, live, odd) target, its top docs "hit" doc
+ *                            score-bits, "visited" count relation
  * </pre>
  */
 public class GenCodecsSimpleTextCodec {
@@ -476,6 +492,7 @@ public class GenCodecsSimpleTextCodec {
             "mvec", new float[] {i, 1}, VectorSimilarityFunction.MAXIMUM_INNER_PRODUCT));
     docValues(doc, i, new Random(i * 31L + 7));
     termVectors(doc, i);
+    vectors(doc, i, new Random(i * 977L + 11));
     return doc;
   }
 
@@ -572,6 +589,73 @@ public class GenCodecsSimpleTextCodec {
       doc.add(
           SortedNumericDocValuesField.indexedField(
               "dvsnum", k == 0 ? LONGS[i % 5] : r.nextInt(100) - 50));
+    }
+  }
+
+  /** Finite floats whose text takes every Float.toString shape. */
+  static final float[] TEXT_FLOATS = {
+    -0f, Float.MIN_VALUE, Float.MIN_NORMAL, 1e7f, 9999999f, 0.001f, 0.00099999f, 1e-4f, -1.5f,
+    1.0E10f, 100f, 2e-45f, 8.5e-44f, 123456.79f,
+  };
+
+  static float[] unit(Random r, int dims) {
+    double[] d = new double[dims];
+    double norm = 0;
+    for (int k = 0; k < dims; k++) {
+      d[k] = r.nextGaussian();
+      norm += d[k] * d[k];
+    }
+    float[] v = new float[dims];
+    for (int k = 0; k < dims; k++) v[k] = (float) (d[k] / Math.sqrt(norm));
+    return v;
+  }
+
+  /**
+   * Vectors beside fvec/bvec/mvec: every similarity for both encodings, sparse fields, one to 48
+   * dimensions, ties, floats of every magnitude and text shape (fbig's integers keep its sums
+   * exact past the 32 dimensions where Java's scalar loops unroll).
+   */
+  static void vectors(Document doc, int i, Random r) {
+    doc.add(
+        new KnnFloatVectorField(
+            "f1euc", new float[] {(i % 5) - 2}, VectorSimilarityFunction.EUCLIDEAN));
+    if (i % 3 != 1) {
+      float[] v = new float[5];
+      for (int k = 0; k < v.length; k++) {
+        v[k] = (float) (r.nextGaussian() * Math.pow(10, r.nextInt(9) - 4));
+      }
+      doc.add(new KnnFloatVectorField("feuc", v, VectorSimilarityFunction.EUCLIDEAN));
+    }
+    if (i % 4 == 0) {
+      doc.add(new KnnFloatVectorField("fdot", unit(r, 3), VectorSimilarityFunction.DOT_PRODUCT));
+    }
+    if (i % 2 == 0) {
+      float[] v = new float[7];
+      for (int k = 0; k < v.length; k++) v[k] = (float) r.nextGaussian();
+      // Even i only: i / 2 walks every entry of the table.
+      v[i % 7] = TEXT_FLOATS[(i / 2) % TEXT_FLOATS.length];
+      doc.add(new KnnFloatVectorField("fcos", v, VectorSimilarityFunction.COSINE));
+    }
+    if (i % 6 != 5) {
+      float[] v = new float[48];
+      for (int k = 0; k < v.length; k++) v[k] = r.nextInt(17) - 8;
+      doc.add(new KnnFloatVectorField("fbig", v, VectorSimilarityFunction.EUCLIDEAN));
+    }
+    if (i % 3 == 0) {
+      byte[] b = new byte[6];
+      r.nextBytes(b);
+      b[0] = (byte) (i % 2 == 0 ? -128 : 127);
+      doc.add(new KnnByteVectorField("beuc", b, VectorSimilarityFunction.EUCLIDEAN));
+    }
+    doc.add(
+        new KnnByteVectorField(
+            "bcos",
+            new byte[] {(byte) (1 + i % 3), (byte) (i % 2 == 0 ? -2 : 2)},
+            VectorSimilarityFunction.COSINE));
+    if (i % 5 != 2) {
+      byte[] b = new byte[4];
+      r.nextBytes(b);
+      doc.add(new KnnByteVectorField("bmip", b, VectorSimilarityFunction.MAXIMUM_INNER_PRODUCT));
     }
   }
 
@@ -769,10 +853,111 @@ public class GenCodecsSimpleTextCodec {
             Files.write(out.resolve("points." + si.name + ".tsv"), lines);
           }
         }
+        if (fis.hasVectorValues()) {
+          Bits live =
+              sci.hasDeletions() ? codec.liveDocsFormat().readLiveDocs(dir, sci, CTX) : null;
+          knn(out.resolve("knn." + si.name + ".tsv"), core, si, fis, live);
+        }
         if (cfs != null) cfs.close();
       }
     }
     Files.write(out.resolve("segments.tsv"), segments);
+  }
+
+  static String floatsHex(float[] v) {
+    StringBuilder sb = new StringBuilder();
+    for (float f : v) sb.append(String.format("%08x", Float.floatToRawIntBits(f)));
+    return sb.toString();
+  }
+
+  /** The queries of knn.SEG.tsv: k, visitLimit, filter. */
+  static final Object[][] KNN_QUERIES = {
+    {1, Integer.MAX_VALUE, "none"},
+    {5, Integer.MAX_VALUE, "live"},
+    {10, Integer.MAX_VALUE, "odd"},
+    {1000, Integer.MAX_VALUE, "none"},
+    {4, 7, "none"},
+    {3, 2, "odd"},
+  };
+
+  /** knn.SEG.tsv: every vector, then searches, through SimpleTextKnnVectorsReader. */
+  static void knn(Path path, Directory core, SegmentInfo si, FieldInfos fis, Bits live)
+      throws IOException {
+    Codec codec = new SimpleTextCodec();
+    List<String> order = new ArrayList<>();
+    try (IndexInput in = core.openInput(si.name + ".gri", CTX)) {
+      byte[] b = new byte[(int) in.length()];
+      in.readBytes(b, 0, b.length);
+      for (String line : new String(b, StandardCharsets.UTF_8).split("\n")) {
+        if (line.startsWith("field-name ")) order.add(line.substring("field-name ".length()));
+      }
+    }
+    int maxDoc = si.maxDoc();
+    FixedBitSet odd = new FixedBitSet(maxDoc);
+    for (int d = 1; d < maxDoc; d += 2) odd.set(d);
+    List<String> lines = new ArrayList<>();
+    Random r = new Random(maxDoc * 7919L + 1);
+    try (KnnVectorsReader kr =
+        codec.knnVectorsFormat().fieldsReader(new SegmentReadState(core, si, fis, CTX))) {
+      kr.checkIntegrity();
+      for (String name : order) {
+        FieldInfo fi = fis.fieldInfo(name);
+        boolean bytes = fi.getVectorEncoding() == VectorEncoding.BYTE;
+        KnnVectorValues values =
+            bytes ? kr.getByteVectorValues(name) : kr.getFloatVectorValues(name);
+        int dims = values.dimension();
+        lines.add(
+            String.join(
+                "\t",
+                "field",
+                hex(name),
+                fi.getVectorEncoding().name(),
+                fi.getVectorSimilarityFunction().name(),
+                Integer.toString(dims),
+                Integer.toString(values.size())));
+        for (int ord = 0; ord < values.size(); ord++) {
+          String v =
+              bytes
+                  ? HEX.formatHex(((ByteVectorValues) values).vectorValue(ord))
+                  : floatsHex(((FloatVectorValues) values).vectorValue(ord));
+          lines.add("v\t" + ord + "\t" + values.ordToDoc(ord) + "\t" + v);
+        }
+        for (Object[] q : KNN_QUERIES) {
+          int k = (Integer) q[0];
+          int limit = (Integer) q[1];
+          String filter = (String) q[2];
+          Bits bits = filter.equals("none") ? null : filter.equals("live") ? live : odd;
+          AcceptDocs accept = AcceptDocs.fromLiveDocs(bits, maxDoc);
+          TopKnnCollector c = new TopKnnCollector(k, limit);
+          String target;
+          if (bytes) {
+            byte[] t = new byte[dims];
+            r.nextBytes(t);
+            t[0] |= 1;
+            target = HEX.formatHex(t);
+            kr.search(name, t, c, accept);
+          } else {
+            float[] t = new float[dims];
+            for (int j = 0; j < dims; j++) {
+              t[j] = name.equals("fbig") ? r.nextInt(17) - 8 : (float) r.nextGaussian();
+            }
+            t[0] = t[0] == 0 ? 1 : t[0];
+            target = floatsHex(t);
+            kr.search(name, t, c, accept);
+          }
+          lines.add(
+              String.join(
+                  "\t", "q", Integer.toString(k), Integer.toString(limit), filter, target));
+          TopDocs td = c.topDocs();
+          for (ScoreDoc sd : td.scoreDocs) {
+            lines.add(
+                "hit\t" + sd.doc + "\t" + String.format("%08x", Float.floatToRawIntBits(sd.score)));
+          }
+          lines.add("visited\t" + td.totalHits.value() + "\t" + td.totalHits.relation());
+        }
+      }
+    }
+    Files.write(path, lines);
   }
 
   /** One points field of points.SEG.tsv. */
