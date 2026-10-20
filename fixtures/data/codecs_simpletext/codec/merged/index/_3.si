@@ -1,0 +1,36 @@
+    version 10.5.0
+    min version 10.5.0
+    number of documents 180
+    uses compound file true
+    has blocks false
+    diagnostics 10
+      key source
+      value merge
+      key os.arch
+      value amd64
+      key java.runtime.version
+      value 21.0.12.1+1-LTS
+      key mergeFactor
+      value 3
+      key os
+      value Linux
+      key java.vendor
+      value Eclipse Adoptium
+      key os.version
+      value 6.18.33.2-microsoft-standard-WSL2
+      key timestamp
+      value 1792497436526
+      key mergeMaxNumSegments
+      value 1
+      key lucene.version
+      value 10.5.0
+    attributes 1
+      key gen.note
+      value line\
+break \\ é
+    files 2
+      file _3.si
+      file _3.scf
+    id [77 3a 6f 5d 78 cf 9b 14 b2 6c 13 e9 ae e8 96 b9]
+    sort 0
+checksum 00000000004115244548

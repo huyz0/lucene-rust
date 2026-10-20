@@ -29,6 +29,11 @@
 //! through `blockterms`' `BlockTermsReader` over its default fixed-gap index
 //! (interval 32), over `bterms/`'s files (Java's `BlockTermsBenchFormat`).
 //!
+//! `cx_stext_stored`: per target document of `sstored/` (20 000 documents
+//! under `SimpleTextCodec`, every stored type), `visit_document` through
+//! `simpletext`'s `SimpleTextStoredFieldsReader` over Java's `.fld`, every
+//! value hashed (strings by length and first byte).
+//!
 //! `cx_stext_seek`: per target of `stext/`, `seekExact` on the word through
 //! `simpletext`'s `SimpleTextFieldsReader`, then a hit's postings (docs and
 //! freqs) walked to the end, over Java's `SimpleTextBench_0` `.pst`.
@@ -44,7 +49,9 @@ use lucene_codecs::hnsw_vectors::SearchOptions;
 use lucene_codecs::memory::{DirectFiles, DirectPostingsFormat, FstPostingsFormat};
 use lucene_codecs::segment_state::SegmentReadState;
 use lucene_codecs::simpletext::fields_reader::{SimpleTextFieldsReader, SimpleTextTerms};
+use lucene_codecs::simpletext::stored_fields_reader::SimpleTextStoredFieldsReader;
 use lucene_codecs::simpletext::{FREQS, NO_MORE_DOCS};
+use lucene_codecs::stored_fields::{self, StoredFieldVisitor, VisitStatus};
 use lucene_codecs::uniformsplit::sharedterms::StUniformSplitPostingsFormat;
 use lucene_codecs::uniformsplit::UniformSplitPostingsFormat;
 
@@ -433,6 +440,85 @@ fn bench_stext(w: Duration, m: Duration, dir: &str) {
     });
 }
 
+/// `cx_stext_stored`'s visitor, as Java's `HashVisitor`.
+struct HashVisitor<'a>(&'a mut Fnv);
+
+impl StoredFieldVisitor for HashVisitor<'_> {
+    fn needs_field(&mut self, _field_number: i32) -> stored_fields::Result<VisitStatus> {
+        Ok(VisitStatus::Yes)
+    }
+
+    fn string_field(&mut self, field_number: i32, value: &str) -> stored_fields::Result<()> {
+        // ASCII values: Java's `length()` and `charAt(0)` are these.
+        self.0.add(i64::from(field_number));
+        self.0.add(value.len() as i64);
+        self.0
+            .add(value.as_bytes().first().map_or(-1, |&b| i64::from(b)));
+        Ok(())
+    }
+
+    fn binary_field(&mut self, field_number: i32, value: &[u8]) -> stored_fields::Result<()> {
+        self.0.add(i64::from(field_number));
+        self.0.add(value.len() as i64);
+        self.0
+            .add(value.first().map_or(-1, |&b| i64::from(b as i8)));
+        Ok(())
+    }
+
+    fn int_field(&mut self, field_number: i32, value: i32) -> stored_fields::Result<()> {
+        self.0.add(i64::from(field_number));
+        self.0.add(i64::from(value));
+        Ok(())
+    }
+
+    fn long_field(&mut self, field_number: i32, value: i64) -> stored_fields::Result<()> {
+        self.0.add(i64::from(field_number));
+        self.0.add(value);
+        Ok(())
+    }
+
+    fn float_field(&mut self, field_number: i32, value: f32) -> stored_fields::Result<()> {
+        self.0.add(i64::from(field_number));
+        self.0.add(i64::from(value.to_bits() as i32));
+        Ok(())
+    }
+
+    fn double_field(&mut self, field_number: i32, value: f64) -> stored_fields::Result<()> {
+        self.0.add(i64::from(field_number));
+        self.0.add(value.to_bits() as i64);
+        Ok(())
+    }
+}
+
+/// One `cx_stext_stored` pass, as Java's `runStoredText`.
+fn stored_pass(reader: &SimpleTextStoredFieldsReader<'_>, docs: &[i32], f: &mut Fnv) {
+    for &doc in docs {
+        f.add(i64::from(doc));
+        reader.visit_document(doc, &mut HashVisitor(f)).unwrap();
+    }
+}
+
+fn bench_stext_stored(w: Duration, m: Duration, dir: &str) {
+    if !selected("cx_stext_stored") {
+        return;
+    }
+    let docs: Vec<i32> = read_targets(dir)
+        .iter()
+        .map(|t| std::str::from_utf8(t).unwrap().parse().unwrap())
+        .collect();
+    let fld = std::fs::read(format!("{dir}/_0.fld")).unwrap();
+    let reader = SimpleTextStoredFieldsReader::open(&fld, 20_000).unwrap();
+    let mut f = Fnv::new();
+    stored_pass(&reader, &docs, &mut f);
+    println!("#check\tcx_stext_stored\t{:016x}\t{}", f.0, docs.len());
+    measure("cx_stext_stored", w, m, || {
+        let mut g = Fnv::new();
+        stored_pass(&reader, &docs, black_box(&mut g));
+        black_box(g.0);
+        docs.len() as u64
+    });
+}
+
 pub fn bench_codecs(w: Duration, m: Duration, dir: &str) {
     bench_bloom(w, m, &format!("{dir}/bloom"));
     bench_memory(w, m, &format!("{dir}/memory"));
@@ -442,4 +528,5 @@ pub fn bench_codecs(w: Duration, m: Duration, dir: &str) {
     bench_stsplit(w, m, &format!("{dir}/stsplit"));
     bench_bterms(w, m, &format!("{dir}/bterms"));
     bench_stext(w, m, &format!("{dir}/stext"));
+    bench_stext_stored(w, m, &format!("{dir}/sstored"));
 }

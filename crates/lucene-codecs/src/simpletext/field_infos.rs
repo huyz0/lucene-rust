@@ -32,6 +32,7 @@
 
 use super::util::{
     self, boolean_str, parse_boolean, parse_integer, parse_long, read_string, read_value,
+    OrderedMap,
 };
 use super::{corrupt, Result};
 use crate::field_infos::{
@@ -147,15 +148,11 @@ pub fn similarity_name(f: VectorSimilarityFunction) -> &'static str {
 }
 
 /// `Enum.valueOf(class, name)` over one of the `*_name` tables.
-fn value_of<T: Copy>(
-    s: &str,
-    what: &str,
-    all: &[T],
-    name: fn(T) -> &'static str,
-) -> Result<T> {
-    all.iter().copied().find(|&v| name(v) == s).ok_or_else(|| {
-        super::Error::IllegalArgument(format!("No enum constant {what}.{s}"))
-    })
+fn value_of<T: Copy>(s: &str, what: &str, all: &[T], name: fn(T) -> &'static str) -> Result<T> {
+    all.iter()
+        .copied()
+        .find(|&v| name(v) == s)
+        .ok_or_else(|| super::Error::IllegalArgument(format!("No enum constant {what}.{s}")))
 }
 
 /// `IndexOptions.valueOf(s)`.
@@ -250,17 +247,21 @@ pub fn distance_function(s: &str) -> Result<VectorSimilarityFunction> {
 /// [`super::Error::IllegalArgument`] for an unknown enum name; and what
 /// `new FieldInfos(infos)` refuses ([`super::Error::FieldInfos`]).
 pub fn read(data: &[u8]) -> Result<FieldInfos> {
+    // Java: SimpleTextFieldInfosFormat.read
     let mut pos = 0usize;
     let mut scratch = Vec::new();
     let size = parse_integer(read_value(data, &mut pos, &mut scratch, NUMFIELDS)?)?;
-    // Java's `new FieldInfo[size]`, sized from the file; a field takes at
-    // least one byte per line, so cap the reservation by the file.
-    let size = usize::try_from(size).map_err(|_| corrupt(format!("invalid field count: {size}")))?;
-    let mut infos = Vec::with_capacity(size.min(data.len()));
+    // Java's `new FieldInfo[size]`, sized from the file: here the list grows
+    // as fields parse, each taking 18 lines of input, so a hostile count
+    // runs out of bytes before it allocates.
+    let size =
+        usize::try_from(size).map_err(|_| corrupt(format!("invalid field count: {size}")))?;
+    let mut infos = Vec::new();
     for _ in 0..size {
         let name = read_string(data, &mut pos, &mut scratch, NAME)?;
         let field_number = parse_integer(read_value(data, &mut pos, &mut scratch, NUMBER)?)?;
-        let index_options = index_options(&read_string(data, &mut pos, &mut scratch, INDEXOPTIONS)?)?;
+        let index_options =
+            index_options(&read_string(data, &mut pos, &mut scratch, INDEXOPTIONS)?)?;
         let store_term_vector = parse_boolean(read_value(data, &mut pos, &mut scratch, STORETV)?);
         let store_payloads = parse_boolean(read_value(data, &mut pos, &mut scratch, PAYLOADS)?);
         let omit_norms = !parse_boolean(read_value(data, &mut pos, &mut scratch, NORMS)?);
@@ -274,16 +275,11 @@ pub fn read(data: &[u8]) -> Result<FieldInfos> {
         )?)?;
         let dv_gen = parse_long(read_value(data, &mut pos, &mut scratch, DOCVALUES_GEN)?)?;
         let num_atts = parse_integer(read_value(data, &mut pos, &mut scratch, NUM_ATTS)?)?;
-        let mut atts: Vec<(String, String)> = Vec::new();
+        let mut atts = OrderedMap::default();
         for _ in 0..num_atts {
             let key = read_string(data, &mut pos, &mut scratch, ATT_KEY)?;
             let value = read_string(data, &mut pos, &mut scratch, ATT_VALUE)?;
-            // `atts.put(key, value)`: a repeated key keeps its first slot
-            // and takes the last value.
-            match atts.iter_mut().find(|(k, _)| *k == key) {
-                Some(slot) => slot.1 = value,
-                None => atts.push((key, value)),
-            }
+            atts.put(key, value);
         }
         let dimensional_count =
             parse_integer(read_value(data, &mut pos, &mut scratch, DATA_DIM_COUNT)?)?;
@@ -295,8 +291,12 @@ pub fn read(data: &[u8]) -> Result<FieldInfos> {
             parse_integer(read_value(data, &mut pos, &mut scratch, VECTOR_NUM_DIMS)?)?;
         let encoding =
             vector_encoding(&read_string(data, &mut pos, &mut scratch, VECTOR_ENCODING)?)?;
-        let similarity =
-            distance_function(&read_string(data, &mut pos, &mut scratch, VECTOR_SIMILARITY)?)?;
+        let similarity = distance_function(&read_string(
+            data,
+            &mut pos,
+            &mut scratch,
+            VECTOR_SIMILARITY,
+        )?)?;
         let soft_deletes = parse_boolean(read_value(data, &mut pos, &mut scratch, SOFT_DELETES)?);
         let parent = parse_boolean(read_value(data, &mut pos, &mut scratch, PARENT)?);
         infos.push(
@@ -306,7 +306,7 @@ pub fn read(data: &[u8]) -> Result<FieldInfos> {
                 .with_omit_norms(omit_norms)
                 .with_store_payloads(store_payloads)
                 .with_doc_values(doc_values_type, skip_index, dv_gen)
-                .with_attributes(atts)
+                .with_attributes(atts.into_entries())
                 .with_points(
                     dimensional_count,
                     index_dimensional_count,
@@ -318,15 +318,22 @@ pub fn read(data: &[u8]) -> Result<FieldInfos> {
         );
     }
     util::check_footer(data, 0, &mut pos)?;
-    Ok(FieldInfos::new(infos)?)
+    let mut fis = FieldInfos::new(infos)?;
+    // `new FieldInfos(infos)` iterates by field number, whatever the file's
+    // order (the numbers were just checked unique).
+    fis.fields.sort_by_key(|fi| fi.number);
+    Ok(fis)
 }
 
 /// `SimpleTextFieldInfosFormat.write`: the `.inf` file for `infos`, in
-/// their order.
+/// field-number order, as Java's `FieldInfos` iterates them.
 pub fn write(infos: &[FieldInfo]) -> Vec<u8> {
+    // Java: SimpleTextFieldInfosFormat.write
     let mut out = Vec::new();
     util::write_line(&mut out, NUMFIELDS, infos.len().to_string().as_bytes());
-    for fi in infos {
+    let mut by_number: Vec<&FieldInfo> = infos.iter().collect();
+    by_number.sort_by_key(|fi| fi.number);
+    for fi in by_number {
         util::write_line(&mut out, NAME, fi.name.as_bytes());
         util::write_line(&mut out, NUMBER, fi.number.to_string().as_bytes());
         util::write_line(
@@ -347,8 +354,16 @@ pub fn write(infos: &[FieldInfo]) -> Vec<u8> {
             DOCVALUES_SKIP_INDEX,
             skip_index_type_name(fi.doc_values_skip_index_type).as_bytes(),
         );
-        util::write_line(&mut out, DOCVALUES_GEN, fi.doc_values_gen.to_string().as_bytes());
-        util::write_line(&mut out, NUM_ATTS, fi.attributes.len().to_string().as_bytes());
+        util::write_line(
+            &mut out,
+            DOCVALUES_GEN,
+            fi.doc_values_gen.to_string().as_bytes(),
+        );
+        util::write_line(
+            &mut out,
+            NUM_ATTS,
+            fi.attributes.len().to_string().as_bytes(),
+        );
         for (key, value) in &fi.attributes {
             util::write_line(&mut out, ATT_KEY, key.as_bytes());
             util::write_line(&mut out, ATT_VALUE, value.as_bytes());
@@ -363,7 +378,11 @@ pub fn write(infos: &[FieldInfo]) -> Vec<u8> {
             INDEX_DIM_COUNT,
             fi.point_index_dimension_count.to_string().as_bytes(),
         );
-        util::write_line(&mut out, DIM_NUM_BYTES, fi.point_num_bytes.to_string().as_bytes());
+        util::write_line(
+            &mut out,
+            DIM_NUM_BYTES,
+            fi.point_num_bytes.to_string().as_bytes(),
+        );
         util::write_line(
             &mut out,
             VECTOR_NUM_DIMS,
@@ -384,4 +403,179 @@ pub fn write(infos: &[FieldInfo]) -> Vec<u8> {
     }
     util::write_checksum(&mut out);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn infos() -> Vec<FieldInfo> {
+        vec![
+            FieldInfo::new("body\nx", 0)
+                .with_index_options(IndexOptions::DocsAndFreqsAndPositionsAndOffsets)
+                .with_store_term_vectors(true)
+                .with_store_payloads(true)
+                .with_attributes(vec![("k\\".into(), "v\n".into()), ("a".into(), "b".into())]),
+            FieldInfo::new("dv", 3)
+                .with_doc_values(
+                    DocValuesType::SortedNumeric,
+                    DocValuesSkipIndexType::Range,
+                    2,
+                )
+                .with_points(3, 2, 4)
+                .with_vectors(
+                    8,
+                    VectorEncoding::Byte,
+                    VectorSimilarityFunction::MaximumInnerProduct,
+                )
+                .with_soft_deletes_field(true),
+            FieldInfo::new("p", 1)
+                .with_index_options(IndexOptions::Docs)
+                .with_omit_norms(true)
+                .with_parent_field(true),
+        ]
+    }
+
+    fn reseal(body: &str) -> Vec<u8> {
+        let mut out = body.as_bytes().to_vec();
+        util::write_checksum(&mut out);
+        out
+    }
+
+    fn body() -> String {
+        let out = String::from_utf8(write(&infos())).unwrap();
+        out.rsplit_once("checksum ").unwrap().0.to_string()
+    }
+
+    #[test]
+    fn round_trip_in_number_order() {
+        let out = write(&infos());
+        let back = read(&out).unwrap();
+        // Java's `FieldInfos` iterates by number, in `write` and after `read`.
+        let mut want = infos();
+        want.sort_by_key(|fi| fi.number);
+        assert_eq!(format!("{:?}", back.fields), format!("{:?}", want));
+        assert_eq!(write(&back.fields), out);
+        assert_eq!(write(&want), out);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.find("  name p\n") < text.find("  name dv\n"), "{text}");
+        assert!(text.contains("  doc values skip indexRANGE\n"), "{text}");
+        assert!(text.contains("  norms false\n"));
+        assert_eq!(field_infos_file_name("_0", ""), "_0.inf");
+        assert_eq!(field_infos_file_name("_0", "1"), "_0_1.inf");
+    }
+
+    #[test]
+    fn every_enum_name_round_trips() {
+        for o in [
+            IndexOptions::None,
+            IndexOptions::Docs,
+            IndexOptions::DocsAndFreqs,
+            IndexOptions::DocsAndFreqsAndPositions,
+            IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
+            IndexOptions::DocsAndCustomFreqs,
+        ] {
+            assert_eq!(index_options(index_options_name(o)).unwrap(), o);
+        }
+        for t in [
+            DocValuesType::None,
+            DocValuesType::Numeric,
+            DocValuesType::Binary,
+            DocValuesType::Sorted,
+            DocValuesType::SortedSet,
+            DocValuesType::SortedNumeric,
+        ] {
+            assert_eq!(doc_values_type(doc_values_type_name(t)).unwrap(), t);
+        }
+        for e in [VectorEncoding::Byte, VectorEncoding::Float32] {
+            assert_eq!(vector_encoding(vector_encoding_name(e)).unwrap(), e);
+        }
+        for f in [
+            VectorSimilarityFunction::Euclidean,
+            VectorSimilarityFunction::DotProduct,
+            VectorSimilarityFunction::Cosine,
+            VectorSimilarityFunction::MaximumInnerProduct,
+        ] {
+            assert_eq!(distance_function(similarity_name(f)).unwrap(), f);
+        }
+        assert_eq!(
+            doc_values_skip_index_type("NONE").unwrap(),
+            DocValuesSkipIndexType::None
+        );
+        let err = index_options("docs").unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "No enum constant org.apache.lucene.index.IndexOptions.docs"
+        );
+    }
+
+    #[test]
+    fn repeated_attribute_keys_collapse_and_negative_counts_read_none() {
+        let b = body().replacen(
+            "  attributes 2\n",
+            "  attributes 3\n    key a\n    value first\n",
+            1,
+        );
+        let fis = read(&reseal(&b)).unwrap();
+        assert_eq!(
+            fis.fields[0].attributes,
+            [
+                ("a".to_string(), "b".to_string()),
+                ("k\\".into(), "v\n".into())
+            ]
+        );
+        // Java's `new HashMap<>()` loops zero times on a negative count.
+        let b = body().replacen(
+            "  attributes 2\n    key k\\\\\n    value v\\\n\n    key a\n    value b\n",
+            "  attributes -4\n",
+            1,
+        );
+        assert!(read(&reseal(&b)).unwrap().fields[0].attributes.is_empty());
+    }
+
+    #[test]
+    fn damaged_files_are_refused() {
+        let b = body();
+        for (from, to) in [
+            ("number of fields 3", "number of fields -1"),
+            ("number of fields 3", "number of fields 4"),
+            ("  number 3", "  number x"),
+            ("  index options DOCS\n", "  index options DOC\n"),
+            ("  doc values SORTED_NUMERIC", "  doc values SORTED_NUMBER"),
+            (
+                "  doc values skip indexRANGE",
+                "  doc values skip index RANGE",
+            ),
+            ("  doc values gen 2", "  doc values gen 2.0"),
+            ("  vector encoding BYTE", "  vector encoding INT8"),
+            (
+                "  vector similarity MAXIMUM_INNER_PRODUCT",
+                "  vector similarity DOT",
+            ),
+            (
+                "  data dimensional count 3",
+                "  data dimensional count three",
+            ),
+            ("  index dimensional count 2", "  index dimensional count"),
+            ("  dimensional num bytes 4", "  dimensional num bytes 0"),
+            (
+                "  vector number of dimensions 8",
+                "  vector number of dimensions -8",
+            ),
+            ("  soft-deletes", "  soft deletes"),
+            ("  parent true", "  parent"),
+            ("  name p", "  name dv"),
+            ("  number 1", "  number 3"),
+            ("  number 1", "  number -1"),
+            ("  payloads true", "  payload true"),
+        ] {
+            assert!(b.contains(from), "{from}");
+            assert!(read(&reseal(&b.replacen(from, to, 1))).is_err(), "{to}");
+        }
+        let out = write(&infos());
+        assert!(read(&out[..out.len() - 1]).is_err());
+        let mut flipped = out.clone();
+        flipped[20] ^= 1;
+        assert!(read(&flipped).is_err());
+    }
 }
