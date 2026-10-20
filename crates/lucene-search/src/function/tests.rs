@@ -48,6 +48,11 @@ fn java_number_formatting_and_parsing() {
     assert_eq!(java_float(f32::from_bits(0x0001_2345)), "1.04488E-40");
     assert_eq!(java_double(f64::INFINITY), "Infinity");
     assert_eq!(java_double(-2.5e-7), "-2.5E-7");
+    // `Double.MIN_VALUE`: Java's two-digit choice, not the shortest `5E-324`.
+    assert_eq!(java_double(f64::from_bits(1)), "4.9E-324");
+    assert_eq!(java_double(-f64::from_bits(1)), "-4.9E-324");
+    assert_eq!(java_double(1.0e7), "1.0E7");
+    assert_eq!(java_double(-0.0), "-0.0");
     assert_eq!(parse_java_float(" 1.5f ").unwrap(), 1.5);
     assert_eq!(parse_java_float("-Infinity").unwrap(), f32::NEG_INFINITY);
     assert!(parse_java_float("+NaN").unwrap().is_nan());
