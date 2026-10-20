@@ -10,9 +10,11 @@
 
 pub(crate) mod builders;
 pub(crate) mod constants;
+pub(crate) mod escape;
 pub(crate) mod lookahead;
 pub(crate) mod nodes;
 pub(crate) mod parser;
+pub(crate) mod points;
 pub(crate) mod processors;
 #[cfg(test)]
 mod tests;
@@ -29,6 +31,9 @@ use crate::extended_query::RewriteMethod;
 use crate::queryparser::classic::QueryParserError;
 use crate::queryparser::date_range::DateParsing;
 use crate::queryparser::ParsedQuery;
+
+pub use escape::CaseLocale;
+pub use points::{NumberDateFormat, PointType, PointsConfig, PointsFormat};
 
 /// `StandardQueryConfigHandler.Operator`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +65,12 @@ pub struct StandardQueryParser {
     pub(crate) date_resolution: Option<Resolution>,
     /// `FIELD_DATE_RESOLUTION_MAP`.
     pub(crate) field_date_resolutions: HashMap<String, Resolution>,
+    /// `POINTS_CONFIG_MAP`, which `PointsConfigListener` reads a field's
+    /// `POINTS_CONFIG` from.
+    pub(crate) points_configs: Option<HashMap<String, PointsConfig>>,
+    /// `Locale.getDefault()`'s case mapping, which a message's
+    /// `toQueryString` escapes terms with.
+    pub(crate) default_case_locale: CaseLocale,
 }
 
 impl Default for StandardQueryParser {
@@ -88,6 +99,8 @@ impl StandardQueryParser {
             dates: DateParsing::default(),
             date_resolution: None,
             field_date_resolutions: HashMap::new(),
+            points_configs: None,
+            default_case_locale: CaseLocale::Root,
         }
     }
 
@@ -180,6 +193,30 @@ impl StandardQueryParser {
             .or(self.date_resolution)
     }
 
+    /// `setPointsConfigMap(pointsConfigMap)`: the fields indexed as points,
+    /// whose terms and range bounds parse as numbers into a point range.
+    pub fn set_points_config_map(&mut self, map: Option<HashMap<String, PointsConfig>>) {
+        self.points_configs = map;
+    }
+
+    /// `getPointsConfigMap()`.
+    pub fn points_config_map(&self) -> Option<&HashMap<String, PointsConfig>> {
+        self.points_configs.as_ref()
+    }
+
+    /// `PointsConfigListener`: the field's `POINTS_CONFIG`.
+    pub(crate) fn points_config(&self, field: &str) -> Option<&PointsConfig> {
+        self.points_configs.as_ref()?.get(field)
+    }
+
+    /// `Locale.setDefault(locale)`, as far as the parser reads it: the case
+    /// mapping (Turkish and Azerbaijani, Lithuanian, or the root's) the
+    /// terms of an exception's message are escaped in. By default the
+    /// root's.
+    pub fn set_default_case_locale(&mut self, locale: CaseLocale) {
+        self.default_case_locale = locale;
+    }
+
     /// `setAnalyzer(analyzer)`.
     pub fn set_analyzer(&mut self, analyzer: Option<Arc<Analyzer>>) {
         self.analyzer = analyzer;
@@ -240,7 +277,8 @@ impl StandardQueryParser {
             .top_level_query(default_field)
             .map_err(|f| syntax_error(query, f))?;
         let tree = processors::run(self, tree).map_err(java_exception)?;
-        builders::build(self, &tree)
+        let parent = tree.stale_parent.as_deref().cloned();
+        builders::build(self, &tree, parent.as_ref())
             .map_err(java_exception)?
             .ok_or_else(|| QueryParserError::runtime("null query"))
     }

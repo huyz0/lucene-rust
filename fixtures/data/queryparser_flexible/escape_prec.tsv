@@ -1,0 +1,97 @@
+a\\:b	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:a\\:b
+"a:b\\"c"	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>[TP[f:a\\:b,f:c]]~0
+a\\ b	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>( f:a f:b )
+\\+a	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:a
+\\-a	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:a
+\\@a	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:a
+and	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:\\and
+\\AND	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:\\and
+Within	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:\\within
+within	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:\\within
+notx	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:notx
+İNORDER	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:\\inorder
+wıthİn	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:\\wıthin
+İn	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:in
+a\\(b\\)	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>( f:a f:b )
+a\\*b*	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:a*b*
+a?\\?	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:a??
+\\*a	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:a
+a\\\\b	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>( f:a f:b )
+a\\u3000b	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>( f:a f:b )
+a　b	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:a f:b
+a\\~b	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>( f:a f:b )
+a\\^b	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>( f:a f:b )
+a\\/b	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>( f:a f:b )
+a\\<b	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>( f:a f:b )
+a\\=b	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>( f:a f:b )
+a\\!b	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>( f:a f:b )
+a\\[b\\]	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>( f:a f:b )
+a\\{b\\}	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>( f:a f:b )
+a\\>b	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>( f:a f:b )
+İ\\:	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:i
+İ\\:a	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:i\\:a
+İa\\:	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:ia
+a\\:İ	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:a\\:i
+İ\\:	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:i̇
+Ì\\:	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:ì
+Ì	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:ì
+Ì\\:	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:ì
+J́\\:	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:j́
+Ĩ\\:	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:ĩ
+Σ\\:	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:σ
+K\\:	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:k
+(a b)	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>( f:a f:b )
++a -b	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>+f:a -f:b
+a AND b	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>( +f:a AND +f:b )
+a OR b	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>( f:a OR f:b )
+NOT a	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>-f:a
+a && b	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>( +f:a AND +f:b )
+a^2	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:a^2
+a^2.5	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:a^2.5
+a^0.1	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:a^0.1
+(a b)^3	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>( ( f:a f:b )^3 )
+"a b"~3	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>[TP[f:a,f:b]]~3
+"a"	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:"a"
+"a:b c"	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>[TP[f:a\\:b,f:c]]~0
+a~	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:a~2.0
+a~0.5	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:a~0.5
+a~1	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:a~1.0
+a~2	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:a~2.0
+[a TO b]	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>[f:a f:b]
+{a TO *]	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>{f:a f:]
+[* TO *]	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>[f: f:]
+[\\: TO b\\:]	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>[f:\\: f:b\\:]
+/a.b/	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:/a.b/
+/a\\/b/	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:/a\\/b/
+*:*	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>*:*
+(a b)@2	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>( f:a f:b )@2
+g:a	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>g:a
+_plain:a	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>a
+a*	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:a*
+a*b?c	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:a*b?c
+f:(a b)	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>( f:a f:b )
+((a))	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>( ( f:a ) )
++(a b)	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>+( f:a f:b )
+-(a b)	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>-( f:a f:b )
+!a	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>-f:a
++(+a)	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>+( +f:a )
+-(-a)	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>-( -f:a )
+a\\ AND	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>( f:a f:\\and )
+fn:ordered(a b)	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:fn:ordered(a b)
+"fast car"	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>[TP[f:fast,f:car]]~0
+fast	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:fast
+car	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:car
+the	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:the
+a b c	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>f:a f:b f:c
+i:5	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>i:5
+i:1234	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>i:1234
+i:[1 TO 10]	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>[i:1 i:10]
+i:[1 TO *]	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>[i:1 i:]
+i:{* TO 5}	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>{i: i:5}
+l:1234567	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>l:1234567
+fl:1,5	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>fl:1,5
+d:-1,25	X	org.apache.lucene.queryparser.flexible.standard.parser.ParseException: Syntax Error, cannot parse z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z z d:-1,25:  
+d:{* TO 1}	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>{d: d:1}
+dt:"1/2/2020"	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>[TP[dt:1,dt:2,dt:2020]]~0
+dt:["1/1/2020" TO "12/31/2020"]	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>[dt:1\\/1\\/2020 dt:12\\/31\\/2020]
+dt:[* TO "1/1/2020"]	X	org.apache.lucene.queryparser.flexible.core.QueryNodeException: Too many boolean clauses, the maximum supported is 1,024: <FILL>[dt: dt:1\\/1\\/2020]

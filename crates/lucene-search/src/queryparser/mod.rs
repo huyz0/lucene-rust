@@ -468,7 +468,9 @@ fn point_range_string(
             PointKind::Float => {
                 java_float_to_string(sortable_int_to_float(sortable_bytes_to_int(bytes, 0)))
             }
-            PointKind::Double => crate::function::java_double(sortable_long_to_double(
+            // `Double.toString` with its `4.9E-324` (`function::java_double`
+            // prints `5.0E-324`)
+            PointKind::Double => lucene_util::geo::java_double_string(sortable_long_to_double(
                 sortable_bytes_to_long(bytes, 0),
             )),
         }

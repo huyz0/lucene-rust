@@ -140,6 +140,11 @@ impl DateLocale {
     pub fn is_gregorian(&self) -> bool {
         self.data.gregorian
     }
+
+    /// The locale's generated record.
+    pub(crate) fn data(&self) -> &'static LocaleData {
+        self.data
+    }
 }
 
 /// `Locale.Builder.setLanguageTag(tag).build().toLanguageTag()` for a
@@ -194,6 +199,8 @@ struct Symbols {
     infinity: Vec<u16>,
     exponent: Vec<u16>,
     minus: Vec<u16>,
+    /// The zero digit the locale formats with.
+    zero: u32,
 }
 
 impl Symbols {
@@ -211,6 +218,7 @@ impl Symbols {
             infinity: one(d.infinity),
             exponent: one(d.exponent),
             minus: one(d.minus),
+            zero: u32::from(d.zero),
         }
     }
 }
@@ -357,6 +365,39 @@ impl SimpleDateFormat {
         let mut numeric = Vec::new();
         let end = self.run(&t, Some(&mut numeric))?;
         Some(ParsedFields { end, numeric })
+    }
+
+    /// `format(date)` of a pattern with only numeric `y`, `M` and `d`
+    /// fields (Gregorian era year, month `1..=12`, day of month): each field
+    /// zero-padded to its letter count in the locale's digits, a two-letter
+    /// year its last two digits. `None` for a pattern with another field.
+    pub fn format_year_month_day(&self, year: i64, month: i64, day: i64) -> Option<String> {
+        let mut out: Vec<u16> = Vec::new();
+        for e in &self.elements {
+            match *e {
+                Element::Literal(c) => out.push(c),
+                Element::Field { letter, count } => {
+                    let value = match letter {
+                        b'y' if count == 2 => year.rem_euclid(100),
+                        b'y' => year,
+                        b'M' if count <= 2 => month,
+                        b'd' => day,
+                        _ => return None,
+                    };
+                    let digits = value.unsigned_abs().to_string();
+                    let pad = count.saturating_sub(digits.len());
+                    if value < 0 {
+                        out.extend(&self.symbols.minus);
+                    }
+                    for b in "0".repeat(pad).bytes().chain(digits.bytes()) {
+                        let d = self.symbols.zero + u32::from(b - b'0');
+                        // The table's zero digits are BMP `char`s.
+                        out.push(u16::try_from(d).unwrap_or(u16::from(b)));
+                    }
+                }
+            }
+        }
+        Some(String::from_utf16_lossy(&out))
     }
 
     fn run(&self, t: &[u16], mut values: Option<&mut Vec<NumericField>>) -> Option<usize> {

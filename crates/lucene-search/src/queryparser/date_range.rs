@@ -31,7 +31,7 @@ use lucene_index::document::{DateTools, Resolution};
 const MS_PER_DAY: i64 = 86_400_000;
 
 /// The date settings a parser's range bounds are read with.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DateParsing {
     locale: DateLocale,
     format: SimpleDateFormat,
@@ -120,6 +120,23 @@ impl DateParsing {
         } else {
             time
         })
+    }
+
+    /// The locale's dates are ones this port computes (see [`supported`]).
+    pub(crate) fn is_supported(&self) -> bool {
+        self.supported
+    }
+
+    /// `df.format(new Date(time))`: the date of `time` in the default zone,
+    /// in the short pattern's `y`, `M` and `d` fields (the year of its era).
+    pub(crate) fn format(&self, time: i64) -> String {
+        let (year, month, day, _) =
+            DateTools::calendar_fields(time, i64::from(self.default_time_zone));
+        let year = if year <= 0 { 1 - year } else { year };
+        // [`supported`] admits no other field.
+        self.format
+            .format_year_month_day(year, month, day)
+            .unwrap_or_default()
     }
 
     /// The parser's time zone offset.

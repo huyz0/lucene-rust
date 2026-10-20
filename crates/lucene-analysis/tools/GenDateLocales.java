@@ -4,7 +4,8 @@
  * for the text fields (G, M/L from three letters, E, a) the set of names a one-field pattern
  * parses whole (Pattern itself is the oracle: every display name the locale's Calendar and
  * DateFormatSymbols offer is tried), the default date pattern, and the number symbols a numeric
- * field reads (NaN, infinity, exponent separator, negative prefix). The data is CLDR's (Unicode
+ * field reads (NaN, infinity, exponent separator, negative prefix), and the separators, zero digit
+ * and grouping size of the locale's number and integer instances. The data is CLDR's (Unicode
  * licence), read through the JDK's public API; no JDK code is copied. Run with JDK 25:
  *
  *   java crates/lucene-analysis/tools/GenDateLocales.java > crates/lucene-analysis/src/miscellaneous/date_locales.rs
@@ -13,7 +14,10 @@
  */
 import java.text.DateFormat;
 import java.text.DateFormatSymbols;
+import java.math.RoundingMode;
 import java.text.DecimalFormat;
+import java.text.DecimalFormatSymbols;
+import java.text.NumberFormat;
 import java.text.ParsePosition;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -82,7 +86,39 @@ public class GenDateLocales {
     r.add(df.getNegativePrefix());
     r.add(((SimpleDateFormat) DateFormat.getDateInstance(DateFormat.SHORT, l)).toPattern());
     r.add(Calendar.getInstance(l).getCalendarType().equals("gregory"));
+    // NumberFormat.getNumberInstance and getIntegerInstance: every locale's is a DecimalFormat
+    // that differs from the year field's only in these symbols (asserted), so the record holds
+    // just them.
+    DecimalFormat n = (DecimalFormat) NumberFormat.getNumberInstance(l);
+    DecimalFormat i = (DecimalFormat) NumberFormat.getIntegerInstance(l);
+    DecimalFormatSymbols s = n.getDecimalFormatSymbols();
+    DecimalFormatSymbols ys = df.getDecimalFormatSymbols();
+    for (DecimalFormat f : new DecimalFormat[] {n, i}) {
+      boolean integer = f == i;
+      if (!f.getPositivePrefix().isEmpty() || !f.getPositiveSuffix().isEmpty() || !f.getNegativeSuffix().isEmpty()
+          || !f.getNegativePrefix().equals(df.getNegativePrefix())
+          || !f.getDecimalFormatSymbols().equals(s)
+          || f.getGroupingSize() != n.getGroupingSize() || !f.isGroupingUsed()
+          || f.getMinimumIntegerDigits() != 1 || f.getMinimumFractionDigits() != 0
+          || f.getMaximumFractionDigits() != (integer ? 0 : 3) || f.getMultiplier() != 1
+          || f.isDecimalSeparatorAlwaysShown() || f.isParseIntegerOnly() != integer || f.isParseBigDecimal()
+          || f.getRoundingMode() != RoundingMode.HALF_EVEN) {
+        throw new IllegalStateException(l + ": a number format beyond #,##0.### and #,##0: " + f.toPattern());
+      }
+    }
+    if (!s.getNaN().equals(ys.getNaN()) || !s.getInfinity().equals(ys.getInfinity())
+        || !s.getExponentSeparator().equals(ys.getExponentSeparator()) || s.getZeroDigit() != ys.getZeroDigit()) {
+      throw new IllegalStateException(l + ": the number format's symbols are not the year field's");
+    }
+    r.add(s.getDecimalSeparator());
+    r.add(s.getGroupingSeparator());
+    r.add(s.getZeroDigit());
+    r.add(n.getGroupingSize());
     return r;
+  }
+
+  static String charLit(char c) {
+    return c >= 0x20 && c < 0x7f && c != '\'' && c != '\\' ? "'" + c + "'" : String.format("'\\u{%x}'", (int) c);
   }
 
   /** The locales the table holds: no variant (its tag round-trips) and a Gregorian or Buddhist calendar. */
@@ -134,7 +170,12 @@ public class GenDateLocales {
       }
       String[] scalars = {"default_pattern", "nan", "infinity", "exponent", "minus", "short_pattern"};
       for (int k = 0; k < scalars.length; k++) data.append(' ').append(scalars[k]).append(": ").append(strings.computeIfAbsent((String) r.get(PATTERNS.length + k), x -> strings.size())).append(',');
-      data.append(" gregorian: ").append(r.get(PATTERNS.length + scalars.length)).append(',');
+      int at = PATTERNS.length + scalars.length;
+      data.append(" gregorian: ").append(r.get(at)).append(',');
+      data.append(" decimal: ").append(charLit((Character) r.get(at + 1))).append(',');
+      data.append(" grouping: ").append(charLit((Character) r.get(at + 2))).append(',');
+      data.append(" zero: ").append(charLit((Character) r.get(at + 3))).append(',');
+      data.append(" grouping_size: ").append(r.get(at + 4)).append(',');
       data.append(" },\n");
     }
     StringBuilder o = new StringBuilder();
@@ -157,6 +198,11 @@ public class GenDateLocales {
     o.append("    /// The negative prefix (the exponent's sign too).\n    pub(crate) minus: u16,\n");
     o.append("    /// `DateFormat.getDateInstance(SHORT, locale)`'s pattern.\n    pub(crate) short_pattern: u16,\n");
     o.append("    /// The locale's calendar is Gregorian (not Buddhist).\n    pub(crate) gregorian: bool,\n");
+    o.append("    /// `NumberFormat.getNumberInstance(locale)` (`#,##0.###`) and\n");
+    o.append("    /// `getIntegerInstance(locale)` (`#,##0`): `getDecimalSeparator()`.\n    pub(crate) decimal: char,\n");
+    o.append("    /// `getGroupingSeparator()`.\n    pub(crate) grouping: char,\n");
+    o.append("    /// `getZeroDigit()` (the year field's too).\n    pub(crate) zero: char,\n");
+    o.append("    /// `getGroupingSize()`.\n    pub(crate) grouping_size: u8,\n");
     o.append("}\n\n");
     o.append("/// The strings the records name.\n");
     o.append("pub(crate) static STRINGS: [&str; ").append(strings.size()).append("] = [\n");

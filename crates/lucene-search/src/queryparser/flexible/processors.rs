@@ -4,12 +4,12 @@
 //! children (a child sees the node as its parent), let the processor order
 //! the new children, post-process -- with the processor's own hooks.
 //!
-//! Not ported: points (`PointsConfig`) and date resolutions, which need
-//! Java's locale `NumberFormat`/`DateFormat`; with neither configured (the
-//! default) the processors that read them change nothing but the term
-//! ranges' normalisation, which is ported.
+//! A field's points config (`points.rs`) and date resolution read its
+//! terms and range bounds in Java's locale `NumberFormat` and `DateFormat`,
+//! as far as `lucene_analysis::miscellaneous` reproduces them.
 
 use super::nodes::{FieldData, Kind, Modifier, Node, Text};
+use super::points::PointsConfig;
 use super::{Operator, StandardQueryParser};
 use crate::queryparser::classic::QueryParserError;
 use lucene_analysis::TokenStream;
@@ -95,11 +95,11 @@ pub(crate) fn run(cfg: &StandardQueryParser, tree: Node) -> Result<Node> {
     tree = pass(&mut RegexpProc { cfg }, tree)?;
     tree = pass(&mut MatchAllProc, tree)?;
     tree = pass(&mut OpenRangeProc, tree)?;
-    tree = pass(&mut PointProc, tree)?;
-    tree = pass(&mut PointRangeProc, tree)?;
+    tree = pass(&mut PointProc { cfg }, tree)?;
+    tree = pass(&mut PointRangeProc { cfg }, tree)?;
     tree = pass(&mut TermRangeProc { cfg }, tree)?;
     if !cfg.allow_leading_wildcard {
-        tree = pass(&mut LeadingWildcardProc, tree)?;
+        tree = pass(&mut LeadingWildcardProc { cfg }, tree)?;
     }
     if cfg.analyzer.is_some() {
         tree = pass(&mut AnalyzerProc { cfg }, tree)?;
@@ -394,30 +394,134 @@ impl Processor for OpenRangeProc {
     }
 }
 
-/// `PointQueryNodeProcessor`: with no `PointsConfig` it only asks for each
-/// field term's field config, which refuses no field.
-struct PointProc;
+/// `QueryNodeParseException`, which a points term that does not parse
+/// throws.
+const QUERY_NODE_PARSE_EXCEPTION: &str =
+    "org.apache.lucene.queryparser.flexible.core.QueryNodeParseException";
 
-impl Processor for PointProc {
+/// A point bound's text through its config: `None` for an empty text,
+/// `COULD_NOT_PARSE_NUMBER` for one its format does not parse.
+fn point_value(config: &PointsConfig, text: &str) -> Result<Option<super::points::PointValue>> {
+    if text.is_empty() {
+        return Ok(None);
+    }
+    let format = config.number_format();
+    let number = format.parse(text).ok_or_else(|| {
+        QueryParserError::runtime_class(
+            QUERY_NODE_PARSE_EXCEPTION,
+            format!(
+                "Could not parse text \"{text}\" using {}",
+                format.class_name()
+            ),
+        )
+    })?;
+    Ok(Some(config.point_type().convert(number)))
+}
+
+/// A `PointRangeQueryNode` over two `PointQueryNode`s of `field`.
+fn point_range(
+    field: Option<String>,
+    config: &PointsConfig,
+    values: [Option<super::points::PointValue>; 2],
+    lower_inclusive: bool,
+    upper_inclusive: bool,
+) -> Node {
+    let children = values
+        .into_iter()
+        .map(|value| {
+            Node::leaf(Kind::Point {
+                field: field.clone(),
+                value,
+                format: config.number_format().clone(),
+            })
+        })
+        .collect();
+    Node::with(
+        Kind::PointRange {
+            lower_inclusive,
+            upper_inclusive,
+            config: config.clone(),
+        },
+        children,
+    )
+}
+
+/// `PointQueryNodeProcessor`: a field term (of any `FieldQueryNode` class)
+/// outside a range, of a field with a points config, is the inclusive range
+/// from its number to itself.
+struct PointProc<'a> {
+    cfg: &'a StandardQueryParser,
+}
+
+impl Processor for PointProc<'_> {
     fn post(&mut self, node: Node, parent: Option<&Kind>) -> Result<Node> {
-        if let Some(d) = node.field_data() {
-            if !matches!(parent, Some(Kind::TermRange { .. })) {
-                check_field_config(d.field.as_deref())?;
-            }
+        let Some(d) = node.field_data() else {
+            return Ok(node);
+        };
+        if matches!(
+            parent,
+            Some(Kind::TermRange { .. } | Kind::PointRange { .. })
+        ) {
+            return Ok(node);
         }
-        Ok(node)
+        check_field_config(d.field.as_deref())?;
+        let field = d.field.clone().unwrap_or_default();
+        let Some(config) = self.cfg.points_config(&field) else {
+            return Ok(node);
+        };
+        let Some(value) = point_value(config, &d.text.as_string())? else {
+            return Err(QueryParserError::runtime_class(
+                QUERY_NODE_PARSE_EXCEPTION,
+                format!("Field \"{field}\" is numeric and cannot have an empty value."),
+            ));
+        };
+        Ok(point_range(
+            d.field.clone(),
+            config,
+            [Some(value), Some(value)],
+            true,
+            true,
+        ))
     }
 }
 
-/// `PointRangeQueryNodeProcessor`: likewise, for a range.
-struct PointRangeProc;
+/// `PointRangeQueryNodeProcessor`: a term range of a field with a points
+/// config is a point range, its bounds parsed (an empty one open), the
+/// lower first.
+struct PointRangeProc<'a> {
+    cfg: &'a StandardQueryParser,
+}
 
-impl Processor for PointRangeProc {
+impl Processor for PointRangeProc<'_> {
     fn post(&mut self, node: Node, _parent: Option<&Kind>) -> Result<Node> {
-        if matches!(node.kind, Kind::TermRange { .. }) {
-            check_field_config(node.get_field().as_deref())?;
-        }
-        Ok(node)
+        let Kind::TermRange {
+            lower_inclusive,
+            upper_inclusive,
+        } = node.kind
+        else {
+            return Ok(node);
+        };
+        let field = node.get_field();
+        check_field_config(field.as_deref())?;
+        let Some(config) = self.cfg.points_config(field.as_deref().unwrap_or_default()) else {
+            return Ok(node);
+        };
+        let text = |i: usize| {
+            node.children
+                .get(i)
+                .and_then(Node::field_data)
+                .map(|d| d.text.as_string())
+                .unwrap_or_default()
+        };
+        let lower = point_value(config, &text(0))?;
+        let upper = point_value(config, &text(1))?;
+        Ok(point_range(
+            field,
+            config,
+            [lower, upper],
+            lower_inclusive,
+            upper_inclusive,
+        ))
     }
 }
 
@@ -484,9 +588,11 @@ impl Processor for TermRangeProc<'_> {
 
 /// `AllowLeadingWildcardProcessor`, run when leading wildcards are not
 /// allowed.
-struct LeadingWildcardProc;
+struct LeadingWildcardProc<'a> {
+    cfg: &'a StandardQueryParser,
+}
 
-impl Processor for LeadingWildcardProc {
+impl Processor for LeadingWildcardProc<'_> {
     fn post(&mut self, node: Node, _parent: Option<&Kind>) -> Result<Node> {
         if node.is_wildcard() {
             let d = node.field_data().expect("a wildcard node");
@@ -498,7 +604,7 @@ impl Processor for LeadingWildcardProc {
                     QUERY_NODE_EXCEPTION,
                     format!(
                         "Leading wildcard is not allowed: {}",
-                        node.to_query_string()
+                        node.to_query_string(None, self.cfg.default_case_locale)?
                     ),
                 ));
             }
@@ -873,6 +979,8 @@ impl Kind {
                 | Kind::TermRange { .. }
                 | Kind::Regexp { .. }
                 | Kind::Interval { .. }
+                | Kind::Point { .. }
+                | Kind::PointRange { .. }
         )
     }
 }

@@ -9,6 +9,7 @@ mod conditional;
 #[rustfmt::skip]
 mod date_locales;
 mod date_recognizer;
+mod decimal_format;
 mod filtering;
 mod keyword;
 mod limit;
@@ -27,6 +28,7 @@ pub use date_recognizer::{
     DateLocale, DateRecognizerFilter, NumericField, ParsedFields, SimpleDateFormat, DATE_TYPE,
     ENGLISH_DEFAULT_DATE_PATTERN,
 };
+pub use decimal_format::{DecimalFormat, JavaNumber};
 pub use filtering::{CodepointCountFilter, DropIfFlaggedFilter, KeepWordFilter, LengthFilter};
 pub use keyword::{
     KeywordMarkerFilter, KeywordRepeatFilter, KeywordTest, PatternKeywordMarkerFilter,
