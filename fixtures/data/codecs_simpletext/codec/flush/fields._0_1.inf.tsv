@@ -1,0 +1,26 @@
+6964	0	DOCS	false	false	true	NONE	NONE	-1		0	0	0	0	FLOAT32	EUCLIDEAN	false	false
+73	1	NONE	false	false	false	NONE	NONE	-1		0	0	0	0	FLOAT32	EUCLIDEAN	false	false
+62	2	NONE	false	false	false	NONE	NONE	-1		0	0	0	0	FLOAT32	EUCLIDEAN	false	false
+69	3	NONE	false	false	false	NONE	NONE	-1		0	0	0	0	FLOAT32	EUCLIDEAN	false	false
+6c	4	NONE	false	false	false	NONE	NONE	-1		0	0	0	0	FLOAT32	EUCLIDEAN	false	false
+66	5	NONE	false	false	false	NONE	NONE	-1		0	0	0	0	FLOAT32	EUCLIDEAN	false	false
+64	6	NONE	false	false	false	NONE	NONE	-1		0	0	0	0	FLOAT32	EUCLIDEAN	false	false
+6672657173	7	DOCS_AND_FREQS	false	false	false	NONE	NONE	-1		0	0	0	0	FLOAT32	EUCLIDEAN	false	false
+6f666673	8	DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS	false	false	false	NONE	NONE	-1		0	0	0	0	FLOAT32	EUCLIDEAN	false	false
+7476	9	DOCS_AND_FREQS_AND_POSITIONS	true	false	false	NONE	NONE	-1		0	0	0	0	FLOAT32	EUCLIDEAN	false	false
+706179	10	DOCS_AND_FREQS_AND_POSITIONS	false	true	false	NONE	NONE	-1		0	0	0	0	FLOAT32	EUCLIDEAN	false	false
+61747472	11	DOCS	false	false	true	NONE	NONE	-1	6130=78,6b31=760a31,6b325c=	0	0	0	0	FLOAT32	EUCLIDEAN	false	false
+6e756d	12	NONE	false	false	false	NUMERIC	NONE	-1		0	0	0	0	FLOAT32	EUCLIDEAN	false	false
+757064	13	NONE	false	false	false	NUMERIC	NONE	1		0	0	0	0	FLOAT32	EUCLIDEAN	false	false
+736e756d	14	NONE	false	false	false	SORTED_NUMERIC	NONE	-1		0	0	0	0	FLOAT32	EUCLIDEAN	false	false
+73736574	15	NONE	false	false	false	SORTED_SET	NONE	-1		0	0	0	0	FLOAT32	EUCLIDEAN	false	false
+736476	16	NONE	false	false	false	SORTED	NONE	-1		0	0	0	0	FLOAT32	EUCLIDEAN	false	false
+626476	17	NONE	false	false	false	BINARY	NONE	-1		0	0	0	0	FLOAT32	EUCLIDEAN	false	false
+736b6970	18	NONE	false	false	false	NUMERIC	RANGE	-1		0	0	0	0	FLOAT32	EUCLIDEAN	false	false
+697074	19	NONE	false	false	false	NONE	NONE	-1		2	2	4	0	FLOAT32	EUCLIDEAN	false	false
+64696d73	20	NONE	false	false	false	NONE	NONE	-1		3	2	4	0	FLOAT32	EUCLIDEAN	false	false
+66766563	21	NONE	false	false	false	NONE	NONE	-1		0	0	0	4	FLOAT32	COSINE	false	false
+62766563	22	NONE	false	false	false	NONE	NONE	-1		0	0	0	3	BYTE	DOT_PRODUCT	false	false
+6d766563	23	NONE	false	false	false	NONE	NONE	-1		0	0	0	2	FLOAT32	MAXIMUM_INNER_PRODUCT	false	false
+706172656e74	24	NONE	false	false	false	NUMERIC	NONE	-1		0	0	0	0	FLOAT32	EUCLIDEAN	false	true
+736f6674	25	NONE	false	false	false	NUMERIC	NONE	2		0	0	0	0	FLOAT32	EUCLIDEAN	true	false

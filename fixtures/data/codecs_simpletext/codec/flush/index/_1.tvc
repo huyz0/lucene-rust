@@ -1,0 +1,18 @@
+doc 0
+  numfields 1
+  field 9
+    name tv
+    positions true
+    offsets   true
+    payloads  false
+    numterms 1
+    term t1
+      freq 2
+      position 0
+        startoffset 0
+        endoffset 2
+      position 1
+        startoffset 3
+        endoffset 5
+END
+checksum 00000000000029632561
