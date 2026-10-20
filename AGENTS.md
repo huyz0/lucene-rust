@@ -84,8 +84,13 @@ do) when the docker engine does not answer in 30 s, when the drive holding
 Docker's disk has under 25 GB free or Docker's virtual disk exceeds 300 GB, and
 it prunes Docker's *build cache* above 40 GB. `gate.sh` repeats the check inside
 the container for the target dir. **If it fails, stop and report it; do not set
-`PREFLIGHT=0` to push through, and never run two heavy jobs at once** (check
-`docker ps` for a `lucene-rust` container first). Docker Desktop's virtual disk
+`PREFLIGHT=0` to push through, and never run two heavy jobs at once.** The
+script enforces that last rule itself: a machine-wide lock
+(`~/.lucene-rust-docker-test.lock`, shared by every checkout, worktree and
+session) makes a second run print "waiting for the other job to finish" and
+start when the first exits -- wait for it, do not set `DOCKER_LOCK=0`. A run
+that is never invoked through the script (a bare `docker run`) bypasses the
+lock, so do not. Docker Desktop's virtual disk
 never shrinks, and a full drive once killed rustc and then the engine. See
 [`docs/mechanical-gates.md`](docs/mechanical-gates.md#preflight).
 
