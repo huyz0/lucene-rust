@@ -75,15 +75,15 @@ codecs/uniformsplit/UniformSplitPostingsFormat	ported	crates/lucene-codecs/src/u
 codecs/uniformsplit/UniformSplitTerms	ported	crates/lucene-codecs/src/uniformsplit/reader.rs::UniformSplitTerms
 codecs/uniformsplit/UniformSplitTermsReader	ported	crates/lucene-codecs/src/uniformsplit/reader.rs::UniformSplitTermsReader
 codecs/uniformsplit/UniformSplitTermsWriter	ported	crates/lucene-codecs/src/uniformsplit/writer.rs::UniformSplitTermsWriter
-codecs/uniformsplit/sharedterms/FieldMetadataTermState	todo:M14	the shared-terms uniform-split terms dictionary (M14.g)
-codecs/uniformsplit/sharedterms/STBlockLine	todo:M14	the shared-terms uniform-split terms dictionary (M14.g)
-codecs/uniformsplit/sharedterms/STBlockReader	todo:M14	the shared-terms uniform-split terms dictionary (M14.g)
-codecs/uniformsplit/sharedterms/STBlockWriter	todo:M14	the shared-terms uniform-split terms dictionary (M14.g)
-codecs/uniformsplit/sharedterms/STIntersectBlockReader	todo:M14	the shared-terms uniform-split terms dictionary (M14.g)
-codecs/uniformsplit/sharedterms/STMergingBlockReader	todo:M14	the shared-terms uniform-split terms dictionary (M14.g)
-codecs/uniformsplit/sharedterms/STMergingTermsEnum	todo:M14	the shared-terms uniform-split terms dictionary (M14.g)
-codecs/uniformsplit/sharedterms/STUniformSplitPostingsFormat	todo:M14	the shared-terms uniform-split terms dictionary (M14.g)
-codecs/uniformsplit/sharedterms/STUniformSplitTerms	todo:M14	the shared-terms uniform-split terms dictionary (M14.g)
-codecs/uniformsplit/sharedterms/STUniformSplitTermsReader	todo:M14	the shared-terms uniform-split terms dictionary (M14.g)
-codecs/uniformsplit/sharedterms/STUniformSplitTermsWriter	todo:M14	the shared-terms uniform-split terms dictionary (M14.g)
-codecs/uniformsplit/sharedterms/UnionFieldMetadataBuilder	todo:M14	the shared-terms uniform-split terms dictionary (M14.g)
+codecs/uniformsplit/sharedterms/FieldMetadataTermState	ported	crates/lucene-codecs/src/uniformsplit/sharedterms/block_line.rs::FieldMetadataTermState
+codecs/uniformsplit/sharedterms/STBlockLine	ported	crates/lucene-codecs/src/uniformsplit/sharedterms/block_line.rs::SharedFieldInfos
+codecs/uniformsplit/sharedterms/STBlockReader	ported	crates/lucene-codecs/src/uniformsplit/sharedterms/block_reader.rs::StBlockReader
+codecs/uniformsplit/sharedterms/STBlockWriter	ported	crates/lucene-codecs/src/uniformsplit/sharedterms/writer.rs::StBlockSink
+codecs/uniformsplit/sharedterms/STIntersectBlockReader	ported	crates/lucene-codecs/src/uniformsplit/sharedterms/block_reader.rs::StIntersectBlockReader
+codecs/uniformsplit/sharedterms/STMergingBlockReader	ported	crates/lucene-codecs/src/uniformsplit/sharedterms/block_reader.rs::StMergingBlockReader
+codecs/uniformsplit/sharedterms/STMergingTermsEnum	todo:M14	merge(MergeState)'s cross-segment postings enum (docMap remap); the Rust writer takes already-merged postings
+codecs/uniformsplit/sharedterms/STUniformSplitPostingsFormat	ported	crates/lucene-codecs/src/uniformsplit/sharedterms/mod.rs::StUniformSplitPostingsFormat
+codecs/uniformsplit/sharedterms/STUniformSplitTerms	ported	crates/lucene-codecs/src/uniformsplit/sharedterms/reader.rs::StUniformSplitTerms
+codecs/uniformsplit/sharedterms/STUniformSplitTermsReader	ported	crates/lucene-codecs/src/uniformsplit/sharedterms/reader.rs::StUniformSplitTermsReader
+codecs/uniformsplit/sharedterms/STUniformSplitTermsWriter	partial	crates/lucene-codecs/src/uniformsplit/sharedterms/writer.rs::StUniformSplitTermsWriter -- M14: merge(MergeState) (mergeSegments, SegmentTerms, MergingFieldTerms) not ported
+codecs/uniformsplit/sharedterms/UnionFieldMetadataBuilder	ported	crates/lucene-codecs/src/uniformsplit/sharedterms/reader.rs::UnionFieldMetadataBuilder

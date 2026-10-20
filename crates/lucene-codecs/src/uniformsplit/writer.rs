@@ -20,45 +20,106 @@ use super::{
     validate_settings, BlockEncoder, BlockHeader, DeltaBaseTermStateSerializer, Error, Result,
     NAME, VERSION_CURRENT,
 };
-use crate::field_infos::FieldInfo;
 use crate::postings::TermMetadata;
 use crate::postings_writer::{self, FieldTermStates};
 use crate::segment_state::SegmentWriteState;
 
 /// `BlockLine` on the write side: a term, its `mdpLength` against the term
-/// before it, and its `BlockTermState`.
+/// before it, and its term state(s) -- one field's `BlockTermState`, or
+/// (`STBlockLine`) every field's.
 #[derive(Debug, Clone)]
-struct PendingLine {
-    term: Vec<u8>,
-    mdp_length: usize,
+pub(super) struct PendingLine<S> {
+    pub(super) term: Vec<u8>,
+    pub(super) mdp_length: usize,
+    pub(super) states: S,
+}
+
+/// One field's `BlockTermState`, as a [`UniformSplitTermsWriter`] line
+/// holds it.
+#[derive(Debug, Clone)]
+pub(super) struct TermStateLine {
     doc_freq: i32,
     total_term_freq: i64,
     meta: TermMetadata,
 }
 
+/// The two `BlockWriter` methods `STBlockWriter` overrides: what a line's
+/// term states are and how they are written (`writeBlockLine`'s
+/// `termStateSerializer.writeTermState`), and which fields a written block
+/// belongs to (`updateFieldMetadata`). [`FieldMetadata`] is the one-field
+/// case; `sharedterms` has the other.
+pub(super) trait BlockSink {
+    /// A line's term state(s).
+    type States;
+
+    /// Writes `states` to the block's term states.
+    fn write_line_term_states(
+        &mut self,
+        out: &mut Vec<u8>,
+        serializer: &mut DeltaBaseTermStateSerializer,
+        states: &Self::States,
+    );
+
+    /// `updateFieldMetadata(blockStartFP)`.
+    fn update_field_metadata(&mut self, block_start_fp: i64);
+}
+
+impl BlockSink for FieldMetadata {
+    type States = TermStateLine;
+
+    /// `writeBlockLine`'s `termStateSerializer.writeTermState(...)`.
+    fn write_line_term_states(
+        &mut self,
+        out: &mut Vec<u8>,
+        serializer: &mut DeltaBaseTermStateSerializer,
+        line: &TermStateLine,
+    ) {
+        serializer.write_term_state(
+            out,
+            self.field_info.index_options,
+            self.field_info.store_payloads,
+            line.doc_freq,
+            line.total_term_freq,
+            &line.meta,
+        );
+    }
+
+    fn update_field_metadata(&mut self, block_start_fp: i64) {
+        if self.first_block_start_fp == -1 {
+            self.first_block_start_fp = block_start_fp;
+        }
+        self.last_block_start_fp = block_start_fp;
+    }
+}
+
 /// `BlockWriter`.
-struct BlockWriter {
+pub(super) struct BlockWriter<S> {
     target_num_block_lines: usize,
     delta_num_lines: usize,
-    block_lines: Vec<PendingLine>,
+    block_lines: Vec<PendingLine<S>>,
     block_lines_write_buffer: Vec<u8>,
     term_states_write_buffer: Vec<u8>,
     block_write_buffer: Vec<u8>,
     term_state_serializer: DeltaBaseTermStateSerializer,
-    block_encoder: Option<Arc<dyn BlockEncoder>>,
+    pub(super) block_encoder: Option<Arc<dyn BlockEncoder>>,
     /// `lastTerm`.
-    last_term: Option<Vec<u8>>,
+    pub(super) last_term: Option<Vec<u8>>,
 }
 
-impl BlockWriter {
-    fn new(
-        target_num_block_lines: usize,
-        delta_num_lines: usize,
+impl<S> BlockWriter<S> {
+    /// `new BlockWriter(blockOutput, targetNumBlockLines, deltaNumLines,
+    /// blockEncoder)`, from settings `validateSettings` accepted.
+    pub(super) fn new(
+        target_num_block_lines: i32,
+        delta_num_lines: i32,
         block_encoder: Option<Arc<dyn BlockEncoder>>,
     ) -> Self {
+        // Both validated as `0 <= delta < target <= 1000`.
+        let to_usize = |n: i32| usize::try_from(n).unwrap_or(0);
+        let target_num_block_lines = to_usize(target_num_block_lines);
         BlockWriter {
             target_num_block_lines,
-            delta_num_lines,
+            delta_num_lines: to_usize(delta_num_lines),
             block_lines: Vec::with_capacity(target_num_block_lines),
             block_lines_write_buffer: Vec::new(),
             term_states_write_buffer: Vec::new(),
@@ -72,30 +133,30 @@ impl BlockWriter {
     /// `addLine(term, blockTermState, dictionaryBuilder)`.
     // ARITH: `target + delta <= MAX_NUM_BLOCK_LINES` (`validateSettings`).
     #[allow(clippy::arithmetic_side_effects)]
-    fn add_line(
+    pub(super) fn add_line<K: BlockSink<States = S>>(
         &mut self,
-        line: PendingLine,
+        line: PendingLine<S>,
         block_output: &mut Vec<u8>,
-        field: &mut FieldMetadata,
+        sink: &mut K,
         dictionary: &mut FstDictionaryBuilder,
     ) -> Result<()> {
         self.last_term = Some(line.term.clone());
         self.block_lines.push(line);
         if self.block_lines.len() >= self.target_num_block_lines + self.delta_num_lines {
-            self.split_and_write_block(block_output, field, dictionary)?;
+            self.split_and_write_block(block_output, sink, dictionary)?;
         }
         Ok(())
     }
 
     /// `finishLastBlock(dictionaryBuilder)`.
-    fn finish_last_block(
+    pub(super) fn finish_last_block<K: BlockSink<States = S>>(
         &mut self,
         block_output: &mut Vec<u8>,
-        field: &mut FieldMetadata,
+        sink: &mut K,
         dictionary: &mut FstDictionaryBuilder,
     ) -> Result<()> {
         while !self.block_lines.is_empty() {
-            self.split_and_write_block(block_output, field, dictionary)?;
+            self.split_and_write_block(block_output, sink, dictionary)?;
         }
         self.last_term = None;
         Ok(())
@@ -110,10 +171,10 @@ impl BlockWriter {
     /// number fewer than `2 * delta` and the first of them has the smallest
     /// `mdpLength`, which settings with `target >= 3 * delta + 1` never
     /// meet.
-    fn split_and_write_block(
+    fn split_and_write_block<K: BlockSink<States = S>>(
         &mut self,
         block_output: &mut Vec<u8>,
-        field: &mut FieldMetadata,
+        sink: &mut K,
         dictionary: &mut FstDictionaryBuilder,
     ) -> Result<()> {
         let num_lines = self.block_lines.len();
@@ -124,7 +185,7 @@ impl BlockWriter {
                 .saturating_sub(self.delta_num_lines)
         {
             let lines = std::mem::take(&mut self.block_lines);
-            self.write_block(&lines, block_output, field, dictionary)?;
+            self.write_block(&lines, block_output, sink, dictionary)?;
             self.block_lines = lines;
             self.block_lines.clear();
             return Ok(());
@@ -155,15 +216,15 @@ impl BlockWriter {
         }
         let rest = self.block_lines.split_off(min_mdp_end_index);
         let lines = std::mem::replace(&mut self.block_lines, rest);
-        self.write_block(&lines, block_output, field, dictionary)
+        self.write_block(&lines, block_output, sink, dictionary)
     }
 
     /// `writeBlock(blockLines, dictionaryBuilder)`.
-    fn write_block(
+    fn write_block<K: BlockSink<States = S>>(
         &mut self,
-        lines: &[PendingLine],
+        lines: &[PendingLine<S>],
         block_output: &mut Vec<u8>,
-        field: &mut FieldMetadata,
+        sink: &mut K,
         dictionary: &mut FstDictionaryBuilder,
     ) -> Result<()> {
         let block_start_fp = block_output.len() as i64;
@@ -179,12 +240,7 @@ impl BlockWriter {
                 middle_offset = self.block_lines_write_buffer.len() as i32;
                 is_incremental_encoding_seed = true;
             }
-            self.write_block_line(
-                is_incremental_encoding_seed,
-                line,
-                previous,
-                field.field_info(),
-            );
+            self.write_block_line(is_incremental_encoding_seed, line, previous, sink);
             previous = Some(&line.term);
         }
         let header = BlockHeader::new(
@@ -215,21 +271,17 @@ impl BlockWriter {
         self.term_states_write_buffer.clear();
         self.block_write_buffer.clear();
         self.term_state_serializer.reset_base_start_fp();
-        // `updateFieldMetadata(blockStartFP)`.
-        if field.first_block_start_fp == -1 {
-            field.first_block_start_fp = block_start_fp;
-        }
-        field.last_block_start_fp = block_start_fp;
+        sink.update_field_metadata(block_start_fp);
         Ok(())
     }
 
     /// `writeBlockLine(isIncrementalEncodingSeed, line, previousLine)`.
-    fn write_block_line(
+    fn write_block_line<K: BlockSink<States = S>>(
         &mut self,
         is_incremental_encoding_seed: bool,
-        line: &PendingLine,
+        line: &PendingLine<S>,
         previous: Option<&[u8]>,
-        field_info: &FieldInfo,
+        sink: &mut K,
     ) {
         write_line(
             &mut self.block_lines_write_buffer,
@@ -239,13 +291,10 @@ impl BlockWriter {
             self.term_states_write_buffer.len() as i32,
             is_incremental_encoding_seed,
         );
-        self.term_state_serializer.write_term_state(
+        sink.write_line_term_states(
             &mut self.term_states_write_buffer,
-            field_info.index_options,
-            field_info.store_payloads,
-            line.doc_freq,
-            line.total_term_freq,
-            &line.meta,
+            &mut self.term_state_serializer,
+            &line.states,
         );
     }
 }
@@ -254,7 +303,7 @@ impl BlockWriter {
 /// field by field from the postings writer's term states.
 pub struct UniformSplitTermsWriter<'s> {
     state: &'s SegmentWriteState<'s>,
-    block_writer: BlockWriter,
+    block_writer: BlockWriter<TermStateLine>,
     block_output: Vec<u8>,
     dictionary_output: Vec<u8>,
     fields_output: Vec<u8>,
@@ -295,15 +344,9 @@ impl<'s> UniformSplitTermsWriter<'s> {
             state.segment_id,
             state.segment_suffix,
         );
-        // Both validated as `0 <= delta < target <= 1000`.
-        let to_usize = |n: i32| usize::try_from(n).unwrap_or(0);
         Ok(UniformSplitTermsWriter {
             state,
-            block_writer: BlockWriter::new(
-                to_usize(target_num_block_lines),
-                to_usize(delta_num_lines),
-                block_encoder,
-            ),
+            block_writer: BlockWriter::new(target_num_block_lines, delta_num_lines, block_encoder),
             block_output,
             dictionary_output,
             fields_output: Vec::new(),
@@ -338,9 +381,11 @@ impl<'s> UniformSplitTermsWriter<'s> {
             let line = PendingLine {
                 term: term.to_vec(),
                 mdp_length,
-                doc_freq,
-                total_term_freq,
-                meta: field.term_metadata(i),
+                states: TermStateLine {
+                    doc_freq,
+                    total_term_freq,
+                    meta: field.term_metadata(i),
+                },
             };
             self.block_writer.add_line(
                 line,
@@ -378,19 +423,39 @@ impl<'s> UniformSplitTermsWriter<'s> {
     /// # Errors
     /// What the encoder fails with.
     pub fn finish(mut self) -> Result<(Vec<u8>, Vec<u8>)> {
-        let fields_start_position = self.block_output.len() as i64;
-        self.block_output.write_vint(self.fields_number);
-        match &self.block_writer.block_encoder {
-            None => self.block_output.write_bytes(&self.fields_output),
-            Some(encoder) => {
-                let encoded = encoder.encode(&self.fields_output)?;
-                self.block_output.write_vlong(encoded.len() as i64);
-                self.block_output.write_bytes(&encoded);
-            }
-        }
-        self.block_output.write_i64(fields_start_position);
-        codec_util::write_footer(&mut self.block_output);
+        write_fields_metadata(
+            &mut self.block_output,
+            self.fields_number,
+            &self.fields_output,
+            self.block_writer.block_encoder.as_deref(),
+        )?;
         codec_util::write_footer(&mut self.dictionary_output);
         Ok((self.block_output, self.dictionary_output))
     }
+}
+
+/// `writeFieldsMetadata(fieldsNumber, fieldsOutput)`: the fields' metadata,
+/// encoded or not, its start, and the blocks file's footer.
+///
+/// # Errors
+/// What the encoder fails with.
+pub(super) fn write_fields_metadata(
+    block_output: &mut Vec<u8>,
+    fields_number: i32,
+    fields_output: &[u8],
+    block_encoder: Option<&dyn BlockEncoder>,
+) -> Result<()> {
+    let fields_start_position = block_output.len() as i64;
+    block_output.write_vint(fields_number);
+    match block_encoder {
+        None => block_output.write_bytes(fields_output),
+        Some(encoder) => {
+            let encoded = encoder.encode(fields_output)?;
+            block_output.write_vlong(encoded.len() as i64);
+            block_output.write_bytes(&encoded);
+        }
+    }
+    block_output.write_i64(fields_start_position);
+    codec_util::write_footer(block_output);
+    Ok(())
 }

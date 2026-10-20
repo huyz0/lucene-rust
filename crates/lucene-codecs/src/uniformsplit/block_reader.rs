@@ -44,6 +44,10 @@ pub struct BlockReader<'a> {
     term_state_forced: bool,
     /// `forcedTerm`.
     forced_term: Vec<u8>,
+    /// Whether this is `sharedterms`' `STBlockReader`, whose
+    /// `isBeyondLastTerm` also stops past the field's last block and whose
+    /// `nextTerm` stops after the field's last term.
+    pub(super) shared_reader: bool,
 }
 
 impl std::fmt::Debug for BlockReader<'_> {
@@ -88,6 +92,7 @@ impl<'a> BlockReader<'a> {
             term_state: None,
             term_state_forced: false,
             forced_term: Vec::new(),
+            shared_reader: false,
         }
     }
 
@@ -143,8 +148,15 @@ impl<'a> BlockReader<'a> {
         self.term() == Some(searched_term)
     }
 
-    /// `isBeyondLastTerm(searchedTerm, blockStartFP)`.
+    /// `isBeyondLastTerm(searchedTerm, blockStartFP)`; `STBlockReader`'s
+    /// also when the block is past the field's last one.
     pub(super) fn is_beyond_last_term(&self, searched_term: &[u8], block_start_fp: i64) -> bool {
+        (self.shared_reader && block_start_fp > self.terms.metadata.last_block_start_fp)
+            || self.is_beyond_last_term_in_block(searched_term, block_start_fp)
+    }
+
+    /// `BlockReader.isBeyondLastTerm(searchedTerm, blockStartFP)`.
+    fn is_beyond_last_term_in_block(&self, searched_term: &[u8], block_start_fp: i64) -> bool {
         block_start_fp == self.terms.metadata.last_block_start_fp
             && searched_term > self.terms.metadata.last_term.as_slice()
     }
@@ -319,6 +331,14 @@ impl<'a> BlockReader<'a> {
             }
             self.read_line_in_block()?;
         }
+        // `STBlockReader.nextTerm()`: nothing after the field's last term.
+        if self.shared_reader {
+            if let Some(term) = self.term() {
+                if self.is_beyond_last_term_in_block(term, self.block_start_fp) {
+                    return Ok(None);
+                }
+            }
+        }
         Ok(self.term())
     }
 
@@ -393,34 +413,37 @@ impl<'a> BlockReader<'a> {
     /// [`Error::Unsupported`] when not positioned on a term (Java's
     /// `NullPointerException`); `Corrupted` for a malformed term state.
     pub(super) fn read_term_state_if_not_read(&mut self) -> Result<UniformSplitTermState> {
-        if let Some(state) = self.term_state {
-            return Ok(state);
-        }
-        let mut state = self.read_term_state()?;
-        state.term_block_ord = self.line_index_in_block;
-        state.block_file_pointer = self.block_start_fp;
-        self.term_state = Some(state);
-        Ok(state)
+        self.read_term_state_opt()?
+            .ok_or(Error::Unsupported("the term does not occur in the field"))
     }
 
-    /// `readTermState()`.
-    fn read_term_state(&self) -> Result<UniformSplitTermState> {
+    /// `readTermStateIfNotRead()` as Java has it: `None` when the line's
+    /// term is not the field's (`sharedterms`; never otherwise).
+    pub(super) fn read_term_state_opt(&mut self) -> Result<Option<UniformSplitTermState>> {
+        if self.term_state.is_none() {
+            self.term_state = self.read_term_state()?;
+            if let Some(state) = self.term_state.as_mut() {
+                state.term_block_ord = self.line_index_in_block;
+                state.block_file_pointer = self.block_start_fp;
+            }
+        }
+        Ok(self.term_state)
+    }
+
+    /// `readTermState()`; `STBlockReader`'s and `STIntersectBlockReader`'s
+    /// (`sharedterms`) from the line's list of fields.
+    fn read_term_state(&self) -> Result<Option<UniformSplitTermState>> {
         let (Some(header), Some((rel_offset, _))) = (self.block_header.as_ref(), self.line) else {
             return Err(Error::Unsupported(
                 "the terms enum is not positioned on a term",
             ));
         };
-        let mut pos = usize::try_from(header.term_states_base_offset)
-            .ok()
-            .zip(usize::try_from(rel_offset).ok())
-            .and_then(|(base, rel)| {
-                self.block_first_line_start
-                    .checked_add(base)?
-                    .checked_add(rel)
-            })
-            .ok_or_else(|| corrupt("term state offset overflows"))?;
+        let mut pos = self.term_states_position(header, rel_offset)?;
         let bytes = block_bytes(&self.terms.ustb, &self.block_decoded, self.block_range);
         let info = &self.terms.metadata.field_info;
+        if let Some(shared) = self.terms.shared.as_deref() {
+            return shared.read_term_state_for_field(info.number, bytes, &mut pos, header);
+        }
         DeltaBaseTermStateSerializer::read_term_state(
             header.base_docs_fp,
             header.base_positions_fp,
@@ -430,6 +453,40 @@ impl<'a> BlockReader<'a> {
             info.index_options,
             info.store_payloads,
         )
+        .map(Some)
+    }
+
+    /// `STMergingBlockReader.readFieldTermStatesMap(fieldTermStatesMap)`:
+    /// every field's term state on the current line, in the line's order;
+    /// nothing when not on a line or not `sharedterms`.
+    pub(super) fn read_field_term_states(
+        &self,
+        out: &mut Vec<(i32, UniformSplitTermState)>,
+    ) -> Result<()> {
+        out.clear();
+        let (Some(shared), Some(header), Some((rel_offset, _))) = (
+            self.terms.shared.as_deref(),
+            self.block_header.as_ref(),
+            self.line,
+        ) else {
+            return Ok(());
+        };
+        let mut pos = self.term_states_position(header, rel_offset)?;
+        let bytes = block_bytes(&self.terms.ustb, &self.block_decoded, self.block_range);
+        shared.read_field_term_states(bytes, &mut pos, header, out)
+    }
+
+    /// `blockFirstLineStart + termStatesBaseOffset + termStateRelativeOffset`.
+    fn term_states_position(&self, header: &BlockHeader, rel_offset: i32) -> Result<usize> {
+        usize::try_from(header.term_states_base_offset)
+            .ok()
+            .zip(usize::try_from(rel_offset).ok())
+            .and_then(|(base, rel)| {
+                self.block_first_line_start
+                    .checked_add(base)?
+                    .checked_add(rel)
+            })
+            .ok_or_else(|| corrupt("term state offset overflows"))
     }
 
     /// `term()`.

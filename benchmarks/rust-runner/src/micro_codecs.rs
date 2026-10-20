@@ -20,6 +20,10 @@
 //!
 //! `cx_usplit_seek`: `seekExact` on the same kind of ids (half present)
 //! through `UniformSplitPostingsFormat`'s enum, over `usplit/`'s files.
+//!
+//! `cx_stsplit_seek`: `seekExact` on the same kind of ids through
+//! `STUniformSplitPostingsFormat`'s enum of `sb`, whose ids (every third)
+//! share `stsplit/`'s blocks and dictionary with `sa`'s (all).
 
 use std::hint::black_box;
 use std::time::Duration;
@@ -30,6 +34,7 @@ use lucene_codecs::bloom::BloomFilteredFieldsProducer;
 use lucene_codecs::hnsw_vectors::SearchOptions;
 use lucene_codecs::memory::{DirectFiles, DirectPostingsFormat, FstPostingsFormat};
 use lucene_codecs::segment_state::SegmentReadState;
+use lucene_codecs::uniformsplit::sharedterms::StUniformSplitPostingsFormat;
 use lucene_codecs::uniformsplit::UniformSplitPostingsFormat;
 
 use super::measure;
@@ -321,10 +326,36 @@ fn bench_usplit(w: Duration, m: Duration, dir: &str) {
     });
 }
 
+fn bench_stsplit(w: Duration, m: Duration, dir: &str) {
+    if !selected("cx_stsplit_seek") {
+        return;
+    }
+    let targets = read_targets(dir);
+    let (name, id, fis) = segment(dir);
+    let suffix = "SharedTermsUniformSplit_0";
+    let file = |ext: &str| std::fs::read(format!("{dir}/{name}_{suffix}.{ext}")).unwrap();
+    let state = SegmentReadState {
+        max_doc: 200_000,
+        segment_id: &id,
+        segment_suffix: suffix,
+        field_infos: &fis,
+    };
+    let reader = StUniformSplitPostingsFormat::default()
+        .open(file("stustb"), &file("stustd"), &state)
+        .unwrap();
+    let terms = reader.terms("sb").unwrap();
+    // One enum, as Java's case reuses one `TermsEnum` per pass.
+    let mut e = terms.iter();
+    bench_seek(w, m, "cx_stsplit_seek", &targets, |t| {
+        e.seek_exact(t).unwrap().then(|| e.doc_freq().unwrap())
+    });
+}
+
 pub fn bench_codecs(w: Duration, m: Duration, dir: &str) {
     bench_bloom(w, m, &format!("{dir}/bloom"));
     bench_memory(w, m, &format!("{dir}/memory"));
     bench_bitvectors(w, m, &format!("{dir}/bitvectors"));
     bench_ords(w, m, &format!("{dir}/ords"));
     bench_usplit(w, m, &format!("{dir}/usplit"));
+    bench_stsplit(w, m, &format!("{dir}/stsplit"));
 }
