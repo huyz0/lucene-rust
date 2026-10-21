@@ -456,6 +456,42 @@ impl SparseFixedBitSet {
     pub fn non_zero_long_count(&self) -> usize {
         self.non_zero_long_count
     }
+
+    /// `TestSparseFixedBitSet.assertEquals`'s structural half, for the test
+    /// framework: each block holds at least as many words as its index has
+    /// bits, every word past that count is zero, and the counts sum to
+    /// `nonZeroLongCount`. `Err` names the first violation.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn check_structure(&self) -> Result<(), String> {
+        let mut total = 0;
+        for (i, (&index, block)) in self.indices.iter().zip(&self.bits).enumerate() {
+            let n = index.count_ones() as usize;
+            if n == 0 {
+                continue;
+            }
+            total += n;
+            let block = block.as_deref().unwrap_or(&[]);
+            if block.len() < n {
+                return Err(format!(
+                    "block {i} holds {} words for {n} index bits",
+                    block.len()
+                ));
+            }
+            if let Some(j) = block[n..].iter().position(|&w| w != 0) {
+                return Err(format!(
+                    "block {i} word {} is set past its count {n}",
+                    n + j
+                ));
+            }
+        }
+        if total != self.non_zero_long_count {
+            return Err(format!(
+                "nonZeroLongCount {} != {total}",
+                self.non_zero_long_count
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl std::fmt::Display for SparseFixedBitSet {
@@ -474,6 +510,33 @@ mod tests {
     #![allow(clippy::needless_range_loop, clippy::identity_op)]
 
     use super::*;
+
+    #[test]
+    fn check_structure_sees_each_corruption() {
+        let mut s = SparseFixedBitSet::new(10_000);
+        for i in [3, 70, 4100, 9000] {
+            s.set(i);
+        }
+        assert_eq!(s.check_structure(), Ok(()));
+        let mut short = s.clone();
+        // Block 0 holds words 0 and 1 (bits 3 and 70).
+        short.bits[0].as_mut().unwrap().truncate(1);
+        assert!(short.check_structure().unwrap_err().contains("words for"));
+        let mut extra = s.clone();
+        let block = extra.bits[0].as_mut().unwrap();
+        block.resize(block.len().max(3), 0);
+        block[2] = 1;
+        assert!(extra
+            .check_structure()
+            .unwrap_err()
+            .contains("past its count"));
+        let mut count = s.clone();
+        count.non_zero_long_count += 1;
+        assert!(count
+            .check_structure()
+            .unwrap_err()
+            .contains("nonZeroLongCount"));
+    }
 
     fn rng(s: &mut u64) -> u64 {
         *s = s

@@ -77,6 +77,7 @@ Cargo workspace, one crate per Java module boundary (roughly):
 | `lucene-analysis` | `o.a.l.analysis` + `analysis/common` subset | TokenStream trait, StandardTokenizer (from Unicode segmentation), lowercase/stop/ascii-folding/Porter-stem; everything else stays JVM-side long-term |
 | `lucene-analysis-<m>` | `lucene-analysis-{phonetic,stempel,morfologik,kuromoji,nori,smartcn,icu,opennlp}` | M12: one crate per language module, each over `lucene-util` + `lucene-analysis` (`lucene-analysis-icu` also `lucene-index`, for its doc-values field alone), nothing depending on it (see `docs/milestones/m12-language-analysis.md`, Architecture) |
 | `lucene-search` | `o.a.l.search` | Query/Weight/Scorer, Boolean (WAND/BMW), term/phrase/points ranges, collectors, BM25, ConstantScore, MatchAll |
+| `lucene-test-framework` | `lucene-test-framework` (`o.a.l.tests`) | M14.h: `LuceneTestCase`'s seeds and knobs, `TestUtil`'s generators, the mock directory/analysis/codec layers and the `Base*TestCase` suites. **A dev-dependency only**: no crate names it under `[dependencies]`, so it never reaches `lucene-ffi` (`cargo tree -p lucene-ffi -e normal,build`) |
 | `lucene-core` | — | Facade crate re-exporting the above; the "public API" |
 | `lucene-ffi` | — | `cdylib`: C ABI (called from Java through FFM downcalls), handle registry, panic → error-code mapping |
 | `opensearch-plugin/` | — | Java: OpenSearch engine plugin (`EngineFactory`) + FFM binding class, native lib loading, CI packaging |

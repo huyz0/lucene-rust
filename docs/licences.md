@@ -88,6 +88,20 @@ a dependency the shipped library links is not under a licence listed here.
   (`PHONETIC_DEPS` in `scripts/lib-lucene-jars.sh`) and the container image,
   never redistributed.
 
+- **The test framework** (M14.h). `crates/lucene-test-framework/` ports
+  Lucene 10.5.0's `lucene-test-framework` (Apache-2.0); it is a
+  dev-dependency only, so nothing of it reaches the native library.
+  - `crates/lucene-test-framework/data/europarl.lines.excerpt.txt.gz` (and
+    its `.seek` file) is the first 200 lines of that jar's
+    `europarl.lines.txt.gz`, the European Parliament proceedings text Lucene
+    redistributes as test data. Test data only.
+  - The fixture generators (`fixtures/src/testframework/`) put three jars
+    beside it on the classpath, as Lucene's own build does: **JUnit 4.13.1**
+    (EPL-1.0), **Hamcrest 2.2** (BSD-3-Clause) and **randomizedtesting-runner
+    2.8.1** (Apache-2.0). They are fetched by the fixture script
+    (`TEST_FRAMEWORK_DEPS` in `scripts/lib-lucene-jars.sh`) and the container
+    image, run only to generate fixtures, and never copied or redistributed.
+
 - **Ported third-party code and data** (M12 T12.2, T12.3).
   - **Egothor** (`org.egothor.stemmer`, inside Lucene's
     `lucene-analysis-stempel`; Egothor Software License 1.00, BSD-style:
