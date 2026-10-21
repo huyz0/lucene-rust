@@ -968,6 +968,8 @@ pub(crate) struct MergePlan {
     /// SORTED_NUMERIC values rewritten on the way through
     /// ([`IndexWriter::add_indexes_merged_remapping`]).
     sorted_numeric_remap: Option<std::sync::Arc<merge::SortedNumericRemap>>,
+    /// What the merged segment's diagnostics record.
+    pub(crate) kind: merge::MergeKind,
 }
 
 /// `SoftDeletesRetentionMergePolicy` with OpenSearch's retention query,
@@ -2557,6 +2559,7 @@ impl IndexingConfig {
                 codec: self.codec.clone(),
                 reorder,
                 sorted_numeric_remap: plan.sorted_numeric_remap.clone(),
+                kind: plan.kind,
             },
             &plan.merged_name,
             plan.merged_id,
@@ -3675,6 +3678,10 @@ pub struct IndexWriter<'d> {
     pluggable_merge_policy: Option<std::sync::Arc<dyn merge_policy::MergePolicy>>,
     /// See [`IndexWriter::set_merges_by_caller`].
     merges_by_caller: bool,
+    /// `IndexWriter.mergeMaxNumSegments`: [`IndexWriter::force_merge`]'s
+    /// argument while it runs, which its merges record as
+    /// `OneMerge.maxNumSegments`; `-1` otherwise.
+    merge_max_num_segments: i32,
     /// `LiveIndexWriterConfig.maxFullFlushMergeWaitMillis` -- see
     /// [`IndexWriter::set_max_full_flush_merge_wait_millis`].
     max_full_flush_merge_wait_millis: i64,
@@ -4917,6 +4924,7 @@ impl<'d> IndexWriter<'d> {
             merge_policy: None,
             pluggable_merge_policy: None,
             merges_by_caller: false,
+            merge_max_num_segments: -1,
             max_full_flush_merge_wait_millis: DEFAULT_MAX_FULL_FLUSH_MERGE_WAIT_MILLIS,
             commit_on_close: true,
             pending_custom_freq_terms: Vec::new(),
@@ -9531,19 +9539,25 @@ impl IndexWriter<'_> {
         names: &[String],
         hooks: Option<std::sync::Arc<dyn crate::merge_policy::MergeHooks>>,
     ) -> Result<()> {
-        self.execute_merge_planned(names, hooks, None).map(|_| ())
+        self.execute_merge_planned(names, hooks, None, false)
+            .map(|_| ())
     }
 
     /// [`Self::execute_merge_hooked`], with SORTED_NUMERIC values rewritten
-    /// through `remap`: whether the merge was published.
+    /// through `remap`, as `addIndexes(CodecReader...)`'s merge when
+    /// `add_indexes`: whether the merge was published.
     pub(crate) fn execute_merge_planned(
         &mut self,
         names: &[String],
         hooks: Option<std::sync::Arc<dyn crate::merge_policy::MergeHooks>>,
         remap: Option<std::sync::Arc<merge::SortedNumericRemap>>,
+        add_indexes: bool,
     ) -> Result<bool> {
         let mut plan = self.begin_merge(names)?;
         plan.sorted_numeric_remap = remap;
+        if add_indexes {
+            plan.kind = merge::MergeKind::AddIndexes;
+        }
         if let Some(hooks) = hooks {
             let mut infos = self.segment_infos.clone();
             infos.segments = plan.sources.clone();
@@ -9574,6 +9588,17 @@ impl IndexWriter<'_> {
         if max_num_segments == 0 {
             return Err(Error::InvalidMaxNumSegments(max_num_segments));
         }
+        let outer = std::mem::replace(
+            &mut self.merge_max_num_segments,
+            i32::try_from(max_num_segments).unwrap_or(i32::MAX),
+        );
+        let merged = self.force_merge_inner(max_num_segments);
+        self.merge_max_num_segments = outer;
+        merged
+    }
+
+    /// [`Self::force_merge`] with `mergeMaxNumSegments` set.
+    fn force_merge_inner(&mut self, max_num_segments: usize) -> Result<()> {
         if let Some(policy) = self.pluggable_merge_policy.clone() {
             return self.force_merge_pluggable(&policy, max_num_segments);
         }
@@ -9702,6 +9727,9 @@ impl IndexWriter<'_> {
             retention: self.soft_deletes_retention.clone(),
             hooks: None,
             sorted_numeric_remap: None,
+            kind: merge::MergeKind::Merge {
+                max_num_segments: self.merge_max_num_segments,
+            },
         })
     }
 
