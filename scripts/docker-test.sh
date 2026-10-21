@@ -92,8 +92,13 @@ TTY_FLAGS=()
 # take 16 GiB (two can exhaust the VM). The lock is a directory -- `mkdir` is
 # atomic and Git Bash has no `flock` -- under $HOME, so worktrees share it. A
 # holder that died without its EXIT trap (kill -9) leaves a stale lock; it is
-# reclaimed once it is older than DOCKER_LOCK_STALE_S *and* no lucene-rust-test
-# container is running. After taking the lock we also wait out any such
+# reclaimed once it is older than DOCKER_LOCK_STALE_S, no lucene-rust-test
+# container is running, *and* its holder is gone: the owner file's pid fails
+# `kill -0` (MSYS pids are machine-wide, so another session's shell is seen),
+# or, for an owner file without a pid, the engine answers. "No container
+# running" alone is not enough: with the engine stopped (a vhdx compaction
+# holding the lock) it is trivially true, and a queued run once stole the lock.
+# After taking the lock we also wait out any running lucene-rust-test
 # container, which covers a checkout whose script predates the lock.
 # DOCKER_LOCK=0 skips all of this (CI does not use this script anyway).
 LOCK="${DOCKER_TEST_LOCK:-$HOME/.lucene-rust-docker-test.lock}"
@@ -101,12 +106,21 @@ LOCK_STALE_S="${DOCKER_LOCK_STALE_S:-300}"
 running_jobs() {
   docker ps --format '{{.Image}}' 2>/dev/null | grep -c '^lucene-rust-test' || true
 }
+holder_gone() {
+  local pid
+  pid="$(sed -n 's/.* pid \([0-9][0-9]*\) since .*/\1/p' "$LOCK/owner" 2>/dev/null)"
+  if [ -n "$pid" ]; then
+    ! kill -0 "$pid" 2>/dev/null
+  else
+    docker info >/dev/null 2>&1
+  fi
+}
 if [ "${DOCKER_LOCK:-1}" != "0" ]; then
   waited=0
   until mkdir "$LOCK" 2>/dev/null; do
     age=$(( $(date +%s) - $(stat -c %Y "$LOCK" 2>/dev/null || date +%s) ))
-    if [ "$age" -gt "$LOCK_STALE_S" ] && [ "$(running_jobs)" = "0" ]; then
-      echo "docker-test: reclaiming stale lock $LOCK (${age}s old, no job running)" >&2
+    if [ "$age" -gt "$LOCK_STALE_S" ] && [ "$(running_jobs)" = "0" ] && holder_gone; then
+      echo "docker-test: reclaiming stale lock $LOCK (${age}s old, holder gone, no job running)" >&2
       rm -rf "$LOCK"
       continue
     fi

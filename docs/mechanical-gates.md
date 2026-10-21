@@ -717,20 +717,29 @@ exhaust the WSL2 VM -- and parallel agent sessions made "check `docker ps`
 first" a rule nobody could follow reliably. The lock is a directory under
 `$HOME` (`mkdir` is atomic; Git Bash has no `flock`) holding an `owner` line,
 removed by an EXIT trap. A holder killed without its trap leaves it behind: it
-is reclaimed once older than `DOCKER_LOCK_STALE_S` (300) *and* no
-`lucene-rust-test` container runs. After taking the lock, the script also waits
+is reclaimed once older than `DOCKER_LOCK_STALE_S` (300), no
+`lucene-rust-test` container runs, *and* its holder is gone: the owner line's
+pid fails `kill -0` (MSYS pids are machine-wide, so one Git Bash sees another
+session's shell), or, for an owner line without a pid, the engine answers. The
+holder check exists because "no container runs" is trivially true with the
+engine stopped: during a vhdx compaction that held the lock, a queued gate
+reclaimed it and started. After taking the lock, the script also waits
 for any running `lucene-rust-test` container, which covers a checkout whose
 script predates the lock.
 
 Seen to work (and so to fail the second job's start): a run on a hand-made
 fresh lock printed "waiting", reclaimed it past `DOCKER_LOCK_STALE_S=20`, ran,
 and left no lock; a second run on the same lock as a `sleep 30` run waited 33 s;
-a run on a *different* lock waited 34 s for the other's container.
+a run on a *different* lock waited 34 s for the other's container; a run on a
+lock 649 s old, past `DOCKER_LOCK_STALE_S=5`, whose owner pid was a live
+`sleep 45` waited until the sleep exited and only then reclaimed it (the
+previous rule reclaimed it at once).
 
 Blind to: a container started by a bare `docker run` with a different image
 (the container check matches the `lucene-rust-test` image name); a stale lock
-whose holder's container is still running under another name; and jobs of
-other projects on the same engine. It serialises, it does not schedule -- a
+whose holder's container is still running under another name; jobs of
+other projects on the same engine; and a holder whose pid was reused by an
+unrelated process (the lock then waits until that process exits). It serialises, it does not schedule -- a
 waiting gate waits the whole of the running one.
 
 ## rustdoc
