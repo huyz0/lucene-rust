@@ -877,8 +877,10 @@ pub unsafe extern "C" fn ffi_engine_writer_force_merge(
 }
 
 /// Writes `min(n, STAT_COUNT)` counters into `out`: RAM bytes buffered,
-/// buffered documents, whether anything is uncommitted (0/1), the newest
-/// commit's generation, and its segment count (`STAT_*`).
+/// buffered documents, whether anything is uncommitted (0/1), the last
+/// commit generation written or attempted (a failed or only prepared commit
+/// advances it, as Java's `updateGeneration` does), and the segment count
+/// (`STAT_*`).
 ///
 /// # Safety
 /// `out` valid for `n` writes.

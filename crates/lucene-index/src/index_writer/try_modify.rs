@@ -77,13 +77,16 @@ impl IndexWriter<'_> {
             .as_ref()
             .is_some_and(|l| !l.get(usize::try_from(target.leaf_doc).unwrap_or(0)));
         if !already {
-            let updated = deletes::apply_deletes(
-                dir,
-                &sci,
-                live.as_ref(),
-                target.max_doc,
-                [target.leaf_doc],
-            )?;
+            let updated =
+                deletes::apply_deletes(dir, &sci, live.as_ref(), target.max_doc, [target.leaf_doc]);
+            if updated.is_err() {
+                // `PendingDeletes.writeLiveDocs`' failure path:
+                // `advanceNextWriteDelGen()` on the live segment.
+                let live_sci = self.target_mut(&target);
+                let next = live_sci.next_write_del_gen();
+                live_sci.set_next_write_del_gen(next.saturating_add(1));
+            }
+            let updated = updated?;
             let fully_deleted =
                 usize::try_from(updated.del_count).is_ok_and(|n| n == target.max_doc);
             *self.target_mut(&target) = updated;

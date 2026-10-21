@@ -475,7 +475,9 @@ impl<'d> DirectoryTaxonomyWriter<'d> {
             }
             let w = inner.writer_mut()?;
             w.prepare_commit().map_err(iw_error)?;
-            let generation = w.segment_infos().generation.saturating_add(1);
+            // `startCommit`'s `updateGeneration`: the live generation is
+            // already the prepared one.
+            let generation = w.segment_infos().generation;
             inner.prepared = true;
             return Ok(generation);
         }
