@@ -1201,6 +1201,22 @@ impl<'d> IndexWriter<'d> {
         self.register_field(parent_field_info(&name)).map(Some)
     }
 
+    /// `IndexingChain.processDocument(docId, doc, lastDocInBlock)` for an
+    /// add of stored-only [`Document`]s: the last document buffered closes
+    /// the add, so it is the parent, `-1` in the parent field. Without a
+    /// parent field there is nothing to mark.
+    pub(crate) fn mark_last_buffered_parent(&mut self) -> Result<()> {
+        if let Some(parent) = self.register_parent_field()? {
+            if let Some(last) = self.pending_explicit.last_mut() {
+                last.doc_values.push(StoredField {
+                    field_number: parent,
+                    value: FieldValue::Long(-1),
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn explicit_documents_check(&self, docs: &[ExplicitDocument]) -> Result<()> {
         if !self.cfg.explicit {
             return Err(explicit_error("explicit documents are not enabled"));
@@ -2004,6 +2020,36 @@ mod tests {
             )
             .expect_err("soft update encoding");
         assert!(matches!(err, Error::Explicit(_)), "{err}");
+    }
+
+    #[test]
+    fn stored_only_adds_mark_their_parent() {
+        // Java's `addDocument`/`addDocuments` mark the last document of
+        // every add once a parent field is configured; the stored-only
+        // entry points used to buffer it unmarked, so a block had no
+        // parent and `MockRandomMergePolicy.reverse` saw none.
+        let tmp = TempDir::new("explicit-stored-only-parent");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        w.set_parent_field(Some("_parent")).unwrap();
+        let empty = || Document { fields: Vec::new() };
+        w.add_documents(vec![empty(), empty()]).unwrap();
+        w.add_document(empty()).unwrap();
+        w.add_document_with_custom_freq_terms(empty(), Vec::new())
+            .unwrap();
+        w.add_document_with_vectors(empty(), Vec::new()).unwrap();
+        w.add_documents(Vec::new()).unwrap();
+        let parent = w.cfg.parent_field_number().unwrap();
+        let marked: Vec<bool> = w
+            .pending_explicit
+            .iter()
+            .map(|f| f.doc_values.iter().any(|v| v.field_number == parent))
+            .collect();
+        assert_eq!(marked, [false, true, true, true, true]);
+        w.commit().unwrap();
+        let sci = w.segment_infos.segments[0].clone();
+        let infos = super::super::segment_field_infos(&dir, &sci).unwrap();
+        assert_eq!(infos.parent_field(), Some("_parent"));
     }
 
     /// The refusals `register_field` and `set_parent_field` make: schema
