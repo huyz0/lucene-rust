@@ -31,7 +31,9 @@ quick-xml = "0.39"
 # `[dev-dependencies]` edge (see that crate's `Cargo.toml`), which Cargo's
 # resolver-2 feature unification confines to `lucene-ffi`'s test/bench
 # targets -- never its normal library/cdylib build, so this never reaches a
-# production binary.
+# production binary. It also compiles `test_support` (the scorer-tree seam and
+# asserting wrappers `lucene-test-framework`'s search checks drive), for the
+# same dev-only consumers.
 test-support = []
 
 [dev-dependencies]

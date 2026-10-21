@@ -11,9 +11,10 @@ publish = false
 # no crate names it under `[dependencies]`, so it never reaches a production
 # build (`cargo tree -p lucene-ffi` does not show it; check-port-invariants.py's
 # `test-framework-dev-only` rule enforces it). Per package: a whole-workspace
-# build unifies the `test-support` feature below into its lucene-util and the
-# `test-util` feature into its lucene-store (the fault seams the mock
-# directory hooks), as the other crates' dev-dependencies already do. See the architecture skill and
+# build unifies the `test-support` feature below into its lucene-util and
+# lucene-search, and the `test-util` feature into its lucene-store (the fault
+# seams the mock directory hooks); a `-p lucene-ffi` build has none of them,
+# as with the other crates' dev-dependencies. See the architecture skill and
 # PLAN.md section 1.
 #
 # Not opted into the workspace's arithmetic gate (`[lints] workspace = true`):
@@ -25,7 +26,9 @@ lucene-util = { path = "../lucene-util", features = ["test-support"] }
 lucene-store = { path = "../lucene-store", features = ["test-util"] }
 lucene-codecs = { path = "../lucene-codecs" }
 lucene-index = { path = "../lucene-index" }
-lucene-search = { path = "../lucene-search" }
+# `test-support`: the scorer-tree seam the search checks (`search::query_utils`,
+# `search::asserting`) drive -- lucene-search's `test_support` module.
+lucene-search = { path = "../lucene-search", features = ["test-support"] }
 # The mock analysis chain (`analysis`) implements lucene-analysis's traits.
 lucene-analysis = { path = "../lucene-analysis" }
 # Inflates the gzip members of Lucene's `europarl.lines.txt.gz` when
