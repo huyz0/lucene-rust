@@ -679,6 +679,7 @@ pub fn explain_clause_with_stats(
             explain_term(fields, doc_in, live_docs, query, doc, clause_norms, global)
         }
         Clause::Phrase(query) => {
+            crate::require_phrase_positions(fields, query)?;
             let clause_norms = norms.and_then(|m| m.get(&query.field));
             explain_phrase(
                 fields,
@@ -787,6 +788,7 @@ pub fn explain_clause_with_stats(
             )
         }
         Clause::MultiPhrase(query) => {
+            crate::require_multi_phrase_positions(fields, query)?;
             // No per-position breakdown yet (real `MultiPhraseWeight.explain`
             // has one): this reports the real score the scorer produces for
             // this doc, obtained from the scorer itself so the two can never
@@ -3797,7 +3799,8 @@ mod tests {
     }
 
     #[test]
-    fn phrase_explain_missing_multi_term_without_pos_input_is_an_error() {
+    fn phrase_explain_over_a_field_without_positions_is_javas_error() {
+        // `body` is `DOCS_AND_FREQS`: `getPhraseMatcher`'s check fires first.
         let (fields, _doc) = open_fixture();
         let query = crate::PhraseQuery::new("body", ["quick", "fox"]);
         let err = explain_clause(
@@ -3811,7 +3814,10 @@ mod tests {
             None,
         )
         .unwrap_err();
-        assert!(matches!(err, crate::Error::MissingPosInput));
+        assert_eq!(
+            err.to_string(),
+            "field \"body\" was indexed without position data; cannot run PhraseQuery              (phrase=body:\"quick fox\")"
+        );
     }
 
     #[test]

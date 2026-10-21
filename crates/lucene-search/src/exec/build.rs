@@ -205,17 +205,25 @@ pub(crate) fn build<'a>(
         // rewrite does not depend on the score mode: an unscored fuzzy
         // clause matches the same reader-wide expansion.
         Clause::Fuzzy(f) => super::extended::fuzzy_sim(ctx, f, boost, mode, top_level),
-        Clause::MultiPhrase(m) => super::extended::multi_phrase(ctx, m, boost, mode),
+        Clause::MultiPhrase(m) => {
+            crate::require_multi_phrase_positions(ctx.fields, m)?;
+            super::extended::multi_phrase(ctx, m, boost, mode)
+        }
         // `SpanWeight`/`SpanScorer`.
         Clause::Span(s) => super::span::span(ctx, s, boost, mode),
-        Clause::Phrase(p) if !p.has_implicit_positions() => {
-            super::extended::positional_phrase(ctx, p, boost, mode)
+        // `PhraseWeight.getPhraseMatcher`'s positions check, ahead of every
+        // shape below.
+        Clause::Phrase(p) => {
+            crate::require_phrase_positions(ctx.fields, p)?;
+            if !p.has_implicit_positions() {
+                return super::extended::positional_phrase(ctx, p, boost, mode);
+            }
+            match phrase(ctx, p, boost, mode)? {
+                PhraseForm::Scorer(s) => Ok(Some(s)),
+                PhraseForm::Absent => Ok(None),
+                PhraseForm::Other => materialized(ctx, clause, boost, mode),
+            }
         }
-        Clause::Phrase(p) => match phrase(ctx, p, boost, mode)? {
-            PhraseForm::Scorer(s) => Ok(Some(s)),
-            PhraseForm::Absent => Ok(None),
-            PhraseForm::Other => materialized(ctx, clause, boost, mode),
-        },
         other => match super::multi_term::multi_term(ctx, other, boost, mode)? {
             Some(scorer) => Ok(scorer),
             None => materialized(ctx, other, boost, mode),

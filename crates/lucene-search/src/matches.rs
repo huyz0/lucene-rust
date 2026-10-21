@@ -700,14 +700,12 @@ fn phrase_matches(
         }
         _ => {}
     }
-    let Some(ft) = seg.fields.field(&q.field) else {
+    crate::require_phrase_positions(seg.fields, q)?;
+    if seg.fields.field(&q.field).is_none() {
         return Ok(None);
-    };
-    if !ft.index_options().subsumes_positions() || seg.pos_in.is_none() {
-        return Err(Error::IllegalState(format!(
-            "field \"{}\" was indexed without position data; cannot run PhraseQuery",
-            q.field
-        )));
+    }
+    if seg.pos_in.is_none() {
+        return Err(Error::MissingPosInput);
     }
     let mut occs = Vec::with_capacity(q.terms.len());
     for t in &q.terms {
