@@ -40,6 +40,7 @@ to describe a defect that got past it.
 | [`alloc-from-parse`](#alloc-from-parse) | `check-port-invariants.py` | an allocation size (`vec![_; n]`, `with_capacity(n)`, `.resize(n, ..)`) mentioning a name its fn bound from a text parse (`parse_int(`, `parse_num(`, `.parse()`) or containing one, with no `min(` in the size and no `// ALLOC:` proof | a count reaching the size through a struct field, a parameter or another fn; a count decoded from bytes (`read_vint`) rather than parsed from text; a `min(` that does not actually cap it; a loop that pushes once per announced entry without reading one |
 | [`literal-space-run`](#literal-space-run) | `check-port-invariants.py` | a line in `crates/*/src` holding a string literal with a run of 8+ spaces between non-spaces, or a `\n` then 8+ spaces, with no `// SPACES-OK:` waiver | a run under eight spaces; a run only on a later line of a multi-line literal; `crates/*/tests` |
 | [`test-framework-dev-only`](#test-framework-dev-only) | `check-port-invariants.py` | a `lucene-test-framework` key (inline or `[*.lucene-test-framework]` table) in the root or a `crates/*/Cargo.toml` under any section but a `dev-dependencies` one | an edge written through `package = "lucene-test-framework"` under another key; a manifest outside `crates/`; feature unification in a whole-workspace build (see the section) |
+| [`bench-not-asserting`](#bench-not-asserting) | `check-port-invariants.py` | an `asserting` entry in any `features = [...]` list of `benchmarks/rust-runner/Cargo.toml` | a feature enabling `asserting` transitively; a `--workspace` benchmark build |
 | [`preflight`](#preflight) | `preflight.sh` | a docker engine that does not answer in 30 s; under 25 GB free where Docker keeps its disk; a Docker virtual disk over 300 GB on a drive with under 150 GB free (over 300 GB with more room only warns); under 5 GB free on the repo's drive; (in the container) under 15 GB free under the target dir | a drive that fills *during* a run (it checks the start, not the trend); a second project's disk use between checks; free space that is real but fragmented |
 | [rustdoc links](#rustdoc) | `cargo doc` | a `[`link`]` that resolves to nothing | a symbol named in *plain backticks*, which is most of them |
 | [coverage objects](#coverage-objects) | `scripts/coverage.sh` | lucene-ffi's never-loaded cdylib standing in for the executed copy of a `#[no_mangle]` function in the line report | the same first-copy-wins rule between two *executed* copies; a file whose lines split between a crate's unit-test and integration-test builds, which the summary under-reports |
@@ -897,6 +898,25 @@ compiles the test framework as a member, so its `test-support` feature on
 `lucene-util` is unified into that build of `lucene-util` too; the shipped
 `-p lucene-ffi` build does not include it (`cargo tree -p lucene-ffi -e
 normal,build`).
+
+## bench-not-asserting
+
+`check-port-invariants.py --only=bench-not-asserting`. `lucene-search`'s
+`asserting` feature (M14.h h7) compiles the test framework's asserting hooks
+into `exec/build.rs::build` and `exec/bulk.rs::score_segment` -- a
+thread-local read per scorer built and per segment scored -- so only
+`lucene-test-framework` enables it; the out-of-workspace benchmark runner
+takes `test-support` for its counters and must measure the code that ships.
+The rule reads every `features = [...]` list in
+`benchmarks/rust-runner/Cargo.toml` (one line or several, inline or a
+`[dependencies.x]` table) and fails on an `asserting` entry. **Seen to fail**
+on both shapes: `"asserting"` added to `lucene-search`'s inline list, and a
+`[dependencies.lucene-search]` table with a multi-line list holding
+`'asserting'` (`enables the asserting feature, which compiles the test
+framework's scorer checks into the benchmarked hot path`). Blind to: a
+feature that turns `asserting` on transitively (none does); a benchmark
+built with `--workspace`, which unifies the feature in from
+`lucene-test-framework`.
 
 ## store-feature-off-lint
 

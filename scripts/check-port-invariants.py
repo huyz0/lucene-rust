@@ -1028,6 +1028,36 @@ def rule_test_framework_dev_only(files, problems, stats):
                 )
 
 
+# lucene-search's `asserting` feature compiles the test framework's asserting
+# hooks into the scorer builder and `score_segment` (a thread-local check per
+# scorer built, per segment scored). The out-of-workspace benchmark runner
+# must measure the scoring code that ships, so it never enables it. Every
+# `features = [...]` list in its manifest (one line or several) is read.
+
+BENCH_MANIFEST = os.path.join(ROOT, "benchmarks", "rust-runner", "Cargo.toml")
+FEATURES_LIST = re.compile(r"features\s*=\s*\[([^\]]*)\]", re.S)
+
+
+def rule_bench_not_asserting(_files, problems, stats):
+    if not os.path.isfile(BENCH_MANIFEST):
+        problems.append(
+            "benchmarks/rust-runner/Cargo.toml: missing, so the bench-not-asserting "
+            "rule checks nothing. (docs/mechanical-gates.md#bench-not-asserting)"
+        )
+        return
+    with open(BENCH_MANIFEST, encoding="utf-8") as fh:
+        text = fh.read()
+    for m in FEATURES_LIST.finditer(text):
+        stats["bench_feature_lists"] += 1
+        if re.search(r"[\"']asserting[\"']", m.group(1)):
+            line = text.count("\n", 0, m.start()) + 1
+            problems.append(
+                f"benchmarks/rust-runner/Cargo.toml:{line}: enables the `asserting` "
+                "feature, which compiles the test framework's scorer checks into the "
+                "benchmarked hot path. (docs/mechanical-gates.md#bench-not-asserting)"
+            )
+
+
 RULES = (
     ("fixed-bitset-bound", rule_fixed_bitset_bound),
     ("sentinel-callers", rule_sentinel_callers),
@@ -1043,6 +1073,7 @@ RULES = (
     ("alloc-from-parse", rule_alloc_from_parse),
     ("literal-space-run", rule_literal_space_run),
     ("test-framework-dev-only", rule_test_framework_dev_only),
+    ("bench-not-asserting", rule_bench_not_asserting),
 )
 
 
@@ -1071,6 +1102,7 @@ def main(argv):
         "alloc_parse_sites": 0,
         "space_run_sites": 0,
         "test_framework_edges": 0,
+        "bench_feature_lists": 0,
     }
     for name, rule in RULES:
         if only and name != only:
@@ -1094,6 +1126,7 @@ def main(argv):
         print(f"allocations sized from a parse      : {stats['alloc_parse_sites']}")
         print(f"literal space runs (all waived)     : {stats['space_run_sites']}")
         print(f"lucene-test-framework edges         : {stats['test_framework_edges']}")
+        print(f"bench-runner feature lists          : {stats['bench_feature_lists']}")
 
     if problems:
         for p in problems:

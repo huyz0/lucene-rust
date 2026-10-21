@@ -268,7 +268,7 @@ pub mod suggest;
 pub mod term_vectors_query;
 pub mod terminate;
 pub mod terms_agg;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "asserting"))]
 pub mod test_support;
 pub mod top_docs;
 pub mod top_field;

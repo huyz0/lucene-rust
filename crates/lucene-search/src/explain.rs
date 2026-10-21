@@ -623,7 +623,7 @@ pub fn explain_clause_with_stats(
         Clause::Extended(q) => {
             // A test query's weight is a `FilterWeight`: the wrapped
             // query's explanation.
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(any(test, feature = "asserting"))]
             if let crate::extended_query::ExtendedQuery::Test(t) = q.as_ref() {
                 return explain_clause_with_stats(
                     fields,

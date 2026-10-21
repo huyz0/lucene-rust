@@ -90,7 +90,7 @@ pub(crate) fn build<'a>(
     let scorer = build_unchecked(ctx, clause, boost, mode, top_level)?;
     // `AssertingWeight`: under the test framework's asserting searcher, every
     // scorer the tree is built from checks its iteration contract.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "asserting"))]
     let scorer = scorer.map(|s| super::asserting::wrap(s, mode, top_level));
     Ok(scorer)
 }
