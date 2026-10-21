@@ -15,7 +15,7 @@ use super::field_term_stack::TermInfo;
 const MAX_MTQ_TERMS: usize = 1024;
 
 /// A term or a phrase, as `flatten` leaves it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum FlatKind {
     Term {
         field: String,
@@ -40,6 +40,35 @@ struct Flat {
 impl PartialEq for Flat {
     fn eq(&self, other: &Self) -> bool {
         self.kind == other.kind && self.boost.map(f32::to_bits) == other.boost.map(f32::to_bits)
+    }
+}
+
+impl Eq for Flat {}
+
+impl std::hash::Hash for Flat {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.kind.hash(state);
+        self.boost.map(f32::to_bits).hash(state);
+    }
+}
+
+/// `LinkedHashSet<Query>`: the flat queries in the order they were first
+/// added, each once.
+#[derive(Debug, Default)]
+struct FlatSet {
+    list: Vec<Flat>,
+    seen: HashSet<Flat>,
+}
+
+impl FlatSet {
+    /// `add(query)`: `false` when an equal query is already in.
+    fn add(&mut self, flat: Flat) -> bool {
+        if self.seen.contains(&flat) {
+            return false;
+        }
+        self.seen.insert(flat.clone());
+        self.list.push(flat);
+        true
     }
 }
 
@@ -84,8 +113,9 @@ impl FieldQuery {
         phrase_highlight: bool,
         field_match: bool,
     ) -> Result<Self> {
-        let mut flat: Vec<Flat> = Vec::new();
+        let mut flat = FlatSet::default();
         flatten(query, reader, &mut flat, 1.0)?;
+        let flat = flat.list;
         let mut this = Self {
             field_match,
             root_maps: HashMap::new(),
@@ -140,27 +170,24 @@ impl FieldQuery {
 
     /// `expand`: each phrase a later one overlaps with is joined by the
     /// phrase the two make together.
-    fn expand(&self, mut flat: Vec<Flat>) -> Vec<Flat> {
-        let mut out: Vec<Flat> = Vec::new();
-        while !flat.is_empty() {
-            // the iterator removes what it returns
-            let query = flat.remove(0);
-            if !out.contains(&query) {
-                out.push(query.clone());
-            }
+    fn expand(&self, flat: Vec<Flat>) -> Vec<Flat> {
+        let mut out = FlatSet::default();
+        for (i, query) in flat.iter().enumerate() {
+            // the iterator removes what it returns: the rest follow it
+            out.add(query.clone());
             let FlatKind::Phrase { .. } = &query.kind else {
                 continue;
             };
-            for qj in &flat {
+            for qj in &flat[i + 1..] {
                 if let FlatKind::Phrase { .. } = &qj.kind {
-                    self.check_overlap(&mut out, &query, qj);
+                    self.check_overlap(&mut out, query, qj);
                 }
             }
         }
-        out
+        out.list
     }
 
-    fn check_overlap(&self, out: &mut Vec<Flat>, a: &Flat, b: &Flat) {
+    fn check_overlap(&self, out: &mut FlatSet, a: &Flat, b: &Flat) {
         let (
             FlatKind::Phrase {
                 field: af,
@@ -189,7 +216,7 @@ impl FieldQuery {
     }
 
     fn overlap(
-        out: &mut Vec<Flat>,
+        out: &mut FlatSet,
         field: &str,
         src: &[String],
         dest: &[String],
@@ -220,9 +247,7 @@ impl FieldQuery {
                 } else {
                     pq
                 };
-                if !out.contains(&pq) {
-                    out.push(pq);
-                }
+                out.add(pq);
             }
         }
     }
@@ -256,7 +281,7 @@ impl FieldQuery {
 fn flatten(
     query: &Clause,
     reader: Option<&DirectoryReader>,
-    out: &mut Vec<Flat>,
+    out: &mut FlatSet,
     boost: f32,
 ) -> Result<()> {
     match query {
@@ -281,9 +306,7 @@ fn flatten(
                 },
                 boost,
             );
-            if !out.contains(&flat) {
-                out.push(flat);
-            }
+            out.add(flat);
         }
         Clause::Extended(e) => {
             if let ExtendedQuery::Synonym(s) = &**e {
@@ -313,10 +336,7 @@ fn flatten(
                     slop: i32::try_from(p.slop).unwrap_or(i32::MAX),
                 }
             };
-            let flat = wrap(kind, boost);
-            if !out.contains(&flat) {
-                out.push(flat);
-            }
+            out.add(wrap(kind, boost));
         }
         Clause::ConstantScore(c) => flatten(&c.inner, reader, out, boost)?,
         Clause::MultiPhrase(m) if m.term_arrays.len() == 1 && reader.is_some() => {
@@ -484,5 +504,99 @@ impl QueryPhraseMap {
             pos = next;
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn term(text: &str, boost: Option<f32>) -> Flat {
+        Flat {
+            kind: FlatKind::Term {
+                field: "f".to_string(),
+                text: text.to_string(),
+            },
+            boost,
+        }
+    }
+
+    fn phrase(terms: &[&str]) -> Flat {
+        Flat {
+            kind: FlatKind::Phrase {
+                field: "f".to_string(),
+                terms: terms.iter().map(|t| (*t).to_string()).collect(),
+                positions: (0..terms.len() as i32).collect(),
+                slop: 0,
+            },
+            boost: None,
+        }
+    }
+
+    fn field_query() -> FieldQuery {
+        FieldQuery {
+            field_match: true,
+            root_maps: HashMap::new(),
+            term_set_map: HashMap::new(),
+            term_or_phrase_number: 0,
+        }
+    }
+
+    /// `LinkedHashSet.add`: first insertion order, each query once, and a
+    /// `BoostQuery(q, 1)` is not `q`.
+    #[test]
+    fn flat_set_keeps_first_insertion_order_and_boost_identity() {
+        let mut set = FlatSet::default();
+        assert!(set.add(term("a", None)));
+        assert!(set.add(term("b", None)));
+        assert!(!set.add(term("a", None)));
+        assert!(set.add(term("a", Some(1.0))));
+        assert!(!set.add(term("a", Some(1.0))));
+        assert_eq!(
+            set.list,
+            vec![term("a", None), term("b", None), term("a", Some(1.0))]
+        );
+    }
+
+    /// `FieldQuery.expand`'s javadoc: `a, "b c", "c d"` gains `"b c d"`, added
+    /// as `"b c"` meets `"c d"` and so before it; `"a a a a"` with `"a a a"`
+    /// gains five and six `a`s, before the second.
+    #[test]
+    fn expand_appends_overlapping_phrases_in_javas_order() {
+        let fq = field_query();
+        assert_eq!(
+            fq.expand(vec![
+                term("a", None),
+                phrase(&["b", "c"]),
+                phrase(&["c", "d"])
+            ]),
+            vec![
+                term("a", None),
+                phrase(&["b", "c"]),
+                phrase(&["b", "c", "d"]),
+                phrase(&["c", "d"]),
+            ]
+        );
+        let got = fq.expand(vec![
+            phrase(&["a", "a", "a", "a"]),
+            phrase(&["a", "a", "a"]),
+        ]);
+        // both directions make the same two phrases; each is kept once
+        assert_eq!(
+            got,
+            vec![
+                phrase(&["a"; 4]),
+                phrase(&["a"; 5]),
+                phrase(&["a"; 6]),
+                phrase(&["a"; 3]),
+            ]
+        );
+        // an expansion that recreates a query already in is not added twice
+        let again = fq.expand(vec![
+            phrase(&["b", "c"]),
+            phrase(&["c", "d"]),
+            phrase(&["b", "c", "d"]),
+        ]);
+        assert_eq!(again.len(), 3);
     }
 }

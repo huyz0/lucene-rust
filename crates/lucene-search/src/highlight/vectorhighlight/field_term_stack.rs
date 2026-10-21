@@ -6,7 +6,6 @@ use std::collections::VecDeque;
 use super::super::{Error, Result};
 use super::field_query::FieldQuery;
 use crate::directory_reader::DirectoryReader;
-use crate::reader::LeafReader;
 
 /// `FieldTermStack.TermInfo`.
 #[derive(Debug, Clone)]
@@ -99,13 +98,21 @@ impl FieldTermStack {
         let Some(number) = segment.field_infos().field_by_name(field).map(|f| f.number) else {
             return Ok(this);
         };
-        let Some(vectors) = segment
-            .term_vectors(local)
+        // `termVectors().get(docId, fieldName)`: the one field, not the
+        // document's every field
+        let io = |e: lucene_codecs::term_vectors::Error| Error::Io(e.to_string());
+        let Some(tvs) = segment
+            .term_vectors_reader()
             .map_err(|e| Error::Io(e.to_string()))?
         else {
             return Ok(this);
         };
-        let Some(vector) = vectors.fields.iter().find(|f| f.field_number == number) else {
+        let Some(vector) = tvs
+            .read_chunk(local)
+            .map_err(io)?
+            .field(local, number)
+            .map_err(io)?
+        else {
             return Ok(this);
         };
         if !vector.has_positions {
