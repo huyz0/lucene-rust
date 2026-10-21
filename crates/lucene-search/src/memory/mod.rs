@@ -7,16 +7,16 @@
 //! occurrences (position, offsets, payload index -- the ints Java writes to
 //! its `SlicedIntBlockPool`), the token counts its norm is computed from,
 //! its doc values, points and stored values, with Java's checks and messages.
-//! What differs is the reader. Java's `MemoryIndexReader` is a `LeafReader`
-//! over those structures; this port's queries execute on codec structures
-//! (`crate::multi_segment::OpenSegment`), so [`MemoryIndex::create_reader`]
-//! encodes the one document -- terms, positions, offsets and payloads as
-//! `Info` holds them, the norm as `Info` computes it -- with the codec's own
-//! writers and searches it in place ([`MemoryIndexReader`] has the details).
-//! The statistics a searcher reads are the ones Java's reader reports for a
-//! field with tokens: `maxDoc` 1, every term `docFreq` 1, `totalTermFreq`
-//! its frequency, `docCount` 1 (Lucene's `TestMemoryIndexAgainstDirectory`
-//! duels the two).
+//! [`MemoryIndex::create_reader`] hands them, term-sorted, to a
+//! [`MemoryIndexReader`]: like Java's, a `LeafReader` over those arrays,
+//! which also answers `Weight.matches` from them. This port's scorer tree
+//! executes on codec structures (`crate::multi_segment::OpenSegment`), so a
+//! search encodes the one document -- terms, positions, offsets and payloads
+//! as `Info` holds them, the norm as `Info` computes it -- with the codec's
+//! own writers, on first need ([`MemoryIndexReader`] has the details). The
+//! statistics every form reports are Java's for a field with tokens:
+//! `maxDoc` 1, every term `docFreq` 1, `totalTermFreq` its frequency,
+//! `docCount` 1 (Lucene's `TestMemoryIndexAgainstDirectory` duels the two).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -35,10 +35,12 @@ use crate::query::Clause;
 use crate::similarities::{Bm25Similarity, Similarity};
 use crate::{Error, Result};
 
+mod leaf;
 mod reader;
 mod term_hash;
 #[cfg(test)]
 mod tests;
+mod vector;
 
 pub use reader::MemoryIndexReader;
 use reader::{Document, FieldPostings};
@@ -169,6 +171,14 @@ impl Info {
         if let Some(n) = self.norm {
             return n;
         }
+        let n = self.norm_of(self.terms.len(), similarity);
+        self.norm = Some(n);
+        n
+    }
+
+    /// The norm of the field's statistics with `unique_terms` distinct
+    /// terms.
+    fn norm_of(&self, unique_terms: usize, similarity: &dyn Similarity) -> i64 {
         let state = FieldInvertState {
             docs_only: self.field_info.index_options == IndexOptions::Docs,
             position: self.last_position,
@@ -176,12 +186,10 @@ impl Info {
             num_overlap: self.num_overlap_tokens,
             offset: 0,
             max_term_frequency: self.max_term_frequency,
-            unique_term_count: i32::try_from(self.terms.len()).unwrap_or(i32::MAX),
+            unique_term_count: i32::try_from(unique_terms).unwrap_or(i32::MAX),
             attribute_source: None,
         };
-        let n = similarity.compute_norm(&self.field_info.name, &state);
-        self.norm = Some(n);
-        n
+        similarity.compute_norm(&self.field_info.name, &state)
     }
 }
 

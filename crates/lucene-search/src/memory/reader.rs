@@ -1,9 +1,19 @@
-//! `MemoryIndex.MemoryIndexReader`: the one document, searchable.
+//! `MemoryIndex.MemoryIndexReader`: the one document, readable and
+//! searchable.
 //!
-//! Java's reader serves the `Info` structures through the `LeafReader` API;
-//! this port's queries execute on codec structures
-//! ([`crate::multi_segment::OpenSegment`]), so the document is encoded with
-//! the codec's own writers and searched as a segment. Two ways:
+//! Java's reader serves the `Info` structures through the `LeafReader` API,
+//! and so does this one ([`super::leaf`]): terms, postings, norms, doc
+//! values, points and stored fields are read straight from the document's
+//! arrays, and `Weight.matches` of the term, phrase, boolean, multi-term,
+//! fuzzy and synonym queries runs on them too -- what the highlighters ask
+//! of a memory index for every value they highlight. Nothing is encoded for
+//! those.
+//!
+//! The scorer tree ([`crate::exec`]) and the span and interval weights run
+//! on codec structures ([`crate::multi_segment::OpenSegment`]), so a search
+//! (or the matches of a span, an interval or a scorer-only query) encodes
+//! the document with the codec's own writers on first need, and keeps it.
+//! Two ways:
 //!
 //! - **in memory** ([`MemorySegment`]), when the document is postings and
 //!   norms only: the postings writer's `.doc`/`.pos`/`.pay` and terms
@@ -13,11 +23,11 @@
 //!   explicit-document path and a [`DirectoryReader`]: when the document has
 //!   doc values or points, which the in-memory form does not carry, or when a
 //!   query needs a segment reader (a [`crate::Error::MissingSegmentReader`]
-//!   from the in-memory form) -- built on first need and kept.
+//!   from the in-memory form).
 //!
-//! Either way the searcher sees what Java's reader reports: `maxDoc` 1,
-//! every term `docFreq` 1, `docCount` 1 for a field with terms, and the norm
-//! `Info` computed.
+//! Every form reports what Java's reader does: `maxDoc` 1, every term
+//! `docFreq` 1, `docCount` 1 for a field with terms, and the norm `Info`
+//! computed.
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -38,6 +48,7 @@ use super::illegal;
 use crate::directory_reader::DirectoryReader;
 use crate::field_norms::FieldNorms;
 use crate::index_searcher::{IndexSearcher, SegmentNorms};
+use crate::matches::BoxMatches;
 use crate::multi_segment::OpenSegment;
 use crate::query::{BooleanQuery, Clause};
 use crate::similarities::Similarity;
@@ -51,12 +62,16 @@ const SEGMENT_ID: [u8; 16] = [0; 16];
 pub(super) struct FieldPostings {
     pub(super) info: FieldInfo,
     pub(super) has_payloads: bool,
+    /// One entry per distinct term, in term order, each with the one
+    /// document `0`.
     pub(super) terms: Vec<TermPostings>,
     pub(super) norm: Option<i64>,
 }
 
 /// The document as [`super::MemoryIndex`] hands it over: every field, in
-/// Java's numbering, and the values the in-memory form does not carry.
+/// Java's numbering, and its doc values (`NUMERIC`/`SORTED_NUMERIC` in add
+/// order, `SORTED_SET` sorted), points (in add order) and stored values (in
+/// field-name order).
 #[derive(Debug, Clone, Default)]
 pub(super) struct Document {
     pub(super) fields: Vec<FieldPostings>,
@@ -129,16 +144,13 @@ struct MemorySegment {
 }
 
 impl MemorySegment {
-    /// Encodes `doc`'s postings and norms: `None` when no field has terms.
-    fn build(doc: &Document) -> Result<Option<Self>> {
+    /// Encodes `doc`'s postings and norms (`field_infos` its fields' schema):
+    /// `None` when no field has terms.
+    fn build(doc: &Document, field_infos: &FieldInfos) -> Result<Option<Self>> {
         let codec_error = |e: &dyn std::fmt::Display| illegal(e.to_string());
-        let mut fields: Vec<FieldInfo> = Vec::with_capacity(doc.fields.len());
         let mut inputs: Vec<(i32, IndexOptions, bool, &[TermPostings])> = Vec::new();
         let mut norm_values: Vec<(i32, [i64; 1])> = Vec::new();
         for f in &doc.fields {
-            let mut info = f.info.clone();
-            info.store_payloads = f.has_payloads;
-            fields.push(info);
             if f.terms.is_empty() {
                 continue;
             }
@@ -175,12 +187,11 @@ impl MemorySegment {
         let output =
             postings_writer::write_fields_with_norms(&postings_inputs, &impacts, &SEGMENT_ID, "")
                 .map_err(|e| codec_error(&e))?;
-        let field_infos = FieldInfos::new(fields).map_err(|e| codec_error(&e))?;
         let terms = blocktree::open_shared(
             Arc::new(output.tim),
             Arc::new(output.tip),
             &output.tmd,
-            &field_infos,
+            field_infos,
             &SEGMENT_ID,
             "",
             1,
@@ -280,32 +291,64 @@ impl MemorySegment {
 /// its searcher scores with. See the module docs.
 #[derive(Debug)]
 pub struct MemoryIndexReader {
-    /// The in-memory form, unless the document needs the segment.
-    memory: Option<MemorySegment>,
-    /// What [`Self::segment`] writes.
-    doc: Document,
+    pub(super) doc: Document,
+    /// `getFieldInfos()`: every field, in Java's numbering.
+    pub(super) field_infos: FieldInfos,
+    /// `doc.fields`' indexes in field-name order (`MemoryIndex.fields`'
+    /// `SortedMap` order).
+    pub(super) by_name: Vec<usize>,
+    /// The in-memory form, `None` when no field has terms; built on first
+    /// need.
+    memory: OnceLock<Option<MemorySegment>>,
+    /// The segment form, built on first need.
     segment: OnceLock<DirectoryReader>,
     similarity: Arc<dyn Similarity>,
 }
 
 impl MemoryIndexReader {
     pub(super) fn new(doc: Document, similarity: Arc<dyn Similarity>) -> Result<Self> {
-        let needs_segment = !doc.doc_values.is_empty() || !doc.points.is_empty();
-        let memory = if needs_segment {
-            None
-        } else {
-            MemorySegment::build(&doc)?
-        };
-        let reader = MemoryIndexReader {
-            memory,
+        let infos = doc
+            .fields
+            .iter()
+            .map(|f| {
+                let mut info = f.info.clone();
+                info.store_payloads = f.has_payloads;
+                info
+            })
+            .collect();
+        let field_infos = FieldInfos::new(infos).map_err(|e| illegal(e.to_string()))?;
+        let mut by_name: Vec<usize> = (0..doc.fields.len()).collect();
+        by_name.sort_by(|&a, &b| doc.fields[a].info.name.cmp(&doc.fields[b].info.name));
+        Ok(MemoryIndexReader {
             doc,
+            field_infos,
+            by_name,
+            memory: OnceLock::new(),
             segment: OnceLock::new(),
             similarity,
-        };
-        if reader.memory.is_none() {
-            reader.segment()?;
+        })
+    }
+
+    /// The field named `name`, when the document has it.
+    pub(super) fn field(&self, name: &str) -> Option<&FieldPostings> {
+        let fields = &self.doc.fields;
+        self.by_name
+            .binary_search_by(|&i| fields[i].info.name.as_str().cmp(name))
+            .ok()
+            .map(|i| &fields[self.by_name[i]])
+    }
+
+    /// The in-memory form, encoded on first need: `None` when the document
+    /// has doc values or points, which it does not carry, or no terms.
+    fn memory(&self) -> Result<Option<&MemorySegment>> {
+        if !self.doc.doc_values.is_empty() || !self.doc.points.is_empty() {
+            return Ok(None);
         }
-        Ok(reader)
+        if let Some(m) = self.memory.get() {
+            return Ok(m.as_ref());
+        }
+        let built = MemorySegment::build(&self.doc, &self.field_infos)?;
+        Ok(self.memory.get_or_init(|| built).as_ref())
     }
 
     /// The document written to a [`ByteBuffersDirectory`] and opened, on
@@ -333,7 +376,7 @@ impl MemoryIndexReader {
         Ok(self.segment.get_or_init(|| reader))
     }
 
-    /// The document as a segment, for statistics and the reader-level APIs.
+    /// The document as a segment, for the codec-level APIs.
     pub fn directory_reader(&self) -> Result<&DirectoryReader> {
         self.segment()
     }
@@ -341,7 +384,7 @@ impl MemoryIndexReader {
     /// `createSearcher()`: a searcher over the document, scoring with the
     /// index's similarity, handed to `f`.
     pub fn with_searcher<R>(&self, f: impl FnOnce(&IndexSearcher<'_, '_>) -> R) -> Result<R> {
-        if let Some(m) = &self.memory {
+        if let Some(m) = self.memory()? {
             return m.with_searcher(self.similarity.as_ref(), f);
         }
         self.with_segment_searcher(f)
@@ -365,6 +408,28 @@ impl MemoryIndexReader {
         Ok(f(&searcher))
     }
 
+    /// `createSearcher().createWeight(query).matches(leaf, doc)`, as
+    /// [`crate::matches::matches`] over [`Self::with_searcher`] answers it --
+    /// read from the document's arrays where the weight allows (see the
+    /// module docs).
+    ///
+    /// # Errors
+    /// [`Error::IllegalArgument`] for a `doc` other than `0`, and what
+    /// [`crate::matches::leaf_matches`] reports.
+    pub fn matches(&self, clause: &Clause, doc: i32) -> Result<Option<BoxMatches>> {
+        if doc != 0 {
+            return Err(Error::IllegalArgument(format!(
+                "doc {doc} is in no segment"
+            )));
+        }
+        crate::matches::leaf_matches_in(self, clause, doc)
+    }
+
+    /// The matches of a weight that runs on the codec form.
+    pub(super) fn codec_matches(&self, clause: &Clause, doc: i32) -> Result<Option<BoxMatches>> {
+        self.with_searcher(|s| crate::matches::leaf_matches(&s.segments()[0], clause, doc))?
+    }
+
     /// `MemoryIndex.search(query)` over this reader.
     pub fn search(&self, query: &Clause) -> Result<f32> {
         // `IndexSearcher.search` rewrites the query first (merging duplicate
@@ -372,7 +437,7 @@ impl MemoryIndexReader {
         let Some(bq) = as_boolean(&query.clone().rewrite()) else {
             return Ok(0.0);
         };
-        if let Some(m) = &self.memory {
+        if let Some(m) = self.memory()? {
             match m.with_searcher(self.similarity.as_ref(), |s| s.search(&bq, 1))? {
                 Ok(top) => return Ok(score(top)),
                 // a clause that reads what only a segment reader has
