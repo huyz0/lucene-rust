@@ -808,18 +808,17 @@ pub fn explain_clause_with_stats(
             crate::require_multi_phrase_positions(fields, query)?;
             // No per-position breakdown yet (real `MultiPhraseWeight.explain`
             // has one): this reports the real score the scorer produces for
-            // this doc, obtained from the scorer itself so the two can never
-            // disagree, rather than a re-derivation that could drift. Under
-            // the searcher's similarity, the scorer tree's, which scores
-            // with it.
-            let scored = with_leaf_reader(|_, similarity| -> Result<Option<Option<f32>>> {
-                let Some(similarity) = similarity else {
-                    return Ok(None);
-                };
+            // this doc under the searcher's similarity, obtained from the
+            // scorer itself so the two can never disagree, rather than a
+            // re-derivation that could drift. `PhraseWeight.explain`'s two
+            // no-matches: the approximation not on the document ("no
+            // matching terms"), or its positions not matching ("no matching
+            // phrase").
+            with_leaf_reader(|_, similarity| {
                 let mut ctx = interval_context(
                     fields, doc_in, pos_in, pay_in, live_docs, points, norms, global,
                 );
-                ctx.similarity = Some(similarity);
+                ctx.similarity = similarity;
                 ctx.max_doc = leaf().map(|(max_doc, _)| max_doc);
                 let Some(mut s) = crate::exec::extended::multi_phrase(
                     &ctx,
@@ -828,62 +827,27 @@ pub fn explain_clause_with_stats(
                     crate::exec::Mode::Complete,
                 )?
                 else {
-                    return Ok(Some(None));
+                    return Ok(Explanation::no_match("no matching terms"));
                 };
-                Ok(Some(if s.advance(doc)? == doc && s.matches()? {
-                    Some(s.score()?)
-                } else {
-                    None
-                }))
-            })?;
-            if let Some(hit) = scored {
-                return Ok(match hit {
-                    Some(score) => Explanation::match_(
-                        score,
-                        format!(
-                            "weight({} in {doc}) [{}], result of:",
-                            describe_clause(clause),
-                            similarity_name()
-                        ),
-                    ),
-                    None => Explanation::no_match("no matching terms"),
-                });
-            }
-            let mut hit: Option<f32> = None;
-            struct Pick<'a> {
-                doc: i32,
-                out: &'a mut Option<f32>,
-            }
-            impl crate::collector::ScoringCollector for Pick<'_> {
-                fn collect(&mut self, doc_id: i32, score: f32) {
-                    if doc_id == self.doc {
-                        *self.out = Some(score);
-                    }
+                // The scorer is exact (it visits matches only): whether the
+                // approximation is on `doc` is asked separately.
+                if s.advance(doc)? != doc || !s.matches()? {
+                    let on =
+                        crate::exec::extended::multi_phrase_approximation_on(&ctx, query, doc)?;
+                    return Ok(Explanation::no_match(if on {
+                        "no matching phrase"
+                    } else {
+                        "no matching terms"
+                    }));
                 }
-            }
-            let mut pick = Pick { doc, out: &mut hit };
-            crate::search_multi_phrase_query_scored_with_stats(
-                fields,
-                doc_in,
-                pos_in,
-                pay_in,
-                live_docs,
-                query,
-                norms.and_then(|m| m.get(&query.field)),
-                global,
-                &mut pick,
-            )?;
-            Ok(match hit {
-                Some(score) => Explanation::match_(
-                    score,
+                Ok(Explanation::match_(
+                    s.score()?,
                     format!(
-                        "weight({} in {doc}) [BM25Similarity], result of:",
-                        describe_clause(clause)
+                        "weight({} in {doc}) [{}], result of:",
+                        describe_clause(clause),
+                        similarity_name()
                     ),
-                ),
-                // `MultiPhraseWeight` inherits `PhraseWeight.explain`, whose
-                // no-match description is exactly `"no matching terms"`.
-                None => Explanation::no_match("no matching terms"),
+                ))
             })
         }
         Clause::TermInSet(query) => {
