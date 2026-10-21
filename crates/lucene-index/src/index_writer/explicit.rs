@@ -3137,4 +3137,46 @@ mod tests {
         assert!(err.contains("cannot store payloads"), "{err}");
         assert_eq!(w.pending_doc_count(), 0);
     }
+
+    #[test]
+    fn a_doc_values_update_creates_an_unknown_field_doc_values_only() {
+        // Java's `updateDocValues`/`tryUpdateDocValue` build their update
+        // with `verifyOrCreateDvOnlyField(name, type, false)`: a field no
+        // document has carried is created, not indexed, with the update's
+        // type. `updateNumericDocValue`/`updateBinaryDocValue` pass
+        // `fieldMustExist` and still refuse it.
+        use crate::document::{Document as Doc, Store, StringField};
+        let tmp = TempDir::new("explicit-dv-only-update");
+        let dir = FsDirectory::open(tmp.path());
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        w.enable_explicit_documents().unwrap();
+        let mut d = Doc::new();
+        d.add(StringField::new("id", "0", Store::No));
+        w.add_fields_document(&d).unwrap();
+        w.commit().unwrap();
+        let reader_infos = w.segment_infos().clone();
+        let id = || Term::new("id", "0");
+        let err = w.update_numeric_doc_value(id(), "n", 1).unwrap_err();
+        assert!(matches!(err, Error::UnknownDocValuesUpdateField(_)), "{err}");
+        let err = w.update_binary_doc_value(id(), "b", b"x").unwrap_err();
+        assert!(matches!(err, Error::UnknownDocValuesUpdateField(_)), "{err}");
+        let update = |field: &str| DocValuesUpdate::Numeric {
+            term: id(),
+            field: field.to_string(),
+            value: Some(7),
+        };
+        w.update_doc_values(id(), &[update("n")]).unwrap();
+        assert!(w
+            .try_update_doc_value(&reader_infos, 0, &[update("m")])
+            .unwrap()
+            .is_some());
+        w.commit().unwrap();
+        let sci = w.segment_infos.segments[0].clone();
+        let infos = super::super::segment_field_infos(&dir, &sci).unwrap();
+        for name in ["n", "m"] {
+            let info = infos.field_by_name(name).unwrap();
+            assert_eq!(info.doc_values_type, DocValuesType::Numeric, "{name}");
+            assert_eq!(info.index_options, IndexOptions::None, "{name}");
+        }
+    }
 }

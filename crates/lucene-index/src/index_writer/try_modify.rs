@@ -133,6 +133,7 @@ impl IndexWriter<'_> {
         if updates.is_empty() {
             return Err(Error::NoDocValuesUpdatesSupplied);
         }
+        self.create_doc_values_only_fields(updates)?;
         let mut numeric: Vec<super::PerFieldNumericUpdates> = Vec::new();
         let mut binary: Vec<super::PerFieldBinaryUpdates> = Vec::new();
         for update in updates {
