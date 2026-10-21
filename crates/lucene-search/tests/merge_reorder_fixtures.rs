@@ -404,3 +404,37 @@ fn a_reordering_merge_carries_sparse_multi_valued_columns() {
         assert!(result.all_passed(), "{:?}", result.failures());
     }
 }
+
+/// [`RankHooks`], counting its `wrapForMerge` calls.
+#[derive(Default)]
+struct CountingRank(std::sync::atomic::AtomicUsize);
+
+impl MergeReaderHooks for CountingRank {
+    fn wrap_for_merge(
+        &self,
+        reader: Arc<dyn CodecReader>,
+    ) -> lucene_search::Result<Arc<dyn CodecReader>> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        RankHooks.wrap_for_merge(reader)
+    }
+
+    fn reorder(&self, reader: &dyn CodecReader) -> lucene_search::Result<Option<DocMap>> {
+        RankHooks.reorder(reader)
+    }
+}
+
+/// Java's `getMergeReader` wraps each source once, and a hook may draw
+/// (`MockRandomOneMerge`): a reordering merge used to wrap every source a
+/// second time for its live documents, so a drawing hook's stream ran ahead
+/// of Java's.
+#[test]
+fn a_reordering_merge_wraps_each_source_once() {
+    let tmp = TempDir::new("merge-reorder-wraps");
+    let dir = FsDirectory::open(&tmp);
+    let hooks = Arc::new(CountingRank::default());
+    write_docs(&dir, hooks.clone(), doc);
+    let reader = DirectoryReader::open(&dir).unwrap();
+    assert_eq!(reader.segment_readers().len(), 1);
+    // One merge of the three committed segments.
+    assert_eq!(hooks.0.load(std::sync::atomic::Ordering::Relaxed), 3);
+}
