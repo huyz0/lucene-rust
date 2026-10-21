@@ -85,7 +85,8 @@ fn bad_arguments_are_illegal_argument_errors() {
         let none = UnifiedHighlighter::new(None, Some(analyzer()));
         assert!(matches!(
             none.highlight_fields(searcher, &["offs"], &q, &all, &[1]),
-            Err(Error::IllegalArgument(m)) if m.contains("highlightWithoutSearcher")
+            Err(Error::Search(lucene_search::Error::IllegalState(m)))
+                if m.contains("highlightWithoutSearcher")
         ));
         assert!(matches!(
             uh.highlight_without_searcher("offs", &q, "a fox", 1),
@@ -378,5 +379,94 @@ fn a_match_needs_room_for_a_passage() {
         // a query that matches nothing never reaches the queue
         let none = query("offs:zzzzz", reader.max_doc());
         assert!(uh.highlight(searcher, "offs", &none, &all, 0).is_ok());
+    });
+}
+
+#[test]
+fn a_term_vector_without_offsets_is_refused_on_the_classic_path_too() {
+    with_index(|reader, searcher, all| {
+        let q = query("tvpos:fox", reader.max_doc());
+        let classic = UnifiedHighlighter::new(Some(reader), Some(analyzer()))
+            .with_flags(true, true, false, false);
+        assert!(matches!(
+            classic.highlight(searcher, "tvpos", &q, &all, 1),
+            Err(Error::IllegalArgument(m)) if m.contains("without offsets")
+        ));
+    });
+}
+
+#[test]
+fn the_overlay_asks_the_index_about_other_fields() {
+    use lucene_search::query::{BooleanQuery, PhraseQuery, TermQuery};
+    with_index(|reader, searcher, all| {
+        let uh = UnifiedHighlighter::new(Some(reader), Some(analyzer()));
+        // a phrase over a field without positions fails as it does in the
+        // index, which the overlay asks
+        let q: Clause = BooleanQuery::new()
+            .with_should(vec![
+                Clause::from(TermQuery::new("pos", "fox")),
+                Clause::from(PhraseQuery::new("docs", ["quick", "brown"])),
+            ])
+            .into();
+        assert!(matches!(
+            uh.highlight(searcher, "pos", &q, &all, 1),
+            Err(Error::Search(lucene_search::Error::IllegalState(m))) if m.contains("position")
+        ));
+        // a query part it cannot take apart (`lucene-join`'s term set, a
+        // `MultiTermQuery` whose `visit` is a leaf): nothing is filtered out
+        // of the one-document index, and its matches still mark the term
+        let range = lucene_search::extended_query::MultiTermQuery::new(
+            lucene_search::extended_query::MultiTermSource::TermSet(
+                lucene_search::join::TermSetSource {
+                    field: "pos".into(),
+                    terms: vec![b"brown".to_vec()].into(),
+                    from_field: "id".into(),
+                    from_query: std::sync::Arc::new(Clause::from(TermQuery::new("id", "d0"))),
+                },
+            ),
+            lucene_search::extended_query::RewriteMethod::default(),
+        );
+        let q: Clause = BooleanQuery::new()
+            .with_should(vec![
+                Clause::from(TermQuery::new("pos", "fox")),
+                Clause::from(range),
+            ])
+            .into();
+        let got = uh.highlight(searcher, "pos", &q, &all, 1).unwrap();
+        assert!(
+            got.iter().flatten().any(|s| s.contains("<b>fox</b>")),
+            "{got:?}"
+        );
+    });
+}
+
+#[test]
+fn a_span_term_on_a_rejected_field_is_not_marked() {
+    use lucene_search::spans::SpanNode;
+    with_index(|reader, searcher, all| {
+        // the little span is `brown` of `pos` through a mask: the query's
+        // field is `tv`, so the span is the helper's, but `brown`'s own field
+        // is one the default matcher rejects -- it is not marked. (`tv` is
+        // read from its term vectors, which nothing filters.)
+        let big = SpanNode::near(
+            vec![SpanNode::term("tv", "quick"), SpanNode::term("tv", "fox")],
+            2,
+            true,
+        )
+        .unwrap();
+        let little = SpanNode::field_masking(SpanNode::term("pos", "brown"), "tv");
+        let q: Clause = SpanNode::containing(big, little).unwrap().into();
+        let classic = UnifiedHighlighter::new(Some(reader), Some(analyzer()))
+            .with_flags(true, true, false, false);
+        let got = classic.highlight(searcher, "tv", &q, &all, 1).unwrap();
+        let snippets: Vec<&String> = got.iter().flatten().collect();
+        assert!(
+            snippets.iter().any(|s| s.contains("<b>quick</b>")),
+            "{got:?}"
+        );
+        assert!(
+            !snippets.iter().any(|s| s.contains("<b>brown</b>")),
+            "{got:?}"
+        );
     });
 }

@@ -832,14 +832,17 @@ pub(crate) fn sloppy_phrase_freq_offsets_in(
 /// captured lead against every slot's current occurrence.
 ///
 /// `term_offsets[i][j]` is slot `i`'s `j`-th occurrence's `(startOffset,
-/// endOffset)`, parallel to `term_positions`. A phrase of fewer than two
-/// slots, or with a slot absent from the document, has no matches here (a
-/// one-term phrase is a `TermQuery` after `rewrite`).
+/// endOffset)`, parallel to `term_positions`; `offsets` are the slots'
+/// positions in the phrase as [`sloppy_phrase_freq_offsets_in`] takes them
+/// (`None`: each slot's index). A phrase of fewer than two slots, or with a
+/// slot absent from the document, has no matches here (a one-term phrase is
+/// a `TermQuery` after `rewrite`).
 pub(crate) fn sloppy_phrase_match_spans(
     term_positions: &[&[i32]],
     term_offsets: &[&[(i32, i32)]],
     repeats: &PhraseRepeats,
     slop: u32,
+    offsets: Option<&[i32]>,
 ) -> Vec<[i32; 4]> {
     if let Degenerate::Yes(_) = degenerate(term_positions) {
         return Vec::new();
@@ -847,7 +850,13 @@ pub(crate) fn sloppy_phrase_match_spans(
     if term_positions.len() < 2 {
         return Vec::new();
     }
-    let mut m = SloppyMatcher::new(term_positions, repeats, slop);
+    let mut m = SloppyMatcher::new_in(
+        term_positions,
+        repeats,
+        slop,
+        SloppyScratch::default(),
+        offsets,
+    );
     m.capture_lead = true;
     let off = |slot: usize, idx: usize| -> (i32, i32) {
         term_offsets

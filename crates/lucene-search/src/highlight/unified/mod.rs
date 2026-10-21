@@ -8,31 +8,35 @@
 //! Offsets are UTF-16 code units, as Java's `String` indexes, so the text is
 //! held as UTF-16; a lone surrogate in a snippet reads as U+FFFD.
 //!
-//! Differences from Lucene, each a reach of the port rather than a choice:
+//! Differences from Lucene:
 //!
-//! - `PhraseHelper` takes the phrase and span clauses of the query (and the
-//!   terms that need no positions) as phrase matches whose occurrences are
-//!   those inside a match's offsets, not Java's `SpanNearQuery` (an
-//!   unordered sloppy phrase differs). It leaves out a `SynonymQuery`, a
-//!   `MultiPhraseQuery`, the lucene-queries span nodes and a multi-term
-//!   query inside a span (Java also expands the automata of a span query
-//!   for the memory-index pre-filter), and `retarget` remaps only term,
-//!   phrase and multi-term leaves onto the field being highlighted.
 //! - `with_max_length` and the fragment-alignment constructor panic where
 //!   Java throws `IllegalArgumentException`; see their `# Panics`.
-//! - An `ANALYSIS` or `TERM_VECTORS` field is read through a one-document
-//!   index of the field alone (Lucene overlays it on the real reader), so a
-//!   clause of the query on another field is taken as the hit it must have
-//!   been; see [`strategies`]. A term vector is not filtered to the query's
-//!   terms first.
-//! - Term vectors are read with their whole document, and field values are
-//!   loaded one document at a time (Lucene batches them): the snippets are
-//!   the same.
+//! - The one-document index of an `ANALYSIS` or `TERM_VECTORS` field is
+//!   overlaid on the segment leaf by leaf of the query (see
+//!   [`strategies`]): a leaf that reads both the highlighted field and
+//!   another (a span query masking one field as another, a
+//!   `CommonTermsQuery` over both) reads the other from neither.
+//! - A term vector without positions is read with the positions its tokens
+//!   imply (Java's `TermVectorLeafReader` then fails a phrase or span
+//!   query); one without offsets reports them as -1, as Java's does.
+//! - `TermVectorReusingLeafReader` (a cache of the current document's term
+//!   vector when two or more fields read them) is not needed: a term
+//!   vector is read once per field and document either way.
+//! - A span query's term on a field the matcher rejects is left out of the
+//!   `PhraseHelper`'s offsets by its bytes: where the same bytes are also a
+//!   term of an accepted field, the rejected occurrences count too.
+//! - `POSTINGS_WITH_TERM_VECTORS` filters the terms of the classic term and
+//!   automaton paths by the document's term vector, but a query rewritten
+//!   from the index (`WEIGHT_MATCHES`, a multi-term span) enumerates the
+//!   segment's terms, not the term vector's: a top-terms or clause-limited
+//!   rewrite may keep other terms than Java's.
 
 pub mod break_iterators;
 pub mod field_highlighter;
 pub mod matches_enum;
 pub mod passage;
+pub mod phrase_helper;
 pub mod strategies;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -44,7 +48,8 @@ use lucene_codecs::stored_fields::FieldValue;
 use self::break_iterators::{sentence_instance, BreakIterator, SplittingBreakIterator};
 pub use self::field_highlighter::{passage_by_start_offset, FieldHighlighter, PassageOrder};
 pub use self::passage::{
-    DefaultPassageFormatter, EmptyOffsets, OffsetsEnum, Passage, PassageFormatter, PassageScorer,
+    DefaultPassageFormatter, EmptyOffsets, HighlightObject, HighlightValue, OffsetsEnum, Passage,
+    PassageFormatter, PassageScorer,
 };
 pub use self::strategies::Flags;
 use self::strategies::{
@@ -60,6 +65,9 @@ use crate::query_visitor::extract_terms;
 /// `UnifiedHighlighter.DEFAULT_MAX_LENGTH`.
 pub const DEFAULT_MAX_LENGTH: i32 = 10_000;
 
+/// `UnifiedHighlighter.DEFAULT_CACHE_CHARS_THRESHOLD`: ~1 MB of UTF-16.
+pub const DEFAULT_CACHE_CHARS_THRESHOLD: i32 = 524_288;
+
 /// A factory of the base `BreakIterator` (`Supplier<BreakIterator>`).
 pub type BreakIteratorFactory = Arc<dyn Fn() -> Box<dyn BreakIterator> + Send + Sync>;
 
@@ -74,6 +82,7 @@ pub struct UnifiedHighlighter<'r> {
     masked_fields: Option<MaskedFields>,
     flags: Flags,
     max_length: i32,
+    cache_field_val_chars_threshold: i32,
     break_iterator: BreakIteratorFactory,
     scorer: PassageScorer,
     formatter: Arc<dyn PassageFormatter + Send + Sync>,
@@ -92,6 +101,7 @@ impl<'r> UnifiedHighlighter<'r> {
             masked_fields: None,
             flags: Flags::evaluate(true, true, true, true),
             max_length: DEFAULT_MAX_LENGTH,
+            cache_field_val_chars_threshold: DEFAULT_CACHE_CHARS_THRESHOLD,
             break_iterator: Arc::new(sentence_instance),
             scorer: PassageScorer::default(),
             formatter: Arc::new(DefaultPassageFormatter::default()),
@@ -130,6 +140,18 @@ impl<'r> UnifiedHighlighter<'r> {
         );
         self.max_length = max_length;
         self
+    }
+
+    /// `withCacheFieldValCharsThreshold(value)`: how many characters of
+    /// stored values a batch of documents loads before it is highlighted.
+    pub fn with_cache_field_val_chars_threshold(mut self, value: i32) -> Self {
+        self.cache_field_val_chars_threshold = value;
+        self
+    }
+
+    /// `getCacheFieldValCharsThreshold()`.
+    pub fn cache_field_val_chars_threshold(&self) -> i32 {
+        self.cache_field_val_chars_threshold
     }
 
     /// `withBreakIterator(value)`.
@@ -269,12 +291,11 @@ impl<'r> UnifiedHighlighter<'r> {
     }
 
     /// `highlightFields(fields, query, docIds, maxPassages)`: for each field,
-    /// the snippet of each document, `None` where there is nothing to show.
+    /// the snippet of each document, `None` where there is nothing to show
+    /// -- the `toString()` of [`Self::highlight_fields_as_objects`]'.
     ///
     /// # Errors
-    /// [`Error::IllegalArgument`] for no fields, or `fields` and
-    /// `max_passages` of different lengths, or a field indexed without
-    /// offsets that is highlighted from its postings.
+    /// As [`Self::highlight_fields_as_objects`].
     pub fn highlight_fields(
         &self,
         searcher: &IndexSearcher<'_, '_>,
@@ -283,6 +304,38 @@ impl<'r> UnifiedHighlighter<'r> {
         doc_ids: &[i32],
         max_passages: &[i32],
     ) -> Result<BTreeMap<String, Vec<Option<String>>>> {
+        let objects =
+            self.highlight_fields_as_objects(searcher, fields, query, doc_ids, max_passages)?;
+        Ok(objects
+            .into_iter()
+            .map(|(field, docs)| {
+                let snippets = docs.into_iter().map(|o| o.map(|o| o.to_string())).collect();
+                (field, snippets)
+            })
+            .collect())
+    }
+
+    /// `highlightFieldsAsObjects(fields, query, docIds, maxPassages)`: for
+    /// each field, what the formatter made of each document, `None` where
+    /// there is nothing to show. The documents are highlighted in doc id
+    /// order, in batches whose stored values are loaded together
+    /// (`loadFieldValues` with the threshold
+    /// `calculateOptimalCacheCharsThreshold` picks), and within a batch
+    /// field by field.
+    ///
+    /// # Errors
+    /// [`Error::IllegalArgument`] for no fields, or `fields` and
+    /// `max_passages` of different lengths, or a field indexed without
+    /// offsets that is highlighted from its postings; `IllegalStateException`
+    /// without a reader.
+    pub fn highlight_fields_as_objects(
+        &self,
+        searcher: &IndexSearcher<'_, '_>,
+        fields: &[&str],
+        query: &Clause,
+        doc_ids: &[i32],
+        max_passages: &[i32],
+    ) -> Result<BTreeMap<String, Vec<Option<HighlightObject>>>> {
         if fields.is_empty() {
             return Err(Error::IllegalArgument("fieldsIn must not be empty".into()));
         }
@@ -292,13 +345,16 @@ impl<'r> UnifiedHighlighter<'r> {
             ));
         }
         let reader = self.reader.ok_or_else(|| {
-            Error::IllegalArgument(
-                "This method requires that an indexSearcher was passed in the constructor.  \
-                 Perhaps you mean to call highlightWithoutSearcher?"
+            Error::Search(crate::Error::IllegalState(
+                "This method requires that an indexSearcher was passed in the \
+                 constructor.  Perhaps you mean to call highlightWithoutSearcher?"
                     .into(),
-            )
+            ))
         })?;
-        // sorted fields, each with its maxPassages
+        // sort docs and fields for sequential i/o: each doc with its index in
+        // the input, each field with its maxPassages (both sorts stable)
+        let mut docs: Vec<(i32, usize)> = doc_ids.iter().copied().zip(0..).collect();
+        docs.sort_by_key(|&(doc, _)| doc);
         let mut sorted: Vec<(&str, i32)> = fields
             .iter()
             .copied()
@@ -307,34 +363,79 @@ impl<'r> UnifiedHighlighter<'r> {
         sorted.sort_by(|a, b| a.0.cmp(b.0));
         let all_terms = extract_terms(query);
         let mut highlighters = Vec::new();
+        let (mut num_term_vectors, mut num_postings) = (0, 0);
         for (field, max) in &sorted {
-            highlighters.push(self.field_highlighter(field, query, &all_terms, *max)?);
-        }
-        let names: Vec<&str> = sorted.iter().map(|(f, _)| *f).collect();
-        let mut results: Vec<Vec<Option<String>>> = vec![vec![None; doc_ids.len()]; names.len()];
-        for (d, &doc_id) in doc_ids.iter().enumerate() {
-            let values = self.load_field_values(reader, searcher, &names, doc_id)?;
-            let leaf = searcher
-                .segment_of(doc_id)
-                .ok_or_else(|| Error::IllegalArgument(format!("doc {doc_id} is in no segment")))?;
-            let local = doc_id - searcher.segments()[leaf].doc_base;
-            let segment = &reader.segment_readers()[leaf];
-            let matches =
-                |c: &Clause| crate::matches::matches(searcher, &c.clone().rewrite(), doc_id);
-            let ctx = LeafCtx {
-                reader: segment,
-                doc: local,
-                matches: &matches,
-            };
-            for (f, (strategies, highlighter)) in highlighters.iter_mut().enumerate() {
-                let Some(content) = &values[f] else {
-                    continue;
-                };
-                results[f][d] =
-                    highlight_field_for_doc(strategies, highlighter, Some(&ctx), content)?;
+            let (strategies, highlighter) =
+                self.field_highlighter(field, query, &all_terms, *max)?;
+            // a masking field's strategy reports its first masked field's source
+            match strategies[0].source {
+                OffsetSource::TermVectors => num_term_vectors += 1,
+                OffsetSource::Postings => num_postings += 1,
+                OffsetSource::PostingsWithTermVectors => {
+                    num_term_vectors += 1;
+                    num_postings += 1;
+                }
+                OffsetSource::Analysis | OffsetSource::NoneNeeded => {}
             }
+            highlighters.push((strategies, highlighter));
+        }
+        let cache_chars_threshold =
+            self.calculate_optimal_cache_chars_threshold(num_term_vectors, num_postings);
+        let names: Vec<&str> = sorted.iter().map(|(f, _)| *f).collect();
+        let mut results: Vec<Vec<Option<HighlightObject>>> = names
+            .iter()
+            .map(|_| (0..doc_ids.len()).map(|_| None).collect())
+            .collect();
+        let mut batch_start = 0;
+        while batch_start < docs.len() {
+            let batch = self.load_field_values(
+                reader,
+                searcher,
+                &names,
+                &docs[batch_start..],
+                cache_chars_threshold,
+            )?;
+            // per field first, then by doc
+            for (f, (strategies, highlighter)) in highlighters.iter_mut().enumerate() {
+                for (values, &(doc_id, doc_in_index)) in batch.iter().zip(&docs[batch_start..]) {
+                    let Some(content) = &values[f] else {
+                        continue;
+                    };
+                    let leaf = searcher.segment_of(doc_id).ok_or_else(|| {
+                        Error::IllegalArgument(format!("doc {doc_id} is in no segment"))
+                    })?;
+                    let segment = &searcher.segments()[leaf];
+                    let matches = |c: &Clause| {
+                        crate::matches::matches(searcher, &c.clone().rewrite(), doc_id)
+                    };
+                    let ctx = LeafCtx {
+                        reader: &reader.segment_readers()[leaf],
+                        segment,
+                        doc: doc_id - segment.doc_base,
+                        matches: &matches,
+                    };
+                    results[f][doc_in_index] =
+                        highlight_field_for_doc(strategies, highlighter, Some(&ctx), content)?;
+                }
+            }
+            batch_start += batch.len();
         }
         Ok(names.into_iter().map(str::to_string).zip(results).collect())
+    }
+
+    /// `calculateOptimalCacheCharsThreshold`: one document at a time when
+    /// every field is analysed (nothing else is read from disk) or when two
+    /// or more read term vectors; else [`Self::cache_field_val_chars_threshold`].
+    fn calculate_optimal_cache_chars_threshold(
+        &self,
+        num_term_vectors: i32,
+        num_postings: i32,
+    ) -> i32 {
+        if (num_postings == 0 && num_term_vectors == 0) || num_term_vectors >= 2 {
+            0
+        } else {
+            self.cache_field_val_chars_threshold
+        }
     }
 
     /// `highlight(field, query, docIds, maxPassages)`.
@@ -353,11 +454,12 @@ impl<'r> UnifiedHighlighter<'r> {
         Ok(m.remove(field).unwrap_or_default())
     }
 
-    /// `highlightWithoutSearcher(field, query, content, maxPassages)`: the
-    /// text is analyzed, as there is no index to read offsets from.
+    /// `highlightWithoutSearcher(field, query, content, maxPassages)` as
+    /// text: the text is analyzed, as there is no index to read offsets
+    /// from.
     ///
     /// # Errors
-    /// [`Error::IllegalArgument`] when the highlighter has a reader.
+    /// As [`Self::highlight_without_searcher_as_object`].
     pub fn highlight_without_searcher(
         &self,
         field: &str,
@@ -365,6 +467,23 @@ impl<'r> UnifiedHighlighter<'r> {
         content: &str,
         max_passages: i32,
     ) -> Result<Option<String>> {
+        Ok(self
+            .highlight_without_searcher_as_object(field, query, content, max_passages)?
+            .map(|o| o.to_string()))
+    }
+
+    /// `highlightWithoutSearcher(field, query, content, maxPassages)`: what
+    /// the formatter made of the text.
+    ///
+    /// # Errors
+    /// [`Error::IllegalArgument`] when the highlighter has a reader.
+    pub fn highlight_without_searcher_as_object(
+        &self,
+        field: &str,
+        query: &Clause,
+        content: &str,
+        max_passages: i32,
+    ) -> Result<Option<HighlightObject>> {
         if self.reader.is_some() {
             return Err(Error::IllegalArgument(
                 "highlightWithoutSearcher should only be called on a UnifiedHighlighter \
@@ -379,10 +498,37 @@ impl<'r> UnifiedHighlighter<'r> {
         highlight_field_for_doc(&strategies, &mut highlighter, None, &content)
     }
 
-    /// `loadFieldValues` for one document with `LimitedStoredFieldVisitor`:
-    /// each field's string values joined by [`MULTIVAL_SEP_CHAR`] and cut to
-    /// `maxLength` UTF-16 units; `None` for a field without a value.
+    /// `loadFieldValues(fields, docIter, cacheCharsThreshold)` with
+    /// `LimitedStoredFieldVisitor`: from the first of `docs` on, each
+    /// document's fields (string values joined by [`MULTIVAL_SEP_CHAR`] and
+    /// cut to `maxLength` UTF-16 units; `None` for a field without a value),
+    /// until their characters pass the threshold -- one document when it is
+    /// 0 or less.
     fn load_field_values(
+        &self,
+        reader: &DirectoryReader,
+        searcher: &IndexSearcher<'_, '_>,
+        fields: &[&str],
+        docs: &[(i32, usize)],
+        cache_chars_threshold: i32,
+    ) -> Result<Vec<Vec<Option<Vec<u16>>>>> {
+        let mut batch = Vec::new();
+        let mut sum_chars = 0usize;
+        let threshold = usize::try_from(cache_chars_threshold).unwrap_or(0);
+        for &(doc_id, _) in docs {
+            let values = self.load_doc_field_values(reader, searcher, fields, doc_id)?;
+            sum_chars += values.iter().flatten().map(Vec::len).sum::<usize>();
+            batch.push(values);
+            // Java's `sumChars <= threshold && threshold != 0` to go on
+            if cache_chars_threshold <= 0 || sum_chars > threshold {
+                break;
+            }
+        }
+        Ok(batch)
+    }
+
+    /// One document's values, as `LimitedStoredFieldVisitor` reads them.
+    fn load_doc_field_values(
         &self,
         reader: &DirectoryReader,
         searcher: &IndexSearcher<'_, '_>,
@@ -440,7 +586,7 @@ fn highlight_field_for_doc(
     highlighter: &mut FieldHighlighter,
     ctx: Option<&LeafCtx<'_>>,
     content: &[u16],
-) -> Result<Option<String>> {
+) -> Result<Option<HighlightObject>> {
     // nothing to do
     if content.is_empty() {
         return Ok(None);
@@ -461,5 +607,8 @@ struct SharedFormatter(Arc<dyn PassageFormatter + Send + Sync>);
 impl PassageFormatter for SharedFormatter {
     fn format(&self, passages: &[Passage], content: &[u16]) -> String {
         self.0.format(passages, content)
+    }
+    fn format_object(&self, passages: &[Passage], content: &[u16]) -> HighlightObject {
+        self.0.format_object(passages, content)
     }
 }

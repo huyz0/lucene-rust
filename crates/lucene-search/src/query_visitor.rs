@@ -23,6 +23,7 @@ use std::collections::BTreeSet;
 
 use lucene_util::automaton::{self, AutomatonType, CompiledAutomaton};
 
+use crate::extended_query::MultiTermSource;
 use crate::query::{Clause, SpanQuery};
 
 /// `BooleanClause.Occur`, as a sub-visitor is asked for.
@@ -147,6 +148,45 @@ fn visit_automaton(
         return;
     };
     visit_compiled(&c, visitor, query, field);
+}
+
+/// The `visit` of a multi-term query by its source: `AutomatonQuery.visit`
+/// (prefix, wildcard, regexp, term range, automaton: the compiled
+/// automaton, when the visitor accepts the field), or `MultiTermQuery.visit`
+/// (`lucene-join`'s term set: a leaf).
+fn visit_source(source: &MultiTermSource, query: &Clause, visitor: &mut dyn QueryVisitor) {
+    if !visitor.accept_field(source.field()) {
+        return;
+    }
+    let c = match source {
+        MultiTermSource::Prefix(q) => {
+            CompiledAutomaton::with_options(&prefix_automaton(&q.prefix), false, true, true).ok()
+        }
+        MultiTermSource::Wildcard(q) => wildcard_automaton(&q.pattern)
+            .and_then(|a| CompiledAutomaton::with_options(&a, false, true, false).ok()),
+        MultiTermSource::Regexp(q) => automaton::RegExp::new(&q.pattern)
+            .ok()
+            .and_then(|r| r.to_automaton().ok())
+            .and_then(|a| {
+                automaton::operations::determinize(&a, automaton::DEFAULT_DETERMINIZE_WORK_LIMIT)
+                    .ok()
+            })
+            .and_then(|a| CompiledAutomaton::with_options(&a, false, true, false).ok()),
+        // `TermRangeQuery.toAutomaton`: an open end is inclusive
+        MultiTermSource::TermRange(r) => automaton::automata::make_binary_interval(
+            r.lower.as_deref(),
+            r.include_lower || r.lower.is_none(),
+            r.upper.as_deref(),
+            r.include_upper || r.upper.is_none(),
+        )
+        .ok()
+        .and_then(|a| CompiledAutomaton::with_options(&a, false, true, true).ok()),
+        MultiTermSource::Automaton(q) => {
+            CompiledAutomaton::with_options(&q.automaton, false, true, q.binary).ok()
+        }
+        MultiTermSource::TermSet(_) => return visitor.visit_leaf(query),
+    };
+    visit_automaton(visitor, query, source.field(), c);
 }
 
 /// `CompiledAutomaton.visit(visitor, parent, field)`: when the visitor
@@ -305,41 +345,11 @@ pub fn visit(clause: &Clause, visitor: &mut dyn QueryVisitor) {
         Clause::Boost(b) => {
             with_sub(visitor, Occur::Must, clause, &mut |v| visit(&b.inner, v));
         }
-        Clause::Prefix(q) => {
-            if visitor.accept_field(&q.field) {
-                let c = CompiledAutomaton::with_options(
-                    &prefix_automaton(&q.prefix),
-                    false,
-                    true,
-                    true,
-                )
-                .ok();
-                visit_automaton(visitor, clause, &q.field, c);
-            }
-        }
+        Clause::Prefix(q) => visit_source(&MultiTermSource::Prefix(q.clone()), clause, visitor),
         Clause::Wildcard(q) => {
-            if visitor.accept_field(&q.field) {
-                let c = wildcard_automaton(&q.pattern)
-                    .and_then(|a| CompiledAutomaton::with_options(&a, false, true, false).ok());
-                visit_automaton(visitor, clause, &q.field, c);
-            }
+            visit_source(&MultiTermSource::Wildcard(q.clone()), clause, visitor);
         }
-        Clause::Regexp(q) => {
-            if visitor.accept_field(&q.field) {
-                let c = automaton::RegExp::new(&q.pattern)
-                    .ok()
-                    .and_then(|r| r.to_automaton().ok())
-                    .and_then(|a| {
-                        automaton::operations::determinize(
-                            &a,
-                            automaton::DEFAULT_DETERMINIZE_WORK_LIMIT,
-                        )
-                        .ok()
-                    })
-                    .and_then(|a| CompiledAutomaton::with_options(&a, false, true, false).ok());
-                visit_automaton(visitor, clause, &q.field, c);
-            }
-        }
+        Clause::Regexp(q) => visit_source(&MultiTermSource::Regexp(q.clone()), clause, visitor),
         Clause::Fuzzy(q) => {
             if visitor.accept_field(&q.field) {
                 let m = lucene_codecs::fuzzy::FuzzyMatch::new(
@@ -380,6 +390,9 @@ pub fn visit(clause: &Clause, visitor: &mut dyn QueryVisitor) {
             }
             crate::extended_query::ExtendedQuery::Span(node) => {
                 visit_span_node(node, clause, visitor);
+            }
+            crate::extended_query::ExtendedQuery::MultiTerm(m) => {
+                visit_source(&m.source, clause, visitor);
             }
             _ => visitor.visit_leaf(clause),
         },
@@ -496,7 +509,33 @@ fn visit_span_node(node: &crate::spans::SpanNode, clause: &Clause, visitor: &mut
             });
         }
         N::FieldMasking { inner, .. } => visit_span_node(inner, &sub(inner), visitor),
-        _ => visitor.visit_leaf(clause),
+        // `SpanMultiTermQueryWrapper.visit`: the wrapped query, as a
+        // `MUST`
+        N::MultiTerm(m) => {
+            if visitor.accept_field(m.source.field()) {
+                let inner = match &m.source {
+                    MultiTermSource::Prefix(q) => Clause::Prefix(q.clone()),
+                    MultiTermSource::Wildcard(q) => Clause::Wildcard(q.clone()),
+                    MultiTermSource::Regexp(q) => Clause::Regexp(q.clone()),
+                    _ => Clause::Extended(Box::new(
+                        crate::extended_query::ExtendedQuery::MultiTerm(m.clone()),
+                    )),
+                };
+                with_sub(visitor, Occur::Must, clause, &mut |v| visit(&inner, v));
+            }
+        }
+        // `SpanPayloadCheckQuery.visit`: its match, as a `MUST`
+        N::PayloadCheck(p) => {
+            if p.inner.field().is_some_and(|f| visitor.accept_field(f)) {
+                with_sub(visitor, Occur::Must, clause, &mut |v| {
+                    visit_span_node(&p.inner, &sub(&p.inner), v);
+                });
+            }
+        }
+        // `PayloadScoreQuery.visit`: the wrapped query, as a `MUST`
+        N::PayloadScore(p) => with_sub(visitor, Occur::Must, clause, &mut |v| {
+            visit_span_node(&p.inner, &sub(&p.inner), v);
+        }),
     }
 }
 
@@ -511,6 +550,112 @@ pub fn extract_terms(clause: &Clause) -> BTreeSet<Term> {
 mod tests {
     use super::*;
     use crate::query::{BooleanQuery, TermQuery};
+
+    #[test]
+    fn span_wrappers_visit_what_they_wrap() {
+        use crate::extended_query::{MultiTermQuery, MultiTermSource, RewriteMethod};
+        use crate::query::PrefixQuery;
+        use crate::spans::payloads::{
+            PayloadDecoder, PayloadFunction, PayloadScoreQuery, SpanPayloadCheckQuery,
+        };
+        use crate::spans::SpanNode;
+        struct Seen(Vec<String>);
+        impl QueryVisitor for Seen {
+            fn accept_field(&self, field: &str) -> bool {
+                field == "f"
+            }
+            fn consume_terms(&mut self, _q: &Clause, terms: &[Term]) {
+                self.0.extend(
+                    terms
+                        .iter()
+                        .map(|t| String::from_utf8_lossy(&t.bytes).into()),
+                );
+            }
+            fn consume_terms_matching(&mut self, _q: &Clause, _f: &str, m: &dyn TermMatcher) {
+                self.0.push(format!("matcher:{}", m.matches(b"quick")));
+            }
+            fn visit_leaf(&mut self, _q: &Clause) {
+                self.0.push("leaf".into());
+            }
+        }
+        let seen = |node: SpanNode| {
+            let mut v = Seen(Vec::new());
+            visit(&Clause::from(node), &mut v);
+            v.0
+        };
+        let prefix = |f: &str| {
+            SpanNode::multi_term(MultiTermQuery::new(
+                MultiTermSource::Prefix(PrefixQuery::new(f, "qu")),
+                RewriteMethod::default(),
+            ))
+        };
+        assert_eq!(seen(prefix("f")), ["matcher:true"]);
+        assert!(seen(prefix("g")).is_empty());
+        // `AutomatonQuery.visit` for a range and an automaton; the join's
+        // term set is a `MultiTermQuery` leaf
+        let wrap =
+            |source| SpanNode::multi_term(MultiTermQuery::new(source, RewriteMethod::default()));
+        let range = |lo: &str, hi: &str, incl_hi| {
+            wrap(MultiTermSource::TermRange(
+                crate::extended_query::TermRangeQuery::new(
+                    "f",
+                    (!lo.is_empty()).then(|| lo.as_bytes().to_vec()),
+                    (!hi.is_empty()).then(|| hi.as_bytes().to_vec()),
+                    false,
+                    incl_hi,
+                ),
+            ))
+        };
+        assert_eq!(seen(range("", "", false)), ["matcher:true"]);
+        assert_eq!(seen(range("a", "b", false)), ["matcher:false"]);
+        assert_eq!(seen(range("a", "r", true)), ["matcher:true"]);
+        let automaton = wrap(MultiTermSource::Automaton(
+            crate::extended_query::AutomatonQuery::new(
+                "f",
+                lucene_util::automaton::automata::make_any_binary(),
+                true,
+            ),
+        ));
+        assert_eq!(seen(automaton), ["matcher:true"]);
+        let set = wrap(MultiTermSource::TermSet(crate::join::TermSetSource {
+            field: "f".into(),
+            terms: vec![b"quick".to_vec()].into(),
+            from_field: "g".into(),
+            from_query: std::sync::Arc::new(Clause::MatchAllDocs(
+                crate::query::MatchAllDocsQuery::new(1),
+            )),
+        }));
+        assert_eq!(seen(set), ["leaf"]);
+        // a top-level multi-term query visits as its wrapper's inner one
+        let mut v = Seen(Vec::new());
+        visit(
+            &Clause::Extended(Box::new(crate::extended_query::ExtendedQuery::MultiTerm(
+                MultiTermQuery::new(
+                    MultiTermSource::Prefix(PrefixQuery::new("f", "z")),
+                    RewriteMethod::default(),
+                ),
+            ))),
+            &mut v,
+        );
+        assert_eq!(v.0, ["matcher:false"]);
+        let check = SpanNode::PayloadCheck(Box::new(SpanPayloadCheckQuery::new(
+            SpanNode::term("f", "a"),
+            vec![None],
+        )));
+        assert_eq!(seen(check), ["a"]);
+        let elsewhere = SpanNode::PayloadCheck(Box::new(SpanPayloadCheckQuery::new(
+            SpanNode::term("g", "a"),
+            vec![None],
+        )));
+        assert!(seen(elsewhere).is_empty());
+        let score = SpanNode::PayloadScore(Box::new(PayloadScoreQuery::new(
+            SpanNode::term("f", "b"),
+            PayloadFunction::Max,
+            PayloadDecoder::Float,
+            false,
+        )));
+        assert_eq!(seen(score), ["b"]);
+    }
 
     #[test]
     fn empty_visitor_accepts_nothing_and_must_not_is_skipped() {
