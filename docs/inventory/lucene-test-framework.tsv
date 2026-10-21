@@ -137,16 +137,16 @@ tests/mockfile/VirusCheckingFS	ported	crates/lucene-test-framework/src/mockfile/
 tests/mockfile/WindowsFS	ported	crates/lucene-test-framework/src/mockfile/mock_fs.rs::check_delete
 tests/mockfile/WindowsPath	not-needed	a java.nio.file.Path that refuses Windows-illegal characters; Rust paths are std::path::Path, and the Windows delete/rename semantics are MockFs::check_delete
 tests/search/AssertingAcceptDocs	not-needed	accept docs are a borrowed FixedBitSet whose reads are bounds-checked (the FixedBitSet gate), not a wrappable Bits
-tests/search/AssertingBulkScorer	ported	crates/lucene-search/src/exec/asserting.rs::AssertingBulk
+tests/search/AssertingBulkScorer	ported	crates/lucene-search/src/exec/asserting.rs::AssertingBulk -- the leaf's maxDoc from score_segment
 tests/search/AssertingCollector	ported	crates/lucene-test-framework/src/search/asserting.rs::AssertingCollector
-tests/search/AssertingIndexSearcher	partial	crates/lucene-test-framework/src/search/asserting.rs::AssertingIndexSearcher -- M14: no random executor/slices, no rewrite or createWeight assertions (no Weight)
+tests/search/AssertingIndexSearcher	partial	crates/lucene-test-framework/src/search/asserting.rs::AssertingIndexSearcher -- M14: no random executor/slices, no rewrite or createWeight assertions (no Weight); the thread-local guard does not assert searches on the rayon *_concurrent paths
 tests/search/AssertingLeafCollector	ported	crates/lucene-search/src/exec/asserting.rs::AssertingLeafCollector
 tests/search/AssertingMatches	ported	crates/lucene-test-framework/src/search/asserting_matches.rs::AssertingMatches
 tests/search/AssertingMatchesIterator	ported	crates/lucene-test-framework/src/search/asserting_matches.rs::AssertingMatchesIterator
 tests/search/AssertingQuery	partial	crates/lucene-search/src/test_support.rs::asserting -- M14: the guard wraps every scorer of a search; no per-query wrapper to compose
 tests/search/AssertingScorable	ported	crates/lucene-search/src/exec/asserting.rs::AssertingLeafCollector
 tests/search/AssertingScorer	ported	crates/lucene-search/src/exec/asserting.rs::AssertingScorer
-tests/search/AssertingWeight	ported	crates/lucene-search/src/exec/asserting.rs::wrap
+tests/search/AssertingWeight	partial	crates/lucene-search/src/exec/asserting.rs::wrap -- M14: no Weight; each built scorer wrapped; no count/cost/get-once checks or usually() bulk-vs-scorer pick
 tests/search/BaseExplanationTestCase	partial	crates/lucene-test-framework/src/search/base_explanation.rs::BaseExplanation -- M14: RandomIndexWriter and newTextField/newStringField random field types
 tests/search/BaseRangeFieldQueryTestCase	partial	crates/lucene-test-framework/src/search/base_range_field.rs::BaseRangeField -- M14: random IndexWriterConfig and forceMerge (one segment here)
 tests/search/BlockScoreQueryWrapper	todo:M14	h7 deferral: re-blocks a query's impacts to exercise block-max scoring; needs a Weight to wrap

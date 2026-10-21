@@ -2740,7 +2740,7 @@ pub(crate) fn segment_match_bits(
         usize::try_from(seg.max_doc.unwrap_or(0)).unwrap_or(0),
     ));
     if let Some(mut bulk) = super::bulk_clause(&ctx, clause, 1.0, Mode::NoScores)? {
-        super::score_segment(&mut bulk, Mode::NoScores, None, &mut bits)?;
+        super::score_segment(&mut bulk, Mode::NoScores, None, &mut bits, ctx.max_doc)?;
     }
     Ok(bits.0)
 }
