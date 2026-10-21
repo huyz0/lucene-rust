@@ -809,7 +809,46 @@ pub fn explain_clause_with_stats(
             // No per-position breakdown yet (real `MultiPhraseWeight.explain`
             // has one): this reports the real score the scorer produces for
             // this doc, obtained from the scorer itself so the two can never
-            // disagree, rather than a re-derivation that could drift.
+            // disagree, rather than a re-derivation that could drift. Under
+            // the searcher's similarity, the scorer tree's, which scores
+            // with it.
+            let scored = with_leaf_reader(|_, similarity| -> Result<Option<Option<f32>>> {
+                let Some(similarity) = similarity else {
+                    return Ok(None);
+                };
+                let mut ctx = interval_context(
+                    fields, doc_in, pos_in, pay_in, live_docs, points, norms, global,
+                );
+                ctx.similarity = Some(similarity);
+                ctx.max_doc = leaf().map(|(max_doc, _)| max_doc);
+                let Some(mut s) = crate::exec::extended::multi_phrase(
+                    &ctx,
+                    query,
+                    1.0,
+                    crate::exec::Mode::Complete,
+                )?
+                else {
+                    return Ok(Some(None));
+                };
+                Ok(Some(if s.advance(doc)? == doc && s.matches()? {
+                    Some(s.score()?)
+                } else {
+                    None
+                }))
+            })?;
+            if let Some(hit) = scored {
+                return Ok(match hit {
+                    Some(score) => Explanation::match_(
+                        score,
+                        format!(
+                            "weight({} in {doc}) [{}], result of:",
+                            describe_clause(clause),
+                            similarity_name()
+                        ),
+                    ),
+                    None => Explanation::no_match("no matching terms"),
+                });
+            }
             let mut hit: Option<f32> = None;
             struct Pick<'a> {
                 doc: i32,
@@ -1066,34 +1105,64 @@ fn explain_term_tfidf(
     doc_count: i64,
     encoded_norm: i64,
 ) -> Explanation {
-    let idf = tfidf.idf(doc_freq, doc_count);
-    let idf_explanation = Explanation::match_(
-        idf,
+    let freq = freq as f32;
+    explain_tfidf(
+        tfidf,
+        &Clause::Term(query.clone()),
+        doc,
+        tfidf_idf_explanation(tfidf, doc_freq, doc_count),
+        Explanation::match_(freq, "freq, occurrences of term within document"),
+        encoded_norm,
+    )
+}
+
+/// One term's `idf` node, `TFIDFSimilarity.idfExplain(CollectionStatistics,
+/// TermStatistics)`.
+fn tfidf_idf_explanation(
+    tfidf: &dyn crate::similarities::TfIdfSimilarity,
+    doc_freq: i64,
+    doc_count: i64,
+) -> Explanation {
+    Explanation::match_(
+        tfidf.idf(doc_freq, doc_count),
         "idf, computed as log((docCount+1)/(docFreq+1)) + 1 from:",
     )
     .with_details(vec![
         Explanation::match_long(doc_freq, "docFreq, number of documents containing term"),
         Explanation::match_long(doc_count, "docCount, total number of documents with field"),
-    ]);
-    let freq = freq as f32;
-    let tf = tfidf.tf(freq);
-    let tf_explanation =
-        Explanation::match_(tf, format!("tf(freq={}), with freq of:", java_float(freq)))
-            .with_details(vec![Explanation::match_(
-                freq,
-                "freq, occurrences of term within document",
-            )]);
+    ])
+}
+
+/// `TFIDFScorer.explain` (`explainScore`) under `clause`'s `weight(...)`
+/// node: `idf` is the weight's idf node, `freq` the frequency the weight
+/// hands it (a term's `freq`, a phrase's `phraseFreq`), in the scorer's
+/// order of operations (`queryWeight * tf * norm`).
+fn explain_tfidf(
+    tfidf: &dyn crate::similarities::TfIdfSimilarity,
+    clause: &Clause,
+    doc: i32,
+    idf: Explanation,
+    freq: Explanation,
+    encoded_norm: i64,
+) -> Explanation {
+    let freq_value = freq.value;
+    let tf = tfidf.tf(freq_value);
+    let tf_explanation = Explanation::match_(
+        tf,
+        format!("tf(freq={}), with freq of:", java_float(freq_value)),
+    )
+    .with_details(vec![freq]);
     let table = crate::similarities::ClassicSimilarity::norm_table();
     // `normTable[(int) (encodedNorm & 0xFF)]`.
     let norm = table[(encoded_norm & 0xFF) as usize];
-    let query_weight = idf;
+    let query_weight = idf.value;
     let value = query_weight * tf * norm;
     let score = Explanation::match_(
         value,
-        format!("score(freq={}), product of:", java_float(freq)),
+        format!("score(freq={}), product of:", java_float(freq_value)),
     )
     .with_details(vec![
-        idf_explanation,
+        idf,
         tf_explanation,
         Explanation::match_(norm, "fieldNorm"),
     ]);
@@ -1101,7 +1170,7 @@ fn explain_term_tfidf(
         value,
         format!(
             "weight({} in {doc}) [ClassicSimilarity], result of:",
-            describe_clause(&Clause::Term(query.clone()))
+            describe_clause(clause)
         ),
     )
     .with_details(vec![score])
@@ -1175,6 +1244,7 @@ fn explain_phrase(
     // casts once: an `f32` sum of three or more idfs can be an ulp off.
     let mut idf_acc = 0.0f64;
     let mut idf_details = Vec::with_capacity(query.terms.len());
+    let mut term_stats = Vec::with_capacity(query.terms.len());
     for term in &query.terms {
         let Some(stats) = field_terms.try_seek_exact(term)? else {
             return Ok(Explanation::no_match("no matching terms"));
@@ -1186,6 +1256,7 @@ fn explain_phrase(
         let term_idf = similarity::idf(doc_freq, doc_count);
         idf_acc += f64::from(term_idf);
         idf_details.push(idf_explanation(term_idf, doc_freq, doc_count));
+        term_stats.push((doc_freq, doc_count));
     }
     let idf_sum = idf_acc as f32;
 
@@ -1253,6 +1324,38 @@ fn explain_phrase(
             doc,
             phrase_freq,
         ));
+    }
+    // Under a TFIDF similarity: `TFIDFScorer.explain` over the phrase's
+    // `idfExplain(collectionStats, termStats[])`, its idfs summed in a double.
+    if let Some(e) = with_leaf_reader(|_, sim| {
+        let Some(tfidf) = sim.and_then(|s| s.as_tfidf(&query.field)) else {
+            return Ok(None);
+        };
+        let encoded = match norms {
+            Some(n) => n.cursor().norm_long(doc)?.unwrap_or(1),
+            None => 1,
+        };
+        let subs: Vec<Explanation> = term_stats
+            .iter()
+            .map(|&(doc_freq, doc_count)| tfidf_idf_explanation(tfidf, doc_freq, doc_count))
+            .collect();
+        let sum: f64 = subs.iter().map(|e| f64::from(e.value)).sum();
+        #[allow(clippy::cast_possible_truncation)]
+        let idf = Explanation::match_(sum as f32, "idf(), sum of:").with_details(subs);
+        let freq = Explanation::match_(
+            phrase_freq,
+            format!("phraseFreq={}", java_float(phrase_freq)),
+        );
+        Ok::<_, crate::Error>(Some(explain_tfidf(
+            tfidf,
+            &Clause::Phrase(query.clone()),
+            doc,
+            idf,
+            freq,
+            encoded,
+        )))
+    })? {
+        return Ok(e);
     }
 
     let (field_length, avg_field_length) = match norms {
