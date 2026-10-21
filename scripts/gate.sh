@@ -17,6 +17,13 @@ cargo fmt --all --check
 echo "gate: cargo clippy -D warnings (includes the arithmetic gate)"
 cargo clippy --workspace --all-targets -- -D warnings
 
+# lucene-test-framework enables lucene-store's `test-util` seams, so every
+# `--workspace` build compiles them in; the shipped build does not. Lint the
+# feature-off library the way `-p lucene-ffi` builds it, so a defect only that
+# configuration sees (a seam's import left ungated) cannot ship.
+echo "gate: cargo clippy for lucene-store without test-util (the shipped seams)"
+cargo clippy -p lucene-store --lib -- -D warnings
+
 echo "gate: cargo clippy for aarch64 (c_char signedness differs by target)"
 cargo clippy --workspace --all-targets --target aarch64-unknown-linux-gnu -- -D warnings
 

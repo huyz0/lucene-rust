@@ -127,6 +127,7 @@ the hook, the container and this table cannot drift apart:
 | Verify the write path (Lucene reads Rust bytes) | `scripts/verify-write-path.sh` |
 | Interop matrix (both engines write, append, merge, delete one index) | `scripts/verify-interop.sh` |
 | Crash fuzzing (power loss, kill -9, concurrent power loss; fixed seeds) | `scripts/crash-fuzz.sh` |
+| I/O-fault run (`IndexWriter` through `MockDirectoryWrapper` at 10% I/O errors, 300 seeds; Lucene `CheckIndex` on 50) | `scripts/test-framework-faults.sh` |
 | Crash campaign (all crash models in parallel, varied conditions, optional `--load`) | `scripts/crash-storm.sh --duration SECS` |
 | Differential op-stream fuzzing vs Java `IndexWriter` (1000 seeds) | `scripts/op-stream-fuzz.sh` |
 | Concurrent writer soak (threads + merges, every commit checked exactly; RSS/fds reported) | `cargo run --release -p lucene-search --example concurrent_soak -- --dir DIR --duration SECS` |

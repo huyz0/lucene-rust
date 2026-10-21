@@ -898,6 +898,36 @@ compiles the test framework as a member, so its `test-support` feature on
 `-p lucene-ffi` build does not include it (`cargo tree -p lucene-ffi -e
 normal,build`).
 
+## store-feature-off-lint
+
+`gate.sh`'s `cargo clippy -p lucene-store --lib -- -D warnings`. Since M14.h
+h2, `lucene-test-framework` turns on `lucene-store`'s `test-util` feature (the
+`MockDirectoryWrapper` fault seams), so every `--workspace` build compiles
+the seams in, and only a per-package build sees the library `lucene-ffi`
+ships. **Seen to fail**: an unused `let` planted under
+`#[cfg(not(feature = "test-util"))]` in `crates/lucene-store/src/lib.rs`
+fails this step (`error: unused variable`) while the workspace clippy over
+the same tree passes. Blind to: a defect that only the feature-on build
+sees (the workspace clippy covers that); the feature-off build of any other
+crate (`lucene-util`'s `test-support` is unified the same way, and is
+covered only by `cargo tree -p lucene-ffi -e normal,build` showing it off);
+and tests, which run feature-on only.
+
+## test-framework-faults
+
+`scripts/test-framework-faults.sh` (CI `test-framework faults`): 300 seeds of
+`examples/io_faults.rs`, an `IndexWriter` over a `MockDirectoryWrapper`
+failing 10% of writes and opens, crashed on close, then this port's
+`CheckIndex` (and Lucene's on the last 50). **Seen to fail**: with the flush's
+`dir.sync(&pending_sync)` in `crates/lucene-index/src/segment_writer.rs`
+removed, seed 1 fails (`CheckIndex failed: _0: si.open ... corrupted index`),
+because the crash damages a committed segment's unsynced `.si`. Blind to:
+disk full, `Failure`s, crashes with an output still open and the mock
+filesystem's behaviours (the run uses a bare `FsDirectory` delegate and only
+the random-rate knobs); a commit whose failure leaves its `segments_N`
+behind (no seed has hit it); and any defect the writer's own error paths
+hide behind an injected error.
+
 ## Each of these has been seen to fail
 
 A gate nobody has watched fail is a gate nobody should trust -- this sweep

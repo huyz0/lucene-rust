@@ -312,6 +312,10 @@ jobs:
       # Lucene's IndexWriter and this port's, compared semantically.
       - name: Differential operation-stream fuzzing
         run: ./scripts/op-stream-fuzz.sh
+      # M14.h h2: IndexWriter through MockDirectoryWrapper at 10% I/O errors,
+      # 300 seeds; real Lucene's CheckIndex on 50 of them.
+      - name: Test-framework fault run
+        run: ./scripts/test-framework-faults.sh
 
   # ---------------------------------------------------------------------------
   # M2: the OpenSearch plugin, on the architectures it ships for. Builds the
