@@ -21,8 +21,10 @@
 //! are the closed sets Lucene ships, as enums; a user-defined similarity is a
 //! type implementing [`Similarity`], as it is a subclass in Java.
 //!
-//! Not ported: `Explanation`s (`SimScorer.explain`) for similarities other
-//! than BM25, which `crate::explain` covers.
+//! `SimScorer.explain` is `crate::explain`'s: BM25's and `TFIDFSimilarity`'s
+//! breakdowns are ported there; under any other similarity a term or a
+//! phrase explains the scorer's value in `SimScorer.explain`'s default
+//! layout, not that similarity's own breakdown.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -157,6 +159,13 @@ pub trait Similarity: NormSimilarity {
         None
     }
 
+    /// This similarity as a `BM25Similarity` for `field` (a
+    /// `PerFieldSimilarityWrapper` unwrapped to `field`'s), whose `k1` and
+    /// `b` its scorer's explanation reports; `None` when it is not one.
+    fn as_bm25(&self, _field: &str) -> Option<&Bm25Similarity> {
+        None
+    }
+
     /// An owned copy of this similarity, for a caller that must keep it past
     /// the borrow it was handed (an explanation's segment state); `None`
     /// for a similarity that cannot be copied.
@@ -179,6 +188,10 @@ pub trait TfIdfSimilarity: Similarity {
     fn tf(&self, freq: f32) -> f32;
     /// `idf(docFreq, docCount)`.
     fn idf(&self, doc_freq: i64, doc_count: i64) -> f32;
+    /// `TFIDFSimilarity.scorer`'s `normTable`: this similarity's
+    /// `lengthNorm` of each norm byte's length, which its scorer and its
+    /// explanation (`fieldNorm`) read.
+    fn norm_table(&self) -> [f32; 256];
 }
 
 /// `SmallFloat.byte4ToInt((byte) i)` for every norm byte, as a float
@@ -318,6 +331,14 @@ impl Similarity for Bm25Similarity {
     fn is_default_bm25(&self) -> bool {
         *self == Self::default()
     }
+
+    fn as_bm25(&self, _field: &str) -> Option<&Bm25Similarity> {
+        Some(self)
+    }
+
+    fn shared(&self) -> Option<Arc<dyn Similarity>> {
+        Some(Arc::new(*self))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -427,6 +448,9 @@ impl TfIdfSimilarity for ClassicSimilarity {
     fn idf(&self, doc_freq: i64, doc_count: i64) -> f32 {
         Self::idf(doc_freq, doc_count)
     }
+    fn norm_table(&self) -> [f32; 256] {
+        Self::norm_table()
+    }
 }
 
 /// `BooleanSimilarity`: every match scores its query boost.
@@ -456,6 +480,10 @@ impl Similarity for BooleanSimilarity {
         _terms: &[TermStatistics],
     ) -> Arc<dyn SimScorer> {
         Arc::new(ConstantSimScorer(boost))
+    }
+
+    fn shared(&self) -> Option<Arc<dyn Similarity>> {
+        Some(Arc::new(*self))
     }
 }
 
@@ -506,6 +534,10 @@ impl Similarity for RawTfSimilarity {
         _terms: &[TermStatistics],
     ) -> Arc<dyn SimScorer> {
         Arc::new(RawTfScorer(boost))
+    }
+
+    fn shared(&self) -> Option<Arc<dyn Similarity>> {
+        Some(Arc::new(*self))
     }
 }
 
@@ -1231,6 +1263,10 @@ macro_rules! base_similarity {
             fn simple_name(&self) -> &str {
                 $name
             }
+
+            fn shared(&self) -> Option<Arc<dyn Similarity>> {
+                Some(Arc::new(*self))
+            }
         }
     )*};
 }
@@ -1263,6 +1299,10 @@ impl Similarity for AxiomaticSimilarity {
 
     fn simple_name(&self) -> &str {
         self.variant.simple_name()
+    }
+
+    fn shared(&self) -> Option<Arc<dyn Similarity>> {
+        Some(Arc::new(*self))
     }
 }
 
@@ -1311,6 +1351,10 @@ impl Similarity for MultiSimilarity {
                 .map(|s| s.scorer(field, boost, collection, terms))
                 .collect(),
         ))
+    }
+
+    fn shared(&self) -> Option<Arc<dyn Similarity>> {
+        Some(Arc::new(self.clone()))
     }
 }
 
@@ -1371,6 +1415,10 @@ impl Similarity for PerFieldSimilarity {
 
     fn as_tfidf(&self, field: &str) -> Option<&dyn TfIdfSimilarity> {
         self.get(field).as_tfidf(field)
+    }
+
+    fn as_bm25(&self, field: &str) -> Option<&Bm25Similarity> {
+        self.get(field).as_bm25(field)
     }
 
     fn shared(&self) -> Option<Arc<dyn Similarity>> {

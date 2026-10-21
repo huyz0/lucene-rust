@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Test-framework fixtures (M14.h): the Java twins in fixtures/src/testframework/
-# run against Lucene 10.5.0's lucene-test-framework jar (plus the JUnit,
+# run against Lucene 10.5.0's lucene-test-framework jar (with lucene-misc,
+# whose SweetSpotSimilarity GenTestFrameworkSearch explains; plus the JUnit,
 # Hamcrest and randomizedtesting jars it needs on the classpath -- generator
 # only, never shipped; docs/licences.md) and record what Lucene's test
 # framework draws from seeded randoms. The Rust tests in
@@ -60,7 +61,7 @@ done
 JARS="${JARS:-$PWD/fixtures/.jars}"
 # shellcheck source=scripts/lib-lucene-jars.sh
 source "$(dirname "$0")/lib-lucene-jars.sh"
-CP="$(lucene_classpath lucene-core lucene-codecs lucene-test-framework):$(thirdparty_classpath "${TEST_FRAMEWORK_DEPS[@]}")"
+CP="$(lucene_classpath lucene-core lucene-codecs lucene-test-framework lucene-misc):$(thirdparty_classpath "${TEST_FRAMEWORK_DEPS[@]}")"
 
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
 javac -nowarn -proc:none -cp "$CP" -d "$WORK/classes" "$SRC"/*.java

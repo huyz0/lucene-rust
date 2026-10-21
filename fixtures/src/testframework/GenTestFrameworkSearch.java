@@ -15,6 +15,7 @@ import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.Term;
+import org.apache.lucene.misc.SweetSpotSimilarity;
 import org.apache.lucene.search.BooleanClause.Occur;
 import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.BoostQuery;
@@ -711,22 +712,66 @@ public class GenTestFrameworkSearch {
     }
     try (DirectoryReader reader = DirectoryReader.open(dir)) {
       for (Similarity sim : new Similarity[] {new BM25Similarity(), new ClassicSimilarity()}) {
+        explain(reader, sim.getClass().getSimpleName(), sim, explanationQueries());
+      }
+      // Other similarities, by the names the Rust test builds them under:
+      // a term, a boosted term, the phrases, a multi-phrase and a dis-max.
+      List<Object[]> some = new ArrayList<>();
+      for (Object[] nq : explanationQueries()) {
+        if (List.of("t_w1", "boost", "dmq8", "phrase", "phrase_sloppy", "mpq").contains(nq[0])) {
+          some.add(nq);
+        }
+      }
+      // documents 0-2 have 5 terms, inside [3, 5]; document 3 has 7, outside
+      SweetSpotSimilarity sweetSpot = new SweetSpotSimilarity();
+      sweetSpot.setLengthNormFactors(3, 5, 0.5f);
+      explain(reader, "BM25_k1.5_b0.5", new BM25Similarity(1.5f, 0.5f), some);
+      explain(
+          reader,
+          "DFR_In_L_H2",
+          new DFRSimilarity(new BasicModelIn(), new AfterEffectL(), new NormalizationH2()),
+          some);
+      explain(reader, "SweetSpot_3_5", sweetSpot, some);
+      // PhraseWeight.explain's two no-matches, on the documents a
+      // (multi-)phrase misses: "no matching terms" where a term is absent,
+      // "no matching phrase" where its positions do not line up
+      MultiPhraseQuery.Builder w1xx = new MultiPhraseQuery.Builder();
+      w1xx.add(new Term(FIELD, "w1"));
+      w1xx.add(new Term[] {new Term(FIELD, "xx"), new Term(FIELD, "QQ")});
+      List<Object[]> misses = new ArrayList<>();
+      misses.add(new Object[] {"mpq_xx", w1xx.build()});
+      misses.add(new Object[] {"phrase_xx", new PhraseQuery(0, FIELD, "w1", "xx")});
+      for (Similarity sim : new Similarity[] {new BM25Similarity(), new ClassicSimilarity()}) {
         IndexSearcher searcher = new IndexSearcher(reader);
-        // Rust's explain has no query cache: a cached FILTER clause would
-        // explain as CachingWrapperWeight's constant score, not as its weight
         searcher.setQueryCache(null);
         searcher.setSimilarity(sim);
-        for (Object[] nq : explanationQueries()) {
-          Query q = (Query) nq[1];
-          TopDocs td = searcher.search(q, 10);
-          line("exp", sim.getClass().getSimpleName(), nq[0], td.totalHits.value());
-          for (ScoreDoc sd : td.scoreDocs) {
-            line("hit", sd.doc, bits(sd.score));
-            String[] lines = searcher.explain(q, sd.doc).toString().split("\n");
-            line("expl", lines.length);
-            for (String l : lines) line("|", l);
+        for (Object[] nq : misses) {
+          for (int doc = 0; doc < reader.maxDoc(); doc++) {
+            String[] lines = searcher.explain((Query) nq[1], doc).toString().split("\n");
+            line("miss", sim.getClass().getSimpleName(), nq[0], doc, lines[0]);
           }
         }
+      }
+    }
+  }
+
+  /** {@code exp} rows: each query's top docs under {@code sim} and each hit's explanation. */
+  static void explain(DirectoryReader reader, String name, Similarity sim, List<Object[]> queries)
+      throws Exception {
+    IndexSearcher searcher = new IndexSearcher(reader);
+    // Rust's explain has no query cache: a cached FILTER clause would
+    // explain as CachingWrapperWeight's constant score, not as its weight
+    searcher.setQueryCache(null);
+    searcher.setSimilarity(sim);
+    for (Object[] nq : queries) {
+      Query q = (Query) nq[1];
+      TopDocs td = searcher.search(q, 10);
+      line("exp", name, nq[0], td.totalHits.value());
+      for (ScoreDoc sd : td.scoreDocs) {
+        line("hit", sd.doc, bits(sd.score));
+        String[] lines = searcher.explain(q, sd.doc).toString().split("\n");
+        line("expl", lines.length);
+        for (String l : lines) line("|", l);
       }
     }
   }
@@ -817,7 +862,18 @@ public class GenTestFrameworkSearch {
     }
   }
 
+  /**
+   * {@code tests.seed}, pinned: {@code StringHelper.GOOD_FAST_HASH_SEED} (a {@code BytesRef}'s
+   * hash, so a {@code TermQuery}'s) is drawn from it, else from the clock, and a {@code
+   * DisjunctionMaxQuery} explains its disjuncts in its hash set's order. This one orders the {@code
+   * dmq} rows' disjuncts as they were added, as the Rust port explains them.
+   */
+  static final String TESTS_SEED = "E";
+
   public static void main(String[] args) throws Exception {
+    if (System.getProperty("tests.seed") == null) {
+      System.setProperty("tests.seed", TESTS_SEED);
+    }
     Result result = JUnitCore.runClasses(Dump.class);
     for (Failure f : result.getFailures()) {
       System.err.println(f.getTrace());

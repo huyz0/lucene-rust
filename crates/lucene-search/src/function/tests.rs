@@ -1225,9 +1225,14 @@ fn query_strings_and_similarity_accessors() {
     assert!(classic.as_tfidf("f").is_some() && classic.shared().is_some());
     assert_eq!(classic.as_tfidf("f").unwrap().tf(4.0), 2.0);
     let bm25 = Bm25Similarity::default();
-    assert!(bm25.as_tfidf("f").is_none() && bm25.shared().is_none());
+    assert!(bm25.as_tfidf("f").is_none() && bm25.shared().is_some());
+    assert_eq!(
+        bm25.as_bm25("f").map(|s| (s.k1(), s.b())),
+        Some((1.2, 0.75))
+    );
     let per = PerFieldSimilarity::new(Arc::new(bm25)).with_field("t", Arc::new(classic));
     assert!(per.as_tfidf("t").is_some() && per.as_tfidf("f").is_none());
+    assert!(per.as_bm25("f").is_some() && per.as_bm25("t").is_none());
     assert!(per.shared().is_some());
 }
 
