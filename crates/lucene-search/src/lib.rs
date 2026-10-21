@@ -3463,7 +3463,7 @@ pub(crate) fn search_boolean_query_scored_segment_with_similarity<C: ScoringColl
     };
     let mode = exec::Mode::of(collector);
     if let Some(mut bulk) = exec::bulk_boolean(&ctx, query, 1.0, mode)? {
-        exec::score_segment(&mut bulk, mode, seg.live_docs, collector)?;
+        exec::score_segment(&mut bulk, mode, seg.live_docs, collector, ctx.max_doc)?;
     }
     Ok(())
 }
@@ -3568,7 +3568,13 @@ pub fn count_boolean_query_segment(
     }
     let mut count = Count(0);
     if let Some(mut bulk) = exec::bulk_boolean(&ctx, query, 1.0, exec::Mode::NoScores)? {
-        exec::score_segment(&mut bulk, exec::Mode::NoScores, seg.live_docs, &mut count)?;
+        exec::score_segment(
+            &mut bulk,
+            exec::Mode::NoScores,
+            seg.live_docs,
+            &mut count,
+            ctx.max_doc,
+        )?;
     }
     Ok(count.0)
 }
@@ -3783,7 +3789,7 @@ fn search_boolean_query_scored_impl<C: ScoringCollector>(
     };
     let mode = exec::Mode::of(collector);
     if let Some(mut bulk) = exec::bulk_boolean(&ctx, query, 1.0, mode)? {
-        exec::score_segment(&mut bulk, mode, live_docs, collector)?;
+        exec::score_segment(&mut bulk, mode, live_docs, collector, ctx.max_doc)?;
     }
     Ok(())
 }

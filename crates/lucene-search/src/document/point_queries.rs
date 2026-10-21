@@ -84,7 +84,13 @@ fn score_points_leaf(
     };
     let mode = Mode::of(&*collector);
     if let Some(scorer) = build(&ctx, mode)? {
-        exec::score_segment(&mut Bulk::scorer(scorer), mode, leaf.live_docs, collector)?;
+        exec::score_segment(
+            &mut Bulk::scorer(scorer),
+            mode,
+            leaf.live_docs,
+            collector,
+            ctx.max_doc,
+        )?;
     }
     Ok(())
 }

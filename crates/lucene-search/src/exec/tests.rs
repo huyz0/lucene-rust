@@ -402,14 +402,14 @@ fn random_trees_match_brute_force_in_every_mode() {
         // COMPLETE: every match, with its score.
         let mut all = All(Vec::new());
         if let Some(s) = build(&node, Mode::Complete, top_level) {
-            score_segment(&mut Bulk::scorer(s), Mode::Complete, None, &mut all).unwrap();
+            score_segment(&mut Bulk::scorer(s), Mode::Complete, None, &mut all, None).unwrap();
         }
         assert_eq!(all.0, expected(&node, true), "{label}: complete");
 
         // COMPLETE_NO_SCORES: every match.
         let mut none = All(Vec::new());
         if let Some(s) = build(&node, Mode::NoScores, top_level) {
-            score_segment(&mut Bulk::scorer(s), Mode::NoScores, None, &mut none).unwrap();
+            score_segment(&mut Bulk::scorer(s), Mode::NoScores, None, &mut none, None).unwrap();
         }
         assert_eq!(none.0, expected(&node, false), "{label}: no scores");
 
@@ -417,7 +417,7 @@ fn random_trees_match_brute_force_in_every_mode() {
         let k = 1 + rng.below(12) as usize;
         let mut top = TopDocsCollector::with_total_hits_threshold(k, k as u64);
         if let Some(s) = build(&node, Mode::TopScores, top_level) {
-            score_segment(&mut Bulk::scorer(s), Mode::TopScores, None, &mut top).unwrap();
+            score_segment(&mut Bulk::scorer(s), Mode::TopScores, None, &mut top, None).unwrap();
         }
         let want = top_k(expected(&node, true), k);
         assert_eq!(pairs(top.top_docs()), want, "{label}: top {k}");
@@ -479,7 +479,7 @@ fn scorer_disjunctions_match_brute_force() {
         let state = MaxScore::new(&mut legs);
         let mut bulk = Bulk::ScorerDisjunction(legs, filter_scorer, state);
         let mut top = TopDocsCollector::with_total_hits_threshold(k, k as u64);
-        score_segment(&mut bulk, Mode::TopScores, None, &mut top).unwrap();
+        score_segment(&mut bulk, Mode::TopScores, None, &mut top, None).unwrap();
         assert_eq!(
             pairs(top.top_docs()),
             top_k(expected(&node, true), k),
@@ -1313,7 +1313,7 @@ fn a_phrase_without_norms_scores_unnormed() {
         .unwrap()
         .unwrap();
     let mut all = All(Vec::new());
-    score_segment(&mut Bulk::scorer(s), Mode::Complete, None, &mut all).unwrap();
+    score_segment(&mut Bulk::scorer(s), Mode::Complete, None, &mut all, None).unwrap();
     assert!(!all.0.is_empty());
     assert!(all
         .0
@@ -1352,7 +1352,7 @@ fn a_match_all_needs_some_max_doc() {
     let s = super::build::build(&ctx, &known, 1.0, Mode::Complete, true)
         .unwrap()
         .unwrap();
-    score_segment(&mut Bulk::scorer(s), Mode::Complete, None, &mut all).unwrap();
+    score_segment(&mut Bulk::scorer(s), Mode::Complete, None, &mut all, None).unwrap();
     assert_eq!(all.0.len(), 3);
 }
 
@@ -1403,7 +1403,7 @@ fn a_match_all_collects_its_documents_as_ranges() {
             .unwrap()
             .unwrap();
         let mut got = Ranges::default();
-        score_segment(&mut Bulk::scorer(s), mode, live, &mut got).unwrap();
+        score_segment(&mut Bulk::scorer(s), mode, live, &mut got, None).unwrap();
         got
     };
     for (mode, score) in [(Mode::Complete, 2.0), (Mode::NoScores, 0.0)] {
@@ -1433,7 +1433,7 @@ fn a_match_all_collects_its_documents_as_ranges() {
     let s = super::build::build(&ctx, &q, 2.0, Mode::TopScores, true)
         .unwrap()
         .unwrap();
-    score_segment(&mut Bulk::scorer(s), Mode::TopScores, None, &mut top).unwrap();
+    score_segment(&mut Bulk::scorer(s), Mode::TopScores, None, &mut top, None).unwrap();
     assert_eq!(pairs(top.top_docs()), vec![(0, 2.0), (1, 2.0), (2, 2.0)]);
 }
 
@@ -1455,7 +1455,14 @@ fn deleted_documents_are_never_collected() {
         let node = random_node(&mut rng, 2);
         let mut all = All(Vec::new());
         if let Some(s) = build(&node, Mode::Complete, true) {
-            score_segment(&mut Bulk::scorer(s), Mode::Complete, Some(&live), &mut all).unwrap();
+            score_segment(
+                &mut Bulk::scorer(s),
+                Mode::Complete,
+                Some(&live),
+                &mut all,
+                None,
+            )
+            .unwrap();
         }
         let want: Vec<(i32, f32)> = expected(&node, true)
             .into_iter()
@@ -1480,7 +1487,7 @@ fn a_threshold_from_an_earlier_segment_prunes_from_the_first_document() {
         top.collect(10_000 + d, 5.0);
     }
     let s = build(&node, Mode::TopScores, true).unwrap();
-    score_segment(&mut Bulk::scorer(s), Mode::TopScores, None, &mut top).unwrap();
+    score_segment(&mut Bulk::scorer(s), Mode::TopScores, None, &mut top, None).unwrap();
     assert_eq!(
         top.total_hits().value,
         3,
@@ -1726,8 +1733,14 @@ mod fixture {
                 if let Some(mut b) = bulk_boolean(&ctx, &q, 1.0, Mode::NoScores).unwrap() {
                     kinds.insert(b.kind());
                     let mut c = Count(0);
-                    crate::exec::score_segment(&mut b, Mode::NoScores, seg.live_docs, &mut c)
-                        .unwrap();
+                    crate::exec::score_segment(
+                        &mut b,
+                        Mode::NoScores,
+                        seg.live_docs,
+                        &mut c,
+                        ctx.max_doc,
+                    )
+                    .unwrap();
                     total += c.0;
                 }
             }

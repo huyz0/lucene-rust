@@ -540,11 +540,14 @@ impl AssertingBulk {
                 break;
             }
         }
-        if let Some(max_doc) = self.max_doc {
-            if max >= max_doc || next >= max_doc {
-                assert_eq!(next, NO_MORE_DOCS, "a bulk scorer past maxDoc must be done");
-                return Ok(NO_MORE_DOCS);
-            }
+        // A leaf of unknown `maxDoc` is taken as the widest (every real
+        // `maxDoc` is below `NO_MORE_DOCS`): a whole-segment call
+        // (`max == NO_MORE_DOCS`) then ends here as Java's, without the
+        // `randomIntBetween` draw below.
+        let max_doc = self.max_doc.unwrap_or(NO_MORE_DOCS);
+        if max >= max_doc || next >= max_doc {
+            assert_eq!(next, NO_MORE_DOCS, "a bulk scorer past maxDoc must be done");
+            return Ok(NO_MORE_DOCS);
         }
         // `RandomNumbers.randomIntBetween(random, max, next)`.
         Ok(random_int_between(&mut self.random, max, next))
