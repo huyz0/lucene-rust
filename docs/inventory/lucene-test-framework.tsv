@@ -2,37 +2,37 @@
 # Checked by scripts/check-port-inventory.py --module test-framework (see its docstring for the statuses).
 # M14.h batches: h1 util/ suites and generators; h2 store/mockfile; h3 analysis; h4 index infrastructure; h5-h6 format suites; h7 search/geo; h8 stress.
 # class	status	detail
-tests/analysis/BaseTokenStreamFactoryTestCase	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/BaseTokenStreamTestCase	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/CannedBinaryTokenStream	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/CannedTokenStream	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/CollationTestBase	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/CrankyTokenFilter	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/LookaheadTokenFilter	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/MockAnalyzer	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/MockBytesAnalyzer	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/MockCharFilter	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/MockFixedLengthPayloadFilter	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/MockGraphTokenFilter	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/MockHoleInjectingTokenFilter	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/MockLowerCaseFilter	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/MockPayloadAnalyzer	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/MockPayloadFilter	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/MockRandomLookaheadTokenFilter	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/MockReaderWrapper	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/MockSynonymAnalyzer	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/MockSynonymFilter	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/MockTokenFilter	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/MockTokenizer	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/MockUTF16TermAttributeImpl	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/MockVariableLengthPayloadFilter	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/SimplePayloadFilter	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/Token	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/TokenStreamToDot	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/ValidatingTokenFilter	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/VocabularyAssert	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/standard/EmojiTokenizationTestUnicode_12_1	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
-tests/analysis/standard/WordBreakTestUnicode_12_1_0	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/BaseTokenStreamFactoryTestCase	ported	crates/lucene-test-framework/src/analysis/base_token_stream_factory.rs::tokenizer_factory
+tests/analysis/BaseTokenStreamTestCase	partial	crates/lucene-test-framework/src/analysis/base_token_stream.rs::check_random_data -- M14: checkRandomData's RandomIndexWriter indexing (h4; its draws are made, so seeds replay Java's texts) and newAttributeFactory (the port's attributes are a fixed struct); checkResetException's missing-close half has no counterpart (an AnalyzerTokenStream closes on drop)
+tests/analysis/CannedBinaryTokenStream	ported	crates/lucene-test-framework/src/analysis/canned.rs::CannedBinaryTokenStream
+tests/analysis/CannedTokenStream	ported	crates/lucene-test-framework/src/analysis/canned.rs::CannedTokenStream
+tests/analysis/CollationTestBase	not-needed	its subclasses (TestCollationKeyAnalyzer, TestICUCollationKeyAnalyzer) index collation keys and range-query them through a RandomIndexWriter; the ICU crate tests ICUCollationKeyAnalyzer's keys against Java fixtures directly, and the JDK-collator half has no Rust collator to test
+tests/analysis/CrankyTokenFilter	ported	crates/lucene-test-framework/src/analysis/cranky_token_filter.rs::CrankyTokenFilter
+tests/analysis/LookaheadTokenFilter	ported	crates/lucene-test-framework/src/analysis/lookahead.rs::LookaheadTokenFilter
+tests/analysis/MockAnalyzer	ported	crates/lucene-test-framework/src/analysis/mock_analyzer.rs::MockAnalyzer
+tests/analysis/MockBytesAnalyzer	not-needed	a MockTokenizer over MockUTF16TermAttributeImpl, for tests of UTF-16-encoded term bytes; the port's term attribute always yields the term's UTF-8, so no Rust test can ask for another encoding
+tests/analysis/MockCharFilter	ported	crates/lucene-test-framework/src/analysis/mock_char_filter.rs::MockCharFilter
+tests/analysis/MockFixedLengthPayloadFilter	ported	crates/lucene-test-framework/src/analysis/mock_filters.rs::MockFixedLengthPayloadFilter
+tests/analysis/MockGraphTokenFilter	ported	crates/lucene-test-framework/src/analysis/lookahead.rs::MockGraphTokenFilter
+tests/analysis/MockHoleInjectingTokenFilter	ported	crates/lucene-test-framework/src/analysis/mock_filters.rs::MockHoleInjectingTokenFilter
+tests/analysis/MockLowerCaseFilter	ported	crates/lucene-test-framework/src/analysis/mock_filters.rs::MockLowerCaseFilter
+tests/analysis/MockPayloadAnalyzer	ported	crates/lucene-test-framework/src/analysis/mock_analyzer.rs::MockPayloadAnalyzer
+tests/analysis/MockPayloadFilter	ported	crates/lucene-test-framework/src/analysis/mock_filters.rs::MockPayloadFilter
+tests/analysis/MockRandomLookaheadTokenFilter	ported	crates/lucene-test-framework/src/analysis/lookahead.rs::MockRandomLookaheadTokenFilter
+tests/analysis/MockReaderWrapper	ported	crates/lucene-test-framework/src/analysis/mock_reader_wrapper.rs::MockReaderWrapper
+tests/analysis/MockSynonymAnalyzer	ported	crates/lucene-test-framework/src/analysis/mock_analyzer.rs::MockSynonymAnalyzer
+tests/analysis/MockSynonymFilter	ported	crates/lucene-test-framework/src/analysis/mock_synonym.rs::MockSynonymFilter
+tests/analysis/MockTokenFilter	ported	crates/lucene-test-framework/src/analysis/mock_filters.rs::MockTokenFilter
+tests/analysis/MockTokenizer	ported	crates/lucene-test-framework/src/analysis/mock_tokenizer.rs::MockTokenizer
+tests/analysis/MockUTF16TermAttributeImpl	not-needed	a term attribute whose bytes are UTF-16 (MockBytesAnalyzer's); the port's attributes are a fixed struct whose term bytes are always UTF-8, with no attribute factory to swap the implementation in
+tests/analysis/MockVariableLengthPayloadFilter	ported	crates/lucene-test-framework/src/analysis/mock_filters.rs::MockVariableLengthPayloadFilter
+tests/analysis/SimplePayloadFilter	ported	crates/lucene-test-framework/src/analysis/mock_filters.rs::SimplePayloadFilter
+tests/analysis/Token	ported	crates/lucene-test-framework/src/analysis/token.rs::Token
+tests/analysis/TokenStreamToDot	ported	crates/lucene-test-framework/src/analysis/token_stream_to_dot.rs::TokenStreamToDot
+tests/analysis/ValidatingTokenFilter	ported	crates/lucene-test-framework/src/analysis/validating_token_filter.rs::ValidatingTokenFilter
+tests/analysis/VocabularyAssert	partial	crates/lucene-test-framework/src/analysis/vocabulary_assert.rs::assert_vocabulary -- M14: the zip-file overloads (assertVocabulary over an entry of a vocabulary zip), which need a zip reader the test framework does not have
+tests/analysis/standard/EmojiTokenizationTestUnicode_12_1	not-needed	test data, not infrastructure: crates/lucene-analysis/tools/extract_uax29_inputs.py takes its inputs and GenStandardTokenizer records Lucene's tokens for them (crates/lucene-analysis/tests/standard_tokenizer_fixtures.rs)
+tests/analysis/standard/WordBreakTestUnicode_12_1_0	not-needed	test data, not infrastructure: crates/lucene-analysis/tools/extract_uax29_inputs.py takes its inputs and GenStandardTokenizer records Lucene's tokens for them (crates/lucene-analysis/tests/standard_tokenizer_fixtures.rs)
 tests/codecs/asserting/AssertingCodec	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
 tests/codecs/asserting/AssertingDocValuesFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
 tests/codecs/asserting/AssertingKnnVectorsFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
