@@ -496,7 +496,9 @@ mod tests {
     #[test]
     fn temp_output_errors_propagate() {
         let root = TempDir::new("nrt-temp-err");
-        let missing = root.join("missing");
+        // Under a plain file, the directory cannot be created.
+        std::fs::write(root.join("plain_file"), b"").unwrap();
+        let missing = root.join("plain_file").join("missing");
         let dir = NrtCachingDirectory::new(FsDirectory::open(&missing), 1.0, 2.0);
         assert!(dir.create_temp_output("_0", "x").is_err());
     }

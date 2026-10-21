@@ -111,10 +111,9 @@ impl FsIndexOutput {
     /// writing.
     ///
     /// Java's `FSDirectory.createOutput` opens with `CREATE_NEW` and so
-    /// refuses an existing name; this port has always truncated, and every
-    /// writer here only ever creates fresh names, so the difference is never
-    /// reached. [`FsIndexOutput::create_new`] is the `CREATE_NEW` form, which
-    /// `createTempOutput` depends on.
+    /// refuses an existing name: the directories create through
+    /// [`FsIndexOutput::create_new`]. This truncating form is for a caller
+    /// outside a directory that means to overwrite.
     pub fn create(root: &Path, name: &str) -> Result<Self> {
         let path = root.join(name);
         let file = File::create(&path)?;
@@ -305,14 +304,6 @@ impl IndexOutput for FsIndexOutput {
     }
 }
 
-/// Port of `Directory.createOutput`, shared by [`crate::directory::
-/// FsDirectory`] and [`crate::directory::MmapDirectory`] (both back onto a
-/// plain directory of real files; only the *read* path differs between
-/// them).
-pub(crate) fn create_output(root: &Path, name: &str) -> Result<FsIndexOutput> {
-    FsIndexOutput::create(root, name)
-}
-
 /// Port of `Directory.sync(Collection<String>)`: fsyncs every named file's
 /// contents (Lucene's actual durability contract — a new segment's files
 /// must be fsynced before a commit file references them), then fsyncs the
@@ -362,7 +353,7 @@ pub(crate) fn sync_meta_data(root: &Path) -> Result<()> {
 /// fresh [`FsIndexOutput`] and closes it, returning the checksum.
 #[cfg(test)]
 pub(crate) fn write_all_bytes(root: &Path, name: &str, bytes: &[u8]) -> Result<u64> {
-    let mut out = create_output(root, name)?;
+    let mut out = FsIndexOutput::create(root, name)?;
     out.write_bytes(bytes);
     out.close()
 }
