@@ -23,6 +23,18 @@ publish = false
 lucene-util = { path = "../lucene-util", features = ["test-support"] }
 lucene-codecs = { path = "../lucene-codecs" }
 lucene-search = { path = "../lucene-search" }
+# The mock analysis chain (`analysis`) implements lucene-analysis's traits.
+lucene-analysis = { path = "../lucene-analysis" }
 # Inflates the gzip members of Lucene's `europarl.lines.txt.gz` when
 # `TESTS_LINEDOCSFILE` names it (`util::line_file_docs`).
 miniz_oxide.workspace = true
+
+[dev-dependencies]
+# `tests/check_random_data_all_analyzers.rs` runs `check_random_data` over
+# every Analyzer in the workspace, the M12 modules' included.
+lucene-analysis-icu = { path = "../lucene-analysis-icu" }
+lucene-analysis-kuromoji = { path = "../lucene-analysis-kuromoji" }
+lucene-analysis-morfologik = { path = "../lucene-analysis-morfologik" }
+lucene-analysis-nori = { path = "../lucene-analysis-nori" }
+lucene-analysis-smartcn = { path = "../lucene-analysis-smartcn" }
+lucene-analysis-stempel = { path = "../lucene-analysis-stempel" }

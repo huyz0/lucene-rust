@@ -16,6 +16,9 @@
 //! test's seed from `TESTS_SEED` and the test's name, and prints the line
 //! that reproduces a failure.
 //!
-//! Modules follow the Java packages: [`util`] is `org.apache.lucene.tests.util`.
+//! Modules follow the Java packages: [`util`] is `org.apache.lucene.tests.util`,
+//! [`analysis`] `org.apache.lucene.tests.analysis` (the mock analysis chain
+//! and `BaseTokenStreamTestCase`).
 
+pub mod analysis;
 pub mod util;
