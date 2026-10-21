@@ -259,6 +259,8 @@ pub(crate) fn build<'a>(
         ExtendedQuery::FunctionScore(q) => {
             super::function::function_score(ctx, q, boost, mode, top_level)
         }
+        #[cfg(any(test, feature = "test-support"))]
+        ExtendedQuery::Test(q) => super::test_queries::build(ctx, q, boost, mode),
         // `CommonTermsQuery` has no weight of its own: `rewrite(searcher)`
         // turns it into the boolean of its rare and frequent terms first.
         ExtendedQuery::CommonTerms(_) => Err(crate::Error::IllegalState(

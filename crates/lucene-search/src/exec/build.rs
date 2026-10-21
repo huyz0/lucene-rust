@@ -87,6 +87,22 @@ pub(crate) fn build<'a>(
     mode: Mode,
     top_level: bool,
 ) -> Result<Option<BoxScorer<'a>>> {
+    let scorer = build_unchecked(ctx, clause, boost, mode, top_level)?;
+    // `AssertingWeight`: under the test framework's asserting searcher, every
+    // scorer the tree is built from checks its iteration contract.
+    #[cfg(any(test, feature = "test-support"))]
+    let scorer = scorer.map(|s| super::asserting::wrap(s, mode, top_level));
+    Ok(scorer)
+}
+
+/// [`build`] without the asserting wrapper.
+fn build_unchecked<'a>(
+    ctx: &LeafContext<'a>,
+    clause: &Clause,
+    boost: f32,
+    mode: Mode,
+    top_level: bool,
+) -> Result<Option<BoxScorer<'a>>> {
     match term_leg(ctx, clause, boost, mode)? {
         TermForm::Leg(leg) => {
             return Ok(Some(Box::new(TermScorer::new(

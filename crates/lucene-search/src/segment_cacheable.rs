@@ -56,6 +56,9 @@ pub fn is_cacheable(clause: &Clause, reader: Option<&SegmentReader>) -> bool {
         // (`FilterWeight`); `ParentChildrenBlockJoinQuery` is never cacheable.
         Clause::Extended(e) => match e.as_ref() {
             crate::extended_query::ExtendedQuery::ParentChildrenBlockJoin(_) => false,
+            // A test query's scorer is what the test checks.
+            #[cfg(any(test, feature = "test-support"))]
+            crate::extended_query::ExtendedQuery::Test(_) => false,
             // `GlobalOrdinals*Query.W.isCacheable`: never.
             crate::extended_query::ExtendedQuery::GlobalOrdinals(_)
             | crate::extended_query::ExtendedQuery::GlobalOrdinalsWithScore(_) => false,

@@ -1089,6 +1089,9 @@ pub(crate) fn leaf_matches_in<L: MatchesLeaf + ?Sized>(
             crate::extended_query::ExtendedQuery::ToChildBlockJoin(q) => {
                 leaf_matches_in(seg, &q.parent, doc)
             }
+            // A test query's `FilterWeight`: the wrapped query's matches.
+            #[cfg(any(test, feature = "test-support"))]
+            crate::extended_query::ExtendedQuery::Test(q) => leaf_matches_in(seg, q.query(), doc),
             // `ParentsChildrenBlockJoinWeight.matches`: the parent's and the
             // child's matches of the document, combined.
             crate::extended_query::ExtendedQuery::ParentsChildrenBlockJoin(q) => {

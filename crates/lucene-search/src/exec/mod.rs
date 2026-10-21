@@ -34,6 +34,8 @@
 //! weights the way `createWeight(searcher, scoreMode, boost)` passes them down,
 //! so a boosted term scores `(boost * idf)`-weighted, not `boost * score`.
 
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod asserting;
 pub(crate) mod build;
 mod bulk;
 pub(crate) mod cache;
@@ -53,6 +55,8 @@ mod req;
 pub(crate) mod span;
 pub(crate) mod spans;
 mod term_dismax;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod test_queries;
 mod wand;
 
 pub(crate) use build::LeafContext;
