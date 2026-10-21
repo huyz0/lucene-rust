@@ -221,6 +221,8 @@ fn explanation_query(name: &str) -> Clause {
         "csq" => csq(t("w1")),
         "match_all" => match_all(),
         "mpq" => mpq(0, &[&["w1"], &["w2", "w3"]]),
+        "mpq_xx" => mpq(0, &[&["w1"], &["xx", "QQ"]]),
+        "phrase_xx" => phrase(0, &["w1", "xx"]),
         "synonym" => synonym(&["w2", "w3"]),
         other => panic!("no explanation query {other}"),
     }
@@ -346,6 +348,31 @@ fn explanations_are_javas() {
         );
     }
     assert_eq!(g.len(), w.len());
+}
+
+/// `PhraseWeight.explain`'s two no-matches on the documents a phrase and a
+/// multi-phrase miss: "no matching terms" where a term is absent, "no
+/// matching phrase" where the positions do not line up.
+#[test]
+fn phrase_misses_explain_as_javas() {
+    let mut n = 0;
+    for l in lines("miss") {
+        let (sim_name, q_name, doc) = (l[0], l[1], l[2].parse::<i32>().expect("doc"));
+        let want = l[3..].join(" ");
+        let mut base = BaseExplanation::new(&mut JavaRandom::new(0));
+        if let Some(sim) = explanation_similarity(sim_name) {
+            base = base.with_similarity(sim);
+        }
+        let q = top_level(explanation_query(q_name));
+        let got = base.with_searcher(|s| s.explain(&q, doc).expect("explain").to_string());
+        assert_eq!(
+            got.lines().next().expect("a line"),
+            want,
+            "{sim_name} {q_name} doc {doc}"
+        );
+        n += 1;
+    }
+    assert_eq!(n, 16);
 }
 
 /// `SearchEquivalenceTestBase`'s corpus: the same stop letter, documents

@@ -522,20 +522,50 @@ fn searched_rewritten_and_explained() {
     assert_eq!(e.value, hit.score, "{e}");
     assert!(e.description.ends_with("[ClassicSimilarity], result of:"));
 
-    // Its scorer skipping the document, or absent from the segment (no
-    // position's term indexed), is `PhraseWeight.explain`'s no match.
+    // `PhraseWeight.explain`'s two no-matches, on documents chosen for
+    // them: one lacking `apple` (its approximation skips it, "no matching
+    // terms") and one holding `apple` and `bank` where no `apple bank`
+    // lines up within the slop (approximation lands, positions do not
+    // match, "no matching phrase").
     let max_doc: i32 = segments.iter().map(|s| s.max_doc.unwrap()).sum();
-    let hits = searcher
-        .search(&multi, usize::try_from(max_doc).unwrap())
-        .unwrap();
-    let miss = (0..max_doc)
-        .find(|d| hits.score_docs.iter().all(|h| h.doc != *d))
-        .expect("a document the multi-phrase misses");
-    let e = searcher.explain(&multi, miss).unwrap();
-    assert!(
-        !e.matched && e.to_string().contains("no matching terms"),
-        "{e}"
-    );
+    let all = usize::try_from(max_doc).unwrap();
+    let docs_of = |q: &BooleanQuery| -> Vec<i32> {
+        let mut d: Vec<i32> = searcher
+            .search(q, all)
+            .unwrap()
+            .score_docs
+            .iter()
+            .map(|h| h.doc)
+            .collect();
+        d.sort_unstable();
+        d
+    };
+    let term = |t: &str| Clause::Term(crate::query::TermQuery::new("body", t));
+    let with_apple = docs_of(&BooleanQuery {
+        must: vec![term("apple")],
+        ..Default::default()
+    });
+    let with_both = docs_of(&BooleanQuery {
+        must: vec![term("apple"), term("bank")],
+        ..Default::default()
+    });
+    let phrase_hits = docs_of(&multi);
+    let lacking = (0..max_doc)
+        .find(|d| with_apple.binary_search(d).is_err())
+        .expect("a document without apple");
+    let e = searcher.explain(&multi, lacking).unwrap();
+    let text = e.to_string();
+    assert!(!e.matched && text.contains("no matching terms"), "{e}");
+    assert!(!text.contains("no matching phrase"), "{e}");
+    let misaligned = with_both
+        .iter()
+        .copied()
+        .find(|d| phrase_hits.binary_search(d).is_err())
+        .expect("a document with apple and bank not lined up");
+    let e = searcher.explain(&multi, misaligned).unwrap();
+    let text = e.to_string();
+    assert!(!e.matched && text.contains("no matching phrase"), "{e}");
+    assert!(!text.contains("no matching terms"), "{e}");
     let absent = BooleanQuery {
         must: vec![Clause::MultiPhrase(crate::query::MultiPhraseQuery::new(
             "body",

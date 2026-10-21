@@ -689,6 +689,30 @@ fn phrase_approximation(
     }
 }
 
+/// Whether `MultiPhraseQuery`'s approximation (every position's
+/// `UnionPostingsEnum`) is on `doc`: `PhraseWeight.explain`'s test between
+/// its two no-matches, "no matching terms" (not on it) and "no matching
+/// phrase" (on it, positions not lining up). [`multi_phrase`]'s scorer
+/// visits only the documents that match, so it cannot tell them apart.
+pub(crate) fn multi_phrase_approximation_on(
+    ctx: &LeafContext<'_>,
+    q: &MultiPhraseQuery,
+    doc: i32,
+) -> Result<bool> {
+    let Some(pos_in) = ctx.pos_in else {
+        return Err(crate::Error::MissingPosInput);
+    };
+    let mut sources = Vec::with_capacity(q.term_arrays.len());
+    for alts in &q.term_arrays {
+        let mut slot = Vec::with_capacity(alts.len());
+        for t in alts {
+            slot.push(super::span::LeafPositions::open(ctx, pos_in, &q.field, t)?);
+        }
+        sources.push(slot);
+    }
+    Ok(phrase_approximation(&mut sources, doc)? == doc)
+}
+
 /// `MultiPhraseQuery`'s weight: one position rewrites to a `BooleanQuery` of
 /// `SHOULD` terms; otherwise `PhraseWeight` over `UnionPostingsEnum`s, the
 /// similarity's scorer built from every present term of every position
