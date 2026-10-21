@@ -178,7 +178,7 @@ tests/store/SlowClosingMockIndexInputWrapper	ported	crates/lucene-test-framework
 tests/store/SlowOpeningMockIndexInputWrapper	ported	crates/lucene-test-framework/src/store/mock_directory_wrapper.rs::set_use_slow_open_closers
 tests/util/AbstractBeforeAfterRule	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
 tests/util/BaseBitSetTestCase	ported	crates/lucene-test-framework/src/util/base_bit_set.rs::BaseBitSetTestCase
-tests/util/BaseDocIdSetTestCase	partial	crates/lucene-test-framework/src/util/base_doc_id_set.rs::BaseDocIdSetTestCase -- M14: testIntoBitSet, testIntoBitSetBoundChecks and testRamBytesUsed (the Rust DocIdSet has no intoBitSet or ramBytesUsed)
+tests/util/BaseDocIdSetTestCase	partial	crates/lucene-test-framework/src/util/base_doc_id_set.rs::BaseDocIdSetTestCase -- M14: intoBitSet/ramBytesUsed have no Rust counterpart on DocIdSet (testIntoBitSet, testIntoBitSetBoundChecks, testRamBytesUsed)
 tests/util/CloseableDirectory	todo:M14	h2: closes a MockDirectoryWrapper at suite end, checking for leaks
 tests/util/English	ported	crates/lucene-test-framework/src/util/english.rs::long_to_english
 tests/util/FailOnNonBulkMergesInfoStream	todo:M14	h4: InfoStream failing on a non-bulk stored-fields merge
