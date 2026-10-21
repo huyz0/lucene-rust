@@ -21,7 +21,11 @@ INDEX_ARG=""
 # Repetitions of the whole A/B pair. Three is the minimum that gives a median
 # and a spread; the spread is what decides whether a difference is reportable.
 REPS=3
-WARMUP=1500
+# Empty until --warmup-ms or the bench's own BENCH_WARMUP sets it; 1500 else.
+WARMUP=""
+# Set by a bench below, never taken from the environment.
+BENCH_WARMUP=""
+CASES=""
 MEASURE=2000
 JARS="$PWD/fixtures/.jars"
 # Same pinning rationale as bench-compare.sh: this is a hybrid P/E-core part,
@@ -136,7 +140,14 @@ case "$BENCH" in
     MAIN=HighlightMicro
     SRC=benchmarks/micro/java/HighlightMicro.java
     EXTRA_SRC="benchmarks/micro/java/SweepMicro.java"
-    JAR_MODULES="lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-memory lucene-highlighter" ;;
+    JAR_MODULES="lucene-core lucene-analysis-common lucene-queries lucene-queryparser lucene-memory lucene-highlighter"
+    # One process per case: in one JVM, fvh and uh_tv inherited the JIT's
+    # profile of the cases run before them (the term-vector and stored-field
+    # reads they share) and their Java times wandered 1.3-2.9x across reps.
+    CASES="uh_postings uh_analysis uh_tv uh_phrases fvh"
+    # Lucene's fvh path was still compiling 1.5 s in: 80-90 us a unit after
+    # that warmup, 71-74 us after 4 s.
+    BENCH_WARMUP=4000 ;;
   # M13 T13.3c: AnalyzingSuggester and FuzzySuggester, lookups and builds.
   analyzing)
     MAIN=AnalyzingSuggestMicro
@@ -475,6 +486,8 @@ case "$BENCH" in
   *) echo "bench-micro: no Java counterpart for $BENCH" >&2; exit 2 ;;
 esac
 
+WARMUP="${WARMUP:-${BENCH_WARMUP:-1500}}"
+
 # shellcheck source=scripts/lib-lucene-jars.sh
 source "$(dirname "$0")/lib-lucene-jars.sh"
 # shellcheck disable=SC2086  # JAR_MODULES is a deliberate word list
@@ -540,16 +553,24 @@ fi
 # other. A run takes minutes and this machine drifts over that: whatever the
 # drift is, alternating makes it fall on both sides equally instead of biasing
 # whichever went second.
+#
+# A bench that sets CASES runs each of those cases in a process of its own
+# (`MICRO_CASE` / `-DmicroCase`), still alternating the engines, so no case is
+# measured in a JVM the cases before it have JIT-compiled for their own paths.
 for rep in $(seq 1 "$REPS"); do
-  echo "bench-micro: rep $rep/$REPS rust ($BENCH)" >&2
-  MICRO_WARMUP_MS="$WARMUP" MICRO_MEASURE_MS="$MEASURE" \
-    "${PINCMD[@]}" "$RUST_TARGET_DIR/release/$RUST_BIN" "${RUST_ARGS[@]}" \
-    > "$OUT/rust.$rep.tsv"
+  : > "$OUT/rust.$rep.tsv"
+  : > "$OUT/java.$rep.tsv"
+  for case in ${CASES:-""}; do
+    echo "bench-micro: rep $rep/$REPS rust ($BENCH${case:+ $case})" >&2
+    env ${case:+MICRO_CASE="$case"} MICRO_WARMUP_MS="$WARMUP" MICRO_MEASURE_MS="$MEASURE" \
+      "${PINCMD[@]}" "$RUST_TARGET_DIR/release/$RUST_BIN" "${RUST_ARGS[@]}" \
+      >> "$OUT/rust.$rep.tsv"
 
-  echo "bench-micro: rep $rep/$REPS java ($BENCH)" >&2
-  "${PINCMD[@]}" java --add-modules jdk.incubator.vector \
-    -DwarmupMs="$WARMUP" -DmeasureMs="$MEASURE" \
-    -cp "$CP:$OUT/classes" "$MAIN" ${JAVA_ARGS[@]+"${JAVA_ARGS[@]}"} ${NEEDS_INDEX:+"$INDEX"} > "$OUT/java.$rep.tsv"
+    echo "bench-micro: rep $rep/$REPS java ($BENCH${case:+ $case})" >&2
+    "${PINCMD[@]}" java --add-modules jdk.incubator.vector \
+      -DwarmupMs="$WARMUP" -DmeasureMs="$MEASURE" ${case:+"-DmicroCase=$case"} \
+      -cp "$CP:$OUT/classes" "$MAIN" ${JAVA_ARGS[@]+"${JAVA_ARGS[@]}"} ${NEEDS_INDEX:+"$INDEX"} >> "$OUT/java.$rep.tsv"
+  done
 done
 
 python3 scripts/bench-micro-report.py "$OUT" "$REPS"

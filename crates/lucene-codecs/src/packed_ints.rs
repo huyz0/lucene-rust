@@ -9,8 +9,8 @@
 //!
 //! This is the "headerless flat array" case (a fixed `bits_per_value` for
 //! every value, no min-value, no block splitting) — used directly for
-//! term vectors' distinct-field-numbers array, and as the per-block body
-//! decoder inside [`crate::block_packed`].
+//! term vectors' distinct-field-numbers array, and as the layout of the
+//! per-block body [`crate::block_packed`] unpacks.
 
 use lucene_store::Result;
 

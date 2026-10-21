@@ -97,15 +97,21 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
   (`docs/inventory/lucene-queryparser.tsv`).
 - **T13.2** — Highlighting, including term vectors in `DirectoryReader`.
   **Ported and benchmarked** (`scripts/bench-micro.sh --bench highlight`, pair `HighlightMicro`
-  vs Lucene 10.5.0; ratio > 1 is Rust faster): `uh_postings` 2.43x, `uh_analysis` 1.83x,
-  `uh_tv` 1.24x, `uh_phrases` (no weight matches) 1.22x, `fvh` 0.51x (noise 1.70x). Stage 3:
+  vs Lucene 10.5.0; ratio > 1 is Rust faster; each case in its own process, noise floor
+  1.04x): `uh_postings` 1.52x, `uh_analysis` 1.66x, `uh_tv` 1.38x, `uh_phrases` (no weight
+  matches) 1.19x, `fvh` 1.22x. `fvh` read 0.51-1.23x with a 1.7-2.9x noise floor while every
+  case shared one JVM: Lucene's term-vector reads arrived JIT-compiled for the cases before it,
+  and still compiling 1.5 s in (its warmup is now 4 s). Measured cleanly it was 0.47x: the
+  Rust side decoded every field of the document's term vector and unpacked block-packed ints
+  one `packed_ints::get` at a time (now one field, one pass per block), and deduplicated the
+  1,024 terms of `F:t*` by linear search (now hashed, as Java's `LinkedHashSet`). Stage 3:
   the `MemoryIndex` strategies read the one-document index in heap, as Lucene does -- a
   `LeafReader` and `Weight.matches` over its arrays (`memory/leaf.rs`; the codec segment is
   built only for scoring, spans and intervals) -- a term vector goes straight into it
   (`memory/vector.rs`, one field decoded per document through a `ChunkCursor`), and each
   strategy keeps its rewritten query and automata, as Java builds them once. From 0.31x
   (`uh_analysis`, `uh_tv`) and 0.36x (`uh_phrases`). `memory_index` and `monitor` re-measured
-  with it: build 2.71x, search 6.35x/7.52x, `mon_match` 3.50x. The classic `Highlighter` (`GenHighlight`), the
+  with it: build 2.71x, search 6.35x/7.52x, `mon_match` 3.41x. The classic `Highlighter` (`GenHighlight`), the
   `matchhighlight` package (`GenMatchHighlight`, with the JDK's word and
   sentence breaks fuzzed against `BreakIterator`), the `UnifiedHighlighter`
   (`GenUnifiedHighlight`: every offset source, passage and break option;
