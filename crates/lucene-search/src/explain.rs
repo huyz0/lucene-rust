@@ -3816,7 +3816,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(
             err.to_string(),
-            "field \"body\" was indexed without position data; cannot run PhraseQuery              (phrase=body:\"quick fox\")"
+            "field \"body\" was indexed without position data; cannot run PhraseQuery (phrase=body:\"quick fox\")"
         );
     }
 
