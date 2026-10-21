@@ -666,6 +666,16 @@ public class GenTestFrameworkSearch {
           "bq_dup_nested",
           bq(0, Occur.SHOULD, dup, Occur.SHOULD, new TermQuery(new Term("NEVER", "MATCH")))
         });
+    // TestSimpleExplanations.testDMQ8
+    qs.add(
+        new Object[] {
+          "dmq8",
+          new DisjunctionMaxQuery(
+              List.of(
+                  bq(0, Occur.SHOULD, t("yy"), Occur.SHOULD, new BoostQuery(t("w5"), 100)),
+                  new BoostQuery(t("xx"), 100000)),
+              0.5f)
+        });
     qs.add(new Object[] {"boost", new BoostQuery(t("w2"), 1000)});
     qs.add(new Object[] {"phrase", new PhraseQuery(0, FIELD, "w1", "w2")});
     qs.add(new Object[] {"phrase_sloppy", new PhraseQuery(2, FIELD, "w1", "w3")});

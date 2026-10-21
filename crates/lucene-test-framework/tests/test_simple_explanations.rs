@@ -32,6 +32,10 @@ qtests! {
     dmq5: dmq(vec![bq(vec![(S, t("yy")), (N, t("QQ"))]), t("xx")], 0.5) => [2, 3];
     dmq6: dmq(vec![bq(vec![(N, t("yy")), (S, t("w3"))]), t("xx")], 0.5) => [0, 1, 2, 3];
     dmq7: dmq(vec![bq(vec![(N, t("yy")), (S, t("w3"))]), t("w2")], 0.5) => [0, 1, 2, 3];
+    dmq8: dmq(
+        vec![bq(vec![(S, t("yy")), (S, boost(t("w5"), 100.0))]), boost(t("xx"), 100_000.0)],
+        0.5
+    ) => [0, 2, 3];
     dmq9: dmq(
         vec![bq(vec![(S, t("yy")), (S, boost(t("w5"), 100.0))]), boost(t("xx"), 0.0)],
         0.5

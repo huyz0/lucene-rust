@@ -1582,16 +1582,7 @@ fn explain_dismax(
         return Ok(Explanation::no_match("No matching clause").with_details(subs_on_no_match));
     }
 
-    let mut max_score = f32::NEG_INFINITY;
-    let mut sum_score = 0.0f32;
-    for e in &subs_on_match {
-        sum_score += e.value;
-        if e.value > max_score {
-            max_score = e.value;
-        }
-    }
-    let other_sum = sum_score - max_score;
-    let value = max_score + query.tie_breaker * other_sum;
+    let value = dismax_value(subs_on_match.iter().map(|e| e.value), query.tie_breaker);
 
     // `DisjunctionMaxWeight.explain`'s exact description switch.
     let desc = if query.tie_breaker == 0.0 {
@@ -1603,6 +1594,26 @@ fn explain_dismax(
         )
     };
     Ok(Explanation::match_(value, desc).with_details(subs_on_match))
+}
+
+/// `DisjunctionMaxWeight.explain`'s arithmetic, in doubles as Java's
+/// (`double max = 0, otherSum = 0`; `(float) (max + otherSum *
+/// tieBreakerMultiplier)`), which is `DisjunctionMaxScorer.score`'s: in
+/// floats, `28344.309 + 0.5 * 0.2834431` rounds one ulp below the score.
+fn dismax_value(scores: impl Iterator<Item = f32>, tie_breaker: f32) -> f32 {
+    let mut max = 0.0f64;
+    let mut other_sum = 0.0f64;
+    for score in scores.map(f64::from) {
+        if score >= max {
+            other_sum += max;
+            max = score;
+        } else {
+            other_sum += score;
+        }
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    let value = (max + other_sum * f64::from(tie_breaker)) as f32;
+    value
 }
 
 /// [`Clause::ConstantScore`]'s explanation: mirrors real
@@ -3975,5 +3986,19 @@ mod tests {
                  1.0 = freq, occurrences of term within document\n"
             )
         );
+    }
+
+    #[test]
+    fn dismax_explains_its_value_in_doubles_as_java() {
+        // `TestSimpleExplanations.testDMQ8`'s doc 3: Java's explain and
+        // scorer both give 28344.451
+        let v = super::dismax_value([0.283_443_1f32, 28_344.309].into_iter(), 0.5);
+        assert_eq!(v, 28_344.451f32);
+        // the float arithmetic explain had (`max + tie * (sum - max)`) is
+        // one ulp below
+        let (lo, hi) = (0.283_443_1f32, 28_344.309f32);
+        assert_eq!(hi + 0.5 * ((lo + hi) - hi), 28_344.45f32);
+        // Java's `score >= max` from 0: a negative score is an "other"
+        assert_eq!(super::dismax_value([-2.0f32, -1.0].into_iter(), 1.0), -3.0);
     }
 }

@@ -42,6 +42,13 @@ fn explanation_query(name: &str) -> Clause {
             (S, explanation_query("bq_dup")),
             (S, Clause::Term(TermQuery::new("NEVER", "MATCH"))),
         ]),
+        "dmq8" => dmq(
+            vec![
+                bq(vec![(S, t("yy")), (S, boost(t("w5"), 100.0))]),
+                boost(t("xx"), 100_000.0),
+            ],
+            0.5,
+        ),
         "boost" => boost(t("w2"), 1000.0),
         "phrase" => phrase(0, &["w1", "w2"]),
         "phrase_sloppy" => phrase(2, &["w1", "w3"]),
@@ -62,18 +69,19 @@ enum Compared {
     /// The top line's value: the ledger's "multi-term, span flat" and
     /// "other boosts are own node" (a boost under a non-BM25 similarity).
     Top,
-    /// The hit lines only.
+    /// The hit lines only: under a non-BM25 similarity a boost's own node
+    /// rounds `dmq8`'s sub-values, so their sum can land one ulp from the
+    /// score (Classic: 57104.13 for Java's 57104.125, the score bits equal).
     Hits,
 }
 
 fn compared_part(sim_name: &str, q_name: &str) -> Compared {
     let bm25 = sim_name == "BM25Similarity";
     match q_name {
+        "dmq8" if !bm25 => Compared::Hits,
         // Rust explains a phrase's and a multi-phrase's value with BM25,
         // whatever the similarity
         "phrase" | "phrase_sloppy" | "mpq" if !bm25 => Compared::Hits,
-        // Rust explains a dis-max value in floats, Java in doubles
-        "dmq" => Compared::Hits,
         "mpq" | "synonym" => Compared::Top,
         "boost" | "bq_dup" | "bq_dup_nested" if !bm25 => Compared::Top,
         _ => Compared::All,
