@@ -45,7 +45,7 @@ RUN mkdir -p "$LUCENE_JARS" && cd "$LUCENE_JARS" \
                 lucene-analysis-icu lucene-analysis-kuromoji lucene-analysis-nori \
                 lucene-analysis-smartcn lucene-analysis-stempel \
                 lucene-analysis-morfologik lucene-analysis-phonetic \
-                lucene-analysis-opennlp lucene-demo lucene-luke lucene-benchmark; do \
+                lucene-analysis-opennlp lucene-demo lucene-luke lucene-benchmark lucene-test-framework; do \
          curl -fsSL -O "$base/$m/$LUCENE_VERSION/$m-$LUCENE_VERSION.jar" || \
            echo "note: $m not published for $LUCENE_VERSION, skipping"; \
        done \
@@ -62,7 +62,10 @@ RUN mkdir -p "$LUCENE_JARS" && cd "$LUCENE_JARS" \
     && curl -fsSL -O https://repo1.maven.org/maven2/org/slf4j/slf4j-api/2.0.16/slf4j-api-2.0.16.jar \
     && curl -fsSL -O https://repo1.maven.org/maven2/org/antlr/antlr4-runtime/4.13.2/antlr4-runtime-4.13.2.jar \
     && curl -fsSL -O https://repo1.maven.org/maven2/org/ow2/asm/asm/9.6/asm-9.6.jar \
-    && curl -fsSL -O https://repo1.maven.org/maven2/org/ow2/asm/asm-commons/9.6/asm-commons-9.6.jar
+    && curl -fsSL -O https://repo1.maven.org/maven2/org/ow2/asm/asm-commons/9.6/asm-commons-9.6.jar \
+    && curl -fsSL -O https://repo1.maven.org/maven2/junit/junit/4.13.1/junit-4.13.1.jar \
+    && curl -fsSL -O https://repo1.maven.org/maven2/org/hamcrest/hamcrest/2.2/hamcrest-2.2.jar \
+    && curl -fsSL -O https://repo1.maven.org/maven2/com/carrotsearch/randomizedtesting/randomizedtesting-runner/2.8.1/randomizedtesting-runner-2.8.1.jar
 
 # The gate is not just `cargo test`: it includes an aarch64 check-only clippy
 # pass (c_char signedness differs by target, so a class of FFI defect is

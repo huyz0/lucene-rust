@@ -21,6 +21,7 @@ members = [
     "crates/lucene-core",
     "crates/lucene-ffi",
     "crates/lucene-tools",
+    "crates/lucene-test-framework",
 ]
 
 [workspace.package]

@@ -75,6 +75,13 @@ OPENNLP_DEPS=(org.apache.opennlp:opennlp-tools:2.5.3 org.slf4j:slf4j-api:2.0.16)
 # halves as a parser and an evaluator.
 EXPRESSIONS_DEPS=(org.antlr:antlr4-runtime:4.13.2 org.ow2.asm:asm:9.6 org.ow2.asm:asm-commons:9.6)
 
+# lucene-test-framework 10.5.0's pom names JUnit 4.13.1 (EPL-1.0), Hamcrest 2.2
+# (BSD-3-Clause) and randomizedtesting-runner 2.8.1 (Apache-2.0). The M14.h
+# Java twins (fixtures/src/testframework/) compile against them; nothing
+# ported reads them (docs/licences.md: generator-only).
+TEST_FRAMEWORK_DEPS=(junit:junit:4.13.1 org.hamcrest:hamcrest:2.2
+  com.carrotsearch.randomizedtesting:randomizedtesting-runner:2.8.1)
+
 thirdparty_resolve_jar() {
   local coord="$1" group artifact version jar found=""
   IFS=: read -r group artifact version <<< "$coord"

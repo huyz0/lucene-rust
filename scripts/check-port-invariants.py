@@ -984,6 +984,50 @@ def rule_literal_space_run(files, problems, stats):
             )
 
 
+# lucene-test-framework (M14.h) is a dev-dependency only: a normal or build
+# edge would put the test framework (and the `test-support` items it turns
+# on) into the library `lucene-ffi` ships. Each dependency key in the root and
+# `crates/*/Cargo.toml` manifests is read under the section it sits in.
+
+TEST_FRAMEWORK_KEY = re.compile(r"^\s*lucene[-_]test[-_]framework\s*(?:=|\.)")
+TEST_FRAMEWORK_TABLE = re.compile(
+    r"^\s*\[(?:.*\.)?(dependencies|dev-dependencies|build-dependencies)\.lucene[-_]test[-_]framework\]"
+)
+MANIFEST_SECTION = re.compile(r"^\s*\[([^\]]+)\]")
+
+
+def rule_test_framework_dev_only(files, problems, stats):
+    manifests = [os.path.join(ROOT, "Cargo.toml")] + sorted(
+        os.path.join(CRATES, c, "Cargo.toml")
+        for c in os.listdir(CRATES)
+        if os.path.isfile(os.path.join(CRATES, c, "Cargo.toml"))
+    )
+    for path in manifests:
+        rel = os.path.relpath(path, ROOT).replace(os.sep, "/")
+        section = ""
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().split("\n")
+        for k, line in enumerate(lines):
+            table = TEST_FRAMEWORK_TABLE.match(line)
+            m = MANIFEST_SECTION.match(line)
+            if m:
+                section = m.group(1).strip()
+            last = section.split(".")[-1]
+            if table:
+                kind = table.group(1)
+            elif TEST_FRAMEWORK_KEY.match(line) and last.endswith("dependencies"):
+                kind = last
+            else:
+                continue
+            stats["test_framework_edges"] += 1
+            if kind != "dev-dependencies":
+                problems.append(
+                    f"{rel}:{k + 1}: lucene-test-framework under [{kind}]: it is a "
+                    "dev-dependency only, so it never reaches lucene-ffi's library. "
+                    "(docs/mechanical-gates.md#test-framework-dev-only)"
+                )
+
+
 RULES = (
     ("fixed-bitset-bound", rule_fixed_bitset_bound),
     ("sentinel-callers", rule_sentinel_callers),
@@ -998,6 +1042,7 @@ RULES = (
     ("table-fixed-len", rule_table_fixed_len),
     ("alloc-from-parse", rule_alloc_from_parse),
     ("literal-space-run", rule_literal_space_run),
+    ("test-framework-dev-only", rule_test_framework_dev_only),
 )
 
 
@@ -1025,6 +1070,7 @@ def main(argv):
         "slice_tables": 0,
         "alloc_parse_sites": 0,
         "space_run_sites": 0,
+        "test_framework_edges": 0,
     }
     for name, rule in RULES:
         if only and name != only:
@@ -1047,6 +1093,7 @@ def main(argv):
         print(f"slice-typed analysis tables         : {stats['slice_tables']}")
         print(f"allocations sized from a parse      : {stats['alloc_parse_sites']}")
         print(f"literal space runs (all waived)     : {stats['space_run_sites']}")
+        print(f"lucene-test-framework edges         : {stats['test_framework_edges']}")
 
     if problems:
         for p in problems:
