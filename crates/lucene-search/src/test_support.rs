@@ -6,10 +6,10 @@
 //! asserting wrappers (`AssertingWeight`, `AssertingScorer`,
 //! `AssertingBulkScorer`, `AssertingLeafCollector`).
 //!
-//! Compiled only under the `test-support` feature, which nothing but a
-//! `[dev-dependencies]` edge (or `lucene-test-framework`, itself only ever a
-//! dev-dependency) turns on: a `-p lucene-ffi` build of the cdylib has none
-//! of it (a whole-workspace build unifies the feature in).
+//! Compiled only under the `asserting` feature, which nothing but
+//! `lucene-test-framework` (itself only ever a dev-dependency) turns on: a
+//! `-p lucene-ffi` build of the cdylib and the benchmark runner have none of
+//! it (a whole-workspace build unifies the feature in).
 
 use std::sync::{Arc, Mutex};
 
