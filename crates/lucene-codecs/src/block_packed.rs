@@ -85,6 +85,48 @@ fn max_value(bits_per_value: u32) -> i64 {
     ((1u64 << bits_per_value) - 1) as i64
 }
 
+/// The packed body of one block at its widest: 64 values of 64 bits.
+const BLOCK_BYTES_MAX: usize = BLOCK_SIZE as usize * 8;
+
+/// `count` values of `bits_per_value` (`1..=64`) bits each, packed MSB-first
+/// in `bytes` (which [`packed_ints::byte_count`] sized for them), each plus
+/// `min_value`, onto `out` -- what `PackedInts.ReaderIterator.next` yields
+/// one at a time, read through a bit accumulator in one pass instead of one
+/// [`packed_ints::get`] per value.
+///
+/// ARITH: `bits_per_value` is in `1..=64` (the caller rejected a width above
+/// 64 and handles 0 itself), so `1 << bits_per_value` fits a `u128` and the
+/// mask is at least 1. Before each value `acc_bits < bits_per_value` triggers
+/// a refill of whole bytes, so `acc_bits <= bits_per_value + 7 <= 71 < 128`
+/// and `acc_bits - bits_per_value` cannot underflow once the refill stops.
+/// `bytes` holds at least `count * bits_per_value` bits (`byte_count` sized
+/// it), so before the `k`-th value at least `(k + 1) * bits_per_value` bits
+/// are there to load and the refill never runs short (were it to, it would
+/// load zero bits rather than index past the slice).
+#[allow(clippy::arithmetic_side_effects)]
+fn unpack_block(
+    bytes: &[u8],
+    bits_per_value: u32,
+    count: usize,
+    min_value: i64,
+    out: &mut Vec<i64>,
+) {
+    let mask: u128 = (1u128 << bits_per_value) - 1;
+    let mut acc: u128 = 0;
+    let mut acc_bits = 0u32;
+    let mut at = 0usize;
+    for _ in 0..count {
+        while acc_bits < bits_per_value {
+            acc = (acc << 8) | u128::from(bytes.get(at).copied().unwrap_or(0));
+            acc_bits += 8;
+            at += 1;
+        }
+        let raw = ((acc >> (acc_bits - bits_per_value)) & mask) as i64;
+        acc_bits -= bits_per_value;
+        out.push(raw.wrapping_add(min_value));
+    }
+}
+
 /// Decodes `total_value_count` values written by `BlockPackedWriter`.
 /// Reads nothing at all if `total_value_count == 0` (matches the writer,
 /// which emits zero blocks for an empty stream).
@@ -129,13 +171,19 @@ pub(crate) fn decode_all(input: &mut impl DataInput, total_value_count: i64) -> 
         if bits_per_value == 0 {
             out.extend(std::iter::repeat_n(min_value, block_value_count));
         } else {
+            // At most `BLOCK_SIZE * 64` bits: the block's packed body always
+            // fits the stack buffer, whatever the token said.
             let byte_len = packed_ints::byte_count(block_value_count as u64, bits_per_value);
-            let mut block_bytes = vec![0u8; byte_len];
-            input.read_bytes(&mut block_bytes)?;
-            for i in 0..block_value_count {
-                let raw = packed_ints::get(&block_bytes, bits_per_value, i as i64)?;
-                out.push(raw.wrapping_add(min_value));
-            }
+            let mut block_bytes = [0u8; BLOCK_BYTES_MAX];
+            let block_bytes = &mut block_bytes[..byte_len];
+            input.read_bytes(block_bytes)?;
+            unpack_block(
+                block_bytes,
+                bits_per_value,
+                block_value_count,
+                min_value,
+                &mut out,
+            );
         }
         // ARITH: `block_value_count <= total_value_count - produced` by its
         // definition above, so `produced` lands in `..=total_value_count`.
@@ -457,6 +505,40 @@ mod tests {
     fn empty_stream_reads_nothing() {
         let mut input = SliceInput::new(&[]);
         assert_eq!(decode_all(&mut input, 0).unwrap(), Vec::<i64>::new());
+    }
+
+    /// The one-pass unpacker reads every width exactly as the per-value
+    /// `packed_ints::get` does, at every count a block can hold.
+    #[test]
+    fn unpack_block_matches_packed_ints_get_at_every_width() {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let bytes: Vec<u8> = (0..BLOCK_BYTES_MAX)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state as u8
+            })
+            .collect();
+        for bits in 1..=64u32 {
+            for count in [1usize, 5, 63, 64] {
+                let len = packed_ints::byte_count(count as u64, bits);
+                let mut out = Vec::new();
+                unpack_block(&bytes[..len], bits, count, -3, &mut out);
+                let want: Vec<i64> = (0..count)
+                    .map(|i| {
+                        packed_ints::get(&bytes[..len], bits, i as i64)
+                            .unwrap()
+                            .wrapping_add(-3)
+                    })
+                    .collect();
+                assert_eq!(out, want, "bits={bits} count={count}");
+            }
+        }
+        // a slice short of its promise loads zero bits, it does not panic
+        let mut out = Vec::new();
+        unpack_block(&[0xFF], 12, 2, 0, &mut out);
+        assert_eq!(out, vec![0xFF0, 0]);
     }
 
     #[test]

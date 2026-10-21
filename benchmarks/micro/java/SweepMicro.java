@@ -67,7 +67,17 @@ public final class SweepMicro {
   static long measureMs = Long.getLong("measureMs", 2000);
   static long sink;
 
+  /**
+   * {@code -DmicroCase=<name>} runs one case alone, as the Rust harness's {@code MICRO_CASE} does:
+   * {@code scripts/bench-micro.sh} gives a case its own JVM this way when the cases before it would
+   * otherwise leave it the JIT's profile of their code.
+   */
+  static final String onlyCase = System.getProperty("microCase");
+
   static void measure(String name, Op op) throws IOException {
+    if (onlyCase != null && !onlyCase.equals(name)) {
+      return;
+    }
     loop(op, warmupMs);
     long start = System.nanoTime();
     long units = loop(op, measureMs);
