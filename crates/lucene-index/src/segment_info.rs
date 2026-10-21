@@ -136,6 +136,94 @@ pub struct LuceneVersion {
     pub bugfix: i32,
 }
 
+/// `IndexWriter.SOURCE_FLUSH`.
+pub const SOURCE_FLUSH: &str = "flush";
+/// `IndexWriter.SOURCE_MERGE`.
+pub const SOURCE_MERGE: &str = "merge";
+/// `IndexWriter.SOURCE_ADDINDEXES_READERS`.
+pub const SOURCE_ADDINDEXES_READERS: &str = "addIndexes(CodecReader...)";
+
+/// `IndexWriter.setDiagnostics(info, source, details)`: the diagnostics a
+/// flushed, merged or added segment's `.si` records -- Java's keys (`source`,
+/// `lucene.version`, `os`, `os.arch`, `os.version`, `java.runtime.version`,
+/// `java.vendor`, `timestamp`), then `details` (a merge's `mergeFactor` and
+/// `mergeMaxNumSegments`).
+///
+/// The platform values are the JVM's spelling of this process's platform:
+/// `os` is `os.name`'s (`Linux`, `Mac OS X`, `Windows`), `os.arch` is
+/// `os.arch`'s (`amd64` for x86-64 outside macOS), `os.version` the Linux
+/// kernel release (`/proc/sys/kernel/osrelease`) and `unknown` elsewhere.
+/// There is no JVM, so `java.vendor` is `lucene-rust` and
+/// `java.runtime.version` this crate's version. `timestamp` is the wall
+/// clock in epoch milliseconds, as `Instant.now().toEpochMilli()`.
+pub fn writer_diagnostics(
+    source: &str,
+    version: LuceneVersion,
+    details: &[(&str, String)],
+) -> Vec<(String, String)> {
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    let mut out: Vec<(String, String)> = [
+        ("source", source.to_string()),
+        (
+            "lucene.version",
+            format!("{}.{}.{}", version.major, version.minor, version.bugfix),
+        ),
+        ("os", java_os_name(std::env::consts::OS).to_string()),
+        (
+            "os.arch",
+            java_os_arch(std::env::consts::OS, std::env::consts::ARCH).to_string(),
+        ),
+        ("os.version", os_version().to_string()),
+        (
+            "java.runtime.version",
+            env!("CARGO_PKG_VERSION").to_string(),
+        ),
+        ("java.vendor", "lucene-rust".to_string()),
+        ("timestamp", timestamp.to_string()),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect();
+    out.extend(details.iter().map(|(k, v)| ((*k).to_string(), v.clone())));
+    out
+}
+
+/// The JVM's `os.name` for a Rust `std::env::consts::OS`.
+fn java_os_name(os: &str) -> &str {
+    match os {
+        "linux" => "Linux",
+        "macos" => "Mac OS X",
+        "windows" => "Windows",
+        "freebsd" => "FreeBSD",
+        other => other,
+    }
+}
+
+/// The JVM's `os.arch` for a Rust `std::env::consts::ARCH`: HotSpot says
+/// `amd64` for x86-64 everywhere but macOS, and `x86` for 32-bit x86.
+fn java_os_arch<'a>(os: &str, arch: &'a str) -> &'a str {
+    match (os, arch) {
+        ("macos", "x86_64") => "x86_64",
+        (_, "x86_64") => "amd64",
+        (_, "x86") => "x86",
+        (_, other) => other,
+    }
+}
+
+/// `os.version`: the kernel release on Linux, read once.
+fn os_version() -> &'static str {
+    static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    VERSION.get_or_init(|| {
+        std::fs::read_to_string("/proc/sys/kernel/osrelease")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "unknown".to_string())
+    })
+}
+
 /// A `SortField.Type` that can be an index sort, paired with the missing
 /// value that goes with it -- Java's `SortField(field, type, reverse,
 /// missingValue)` for the four numeric types, where `None` means
@@ -1261,6 +1349,55 @@ fn read_version(input: &mut SliceInput) -> Result<LuceneVersion> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writer_diagnostics_are_javas_keys_then_the_details() {
+        let v = LuceneVersion {
+            major: 10,
+            minor: 5,
+            bugfix: 0,
+        };
+        let d = writer_diagnostics(SOURCE_MERGE, v, &[("mergeFactor", "3".to_string())]);
+        let keys: Vec<&str> = d.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            keys,
+            [
+                "source",
+                "lucene.version",
+                "os",
+                "os.arch",
+                "os.version",
+                "java.runtime.version",
+                "java.vendor",
+                "timestamp",
+                "mergeFactor"
+            ]
+        );
+        assert_eq!(d[0].1, "merge");
+        assert_eq!(d[1].1, "10.5.0");
+        assert_eq!(d[6].1, "lucene-rust");
+        assert!(d[7].1.parse::<u64>().unwrap() > 1_600_000_000_000);
+        assert_eq!(d[8].1, "3");
+        assert!(!d[4].1.is_empty());
+    }
+
+    #[test]
+    fn os_name_and_arch_are_the_jvms_spelling() {
+        for (os, name) in [
+            ("linux", "Linux"),
+            ("macos", "Mac OS X"),
+            ("windows", "Windows"),
+            ("freebsd", "FreeBSD"),
+            ("solaris", "solaris"),
+        ] {
+            assert_eq!(java_os_name(os), name);
+        }
+        assert_eq!(java_os_arch("linux", "x86_64"), "amd64");
+        assert_eq!(java_os_arch("windows", "x86_64"), "amd64");
+        assert_eq!(java_os_arch("macos", "x86_64"), "x86_64");
+        assert_eq!(java_os_arch("linux", "x86"), "x86");
+        assert_eq!(java_os_arch("linux", "aarch64"), "aarch64");
+    }
 
     /// A 9.0.0 segment (`Lucene90` codec, `Lucene90SegmentInfoFormat`) reads
     /// only by its codec: the same bytes through `Lucene99SegmentInfoFormat`

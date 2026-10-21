@@ -183,6 +183,15 @@ fn add_indexes_merged_makes_one_segment() {
         0,
         "deletions dropped"
     );
+    // `IndexWriter.addIndexes(CodecReader...)`'s diagnostics: no merge details.
+    let sci = &w.segment_infos().segments[0];
+    let si = crate::segment_info::parse(
+        &dir.open(&format!("{}.si", sci.segment_name)).unwrap(),
+        &sci.segment_id,
+    )
+    .unwrap();
+    assert_eq!(si.diagnostics[0].1, "addIndexes(CodecReader...)");
+    assert!(si.diagnostics.iter().all(|(k, _)| !k.starts_with("merge")));
     assert_clean(&dir);
 }
 

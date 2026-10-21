@@ -304,16 +304,12 @@ pub fn write_stored_only_segment_files(
         doc_count,
         is_compound_file: use_compound_file,
         has_blocks,
-        diagnostics: vec![
-            ("source".to_string(), "flush".to_string()),
-            (
-                "lucene.version".to_string(),
-                format!(
-                    "{}.{}.{}",
-                    lucene_version.major, lucene_version.minor, lucene_version.bugfix
-                ),
-            ),
-        ],
+        // `DocumentsWriterPerThread.sealFlushedSegment`.
+        diagnostics: segment_info::writer_diagnostics(
+            segment_info::SOURCE_FLUSH,
+            lucene_version,
+            &[],
+        ),
         files,
         attributes: vec![(
             "Lucene90StoredFieldsFormat.mode".to_string(),
