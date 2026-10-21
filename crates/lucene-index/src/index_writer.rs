@@ -6754,6 +6754,10 @@ impl IndexWriter<'_> {
         let mut base = self.segment_infos.clone();
         base.id = generate_segment_id(base.counter);
 
+        // Known difference: a failure here keeps the generation (most never
+        // reach `segments_N`). One whose `segments_N` write *and* cleanup
+        // both failed leaves a name the next commit asks for again, where
+        // Java's `startCommit` would have moved past it.
         let updated = update_document::update_document(
             self.dir,
             &base,
@@ -6848,7 +6852,10 @@ impl IndexWriter<'_> {
         new_segment_infos.segments = updated_segments;
         self.stamp_min_segment_version(&mut new_segment_infos)?;
         self.stamp_soft_delete_counts(&mut new_segment_infos)?;
-        segment_infos::write(&new_segment_infos, self.dir)?;
+        let written = segment_infos::write(&new_segment_infos, self.dir);
+        // `updateGeneration` on error as on success (`startCommit`).
+        self.segment_infos.generation = new_segment_infos.generation;
+        written?;
 
         self.segment_infos = new_segment_infos;
         // `finishCommit`: `rollbackSegments =
@@ -7141,7 +7148,14 @@ impl IndexWriter<'_> {
         // and `finish_commit` leaves the previous commit current and this one
         // an inert orphan -- never a truncated `segments_N` that makes the
         // whole index unopenable.
-        segment_infos::write_pending(&new_segment_infos, self.dir)?;
+        let written = segment_infos::write_pending(&new_segment_infos, self.dir);
+        // `startCommit`'s `finally`: `segmentInfos.updateGeneration(toSync)`
+        // "on error or success so we don't double-write a segments_N file".
+        // A pending file a failed write or a rollback could not delete is
+        // then never asked for again (`createOutput` refuses an existing
+        // name), and the next prepare takes the generation after it.
+        self.segment_infos.generation = new_segment_infos.generation;
+        written?;
         self.prepared_commit = Some(new_segment_infos);
         Ok(())
     }
@@ -10016,19 +10030,47 @@ impl IndexWriter<'_> {
         // `std::mem::take` rather than an index loop: the apply below needs
         // `&mut self` for the `.liv`/doc-values-generation writes, and the segment lists are
         // put back verbatim (plus their new generations) once it is done.
+        //
+        // On a failed apply the lists still go back, and so do the packets:
+        // returning early used to drop both, so the next commit published a
+        // `segments_N` naming none of the committed segments and the deleter
+        // reclaimed their files. Java never reaches that state, because a
+        // failed packet apply is a tragic event that closes the writer
+        // (`onTragicEvent(t, "applyUpdatesPacket")`); this writer stays
+        // usable, so a retry re-applies the packets, which is idempotent for
+        // the segments the failed round already reached.
+        let mut failure = None;
         let mut committed = std::mem::take(&mut self.segment_infos.segments);
         let mut committed_fully_deleted = Vec::with_capacity(committed.len());
         for sci in committed.iter_mut() {
-            committed_fully_deleted.push(self.apply_packets_to_segment(&packets, sci)?);
+            match self.apply_packets_to_segment(&packets, sci) {
+                Ok(fully_deleted) => committed_fully_deleted.push(fully_deleted),
+                Err(e) => {
+                    failure = Some(e);
+                    break;
+                }
+            }
         }
         self.segment_infos.segments = committed;
 
         let mut flushed = std::mem::take(&mut self.flushed_segments);
         let mut flushed_fully_deleted = Vec::with_capacity(flushed.len());
-        for sci in flushed.iter_mut() {
-            flushed_fully_deleted.push(self.apply_packets_to_segment(&packets, sci)?);
+        if failure.is_none() {
+            for sci in flushed.iter_mut() {
+                match self.apply_packets_to_segment(&packets, sci) {
+                    Ok(fully_deleted) => flushed_fully_deleted.push(fully_deleted),
+                    Err(e) => {
+                        failure = Some(e);
+                        break;
+                    }
+                }
+            }
         }
         self.flushed_segments = flushed;
+        if let Some(e) = failure {
+            self.updates_stream.restore_pending(packets);
+            return Err(e);
+        }
 
         self.drop_fully_deleted_segments(&committed_fully_deleted, &flushed_fully_deleted);
         // `ReaderPool.drop` for what this round (or anything since the last
@@ -10644,7 +10686,10 @@ impl IndexWriter<'_> {
 
         self.stamp_min_segment_version(&mut new_segment_infos)?;
         self.stamp_soft_delete_counts(&mut new_segment_infos)?;
-        segment_infos::write(&new_segment_infos, self.dir)?;
+        let written = segment_infos::write(&new_segment_infos, self.dir);
+        // `updateGeneration` on error as on success (`startCommit`).
+        self.segment_infos.generation = new_segment_infos.generation;
+        written?;
         // The merge's source segments are no longer named by any live commit
         // once the superseded commit point dies here, so this is what actually
         // reclaims them -- `commitMerge` -> `checkpoint` in Java.
@@ -10898,7 +10943,16 @@ impl IndexingConfig {
             // `apply_deletes` itself is order-insensitive (it clears bits).
             let mut deleted: Vec<i32> = deleted.into_iter().collect();
             deleted.sort_unstable();
-            *sci = deletes::apply_deletes(dir, sci, opened.live_docs, opened.max_doc, deleted)?;
+            let updated =
+                deletes::apply_deletes(dir, sci, opened.live_docs, opened.max_doc, deleted);
+            if updated.is_err() {
+                // `PendingDeletes.writeLiveDocs`' failure path:
+                // `info.advanceNextWriteDelGen()`, so a retry never asks for
+                // the name a failed attempt may have left behind.
+                let next = sci.next_write_del_gen();
+                sci.set_next_write_del_gen(next.saturating_add(1));
+            }
+            *sci = updated?;
         }
 
         if !numeric_updates.is_empty() || !binary_updates.is_empty() {
@@ -11821,9 +11875,11 @@ pub(crate) mod tests {
         assert_eq!(reopened.generation, committed_generation);
         assert_eq!(read_all_docs(&dir, &reopened), vec!["a"]);
 
-        // `self.segment_infos` on the live writer is likewise untouched --
-        // only `finish_commit()` would update it.
-        assert_eq!(writer.segment_infos().generation, committed_generation);
+        // The live writer's segments are likewise untouched -- only
+        // `finish_commit()` installs them. Its generation is not: Java's
+        // `startCommit` runs `updateGeneration` as soon as the pending file
+        // is written, so a later prepare never asks for the same name.
+        assert_eq!(writer.segment_infos().generation, committed_generation + 1);
         assert_eq!(
             writer.segment_infos().segments.len(),
             reopened.segments.len()
@@ -12994,6 +13050,142 @@ pub(crate) mod tests {
         fn obtain_lock(&self, name: &str) -> lucene_store::Result<Box<dyn lucene_store::Lock>> {
             self.inner.obtain_lock(name)
         }
+    }
+
+    /// A [`Directory`] that, while `fail` is set, fails the fsync of a
+    /// `pending_segments_N` and then the delete that would clean it up --
+    /// leaving the pending file behind, as a failed commit on a sick disk
+    /// can.
+    struct StuckPendingDirectory<'a> {
+        inner: &'a FsDirectory,
+        fail: std::sync::atomic::AtomicBool,
+        /// Which names get stuck: `pending_segments_N` unless a test says.
+        stuck: fn(&str) -> bool,
+    }
+
+    impl StuckPendingDirectory<'_> {
+        fn failing(&self, name: &str) -> lucene_store::Result<()> {
+            if (self.stuck)(name) && self.fail.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(lucene_store::Error::Io(std::io::Error::other("stuck")));
+            }
+            Ok(())
+        }
+    }
+
+    impl Directory for StuckPendingDirectory<'_> {
+        fn list_all(&self) -> lucene_store::Result<Vec<String>> {
+            self.inner.list_all()
+        }
+        fn open(&self, name: &str) -> lucene_store::Result<lucene_store::directory::Input> {
+            self.inner.open(name)
+        }
+        fn create_output(&self, name: &str) -> lucene_store::Result<lucene_store::FsIndexOutput> {
+            self.inner.create_output(name)
+        }
+        fn sync(&self, names: &[String]) -> lucene_store::Result<()> {
+            for name in names {
+                self.failing(name)?;
+            }
+            self.inner.sync(names)
+        }
+        fn rename(&self, source: &str, dest: &str) -> lucene_store::Result<()> {
+            self.inner.rename(source, dest)
+        }
+        fn delete_file(&self, name: &str) -> lucene_store::Result<()> {
+            self.failing(name)?;
+            self.inner.delete_file(name)
+        }
+        fn sync_meta_data(&self) -> lucene_store::Result<()> {
+            self.inner.sync_meta_data()
+        }
+        fn obtain_lock(&self, name: &str) -> lucene_store::Result<Box<dyn lucene_store::Lock>> {
+            self.inner.obtain_lock(name)
+        }
+    }
+
+    /// `IndexWriter.startCommit` records the prepared generation "on error
+    /// or success so we don't double-write a segments_N file". This writer
+    /// recorded it on success only, so a retry after a failed commit asked
+    /// for the same `pending_segments_N` again -- which `createOutput`
+    /// refuses once the failed commit could not delete it, wedging every
+    /// later commit of the writer.
+    #[test]
+    fn a_pending_segments_file_a_failed_commit_left_is_never_asked_for_again() {
+        let tmp = tempdir("stuck-pending");
+        let fs = FsDirectory::open(&tmp);
+        let dir = StuckPendingDirectory {
+            inner: &fs,
+            fail: std::sync::atomic::AtomicBool::new(false),
+            stuck: |name| name.starts_with("pending_segments"),
+        };
+        let fields = vec![stored_only_field("id", 0)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.add_document(doc("a")).unwrap();
+        writer.commit().unwrap();
+        let first = writer.segment_infos().generation;
+
+        writer.add_document(doc("b")).unwrap();
+        dir.fail.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(writer.commit().is_err());
+        let stuck = lucene_store::directory::pending_segments_file_name(first + 1).unwrap();
+        assert!(
+            fs.list_all().unwrap().contains(&stuck),
+            "the failed commit left {stuck}"
+        );
+
+        dir.fail.store(false, std::sync::atomic::Ordering::SeqCst);
+        writer.commit().unwrap();
+        assert_eq!(writer.segment_infos().generation, first + 2);
+        assert_eq!(writer.committed_doc_count().unwrap(), 2);
+        assert_eq!(
+            segment_infos::read_latest(&fs).unwrap().generation,
+            first + 2
+        );
+    }
+
+    /// A buffered delete whose `.liv` cannot be written fails the commit,
+    /// and the writer keeps every segment and every packet. It used to take
+    /// the segment lists out for the apply and drop them on the error, so
+    /// the next commit published a `segments_N` naming no segment at all.
+    /// The partial `.liv` cannot be deleted either, so the retry must also
+    /// take the next delete generation (`PendingDeletes.writeLiveDocs`'
+    /// `advanceNextWriteDelGen`).
+    #[test]
+    fn a_failed_delete_apply_keeps_every_segment_for_the_next_commit() {
+        let tmp = tempdir("failed-delete-apply");
+        let fs = FsDirectory::open(&tmp);
+        let dir = StuckPendingDirectory {
+            inner: &fs,
+            fail: std::sync::atomic::AtomicBool::new(false),
+            stuck: |name| name.ends_with(".liv"),
+        };
+        let fields = vec![FieldInfo {
+            index_options: lucene_codecs::field_infos::IndexOptions::Docs,
+            omit_norms: true,
+            ..FieldInfo::new("id", 0)
+        }];
+        let mut w = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        w.set_postings_field(Some("id")).unwrap();
+        w.add_document(doc("d0")).unwrap();
+        w.add_document(doc("d1")).unwrap();
+        w.commit().unwrap();
+        w.add_document(doc("d2")).unwrap();
+        w.commit().unwrap();
+        let segments = w.segment_infos().segments.len();
+
+        w.delete_documents_by_term(&[Term::new("id", "d0")])
+            .unwrap();
+        dir.fail.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(w.commit().is_err());
+        assert_eq!(w.segment_infos().segments.len(), segments);
+        assert!(fs.list_all().unwrap().iter().any(|f| f.ends_with(".liv")));
+
+        dir.fail.store(false, std::sync::atomic::Ordering::SeqCst);
+        w.commit().unwrap();
+        let latest = segment_infos::read_latest(&fs).unwrap();
+        assert_eq!(latest.segments.len(), segments);
+        let deleted: i32 = latest.segments.iter().map(|s| s.del_count).sum();
+        assert_eq!(deleted, 1, "the restored packet was applied on the retry");
     }
 
     /// `IndexWriter.sealFlushedSegment` writes a segment's `.si` **once**,
