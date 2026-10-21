@@ -18,9 +18,12 @@ libc.workspace = true
 
 [features]
 # `crashing_directory::CrashingDirectory`, the crash half of Lucene's
-# test-framework `MockDirectoryWrapper`. Test infrastructure, like Java's:
-# enabled only through `[dev-dependencies]` edges (lucene-search's, for the
-# crash fuzzer), which resolver-2 keeps out of every production build.
+# test-framework `MockDirectoryWrapper`, and the fault seams lucene-test-
+# framework's `MockDirectoryWrapper` hooks (`OutputFaults`, `FsFaults`,
+# `Input::Tracked`). Test infrastructure, like Java's: enabled through
+# `[dev-dependencies]` edges and by lucene-test-framework, itself only ever a
+# dev-dependency, so no production build (`-p lucene-ffi`) carries it. A
+# whole-workspace build does, so the gate lints lucene-store alone too.
 test-util = []
 
 [dev-dependencies]

@@ -21,6 +21,14 @@
 //! subsequent write becomes a no-op; the latched error surfaces from
 //! [`FsIndexOutput::close`], mirroring how a `BufWriter` drop swallowing a
 //! flush error would otherwise silently lose data.
+//!
+//! Test seam (feature `test-util` only): `FsIndexOutput::set_faults`
+//! installs an `OutputFaults` hook, consulted before every write and at
+//! close -- what the test framework's `MockIndexOutputWrapper` needs to throw
+//! random and deterministic I/O errors and to fake a full disk. A fault
+//! latches like a real write error, so it surfaces from `close`. The hook is
+//! dropped with the output, closed or not, which is how a mock directory
+//! counts the output's handle as released.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -101,8 +109,60 @@ pub struct FsIndexOutput {
     bytes_written: u64,
     crc: crc32fast::Hasher,
     pending_err: Option<std::io::Error>,
+    /// A write fault the hook injected (feature `test-util`): later writes
+    /// are dropped, as Java's caller stops at the exception, and `close`
+    /// returns it after flushing what was written before it -- the bytes a
+    /// Java `writeBytes` wrote before throwing are in the file.
+    #[cfg(any(test, feature = "test-util"))]
+    fault_err: Option<std::io::Error>,
     /// `Some` once [`FsIndexOutput::set_rate_limiter`] throttled this output.
     rate_limit: Option<Box<RateLimit>>,
+    /// `Some` once [`FsIndexOutput::set_faults`] installed a test hook.
+    #[cfg(any(test, feature = "test-util"))]
+    faults: Option<Box<dyn OutputFaults>>,
+}
+
+/// What an [`OutputFaults`] hook decides about one write.
+#[cfg(any(test, feature = "test-util"))]
+#[derive(Debug)]
+pub enum WriteVerdict {
+    /// Write the bytes.
+    Write,
+    /// Write the first `keep` bytes (all of them when `keep` is the write's
+    /// length), then fail with `error`: latched, and returned by `close`.
+    /// `MockIndexOutputWrapper`'s fake disk full writes the space left; its
+    /// random exception fires after the first write went through.
+    Fail { keep: usize, error: std::io::Error },
+}
+
+/// A test hook on an [`FsIndexOutput`] (feature `test-util`): the seam the
+/// test framework's `MockIndexOutputWrapper` wraps an output through, since
+/// every directory hands out this one concrete type.
+#[cfg(any(test, feature = "test-util"))]
+pub trait OutputFaults: Send {
+    /// Called before each write of `len` bytes to the output named `name`.
+    fn before_write(&mut self, name: &str, len: usize) -> WriteVerdict;
+    /// Called after a write the hook let through, with the bytes written
+    /// (`ThrottledIndexOutput` times the write between the two calls).
+    fn after_write(&mut self, _name: &str, _len: usize) {}
+    /// Called as the output closes, before its bytes are flushed.
+    fn on_close(&mut self, name: &str) -> CloseVerdict;
+}
+
+/// What an [`OutputFaults`] hook decides about a close.
+#[cfg(any(test, feature = "test-util"))]
+#[derive(Debug)]
+pub enum CloseVerdict {
+    /// Flush and close.
+    Close,
+    /// Flush, then fail: Java's try-with-resources in
+    /// `MockIndexOutputWrapper.close` closes the delegate before the
+    /// failure's exception propagates.
+    FailAfterFlush(std::io::Error),
+    /// Fail without flushing the buffered bytes: the output was already
+    /// force-closed, as `MockDirectoryWrapper.crash()` closes every open
+    /// handle before it damages the unsynced files.
+    FailWithoutFlush(std::io::Error),
 }
 
 impl FsIndexOutput {
@@ -139,7 +199,11 @@ impl FsIndexOutput {
             bytes_written: 0,
             crc: crc32fast::Hasher::new(),
             pending_err: None,
+            #[cfg(any(test, feature = "test-util"))]
+            fault_err: None,
             rate_limit: None,
+            #[cfg(any(test, feature = "test-util"))]
+            faults: None,
         }
     }
 
@@ -155,8 +219,19 @@ impl FsIndexOutput {
             bytes_written: 0,
             crc: crc32fast::Hasher::new(),
             pending_err: None,
+            #[cfg(any(test, feature = "test-util"))]
+            fault_err: None,
             rate_limit: None,
+            #[cfg(any(test, feature = "test-util"))]
+            faults: None,
         }
+    }
+
+    /// Installs a test hook consulted before every write and at close
+    /// (feature `test-util`; see [`OutputFaults`]). Replaces any earlier one.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set_faults(&mut self, faults: Box<dyn OutputFaults>) {
+        self.faults = Some(faults);
     }
 
     /// Port of `IndexOutput.close()`: flushes buffered bytes to the OS (or,
@@ -168,6 +243,15 @@ impl FsIndexOutput {
     /// [`crate::directory::Directory::sync`]. Returns the first latched I/O
     /// error, if any write since `create` failed.
     pub fn close(mut self) -> Result<u64> {
+        #[cfg(any(test, feature = "test-util"))]
+        let close_fault = match self.faults.as_deref_mut() {
+            Some(faults) => match faults.on_close(&self.name) {
+                CloseVerdict::Close => None,
+                CloseVerdict::FailAfterFlush(e) => Some(e),
+                CloseVerdict::FailWithoutFlush(e) => return Err(Error::Io(e)),
+            },
+            None => None,
+        };
         if let Some(e) = self.pending_err.take() {
             return Err(Error::Io(e));
         }
@@ -182,6 +266,10 @@ impl FsIndexOutput {
                     publish(std::mem::take(&mut self.buf));
                 }
             }
+        }
+        #[cfg(any(test, feature = "test-util"))]
+        if let Some(e) = self.fault_err.take().or(close_fault) {
+            return Err(Error::Io(e));
         }
         Ok(checksum)
     }
@@ -269,7 +357,34 @@ impl DataOutput for FsIndexOutput {
 
 impl FsIndexOutput {
     fn write_unlimited(&mut self, b: &[u8]) {
-        if self.pending_err.is_some() || !self.write_through(b) {
+        if self.pending_err.is_some() {
+            return;
+        }
+        #[cfg(any(test, feature = "test-util"))]
+        if self.fault_err.is_some() {
+            return;
+        }
+        #[cfg(any(test, feature = "test-util"))]
+        if let Some(faults) = self.faults.as_deref_mut() {
+            if let WriteVerdict::Fail { keep, error } = faults.before_write(&self.name, b.len()) {
+                self.write_counted(&b[..keep.min(b.len())]);
+                self.fault_err = Some(error);
+                return;
+            }
+            self.write_counted(b);
+            if self.pending_err.is_none() {
+                if let Some(faults) = self.faults.as_deref_mut() {
+                    faults.after_write(&self.name, b.len());
+                }
+            }
+            return;
+        }
+        self.write_counted(b);
+    }
+
+    /// Writes `b` through, then counts it into the checksum and length.
+    fn write_counted(&mut self, b: &[u8]) {
+        if !self.write_through(b) {
             return;
         }
         self.crc.update(b);
@@ -559,5 +674,131 @@ mod tests {
             crate::Directory::file_length(&mem, "limited").unwrap(),
             111 + CHUNK_SIZE as u64 * 2 + 5
         );
+    }
+
+    /// Fails the `fail_at`-th write after keeping `keep` of its bytes, and
+    /// the close when `fail_close` is 1 (after the flush) or 2 (without it).
+    /// Counts the bytes `after_write` saw (`written`) and its own drop
+    /// (`dropped`).
+    struct Faulty {
+        writes: usize,
+        fail_at: usize,
+        keep: usize,
+        fail_close: u8,
+        written: Arc<std::sync::atomic::AtomicUsize>,
+        dropped: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl OutputFaults for Faulty {
+        fn before_write(&mut self, name: &str, len: usize) -> WriteVerdict {
+            self.writes = self.writes.saturating_add(1);
+            if self.writes == self.fail_at {
+                return WriteVerdict::Fail {
+                    keep: self.keep.min(len),
+                    error: std::io::Error::other(format!("fake fault on {name}")),
+                };
+            }
+            WriteVerdict::Write
+        }
+        fn after_write(&mut self, _name: &str, len: usize) {
+            self.written
+                .fetch_add(len, std::sync::atomic::Ordering::SeqCst);
+        }
+        fn on_close(&mut self, name: &str) -> CloseVerdict {
+            let error = || std::io::Error::other(format!("fake close fault on {name}"));
+            match self.fail_close {
+                0 => CloseVerdict::Close,
+                1 => CloseVerdict::FailAfterFlush(error()),
+                _ => CloseVerdict::FailWithoutFlush(error()),
+            }
+        }
+    }
+
+    impl Drop for Faulty {
+        fn drop(&mut self) {
+            self.dropped
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn faulty(fail_at: usize, keep: usize, fail_close: u8) -> (Box<Faulty>, Counter, Counter) {
+        let written = Counter::default();
+        let dropped = Counter::default();
+        let hook = Box::new(Faulty {
+            writes: 0,
+            fail_at,
+            keep,
+            fail_close,
+            written: Arc::clone(&written),
+            dropped: Arc::clone(&dropped),
+        });
+        (hook, written, dropped)
+    }
+
+    type Counter = Arc<std::sync::atomic::AtomicUsize>;
+
+    fn count(c: &Counter) -> usize {
+        c.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// A failed write keeps the bytes the hook allows, latches its error
+    /// (later writes are no-ops) and surfaces it from `close`; the hook is
+    /// dropped with the output.
+    #[test]
+    fn a_write_fault_keeps_its_prefix_and_surfaces_at_close() {
+        let dir = tempdir();
+        let (hook, written, dropped) = faulty(2, 3, 0);
+        let mut out = FsIndexOutput::create(&dir, "f").unwrap();
+        out.set_faults(hook);
+        out.write_bytes(b"ab");
+        assert_eq!(count(&written), 2, "after_write saw 2");
+        out.write_bytes(b"cdefg");
+        assert_eq!(out.file_pointer(), 5);
+        out.write_bytes(b"zz");
+        assert_eq!(out.file_pointer(), 5, "latched: no-op");
+        let err = out.close().unwrap_err();
+        assert!(err.to_string().contains("fake fault on f"), "{err}");
+        assert_eq!(count(&written), 2, "the failed write is not after_write's");
+        assert_eq!(count(&dropped), 1);
+        // What was written before the fault is in the file, as in Java.
+        assert_eq!(std::fs::read(dir.join("f")).unwrap(), b"abcde");
+    }
+
+    /// A close fault fails the close only after the bytes were flushed, for
+    /// a file and in memory; an output dropped unclosed drops its hook too.
+    #[test]
+    fn a_close_fault_fails_after_the_flush() {
+        let dir = tempdir();
+        let (hook, written, dropped) = faulty(0, 0, 1);
+        let mut out = FsIndexOutput::create(&dir, "g").unwrap();
+        out.set_faults(hook);
+        out.write_bytes(b"hello");
+        let err = out.close().unwrap_err();
+        assert!(err.to_string().contains("fake close fault on g"), "{err}");
+        assert_eq!(std::fs::read(dir.join("g")).unwrap(), b"hello");
+        assert_eq!(count(&written), 5);
+        assert_eq!(count(&dropped), 1);
+
+        // Force-closed: the buffered bytes never reach the file.
+        let (hook, _, _) = faulty(0, 0, 2);
+        let mut out = FsIndexOutput::create(&dir, "k").unwrap();
+        out.set_faults(hook);
+        out.write_bytes(b"lost");
+        assert!(out.close().is_err());
+        assert_eq!(std::fs::read(dir.join("k")).unwrap(), b"");
+
+        let mem = crate::ByteBuffersDirectory::new();
+        let (hook, _, _) = faulty(0, 0, 0);
+        let mut out = crate::Directory::create_output(&mem, "m").unwrap();
+        out.set_faults(hook);
+        out.write_bytes(b"xy");
+        out.close().unwrap();
+        assert_eq!(crate::Directory::file_length(&mem, "m").unwrap(), 2);
+
+        let (hook, _, dropped) = faulty(0, 0, 0);
+        let mut out = FsIndexOutput::create(&dir, "h").unwrap();
+        out.set_faults(hook);
+        drop(out);
+        assert_eq!(count(&dropped), 1);
     }
 }
