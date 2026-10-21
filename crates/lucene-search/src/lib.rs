@@ -1351,6 +1351,24 @@ fn fuzzy_expanded_terms_instrumented(
     ))
 }
 
+/// The terms [`fuzzy_expanded_terms`] selects, over a one-document leaf
+/// whose terms are held in memory (`MemoryIndex`'s, each with `docFreq` 1),
+/// in the queue's order.
+pub(crate) fn fuzzy_expanded_terms_in_memory<'t>(
+    terms: impl Iterator<Item = &'t [u8]>,
+    query: &FuzzyQuery,
+) -> Vec<Vec<u8>> {
+    let pattern = FuzzyMatch::new(
+        &query.term,
+        query.max_edits,
+        query.prefix_length,
+        query.transpositions,
+    );
+    let mut collector = FuzzyTopTerms::new(query, &pattern);
+    collector.collect_sorted(terms.map(|t| (t, 1)), &pattern);
+    collector.queue.into_iter().map(|e| e.term).collect()
+}
+
 /// `TopTermsRewrite.rewrite`'s `stQueue` + `visitedTerms` + the shared
 /// `MaxNonCompetitiveBoostAttribute`, as one object that
 /// `TermCollectingRewrite.collectTerms` drives **once per leaf**.
@@ -1425,6 +1443,87 @@ impl FuzzyTopTerms {
         edits
     }
 
+    /// `collectTerms`' body for one accepted term with its `boost` and
+    /// `docFreq`: whether it was inserted into the queue (and so may have
+    /// moved its bottom).
+    fn offer(&mut self, term: &[u8], boost: f32, doc_freq: i64) -> bool {
+        // `collectTerms`' own rejection, *before* the visited-term lookup:
+        // once the queue is full, a term that cannot beat the worst entry
+        // is dropped without being inserted -- and, in a second leaf,
+        // without its `docFreq` being accumulated either.
+        // `maxSize == 0` makes the queue full from the start with no
+        // bottom to compare against, so nothing is ever competitive --
+        // which is the same "select nothing" a truncate-to-zero gives.
+        if self.queue.len() == self.max_size {
+            match self.queue.last() {
+                None => return false,
+                Some(bottom) => {
+                    if boost < bottom.boost
+                        || (boost == bottom.boost && term > bottom.term.as_slice())
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        // `ScoreTerm t = visitedTerms.get(bytes)`: a term already in the
+        // queue only has its `docFreq` accumulated
+        // (`t.termState.register(state, ord, docFreq, totalTermFreq)`),
+        // and nothing is republished. Only reachable across leaves --
+        // within one leaf the term dictionary yields each term once.
+        //
+        // The queue is sorted by `(boost desc, term asc)` and a term's
+        // boost is a function of the term alone, so an entry for it can
+        // only sit where it would be inserted: the binary search for the
+        // insertion point answers the lookup too, where a scan compared
+        // the term against every entry.
+        let at = self
+            .queue
+            .partition_point(|e| e.boost > boost || (e.boost == boost && e.term.as_slice() < term));
+        if let Some(entry) = self
+            .queue
+            .get_mut(at)
+            .filter(|e| e.boost == boost && e.term == term)
+        {
+            entry.doc_freq = entry.doc_freq.saturating_add(doc_freq);
+            return false;
+        }
+        self.queue.insert(
+            at,
+            ExpandedTerm {
+                boost,
+                term: term.to_vec(),
+                doc_freq,
+            },
+        );
+        // `if (stQueue.size() > maxSize) { st = stQueue.poll(); visitedTerms
+        // .remove(st.bytes.get()); st.termState.clear(); }` -- an evicted
+        // term loses the `docFreq` earlier leaves contributed, which is
+        // Java's behaviour and not an oversight here.
+        if self.queue.len() > self.max_size {
+            self.queue.pop();
+        }
+        true
+    }
+
+    /// [`Self::collect_segment`] over a leaf whose terms are held in memory
+    /// (`MemoryIndex`'s): each of `terms`, in term order with its `docFreq`,
+    /// that the pattern accepts within the query's `maxEdits`. Without the
+    /// feedback loop, which only prunes the walk and never changes the
+    /// selected expansion (`pruning_never_changes_the_selected_expansion`).
+    fn collect_sorted<'t>(
+        &mut self,
+        terms: impl Iterator<Item = (&'t [u8], i64)>,
+        pattern: &FuzzyMatch<'_>,
+    ) {
+        for (term, doc_freq) in terms {
+            if let Some(ed) = pattern.edits_within(term, pattern.max_edits()) {
+                self.offer(term, pattern.boost_from_edits(term, ed), doc_freq);
+            }
+        }
+    }
+
     /// One leaf: `collectTerms`' inner `while ((bytes = termsEnum.next()) != null)`
     /// loop over `getTermsEnum(query, terms, collector.attributes)`.
     ///
@@ -1459,62 +1558,8 @@ impl FuzzyTopTerms {
             // does not run the banded DP a second time per accepted term.
             let boost = pattern.boost_from_edits(&term, walk.last_edits());
 
-            // `collectTerms`' own rejection, *before* the visited-term lookup:
-            // once the queue is full, a term that cannot beat the worst entry
-            // is dropped without being inserted -- and, in a second leaf,
-            // without its `docFreq` being accumulated either.
-            // `maxSize == 0` makes the queue full from the start with no
-            // bottom to compare against, so nothing is ever competitive --
-            // which is the same "select nothing" a truncate-to-zero gives.
-            if self.queue.len() == self.max_size {
-                match self.queue.last() {
-                    None => continue,
-                    Some(bottom) => {
-                        if boost < bottom.boost
-                            || (boost == bottom.boost && term.as_slice() > bottom.term.as_slice())
-                        {
-                            continue;
-                        }
-                    }
-                }
-            }
-
-            // `ScoreTerm t = visitedTerms.get(bytes)`: a term already in the
-            // queue only has its `docFreq` accumulated
-            // (`t.termState.register(state, ord, docFreq, totalTermFreq)`),
-            // and nothing is republished. Only reachable across leaves --
-            // within one leaf the term dictionary yields each term once.
-            //
-            // The queue is sorted by `(boost desc, term asc)` and a term's
-            // boost is a function of the term alone, so an entry for it can
-            // only sit where it would be inserted: the binary search for the
-            // insertion point answers the lookup too, where a scan compared
-            // the term against every entry.
-            let at = self.queue.partition_point(|e| {
-                e.boost > boost || (e.boost == boost && e.term.as_slice() < term.as_slice())
-            });
-            if let Some(entry) = self
-                .queue
-                .get_mut(at)
-                .filter(|e| e.boost == boost && e.term == term)
-            {
-                entry.doc_freq = entry.doc_freq.saturating_add(stats.doc_freq as i64);
+            if !self.offer(&term, boost, stats.doc_freq as i64) {
                 continue;
-            }
-            self.queue.insert(
-                at,
-                ExpandedTerm {
-                    boost,
-                    term: term.clone(),
-                    doc_freq: stats.doc_freq as i64,
-                },
-            );
-            // `if (stQueue.size() > maxSize) { st = stQueue.poll(); visitedTerms
-            // .remove(st.bytes.get()); st.termState.clear(); }` -- an evicted
-            // term loses the `docFreq` earlier leaves contributed, which is
-            // Java's behaviour and not an oversight here.
-            if self.queue.len() > self.max_size {
-                self.queue.pop();
             }
 
             // `maxBoostAtt.setMaxNonCompetitiveBoost(peek().boost)` +
@@ -4494,12 +4539,7 @@ fn term_doc_positions(
 /// `toString()`. A segment without the field has no matcher, so no error;
 /// the check comes before any term lookup, as Java's does.
 pub(crate) fn require_phrase_positions(fields: &BlockTreeFields, q: &PhraseQuery) -> Result<()> {
-    if q.terms.len() < 2 {
-        return Ok(());
-    }
-    no_positions(fields, &q.field, "PhraseQuery", || {
-        Clause::Phrase(q.clone())
-    })
+    phrase_positions_check(field_index_options(fields, &q.field), q)
 }
 
 /// [`require_phrase_positions`] for `MultiPhraseQuery`.
@@ -4507,22 +4547,51 @@ pub(crate) fn require_multi_phrase_positions(
     fields: &BlockTreeFields,
     q: &query::MultiPhraseQuery,
 ) -> Result<()> {
+    multi_phrase_positions_check(field_index_options(fields, &q.field), q)
+}
+
+/// [`require_phrase_positions`] given the field's index options in the leaf
+/// (`None`: the leaf has no terms in it).
+pub(crate) fn phrase_positions_check(
+    options: Option<lucene_codecs::field_infos::IndexOptions>,
+    q: &PhraseQuery,
+) -> Result<()> {
+    if q.terms.len() < 2 {
+        return Ok(());
+    }
+    no_positions(options, &q.field, "PhraseQuery", || {
+        Clause::Phrase(q.clone())
+    })
+}
+
+/// [`phrase_positions_check`] for `MultiPhraseQuery`.
+pub(crate) fn multi_phrase_positions_check(
+    options: Option<lucene_codecs::field_infos::IndexOptions>,
+    q: &query::MultiPhraseQuery,
+) -> Result<()> {
     if q.term_arrays.len() < 2 {
         return Ok(());
     }
-    no_positions(fields, &q.field, "MultiPhraseQuery", || {
+    no_positions(options, &q.field, "MultiPhraseQuery", || {
         Clause::MultiPhrase(q.clone())
     })
 }
 
-fn no_positions(
+fn field_index_options(
     fields: &BlockTreeFields,
+    field: &str,
+) -> Option<lucene_codecs::field_infos::IndexOptions> {
+    fields.field(field).map(|ft| ft.index_options())
+}
+
+fn no_positions(
+    options: Option<lucene_codecs::field_infos::IndexOptions>,
     field: &str,
     name: &str,
     clause: impl FnOnce() -> Clause,
 ) -> Result<()> {
-    match fields.field(field) {
-        Some(ft) if !ft.index_options().subsumes_positions() => Err(Error::IllegalState(format!(
+    match options {
+        Some(o) if !o.subsumes_positions() => Err(Error::IllegalState(format!(
             "field \"{field}\" was indexed without position data; cannot run {name} (phrase={})",
             query_builder::to_query_string(Some(&clause()), "")
         ))),

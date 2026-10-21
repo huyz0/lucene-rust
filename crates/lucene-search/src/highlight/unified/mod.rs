@@ -39,11 +39,13 @@ pub mod passage;
 pub mod phrase_helper;
 pub mod strategies;
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use lucene_analysis::Analyzer;
-use lucene_codecs::stored_fields::FieldValue;
+use lucene_codecs::stored_fields::{StoredFieldVisitor, VisitStatus};
+use lucene_codecs::term_vectors::ChunkCursor;
 
 use self::break_iterators::{sentence_instance, BreakIterator, SplittingBreakIterator};
 pub use self::field_highlighter::{passage_by_start_offset, FieldHighlighter, PassageOrder};
@@ -386,6 +388,9 @@ impl<'r> UnifiedHighlighter<'r> {
             .iter()
             .map(|_| (0..doc_ids.len()).map(|_| None).collect())
             .collect();
+        // the term-vector chunk last decoded, and the segment it is of: the
+        // documents come in order, so one decode serves a run of them
+        let tv_chunk = RefCell::new((usize::MAX, ChunkCursor::new()));
         let mut batch_start = 0;
         while batch_start < docs.len() {
             let batch = self.load_field_values(
@@ -408,11 +413,24 @@ impl<'r> UnifiedHighlighter<'r> {
                     let matches = |c: &Clause| {
                         crate::matches::matches(searcher, &c.clone().rewrite(), doc_id)
                     };
+                    let local = doc_id - segment.doc_base;
+                    let term_vector = |field: i32| -> crate::Result<_> {
+                        let Some(tvs) = reader.segment_readers()[leaf].term_vectors_reader()?
+                        else {
+                            return Ok(None);
+                        };
+                        let mut held = tv_chunk.borrow_mut();
+                        if held.0 != leaf {
+                            *held = (leaf, ChunkCursor::new());
+                        }
+                        Ok(held.1.field(&tvs, local, field)?)
+                    };
                     let ctx = LeafCtx {
                         reader: &reader.segment_readers()[leaf],
                         segment,
-                        doc: doc_id - segment.doc_base,
+                        doc: local,
                         matches: &matches,
+                        term_vector: &term_vector,
                     };
                     results[f][doc_in_index] =
                         highlight_field_for_doc(strategies, highlighter, Some(&ctx), content)?;
@@ -540,43 +558,17 @@ impl<'r> UnifiedHighlighter<'r> {
             .ok_or_else(|| Error::IllegalArgument(format!("doc {doc_id} is in no segment")))?;
         let local = doc_id - searcher.segments()[leaf].doc_base;
         let segment = &reader.segment_readers()[leaf];
-        let mut values: Vec<Option<Vec<u16>>> = vec![None; fields.len()];
-        let max_length = usize::try_from(self.max_length).unwrap_or(0);
-        let doc = segment
-            .stored_document(local)
-            .map_err(|e| Error::Io(e.to_string()))?;
-        let Some(doc) = doc else {
-            return Ok(values);
+        let mut visitor = LimitedVisitor {
+            infos: segment.field_infos(),
+            fields,
+            values: vec![None; fields.len()],
+            max_length: usize::try_from(self.max_length).unwrap_or(0),
+            current: 0,
         };
-        for f in &doc.fields {
-            let Some(fi) = segment.field_infos().field_by_number(f.field_number) else {
-                continue;
-            };
-            let Ok(slot) = fields.binary_search(&fi.name.as_str()) else {
-                continue;
-            };
-            // `needsField`: a field that is full needs no more
-            if values[slot].as_ref().is_some_and(|v| v.len() >= max_length) {
-                continue;
-            }
-            // `stringField`: only string values reach it
-            let FieldValue::String(text) = &f.value else {
-                continue;
-            };
-            let value: Vec<u16> = text.encode_utf16().collect();
-            match &mut values[slot] {
-                None => values[slot] = Some(value[..value.len().min(max_length)].to_vec()),
-                Some(cur) => {
-                    let budget = max_length - cur.len();
-                    if budget == 0 {
-                        continue;
-                    }
-                    cur.push(MULTIVAL_SEP_CHAR);
-                    cur.extend_from_slice(&value[..(budget - 1).min(value.len())]);
-                }
-            }
-        }
-        Ok(values)
+        let _any = segment
+            .visit_stored_document(local, &mut visitor)
+            .map_err(|e| Error::Io(e.to_string()))?;
+        Ok(visitor.values)
     }
 }
 
@@ -599,6 +591,65 @@ fn highlight_field_for_doc(
     };
     let mut off: Box<dyn OffsetsEnum> = enum_.unwrap_or_else(|| Box::new(EmptyOffsets));
     highlighter.highlight_content(content, off.as_mut())
+}
+
+/// `LimitedStoredFieldVisitor`: the string values of the fields asked for
+/// (sorted), each value cut to what is left of `max_length` and joined to
+/// the one before by [`MULTIVAL_SEP_CHAR`]; every other field, and a field
+/// already full, is skipped undecoded.
+struct LimitedVisitor<'a> {
+    infos: &'a lucene_codecs::field_infos::FieldInfos,
+    fields: &'a [&'a str],
+    values: Vec<Option<Vec<u16>>>,
+    max_length: usize,
+    /// The slot of the field being read.
+    current: usize,
+}
+
+impl StoredFieldVisitor for LimitedVisitor<'_> {
+    fn needs_field(
+        &mut self,
+        field_number: i32,
+    ) -> lucene_codecs::stored_fields::Result<VisitStatus> {
+        let Some(fi) = self.infos.field_by_number(field_number) else {
+            return Ok(VisitStatus::No);
+        };
+        let Ok(slot) = self.fields.binary_search(&fi.name.as_str()) else {
+            return Ok(VisitStatus::No);
+        };
+        // a field that is full needs no more, and when it is the only one
+        // the rest of the document is not walked
+        if self.values[slot]
+            .as_ref()
+            .is_some_and(|v| v.len() >= self.max_length)
+        {
+            return Ok(if self.fields.len() == 1 {
+                VisitStatus::Stop
+            } else {
+                VisitStatus::No
+            });
+        }
+        self.current = slot;
+        Ok(VisitStatus::Yes)
+    }
+
+    // `stringField`: only string values reach it
+    fn string_field(
+        &mut self,
+        _field_number: i32,
+        text: &str,
+    ) -> lucene_codecs::stored_fields::Result<()> {
+        let max_length = self.max_length;
+        match &mut self.values[self.current] {
+            slot @ None => *slot = Some(text.encode_utf16().take(max_length).collect()),
+            Some(cur) => {
+                let budget = max_length - cur.len();
+                cur.push(MULTIVAL_SEP_CHAR);
+                cur.extend(text.encode_utf16().take(budget - 1));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// An `Arc`'d formatter as a boxed one.

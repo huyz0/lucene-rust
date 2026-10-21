@@ -43,11 +43,12 @@
 
 use std::sync::Arc;
 
+use lucene_codecs::field_infos::IndexOptions;
 use lucene_codecs::postings::Position;
 
 use crate::exec::{self, LeafContext, Mode, NO_MORE_DOCS};
 use crate::multi_segment::OpenSegment;
-use crate::query::{BooleanQuery, Clause, PhraseQuery, TermQuery};
+use crate::query::{BooleanQuery, Clause, FuzzyQuery, PhraseQuery, TermQuery};
 use crate::sloppy_phrase::{sloppy_phrase_match_spans, PhraseRepeats};
 use crate::{Error, Result};
 
@@ -523,6 +524,123 @@ impl MatchesIterator for DisjunctionMatchesIterator {
 // Weight.matches
 // ---------------------------------------------------------------------------
 
+/// What `Weight.matches` reads of a leaf: a codec segment
+/// ([`OpenSegment`]), or the one document of a
+/// [`crate::memory::MemoryIndexReader`] read from its in-heap arrays, as
+/// Java's `MemoryIndexReader` serves its `Info`s.
+///
+/// The term, phrase, boolean, multi-term, fuzzy and synonym weights are
+/// written once against this trait; the span and interval weights and
+/// `Weight`'s default run on codec structures, which
+/// [`Self::codec_matches`] provides.
+pub(crate) trait MatchesLeaf {
+    /// The field's index options, `None` when the leaf has no terms in it.
+    fn field_index_options(&self, field: &str) -> Option<IndexOptions>;
+    /// Whether the leaf's positions can be read (a segment opened without
+    /// its `.pos` file cannot).
+    fn reads_positions(&self) -> bool;
+    /// The occurrences of `term` in `doc` (`PostingsEnum.OFFSETS`), `None`
+    /// when it does not occur there; a field without positions reports
+    /// `freq` occurrences at position `-1` without offsets.
+    fn occurrences(&self, field: &str, term: &[u8], doc: i32) -> Result<Option<Vec<Position>>>;
+    /// A prefix, wildcard, regexp or term-set clause's field and the terms
+    /// of the leaf it accepts, in term order; `None` for another clause or
+    /// a field without terms.
+    fn expanded_terms(&self, clause: &Clause) -> Result<Option<(String, Vec<Vec<u8>>)>>;
+    /// The terms `FuzzyQuery`'s `TopTermsBlendedFreqScoringRewrite` keeps
+    /// over the leaf, in its queue's order; `None` for a field without terms.
+    fn fuzzy_terms(&self, query: &FuzzyQuery) -> Result<Option<Vec<Vec<u8>>>>;
+    /// The matches of the clauses answered from codec structures: the span
+    /// and interval queries, and `Weight`'s default.
+    fn codec_matches(&self, clause: &Clause, doc: i32) -> Result<Option<BoxMatches>>;
+}
+
+impl MatchesLeaf for OpenSegment<'_> {
+    fn field_index_options(&self, field: &str) -> Option<IndexOptions> {
+        self.fields.field(field).map(|ft| ft.index_options())
+    }
+
+    fn reads_positions(&self) -> bool {
+        self.pos_in.is_some()
+    }
+
+    fn occurrences(&self, field: &str, term: &[u8], doc: i32) -> Result<Option<Vec<Position>>> {
+        occurrences(self, field, term, doc)
+    }
+
+    fn expanded_terms(&self, clause: &Clause) -> Result<Option<(String, Vec<Vec<u8>>)>> {
+        Ok(crate::expanded_terms(self.fields, clause)?
+            .map(|(field, terms, _)| (field, terms.into_iter().map(|(t, _)| t).collect())))
+    }
+
+    fn fuzzy_terms(&self, query: &FuzzyQuery) -> Result<Option<Vec<Vec<u8>>>> {
+        let Some(field_terms) = self.fields.field(&query.field) else {
+            return Ok(None);
+        };
+        let expansion = crate::fuzzy_expanded_terms(field_terms, query)?;
+        Ok(Some(expansion.terms.into_iter().map(|e| e.term).collect()))
+    }
+
+    fn codec_matches(&self, clause: &Clause, doc: i32) -> Result<Option<BoxMatches>> {
+        segment_codec_matches(self, clause, doc)
+    }
+}
+
+/// [`MatchesLeaf::codec_matches`] over a segment.
+fn segment_codec_matches(
+    seg: &OpenSegment<'_>,
+    clause: &Clause,
+    doc: i32,
+) -> Result<Option<BoxMatches>> {
+    match clause {
+        Clause::Extended(e) => match e.as_ref() {
+            crate::extended_query::ExtendedQuery::Interval(q) => {
+                crate::intervals::matches::interval_matches(seg, q, Arc::new(clause.clone()), doc)
+            }
+            // `SpanWeight.matches`; a top-level `FieldMaskingSpanQuery`'s
+            // weight is its masked query's, and an unscored
+            // `PayloadScoreQuery`'s its wrapped query's, which the iterators
+            // report.
+            crate::extended_query::ExtendedQuery::Span(q) => {
+                let weight = crate::spans::unscored_weight_query(q);
+                if weight.needs_rewrite() {
+                    // `IndexSearcher.rewrite`: a span over multi-term
+                    // queries is the span disjunction of their terms -- this
+                    // leaf's here, so a top-terms rewrite keeps its top terms
+                    // per segment rather than across the index.
+                    let norms = [None];
+                    let searcher = crate::index_searcher::IndexSearcher::new(
+                        std::slice::from_ref(seg),
+                        &norms,
+                    )?;
+                    let rewritten = weight.rewrite(&searcher)?;
+                    let query = Arc::new(Clause::from(rewritten.clone()));
+                    return exec::spans::span_matches(&leaf_context(seg), &rewritten, query, doc);
+                }
+                let query = if std::ptr::eq(weight, q) {
+                    Arc::new(clause.clone())
+                } else {
+                    Arc::new(Clause::from(weight.clone()))
+                };
+                exec::spans::span_matches(&leaf_context(seg), weight, query, doc)
+            }
+            // `ToParentBlockJoinQuery` (`MATCH_WITH_NO_TERMS` where its
+            // scorer matches) and everything else: `Weight`'s default.
+            _ => default_matches(seg, clause, doc),
+        },
+        // The core span queries are the same `SpanWeight`s.
+        Clause::Span(q) => exec::spans::span_matches(
+            &leaf_context(seg),
+            &crate::spans::SpanNode::from(q),
+            Arc::new(clause.clone()),
+            doc,
+        ),
+        // `Weight.matches`'s default: every other clause (match-all, points
+        // range, exists, ...) matches with no terms where its scorer does.
+        _ => default_matches(seg, clause, doc),
+    }
+}
+
 /// The segment's readers, as a matches computation needs them (no live docs:
 /// matches ignore deletions, as a `Scorer` does).
 fn leaf_context<'a>(seg: &OpenSegment<'a>) -> LeafContext<'a> {
@@ -586,13 +704,13 @@ fn occurrences(
 }
 
 /// `TermWeight.matches`.
-fn term_matches(
-    seg: &OpenSegment<'_>,
+fn term_matches<L: MatchesLeaf + ?Sized>(
+    seg: &L,
     q: &TermQuery,
     clause: Arc<Clause>,
     doc: i32,
 ) -> Result<Option<BoxMatches>> {
-    let Some(occ) = occurrences(seg, &q.field, &q.term, doc)? else {
+    let Some(occ) = seg.occurrences(&q.field, &q.term, doc)? else {
         return Ok(None);
     };
     let occ: Arc<[Position]> = occ.into();
@@ -688,8 +806,8 @@ fn exact_phrase_spans(occs: &[Vec<Position>], offsets: &[i32]) -> Vec<[i32; 4]> 
 
 /// `PhraseWeight.matches` for a `PhraseQuery` (after `rewrite`: no terms is
 /// `MatchNoDocsQuery`, one term a `TermQuery`).
-fn phrase_matches(
-    seg: &OpenSegment<'_>,
+fn phrase_matches<L: MatchesLeaf + ?Sized>(
+    seg: &L,
     q: &PhraseQuery,
     clause: Arc<Clause>,
     doc: i32,
@@ -703,7 +821,7 @@ fn phrase_matches(
         }
         _ => {}
     }
-    crate::require_phrase_positions(seg.fields, q)?;
+    crate::phrase_positions_check(seg.field_index_options(&q.field), q)?;
     let slots: Vec<Vec<Vec<u8>>> = q.terms.iter().map(|t| vec![t.clone()]).collect();
     let repeats = PhraseRepeats::for_phrase(&q.terms);
     let phrase = Phrase {
@@ -719,8 +837,8 @@ fn phrase_matches(
 /// `PhraseWeight.matches` for a `MultiPhraseQuery` (after `rewrite`: no
 /// positions is `MatchNoDocsQuery`, one a `BooleanQuery` of its terms
 /// `SHOULD`).
-fn multi_phrase_matches(
-    seg: &OpenSegment<'_>,
+fn multi_phrase_matches<L: MatchesLeaf + ?Sized>(
+    seg: &L,
     q: &crate::query::MultiPhraseQuery,
     clause: Arc<Clause>,
     doc: i32,
@@ -737,7 +855,7 @@ fn multi_phrase_matches(
         }
         _ => {}
     }
-    crate::require_multi_phrase_positions(seg.fields, q)?;
+    crate::multi_phrase_positions_check(seg.field_index_options(&q.field), q)?;
     let repeats = PhraseRepeats::for_multi_phrase(&q.term_arrays);
     let phrase = Phrase {
         field: &q.field,
@@ -762,23 +880,23 @@ struct Phrase<'q> {
 /// `PhraseWeight.matches` over the `PhraseMatcher` of `phrase`: an exact
 /// or sloppy matcher over each position's postings (`UnionFullPostingsEnum`
 /// over a position's alternatives: their occurrences in position order).
-fn positional_matches(
-    seg: &OpenSegment<'_>,
+fn positional_matches<L: MatchesLeaf + ?Sized>(
+    seg: &L,
     phrase: &Phrase<'_>,
     clause: Arc<Clause>,
     doc: i32,
 ) -> Result<Option<BoxMatches>> {
-    if seg.fields.field(phrase.field).is_none() {
+    if seg.field_index_options(phrase.field).is_none() {
         return Ok(None);
     }
-    if seg.pos_in.is_none() {
+    if !seg.reads_positions() {
         return Err(Error::MissingPosInput);
     }
     let mut occs = Vec::with_capacity(phrase.slots.len());
     for alts in phrase.slots {
         let mut slot: Vec<Position> = Vec::new();
         for t in alts {
-            if let Some(o) = occurrences(seg, phrase.field, t, doc)? {
+            if let Some(o) = seg.occurrences(phrase.field, t, doc)? {
                 slot.extend(o);
             }
         }
@@ -829,15 +947,14 @@ fn positional_matches(
 /// `AbstractMultiTermQueryConstantScoreWrapper.matches`:
 /// `DisjunctionMatchesIterator.fromTermsEnum` over the query's terms in term
 /// order.
-fn multi_term_matches(
-    seg: &OpenSegment<'_>,
+fn multi_term_matches<L: MatchesLeaf + ?Sized>(
+    seg: &L,
     clause: Arc<Clause>,
     doc: i32,
 ) -> Result<Option<BoxMatches>> {
-    let Some((field, terms, _)) = crate::expanded_terms(seg.fields, &clause)? else {
+    let Some((field, terms)) = seg.expanded_terms(&clause)? else {
         return Ok(None);
     };
-    let terms: Vec<Vec<u8>> = terms.into_iter().map(|(t, _)| t).collect();
     term_set_matches(seg, clause, &field, &terms, doc)
 }
 
@@ -845,23 +962,21 @@ fn multi_term_matches(
 /// matches of the terms the rewrite keeps (`maxExpansions` of them, the most
 /// similar first), a disjunction of term matches as for the other multi-term
 /// queries.
-fn fuzzy_matches(
-    seg: &OpenSegment<'_>,
+fn fuzzy_matches<L: MatchesLeaf + ?Sized>(
+    seg: &L,
     clause: Arc<Clause>,
-    query: &crate::query::FuzzyQuery,
+    query: &FuzzyQuery,
     doc: i32,
 ) -> Result<Option<BoxMatches>> {
-    let Some(field_terms) = seg.fields.field(&query.field) else {
+    let Some(terms) = seg.fuzzy_terms(query)? else {
         return Ok(None);
     };
-    let expansion = crate::fuzzy_expanded_terms(field_terms, query)?;
-    let terms: Vec<Vec<u8>> = expansion.terms.into_iter().map(|e| e.term).collect();
     term_set_matches(seg, clause, &query.field, &terms, doc)
 }
 
 /// The disjunction of the per-term matches of `terms` in `doc`.
-fn term_set_matches(
-    seg: &OpenSegment<'_>,
+fn term_set_matches<L: MatchesLeaf + ?Sized>(
+    seg: &L,
     clause: Arc<Clause>,
     field: &str,
     terms: &[Vec<u8>],
@@ -869,7 +984,7 @@ fn term_set_matches(
 ) -> Result<Option<BoxMatches>> {
     let mut per_term: Vec<Arc<[Position]>> = Vec::new();
     for term in terms {
-        if let Some(o) = occurrences(seg, field, term, doc)? {
+        if let Some(o) = seg.occurrences(field, term, doc)? {
             per_term.push(o.into());
         }
     }
@@ -895,8 +1010,8 @@ fn term_set_matches(
 /// `BooleanWeight.matches`: `None` if a prohibited clause matches, a
 /// required one does not, or fewer `SHOULD`s match than the minimum; else
 /// the required and matching optional clauses' matches amalgamated.
-fn boolean_matches(
-    seg: &OpenSegment<'_>,
+fn boolean_matches<L: MatchesLeaf + ?Sized>(
+    seg: &L,
     q: &BooleanQuery,
     doc: i32,
 ) -> Result<Option<BoxMatches>> {
@@ -905,19 +1020,19 @@ fn boolean_matches(
     // required clause ends the walk either way, and only the amalgamation's
     // order (required then optional, as added) is observable.
     for c in &q.must_not {
-        if leaf_matches(seg, c, doc)?.is_some() {
+        if leaf_matches_in(seg, c, doc)?.is_some() {
             return Ok(None);
         }
     }
     for c in q.must.iter().chain(&q.filter) {
-        match leaf_matches(seg, c, doc)? {
+        match leaf_matches_in(seg, c, doc)? {
             Some(m) => matches.push(m),
             None => return Ok(None),
         }
     }
     let mut should_count = 0usize;
     for c in &q.should {
-        if let Some(m) = leaf_matches(seg, c, doc)? {
+        if let Some(m) = leaf_matches_in(seg, c, doc)? {
             matches.push(m);
             should_count += 1;
         }
@@ -939,6 +1054,15 @@ pub fn leaf_matches(
     clause: &Clause,
     doc: i32,
 ) -> Result<Option<BoxMatches>> {
+    leaf_matches_in(seg, clause, doc)
+}
+
+/// [`leaf_matches`] over any [`MatchesLeaf`].
+pub(crate) fn leaf_matches_in<L: MatchesLeaf + ?Sized>(
+    seg: &L,
+    clause: &Clause,
+    doc: i32,
+) -> Result<Option<BoxMatches>> {
     match clause {
         Clause::Term(q) => term_matches(seg, q, Arc::new(clause.clone()), doc),
         Clause::Phrase(q) => phrase_matches(seg, q, Arc::new(clause.clone()), doc),
@@ -946,14 +1070,14 @@ pub fn leaf_matches(
         Clause::DisjunctionMax(d) => {
             let mut subs = Vec::new();
             for c in &d.disjuncts {
-                if let Some(m) = leaf_matches(seg, c, doc)? {
+                if let Some(m) = leaf_matches_in(seg, c, doc)? {
                     subs.push(m);
                 }
             }
             Ok(from_sub_matches(subs))
         }
-        Clause::ConstantScore(c) => leaf_matches(seg, &c.inner, doc),
-        Clause::Boost(b) => leaf_matches(seg, &b.inner, doc),
+        Clause::ConstantScore(c) => leaf_matches_in(seg, &c.inner, doc),
+        Clause::Boost(b) => leaf_matches_in(seg, &b.inner, doc),
         Clause::Prefix(_) | Clause::Wildcard(_) | Clause::Regexp(_) | Clause::TermInSet(_) => {
             multi_term_matches(seg, Arc::new(clause.clone()), doc)
         }
@@ -963,72 +1087,33 @@ pub fn leaf_matches(
             // parent weight's `matches`: the parent query asked about the
             // child document.
             crate::extended_query::ExtendedQuery::ToChildBlockJoin(q) => {
-                leaf_matches(seg, &q.parent, doc)
+                leaf_matches_in(seg, &q.parent, doc)
             }
             // `ParentsChildrenBlockJoinWeight.matches`: the parent's and the
             // child's matches of the document, combined.
             crate::extended_query::ExtendedQuery::ParentsChildrenBlockJoin(q) => {
                 let subs: Vec<BoxMatches> = [
-                    leaf_matches(seg, &q.parent, doc)?,
-                    leaf_matches(seg, &q.child, doc)?,
+                    leaf_matches_in(seg, &q.parent, doc)?,
+                    leaf_matches_in(seg, &q.child, doc)?,
                 ]
                 .into_iter()
                 .flatten()
                 .collect();
                 Ok(from_sub_matches(subs))
             }
-            crate::extended_query::ExtendedQuery::Interval(q) => {
-                crate::intervals::matches::interval_matches(seg, q, Arc::new(clause.clone()), doc)
-            }
-            // `SpanWeight.matches`; a top-level `FieldMaskingSpanQuery`'s
-            // weight is its masked query's, and an unscored
-            // `PayloadScoreQuery`'s its wrapped query's, which the iterators
-            // report.
-            crate::extended_query::ExtendedQuery::Span(q) => {
-                let weight = crate::spans::unscored_weight_query(q);
-                if weight.needs_rewrite() {
-                    // `IndexSearcher.rewrite`: a span over multi-term
-                    // queries is the span disjunction of their terms -- this
-                    // leaf's here, so a top-terms rewrite keeps its top terms
-                    // per segment rather than across the index.
-                    let norms = [None];
-                    let searcher = crate::index_searcher::IndexSearcher::new(
-                        std::slice::from_ref(seg),
-                        &norms,
-                    )?;
-                    let rewritten = weight.rewrite(&searcher)?;
-                    let query = Arc::new(Clause::from(rewritten.clone()));
-                    return exec::spans::span_matches(&leaf_context(seg), &rewritten, query, doc);
-                }
-                let query = if std::ptr::eq(weight, q) {
-                    Arc::new(clause.clone())
-                } else {
-                    Arc::new(Clause::from(weight.clone()))
-                };
-                exec::spans::span_matches(&leaf_context(seg), weight, query, doc)
-            }
             // `SynonymWeight.matches`: the disjunction of its terms' matches.
             crate::extended_query::ExtendedQuery::Synonym(q) => {
                 let terms: Vec<Vec<u8>> = q.terms.iter().map(|(t, _)| t.clone()).collect();
                 term_set_matches(seg, Arc::new(clause.clone()), &q.field, &terms, doc)
             }
-            // `ToParentBlockJoinQuery` (`MATCH_WITH_NO_TERMS` where its
-            // scorer matches) and everything else: `Weight`'s default.
-            _ => default_matches(seg, clause, doc),
+            // The interval and span weights, and `Weight`'s default.
+            _ => seg.codec_matches(clause, doc),
         },
-        // The core span queries are the same `SpanWeight`s.
-        Clause::Span(q) => exec::spans::span_matches(
-            &leaf_context(seg),
-            &crate::spans::SpanNode::from(q),
-            Arc::new(clause.clone()),
-            doc,
-        ),
         Clause::Fuzzy(q) => fuzzy_matches(seg, Arc::new(clause.clone()), q, doc),
         Clause::MultiPhrase(q) => multi_phrase_matches(seg, q, Arc::new(clause.clone()), doc),
-        // `Weight.matches`'s default: every other clause (match-all, points
-        // range, exists, ...) matches with no terms where its scorer does.
+        // The core span queries' `SpanWeight`s, and `Weight`'s default.
         #[allow(unreachable_patterns)]
-        _ => default_matches(seg, clause, doc),
+        _ => seg.codec_matches(clause, doc),
     }
 }
 

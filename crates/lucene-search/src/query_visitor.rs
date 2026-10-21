@@ -20,6 +20,7 @@
 //! (`fixtures/src/GenQueryVisitor.java`).
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use lucene_util::automaton::{self, AutomatonType, CompiledAutomaton};
 
@@ -55,6 +56,100 @@ impl Term {
 /// one the query accepts.
 pub trait TermMatcher {
     fn matches(&self, term: &[u8]) -> bool;
+
+    /// A matcher of the same terms that outlives the visit, for a visitor
+    /// that keeps it (Java's keeps the `ByteRunAutomaton` it was supplied);
+    /// `None`, the default, when this one cannot give it.
+    fn to_owned_matcher(&self) -> Option<Box<dyn TermMatcher + Send + Sync>> {
+        None
+    }
+}
+
+/// The matcher of an automaton that accepts every term.
+struct AcceptAll;
+
+impl TermMatcher for AcceptAll {
+    fn matches(&self, _term: &[u8]) -> bool {
+        true
+    }
+    fn to_owned_matcher(&self) -> Option<Box<dyn TermMatcher + Send + Sync>> {
+        Some(Box::new(AcceptAll))
+    }
+}
+
+/// The matcher of a `NORMAL` compiled automaton: its runnable form.
+struct Runs<'a>(&'a CompiledAutomaton);
+
+impl TermMatcher for Runs<'_> {
+    fn matches(&self, term: &[u8]) -> bool {
+        self.0.get_byte_runnable().is_some_and(|r| r.run(term))
+    }
+    fn to_owned_matcher(&self) -> Option<Box<dyn TermMatcher + Send + Sync>> {
+        // the NFA form keeps a cache it cannot share; the DFA is plain data
+        match (&self.0.nfa_run_automaton, &self.0.run_automaton) {
+            (None, Some(r)) => Some(Box::new(OwnedRun(r.clone()))),
+            _ => None,
+        }
+    }
+}
+
+/// [`Runs`] over a determinized automaton, owned.
+struct OwnedRun(automaton::ByteRunAutomaton);
+
+impl TermMatcher for OwnedRun {
+    fn matches(&self, term: &[u8]) -> bool {
+        automaton::ByteRunnable::run(&self.0, term)
+    }
+    fn to_owned_matcher(&self) -> Option<Box<dyn TermMatcher + Send + Sync>> {
+        Some(Box::new(OwnedRun(self.0.clone())))
+    }
+}
+
+/// `FuzzyQuery`'s matcher: its pattern, built once.
+struct Fuzzy<'a>(lucene_codecs::fuzzy::FuzzyMatch<'a>);
+
+impl Fuzzy<'_> {
+    fn of(q: &crate::query::FuzzyQuery) -> Fuzzy<'_> {
+        Fuzzy(lucene_codecs::fuzzy::FuzzyMatch::new(
+            &q.term,
+            q.max_edits,
+            q.prefix_length,
+            q.transpositions,
+        ))
+    }
+}
+
+impl TermMatcher for Fuzzy<'_> {
+    fn matches(&self, term: &[u8]) -> bool {
+        self.0.matches(term)
+    }
+    fn to_owned_matcher(&self) -> Option<Box<dyn TermMatcher + Send + Sync>> {
+        Some(Box::new(OwnedFuzzy(Arc::new(self.0.clone().into_owned()))))
+    }
+}
+
+/// [`Fuzzy`], owned.
+struct OwnedFuzzy(Arc<lucene_codecs::fuzzy::FuzzyMatch<'static>>);
+
+impl TermMatcher for OwnedFuzzy {
+    fn matches(&self, term: &[u8]) -> bool {
+        self.0.matches(term)
+    }
+    fn to_owned_matcher(&self) -> Option<Box<dyn TermMatcher + Send + Sync>> {
+        Some(Box::new(OwnedFuzzy(Arc::clone(&self.0))))
+    }
+}
+
+/// `TermInSetQuery`'s matcher: membership of its terms.
+struct InSet(BTreeSet<Vec<u8>>);
+
+impl TermMatcher for InSet {
+    fn matches(&self, term: &[u8]) -> bool {
+        self.0.contains(term)
+    }
+    fn to_owned_matcher(&self) -> Option<Box<dyn TermMatcher + Send + Sync>> {
+        Some(Box::new(InSet(self.0.clone())))
+    }
 }
 
 impl<F: Fn(&[u8]) -> bool> TermMatcher for F {
@@ -209,11 +304,8 @@ pub fn visit_compiled(
             let term = c.term.clone().unwrap_or_default();
             visitor.consume_terms(query, &[Term::new(field, term)]);
         }
-        AutomatonType::ALL => visitor.consume_terms_matching(query, field, &|_: &[u8]| true),
-        AutomatonType::NORMAL => {
-            let run = |t: &[u8]| c.get_byte_runnable().is_some_and(|r| r.run(t));
-            visitor.consume_terms_matching(query, field, &run);
-        }
+        AutomatonType::ALL => visitor.consume_terms_matching(query, field, &AcceptAll),
+        AutomatonType::NORMAL => visitor.consume_terms_matching(query, field, &Runs(c)),
     }
 }
 
@@ -352,27 +444,19 @@ pub fn visit(clause: &Clause, visitor: &mut dyn QueryVisitor) {
         Clause::Regexp(q) => visit_source(&MultiTermSource::Regexp(q.clone()), clause, visitor),
         Clause::Fuzzy(q) => {
             if visitor.accept_field(&q.field) {
-                let m = lucene_codecs::fuzzy::FuzzyMatch::new(
-                    &q.term,
-                    q.max_edits,
-                    q.prefix_length,
-                    q.transpositions,
-                );
-                visitor.consume_terms_matching(clause, &q.field, &|t: &[u8]| m.matches(t));
+                visitor.consume_terms_matching(clause, &q.field, &Fuzzy::of(q));
             }
         }
         Clause::TermInSet(q) => {
             if !visitor.accept_field(&q.field) {
                 return;
             }
-            let set: BTreeSet<&Vec<u8>> = q.terms.iter().collect();
+            let set: BTreeSet<Vec<u8>> = q.terms.iter().cloned().collect();
             if set.len() == 1 {
-                let only = set.iter().next().map(|t| (*t).clone()).unwrap_or_default();
+                let only = set.into_iter().next().unwrap_or_default();
                 visitor.consume_terms(clause, &[Term::new(q.field.clone(), only)]);
             } else if set.len() > 1 {
-                visitor.consume_terms_matching(clause, &q.field, &|t: &[u8]| {
-                    set.contains(&t.to_vec())
-                });
+                visitor.consume_terms_matching(clause, &q.field, &InSet(set));
             }
         }
         Clause::Span(s) => visit_span(s, clause, visitor),
@@ -748,5 +832,60 @@ mod tests {
         let mut seen = Seen::default();
         visit_compiled(&none, &mut seen, &q, "f");
         assert!(seen.terms.is_empty() && seen.matched.is_empty());
+    }
+
+    /// Every matcher a visit hands over can be kept past it, as the same
+    /// test -- except a non-determinized automaton's.
+    #[test]
+    fn matchers_can_be_kept_past_the_visit() {
+        use crate::extended_query::{
+            AutomatonQuery, MultiTermQuery, MultiTermSource, RewriteMethod,
+        };
+        use crate::query::{FuzzyQuery, PrefixQuery, RegexpQuery, TermInSetQuery};
+        #[derive(Default)]
+        struct Kept(Vec<Option<Box<dyn TermMatcher + Send + Sync>>>);
+        impl QueryVisitor for Kept {
+            fn consume_terms(&mut self, _q: &Clause, _terms: &[Term]) {}
+            fn consume_terms_matching(&mut self, _q: &Clause, _f: &str, m: &dyn TermMatcher) {
+                let owned = m.to_owned_matcher();
+                if let Some(o) = &owned {
+                    for t in [&b"ab"[..], b"abc", b"abd", b"x", b""] {
+                        assert_eq!(o.matches(t), m.matches(t), "{t:?}");
+                        // and a copy of the copy
+                        let again = o.to_owned_matcher().unwrap();
+                        assert_eq!(again.matches(t), m.matches(t));
+                    }
+                }
+                self.0.push(owned);
+            }
+            fn visit_leaf(&mut self, _q: &Clause) {}
+        }
+        let kept = |q: Clause| {
+            let mut v = Kept::default();
+            visit(&q, &mut v);
+            assert_eq!(v.0.len(), 1, "{q:?}");
+            v.0.remove(0)
+        };
+        for q in [
+            Clause::from(PrefixQuery::new("f", "ab")),
+            Clause::from(PrefixQuery::new("f", "")),
+            Clause::from(RegexpQuery::new("f", "ab[cd]")),
+            Clause::from(FuzzyQuery::new("f", "abc")),
+            Clause::from(TermInSetQuery::new("f", ["abc", "x"])),
+        ] {
+            assert!(kept(q.clone()).is_some(), "{q:?}");
+        }
+        // an automaton query keeps its automaton as given: here an NFA
+        let nfa = lucene_util::automaton::RegExp::new("(a|ab)*c")
+            .unwrap()
+            .to_automaton()
+            .unwrap();
+        let q = MultiTermQuery::new(
+            MultiTermSource::Automaton(AutomatonQuery::new("f", nfa, false)),
+            RewriteMethod::default(),
+        );
+        assert!(kept(Clause::from(q)).is_none());
+        // a plain closure keeps nothing
+        assert!((|_: &[u8]| true).to_owned_matcher().is_none());
     }
 }

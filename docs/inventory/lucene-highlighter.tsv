@@ -21,7 +21,7 @@ search/highlight/SimpleHTMLEncoder	ported	crates/lucene-search/src/highlight/for
 search/highlight/SimpleHTMLFormatter	ported	crates/lucene-search/src/highlight/formatters.rs::SimpleHtmlFormatter
 search/highlight/SimpleSpanFragmenter	ported	crates/lucene-search/src/highlight/formatters.rs::SimpleSpanFragmenter
 search/highlight/SpanGradientFormatter	ported	crates/lucene-search/src/highlight/formatters.rs::SpanGradientFormatter
-search/highlight/TermVectorLeafReader	ported	crates/lucene-search/src/highlight/term_vector.rs::TokenStreamFromTermVector -- no class of its own: the extractor indexes the vector's stream
+search/highlight/TermVectorLeafReader	ported	crates/lucene-search/src/highlight/term_vector.rs::TokenStreamFromTermVector -- no class of its own: the extractor indexes the vector's stream; the unified highlighter reads a vector straight into a one-document index (crates/lucene-search/src/memory/vector.rs::MemoryIndex::vector_reader)
 search/highlight/TextFragment	ported	crates/lucene-search/src/highlight/mod.rs::TextFragment
 search/highlight/TokenGroup	ported	crates/lucene-search/src/highlight/mod.rs::TokenGroup
 search/highlight/TokenSources	ported	crates/lucene-search/src/highlight/term_vector.rs::TokenSources

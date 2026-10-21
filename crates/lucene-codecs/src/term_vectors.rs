@@ -1066,41 +1066,76 @@ impl DecodedChunk {
 
         let mut fields = Vec::with_capacity(doc_num_fields);
         for field_idx in doc_field_start..doc_field_start + doc_num_fields {
-            let term_start = self.term_offsets[field_idx] as usize;
-            let term_end = self.term_offsets[field_idx + 1] as usize;
-            // `field_num_offs` was range-checked against `field_nums` once
-            // per chunk in `read_chunk`, so this per-document path does not
-            // re-check it. `chars_per_term` carries one entry per distinct
-            // field number too, or none at all.
-            let field_number = self.field_nums[self.field_num_offs[field_idx] as usize] as i32;
-            let field_chars_per_term = if self.chars_per_term.is_empty() {
-                0.0
-            } else {
-                self.chars_per_term[self.field_num_offs[field_idx] as usize]
-            };
-            fields.push(build_field(FieldDecodeInput {
-                field_number,
-                flags: self.all_flags[field_idx],
-                term_start,
-                term_count: term_end - term_start,
-                prefix_lengths: &self.prefix_lengths,
-                suffix_lengths: &self.suffix_lengths,
-                term_freqs_minus1: &self.term_freqs_minus1,
-                suffix_bytes: &self.decompressed,
-                suffix_byte_start: self.suffix_byte_starts[field_idx],
-                positions_flat: &self.positions_flat,
-                position_start: self.position_starts[field_idx],
-                start_offsets_flat: &self.start_offsets_flat,
-                lengths_flat: &self.lengths_flat,
-                offset_start: self.offset_starts[field_idx],
-                payload_bytes: &self.decompressed,
-                payload_lengths_flat: &self.payload_lengths_flat,
-                payload_start: self.payload_starts[field_idx],
-                payload_byte_start: self.payload_byte_starts[field_idx],
-                chars_per_term: field_chars_per_term,
-            })?);
+            fields.push(self.build_field(field_idx)?);
         }
         Ok(Some(TermVectorsDocument { fields }))
+    }
+
+    /// One field of one of this chunk's documents -- what
+    /// [`Self::document`] would hold for `field_number` -- or `None` if the
+    /// document has no vector for it; the document's other fields are not
+    /// materialised.
+    ///
+    /// ARITH: as [`Self::document`].
+    #[allow(clippy::arithmetic_side_effects)]
+    pub fn field(&self, doc_id: i32, field_number: i32) -> Result<Option<TermVectorField>> {
+        if !self.contains(doc_id) {
+            return Err(Error::CorruptChunkBounds {
+                doc_base: self.doc_base,
+                chunk_docs: self.chunk_docs,
+                doc: doc_id,
+                max_doc: self.doc_base + self.chunk_docs,
+            });
+        }
+        let doc_index = (doc_id - self.doc_base) as usize;
+        let start = self.field_offsets[doc_index] as usize;
+        let end = self.field_offsets[doc_index + 1] as usize;
+        for field_idx in start..end {
+            if self.field_nums[self.field_num_offs[field_idx] as usize] as i32 == field_number {
+                return self.build_field(field_idx).map(Some);
+            }
+        }
+        Ok(None)
+    }
+
+    /// The chunk's `field_idx`-th field, materialised.
+    ///
+    /// ARITH: as [`Self::document`]; `field_idx` is below `total_fields`.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn build_field(&self, field_idx: usize) -> Result<TermVectorField> {
+        let term_start = self.term_offsets[field_idx] as usize;
+        let term_end = self.term_offsets[field_idx + 1] as usize;
+        // `field_num_offs` was range-checked against `field_nums` once
+        // per chunk in `read_chunk`, so this per-document path does not
+        // re-check it. `chars_per_term` carries one entry per distinct
+        // field number too, or none at all.
+        let field_number = self.field_nums[self.field_num_offs[field_idx] as usize] as i32;
+        let field_chars_per_term = if self.chars_per_term.is_empty() {
+            0.0
+        } else {
+            self.chars_per_term[self.field_num_offs[field_idx] as usize]
+        };
+        build_field(FieldDecodeInput {
+            field_number,
+            flags: self.all_flags[field_idx],
+            term_start,
+            term_count: term_end - term_start,
+            prefix_lengths: &self.prefix_lengths,
+            suffix_lengths: &self.suffix_lengths,
+            term_freqs_minus1: &self.term_freqs_minus1,
+            suffix_bytes: &self.decompressed,
+            suffix_byte_start: self.suffix_byte_starts[field_idx],
+            positions_flat: &self.positions_flat,
+            position_start: self.position_starts[field_idx],
+            start_offsets_flat: &self.start_offsets_flat,
+            lengths_flat: &self.lengths_flat,
+            offset_start: self.offset_starts[field_idx],
+            payload_bytes: &self.decompressed,
+            payload_lengths_flat: &self.payload_lengths_flat,
+            payload_start: self.payload_starts[field_idx],
+            payload_byte_start: self.payload_byte_starts[field_idx],
+            chars_per_term: field_chars_per_term,
+        })
     }
 }
 
@@ -1129,6 +1164,23 @@ impl ChunkCursor {
             self.chunk = Some(reader.read_chunk(doc_id)?);
         }
         self.chunk.as_ref().expect("just loaded").document(doc_id)
+    }
+
+    /// `doc_id`'s term vector of field `field_number` alone, as
+    /// [`Self::document`] decodes its chunk.
+    pub fn field(
+        &mut self,
+        reader: &TermVectorsReader<'_>,
+        doc_id: i32,
+        field_number: i32,
+    ) -> Result<Option<TermVectorField>> {
+        if !self.chunk.as_ref().is_some_and(|c| c.contains(doc_id)) {
+            self.chunk = Some(reader.read_chunk(doc_id)?);
+        }
+        self.chunk
+            .as_ref()
+            .expect("just loaded")
+            .field(doc_id, field_number)
     }
 
     /// Drops the held chunk.
@@ -4523,6 +4575,15 @@ mod tests {
         assert_eq!(reader.read_chunk(0).unwrap().field_nums, vec![2, 5, 7]);
         // Document order is preserved regardless.
         let got = reader.document(0).unwrap().unwrap();
+        // One field alone is the document's field of that number.
+        let mut cursor = ChunkCursor::new();
+        for n in [7, 2, 5] {
+            assert_eq!(
+                cursor.field(&reader, 0, n).unwrap().as_ref(),
+                got.fields.iter().find(|f| f.field_number == n)
+            );
+        }
+        assert!(cursor.field(&reader, 0, 3).unwrap().is_none());
         assert_eq!(
             got.fields
                 .iter()
@@ -4544,6 +4605,14 @@ mod tests {
                 cursor.document(&reader, doc_id).unwrap(),
                 reader.document(doc_id).unwrap(),
                 "doc {doc_id}"
+            );
+        }
+        // the field form reloads across chunks, backwards too
+        for doc_id in (0..reader.max_doc()).rev() {
+            assert_eq!(
+                cursor.field(&reader, doc_id, 0).unwrap(),
+                Some(tiny_doc(doc_id as usize).fields.remove(0)),
+                "doc {doc_id} field"
             );
         }
         // A backwards walk must reload rather than serve a stale chunk.
@@ -4572,6 +4641,14 @@ mod tests {
             chunk.document(300),
             Err(Error::CorruptChunkBounds { .. })
         ));
+        assert!(matches!(
+            chunk.field(300, 0),
+            Err(Error::CorruptChunkBounds { .. })
+        ));
+        assert_eq!(
+            chunk.field(200, 0).unwrap(),
+            Some(tiny_doc(200).fields.remove(0))
+        );
         assert!(matches!(
             reader.read_chunk(-1),
             Err(Error::DocOutOfRange(-1, 300))

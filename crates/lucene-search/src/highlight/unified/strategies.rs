@@ -3,20 +3,20 @@
 //! text, or nowhere) and what they are for the query.
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use lucene_analysis::{Analyzer, TokenStream};
 use lucene_codecs::term_vectors::TermVectorField;
 use lucene_index::document::{FieldToken, FieldTokens};
 
 use super::super::{Error, Result};
-use super::matches_enum::OfMatchesWithSubs;
+use super::matches_enum::{OfMatchesWithSubs, QueryTerms};
 use super::passage::{MatchEntry, MultiOffsets, OfMatches, OfPostings, OffsetsEnum};
 pub use super::phrase_helper::PhraseHelper;
 use crate::extended_query::ExtendedQuery;
 use crate::highlighter::OffsetSource;
 use crate::matches::BoxMatches;
-use crate::memory::MemoryIndex;
+use crate::memory::{MemoryIndex, MemoryIndexReader};
 use crate::multi_segment::OpenSegment;
 use crate::query::{Clause, MatchAllDocsQuery, MatchNoDocsQuery};
 use crate::query_visitor::{self, Occur, QueryVisitor, SubVisitor, Term, TermMatcher};
@@ -453,17 +453,54 @@ pub struct LeafCtx<'a> {
     pub doc: i32,
     /// `Weight.matches(leaf, doc)` of a query over the index.
     pub matches: &'a dyn Fn(&Clause) -> crate::Result<Option<BoxMatches>>,
+    /// `reader.termVectors().get(doc, field)`, by field number.
+    pub term_vector: &'a dyn Fn(i32) -> crate::Result<Option<TermVectorField>>,
 }
 
-/// A strategy: an offset source with the components it works from.
-#[derive(Clone)]
+/// A strategy: an offset source with the components it works from. Its
+/// parts are fixed once it is built, as Java's are final: the per-document
+/// work that depends on them alone is cached on first use.
 pub struct Strategy {
     /// What `getOffsetSource()` reports.
     pub source: OffsetSource,
     /// The components.
-    pub components: Components,
+    components: Components,
     /// The index analyzer, for `ANALYSIS`.
-    pub analyzer: Option<Arc<Analyzer>>,
+    analyzer: Option<Arc<Analyzer>>,
+    /// The query the one-document index answers, retargeted and rewritten,
+    /// when no leaf of it reads another field (the overlay is then the
+    /// identity, so it is the same for every document); `None` otherwise.
+    own_query: OnceLock<Option<Clause>>,
+    /// The automata, built on first use; `None` when one of them cannot
+    /// outlive the visit that supplies it.
+    automata: OnceLock<Option<Automata>>,
+    /// The terms the weight-matches enums name their queries by.
+    query_terms: Arc<QueryTerms>,
+}
+
+impl Clone for Strategy {
+    fn clone(&self) -> Self {
+        Strategy {
+            source: self.source,
+            components: self.components.clone(),
+            analyzer: self.analyzer.clone(),
+            own_query: OnceLock::new(),
+            automata: OnceLock::new(),
+            query_terms: Arc::default(),
+        }
+    }
+}
+
+/// A matcher kept past the visit that supplied it.
+type OwnedMatcher = Box<dyn TermMatcher + Send + Sync>;
+
+/// A strategy's automata, kept.
+struct Automata {
+    /// The query's (`AutomataCollector`'s), with their labels, in visiting
+    /// order.
+    query: Vec<(String, OwnedMatcher)>,
+    /// The `PhraseHelper`'s span queries'.
+    spans: Vec<OwnedMatcher>,
 }
 
 impl Strategy {
@@ -489,6 +526,9 @@ impl Strategy {
             source,
             components,
             analyzer,
+            own_query: OnceLock::new(),
+            automata: OnceLock::new(),
+            query_terms: Arc::default(),
         })
     }
 
@@ -539,9 +579,16 @@ impl Strategy {
                 let Some(vector) = term_vector(ctx, &self.components.field)? else {
                     return Ok(None);
                 };
-                let mut stream = super::super::TokenStreamFromTermVector::new(&vector, -1)?;
-                let tokens = drain_tokens(&mut stream)?;
-                let found = self.enums_from_memory_index(&tokens, Some(ctx), false)?;
+                let index = MemoryIndex::vector_reader(&self.components.field, &vector)
+                    .map_err(|e| Error::IllegalArgument(e.to_string()))?;
+                let found = match index {
+                    Some(reader) => self.enums_from_index(Arc::new(reader), Some(ctx))?,
+                    None => {
+                        let mut stream = super::super::TokenStreamFromTermVector::new(&vector, -1)?;
+                        let tokens = drain_tokens(&mut stream)?;
+                        self.enums_from_memory_index(&tokens, Some(ctx), false)?
+                    }
+                };
                 if vector.has_offsets {
                     return Ok(found);
                 }
@@ -576,17 +623,12 @@ impl Strategy {
         let mut automata: Vec<(String, Vec<bool>)> = Vec::new();
         if c.flags.multi_term_query {
             let distinct: Vec<&[u8]> = tokens.tokens.iter().map(|t| t.term.as_slice()).collect();
-            for_each_automaton(
-                &c.query,
-                &*c.field_matcher,
-                c.look_in_span,
-                &mut |label, m| {
-                    automata.push((
-                        label.to_string(),
-                        distinct.iter().map(|t| m.matches(t)).collect(),
-                    ));
-                },
-            );
+            self.for_each_query_automaton(&mut |label, m| {
+                automata.push((
+                    label.to_string(),
+                    distinct.iter().map(|t| m.matches(t)).collect(),
+                ));
+            });
         }
         let mut entries = Vec::new();
         for (i, t) in tokens.tokens.iter().enumerate() {
@@ -625,26 +667,10 @@ impl Strategy {
     /// terms and the automata nothing is filtered.
     fn keep_words(&self, tokens: &FieldTokens) -> FieldTokens {
         let c = &self.components;
-        let (Some(terms), Some(automata)) = (&c.terms, &c.automata) else {
+        let (Some(terms), Some(_)) = (&c.terms, &c.automata) else {
             return tokens.clone();
         };
-        let mut hit = vec![false; tokens.tokens.len()];
-        let mut mark = |_: &str, m: &dyn TermMatcher| {
-            for (h, t) in hit.iter_mut().zip(&tokens.tokens) {
-                *h = *h || m.matches(&t.term);
-            }
-        };
-        if !automata.is_empty() {
-            for_each_automaton(&c.query, &*c.field_matcher, c.look_in_span, &mut mark);
-        }
-        for span in c.phrase.span_queries() {
-            for_each_automaton(
-                &Clause::from(span.clone()),
-                &*c.field_matcher,
-                true,
-                &mut mark,
-            );
-        }
+        let hit = self.automata_hits(tokens);
         let mut kept = Vec::new();
         let mut carried = 0;
         for (t, h) in tokens.tokens.iter().zip(hit) {
@@ -665,6 +691,89 @@ impl Strategy {
             final_position_increment: tokens.final_position_increment,
             final_offset: tokens.final_offset,
             end_attributes: None,
+        }
+    }
+
+    /// Whether each token matches an automaton of the query or of one of
+    /// the `PhraseHelper`'s span queries.
+    fn automata_hits(&self, tokens: &FieldTokens) -> Vec<bool> {
+        let c = &self.components;
+        let mut hit = vec![false; tokens.tokens.len()];
+        let mut mark = |m: &dyn TermMatcher| {
+            for (h, t) in hit.iter_mut().zip(&tokens.tokens) {
+                *h = *h || m.matches(&t.term);
+            }
+        };
+        if c.automata.as_ref().is_some_and(|a| !a.is_empty()) {
+            self.for_each_query_automaton(&mut |_, m| mark(m));
+        }
+        self.for_each_span_automaton(&mut mark);
+        hit
+    }
+
+    /// The automata of the query and of the span queries, built on first
+    /// use as Java builds them once per strategy; `None` when one of them
+    /// cannot be kept (an NFA's), and they are visited for each document.
+    fn kept_automata(&self) -> Option<&Automata> {
+        self.automata
+            .get_or_init(|| {
+                let c = &self.components;
+                let mut kept = true;
+                let mut query = Vec::new();
+                for_each_automaton(
+                    &c.query,
+                    &*c.field_matcher,
+                    c.look_in_span,
+                    &mut |l, m| match m.to_owned_matcher() {
+                        Some(m) => query.push((l.to_string(), m)),
+                        None => kept = false,
+                    },
+                );
+                let mut spans = Vec::new();
+                for span in c.phrase.span_queries() {
+                    let span = Clause::from(span.clone());
+                    for_each_automaton(&span, &*c.field_matcher, true, &mut |_, m| match m
+                        .to_owned_matcher()
+                    {
+                        Some(m) => spans.push(m),
+                        None => kept = false,
+                    });
+                }
+                kept.then_some(Automata { query, spans })
+            })
+            .as_ref()
+    }
+
+    /// `for_each_automaton` of the query, over the kept automata when there
+    /// are.
+    fn for_each_query_automaton(&self, f: &mut dyn FnMut(&str, &dyn TermMatcher)) {
+        let c = &self.components;
+        match self.kept_automata() {
+            Some(kept) => {
+                for (label, m) in &kept.query {
+                    f(label, &**m);
+                }
+            }
+            None => for_each_automaton(&c.query, &*c.field_matcher, c.look_in_span, f),
+        }
+    }
+
+    /// Every automaton of the span queries, over the kept automata when
+    /// there are.
+    fn for_each_span_automaton(&self, f: &mut dyn FnMut(&dyn TermMatcher)) {
+        let c = &self.components;
+        match self.kept_automata() {
+            Some(kept) => {
+                for m in &kept.spans {
+                    f(&**m);
+                }
+            }
+            None => {
+                for span in c.phrase.span_queries() {
+                    let span = Clause::from(span.clone());
+                    for_each_automaton(&span, &*c.field_matcher, true, &mut |_, m| f(m));
+                }
+            }
         }
     }
 
@@ -693,29 +802,58 @@ impl Strategy {
         let reader = index
             .create_reader()
             .map_err(|e| Error::IllegalArgument(e.to_string()))?;
+        self.enums_from_index(reader, ctx)
+    }
+
+    /// The reader-based extraction over a one-document index.
+    fn enums_from_index(
+        &self,
+        reader: Arc<MemoryIndexReader>,
+        ctx: Option<&LeafCtx<'_>>,
+    ) -> Result<Option<Box<dyn OffsetsEnum>>> {
+        let c = &self.components;
         let own = |q: &Clause| -> Result<Option<BoxMatches>> {
+            if std::ptr::eq(q, &c.query) {
+                if let Some(q) = self.own_query() {
+                    return reader.matches(q, 0).map_err(Into::into);
+                }
+            }
             let q = retarget(q, &*c.field_matcher, &c.field);
             let q = overlay_query(&q, &c.field, ctx)?.rewrite();
-            reader
-                .with_searcher(|s| crate::matches::matches(s, &q, 0))
-                .map_err(|e| Error::IllegalArgument(e.to_string()))?
-                .map_err(Into::into)
+            reader.matches(&q, 0).map_err(Into::into)
         };
         if c.flags.weight_matches {
-            // the in-memory searcher answers; the codec segment the
-            // reader-level APIs need is written only on the classic path
-            return self.enums_from_matches(own(&c.query)?);
+            let m = own(&c.query)?;
+            return self.enums_from_matches(m);
         }
+        // the span queries run on the codec form, encoded only for them
         let spans = |out: &mut Vec<Box<dyn OffsetsEnum>>| -> Result<()> {
             reader
                 .with_searcher(|s| c.phrase.offsets_enums_for_spans(&s.segments()[0], 0, out))
                 .map_err(|e| Error::IllegalArgument(e.to_string()))?
         };
-        let segments = reader
-            .directory_reader()
-            .map_err(|e| Error::IllegalArgument(e.to_string()))?;
-        let leaf: &dyn LeafReader = &segments.segment_readers()[0];
+        let leaf: &dyn LeafReader = &*reader;
         self.enums_from_reader(leaf, 0, &own, &spans, None)
+    }
+
+    /// The document-independent form of the query the one-document index
+    /// answers (see `own_query`), computed on first use.
+    fn own_query(&self) -> Option<&Clause> {
+        self.own_query
+            .get_or_init(|| {
+                let c = &self.components;
+                let q = retarget(&c.query, &*c.field_matcher, &c.field);
+                let foreign = std::cell::Cell::new(false);
+                map_leaves(&q, true, &|leaf, _| {
+                    let fields = clause_fields(leaf);
+                    if !fields.is_empty() && !fields.contains(&c.field) {
+                        foreign.set(true);
+                    }
+                    leaf.clone()
+                });
+                (!foreign.get()).then(|| q.rewrite())
+            })
+            .as_ref()
     }
 
     /// `createOffsetsEnumFromReader(leafReader, doc)`; `tv_terms` is the
@@ -775,7 +913,10 @@ impl Strategy {
         for field in matches.fields() {
             if (self.components.field_matcher)(&field) {
                 if let Some(it) = matches.get_matches(&field)? {
-                    out.push(Box::new(OfMatchesWithSubs::new(it)));
+                    out.push(Box::new(OfMatchesWithSubs::with_terms(
+                        it,
+                        Arc::clone(&self.query_terms),
+                    )));
                 }
             }
         }
@@ -825,58 +966,52 @@ impl Strategy {
         tv_terms: Option<&TvTerms>,
         results: &mut Vec<Box<dyn OffsetsEnum>>,
     ) -> Result<()> {
-        let c = &self.components;
         let mut failure: Option<Error> = None;
         let mut found: Vec<(String, Vec<Postings>)> = Vec::new();
-        for_each_automaton(
-            &c.query,
-            &*c.field_matcher,
-            c.look_in_span,
-            &mut |label, m| {
-                if failure.is_some() {
-                    return;
-                }
-                let mut postings: Vec<Postings> = Vec::new();
-                let scan = (|| -> Result<()> {
-                    let mut te = terms_index.iterator()?;
-                    let mut read = |te: &mut Box<dyn crate::reader::TermsEnum + '_>| -> Result<()> {
-                        let mut pe = te.postings(PostingsFlags::Offsets)?;
-                        if pe.advance(doc)? == doc {
-                            let freq = pe.freq();
-                            let mut offsets = Vec::new();
-                            for _ in 0..freq {
-                                pe.next_position()?;
-                                offsets.push((pe.start_offset(), pe.end_offset()));
-                            }
-                            postings.push((freq, offsets));
+        self.for_each_query_automaton(&mut |label, m| {
+            if failure.is_some() {
+                return;
+            }
+            let mut postings: Vec<Postings> = Vec::new();
+            let scan = (|| -> Result<()> {
+                let mut te = terms_index.iterator()?;
+                let mut read = |te: &mut Box<dyn crate::reader::TermsEnum + '_>| -> Result<()> {
+                    let mut pe = te.postings(PostingsFlags::Offsets)?;
+                    if pe.advance(doc)? == doc {
+                        let freq = pe.freq();
+                        let mut offsets = Vec::new();
+                        for _ in 0..freq {
+                            pe.next_position()?;
+                            offsets.push((pe.start_offset(), pe.end_offset()));
                         }
-                        Ok(())
-                    };
-                    match tv_terms {
-                        Some(tv) => {
-                            for term in tv.iter().filter(|t| m.matches(t)) {
-                                if !te.try_seek_exact(term)? {
-                                    return Err(not_in_full_index(term));
-                                }
+                        postings.push((freq, offsets));
+                    }
+                    Ok(())
+                };
+                match tv_terms {
+                    Some(tv) => {
+                        for term in tv.iter().filter(|t| m.matches(t)) {
+                            if !te.try_seek_exact(term)? {
+                                return Err(not_in_full_index(term));
+                            }
+                            read(&mut te)?;
+                        }
+                    }
+                    None => {
+                        while let Some(term) = te.next()? {
+                            if m.matches(term) {
                                 read(&mut te)?;
                             }
                         }
-                        None => {
-                            while let Some(term) = te.next()? {
-                                if m.matches(term) {
-                                    read(&mut te)?;
-                                }
-                            }
-                        }
                     }
-                    Ok(())
-                })();
-                match scan {
-                    Ok(()) => found.push((label.to_string(), postings)),
-                    Err(e) => failure = Some(e),
                 }
-            },
-        );
+                Ok(())
+            })();
+            match scan {
+                Ok(()) => found.push((label.to_string(), postings)),
+                Err(e) => failure = Some(e),
+            }
+        });
         if let Some(e) = failure {
             return Err(e);
         }
@@ -911,11 +1046,7 @@ fn term_vector(ctx: &LeafCtx<'_>, field: &str) -> Result<Option<TermVectorField>
     let Some(fi) = ctx.reader.field_infos().field_by_name(field) else {
         return Ok(None);
     };
-    let number = fi.number;
-    let Some(doc) = ctx.reader.term_vectors(ctx.doc)? else {
-        return Ok(None);
-    };
-    Ok(doc.fields.into_iter().find(|f| f.field_number == number))
+    Ok((ctx.term_vector)(fi.number)?)
 }
 
 /// `switch (offsetsEnums.size())`: none, the one, or a merge.

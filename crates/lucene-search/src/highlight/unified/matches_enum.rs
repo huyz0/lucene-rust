@@ -2,6 +2,8 @@
 //! `MatchesIterator`, descending into the sub-matches of a match that has
 //! them (a phrase or an interval reports its terms, not itself).
 
+use std::sync::{Arc, Mutex, PoisonError};
+
 use crate::matches::BoxMatchesIterator;
 use crate::query::Clause;
 use crate::query_visitor::{self, QueryVisitor, Term};
@@ -45,15 +47,53 @@ struct Pending {
     end: i32,
 }
 
+/// How many queries' [`query_to_term`] a [`QueryTerms`] remembers.
+const REMEMBERED_TERMS: usize = 64;
+
+/// [`query_to_term`] of the queries met so far, shared by the enums of a
+/// strategy: matches report the same few queries over and over, and naming
+/// a multi-term one visits it -- compiling its automaton -- only to find it
+/// has no single term, so its `toString()` stands in.
+#[derive(Default)]
+pub(super) struct QueryTerms(Mutex<Vec<(Clause, Vec<u8>)>>);
+
+impl QueryTerms {
+    /// [`query_to_term`], remembered.
+    fn term_of(&self, query: &Clause) -> Vec<u8> {
+        if let Clause::Term(t) = query {
+            // the one term (an empty one is the query's `toString()`)
+            if !t.term.is_empty() {
+                return t.term.clone();
+            }
+        }
+        // a poisoned lock holds terms that are still right
+        let mut known = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((_, term)) = known.iter().find(|(q, _)| q == query) {
+            return term.clone();
+        }
+        let term = query_to_term(query);
+        if known.len() < REMEMBERED_TERMS {
+            known.push((query.clone(), term.clone()));
+        }
+        term
+    }
+}
+
 /// `OffsetsEnum.OfMatchesIteratorWithSubs`.
 pub struct OfMatchesWithSubs {
     /// `pendingQueue`, ascending by (start, end, term).
     pending: Vec<Pending>,
+    terms: Arc<QueryTerms>,
 }
 
 impl OfMatchesWithSubs {
     /// `new OfMatchesIteratorWithSubs(matchesIterator)`.
     pub fn new(iterator: BoxMatchesIterator) -> Self {
+        Self::with_terms(iterator, Arc::default())
+    }
+
+    /// [`Self::new`], naming the queries' terms through `terms`.
+    pub(super) fn with_terms(iterator: BoxMatchesIterator, terms: Arc<QueryTerms>) -> Self {
         OfMatchesWithSubs {
             pending: vec![Pending {
                 slot: Slot::Iterator(iterator),
@@ -61,6 +101,7 @@ impl OfMatchesWithSubs {
                 start: 0,
                 end: 0,
             }],
+            terms,
         }
     }
 
@@ -74,7 +115,7 @@ impl OfMatchesWithSubs {
 
     fn add_iterator(&mut self, it: BoxMatchesIterator) {
         let (start, end) = (it.start_offset(), it.end_offset());
-        let term = query_to_term(it.query());
+        let term = self.terms.term_of(it.query());
         self.add(Pending {
             slot: Slot::Iterator(it),
             term,
@@ -91,9 +132,10 @@ impl OfMatchesWithSubs {
         while mi.next()? {
             let subs = mi.sub_matches()?;
             if !self.enqueue_cached(subs)? {
+                let term = self.terms.term_of(mi.query());
                 self.add(Pending {
                     slot: Slot::Cached,
-                    term: query_to_term(mi.query()),
+                    term,
                     start: mi.start_offset(),
                     end: mi.end_offset(),
                 });
@@ -160,5 +202,31 @@ impl OffsetsEnum for OfMatchesWithSubs {
     }
     fn end_offset(&self) -> i32 {
         self.pending[0].end
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::query::{PrefixQuery, TermQuery};
+
+    /// The remembered term is the one [`query_to_term`] gives, remembered
+    /// or not, for a term (an empty one too) and past the cap.
+    #[test]
+    fn query_terms_name_queries_as_query_to_term_does() {
+        let terms = QueryTerms::default();
+        let mut queries = vec![
+            Clause::from(TermQuery::new("f", "t")),
+            Clause::from(TermQuery::new("f", "")),
+        ];
+        queries.extend(
+            (0..REMEMBERED_TERMS + 6).map(|i| Clause::from(PrefixQuery::new("f", format!("p{i}")))),
+        );
+        for _ in 0..2 {
+            for q in &queries {
+                assert_eq!(terms.term_of(q), query_to_term(q), "{q:?}");
+            }
+        }
+        assert_eq!(terms.0.lock().unwrap().len(), REMEMBERED_TERMS);
     }
 }

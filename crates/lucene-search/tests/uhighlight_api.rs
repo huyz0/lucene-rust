@@ -470,3 +470,43 @@ fn a_span_term_on_a_rejected_field_is_not_marked() {
         );
     });
 }
+
+/// An automaton that stays non-deterministic cannot be kept past the visit
+/// that hands it over, so it is visited for every document: the highlight
+/// is the same on every path, bare and inside a span.
+#[test]
+fn a_non_deterministic_automaton_is_visited_per_document() {
+    use lucene_search::extended_query::{
+        AutomatonQuery, MultiTermQuery, MultiTermSource, RewriteMethod,
+    };
+    use lucene_search::spans::SpanNode;
+    let nfa = lucene_util::automaton::RegExp::new("(a|ab)*c")
+        .unwrap()
+        .to_automaton()
+        .unwrap();
+    let query = MultiTermQuery::new(
+        MultiTermSource::Automaton(AutomatonQuery::new("offs", nfa, false)),
+        RewriteMethod::default(),
+    );
+    let span = Clause::from(SpanNode::multi_term(query.clone()));
+    let text = "ababc x c abd";
+    for q in [Clause::from(query), span] {
+        for flags in [
+            (true, true, false, true),
+            (true, true, false, false),
+            (true, true, true, false),
+            (true, false, false, false),
+        ] {
+            let uh = UnifiedHighlighter::new(None, Some(analyzer()))
+                .with_flags(flags.0, flags.1, flags.2, flags.3);
+            for _ in 0..2 {
+                let got = uh.highlight_without_searcher("offs", &q, text, 1).unwrap();
+                assert_eq!(
+                    got.as_deref(),
+                    Some("<b>ababc</b> x <b>c</b> abd"),
+                    "{flags:?} {q:?}"
+                );
+            }
+        }
+    }
+}

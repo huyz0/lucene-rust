@@ -97,17 +97,15 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
   (`docs/inventory/lucene-queryparser.tsv`).
 - **T13.2** — Highlighting, including term vectors in `DirectoryReader`.
   **Ported and benchmarked** (`scripts/bench-micro.sh --bench highlight`, pair `HighlightMicro`
-  vs Lucene 10.5.0; ratio > 1 is Rust faster): `uh_postings` 0.96x (inside the 1.18x noise
-  floor), `fvh` 0.75x (noise 2.06x), `uh_analysis` 0.36x, `uh_tv` 0.36x. Stage 3 so far: the
-  `MemoryIndex` strategies no longer write the one-document codec segment on the
-  weight-matches path (0.17x -> 0.36x). What remains is that same `MemoryIndex`: the Rust one
-  encodes each document's postings into a codec segment for `IndexSearcher` to read, where
-  Lucene searches the in-heap postings directly. A lightweight in-memory leaf reader is a
-  `MemoryIndex`-wide change (T13.5's, `memory/reader.rs`), recorded as the reason for the two
-  ratios below 1.0, not done here. M14 (the unified highlighter's
-  `PhraseHelper`, overlay and batching) re-measured: `uh_postings` 1.13x, `uh_analysis`/`uh_tv`
-  0.31x (Rust's time unchanged from before it), and the new `uh_phrases` (no weight matches) 0.39x,
-  1.26x without its multi-term queries -- they go through the same `MemoryIndex`. The classic `Highlighter` (`GenHighlight`), the
+  vs Lucene 10.5.0; ratio > 1 is Rust faster): `uh_postings` 2.43x, `uh_analysis` 1.83x,
+  `uh_tv` 1.24x, `uh_phrases` (no weight matches) 1.22x, `fvh` 0.51x (noise 1.70x). Stage 3:
+  the `MemoryIndex` strategies read the one-document index in heap, as Lucene does -- a
+  `LeafReader` and `Weight.matches` over its arrays (`memory/leaf.rs`; the codec segment is
+  built only for scoring, spans and intervals) -- a term vector goes straight into it
+  (`memory/vector.rs`, one field decoded per document through a `ChunkCursor`), and each
+  strategy keeps its rewritten query and automata, as Java builds them once. From 0.31x
+  (`uh_analysis`, `uh_tv`) and 0.36x (`uh_phrases`). `memory_index` and `monitor` re-measured
+  with it: build 2.71x, search 6.35x/7.52x, `mon_match` 3.50x. The classic `Highlighter` (`GenHighlight`), the
   `matchhighlight` package (`GenMatchHighlight`, with the JDK's word and
   sentence breaks fuzzed against `BreakIterator`), the `UnifiedHighlighter`
   (`GenUnifiedHighlight`: every offset source, passage and break option;
