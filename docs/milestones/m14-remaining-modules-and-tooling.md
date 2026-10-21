@@ -119,7 +119,7 @@ h1's known gaps (rows in the ledger):
 - `TestFixedBitSet`: the `andNot(DocIdSetIterator)` shapes are reduced to `and_not(&FixedBitSet)`, `asReadOnlyBits` is not ported, and the set is built over an exact-length word array (Java over-allocates it; the draw is kept).
 - `FSTTester`: the UTF-32 enum checks are missing, and `ListOfOutputs` is not exercised.
 - `TestUtil.randomPattern` is not ported.
-- `randomlyRecaseCodePoints` maps through `lucene-util`'s JDK 25 case tables, while the generator runs JDK 21. Its fixture sticks to ASCII and Latin-1, where the two agree.
+- `randomlyRecaseCodePoints` maps through `lucene_util::automaton::java_to_{upper,lower}_case`, the JDK 25 simple mapping rather than Rust's own tables, while the generator runs JDK 21. Its fixture sticks to ASCII and Latin-1, where the two agree.
 - `TESTS_LINEDOCSFILE` defaults to the committed excerpt rather than the 9.7 MB file.
 
 Port bug found: `FixedBitSet::into_array` indexed past a full destination array (fixture `intoArrayCap`).
