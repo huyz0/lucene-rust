@@ -15,8 +15,9 @@ use std::sync::Arc;
 
 use lucene_index::buffered_updates::Term;
 use lucene_index::document::{
-    Document, Field, IntPoint, NumericDocValuesField, SortedDocValuesField, Store, StoredValue,
-    StringField, TextField,
+    Document, Field, IntPoint, NumericDocValuesField, SortedDocValuesField,
+    SortedNumericDocValuesField, SortedSetDocValuesField, Store, StoredValue, StringField,
+    TextField,
 };
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::merge_policy::filter::OneMergeWrappingMergePolicy;
@@ -149,6 +150,14 @@ fn write(dir: &FsDirectory) {
 }
 
 fn write_with(dir: &FsDirectory, merge_hooks: Arc<dyn MergeReaderHooks>) {
+    write_docs(dir, merge_hooks, doc);
+}
+
+fn write_docs(
+    dir: &FsDirectory,
+    merge_hooks: Arc<dyn MergeReaderHooks>,
+    doc: fn(usize) -> Document,
+) {
     let version = LuceneVersion {
         major: 10,
         minor: 5,
@@ -313,6 +322,84 @@ fn a_wrapping_merge_without_a_reorder_keeps_the_wrapped_documents_in_order() {
     assert!(ids
         .windows(2)
         .all(|w| n(&w[0]) / PER_SEGMENT != n(&w[1]) / PER_SEGMENT || n(&w[0]) < n(&w[1])));
+    for result in lucene_index::check_index::check_directory(&dir).unwrap() {
+        assert!(result.all_passed(), "{:?}", result.failures());
+    }
+}
+
+/// `doc(i)` plus sparse multi-valued columns: `sn` (`i` and `-i`) on every
+/// third document, `ss` (two words) on every fourth.
+fn sparse_doc(i: usize) -> Document {
+    let mut d = doc(i);
+    if i.is_multiple_of(3) {
+        d.add(SortedNumericDocValuesField::new("sn", i as i64));
+        d.add(SortedNumericDocValuesField::new("sn", -(i as i64)));
+    }
+    if i % 4 == 1 {
+        d.add(SortedSetDocValuesField::new("ss", word(i, 6)));
+        d.add(SortedSetDocValuesField::new("ss", word(i, 7)));
+    }
+    d
+}
+
+/// A reorder renumbers each source's documents out of order, so the merge
+/// reads a sparse SORTED_NUMERIC (and SORTED_SET, whose ordinals are one)
+/// column backwards. Its reader once refused that ("IndexedDISI cursors are
+/// forward-only"), where the numeric and binary readers rewound; every
+/// document's values must still travel with it.
+#[test]
+fn a_reordering_merge_carries_sparse_multi_valued_columns() {
+    let tmp = TempDir::new("merge-reorder-sparse");
+    let dir = FsDirectory::open(&tmp);
+    write_docs(&dir, Arc::new(RankHooks), sparse_doc);
+    let reader = DirectoryReader::open(&dir).unwrap();
+    assert_eq!(reader.segment_readers().len(), 1);
+    let seg = &reader.segment_readers()[0];
+    let mut sn = seg.sorted_numeric_doc_values("sn").unwrap().unwrap();
+    let mut ss = seg.sorted_set_doc_values("ss").unwrap().unwrap();
+    let (mut with_sn, mut with_ss, mut backwards) = (0, 0, false);
+    let mut last = None;
+    for d in 0..seg.max_doc() {
+        let mut id = Id::default();
+        seg.document(d, &mut id).unwrap();
+        let i: usize = id.0.unwrap()[1..].parse().unwrap();
+        backwards |= last.is_some_and(|l| l > i);
+        last = Some(i);
+        let got: Option<Vec<i64>> = sn.advance_exact(d).unwrap().then(|| {
+            (0..sn.doc_value_count())
+                .map(|_| sn.next_value().unwrap())
+                .collect()
+        });
+        // SORTED_NUMERIC keeps duplicates: d0 would read `[0, 0]`.
+        let want = i.is_multiple_of(3).then(|| vec![-(i as i64), i as i64]);
+        assert_eq!(got, want, "sn of d{i}");
+        with_sn += usize::from(want.is_some());
+        let got: Option<Vec<Vec<u8>>> = if ss.advance_exact(d).unwrap() {
+            let ords: Vec<i64> = (0..ss.doc_value_count())
+                .map(|_| ss.next_ord().unwrap())
+                .collect();
+            Some(
+                ords.into_iter()
+                    .map(|o| ss.lookup_ord(o).unwrap())
+                    .collect(),
+            )
+        } else {
+            None
+        };
+        let want = (i % 4 == 1).then(|| {
+            let mut v = vec![
+                word(i, 6).as_bytes().to_vec(),
+                word(i, 7).as_bytes().to_vec(),
+            ];
+            v.sort();
+            v.dedup();
+            v
+        });
+        assert_eq!(got, want, "ss of d{i}");
+        with_ss += usize::from(want.is_some());
+    }
+    assert!(backwards, "the reorder must renumber the documents");
+    assert!(with_sn > 20 && with_ss > 20 && with_sn < seg.max_doc() as usize);
     for result in lucene_index::check_index::check_directory(&dir).unwrap() {
         assert!(result.all_passed(), "{:?}", result.failures());
     }

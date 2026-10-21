@@ -2264,8 +2264,10 @@ impl<'a> SortedNumericReader<'a> {
     }
 
     /// Replaces `out` with document `doc`'s values, in stored (ascending)
-    /// order; leaves it empty when the document has none. Documents must be
-    /// visited in non-decreasing order, as with any `DocIdSetIterator`.
+    /// order; leaves it empty when the document has none. Ascending `doc`
+    /// walks the region once; going backwards rewinds the cursor (a re-walk),
+    /// as [`NumericReader::value`] does -- a merge that reorders documents
+    /// visits a source out of order.
     pub fn values(&mut self, doc: i32, out: &mut Vec<i64>) -> Result<()> {
         out.clear();
         let numeric = &self.entry.numeric;
@@ -2282,6 +2284,9 @@ impl<'a> SortedNumericReader<'a> {
                 *out = sorted_numeric_values(self.data, self.entry, doc)?;
                 return Ok(());
             };
+            if doc < cursor.doc_id() {
+                cursor.reset();
+            }
             match cursor.advance_exact(doc)? {
                 Some(r) => r as i64,
                 None => return Ok(()),
@@ -10051,6 +10056,17 @@ mod tests {
         ascending.sort_unstable();
         let mut got = Vec::new();
         for &doc in &ascending {
+            r.values(doc, &mut got).unwrap();
+            assert_eq!(
+                got,
+                sorted_numeric_values(&dvd, entry, doc).unwrap(),
+                "doc {doc}"
+            );
+        }
+        // Out of order (a reordering merge's access), every backward step
+        // rewinding the cursor.
+        let mut r = SortedNumericReader::new(&dvd, entry);
+        for &doc in order.iter().rev() {
             r.values(doc, &mut got).unwrap();
             assert_eq!(
                 got,
