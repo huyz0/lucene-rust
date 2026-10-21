@@ -37,6 +37,11 @@ fn explanation_query(name: &str) -> Clause {
             vec![(S, t("w1")), (S, t("w2")), (S, t("w5")), (S, t("zz"))],
         ),
         "bq_filter" => bq(vec![(F, t("xx")), (S, t("w3"))]),
+        "bq_dup" => bq(vec![(S, t("w1")), (S, boost(t("w1"), 1000.0))]),
+        "bq_dup_nested" => bq(vec![
+            (S, explanation_query("bq_dup")),
+            (S, Clause::Term(TermQuery::new("NEVER", "MATCH"))),
+        ]),
         "boost" => boost(t("w2"), 1000.0),
         "phrase" => phrase(0, &["w1", "w2"]),
         "phrase_sloppy" => phrase(2, &["w1", "w3"]),
@@ -70,7 +75,7 @@ fn compared_part(sim_name: &str, q_name: &str) -> Compared {
         // Rust explains a dis-max value in floats, Java in doubles
         "dmq" => Compared::Hits,
         "mpq" | "synonym" => Compared::Top,
-        "boost" if !bm25 => Compared::Top,
+        "boost" | "bq_dup" | "bq_dup_nested" if !bm25 => Compared::Top,
         _ => Compared::All,
     }
 }

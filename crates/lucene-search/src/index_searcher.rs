@@ -194,6 +194,8 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
         }
         let rescored = self.rewrite_rescore(query)?;
         let query = rescored.as_ref().unwrap_or(query);
+        let rewritten = rewrite_structure(query);
+        let query = rewritten.as_ref().unwrap_or(query);
         let (hits, total_hits) = search_boolean_query_multi_segment_maxscore_counting(
             self.segments,
             query,
@@ -251,6 +253,8 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
     ) -> Result<crate::top_field::TopFieldDocs> {
         let norms: Vec<SegmentNorms<'s, 'a>> =
             (0..self.segments.len()).map(|i| self.norms(i)).collect();
+        let rewritten = rewrite_structure(query);
+        let query = rewritten.as_ref().unwrap_or(query);
         crate::top_field::search_sorted_leaves(
             self.segments,
             readers,
@@ -281,6 +285,8 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
     ) -> Result<crate::top_field::TopFieldDocs> {
         let norms: Vec<SegmentNorms<'s, 'a>> =
             (0..self.segments.len()).map(|i| self.norms(i)).collect();
+        let rewritten = rewrite_structure(query);
+        let query = rewritten.as_ref().unwrap_or(query);
         crate::top_field::search_sorted_leaves(
             self.segments,
             readers,
@@ -349,9 +355,24 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
         &self,
         query: &BooleanQuery,
     ) -> Result<(Option<BooleanQuery>, crate::GlobalStats)> {
+        self.prepare_with(query, true)
+    }
+
+    /// [`Self::prepare`] keeping the query's own clauses where they are
+    /// (`structure: false`): for a caller that splits the rewritten query
+    /// back into its parts and rewrites each one itself, as
+    /// `DrillSidewaysQuery` does.
+    pub(crate) fn prepare_with(
+        &self,
+        query: &BooleanQuery,
+        structure: bool,
+    ) -> Result<(Option<BooleanQuery>, crate::GlobalStats)> {
         let rescored = self.rewrite_rescore(query)?;
         let query = rescored.as_ref().unwrap_or(query);
-        let rewritten = rewrite_points_ranges(query, self.segments).or(rescored.clone());
+        let mut rewritten = rewrite_points_ranges(query, self.segments).or(rescored.clone());
+        if structure {
+            rewritten = rewrite_structure(rewritten.as_ref().unwrap_or(query)).or(rewritten);
+        }
         let global = crate::multi_segment::global_boolean_stats_with_similarity(
             self.segments,
             rewritten.as_ref().unwrap_or(query),
@@ -574,6 +595,28 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
     }
 }
 
+/// `IndexSearcher.rewrite(query)` before `createWeight`:
+/// [`Clause::rewrite`]'s structural rules (`BooleanQuery.rewrite`'s
+/// duplicate `SHOULD`/`MUST` clauses summed into one boosted clause,
+/// flattened disjunctions, collapsed boosts), so a search scores the query
+/// [`IndexSearcher::explain`] explains. A query rewriting to a lone clause
+/// runs as that clause, the one `MUST` clause of a boolean. `None` when
+/// nothing changes.
+///
+/// Only this searcher's entry points rewrite: the free multi-segment
+/// functions (`lucene-ffi`'s search among them) score the query as given,
+/// relying on the JVM's `searcher.rewrite` before encoding.
+fn rewrite_structure(query: &BooleanQuery) -> Option<BooleanQuery> {
+    let rewritten = match Clause::Boolean(Box::new(query.clone())).rewrite() {
+        Clause::Boolean(b) => *b,
+        other => BooleanQuery {
+            must: vec![other],
+            ..BooleanQuery::default()
+        },
+    };
+    (rewritten != *query).then_some(rewritten)
+}
+
 /// A `MatchAllDocsQuery` built without a `maxDoc` (a query parsed once for
 /// the whole reader) matches every document of the leaf it is explained in,
 /// as its scorer does (`DocIdSetIterator.all(context.reader().maxDoc())`).
@@ -609,7 +652,7 @@ fn set_match_all_max_doc(clause: &mut Clause, max_doc: i32) {
 
 #[cfg(test)]
 mod tests {
-    use super::set_match_all_max_doc;
+    use super::{rewrite_structure, set_match_all_max_doc};
     use crate::query::{
         BoostQuery, ConstantScoreQuery, DisjunctionMaxQuery, MatchAllDocsQuery, TermQuery,
     };
@@ -637,5 +680,29 @@ mod tests {
         let text = format!("{clause:?}");
         assert_eq!(text.matches("max_doc: 7").count(), 4, "{text}");
         assert!(!text.contains("max_doc: 0"), "{text}");
+    }
+
+    #[test]
+    fn a_search_runs_the_query_booleanquery_rewrite_returns() {
+        let t = || Clause::Term(TermQuery::new("f", "w1"));
+        // Java's `IndexSearcher.rewrite`: `w1 w1^1000` is `w1^1001`, the
+        // query `explain` explains and Lucene scores
+        let dup = BooleanQuery::new()
+            .with_should([t(), Clause::Boost(Box::new(BoostQuery::new(t(), 1000.0)))]);
+        let want =
+            BooleanQuery::new().with_must([Clause::Boost(Box::new(BoostQuery::new(t(), 1001.0)))]);
+        assert_eq!(rewrite_structure(&dup), Some(want));
+        // still a boolean after the rewrite: returned as one
+        let two = BooleanQuery::new().with_should([t(), Clause::Term(TermQuery::new("f", "w2"))]);
+        let nested = BooleanQuery::new()
+            .with_should([Clause::Boolean(Box::new(two.clone()))])
+            .with_must([Clause::Term(TermQuery::new("f", "w3"))]);
+        // the nested pure disjunction flattened into the outer `SHOULD`s
+        let flat = BooleanQuery::new()
+            .with_must([Clause::Term(TermQuery::new("f", "w3"))])
+            .with_should([t(), Clause::Term(TermQuery::new("f", "w2"))]);
+        assert_eq!(rewrite_structure(&nested), Some(flat));
+        // nothing to rewrite
+        assert_eq!(rewrite_structure(&two), None);
     }
 }
