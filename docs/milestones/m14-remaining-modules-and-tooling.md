@@ -109,7 +109,7 @@ against a Java twin (`fixtures/src/testframework/`, run by
 | h4 | `RandomIndexWriter`, `newIndexWriterConfig`, `RandomCodec`, merge policies, reader wrappers, `newSearcher`, `BaseTestCheckIndex`, `BaseMergePolicyTestCase` | `TestCheckIndex`, `TestAssertingLeafReader`, merge-policy tests | 300 seeds pass Rust `CheckIndex`; on 50, Java's too | planned |
 | h5 | `BaseIndexFileFormatTestCase`; doc values, postings, stored fields, term vectors suites | the default codec's format tests | 30 seeds per format read back by Lucene | planned |
 | h6 | points, norms, segment/field infos, live docs, compound, KNN suites; the test postings formats' read side | the default codec's format tests | as h5 | planned |
-| h7 | `QueryUtils`, `CheckHits`, asserting search wrappers, search/similarity/geo bases | equivalence, explanation, similarity and geo tests | top docs, score bits and explanations equal Java's | planned |
+| h7 | `QueryUtils`, `CheckHits`, asserting search wrappers, search/similarity/geo bases | equivalence, explanation, similarity and geo tests | top docs, score bits and explanations equal Java's | done (deferrals below) |
 | h8 | writer stress, exceptions, NRT | `TestNRTThreads`, `TestStressNRT`, `TestIndexWriterExceptions`, ... | `scripts/test-framework-stress.sh` over 200 seeds | planned |
 
 h1's known gaps (rows in the ledger):
@@ -141,6 +141,17 @@ h2's known gaps:
 - The fault run never saw a failed commit leave its `segments_N` behind, so that branch of its model is untested.
 
 Port bugs found: `FsDirectory`/`MmapDirectory::create_output` truncated an existing file (Java: `CREATE_NEW`), and an output under a missing root failed (Java's constructor creates it). Both are fixed in 5bcebd83, and `create_output_refuses_an_existing_name_and_creates_a_missing_root` covers them. The create-new outputs then exposed writer state a failure left behind: a failed commit kept its generation, a failed `.liv` write kept its partial file and delete generation, and a failed packet apply dropped the segment lists. All three are fixed in 0af77546.
+
+h7's deferrals (rows in the ledger and the inventory):
+
+- Every base indexes one segment under a plain `IndexWriter`, with deletes in a last commit; `RandomIndexWriter`, random `IndexWriterConfig`s, `forceMerge` (its coin is drawn and ignored), random field types and `newSearcher`'s reader wrappers wait for h4. The bases therefore do not replay a Java test seed's index, only its draws.
+- `QueryUtils`/`CheckHits` skip the `wrapUnderlyingReader` passes: there is no `MultiReader` over arbitrary readers.
+- With no `Weight`, `AssertingWeight`/`AssertingQuery` are a guard that wraps every scorer of a search (`lucene-search`'s `test-support` feature, absent from `lucene-ffi`'s build); `BlockScoreQueryWrapper`, `BulkScorerWrapperScorer`, `DisablingBulkScorerQuery`, `ScorerIndexSearcher` and `DummyTotalHitCountCollector` are not ported, nor is `ShardSearchingTestBase` (left for h8). In a real search the asserting bulk scorer has no `maxDoc`, so its "past `maxDoc` is exhausted" check runs only on `test_support`'s leaves.
+- `NamedQuery` is not a clause: `MatchesTestBase` takes the named clauses alongside.
+- `BaseSimilarityTestCase`'s explanation checks wait for `SimScorer.explain` beyond BM25; their `rarely()` draws are kept, so the streams stay Java's.
+- The geo point bases verify boxes and circles only (no polygon or geometry verifies, no fixed-input tests); `BaseXYPointTestCase` and `ShapeTestUtil` are not ported, and `EarthDebugger` is not needed.
+- No bench pair: test-only code.
+- Every one of the 22 similarities' cases matched Java bit for bit. Three search bugs surfaced, each fixed in its own `fix(search)` commit: `IndexSearcher` searched a query without `BooleanQuery.rewrite`'s structural rules, so `w1 w1^1000` scored as a sum while Java (and `explain`) score `w1^1001` (`bq_dup` in `search.txt`); and a `DisjunctionMaxQuery` explained its value in float arithmetic where Java's explain and scorer use doubles, one ulp off its score (`dmq8`); and a phrase and a multi-phrase explained BM25's value under `ClassicSimilarity` (`phrase`, `phrase_sloppy`, `mpq`). The explanation fixture runs Java's searcher without a query cache and its booleans in occur order, and compares only the top line of `mpq`'s, `synonym`'s and (under Classic) boosted queries' explanations, and only the hits of Classic `dmq8` (its boosts' own nodes round the explained sum one ulp off the score): documented limits of Rust's `explain`.
 
 ## Acceptance criteria
 
