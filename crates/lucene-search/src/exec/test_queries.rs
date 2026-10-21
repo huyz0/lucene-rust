@@ -3,7 +3,7 @@
 //! approximation adds random false positives) and the deliberately broken
 //! scorers of `TestQueryUtils`, which `QueryUtils` must catch.
 //!
-//! Compiled only under `cfg(test)` or the `test-support` feature.
+//! Compiled only under `cfg(test)` or the `asserting` feature.
 
 use lucene_util::java_random::JavaRandom;
 

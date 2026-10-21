@@ -10,9 +10,11 @@
 //! searches run on that thread while it is held. Every check is an
 //! `assert!`: a broken contract panics, as Java's `assert` throws.
 //!
-//! Compiled only under `cfg(test)` or the `test-support` feature, which only
-//! dev-dependency edges enable: a production build has neither the module
-//! nor the checks at its call sites.
+//! Compiled only under `cfg(test)` or the `asserting` feature, which only
+//! `lucene-test-framework` enables: a production build, and the benchmark
+//! runner (`test-support` only; check-port-invariants.py's
+//! `bench-not-asserting` rule), have neither the module nor the checks at
+//! its call sites.
 
 use std::cell::RefCell;
 

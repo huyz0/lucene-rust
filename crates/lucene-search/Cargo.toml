@@ -31,10 +31,15 @@ quick-xml = "0.39"
 # `[dev-dependencies]` edge (see that crate's `Cargo.toml`), which Cargo's
 # resolver-2 feature unification confines to `lucene-ffi`'s test/bench
 # targets -- never its normal library/cdylib build, so this never reaches a
-# production binary. It also compiles `test_support` (the scorer-tree seam and
-# asserting wrappers `lucene-test-framework`'s search checks drive), for the
-# same dev-only consumers.
+# production binary.
 test-support = []
+# Compiles `test_support` (the scorer-tree seam and the asserting wrappers
+# `lucene-test-framework`'s search checks drive) and the asserting hooks in
+# the scorer builder and `score_segment`. Only `lucene-test-framework`
+# enables it: the benchmark runner takes `test-support` for its counters but
+# never this, so it measures the scoring code that ships
+# (check-port-invariants.py's `bench-not-asserting` rule).
+asserting = []
 
 [dev-dependencies]
 # The shared RAII scratch-directory guard (`lucene_util::test_support::TempDir`).

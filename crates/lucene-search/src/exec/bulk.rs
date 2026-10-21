@@ -1327,7 +1327,7 @@ pub(crate) fn score_segment<C: ScoringCollector + ?Sized>(
 ) -> Result<()> {
     // `AssertingBulkScorer`, under the test framework's asserting searcher:
     // the segment in random windows, each collector checked.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "asserting"))]
     if let Some(mut asserting) = super::asserting::AssertingBulk::installed(None) {
         let collector: &mut dyn ScoringCollector = &mut AsDyn(collector);
         asserting.score(bulk, mode, live_docs, collector, 0, NO_MORE_DOCS)?;
@@ -1338,10 +1338,10 @@ pub(crate) fn score_segment<C: ScoringCollector + ?Sized>(
 }
 
 /// A possibly unsized collector as a `dyn` one.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "asserting"))]
 pub(crate) struct AsDyn<'c, C: ?Sized>(pub(crate) &'c mut C);
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "asserting"))]
 impl<C: ScoringCollector + ?Sized> ScoringCollector for AsDyn<'_, C> {
     fn collect(&mut self, doc: i32, score: f32) {
         self.0.collect(doc, score);
