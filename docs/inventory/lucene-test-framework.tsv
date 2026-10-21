@@ -136,31 +136,31 @@ tests/mockfile/VerboseFS	not-needed	logs every filesystem call to the infoStream
 tests/mockfile/VirusCheckingFS	ported	crates/lucene-test-framework/src/mockfile/mock_fs.rs::disable_virus_checker
 tests/mockfile/WindowsFS	ported	crates/lucene-test-framework/src/mockfile/mock_fs.rs::check_delete
 tests/mockfile/WindowsPath	not-needed	a java.nio.file.Path that refuses Windows-illegal characters; Rust paths are std::path::Path, and the Windows delete/rename semantics are MockFs::check_delete
-tests/search/AssertingAcceptDocs	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
-tests/search/AssertingBulkScorer	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
-tests/search/AssertingCollector	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
-tests/search/AssertingIndexSearcher	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
-tests/search/AssertingLeafCollector	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/AssertingAcceptDocs	not-needed	accept docs are a borrowed FixedBitSet whose reads are bounds-checked (the FixedBitSet gate), not a wrappable Bits
+tests/search/AssertingBulkScorer	ported	crates/lucene-search/src/exec/asserting.rs::AssertingBulk
+tests/search/AssertingCollector	ported	crates/lucene-test-framework/src/search/asserting.rs::AssertingCollector
+tests/search/AssertingIndexSearcher	partial	crates/lucene-test-framework/src/search/asserting.rs::AssertingIndexSearcher -- M14: no random executor/slices, no rewrite or createWeight assertions (no Weight)
+tests/search/AssertingLeafCollector	ported	crates/lucene-search/src/exec/asserting.rs::AssertingLeafCollector
 tests/search/AssertingMatches	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
 tests/search/AssertingMatchesIterator	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
-tests/search/AssertingQuery	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
-tests/search/AssertingScorable	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
-tests/search/AssertingScorer	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
-tests/search/AssertingWeight	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/AssertingQuery	partial	crates/lucene-search/src/test_support.rs::asserting -- M14: the guard wraps every scorer of a search; no per-query wrapper to compose
+tests/search/AssertingScorable	ported	crates/lucene-search/src/exec/asserting.rs::AssertingLeafCollector
+tests/search/AssertingScorer	ported	crates/lucene-search/src/exec/asserting.rs::AssertingScorer
+tests/search/AssertingWeight	ported	crates/lucene-search/src/exec/asserting.rs::wrap
 tests/search/BaseExplanationTestCase	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
 tests/search/BaseRangeFieldQueryTestCase	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
-tests/search/BlockScoreQueryWrapper	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
-tests/search/BulkScorerWrapperScorer	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
-tests/search/CheckHits	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
-tests/search/DisablingBulkScorerQuery	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
-tests/search/DummyTotalHitCountCollector	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
-tests/search/FixedBitSetCollector	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/BlockScoreQueryWrapper	todo:M14	h7 deferral: re-blocks a query's impacts to exercise block-max scoring; needs a Weight to wrap
+tests/search/BulkScorerWrapperScorer	todo:M14	h7 deferral: a BulkScorer seen as a Scorer; the scorer tree is private to lucene-search
+tests/search/CheckHits	partial	crates/lucene-test-framework/src/search/check_hits.rs::check_hits -- M14: wrapUnderlyingReader passes (no MultiReader over arbitrary readers)
+tests/search/DisablingBulkScorerQuery	todo:M14	h7 deferral: hides a query's bulk scorer; needs a Weight to wrap
+tests/search/DummyTotalHitCountCollector	todo:M14	h7 deferral: a hit counter without TotalHitCountCollector's shortcuts
+tests/search/FixedBitSetCollector	ported	crates/lucene-test-framework/src/search/check_hits.rs::all_hits
 tests/search/MatchesTestBase	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
-tests/search/QueryUtils	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
-tests/search/RandomApproximationQuery	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
-tests/search/ScorerIndexSearcher	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/QueryUtils	partial	crates/lucene-test-framework/src/search/query_utils.rs::check_with_searcher -- M14: wrapUnderlyingReader/MultiReader passes
+tests/search/RandomApproximationQuery	ported	crates/lucene-search/src/test_support.rs::TestQuery
+tests/search/ScorerIndexSearcher	todo:M14	h7 deferral: a searcher that scores through Scorer, never BulkScorer; the scorer tree is private to lucene-search
 tests/search/SearchEquivalenceTestBase	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
-tests/search/ShardSearchingTestBase	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/ShardSearchingTestBase	todo:M14	h7 deferral: simulated distributed search over node searchers and term statistics; with h8
 tests/search/similarities/AssertingSimilarity	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
 tests/search/similarities/BaseSimilarityTestCase	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
 tests/search/similarities/RandomSimilarity	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases

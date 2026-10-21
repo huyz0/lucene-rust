@@ -268,6 +268,8 @@ pub mod suggest;
 pub mod term_vectors_query;
 pub mod terminate;
 pub mod terms_agg;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 pub mod top_docs;
 pub mod top_field;
 pub mod values_source;
@@ -2820,7 +2822,7 @@ pub mod test_only_maxscore_block_skip_counter {
     }
 
     /// Resets the counter to 0 -- call before a test's search, then
-    /// [`take`] after to read how many blocks that search skipped.
+    /// [`count`] after to read how many blocks that search skipped.
     pub fn reset() {
         SKIPPED_BLOCKS.with(|c| c.set(0));
     }

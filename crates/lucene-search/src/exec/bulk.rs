@@ -1325,8 +1325,51 @@ pub(crate) fn score_segment<C: ScoringCollector + ?Sized>(
     live_docs: Option<&FixedBitSet>,
     collector: &mut C,
 ) -> Result<()> {
+    // `AssertingBulkScorer`, under the test framework's asserting searcher:
+    // the segment in random windows, each collector checked.
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(mut asserting) = super::asserting::AssertingBulk::installed(None) {
+        let collector: &mut dyn ScoringCollector = &mut AsDyn(collector);
+        asserting.score(bulk, mode, live_docs, collector, 0, NO_MORE_DOCS)?;
+        return Ok(());
+    }
     bulk.score(mode, live_docs, collector, 0, NO_MORE_DOCS)?;
     Ok(())
+}
+
+/// A possibly unsized collector as a `dyn` one.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) struct AsDyn<'c, C: ?Sized>(pub(crate) &'c mut C);
+
+#[cfg(any(test, feature = "test-support"))]
+impl<C: ScoringCollector + ?Sized> ScoringCollector for AsDyn<'_, C> {
+    fn collect(&mut self, doc: i32, score: f32) {
+        self.0.collect(doc, score);
+    }
+    fn min_competitive_score(&self) -> Option<f32> {
+        self.0.min_competitive_score()
+    }
+    fn score_mode(&self) -> crate::collector::ScoreMode {
+        self.0.score_mode()
+    }
+    fn pruning_threshold(&self) -> Option<f32> {
+        self.0.pruning_threshold()
+    }
+    fn constant_score_hits_needed(&self) -> Option<u64> {
+        self.0.constant_score_hits_needed()
+    }
+    fn count_losing_hits(&mut self, n: u64, score: f32) -> bool {
+        self.0.count_losing_hits(n, score)
+    }
+    fn add_hits(&mut self, n: u64) -> bool {
+        self.0.add_hits(n)
+    }
+    fn collect_many(&mut self, docs: &[i32], scores: &[f32], doc_base: i32) -> usize {
+        self.0.collect_many(docs, scores, doc_base)
+    }
+    fn collect_range(&mut self, min: i32, max: i32, score: f32) {
+        self.0.collect_range(min, max, score);
+    }
 }
 
 /// `TimeLimitingBulkScorer.INTERVAL`: the first window's width in documents.

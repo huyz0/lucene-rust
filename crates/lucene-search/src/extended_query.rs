@@ -81,6 +81,9 @@ pub enum ExtendedQuery {
     /// [`ExtendedQuery::PhraseWildcardWeight`] before it is searched.
     PhraseWildcard(crate::sandbox::search::PhraseWildcardQuery),
     PhraseWildcardWeight(crate::sandbox::search::ResolvedPhraseWildcard),
+    /// A query only tests build ([`crate::test_support::TestQuery`]).
+    #[cfg(any(test, feature = "test-support"))]
+    Test(crate::test_support::TestQuery),
 }
 
 macro_rules! into_clause {
@@ -203,6 +206,8 @@ impl ExtendedQuery {
             ExtendedQuery::PhraseWildcard(_) | ExtendedQuery::PhraseWildcardWeight(_) => {
                 "PhraseWildcardQuery"
             }
+            #[cfg(any(test, feature = "test-support"))]
+            ExtendedQuery::Test(q) => q.name(),
         }
     }
 
@@ -223,6 +228,8 @@ impl ExtendedQuery {
             ExtendedQuery::GlobalOrdinalsWithScore(q) => vec![q.to_query.as_ref()],
             ExtendedQuery::FunctionScore(q) => vec![q.in_query.as_ref()],
             ExtendedQuery::Covering(q) => q.queries.iter().collect(),
+            #[cfg(any(test, feature = "test-support"))]
+            ExtendedQuery::Test(q) => vec![q.query()],
             _ => Vec::new(),
         }
     }

@@ -621,6 +621,23 @@ pub fn explain_clause_with_stats(
         }
         // The score the scorer tree gives the document, as one match.
         Clause::Extended(q) => {
+            // A test query's weight is a `FilterWeight`: the wrapped
+            // query's explanation.
+            #[cfg(any(test, feature = "test-support"))]
+            if let crate::extended_query::ExtendedQuery::Test(t) = q.as_ref() {
+                return explain_clause_with_stats(
+                    fields,
+                    doc_in,
+                    pos_in,
+                    pay_in,
+                    live_docs,
+                    points,
+                    t.query(),
+                    doc,
+                    norms,
+                    global,
+                );
+            }
             if let crate::extended_query::ExtendedQuery::Interval(iq) = q.as_ref() {
                 let ctx = interval_context(
                     fields, doc_in, pos_in, pay_in, live_docs, points, norms, global,
