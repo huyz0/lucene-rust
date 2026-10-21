@@ -687,7 +687,7 @@ and bench runs between gates grew the volume to 146 GB. It deletes only build ou
 regenerates: Docker's *build cache* above `BUILD_CACHE_MAX_GB` (pruned down to
 `BUILD_CACHE_KEEP_GB`; `DOCKER_AUTO_PRUNE=0` only warns) and cargo `incremental`
 directories above `INCREMENTAL_MAX_MB`, and, once the target volume passes
-`TARGET_MAX_GB` (60), every superseded build of an artifact in a `deps` directory (what `cargo sweep`
+`TARGET_MAX_GB` (160: one debug build of the workspace is about 75 GB and one coverage build about 60 GB, so a lower cap deleted `llvm-cov-target` on every run once the trim ran before each container), every superseded build of an artifact in a `deps` directory (what `cargo sweep`
 does), then `llvm-cov-target` if that was not enough. That last rule exists
 because the volume was found at 151 GB, 123 GB of it instrumented test binaries
 rebuilt under new hashes and never deleted; the trim took it to 14 GB. It never
