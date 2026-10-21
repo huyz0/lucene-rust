@@ -27,8 +27,8 @@
 //! - `addIndexes(CodecReader...)` takes directories (their latest commits)
 //!   rather than arbitrary `CodecReader`s -- readers live above this crate --
 //!   and is carried out as a copy of the sources' segments followed by one
-//!   merge of those copies. The merged segment is the same; its diagnostics
-//!   say `merge` where Java's say `addIndexes(CodecReader...)`.
+//!   merge of those copies. The merged segment is the same, its diagnostics
+//!   saying `addIndexes(CodecReader...)` as Java's do.
 //! - An unsorted source cannot be added to an index-sorted writer by
 //!   either method: Java sorts such a reader during the merge
 //!   (`MergeState.maybeSortReaders`), which this port's merge does not do.
@@ -132,7 +132,7 @@ impl IndexWriter<'_> {
         // Published in this writer's view, as `addIndexes` publishes: not a
         // commit of its own.
         let by_caller = std::mem::replace(&mut self.merges_by_caller, true);
-        let merged = self.execute_merge_planned(&names, None, remap);
+        let merged = self.execute_merge_planned(&names, None, remap, true);
         self.merges_by_caller = by_caller;
         match merged {
             Ok(true) => Ok(self.delete_queue.next_sequence_number()),

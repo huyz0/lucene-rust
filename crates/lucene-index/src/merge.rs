@@ -2500,16 +2500,7 @@ pub fn merge_segments_mapped(
         // `IndexWriter.mergeMiddle`: the merged segment holds blocks iff any
         // source did -- see [`MergeSource::has_blocks`].
         has_blocks: sources.iter().any(|s| s.has_blocks),
-        diagnostics: vec![
-            ("source".to_string(), "merge".to_string()),
-            (
-                "lucene.version".to_string(),
-                format!(
-                    "{}.{}.{}",
-                    lucene_version.major, lucene_version.minor, lucene_version.bugfix
-                ),
-            ),
-        ],
+        diagnostics: options.kind.diagnostics(sources.len(), lucene_version),
         files: files.clone(),
         attributes: vec![(
             "Lucene90StoredFieldsFormat.mode".to_string(),
@@ -3725,6 +3716,51 @@ pub struct MergeOptions {
     /// Values of the named SORTED_NUMERIC fields rewritten on the way
     /// through -- see [`SortedNumericRemap`].
     pub sorted_numeric_remap: Option<std::sync::Arc<SortedNumericRemap>>,
+    /// What the merged `.si`'s diagnostics say produced it.
+    pub kind: MergeKind,
+}
+
+/// The writer operation a merge carries out, as the merged segment's
+/// diagnostics record it (`IndexWriter.setDiagnostics`' source and details).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeKind {
+    /// A `OneMerge` (`_mergeInit`): source `merge`, with `mergeFactor` (the
+    /// number of sources) and `mergeMaxNumSegments` (`OneMerge.maxNumSegments`:
+    /// `forceMerge`'s argument for a forced merge, `-1` otherwise).
+    Merge { max_num_segments: i32 },
+    /// `addIndexes(CodecReader...)`'s merge: source
+    /// `addIndexes(CodecReader...)`, no details.
+    AddIndexes,
+}
+
+impl Default for MergeKind {
+    fn default() -> Self {
+        MergeKind::Merge {
+            max_num_segments: -1,
+        }
+    }
+}
+
+impl MergeKind {
+    /// [`segment_info::writer_diagnostics`] for a merge of `merge_factor`
+    /// sources.
+    pub fn diagnostics(self, merge_factor: usize, version: LuceneVersion) -> Vec<(String, String)> {
+        match self {
+            MergeKind::Merge { max_num_segments } => segment_info::writer_diagnostics(
+                segment_info::SOURCE_MERGE,
+                version,
+                &[
+                    ("mergeMaxNumSegments", max_num_segments.to_string()),
+                    ("mergeFactor", merge_factor.to_string()),
+                ],
+            ),
+            MergeKind::AddIndexes => segment_info::writer_diagnostics(
+                segment_info::SOURCE_ADDINDEXES_READERS,
+                version,
+                &[],
+            ),
+        }
+    }
 }
 
 /// `OrdinalMappingLeafReader`'s view of a merge source (lucene-facet's
@@ -3818,6 +3854,7 @@ impl Default for MergeOptions {
             codec: None,
             reorder: None,
             sorted_numeric_remap: None,
+            kind: MergeKind::default(),
         }
     }
 }

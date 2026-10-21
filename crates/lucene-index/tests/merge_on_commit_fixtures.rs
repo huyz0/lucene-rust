@@ -276,3 +276,86 @@ fn the_default_wait_is_javas() {
     assert_eq!(w.max_full_flush_merge_wait_millis(), 500);
     assert_eq!(DEFAULT_MAX_FULL_FLUSH_MERGE_WAIT_MILLIS, 500);
 }
+
+/// Each segment of the latest commit: its diagnostics' keys (sorted, since
+/// Java writes them in `Map.copyOf`'s randomized order) and the values the
+/// two engines share -- `os`/`java.*`/`timestamp` describe the writer and
+/// differ by construction.
+fn diagnostics(dir: &dyn Directory) -> Vec<String> {
+    let sis = segment_infos::read_latest(dir).unwrap();
+    sis.segments
+        .iter()
+        .map(|sci| {
+            let bytes = dir.open(&format!("{}.si", sci.segment_name)).unwrap();
+            let d = segment_info::parse(&bytes, &sci.segment_id)
+                .unwrap()
+                .diagnostics;
+            let mut keys: Vec<&str> = d.iter().map(|(k, _)| k.as_str()).collect();
+            keys.sort_unstable();
+            let get = |key: &str| d.iter().find(|(k, _)| k == key).map_or("-", |(_, v)| v);
+            format!(
+                "{} [{}] source={} lucene.version={} mergeFactor={} mergeMaxNumSegments={}",
+                sci.segment_name,
+                keys.join(","),
+                get("source"),
+                get("lucene.version"),
+                get("mergeFactor"),
+                get("mergeMaxNumSegments"),
+            )
+        })
+        .collect()
+}
+
+fn java_dir(which: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/data")
+        .join(which)
+}
+
+/// `IndexWriter.setDiagnostics`: a flushed segment's keys (`nowait`) and a
+/// merged one's (`wait`, whose last commit holds only merges) are Java's,
+/// with Java's `source`, `mergeFactor` and `mergeMaxNumSegments`.
+#[test]
+fn segment_diagnostics_have_javas_keys() {
+    for (which, wait) in [("wait", None), ("nowait", Some(0))] {
+        let tmp = TempDir::new("merge-on-commit-diagnostics");
+        let dir = FsDirectory::open(&tmp);
+        run(&dir, wait);
+        let java = FsDirectory::open(java_dir(&format!("merge_on_commit/{which}")));
+        let want = diagnostics(&java);
+        assert!(want.iter().all(|d| d.contains(if which == "wait" {
+            "source=merge"
+        } else {
+            "source=flush"
+        })));
+        assert_eq!(want, diagnostics(&dir), "{which}");
+    }
+}
+
+/// `forceMerge(n)` records `mergeMaxNumSegments` n, as Java's
+/// `forceMerge(1)` of three segments did in `GenCodecs`' `merged` index.
+#[test]
+fn a_forced_merge_records_its_max_num_segments() {
+    let java = FsDirectory::open(java_dir("codecs_bloom/merged/index"));
+    let want = diagnostics(&java);
+    assert_eq!(want.len(), 1);
+    assert!(
+        want[0].ends_with("mergeFactor=3 mergeMaxNumSegments=1"),
+        "{want:?}"
+    );
+    let tmp = TempDir::new("merge-on-commit-forced");
+    let dir = FsDirectory::open(&tmp);
+    run(&dir, None);
+    let mut w = writer(&dir, None);
+    w.force_merge(1).unwrap();
+    w.commit().unwrap();
+    let got = diagnostics(&dir);
+    assert_eq!(got.len(), 1);
+    let keys = |d: &str| d.split(' ').nth(1).unwrap().to_string();
+    assert_eq!(keys(&got[0]), keys(&want[0]));
+    assert!(
+        got[0].ends_with("source=merge lucene.version=10.5.0 mergeFactor=2 mergeMaxNumSegments=1"),
+        "{got:?}"
+    );
+    w.close().unwrap();
+}
