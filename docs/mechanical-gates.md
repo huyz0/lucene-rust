@@ -39,6 +39,7 @@ to describe a defect that got past it.
 | [`table-fixed-len`](#table-fixed-len) | `check-port-invariants.py` | a non-test `static`/`const` in `lucene-analysis` typed as a slice literal (`&[T] = &[`) | a fixed-length type whose `N` was itself copied from the short transcription; a table built at runtime (`vec!`, `LazyLock`); a dropped or reordered entry in a table nothing indexes by position; every other crate |
 | [`alloc-from-parse`](#alloc-from-parse) | `check-port-invariants.py` | an allocation size (`vec![_; n]`, `with_capacity(n)`, `.resize(n, ..)`) mentioning a name its fn bound from a text parse (`parse_int(`, `parse_num(`, `.parse()`) or containing one, with no `min(` in the size and no `// ALLOC:` proof | a count reaching the size through a struct field, a parameter or another fn; a count decoded from bytes (`read_vint`) rather than parsed from text; a `min(` that does not actually cap it; a loop that pushes once per announced entry without reading one |
 | [`literal-space-run`](#literal-space-run) | `check-port-invariants.py` | a line in `crates/*/src` holding a string literal with a run of 8+ spaces between non-spaces, or a `\n` then 8+ spaces, with no `// SPACES-OK:` waiver | a run under eight spaces; a run only on a later line of a multi-line literal; `crates/*/tests` |
+| [`test-framework-dev-only`](#test-framework-dev-only) | `check-port-invariants.py` | a `lucene-test-framework` key (inline or `[*.lucene-test-framework]` table) in the root or a `crates/*/Cargo.toml` under any section but a `dev-dependencies` one | an edge written through `package = "lucene-test-framework"` under another key; a manifest outside `crates/`; feature unification in a whole-workspace build (see the section) |
 | [`preflight`](#preflight) | `preflight.sh` | a docker engine that does not answer in 30 s; under 25 GB free where Docker keeps its disk; a Docker virtual disk over 300 GB on a drive with under 150 GB free (over 300 GB with more room only warns); under 5 GB free on the repo's drive; (in the container) under 15 GB free under the target dir | a drive that fills *during* a run (it checks the start, not the trend); a second project's disk use between checks; free space that is real but fragmented |
 | [rustdoc links](#rustdoc) | `cargo doc` | a `[`link`]` that resolves to nothing | a symbol named in *plain backticks*, which is most of them |
 | [coverage objects](#coverage-objects) | `scripts/coverage.sh` | lucene-ffi's never-loaded cdylib standing in for the executed copy of a `#[no_mangle]` function in the line report | the same first-copy-wins rule between two *executed* copies; a file whose lines split between a crate's unit-test and integration-test builds, which the summary under-reports |
@@ -876,6 +877,26 @@ python3 scripts/check-parity.py
 RUSTDOCFLAGS="-D warnings -A rustdoc::private_intra_doc_links" \
   cargo doc --workspace --no-deps --document-private-items
 ```
+
+## test-framework-dev-only
+
+`check-port-invariants.py --only=test-framework-dev-only`. `lucene-test-framework`
+(M14.h) is test infrastructure: a normal or build edge to it would link it, and
+the `test-support` items of `lucene-util` it enables, into the library
+`lucene-ffi` ships. The rule reads every dependency key in the root manifest
+and each `crates/*/Cargo.toml` under the section it sits in, and fails unless
+that section is a `dev-dependencies` one (`[target.'..'.dev-dependencies]`
+included). **Seen to fail** on all three shapes, planted in
+`crates/lucene-util/Cargo.toml`: a `[build-dependencies]` key, a
+`[dependencies.lucene-test-framework]` table (`lucene-test-framework under
+[dependencies]: it is a dev-dependency only`), and passed a
+`[target.x.dev-dependencies]` one. Blind to: a renamed edge (`tf = { package =
+"lucene-test-framework" }`); manifests outside `crates/` (the out-of-workspace
+benchmark runner). And not a property of the graph: `cargo build --workspace`
+compiles the test framework as a member, so its `test-support` feature on
+`lucene-util` is unified into that build of `lucene-util` too; the shipped
+`-p lucene-ffi` build does not include it (`cargo tree -p lucene-ffi -e
+normal,build`).
 
 ## Each of these has been seen to fail
 

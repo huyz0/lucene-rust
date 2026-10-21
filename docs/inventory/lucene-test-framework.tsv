@@ -1,0 +1,216 @@
+# Lucene 10.5.0 lucene-test-framework: every top-level class of the jar, and what became of it.
+# Checked by scripts/check-port-inventory.py --module test-framework (see its docstring for the statuses).
+# M14.h batches: h1 util/ suites and generators; h2 store/mockfile; h3 analysis; h4 index infrastructure; h5-h6 format suites; h7 search/geo; h8 stress.
+# class	status	detail
+tests/analysis/BaseTokenStreamFactoryTestCase	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/BaseTokenStreamTestCase	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/CannedBinaryTokenStream	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/CannedTokenStream	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/CollationTestBase	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/CrankyTokenFilter	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/LookaheadTokenFilter	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/MockAnalyzer	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/MockBytesAnalyzer	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/MockCharFilter	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/MockFixedLengthPayloadFilter	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/MockGraphTokenFilter	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/MockHoleInjectingTokenFilter	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/MockLowerCaseFilter	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/MockPayloadAnalyzer	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/MockPayloadFilter	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/MockRandomLookaheadTokenFilter	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/MockReaderWrapper	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/MockSynonymAnalyzer	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/MockSynonymFilter	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/MockTokenFilter	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/MockTokenizer	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/MockUTF16TermAttributeImpl	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/MockVariableLengthPayloadFilter	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/SimplePayloadFilter	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/Token	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/TokenStreamToDot	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/ValidatingTokenFilter	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/VocabularyAssert	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/standard/EmojiTokenizationTestUnicode_12_1	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/analysis/standard/WordBreakTestUnicode_12_1_0	todo:M14	h3: mock analysis chain / BaseTokenStreamTestCase
+tests/codecs/asserting/AssertingCodec	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/codecs/asserting/AssertingDocValuesFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/codecs/asserting/AssertingKnnVectorsFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/codecs/asserting/AssertingLiveDocsFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/codecs/asserting/AssertingNormsFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/codecs/asserting/AssertingPointsFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/codecs/asserting/AssertingPostingsFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/codecs/asserting/AssertingStoredFieldsFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/codecs/asserting/AssertingTermVectorsFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/codecs/blockterms/LuceneFixedGap	todo:M14	h6: test postings format (read side vs Java)
+tests/codecs/blockterms/LuceneVarGapDocFreqInterval	todo:M14	h6: test postings format (read side vs Java)
+tests/codecs/blockterms/LuceneVarGapFixedInterval	todo:M14	h6: test postings format (read side vs Java)
+tests/codecs/bloom/TestBloomFilteredLucenePostings	todo:M14	h6: test postings format (read side vs Java)
+tests/codecs/cheapbastard/CheapBastardCodec	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/codecs/compressing/CompressingCodec	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/codecs/compressing/DeflateWithPresetCompressingCodec	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/codecs/compressing/FastCompressingCodec	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/codecs/compressing/FastDecompressionCompressingCodec	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/codecs/compressing/HighCompressionCompressingCodec	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/codecs/compressing/LZ4WithPresetCompressingCodec	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/codecs/compressing/dummy/DummyCompressingCodec	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/codecs/cranky/CrankyCodec	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/codecs/cranky/CrankyCompoundFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/codecs/cranky/CrankyDocValuesFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/codecs/cranky/CrankyFieldInfosFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/codecs/cranky/CrankyLiveDocsFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/codecs/cranky/CrankyNormsFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/codecs/cranky/CrankyPointsFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/codecs/cranky/CrankyPostingsFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/codecs/cranky/CrankySegmentInfoFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/codecs/cranky/CrankyStoredFieldsFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/codecs/cranky/CrankyTermVectorsFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/codecs/mockrandom/MockRandomPostingsFormat	todo:M14	h6: test postings format (read side vs Java)
+tests/codecs/ramonly/RAMOnlyPostingsFormat	todo:M14	h6: test postings format (read side vs Java)
+tests/codecs/uniformsplit/Rot13CypherTestUtil	todo:M14	h6: test postings format (read side vs Java)
+tests/codecs/uniformsplit/UniformSplitRot13PostingsFormat	todo:M14	h6: test postings format (read side vs Java)
+tests/codecs/uniformsplit/sharedterms/STUniformSplitRot13PostingsFormat	todo:M14	h6: test postings format (read side vs Java)
+tests/codecs/vector/ConfigurableMCodec	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/geo/BaseGeoPointTestCase	todo:M14	h7: geo query test bases
+tests/geo/BaseXYPointTestCase	todo:M14	h7: geo query test bases
+tests/geo/EarthDebugger	todo:M14	h7: geo query test bases
+tests/geo/GeoTestUtil	todo:M14	h7: geo query test bases
+tests/geo/ShapeTestUtil	todo:M14	h7: geo query test bases
+tests/index/AlcoholicMergePolicy	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
+tests/index/AllDeletedFilterReader	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
+tests/index/AssertingDirectoryReader	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
+tests/index/AssertingLeafReader	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
+tests/index/BaseCompoundFormatTestCase	todo:M14	h6: index file format suites
+tests/index/BaseCompressingDocValuesFormatTestCase	todo:M14	h5: index file format suites
+tests/index/BaseDocValuesFormatTestCase	todo:M14	h5: index file format suites
+tests/index/BaseFieldInfoFormatTestCase	todo:M14	h6: index file format suites
+tests/index/BaseIndexFileFormatTestCase	todo:M14	h5: index file format suites
+tests/index/BaseKnnVectorsFormatTestCase	todo:M14	h6: index file format suites
+tests/index/BaseLiveDocsFormatTestCase	todo:M14	h6: index file format suites
+tests/index/BaseMergePolicyTestCase	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
+tests/index/BaseNormsFormatTestCase	todo:M14	h6: index file format suites
+tests/index/BasePointsFormatTestCase	todo:M14	h6: index file format suites
+tests/index/BasePostingsFormatTestCase	todo:M14	h5: index file format suites
+tests/index/BaseSegmentInfoFormatTestCase	todo:M14	h6: index file format suites
+tests/index/BaseStoredFieldsFormatTestCase	todo:M14	h5: index file format suites
+tests/index/BaseTermVectorsFormatTestCase	todo:M14	h5: index file format suites
+tests/index/BaseTestCheckIndex	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
+tests/index/DocHelper	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
+tests/index/FieldFilterLeafReader	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
+tests/index/ForceMergePolicy	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
+tests/index/LegacyBaseDocValuesFormatTestCase	todo:M14	h5: index file format suites
+tests/index/MergeReaderWrapper	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
+tests/index/MergingCodecReader	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
+tests/index/MergingDirectoryReaderWrapper	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
+tests/index/MismatchedCodecReader	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
+tests/index/MismatchedDirectoryReader	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
+tests/index/MismatchedLeafReader	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
+tests/index/MockIndexWriterEventListener	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
+tests/index/MockRandomMergePolicy	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
+tests/index/OwnCacheKeyMultiReader	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
+tests/index/PerThreadPKLookup	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
+tests/index/PointsStackTracker	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
+tests/index/RandomCodec	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
+tests/index/RandomIndexWriter	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
+tests/index/RandomPostingsTester	todo:M14	h5: index file format suites
+tests/index/SuppressingConcurrentMergeScheduler	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
+tests/index/ThreadedIndexingAndSearchingTestCase	todo:M14	h8: NRT/stress
+tests/mockfile/DisableFsyncFS	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
+tests/mockfile/ExtrasFS	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
+tests/mockfile/FilterAsynchronousFileChannel	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
+tests/mockfile/FilterDirectoryStream	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
+tests/mockfile/FilterFileChannel	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
+tests/mockfile/FilterFileStore	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
+tests/mockfile/FilterFileSystem	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
+tests/mockfile/FilterFileSystemProvider	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
+tests/mockfile/FilterInputStream2	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
+tests/mockfile/FilterOutputStream2	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
+tests/mockfile/FilterPath	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
+tests/mockfile/FilterSeekableByteChannel	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
+tests/mockfile/HandleLimitFS	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
+tests/mockfile/HandleTrackingFS	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
+tests/mockfile/LeakFS	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
+tests/mockfile/MockFileSystemTestCase	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
+tests/mockfile/ShuffleFS	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
+tests/mockfile/VerboseFS	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
+tests/mockfile/VirusCheckingFS	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
+tests/mockfile/WindowsFS	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
+tests/mockfile/WindowsPath	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
+tests/search/AssertingAcceptDocs	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/AssertingBulkScorer	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/AssertingCollector	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/AssertingIndexSearcher	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/AssertingLeafCollector	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/AssertingMatches	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/AssertingMatchesIterator	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/AssertingQuery	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/AssertingScorable	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/AssertingScorer	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/AssertingWeight	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/BaseExplanationTestCase	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/BaseRangeFieldQueryTestCase	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/BlockScoreQueryWrapper	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/BulkScorerWrapperScorer	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/CheckHits	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/DisablingBulkScorerQuery	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/DummyTotalHitCountCollector	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/FixedBitSetCollector	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/MatchesTestBase	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/QueryUtils	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/RandomApproximationQuery	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/ScorerIndexSearcher	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/SearchEquivalenceTestBase	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/ShardSearchingTestBase	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/similarities/AssertingSimilarity	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/similarities/BaseSimilarityTestCase	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/similarities/RandomSimilarity	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/store/BaseChunkedDirectoryTestCase	todo:M14	h2: MockDirectoryWrapper and the directory/lock-factory suites
+tests/store/BaseDirectoryTestCase	todo:M14	h2: MockDirectoryWrapper and the directory/lock-factory suites
+tests/store/BaseDirectoryWrapper	todo:M14	h2: MockDirectoryWrapper and the directory/lock-factory suites
+tests/store/BaseLockFactoryTestCase	todo:M14	h2: MockDirectoryWrapper and the directory/lock-factory suites
+tests/store/CorruptingIndexOutput	todo:M14	h2: MockDirectoryWrapper and the directory/lock-factory suites
+tests/store/MockDirectoryWrapper	todo:M14	h2: MockDirectoryWrapper and the directory/lock-factory suites
+tests/store/MockIndexInputWrapper	todo:M14	h2: MockDirectoryWrapper and the directory/lock-factory suites
+tests/store/MockIndexOutputWrapper	todo:M14	h2: MockDirectoryWrapper and the directory/lock-factory suites
+tests/store/RawDirectoryWrapper	todo:M14	h2: MockDirectoryWrapper and the directory/lock-factory suites
+tests/store/SerialIOCountingDirectory	todo:M14	h2: MockDirectoryWrapper and the directory/lock-factory suites
+tests/store/SlowClosingMockIndexInputWrapper	todo:M14	h2: MockDirectoryWrapper and the directory/lock-factory suites
+tests/store/SlowOpeningMockIndexInputWrapper	todo:M14	h2: MockDirectoryWrapper and the directory/lock-factory suites
+tests/util/AbstractBeforeAfterRule	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
+tests/util/BaseBitSetTestCase	ported	crates/lucene-test-framework/src/util/base_bit_set.rs::BaseBitSetTestCase
+tests/util/BaseDocIdSetTestCase	partial	crates/lucene-test-framework/src/util/base_doc_id_set.rs::BaseDocIdSetTestCase -- M14: testIntoBitSet, testIntoBitSetBoundChecks and testRamBytesUsed (the Rust DocIdSet has no intoBitSet or ramBytesUsed)
+tests/util/CloseableDirectory	todo:M14	h2: closes a MockDirectoryWrapper at suite end, checking for leaks
+tests/util/English	ported	crates/lucene-test-framework/src/util/english.rs::long_to_english
+tests/util/FailOnNonBulkMergesInfoStream	todo:M14	h4: InfoStream failing on a non-bulk stored-fields merge
+tests/util/FailureMarker	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
+tests/util/LineFileDocs	ported	crates/lucene-test-framework/src/util/line_file_docs.rs::LineFileDocs
+tests/util/LuceneJUnit3MethodProvider	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
+tests/util/LuceneTestCase	partial	crates/lucene-test-framework/src/util/lucene_test_case.rs::LuceneTestCase -- M14: newDirectory/newIndexWriterConfig/newSearcher/newField arrive with h2, h4 and h7
+tests/util/NullInfoStream	todo:M14	h4: an InfoStream that discards (and asserts on) messages
+tests/util/QuickPatchThreadsFilter	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
+tests/util/RamUsageTester	not-needed	reflection over the JVM heap; Rust types report their own heap (`ram_bytes_used`)
+tests/util/RemoveUponClose	todo:M14	h2: deletes a test directory on close unless the test failed
+tests/util/Rethrow	not-needed	sneaky-throws a checked exception; Rust has no checked exceptions
+tests/util/RunListenerPrintReproduceInfo	ported	crates/lucene-test-framework/src/util/lucene_test_case.rs::reproduce_line
+tests/util/StringMockResourceLoader	todo:M14	h3: a ResourceLoader over an in-memory string
+tests/util/TestObjectInputFilterFactory	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
+tests/util/TestRuleAssertionsRequired	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
+tests/util/TestRuleDelegate	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
+tests/util/TestRuleIgnoreAfterMaxFailures	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
+tests/util/TestRuleIgnoreTestSuites	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
+tests/util/TestRuleLimitSysouts	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
+tests/util/TestRuleMarkFailure	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
+tests/util/TestRuleRestoreSystemProperties	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
+tests/util/TestRuleSetupAndRestoreClassEnv	todo:M14	h4: per-class codec/similarity/locale randomization
+tests/util/TestRuleSetupAndRestoreInstanceEnv	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
+tests/util/TestRuleSetupTeardownChained	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
+tests/util/TestRuleStoreClassName	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
+tests/util/TestRuleTemporaryFilesCleanup	ported	crates/lucene-util/src/test_support.rs::TempDir
+tests/util/TestRuleThreadAndTestName	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
+tests/util/TestSecurityManager	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
+tests/util/TestUtil	partial	crates/lucene-test-framework/src/util/test_util.rs::random_realistic_unicode_string -- M14: index/codec helpers (checkIndex, getDefaultCodec, docs, ...) arrive with h4-h5; randomPattern (java.util.regex) is not ported
+tests/util/ThrottledIndexOutput	todo:M14	h2: an IndexOutput that sleeps to model a slow disk
+tests/util/TimeUnits	not-needed	millisecond constants for JUnit `@Timeout` annotations
+tests/util/VerifyTestClassNamingConvention	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
+tests/util/automaton/AutomatonTestUtil	ported	crates/lucene-test-framework/src/util/automaton_test_util.rs::RandomAcceptedStrings
+tests/util/fst/FSTTester	partial	crates/lucene-test-framework/src/util/fst_tester.rs::FstTester -- M14: inputMode 1 (UTF-32) next/seek checks need an IntsRefFSTEnum over a typed FST

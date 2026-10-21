@@ -12,6 +12,9 @@ const MASK: u64 = (1 << 48) - 1;
 #[derive(Debug, Clone)]
 pub struct JavaRandom {
     seed: u64,
+    /// `nextNextGaussian`, when `haveNextNextGaussian`: the second value of
+    /// the last polar-method pair.
+    next_next_gaussian: Option<f64>,
 }
 
 impl JavaRandom {
@@ -19,7 +22,13 @@ impl JavaRandom {
     pub fn new(seed: i64) -> Self {
         JavaRandom {
             seed: (seed as u64 ^ MULTIPLIER) & MASK,
+            next_next_gaussian: None,
         }
+    }
+
+    /// `setSeed(seed)`: as `new Random(seed)`, dropping a pending Gaussian.
+    pub fn set_seed(&mut self, seed: i64) {
+        *self = JavaRandom::new(seed);
     }
 
     /// `next(bits)`.
@@ -72,6 +81,36 @@ impl JavaRandom {
         (((self.next(26) as i64) << 27) + self.next(27) as i64) as f64
             * (1.0f64 / (1u64 << 53) as f64)
     }
+
+    /// `nextBytes(bytes)`: one `nextInt()` per four bytes, low byte first.
+    pub fn next_bytes(&mut self, bytes: &mut [u8]) {
+        for chunk in bytes.chunks_mut(4) {
+            let mut rnd = self.next_int();
+            for b in chunk {
+                *b = rnd as u8;
+                rnd >>= 8;
+            }
+        }
+    }
+
+    /// `nextGaussian()`: the legacy polar method `java.util.Random` keeps
+    /// (Marsaglia), over `StrictMath.log` and `StrictMath.sqrt`, caching the
+    /// pair's second value for the next call.
+    pub fn next_gaussian(&mut self) -> f64 {
+        if let Some(g) = self.next_next_gaussian.take() {
+            return g;
+        }
+        loop {
+            let v1 = 2.0 * self.next_double() - 1.0;
+            let v2 = 2.0 * self.next_double() - 1.0;
+            let s = v1 * v1 + v2 * v2;
+            if s < 1.0 && s != 0.0 {
+                let multiplier = (-2.0 * crate::strict_math::log(s) / s).sqrt();
+                self.next_next_gaussian = Some(v2 * multiplier);
+                return v1 * multiplier;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -92,6 +131,23 @@ mod tests {
         assert!((0.0..1.0).contains(&f));
         let d = r.next_double();
         assert!((0.0..1.0).contains(&d));
+    }
+
+    const GAUSS: [u64; 3] = [0x3ff1a4d76a1d7504, 0xbff26b7713e0ae21, 0xbff3b3e821a12136];
+
+    /// `new Random(42)`: `nextBytes(new byte[6])`, then `nextGaussian()`
+    /// three times (the pair, then a fresh pair), on a JDK.
+    #[test]
+    fn bytes_and_gaussians_match_the_jdk() {
+        let mut r = JavaRandom::new(42);
+        let mut b = [0u8; 6];
+        r.next_bytes(&mut b);
+        assert_eq!(b, [0x35, 0x9d, 0x41, 0xba, 0xf7, 0x8a]);
+        assert_eq!(r.next_gaussian().to_bits(), GAUSS[0]);
+        assert_eq!(r.next_gaussian().to_bits(), GAUSS[1]);
+        assert_eq!(r.next_gaussian().to_bits(), GAUSS[2]);
+        r.set_seed(42);
+        assert_eq!(r.next_int(), -1170105035);
     }
 
     #[test]

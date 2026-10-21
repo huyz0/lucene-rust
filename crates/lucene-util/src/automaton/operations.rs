@@ -832,6 +832,15 @@ pub fn reverse(a: &Automaton) -> Automaton {
     reverse_with_initials(a, None)
 }
 
+/// `AutomatonTestUtil.reverseOriginal(a, initialStates)`: brics' reverse,
+/// dead states kept, with the states [`determinize_simple_from`] should
+/// start from (the old accept states, renumbered).
+pub fn reverse_original(a: &Automaton) -> (Automaton, Vec<i32>) {
+    let mut initials = Vec::new();
+    let r = reverse_with_initials(a, Some(&mut initials));
+    (r, initials)
+}
+
 fn reverse_with_initials(a: &Automaton, mut initials: Option<&mut Vec<i32>>) -> Automaton {
     if is_empty(a) {
         return Automaton::new();
@@ -1072,7 +1081,9 @@ pub fn determinize_simple(a: &Automaton) -> Automaton {
     determinize_simple_from(a, &[0])
 }
 
-fn determinize_simple_from(a: &Automaton, initial: &[i32]) -> Automaton {
+/// `AutomatonTestUtil.determinizeSimple(a, initialset)`: the subset
+/// construction started from the set of `initial` states.
+pub fn determinize_simple_from(a: &Automaton, initial: &[i32]) -> Automaton {
     if a.get_num_states() == 0 {
         return a.clone();
     }
@@ -1173,6 +1184,11 @@ mod tests {
         let simple = determinize_simple(&nfa);
         assert!(simple.is_deterministic());
         assert!(same_language(&simple, &minimize(&nfa)).unwrap());
+        let (rev, initials) = reverse_original(&nfa);
+        assert_eq!(initials.len(), nfa.accept_count());
+        let back = determinize_simple_from(&rev, &initials);
+        assert!(run_ints(&back, &['b' as i32, 'a' as i32]));
+        assert!(reverse_original(&automata::make_empty()).1.is_empty());
         assert!(subset_of(&make_string("ab"), &simple).unwrap());
         assert!(!subset_of(&simple, &make_string("ab")).unwrap());
         assert!(subset_of(&automata::make_empty(), &simple).unwrap());

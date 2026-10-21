@@ -27,6 +27,12 @@ each other.
   `lucene-core`: `ICUCollationDocValuesField` is a `SortedDocValuesField`
   (Java: a `Field`), so `lucene-analysis-icu` depends on `lucene-index` for
   that type alone (M12, Architecture).
+- **`lucene-test-framework` is a dev-dependency only** (PLAN.md §1, M14.h).
+  A crate may name it under `[dev-dependencies]`, never `[dependencies]` or
+  `[build-dependencies]`, so it never reaches `lucene-ffi`'s library: `cargo
+  tree -p lucene-ffi -e normal,build` must not list it. It depends on the
+  crates it tests (`lucene-util` up), which a normal edge back would turn
+  into a cycle.
 - **Port by format, not by class hierarchy.** A Java class name is not a
   license to create a matching Rust type — port the on-disk contract; design
   the in-memory shape for Rust (see the `rust-performance` skill).
@@ -49,6 +55,12 @@ each other.
   `grep -E '^lucene-analysis-' crates/*/Cargo.toml` shows any offender).
 - `cargo clippy --workspace` — `forbid(unsafe_code)` turns stray `unsafe` into
   a hard compile error outside `lucene-util`/`lucene-store`/`lucene-ffi`.
+- `check-port-invariants.py`'s `test-framework-dev-only` rule fails on a
+  `lucene-test-framework` edge outside a `dev-dependencies` section. The
+  rule is per package: `cargo build --workspace` still unifies the test
+  framework's `test-support` feature on `lucene-util` into that build, so
+  the shipped artifact is the `-p lucene-ffi` build (`cargo tree -p
+  lucene-ffi -e normal,build` does not list it).
 - Code review (no automated dep-direction linter yet — a good candidate for a
   future `xtask` if the workspace grows past ~10 crates).
 

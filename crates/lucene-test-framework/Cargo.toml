@@ -1,0 +1,28 @@
+[package]
+name = "lucene-test-framework"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Lucene's `lucene/test-framework` (M14.h): randomized-test infrastructure and
+# the reusable `Base*TestCase` suites, as library code so the port inventory
+# can point at it. A leaf that is only ever a `[dev-dependencies]` edge --
+# no crate names it under `[dependencies]`, so it never reaches a production
+# build (`cargo tree -p lucene-ffi` does not show it; check-port-invariants.py's
+# `test-framework-dev-only` rule enforces it). Per package: a whole-workspace
+# build unifies the `test-support` feature below into its lucene-util, as the
+# other crates' dev-dependencies already do. See the architecture skill and
+# PLAN.md section 1.
+#
+# Not opted into the workspace's arithmetic gate (`[lints] workspace = true`):
+# nothing here reads a length or count off disk; it generates random inputs
+# and compares an implementation against a model.
+
+[dependencies]
+lucene-util = { path = "../lucene-util", features = ["test-support"] }
+lucene-codecs = { path = "../lucene-codecs" }
+lucene-search = { path = "../lucene-search" }
+# Inflates the gzip members of Lucene's `europarl.lines.txt.gz` when
+# `TESTS_LINEDOCSFILE` names it (`util::line_file_docs`).
+miniz_oxide.workspace = true
