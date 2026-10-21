@@ -71,7 +71,7 @@ tests/codecs/uniformsplit/Rot13CypherTestUtil	todo:M14	h6: test postings format 
 tests/codecs/uniformsplit/UniformSplitRot13PostingsFormat	todo:M14	h6: test postings format (read side vs Java)
 tests/codecs/uniformsplit/sharedterms/STUniformSplitRot13PostingsFormat	todo:M14	h6: test postings format (read side vs Java)
 tests/codecs/vector/ConfigurableMCodec	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
-tests/geo/BaseGeoPointTestCase	partial	crates/lucene-test-framework/src/geo/base_geo_point.rs::BaseGeoPoint -- M14: the polygon and geometry verifies, the fixed-input and invalid-argument tests; RandomIndexWriter and forceMerge
+tests/geo/BaseGeoPointTestCase	partial	crates/lucene-test-framework/src/geo/base_geo_point.rs::BaseGeoPoint -- M14: the polygon and geometry verifies; testMultiValued, testRandomBig, testRandomDistance(Huge), testRectBoundariesAreInclusive, testEquals, the fixed-input (testBoxBasics, testDistanceBasics, testSmallSet*, polygon) and invalid-argument tests; RandomIndexWriter, newIndexWriterConfig and newSearcher draws, forceMerge
 tests/geo/BaseXYPointTestCase	todo:M14	h7 deferral: the XY twin of BaseGeoPointTestCase (XYPointField queries)
 tests/geo/EarthDebugger	not-needed	a debugging aid that renders shapes as an HTML/SVG globe; no check depends on it
 tests/geo/GeoTestUtil	partial	crates/lucene-test-framework/src/geo/geo_test_util.rs::next_double_internal -- M14: the polygon, line and near-point generators, toSVG
@@ -148,7 +148,7 @@ tests/search/AssertingScorable	ported	crates/lucene-search/src/exec/asserting.rs
 tests/search/AssertingScorer	ported	crates/lucene-search/src/exec/asserting.rs::AssertingScorer
 tests/search/AssertingWeight	partial	crates/lucene-search/src/exec/asserting.rs::wrap -- M14: no Weight; each built scorer wrapped; no count/cost/get-once checks or usually() bulk-vs-scorer pick
 tests/search/BaseExplanationTestCase	partial	crates/lucene-test-framework/src/search/base_explanation.rs::BaseExplanation -- M14: RandomIndexWriter and newTextField/newStringField random field types
-tests/search/BaseRangeFieldQueryTestCase	partial	crates/lucene-test-framework/src/search/base_range_field.rs::BaseRangeField -- M14: random IndexWriterConfig and forceMerge (one segment here)
+tests/search/BaseRangeFieldQueryTestCase	partial	crates/lucene-test-framework/src/search/base_range_field.rs::BaseRangeField -- M14: testRandomBig; random IndexWriterConfig (and its draws), newSearcher and forceMerge (one segment here)
 tests/search/BlockScoreQueryWrapper	todo:M14	h7 deferral: re-blocks a query's impacts to exercise block-max scoring; needs a Weight to wrap
 tests/search/BulkScorerWrapperScorer	todo:M14	h7 deferral: a BulkScorer seen as a Scorer; the scorer tree is private to lucene-search
 tests/search/CheckHits	partial	crates/lucene-test-framework/src/search/check_hits.rs::check_hits -- M14: wrapUnderlyingReader passes (no MultiReader over arbitrary readers)
@@ -156,8 +156,8 @@ tests/search/DisablingBulkScorerQuery	todo:M14	h7 deferral: hides a query's bulk
 tests/search/DummyTotalHitCountCollector	todo:M14	h7 deferral: a hit counter without TotalHitCountCollector's shortcuts
 tests/search/FixedBitSetCollector	ported	crates/lucene-test-framework/src/search/check_hits.rs::all_hits
 tests/search/MatchesTestBase	partial	crates/lucene-test-framework/src/search/matches_test_base.rs::MatchesTestBase -- M14: NamedQuery as a clause (named clauses passed alongside), RandomIndexWriter
-tests/search/QueryUtils	partial	crates/lucene-test-framework/src/search/query_utils.rs::check_with_searcher -- M14: wrapUnderlyingReader/MultiReader passes
-tests/search/RandomApproximationQuery	ported	crates/lucene-search/src/test_support.rs::TestQuery
+tests/search/QueryUtils	partial	crates/lucene-test-framework/src/search/query_utils.rs::check_with_searcher -- M14: wrapUnderlyingReader/MultiReader passes (and their draws)
+tests/search/RandomApproximationQuery	partial	crates/lucene-search/src/test_support.rs::TestQuery -- M14: no Weight: each scorer seeded from the query's own JavaRandom, not one per weight (createWeight) and one per scorer from it
 tests/search/ScorerIndexSearcher	todo:M14	h7 deferral: a searcher that scores through Scorer, never BulkScorer; the scorer tree is private to lucene-search
 tests/search/SearchEquivalenceTestBase	partial	crates/lucene-test-framework/src/search/search_equivalence.rs::SearchEquivalence -- M14: RandomIndexWriter and two newSearcher wrappers (one plain searcher here)
 tests/search/ShardSearchingTestBase	todo:M14	h7 deferral: simulated distributed search over node searchers and term statistics; with h8
