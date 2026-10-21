@@ -161,9 +161,9 @@ tests/search/RandomApproximationQuery	ported	crates/lucene-search/src/test_suppo
 tests/search/ScorerIndexSearcher	todo:M14	h7 deferral: a searcher that scores through Scorer, never BulkScorer; the scorer tree is private to lucene-search
 tests/search/SearchEquivalenceTestBase	partial	crates/lucene-test-framework/src/search/search_equivalence.rs::SearchEquivalence -- M14: RandomIndexWriter and two newSearcher wrappers (one plain searcher here)
 tests/search/ShardSearchingTestBase	todo:M14	h7 deferral: simulated distributed search over node searchers and term statistics; with h8
-tests/search/similarities/AssertingSimilarity	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
-tests/search/similarities/BaseSimilarityTestCase	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
-tests/search/similarities/RandomSimilarity	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
+tests/search/similarities/AssertingSimilarity	ported	crates/lucene-test-framework/src/search/similarities.rs::AssertingSimilarity
+tests/search/similarities/BaseSimilarityTestCase	partial	crates/lucene-test-framework/src/search/similarities.rs::do_test_scoring -- M14: the explanation checks (SimScorer.explain is BM25-only in lucene-search); their rarely() draws are kept
+tests/search/similarities/RandomSimilarity	ported	crates/lucene-test-framework/src/search/similarities.rs::RandomSimilarity
 tests/store/BaseChunkedDirectoryTestCase	not-needed	suites a directory with a configurable chunk size (MMapDirectory maxChunkSize); the Rust MmapDirectory maps each file whole and has no chunk size to vary
 tests/store/BaseDirectoryTestCase	ported	crates/lucene-test-framework/src/store/base_directory.rs::BaseDirectoryTestCase
 tests/store/BaseDirectoryWrapper	ported	crates/lucene-test-framework/src/store/base_directory_wrapper.rs::BaseDirectoryWrapper
