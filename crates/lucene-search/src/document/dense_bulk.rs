@@ -43,8 +43,9 @@ pub(crate) enum Step {
 ///   checked only between windows;
 /// * `ConstantScoreBulkScorer` (no scores needed): every candidate
 ///   confirmed, then masked; nothing to stop for;
-/// * `DefaultBulkScorer` (otherwise): only live candidates confirmed, the
-///   search ending at the hit that saturates the collector.
+/// * `DefaultBulkScorer` (otherwise, and [`Bulk::default_scorer`]): only
+///   live candidates confirmed, the search ending at the hit that saturates
+///   the collector.
 pub(crate) struct Bulk {
     windows: bool,
     live_first: bool,
@@ -59,6 +60,18 @@ impl Bulk {
         Bulk {
             windows,
             live_first: needs_scores && !windows,
+            window_end: -1,
+            max_doc,
+        }
+    }
+
+    /// `DefaultBulkScorer`, what a plain `ScorerSupplier` (or a
+    /// non-exhaustive `ConstantScoreQuery`) scores with: live candidates
+    /// confirmed, the search ending at the hit that saturates the collector.
+    pub(crate) fn default_scorer(max_doc: i32) -> Self {
+        Bulk {
+            windows: false,
+            live_first: true,
             window_end: -1,
             max_doc,
         }
