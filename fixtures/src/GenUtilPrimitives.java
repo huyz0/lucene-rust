@@ -346,6 +346,24 @@ public class GenUtilPrimitives {
       line("words", hex(toBytes(a)));
     }
 
+    // intoArray into an array with less room than the bits in range:
+    // word2Array copies only what fits (sparse words and, at step 1, the
+    // dense-word path).
+    for (int step : new int[] {3, 1}) {
+      FixedBitSet a = new FixedBitSet(300);
+      line("fbs", 300);
+      for (int i = 0; i < 300; i += step) {
+        a.set(i);
+        line("set", i);
+      }
+      for (int[] c : new int[][] {{0, 300, 5}, {5, 200, 40}, {64, 300, 0}, {1, 63, 3}, {0, 300, 100}, {0, 300, 99}, {70, 75, 2}}) {
+        int[] arr = new int[c[2]];
+        int n = a.intoArray(c[0], c[1], 7, arr);
+        line("intoArrayCap", c[0], c[1], c[2], n, n == 0 ? "-" : join(arr, n));
+      }
+      line("words", hex(toBytes(a)));
+    }
+
     Files.writeString(out.resolve("cases.txt"), OUT.toString());
 
     // --- LowercaseAsciiCompression.compress: `in <hex> <compressed hex | REJECT>` ---
