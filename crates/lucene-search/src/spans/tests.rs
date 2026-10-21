@@ -483,4 +483,69 @@ fn searched_rewritten_and_explained() {
         e.description
     );
     assert!(e.details.is_empty());
+
+    // A phrase explains `TFIDFScorer`'s breakdown, its value the score
+    // (`GenTestFrameworkSearch`'s Classic `phrase`/`phrase_sloppy` rows).
+    let phrase = BooleanQuery {
+        must: vec![Clause::Phrase(
+            crate::query::PhraseQuery::new("body", ["apple", "bank"]).with_slop(3),
+        )],
+        ..Default::default()
+    };
+    let td = searcher.search(&phrase, 1).unwrap();
+    let hit = &td.score_docs[0];
+    let e = searcher.explain(&phrase, hit.doc).unwrap();
+    assert_eq!(e.value, hit.score, "{e}");
+    assert!(e.description.ends_with("[ClassicSimilarity], result of:"));
+    let parts = &e.details[0].details;
+    assert_eq!(
+        (parts[0].description.as_str(), parts[0].details.len()),
+        ("idf(), sum of:", 2),
+        "{e}"
+    );
+    assert!(parts[1].description.starts_with("tf(freq="), "{e}");
+    assert!(parts[1].details[0].description.starts_with("phraseFreq="));
+    assert_eq!(parts[2].description, "fieldNorm");
+
+    // A multi-phrase explains the score its scorer gives under the
+    // searcher's similarity (`GenTestFrameworkSearch`'s Classic `mpq`).
+    let multi = BooleanQuery {
+        must: vec![Clause::MultiPhrase(
+            crate::query::MultiPhraseQuery::new("body", [vec!["apple"], vec!["bank", "zzz"]])
+                .with_slop(3),
+        )],
+        ..Default::default()
+    };
+    let td = searcher.search(&multi, 1).unwrap();
+    let hit = &td.score_docs[0];
+    let e = searcher.explain(&multi, hit.doc).unwrap();
+    assert_eq!(e.value, hit.score, "{e}");
+    assert!(e.description.ends_with("[ClassicSimilarity], result of:"));
+
+    // Its scorer skipping the document, or absent from the segment (no
+    // position's term indexed), is `PhraseWeight.explain`'s no match.
+    let max_doc: i32 = segments.iter().map(|s| s.max_doc.unwrap()).sum();
+    let hits = searcher
+        .search(&multi, usize::try_from(max_doc).unwrap())
+        .unwrap();
+    let miss = (0..max_doc)
+        .find(|d| hits.score_docs.iter().all(|h| h.doc != *d))
+        .expect("a document the multi-phrase misses");
+    let e = searcher.explain(&multi, miss).unwrap();
+    assert!(
+        !e.matched && e.to_string().contains("no matching terms"),
+        "{e}"
+    );
+    let absent = BooleanQuery {
+        must: vec![Clause::MultiPhrase(crate::query::MultiPhraseQuery::new(
+            "body",
+            [vec!["zzz"], vec!["yyy"]],
+        ))],
+        ..Default::default()
+    };
+    let e = searcher.explain(&absent, hit.doc).unwrap();
+    assert!(
+        !e.matched && e.to_string().contains("no matching terms"),
+        "{e}"
+    );
 }

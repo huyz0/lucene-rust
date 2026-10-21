@@ -79,9 +79,6 @@ fn compared_part(sim_name: &str, q_name: &str) -> Compared {
     let bm25 = sim_name == "BM25Similarity";
     match q_name {
         "dmq8" if !bm25 => Compared::Hits,
-        // Rust explains a phrase's and a multi-phrase's value with BM25,
-        // whatever the similarity
-        "phrase" | "phrase_sloppy" | "mpq" if !bm25 => Compared::Hits,
         "mpq" | "synonym" => Compared::Top,
         "boost" | "bq_dup" | "bq_dup_nested" if !bm25 => Compared::Top,
         _ => Compared::All,
