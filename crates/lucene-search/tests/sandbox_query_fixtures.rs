@@ -9,22 +9,27 @@
 //! expansion budgets) -- over a three-segment index with deletions: each
 //! query's total hits and top 20 with their score bits (`searches.tsv`), and
 //! the errors Java throws building or searching the bad ones
-//! (`errors.tsv`).
+//! (`errors.tsv`), among them core's phrase and `lucene-queries`' span
+//! queries over a field indexed without positions.
 
 // Test fixtures' own arithmetic -- see `docs/arithmetic-gate.md`'s "Test code".
 #![allow(clippy::arithmetic_side_effects)]
 
 use lucene_search::directory_reader::DirectoryReader;
-use lucene_search::extended_query::{MultiTermQuery, MultiTermSource, RewriteMethod};
+use lucene_search::extended_query::{
+    ExtendedQuery, MultiTermQuery, MultiTermSource, RewriteMethod,
+};
 use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
 use lucene_search::query::{
-    BooleanQuery, BoostQuery, Clause, FuzzyQuery, PrefixQuery, RegexpQuery, TermQuery,
-    WildcardQuery,
+    BooleanQuery, BoostQuery, Clause, FuzzyQuery, MultiPhraseQuery, PhraseQuery, PrefixQuery,
+    RegexpQuery, TermQuery, WildcardQuery,
 };
 use lucene_search::sandbox::search::{
     CombinedFieldQuery, CoveringQuery, GraphToken, PhraseWildcardBuilder, TermAutomatonQuery,
     TokenStreamToTermAutomatonQuery,
 };
+use lucene_search::spans::payloads::SpanPayloadCheckQuery;
+use lucene_search::spans::SpanNode;
 use lucene_search::values_source::{
     long_constant, long_from_long_field, BoxDoubleValues, BoxLongValues, LongValuesSource,
     ValuesContext,
@@ -168,6 +173,52 @@ impl<'s> Parser<'s> {
                     }
                 }
                 Clause::from(b.build())
+            }
+            "P" => {
+                let f = self.next();
+                let slop = u32::try_from(self.int()).unwrap();
+                let n = self.int();
+                let terms: Vec<&str> = (0..n).map(|_| self.next()).collect();
+                Clause::Phrase(PhraseQuery::new(f, terms).with_slop(slop))
+            }
+            "MP" => {
+                let f = self.next();
+                let n = self.int();
+                let mut arrays = Vec::new();
+                for _ in 0..n {
+                    let m = self.int();
+                    arrays.push((0..m).map(|_| self.next()).collect::<Vec<_>>());
+                }
+                Clause::MultiPhrase(MultiPhraseQuery::new(f, arrays))
+            }
+            "ST" | "SN" | "SPC" => {
+                self.pos -= 1;
+                Clause::Extended(Box::new(ExtendedQuery::Span(self.span()?)))
+            }
+            other => panic!("{other}"),
+        })
+    }
+
+    /// The span specs, as the `SpanQuery` tree they build.
+    fn span(&mut self) -> Result<SpanNode> {
+        Ok(match self.next() {
+            "ST" => {
+                let f = self.next();
+                SpanNode::term(f, self.next())
+            }
+            "SN" => {
+                let slop = self.int();
+                let in_order = self.next() == "1";
+                let n = self.int();
+                let clauses = (0..n).map(|_| self.span()).collect::<Result<_>>()?;
+                SpanNode::near(clauses, slop, in_order)?
+            }
+            "SPC" => {
+                let payload = self.next().as_bytes().to_vec();
+                SpanNode::PayloadCheck(Box::new(SpanPayloadCheckQuery::new(
+                    self.span()?,
+                    vec![Some(payload)],
+                )))
             }
             other => panic!("{other}"),
         })

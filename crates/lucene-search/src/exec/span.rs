@@ -624,6 +624,7 @@ pub(crate) fn span_doc_scores(
     let Some(field) = span_field(q) else {
         return Ok(None);
     };
+    crate::require_span_positions(ctx.fields, q)?;
     // `buildSimWeight`: the distinct leaf terms, in `Term` order, that have a
     // document somewhere in the reader.
     let mut leaves = Vec::new();
