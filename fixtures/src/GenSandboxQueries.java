@@ -14,6 +14,10 @@ import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.NoMergePolicy;
 import org.apache.lucene.index.Term;
+import org.apache.lucene.queries.payloads.SpanPayloadCheckQuery;
+import org.apache.lucene.queries.spans.SpanNearQuery;
+import org.apache.lucene.queries.spans.SpanQuery;
+import org.apache.lucene.queries.spans.SpanTermQuery;
 import org.apache.lucene.sandbox.search.CombinedFieldQuery;
 import org.apache.lucene.sandbox.search.CoveringQuery;
 import org.apache.lucene.sandbox.search.PhraseWildcardQuery;
@@ -25,6 +29,8 @@ import org.apache.lucene.search.BoostQuery;
 import org.apache.lucene.search.FuzzyQuery;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.LongValuesSource;
+import org.apache.lucene.search.MultiPhraseQuery;
+import org.apache.lucene.search.PhraseQuery;
 import org.apache.lucene.search.PrefixQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
@@ -66,6 +72,11 @@ import java.util.stream.Stream;
  *   TS field preserve n term/inc/len...        TokenStreamToTermAutomatonQuery over those tokens
  *   PW field maxExp slop n kind:text...        PhraseWildcardQuery: t term, p prefix, w wildcard,
  *                                              f fuzzy (text~edits)
+ *   P field slop n term...                     PhraseQuery
+ *   MP field n (m term...)...                  MultiPhraseQuery, n positions of m terms each
+ *   ST field term                              SpanTermQuery
+ *   SN slop inOrder n Q...                     SpanNearQuery over span specs
+ *   SPC payload Q                              SpanPayloadCheckQuery, one payload to match
  * </pre>
  */
 public class GenSandboxQueries {
@@ -206,6 +217,45 @@ public class GenSandboxQueries {
             }
             return b.build();
           }
+        case "P":
+          {
+            String f = next();
+            int slop = i();
+            int n = i();
+            String[] terms = new String[n];
+            for (int k = 0; k < n; k++) terms[k] = next();
+            return new PhraseQuery(slop, f, terms);
+          }
+        case "MP":
+          {
+            String f = next();
+            int n = i();
+            MultiPhraseQuery.Builder b = new MultiPhraseQuery.Builder();
+            for (int k = 0; k < n; k++) {
+              Term[] terms = new Term[i()];
+              for (int j = 0; j < terms.length; j++) terms[j] = new Term(f, next());
+              b.add(terms);
+            }
+            return b.build();
+          }
+        case "ST":
+          {
+            String f = next();
+            return new SpanTermQuery(new Term(f, next()));
+          }
+        case "SN":
+          {
+            int slop = i();
+            boolean inOrder = next().equals("1");
+            SpanQuery[] clauses = new SpanQuery[i()];
+            for (int k = 0; k < clauses.length; k++) clauses[k] = (SpanQuery) query();
+            return new SpanNearQuery(clauses, slop, inOrder);
+          }
+        case "SPC":
+          {
+            BytesRef payload = new BytesRef(next());
+            return new SpanPayloadCheckQuery((SpanQuery) query(), List.of(payload));
+          }
         default:
           throw new IllegalArgumentException(op);
       }
@@ -320,6 +370,22 @@ public class GenSandboxQueries {
     "PW body 100 0 0",
     "PW body 100 -1 2 t:w0 t:w1",
     "COV c 1 0",
+    // Positional queries over a field indexed without positions (id): IllegalStateException
+    // from the scorer, unless rewrite turns the query into term queries first.
+    "P id 0 2 1 2",
+    "P id 2 2 1 zz",
+    "P id 0 1 1",
+    "P nope 0 2 a b",
+    "P body 0 2 w0 w1",
+    "B 2 T body w1 P id 1 2 1 2",
+    "boost 2 P id 0 3 1 2 3",
+    "MP id 2 2 1 2 1 3",
+    "MP id 1 2 1 2",
+    "ST id 1",
+    "ST id zz",
+    "SN 0 1 2 ST id 1 ST id 2",
+    "SPC x ST id 1",
+    "SPC x ST id zz",
   };
 
   static String hits(IndexSearcher searcher, Query q) throws IOException {

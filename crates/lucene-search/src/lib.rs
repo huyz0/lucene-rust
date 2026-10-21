@@ -4192,6 +4192,65 @@ pub(crate) fn collect_span_leaves(query: &SpanQuery, leaves: &mut Vec<SpanLeafKe
     }
 }
 
+/// `SpanTermQuery.SpanTermWeight.getSpans`' positions check, reached as
+/// `SpanWeight.getSpans` walks `query`: a term this segment has, in a field it
+/// indexed without positions, is Java's `IllegalStateException`. The walk
+/// stops where Java's does -- `SpanNearQuery` at its first clause without
+/// spans, `SpanOrQuery` after every clause -- so a near whose earlier term
+/// is absent here reports nothing. A query whose fields all have positions
+/// (or are absent) is not walked.
+pub(crate) fn require_span_positions(fields: &BlockTreeFields, query: &SpanQuery) -> Result<()> {
+    fn lacks(fields: &BlockTreeFields, q: &SpanQuery) -> bool {
+        match q {
+            SpanQuery::SpanTerm { field, .. } => fields
+                .field(field)
+                .is_some_and(|ft| !ft.index_options().subsumes_positions()),
+            SpanQuery::SpanNear { clauses, .. } | SpanQuery::SpanOr { clauses } => {
+                clauses.iter().any(|c| lacks(fields, c))
+            }
+        }
+    }
+    /// Whether `q` has spans in this segment (Java's non-`null`).
+    fn walk(fields: &BlockTreeFields, q: &SpanQuery) -> Result<bool> {
+        match q {
+            SpanQuery::SpanTerm { field, term } => {
+                let Some(ft) = fields.field(field) else {
+                    return Ok(false);
+                };
+                if ft.try_seek_exact(term)?.is_none() {
+                    return Ok(false);
+                }
+                if !ft.index_options().subsumes_positions() {
+                    return Err(Error::IllegalState(format!(
+                        "field \"{field}\" was indexed without position data; cannot run SpanTermQuery (term={})",
+                        String::from_utf8_lossy(term)
+                    )));
+                }
+                Ok(true)
+            }
+            SpanQuery::SpanNear { clauses, .. } => {
+                for c in clauses {
+                    if !walk(fields, c)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            SpanQuery::SpanOr { clauses } => {
+                let mut any = false;
+                for c in clauses {
+                    any |= walk(fields, c)?;
+                }
+                Ok(any)
+            }
+        }
+    }
+    if lacks(fields, query) {
+        walk(fields, query)?;
+    }
+    Ok(())
+}
+
 /// [`Clause::Span`]'s matched doc-ID list (task #55): [`span_doc_extents`]
 /// with the extents dropped.
 ///
@@ -4307,6 +4366,7 @@ pub(crate) fn span_leaf_positions(
     live_docs: Option<&FixedBitSet>,
     query: &SpanQuery,
 ) -> Result<Option<(Vec<i32>, Vec<(SpanLeafKey, HashMap<i32, Vec<i32>>)>)>> {
+    require_span_positions(fields, query)?;
     let mut leaves: Vec<SpanLeafKey> = Vec::new();
     collect_span_leaves(query, &mut leaves);
     // A segment without any leaf's field has no spans (`SpanTermWeight`
@@ -4427,6 +4487,49 @@ fn term_doc_positions(
     Ok(Some((docs, positions, spans)))
 }
 
+/// `getPhraseMatcher`'s `fieldTerms.hasPositions() == false` check: a phrase
+/// that `rewrite` leaves a phrase (two or more terms for `PhraseQuery`, two or
+/// more positions for `MultiPhraseQuery`) over a field this segment indexed
+/// without positions is Java's `IllegalStateException`, with the query as its
+/// `toString()`. A segment without the field has no matcher, so no error;
+/// the check comes before any term lookup, as Java's does.
+pub(crate) fn require_phrase_positions(fields: &BlockTreeFields, q: &PhraseQuery) -> Result<()> {
+    if q.terms.len() < 2 {
+        return Ok(());
+    }
+    no_positions(fields, &q.field, "PhraseQuery", || {
+        Clause::Phrase(q.clone())
+    })
+}
+
+/// [`require_phrase_positions`] for `MultiPhraseQuery`.
+pub(crate) fn require_multi_phrase_positions(
+    fields: &BlockTreeFields,
+    q: &query::MultiPhraseQuery,
+) -> Result<()> {
+    if q.term_arrays.len() < 2 {
+        return Ok(());
+    }
+    no_positions(fields, &q.field, "MultiPhraseQuery", || {
+        Clause::MultiPhrase(q.clone())
+    })
+}
+
+fn no_positions(
+    fields: &BlockTreeFields,
+    field: &str,
+    name: &str,
+    clause: impl FnOnce() -> Clause,
+) -> Result<()> {
+    match fields.field(field) {
+        Some(ft) if !ft.index_options().subsumes_positions() => Err(Error::IllegalState(format!(
+            "field \"{field}\" was indexed without position data; cannot run {name} (phrase={})",
+            query_builder::to_query_string(Some(&clause()), "")
+        ))),
+        _ => Ok(()),
+    }
+}
+
 /// Executes `query` (see [`query::PhraseQuery`] for `slop`'s exact semantics)
 /// against one already-opened segment, feeding every matching **live** doc ID to
 /// `collector` in ascending order -- same
@@ -4479,6 +4582,7 @@ pub fn search_phrase_query<C: Collector>(
     query: &PhraseQuery,
     collector: &mut C,
 ) -> Result<()> {
+    require_phrase_positions(fields, query)?;
     if query.terms.is_empty() {
         return Ok(());
     }
@@ -4642,6 +4746,7 @@ pub fn search_phrase_query_scored_with_stats<C: ScoringCollector>(
     global: Option<&GlobalStats>,
     collector: &mut C,
 ) -> Result<()> {
+    require_phrase_positions(fields, query)?;
     if query.terms.is_empty() {
         return Ok(());
     }
@@ -5067,6 +5172,7 @@ fn multi_phrase_hits<C: ScoringCollector>(
     global: Option<&GlobalStats>,
     collector: &mut C,
 ) -> Result<()> {
+    require_multi_phrase_positions(fields, query)?;
     // `MultiPhraseQuery.rewrite`: an empty `termArrays` is a
     // `MatchNoDocsQuery`.
     if query.term_arrays.is_empty() {
@@ -5159,6 +5265,7 @@ pub(crate) fn multi_phrase_freq(
     query: &query::MultiPhraseQuery,
     doc: i32,
 ) -> Result<Option<f32>> {
+    require_multi_phrase_positions(fields, query)?;
     let Some(field_terms) = fields.field(&query.field) else {
         return Ok(None);
     };

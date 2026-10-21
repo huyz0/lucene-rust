@@ -243,6 +243,30 @@ fn sim_of<'a>(
     })
 }
 
+/// `SpanPayloadCheckWeight.scorerSupplier`'s check, when the weight `q`
+/// creates under `mode` is a `SpanPayloadCheckQuery`'s (a `PayloadScoreQuery`
+/// created without scores is its inner query's weight): a field this segment
+/// indexed without positions is Java's `IllegalStateException`, before any
+/// term is looked up.
+fn require_payload_check_positions(ctx: &LeafContext<'_>, q: &SpanNode, mode: Mode) -> Result<()> {
+    let weight_q = if mode.needs_scores() {
+        spans::weight_query(q)
+    } else {
+        spans::unscored_weight_query(q)
+    };
+    let SpanNode::PayloadCheck(check) = weight_q else {
+        return Ok(());
+    };
+    match check.inner.field().and_then(|f| ctx.fields.field(f).map(|ft| (f, ft))) {
+        Some((field, ft)) if !ft.index_options().subsumes_positions() => {
+            Err(crate::Error::IllegalState(format!(
+                "field \"{field}\" was indexed without position data; cannot run SpanQuery (query={check})"
+            )))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// `SpanWeight.scorerSupplier(context)`: `None` when the query has no spans
 /// in this segment. A payload score query's goes through
 /// [`build_scorer`]; every other query's scorer is monomorphised over its
@@ -253,6 +277,7 @@ pub(crate) fn span_node<'a>(
     boost: f32,
     mode: Mode,
 ) -> Result<Option<BoxScorer<'a>>> {
+    require_payload_check_positions(ctx, q, mode)?;
     if matches!(q, SpanNode::PayloadScore(_)) {
         return Ok(build_scorer(ctx, q, boost, mode)?.map(|s| -> BoxScorer<'a> { Box::new(s) }));
     }
