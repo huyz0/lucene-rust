@@ -120,7 +120,7 @@ impl SweetSpotSimilarity {
     }
 
     /// `TFIDFSimilarity.scorer`'s `normTable`, from this `lengthNorm`.
-    fn norm_table(&self) -> [f32; 256] {
+    fn length_norm_table(&self) -> [f32; 256] {
         let mut norm_table = [0.0f32; 256];
         for (i, slot) in norm_table.iter_mut().enumerate().skip(1) {
             *slot = self.length_norm(small_float::byte4_to_int(i as u8) as i32);
@@ -188,7 +188,7 @@ impl Similarity for SweetSpotSimilarity {
         Arc::new(SweetSpotScorer {
             query_weight: boost * idf,
             sim: *self,
-            norm_table: self.norm_table(),
+            norm_table: self.length_norm_table(),
         })
     }
 
@@ -209,6 +209,10 @@ impl TfIdfSimilarity for SweetSpotSimilarity {
 
     fn idf(&self, doc_freq: i64, doc_count: i64) -> f32 {
         ClassicSimilarity::idf(doc_freq, doc_count)
+    }
+
+    fn norm_table(&self) -> [f32; 256] {
+        self.length_norm_table()
     }
 }
 

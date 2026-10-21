@@ -13,8 +13,12 @@ use std::fmt::Write as _;
 use explanation_dsl::{
     a, boost, bq, bq_msm, csq, dmq, match_all, mpq, phrase, synonym, t, F, M, N, S,
 };
+use lucene_search::misc::SweetSpotSimilarity;
 use lucene_search::query::{Clause, TermQuery};
-use lucene_search::similarities::{ClassicSimilarity, Similarity};
+use lucene_search::similarities::{
+    AfterEffect, BasicModel, Bm25Similarity, ClassicSimilarity, DfrSimilarity, Normalization,
+    Similarity,
+};
 use lucene_test_framework::search::base_explanation::{top_level, BaseExplanation};
 use lucene_test_framework::search::search_equivalence::SearchEquivalence;
 use lucene_test_framework::search::similarities::{
@@ -227,22 +231,39 @@ fn explanation_query(name: &str) -> Clause {
 enum Compared {
     /// Every line.
     All,
-    /// The top line's value: the ledger's "multi-term, span flat" and
-    /// "other boosts are own node" (a boost under a non-BM25 similarity).
+    /// The top line's value: the ledger's "multi-term, span flat", and a
+    /// term or a phrase under a similarity other than BM25's and
+    /// `TFIDFSimilarity`'s, explained in `SimScorer.explain`'s default
+    /// layout rather than its own breakdown.
     Top,
-    /// The hit lines only: under a non-BM25 similarity a boost's own node
-    /// rounds `dmq8`'s sub-values, so their sum can land one ulp from the
-    /// score (Classic: 57104.13 for Java's 57104.125, the score bits equal).
-    Hits,
 }
 
 fn compared_part(sim_name: &str, q_name: &str) -> Compared {
-    let bm25 = sim_name == "BM25Similarity";
     match q_name {
-        "dmq8" if !bm25 => Compared::Hits,
         "mpq" | "synonym" => Compared::Top,
-        "boost" | "bq_dup" | "bq_dup_nested" if !bm25 => Compared::Top,
+        _ if sim_name.starts_with("DFR") => Compared::Top,
         _ => Compared::All,
+    }
+}
+
+/// The twin's similarities, by the names its `exp` rows carry.
+fn explanation_similarity(name: &str) -> Option<Box<dyn Similarity>> {
+    match name {
+        "BM25Similarity" => None,
+        "ClassicSimilarity" => Some(Box::new(ClassicSimilarity::default())),
+        "BM25_k1.5_b0.5" => Some(Box::new(
+            Bm25Similarity::new(1.5, 0.5, true).expect("valid parameters"),
+        )),
+        "DFR_In_L_H2" => Some(Box::new(
+            DfrSimilarity::new(BasicModel::In, AfterEffect::L, Normalization::H2_DEFAULT)
+                .expect("valid parameters"),
+        )),
+        "SweetSpot_3_5" => {
+            let mut s = SweetSpotSimilarity::default();
+            s.set_length_norm_factors(3, 5, 0.5);
+            Some(Box::new(s))
+        }
+        other => panic!("no explanation similarity {other}"),
     }
 }
 
@@ -253,14 +274,16 @@ fn compared(part: Compared, line: &str, seen_top: &mut bool) -> Option<String> {
         *seen_top = false;
         return Some(line.to_string());
     }
-    if part == Compared::Hits || line.starts_with("expl ") || std::mem::replace(seen_top, true) {
+    if line.starts_with("expl ") || std::mem::replace(seen_top, true) {
         return None;
     }
     line.split(" = ").next().map(str::to_string)
 }
 
-/// `BaseExplanationTestCase`'s index under BM25 and `ClassicSimilarity`:
-/// the same hits, score bits and explanation text.
+/// `BaseExplanationTestCase`'s index under BM25, `ClassicSimilarity` and
+/// (some queries) BM25 with its own `k1` and `b`, DFR and
+/// `SweetSpotSimilarity` with a document outside its sweet spot: the same
+/// hits, score bits and explanation text.
 #[test]
 fn explanations_are_javas() {
     let mut want = String::new();
@@ -275,16 +298,16 @@ fn explanations_are_javas() {
         let (sim_name, q_name) = (parts[1], parts[2]);
         let part = compared_part(sim_name, q_name);
         let mut seen_top = false;
-        while let Some(line) = l.next_if(|l| !l.starts_with("exp ") && !l.starts_with("eq ")) {
+        while let Some(line) = l
+            .next_if(|l| !l.starts_with("exp ") && !l.starts_with("miss ") && !l.starts_with("eq "))
+        {
             if let Some(line) = compared(part, line, &mut seen_top) {
                 writeln!(want, "{line}").expect("write");
             }
         }
         let mut base = BaseExplanation::new(&mut JavaRandom::new(0));
-        if sim_name == "ClassicSimilarity" {
-            base = base.with_similarity(Box::new(ClassicSimilarity::default()));
-        } else {
-            assert_eq!(sim_name, "BM25Similarity");
+        if let Some(sim) = explanation_similarity(sim_name) {
+            base = base.with_similarity(sim);
         }
         let q = top_level(explanation_query(q_name));
         base.with_searcher(|s| {

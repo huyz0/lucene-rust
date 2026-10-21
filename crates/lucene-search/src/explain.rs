@@ -1012,20 +1012,19 @@ fn explain_term(
         Some(g) => (g.doc_freq, g.doc_count),
         None => (stats.doc_freq as i64, field_terms.doc_count as i64),
     };
-    // Under a TFIDF similarity (the searcher's, `ClassicSimilarity`):
-    // `TFIDFScorer.explain`.
-    if let Some(e) = with_leaf_reader(|_, sim| {
-        let Some(tfidf) = sim.and_then(|s| s.as_tfidf(&query.field)) else {
-            return Ok(None);
-        };
-        let encoded = match norms {
-            Some(n) => n.cursor().norm_long(doc)?.unwrap_or(1),
-            None => 1,
-        };
-        Ok::<_, crate::Error>(Some(explain_term_tfidf(
-            tfidf, query, doc, freq, doc_freq, doc_count, encoded,
-        )))
-    })? {
+    // Under the searcher's similarity, when it is not the default BM25:
+    // `docScorer.explain(freq, norm)` of `similarity.scorer(boost,
+    // collectionStats, termStats)`.
+    if let Some(e) = explain_under_similarity(
+        fields,
+        global,
+        &query.field,
+        std::slice::from_ref(&query.term),
+        &Clause::Term(query.clone()),
+        doc,
+        Explanation::match_(freq as f32, "freq, occurrences of term within document"),
+        norms,
+    )? {
         return Ok(e);
     }
     let (field_length, avg_field_length) = match norms {
@@ -1093,29 +1092,6 @@ fn explain_term(
     .with_details(vec![score_explanation]))
 }
 
-/// `TermWeight.explain` under a TFIDF similarity: `TFIDFScorer.explainScore`
-/// (`ClassicSimilarity`'s `idfExplain`, its `normTable`), in the scorer's
-/// order of operations (`queryWeight * tf * norm`).
-fn explain_term_tfidf(
-    tfidf: &dyn crate::similarities::TfIdfSimilarity,
-    query: &TermQuery,
-    doc: i32,
-    freq: i32,
-    doc_freq: i64,
-    doc_count: i64,
-    encoded_norm: i64,
-) -> Explanation {
-    let freq = freq as f32;
-    explain_tfidf(
-        tfidf,
-        &Clause::Term(query.clone()),
-        doc,
-        tfidf_idf_explanation(tfidf, doc_freq, doc_count),
-        Explanation::match_(freq, "freq, occurrences of term within document"),
-        encoded_norm,
-    )
-}
-
 /// One term's `idf` node, `TFIDFSimilarity.idfExplain(CollectionStatistics,
 /// TermStatistics)`.
 fn tfidf_idf_explanation(
@@ -1133,14 +1109,15 @@ fn tfidf_idf_explanation(
     ])
 }
 
-/// `TFIDFScorer.explain` (`explainScore`) under `clause`'s `weight(...)`
-/// node: `idf` is the weight's idf node, `freq` the frequency the weight
-/// hands it (a term's `freq`, a phrase's `phraseFreq`), in the scorer's
-/// order of operations (`queryWeight * tf * norm`).
+/// `TFIDFScorer.explain` (`explainScore`): `idf` is the weight's idf node,
+/// `freq` the frequency the weight hands it (a term's `freq`, a phrase's
+/// `phraseFreq`), `boost` the weight's, folded into `queryWeight = boost *
+/// idf` and reported as its own node when not 1, in the scorer's order of
+/// operations (`queryWeight * tf * norm`) over the similarity's own
+/// `normTable`.
 fn explain_tfidf(
     tfidf: &dyn crate::similarities::TfIdfSimilarity,
-    clause: &Clause,
-    doc: i32,
+    boost: f32,
     idf: Explanation,
     freq: Explanation,
     encoded_norm: i64,
@@ -1152,28 +1129,175 @@ fn explain_tfidf(
         format!("tf(freq={}), with freq of:", java_float(freq_value)),
     )
     .with_details(vec![freq]);
-    let table = crate::similarities::ClassicSimilarity::norm_table();
+    let table = tfidf.norm_table();
     // `normTable[(int) (encodedNorm & 0xFF)]`.
     let norm = table[(encoded_norm & 0xFF) as usize];
-    let query_weight = idf.value;
+    let query_weight = boost * idf.value;
     let value = query_weight * tf * norm;
-    let score = Explanation::match_(
+    let mut subs = Vec::with_capacity(4);
+    if boost != 1.0 {
+        subs.push(Explanation::match_(boost, "boost"));
+    }
+    subs.extend([idf, tf_explanation, Explanation::match_(norm, "fieldNorm")]);
+    Explanation::match_(
         value,
         format!("score(freq={}), product of:", java_float(freq_value)),
     )
+    .with_details(subs)
+}
+
+/// `BM25Scorer.explain` of a `BM25Similarity` with its own `k1` and `b`:
+/// `value` is the scorer's score, `idf` the weight's idf node, `freq` the
+/// frequency the weight hands it; `dl` is `LENGTH_TABLE[norm]` and `avgdl`
+/// the collection's (`BM25Similarity.avgFieldLength`), which the scorer's
+/// cache was built from.
+fn explain_bm25(
+    bm25: &crate::similarities::Bm25Similarity,
+    boost: f32,
+    value: f32,
+    idf: Explanation,
+    freq: Explanation,
+    encoded_norm: i64,
+    collection: &crate::similarities::CollectionStatistics,
+) -> Explanation {
+    let (k1, b) = (bm25.k1(), bm25.b());
+    let norm_byte = (encoded_norm & 0xFF) as u8;
+    #[allow(clippy::cast_possible_truncation)]
+    let avgdl = (collection.sum_total_term_freq as f64 / collection.doc_count as f64) as f32;
+    let doclen = lucene_util::small_float::byte4_to_int(norm_byte) as f32;
+    let norm_inverse = 1.0 / (k1 * ((1.0 - b) + b * doclen / avgdl));
+    let freq_value = freq.value;
+    let dl = if norm_byte > 39 {
+        "dl, length of field (approximate)"
+    } else {
+        "dl, length of field"
+    };
+    let tf = Explanation::match_(
+        1.0 - 1.0 / (1.0 + freq_value * norm_inverse),
+        "tf, computed as freq / (freq + k1 * (1 - b + b * dl / avgdl)) from:",
+    )
     .with_details(vec![
-        idf,
-        tf_explanation,
-        Explanation::match_(norm, "fieldNorm"),
+        freq,
+        Explanation::match_(k1, "k1, term saturation parameter"),
+        Explanation::match_(b, "b, length normalization parameter"),
+        Explanation::match_(doclen, dl),
+        Explanation::match_(avgdl, "avgdl, average length of field"),
     ]);
+    let mut subs = Vec::with_capacity(3);
+    if boost != 1.0 {
+        subs.push(Explanation::match_(boost, "boost"));
+    }
+    subs.extend([idf, tf]);
     Explanation::match_(
         value,
         format!(
-            "weight({} in {doc}) [ClassicSimilarity], result of:",
-            describe_clause(clause)
+            "score(freq={}), computed as boost * idf * tf from:",
+            java_float(freq_value)
         ),
     )
-    .with_details(vec![score])
+    .with_details(subs)
+}
+
+/// `idfExplain(collectionStats, termStats[])`'s node over one idf node per
+/// term: the one term's, or `description` over their sum in a double,
+/// narrowed once.
+fn summed_idf_explanation(mut idfs: Vec<Explanation>, description: &str) -> Explanation {
+    if idfs.len() == 1 {
+        return idfs.remove(0);
+    }
+    let sum: f64 = idfs.iter().map(|e| f64::from(e.value)).sum();
+    #[allow(clippy::cast_possible_truncation)]
+    let sum = sum as f32;
+    Explanation::match_(sum, description).with_details(idfs)
+}
+
+/// A term's or a phrase's explanation under the searcher's similarity when
+/// it is not the default BM25 (`None` under the default): `TermWeight`'s
+/// and `PhraseWeight`'s `weight(q in doc) [Similarity], result of:` over
+/// `similarity.scorer(boost, collectionStats, termStats...).explain(freq,
+/// norm)`. A `TFIDFSimilarity` and a `BM25Similarity` explain their own
+/// breakdowns; any other similarity explains its scorer's score in
+/// `SimScorer.explain`'s default layout (`score(freq=f), with freq of:`),
+/// not its own breakdown. The value is the scorer's: the hit's score.
+#[allow(clippy::too_many_arguments)]
+fn explain_under_similarity(
+    fields: &BlockTreeFields,
+    global: Option<&GlobalStats>,
+    field: &str,
+    terms: &[Vec<u8>],
+    clause: &Clause,
+    doc: i32,
+    freq: Explanation,
+    norms: Option<&FieldNorms<'_>>,
+) -> Result<Option<Explanation>> {
+    with_leaf_reader(|_, sim| {
+        let Some(sim) = sim else {
+            return Ok(None);
+        };
+        let mut ctx = interval_context(fields, None, None, None, None, None, None, global);
+        ctx.max_doc = leaf().map(|(max_doc, _)| max_doc);
+        let mut entries = Vec::with_capacity(terms.len());
+        for term in terms {
+            // Present: the caller found every term in the segment.
+            if let Some(entry) = crate::exec::extended::term_entry(&ctx, field, term)? {
+                entries.push(entry);
+            }
+        }
+        let Some(first) = entries.first() else {
+            return Ok(None);
+        };
+        let collection = first.collection_statistics();
+        let term_stats: Vec<_> = entries.iter().map(|e| e.term_statistics()).collect();
+        // `LeafSimScorer.getNormValue`: `1` for a field without norms.
+        let encoded = match norms {
+            Some(n) => n.cursor().norm_long(doc)?.unwrap_or(1),
+            None => 1,
+        };
+        let boost = weight_boost();
+        let score = if let Some(tfidf) = sim.as_tfidf(field) {
+            let idfs = term_stats
+                .iter()
+                .map(|t| tfidf_idf_explanation(tfidf, t.doc_freq, collection.doc_count))
+                .collect();
+            let idf = summed_idf_explanation(idfs, "idf(), sum of:");
+            explain_tfidf(tfidf, boost, idf, freq, encoded)
+        } else {
+            let value = sim
+                .scorer(field, boost, &collection, &term_stats)
+                .score(freq.value, encoded);
+            if let Some(bm25) = sim.as_bm25(field) {
+                let idfs = term_stats
+                    .iter()
+                    .map(|t| {
+                        let idf = crate::similarities::Bm25Similarity::idf(
+                            t.doc_freq,
+                            collection.doc_count,
+                        );
+                        idf_explanation(idf, t.doc_freq, collection.doc_count)
+                    })
+                    .collect();
+                let idf = summed_idf_explanation(idfs, "idf, sum of:");
+                explain_bm25(bm25, boost, value, idf, freq, encoded, &collection)
+            } else {
+                Explanation::match_(
+                    value,
+                    format!("score(freq={}), with freq of:", java_float(freq.value)),
+                )
+                .with_details(vec![freq])
+            }
+        };
+        Ok(Some(
+            Explanation::match_(
+                score.value,
+                format!(
+                    "weight({} in {doc}) [{}], result of:",
+                    describe_clause(clause),
+                    sim.simple_name()
+                ),
+            )
+            .with_details(vec![score]),
+        ))
+    })
 }
 
 /// One term's `idf` node, verbatim from `BM25Similarity.idfExplain(FieldStats,
@@ -1244,7 +1368,6 @@ fn explain_phrase(
     // casts once: an `f32` sum of three or more idfs can be an ulp off.
     let mut idf_acc = 0.0f64;
     let mut idf_details = Vec::with_capacity(query.terms.len());
-    let mut term_stats = Vec::with_capacity(query.terms.len());
     for term in &query.terms {
         let Some(stats) = field_terms.try_seek_exact(term)? else {
             return Ok(Explanation::no_match("no matching terms"));
@@ -1256,7 +1379,6 @@ fn explain_phrase(
         let term_idf = similarity::idf(doc_freq, doc_count);
         idf_acc += f64::from(term_idf);
         idf_details.push(idf_explanation(term_idf, doc_freq, doc_count));
-        term_stats.push((doc_freq, doc_count));
     }
     let idf_sum = idf_acc as f32;
 
@@ -1325,36 +1447,21 @@ fn explain_phrase(
             phrase_freq,
         ));
     }
-    // Under a TFIDF similarity: `TFIDFScorer.explain` over the phrase's
-    // `idfExplain(collectionStats, termStats[])`, its idfs summed in a double.
-    if let Some(e) = with_leaf_reader(|_, sim| {
-        let Some(tfidf) = sim.and_then(|s| s.as_tfidf(&query.field)) else {
-            return Ok(None);
-        };
-        let encoded = match norms {
-            Some(n) => n.cursor().norm_long(doc)?.unwrap_or(1),
-            None => 1,
-        };
-        let subs: Vec<Explanation> = term_stats
-            .iter()
-            .map(|&(doc_freq, doc_count)| tfidf_idf_explanation(tfidf, doc_freq, doc_count))
-            .collect();
-        let sum: f64 = subs.iter().map(|e| f64::from(e.value)).sum();
-        #[allow(clippy::cast_possible_truncation)]
-        let idf = Explanation::match_(sum as f32, "idf(), sum of:").with_details(subs);
-        let freq = Explanation::match_(
+    // Under the searcher's similarity, when it is not the default BM25:
+    // `PhraseWeight.explain`'s `docScorer.explain(phraseFreq, norm)`.
+    if let Some(e) = explain_under_similarity(
+        fields,
+        global,
+        &query.field,
+        &query.terms,
+        &Clause::Phrase(query.clone()),
+        doc,
+        Explanation::match_(
             phrase_freq,
             format!("phraseFreq={}", java_float(phrase_freq)),
-        );
-        Ok::<_, crate::Error>(Some(explain_tfidf(
-            tfidf,
-            &Clause::Phrase(query.clone()),
-            doc,
-            idf,
-            freq,
-            encoded,
-        )))
-    })? {
+        ),
+        norms,
+    )? {
         return Ok(e);
     }
 
@@ -1780,11 +1887,11 @@ fn explain_boost(
             );
         }
     }
-    // Term weights take the boost into their BM25 explanation, and a
-    // boolean or dis-max of them hands it down (`BooleanWeight` creates its
-    // clauses' weights with it): explained with the boost, not as a
-    // product with it.
-    if takes_boost(inner) && with_leaf_reader(|_, sim| sim.is_none()) {
+    // Term weights take the boost into their similarity's scorer
+    // (`similarity.scorer(boost, ...)`), and a boolean or dis-max of them
+    // hands it down (`BooleanWeight` creates its clauses' weights with it):
+    // explained with the boost, not as a product with it.
+    if takes_boost(inner) {
         return with_boost(weight_boost() * boost, || {
             explain_clause_with_stats(
                 fields, doc_in, pos_in, pay_in, live_docs, points, inner, doc, norms, global,
@@ -1861,8 +1968,9 @@ fn explain_span(
     })
 }
 
-/// Whether `clause`'s explanation takes its weight's boost (the default
-/// BM25 term weights, and the booleans, dis-maxes and boosts of them).
+/// Whether `clause`'s explanation takes its weight's boost (the term
+/// weights, under any similarity, and the booleans, dis-maxes and boosts of
+/// them).
 fn takes_boost(clause: &Clause) -> bool {
     match clause {
         Clause::Term(_) | Clause::MatchNoDocs(_) => true,
