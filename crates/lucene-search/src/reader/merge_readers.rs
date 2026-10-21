@@ -107,6 +107,15 @@ pub fn prepare_merge_readers(
     })
 }
 
+/// `hooks`' `reorder` over readers already wrapped.
+struct ReorderOnly<'a>(&'a dyn MergeReaderHooks);
+
+impl MergeReaderHooks for ReorderOnly<'_> {
+    fn reorder(&self, reader: &dyn CodecReader) -> Result<Option<DocMap>> {
+        self.0.reorder(reader)
+    }
+}
+
 /// A `OneMerge` subclass's hooks as the writer runs them: see the module
 /// doc. Attach with `OneMerge::with_hooks(Arc::new(SegmentMergeHooks::new(..)))`.
 pub struct SegmentMergeHooks {
@@ -141,18 +150,19 @@ impl lucene_index::merge_policy::MergeHooks for SegmentMergeHooks {
                 .collect();
             // `open_at` opens one reader per listed segment, in order.
             debug_assert_eq!(readers.len(), sources.segments.len());
-            let merge = prepare_merge_readers(self.hooks.as_ref(), readers.clone(), !may_reorder)?;
-            // The wrapped readers' live documents: with a reorder, the one
-            // sorted view hides them, so they are taken from the wrapped
-            // inputs again (wrapping is expected to be deterministic).
-            let wrapped: Vec<Arc<dyn CodecReader>> = if merge.reorder_doc_maps.is_some() {
-                readers
-                    .into_iter()
-                    .map(|r| self.hooks.wrap_for_merge(r))
-                    .collect::<Result<_>>()?
-            } else {
-                merge.readers
-            };
+            // `wrapForMerge` once per source, as Java's `getMergeReader`:
+            // a hook may draw (`MockRandomOneMerge`), so the wrapped readers
+            // are kept for their live documents, which a reorder's one
+            // sorted view hides.
+            let wrapped: Vec<Arc<dyn CodecReader>> = readers
+                .into_iter()
+                .map(|r| self.hooks.wrap_for_merge(r))
+                .collect::<Result<_>>()?;
+            let merge = prepare_merge_readers(
+                &ReorderOnly(self.hooks.as_ref()),
+                wrapped.clone(),
+                !may_reorder,
+            )?;
             let live_docs = wrapped.iter().map(|r| r.live_docs().cloned()).collect();
             let new_to_old = merge.reorder_doc_maps.map(|maps| {
                 // `maps[i][d]` is input `i`'s document `d`'s new id.
