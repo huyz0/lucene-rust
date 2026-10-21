@@ -1685,7 +1685,7 @@ fn explain_dismax(
         return Ok(Explanation::no_match("No matching clause").with_details(subs_on_no_match));
     }
 
-    let value = dismax_value(subs_on_match.iter().map(|e| e.value), query.tie_breaker);
+    let value = crate::dismax_value(subs_on_match.iter().map(|e| e.value), query.tie_breaker);
 
     // `DisjunctionMaxWeight.explain`'s exact description switch.
     let desc = if query.tie_breaker == 0.0 {
@@ -1697,26 +1697,6 @@ fn explain_dismax(
         )
     };
     Ok(Explanation::match_(value, desc).with_details(subs_on_match))
-}
-
-/// `DisjunctionMaxWeight.explain`'s arithmetic, in doubles as Java's
-/// (`double max = 0, otherSum = 0`; `(float) (max + otherSum *
-/// tieBreakerMultiplier)`), which is `DisjunctionMaxScorer.score`'s: in
-/// floats, `28344.309 + 0.5 * 0.2834431` rounds one ulp below the score.
-fn dismax_value(scores: impl Iterator<Item = f32>, tie_breaker: f32) -> f32 {
-    let mut max = 0.0f64;
-    let mut other_sum = 0.0f64;
-    for score in scores.map(f64::from) {
-        if score >= max {
-            other_sum += max;
-            max = score;
-        } else {
-            other_sum += score;
-        }
-    }
-    #[allow(clippy::cast_possible_truncation)]
-    let value = (max + other_sum * f64::from(tie_breaker)) as f32;
-    value
 }
 
 /// [`Clause::ConstantScore`]'s explanation: mirrors real
@@ -4095,13 +4075,72 @@ mod tests {
     fn dismax_explains_its_value_in_doubles_as_java() {
         // `TestSimpleExplanations.testDMQ8`'s doc 3: Java's explain and
         // scorer both give 28344.451
-        let v = super::dismax_value([0.283_443_1f32, 28_344.309].into_iter(), 0.5);
+        let v = crate::dismax_value([0.283_443_1f32, 28_344.309].into_iter(), 0.5);
         assert_eq!(v, 28_344.451f32);
         // the float arithmetic explain had (`max + tie * (sum - max)`) is
         // one ulp below
         let (lo, hi) = (0.283_443_1f32, 28_344.309f32);
         assert_eq!(hi + 0.5 * ((lo + hi) - hi), 28_344.45f32);
         // Java's `score >= max` from 0: a negative score is an "other"
-        assert_eq!(super::dismax_value([-2.0f32, -1.0].into_iter(), 1.0), -3.0);
+        assert_eq!(crate::dismax_value([-2.0f32, -1.0].into_iter(), 1.0), -3.0);
+    }
+
+    /// The scored search's dis-max is `dismax_value`'s doubles, as
+    /// `DisjunctionMaxScorer.score`: over `testDMQ8`-shaped disjuncts (a
+    /// small score and a hugely boosted one, tie 0.5) every document both
+    /// match scores `dismax_value` of its two disjunct scores, and on some
+    /// of them the float formula would round differently.
+    #[test]
+    fn dismax_search_scores_in_doubles_as_java() {
+        let (fields, doc) = open_fixture();
+        let doc_in = doc.as_ref().map(|d| d.open());
+        let scored = |q: &DisjunctionMaxQuery| {
+            let mut capture = ScoreCapture::default();
+            search_disjunction_max_query_scored(
+                &fields,
+                doc_in.as_ref(),
+                None,
+                None,
+                None,
+                None,
+                q,
+                None,
+                &mut capture,
+            )
+            .unwrap();
+            capture.scores
+        };
+        let mut differs = 0;
+        let mut compared = 0;
+        for boost in [100.0f32, 1_000.0, 100_000.0, 12_345.678, 3.0e6] {
+            let small = Clause::Term(TermQuery::new("body", "cat"));
+            let big = Clause::Boost(Box::new(crate::query::BoostQuery::new(
+                Clause::Term(TermQuery::new("body", "dog")),
+                boost,
+            )));
+            let alone = |c: &Clause| -> std::collections::HashMap<i32, f32> {
+                scored(&DisjunctionMaxQuery::new([c.clone()], 0.5))
+                    .into_iter()
+                    .collect()
+            };
+            let (lo, hi) = (alone(&small), alone(&big));
+            for (d, score) in scored(&DisjunctionMaxQuery::new([small, big], 0.5)) {
+                let (Some(&a), Some(&b)) = (lo.get(&d), hi.get(&d)) else {
+                    continue;
+                };
+                compared += 1;
+                assert_eq!(
+                    score,
+                    crate::dismax_value([a, b].into_iter(), 0.5),
+                    "doc {d}"
+                );
+                let max = a.max(b);
+                if max + 0.5 * ((a + b) - max) != score {
+                    differs += 1;
+                }
+            }
+        }
+        assert!(compared > 0, "no document matches both disjuncts");
+        assert!(differs > 0, "no boost separates doubles from floats");
     }
 }

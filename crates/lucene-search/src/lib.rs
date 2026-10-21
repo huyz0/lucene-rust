@@ -3105,20 +3105,33 @@ fn dismax_scores(
 
     let mut result = HashMap::new();
     for doc_id in all_docs {
-        let mut max_score = f32::NEG_INFINITY;
-        let mut sum_score = 0.0f32;
-        for scores in &per_disjunct {
-            if let Some(&score) = scores.get(&doc_id) {
-                sum_score += score;
-                if score > max_score {
-                    max_score = score;
-                }
-            }
-        }
-        let other_sum = sum_score - max_score;
-        result.insert(doc_id, max_score + query.tie_breaker * other_sum);
+        let scores = per_disjunct
+            .iter()
+            .filter_map(|scores| scores.get(&doc_id).copied());
+        result.insert(doc_id, dismax_value(scores, query.tie_breaker));
     }
     Ok(result)
+}
+
+/// `DisjunctionMaxScorer.score`'s and `DisjunctionMaxWeight.explain`'s
+/// arithmetic over the matching disjuncts' scores, in doubles as Java's
+/// (`max = 0`, `double otherScoreSum = 0`; `(float) (max + otherScoreSum *
+/// tieBreakerMultiplier)`): in floats, `28344.309 + 0.5 * 0.2834431` rounds
+/// one ulp below Java's score.
+pub(crate) fn dismax_value(scores: impl Iterator<Item = f32>, tie_breaker: f32) -> f32 {
+    let mut max = 0.0f64;
+    let mut other_sum = 0.0f64;
+    for score in scores.map(f64::from) {
+        if score >= max {
+            other_sum += max;
+            max = score;
+        } else {
+            other_sum += score;
+        }
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    let value = (max + other_sum * f64::from(tie_breaker)) as f32;
+    value
 }
 
 /// Reader-wide term and collection statistics, for scoring a multi-segment
