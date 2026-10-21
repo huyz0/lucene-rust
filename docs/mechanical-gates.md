@@ -39,7 +39,7 @@ to describe a defect that got past it.
 | [`table-fixed-len`](#table-fixed-len) | `check-port-invariants.py` | a non-test `static`/`const` in `lucene-analysis` typed as a slice literal (`&[T] = &[`) | a fixed-length type whose `N` was itself copied from the short transcription; a table built at runtime (`vec!`, `LazyLock`); a dropped or reordered entry in a table nothing indexes by position; every other crate |
 | [`alloc-from-parse`](#alloc-from-parse) | `check-port-invariants.py` | an allocation size (`vec![_; n]`, `with_capacity(n)`, `.resize(n, ..)`) mentioning a name its fn bound from a text parse (`parse_int(`, `parse_num(`, `.parse()`) or containing one, with no `min(` in the size and no `// ALLOC:` proof | a count reaching the size through a struct field, a parameter or another fn; a count decoded from bytes (`read_vint`) rather than parsed from text; a `min(` that does not actually cap it; a loop that pushes once per announced entry without reading one |
 | [`literal-space-run`](#literal-space-run) | `check-port-invariants.py` | a line in `crates/*/src` holding a string literal with a run of 8+ spaces between non-spaces, or a `\n` then 8+ spaces, with no `// SPACES-OK:` waiver | a run under eight spaces; a run only on a later line of a multi-line literal; `crates/*/tests` |
-| [`preflight`](#preflight) | `preflight.sh` | a docker engine that does not answer in 30 s; under 25 GB free where Docker keeps its disk; a Docker virtual disk over 300 GB; under 5 GB free on the repo's drive; (in the container) under 15 GB free under the target dir | a drive that fills *during* a run (it checks the start, not the trend); a second project's disk use between checks; free space that is real but fragmented |
+| [`preflight`](#preflight) | `preflight.sh` | a docker engine that does not answer in 30 s; under 25 GB free where Docker keeps its disk; a Docker virtual disk over 300 GB on a drive with under 150 GB free (over 300 GB with more room only warns); under 5 GB free on the repo's drive; (in the container) under 15 GB free under the target dir | a drive that fills *during* a run (it checks the start, not the trend); a second project's disk use between checks; free space that is real but fragmented |
 | [rustdoc links](#rustdoc) | `cargo doc` | a `[`link`]` that resolves to nothing | a symbol named in *plain backticks*, which is most of them |
 | [coverage objects](#coverage-objects) | `scripts/coverage.sh` | lucene-ffi's never-loaded cdylib standing in for the executed copy of a `#[no_mangle]` function in the line report | the same first-copy-wins rule between two *executed* copies; a file whose lines split between a crate's unit-test and integration-test builds, which the summary under-reports |
 
@@ -698,7 +698,7 @@ The target trim was run for real on the 151 GB volume, not on a stub.
 
 Seen to fail, each by forcing its input: an unreachable `DOCKER_HOST` (fails in
 the timeout, not a hang), `MIN_FREE_GB`/`MIN_REPO_FREE_GB` above the real free
-space, `DOCKER_VHDX_MAX_GB=0`, and a stub `docker` reporting a 57 GB build cache
+space, `DOCKER_VHDX_MAX_GB=0` (refuses only with `VHDX_HARD_FREE_GB` above the real free space, else warns: a 306 GB disk on a drive with 398 GB free once blocked every run for a compaction only the user can schedule), and a stub `docker` reporting a 57 GB build cache
 (pruned to the keep size; with `DOCKER_AUTO_PRUNE=0`, not pruned) and an
 over-cap `incremental` directory (cleared; one under the cap is kept).
 

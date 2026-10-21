@@ -31,7 +31,9 @@
 #   MIN_FREE_GB=25             hard floor on the drive holding Docker's disk
 #   WARN_FREE_GB=60            warn below this
 #   MIN_REPO_FREE_GB=5         hard floor on the drive holding this repo
-#   DOCKER_VHDX_MAX_GB=300     hard ceiling on Docker Desktop's virtual disk
+#   DOCKER_VHDX_MAX_GB=300     ceiling on Docker Desktop's virtual disk: above
+#                              it, refuse while its drive has under
+#                              VHDX_HARD_FREE_GB (150) free, else warn
 #   DOCKER_DATA_PATH=...       where Docker's disk lives (auto-detected)
 #   BUILD_CACHE_MAX_GB=40      docker build cache above this is pruned down to
 #                              BUILD_CACHE_KEEP_GB (20); DOCKER_AUTO_PRUNE=0
@@ -50,6 +52,7 @@ MIN_FREE_GB="${MIN_FREE_GB:-25}"
 WARN_FREE_GB="${WARN_FREE_GB:-60}"
 MIN_REPO_FREE_GB="${MIN_REPO_FREE_GB:-5}"
 DOCKER_VHDX_MAX_GB="${DOCKER_VHDX_MAX_GB:-300}"
+VHDX_HARD_FREE_GB="${VHDX_HARD_FREE_GB:-150}"
 BUILD_CACHE_MAX_GB="${BUILD_CACHE_MAX_GB:-40}"
 BUILD_CACHE_KEEP_GB="${BUILD_CACHE_KEEP_GB:-20}"
 DOCKER_TIMEOUT="${DOCKER_TIMEOUT:-30}"
@@ -122,10 +125,19 @@ host_checks() {
     local vgb
     vgb="$(du -sk "$vhdx" 2>/dev/null | awk '{ printf "%d", $1 / 1048576 }')"
     if [ "${vgb:-0}" -gt "$DOCKER_VHDX_MAX_GB" ]; then
-      fail "docker's virtual disk is ${vgb} GB (limit ${DOCKER_VHDX_MAX_GB}): $vhdx
+      local msg="docker's virtual disk is ${vgb} GB (limit ${DOCKER_VHDX_MAX_GB}): $vhdx
   It only grows. Prune with 'docker builder prune' and 'docker image prune',
   then compact it (Docker Desktop > Troubleshoot > Clean / Purge data, or
   'Optimize-VHD -Mode Full' with the engine stopped)."
+      # The size is a high-water mark, not a hazard by itself: compacting needs
+      # the engine stopped (other projects' containers with it), so an
+      # oversized disk on a roomy drive warns and only a drive that could
+      # plausibly fill refuses.
+      if [ "$free" -lt "$VHDX_HARD_FREE_GB" ]; then
+        fail "$msg
+  Refusing because the drive has only ${free} GB free (VHDX_HARD_FREE_GB=${VHDX_HARD_FREE_GB})."
+      fi
+      warn "$msg"
     fi
   fi
 

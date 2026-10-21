@@ -81,7 +81,7 @@ kills the build instead, and the host never notices.
 
 Every run starts with `scripts/preflight.sh host`: it refuses (exit 1, with what to
 do) when the docker engine does not answer in 30 s, when the drive holding
-Docker's disk has under 25 GB free or Docker's virtual disk exceeds 300 GB, and
+Docker's disk has under 25 GB free or Docker's virtual disk exceeds 300 GB while that drive has under 150 GB free (over 300 GB on a roomier drive only warns: compacting means stopping every project's containers), and
 it prunes Docker's *build cache* above 40 GB. `gate.sh` repeats the check inside
 the container for the target dir. **If it fails, stop and report it; do not set
 `PREFLIGHT=0` to push through, and never run two heavy jobs at once.** The
