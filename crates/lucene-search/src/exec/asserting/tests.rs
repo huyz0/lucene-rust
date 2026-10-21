@@ -425,6 +425,31 @@ fn random_windows_collect_every_hit_once() {
 }
 
 #[test]
+fn a_whole_segment_call_draws_as_java_whatever_max_doc_is_known() {
+    // `max >= maxDoc` holds for `max == NO_MORE_DOCS` with any real `maxDoc`:
+    // no `randomIntBetween(max, next)` draw, whether or not it is known.
+    let docs: Vec<i32> = (0..3000).step_by(7).collect();
+    let mut after = Vec::new();
+    for max_doc in [Some(3000), None] {
+        let mut bulk = Bulk::scorer(Box::new(fake(&docs)));
+        let mut a = AssertingBulk::new(JavaRandom::new(5), max_doc);
+        let next = a
+            .score(
+                &mut bulk,
+                Mode::Complete,
+                None,
+                &mut All::default(),
+                0,
+                NO_MORE_DOCS,
+            )
+            .unwrap();
+        assert_eq!(next, NO_MORE_DOCS);
+        after.push(a.random.next_long());
+    }
+    assert_eq!(after[0], after[1]);
+}
+
+#[test]
 #[should_panic(expected = "Scoring backward: min=1 while previous max was max=5")]
 fn bulk_scoring_backwards() {
     let mut bulk = Bulk::scorer(Box::new(fake(&[7])));

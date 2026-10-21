@@ -967,7 +967,7 @@ pub(crate) fn segment_matches<'b>(
         return Ok(None);
     };
     buf.clear();
-    exec::score_segment(&mut bulk, Mode::NoScores, live, &mut Docs(buf))?;
+    exec::score_segment(&mut bulk, Mode::NoScores, live, &mut Docs(buf), ctx.max_doc)?;
     // The readers downstream walk forward and count each document once; a
     // bulk scorer hands documents out strictly ascending, and this keeps that
     // a checked fact rather than an assumption.
@@ -1045,7 +1045,13 @@ pub(crate) fn segment_match_read<'b>(
     words.clear();
     words.resize(max.div_ceil(64), 0);
     if !copy_constant_bits(&bulk, live, words) {
-        exec::score_segment(&mut bulk, Mode::NoScores, live, &mut Marks(words))?;
+        exec::score_segment(
+            &mut bulk,
+            Mode::NoScores,
+            live,
+            &mut Marks(words),
+            ctx.max_doc,
+        )?;
     }
     let count: u64 = words.iter().map(|w| u64::from(w.count_ones())).sum();
     // As `column_read`: seek when the matches are at most a quarter of the
@@ -1137,7 +1143,7 @@ pub(crate) fn segment_matches_scoring<'b>(
     buf.clear();
     let mut docs = Docs(buf);
     let mut passing = crate::collector::MinScoreCollector::new(&mut docs, min);
-    exec::score_segment(&mut bulk, Mode::Complete, live, &mut passing)?;
+    exec::score_segment(&mut bulk, Mode::Complete, live, &mut passing, ctx.max_doc)?;
     if !buf.windows(2).all(|w| w[0] < w[1]) {
         buf.sort_unstable();
         buf.dedup();

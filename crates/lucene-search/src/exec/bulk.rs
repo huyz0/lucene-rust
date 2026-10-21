@@ -1318,17 +1318,20 @@ impl crate::bulk_scorer::BulkLeg for BoxScorer<'_> {
     }
 }
 
-/// Scores `bulk` over the whole segment.
+/// Scores `bulk` over the whole segment, whose `maxDoc` is `max_doc` (the
+/// leaf context's; only the asserting bulk scorer reads it).
+#[cfg_attr(not(any(test, feature = "asserting")), allow(unused_variables))]
 pub(crate) fn score_segment<C: ScoringCollector + ?Sized>(
     bulk: &mut Bulk<'_>,
     mode: Mode,
     live_docs: Option<&FixedBitSet>,
     collector: &mut C,
+    max_doc: Option<i32>,
 ) -> Result<()> {
     // `AssertingBulkScorer`, under the test framework's asserting searcher:
     // the segment in random windows, each collector checked.
     #[cfg(any(test, feature = "asserting"))]
-    if let Some(mut asserting) = super::asserting::AssertingBulk::installed(None) {
+    if let Some(mut asserting) = super::asserting::AssertingBulk::installed(max_doc) {
         let collector: &mut dyn ScoringCollector = &mut AsDyn(collector);
         asserting.score(bulk, mode, live_docs, collector, 0, NO_MORE_DOCS)?;
         return Ok(());
