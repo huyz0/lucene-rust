@@ -52,6 +52,7 @@ qtests! {
     bq8: nested(S) => [0, 1, 2, 3];
     bq9: nested_excl(S) => [0, 1, 2, 3];
     bq10: nested_excl(M) => [1];
+    bq11: bq(vec![(S, t("w1")), (S, boost(t("w1"), 1000.0))]) => [0, 1, 2, 3];
     bq14: bq(vec![(S, t("QQQQQ")), (S, t("w1"))]) => [0, 1, 2, 3];
     bq15: bq(vec![(N, t("QQQQQ")), (S, t("w1"))]) => [0, 1, 2, 3];
     bq16: bq(vec![(S, t("QQQQQ")), (S, bq(vec![(S, t("w1")), (N, t("xx"))]))]) => [0, 1];
