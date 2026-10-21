@@ -95,7 +95,7 @@ impl DrillSidewaysQuery {
             filter: self.drill_down_queries.clone(),
             ..Default::default()
         };
-        let (rewritten, global) = searcher.prepare(&whole)?;
+        let (rewritten, global) = searcher.prepare_with(&whole, false)?;
         let whole = rewritten.unwrap_or(whole);
         let mut parts = whole
             .must

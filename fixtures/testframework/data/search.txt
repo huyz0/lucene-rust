@@ -844,6 +844,124 @@ expl 17
 |         0.75 = b, length normalization parameter
 |         5.0 = dl, length of field
 |         5.5 = avgdl, average length of field
+exp BM25Similarity bq_dup 4
+hit 0 424729bc
+expl 12
+| 49.790756 = weight(field:w1 in 0) [BM25Similarity], result of:
+|   49.790756 = score(freq=1.0), computed as boost * idf * tf from:
+|     1001.0 = boost
+|     0.105360515 = idf, computed as log(1 + (N - n + 0.5) / (n + 0.5)) from:
+|       4 = n, number of documents containing term
+|       4 = N, total number of documents with field
+|     0.472103 = tf, computed as freq / (freq + k1 * (1 - b + b * dl / avgdl)) from:
+|       1.0 = freq, occurrences of term within document
+|       1.2 = k1, term saturation parameter
+|       0.75 = b, length normalization parameter
+|       5.0 = dl, length of field
+|       5.5 = avgdl, average length of field
+hit 1 424729bc
+expl 12
+| 49.790756 = weight(field:w1 in 1) [BM25Similarity], result of:
+|   49.790756 = score(freq=1.0), computed as boost * idf * tf from:
+|     1001.0 = boost
+|     0.105360515 = idf, computed as log(1 + (N - n + 0.5) / (n + 0.5)) from:
+|       4 = n, number of documents containing term
+|       4 = N, total number of documents with field
+|     0.472103 = tf, computed as freq / (freq + k1 * (1 - b + b * dl / avgdl)) from:
+|       1.0 = freq, occurrences of term within document
+|       1.2 = k1, term saturation parameter
+|       0.75 = b, length normalization parameter
+|       5.0 = dl, length of field
+|       5.5 = avgdl, average length of field
+hit 2 424729bc
+expl 12
+| 49.790756 = weight(field:w1 in 2) [BM25Similarity], result of:
+|   49.790756 = score(freq=1.0), computed as boost * idf * tf from:
+|     1001.0 = boost
+|     0.105360515 = idf, computed as log(1 + (N - n + 0.5) / (n + 0.5)) from:
+|       4 = n, number of documents containing term
+|       4 = N, total number of documents with field
+|     0.472103 = tf, computed as freq / (freq + k1 * (1 - b + b * dl / avgdl)) from:
+|       1.0 = freq, occurrences of term within document
+|       1.2 = k1, term saturation parameter
+|       0.75 = b, length normalization parameter
+|       5.0 = dl, length of field
+|       5.5 = avgdl, average length of field
+hit 3 422c825e
+expl 12
+| 43.12731 = weight(field:w1 in 3) [BM25Similarity], result of:
+|   43.12731 = score(freq=1.0), computed as boost * idf * tf from:
+|     1001.0 = boost
+|     0.105360515 = idf, computed as log(1 + (N - n + 0.5) / (n + 0.5)) from:
+|       4 = n, number of documents containing term
+|       4 = N, total number of documents with field
+|     0.40892196 = tf, computed as freq / (freq + k1 * (1 - b + b * dl / avgdl)) from:
+|       1.0 = freq, occurrences of term within document
+|       1.2 = k1, term saturation parameter
+|       0.75 = b, length normalization parameter
+|       7.0 = dl, length of field
+|       5.5 = avgdl, average length of field
+exp BM25Similarity bq_dup_nested 4
+hit 0 424729bc
+expl 13
+| 49.790756 = sum of:
+|   49.790756 = weight(field:w1 in 0) [BM25Similarity], result of:
+|     49.790756 = score(freq=1.0), computed as boost * idf * tf from:
+|       1001.0 = boost
+|       0.105360515 = idf, computed as log(1 + (N - n + 0.5) / (n + 0.5)) from:
+|         4 = n, number of documents containing term
+|         4 = N, total number of documents with field
+|       0.472103 = tf, computed as freq / (freq + k1 * (1 - b + b * dl / avgdl)) from:
+|         1.0 = freq, occurrences of term within document
+|         1.2 = k1, term saturation parameter
+|         0.75 = b, length normalization parameter
+|         5.0 = dl, length of field
+|         5.5 = avgdl, average length of field
+hit 1 424729bc
+expl 13
+| 49.790756 = sum of:
+|   49.790756 = weight(field:w1 in 1) [BM25Similarity], result of:
+|     49.790756 = score(freq=1.0), computed as boost * idf * tf from:
+|       1001.0 = boost
+|       0.105360515 = idf, computed as log(1 + (N - n + 0.5) / (n + 0.5)) from:
+|         4 = n, number of documents containing term
+|         4 = N, total number of documents with field
+|       0.472103 = tf, computed as freq / (freq + k1 * (1 - b + b * dl / avgdl)) from:
+|         1.0 = freq, occurrences of term within document
+|         1.2 = k1, term saturation parameter
+|         0.75 = b, length normalization parameter
+|         5.0 = dl, length of field
+|         5.5 = avgdl, average length of field
+hit 2 424729bc
+expl 13
+| 49.790756 = sum of:
+|   49.790756 = weight(field:w1 in 2) [BM25Similarity], result of:
+|     49.790756 = score(freq=1.0), computed as boost * idf * tf from:
+|       1001.0 = boost
+|       0.105360515 = idf, computed as log(1 + (N - n + 0.5) / (n + 0.5)) from:
+|         4 = n, number of documents containing term
+|         4 = N, total number of documents with field
+|       0.472103 = tf, computed as freq / (freq + k1 * (1 - b + b * dl / avgdl)) from:
+|         1.0 = freq, occurrences of term within document
+|         1.2 = k1, term saturation parameter
+|         0.75 = b, length normalization parameter
+|         5.0 = dl, length of field
+|         5.5 = avgdl, average length of field
+hit 3 422c825e
+expl 13
+| 43.12731 = sum of:
+|   43.12731 = weight(field:w1 in 3) [BM25Similarity], result of:
+|     43.12731 = score(freq=1.0), computed as boost * idf * tf from:
+|       1001.0 = boost
+|       0.105360515 = idf, computed as log(1 + (N - n + 0.5) / (n + 0.5)) from:
+|         4 = n, number of documents containing term
+|         4 = N, total number of documents with field
+|       0.40892196 = tf, computed as freq / (freq + k1 * (1 - b + b * dl / avgdl)) from:
+|         1.0 = freq, occurrences of term within document
+|         1.2 = k1, term saturation parameter
+|         0.75 = b, length normalization parameter
+|         7.0 = dl, length of field
+|         5.5 = avgdl, average length of field
 exp BM25Similarity boost 4
 hit 0 4246f6cc
 expl 12
@@ -1598,6 +1716,100 @@ expl 14
 |       1.0 = tf(freq=1.0), with freq of:
 |         1.0 = freq, occurrences of term within document
 |       0.4472136 = fieldNorm
+exp ClassicSimilarity bq_dup 4
+hit 0 43dfd495
+expl 9
+| 447.6608 = weight(field:w1 in 0) [ClassicSimilarity], result of:
+|   447.6608 = score(freq=1.0), product of:
+|     1001.0 = boost
+|     1.0 = idf, computed as log((docCount+1)/(docFreq+1)) + 1 from:
+|       4 = docFreq, number of documents containing term
+|       4 = docCount, total number of documents with field
+|     1.0 = tf(freq=1.0), with freq of:
+|       1.0 = freq, occurrences of term within document
+|     0.4472136 = fieldNorm
+hit 1 43dfd495
+expl 9
+| 447.6608 = weight(field:w1 in 1) [ClassicSimilarity], result of:
+|   447.6608 = score(freq=1.0), product of:
+|     1001.0 = boost
+|     1.0 = idf, computed as log((docCount+1)/(docFreq+1)) + 1 from:
+|       4 = docFreq, number of documents containing term
+|       4 = docCount, total number of documents with field
+|     1.0 = tf(freq=1.0), with freq of:
+|       1.0 = freq, occurrences of term within document
+|     0.4472136 = fieldNorm
+hit 2 43dfd495
+expl 9
+| 447.6608 = weight(field:w1 in 2) [ClassicSimilarity], result of:
+|   447.6608 = score(freq=1.0), product of:
+|     1001.0 = boost
+|     1.0 = idf, computed as log((docCount+1)/(docFreq+1)) + 1 from:
+|       4 = docFreq, number of documents containing term
+|       4 = docCount, total number of documents with field
+|     1.0 = tf(freq=1.0), with freq of:
+|       1.0 = freq, occurrences of term within document
+|     0.4472136 = fieldNorm
+hit 3 43bd2bd5
+expl 9
+| 378.34244 = weight(field:w1 in 3) [ClassicSimilarity], result of:
+|   378.34244 = score(freq=1.0), product of:
+|     1001.0 = boost
+|     1.0 = idf, computed as log((docCount+1)/(docFreq+1)) + 1 from:
+|       4 = docFreq, number of documents containing term
+|       4 = docCount, total number of documents with field
+|     1.0 = tf(freq=1.0), with freq of:
+|       1.0 = freq, occurrences of term within document
+|     0.37796447 = fieldNorm
+exp ClassicSimilarity bq_dup_nested 4
+hit 0 43dfd495
+expl 10
+| 447.6608 = sum of:
+|   447.6608 = weight(field:w1 in 0) [ClassicSimilarity], result of:
+|     447.6608 = score(freq=1.0), product of:
+|       1001.0 = boost
+|       1.0 = idf, computed as log((docCount+1)/(docFreq+1)) + 1 from:
+|         4 = docFreq, number of documents containing term
+|         4 = docCount, total number of documents with field
+|       1.0 = tf(freq=1.0), with freq of:
+|         1.0 = freq, occurrences of term within document
+|       0.4472136 = fieldNorm
+hit 1 43dfd495
+expl 10
+| 447.6608 = sum of:
+|   447.6608 = weight(field:w1 in 1) [ClassicSimilarity], result of:
+|     447.6608 = score(freq=1.0), product of:
+|       1001.0 = boost
+|       1.0 = idf, computed as log((docCount+1)/(docFreq+1)) + 1 from:
+|         4 = docFreq, number of documents containing term
+|         4 = docCount, total number of documents with field
+|       1.0 = tf(freq=1.0), with freq of:
+|         1.0 = freq, occurrences of term within document
+|       0.4472136 = fieldNorm
+hit 2 43dfd495
+expl 10
+| 447.6608 = sum of:
+|   447.6608 = weight(field:w1 in 2) [ClassicSimilarity], result of:
+|     447.6608 = score(freq=1.0), product of:
+|       1001.0 = boost
+|       1.0 = idf, computed as log((docCount+1)/(docFreq+1)) + 1 from:
+|         4 = docFreq, number of documents containing term
+|         4 = docCount, total number of documents with field
+|       1.0 = tf(freq=1.0), with freq of:
+|         1.0 = freq, occurrences of term within document
+|       0.4472136 = fieldNorm
+hit 3 43bd2bd5
+expl 10
+| 378.34244 = sum of:
+|   378.34244 = weight(field:w1 in 3) [ClassicSimilarity], result of:
+|     378.34244 = score(freq=1.0), product of:
+|       1001.0 = boost
+|       1.0 = idf, computed as log((docCount+1)/(docFreq+1)) + 1 from:
+|         4 = docFreq, number of documents containing term
+|         4 = docCount, total number of documents with field
+|       1.0 = tf(freq=1.0), with freq of:
+|         1.0 = freq, occurrences of term within document
+|       0.37796447 = fieldNorm
 exp ClassicSimilarity boost 4
 hit 0 43df9b57
 expl 9

@@ -658,6 +658,14 @@ public class GenTestFrameworkSearch {
           // in occur order: the Rust model keeps clauses per occur
           "bq_filter", bq(0, Occur.FILTER, t("xx"), Occur.SHOULD, t("w3"))
         });
+    // TestSimpleExplanations.testBQ11, alone and as qtest wraps it
+    Query dup = bq(0, Occur.SHOULD, t("w1"), Occur.SHOULD, new BoostQuery(t("w1"), 1000));
+    qs.add(new Object[] {"bq_dup", dup});
+    qs.add(
+        new Object[] {
+          "bq_dup_nested",
+          bq(0, Occur.SHOULD, dup, Occur.SHOULD, new TermQuery(new Term("NEVER", "MATCH")))
+        });
     qs.add(new Object[] {"boost", new BoostQuery(t("w2"), 1000)});
     qs.add(new Object[] {"phrase", new PhraseQuery(0, FIELD, "w1", "w2")});
     qs.add(new Object[] {"phrase_sloppy", new PhraseQuery(2, FIELD, "w1", "w3")});
