@@ -51,6 +51,12 @@ if [ "${1:-}" = "gate" ]; then
   CMD=(bash /work/scripts/gate.sh)
 else
   CMD=("${@:-cargo test --workspace}")
+  # Every run trims the shared target volume, not only the gate: coverage,
+  # fixture and bench runs grew it to 146 GB between gates (gate.sh runs the
+  # same check itself, so it is not wrapped twice).
+  if [ "${PREFLIGHT:-1}" != "0" ]; then
+    CMD=(bash -c 'scripts/preflight.sh container && exec "$@"' preflight "${CMD[@]}")
+  fi
 fi
 
 # Refuse to start on a wedged engine or a nearly full drive: a build that fills
