@@ -23,6 +23,30 @@ members = [
     "crates/lucene-tools",
     "crates/lucene-test-framework",
 ]
+# A bare `cargo build`/`cargo test` at the root leaves the test framework out,
+# so its `test-support`/`test-util` features are not unified into the
+# production crates. `--workspace` (the gate) ignores this list and builds it
+# anyway; the shipped artifact is the `-p lucene-ffi` build. Keep this list
+# equal to `members` minus `crates/lucene-test-framework`.
+default-members = [
+    "crates/lucene-util",
+    "crates/lucene-store",
+    "crates/lucene-codecs",
+    "crates/lucene-index",
+    "crates/lucene-analysis",
+    "crates/lucene-analysis-phonetic",
+    "crates/lucene-analysis-stempel",
+    "crates/lucene-analysis-morfologik",
+    "crates/lucene-analysis-kuromoji",
+    "crates/lucene-analysis-nori",
+    "crates/lucene-analysis-smartcn",
+    "crates/lucene-analysis-icu",
+    "crates/lucene-analysis-opennlp",
+    "crates/lucene-search",
+    "crates/lucene-core",
+    "crates/lucene-ffi",
+    "crates/lucene-tools",
+]
 
 [workspace.package]
 version = "0.1.0"
