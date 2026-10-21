@@ -193,9 +193,8 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
             });
         }
         let rescored = self.rewrite_rescore(query)?;
-        let query = rescored.as_ref().unwrap_or(query);
-        let rewritten = rewrite_structure(query);
-        let query = rewritten.as_ref().unwrap_or(query);
+        let rewritten = rewrite_structure(rescored.unwrap_or_else(|| query.clone()));
+        let query = &rewritten;
         let (hits, total_hits) = search_boolean_query_multi_segment_maxscore_counting(
             self.segments,
             query,
@@ -253,8 +252,8 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
     ) -> Result<crate::top_field::TopFieldDocs> {
         let norms: Vec<SegmentNorms<'s, 'a>> =
             (0..self.segments.len()).map(|i| self.norms(i)).collect();
-        let rewritten = rewrite_structure(query);
-        let query = rewritten.as_ref().unwrap_or(query);
+        let rewritten = rewrite_structure(query.clone());
+        let query = &rewritten;
         crate::top_field::search_sorted_leaves(
             self.segments,
             readers,
@@ -285,8 +284,8 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
     ) -> Result<crate::top_field::TopFieldDocs> {
         let norms: Vec<SegmentNorms<'s, 'a>> =
             (0..self.segments.len()).map(|i| self.norms(i)).collect();
-        let rewritten = rewrite_structure(query);
-        let query = rewritten.as_ref().unwrap_or(query);
+        let rewritten = rewrite_structure(query.clone());
+        let query = &rewritten;
         crate::top_field::search_sorted_leaves(
             self.segments,
             readers,
@@ -348,9 +347,9 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
         crate::rescorer::rewrite_rescore_clauses(query, &ctx)
     }
 
-    /// The query rewritten against the segments (and its rescore clauses),
-    /// `None` when nothing changed, with its reader-wide statistics: what
-    /// every search here does before scoring a segment.
+    /// The query rewritten against the segments (and its rescore clauses)
+    /// and [`rewrite_structure`]d -- always `Some` -- with its reader-wide
+    /// statistics: what every search here does before scoring a segment.
     pub(crate) fn prepare(
         &self,
         query: &BooleanQuery,
@@ -368,10 +367,14 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
         structure: bool,
     ) -> Result<(Option<BooleanQuery>, crate::GlobalStats)> {
         let rescored = self.rewrite_rescore(query)?;
-        let query = rescored.as_ref().unwrap_or(query);
-        let mut rewritten = rewrite_points_ranges(query, self.segments).or(rescored.clone());
+        let base = rescored.as_ref().unwrap_or(query);
+        let mut rewritten = rewrite_points_ranges(base, self.segments).or(rescored);
         if structure {
-            rewritten = rewrite_structure(rewritten.as_ref().unwrap_or(query)).or(rewritten);
+            // One owned copy rewritten in place: no second clone, no
+            // comparison with the original (`Some` whether or not it moved).
+            rewritten = Some(rewrite_structure(
+                rewritten.unwrap_or_else(|| query.clone()),
+            ));
         }
         let global = crate::multi_segment::global_boolean_stats_with_similarity(
             self.segments,
@@ -600,21 +603,21 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
 /// duplicate `SHOULD`/`MUST` clauses summed into one boosted clause,
 /// flattened disjunctions, collapsed boosts), so a search scores the query
 /// [`IndexSearcher::explain`] explains. A query rewriting to a lone clause
-/// runs as that clause, the one `MUST` clause of a boolean. `None` when
-/// nothing changes.
+/// runs as that clause, the one `MUST` clause of a boolean. Takes the
+/// query owned and returns it rewritten whether or not anything changed:
+/// one pass over a copy the caller already holds, never a deep comparison.
 ///
 /// Only this searcher's entry points rewrite: the free multi-segment
 /// functions (`lucene-ffi`'s search among them) score the query as given,
 /// relying on the JVM's `searcher.rewrite` before encoding.
-fn rewrite_structure(query: &BooleanQuery) -> Option<BooleanQuery> {
-    let rewritten = match Clause::Boolean(Box::new(query.clone())).rewrite() {
+fn rewrite_structure(query: BooleanQuery) -> BooleanQuery {
+    match Clause::Boolean(Box::new(query)).rewrite() {
         Clause::Boolean(b) => *b,
         other => BooleanQuery {
             must: vec![other],
             ..BooleanQuery::default()
         },
-    };
-    (rewritten != *query).then_some(rewritten)
+    }
 }
 
 /// A `MatchAllDocsQuery` built without a `maxDoc` (a query parsed once for
@@ -691,7 +694,7 @@ mod tests {
             .with_should([t(), Clause::Boost(Box::new(BoostQuery::new(t(), 1000.0)))]);
         let want =
             BooleanQuery::new().with_must([Clause::Boost(Box::new(BoostQuery::new(t(), 1001.0)))]);
-        assert_eq!(rewrite_structure(&dup), Some(want));
+        assert_eq!(rewrite_structure(dup), want);
         // still a boolean after the rewrite: returned as one
         let two = BooleanQuery::new().with_should([t(), Clause::Term(TermQuery::new("f", "w2"))]);
         let nested = BooleanQuery::new()
@@ -701,8 +704,8 @@ mod tests {
         let flat = BooleanQuery::new()
             .with_must([Clause::Term(TermQuery::new("f", "w3"))])
             .with_should([t(), Clause::Term(TermQuery::new("f", "w2"))]);
-        assert_eq!(rewrite_structure(&nested), Some(flat));
+        assert_eq!(rewrite_structure(nested), flat);
         // nothing to rewrite
-        assert_eq!(rewrite_structure(&two), None);
+        assert_eq!(rewrite_structure(two.clone()), two);
     }
 }
