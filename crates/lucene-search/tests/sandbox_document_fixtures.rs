@@ -229,8 +229,45 @@ fn query(spec: &str) -> Result<Box<dyn DocumentQuery>> {
             }
             b.build()
         }
+        "NSet" => {
+            let (lo, hi) = span(a[2]);
+            Box::new(dq::sorted_numeric_doc_values_field::new_slow_set_query(
+                f,
+                &(lo..hi).collect::<Vec<i64>>(),
+            ))
+        }
+        "SSRange" => Box::new(dq::sorted_set_doc_values_field::new_slow_range_query(
+            f,
+            Some(tterm(a[2].parse().unwrap()).as_bytes()),
+            Some(tterm(a[3].parse().unwrap()).as_bytes()),
+            true,
+            true,
+        )),
+        "SSExact" => Box::new(dq::sorted_set_doc_values_field::new_slow_exact_query(
+            f,
+            tterm(a[2].parse().unwrap()).as_bytes(),
+        )),
+        "SSSet" => {
+            let (lo, hi) = span(a[2]);
+            let terms: Vec<String> = (lo..hi).map(tterm).collect();
+            let refs: Vec<&[u8]> = terms.iter().map(|t| t.as_bytes()).collect();
+            Box::new(dq::sorted_set_doc_values_field::new_slow_set_query(
+                f, &refs,
+            ))
+        }
         other => panic!("unknown query spec {other}"),
     })
+}
+
+/// `GenSandboxDocument.span`: `lo:hi`, `hi` exclusive.
+fn span(s: &str) -> (i64, i64) {
+    let (lo, hi) = s.split_once(':').unwrap();
+    (lo.parse().unwrap(), hi.parse().unwrap())
+}
+
+/// `GenSandboxDocument.tterm`.
+fn tterm(n: i64) -> String {
+    format!("t{n:03}")
 }
 
 /// `GenSandboxDocument.hits(searcher, query)`.

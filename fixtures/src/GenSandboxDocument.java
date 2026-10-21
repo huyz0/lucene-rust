@@ -348,9 +348,38 @@ public class GenSandboxDocument {
           }
           return b.build();
         }
+      // Core's other slow doc-values queries, over integer spans "lo:hi" (hi exclusive) and
+      // "t%03d" terms.
+      case "NSet":
+        return SortedNumericDocValuesField.newSlowSetQuery(
+            f, java.util.stream.LongStream.range(span(a[2])[0], span(a[2])[1]).toArray());
+      case "SSRange":
+        return SortedSetDocValuesField.newSlowRangeQuery(
+            f, tbytes(Integer.parseInt(a[2])), tbytes(Integer.parseInt(a[3])), true, true);
+      case "SSExact":
+        return SortedSetDocValuesField.newSlowExactQuery(f, tbytes(Integer.parseInt(a[2])));
+      case "SSSet":
+        {
+          List<BytesRef> terms = new ArrayList<>();
+          for (long t = span(a[2])[0]; t < span(a[2])[1]; t++) terms.add(tbytes((int) t));
+          return SortedSetDocValuesField.newSlowSetQuery(f, terms);
+        }
       default:
         throw new IllegalArgumentException(spec);
     }
+  }
+
+  static long[] span(String s) {
+    String[] p = s.split(":");
+    return new long[] {Long.parseLong(p[0]), Long.parseLong(p[1])};
+  }
+
+  static String tterm(int n) {
+    return String.format(java.util.Locale.ROOT, "t%03d", n);
+  }
+
+  static BytesRef tbytes(int n) {
+    return new BytesRef(tterm(n));
   }
 
   static String[] ranges(String[] a) {
@@ -601,6 +630,26 @@ public class GenSandboxDocument {
     "SNMR ux 0:999",
     "SNMR vx 0:999",
     "SNMR gx 0:6000",
+    // Core's other slow doc-values queries. newSlowSetQuery (SortedNumericDocValuesSetQuery,
+    // and TermInSetQuery's DOC_VALUES_REWRITE) is scored by DefaultBulkScorer, which stops at
+    // the hit that saturates the collector; SortedSetDocValuesRangeQuery by
+    // ConstantScoreScorerSupplier's windows: dense skip-indexed (sx), sparse multi-valued
+    // skip-indexed (sm) and dense unindexed (sd) columns.
+    "NSet dx 0:200",
+    "NSet gx 0:600",
+    "NSet kx 5:9",
+    "SSRange sx 0 300",
+    "SSRange sx 0 999",
+    "SSRange sx 500 501",
+    "SSRange sm 100 400",
+    "SSRange sm 7 8",
+    "SSRange sd 0 500",
+    "SSExact sx 5",
+    "SSExact sm 6",
+    "SSSet sx 0:200",
+    "SSSet sm 0:300",
+    "SSSet sd 0:200",
+    "SSSet sx 5:7",
   };
 
   /**
@@ -639,6 +688,12 @@ public class GenSandboxDocument {
           specs.add("SortedNumericDocValuesField kx " + i + " 1");
           specs.add("SortedNumericDocValuesField ux " + (i % 1000) + " 0");
           if (i % 40 == 0) specs.add("SortedNumericDocValuesField vx " + (i % 1000) + " 0");
+          specs.add("SortedSetDocValuesField sx " + tterm(i % 1000) + " 1");
+          if (i % 2 == 0) {
+            specs.add("SortedSetDocValuesField sm " + tterm(i % 1000) + " 1");
+            specs.add("SortedSetDocValuesField sm " + tterm(i % 1000 + 1) + " 1");
+          }
+          specs.add("SortedDocValuesField sd " + tterm(i % 1000) + " 0");
           Document doc = new Document();
           docsOut.append(i);
           for (String s : specs) {

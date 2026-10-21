@@ -27,7 +27,7 @@ use lucene_index::segment_info::IndexSortField;
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 use super::dense_bulk::{saturated, Bulk, SkipBlocks, Step};
-use super::{collect_live, field_info, reader, DocumentQuery, FieldExists, MatchNoDocs};
+use super::{field_info, reader, DocumentQuery, FieldExists, MatchNoDocs};
 use crate::collector::{ScoringCollector, VecCollector};
 use crate::multi_segment::OpenSegment;
 use crate::query::TermQuery;
@@ -449,10 +449,24 @@ impl DocumentQuery for SortedNumericDocValuesSetQuery {
         let Some((data, column)) = numeric_column(leaf, info)? else {
             return Ok(());
         };
+        // `DefaultScorerSupplier(ConstantScoreScorer)`: `DefaultBulkScorer`.
+        if saturated(collector, boost) {
+            return Ok(());
+        }
+        let max_doc = reader(leaf)?.max_doc;
+        let mut bulk = Bulk::default_scorer(max_doc);
         let n = &self.numbers;
         let mut values = Vec::new();
-        for doc in 0..reader(leaf)?.max_doc {
+        for doc in 0..max_doc {
             column.values(data, doc, &mut values)?;
+            if values.is_empty() {
+                continue;
+            }
+            match bulk.candidate(leaf, doc, boost, collector) {
+                Step::Stop => return Ok(()),
+                Step::Skip => continue,
+                Step::Check => {}
+            }
             let mut matched = false;
             for &v in &values {
                 if v < n.min_value {
@@ -464,8 +478,8 @@ impl DocumentQuery for SortedNumericDocValuesSetQuery {
                     break;
                 }
             }
-            if matched {
-                collect_live(leaf, doc, boost, collector);
+            if matched && bulk.hit(leaf, doc, boost, collector) {
+                return Ok(());
             }
         }
         Ok(())
@@ -485,6 +499,14 @@ impl<'a> OrdsColumn<'a> {
         match self {
             OrdsColumn::Sorted(e) => &e.terms,
             OrdsColumn::Multi(_, t) => t,
+        }
+    }
+
+    /// `cost()` of the column's iterator: its documents with a value.
+    fn docs_with_field(&self) -> i64 {
+        match self {
+            OrdsColumn::Sorted(e) => e.ords.num_values,
+            OrdsColumn::Multi(e, _) => i64::from(e.num_docs_with_field),
         }
     }
 
@@ -648,26 +670,72 @@ impl DocumentQuery for SortedSetDocValuesRangeQuery {
         {
             return Ok(());
         }
+        // `ConstantScoreScorerSupplier`, as `SortedNumericDocValuesRangeQuery`.
+        if saturated(collector, boost) {
+            return Ok(());
+        }
+        let needs_scores = collector.score_mode().needs_scores();
         if skip.as_ref().is_some_and(|s| {
             s.doc_count == r.max_doc && s.min_value >= min_ord && s.max_value <= max_ord
         }) {
+            // `DocIdSetIterator.all(docCount)`: one run to `maxDoc`.
+            let mut bulk = Bulk::new(needs_scores, r.max_doc, i64::from(r.max_doc));
             for doc in 0..r.max_doc {
-                collect_live(leaf, doc, boost, collector);
+                match bulk.candidate_run(leaf, doc, r.max_doc, boost, collector) {
+                    Step::Stop => return Ok(()),
+                    Step::Skip => continue,
+                    Step::Check => {}
+                }
+                if bulk.hit(leaf, doc, boost, collector) {
+                    return Ok(());
+                }
             }
             return Ok(());
         }
         let mut ords = Vec::new();
-        for doc in 0..r.max_doc {
-            column.ords(data, doc, &mut ords)?;
-            if ords
-                .iter()
+        let in_range = |ords: &[i64]| {
+            ords.iter()
                 .find(|&&o| o >= min_ord)
                 .is_some_and(|&o| o <= max_ord)
-            {
-                collect_live(leaf, doc, boost, collector);
+        };
+        // `DocValuesRangeIterator.forOrdinalRange`: the skip blocks meeting
+        // the range (cost `NO_MORE_DOCS`) or else the column's documents.
+        let Some(s) = skip else {
+            let mut bulk = Bulk::new(needs_scores, r.max_doc, column.docs_with_field());
+            for doc in 0..r.max_doc {
+                column.ords(data, doc, &mut ords)?;
+                if ords.is_empty() {
+                    continue;
+                }
+                match bulk.candidate(leaf, doc, boost, collector) {
+                    Step::Stop => return Ok(()),
+                    Step::Skip => continue,
+                    Step::Check => {}
+                }
+                if in_range(&ords) && bulk.hit(leaf, doc, boost, collector) {
+                    return Ok(());
+                }
+            }
+            return Ok(());
+        };
+        let mut bulk = Bulk::new(needs_scores, r.max_doc, i64::from(i32::MAX));
+        let mut approximation = SkipBlocks::new(s, min_ord, max_ord);
+        loop {
+            let doc = approximation.next_doc();
+            if doc >= r.max_doc {
+                return Ok(());
+            }
+            let run_end = approximation.doc_id_run_end();
+            match bulk.candidate_run(leaf, doc, run_end, boost, collector) {
+                Step::Stop => return Ok(()),
+                Step::Skip => continue,
+                Step::Check => {}
+            }
+            column.ords(data, doc, &mut ords)?;
+            if in_range(&ords) && bulk.hit(leaf, doc, boost, collector) {
+                return Ok(());
             }
         }
-        Ok(())
     }
 }
 
@@ -725,11 +793,28 @@ impl DocumentQuery for DocValuesTermInSetQuery {
         if wanted.is_empty() {
             return Ok(());
         }
+        // A non-exhaustive `ConstantScoreQuery` over a plain `ScorerSupplier`:
+        // `DefaultBulkScorer`.
+        if saturated(collector, boost) {
+            return Ok(());
+        }
+        let max_doc = reader(leaf)?.max_doc;
+        let mut bulk = Bulk::default_scorer(max_doc);
         let mut ords = Vec::new();
-        for doc in 0..reader(leaf)?.max_doc {
+        for doc in 0..max_doc {
             column.ords(data, doc, &mut ords)?;
-            if ords.iter().any(|o| wanted.binary_search(o).is_ok()) {
-                collect_live(leaf, doc, boost, collector);
+            if ords.is_empty() {
+                continue;
+            }
+            match bulk.candidate(leaf, doc, boost, collector) {
+                Step::Stop => return Ok(()),
+                Step::Skip => continue,
+                Step::Check => {}
+            }
+            if ords.iter().any(|o| wanted.binary_search(o).is_ok())
+                && bulk.hit(leaf, doc, boost, collector)
+            {
+                return Ok(());
             }
         }
         Ok(())
