@@ -5897,6 +5897,7 @@ impl<'d> IndexWriter<'d> {
         self.reserve_docs(1)?;
         let seq_no = self.delete_queue.next_sequence_number();
         self.buffer_document(doc);
+        self.mark_last_buffered_parent()?;
         self.maybe_flush()?;
         Ok(seq_no)
     }
@@ -6048,6 +6049,7 @@ impl<'d> IndexWriter<'d> {
         self.pending_custom_freq_terms.push(Vec::new());
         self.pending_vectors.push(vectors);
         self.pending_explicit.push(ExplicitFields::default());
+        self.mark_last_buffered_parent()?;
         self.maybe_flush()?;
         Ok(seq_no)
     }
@@ -6158,8 +6160,12 @@ impl IndexWriter<'_> {
         if docs.len() > 1 {
             self.pending_has_blocks = true;
         }
+        let any = !docs.is_empty();
         for doc in docs {
             self.buffer_document(doc);
+        }
+        if any {
+            self.mark_last_buffered_parent()?;
         }
         // Consulted once per call, never inside the loop: a flush partway
         // through a block would split it across two segments and break the
@@ -6536,6 +6542,7 @@ impl IndexWriter<'_> {
         self.pending_custom_freq_terms.push(terms);
         self.pending_vectors.push(Vec::new());
         self.pending_explicit.push(ExplicitFields::default());
+        self.mark_last_buffered_parent()?;
         self.maybe_flush()?;
         Ok(seq_no)
     }
