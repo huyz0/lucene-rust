@@ -511,6 +511,18 @@ impl MultiTermSource {
         }
     }
 
+    /// The field, to change.
+    pub(crate) fn field_mut(&mut self) -> &mut String {
+        match self {
+            MultiTermSource::Prefix(q) => &mut q.field,
+            MultiTermSource::Wildcard(q) => &mut q.field,
+            MultiTermSource::Regexp(q) => &mut q.field,
+            MultiTermSource::TermRange(q) => &mut q.field,
+            MultiTermSource::Automaton(q) => &mut q.field,
+            MultiTermSource::TermSet(q) => &mut q.field,
+        }
+    }
+
     fn name(&self) -> &'static str {
         match self {
             MultiTermSource::Prefix(_) => "PrefixQuery",

@@ -2,21 +2,30 @@
 //! highlightable offsets come from (postings, term vectors, re-analysis of the
 //! text, or nowhere) and what they are for the query.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use lucene_analysis::{Analyzer, TokenStream};
+use lucene_codecs::term_vectors::TermVectorField;
 use lucene_index::document::{FieldToken, FieldTokens};
 
 use super::super::{Error, Result};
-use super::matches_enum::{query_to_term, OfMatchesWithSubs};
+use super::matches_enum::OfMatchesWithSubs;
 use super::passage::{MatchEntry, MultiOffsets, OfMatches, OfPostings, OffsetsEnum};
+pub use super::phrase_helper::PhraseHelper;
+use crate::extended_query::ExtendedQuery;
 use crate::highlighter::OffsetSource;
 use crate::matches::BoxMatches;
 use crate::memory::MemoryIndex;
+use crate::multi_segment::OpenSegment;
 use crate::query::{Clause, MatchAllDocsQuery, MatchNoDocsQuery};
 use crate::query_visitor::{self, Occur, QueryVisitor, SubVisitor, Term, TermMatcher};
 use crate::reader::{LeafReader, PostingsFlags, Terms};
+use crate::spans::SpanNode;
+
+/// `Automata.MAX_STRING_UNION_TERM_LENGTH`: longer terms are left out of
+/// the memory index's pre-filter.
+const MAX_STRING_UNION_TERM_LENGTH: usize = 1000;
 
 /// `UnifiedHighlighter.MULTIVAL_SEP_CHAR`.
 pub const MULTIVAL_SEP_CHAR: u16 = 0;
@@ -55,70 +64,6 @@ impl Flags {
                 && passage_relevancy_over_speed
                 && weight_matches,
         }
-    }
-}
-
-/// A reduced `PhraseHelper`: the phrase and span clauses of the query on
-/// matching fields (highlighted only where they match as a whole) and the
-/// terms that need no such care. Span clauses holding a multi-term query are
-/// not looked into (Java ignores a query it must rewrite).
-#[derive(Clone, Default)]
-pub struct PhraseHelper {
-    /// `positionInsensitiveTerms`, sorted.
-    insensitive: Vec<Vec<u8>>,
-    /// `spanQueries`.
-    spans: Vec<Clause>,
-}
-
-impl PhraseHelper {
-    /// The helper for `query`.
-    pub fn new(query: &Clause, field_matcher: &dyn Fn(&str) -> bool) -> Self {
-        fn walk(
-            c: &Clause,
-            fm: &dyn Fn(&str) -> bool,
-            ins: &mut BTreeSet<Vec<u8>>,
-            spans: &mut Vec<Clause>,
-        ) {
-            match c {
-                Clause::Boolean(b) => {
-                    for x in b.must.iter().chain(&b.filter).chain(&b.should) {
-                        walk(x, fm, ins, spans);
-                    }
-                }
-                Clause::DisjunctionMax(d) => {
-                    for x in &d.disjuncts {
-                        walk(x, fm, ins, spans);
-                    }
-                }
-                Clause::ConstantScore(q) => walk(&q.inner, fm, ins, spans),
-                Clause::Boost(q) => walk(&q.inner, fm, ins, spans),
-                Clause::Term(t) => {
-                    if fm(&t.field) {
-                        ins.insert(t.term.clone());
-                    }
-                }
-                Clause::Phrase(p) => {
-                    if fm(&p.field) {
-                        spans.push(c.clone());
-                    }
-                }
-                Clause::Span(_) if clause_fields(c).iter().all(|f| fm(f)) => {
-                    spans.push(c.clone());
-                }
-                _ => {}
-            }
-        }
-        let (mut ins, mut spans) = (BTreeSet::new(), Vec::new());
-        walk(query, field_matcher, &mut ins, &mut spans);
-        PhraseHelper {
-            insensitive: ins.into_iter().collect(),
-            spans,
-        }
-    }
-
-    /// `hasPositionSensitivity`.
-    pub fn has_position_sensitivity(&self) -> bool {
-        !self.spans.is_empty()
     }
 }
 
@@ -219,8 +164,82 @@ fn retarget(c: &Clause, fm: &dyn Fn(&str) -> bool, to: &str) -> Clause {
             q.field = to.to_string();
             Clause::Regexp(q)
         }
+        Clause::MultiPhrase(q) if fm(&q.field) => {
+            let mut q = q.clone();
+            q.field = to.to_string();
+            Clause::MultiPhrase(q)
+        }
+        Clause::TermInSet(q) if fm(&q.field) => {
+            let mut q = q.clone();
+            q.field = to.to_string();
+            Clause::TermInSet(q)
+        }
+        Clause::Span(q) => Clause::from(retarget_span(&SpanNode::from(q), fm, to)),
+        Clause::Extended(e) => match e.as_ref() {
+            ExtendedQuery::Synonym(q) if fm(&q.field) => {
+                let mut q = q.clone();
+                q.field = to.to_string();
+                Clause::from(q)
+            }
+            ExtendedQuery::MultiTerm(q) if fm(q.field()) => {
+                let mut q = q.clone();
+                *q.source.field_mut() = to.to_string();
+                Clause::from(q)
+            }
+            ExtendedQuery::CommonTerms(q) => {
+                let mut q = q.clone();
+                for (field, _) in &mut q.terms {
+                    if fm(field) {
+                        *field = to.to_string();
+                    }
+                }
+                Clause::Extended(Box::new(ExtendedQuery::CommonTerms(q)))
+            }
+            ExtendedQuery::Span(node) => Clause::from(retarget_span(node, fm, to)),
+            _ => leaf.clone(),
+        },
         other => other.clone(),
     })
+}
+
+/// [`retarget`] of a span query: each term (and multi-term, and masked
+/// field) the matcher accepts is read from `to`.
+fn retarget_span(node: &SpanNode, fm: &dyn Fn(&str) -> bool, to: &str) -> SpanNode {
+    fn walk(n: &mut SpanNode, fm: &dyn Fn(&str) -> bool, to: &str) {
+        match n {
+            SpanNode::Term { field, .. } | SpanNode::FieldMasking { field, .. } if fm(field) => {
+                *field = to.to_string();
+            }
+            SpanNode::MultiTerm(m) if fm(m.field()) => *m.source.field_mut() = to.to_string(),
+            _ => {}
+        }
+        match n {
+            SpanNode::Term { .. } | SpanNode::MultiTerm(_) => {}
+            SpanNode::Near { clauses, .. } | SpanNode::Or { clauses } => {
+                for c in clauses {
+                    walk(c, fm, to);
+                }
+            }
+            SpanNode::First { inner, .. }
+            | SpanNode::PositionRange { inner, .. }
+            | SpanNode::FieldMasking { inner, .. } => walk(inner, fm, to),
+            SpanNode::Not {
+                include, exclude, ..
+            } => {
+                walk(include, fm, to);
+                walk(exclude, fm, to);
+            }
+            SpanNode::Containing { big, little } | SpanNode::Within { big, little } => {
+                walk(big, fm, to);
+                walk(little, fm, to);
+            }
+            SpanNode::PayloadCheck(p) => walk(&mut p.inner, fm, to),
+            SpanNode::PayloadScore(p) => walk(&mut p.inner, fm, to),
+        }
+    }
+    let mut out = node.clone();
+    walk(&mut out, fm, to);
+    out
 }
 
 /// One term's occurrences in the document: its frequency and their offsets.
@@ -229,22 +248,13 @@ type Postings = (i32, Vec<(i32, i32)>);
 /// `Weight.matches` of a query, over the index or over a memory index.
 type MatchesFn<'a> = &'a dyn Fn(&Clause) -> Result<Option<BoxMatches>>;
 
-/// `OffsetSpanCollector`: the offsets of the terms of every match.
-fn collect_leaf_offsets(
-    it: &mut crate::matches::BoxMatchesIterator,
-    out: &mut BTreeMap<Vec<u8>, Vec<(i32, i32)>>,
-) -> Result<()> {
-    while it.next()? {
-        match it.sub_matches()? {
-            Some(mut subs) => collect_leaf_offsets(&mut subs, out)?,
-            None => out
-                .entry(query_to_term(it.query()))
-                .or_default()
-                .push((it.start_offset(), it.end_offset())),
-        }
-    }
-    Ok(())
-}
+/// `PhraseHelper.createOffsetsEnumsForSpans` over the reader the strategy
+/// reads (the segment, or the memory index).
+type SpansFn<'a> = &'a dyn Fn(&mut Vec<Box<dyn OffsetsEnum>>) -> Result<()>;
+
+/// The terms of a document's term vector (`TermVectorFilteredLeafReader`'s
+/// filter), sorted.
+type TvTerms = BTreeSet<Vec<u8>>;
 
 /// `UHComponents`.
 #[derive(Clone)]
@@ -264,7 +274,8 @@ pub struct Components {
     pub look_in_span: bool,
     /// `hasUnrecognizedQueryPart`.
     pub has_unrecognized_query_part: bool,
-    /// The `PhraseHelper` (empty without `PHRASES`).
+    /// The `PhraseHelper` (`NONE` without `PHRASES` or with
+    /// `WEIGHT_MATCHES`).
     pub phrase: PhraseHelper,
     /// The flags.
     pub flags: Flags,
@@ -354,7 +365,7 @@ pub fn has_unrecognized_query(field_matcher: &dyn Fn(&str) -> bool, query: &Clau
 }
 
 impl Components {
-    /// `getHighlightComponents(field, query, allTerms)` (no `PhraseHelper`).
+    /// `getHighlightComponents(field, query, allTerms)`.
     pub fn new(
         field: &str,
         field_matcher: FieldMatcher,
@@ -385,8 +396,14 @@ impl Components {
             }
             automata = Some(labels);
         }
-        let phrase = if flags.phrases {
-            PhraseHelper::new(query, &*field_matcher)
+        // `getPhraseHelper`: `Weight.matches` always considers phrases
+        let phrase = if flags.phrases && !flags.weight_matches {
+            PhraseHelper::new(
+                query,
+                field,
+                Arc::clone(&field_matcher),
+                !flags.multi_term_query,
+            )
         } else {
             PhraseHelper::default()
         };
@@ -413,6 +430,7 @@ impl Components {
     pub fn optimized_offset_source(&self, source: OffsetSource) -> OffsetSource {
         // null automata means unknown, so assume a possibility
         let mtq_or_rewrite = self.automata.as_ref().is_none_or(|a| !a.is_empty())
+            || self.phrase.will_rewrite()
             || self.has_unrecognized_query_part;
         // null terms means unknown, so assume something to highlight
         let has_terms = self.terms.as_ref().is_none_or(|t| !t.is_empty());
@@ -429,6 +447,8 @@ impl Components {
 pub struct LeafCtx<'a> {
     /// The segment's reader.
     pub reader: &'a dyn LeafReader,
+    /// The segment as the searcher opened it, for the span queries.
+    pub segment: &'a OpenSegment<'a>,
     /// The document, leaf-local.
     pub doc: i32,
     /// `Weight.matches(leaf, doc)` of a query over the index.
@@ -486,28 +506,40 @@ impl Strategy {
                 let ctx = ctx.ok_or_else(|| {
                     Error::IllegalArgument("a postings strategy needs a reader".into())
                 })?;
+                let c = &self.components;
+                // `PostingsWithTermVectorsOffsetStrategy`: the field's terms
+                // filtered to the document's term vector, which it must have
+                let tv_terms = if self.source == OffsetSource::PostingsWithTermVectors {
+                    let Some(vector) = term_vector(ctx, &c.field)? else {
+                        return Ok(None);
+                    };
+                    Some(
+                        vector
+                            .terms
+                            .into_iter()
+                            .map(|t| t.term)
+                            .collect::<TvTerms>(),
+                    )
+                } else {
+                    None
+                };
                 let own = |q: &Clause| -> Result<Option<BoxMatches>> {
-                    let q = retarget(q, &*self.components.field_matcher, &self.components.field);
+                    let q = retarget(q, &*c.field_matcher, &c.field);
                     (ctx.matches)(&q).map_err(Into::into)
                 };
-                self.enums_from_reader(ctx.reader, ctx.doc, &own)
+                let spans = |out: &mut Vec<Box<dyn OffsetsEnum>>| -> Result<()> {
+                    c.phrase.offsets_enums_for_spans(ctx.segment, ctx.doc, out)
+                };
+                self.enums_from_reader(ctx.reader, ctx.doc, &own, &spans, tv_terms.as_ref())
             }
             OffsetSource::TermVectors => {
                 let ctx = ctx.ok_or_else(|| {
                     Error::IllegalArgument("a term vector strategy needs a reader".into())
                 })?;
-                let field = &self.components.field;
-                let Some(fi) = ctx.reader.field_infos().field_by_name(field) else {
+                let Some(vector) = term_vector(ctx, &self.components.field)? else {
                     return Ok(None);
                 };
-                let number = fi.number;
-                let Some(doc) = ctx.reader.term_vectors(ctx.doc)? else {
-                    return Ok(None);
-                };
-                let Some(vector) = doc.fields.iter().find(|f| f.field_number == number) else {
-                    return Ok(None);
-                };
-                let mut stream = super::super::TokenStreamFromTermVector::new(vector, -1)?;
+                let mut stream = super::super::TokenStreamFromTermVector::new(&vector, -1)?;
                 let tokens = drain_tokens(&mut stream)?;
                 let found = self.enums_from_memory_index(&tokens, Some(ctx), false)?;
                 if vector.has_offsets {
@@ -585,27 +617,41 @@ impl Strategy {
         Some(Box::new(OfMatches::new(entries)))
     }
 
-    /// `MemoryIndexOffsetStrategy`'s pre-filter: only the tokens that equal
-    /// a query term or match an automaton reach the memory index, the
-    /// positions of the dropped ones still counting. (Java filters the
-    /// `ANALYSIS` tokens only, and only when it knows both sets.)
+    /// `MemoryIndexOffsetStrategy`'s pre-filter (`buildCombinedAutomaton`):
+    /// only the tokens that equal a query term (one shorter than
+    /// `MAX_STRING_UNION_TERM_LENGTH`), or match an automaton of the query or
+    /// of one of the `PhraseHelper`'s span queries, reach the memory index,
+    /// the positions of the dropped ones still counting. Without both the
+    /// terms and the automata nothing is filtered.
     fn keep_words(&self, tokens: &FieldTokens) -> FieldTokens {
         let c = &self.components;
-        let (Some(terms), Some(_)) = (&c.terms, &c.automata) else {
+        let (Some(terms), Some(automata)) = (&c.terms, &c.automata) else {
             return tokens.clone();
         };
         let mut hit = vec![false; tokens.tokens.len()];
-        if c.flags.multi_term_query {
-            for_each_automaton(&c.query, &*c.field_matcher, c.look_in_span, &mut |_, m| {
-                for (h, t) in hit.iter_mut().zip(&tokens.tokens) {
-                    *h = *h || m.matches(&t.term);
-                }
-            });
+        let mut mark = |_: &str, m: &dyn TermMatcher| {
+            for (h, t) in hit.iter_mut().zip(&tokens.tokens) {
+                *h = *h || m.matches(&t.term);
+            }
+        };
+        if !automata.is_empty() {
+            for_each_automaton(&c.query, &*c.field_matcher, c.look_in_span, &mut mark);
+        }
+        for span in c.phrase.span_queries() {
+            for_each_automaton(
+                &Clause::from(span.clone()),
+                &*c.field_matcher,
+                true,
+                &mut mark,
+            );
         }
         let mut kept = Vec::new();
         let mut carried = 0;
         for (t, h) in tokens.tokens.iter().zip(hit) {
-            if h || terms.contains(&t.term) {
+            let is_term = || {
+                t.term.len() < MAX_STRING_UNION_TERM_LENGTH && terms.binary_search(&t.term).is_ok()
+            };
+            if h || is_term() {
                 let mut t = t.clone();
                 t.position_increment += carried;
                 carried = 0;
@@ -622,8 +668,10 @@ impl Strategy {
         }
     }
 
-    /// `MemoryIndexOffsetStrategy`: the tokens as a one-document index that
-    /// the reader-based extraction then reads.
+    /// `MemoryIndexOffsetStrategy` (and `TermVectorOffsetStrategy`): the
+    /// tokens as a one-document index that the reader-based extraction then
+    /// reads -- overlaid on the segment (`OverlaySingleDocTermsLeafReader`)
+    /// when there is one.
     fn enums_from_memory_index(
         &self,
         tokens: &FieldTokens,
@@ -645,10 +693,9 @@ impl Strategy {
         let reader = index
             .create_reader()
             .map_err(|e| Error::IllegalArgument(e.to_string()))?;
-        let overlay = ctx.is_some();
         let own = |q: &Clause| -> Result<Option<BoxMatches>> {
             let q = retarget(q, &*c.field_matcher, &c.field);
-            let q = memory_index_query(&q, &|f| f == c.field, overlay).rewrite();
+            let q = overlay_query(&q, &c.field, ctx)?.rewrite();
             reader
                 .with_searcher(|s| crate::matches::matches(s, &q, 0))
                 .map_err(|e| Error::IllegalArgument(e.to_string()))?
@@ -659,19 +706,27 @@ impl Strategy {
             // reader-level APIs need is written only on the classic path
             return self.enums_from_matches(own(&c.query)?);
         }
+        let spans = |out: &mut Vec<Box<dyn OffsetsEnum>>| -> Result<()> {
+            reader
+                .with_searcher(|s| c.phrase.offsets_enums_for_spans(&s.segments()[0], 0, out))
+                .map_err(|e| Error::IllegalArgument(e.to_string()))?
+        };
         let segments = reader
             .directory_reader()
             .map_err(|e| Error::IllegalArgument(e.to_string()))?;
         let leaf: &dyn LeafReader = &segments.segment_readers()[0];
-        self.enums_from_reader(leaf, 0, &own)
+        self.enums_from_reader(leaf, 0, &own, &spans, None)
     }
 
-    /// `createOffsetsEnumFromReader(leafReader, doc)`.
+    /// `createOffsetsEnumFromReader(leafReader, doc)`; `tv_terms` is the
+    /// filter of `TermVectorFilteredLeafReader`.
     fn enums_from_reader(
         &self,
         leaf: &dyn LeafReader,
         doc: i32,
         matches_of: MatchesFn<'_>,
+        spans_of: SpansFn<'_>,
+        tv_terms: Option<&TvTerms>,
     ) -> Result<Option<Box<dyn OffsetsEnum>>> {
         let c = &self.components;
         let Some(terms_index) = leaf.terms(&c.field)? else {
@@ -687,18 +742,18 @@ impl Strategy {
             // classic approach
             let position_sensitive = c.phrase.has_position_sensitivity();
             let terms = if position_sensitive {
-                c.phrase.insensitive.clone()
+                c.phrase.all_position_insensitive_terms()
             } else {
                 c.terms.clone().unwrap_or_default()
             };
             if !terms.is_empty() {
-                self.enums_for_terms(&terms, &*terms_index, doc, &mut enums)?;
+                self.enums_for_terms(&terms, &*terms_index, doc, tv_terms, &mut enums)?;
             }
             if position_sensitive {
-                self.enums_for_spans(matches_of, &mut enums)?;
+                spans_of(&mut enums)?;
             }
             if c.automata.as_ref().is_some_and(|a| !a.is_empty()) {
-                self.enums_for_automata(&*terms_index, doc, &mut enums)?;
+                self.enums_for_automata(&*terms_index, doc, tv_terms, &mut enums)?;
             }
         }
         collapse(enums)
@@ -727,92 +782,47 @@ impl Strategy {
         Ok(out)
     }
 
-    /// `PhraseHelper.createOffsetsEnumsForSpans`.
-    fn enums_for_spans(
-        &self,
-        matches_of: MatchesFn<'_>,
-        results: &mut Vec<Box<dyn OffsetsEnum>>,
-    ) -> Result<()> {
-        let c = &self.components;
-        let mut by_term: BTreeMap<Vec<u8>, Vec<(i32, i32)>> = BTreeMap::new();
-        for span in &c.phrase.spans {
-            let Some(m) = matches_of(span)? else {
-                continue;
-            };
-            let Some(mut it) = m.get_matches(&c.field)? else {
-                continue;
-            };
-            let Clause::Phrase(phrase) = span else {
-                collect_leaf_offsets(&mut it, &mut by_term)?;
-                continue;
-            };
-            // a phrase match reports no terms: take each term's own offsets
-            // that fall inside a match
-            let mut ranges = Vec::new();
-            while it.next()? {
-                ranges.push((it.start_offset(), it.end_offset()));
-            }
-            for term in &phrase.terms {
-                let single =
-                    Clause::Term(crate::query::TermQuery::new(c.field.clone(), term.clone()));
-                let Some(tm) = matches_of(&single)? else {
-                    continue;
-                };
-                let Some(mut tit) = tm.get_matches(&c.field)? else {
-                    continue;
-                };
-                while tit.next()? {
-                    let (s, e) = (tit.start_offset(), tit.end_offset());
-                    if ranges.iter().any(|&(rs, re)| rs <= s && e <= re) {
-                        by_term.entry(term.clone()).or_default().push((s, e));
-                    }
-                }
-            }
-        }
-        for (term, mut offsets) in by_term {
-            // handled with the position-insensitive terms
-            if c.phrase.insensitive.contains(&term) {
-                continue;
-            }
-            offsets.sort_unstable();
-            offsets.dedup();
-            let freq = i32::try_from(offsets.len()).unwrap_or(i32::MAX);
-            results.push(Box::new(OfPostings::new(term, freq, offsets)));
-        }
-        Ok(())
-    }
-
     /// `createOffsetsEnumsForTerms`.
     fn enums_for_terms(
         &self,
         source_terms: &[Vec<u8>],
         terms_index: &dyn Terms,
         doc: i32,
+        tv_terms: Option<&TvTerms>,
         results: &mut Vec<Box<dyn OffsetsEnum>>,
     ) -> Result<()> {
         let mut te = terms_index.iterator()?;
         for term in source_terms {
-            if te.try_seek_exact(term)? {
-                let mut pe = te.postings(PostingsFlags::Offsets)?;
-                if pe.advance(doc)? == doc {
-                    let freq = pe.freq();
-                    let mut offsets = Vec::new();
-                    for _ in 0..freq {
-                        pe.next_position()?;
-                        offsets.push((pe.start_offset(), pe.end_offset()));
-                    }
-                    results.push(Box::new(OfPostings::new(term.clone(), freq, offsets)));
+            if tv_terms.is_some_and(|tv| !tv.contains(term)) {
+                continue;
+            }
+            if !te.try_seek_exact(term)? {
+                if tv_terms.is_some() {
+                    return Err(not_in_full_index(term));
                 }
+                continue;
+            }
+            let mut pe = te.postings(PostingsFlags::Offsets)?;
+            if pe.advance(doc)? == doc {
+                let freq = pe.freq();
+                let mut offsets = Vec::new();
+                for _ in 0..freq {
+                    pe.next_position()?;
+                    offsets.push((pe.start_offset(), pe.end_offset()));
+                }
+                results.push(Box::new(OfPostings::new(term.clone(), freq, offsets)));
             }
         }
         Ok(())
     }
 
-    /// `createOffsetsEnumsForAutomata`.
+    /// `createOffsetsEnumsForAutomata`: the field's terms (or the term
+    /// vector's, each sought in the index) each automaton matches.
     fn enums_for_automata(
         &self,
         terms_index: &dyn Terms,
         doc: i32,
+        tv_terms: Option<&TvTerms>,
         results: &mut Vec<Box<dyn OffsetsEnum>>,
     ) -> Result<()> {
         let c = &self.components;
@@ -829,17 +839,33 @@ impl Strategy {
                 let mut postings: Vec<Postings> = Vec::new();
                 let scan = (|| -> Result<()> {
                     let mut te = terms_index.iterator()?;
-                    while let Some(term) = te.next()? {
-                        if m.matches(term) {
-                            let mut pe = te.postings(PostingsFlags::Offsets)?;
-                            if pe.advance(doc)? == doc {
-                                let freq = pe.freq();
-                                let mut offsets = Vec::new();
-                                for _ in 0..freq {
-                                    pe.next_position()?;
-                                    offsets.push((pe.start_offset(), pe.end_offset()));
+                    let mut read = |te: &mut Box<dyn crate::reader::TermsEnum + '_>| -> Result<()> {
+                        let mut pe = te.postings(PostingsFlags::Offsets)?;
+                        if pe.advance(doc)? == doc {
+                            let freq = pe.freq();
+                            let mut offsets = Vec::new();
+                            for _ in 0..freq {
+                                pe.next_position()?;
+                                offsets.push((pe.start_offset(), pe.end_offset()));
+                            }
+                            postings.push((freq, offsets));
+                        }
+                        Ok(())
+                    };
+                    match tv_terms {
+                        Some(tv) => {
+                            for term in tv.iter().filter(|t| m.matches(t)) {
+                                if !te.try_seek_exact(term)? {
+                                    return Err(not_in_full_index(term));
                                 }
-                                postings.push((freq, offsets));
+                                read(&mut te)?;
+                            }
+                        }
+                        None => {
+                            while let Some(term) = te.next()? {
+                                if m.matches(term) {
+                                    read(&mut te)?;
+                                }
                             }
                         }
                     }
@@ -871,6 +897,27 @@ impl Strategy {
     }
 }
 
+/// `TermVectorFilteredTermsEnum.moveToCurrentTerm`'s refusal.
+fn not_in_full_index(term: &[u8]) -> Error {
+    Error::Search(crate::Error::IllegalState(format!(
+        "Term vector term '{}' does not appear in full index.",
+        String::from_utf8_lossy(term)
+    )))
+}
+
+/// `termVectors().get(docId, field)`: the document's term vector of the
+/// field, `None` where it has none.
+fn term_vector(ctx: &LeafCtx<'_>, field: &str) -> Result<Option<TermVectorField>> {
+    let Some(fi) = ctx.reader.field_infos().field_by_name(field) else {
+        return Ok(None);
+    };
+    let number = fi.number;
+    let Some(doc) = ctx.reader.term_vectors(ctx.doc)? else {
+        return Ok(None);
+    };
+    Ok(doc.fields.into_iter().find(|f| f.field_number == number))
+}
+
 /// `switch (offsetsEnums.size())`: none, the one, or a merge.
 fn collapse(mut enums: Vec<Box<dyn OffsetsEnum>>) -> Result<Option<Box<dyn OffsetsEnum>>> {
     match enums.len() {
@@ -895,28 +942,37 @@ pub fn multi_fields_enum(
     Ok(Some(Box::new(MultiOffsets::new(enums)?)))
 }
 
-/// The query as the one-document index can answer it. Java overlays the
-/// index's other fields on the memory index; here a clause on a field the
-/// highlighter does not match is taken as the hit it must have been
-/// (`MUST`/`FILTER`) or as absent (`SHOULD`/`MUST_NOT`).
-fn memory_index_query(
-    query: &Clause,
-    field_matcher: &dyn Fn(&str) -> bool,
-    overlay: bool,
-) -> Clause {
-    if !overlay {
-        return query.clone();
-    }
-    map_leaves(query, true, &|leaf, required| {
+/// The query as `OverlaySingleDocTermsLeafReader` answers it: the field
+/// being highlighted read from the one-document index, every other field
+/// from the segment. A leaf of the query (below its boolean, disjunction,
+/// constant-score and boost nodes) that reads only other fields is
+/// answered by the segment at the document -- a hit becomes a match-all, a
+/// miss a match-none -- and contributes no offsets, as the highlighted
+/// field's are all that are kept. Without a segment (`highlightWithoutSearcher`)
+/// the memory index answers alone.
+fn overlay_query(query: &Clause, field: &str, ctx: Option<&LeafCtx<'_>>) -> Result<Clause> {
+    let Some(ctx) = ctx else {
+        return Ok(query.clone());
+    };
+    let failure: std::cell::RefCell<Option<Error>> = std::cell::RefCell::new(None);
+    let out = map_leaves(query, true, &|leaf, _| {
         let fields = clause_fields(leaf);
-        if fields.is_empty() || fields.iter().any(|f| field_matcher(f)) {
-            leaf.clone()
-        } else if required {
-            Clause::MatchAllDocs(MatchAllDocsQuery::new(1))
-        } else {
-            Clause::MatchNoDocs(MatchNoDocsQuery::new())
+        if fields.is_empty() || fields.iter().any(|f| f == field) {
+            return leaf.clone();
         }
-    })
+        match (ctx.matches)(leaf) {
+            Ok(Some(_)) => Clause::MatchAllDocs(MatchAllDocsQuery::new(1)),
+            Ok(None) => Clause::MatchNoDocs(MatchNoDocsQuery::new()),
+            Err(e) => {
+                failure.borrow_mut().get_or_insert(e.into());
+                leaf.clone()
+            }
+        }
+    });
+    match failure.into_inner() {
+        Some(e) => Err(e),
+        None => Ok(out),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1026,5 +1082,71 @@ impl OffsetsEnum for NoOffsets {
     // SENTINEL: `-1` = no offsets, as `start_offset`; compared only.
     fn end_offset(&self) -> i32 {
         -1
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common_terms::CommonTermsQuery;
+    use crate::extended_query::{MultiTermQuery, MultiTermSource, RewriteMethod, SynonymQuery};
+    use crate::query::{MultiPhraseQuery, TermInSetQuery, WildcardQuery};
+
+    fn moved(q: impl Into<Clause>) -> String {
+        format!("{:?}", retarget(&q.into(), &|f| f == "a", "x"))
+    }
+
+    #[test]
+    fn every_accepted_field_is_read_as_the_highlighted_one() {
+        let span = SpanNode::not(
+            SpanNode::first(SpanNode::term("a", "t"), 3),
+            SpanNode::within(
+                SpanNode::term("a", "u"),
+                SpanNode::field_masking(SpanNode::term("b", "v"), "a"),
+            )
+            .unwrap(),
+            0,
+            0,
+        )
+        .unwrap();
+        let wildcard = MultiTermQuery::new(
+            MultiTermSource::Wildcard(WildcardQuery::new("a", "t?")),
+            RewriteMethod::default(),
+        );
+        for q in [
+            Clause::from(MultiPhraseQuery::new("a", [vec!["t"], vec!["u"]])),
+            Clause::from(TermInSetQuery::new("a", ["t", "u"])),
+            Clause::from(SynonymQuery::new("a", [(b"t".to_vec(), 1.0)]).unwrap()),
+            Clause::from(wildcard),
+        ] {
+            let out = moved(q);
+            assert!(out.contains("\"x\"") && !out.contains("\"a\""), "{out}");
+        }
+        // the masked term keeps its own, rejected, field
+        let out = moved(span);
+        assert!(!out.contains("\"a\"") && out.contains("\"b\""), "{out}");
+        let mut common = CommonTermsQuery::new(Occur::Should, Occur::Should, 0.1).unwrap();
+        common.add("a", "t");
+        common.add("b", "u");
+        let out = moved(common);
+        assert!(
+            out.contains("\"x\"") && out.contains("\"b\"") && !out.contains("\"a\""),
+            "{out}"
+        );
+        // a query it has no field for is left as it is
+        let all = moved(MatchAllDocsQuery::new(1));
+        assert_eq!(
+            all,
+            format!("{:?}", Clause::from(MatchAllDocsQuery::new(1)))
+        );
+    }
+
+    #[test]
+    fn a_term_vector_term_missing_from_the_index_is_refused() {
+        let e = not_in_full_index(b"fox");
+        assert!(
+            matches!(&e, Error::Search(crate::Error::IllegalState(m)) if m.contains("'fox'")),
+            "{e:?}"
+        );
     }
 }

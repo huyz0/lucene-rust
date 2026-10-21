@@ -60,10 +60,14 @@ pub fn bench_highlight(w: Duration, m: Duration) {
     let searcher = IndexSearcher::new(&segments, &norms).unwrap();
     let docs: Vec<i32> = (0..reader.max_doc()).collect();
     let uh = UnifiedHighlighter::new(Some(&reader), Some(Arc::clone(&a)));
-    for (name, field) in [
-        ("uh_postings", "offs"),
-        ("uh_analysis", "docs"),
-        ("uh_tv", "tv"),
+    // `withWeightMatches(false)`: the classic path, phrases by `PhraseHelper`
+    let classic = UnifiedHighlighter::new(Some(&reader), Some(Arc::clone(&a)))
+        .with_flags(true, true, true, false);
+    for (name, field, uh) in [
+        ("uh_postings", "offs", &uh),
+        ("uh_analysis", "docs", &uh),
+        ("uh_tv", "tv", &uh),
+        ("uh_phrases", "offs", &classic),
     ] {
         let queries = templated(
             "fixtures/corpus/uhighlight-queries.txt",

@@ -58,19 +58,19 @@ search/uhighlight/MultiFieldsOffsetStrategy	ported	crates/lucene-search/src/high
 search/uhighlight/MultiTermHighlighting	ported	crates/lucene-search/src/highlight/unified/strategies.rs::AutomataCollector
 search/uhighlight/NoOpOffsetStrategy	ported	crates/lucene-search/src/highlight/unified/strategies.rs::Strategy
 search/uhighlight/OffsetsEnum	ported	crates/lucene-search/src/highlight/unified/passage.rs::OffsetsEnum
-search/uhighlight/OverlaySingleDocTermsLeafReader	partial	crates/lucene-search/src/highlight/unified/strategies.rs::memory_index_query -- M14: the other fields of the query are answered as the hit they must have been rather than overlaid
+search/uhighlight/OverlaySingleDocTermsLeafReader	ported	crates/lucene-search/src/highlight/unified/strategies.rs::overlay_query
 search/uhighlight/Passage	ported	crates/lucene-search/src/highlight/unified/passage.rs::Passage
 search/uhighlight/PassageFormatter	ported	crates/lucene-search/src/highlight/unified/passage.rs::PassageFormatter
 search/uhighlight/PassageScorer	ported	crates/lucene-search/src/highlight/unified/passage.rs::PassageScorer
-search/uhighlight/PhraseHelper	partial	crates/lucene-search/src/highlight/unified/strategies.rs::PhraseHelper -- M14: phrase and span clauses by offset containment (not SpanNear), not SynonymQuery, MultiPhraseQuery, lucene-queries spans or multi-term queries inside a span
+search/uhighlight/PhraseHelper	ported	crates/lucene-search/src/highlight/unified/phrase_helper.rs::PhraseHelper
 search/uhighlight/PostingsOffsetStrategy	ported	crates/lucene-search/src/highlight/unified/strategies.rs::Strategy
-search/uhighlight/PostingsWithTermVectorsOffsetStrategy	partial	crates/lucene-search/src/highlight/unified/strategies.rs::Strategy -- M14: reads the postings alone
+search/uhighlight/PostingsWithTermVectorsOffsetStrategy	ported	crates/lucene-search/src/highlight/unified/strategies.rs::Strategy
 search/uhighlight/SplittingBreakIterator	ported	crates/lucene-search/src/highlight/unified/break_iterators.rs::SplittingBreakIterator
-search/uhighlight/TermVectorFilteredLeafReader	not-needed	the term vector goes through a one-document memory index
-search/uhighlight/TermVectorOffsetStrategy	partial	crates/lucene-search/src/highlight/unified/strategies.rs::Strategy -- M14: through a one-document memory index
+search/uhighlight/TermVectorFilteredLeafReader	ported	crates/lucene-search/src/highlight/unified/strategies.rs::enums_from_reader
+search/uhighlight/TermVectorOffsetStrategy	ported	crates/lucene-search/src/highlight/unified/strategies.rs::Strategy
 search/uhighlight/TokenStreamOffsetStrategy	ported	crates/lucene-search/src/highlight/unified/strategies.rs::Strategy
 search/uhighlight/UHComponents	ported	crates/lucene-search/src/highlight/unified/strategies.rs::Components
-search/uhighlight/UnifiedHighlighter	partial	crates/lucene-search/src/highlight/unified/mod.rs::UnifiedHighlighter -- M14: no batching of the stored fields, no highlightFieldsAsObjects
+search/uhighlight/UnifiedHighlighter	ported	crates/lucene-search/src/highlight/unified/mod.rs::highlight_fields_as_objects
 search/uhighlight/WholeBreakIterator	ported	crates/lucene-search/src/highlight/unified/break_iterators.rs::WholeBreakIterator
 search/vectorhighlight/BaseFragListBuilder	ported	crates/lucene-search/src/highlight/vectorhighlight/frag_list.rs::BaseFragListBuilder
 search/vectorhighlight/BaseFragmentsBuilder	ported	crates/lucene-search/src/highlight/vectorhighlight/fragments.rs::FragmentsBuilder

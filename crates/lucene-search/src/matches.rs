@@ -28,15 +28,18 @@
 //! matches.
 //!
 //! The span queries' (`SpanWeight.matches`, the payload queries' included)
-//! are [`crate::exec::spans`]'s.
+//! are [`crate::exec::spans`]'s. A span over multi-term queries is rewritten
+//! over the leaf alone, so a top-terms rewrite keeps its top terms per
+//! segment, where Java's `IndexSearcher.rewrite` keeps them across the index
+//! (the unified highlighter's leaf searcher rewrites per leaf in Java too).
 //!
-//! Not ported: the `matches` of `FuzzyQuery` (its rewrite is a reader-wide
-//! top-terms boolean) and `MultiPhraseQuery`, which report
-//! [`crate::Error::IllegalArgument`]; `NamedQuery` has no [`Clause`] variant,
-//! so names are attached through [`named_matches`].
+//! `NamedQuery` has no [`Clause`] variant, so names are attached through
+//! [`named_matches`].
 //!
 //! Verified against Lucene by `tests/matches_fixtures.rs`
-//! (`fixtures/src/GenMatches.java`).
+//! (`fixtures/src/GenMatches.java`); a phrase with explicit positions and
+//! `MultiPhraseQuery` by the weight-matches rows of
+//! `tests/uhighlight_fixtures.rs` (`fixtures/src/GenUnifiedHighlight.java`).
 
 use std::sync::Arc;
 
@@ -658,18 +661,18 @@ fn exact_next_match(ps: &mut [PostingsAndPosition<'_>]) -> bool {
     false
 }
 
-/// Every exact match of the phrase whose terms' occurrences are `occs`, as
-/// `ExactPhraseMatcher.startPosition()/endPosition()/startOffset()/
-/// endOffset()` report them.
-fn exact_phrase_spans(occs: &[Vec<Position>]) -> Vec<[i32; 4]> {
+/// Every exact match of the phrase whose slots' occurrences are `occs`, at
+/// the phrase positions `offsets`, as `ExactPhraseMatcher.startPosition()/
+/// endPosition()/startOffset()/endOffset()` report them.
+fn exact_phrase_spans(occs: &[Vec<Position>], offsets: &[i32]) -> Vec<[i32; 4]> {
     let mut ps: Vec<PostingsAndPosition<'_>> = occs
         .iter()
-        .enumerate()
-        .map(|(i, occ)| PostingsAndPosition {
+        .zip(offsets)
+        .map(|(occ, &offset)| PostingsAndPosition {
             occ,
             pos: -1,
             up_to: 0,
-            offset: i32::try_from(i).unwrap_or(i32::MAX),
+            offset,
         })
         .collect();
     let mut out = Vec::new();
@@ -701,21 +704,93 @@ fn phrase_matches(
         _ => {}
     }
     crate::require_phrase_positions(seg.fields, q)?;
-    if seg.fields.field(&q.field).is_none() {
+    let slots: Vec<Vec<Vec<u8>>> = q.terms.iter().map(|t| vec![t.clone()]).collect();
+    let repeats = PhraseRepeats::for_phrase(&q.terms);
+    let phrase = Phrase {
+        field: &q.field,
+        slots: &slots,
+        positions: &q.positions(),
+        slop: q.slop,
+        repeats: &repeats,
+    };
+    positional_matches(seg, &phrase, clause, doc)
+}
+
+/// `PhraseWeight.matches` for a `MultiPhraseQuery` (after `rewrite`: no
+/// positions is `MatchNoDocsQuery`, one a `BooleanQuery` of its terms
+/// `SHOULD`).
+fn multi_phrase_matches(
+    seg: &OpenSegment<'_>,
+    q: &crate::query::MultiPhraseQuery,
+    clause: Arc<Clause>,
+    doc: i32,
+) -> Result<Option<BoxMatches>> {
+    match q.term_arrays.len() {
+        0 => return Ok(None),
+        1 => {
+            let should: Vec<Clause> = q.term_arrays[0]
+                .iter()
+                .map(|t| Clause::Term(TermQuery::new(q.field.clone(), t.clone())))
+                .collect();
+            let b = crate::query::BooleanQuery::new().with_should(should);
+            return boolean_matches(seg, &b, doc);
+        }
+        _ => {}
+    }
+    crate::require_multi_phrase_positions(seg.fields, q)?;
+    let repeats = PhraseRepeats::for_multi_phrase(&q.term_arrays);
+    let phrase = Phrase {
+        field: &q.field,
+        slots: &q.term_arrays,
+        positions: &q.positions(),
+        slop: q.slop,
+        repeats: &repeats,
+    };
+    positional_matches(seg, &phrase, clause, doc)
+}
+
+/// A phrase as `PhraseWeight` matches it: each position's alternative terms
+/// (one for a `PhraseQuery`), the positions, the slop.
+struct Phrase<'q> {
+    field: &'q str,
+    slots: &'q [Vec<Vec<u8>>],
+    positions: &'q [i32],
+    slop: u32,
+    repeats: &'q PhraseRepeats,
+}
+
+/// `PhraseWeight.matches` over the `PhraseMatcher` of `phrase`: an exact
+/// or sloppy matcher over each position's postings (`UnionFullPostingsEnum`
+/// over a position's alternatives: their occurrences in position order).
+fn positional_matches(
+    seg: &OpenSegment<'_>,
+    phrase: &Phrase<'_>,
+    clause: Arc<Clause>,
+    doc: i32,
+) -> Result<Option<BoxMatches>> {
+    if seg.fields.field(phrase.field).is_none() {
         return Ok(None);
     }
     if seg.pos_in.is_none() {
         return Err(Error::MissingPosInput);
     }
-    let mut occs = Vec::with_capacity(q.terms.len());
-    for t in &q.terms {
-        match occurrences(seg, &q.field, t, doc)? {
-            Some(o) => occs.push(o),
-            None => return Ok(None),
+    let mut occs = Vec::with_capacity(phrase.slots.len());
+    for alts in phrase.slots {
+        let mut slot: Vec<Position> = Vec::new();
+        for t in alts {
+            if let Some(o) = occurrences(seg, phrase.field, t, doc)? {
+                slot.extend(o);
+            }
         }
+        if slot.is_empty() {
+            return Ok(None);
+        }
+        // stable: a single alternative's occurrences are already in order
+        slot.sort_by_key(|p| p.position);
+        occs.push(slot);
     }
-    let spans = if q.slop == 0 {
-        exact_phrase_spans(&occs)
+    let spans = if phrase.slop == 0 {
+        exact_phrase_spans(&occs, phrase.positions)
     } else {
         let positions: Vec<Vec<i32>> = occs
             .iter()
@@ -727,15 +802,20 @@ fn phrase_matches(
             .collect();
         let pos_refs: Vec<&[i32]> = positions.iter().map(Vec::as_slice).collect();
         let off_refs: Vec<&[(i32, i32)]> = offsets.iter().map(Vec::as_slice).collect();
-        let repeats = PhraseRepeats::for_phrase(&q.terms);
-        sloppy_phrase_match_spans(&pos_refs, &off_refs, &repeats, q.slop)
+        sloppy_phrase_match_spans(
+            &pos_refs,
+            &off_refs,
+            phrase.repeats,
+            phrase.slop,
+            Some(phrase.positions),
+        )
     };
     if spans.is_empty() {
         return Ok(None);
     }
     let spans: Arc<[[i32; 4]]> = spans.into();
     for_field(
-        &q.field,
+        phrase.field,
         Box::new(move || {
             Ok(Some(Box::new(ListMatchesIterator {
                 query: Arc::clone(&clause),
@@ -852,9 +932,8 @@ fn boolean_matches(
 /// leaf-local.
 ///
 /// # Errors
-/// [`Error::IllegalArgument`] for a clause whose positional matches are not
-/// ported (fuzzy, multi-phrase, span); [`Error::IllegalState`] for a phrase
-/// over a field without positions.
+/// [`Error::IllegalState`] for a phrase over a field without positions;
+/// what reading the postings reports.
 pub fn leaf_matches(
     seg: &OpenSegment<'_>,
     clause: &Clause,
@@ -907,12 +986,31 @@ pub fn leaf_matches(
             // report.
             crate::extended_query::ExtendedQuery::Span(q) => {
                 let weight = crate::spans::unscored_weight_query(q);
+                if weight.needs_rewrite() {
+                    // `IndexSearcher.rewrite`: a span over multi-term
+                    // queries is the span disjunction of their terms -- this
+                    // leaf's here, so a top-terms rewrite keeps its top terms
+                    // per segment rather than across the index.
+                    let norms = [None];
+                    let searcher = crate::index_searcher::IndexSearcher::new(
+                        std::slice::from_ref(seg),
+                        &norms,
+                    )?;
+                    let rewritten = weight.rewrite(&searcher)?;
+                    let query = Arc::new(Clause::from(rewritten.clone()));
+                    return exec::spans::span_matches(&leaf_context(seg), &rewritten, query, doc);
+                }
                 let query = if std::ptr::eq(weight, q) {
                     Arc::new(clause.clone())
                 } else {
                     Arc::new(Clause::from(weight.clone()))
                 };
                 exec::spans::span_matches(&leaf_context(seg), weight, query, doc)
+            }
+            // `SynonymWeight.matches`: the disjunction of its terms' matches.
+            crate::extended_query::ExtendedQuery::Synonym(q) => {
+                let terms: Vec<Vec<u8>> = q.terms.iter().map(|(t, _)| t.clone()).collect();
+                term_set_matches(seg, Arc::new(clause.clone()), &q.field, &terms, doc)
             }
             // `ToParentBlockJoinQuery` (`MATCH_WITH_NO_TERMS` where its
             // scorer matches) and everything else: `Weight`'s default.
@@ -926,10 +1024,7 @@ pub fn leaf_matches(
             doc,
         ),
         Clause::Fuzzy(q) => fuzzy_matches(seg, Arc::new(clause.clone()), q, doc),
-        Clause::MultiPhrase(_) => Err(Error::IllegalArgument(format!(
-            "Weight.matches is not ported for {}",
-            clause_name(clause)
-        ))),
+        Clause::MultiPhrase(q) => multi_phrase_matches(seg, q, Arc::new(clause.clone()), doc),
         // `Weight.matches`'s default: every other clause (match-all, points
         // range, exists, ...) matches with no terms where its scorer does.
         #[allow(unreachable_patterns)]
@@ -1165,11 +1260,11 @@ mod tests {
         let a = vec![occ(0, 0, 1), occ(2, 4, 5), occ(4, 8, 9)];
         let b = vec![occ(1, 2, 3), occ(5, 10, 11)];
         assert_eq!(
-            exact_phrase_spans(&[a.clone(), b.clone()]),
+            exact_phrase_spans(&[a.clone(), b.clone()], &[0, 1]),
             vec![[0, 1, 0, 3], [4, 5, 8, 11]]
         );
         // "b a": b(1) a(2) only.
-        assert_eq!(exact_phrase_spans(&[b, a]), vec![[1, 2, 2, 5]]);
-        assert!(exact_phrase_spans(&[]).is_empty());
+        assert_eq!(exact_phrase_spans(&[b, a], &[0, 1]), vec![[1, 2, 2, 5]]);
+        assert!(exact_phrase_spans(&[], &[]).is_empty());
     }
 }

@@ -213,11 +213,35 @@ impl PassageScorer {
     }
 }
 
-/// `PassageFormatter`: the snippet text from the top passages. `content` is
-/// the UTF-16 text the offsets index.
+/// What `PassageFormatter.format` returns: Java's `Object`, here anything
+/// that prints (`toString()`, which `highlightFields` takes) and can be
+/// downcast to what the formatter made.
+pub trait HighlightValue: std::fmt::Display + std::any::Any + Send + Sync {
+    /// The value, for a downcast.
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
+impl<T: std::fmt::Display + std::any::Any + Send + Sync> HighlightValue for T {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// A formatted highlight, as `highlightFieldsAsObjects` returns them.
+pub type HighlightObject = Box<dyn HighlightValue>;
+
+/// `PassageFormatter`: the snippet from the top passages. `content` is the
+/// UTF-16 text the offsets index.
 pub trait PassageFormatter {
-    /// `format(passages, content)`.
+    /// `format(passages, content)` as text.
     fn format(&self, passages: &[Passage], content: &[u16]) -> String;
+
+    /// `format(passages, content)` as the object it is: [`Self::format`]'s
+    /// text unless the formatter makes something else, whose `Display` is
+    /// then what `highlightFields` reports.
+    fn format_object(&self, passages: &[Passage], content: &[u16]) -> HighlightObject {
+        Box::new(self.format(passages, content))
+    }
 }
 
 /// `DefaultPassageFormatter`.
