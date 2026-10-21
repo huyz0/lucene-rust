@@ -50,6 +50,37 @@ pub enum Input {
     /// ([`crate::ByteBuffersDirectory`]): opening costs a reference count,
     /// not a copy -- Java's `IndexInput.clone()` of the stored content.
     Shared(Arc<[u8]>),
+    /// Another input held open by a test harness (feature `test-util`): the
+    /// guard is dropped with the bytes, which is how the test framework's
+    /// `MockDirectoryWrapper` sees an input "closed".
+    #[cfg(any(test, feature = "test-util"))]
+    Tracked(TrackedInput),
+}
+
+/// An [`Input`] with a guard whose `Drop` marks it closed (feature
+/// `test-util`): the test framework's `MockIndexInputWrapper`, reduced to
+/// the open/close bookkeeping, since an input here is a byte buffer and has
+/// no reads to intercept.
+#[cfg(any(test, feature = "test-util"))]
+pub struct TrackedInput {
+    input: Box<Input>,
+    _guard: Box<dyn Send + Sync>,
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl TrackedInput {
+    /// Wraps `input`; `guard` is dropped when the returned input is.
+    pub fn new(input: Input, guard: impl Send + Sync + 'static) -> Self {
+        Self {
+            input: Box::new(input),
+            _guard: Box::new(guard),
+        }
+    }
+
+    /// The wrapped input.
+    pub fn inner(&self) -> &Input {
+        &self.input
+    }
 }
 
 impl std::fmt::Debug for Input {
@@ -60,6 +91,8 @@ impl std::fmt::Debug for Input {
             Input::Owned(_) => "Owned",
             Input::Mapped(_) => "Mapped",
             Input::Shared(_) => "Shared",
+            #[cfg(any(test, feature = "test-util"))]
+            Input::Tracked(_) => "Tracked",
         };
         write!(f, "Input::{kind}({} bytes)", self.len())
     }
@@ -73,6 +106,8 @@ impl Deref for Input {
             Input::Owned(v) => v,
             Input::Mapped(m) => m,
             Input::Shared(s) => s,
+            #[cfg(any(test, feature = "test-util"))]
+            Input::Tracked(t) => &t.input,
         }
     }
 }
@@ -435,6 +470,25 @@ struct FsCore {
     ops_since_last_delete: AtomicUsize,
     /// `FSDirectory.nextTempFileCounter`.
     next_temp_file_counter: AtomicU64,
+    /// The mock filesystem under this directory, if a test installed one.
+    #[cfg(any(test, feature = "test-util"))]
+    faults: Option<Arc<dyn FsFaults>>,
+}
+
+/// A mock filesystem under an [`FsDirectory`] or [`MmapDirectory`] (feature
+/// `test-util`): the test framework's `WindowsFS` and `VirusCheckingFS`,
+/// which refuse to delete or move a file the way a real filesystem can, so
+/// the directory's own pending-delete handling (`FSDirectory`'s) is what
+/// answers. Java installs these as `java.nio` filesystem providers under
+/// the directory; this port has no filesystem layer to wrap, so the
+/// directory asks the hook before the real call.
+#[cfg(any(test, feature = "test-util"))]
+pub trait FsFaults: Send + Sync {
+    /// Before `path` is deleted: an error refuses the delete, as the
+    /// filesystem's `delete(path)` throwing would.
+    fn check_delete(&self, path: &Path) -> std::io::Result<()>;
+    /// Before `source` is moved onto `dest`: an error refuses the move.
+    fn check_rename(&self, source: &Path, dest: &Path) -> std::io::Result<()>;
 }
 
 impl FsCore {
@@ -445,7 +499,19 @@ impl FsCore {
             pending_deletes: Mutex::new(BTreeSet::new()),
             ops_since_last_delete: AtomicUsize::new(0),
             next_temp_file_counter: AtomicU64::new(0),
+            #[cfg(any(test, feature = "test-util"))]
+            faults: None,
         }
+    }
+
+    /// The mock filesystem's verdict on deleting `path`; always `Ok`
+    /// without one.
+    fn check_delete(&self, _path: &Path) -> std::io::Result<()> {
+        #[cfg(any(test, feature = "test-util"))]
+        if let Some(faults) = &self.faults {
+            return faults.check_delete(_path);
+        }
+        Ok(())
     }
 
     fn pending(&self) -> std::sync::MutexGuard<'_, BTreeSet<String>> {
@@ -550,6 +616,10 @@ impl FsCore {
             self.private_delete_file(dest, true)?;
             self.pending().remove(dest);
         }
+        #[cfg(any(test, feature = "test-util"))]
+        if let Some(faults) = &self.faults {
+            faults.check_rename(&self.root.join(source), &self.root.join(dest))?;
+        }
         index_output::rename(&self.root, source, dest)
     }
 
@@ -602,7 +672,11 @@ impl FsCore {
 
     /// `FSDirectory.privateDeleteFile(name, isPendingDelete)`.
     fn private_delete_file(&self, name: &str, is_pending_delete: bool) -> Result<()> {
-        match fs::remove_file(self.root.join(name)) {
+        let path = self.root.join(name);
+        match self
+            .check_delete(&path)
+            .and_then(|()| fs::remove_file(&path))
+        {
             Ok(()) => {
                 self.pending().remove(name);
                 Ok(())
@@ -680,6 +754,14 @@ impl FsDirectory {
     /// `FSDirectory.deletePendingFiles()`.
     pub fn delete_pending_files(&self) -> Result<()> {
         self.core.delete_pending_files()
+    }
+
+    /// Puts a mock filesystem under this directory (feature `test-util`;
+    /// see [`FsFaults`]).
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn with_fs_faults(mut self, faults: Arc<dyn FsFaults>) -> Self {
+        self.core.faults = Some(faults);
+        self
     }
 }
 
@@ -806,6 +888,14 @@ impl MmapDirectory {
     /// `FSDirectory.deletePendingFiles()`.
     pub fn delete_pending_files(&self) -> Result<()> {
         self.core.delete_pending_files()
+    }
+
+    /// Puts a mock filesystem under this directory (feature `test-util`;
+    /// see [`FsFaults`]).
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn with_fs_faults(mut self, faults: Arc<dyn FsFaults>) -> Self {
+        self.core.faults = Some(faults);
+        self
     }
 }
 
@@ -1647,5 +1737,91 @@ mod tests {
         only.rename("g", "h").unwrap();
         only.delete_file("h").unwrap();
         only.obtain_lock("l").unwrap();
+    }
+
+    /// Refuses deleting or moving any file whose name starts with `held`,
+    /// as `WindowsFS` refuses a file that is still open.
+    struct Refusing;
+
+    impl FsFaults for Refusing {
+        fn check_delete(&self, path: &Path) -> std::io::Result<()> {
+            refuse(path)
+        }
+        fn check_rename(&self, source: &Path, _dest: &Path) -> std::io::Result<()> {
+            refuse(source)
+        }
+    }
+
+    fn refuse(path: &Path) -> std::io::Result<()> {
+        let name = path.file_name().unwrap().to_string_lossy();
+        if name.starts_with("held") {
+            return Err(std::io::Error::other(format!("access denied: {name}")));
+        }
+        Ok(())
+    }
+
+    /// A refused delete becomes a pending delete -- hidden from the listing,
+    /// retried later -- exactly as a real one failing would, for both
+    /// backends; a refused move fails the rename.
+    #[test]
+    fn a_mock_filesystem_refusing_a_delete_makes_it_pending() {
+        let tmp = tempdir();
+        let dirs: Vec<Box<dyn Directory>> = vec![
+            Box::new(FsDirectory::open(tmp.join("fs")).with_fs_faults(Arc::new(Refusing))),
+            Box::new(MmapDirectory::open(tmp.join("mm")).with_fs_faults(Arc::new(Refusing))),
+        ];
+        for (dir, sub) in dirs.iter().zip(["fs", "mm"]) {
+            std::fs::create_dir_all(tmp.join(sub)).unwrap();
+            for name in ["held_a", "free_b"] {
+                let mut out = dir.create_output(name).unwrap();
+                out.write_bytes(b"xyz");
+                out.close().unwrap();
+            }
+            dir.delete_file("free_b").unwrap();
+            dir.delete_file("held_a").unwrap();
+            assert!(dir.list_all().unwrap().is_empty(), "{sub}");
+            assert!(
+                tmp.join(sub).join("held_a").exists(),
+                "{sub}: still on disk"
+            );
+            assert_eq!(
+                dir.pending_deletions()
+                    .unwrap()
+                    .into_iter()
+                    .collect::<Vec<_>>(),
+                vec!["held_a".to_string()]
+            );
+            let mut out = dir.create_output("held_c").unwrap();
+            out.write_bytes(b"c");
+            out.close().unwrap();
+            let err = dir.rename("held_c", "d").unwrap_err();
+            assert!(err.to_string().contains("access denied"), "{err}");
+        }
+    }
+
+    /// A tracked input reads as the input it wraps and drops its guard with
+    /// it.
+    #[test]
+    fn a_tracked_input_derefs_to_its_bytes_and_drops_its_guard() {
+        struct Guard(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let input = Input::Tracked(TrackedInput::new(
+            Input::Owned(vec![1, 2, 3]),
+            Guard(dropped.clone()),
+        ));
+        assert_eq!(&*input, &[1, 2, 3]);
+        assert_eq!(format!("{input:?}"), "Input::Tracked(3 bytes)");
+        let Input::Tracked(tracked) = &input else {
+            unreachable!()
+        };
+        assert!(matches!(tracked.inner(), Input::Owned(_)));
+        assert!(!dropped.load(Ordering::SeqCst));
+        drop(input);
+        assert!(dropped.load(Ordering::SeqCst));
     }
 }

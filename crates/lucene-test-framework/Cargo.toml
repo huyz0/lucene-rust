@@ -11,8 +11,9 @@ publish = false
 # no crate names it under `[dependencies]`, so it never reaches a production
 # build (`cargo tree -p lucene-ffi` does not show it; check-port-invariants.py's
 # `test-framework-dev-only` rule enforces it). Per package: a whole-workspace
-# build unifies the `test-support` feature below into its lucene-util, as the
-# other crates' dev-dependencies already do. See the architecture skill and
+# build unifies the `test-support` feature below into its lucene-util and the
+# `test-util` feature into its lucene-store (the fault seams the mock
+# directory hooks), as the other crates' dev-dependencies already do. See the architecture skill and
 # PLAN.md section 1.
 #
 # Not opted into the workspace's arithmetic gate (`[lints] workspace = true`):
@@ -21,13 +22,17 @@ publish = false
 
 [dependencies]
 lucene-util = { path = "../lucene-util", features = ["test-support"] }
+lucene-store = { path = "../lucene-store", features = ["test-util"] }
 lucene-codecs = { path = "../lucene-codecs" }
+lucene-index = { path = "../lucene-index" }
 lucene-search = { path = "../lucene-search" }
 # The mock analysis chain (`analysis`) implements lucene-analysis's traits.
 lucene-analysis = { path = "../lucene-analysis" }
 # Inflates the gzip members of Lucene's `europarl.lines.txt.gz` when
 # `TESTS_LINEDOCSFILE` names it (`util::line_file_docs`).
 miniz_oxide.workspace = true
+# `BaseDirectoryTestCase.testChecksum`'s reference CRC32.
+crc32fast.workspace = true
 
 [dev-dependencies]
 # `tests/check_random_data_all_analyzers.rs` runs `check_random_data` over

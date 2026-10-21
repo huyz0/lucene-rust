@@ -8,9 +8,10 @@
 //! and returned as `String` once they are known to be well formed (every
 //! generator here produces well-formed UTF-16).
 //!
-//! `TestUtil`'s index helpers (`checkIndex`, `docs`, `cloneDocument`, the
-//! codec pickers) arrive with `RandomIndexWriter` (M14.h batch h4);
-//! `randomPattern` needs `java.util.regex` and is not ported.
+//! [`check_index`] is `TestUtil.checkIndex`. The other index helpers
+//! (`docs`, `cloneDocument`, the codec pickers) arrive with
+//! `RandomIndexWriter` (M14.h batch h4); `randomPattern` needs
+//! `java.util.regex` and is not ported.
 
 use std::cmp::Ordering;
 
@@ -18,6 +19,23 @@ use lucene_util::automaton::{java_to_lower_case, java_to_upper_case};
 use lucene_util::java_random::JavaRandom;
 
 use super::random_numbers::{random_from, random_int_between};
+
+/// `TestUtil.checkIndex(dir)`: this port's `CheckIndex` over the latest
+/// commit; the `Err` names each segment that failed and why.
+pub fn check_index(dir: &dyn lucene_store::Directory) -> Result<(), String> {
+    let results = lucene_index::check_index::check_directory(dir)
+        .map_err(|e| format!("CheckIndex could not read the commit: {e}"))?;
+    let failed: Vec<String> = results
+        .iter()
+        .filter(|r| !r.all_passed())
+        .map(|r| format!("{}: {:?}", r.segment_name, r.failures()))
+        .collect();
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("CheckIndex failed: {}", failed.join("; ")))
+    }
+}
 
 /// `TestUtil.nextInt(r, start, end)`: both bounds inclusive.
 pub fn next_int(r: &mut JavaRandom, start: i32, end: i32) -> i32 {

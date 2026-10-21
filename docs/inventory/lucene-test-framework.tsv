@@ -115,27 +115,27 @@ tests/index/RandomIndexWriter	todo:M14	h4: RandomIndexWriter, merge policies, re
 tests/index/RandomPostingsTester	todo:M14	h5: index file format suites
 tests/index/SuppressingConcurrentMergeScheduler	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
 tests/index/ThreadedIndexingAndSearchingTestCase	todo:M14	h8: NRT/stress
-tests/mockfile/DisableFsyncFS	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
-tests/mockfile/ExtrasFS	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
-tests/mockfile/FilterAsynchronousFileChannel	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
-tests/mockfile/FilterDirectoryStream	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
-tests/mockfile/FilterFileChannel	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
-tests/mockfile/FilterFileStore	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
-tests/mockfile/FilterFileSystem	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
-tests/mockfile/FilterFileSystemProvider	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
-tests/mockfile/FilterInputStream2	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
-tests/mockfile/FilterOutputStream2	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
-tests/mockfile/FilterPath	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
-tests/mockfile/FilterSeekableByteChannel	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
-tests/mockfile/HandleLimitFS	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
-tests/mockfile/HandleTrackingFS	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
-tests/mockfile/LeakFS	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
-tests/mockfile/MockFileSystemTestCase	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
-tests/mockfile/ShuffleFS	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
-tests/mockfile/VerboseFS	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
-tests/mockfile/VirusCheckingFS	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
-tests/mockfile/WindowsFS	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
-tests/mockfile/WindowsPath	todo:M14	h2: mock filesystem behaviour (faults, Windows semantics, leak tracking)
+tests/mockfile/DisableFsyncFS	ported	crates/lucene-test-framework/src/mockfile/mock_fs.rs::fsync_disabled
+tests/mockfile/ExtrasFS	ported	crates/lucene-test-framework/src/mockfile/mock_fs.rs::create_directory
+tests/mockfile/FilterAsynchronousFileChannel	not-needed	java.nio.file FileSystem/Path/channel delegation plumbing the mock filesystems are built from; MockFs hooks the Rust directories (FsFaults, the output and input guards) instead
+tests/mockfile/FilterDirectoryStream	not-needed	java.nio.file FileSystem/Path/channel delegation plumbing the mock filesystems are built from; MockFs hooks the Rust directories (FsFaults, the output and input guards) instead
+tests/mockfile/FilterFileChannel	not-needed	java.nio.file FileSystem/Path/channel delegation plumbing the mock filesystems are built from; MockFs hooks the Rust directories (FsFaults, the output and input guards) instead
+tests/mockfile/FilterFileStore	not-needed	java.nio.file FileSystem/Path/channel delegation plumbing the mock filesystems are built from; MockFs hooks the Rust directories (FsFaults, the output and input guards) instead
+tests/mockfile/FilterFileSystem	not-needed	java.nio.file FileSystem/Path/channel delegation plumbing the mock filesystems are built from; MockFs hooks the Rust directories (FsFaults, the output and input guards) instead
+tests/mockfile/FilterFileSystemProvider	not-needed	java.nio.file FileSystem/Path/channel delegation plumbing the mock filesystems are built from; MockFs hooks the Rust directories (FsFaults, the output and input guards) instead
+tests/mockfile/FilterInputStream2	not-needed	java.nio.file FileSystem/Path/channel delegation plumbing the mock filesystems are built from; MockFs hooks the Rust directories (FsFaults, the output and input guards) instead
+tests/mockfile/FilterOutputStream2	not-needed	java.nio.file FileSystem/Path/channel delegation plumbing the mock filesystems are built from; MockFs hooks the Rust directories (FsFaults, the output and input guards) instead
+tests/mockfile/FilterPath	not-needed	java.nio.file FileSystem/Path/channel delegation plumbing the mock filesystems are built from; MockFs hooks the Rust directories (FsFaults, the output and input guards) instead
+tests/mockfile/FilterSeekableByteChannel	not-needed	java.nio.file FileSystem/Path/channel delegation plumbing the mock filesystems are built from; MockFs hooks the Rust directories (FsFaults, the output and input guards) instead
+tests/mockfile/HandleLimitFS	ported	crates/lucene-test-framework/src/mockfile/mock_fs.rs::on_open
+tests/mockfile/HandleTrackingFS	ported	crates/lucene-test-framework/src/mockfile/mock_fs.rs::open_handles
+tests/mockfile/LeakFS	ported	crates/lucene-test-framework/src/mockfile/mock_fs.rs::check_leaks
+tests/mockfile/MockFileSystemTestCase	not-needed	the suite of the java.nio.file filesystem wrappers (paths, URIs, channels, directory streams); MockFs has none of that surface, and its behaviours are tested in crates/lucene-test-framework/tests/test_mock_directory_wrapper.rs
+tests/mockfile/ShuffleFS	not-needed	shuffles directory listings; every Rust Directory::list_all returns a sorted listing, so there is no order for a caller to depend on
+tests/mockfile/VerboseFS	not-needed	logs every filesystem call to the infoStream; the Rust directories have no infoStream
+tests/mockfile/VirusCheckingFS	ported	crates/lucene-test-framework/src/mockfile/mock_fs.rs::disable_virus_checker
+tests/mockfile/WindowsFS	ported	crates/lucene-test-framework/src/mockfile/mock_fs.rs::check_delete
+tests/mockfile/WindowsPath	not-needed	a java.nio.file.Path that refuses Windows-illegal characters; Rust paths are std::path::Path, and the Windows delete/rename semantics are MockFs::check_delete
 tests/search/AssertingAcceptDocs	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
 tests/search/AssertingBulkScorer	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
 tests/search/AssertingCollector	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
@@ -164,18 +164,18 @@ tests/search/ShardSearchingTestBase	todo:M14	h7: asserting search wrappers, Quer
 tests/search/similarities/AssertingSimilarity	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
 tests/search/similarities/BaseSimilarityTestCase	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
 tests/search/similarities/RandomSimilarity	todo:M14	h7: asserting search wrappers, QueryUtils/CheckHits and query test bases
-tests/store/BaseChunkedDirectoryTestCase	todo:M14	h2: MockDirectoryWrapper and the directory/lock-factory suites
-tests/store/BaseDirectoryTestCase	todo:M14	h2: MockDirectoryWrapper and the directory/lock-factory suites
-tests/store/BaseDirectoryWrapper	todo:M14	h2: MockDirectoryWrapper and the directory/lock-factory suites
-tests/store/BaseLockFactoryTestCase	todo:M14	h2: MockDirectoryWrapper and the directory/lock-factory suites
-tests/store/CorruptingIndexOutput	todo:M14	h2: MockDirectoryWrapper and the directory/lock-factory suites
-tests/store/MockDirectoryWrapper	todo:M14	h2: MockDirectoryWrapper and the directory/lock-factory suites
-tests/store/MockIndexInputWrapper	todo:M14	h2: MockDirectoryWrapper and the directory/lock-factory suites
-tests/store/MockIndexOutputWrapper	todo:M14	h2: MockDirectoryWrapper and the directory/lock-factory suites
-tests/store/RawDirectoryWrapper	todo:M14	h2: MockDirectoryWrapper and the directory/lock-factory suites
-tests/store/SerialIOCountingDirectory	todo:M14	h2: MockDirectoryWrapper and the directory/lock-factory suites
-tests/store/SlowClosingMockIndexInputWrapper	todo:M14	h2: MockDirectoryWrapper and the directory/lock-factory suites
-tests/store/SlowOpeningMockIndexInputWrapper	todo:M14	h2: MockDirectoryWrapper and the directory/lock-factory suites
+tests/store/BaseChunkedDirectoryTestCase	not-needed	suites a directory with a configurable chunk size (MMapDirectory maxChunkSize); the Rust MmapDirectory maps each file whole and has no chunk size to vary
+tests/store/BaseDirectoryTestCase	ported	crates/lucene-test-framework/src/store/base_directory.rs::BaseDirectoryTestCase
+tests/store/BaseDirectoryWrapper	ported	crates/lucene-test-framework/src/store/base_directory_wrapper.rs::BaseDirectoryWrapper
+tests/store/BaseLockFactoryTestCase	ported	crates/lucene-test-framework/src/store/base_lock_factory.rs::BaseLockFactoryTestCase
+tests/store/CorruptingIndexOutput	ported	crates/lucene-test-framework/src/store/corrupting_index_output.rs::CorruptingIndexOutput
+tests/store/MockDirectoryWrapper	partial	crates/lucene-test-framework/src/store/mock_directory_wrapper.rs::MockDirectoryWrapper -- M14: corruptUnknownFiles, setAssertNoUnrefencedFilesOnClose, getLevelForCheckOnClose, the input clone count and the READONCE segments check are not ported yet (no IOContext; inputs are byte buffers)
+tests/store/MockIndexInputWrapper	partial	crates/lucene-test-framework/src/store/mock_directory_wrapper.rs::MockInput -- M14: only open/close bookkeeping; the read-side checks (reads after close, clone tracking) need a reading IndexInput, which the byte-buffer Input is not
+tests/store/MockIndexOutputWrapper	partial	crates/lucene-test-framework/src/store/mock_directory_wrapper.rs::MockOutput -- M14: no AlreadyClosedException on a write after close (the output is consumed by close), no separate copyBytes path, and a write fault is latched until close rather than thrown by the write
+tests/store/RawDirectoryWrapper	ported	crates/lucene-test-framework/src/store/base_directory_wrapper.rs::RawDirectoryWrapper
+tests/store/SerialIOCountingDirectory	not-needed	counts random-access reads per IOContext ReadAdvice; the Rust Directory::open takes no IOContext or read advice to count
+tests/store/SlowClosingMockIndexInputWrapper	ported	crates/lucene-test-framework/src/store/mock_directory_wrapper.rs::set_use_slow_open_closers
+tests/store/SlowOpeningMockIndexInputWrapper	ported	crates/lucene-test-framework/src/store/mock_directory_wrapper.rs::set_use_slow_open_closers
 tests/util/AbstractBeforeAfterRule	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
 tests/util/BaseBitSetTestCase	ported	crates/lucene-test-framework/src/util/base_bit_set.rs::BaseBitSetTestCase
 tests/util/BaseDocIdSetTestCase	partial	crates/lucene-test-framework/src/util/base_doc_id_set.rs::BaseDocIdSetTestCase -- M14: testIntoBitSet, testIntoBitSetBoundChecks and testRamBytesUsed (the Rust DocIdSet has no intoBitSet or ramBytesUsed)
@@ -185,7 +185,7 @@ tests/util/FailOnNonBulkMergesInfoStream	todo:M14	h4: InfoStream failing on a no
 tests/util/FailureMarker	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
 tests/util/LineFileDocs	ported	crates/lucene-test-framework/src/util/line_file_docs.rs::LineFileDocs
 tests/util/LuceneJUnit3MethodProvider	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
-tests/util/LuceneTestCase	partial	crates/lucene-test-framework/src/util/lucene_test_case.rs::LuceneTestCase -- M14: newDirectory/newIndexWriterConfig/newSearcher/newField arrive with h2, h4 and h7
+tests/util/LuceneTestCase	partial	crates/lucene-test-framework/src/util/lucene_test_case.rs::LuceneTestCase -- M14: newIndexWriterConfig/newSearcher/newField arrive with h4 and h7 (newDirectory and its family: crates/lucene-test-framework/src/store/new_directory.rs)
 tests/util/NullInfoStream	todo:M14	h4: an InfoStream that discards (and asserts on) messages
 tests/util/QuickPatchThreadsFilter	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
 tests/util/RamUsageTester	not-needed	reflection over the JVM heap; Rust types report their own heap (`ram_bytes_used`)
@@ -208,8 +208,8 @@ tests/util/TestRuleStoreClassName	not-needed	JUnit/randomizedtesting runner infr
 tests/util/TestRuleTemporaryFilesCleanup	ported	crates/lucene-util/src/test_support.rs::TempDir
 tests/util/TestRuleThreadAndTestName	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
 tests/util/TestSecurityManager	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
-tests/util/TestUtil	partial	crates/lucene-test-framework/src/util/test_util.rs::random_realistic_unicode_string -- M14: index/codec helpers (checkIndex, getDefaultCodec, docs, ...) arrive with h4-h5; randomPattern (java.util.regex) is not ported
-tests/util/ThrottledIndexOutput	todo:M14	h2: an IndexOutput that sleeps to model a slow disk
+tests/util/TestUtil	partial	crates/lucene-test-framework/src/util/test_util.rs::random_realistic_unicode_string -- M14: index/codec helpers (getDefaultCodec, docs, ...) arrive with h4-h5 (checkIndex: test_util.rs::check_index); randomPattern (java.util.regex) is not ported
+tests/util/ThrottledIndexOutput	ported	crates/lucene-test-framework/src/store/mock_directory_wrapper.rs::set_throttling
 tests/util/TimeUnits	not-needed	millisecond constants for JUnit `@Timeout` annotations
 tests/util/VerifyTestClassNamingConvention	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
 tests/util/automaton/AutomatonTestUtil	ported	crates/lucene-test-framework/src/util/automaton_test_util.rs::RandomAcceptedStrings
