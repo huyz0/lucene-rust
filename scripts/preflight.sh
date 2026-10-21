@@ -40,7 +40,7 @@
 #                              only warns
 #   DOCKER_TIMEOUT=30          seconds to wait for the engine
 #   MIN_TARGET_FREE_GB=15      (container) hard floor under the target dir
-#   TARGET_MAX_GB=60           (container) a target dir above this loses superseded
+#   TARGET_MAX_GB=160          (container) a target dir above this loses superseded
 #                              build artifacts, then llvm-cov-target
 #   INCREMENTAL_MAX_MB=20480   (container) incremental dirs above this are cleared
 set -euo pipefail
@@ -57,7 +57,7 @@ BUILD_CACHE_MAX_GB="${BUILD_CACHE_MAX_GB:-40}"
 BUILD_CACHE_KEEP_GB="${BUILD_CACHE_KEEP_GB:-20}"
 DOCKER_TIMEOUT="${DOCKER_TIMEOUT:-30}"
 MIN_TARGET_FREE_GB="${MIN_TARGET_FREE_GB:-15}"
-TARGET_MAX_GB="${TARGET_MAX_GB:-60}"
+TARGET_MAX_GB="${TARGET_MAX_GB:-160}"
 INCREMENTAL_MAX_MB="${INCREMENTAL_MAX_MB:-20480}"
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
