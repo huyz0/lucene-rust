@@ -720,12 +720,14 @@ impl FixedBitSet {
     }
 
     /// `FixedBitSet.intoArray(from, to, base, array)`: the set bits of
-    /// `from..to`, plus `base`, into `array`; returns how many.
+    /// `from..to`, plus `base`, into `array`; returns how many. Stops when
+    /// `array` is full, as Java's `word2Array` copies at most the room left:
+    /// the first `array.len()` bits, in order.
     pub fn into_array(&self, from: usize, to: usize, base: i32, array: &mut [i32]) -> usize {
         assert!(from <= to && to <= self.num_bits);
         let mut n = 0;
         let mut i = self.next_set_bit(from);
-        while let Some(b) = i.filter(|&b| b < to) {
+        while let Some(b) = i.filter(|&b| b < to && n < array.len()) {
             array[n] = base + b as i32;
             n += 1;
             i = self.next_set_bit(b + 1);

@@ -450,6 +450,21 @@ fn util_primitives_match_lucene() {
                 a.for_each_in_range(us(1), us(2), 7, |x| seen.push(x));
                 assert_eq!(seen, arr[..n].to_vec());
             }
+            "intoArrayCap" => {
+                // An array with less room than the range holds bits for.
+                let mut arr = vec![0i32; us(3)];
+                let n = a.into_array(us(1), us(2), 7, &mut arr);
+                let got = if n == 0 {
+                    "-".to_string()
+                } else {
+                    arr[..n]
+                        .iter()
+                        .map(|x| x.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                };
+                assert_eq!(format!("{n} {got}"), p[4..].join(" "), "{}", ctx());
+            }
             "ensureCapacity" => {
                 let g = FixedBitSet::ensure_capacity(a.clone(), us(1));
                 assert_eq!(
@@ -477,6 +492,7 @@ fn util_primitives_match_lucene() {
     for (op, min) in [
         ("mm128", 150),
         ("fbs", 40),
+        ("intoArrayCap", 14),
         ("vparse", 39),
         ("id", 20),
         ("words", 40),
