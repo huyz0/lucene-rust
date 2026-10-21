@@ -3157,9 +3157,15 @@ mod tests {
         let reader_infos = w.segment_infos().clone();
         let id = || Term::new("id", "0");
         let err = w.update_numeric_doc_value(id(), "n", 1).unwrap_err();
-        assert!(matches!(err, Error::UnknownDocValuesUpdateField(_)), "{err}");
+        assert!(
+            matches!(err, Error::UnknownDocValuesUpdateField(_)),
+            "{err}"
+        );
         let err = w.update_binary_doc_value(id(), "b", b"x").unwrap_err();
-        assert!(matches!(err, Error::UnknownDocValuesUpdateField(_)), "{err}");
+        assert!(
+            matches!(err, Error::UnknownDocValuesUpdateField(_)),
+            "{err}"
+        );
         let update = |field: &str| DocValuesUpdate::Numeric {
             term: id(),
             field: field.to_string(),
