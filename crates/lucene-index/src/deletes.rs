@@ -245,12 +245,22 @@ pub fn apply_deletes(
     )?;
     let file_name = liv_file_name(&sci.segment_name, next_del_gen);
     let mut out = dir.create_output(&file_name)?;
-    {
+    let written = (|| {
         use lucene_store::data_output::DataOutput;
         out.write_bytes(&liv_bytes);
+        out.close()?;
+        dir.sync(std::slice::from_ref(&file_name))
+    })();
+    if let Err(e) = written {
+        // `PendingDeletes.writeLiveDocs`' `finally`: on failure,
+        // `IOUtils.deleteFilesIgnoringExceptions(dir, createdFiles)`. A partial
+        // `.liv` left under this generation's name would make a retry at the
+        // same generation fail, since `createOutput` refuses an existing name.
+        // (Java also calls `advanceNextWriteDelGen()`; callers holding the
+        // live `SegmentCommitInfo` do that, see `IndexWriter`.)
+        let _ = dir.delete_file(&file_name);
+        return Err(e.into());
     }
-    out.close()?;
-    dir.sync(std::slice::from_ref(&file_name))?;
 
     // `ReadersAndUpdates.writeLiveDocs`: the same `SegmentCommitInfo`, with
     // its delete count raised and `advanceDelGen()` called on it -- not a
@@ -346,6 +356,63 @@ mod tests {
         assert_ne!(after_second.sci_id, info.sci_id);
         assert_eq!(after_second.del_gen, 2);
         assert_eq!(after_second.del_count, 2);
+    }
+
+    /// Fails every `sync` while `fail` is set; everything else passes through.
+    struct FailingSync<'a> {
+        inner: &'a FsDirectory,
+        fail: std::sync::atomic::AtomicBool,
+    }
+
+    impl Directory for FailingSync<'_> {
+        fn list_all(&self) -> lucene_store::Result<Vec<String>> {
+            self.inner.list_all()
+        }
+        fn open(&self, name: &str) -> lucene_store::Result<lucene_store::directory::Input> {
+            self.inner.open(name)
+        }
+        fn create_output(&self, name: &str) -> lucene_store::Result<lucene_store::FsIndexOutput> {
+            self.inner.create_output(name)
+        }
+        fn sync(&self, names: &[String]) -> lucene_store::Result<()> {
+            if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(lucene_store::Error::Io(std::io::Error::other("sync")));
+            }
+            self.inner.sync(names)
+        }
+        fn rename(&self, source: &str, dest: &str) -> lucene_store::Result<()> {
+            self.inner.rename(source, dest)
+        }
+        fn delete_file(&self, name: &str) -> lucene_store::Result<()> {
+            self.inner.delete_file(name)
+        }
+        fn sync_meta_data(&self) -> lucene_store::Result<()> {
+            self.inner.sync_meta_data()
+        }
+        fn obtain_lock(&self, name: &str) -> lucene_store::Result<Box<dyn lucene_store::Lock>> {
+            self.inner.obtain_lock(name)
+        }
+    }
+
+    /// `PendingDeletes.writeLiveDocs` deletes the files a failed attempt
+    /// created. Leaving the partial `.liv` behind made the retry at the same
+    /// generation fail, since `createOutput` refuses an existing name.
+    #[test]
+    fn a_failed_live_docs_write_leaves_no_partial_file_behind() {
+        let tmp = lucene_util::test_support::TempDir::new("deletes-failed-liv-cleaned");
+        let fs = FsDirectory::open(&tmp);
+        let dir = FailingSync {
+            inner: &fs,
+            fail: std::sync::atomic::AtomicBool::new(true),
+        };
+        let info = sci("_0", -1, 0);
+        assert!(apply_deletes(&dir, &info, None, 4, [0]).is_err());
+        assert!(!fs.list_all().unwrap().contains(&liv_file_name("_0", 1)));
+
+        dir.fail.store(false, std::sync::atomic::Ordering::SeqCst);
+        let updated = apply_deletes(&dir, &info, None, 4, [0]).unwrap();
+        assert_eq!(updated.del_gen, 1);
+        assert_eq!(updated.del_count, 1);
     }
 
     /// A commit can never record more deletions than the segment has docs --

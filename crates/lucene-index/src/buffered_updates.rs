@@ -605,6 +605,14 @@ impl BufferedUpdatesStream {
         std::mem::take(&mut self.updates)
     }
 
+    /// Puts back packets a failed apply took with [`Self::take_pending`],
+    /// ahead of anything pushed since and with their generations unchanged.
+    /// Java has no counterpart: its failed apply closes the writer.
+    pub fn restore_pending(&mut self, mut packets: Vec<FrozenBufferedUpdates>) {
+        packets.append(&mut self.updates);
+        self.updates = packets;
+    }
+
     /// `BufferedUpdatesStream.clear()` — only used by `IndexWriter.rollback`.
     ///
     /// **The generation counter deliberately does not reset**, and this is the
