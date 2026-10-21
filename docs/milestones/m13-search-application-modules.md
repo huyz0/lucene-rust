@@ -104,12 +104,15 @@ Each module has a per-class inventory, `docs/inventory/lucene-<module>.tsv`
   encodes each document's postings into a codec segment for `IndexSearcher` to read, where
   Lucene searches the in-heap postings directly. A lightweight in-memory leaf reader is a
   `MemoryIndex`-wide change (T13.5's, `memory/reader.rs`), recorded as the reason for the two
-  ratios below 1.0, not done here. The classic `Highlighter` (`GenHighlight`), the
+  ratios below 1.0, not done here. M14 (the unified highlighter's
+  `PhraseHelper`, overlay and batching) re-measured: `uh_postings` 1.13x, `uh_analysis`/`uh_tv`
+  0.31x (Rust's time unchanged from before it), and the new `uh_phrases` (no weight matches) 0.39x,
+  1.26x without its multi-term queries -- they go through the same `MemoryIndex`. The classic `Highlighter` (`GenHighlight`), the
   `matchhighlight` package (`GenMatchHighlight`, with the JDK's word and
   sentence breaks fuzzed against `BreakIterator`), the `UnifiedHighlighter`
   (`GenUnifiedHighlight`: every offset source, passage and break option;
-  five classes partial, their gaps deferred to M14 in
-  `docs/inventory/lucene-highlighter.tsv`) and the `FastVectorHighlighter`
+  five classes left partial here, ported in M14 (`docs/parity/highlighter.md`;
+  `docs/inventory/lucene-highlighter.tsv`)) and the `FastVectorHighlighter`
   (`GenVectorHighlight`: 10,036 rows, eight configurations, term vectors with
   and without offsets or positions, matched fields, multi-valued and discrete
   fields), every fixture row equal.

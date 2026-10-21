@@ -721,7 +721,7 @@ fn span_positions(
 }
 
 /// `collectSpanQueryFields`.
-fn collect_span_query_fields(node: &SpanNode, fields: &mut HashSet<String>) {
+pub(crate) fn collect_span_query_fields(node: &SpanNode, fields: &mut HashSet<String>) {
     match node {
         SpanNode::FieldMasking { inner, .. } | SpanNode::First { inner, .. } => {
             collect_span_query_fields(inner, fields);
@@ -741,7 +741,7 @@ fn collect_span_query_fields(node: &SpanNode, fields: &mut HashSet<String>) {
 }
 
 /// `mustRewriteQuery(spanQuery)`.
-fn must_rewrite(node: &SpanNode, expand: bool) -> bool {
+pub(crate) fn must_rewrite(node: &SpanNode, expand: bool) -> bool {
     if !expand {
         return false;
     }

@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 
 use super::super::{Error, Result};
 use super::break_iterators::{BreakIterator, DONE};
-use super::passage::{OffsetsEnum, Passage, PassageFormatter, PassageScorer};
+use super::passage::{HighlightObject, OffsetsEnum, Passage, PassageFormatter, PassageScorer};
 
 /// The order the chosen passages are returned in (`passageSortComparator`).
 pub type PassageOrder = fn(&Passage, &Passage) -> Ordering;
@@ -167,13 +167,14 @@ impl FieldHighlighter {
         }
     }
 
-    /// `highlightFieldForDoc` after the offsets are known: the formatted
-    /// snippet, or `None` when the content is empty or nothing can be shown.
+    /// `highlightFieldForDoc` after the offsets are known: what the
+    /// formatter makes of the passages, or `None` when the content is empty
+    /// or nothing can be shown.
     pub fn highlight_content(
         &mut self,
         content: &[u16],
         off: &mut dyn OffsetsEnum,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<HighlightObject>> {
         let mut passages = self.highlight_offsets_enums(off)?;
         if passages.is_empty() {
             // no passages were returned, so ask for a default summary
@@ -187,7 +188,9 @@ impl FieldHighlighter {
         if passages.is_empty() {
             Ok(None)
         } else {
-            Ok(Some(self.passage_formatter.format(&passages, content)))
+            Ok(Some(
+                self.passage_formatter.format_object(&passages, content),
+            ))
         }
     }
 }

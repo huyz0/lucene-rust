@@ -18,8 +18,9 @@ import org.apache.lucene.store.FSDirectory;
  * M13 T13.2's pairs (the Rust twin is {@code benchmarks/rust-runner/src/micro_highlight.rs}): the
  * unified highlighter and the fast vector highlighter over the fixture indexes, every templated
  * query of {@code uhighlight-queries.txt} / {@code vhighlight-queries.txt} against every document,
- * default configuration. {@code uh_postings}: field {@code offs}; {@code uh_analysis}: field {@code
- * docs}; {@code uh_tv}: field {@code tv}; {@code fvh}: the fast vector highlighter on field {@code
+ * default configuration (but {@code uh_phrases}). {@code uh_postings}: field {@code offs}; {@code uh_analysis}: field {@code
+ * docs}; {@code uh_tv}: field {@code tv}; {@code uh_phrases}: field {@code offs} without weight
+ * matches (phrases through {@code PhraseHelper}); {@code fvh}: the fast vector highlighter on field {@code
  * tv} (30 characters, three fragments). Units: query x document. Output is {@code
  * name\tns_per_unit\tunits}.
  */
@@ -40,9 +41,14 @@ public class HighlightMicro {
       IndexSearcher searcher = new IndexSearcher(reader);
       int[] docs = new int[reader.maxDoc()];
       for (int i = 0; i < docs.length; i++) docs[i] = i;
-      UnifiedHighlighter uh = UnifiedHighlighter.builder(searcher, a).build();
-      String[][] cases = {{"uh_postings", "offs"}, {"uh_analysis", "docs"}, {"uh_tv", "tv"}};
+      UnifiedHighlighter defaults = UnifiedHighlighter.builder(searcher, a).build();
+      UnifiedHighlighter classic =
+          UnifiedHighlighter.builder(searcher, a).withWeightMatches(false).build();
+      String[][] cases = {
+        {"uh_postings", "offs"}, {"uh_analysis", "docs"}, {"uh_tv", "tv"}, {"uh_phrases", "offs"}
+      };
       for (String[] c : cases) {
+        UnifiedHighlighter uh = c[0].equals("uh_phrases") ? classic : defaults;
         List<Query> queries = templated("fixtures/corpus/uhighlight-queries.txt", c[1], a);
         SweepMicro.measure(c[0], () -> {
           for (Query q : queries) {

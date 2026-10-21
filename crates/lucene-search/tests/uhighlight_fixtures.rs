@@ -1,21 +1,30 @@
 //! M13 T13.2 (`uhighlight`) against Lucene 10.5.0: the unified highlighter's
-//! snippets and its break iterators.
+//! snippets (for parsed and hand-built queries), its stored-field batching
+//! and objects, and its break iterators.
 
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use lucene_analysis::{Analyzer, StandardAnalyzer};
 use lucene_search::directory_reader::DirectoryReader;
+use lucene_search::extended_query::{MultiTermQuery, MultiTermSource, RewriteMethod, SynonymQuery};
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::highlight::unified::break_iterators::{
     sentence_instance, word_instance, BreakIterator, CustomSeparatorBreakIterator,
     LengthGoalBreakIterator, SplittingBreakIterator, WholeBreakIterator,
 };
-use lucene_search::highlight::unified::{DefaultPassageFormatter, UnifiedHighlighter};
+use lucene_search::highlight::unified::{
+    DefaultPassageFormatter, HighlightObject, Passage, PassageFormatter, UnifiedHighlighter,
+};
 use lucene_search::index_searcher::IndexSearcher;
+use lucene_search::query::{
+    BooleanQuery, BoostQuery, Clause, ConstantScoreQuery, DisjunctionMaxQuery, MultiPhraseQuery,
+    PhraseQuery, PrefixQuery, RegexpQuery, TermQuery, WildcardQuery,
+};
 use lucene_search::queryparser::classic::QueryParser;
+use lucene_search::spans::SpanNode;
 
 fn dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data/uhighlight")
@@ -245,4 +254,337 @@ fn unified_highlighting_equals_lucenes() {
         )
     );
     assert_eq!(checked, 810);
+}
+
+/// The fixture index's reader and a searcher over it, with every field's
+/// norms, handed to `f`.
+fn with_index(f: impl FnOnce(&DirectoryReader, &IndexSearcher<'_, '_>)) {
+    let reader =
+        DirectoryReader::open(&lucene_store::FsDirectory::open(dir().join("index"))).unwrap();
+    let opened = reader.open_segments().unwrap();
+    let segments = opened.as_open_segments();
+    let mut owned: Vec<HashMap<String, FieldNorms<'_>>> = Vec::new();
+    for field in ["id", "offs", "pos", "docs", "tv", "both", "tvpos"] {
+        for (i, n) in reader.field_norms(field).into_iter().enumerate() {
+            if owned.len() <= i {
+                owned.push(HashMap::new());
+            }
+            if let Some(n) = n {
+                owned[i].insert(field.to_string(), n);
+            }
+        }
+    }
+    let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
+    let searcher = IndexSearcher::new(&segments, &norms).unwrap();
+    f(&reader, &searcher);
+}
+
+fn st(f: &str, t: &str) -> SpanNode {
+    SpanNode::term(f, t)
+}
+
+fn tq(f: &str, t: &str) -> Clause {
+    TermQuery::new(f, t).into()
+}
+
+fn phrase(f: &str, terms: &[&str]) -> PhraseQuery {
+    PhraseQuery::new(f, terms.iter().map(|s| s.as_bytes().to_vec()))
+}
+
+fn near(clauses: Vec<SpanNode>, slop: i32, in_order: bool) -> SpanNode {
+    SpanNode::near(clauses, slop, in_order).unwrap()
+}
+
+fn span_mtq(source: MultiTermSource) -> SpanNode {
+    SpanNode::multi_term(MultiTermQuery::new(source, RewriteMethod::default()))
+}
+
+/// `BooleanQuery` of `(occur, clause)`: `+` must, `-` must not, else should.
+fn boolean(msm: usize, clauses: Vec<(char, Clause)>) -> Clause {
+    let mut b = BooleanQuery::new();
+    b.minimum_should_match = msm;
+    for (occur, c) in clauses {
+        match occur {
+            '+' => b.must.push(c),
+            '-' => b.must_not.push(c),
+            _ => b.should.push(c),
+        }
+    }
+    b.into()
+}
+
+/// `GenUnifiedHighlight.built(i, f)`.
+fn built(i: usize, f: &str) -> Clause {
+    match i {
+        0 => near(vec![st(f, "quick"), st(f, "fox")], 1, false).into(),
+        1 => phrase(f, &["fox", "quick"]).with_slop(2).into(),
+        2 => PhraseQuery::with_positions(f, [("quick", 0), ("fox", 2)])
+            .unwrap()
+            .into(),
+        3 => MultiPhraseQuery::new(
+            f,
+            [
+                vec![b"quick".to_vec(), b"lazy".to_vec()],
+                vec![b"brown".to_vec(), b"dog".to_vec()],
+            ],
+        )
+        .into(),
+        4 => boolean(
+            0,
+            vec![
+                (
+                    ' ',
+                    SynonymQuery::new(f, [(b"fox".to_vec(), 1.0), (b"quick".to_vec(), 1.0)])
+                        .unwrap()
+                        .into(),
+                ),
+                (' ', phrase(f, &["quick", "brown"]).into()),
+            ],
+        ),
+        5 => near(
+            vec![
+                span_mtq(MultiTermSource::Prefix(PrefixQuery::new(f, "qu"))),
+                st(f, "brown"),
+            ],
+            0,
+            true,
+        )
+        .into(),
+        6 => SpanNode::or(vec![
+            st(f, "lazy"),
+            span_mtq(MultiTermSource::Wildcard(WildcardQuery::new(f, "f?x"))),
+        ])
+        .unwrap()
+        .into(),
+        7 => boolean(0, vec![('+', tq(f, "fox")), ('+', tq("id", "d0"))]),
+        8 => boolean(0, vec![('+', tq(f, "fox")), ('-', tq("id", "d4"))]),
+        9 => boolean(
+            2,
+            vec![
+                (' ', tq(f, "fox")),
+                (' ', tq("id", "d1")),
+                (' ', tq(f, "zzz")),
+            ],
+        ),
+        10 => boolean(
+            2,
+            vec![
+                (' ', phrase(f, &["quick", "brown"]).into()),
+                (' ', tq("docs", "cat")),
+            ],
+        ),
+        11 => SpanNode::not(st(f, "fox"), st(f, "quick"), 1, 1)
+            .unwrap()
+            .into(),
+        12 => SpanNode::first(st(f, "fox"), 5).into(),
+        13 => boolean(0, vec![(' ', tq(f, "fox")), (' ', tq("pos", "quick"))]),
+        14 => ConstantScoreQuery::new(
+            BoostQuery::new(
+                Clause::from(near(vec![st(f, "the"), st(f, "fox")], 3, true)),
+                2.0,
+            ),
+            1.0,
+        )
+        .into(),
+        15 => DisjunctionMaxQuery::new(
+            [Clause::from(phrase(f, &["lazy", "dog"])), tq(f, "fox")],
+            0.1,
+        )
+        .into(),
+        16 => SpanNode::within(
+            near(vec![st(f, "quick"), st(f, "fox")], 3, true),
+            st(f, "brown"),
+        )
+        .unwrap()
+        .into(),
+        17 => phrase(f, &["fox"]).into(),
+        18 => boolean(
+            0,
+            vec![
+                (
+                    '+',
+                    near(vec![st(f, "quick"), st(f, "fox")], 1, false).into(),
+                ),
+                ('-', tq(f, "cat")),
+            ],
+        ),
+        19 => boolean(
+            0,
+            vec![
+                (' ', phrase(f, &["quick", "brown"]).into()),
+                (' ', PrefixQuery::new(f, "qu").into()),
+            ],
+        ),
+        20 => near(
+            vec![
+                span_mtq(MultiTermSource::Regexp(RegexpQuery::new(f, "la.y"))),
+                st(f, "dog"),
+            ],
+            0,
+            true,
+        )
+        .into(),
+        21 => SpanNode::containing(
+            near(vec![st(f, "quick"), st(f, "fox")], 2, true),
+            st(f, "brown"),
+        )
+        .unwrap()
+        .into(),
+        _ => boolean(
+            0,
+            vec![
+                (' ', phrase(f, &["quick", "brown"]).into()),
+                (' ', st("pos", "quick").into()),
+            ],
+        ),
+    }
+}
+
+/// The documents' snippets as the fixture joins them.
+fn joined<T: ToString>(snippets: Vec<Option<T>>) -> String {
+    snippets
+        .into_iter()
+        .map(|s| s.map_or_else(|| "\u{2}".to_string(), |s| s.to_string()))
+        .collect::<Vec<_>>()
+        .join("\u{1f}")
+}
+
+#[test]
+fn built_queries_highlight_as_lucenes_do() {
+    with_index(|reader, searcher| {
+        let analyzer = Arc::new(Analyzer::new(StandardAnalyzer::new()));
+        let all: Vec<i32> = (0..reader.max_doc()).collect();
+        let want = fs::read_to_string(dir().join("uhighlight-built.tsv")).unwrap();
+        let (mut checked, mut bad) = (0, Vec::new());
+        for row in want.lines() {
+            let c: Vec<&str> = row.split('\t').collect();
+            let (cfg, qi): (usize, usize) = (c[0].parse().unwrap(), c[1].parse().unwrap());
+            let field = c[2];
+            let mut uh = UnifiedHighlighter::new(Some(reader), Some(Arc::clone(&analyzer)));
+            uh = match cfg {
+                0 => uh,
+                1 => uh.with_flags(true, true, true, false),
+                2 => uh.with_flags(false, true, true, false),
+                3 => uh
+                    .with_flags(true, true, true, false)
+                    .with_field_matcher(Arc::new(|_| true)),
+                _ => uh.with_field_matcher(Arc::new(|_| true)),
+            };
+            let query = built(qi, field);
+            let got = match uh.highlight_fields(searcher, &[field], &query, &all, &[2]) {
+                Ok(mut m) => format!("R\t{}", joined(m.remove(field).unwrap())),
+                Err(e) => format!("X\t{}", e.class()),
+            };
+            let expected = format!("{}\t{}", c[3], unesc(c[4]));
+            checked += 1;
+            if got != expected {
+                bad.push(format!(
+                    "config {cfg} query {qi} field {field}\n  want {}\n  got  {}",
+                    expected.replace('\n', "\\n"),
+                    got.replace('\n', "\\n")
+                ));
+            }
+        }
+        assert!(
+            bad.is_empty(),
+            "{} of {checked} differ:\n{}",
+            bad.len(),
+            bad.iter().take(8).cloned().collect::<Vec<_>>().join("\n")
+        );
+        assert_eq!(checked, 575);
+    });
+}
+
+/// `GenUnifiedHighlight.Snip`.
+struct Snip(usize, String);
+
+impl std::fmt::Display for Snip {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}|{}", self.0, self.1)
+    }
+}
+
+/// `GenUnifiedHighlight.LoggingFormatter`: logs the head of the content of
+/// each call, in call order.
+#[derive(Default)]
+struct LoggingFormatter {
+    log: Mutex<Vec<String>>,
+    inner: DefaultPassageFormatter,
+}
+
+impl PassageFormatter for LoggingFormatter {
+    fn format(&self, passages: &[Passage], content: &[u16]) -> String {
+        self.format_object(passages, content).to_string()
+    }
+    fn format_object(&self, passages: &[Passage], content: &[u16]) -> HighlightObject {
+        let head = String::from_utf16_lossy(&content[..content.len().min(12)]);
+        self.log.lock().unwrap().push(head);
+        Box::new(Snip(passages.len(), self.inner.format(passages, content)))
+    }
+}
+
+const CALL_FIELDS: [&str; 4] = ["tv", "offs", "pos", "both"];
+const CALL_MAX_PASSAGES: [i32; 4] = [1, 2, 1, 2];
+const CALL_DOCS: [i32; 6] = [5, 0, 3, 0, 7, 1];
+
+fn call_query(i: usize) -> Clause {
+    let mut b = BooleanQuery::new();
+    for f in CALL_FIELDS {
+        b.should.push(if i == 0 {
+            tq(f, "fox")
+        } else {
+            PrefixQuery::new(f, "qu").into()
+        });
+    }
+    b.into()
+}
+
+#[test]
+fn stored_values_are_batched_and_objects_returned_as_lucene_does() {
+    with_index(|reader, searcher| {
+        let analyzer = Arc::new(Analyzer::new(StandardAnalyzer::new()));
+        let want = fs::read_to_string(dir().join("uhighlight-calls.tsv")).unwrap();
+        let mut checked = 0;
+        for row in want.lines() {
+            let c: Vec<&str> = row.split('\t').collect();
+            let (threshold, qi): (i32, usize) = (c[0].parse().unwrap(), c[1].parse().unwrap());
+            let formatter = Arc::new(LoggingFormatter::default());
+            let mut uh = UnifiedHighlighter::new(Some(reader), Some(Arc::clone(&analyzer)))
+                .with_formatter(Arc::clone(&formatter) as _);
+            if threshold >= 0 {
+                uh = uh.with_cache_field_val_chars_threshold(threshold);
+            }
+            let got = uh
+                .highlight_fields_as_objects(
+                    searcher,
+                    &CALL_FIELDS,
+                    &call_query(qi),
+                    &CALL_DOCS,
+                    &CALL_MAX_PASSAGES,
+                )
+                .unwrap();
+            let log = formatter.log.lock().unwrap().join("\u{1f}");
+            assert_eq!(
+                log,
+                unesc(c[2]),
+                "threshold {threshold} query {qi}: the calls"
+            );
+            let fields: Vec<String> = got
+                .into_iter()
+                .map(|(field, objects)| {
+                    for o in objects.iter().flatten() {
+                        assert!(o.as_any().downcast_ref::<Snip>().is_some());
+                    }
+                    format!("{field}={}", joined(objects))
+                })
+                .collect();
+            let expected: Vec<String> = c[3..].iter().map(|s| unesc(s)).collect();
+            assert_eq!(
+                fields, expected,
+                "threshold {threshold} query {qi}: the objects"
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 6);
+    });
 }
