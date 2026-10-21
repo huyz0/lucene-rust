@@ -1,11 +1,12 @@
 //! Differential test against `GenTestFrameworkSearch`
-//! (`fixtures/testframework/data/search.txt`): the explanation index's top
-//! docs, score bits and explanations, and the search-equivalence corpus,
-//! each equal to what Lucene 10.5.0 gives on the same `java.util.Random`
-//! streams. (The dump's similarity sections are checked with the similarity
-//! bases.)
+//! (`fixtures/testframework/data/search.txt`): the similarity bases'
+//! random scoring and bulk scoring, `RandomSimilarity`'s picks, the
+//! explanation index's top docs, score bits and explanations, and the
+//! search-equivalence corpus, each equal to what Lucene 10.5.0 gives on the
+//! same `java.util.Random` streams.
 
 mod explanation_dsl;
+mod similarity_cases;
 
 use std::fmt::Write as _;
 
@@ -16,12 +17,172 @@ use lucene_search::query::{Clause, TermQuery};
 use lucene_search::similarities::{ClassicSimilarity, Similarity};
 use lucene_test_framework::search::base_explanation::{top_level, BaseExplanation};
 use lucene_test_framework::search::search_equivalence::SearchEquivalence;
+use lucene_test_framework::search::similarities::{
+    bulk_score, java_shuffle, random_scoring, Knobs, RandomSimilarity, ScoringCase,
+};
 use lucene_util::java_random::JavaRandom;
 
 const DATA: &str = include_str!("../../../fixtures/testframework/data/search.txt");
 
+/// `atLeast`/`rarely` as the twin runs them: multiplier 1, not nightly.
+const KNOBS: Knobs = Knobs {
+    nightly: false,
+    multiplier: 1,
+};
+
+fn lines(prefix: &str) -> impl Iterator<Item = Vec<&'static str>> + '_ {
+    DATA.lines()
+        .filter(move |l| l.split(' ').next() == Some(prefix))
+        .map(|l| l.split(' ').skip(1).collect())
+}
+
+/// FNV-1a over 64-bit values, as the twin's `feed`.
+struct Fnv(u64);
+
+impl Fnv {
+    fn new() -> Self {
+        Fnv(0xcbf2_9ce4_8422_2325)
+    }
+
+    fn feed(&mut self, v: i64) {
+        self.0 = (self.0 ^ v as u64).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+
+    /// `(long) Float.floatToRawIntBits(f)`: sign-extended.
+    fn feed_f(&mut self, f: f32) {
+        self.feed(i64::from(f.to_bits() as i32));
+    }
+
+    fn hex(&self) -> String {
+        format!("{:016x}", self.0)
+    }
+}
+
 fn bits(f: f32) -> String {
     format!("{:08x}", f.to_bits())
+}
+
+fn feed_case(h: &mut Fnv, c: &ScoringCase) {
+    for v in [
+        c.corpus.max_doc,
+        c.corpus.doc_count,
+        c.corpus.sum_total_term_freq,
+        c.corpus.sum_doc_freq,
+        c.term.doc_freq,
+        c.term.total_term_freq,
+    ] {
+        h.feed(v);
+    }
+    h.feed_f(c.boost);
+    h.feed_f(c.freq);
+    h.feed(i64::from(c.norm));
+    for f in [c.max_score, c.score, c.prev_freq, c.prev_score] {
+        h.feed_f(f);
+    }
+    for o in [c.prev_norm_score, c.prev_term_score] {
+        match o {
+            None => h.feed(0),
+            Some(f) => {
+                h.feed(1);
+                h.feed_f(f);
+            }
+        }
+    }
+}
+
+fn verbatim(c: &ScoringCase) -> String {
+    let opt = |o: Option<f32>| o.map_or("-".to_string(), bits);
+    format!(
+        "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+        c.corpus.max_doc,
+        c.corpus.doc_count,
+        c.corpus.sum_total_term_freq,
+        c.corpus.sum_doc_freq,
+        c.term.doc_freq,
+        c.term.total_term_freq,
+        bits(c.boost),
+        bits(c.freq),
+        c.norm,
+        bits(c.max_score),
+        bits(c.score),
+        bits(c.prev_freq),
+        bits(c.prev_score),
+        opt(c.prev_norm_score),
+        opt(c.prev_term_score)
+    )
+}
+
+/// Every `BaseSimilarityTestCase` subclass's `testRandomScoring` and
+/// `testBulkScore`: the same cases, the same score bits.
+#[test]
+fn similarity_scores_are_javas_bit_for_bit() {
+    let sims: Vec<_> = lines("sim").collect();
+    assert_eq!(sims.len(), similarity_cases::CASES.len() * 4);
+    for sim in sims {
+        let (name, kind, seed, count, hash) = (sim[0], sim[1], sim[2], sim[3], sim[4]);
+        let get = similarity_cases::get(name);
+        let seed_n: i64 = seed.parse().expect("seed");
+        let mut random = JavaRandom::new(seed_n);
+        let mut h = Fnv::new();
+        let n = if kind == "scoring" {
+            let want: Vec<String> = lines("case")
+                .filter(|c| c[0] == name && c[1] == seed)
+                .map(|c| c[3..].join(" "))
+                .collect();
+            let mut n = 0;
+            random_scoring(&mut random, KNOBS, get, |c| {
+                if n < want.len() {
+                    assert_eq!(verbatim(c), want[n], "{name} seed {seed} case {n}");
+                }
+                feed_case(&mut h, c);
+                n += 1;
+            });
+            n
+        } else {
+            let batches = bulk_score(&mut random, KNOBS, get);
+            for b in &batches {
+                h.feed(i64::try_from(b.len()).expect("small"));
+                for &s in b {
+                    h.feed_f(s);
+                }
+            }
+            batches.len()
+        };
+        assert_eq!(n.to_string(), count, "{name} {kind} seed {seed}: count");
+        assert_eq!(h.hex(), hash, "{name} {kind} seed {seed}: hash");
+    }
+}
+
+/// `Collections.shuffle` and `RandomSimilarity.get`'s per-field picks.
+#[test]
+fn random_similarity_picks_are_javas() {
+    let want = lines("shuffle").next().expect("a shuffle line")[0];
+    let mut v: Vec<i32> = (0..10).collect();
+    java_shuffle(&mut v, &mut JavaRandom::new(42));
+    let got = format!(
+        "[{}]",
+        v.iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    assert_eq!(got, want);
+
+    const FIELDS: [&str; 14] = [
+        "field", "body", "title", "id", "KEY", "alt", "f0", "f1", "f2", "f3", "f4", "f5", "f6",
+        "f7",
+    ];
+    let mut n = 0;
+    for l in lines("rsim") {
+        let sim = RandomSimilarity::new(&mut JavaRandom::new(l[0].parse().expect("seed")));
+        let picks: Vec<String> = FIELDS
+            .iter()
+            .map(|f| sim.all_sims_index(f).to_string())
+            .collect();
+        assert_eq!(picks.join(","), l[1], "seed {}", l[0]);
+        n += 1;
+    }
+    assert_eq!(n, 20);
 }
 
 /// The twin's explanation queries, by name.
