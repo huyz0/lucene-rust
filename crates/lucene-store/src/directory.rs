@@ -497,7 +497,23 @@ impl FsCore {
             // If the delete failed it went back in; take it out again.
             self.pending().remove(name);
         }
-        index_output::create_output(&self.root, name)
+        self.create_new(name)
+    }
+
+    /// `new FSIndexOutput(name)`: `WRITE, CREATE_NEW`, so an existing name
+    /// fails with `ErrorKind::AlreadyExists` (`FileAlreadyExistsException`).
+    /// A root that does not exist yet is created first -- Java's
+    /// constructor creates it; this port does it on the first output.
+    fn create_new(&self, name: &str) -> Result<FsIndexOutput> {
+        match FsIndexOutput::create_new(&self.root, name) {
+            Err(Error::Io(e))
+                if e.kind() == std::io::ErrorKind::NotFound && !self.root.is_dir() =>
+            {
+                fs::create_dir_all(&self.root)?;
+                FsIndexOutput::create_new(&self.root, name)
+            }
+            other => other,
+        }
     }
 
     /// `FSDirectory.createTempOutput(prefix, suffix, context)`.
@@ -509,7 +525,7 @@ impl FsCore {
             if self.is_pending(&name) {
                 continue;
             }
-            match FsIndexOutput::create_new(&self.root, &name) {
+            match self.create_new(&name) {
                 Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 other => return other,
             }
@@ -638,8 +654,8 @@ pub struct FsDirectory {
 impl FsDirectory {
     /// `FSDirectory.open(path)`: locks with [`NativeFsLockFactory`]
     /// (`FSLockFactory.getDefault()`). Neither creates nor canonicalises the
-    /// path up front, unlike Java's constructor -- the lock factory creates
-    /// the directory when a writer first locks it.
+    /// path up front, unlike Java's constructor: the first output (or the
+    /// lock factory, when a writer first locks it) creates the directory.
     pub fn open(root: impl Into<PathBuf>) -> Self {
         Self::with_lock_factory(root, default_fs_lock_factory())
     }
@@ -1421,6 +1437,38 @@ mod tests {
         replace_dir_with_file(root, name);
     }
 
+    /// `FSDirectory.createOutput` is `CREATE_NEW`: an existing name is
+    /// `FileAlreadyExistsException` (`BaseDirectoryTestCase.
+    /// testCreateOutputForExistingFile`), the file untouched; and the first
+    /// output under a root that does not exist yet creates it, as Java's
+    /// constructor does (`TestFileSwitchDirectory` over two fresh paths).
+    #[test]
+    fn create_output_refuses_an_existing_name_and_creates_a_missing_root() {
+        let root = tempdir();
+        let dirs: Vec<Box<dyn Directory>> = vec![
+            Box::new(FsDirectory::open(root.join("fs/nested"))),
+            Box::new(MmapDirectory::open(root.join("mm/nested"))),
+        ];
+        for dir in &dirs {
+            let mut out = dir.create_output("file").unwrap();
+            out.write_bytes(b"abc");
+            out.close().unwrap();
+            let err = dir.create_output("file").unwrap_err();
+            match &err {
+                Error::Io(e) => assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists),
+                other => panic!("{other}"),
+            }
+            assert_eq!(&*dir.open("file").unwrap(), b"abc");
+            dir.delete_file("file").unwrap();
+            dir.create_output("file").unwrap().close().unwrap();
+        }
+        let temp_root = root.join("temp/nested");
+        let dir = FsDirectory::open(&temp_root);
+        let out = dir.create_temp_output("p", "s").unwrap();
+        out.close().unwrap();
+        assert!(temp_root.is_dir());
+    }
+
     #[test]
     fn pending_deletes_are_retried_by_later_operations_and_on_drop() {
         let root = tempdir();
@@ -1482,8 +1530,10 @@ mod tests {
         let fs_dir = FsDirectory::open(&root);
         let out = fs_dir.create_temp_output("_0", "sort").unwrap();
         assert_eq!(crate::IndexOutput::name(&out), "_0_sort_2.tmp");
-        // A missing directory is an error, not an endless retry.
-        assert!(FsDirectory::open(root.join("missing"))
+        // A directory that cannot be created is an error, not an endless
+        // retry (a missing one is created, as Java's constructor does).
+        index_output::write_all_bytes(&root, "plain_file", b"").unwrap();
+        assert!(FsDirectory::open(root.join("plain_file").join("missing"))
             .create_temp_output("_0", "x")
             .is_err());
         assert_eq!(temp_file_name("_5", "fdt", 35), "_5_fdt_z.tmp");
