@@ -456,9 +456,14 @@ mod tests {
         let to = HardlinkCopyDirectory::new(FsDirectory::open(b.path()));
         to.copy_from(&from, "f", "g").unwrap();
         assert_eq!(&*to.open("g").unwrap(), b"hello");
-        // The destination exists now: the link fails, and so does the copy's
-        // later attempt only if it cannot create the file; either way the
-        // bytes are those of the source.
+        // The destination exists now: Java's wrapper returns the link's
+        // FileAlreadyExistsException as suppressed and the byte copy, which
+        // is CREATE_NEW, fails with it too. Directory.copyFrom deletes the
+        // destination on any failure, a failed createOutput included, so the
+        // earlier copy is gone.
+        let err = to.copy_from(&from, "f", "g").unwrap_err();
+        assert!(format!("{err}").contains("File exists"), "{err}");
+        assert!(to.open("g").is_err());
         to.copy_from(&from, "f", "g").unwrap();
         assert_eq!(&*to.open("g").unwrap(), b"hello");
         assert!(to.copy_from(&from, "missing", "h").is_err());

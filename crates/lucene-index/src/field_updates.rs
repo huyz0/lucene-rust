@@ -1160,6 +1160,7 @@ mod tests {
         // Rewrite the `.si` without its `.fnm` entry.
         let mut si = segment_info::parse(&dir.open("_0.si").unwrap(), &SEG_ID).unwrap();
         si.files.retain(|f| !f.ends_with(".fnm"));
+        dir.delete_file("_0.si").unwrap();
         write_file(&dir, "_0.si", &segment_info::write(&si, "")).unwrap();
         let err = write_field_updates(&dir, &mut sci, &[(0, vec![(0, Some(1))])], &[], SUFFIX)
             .unwrap_err();
@@ -1232,6 +1233,7 @@ mod tests {
                 si.files.push(name);
             }
         }
+        dir.delete_file("_0.si").unwrap();
         write_file(&dir, "_0.si", &segment_info::write(&si, "")).unwrap();
 
         write_field_updates(&dir, &mut sci, &[(0, vec![(1, Some(99))])], &[], SUFFIX).unwrap();
@@ -1283,6 +1285,7 @@ mod tests {
             write_file(&dir, &name, bytes).unwrap();
             si.files.push(name);
         }
+        dir.delete_file("_0.si").unwrap();
         write_file(&dir, "_0.si", &segment_info::write(&si, "")).unwrap();
 
         let err = write_field_updates(&dir, &mut sci, &[(0, vec![(0, Some(1))])], &[], SUFFIX)

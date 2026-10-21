@@ -766,12 +766,17 @@ mod tests {
 
     #[test]
     fn flush_surfaces_directory_io_error_rather_than_panicking() {
-        // A directory that doesn't exist makes the very first create_output
-        // (the .fdt file) fail -- confirms Error::Store's #[from] wrapping
-        // actually propagates a real Directory I/O failure as an Err rather
-        // than panicking or silently losing the error, the one path this
-        // module's own error type exists to cover.
-        let dir = FsDirectory::open("/nonexistent-lucene-rust-segment-writer-test-dir");
+        // A root under a regular file cannot be created, so the very first
+        // create_output (the .fdt file) fails -- confirms Error::Store's
+        // #[from] wrapping propagates a real Directory I/O failure as an Err
+        // rather than panicking or silently losing the error, the one path
+        // this module's own error type exists to cover. (A merely missing
+        // root no longer fails: the first output creates it, as Java's
+        // FSDirectory constructor does.)
+        let tmp = tempdir();
+        let blocker = std::path::Path::new(&tmp).join("blocker");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        let dir = FsDirectory::open(blocker.join("index"));
         let fields = vec![stored_only_field("id", 0)];
         let docs = vec![doc("1")];
 
