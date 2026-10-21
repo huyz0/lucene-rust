@@ -680,8 +680,10 @@ waiting on it waited for ever), and the drive filled -- Docker's virtual disk
 `C:` had 1.5 GB free, rustc died with SIGBUS mid-build and the engine went down
 with it.
 
-`docker-test.sh` runs `preflight.sh host` before every container, and `gate.sh`
-runs `preflight.sh container` first. It deletes only build output that
+`docker-test.sh` runs `preflight.sh host` before every container, and
+`preflight.sh container` first inside every container (`gate.sh` runs it
+itself). The container check once ran only in the gate, and coverage, fixture
+and bench runs between gates grew the volume to 146 GB. It deletes only build output that
 regenerates: Docker's *build cache* above `BUILD_CACHE_MAX_GB` (pruned down to
 `BUILD_CACHE_KEEP_GB`; `DOCKER_AUTO_PRUNE=0` only warns) and cargo `incremental`
 directories above `INCREMENTAL_MAX_MB`, and, once the target volume passes
