@@ -6665,12 +6665,28 @@ impl IndexWriter<'_> {
     /// Java also validates that each field exists and is a doc-values-only
     /// NUMERIC/BINARY field (`verifyOrCreateDvOnlyField`) and that it is not
     /// part of the index sort. This port checks the same two things against
-    /// its own fixed field list: [`Error::UnknownDocValuesUpdateField`] and
-    /// [`Error::WrongDocValuesUpdateType`].
+    /// its field list: [`Error::UnknownDocValuesUpdateField`] and
+    /// [`Error::WrongDocValuesUpdateType`]. With explicit documents (the
+    /// document API's mode, whose schema grows as fields arrive) an unknown
+    /// field is created as a doc-values-only field first, as Java's
+    /// `buildDocValuesUpdate` (`verifyOrCreateDvOnlyField(name, type,
+    /// false)`) creates it; a fixed field list refuses it.
+    /// [`Self::update_numeric_doc_value`] and [`Self::update_binary_doc_value`]
+    /// never create one (Java passes `fieldMustExist`).
     pub fn update_doc_values(&mut self, term: Term, updates: &[DocValuesUpdate]) -> Result<SeqNo> {
         if updates.is_empty() {
             return Err(Error::NoDocValuesUpdatesSupplied);
         }
+        self.create_doc_values_only_fields(updates)?;
+        self.update_existing_doc_values(term, updates)
+    }
+
+    /// [`Self::update_doc_values`] of fields that must exist.
+    fn update_existing_doc_values(
+        &mut self,
+        term: Term,
+        updates: &[DocValuesUpdate],
+    ) -> Result<SeqNo> {
         let mut retargeted = Vec::with_capacity(updates.len());
         for update in updates {
             self.cfg.verify_doc_values_update_field(update)?;
@@ -6680,6 +6696,34 @@ impl IndexWriter<'_> {
         let seq_no = self.buffer_delete_node(DeleteNode::DocValuesUpdates(retargeted), doc_id_upto);
         self.maybe_apply_deletes()?;
         Ok(seq_no)
+    }
+
+    /// `verifyOrCreateDvOnlyField(name, type, false)`'s create half, for a
+    /// writer on explicit documents: each update naming a field nothing has
+    /// registered registers it, not indexed, with the update's doc-values
+    /// type.
+    pub(crate) fn create_doc_values_only_fields(
+        &mut self,
+        updates: &[DocValuesUpdate],
+    ) -> Result<()> {
+        if !self.cfg.explicit {
+            return Ok(());
+        }
+        for update in updates {
+            if self.registered_field(update.field()).is_some() {
+                continue;
+            }
+            let doc_values_type = match update {
+                DocValuesUpdate::Numeric { .. } => DocValuesType::Numeric,
+                DocValuesUpdate::Binary { .. } => DocValuesType::Binary,
+            };
+            self.register_field(FieldInfo::new(update.field(), 0).with_doc_values(
+                doc_values_type,
+                lucene_codecs::field_infos::DocValuesSkipIndexType::None,
+                -1,
+            ))?;
+        }
+        Ok(())
     }
 
     /// `IndexWriter.updateNumericDocValue(Term, String, long)`.
@@ -6694,7 +6738,7 @@ impl IndexWriter<'_> {
             field: field.to_string(),
             value: Some(value),
         };
-        self.update_doc_values(term, std::slice::from_ref(&update))
+        self.update_existing_doc_values(term, std::slice::from_ref(&update))
     }
 
     /// `IndexWriter.updateBinaryDocValue(Term, String, BytesRef)`. Java
@@ -6713,7 +6757,7 @@ impl IndexWriter<'_> {
             field: field.to_string(),
             value: Some(value.to_vec()),
         };
-        self.update_doc_values(term, std::slice::from_ref(&update))
+        self.update_existing_doc_values(term, std::slice::from_ref(&update))
     }
 
     /// The atomic delete-by-term + add-document real Lucene calls
