@@ -21557,6 +21557,7 @@ pub(crate) mod tests {
             let si_bytes = dir.open(&si_name).unwrap().to_vec();
             let mut si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
             si.index_sort = None;
+            dir.delete_file(&si_name).unwrap();
             write_file(&dir, &si_name, &segment_info::write(&si, "")).unwrap();
         }
         let names: Vec<String> = writer
@@ -21605,6 +21606,7 @@ pub(crate) mod tests {
         let si_bytes = dir.open(&si_name).unwrap().to_vec();
         let mut si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
         si.index_sort = Some(vec![sort_field("rank", false, SortMissingValue::Last)]);
+        dir.delete_file(&si_name).unwrap();
         write_file(&dir, &si_name, &segment_info::write(&si, "")).unwrap();
         let results = crate::check_index::check_directory(&dir).unwrap();
         let failures: Vec<String> = results
@@ -22355,6 +22357,7 @@ pub(crate) mod tests {
         let fdm_name = format!("{}.fdm", names[0]);
         let mut fdm = dir.open(&fdm_name).unwrap().to_vec();
         patch_fdm_max_doc(&mut fdm, 3, i32::MAX);
+        dir.delete_file(&fdm_name).unwrap();
         write_file(&dir, &fdm_name, &fdm).unwrap();
 
         assert!(
@@ -22414,6 +22417,7 @@ pub(crate) mod tests {
         let si_bytes = dir.open(&si_name).unwrap().to_vec();
         let mut si = segment_info::parse(&si_bytes, &sci.segment_id).unwrap();
         si.index_sort = Some(vec![sort_field("rank", false, SortMissingValue::Last)]);
+        dir.delete_file(&si_name).unwrap();
         write_file(&dir, &si_name, &segment_info::write(&si, "")).unwrap();
 
         // Still a merge candidate -- the exclusion is gone.
