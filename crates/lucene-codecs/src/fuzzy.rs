@@ -273,7 +273,7 @@ impl SharedDfas {
 /// term against.
 #[derive(Debug, Clone)]
 pub struct FuzzyMatch<'a> {
-    term: &'a [u8],
+    term: std::borrow::Cow<'a, [u8]>,
     /// `term` decoded once, so a scan over thousands of candidates does not
     /// re-decode the target for each of them.
     term_chars: Vec<char>,
@@ -307,7 +307,7 @@ impl<'a> FuzzyMatch<'a> {
             .map(|c| c.len_utf8())
             .sum();
         Self {
-            term,
+            term: std::borrow::Cow::Borrowed(term),
             term_chars,
             prefix_chars,
             prefix_bytes,
@@ -316,6 +316,22 @@ impl<'a> FuzzyMatch<'a> {
             dfa: std::sync::OnceLock::new(),
             compiled: std::sync::OnceLock::new(),
             lower: [std::sync::OnceLock::new(), std::sync::OnceLock::new()],
+        }
+    }
+
+    /// This pattern over its own copy of the term, for a holder that
+    /// outlives the term's owner; what it has cached is kept.
+    pub fn into_owned(self) -> FuzzyMatch<'static> {
+        FuzzyMatch {
+            term: std::borrow::Cow::Owned(self.term.into_owned()),
+            term_chars: self.term_chars,
+            prefix_chars: self.prefix_chars,
+            prefix_bytes: self.prefix_bytes,
+            max_edits: self.max_edits,
+            transpositions: self.transpositions,
+            dfa: self.dfa,
+            compiled: self.compiled,
+            lower: self.lower,
         }
     }
 
@@ -380,7 +396,7 @@ impl<'a> FuzzyMatch<'a> {
     /// [`crate::blocktree::FieldTerms`] to narrow its scan to a contiguous
     /// sorted range via binary search first, the same literal-prefix-range
     /// trick `wildcard.rs`'s `literal_prefix` already uses.
-    pub fn literal_prefix(&self) -> &'a [u8] {
+    pub fn literal_prefix(&self) -> &[u8] {
         &self.term[..self.prefix_bytes]
     }
 
@@ -1002,5 +1018,23 @@ mod tests {
         cache.put((vec![0; SHARED_DFA_BUDGET_BYTES], 1, 0, true), None);
         assert!(cache.get(&small).is_none());
         assert_eq!(cache.map.lock().unwrap().dfas.len(), 1);
+    }
+
+    #[test]
+    fn an_owned_pattern_matches_as_the_borrowed_one() {
+        let term = b"quick".to_vec();
+        let borrowed = FuzzyMatch::new(&term, 1, 1, true);
+        let expected: Vec<bool> = [&b"quick"[..], b"quack", b"qiuck", b"xuick", b""]
+            .iter()
+            .map(|t| borrowed.matches(t))
+            .collect();
+        let owned = borrowed.into_owned();
+        drop(term);
+        let got: Vec<bool> = [&b"quick"[..], b"quack", b"qiuck", b"xuick", b""]
+            .iter()
+            .map(|t| owned.matches(t))
+            .collect();
+        assert_eq!(got, expected);
+        assert_eq!(expected, [true, true, true, false, false]);
     }
 }
