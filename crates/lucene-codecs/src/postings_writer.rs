@@ -127,8 +127,8 @@ pub enum Error {
     )]
     MissingPositions { index: usize, doc_index: usize },
     #[error(
-        "write_single_field: term at index {index}, doc index {doc_index} has non-ascending or \
-         duplicate positions -- positions must strictly increase within a doc"
+        "write_single_field: term at index {index}, doc index {doc_index} has decreasing \
+         positions -- positions must not decrease within a doc"
     )]
     PositionsNotAscending { index: usize, doc_index: usize },
     #[error(
@@ -1409,7 +1409,10 @@ fn validate_field<'a, T: TermSource>(input: &FieldPostingsInput<'a, T>) -> Resul
                         freq,
                     });
                 }
-                if positions.windows(2).any(|w| w[0] >= w[1]) {
+                // A repeated position is legal: a token with a position
+                // increment of 0 that repeats the term (Java's indexing chain
+                // allows it, and `addPosition` writes a delta of 0).
+                if positions.windows(2).any(|w| w[0] > w[1]) {
                     return Err(Error::PositionsNotAscending {
                         index: i,
                         doc_index: j,
@@ -4211,29 +4214,55 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_ascending_positions_within_a_doc() {
-        let terms = vec![TermPostings {
-            payload_bytes: Vec::new(),
-            payload_lengths: Vec::new(),
-            term: b"a".to_vec(),
-            docs: vec![(0, 2)],
-            positions: vec![vec![3, 3]], // duplicate, not strictly ascending
-            offsets: Vec::new(),
-        }];
-        let input = FieldPostingsInput {
-            field_number: 0,
-            index_options: IndexOptions::DocsAndFreqsAndPositions,
-            doc_count: 1,
-            has_payloads: false,
-            terms: &terms,
+    fn rejects_decreasing_positions_within_a_doc_but_not_repeated_ones() {
+        let write = |positions: Vec<i32>| {
+            let terms = vec![TermPostings {
+                payload_bytes: Vec::new(),
+                payload_lengths: Vec::new(),
+                term: b"a".to_vec(),
+                docs: vec![(0, 2)],
+                positions: vec![positions],
+                offsets: Vec::new(),
+            }];
+            let input = FieldPostingsInput {
+                field_number: 0,
+                index_options: IndexOptions::DocsAndFreqsAndPositions,
+                doc_count: 1,
+                has_payloads: false,
+                terms: &terms,
+            };
+            write_single_field(&input, &SEG_ID, SUFFIX)
         };
         assert!(matches!(
-            write_single_field(&input, &SEG_ID, SUFFIX),
+            write(vec![4, 3]),
             Err(Error::PositionsNotAscending {
                 index: 0,
                 doc_index: 0,
             })
         ));
+        // A position increment of 0 repeating the term: Java writes it, as a
+        // delta of 0, and it reads back as two occurrences at one position.
+        let output = write(vec![3, 3]).expect("a repeated position is legal");
+        let fis = FieldInfos {
+            fields: vec![field_info(
+                0,
+                "body",
+                IndexOptions::DocsAndFreqsAndPositions,
+            )],
+        };
+        let (fields, doc_in) = open_written(&output, &fis, 1);
+        let pos_in =
+            crate::postings::PosInput::open(&output.pos, &SEG_ID, SUFFIX).expect("open .pos");
+        let positions = fields
+            .field("body")
+            .unwrap()
+            .positions(b"a", Some(&doc_in), &pos_in, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            positions[0].iter().map(|p| p.position).collect::<Vec<_>>(),
+            vec![3, 3]
+        );
     }
 
     /// Two fields ("title": term-freq only, "body": positions) written in
