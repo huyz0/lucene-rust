@@ -194,6 +194,9 @@ impl IndexWriter<'_> {
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let mut plans = Vec::new();
         let mut total = self.live_doc_total()?;
+        // `globalFieldNumberMap.addOrGet` registers each incoming field as
+        // it goes, so a later source is checked against an earlier one.
+        let mut incoming_fields = std::collections::HashMap::new();
         for (source, src) in sources.iter().enumerate() {
             let infos = segment_infos::read_latest(*src)?;
             for (segment, sci) in infos.segments.into_iter().enumerate() {
@@ -202,7 +205,7 @@ impl IndexWriter<'_> {
                     &sci.segment_id,
                     &sci.codec_name,
                 )?;
-                self.check_addable(*src, &sci, &si)?;
+                self.check_addable(*src, &sci, &si, &mut incoming_fields)?;
                 total = total.saturating_add(i64::from(si.doc_count));
                 plans.push((*src, (source, segment), sci, si));
             }
@@ -271,12 +274,14 @@ impl IndexWriter<'_> {
     }
 
     /// The index sort and the fields of one incoming segment against this
-    /// writer's.
+    /// writer's and the earlier incoming segments' (`incoming_fields`, which
+    /// this call extends).
     fn check_addable(
         &self,
         src: &dyn Directory,
         sci: &SegmentCommitInfo,
         si: &segment_info::SegmentInfo,
+        incoming_fields: &mut std::collections::HashMap<String, FieldInfo>,
     ) -> Result<()> {
         if let Some(sort) = &self.cfg.index_sort {
             let congruent = si.index_sort.as_ref().is_some_and(|existing| {
@@ -293,54 +298,26 @@ impl IndexWriter<'_> {
         // Through the segment's compound file when it has one.
         let incoming = super::segment_field_infos(src, sci)?;
         for theirs in &incoming.fields {
-            let Some(ours) = self.cfg.fields.iter().find(|f| f.name == theirs.name) else {
-                continue;
+            let ours = match self.cfg.fields.iter().find(|f| f.name == theirs.name) {
+                Some(ours) => ours.clone(),
+                None => match self.segments_schema(&theirs.name)? {
+                    Some(ours) => ours,
+                    None => match incoming_fields.get(&theirs.name) {
+                        Some(earlier) => earlier.clone(),
+                        None => {
+                            incoming_fields.insert(theirs.name.clone(), theirs.clone());
+                            continue;
+                        }
+                    },
+                },
             };
-            if let Some(what) = Self::schema_conflict(ours, theirs) {
-                return Err(Error::AddIndexes(format!(
-                    "cannot change field {:?} from this index's {what} to segment {}'s",
-                    theirs.name, sci.segment_name
-                )));
+            // `FieldNumbers.verifyFieldInfo`, for every field of every
+            // incoming segment.
+            if let Some(message) = super::explicit::schema_change(&ours, theirs) {
+                return Err(Error::AddIndexes(message));
             }
         }
         Ok(())
-    }
-
-    /// What an incoming segment's field would change in this writer's field of
-    /// the same name -- `FieldInfos.FieldNumbers.verifyFieldInfo` /
-    /// `verifySameSchema`: a doc-values type or index options both sides set
-    /// differently, point or vector shape, the soft-deletes role.
-    fn schema_conflict(ours: &FieldInfo, theirs: &FieldInfo) -> Option<&'static str> {
-        use lucene_codecs::field_infos::{DocValuesType, IndexOptions};
-        [
-            (ours.doc_values_type != theirs.doc_values_type
-                && ours.doc_values_type != DocValuesType::None
-                && theirs.doc_values_type != DocValuesType::None)
-                .then_some("doc values type"),
-            (ours.index_options != theirs.index_options
-                && ours.index_options != IndexOptions::None
-                && theirs.index_options != IndexOptions::None)
-                .then_some("index options"),
-            (theirs.point_dimension_count != 0
-                && (ours.point_dimension_count, ours.point_num_bytes)
-                    != (theirs.point_dimension_count, theirs.point_num_bytes))
-                .then_some("point dimensions"),
-            (theirs.vector_dimension != 0
-                && (
-                    ours.vector_dimension,
-                    ours.vector_encoding,
-                    ours.vector_similarity_function,
-                ) != (
-                    theirs.vector_dimension,
-                    theirs.vector_encoding,
-                    theirs.vector_similarity_function,
-                ))
-                .then_some("vector"),
-            (ours.soft_deletes_field != theirs.soft_deletes_field).then_some("soft-deletes"),
-        ]
-        .into_iter()
-        .flatten()
-        .next()
     }
 
     /// `IndexWriter.copySegmentAsIs`.

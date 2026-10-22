@@ -278,63 +278,85 @@ fn add_indexes_refuses_incompatible_sources() {
     assert_eq!(rename("_30.fdt", "_3", "_9"), "_30.fdt");
 }
 
-/// Every schema difference `schema_conflict` refuses, and the ones it lets
-/// through (a side that does not set doc values or index options, a field
-/// without points or vectors in the incoming segment).
+/// `FieldNumbers.verifySameSchema`, which `addIndexes` runs on every
+/// incoming field (`addOrGet`/`verifyFieldInfo`): any difference is refused
+/// with Java's message, a side that sets no doc values, index options,
+/// points or vectors included; norms and term vectors count only for an
+/// indexed field.
 #[test]
 fn schema_conflicts_are_the_ones_java_refuses() {
+    use super::super::explicit::schema_change;
     use lucene_codecs::field_infos::{VectorEncoding, VectorSimilarityFunction};
     let base = FieldInfo::new("f", 0);
-    assert_eq!(IndexWriter::schema_conflict(&base, &base), None);
+    assert_eq!(schema_change(&base, &base), None);
+    let says = |ours: &FieldInfo, theirs: &FieldInfo| schema_change(ours, theirs).unwrap();
     let dv = |t| {
         base.clone()
             .with_doc_values(t, DocValuesSkipIndexType::None, -1)
     };
     assert_eq!(
-        IndexWriter::schema_conflict(&dv(DocValuesType::Numeric), &dv(DocValuesType::Sorted)),
-        Some("doc values type")
+        says(&dv(DocValuesType::Numeric), &dv(DocValuesType::Sorted)),
+        "cannot change field \"f\" from doc values type=NUMERIC to inconsistent doc values type=SORTED"
     );
     assert_eq!(
-        IndexWriter::schema_conflict(&base, &dv(DocValuesType::Sorted)),
-        None,
-        "a side without doc values"
+        says(&base, &dv(DocValuesType::Sorted)),
+        "cannot change field \"f\" from doc values type=NONE to inconsistent doc values type=SORTED"
+    );
+    let skip =
+        base.clone()
+            .with_doc_values(DocValuesType::Numeric, DocValuesSkipIndexType::Range, -1);
+    assert_eq!(
+        says(&dv(DocValuesType::Numeric), &skip),
+        "cannot change field \"f\" from docValuesSkipIndexType=NONE to inconsistent docValuesSkipIndexType=RANGE"
     );
     let io = |o| base.clone().with_index_options(o);
     assert_eq!(
-        IndexWriter::schema_conflict(&io(IndexOptions::Docs), &io(IndexOptions::DocsAndFreqs)),
-        Some("index options")
+        says(&io(IndexOptions::Docs), &io(IndexOptions::DocsAndFreqs)),
+        "cannot change field \"f\" from index options=DOCS to inconsistent index options=DOCS_AND_FREQS"
     );
     assert_eq!(
-        IndexWriter::schema_conflict(&io(IndexOptions::None), &io(IndexOptions::Docs)),
-        None
+        says(&io(IndexOptions::None), &io(IndexOptions::Docs)),
+        "cannot change field \"f\" from index options=NONE to inconsistent index options=DOCS"
     );
+    let mut tv = io(IndexOptions::Docs);
+    tv.store_term_vectors = true;
+    assert_eq!(
+        says(&io(IndexOptions::Docs), &tv),
+        "cannot change field \"f\" from storeTermVector=false to inconsistent storeTermVector=true"
+    );
+    let mut norms = io(IndexOptions::Docs);
+    norms.omit_norms = true;
+    assert_eq!(
+        says(&io(IndexOptions::Docs), &norms),
+        "cannot change field \"f\" from omitNorms=false to inconsistent omitNorms=true"
+    );
+    // Not indexed: norms and term vectors are not the field's.
+    let mut unindexed = base.clone();
+    unindexed.omit_norms = true;
+    assert_eq!(schema_change(&base, &unindexed), None);
     let points = base.clone().with_points(1, 1, 8);
     assert_eq!(
-        IndexWriter::schema_conflict(&base, &points),
-        Some("point dimensions")
+        says(&base, &points),
+        "cannot change field \"f\" from points dimensionCount=0, indexDimensionCount=0, numBytes=0 to inconsistent dimensionCount=1, indexDimensionCount=1, numBytes=8"
     );
-    assert_eq!(
-        IndexWriter::schema_conflict(&base.clone().with_points(2, 2, 8), &points),
-        Some("point dimensions")
-    );
-    assert_eq!(IndexWriter::schema_conflict(&points, &points), None);
-    assert_eq!(
-        IndexWriter::schema_conflict(&points, &base),
-        None,
+    assert_eq!(schema_change(&points, &points), None);
+    assert!(
+        schema_change(&points, &base).is_some(),
         "no incoming points"
     );
-    let vectors = |d| {
-        base.clone()
-            .with_vectors(d, VectorEncoding::Float32, VectorSimilarityFunction::Cosine)
-    };
+    let vectors = |d, sim| base.clone().with_vectors(d, VectorEncoding::Float32, sim);
     assert_eq!(
-        IndexWriter::schema_conflict(&vectors(4), &vectors(8)),
-        Some("vector")
+        says(
+            &vectors(4, VectorSimilarityFunction::DotProduct),
+            &vectors(6, VectorSimilarityFunction::DotProduct)
+        ),
+        "cannot change field \"f\" from vector dimension=4, vector encoding=FLOAT32, vector similarity function=DOT_PRODUCT to inconsistent vector dimension=6, vector encoding=FLOAT32, vector similarity function=DOT_PRODUCT"
     );
-    assert_eq!(IndexWriter::schema_conflict(&vectors(4), &vectors(4)), None);
-    assert_eq!(
-        IndexWriter::schema_conflict(&base, &base.clone().with_soft_deletes_field(true)),
-        Some("soft-deletes")
+    let cosine = vectors(4, VectorSimilarityFunction::Cosine);
+    assert_eq!(schema_change(&cosine, &cosine), None);
+    assert!(
+        says(&base, &base.clone().with_soft_deletes_field(true)).contains("soft-deletes"),
+        "soft-deletes role"
     );
 }
 
