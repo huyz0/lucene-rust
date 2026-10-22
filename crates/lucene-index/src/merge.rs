@@ -4802,11 +4802,17 @@ fn merge_postings(
             }
         }
 
-        if terms_out.is_empty() {
-            // Only reachable through `SourcePostings::live`: every term was
-            // pruned, and `BlockTreeTermsWriter` writes no field without terms.
+        if per_source_field.iter().all(Option::is_none) {
+            // No live source's term dictionary lists the field, so
+            // `PerFieldPostingsFormat.FieldsWriter.merge`'s `MergedIterator`
+            // over the sources' fields never names it.
             continue;
         }
+        // A field whose every term was pruned through `SourcePostings::live`
+        // stays: the sources list it, so `PerFieldPostingsFormat` routes it
+        // to a group and writes that group's files (the field itself gets no
+        // `.tmd` record -- `per_field_postings::write` drops it). Dropping it
+        // here left a merged `.fnm` claiming postings with no `.tim` beside it.
         let doc_count = docs_seen.cardinality() as i32;
 
         result.push(MergedPostingsField {

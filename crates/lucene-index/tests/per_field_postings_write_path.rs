@@ -227,3 +227,115 @@ fn a_codec_routes_postings_as_the_per_field_setters_do() {
     write_with(&FsDirectory::open(&path), true, true);
     assert_index(&path, 1);
 }
+
+/// Ten documents carrying `tag:x` (routed to the second format) and, when
+/// `body`, `body:x`; an eleventh carrying `body:y` only when `last_body`;
+/// then `tag:x` deleted and the segment merged.
+fn write_pruned(dir: &FsDirectory, last_body: bool) {
+    let fields = vec![
+        field("id", 0, IndexOptions::None),
+        field("body", 1, IndexOptions::DocsAndFreqsAndPositions),
+        field("tag", 2, IndexOptions::Docs),
+    ];
+    let version = LuceneVersion {
+        major: 10,
+        minor: 5,
+        bugfix: 0,
+    };
+    let mut writer = IndexWriter::open(dir, fields, "Lucene104", version).unwrap();
+    for name in ["body", "tag"] {
+        writer.add_postings_field(name).unwrap();
+    }
+    writer.set_postings_format_for_field("tag", Lucene104PostingsFormat::new(10, 20).unwrap());
+    let text = |field_number: i32, s: &str| StoredField {
+        field_number,
+        value: FieldValue::String(s.to_string()),
+    };
+    for i in 0..10 {
+        writer
+            .add_document(Document {
+                fields: vec![text(0, &format!("doc{i}")), text(1, "x"), text(2, "x")],
+            })
+            .unwrap();
+    }
+    let mut last = vec![text(0, "doc10")];
+    if last_body {
+        last.push(text(1, "y"));
+    }
+    writer.add_document(Document { fields: last }).unwrap();
+    writer
+        .delete_documents_by_term(&[Term {
+            field: "tag".to_string(),
+            bytes: b"x".to_vec(),
+        }])
+        .unwrap();
+    writer.commit().unwrap();
+    writer.force_merge(1).unwrap();
+    writer.commit().unwrap();
+}
+
+/// The merged segment still claims both fields indexed, routes each to its
+/// format, writes each format's files -- the pruned ones with no field in
+/// them -- and passes `check_index`.
+fn assert_pruned(path: &TempDir, groups_with_terms: &[&str]) {
+    let dir = FsDirectory::open(path);
+    let infos = segment_infos::read_latest(&dir).unwrap();
+    assert_eq!(infos.segments.len(), 1);
+    let sci = &infos.segments[0];
+    let files = dir.list_all().unwrap();
+    for suffix in ["Lucene104_0", "Lucene104_1"] {
+        for ext in ["doc", "psm", "tim", "tip", "tmd"] {
+            let name = format!("{}_{suffix}.{ext}", sci.segment_name);
+            assert!(files.contains(&name), "{name} missing: {files:?}");
+        }
+    }
+    let fnm = dir.open(&format!("{}.fnm", sci.segment_name)).unwrap();
+    let fis = field_infos::parse(&fnm, &sci.segment_id, "").unwrap();
+    for name in ["body", "tag"] {
+        let f = fis.fields.iter().find(|f| f.name == name).unwrap();
+        assert_ne!(f.index_options, IndexOptions::None, "{name}");
+        assert!(
+            f.attributes
+                .iter()
+                .any(|(k, _)| k == per_field_postings::PER_FIELD_SUFFIX_KEY),
+            "{name} lost its routing"
+        );
+    }
+    let results = check_index::check_directory(&dir).unwrap();
+    for result in &results {
+        assert!(result.all_passed(), "{:?}", result.failures());
+    }
+    let names: Vec<&str> = results
+        .iter()
+        .flat_map(|r| r.checks.iter())
+        .map(|c| c.name.as_str())
+        .collect();
+    for field in ["body", "tag"] {
+        let wanted = format!("postings.field_summary:{field}");
+        assert_eq!(
+            names.contains(&wanted.as_str()),
+            groups_with_terms.contains(&field),
+            "{wanted}"
+        );
+    }
+}
+
+/// `BasePointsFormatTestCase.testAllPointDocsDeletedInSegment`'s shape: a
+/// merge whose every term of a field belonged to deleted documents. Java's
+/// `PerFieldPostingsFormat` still routes the field (its sources list it) and
+/// writes the group's files with no field in them; this port dropped the
+/// field, leaving a `.fnm` claiming postings with no `.tim`.
+#[test]
+fn a_merge_keeps_a_field_whose_every_term_was_deleted() {
+    let path = TempDir::new("per-field-pruned");
+    write_pruned(&FsDirectory::open(&path), true);
+    assert_pruned(&path, &["body"]);
+}
+
+/// The same with no live term in any field: both groups write empty files.
+#[test]
+fn a_merge_writes_empty_groups_when_every_term_was_deleted() {
+    let path = TempDir::new("per-field-all-pruned");
+    write_pruned(&FsDirectory::open(&path), false);
+    assert_pruned(&path, &[]);
+}
