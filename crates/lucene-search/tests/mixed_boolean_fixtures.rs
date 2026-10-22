@@ -214,19 +214,32 @@ fn mixed_boolean_queries_match_real_lucene_pruned_and_exact() {
     let threshold: u64 = m.get("threshold").parse().unwrap();
     let count: usize = m.get("query_count").parse().unwrap();
     let mut failures = Vec::new();
-    for i in 0..count {
-        let text = m.get(&format!("query.{i}"));
-        // `IndexSearcher.search` rewrites first, and the lower-bound totals
-        // depend on the bulk scorer the rewritten query gets; the free search
-        // functions score the query as given, as the JVM hands it over.
-        let query = root(parse(&mut Tokens::new(text)).rewrite());
+    // `IndexSearcher.search` rewrites first, and the lower-bound totals
+    // depend on the bulk scorer the rewritten query gets; the free search
+    // functions score the query as given, as the JVM hands it over.
+    let mut runs: Vec<(usize, String, BooleanQuery)> = (0..count)
+        .map(|i| {
+            let text = m.get(&format!("query.{i}")).to_string();
+            let query = root(parse(&mut Tokens::new(&text)).rewrite());
+            (i, text, query)
+        })
+        .collect();
+    // `+a ?(b c)`, not rewritten: `BooleanQuery.rewrite` flattens the nested
+    // disjunction, so Lucene's answer is the one it recorded for `+a ?b ?c`
+    // -- which the free functions must give for the nested query as handed
+    // over (`Child::TermSum`, the same `DisjunctionSumScorer`).
+    let nested = nested_disjunction_runs(&m, count);
+    assert_eq!(nested.len(), 3, "the fixture has three `+a ?b ?c`");
+    runs.extend(nested);
+    for (i, text, query) in &runs {
+        let (i, text) = (*i, text.as_str());
         for (mode, limit) in [
             ("pruned", threshold),
             ("searcher", 1000),
             ("exact", u64::MAX),
         ] {
             let (hits, total) = search_boolean_query_multi_segment_maxscore_counting(
-                &segments, &query, &norms, top_n, limit,
+                &segments, query, &norms, top_n, limit,
             )
             .unwrap_or_else(|e| panic!("{text}: {e}"));
             let got: Vec<(i32, u32)> = hits.iter().map(|h| (h.doc_id, h.score.to_bits())).collect();
@@ -271,9 +284,45 @@ fn mixed_boolean_queries_match_real_lucene_pruned_and_exact() {
         failures.is_empty(),
         "{} of {} runs disagree with Lucene:\n{}",
         failures.len(),
-        count * 3,
+        runs.len() * 3,
         failures.join("\n")
     );
+}
+
+/// Each manifest query `(b 0 (+ a) (? b) (? c))` of three terms, as
+/// `(b 0 (+ a) (? (b 0 (? b) (? c))))` -- not rewritten -- with the index of
+/// the flat query whose recorded answers it must give.
+///
+/// Not `#a ?(b c)`: there the nested boolean is the only scoring clause as
+/// written, so `setTopLevelScoringClause` makes it a `WANDScorer`, where
+/// Lucene, which only ever scores it flattened, has two scoring clauses and a
+/// `DisjunctionSumScorer` -- the pruned totals differ (177 vs 10,343).
+fn nested_disjunction_runs(m: &Manifest, count: usize) -> Vec<(usize, String, BooleanQuery)> {
+    let mut out = Vec::new();
+    for i in 0..count {
+        let text = m.get(&format!("query.{i}"));
+        let Clause::Boolean(b) = parse(&mut Tokens::new(text)) else {
+            continue;
+        };
+        let terms = |cs: &[Clause]| cs.iter().all(|c| matches!(c, Clause::Term(_)));
+        let shape = b.minimum_should_match == 0
+            && b.must.len() == 1
+            && b.filter.is_empty()
+            && b.should.len() == 2
+            && b.must_not.is_empty()
+            && terms(&b.must)
+            && terms(&b.should);
+        if !shape {
+            continue;
+        }
+        let mut inner = BooleanQuery::new();
+        inner.should = b.should.clone();
+        let mut outer = BooleanQuery::new();
+        outer.must = b.must.clone();
+        outer.should.push(Clause::Boolean(Box::new(inner)));
+        out.push((i, format!("{text} as nested ?(b c)"), outer));
+    }
+    out
 }
 
 fn decode(hits: &[(i32, u32)]) -> Vec<(i32, f32)> {
