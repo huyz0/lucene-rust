@@ -45,8 +45,9 @@ pub(crate) struct TermDisMaxScorer<'a> {
     propagator: Option<BlockBoundaryPropagator>,
 }
 
-impl Clause for TermScorer<'_> {
-    fn scorer(&mut self) -> &mut dyn Scorer {
+impl<'a> Clause for TermScorer<'a> {
+    type Scorer = Self;
+    fn scorer(&mut self) -> &mut Self {
         self
     }
 }

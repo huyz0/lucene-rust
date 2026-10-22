@@ -1804,6 +1804,13 @@ mod fixture {
             // A one-phase nested boolean beside one optional term, scored
             // exhaustively (`COMPLETE`: no threshold to skip on).
             "req_scorer_opt",
+            // `+a ?b` for top scores.
+            "req_opt_terms",
+            "req_opt_term_sum",
+            // `#a ?b ?c` for top scores.
+            "filter_opt_term_sum",
+            // `+a +b ?c -d` for top scores.
+            "req_excl_opt_term",
             "req_excl",
             "dismax",
             "union",
@@ -2275,7 +2282,8 @@ fn similarity_bounds_prune_soundly() {
 }
 
 impl super::disjunction::Clause for Fake {
-    fn scorer(&mut self) -> &mut dyn Scorer {
+    type Scorer = Self;
+    fn scorer(&mut self) -> &mut Self {
         self
     }
 }

@@ -51,12 +51,19 @@ Acceptance:
 - [x] 1,500 random trees, with two-phase leaves, agree with brute force in all
       three score modes (`exec/tests.rs`).
 - [x] Both suites seen to fail on seeded defects.
-- [x] Every mixed shape the M2 REST benchmark measured slower (boosts,
+- [ ] Every mixed shape the M2 REST benchmark measured slower (boosts,
       `must_not`, `must` + `should`, `constant_score`, nesting) at least as
-      fast as Lucene in process, on the merged index — 1.3× to 6.7×. The
-      `must` + `should` figure was `ReqOptBulk`'s window skipping, since
-      removed; on the tree `ct_split` (`+rare f1 f2`, `bench-micro --bench
-      queries`) reads 1.00×, and q40/q50 have not been re-measured.
+      fast as Lucene in process, on the merged index. The old 1.3×–6.7×
+      `must` + `should` figures were `ReqOptBulk`'s window skipping, since
+      removed (it counted a lower total than Lucene). Re-measured on
+      `ReqOptSumScorer` with concrete clause types (`Bulk::ReqOptTerms`
+      and kin, `fix-flat-bool-total-hits`): q40 1.20–1.30×, q50 1.27–1.38×,
+      q48 0.98–1.03× (parity), `ct_msm` 1.03×, `ct_split` 1.09× -- but q52
+      (`+t0 +t1 ?t2 -t3`) is 0.82–0.86× merged, 0.92× segmented: open. It
+      runs the same tree as Lucene, document at a time, with no virtual
+      call left; the remaining gap is per-document cost in the conjunction
+      and exclusion under `ReqOptSumScorer`'s impacts approximation, not
+      yet profiled (the capped container has no `perf`).
 - [x] Every boolean shape in the query file at least 1.0× on both indexes
       (after R2's run below: 1.04–13.7×; q11 0.99× merged with overlapping
       runs). q25 (fuzzy, 0.76× segmented) is a leaf query, R3's -- since
@@ -215,8 +222,8 @@ range 0.97–1.0× (q71).
 non-scoring clause per segment under Lucene's own policy, built from the
 clause's scorer without live docs and kept with the segment's core across
 reopens. q59 went from 0.20× to 1.20× merged and 2.27× segmented; the
-other `FILTER`/`MUST_NOT` shapes (q41, q47–q49, q52, q54, q55) stay at
-1.2–4.3×.
+other `FILTER`/`MUST_NOT` shapes (q41, q47, q49, q54, q55) stay at
+1.2–4.3× (q48 and q52: see the benchmark table).
 
 ## R4 — sorted search (delivered)
 
@@ -700,7 +707,7 @@ matched on every query.
 
 | query | shape | merged | 15 segments |
 |---|---|---|---|
-| q40 | `+t0 ?t1` | 2.45× | 1.23× |
+| q40 | `+t0 ?t1` | 1.21–1.30× | 1.20–1.30× |
 | q41 | `+t0 -t1` | 2.49× | 2.45× |
 | q42 | `?t1 ?t2 -t0` | 2.16× | 2.33× |
 | q43 | 2 of `t0 t1 t2 t3` | 1.02× | 0.96× |
@@ -708,17 +715,21 @@ matched on every query.
 | q45 | `?t0^2 ?t1` | 1.46× | 1.32× |
 | q46 | `constant_score(t1)` | 1.33× | 1.60× |
 | q47 | `+(t0 t2) +t1 -t3` | 1.30× | 1.17× |
-| q48 | `#t0 ?t1 ?t2` | 1.88× | 1.91× |
+| q48 | `#t0 ?t1 ?t2` | 1.00–1.03× | 0.98–1.00× |
 | q49 | `#t0 ?t1 ?t2`, msm 1 | 1.28× | 1.29× |
-| q50 | `+tz ?t0 ?t1` | 6.70× | 6.16× |
+| q50 | `+tz ?t0 ?t1` | 1.27–1.38× | 1.32× |
 | q51 | dismax 0.3 of three | 1.03× | 1.15× |
-| q52 | `+t0 +t1 ?t2 -t3` | 2.31× | 1.82× |
+| q52 | `+t0 +t1 ?t2 -t3` | 0.82–0.86× | 0.92× |
 | q53 | `?constant_score(t0) ?t1` | 2.42× | 2.79× |
 | q54 | `#t1 -t0` | 3.53× | 3.58× |
 | q55 | `+t2s -t0` | 3.98× | 3.78× |
 
 Before R1 the same file measured q42 at 0.03×, q54 at 0.05×, q49 at 0.28×,
-q47 at 0.37× and q52 at 0.47× (the materializing path).
+q47 at 0.37× and q52 at 0.47× (the materializing path). q40, q48, q50 and
+q52 were re-measured on `fix-flat-bool-total-hits` (two runs, ranges
+shown): under `TOP_SCORES` they now run Lucene's `ReqOptSumScorer` tree,
+so the earlier 1.8×–6.7× -- `ReqOptBulk`'s window skipping, which counted
+a lower total than Lucene -- no longer apply.
 
 The whole file (q01–q55) on both indexes after R1: every query from the M1
 mix at 1.0× or above on the 15-segment index except q25 (fuzzy, 0.76×); on

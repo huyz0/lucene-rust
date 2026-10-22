@@ -668,6 +668,12 @@ fn term<'a>(
 pub(crate) enum Child<'a> {
     Leg(Box<TermLeg<'a>>),
     Scorer(BoxScorer<'a>),
+    /// A nested boolean that `BooleanScorerSupplier.opt` makes a
+    /// `DisjunctionSumScorer` of two or more terms (under `TOP_SCORES`, not
+    /// at the top level), kept as its terms: [`Child::into_scorer`] builds
+    /// that scorer, and a bulk scorer that knows the shape can build it
+    /// without a virtual call.
+    TermSum(Vec<TermLeg<'a>>),
 }
 
 impl<'a> Child<'a> {
@@ -675,6 +681,7 @@ impl<'a> Child<'a> {
         match self {
             Child::Leg(leg) => Box::new(TermScorer::new(*leg, mode == Mode::TopScores)),
             Child::Scorer(s) => s,
+            Child::TermSum(legs) => Box::new(term_sum(legs, mode)),
         }
     }
 
@@ -683,6 +690,7 @@ impl<'a> Child<'a> {
         match self {
             Child::Leg(leg) => leg.cost,
             Child::Scorer(s) => s.cost(),
+            Child::TermSum(legs) => legs.iter().fold(0i64, |c, l| c.saturating_add(l.cost)),
         }
     }
 
@@ -693,9 +701,22 @@ impl<'a> Child<'a> {
     pub(crate) fn into_leg(self) -> TermLeg<'a> {
         match self {
             Child::Leg(leg) => *leg,
-            Child::Scorer(_) => unreachable!("checked with is_leg"),
+            Child::Scorer(_) | Child::TermSum(_) => unreachable!("checked with is_leg"),
         }
     }
+}
+
+/// [`Child::TermSum`]'s scorer type.
+pub(crate) type TermSum<'a> = DisjunctionScorer<'a, TermScorer<'a>>;
+
+/// [`Child::TermSum`]'s scorer: `DisjunctionSumScorer` over its terms'
+/// `TermScorer`s, each call to them monomorphic.
+pub(crate) fn term_sum(legs: Vec<TermLeg<'_>>, mode: Mode) -> TermSum<'_> {
+    let subs = legs
+        .into_iter()
+        .map(|l| Box::new(TermScorer::new(l, mode == Mode::TopScores)))
+        .collect();
+    DisjunctionScorer::new(subs, Combine::Sum, mode.needs_scores())
 }
 
 pub(crate) fn child<'a>(
@@ -923,9 +944,10 @@ fn child_led<'a>(
     Ok(match term_leg(ctx, clause, boost, mode)? {
         TermForm::Leg(leg) => Some(Child::Leg(leg)),
         TermForm::Absent => None,
-        TermForm::Other => {
-            build_led(ctx, clause, boost, mode, top_level, lead_cost)?.map(Child::Scorer)
-        }
+        TermForm::Other => match clause {
+            Clause::Boolean(q) => build_boolean_child(ctx, q, boost, mode, top_level)?,
+            _ => build_led(ctx, clause, boost, mode, top_level, lead_cost)?.map(Child::Scorer),
+        },
     })
 }
 
@@ -982,6 +1004,17 @@ pub(crate) fn build_boolean<'a>(
     mode: Mode,
     top_level: bool,
 ) -> Result<Option<BoxScorer<'a>>> {
+    Ok(build_boolean_child(ctx, q, boost, mode, top_level)?.map(|c| c.into_scorer(mode)))
+}
+
+/// [`build_boolean`], as a [`Child`] (see [`compose_child`]).
+fn build_boolean_child<'a>(
+    ctx: &LeafContext<'a>,
+    q: &BooleanQuery,
+    boost: f32,
+    mode: Mode,
+    top_level: bool,
+) -> Result<Option<Child<'a>>> {
     // `setTopLevelScoringClause` passes through to a lone scoring clause.
     let child_top_level = top_level && q.must.len() + q.should.len() == 1;
     let Some((must, filter, should, must_not)) =
@@ -995,7 +1028,7 @@ pub(crate) fn build_boolean<'a>(
     let (must, filter, should, must_not) =
         (strip(must), strip(filter), strip(should), strip(must_not));
 
-    compose(
+    compose_child(
         must,
         filter,
         should,
@@ -1012,6 +1045,31 @@ pub(crate) fn build_boolean<'a>(
 /// clause has already made the whole boolean `None`), `should` and
 /// `must_not` the present ones among theirs.
 pub(crate) fn compose<'a>(
+    must: Vec<Child<'a>>,
+    filter: Vec<Child<'a>>,
+    should: Vec<Child<'a>>,
+    must_not: Vec<Child<'a>>,
+    minimum_should_match: usize,
+    mode: Mode,
+    top_level: bool,
+) -> Result<Option<BoxScorer<'a>>> {
+    Ok(compose_child(
+        must,
+        filter,
+        should,
+        must_not,
+        minimum_should_match,
+        mode,
+        top_level,
+    )?
+    .map(|c| c.into_scorer(mode)))
+}
+
+/// [`compose`], as a [`Child`]: a boolean that is one of its clauses
+/// (`req` or `opt` of a single scorer) is that clause, a term leg included,
+/// and one that `opt` makes a `DisjunctionSumScorer` of terms is
+/// [`Child::TermSum`] -- so the boolean it is nested in can still see terms.
+pub(crate) fn compose_child<'a>(
     mut must: Vec<Child<'a>>,
     filter: Vec<Child<'a>>,
     mut should: Vec<Child<'a>>,
@@ -1019,7 +1077,7 @@ pub(crate) fn compose<'a>(
     minimum_should_match: usize,
     mode: Mode,
     top_level: bool,
-) -> Result<Option<BoxScorer<'a>>> {
+) -> Result<Option<Child<'a>>> {
     let mut msm = minimum_should_match;
     // Exactly `msm` optional clauses exist in this segment: all are required.
     if should.len() == msm {
@@ -1034,6 +1092,28 @@ pub(crate) fn compose<'a>(
     }
     if !mode.needs_scores() && msm == 0 && must.len() + filter.len() > 0 {
         should.clear();
+    }
+    if filter.is_empty() && must_not.is_empty() {
+        // `req` of one `MUST` clause, or `opt` of one `SHOULD` clause: the
+        // clause's own scorer.
+        match (must.len(), should.len()) {
+            (1, 0) => return Ok(must.pop()),
+            (0, 1) => return Ok(should.pop()),
+            _ => {}
+        }
+        // `opt` below the top level, `minimum_should_match` at most one:
+        // `DisjunctionSumScorer`.
+        if must.is_empty()
+            && should.len() > 1
+            && msm <= 1
+            && mode == Mode::TopScores
+            && !top_level
+            && should.iter().all(Child::is_leg)
+        {
+            return Ok(Some(Child::TermSum(
+                should.into_iter().map(Child::into_leg).collect(),
+            )));
+        }
     }
 
     // `BooleanScorerSupplier.cost()`, the lead cost handed to `WANDScorer`.
@@ -1073,9 +1153,11 @@ pub(crate) fn compose<'a>(
     // `BooleanScorerSupplier.get`: a filter-only boolean collected for top
     // scores is a constant `0`, so it stops once the top hits fill.
     if mode == Mode::TopScores && filter_only {
-        return Ok(Some(Box::new(ConstantScorer::new(scorer, 0.0, true))));
+        return Ok(Some(Child::Scorer(Box::new(ConstantScorer::new(
+            scorer, 0.0, true,
+        )))));
     }
-    Ok(Some(scorer))
+    Ok(Some(Child::Scorer(scorer)))
 }
 
 /// `BooleanScorerSupplier.req`.

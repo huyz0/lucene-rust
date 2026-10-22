@@ -1,7 +1,7 @@
 //! `ReqExclScorer` (`MUST_NOT`) and `ReqOptSumScorer` (`MUST` + optional
 //! `SHOULD`).
 
-use super::{BoxScorer, Scorer, NO_MORE_DOCS};
+use super::{Scorer, NO_MORE_DOCS};
 use crate::Result;
 
 /// `ReqExclScorer.ADVANCE_COST`.
@@ -9,16 +9,19 @@ const ADVANCE_COST: f32 = 10.0;
 
 /// `ReqExclScorer`: the required scorer's matches that the excluded one does
 /// not match. Always two-phase: the exclusion is checked in `matches`.
-pub(crate) struct ReqExclScorer<'a> {
-    req: BoxScorer<'a>,
-    excl: BoxScorer<'a>,
+///
+/// Generic over its two clauses, as [`ReqOptSumScorer`] is; the tree's
+/// general case is `ReqExclScorer<dyn Scorer, dyn Scorer>`.
+pub(crate) struct ReqExclScorer<R: Scorer + ?Sized, E: Scorer + ?Sized> {
+    req: Box<R>,
+    excl: Box<E>,
     match_cost: f32,
     /// Whether the required scorer's own match check runs first.
     req_first: bool,
 }
 
-impl<'a> ReqExclScorer<'a> {
-    pub(crate) fn new(req: BoxScorer<'a>, excl: BoxScorer<'a>) -> Self {
+impl<R: Scorer + ?Sized, E: Scorer + ?Sized> ReqExclScorer<R, E> {
+    pub(crate) fn new(req: Box<R>, excl: Box<E>) -> Self {
         let mut match_cost = 2.0f32;
         if req.two_phase() {
             match_cost += req.match_cost();
@@ -48,7 +51,7 @@ impl<'a> ReqExclScorer<'a> {
     }
 }
 
-impl Scorer for ReqExclScorer<'_> {
+impl<R: Scorer + ?Sized, E: Scorer + ?Sized> Scorer for ReqExclScorer<R, E> {
     fn doc_id(&self) -> i32 {
         self.req.doc_id()
     }
@@ -118,9 +121,13 @@ impl Scorer for ReqExclScorer<'_> {
 /// scorer's score where it matches too. In `TOP_SCORES` its approximation
 /// skips blocks whose combined maxima cannot compete, and once the required
 /// clause alone cannot reach the threshold the optional one becomes required.
-pub(crate) struct ReqOptSumScorer<'a> {
-    req: BoxScorer<'a>,
-    opt: BoxScorer<'a>,
+///
+/// Generic over its two clauses so that a pair of terms (`+a ?b`, the most
+/// common shape) runs with every per-document call inlined; the tree's
+/// general case is `ReqOptSumScorer<dyn Scorer, dyn Scorer>`.
+pub(crate) struct ReqOptSumScorer<R: Scorer + ?Sized, O: Scorer + ?Sized> {
+    req: Box<R>,
+    opt: Box<O>,
     top_scores: bool,
     min_score: f32,
     req_max_score: f32,
@@ -129,12 +136,8 @@ pub(crate) struct ReqOptSumScorer<'a> {
     block_max: f32,
 }
 
-impl<'a> ReqOptSumScorer<'a> {
-    pub(crate) fn new(
-        mut req: BoxScorer<'a>,
-        mut opt: BoxScorer<'a>,
-        top_scores: bool,
-    ) -> Result<Self> {
+impl<R: Scorer + ?Sized, O: Scorer + ?Sized> ReqOptSumScorer<R, O> {
+    pub(crate) fn new(mut req: Box<R>, mut opt: Box<O>, top_scores: bool) -> Result<Self> {
         let req_max_score = if top_scores {
             req.advance_shallow(0)?;
             opt.advance_shallow(0)?;
@@ -225,7 +228,7 @@ impl<'a> ReqOptSumScorer<'a> {
     }
 }
 
-impl Scorer for ReqOptSumScorer<'_> {
+impl<R: Scorer + ?Sized, O: Scorer + ?Sized> Scorer for ReqOptSumScorer<R, O> {
     fn doc_id(&self) -> i32 {
         self.req.doc_id()
     }
