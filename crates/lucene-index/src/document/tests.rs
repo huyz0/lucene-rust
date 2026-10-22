@@ -957,6 +957,41 @@ fn vector_fields_index_through_the_explicit_path() {
     let _ = VectorValue::Byte(vec![]);
 }
 
+/// `testIllegalDimensionTooLarge`: a vector wider than the format's 1024
+/// dimensions is refused when its field is first registered, before and
+/// after the field exists, and after a flush.
+#[test]
+fn a_vector_wider_than_the_format_allows_is_refused() {
+    let tmp = TempDir::new("document-vector-dims");
+    let dir = FsDirectory::open(tmp.path());
+    let mut w = writer(&dir);
+    let vector_doc = |dim: usize| {
+        let mut d = Document::new();
+        d.add(
+            KnnFloatVectorField::new("f", vec![0.5; dim], VectorSimilarityFunction::DotProduct)
+                .unwrap(),
+        );
+        d
+    };
+    let too_large = "Field [f] vector's dimensions must be <= [1024]; got 1025";
+    let e = w.add_fields_document(&vector_doc(1025)).unwrap_err();
+    assert!(e.to_string().contains(too_large), "{e}");
+    w.add_fields_document(&vector_doc(2)).unwrap();
+    let e = w.add_fields_document(&vector_doc(1025)).unwrap_err();
+    assert!(e.to_string().contains(too_large), "{e}");
+    w.commit().unwrap();
+    let e = w.add_fields_document(&vector_doc(1025)).unwrap_err();
+    assert!(e.to_string().contains(too_large), "{e}");
+    // The limit itself is allowed, in a field of its own.
+    let mut d = Document::new();
+    d.add(
+        KnnFloatVectorField::new("g", vec![0.5; 1024], VectorSimilarityFunction::DotProduct)
+            .unwrap(),
+    );
+    w.add_fields_document(&d).unwrap();
+    w.commit().unwrap();
+}
+
 #[test]
 fn default_accessors_and_value_type_names() {
     let p = IntPoint::new("p", &[1]).unwrap();
