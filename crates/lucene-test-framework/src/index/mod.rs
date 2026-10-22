@@ -10,6 +10,7 @@ pub mod base_index_file_format;
 pub mod base_live_docs_format;
 pub mod base_merge_policy;
 pub mod base_norms_format;
+pub mod base_points_format;
 pub mod base_postings_format;
 pub mod base_segment_info_format;
 pub mod base_stored_fields_format;

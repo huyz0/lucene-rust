@@ -89,7 +89,7 @@ tests/index/BaseKnnVectorsFormatTestCase	todo:M14	h6: index file format suites
 tests/index/BaseLiveDocsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_live_docs_format.rs::TESTS -- M14: one FixedBitSet pass (the writer takes no other Bits)
 tests/index/BaseMergePolicyTestCase	ported	crates/lucene-test-framework/src/index/base_merge_policy.rs::BaseMergePolicyTestCase
 tests/index/BaseNormsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_norms_format.rs::NormsSuite -- M14: bulk longValues is the advanceExact walk (not ported)
-tests/index/BasePointsFormatTestCase	todo:M14	h6: index file format suites
+tests/index/BasePointsFormatTestCase	ported	crates/lucene-test-framework/src/index/base_points_format.rs::PointsSuite
 tests/index/BasePostingsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_postings_format.rs::TESTS -- M14: testInvertedWrite (no codec plug-in point); enum reuse
 tests/index/BaseSegmentInfoFormatTestCase	partial	crates/lucene-test-framework/src/index/base_segment_info_format.rs::SegmentInfoSuite -- M14: no testExceptionOnCloseInput (a read has no input close)
 tests/index/BaseStoredFieldsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_stored_fields_format.rs::TESTS -- M14: the merging reader wrappers (the merge reads files, not readers); SimpleText switch
