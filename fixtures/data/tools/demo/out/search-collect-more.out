@@ -1,22 +1,22 @@
 Enter query: 
 Searching for: the is
-7 total matching documents
-1. {fixture}/docs/sub/i.txt
+8 total matching documents
+1. {docs}/sub/i.txt
 Press (n)ext page, (q)uit or enter number to jump to a page.
-2. {fixture}/docs/e.txt
+2. {docs}/e.txt
 Press (p)revious page, (n)ext page, (q)uit or enter number to jump to a page.
-3. {fixture}/docs/c.txt
+3. {docs}/c.txt
 Press (p)revious page, (n)ext page, (q)uit or enter number to jump to a page.
-4. {fixture}/docs/a.txt
+4. {docs}/d.txt
 Press (p)revious page, (n)ext page, (q)uit or enter number to jump to a page.
-5. {fixture}/docs/d.txt
+5. {docs}/h.txt
 Press (p)revious page, (n)ext page, (q)uit or enter number to jump to a page.
-Only results 1 - 5 of 7 total matching documents collected.
+Only results 1 - 5 of 8 total matching documents collected.
 Collect more (y/n) ?
-6. {fixture}/docs/f.txt
+6. {docs}/a.txt
 Press (p)revious page, (n)ext page, (q)uit or enter number to jump to a page.
-7. {fixture}/docs/b.txt
-Press (p)revious page, (q)uit or enter number to jump to a page.
-7. {fixture}/docs/b.txt
+7. {docs}/f.txt
+Press (p)revious page, (n)ext page, (q)uit or enter number to jump to a page.
+8. {docs}/b.txt
 Press (p)revious page, (q)uit or enter number to jump to a page.
 Enter query: 

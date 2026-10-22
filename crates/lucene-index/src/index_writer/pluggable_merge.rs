@@ -68,16 +68,9 @@ impl IndexWriter<'_> {
         for sci in &self.segment_infos.segments {
             let si_bytes = self.dir.open(&format!("{}.si", sci.segment_name))?.to_vec();
             let si = segment_info::parse_for_codec(&si_bytes, &sci.segment_id, &sci.codec_name)?;
-            let mut size = merge_policy::segment_byte_size(self.dir, &si);
-            if sci.del_gen >= 0 {
-                // `SegmentCommitInfo.sizeInBytes` counts the live-docs file.
-                if let Ok(liv) = self.dir.open(&crate::deletes::liv_file_name(
-                    &sci.segment_name,
-                    sci.del_gen,
-                )) {
-                    size = size.saturating_add(liv.len() as u64);
-                }
-            }
+            // `SegmentCommitInfo.sizeInBytes`: the live-docs and generational
+            // files count too.
+            let size = merge_policy::commit_byte_size(self.dir, sci, &si);
             let stat = merge_policy::SegmentStat {
                 name: sci.segment_name.clone(),
                 doc_count: si.doc_count,

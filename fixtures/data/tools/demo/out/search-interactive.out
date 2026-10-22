@@ -1,15 +1,15 @@
 Enter query: 
 Searching for: fox
 3 total matching documents
-1. {fixture}/docs/a.txt
-2. {fixture}/docs/b.txt
-3. {fixture}/docs/sub/i.txt
+1. {docs}/a.txt
+2. {docs}/b.txt
+3. {docs}/sub/i.txt
 Press (q)uit or enter number to jump to a page.
 Enter query: 
 Searching for: dog
 3 total matching documents
-1. {fixture}/docs/a.txt
-2. {fixture}/docs/f.txt
-3. {fixture}/docs/sub/i.txt
+1. {docs}/a.txt
+2. {docs}/f.txt
+3. {docs}/sub/i.txt
 Press (q)uit or enter number to jump to a page.
 Enter query: 

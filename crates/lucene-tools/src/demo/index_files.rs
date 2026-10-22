@@ -177,6 +177,11 @@ fn index(
     // demo's one-document segments as they pile up, which changes the doc
     // ids and the statistics a search scores with.
     writer.set_merge_policy(Some(MergePolicyConfig::default()));
+    // `IndexWriterConfig`'s default compound files: a flushed segment is a
+    // `.cfs` whose sub-files are 64-byte aligned. The policy sorts segments by
+    // byte size, ties by name, so the padding decides which one-document
+    // segments tie and so the order a merge takes their documents in.
+    writer.set_use_compound_file(true);
     if create && existing {
         // `OpenMode.CREATE` over an index: the new commit holds none of it.
         writer.delete_all().map_err(caught)?;

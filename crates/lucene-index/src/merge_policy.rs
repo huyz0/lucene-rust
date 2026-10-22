@@ -39,8 +39,9 @@
 //! does too:
 //! - `SegmentCommitInfo.sizeInBytes()` -- the **raw** sum of the segment's
 //!   file lengths. That is [`SegmentStat::size_bytes`], filled either by
-//!   [`segment_byte_size`] (byte-accurate, needs a
-//!   [`Directory`]) or by a caller's own
+//!   [`commit_byte_size`] (byte-accurate, `.liv` included, needs a
+//!   [`Directory`]; [`segment_byte_size`] for a segment no commit names
+//!   yet) or by a caller's own
 //!   doc-count approximation ([`SegmentStat::from_segment_info`]).
 //! - `MergePolicy.size(info, ctx)` -- the raw size **pro-rated by the live-doc
 //!   fraction**, `bytes * (1 - delCount/maxDoc)`. That is [`prorated_size`],
@@ -114,7 +115,7 @@ pub use merge_on_flush::MergeOnFlushMergePolicy;
 /// separate per-segment `.si` file (`SegmentInfo`, `segment_info.rs`). A
 /// caller that has both parsed already builds a `SegmentStat` from them (see
 /// [`SegmentStat::from_segment_info`]); a caller with only a `Directory` can
-/// use [`segment_byte_size`] to fill in `size_bytes`.
+/// use [`commit_byte_size`] to fill in `size_bytes`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SegmentStat {
     pub name: String,
@@ -125,7 +126,7 @@ pub struct SegmentStat {
     /// `SegmentCommitInfo.sizeInBytes()`, i.e. *not* pro-rated by deletes.
     /// The pro-rated figure the algorithm actually compares against
     /// (`MergePolicy.size`) is derived from this by [`prorated_size`]. Real
-    /// on-disk bytes if obtained via [`segment_byte_size`], or a doc-count
+    /// on-disk bytes if obtained via [`commit_byte_size`], or a doc-count
     /// approximation otherwise.
     pub size_bytes: u64,
 }
@@ -173,8 +174,27 @@ pub fn prorated_size(stat: &SegmentStat) -> u64 {
 /// files are skipped (matches "some auxiliary files are optional" rather
 /// than erroring the whole computation over one absent file).
 pub fn segment_byte_size(dir: &dyn Directory, info: &SegmentInfo) -> u64 {
+    files_byte_size(dir, &info.files)
+}
+
+/// Port of `SegmentCommitInfo.sizeInBytes()`: [`segment_byte_size`] over
+/// [`SegmentCommitInfo::files`](crate::segment_infos::SegmentCommitInfo::files),
+/// so the commit-only files -- the current `.liv`, the generational field
+/// infos and doc-values update files -- count too. A merge policy sizes a
+/// committed segment with this: leaving the `.liv` out once ordered two
+/// nearly equal segments the other way round from Java's
+/// `TieredMergePolicy`, and so merged their documents in a different order.
+pub fn commit_byte_size(
+    dir: &dyn Directory,
+    commit: &crate::segment_infos::SegmentCommitInfo,
+    info: &SegmentInfo,
+) -> u64 {
+    files_byte_size(dir, &commit.files(&info.files))
+}
+
+fn files_byte_size(dir: &dyn Directory, files: &[String]) -> u64 {
     let mut total = 0u64;
-    for file in &info.files {
+    for file in files {
         if let Ok(input) = dir.open(file) {
             // Saturating rather than a bare `+`: `info.files` is parsed off
             // the `.si`, so the *number* of terms is file-controlled even
@@ -2113,6 +2133,26 @@ mod tests {
         };
         let size = segment_byte_size(&dir, &info);
         assert_eq!(size, 15);
+
+        // `SegmentCommitInfo.sizeInBytes` adds the files only the commit
+        // names: the current `.liv`, and the generational field infos and
+        // doc-values files; a file both lists name is counted once.
+        std::fs::write(dir_path.join("_0_2.liv"), b"012").unwrap();
+        std::fs::write(dir_path.join("_0_1.fnm"), b"0123456").unwrap();
+        std::fs::write(dir_path.join("_0_1_Lucene90_0.dvd"), b"01").unwrap();
+        let mut commit = crate::segment_infos::SegmentCommitInfo {
+            segment_name: "_0".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            commit_byte_size(&dir, &commit, &info),
+            15,
+            "no deletes, no updates"
+        );
+        commit.del_gen = 2;
+        commit.field_infos_files = vec!["_0_1.fnm".to_string(), "_0.fdt".to_string()];
+        commit.dv_update_files = vec![(0, vec!["_0_1_Lucene90_0.dvd".to_string()])];
+        assert_eq!(commit_byte_size(&dir, &commit, &info), 15 + 3 + 7 + 2);
 
         std::fs::remove_dir_all(&dir_path).ok();
     }
