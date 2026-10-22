@@ -117,9 +117,13 @@ holder_gone() {
 }
 if [ "${DOCKER_LOCK:-1}" != "0" ]; then
   waited=0
+  me="pid $$ nonce $RANDOM$RANDOM"
+  while :; do
   until mkdir "$LOCK" 2>/dev/null; do
     age=$(( $(date +%s) - $(stat -c %Y "$LOCK" 2>/dev/null || date +%s) ))
-    if [ "$age" -gt "$LOCK_STALE_S" ] && [ "$(running_jobs)" = "0" ] && holder_gone; then
+    stale_owner="$(cat "$LOCK/owner" 2>/dev/null)"
+    if [ "$age" -gt "$LOCK_STALE_S" ] && [ "$(running_jobs)" = "0" ] && holder_gone \
+      && [ "$(cat "$LOCK/owner" 2>/dev/null)" = "$stale_owner" ]; then
       echo "docker-test: reclaiming stale lock $LOCK (${age}s old, holder gone, no job running)" >&2
       rm -rf "$LOCK"
       continue
@@ -130,8 +134,16 @@ if [ "${DOCKER_LOCK:-1}" != "0" ]; then
     fi
     sleep 15
   done
+  echo "$REPO pid $$ since $(date '+%F %T') ($me): ${CMD[*]}" > "$LOCK/owner"
+  # Waiters that judged the same dead lock stale at the same moment each
+  # `rm -rf` it and `mkdir` their own, the later ones deleting the earlier
+  # ones' fresh lock: four runs once all started at one second this way.
+  # Settle, then keep the lock only if the owner file is still ours.
+  sleep 3
+  if grep -qF "($me)" "$LOCK/owner" 2>/dev/null; then break; fi
+  echo "docker-test: lost the lock to a concurrent reclaim, waiting again" >&2
+  done
   trap 'rm -rf "$LOCK"' EXIT
-  echo "$REPO pid $$ since $(date '+%F %T'): ${CMD[*]}" > "$LOCK/owner"
   while [ "$(running_jobs)" != "0" ]; do
     if [ "$waited" != 2 ]; then
       echo "docker-test: lock held, waiting for a running lucene-rust-test container to exit" >&2
