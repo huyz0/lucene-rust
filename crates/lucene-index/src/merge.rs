@@ -1573,11 +1573,13 @@ fn describe_written_files(
                 suffix.to_string(),
             ));
         } else {
-            // The vectors twin of the doc-values rule above, and it tolerates
-            // a loss on the same terms as `omit_norms`: a caller that supplies
-            // no `MergeSource::vectors` for sources that have them gets a
-            // merged segment with no vectors and an honest `.fnm`, rather than
-            // one that claims them. `IndexWriter::execute_merge` always opens
+            // The vectors twin of the doc-values rule above, for a field the
+            // vectors merge wrote no entry for. That is every vector field
+            // when no source supplies `MergeSource::vectors` (a merged
+            // segment with no vectors and an honest `.fnm`); once any source
+            // does, every vector field of the merged FieldInfos gets an
+            // entry, empty when its sources supplied none (as
+            // `KnnVectorsWriter.merge` writes it). `IndexWriter::execute_merge` always opens
             // them, so the loss is not reachable from this port's own writer.
             // A positive `vector_dimension` makes `FieldInfo.hasVectorValues()` true,
             // which `IncrementalHnswGraphMerger` and `CheckIndex` key off,
@@ -3923,7 +3925,6 @@ fn merge_vectors(
             continue;
         }
         let mut field_sources = Vec::new();
-        let mut surviving = 0usize;
         for (src_idx, (source, reverse)) in sources.iter().zip(&reverse_maps).enumerate() {
             let Some(source_vectors) = source.vectors else {
                 continue;
@@ -3946,30 +3947,18 @@ fn merge_vectors(
                 original_number,
                 merged_field.vector_encoding,
             )?;
-            let doc_map = &doc_id_maps[src_idx];
-            // ARITH: a count of elements of an in-memory slice added to a
-            // running total of the same, so the sum is bounded by the number
-            // of `i32`s this process holds and cannot reach `usize::MAX`.
-            #[allow(clippy::arithmetic_side_effects)]
-            {
-                surviving += ord_to_doc
-                    .iter()
-                    .filter(|&&doc| mapped_doc_id(doc_map, doc).is_some())
-                    .count();
-            }
             field_sources.push(FieldSource {
                 source_index: src_idx,
                 original_field_number: original_number,
                 ord_to_doc,
             });
         }
-        // A field every one of whose vectors was deleted is omitted rather
-        // than written as an empty one, exactly as `build_vectors_output`
-        // omits it at flush time -- and the merged `.fnm` then zeroes its
-        // `vector_dimension` instead of claiming vectors that are not there.
-        if surviving > 0 {
-            plan.push((merged_field, field_sources));
-        }
+        // A field every one of whose vectors was deleted is still written,
+        // as an empty one: `KnnVectorsWriter.merge` merges every field of
+        // the merged `FieldInfos` that `hasVectorValues()`, so the merged
+        // segment keeps the field (`getFloatVectorValues` of size 0), as
+        // `testDeleteAllVectorDocs` reads it.
+        plan.push((merged_field, field_sources));
     }
     if plan.is_empty() {
         return Ok(None);
