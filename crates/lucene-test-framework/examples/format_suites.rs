@@ -1,10 +1,12 @@
-//! M14.h h5's acceptance run: each format suite's `addRandomFields`
-//! (postings, stored fields, term vectors, doc values) fills a fresh
+//! M14.h h5's and h6's acceptance run: each format suite's
+//! `addRandomFields` (postings, stored fields, term vectors, doc values,
+//! segment infos, field infos, compound, norms) fills a fresh
 //! `FsDirectory` per seed through a `RandomIndexWriter` under a random
 //! `newIndexWriterConfig`, with deletes, commits and sometimes a forced
 //! merge. The closed index must pass this port's `CheckIndex`, and real
 //! Lucene's with `--java-cp` (`org.apache.lucene.index.CheckIndex`, which
-//! decodes every posting, stored document, term vector and doc value),
+//! decodes every posting, stored document, term vector, doc value and
+//! norm, and every deleted document's `.liv`),
 //! having opened every segment the port wrote.
 //!
 //! Usage: `format_suites [--seeds A..B | --seed N] [--java-cp CP] [--dir DIR]`.
@@ -15,19 +17,27 @@ use std::time::Instant;
 use lucene_index::buffered_updates::Term;
 use lucene_index::document::{Document, Store, StringField};
 use lucene_store::FsDirectory;
+use lucene_test_framework::index::base_compound_format::CompoundSuite;
+use lucene_test_framework::index::base_field_info_format::FieldInfoSuite;
 use lucene_test_framework::index::base_index_file_format::{new_riw, IndexFileFormatSuite};
+use lucene_test_framework::index::base_norms_format::NormsSuite;
 use lucene_test_framework::index::base_postings_format::PostingsSuite;
+use lucene_test_framework::index::base_segment_info_format::SegmentInfoSuite;
 use lucene_test_framework::index::base_stored_fields_format::StoredFieldsSuite;
 use lucene_test_framework::index::base_term_vectors_format::TermVectorsSuite;
 use lucene_test_framework::index::legacy_base_doc_values_format::DocValuesSuite;
 use lucene_test_framework::util::lucene_test_case::LuceneTestCase;
 use lucene_test_framework::util::test_util;
 
-const SUITES: [(&str, &dyn IndexFileFormatSuite); 4] = [
+const SUITES: [(&str, &dyn IndexFileFormatSuite); 8] = [
     ("postings", &PostingsSuite),
     ("stored fields", &StoredFieldsSuite),
     ("term vectors", &TermVectorsSuite),
     ("doc values", &DocValuesSuite),
+    ("segment infos", &SegmentInfoSuite),
+    ("field infos", &FieldInfoSuite),
+    ("compound", &CompoundSuite),
+    ("norms", &NormsSuite),
 ];
 
 /// Port and (with `java_cp`) Lucene `CheckIndex` over `path`; the number of

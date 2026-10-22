@@ -74,9 +74,12 @@ MAX_FILE = 80_000
 # found it full, with rows trimmed to fit, so it is 560 KB. M14.i's
 # command-line tools (`tools.md`: misc, demo, luke, benchmark) and M14.h's
 # lucene-test-framework (`test-framework.md`, growing over eight batches)
-# need room for theirs, so it is 590 KB. The per-row and per-file budgets
+# need room for theirs, so it is 590 KB. M14.h's h6 found it full: trimming
+# other rows to fit dropped Differs that were still true, and h6's points,
+# KNN and test-postings rows and h8's are still to come, so it is 600 KB.
+# The per-row and per-file budgets
 # are what keep a row short; the total only says how many rows there may be.
-MAX_TOTAL = 590_000
+MAX_TOTAL = 600_000
 
 # A line of the index's area table: its link and its row count.
 AREA_ROW = re.compile(r"^\|\s*\[[^\]]*\]\(([^)]+\.md)\)\s*\|.*\|\s*(\d+)\s*\|\s*$")

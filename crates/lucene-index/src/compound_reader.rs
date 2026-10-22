@@ -20,7 +20,7 @@
 //! stale loose file that happens to share a core file's name.
 
 use lucene_codecs::compound_format::{self, CompoundEntries};
-use lucene_store::codec_util::ID_LENGTH;
+use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::{Directory, FsIndexOutput, Input};
 use lucene_store::{Error, Result};
 
@@ -63,6 +63,13 @@ impl<'d> CompoundReader<'d> {
             .names()
             .map(|id| format!("{}{id}", self.segment_name))
             .collect()
+    }
+
+    /// `checkIntegrity()`: `CodecUtil.checksumEntireFile` over `.cfs`.
+    /// Opening checks only its header, footer and length.
+    pub fn check_integrity(&self) -> Result<()> {
+        let footer = self.data.len().saturating_sub(codec_util::FOOTER_LENGTH);
+        codec_util::check_whole_file_footer(&self.data, footer).map(|_| ())
     }
 
     /// The member id of `name` (`IndexFileNames.stripSegmentName`), when it is
@@ -157,7 +164,6 @@ impl Directory for CompoundReader<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lucene_store::codec_util;
     use lucene_store::FsDirectory;
 
     const ID: [u8; ID_LENGTH] = [7; ID_LENGTH];
@@ -273,6 +279,26 @@ mod tests {
             CompoundReader::open(&base, "_3", &ID),
             Err(Error::Corrupted(_))
         ));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn check_integrity_reads_the_whole_archive() {
+        let (root, _, _) = compound_dir("integrity");
+        let base = FsDirectory::open(&root);
+        CompoundReader::open(&base, "_3", &ID)
+            .unwrap()
+            .check_integrity()
+            .unwrap();
+        // A flipped byte inside a member: opening does not look there.
+        let mut cfs = std::fs::read(root.join("_3.cfs")).unwrap();
+        let mid = cfs.len() / 2;
+        cfs[mid] ^= 1;
+        std::fs::write(root.join("_3.cfs"), &cfs).unwrap();
+        let reader = CompoundReader::open(&base, "_3", &ID).unwrap();
+        let err = reader.check_integrity().unwrap_err();
+        assert!(err.to_string().contains("checksum failed"), "{err}");
+        drop(reader);
         std::fs::remove_dir_all(root).unwrap();
     }
 }
