@@ -2113,6 +2113,34 @@ fn check_integrity_and_skippers() {
         .unwrap();
 }
 
+/// `Lucene90PointsReader` reads `.kdm` through a `ChecksumIndexInput` and
+/// `checkFooter`s it in its constructor, so a flipped byte there is refused
+/// when the segment opens. This reader parses `.kdm` on first use, and
+/// `BasePointsFormatTestCase`'s inherited `testCheckIntegrityReadsAllBytes`
+/// found the damage going unnoticed by both the open and `check_integrity`.
+#[test]
+fn a_damaged_points_meta_file_is_refused_at_open() {
+    let src = format!(
+        "{}/../../fixtures/data/reader_api/multi",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let tmp = lucene_util::test_support::TempDir::new("reader-kdm-footer");
+    for entry in std::fs::read_dir(&src).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(entry.path(), tmp.path().join(entry.file_name())).unwrap();
+    }
+    DirectoryReader::open(&FsDirectory::open(tmp.path())).unwrap();
+    let kdm = tmp.path().join("_0.kdm");
+    let mut bytes = std::fs::read(&kdm).unwrap();
+    let mid = bytes.len() / 2;
+    bytes[mid] ^= 0x01;
+    std::fs::write(&kdm, bytes).unwrap();
+    assert!(
+        DirectoryReader::open(&FsDirectory::open(tmp.path())).is_err(),
+        "a damaged byte of _0.kdm opened"
+    );
+}
+
 /// A sparse field's `IndexedDISI` region, as bytes: each `(block, docs)` a
 /// SPARSE block of those low 16 bits, then the `NO_MORE_DOCS` block.
 fn sparse_region(blocks: &[(u16, &[u16])]) -> Vec<u8> {
