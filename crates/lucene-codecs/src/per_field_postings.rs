@@ -248,13 +248,26 @@ pub fn write<T: TermSource>(
             has_payloads_or_offsets: Some(has_payloads_or_offsets),
             ..format.write_options()
         };
-        let output = postings_writer::write_fields_with_options(
-            &group_inputs,
-            norms,
-            &options,
-            segment_id,
-            &codec_suffix,
-        )?;
+        // `Lucene103BlockTreeTermsWriter.TermsWriter.finish`: a field with
+        // no terms (a merge's, whose every source term was deleted) gets no
+        // `.tmd` record, but stays routed to the group, whose files are
+        // written even when every one of its fields is empty.
+        let with_terms: Vec<FieldPostingsInput<'_, T>> = group_inputs
+            .iter()
+            .copied()
+            .filter(|input| !input.terms.is_empty())
+            .collect();
+        let output = if with_terms.is_empty() {
+            postings_writer::write_no_fields(&options, segment_id, &codec_suffix)?
+        } else {
+            postings_writer::write_fields_with_options(
+                &with_terms,
+                norms,
+                &options,
+                segment_id,
+                &codec_suffix,
+            )?
+        };
         let completion = match format.kind {
             PostingsFormatKind::Lucene104 => None,
             PostingsFormatKind::Completion104 => Some(

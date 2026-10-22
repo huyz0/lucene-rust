@@ -811,10 +811,39 @@ pub fn write_fields_with_options<T: TermSource>(
     segment_id: &[u8; ID_LENGTH],
     segment_suffix: &str,
 ) -> Result<Output> {
-    options.validate()?;
     if inputs.is_empty() {
         return Err(Error::EmptyTerms);
     }
+    write_any_fields(inputs, norms, options, segment_id, segment_suffix)
+}
+
+/// A `Lucene104PostingsFormat` instance whose every field lost all its terms:
+/// `Lucene103BlockTreeTermsWriter` skips a field with `numTerms == 0`, so a
+/// merge whose only source terms belonged to deleted documents still writes
+/// the format's five files, with no field in them. `SegmentMerger` opens the
+/// consumer whenever the merged `FieldInfos.hasPostings()`, and
+/// `PerFieldPostingsFormat` routes every field the sources' term
+/// dictionaries list -- empty or not -- to it.
+///
+/// # Errors
+/// [`Error::InvalidBlockSizes`] for `options`.
+pub fn write_no_fields(
+    options: &WriteOptions,
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+) -> Result<Output> {
+    write_any_fields::<TermPostings>(&[], &[], options, segment_id, segment_suffix)
+}
+
+/// [`write_fields_with_options`] without its non-empty check.
+fn write_any_fields<T: TermSource>(
+    inputs: &[FieldPostingsInput<'_, T>],
+    norms: &[FieldNorms<'_>],
+    options: &WriteOptions,
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+) -> Result<Output> {
+    options.validate()?;
     // Every file starts at a size a small segment fits: growing an empty
     // buffer through 8, 16, 32 ... bytes was a measurable share of a
     // one-document flush (`MemoryIndex`).
@@ -850,7 +879,7 @@ pub fn write_fields_with_options<T: TermSource>(
     write_postings_terms_header(&mut tmd, segment_id, segment_suffix);
     tmd.write_vint(inputs.len() as i32); // numFields
 
-    let postings = write_postings(
+    let postings = write_any_postings(
         inputs,
         norms,
         options.has_prox,
@@ -1069,7 +1098,7 @@ pub fn write_postings<T, E, F>(
     has_payloads_or_offsets: Option<bool>,
     segment_id: &[u8; ID_LENGTH],
     segment_suffix: &str,
-    mut terms_dict: F,
+    terms_dict: F,
 ) -> std::result::Result<PostingsFiles, E>
 where
     T: TermSource,
@@ -1079,6 +1108,33 @@ where
     if inputs.is_empty() {
         return Err(Error::EmptyTerms.into());
     }
+    write_any_postings(
+        inputs,
+        norms,
+        has_prox,
+        has_payloads_or_offsets,
+        segment_id,
+        segment_suffix,
+        terms_dict,
+    )
+}
+
+/// [`write_postings`] without its non-empty check: no field writes the
+/// files' headers, footers and an all-zero `.psm`.
+fn write_any_postings<T, E, F>(
+    inputs: &[FieldPostingsInput<'_, T>],
+    norms: &[FieldNorms<'_>],
+    has_prox: Option<bool>,
+    has_payloads_or_offsets: Option<bool>,
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+    mut terms_dict: F,
+) -> std::result::Result<PostingsFiles, E>
+where
+    T: TermSource,
+    E: From<Error>,
+    F: FnMut(&FieldTermStates<'_>) -> std::result::Result<(), E>,
+{
     // Each field's per-term statistics come out of its validation pass, the
     // one walk over every term's `docs` (see [`FieldStats`]).
     let mut field_stats = Vec::with_capacity(inputs.len());
