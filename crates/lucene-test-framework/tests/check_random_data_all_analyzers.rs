@@ -13,13 +13,16 @@ use std::sync::Arc;
 use lucene_analysis::lang::*;
 use lucene_analysis::{Analyzer, AnalyzerDefinition, CharArraySet, ENGLISH_STOP_WORDS};
 use lucene_test_framework::analysis::{check_random_data, check_random_data_with, MockAnalyzer};
-use lucene_test_framework::util::lucene_test_case::LuceneTestCase;
+use lucene_test_framework::util::lucene_test_case::{default_multiplier, LuceneTestCase};
 
 /// Java's `200 * RANDOM_MULTIPLIER`, before the multiplier.
 const ITERATIONS: i32 = 200;
 
 fn check<D: AnalyzerDefinition + Send + Sync + 'static>(name: &str, def: D) {
-    let mut t = LuceneTestCase::new(name);
+    check_with(LuceneTestCase::new(name), def);
+}
+
+fn check_with<D: AnalyzerDefinition + Send + Sync + 'static>(mut t: LuceneTestCase, def: D) {
     let a = Analyzer::new(def);
     let m = t.multiplier();
     check_random_data(t.random(), &a, ITERATIONS * m).unwrap();
@@ -101,6 +104,28 @@ random_strings! {
     polish => lucene_analysis_stempel::PolishAnalyzer::default();
     icu_collation_key => lucene_analysis_icu::ICUCollationKeyAnalyzer::new(
         lucene_analysis_icu::Collator::root().unwrap(),
+    );
+}
+
+/// `icu_collation_key` at seed C950197: its huge-strings run indexes the
+/// collation key of a long text, and `CheckIndex`'s
+/// `postings.intersect_agrees` scan used to match it with a regexp
+/// backtracker a few frames deep per code point, overflowing the 2 MB
+/// test-thread stack (seen before the fix: `TESTS_SEED=C950197` aborted at
+/// `RUST_MIN_STACK` 2, 1 and 0.5 MB, and passed at 64 MB).
+#[test]
+fn icu_collation_key_seed_c950197() {
+    let t = LuceneTestCase::with_config(
+        "icu_collation_key",
+        0xC950197,
+        false,
+        default_multiplier(false),
+    );
+    check_with(
+        t,
+        lucene_analysis_icu::ICUCollationKeyAnalyzer::new(
+            lucene_analysis_icu::Collator::root().unwrap(),
+        ),
     );
 }
 

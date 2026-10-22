@@ -3066,16 +3066,53 @@ fn check_postings(
         // both sides: `.*[a-e].*` matches most natural-language terms, so
         // materializing them would be close to a second copy of the whole
         // dictionary.
+        //
+        // The automaton rounds' scans step a DFA a byte at a time, as Java's
+        // `ByteRunAutomaton.run` does -- never `RegexpPattern::matches`,
+        // whose backtracker recurses once per code point consumed and
+        // overflowed a 2 MB thread stack on a binary term of a few thousand
+        // valid UTF-8 code points (an ICU collation key). The glob's
+        // `WildcardPattern::matches` recurses per pattern token, not per
+        // term byte.
         let mut intersect_problems: Vec<String> = Vec::new();
-        if let Ok(pattern) = lucene_codecs::regexp::RegexpPattern::new(b".*[a-e].*") {
+        // Java's own round (the first of its four automaton/start-term
+        // combinations): `makeAnyBinary() [a-e] makeAnyBinary()` over raw
+        // bytes, so binary terms take part too.
+        if let Some((compiled, run)) = any_binary_a_to_e_any_binary() {
+            compare_intersect_with_scan(
+                field_name,
+                field_terms,
+                "automaton `anyBinary [a-e] anyBinary`",
+                |t| lucene_util::automaton::ByteRunnable::run(&run, t),
+                field_terms
+                    .compiled_terms(&compiled)
+                    .map(|r| r.map(|(t, s)| (t, s.stats))),
+                &mut intersect_problems,
+            );
+        } else {
+            // Java throws here; a round that cannot run must not pass.
+            intersect_problems.push(format!(
+                "field {field_name:?}: `anyBinary [a-e] anyBinary` did not compile"
+            ));
+        }
+        // The regexp walker this port adds (`RegexpQuery`'s), over the same
+        // DFA it compiles to.
+        if let Some((pattern, dfa)) = lucene_codecs::regexp::RegexpPattern::new(b".*[a-e].*")
+            .ok()
+            .and_then(|p| p.to_dfa().map(|d| (p, d)))
+        {
             compare_intersect_with_scan(
                 field_name,
                 field_terms,
                 "regexp `.*[a-e].*`",
-                |t| pattern.matches(t),
+                |t| dfa.run(t),
                 field_terms.regexp_intersect(&pattern),
                 &mut intersect_problems,
             );
+        } else {
+            intersect_problems.push(format!(
+                "field {field_name:?}: regexp `.*[a-e].*` did not compile to a DFA"
+            ));
         }
         {
             let pattern = lucene_codecs::wildcard::WildcardPattern::new(b"*e*");
@@ -3278,6 +3315,27 @@ fn check_occurrences(
             last_start_offset = occ.start_offset;
         }
     }
+}
+
+/// `checkTermsIntersect`'s first automaton, `concatenate(makeAnyBinary(),
+/// makeCharRange('a', 'e'), makeAnyBinary())` determinized, as the walk's
+/// `CompiledAutomaton(automaton, false, true, true)` and the scan's
+/// `ByteRunAutomaton(automaton, true)`. `None` only if the automaton API
+/// refused it, which it cannot for this one.
+fn any_binary_a_to_e_any_binary() -> Option<(
+    lucene_util::automaton::CompiledAutomaton,
+    lucene_util::automaton::ByteRunAutomaton,
+)> {
+    use lucene_util::automaton::{
+        automata, operations, ByteRunAutomaton, CompiledAutomaton, DEFAULT_DETERMINIZE_WORK_LIMIT,
+    };
+    let any = automata::make_any_binary();
+    let a_to_e = automata::make_char_range(i32::from(b'a'), i32::from(b'e'));
+    let automaton = operations::concatenate(&[&any, &a_to_e, &any]);
+    let automaton = operations::determinize(&automaton, DEFAULT_DETERMINIZE_WORK_LIMIT).ok()?;
+    let compiled = CompiledAutomaton::with_options(&automaton, false, true, true).ok()?;
+    let run = ByteRunAutomaton::new(&automaton, true).ok()?;
+    Some((compiled, run))
 }
 
 /// One `checkTermsIntersect` round: walks the field's terms linearly and the
@@ -6542,6 +6600,60 @@ mod tests {
             caught_by_impacts >= 1,
             "no re-signed .doc bit flip was caught by postings.impacts"
         );
+    }
+
+    /// `postings.intersect_agrees` scans a term of tens of thousands of code
+    /// points in constant stack: the scan side used to run `.*[a-e].*`'s
+    /// backtracker, a few frames per code point, and overflowed the 2 MB
+    /// test-thread stack (`check_random_data_all_analyzers::
+    /// icu_collation_key`, seed C950197, a long collation key). A binary
+    /// term takes part in Java's `anyBinary [a-e] anyBinary` round too.
+    #[test]
+    fn intersect_agrees_scans_a_long_term_in_constant_stack() {
+        use crate::document::{Document, Store, StringField};
+        use crate::index_writer::IndexWriter;
+        let dst = tempdir();
+        let dir = FsDirectory::open(&dst);
+        let version = segment_info::LuceneVersion {
+            major: 10,
+            minor: 5,
+            bugfix: 0,
+        };
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", version).unwrap();
+        let terms = [
+            "z".repeat(30_000).into_bytes(),
+            // Not UTF-8, so only the binary automaton matches it.
+            vec![0xff, b'b', 0xff],
+            b"cat".to_vec(),
+        ];
+        let (compiled, run) = any_binary_a_to_e_any_binary().unwrap();
+        assert_eq!(
+            compiled.automaton_type,
+            lucene_util::automaton::AutomatonType::NORMAL
+        );
+        let regexp = lucene_codecs::regexp::RegexpPattern::new(b".*[a-e].*")
+            .unwrap()
+            .to_dfa()
+            .unwrap();
+        use lucene_util::automaton::ByteRunnable;
+        let verdicts: Vec<(bool, bool)> =
+            terms.iter().map(|t| (run.run(t), regexp.run(t))).collect();
+        assert_eq!(verdicts, [(false, false), (true, false), (true, true)]);
+        for term in terms {
+            let mut d = Document::new();
+            d.add(StringField::from_bytes("k", term, Store::No));
+            w.add_fields_document(&d).unwrap();
+        }
+        w.commit().unwrap();
+        drop(w);
+        let results = check_directory(&dir).unwrap();
+        let check = results[1]
+            .checks
+            .iter()
+            .find(|c| c.name == "postings.intersect_agrees:k")
+            .expect("the intersect check ran on the field");
+        assert!(check.passed(), "{check:?}");
+        assert!(results.iter().all(CheckResult::all_passed));
     }
 
     /// `-exorcise`: a segment whose `.fdt` fails its checksum is dropped

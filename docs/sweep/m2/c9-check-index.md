@@ -118,7 +118,7 @@ means the check already existed before this batch.
 | "Cross-check terms with norms" (norm ≠ 0 ⇔ doc has terms, live docs only, plus the two counts) | `norms.agree_with_postings:<f>` (new) |
 | "seek to last term" | `postings.seek_agrees:<f>` (new). Its accompanying `docFreq` recount is deliberately **not** ported — see finding 9. |
 | "Test seeking by ord" (10 000 sampled ordinals, then re-seek by term) | `postings.seek_agrees:<f>` (new), re-expressed against the API this port has: up to 10 000 evenly-spaced terms are collected during the forward scan and each is re-found with `try_seek_exact` *and* `try_seek_ceil`, which must report `Found` and land on that exact term |
-| `checkTermsIntersect` (4 automaton/start-term combinations) | `postings.intersect_agrees:<f>` (new): `regexp_intersect` against `.*[a-e].*` and `intersect` against the glob `*e*`, each compared term-for-term against a linear scan filtered by the same matcher |
+| `checkTermsIntersect` (4 automaton/start-term combinations) | `postings.intersect_agrees:<f>` (new): Java's first combination (`anyBinary [a-e] anyBinary`, null start term) through `FieldTerms::compiled_terms`, `regexp_intersect` against `.*[a-e].*` and `intersect` against the glob `*e*`, each compared term-for-term against a linear scan filtered by an automaton (the `ByteRunAutomaton`, the regexp's `ByteDfa`) or the glob's own matcher |
 | `fields.size() != computedFieldCount` | not applicable: `iter_fields()` *is* the field map; there is no second count. Finding 17. |
 
 #### `testStoredFields`
@@ -278,9 +278,17 @@ All ported by b11: `soft_deletes.count_matches`, `sort.docs_in_index_sort_order`
    cross-check against a linear scan anywhere in `check_index`. A pruning bug
    silently drops matching terms from every wildcard and regexp query.
    *Fixed*: `postings.intersect_agrees:<f>` runs `regexp_intersect` with
-   `.*[a-e].*` — Java's own `makeAnyBinary + charRange('a','e') +
-   makeAnyBinary` automaton — and `intersect` with the glob `*e*`, comparing
-   each term-for-term against a linear scan filtered by the same matcher.
+   `.*[a-e].*` — a UTF-8 approximation of Java's `makeAnyBinary +
+   charRange('a','e') + makeAnyBinary` automaton — and `intersect` with the
+   glob `*e*`, comparing each term-for-term against a linear scan filtered by
+   the same matcher.
+   *Later*: that scan ran `RegexpPattern::matches`, a backtracker a few frames
+   deep per code point, and overflowed a 2 MB stack on a long binary term (an
+   ICU collation key). The regexp scan now steps the pattern's `ByteDfa`, and
+   Java's own binary automaton runs as a round of its own (walk through
+   `compiled_terms`, scan through `ByteRunAutomaton`), so binary terms are
+   checked as well. The glob scan keeps `WildcardPattern::matches`, which
+   recurses per pattern token, not per term byte.
 
 6. **[MISSING → fixed]** *No skip-data cross-check.* Java's "Test skipping"
    block had no counterpart. This port can do better than Java here: the
