@@ -169,10 +169,11 @@ pub extern "C" fn ffi_jvm_abi_version() -> u32 {
 }
 
 /// A request's query blob: the query, and the `min_score` in front of it
-/// ([`QUERY_MIN_SCORE`]) when there is one.
+/// ([`QUERY_MIN_SCORE`]) when there is one -- rewritten, as
+/// `IndexSearcher.search` rewrites before it builds a weight ([`rewritten`]).
 pub(crate) fn decode_request(blob: &[u8]) -> Result<(JvmQuery, Option<f32>), FfiStatus> {
     if blob.first() != Some(&QUERY_MIN_SCORE) {
-        return Ok((decode_query(blob)?, None));
+        return Ok((rewritten(decode_query(blob)?), None));
     }
     let mut c = Cursor { buf: blob, pos: 1 };
     let min = f32::from_bits(u32::from_le_bytes(c.i32()?.to_le_bytes()));
@@ -181,7 +182,38 @@ pub(crate) fn decode_request(blob: &[u8]) -> Result<(JvmQuery, Option<f32>), Ffi
         set_last_error("query blob: min_score twice");
         return Err(FfiStatus::InvalidArgument);
     }
-    Ok((decode_query(rest)?, Some(min)))
+    Ok((rewritten(decode_query(rest)?), Some(min)))
+}
+
+/// `IndexSearcher.rewrite`, before the free `search_*_multi_segment`
+/// functions score a request: they take the query as written, and its shape
+/// picks the scorer tree. An un-rewritten `#a ?(b c)` keeps its nested
+/// disjunction as the lone scoring clause, which runs as a top-level WAND and
+/// prunes to a different lower-bound total than Lucene's flattened
+/// `#a ?b ?c` (177 vs 10,343 on `mixed_boolean_scoring_index`).
+///
+/// OpenSearch's `QueryPhase` hands the plugin a query that
+/// `DefaultSearchContext.preProcess(true)` has already rewritten, and
+/// `BooleanQuery.rewrite` is a fixpoint, so on that path this changes
+/// nothing; it makes every other caller of the bridge score what Lucene
+/// would score.
+///
+/// A query that rewrites to something other than a boolean (`?t` to `t`, a
+/// pure negative one to `MatchNoDocsQuery`) becomes that boolean's one
+/// `MUST` clause, as a non-boolean tree root always has: the boolean path
+/// scores it exactly as the clause alone, and keeps what the term path
+/// would not (a term's own `docFreq`, `NODE_TERM_STATS`).
+pub(crate) fn rewritten(query: JvmQuery) -> JvmQuery {
+    match query {
+        JvmQuery::Term(t) => JvmQuery::Term(t),
+        JvmQuery::Boolean(b) => match Clause::Boolean(Box::new(b)).rewrite() {
+            Clause::Boolean(b) => JvmQuery::Boolean(*b),
+            other => JvmQuery::Boolean(BooleanQuery {
+                must: vec![other],
+                ..Default::default()
+            }),
+        },
+    }
 }
 
 /// One decoded query blob.
@@ -5448,6 +5480,57 @@ pub(crate) mod tests {
         let mut b = vec![QUERY_TREE];
         enc(&n, &mut b);
         b
+    }
+
+    /// `#w0 ?(w5 w6)` as the JVM might send it, un-rewritten: the bridge
+    /// rewrites it to `#w0 ?w5 ?w6`, so the pruned run's top ten and its
+    /// lower-bound total are Lucene's (`GenMixedBooleanScoring`'s query 16:
+    /// 10,343, where the nested disjunction scored as written counts 177).
+    /// A lone `?t` rewrites to the term query itself, which scores as the
+    /// term blob does.
+    #[test]
+    fn a_request_is_rewritten_before_it_is_scored() {
+        let h = open_fixture("mixed_boolean_scoring_index");
+        let nested = tree(N::B(
+            0,
+            vec![
+                (1, N::T("body", "w0")),
+                (
+                    2,
+                    N::B(0, vec![(2, N::T("body", "w5")), (2, N::T("body", "w6"))]),
+                ),
+            ],
+        ));
+        let (hits, total, lower) = run_limit(h, &nested, 10, 100).unwrap();
+        let docs: Vec<i32> = hits.iter().map(|&(d, _)| d).collect();
+        assert_eq!(
+            docs,
+            [9156, 17605, 7376, 12786, 13304, 22369, 13455, 15217, 15458, 16280]
+        );
+        assert_eq!(hits[0].1.to_bits(), 1_071_013_260);
+        assert_eq!((total, lower), (10_343, true));
+
+        let lone = tree(N::B(0, vec![(2, N::T("body", "w5"))]));
+        let JvmQuery::Boolean(b) = decode_request(&lone).unwrap().0 else {
+            panic!("a rewritten tree stays a boolean");
+        };
+        assert!(matches!(b.must[..], [Clause::Term(_)]) && b.should.is_empty());
+        let (via_bool, ..) = run_limit(h, &lone, 10, i64::MAX).unwrap();
+        let (via_term, ..) = run_limit(h, &term_blob("body", "w5"), 10, i64::MAX).unwrap();
+        assert_eq!(via_bool, via_term);
+
+        // A pure negative query rewrites to `MatchNoDocsQuery`, kept as the
+        // boolean's one required clause: no hits, and a count of zero.
+        let negative = tree(N::B(0, vec![(3, N::T("body", "w5"))]));
+        let JvmQuery::Boolean(b) = decode_request(&negative).unwrap().0 else {
+            panic!("a pure negative query stays a boolean");
+        };
+        assert!(matches!(b.must[..], [Clause::MatchNoDocs(_)]));
+        assert_eq!(
+            run_limit(h, &negative, 10, i64::MAX).unwrap(),
+            (vec![], 0, false)
+        );
+        ffi_close_jvm_reader(h);
     }
 
     /// The tree blob and the clause-list blob describe the same queries, so
