@@ -36,18 +36,12 @@ impl SegmentWriteState<'_> {
 
     /// `fieldInfos.hasProx()`: some field of the segment indexes positions.
     pub fn has_prox(&self) -> bool {
-        self.field_infos
-            .fields
-            .iter()
-            .any(|f| f.index_options.subsumes_positions())
+        crate::field_infos::has_prox(&self.field_infos.fields)
     }
 
     /// `fieldInfos.hasPayloads() || fieldInfos.hasOffsets()`.
     pub fn has_payloads_or_offsets(&self) -> bool {
-        self.field_infos.fields.iter().any(|f| {
-            f.index_options.subsumes_offsets()
-                || (f.store_payloads && f.index_options.subsumes_positions())
-        })
+        crate::field_infos::has_payloads_or_offsets(&self.field_infos.fields)
     }
 
     /// `options` with `.pos`/`.pay` presence decided over the segment, as
