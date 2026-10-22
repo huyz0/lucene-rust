@@ -108,7 +108,7 @@ against a Java twin (`fixtures/src/testframework/`, run by
 | h3 | mock analysis chain, `BaseTokenStreamTestCase` | `TestMockAnalyzer`, `TestMockCharFilter`, `TestLookaheadTokenFilter`, `TestMockSynonymFilter`, `TestToken` | `GenTestFrameworkAnalysis`: 100 seeds of token dumps equal | done (deferrals below) |
 | h4 | `RandomIndexWriter`, `newIndexWriterConfig`, `RandomCodec`, merge policies, reader wrappers, `newSearcher`, `BaseTestCheckIndex`, `BaseMergePolicyTestCase` | `TestCheckIndex`, `TestAssertingLeafReader`, merge-policy tests | 300 seeds pass Rust `CheckIndex`; on 50, Java's too (`scripts/test-framework-index.sh`) | done (deferrals below) |
 | h5 | `BaseIndexFileFormatTestCase`; doc values, postings, stored fields, term vectors suites | the default codec's format tests | 30 seeds per format read back by Lucene (`scripts/test-framework-formats.sh`) | done (deferrals below) |
-| h6 | points, norms, segment/field infos, live docs, compound, KNN suites; the test postings formats' read side | the default codec's format tests | as h5 (240 indexes, the segment info, field infos, compound and norms suites added) | in progress: segment/field infos, live docs, compound, norms done (deferrals below); points, KNN, test postings formats to come |
+| h6 | points, norms, segment/field infos, live docs, compound, KNN suites; the test postings formats' read side | the default codec's format tests | as h5 (270 indexes, the segment info, field infos, compound, norms and points suites added) | in progress: segment/field infos, live docs, compound, norms, points done (deferrals below); KNN, test postings formats to come |
 | h7 | `QueryUtils`, `CheckHits`, asserting search wrappers, search/similarity/geo bases | equivalence, explanation, similarity and geo tests | top docs, score bits and explanations equal Java's | done (deferrals below) |
 | h8 | writer stress, exceptions, NRT | `TestNRTThreads`, `TestStressNRT`, `TestIndexWriterExceptions`, ... | `scripts/test-framework-stress.sh` over 200 seeds | planned |
 
@@ -173,8 +173,9 @@ h6's deferrals so far (rows in the ledger and the inventory):
 - `CompoundReader::list_all` also lists the directory underneath (its `open` falls through to it), so the suite's `listAll` is `member_files`. A headerless sub-file is refused as "bad magic", not Java's "codec header mismatch". `testCheckIntegrity` flips a `.cfs` byte opening does not read instead of counting reads; `CompoundReader::check_integrity` was added for it. `testDoubleClose`, `testPassIOContext` and `testResourceNameInsideCompoundFile` are not ported (no explicit close, `IOContext` or resource names).
 - The norms suite checks values with `advanceExact`, since the bulk `NumericDocValues.longValues` is not ported; no merging reader wrapper.
 - `@Monster` tests (`testLargeCFS`, live docs' `testOverflow`) take their sizes as parameters and run smaller.
+- The points suite walks the index tree as values: a node has no `size()`, so its count is checked as its children's sum and every visited point against its cell. `switchIndex` merges the side writer's committed directory rather than an NRT reader, and `MismatchedCodecReader` is an index that numbers the fields in the other order. `@Nightly testRandomBinaryBig` runs at 5,000 values.
 
-No port bugs found in this part.
+Port bugs found by the points suite, each fixed in its own commit: a merge dropped a field whose every term belonged to deleted documents, so the merged `.fnm` claimed postings with no `.tim` (`fix(index)`, `per_field_postings_write_path.rs`); and `.kdm`'s footer was verified neither at open nor by `check_integrity` (`fix(search)`, `a_damaged_points_meta_file_is_refused_at_open`). The segment info, field infos, live docs, compound and norms suites found none.
 
 h7's deferrals (rows in the ledger and the inventory):
 

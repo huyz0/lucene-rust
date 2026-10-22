@@ -90,9 +90,13 @@ pub enum Error {
     UnsupportedCompressedDim(i8),
     #[error("sub-blocks do not add up to the expected count: {expected} != {actual}")]
     SubBlockCountMismatch { expected: usize, actual: usize },
-    #[error("field {field_number}: write() requires at least one point (empty fields aren't supported by this write path)")]
+    #[error(
+        "field {field_number}: write() requires at least one point (empty fields aren't supported by this write path)"
+    )]
     EmptyField { field_number: i32 },
-    #[error("field {field_number}: point {index} has packed_value.len() == {actual}, expected bytes_per_dim == {expected}")]
+    #[error(
+        "field {field_number}: point {index} has packed_value.len() == {actual}, expected bytes_per_dim == {expected}"
+    )]
     WrongPackedValueLength {
         field_number: i32,
         index: usize,
@@ -101,14 +105,18 @@ pub enum Error {
     },
     /// A [`PackedPointsField`] whose `values` is not exactly `docs.len()`
     /// packed values of `num_dims * bytes_per_dim` bytes.
-    #[error("field {field_number}: {points} points of {stride} bytes need {points}x{stride} value bytes, got {actual}")]
+    #[error(
+        "field {field_number}: {points} points of {stride} bytes need {points}x{stride} value bytes, got {actual}"
+    )]
     PackedValuesLength {
         field_number: i32,
         points: usize,
         stride: usize,
         actual: usize,
     },
-    #[error("field {field_number}: num_index_dims ({num_index_dims}) must be between 1 and num_dims ({num_dims}) inclusive")]
+    #[error(
+        "field {field_number}: num_index_dims ({num_index_dims}) must be between 1 and num_dims ({num_dims}) inclusive"
+    )]
     InvalidNumIndexDims {
         field_number: i32,
         num_dims: i32,
@@ -943,6 +951,52 @@ impl<'d> PointsReader<'d> {
             &mut VisitSink(visitor),
         )?;
         Ok(())
+    }
+
+    /// `PointTree.size()` at `node`: its points, from the tree's shape
+    /// alone (`BKDPointTree.sizeFromBalancedTree`), the count
+    /// [`count_points`](Self::count_points) adds for a cell entirely inside
+    /// a query.
+    ///
+    /// # Errors
+    /// A node of a tree other than this reader's.
+    pub fn point_tree_size(&self, node: &PointTreeNode) -> Result<i64> {
+        self.node_field(node)?.subtree_size(node.node_id)
+    }
+
+    /// `PointTree.visitDocIDs(visitor)` at `node`: `grow(size())`, then every
+    /// document id under it through [`IntersectVisitor::visit_many`], with
+    /// no value decoded (`BKDPointTree.addAll`) -- the walk
+    /// [`intersect`](Self::intersect) takes for a cell inside the query.
+    ///
+    /// # Errors
+    /// A node of a tree other than this reader's, or corrupt index bytes.
+    pub fn visit_doc_ids<V: IntersectVisitor>(
+        &self,
+        node: &PointTreeNode,
+        visitor: &mut V,
+    ) -> Result<()> {
+        let field = self.node_field(node)?;
+        let size = field.subtree_size(node.node_id)?;
+        if let Ok(size) = usize::try_from(size) {
+            if size <= i32::MAX as usize {
+                visitor.grow(size);
+            }
+        }
+        let mut input = SliceInput::new(self.inner_nodes(field)?);
+        input.seek(node.pos)?;
+        let mut ctx = IntersectCtx {
+            field,
+            kdd: self.kdd,
+            min: Vec::new(),
+            max: Vec::new(),
+            split_values: node.split_values.clone(),
+            negative_deltas: node.negative_deltas.clone(),
+            stack: Vec::new(),
+            reuse_scratch: true,
+            doc_ids: Vec::new(),
+        };
+        add_all(&mut input, node.node_id, node.fp, &mut ctx, visitor)
     }
 
     /// `PointRangeQuery`'s `Weight.count` walk (its private `pointCount`),
