@@ -1,0 +1,8 @@
+refused Can't update [NUMERIC] doc values; the field [n] doesn't exist.
+doc 0 n=7 m=- b=x
+doc 1 n=1 m=3 b=-
+doc 2 n=- m=4 b=-
+field b BINARY NONE
+field id NONE DOCS
+field m NUMERIC NONE
+field n NUMERIC NONE

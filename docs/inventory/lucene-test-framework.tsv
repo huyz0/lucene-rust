@@ -3,7 +3,7 @@
 # M14.h batches: h1 util/ suites and generators; h2 store/mockfile; h3 analysis; h4 index infrastructure; h5-h6 format suites; h7 search/geo; h8 stress.
 # class	status	detail
 tests/analysis/BaseTokenStreamFactoryTestCase	ported	crates/lucene-test-framework/src/analysis/base_token_stream_factory.rs::tokenizer_factory
-tests/analysis/BaseTokenStreamTestCase	partial	crates/lucene-test-framework/src/analysis/base_token_stream.rs::check_random_data -- M14: checkRandomData's RandomIndexWriter indexing (h4; its draws are made, so seeds replay Java's texts) and newAttributeFactory (the port's attributes are a fixed struct); checkResetException's missing-close half has no counterpart (an AnalyzerTokenStream closes on drop)
+tests/analysis/BaseTokenStreamTestCase	partial	crates/lucene-test-framework/src/analysis/base_token_stream.rs::check_random_data -- M14: newAttributeFactory (the port's attributes are a fixed struct); checkResetException's missing-close half has no counterpart (an AnalyzerTokenStream closes on drop)
 tests/analysis/CannedBinaryTokenStream	ported	crates/lucene-test-framework/src/analysis/canned.rs::CannedBinaryTokenStream
 tests/analysis/CannedTokenStream	ported	crates/lucene-test-framework/src/analysis/canned.rs::CannedTokenStream
 tests/analysis/CollationTestBase	not-needed	its subclasses (TestCollationKeyAnalyzer, TestICUCollationKeyAnalyzer) index collation keys and range-query them through a RandomIndexWriter; the ICU crate tests ICUCollationKeyAnalyzer's keys against Java fixtures directly, and the JDK-collator half has no Rust collator to test
@@ -76,10 +76,10 @@ tests/geo/BaseXYPointTestCase	todo:M14	h7 deferral: the XY twin of BaseGeoPointT
 tests/geo/EarthDebugger	not-needed	a debugging aid that renders shapes as an HTML/SVG globe; no check depends on it
 tests/geo/GeoTestUtil	partial	crates/lucene-test-framework/src/geo/geo_test_util.rs::next_double_internal -- M14: the polygon, line and near-point generators, toSVG
 tests/geo/ShapeTestUtil	todo:M14	h7 deferral: XY shape generators, with BaseXYPointTestCase
-tests/index/AlcoholicMergePolicy	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
-tests/index/AllDeletedFilterReader	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
-tests/index/AssertingDirectoryReader	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
-tests/index/AssertingLeafReader	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
+tests/index/AlcoholicMergePolicy	ported	crates/lucene-test-framework/src/index/merge_policies.rs::AlcoholicMergePolicy
+tests/index/AllDeletedFilterReader	ported	crates/lucene-test-framework/src/index/reader_wrappers.rs::AllDeletedFilterReader
+tests/index/AssertingDirectoryReader	ported	crates/lucene-test-framework/src/index/asserting_leaf_reader.rs::asserting_directory_reader
+tests/index/AssertingLeafReader	partial	crates/lucene-test-framework/src/index/asserting_leaf_reader.rs::AssertingLeafReader -- M14: impacts, the doc-values skipper, points and vectors pass through unchecked
 tests/index/BaseCompoundFormatTestCase	todo:M14	h6: index file format suites
 tests/index/BaseCompressingDocValuesFormatTestCase	todo:M14	h5: index file format suites
 tests/index/BaseDocValuesFormatTestCase	todo:M14	h5: index file format suites
@@ -87,33 +87,33 @@ tests/index/BaseFieldInfoFormatTestCase	todo:M14	h6: index file format suites
 tests/index/BaseIndexFileFormatTestCase	todo:M14	h5: index file format suites
 tests/index/BaseKnnVectorsFormatTestCase	todo:M14	h6: index file format suites
 tests/index/BaseLiveDocsFormatTestCase	todo:M14	h6: index file format suites
-tests/index/BaseMergePolicyTestCase	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
+tests/index/BaseMergePolicyTestCase	ported	crates/lucene-test-framework/src/index/base_merge_policy.rs::BaseMergePolicyTestCase
 tests/index/BaseNormsFormatTestCase	todo:M14	h6: index file format suites
 tests/index/BasePointsFormatTestCase	todo:M14	h6: index file format suites
 tests/index/BasePostingsFormatTestCase	todo:M14	h5: index file format suites
 tests/index/BaseSegmentInfoFormatTestCase	todo:M14	h6: index file format suites
 tests/index/BaseStoredFieldsFormatTestCase	todo:M14	h5: index file format suites
 tests/index/BaseTermVectorsFormatTestCase	todo:M14	h5: index file format suites
-tests/index/BaseTestCheckIndex	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
-tests/index/DocHelper	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
-tests/index/FieldFilterLeafReader	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
-tests/index/ForceMergePolicy	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
+tests/index/BaseTestCheckIndex	ported	crates/lucene-test-framework/src/index/base_test_check_index.rs::test_deleted_docs
+tests/index/DocHelper	ported	crates/lucene-test-framework/src/index/doc_helper.rs::setup_doc
+tests/index/FieldFilterLeafReader	ported	crates/lucene-test-framework/src/index/reader_wrappers.rs::FieldFilterLeafReader
+tests/index/ForceMergePolicy	ported	crates/lucene-test-framework/src/index/merge_policies.rs::ForceMergePolicy
 tests/index/LegacyBaseDocValuesFormatTestCase	todo:M14	h5: index file format suites
-tests/index/MergeReaderWrapper	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
-tests/index/MergingCodecReader	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
-tests/index/MergingDirectoryReaderWrapper	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
-tests/index/MismatchedCodecReader	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
-tests/index/MismatchedDirectoryReader	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
-tests/index/MismatchedLeafReader	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
-tests/index/MockIndexWriterEventListener	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
-tests/index/MockRandomMergePolicy	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
-tests/index/OwnCacheKeyMultiReader	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
-tests/index/PerThreadPKLookup	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
-tests/index/PointsStackTracker	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
-tests/index/RandomCodec	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
-tests/index/RandomIndexWriter	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
+tests/index/MergeReaderWrapper	not-needed	wraps a reader in its merge instances; this port has no merge instances, a reader merges as it reads
+tests/index/MergingCodecReader	not-needed	wraps a CodecReader in its merge instances; this port has no merge instances
+tests/index/MergingDirectoryReaderWrapper	not-needed	wraps every leaf in MergingCodecReader; this port has no merge instances
+tests/index/MismatchedCodecReader	ported	crates/lucene-test-framework/src/index/reader_wrappers.rs::MismatchedCodecReader
+tests/index/MismatchedDirectoryReader	ported	crates/lucene-test-framework/src/index/reader_wrappers.rs::mismatched_directory_reader
+tests/index/MismatchedLeafReader	ported	crates/lucene-test-framework/src/index/reader_wrappers.rs::MismatchedLeafReader
+tests/index/MockIndexWriterEventListener	not-needed	records IndexWriterEventListener callbacks; this port's IndexWriter has no event listener
+tests/index/MockRandomMergePolicy	ported	crates/lucene-test-framework/src/index/merge_policies.rs::MockRandomMergePolicy
+tests/index/OwnCacheKeyMultiReader	ported	crates/lucene-test-framework/src/index/reader_wrappers.rs::OwnCacheKeyMultiReader
+tests/index/PerThreadPKLookup	ported	crates/lucene-test-framework/src/index/per_thread_pk_lookup.rs::PerThreadPkLookup
+tests/index/PointsStackTracker	ported	crates/lucene-test-framework/src/index/points_stack_tracker.rs::PointsStackTracker
+tests/index/RandomCodec	todo:M14	h4 deferral: a per-field random codec; only Lucene104 postings and doc-values formats are writable here, so the draw has nothing to choose between
+tests/index/RandomIndexWriter	partial	crates/lucene-test-framework/src/index/random_index_writer.rs::RandomIndexWriter -- M14: soft deletes (the readers do not resolve them) and update by query
 tests/index/RandomPostingsTester	todo:M14	h5: index file format suites
-tests/index/SuppressingConcurrentMergeScheduler	todo:M14	h4: RandomIndexWriter, merge policies, reader wrappers, CheckIndex
+tests/index/SuppressingConcurrentMergeScheduler	todo:M14	h8: a ConcurrentMergeScheduler swallowing chosen merge exceptions
 tests/index/ThreadedIndexingAndSearchingTestCase	todo:M14	h8: NRT/stress
 tests/mockfile/DisableFsyncFS	ported	crates/lucene-test-framework/src/mockfile/mock_fs.rs::fsync_disabled
 tests/mockfile/ExtrasFS	ported	crates/lucene-test-framework/src/mockfile/mock_fs.rs::create_directory
@@ -179,17 +179,17 @@ tests/store/SlowOpeningMockIndexInputWrapper	ported	crates/lucene-test-framework
 tests/util/AbstractBeforeAfterRule	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
 tests/util/BaseBitSetTestCase	ported	crates/lucene-test-framework/src/util/base_bit_set.rs::BaseBitSetTestCase
 tests/util/BaseDocIdSetTestCase	partial	crates/lucene-test-framework/src/util/base_doc_id_set.rs::BaseDocIdSetTestCase -- M14: intoBitSet/ramBytesUsed have no Rust counterpart on DocIdSet (testIntoBitSet, testIntoBitSetBoundChecks, testRamBytesUsed)
-tests/util/CloseableDirectory	todo:M14	h2: closes a MockDirectoryWrapper at suite end, checking for leaks
+tests/util/CloseableDirectory	ported	crates/lucene-test-framework/src/util/closeable_directory.rs::CloseableDirectory
 tests/util/English	ported	crates/lucene-test-framework/src/util/english.rs::long_to_english
-tests/util/FailOnNonBulkMergesInfoStream	todo:M14	h4: InfoStream failing on a non-bulk stored-fields merge
+tests/util/FailOnNonBulkMergesInfoStream	not-needed	an InfoStream asserting on merge messages; this port has no InfoStream
 tests/util/FailureMarker	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
 tests/util/LineFileDocs	ported	crates/lucene-test-framework/src/util/line_file_docs.rs::LineFileDocs
 tests/util/LuceneJUnit3MethodProvider	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
-tests/util/LuceneTestCase	partial	crates/lucene-test-framework/src/util/lucene_test_case.rs::LuceneTestCase -- M14: newIndexWriterConfig/newSearcher/newField arrive with h4 and h7 (newDirectory and its family: crates/lucene-test-framework/src/store/new_directory.rs)
-tests/util/NullInfoStream	todo:M14	h4: an InfoStream that discards (and asserts on) messages
+tests/util/LuceneTestCase	partial	crates/lucene-test-framework/src/util/lucene_test_case.rs::LuceneTestCase -- M14: newSearcher/newField arrive with h7 (newDirectory and its family: crates/lucene-test-framework/src/store/new_directory.rs; newIndexWriterConfig: crates/lucene-test-framework/src/index/index_writer_config.rs)
+tests/util/NullInfoStream	not-needed	an InfoStream that discards messages; this port has no InfoStream
 tests/util/QuickPatchThreadsFilter	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
 tests/util/RamUsageTester	not-needed	reflection over the JVM heap; Rust types report their own heap (`ram_bytes_used`)
-tests/util/RemoveUponClose	todo:M14	h2: deletes a test directory on close unless the test failed
+tests/util/RemoveUponClose	ported	crates/lucene-util/src/test_support.rs::TempDir
 tests/util/Rethrow	not-needed	sneaky-throws a checked exception; Rust has no checked exceptions
 tests/util/RunListenerPrintReproduceInfo	ported	crates/lucene-test-framework/src/util/lucene_test_case.rs::reproduce_line
 tests/util/StringMockResourceLoader	todo:M14	h3: a ResourceLoader over an in-memory string
@@ -201,14 +201,14 @@ tests/util/TestRuleIgnoreTestSuites	not-needed	JUnit/randomizedtesting runner in
 tests/util/TestRuleLimitSysouts	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
 tests/util/TestRuleMarkFailure	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
 tests/util/TestRuleRestoreSystemProperties	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
-tests/util/TestRuleSetupAndRestoreClassEnv	todo:M14	h4: per-class codec/similarity/locale randomization
+tests/util/TestRuleSetupAndRestoreClassEnv	not-needed	sets the JVM-global default codec, similarity, locale and time zone per class; this port has no such globals (WriterEnv carries the time zone and flush mode)
 tests/util/TestRuleSetupAndRestoreInstanceEnv	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
 tests/util/TestRuleSetupTeardownChained	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
 tests/util/TestRuleStoreClassName	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
 tests/util/TestRuleTemporaryFilesCleanup	ported	crates/lucene-util/src/test_support.rs::TempDir
 tests/util/TestRuleThreadAndTestName	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
 tests/util/TestSecurityManager	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
-tests/util/TestUtil	partial	crates/lucene-test-framework/src/util/test_util.rs::random_realistic_unicode_string -- M14: index/codec helpers (getDefaultCodec, docs, ...) arrive with h4-h5 (checkIndex: test_util.rs::check_index); randomPattern (java.util.regex) is not ported
+tests/util/TestUtil	partial	crates/lucene-test-framework/src/util/test_util.rs::random_realistic_unicode_string -- M14: index/codec helpers (getDefaultCodec, docs, ...) arrive with h5 (checkIndex: test_util.rs::check_index); randomPattern (java.util.regex) is not ported
 tests/util/ThrottledIndexOutput	ported	crates/lucene-test-framework/src/store/mock_directory_wrapper.rs::set_throttling
 tests/util/TimeUnits	not-needed	millisecond constants for JUnit `@Timeout` annotations
 tests/util/VerifyTestClassNamingConvention	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests

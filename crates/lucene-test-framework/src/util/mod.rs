@@ -5,6 +5,7 @@
 pub mod automaton_test_util;
 pub mod base_bit_set;
 pub mod base_doc_id_set;
+pub mod closeable_directory;
 pub mod english;
 pub mod fst_tester;
 pub mod line_file_docs;

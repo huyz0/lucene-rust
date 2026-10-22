@@ -19,11 +19,13 @@
 //! Modules follow the Java packages: [`util`] is `org.apache.lucene.tests.util`,
 //! [`analysis`] `org.apache.lucene.tests.analysis` (the mock analysis chain
 //! and `BaseTokenStreamTestCase`), [`store`] `org.apache.lucene.tests.store`,
-//! [`mockfile`] `org.apache.lucene.tests.mockfile`, [`search`]
+//! [`mockfile`] `org.apache.lucene.tests.mockfile`, [`index`]
+//! `org.apache.lucene.tests.index`, [`search`]
 //! `org.apache.lucene.tests.search` and [`geo`] `org.apache.lucene.tests.geo`.
 
 pub mod analysis;
 pub mod geo;
+pub mod index;
 pub mod mockfile;
 pub mod search;
 pub mod store;

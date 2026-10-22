@@ -1,8 +1,7 @@
 //! Lucene's `TestMockAnalyzer` (test-framework's own tests), ported.
 //!
-//! `testChangeGaps` (LUCENE-5324) is not here: it is entirely an indexing
-//! test -- a wrapper's gaps must show in indexed term-vector positions and
-//! offsets -- and waits for the port's `RandomIndexWriter` (h4).
+//! `testChangeGaps`' `DelegatingAnalyzerWrapper` overriding the two gaps is
+//! the analyzer's own gap overrides here.
 
 use std::sync::Arc;
 
@@ -426,4 +425,62 @@ fn analyzer_streams_are_token_streams() {
     let a = MockAnalyzer::new(t.random()).build();
     let ts: &mut dyn TokenStream = &mut a.token_stream("f", "x").unwrap();
     assert_token_stream_contents(ts, &terms(&["x"]).final_offset(1)).unwrap();
+}
+
+/// `testChangeGaps` (LUCENE-5324): the analyzer's gaps show in the
+/// indexed term vector's positions and offsets.
+#[test]
+fn change_gaps() {
+    use lucene_index::document::{Document, Field, FieldType, IndexOptions};
+    use lucene_search::reader::LeafReader;
+    use lucene_store::ByteBuffersDirectory;
+    use lucene_test_framework::index::random_index_writer::{RandomIndexWriter, WriterEnv};
+    use lucene_util::java_random::JavaRandom;
+
+    for seed in 0..8 {
+        let mut random = JavaRandom::new(seed);
+        let position_gap = random.next_int_bounded(1000);
+        let offset_gap = random.next_int_bounded(1000);
+        let a = MockAnalyzer::new(&mut random)
+            .build()
+            .with_position_increment_gap(position_gap)
+            .with_offset_gap(offset_gap);
+        let dir = ByteBuffersDirectory::new();
+        let mut writer =
+            RandomIndexWriter::with_analyzer(&mut random, &dir, Arc::new(a), WriterEnv::new(seed))
+                .unwrap();
+        let mut ft = FieldType::new();
+        ft.set_index_options(IndexOptions::Docs).unwrap();
+        ft.set_tokenized(true).unwrap();
+        ft.set_store_term_vectors(true).unwrap();
+        ft.set_store_term_vector_positions(true).unwrap();
+        ft.set_store_term_vector_offsets(true).unwrap();
+        let mut doc = Document::new();
+        doc.add(Field::from_string("f", "a", ft.clone()).unwrap());
+        doc.add(Field::from_string("f", "a", ft).unwrap());
+        writer.add_document(&doc).unwrap();
+        let reader = writer.get_reader().unwrap();
+        assert_eq!(reader.segment_readers().len(), 1);
+        let leaf = &reader.segment_readers()[0];
+        let vectors = leaf.term_vectors(0).unwrap().unwrap();
+        let number = leaf.field_infos().field_by_name("f").unwrap().number;
+        let field = vectors
+            .fields
+            .iter()
+            .find(|f| f.field_number == number)
+            .unwrap();
+        assert_eq!(field.terms.len(), 1, "seed {seed}");
+        let t = &field.terms[0];
+        assert_eq!(t.term, b"a");
+        assert_eq!(t.freq, 2);
+        let positions = t.positions.as_ref().unwrap();
+        let starts = t.start_offsets.as_ref().unwrap();
+        let ends = t.end_offsets.as_ref().unwrap();
+        assert_eq!(positions[0], 0);
+        assert_eq!(starts[0], 0);
+        assert_eq!(positions[1], 1 + position_gap, "seed {seed}");
+        assert_eq!(ends[1], 1 + ends[0] + offset_gap, "seed {seed}");
+        drop(reader);
+        writer.close().unwrap();
+    }
 }

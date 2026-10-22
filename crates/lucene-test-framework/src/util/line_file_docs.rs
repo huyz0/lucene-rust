@@ -19,6 +19,11 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+use lucene_codecs::field_infos::IndexOptions;
+use lucene_index::document::{
+    Document, Field, FieldType, IntField, KeywordField, NumericDocValuesField, Store, StringField,
+    TextField,
+};
 use lucene_util::java_random::JavaRandom;
 
 /// One line's document: the fields Java's `DocState` fills.
@@ -34,6 +39,37 @@ pub struct LineDoc {
     pub id: i32,
     /// `page_views`: `random.nextInt(10_000)`.
     pub page_views: i64,
+}
+
+impl LineDoc {
+    /// The `Document` Java's `nextDoc()` returns for this line: `title` (a
+    /// `KeywordField`), `titleTokenized` and `body` (stored text with
+    /// positions and term vectors with positions and offsets), `docid`
+    /// (stored), `docid_int` (an `IntField`), `date` (stored) and
+    /// `page_views` (a numeric doc value).
+    pub fn to_document(&self) -> Document {
+        let mut ft = FieldType::copy_of(&TextField::type_stored());
+        for r in [
+            ft.set_index_options(IndexOptions::DocsAndFreqsAndPositions),
+            ft.set_store_term_vectors(true),
+            ft.set_store_term_vector_offsets(true),
+            ft.set_store_term_vector_positions(true),
+        ] {
+            r.expect("an unfrozen FieldType");
+        }
+        let text = |name: &str, value: &str| {
+            Field::from_string(name, value, ft.clone()).expect("stored text is valid")
+        };
+        let mut doc = Document::new();
+        doc.add(KeywordField::new("title", self.title.clone(), Store::No));
+        doc.add(text("titleTokenized", &self.title));
+        doc.add(text("body", &self.body));
+        doc.add(StringField::new("docid", self.id.to_string(), Store::Yes));
+        doc.add(IntField::new("docid_int", self.id, Store::No));
+        doc.add(StringField::new("date", self.date.clone(), Store::Yes));
+        doc.add(NumericDocValuesField::new("page_views", self.page_views));
+        doc
+    }
 }
 
 /// The committed excerpt of Lucene's `europarl.lines.txt.gz`.
