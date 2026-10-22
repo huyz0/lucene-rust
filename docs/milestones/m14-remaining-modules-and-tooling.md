@@ -108,7 +108,7 @@ against a Java twin (`fixtures/src/testframework/`, run by
 | h3 | mock analysis chain, `BaseTokenStreamTestCase` | `TestMockAnalyzer`, `TestMockCharFilter`, `TestLookaheadTokenFilter`, `TestMockSynonymFilter`, `TestToken` | `GenTestFrameworkAnalysis`: 100 seeds of token dumps equal | done (deferrals below) |
 | h4 | `RandomIndexWriter`, `newIndexWriterConfig`, `RandomCodec`, merge policies, reader wrappers, `newSearcher`, `BaseTestCheckIndex`, `BaseMergePolicyTestCase` | `TestCheckIndex`, `TestAssertingLeafReader`, merge-policy tests | 300 seeds pass Rust `CheckIndex`; on 50, Java's too (`scripts/test-framework-index.sh`) | done (deferrals below) |
 | h5 | `BaseIndexFileFormatTestCase`; doc values, postings, stored fields, term vectors suites | the default codec's format tests | 30 seeds per format read back by Lucene (`scripts/test-framework-formats.sh`) | done (deferrals below) |
-| h6 | points, norms, segment/field infos, live docs, compound, KNN suites; the test postings formats' read side | the default codec's format tests | as h5 | planned |
+| h6 | points, norms, segment/field infos, live docs, compound, KNN suites; the test postings formats' read side | the default codec's format tests | as h5 (240 indexes, the segment info, field infos, compound and norms suites added) | in progress: segment/field infos, live docs, compound, norms done (deferrals below); points, KNN, test postings formats to come |
 | h7 | `QueryUtils`, `CheckHits`, asserting search wrappers, search/similarity/geo bases | equivalence, explanation, similarity and geo tests | top docs, score bits and explanations equal Java's | done (deferrals below) |
 | h8 | writer stress, exceptions, NRT | `TestNRTThreads`, `TestStressNRT`, `TestIndexWriterExceptions`, ... | `scripts/test-framework-stress.sh` over 200 seeds | planned |
 
@@ -166,6 +166,15 @@ h5's deferrals (rows in the ledger and the inventory):
 - `RandomPostingsTester` checks impacts against the reader's `SlowImpactsEnum` only.
 
 Port bugs found: the postings writer refused a term repeated at one position (a position increment of 0), which Java writes as a delta of 0 (`rejects_decreasing_positions_within_a_doc_but_not_repeated_ones`). `add_indexes_merged` (`addIndexes(CodecReader...)`) took each source's write lock, which only `addIndexes(Directory...)` does, so it refused an index whose writer was still open (`add_indexes_refuses_incompatible_sources`). A segment reader passed a damaged `.fdm`, `.tvm`, `.vemf` or `.psm` at open and a damaged `.tim`, `.tip` or `.dvs` in `check_integrity`, where Java's open and `checkIntegrity` refuse them (`check_integrity_and_skippers`). A segment whose `.fnm` indexed positions on a field with no terms wrote a `.psm` without the `.pos`/`.pay` lengths Java's reader reads off the FieldInfos, so Lucene's `CheckIndex` refused it (`psm_frames_pos_and_pay_from_the_segment_fields_not_the_inputs`). Each fix is in its own commit.
+
+h6's deferrals so far (rows in the ledger and the inventory):
+
+- The segment info, field infos and live docs formats are byte functions, not format objects, so the suites drive `write`/`parse` through a directory. A parsed `SegmentInfo` or `FieldInfo` is a value the caller owns, so Java's immutable-view checks have nothing to refuse, and `testExceptionOnCloseInput` has no input `close` to fail (a directory hands out whole files).
+- `CompoundReader::list_all` also lists the directory underneath (its `open` falls through to it), so the suite's `listAll` is `member_files`. A headerless sub-file is refused as "bad magic", not Java's "codec header mismatch". `testCheckIntegrity` flips a `.cfs` byte opening does not read instead of counting reads; `CompoundReader::check_integrity` was added for it. `testDoubleClose`, `testPassIOContext` and `testResourceNameInsideCompoundFile` are not ported (no explicit close, `IOContext` or resource names).
+- The norms suite checks values with `advanceExact`, since the bulk `NumericDocValues.longValues` is not ported; no merging reader wrapper.
+- `@Monster` tests (`testLargeCFS`, live docs' `testOverflow`) take their sizes as parameters and run smaller.
+
+No port bugs found in this part.
 
 h7's deferrals (rows in the ledger and the inventory):
 
