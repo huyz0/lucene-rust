@@ -40,8 +40,9 @@ import org.apache.lucene.store.FSDirectory;
  *       and modification time 0, in name order, and the dictionary;
  *   <li>{@code cases.tsv}, one run per line: {@code id, stdin, tool, args...}. {@code stdin} is
  *       what {@code System.in} holds, newlines written {@code \n} ({@code -} for nothing). An
- *       argument may name {@code {fixture}} (this directory, read only) or {@code {tmp}} (one
- *       scratch directory the runs share, in order);
+ *       argument may name {@code {fixture}} (this directory, read only), {@code {tmp}} (one
+ *       scratch directory the runs share, in order) or {@code {docs}} (a copy of {@code docs/}
+ *       at a path of {@code DOCS_PATH_LENGTH} characters);
  *   <li>{@code out/<id>.out}, {@code .err} and {@code .code}, as {@code GenToolsMisc} writes
  *       them, with this directory written {@code {fixture}}, the scratch directory {@code {tmp}},
  *       and the times the tools measure {@code {ms}}.
@@ -88,19 +89,23 @@ public class GenToolsDemo {
     c("index-usage", "-", "IndexFiles", "-index", "{tmp}/x");
     c("index-unknown", "-", "IndexFiles", "-bogus");
     c("index-missing-docs", "-", "IndexFiles", "-index", "{tmp}/x", "-docs", "{tmp}/nowhere");
-    c("index-a", "-", "IndexFiles", "-index", "{tmp}/idx", "-docs", "{fixture}/docs/a.txt");
-    // Eight one-document segments at most: a ninth makes TieredMergePolicy merge them, and the
-    // order the merged segment takes its documents in follows the segments' byte sizes, which
-    // the Rust writer does not reproduce (its `.si` diagnostics are shorter).
-    String[] rest = {"b", "c", "d", "e", "f", "g"};
+    c("index-a", "-", "IndexFiles", "-index", "{tmp}/idx", "-docs", "{docs}/a.txt");
+    // One-document compound segments until TieredMergePolicy merges the ninth: the policy sorts
+    // them by byte size, ties by name, and the order the merged segment takes their documents in
+    // follows. A `.cfs` pads each file to 64 bytes, so most of them tie, and the stored path
+    // decides which: these documents are read from {docs}, a copy of docs/ at a path of exactly
+    // DOCS_PATH_LENGTH characters, which the Rust test recreates. `search-all` lists every
+    // document in index order.
+    String[] rest = {"b", "c", "d", "e", "f", "g", "h"};
     for (String r : rest) {
       c("index-" + r, "-", "IndexFiles", "-update", "-index", "{tmp}/idx", "-docs",
-          "{fixture}/docs/" + r + ".txt");
+          "{docs}/" + r + ".txt");
     }
     c("index-i", "-", "IndexFiles", "-index", "{tmp}/idx", "-update", "-docs",
-        "{fixture}/docs/sub//i.txt/");
+        "{docs}/sub//i.txt/");
     c("index-again-a", "-", "IndexFiles", "-update", "-index", "{tmp}/idx", "-docs",
-        "{fixture}/docs/a.txt");
+        "{docs}/a.txt");
+    c("search-all", "-", "SearchFiles", "-index", "{tmp}/idx", "-query", "*:*");
     c("search-fox", "-", "SearchFiles", "-index", "{tmp}/idx", "-query", "fox");
     c("search-raw", "-", "SearchFiles", "-index", "{tmp}/idx", "-query", "the", "-raw");
     c("search-bool", "-", "SearchFiles", "-index", "{tmp}/idx", "-query",
@@ -200,6 +205,7 @@ public class GenToolsDemo {
     writeJavaIndex(data);
 
     Path tmp = Files.createTempDirectory("gen-tools-demo");
+    Path docs = paddedDocs(tmp, data.resolve("docs"));
     // the forked JVMs log nothing (Lucene's vectorization notice would land on their stderr)
     Path logging = Files.createTempFile("gen-tools-demo", ".properties");
     Files.writeString(logging, ".level=OFF\n", StandardCharsets.UTF_8);
@@ -219,7 +225,10 @@ public class GenToolsDemo {
         command.add(System.getProperty("java.class.path"));
         command.add("org.apache.lucene.demo." + c[2]);
         for (int i = 3; i < c.length; i++) {
-          command.add(c[i].replace("{fixture}", data.toString()).replace("{tmp}", tmp.toString()));
+          command.add(
+              c[i].replace("{docs}", docs.toString())
+                  .replace("{fixture}", data.toString())
+                  .replace("{tmp}", tmp.toString()));
         }
         String in = c[1].equals("-") ? "" : c[1].replace("\\n", "\n");
         Path outFile = tmp.resolve(".out");
@@ -233,8 +242,8 @@ public class GenToolsDemo {
           stdin.write(in.getBytes(StandardCharsets.UTF_8));
         }
         int exit = process.waitFor();
-        String out = clean(Files.readString(outFile, StandardCharsets.UTF_8), data, tmp);
-        String err = clean(Files.readString(errFile, StandardCharsets.UTF_8), data, tmp);
+        String out = clean(Files.readString(outFile, StandardCharsets.UTF_8), docs, data, tmp);
+        String err = clean(Files.readString(errFile, StandardCharsets.UTF_8), docs, data, tmp);
         Files.delete(outFile);
         Files.delete(errFile);
         // An exception out of `main`: its toString (without the JVM's prefix), every line of it,
@@ -259,12 +268,42 @@ public class GenToolsDemo {
   }
 
   /** What a tool printed, with the directories and the measured times written as names. */
-  private static String clean(String text, Path data, Path tmp) {
+  private static String clean(String text, Path docs, Path data, Path tmp) {
     return text
+        .replace(docs.toString(), "{docs}")
         .replace(data.toString(), "{fixture}")
         .replace(tmp.toString(), "{tmp}")
         .replaceAll("documents in [0-9]+ ms", "documents in {ms} ms")
         .replaceAll("Time: [0-9]+ms", "Time: {ms}ms");
+  }
+
+  /**
+   * How long {@code {docs}}' absolute path is: the Rust test pads its own copy to the same length,
+   * so the stored paths, and the segments' sizes with them, agree.
+   */
+  static final int DOCS_PATH_LENGTH = 160;
+
+  /** A copy of {@code from} under {@code tmp}, at a path of exactly DOCS_PATH_LENGTH characters. */
+  private static Path paddedDocs(Path tmp, Path from) throws Exception {
+    int pad = DOCS_PATH_LENGTH - tmp.toString().length() - "/docs".length() - 1;
+    if (pad < 1) {
+      throw new IllegalStateException("temporary directory too long: " + tmp);
+    }
+    Path docs = tmp.resolve("p".repeat(pad)).resolve("docs");
+    try (Stream<Path> walk = Files.walk(from)) {
+      for (Path f : walk.toList()) {
+        Path to = docs.resolve(from.relativize(f).toString());
+        if (Files.isDirectory(f)) {
+          Files.createDirectories(to);
+        } else {
+          Files.copy(f, to);
+        }
+      }
+    }
+    if (docs.toString().length() != DOCS_PATH_LENGTH) {
+      throw new IllegalStateException(docs + " is not " + DOCS_PATH_LENGTH + " characters");
+    }
+    return docs;
   }
 
   /** A first line, then {@link #WORDS} with four components each, four decimals. */

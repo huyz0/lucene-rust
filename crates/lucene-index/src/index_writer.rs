@@ -9498,10 +9498,11 @@ impl IndexWriter<'_> {
     /// Builds the [`crate::merge_policy::SegmentStat`] list
     /// [`IndexWriter::auto_merge`] feeds to
     /// [`crate::merge_policy::find_merges`], sourced from this writer's
-    /// current committed segments: `doc_count`/on-disk size come from each
-    /// segment's own `.si` file (via [`crate::segment_info::parse`] and
-    /// [`crate::merge_policy::segment_byte_size`], the byte-accurate path
-    /// that module's doc comment describes), `del_count` from this writer's
+    /// current committed segments: `doc_count` comes from each segment's own
+    /// `.si` file (via [`crate::segment_info::parse`]), the on-disk size from
+    /// every file the commit says the segment owns, `.liv` included
+    /// ([`crate::merge_policy::commit_byte_size`], Java's
+    /// `SegmentCommitInfo.sizeInBytes`), `del_count` from this writer's
     /// own [`SegmentCommitInfo`] (already in memory, no re-read needed).
     ///
     /// **Every format this writer can flush is now mergeable**, so the only
@@ -9542,7 +9543,7 @@ impl IndexWriter<'_> {
         for sci in &self.segment_infos.segments {
             let si_bytes = self.dir.open(&format!("{}.si", sci.segment_name))?.to_vec();
             let si = segment_info::parse_for_codec(&si_bytes, &sci.segment_id, &sci.codec_name)?;
-            let size_bytes = merge_policy::segment_byte_size(self.dir, &si);
+            let size_bytes = merge_policy::commit_byte_size(self.dir, sci, &si);
             stats.push(merge_policy::SegmentStat {
                 name: sci.segment_name.clone(),
                 doc_count: si.doc_count,

@@ -30,20 +30,86 @@ fn copy_tree(from: &Path, to: &Path) {
     }
 }
 
-/// `IndexSplitter -l` over a segment a force-merge wrote: the names and their
-/// order compare, the sizes do not. Java's merged `.si` carries the JVM's
-/// environment in its diagnostics (`os.version`, `java.runtime.version`, a
-/// timestamp, ...), so its size is not even stable across machines, and the
-/// Rust writer records only `source` and `lucene.version`.
+/// `IndexSplitter -l` over an index a force-merge wrote. A merged `.si`
+/// records `IndexWriter.setDiagnostics`' map, six of whose values are the
+/// writing process's environment: Java's are its JVM's and host's, the Rust
+/// writer's its own (`segment_info::writer_diagnostics`). Every other byte of
+/// the segment must agree, so each listed size is compared with Java's plus
+/// the difference those six values make to the `.si`.
 const MERGED_LISTINGS: &[&str] = &["merge-again-list", "merge-logdoc-list"];
 
-/// The first column of each `name size` line.
-fn segment_names(listing: &str) -> String {
+/// The diagnostics a writer fills in from its environment.
+const ENVIRONMENT_DIAGNOSTICS: [&str; 6] = [
+    "os",
+    "os.arch",
+    "os.version",
+    "java.runtime.version",
+    "java.vendor",
+    "timestamp",
+];
+
+/// The newest commit's diagnostics of segment `name` in the index at `path`.
+fn diagnostics(path: &Path, name: &str) -> Vec<(String, String)> {
+    let dir = lucene_store::FsDirectory::open(path);
+    let commits = lucene_tools::luke::commits::Commits::new(&dir, path).unwrap();
+    let generation = commits.list_commits()[0].generation;
+    commits.segment_diagnostics(generation, name).unwrap()
+}
+
+/// `DataOutput.writeString`'s length: a vInt byte count, then the UTF-8.
+fn written_len(s: &str) -> i64 {
+    let n = s.len();
+    let vint = (usize::BITS - (n | 1).leading_zeros()).div_ceil(7);
+    i64::from(vint) + n as i64
+}
+
+/// What the environment values of `segment` add to its `.si` over those of
+/// `java`, a segment Java's process wrote. Zero for a segment Java wrote.
+fn environment_delta(segment: &[(String, String)], java: &[(String, String)]) -> i64 {
+    let value = |d: &[(String, String)], k: &str| {
+        d.iter()
+            .find(|(key, _)| key == k)
+            .map(|(_, v)| written_len(v))
+            .unwrap_or_else(|| panic!("no {k} diagnostic in {d:?}"))
+    };
+    ENVIRONMENT_DIAGNOSTICS
+        .iter()
+        .map(|k| value(segment, k) - value(java, k))
+        .sum()
+}
+
+/// Each `name size` line of an `IndexSplitter -l` listing, the size's
+/// grouping commas dropped.
+fn listed_sizes(listing: &str) -> Vec<(String, i64)> {
     listing
         .lines()
-        .map(|l| l.split(' ').next().unwrap_or_default())
-        .collect::<Vec<_>>()
-        .join("\n")
+        .map(|l| {
+            let (name, size) = l.split_once(' ').unwrap_or_else(|| panic!("{l:?}"));
+            (name.to_string(), size.replace(',', "").parse().unwrap())
+        })
+        .collect()
+}
+
+#[test]
+fn the_environment_delta_counts_vint_and_utf8_bytes() {
+    assert_eq!(written_len(""), 1);
+    assert_eq!(written_len("Linux"), 6);
+    assert_eq!(written_len(&"x".repeat(127)), 128);
+    assert_eq!(written_len(&"x".repeat(128)), 130);
+    let d = |vendor: &str| {
+        ENVIRONMENT_DIAGNOSTICS
+            .iter()
+            .map(|k| {
+                let v = if *k == "java.vendor" { vendor } else { "v" };
+                (k.to_string(), v.to_string())
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        environment_delta(&d("lucene-rust"), &d("Eclipse Adoptium")),
+        -5
+    );
+    assert_eq!(environment_delta(&d("a"), &d("a")), 0);
 }
 
 #[test]
@@ -61,6 +127,7 @@ fn misc_tools_print_what_lucene_prints() {
     let scratch = scratch.to_str().unwrap().replace('\\', "/");
     let cases = read(&data.join("cases.tsv"));
     let mut ran = 0;
+    let mut merged_listings = 0;
     for line in cases.lines() {
         let fields: Vec<&str> = line.split('\t').collect();
         let (id, args) = (fields[0], &fields[1..]);
@@ -92,8 +159,21 @@ fn misc_tools_print_what_lucene_prints() {
         let mut out = String::from_utf8(out).unwrap();
         let err = String::from_utf8(err).unwrap();
         if MERGED_LISTINGS.contains(&id) {
-            out = segment_names(&out);
-            want_out = segment_names(&want_out);
+            // Java's environment, from a segment the same process flushed.
+            let java = diagnostics(&copy.join("index"), "_0");
+            let listed = Path::new(&args[1]);
+            let want: Vec<(String, i64)> = listed_sizes(&want_out)
+                .into_iter()
+                .map(|(name, size)| {
+                    let delta = environment_delta(&diagnostics(listed, &name), &java);
+                    (name, size + delta)
+                })
+                .collect();
+            assert!(!want.is_empty(), "{id}: Java listed no segment");
+            assert_eq!(listed_sizes(&out), want, "{id}: stdout");
+            merged_listings += 1;
+            out.clear();
+            want_out.clear();
         }
         assert_eq!(out, want_out, "{id}: stdout");
         assert_eq!(err, want_err, "{id}: stderr");
@@ -101,4 +181,9 @@ fn misc_tools_print_what_lucene_prints() {
         ran += 1;
     }
     assert!(ran >= 30, "only {ran} cases ran");
+    assert_eq!(
+        merged_listings,
+        MERGED_LISTINGS.len(),
+        "a merged listing is not in cases.tsv"
+    );
 }
