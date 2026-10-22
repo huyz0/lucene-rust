@@ -727,7 +727,12 @@ holder check exists because "no container runs" is trivially true with the
 engine stopped: during a vhdx compaction that held the lock, a queued gate
 reclaimed it and started. After taking the lock, the script also waits
 for any running `lucene-rust-test` container, which covers a checkout whose
-script predates the lock.
+script predates the lock. Waiters that judge one dead lock stale at the same
+moment each `rm -rf` it and `mkdir` their own, a later one deleting an earlier
+one's fresh lock, and all then see no container: after a session restart four
+runs started in the same second. So a reclaim removes the lock only if its
+owner line is still the one judged stale, and a new holder writes a nonce into
+the owner line, waits 3 s, and keeps the lock only if the nonce is still there.
 
 Seen to work (and so to fail the second job's start): a run on a hand-made
 fresh lock printed "waiting", reclaimed it past `DOCKER_LOCK_STALE_S=20`, ran,
@@ -735,7 +740,10 @@ and left no lock; a second run on the same lock as a `sleep 30` run waited 33 s;
 a run on a *different* lock waited 34 s for the other's container; a run on a
 lock 649 s old, past `DOCKER_LOCK_STALE_S=5`, whose owner pid was a live
 `sleep 45` waited until the sleep exited and only then reclaimed it (the
-previous rule reclaimed it at once).
+previous rule reclaimed it at once). Six runs started together on a
+planted stale lock, through a fake `docker` that logs each run's start and
+end: the previous script ran five, two at once; this one runs all six, one at
+a time.
 
 Blind to: a container started by a bare `docker run` with a different image
 (the container check matches the `lucene-rust-test` image name); a stale lock
