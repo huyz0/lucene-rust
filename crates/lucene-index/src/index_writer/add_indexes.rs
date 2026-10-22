@@ -14,13 +14,15 @@
 //!   through this writer's merge (`SegmentMerger`), so deleted documents are
 //!   dropped and the segment is written by this writer's codec.
 //!
-//! Both first flush this writer (Java's `flush(false, true)`), hold each
-//! source's `write.lock` so no writer changes it underneath (Java's
-//! `acquireWriteLocks`), refuse a source whose segments are not sorted by a
+//! Both first flush this writer (Java's `flush(false, true)`), refuse a
+//! source whose segments are not sorted by a
 //! sort congruent with this writer's index sort, and refuse a field whose
 //! schema conflicts with this writer's (`FieldInfos.verifyFieldInfos`). The
 //! added segments are published in this writer's view; the next commit makes
-//! them durable, and a rollback drops them.
+//! them durable, and a rollback drops them. Only [`IndexWriter::add_indexes`]
+//! holds each source's `write.lock` while it copies (Java's
+//! `acquireWriteLocks`), so it refuses a source a writer has open; Java's `addIndexes(CodecReader...)` reads open
+//! readers and locks nothing, so neither does [`IndexWriter::add_indexes_merged`].
 //!
 //! # What differs from Java
 //!
@@ -29,6 +31,13 @@
 //!   and is carried out as a copy of the sources' segments followed by one
 //!   merge of those copies. The merged segment is the same, its diagnostics
 //!   saying `addIndexes(CodecReader...)` as Java's do.
+//! - `addIndexes(CodecReader...)` reads each source's latest commit unlocked,
+//!   as a `DirectoryReader` would, but without a reader's open files: a
+//!   writer that commits to the source during the copy and deletes a file the
+//!   copy still needs makes the call fail, where Java's reader keeps it.
+//! - One directory named twice to `addIndexes(Directory...)` is refused by
+//!   its second `write.lock` (`LockObtainFailed`); Java's `noDupDirs` refuses
+//!   it first, with an `IllegalArgumentException`. Nothing is added either way.
 //! - An unsorted source cannot be added to an index-sorted writer by
 //!   either method: Java sorts such a reader during the merge
 //!   (`MergeState.maybeSortReaders`), which this port's merge does not do.
@@ -53,7 +62,7 @@ impl IndexWriter<'_> {
     /// `IndexWriter.addIndexes(Directory...)`: see the module documentation.
     /// Returns the operation's sequence number.
     pub fn add_indexes(&mut self, sources: &[&dyn Directory]) -> Result<SeqNo> {
-        let added = self.copy_segments_in(sources, None)?;
+        let added = self.copy_segments_in(sources, None, true)?;
         self.segment_infos.segments.extend(added);
         self.prune_segment_versions();
         let live = self.live_infos();
@@ -120,7 +129,7 @@ impl IndexWriter<'_> {
         keep: Option<&dyn Fn(usize, usize, i32) -> bool>,
         remap: Option<std::sync::Arc<crate::merge::SortedNumericRemap>>,
     ) -> Result<SeqNo> {
-        let added = self.copy_segments_in(sources, keep)?;
+        let added = self.copy_segments_in(sources, keep, false)?;
         if added.is_empty() {
             return Ok(self.delete_queue.next_sequence_number());
         }
@@ -165,10 +174,13 @@ impl IndexWriter<'_> {
 
     /// Flushes, checks every source and copies its segments in under fresh
     /// names, returning their new `SegmentCommitInfo`s (not yet published).
+    /// `lock_sources`: hold each source's `write.lock` throughout, as
+    /// `addIndexes(Directory...)` does.
     fn copy_segments_in(
         &mut self,
         sources: &[&dyn Directory],
         keep: Option<&dyn Fn(usize, usize, i32) -> bool>,
+        lock_sources: bool,
     ) -> Result<Vec<SegmentCommitInfo>> {
         if self.prepared_commit.is_some() {
             return Err(Error::PreparedCommitPending("add_indexes"));
@@ -177,6 +189,7 @@ impl IndexWriter<'_> {
         // `acquireWriteLocks`: held until every copy is done.
         let _locks = sources
             .iter()
+            .filter(|_| lock_sources)
             .map(|d| d.obtain_lock(WRITE_LOCK_NAME))
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let mut plans = Vec::new();
