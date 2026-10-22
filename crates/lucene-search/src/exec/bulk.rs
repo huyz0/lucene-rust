@@ -19,11 +19,14 @@
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 use super::build::{
-    boost_chain, build_clauses, child, compose, term_leg, Child, LeafContext, TermForm,
+    boost_chain, build_clauses, child, compose, term_leg, term_sum, Child, LeafContext, TermForm,
+    TermSum,
 };
 use super::conjunction::ConjunctionScorer;
+use super::conjunction::LegConjunctionScorer;
 use super::disjunction::{Combine, DisjunctionScorer};
-use super::leaf::ZeroScorer;
+use super::leaf::{TermScorer, ZeroScorer};
+use super::req::{ReqExclScorer, ReqOptSumScorer};
 use super::{BoxScorer, Mode, NO_MORE_DOCS};
 use crate::bulk_scorer::{
     min_competitive_score, score_term_window, BulkLeg, ConjunctionBulk, DisMaxBulk, DocScores,
@@ -88,6 +91,20 @@ pub(crate) enum Bulk<'a> {
     /// match scored, the term's score added where it matches. See
     /// [`req_scorer_opt_score`].
     ReqScorerOpt(BoxScorer<'a>, Box<TermLeg<'a>>),
+    /// `DefaultBulkScorer` over `ReqOptSumScorer(TermScorer, TermScorer)`
+    /// under `TOP_SCORES` (`+a ?b`): the scorer tree's own algorithm, every
+    /// call monomorphic. The `f32` is the threshold last published.
+    ReqOptTerms(Box<ReqOptTerms<'a>>, f32),
+    /// The same over `ReqOptSumScorer(TermScorer, DisjunctionSumScorer)`
+    /// (`+a ?b ?c`, or `+a ?(b c)`).
+    ReqOptTermSum(Box<ReqOptTermSum<'a>>, f32),
+    /// The same with a lone `FILTER` term for the required clause
+    /// (`#a ?b ?c`): `ReqOptSumScorer(FilterScorer(TermScorer),
+    /// DisjunctionSumScorer)`.
+    FilterOptTermSum(Box<FilterOptTermSum<'a>>, f32),
+    /// The same over `ReqOptSumScorer(ReqExclScorer(ConjunctionScorer,
+    /// TermScorer), TermScorer)` (`+a +b ?c -d`).
+    ReqExclOptTerm(Box<ReqExclOptTerm<'a>>, f32),
     /// `ReqExclBulkScorer`.
     ReqExcl(Box<Bulk<'a>>, BoxScorer<'a>),
     /// A dismax of terms, a window at a time. See `DisMaxBulk`.
@@ -103,6 +120,19 @@ pub(crate) enum Bulk<'a> {
     /// scorer, its hits folded into their parents.
     BlockJoin(Box<super::join::BlockJoinBulk<'a>>),
 }
+
+/// [`Bulk::ReqOptTerms`]' scorer.
+pub(crate) type ReqOptTerms<'a> = ReqOptSumScorer<TermScorer<'a>, TermScorer<'a>>;
+
+/// [`Bulk::ReqOptTermSum`]' scorer.
+pub(crate) type ReqOptTermSum<'a> = ReqOptSumScorer<TermScorer<'a>, TermSum<'a>>;
+
+/// [`Bulk::FilterOptTermSum`]' scorer.
+pub(crate) type FilterOptTermSum<'a> = ReqOptSumScorer<ZeroScorer<TermScorer<'a>>, TermSum<'a>>;
+
+/// [`Bulk::ReqExclOptTerm`]' scorer.
+pub(crate) type ReqExclOptTerm<'a> =
+    ReqOptSumScorer<ReqExclScorer<LegConjunctionScorer<'a>, TermScorer<'a>>, TermScorer<'a>>;
 
 impl<'a> Bulk<'a> {
     pub(crate) fn scorer(s: BoxScorer<'a>) -> Self {
@@ -127,6 +157,10 @@ impl<'a> Bulk<'a> {
             Bulk::ReqOpt(..) => "req_opt",
             Bulk::ReqBitsOpt(..) => "req_bits_opt",
             Bulk::ReqScorerOpt(..) => "req_scorer_opt",
+            Bulk::ReqOptTerms(..) => "req_opt_terms",
+            Bulk::ReqOptTermSum(..) => "req_opt_term_sum",
+            Bulk::FilterOptTermSum(..) => "filter_opt_term_sum",
+            Bulk::ReqExclOptTerm(..) => "req_excl_opt_term",
             Bulk::ReqExcl(..) => "req_excl",
             Bulk::DisMax(..) => "dismax",
             Bulk::Union(..) => "union",
@@ -189,6 +223,18 @@ impl<'a> Bulk<'a> {
             ),
             Bulk::ReqScorerOpt(req, leg) => {
                 req_scorer_opt_score(&mut **req, leg, live_docs, collector, min, max)
+            }
+            Bulk::ReqExclOptTerm(s, published) => {
+                default_score(&mut **s, published, mode, live_docs, collector, min, max)
+            }
+            Bulk::FilterOptTermSum(s, published) => {
+                default_score(&mut **s, published, mode, live_docs, collector, min, max)
+            }
+            Bulk::ReqOptTermSum(s, published) => {
+                default_score(&mut **s, published, mode, live_docs, collector, min, max)
+            }
+            Bulk::ReqOptTerms(s, published) => {
+                default_score(&mut **s, published, mode, live_docs, collector, min, max)
             }
             Bulk::DisMax(legs, state) => state.score(legs, live_docs, collector, min, max),
             Bulk::Union(legs) => union_score(legs, live_docs, collector, min, max),
@@ -355,8 +401,8 @@ fn union_score<C: ScoringCollector + ?Sized>(
 /// `DefaultBulkScorer.score`, with `TopScoreDocCollector`'s leaf collector's
 /// half of the pruning handshake: `setScorer` and every competitive hit pass
 /// a newly published threshold down as `setMinCompetitiveScore`.
-fn default_score<C: ScoringCollector + ?Sized>(
-    scorer: &mut dyn super::Scorer,
+fn default_score<S: super::Scorer + ?Sized, C: ScoringCollector + ?Sized>(
+    scorer: &mut S,
     published: &mut f32,
     mode: Mode,
     live_docs: Option<&FixedBitSet>,
@@ -426,8 +472,8 @@ fn default_score<C: ScoringCollector + ?Sized>(
 /// sparse tail would otherwise pay a `docIDRunEnd` per document, which Java
 /// avoids by choosing the dense scorer on cost). `doc` is the scorer's
 /// current document, below `max`. Returns the next document to score.
-fn constant_runs_score<C: ScoringCollector + ?Sized>(
-    scorer: &mut dyn super::Scorer,
+fn constant_runs_score<S: super::Scorer + ?Sized, C: ScoringCollector + ?Sized>(
+    scorer: &mut S,
     collector: &mut C,
     score: f32,
     mut doc: i32,
@@ -459,8 +505,8 @@ const DENSE_RUN_MIN: i32 = 2048;
 /// document-at-a-time loop collects. Such a scorer ignores thresholds, so
 /// publishing one once per batch rather than after each hit changes
 /// nothing it does. `doc` is the scorer's current document, below `max`.
-fn batch_score<C: ScoringCollector + ?Sized>(
-    scorer: &mut dyn super::Scorer,
+fn batch_score<S: super::Scorer + ?Sized, C: ScoringCollector + ?Sized>(
+    scorer: &mut S,
     published: &mut f32,
     prune: bool,
     live_docs: Option<&FixedBitSet>,
@@ -499,8 +545,8 @@ fn batch_score<C: ScoringCollector + ?Sized>(
 /// hit as the document-at-a-time loop does; once the threshold passes the
 /// constant, the scorer has emptied itself and the walk ends.
 #[allow(clippy::too_many_arguments)]
-fn constant_bits_score<C: ScoringCollector + ?Sized>(
-    scorer: &mut dyn super::Scorer,
+fn constant_bits_score<S: super::Scorer + ?Sized, C: ScoringCollector + ?Sized>(
+    scorer: &mut S,
     published: &mut f32,
     prune: bool,
     bits: &FixedBitSet,
@@ -620,8 +666,8 @@ pub(super) fn count_set_bits(
 }
 
 #[inline]
-fn publish<C: ScoringCollector + ?Sized>(
-    scorer: &mut dyn super::Scorer,
+fn publish<S: super::Scorer + ?Sized, C: ScoringCollector + ?Sized>(
+    scorer: &mut S,
     published: &mut f32,
     collector: &C,
 ) -> Result<()> {
@@ -739,7 +785,7 @@ pub(crate) fn bulk_clause<'a>(
     }
     Ok(match child(ctx, clause, boost, mode, true)? {
         Some(Child::Leg(leg)) => Some(Bulk::Term(leg, DocScores::default())),
-        Some(Child::Scorer(s)) => Some(Bulk::scorer(s)),
+        Some(c) => Some(Bulk::scorer(c.into_scorer(mode))),
         None => None,
     })
 }
@@ -827,8 +873,10 @@ fn lone<'a>(
     };
     Ok(match built {
         Child::Leg(leg) => Some(Bulk::Term(leg, DocScores::default())),
-        Child::Scorer(_) if nested => return bulk_clause(ctx, clause, boost, mode),
-        Child::Scorer(s) => Some(Bulk::scorer(s)),
+        Child::Scorer(_) | Child::TermSum(_) if nested => {
+            return bulk_clause(ctx, clause, boost, mode)
+        }
+        c => Some(Bulk::scorer(c.into_scorer(mode))),
     })
 }
 
@@ -864,7 +912,7 @@ pub(crate) fn bulk_boolean<'a>(
     else {
         return Ok(None);
     };
-    let must_not: Vec<Child<'a>> = must_not.into_iter().map(|(c, _)| c).collect();
+    let mut must_not: Vec<Child<'a>> = must_not.into_iter().map(|(c, _)| c).collect();
 
     // `BooleanWeight.scorerSupplier`'s per-segment adjustments.
     let mut msm = q.minimum_should_match;
@@ -954,10 +1002,10 @@ pub(crate) fn bulk_boolean<'a>(
                         ZeroScorer(Child::Leg(leg).into_scorer(Mode::NoScores)),
                     )),
                     Child::Leg(leg) => Bulk::Term(leg, DocScores::default()),
-                    Child::Scorer(s) if mode.needs_scores() => {
-                        Bulk::scorer(Box::new(ZeroScorer(s)))
+                    c if mode.needs_scores() => {
+                        Bulk::scorer(Box::new(ZeroScorer(c.into_scorer(Mode::NoScores))))
                     }
-                    Child::Scorer(s) => Bulk::scorer(s),
+                    c => Bulk::scorer(c.into_scorer(Mode::NoScores)),
                 })
             }
         } else if mode == Mode::TopScores && must.len() <= 1 {
@@ -1054,7 +1102,7 @@ pub(crate) fn bulk_boolean<'a>(
         && should[0].0.is_leg())
     .then(|| match &must[0].0 {
         Child::Scorer(s) => s.constant_bits(),
-        Child::Leg(_) => None,
+        Child::Leg(_) | Child::TermSum(_) => None,
     })
     .flatten()
     {
@@ -1066,6 +1114,94 @@ pub(crate) fn bulk_boolean<'a>(
         let (leg, _) = should.pop().expect("one optional clause");
         must.clear();
         Some(Bulk::ReqBitsOpt(set, c, Box::new(leg.into_leg())))
+    } else if must.len() == 1
+        && filter.is_empty()
+        && should.len() == 1
+        && must_not.is_empty()
+        && msm == 0
+        && mode == Mode::TopScores
+        && must[0].0.is_leg()
+        && should[0].0.is_leg()
+    {
+        // `+a ?b` for top scores: `booleanScorer()` declines and
+        // `DefaultBulkScorer` runs `ReqOptSumScorer` over the two
+        // `TermScorer`s -- exactly the tree, without a virtual call.
+        let (opt, _) = should.pop().expect("one optional clause");
+        let (req, _) = must.pop().expect("one required clause");
+        let s = ReqOptTerms::new(
+            Box::new(TermScorer::new(req.into_leg(), true)),
+            Box::new(TermScorer::new(opt.into_leg(), true)),
+            true,
+        )?;
+        Some(Bulk::ReqOptTerms(Box::new(s), 0.0))
+    } else if !must.is_empty()
+        && must.len() + filter.len() > 1
+        && should.len() == 1
+        && must_not.len() == 1
+        && msm == 0
+        && mode == Mode::TopScores
+        && all_legs(&must)
+        && all_legs(&filter)
+        && all_legs(&should)
+        && must_not[0].is_leg()
+    {
+        // `+a +b ?c -d` for top scores: `ReqOptSumScorer` over `req`'s
+        // conjunction (not top level, so not block-max) inside the
+        // exclusion, and the optional `TermScorer`, every call monomorphic.
+        let conj = LegConjunctionScorer::new(
+            std::mem::take(&mut filter)
+                .into_iter()
+                .map(|(c, _)| c.into_leg())
+                .collect(),
+            std::mem::take(&mut must)
+                .into_iter()
+                .map(|(c, _)| c.into_leg())
+                .collect(),
+            true,
+        );
+        let excl = must_not.pop().expect("one prohibited clause").into_leg();
+        let req = ReqExclScorer::new(Box::new(conj), Box::new(TermScorer::new(excl, false)));
+        let (opt, _) = should.pop().expect("one optional clause");
+        let opt = Box::new(TermScorer::new(opt.into_leg(), true));
+        Some(Bulk::ReqExclOptTerm(
+            Box::new(ReqExclOptTerm::new(Box::new(req), opt, true)?),
+            0.0,
+        ))
+    } else if must.len() + filter.len() == 1
+        && must_not.is_empty()
+        && msm == 0
+        && mode == Mode::TopScores
+        && must.iter().chain(&filter).all(|(c, _)| c.is_leg())
+        && (matches!(&should[..], [(Child::TermSum(_), _)])
+            || (should.len() > 1 && all_legs(&should)))
+    {
+        // `+a ?b ?c`, `+a ?(b c)` or `#a ?b ?c` for top scores:
+        // `ReqOptSumScorer` over the `TermScorer` (a `FILTER` one inside
+        // `req`'s zero-scoring `FilterScorer`) and `opt`'s
+        // `DisjunctionSumScorer` of terms (not top level, so not
+        // `WANDScorer`), every call monomorphic.
+        let mut legs: Vec<TermLeg<'a>> = Vec::with_capacity(should.len());
+        for (c, _) in std::mem::take(&mut should) {
+            match c {
+                Child::TermSum(sum) => legs.extend(sum),
+                c => legs.push(c.into_leg()),
+            }
+        }
+        let opt = Box::new(term_sum(legs, mode));
+        if let Some((req, _)) = must.pop() {
+            let req = Box::new(TermScorer::new(req.into_leg(), true));
+            Some(Bulk::ReqOptTermSum(
+                Box::new(ReqOptTermSum::new(req, opt, true)?),
+                0.0,
+            ))
+        } else {
+            let (req, _) = filter.pop().expect("one filter clause");
+            let req = Box::new(ZeroScorer(Box::new(TermScorer::new(req.into_leg(), false))));
+            Some(Bulk::FilterOptTermSum(
+                Box::new(FilterOptTermSum::new(req, opt, true)?),
+                0.0,
+            ))
+        }
     } else if must.len() == 1
         && filter.is_empty()
         && should.len() == 1

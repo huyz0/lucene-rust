@@ -229,9 +229,9 @@ impl Scorer for ConstantScorer<'_> {
 
 /// The anonymous `FilterScorer` `BooleanScorerSupplier.req` wraps a lone
 /// `FILTER` clause in when scores are needed: its matches, scoring `0`.
-pub(crate) struct ZeroScorer<'a>(pub(crate) BoxScorer<'a>);
+pub(crate) struct ZeroScorer<S: Scorer + ?Sized>(pub(crate) Box<S>);
 
-impl Scorer for ZeroScorer<'_> {
+impl<S: Scorer + ?Sized> Scorer for ZeroScorer<S> {
     fn doc_id(&self) -> i32 {
         self.0.doc_id()
     }

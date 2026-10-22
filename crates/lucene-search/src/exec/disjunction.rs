@@ -2,23 +2,29 @@
 //! `DisjunctionSumScorer` and `DisjunctionMaxScorer` over a
 //! `DisjunctionDISIApproximation`.
 
-use super::{BoxScorer, Scorer, NO_MORE_DOCS};
+use std::marker::PhantomData;
+
+use super::{Scorer, NO_MORE_DOCS};
 use crate::bulk_scorer::{sum_relative_error_bound, sum_upper_bound};
 use crate::Result;
 
 /// `DisiWrapper`: a sub-scorer and the state a disjunction keeps about it.
-pub(crate) struct Disi<'a> {
-    pub(crate) scorer: BoxScorer<'a>,
+///
+/// `S` is the sub-scorers' type: `dyn Scorer` in the scorer tree, a concrete
+/// scorer where a bulk scorer knows it (every call then monomorphic).
+pub(crate) struct Disi<'a, S: Scorer + ?Sized + 'a = dyn Scorer + 'a> {
+    pub(crate) scorer: Box<S>,
     /// The sub-scorer's document as the disjunction last saw it.
     pub(crate) doc: i32,
     pub(crate) cost: i64,
     pub(crate) match_cost: f32,
     /// `WANDScorer`'s scaled block maximum.
     pub(crate) scaled_max_score: i64,
+    life: PhantomData<&'a ()>,
 }
 
-impl<'a> Disi<'a> {
-    pub(crate) fn new(scorer: BoxScorer<'a>) -> Self {
+impl<'a, S: Scorer + ?Sized + 'a> Disi<'a, S> {
+    pub(crate) fn new(scorer: Box<S>) -> Self {
         let cost = scorer.cost();
         let match_cost = if scorer.two_phase() {
             scorer.match_cost()
@@ -31,6 +37,7 @@ impl<'a> Disi<'a> {
             cost,
             match_cost,
             scaled_max_score: 0,
+            life: PhantomData,
         }
     }
 }
@@ -74,7 +81,7 @@ impl DisiQueue {
 
     /// The member on the smallest document, the first such in member order.
     #[inline]
-    fn scan_min(&self, disis: &[Disi<'_>]) -> usize {
+    fn scan_min<S: Scorer + ?Sized>(&self, disis: &[Disi<'_, S>]) -> usize {
         let mut best = self.heap[0];
         for &i in &self.heap[1..] {
             if disis[i].doc < disis[best].doc {
@@ -89,7 +96,7 @@ impl DisiQueue {
     }
 
     /// Linear mode needs `disis` to find the top; heap mode ignores it.
-    pub(crate) fn top_of(&self, disis: &[Disi<'_>]) -> Option<usize> {
+    pub(crate) fn top_of<S: Scorer + ?Sized>(&self, disis: &[Disi<'_, S>]) -> Option<usize> {
         if self.linear && !self.heap.is_empty() {
             return Some(self.scan_min(disis));
         }
@@ -106,7 +113,7 @@ impl DisiQueue {
         &self.heap
     }
 
-    pub(crate) fn push(&mut self, disis: &[Disi<'_>], i: usize) {
+    pub(crate) fn push<S: Scorer + ?Sized>(&mut self, disis: &[Disi<'_, S>], i: usize) {
         self.heap.push(i);
         if self.linear {
             return;
@@ -122,7 +129,7 @@ impl DisiQueue {
         }
     }
 
-    pub(crate) fn pop(&mut self, disis: &[Disi<'_>]) -> Option<usize> {
+    pub(crate) fn pop<S: Scorer + ?Sized>(&mut self, disis: &[Disi<'_, S>]) -> Option<usize> {
         debug_assert!(!self.linear, "a disjunction's queue never pops");
         let last = self.heap.pop()?;
         if self.heap.is_empty() {
@@ -134,7 +141,7 @@ impl DisiQueue {
     }
 
     /// `updateTop()`: restores the heap after the top's `doc` grew.
-    pub(crate) fn update_top(&mut self, disis: &[Disi<'_>]) -> usize {
+    pub(crate) fn update_top<S: Scorer + ?Sized>(&mut self, disis: &[Disi<'_, S>]) -> usize {
         if self.linear {
             return self.scan_min(disis);
         }
@@ -143,13 +150,17 @@ impl DisiQueue {
     }
 
     /// `updateTop(replacement)`.
-    pub(crate) fn replace_top(&mut self, disis: &[Disi<'_>], i: usize) -> usize {
+    pub(crate) fn replace_top<S: Scorer + ?Sized>(
+        &mut self,
+        disis: &[Disi<'_, S>],
+        i: usize,
+    ) -> usize {
         debug_assert!(!self.linear, "a disjunction's queue never replaces its top");
         self.heap[0] = i;
         self.update_top(disis)
     }
 
-    fn down_heap(&mut self, disis: &[Disi<'_>]) {
+    fn down_heap<S: Scorer + ?Sized>(&mut self, disis: &[Disi<'_, S>]) {
         let n = self.heap.len();
         let mut at = 0;
         loop {
@@ -172,7 +183,7 @@ impl DisiQueue {
     }
 
     /// `topList()`: every member on the top's document, into `out`.
-    pub(crate) fn top_list(&self, disis: &[Disi<'_>], out: &mut Vec<usize>) {
+    pub(crate) fn top_list<S: Scorer + ?Sized>(&self, disis: &[Disi<'_, S>], out: &mut Vec<usize>) {
         out.clear();
         if self.linear {
             if let Some(top) = self.top_of(disis) {
@@ -215,8 +226,8 @@ pub(crate) enum Combine {
 
 /// `DisjunctionScorer`: the union of its sub-scorers' approximations, with
 /// two-phase verification when any sub-scorer has one.
-pub(crate) struct DisjunctionScorer<'a> {
-    subs: Vec<Disi<'a>>,
+pub(crate) struct DisjunctionScorer<'a, S: Scorer + ?Sized + 'a = dyn Scorer + 'a> {
+    subs: Vec<Disi<'a, S>>,
     heap: DisiQueue,
     doc: i32,
     cost: i64,
@@ -236,12 +247,14 @@ pub(crate) struct DisjunctionScorer<'a> {
 
 /// A clause a [`BlockBoundaryPropagator`] reads through.
 pub(crate) trait Clause {
-    fn scorer(&mut self) -> &mut dyn Scorer;
+    type Scorer: Scorer + ?Sized;
+    fn scorer(&mut self) -> &mut Self::Scorer;
 }
 
-impl Clause for Disi<'_> {
-    fn scorer(&mut self) -> &mut dyn Scorer {
-        &mut *self.scorer
+impl<S: Scorer + ?Sized> Clause for Disi<'_, S> {
+    type Scorer = S;
+    fn scorer(&mut self) -> &mut S {
+        &mut self.scorer
     }
 }
 
@@ -318,7 +331,7 @@ impl BlockBoundaryPropagator {
     }
 }
 
-impl<'a> DisjunctionScorer<'a> {
+impl<'a, S: Scorer + ?Sized + 'a> DisjunctionScorer<'a, S> {
     /// Installs the [`BlockBoundaryPropagator`], as `DisjunctionMaxScorer`
     /// does under `ScoreMode.TOP_SCORES`.
     pub(crate) fn with_block_propagator(mut self) -> Result<Self> {
@@ -326,9 +339,9 @@ impl<'a> DisjunctionScorer<'a> {
         Ok(self)
     }
 
-    pub(crate) fn new(scorers: Vec<BoxScorer<'a>>, combine: Combine, needs_scores: bool) -> Self {
+    pub(crate) fn new(scorers: Vec<Box<S>>, combine: Combine, needs_scores: bool) -> Self {
         debug_assert!(scorers.len() >= 2);
-        let subs: Vec<Disi<'a>> = scorers.into_iter().map(Disi::new).collect();
+        let subs: Vec<Disi<'a, S>> = scorers.into_iter().map(Disi::new).collect();
         let mut two_phase = false;
         let mut sum_match_cost = 0.0f32;
         let mut sum_approx_cost = 0i64;
@@ -383,7 +396,7 @@ impl<'a> DisjunctionScorer<'a> {
     }
 }
 
-impl Scorer for DisjunctionScorer<'_> {
+impl<S: Scorer + ?Sized> Scorer for DisjunctionScorer<'_, S> {
     fn doc_id(&self) -> i32 {
         self.doc
     }
@@ -583,7 +596,7 @@ mod tests {
         let lists: Vec<Vec<i32>> = (0..12)
             .map(|m| (0..40).filter(|d| (d + m) % (2 + m % 5) == 0).collect())
             .collect();
-        let disis = || -> Vec<Disi<'static>> {
+        let disis = || -> Vec<Disi<'static, DocList>> {
             lists
                 .iter()
                 .map(|l| Disi::new(Box::new(DocList::new(l.clone(), Vec::new()))))
