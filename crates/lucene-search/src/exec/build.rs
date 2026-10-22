@@ -95,6 +95,15 @@ pub(crate) fn build<'a>(
     Ok(scorer)
 }
 
+/// Whether [`build`] wraps the scorers it builds (an `AssertingGuard` is
+/// held).
+fn asserting_active() -> bool {
+    #[cfg(any(test, feature = "asserting"))]
+    return super::asserting::active();
+    #[cfg(not(any(test, feature = "asserting")))]
+    false
+}
+
 /// [`build`] without the asserting wrapper.
 fn build_unchecked<'a>(
     ctx: &LeafContext<'a>,
@@ -945,7 +954,11 @@ fn child_led<'a>(
         TermForm::Leg(leg) => Some(Child::Leg(leg)),
         TermForm::Absent => None,
         TermForm::Other => match clause {
-            Clause::Boolean(q) => build_boolean_child(ctx, q, boost, mode, top_level)?,
+            // Under the asserting searcher a nested boolean is built through
+            // [`build`], which wraps it as `AssertingWeight` does.
+            Clause::Boolean(q) if !asserting_active() => {
+                build_boolean_child(ctx, q, boost, mode, top_level)?
+            }
             _ => build_led(ctx, clause, boost, mode, top_level, lead_cost)?.map(Child::Scorer),
         },
     })

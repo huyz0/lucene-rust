@@ -64,9 +64,10 @@ Acceptance:
       call left; the remaining gap is per-document cost in the conjunction
       and exclusion under `ReqOptSumScorer`'s impacts approximation, not
       yet profiled (the capped container has no `perf`).
-- [x] Every boolean shape in the query file at least 1.0× on both indexes
+- [ ] Every boolean shape in the query file at least 1.0× on both indexes
       (after R2's run below: 1.04–13.7×; q11 0.99× merged with overlapping
-      runs). q25 (fuzzy, 0.76× segmented) is a leaf query, R3's -- since
+      runs). Not since `fix-flat-bool-total-hits`: q52 0.82–0.92× and q48
+      0.98–1.03× on Lucene's `ReqOptSumScorer` tree (see the item above). q25 (fuzzy, 0.76× segmented) is a leaf query, R3's -- since
       1.16–1.30× segmented (R3, fuzzy).
 
 ## R2 — the query tree on the wire (delivered)
