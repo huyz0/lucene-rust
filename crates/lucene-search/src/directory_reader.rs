@@ -195,6 +195,10 @@ pub struct SegmentReader {
     /// that opening it did. A refcount bump is what that comment always
     /// described.
     doc_buf: Option<Arc<Input>>,
+    /// Every `.tim` and `.tip` the term dictionary navigates (one pair per
+    /// postings format), the same shared bytes, held for
+    /// [`Self::check_integrity`].
+    dictionary_files: Vec<Arc<Input>>,
     /// The core's query cache: shared by every reopen that keeps the
     /// segment, like the core itself, and valid across new deletions because
     /// entries are computed without live docs (`LRUQueryCache` keys on the
@@ -402,7 +406,8 @@ impl SegmentReader {
         );
         let multi_format = postings_suffixes.len() > 1;
 
-        let (fields, segment_suffix, doc_buf, pos_buf, pay_buf) = if multi_format {
+        let (fields, segment_suffix, doc_buf, pos_buf, pay_buf, dictionary_files) = if multi_format
+        {
             open_per_field_postings(
                 dir,
                 compound.as_ref(),
@@ -458,7 +463,18 @@ impl SegmentReader {
             let pos_buf = open_segment_file(dir, compound.as_ref(), &si.files, ".pos")?;
             let pay_buf = open_segment_file(dir, compound.as_ref(), &si.files, ".pay")?;
 
-            (Arc::new(fields), segment_suffix, doc_buf, pos_buf, pay_buf)
+            let dictionary_files = vec![
+                tim_bytes.clone().expect("found == 3"),
+                tip_bytes.clone().expect("found == 3"),
+            ];
+            (
+                Arc::new(fields),
+                segment_suffix,
+                doc_buf,
+                pos_buf,
+                pay_buf,
+                dictionary_files,
+            )
         } else if found == 0 {
             (
                 Arc::new(BlockTreeFields::empty()),
@@ -466,6 +482,7 @@ impl SegmentReader {
                 None,
                 None,
                 None,
+                Vec::new(),
             )
         } else {
             return Err(Error::PartialBlockTreeFiles {
@@ -490,9 +507,8 @@ impl SegmentReader {
             None
         };
 
-        // `.dvm`/`.dvd` (no `.dvs` reader exists yet in this port, matching
-        // `doc_value_query.rs`/`facets.rs`'s own scope): present together or
-        // not at all, exactly like `.tim`/`.tip`/`.tmd` above -- a segment
+        // `.dvm`/`.dvd` (the skipper's `.dvs` is opened beside them and
+        // checksummed by `check_integrity`): present together or not at all, exactly like `.tim`/`.tip`/`.tmd` above -- a segment
         // with no doc-values field opted in has neither (see
         // `segment_writer.rs`'s "no pending values -> no files" contract).
         // The codec suffix is derived the same way `.tim`'s is above --
@@ -764,6 +780,35 @@ impl SegmentReader {
             )?));
         }
 
+        // Java reads each format's metadata through a `ChecksumIndexInput`
+        // when the segment opens and `checkFooter`s it there. This reader
+        // parses `.fdm`, `.tvm` and `.vemf` on first use and never reads
+        // `.psm` (its impact maxima matter to `CheckIndex` only), so their
+        // checksums are verified here: otherwise a damaged one would pass
+        // both the open and `check_integrity`.
+        let psm = segment_codec_suffixes(&si.files, compound.as_ref(), &segment_name, ".psm")
+            .into_iter()
+            .map(|suffix| {
+                let ext = if suffix.is_empty() {
+                    ".psm".to_string()
+                } else {
+                    format!("_{suffix}.psm")
+                };
+                open_segment_file(dir, compound.as_ref(), &si.files, &ext)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        for meta in stored
+            .iter()
+            .map(|s| &s.fdm)
+            .chain(term_vectors.iter().chain(&vectors).map(|c| &c.meta))
+            .chain(psm.iter().flatten())
+        {
+            let end = meta
+                .len()
+                .saturating_sub(lucene_store::codec_util::FOOTER_LENGTH);
+            lucene_store::codec_util::check_whole_file_footer(meta, end)?;
+        }
+
         Ok(SegmentReader {
             term_vectors,
             vectors,
@@ -785,6 +830,7 @@ impl SegmentReader {
             segment_suffix,
             fields,
             doc_buf,
+            dictionary_files,
             pos_buf,
             pay_buf,
             live_docs,
@@ -962,10 +1008,10 @@ impl SegmentReader {
     }
 
     /// `SegmentReader.checkIntegrity()`: `CodecUtil.checksumEntireFile` over
-    /// every data file this reader holds -- postings (`.doc`/`.pos`/`.pay`),
-    /// stored fields, term vectors, doc values (every generation), norms,
-    /// points and vectors. The term dictionary's `.tim`/`.tip` are owned by
-    /// the lazily-navigated `BlockTreeFields` and not re-read here.
+    /// every data file this reader holds -- the term dictionary
+    /// (`.tim`/`.tip`), postings (`.doc`/`.pos`/`.pay`), stored fields, term
+    /// vectors, doc values (every generation) and their skip index (`.dvs`),
+    /// norms, points and vectors.
     ///
     /// # Errors
     /// The first file whose footer or checksum does not verify.
@@ -982,11 +1028,17 @@ impl SegmentReader {
         ]
         .into_iter()
         .flatten()
+        .chain(&self.dictionary_files)
         {
             files.push(f);
         }
         if let Some(s) = self.stored.as_deref() {
             files.extend([&**s.fdt, &**s.fdx]);
+        }
+        // `Lucene90DocValuesProducer.checkIntegrity` checksums the skip
+        // index too.
+        if let Some((dvs, _)) = &self.dvs {
+            files.push(dvs);
         }
         for c in self.term_vectors.iter().chain(&self.vectors) {
             files.push(&c.data);
@@ -1639,6 +1691,7 @@ type PostingsFiles = (
     Option<Arc<Input>>,
     Option<Arc<Input>>,
     Option<Arc<Input>>,
+    Vec<Arc<Input>>,
 );
 
 /// `PerFieldPostingsFormat.FieldsReader` for a segment with more than one
@@ -1691,12 +1744,17 @@ fn open_per_field_postings(
         .collect();
     let combined = per_field_postings::open_groups(&groups, field_infos, segment_id, doc_count)?;
     let owned = |bytes: Vec<u8>| (!bytes.is_empty()).then(|| Arc::new(Input::Owned(bytes)));
+    let dictionary_files = opened
+        .iter()
+        .flat_map(|(_, tim, tip, ..)| [Arc::clone(tim), Arc::clone(tip)])
+        .collect();
     Ok((
         Arc::new(combined.fields),
         suffixes[0].clone(),
         owned(combined.doc),
         owned(combined.pos),
         owned(combined.pay),
+        dictionary_files,
     ))
 }
 
@@ -3560,8 +3618,10 @@ mod tests {
     }
 
     /// Stored-fields metadata that does not parse fails each read and is not
-    /// kept: the segment still opens (Java opens its stored-fields reader
-    /// with the segment core; this one reads `.fdm` on the first document).
+    /// kept: the segment still opens when the file's checksum holds (Java
+    /// opens its stored-fields reader with the segment core; this one
+    /// verifies the `.fdm`'s footer at open and parses it on the first
+    /// document).
     #[test]
     fn stored_fields_metadata_that_does_not_parse_is_an_error_every_time() {
         let dir_path = tempdir();
@@ -3575,7 +3635,10 @@ mod tests {
         }
         let fdm = dir_path.join("_0.fdm");
         let bytes = std::fs::read(&fdm).unwrap();
-        std::fs::write(&fdm, &bytes[..bytes.len() / 2]).unwrap();
+        // Half the metadata, under a footer whose checksum matches it.
+        let mut half = bytes[..bytes.len() / 2].to_vec();
+        lucene_store::codec_util::write_footer(&mut half);
+        std::fs::write(&fdm, &half).unwrap();
         let reader = DirectoryReader::open(&FsDirectory::open(&dir_path)).unwrap();
         let seg = &reader.segment_readers()[0];
         for _ in 0..2 {

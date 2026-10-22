@@ -2066,6 +2066,51 @@ fn check_integrity_and_skippers() {
     let r = DirectoryReader::open(&FsDirectory::open(tmp.path())).unwrap();
     assert!(r.segment_readers()[0].check_integrity().is_err());
     r.segment_readers()[1].check_integrity().unwrap();
+
+    std::fs::copy(format!("{src}/_0.fdt"), &fdt).unwrap();
+
+    // One in a metadata file this reader parses on first use (`.fdm`) or
+    // never (`.psm`): Java's open verifies its footer, and so does this one.
+    // One in the skip index (`.dvs`) or the term dictionary (`.tim`/`.tip`),
+    // which Java's `checkIntegrity` covers.
+    // `.tip`'s FST is decoded at open, so its damage may be refused there
+    // (`None`: either check will do).
+    for (ext, at_open) in [
+        (".fdm", Some(true)),
+        (".psm", Some(true)),
+        (".dvs", Some(false)),
+        (".tim", Some(false)),
+        (".tip", None),
+    ] {
+        let file = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .find(|n| n.starts_with("_0") && n.ends_with(ext))
+            .unwrap_or_else(|| panic!("segment _0 has a {ext}"));
+        let path = tmp.path().join(&file);
+        let original = std::fs::read(&path).unwrap();
+        let mut bytes = original.clone();
+        let mid = bytes.len() / 2;
+        bytes[mid] ^= 0x01;
+        std::fs::write(&path, bytes).unwrap();
+        // Each refused by the check Java's is: the open, or `checkIntegrity`.
+        match DirectoryReader::open(&FsDirectory::open(tmp.path())) {
+            Err(_) => assert_ne!(at_open, Some(false), "{file} refused at open"),
+            Ok(r) => {
+                assert_ne!(at_open, Some(true), "a damaged byte of {file} opened");
+                assert!(
+                    r.segment_readers()[0].check_integrity().is_err(),
+                    "a damaged byte of {file} passed check_integrity"
+                );
+            }
+        }
+        std::fs::write(&path, original).unwrap();
+    }
+    DirectoryReader::open(&FsDirectory::open(tmp.path()))
+        .unwrap()
+        .segment_readers()[0]
+        .check_integrity()
+        .unwrap();
 }
 
 /// A sparse field's `IndexedDISI` region, as bytes: each `(block, docs)` a
