@@ -322,6 +322,12 @@ jobs:
       - name: Test-framework index run
         run: ./scripts/test-framework-index.sh
 
+      # M14.h h5: the postings, stored fields, term vectors and doc values
+      # suites' random documents, 30 seeds each, through this port's
+      # CheckIndex and real Lucene's.
+      - name: Test-framework format suites
+        run: ./scripts/test-framework-formats.sh
+
   # ---------------------------------------------------------------------------
   # M2: the OpenSearch plugin, on the architectures it ships for. Builds the
   # plugin against the pinned OpenSearch image's own jars, runs the JVM-side

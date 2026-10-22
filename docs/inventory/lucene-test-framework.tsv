@@ -81,24 +81,24 @@ tests/index/AllDeletedFilterReader	ported	crates/lucene-test-framework/src/index
 tests/index/AssertingDirectoryReader	ported	crates/lucene-test-framework/src/index/asserting_leaf_reader.rs::asserting_directory_reader
 tests/index/AssertingLeafReader	partial	crates/lucene-test-framework/src/index/asserting_leaf_reader.rs::AssertingLeafReader -- M14: impacts, the doc-values skipper, points and vectors pass through unchecked
 tests/index/BaseCompoundFormatTestCase	todo:M14	h6: index file format suites
-tests/index/BaseCompressingDocValuesFormatTestCase	todo:M14	h5: index file format suites
-tests/index/BaseDocValuesFormatTestCase	todo:M14	h5: index file format suites
+tests/index/BaseCompressingDocValuesFormatTestCase	partial	crates/lucene-test-framework/src/index/base_doc_values_format.rs::COMPRESSING_TESTS -- M14: bounds on Lucene90 only (no other codec)
+tests/index/BaseDocValuesFormatTestCase	partial	crates/lucene-test-framework/src/index/base_doc_values_format.rs::TESTS -- M14: intoBitSet is the nextDoc loop (no port of DocIdSetIterator.intoBitSet)
 tests/index/BaseFieldInfoFormatTestCase	todo:M14	h6: index file format suites
-tests/index/BaseIndexFileFormatTestCase	todo:M14	h5: index file format suites
+tests/index/BaseIndexFileFormatTestCase	partial	crates/lucene-test-framework/src/index/base_index_file_format.rs::IndexFileFormatSuite -- M14: testMultiClose (no codec-level writer/reader objects); checkIntegrity is checked by damaging bytes, not by tracking reads
 tests/index/BaseKnnVectorsFormatTestCase	todo:M14	h6: index file format suites
 tests/index/BaseLiveDocsFormatTestCase	todo:M14	h6: index file format suites
 tests/index/BaseMergePolicyTestCase	ported	crates/lucene-test-framework/src/index/base_merge_policy.rs::BaseMergePolicyTestCase
 tests/index/BaseNormsFormatTestCase	todo:M14	h6: index file format suites
 tests/index/BasePointsFormatTestCase	todo:M14	h6: index file format suites
-tests/index/BasePostingsFormatTestCase	todo:M14	h5: index file format suites
+tests/index/BasePostingsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_postings_format.rs::TESTS -- M14: testInvertedWrite (no codec plug-in point); enum reuse
 tests/index/BaseSegmentInfoFormatTestCase	todo:M14	h6: index file format suites
-tests/index/BaseStoredFieldsFormatTestCase	todo:M14	h5: index file format suites
-tests/index/BaseTermVectorsFormatTestCase	todo:M14	h5: index file format suites
+tests/index/BaseStoredFieldsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_stored_fields_format.rs::TESTS -- M14: the merging reader wrappers (the merge reads files, not readers); SimpleText switch
+tests/index/BaseTermVectorsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_term_vectors_format.rs::TESTS -- M14: term vectors are read as a value, so the enum seeks and reuse are not exercised
 tests/index/BaseTestCheckIndex	ported	crates/lucene-test-framework/src/index/base_test_check_index.rs::test_deleted_docs
 tests/index/DocHelper	ported	crates/lucene-test-framework/src/index/doc_helper.rs::setup_doc
 tests/index/FieldFilterLeafReader	ported	crates/lucene-test-framework/src/index/reader_wrappers.rs::FieldFilterLeafReader
 tests/index/ForceMergePolicy	ported	crates/lucene-test-framework/src/index/merge_policies.rs::ForceMergePolicy
-tests/index/LegacyBaseDocValuesFormatTestCase	todo:M14	h5: index file format suites
+tests/index/LegacyBaseDocValuesFormatTestCase	partial	crates/lucene-test-framework/src/index/legacy_base_doc_values_format.rs::TESTS -- M14: termsEnum/intersect are lookupOrd/lookupTerm (no doc-values TermsEnum)
 tests/index/MergeReaderWrapper	not-needed	wraps a reader in its merge instances; this port has no merge instances, a reader merges as it reads
 tests/index/MergingCodecReader	not-needed	wraps a CodecReader in its merge instances; this port has no merge instances
 tests/index/MergingDirectoryReaderWrapper	not-needed	wraps every leaf in MergingCodecReader; this port has no merge instances
@@ -112,7 +112,7 @@ tests/index/PerThreadPKLookup	ported	crates/lucene-test-framework/src/index/per_
 tests/index/PointsStackTracker	ported	crates/lucene-test-framework/src/index/points_stack_tracker.rs::PointsStackTracker
 tests/index/RandomCodec	todo:M14	h4 deferral: a per-field random codec; only Lucene104 postings and doc-values formats are writable here, so the draw has nothing to choose between
 tests/index/RandomIndexWriter	partial	crates/lucene-test-framework/src/index/random_index_writer.rs::RandomIndexWriter -- M14: soft deletes (the readers do not resolve them) and update by query
-tests/index/RandomPostingsTester	todo:M14	h5: index file format suites
+tests/index/RandomPostingsTester	partial	crates/lucene-test-framework/src/index/random_postings_tester.rs::RandomPostingsTester -- M14: TermState, enum reuse, intoBitSet, nextPostings; builds through IndexWriter, not a FieldsConsumer
 tests/index/SuppressingConcurrentMergeScheduler	todo:M14	h8: a ConcurrentMergeScheduler swallowing chosen merge exceptions
 tests/index/ThreadedIndexingAndSearchingTestCase	todo:M14	h8: NRT/stress
 tests/mockfile/DisableFsyncFS	ported	crates/lucene-test-framework/src/mockfile/mock_fs.rs::fsync_disabled
