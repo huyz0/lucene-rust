@@ -77,9 +77,12 @@ MAX_FILE = 80_000
 # need room for theirs, so it is 590 KB. M14.h's h6 found it full: trimming
 # other rows to fit dropped Differs that were still true, and h6's points,
 # KNN and test-postings rows and h8's are still to come, so it is 600 KB.
+# h8 left it at 599,973 with the last ~80 test-framework rows (test codecs,
+# search, geo, index, util) and M14.j's closing rows still unwritten, at
+# roughly 500 bytes each, so it is 660 KB: the last raise M14 should need.
 # The per-row and per-file budgets
 # are what keep a row short; the total only says how many rows there may be.
-MAX_TOTAL = 600_000
+MAX_TOTAL = 660_000
 
 # A line of the index's area table: its link and its row count.
 AREA_ROW = re.compile(r"^\|\s*\[[^\]]*\]\(([^)]+\.md)\)\s*\|.*\|\s*(\d+)\s*\|\s*$")
