@@ -171,8 +171,13 @@ fn add_indexes_merged_makes_one_segment() {
     w.set_index_sort(Some(&[IndexSortField::long("rank", false, None)]))
         .unwrap();
     w.add_indexes_merged(&[]).unwrap();
-    // One directory named twice is locked by its first mention, as in Java.
-    assert!(w.add_indexes_merged(&[&src, &src]).is_err());
+    // One directory named twice: its second `write.lock` fails (Java's
+    // `noDupDirs` throws first); nothing is added.
+    assert!(matches!(
+        w.add_indexes(&[&src, &src]),
+        Err(Error::Store(lucene_store::Error::LockObtainFailed(_)))
+    ));
+    assert!(w.segment_infos().segments.is_empty());
     w.add_indexes_merged(&[&src, &src2]).unwrap();
     assert_eq!(w.segment_infos().segments.len(), 1);
     w.commit().unwrap();
@@ -250,11 +255,24 @@ fn add_indexes_refuses_incompatible_sources() {
     // A source with a writer still open on it is locked.
     let tmp = TempDir::new("add-locked");
     let busy = FsDirectory::open(&tmp);
-    let _open = writer(&busy, DocValuesType::Numeric);
+    let mut open = writer(&busy, DocValuesType::Numeric);
     let tmp2 = TempDir::new("add-locked-dst");
     let dir2 = FsDirectory::open(&tmp2);
     let mut w = writer(&dir2, DocValuesType::Numeric);
-    assert!(w.add_indexes(&[&busy]).is_err());
+    assert!(matches!(
+        w.add_indexes(&[&busy]),
+        Err(Error::Store(lucene_store::Error::LockObtainFailed(_)))
+    ));
+    // `addIndexes(CodecReader...)` reads readers and locks nothing: the open
+    // writer's committed documents arrive, and it keeps its lock.
+    open.add_document(doc("busy", 1)).unwrap();
+    open.commit().unwrap();
+    w.add_indexes_merged(&[&busy]).unwrap();
+    w.commit().unwrap();
+    assert_eq!(committed_ids(&dir2), vec!["busy".to_string()]);
+    open.add_document(doc("still", 2)).unwrap();
+    open.commit().unwrap();
+    drop(open);
     assert_eq!(rename("_3.fdt", "_3", "_9"), "_9.fdt");
     assert_eq!(rename("_3_1.liv", "_3", "_9"), "_9_1.liv");
     assert_eq!(rename("_30.fdt", "_3", "_9"), "_30.fdt");
