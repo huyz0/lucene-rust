@@ -782,13 +782,21 @@ fn build_led<'a>(
 /// values as `IndexOrDocValuesQuery`'s `get(leadCost)` does. A boolean nested
 /// in another uses its own cost (Java passes the smaller of it and its
 /// parent's lead cost).
+///
+/// `top_level` is the boolean's own `setTopLevelScoringClause`, which
+/// passes through to its scoring (`MUST` and `SHOULD`) clause when exactly
+/// one is *present in this segment* -- `subs` holds only the suppliers that
+/// exist. A lone written scoring clause is built top-level up front; when
+/// several are written but one is present, it is built again top-level once
+/// the others turn out absent. A term ignores the flag, so only a clause
+/// that is not one is rebuilt.
 #[allow(clippy::type_complexity)]
 pub(crate) fn build_clauses<'a, 'q>(
     ctx: &LeafContext<'a>,
     q: &'q BooleanQuery,
     boost: f32,
     mode: Mode,
-    child_top_level: bool,
+    top_level: bool,
 ) -> Result<
     Option<(
         Vec<(Child<'a>, &'q Clause)>,
@@ -798,6 +806,8 @@ pub(crate) fn build_clauses<'a, 'q>(
     )>,
 > {
     use super::extended::{index_side, Supplier};
+    let written = q.must.len() + q.should.len();
+    let child_top_level = top_level && written == 1;
     // (clause, mode, top level, required) per group, in order.
     let groups: [(&'q [Clause], Mode, bool, bool); 4] = [
         (&q.must, mode, child_top_level, true),
@@ -814,6 +824,8 @@ pub(crate) fn build_clauses<'a, 'q>(
     // `SHOULD` fuzzy clauses flattened into this boolean, by position.
     let mut flattened: Vec<Option<Vec<Child<'a>>>> = (0..q.should.len()).map(|_| None).collect();
     let flatten = mode.needs_scores() && q.minimum_should_match <= 1;
+    // The lead cost the deferred `IndexOrDocValuesQuery`s were built with.
+    let mut lead_cost = None;
     for (g, (clauses, m, top, required)) in groups.iter().enumerate() {
         for (i, c) in clauses.iter().enumerate() {
             if let (2, true, Clause::Fuzzy(f)) = (g, flatten, c) {
@@ -876,6 +888,7 @@ pub(crate) fn build_clauses<'a, 'q>(
                 .unwrap_or(i64::MAX)
                 .min(super::wand::cost_with_min_should_match(&optional, msm)),
         };
+        lead_cost = Some(lead);
         for (g, (clauses, m, top, required)) in groups.iter().enumerate() {
             for (i, c) in clauses.iter().enumerate() {
                 if built[g][i].is_some() || costs[g][i].is_none() {
@@ -900,14 +913,31 @@ pub(crate) fn build_clauses<'a, 'q>(
             .collect()
     };
     let mut should_pairs = Vec::with_capacity(should.len());
+    // A fuzzy clause flattened into terms: each is a term, which ignores
+    // `top_level`, so none is ever rebuilt.
+    let mut from_fuzzy = false;
     for ((c, clause), flat) in should.into_iter().zip(&q.should).zip(flattened) {
         match flat {
-            Some(children) => should_pairs.extend(children.into_iter().map(|c| (c, clause))),
+            Some(children) => {
+                from_fuzzy = true;
+                should_pairs.extend(children.into_iter().map(|c| (c, clause)));
+            }
             None => should_pairs.extend(c.map(|c| (c, clause))),
         }
     }
+    let mut must_pairs = pair(must, &q.must);
+    if top_level && written > 1 && must_pairs.len() + should_pairs.len() == 1 && !from_fuzzy {
+        let lone = must_pairs.first_mut().or(should_pairs.first_mut());
+        if let Some((built, clause)) = lone {
+            if !built.is_leg() {
+                if let Some(again) = child_led(ctx, clause, boost, mode, true, lead_cost)? {
+                    *built = again;
+                }
+            }
+        }
+    }
     Ok(Some((
-        pair(must, &q.must),
+        must_pairs,
         pair(filter, &q.filter),
         should_pairs,
         pair(must_not, &q.must_not),
@@ -1028,10 +1058,7 @@ fn build_boolean_child<'a>(
     mode: Mode,
     top_level: bool,
 ) -> Result<Option<Child<'a>>> {
-    // `setTopLevelScoringClause` passes through to a lone scoring clause.
-    let child_top_level = top_level && q.must.len() + q.should.len() == 1;
-    let Some((must, filter, should, must_not)) =
-        build_clauses(ctx, q, boost, mode, child_top_level)?
+    let Some((must, filter, should, must_not)) = build_clauses(ctx, q, boost, mode, top_level)?
     else {
         return Ok(None);
     };

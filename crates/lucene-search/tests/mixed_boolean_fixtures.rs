@@ -217,11 +217,11 @@ fn mixed_boolean_queries_match_real_lucene_pruned_and_exact() {
     // `IndexSearcher.search` rewrites first, and the lower-bound totals
     // depend on the bulk scorer the rewritten query gets; the free search
     // functions score the query as given, as the JVM hands it over.
-    let mut runs: Vec<(usize, String, BooleanQuery)> = (0..count)
+    let mut runs: Vec<(String, String, BooleanQuery)> = (0..count)
         .map(|i| {
             let text = m.get(&format!("query.{i}")).to_string();
             let query = root(parse(&mut Tokens::new(&text)).rewrite());
-            (i, text, query)
+            (format!("query.{i}"), text, query)
         })
         .collect();
     // `+a ?(b c)`, not rewritten: `BooleanQuery.rewrite` flattens the nested
@@ -231,8 +231,18 @@ fn mixed_boolean_queries_match_real_lucene_pruned_and_exact() {
     let nested = nested_disjunction_runs(&m, count);
     assert_eq!(nested.len(), 3, "the fixture has three `+a ?b ?c`");
     runs.extend(nested);
-    for (i, text, query) in &runs {
-        let (i, text) = (*i, text.as_str());
+    // `AppendPresentClausesManifest`: booleans written with several scoring
+    // clauses of which one is present in the segment. `setTopLevelScoringClause`
+    // counts the present ones, so that one is built top-level.
+    let present: usize = m.get("present_count").parse().unwrap();
+    assert!(present > 0, "the fixture has present-clause queries");
+    runs.extend((0..present).map(|i| {
+        let text = m.get(&format!("present.{i}")).to_string();
+        let query = root(parse(&mut Tokens::new(&text)).rewrite());
+        (format!("present.{i}"), text, query)
+    }));
+    for (key, text, query) in &runs {
+        let text = text.as_str();
         for (mode, limit) in [
             ("pruned", threshold),
             ("searcher", 1000),
@@ -246,8 +256,8 @@ fn mixed_boolean_queries_match_real_lucene_pruned_and_exact() {
             let expected = match mode {
                 // `search(query, 10)` returns the same top ten as the pruned
                 // run: both collect exactly the ten best.
-                "searcher" => m.hits(&format!("query.{i}.pruned")),
-                _ => m.hits(&format!("query.{i}.{mode}")),
+                "searcher" => m.hits(&format!("{key}.pruned")),
+                _ => m.hits(&format!("{key}.{mode}")),
             };
             if got != expected {
                 failures.push(format!(
@@ -258,14 +268,14 @@ fn mixed_boolean_queries_match_real_lucene_pruned_and_exact() {
             }
             let (total_key, relation) = match mode {
                 "pruned" => (
-                    format!("query.{i}.pruned.total"),
-                    m.get(&format!("query.{i}.pruned.relation")),
+                    format!("{key}.pruned.total"),
+                    m.get(&format!("{key}.pruned.relation")),
                 ),
                 "searcher" => (
-                    format!("query.{i}.searcher.total"),
-                    m.get(&format!("query.{i}.searcher.relation")),
+                    format!("{key}.searcher.total"),
+                    m.get(&format!("{key}.searcher.relation")),
                 ),
-                _ => (format!("query.{i}.total"), "eq"),
+                _ => (format!("{key}.total"), "eq"),
             };
             let lucene_total: u64 = m.get(&total_key).parse().unwrap();
             let got_relation = match total.relation {
@@ -297,7 +307,7 @@ fn mixed_boolean_queries_match_real_lucene_pruned_and_exact() {
 /// written, so `setTopLevelScoringClause` makes it a `WANDScorer`, where
 /// Lucene, which only ever scores it flattened, has two scoring clauses and a
 /// `DisjunctionSumScorer` -- the pruned totals differ (177 vs 10,343).
-fn nested_disjunction_runs(m: &Manifest, count: usize) -> Vec<(usize, String, BooleanQuery)> {
+fn nested_disjunction_runs(m: &Manifest, count: usize) -> Vec<(String, String, BooleanQuery)> {
     let mut out = Vec::new();
     for i in 0..count {
         let text = m.get(&format!("query.{i}"));
@@ -320,7 +330,11 @@ fn nested_disjunction_runs(m: &Manifest, count: usize) -> Vec<(usize, String, Bo
         let mut outer = BooleanQuery::new();
         outer.must = b.must.clone();
         outer.should.push(Clause::Boolean(Box::new(inner)));
-        out.push((i, format!("{text} as nested ?(b c)"), outer));
+        out.push((
+            format!("query.{i}"),
+            format!("{text} as nested ?(b c)"),
+            outer,
+        ));
     }
     out
 }
