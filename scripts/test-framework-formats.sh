@@ -2,12 +2,13 @@
 # M14.h h5's and h6's acceptance run: crates/lucene-test-framework/examples/
 # format_suites.rs over 30 seeds per format suite (postings, stored fields,
 # term vectors, doc values, segment infos, field infos, compound, norms,
-# points).
+# points, float and byte KNN vectors).
 # Each seed's index -- the suite's addRandomFields through a
 # RandomIndexWriter under a random IndexWriterConfig, with deletes, commits
 # and sometimes a forced merge -- must pass this port's CheckIndex and real
 # Lucene's org.apache.lucene.index.CheckIndex, which decodes every posting,
-# stored document, term vector, doc value, norm and point of every segment.
+# stored document, term vector, doc value, norm, point and vector of every
+# segment.
 #
 # Usage: scripts/test-framework-formats.sh [--jars DIR]
 set -euo pipefail
@@ -36,9 +37,9 @@ if ! out=$("$BIN" --seeds 0..30 --java-cp "$CP"); then
   exit 1
 fi
 echo "$out" | tail -1
-# Gate rule #10: 9 suites x 30 seeds, every one checked by Lucene.
-echo "$out" | grep -q '^format_suites: 270 index(es), .* checked by Lucene too' || {
-  echo "test-framework-formats: the run did not check all 270 indexes with Lucene" >&2
+# Gate rule #10: 11 suites x 30 seeds, every one checked by Lucene.
+echo "$out" | grep -q '^format_suites: 330 index(es), .* checked by Lucene too' || {
+  echo "test-framework-formats: the run did not check all 330 indexes with Lucene" >&2
   exit 1
 }
 echo "test-framework-formats: ok"

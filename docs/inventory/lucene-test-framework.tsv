@@ -85,7 +85,7 @@ tests/index/BaseCompressingDocValuesFormatTestCase	partial	crates/lucene-test-fr
 tests/index/BaseDocValuesFormatTestCase	partial	crates/lucene-test-framework/src/index/base_doc_values_format.rs::TESTS -- M14: intoBitSet is the nextDoc loop (no port of DocIdSetIterator.intoBitSet)
 tests/index/BaseFieldInfoFormatTestCase	partial	crates/lucene-test-framework/src/index/base_field_info_format.rs::FieldInfoSuite -- M14: no testExceptionOnCloseInput (a read has no input close)
 tests/index/BaseIndexFileFormatTestCase	partial	crates/lucene-test-framework/src/index/base_index_file_format.rs::IndexFileFormatSuite -- M14: testMultiClose (no codec-level writer/reader objects); checkIntegrity is checked by damaging bytes, not by tracking reads
-tests/index/BaseKnnVectorsFormatTestCase	todo:M14	h6: index file format suites
+tests/index/BaseKnnVectorsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_knn_vectors_format.rs::KnnVectorsSuite -- M14: testSearchWithVisitedLimit and testMergeOffHeapByteSizeMaps (the search reader has no graph), testFieldSetValue (vector fields are immutable), testDifferentCodecs1/2 (no SimpleText writer)
 tests/index/BaseLiveDocsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_live_docs_format.rs::TESTS -- M14: one FixedBitSet pass (the writer takes no other Bits)
 tests/index/BaseMergePolicyTestCase	ported	crates/lucene-test-framework/src/index/base_merge_policy.rs::BaseMergePolicyTestCase
 tests/index/BaseNormsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_norms_format.rs::NormsSuite -- M14: bulk longValues is the advanceExact walk (not ported)
@@ -113,8 +113,8 @@ tests/index/PointsStackTracker	ported	crates/lucene-test-framework/src/index/poi
 tests/index/RandomCodec	todo:M14	h4 deferral: a per-field random codec; only Lucene104 postings and doc-values formats are writable here, so the draw has nothing to choose between
 tests/index/RandomIndexWriter	partial	crates/lucene-test-framework/src/index/random_index_writer.rs::RandomIndexWriter -- M14: soft deletes (the readers do not resolve them) and update by query
 tests/index/RandomPostingsTester	partial	crates/lucene-test-framework/src/index/random_postings_tester.rs::RandomPostingsTester -- M14: TermState, enum reuse, intoBitSet, nextPostings; builds through IndexWriter, not a FieldsConsumer
-tests/index/SuppressingConcurrentMergeScheduler	todo:M14	h8: a ConcurrentMergeScheduler swallowing chosen merge exceptions
-tests/index/ThreadedIndexingAndSearchingTestCase	todo:M14	h8: NRT/stress
+tests/index/SuppressingConcurrentMergeScheduler	ported	crates/lucene-test-framework/src/index/suppressing_concurrent_merge_scheduler.rs::SuppressingConcurrentMergeScheduler
+tests/index/ThreadedIndexingAndSearchingTestCase	partial	crates/lucene-test-framework/src/index/threaded_indexing_and_searching.rs::run_test -- M14: TestNRTThreads' openIfChanged loop over one searcher and its open-but-deleted-files check; TestSearcherManager's reopen thread and SearcherLifetimeManager; advanceSegmentInfosCounter, FailOnNonBulkMergesInfoStream, ensureSaneIWCOnNightly, reduceOpenFiles
 tests/mockfile/DisableFsyncFS	ported	crates/lucene-test-framework/src/mockfile/mock_fs.rs::fsync_disabled
 tests/mockfile/ExtrasFS	ported	crates/lucene-test-framework/src/mockfile/mock_fs.rs::create_directory
 tests/mockfile/FilterAsynchronousFileChannel	not-needed	java.nio.file FileSystem/Path/channel delegation plumbing the mock filesystems are built from; MockFs hooks the Rust directories (FsFaults, the output and input guards) instead
@@ -160,7 +160,7 @@ tests/search/QueryUtils	partial	crates/lucene-test-framework/src/search/query_ut
 tests/search/RandomApproximationQuery	partial	crates/lucene-search/src/test_support.rs::TestQuery -- M14: no Weight: each scorer seeded from the query's own JavaRandom, not one per weight (createWeight) and one per scorer from it
 tests/search/ScorerIndexSearcher	todo:M14	h7 deferral: a searcher that scores through Scorer, never BulkScorer; the scorer tree is private to lucene-search
 tests/search/SearchEquivalenceTestBase	partial	crates/lucene-test-framework/src/search/search_equivalence.rs::SearchEquivalence -- M14: RandomIndexWriter and two newSearcher wrappers (one plain searcher here)
-tests/search/ShardSearchingTestBase	todo:M14	h7 deferral: simulated distributed search over node searchers and term statistics; with h8
+tests/search/ShardSearchingTestBase	todo:M14	h8 deferral: its ShardIndexSearcher overrides IndexSearcher.termStatistics/collectionStatistics with statistics gathered from the other nodes; the port's searcher computes them from its own segments and has no override hook
 tests/search/similarities/AssertingSimilarity	ported	crates/lucene-test-framework/src/search/similarities.rs::AssertingSimilarity
 tests/search/similarities/BaseSimilarityTestCase	partial	crates/lucene-test-framework/src/search/similarities.rs::do_test_scoring -- M14: the explanation checks (SimScorer.explain is BM25-only in lucene-search); their rarely() draws are kept
 tests/search/similarities/RandomSimilarity	ported	crates/lucene-test-framework/src/search/similarities.rs::RandomSimilarity
