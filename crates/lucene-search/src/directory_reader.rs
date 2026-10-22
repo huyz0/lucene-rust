@@ -782,10 +782,10 @@ impl SegmentReader {
 
         // Java reads each format's metadata through a `ChecksumIndexInput`
         // when the segment opens and `checkFooter`s it there. This reader
-        // parses `.fdm`, `.tvm` and `.vemf` on first use and never reads
-        // `.psm` (its impact maxima matter to `CheckIndex` only), so their
-        // checksums are verified here: otherwise a damaged one would pass
-        // both the open and `check_integrity`.
+        // parses `.fdm`, `.tvm`, `.vemf` and `.kdm` on first use and never
+        // reads `.psm` (its impact maxima matter to `CheckIndex` only), so
+        // their checksums are verified here: otherwise a damaged one would
+        // pass both the open and `check_integrity`.
         let psm = segment_codec_suffixes(&si.files, compound.as_ref(), &segment_name, ".psm")
             .into_iter()
             .map(|suffix| {
@@ -802,6 +802,7 @@ impl SegmentReader {
             .map(|s| &s.fdm)
             .chain(term_vectors.iter().chain(&vectors).map(|c| &c.meta))
             .chain(psm.iter().flatten())
+            .chain(kdm_buf.iter())
         {
             let end = meta
                 .len()
