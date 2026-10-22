@@ -5712,6 +5712,44 @@ pub(crate) mod tests {
         );
     }
 
+    /// A phrase over a field indexed without positions is `PhraseWeight`'s
+    /// `IllegalStateException` at this boundary too: a search error carrying
+    /// Lucene's message (`GenSandboxQueries`' `errors.tsv` pins it against
+    /// Java), from the search and the count alike, and never a panic. The
+    /// plugin re-runs a failed native search on Lucene, which throws it.
+    #[test]
+    fn a_phrase_over_a_field_without_positions_is_a_search_error() {
+        let h = open_fixture("sandbox_queries/index");
+        // The status's own prefix, then Lucene's message.
+        let want = "search failed: field \"id\" was indexed without position data; \
+                    cannot run PhraseQuery (phrase=id:\"1 2\")";
+        let phrase = || N::P("id", 0, vec![(0, "1"), (1, "2")]);
+        for (top_n, count) in [(10, true), (0, true), (10, false)] {
+            assert_eq!(
+                run(h, &tree(phrase()), top_n, count).err(),
+                Some(FfiStatus::Search.code()),
+                "top_n {top_n}, count {count}"
+            );
+            assert_eq!(crate::error::last_error(), want);
+        }
+        // Under a boolean, and over a term no segment holds: the field's
+        // missing positions are checked before its terms are looked up.
+        let nested = tree(N::B(0, vec![(2, N::T("body", "w1")), (2, phrase())]));
+        assert_eq!(
+            run(h, &nested, 10, true).err(),
+            Some(FfiStatus::Search.code())
+        );
+        assert_eq!(crate::error::last_error(), want);
+        let absent = tree(N::P("id", 0, vec![(0, "zz"), (1, "yy")]));
+        assert_eq!(
+            run(h, &absent, 10, true).err(),
+            Some(FfiStatus::Search.code())
+        );
+        // One term rewrites to a term query, which needs no positions.
+        assert!(run(h, &tree(N::P("id", 0, vec![(0, "1")])), 10, true).is_ok());
+        assert_eq!(ffi_close_jvm_reader(h), 0);
+    }
+
     #[test]
     fn match_all_counts_the_live_documents_of_each_segment() {
         // Segment 0 has document 2 deleted; the match-all spans each
