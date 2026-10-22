@@ -424,6 +424,9 @@ pub(crate) struct CachedScorer {
     /// constant empties the iterator.
     top_scores: bool,
     emptied: bool,
+    /// The cost the set was built with, when it is not its size: a
+    /// `DocIdSetBuilder` bit set's estimate.
+    cost: Option<i64>,
 }
 
 impl CachedScorer {
@@ -440,7 +443,14 @@ impl CachedScorer {
             score,
             top_scores,
             emptied: false,
+            cost: None,
         }
+    }
+
+    /// The set's cost as its builder estimated it (`BitDocIdSet(bits, cost)`).
+    pub(crate) fn with_cost(mut self, cost: i64) -> Self {
+        self.cost = Some(cost);
+        self
     }
 }
 
@@ -476,6 +486,9 @@ impl Scorer for CachedScorer {
     }
 
     fn cost(&self) -> i64 {
+        if let Some(cost) = self.cost {
+            return cost;
+        }
         match &*self.set {
             CachedSet::Bits { cardinality, .. } => *cardinality,
             CachedSet::Docs(docs) => docs.len() as i64,

@@ -567,88 +567,129 @@ fn cached_clauses_search_exactly_like_uncached_ones() {
     }
 }
 
-/// A cached term set as a scoring `MUST` beside one optional term
-/// (`Bulk::ReqBitsOpt`): with a count threshold small enough that the
-/// collector's threshold passes the set's constant score, the walk switches
-/// from the set's bits to the term's postings. Every run -- the uncached
-/// first ones through `ReqOptSumScorer`, the cached ones through the
-/// specialised bulk scorer -- returns the same hits and score bits, whatever
-/// the threshold and the number of hits, deletions included.
+/// A cached term set as a scoring `MUST` beside one optional term, against
+/// Lucene through a real `LRUQueryCache` (`AppendCachedTotalsManifest`):
+/// each query runs six times on a fresh reader, the first runs iterating the
+/// set's postings through `ReqOptSumScorer`, the later ones the bit set the
+/// cache built -- through the specialised `Bulk::ReqBitsOpt` when every
+/// match is scored, through `ReqOptSumScorer` again under `TOP_SCORES`. Every run returns Lucene's hits and score bits,
+/// and its lower-bound total and relation -- the same for every run in
+/// Lucene, whose impacts approximation takes its block bounds from the
+/// optional term alone whether the required clause is cached or not --
+/// deletions and a `MUST_NOT` (which wraps the bulk scorer in `ReqExcl`,
+/// re-entering it window by window) included.
 #[test]
-fn a_cached_required_set_with_an_optional_term_scores_like_req_opt_sum() {
+fn a_cached_required_set_with_an_optional_term_counts_like_lucene() {
+    use crate::collector::TotalHitsRelation;
     use crate::directory_reader::DirectoryReader;
     use crate::field_norms::FieldNorms;
     use crate::query::{BooleanQuery, Clause, TermInSetQuery, TermQuery};
     use std::collections::HashMap;
-    let dir = lucene_store::FsDirectory::open(concat!(
+    let base = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../fixtures/data/mixed_boolean_scoring_index"
-    ));
+    );
+    let dir = lucene_store::FsDirectory::open(base);
+    let manifest: HashMap<String, String> =
+        std::fs::read_to_string(format!("{base}/manifest.properties"))
+            .expect("scripts/gen-fixtures.sh --append-only")
+            .lines()
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+    let get = |k: &str| -> &str {
+        manifest
+            .get(k)
+            .unwrap_or_else(|| panic!("manifest key {k} missing"))
+    };
     let bits = |h: &[crate::ScoreDoc]| -> Vec<(i32, u32)> {
         h.iter().map(|d| (d.doc_id, d.score.to_bits())).collect()
     };
-    crate::bulk_scorer::test_only_req_bits_opt_phases::take();
-    // Each with and without a `MUST_NOT` (which wraps the bulk scorer in
-    // `ReqExcl`, re-entering it window by window).
-    for (set, opt, not) in [
-        (["w3", "w5", "w7"], "w0", None),
-        (["w1", "w2", "w9"], "w4", None),
-        (["w3", "w5", "w7"], "w0", Some("w8")),
-        (["w1", "w2", "w9"], "w4", Some("w6")),
-    ] {
-        for (top_n, threshold) in [(10, 10u64), (3, 0), (5, 50), (20, 1000), (1, 1)] {
-            // A fresh reader: every combination starts uncached.
-            let reader = DirectoryReader::open(&dir).unwrap();
-            let opened = reader.open_segments().unwrap();
-            let segments = opened.as_open_segments();
-            assert!(segments.iter().any(|s| s.live_docs.is_some()));
-            let owned: Vec<HashMap<String, FieldNorms<'_>>> = reader
-                .field_norms("body")
-                .into_iter()
-                .map(|n| n.into_iter().map(|n| ("body".to_string(), n)).collect())
-                .collect();
-            let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> =
-                owned.iter().map(Some).collect();
-            let mut q = BooleanQuery::new();
-            q.must
-                .push(Clause::TermInSet(TermInSetQuery::new("body", set)));
-            q.should.push(Clause::Term(TermQuery::new(
+    let count: usize = get("cached_total.count").parse().unwrap();
+    let runs: usize = get("cached_total.runs").parse().unwrap();
+    assert!(count >= 20 && runs >= 4, "{count} queries, {runs} runs");
+    crate::bulk_scorer::test_only_req_bits_opt_docs::take();
+    let mut failures = Vec::new();
+    for i in 0..count {
+        let k = format!("cached_total.{i}");
+        assert_eq!(get(&format!("{k}.cached")), "true", "{k}: Lucene cached it");
+        let set: Vec<Vec<u8>> = get(&format!("{k}.set"))
+            .split(' ')
+            .map(|t| t.as_bytes().to_vec())
+            .collect();
+        let mut q = BooleanQuery::new();
+        q.must
+            .push(Clause::TermInSet(TermInSetQuery::new("body", set)));
+        q.should.push(Clause::Term(TermQuery::new(
+            "body",
+            get(&format!("{k}.opt")).as_bytes().to_vec(),
+        )));
+        let not = get(&format!("{k}.not"));
+        if !not.is_empty() {
+            q.must_not.push(Clause::Term(TermQuery::new(
                 "body",
-                opt.as_bytes().to_vec(),
+                not.as_bytes().to_vec(),
             )));
-            let run = || {
+        }
+        let top_n: usize = get(&format!("{k}.top_n")).parse().unwrap();
+        // `Integer.MAX_VALUE`: an exact count, `COMPLETE`.
+        let threshold: u64 = match get(&format!("{k}.threshold")) {
+            "2147483647" => u64::MAX,
+            t => t.parse().unwrap(),
+        };
+        let want_hits: Vec<(i32, u32)> = get(&format!("{k}.hits"))
+            .split(',')
+            .map(|p| {
+                let (d, b) = p.split_once(':').unwrap();
+                (d.parse().unwrap(), b.parse().unwrap())
+            })
+            .collect();
+        let want: Vec<&str> = get(&format!("{k}.totals")).split(',').collect();
+        assert_eq!(want.len(), runs);
+
+        // A fresh reader: every query starts uncached, as each Java query's
+        // own fresh cache does.
+        let reader = DirectoryReader::open(&dir).unwrap();
+        let opened = reader.open_segments().unwrap();
+        let segments = opened.as_open_segments();
+        assert!(segments.iter().any(|s| s.live_docs.is_some()));
+        let owned: Vec<HashMap<String, FieldNorms<'_>>> = reader
+            .field_norms("body")
+            .into_iter()
+            .map(|n| n.into_iter().map(|n| ("body".to_string(), n)).collect())
+            .collect();
+        let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
+        for (run, want) in want.iter().enumerate() {
+            let (hits, total) =
                 crate::multi_segment::search_boolean_query_multi_segment_maxscore_counting(
                     &segments, &q, &norms, top_n, threshold,
                 )
-                .unwrap()
-                .0
+                .unwrap();
+            let relation = match total.relation {
+                TotalHitsRelation::EqualTo => "eq",
+                TotalHitsRelation::GreaterThanOrEqualTo => "gte",
             };
-            let first = run();
-            assert!(!first.is_empty());
-            for i in 0..7 {
-                assert_eq!(
-                    bits(&run()),
-                    bits(&first),
-                    "run {i}, {set:?} + {opt} - {not:?}, top {top_n}, threshold {threshold}"
-                );
-            }
-            for r in reader.segment_readers() {
-                assert_eq!(
-                    r.query_cache().stats().0,
-                    1,
-                    "the set cached in {}",
-                    r.segment_name
-                );
+            let got = format!("{}:{relation}", total.value);
+            if got != *want || bits(&hits) != want_hits {
+                failures.push(format!(
+                    "{k} run {run} (top {top_n}, threshold {threshold}, not {not:?}): \
+                     total {got}, Lucene {want}; hits equal: {}",
+                    bits(&hits) == want_hits
+                ));
             }
         }
+        for r in reader.segment_readers() {
+            assert!(
+                r.query_cache().stats().0 >= 1,
+                "{k}: the set cached in {}",
+                r.segment_name
+            );
+        }
     }
-    // The specialised scorer ran, in both of its phases: the cached runs
-    // above did not all fall back to the generic `ReqOptSumScorer`.
-    let [required, optional] = crate::bulk_scorer::test_only_req_bits_opt_phases::take();
-    assert!(
-        required > 0 && optional > 0,
-        "phases reached: {required}, {optional}"
-    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    // The specialised scorer ran: the cached exhaustive runs above did not
+    // all fall back to the generic `ReqOptSumScorer`.
+    assert!(crate::bulk_scorer::test_only_req_bits_opt_docs::take() > 0);
 }
 
 /// A lone term set, top hits with a small count threshold: once its

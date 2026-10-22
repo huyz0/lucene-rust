@@ -558,18 +558,24 @@ fn search_after_pages_match_real_lucene_bit_for_bit() {
 /// field could not do, and why c11 recorded this as blocked on a fixture. The
 /// fixture was already there.
 ///
-/// Both shapes are checked: the single filter clause, and the duplicated one
-/// that `BooleanQuery.rewrite` collapses (this port executes the un-rewritten
-/// two-leg conjunction, so its answer has to survive the collapse).
+/// Lucene prunes the query `IndexSearcher` runs: `BooleanQuery.rewrite` turns
+/// a lone `FILTER` into `BoostQuery(ConstantScoreQuery(q), 0)`, whose
+/// `ConstantScoreScorer` empties once the threshold passes its score. The
+/// lone filter as written does not prune: `BooleanScorerSupplier.disableScoring`
+/// hands the collector a `SimpleScorable` that swallows the threshold, so
+/// every match is collected. The duplicated filter as written does: under
+/// `TOP_SCORES` `requiredBulkScorer` wraps the conjunction of filters in a
+/// `ConstantScoreScorer(0)`. Each is checked as written and rewritten.
 #[test]
 fn filter_only_top_n_prunes_and_still_matches_real_lucene() {
     let seg = open_segment();
     let doc_in = DocInput::open(seg.doc, &seg.id, &seg.suffix).expect("open .doc");
 
-    let cases: [(&str, BooleanQuery); 2] = [
+    let cases: [(&str, BooleanQuery, bool); 2] = [
         (
             "scoring.boolean.filteronly.big",
             BooleanQuery::new().with_filter([TermQuery::new("big", "everywhere")]),
+            false,
         ),
         (
             "scoring.boolean.filteronly.bigdup",
@@ -577,33 +583,40 @@ fn filter_only_top_n_prunes_and_still_matches_real_lucene() {
                 TermQuery::new("big", "everywhere"),
                 TermQuery::new("big", "everywhere"),
             ]),
+            true,
         ),
     ];
 
-    for (key, query) in cases {
-        // `total_hits_threshold == 0`: pruning is authorized the moment the
-        // queue fills, which is `TopScoreDocCollectorManager`'s behaviour once
-        // its own threshold is passed.
-        let mut top = TopDocsCollector::with_total_hits_threshold(20, 0);
-        search_boolean_query_scored(
-            &seg.fields,
-            Some(&doc_in),
-            None,
-            None,
-            None,
-            None,
-            &query,
-            None,
-            &mut top,
-        )
-        .unwrap();
-        assert_same_as_lucene(key, top.top_docs(), &seg.manifest.lucene_hits(key));
-        // The point of the exercise: it did not visit all 300.
-        assert!(
-            top.total_hits().value < 300,
-            "{key}: pruning did not fire -- visited {} of 300 documents",
-            top.total_hits().value
-        );
+    for (key, query, as_written_prunes) in cases {
+        let rewritten = BooleanQuery::new().with_must([query.clone().rewrite()]);
+        for (shape, query, prunes) in [
+            ("as written", &query, as_written_prunes),
+            ("rewritten", &rewritten, true),
+        ] {
+            // `total_hits_threshold == 0`: pruning is authorized the moment
+            // the queue fills, which is `TopScoreDocCollectorManager`'s
+            // behaviour once its own threshold is passed.
+            let mut top = TopDocsCollector::with_total_hits_threshold(20, 0);
+            search_boolean_query_scored(
+                &seg.fields,
+                Some(&doc_in),
+                None,
+                None,
+                None,
+                None,
+                query,
+                None,
+                &mut top,
+            )
+            .unwrap();
+            assert_same_as_lucene(key, top.top_docs(), &seg.manifest.lucene_hits(key));
+            let total = top.total_hits().value;
+            assert_eq!(
+                total < 300,
+                prunes,
+                "{key} {shape}: collected {total} of 300 documents"
+            );
+        }
     }
 }
 
