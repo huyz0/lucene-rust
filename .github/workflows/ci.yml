@@ -316,6 +316,11 @@ jobs:
       # 300 seeds; real Lucene's CheckIndex on 50 of them.
       - name: Test-framework fault run
         run: ./scripts/test-framework-faults.sh
+      # M14.h h4: RandomIndexWriter's random op stream, every NRT reader
+      # checked against a model and walked through AssertingLeafReader, 300
+      # seeds; real Lucene's CheckIndex on 50 of them.
+      - name: Test-framework index run
+        run: ./scripts/test-framework-index.sh
 
   # ---------------------------------------------------------------------------
   # M2: the OpenSearch plugin, on the architectures it ships for. Builds the

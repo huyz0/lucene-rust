@@ -935,7 +935,7 @@ and tests, which run feature-on only.
 
 ## test-framework-faults
 
-`scripts/test-framework-faults.sh` (CI `test-framework faults`): 300 seeds of
+`scripts/test-framework-faults.sh` (CI job `write-path`, step "Test-framework fault run"): 300 seeds of
 `examples/io_faults.rs`, an `IndexWriter` over a `MockDirectoryWrapper`
 failing 10% of writes and opens, crashed on close, then this port's
 `CheckIndex` (and Lucene's on the last 50). **Seen to fail**: with the flush's
@@ -947,6 +947,29 @@ filesystem's behaviours (the run uses a bare `FsDirectory` delegate and only
 the random-rate knobs); a commit whose failure leaves its `segments_N`
 behind (no seed has hit it); and any defect the writer's own error paths
 hide behind an injected error.
+
+## test-framework-index
+
+`scripts/test-framework-index.sh` (CI job `write-path`, step "Test-framework index run"):
+300 seeds of `examples/random_index.rs`, a `RandomIndexWriter` (random
+config, merge policy and `MockAnalyzer`) over an `FsDirectory` running a
+random stream of adds, updates, deletes, numeric doc-values updates, commits,
+flushes and forced merges. Every few ops an NRT reader is checked against a
+model (live ids and their `n` values) and walked through
+`AssertingLeafReader`. At the end the closed index is reopened cold, checked
+against the model, and run through this port's `CheckIndex` (and Lucene's on
+the last 50, whose report must say "No problems were detected" over as many
+segments as the port wrote). A run of 20 or more seeds whose totals never
+opened a reader, deleted, updated a doc value, committed or walked a posting
+fails, so it cannot pass vacuously; a shorter run is not checked for that.
+**Seen to fail**: with `update_existing_doc_values` in
+`crates/lucene-index/src/index_writer.rs` returning before it buffers the
+update, seed 0 fails (`the reader disagrees with the model`). Before the
+SORTED_NUMERIC rewind fix, seed 79 panicked in a `MockRandomMergePolicy`
+reordering merge. Blind to: binary and sorted doc-values updates, soft deletes
+and update-by-query (none in the stream), concurrency (one thread), I/O
+faults (see `test-framework-faults`), and any field the model does not read
+(only `id` and `n` are compared; the rest is left to `CheckIndex`).
 
 ## Each of these has been seen to fail
 

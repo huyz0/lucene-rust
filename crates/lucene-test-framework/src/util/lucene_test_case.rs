@@ -224,6 +224,16 @@ impl Drop for LuceneTestCase {
     }
 }
 
+/// The environment's `TEST_NIGHTLY` and `RANDOM_MULTIPLIER`, read once: the
+/// static knobs Java's `rarely(random)`/`atLeast(random, i)` consult.
+pub fn knobs() -> (bool, i32) {
+    static KNOBS: std::sync::OnceLock<(bool, i32)> = std::sync::OnceLock::new();
+    *KNOBS.get_or_init(|| {
+        let t = LuceneTestCase::new("knobs");
+        (t.nightly(), t.multiplier())
+    })
+}
+
 /// `LuceneTestCase.defaultRandomMultiplier()`: 2 nightly, else 1.
 pub fn default_multiplier(nightly: bool) -> i32 {
     if nightly {
