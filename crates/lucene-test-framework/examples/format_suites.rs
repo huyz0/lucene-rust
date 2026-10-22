@@ -1,12 +1,13 @@
 //! M14.h h5's and h6's acceptance run: each format suite's
 //! `addRandomFields` (postings, stored fields, term vectors, doc values,
-//! segment infos, field infos, compound, norms, points) fills a fresh
+//! segment infos, field infos, compound, norms, points, float and byte
+//! KNN vectors) fills a fresh
 //! `FsDirectory` per seed through a `RandomIndexWriter` under a random
 //! `newIndexWriterConfig`, with deletes, commits and sometimes a forced
 //! merge. The closed index must pass this port's `CheckIndex`, and real
 //! Lucene's with `--java-cp` (`org.apache.lucene.index.CheckIndex`, which
 //! decodes every posting, stored document, term vector, doc value, norm
-//! and point, and every deleted document's `.liv`),
+//! point and vector, and every deleted document's `.liv`),
 //! having opened every segment the port wrote.
 //!
 //! Usage: `format_suites [--seeds A..B | --seed N] [--java-cp CP] [--dir DIR]`.
@@ -14,12 +15,14 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use lucene_codecs::field_infos::{VectorEncoding, VectorSimilarityFunction};
 use lucene_index::buffered_updates::Term;
 use lucene_index::document::{Document, Store, StringField};
 use lucene_store::FsDirectory;
 use lucene_test_framework::index::base_compound_format::CompoundSuite;
 use lucene_test_framework::index::base_field_info_format::FieldInfoSuite;
 use lucene_test_framework::index::base_index_file_format::{new_riw, IndexFileFormatSuite};
+use lucene_test_framework::index::base_knn_vectors_format::KnnVectorsSuite;
 use lucene_test_framework::index::base_norms_format::NormsSuite;
 use lucene_test_framework::index::base_points_format::PointsSuite;
 use lucene_test_framework::index::base_postings_format::PostingsSuite;
@@ -30,7 +33,7 @@ use lucene_test_framework::index::legacy_base_doc_values_format::DocValuesSuite;
 use lucene_test_framework::util::lucene_test_case::LuceneTestCase;
 use lucene_test_framework::util::test_util;
 
-const SUITES: [(&str, &dyn IndexFileFormatSuite); 9] = [
+const SUITES: [(&str, &dyn IndexFileFormatSuite); 11] = [
     ("postings", &PostingsSuite),
     ("stored fields", &StoredFieldsSuite),
     ("term vectors", &TermVectorsSuite),
@@ -40,6 +43,20 @@ const SUITES: [(&str, &dyn IndexFileFormatSuite); 9] = [
     ("compound", &CompoundSuite),
     ("norms", &NormsSuite),
     ("points", &PointsSuite),
+    (
+        "float vectors",
+        &KnnVectorsSuite {
+            encoding: VectorEncoding::Float32,
+            similarity: VectorSimilarityFunction::Cosine,
+        },
+    ),
+    (
+        "byte vectors",
+        &KnnVectorsSuite {
+            encoding: VectorEncoding::Byte,
+            similarity: VectorSimilarityFunction::Euclidean,
+        },
+    ),
 ];
 
 /// Port and (with `java_cp`) Lucene `CheckIndex` over `path`; the number of
