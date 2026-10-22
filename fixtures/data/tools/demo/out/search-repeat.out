@@ -1,4 +1,5 @@
 Searching for: cat
 Time: {ms}ms
-1 total matching documents
-1. {fixture}/docs/f.txt
+2 total matching documents
+1. {docs}/h.txt
+2. {docs}/f.txt

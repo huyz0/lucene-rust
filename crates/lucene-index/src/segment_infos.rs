@@ -447,7 +447,7 @@ impl SegmentCommitInfo {
     /// `setBufferedDeletesGen`).
     ///
     /// Java also resets its cached `sizeInBytes` here. This port has no such
-    /// cache (`merge_policy::segment_byte_size` sizes a segment from the
+    /// cache (`merge_policy::commit_byte_size` sizes a segment from the
     /// directory on demand), so there is nothing to invalidate.
     fn generation_advanced(&mut self) {
         use std::collections::hash_map::DefaultHasher;

@@ -1,22 +1,24 @@
 Enter query: 
 Searching for: the
-5 total matching documents
-1. {fixture}/docs/a.txt
-2. {fixture}/docs/f.txt
+6 total matching documents
+1. {docs}/h.txt
+2. {docs}/a.txt
 Press (n)ext page, (q)uit or enter number to jump to a page.
-3. {fixture}/docs/e.txt
-4. {fixture}/docs/sub/i.txt
+3. {docs}/f.txt
+4. {docs}/e.txt
 Press (p)revious page, (n)ext page, (q)uit or enter number to jump to a page.
-5. {fixture}/docs/b.txt
+5. {docs}/sub/i.txt
+6. {docs}/b.txt
 Press (p)revious page, (q)uit or enter number to jump to a page.
-3. {fixture}/docs/e.txt
-4. {fixture}/docs/sub/i.txt
+3. {docs}/f.txt
+4. {docs}/e.txt
 Press (p)revious page, (n)ext page, (q)uit or enter number to jump to a page.
-3. {fixture}/docs/e.txt
-4. {fixture}/docs/sub/i.txt
+3. {docs}/f.txt
+4. {docs}/e.txt
 Press (p)revious page, (n)ext page, (q)uit or enter number to jump to a page.
 No such page
 Press (p)revious page, (n)ext page, (q)uit or enter number to jump to a page.
-5. {fixture}/docs/b.txt
+5. {docs}/sub/i.txt
+6. {docs}/b.txt
 Press (p)revious page, (q)uit or enter number to jump to a page.
 Enter query: 

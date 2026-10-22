@@ -53,10 +53,40 @@ fn mask_times(s: &str, prefix: &str, suffix: &str) -> String {
     out
 }
 
+/// `GenToolsDemo.DOCS_PATH_LENGTH`: how many characters `{docs}`' absolute
+/// path has. A document's stored path is part of its segment's size, which
+/// `TieredMergePolicy` sorts by, so the copy sits at a path as long as Java's.
+const DOCS_PATH_LENGTH: usize = 160;
+
+/// A copy of `fixture/docs` under `tmp`, at a path of exactly
+/// [`DOCS_PATH_LENGTH`] characters (separators written `/`).
+fn padded_docs(tmp: &Path, fixture: &Path) -> String {
+    let base = tmp.to_str().unwrap().replace('\\', "/");
+    let pad = DOCS_PATH_LENGTH
+        .checked_sub(base.len() + "/docs".len() + 1)
+        .filter(|&p| p > 0)
+        .unwrap_or_else(|| panic!("temporary directory too long: {base}"));
+    let docs = tmp.join("p".repeat(pad)).join("docs");
+    let from = fixture.join("docs");
+    std::fs::create_dir_all(docs.join("sub")).unwrap();
+    for sub in ["", "sub"] {
+        for f in std::fs::read_dir(from.join(sub)).unwrap() {
+            let f = f.unwrap();
+            if f.file_type().unwrap().is_file() {
+                std::fs::copy(f.path(), docs.join(sub).join(f.file_name())).unwrap();
+            }
+        }
+    }
+    let docs = docs.to_str().unwrap().replace('\\', "/");
+    assert_eq!(docs.len(), DOCS_PATH_LENGTH, "{docs}");
+    docs
+}
+
 /// What a tool printed, with the directories written as names.
-fn clean(s: &str, fixture: &str, tmp: &str) -> String {
+fn clean(s: &str, docs: &str, fixture: &str, tmp: &str) -> String {
     let s = s
         .replace('\\', "/")
+        .replace(docs, "{docs}")
         .replace(fixture, "{fixture}")
         .replace(tmp, "{tmp}");
     let s = mask_times(&s, "documents in ", " ms");
@@ -108,6 +138,7 @@ fn demo_tools_print_what_lucene_prints() {
     let fixture = data.to_str().unwrap().replace('\\', "/");
     let tmp = TempDir::new("tools-demo");
     let scratch = tmp.path().to_str().unwrap().replace('\\', "/");
+    let docs = padded_docs(tmp.path(), &data);
     let mut ran = 0;
     let mut failed = Vec::new();
     for line in read(&data.join("cases.tsv")).lines() {
@@ -120,7 +151,11 @@ fn demo_tools_print_what_lucene_prints() {
         };
         let args: Vec<String> = fields[3..]
             .iter()
-            .map(|a| a.replace("{fixture}", &fixture).replace("{tmp}", &scratch))
+            .map(|a| {
+                a.replace("{docs}", &docs)
+                    .replace("{fixture}", &fixture)
+                    .replace("{tmp}", &scratch)
+            })
             .collect();
         let out_dir = data.join("out");
         let want_out = read(&out_dir.join(format!("{id}.out")));
@@ -137,8 +172,8 @@ fn demo_tools_print_what_lucene_prints() {
         };
 
         let (code, out, err) = run_case(tool, &args, &stdin);
-        let out = clean(&out, &fixture, &scratch);
-        let err = clean(&err, &fixture, &scratch);
+        let out = clean(&out, &docs, &fixture, &scratch);
+        let err = clean(&err, &docs, &fixture, &scratch);
         let same_out = if id.starts_with("walk-") && tool == "IndexFiles" {
             sorted_lines(&out) == sorted_lines(&want_out)
         } else {
@@ -165,6 +200,25 @@ fn demo_tools_print_what_lucene_prints() {
         )
     );
     assert!(ran >= 35, "only {ran} cases ran");
+    // `search-all` lists the documents in index order, so it compares which
+    // segments `TieredMergePolicy` merged and in what order -- provided the
+    // index built a file at a time holds a merged segment.
+    let idx = tmp.path().join("idx");
+    let dir = FsDirectory::open(&idx);
+    let commits = lucene_tools::luke::commits::Commits::new(&dir, &idx).unwrap();
+    let generation = commits.list_commits()[0].generation;
+    let merged = commits
+        .segments(generation)
+        .unwrap()
+        .into_iter()
+        .filter(|s| {
+            commits
+                .segment_diagnostics(generation, &s.name)
+                .unwrap()
+                .contains(&("source".to_string(), "merge".to_string()))
+        })
+        .count();
+    assert!(merged > 0, "no merged segment in {}", idx.display());
 }
 
 #[test]

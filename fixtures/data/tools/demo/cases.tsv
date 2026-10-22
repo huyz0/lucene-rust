@@ -1,15 +1,17 @@
 index-usage	-	IndexFiles	-index	{tmp}/x
 index-unknown	-	IndexFiles	-bogus
 index-missing-docs	-	IndexFiles	-index	{tmp}/x	-docs	{tmp}/nowhere
-index-a	-	IndexFiles	-index	{tmp}/idx	-docs	{fixture}/docs/a.txt
-index-b	-	IndexFiles	-update	-index	{tmp}/idx	-docs	{fixture}/docs/b.txt
-index-c	-	IndexFiles	-update	-index	{tmp}/idx	-docs	{fixture}/docs/c.txt
-index-d	-	IndexFiles	-update	-index	{tmp}/idx	-docs	{fixture}/docs/d.txt
-index-e	-	IndexFiles	-update	-index	{tmp}/idx	-docs	{fixture}/docs/e.txt
-index-f	-	IndexFiles	-update	-index	{tmp}/idx	-docs	{fixture}/docs/f.txt
-index-g	-	IndexFiles	-update	-index	{tmp}/idx	-docs	{fixture}/docs/g.txt
-index-i	-	IndexFiles	-index	{tmp}/idx	-update	-docs	{fixture}/docs/sub//i.txt/
-index-again-a	-	IndexFiles	-update	-index	{tmp}/idx	-docs	{fixture}/docs/a.txt
+index-a	-	IndexFiles	-index	{tmp}/idx	-docs	{docs}/a.txt
+index-b	-	IndexFiles	-update	-index	{tmp}/idx	-docs	{docs}/b.txt
+index-c	-	IndexFiles	-update	-index	{tmp}/idx	-docs	{docs}/c.txt
+index-d	-	IndexFiles	-update	-index	{tmp}/idx	-docs	{docs}/d.txt
+index-e	-	IndexFiles	-update	-index	{tmp}/idx	-docs	{docs}/e.txt
+index-f	-	IndexFiles	-update	-index	{tmp}/idx	-docs	{docs}/f.txt
+index-g	-	IndexFiles	-update	-index	{tmp}/idx	-docs	{docs}/g.txt
+index-h	-	IndexFiles	-update	-index	{tmp}/idx	-docs	{docs}/h.txt
+index-i	-	IndexFiles	-index	{tmp}/idx	-update	-docs	{docs}/sub//i.txt/
+index-again-a	-	IndexFiles	-update	-index	{tmp}/idx	-docs	{docs}/a.txt
+search-all	-	SearchFiles	-index	{tmp}/idx	-query	*:*
 search-fox	-	SearchFiles	-index	{tmp}/idx	-query	fox
 search-raw	-	SearchFiles	-index	{tmp}/idx	-query	the	-raw
 search-bool	-	SearchFiles	-index	{tmp}/idx	-query	+search engine -java
