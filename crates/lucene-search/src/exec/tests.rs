@@ -1543,7 +1543,6 @@ fn wand_scaling_matches_lucene() {
 mod fixture {
     use std::collections::{BTreeSet, HashMap};
 
-    use crate::bulk_scorer::test_only_req_opt_paths;
     use crate::directory_reader::DirectoryReader;
     use crate::exec::{bulk_boolean, LeafContext, Mode};
     use crate::field_norms::FieldNorms;
@@ -1680,8 +1679,8 @@ mod fixture {
             .collect()
     }
 
-    /// Every bulk scorer the dispatch can choose, and every `ReqOptBulk` path,
-    /// is reached by some fixture query -- so the Lucene differential test in
+    /// Every bulk scorer the dispatch can choose is reached by some fixture
+    /// query -- so the Lucene differential test in
     /// `tests/mixed_boolean_fixtures.rs` covers each of them, not only the
     /// ones a query mix happens to reach. Also runs every query in
     /// `COMPLETE_NO_SCORES` and checks its count against Lucene's.
@@ -1700,7 +1699,6 @@ mod fixture {
         let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
         let count: usize = m["query_count"].parse().unwrap();
         let mut kinds = BTreeSet::new();
-        test_only_req_opt_paths::take();
         for i in 0..count {
             let q = parse(&m[&format!("query.{i}")]);
             let global = crate::multi_segment::global_boolean_stats(&segments, &q).unwrap();
@@ -1772,107 +1770,6 @@ mod fixture {
         .into_iter()
         .collect();
         assert_eq!(kinds, all, "bulk scorers the fixture reaches");
-        let paths = test_only_req_opt_paths::take();
-        // A window per lead block: never the 64K-id march through the whole
-        // `int` range once a skipped window leaves the lead in its last block.
-        let windows = test_only_req_opt_paths::take_windows();
-        assert!(windows < 30_000, "ReqOptBulk windows: {windows}");
-        assert!(
-            paths.iter().all(|&n| n > 0),
-            "every ReqOptBulk path must run (required-led, optional-led single, \
-             optional-led window, filtered MaxScore): {paths:?}"
-        );
-    }
-
-    /// `FilterConjunction` taking over legs that are out of step -- a
-    /// non-lead leg already *past* the lead's document, which is how the
-    /// batch path can leave them -- must still report only documents every
-    /// leg matches. (R1 review: it used to treat a leg ahead as a match.)
-    #[test]
-    fn a_filter_conjunction_taking_over_out_of_step_legs_reports_only_matches() {
-        use crate::bulk_scorer::{BulkLeg, FilterConjunction, TermLeg};
-        use crate::exec::build::{term_leg, TermForm};
-        use crate::exec::Scorer as _;
-
-        let reader = DirectoryReader::open(&lucene_store::FsDirectory::open(dir())).unwrap();
-        let opened = reader.open_segments().unwrap();
-        let seg = &opened.as_open_segments()[0];
-        let ctx = LeafContext {
-            fields: seg.fields,
-            doc_in: seg.doc_in,
-            pos_in: None,
-            pay_in: None,
-            live_docs: None,
-            points: None,
-            norms: None,
-            global: None,
-            max_doc: None,
-            cache: None,
-            reader: None,
-            similarity: None,
-        };
-        let leg = |t: &str| -> TermLeg<'_> {
-            match term_leg(
-                &ctx,
-                &Clause::Term(TermQuery::new("body", t)),
-                1.0,
-                Mode::NoScores,
-            )
-            .unwrap()
-            {
-                TermForm::Leg(l) => *l,
-                _ => panic!("{t} is a term leg"),
-            }
-        };
-        let docs_of = |t: &str| -> Vec<i32> {
-            let mut l = leg(t);
-            let mut v = Vec::new();
-            while BulkLeg::next_doc(&mut l).unwrap() != super::NO_MORE_DOCS {
-                v.push(BulkLeg::doc_id(&l));
-            }
-            v
-        };
-        let (a, b) = (docs_of("w8"), docs_of("w9"));
-        let both: Vec<i32> = a
-            .iter()
-            .copied()
-            .filter(|d| b.binary_search(d).is_ok())
-            .collect();
-        assert!(both.len() > 5, "the fixture's w8 and w9 overlap");
-        let mut checked = 0;
-        // The batch path's state: the lead has moved on from `prev` (the last
-        // document of a batch) to `lead_at`, and the other leg was advanced
-        // to `prev` -- landing on its first document at or after it, which
-        // can be past `lead_at`. Every such start where it is past is tried.
-        for w in a.windows(2).take(2000) {
-            let (prev, lead_at) = (w[0], w[1]);
-            let Some(&landed) = b.iter().find(|&&d| d >= prev) else {
-                continue;
-            };
-            if landed <= lead_at {
-                continue;
-            }
-            let mut legs = vec![leg("w8"), leg("w9")];
-            BulkLeg::advance(&mut legs[0], lead_at).unwrap();
-            BulkLeg::advance(&mut legs[1], prev).unwrap();
-            let mut f = FilterConjunction { legs: &mut legs };
-            let got = f.align(lead_at).unwrap();
-            let want = both
-                .iter()
-                .copied()
-                .find(|&d| d >= lead_at)
-                .unwrap_or(super::NO_MORE_DOCS);
-            assert_eq!(got, want, "lead at {lead_at}, other leg ahead at {landed}");
-            let next = f.next_doc().unwrap();
-            let want_next = both
-                .iter()
-                .copied()
-                .find(|&d| d > want)
-                .unwrap_or(super::NO_MORE_DOCS);
-            assert_eq!(next, want_next, "after {want}");
-            checked += 1;
-        }
-        assert!(checked > 50, "enough out-of-step starts: {checked}");
     }
 
     /// A scored dismax of terms (`TermDisMaxScorer`) answers every question

@@ -228,3 +228,82 @@ fn index_searcher_and_collectors_match_real_lucene() {
     assert!(searcher.explain(&grammar.query("(t w0)"), 9000).is_err());
     assert!(checked >= 9, "one run per query: {checked}");
 }
+
+/// `search(query, 10)`'s lower-bound total for `MUST` + `SHOULD` shapes,
+/// recorded by `fixtures/src/AppendSearcherTotalsManifest.java` over
+/// `GenMixedBooleanScoring`'s index. Past the 1000-hit threshold the count
+/// is every document `ReqOptSumScorer` hands the collector under
+/// `DefaultBulkScorer`, so it is exact only if the scorer skips exactly the
+/// blocks Lucene's does: a `CommonTermsQuery` rewritten to `+rare f1 f2`
+/// once counted lower here than in Lucene, with the same top hits.
+#[test]
+fn searcher_lower_bound_totals_match_real_lucene() {
+    use lucene_search::common_terms::CommonTermsQuery;
+    use lucene_search::query_visitor::Occur;
+    use lucene_search::BooleanQuery;
+
+    let dir = fixture("mixed_boolean_scoring_index");
+    let m = Manifest::load(&format!("{dir}/manifest.properties"));
+    let reader = DirectoryReader::open(&FsDirectory::open(&dir)).expect("open reader");
+    let mut opened = reader.open_segments().expect("open postings");
+    opened.open_points().expect("open points");
+    let mut segments = opened.as_open_segments();
+    for seg in &mut segments {
+        // No query cache, as the generator's `setQueryCache(null)`.
+        seg.cache = None;
+    }
+    let owned: Vec<HashMap<String, FieldNorms<'_>>> = reader
+        .field_norms("body")
+        .into_iter()
+        .map(|n| n.into_iter().map(|n| ("body".to_string(), n)).collect())
+        .collect();
+    let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
+    let searcher = IndexSearcher::new(&segments, &norms).unwrap();
+    let grammar = Grammar {
+        text: "body",
+        range: "n",
+    };
+
+    let count: usize = m.get("searcher_total.count").parse().unwrap();
+    assert!(count >= 7, "shapes recorded: {count}");
+    let mut failures = Vec::new();
+    for i in 0..count {
+        let k = format!("searcher_total.{i}");
+        let text = m.get(&format!("{k}.query"));
+        let q = match text.strip_prefix("ct ") {
+            Some(rest) => {
+                let mut parts = rest.split(' ');
+                let max_freq: f32 = parts.next().unwrap().parse().unwrap();
+                let mut ct = CommonTermsQuery::new(Occur::Should, Occur::Should, max_freq).unwrap();
+                for t in parts {
+                    ct.add("body", t);
+                }
+                let mut b = BooleanQuery::new();
+                b.must.push(ct.into());
+                b
+            }
+            None => grammar.query(text),
+        };
+        let td = searcher.search(&q, 10).unwrap();
+        let got: Vec<(i32, u32)> = td
+            .score_docs
+            .iter()
+            .map(|h| (h.doc, h.score.to_bits()))
+            .collect();
+        let want = scored_hits(m.get(&format!("{k}.hits")));
+        let total: u64 = m.get(&format!("{k}.total")).parse().unwrap();
+        let relation = match td.total_hits.relation {
+            TotalHitsRelation::EqualTo => "eq",
+            TotalHitsRelation::GreaterThanOrEqualTo => "gte",
+        };
+        let want_relation = m.get(&format!("{k}.relation"));
+        if got != want || td.total_hits.value != total || relation != want_relation {
+            failures.push(format!(
+                "{text}: total {} {relation}, Lucene {total} {want_relation}; hits equal: {}",
+                td.total_hits.value,
+                got == want
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

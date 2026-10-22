@@ -70,8 +70,9 @@ pub(crate) enum Bulk<'a> {
     /// `MaxScoreBulkScorer` over clauses that are not all terms (a nested
     /// boolean, a dismax), with `filteredOptionalBulkScorer`'s filter.
     ScorerDisjunction(Vec<ScorerLeg<'a>>, Option<BoxScorer<'a>>, MaxScore),
-    /// `ReqOptSumScorer`'s shape, a batch at a time: the required legs
-    /// (cheapest first), then the optional ones. See `ReqOptBulk`.
+    /// `ReqOptSumScorer`'s shape outside `TOP_SCORES`, a batch at a time:
+    /// the required legs (cheapest first), then the optional ones. See
+    /// `ReqOptBulk`.
     ReqOpt(Vec<TermLeg<'a>>, Vec<TermLeg<'a>>, Box<ReqOptBulk>),
     /// `ReqOptSumScorer` over one required constant-scoring bit set (a
     /// cached clause) and one optional scoring term. See
@@ -1085,11 +1086,15 @@ pub(crate) fn bulk_boolean<'a>(
         ))
     } else if required > 0
         && msm == 0
-        && mode.needs_scores()
+        && mode == Mode::Complete
         && all_legs(&must)
         && all_legs(&filter)
         && all_legs(&should)
     {
+        // Every match, scored: `ReqOptSumScorer` skips nothing, so neither
+        // does the batch loop. Under `TOP_SCORES` the scorer tree runs
+        // instead, because the collector's lower-bound total counts exactly
+        // the documents `ReqOptSumScorer`'s impacts approximation hands it.
         let mut req: Vec<TermLeg<'a>> = std::mem::take(&mut must)
             .into_iter()
             .chain(std::mem::take(&mut filter))
@@ -1100,7 +1105,7 @@ pub(crate) fn bulk_boolean<'a>(
             .into_iter()
             .map(|(c, _)| c.into_leg())
             .collect();
-        let state = Box::new(ReqOptBulk::new(req.len()));
+        let state = Box::new(ReqOptBulk::new());
         Some(Bulk::ReqOpt(req, opt, state))
     } else if required > 0 && msm >= 1 && !should.is_empty() && mode == Mode::TopScores {
         // Our own: Lucene declines a bulk scorer here and runs
