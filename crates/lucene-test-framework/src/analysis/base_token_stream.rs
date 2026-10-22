@@ -18,27 +18,37 @@
 //!   next `tokenStream` throw) has no counterpart: the port's
 //!   [`lucene_analysis::AnalyzerTokenStream`] closes itself when dropped, so
 //!   a stream cannot be left unclosed.
-//! - `checkRandomData` never indexes the random text (Java does, through a
-//!   `RandomIndexWriter`, when `rarely(random)`): that path waits for the
-//!   port's `RandomIndexWriter`. Every draw the indexing path makes (the
-//!   `rarely`, the field type's, one `nextInt(7)` per text) is still made,
-//!   so a seed produces Java's texts either way.
+//! - `checkRandomData`'s indexing pass (Java's, when `rarely(random)`)
+//!   hands the `RandomIndexWriter` each text pre-analyzed by the analyzer
+//!   under test, through the same readers Java's `setReaderValue` gives it:
+//!   the writer's own analyzer is a stand-in carrying the analyzer's
+//!   position and offset gaps (the port's writer takes an owned
+//!   `Arc<Analyzer>`), built off the writer's `Random(seed)`. The
+//!   directory is a plain `FsDirectory` under a temporary directory, checked
+//!   with `CheckIndex` after the writer closes, as Java's mock directory is
+//!   on close.
 //! - `newAttributeFactory` is not ported: the port's attributes are a fixed
 //!   struct with no factory to vary.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use lucene_analysis::attributes::{AttrValue, AttributeSource, CustomAttribute};
 use lucene_analysis::{
     token_stream_to_automaton, AnalysisError, Analyzer, CharReader, StrReader, TokenStream,
     Tokenizer, POS_SEP,
 };
+use lucene_index::document::IndexOptions;
+use lucene_index::document::{Document, Field, FieldToken, FieldTokens, FieldType, TextField};
+use lucene_store::FsDirectory;
 use lucene_util::java_random::JavaRandom;
+use lucene_util::test_support::TempDir;
 
+use super::mock_analyzer::MockAnalyzer;
 use super::mock_char_filter::MockCharFilter;
 use super::mock_reader_wrapper::MockReaderWrapper;
 use super::mock_tokenizer::{self, MockTokenizer};
+use crate::index::random_index_writer::{RandomIndexWriter, WriterEnv};
 use crate::util::automaton_test_util::get_finite_strings_recursive;
 use crate::util::{lucene_test_case, test_util};
 
@@ -508,15 +518,7 @@ pub fn assert_stream_has_number_of_tokens(
     Ok(())
 }
 
-/// `TEST_NIGHTLY` and `RANDOM_MULTIPLIER` of this run, from the
-/// environment (as `LuceneTestCase` reads them).
-pub(crate) fn knobs() -> (bool, i32) {
-    static KNOBS: OnceLock<(bool, i32)> = OnceLock::new();
-    *KNOBS.get_or_init(|| {
-        let t = lucene_test_case::LuceneTestCase::new("knobs");
-        (t.nightly(), t.multiplier())
-    })
-}
+pub(crate) use crate::util::lucene_test_case::knobs;
 
 /// `checkRandomData(random, a, iterations)`: max word length 20, not
 /// simple, graph offsets checked.
@@ -555,7 +557,6 @@ pub fn check_random_data_with(
     let (nightly, multiplier) = knobs();
     // Java indexes the text through a RandomIndexWriter when this holds
     // (`codecOk`: no SimpleText here, the port has no randomized codec).
-    // The indexing waits for that port; its draws are made regardless.
     let codec_ok = i64::from(iterations) * i64::from(max_word_length) < 100_000;
     let index = lucene_test_case::rarely(random, nightly, multiplier) && codec_ok;
     let config = RandomRun {
@@ -564,9 +565,13 @@ pub fn check_random_data_with(
         use_char_filter,
         simple,
         graph_offsets_are_correct,
-        index,
     };
-    let run = || check_random_data_inner(&mut JavaRandom::new(seed), a, &config);
+    let tmp = index.then(|| TempDir::new("bttc"));
+    let dir = tmp.as_ref().map(|t| FsDirectory::open(t.path()));
+    let iw = dir
+        .as_ref()
+        .map(|dir| Mutex::new(random_index_writer(seed, a, dir)));
+    let run = || check_random_data_inner(&mut JavaRandom::new(seed), a, &config, iw.as_ref());
     run()?;
     // now test with multiple threads: each does the EXACT same thing, so
     // this should only fail from another thread on a real thread problem
@@ -584,7 +589,39 @@ pub fn check_random_data_with(
         }
         assert!(!failed, "some thread(s) failed");
         result
-    })
+    })?;
+    if let (Some(iw), Some(dir)) = (iw, dir.as_ref()) {
+        close_and_check(iw, dir);
+    }
+    Ok(())
+}
+
+/// `new RandomIndexWriter(new Random(seed), dir, a)`: `Random(seed)` makes
+/// only the writer's draws, as Java's. The texts arrive pre-analyzed, so the
+/// writer's analyzer contributes only `a`'s gaps on the `dummy` field; it is
+/// a stand-in carrying them (an `Analyzer` is not shared), built without
+/// touching the writer's stream.
+fn random_index_writer<'d>(seed: i64, a: &Analyzer, dir: &'d FsDirectory) -> RandomIndexWriter<'d> {
+    let stand_in = MockAnalyzer::new(&mut JavaRandom::new(seed))
+        .build()
+        .with_position_increment_gap(a.position_increment_gap_for_field("dummy"))
+        .with_offset_gap(a.offset_gap_for_field("dummy"));
+    RandomIndexWriter::with_analyzer(
+        &mut JavaRandom::new(seed),
+        dir,
+        Arc::new(stand_in),
+        WriterEnv::new(seed),
+    )
+    .expect("open the RandomIndexWriter")
+}
+
+/// `iw.close()`, then the `CheckIndex` Java's mock directory runs on close.
+fn close_and_check(iw: Mutex<RandomIndexWriter<'_>>, dir: &FsDirectory) {
+    iw.into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .close()
+        .expect("close the RandomIndexWriter");
+    test_util::check_index(dir).expect("CheckIndex over the indexed random text");
 }
 
 /// Prints Java's "TEST FAIL" line when an assertion unwinds through it.
@@ -612,55 +649,142 @@ struct RandomRun {
     use_char_filter: bool,
     simple: bool,
     graph_offsets_are_correct: bool,
-    /// Java's `iw != null`: it indexes each text. The port does not index
-    /// yet, but makes Java's draws so a seed's texts stay Java's.
-    index: bool,
+}
+
+/// The `dummy` field's type Java draws when it indexes.
+fn random_field_type(random: &mut JavaRandom) -> FieldType {
+    let set = |r: lucene_index::document::Result<()>| r.expect("an unfrozen FieldType");
+    let mut ft = FieldType::copy_of(&TextField::type_not_stored());
+    if random.next_boolean() {
+        set(ft.set_store_term_vectors(true));
+        set(ft.set_store_term_vector_offsets(random.next_boolean()));
+        set(ft.set_store_term_vector_positions(random.next_boolean()));
+        if ft.store_term_vector_positions() {
+            set(ft.set_store_term_vector_payloads(random.next_boolean()));
+        }
+    }
+    if random.next_boolean() {
+        set(ft.set_omit_norms(true));
+    }
+    set(ft.set_index_options(match random.next_int_bounded(4) {
+        0 => IndexOptions::Docs,
+        1 => IndexOptions::DocsAndFreqs,
+        2 => IndexOptions::DocsAndFreqsAndPositions,
+        _ => IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
+    }));
+    ft
+}
+
+/// What `field.setReaderValue(..)` hands the indexing chain: `text` through
+/// the spoon-feeding reader `Random(seed)` picks and the char filter, run
+/// through `a` as `IndexingChain.invertTokenStream` consumes it.
+fn index_tokens(
+    a: &Analyzer,
+    text: &str,
+    seed: i64,
+    use_char_filter: bool,
+    remainder: i32,
+) -> Result<FieldTokens, AnalysisError> {
+    let mut feed = JavaRandom::new(seed);
+    let mut reader: Box<dyn CharReader> = Box::new(StrReader::new(text));
+    if feed.next_int_bounded(30) == 7 {
+        reader = Box::new(MockReaderWrapper::new(Arc::new(Mutex::new(feed)), reader));
+    }
+    let reader = maybe_char_filter(reader, use_char_filter, remainder)?;
+    let mut ts = a.token_stream_from_reader("dummy", reader)?;
+    ts.reset()?;
+    let mut tokens = Vec::new();
+    while ts.increment_token()? {
+        let atts = ts.attributes();
+        tokens.push(FieldToken {
+            term: atts.term_bytes().to_vec(),
+            start_offset: atts.start_offset(),
+            end_offset: atts.end_offset(),
+            position_increment: atts.position_increment(),
+            term_frequency: atts.term_frequency(),
+            payload: atts.payload().map(<[u8]>::to_vec),
+        });
+    }
+    ts.end()?;
+    let end = ts.attributes().clone();
+    ts.close()?;
+    Ok(FieldTokens {
+        tokens,
+        final_position_increment: end.position_increment(),
+        final_offset: end.end_offset(),
+        end_attributes: Some(end),
+    })
+}
+
+/// The document Java's `doc` holds: one `dummy` field per piled-up value.
+fn dummy_document(ft: &FieldType, values: &[FieldTokens]) -> Document {
+    let mut doc = Document::new();
+    for v in values {
+        doc.add(
+            Field::from_token_stream("dummy", v.clone(), ft.clone())
+                .expect("an indexed, tokenized, unstored type"),
+        );
+    }
+    doc
 }
 
 fn check_random_data_inner(
     random: &mut JavaRandom,
     a: &Analyzer,
     c: &RandomRun,
+    iw: Option<&Mutex<RandomIndexWriter<'_>>>,
 ) -> Result<(), AnalysisError> {
-    if c.index {
-        // the indexed FieldType: term vectors (offsets, positions, payloads),
-        // omitNorms, index options
-        if random.next_boolean() {
-            random.next_boolean();
-            if random.next_boolean() {
-                random.next_boolean();
-            }
-        }
-        random.next_boolean();
-        random.next_int_bounded(4);
-    }
+    // Java's `doc`: the field type, and each field's (reader) value; the
+    // last is `currentField`, the one each text sets.
+    let ft = iw.map(|_| random_field_type(random));
+    let mut values = vec![FieldTokens::default()];
     for _ in 0..c.iterations {
         let text = test_util::random_analysis_string(random, c.max_word_length, c.simple);
         let note = FailNote {
             use_char_filter: c.use_char_filter,
             text: &text,
         };
-        if let Err(e) = check_analysis_consistency(
+        let (seed, remainder) = match consistency(
             random,
             a,
             c.use_char_filter,
             &text,
             c.graph_offsets_are_correct,
         ) {
-            eprintln!(
-                "TEST FAIL: useCharFilter={} text='{}'",
-                c.use_char_filter,
-                escape(&text)
-            );
-            return Err(e);
+            Ok(drawn) => drawn,
+            Err(e) => {
+                eprintln!(
+                    "TEST FAIL: useCharFilter={} text='{}'",
+                    c.use_char_filter,
+                    escape(&text)
+                );
+                return Err(e);
+            }
+        };
+        if let (Some(iw), Some(ft)) = (iw, ft.as_ref()) {
+            let last = values.len() - 1;
+            values[last] = index_tokens(a, &text, seed, c.use_char_filter, remainder)?;
+            if random.next_int_bounded(7) == 0 {
+                // pile up a multivalued field
+                values.push(FieldTokens::default());
+            } else {
+                lock_writer(iw)
+                    .add_document(&dummy_document(ft, &values))
+                    .expect("index the random text");
+                // back to 1 field
+                values.truncate(1);
+            }
         }
         drop(note);
-        if c.index {
-            // Java: pile up a multivalued field, or add the document
-            random.next_int_bounded(7);
-        }
     }
     Ok(())
+}
+
+/// The shared writer (Java's `RandomIndexWriter` is synchronized).
+fn lock_writer<'m, 'd>(
+    iw: &'m Mutex<RandomIndexWriter<'d>>,
+) -> std::sync::MutexGuard<'m, RandomIndexWriter<'d>> {
+    iw.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// `escape`: `s` with newlines, quotes, backslashes and non-ASCII UTF-16
@@ -721,6 +845,19 @@ pub fn check_analysis_consistency(
     text: &str,
     graph_offsets_are_correct: bool,
 ) -> Result<(), AnalysisError> {
+    consistency(random, a, use_char_filter, text, graph_offsets_are_correct).map(drop)
+}
+
+/// [`check_analysis_consistency`], answering the final pass's reader seed
+/// and the char filter's remainder: what Java's `field.setReaderValue`
+/// rebuilds the reader from.
+fn consistency(
+    random: &mut JavaRandom,
+    a: &Analyzer,
+    use_char_filter: bool,
+    text: &str,
+    graph_offsets_are_correct: bool,
+) -> Result<(i64, i32), AnalysisError> {
     let remainder = random.next_int_bounded(10);
     let reader = maybe_char_filter(Box::new(StrReader::new(text)), use_char_filter, remainder)?;
     let mut ts = a.token_stream_from_reader("dummy", reader)?;
@@ -821,7 +958,7 @@ pub fn check_analysis_consistency(
     drop(ts);
     // TODO (as Java): what can we do besides testing this does not fail?
     a.normalize("dummy", text)?;
-    Ok(())
+    Ok((seed, remainder))
 }
 
 /// `whitespaceMockTokenizer(input)`: not lowercased.
@@ -1462,17 +1599,22 @@ mod tests {
     fn random_data_makes_the_index_writers_draws() {
         let a = MockAnalyzer::new(&mut JavaRandom::new(4)).build();
         for seed in 0..8 {
-            let run = |index| {
+            let run = |index: bool| {
                 let mut r = JavaRandom::new(seed);
                 let c = RandomRun {
                     iterations: 5,
                     max_word_length: 20,
-                    use_char_filter: false,
+                    use_char_filter: seed % 2 == 1,
                     simple: false,
                     graph_offsets_are_correct: true,
-                    index,
                 };
-                check_random_data_inner(&mut r, &a, &c).unwrap();
+                let tmp = TempDir::new("bttc-draws");
+                let dir = FsDirectory::open(tmp.path());
+                let iw = index.then(|| Mutex::new(random_index_writer(seed, &a, &dir)));
+                check_random_data_inner(&mut r, &a, &c, iw.as_ref()).unwrap();
+                if let Some(iw) = iw {
+                    close_and_check(iw, &dir);
+                }
                 r.next_long()
             };
             let indexed = run(true);

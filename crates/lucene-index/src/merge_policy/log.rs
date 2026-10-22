@@ -10,9 +10,14 @@
 //! Java's `float`/`double` mix in the level computation is kept operation for
 //! operation, since a level on the boundary of `LEVEL_LOG_SPAN` decides which
 //! segments merge.
+//!
+//! A subclass that overrides `size()` with anything else (test-framework's
+//! `AlcoholicMergePolicy`) is [`LogMergePolicy::with_size_fn`].
 
 use std::collections::HashMap;
+use std::fmt;
 use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 
 use super::api::{
     default_size, CompoundFileSettings, Error, MergeContext, MergePolicy, MergeSegment,
@@ -27,6 +32,20 @@ pub enum LogSizeUnit {
     Bytes,
     /// `LogDocMergePolicy.size = sizeDocs`.
     Docs,
+}
+
+/// A `size(info, mergeContext)` override for a [`LogMergePolicy`] subclass
+/// that measures neither bytes nor documents.
+pub type LogSizeFn = Arc<dyn Fn(&MergeSegment, &dyn MergeContext) -> Result<i64> + Send + Sync>;
+
+/// [`LogSizeFn`] with a `Debug` (the closure has none).
+#[derive(Clone)]
+struct SizeOverride(LogSizeFn);
+
+impl fmt::Debug for SizeOverride {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SizeOverride")
+    }
 }
 
 /// `LogMergePolicy`: merges segments of roughly equal size (levels on a log
@@ -47,6 +66,7 @@ pub struct LogMergePolicy {
     pub calibrate_size_by_deletes: bool,
     target_search_concurrency: i32,
     compound: CompoundFileSettings,
+    size_override: Option<SizeOverride>,
 }
 
 impl LogMergePolicy {
@@ -73,12 +93,30 @@ impl LogMergePolicy {
                 Self::DEFAULT_NO_CFS_RATIO,
                 CompoundFileSettings::DEFAULT_MAX_CFS_SEGMENT_SIZE,
             ),
+            size_override: None,
+        }
+    }
+
+    /// `new LogMergePolicy() { protected long size(...) }`: Java's base
+    /// constructor (`minMergeSize` and `maxMergeSize` 0,
+    /// `maxMergeSizeForForcedMerge` `Long.MAX_VALUE`) with `size` as the
+    /// override. [`Self::unit`] reports [`LogSizeUnit::Bytes`], which no
+    /// decision reads once the override is in place.
+    pub fn with_size_fn(size: LogSizeFn) -> Self {
+        LogMergePolicy {
+            size_override: Some(SizeOverride(size)),
+            ..Self::with_unit(LogSizeUnit::Bytes, 0, 0, i64::MAX)
         }
     }
 
     /// Which size this policy measures.
     pub fn unit(&self) -> LogSizeUnit {
         self.unit
+    }
+
+    /// Whether `size` is a [`Self::with_size_fn`] override.
+    pub fn has_size_fn(&self) -> bool {
+        self.size_override.is_some()
     }
 
     /// `getMergeFactor`.
@@ -270,6 +308,11 @@ impl LogMergePolicy {
 
 impl MergePolicy for LogMergePolicy {
     fn size(&self, info: &MergeSegment, ctx: &dyn MergeContext) -> Result<i64> {
+        if let Some(SizeOverride(size)) = &self.size_override {
+            // SENTINEL-OK: `size` is the override closure, not
+            // `MultiTerms::size`; it returns a byte measure.
+            return size(info, ctx);
+        }
         match self.unit {
             LogSizeUnit::Bytes => self.size_bytes(info, ctx),
             LogSizeUnit::Docs => self.size_docs(info, ctx),
@@ -821,5 +864,29 @@ mod tests {
         assert_eq!(ceil_div(8, 2), 4);
         assert_eq!(ceil_div(-7, 2), -3);
         assert_eq!(ceil_div(0, 3), 0);
+    }
+
+    #[test]
+    fn a_size_fn_replaces_the_unit_and_takes_the_base_defaults() {
+        let p =
+            LogMergePolicy::with_size_fn(Arc::new(|info: &MergeSegment, _: &dyn MergeContext| {
+                Ok(info.size_in_bytes * 3)
+            }));
+        assert_eq!((p.min_merge_size, p.max_merge_size), (0, 0));
+        assert_eq!(p.max_merge_size_for_forced_merge, i64::MAX);
+        let ctx = BasicMergeContext::default();
+        let seg = MergeSegment::new("_0", 10, 0, 7);
+        assert_eq!(p.size(&seg, &ctx).unwrap(), 21);
+        assert!(format!("{p:?}").contains("SizeOverride"));
+        assert!(p.has_size_fn() && !LogDocMergePolicy::new().has_size_fn());
+        // The override feeds the decisions: ten equal segments of size 0
+        // under a policy that measures them as such merge as one level.
+        let zero =
+            LogMergePolicy::with_size_fn(Arc::new(|_: &MergeSegment, _: &dyn MergeContext| Ok(0)));
+        let infos = segs(&[(1, 0, 1 << 20); 10]);
+        let spec = zero
+            .find_merges(MergeTrigger::SegmentFlush, &infos, &ctx)
+            .unwrap();
+        assert_eq!(groups(spec).len(), 1);
     }
 }

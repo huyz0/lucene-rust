@@ -42,6 +42,37 @@ pub fn next_int(r: &mut JavaRandom, start: i32, end: i32) -> i32 {
     random_int_between(r, start, end)
 }
 
+/// `random.nextInt(origin, bound)` (`RandomGenerator`'s default, JDK 17+:
+/// `RandomSupport.boundedNextInt`): `origin` inclusive, `bound` exclusive.
+///
+/// # Panics
+///
+/// When `origin >= bound` (Java's `IllegalArgumentException`).
+pub fn next_int_in(r: &mut JavaRandom, origin: i32, bound: i32) -> i32 {
+    assert!(origin < bound, "bound must be greater than origin");
+    let mut v = r.next_int();
+    let n = bound.wrapping_sub(origin);
+    let m = n.wrapping_sub(1);
+    if n & m == 0 {
+        v = (v & m).wrapping_add(origin);
+    } else if n > 0 {
+        let mut u = ((v as u32) >> 1) as i32;
+        loop {
+            v = u % n;
+            if u.wrapping_add(m).wrapping_sub(v) >= 0 {
+                break;
+            }
+            u = ((r.next_int() as u32) >> 1) as i32;
+        }
+        v = v.wrapping_add(origin);
+    } else {
+        while v < origin || v >= bound {
+            v = r.next_int();
+        }
+    }
+    v
+}
+
 /// `TestUtil.nextLong(r, start, end)`: both bounds inclusive.
 ///
 /// A range wider than `Integer.MAX_VALUE` is Java's
@@ -620,6 +651,30 @@ mod tests {
         let d = JavaRandom::new(9).next_double();
         let want = ((1u128 << 40) as f64 * d) as i64;
         assert_eq!(next_long(&mut r, 0, (1 << 40) - 1), want);
+    }
+
+    #[test]
+    fn next_int_in_covers_each_branch_of_bounded_next_int() {
+        // A power-of-two range masks the one draw.
+        let (mut r, mut twin) = (JavaRandom::new(3), JavaRandom::new(3));
+        assert_eq!(next_int_in(&mut r, 10, 18), 10 + (twin.next_int() & 7));
+        // An odd range rejects the over-represented top quarter here.
+        let mut r = JavaRandom::new(4);
+        for _ in 0..200 {
+            let v = next_int_in(&mut r, -5, 0x6000_0000 - 5);
+            assert!((-5..0x6000_0000 - 5).contains(&v));
+        }
+        // A range wider than `int` redraws until the value is inside.
+        for _ in 0..50 {
+            let v = next_int_in(&mut r, -2, i32::MAX);
+            assert!((-2..i32::MAX).contains(&v));
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "bound must be greater than origin")]
+    fn next_int_in_refuses_an_empty_range() {
+        next_int_in(&mut JavaRandom::new(1), 3, 3);
     }
 
     #[test]

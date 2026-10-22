@@ -143,6 +143,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn segment_count_includes_flushed_segments() {
+        let tmp = TempDir::new("segment-count");
+        let dir = FsDirectory::open(&tmp);
+        let mut w = writer(&dir);
+        assert_eq!(w.segment_count(), 0);
+        w.add_document(doc(0)).unwrap();
+        assert!(w.flush_next_buffer().unwrap());
+        w.add_document(doc(1)).unwrap();
+        w.flush().unwrap();
+        assert_eq!(w.segment_count(), 2);
+        w.commit().unwrap();
+        assert_eq!(w.segment_count(), 2);
+        w.force_merge(1).unwrap();
+        assert_eq!(w.segment_count(), 1);
+    }
+
     /// `maybeMerge` merges without committing; the merge becomes durable with
     /// the next commit. The warmer sees the merged segment first.
     #[test]

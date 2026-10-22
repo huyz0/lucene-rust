@@ -10368,6 +10368,15 @@ impl IndexWriter<'_> {
         &self.segment_infos
     }
 
+    /// `IndexWriter.getSegmentCount()`: the segments of the writer's
+    /// in-memory view -- the last commit's and those flushed since.
+    pub fn segment_count(&self) -> usize {
+        self.segment_infos
+            .segments
+            .len()
+            .saturating_add(self.flushed_segments.len())
+    }
+
     /// Number of documents buffered by [`IndexWriter::add_document`] but not
     /// yet written to disk by a [`IndexWriter::commit`] call.
     pub fn pending_doc_count(&self) -> usize {
