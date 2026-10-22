@@ -286,7 +286,7 @@ pub struct SegmentReader {
 #[derive(Debug)]
 struct CodecFiles {
     data: Arc<Input>,
-    /// `.tvx` for term vectors; unused (empty) for vectors.
+    /// `.tvx` for term vectors; the HNSW graph's `.vex` for vectors.
     index: Option<Arc<Input>>,
     meta: Arc<Input>,
     suffix: String,
@@ -721,7 +721,13 @@ impl SegmentReader {
         // (`FieldsReader` opens a reader per suffix the fields name). A
         // `.vec` without `.vemf` is a pre-`Lucene99` vectors format (`.vec` +
         // `.vem` only), read through the backward codecs, not this reader.
+        // `Lucene99HnswVectorsReader` opens its graph's `.vem` through a
+        // `ChecksumIndexInput` (checked with the other metadata below) and
+        // checksums `.vex` in `checkIntegrity`, so both are opened here even
+        // though this reader searches the flat vectors (`.vex` rides as the
+        // pair's `index`).
         let mut vectors = Vec::new();
+        let mut graph_meta = Vec::new();
         for suffix in segment_codec_suffixes(&si.files, compound.as_ref(), &segment_name, ".vemf") {
             let open = |ext: &str| {
                 open_segment_file(
@@ -732,9 +738,10 @@ impl SegmentReader {
                 )
             };
             if let (Some(data), Some(meta)) = (open(".vec")?, open(".vemf")?) {
+                graph_meta.extend(open(".vem")?);
                 vectors.push(Arc::new(CodecFiles {
                     data,
-                    index: None,
+                    index: open(".vex")?,
                     meta,
                     suffix,
                 }));
@@ -783,7 +790,8 @@ impl SegmentReader {
         // Java reads each format's metadata through a `ChecksumIndexInput`
         // when the segment opens and `checkFooter`s it there. This reader
         // parses `.fdm`, `.tvm`, `.vemf` and `.kdm` on first use and never
-        // reads `.psm` (its impact maxima matter to `CheckIndex` only), so
+        // reads `.psm` (its impact maxima matter to `CheckIndex` only) or the
+        // graph's `.vem` (its searches are exhaustive), so
         // their checksums are verified here: otherwise a damaged one would
         // pass both the open and `check_integrity`.
         let psm = segment_codec_suffixes(&si.files, compound.as_ref(), &segment_name, ".psm")
@@ -802,6 +810,7 @@ impl SegmentReader {
             .map(|s| &s.fdm)
             .chain(term_vectors.iter().chain(&vectors).map(|c| &c.meta))
             .chain(psm.iter().flatten())
+            .chain(&graph_meta)
             .chain(kdm_buf.iter())
         {
             let end = meta

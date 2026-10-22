@@ -2141,6 +2141,55 @@ fn a_damaged_points_meta_file_is_refused_at_open() {
     );
 }
 
+/// `Lucene99HnswVectorsReader` reads the graph's `.vem` through a
+/// `ChecksumIndexInput` at open and checksums `.vex` in `checkIntegrity`.
+/// This reader searches the flat vectors and never read either, so
+/// `BaseKnnVectorsFormatTestCase`'s inherited `testCheckIntegrityReadsAllBytes`
+/// found a damaged byte of either going unnoticed.
+#[test]
+fn a_damaged_hnsw_graph_file_is_refused() {
+    let src = format!(
+        "{}/../../fixtures/data/block_join/index",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let tmp = lucene_util::test_support::TempDir::new("reader-hnsw-footer");
+    for entry in std::fs::read_dir(&src).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(entry.path(), tmp.path().join(entry.file_name())).unwrap();
+    }
+    let open = || DirectoryReader::open(&FsDirectory::open(tmp.path()));
+    let first = |r: &DirectoryReader| {
+        r.segment_readers()
+            .iter()
+            .find(|s| s.segment_name == "_0")
+            .unwrap()
+            .check_integrity()
+    };
+    first(&open().unwrap()).unwrap();
+    for (ext, at_open) in [(".vem", true), (".vex", false)] {
+        let path = tmp
+            .path()
+            .join(format!("_0_Lucene99HnswVectorsFormat_0{ext}"));
+        let original = std::fs::read(&path).unwrap();
+        let mut bytes = original.clone();
+        let mid = bytes.len() / 2;
+        bytes[mid] ^= 0x01;
+        std::fs::write(&path, bytes).unwrap();
+        match open() {
+            Err(_) => assert!(at_open, "a damaged byte of {ext} refused at open"),
+            Ok(r) => {
+                assert!(!at_open, "a damaged byte of {ext} opened");
+                assert!(
+                    first(&r).is_err(),
+                    "a damaged byte of {ext} passed check_integrity"
+                );
+            }
+        }
+        std::fs::write(&path, original).unwrap();
+    }
+    first(&open().unwrap()).unwrap();
+}
+
 /// A sparse field's `IndexedDISI` region, as bytes: each `(block, docs)` a
 /// SPARSE block of those low 16 bits, then the `NO_MORE_DOCS` block.
 fn sparse_region(blocks: &[(u16, &[u16])]) -> Vec<u8> {
