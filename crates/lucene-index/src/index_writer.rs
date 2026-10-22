@@ -1387,6 +1387,7 @@ impl IndexingConfig {
     pub(crate) fn write_postings_groups<T: postings_writer::TermSource>(
         &self,
         inputs: &[FieldPostingsInput<'_, T>],
+        segment_fields: &[FieldInfo],
         norms: &[postings_writer::FieldNorms<'_>],
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<PostingsGroups> {
@@ -1399,6 +1400,7 @@ impl IndexingConfig {
         let format_for = |name: &str| self.postings_format_for(name);
         Ok(per_field_postings::write(
             inputs,
+            segment_fields,
             norms,
             &name_of,
             &format_for,
@@ -7898,7 +7900,12 @@ impl IndexWriter<'_> {
                 values,
             })
             .collect();
-        let output = routing.write_postings_groups(&inputs, &norms_for_impacts, segment_id)?;
+        let output = routing.write_postings_groups(
+            &inputs,
+            &routing.fields,
+            &norms_for_impacts,
+            segment_id,
+        )?;
         Ok(Some(output))
     }
 
@@ -8041,6 +8048,7 @@ impl IndexWriter<'_> {
             .collect();
         Ok(Some(routing.write_postings_groups(
             &inputs,
+            &routing.fields,
             &norms_for_impacts,
             segment_id,
         )?))
@@ -8128,7 +8136,7 @@ impl IndexWriter<'_> {
             has_payloads: false,
             terms: &terms,
         }];
-        let output = routing.write_postings_groups(&inputs, &[], segment_id)?;
+        let output = routing.write_postings_groups(&inputs, &routing.fields, &[], segment_id)?;
         Ok(Some(output))
     }
 

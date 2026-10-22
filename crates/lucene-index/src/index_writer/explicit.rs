@@ -646,6 +646,18 @@ impl IndexingConfig {
             })
             .collect::<Result<_>>()?;
         let postings_fields: BTreeSet<i32> = term_lists.iter().map(|(n, ..)| *n).collect();
+        // This segment's FieldInfos before the per-field attributes: the
+        // present fields, with the payloads this segment holds. `.psm` frames
+        // `.pos`/`.pay` from them, and the `.fnm` below is written from them.
+        let segment_fields: Vec<FieldInfo> = self
+            .fields
+            .iter()
+            .filter(|f| present.contains(&f.number))
+            .map(|f| FieldInfo {
+                store_payloads: payload_fields.contains(&f.number),
+                ..f.clone()
+            })
+            .collect();
         let postings_output = if term_lists.is_empty() {
             None
         } else {
@@ -666,7 +678,12 @@ impl IndexingConfig {
                     values,
                 })
                 .collect();
-            Some(self.write_postings_groups(&inputs, &norms_for_impacts, &segment_id)?)
+            Some(self.write_postings_groups(
+                &inputs,
+                &segment_fields,
+                &norms_for_impacts,
+                &segment_id,
+            )?)
         };
 
         // Norms: a column for every present indexed field with norms, dense
@@ -826,14 +843,11 @@ impl IndexingConfig {
 
         // This segment's FieldInfos: the present fields, full schema, and the
         // per-field format attributes for what was written.
-        let fnm_fields: Vec<FieldInfo> = self
-            .fields
+        let fnm_fields: Vec<FieldInfo> = segment_fields
             .iter()
-            .filter(|f| present.contains(&f.number))
             .map(|f| {
                 let mut f = f.clone();
                 f.attributes.retain(|(k, _)| !k.starts_with("PerField"));
-                f.store_payloads = payload_fields.contains(&f.number);
                 let postings_suffix = postings_output.as_ref().and_then(|groups| {
                     groups
                         .iter()

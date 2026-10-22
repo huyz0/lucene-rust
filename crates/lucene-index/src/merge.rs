@@ -2413,6 +2413,7 @@ pub fn merge_segments_mapped(
         };
         let groups = per_field_postings::write(
             &inputs,
+            &merged_fields,
             &norms_for_impacts,
             &name_of,
             &format_for,

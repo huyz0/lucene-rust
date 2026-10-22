@@ -511,6 +511,19 @@ pub struct FieldInfos {
     pub fields: Vec<FieldInfo>,
 }
 
+/// `FieldInfos.hasProx()` over `fields`: some field indexes positions.
+pub fn has_prox(fields: &[FieldInfo]) -> bool {
+    fields.iter().any(|f| f.index_options.subsumes_positions())
+}
+
+/// `FieldInfos.hasPayloads() || hasOffsets()` over `fields`.
+pub fn has_payloads_or_offsets(fields: &[FieldInfo]) -> bool {
+    fields.iter().any(|f| {
+        f.index_options.subsumes_offsets()
+            || (f.store_payloads && f.index_options.subsumes_positions())
+    })
+}
+
 impl FieldInfos {
     /// Port of the `FieldInfos(FieldInfo[])` constructor: every field goes
     /// through [`FieldInfo::checked`] (Java's per-field constructor already

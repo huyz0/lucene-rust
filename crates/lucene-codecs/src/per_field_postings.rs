@@ -36,7 +36,7 @@ use lucene_store::codec_util::ID_LENGTH;
 
 use crate::blocktree::{self, BlockTreeFields};
 use crate::completion::{CompletionFieldWriter, CompletionFilesWriter, TermDoc};
-use crate::field_infos::FieldInfos;
+use crate::field_infos::{FieldInfo, FieldInfos};
 use crate::postings::{DocInput, PayInput, PosInput};
 use crate::postings_writer::{
     self, FieldNorms, FieldPostingsInput, Output, TermSource, WriteOptions,
@@ -193,19 +193,42 @@ pub struct CompletionOutput {
 
 /// `FieldsWriter.write`: groups `inputs` by `format_for(field name)` in
 /// name order and writes each group. `name_of` names a field number.
-/// `.pos`/`.pay` presence is decided over *all* `inputs`, the segment's
-/// postings fields.
+/// `.pos`/`.pay` presence (and so the `.psm` lengths) is decided over the
+/// whole segment, as `Lucene104PostingsWriter`'s constructor decides it from
+/// `state.fieldInfos`: `segment_fields` is the segment's `.fnm`, which may
+/// index positions on a field that got no terms, and must describe every
+/// input as the `.fnm` does (checked in debug builds). An empty list (unit
+/// tests with no `.fnm`) decides from `inputs` instead.
 pub fn write<T: TermSource>(
     inputs: &[FieldPostingsInput<'_, T>],
+    segment_fields: &[FieldInfo],
     norms: &[FieldNorms<'_>],
     name_of: &dyn Fn(i32) -> Option<String>,
     format_for: &dyn Fn(&str) -> Lucene104PostingsFormat,
     segment_id: &[u8; ID_LENGTH],
 ) -> postings_writer::Result<Vec<GroupOutput>> {
-    let has_prox = inputs.iter().any(|i| i.index_options.subsumes_positions());
-    let has_payloads_or_offsets = inputs
-        .iter()
-        .any(|i| i.index_options.subsumes_offsets() || i.has_payloads);
+    debug_assert!(
+        segment_fields.is_empty()
+            || inputs.iter().all(|i| segment_fields.iter().any(|f| {
+                f.number == i.field_number
+                    && f.index_options == i.index_options
+                    && (f.store_payloads && f.index_options.subsumes_positions()) == i.has_payloads
+            })),
+        "every postings input must be described by the segment's FieldInfos"
+    );
+    let (has_prox, has_payloads_or_offsets) = if segment_fields.is_empty() {
+        (
+            inputs.iter().any(|i| i.index_options.subsumes_positions()),
+            inputs
+                .iter()
+                .any(|i| i.index_options.subsumes_offsets() || i.has_payloads),
+        )
+    } else {
+        (
+            crate::field_infos::has_prox(segment_fields),
+            crate::field_infos::has_payloads_or_offsets(segment_fields),
+        )
+    };
     let named: Vec<String> = inputs
         .iter()
         .map(|input| name_of(input.field_number).unwrap_or_else(|| input.field_number.to_string()))
@@ -520,6 +543,51 @@ mod tests {
         );
     }
 
+    /// A field whose `.fnm` indexes positions and offsets but which got no
+    /// terms still frames `.pos`/`.pay` in `.psm`, as Java's
+    /// `state.fieldInfos.hasProx()` does: `Lucene104PostingsReader` reads
+    /// those lengths off the FieldInfos, and without them it found 8 bytes
+    /// where the footer belonged (`checksum status indeterminate`).
+    #[test]
+    fn psm_frames_pos_and_pay_from_the_segment_fields_not_the_inputs() {
+        let docs_only = terms(5, 0);
+        let inputs = [FieldPostingsInput {
+            field_number: 0,
+            index_options: IndexOptions::Docs,
+            doc_count: 2,
+            has_payloads: false,
+            terms: &docs_only,
+        }];
+        let segment_fields = [
+            FieldInfo {
+                index_options: IndexOptions::Docs,
+                ..FieldInfo::new("id", 0)
+            },
+            FieldInfo {
+                index_options: IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
+                ..FieldInfo::new("body", 1)
+            },
+        ];
+        let run = |fields: &[FieldInfo]| {
+            write(
+                &inputs,
+                fields,
+                &[],
+                &|n| Some(["id", "body"][n as usize].to_string()),
+                &|_| Lucene104PostingsFormat::default(),
+                &[3; ID_LENGTH],
+            )
+            .unwrap()
+            .remove(0)
+            .output
+        };
+        let (bare, framed) = (run(&segment_fields[..1]), run(&segment_fields));
+        assert!(bare.pos.is_empty() && bare.pay.is_empty());
+        assert!(!framed.pos.is_empty() && !framed.pay.is_empty());
+        // Two more longs: the `.pos` and the `.pay` lengths.
+        assert_eq!(framed.psm.len(), bare.psm.len() + 16);
+    }
+
     /// Two fields to the small format, one to the default: two groups,
     /// numbered in the name order of their first field, each field listed
     /// once; the second group has `.pos` because the segment has positions.
@@ -557,6 +625,7 @@ mod tests {
         let small = Lucene104PostingsFormat::new(10, 20).unwrap();
         let groups = write(
             &inputs,
+            &[],
             &[],
             &|n| names.get(n as usize).map(|s| s.to_string()),
             &|name| {
@@ -710,6 +779,7 @@ mod tests {
         let groups = write(
             &inputs,
             &[],
+            &[],
             &|n| names.get(n as usize).map(|s| s.to_string()),
             &route,
             &id,
@@ -769,6 +839,7 @@ mod tests {
             }];
             let err = write(
                 &inputs,
+                &[],
                 &[],
                 &|_| Some("suggest".to_string()),
                 &|_| Lucene104PostingsFormat::completion104(),
