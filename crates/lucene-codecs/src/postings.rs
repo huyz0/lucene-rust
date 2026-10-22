@@ -4780,6 +4780,20 @@ impl<'a> LazyDocsCursor<'a> {
         docs: &mut Vec<i32>,
         freqs: &mut Vec<i32>,
     ) -> Result<()> {
+        self.next_postings_at_most(up_to, usize::MAX, docs, freqs)
+    }
+
+    /// [`Self::next_postings`], returning at most `max` documents (`max >=
+    /// 1`): a caller that must stop after a given number of matches -- a
+    /// conjunction filling `Scorer.nextDocsAndScores`' batch of 64 -- takes
+    /// no document from the block it cannot use.
+    pub fn next_postings_at_most(
+        &mut self,
+        up_to: i32,
+        max: usize,
+        docs: &mut Vec<i32>,
+        freqs: &mut Vec<i32>,
+    ) -> Result<()> {
         docs.clear();
         freqs.clear();
         if self.pending.is_some() {
@@ -4803,7 +4817,8 @@ impl<'a> LazyDocsCursor<'a> {
             block.len()
         } else {
             find_next_geq(block, up_to)
-        };
+        }
+        .min(max.max(1));
         docs.extend_from_slice(&block[..n]);
         freqs.extend_from_slice(&self.block_freqs[start..len][..n]);
         // ARITH: `n <= len - start`, so `start + n <= len <= BLOCK_SIZE`.
