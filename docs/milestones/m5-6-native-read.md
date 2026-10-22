@@ -43,14 +43,20 @@ Acceptance:
 
 - [x] Every mixed shape agrees with real Lucene, pruned and exact, doc ids and
       score bits: `tests/mixed_boolean_fixtures.rs` (68 queries since R2, two segments,
-      deletions), and every bulk scorer and `ReqOptBulk` path is reached by
-      one of them (`exec/tests.rs::fixture`).
+      deletions), and every bulk scorer is reached by one of them
+      (`exec/tests.rs::fixture`). (`ReqOptBulk`'s threshold paths are gone
+      since `fix-flat-bool-total-hits`: they counted a lower
+      `GreaterThanOrEqualTo` total than Lucene; `TOP_SCORES` `must` +
+      `should` runs `ReqOptSumScorer` on the tree.)
 - [x] 1,500 random trees, with two-phase leaves, agree with brute force in all
       three score modes (`exec/tests.rs`).
 - [x] Both suites seen to fail on seeded defects.
 - [x] Every mixed shape the M2 REST benchmark measured slower (boosts,
       `must_not`, `must` + `should`, `constant_score`, nesting) at least as
-      fast as Lucene in process, on the merged index — 1.3× to 6.7×.
+      fast as Lucene in process, on the merged index — 1.3× to 6.7×. The
+      `must` + `should` figure was `ReqOptBulk`'s window skipping, since
+      removed; on the tree `ct_split` (`+rare f1 f2`, `bench-micro --bench
+      queries`) reads 1.00×, and q40/q50 have not been re-measured.
 - [x] Every boolean shape in the query file at least 1.0× on both indexes
       (after R2's run below: 1.04–13.7×; q11 0.99× merged with overlapping
       runs). q25 (fuzzy, 0.76× segmented) is a leaf query, R3's -- since

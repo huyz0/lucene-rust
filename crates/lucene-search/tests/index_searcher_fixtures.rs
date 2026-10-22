@@ -278,6 +278,9 @@ fn searcher_lower_bound_totals_match_real_lucene() {
                 for t in parts {
                     ct.add("body", t);
                 }
+                // `search` takes a boolean; a lone `MUST` rewrites to its
+                // clause (`BooleanQuery.rewrite`), so this is Java's bare
+                // `CommonTermsQuery`.
                 let mut b = BooleanQuery::new();
                 b.must.push(ct.into());
                 b
