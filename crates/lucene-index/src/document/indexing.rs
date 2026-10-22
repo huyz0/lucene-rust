@@ -61,6 +61,22 @@ fn doc_error(e: super::Error) -> Error {
     Error::Document(e)
 }
 
+/// `IndexingChain.validateMaxVectorDimension`, run where Java runs it: in
+/// `initializeFieldInfo`, before a vector field's schema is registered.
+/// The limit is `knnVectorsFormat().getMaxDimensions(field)`, which is
+/// `KnnVectorsFormat.DEFAULT_MAX_DIMENSIONS` for every format this writer
+/// can write a field with.
+fn validate_max_vector_dimension(s: &FieldSchema<'_>) -> Result<()> {
+    let max = lucene_codecs::simpletext::codec::DEFAULT_MAX_DIMENSIONS;
+    if s.vector_dimension > max {
+        return Err(doc_error(illegal(format!(
+            "Field [{}] vector's dimensions must be <= [{max}]; got {}",
+            s.name, s.vector_dimension
+        ))));
+    }
+    Ok(())
+}
+
 /// `IndexingChain.FieldSchema`: one field name's structures in one document.
 #[derive(Debug, Clone)]
 struct FieldSchema<'n> {
@@ -974,7 +990,10 @@ impl IndexWriter<'_> {
             .map(|s| {
                 let n = match self.registered_field(s.name) {
                     Some(f) if s.matches(f) => f.number,
-                    _ => self.register_field(s.field_info())?,
+                    _ => {
+                        validate_max_vector_dimension(&s)?;
+                        self.register_field(s.field_info())?
+                    }
                 };
                 Ok((s, n))
             })
