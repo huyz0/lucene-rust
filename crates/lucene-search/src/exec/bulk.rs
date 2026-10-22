@@ -916,9 +916,8 @@ pub(crate) fn bulk_boolean<'a>(
         }
     }
 
-    let child_top_level = q.must.len() + q.should.len() == 1;
     let Some((mut must, mut filter, mut should, must_not)) =
-        build_clauses(ctx, q, boost, mode, child_top_level)?
+        build_clauses(ctx, q, boost, mode, true)?
     else {
         return Ok(None);
     };
