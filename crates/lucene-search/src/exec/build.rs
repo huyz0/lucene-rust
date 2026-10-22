@@ -1078,28 +1078,6 @@ pub(crate) fn compose<'a>(
     Ok(Some(scorer))
 }
 
-/// `BooleanScorerSupplier.getInternal`'s `minShouldMatch > 0` mix: the
-/// required side and the optional side (at least `msm` of it must match),
-/// which Lucene conjoins with a plain `ConjunctionScorer`. `bulk` runs the
-/// pair as a block-max conjunction instead.
-pub(crate) fn req_and_opt<'a>(
-    must: Vec<Child<'a>>,
-    filter: Vec<Child<'a>>,
-    should: Vec<Child<'a>>,
-    msm: usize,
-    mode: Mode,
-) -> Result<(BoxScorer<'a>, BoxScorer<'a>)> {
-    let min_required = must.iter().chain(&filter).map(|s| s.cost()).min();
-    let costs: Vec<i64> = should.iter().map(|s| s.cost()).collect();
-    let lead_cost = min_required
-        .unwrap_or(i64::MAX)
-        .min(cost_with_min_should_match(&costs, msm));
-    let should: Vec<BoxScorer<'a>> = should.into_iter().map(|c| c.into_scorer(mode)).collect();
-    let req = req(filter, must, mode, false)?;
-    let opt = opt(should, msm, mode, false, lead_cost)?;
-    Ok((req, opt))
-}
-
 /// `BooleanScorerSupplier.req`.
 fn req<'a>(
     filter: Vec<Child<'a>>,

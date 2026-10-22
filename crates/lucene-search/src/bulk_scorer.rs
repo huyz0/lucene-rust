@@ -232,6 +232,16 @@ pub(crate) trait BulkLeg {
         live_docs: Option<&FixedBitSet>,
         out: &mut DocScores,
     ) -> Result<()>;
+    /// [`Self::next_docs_and_scores`] in the batches Lucene's scorer of this
+    /// clause fills, where a faster batch would differ.
+    fn next_docs_and_scores_exact(
+        &mut self,
+        up_to: i32,
+        live_docs: Option<&FixedBitSet>,
+        out: &mut DocScores,
+    ) -> Result<()> {
+        self.next_docs_and_scores(up_to, live_docs, out)
+    }
     /// Whether the leg matches exactly `target` (past its current doc),
     /// when it can tell without moving past it: `Some(true)` leaves it on
     /// `target`, `Some(false)` where it was. `None`: use [`Self::advance`].
@@ -336,9 +346,17 @@ pub(crate) struct TermLeg<'a> {
     norms: Option<FieldNormsCursor<'a, 'a>>,
     /// `DocIdSetIterator.cost()`: the term's document frequency.
     pub(crate) cost: i64,
-    /// Upper bound on any document's score, whatever the impacts say --
-    /// `MaxScoreCache.globalMaxScore`.
+    /// Upper bound on any document's score, whatever the impacts say: for
+    /// a BM25 term, its score at the segment's highest possible frequency
+    /// and shortest field -- tighter than `MaxScoreCache.globalMaxScore`, so
+    /// a threshold above it ends the term without walking its blocks.
     global_max: f32,
+    /// `MaxScoreCache.globalMaxScore`, `score(Float.MAX_VALUE, 1)`: what
+    /// [`Self::max_score`] answers past the last impacts level. Kept apart
+    /// from [`Self::global_max`] because a disjunction's windows and
+    /// partitions are computed from it, and so, past the hit threshold, are
+    /// the documents the collector counts.
+    max_score_global: f32,
     /// `MaxScoreCache`: the level-0 and level-1 bounds, keyed by the level's
     /// last doc id (unique per block/span, so a key match means the impacts
     /// are the same ones).
@@ -360,6 +378,10 @@ pub(crate) struct TermLeg<'a> {
     /// branch above stays exactly as it was; the non-BM25 branches consult
     /// this before falling back to [`Self::constant`].
     sim: Option<Box<SimLeg<'a>>>,
+    /// A `ConstantScoreScorer` (built by [`Self::constant`]) rather than a
+    /// `TermScorer`: it scores its documents in batches of 64, not a
+    /// postings block at a time.
+    constant_scorer: bool,
 }
 
 /// A [`TermLeg`]'s scoring state under a general
@@ -411,7 +433,11 @@ pub(crate) fn sim_global_max(scorer: &dyn crate::similarities::SimScorer, max_fr
 /// The largest score `impacts` allow for a term of `weight` -- the same float
 /// expression the document is scored with, so the bound can never land one
 /// ULP under a real score.
-fn bound(norm_inverse_table: Option<&[f32; 256]>, weight: f32, impacts: &[Impact]) -> f32 {
+pub(crate) fn bound(
+    norm_inverse_table: Option<&[f32; 256]>,
+    weight: f32,
+    impacts: &[Impact],
+) -> f32 {
     match norm_inverse_table {
         Some(table) => similarity::max_score_for_impacts_table(impacts, weight, table),
         None => similarity::max_score_for_impacts_unnormed_weighted(impacts, weight),
@@ -435,8 +461,17 @@ impl<'a> TermLeg<'a> {
             None => similarity::UNNORMED_NORM_INVERSE,
         };
         let global_max = similarity::do_score(weight, max_freq, max_norm_inverse);
+        // `scorer.score(Float.MAX_VALUE, 1L)`: the norm `1` decoded through
+        // the field's table, as `BM25Scorer` does whether or not the field
+        // has norms.
+        let norm_one = match &norms {
+            Some(n) => n.norm_inverse_table()[1],
+            None => similarity::UNNORMED_NORM_INVERSE,
+        };
+        let max_score_global = similarity::do_score(weight, f32::MAX, norm_one);
         let has_freqs = cursor.has_freqs();
         let mut leg = Self::new(cursor, weight, true, norms, cost, global_max);
+        leg.max_score_global = max_score_global;
         if !has_freqs {
             // `Lucene104PostingsReader`'s impacts for a field without
             // frequencies: one level up to `NO_MORE_DOCS` holding the impact
@@ -447,6 +482,7 @@ impl<'a> TermLeg<'a> {
             // a full queue could never end the scan.
             let dummy = [Impact { freq: 1, norm: 1 }];
             leg.global_max = leg.global_max.min(leg.impacts_bound(&dummy));
+            leg.max_score_global = leg.global_max;
         }
         leg
     }
@@ -485,6 +521,7 @@ impl<'a> TermLeg<'a> {
     pub(crate) fn constant(cursor: LazyDocsCursor<'a>, cost: i64, score: f32) -> Self {
         let mut leg = Self::new(cursor, 0.0, false, None, cost, score);
         leg.constant = score;
+        leg.constant_scorer = true;
         leg
     }
 
@@ -504,6 +541,7 @@ impl<'a> TermLeg<'a> {
             norms,
             cost,
             global_max,
+            max_score_global: global_max,
             l0_key: i32::MIN,
             l0_max: 0.0,
             l1_key: i32::MIN,
@@ -515,6 +553,7 @@ impl<'a> TermLeg<'a> {
             freqs: Vec::with_capacity(lucene_codecs::postings::BLOCK_SIZE as usize + 1),
             norm_inv: Vec::with_capacity(lucene_codecs::postings::BLOCK_SIZE as usize + 1),
             sim: None,
+            constant_scorer: false,
         }
     }
 
@@ -536,8 +575,15 @@ impl<'a> TermLeg<'a> {
         Ok(self.cursor.next_doc().map_err(blocktree::Error::Postings)?)
     }
 
+    /// `Scorer.advanceShallow`. A leg without impacts -- a filter, whose
+    /// `TermScorer` reads a `SlowImpactsEnum`, or a `ConstantScoreScorer` --
+    /// has a single level that runs to `NO_MORE_DOCS`, so a window bounded
+    /// by it is not cut at a postings block.
     #[inline]
     fn advance_shallow(&mut self, target: i32) -> Result<i32> {
+        if self.is_constant() {
+            return Ok(NO_MORE_DOCS);
+        }
         Ok(self
             .cursor
             .advance_shallow(target)
@@ -557,10 +603,9 @@ impl<'a> TermLeg<'a> {
         )
     }
 
-    /// `MaxScoreCache.getMaxScoreForLevel(0)`; an empty level (the tail block,
-    /// a field without frequencies) is bounded by the global maximum, where
-    /// Lucene uses a dummy `freq = MAX_VALUE` impact that bounds it at
-    /// `weight`.
+    /// `MaxScoreCache.getMaxScoreForLevel(0)`; an empty level (the tail block)
+    /// is Lucene's dummy `(Integer.MAX_VALUE, 1)` impact, bounded at
+    /// `MaxScoreCache.globalMaxScore`.
     fn level0_max(&mut self) -> f32 {
         if !self.scoring {
             return self.other_level_max(0);
@@ -593,7 +638,9 @@ impl<'a> TermLeg<'a> {
             let impacts = self.cursor.level0_impacts();
             (!impacts.is_empty()).then(|| bound(table, self.weight, impacts))
         });
-        self.l0_max = max.map_or(self.global_max, |m| m.min(self.global_max));
+        // No impacts (the tail block): Lucene's dummy `(Integer.MAX_VALUE,
+        // 1)`, which bounds the block at `MaxScoreCache.globalMaxScore`.
+        self.l0_max = max.map_or(self.max_score_global, |m| m.min(self.global_max));
         self.l0_key = key;
     }
 
@@ -664,7 +711,7 @@ impl<'a> TermLeg<'a> {
         if self.has_level1() && up_to <= self.cursor.level1_last_doc_id() {
             return self.level1_max();
         }
-        self.global_max
+        self.max_score_global
     }
 
     /// `MaxScoreCache.getSkipUpTo`: the last doc id of the highest impacts
@@ -699,9 +746,10 @@ impl<'a> TermLeg<'a> {
         if target <= self.up_to {
             return Ok(target);
         }
-        // Nothing anywhere can compete: `MaxScoreCache.globalMaxScore` answers
-        // without walking a single block header.
-        if self.global_max < self.min_competitive {
+        // Nothing anywhere can compete: `MaxScoreCache.globalMaxScore` bounds
+        // every block Lucene's walk would visit (the tail's dummy impact
+        // included), so it answers without walking a single block header.
+        if self.max_score_global < self.min_competitive {
             #[cfg(any(test, feature = "test-support"))]
             crate::test_only_maxscore_block_skip_counter::record_skip();
             return Ok(NO_MORE_DOCS);
@@ -764,6 +812,11 @@ impl<'a> TermLeg<'a> {
             return self.next_doc();
         }
         self.impacts_advance(doc.saturating_add(1))
+    }
+
+    /// A `ConstantScoreScorer`, built by [`Self::constant`].
+    pub(crate) fn is_constant_scorer(&self) -> bool {
+        self.constant_scorer
     }
 
     /// Every score is [`Self::constant`]: scoring reads nothing.
@@ -835,7 +888,52 @@ impl<'a> TermLeg<'a> {
         live_docs: Option<&FixedBitSet>,
         out: &mut DocScores,
     ) -> Result<()> {
+        if self.constant_scorer {
+            return self.constant_docs_and_scores(up_to, usize::MAX, live_docs, out);
+        }
         self.next_docs_and_scores_where(up_to, live_docs, |_| Ok(true), out)
+    }
+
+    /// [`Self::next_docs_and_scores`] over at most `max` of the postings'
+    /// documents (live or not; `max >= 1`), the cursor left on the next.
+    pub(crate) fn next_docs_and_scores_at_most(
+        &mut self,
+        up_to: i32,
+        max: usize,
+        live_docs: Option<&FixedBitSet>,
+        out: &mut DocScores,
+    ) -> Result<()> {
+        if self.constant_scorer {
+            return self.constant_docs_and_scores(up_to, max, live_docs, out);
+        }
+        self.next_docs_and_scores_limited(up_to, max, live_docs, |_| Ok(true), out)
+    }
+
+    /// `ConstantScoreScorer.nextDocsAndScores`: up to 64 live documents
+    /// below `up_to`, stepping the iterator one document at a time, so an
+    /// empty batch means `up_to` was reached. At most `max` documents are
+    /// stepped over, unless none of them was live.
+    fn constant_docs_and_scores(
+        &mut self,
+        up_to: i32,
+        max: usize,
+        live_docs: Option<&FixedBitSet>,
+        out: &mut DocScores,
+    ) -> Result<()> {
+        const BATCH_SIZE: usize = 64;
+        out.docs.clear();
+        let mut doc = self.doc_id();
+        let mut stepped = 0usize;
+        while doc < up_to && out.docs.len() < BATCH_SIZE && (stepped < max || out.docs.is_empty()) {
+            if live_docs.is_none_or(|l| l.get_doc(doc)) {
+                out.docs.push(doc);
+            }
+            doc = self.tree_next_doc()?;
+            stepped = stepped.saturating_add(1);
+        }
+        out.scores.clear();
+        out.scores.resize(out.docs.len(), self.constant);
+        Ok(())
     }
 
     /// [`Self::next_docs_and_scores`] keeping only the documents `accept`
@@ -847,13 +945,24 @@ impl<'a> TermLeg<'a> {
         &mut self,
         up_to: i32,
         live_docs: Option<&FixedBitSet>,
+        accept: impl FnMut(i32) -> Result<bool>,
+        out: &mut DocScores,
+    ) -> Result<()> {
+        self.next_docs_and_scores_limited(up_to, usize::MAX, live_docs, accept, out)
+    }
+
+    fn next_docs_and_scores_limited(
+        &mut self,
+        up_to: i32,
+        max: usize,
+        live_docs: Option<&FixedBitSet>,
         mut accept: impl FnMut(i32) -> Result<bool>,
         out: &mut DocScores,
     ) -> Result<()> {
         loop {
             self.ensure_competitive()?;
             self.cursor
-                .next_postings(up_to, &mut out.docs, &mut self.freqs)
+                .next_postings_at_most(up_to, max, &mut out.docs, &mut self.freqs)
                 .map_err(blocktree::Error::Postings)?;
             if out.docs.is_empty() {
                 break;
@@ -1242,29 +1351,25 @@ pub(crate) struct TwoPhaseRun {
 /// where the term matches too -- `float score = reqScore; score +=
 /// optScore`.
 ///
-/// Two phases, as `ReqOptSumScorer` has. While the collector's threshold is
-/// at most `c`, a document of `req` alone can still compete, so every one is
-/// visited in order and the term advanced to it (Java's approximation skips
-/// no block then: `c + blockMax >= threshold` always holds). Once the
-/// threshold passes `c` (`optIsRequired`), only documents of both can
-/// compete, and they are the term's postings a batch at a time kept where
-/// the bit is set -- [`score_filtered_term_window`] with `c` added -- the
-/// term skipping blocks whose maximum cannot reach `threshold - c`. That
-/// bound is taken a few ulps low, so a block Java's `c + blockMax <
-/// threshold` keeps is never skipped here; what it lets through the
-/// collector's own `score >= threshold` check drops, as in Java.
-#[allow(clippy::too_many_arguments)]
+/// Every match scored (`COMPLETE`): `ReqOptSumScorer`'s approximation is
+/// then the required clause's iterator, so every document of `req` is
+/// visited in order and the term advanced to it. Under `TOP_SCORES` the
+/// scorer tree runs instead (`exec::Bulk::ReqBitsOpt` is not built there):
+/// the collector's lower-bound total counts exactly the documents
+/// `ReqOptSumScorer`'s impacts approximation hands it.
 pub(crate) fn score_req_bits_opt_term<C: ScoringCollector + ?Sized>(
     set: &crate::exec::cache::CachedSet,
     c: f32,
     leg: &mut TermLeg<'_>,
-    buf: &mut DocScores,
-    top_scores: bool,
     live_docs: Option<&FixedBitSet>,
     collector: &mut C,
     min: i32,
     max: i32,
 ) -> Result<i32> {
+    debug_assert!(
+        collector.pruning_threshold().is_none(),
+        "ReqBitsOpt is exhaustive only"
+    );
     // `Bulk::ReqBitsOpt` is only built from `constant_bits()`, which answers
     // for a bit set alone.
     debug_assert!(
@@ -1283,12 +1388,8 @@ pub(crate) fn score_req_bits_opt_term<C: ScoringCollector + ?Sized>(
             _ => NO_MORE_DOCS,
         }
     };
-    let mut min_competitive = min_competitive_score(collector);
     let mut doc = next_bit(min);
-    while !(top_scores && min_competitive > c) {
-        if doc >= max {
-            return Ok(doc);
-        }
+    while doc < max {
         if live_docs.is_none_or(|l| l.get_doc(doc)) {
             let mut score = c;
             if leg.doc_id() < doc {
@@ -1298,43 +1399,12 @@ pub(crate) fn score_req_bits_opt_term<C: ScoringCollector + ?Sized>(
                 score += leg.score()?;
             }
             collector.collect(doc, score);
-            min_competitive = min_competitive_score(collector);
             #[cfg(test)]
-            test_only_req_bits_opt_phases::record(0);
+            test_only_req_bits_opt_docs::record();
         }
         doc = next_bit(doc.saturating_add(1));
     }
-    // `optIsRequired` from `doc` on.
-    let conservative = |min: f32| {
-        // ARITH: finite, non-negative scores; a few ulps of the larger
-        // operand below the exact difference, clamped at zero.
-        #[allow(clippy::arithmetic_side_effects)]
-        let t = (min - c) - (min.abs() + c.abs()) * 4.0 * f32::EPSILON;
-        t.max(0.0)
-    };
-    leg.set_min_competitive_score(conservative(min_competitive));
-    if leg.doc_id() < doc {
-        leg.advance(doc)?;
-    }
-    loop {
-        if leg.doc_id() >= max {
-            return Ok(leg.doc_id());
-        }
-        leg.next_docs_and_scores_where(max, live_docs, |d| Ok(bits.get_doc(d)), buf)?;
-        if buf.docs.is_empty() {
-            return Ok(leg.doc_id());
-        }
-        #[cfg(test)]
-        test_only_req_bits_opt_phases::record(1);
-        for (&d, &s) in buf.docs.iter().zip(&buf.scores) {
-            let score = c + s;
-            if score >= min_competitive {
-                collector.collect(d, score);
-                min_competitive = min_competitive_score(collector);
-            }
-        }
-        leg.set_min_competitive_score(conservative(min_competitive));
-    }
+    Ok(doc)
 }
 
 // ---------------------------------------------------------------------------
@@ -1603,16 +1673,18 @@ fn conjunction_doc_first<L: BulkLeg, C: ScoringCollector + ?Sized>(
 // A dismax of terms, a window at a time.
 // ---------------------------------------------------------------------------
 
-/// A `DisjunctionMaxQuery` over term legs, a window at a time -- our own.
+/// A `DisjunctionMaxQuery` over term legs, a window of
+/// `INNER_WINDOW_SIZE` documents at a time.
 ///
-/// Lucene has `DisjunctionMaxBulkScorer` only for a tie-breaker of 0; any
-/// other runs `DisjunctionMaxScorer` through `DefaultBulkScorer`, a document
-/// at a time, and never skips: the scorer publishes block boundaries but
-/// nothing drives it past a non-competitive block. This one scores each
-/// clause's postings a block at a time into a window (`DisjunctionMaxBulkScorer`'s
-/// shape), and once the collector has a threshold ends each window at the
-/// clauses' first impacts-block boundary and drops it whole when
-/// `DisjunctionMaxScorer.getMaxScore`'s bound over it cannot compete.
+/// With a tie-breaker of 0 under `TOP_SCORES` this is
+/// `DisjunctionMaxBulkScorer`: each clause runs as its own
+/// `BatchScoreBulkScorer` over the window -- skipping its own
+/// non-competitive blocks and keeping only the documents whose score
+/// reaches the threshold as the window began -- and the window's best
+/// scores are collected in doc-id order. Any other tie-breaker (or score
+/// mode) is `DefaultBulkScorer` over `DisjunctionMaxScorer` in Lucene, which
+/// never skips: every match is collected, so is every match here, a window
+/// at a time rather than a document at a time.
 ///
 /// Scores are `DisjunctionMaxScorer.score`'s, bit for bit: per document, the
 /// clauses fold in as `score` folds its top list (`>=` promotes to the max,
@@ -1627,6 +1699,9 @@ pub(crate) struct DisMaxBulk {
     max: Vec<f32>,
     others: Vec<f64>,
     buf: DocScores,
+    /// `topLevelScorable.minCompetitiveScore`: `0` until the collector is
+    /// first handed the scorable, after this leaf's first window.
+    published: f32,
 }
 
 impl DisMaxBulk {
@@ -1637,29 +1712,8 @@ impl DisMaxBulk {
             max: vec![0.0; INNER_WINDOW_SIZE as usize],
             others: vec![0.0; INNER_WINDOW_SIZE as usize],
             buf: DocScores::default(),
+            published: 0.0,
         }
-    }
-
-    /// `DisjunctionMaxScorer.getMaxScore(upTo)`.
-    fn max_score(&self, legs: &mut [TermLeg<'_>], up_to: i32) -> f32 {
-        let mut score_max = 0.0f32;
-        let mut others = 0.0f64;
-        for leg in legs.iter_mut() {
-            if leg.doc_id() <= up_to {
-                let sub = leg.max_score(up_to);
-                if sub >= score_max {
-                    others += f64::from(score_max);
-                    score_max = sub;
-                } else {
-                    others += f64::from(sub);
-                }
-            }
-        }
-        if self.tie == 0.0 {
-            return score_max;
-        }
-        others *= 1.0 + 2.0 * sum_relative_error_bound(legs.len() - 1);
-        (f64::from(score_max) + others * f64::from(self.tie)) as f32
     }
 
     /// `BulkScorer.score(collector, acceptDocs, min, max)`; returns the next
@@ -1672,59 +1726,47 @@ impl DisMaxBulk {
         min: i32,
         max: i32,
     ) -> Result<i32> {
-        let mut min_competitive = min_competitive_score(collector);
-        let mut window_min = min;
+        // Only `DisjunctionMaxBulkScorer` hands its clauses the threshold.
+        let prune = self.tie == 0.0;
         loop {
-            let mut start = NO_MORE_DOCS;
-            for leg in legs.iter_mut() {
-                let mut doc = leg.doc_id();
-                if doc < window_min {
-                    doc = leg.advance(window_min)?;
-                }
-                start = start.min(doc);
+            // `scorers.top().next`: where the earliest clause stands.
+            let next = legs
+                .iter()
+                .map(TermLeg::doc_id)
+                .min()
+                .unwrap_or(NO_MORE_DOCS);
+            if next >= max {
+                return Ok(next);
             }
-            if start >= max {
-                return Ok(start);
-            }
-            let mut window_max = max.min(start.saturating_add(INNER_WINDOW_SIZE));
-            // With a tie-breaker of 0 each clause skips its own blocks (below),
-            // which subsumes the window bound; windows stay whole.
-            if min_competitive > 0.0 && self.tie != 0.0 {
-                // A window per impacts block, so a block that cannot compete
-                // is dropped without decoding it.
-                let mut block_end = NO_MORE_DOCS;
-                for leg in legs.iter_mut() {
-                    let doc = leg.doc_id();
-                    if doc < window_max {
-                        block_end = block_end.min(leg.shallow_advance(doc.max(start))?);
-                    }
-                }
-                window_max = window_max.min(block_end.saturating_add(1));
-                if self.max_score(legs, window_max - 1) < min_competitive {
-                    #[cfg(any(test, feature = "test-support"))]
-                    crate::test_only_maxscore_block_skip_counter::record_skip();
-                    window_min = window_max;
-                    continue;
-                }
-            }
+            let start = next.max(min);
+            let window_max = max.min(start.saturating_add(INNER_WINDOW_SIZE));
+            // `topLevelScorable.minCompetitiveScore` as the window begins:
+            // nothing the clauses collect into the window changes it.
+            let min_competitive = if prune { self.published } else { 0.0 };
             for leg in legs.iter_mut() {
                 if leg.doc_id() >= window_max {
                     continue;
                 }
-                if self.tie == 0.0 && min_competitive > 0.0 {
-                    // `DisjunctionMaxScorer.setMinCompetitiveScore` with a
-                    // tie-breaker of 0: a document scores its best clause,
-                    // so a clause's own non-competitive blocks can go
-                    // unread. A document it skips either scores its max
-                    // from another clause or cannot compete at all.
+                // The clause's `BatchScoreBulkScorer.score(innerCollector,
+                // acceptDocs, windowMin, windowMax)`.
+                if prune {
                     leg.set_min_competitive_score(min_competitive);
                 }
+                if leg.doc_id() < start {
+                    leg.impacts_advance(start)?;
+                }
+                // A `ConstantScoreScorer` runs under `DefaultBulkScorer`,
+                // which keeps every document its iterator returns.
+                let keep_all = leg.is_constant_scorer();
                 loop {
                     leg.next_docs_and_scores(window_max, live_docs, &mut self.buf)?;
                     if self.buf.docs.is_empty() {
                         break;
                     }
                     for (&doc, &sub) in self.buf.docs.iter().zip(&self.buf.scores) {
+                        if !keep_all && sub < min_competitive {
+                            continue;
+                        }
                         let i = (doc - start) as usize;
                         // FBS: `matches` is `FixedBitSet::new(INNER_WINDOW_SIZE)`, and
                         // every doc here is in `start..window_max`, a span of at most
@@ -1749,8 +1791,10 @@ impl DisMaxBulk {
                 collector.collect(start + i as i32, score);
             });
             self.matches.clear_all();
-            min_competitive = min_competitive_score(collector);
-            window_min = window_max;
+            // `collector.setScorer(topLevelScorable)` before the window's
+            // hits publishes the threshold so far, and each hit what it
+            // raises it to.
+            self.published = min_competitive_score(collector);
         }
     }
 }
@@ -1848,9 +1892,12 @@ impl MaxScore {
         ms.docs.clear();
         ms.docs.extend(legs.iter().map(MaxScoreLeg::cur));
         ms.min_competitive = min_competitive_score(collector);
+        let filter_cost = filter.as_deref().map(|f| f.cost());
         let mut outer_min = min;
         'outer: while outer_min < max {
-            let mut outer_max = ms.compute_outer_window_max(legs, outer_min)?.min(max);
+            let mut outer_max = ms
+                .compute_outer_window_max(legs, filter_cost, outer_min)?
+                .min(max);
             loop {
                 ms.update_max_window_scores(legs, outer_min, outer_max)?;
                 if !ms.partition_scorers(legs) {
@@ -1860,7 +1907,7 @@ impl MaxScore {
                     outer_min = outer_max;
                     continue 'outer;
                 }
-                let new_max = ms.compute_outer_window_max(legs, outer_min)?;
+                let new_max = ms.compute_outer_window_max(legs, filter_cost, outer_min)?;
                 if new_max >= outer_max {
                     break;
                 }
@@ -2032,18 +2079,14 @@ impl MaxScore {
         }
     }
 
-    /// `computeOuterWindowMax`.
-    ///
-    /// Deviation: with a filter, Lucene lets only the clauses at least as
-    /// costly as the filter bound the window. Under a dense filter that is
-    /// none of them, so the partition is computed over one huge window;
-    /// bounding by every clause measured faster (`FILTER` + two `SHOULD`s on
-    /// the benchmark corpus: 1.36x Lucene against 0.99x with the rule). The
-    /// windows only decide how often the partition is recomputed, never
-    /// which documents match or what they score.
+    /// `computeOuterWindowMax`: with a filter (of cost `filter_cost`), only
+    /// the clauses at least as costly as the filter bound the window. The
+    /// windows decide when the partition is recomputed, so past the hit
+    /// threshold they decide which documents the collector counts.
     fn compute_outer_window_max<L: MaxScoreLeg>(
         &mut self,
         legs: &mut [L],
+        filter_cost: Option<i64>,
         window_min: i32,
     ) -> Result<i32> {
         let n = legs.len();
@@ -2051,6 +2094,9 @@ impl MaxScore {
         let mut window_max = NO_MORE_DOCS;
         for k in first_window_lead..n {
             let i = self.order[k];
+            if filter_cost.is_some_and(|c| legs[i].leg_cost() < c) {
+                continue;
+            }
             let target = legs[i].cur().max(window_min);
             let up_to = legs[i].advance_shallow(target)?;
             // `upTo + 1` in unsigned arithmetic: `NO_MORE_DOCS + 1` wraps to
@@ -2177,7 +2223,9 @@ impl MaxScore {
         up_to: i32,
     ) -> Result<()> {
         loop {
-            legs[top].next_docs_and_scores(up_to, live_docs, &mut self.single)?;
+            // The batches decide when the threshold below is re-read, so they
+            // are Lucene's: `nextDocsAndScores`' own, whatever the clause.
+            legs[top].next_docs_and_scores_exact(up_to, live_docs, &mut self.single)?;
             if self.single.docs.is_empty() {
                 break;
             }
@@ -2396,27 +2444,21 @@ impl ReqOptBulk {
     }
 }
 
-/// How far [`score_req_bits_opt_term`] got, per thread: `[documents of the
-/// required set collected, batches of the optional term collected once it
-/// became required]`.
+/// Documents [`score_req_bits_opt_term`] collected, per thread.
 #[cfg(test)]
-pub(crate) mod test_only_req_bits_opt_phases {
+pub(crate) mod test_only_req_bits_opt_docs {
     use std::cell::Cell;
 
     thread_local! {
-        static HITS: Cell<[u64; 2]> = const { Cell::new([0; 2]) };
+        static HITS: Cell<u64> = const { Cell::new(0) };
     }
 
-    pub(crate) fn record(phase: usize) {
-        HITS.with(|h| {
-            let mut v = h.get();
-            v[phase] += 1;
-            h.set(v);
-        });
+    pub(crate) fn record() {
+        HITS.with(|h| h.set(h.get() + 1));
     }
 
-    pub(crate) fn take() -> [u64; 2] {
-        HITS.with(|h| h.replace([0; 2]))
+    pub(crate) fn take() -> u64 {
+        HITS.with(|h| h.replace(0))
     }
 }
 

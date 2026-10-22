@@ -198,6 +198,17 @@ impl Scorer for TermDisMaxScorer<'_> {
         Ok(())
     }
 
+    /// `DisjunctionMaxScorer` keeps `Scorer`'s default: 64 matches, a
+    /// document at a time.
+    fn next_docs_and_scores_exact(
+        &mut self,
+        up_to: i32,
+        live_docs: Option<&FixedBitSet>,
+        out: &mut DocScores,
+    ) -> Result<()> {
+        super::docs_and_scores_one_by_one(self, up_to, live_docs, out)
+    }
+
     /// The matches in `[doc, min(up_to, doc + WINDOW))`: every clause's
     /// postings there a block at a time, folded per document.
     fn next_docs_and_scores(

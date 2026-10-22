@@ -52,18 +52,40 @@ impl<T, F: Fn(&T, &T) -> bool> JavaPriorityQueue<T, F> {
     /// `insertWithOverflow(element)`: added while there is room, else it
     /// replaces the least element unless it is less than it.
     pub(crate) fn insert_with_overflow(&mut self, element: T) {
+        self.insert_with_overflow_dropped(element);
+    }
+
+    /// [`Self::insert_with_overflow`] returning what Java's returns: the
+    /// element that did not fit -- the old top it replaced, or `element`
+    /// itself -- or `None` while there was room.
+    pub(crate) fn insert_with_overflow_dropped(&mut self, element: T) -> Option<T> {
         if self.size < self.max_size {
             self.add(element);
-        } else if self.size > 0 {
-            let replaces = match &self.heap[1] {
-                Some(top) => !(self.less_than)(&element, top),
-                None => false,
-            };
-            if replaces {
-                self.heap[1] = Some(element);
-                self.down_heap(1);
-            }
+            return None;
         }
+        if self.size == 0 {
+            return Some(element);
+        }
+        let replaces = match &self.heap[1] {
+            Some(top) => !(self.less_than)(&element, top),
+            None => false,
+        };
+        if !replaces {
+            return Some(element);
+        }
+        let old = self.heap[1].replace(element);
+        self.down_heap(1);
+        old
+    }
+
+    /// The elements in heap order, as Java's `iterator()` walks them.
+    pub(crate) fn into_heap_order(self) -> Vec<T> {
+        self.heap
+            .into_iter()
+            .skip(1)
+            .take(self.size)
+            .flatten()
+            .collect()
     }
 
     /// `top()`.

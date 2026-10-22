@@ -21,6 +21,7 @@ use super::cache::{CacheResult, CachedScorer, CachedSet};
 use super::leaf::{ConstantScorer, TermScorer};
 use super::{BoxScorer, Mode, Scorer, NO_MORE_DOCS};
 use crate::bulk_scorer::TermLeg;
+use crate::java_priority_queue::JavaPriorityQueue;
 use crate::query::{BooleanQuery, Clause, TermQuery};
 use crate::Result;
 
@@ -123,11 +124,11 @@ where
 ///   inputs the union needs.
 /// - Past that, `MultiTermQueryConstantScoreBlendedWrapper` adds a term with
 ///   `docFreq <= 512` (`POSTINGS_PRE_PROCESS_THRESHOLD`) straight into its
-///   `DocIdSetBuilder` and offers the others to a 16-entry priority queue by
-///   `docFreq` (`insertWithOverflow`: on an incoming tie the kept term stays;
-///   among kept ties the latest is evicted, where Java evicts whichever is
-///   the heap top -- only the iterator/bitset split differs, never the
-///   matches), whatever the queue drops going into the set as well.
+///   `DocIdSetBuilder` and offers the others to Lucene's 16-entry priority
+///   queue by `docFreq` (`insertWithOverflow`: an incoming tie replaces the
+///   heap top), whatever the queue drops going into the set as well. The
+///   split never changes a match, but it sets the clause's cost, and so the
+///   order a disjunction partitions its clauses in.
 ///   `MultiTermQueryConstantScoreWrapper` adds every term to the set.
 /// - A term whose `docFreq` is the field's `docCount` matches every document
 ///   the others can, so both wrappers drop the rest and run that term alone
@@ -145,8 +146,6 @@ pub(crate) struct StreamedTerms<'a> {
     inputs: Option<Inputs<'a>>,
     /// Past 16 terms: the union and the kept terms.
     stream: Option<Stream<'a>>,
-    /// Terms seen so far.
-    seen: usize,
     /// The field's `docCount`, when the field is in the segment.
     field_doc_count: Option<i32>,
     /// A term matching every document with the field, once one is pushed.
@@ -163,18 +162,18 @@ type Inputs<'a> = (
     i32,
 );
 
-struct Stream<'a> {
-    union: UnionBuilder<'a>,
-    /// The kept terms as `(docFreq, position, term)`; blended only.
-    top: Vec<(i32, usize, SeekedTerm)>,
-    /// The position in `top` of its lowest-ranked term.
-    lowest: usize,
+/// `highFrequencyTerms`: the kept terms as `(docFreq, term)`, by `docFreq`.
+type KeptTerms<T> = JavaPriorityQueue<(i32, T), fn(&(i32, T), &(i32, T)) -> bool>;
+
+/// `highFrequencyTerms`' `lessThan`: `a.cost() < b.cost()`.
+fn kept_terms<T>() -> KeptTerms<T> {
+    JavaPriorityQueue::new(BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD, |a, b| a.0 < b.0)
 }
 
-/// Whether the term at `(docFreq, position)` `a` ranks above `b`: a higher
-/// `docFreq`, then an earlier position.
-fn ranks_above(a: (i32, usize), b: (i32, usize)) -> bool {
-    a.0 > b.0 || (a.0 == b.0 && a.1 < b.1)
+struct Stream<'a> {
+    union: UnionBuilder<'a>,
+    /// The kept terms; blended only.
+    top: KeptTerms<SeekedTerm>,
 }
 
 impl<'a> StreamedTerms<'a> {
@@ -191,7 +190,6 @@ impl<'a> StreamedTerms<'a> {
             head: Vec::with_capacity(BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD + 1),
             inputs,
             stream: None,
-            seen: 0,
             field_doc_count: ctx.fields.field(field).map(|ft| ft.doc_count),
             dense: None,
         }
@@ -212,8 +210,6 @@ impl<'a> StreamedTerms<'a> {
             self.dense = Some((term, seeked));
             return Ok(());
         }
-        let at = self.seen;
-        self.seen = self.seen.saturating_add(1);
         let Some((ft, doc_in, max_doc)) = self.inputs else {
             self.head.push((term, seeked));
             return Ok(());
@@ -223,18 +219,17 @@ impl<'a> StreamedTerms<'a> {
             if self.head.len() > BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD {
                 // Past the boolean rewrite: replay the head into a stream.
                 let mut stream = Stream {
-                    union: UnionBuilder::new(max_doc),
-                    top: Vec::with_capacity(BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD),
-                    lowest: 0,
+                    union: UnionBuilder::new(max_doc, ft),
+                    top: kept_terms(),
                 };
-                for (i, (_, seeked)) in std::mem::take(&mut self.head).into_iter().enumerate() {
-                    stream.add(self.blended, ft, doc_in, i, seeked)?;
+                for (_, seeked) in std::mem::take(&mut self.head) {
+                    stream.add(self.blended, ft, doc_in, seeked)?;
                 }
                 self.stream = Some(stream);
             }
             return Ok(());
         };
-        stream.add(self.blended, ft, doc_in, at, seeked)
+        stream.add(self.blended, ft, doc_in, seeked)
     }
 
     /// The clause's scorer over every term pushed.
@@ -249,24 +244,25 @@ impl<'a> StreamedTerms<'a> {
             // `new ConstantScoreQuery(new TermQuery(term))`.
             return constant_score_terms(ctx, field, vec![dense], boost, mode);
         }
-        let (Some(mut stream), Some((ft, doc_in, _))) = (self.stream, self.inputs) else {
+        let (Some(stream), Some((ft, doc_in, _))) = (self.stream, self.inputs) else {
             return constant_score_terms(ctx, field, self.head, boost, mode);
         };
-        stream
-            .top
-            .sort_unstable_by(|a, b| match ranks_above((a.0, a.1), (b.0, b.1)) {
-                true => std::cmp::Ordering::Less,
-                false => std::cmp::Ordering::Greater,
-            });
-        let mut legs = Vec::with_capacity(stream.top.len());
-        for (_, _, seeked) in &stream.top {
+        // `DisjunctionDISIApproximation` orders its clauses by cost, the
+        // costliest first (a stable sort over the queue's heap order).
+        let mut top = stream.top.into_heap_order();
+        top.sort_by_key(|t| std::cmp::Reverse(t.0));
+        let mut legs = Vec::with_capacity(top.len());
+        for (_, seeked) in &top {
             let cursor = ft.lazy_postings_for(seeked, doc_in, PostingsFlags::DocsOnly)?;
             legs.push(TermLeg::filter(cursor, seeked.stats.doc_freq as i64));
         }
-        let bits: Option<BoxScorer<'a>> = stream
-            .union
-            .build()
-            .map(|set| Box::new(CachedScorer::new(std::sync::Arc::new(set))) as BoxScorer<'a>);
+        let bits: Option<BoxScorer<'a>> = stream.union.build().map(|(set, cost)| {
+            let scorer = CachedScorer::new(std::sync::Arc::new(set));
+            Box::new(match cost {
+                Some(cost) => scorer.with_cost(cost),
+                None => scorer,
+            }) as BoxScorer<'a>
+        });
         let inner: BoxScorer<'a> = match (bits, legs.is_empty()) {
             (None, true) => return Ok(None),
             // `MultiTermQueryConstantScoreWrapper`: the set alone.
@@ -282,63 +278,27 @@ impl<'a> StreamedTerms<'a> {
 }
 
 impl<'a> Stream<'a> {
-    /// Term `at` (its position in term order): kept as an iterator if it is
-    /// past [`POSTINGS_PRE_PROCESS_THRESHOLD`] and among the 16
-    /// highest-ranked so far (blended), else into the union -- along with
-    /// whichever kept term it displaces.
+    /// The next term: kept as an iterator if it is past
+    /// [`POSTINGS_PRE_PROCESS_THRESHOLD`] and the queue takes it (blended),
+    /// else into the union -- along with whichever kept term it displaces.
     fn add(
         &mut self,
         blended: bool,
         ft: &'a lucene_codecs::blocktree::FieldTerms,
         doc_in: &'a lucene_codecs::postings::DocInput<'a>,
-        at: usize,
         seeked: SeekedTerm,
     ) -> Result<()> {
         if !blended || seeked.stats.doc_freq <= POSTINGS_PRE_PROCESS_THRESHOLD {
             return self.union.add(ft, doc_in, &seeked);
         }
-        let key = (seeked.stats.doc_freq, at);
-        match offer(&mut self.top, &mut self.lowest, key, seeked) {
-            Some(out) => self.union.add(ft, doc_in, &out),
+        match self
+            .top
+            .insert_with_overflow_dropped((seeked.stats.doc_freq, seeked))
+        {
+            Some((_, out)) => self.union.add(ft, doc_in, &out),
             None => Ok(()),
         }
     }
-}
-
-/// `PriorityQueue.insertWithOverflow` over the 16 kept terms, as
-/// `(docFreq, position, term)`: `item` is kept while there is room, or in
-/// place of the lowest-ranked kept term if it ranks above it. Returns
-/// whichever term is not kept -- `item` itself, or the one it displaced.
-/// `lowest` tracks the position of the lowest-ranked kept term.
-fn offer<T>(
-    top: &mut Vec<(i32, usize, T)>,
-    lowest: &mut usize,
-    key: (i32, usize),
-    item: T,
-) -> Option<T> {
-    if top.len() < BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD {
-        top.push((key.0, key.1, item));
-        *lowest = lowest_rank(top);
-        return None;
-    }
-    let low = &top[*lowest];
-    if !ranks_above(key, (low.0, low.1)) {
-        return Some(item);
-    }
-    let evicted = std::mem::replace(&mut top[*lowest], (key.0, key.1, item));
-    *lowest = lowest_rank(top);
-    Some(evicted.2)
-}
-
-/// The position in `top` of its lowest-ranked term.
-fn lowest_rank<T>(top: &[(i32, usize, T)]) -> usize {
-    let mut low = 0;
-    for (i, t) in top.iter().enumerate().skip(1) {
-        if ranks_above((top[low].0, top[low].1), (t.0, t.1)) {
-            low = i;
-        }
-    }
-    low
 }
 
 /// `AbstractMultiTermQueryConstantScoreWrapper` over one segment's expanded
@@ -425,8 +385,19 @@ pub(crate) fn constant_score_terms<'a>(
 /// same documents.
 struct UnionBuilder<'d> {
     max_doc: i32,
-    /// The most ids the sparse list holds before the set upgrades.
+    /// `maxDoc >>> 7`: the most ids the sparse buffers may allocate before
+    /// the set upgrades.
     threshold: usize,
+    /// `totalAllocated`, and the last buffer's capacity and length, as
+    /// `DocIdSetBuilder` grows its buffers: when they would pass
+    /// [`Self::threshold`] decides between a list and a bit set, and so the
+    /// cost the disjunction is ordered by.
+    total_allocated: usize,
+    last_buffer: Option<(usize, usize)>,
+    /// `counter`: every term's `docFreq`, once a bit set.
+    counter: i64,
+    /// `numValuesPerDoc`: the field's `sumDocFreq / docCount`.
+    values_per_doc: f64,
     docs: Vec<i32>,
     words: Option<Vec<u64>>,
     /// One cursor reset for every term ORed into `words`.
@@ -434,11 +405,20 @@ struct UnionBuilder<'d> {
 }
 
 impl<'d> UnionBuilder<'d> {
-    fn new(max_doc: i32) -> Self {
+    fn new(max_doc: i32, field_terms: &lucene_codecs::blocktree::FieldTerms) -> Self {
         let len = usize::try_from(max_doc).unwrap_or(0);
+        let (doc_count, value_count) = (field_terms.doc_count, field_terms.sum_doc_freq);
         Self {
             max_doc,
-            threshold: (len >> 7).max(1),
+            threshold: len >> 7,
+            total_allocated: 0,
+            last_buffer: None,
+            counter: 0,
+            values_per_doc: if doc_count <= 0 || value_count < 0 {
+                1.0
+            } else {
+                value_count as f64 / f64::from(doc_count)
+            },
             docs: Vec::new(),
             words: None,
             reuse: None,
@@ -456,7 +436,8 @@ impl<'d> UnionBuilder<'d> {
         term: &SeekedTerm,
     ) -> Result<()> {
         let df = usize::try_from(term.stats.doc_freq).unwrap_or(usize::MAX);
-        if self.words.is_none() && self.docs.len().saturating_add(df) > self.threshold {
+        if self.words.is_none() && !self.grow_buffers(df) {
+            self.counter = self.docs.len() as i64;
             // A cleared set this thread has spare, or a fresh one: the
             // `DocIdSetBuilder` allocation Lucene makes per query on a warm
             // heap.
@@ -476,6 +457,7 @@ impl<'d> UnionBuilder<'d> {
             self.words = Some(words);
         }
         if let Some(words) = self.words.as_mut() {
+            self.counter = self.counter.saturating_add(i64::from(term.stats.doc_freq));
             return Ok(field_terms.or_docs_into(
                 term,
                 doc_in,
@@ -495,19 +477,60 @@ impl<'d> UnionBuilder<'d> {
         Ok(())
     }
 
-    /// The set, or `None` when no document was added.
-    fn build(self) -> Option<CachedSet> {
+    /// `DocIdSetBuilder.grow(numDocs)` while still on buffers: whether
+    /// `num_docs` more fit under the threshold (`ensureBufferCapacity`), or
+    /// the builder must upgrade to a bit set.
+    fn grow_buffers(&mut self, num_docs: usize) -> bool {
+        if self.total_allocated.saturating_add(num_docs) > self.threshold {
+            return false;
+        }
+        // `additionalCapacity`: what has been allocated so far, at least
+        // `numDocs + 1` and 32, never past the threshold.
+        let additional = |total: usize| {
+            num_docs
+                .saturating_add(1)
+                .max(total)
+                .max(32)
+                .min(self.threshold - total)
+        };
+        let (cap, len) = match self.last_buffer {
+            None => {
+                let add = additional(self.total_allocated);
+                self.total_allocated += add;
+                (add, 0)
+            }
+            Some((cap, len)) if cap - len >= num_docs => (cap, len),
+            Some((cap, len)) if len < cap - (cap >> 3) => {
+                let add = additional(self.total_allocated);
+                self.total_allocated += add;
+                (cap + add, len)
+            }
+            Some(_) => {
+                let add = additional(self.total_allocated);
+                self.total_allocated += add;
+                (add, 0)
+            }
+        };
+        self.last_buffer = Some((cap, len.saturating_add(num_docs)));
+        true
+    }
+
+    /// The set, or `None` when no document was added, with the cost
+    /// `DocIdSetBuilder.build` gives a bit set: `round(counter /
+    /// numValuesPerDoc)`. A list costs its length.
+    fn build(self) -> Option<(CachedSet, Option<i64>)> {
         let len = self.len();
         match self.words {
             Some(words) => {
                 let bits = FixedBitSet::from_words(words, len);
                 let cardinality = bits.cardinality() as i64;
-                (cardinality > 0).then_some(CachedSet::Bits { bits, cardinality })
+                let cost = (self.counter as f64 / self.values_per_doc + 0.5).floor() as i64;
+                (cardinality > 0).then_some((CachedSet::Bits { bits, cardinality }, Some(cost)))
             }
             None => {
                 let mut docs = self.docs;
                 lucene_util::doc_id_sort::sort_dedup_doc_ids(&mut docs);
-                (!docs.is_empty()).then_some(CachedSet::Docs(docs))
+                (!docs.is_empty()).then_some((CachedSet::Docs(docs), None))
             }
         }
     }
@@ -619,33 +642,37 @@ impl Scorer for TermUnion<'_> {
 mod tests {
     use super::*;
 
-    /// The queue keeps exactly the 16 highest `(docFreq desc, position asc)`
-    /// keys of any sequence -- ties included, where the earlier term stays
-    /// -- and hands back every other key once.
+    /// The queue is Lucene's: it keeps 16 terms of the highest `docFreq`s,
+    /// an incoming tie replacing the heap top, and hands back every other
+    /// term once.
     #[test]
-    fn the_queue_keeps_the_sixteen_highest_ranked_terms() {
+    fn the_queue_keeps_sixteen_terms_as_lucene_does() {
         // Few distinct `docFreq`s, so ties are everywhere, in a scrambled order.
         let dfs: Vec<i32> = (0..200u32)
             .map(|i| ((i * 37 + 11) % 23) as i32 * 100)
             .collect();
-        let mut top = Vec::new();
-        let mut lowest = 0;
+        let mut top = kept_terms();
         let mut out = Vec::new();
         for (at, &df) in dfs.iter().enumerate() {
-            out.extend(offer(&mut top, &mut lowest, (df, at), at));
+            out.extend(top.insert_with_overflow_dropped((df, at)).map(|t| t.1));
         }
-        let mut kept: Vec<usize> = top.iter().map(|t| t.2).collect();
-        kept.sort_unstable();
-        let mut want: Vec<usize> = (0..dfs.len()).collect();
-        want.sort_by_key(|&i| (std::cmp::Reverse(dfs[i]), i));
-        want.truncate(BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD);
-        want.sort_unstable();
-        assert_eq!(kept, want);
-        out.sort_unstable();
-        let rest: Vec<usize> = (0..dfs.len()).filter(|i| !want.contains(i)).collect();
-        assert_eq!(out, rest, "every term not kept goes to the union, once");
-        assert!(ranks_above((5, 9), (4, 0)));
-        assert!(ranks_above((5, 1), (5, 2)), "a tie keeps the earlier term");
-        assert!(!ranks_above((5, 2), (5, 2)));
+        let kept = top.into_heap_order();
+        assert_eq!(kept.len(), BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD);
+        let mut by_df: Vec<i32> = dfs.clone();
+        by_df.sort_unstable_by(|a, b| b.cmp(a));
+        let mut kept_dfs: Vec<i32> = kept.iter().map(|t| t.0).collect();
+        kept_dfs.sort_unstable_by(|a, b| b.cmp(a));
+        assert_eq!(kept_dfs, by_df[..BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD]);
+        // An incoming tie replaces the heap top, which goes to the union.
+        let mut tied = kept_terms();
+        for at in 0..BOOLEAN_REWRITE_TERM_COUNT_THRESHOLD {
+            assert!(tied.insert_with_overflow_dropped((7, at)).is_none());
+        }
+        assert_eq!(tied.insert_with_overflow_dropped((7, 99)), Some((7, 0)));
+        assert_eq!(tied.insert_with_overflow_dropped((6, 98)), Some((6, 98)));
+        let mut every: Vec<usize> = out;
+        every.extend(kept.iter().map(|t| t.1));
+        every.sort_unstable();
+        assert_eq!(every, (0..dfs.len()).collect::<Vec<_>>(), "each term once");
     }
 }

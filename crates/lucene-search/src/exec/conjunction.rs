@@ -511,7 +511,11 @@ impl Scorer for LegConjunctionScorer<'_> {
         // `score` sums it: the scoring legs' `f64` sum in leg order.
         let lead_scores = self.is_scoring[0];
         while self.legs[0].doc_id() < up_to && out.docs.len() < super::NEXT_DOCS_BATCH {
-            self.legs[0].next_docs_and_scores(up_to, live_docs, &mut self.buf)?;
+            // No more candidates than the batch has room for matches, so the
+            // batch ends on its 64th match as `Scorer.nextDocsAndScores`'
+            // does, with every later candidate still ahead of the lead.
+            let room = super::NEXT_DOCS_BATCH - out.docs.len();
+            self.legs[0].next_docs_and_scores_at_most(up_to, room, live_docs, &mut self.buf)?;
             if self.buf.docs.is_empty() {
                 // Nothing below `up_to`: back on a match past it.
                 let next = self.legs[0].doc_id();

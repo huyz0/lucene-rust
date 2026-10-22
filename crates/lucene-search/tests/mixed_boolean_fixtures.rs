@@ -10,7 +10,11 @@
 //! competitive score almost at once and every block-max path (`WANDScorer`,
 //! `BlockMaxConjunctionScorer`, `ReqOptSumScorer`'s impacts approximation,
 //! `ImpactsDISI`, `ConstantScoreScorer`'s emptying) prunes; and with an exact
-//! count, which prunes nothing.
+//! count, which prunes nothing. `AppendPrunedTotalsManifest` adds the
+//! pruned run's lower-bound total, and `IndexSearcher.search(query, 10)`'s
+//! total and relation (its default threshold of 1000): the collector counts
+//! every document the scorer tree hands it, so these totals pin down exactly
+//! which documents each block-max path skips, which top hits cannot.
 //!
 //! Hits compare on doc id **and raw `f32` score bits**. The queries are
 //! written in the generator's S-expression grammar, parsed here into
@@ -18,6 +22,7 @@
 
 use std::collections::HashMap;
 
+use lucene_search::collector::TotalHitsRelation;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::field_norms::FieldNorms;
 use lucene_search::multi_segment::search_boolean_query_multi_segment_maxscore_counting;
@@ -211,14 +216,26 @@ fn mixed_boolean_queries_match_real_lucene_pruned_and_exact() {
     let mut failures = Vec::new();
     for i in 0..count {
         let text = m.get(&format!("query.{i}"));
-        let query = root(parse(&mut Tokens::new(text)));
-        for (mode, limit) in [("pruned", threshold), ("exact", u64::MAX)] {
+        // `IndexSearcher.search` rewrites first, and the lower-bound totals
+        // depend on the bulk scorer the rewritten query gets; the free search
+        // functions score the query as given, as the JVM hands it over.
+        let query = root(parse(&mut Tokens::new(text)).rewrite());
+        for (mode, limit) in [
+            ("pruned", threshold),
+            ("searcher", 1000),
+            ("exact", u64::MAX),
+        ] {
             let (hits, total) = search_boolean_query_multi_segment_maxscore_counting(
                 &segments, &query, &norms, top_n, limit,
             )
             .unwrap_or_else(|e| panic!("{text}: {e}"));
             let got: Vec<(i32, u32)> = hits.iter().map(|h| (h.doc_id, h.score.to_bits())).collect();
-            let expected = m.hits(&format!("query.{i}.{mode}"));
+            let expected = match mode {
+                // `search(query, 10)` returns the same top ten as the pruned
+                // run: both collect exactly the ten best.
+                "searcher" => m.hits(&format!("query.{i}.pruned")),
+                _ => m.hits(&format!("query.{i}.{mode}")),
+            };
             if got != expected {
                 failures.push(format!(
                     "{text} [{mode}]\n  got    {:?}\n  Lucene {:?}",
@@ -226,14 +243,27 @@ fn mixed_boolean_queries_match_real_lucene_pruned_and_exact() {
                     decode(&expected)
                 ));
             }
-            if mode == "exact" {
-                let lucene_total: u64 = m.get(&format!("query.{i}.total")).parse().unwrap();
-                if total.value != lucene_total {
-                    failures.push(format!(
-                        "{text}: total {} vs Lucene {lucene_total}",
-                        total.value
-                    ));
-                }
+            let (total_key, relation) = match mode {
+                "pruned" => (
+                    format!("query.{i}.pruned.total"),
+                    m.get(&format!("query.{i}.pruned.relation")),
+                ),
+                "searcher" => (
+                    format!("query.{i}.searcher.total"),
+                    m.get(&format!("query.{i}.searcher.relation")),
+                ),
+                _ => (format!("query.{i}.total"), "eq"),
+            };
+            let lucene_total: u64 = m.get(&total_key).parse().unwrap();
+            let got_relation = match total.relation {
+                TotalHitsRelation::EqualTo => "eq",
+                TotalHitsRelation::GreaterThanOrEqualTo => "gte",
+            };
+            if total.value != lucene_total || got_relation != relation {
+                failures.push(format!(
+                    "{text} [{mode}]: total {} {got_relation} vs Lucene {lucene_total} {relation}",
+                    total.value
+                ));
             }
         }
     }
@@ -241,7 +271,7 @@ fn mixed_boolean_queries_match_real_lucene_pruned_and_exact() {
         failures.is_empty(),
         "{} of {} runs disagree with Lucene:\n{}",
         failures.len(),
-        count * 2,
+        count * 3,
         failures.join("\n")
     );
 }

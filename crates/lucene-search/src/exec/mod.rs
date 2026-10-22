@@ -199,6 +199,18 @@ pub(crate) trait Scorer {
     ) -> Result<()> {
         docs_and_scores_one_by_one(self, up_to, live_docs, out)
     }
+    /// [`Self::next_docs_and_scores`] in the batches Lucene's scorer fills
+    /// (`Scorer.nextDocsAndScores`' 64 live matches, unless Lucene's class
+    /// overrides it), for a caller whose results depend on where batches
+    /// end: `MaxScoreBulkScorer` re-reads the threshold between them.
+    fn next_docs_and_scores_exact(
+        &mut self,
+        up_to: i32,
+        live_docs: Option<&FixedBitSet>,
+        out: &mut crate::bulk_scorer::DocScores,
+    ) -> Result<()> {
+        self.next_docs_and_scores(up_to, live_docs, out)
+    }
     /// Whether [`Self::next_docs_and_scores`] is this scorer's cheaper way
     /// to score: it reads its values a batch of documents at a time, where
     /// the document-at-a-time loop pays a chain of virtual calls per

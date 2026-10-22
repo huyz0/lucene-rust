@@ -75,13 +75,12 @@ pub(crate) enum Bulk<'a> {
     /// `ReqOptBulk`.
     ReqOpt(Vec<TermLeg<'a>>, Vec<TermLeg<'a>>, Box<ReqOptBulk>),
     /// `ReqOptSumScorer` over one required constant-scoring bit set (a
-    /// cached clause) and one optional scoring term. See
+    /// cached clause) and one optional scoring term, outside `TOP_SCORES`. See
     /// [`crate::bulk_scorer::score_req_bits_opt_term`].
     ReqBitsOpt(
         std::sync::Arc<super::cache::CachedSet>,
         f32,
         Box<TermLeg<'a>>,
-        DocScores,
     ),
     /// `ReqOptSumScorer` over one required scorer whose maximum score is
     /// unbounded (so no threshold ever skips a document of it, nor makes
@@ -185,16 +184,8 @@ impl<'a> Bulk<'a> {
                 state.score(legs, filter, live_docs, collector, min, max)
             }
             Bulk::ReqOpt(req, opt, state) => state.score(req, opt, live_docs, collector, min, max),
-            Bulk::ReqBitsOpt(set, c, leg, buf) => crate::bulk_scorer::score_req_bits_opt_term(
-                set,
-                *c,
-                leg,
-                buf,
-                mode == Mode::TopScores,
-                live_docs,
-                collector,
-                min,
-                max,
+            Bulk::ReqBitsOpt(set, c, leg) => crate::bulk_scorer::score_req_bits_opt_term(
+                set, *c, leg, live_docs, collector, min, max,
             ),
             Bulk::ReqScorerOpt(req, leg) => {
                 req_scorer_opt_score(&mut **req, leg, live_docs, collector, min, max)
@@ -955,8 +946,13 @@ pub(crate) fn bulk_boolean<'a>(
                 lone(ctx, c, clause, boost, mode)?
             } else {
                 let (c, _) = filter.pop().expect("one filter clause");
-                // `disableScoring(filter.bulkScorer())`: its matches score 0.
+                // `disableScoring(filter.bulkScorer())`: its matches score 0,
+                // and the collector's threshold never reaches the clause, so
+                // under `TOP_SCORES` every match is counted.
                 Some(match c {
+                    Child::Leg(leg) if mode == Mode::TopScores => Bulk::scorer(Box::new(
+                        ZeroScorer(Child::Leg(leg).into_scorer(Mode::NoScores)),
+                    )),
                     Child::Leg(leg) => Bulk::Term(leg, DocScores::default()),
                     Child::Scorer(s) if mode.needs_scores() => {
                         Bulk::scorer(Box::new(ZeroScorer(s)))
@@ -964,6 +960,13 @@ pub(crate) fn bulk_boolean<'a>(
                     Child::Scorer(s) => Bulk::scorer(s),
                 })
             }
+        } else if mode == Mode::TopScores && must.len() <= 1 {
+            // `requiredBulkScorer`: one scoring clause (or none) under
+            // `TOP_SCORES` gets no bulk scorer of its own, but
+            // `DefaultBulkScorer` over `ConjunctionScorer`, which collects --
+            // and so counts -- every document the scoring clause's impacts
+            // iterator lands on.
+            return bulk_boolean_tree(ctx, q, boost, mode);
         } else if all_legs(&must) && all_legs(&filter) {
             let mut legs: Vec<TermLeg<'a>> = std::mem::take(&mut must)
                 .into_iter()
@@ -1047,7 +1050,7 @@ pub(crate) fn bulk_boolean<'a>(
         && filter.is_empty()
         && should.len() == 1
         && msm == 0
-        && mode.needs_scores()
+        && mode == Mode::Complete
         && should[0].0.is_leg())
     .then(|| match &must[0].0 {
         Child::Scorer(s) => s.constant_bits(),
@@ -1056,16 +1059,13 @@ pub(crate) fn bulk_boolean<'a>(
     .flatten()
     {
         // A required clause the query cache answers as a constant-scored bit
-        // set, and one optional term: `ReqOptSumScorer`, without a virtual
-        // call per document on either side.
+        // set, and one optional term, every match scored: `ReqOptSumScorer`,
+        // without a virtual call per document on either side. Under
+        // `TOP_SCORES` the scorer tree runs, whose impacts approximation
+        // decides which documents the collector counts.
         let (leg, _) = should.pop().expect("one optional clause");
         must.clear();
-        Some(Bulk::ReqBitsOpt(
-            set,
-            c,
-            Box::new(leg.into_leg()),
-            DocScores::default(),
-        ))
+        Some(Bulk::ReqBitsOpt(set, c, Box::new(leg.into_leg())))
     } else if must.len() == 1
         && filter.is_empty()
         && should.len() == 1
@@ -1107,34 +1107,6 @@ pub(crate) fn bulk_boolean<'a>(
             .collect();
         let state = Box::new(ReqOptBulk::new());
         Some(Bulk::ReqOpt(req, opt, state))
-    } else if required > 0 && msm >= 1 && !should.is_empty() && mode == Mode::TopScores {
-        // Our own: Lucene declines a bulk scorer here and runs
-        // `ConjunctionScorer(req, opt)` a document at a time, never skipping.
-        // The same two scorers as a block-max conjunction score identically
-        // (`ConjunctionScorer.score` is the same `f64` sum) and drop blocks
-        // whose summed maxima cannot compete.
-        let (req, opt) = super::build::req_and_opt(
-            std::mem::take(&mut must)
-                .into_iter()
-                .map(|(c, _)| c)
-                .collect(),
-            std::mem::take(&mut filter)
-                .into_iter()
-                .map(|(c, _)| c)
-                .collect(),
-            std::mem::take(&mut should)
-                .into_iter()
-                .map(|(c, _)| c)
-                .collect(),
-            msm,
-            mode,
-        )?;
-        if req.two_phase() || opt.two_phase() {
-            return bulk_boolean_tree(ctx, q, boost, mode);
-        }
-        let mut scorers = vec![req, opt];
-        scorers.sort_by_key(|s| s.cost());
-        Some(Bulk::ScorerConjunction(scorers, ConjunctionBulk::new(2)))
     } else {
         None
     };
@@ -1270,6 +1242,14 @@ impl BulkLeg for ScorerLeg<'_> {
         // which method resolution would pick and which walks the
         // approximation.
         super::Scorer::next_docs_and_scores(&mut *self.s, up_to, live_docs, out)
+    }
+    fn next_docs_and_scores_exact(
+        &mut self,
+        up_to: i32,
+        live_docs: Option<&FixedBitSet>,
+        out: &mut DocScores,
+    ) -> Result<()> {
+        super::Scorer::next_docs_and_scores_exact(&mut *self.s, up_to, live_docs, out)
     }
 }
 

@@ -9,17 +9,20 @@
 //! [`sloppy_phrase::sloppy_phrase_freq`]), so a document scores the same bits
 //! either way.
 //!
-//! Deviations from Lucene, neither of which changes a hit or a score: the
-//! block-max bound is the similarity's global one (`weight` for BM25,
-//! `score(Float.MAX_VALUE, 1)` for any other) rather than
-//! `ExactPhraseMatcher`'s merged impacts, which only means less pruning.
+//! An exact phrase bounds its scores as `ExactPhraseMatcher.mergeImpacts`
+//! does: block boundaries are the rarest term's, and a block's impacts are
+//! every term's merged by frequency ([`merge_impacts`]). Under `TOP_SCORES` its
+//! approximation skips blocks as `ImpactsDISI` does. A sloppy phrase has
+//! Lucene's dummy impacts: one level, up to `NO_MORE_DOCS`, bounded by the
+//! global maximum. Past the hit threshold these bounds decide which
+//! documents a disjunction hands the collector, so they are Lucene's exactly.
 //!
 //! A similarity other than the default BM25 scores through its
 //! [`SimScorer`] (`PhraseScorer.score`'s `simScorer.score(freq, norm)`, the
 //! norm as stored, `1` without one); BM25 keeps its weight and norm-inverse
 //! table.
 
-use lucene_codecs::postings::PositionsCursor;
+use lucene_codecs::postings::{Impact, LazyDocsCursor, PositionsCursor};
 
 use std::sync::Arc;
 
@@ -78,6 +81,114 @@ pub(crate) struct PhraseScorer<'a> {
     offsets: Option<Vec<i32>>,
     /// Scratch for rebasing positions onto slots.
     shifted: Vec<Vec<i32>>,
+    /// `MaxScoreCache.maxScoreCache` / `maxScoreCacheUpTo`, per lead level.
+    max_score_cache: [(i32, f32); 2],
+    /// `ImpactsDISI.upTo`: `NO_MORE_DOCS` until a threshold is set.
+    impacts_up_to: i32,
+    /// Scratch for [`merge_impacts`]: each term's level, copied.
+    term_impacts: Vec<Vec<Impact>>,
+    merged: Vec<Impact>,
+}
+
+/// `Integer.MAX_VALUE, 1L`: the impacts Lucene reports where it knows
+/// nothing (the tail block), which bound a block at the global maximum.
+const DUMMY_IMPACT: Impact = Impact {
+    freq: i32::MAX,
+    norm: 1,
+};
+
+/// `Lucene104PostingsReader`'s `Impacts.numLevels()` for one term.
+fn num_levels(c: &LazyDocsCursor<'_>) -> usize {
+    if !c.has_freqs() || c.level1_last_doc_id() == NO_MORE_DOCS {
+        1
+    } else {
+        2
+    }
+}
+
+/// `Impacts.getDocIdUpTo(level)` for one term.
+fn doc_id_up_to(c: &LazyDocsCursor<'_>, level: usize) -> i32 {
+    if !c.has_freqs() {
+        return NO_MORE_DOCS;
+    }
+    match level {
+        0 => c.level0_last_doc_id(),
+        1 => c.level1_last_doc_id(),
+        _ => NO_MORE_DOCS,
+    }
+}
+
+/// `Impacts.getImpacts(level)` for one term, into `out`.
+fn level_impacts(c: &mut LazyDocsCursor<'_>, level: usize, out: &mut Vec<Impact>) {
+    out.clear();
+    if !c.has_freqs() {
+        out.push(Impact { freq: 1, norm: 1 });
+    } else if level == 0 && c.level0_last_doc_id() != NO_MORE_DOCS {
+        out.extend_from_slice(c.level0_impacts());
+    } else if level == 1 {
+        out.extend_from_slice(c.level1_impacts());
+    } else {
+        out.push(DUMMY_IMPACT);
+    }
+}
+
+/// `ExactPhraseMatcher.mergeImpacts(...).getImpacts().getImpacts(level)`'s
+/// walk: the terms' lists merged by frequency, each step the lowest
+/// frequency still listed with the highest (unsigned) norm seen so far,
+/// stopping as soon as any one list runs out. Lists that are empty or
+/// dummy were left out by the caller; with none left the result is the
+/// dummy impact.
+fn merge_impacts(lists: &[&[Impact]], out: &mut Vec<Impact>) {
+    out.clear();
+    match lists {
+        [] => {
+            out.push(DUMMY_IMPACT);
+            return;
+        }
+        [only] => {
+            out.extend_from_slice(only);
+            return;
+        }
+        _ => {}
+    }
+    // Every list's next index: an iterator's `freq`/`norm` are
+    // `lists[i][at[i] - 1]`, as `SubIterator` reads them after `next()`.
+    let mut at: Vec<usize> = vec![1; lists.len()];
+    let impact_at = |at: &[usize], i: usize| lists[i][at[i] - 1];
+    let mut current_freq = (0..lists.len())
+        .map(|i| impact_at(&at, i).freq)
+        .min()
+        .unwrap_or(i32::MAX);
+    let mut current_norm = (0..lists.len())
+        .map(|i| impact_at(&at, i).norm as u64)
+        .max()
+        .unwrap_or(0);
+    loop {
+        match out.last_mut() {
+            Some(last) if last.norm as u64 == current_norm => last.freq = current_freq,
+            _ => out.push(Impact {
+                freq: current_freq,
+                norm: current_norm as i64,
+            }),
+        }
+        // Each list on the current frequency steps once: frequencies are
+        // strictly increasing within a list, so none is stepped twice.
+        for i in 0..lists.len() {
+            if impact_at(&at, i).freq != current_freq {
+                continue;
+            }
+            if at[i] >= lists[i].len() {
+                // One clause has no documents left at or below this norm.
+                return;
+            }
+            at[i] += 1;
+            current_norm = current_norm.max(impact_at(&at, i).norm as u64);
+        }
+        current_freq = (0..lists.len())
+            .map(|i| impact_at(&at, i).freq)
+            .min()
+            .unwrap_or(i32::MAX);
+    }
 }
 
 impl<'a> PhraseScorer<'a> {
@@ -114,7 +225,154 @@ impl<'a> PhraseScorer<'a> {
             lazy: vec![(0, 0); n],
             offsets: None,
             shifted: Vec::new(),
+            max_score_cache: [(-1, 0.0); 2],
+            impacts_up_to: NO_MORE_DOCS,
+            term_impacts: vec![Vec::new(); n],
+            merged: Vec::new(),
         }
+    }
+
+    /// `MaxScoreCache.globalMaxScore`: BM25's `weight`, or the similarity's.
+    fn global_max(&self) -> f32 {
+        match &self.sim {
+            None => self.weight,
+            Some((_, max)) => *max,
+        }
+    }
+
+    /// The largest score `impacts` allow, as `MaxScoreCache.computeMaxScore`.
+    fn impacts_max(&self, impacts: &[Impact]) -> f32 {
+        match &self.sim {
+            None => crate::bulk_scorer::bound(
+                self.norms
+                    .as_ref()
+                    .map(FieldNormsCursor::norm_inverse_table),
+                self.weight,
+                impacts,
+            ),
+            Some((s, _)) => {
+                let with_norms = self.norms.is_some();
+                impacts.iter().fold(0.0f32, |max, i| {
+                    max.max(s.score(i.freq as f32, if with_norms { i.norm } else { 1 }))
+                })
+            }
+        }
+    }
+
+    /// The merged impacts' `numLevels()`: the lead's, or a sloppy phrase's one.
+    fn merged_num_levels(&self) -> usize {
+        if self.slop == 0 {
+            num_levels(self.terms[0].cursor.docs())
+        } else {
+            1
+        }
+    }
+
+    /// The merged impacts' `getDocIdUpTo(level)`: the lead's.
+    fn merged_doc_id_up_to(&self, level: usize) -> i32 {
+        if self.slop == 0 {
+            doc_id_up_to(self.terms[0].cursor.docs(), level)
+        } else {
+            NO_MORE_DOCS
+        }
+    }
+
+    /// `MaxScoreCache.getMaxScoreForLevel(level)`, cached as Lucene caches it:
+    /// by the level's `docIdUpTo`, not by where the other terms are.
+    fn max_score_for_level(&mut self, level: usize) -> f32 {
+        let level_up_to = self.merged_doc_id_up_to(level);
+        if self.max_score_cache[level].0 < level_up_to {
+            let max = if self.slop == 0 {
+                self.merged_level_max(level_up_to)
+            } else {
+                self.impacts_max(&[DUMMY_IMPACT])
+            };
+            self.max_score_cache[level] = (level_up_to, max);
+        }
+        self.max_score_cache[level].1
+    }
+
+    /// The bound of `mergeImpacts`' `getImpacts(level)`, for the lead level
+    /// ending at `level_up_to`.
+    fn merged_level_max(&mut self, level_up_to: i32) -> f32 {
+        let mut used = 0;
+        for t in self.terms.iter_mut() {
+            let c = t.cursor.docs_mut();
+            // `getLevel`: the term's first level reaching the lead's bound.
+            let Some(term_level) = (0..num_levels(c)).find(|&l| doc_id_up_to(c, l) >= level_up_to)
+            else {
+                continue;
+            };
+            let out = &mut self.term_impacts[used];
+            level_impacts(c, term_level, out);
+            if out.is_empty() || out[0] == DUMMY_IMPACT {
+                continue;
+            }
+            used += 1;
+        }
+        let lists: Vec<&[Impact]> = self.term_impacts[..used]
+            .iter()
+            .map(Vec::as_slice)
+            .collect();
+        let mut merged = std::mem::take(&mut self.merged);
+        merge_impacts(&lists, &mut merged);
+        let max = self.impacts_max(&merged);
+        self.merged = merged;
+        max
+    }
+
+    /// `MaxScoreCache.getSkipUpTo(minScore)`: the last doc of the highest
+    /// level bounded under `min_score`, or `-1` if level 0 is not.
+    //
+    // SENTINEL: `-1` = "the current block may compete", as Lucene's; the one
+    // caller, `advance_target`, tests `skip == -1`.
+    fn skip_up_to(&mut self, min_score: f32) -> i32 {
+        let num_levels = self.merged_num_levels();
+        let mut level = num_levels - 1;
+        for l in 0..num_levels {
+            if self.max_score_for_level(l) >= min_score {
+                if l == 0 {
+                    return -1;
+                }
+                level = l - 1;
+                break;
+            }
+        }
+        self.merged_doc_id_up_to(level)
+    }
+
+    /// `ImpactsDISI.advanceTarget` over the merged impacts: the first doc at
+    /// or after `target` in a block that can still compete.
+    fn advance_target(&mut self, mut target: i32) -> Result<i32> {
+        if target <= self.impacts_up_to {
+            return Ok(target);
+        }
+        self.impacts_up_to = self.advance_shallow(target)?;
+        let mut max = self.max_score_for_level(0);
+        loop {
+            if max >= self.min_competitive {
+                return Ok(target);
+            }
+            if self.impacts_up_to == NO_MORE_DOCS {
+                return Ok(NO_MORE_DOCS);
+            }
+            let skip = self.skip_up_to(self.min_competitive);
+            target = if skip == -1 {
+                self.impacts_up_to.saturating_add(1)
+            } else if skip == NO_MORE_DOCS {
+                return Ok(NO_MORE_DOCS);
+            } else {
+                skip.saturating_add(1)
+            };
+            self.impacts_up_to = self.advance_shallow(target)?;
+            max = self.max_score_for_level(0);
+        }
+    }
+
+    /// Whether the approximation is `ImpactsDISI`: an exact phrase under
+    /// `TOP_SCORES`.
+    fn impacts_approximation(&self) -> bool {
+        self.top_scores && self.slop == 0
     }
 
     /// Explicit per-slot positions (`PhraseQuery.Builder.add(term,
@@ -247,7 +505,13 @@ impl Scorer for PhraseScorer<'_> {
     }
 
     fn next_doc(&mut self) -> Result<i32> {
-        if self.cannot_compete() {
+        if self.impacts_approximation() {
+            // `ImpactsDISI.nextDoc`.
+            let doc = self.doc_id();
+            if doc >= self.impacts_up_to {
+                return self.advance(doc.saturating_add(1));
+            }
+        } else if self.cannot_compete() {
             return self.exhaust();
         }
         let doc = self.terms[0]
@@ -257,8 +521,10 @@ impl Scorer for PhraseScorer<'_> {
         self.do_next(doc)
     }
 
-    fn advance(&mut self, target: i32) -> Result<i32> {
-        if self.cannot_compete() {
+    fn advance(&mut self, mut target: i32) -> Result<i32> {
+        if self.impacts_approximation() {
+            target = self.advance_target(target)?;
+        } else if self.cannot_compete() {
             return self.exhaust();
         }
         let doc = self.terms[0]
@@ -365,20 +631,37 @@ impl Scorer for PhraseScorer<'_> {
         Ok(similarity::do_score(self.weight, self.freq, norm_inverse))
     }
 
-    fn advance_shallow(&mut self, _target: i32) -> Result<i32> {
-        Ok(NO_MORE_DOCS)
+    /// `MaxScoreCache.advanceShallow`: every term moved shallowly, the
+    /// lead's block boundary returned. A sloppy phrase has no boundary.
+    fn advance_shallow(&mut self, target: i32) -> Result<i32> {
+        if self.slop != 0 {
+            return Ok(NO_MORE_DOCS);
+        }
+        for t in self.terms.iter_mut() {
+            t.cursor
+                .docs_mut()
+                .advance_shallow(target)
+                .map_err(|e| crate::Error::from(blocktree::Error::Postings(e)))?;
+        }
+        Ok(self.merged_doc_id_up_to(0))
     }
 
-    /// BM25's `weight - weight / (1 + freq * normInverse)` never reaches
-    /// `weight`; any other similarity's `MaxScoreCache.globalMaxScore`.
-    fn max_score(&mut self, _up_to: i32) -> Result<f32> {
-        Ok(match &self.sim {
-            None => self.weight,
-            Some((_, max)) => *max,
+    /// `MaxScoreCache.getMaxScore(upTo)`: the first lead level covering
+    /// `up_to`, else the global maximum.
+    fn max_score(&mut self, up_to: i32) -> Result<f32> {
+        let level = (0..self.merged_num_levels()).find(|&l| up_to <= self.merged_doc_id_up_to(l));
+        Ok(match level {
+            Some(l) => self.max_score_for_level(l),
+            None => self.global_max(),
         })
     }
 
+    /// `PhraseScorer.setMinCompetitiveScore`, and `ImpactsDISI`'s: a higher
+    /// threshold makes the approximation re-check its block.
     fn set_min_competitive_score(&mut self, min: f32) -> Result<()> {
+        if min > self.min_competitive {
+            self.impacts_up_to = -1;
+        }
         self.min_competitive = min;
         Ok(())
     }
