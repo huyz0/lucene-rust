@@ -957,6 +957,91 @@ fn vector_fields_index_through_the_explicit_path() {
     let _ = VectorValue::Byte(vec![]);
 }
 
+/// `testIllegalDimChangeTwoWriters`, `testIllegalSimilarityFunctionChange`
+/// (a different segment) and `testIllegalDimChangeViaAddIndexesDirectory`:
+/// a field's vector shape cannot change once the index has it, and the
+/// refusal is `FieldInfo.verifySameVectorOptions`' message.
+#[test]
+fn a_changed_vector_schema_is_refused_with_javas_message() {
+    let vector_doc = |dim: usize, sim| {
+        let mut d = Document::new();
+        d.add(KnnFloatVectorField::new("f", vec![0.5; dim], sim).unwrap());
+        d
+    };
+    let tmp = TempDir::new("document-vector-schema");
+    let dir = FsDirectory::open(tmp.path());
+    let mut w = writer(&dir);
+    w.add_fields_document(&vector_doc(4, VectorSimilarityFunction::DotProduct))
+        .unwrap();
+    w.commit().unwrap();
+    let e = w
+        .add_fields_document(&vector_doc(6, VectorSimilarityFunction::DotProduct))
+        .unwrap_err();
+    assert!(
+        e.to_string().contains(
+            "cannot change field \"f\" from vector dimension=4, vector encoding=FLOAT32, vector \
+             similarity function=DOT_PRODUCT to inconsistent vector dimension=6, vector \
+             encoding=FLOAT32, vector similarity function=DOT_PRODUCT"
+        ),
+        "{e}"
+    );
+    let e = w
+        .add_fields_document(&vector_doc(4, VectorSimilarityFunction::Euclidean))
+        .unwrap_err();
+    assert!(
+        e.to_string()
+            .contains("to inconsistent vector dimension=4, vector encoding=FLOAT32, vector similarity function=EUCLIDEAN"),
+        "{e}"
+    );
+    drop(w);
+    // A second writer starts from the index's schema (`getFieldNumberMap`).
+    let mut w = writer(&dir);
+    let e = w
+        .add_fields_document(&vector_doc(2, VectorSimilarityFunction::DotProduct))
+        .unwrap_err();
+    assert!(
+        e.to_string()
+            .contains("from vector dimension=4, vector encoding=FLOAT32"),
+        "{e}"
+    );
+    drop(w);
+    // The same field arriving through `addIndexes`.
+    let tmp2 = TempDir::new("document-vector-schema-2");
+    let dir2 = FsDirectory::open(tmp2.path());
+    let mut w2 = writer(&dir2);
+    w2.add_fields_document(&vector_doc(6, VectorSimilarityFunction::DotProduct))
+        .unwrap();
+    let src: &dyn Directory = &dir;
+    let e = w2.add_indexes_merged(&[src]).unwrap_err();
+    assert!(
+        e.to_string().contains(
+            "cannot change field \"f\" from vector dimension=6, vector encoding=FLOAT32, vector \
+             similarity function=DOT_PRODUCT to inconsistent vector dimension=4"
+        ),
+        "{e}"
+    );
+    let e = w2.add_indexes(&[src]).unwrap_err();
+    assert!(e.to_string().contains("from vector dimension=6"), "{e}");
+    w2.commit().unwrap();
+    drop(w2);
+    // Two sources that disagree on a field the writer lacks: the first
+    // registers it (`globalFieldNumberMap.addOrGet`), the second is refused.
+    let tmp3 = TempDir::new("document-vector-schema-3");
+    let dir3 = FsDirectory::open(tmp3.path());
+    let mut w3 = writer(&dir3);
+    let e = w3.add_indexes(&[src, &dir2]).unwrap_err();
+    assert!(
+        e.to_string().contains(
+            "cannot change field \"f\" from vector dimension=4, vector encoding=FLOAT32, vector \
+             similarity function=DOT_PRODUCT to inconsistent vector dimension=6"
+        ),
+        "{e}"
+    );
+    assert!(w3.segment_infos().segments.is_empty(), "nothing was added");
+    // Either source alone is fine.
+    w3.add_indexes(&[&dir2]).unwrap();
+}
+
 /// `testIllegalDimensionTooLarge`: a vector wider than the format's 1024
 /// dimensions is refused when its field is first registered, before and
 /// after the field exists, and after a flush.

@@ -218,6 +218,118 @@ pub(crate) fn explicit_error(message: impl Into<String>) -> Error {
     Error::Explicit(message.into())
 }
 
+/// `FieldInfos.FieldNumbers.verifySameSchema(fi)`: what `theirs` would
+/// change in the index's field `ours`, as Java's
+/// `IllegalArgumentException` says it -- the first of index options, term
+/// vectors and norms (compared only for an indexed field), doc-values type,
+/// skip index, point shape and vector shape that differs. `None` when the
+/// schemas agree. The soft-deletes and parent roles, which Java checks by
+/// name before this, are the last comparison here.
+pub(crate) fn schema_change(ours: &FieldInfo, theirs: &FieldInfo) -> Option<String> {
+    use lucene_codecs::simpletext::field_infos::{
+        doc_values_type_name, index_options_name, similarity_name, skip_index_type_name,
+        vector_encoding_name,
+    };
+    let name = &ours.name;
+    let change = |what: &str, from: String, to: String| {
+        Some(format!(
+            "cannot change field \"{name}\" from {what}{from} to inconsistent {what}{to}"
+        ))
+    };
+    if ours.index_options != theirs.index_options {
+        return change(
+            "index options=",
+            index_options_name(ours.index_options).to_string(),
+            index_options_name(theirs.index_options).to_string(),
+        );
+    }
+    if ours.index_options != IndexOptions::None {
+        if ours.store_term_vectors != theirs.store_term_vectors {
+            return change(
+                "storeTermVector=",
+                ours.store_term_vectors.to_string(),
+                theirs.store_term_vectors.to_string(),
+            );
+        }
+        if ours.omit_norms != theirs.omit_norms {
+            return change(
+                "omitNorms=",
+                ours.omit_norms.to_string(),
+                theirs.omit_norms.to_string(),
+            );
+        }
+    }
+    if ours.doc_values_type != theirs.doc_values_type {
+        return change(
+            "doc values type=",
+            doc_values_type_name(ours.doc_values_type).to_string(),
+            doc_values_type_name(theirs.doc_values_type).to_string(),
+        );
+    }
+    if ours.doc_values_skip_index_type != theirs.doc_values_skip_index_type {
+        return change(
+            "docValuesSkipIndexType=",
+            skip_index_type_name(ours.doc_values_skip_index_type).to_string(),
+            skip_index_type_name(theirs.doc_values_skip_index_type).to_string(),
+        );
+    }
+    let points = |f: &FieldInfo| {
+        (
+            f.point_dimension_count,
+            f.point_index_dimension_count,
+            f.point_num_bytes,
+        )
+    };
+    if points(ours) != points(theirs) {
+        let shape = |f: &FieldInfo| {
+            format!(
+                "dimensionCount={}, indexDimensionCount={}, numBytes={}",
+                f.point_dimension_count, f.point_index_dimension_count, f.point_num_bytes
+            )
+        };
+        return Some(format!(
+            "cannot change field \"{name}\" from points {} to inconsistent {}",
+            shape(ours),
+            shape(theirs)
+        ));
+    }
+    let vectors = |f: &FieldInfo| {
+        (
+            f.vector_dimension,
+            f.vector_encoding,
+            f.vector_similarity_function,
+        )
+    };
+    if vectors(ours) != vectors(theirs) {
+        let shape = |f: &FieldInfo| {
+            format!(
+                "vector dimension={}, vector encoding={}, vector similarity function={}",
+                f.vector_dimension,
+                vector_encoding_name(f.vector_encoding),
+                similarity_name(f.vector_similarity_function)
+            )
+        };
+        return Some(format!(
+            "cannot change field \"{name}\" from {} to inconsistent {}",
+            shape(ours),
+            shape(theirs)
+        ));
+    }
+    if (ours.soft_deletes_field, ours.parent_field)
+        != (theirs.soft_deletes_field, theirs.parent_field)
+    {
+        return Some(format!(
+            "cannot change field \"{name}\" from soft-deletes field={}, parent field={} to \
+             inconsistent soft-deletes field={}, parent field={}",
+            ours.soft_deletes_field,
+            ours.parent_field,
+            theirs.soft_deletes_field,
+            theirs.parent_field
+        ));
+    }
+    None
+}
+
 /// `IndexingChain.processDocument`'s `IllegalArgumentException` for a
 /// document that carries the parent field itself.
 fn reserved_parent_field(name: &str) -> Error {
@@ -1054,31 +1166,18 @@ impl<'d> IndexWriter<'d> {
                 )));
             }
         }
-        let same_schema = |a: &FieldInfo, b: &FieldInfo| {
-            a.index_options == b.index_options
-                && a.omit_norms == b.omit_norms
-                // `FieldInfo.verifySameStoreTermVectors`.
-                && a.store_term_vectors == b.store_term_vectors
-                && a.doc_values_type == b.doc_values_type
-                // `FieldInfo.verifySameDocValuesSkipIndex`.
-                && a.doc_values_skip_index_type == b.doc_values_skip_index_type
-                && a.point_dimension_count == b.point_dimension_count
-                && a.point_index_dimension_count == b.point_index_dimension_count
-                && a.point_num_bytes == b.point_num_bytes
-                && a.vector_dimension == b.vector_dimension
-                && a.vector_encoding == b.vector_encoding
-                && a.vector_similarity_function == b.vector_similarity_function
-                && a.soft_deletes_field == b.soft_deletes_field
-                && a.parent_field == b.parent_field
-        };
         if let Some(existing) = self.cfg.fields.iter().find(|f| f.name == info.name) {
-            if !same_schema(existing, &info) {
-                return Err(explicit_error(format!(
-                    "field {:?} is registered with a different schema",
-                    info.name
-                )));
+            if let Some(message) = schema_change(existing, &info) {
+                return Err(explicit_error(message));
             }
             return Ok(existing.number);
+        }
+        // `FieldNumbers` starts from every segment of the index the writer
+        // opened, so a field another writer indexed keeps its schema.
+        if let Some(existing) = self.segments_schema(&info.name)? {
+            if let Some(message) = schema_change(&existing, &info) {
+                return Err(explicit_error(message));
+            }
         }
         let number = self
             .cfg
@@ -1093,6 +1192,27 @@ impl<'d> IndexWriter<'d> {
         info.attributes.clear();
         self.cfg_mut().fields.push(info);
         Ok(number)
+    }
+
+    /// The schema the index's segments give the field named `name`, from
+    /// the first segment holding it: what `IndexWriter`'s constructor reads
+    /// into `globalFieldNumberMap` (`getFieldNumberMap`) for a field this
+    /// writer has not registered itself.
+    pub(crate) fn segments_schema(&self, name: &str) -> Result<Option<FieldInfo>> {
+        let segments: Vec<SegmentCommitInfo> = self
+            .segment_infos
+            .segments
+            .iter()
+            .chain(&self.flushed_segments)
+            .cloned()
+            .collect();
+        for sci in &segments {
+            let infos = super::segment_field_infos(self.dir, sci)?;
+            if let Some(f) = infos.fields.into_iter().find(|f| f.name == name) {
+                return Ok(Some(f));
+            }
+        }
+        Ok(None)
     }
 
     /// The registered field named `name`, if any.
