@@ -1465,3 +1465,47 @@ fn term_vector_settings_are_checked_as_java_checks_them() {
         [vector_term("a", 5, None, None, None)]
     );
 }
+
+/// `testDeleteAllVectorDocs`: a merge whose every vector document was
+/// deleted keeps the field, empty, as `KnnVectorsWriter.merge` writes every
+/// vector field of the merged `FieldInfos`.
+#[test]
+fn a_merge_keeps_a_vector_field_whose_every_vector_was_deleted() {
+    let tmp = TempDir::new("document-vector-all-deleted");
+    let dir = FsDirectory::open(tmp.path());
+    let mut w = writer(&dir);
+    let mut d0 = Document::new();
+    d0.add(StringField::new("id", "0", Store::No));
+    d0.add(
+        KnnFloatVectorField::new(
+            "v",
+            vec![2.0, 3.0, 5.0, 6.0],
+            VectorSimilarityFunction::DotProduct,
+        )
+        .unwrap(),
+    );
+    let mut d1 = Document::new();
+    d1.add(StringField::new("id", "1", Store::No));
+    w.add_fields_document(&d0).unwrap();
+    w.add_fields_document(&d1).unwrap();
+    w.commit().unwrap();
+    w.delete_documents_by_term(&[crate::buffered_updates::Term::new("id", "0")])
+        .unwrap();
+    w.commit().unwrap();
+    w.force_merge(1).unwrap();
+    let infos = w.commit().unwrap().clone();
+    assert_eq!(infos.segments.len(), 1);
+    let fields = crate::index_writer::segment_field_infos(&dir, &infos.segments[0]).unwrap();
+    let v = fields
+        .fields
+        .iter()
+        .find(|f| f.name == "v")
+        .expect("field v");
+    assert_eq!(v.vector_dimension, 4);
+    let results = crate::check_index::check_directory(&dir).unwrap();
+    for r in &results {
+        assert!(r.all_passed(), "{:?}", r.failures());
+    }
+    let segment = &results[1].stats;
+    assert_eq!((segment.vector_fields, segment.vector_values), (1, 0));
+}
