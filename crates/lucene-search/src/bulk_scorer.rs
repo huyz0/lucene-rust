@@ -766,11 +766,6 @@ impl<'a> TermLeg<'a> {
         self.impacts_advance(doc.saturating_add(1))
     }
 
-    /// A `FILTER` leg: matches only, every score `0`.
-    pub(crate) fn is_filter(&self) -> bool {
-        !self.scoring && self.constant == 0.0 && self.sim.is_none()
-    }
-
     /// Every score is [`Self::constant`]: scoring reads nothing.
     pub(crate) fn is_constant(&self) -> bool {
         !self.scoring && self.sim.is_none()
@@ -2305,86 +2300,17 @@ impl MaxScore {
     }
 }
 
-/// Filter legs as one iterator: a leapfrog over their documents, the filter
-/// a filtered `MaxScoreBulkScorer` checks candidates against.
-pub(crate) struct FilterConjunction<'x, 'a> {
-    pub(crate) legs: &'x mut [TermLeg<'a>],
-}
-
-impl FilterConjunction<'_, '_> {
-    /// Leapfrog to the first document at or after `doc` every leg matches.
-    ///
-    /// Unlike `ConjunctionDISI.doNext`, a leg already *past* `doc` counts as
-    /// a mismatch rather than a match: these legs come from the batch path,
-    /// which advances the non-lead legs to candidate documents on its own, so
-    /// one can sit ahead of the lead when this takes over.
-    fn do_next(&mut self, mut doc: i32) -> Result<i32> {
-        'head: loop {
-            if doc == NO_MORE_DOCS {
-                return Ok(doc);
-            }
-            for i in 1..self.legs.len() {
-                let mut other = self.legs[i].doc_id();
-                if other < doc {
-                    other = self.legs[i].advance(doc)?;
-                }
-                if other != doc {
-                    doc = self.legs[0].advance(other)?;
-                    continue 'head;
-                }
-            }
-            debug_assert!(
-                self.legs.iter().all(|l| l.doc_id() == doc),
-                "every filter leg must be on the document it reports"
-            );
-            return Ok(doc);
-        }
-    }
-
-    /// Positions the conjunction on its first match at or after `target`.
-    pub(crate) fn align(&mut self, target: i32) -> Result<i32> {
-        let lead = self.legs[0].doc_id();
-        let doc = if lead < target {
-            self.legs[0].advance(target)?
-        } else {
-            lead
-        };
-        self.do_next(doc)
-    }
-}
-
-impl crate::exec::Scorer for FilterConjunction<'_, '_> {
-    fn doc_id(&self) -> i32 {
-        self.legs[0].doc_id()
-    }
-    fn next_doc(&mut self) -> Result<i32> {
-        let doc = self.legs[0].next_doc()?;
-        self.do_next(doc)
-    }
-    fn advance(&mut self, target: i32) -> Result<i32> {
-        let doc = self.legs[0].advance(target)?;
-        self.do_next(doc)
-    }
-    fn cost(&self) -> i64 {
-        self.legs[0].cost
-    }
-    fn score(&mut self) -> Result<f32> {
-        Ok(0.0)
-    }
-    fn max_score(&mut self, _up_to: i32) -> Result<f32> {
-        Ok(0.0)
-    }
-}
-
 // ---------------------------------------------------------------------------
-// Required plus optional clauses: `ReqOptSumScorer`, a batch at a time.
+// Required plus optional clauses, every match: `ReqOptSumScorer`, a batch at
+// a time.
 // ---------------------------------------------------------------------------
 
-/// `ReqOptSumScorer` over term legs, as a bulk scorer. Lucene has none for
-/// this shape -- `BooleanScorerSupplier.booleanScorer()` declines `MUST` +
-/// `SHOULD` and `DefaultBulkScorer` drives `ReqOptSumScorer` a document at a
-/// time -- so this is the conjunction bulk scorer's batch loop with the
-/// optional clauses applied the way `ReqOptSumScorer.score` applies them:
+/// `ReqOptSumScorer` over term legs outside `TOP_SCORES`, as a bulk scorer.
+/// Lucene has none for this shape -- `BooleanScorerSupplier.booleanScorer()`
+/// declines `MUST` + `SHOULD` and `DefaultBulkScorer` drives
+/// `ReqOptSumScorer` a document at a time -- so this is the conjunction bulk
+/// scorer's batch loop with the optional clauses applied the way
+/// `ReqOptSumScorer.score` applies them:
 ///
 /// - the required legs' scores summed in `double` and narrowed
 ///   (`ConjunctionScorer.score`; a `FILTER` leg contributes `0`),
@@ -2392,46 +2318,25 @@ impl crate::exec::Scorer for FilterConjunction<'_, '_> {
 ///   (`DisjunctionSumScorer.score`),
 /// - the two added in `float` (`score += optScorer.score()`).
 ///
-/// Each window is the lead's block. A window whose required and optional
-/// block maxima cannot reach the threshold is skipped outright
-/// (`ReqOptSumScorer`'s impacts approximation), and a batch document whose
-/// required score plus the optional maxima cannot reach it is dropped before
-/// the optional legs are advanced to it (`optIsRequired`, per document). Both
-/// bounds are the score's own arithmetic over the maxima, so neither can drop
-/// a document that would have entered the results.
+/// Outside `TOP_SCORES` `ReqOptSumScorer` iterates its required clause and
+/// skips nothing, so neither does this. Under `TOP_SCORES` the dispatch runs
+/// the scorer tree instead: the lower-bound total a collector reports is the
+/// number of documents `ReqOptSumScorer`'s impacts approximation hands it,
+/// and only that iteration reproduces the count.
 pub(crate) struct ReqOptBulk {
     single: DocScores,
     acc: DocScoreAcc,
-    /// `req_sums[i]`: the block maxima of required legs `i..`, summed.
-    req_sums: Vec<f64>,
     opt_sums: Vec<f64>,
     opt_hit: Vec<bool>,
-    /// The optional-led path's window: which documents an optional leg
-    /// matched, and their summed optional scores.
-    window_matches: FixedBitSet,
-    window_scores: Vec<f64>,
-    req_scores: Vec<f64>,
-    /// Once a threshold exists over filter-only required legs: the filtered
-    /// `MaxScoreBulkScorer` the rest of the segment runs on.
-    filtered: Option<MaxScore>,
-    /// The required legs' summed global maxima, once computed: a bound on
-    /// the required score anywhere in the segment.
-    req_global: Option<f32>,
 }
 
 impl ReqOptBulk {
-    pub(crate) fn new(num_required: usize) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             single: DocScores::default(),
             acc: DocScoreAcc::default(),
-            req_sums: vec![0.0; num_required + 1],
             opt_sums: Vec::new(),
             opt_hit: Vec::new(),
-            window_matches: FixedBitSet::new(INNER_WINDOW_SIZE as usize),
-            window_scores: vec![0.0; INNER_WINDOW_SIZE as usize],
-            req_scores: Vec::new(),
-            filtered: None,
-            req_global: None,
         }
     }
 
@@ -2447,289 +2352,47 @@ impl ReqOptBulk {
         min: i32,
         max: i32,
     ) -> Result<i32> {
-        let nr = req.len();
-        let n = nr + opt.len();
-        let filters_only = req.iter().all(TermLeg::is_filter);
-        let mut window_min = req[0].doc_id().max(min);
-        while window_min < max {
-            let mut min_competitive = min_competitive_score(collector);
-            // Every required leg is a filter, so a document matching none of
-            // the optional legs scores 0. Once the threshold is above 0 it
-            // cannot compete, and the rest is a filtered disjunction:
-            // `MaxScoreBulkScorer` with the filters as its filter, which never
-            // iterates the optional legs the threshold makes non-essential.
-            if filters_only && min_competitive > 0.0 && opt.len() > 1 {
-                let state = self.filtered.get_or_insert_with(|| MaxScore::new(opt));
-                #[cfg(test)]
-                test_only_req_opt_paths::record(3);
-                let mut filter = FilterConjunction { legs: req };
-                filter.align(window_min)?;
-                return state.score(
-                    opt,
-                    Some(&mut filter),
-                    live_docs,
-                    collector,
-                    window_min,
-                    max,
-                );
+        debug_assert!(
+            collector.pruning_threshold().is_none(),
+            "ReqOptBulk is never built for TOP_SCORES"
+        );
+        if req[0].doc_id() < min {
+            req[0].advance(min)?;
+        }
+        loop {
+            req[0].next_docs_and_scores(max, live_docs, &mut self.single)?;
+            if self.single.docs.is_empty() {
+                return Ok(req[0].doc_id());
             }
-            #[cfg(test)]
-            test_only_req_opt_paths::window();
-            let shallow = req[0].advance_shallow(window_min)?;
-            let window_max = last_window_or_capped(shallow, window_min, max);
-            let window_end = window_max.saturating_add(1);
-
-            for leg in req.iter_mut() {
-                leg.advance_shallow(window_min)?;
+            let acc = &mut self.acc;
+            acc.copy_from(&self.single);
+            for leg in req.iter_mut().skip(1) {
+                apply_required_clause(acc, leg)?;
             }
-            self.req_sums[nr] = 0.0;
-            for i in (0..nr).rev() {
-                self.req_sums[i] = self.req_sums[i + 1] + req[i].max_score(window_max) as f64;
-            }
-            let mut opt_max = 0.0f64;
+            self.opt_sums.clear();
+            self.opt_sums.resize(acc.docs.len(), 0.0);
+            self.opt_hit.clear();
+            self.opt_hit.resize(acc.docs.len(), false);
             for leg in opt.iter_mut() {
-                if leg.doc_id() <= window_max {
-                    if leg.doc_id() < window_min {
-                        leg.advance_shallow(window_min)?;
-                    }
-                    opt_max += leg.max_score(window_max) as f64;
-                }
-            }
-            let opt_max_f = opt_max as f32;
-            let window_bound = (self.req_sums[0] as f32) + opt_max_f;
-            if min_competitive > 0.0 && window_bound < min_competitive {
-                // No document in the window can compete: nothing is decoded.
-                #[cfg(any(test, feature = "test-support"))]
-                crate::test_only_maxscore_block_skip_counter::record_skip();
-                window_min = req[0].doc_id().max(window_end);
-                continue;
-            }
-
-            // Once the required clauses alone cannot reach the threshold, a
-            // hit must match an optional clause too (`optIsRequired`); when
-            // the optional clauses are also the cheaper side, they lead.
-            let opt_cost = opt.iter().fold(0i64, |a, l| a.saturating_add(l.cost));
-            if min_competitive > 0.0
-                && (self.req_sums[0] as f32) < min_competitive
-                && opt_cost < req[0].cost
-            {
-                self.score_optional_led(req, opt, live_docs, collector, window_min, window_end)?;
-                window_min = req[0].doc_id().max(window_end);
-                continue;
-            }
-
-            #[cfg(test)]
-            test_only_req_opt_paths::record(0);
-            if req[0].doc_id() < window_min {
-                req[0].advance(window_min)?;
-            }
-            loop {
-                req[0].next_docs_and_scores(window_end, live_docs, &mut self.single)?;
-                if self.single.docs.is_empty() {
-                    break;
-                }
-                let acc = &mut self.acc;
-                acc.copy_from(&self.single);
-                // A partial required sum is not yet the narrowed score, so
-                // these filters leave two ulps of slack below the threshold.
-                let slack = min_competitive.next_down().next_down().max(0.0);
-                for (i, leg) in req.iter_mut().enumerate().skip(1) {
-                    filter_competitive_hits(acc, self.req_sums[i] + opt_max, slack, n);
-                    apply_required_clause(acc, leg)?;
-                }
-                // The required score is final: drop what cannot compete even
-                // with every optional clause at its maximum.
-                if min_competitive > 0.0 {
-                    let mut k = 0;
-                    for i in 0..acc.docs.len() {
-                        if (acc.scores[i] as f32) + opt_max_f >= min_competitive {
-                            acc.docs[k] = acc.docs[i];
-                            acc.scores[k] = acc.scores[i];
-                            k += 1;
-                        }
-                    }
-                    acc.truncate(k);
-                }
-                self.opt_sums.clear();
-                self.opt_sums.resize(acc.docs.len(), 0.0);
-                self.opt_hit.clear();
-                self.opt_hit.resize(acc.docs.len(), false);
-                for leg in opt.iter_mut() {
-                    let mut cur = leg.doc_id();
-                    for (k, &doc) in acc.docs.iter().enumerate() {
-                        if cur < doc {
-                            cur = leg.advance(doc)?;
-                        }
-                        if cur == doc {
-                            self.opt_sums[k] += leg.score()? as f64;
-                            self.opt_hit[k] = true;
-                        }
-                    }
-                }
+                let mut cur = leg.doc_id();
                 for (k, &doc) in acc.docs.iter().enumerate() {
-                    let mut score = acc.scores[k] as f32;
-                    if self.opt_hit[k] {
-                        score += self.opt_sums[k] as f32;
+                    if cur < doc {
+                        cur = leg.advance(doc)?;
                     }
-                    collector.collect(doc, score);
-                }
-                min_competitive = min_competitive_score(collector);
-            }
-            window_min = req[0].doc_id().max(window_end);
-        }
-        Ok(window_min)
-    }
-
-    /// One window with the optional legs leading: their documents (a batch
-    /// at a time, in inner windows of `INNER_WINDOW_SIZE`) are the candidates,
-    /// each dropped unless its optional score plus the required maxima can
-    /// compete, and the survivors advance the required legs -- which are
-    /// never decoded or scored for a document no optional leg matches.
-    #[allow(clippy::too_many_arguments)]
-    fn score_optional_led<C: ScoringCollector + ?Sized>(
-        &mut self,
-        req: &mut [TermLeg<'_>],
-        opt: &mut [TermLeg<'_>],
-        live_docs: Option<&FixedBitSet>,
-        collector: &mut C,
-        window_min: i32,
-        window_end: i32,
-    ) -> Result<()> {
-        let req_max = self.req_sums[0] as f32;
-        let req_global = match self.req_global {
-            Some(g) => g,
-            None => {
-                let mut sum = 0.0f64;
-                for leg in req.iter_mut() {
-                    sum += leg.max_score(NO_MORE_DOCS) as f64;
-                }
-                let g = sum as f32;
-                self.req_global = Some(g);
-                g
-            }
-        };
-        if let [only] = opt {
-            #[cfg(test)]
-            test_only_req_opt_paths::record(1);
-            // One optional leg: its batches are the candidates, already in
-            // order, with no window to merge them through.
-            if only.doc_id() < window_min {
-                only.advance(window_min)?;
-            }
-            loop {
-                // The optional leg is required, so a block of it whose
-                // maximum plus the required side's cannot compete holds
-                // nothing: hand it that as its own threshold, and its impacts
-                // skip the block undecoded. Against the required side's
-                // *global* maximum, so the bound only ever rises (a leg's
-                // threshold cannot fall), with four ulps of the threshold's
-                // own scale as slack for the two roundings of the final sum.
-                let min_competitive = min_competitive_score(collector);
-                let ulp = (min_competitive.next_up() - min_competitive) as f64;
-                let needed = min_competitive as f64 - req_global as f64 - 4.0 * ulp;
-                if needed > 0.0 {
-                    only.set_min_competitive_score((needed as f32).next_down());
-                }
-                only.next_docs_and_scores(window_end, live_docs, &mut self.single)?;
-                if self.single.docs.is_empty() {
-                    return Ok(());
-                }
-                let acc = &mut self.acc;
-                acc.docs.clear();
-                acc.scores.clear();
-                for (&doc, &score) in self.single.docs.iter().zip(&self.single.scores) {
-                    if req_max + score >= min_competitive {
-                        acc.docs.push(doc);
-                        acc.scores.push(score as f64);
-                    }
-                }
-                self.apply_required_and_collect(req, collector)?;
-            }
-        }
-        #[cfg(test)]
-        test_only_req_opt_paths::record(2);
-        let mut inner_min = window_min;
-        while inner_min < window_end {
-            let inner_end = window_end.min(inner_min.saturating_add(INNER_WINDOW_SIZE));
-            let mut any = false;
-            for leg in opt.iter_mut() {
-                if leg.doc_id() < inner_min {
-                    leg.advance(inner_min)?;
-                }
-                loop {
-                    leg.next_docs_and_scores(inner_end, live_docs, &mut self.single)?;
-                    if self.single.docs.is_empty() {
-                        break;
-                    }
-                    any = true;
-                    for (&doc, &score) in self.single.docs.iter().zip(&self.single.scores) {
-                        let i = (doc - inner_min) as usize;
-                        // FBS: `next_docs_and_scores(inner_end, ..)` returns
-                        // documents in `inner_min..inner_end`, a span of at
-                        // most `INNER_WINDOW_SIZE`, the bitset's size.
-                        self.window_matches.set(i);
-                        self.window_scores[i] += score as f64;
+                    if cur == doc {
+                        self.opt_sums[k] += leg.score()? as f64;
+                        self.opt_hit[k] = true;
                     }
                 }
             }
-            if any {
-                let min_competitive = min_competitive_score(collector);
-                // Candidates, ascending, with their optional sums.
-                let acc = &mut self.acc;
-                acc.docs.clear();
-                acc.scores.clear();
-                let window_scores = &mut self.window_scores;
-                self.window_matches.for_each_set_bit(|i| {
-                    let opt_score = window_scores[i];
-                    window_scores[i] = 0.0;
-                    if req_max + (opt_score as f32) >= min_competitive {
-                        acc.docs.push(inner_min + i as i32);
-                        acc.scores.push(opt_score);
-                    }
-                });
-                self.window_matches.clear_all();
-                self.apply_required_and_collect(req, collector)?;
-            }
-            inner_min = inner_end;
-        }
-        Ok(())
-    }
-
-    /// The candidates in `acc` (optional sums in its scores) that every
-    /// required leg matches, collected with `ReqOptSumScorer`'s arithmetic.
-    fn apply_required_and_collect<C: ScoringCollector + ?Sized>(
-        &mut self,
-        req: &mut [TermLeg<'_>],
-        collector: &mut C,
-    ) -> Result<()> {
-        let acc = &mut self.acc;
-        // Every required leg must match; their scores sum apart from the
-        // optional ones, as `ReqOptSumScorer` keeps them.
-        self.req_scores.clear();
-        self.req_scores.resize(acc.docs.len(), 0.0);
-        let mut len = acc.docs.len();
-        for leg in req.iter_mut() {
-            let mut cur = leg.doc_id();
-            let mut k = 0;
-            for i in 0..len {
-                let doc = acc.docs[i];
-                if cur < doc {
-                    cur = leg.advance(doc)?;
+            for (k, &doc) in acc.docs.iter().enumerate() {
+                let mut score = acc.scores[k] as f32;
+                if self.opt_hit[k] {
+                    score += self.opt_sums[k] as f32;
                 }
-                if cur == doc {
-                    acc.docs[k] = doc;
-                    acc.scores[k] = acc.scores[i];
-                    self.req_scores[k] = self.req_scores[i] + leg.score()? as f64;
-                    k += 1;
-                }
+                collector.collect(doc, score);
             }
-            len = k;
         }
-        for k in 0..len {
-            let score = (self.req_scores[k] as f32) + (acc.scores[k] as f32);
-            collector.collect(acc.docs[k], score);
-        }
-        Ok(())
     }
 }
 
@@ -2754,43 +2417,6 @@ pub(crate) mod test_only_req_bits_opt_phases {
 
     pub(crate) fn take() -> [u64; 2] {
         HITS.with(|h| h.replace([0; 2]))
-    }
-}
-
-/// Which of `ReqOptBulk`'s paths ran, per thread, for tests that must show
-/// every path is reached: `[required-led batch, optional-led with one
-/// optional leg, optional-led through the window bitset, filtered MaxScore]`.
-#[cfg(test)]
-pub(crate) mod test_only_req_opt_paths {
-    use std::cell::Cell;
-
-    thread_local! {
-        static HITS: Cell<[u64; 4]> = const { Cell::new([0; 4]) };
-    }
-
-    pub(crate) fn record(path: usize) {
-        HITS.with(|h| {
-            let mut v = h.get();
-            v[path] += 1;
-            h.set(v);
-        });
-    }
-
-    pub(crate) fn take() -> [u64; 4] {
-        HITS.with(|h| h.replace([0; 4]))
-    }
-
-    thread_local! {
-        static WINDOWS: Cell<u64> = const { Cell::new(0) };
-    }
-
-    /// One window of the required-led loop.
-    pub(crate) fn window() {
-        WINDOWS.with(|w| w.set(w.get() + 1));
-    }
-
-    pub(crate) fn take_windows() -> u64 {
-        WINDOWS.with(|w| w.replace(0))
     }
 }
 
