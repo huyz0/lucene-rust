@@ -52,8 +52,12 @@
 //!   after `clear_crash`, as Java's closed wrapper does. Its file never got
 //!   all its bytes, so whatever fate is drawn for it, it is deleted (Java
 //!   flushes it first and then damages it).
+//! - `corruptUnknownFiles` uses two directory listings, as Java does, but
+//!   does not hold Java's reentrant directory monitor across the scan and
+//!   corruption. The wrapper guards each operation's state independently;
+//!   callers must stop concurrent directory mutations for a stable scan.
 //! - Not ported (listed in the test-framework ledger's gap):
-//!   `corruptUnknownFiles`, `setAssertNoUnrefencedFilesOnClose` (it needs
+//!   `setAssertNoUnrefencedFilesOnClose` (it needs
 //!   an `IndexWriter` over the directory) and `getLevelForCheckOnClose`.
 //! - The seeding is Java's (`new Random(random.nextInt())`), but the draw
 //!   sites differ: no `newIOContext` draws, the crash's damage deletes and
@@ -66,7 +70,7 @@
 //! - `getFileHandleCount` counts the handles this wrapper has seen open,
 //!   which is every output and every input it handed out.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -408,6 +412,213 @@ fn io_error(message: String) -> Error {
     Error::Io(io::Error::other(message))
 }
 
+/// Java: `SegmentInfos.generationFromSegmentsFileName` and `Long.parseLong`
+/// at radix 36. The shared store helper accepts only canonical
+/// `segments_` names; this scan must also accept Java's arbitrary one-UTF-16-
+/// unit separator, optional ASCII sign and `Character.digit(char, 36)` digits.
+fn unknown_commit_generation(name: &str) -> Result<i64> {
+    let parse = || -> Option<i64> {
+        if name == "segments" {
+            return Some(0);
+        }
+        if name == "segments.gen" {
+            return None;
+        }
+        let mut units = name.strip_prefix("segments")?.encode_utf16();
+        // String.substring(9) skips one UTF-16 unit, not one code point.
+        // A supplementary separator leaves its low surrogate to fail below.
+        units.next()?;
+        let mut units = units.peekable();
+        let negative = match units.peek().copied()? {
+            0x002d => {
+                units.next();
+                true
+            }
+            0x002b => {
+                units.next();
+                false
+            }
+            _ => false,
+        };
+        units.peek()?;
+        // Negative accumulation accepts Long.MIN_VALUE without overflowing
+        // on its positive magnitude. Both arithmetic steps check input bounds.
+        let mut value = 0i64;
+        for unit in units {
+            let digit = match unit {
+                0x0030..=0x0039 => Some(u32::from(unit - 0x0030)),
+                0x0041..=0x005a => Some(u32::from(unit - 0x0041) + 10),
+                0x0061..=0x007a => Some(u32::from(unit - 0x0061) + 10),
+                0xff21..=0xff3a => Some(u32::from(unit - 0xff21) + 10),
+                0xff41..=0xff5a => Some(u32::from(unit - 0xff41) + 10),
+                _ => lucene_analysis::java_character::decimal_digit_value(u32::from(unit)),
+            }?;
+            value = value.checked_mul(36)?.checked_sub(i64::from(digit))?;
+        }
+        if negative {
+            Some(value)
+        } else {
+            value.checked_neg()
+        }
+    };
+    parse().ok_or_else(|| {
+        Error::Corrupted(format!(
+            "fileName {name:?} has an invalid segments generation"
+        ))
+    })
+}
+
+/// `SegmentInfos.readCommit`: the cross-file checks require each `.si`, not
+/// just the commit's byte parser. Keep them in this scan so malformed commits
+/// fail before the corruption callback, reading each segment descriptor once.
+fn unknown_commit_files(
+    dir: &dyn Directory,
+    infos: &lucene_index::segment_infos::SegmentInfos,
+) -> lucene_index::index_file_deleter::Result<HashSet<String>> {
+    // Java's SegmentInfos constructor enforces this even for an empty commit.
+    if !(6..=10).contains(&infos.index_created_version_major) {
+        return Err(Error::Corrupted(format!(
+            "indexCreatedVersionMajor must be in 6..=10, got {}",
+            infos.index_created_version_major,
+        ))
+        .into());
+    }
+    let mut files = HashSet::new();
+    if let Some(name) = lucene_store::directory::segments_file_name(infos.generation) {
+        files.insert(name);
+    }
+    let mut total_docs = 0;
+    for commit in &infos.segments {
+        let name = format!("{}.si", commit.segment_name);
+        let input = dir.open(&name)?;
+        let si = unknown_segment_info(&input, commit)?;
+        validate_unknown_segment(infos, commit, &si, &mut total_docs)?;
+        files.extend(unknown_segment_files(commit, &si)?);
+    }
+    Ok(files)
+}
+
+/// `Codec.forName(...).segmentInfoFormat().read`: SimpleText uses textual
+/// segment metadata even though its enclosing segments_N remains binary.
+fn unknown_segment_info(
+    input: &[u8],
+    commit: &lucene_index::segment_infos::SegmentCommitInfo,
+) -> lucene_index::segment_info::Result<lucene_index::segment_info::SegmentInfo> {
+    use lucene_index::segment_info::{self, LuceneVersion, SegmentInfo};
+    if commit.codec_name != "SimpleText" {
+        return segment_info::parse_for_codec(input, &commit.segment_id, &commit.codec_name);
+    }
+    let si = segment_info::parse_simpletext(input, &commit.segment_name, &commit.segment_id)?;
+    // The commit records three version components, with no prerelease value.
+    // Its comparisons therefore need only these components; SimpleText's
+    // nonnegative prerelease cannot make an equal triple precede the commit.
+    let version = |value: lucene_util::version::Version| LuceneVersion {
+        major: value.major(),
+        minor: value.minor(),
+        bugfix: value.bugfix(),
+    };
+    Ok(SegmentInfo {
+        id: si.id,
+        version: version(si.version),
+        min_version: si.min_version.map(version),
+        doc_count: si.doc_count,
+        is_compound_file: si.is_compound_file,
+        has_blocks: si.has_blocks,
+        diagnostics: si.diagnostics,
+        files: si.files,
+        attributes: si.attributes,
+        index_sort: (!si.index_sort.is_empty()).then_some(si.index_sort),
+    })
+}
+/// Java: `SegmentInfo.namedForThisSegment` / `IndexFileNames.stripSegmentName`.
+/// An underscore after the first character takes precedence over any dot.
+fn unknown_named_for_segment(segment: &str, file: &str) -> String {
+    let index = file
+        .match_indices('_')
+        .find(|(index, _)| *index != 0)
+        .map(|(index, _)| index)
+        .or_else(|| file.find('.'));
+    format!("{segment}{}", index.map_or(file, |index| &file[index..]))
+}
+
+fn unknown_segment_files(
+    commit: &lucene_index::segment_infos::SegmentCommitInfo,
+    si: &lucene_index::segment_info::SegmentInfo,
+) -> Result<HashSet<String>> {
+    let mut files = HashSet::new();
+    // SegmentInfo.setFiles validates and normalizes; the commit's two update
+    // setters normalize without applying the codec-name/.tmp validation.
+    for file in &si.files {
+        let temporary = file
+            .get(file.len().saturating_sub(4)..)
+            .is_some_and(|extension| extension.eq_ignore_ascii_case(".tmp"));
+        if !super::new_directory::is_codec_file(file) || temporary {
+            return Err(Error::Corrupted(format!("invalid codec filename {file:?}")));
+        }
+        files.insert(unknown_named_for_segment(&commit.segment_name, file));
+    }
+    if commit.del_gen != -1 {
+        files.insert(lucene_index::deletes::liv_file_name(
+            &commit.segment_name,
+            commit.del_gen,
+        ));
+    }
+    for file in &commit.field_infos_files {
+        files.insert(unknown_named_for_segment(&commit.segment_name, file));
+    }
+    // SegmentInfos.readCommit builds a HashMap: the last occurrence of a
+    // duplicate field number replaces the earlier files, rather than unions it.
+    let mut fields = HashSet::new();
+    for (field, updates) in commit.dv_update_files.iter().rev() {
+        if fields.insert(*field) {
+            for file in updates {
+                files.insert(unknown_named_for_segment(&commit.segment_name, file));
+            }
+        }
+    }
+    Ok(files)
+}
+fn validate_unknown_segment(
+    infos: &lucene_index::segment_infos::SegmentInfos,
+    commit: &lucene_index::segment_infos::SegmentCommitInfo,
+    si: &lucene_index::segment_info::SegmentInfo,
+    total_docs: &mut u64,
+) -> Result<()> {
+    let invalid =
+        |reason: &str| Error::Corrupted(format!("segment {}: {reason}", commit.segment_name));
+    if commit.del_count < 0
+        || commit.soft_del_count < 0
+        || i64::from(commit.del_count) + i64::from(commit.soft_del_count) > i64::from(si.doc_count)
+    {
+        return Err(invalid("invalid deletion counts vs maxDoc"));
+    }
+    let version = (si.version.major, si.version.minor, si.version.bugfix);
+    if let Some(min) = infos.min_segment_lucene_version {
+        if version < (min.major, min.minor, min.bugfix) {
+            return Err(invalid("version precedes minSegmentLuceneVersion"));
+        }
+    }
+    if infos.index_created_version_major >= 7
+        && si.version.major < infos.index_created_version_major
+    {
+        return Err(invalid("version precedes indexCreatedVersionMajor"));
+    }
+    // Lucene 10.5.0 Version.MIN_SUPPORTED_MAJOR = LATEST.major - 1 = 9.
+    // Java rejects a missing minVersion even when indexCreatedVersionMajor < 7.
+    if si.min_version.is_none_or(|min| min.major < 9) {
+        return Err(invalid(
+            "minVersion is missing or older than supported major 9",
+        ));
+    }
+    let max_docs = lucene_index::index_writer::MAX_DOCS as u64;
+    // The nonnegative deletion-count sum above cannot exceed a negative maxDoc.
+    let docs = si.doc_count as u64;
+    if docs > max_docs || *total_docs > max_docs - docs {
+        return Err(invalid("total maxDoc exceeds IndexWriter.MAX_DOCS"));
+    }
+    *total_docs += docs;
+    Ok(())
+}
 impl MockDirectoryWrapper {
     /// `new MockDirectoryWrapper(random, delegate)`: a private stream seeded
     /// from `random.nextInt()`, then the throttle's rate and delay drawn
@@ -745,6 +956,54 @@ impl MockDirectoryWrapper {
     /// `clearCrash()`.
     pub fn clear_crash(&self) {
         self.state().crashed = false;
+    }
+
+    /// Java: `corruptUnknownFiles()`: damage codec files and pending commits
+    /// that no committed `segments*` file references, leaving lock files alone.
+    ///
+    /// The scan and corruption require no concurrent directory mutations;
+    /// unlike Java's synchronized method, they are not one atomic operation.
+    ///
+    /// # Errors
+    /// A directory listing, commit or segment-info read, or corruption fails.
+    /// Commit-read errors stop the scan before any file is damaged.
+    pub fn corrupt_unknown_files(&self) -> lucene_index::index_file_deleter::Result<()> {
+        self.corrupt_unknown_files_with(|files| self.corrupt_files(files))
+    }
+
+    /// [`Self::corrupt_unknown_files`] with Java's overridable
+    /// `corruptFiles(files)` supplied by the caller. The callback runs exactly
+    /// once after both listings succeed, even when there are no unknown files.
+    ///
+    /// # Errors
+    /// The same scan errors as [`Self::corrupt_unknown_files`], or the
+    /// callback's error. A failed scan never invokes the callback.
+    pub fn corrupt_unknown_files_with(
+        &self,
+        corrupt: impl FnOnce(&BTreeSet<String>) -> Result<()>,
+    ) -> lucene_index::index_file_deleter::Result<()> {
+        let mut known_files = HashSet::new();
+        for name in self.list_all()? {
+            if name.starts_with("segments") {
+                let generation = unknown_commit_generation(&name)?;
+                let input = self.open(&name)?;
+                let infos = lucene_index::segment_infos::parse(&input, generation)?;
+                known_files.extend(unknown_commit_files(self, &infos)?);
+            }
+        }
+        // The existing corruption API accepts a sorted set; Java sorts its
+        // HashSet in `_corruptFiles` before applying the damage.
+        let mut to_corrupt = BTreeSet::new();
+        for name in self.list_all()? {
+            if !known_files.contains(&name)
+                && !name.ends_with("write.lock")
+                && (super::new_directory::is_codec_file(&name)
+                    || name.starts_with("pending_segments"))
+            {
+                to_corrupt.insert(name);
+            }
+        }
+        Ok(corrupt(&to_corrupt)?)
     }
 
     /// `corruptFiles(files)`, with the virus checker off while it runs.
@@ -1313,8 +1572,318 @@ impl Directory for MockDirectoryWrapper {
 
 #[cfg(test)]
 mod tests {
-    use super::Throttle;
+    use super::{unknown_commit_generation, Throttle};
 
+    #[test]
+    fn unknown_commit_generations_follow_java_utf16_and_radix36_rules() {
+        for (name, expected) in [
+            ("segments", 0),
+            ("segments_4", 4),
+            ("segmentsX4", 4),
+            ("segments§4", 4),
+            ("segments\n4", 4),
+            ("segments_+4", 4),
+            ("segments_-4", -4),
+            ("segments_٤", 4),
+            ("segments_４", 4),
+            ("segments_ａ", 10),
+            ("segments_Ｚ", 35),
+            ("segments_aZ", 395),
+            ("segments_+000", 0),
+            ("segments_-0", 0),
+            ("segments_1y2p0ij32e8e7", i64::MAX),
+            ("segments_-1y2p0ij32e8e8", i64::MIN),
+        ] {
+            assert_eq!(
+                unknown_commit_generation(name).unwrap(),
+                expected,
+                "{name:?}"
+            );
+        }
+        for name in [
+            "other_4",
+            "segments.gen",
+            "segments_",
+            "segments_+",
+            "segments_-",
+            "segments_++4",
+            "segments_ 4",
+            "segments_4 ",
+            "segments_4\n",
+            "segments_＋4",
+            "segments_𝟜",
+            "segments😀4",
+            "segments_1y2p0ij32e8e8",
+            "segments_-1y2p0ij32e8e9",
+            "segments_zzzzzzzzzzzzzzzzzzzz",
+        ] {
+            let error = unknown_commit_generation(name).unwrap_err();
+            assert!(matches!(error, super::Error::Corrupted(_)), "{error}");
+            assert!(error.to_string().contains(&format!("{name:?}")), "{error}");
+        }
+    }
+
+    fn validation_case() -> (
+        lucene_index::segment_infos::SegmentInfos,
+        lucene_index::segment_infos::SegmentCommitInfo,
+        lucene_index::segment_info::SegmentInfo,
+    ) {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/data/merge_policies/commits_index");
+        let infos =
+            lucene_index::segment_infos::parse(&std::fs::read(path.join("segments_3")).unwrap(), 3)
+                .unwrap();
+        let commit = infos.segments[0].clone();
+        let si = lucene_index::segment_info::parse_for_codec(
+            &std::fs::read(path.join(format!("{}.si", commit.segment_name))).unwrap(),
+            &commit.segment_id,
+            &commit.codec_name,
+        )
+        .unwrap();
+        (infos, commit, si)
+    }
+
+    #[test]
+    fn unknown_scan_dispatches_simpletext_metadata_and_uses_liv_suffix() {
+        use lucene_index::segment_info::{self, LuceneVersion};
+        use lucene_store::{ByteBuffersDirectory, DataOutput, Directory};
+        let bytes = include_bytes!("../../../../fixtures/data/simpletext_index_sort/_1.si");
+        let id = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let mut text = segment_info::parse_simpletext(bytes, "_1", &id).unwrap();
+        let (mut infos, mut commit, _) = validation_case();
+        commit.segment_name = "_1".into();
+        commit.segment_id = id;
+        commit.codec_name = "SimpleText".into();
+        commit.del_count = 0;
+        commit.soft_del_count = 0;
+        commit.del_gen = 1;
+        commit.field_infos_files.clear();
+        commit.dv_update_files.clear();
+        infos.segments = vec![commit.clone()];
+        let parsed = super::unknown_segment_info(bytes, &commit).unwrap();
+        assert_eq!(parsed.doc_count, 7);
+        assert!(
+            parsed.index_sort.is_some(),
+            "typed SimpleText sort must be decoded"
+        );
+        let error = super::validate_unknown_segment(&infos, &commit, &parsed, &mut 0).unwrap_err();
+        assert!(error.to_string().contains("minVersion"), "{error}");
+        text.version = lucene_util::version::Version::new(10, 0, 0, 2).unwrap();
+        text.min_version = Some(lucene_util::version::Version::LUCENE_9_0_0);
+        infos.min_segment_lucene_version = Some(lucene_index::segment_infos::LuceneVersion {
+            major: 10,
+            minor: 0,
+            bugfix: 0,
+        });
+        let bytes = segment_info::write_simpletext(&mut text).unwrap();
+        let parsed = super::unknown_segment_info(&bytes, &commit).unwrap();
+        assert_eq!(
+            parsed.version,
+            LuceneVersion {
+                major: 10,
+                minor: 0,
+                bugfix: 0
+            }
+        );
+        let dir = ByteBuffersDirectory::new();
+        let mut output = dir.create_output("_1.si").unwrap();
+        output.write_bytes(&bytes);
+        output.close().unwrap();
+        assert_eq!(
+            super::unknown_commit_files(&dir, &infos).unwrap(),
+            std::collections::HashSet::from([
+                "segments_3".to_owned(),
+                "_1.si".to_owned(),
+                "_1.other".to_owned(),
+                "_1_1.liv".to_owned(),
+            ])
+        );
+        assert!(super::unknown_segment_info(&bytes[..20], &commit).is_err());
+        commit.segment_id = [0; 16];
+        assert!(super::unknown_segment_info(&bytes, &commit).is_err());
+    }
+    #[test]
+    fn unknown_scan_normalizes_names_like_java() {
+        for (file, expected) in [
+            ("_old.si", "_new.si"),
+            ("_old_1_Lucene90_0.dvd", "_new_1_Lucene90_0.dvd"),
+            ("_old.ext_suffix.more", "_new_suffix.more"),
+            ("plain.ext", "_new.ext"),
+            ("plain", "_newplain"),
+            ("", "_new"),
+            ("_", "_new_"),
+            ("__", "_new_"),
+            ("😀_suffix.ext", "_new_suffix.ext"),
+        ] {
+            assert_eq!(
+                super::unknown_named_for_segment("_new", file),
+                expected,
+                "{file:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_scan_unions_normalized_names_and_validates_only_si_names() {
+        let (_, mut commit, mut si) = validation_case();
+        commit.segment_name = "_new".into();
+        commit.del_gen = 1;
+        commit.field_infos_files = vec![
+            "_other.fnm".into(),
+            "_old_1.dvd".into(),
+            "no.dot_TMP".into(),
+        ];
+        commit.dv_update_files = vec![
+            (3, vec!["_ignored_99.dvd".into()]),
+            (3, vec!["_older_1.dvd".into(), "_other.TMP".into()]),
+        ];
+        si.files = vec!["_old.si".into(), "_other.si".into(), "_old_1.dvd".into()];
+        assert_eq!(
+            super::unknown_segment_files(&commit, &si).unwrap(),
+            std::collections::HashSet::from([
+                "_new.si".to_owned(),
+                "_new_1.dvd".to_owned(),
+                "_new.fnm".to_owned(),
+                "_new_1.liv".to_owned(),
+                "_new_TMP".to_owned(),
+                "_new.TMP".to_owned(),
+            ])
+        );
+        commit.del_gen = -1;
+        si.files.clear();
+        assert!(
+            !super::unknown_segment_files(&commit, &si)
+                .unwrap()
+                .contains("_new.si"),
+            "Java does not synthesize a missing .si self-listing"
+        );
+        for bad in ["not-a-codec", "_old.TMP", "_old.tMp", "_old.x\n"] {
+            si.files = vec![bad.into()];
+            let error = super::unknown_segment_files(&commit, &si).unwrap_err();
+            assert!(
+                error.to_string().contains("invalid codec filename"),
+                "{error}"
+            );
+        }
+    }
+    #[test]
+    fn unknown_scan_validates_created_major_even_for_empty_commits() {
+        let (mut infos, _, _) = validation_case();
+        infos.segments.clear();
+        let dir = lucene_store::ByteBuffersDirectory::new();
+        for major in [5, 11] {
+            infos.index_created_version_major = major;
+            let error = super::unknown_commit_files(&dir, &infos).unwrap_err();
+            assert!(
+                error.to_string().contains("indexCreatedVersionMajor"),
+                "{error}"
+            );
+        }
+        for major in [6, 10] {
+            infos.index_created_version_major = major;
+            assert_eq!(
+                super::unknown_commit_files(&dir, &infos).unwrap(),
+                std::collections::HashSet::from(["segments_3".to_owned()])
+            );
+        }
+    }
+    #[test]
+    fn unknown_scan_rejects_invalid_deletion_counts() {
+        let (infos, mut commit, si) = validation_case();
+        for (hard, soft) in [
+            (-1, 0),
+            (0, -1),
+            (si.doc_count + 1, 0),
+            (0, si.doc_count + 1),
+            (si.doc_count, 1),
+        ] {
+            commit.del_count = hard;
+            commit.soft_del_count = soft;
+            let mut total = 0;
+            let error =
+                super::validate_unknown_segment(&infos, &commit, &si, &mut total).unwrap_err();
+            assert!(
+                error.to_string().contains("invalid deletion counts"),
+                "{error}"
+            );
+            assert_eq!(total, 0, "failed validation must not advance total");
+        }
+        commit.del_count = si.doc_count;
+        commit.soft_del_count = 0;
+        let mut total = 0;
+        super::validate_unknown_segment(&infos, &commit, &si, &mut total).unwrap();
+        assert_eq!(total, si.doc_count as u64);
+    }
+
+    #[test]
+    fn unknown_scan_checks_segment_versions_against_commit() {
+        let (mut infos, commit, mut si) = validation_case();
+        let original_si = si.clone();
+        let original_infos = infos.clone();
+        let min = infos.min_segment_lucene_version.as_mut().unwrap();
+        *min = lucene_index::segment_infos::LuceneVersion {
+            major: si.version.major,
+            minor: si.version.minor,
+            bugfix: si.version.bugfix + 1,
+        };
+        let error = super::validate_unknown_segment(&infos, &commit, &si, &mut 0).unwrap_err();
+        assert!(
+            error.to_string().contains("minSegmentLuceneVersion"),
+            "{error}"
+        );
+        infos = original_infos;
+        infos.min_segment_lucene_version = None;
+        infos.index_created_version_major = si.version.major + 1;
+        let error = super::validate_unknown_segment(&infos, &commit, &si, &mut 0).unwrap_err();
+        assert!(
+            error.to_string().contains("indexCreatedVersionMajor"),
+            "{error}"
+        );
+        infos.index_created_version_major = 6;
+        for min_version in [
+            None,
+            Some(lucene_index::segment_info::LuceneVersion {
+                major: 8,
+                minor: 11,
+                bugfix: 0,
+            }),
+        ] {
+            si.min_version = min_version;
+            let error = super::validate_unknown_segment(&infos, &commit, &si, &mut 0).unwrap_err();
+            assert!(error.to_string().contains("minVersion"), "{error}");
+        }
+        si = original_si;
+        si.min_version = Some(lucene_index::segment_info::LuceneVersion {
+            major: 9,
+            minor: 0,
+            bugfix: 0,
+        });
+        let mut total = 0;
+        super::validate_unknown_segment(&infos, &commit, &si, &mut total).unwrap();
+        assert_eq!(total, si.doc_count as u64);
+    }
+
+    #[test]
+    fn unknown_scan_enforces_total_max_doc_including_deleted_documents() {
+        let (infos, mut commit, mut si) = validation_case();
+        let max = lucene_index::index_writer::MAX_DOCS as u64;
+        commit.del_count = 0;
+        commit.soft_del_count = 0;
+        si.doc_count = max as i32;
+        let mut total = 0;
+        super::validate_unknown_segment(&infos, &commit, &si, &mut total).unwrap();
+        assert_eq!(total, max);
+        si.doc_count = 1;
+        commit.del_count = 1;
+        let error = super::validate_unknown_segment(&infos, &commit, &si, &mut total).unwrap_err();
+        assert!(error.to_string().contains("total maxDoc"), "{error}");
+        assert_eq!(total, max);
+        si.doc_count = max as i32 + 1;
+        let mut total = 0;
+        let error = super::validate_unknown_segment(&infos, &commit, &si, &mut total).unwrap_err();
+        assert!(error.to_string().contains("total maxDoc"), "{error}");
+        assert_eq!(total, 0);
+    }
     /// `ThrottledIndexOutput.getDelay`, quirks included: the observed rate
     /// is `(elapsedNanos / pendingBytes) * 1e9` in integer arithmetic, so a
     /// delegate faster than one nanosecond per byte reads as 0 bytes/s and

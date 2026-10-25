@@ -301,7 +301,11 @@ impl LuceneTestCase {
 }
 
 /// `IndexFileNames.CODEC_FILE_PATTERN`: `_[a-z0-9]+(_.*)?\..*`.
-fn is_codec_file(name: &str) -> bool {
+pub(crate) fn is_codec_file(name: &str) -> bool {
+    // Java's default `.` does not match any of these line terminators.
+    if name.contains(['\n', '\r', '\u{0085}', '\u{2028}', '\u{2029}']) {
+        return false;
+    }
     let Some(rest) = name.strip_prefix('_') else {
         return false;
     };
@@ -326,11 +330,29 @@ mod tests {
 
     #[test]
     fn codec_file_pattern_matches_javas() {
-        for yes in ["_0.cfs", "_a1_Lucene90_0.dvd", "_z.si", "_0_1.liv"] {
+        for yes in [
+            "_0.cfs",
+            "_a1_Lucene90_0.dvd",
+            "_z.si",
+            "_0_1.liv",
+            "_0.",
+            "_0_.",
+            "_0_x.y.z",
+            "_0.\u{000b}\u{000c}\u{0000}",
+        ] {
             assert!(is_codec_file(yes), "{yes}");
         }
         for no in ["segments_1", "_.cfs", "_0", "_A.cfs", "write.lock", "_0_x"] {
             assert!(!is_codec_file(no), "{no}");
+        }
+        for terminator in ['\n', '\r', '\u{0085}', '\u{2028}', '\u{2029}'] {
+            for name in [
+                format!("_0.{terminator}"),
+                format!("_0_{terminator}.si"),
+                format!("_0_x.{terminator}si"),
+            ] {
+                assert!(!is_codec_file(&name), "{name:?}");
+            }
         }
     }
 
