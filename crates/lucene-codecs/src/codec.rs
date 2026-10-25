@@ -1,12 +1,14 @@
-//! `Lucene104Codec` per-field routing and optional same-wire stored-fields writers.
+//! `Lucene104Codec` per-field routing and optional same-wire writers.
 //!
 //! Postings, doc-values and vector selection use native format descriptors.
 //! An optional stored-fields factory wraps the real document writer lifecycle
 //! while retaining the native reader graph and `Lucene104` on-disk formats.
-//! Other segment-level formats remain fixed to the native codec.
+//! An optional live-docs writer adds checks to deletion output. Other
+//! segment-level formats remain fixed to the native codec.
 
 use std::fmt;
 
+use crate::live_docs_writer::LiveDocsWriter;
 use crate::per_field_doc_values::Lucene90DocValuesFormat;
 use crate::per_field_knn_vectors::KnnVectorsFormat;
 use crate::per_field_postings::Lucene104PostingsFormat;
@@ -25,6 +27,14 @@ pub trait Lucene104Codec: Send + Sync + fmt::Debug {
     /// `None` retains the direct native encoder and its bulk merge paths.
     /// A factory must preserve the native wire format and segment codec name.
     fn stored_fields_writer_factory(&self) -> Option<&dyn StoredFieldsWriterFactory> {
+        None
+    }
+
+    /// Optional wrapper for native live-docs writes.
+    ///
+    /// `None` retains the direct native encoder. A writer must preserve the
+    /// native wire format and leave generation advancement to the index layer.
+    fn live_docs_writer(&self) -> Option<&dyn LiveDocsWriter> {
         None
     }
 
@@ -72,6 +82,7 @@ mod tests {
         let c = DefaultLucene104Codec;
         assert_eq!(c.name(), "Lucene104");
         assert!(c.stored_fields_writer_factory().is_none());
+        assert!(c.live_docs_writer().is_none());
         assert_eq!(
             c.postings_format_for_field("f"),
             Lucene104PostingsFormat::default()

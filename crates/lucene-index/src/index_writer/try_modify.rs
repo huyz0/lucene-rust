@@ -77,8 +77,14 @@ impl IndexWriter<'_> {
             .as_ref()
             .is_some_and(|l| !l.get(usize::try_from(target.leaf_doc).unwrap_or(0)));
         if !already {
-            let updated =
-                deletes::apply_deletes(dir, &sci, live.as_ref(), target.max_doc, [target.leaf_doc]);
+            let updated = deletes::apply_deletes_with_codec(
+                dir,
+                &sci,
+                live.as_ref(),
+                target.max_doc,
+                [target.leaf_doc],
+                self.cfg.codec.as_deref(),
+            );
             if updated.is_err() {
                 // `PendingDeletes.writeLiveDocs`' failure path:
                 // `advanceNextWriteDelGen()` on the live segment.
