@@ -70,7 +70,7 @@ run() { # <generator> <outdir>
   local assertion_opts=()
   # These generators record assertions in Lucene's asserting wrappers.
   case "$1" in
-    AssertingCodec|AssertingDocValues|AssertingDocValuesIterators|AssertingKnnVectors|AssertingLiveDocs|AssertingNorms|AssertingPoints|AssertingPostings|AssertingStoredFields|AssertingTermVectors|CompressingCodec|ConfigurableM|CrankyDocValues|CrankyPostings|ScorerIndexSearcher) assertion_opts=(-ea) ;;
+    AssertingCodec|AssertingDocValues|AssertingDocValuesIterators|AssertingKnnVectors|AssertingLiveDocs|AssertingNorms|AssertingPoints|AssertingPostings|AssertingStoredFields|AssertingTermVectors|CompressingCodec|ConfigurableM|CorruptUnknownFiles|CrankyDocValues|CrankyPostings|ScorerIndexSearcher) assertion_opts=(-ea) ;;
     FstTesterLists) assertion_opts=(-ea -Dtests.multiplier=1) ;;
   esac
   java "${LUCENE_FIXTURE_JVM_OPTS[@]}" "${assertion_opts[@]}" -cp "$WORK/classes:$CP" "Gen$1" "$2" "$EXCERPT"
