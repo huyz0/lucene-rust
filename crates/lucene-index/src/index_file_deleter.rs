@@ -120,10 +120,23 @@ pub fn files_of_infos(
 /// # Errors
 /// The `.si` is missing or unreadable.
 pub fn segment_files(dir: &dyn Directory, sci: &SegmentCommitInfo) -> Result<Vec<String>> {
-    let bytes = dir.open(&format!("{}.si", sci.segment_name))?.to_vec();
-    let si = segment_info::parse_for_codec(&bytes, &sci.segment_id, &sci.codec_name)?;
-    let si_files = IndexFileDeleter::with_self_listing(&sci.segment_name, si.files);
+    let si_files = segment_info_files(dir, sci)?;
     Ok(sci.files(&si_files))
+}
+
+/// Java: `Codec.forName(...).segmentInfoFormat().read`, then `SegmentInfo.files`.
+/// SimpleText's `.si` is textual even though its enclosing commit is binary.
+fn segment_info_files(dir: &dyn Directory, sci: &SegmentCommitInfo) -> Result<Vec<String>> {
+    let bytes = dir.open(&format!("{}.si", sci.segment_name))?.to_vec();
+    let files = if sci.codec_name == "SimpleText" {
+        segment_info::parse_simpletext(&bytes, &sci.segment_name, &sci.segment_id)?.files
+    } else {
+        segment_info::parse_for_codec(&bytes, &sci.segment_id, &sci.codec_name)?.files
+    };
+    Ok(IndexFileDeleter::with_self_listing(
+        &sci.segment_name,
+        files,
+    ))
 }
 
 /// Port of `IndexDeletionPolicy`, restricted to Lucene's two stateless
@@ -717,10 +730,7 @@ impl<'d> IndexFileDeleter<'d> {
                 return Ok(());
             }
         }
-        let name = format!("{}.si", sci.segment_name);
-        let bytes = self.dir.open(&name)?.to_vec();
-        let si = segment_info::parse_for_codec(&bytes, &sci.segment_id, &sci.codec_name)?;
-        let files = Self::with_self_listing(&sci.segment_name, si.files);
+        let files = segment_info_files(self.dir, sci)?;
         self.si_files
             .insert(sci.segment_name.clone(), (sci.segment_id, files));
         Ok(())
@@ -903,6 +913,11 @@ pub fn is_index_file_name(name: &str) -> bool {
     if name.starts_with("segments") || name.starts_with("pending_segments") {
         return true;
     }
+    // Java's default regex `.` excludes these line terminators. The prefix
+    // branches above are String.startsWith checks and have no such exclusion.
+    if name.contains(['\n', '\r', '\u{0085}', '\u{2028}', '\u{2029}']) {
+        return false;
+    }
     let Some(rest) = name.strip_prefix('_') else {
         return false;
     };
@@ -1026,10 +1041,7 @@ fn commit_file_names(dir: &dyn Directory, infos: &SegmentInfos) -> Result<Vec<St
         out.push(name);
     }
     for sci in &infos.segments {
-        let bytes = dir.open(&format!("{}.si", sci.segment_name))?.to_vec();
-        let si = segment_info::parse_for_codec(&bytes, &sci.segment_id, &sci.codec_name)?;
-        let si_files = IndexFileDeleter::with_self_listing(&sci.segment_name, si.files);
-        for f in sci.files(&si_files) {
+        for f in segment_files(dir, sci)? {
             if !out.contains(&f) {
                 out.push(f);
             }
@@ -1215,6 +1227,78 @@ mod tests {
                 !is_index_file_name(name),
                 "{name} should not be an index file"
             );
+        }
+    }
+
+    #[test]
+    fn codec_pattern_uses_java_line_terminators_only_for_regex_branch() {
+        for terminator in ['\n', '\r', '\u{0085}', '\u{2028}', '\u{2029}'] {
+            assert!(!is_index_file_name(&format!("_0.{terminator}")));
+            assert!(!is_index_file_name(&format!("_0_{terminator}.si")));
+            assert!(is_index_file_name(&format!("segments_{terminator}")));
+            assert!(is_index_file_name(&format!(
+                "pending_segments_{terminator}"
+            )));
+        }
+        for name in ["_0.", "_0_\u{000b}.si", "_0.\u{000c}"] {
+            assert!(is_index_file_name(name));
+        }
+    }
+
+    #[test]
+    fn simpletext_file_sets_reach_all_deleter_and_commit_listing_paths() {
+        use lucene_store::ByteBuffersDirectory;
+        use std::collections::BTreeSet;
+        for stage in ["flush", "merged"] {
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures/data/codecs_simpletext/codec")
+                .join(stage)
+                .join("index");
+            let dir = ByteBuffersDirectory::new();
+            for entry in std::fs::read_dir(root).unwrap() {
+                let entry = entry.unwrap();
+                let mut out = dir
+                    .create_output(entry.file_name().to_str().unwrap())
+                    .unwrap();
+                out.write_bytes(&std::fs::read(entry.path()).unwrap());
+                out.close().unwrap();
+            }
+            let infos = segment_infos::read_latest(&dir).unwrap();
+            let expected: BTreeSet<_> = dir.list_all().unwrap().into_iter().collect();
+            assert_eq!(
+                files_of_infos(&dir, &infos, true)
+                    .unwrap()
+                    .into_iter()
+                    .collect::<BTreeSet<_>>(),
+                expected
+            );
+            let commits = list_commits(&dir).unwrap();
+            assert_eq!(commits.len(), 1);
+            assert_eq!(
+                commits[0]
+                    .file_names()
+                    .iter()
+                    .cloned()
+                    .collect::<BTreeSet<_>>(),
+                expected
+            );
+            let mut deleter =
+                IndexFileDeleter::open(&dir, &infos, DeletionPolicy::KeepAll).unwrap();
+            deleter.forget_segment_files();
+            deleter.checkpoint(&infos, false).unwrap();
+            assert_eq!(
+                dir.list_all().unwrap().into_iter().collect::<BTreeSet<_>>(),
+                expected
+            );
+            let mut wrong_id = infos.segments[0].clone();
+            wrong_id.segment_id = [0; ID_LENGTH];
+            assert!(segment_files(&dir, &wrong_id).is_err());
+            let name = format!("{}.si", wrong_id.segment_name);
+            dir.delete_file(&name).unwrap();
+            let mut output = dir.create_output(&name).unwrap();
+            output.write_bytes(b"truncated");
+            output.close().unwrap();
+            assert!(segment_files(&dir, &infos.segments[0]).is_err());
         }
     }
 

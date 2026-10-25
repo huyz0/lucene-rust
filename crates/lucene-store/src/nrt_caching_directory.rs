@@ -284,6 +284,11 @@ impl<D: Directory> Directory for NrtCachingDirectory<D> {
         self.inner.pending_deletions()
     }
 
+    #[cfg(any(test, feature = "test-util"))]
+    fn disable_virus_checker(&self) -> bool {
+        self.inner.disable_virus_checker()
+    }
+
     fn fs_directory_path(&self) -> Option<&Path> {
         None
     }
@@ -391,6 +396,57 @@ mod tests {
         assert!(merge.pending_deletions().unwrap().is_empty());
         assert!(merge.fs_directory_path().is_none());
         assert!(merge.obtain_lock("x.lock").is_ok());
+    }
+
+    #[test]
+    fn virus_checker_control_unwraps_nrt_and_both_lock_wrappers() {
+        use crate::directory::FsFaults;
+        use crate::{LockValidatingDirectoryWrapper, SleepingLockWrapper};
+        struct Virus(AtomicBool);
+        impl FsFaults for Virus {
+            fn check_delete(&self, _path: &Path) -> std::io::Result<()> {
+                if self.0.load(Ordering::SeqCst) {
+                    Err(std::io::Error::other("virus checker refused delete"))
+                } else {
+                    Ok(())
+                }
+            }
+            fn check_rename(&self, _source: &Path, _dest: &Path) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn disable_virus_checker(&self) -> bool {
+                self.0.swap(false, Ordering::SeqCst)
+            }
+        }
+        let root = TempDir::new("nrt-virus-checker");
+        let faults = Arc::new(Virus(AtomicBool::new(true)));
+        let fs = FsDirectory::open(&root).with_fs_faults(faults.clone());
+        let nrt = NrtCachingDirectory::new(fs, 1.0, 2.0);
+        let mut cached = nrt.create_output_with_estimate("cached", Some(1)).unwrap();
+        cached.write_bytes(b"x");
+        cached.close().unwrap();
+        nrt.create_output("orphan").unwrap().close().unwrap();
+        assert!(faults.check_delete(&root.join("orphan")).is_err());
+        faults
+            .check_rename(&root.join("orphan"), &root.join("other"))
+            .unwrap();
+        let lock: Arc<dyn Lock> = Arc::from(nrt.obtain_lock("write.lock").unwrap());
+        let validating = LockValidatingDirectoryWrapper::new(&nrt, lock.clone());
+        let sleeping = SleepingLockWrapper::new(&validating, 0).unwrap();
+        // TestUtil unwraps FilterDirectory without invoking their operations:
+        // neither an invalid write lock nor cached files block this control.
+        lock.close().unwrap();
+        assert!(sleeping.disable_virus_checker());
+        assert!(!sleeping.disable_virus_checker());
+        assert_eq!(nrt.list_cached_files(), vec!["cached".to_string()]);
+        assert!(!root.join("cached").exists());
+        assert!(matches!(
+            sleeping.delete_file("orphan"),
+            Err(Error::AlreadyClosed(_))
+        ));
+        nrt.delete_file("orphan").unwrap();
+        assert!(!root.join("orphan").exists());
+        assert!(nrt.pending_deletions().unwrap().is_empty());
     }
 
     #[test]

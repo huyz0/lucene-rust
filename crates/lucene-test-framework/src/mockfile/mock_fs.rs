@@ -246,6 +246,10 @@ fn file_name(path: &Path) -> String {
 }
 
 impl FsFaults for MockFs {
+    fn disable_virus_checker(&self) -> bool {
+        MockFs::disable_virus_checker(self)
+    }
+
     /// `VirusCheckingFS.delete` (outermost, as `addVirusChecker` wraps the
     /// test filesystem), then `WindowsFS.delete`.
     fn check_delete(&self, path: &Path) -> io::Result<()> {
