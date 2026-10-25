@@ -7,6 +7,7 @@ pub mod asserting_norms;
 pub mod asserting_points;
 pub mod asserting_postings;
 pub mod asserting_stored_fields;
+pub mod asserting_stored_fields_writer;
 pub mod asserting_term_vectors;
 pub mod blockterms;
 pub mod bloom;

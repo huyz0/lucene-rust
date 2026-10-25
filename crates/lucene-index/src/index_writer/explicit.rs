@@ -1002,7 +1002,7 @@ impl IndexingConfig {
             })
             .collect();
 
-        let mut flushed = segment_writer::write_stored_only_segment_files(
+        let mut flushed = segment_writer::write_stored_only_segment_files_with_codec(
             dir,
             segment_name,
             segment_id,
@@ -1010,8 +1010,8 @@ impl IndexingConfig {
             self.lucene_version,
             &fnm_fields,
             buf.docs,
-            false,
             buf.has_blocks,
+            self.codec.as_deref(),
         )?;
         let mut record = |names: Vec<String>| {
             flushed.info.files.extend(names.iter().cloned());

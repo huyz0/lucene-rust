@@ -87,6 +87,8 @@ pub enum Error {
     CompoundFormat(#[from] compound_format::Error),
     #[error(transparent)]
     SegmentInfo(#[from] segment_info::Error),
+    #[error(transparent)]
+    StoredFields(#[from] stored_fields::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -246,9 +248,91 @@ pub fn write_stored_only_segment_files(
     use_compound_file: bool,
     has_blocks: bool,
 ) -> Result<FlushedSegment> {
+    write_stored_only_segment_files_inner(
+        dir,
+        segment_name,
+        segment_id,
+        codec_name,
+        lucene_version,
+        fields,
+        docs,
+        use_compound_file,
+        has_blocks,
+        None,
+    )
+}
+
+/// `StoredFieldsFormat.fieldsWriter` for an IndexWriter flush, before its
+/// separately assembled compound file and segment info are sealed.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn write_stored_only_segment_files_with_codec(
+    dir: &dyn Directory,
+    segment_name: &str,
+    segment_id: [u8; ID_LENGTH],
+    codec_name: &str,
+    lucene_version: LuceneVersion,
+    fields: &[FieldInfo],
+    docs: &[Document],
+    has_blocks: bool,
+    codec: Option<&dyn lucene_codecs::codec::Lucene104Codec>,
+) -> Result<FlushedSegment> {
+    write_stored_only_segment_files_inner(
+        dir,
+        segment_name,
+        segment_id,
+        codec_name,
+        lucene_version,
+        fields,
+        docs,
+        false,
+        has_blocks,
+        codec.and_then(|codec| codec.stored_fields_writer_factory()),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_stored_only_segment_files_inner(
+    dir: &dyn Directory,
+    segment_name: &str,
+    segment_id: [u8; ID_LENGTH],
+    codec_name: &str,
+    lucene_version: LuceneVersion,
+    fields: &[FieldInfo],
+    docs: &[Document],
+    use_compound_file: bool,
+    has_blocks: bool,
+    factory: Option<&dyn lucene_codecs::stored_fields_writer::StoredFieldsWriterFactory>,
+) -> Result<FlushedSegment> {
     let doc_count = docs.len() as i32;
 
-    let (fdt, fdx, fdm) = stored_fields::write_best_speed(docs, &segment_id, "");
+    let native = if let Some(factory) = factory {
+        use lucene_codecs::stored_fields_writer::{with_writer, StoredFieldsWriteState};
+        // Only the non-compound IndexWriter entry point supplies a factory.
+        // Its files are packed later, together with the other segment formats.
+        with_writer(
+            factory,
+            StoredFieldsWriteState {
+                directory: dir,
+                segment: segment_name,
+                id: &segment_id,
+                suffix: "",
+                mode: stored_fields::Mode::BestSpeed,
+            },
+            |writer| -> stored_fields::Result<()> {
+                for doc in docs {
+                    writer.start_document()?;
+                    for field in &doc.fields {
+                        writer.write_field(field.field_number, &field.value)?;
+                    }
+                    writer.finish_document()?;
+                }
+                writer.finish(doc_count)
+            },
+        )?;
+        None
+    } else {
+        Some(stored_fields::write_best_speed(docs, &segment_id, ""))
+    };
     let fnm = field_infos::write(fields, &segment_id, "");
 
     let fdt_name = format!("{segment_name}.fdt");
@@ -256,36 +340,42 @@ pub fn write_stored_only_segment_files(
     let fdm_name = format!("{segment_name}.fdm");
     let fnm_name = format!("{segment_name}.fnm");
 
-    let (files, written_names) = if use_compound_file {
-        let sub_files = vec![
-            (".fdt".to_string(), fdt),
-            (".fdx".to_string(), fdx),
-            (".fdm".to_string(), fdm),
-            (".fnm".to_string(), fnm),
-        ];
-        let (cfs, cfe) = compound_format::write(&segment_id, &sub_files)?;
-        let cfs_name = format!("{segment_name}.cfs");
-        let cfe_name = format!("{segment_name}.cfe");
-        write_file(dir, &cfs_name, &cfs)?;
-        write_file(dir, &cfe_name, &cfe)?;
-        (
-            vec![cfs_name.clone(), cfe_name.clone()],
-            vec![cfs_name, cfe_name],
-        )
-    } else {
-        for (name, bytes) in [(&fdt_name, &fdt), (&fdx_name, &fdx), (&fdm_name, &fdm)] {
-            write_file(dir, name, bytes)?;
+    let (files, written_names) = if let Some((fdt, fdx, fdm)) = native {
+        if use_compound_file {
+            let sub_files = vec![
+                (".fdt".to_string(), fdt),
+                (".fdx".to_string(), fdx),
+                (".fdm".to_string(), fdm),
+                (".fnm".to_string(), fnm),
+            ];
+            let (cfs, cfe) = compound_format::write(&segment_id, &sub_files)?;
+            let cfs_name = format!("{segment_name}.cfs");
+            let cfe_name = format!("{segment_name}.cfe");
+            write_file(dir, &cfs_name, &cfs)?;
+            write_file(dir, &cfe_name, &cfe)?;
+            (
+                vec![cfs_name.clone(), cfe_name.clone()],
+                vec![cfs_name, cfe_name],
+            )
+        } else {
+            for (name, bytes) in [(&fdt_name, &fdt), (&fdx_name, &fdx), (&fdm_name, &fdm)] {
+                write_file(dir, name, bytes)?;
+            }
+            write_file(dir, &fnm_name, &fnm)?;
+            (
+                vec![
+                    fdt_name.clone(),
+                    fdx_name.clone(),
+                    fdm_name.clone(),
+                    fnm_name.clone(),
+                ],
+                vec![fdt_name, fdx_name, fdm_name, fnm_name],
+            )
         }
+    } else {
         write_file(dir, &fnm_name, &fnm)?;
-        (
-            vec![
-                fdt_name.clone(),
-                fdx_name.clone(),
-                fdm_name.clone(),
-                fnm_name.clone(),
-            ],
-            vec![fdt_name, fdx_name, fdm_name, fnm_name],
-        )
+        let names = vec![fdt_name, fdx_name, fdm_name, fnm_name];
+        (names.clone(), names)
     };
 
     // `Lucene99SegmentInfoFormat.write` calls `si.addFile(fileName)` before
