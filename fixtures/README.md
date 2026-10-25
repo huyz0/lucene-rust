@@ -168,6 +168,12 @@ all-commit unions and missing/corrupt live-doc positive controls, and writes
 `corrupt_unknown_files_fixtures.rs`. Rust exposes the override as
 `corrupt_unknown_files_with` and requires a quiescent directory because
 it does not hold Java's synchronized monitor across the scan and corruption.
+
+`scripts/gen-test-framework-fixtures.sh --only <GenName>` compiles the selected
+generator and its Java source dependencies into a fresh temporary directory.
+Repeated `--only` options select several generators. `--check` compiles every
+Java source, executes every generator and compares the complete fixture set.
+
 `GenNoUnreferencedFilesOnClose` records actual mock-directory close calls with
 Java assertions enabled: both writer passes, retained-commit pruning, exact
 file sets and document counts, first-pass added/removed files, disabled random
@@ -179,6 +185,15 @@ compare each writer phase. Java delegate close calls are recorded separately:
 Rust directories release their resources when their owners drop.
 Independently armed rollback and close-without-commit probes check that refresh
 listing failures propagate, preserve committed files and release writer locks.
+`GenAssertingImpacts` invokes the actual asserting reader impacts wrapper with
+assertions enabled. Its `asserting_impacts.tsv` records 56 scenarios and 202
+operations: shallow targets, inherited postings/positions/offsets/payloads,
+delegate I/O failures, signed diagnostics, unsigned norms, equal level bounds,
+and the pinned checker's first-pair and single-step cross-level comparisons.
+`asserting_impacts_fixtures.rs` compares results, errors, delegate callback
+order and raw cursor state after every operation. Java borrowed-view lifetime
+checks are replaced by Rust owned snapshots; invalid metadata panics because
+Rust's impacts getter is infallible.
 `GenConfigurableM` records default and explicit connectivity settings, inherited
 accessor identities and failures, and native float/byte dense, sparse and empty
 fields. Four segments combine M=128/4 with sparse counts 647/648 at the tiny-graph
