@@ -28,7 +28,9 @@
 //!   with a file still open fails.
 //! - **Close**: [`BaseDirectoryWrapper::close`] turns the fault rates off,
 //!   crashes the directory (so a file the index needs but never synced is
-//!   damaged) and runs `CheckIndex`.
+//!   damaged) and runs `CheckIndex`. An optional unreferenced-file assertion
+//!   opens real writers and readers, checking that cleanup removes no files
+//!   and that a writer close preserves the live document count.
 //! - **Throttling**: `Throttling::Always` (and one output in 200 under
 //!   `Sometimes`) slows outputs as `ThrottledIndexOutput` does.
 //!
@@ -56,9 +58,10 @@
 //!   does not hold Java's reentrant directory monitor across the scan and
 //!   corruption. The wrapper guards each operation's state independently;
 //!   callers must stop concurrent directory mutations for a stable scan.
+//! - `close` is an explicit validation call; `Directory` has no resource-close
+//!   API, so delegate resources remain owned until their last Rust owner drops.
 //! - Not ported (listed in the test-framework ledger's gap):
-//!   `setAssertNoUnrefencedFilesOnClose` (it needs
-//!   an `IndexWriter` over the directory) and `getLevelForCheckOnClose`.
+//!   `getLevelForCheckOnClose`.
 //! - The seeding is Java's (`new Random(random.nextInt())`), but the draw
 //!   sites differ: no `newIOContext` draws, the crash's damage deletes and
 //!   lengths through the delegate (no `maybeYield`, no `Failure`), and under
@@ -320,6 +323,7 @@ struct State {
     fail_on_open_input: bool,
     failures: Vec<Arc<dyn Failure>>,
     check_index_on_close: bool,
+    assert_no_unreferenced_files_on_close: bool,
     is_open: bool,
     /// How many inputs opened slowly, closed slowly, and outputs were
     /// throttled: what shows the knobs fired.
@@ -676,6 +680,7 @@ impl MockDirectoryWrapper {
             fail_on_open_input: true,
             failures: Vec::new(),
             check_index_on_close: true,
+            assert_no_unreferenced_files_on_close: false,
             is_open: true,
             slow_opens: 0,
             slow_closes: 0,
@@ -713,6 +718,87 @@ impl MockDirectoryWrapper {
         self.shared.fs.as_ref()
     }
 
+    /// Java: `setAssertNoUnrefencedFilesOnClose(value)` (Java spells
+    /// "Unrefenced"). Off by default. The check opens actual writers on close
+    /// and fails if the first writer's cleanup removes or adds any entries.
+    /// The second writer may prune older commits but must preserve live docs.
+    pub fn set_assert_no_unreferenced_files_on_close(&self, value: bool) {
+        self.state().assert_no_unreferenced_files_on_close = value;
+    }
+
+    /// Java: `MockDirectoryWrapper.close`'s optional unreferenced-file check.
+    /// Writers/readers are scoped so every error releases their locks/inputs.
+    fn assert_no_unreferenced_files(&self) -> std::result::Result<(), String> {
+        use lucene_index::deletion_policy::NoDeletionPolicy;
+        use lucene_index::index_writer::IndexWriter;
+        use lucene_index::segment_info::LuceneVersion;
+        use lucene_search::directory_reader::DirectoryReader;
+        use lucene_util::version::Version;
+
+        let start: BTreeSet<_> = self
+            .list_all()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .collect();
+        // Java disables the delegate virus checker before opening the writer;
+        // it stays disabled because Java closes the delegate after this check.
+        self.disable_virus_checker();
+        let latest = Version::LATEST;
+        let version = LuceneVersion {
+            major: latest.major(),
+            minor: latest.minor(),
+            bugfix: latest.bugfix(),
+        };
+        {
+            let mut writer = IndexWriter::open_with_default_config(
+                self.shared.inner.as_ref(),
+                "Lucene104",
+                version,
+                Some(Arc::new(NoDeletionPolicy)),
+            )
+            .map_err(|error| error.to_string())?;
+            writer.try_rollback().map_err(|error| error.to_string())?;
+        }
+        let end: BTreeSet<_> = self
+            .shared
+            .inner
+            .list_all()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .collect();
+        if start != end {
+            let removed: Vec<_> = start.difference(&end).collect();
+            let added: Vec<_> = end.difference(&start).collect();
+            let mut extras = String::new();
+            if !removed.is_empty() {
+                extras.push_str(&format!("\n\nThese files were removed: {removed:?}"));
+            }
+            if !added.is_empty() {
+                extras.push_str(&format!(
+                    "\n\nThese files were added (waaaaaaaaaat!): {added:?}"
+                ));
+            }
+            return Err(format!(
+                "unreferenced files: before delete:\n    {start:?}\n  after delete:\n    {end:?}{extras}"
+            ));
+        }
+        let before = DirectoryReader::open(self)
+            .map_err(|error| error.to_string())?
+            .num_docs();
+        let mut writer = IndexWriter::open_with_default_config(self, "Lucene104", version, None)
+            .map_err(|error| error.to_string())?;
+        writer.set_commit_on_close(false);
+        writer.close().map_err(|error| error.to_string())?;
+        let after = DirectoryReader::open(self)
+            .map_err(|error| error.to_string())?
+            .num_docs();
+        if before != after {
+            return Err(format!(
+                "numDocs changed after opening/closing IW: before={before} after={after}"
+            ));
+        }
+        Ok(())
+    }
     /// `setTrackDiskUsage(v)`.
     pub fn set_track_disk_usage(&self, v: bool) {
         self.state().track_disk_usage = v;
@@ -1305,7 +1391,10 @@ impl Drop for MockInput {
 impl BaseDirectoryWrapper for MockDirectoryWrapper {
     /// `MockDirectoryWrapper.close()`: fails while a file is open;
     /// otherwise turns the fault rates off and, when the index exists and
-    /// the check is on, crashes the directory and runs `CheckIndex`.
+    /// the check is on, crashes the directory and runs `CheckIndex`. The
+    /// optional unreferenced-file check then opens actual writers/readers.
+    /// Delegate resources are released when their Rust owners drop. The caller
+    /// must stop concurrent directory operations before closing it.
     fn close(&self) -> std::result::Result<(), String> {
         {
             let mut st = self.state();
@@ -1327,10 +1416,20 @@ impl BaseDirectoryWrapper for MockDirectoryWrapper {
         if let Some(fs) = &self.shared.fs {
             fs.check_leaks()?;
         }
-        if self.check_index_on_close() && index_exists(self).map_err(|e| e.to_string())? {
-            self.crash().map_err(|e| e.to_string())?;
-            // Reading is still allowed after a crash, as in Java.
-            crate::util::test_util::check_index(self)?;
+        let check_index = self.check_index_on_close();
+        let assert_no_unreferenced = self.state().assert_no_unreferenced_files_on_close;
+        if (check_index || assert_no_unreferenced)
+            && index_exists(self).map_err(|error| error.to_string())?
+        {
+            if check_index {
+                self.crash().map_err(|error| error.to_string())?;
+                // Reading is still allowed after a crash, as in Java. Preserve
+                // that state for the later writer: Java does not clearCrash.
+                crate::util::test_util::check_index(self)?;
+            }
+            if assert_no_unreferenced {
+                self.assert_no_unreferenced_files()?;
+            }
         }
         Ok(())
     }
@@ -1563,6 +1662,17 @@ impl Directory for MockDirectoryWrapper {
 
     fn pending_deletions(&self) -> Result<BTreeSet<String>> {
         self.shared.inner.pending_deletions()
+    }
+
+    fn disable_virus_checker(&self) -> bool {
+        let local = self
+            .shared
+            .fs
+            .as_ref()
+            .is_some_and(|fs| fs.disable_virus_checker());
+        // Evaluate both: a nested wrapper may own a different filesystem.
+        let delegate = self.shared.inner.disable_virus_checker();
+        local || delegate
     }
 
     fn fs_directory_path(&self) -> Option<&Path> {

@@ -75,7 +75,7 @@ impl IndexWriter<'_> {
             }
             self.commit()?;
         } else {
-            self.rollback();
+            self.try_rollback()?;
         }
         Ok(())
     }

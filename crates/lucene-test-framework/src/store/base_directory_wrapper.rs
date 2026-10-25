@@ -46,9 +46,13 @@ pub trait BaseDirectoryWrapper: Directory {
     }
 }
 
-/// `DirectoryReader.indexExists(dir)`: some `segments_N` is listed.
+/// `DirectoryReader.indexExists(dir)`: any name starts with `segments_`.
+/// This deliberately accepts malformed suffixes and never parses a generation.
 pub fn index_exists(dir: &dyn Directory) -> Result<bool> {
-    Ok(lucene_store::directory::last_commit_generation(&dir.list_all()?)? != -1)
+    Ok(dir
+        .list_all()?
+        .iter()
+        .any(|name| name.starts_with("segments_")))
 }
 
 /// `RawDirectoryWrapper`: a [`BaseDirectoryWrapper`] that only forwards --
@@ -146,6 +150,9 @@ impl Directory for RawDirectoryWrapper {
     fn pending_deletions(&self) -> Result<BTreeSet<String>> {
         self.inner.pending_deletions()
     }
+    fn disable_virus_checker(&self) -> bool {
+        self.inner.disable_virus_checker()
+    }
     fn fs_directory_path(&self) -> Option<&Path> {
         self.inner.fs_directory_path()
     }
@@ -160,6 +167,32 @@ mod tests {
     use super::*;
     use lucene_store::{ByteBuffersDirectory, DataOutput, IndexOutput};
 
+    #[test]
+    fn index_exists_only_tests_the_java_prefix() {
+        for name in [
+            "segments",
+            "segments.gen",
+            "segments-1",
+            "pending_segments_1",
+        ] {
+            let dir = ByteBuffersDirectory::new();
+            let out = dir.create_output(name).unwrap();
+            out.close().unwrap();
+            assert!(!index_exists(&dir).unwrap(), "{name}");
+        }
+        for name in [
+            "segments_",
+            "segments_bad!",
+            "segments_-1",
+            "segments_zzzzzzzzzzzzzzzzzzzz",
+            "segments_😀",
+        ] {
+            let dir = ByteBuffersDirectory::new();
+            let out = dir.create_output(name).unwrap();
+            out.close().unwrap();
+            assert!(index_exists(&dir).unwrap(), "{name}");
+        }
+    }
     #[test]
     fn raw_wrapper_forwards_and_checks_once() {
         let dir = RawDirectoryWrapper::new(ByteBuffersDirectory::new());
@@ -185,6 +218,7 @@ mod tests {
         );
         assert!(dir.pending_deletions().unwrap().is_empty());
         assert!(dir.fs_directory_path().is_none());
+        assert!(!dir.disable_virus_checker());
         drop(dir.obtain_lock("write.lock").unwrap());
         assert!(!index_exists(&dir).unwrap());
         dir.close().unwrap();

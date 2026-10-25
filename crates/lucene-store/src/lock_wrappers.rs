@@ -128,6 +128,11 @@ impl<D: Directory> Directory for SleepingLockWrapper<D> {
         )))
     }
 
+    #[cfg(any(test, feature = "test-util"))]
+    fn disable_virus_checker(&self) -> bool {
+        self.inner.disable_virus_checker()
+    }
+
     fn fs_directory_path(&self) -> Option<&Path> {
         None
     }
@@ -207,6 +212,11 @@ impl<D: Directory> Directory for LockValidatingDirectoryWrapper<D> {
     fn sync(&self, names: &[String]) -> Result<()> {
         self.write_lock.ensure_valid()?;
         self.inner.sync(names)
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    fn disable_virus_checker(&self) -> bool {
+        self.inner.disable_virus_checker()
     }
 
     fn fs_directory_path(&self) -> Option<&Path> {
