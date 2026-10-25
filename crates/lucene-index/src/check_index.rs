@@ -2267,12 +2267,25 @@ fn impacts_levels(
     levels
 }
 
-/// `CheckIndex.checkImpacts(impacts, lastTarget)`, over [`impacts_levels`].
+/// Java: `CheckIndex.checkImpacts(impacts, lastTarget)`, over owned impact
+/// snapshots. Shared by this index checker and the test framework's asserting
+/// impacts iterator. Equal level bounds are allowed.
 ///
 /// Ported as written, including that the within-level ordering loop never
 /// advances its "previous" impact, so it compares every impact with the
-/// first one rather than with its predecessor.
-fn check_impacts(levels: &[(i32, Vec<postings::Impact>)], last_target: i32) -> Result<(), String> {
+/// first one rather than with its predecessor. The cross-level loop advances
+/// the upper impact at most once for each lower impact, without retrying it.
+/// Java copies mutable frequency/norm buffers before comparing levels; these
+/// snapshots already own their immutable pairs.
+///
+/// # Errors
+/// An empty level list, insufficient or decreasing bounds, invalid frequency
+/// or norm, ordering violation, or exhausted cross-level comparison returns
+/// Java's diagnostic message.
+pub fn check_impacts(
+    levels: &[(i32, Vec<postings::Impact>)],
+    last_target: i32,
+) -> Result<(), String> {
     let Some((doc_id_up_to0, _)) = levels.first() else {
         return Err("The number of impact levels must be >= 1, got 0".to_string());
     };
@@ -2282,12 +2295,13 @@ fn check_impacts(levels: &[(i32, Vec<postings::Impact>)], last_target: i32) -> R
              {last_target}"
         ));
     }
-    for pair in levels.windows(2) {
+    for (previous_level, pair) in levels.windows(2).enumerate() {
         if let [(previous, _), (up_to, _)] = pair {
             if up_to < previous {
                 return Err(format!(
-                    "Decreasing return for getDocIdUpTo: {previous} then {up_to} for target \
-                     {last_target}"
+                    "Decreasing return for getDocIdUpTo: level {previous_level} returned \
+                     {previous} but level {} returned {up_to} for target {last_target}",
+                    previous_level.saturating_add(1)
                 ));
             }
         }
@@ -2302,9 +2316,9 @@ fn check_impacts(levels: &[(i32, Vec<postings::Impact>)], last_target: i32) -> R
         if first.norm == 0 {
             return Err(format!("First impact had a norm == 0: {}", first.norm));
         }
-        let (prev_freq, prev_norm) = (first.freq, first.norm as u64);
+        let (prev_freq, prev_norm) = (first.freq, first.norm);
         for impact in impacts.iter().skip(1) {
-            if impact.freq <= prev_freq || (impact.norm as u64) <= prev_norm {
+            if impact.freq <= prev_freq || (impact.norm as u64) <= (prev_norm as u64) {
                 return Err(format!(
                     "Impacts are not ordered or contain dups, got ({prev_freq},{prev_norm}) \
                      then ({},{})",
@@ -2323,9 +2337,11 @@ fn check_impacts(levels: &[(i32, Vec<postings::Impact>)], last_target: i32) -> R
                     continue;
                 }
                 let Some(next) = impacts.get(index) else {
+                    let freqs: Vec<_> = impacts.iter().map(|impact| impact.freq).collect();
+                    let norms: Vec<_> = impacts.iter().map(|impact| impact.norm).collect();
                     return Err(format!(
                         "Found impact ({},{}) on level {} but no impact on level {level} \
-                         triggers a better score",
+                         triggers a better score: freqs={freqs:?} norms={norms:?}",
                         p.freq,
                         p.norm,
                         level.saturating_sub(1)
@@ -6561,6 +6577,59 @@ mod tests {
             0
         )
         .contains("triggers a better score"));
+    }
+
+    #[test]
+    fn shared_impacts_validation_keeps_java_quirks_and_signed_diagnostics() {
+        // Java accepts equal level bounds and compares later pairs only to
+        // the first one, even if the last two pairs regress.
+        assert_eq!(
+            check_impacts(
+                &[
+                    (10, vec![impact(1, 1), impact(5, 5), impact(3, 3)]),
+                    (10, vec![impact(10, 1)]),
+                ],
+                10,
+            ),
+            Ok(())
+        );
+        // Advancing the upper pair consumes the lower pair without checking
+        // it again. Both upper pairs here score worse than the lower one.
+        assert_eq!(
+            check_impacts(
+                &[
+                    (10, vec![impact(10, 1)]),
+                    (20, vec![impact(1, 1), impact(2, 2)]),
+                ],
+                0,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            check_impacts(
+                &[(10, vec![impact(1, 1)]), (9, vec![impact(1, 1)])],
+                0,
+            )
+            .unwrap_err(),
+            "Decreasing return for getDocIdUpTo: level 0 returned 10 but level 1 returned 9 for target 0"
+        );
+        // Norm comparisons are unsigned, but Java renders signed longs in
+        // error messages, including the first pair's norm.
+        assert_eq!(
+            check_impacts(&[(10, vec![impact(1, -1), impact(2, i64::MIN)])], 0).unwrap_err(),
+            "Impacts are not ordered or contain dups, got (1,-1) then (2,-9223372036854775808)"
+        );
+        assert_eq!(
+            check_impacts(
+                &[
+                    (10, vec![impact(10, 1), impact(11, 2)]),
+                    (20, vec![impact(1, 1), impact(2, 2)]),
+                ],
+                0,
+            )
+            .unwrap_err(),
+            "Found impact (11,2) on level 0 but no impact on level 1 triggers a better score: freqs=[1, 2] norms=[1, 2]"
+        );
     }
 
     /// `postings.impacts` and `postings.doc_id_runs` run on every term of a

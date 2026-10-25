@@ -41,6 +41,7 @@ to describe a defect that got past it.
 | [`literal-space-run`](#literal-space-run) | `check-port-invariants.py` | a line in `crates/*/src` holding a string literal with a run of 8+ spaces between non-spaces, or a `\n` then 8+ spaces, with no `// SPACES-OK:` waiver | a run under eight spaces; a run only on a later line of a multi-line literal; `crates/*/tests` |
 | [`test-framework-dev-only`](#test-framework-dev-only) | `check-port-invariants.py` | a `lucene-test-framework` key (inline or `[*.lucene-test-framework]` table) in the root or a `crates/*/Cargo.toml` under any section but a `dev-dependencies` one | an edge written through `package = "lucene-test-framework"` under another key; a manifest outside `crates/`; feature unification in a whole-workspace build (see the section) |
 | [`bench-not-asserting`](#bench-not-asserting) | `check-port-invariants.py` | an `asserting` entry in any `features = [...]` list of `benchmarks/rust-runner/Cargo.toml` | a feature enabling `asserting` transitively; a `--workspace` benchmark build |
+| [fixture source selection](#fixture-source-selection) | `test-test-framework-fixture-selection.py` | `--only` compiling unrelated broken sources, missing source dependencies, incomplete full checks, fixture drift or changed early argument handling | runtime dependencies loaded by reflection, actual Lucene behavior or fixture determinism; the full Java fixture check covers the real generators |
 | [`preflight`](#preflight) | `preflight.sh` | a docker engine that does not answer in 30 s; under 25 GB free where Docker keeps its disk; a Docker virtual disk over 300 GB on a drive with under 150 GB free (over 300 GB with more room only warns); under 5 GB free on the repo's drive; (in the container) under 15 GB free under the target dir | a drive that fills *during* a run (it checks the start, not the trend); a second project's disk use between checks; free space that is real but fragmented |
 | [rustdoc links](#rustdoc) | `cargo doc` | a `[`link`]` that resolves to nothing | a symbol named in *plain backticks*, which is most of them |
 | [coverage objects](#coverage-objects) | `scripts/coverage.sh` | lucene-ffi's never-loaded cdylib standing in for the executed copy of a `#[no_mangle]` function in the line report | the same first-copy-wins rule between two *executed* copies; a file whose lines split between a crate's unit-test and integration-test builds, which the summary under-reports |
@@ -54,6 +55,30 @@ sizing: that is still a hand audit, still step 2 of the three-part module audit,
 still where c27 found four aborts and a release-mode infinite loop.
 
 ---
+
+## Fixture source selection
+
+`gen-test-framework-fixtures.sh --only` passes the requested generator sources
+to `javac`, with the generator directory as its source path. The compiler also
+builds referenced source helpers. Each invocation uses a fresh classes directory,
+so there is no persistent Java compilation cache to invalidate. `--check` still
+compiles every Java source and executes every discovered generator before
+comparing the complete output directory with the committed fixtures.
+
+The local gate and CI's fixtures job run
+`test-test-framework-fixture-selection.py` against the production shell
+script in a temporary fixture tree using real `javac` and `java`. A selected
+generator calls a second source class while an unrelated source is deliberately
+invalid. Selection must resolve the dependency and ignore the invalid source;
+full checking must reject it. Other cases verify repeated selections, full
+execution, deterministic repeated output, drift rejection without rewriting the
+committed files, and early argument handling.
+
+Negative controls replace selected compiler inputs with all sources, then remove
+the source path. The dependency/selection regression must fail for each defect;
+the original script is restored after each probe. This check cannot discover a
+future runtime dependency loaded by reflection, nor prove actual Lucene oracle
+determinism. The real generators' full `--check` remains required for that.
 
 ## fixed-bitset-bound
 

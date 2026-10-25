@@ -221,6 +221,8 @@ jobs:
         run: ./scripts/gen-bwc-fixtures.sh --check
       # lucene-test-framework's generators (M14.h) run on their own classpath
       # (the test-framework jar plus JUnit, Hamcrest, randomizedtesting).
+      - name: Test-framework fixture source selection
+        run: python3 scripts/test-test-framework-fixture-selection.py
       - name: Test-framework fixtures
         run: ./scripts/gen-test-framework-fixtures.sh --check
       # Nori's UnicodeScript table is read off JDK 25 (Unicode 16.0; JDK 21

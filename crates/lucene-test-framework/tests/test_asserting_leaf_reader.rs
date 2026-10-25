@@ -26,10 +26,10 @@ use lucene_search::reader::{
 use lucene_search::Result;
 use lucene_store::ByteBuffersDirectory;
 use lucene_test_framework::index::asserting_leaf_reader::{
-    asserting_directory_reader, AssertingBinaryDocValues, AssertingLeafReader,
-    AssertingNumericDocValues, AssertingPostingsEnum, AssertingSortedDocValues,
-    AssertingSortedNumericDocValues, AssertingSortedSetDocValues, AssertingTerms,
-    AssertingTermsEnum,
+    asserting_directory_reader, AssertingBinaryDocValues, AssertingImpactsEnum,
+    AssertingLeafReader, AssertingNumericDocValues, AssertingPostingsEnum,
+    AssertingSortedDocValues, AssertingSortedNumericDocValues, AssertingSortedSetDocValues,
+    AssertingTerms, AssertingTermsEnum,
 };
 use lucene_util::fixed_bit_set::FixedBitSet;
 
@@ -1031,6 +1031,248 @@ fn faulty_postings_fire() {
     assert_eq!(p.next_position().unwrap(), -1);
     assert_eq!(p.payload(), Some([1u8].as_slice()));
     assert_eq!((p.start_offset(), p.end_offset(), p.cost()), (-1, -1, 1));
+}
+
+/// Scripted postings and impact snapshots, including fallible delegate calls.
+struct FakeImpacts {
+    postings: FakePostings,
+    levels: Vec<(i32, Vec<lucene_codecs::postings::Impact>)>,
+    fail_shallow: bool,
+    fail_next: bool,
+    fail_advance: bool,
+    fail_position: bool,
+}
+impl FakeImpacts {
+    fn new(levels: Vec<(i32, Vec<lucene_codecs::postings::Impact>)>) -> Self {
+        Self {
+            postings: FakePostings::new(&[3, 5, NO_MORE_DOCS]),
+            levels,
+            fail_shallow: false,
+            fail_next: false,
+            fail_advance: false,
+            fail_position: false,
+        }
+    }
+    fn fail(once: &mut bool, operation: &str) -> Result<()> {
+        if std::mem::take(once) {
+            Err(lucene_search::Error::IllegalArgument(operation.into()))
+        } else {
+            Ok(())
+        }
+    }
+}
+impl DocIdSetIterator for FakeImpacts {
+    fn doc_id(&self) -> i32 {
+        self.postings.doc_id()
+    }
+    fn next_doc(&mut self) -> Result<i32> {
+        Self::fail(&mut self.fail_next, "next")?;
+        self.postings.next_doc()
+    }
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        Self::fail(&mut self.fail_advance, "advance")?;
+        self.postings.advance(target)
+    }
+    fn cost(&self) -> i64 {
+        self.postings.cost()
+    }
+}
+impl PostingsEnum for FakeImpacts {
+    fn freq(&self) -> i32 {
+        self.postings.freq()
+    }
+    fn next_position(&mut self) -> Result<i32> {
+        Self::fail(&mut self.fail_position, "position")?;
+        self.postings.next_position()
+    }
+    fn start_offset(&self) -> i32 {
+        self.postings.start_offset()
+    }
+    fn end_offset(&self) -> i32 {
+        self.postings.end_offset()
+    }
+    fn payload(&self) -> Option<&[u8]> {
+        self.postings.payload()
+    }
+}
+impl ImpactsEnum for FakeImpacts {
+    fn advance_shallow(&mut self, _target: i32) -> Result<i32> {
+        Self::fail(&mut self.fail_shallow, "shallow")?;
+        Ok(self.levels.first().map_or(NO_MORE_DOCS, |level| level.0))
+    }
+    fn impacts(&self) -> Vec<(i32, Vec<lucene_codecs::postings::Impact>)> {
+        self.levels.clone()
+    }
+}
+fn impact_level(up_to: i32, pairs: &[(i32, i64)]) -> (i32, Vec<lucene_codecs::postings::Impact>) {
+    (
+        up_to,
+        pairs
+            .iter()
+            .map(|&(freq, norm)| lucene_codecs::postings::Impact { freq, norm })
+            .collect(),
+    )
+}
+
+#[test]
+fn asserting_terms_returns_checked_impacts() {
+    let mut terms = AssertingTermsEnum::new(
+        Box::new(FakeTermsEnum {
+            df: 1,
+            ttf: 1,
+            positioned: false,
+        }),
+        true,
+    );
+    assert_eq!(terms.next().unwrap(), Some(b"t".as_slice()));
+    let mut impacts = terms.impacts(PostingsFlags::Freqs).unwrap();
+    fires("Cannot get impacts until", || {
+        impacts.impacts();
+    });
+    assert_eq!(impacts.next_doc().unwrap(), 0);
+    assert_eq!(impacts.freq(), 1);
+    assert!(!impacts.impacts().is_empty());
+}
+
+#[test]
+fn impacts_inherit_postings_and_keep_owned_snapshots() {
+    let levels = vec![impact_level(NO_MORE_DOCS, &[(1, 1), (2, -1)])];
+    let mut inner = FakeImpacts::new(levels.clone());
+    inner.postings.payload = Some(vec![9]);
+    let mut p = AssertingImpactsEnum::new(Box::new(inner));
+    fires("Cannot get impacts until", || {
+        p.impacts();
+    });
+    fires("freq() called before", || {
+        p.freq();
+    });
+    assert_eq!(p.cost(), 1);
+    assert_eq!(p.advance_shallow(0).unwrap(), NO_MORE_DOCS);
+    let snapshot = p.impacts();
+    assert_eq!(snapshot, levels);
+    assert_eq!(p.next_doc().unwrap(), 3);
+    assert_eq!(p.doc_id(), 3);
+    assert_eq!(p.freq(), 1);
+    fires("startOffset() called before nextPosition", || {
+        p.start_offset();
+    });
+    assert_eq!(p.next_position().unwrap(), 0);
+    assert_eq!(p.start_offset(), -1);
+    assert_eq!(p.end_offset(), -1);
+    assert_eq!(p.payload(), Some([9].as_slice()));
+    fires("nextPosition() called more than", || {
+        p.next_position().unwrap();
+    });
+    assert_eq!(p.advance(5).unwrap(), 5);
+    assert_eq!(snapshot, levels, "owned snapshot survives cursor movement");
+    assert_eq!(p.impacts(), levels);
+    assert_eq!(p.next_doc().unwrap(), NO_MORE_DOCS);
+    fires("freq() called after", || {
+        p.freq();
+    });
+    fires("last shallow target", || {
+        p.next_doc().unwrap();
+    });
+}
+
+#[test]
+fn impacts_shallow_targets_and_delegate_failures_preserve_java_state() {
+    let mut inner = FakeImpacts::new(vec![impact_level(10, &[(1, 1)])]);
+    inner.fail_shallow = true;
+    inner.fail_next = true;
+    inner.fail_advance = true;
+    inner.fail_position = true;
+    let mut p = AssertingImpactsEnum::new(Box::new(inner));
+    assert!(
+        matches!(p.advance_shallow(2), Err(lucene_search::Error::IllegalArgument(message)) if message == "shallow")
+    );
+    fires("called on decreasing targets", || {
+        p.advance_shallow(1).unwrap();
+    });
+    fires("last shallow target", || {
+        p.next_doc().unwrap();
+    });
+    fires("last shallow target", || {
+        p.advance(1).unwrap();
+    });
+    assert_eq!(p.advance_shallow(2).unwrap(), 10);
+    assert!(
+        matches!(p.advance(2), Err(lucene_search::Error::IllegalArgument(message)) if message == "advance")
+    );
+    assert_eq!(p.doc_id(), -1);
+    assert_eq!(p.advance(2).unwrap(), 3);
+    fires("docID = 3", || {
+        p.advance_shallow(2).unwrap();
+    });
+    assert!(
+        matches!(p.next_position(), Err(lucene_search::Error::IllegalArgument(message)) if message == "position")
+    );
+    assert_eq!(
+        p.next_position().unwrap(),
+        0,
+        "failed position did not consume budget"
+    );
+    assert!(
+        matches!(p.next_doc(), Err(lucene_search::Error::IllegalArgument(message)) if message == "next")
+    );
+    assert_eq!(p.doc_id(), 3);
+    assert_eq!(p.next_doc().unwrap(), 5);
+}
+
+#[test]
+fn malformed_impacts_fire_each_metadata_check() {
+    let cases = [
+        (vec![], "number of impact levels"),
+        (vec![impact_level(0, &[(1, 1)])], "less than the target"),
+        (
+            vec![impact_level(10, &[(1, 1)]), impact_level(9, &[(1, 1)])],
+            "Decreasing return",
+        ),
+        (vec![impact_level(10, &[])], "empty list of impacts"),
+        (vec![impact_level(10, &[(0, 1)])], "freq <= 0"),
+        (vec![impact_level(10, &[(1, 0)])], "norm == 0"),
+        (
+            vec![impact_level(10, &[(2, 1), (2, 2)])],
+            "not ordered or contain dups",
+        ),
+        (
+            vec![impact_level(10, &[(1, -1), (2, 1)])],
+            "not ordered or contain dups",
+        ),
+        (
+            vec![impact_level(10, &[(2, 1)]), impact_level(10, &[(1, 1)])],
+            "triggers a better score",
+        ),
+    ];
+    for (levels, message) in cases {
+        let mut p = AssertingImpactsEnum::new(Box::new(FakeImpacts::new(levels)));
+        p.advance_shallow(1).unwrap();
+        fires(message, || {
+            p.impacts();
+        });
+    }
+}
+
+#[test]
+fn impacts_preserve_pinned_first_entry_and_single_step_cross_level_checks() {
+    // Equal upper bounds and decreasing later pairs pass the pinned Java
+    // checker: each later pair is compared to the first, not its predecessor.
+    let levels = vec![
+        impact_level(10, &[(1, 1), (4, -1), (3, i64::MIN)]),
+        impact_level(10, &[(5, 1)]),
+    ];
+    let mut p = AssertingImpactsEnum::new(Box::new(FakeImpacts::new(levels.clone())));
+    p.advance_shallow(1).unwrap();
+    assert_eq!(p.impacts(), levels);
+    // Java advances the current level at most once for each previous pair,
+    // without rechecking that pair against the newly selected current one.
+    let levels = vec![
+        impact_level(10, &[(9, 1)]),
+        impact_level(20, &[(1, 1), (2, 2)]),
+    ];
+    let mut p = AssertingImpactsEnum::new(Box::new(FakeImpacts::new(levels.clone())));
+    p.advance_shallow(1).unwrap();
+    assert_eq!(p.impacts(), levels);
 }
 
 /// Doc values of every kind that go where they are told.

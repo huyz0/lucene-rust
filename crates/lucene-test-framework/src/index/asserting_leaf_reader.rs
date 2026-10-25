@@ -9,8 +9,7 @@
 //! - `assertThread` has no counterpart: the iterators borrow their reader
 //!   and are not `Send`, so the compiler already refuses to hand one to
 //!   another thread.
-//! - Not wrapped (they pass through unchecked): impacts
-//!   (`AssertingImpactsEnum`), the doc-values skipper
+//! - Not wrapped (they pass through unchecked): the doc-values skipper
 //!   (`AssertingDocValuesSkipper`), points (`AssertingPointValues`,
 //!   `AssertingPointTree`, `AssertingIntersectVisitor`) and vectors
 //!   (`searchNearestVectors`). Stored fields and term vectors pass through
@@ -22,6 +21,9 @@
 //! - `prepareSeekExact`, `termState`, `intoBitSet`, `docIDRunEnd`,
 //!   `nextPostings` and `longValues` have no Rust counterpart, nor has the
 //!   `TWO_PHASE_SEEKING` state they need. `BytesRef.isValid` is a slice here.
+//! - Impacts are owned snapshots, so Java's stale `AssertingImpacts` view
+//!   guard is unnecessary. The infallible `ImpactsEnum::impacts` API reports
+//!   Java's `CheckIndexException` validation failures as assertion panics.
 //! - [`SortedNumericDocValues::take_values`] and
 //!   [`SortedSetDocValues::take_ords`], the bulk reads Java lacks, are
 //!   checked as `nextValue`/`nextOrd` are and count as reading every value.
@@ -31,6 +33,7 @@ use std::sync::Arc;
 use lucene_codecs::automaton::ByteDfa;
 use lucene_codecs::blocktree::SeekStatus;
 use lucene_codecs::field_infos::{DocValuesType, FieldInfo, FieldInfos, IndexOptions};
+use lucene_codecs::postings::Impact;
 use lucene_codecs::stored_fields::StoredFieldVisitor;
 use lucene_index::segment_info::IndexSortField;
 use lucene_search::directory_reader::DirectoryReader;
@@ -490,7 +493,9 @@ impl TermsEnum for AssertingTermsEnum<'_> {
             flags >= PostingsFlags::Freqs,
             "Freqs should be requested on impacts"
         );
-        self.in_.impacts(flags)
+        Ok(Box::new(AssertingImpactsEnum::new(
+            self.in_.impacts(flags)?,
+        )))
     }
     fn ord(&self) -> Result<i64> {
         // SENTINEL-OK: the "ord()" is a state label, not a call; the
@@ -517,9 +522,41 @@ enum DocsState {
 }
 
 /// `AssertingPostingsEnum`: the START/ITERATING/FINISHED state machine and
-/// the position budget `freq()` sets.
-pub struct AssertingPostingsEnum {
-    in_: Box<dyn PostingsEnum>,
+/// the position budget `freq()` sets. The wrapper is neither `Send` nor `Sync`,
+/// even when its concrete delegate is: Java's creation-thread checks are
+/// enforced by this thread restriction. The public constructor keeps its
+/// original erased delegate type; the marker preserves the same restriction
+/// for internal concrete delegate shapes too.
+///
+/// The concrete wrapper type fails the `Send` bound required by thread spawn,
+/// even though its delegate passes that bound:
+///
+/// ```compile_fail
+/// use lucene_search::reader::MaterializedPostings;
+/// use lucene_test_framework::index::asserting_leaf_reader::AssertingPostingsEnum;
+///
+/// fn require_send<T: Send>() {}
+/// require_send::<MaterializedPostings>();
+/// require_send::<AssertingPostingsEnum<MaterializedPostings>>();
+/// ```
+///
+/// The public constructor erases different concrete delegates identically:
+///
+/// ```
+/// use lucene_search::reader::{DocIdSetIterator, MaterializedPostings, SlowImpactsEnum};
+/// use lucene_test_framework::index::asserting_leaf_reader::AssertingPostingsEnum;
+///
+/// let first = MaterializedPostings::new(vec![0], vec![1], None).unwrap();
+/// let mut checked = AssertingPostingsEnum::new(Box::new(first));
+/// assert_eq!(checked.cost(), 1);
+/// let second = MaterializedPostings::new(vec![0], vec![1], None).unwrap();
+/// checked = AssertingPostingsEnum::new(Box::new(SlowImpactsEnum::new(Box::new(second))));
+/// assert_eq!(checked.cost(), 1);
+/// ```
+pub struct AssertingPostingsEnum<P: PostingsEnum + ?Sized = dyn PostingsEnum> {
+    in_: Box<P>,
+    // Preserve the non-thread-transferable trait-object wrapper's contract.
+    _thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
     state: DocsState,
     position_count: i32,
     position_max: i32,
@@ -527,11 +564,18 @@ pub struct AssertingPostingsEnum {
 }
 
 impl AssertingPostingsEnum {
-    /// Wraps `in_`.
+    /// Wraps `in_`, preserving the original erased-delegate constructor API.
     pub fn new(in_: Box<dyn PostingsEnum>) -> Self {
+        Self::new_inner(in_)
+    }
+}
+
+impl<P: PostingsEnum + ?Sized> AssertingPostingsEnum<P> {
+    fn new_inner(in_: Box<P>) -> Self {
         let doc = in_.doc_id();
         Self {
             in_,
+            _thread_bound: std::marker::PhantomData,
             state: DocsState::Start,
             position_count: 0,
             position_max: 0,
@@ -573,7 +617,7 @@ impl AssertingPostingsEnum {
     }
 }
 
-impl DocIdSetIterator for AssertingPostingsEnum {
+impl<P: PostingsEnum + ?Sized> DocIdSetIterator for AssertingPostingsEnum<P> {
     fn doc_id(&self) -> i32 {
         let inner = self.in_.doc_id();
         assert!(
@@ -618,7 +662,7 @@ impl DocIdSetIterator for AssertingPostingsEnum {
     }
 }
 
-impl PostingsEnum for AssertingPostingsEnum {
+impl<P: PostingsEnum + ?Sized> PostingsEnum for AssertingPostingsEnum<P> {
     fn freq(&self) -> i32 {
         self.on_a_doc("freq");
         let freq = self.in_.freq();
@@ -655,6 +699,99 @@ impl PostingsEnum for AssertingPostingsEnum {
             "getPayload() returned payload with invalid length!"
         );
         payload
+    }
+}
+
+/// Java's `AssertingLeafReader.AssertingImpactsEnum`: postings checks plus
+/// shallow-position ordering and `CheckIndex.checkImpacts` validation.
+pub struct AssertingImpactsEnum {
+    postings: AssertingPostingsEnum<dyn ImpactsEnum>,
+    // SENTINEL: `-1` means advanceShallow has not been called; compared only.
+    last_shallow_target: i32,
+}
+
+impl AssertingImpactsEnum {
+    /// Wraps the same impacts iterator in the inherited postings checks.
+    pub fn new(inner: Box<dyn ImpactsEnum>) -> Self {
+        Self {
+            postings: AssertingPostingsEnum::new_inner(inner),
+            last_shallow_target: -1,
+        }
+    }
+}
+
+impl DocIdSetIterator for AssertingImpactsEnum {
+    fn doc_id(&self) -> i32 {
+        self.postings.doc_id()
+    }
+    fn next_doc(&mut self) -> Result<i32> {
+        // Java int addition wraps when docID is NO_MORE_DOCS.
+        assert!(
+            self.doc_id().wrapping_add(1) >= self.last_shallow_target,
+            "target = {} < last shallow target = {}",
+            self.doc_id().wrapping_add(1),
+            self.last_shallow_target
+        );
+        self.postings.next_doc()
+    }
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        assert!(
+            target >= self.last_shallow_target,
+            "target = {target} < last shallow target = {}",
+            self.last_shallow_target
+        );
+        self.postings.advance(target)
+    }
+    fn cost(&self) -> i64 {
+        self.postings.cost()
+    }
+}
+
+impl PostingsEnum for AssertingImpactsEnum {
+    fn freq(&self) -> i32 {
+        self.postings.freq()
+    }
+    fn next_position(&mut self) -> Result<i32> {
+        self.postings.next_position()
+    }
+    fn start_offset(&self) -> i32 {
+        self.postings.start_offset()
+    }
+    fn end_offset(&self) -> i32 {
+        self.postings.end_offset()
+    }
+    fn payload(&self) -> Option<&[u8]> {
+        self.postings.payload()
+    }
+}
+
+impl ImpactsEnum for AssertingImpactsEnum {
+    fn advance_shallow(&mut self, target: i32) -> Result<i32> {
+        assert!(
+            target >= self.last_shallow_target,
+            "called on decreasing targets: target = {target} < last target = {}",
+            self.last_shallow_target
+        );
+        assert!(
+            target >= self.doc_id(),
+            "target = {target} < docID = {}",
+            self.doc_id()
+        );
+        self.last_shallow_target = target;
+        self.postings.in_.advance_shallow(target)
+    }
+    fn impacts(&self) -> Vec<(i32, Vec<Impact>)> {
+        assert!(
+            self.doc_id() >= 0 || self.last_shallow_target >= 0,
+            "Cannot get impacts until the iterator is positioned or advanceShallow has been called"
+        );
+        let impacts = self.postings.in_.impacts();
+        lucene_index::check_index::check_impacts(
+            &impacts,
+            self.doc_id().max(self.last_shallow_target),
+        )
+        .unwrap_or_else(|message| panic!("{message}"));
+        impacts
     }
 }
 

@@ -1,0 +1,327 @@
+case	valid_walk	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	valid_walk	2147483647	1/1,3/7
+step	valid_walk	D	0	ok		2d31			-1	0
+step	valid_walk	C	0	ok		33		cost	-1	0
+step	valid_walk	S	0	ok				shallow:0	-1	0
+step	valid_walk	I	0	ok		323134373438333634373a312f312c332f37		impacts	-1	0
+step	valid_walk	N	0	ok		30		next,freq	0	0
+step	valid_walk	F	0	ok		32		freq	0	0
+step	valid_walk	P	0	ok		30		position	0	1
+step	valid_walk	O	0	ok		30		start	0	1
+step	valid_walk	E	0	ok		32		end	0	1
+step	valid_walk	Y	0	ok		30316666		payload	0	1
+step	valid_walk	P	0	ok		32		position	0	2
+step	valid_walk	Y	0	ok		30316666		payload	0	2
+step	valid_walk	N	0	ok		32		next,freq	2	0
+step	valid_walk	F	0	ok		32		freq	2	0
+step	valid_walk	A	7	ok		37		advance:7,freq	7	0
+step	valid_walk	P	0	ok		30		position	7	1
+step	valid_walk	N	0	ok		32313437343833363437		next	2147483647	0
+step	valid_walk	I	0	ok		323134373438333634373a312f312c332f37		impacts	2147483647	0
+case	unpositioned_impacts	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	unpositioned_impacts	2147483647	1/1,3/7
+step	unpositioned_impacts	I	0	assert	AssertionError		43616e6e6f742067657420696d706163747320756e74696c20746865206974657261746f7220697320706f736974696f6e6564206f7220616476616e63655368616c6c6f7720686173206265656e2063616c6c6564		-1	0
+step	unpositioned_impacts	S	-1	ok				shallow:-1	-1	0
+step	unpositioned_impacts	I	0	assert	AssertionError		43616e6e6f742067657420696d706163747320756e74696c20746865206974657261746f7220697320706f736974696f6e6564206f7220616476616e63655368616c6c6f7720686173206265656e2063616c6c6564		-1	0
+step	unpositioned_impacts	S	0	ok				shallow:0	-1	0
+step	unpositioned_impacts	I	0	ok		323134373438333634373a312f312c332f37		impacts	-1	0
+case	repeated_shallow	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	repeated_shallow	2147483647	1/1,3/7
+step	repeated_shallow	S	2	ok				shallow:2	-1	0
+step	repeated_shallow	S	2	ok				shallow:2	-1	0
+step	repeated_shallow	I	0	ok		323134373438333634373a312f312c332f37		impacts	-1	0
+step	repeated_shallow	S	1	assert	AssertionError		63616c6c6564206f6e2064656372656173696e6720746172676574733a20746172676574203d2031203c206c61737420746172676574203d2032		-1	0
+step	repeated_shallow	I	0	ok		323134373438333634373a312f312c332f37		impacts	-1	0
+step	repeated_shallow	A	2	ok		32		advance:2,freq	2	0
+step	repeated_shallow	D	0	ok		32			2	0
+case	shallow_before_doc	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	shallow_before_doc	2147483647	1/1,3/7
+step	shallow_before_doc	A	7	ok		37		advance:7,freq	7	0
+step	shallow_before_doc	S	6	assert	AssertionError		746172676574203d2036203c20646f634944203d2037		7	0
+step	shallow_before_doc	S	7	ok				shallow:7	7	0
+step	shallow_before_doc	I	0	ok		323134373438333634373a312f312c332f37		impacts	7	0
+case	shallow_blocks_next	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	shallow_blocks_next	2147483647	1/1,3/7
+step	shallow_blocks_next	S	2	ok				shallow:2	-1	0
+step	shallow_blocks_next	N	0	assert	AssertionError		746172676574203d2030203c206c617374207368616c6c6f7720746172676574203d2032		-1	0
+step	shallow_blocks_next	A	1	assert	AssertionError		746172676574203d2031203c206c617374207368616c6c6f7720746172676574203d2032		-1	0
+step	shallow_blocks_next	A	2	ok		32		advance:2,freq	2	0
+step	shallow_blocks_next	N	0	ok		37		next,freq	7	0
+case	shallow_error_retains_target	-1	2	0,2,7	0,2	0,4	2,6	01ff	shallow
+level	shallow_error_retains_target	2147483647	1/1,3/7
+step	shallow_error_retains_target	S	7	io	IOException		66697874757265207368616c6c6f77206661696c757265	shallow:7	-1	0
+step	shallow_error_retains_target	S	6	assert	AssertionError		63616c6c6564206f6e2064656372656173696e6720746172676574733a20746172676574203d2036203c206c61737420746172676574203d2037		-1	0
+step	shallow_error_retains_target	N	0	assert	AssertionError		746172676574203d2030203c206c617374207368616c6c6f7720746172676574203d2037		-1	0
+step	shallow_error_retains_target	A	7	ok		37		advance:7,freq	7	0
+step	shallow_error_retains_target	I	0	ok		323134373438333634373a312f312c332f37		impacts	7	0
+case	next_error_retains_state	-1	2	0,2,7	0,2	0,4	2,6	01ff	next
+level	next_error_retains_state	2147483647	1/1,3/7
+step	next_error_retains_state	N	0	io	IOException		66697874757265206e657874206661696c757265	next	-1	0
+step	next_error_retains_state	F	0	assert	AssertionError		6672657128292063616c6c6564206265666f7265206e657874446f6328292f616476616e63652829		-1	0
+step	next_error_retains_state	N	0	ok		30		next,freq	0	0
+step	next_error_retains_state	F	0	ok		32		freq	0	0
+step	next_error_retains_state	P	0	ok		30		position	0	1
+case	advance_error_retains_state	-1	2	0,2,7	0,2	0,4	2,6	01ff	advance
+level	advance_error_retains_state	2147483647	1/1,3/7
+step	advance_error_retains_state	A	2	io	IOException		6669787475726520616476616e6365206661696c757265	advance:2	-1	0
+step	advance_error_retains_state	F	0	assert	AssertionError		6672657128292063616c6c6564206265666f7265206e657874446f6328292f616476616e63652829		-1	0
+step	advance_error_retains_state	N	0	ok		30		next,freq	0	0
+step	advance_error_retains_state	A	2	ok		32		advance:2,freq	2	0
+step	advance_error_retains_state	I	0	ok		323134373438333634373a312f312c332f37		impacts	2	0
+case	next_error_retains_consumed_position	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	next_error_retains_consumed_position	2147483647	1/1,3/7
+step	next_error_retains_consumed_position	N	0	ok		30		next,freq	0	0
+step	next_error_retains_consumed_position	P	0	ok		30		position	0	1
+step	next_error_retains_consumed_position	X	1	ok					0	1
+step	next_error_retains_consumed_position	N	0	io	IOException		66697874757265206e657874206661696c757265	next	0	1
+step	next_error_retains_consumed_position	O	0	ok		30		start	0	1
+step	next_error_retains_consumed_position	P	0	ok		32		position	0	2
+step	next_error_retains_consumed_position	P	0	assert	AssertionError		6e657874506f736974696f6e28292063616c6c6564206d6f7265207468616e206672657128292074696d657321		0	2
+case	advance_error_retains_consumed_position	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	advance_error_retains_consumed_position	2147483647	1/1,3/7
+step	advance_error_retains_consumed_position	N	0	ok		30		next,freq	0	0
+step	advance_error_retains_consumed_position	P	0	ok		30		position	0	1
+step	advance_error_retains_consumed_position	X	2	ok					0	1
+step	advance_error_retains_consumed_position	A	2	io	IOException		6669787475726520616476616e6365206661696c757265	advance:2	0	1
+step	advance_error_retains_consumed_position	O	0	ok		30		start	0	1
+step	advance_error_retains_consumed_position	P	0	ok		32		position	0	2
+step	advance_error_retains_consumed_position	P	0	assert	AssertionError		6e657874506f736974696f6e28292063616c6c6564206d6f7265207468616e206672657128292074696d657321		0	2
+case	position_error_retains_budget	-1	2	0,2,7	0,2	0,4	2,6	01ff	position
+level	position_error_retains_budget	2147483647	1/1,3/7
+step	position_error_retains_budget	N	0	ok		30		next,freq	0	0
+step	position_error_retains_budget	P	0	io	IOException		6669787475726520706f736974696f6e206661696c757265	position	0	0
+step	position_error_retains_budget	P	0	ok		30		position	0	1
+step	position_error_retains_budget	P	0	ok		32		position	0	2
+step	position_error_retains_budget	P	0	assert	AssertionError		6e657874506f736974696f6e28292063616c6c6564206d6f7265207468616e206672657128292074696d657321		0	2
+case	postings_unpositioned	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	postings_unpositioned	2147483647	1/1,3/7
+step	postings_unpositioned	F	0	assert	AssertionError		6672657128292063616c6c6564206265666f7265206e657874446f6328292f616476616e63652829		-1	0
+step	postings_unpositioned	P	0	assert	AssertionError		6e657874506f736974696f6e28292063616c6c6564206265666f7265206e657874446f6328292f616476616e63652829		-1	0
+step	postings_unpositioned	O	0	assert	AssertionError		73746172744f666673657428292063616c6c6564206265666f7265206e657874446f6328292f616476616e63652829		-1	0
+step	postings_unpositioned	E	0	assert	AssertionError		656e644f666673657428292063616c6c6564206265666f7265206e657874446f6328292f616476616e63652829		-1	0
+step	postings_unpositioned	Y	0	assert	AssertionError		6765745061796c6f616428292063616c6c6564206265666f7265206e657874446f6328292f616476616e63652829		-1	0
+step	postings_unpositioned	C	0	ok		33		cost	-1	0
+case	postings_before_position	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	postings_before_position	2147483647	1/1,3/7
+step	postings_before_position	N	0	ok		30		next,freq	0	0
+step	postings_before_position	O	0	assert	AssertionError		73746172744f666673657428292063616c6c6564206265666f7265206e657874506f736974696f6e282921		0	0
+step	postings_before_position	E	0	assert	AssertionError		656e644f666673657428292063616c6c6564206265666f7265206e657874506f736974696f6e282921		0	0
+step	postings_before_position	Y	0	assert	AssertionError		6765745061796c6f616428292063616c6c6564206265666f7265206e657874506f736974696f6e282921		0	0
+step	postings_before_position	P	0	ok		30		position	0	1
+step	postings_before_position	O	0	ok		30		start	0	1
+step	postings_before_position	E	0	ok		32		end	0	1
+step	postings_before_position	Y	0	ok		30316666		payload	0	1
+case	position_budget_and_reset	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	position_budget_and_reset	2147483647	1/1,3/7
+step	position_budget_and_reset	N	0	ok		30		next,freq	0	0
+step	position_budget_and_reset	P	0	ok		30		position	0	1
+step	position_budget_and_reset	P	0	ok		32		position	0	2
+step	position_budget_and_reset	P	0	assert	AssertionError		6e657874506f736974696f6e28292063616c6c6564206d6f7265207468616e206672657128292074696d657321		0	2
+step	position_budget_and_reset	N	0	ok		32		next,freq	2	0
+step	position_budget_and_reset	O	0	assert	AssertionError		73746172744f666673657428292063616c6c6564206265666f7265206e657874506f736974696f6e282921		2	0
+step	position_budget_and_reset	P	0	ok		30		position	2	1
+case	advance_equal_doc	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	advance_equal_doc	2147483647	1/1,3/7
+step	advance_equal_doc	N	0	ok		30		next,freq	0	0
+step	advance_equal_doc	A	0	assert	AssertionError		746172676574206d757374206265203e20646f63494428292c20676f742030203c3d2030		0	0
+step	advance_equal_doc	D	0	ok		30			0	0
+case	finished_guards	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	finished_guards	2147483647	1/1,3/7
+step	finished_guards	A	2147483647	ok		32313437343833363437		advance:2147483647	2147483647	0
+step	finished_guards	F	0	assert	AssertionError		6672657128292063616c6c6564206166746572204e4f5f4d4f52455f444f4353		2147483647	0
+step	finished_guards	P	0	assert	AssertionError		6e657874506f736974696f6e28292063616c6c6564206166746572204e4f5f4d4f52455f444f4353		2147483647	0
+step	finished_guards	O	0	assert	AssertionError		73746172744f666673657428292063616c6c6564206166746572204e4f5f4d4f52455f444f4353		2147483647	0
+step	finished_guards	E	0	assert	AssertionError		656e644f666673657428292063616c6c6564206166746572204e4f5f4d4f52455f444f4353		2147483647	0
+step	finished_guards	Y	0	assert	AssertionError		6765745061796c6f616428292063616c6c6564206166746572204e4f5f4d4f52455f444f4353		2147483647	0
+step	finished_guards	N	0	assert	AssertionError		746172676574203d202d32313437343833363438203c206c617374207368616c6c6f7720746172676574203d202d31		2147483647	0
+step	finished_guards	A	2147483647	assert	AssertionError		616476616e636528292063616c6c6564206166746572204e4f5f4d4f52455f444f4353		2147483647	0
+step	finished_guards	I	0	ok		323134373438333634373a312f312c332f37		impacts	2147483647	0
+case	finished_shallow_overflow	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	finished_shallow_overflow	2147483647	1/1,3/7
+step	finished_shallow_overflow	A	2147483647	ok		32313437343833363437		advance:2147483647	2147483647	0
+step	finished_shallow_overflow	S	2147483647	ok				shallow:2147483647	2147483647	0
+step	finished_shallow_overflow	N	0	assert	AssertionError		746172676574203d202d32313437343833363438203c206c617374207368616c6c6f7720746172676574203d2032313437343833363437		2147483647	0
+case	initially_positioned_impacts	2	2	0,2,7	0,2	0,4	2,6	01ff	
+level	initially_positioned_impacts	2147483647	1/1,3/7
+step	initially_positioned_impacts	D	0	ok		32			2	0
+step	initially_positioned_impacts	I	0	ok		323134373438333634373a312f312c332f37		impacts	2	0
+step	initially_positioned_impacts	F	0	assert	AssertionError		6672657128292063616c6c6564206265666f7265206e657874446f6328292f616476616e63652829		2	0
+case	duplicate_doc	-1	2	0,0	0,2	0,4	2,6	01ff	
+level	duplicate_doc	2147483647	1/1,3/7
+step	duplicate_doc	N	0	ok		30		next,freq	0	0
+step	duplicate_doc	N	0	assert	AssertionError		6261636b7761726473206e657874446f632066726f6d203020746f20302050726f6265496d7061637473	next	0	0
+step	duplicate_doc	D	0	ok		30			0	0
+case	descending_doc	-1	2	2,0	0,2	0,4	2,6	01ff	
+level	descending_doc	2147483647	1/1,3/7
+step	descending_doc	N	0	ok		32		next,freq	2	0
+step	descending_doc	N	0	assert	AssertionError		6261636b7761726473206e657874446f632066726f6d203220746f20302050726f6265496d7061637473	next	0	0
+step	descending_doc	D	0	assert	AssertionError		20696e76616c696420646f634944282920696e20636c6173732047656e417373657274696e67496d70616374732450726f6265203020696e7374656164206f662032		0	0
+case	negative_doc	-1	2	-1	0,2	0,4	2,6	01ff	
+level	negative_doc	2147483647	1/1,3/7
+step	negative_doc	N	0	assert	AssertionError		6261636b7761726473206e657874446f632066726f6d202d3120746f202d312050726f6265496d7061637473	next	-1	0
+step	negative_doc	D	0	ok		2d31			-1	0
+case	zero_freq	-1	0	0,2,7	0,2	0,4	2,6	01ff	
+level	zero_freq	2147483647	1/1,3/7
+step	zero_freq	N	0	ok		30		next,freq	0	0
+step	zero_freq	F	0	assert	AssertionError		6e756c6c	freq	0	0
+step	zero_freq	P	0	assert	AssertionError		6e657874506f736974696f6e28292063616c6c6564206d6f7265207468616e206672657128292074696d657321		0	0
+case	negative_position	-1	2	0,2,7	-2,0	0,4	2,6	01ff	
+level	negative_position	2147483647	1/1,3/7
+step	negative_position	N	0	ok		30		next,freq	0	0
+step	negative_position	P	0	assert	AssertionError		696e76616c696420706f736974696f6e3a202d32	position	0	1
+step	negative_position	P	0	ok		30		position	0	2
+step	negative_position	P	0	ok		2d31		position	0	3
+case	minus_one_position	-1	2	0,2,7	-1,0	0,4	2,6	01ff	
+level	minus_one_position	2147483647	1/1,3/7
+step	minus_one_position	N	0	ok		30		next,freq	0	0
+step	minus_one_position	P	0	ok		2d31		position	0	1
+step	minus_one_position	O	0	ok		30		start	0	1
+step	minus_one_position	E	0	ok		32		end	0	1
+step	minus_one_position	Y	0	ok		30316666		payload	0	1
+case	descending_positions_allowed	-1	2	0,2,7	9,1	0,4	2,6	01ff	
+level	descending_positions_allowed	2147483647	1/1,3/7
+step	descending_positions_allowed	N	0	ok		30		next,freq	0	0
+step	descending_positions_allowed	P	0	ok		39		position	0	1
+step	descending_positions_allowed	P	0	ok		31		position	0	2
+case	max_position_allowed	-1	2	0,2,7	2147483647,1	0,4	2,6	01ff	
+level	max_position_allowed	2147483647	1/1,3/7
+step	max_position_allowed	N	0	ok		30		next,freq	0	0
+step	max_position_allowed	P	0	ok		32313437343833363437		position	0	1
+step	max_position_allowed	P	0	ok		31		position	0	2
+case	empty_payload	-1	2	0,2,7	0,2	0,4	2,6		
+level	empty_payload	2147483647	1/1,3/7
+step	empty_payload	N	0	ok		30		next,freq	0	0
+step	empty_payload	P	0	ok		30		position	0	1
+step	empty_payload	Y	0	assert	AssertionError		6765745061796c6f616428292072657475726e6564207061796c6f6164207769746820696e76616c6964206c656e67746821	payload	0	1
+case	null_payload	-1	2	0,2,7	0,2	0,4	2,6	null	
+level	null_payload	2147483647	1/1,3/7
+step	null_payload	N	0	ok		30		next,freq	0	0
+step	null_payload	P	0	ok		30		position	0	1
+step	null_payload	Y	0	ok		6e756c6c		payload	0	1
+case	offset_values_unchecked	-1	2	0,2,7	0,2	-9	-20	01ff	
+level	offset_values_unchecked	2147483647	1/1,3/7
+step	offset_values_unchecked	N	0	ok		30		next,freq	0	0
+step	offset_values_unchecked	P	0	ok		30		position	0	1
+step	offset_values_unchecked	O	0	ok		2d39		start	0	1
+step	offset_values_unchecked	E	0	ok		2d3230		end	0	1
+case	no_levels	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+step	no_levels	S	0	ok				shallow:0	-1	0
+step	no_levels	I	0	check	CheckIndexException		546865206e756d626572206f6620696d70616374206c6576656c73206d757374206265203e3d20312c20676f742030	impacts	-1	0
+case	level_below_target	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	level_below_target	4	1/1
+step	level_below_target	S	5	ok				shallow:5	-1	0
+step	level_below_target	I	0	check	CheckIndexException		676574446f6349645570546f2072657475726e65642034206f6e206c6576656c20302c207768696368206973206c657373207468616e20746865207461726765742035	impacts	-1	0
+case	level_below_doc	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	level_below_doc	6	1/1
+step	level_below_doc	A	7	ok		37		advance:7,freq	7	0
+step	level_below_doc	I	0	check	CheckIndexException		676574446f6349645570546f2072657475726e65642036206f6e206c6576656c20302c207768696368206973206c657373207468616e20746865207461726765742037	impacts	7	0
+case	decreasing_level_bounds	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	decreasing_level_bounds	9	1/1
+level	decreasing_level_bounds	8	1/1
+step	decreasing_level_bounds	S	0	ok				shallow:0	-1	0
+step	decreasing_level_bounds	I	0	check	CheckIndexException		44656372656173696e672072657475726e20666f7220676574446f6349645570546f3a206c6576656c20302072657475726e6564203920627574206c6576656c20312072657475726e6564203820666f72207461726765742030	impacts	-1	0
+case	equal_level_bounds_allowed	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	equal_level_bounds_allowed	9	1/1
+level	equal_level_bounds_allowed	9	1/1
+step	equal_level_bounds_allowed	S	0	ok				shallow:0	-1	0
+step	equal_level_bounds_allowed	I	0	ok		393a312f313b393a312f31		impacts	-1	0
+case	empty_impacts	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	empty_impacts	9	
+step	empty_impacts	S	0	ok				shallow:0	-1	0
+step	empty_impacts	I	0	check	CheckIndexException		476f7420656d707479206c697374206f6620696d7061637473206f6e206c6576656c2030	impacts	-1	0
+case	empty_upper_impacts	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	empty_upper_impacts	9	1/1
+level	empty_upper_impacts	20	
+step	empty_upper_impacts	S	0	ok				shallow:0	-1	0
+step	empty_upper_impacts	I	0	check	CheckIndexException		476f7420656d707479206c697374206f6620696d7061637473206f6e206c6576656c2031	impacts	-1	0
+case	first_freq_zero	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	first_freq_zero	9	0/1
+step	first_freq_zero	S	0	ok				shallow:0	-1	0
+step	first_freq_zero	I	0	check	CheckIndexException		466972737420696d706163742068616420612066726571203c3d20303a2030	impacts	-1	0
+case	first_freq_negative	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	first_freq_negative	9	-1/1
+step	first_freq_negative	S	0	ok				shallow:0	-1	0
+step	first_freq_negative	I	0	check	CheckIndexException		466972737420696d706163742068616420612066726571203c3d20303a202d31	impacts	-1	0
+case	first_norm_zero	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	first_norm_zero	9	1/0
+step	first_norm_zero	S	0	ok				shallow:0	-1	0
+step	first_norm_zero	I	0	check	CheckIndexException		466972737420696d70616374206861642061206e6f726d203d3d20303a2030	impacts	-1	0
+case	duplicate_freq	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	duplicate_freq	9	1/1,1/2
+step	duplicate_freq	S	0	ok				shallow:0	-1	0
+step	duplicate_freq	I	0	check	CheckIndexException		496d706163747320617265206e6f74206f726465726564206f7220636f6e7461696e20647570732c20676f742028312c3129207468656e2028312c3229	impacts	-1	0
+case	duplicate_norm	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	duplicate_norm	9	1/1,2/1
+step	duplicate_norm	S	0	ok				shallow:0	-1	0
+step	duplicate_norm	I	0	check	CheckIndexException		496d706163747320617265206e6f74206f726465726564206f7220636f6e7461696e20647570732c20676f742028312c3129207468656e2028322c3129	impacts	-1	0
+case	decreasing_freq	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	decreasing_freq	9	3/1,2/2
+step	decreasing_freq	S	0	ok				shallow:0	-1	0
+step	decreasing_freq	I	0	check	CheckIndexException		496d706163747320617265206e6f74206f726465726564206f7220636f6e7461696e20647570732c20676f742028332c3129207468656e2028322c3229	impacts	-1	0
+case	decreasing_unsigned_norm	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	decreasing_unsigned_norm	9	1/9223372036854775808,2/9223372036854775807
+step	decreasing_unsigned_norm	S	0	ok				shallow:0	-1	0
+step	decreasing_unsigned_norm	I	0	check	CheckIndexException		496d706163747320617265206e6f74206f726465726564206f7220636f6e7461696e20647570732c20676f742028312c2d3932323333373230333638353437373538303829207468656e2028322c3932323333373230333638353437373538303729	impacts	-1	0
+case	unsigned_norm_extremes	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	unsigned_norm_extremes	9	1/1,2/9223372036854775807,3/9223372036854775808,4/18446744073709551615
+step	unsigned_norm_extremes	S	0	ok				shallow:0	-1	0
+step	unsigned_norm_extremes	I	0	ok		393a312f312c322f393232333337323033363835343737353830372c332f393232333337323033363835343737353830382c342f3138343436373434303733373039353531363135		impacts	-1	0
+case	later_pairs_compare_only_first	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	later_pairs_compare_only_first	9	1/1,5/5,3/3
+step	later_pairs_compare_only_first	S	0	ok				shallow:0	-1	0
+step	later_pairs_compare_only_first	I	0	ok		393a312f312c352f352c332f33		impacts	-1	0
+case	later_pair_equal_first_rejected	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	later_pair_equal_first_rejected	9	1/1,5/5,1/3
+step	later_pair_equal_first_rejected	S	0	ok				shallow:0	-1	0
+step	later_pair_equal_first_rejected	I	0	check	CheckIndexException		496d706163747320617265206e6f74206f726465726564206f7220636f6e7461696e20647570732c20676f742028312c3129207468656e2028312c3329	impacts	-1	0
+case	dominance_same_pair	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	dominance_same_pair	9	2/7
+level	dominance_same_pair	20	2/7
+step	dominance_same_pair	S	0	ok				shallow:0	-1	0
+step	dominance_same_pair	I	0	ok		393a322f373b32303a322f37		impacts	-1	0
+case	dominance_better_upper	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	dominance_better_upper	9	1/3,3/9
+level	dominance_better_upper	20	5/1
+step	dominance_better_upper	S	0	ok				shallow:0	-1	0
+step	dominance_better_upper	I	0	ok		393a312f332c332f393b32303a352f31		impacts	-1	0
+case	dominance_no_upper_frequency	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	dominance_no_upper_frequency	9	3/1
+level	dominance_no_upper_frequency	20	2/1
+step	dominance_no_upper_frequency	S	0	ok				shallow:0	-1	0
+step	dominance_no_upper_frequency	I	0	check	CheckIndexException		466f756e6420696d706163742028332c3129206f6e206c6576656c203020627574206e6f20696d70616374206f6e206c6576656c20312074726967676572732061206265747465722073636f72653a2066726571733d5b325d206e6f726d733d5b315d	impacts	-1	0
+case	dominance_no_upper_norm	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	dominance_no_upper_norm	9	1/1
+level	dominance_no_upper_norm	20	2/2
+step	dominance_no_upper_norm	S	0	ok				shallow:0	-1	0
+step	dominance_no_upper_norm	I	0	check	CheckIndexException		466f756e6420696d706163742028312c3129206f6e206c6576656c203020627574206e6f20696d70616374206f6e206c6576656c20312074726967676572732061206265747465722073636f72653a2066726571733d5b325d206e6f726d733d5b325d	impacts	-1	0
+case	dominance_cursor_last_unchecked	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	dominance_cursor_last_unchecked	9	3/1
+level	dominance_cursor_last_unchecked	20	1/1,2/2
+step	dominance_cursor_last_unchecked	S	0	ok				shallow:0	-1	0
+step	dominance_cursor_last_unchecked	I	0	ok		393a332f313b32303a312f312c322f32		impacts	-1	0
+case	dominance_cursor_exhausted	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	dominance_cursor_exhausted	9	3/1,4/2
+level	dominance_cursor_exhausted	20	1/1,2/2
+step	dominance_cursor_exhausted	S	0	ok				shallow:0	-1	0
+step	dominance_cursor_exhausted	I	0	check	CheckIndexException		466f756e6420696d706163742028342c3229206f6e206c6576656c203020627574206e6f20696d70616374206f6e206c6576656c20312074726967676572732061206265747465722073636f72653a2066726571733d5b312c20325d206e6f726d733d5b312c20325d	impacts	-1	0
+case	dominance_cursor_does_not_retry	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	dominance_cursor_does_not_retry	9	3/1,4/2
+level	dominance_cursor_does_not_retry	20	1/1,2/2,5/3
+step	dominance_cursor_does_not_retry	S	0	ok				shallow:0	-1	0
+step	dominance_cursor_does_not_retry	I	0	ok		393a332f312c342f323b32303a312f312c322f322c352f33		impacts	-1	0
+case	dominance_unsigned_valid	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	dominance_unsigned_valid	9	1/18446744073709551615
+level	dominance_unsigned_valid	20	1/9223372036854775808
+step	dominance_unsigned_valid	S	0	ok				shallow:0	-1	0
+step	dominance_unsigned_valid	I	0	ok		393a312f31383434363734343037333730393535313631353b32303a312f39323233333732303336383534373735383038		impacts	-1	0
+case	dominance_unsigned_invalid	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	dominance_unsigned_invalid	9	1/9223372036854775807
+level	dominance_unsigned_invalid	20	1/9223372036854775808
+step	dominance_unsigned_invalid	S	0	ok				shallow:0	-1	0
+step	dominance_unsigned_invalid	I	0	check	CheckIndexException		466f756e6420696d706163742028312c3932323333373230333638353437373538303729206f6e206c6576656c203020627574206e6f20696d70616374206f6e206c6576656c20312074726967676572732061206265747465722073636f72653a2066726571733d5b315d206e6f726d733d5b2d393232333337323033363835343737353830385d	impacts	-1	0
+case	three_levels	-1	2	0,2,7	0,2	0,4	2,6	01ff	
+level	three_levels	9	1/3
+level	three_levels	20	2/2
+level	three_levels	2147483647	3/1
+step	three_levels	S	0	ok				shallow:0	-1	0
+step	three_levels	I	0	ok		393a312f333b32303a322f323b323134373438333634373a332f31		impacts	-1	0

@@ -64,13 +64,21 @@ source "$(dirname "$0")/lib-lucene-jars.sh"
 CP="$(lucene_classpath lucene-core lucene-codecs lucene-test-framework lucene-misc):$(thirdparty_classpath "${TEST_FRAMEWORK_DEPS[@]}")"
 
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
-javac -nowarn -proc:none -cp "$CP" -d "$WORK/classes" "$SRC"/*.java
+# Let javac resolve helpers from the source path for selected generators.
+# A full check still compiles every source, including unselected failures.
+SOURCES=()
+if [ "$CHECK" = 1 ]; then
+  SOURCES=("$SRC"/*.java)
+else
+  for n in "${ONLY[@]}"; do SOURCES+=("$SRC/Gen$n.java"); done
+fi
+javac -nowarn -proc:none -cp "$CP" -sourcepath "$SRC" -d "$WORK/classes" "${SOURCES[@]}"
 
 run() { # <generator> <outdir>
   local assertion_opts=()
   # These generators record assertions in Lucene's asserting wrappers.
   case "$1" in
-    AssertingCodec|AssertingDocValues|AssertingDocValuesIterators|AssertingKnnVectors|AssertingLiveDocs|AssertingNorms|AssertingPoints|AssertingPostings|AssertingStoredFields|AssertingTermVectors|CompressingCodec|ConfigurableM|CorruptUnknownFiles|CrankyDocValues|CrankyPostings|ScorerIndexSearcher|NoUnreferencedFilesOnClose) assertion_opts=(-ea) ;;
+    AssertingCodec|AssertingImpacts|AssertingDocValues|AssertingDocValuesIterators|AssertingKnnVectors|AssertingLiveDocs|AssertingNorms|AssertingPoints|AssertingPostings|AssertingStoredFields|AssertingTermVectors|CompressingCodec|ConfigurableM|CorruptUnknownFiles|CrankyDocValues|CrankyPostings|ScorerIndexSearcher|NoUnreferencedFilesOnClose) assertion_opts=(-ea) ;;
     FstTesterLists) assertion_opts=(-ea -Dtests.multiplier=1) ;;
   esac
   java "${LUCENE_FIXTURE_JVM_OPTS[@]}" "${assertion_opts[@]}" -cp "$WORK/classes:$CP" "Gen$1" "$2" "$EXCERPT"
