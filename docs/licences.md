@@ -91,7 +91,8 @@ a dependency the shipped library links is not under a licence listed here.
 - **The test framework** (M14.h). `crates/lucene-test-framework/` ports
   Lucene 10.5.0's `lucene-test-framework` (Apache-2.0); it is a
   dev-dependency only, so nothing of it reaches the native library.
-  - `geo/shape_test_util.rs` ports `ShapeTestUtil.containsSlowly`, including
+  - `geo/shape_test_util.rs` and `geo/geo_test_util.rs` port
+    `ShapeTestUtil.containsSlowly` and `GeoTestUtil.containsSlowly`, including
     Wm. Randolph Franklin's PNPOLY algorithm (Copyright (c) 1970-2003).
     Its full permission, redistribution conditions and disclaimer remain
     in the module and `NOTICE`. Source redistributions retain the notice;
