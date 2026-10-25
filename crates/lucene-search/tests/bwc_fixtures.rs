@@ -1390,7 +1390,7 @@ fn search_dir(path: &std::path::Path) -> Result<Vec<String>, String> {
     let mut owned: Vec<HashMap<String, FieldNorms<'_>>> =
         (0..segments.len()).map(|_| HashMap::new()).collect();
     for f in ["body", "title", "off", "pay", "freqs"] {
-        for (i, n) in reader.field_norms(f).into_iter().enumerate() {
+        for (i, n) in reader.field_norms(f).unwrap().into_iter().enumerate() {
             if let Some(n) = n {
                 owned[i].insert(f.to_string(), n);
             }

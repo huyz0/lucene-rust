@@ -121,7 +121,10 @@ fn the_two_segments_own_avgdl_values_are_far_apart_and_neither_is_the_readers() 
     assert_eq!(reader.segment_readers().len(), 2, "two-segment fixture");
 
     for (i, seg) in reader.segment_readers().iter().enumerate() {
-        let (stf, dc) = seg.field_stats("body").expect("body has a term dictionary");
+        let (stf, dc) = seg
+            .field_stats("body")
+            .unwrap()
+            .expect("body has a term dictionary");
         assert_eq!(
             stf,
             m.get(&format!("segment.{i}.sum_total_term_freq"))
@@ -136,7 +139,10 @@ fn the_two_segments_own_avgdl_values_are_far_apart_and_neither_is_the_readers() 
         );
     }
 
-    let reader_wide = reader.avg_field_length("body").expect("body has norms");
+    let reader_wide = reader
+        .avg_field_length("body")
+        .unwrap()
+        .expect("body has norms");
     assert_eq!(
         reader_wide.to_bits(),
         m.bits("avgdl.bits"),
@@ -182,7 +188,7 @@ fn multi_segment_term_query_scores_match_real_lucene_bit_for_bit() {
     let reader = DirectoryReader::open(&FsDirectory::open(fixture_dir())).expect("open reader");
     let opened = reader.open_segments().expect("open postings");
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms("body");
+    let owned = reader.field_norms("body").unwrap();
     let norms: Vec<Option<&FieldNorms<'_>>> = owned.iter().map(Option::as_ref).collect();
     assert!(
         norms.iter().all(Option::is_some),
@@ -221,7 +227,7 @@ fn multi_segment_search_after_pages_match_real_lucene_bit_for_bit() {
     let reader = DirectoryReader::open(&FsDirectory::open(fixture_dir())).expect("open reader");
     let opened = reader.open_segments().expect("open postings");
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms("body");
+    let owned = reader.field_norms("body").unwrap();
     let norms: Vec<Option<&FieldNorms<'_>>> = owned.iter().map(Option::as_ref).collect();
     let page_size: usize = m.get("after.dog.pageSize").parse().unwrap();
     let query = TermQuery::new("body", "dog");
@@ -275,7 +281,7 @@ fn the_concurrent_fan_out_matches_real_lucene_too() {
     let reader = DirectoryReader::open(&FsDirectory::open(fixture_dir())).expect("open reader");
     let opened = reader.open_segments().expect("open postings");
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms("body");
+    let owned = reader.field_norms("body").unwrap();
     let norms: Vec<Option<&FieldNorms<'_>>> = owned.iter().map(Option::as_ref).collect();
 
     let hits = search_term_query_multi_segment_concurrent(
@@ -300,7 +306,7 @@ fn multi_segment_boolean_query_scores_match_real_lucene_bit_for_bit() {
     let reader = DirectoryReader::open(&FsDirectory::open(fixture_dir())).expect("open reader");
     let opened = reader.open_segments().expect("open postings");
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
     let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
 
     let query = BooleanQuery::new().with_should(vec![
@@ -332,7 +338,7 @@ fn per_leaf_avgdl_does_not_reproduce_lucenes_scores() {
     let owned: Vec<Option<FieldNorms<'_>>> = reader
         .segment_readers()
         .iter()
-        .map(|seg| seg.field_norms("body"))
+        .map(|seg| seg.field_norms("body").unwrap())
         .collect();
     let norms: Vec<Option<&FieldNorms<'_>>> = owned.iter().map(Option::as_ref).collect();
 

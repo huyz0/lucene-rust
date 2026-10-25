@@ -1410,33 +1410,33 @@ fn collect_clause<'q>(c: &'q crate::query::Clause, out: &mut Vec<FunctionSource<
 fn segment_norms<'a>(
     segments: &[crate::multi_segment::OpenSegment<'a>],
     fields: &[String],
-) -> Vec<HashMap<String, crate::FieldNorms<'a>>> {
-    let avgs: Vec<(String, f32)> = fields
-        .iter()
-        .filter_map(|f| {
-            let (mut stf, mut dc, mut seen) = (0i64, 0i64, false);
-            for seg in segments {
-                if let Some((s, d)) = seg.reader.and_then(|r| r.field_stats(f)) {
-                    stf = stf.saturating_add(s);
-                    dc = dc.saturating_add(i64::from(d));
-                    seen = true;
-                }
+) -> Result<Vec<HashMap<String, crate::FieldNorms<'a>>>> {
+    let mut avgs = Vec::new();
+    for f in fields {
+        let (mut stf, mut dc, mut seen) = (0i64, 0i64, false);
+        for seg in segments {
+            if let Some((s, d)) = seg.reader.map(|r| r.field_stats(f)).transpose()?.flatten() {
+                stf = stf.saturating_add(s);
+                dc = dc.saturating_add(i64::from(d));
+                seen = true;
             }
-            seen.then(|| (f.clone(), crate::field_norms::avg_field_length(stf, dc)))
-        })
-        .collect();
+        }
+        if seen {
+            avgs.push((f.clone(), crate::field_norms::avg_field_length(stf, dc)));
+        }
+    }
     segments
         .iter()
         .map(|seg| {
             let mut m = HashMap::new();
             if let Some(r) = seg.reader {
                 for (f, avg) in &avgs {
-                    if let Some(n) = r.field_norms_with_avg_field_length(f, *avg) {
+                    if let Some(n) = r.field_norms_with_avg_field_length(f, *avg)? {
                         m.insert(f.clone(), n);
                     }
                 }
             }
-            m
+            Ok(m)
         })
         .collect()
 }
@@ -1466,7 +1466,7 @@ pub(crate) fn prepare_functions(
     }
     terms.sort();
     terms.dedup();
-    let norms = segment_norms(segments, &terms);
+    let norms = segment_norms(segments, &terms)?;
     let top = TopLevel {
         leaves: segments
             .iter()

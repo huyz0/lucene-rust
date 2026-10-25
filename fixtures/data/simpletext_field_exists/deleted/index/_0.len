@@ -1,0 +1,98 @@
+field norms_dv
+  type NUMERIC
+  minalue 1
+  maxvalue 1
+  doccount 4
+  maxvaluecount 1
+  origin 0
+  pattern 0
+1
+T
+0
+F
+1
+T
+0
+F
+1
+T
+0
+F
+1
+T
+0
+F
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 6
+      minValue 1
+      maxValue 1
+      docCount 4
+  skipend
+field dense_norms
+  type NUMERIC
+  minalue 1
+  maxvalue 1
+  doccount 8
+  maxvaluecount 1
+  origin 1
+  pattern 0
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 7
+      minValue 1
+      maxValue 1
+      docCount 8
+  skipend
+field empty_norms
+  type NUMERIC
+  minalue 0
+  maxvalue 0
+  doccount 8
+  maxvaluecount 1
+  origin 0
+  pattern 0
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 7
+      minValue 0
+      maxValue 0
+      docCount 8
+  skipend
+END
+checksum 00000000002406841835

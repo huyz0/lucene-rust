@@ -68,8 +68,10 @@
 //! - The `.si`/`.inf`/`.liv`/`.scf`/`.fld` readers and writers take and
 //!   return bytes and this crate's models; the `.si` model is
 //!   [`segment_info::SimpleTextSegmentInfo`] (`lucene-index`'s
-//!   `SegmentInfo` sits above this crate), whose index-sort fields stay
-//!   undecoded provider/type/bytes triples. `HashMap`/`HashSet` contents
+//!   `SegmentInfo` sits above this crate). Its default index-sort fields are
+//!   provider/type/bytes triples; `lucene_index::segment_info` specializes
+//!   the model with typed sort fields and shares the binary sort providers.
+//!   `HashMap`/`HashSet` contents
 //!   (diagnostics, attributes, files) keep file order; a repeated key keeps
 //!   its first slot and its last value. Java's `assert`s on line prefixes,
 //!   counts and sort order, its `NumberFormatException`s,

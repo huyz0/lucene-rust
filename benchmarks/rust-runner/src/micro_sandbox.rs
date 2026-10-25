@@ -160,7 +160,9 @@ fn bench_text(w: Duration, m: Duration, dir: &str, sets: &[Ranges]) {
     for seg in &mut segments {
         seg.cache = None;
     }
-    let owned = reader.field_norms_by_field(&["body".to_string(), "title".to_string()]);
+    let owned = reader
+        .field_norms_by_field(&["body".to_string(), "title".to_string()])
+        .unwrap();
     let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
     let s = IndexSearcher::new(&segments, &norms).unwrap();
     scored_cases("sb_combined_terms", sets, &s, w, m, &|set| {

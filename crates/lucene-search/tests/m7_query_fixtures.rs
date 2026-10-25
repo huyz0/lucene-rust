@@ -97,8 +97,9 @@ fn check_fixture(name: &str, qvec: &[f32], top: usize, estimator: bool) -> usize
     let mut opened = reader.open_segments().unwrap();
     opened.open_points().unwrap();
     let segments: Vec<OpenSegment<'_>> = opened.as_open_segments();
-    let owned =
-        reader.field_norms_by_field(&["body".to_string(), "title".to_string(), "gram".to_string()]);
+    let owned = reader
+        .field_norms_by_field(&["body".to_string(), "title".to_string(), "gram".to_string()])
+        .unwrap();
     let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
     let vectors = VectorFiles::read(&dir, &reader);
     let knn = |op: &str, field: &str, arg: &str, clause: Option<Clause>| -> Option<Clause> {
@@ -641,7 +642,9 @@ fn the_estimator_falls_back_without_a_vocabulary_and_samples_past_its_reservoir(
     let reader = DirectoryReader::open(&FsDirectory::open(data("m7_queries_index"))).unwrap();
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["body".to_string(), "title".to_string()]);
+    let owned = reader
+        .field_norms_by_field(&["body".to_string(), "title".to_string()])
+        .unwrap();
     let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
     let p = estimate(&segments, &norms, "nosuch", 5, 3, 1).unwrap();
     assert_eq!((p.alpha, p.beta, p.base_rate), (1.0, 0.0, 0.01));
@@ -725,7 +728,7 @@ fn phrases_through_a_similarity_score_as_the_default_bm25_does() {
     assert!(reader.segment_readers().len() > 1);
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
     let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
     let explicit = ExplicitBm25(Bm25Similarity::default());
     let phrase = |terms: &[&str], slop: u32| {
@@ -803,7 +806,7 @@ fn the_estimator_falls_back_when_only_deleted_documents_hold_the_vocabulary() {
     assert_eq!(reader.segment_readers().len(), 1);
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
     let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
     let p = estimate(&segments, &norms, "body", 4, 1, 3).unwrap();
     assert_eq!((p.alpha, p.beta, p.base_rate), (1.0, 0.0, 0.01));

@@ -185,7 +185,7 @@ impl FieldExistsLeaf {
     /// with deletions there is nothing to shortcut from and the query has to be
     /// run.
     ///
-    /// The one place this cannot follow Java is a vector field whose
+    /// The one place this cannot follow Java is a binary vector field whose
     /// `vector_size` the caller did not supply (see
     /// [`crate::directory_reader::SegmentReader::field_exists_leaf`], where it
     /// is a parameter). Java asserts the values are non-null and so never has

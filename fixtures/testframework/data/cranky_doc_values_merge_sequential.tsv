@@ -1,0 +1,112 @@
+maxDoc	20
+field	0	numeric	NUMERIC	RANGE
+numeric	0	0	-9223372036854775808
+numeric	0	1	-37
+numeric	0	3	-148
+numeric	0	5	-222
+numeric	0	6	-259
+numeric	0	8	9223372036854775807
+numeric	0	10	-9223372036854775808
+numeric	0	11	71
+numeric	0	13	284
+numeric	0	15	426
+numeric	0	16	497
+numeric	0	18	9223372036854775807
+skipGlobal	0	-9223372036854775808	9223372036854775807	12	1
+skip	0	0	0	5	-9223372036854775808	-37	4
+skip	0	0	6	11	-9223372036854775808	9223372036854775807	4
+skip	0	0	13	18	284	9223372036854775807	4
+field	1	binary	BINARY	NONE
+binary	1	0	-
+binary	1	2	0002ff
+binary	1	3	0004ff
+binary	1	5	0006ff
+binary	1	6	0007ff
+binary	1	7	0008ff
+binary	1	9	000bff
+binary	1	10	-
+binary	1	12	0102ff
+binary	1	13	0104ff
+binary	1	15	0106ff
+binary	1	16	0107ff
+binary	1	17	0108ff
+binary	1	19	010bff
+field	2	sorted	SORTED	RANGE
+term	2	0	-
+term	2	1	6161
+term	2	2	6c656674
+term	2	3	7269676874
+sorted	2	0	0
+sorted	2	2	1
+sorted	2	4	2
+sorted	2	5	0
+sorted	2	7	1
+sorted	2	8	2
+sorted	2	9	2
+sorted	2	10	0
+sorted	2	12	1
+sorted	2	14	3
+sorted	2	15	0
+sorted	2	17	1
+sorted	2	18	3
+sorted	2	19	3
+skipGlobal	2	0	3	14	1
+skip	2	0	0	5	0	2	4
+skip	2	0	7	10	0	2	4
+skip	2	0	12	17	0	3	4
+skip	2	0	18	19	3	3	2
+field	3	sortedNumeric	SORTED_NUMERIC	RANGE
+sortedNumeric	3	0	0
+sortedNumeric	3	1	-1	1	1
+sortedNumeric	3	3	4
+sortedNumeric	3	4	-5	5	5
+sortedNumeric	3	6	-7	7	7
+sortedNumeric	3	7	8
+sortedNumeric	3	8	-9	9	9
+sortedNumeric	3	9	-11	11	11
+sortedNumeric	3	10	0
+sortedNumeric	3	11	-1	1	1
+sortedNumeric	3	13	4
+sortedNumeric	3	14	-5	5	5
+sortedNumeric	3	16	-7	7	7
+sortedNumeric	3	17	8
+sortedNumeric	3	18	-9	9	9
+sortedNumeric	3	19	-11	11	11
+skipGlobal	3	-11	11	16	3
+skip	3	0	0	4	-5	5	4
+skip	3	0	6	9	-11	11	4
+skip	3	0	10	14	-5	5	4
+skip	3	0	16	19	-11	11	4
+field	4	sortedSet	SORTED_SET	RANGE
+term	4	0	-
+term	4	1	6161
+term	4	2	6363
+term	4	3	6c656674
+term	4	4	7269676874
+sortedSet	4	0	0	2
+sortedSet	4	1	2	3
+sortedSet	4	3	1	2
+sortedSet	4	4	2	3
+sortedSet	4	6	2	3
+sortedSet	4	7	1	2
+sortedSet	4	8	2	3
+sortedSet	4	9	2	3
+sortedSet	4	10	0	2
+sortedSet	4	11	2	4
+sortedSet	4	13	1	2
+sortedSet	4	14	2	4
+sortedSet	4	16	2	4
+sortedSet	4	17	1	2
+sortedSet	4	18	2	4
+sortedSet	4	19	2	4
+skipGlobal	4	0	4	16	2
+skip	4	0	0	4	0	3	4
+skip	4	0	6	9	1	3	4
+skip	4	0	10	14	0	4	4
+skip	4	0	16	19	1	4	4
+field	5	emptyNumeric	NUMERIC	NONE
+field	6	emptyBinary	BINARY	NONE
+field	7	emptySorted	SORTED	NONE
+field	8	emptySortedNumeric	SORTED_NUMERIC	NONE
+field	9	emptySortedSet	SORTED_SET	NONE
+rng	1583910553

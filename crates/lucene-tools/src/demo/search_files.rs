@@ -127,7 +127,7 @@ pub fn search_files(args: &[String], io: &mut Io<'_>, stdin: &mut dyn BufRead) -
         .collect();
     fields.sort();
     fields.dedup();
-    let owned: Vec<HashMap<String, FieldNorms<'_>>> = reader.field_norms_by_field(&fields);
+    let owned: Vec<HashMap<String, FieldNorms<'_>>> = reader.field_norms_by_field(&fields)?;
     let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
     let searcher = IndexSearcher::new(&segments, &norms)?;
     let search = Search {
@@ -618,7 +618,9 @@ mod tests {
         let reader = DirectoryReader::open(&fs).unwrap();
         let opened = reader.open_segments().unwrap();
         let segments = opened.as_open_segments();
-        let owned = reader.field_norms_by_field(&["contents".to_string()]);
+        let owned = reader
+            .field_norms_by_field(&["contents".to_string()])
+            .unwrap();
         let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
         let searcher = IndexSearcher::new(&segments, &norms).unwrap();
         let search = Search {

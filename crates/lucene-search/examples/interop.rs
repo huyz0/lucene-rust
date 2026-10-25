@@ -399,10 +399,10 @@ fn verify(path: &str, num_docs: i64, deleted: Option<i64>) -> usize {
     let opened = reader.open_segments().expect("open segments");
     let segments = opened.as_open_segments();
     let top_n = num_docs as usize + 1;
-    let norms = reader.field_norms("body");
+    let norms = reader.field_norms("body").unwrap();
     let norms: Vec<Option<&_>> = norms.iter().map(Option::as_ref).collect();
     let fields = vec!["body".to_string()];
-    let by_field = reader.field_norms_by_field(&fields);
+    let by_field = reader.field_norms_by_field(&fields).unwrap();
     let bool_norms: Vec<Option<&_>> = by_field.iter().map(Some).collect();
     let mut check = |what: String, got: usize, predicate: &dyn Fn(i64) -> bool| {
         let want = (0..num_docs).filter(|&i| live(i) && predicate(i)).count();

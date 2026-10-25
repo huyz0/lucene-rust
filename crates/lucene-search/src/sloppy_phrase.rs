@@ -13,7 +13,7 @@
 //! The whole mechanism is one line of `PhrasePositions`:
 //!
 //! ```text
-//! position = postings.nextPosition() - offset;   // offset = slot index in the phrase
+//! position = postings.nextPosition() - offset;   // offset = query position
 //! ```
 //!
 //! With every slot's positions shifted back by its own slot index, an exact
@@ -38,8 +38,9 @@
 //!
 //! ## Repeats
 //!
-//! Two slots holding the same term must not settle on the same *raw* document
-//! position -- `"a a"~9` does not match a document containing a single `a`.
+//! Two slots holding the same term at distinct query offsets must not settle
+//! on the same *raw* document position -- `"a a"~9` does not match a document
+//! containing a single `a`. Slots at equal query offsets may share an occurrence.
 //! Lucene handles that with `rptGroups`: repeating `PhrasePositions` are grouped,
 //! spread apart at initialization (`advanceRepeatGroups`) and kept apart after
 //! every advance (`advanceRpts`/`collide`). Both are ported here; see
@@ -93,6 +94,35 @@ impl PhraseRepeats {
     pub fn for_phrase(terms: &[Vec<u8>]) -> Self {
         let slots: Vec<&[Vec<u8>]> = terms.iter().map(std::slice::from_ref).collect();
         Self::detect(&slots)
+    }
+
+    /// Java: SloppyPhraseMatcher.gatherRptGroups excludes two single-term
+    /// slots at the same query offset: those may share a document position.
+    /// Keep the normal term-identity grouping difference, while walking the
+    /// slots in Java's order so mixed equal/distinct offsets form its groups.
+    pub(crate) fn for_phrase_positions(terms: &[Vec<u8>], offsets: &[i32]) -> Self {
+        let mut result = Self::for_phrase(terms);
+        if !result.has_rpts {
+            return result;
+        }
+        result.groups.fill(-1);
+        let mut next_group = 0i32;
+        for i in 0..terms.len() {
+            if result.groups[i] >= 0 {
+                continue;
+            }
+            for j in i.saturating_add(1)..terms.len() {
+                if result.groups[j] >= 0 || offsets[i] == offsets[j] || terms[i] != terms[j] {
+                    continue;
+                }
+                if result.groups[i] < 0 {
+                    result.groups[i] = next_group;
+                    next_group = next_group.saturating_add(1);
+                }
+                result.groups[j] = result.groups[i];
+            }
+        }
+        result
     }
 
     /// [`Self::detect`] for a [`crate::query::MultiPhraseQuery`], whose slots
@@ -223,9 +253,8 @@ fn union(parent: &mut [usize], a: usize, b: usize) {
 struct Pp {
     /// Index of the *next* position to read -- Java's `count` counted down.
     idx: usize,
-    /// `PhrasePositions.offset`: the slot's index within the phrase. This
-    /// port's phrases are always at consecutive positions `0..n`, matching
-    /// [`crate::query::PhraseQuery`]'s documented scope.
+    /// `PhrasePositions.offset`: the slot's query position, either explicit
+    /// or its index within an implicit consecutive phrase.
     offset: i32,
     /// `PhrasePositions.ord`.
     ord: usize,
@@ -1019,6 +1048,34 @@ mod tests {
         // the same document could not match at any slop, since c precedes b.
         assert!(!matches(&[&[0][..], &[5][..], &[1][..]], 4));
         assert!(matches(&[&[0][..], &[5][..], &[1][..]], 5));
+    }
+
+    #[test]
+    fn repeated_terms_at_equal_query_positions_can_share_an_occurrence() {
+        // Java: SloppyPhraseMatcher.gatherRptGroups excludes equal offsets.
+        // GenSimpleTextPhraseScorer also checks this through native postings.
+        let terms = vec![b"a".to_vec(), b"a".to_vec()];
+        let positions = [&[0][..], &[0][..]];
+        let mut scratch = SloppyScratch::default();
+        let shared = PhraseRepeats::for_phrase_positions(&terms, &[0, 0]);
+        assert_eq!(shared.groups, [-1, -1]);
+        assert_eq!(
+            sloppy_phrase_freq_offsets_in(&mut scratch, &positions, &shared, 1, &[0, 0]),
+            1.0
+        );
+        let distinct = PhraseRepeats::for_phrase_positions(&terms, &[0, 1]);
+        assert_eq!(distinct.groups, [0, 0]);
+        assert_eq!(
+            sloppy_phrase_freq_offsets_in(&mut scratch, &positions, &distinct, 1, &[0, 1]),
+            0.0
+        );
+        let mixed = PhraseRepeats::for_phrase_positions(
+            &[b"a".to_vec(), b"a".to_vec(), b"a".to_vec()],
+            &[0, 0, 1],
+        );
+        assert_eq!(mixed.groups, [0, -1, 0]);
+        let unique = PhraseRepeats::for_phrase_positions(&[b"a".to_vec(), b"b".to_vec()], &[0, 0]);
+        assert_eq!(unique, PhraseRepeats::none(2));
     }
 
     #[test]

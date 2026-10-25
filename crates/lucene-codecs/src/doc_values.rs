@@ -1,5 +1,5 @@
 //! Port of `org.apache.lucene.codecs.lucene90.Lucene90DocValuesFormat`
-//! (`.dvm` metadata + `.dvd` data + `.dvs` skip index) — read-only. All five
+//! (`.dvm` metadata + `.dvd` data + `.dvs` skip index) — read and write. All five
 //! doc-values types are supported (NUMERIC, BINARY, SORTED, SORTED_SET,
 //! SORTED_NUMERIC).
 //!
@@ -3107,6 +3107,21 @@ impl Default for Lucene90DocValuesFormat {
             skip_index_interval_size: Self::DEFAULT_SKIP_INDEX_INTERVAL_SIZE,
         }
     }
+}
+
+/// Java: `Lucene90DocValuesConsumer.close` without any `add*Field` calls.
+/// Returns `.dvm`, `.dvd` and `.dvs` buffers containing their index headers,
+/// the metadata's `-1` field-list terminator and the three checksummed footers.
+/// Use this explicit no-field path when closing an unused consumer.
+pub fn write_no_fields(
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let mut meta = new_meta_output(segment_id, segment_suffix);
+    let mut data = new_data_output(segment_id, segment_suffix);
+    let skip_index =
+        finish_field_list_and_footers(&mut meta, &mut data, segment_id, segment_suffix);
+    (meta, data, skip_index)
 }
 
 /// [`write_fields_with_skip_indexes`] as `format` writes it -- its skip
@@ -9334,6 +9349,38 @@ mod tests {
         let id = [90u8; ID_LENGTH];
         let err = write_dense_fields(&[], 4, &id, "").unwrap_err();
         assert!(matches!(err, WriteError::EmptyFieldList));
+    }
+
+    #[test]
+    fn no_field_close_matches_actual_java_files_and_empty_metadata() {
+        let id = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+        let (meta, data, skip_index) = write_no_fields(&id, "s");
+        assert_eq!(
+            meta,
+            include_bytes!("../../../fixtures/testframework/data/cranky_doc_values_empty.dvm")
+        );
+        assert_eq!(
+            data,
+            include_bytes!("../../../fixtures/testframework/data/cranky_doc_values_empty.dvd")
+        );
+        assert_eq!(
+            skip_index,
+            include_bytes!("../../../fixtures/testframework/data/cranky_doc_values_empty.dvs")
+        );
+        let (version, fields) =
+            parse_meta(&meta, &id, "s", &FieldInfos { fields: vec![] }).unwrap();
+        assert_eq!(version, VERSION_CURRENT);
+        assert!(fields.numeric.is_empty());
+        assert!(fields.binary.is_empty());
+        assert!(fields.sorted.is_empty());
+        assert!(fields.sorted_numeric.is_empty());
+        assert!(fields.sorted_set.is_empty());
+        assert!(fields.skippers.is_empty());
+        assert_eq!(check_data_header_footer(&data, &id, "s").unwrap(), version);
+        assert_eq!(
+            check_skip_index_header_footer(&skip_index, &id, "s").unwrap(),
+            version
+        );
     }
 
     #[test]

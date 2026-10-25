@@ -399,7 +399,7 @@ fn spans_and_payload_queries_match_lucene() {
         .iter()
         .map(|f| f.to_string())
         .collect();
-    let owned = reader.field_norms_by_field(&fields);
+    let owned = reader.field_norms_by_field(&fields).unwrap();
     let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
     let searcher = IndexSearcher::new(&segments, &norms).unwrap();
     let text = std::fs::read_to_string(dir.join("queries.tsv")).unwrap();

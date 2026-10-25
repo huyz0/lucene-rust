@@ -283,7 +283,7 @@ pub fn query_driver(args: &[String], io: &mut Io<'_>) -> ToolResult {
         .collect();
     fields.sort();
     fields.dedup();
-    let owned: Vec<HashMap<String, FieldNorms<'_>>> = reader.field_norms_by_field(&fields);
+    let owned: Vec<HashMap<String, FieldNorms<'_>>> = reader.field_norms_by_field(&fields)?;
     let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
     let searcher = IndexSearcher::new(&segments, &norms)?;
     let searcher = QualitySearcher {

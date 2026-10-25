@@ -26,6 +26,281 @@ use super::{score_segment, BoxScorer, Bulk, Mode, Scorer, NO_MORE_DOCS};
 use crate::collector::{ScoreDoc, ScoringCollector, TopDocsCollector};
 use crate::Result;
 
+#[test]
+fn asserting_dyn_collector_preserves_all_optional_collector_hooks() {
+    use super::bulk::AsDyn;
+    use crate::collector::ScoreMode;
+
+    #[derive(Debug, PartialEq)]
+    enum Call {
+        Collect(i32, u32),
+        Losing(u64, u32),
+        Add(u64),
+        Many(Vec<i32>, Vec<u32>, i32),
+        Range(i32, i32, u32),
+    }
+    #[derive(Default)]
+    struct Collector(Vec<Call>);
+    impl ScoringCollector for Collector {
+        fn collect(&mut self, doc: i32, score: f32) {
+            self.0.push(Call::Collect(doc, score.to_bits()));
+        }
+        fn score_mode(&self) -> ScoreMode {
+            ScoreMode::TopDocsWithScores
+        }
+        fn min_competitive_score(&self) -> Option<f32> {
+            Some(1.25)
+        }
+        fn pruning_threshold(&self) -> Option<f32> {
+            Some(2.5)
+        }
+        fn constant_score_hits_needed(&self) -> Option<u64> {
+            Some(17)
+        }
+        fn count_losing_hits(&mut self, n: u64, score: f32) -> bool {
+            self.0.push(Call::Losing(n, score.to_bits()));
+            n == 5 && score == 6.0
+        }
+        fn add_hits(&mut self, n: u64) -> bool {
+            self.0.push(Call::Add(n));
+            n == 7
+        }
+        fn collect_many(&mut self, docs: &[i32], scores: &[f32], doc_base: i32) -> usize {
+            self.0.push(Call::Many(
+                docs.to_vec(),
+                scores.iter().map(|score| score.to_bits()).collect(),
+                doc_base,
+            ));
+            2
+        }
+        fn collect_range(&mut self, min: i32, max: i32, score: f32) {
+            self.0.push(Call::Range(min, max, score.to_bits()));
+        }
+    }
+
+    let mut inner = Collector::default();
+    {
+        // The production adapter must also preserve hooks for an unsized collector.
+        let collector: &mut dyn ScoringCollector = &mut inner;
+        let mut adapter = AsDyn(collector);
+        assert_eq!(adapter.score_mode(), ScoreMode::TopDocsWithScores);
+        assert_eq!(adapter.min_competitive_score(), Some(1.25));
+        assert_eq!(adapter.pruning_threshold(), Some(2.5));
+        assert_eq!(adapter.constant_score_hits_needed(), Some(17));
+        adapter.collect(3, 4.0);
+        assert!(adapter.count_losing_hits(5, 6.0));
+        assert!(!adapter.count_losing_hits(8, 6.0));
+        assert!(adapter.add_hits(7));
+        assert!(!adapter.add_hits(9));
+        assert_eq!(adapter.collect_many(&[2, 4, 8], &[0.25, 0.5, 0.75], 32), 2);
+        adapter.collect_range(11, 14, 1.5);
+    }
+    assert_eq!(
+        inner.0,
+        [
+            Call::Collect(3, 4.0_f32.to_bits()),
+            Call::Losing(5, 6.0_f32.to_bits()),
+            Call::Losing(8, 6.0_f32.to_bits()),
+            Call::Add(7),
+            Call::Add(9),
+            Call::Many(
+                vec![2, 4, 8],
+                vec![0.25_f32.to_bits(), 0.5_f32.to_bits(), 0.75_f32.to_bits()],
+                32,
+            ),
+            Call::Range(11, 14, 1.5_f32.to_bits()),
+        ]
+    );
+}
+
+/// Exercise the native text term leg through the existing scorer builder.
+/// The top-level search guard stays in place until the other query families
+/// can use native text cursors too.
+#[test]
+fn simpletext_term_legs_score_java_postings_in_scalar_and_bulk_modes() {
+    use super::build::{term_leg, LeafContext, TermForm};
+    use crate::bulk_scorer::DocScores;
+    use crate::directory_reader::DirectoryReader;
+    use crate::similarities::ClassicSimilarity;
+    use lucene_codecs::blocktree::BlockTreeFields;
+    use lucene_store::FsDirectory;
+    use std::{fs, path::PathBuf};
+
+    fn unhex(value: &str) -> Vec<u8> {
+        value
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect()
+    }
+    let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/data");
+    let empty = BlockTreeFields::empty();
+    let classic = ClassicSimilarity::default();
+    let mut compared = 0;
+    for variant in ["flush", "merged"] {
+        let reader = DirectoryReader::open(&FsDirectory::open(
+            base.join("codecs_simpletext/codec")
+                .join(variant)
+                .join("index"),
+        ))
+        .unwrap();
+        let fields: Vec<_> = reader
+            .segment_readers()
+            .iter()
+            .flat_map(|seg| seg.field_infos().fields.iter().map(|f| f.name.clone()))
+            .collect();
+        let norms = reader.field_norms_by_field(&fields).unwrap();
+        for (index, segment) in reader.segment_readers().iter().enumerate() {
+            let manifest = fs::read_to_string(
+                base.join("simpletext_directory_reader")
+                    .join(variant)
+                    .join(format!("scores.{}.tsv", segment.segment_name)),
+            )
+            .unwrap();
+            let rows: Vec<Vec<_>> = manifest
+                .lines()
+                .map(|line| line.split('\t').collect())
+                .collect();
+            let mut at = 0;
+            while at < rows.len() {
+                let field = String::from_utf8(unhex(rows[at][1])).unwrap();
+                let collection = rows[at].clone();
+                at += 1;
+                while rows[at][0] == "term" {
+                    let term = unhex(rows[at][1]);
+                    let mut global = crate::GlobalStats::new();
+                    global.insert_term(
+                        &field,
+                        term.clone(),
+                        crate::CollectionStats {
+                            doc_freq: rows[at][2].parse().unwrap(),
+                            total_term_freq: rows[at][3].parse().unwrap(),
+                            max_doc: collection[2].parse().unwrap(),
+                            doc_count: collection[3].parse().unwrap(),
+                            sum_total_term_freq: collection[4].parse().unwrap(),
+                            sum_doc_freq: collection[5].parse().unwrap(),
+                        },
+                    );
+                    at += 1;
+                    let mut expected = Vec::new();
+                    while rows[at][0] == "doc" {
+                        expected.push((
+                            rows[at][1].parse::<i32>().unwrap(),
+                            u32::from_str_radix(rows[at][4], 16).unwrap(),
+                            u32::from_str_radix(rows[at][5], 16).unwrap(),
+                        ));
+                        at += 1;
+                    }
+                    at += 1; // endterm
+                    let query =
+                        crate::query::Clause::Term(crate::query::TermQuery::new(&field, term));
+                    for mode in [Mode::Complete, Mode::TopScores, Mode::NoScores] {
+                        for custom in [false, true] {
+                            let ctx = LeafContext {
+                                fields: &empty,
+                                doc_in: None,
+                                pos_in: None,
+                                pay_in: None,
+                                live_docs: None,
+                                points: None,
+                                norms: Some(&norms[index]),
+                                global: (variant != "merged").then_some(&global),
+                                max_doc: Some(segment.max_doc),
+                                cache: None,
+                                reader: Some(segment),
+                                similarity: custom
+                                    .then_some(&classic as &dyn crate::similarities::Similarity),
+                            };
+                            let TermForm::Leg(mut leg) = term_leg(&ctx, &query, 1.0, mode).unwrap()
+                            else {
+                                panic!("missing text term");
+                            };
+                            for &(doc, bm25, classic) in &expected {
+                                assert_eq!(leg.tree_next_doc().unwrap(), doc);
+                                let expected_score = if mode == Mode::NoScores {
+                                    0
+                                } else if custom {
+                                    classic
+                                } else {
+                                    bm25
+                                };
+                                assert_eq!(
+                                    leg.score().unwrap().to_bits(),
+                                    expected_score,
+                                    "{variant}, {field}, {doc}, {mode:?}"
+                                );
+                            }
+                            assert_eq!(leg.tree_next_doc().unwrap(), NO_MORE_DOCS);
+                            let TermForm::Leg(mut leg) = term_leg(&ctx, &query, 1.0, mode).unwrap()
+                            else {
+                                unreachable!()
+                            };
+                            leg.next_doc().unwrap();
+                            let mut buffer = DocScores::default();
+                            let mut actual = Vec::new();
+                            loop {
+                                leg.next_docs_and_scores(NO_MORE_DOCS, None, &mut buffer)
+                                    .unwrap();
+                                if buffer.docs.is_empty() {
+                                    break;
+                                }
+                                actual.extend(
+                                    buffer
+                                        .docs
+                                        .iter()
+                                        .copied()
+                                        .zip(buffer.scores.iter().map(|s| s.to_bits())),
+                                );
+                            }
+                            let expected: Vec<_> = expected
+                                .iter()
+                                .map(|&(doc, bm25, classic)| {
+                                    (
+                                        doc,
+                                        if mode == Mode::NoScores {
+                                            0
+                                        } else if custom {
+                                            classic
+                                        } else {
+                                            bm25
+                                        },
+                                    )
+                                })
+                                .collect();
+                            assert_eq!(actual, expected);
+                            let constant = crate::query::Clause::ConstantScore(Box::new(
+                                crate::query::ConstantScoreQuery::new(query.clone(), 1.5),
+                            ));
+                            let TermForm::Leg(mut constant) =
+                                term_leg(&ctx, &constant, 2.0, mode).unwrap()
+                            else {
+                                unreachable!()
+                            };
+                            assert_eq!(constant.next_doc().unwrap(), expected[0].0);
+                            assert_eq!(
+                                constant.score().unwrap(),
+                                if mode.needs_scores() { 3.0 } else { 0.0 }
+                            );
+                            for missing in [
+                                crate::query::TermQuery::new("absent", b"x"),
+                                crate::query::TermQuery::new(&field, b"\xffmissing"),
+                            ] {
+                                assert!(matches!(
+                                    term_leg(&ctx, &missing.into(), 1.0, mode).unwrap(),
+                                    TermForm::Absent
+                                ));
+                            }
+                            compared += actual.len();
+                        }
+                    }
+                }
+                at += 1; // endfield
+            }
+        }
+    }
+    assert!(compared > 1000);
+}
+
 /// A small deterministic generator (SplitMix64), so a failure reproduces.
 struct Rng(u64);
 
@@ -511,6 +786,7 @@ fn cached_clauses_search_exactly_like_uncached_ones() {
     assert!(segments.iter().any(|s| s.live_docs.is_some()));
     let owned: Vec<HashMap<String, FieldNorms<'_>>> = reader
         .field_norms("body")
+        .unwrap()
         .into_iter()
         .map(|n| n.into_iter().map(|n| ("body".to_string(), n)).collect())
         .collect();
@@ -655,6 +931,7 @@ fn a_cached_required_set_with_an_optional_term_counts_like_lucene() {
         assert!(segments.iter().any(|s| s.live_docs.is_some()));
         let owned: Vec<HashMap<String, FieldNorms<'_>>> = reader
             .field_norms("body")
+            .unwrap()
             .into_iter()
             .map(|n| n.into_iter().map(|n| ("body".to_string(), n)).collect())
             .collect();
@@ -714,6 +991,7 @@ fn a_cached_term_set_is_walked_as_a_bit_set() {
     assert!(segments.iter().any(|s| s.live_docs.is_some()));
     let owned: Vec<HashMap<String, FieldNorms<'_>>> = reader
         .field_norms("body")
+        .unwrap()
         .into_iter()
         .map(|n| n.into_iter().map(|n| ("body".to_string(), n)).collect())
         .collect();
@@ -1734,6 +2012,7 @@ mod fixture {
         let segments = opened.as_open_segments();
         let owned: Vec<HashMap<String, FieldNorms<'_>>> = reader
             .field_norms("body")
+            .unwrap()
             .into_iter()
             .map(|n| n.into_iter().map(|n| ("body".to_string(), n)).collect())
             .collect();
@@ -1836,7 +2115,7 @@ mod fixture {
         let reader = DirectoryReader::open(&lucene_store::FsDirectory::open(dir())).unwrap();
         let opened = reader.open_segments().unwrap();
         let seg = &opened.as_open_segments()[0];
-        let owned = reader.field_norms("body");
+        let owned = reader.field_norms("body").unwrap();
         let norms: HashMap<String, FieldNorms<'_>> = owned
             .into_iter()
             .next()
@@ -2000,8 +2279,13 @@ fn modes_follow_the_collector_and_scorer_defaults_are_conservative() {
         }
     }
     assert_eq!(Mode::of(&With(ScoreMode::CompleteNoScores)), Mode::NoScores);
+    assert_eq!(Mode::of(&With(ScoreMode::TopDocs)), Mode::NoScores);
     assert_eq!(Mode::of(&With(ScoreMode::Complete)), Mode::Complete);
     assert_eq!(Mode::of(&With(ScoreMode::TopScores)), Mode::TopScores);
+    assert_eq!(
+        Mode::of(&With(ScoreMode::TopDocsWithScores)),
+        Mode::Complete
+    );
     assert!(Mode::TopScores.needs_scores() && !Mode::NoScores.needs_scores());
 
     let mut all = AllDocs::new(4);
@@ -2143,7 +2427,7 @@ fn a_docs_only_field_with_norms_ends_its_scan_as_lucene_does() {
     let reader = DirectoryReader::open(&lucene_store::FsDirectory::open(base)).unwrap();
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms("docs_only");
+    let owned = reader.field_norms("docs_only").unwrap();
     assert!(
         owned.iter().all(Option::is_some),
         "the field keeps its norms"
@@ -2151,6 +2435,7 @@ fn a_docs_only_field_with_norms_ends_its_scan_as_lucene_does() {
     let term_norms: Vec<Option<&FieldNorms<'_>>> = owned.iter().map(Option::as_ref).collect();
     let maps: Vec<HashMap<String, FieldNorms<'_>>> = reader
         .field_norms("docs_only")
+        .unwrap()
         .into_iter()
         .map(|n| {
             n.into_iter()
@@ -2241,7 +2526,7 @@ fn similarity_bounds_prune_soundly() {
     let reader = DirectoryReader::open(&lucene_store::FsDirectory::open(base)).unwrap();
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
     let norms: Vec<_> = owned.iter().map(Some).collect();
     let t = |w: &str| Clause::Term(TermQuery::new("body", w));
     let queries = [
@@ -2457,7 +2742,7 @@ fn a_scoring_block_join_beside_an_optional_term_scores_like_lucene() {
         DirectoryReader::open(&lucene_store::FsDirectory::open(data.join("index"))).unwrap();
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
     let norms: Vec<SegmentNorms<'_, '_>> = owned
         .iter()
         .map(|m: &HashMap<String, FieldNorms<'_>>| Some(m))

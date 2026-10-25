@@ -445,7 +445,7 @@ fn run_queries(out_dir: &str) {
 
     let text_fields = vec!["body".to_string(), "title".to_string(), "tag".to_string()];
     let norms_by_seg: Vec<HashMap<String, FieldNorms<'_>>> =
-        reader.field_norms_by_field(&text_fields);
+        reader.field_norms_by_field(&text_fields).unwrap();
     let bool_norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> =
         norms_by_seg.iter().map(Some).collect();
 
@@ -504,7 +504,7 @@ fn scored(
         "term" => {
             // The dedicated single-term path, not a one-clause boolean: it is
             // the one a plain `TermQuery` takes, impacts pruning included.
-            let norms = reader.field_norms(f);
+            let norms = reader.field_norms(f).unwrap();
             let norms: Vec<Option<&FieldNorms<'_>>> = norms.iter().map(Option::as_ref).collect();
             let tq = TermQuery {
                 field: f.to_string(),

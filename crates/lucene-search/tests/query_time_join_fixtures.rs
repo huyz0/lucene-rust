@@ -218,7 +218,7 @@ fn query_time_joins_match_lucene_bit_for_bit() {
     let mut opened = reader.open_segments().unwrap();
     opened.open_points().unwrap();
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
     let norms: Vec<SegmentNorms<'_, '_>> = owned
         .iter()
         .map(|m: &HashMap<String, FieldNorms<'_>>| Some(m))
@@ -229,6 +229,7 @@ fn query_time_joins_match_lucene_bit_for_bit() {
     // statistics, its own average field length.
     let first: HashMap<String, FieldNorms<'_>> = reader.segment_readers()[0]
         .field_norms("body")
+        .unwrap()
         .map(|n| ("body".to_string(), n))
         .into_iter()
         .collect();
@@ -320,7 +321,7 @@ fn query_time_join_edges() {
     let mut opened = reader.open_segments().unwrap();
     opened.open_points().unwrap();
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
     let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
     let searcher = IndexSearcher::new(&segments, &norms).unwrap();
     let from = term("type", "from");

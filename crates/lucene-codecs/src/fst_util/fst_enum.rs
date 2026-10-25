@@ -1,5 +1,5 @@
-//! Port of `org.apache.lucene.util.fst.FSTEnum` and `BytesRefFSTEnum` over
-//! a [`TypedFst`]: `next`, `seekCeil` and `seekExact` through any
+//! Port of `org.apache.lucene.util.fst.FSTEnum`, `BytesRefFSTEnum` and
+//! `IntsRefFSTEnum` over a [`TypedFst`]: `next`, `seekCeil` and `seekExact` through any
 //! [`FstOutputs`], every node encoding (list, binary search, direct
 //! addressing, continuous) walked as Java walks it.
 //!
@@ -7,35 +7,142 @@
 //! this one is what a term dictionary whose FST carries its own outputs
 //! (`FSTTermsReader`'s `TermData`) iterates with. `seekFloor` is what
 //! `uniformsplit`'s `FSTDictionary.Browser.seekBlock` finds a block with.
+//!
+//! Rust adaptation: `current()` exposes only an accepted input returned by
+//! the most recent operation. Before iteration, and after any `None` or
+//! error, it returns `None`. Java leaves `current()` after a failed exact
+//! seek unspecified; the internal traversal prefix is still retained here
+//! so subsequent `next` and seek operations follow the shared algorithm.
 
 use super::{Arc, Result, TypedFst, END_LABEL};
 use crate::fst::{ARCS_FOR_BINARY_SEARCH, ARCS_FOR_DIRECT_ADDRESSING};
 use crate::fst_compiler::{FstOutputs, FstReadError};
 
-/// `BytesRefFSTEnum<T>`.
+// The two Java wrappers differ only in label storage and conversion. Keep
+// FSTEnum's traversal shared, including its END_LABEL handling.
+trait Label: Copy + Default + Into<i32> {
+    fn from_label(label: i32) -> Self;
+}
+impl Label for u8 {
+    fn from_label(label: i32) -> Self {
+        label as u8
+    }
+}
+impl Label for i32 {
+    fn from_label(label: i32) -> Self {
+        label
+    }
+}
+
+/// `BytesRefFSTEnum<T>` over unsigned byte labels.
 #[derive(Debug)]
 pub struct BytesRefFstEnum<'f, O: FstOutputs> {
+    inner: FstEnum<'f, O, u8>,
+    positioned: bool,
+}
+
+/// `IntsRefFSTEnum<T>` over integer labels, including UTF-32 code points.
+#[derive(Debug)]
+pub struct IntsRefFstEnum<'f, O: FstOutputs> {
+    inner: FstEnum<'f, O, i32>,
+    positioned: bool,
+}
+
+macro_rules! enumerator {
+    ($name:ident, $label:ty) => {
+        impl<'f, O: FstOutputs> $name<'f, O> {
+            /// Creates an enumerator before the first accepted input.
+            pub fn new(fst: &'f TypedFst<O>) -> Self {
+                Self {
+                    inner: FstEnum::new(fst),
+                    positioned: false,
+                }
+            }
+            /// The next input and output, or `None` past the last.
+            #[allow(clippy::should_implement_trait)]
+            pub fn next(&mut self) -> Result<Option<(&[$label], &O::Value)>> {
+                self.positioned = false;
+                let result = self.inner.next()?;
+                self.positioned = result.is_some();
+                Ok(result)
+            }
+            /// The smallest accepted input greater than or equal to `target`.
+            pub fn seek_ceil(
+                &mut self,
+                target: &[$label],
+            ) -> Result<Option<(&[$label], &O::Value)>> {
+                self.positioned = false;
+                let result = self.inner.seek_ceil(target)?;
+                self.positioned = result.is_some();
+                Ok(result)
+            }
+            /// The largest accepted input less than or equal to `target`.
+            pub fn seek_floor(
+                &mut self,
+                target: &[$label],
+            ) -> Result<Option<(&[$label], &O::Value)>> {
+                self.positioned = false;
+                let result = self.inner.seek_floor(target)?;
+                self.positioned = result.is_some();
+                Ok(result)
+            }
+            /// The target and output, or `None` when absent. A miss retains
+            /// Java's internal traversal prefix but invalidates `current()`.
+            pub fn seek_exact(
+                &mut self,
+                target: &[$label],
+            ) -> Result<Option<(&[$label], &O::Value)>> {
+                self.positioned = false;
+                let result = self.inner.seek_exact(target)?;
+                self.positioned = result.is_some();
+                Ok(result)
+            }
+            /// The most recent accepted input and output, or `None` before
+            /// iteration and after any operation returns `None` or an error.
+            pub fn current(&self) -> Option<(&[$label], &O::Value)> {
+                if self.positioned {
+                    self.inner.current()
+                } else {
+                    None
+                }
+            }
+        }
+    };
+}
+enumerator!(BytesRefFstEnum, u8);
+enumerator!(IntsRefFstEnum, i32);
+
+/// Shared port of Java's `FSTEnum<T>` traversal.
+#[derive(Debug)]
+struct FstEnum<'f, O: FstOutputs, L: Label> {
     fst: &'f TypedFst<O>,
     /// `arcs[0..=upto]`; `arcs[0]` is the FST's first arc.
     arcs: Vec<Arc<O::Value>>,
     /// `output[i]`: the output accumulated through `arcs[i]`.
     output: Vec<O::Value>,
     upto: usize,
-    /// `current.bytes`, `offset` fixed at 1: the label taken at depth `i`
+    /// `current` labels, `offset` fixed at 1: the label taken at depth `i`
     /// is `current[i]`.
-    current: Vec<u8>,
-    target: Vec<u8>,
+    current: Vec<L>,
+    target: Vec<L>,
 }
 
-impl<'f, O: FstOutputs> BytesRefFstEnum<'f, O> {
-    /// `new BytesRefFSTEnum<>(fst)`.
+impl<'f, O: FstOutputs, L: Label> FstEnum<'f, O, L> {
+    /// `new FSTEnum<>(fst)`: root arc and the outputs identity.
     pub fn new(fst: &'f TypedFst<O>) -> Self {
-        BytesRefFstEnum {
+        // Java starts both arrays with ten slots. The enumeration allocation
+        // profile showed ten reallocations per walk when these began at one;
+        // reserve Java's initial capacity without initializing unused slots.
+        let mut arcs = Vec::with_capacity(10);
+        arcs.push(fst.first_arc());
+        let mut output = Vec::with_capacity(10);
+        output.push(O::no_output());
+        FstEnum {
             fst,
-            arcs: vec![fst.first_arc()],
-            output: vec![O::no_output()],
+            arcs,
+            output,
             upto: 0,
-            current: vec![0; 10],
+            current: vec![L::default(); 10],
             target: Vec::new(),
         }
     }
@@ -43,13 +150,13 @@ impl<'f, O: FstOutputs> BytesRefFstEnum<'f, O> {
     /// `next()`: the next term and its output, or `None` past the last.
     // A cursor that also seeks, as Java's `TermsEnum`, not an `Iterator`.
     #[allow(clippy::should_implement_trait)]
-    pub fn next(&mut self) -> Result<Option<(&[u8], &O::Value)>> {
+    pub fn next(&mut self) -> Result<Option<(&[L], &O::Value)>> {
         self.do_next()?;
         Ok(self.result())
     }
 
     /// `seekCeil(target)`: the smallest term `>= target`.
-    pub fn seek_ceil(&mut self, target: &[u8]) -> Result<Option<(&[u8], &O::Value)>> {
+    pub fn seek_ceil(&mut self, target: &[L]) -> Result<Option<(&[L], &O::Value)>> {
         self.set_target(target);
         self.do_seek_ceil()?;
         Ok(self.result())
@@ -57,7 +164,7 @@ impl<'f, O: FstOutputs> BytesRefFstEnum<'f, O> {
 
     /// `seekExact(target)`: `target` and its output, or `None` when absent
     /// (the enum is then left on a prefix of it, as Java's).
-    pub fn seek_exact(&mut self, target: &[u8]) -> Result<Option<(&[u8], &O::Value)>> {
+    pub fn seek_exact(&mut self, target: &[L]) -> Result<Option<(&[L], &O::Value)>> {
         self.set_target(target);
         if self.do_seek_exact()? {
             Ok(self.result())
@@ -68,18 +175,18 @@ impl<'f, O: FstOutputs> BytesRefFstEnum<'f, O> {
 
     /// `seekFloor(target)`: the largest term `<= target`, or `None` when
     /// every term is greater.
-    pub fn seek_floor(&mut self, target: &[u8]) -> Result<Option<(&[u8], &O::Value)>> {
+    pub fn seek_floor(&mut self, target: &[L]) -> Result<Option<(&[L], &O::Value)>> {
         self.set_target(target);
         self.do_seek_floor()?;
         Ok(self.result())
     }
 
     /// `current()`: the term and output the last call landed on.
-    pub fn current(&self) -> Option<(&[u8], &O::Value)> {
+    pub fn current(&self) -> Option<(&[L], &O::Value)> {
         self.result()
     }
 
-    fn set_target(&mut self, target: &[u8]) {
+    fn set_target(&mut self, target: &[L]) {
         self.target.clear();
         self.target.extend_from_slice(target);
     }
@@ -88,7 +195,7 @@ impl<'f, O: FstOutputs> BytesRefFstEnum<'f, O> {
     // ARITH: `upto >= 1` in the branch taken, and `current` holds `upto + 1`
     // bytes (grown by `incr`).
     #[allow(clippy::arithmetic_side_effects)]
-    fn result(&self) -> Option<(&[u8], &O::Value)> {
+    fn result(&self) -> Option<(&[L], &O::Value)> {
         if self.upto == 0 {
             None
         } else {
@@ -105,19 +212,18 @@ impl<'f, O: FstOutputs> BytesRefFstEnum<'f, O> {
         if at == self.target.len() {
             END_LABEL
         } else {
-            i32::from(self.target[at])
+            self.target[at].into()
         }
     }
 
     /// `getCurrentLabel()`.
     fn current_label(&self) -> i32 {
-        i32::from(self.current[self.upto])
+        self.current[self.upto].into()
     }
 
-    /// `setCurrentLabel(label)`: the low byte, as Java's `(byte) label`
-    /// stores `END_LABEL` as `0xFF`.
+    /// `setCurrentLabel(label)`: Java's wrapper converts to its storage type.
     fn set_current_label(&mut self, label: i32) {
-        self.current[self.upto] = label as u8;
+        self.current[self.upto] = L::from_label(label);
     }
 
     /// `getArc(idx)`.
@@ -133,7 +239,7 @@ impl<'f, O: FstOutputs> BytesRefFstEnum<'f, O> {
     fn incr(&mut self) {
         self.upto += 1;
         if self.current.len() <= self.upto {
-            self.current.resize(self.upto + 1, 0);
+            self.current.resize(self.upto + 1, L::default());
         }
         self.ensure_arc(self.upto);
         while self.output.len() <= self.upto {
@@ -182,7 +288,8 @@ impl<'f, O: FstOutputs> BytesRefFstEnum<'f, O> {
         let current_limit = self.upto;
         self.upto = 1;
         while self.upto < current_limit && self.upto <= self.target.len() + 1 {
-            let cmp = self.current_label() - self.target_label();
+            // Java subtracts ints, including END_LABEL (-1), with wrapping.
+            let cmp = self.current_label().wrapping_sub(self.target_label());
             if cmp < 0 {
                 // Seek forward.
                 break;
@@ -820,5 +927,202 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn integer_labels_match_sorted_scan_for_all_seeks() {
+        for (input_type, scale) in [
+            (InputType::Byte1, 1),
+            (InputType::Byte2, 257),
+            (InputType::Byte4, 4096),
+        ] {
+            for factor in [0.0, 1.0, 64.0, -1.0] {
+                let keys: Vec<Vec<i32>> = keys(19, 350)
+                    .iter()
+                    .map(|key| key.iter().map(|&b| i32::from(b) * scale).collect())
+                    .collect();
+                let mut compiler = FstCompilerBuilder::new(input_type)
+                    .direct_addressing_max_oversizing_factor(factor)
+                    .build::<PositiveIntOutputs>();
+                for (i, key) in keys.iter().enumerate() {
+                    compiler.add(key, i as i64 * 3).unwrap();
+                }
+                let fst =
+                    TypedFst::<PositiveIntOutputs>::from_compiled(compiler.compile().unwrap());
+                let mut cursor = IntsRefFstEnum::new(&fst);
+                assert!(cursor.current().is_none());
+                for (i, key) in keys.iter().enumerate() {
+                    assert_eq!(
+                        cursor.next().unwrap(),
+                        Some((key.as_slice(), &(i as i64 * 3)))
+                    );
+                    assert_eq!(cursor.current(), Some((key.as_slice(), &(i as i64 * 3))));
+                }
+                assert!(cursor.next().unwrap().is_none());
+                let mut probes = keys.clone();
+                for key in &keys {
+                    let mut longer = key.clone();
+                    longer.push(1);
+                    probes.push(longer);
+                    if !key.is_empty() {
+                        let mut bumped = key.clone();
+                        *bumped.last_mut().unwrap() += 1;
+                        probes.push(bumped);
+                    }
+                }
+                probes.push(vec![0x110000]);
+                // Reverse order forces rewind and floor backtracking.
+                for probe in probes.iter().rev() {
+                    let position = keys.binary_search(probe);
+                    let expected =
+                        |index: Option<usize>| index.map(|i| (keys[i].clone(), i as i64 * 3));
+                    let exact = position.ok();
+                    let ceil = match position {
+                        Ok(i) => Some(i),
+                        Err(i) => (i < keys.len()).then_some(i),
+                    };
+                    let floor = match position {
+                        Ok(i) => Some(i),
+                        Err(i) => i.checked_sub(1),
+                    };
+                    assert_eq!(
+                        cursor
+                            .seek_exact(probe)
+                            .unwrap()
+                            .map(|(k, v)| (k.to_vec(), *v)),
+                        expected(exact)
+                    );
+                    assert_eq!(
+                        cursor
+                            .seek_ceil(probe)
+                            .unwrap()
+                            .map(|(k, v)| (k.to_vec(), *v)),
+                        expected(ceil)
+                    );
+                    assert_eq!(
+                        cursor
+                            .seek_floor(probe)
+                            .unwrap()
+                            .map(|(k, v)| (k.to_vec(), *v)),
+                        expected(floor)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn integer_singletons_empty_and_long_inputs() {
+        for input in [vec![], vec![0], vec![0x10ffff], vec![0x10000; 32]] {
+            let mut compiler =
+                FstCompilerBuilder::new(InputType::Byte4).build::<PositiveIntOutputs>();
+            compiler.add(&input, 7).unwrap();
+            let fst = TypedFst::<PositiveIntOutputs>::from_compiled(compiler.compile().unwrap());
+            let mut cursor = IntsRefFstEnum::new(&fst);
+            assert_eq!(cursor.next().unwrap(), Some((input.as_slice(), &7)));
+            assert!(cursor.next().unwrap().is_none());
+            assert!(cursor.current().is_none());
+            assert_eq!(
+                cursor.seek_exact(&input).unwrap(),
+                Some((input.as_slice(), &7))
+            );
+            assert_eq!(
+                cursor.seek_floor(&input).unwrap(),
+                Some((input.as_slice(), &7))
+            );
+            assert_eq!(
+                cursor.seek_ceil(&input).unwrap(),
+                Some((input.as_slice(), &7))
+            );
+            assert!(cursor.seek_ceil(&[0x110000]).unwrap().is_none());
+            if !input.is_empty() {
+                assert!(cursor.seek_floor(&[]).unwrap().is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn integer_enumeration_reports_truncated_arc_data() {
+        let mut compiler = FstCompilerBuilder::new(InputType::Byte4).build::<PositiveIntOutputs>();
+        compiler.add(&[0x10000, 0x10ffff], 7).unwrap();
+        let mut fst = TypedFst::<PositiveIntOutputs>::from_compiled(compiler.compile().unwrap());
+        fst.bytes.clear();
+        assert!(IntsRefFstEnum::new(&fst).next().is_err());
+        assert!(IntsRefFstEnum::new(&fst).seek_exact(&[0x10000]).is_err());
+        assert!(IntsRefFstEnum::new(&fst).seek_ceil(&[0x10000]).is_err());
+        assert!(IntsRefFstEnum::new(&fst).seek_floor(&[0x10000]).is_err());
+    }
+
+    #[test]
+    fn public_current_is_valid_only_after_a_successful_operation() {
+        macro_rules! check {
+            ($enumerator:ident, $label:ty, $input_type:expr, $first:expr, $last:expr) => {{
+                let first: [$label; 2] = [$first, 1];
+                let last: [$label; 2] = [$last, 2];
+                let mut compiler =
+                    FstCompilerBuilder::new($input_type).build::<PositiveIntOutputs>();
+                compiler.add(&first.map(i32::from), 7).unwrap();
+                compiler.add(&last.map(i32::from), 11).unwrap();
+                let fst =
+                    TypedFst::<PositiveIntOutputs>::from_compiled(compiler.compile().unwrap());
+                let mut cursor = $enumerator::new(&fst);
+                assert!(cursor.current().is_none());
+                assert_eq!(cursor.next().unwrap(), Some((first.as_slice(), &7)));
+                assert!(cursor.seek_exact(&[first[0]]).unwrap().is_none());
+                assert!(cursor.current().is_none());
+                assert_eq!(
+                    cursor.seek_ceil(&first).unwrap(),
+                    Some((first.as_slice(), &7))
+                );
+                assert_eq!(cursor.current(), Some((first.as_slice(), &7)));
+                assert!(cursor.seek_floor(&[]).unwrap().is_none());
+                assert!(cursor.current().is_none());
+                assert_eq!(cursor.next().unwrap(), Some((first.as_slice(), &7)));
+                assert!(cursor.seek_ceil(&[last[0], 3]).unwrap().is_none());
+                assert!(cursor.current().is_none());
+                assert_eq!(cursor.next().unwrap(), Some((first.as_slice(), &7)));
+                assert_eq!(
+                    cursor.seek_exact(&last).unwrap(),
+                    Some((last.as_slice(), &11))
+                );
+                assert!(cursor.next().unwrap().is_none());
+                assert!(cursor.current().is_none());
+                assert_eq!(
+                    cursor.seek_floor(&last).unwrap(),
+                    Some((last.as_slice(), &11))
+                );
+                assert_eq!(cursor.current(), Some((last.as_slice(), &11)));
+
+                for operation in 0..4 {
+                    let mut cursor = $enumerator::new(&fst);
+                    assert_eq!(
+                        cursor.seek_exact(&first).unwrap(),
+                        Some((first.as_slice(), &7))
+                    );
+                    // A corrupt root address makes each traversal fail after
+                    // the public cursor was successfully positioned.
+                    let root_address = cursor.inner.arcs[0].target;
+                    cursor.inner.arcs[0].target = i64::MAX;
+                    cursor.inner.upto = 0;
+                    assert!(match operation {
+                        0 => cursor.next(),
+                        1 => cursor.seek_exact(&first),
+                        2 => cursor.seek_ceil(&first),
+                        _ => cursor.seek_floor(&first),
+                    }
+                    .is_err());
+                    assert!(cursor.current().is_none());
+                    cursor.inner.arcs[0].target = root_address;
+                    cursor.inner.upto = 0;
+                    assert_eq!(
+                        cursor.seek_exact(&last).unwrap(),
+                        Some((last.as_slice(), &11))
+                    );
+                    assert_eq!(cursor.current(), Some((last.as_slice(), &11)));
+                }
+            }};
+        }
+        check!(BytesRefFstEnum, u8, InputType::Byte1, 10, 20);
+        check!(IntsRefFstEnum, i32, InputType::Byte4, 0x10000, 0x10ffff);
     }
 }

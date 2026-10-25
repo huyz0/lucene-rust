@@ -1,0 +1,54 @@
+writer	empty	finish:0;close;resources	ok;ok;ok	finish:0;close:1;close:2;ram
+writer	zero-fields	doc:0;enddoc;finish:1;finish:1;close	ok;ok;ok;ok;ok	doc:0;enddoc;finish:1;finish:1;close:1;close:2
+writer	flags-n	doc:1;field:1:n;term:1;endterm;endfield;enddoc;finish:1	ok;ok;ok;ok;ok;ok;ok	doc:1;field:7:1:false:false:false;term:000a5cff:1;endterm;endfield;enddoc;finish:1
+writer	flags-p	doc:1;field:1:p;term:1;position;endterm;endfield;enddoc;finish:1	ok;ok;ok;ok;ok;ok;ok;ok	doc:1;field:7:1:true:false:false;term:000a5cff:1;position:7:10:13:e;endterm;endfield;enddoc;finish:1
+writer	flags-o	doc:1;field:1:o;term:1;position;endterm;endfield;enddoc;finish:1	ok;ok;ok;ok;ok;ok;ok;ok	doc:1;field:7:1:false:true:false;term:000a5cff:1;position:7:10:13:e;endterm;endfield;enddoc;finish:1
+writer	flags-y	doc:1;field:1:y;term:1;position;endterm;endfield;enddoc;finish:1	ok;ok;ok;ok;ok;ok;ok;ok	doc:1;field:7:1:false:false:true;term:000a5cff:1;position:7:10:13:e;endterm;endfield;enddoc;finish:1
+writer	flags-poy	doc:1;field:1:poy;term:1;position;endterm;endfield;enddoc;finish:1	ok;ok;ok;ok;ok;ok;ok;ok	doc:1;field:7:1:true:true:true;term:000a5cff:1;position:7:10:13:e;endterm;endfield;enddoc;finish:1
+writer	multiple	doc:2;field:2:n;term:7;endterm;term:0;endterm;endfield;field:0:n;endfield;enddoc;doc:0;enddoc;finish:2	ok;ok;ok;ok;ok;ok;ok;ok;ok;ok;ok;ok;ok	doc:2;field:7:2:false:false:false;term:000a5cff:7;endterm;term:000a5cff:0;endterm;endfield;field:7:0:false:false:false;endfield;enddoc;doc:0;enddoc;finish:2
+writer	initial-enddoc	enddoc	assert	-
+writer	initial-field:0:n	field:0:n	assert	-
+writer	initial-endfield	endfield	assert	-
+writer	initial-term:1	term:1	assert	-
+writer	initial-endterm	endterm	assert	-
+writer	initial-position	position	assert	-
+writer	initial-finish:1	finish:1	assert	-
+writer	doc-reentry	doc:0;doc:0;enddoc;doc:0;enddoc;finish:2	ok;assert;ok;ok;ok;ok	doc:0;enddoc;doc:0;enddoc;finish:2
+writer	field-reentry	doc:1;field:0:n;field:0:n;endfield;enddoc	ok;ok;assert;ok;ok	doc:1;field:7:0:false:false:false;endfield;enddoc
+writer	term-reentry	doc:1;field:1:n;term:0;term:0;endterm;endfield;enddoc	ok;ok;ok;assert;ok;ok;ok	doc:1;field:7:1:false:false:false;term:000a5cff:0;endterm;endfield;enddoc
+writer	missing-field	doc:1;enddoc;field:0:n;endfield;enddoc;finish:1	ok;assert;ok;ok;ok;ok	doc:1;field:7:0:false:false:false;endfield;enddoc;finish:1
+writer	extra-field	doc:0;field:0:n;endfield;enddoc;doc:0	ok;ok;ok;assert;assert	doc:0;field:7:0:false:false:false;endfield
+writer	missing-term	doc:1;field:1:n;endfield;term:0;endterm;endfield;enddoc	ok;ok;assert;ok;ok;ok;ok	doc:1;field:7:1:false:false:false;term:000a5cff:0;endterm;endfield;enddoc
+writer	extra-term	doc:1;field:0:n;term:0;endterm;endfield	ok;ok;ok;ok;assert	doc:1;field:7:0:false:false:false;term:000a5cff:0;endterm
+writer	missing-position	doc:1;field:1:p;term:1;endterm;position;endterm;endfield;enddoc	ok;ok;ok;assert;ok;ok;ok;ok	doc:1;field:7:1:true:false:false;term:000a5cff:1;position:7:10:13:e;endterm;endfield;enddoc
+writer	extra-position	doc:1;field:1:p;term:0;position;endterm	ok;ok;ok;ok;assert	doc:1;field:7:1:true:false:false;term:000a5cff:0;position:7:10:13:e
+writer	negative-counts	doc:-1;field:-1:p;term:-1;endterm;endfield;enddoc;finish:1	ok;ok;ok;assert;assert;assert;assert	doc:-1;field:7:-1:true:false:false;term:000a5cff:-1
+writer	finish-open-doc	doc:0;finish:1;enddoc;finish:0;finish:1	ok;assert;ok;assert;ok	doc:0;enddoc;finish:1
+writer	finish-open-field	doc:1;field:0:n;enddoc;finish:1	ok;ok;assert;assert	doc:1;field:7:0:false:false:false
+writer	finish-open-term	doc:1;field:1:n;term:0;finish:1	ok;ok;ok;assert	doc:1;field:7:1:false:false:false;term:000a5cff:0
+writer	retry-doc	fail:doc;doc:0;doc:0;enddoc;finish:1	ok;io:delegate doc;ok;ok;ok	doc:0;doc:0;enddoc;finish:1
+writer	retry-field	doc:1;fail:field;field:1:p;field:1:p;term:1;position;endterm;endfield;enddoc;finish:1	ok;ok;io:delegate field;ok;ok;ok;ok;ok;ok;ok	doc:1;field:7:1:true:false:false;field:7:1:true:false:false;term:000a5cff:1;position:7:10:13:e;endterm;endfield;enddoc;finish:1
+writer	retry-term	doc:1;field:1:p;fail:term;term:1;term:1;position;endterm;endfield;enddoc;finish:1	ok;ok;ok;io:delegate term;ok;ok;ok;ok;ok;ok	doc:1;field:7:1:true:false:false;term:000a5cff:1;term:000a5cff:1;position:7:10:13:e;endterm;endfield;enddoc;finish:1
+writer	retry-position	doc:1;field:1:p;term:1;fail:position;position;position;endterm;endfield;enddoc;finish:1	ok;ok;ok;ok;io:delegate position;ok;ok;ok;ok;ok	doc:1;field:7:1:true:false:false;term:000a5cff:1;position:7:10:13:e;position:7:10:13:e;endterm;endfield;enddoc;finish:1
+writer	retry-endterm	doc:1;field:1:p;term:1;position;fail:endterm;endterm;endterm;endfield;enddoc;finish:1	ok;ok;ok;ok;ok;io:delegate endterm;ok;ok;ok;ok	doc:1;field:7:1:true:false:false;term:000a5cff:1;position:7:10:13:e;endterm;endterm;endfield;enddoc;finish:1
+writer	retry-endfield	doc:1;field:1:n;term:0;endterm;fail:endfield;endfield;endfield;enddoc;finish:1	ok;ok;ok;ok;ok;io:delegate endfield;ok;ok;ok	doc:1;field:7:1:false:false:false;term:000a5cff:0;endterm;endfield;endfield;enddoc;finish:1
+writer	retry-enddoc	doc:0;fail:enddoc;enddoc;enddoc;finish:1	ok;ok;io:delegate enddoc;ok;ok	doc:0;enddoc;enddoc;finish:1
+writer	retry-finish	doc:0;enddoc;fail:finish;finish:1;finish:1	ok;ok;ok;io:delegate finish;ok	doc:0;enddoc;finish:1;finish:1
+writer	close#1	fail:close#1;close;close	ok;io:delegate close;ok	close:1;close:2;close:3
+writer	close#2	fail:close#2;close;close	ok;io:delegate close;ok	close:1;close:2;close:3;close:4
+writer	prox	doc:1;field:1:poy;term:3;prox;endterm;endfield;enddoc;finish:1	ok;ok;ok;ok;ok;ok;ok;ok	doc:1;field:7:1:true:true:true;term:000a5cff:3;position:1:0:2:000a;position:3:3:6:-;position:3:6:6:e;inputs:7:6;endterm;endfield;enddoc;finish:1
+writer	shortpos	doc:1;field:1:poy;term:3;shortpos;endterm;endfield;enddoc;finish:1	ok;ok;ok;io:io:input;assert;assert;assert;assert	doc:1;field:7:1:true:true:true;term:000a5cff:3;inputs:1:0
+writer	shortoff	doc:1;field:1:poy;term:3;shortoff;endterm;endfield;enddoc;finish:1	ok;ok;ok;io:io:input;assert;assert;assert;assert	doc:1;field:7:1:true:true:true;term:000a5cff:3;inputs:4:1
+writer	prox-position-error	doc:1;field:1:poy;term:3;fail:position;prox;endterm	ok;ok;ok;ok;io:io:delegate position;assert	doc:1;field:7:1:true:true:true;term:000a5cff:3;position:1:0:2:000a;inputs:4:2
+reader	get	-	ok	get:0
+reader	fail-get:0	-	io:delegate get:0	get:0
+reader	integrity	-	ok	integrity
+reader	fail-integrity	-	io:delegate integrity	integrity
+reader	clone	-	ok	clone;close:1;close:2
+reader	merge	-	ok	merge;close:1;close:2
+reader	string	-	ok	-
+reader	close	-	ok	close:1;close:2
+reader	fail-close:1	-	io:delegate close:1	close:1
+reader	fail-close:2	-	io:delegate close:2	close:1;close:2
+merge	sequential	-	ok	doc:1;field:7:1:true:true:true;term:000a5cff:3;position:1:0:2:000a;position:3:3:6:-;position:3:6:6:-;endterm;endfield;enddoc;doc:0;enddoc;doc:1;field:7:1:true:true:true;term:000a5cff:3;position:1:0:2:000a;position:3:3:6:-;position:3:6:6:-;endterm;endfield;enddoc;doc:0;enddoc;finish:4;merged:4
+merge	sorted	-	ok	doc:0;enddoc;doc:1;field:7:1:true:true:true;term:000a5cff:3;position:1:0:2:000a;position:3:3:6:-;position:3:6:6:-;endterm;endfield;enddoc;doc:1;field:7:1:true:true:true;term:000a5cff:3;position:1:0:2:000a;position:3:3:6:-;position:3:6:6:-;endterm;endfield;enddoc;doc:0;enddoc;finish:4;merged:4

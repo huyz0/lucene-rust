@@ -1,0 +1,43 @@
+reader	f,b,sf,sb,integrity,memory,graph,close,close	ok;ok;ok;ok;ok;ok;ok;ok;ok	float:float,iterator,docID,size,dimension,byte:byte,iterator,docID,size,dimension,search:float,acceptWrapped:AssertingAcceptDocs,bits,cost,acceptIterator,search:byte,acceptWrapped:AssertingAcceptDocs,bits,cost,acceptIterator,integrity,memory:float,graph:float,close,close,close,close
+reader	f:byte,b:float,f:plain,f:missing,sf:byte,sb:float	assert;assert;assert;assert;assert;assert	
+reader	size:-1,f	ok;assert	float:float,iterator,docID,size
+reader	dim:0,b	ok;assert	byte:byte,iterator,docID,size,dimension
+reader	initial:0,f	ok;assert	float:float,iterator,docID
+reader	missing,f,b,merge	ok;assert;assert;assert	float:float,byte:byte,merge
+reader	fail:float:float,f	ok;io:delegate failure	float:float
+reader	fail:integrity,integrity	ok;io:delegate failure	integrity
+reader	merge,mf,mb,msf,msb,mm,mc,finish,mfinish,mfinish,close	ok;ok;ok;assert;assert;assert;assert;assert;ok;assert;ok	merge,float:float,iterator,docID,size,dimension,byte:byte,iterator,docID,size,dimension,finishMerge,close,close
+reader	merge,merge2,mfinish,close,finish2,close	ok;ok;ok;assert;ok;ok	merge,merge,finishMerge,close,close,finishMerge,close,close
+reader	merge,close	ok;ok	merge,close,close
+reader	merge,fail:finishMerge,mfinish,ok,mfinish,close	ok;ok;io:delegate failure;ok;assert;ok	merge,finishMerge,close,close
+reader	merge,merge2,mfinish,fail:finishMerge,finish2,ok,close	ok;ok;ok;ok;io:delegate failure;ok;assert	merge,merge,finishMerge,finishMerge,close,close
+reader	fail:merge,merge,close	ok;io:delegate failure;ok	merge,close,close
+reader	fail:close,close	ok;io:delegate failure	close
+reader	fail:close2,close	ok;io:delegate failure	close,close
+reader	initial:0,sf	ok;assert	search:float,acceptWrapped:AssertingAcceptDocs,bits,cost,acceptIterator
+reader	fail:bits,sf	ok;io:delegate failure	search:float,acceptWrapped:AssertingAcceptDocs,bits
+reader	fail:cost,sb	ok;io:delegate failure	search:byte,acceptWrapped:AssertingAcceptDocs,bits,cost
+reader	fail:acceptIterator,sf	ok;io:delegate failure	search:float,acceptWrapped:AssertingAcceptDocs,bits,cost,acceptIterator
+reader	size:0,f,b	ok;ok;ok	float:float,iterator,docID,size,dimension,byte:byte,iterator,docID,size,dimension
+reader	dim:0,f	ok;assert	float:float,iterator,docID,size,dimension
+reader	initial:0,b	ok;assert	byte:byte,iterator,docID
+writer	all	ok	add:float,flush:7:true,mergeOne:float,deferred,finish,ram,close
+writer	null-field	assert	
+writer	null-state	assert	
+writer	no-task	ok	mergeOne:float
+writer	deferred-error	io:delegate failure	mergeOne:float,deferred
+writer	merge-order	ok	mergeOne:float,mergeOne:byte,deferred,deferred,finish
+writer	merge-reversed	ok	mergeOne:float,mergeOne:byte,deferred:float,deferred:byte,finish
+writer	merge-reversed-field-error	io:delegate failure	mergeOne:float,mergeOne:byte
+writer	merge-reversed-deferred-error	io:delegate failure	mergeOne:float,mergeOne:byte,deferred:float
+writer	add:float	io:delegate failure	add:float
+writer	flush:7:true	io:delegate failure	flush:7:true
+writer	mergeOne:float	io:delegate failure	mergeOne:float
+writer	finish	io:delegate failure	finish
+writer	close	io:delegate failure	close
+accept	all	ok	bits,cost,acceptIterator
+accept	positioned	assert	acceptIterator
+accept	thread	assert;assert;assert	
+accept	bits	io:delegate failure	bits
+accept	cost	io:delegate failure	cost
+accept	acceptIterator	io:delegate failure	acceptIterator

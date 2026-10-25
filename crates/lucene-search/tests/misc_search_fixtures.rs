@@ -51,7 +51,7 @@ macro_rules! with_searcher {
     ($reader:ident, $searcher:ident, $body:block) => {{
         let opened = $reader.open_segments().unwrap();
         let segments = opened.as_open_segments();
-        let owned = $reader.field_norms_by_field(&["txt".to_string()]);
+        let owned = $reader.field_norms_by_field(&["txt".to_string()]).unwrap();
         let norms: Vec<_> = owned.iter().map(Some).collect();
         let $searcher = IndexSearcher::new(&segments, &norms).unwrap();
         $body

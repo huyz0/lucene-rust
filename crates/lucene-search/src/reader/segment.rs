@@ -832,6 +832,17 @@ impl LeafReader for SegmentReader {
     }
 
     fn terms(&self, field: &str) -> Result<Option<Box<dyn Terms + '_>>> {
+        if let Some(core) = &self.simpletext {
+            let Some(postings) = &core.postings else {
+                return Ok(None);
+            };
+            return Ok(postings
+                .terms(field)
+                .map_err(crate::directory_reader::Error::SimpleText)?
+                .map(|terms| {
+                    Box::new(super::simpletext::SimpleTextTerms(terms)) as Box<dyn Terms>
+                }));
+        }
         let Some(terms) = self.block_tree_fields().field(field) else {
             return Ok(None);
         };
@@ -845,6 +856,15 @@ impl LeafReader for SegmentReader {
     }
 
     fn numeric_doc_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues + '_>>> {
+        if let Some(core) = &self.simpletext {
+            let Some((reader, data)) = core.doc_values(field, DocValuesType::Numeric)? else {
+                return Ok(None);
+            };
+            let cursor = reader
+                .numeric_from_data(field, data)
+                .map_err(crate::directory_reader::Error::SimpleText)?;
+            return Ok(Some(Box::new(super::simpletext::Numeric::new(cursor))));
+        }
         let Some((e, data)) =
             self.dv_field(field, DocValuesType::Numeric, |m, n| m.numeric_entry(n))
         else {
@@ -858,6 +878,15 @@ impl LeafReader for SegmentReader {
     }
 
     fn binary_doc_values(&self, field: &str) -> Result<Option<Box<dyn BinaryDocValues + '_>>> {
+        if let Some(core) = &self.simpletext {
+            let Some((reader, data)) = core.doc_values(field, DocValuesType::Binary)? else {
+                return Ok(None);
+            };
+            let cursor = reader
+                .binary_from_data(field, data)
+                .map_err(crate::directory_reader::Error::SimpleText)?;
+            return Ok(Some(Box::new(super::simpletext::Binary::new(cursor))));
+        }
         let Some((e, data)) = self.dv_field(field, DocValuesType::Binary, |m, n| m.binary_entry(n))
         else {
             return Ok(None);
@@ -877,6 +906,15 @@ impl LeafReader for SegmentReader {
     }
 
     fn sorted_doc_values(&self, field: &str) -> Result<Option<Box<dyn SortedDocValues + '_>>> {
+        if let Some(core) = &self.simpletext {
+            let Some((reader, data)) = core.doc_values(field, DocValuesType::Sorted)? else {
+                return Ok(None);
+            };
+            let cursor = reader
+                .sorted_from_data(field, data)
+                .map_err(crate::directory_reader::Error::SimpleText)?;
+            return Ok(Some(Box::new(super::simpletext::Sorted::new(cursor))));
+        }
         let Some((e, data)) = self.dv_field(field, DocValuesType::Sorted, |m, n| m.sorted_entry(n))
         else {
             return Ok(None);
@@ -893,6 +931,17 @@ impl LeafReader for SegmentReader {
         &self,
         field: &str,
     ) -> Result<Option<Box<dyn SortedNumericDocValues + '_>>> {
+        if let Some(core) = &self.simpletext {
+            let Some((reader, data)) = core.doc_values(field, DocValuesType::SortedNumeric)? else {
+                return Ok(None);
+            };
+            let cursor = reader
+                .sorted_numeric_from_data(field, data)
+                .map_err(crate::directory_reader::Error::SimpleText)?;
+            return Ok(Some(Box::new(super::simpletext::SortedNumeric::new(
+                cursor,
+            ))));
+        }
         let Some((e, data)) = self.dv_field(field, DocValuesType::SortedNumeric, |m, n| {
             m.sorted_numeric_entry(n)
         }) else {
@@ -910,6 +959,15 @@ impl LeafReader for SegmentReader {
         &self,
         field: &str,
     ) -> Result<Option<Box<dyn SortedSetDocValues + '_>>> {
+        if let Some(core) = &self.simpletext {
+            let Some((reader, data)) = core.doc_values(field, DocValuesType::SortedSet)? else {
+                return Ok(None);
+            };
+            let cursor = reader
+                .sorted_set_from_data(field, data)
+                .map_err(crate::directory_reader::Error::SimpleText)?;
+            return Ok(Some(Box::new(super::simpletext::SortedSet::new(cursor))));
+        }
         let Some((e, data)) = self.dv_field(field, DocValuesType::SortedSet, |m, n| {
             m.sorted_set_entry(n)
         }) else {
@@ -937,6 +995,15 @@ impl LeafReader for SegmentReader {
     }
 
     fn norm_values(&self, field: &str) -> Result<Option<Box<dyn NumericDocValues + '_>>> {
+        if let Some(core) = &self.simpletext {
+            let Some((reader, data)) = core.norms(field)? else {
+                return Ok(None);
+            };
+            let cursor = reader
+                .numeric_from_data(field, data)
+                .map_err(crate::directory_reader::Error::SimpleText)?;
+            return Ok(Some(Box::new(super::simpletext::Numeric::new(cursor))));
+        }
         let Some(fi) = SegmentReader::field_infos(self).field_by_name(field) else {
             return Ok(None);
         };
@@ -962,6 +1029,11 @@ impl LeafReader for SegmentReader {
     }
 
     fn point_values(&self, field: &str) -> Result<Option<Box<dyn PointValues + '_>>> {
+        if let Some(core) = &self.simpletext {
+            return Ok(core
+                .points(field)?
+                .map(|tree| Box::new(super::simpletext::Points(tree)) as Box<dyn PointValues>));
+        }
         let Some(fi) = SegmentReader::field_infos(self).field_by_name(field) else {
             return Ok(None);
         };
@@ -986,6 +1058,11 @@ impl LeafReader for SegmentReader {
         {
             return Ok(None);
         }
+        if let Some(core) = &self.simpletext {
+            return Ok(core.vector_values::<f32>(field)?.map(|values| {
+                Box::new(super::simpletext::FloatVectors(values)) as Box<dyn FloatVectorValues>
+            }));
+        }
         let Some(flat) = self.flat_vectors_reader_for(fi.number)? else {
             return Ok(None);
         };
@@ -1003,6 +1080,11 @@ impl LeafReader for SegmentReader {
         {
             return Ok(None);
         }
+        if let Some(core) = &self.simpletext {
+            return Ok(core.vector_values::<u8>(field)?.map(|values| {
+                Box::new(super::simpletext::ByteVectors(values)) as Box<dyn ByteVectorValues>
+            }));
+        }
         let Some(flat) = self.flat_vectors_reader_for(fi.number)? else {
             return Ok(None);
         };
@@ -1017,6 +1099,9 @@ impl LeafReader for SegmentReader {
     }
 
     fn term_vectors(&self, doc: i32) -> Result<Option<TermVectorsDocument>> {
+        if let Some(core) = &self.simpletext {
+            return core.term_vectors(doc).map_err(Into::into);
+        }
         match self.term_vectors_reader()? {
             None => Ok(None),
             Some(r) => Ok(r.document(doc)?),
@@ -1031,13 +1116,27 @@ impl LeafReader for SegmentReader {
         Some(SegmentReader::core_cache_helper(self))
     }
 
-    fn doc_values_skipper(&self, field: &str) -> Result<Option<doc_values::DocValuesSkipper<'_>>> {
+    fn doc_values_skipper(&self, field: &str) -> Result<Option<super::DocValuesSkipper<'_>>> {
         let Some(fi) = SegmentReader::field_infos(self).field_by_name(field) else {
             return Ok(None);
         };
+        if let Some(core) = &self.simpletext {
+            if fi.doc_values_skip_index_type
+                == lucene_codecs::field_infos::DocValuesSkipIndexType::None
+            {
+                return Ok(None);
+            }
+            let Some((reader, _)) = core.doc_values(field, fi.doc_values_type)? else {
+                return Ok(None);
+            };
+            let cursor = reader
+                .skipper(field, fi.doc_values_type)
+                .map_err(crate::directory_reader::Error::SimpleText)?;
+            return Ok(Some(super::DocValuesSkipper::simpletext(cursor)));
+        }
         Ok(self
             .doc_values_skip_index(fi.number)?
-            .map(doc_values::DocValuesSkipper::new))
+            .map(super::DocValuesSkipper::new))
     }
 
     fn sorted_numeric_is_singleton(&self, field: &str) -> bool {

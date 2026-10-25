@@ -1,0 +1,31 @@
+case	consumer_valid	ok	-	get,next:0,value:10,next:2,value:20,next:4,value:30,next:2147483647,delegate-add
+case	consumer_duplicate	assert	-	get,next:0,value:10,next:0
+case	consumer_backwards	assert	-	get,next:2,value:10,next:1
+case	consumer_negative	assert	-	get,next:-1
+case	consumer_past_end	assert	-	get,next:0,value:10,next:2,value:20,next:5
+case	consumer_get_error	io	get failure	get
+case	consumer_next_error	io	next failure	get,next-error
+case	consumer_delegate_error	io	add failure	get,next:0,value:10,next:2,value:20,next:4,value:30,next:2147483647,delegate-add
+case	consumer_close_valid	ok	-	cclose:1,cclose:2
+case	consumer_close_first	io	consumer close failure	cclose:1
+case	consumer_close_second	io	consumer close failure	cclose:1,cclose:2
+case	format_consumer	ok	-	open-consumer
+case	format_consumer_error	io	open failure	open-consumer
+case	format_producer	ok	-	open-producer
+case	format_producer_error	io	open failure	open-producer
+case	format_no_norms	assert	-	
+case	producer_valid	ok	-	get,next:0,value:10,next:2,value:20,exact:4:true,value:30,next:2147483647
+case	producer_no_norms	assert	-	
+case	producer_positioned	assert	-	get
+case	producer_get_error	io	get failure	get
+case	producer_before_value	assert	-	get
+case	producer_exact_bounds	assert	-	get
+case	producer_backwards	assert	-	get,next:0
+case	producer_missing_value	assert	-	get,exact:1:false
+case	producer_integrity	ok	-	integrity
+case	producer_integrity_error	io	integrity failure	integrity
+case	producer_close_valid	ok	-	pclose:1,pclose:2
+case	producer_close_first	io	producer close failure	pclose:1
+case	producer_close_second	io	producer close failure	pclose:1,pclose:2
+case	producer_merge	ok	-	merge,get,next:0
+case	producer_merge_thread	assert	-	merge

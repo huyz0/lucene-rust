@@ -291,11 +291,12 @@ Java's — indexes written by either engine fully usable by the other.
 
 **Effort:** L.
 
-**Scope decision required — vector search.** Flat `.vec`/`.vem` storage plus brute-force KNN
-landed; HNSW (`.vex`) does not exist. If OpenSearch k-NN is in the target matrix, HNSW is a
-milestone of its own and must land before M5 — it is not a small addition. If it is not in
-the matrix, record k-NN as Java-served and move on. **Decide this before starting M4**, since
-it changes M5's scope materially.
+**Vector search.** The core reads and writes flat and HNSW vector files,
+builds and merges graphs, and performs approximate and filtered k-NN search
+([codec parity](parity/codecs.md)). OpenSearch integration remains incomplete:
+the Rust engine refuses vector fields and `knn_vector` mappings
+([engine field matrix](opensearch-engine.md)). Core HNSW support does not yet
+provide end-to-end native OpenSearch vector indexing and search.
 
 ---
 

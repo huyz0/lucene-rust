@@ -1,0 +1,21 @@
+    version 10.5.0
+    min version null
+    number of documents 7
+    uses compound file false
+    has blocks true
+    diagnostics 1
+      key source
+      value fixture
+    attributes 1
+      key note
+      value line\
+break\\
+    files 2
+      file _2f.other
+      file _2f.si
+    id [57 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0]
+    sort 1
+      name SortedSetSortField
+      type <sortedset: "set"> missingValue=SortField.STRING_LAST selector=MIN
+      bytes [3 73 65 74 0 0 0 0 0 0 0 0 2 0 0 0]
+checksum 00000000001878727670

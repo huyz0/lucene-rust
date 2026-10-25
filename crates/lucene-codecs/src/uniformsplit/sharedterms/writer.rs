@@ -1,5 +1,5 @@
-//! Port of `STUniformSplitTermsWriter` (its `writeSingleSegment` path) and
-//! `STBlockWriter`.
+//! Port of `STUniformSplitTermsWriter`'s shared block output and
+//! `STBlockWriter`; both flush and specialized merge feed this writer.
 //!
 //! Java pops the fields' terms off one queue by (term, field number); each
 //! term's postings are written field by field, then the term goes into the
@@ -8,9 +8,11 @@
 //! states in that same order and gathers each term's into a line.
 
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use lucene_store::codec_util;
+use lucene_util::fixed_bit_set::FixedBitSet;
 
 use super::super::block_line::TermBytes;
 use super::super::dictionary::FstDictionaryBuilder;
@@ -196,6 +198,21 @@ impl StUniformSplitTermsWriter {
             });
         }
         Ok(())
+    }
+
+    /// `FieldMetadata.getDocCount`: count each merge field's seen documents
+    /// once at metadata serialization, rather than scanning its bitset for
+    /// every term. A flush already supplied its final counts to `new`.
+    pub(crate) fn finish_merge(
+        mut self,
+        docs_seen: &BTreeMap<i32, FixedBitSet>,
+    ) -> Result<(Vec<u8>, Vec<u8>)> {
+        for field in &mut self.sink.fields {
+            field.doc_count = docs_seen
+                .get(&field.field_info.number)
+                .map_or(0, |seen| seen.cardinality() as i32);
+        }
+        self.finish()
     }
 
     /// `STBlockWriter.addLine(term, termStates, dictionaryBuilder)` for the

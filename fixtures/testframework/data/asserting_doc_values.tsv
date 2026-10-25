@@ -1,0 +1,145 @@
+consumer	numeric	good	ok	get:numeric,next,long,next,long,next,delegate
+consumer	numeric	empty	ok	get:numeric,next,delegate
+consumer	numeric	bounds	assert	get:numeric,next,long,next
+consumer	numeric	reverse	assert	get:numeric,next,long,next
+consumer	numeric	duplicate	assert	get:numeric,next,long,next
+consumer	numeric	dictionary	ok	get:numeric,next,long,next,long,next,delegate
+consumer	numeric	orphan	ok	get:numeric,next,long,next,long,next,delegate
+consumer	numeric	badord	ok	get:numeric,next,long,next,long,next,delegate
+consumer	numeric	negative	ok	get:numeric,next,long,next,long,next,delegate
+consumer	numeric	descending	ok	get:numeric,next,long,next,long,next,delegate
+consumer	numeric	zero	ok	get:numeric,next,long,next,delegate
+consumer	numeric	fail-get:numeric	io:get:numeric failure	get:numeric
+consumer	numeric	fail-next	io:next failure	get:numeric,next
+consumer	numeric	fail-lookup:0	ok	get:numeric,next,long,next,long,next,delegate
+consumer	numeric	fail-value	ok	get:numeric,next,long,next,long,next,delegate
+consumer	numeric	fail-ord	ok	get:numeric,next,long,next,long,next,delegate
+consumer	numeric	fail-delegate	io:delegate failure	get:numeric,next,long,next,long,next,delegate
+consumer	binary	good	ok	get:binary,next,binary,next,binary,next,delegate
+consumer	binary	empty	ok	get:binary,next,delegate
+consumer	binary	bounds	assert	get:binary,next,binary,next
+consumer	binary	reverse	assert	get:binary,next,binary,next
+consumer	binary	duplicate	assert	get:binary,next,binary,next
+consumer	binary	dictionary	ok	get:binary,next,binary,next,binary,next,delegate
+consumer	binary	orphan	ok	get:binary,next,binary,next,binary,next,delegate
+consumer	binary	badord	ok	get:binary,next,binary,next,binary,next,delegate
+consumer	binary	negative	ok	get:binary,next,binary,next,binary,next,delegate
+consumer	binary	descending	ok	get:binary,next,binary,next,binary,next,delegate
+consumer	binary	zero	ok	get:binary,next,binary,next,delegate
+consumer	binary	fail-get:binary	io:get:binary failure	get:binary
+consumer	binary	fail-next	io:next failure	get:binary,next
+consumer	binary	fail-lookup:0	ok	get:binary,next,binary,next,binary,next,delegate
+consumer	binary	fail-value	ok	get:binary,next,binary,next,binary,next,delegate
+consumer	binary	fail-ord	ok	get:binary,next,binary,next,binary,next,delegate
+consumer	binary	fail-delegate	io:delegate failure	get:binary,next,binary,next,binary,next,delegate
+consumer	sorted	good	ok	get:sorted,valueCount,lookup:0,lookup:1,next,ordValue,next,ordValue,next,delegate
+consumer	sorted	empty	ok	get:sorted,valueCount,next,delegate
+consumer	sorted	bounds	assert	get:sorted,valueCount,lookup:0,lookup:1,next,ordValue,next
+consumer	sorted	reverse	assert	get:sorted,valueCount,lookup:0,lookup:1,next,ordValue,next
+consumer	sorted	duplicate	assert	get:sorted,valueCount,lookup:0,lookup:1,next,ordValue,next
+consumer	sorted	dictionary	assert	get:sorted,valueCount,lookup:0,lookup:1
+consumer	sorted	orphan	assert	get:sorted,valueCount,lookup:0,lookup:1,lookup:2,next,ordValue,next,ordValue,next
+consumer	sorted	badord	assert	get:sorted,valueCount,lookup:0,lookup:1,next,ordValue,next,ordValue
+consumer	sorted	negative	assert	get:sorted,valueCount,lookup:0,lookup:1,next,ordValue,next,ordValue
+consumer	sorted	descending	ok	get:sorted,valueCount,lookup:0,lookup:1,next,ordValue,next,ordValue,next,delegate
+consumer	sorted	zero	assert	get:sorted,valueCount,next,ordValue
+consumer	sorted	fail-get:sorted	io:get:sorted failure	get:sorted
+consumer	sorted	fail-next	io:next failure	get:sorted,valueCount,lookup:0,lookup:1,next
+consumer	sorted	fail-lookup:0	io:lookup:0 failure	get:sorted,valueCount,lookup:0
+consumer	sorted	fail-value	ok	get:sorted,valueCount,lookup:0,lookup:1,next,ordValue,next,ordValue,next,delegate
+consumer	sorted	fail-ord	ok	get:sorted,valueCount,lookup:0,lookup:1,next,ordValue,next,ordValue,next,delegate
+consumer	sorted	fail-delegate	io:delegate failure	get:sorted,valueCount,lookup:0,lookup:1,next,ordValue,next,ordValue,next,delegate
+consumer	sortedNumeric	good	ok	get:sortedNumeric,next,docID,docID,count,value,value,next,docID,docID,count,value,value,next,delegate
+consumer	sortedNumeric	empty	ok	get:sortedNumeric,next,delegate
+consumer	sortedNumeric	bounds	ok	get:sortedNumeric,next,docID,docID,count,value,value,next,docID,docID,count,value,value,next,delegate
+consumer	sortedNumeric	reverse	assert	get:sortedNumeric,next,docID,docID,count,value,value,next,docID
+consumer	sortedNumeric	duplicate	assert	get:sortedNumeric,next,docID,docID,count,value,value,next,docID
+consumer	sortedNumeric	dictionary	ok	get:sortedNumeric,next,docID,docID,count,value,value,next,docID,docID,count,value,value,next,delegate
+consumer	sortedNumeric	orphan	ok	get:sortedNumeric,next,docID,docID,count,value,value,next,docID,docID,count,value,value,next,delegate
+consumer	sortedNumeric	badord	ok	get:sortedNumeric,next,docID,docID,count,value,value,next,docID,docID,count,value,value,next,delegate
+consumer	sortedNumeric	negative	ok	get:sortedNumeric,next,docID,docID,count,value,value,next,docID,docID,count,value,value,next,delegate
+consumer	sortedNumeric	descending	assert	get:sortedNumeric,next,docID,docID,count,value,value
+consumer	sortedNumeric	zero	assert	get:sortedNumeric,next,docID,docID,count
+consumer	sortedNumeric	fail-get:sortedNumeric	io:get:sortedNumeric failure	get:sortedNumeric
+consumer	sortedNumeric	fail-next	io:next failure	get:sortedNumeric,next
+consumer	sortedNumeric	fail-lookup:0	ok	get:sortedNumeric,next,docID,docID,count,value,value,next,docID,docID,count,value,value,next,delegate
+consumer	sortedNumeric	fail-value	io:value failure	get:sortedNumeric,next,docID,docID,count,value
+consumer	sortedNumeric	fail-ord	ok	get:sortedNumeric,next,docID,docID,count,value,value,next,docID,docID,count,value,value,next,delegate
+consumer	sortedNumeric	fail-delegate	io:delegate failure	get:sortedNumeric,next,docID,docID,count,value,value,next,docID,docID,count,value,value,next,delegate
+consumer	sortedSet	good	ok	get:sortedSet,valueCount,lookup:0,lookup:1,next,count,ord,count,ord,count,next,count,ord,count,ord,count,next,delegate
+consumer	sortedSet	empty	ok	get:sortedSet,valueCount,next,delegate
+consumer	sortedSet	bounds	ok	get:sortedSet,valueCount,lookup:0,lookup:1,next,count,ord,count,ord,count,next,count,ord,count,ord,count,next,delegate
+consumer	sortedSet	reverse	ok	get:sortedSet,valueCount,lookup:0,lookup:1,next,count,ord,count,ord,count,next,count,ord,count,ord,count,next,delegate
+consumer	sortedSet	duplicate	ok	get:sortedSet,valueCount,lookup:0,lookup:1,next,count,ord,count,ord,count,next,count,ord,count,ord,count,next,delegate
+consumer	sortedSet	dictionary	assert	get:sortedSet,valueCount,lookup:0,lookup:1
+consumer	sortedSet	orphan	assert	get:sortedSet,valueCount,lookup:0,lookup:1,lookup:2,next,count,ord,count,ord,count,next,count,ord,count,ord,count,next
+consumer	sortedSet	badord	assert	get:sortedSet,valueCount,lookup:0,lookup:1,next,count,ord,count,ord,count,next,count,ord
+consumer	sortedSet	negative	assert	get:sortedSet,valueCount,lookup:0,lookup:1,next,count,ord,count,ord,count,next,count,ord
+consumer	sortedSet	descending	assert	get:sortedSet,valueCount,lookup:0,lookup:1,next,count,ord,count,ord
+consumer	sortedSet	zero	ok	get:sortedSet,valueCount,next,count,next,delegate
+consumer	sortedSet	fail-get:sortedSet	io:get:sortedSet failure	get:sortedSet
+consumer	sortedSet	fail-next	io:next failure	get:sortedSet,valueCount,lookup:0,lookup:1,next
+consumer	sortedSet	fail-lookup:0	io:lookup:0 failure	get:sortedSet,valueCount,lookup:0
+consumer	sortedSet	fail-value	ok	get:sortedSet,valueCount,lookup:0,lookup:1,next,count,ord,count,ord,count,next,count,ord,count,ord,count,next,delegate
+consumer	sortedSet	fail-ord	io:ord failure	get:sortedSet,valueCount,lookup:0,lookup:1,next,count,ord
+consumer	sortedSet	fail-delegate	io:delegate failure	get:sortedSet,valueCount,lookup:0,lookup:1,next,count,ord,count,ord,count,next,count,ord,count,ord,count,next,delegate
+consumer	close	good	ok	close,close
+consumer	close	fail-close	io:close failure	close
+consumer	close	fail-close2	io:close failure	close,close
+producer	numeric	good	ok	toString,get:numeric,docID
+producer	numeric	positioned	assert	toString,get:numeric,docID
+producer	numeric	wrong-number	assert	toString
+producer	numeric	wrong-type	assert	toString
+producer	numeric	missing	null-field	toString
+producer	numeric	fail-get:numeric	io:get:numeric failure	toString,get:numeric
+producer	numeric	merge	ok	toString,merge,toString,get:numeric,docID
+producer	binary	good	ok	toString,get:binary,docID
+producer	binary	positioned	assert	toString,get:binary,docID
+producer	binary	wrong-number	assert	toString
+producer	binary	wrong-type	assert	toString
+producer	binary	missing	null-field	toString
+producer	binary	fail-get:binary	io:get:binary failure	toString,get:binary
+producer	binary	merge	ok	toString,merge,toString,get:binary,docID
+producer	sorted	good	ok	toString,get:sorted,valueCount
+producer	sorted	positioned	ok	toString,get:sorted,valueCount
+producer	sorted	wrong-number	assert	toString
+producer	sorted	wrong-type	assert	toString
+producer	sorted	missing	null-field	toString
+producer	sorted	fail-get:sorted	io:get:sorted failure	toString,get:sorted
+producer	sorted	merge	ok	toString,merge,toString,get:sorted,valueCount
+producer	sortedNumeric	good	ok	toString,get:sortedNumeric
+producer	sortedNumeric	positioned	ok	toString,get:sortedNumeric
+producer	sortedNumeric	wrong-number	assert	toString
+producer	sortedNumeric	wrong-type	assert	toString
+producer	sortedNumeric	missing	null-field	toString
+producer	sortedNumeric	fail-get:sortedNumeric	io:get:sortedNumeric failure	toString,get:sortedNumeric
+producer	sortedNumeric	merge	ok	toString,merge,toString,get:sortedNumeric
+producer	sortedSet	good	ok	toString,get:sortedSet,valueCount
+producer	sortedSet	positioned	ok	toString,get:sortedSet,valueCount
+producer	sortedSet	wrong-number	assert	toString
+producer	sortedSet	wrong-type	assert	toString
+producer	sortedSet	missing	null-field	toString
+producer	sortedSet	fail-get:sortedSet	io:get:sortedSet failure	toString,get:sortedSet
+producer	sortedSet	merge	ok	toString,merge,toString,get:sortedSet,valueCount
+producer	lifecycle	good	ok	toString,close,close
+producer	lifecycle	fail-close	io:close failure	toString,close
+producer	lifecycle	fail-close2	io:close failure	toString,close,close
+producer	lifecycle	integrity	ok	toString,integrity
+producer	lifecycle	fail-integrity	io:integrity failure	toString,integrity
+skipper	numeric	good	ok	toString,get:skipper,skipAdvance
+skipper	numeric	positioned	assert	toString,get:skipper
+skipper	numeric	unpositioned	assert	toString,get:skipper
+skipper	numeric	level	assert	toString,get:skipper
+skipper	numeric	advance	assert	toString,get:skipper,skipAdvance
+skipper	numeric	fail-skipAdvance	io:skipAdvance failure	toString,get:skipper,skipAdvance
+skipper	numeric	none	assert	toString
+skipper	numeric	missing	null-field	toString
+skipper	numeric	wrong-number	assert	toString
+skipper	numeric	null-skipper	assert	toString,get:skipper
+skipper	numeric	fail-get:skipper	io:get:skipper failure	toString,get:skipper
+skipper	numeric	thread	assert;assert;assert;assert;assert;assert;assert;assert;assert;assert;assert	toString,get:skipper
+producer	numeric	thread	assert	toString,merge,toString
+producer	binary	thread	assert	toString,merge,toString
+producer	sorted	thread	assert	toString,merge,toString
+producer	sortedNumeric	thread	assert	toString,merge,toString
+producer	sortedSet	thread	assert	toString,merge,toString

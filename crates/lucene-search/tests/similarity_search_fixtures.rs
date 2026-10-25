@@ -60,7 +60,9 @@ fn searches_under_every_similarity_match_lucene_bit_for_bit() {
     );
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["body".to_string(), "title".to_string()]);
+    let owned = reader
+        .field_norms_by_field(&["body".to_string(), "title".to_string()])
+        .unwrap();
     let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
 
     let (mut cases, mut hits, mut failures) = (0, 0, Vec::new());
@@ -116,7 +118,7 @@ fn every_scoring_clause_scores_through_the_similarity() {
     let reader = DirectoryReader::open(&FsDirectory::open(&dir)).unwrap();
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
     let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
     let span = || {
         Clause::Span(SpanQuery::span_near(
@@ -353,7 +355,9 @@ fn timeouts_stop_the_search_where_lucene_stops_it() {
     assert_eq!(reader.segment_readers().len(), 2);
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["body".to_string(), "title".to_string()]);
+    let owned = reader
+        .field_norms_by_field(&["body".to_string(), "title".to_string()])
+        .unwrap();
     let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
 
     let (mut cases, mut partial, mut failures) = (0, 0, Vec::new());

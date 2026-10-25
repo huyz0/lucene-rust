@@ -744,6 +744,16 @@ pub(crate) fn bulk_clause<'a>(
         }
     }
     if let Clause::Extended(e) = inner {
+        // Java: BlockScoreQueryWrapper.createWeight returns inWeight directly
+        // without scores, retaining its specialized bulk scorer and top-level hook.
+        #[cfg(any(test, feature = "asserting"))]
+        if let crate::extended_query::ExtendedQuery::Test(q) = e.as_ref() {
+            if matches!(q.kind(), crate::test_support::TestKind::BlockScore(_))
+                && !mode.needs_scores()
+            {
+                return bulk_clause(ctx, q.query(), dismax_boost, mode);
+            }
+        }
         if let crate::extended_query::ExtendedQuery::CombinedField(c) = e.as_ref() {
             if let Some(bulk) = super::extended::combined_field_bulk(ctx, c, dismax_boost, mode)? {
                 return Ok(bulk.map(Bulk::Combined));

@@ -477,7 +477,9 @@ fn with_searcher<R>(
     let opened = reader.open_segments().map_err(text)?;
     let segments = opened.as_open_segments();
     let fields = ["body".to_string(), "titleTokenized".to_string()];
-    let owned = reader.field_norms_by_field(&fields);
+    let owned = reader
+        .field_norms_by_field(&fields)
+        .map_err(|error| error.to_string())?;
     let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
     let searcher = IndexSearcher::new(&segments, &norms).map_err(text)?;
     f(&searcher)

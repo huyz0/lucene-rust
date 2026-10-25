@@ -1,0 +1,8 @@
+segment	_cm
+suffix	s
+max-doc	1296
+sparse-count	648
+file	vec	41616
+file	vemf	395
+file	vex	33929
+file	vem	419

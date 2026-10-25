@@ -72,12 +72,12 @@ Cargo workspace, one crate per Java module boundary (roughly):
 |---|---|---|
 | `lucene-util` | `o.a.l.util`, `o.a.l.internal` | BitSet/FixedBitSet, BKD utils, FST, packed ints, `BytesRef`, LSB radix sorter, SIMD kernels |
 | `lucene-store` | `o.a.l.store` | `Directory`, `IndexInput/Output`, mmap (memmap2), buffered/NIOFS, checksums, locking |
-| `lucene-codecs` | `o.a.l.codecs` | Codec trait + the one pinned default codec: postings (PFOR-delta), doc values, stored fields (LZ4/zstd blocks), points (BKD), KNN vectors (HNSW), norms, live docs, segment infos |
+| `lucene-codecs` | `o.a.l.codecs` | Codec trait + the pinned default codec: postings (PFOR-delta), doc values, stored fields (LZ4/zstd blocks), points (BKD), KNN vectors (HNSW), norms, live docs, segment infos. M14.g also provides the non-default module-level formats, including typed SimpleText segment-info sorts with full prerelease versions; sharedterms merges independent sources with document maps and deletes, with a caller-supplied generic merge for index sorting or wrapped terms. SimpleText reader routing covers metadata, stored fields, terms/postings, generation-aware doc values, norms and term vectors, points, float/byte vectors and skippers, plus reader-wide scoring statistics, norms and field-existence document sets/count proxies, and native term and phrase scorer legs with four-level impacts (phrase differential verified; native Classic single-segment benchmark 2.54-4.20x, lower peak process RSS); full search execution and writer routing remain open (see `docs/parity/codecs-extra.md`). |
 | `lucene-index` | `o.a.l.index` | SegmentReader/DirectoryReader, Terms/PostingsEnum, IndexWriter, DWPT, merge policy/scheduler, deletes, commits |
 | `lucene-analysis` | `o.a.l.analysis` + `analysis/common` subset | TokenStream trait, StandardTokenizer (from Unicode segmentation), lowercase/stop/ascii-folding/Porter-stem; everything else stays JVM-side long-term |
 | `lucene-analysis-<m>` | `lucene-analysis-{phonetic,stempel,morfologik,kuromoji,nori,smartcn,icu,opennlp}` | M12: one crate per language module, each over `lucene-util` + `lucene-analysis` (`lucene-analysis-icu` also `lucene-index`, for its doc-values field alone), nothing depending on it (see `docs/milestones/m12-language-analysis.md`, Architecture) |
 | `lucene-search` | `o.a.l.search` | Query/Weight/Scorer, Boolean (WAND/BMW), term/phrase/points ranges, collectors, BM25, ConstantScore, MatchAll |
-| `lucene-test-framework` | `lucene-test-framework` (`o.a.l.tests`) | M14.h: `LuceneTestCase`'s seeds and knobs, `TestUtil`'s generators, the mock directory/analysis/codec layers and the `Base*TestCase` suites. **A dev-dependency only**: no crate names it under `[dependencies]`, so it never reaches `lucene-ffi` (`cargo tree -p lucene-ffi -e normal,build`). The rule is per package: `cargo build --workspace` still unifies its `test-support`/`test-util` features into `lucene-util`/`lucene-store`, so the root `default-members` leaves it out and the shipped artifact is the `-p lucene-ffi` build |
+| `lucene-test-framework` | `lucene-test-framework` (`o.a.l.tests`) | M14.h: `LuceneTestCase`'s seeds and knobs, `TestUtil`'s generators, the mock directory/analysis/codec layers, the block-terms, low-memory bloom, RAMOnly, MockRandom and ROT13 uniform-split test postings readers/writers, the `Base*TestCase` suites (KNN searches use the stored graph and verify visited limits), typed UTF-32 FST enumeration and list-output tester checks, string resource loading, callback-only hit counting, buffered bulk-scorer iteration, feature-only block-score/default-bulk query wrappers and scorer-only search dispatch (Java differential checks and paired traversal benchmarks), and explicit cranky field-info, live-doc, segment-info, compound, doc-values, norms, points, postings, stored-field and term-vector adapters plus checked asserting live docs, norms, points, postings, KNN vectors, doc values, stored fields and term vectors, direct CheapBastard postings, AssertingCodec/CrankyCodec composition, CompressingCodec configuration and RandomCodec selection descriptors, ConfigurableM HNSW flush/read, bounded BaseXY point-array generators/hooks and the cartesian ShapeTestUtil generators/oracle (Codec/IndexWriter routing remains incomplete). **A dev-dependency only**: no crate names it under `[dependencies]`, so it never reaches `lucene-ffi` (`cargo tree -p lucene-ffi -e normal,build`). The rule is per package: `cargo build --workspace` still unifies `test-support` into `lucene-util`/`lucene-codecs`, `test-util` into `lucene-store`, and `asserting` into `lucene-search`, so the root `default-members` leaves it out and the shipped artifact is the `-p lucene-ffi` build |
 | `lucene-core` | — | Facade crate re-exporting the above; the "public API" |
 | `lucene-ffi` | — | `cdylib`: C ABI (called from Java through FFM downcalls), handle registry, panic → error-code mapping |
 | `opensearch-plugin/` | — | Java: OpenSearch engine plugin (`EngineFactory`) + FFM binding class, native lib loading, CI packaging |
@@ -4048,8 +4048,10 @@ no seek.** Real Lucene's `BytesRefFSTEnum` also exposes `seekCeil`/`seekFloor`/`
 iteration over a term dictionary -- each of those has its own list/binary-search/
 direct-addressing/continuous dispatch in real `FSTEnum.java`, a substantially larger
 increment deliberately left for a future task once prefix/range term queries need it.
-`IntsRefFSTEnum` (the `IntsRef`-input analogue) is also not ported, since this module only
-has a `BytesRef`-shaped output type to begin with. Tests: unit tests in `fst.rs`
+This `Fst::iter` surface only has a `BytesRef`-shaped output type. Native
+integer-label enumeration is provided separately by
+`fst_util::IntsRefFstEnum` over `TypedFst<O>`, including BYTE2/BYTE4 labels
+and all four traversal/seek operations. Tests for this byte iterator: unit tests in `fst.rs`
 (`iter_over_empty_fst_yields_nothing`, `iter_over_single_key_fst_yields_that_one_key`,
 `iter_over_single_empty_string_key_yields_it`, `iter_over_seven_key_fixture_yields_ascending_sorted_order`,
 `iter_over_empty_string_plus_other_keys`, `iter_over_binary_search_root_node_yields_ascending_order`,
@@ -4661,6 +4663,14 @@ clean; `cargo clippy --workspace --all-targets -- -D warnings` clean;
 `docs/parity.md`'s FST row for the parity-tracking update.
 
 **Progress (task: FST `IntsRefFSTEnum`).** `crates/lucene-codecs/src/fst.rs`.
+
+This section describes the byte-keyed compatibility helper in `fst.rs`.
+Native Lucene integer-label FST enumeration lives in
+`crates/lucene-codecs/src/fst_util/fst_enum.rs::IntsRefFstEnum`, over
+`TypedFst<O>`. It supports BYTE1/BYTE2/BYTE4 inputs and generic outputs,
+with Java traces for every node encoding and both UTF-8/UTF-32 checks in
+`FSTTester`. Its benchmark and allocation measurements are in
+[`docs/benchmarks/integer-fst-enumeration.md`](docs/benchmarks/integer-fst-enumeration.md).
 
 Investigated before writing anything, per this task's own instructions.
 Findings: `Arc::label`/`read_label` already carry labels as `i32`

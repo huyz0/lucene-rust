@@ -79,9 +79,11 @@ pub(crate) enum Mode {
     /// `TOP_SCORES`: scores are needed, and the collector may publish a
     /// minimum competitive score the tree can prune against.
     TopScores,
-    /// `COMPLETE`: every match, with its score.
+    /// `COMPLETE` or `TOP_DOCS_WITH_SCORES`: score matches without score-based
+    /// pruning. Field-comparator competitive iterators are handled separately.
     Complete,
-    /// `COMPLETE_NO_SCORES`: every match; scores are never read.
+    /// `COMPLETE_NO_SCORES` or `TOP_DOCS`: scores are never read, and this
+    /// scorer tree performs no score-based pruning.
     NoScores,
 }
 
@@ -92,11 +94,10 @@ impl Mode {
 
     /// The mode a collector asks for.
     pub(crate) fn of<C: ScoringCollector + ?Sized>(collector: &C) -> Self {
-        use crate::collector::ScoreMode;
         match collector.score_mode() {
-            ScoreMode::CompleteNoScores => Mode::NoScores,
-            m if m.is_exhaustive() => Mode::Complete,
-            _ => Mode::TopScores,
+            m if !m.needs_scores() => Mode::NoScores,
+            crate::collector::ScoreMode::TopScores => Mode::TopScores,
+            _ => Mode::Complete,
         }
     }
 }

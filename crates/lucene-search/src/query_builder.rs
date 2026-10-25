@@ -537,8 +537,24 @@ pub fn to_query_string(query: Option<&Clause>, field: &str) -> String {
     }
 }
 
+/// Java: Term.toString(BytesRef), including BytesRef's hex fallback when a
+/// strict UTF-8 decoder rejects the term.
 fn text(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).into_owned()
+    match std::str::from_utf8(bytes) {
+        Ok(text) => text.to_owned(),
+        Err(_) => {
+            use std::fmt::Write;
+            let mut text = String::from("[");
+            for (i, byte) in bytes.iter().enumerate() {
+                if i != 0 {
+                    text.push(' ');
+                }
+                write!(text, "{byte:x}").expect("writing to a String is infallible");
+            }
+            text.push(']');
+            text
+        }
+    }
 }
 
 /// `Float.toString` for the boosts these queries carry.
@@ -760,6 +776,27 @@ mod tests {
         assert!(!b.enable_graph_queries());
         assert!(b.auto_generate_multi_term_synonyms_phrase_query());
         assert!(std::ptr::eq(b.analyzer(), &other));
+    }
+
+    #[test]
+    fn binary_terms_use_javas_hex_fallback_without_replacing_valid_unicode() {
+        for (bytes, expected) in [
+            (&[0xff, 0x0a, 0, 0xff, 0x0a, 0x0a][..], "[ff a 0 ff a a]"),
+            (&[0xe2, 0x82][..], "[e2 82]"),
+            (&[0xed, 0xa0, 0x80][..], "[ed a0 80]"),
+            (&[0xc0, 0xaf][..], "[c0 af]"),
+            ("\u{fffd}".as_bytes(), "\u{fffd}"),
+            ("café".as_bytes(), "café"),
+            (&[][..], ""),
+        ] {
+            let query = Clause::Term(TermQuery::new("body", bytes.to_vec()));
+            assert_eq!(to_query_string(Some(&query), "body"), expected);
+        }
+        let phrase = Clause::Phrase(PhraseQuery::new(
+            "bin",
+            [vec![b'\\', b'\n'], vec![0xff, 10, 0]],
+        ));
+        assert_eq!(to_query_string(Some(&phrase), ""), "bin:\"\\\n [ff a 0]\"");
     }
 
     #[test]

@@ -155,7 +155,7 @@ fn unified_highlighting_equals_lucenes() {
     let owned: Vec<HashMap<String, FieldNorms<'_>>> = {
         let mut owned: Vec<HashMap<String, FieldNorms<'_>>> = Vec::new();
         for field in &names {
-            for (i, n) in reader.field_norms(field).into_iter().enumerate() {
+            for (i, n) in reader.field_norms(field).unwrap().into_iter().enumerate() {
                 if owned.len() <= i {
                     owned.push(HashMap::new());
                 }
@@ -265,7 +265,7 @@ fn with_index(f: impl FnOnce(&DirectoryReader, &IndexSearcher<'_, '_>)) {
     let segments = opened.as_open_segments();
     let mut owned: Vec<HashMap<String, FieldNorms<'_>>> = Vec::new();
     for field in ["id", "offs", "pos", "docs", "tv", "both", "tvpos"] {
-        for (i, n) in reader.field_norms(field).into_iter().enumerate() {
+        for (i, n) in reader.field_norms(field).unwrap().into_iter().enumerate() {
             if owned.len() <= i {
                 owned.push(HashMap::new());
             }

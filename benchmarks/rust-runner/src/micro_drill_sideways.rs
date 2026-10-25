@@ -47,7 +47,7 @@ pub fn bench_drill_sideways(w: Duration, m: Duration, dir: &str) {
     let reader = DirectoryReader::open(&FsDirectory::open(dir.join("index"))).unwrap();
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["q".to_string()]);
+    let owned = reader.field_norms_by_field(&["q".to_string()]).unwrap();
     let norms: Vec<SegmentNorms<'_, '_>> = owned
         .iter()
         .map(|m: &HashMap<String, FieldNorms<'_>>| Some(m))

@@ -1808,12 +1808,13 @@ type OccurrenceRange = (usize, usize);
 
 /// What a [`walk_wanted_occurrences`] pass keeps of each occurrence it reaches.
 ///
-/// Two implementations, monomorphized so neither pays for the other's work:
+/// Implementations are monomorphized so each pays only for its own work:
 /// [`PositionsOnly`] for phrase matching, [`FullOccurrences`] for
-/// highlighting. `NEEDS_EXTRAS` decides whether `.pay`'s offset and payload
+/// highlighting, and a shared-terms merge sink that streams into its target.
+/// `NEEDS_EXTRAS` decides whether `.pay`'s offset and payload
 /// blocks are unpacked or stepped over with `PForUtil.skip`, which is the same
 /// job `PostingsEnum`'s flag mask does one level up in Java.
-trait OccurrenceSink {
+pub(crate) trait OccurrenceSink {
     /// Whether this sink reads offsets and payloads at all.
     const NEEDS_EXTRAS: bool;
 
@@ -2555,7 +2556,7 @@ fn walk_document_occurrences<S: OccurrenceSink>(
 /// fraction of the term's doc list and it has already decoded that list to
 /// intersect it. See `docs/sweep/m2/c20-postings-skip.md`.
 #[allow(clippy::too_many_arguments)]
-fn walk_wanted_occurrences<S: OccurrenceSink>(
+pub(crate) fn walk_wanted_occurrences<S: OccurrenceSink>(
     pos: &PosInput<'_>,
     pay: Option<&PayInput<'_>>,
     meta: TermMetadata,

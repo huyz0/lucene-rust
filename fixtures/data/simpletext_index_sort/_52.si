@@ -1,0 +1,18 @@
+    version 10.0.0.1
+    min version 9.0.0.1
+    number of documents 7
+    uses compound file true
+    has blocks false
+    diagnostics 1
+      key source
+      value fixture
+    attributes 1
+      key note
+      value line\
+break\\
+    files 2
+      file _52.other
+      file _52.si
+    id [b6 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0]
+    sort 0
+checksum 00000000002494368687

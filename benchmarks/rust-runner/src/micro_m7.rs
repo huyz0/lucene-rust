@@ -144,8 +144,9 @@ fn run_m7_cases(
     let mut opened = reader.open_segments().expect("open segments");
     opened.open_points().expect("open points");
     let segments: Vec<OpenSegment<'_>> = opened.as_open_segments();
-    let owned =
-        reader.field_norms_by_field(&["body".to_string(), "title".to_string(), "gram".to_string()]);
+    let owned = reader
+        .field_norms_by_field(&["body".to_string(), "title".to_string(), "gram".to_string()])
+        .unwrap();
     let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(Some).collect();
     let vectors = m7grammar::VectorFiles::read(dir, &reader);
@@ -363,7 +364,9 @@ pub fn bench_similarity(w: Duration, m: Duration, index: &str) {
     let reader = DirectoryReader::open(&dir).expect("open index");
     let opened = reader.open_segments().expect("open segments");
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["body".to_string(), "title".to_string()]);
+    let owned = reader
+        .field_norms_by_field(&["body".to_string(), "title".to_string()])
+        .unwrap();
     let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(Some).collect();
     let mut cases: Vec<(String, Arc<dyn Similarity>, &[&str])> = SIMS
@@ -429,7 +432,9 @@ pub fn bench_sort_pruning(w: Duration, m: Duration, index: &str) {
     let mut opened = reader.open_segments().expect("open segments");
     opened.open_points().expect("open points");
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["body".to_string(), "title".to_string()]);
+    let owned = reader
+        .field_norms_by_field(&["body".to_string(), "title".to_string()])
+        .unwrap();
     let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(Some).collect();
     let text = std::fs::read_to_string("benchmarks/queries.tsv").expect("queries.tsv");

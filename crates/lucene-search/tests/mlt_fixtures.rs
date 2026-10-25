@@ -269,8 +269,9 @@ fn more_like_this_matches_lucene() {
     let reader = DirectoryReader::open(&FsDirectory::open(dir.join("index"))).unwrap();
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
-    let owned =
-        reader.field_norms_by_field(&["body".to_string(), "tv".to_string(), "title".to_string()]);
+    let owned = reader
+        .field_norms_by_field(&["body".to_string(), "tv".to_string(), "title".to_string()])
+        .unwrap();
     let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
     let searcher = IndexSearcher::new(&segments, &norms).unwrap();
     let analyzer = Arc::new(Analyzer::standard(None));

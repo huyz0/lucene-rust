@@ -61,6 +61,12 @@ pub(crate) fn decompress(
     // ::decompress_unit`] decodes a dictionary then several sub-blocks off
     // the same reader), so skipping these bytes would desync every unit
     // that follows.
+    if compressed_len > input.remaining() {
+        return Err(Error::Corrupted(format!(
+            "deflate compressed length {compressed_len} exceeds {} remaining bytes",
+            input.remaining()
+        )));
+    }
     let mut compressed = vec![0u8; compressed_len];
     input.read_bytes(&mut compressed)?;
     if decompressed_len == 0 {
@@ -158,6 +164,32 @@ mod tests {
         assert!(decompress(&mut input, compressed_len, payload.len(), &mut dest, 0).is_err());
     }
 
+    #[test]
+    fn oversized_compressed_length_rejected_before_allocation_or_input_consumption() {
+        // usize::MAX cannot back a Vec: returning a typed error here also
+        // proves corrupt lengths are rejected before allocation is attempted.
+        for decompressed_len in [0, 1] {
+            let mut input = SliceInput::new(&[0x12, 0x34]);
+            let mut destination = [0x56];
+            assert!(matches!(
+                decompress(
+                    &mut input,
+                    usize::MAX,
+                    decompressed_len,
+                    &mut destination,
+                    0
+                ),
+                Err(Error::Corrupted(_))
+            ));
+            assert_eq!(input.position(), 0);
+            assert_eq!(destination, [0x56]);
+        }
+        // Destination validation still wins over the compressed-input check.
+        assert!(matches!(
+            decompress(&mut SliceInput::new(&[]), usize::MAX, 1, &mut [], 0),
+            Err(Error::Eof { offset: 1 })
+        ));
+    }
     #[test]
     fn zero_compressed_length_with_nonzero_decompressed_length_rejected() {
         let mut input = SliceInput::new(&[]);

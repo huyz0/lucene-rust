@@ -1,0 +1,16 @@
+search	1	false	all	9	9
+search	1	false	even	5	5
+search	1	false	absent	0	0
+search	1	true	all	7	7
+search	1	true	even	4	4
+search	1	true	absent	0	0
+search	3	false	all	9	9
+search	3	false	even	5	5
+search	3	false	absent	0	0
+search	3	true	all	7	7
+search	3	true	even	4	4
+search	3	true	absent	0	0
+callbacks	6
+overflow	-2147483648
+reduce	2147483647
+empty	0

@@ -461,6 +461,10 @@ pub fn visit(clause: &Clause, visitor: &mut dyn QueryVisitor) {
         }
         Clause::Span(s) => visit_span(s, clause, visitor),
         Clause::Extended(e) => match e.as_ref() {
+            #[cfg(any(test, feature = "asserting"))]
+            crate::extended_query::ExtendedQuery::Test(q) if q.delegates_query_semantics() => {
+                visit(q.query(), visitor);
+            }
             // `SynonymQuery.visit`
             crate::extended_query::ExtendedQuery::Synonym(q) => {
                 if visitor.accept_field(&q.field) {

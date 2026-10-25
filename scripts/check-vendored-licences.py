@@ -56,6 +56,12 @@ SNOWBALL = "Copyright (c) 2001, Dr Martin Porter"
 # where Apache Lucene itself ships the attribution there and the vendored
 # file's own header carries the licence (Savoy's and Carrot2's stop lists).
 VENDORED = {
+    "fixtures/testframework/data": [
+        ("this project's Java-generated test-framework fixtures (Apache-2.0)", "LICENSE", APACHE),
+    ],
+    "fixtures/data/simpletext_index_sort": [
+        ("this project's Java-generated SimpleText test fixtures (Apache-2.0)", "LICENSE", APACHE),
+    ],
     "crates/lucene-analysis/src/charfilter": [
         ("Lucene's HTMLStripCharFilter tables (Apache-2.0)", "LICENSE", APACHE),
     ],

@@ -1,0 +1,17 @@
+fields	ok	producer-fields,same-fields:f
+size	ok	producer-size,value:1
+absent	ok	producer-terms:missing,absent:true
+terms	ok	producer-terms:f,wrapped:AssertingTerms
+iterate	ok	producer-terms:f,iterator,has-freqs,term-next,term-next,term-next
+twice	ok	producer-terms:f,iterator,has-freqs,term-next,term-next,term-next,producer-terms:f,iterator,has-freqs,term-next,term-next,term-next
+stats	ok	producer-terms:f,doc-count,count:2,sum-total,has-freqs,sum-doc,doc-count,sum:8
+integrity	ok	integrity
+integrity-error	io:integrity failure	integrity
+terms-error	io:terms failure	producer-terms:f
+next-error	io:next failure	producer-terms:f,iterator,has-freqs,term-next
+merge	ok	merge-instance,wrapped-merge:true:AssertingFieldsProducer,producer-terms:f,iterator,has-freqs,term-next
+merge-distinct	ok	merge-instance,wrapped-merge:true:AssertingFieldsProducer,producer-terms:f,iterator,has-freqs,term-next
+merge-close	ok	merge-instance,wrapped-merge:true:AssertingFieldsProducer,pclose:1,pclose:2
+close	ok	pclose:1,pclose:2
+close-first-error	io:producer close failure	pclose:1
+close-second-error	io:producer close failure	pclose:1,pclose:2

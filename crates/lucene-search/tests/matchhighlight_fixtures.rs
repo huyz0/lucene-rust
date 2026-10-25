@@ -229,7 +229,7 @@ mod highlighting {
         let owned: Vec<HashMap<String, FieldNorms<'_>>> = {
             let mut owned: Vec<HashMap<String, FieldNorms<'_>>> = Vec::new();
             for field in &names {
-                for (i, n) in reader.field_norms(field).into_iter().enumerate() {
+                for (i, n) in reader.field_norms(field).unwrap().into_iter().enumerate() {
                     if owned.len() <= i {
                         owned.push(HashMap::new());
                     }

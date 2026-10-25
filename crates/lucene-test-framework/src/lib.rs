@@ -24,6 +24,7 @@
 //! `org.apache.lucene.tests.search` and [`geo`] `org.apache.lucene.tests.geo`.
 
 pub mod analysis;
+pub mod codecs;
 pub mod geo;
 pub mod index;
 pub mod mockfile;

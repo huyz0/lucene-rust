@@ -3,4 +3,6 @@
 //! points against a brute-force model.
 
 pub mod base_geo_point;
+pub mod base_xy_point;
 pub mod geo_test_util;
+pub mod shape_test_util;

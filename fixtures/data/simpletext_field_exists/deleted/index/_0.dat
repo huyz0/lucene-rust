@@ -1,0 +1,194 @@
+field byte_dv
+  type NUMERIC
+  minalue 0
+  maxvalue 6
+  doccount 4
+  maxvaluecount 1
+  origin 0
+  pattern 0
+0
+T
+0
+F
+2
+T
+0
+F
+4
+T
+0
+F
+6
+T
+0
+F
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 6
+      minValue 0
+      maxValue 6
+      docCount 4
+  skipend
+field terms_dv
+  type NUMERIC
+  minalue 1
+  maxvalue 7
+  doccount 5
+  maxvaluecount 1
+  origin 0
+  pattern 0
+0
+F
+1
+T
+2
+T
+0
+F
+4
+T
+5
+T
+0
+F
+7
+T
+  skipdata
+    interval
+      minDocID 1
+      maxDocID 7
+      minValue 1
+      maxValue 7
+      docCount 5
+  skipend
+field points_dv
+  type NUMERIC
+  minalue 1
+  maxvalue 7
+  doccount 5
+  maxvaluecount 1
+  origin 0
+  pattern 0
+0
+F
+1
+T
+2
+T
+0
+F
+4
+T
+5
+T
+0
+F
+7
+T
+  skipdata
+    interval
+      minDocID 1
+      maxDocID 7
+      minValue 1
+      maxValue 7
+      docCount 5
+  skipend
+field float_dv
+  type NUMERIC
+  minalue 0
+  maxvalue 6
+  doccount 4
+  maxvaluecount 1
+  origin 0
+  pattern 0
+0
+T
+0
+F
+2
+T
+0
+F
+4
+T
+0
+F
+6
+T
+0
+F
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 6
+      minValue 0
+      maxValue 6
+      docCount 4
+  skipend
+field norms_dv
+  type NUMERIC
+  minalue 0
+  maxvalue 6
+  doccount 4
+  maxvaluecount 1
+  origin 0
+  pattern 0
+0
+T
+0
+F
+2
+T
+0
+F
+4
+T
+0
+F
+6
+T
+0
+F
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 6
+      minValue 0
+      maxValue 6
+      docCount 4
+  skipend
+field dense_skip
+  type NUMERIC
+  minalue 0
+  maxvalue 7
+  doccount 8
+  maxvaluecount 1
+  origin 0
+  pattern 0
+0
+T
+1
+T
+2
+T
+3
+T
+4
+T
+5
+T
+6
+T
+7
+T
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 7
+      minValue 0
+      maxValue 7
+      docCount 8
+  skipend
+END
+checksum 00000000001712797661

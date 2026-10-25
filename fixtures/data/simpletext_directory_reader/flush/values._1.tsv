@@ -1,0 +1,84 @@
+field	6672657173	NORMS	-1	1
+d	0	2
+endfield
+field	6f666673	NORMS	-1	1
+d	0	1
+endfield
+field	7476	NORMS	-1	1
+d	0	2
+endfield
+field	706179	NORMS	-1	1
+d	0	2
+endfield
+field	6e756d	NUMERIC	-1	1
+d	0	17
+endfield
+field	757064	NUMERIC	-1	1
+d	0	9
+endfield
+field	736e756d	SORTED_NUMERIC	-1	1
+d	0	1,9
+endfield
+field	73736574	SORTED_SET	-1	1
+ord	0	7630
+d	0	0
+endfield
+field	736476	SORTED	-1	1
+ord	0	7330
+d	0	0
+endfield
+field	626476	BINARY	-1	1
+d	0	090a
+endfield
+field	736b6970	NUMERIC	-1	1
+skipall	9	9	1	1
+skip	0	0	9	9	1
+d	0	9
+endfield
+field	6476626967	NUMERIC	-1	1
+d	0	9223372036854775342
+endfield
+field	647662696e	BINARY	-1	1
+d	0	8044e5d1276835b891
+endfield
+field	6476736f72746564	SORTED	-1	1
+ord	0	5c0a5c
+skipall	0	0	1	1
+skip	0	0	0	0	1
+d	0	0
+endfield
+field	647673736574	SORTED_SET	-1	1
+ord	0	610a62
+ord	1	743038
+ord	2	743138
+ord	3	743139
+ord	4	743234
+ord	5	743237
+ord	6	743338
+skipall	0	6	1	7
+skip	0	0	0	6	1
+d	0	0,1,2,3,4,5,6
+endfield
+field	7476706c61696e	NORMS	-1	1
+d	0	1
+endfield
+field	7476706f73	NORMS	-1	1
+d	0	1
+endfield
+field	74766f6666	NORMS	-1	1
+d	0	1
+endfield
+field	7476706179	NORMS	-1	1
+d	0	1
+endfield
+field	7476616c6c	NORMS	-1	1
+d	0	1
+endfield
+field	6476736e756d	SORTED_NUMERIC	-1	1
+skipall	9007199254740992	9007199254740992	1	1
+skip	0	0	9007199254740992	9007199254740992	1
+d	0	9007199254740992
+endfield
+field	706172656e74	NUMERIC	-1	1
+d	0	-1
+endfield

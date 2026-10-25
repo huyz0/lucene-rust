@@ -61,6 +61,7 @@ suite_tests! {
     test_index_multiple_knn_vector_fields => "testIndexMultipleKnnVectorFields",
     test_random => "testRandom",
     test_random_bytes => "testRandomBytes",
+    test_search_with_visited_limit => "testSearchWithVisitedLimit",
     test_random_with_updates_and_graph => "testRandomWithUpdatesAndGraph",
     test_check_index_includes_vectors => "testCheckIndexIncludesVectors",
     test_similarity_function_identifiers => "testSimilarityFunctionIdentifiers",

@@ -248,7 +248,7 @@ container_checks() {
   free="$(free_gb "$target")"
   if [ -n "$free" ] && [ "$free" -lt "$MIN_TARGET_FREE_GB" ]; then
     fail "only ${free} GB free under $target; need ${MIN_TARGET_FREE_GB}.
-  The target volume is a build cache: 'docker volume rm lucene-rust-target'
+  The target volume is a build cache: 'docker volume rm ${DOCKER_TARGET_VOLUME:-lucene-rust-target}'
   from the host recreates it empty. Do that deliberately, not mid-build."
   fi
 

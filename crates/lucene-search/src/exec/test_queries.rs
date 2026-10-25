@@ -19,11 +19,20 @@ pub(crate) fn build<'a>(
     q: &TestQuery,
     boost: f32,
     mode: Mode,
+    top_level: bool,
 ) -> Result<Option<BoxScorer<'a>>> {
-    let Some(inner) = build::build(ctx, q.query(), boost, mode, false)? else {
+    // Java returns inWeight directly for BlockScore without scores. Other
+    // wrappers omit setTopLevelScoringClause on their scorer suppliers.
+    let inner_top_level =
+        top_level && !mode.needs_scores() && matches!(q.kind(), TestKind::BlockScore(_));
+    let Some(inner) = build::build(ctx, q.query(), boost, mode, inner_top_level)? else {
         return Ok(None);
     };
     Ok(Some(match q.kind() {
+        // Java returns the original weight when scores are not required.
+        TestKind::BlockScore(_) if !mode.needs_scores() => inner,
+        TestKind::BlockScore(length) => Box::new(BlockScoreScorer::new(inner, *length)?),
+        TestKind::DisableBulk => inner,
         // `new RandomApproximationScorer(subScorer, new Random(random.nextLong()))`.
         TestKind::RandomApproximation(random) => {
             let seed = random
@@ -219,5 +228,254 @@ impl Scorer for BrokenScorer<'_> {
             BrokenKind::ScoreMismatch => max + 100.0,
             _ => max,
         })
+    }
+}
+
+/// Java: `BlockScoreQueryWrapper.createWeight().scorerSupplier`.
+/// The first and last slots are the -1 and NO_MORE_DOCS sentinels;
+/// blocks count those slots, not document IDs or just the matching docs.
+struct BlockScoreScorer {
+    docs: Box<[i32]>,
+    scores: Box<[f32]>,
+    block_length: i32,
+    index: usize,
+    last_shallow_target: i32,
+}
+
+impl BlockScoreScorer {
+    fn new(mut inner: BoxScorer<'_>, block_length: i32) -> Result<Self> {
+        let mut docs = vec![-1];
+        let mut scores = vec![0.0];
+        loop {
+            let doc = exact_next(&mut *inner)?;
+            docs.push(doc);
+            if doc == NO_MORE_DOCS {
+                scores.push(0.0);
+                break;
+            }
+            scores.push(inner.score()?);
+        }
+        Ok(Self {
+            docs: docs.into_boxed_slice(),
+            scores: scores.into_boxed_slice(),
+            block_length,
+            index: 0,
+            last_shallow_target: -1,
+        })
+    }
+
+    // Java: Arrays.binarySearch and insertion point, over the entire array.
+    fn position(&self, target: i32) -> usize {
+        self.docs.binary_search(&target).unwrap_or_else(|i| i)
+    }
+
+    // ARITH: Java array index is nonnegative and fits i32; remainder is at most index, with zero intentionally rejected by the Java contract.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn start_of_block(&self, target: i32) -> usize {
+        let index = i32::try_from(self.position(target)).expect("Java array index fits i32");
+        // Java accepts zero/negative lengths at construction; invalid use can panic.
+        usize::try_from(index - index % self.block_length).expect("nonnegative block start")
+    }
+
+    // ARITH: The buffered docs always contain two sentinel slots, so len - 1 is nonnegative; Java int addition is explicitly wrapping.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn end_of_block(&self, target: i32) -> usize {
+        let start = i32::try_from(self.start_of_block(target)).expect("Java array index fits i32");
+        let end = start
+            .wrapping_add(self.block_length)
+            .min(i32::try_from(self.docs.len() - 1).expect("Java array length fits i32"));
+        usize::try_from(end).expect("negative block end")
+    }
+}
+
+impl Scorer for BlockScoreScorer {
+    fn doc_id(&self) -> i32 {
+        self.docs[self.index]
+    }
+    // ARITH: The terminal sentinel is checked before incrementing, so index + 1 stays within docs.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn next_doc(&mut self) -> Result<i32> {
+        assert_ne!(self.docs[self.index], NO_MORE_DOCS);
+        self.index += 1;
+        Ok(self.docs[self.index])
+    }
+    fn advance(&mut self, target: i32) -> Result<i32> {
+        self.index = self.position(target);
+        Ok(self.docs[self.index])
+    }
+    // ARITH: Construction always writes both sentinel slots, so len - 2 is nonnegative.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn cost(&self) -> i64 {
+        i64::try_from(self.docs.len() - 2).expect("Java array length fits i64")
+    }
+    fn score(&mut self) -> Result<f32> {
+        Ok(self.scores[self.index])
+    }
+    // ARITH: Every stored document is at least -1, so subtracting one cannot underflow i32.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn advance_shallow(&mut self, target: i32) -> Result<i32> {
+        self.last_shallow_target = target;
+        if target == NO_MORE_DOCS {
+            return Ok(NO_MORE_DOCS);
+        }
+        Ok(self.docs[self.end_of_block(target)] - 1)
+    }
+    fn max_score(&mut self, up_to: i32) -> Result<f32> {
+        let mut max = 0.0_f32;
+        let start = self.start_of_block(self.docs[self.index].max(self.last_shallow_target));
+        for j in start..self.docs.len() {
+            if self.docs[j] > up_to {
+                break;
+            }
+            // Java Math.max keeps the first NaN payload and +0 over -0.
+            // Since max starts at +0, only a larger score or first NaN replaces it.
+            let score = self.scores[j];
+            if !max.is_nan() && (score.is_nan() || score > max) {
+                max = score;
+            }
+        }
+        Ok(max)
+    }
+}
+
+#[cfg(test)]
+mod block_score_tests {
+    use super::*;
+    use crate::Error;
+
+    struct Input {
+        docs: Vec<i32>,
+        scores: Vec<f32>,
+        index: usize,
+        two_phase: bool,
+        fail_iteration: bool,
+        fail_score: bool,
+    }
+    impl Scorer for Input {
+        fn doc_id(&self) -> i32 {
+            self.docs[self.index]
+        }
+        fn next_doc(&mut self) -> Result<i32> {
+            if self.fail_iteration {
+                return Err(Error::MissingPosInput);
+            }
+            self.index += 1;
+            Ok(self.docs[self.index])
+        }
+        fn advance(&mut self, target: i32) -> Result<i32> {
+            self.index = self.docs.binary_search(&target).unwrap_or_else(|i| i);
+            Ok(self.doc_id())
+        }
+        fn cost(&self) -> i64 {
+            5
+        }
+        fn two_phase(&self) -> bool {
+            self.two_phase
+        }
+        fn matches(&mut self) -> Result<bool> {
+            Ok(self.doc_id() != 2)
+        }
+        fn score(&mut self) -> Result<f32> {
+            if self.fail_score {
+                return Err(Error::MissingPosInput);
+            }
+            Ok(self.scores[self.index])
+        }
+        fn max_score(&mut self, _: i32) -> Result<f32> {
+            Ok(f32::INFINITY)
+        }
+    }
+    fn input() -> Input {
+        Input {
+            docs: vec![-1, 0, 2, 8, 9, NO_MORE_DOCS],
+            scores: vec![0.0, 2.0, 11.0, 3.0, 7.0, 0.0],
+            index: 0,
+            two_phase: false,
+            fail_iteration: false,
+            fail_score: false,
+        }
+    }
+    #[test]
+    fn two_phase_is_consumed_exactly_and_scores_are_eagerly_owned() {
+        let mut inner = input();
+        inner.two_phase = true;
+        let mut s = BlockScoreScorer::new(Box::new(inner), 2).unwrap();
+        assert_eq!(&*s.docs, &[-1, 0, 8, 9, NO_MORE_DOCS]);
+        assert_eq!(&*s.scores, &[0.0, 2.0, 3.0, 7.0, 0.0]);
+        assert!(!s.two_phase());
+        assert_eq!(s.cost(), 3);
+        assert_eq!(s.doc_id(), -1);
+        assert_eq!(s.score().unwrap(), 0.0);
+        assert_eq!(s.advance_shallow(0).unwrap(), 7);
+        assert_eq!(s.max_score(7).unwrap(), 2.0);
+        assert_eq!(s.advance(8).unwrap(), 8);
+        assert_eq!(s.max_score(9).unwrap(), 7.0);
+        assert_eq!(s.next_doc().unwrap(), 9);
+        assert_eq!(s.next_doc().unwrap(), NO_MORE_DOCS);
+        assert_eq!(s.score().unwrap(), 0.0);
+        assert_eq!(s.advance_shallow(NO_MORE_DOCS).unwrap(), NO_MORE_DOCS);
+        assert_eq!(s.max_score(NO_MORE_DOCS).unwrap(), 0.0);
+    }
+    #[test]
+    fn empty_scorer_still_owns_both_sentinels() {
+        let mut inner = input();
+        inner.docs = vec![-1, NO_MORE_DOCS];
+        inner.scores = vec![0.0, 0.0];
+        let mut s = BlockScoreScorer::new(Box::new(inner), 1).unwrap();
+        assert_eq!(s.cost(), 0);
+        assert_eq!(s.max_score(NO_MORE_DOCS).unwrap(), 0.0);
+        assert_eq!(s.advance_shallow(0).unwrap(), NO_MORE_DOCS - 1);
+        assert_eq!(s.next_doc().unwrap(), NO_MORE_DOCS);
+    }
+    #[test]
+    fn errors_while_buffering_are_returned_before_a_scorer_escapes() {
+        let mut inner = input();
+        inner.fail_iteration = true;
+        assert!(matches!(
+            BlockScoreScorer::new(Box::new(inner), 2),
+            Err(Error::MissingPosInput)
+        ));
+        let mut inner = input();
+        inner.fail_score = true;
+        assert!(matches!(
+            BlockScoreScorer::new(Box::new(inner), 2),
+            Err(Error::MissingPosInput)
+        ));
+    }
+    #[test]
+    fn max_propagates_nan_and_starts_at_positive_zero_for_negative_scores() {
+        let mut inner = input();
+        inner.scores[1] = -4.0;
+        let mut s = BlockScoreScorer::new(Box::new(inner), 2).unwrap();
+        assert_eq!(s.max_score(0).unwrap().to_bits(), 0);
+        s.scores[1] = f32::from_bits(0x7fc0_1234);
+        assert_eq!(s.max_score(0).unwrap().to_bits(), 0x7fc0_1234);
+        s.scores[2] = f32::from_bits(0x7fc0_5678);
+        assert_eq!(s.max_score(NO_MORE_DOCS).unwrap().to_bits(), 0x7fc0_1234);
+        s.scores[1] = -0.0;
+        assert_eq!(s.max_score(0).unwrap().to_bits(), 0);
+    }
+    #[test]
+    fn memory_of_the_eight_match_fixture_buffer() {
+        let mut inner = input();
+        inner.docs = vec![-1, 0, 2, 3, 6, 8, 9, 11, 14, NO_MORE_DOCS];
+        inner.scores = vec![0.0, 0.25, 2.0, 1.0, 5.0, 0.5, 3.0, 7.0, 4.0, 0.0];
+        let s = BlockScoreScorer::new(Box::new(inner), 3).unwrap();
+        assert_eq!(s.docs.len(), 10);
+        assert_eq!(s.scores.len(), 10);
+        let shallow = std::mem::size_of_val(&s);
+        let docs = s.docs.len() * std::mem::size_of::<i32>();
+        let scores = s.scores.len() * std::mem::size_of::<f32>();
+        println!("block_score_buffer_shallow_bytes={shallow} docs_bytes={docs} scores_bytes={scores} total_bytes={}", shallow + docs + scores);
+        assert_eq!(docs, 40);
+        assert_eq!(scores, 40);
+        assert_eq!(shallow + docs + scores, 128);
+    }
+    #[test]
+    #[should_panic]
+    fn next_after_terminal_sentinel_fails() {
+        let mut s = BlockScoreScorer::new(Box::new(input()), 2).unwrap();
+        s.advance(NO_MORE_DOCS).unwrap();
+        s.next_doc().unwrap();
     }
 }

@@ -358,7 +358,9 @@ fn drill_down_and_sideways_match_lucene() {
     let reader = DirectoryReader::open(&FsDirectory::open(data().join("index"))).unwrap();
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["body", "q", "$facets", "$color"].map(String::from));
+    let owned = reader
+        .field_norms_by_field(&["body", "q", "$facets", "$color"].map(String::from))
+        .unwrap();
     let norms: Vec<SegmentNorms<'_, '_>> = owned
         .iter()
         .map(|m: &HashMap<String, FieldNorms<'_>>| Some(m))

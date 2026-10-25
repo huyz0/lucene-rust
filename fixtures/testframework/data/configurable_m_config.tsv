@@ -1,0 +1,94 @@
+codec	128	ConfigurableMCodec	Lucene104	Lucene99HnswVectorsFormat	true
+setting	128	maxConn	128
+setting	128	beamWidth	100
+setting	128	numMergeWorkers	1
+setting	128	tinySegmentsThreshold	100
+setting	128	writeVersion	1
+setting	128	mergeExec	null
+delegate-identity	128	docValuesFormat	true
+delegate-identity	128	fieldInfosFormat	true
+delegate-identity	128	liveDocsFormat	true
+delegate-identity	128	normsFormat	true
+delegate-identity	128	postingsFormat	true
+delegate-identity	128	segmentInfoFormat	true
+delegate-identity	128	storedFieldsFormat	true
+delegate-identity	128	termVectorsFormat	true
+delegate-identity	128	compoundFormat	true
+delegate-identity	128	pointsFormat	false
+forward	128	docValuesFormat	true	docValuesFormat,docValuesFormat
+forward-error	128	docValuesFormat	delegate failure:docValuesFormat	docValuesFormat
+forward	128	fieldInfosFormat	true	fieldInfosFormat,fieldInfosFormat
+forward-error	128	fieldInfosFormat	delegate failure:fieldInfosFormat	fieldInfosFormat
+forward	128	liveDocsFormat	true	liveDocsFormat,liveDocsFormat
+forward-error	128	liveDocsFormat	delegate failure:liveDocsFormat	liveDocsFormat
+forward	128	normsFormat	true	normsFormat,normsFormat
+forward-error	128	normsFormat	delegate failure:normsFormat	normsFormat
+forward	128	postingsFormat	true	postingsFormat,postingsFormat
+forward-error	128	postingsFormat	delegate failure:postingsFormat	postingsFormat
+forward	128	segmentInfoFormat	true	segmentInfoFormat,segmentInfoFormat
+forward-error	128	segmentInfoFormat	delegate failure:segmentInfoFormat	segmentInfoFormat
+forward	128	storedFieldsFormat	true	storedFieldsFormat,storedFieldsFormat
+forward-error	128	storedFieldsFormat	delegate failure:storedFieldsFormat	storedFieldsFormat
+forward	128	termVectorsFormat	true	termVectorsFormat,termVectorsFormat
+forward-error	128	termVectorsFormat	delegate failure:termVectorsFormat	termVectorsFormat
+forward	128	compoundFormat	true	compoundFormat,compoundFormat
+forward-error	128	compoundFormat	delegate failure:compoundFormat	compoundFormat
+forward	128	pointsFormat	false	pointsFormat,pointsFormat
+forward-error	128	pointsFormat	delegate failure:pointsFormat	pointsFormat
+override-events	128	
+codec	4	ConfigurableMCodec	Lucene104	Lucene99HnswVectorsFormat	true
+setting	4	maxConn	4
+setting	4	beamWidth	100
+setting	4	numMergeWorkers	1
+setting	4	tinySegmentsThreshold	100
+setting	4	writeVersion	1
+setting	4	mergeExec	null
+delegate-identity	4	docValuesFormat	true
+delegate-identity	4	fieldInfosFormat	true
+delegate-identity	4	liveDocsFormat	true
+delegate-identity	4	normsFormat	true
+delegate-identity	4	postingsFormat	true
+delegate-identity	4	segmentInfoFormat	true
+delegate-identity	4	storedFieldsFormat	true
+delegate-identity	4	termVectorsFormat	true
+delegate-identity	4	compoundFormat	true
+delegate-identity	4	pointsFormat	false
+forward	4	docValuesFormat	true	docValuesFormat,docValuesFormat
+forward-error	4	docValuesFormat	delegate failure:docValuesFormat	docValuesFormat
+forward	4	fieldInfosFormat	true	fieldInfosFormat,fieldInfosFormat
+forward-error	4	fieldInfosFormat	delegate failure:fieldInfosFormat	fieldInfosFormat
+forward	4	liveDocsFormat	true	liveDocsFormat,liveDocsFormat
+forward-error	4	liveDocsFormat	delegate failure:liveDocsFormat	liveDocsFormat
+forward	4	normsFormat	true	normsFormat,normsFormat
+forward-error	4	normsFormat	delegate failure:normsFormat	normsFormat
+forward	4	postingsFormat	true	postingsFormat,postingsFormat
+forward-error	4	postingsFormat	delegate failure:postingsFormat	postingsFormat
+forward	4	segmentInfoFormat	true	segmentInfoFormat,segmentInfoFormat
+forward-error	4	segmentInfoFormat	delegate failure:segmentInfoFormat	segmentInfoFormat
+forward	4	storedFieldsFormat	true	storedFieldsFormat,storedFieldsFormat
+forward-error	4	storedFieldsFormat	delegate failure:storedFieldsFormat	storedFieldsFormat
+forward	4	termVectorsFormat	true	termVectorsFormat,termVectorsFormat
+forward-error	4	termVectorsFormat	delegate failure:termVectorsFormat	termVectorsFormat
+forward	4	compoundFormat	true	compoundFormat,compoundFormat
+forward-error	4	compoundFormat	delegate failure:compoundFormat	compoundFormat
+forward	4	pointsFormat	false	pointsFormat,pointsFormat
+forward-error	4	pointsFormat	delegate failure:pointsFormat	pointsFormat
+override-events	4	
+codec	1	ConfigurableMCodec	Lucene104	Lucene99HnswVectorsFormat	true
+setting	1	maxConn	1
+setting	1	beamWidth	100
+setting	1	numMergeWorkers	1
+setting	1	tinySegmentsThreshold	100
+setting	1	writeVersion	1
+setting	1	mergeExec	null
+codec	512	ConfigurableMCodec	Lucene104	Lucene99HnswVectorsFormat	true
+setting	512	maxConn	512
+setting	512	beamWidth	100
+setting	512	numMergeWorkers	1
+setting	512	tinySegmentsThreshold	100
+setting	512	writeVersion	1
+setting	512	mergeExec	null
+invalid	-1	maxConn must be positive and less than or equal to 512; maxConn=-1
+invalid	0	maxConn must be positive and less than or equal to 512; maxConn=0
+invalid	513	maxConn must be positive and less than or equal to 512; maxConn=513
+invalid	2147483647	maxConn must be positive and less than or equal to 512; maxConn=2147483647

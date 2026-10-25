@@ -1,0 +1,1430 @@
+field body
+  type NUMERIC
+  minalue 4
+  maxvalue 14
+  doccount 256
+  maxvaluecount 1
+  origin 4
+  pattern 00
+01
+T
+04
+T
+03
+T
+04
+T
+07
+T
+08
+T
+00
+T
+03
+T
+02
+T
+03
+T
+06
+T
+05
+T
+06
+T
+02
+T
+01
+T
+02
+T
+07
+T
+04
+T
+05
+T
+08
+T
+00
+T
+01
+T
+04
+T
+03
+T
+04
+T
+07
+T
+06
+T
+02
+T
+03
+T
+02
+T
+03
+T
+06
+T
+05
+T
+06
+T
+02
+T
+01
+T
+02
+T
+05
+T
+06
+T
+05
+T
+08
+T
+00
+T
+01
+T
+04
+T
+03
+T
+04
+T
+07
+T
+06
+T
+00
+T
+05
+T
+02
+T
+03
+T
+06
+T
+05
+T
+06
+T
+02
+T
+01
+T
+02
+T
+05
+T
+04
+T
+07
+T
+08
+T
+00
+T
+01
+T
+04
+T
+03
+T
+04
+T
+07
+T
+06
+T
+00
+T
+03
+T
+04
+T
+03
+T
+06
+T
+05
+T
+06
+T
+02
+T
+01
+T
+02
+T
+05
+T
+04
+T
+05
+T
+10
+T
+00
+T
+01
+T
+04
+T
+03
+T
+04
+T
+07
+T
+06
+T
+00
+T
+03
+T
+02
+T
+05
+T
+06
+T
+05
+T
+06
+T
+02
+T
+01
+T
+02
+T
+05
+T
+04
+T
+05
+T
+08
+T
+02
+T
+01
+T
+04
+T
+03
+T
+04
+T
+07
+T
+06
+T
+00
+T
+03
+T
+02
+T
+03
+T
+08
+T
+05
+T
+06
+T
+02
+T
+01
+T
+02
+T
+05
+T
+04
+T
+05
+T
+08
+T
+00
+T
+03
+T
+04
+T
+03
+T
+04
+T
+07
+T
+06
+T
+00
+T
+03
+T
+02
+T
+03
+T
+06
+T
+07
+T
+06
+T
+02
+T
+01
+T
+02
+T
+05
+T
+04
+T
+05
+T
+08
+T
+00
+T
+01
+T
+06
+T
+03
+T
+04
+T
+07
+T
+06
+T
+00
+T
+03
+T
+02
+T
+03
+T
+06
+T
+05
+T
+08
+T
+02
+T
+01
+T
+02
+T
+05
+T
+04
+T
+05
+T
+08
+T
+00
+T
+01
+T
+04
+T
+05
+T
+04
+T
+07
+T
+06
+T
+00
+T
+03
+T
+02
+T
+03
+T
+06
+T
+05
+T
+06
+T
+04
+T
+01
+T
+02
+T
+05
+T
+04
+T
+05
+T
+08
+T
+00
+T
+01
+T
+04
+T
+03
+T
+06
+T
+07
+T
+06
+T
+00
+T
+03
+T
+02
+T
+03
+T
+06
+T
+05
+T
+06
+T
+02
+T
+03
+T
+02
+T
+05
+T
+04
+T
+05
+T
+08
+T
+00
+T
+01
+T
+04
+T
+03
+T
+04
+T
+09
+T
+06
+T
+00
+T
+03
+T
+02
+T
+03
+T
+06
+T
+05
+T
+06
+T
+02
+T
+01
+T
+04
+T
+05
+T
+04
+T
+05
+T
+08
+T
+00
+T
+01
+T
+04
+T
+03
+T
+04
+T
+07
+T
+08
+T
+00
+T
+03
+T
+02
+T
+03
+T
+06
+T
+05
+T
+06
+T
+02
+T
+01
+T
+02
+T
+07
+T
+04
+T
+05
+T
+08
+T
+00
+T
+01
+T
+04
+T
+03
+T
+04
+T
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 7
+      minValue 4
+      maxValue 12
+      docCount 8
+    interval
+      minDocID 8
+      maxDocID 15
+      minValue 5
+      maxValue 10
+      docCount 8
+    interval
+      minDocID 16
+      maxDocID 23
+      minValue 4
+      maxValue 12
+      docCount 8
+    interval
+      minDocID 24
+      maxDocID 31
+      minValue 6
+      maxValue 11
+      docCount 8
+    interval
+      minDocID 32
+      maxDocID 39
+      minValue 5
+      maxValue 10
+      docCount 8
+    interval
+      minDocID 40
+      maxDocID 47
+      minValue 4
+      maxValue 12
+      docCount 8
+    interval
+      minDocID 48
+      maxDocID 55
+      minValue 4
+      maxValue 10
+      docCount 8
+    interval
+      minDocID 56
+      maxDocID 63
+      minValue 4
+      maxValue 12
+      docCount 8
+    interval
+      minDocID 64
+      maxDocID 71
+      minValue 4
+      maxValue 11
+      docCount 8
+    interval
+      minDocID 72
+      maxDocID 79
+      minValue 5
+      maxValue 10
+      docCount 8
+    interval
+      minDocID 80
+      maxDocID 87
+      minValue 4
+      maxValue 14
+      docCount 8
+    interval
+      minDocID 88
+      maxDocID 95
+      minValue 4
+      maxValue 11
+      docCount 8
+    interval
+      minDocID 96
+      maxDocID 103
+      minValue 5
+      maxValue 12
+      docCount 8
+    interval
+      minDocID 104
+      maxDocID 111
+      minValue 4
+      maxValue 11
+      docCount 8
+    interval
+      minDocID 112
+      maxDocID 119
+      minValue 5
+      maxValue 12
+      docCount 8
+    interval
+      minDocID 120
+      maxDocID 127
+      minValue 4
+      maxValue 12
+      docCount 8
+    interval
+      minDocID 128
+      maxDocID 135
+      minValue 4
+      maxValue 11
+      docCount 8
+    interval
+      minDocID 136
+      maxDocID 143
+      minValue 5
+      maxValue 11
+      docCount 8
+    interval
+      minDocID 144
+      maxDocID 151
+      minValue 4
+      maxValue 12
+      docCount 8
+    interval
+      minDocID 152
+      maxDocID 159
+      minValue 4
+      maxValue 12
+      docCount 8
+    interval
+      minDocID 160
+      maxDocID 167
+      minValue 4
+      maxValue 12
+      docCount 8
+    interval
+      minDocID 168
+      maxDocID 175
+      minValue 4
+      maxValue 11
+      docCount 8
+    interval
+      minDocID 176
+      maxDocID 183
+      minValue 5
+      maxValue 10
+      docCount 8
+    interval
+      minDocID 184
+      maxDocID 191
+      minValue 4
+      maxValue 12
+      docCount 8
+    interval
+      minDocID 192
+      maxDocID 199
+      minValue 4
+      maxValue 11
+      docCount 8
+    interval
+      minDocID 200
+      maxDocID 207
+      minValue 6
+      maxValue 10
+      docCount 8
+    interval
+      minDocID 208
+      maxDocID 215
+      minValue 4
+      maxValue 13
+      docCount 8
+    interval
+      minDocID 216
+      maxDocID 223
+      minValue 4
+      maxValue 10
+      docCount 8
+    interval
+      minDocID 224
+      maxDocID 231
+      minValue 4
+      maxValue 12
+      docCount 8
+    interval
+      minDocID 232
+      maxDocID 239
+      minValue 4
+      maxValue 12
+      docCount 8
+    interval
+      minDocID 240
+      maxDocID 247
+      minValue 5
+      maxValue 11
+      docCount 8
+    interval
+      minDocID 248
+      maxDocID 255
+      minValue 4
+      maxValue 12
+      docCount 8
+  skipend
+field tied
+  type NUMERIC
+  minalue 0
+  maxvalue 0
+  doccount 256
+  maxvaluecount 1
+  origin 0
+  pattern 0
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+0
+T
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 7
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 8
+      maxDocID 15
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 16
+      maxDocID 23
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 24
+      maxDocID 31
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 32
+      maxDocID 39
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 40
+      maxDocID 47
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 48
+      maxDocID 55
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 56
+      maxDocID 63
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 64
+      maxDocID 71
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 72
+      maxDocID 79
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 80
+      maxDocID 87
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 88
+      maxDocID 95
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 96
+      maxDocID 103
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 104
+      maxDocID 111
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 112
+      maxDocID 119
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 120
+      maxDocID 127
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 128
+      maxDocID 135
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 136
+      maxDocID 143
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 144
+      maxDocID 151
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 152
+      maxDocID 159
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 160
+      maxDocID 167
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 168
+      maxDocID 175
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 176
+      maxDocID 183
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 184
+      maxDocID 191
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 192
+      maxDocID 199
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 200
+      maxDocID 207
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 208
+      maxDocID 215
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 216
+      maxDocID 223
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 224
+      maxDocID 231
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 232
+      maxDocID 239
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 240
+      maxDocID 247
+      minValue 0
+      maxValue 0
+      docCount 8
+    interval
+      minDocID 248
+      maxDocID 255
+      minValue 0
+      maxValue 0
+      docCount 8
+  skipend
+END
+checksum 00000000002569282616

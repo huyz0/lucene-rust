@@ -1,0 +1,32 @@
+    version 10.5.0
+    min version 10.5.0
+    number of documents 256
+    uses compound file false
+    has blocks false
+    diagnostics 8
+      key source
+      value flush
+      key timestamp
+      value 1792836606973
+      key java.runtime.version
+      value 21.0.12.1+1-LTS
+      key java.vendor
+      value Eclipse Adoptium
+      key os
+      value Linux
+      key os.arch
+      value amd64
+      key os.version
+      value 6.18.54.1-microsoft-standard-WSL2
+      key lucene.version
+      value 10.5.0
+    attributes 0
+    files 5
+      file _2.fld
+      file _2.si
+      file _2.pst
+      file _2.inf
+      file _2.len
+    id [ea 30 d8 b2 46 3d 3 50 cb 60 e9 7c a5 b9 90 2c]
+    sort 0
+checksum 00000000004170022658

@@ -1,0 +1,29 @@
+field	0	13	10	0000	01bc
+point	0	0:0000
+point	0	0:0172
+point	0	1:0025
+point	0	1:0197
+point	0	2:004a
+point	0	2:01bc
+point	0	3:006f
+point	0	4:0094
+point	0	5:00b9
+point	0	6:00de
+point	0	7:0103
+point	0	8:0128
+point	0	9:014d
+field	1	13	10	00000065	01bc0221
+point	1	0:00000065
+point	1	0:017201d7
+point	1	1:0025008a
+point	1	1:019701fc
+point	1	2:004a00af
+point	1	2:01bc0221
+point	1	3:006f00d4
+point	1	4:009400f9
+point	1	5:00b9011e
+point	1	6:00de0143
+point	1	7:01030168
+point	1	8:0128018d
+point	1	9:014d01b2
+rng	-248792245

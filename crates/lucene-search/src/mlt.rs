@@ -57,12 +57,13 @@ impl TermStatsReader for DirectoryReader {
         Ok(DirectoryReader::doc_freq(self, field, term)?)
     }
     fn doc_count(&self, field: &str) -> Result<i64> {
-        Ok(self
-            .segment_readers()
-            .iter()
-            .filter_map(|r| r.field_stats(field))
-            .map(|(_, doc_count)| i64::from(doc_count))
-            .sum())
+        self.segment_readers().iter().try_fold(0i64, |sum, reader| {
+            Ok(sum.saturating_add(
+                reader
+                    .field_stats(field)?
+                    .map_or(0, |(_, count)| i64::from(count)),
+            ))
+        })
     }
     fn max_doc(&self) -> i64 {
         i64::from(DirectoryReader::max_doc(self))

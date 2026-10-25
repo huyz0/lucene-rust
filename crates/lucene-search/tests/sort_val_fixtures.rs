@@ -239,6 +239,7 @@ fn string_val_and_middle_selector_sorts_match_real_lucene() {
     let segments = opened.as_open_segments();
     let owned: Vec<HashMap<String, FieldNorms<'_>>> = reader
         .field_norms("body")
+        .unwrap()
         .into_iter()
         .map(|n| n.into_iter().map(|n| ("body".to_string(), n)).collect())
         .collect();

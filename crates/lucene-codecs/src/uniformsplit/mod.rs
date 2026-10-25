@@ -174,6 +174,24 @@ pub trait BlockEncoder: Send + Sync {
     /// # Errors
     /// What the encoding fails with.
     fn encode(&self, bytes: &[u8]) -> Result<Vec<u8>>;
+
+    /// Encode a dictionary. Defaults to [`Self::encode`]; a test format can
+    /// observe Java's `writeDictionary` override around this call.
+    ///
+    /// # Errors
+    /// What the encoding fails with.
+    fn encode_dictionary(&self, bytes: &[u8]) -> Result<Vec<u8>> {
+        self.encode(bytes)
+    }
+
+    /// Encode field metadata. Defaults to [`Self::encode`]; a test format
+    /// can observe Java's `writeEncodedFieldsMetadata` override here.
+    ///
+    /// # Errors
+    /// What the encoding fails with.
+    fn encode_fields_metadata(&self, bytes: &[u8]) -> Result<Vec<u8>> {
+        self.encode(bytes)
+    }
 }
 
 /// `BlockDecoder`: [`BlockEncoder`]'s inverse.

@@ -49,7 +49,10 @@ pub mod multi_doc_values;
 pub mod multi_reader;
 pub mod parallel;
 mod segment;
+mod simpletext;
+mod skipper;
 pub(crate) use segment::SparseDocs;
+pub use skipper::DocValuesSkipper;
 pub mod slow_codec;
 pub mod sorting;
 
@@ -864,7 +867,7 @@ pub trait LeafReader: IndexReader {
     fn doc_values_skipper(
         &self,
         _field: &str,
-    ) -> Result<Option<lucene_codecs::doc_values::DocValuesSkipper<'_>>> {
+    ) -> Result<Option<crate::reader::DocValuesSkipper<'_>>> {
         Ok(None)
     }
 

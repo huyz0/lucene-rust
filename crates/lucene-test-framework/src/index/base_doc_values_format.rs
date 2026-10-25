@@ -22,12 +22,12 @@
 //!   which is what it draws.
 
 use super::base_index_file_format::SuiteTest;
-use lucene_codecs::doc_values::DocValuesSkipper;
 use lucene_index::document::{
     BinaryDocValuesField, Document, IndexableField, NumericDocValuesField, SortedDocValuesField,
     SortedNumericDocValuesField, SortedSetDocValuesField,
 };
 use lucene_search::directory_reader::{DirectoryReader, SegmentReader};
+use lucene_search::reader::DocValuesSkipper;
 use lucene_search::reader::IndexReader as _;
 use lucene_search::reader::{
     DocIdSetIterator, DocValuesIterator, LeafReader, SortedNumericDocValues, SortedSetDocValues,

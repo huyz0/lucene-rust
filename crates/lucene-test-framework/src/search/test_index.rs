@@ -85,7 +85,7 @@ impl TestIndex {
         let reader = DirectoryReader::open(&self.dir).expect("open reader");
         let opened = reader.open_segments().expect("open segments");
         let segments = opened.as_open_segments();
-        let owned = reader.field_norms_by_field(&self.norm_fields);
+        let owned = reader.field_norms_by_field(&self.norm_fields).unwrap();
         let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
         let mut searcher = IndexSearcher::new(&segments, &norms).expect("searcher");
         if let Some(sim) = similarity {

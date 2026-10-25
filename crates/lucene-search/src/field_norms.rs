@@ -12,6 +12,7 @@
 //! segment-wide average per doc would be correct but needlessly slow).
 
 use lucene_codecs::norms::{self, NormsEntry};
+use lucene_codecs::simpletext::doc_values_reader::SimpleTextNumericDocValues;
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 /// One field's opened norms data plus its precomputed `avgFieldLength` —
@@ -24,9 +25,11 @@ use lucene_util::fixed_bit_set::FixedBitSet;
 /// yet.
 #[derive(Debug, Clone)]
 pub struct FieldNorms<'a> {
-    /// The segment's whole `.nvd` file, matching [`norms::norm_value`]'s
-    /// `data` parameter.
+    /// The default codec's whole `.nvd` file, matching [`norms::norm_value`]'s
+    /// `data` parameter. Empty for SimpleText, whose cursor owns its source.
     pub data: &'a [u8],
+    /// Default-codec metadata. SimpleText reads its private numeric cursor
+    /// instead; this entry's binary offsets do not describe its text file.
     pub entry: NormsEntry,
     /// `sum(decode_norm(doc)) / count(docs with a norm)` across every *live*
     /// doc in `0..max_doc`, computed once by [`FieldNorms::open`].
@@ -74,6 +77,9 @@ pub struct FieldNorms<'a> {
     /// document-with-the-field, allocated per `FieldNorms` and therefore per
     /// query per leaf -- is gone.
     sparse_region: Option<&'a [u8]>,
+    /// SimpleText's numeric norms, cloned into each scorer's cursor. Values
+    /// stay in the text file and are decoded by its fallible positioning path.
+    text: Option<SimpleTextNumericDocValues<'a>>,
 }
 
 /// One scorer's position in a sparse field's norms, the way Lucene's
@@ -98,6 +104,7 @@ pub struct FieldNormsCursor<'n, 'a> {
     norms: &'n FieldNorms<'a>,
     /// `Some` only for a sparse field; a dense or empty one never needs it.
     disi: Option<lucene_codecs::indexed_disi::DisiCursor<'a>>,
+    text: Option<SimpleTextNumericDocValues<'a>>,
 }
 
 /// A sparse field's `IndexedDISI` region, or `None` when the field is dense,
@@ -290,6 +297,28 @@ impl<'a> FieldNorms<'a> {
             norm_inverse: table,
             norm_length: &NORM_LENGTH,
             sparse_region: sparse_region(data, &entry),
+            text: None,
+        }
+    }
+
+    /// Java: `TermScorer.score` takes the codec's `NumericDocValues`, including
+    /// `SimpleTextNormsFormat`'s. Keep its full long values for custom
+    /// similarities; only BM25 narrows them to a byte for its lookup table.
+    pub(crate) fn from_simpletext(
+        values: SimpleTextNumericDocValues<'a>,
+        avg_field_length: f32,
+        table: std::sync::Arc<[f32; 256]>,
+    ) -> Self {
+        Self {
+            data: &[],
+            // The binary metadata is unused when `text` is present.
+            entry: NormsEntry::constant(-1, values.cost() as i32, 0),
+            avg_field_length,
+            norm_inverse: table,
+            dense_norm_bytes: None,
+            norm_length: &NORM_LENGTH,
+            sparse_region: None,
+            text: Some(values),
         }
     }
 
@@ -336,6 +365,7 @@ impl<'a> FieldNorms<'a> {
             norm_inverse: std::sync::Arc::new([0.0; 256]),
             norm_length: &NORM_LENGTH,
             sparse_region: sparse_region(data, &entry),
+            text: None,
         };
         let mut sum = 0.0f64;
         let mut count = 0i64;
@@ -380,6 +410,7 @@ impl<'a> FieldNorms<'a> {
                     self.entry.jump_table_entry_count,
                 )
             }),
+            text: self.text.clone(),
         }
     }
 
@@ -452,6 +483,9 @@ impl<'a> FieldNormsCursor<'_, 'a> {
     ///    [`norms::norm_value`], which owns the error cases.
     #[inline]
     fn norm_byte(&mut self, doc: i32) -> norms::Result<Option<u8>> {
+        if self.text.is_some() {
+            return Ok(self.norm_long(doc)?.map(|value| value as u8));
+        }
         // The whole point of the table: for the ordinary dense one-byte field
         // this is a load and an index, as `BM25Scorer` reading `cache[norm]`
         // is. Anything else falls through.
@@ -512,6 +546,23 @@ impl<'a> FieldNormsCursor<'_, 'a> {
     /// [`Self::norm_byte`]'s three shapes, kept separate from it so the BM25
     /// path's lookup stays exactly what it was.
     pub fn norm_long(&mut self, doc: i32) -> norms::Result<Option<i64>> {
+        if let Some(values) = &mut self.text {
+            if doc < 0 || i64::from(doc) >= values.cost() {
+                return Err(norms::Error::DocOutOfRange(doc, values.cost() as i32));
+            }
+            let value = (|| {
+                if values.advance_exact(doc)? {
+                    values.long_value().map(Some)
+                } else {
+                    Ok(None)
+                }
+            })();
+            return value.map_err(|error| {
+                norms::Error::Store(lucene_store::Error::Corrupted(format!(
+                    "SimpleText norms: {error}"
+                )))
+            });
+        }
         if let Some(bytes) = self.norms.dense_norm_bytes {
             if let Some(&b) = bytes.get(doc as usize) {
                 return Ok(Some(i64::from(b as i8)));
@@ -628,7 +679,8 @@ impl<'a> FieldNormsCursor<'_, 'a> {
         // answers each document of it.
         let entry = &self.norms.entry;
         if let (Some(&first), Some(&last)) = (docs.first(), docs.last()) {
-            if entry.bytes_per_norm == 0
+            if self.text.is_none()
+                && entry.bytes_per_norm == 0
                 && entry.is_dense()
                 && first >= 0
                 && last < entry.num_docs_with_field
@@ -689,6 +741,90 @@ impl<'a> FieldNormsCursor<'_, 'a> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn simpletext_norms_keep_long_values_missing_docs_and_independent_cursors() {
+        use lucene_codecs::field_infos::{DocValuesType, FieldInfo};
+        use lucene_codecs::simpletext::doc_values_reader::SimpleTextDocValuesReader;
+        use lucene_codecs::simpletext::doc_values_writer::SimpleTextDocValuesWriter;
+
+        let mut field = FieldInfo::new("norm", 0);
+        field.doc_values_type = DocValuesType::Numeric;
+        let mut writer = SimpleTextDocValuesWriter::new(5);
+        let expected = [(0, 1), (1, 128), (3, -129), (4, i64::MAX)];
+        writer.add_numeric_field(&field, &expected).unwrap();
+        let bytes = writer.finish().unwrap();
+        let reader = SimpleTextDocValuesReader::open(&bytes, 5).unwrap();
+        let table = super::inverse_table(7.5);
+        let norms =
+            FieldNorms::from_simpletext(reader.numeric("norm").unwrap(), 7.5, table.clone());
+        assert!(norms.cursor().dense_bytes().is_none());
+        let mut first = norms.cursor();
+        let mut second = norms.cursor();
+        for doc in [4, 0, 1, 2, 3, 0] {
+            let value = expected
+                .iter()
+                .find(|(d, _)| *d == doc)
+                .map(|(_, value)| *value);
+            assert_eq!(first.norm_long(doc).unwrap(), value);
+            assert_eq!(first.has_norm(doc).unwrap(), value.is_some());
+            assert_eq!(second.norm_long(doc).unwrap(), value);
+            if let Some(value) = value {
+                assert_eq!(
+                    first.norm_inverse(doc).unwrap().to_bits(),
+                    table[value as u8 as usize].to_bits()
+                );
+                assert_eq!(
+                    first.field_length(doc).unwrap(),
+                    crate::similarity::decode_norm(i64::from(value as u8))
+                );
+            } else {
+                assert_eq!(
+                    first.field_length(doc).unwrap(),
+                    crate::similarity::UNNORMED_FIELD_LENGTH
+                );
+            }
+        }
+        for doc in [-1, 5] {
+            assert!(matches!(
+                first.norm_long(doc),
+                Err(norms::Error::DocOutOfRange(_, 5))
+            ));
+            assert!(first.norm_inverse(doc).is_err());
+        }
+        let docs = [0, 1, 2, 3, 4];
+        let mut longs = Vec::new();
+        first.norm_long_batch(&docs, &mut longs).unwrap();
+        assert_eq!(longs, [1, 128, 1, -129, i64::MAX]);
+        let mut inverses = Vec::new();
+        first.norm_inverse_batch(&docs, &mut inverses).unwrap();
+        assert_eq!(inverses, docs.map(|doc| norms.norm_inverse(doc).unwrap()));
+    }
+
+    #[test]
+    fn simpletext_scoring_norms_report_lazy_value_corruption() {
+        use lucene_codecs::field_infos::{DocValuesType, FieldInfo};
+        use lucene_codecs::simpletext::doc_values_reader::SimpleTextDocValuesReader;
+        use lucene_codecs::simpletext::doc_values_writer::SimpleTextDocValuesWriter;
+
+        let mut field = FieldInfo::new("norm", 0);
+        field.doc_values_type = DocValuesType::Numeric;
+        let mut writer = SimpleTextDocValuesWriter::new(1);
+        writer.add_numeric_field(&field, &[(0, 7)]).unwrap();
+        let mut bytes = writer.finish().unwrap();
+        let reader = SimpleTextDocValuesReader::open(&bytes, 1)
+            .unwrap()
+            .rebind(&[]);
+        bytes[reader.field("norm").unwrap().data_start] = b'x';
+        let norms = FieldNorms::from_simpletext(
+            reader.numeric_from_data("norm", &bytes).unwrap(),
+            7.0,
+            super::inverse_table(7.0),
+        );
+        let error = norms.cursor().norm_long(0).unwrap_err().to_string();
+        assert!(error.contains("SimpleText norms:"), "{error}");
+        assert!(norms.norm_inverse(0).is_err());
+    }
 
     /// `avgdl = sumTotalTermFreq / docCount`, real Lucene's formula.
     #[test]

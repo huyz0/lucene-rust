@@ -23,6 +23,7 @@ pub mod legacy_base_doc_values_format;
 pub mod merge_policies;
 pub mod per_thread_pk_lookup;
 pub mod points_stack_tracker;
+pub mod random_codec;
 pub mod random_index_writer;
 pub mod random_postings_tester;
 pub mod reader_wrappers;

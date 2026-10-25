@@ -185,6 +185,7 @@ fn min_score_matches_real_lucene() {
     assert!(segments.iter().any(|s| s.live_docs.is_some()));
     let owned: Vec<HashMap<String, FieldNorms<'_>>> = reader
         .field_norms("body")
+        .unwrap()
         .into_iter()
         .map(|n| n.into_iter().map(|n| ("body".to_string(), n)).collect())
         .collect();

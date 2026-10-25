@@ -828,7 +828,9 @@ fn sandbox_facets_match_lucene() {
     let mut opened = reader.open_segments().unwrap();
     opened.open_points().unwrap();
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["q", "$facets", "$color"].map(String::from));
+    let owned = reader
+        .field_norms_by_field(&["q", "$facets", "$color"].map(String::from))
+        .unwrap();
     let norms: Vec<SegmentNorms<'_, '_>> = owned
         .iter()
         .map(|m: &HashMap<String, FieldNorms<'_>>| Some(m))

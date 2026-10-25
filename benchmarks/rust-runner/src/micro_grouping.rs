@@ -107,7 +107,7 @@ pub fn bench_grouping(w: Duration, m: Duration, dir: &str) {
     let reader = DirectoryReader::open(&FsDirectory::open(std::path::Path::new(dir))).unwrap();
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
     let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
     let s = IndexSearcher::new(&segments, &norms).unwrap();
     let by_n = Sort::new(vec![SortField::numeric("n", SortType::Long, true)]);

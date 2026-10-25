@@ -1,0 +1,16 @@
+name	CheapBastard
+delegate	Lucene104
+postings	Lucene104
+blocks	100	200
+default-blocks	25	48
+same-postings	true
+delegate-identity	docValuesFormat	true
+delegate-identity	fieldInfosFormat	true
+delegate-identity	liveDocsFormat	true
+delegate-identity	normsFormat	true
+delegate-identity	segmentInfoFormat	true
+delegate-identity	storedFieldsFormat	true
+delegate-identity	termVectorsFormat	true
+delegate-identity	compoundFormat	true
+delegate-identity	pointsFormat	false
+delegate-identity	knnVectorsFormat	true

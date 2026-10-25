@@ -253,7 +253,7 @@ fn with_searcher(name: &str, f: impl FnOnce(&IndexSearcher<'_, '_>, &DirectoryRe
     let reader = DirectoryReader::open(&FsDirectory::open(tmp.path())).unwrap();
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
     let norms: Vec<_> = owned.iter().map(Some).collect();
     let s = IndexSearcher::new(&segments, &norms).unwrap();
     f(&s, &reader);

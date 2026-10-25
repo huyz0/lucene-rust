@@ -90,6 +90,12 @@
 //! selectors, and an ordinal rank for `STRING`, `SortedSetSortField` and
 //! `BinarySortField` (computed by [`crate::index_sorter`]). The writer, the
 //! merge and `CheckIndex` all act on every kind.
+//!
+//! [`parse_simpletext`] and [`write_simpletext`] use the same sort-provider
+//! implementations for `SimpleTextSegmentInfoFormat`. Its text framing lives
+//! in `lucene-codecs`; the typed sort belongs here with the binary `.si` model.
+//! Differs: the text parser checks the checksum before these adapters decode
+//! the provider bytes, whereas Java decodes them before checking the footer.
 
 pub use lucene_codecs::codecs::SegmentInfoFormat;
 use lucene_store::codec_util::{self, ID_LENGTH};
@@ -104,6 +110,8 @@ const VERSION_CURRENT: i32 = 0;
 pub enum Error {
     #[error(transparent)]
     Store(#[from] lucene_store::Error),
+    #[error(transparent)]
+    SimpleText(#[from] lucene_codecs::simpletext::Error),
     #[error("invalid docCount: {0}")]
     InvalidDocCount(i32),
     #[error("illegal boolean value for hasMinVersion: {0}")]
@@ -614,6 +622,12 @@ pub struct SegmentInfo {
     pub index_sort: Option<Vec<IndexSortField>>,
 }
 
+/// SimpleText's metadata with typed index-sort fields. Unlike the binary
+/// `.si` descriptor, its `Version` retains the prerelease component and the
+/// segment name is part of the model passed to the writer.
+pub type SimpleTextSegmentInfo =
+    lucene_codecs::simpletext::segment_info::SimpleTextSegmentInfo<IndexSortField>;
+
 /// `SortFieldProvider` SPI names, exactly as Java's
 /// `META-INF/services/org.apache.lucene.index.SortFieldProvider` registers
 /// them (`SortField.Provider.NAME` and friends).
@@ -627,6 +641,82 @@ const PROVIDER_BINARY: &str = "BinarySortField";
 /// `segments_N` and must match the id embedded in the `.si` file's index header.
 pub fn parse(buf: &[u8], segment_id: &[u8; ID_LENGTH]) -> Result<SegmentInfo> {
     parse_with_format(buf, segment_id, SegmentInfoFormat::Lucene99)
+}
+
+/// `SimpleTextSegmentInfoFormat.read`, including typed `SortFieldProvider`
+/// decoding. The `type` description line is informational, as in Java; the
+/// named provider and its serialized bytes determine the sort.
+///
+/// # Errors
+/// Invalid SimpleText framing, checksum, ID or sort-provider bytes. Trailing
+/// provider bytes are rejected (Java checks this with `assert bytes.eof()`).
+pub fn parse_simpletext(
+    buf: &[u8],
+    segment_name: &str,
+    segment_id: &[u8; ID_LENGTH],
+) -> Result<SimpleTextSegmentInfo> {
+    let raw = lucene_codecs::simpletext::segment_info::read(buf, segment_name, segment_id)?;
+    let mut fields = Vec::new();
+    for entry in raw.index_sort {
+        let mut input = SliceInput::new(&entry.bytes);
+        fields.push(read_sort_field_provider(&mut input, &entry.provider)?);
+        if input.remaining() != 0 {
+            return Err(lucene_store::Error::Corrupted(format!(
+                "trailing bytes in {} sort field: {}",
+                entry.provider,
+                input.remaining()
+            ))
+            .into());
+        }
+    }
+    Ok(SimpleTextSegmentInfo {
+        name: raw.name,
+        id: raw.id,
+        version: raw.version,
+        min_version: raw.min_version,
+        doc_count: raw.doc_count,
+        is_compound_file: raw.is_compound_file,
+        has_blocks: raw.has_blocks,
+        diagnostics: raw.diagnostics,
+        files: raw.files,
+        attributes: raw.attributes,
+        index_sort: fields,
+    })
+}
+
+/// `SimpleTextSegmentInfoFormat.write`: encode the typed index sort using
+/// each provider's own bytes. Adds the `.si` file to `si.files`, as Java does.
+///
+/// # Errors
+/// An invalid codec file name.
+pub fn write_simpletext(si: &mut SimpleTextSegmentInfo) -> Result<Vec<u8>> {
+    use lucene_codecs::simpletext::segment_info::{self as simpletext, SortFieldEntry};
+    let mut index_sort = Vec::new();
+    for field in &si.index_sort {
+        let mut bytes = Vec::new();
+        write_sort_field_value(&mut bytes, field);
+        index_sort.push(SortFieldEntry {
+            provider: sort_field_provider(field).to_string(),
+            description: describe_index_sort(Some(std::slice::from_ref(field))),
+            bytes,
+        });
+    }
+    let mut raw = simpletext::SimpleTextSegmentInfo {
+        name: si.name.clone(),
+        version: si.version,
+        min_version: si.min_version,
+        doc_count: si.doc_count,
+        is_compound_file: si.is_compound_file,
+        has_blocks: si.has_blocks,
+        diagnostics: si.diagnostics.clone(),
+        attributes: si.attributes.clone(),
+        files: si.files.clone(),
+        id: si.id,
+        index_sort,
+    };
+    let bytes = simpletext::write(&mut raw)?;
+    si.files = raw.files;
+    Ok(bytes)
 }
 
 /// [`parse`] for a segment written by codec `codec_name` (the name its
@@ -993,12 +1083,18 @@ fn read_binary_sort_field(input: &mut SliceInput) -> Result<IndexSortField> {
 /// `SortFieldProvider.forName(input.readString()).readSortField(input)`.
 fn read_sort_field(input: &mut SliceInput) -> Result<IndexSortField> {
     let provider = input.read_string()?;
-    match provider.as_str() {
+    read_sort_field_provider(input, &provider)
+}
+
+/// `SortFieldProvider.forName(provider).readSortField(input)`, shared by
+/// binary segment infos and SimpleText's separately named byte arrays.
+fn read_sort_field_provider(input: &mut SliceInput, provider: &str) -> Result<IndexSortField> {
+    match provider {
         PROVIDER_SORT_FIELD => read_plain_sort_field(input),
         PROVIDER_SORTED_NUMERIC => read_sorted_numeric_sort_field(input),
         PROVIDER_SORTED_SET => read_sorted_set_sort_field(input),
         PROVIDER_BINARY => read_binary_sort_field(input),
-        _ => Err(Error::UnknownSortFieldProvider(provider)),
+        _ => Err(Error::UnknownSortFieldProvider(provider.to_string())),
     }
 }
 
@@ -1042,21 +1138,34 @@ fn write_string_missing_marker(out: &mut Vec<u8>, missing: StringMissingValue) {
     });
 }
 
-/// Writes one sort field exactly as `SortFieldProvider.write` does: the
-/// provider's SPI name, then that provider's own `serialize` bytes. The
+/// Writes the binary `.si` provider's SPI name, then its `serialize` bytes. The
 /// byte-level inverse of [`read_sort_field`] for every [`IndexSortKind`].
 fn write_sort_field(out: &mut Vec<u8>, sf: &IndexSortField) {
+    out.write_string(sort_field_provider(sf));
+    write_sort_field_value(out, sf);
+}
+
+fn sort_field_provider(sf: &IndexSortField) -> &'static str {
+    match sf.kind {
+        IndexSortKind::Numeric(_) | IndexSortKind::String(_) => PROVIDER_SORT_FIELD,
+        IndexSortKind::SortedNumeric { .. } => PROVIDER_SORTED_NUMERIC,
+        IndexSortKind::SortedSet { .. } => PROVIDER_SORTED_SET,
+        IndexSortKind::Binary(_) => PROVIDER_BINARY,
+    }
+}
+
+/// `SortFieldProvider.write` writes only the provider's `serialize` bytes;
+/// SimpleText stores its SPI name on a separate text line.
+fn write_sort_field_value(out: &mut Vec<u8>, sf: &IndexSortField) {
     let reverse = if sf.reverse { 1 } else { 0 };
     match &sf.kind {
         IndexSortKind::Numeric(key) => {
-            out.write_string(PROVIDER_SORT_FIELD);
             out.write_string(&sf.field);
             out.write_string(key.type_name());
             out.write_i32(reverse);
             write_numeric_missing(out, key);
         }
         IndexSortKind::String(missing) => {
-            out.write_string(PROVIDER_SORT_FIELD);
             out.write_string(&sf.field);
             out.write_string(TYPE_STRING);
             out.write_i32(reverse);
@@ -1077,7 +1186,6 @@ fn write_sort_field(out: &mut Vec<u8>, sf: &IndexSortField) {
             }
         }
         IndexSortKind::SortedNumeric { key, selector } => {
-            out.write_string(PROVIDER_SORTED_NUMERIC);
             out.write_string(&sf.field);
             out.write_string(key.type_name());
             out.write_i32(reverse);
@@ -1088,7 +1196,6 @@ fn write_sort_field(out: &mut Vec<u8>, sf: &IndexSortField) {
             write_numeric_missing(out, key);
         }
         IndexSortKind::SortedSet { selector, missing } => {
-            out.write_string(PROVIDER_SORTED_SET);
             out.write_string(&sf.field);
             out.write_i32(reverse);
             out.write_i32(match selector {
@@ -1100,7 +1207,6 @@ fn write_sort_field(out: &mut Vec<u8>, sf: &IndexSortField) {
             write_string_missing_marker(out, *missing);
         }
         IndexSortKind::Binary(missing) => {
-            out.write_string(PROVIDER_BINARY);
             out.write_string(&sf.field);
             out.write_i32(reverse);
             write_string_missing_marker(out, *missing);
@@ -1220,38 +1326,14 @@ pub fn describe_index_sort(sort: Option<&[IndexSortField]>) -> String {
     }
 }
 
-/// `Float.toString` for the values a `SortField` missing value can hold.
-///
-/// Three differences from Rust's `Display`, all of them real: Java always
-/// prints a decimal point (`1.0` where Rust prints `1`), spells the
-/// infinities `Infinity`/`-Infinity` where Rust prints `inf`/`-inf`, and
-/// agrees on `NaN`. Java also switches to scientific notation outside
-/// `1e-3 ..= 1e7` where Rust does not; that is *not* reproduced, and the
-/// only consumer of the difference would be an error message quoting a
-/// missing value of that magnitude.
+/// `Float.toString`, including scientific notation and Java's tie rules.
 fn java_float_string(v: f32) -> String {
-    if v.is_infinite() {
-        return if v > 0.0 { "Infinity" } else { "-Infinity" }.to_string();
-    }
-    with_decimal_point(format!("{v}"))
+    lucene_util::geo::java_float_string(v)
 }
 
 /// `Double.toString`, the 64-bit twin of [`java_float_string`].
 fn java_double_string(v: f64) -> String {
-    if v.is_infinite() {
-        return if v > 0.0 { "Infinity" } else { "-Infinity" }.to_string();
-    }
-    with_decimal_point(format!("{v}"))
-}
-
-/// Java's "a float always prints a decimal point" rule, applied to a finite
-/// non-NaN rendering.
-fn with_decimal_point(s: String) -> String {
-    if s.contains(['.', 'e', 'E', 'N']) {
-        s
-    } else {
-        format!("{s}.0")
-    }
+    lucene_util::geo::java_double_string(v)
 }
 
 /// Port of `Lucene99SegmentInfoFormat.write`: the exact byte-level inverse of
@@ -1349,6 +1431,70 @@ fn read_version(input: &mut SliceInput) -> Result<LuceneVersion> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SIMPLETEXT: &[u8] = include_bytes!("../../../fixtures/data/simpletext_index_sort/_1.si");
+    const SIMPLETEXT_ID: [u8; ID_LENGTH] = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+    proptest::proptest! {
+        #[test]
+        fn simpletext_sort_round_trips_arbitrary_names_and_numeric_sentinels(
+            name in proptest::collection::vec(proptest::prelude::any::<char>(), 0..25),
+            reverse in proptest::prelude::any::<bool>(),
+            missing in proptest::option::of(proptest::prelude::any::<i64>()),
+        ) {
+            let mut info = parse_simpletext(SIMPLETEXT, "_1", &SIMPLETEXT_ID).unwrap();
+            info.index_sort = vec![IndexSortField::long(name.into_iter().collect::<String>(), reverse, missing)];
+            let bytes = write_simpletext(&mut info).unwrap();
+            let read = parse_simpletext(&bytes, "_1", &SIMPLETEXT_ID).unwrap();
+            proptest::prop_assert_eq!(read, info);
+        }
+    }
+
+    #[test]
+    fn simpletext_sort_bytes_determine_the_type_and_must_be_fully_consumed() {
+        use lucene_codecs::simpletext::segment_info as simpletext;
+        let mut raw = simpletext::read(SIMPLETEXT, "_1", &SIMPLETEXT_ID).unwrap();
+        raw.index_sort[0].description = "a description the reader must ignore".into();
+        let bytes = simpletext::write(&mut raw).unwrap();
+        let typed = parse_simpletext(&bytes, "_1", &SIMPLETEXT_ID).unwrap();
+        assert!(matches!(
+            typed.index_sort[0].kind,
+            IndexSortKind::Numeric(NumericSortKey::Int(None))
+        ));
+
+        raw.index_sort[0].bytes.push(0);
+        let bytes = simpletext::write(&mut raw).unwrap();
+        assert!(matches!(
+            parse_simpletext(&bytes, "_1", &SIMPLETEXT_ID),
+            Err(Error::Store(lucene_store::Error::Corrupted(message)))
+                if message.contains("trailing bytes")
+        ));
+        raw.index_sort[0].bytes.clear();
+        let bytes = simpletext::write(&mut raw).unwrap();
+        assert!(matches!(
+            parse_simpletext(&bytes, "_1", &SIMPLETEXT_ID),
+            Err(Error::Store(lucene_store::Error::Eof { .. }))
+        ));
+        assert!(parse_simpletext(SIMPLETEXT, "_1", &[0; ID_LENGTH]).is_err());
+        assert!(parse_simpletext(&SIMPLETEXT[..20], "_1", &SIMPLETEXT_ID).is_err());
+    }
+
+    #[test]
+    fn simpletext_writer_adds_its_file_once_and_preserves_prerelease_versions() {
+        let mut info = parse_simpletext(SIMPLETEXT, "_1", &SIMPLETEXT_ID).unwrap();
+        info.files.retain(|file| file != "_1.si");
+        let bytes = write_simpletext(&mut info).unwrap();
+        assert_eq!(info.files.iter().filter(|file| *file == "_1.si").count(), 1);
+        assert_eq!(write_simpletext(&mut info).unwrap(), bytes);
+        info.version = lucene_util::version::Version::new(10, 0, 0, 2).unwrap();
+        info.min_version = Some(lucene_util::version::Version::new(9, 0, 0, 1).unwrap());
+        let bytes = write_simpletext(&mut info).unwrap();
+        let read = parse_simpletext(&bytes, "_1", &SIMPLETEXT_ID).unwrap();
+        assert_eq!(read.version.prerelease(), 2);
+        assert_eq!(read.min_version.unwrap().prerelease(), 1);
+        info.name = "bad segment".into();
+        assert!(write_simpletext(&mut info).is_err());
+    }
 
     #[test]
     fn writer_diagnostics_are_javas_keys_then_the_details() {

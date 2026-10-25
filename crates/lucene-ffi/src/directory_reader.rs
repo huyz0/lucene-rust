@@ -226,7 +226,10 @@ pub unsafe extern "C" fn ffi_search_term_query_multi_segment(
         let segments = opened.as_open_segments();
         // Real norms, with one reader-wide `avgFieldLength` -- see this
         // module's doc comment.
-        let owned_norms = reader_handle_value.reader.field_norms(&query.field); // alloc-ok: reader's own segment count
+        let owned_norms = reader_handle_value
+            .reader
+            .field_norms(&query.field)
+            .map_err(|error| map_search_error(error.into()))?; // alloc-ok: reader's own segment count
         let norms: Vec<Option<&FieldNorms<'_>>> = owned_norms.iter().map(Option::as_ref).collect(); // alloc-ok: reader's own segment count
 
         let hits = search_term_query_multi_segment(&segments, &query, &norms, top_n)
@@ -312,7 +315,8 @@ pub unsafe extern "C" fn ffi_search_boolean_query_multi_segment(
         // this module's doc comment.
         let owned_norms = reader_handle_value
             .reader
-            .field_norms_by_field(&boolean_query_term_fields(&query)); // alloc-ok: reader's own segment count
+            .field_norms_by_field(&boolean_query_term_fields(&query))
+            .map_err(|error| map_search_error(error.into()))?; // alloc-ok: reader's own segment count
         let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> = owned_norms
             .iter()
             .map(|m| (!m.is_empty()).then_some(m))
@@ -384,7 +388,10 @@ pub unsafe extern "C" fn ffi_search_term_query_multi_segment_concurrent(
         let segments = opened.as_open_segments();
         // Real norms, with one reader-wide `avgFieldLength` -- see this
         // module's doc comment.
-        let owned_norms = reader_handle_value.reader.field_norms(&query.field); // alloc-ok: reader's own segment count
+        let owned_norms = reader_handle_value
+            .reader
+            .field_norms(&query.field)
+            .map_err(|error| map_search_error(error.into()))?; // alloc-ok: reader's own segment count
         let norms: Vec<Option<&FieldNorms<'_>>> = owned_norms.iter().map(Option::as_ref).collect(); // alloc-ok: reader's own segment count
 
         let hits = search_term_query_multi_segment_concurrent(&segments, &query, &norms, top_n)
@@ -472,7 +479,8 @@ pub unsafe extern "C" fn ffi_search_boolean_query_multi_segment_concurrent(
         // this module's doc comment.
         let owned_norms = reader_handle_value
             .reader
-            .field_norms_by_field(&boolean_query_term_fields(&query)); // alloc-ok: reader's own segment count
+            .field_norms_by_field(&boolean_query_term_fields(&query))
+            .map_err(|error| map_search_error(error.into()))?; // alloc-ok: reader's own segment count
         let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> = owned_norms
             .iter()
             .map(|m| (!m.is_empty()).then_some(m))
@@ -569,7 +577,8 @@ pub unsafe extern "C" fn ffi_search_boolean_query_multi_segment_maxscore(
         // this module's doc comment.
         let owned_norms = reader_handle_value
             .reader
-            .field_norms_by_field(&boolean_query_term_fields(&query)); // alloc-ok: reader's own segment count
+            .field_norms_by_field(&boolean_query_term_fields(&query))
+            .map_err(|error| map_search_error(error.into()))?; // alloc-ok: reader's own segment count
         let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> = owned_norms
             .iter()
             .map(|m| (!m.is_empty()).then_some(m))
@@ -655,7 +664,8 @@ pub unsafe extern "C" fn ffi_search_boolean_query_multi_segment_maxscore_concurr
         // this module's doc comment.
         let owned_norms = reader_handle_value
             .reader
-            .field_norms_by_field(&boolean_query_term_fields(&query)); // alloc-ok: reader's own segment count
+            .field_norms_by_field(&boolean_query_term_fields(&query))
+            .map_err(|error| map_search_error(error.into()))?; // alloc-ok: reader's own segment count
         let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> = owned_norms
             .iter()
             .map(|m| (!m.is_empty()).then_some(m))

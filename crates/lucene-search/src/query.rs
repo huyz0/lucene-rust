@@ -769,6 +769,13 @@ impl Clause {
                     })),
                 }
             }
+            #[cfg(any(test, feature = "asserting"))]
+            Clause::Extended(mut extended) => {
+                if let crate::extended_query::ExtendedQuery::Test(q) = extended.as_mut() {
+                    *q = q.clone().rewrite();
+                }
+                Clause::Extended(extended)
+            }
             leaf => leaf,
         }
     }

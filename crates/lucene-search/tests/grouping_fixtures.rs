@@ -472,7 +472,7 @@ fn grouping_matches_lucene() {
     let reader = DirectoryReader::open(&FsDirectory::open(dir.join("index"))).unwrap();
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
     let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
     let searcher = IndexSearcher::new(&segments, &norms).unwrap();
     let mut sliced = IndexSearcher::new(&segments, &norms).unwrap();
@@ -481,7 +481,7 @@ fn grouping_matches_lucene() {
     let breader = DirectoryReader::open(&FsDirectory::open(dir.join("blocks"))).unwrap();
     let bopened = breader.open_segments().unwrap();
     let bsegments = bopened.as_open_segments();
-    let bowned = breader.field_norms_by_field(&["body".to_string()]);
+    let bowned = breader.field_norms_by_field(&["body".to_string()]).unwrap();
     let bnorms: Vec<SegmentNorms<'_, '_>> = bowned.iter().map(Some).collect();
     let bsearcher = IndexSearcher::new(&bsegments, &bnorms).unwrap();
     let mut bsliced = IndexSearcher::new(&bsegments, &bnorms).unwrap();
@@ -551,7 +551,7 @@ fn grouping_edges() {
     let reader = DirectoryReader::open(&FsDirectory::open(dir.join("index"))).unwrap();
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
     let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
     let searcher = IndexSearcher::new(&segments, &norms).unwrap();
     let all = query("all");

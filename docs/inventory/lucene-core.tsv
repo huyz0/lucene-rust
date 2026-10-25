@@ -1080,16 +1080,16 @@ util/compress/LowercaseAsciiCompression	ported	crates/lucene-codecs/src/lowercas
 util/fst/BitTableUtil	ported	crates/lucene-codecs/src/fst.rs::bit_table_count_bits
 util/fst/ByteBlockPoolReverseBytesReader	not-needed	NodeHash's reader over its copied node bytes; the Rust NodeHash keys its tables on the node's arcs (which nodes are shared does not depend on how the copy is read back), so there is no byte-pool copy to read
 util/fst/ByteSequenceOutputs	ported	crates/lucene-codecs/src/fst.rs::ByteSequenceOutputs
-util/fst/BytesRefFSTEnum	ported	crates/lucene-codecs/src/fst.rs::FstEnum
+util/fst/BytesRefFSTEnum	ported	crates/lucene-codecs/src/fst_util/fst_enum.rs::BytesRefFstEnum
 util/fst/CharSequenceOutputs	ported	crates/lucene-codecs/src/fst_compiler.rs::CharSequenceOutputs
 util/fst/FST	ported	crates/lucene-codecs/src/fst.rs::Fst
 util/fst/FSTCompiler	ported	crates/lucene-codecs/src/fst_compiler.rs::FstCompiler
-util/fst/FSTEnum	ported	crates/lucene-codecs/src/fst.rs::FstEnum
+util/fst/FSTEnum	ported	crates/lucene-codecs/src/fst_util/fst_enum.rs::FstEnum
 util/fst/FSTReader	not-needed	FST body store interface; Rust Fst holds owned or borrowed bytes
 util/fst/ForwardBytesReader	not-needed	forward byte cursor over a byte[]; Rust reads the slice directly
 util/fst/GrowableByteArrayDataOutput	not-needed	FSTCompiler scratch buffer; fst_compiler.rs keeps it as a Vec<u8> with the same lifetime (never cleared between nodes, which fixed-length arc padding depends on)
 util/fst/IntSequenceOutputs	ported	crates/lucene-codecs/src/fst_compiler.rs::IntSequenceOutputs
-util/fst/IntsRefFSTEnum	ported	crates/lucene-codecs/src/fst.rs::IntsRefFstEnum
+util/fst/IntsRefFSTEnum	ported	crates/lucene-codecs/src/fst_util/fst_enum.rs::IntsRefFstEnum
 util/fst/NoOutputs	ported	crates/lucene-codecs/src/fst_compiler.rs::NoOutputs
 util/fst/NodeHash	ported	crates/lucene-codecs/src/fst_compiler.rs::dedup_add
 util/fst/OffHeapFSTStore	ported	crates/lucene-codecs/src/fst.rs::read_borrowed

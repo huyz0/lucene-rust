@@ -1,28 +1,28 @@
 //! `FSTTester`: builds an FST from sorted input/output pairs, then checks
 //! that every pair is accepted with its output, that random walks only find
-//! added inputs, and (for byte inputs) that `BytesRefFSTEnum`'s `next`,
+//! added inputs, and that `IntsRefFSTEnum`'s `next`,
 //! `seekCeil`, `seekFloor` and `seekExact` land where a binary search over
 //! the pairs says they should.
 //!
 //! Every random draw happens in Java's order, so a seed reproduces Java's
-//! walk. Two parts are not ported:
-//!
-//! - `inputMode` 1 (UTF-32 labels) has no `IntsRefFSTEnum` over a typed FST
-//!   in `lucene-codecs`, so for it only `run` and the random accepted words
-//!   are checked; the enum's `next`/seek checks, and the draws they make,
-//!   are skipped.
-//! - Java's `List` outputs (`ListOfOutputs`, one `add` per value) are not
-//!   expanded: each pair is added once, and the compiler's `merge` handles
-//!   duplicate inputs.
+//! walk. Rust's typed output algebra has no Java `instanceof List` test:
+//! [`FstTester::do_test`] adds scalar outputs, and
+//! [`FstTester::do_test_lists`] expands `ListOfOutputs` pairs into one scalar
+//! compiler addition per value, preserving their order.
 //!
 //! Java's off-heap build (`dataOutput(indexOutput)`) writes the same bytes
 //! the on-heap build saves, so it is modelled as a save/read round trip.
+//! There is no randomized IOContext, but the on-heap save path retains its
+//! three random draws before saving.
 
 use std::collections::HashMap;
 
 use lucene_codecs::fst::InputType;
-use lucene_codecs::fst_compiler::{FstCompilerBuilder, FstOutputs, FstReadError};
-use lucene_codecs::fst_util::{self, BytesRefFstEnum, TypedFst, END_LABEL};
+use lucene_codecs::fst_compiler::{
+    CompileError, FstCompiler, FstCompilerBuilder, FstOutputs, FstReadError,
+};
+use lucene_codecs::fst_util::{self, IntsRefFstEnum, TypedFst, END_LABEL};
+use lucene_search::misc::{ListOfOutputs, ListOutput};
 use lucene_util::java_random::JavaRandom;
 
 use super::lucene_test_case::at_least;
@@ -121,9 +121,9 @@ impl<'r, O: FstOutputs> FstTester<'r, O> {
         &mut self,
         fst: &TypedFst<O>,
         input: &mut Vec<i32>,
+        arcs: &mut Vec<fst_util::Arc<O::Value>>,
     ) -> Result<O::Value, FstReadError> {
         let mut arc = fst.first_arc();
-        let mut arcs = Vec::new();
         input.clear();
         let mut output = O::no_output();
         let mut reader = fst.bytes_reader();
@@ -150,6 +150,15 @@ impl<'r, O: FstOutputs> FstTester<'r, O> {
     /// `doTest()`: builds the FST, verifies it, and returns it (`None` when
     /// no pair was added). Assertion failures panic, as JUnit's do.
     pub fn do_test(&mut self) -> Result<Option<TypedFst<O>>, FstReadError> {
+        self.do_test_with(|compiler, pair| compiler.add(&pair.input, pair.output.clone()))
+    }
+
+    /// The add policy is local to this test utility; production output
+    /// algebras need no test-specific extension or runtime type inspection.
+    fn do_test_with(
+        &mut self,
+        mut add: impl FnMut(&mut FstCompiler<O>, &InputOutput<O::Value>) -> Result<(), CompileError>,
+    ) -> Result<Option<TypedFst<O>>, FstReadError> {
         let input_type = if self.input_mode == 0 {
             InputType::Byte1
         } else {
@@ -158,7 +167,7 @@ impl<'r, O: FstOutputs> FstTester<'r, O> {
         let use_off_heap = self.random.next_boolean();
         let mut compiler = FstCompilerBuilder::new(input_type).build::<O>();
         for pair in &self.pairs {
-            if let Err(e) = compiler.add(&pair.input, pair.output.clone()) {
+            if let Err(e) = add(&mut compiler, pair) {
                 panic!("add({:?}) failed: {e}", pair.input);
             }
         }
@@ -166,7 +175,14 @@ impl<'r, O: FstOutputs> FstTester<'r, O> {
         if let Some(built) = fst.take() {
             // Off heap, Java reads the FST back from the file it was written
             // to; on heap, it round-trips through `save` half the time.
-            fst = Some(if use_off_heap || self.random.next_boolean() {
+            let save_reload = use_off_heap || self.random.next_boolean();
+            if save_reload && !use_off_heap {
+                // Java: LuceneTestCase.newIOContext(random, IOContext.DEFAULT).
+                self.random.next_int_bounded(4192);
+                self.random.next_int_bounded(512);
+                self.random.next_int_bounded(3);
+            }
+            fst = Some(if save_reload {
                 TypedFst::read(&built.save())?
             } else {
                 built
@@ -186,28 +202,23 @@ impl<'r, O: FstOutputs> FstTester<'r, O> {
             return Ok(());
         }
         let fst = fst.expect("pairs were added but no FST was built");
-        let bytes = self.input_mode == 0;
 
         // Every pair is accepted, and `next()` steps through them in order.
         {
-            let mut fst_enum = BytesRefFstEnum::new(fst);
+            let mut fst_enum = IntsRefFstEnum::new(fst);
             for pair in &self.pairs {
                 let output = Self::run(fst, &pair.input)?;
                 let output =
                     output.unwrap_or_else(|| panic!("term {:?} is not accepted", pair.input));
                 assert_eq!(pair.output, output, "output of {:?}", pair.input);
-                if bytes {
-                    let (term, out) = fst_enum.next()?.expect("fstEnum ended early");
-                    assert_eq!(pair.input, fst_util::to_ints_ref(term), "fstEnum.next()");
-                    assert_eq!(&pair.output, out, "fstEnum.next() output");
-                }
+                let (term, out) = fst_enum.next()?.expect("fstEnum ended early");
+                assert_eq!(pair.input, term, "fstEnum.next()");
+                assert_eq!(&pair.output, out, "fstEnum.next() output");
             }
-            if bytes {
-                assert!(
-                    fst_enum.next()?.is_none(),
-                    "fstEnum.next() past the last pair"
-                );
-            }
+            assert!(
+                fst_enum.next()?.is_none(),
+                "fstEnum.next() past the last pair"
+            );
         }
 
         let terms_map: HashMap<Vec<i32>, O::Value> = self
@@ -218,18 +229,18 @@ impl<'r, O: FstOutputs> FstTester<'r, O> {
 
         // Random walks find only added inputs, with their outputs.
         let mut scratch = Vec::new();
+        // Retain allocation across walks; every outgoing arc is still decoded
+        // in Java order, and no decoded arc or output survives a walk.
+        let mut arcs = Vec::new();
         let num = at_least(self.random, self.multiplier, 500);
         for _ in 0..num {
-            let output = self.random_accepted_word(fst, &mut scratch)?;
+            let output = self.random_accepted_word(fst, &mut scratch, &mut arcs)?;
             let expected = terms_map
                 .get(scratch.as_slice())
                 .unwrap_or_else(|| panic!("accepted word {scratch:?} is not valid"));
             assert_eq!(expected, &output, "output of accepted word {scratch:?}");
         }
 
-        if !bytes {
-            return Ok(());
-        }
         self.verify_seeks(fst, &terms_map)?;
         self.verify_mixed(fst, &terms_map)
     }
@@ -251,7 +262,7 @@ impl<'r, O: FstOutputs> FstTester<'r, O> {
         fst: &TypedFst<O>,
         terms_map: &HashMap<Vec<i32>, O::Value>,
     ) -> Result<(), FstReadError> {
-        let mut fst_enum = BytesRefFstEnum::new(fst);
+        let mut fst_enum = IntsRefFstEnum::new(fst);
         let num = at_least(self.random, self.multiplier, 100);
         let size = len_i32(self.pairs.len());
         for _ in 0..num {
@@ -265,21 +276,21 @@ impl<'r, O: FstOutputs> FstTester<'r, O> {
                     }
                     debug_assert!(!terms_map.contains_key(term.as_slice()));
                     pos = -(pos + 1);
-                    let target = fst_util::to_bytes_ref(&term);
+                    let target = &term;
                     let result = if self.random.next_int_bounded(3) == 0 {
                         pos = -1;
-                        fst_enum.seek_exact(&target)?
+                        fst_enum.seek_exact(target)?
                     } else if self.random.next_boolean() {
                         pos -= 1;
-                        fst_enum.seek_floor(&target)?
+                        fst_enum.seek_floor(target)?
                     } else {
-                        fst_enum.seek_ceil(&target)?
+                        fst_enum.seek_ceil(target)?
                     };
                     if pos != -1 && pos < size {
                         let want = &self.pairs[index(pos)];
                         let (got, out) = result
                             .unwrap_or_else(|| panic!("got null but expected {:?}", want.input));
-                        assert_eq!(want.input, fst_util::to_ints_ref(got), "seek to {term:?}");
+                        assert_eq!(want.input, got, "seek to {term:?}");
                         assert_eq!(&want.output, out, "seek output for {term:?}");
                     } else {
                         assert!(result.is_none(), "expected null seeking {term:?}");
@@ -290,20 +301,16 @@ impl<'r, O: FstOutputs> FstTester<'r, O> {
                 // Seek to a term that exists.
                 let pick = self.random.next_int_bounded(size);
                 let pair = &self.pairs[index(pick)];
-                let target = fst_util::to_bytes_ref(&pair.input);
+                let target = &pair.input;
                 let result = if self.random.next_int_bounded(3) == 2 {
-                    fst_enum.seek_exact(&target)?
+                    fst_enum.seek_exact(target)?
                 } else if self.random.next_boolean() {
-                    fst_enum.seek_floor(&target)?
+                    fst_enum.seek_floor(target)?
                 } else {
-                    fst_enum.seek_ceil(&target)?
+                    fst_enum.seek_ceil(target)?
                 };
                 let (got, out) = result.expect("seek to an existing term returned null");
-                assert_eq!(
-                    pair.input,
-                    fst_util::to_ints_ref(got),
-                    "seek to existing term"
-                );
+                assert_eq!(pair.input, got, "seek to existing term");
                 assert_eq!(&pair.output, out, "seek output for existing term");
             }
         }
@@ -319,7 +326,7 @@ impl<'r, O: FstOutputs> FstTester<'r, O> {
         let size = len_i32(self.pairs.len());
         let num = at_least(self.random, self.multiplier, 100);
         for _ in 0..num {
-            let mut fst_enum = BytesRefFstEnum::new(fst);
+            let mut fst_enum = IntsRefFstEnum::new(fst);
             let mut upto: i32 = -1;
             loop {
                 let is_done;
@@ -339,13 +346,13 @@ impl<'r, O: FstOutputs> FstTester<'r, O> {
                             let pos = self.search(&term);
                             debug_assert!(pos < 0);
                             upto = -(pos + 1);
-                            let target = fst_util::to_bytes_ref(&term);
+                            let target = &term;
                             found = Some(if self.random.next_boolean() {
                                 upto -= 1;
                                 assert!(upto != -1);
-                                fst_enum.seek_floor(&target)?.is_none()
+                                fst_enum.seek_floor(target)?.is_none()
                             } else {
-                                fst_enum.seek_ceil(&target)?.is_none()
+                                fst_enum.seek_ceil(target)?.is_none()
                             });
                             break;
                         }
@@ -360,11 +367,11 @@ impl<'r, O: FstOutputs> FstTester<'r, O> {
                     if upto == -1 {
                         upto = 0;
                     }
-                    let target = fst_util::to_bytes_ref(&self.pairs[index(upto)].input);
+                    let target = &self.pairs[index(upto)].input;
                     is_done = if self.random.next_boolean() {
-                        fst_enum.seek_ceil(&target)?.is_none()
+                        fst_enum.seek_ceil(target)?.is_none()
                     } else {
-                        fst_enum.seek_floor(&target)?.is_none()
+                        fst_enum.seek_floor(target)?.is_none()
                     };
                 }
                 if upto == size {
@@ -373,16 +380,37 @@ impl<'r, O: FstOutputs> FstTester<'r, O> {
                 }
                 assert!(!is_done, "enum exhausted at pair {upto}");
                 let want = &self.pairs[index(upto)];
+                // SENTINEL-OK: IntsRefFstEnum::current returns Option, checked
+                // by expect; current() in the diagnostics is not an i32 call.
                 let (got, out) = fst_enum.current().expect("current() after a hit");
-                assert_eq!(
-                    want.input,
-                    fst_util::to_ints_ref(got),
-                    "current() at pair {upto}"
-                );
+                assert_eq!(want.input, got, "current() at pair {upto}");
                 assert_eq!(&want.output, out, "current() output at pair {upto}");
             }
         }
         Ok(())
+    }
+}
+
+impl<O: FstOutputs> FstTester<'_, ListOfOutputs<O>> {
+    /// Java: `FSTTester.doTest`'s `pair.output instanceof List` branch.
+    /// Add each list value as a scalar to the same input, letting the
+    /// compiler merge final outputs. Scalar pairs still add once. Empty and
+    /// one-element lists fail verification, as they do in Java: callers use
+    /// a scalar for one output and a list for two or more.
+    pub fn do_test_lists(&mut self) -> Result<Option<TypedFst<ListOfOutputs<O>>>, FstReadError> {
+        self.do_test_with(|compiler, pair| {
+            match &pair.output {
+                ListOutput::One(value) => {
+                    compiler.add(&pair.input, ListOutput::One(value.clone()))?;
+                }
+                ListOutput::Many(values) => {
+                    for value in values {
+                        compiler.add(&pair.input, ListOutput::One(value.clone()))?;
+                    }
+                }
+            }
+            Ok(())
+        })
     }
 }
 
@@ -450,6 +478,16 @@ mod tests {
     }
 
     #[test]
+    fn code_point_inputs_with_outputs_verify_all_enum_operations() {
+        for seed in 0..6 {
+            let mut random = JavaRandom::new(seed + 81);
+            let pairs = sorted_pairs(&mut random, 1, 60, |_, i| i as i64 * 17);
+            let mut tester = FstTester::<PositiveIntOutputs>::new(&mut random, 1, 1, pairs);
+            assert!(tester.do_test().unwrap().is_some());
+        }
+    }
+
+    #[test]
     fn byte_sequence_outputs_verify() {
         let mut r = JavaRandom::new(42);
         let pairs = sorted_pairs(&mut r, 0, 50, |r, i| {
@@ -477,6 +515,54 @@ mod tests {
         }];
         let mut t = FstTester::<PositiveIntOutputs>::new(&mut r, 1, 0, pairs);
         assert!(t.do_test().unwrap().is_some());
+    }
+
+    #[test]
+    fn list_pairs_expand_scalars_before_shared_prefix_compilation() {
+        for mode in [0, 1] {
+            let expected = [
+                ("", ListOutput::Many(vec![0, 9, 0])),
+                ("a", ListOutput::Many(vec![5, 1])),
+                ("ab", ListOutput::One(0)),
+                ("abc", ListOutput::Many(vec![1, 0, 1, 1 << 40])),
+                ("\u{10000}", ListOutput::Many(vec![0, 7, 0])),
+            ];
+            let pairs = expected
+                .iter()
+                .map(|(term, output)| InputOutput {
+                    input: to_ints_ref(term, mode),
+                    output: output.clone(),
+                })
+                .collect();
+            let mut random = JavaRandom::new(42);
+            let mut tester =
+                FstTester::<ListOfOutputs<PositiveIntOutputs>>::new(&mut random, 1, mode, pairs);
+            let fst = tester.do_test_lists().unwrap().unwrap();
+            let mut enumeration = IntsRefFstEnum::new(&fst);
+            for (term, output) in expected {
+                let (actual_term, actual_output) = enumeration.next().unwrap().unwrap();
+                assert_eq!(actual_term, to_ints_ref(term, mode));
+                assert_eq!(actual_output, &output);
+            }
+            assert!(enumeration.next().unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn invalid_empty_and_singleton_lists_fail_instead_of_becoming_scalar_pairs() {
+        for values in [Vec::new(), vec![7]] {
+            let mut random = JavaRandom::new(1);
+            let pairs = vec![InputOutput {
+                input: to_ints_ref("a", 0),
+                output: ListOutput::Many(values),
+            }];
+            let mut tester =
+                FstTester::<ListOfOutputs<PositiveIntOutputs>>::new(&mut random, 1, 0, pairs);
+            assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                tester.do_test_lists().unwrap();
+            }))
+            .is_err());
+        }
     }
 
     #[test]

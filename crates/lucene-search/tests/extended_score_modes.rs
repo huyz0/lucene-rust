@@ -375,7 +375,7 @@ fn extended_queries_agree_across_score_modes() {
     let reader = DirectoryReader::open(&FsDirectory::open(dir)).unwrap();
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
     let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
     let searcher = IndexSearcher::new(&segments, &norms).unwrap();
     let mut matched_any = 0;
@@ -478,7 +478,7 @@ fn extended_queries_skip_by_impacts_and_still_agree() {
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
     assert_eq!(segments.len(), 2);
-    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
     let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
     let searcher = IndexSearcher::new(&segments, &norms).unwrap();
     let extra: Vec<(&str, Clause)> = vec![

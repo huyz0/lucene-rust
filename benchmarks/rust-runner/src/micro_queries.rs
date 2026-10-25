@@ -109,7 +109,9 @@ pub fn bench_queries(w: Duration, m: Duration, dir: &str) {
     for seg in &mut segments {
         seg.cache = None;
     }
-    let owned = reader.field_norms_by_field(&["body".to_string(), "pay".to_string()]);
+    let owned = reader
+        .field_norms_by_field(&["body".to_string(), "pay".to_string()])
+        .unwrap();
     let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
     let s = IndexSearcher::new(&segments, &norms).unwrap();
 

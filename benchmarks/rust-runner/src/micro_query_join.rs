@@ -89,7 +89,7 @@ pub fn bench_query_join(w: Duration, m: Duration, dir: &str) {
     let mut opened = reader.open_segments().unwrap();
     opened.open_points().unwrap();
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
     let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
     let s = IndexSearcher::new(&segments, &norms).unwrap();
 

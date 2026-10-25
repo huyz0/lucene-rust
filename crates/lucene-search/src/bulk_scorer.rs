@@ -40,13 +40,16 @@
 //! `TopScoreDocCollector` publishes `Math.nextUp(bottom)`, so
 //! [`min_competitive_score`] is `next_up` of what the collector reports.
 
-use lucene_codecs::postings::{Impact, LazyDocsCursor, Level0Impacts, NO_MORE_DOCS};
+use lucene_codecs::postings::{Impact, Level0Impacts, NO_MORE_DOCS};
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 use crate::collector::ScoringCollector;
 use crate::field_norms::FieldNormsCursor;
 use crate::similarity;
-use crate::{blocktree, Result};
+use crate::Result;
+
+mod postings;
+pub(crate) use postings::{PhrasePostings, TermPostings};
 
 /// `MaxScoreBulkScorer.INNER_WINDOW_SIZE`.
 const INNER_WINDOW_SIZE: i32 = 1 << 12;
@@ -331,7 +334,7 @@ impl BulkLeg for TermLeg<'_> {
 /// One term clause: a lazy postings cursor, its BM25 weight and norms, and the
 /// `ImpactsDISI` / `MaxScoreCache` state that lets it skip blocks.
 pub(crate) struct TermLeg<'a> {
-    cursor: LazyDocsCursor<'a>,
+    cursor: TermPostings<'a>,
     /// `boost * idf`; `0` for a non-scoring (`FILTER`) clause.
     weight: f32,
     /// `false` for a `FILTER` clause or a `ConstantScoreQuery` around a term:
@@ -357,13 +360,12 @@ pub(crate) struct TermLeg<'a> {
     /// partitions are computed from it, and so, past the hit threshold, are
     /// the documents the collector counts.
     max_score_global: f32,
-    /// `MaxScoreCache`: the level-0 and level-1 bounds, keyed by the level's
+    /// `MaxScoreCache`: up to four levels' bounds, keyed by the level's
     /// last doc id (unique per block/span, so a key match means the impacts
     /// are the same ones).
     l0_key: i32,
     l0_max: f32,
-    l1_key: i32,
-    l1_max: f32,
+    higher_max: [(i32, f32); 3],
     /// `ImpactsDISI.minCompetitiveScore` / `upTo`.
     min_competitive: f32,
     up_to: i32,
@@ -450,12 +452,13 @@ impl<'a> TermLeg<'a> {
     /// which is what makes the global bound tight enough to stop a keyword
     /// field's scan as soon as the top-k fills.
     pub(crate) fn scoring(
-        cursor: LazyDocsCursor<'a>,
+        cursor: impl Into<TermPostings<'a>>,
         weight: f32,
         norms: Option<FieldNormsCursor<'a, 'a>>,
         cost: i64,
         max_freq: f32,
     ) -> Self {
+        let cursor = cursor.into();
         let max_norm_inverse = match &norms {
             Some(n) => n.max_norm_inverse(),
             None => similarity::UNNORMED_NORM_INVERSE,
@@ -469,10 +472,10 @@ impl<'a> TermLeg<'a> {
             None => similarity::UNNORMED_NORM_INVERSE,
         };
         let max_score_global = similarity::do_score(weight, f32::MAX, norm_one);
-        let has_freqs = cursor.has_freqs();
+        let docs_only_impacts = cursor.binary_docs_only_impacts();
         let mut leg = Self::new(cursor, weight, true, norms, cost, global_max);
         leg.max_score_global = max_score_global;
-        if !has_freqs {
+        if docs_only_impacts {
             // `Lucene104PostingsReader`'s impacts for a field without
             // frequencies: one level up to `NO_MORE_DOCS` holding the impact
             // `(freq 1, norm 1)` -- every document's frequency is 1, and the
@@ -493,12 +496,17 @@ impl<'a> TermLeg<'a> {
     /// impacts per block. A field without frequencies has one impact,
     /// `(1, 1)`, for everything (see [`Self::scoring`]).
     pub(crate) fn scoring_sim(
-        cursor: LazyDocsCursor<'a>,
+        cursor: impl Into<TermPostings<'a>>,
         scorer: std::sync::Arc<dyn crate::similarities::SimScorer>,
         norms: Option<FieldNormsCursor<'a, 'a>>,
         cost: i64,
     ) -> Self {
-        let max_freq = if cursor.has_freqs() { f32::MAX } else { 1.0 };
+        let cursor = cursor.into();
+        let max_freq = if cursor.binary_docs_only_impacts() {
+            1.0
+        } else {
+            f32::MAX
+        };
         let global_max = sim_global_max(scorer.as_ref(), max_freq);
         let mut leg = Self::new(cursor, 0.0, false, None, cost, global_max);
         leg.sim = Some(Box::new(SimLeg {
@@ -511,22 +519,22 @@ impl<'a> TermLeg<'a> {
     }
 
     /// A `FILTER` clause: matches gate the conjunction and contribute `0`.
-    pub(crate) fn filter(cursor: LazyDocsCursor<'a>, cost: i64) -> Self {
-        Self::new(cursor, 0.0, false, None, cost, 0.0)
+    pub(crate) fn filter(cursor: impl Into<TermPostings<'a>>, cost: i64) -> Self {
+        Self::new(cursor.into(), 0.0, false, None, cost, 0.0)
     }
 
     /// `ConstantScoreScorer` over a term's documents: every one scores
     /// `score`, and once the threshold passes `score` nothing is left to
     /// visit (the global bound is `score`, so `advance_target` ends it).
-    pub(crate) fn constant(cursor: LazyDocsCursor<'a>, cost: i64, score: f32) -> Self {
-        let mut leg = Self::new(cursor, 0.0, false, None, cost, score);
+    pub(crate) fn constant(cursor: impl Into<TermPostings<'a>>, cost: i64, score: f32) -> Self {
+        let mut leg = Self::new(cursor.into(), 0.0, false, None, cost, score);
         leg.constant = score;
         leg.constant_scorer = true;
         leg
     }
 
     fn new(
-        cursor: LazyDocsCursor<'a>,
+        cursor: TermPostings<'a>,
         weight: f32,
         scoring: bool,
         norms: Option<FieldNormsCursor<'a, 'a>>,
@@ -544,8 +552,7 @@ impl<'a> TermLeg<'a> {
             max_score_global: global_max,
             l0_key: i32::MIN,
             l0_max: 0.0,
-            l1_key: i32::MIN,
-            l1_max: 0.0,
+            higher_max: [(i32::MIN, 0.0); 3],
             min_competitive: 0.0,
             up_to: NO_MORE_DOCS,
             doc: -1,
@@ -564,15 +571,12 @@ impl<'a> TermLeg<'a> {
 
     #[inline]
     pub(crate) fn advance(&mut self, target: i32) -> Result<i32> {
-        Ok(self
-            .cursor
-            .advance(target)
-            .map_err(blocktree::Error::Postings)?)
+        self.cursor.advance(target)
     }
 
     #[inline]
     pub(crate) fn next_doc(&mut self) -> Result<i32> {
-        Ok(self.cursor.next_doc().map_err(blocktree::Error::Postings)?)
+        self.cursor.next_doc()
     }
 
     /// `Scorer.advanceShallow`. A leg without impacts -- a filter, whose
@@ -584,10 +588,7 @@ impl<'a> TermLeg<'a> {
         if self.is_constant() {
             return Ok(NO_MORE_DOCS);
         }
-        Ok(self
-            .cursor
-            .advance_shallow(target)
-            .map_err(blocktree::Error::Postings)?)
+        self.cursor.advance_shallow(target)
     }
 
     /// The largest score a block's impacts allow -- the same float expression
@@ -636,7 +637,15 @@ impl<'a> TermLeg<'a> {
         };
         let max = folded.unwrap_or_else(|| {
             let impacts = self.cursor.level0_impacts();
-            (!impacts.is_empty()).then(|| bound(table, self.weight, impacts))
+            (!impacts.is_empty()
+                && !matches!(
+                    impacts,
+                    [Impact {
+                        freq: i32::MAX,
+                        norm: 1
+                    }]
+                ))
+            .then(|| bound(table, self.weight, impacts))
         });
         // No impacts (the tail block): Lucene's dummy `(Integer.MAX_VALUE,
         // 1)`, which bounds the block at `MaxScoreCache.globalMaxScore`.
@@ -644,7 +653,7 @@ impl<'a> TermLeg<'a> {
         self.l0_key = key;
     }
 
-    /// [`Self::level0_max`]/[`Self::level1_max`] for a leg that is not the
+    /// [`Self::level0_max`]/[`Self::higher_level_max`] for a leg that is not the
     /// BM25 fast form: a constant's score, or `MaxScoreCache` over a general
     /// similarity's impacts (an empty level bounded by the global maximum).
     #[inline(never)]
@@ -655,7 +664,10 @@ impl<'a> TermLeg<'a> {
         let (key, cached) = if level == 0 {
             (self.cursor.level0_last_doc_id(), (self.l0_key, self.l0_max))
         } else {
-            (self.cursor.level1_last_doc_id(), (self.l1_key, self.l1_max))
+            (
+                self.cursor.doc_id_up_to(level),
+                self.higher_max[level.saturating_sub(1)],
+            )
         };
         if key == cached.0 {
             return cached.1;
@@ -663,7 +675,7 @@ impl<'a> TermLeg<'a> {
         let impacts = if level == 0 {
             self.cursor.level0_impacts()
         } else {
-            self.cursor.level1_impacts()
+            self.cursor.impacts(level)
         };
         let max = if impacts.is_empty() {
             self.global_max
@@ -673,29 +685,37 @@ impl<'a> TermLeg<'a> {
         if level == 0 {
             (self.l0_key, self.l0_max) = (key, max);
         } else {
-            (self.l1_key, self.l1_max) = (key, max);
+            self.higher_max[level.saturating_sub(1)] = (key, max);
         }
         max
     }
 
-    /// Whether a level-1 span with impacts is available -- Lucene's
-    /// `Impacts.numLevels() == 2`.
-    fn has_level1(&self) -> bool {
-        self.cursor.level1_last_doc_id() != NO_MORE_DOCS && !self.cursor.level1_impacts().is_empty()
-    }
-
-    fn level1_max(&mut self) -> f32 {
+    fn higher_level_max(&mut self, level: usize) -> f32 {
         if !self.scoring {
-            return self.other_level_max(1);
+            return self.other_level_max(level);
         }
-        let key = self.cursor.level1_last_doc_id();
-        if key != self.l1_key {
-            self.l1_max = self
-                .impacts_bound(self.cursor.level1_impacts())
-                .min(self.global_max);
-            self.l1_key = key;
+        let key = self.cursor.doc_id_up_to(level);
+        if key != self.higher_max[level.saturating_sub(1)].0 {
+            let table = self
+                .norms
+                .as_ref()
+                .map(FieldNormsCursor::norm_inverse_table);
+            let impacts = self.cursor.impacts(level);
+            let max = if impacts.is_empty()
+                || matches!(
+                    impacts,
+                    [Impact {
+                        freq: i32::MAX,
+                        norm: 1
+                    }]
+                ) {
+                self.max_score_global
+            } else {
+                bound(table, self.weight, impacts).min(self.global_max)
+            };
+            self.higher_max[level.saturating_sub(1)] = (key, max);
         }
-        self.l1_max
+        self.higher_max[level.saturating_sub(1)].1
     }
 
     /// `Scorer.getMaxScore(upTo)` / `MaxScoreCache.getMaxScore`: a bound on
@@ -708,8 +728,10 @@ impl<'a> TermLeg<'a> {
         if up_to <= self.cursor.level0_last_doc_id() {
             return self.level0_max();
         }
-        if self.has_level1() && up_to <= self.cursor.level1_last_doc_id() {
-            return self.level1_max();
+        for level in 1..self.cursor.num_levels() {
+            if up_to <= self.cursor.doc_id_up_to(level) {
+                return self.higher_level_max(level);
+            }
         }
         self.max_score_global
     }
@@ -723,13 +745,14 @@ impl<'a> TermLeg<'a> {
         if self.level0_max() >= min_score {
             return -1;
         }
-        if self.has_level1() {
-            if self.level1_max() >= min_score {
-                return self.cursor.level0_last_doc_id();
+        let mut skip = self.cursor.level0_last_doc_id();
+        for level in 1..self.cursor.num_levels() {
+            if self.higher_level_max(level) >= min_score {
+                return skip;
             }
-            return self.cursor.level1_last_doc_id();
+            skip = self.cursor.doc_id_up_to(level);
         }
-        self.cursor.level0_last_doc_id()
+        skip
     }
 
     /// `ImpactsDISI.setMinCompetitiveScore`.
@@ -962,8 +985,7 @@ impl<'a> TermLeg<'a> {
         loop {
             self.ensure_competitive()?;
             self.cursor
-                .next_postings_at_most(up_to, max, &mut out.docs, &mut self.freqs)
-                .map_err(blocktree::Error::Postings)?;
+                .next_postings_at_most(up_to, max, &mut out.docs, &mut self.freqs)?;
             if out.docs.is_empty() {
                 break;
             }

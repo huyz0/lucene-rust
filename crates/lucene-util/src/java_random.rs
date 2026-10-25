@@ -43,6 +43,9 @@ impl JavaRandom {
     }
 
     /// `nextInt(bound)`. Panics on a non-positive bound, as Java throws.
+    // CrankyTermVectors addProx remained 0.78x Java after payload allocation
+    // removal. Expose this boundary so constant bounds avoid variable division.
+    #[inline]
     pub fn next_int_bounded(&mut self, bound: i32) -> i32 {
         assert!(bound > 0, "bound must be positive");
         let mut r = self.next(31);

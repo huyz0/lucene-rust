@@ -36,7 +36,7 @@ pub fn bench_classification(w: Duration, m: Duration) {
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
     let fields = ["text".to_string(), "cat".to_string(), "bool".to_string()];
-    let owned = reader.field_norms_by_field(&fields);
+    let owned = reader.field_norms_by_field(&fields).unwrap();
     let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
     let index = TrainingIndex::new(&reader, &segments, &norms);
     let a = Arc::new(Analyzer::new(WhitespaceAnalyzer::default()));

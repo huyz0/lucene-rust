@@ -1,0 +1,168 @@
+delegate-identity	fast	docValuesFormat	true
+delegate-identity	fast	fieldInfosFormat	true
+delegate-identity	fast	liveDocsFormat	true
+delegate-identity	fast	normsFormat	true
+delegate-identity	fast	postingsFormat	true
+delegate-identity	fast	segmentInfoFormat	true
+delegate-identity	fast	compoundFormat	true
+delegate-identity	fast	pointsFormat	false
+delegate-identity	fast	knnVectorsFormat	true
+forward	fast	docValuesFormat	true	true	docValuesFormat,docValuesFormat
+forward-error	fast	docValuesFormat	IllegalStateException	delegate failure:docValuesFormat	true	docValuesFormat
+forward	fast	fieldInfosFormat	true	true	fieldInfosFormat,fieldInfosFormat
+forward-error	fast	fieldInfosFormat	IllegalStateException	delegate failure:fieldInfosFormat	true	fieldInfosFormat
+forward	fast	liveDocsFormat	true	true	liveDocsFormat,liveDocsFormat
+forward-error	fast	liveDocsFormat	IllegalStateException	delegate failure:liveDocsFormat	true	liveDocsFormat
+forward	fast	normsFormat	true	true	normsFormat,normsFormat
+forward-error	fast	normsFormat	IllegalStateException	delegate failure:normsFormat	true	normsFormat
+forward	fast	postingsFormat	true	true	postingsFormat,postingsFormat
+forward-error	fast	postingsFormat	IllegalStateException	delegate failure:postingsFormat	true	postingsFormat
+forward	fast	segmentInfoFormat	true	true	segmentInfoFormat,segmentInfoFormat
+forward-error	fast	segmentInfoFormat	IllegalStateException	delegate failure:segmentInfoFormat	true	segmentInfoFormat
+forward	fast	compoundFormat	true	true	compoundFormat,compoundFormat
+forward-error	fast	compoundFormat	IllegalStateException	delegate failure:compoundFormat	true	compoundFormat
+forward	fast	pointsFormat	true	false	pointsFormat,pointsFormat
+forward-error	fast	pointsFormat	IllegalStateException	delegate failure:pointsFormat	true	pointsFormat
+forward	fast	knnVectorsFormat	true	true	knnVectorsFormat,knnVectorsFormat
+forward-error	fast	knnVectorsFormat	IllegalStateException	delegate failure:knnVectorsFormat	true	knnVectorsFormat
+override-events	fast	
+delegate-identity	fast_decompression	docValuesFormat	true
+delegate-identity	fast_decompression	fieldInfosFormat	true
+delegate-identity	fast_decompression	liveDocsFormat	true
+delegate-identity	fast_decompression	normsFormat	true
+delegate-identity	fast_decompression	postingsFormat	true
+delegate-identity	fast_decompression	segmentInfoFormat	true
+delegate-identity	fast_decompression	compoundFormat	true
+delegate-identity	fast_decompression	pointsFormat	false
+delegate-identity	fast_decompression	knnVectorsFormat	true
+forward	fast_decompression	docValuesFormat	true	true	docValuesFormat,docValuesFormat
+forward-error	fast_decompression	docValuesFormat	IllegalStateException	delegate failure:docValuesFormat	true	docValuesFormat
+forward	fast_decompression	fieldInfosFormat	true	true	fieldInfosFormat,fieldInfosFormat
+forward-error	fast_decompression	fieldInfosFormat	IllegalStateException	delegate failure:fieldInfosFormat	true	fieldInfosFormat
+forward	fast_decompression	liveDocsFormat	true	true	liveDocsFormat,liveDocsFormat
+forward-error	fast_decompression	liveDocsFormat	IllegalStateException	delegate failure:liveDocsFormat	true	liveDocsFormat
+forward	fast_decompression	normsFormat	true	true	normsFormat,normsFormat
+forward-error	fast_decompression	normsFormat	IllegalStateException	delegate failure:normsFormat	true	normsFormat
+forward	fast_decompression	postingsFormat	true	true	postingsFormat,postingsFormat
+forward-error	fast_decompression	postingsFormat	IllegalStateException	delegate failure:postingsFormat	true	postingsFormat
+forward	fast_decompression	segmentInfoFormat	true	true	segmentInfoFormat,segmentInfoFormat
+forward-error	fast_decompression	segmentInfoFormat	IllegalStateException	delegate failure:segmentInfoFormat	true	segmentInfoFormat
+forward	fast_decompression	compoundFormat	true	true	compoundFormat,compoundFormat
+forward-error	fast_decompression	compoundFormat	IllegalStateException	delegate failure:compoundFormat	true	compoundFormat
+forward	fast_decompression	pointsFormat	true	false	pointsFormat,pointsFormat
+forward-error	fast_decompression	pointsFormat	IllegalStateException	delegate failure:pointsFormat	true	pointsFormat
+forward	fast_decompression	knnVectorsFormat	true	true	knnVectorsFormat,knnVectorsFormat
+forward-error	fast_decompression	knnVectorsFormat	IllegalStateException	delegate failure:knnVectorsFormat	true	knnVectorsFormat
+override-events	fast_decompression	
+delegate-identity	high_compression	docValuesFormat	true
+delegate-identity	high_compression	fieldInfosFormat	true
+delegate-identity	high_compression	liveDocsFormat	true
+delegate-identity	high_compression	normsFormat	true
+delegate-identity	high_compression	postingsFormat	true
+delegate-identity	high_compression	segmentInfoFormat	true
+delegate-identity	high_compression	compoundFormat	true
+delegate-identity	high_compression	pointsFormat	false
+delegate-identity	high_compression	knnVectorsFormat	true
+forward	high_compression	docValuesFormat	true	true	docValuesFormat,docValuesFormat
+forward-error	high_compression	docValuesFormat	IllegalStateException	delegate failure:docValuesFormat	true	docValuesFormat
+forward	high_compression	fieldInfosFormat	true	true	fieldInfosFormat,fieldInfosFormat
+forward-error	high_compression	fieldInfosFormat	IllegalStateException	delegate failure:fieldInfosFormat	true	fieldInfosFormat
+forward	high_compression	liveDocsFormat	true	true	liveDocsFormat,liveDocsFormat
+forward-error	high_compression	liveDocsFormat	IllegalStateException	delegate failure:liveDocsFormat	true	liveDocsFormat
+forward	high_compression	normsFormat	true	true	normsFormat,normsFormat
+forward-error	high_compression	normsFormat	IllegalStateException	delegate failure:normsFormat	true	normsFormat
+forward	high_compression	postingsFormat	true	true	postingsFormat,postingsFormat
+forward-error	high_compression	postingsFormat	IllegalStateException	delegate failure:postingsFormat	true	postingsFormat
+forward	high_compression	segmentInfoFormat	true	true	segmentInfoFormat,segmentInfoFormat
+forward-error	high_compression	segmentInfoFormat	IllegalStateException	delegate failure:segmentInfoFormat	true	segmentInfoFormat
+forward	high_compression	compoundFormat	true	true	compoundFormat,compoundFormat
+forward-error	high_compression	compoundFormat	IllegalStateException	delegate failure:compoundFormat	true	compoundFormat
+forward	high_compression	pointsFormat	true	false	pointsFormat,pointsFormat
+forward-error	high_compression	pointsFormat	IllegalStateException	delegate failure:pointsFormat	true	pointsFormat
+forward	high_compression	knnVectorsFormat	true	true	knnVectorsFormat,knnVectorsFormat
+forward-error	high_compression	knnVectorsFormat	IllegalStateException	delegate failure:knnVectorsFormat	true	knnVectorsFormat
+override-events	high_compression	
+delegate-identity	dummy	docValuesFormat	true
+delegate-identity	dummy	fieldInfosFormat	true
+delegate-identity	dummy	liveDocsFormat	true
+delegate-identity	dummy	normsFormat	true
+delegate-identity	dummy	postingsFormat	true
+delegate-identity	dummy	segmentInfoFormat	true
+delegate-identity	dummy	compoundFormat	true
+delegate-identity	dummy	pointsFormat	false
+delegate-identity	dummy	knnVectorsFormat	true
+forward	dummy	docValuesFormat	true	true	docValuesFormat,docValuesFormat
+forward-error	dummy	docValuesFormat	IllegalStateException	delegate failure:docValuesFormat	true	docValuesFormat
+forward	dummy	fieldInfosFormat	true	true	fieldInfosFormat,fieldInfosFormat
+forward-error	dummy	fieldInfosFormat	IllegalStateException	delegate failure:fieldInfosFormat	true	fieldInfosFormat
+forward	dummy	liveDocsFormat	true	true	liveDocsFormat,liveDocsFormat
+forward-error	dummy	liveDocsFormat	IllegalStateException	delegate failure:liveDocsFormat	true	liveDocsFormat
+forward	dummy	normsFormat	true	true	normsFormat,normsFormat
+forward-error	dummy	normsFormat	IllegalStateException	delegate failure:normsFormat	true	normsFormat
+forward	dummy	postingsFormat	true	true	postingsFormat,postingsFormat
+forward-error	dummy	postingsFormat	IllegalStateException	delegate failure:postingsFormat	true	postingsFormat
+forward	dummy	segmentInfoFormat	true	true	segmentInfoFormat,segmentInfoFormat
+forward-error	dummy	segmentInfoFormat	IllegalStateException	delegate failure:segmentInfoFormat	true	segmentInfoFormat
+forward	dummy	compoundFormat	true	true	compoundFormat,compoundFormat
+forward-error	dummy	compoundFormat	IllegalStateException	delegate failure:compoundFormat	true	compoundFormat
+forward	dummy	pointsFormat	true	false	pointsFormat,pointsFormat
+forward-error	dummy	pointsFormat	IllegalStateException	delegate failure:pointsFormat	true	pointsFormat
+forward	dummy	knnVectorsFormat	true	true	knnVectorsFormat,knnVectorsFormat
+forward-error	dummy	knnVectorsFormat	IllegalStateException	delegate failure:knnVectorsFormat	true	knnVectorsFormat
+override-events	dummy	
+delegate-identity	deflate_preset	docValuesFormat	true
+delegate-identity	deflate_preset	fieldInfosFormat	true
+delegate-identity	deflate_preset	liveDocsFormat	true
+delegate-identity	deflate_preset	normsFormat	true
+delegate-identity	deflate_preset	postingsFormat	true
+delegate-identity	deflate_preset	segmentInfoFormat	true
+delegate-identity	deflate_preset	compoundFormat	true
+delegate-identity	deflate_preset	pointsFormat	false
+delegate-identity	deflate_preset	knnVectorsFormat	true
+forward	deflate_preset	docValuesFormat	true	true	docValuesFormat,docValuesFormat
+forward-error	deflate_preset	docValuesFormat	IllegalStateException	delegate failure:docValuesFormat	true	docValuesFormat
+forward	deflate_preset	fieldInfosFormat	true	true	fieldInfosFormat,fieldInfosFormat
+forward-error	deflate_preset	fieldInfosFormat	IllegalStateException	delegate failure:fieldInfosFormat	true	fieldInfosFormat
+forward	deflate_preset	liveDocsFormat	true	true	liveDocsFormat,liveDocsFormat
+forward-error	deflate_preset	liveDocsFormat	IllegalStateException	delegate failure:liveDocsFormat	true	liveDocsFormat
+forward	deflate_preset	normsFormat	true	true	normsFormat,normsFormat
+forward-error	deflate_preset	normsFormat	IllegalStateException	delegate failure:normsFormat	true	normsFormat
+forward	deflate_preset	postingsFormat	true	true	postingsFormat,postingsFormat
+forward-error	deflate_preset	postingsFormat	IllegalStateException	delegate failure:postingsFormat	true	postingsFormat
+forward	deflate_preset	segmentInfoFormat	true	true	segmentInfoFormat,segmentInfoFormat
+forward-error	deflate_preset	segmentInfoFormat	IllegalStateException	delegate failure:segmentInfoFormat	true	segmentInfoFormat
+forward	deflate_preset	compoundFormat	true	true	compoundFormat,compoundFormat
+forward-error	deflate_preset	compoundFormat	IllegalStateException	delegate failure:compoundFormat	true	compoundFormat
+forward	deflate_preset	pointsFormat	true	false	pointsFormat,pointsFormat
+forward-error	deflate_preset	pointsFormat	IllegalStateException	delegate failure:pointsFormat	true	pointsFormat
+forward	deflate_preset	knnVectorsFormat	true	true	knnVectorsFormat,knnVectorsFormat
+forward-error	deflate_preset	knnVectorsFormat	IllegalStateException	delegate failure:knnVectorsFormat	true	knnVectorsFormat
+override-events	deflate_preset	
+delegate-identity	lz4_preset	docValuesFormat	true
+delegate-identity	lz4_preset	fieldInfosFormat	true
+delegate-identity	lz4_preset	liveDocsFormat	true
+delegate-identity	lz4_preset	normsFormat	true
+delegate-identity	lz4_preset	postingsFormat	true
+delegate-identity	lz4_preset	segmentInfoFormat	true
+delegate-identity	lz4_preset	compoundFormat	true
+delegate-identity	lz4_preset	pointsFormat	false
+delegate-identity	lz4_preset	knnVectorsFormat	true
+forward	lz4_preset	docValuesFormat	true	true	docValuesFormat,docValuesFormat
+forward-error	lz4_preset	docValuesFormat	IllegalStateException	delegate failure:docValuesFormat	true	docValuesFormat
+forward	lz4_preset	fieldInfosFormat	true	true	fieldInfosFormat,fieldInfosFormat
+forward-error	lz4_preset	fieldInfosFormat	IllegalStateException	delegate failure:fieldInfosFormat	true	fieldInfosFormat
+forward	lz4_preset	liveDocsFormat	true	true	liveDocsFormat,liveDocsFormat
+forward-error	lz4_preset	liveDocsFormat	IllegalStateException	delegate failure:liveDocsFormat	true	liveDocsFormat
+forward	lz4_preset	normsFormat	true	true	normsFormat,normsFormat
+forward-error	lz4_preset	normsFormat	IllegalStateException	delegate failure:normsFormat	true	normsFormat
+forward	lz4_preset	postingsFormat	true	true	postingsFormat,postingsFormat
+forward-error	lz4_preset	postingsFormat	IllegalStateException	delegate failure:postingsFormat	true	postingsFormat
+forward	lz4_preset	segmentInfoFormat	true	true	segmentInfoFormat,segmentInfoFormat
+forward-error	lz4_preset	segmentInfoFormat	IllegalStateException	delegate failure:segmentInfoFormat	true	segmentInfoFormat
+forward	lz4_preset	compoundFormat	true	true	compoundFormat,compoundFormat
+forward-error	lz4_preset	compoundFormat	IllegalStateException	delegate failure:compoundFormat	true	compoundFormat
+forward	lz4_preset	pointsFormat	true	false	pointsFormat,pointsFormat
+forward-error	lz4_preset	pointsFormat	IllegalStateException	delegate failure:pointsFormat	true	pointsFormat
+forward	lz4_preset	knnVectorsFormat	true	true	knnVectorsFormat,knnVectorsFormat
+forward-error	lz4_preset	knnVectorsFormat	IllegalStateException	delegate failure:knnVectorsFormat	true	knnVectorsFormat
+override-events	lz4_preset	

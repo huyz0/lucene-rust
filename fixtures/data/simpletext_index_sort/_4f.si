@@ -1,0 +1,21 @@
+    version 10.5.0
+    min version null
+    number of documents 7
+    uses compound file false
+    has blocks true
+    diagnostics 1
+      key source
+      value fixture
+    attributes 1
+      key note
+      value line\
+break\\
+    files 2
+      file _4f.si
+      file _4f.other
+    id [9f 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0]
+    sort 1
+      name SortedNumericSortField
+      type <sortednumeric: "multi">! missingValue=Infinity selector=MAX type=DOUBLE
+      bytes [5 6d 75 6c 74 69 6 44 4f 55 42 4c 45 1 0 0 0 1 0 0 0 1 0 0 0 0 0 0 0 0 0 f0 7f]
+checksum 00000000002324285059

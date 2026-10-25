@@ -3704,7 +3704,7 @@ mod tests {
             }
         }
 
-        let owned = reader.field_norms_by_field(&["body".to_string()]);
+        let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
         let norms: Vec<Option<&HashMap<String, crate::field_norms::FieldNorms<'_>>>> =
             owned.iter().map(Some).collect();
         let behind = |q: &BooleanQuery, min: f32| {

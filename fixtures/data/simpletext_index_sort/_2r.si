@@ -1,0 +1,21 @@
+    version 10.5.0
+    min version null
+    number of documents 7
+    uses compound file false
+    has blocks true
+    diagnostics 1
+      key source
+      value fixture
+    attributes 1
+      key note
+      value line\
+break\\
+    files 2
+      file _2r.si
+      file _2r.other
+    id [63 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0]
+    sort 1
+      name SortedNumericSortField
+      type <sortednumeric: "multi">! missingValue=17 selector=MAX type=INT
+      bytes [5 6d 75 6c 74 69 3 49 4e 54 1 0 0 0 1 0 0 0 1 0 0 0 11 0 0 0]
+checksum 00000000000956280969

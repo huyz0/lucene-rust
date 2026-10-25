@@ -1,0 +1,32 @@
+field-number 2
+field-name float_dv
+vector-data-offset 0
+vector-data-length 44
+vector-dimension 2
+size 4
+0
+2
+4
+6
+field-number 3
+field-name byte_dv
+vector-data-offset 44
+vector-data-length 28
+vector-dimension 2
+size 4
+0
+2
+4
+6
+field-number 4
+field-name vector_terms
+vector-data-offset 72
+vector-data-length 44
+vector-dimension 2
+size 4
+0
+2
+4
+6
+field-number -1
+checksum 00000000003471658693

@@ -83,6 +83,8 @@ use std::sync::{Arc, OnceLock};
 
 use crate::multi_segment::OpenSegment;
 
+mod simpletext;
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
@@ -91,6 +93,10 @@ pub enum Error {
     SegmentInfos(#[from] segment_infos::Error),
     #[error(transparent)]
     SegmentInfo(#[from] segment_info::Error),
+    #[error(transparent)]
+    SimpleText(#[from] lucene_codecs::simpletext::Error),
+    #[error("{0}")]
+    UnsupportedCodecOperation(&'static str),
     #[error(transparent)]
     FieldInfos(#[from] field_infos::Error),
     #[error(transparent)]
@@ -139,6 +145,8 @@ pub(crate) use crate::sparse_docs_cache::DocsWithFieldCache;
 /// (re-)construct on demand -- see [`DirectoryReader::open_segments`].
 #[derive(Debug, Clone)]
 pub struct SegmentReader {
+    /// The SimpleText codec's independently framed files and typed metadata.
+    pub(crate) simpletext: Option<Arc<simpletext::SimpleTextCore>>,
     pub segment_name: String,
     pub max_doc: i32,
     pub doc_base: i32,
@@ -347,6 +355,9 @@ impl SegmentReader {
         commit: &segment_infos::SegmentCommitInfo,
         doc_base: i32,
     ) -> Result<Self> {
+        if commit.codec_name == "SimpleText" {
+            return Self::open_simpletext(dir, commit, doc_base);
+        }
         let segment_name = commit.segment_name.clone();
         let segment_id = commit.segment_id;
 
@@ -820,6 +831,7 @@ impl SegmentReader {
         }
 
         Ok(SegmentReader {
+            simpletext: None,
             term_vectors,
             vectors,
             completion,
@@ -875,7 +887,9 @@ impl SegmentReader {
         dir: &dyn Directory,
         commit: &segment_infos::SegmentCommitInfo,
     ) -> Result<Self> {
-        let live_docs = if commit.del_gen != -1 {
+        let live_docs = if self.simpletext.is_some() {
+            simpletext::read_live_docs(dir, commit, self.max_doc)?
+        } else if commit.del_gen != -1 {
             let liv_name = liv_file_name(&self.segment_name, commit.del_gen);
             let liv_bytes = dir.open(&liv_name)?;
             Some(Arc::new(live_docs::parse(
@@ -1026,6 +1040,9 @@ impl SegmentReader {
     /// # Errors
     /// The first file whose footer or checksum does not verify.
     pub fn check_integrity(&self) -> crate::Result<()> {
+        if let Some(core) = &self.simpletext {
+            return core.check_integrity();
+        }
         let mut files: Vec<&[u8]> = Vec::new();
         for f in [
             &self.doc_buf,
@@ -1144,6 +1161,9 @@ impl SegmentReader {
         doc: i32,
         visitor: &mut dyn lucene_codecs::stored_fields::StoredFieldVisitor,
     ) -> Result<bool> {
+        if let Some(core) = &self.simpletext {
+            return core.visit_stored_document(doc, visitor);
+        }
         let Some(f) = self.stored.as_deref() else {
             return Ok(false);
         };
@@ -1339,8 +1359,10 @@ impl SegmentReader {
     /// only itself -- so a multi-segment search must call
     /// [`DirectoryReader::field_norms`], which does the sum once and builds
     /// every leaf's norms with the one reader-wide value. (b13's F-26.)
-    pub fn field_norms(&self, field: &str) -> Option<crate::field_norms::FieldNorms<'_>> {
-        let (sum_total_term_freq, doc_count) = self.field_stats(field)?;
+    pub fn field_norms(&self, field: &str) -> Result<Option<crate::field_norms::FieldNorms<'_>>> {
+        let Some((sum_total_term_freq, doc_count)) = self.field_stats(field)? else {
+            return Ok(None);
+        };
         self.field_norms_with_avg_field_length(
             field,
             crate::field_norms::avg_field_length(sum_total_term_freq, doc_count as i64),
@@ -1354,7 +1376,7 @@ impl SegmentReader {
         &self,
         field: &str,
         avg_field_length: f32,
-    ) -> Option<crate::field_norms::FieldNorms<'_>> {
+    ) -> Result<Option<crate::field_norms::FieldNorms<'_>>> {
         self.field_norms_with_table(
             field,
             avg_field_length,
@@ -1369,57 +1391,100 @@ impl SegmentReader {
         field: &str,
         avg_field_length: f32,
         table: Arc<[f32; 256]>,
-    ) -> Option<crate::field_norms::FieldNorms<'_>> {
-        Some(match self.norm_source(field)? {
+    ) -> Result<Option<crate::field_norms::FieldNorms<'_>>> {
+        let Some(source) = self.norm_source(field)? else {
+            return Ok(None);
+        };
+        self.norms_from_source(field, source, avg_field_length, table)
+    }
+
+    fn norms_from_source(
+        &self,
+        field: &str,
+        source: NormSource,
+        avg_field_length: f32,
+        table: Arc<[f32; 256]>,
+    ) -> Result<Option<crate::field_norms::FieldNorms<'_>>> {
+        Ok(Some(match source {
             NormSource::Unnormed => crate::field_norms::FieldNorms::unnormed_with_table(
                 self.max_doc,
                 avg_field_length,
                 table,
             ),
             NormSource::Stored(entry) => crate::field_norms::FieldNorms::with_inverse_table(
-                self.norms_data()?,
+                self.norms_data()
+                    .ok_or_else(|| lucene_store::Error::Corrupted("missing norms data".into()))?,
                 entry,
                 avg_field_length,
                 table,
             ),
-        })
+            NormSource::SimpleText => {
+                let core = self.simpletext.as_ref().ok_or_else(|| {
+                    lucene_store::Error::Corrupted("missing SimpleText core".into())
+                })?;
+                let Some((reader, data)) = core.norms(field)? else {
+                    return Ok(None);
+                };
+                let values = reader.numeric_from_data(field, data)?;
+                crate::field_norms::FieldNorms::from_simpletext(values, avg_field_length, table)
+            }
+        }))
     }
 
     /// Where this segment's norms for `field` come from, or `None` when it
     /// has none to score with (see [`Self::field_norms_with_table`]).
-    fn norm_source(&self, field: &str) -> Option<NormSource> {
-        let info = self.field_infos.field_by_name(field)?;
+    fn norm_source(&self, field: &str) -> Result<Option<NormSource>> {
+        let Some(info) = self.field_infos.field_by_name(field) else {
+            return Ok(None);
+        };
         // A field with no term dictionary entry has no counters, and therefore
         // no norms this port will score with -- same precondition
         // `field_norms` has always had.
-        self.fields.field(field)?;
+        if self.field_stats(field)?.is_none() {
+            return Ok(None);
+        }
         if info.omit_norms {
             // Indexed without norms: every document at norm 1 against the
             // real `avgdl`, as Java's `LeafSimScorer` scores it.
-            return Some(NormSource::Unnormed);
+            return Ok(Some(NormSource::Unnormed));
         }
-        let entry = self.norms_entry(info.number)?;
-        self.norms_data()?;
-        Some(NormSource::Stored(*entry))
+        if self.simpletext.is_some() {
+            return Ok(Some(NormSource::SimpleText));
+        }
+        Ok(self
+            .norms_entry(info.number)
+            .and_then(|entry| self.norms_data().map(|_| NormSource::Stored(*entry))))
     }
 
     /// `LeafReader.docFreq(term)`: how many of this segment's documents,
     /// deleted ones included, hold `term` in `field` (0 when neither is here).
     pub fn doc_freq(&self, field: &str, term: &[u8]) -> Result<i32> {
+        if let Some(core) = &self.simpletext {
+            return core.doc_freq(field, term);
+        }
         let Some(terms) = self.fields.field(field) else {
             return Ok(0);
         };
         Ok(terms.try_seek_exact(term)?.map_or(0, |s| s.doc_freq))
     }
 
-    /// This segment's `.tmd` aggregate counters for `field`:
+    /// This segment's codec aggregate counters for `field`:
     /// `(sumTotalTermFreq, docCount)`, Java's `Terms.getSumTotalTermFreq()` /
     /// `Terms.getDocCount()` -- the two numbers `IndexSearcher.fieldStats`
     /// sums across leaves. `None` when the field has no term dictionary entry
     /// here.
-    pub fn field_stats(&self, field: &str) -> Option<(i64, i32)> {
-        let terms = self.fields.field(field)?;
-        Some((terms.sum_total_term_freq, terms.doc_count))
+    ///
+    /// # Errors
+    /// SimpleText loads the field's terms on first use; malformed postings
+    /// propagate from that load rather than looking like an absent field.
+    pub fn field_stats(&self, field: &str) -> Result<Option<(i64, i32)>> {
+        if let Some(core) = &self.simpletext {
+            return core.field_stats(field);
+        }
+        Ok(self
+            .fields
+            .field(field)
+            .map(|terms| (terms.sum_total_term_freq, terms.doc_count)))
     }
 
     /// The name of this segment's soft-deletes field, if its `.fnm` marks one
@@ -1443,10 +1508,10 @@ impl SegmentReader {
     /// [`crate::weight_count::field_exists_rewrites_to_match_all_docs`], which
     /// are the two rules that consume it.
     ///
-    /// **`vector_size` is a parameter, not a lookup.** Java asks
-    /// `reader.getFloatVectorValues(field).size()`; in this port the vector
-    /// values are opened by the caller (`crate::vector_query`) rather than held
-    /// by the reader, so the one number this type cannot resolve is passed in.
+    /// Java asks `reader.getFloatVectorValues(field).size()`. For binary
+    /// codecs the caller (`crate::vector_query`) supplies `vector_size` from
+    /// its open vector values. SimpleText resolves an omitted size through
+    /// its generic vector reader.
     /// It is only consulted for a field whose `FieldInfo` selects
     /// [`crate::doc_value_query::FieldExistsSource::Vectors`]; pass `None` for
     /// any other field.
@@ -1471,8 +1536,52 @@ impl SegmentReader {
         // field, which would never consult the answer.
         let points_doc_count = match source {
             Some(crate::doc_value_query::FieldExistsSource::DocValues) => {
-                info.and_then(|fi| self.points_doc_count(fi.number))
+                if let Some(core) = &self.simpletext {
+                    core.points(field)?.map(|tree| tree.doc_count())
+                } else {
+                    info.and_then(|fi| self.points_doc_count(fi.number))
+                }
             }
+            _ => None,
+        };
+        let skipper_doc_count =
+            if source != Some(crate::doc_value_query::FieldExistsSource::DocValues) {
+                None
+            } else if self.simpletext.is_some() {
+                use crate::reader::LeafReader;
+                self.doc_values_skipper(field)?
+                    .map(|skipper| skipper.global_doc_count())
+            } else {
+                info.and_then(|fi| {
+                    self.doc_values_meta()
+                        .and_then(|meta| meta.skipper_meta(fi.number))
+                        .map(|skipper| skipper.doc_count)
+                })
+            };
+        let vector_size = match (source, vector_size) {
+            (Some(crate::doc_value_query::FieldExistsSource::Vectors), None)
+                if self.simpletext.is_some() =>
+            {
+                use crate::reader::LeafReader;
+                match info.map(|fi| fi.vector_encoding) {
+                    Some(lucene_codecs::field_infos::VectorEncoding::Float32) => {
+                        self.float_vector_values(field)?.map(|values| values.size())
+                    }
+                    Some(lucene_codecs::field_infos::VectorEncoding::Byte) => {
+                        self.byte_vector_values(field)?.map(|values| values.size())
+                    }
+                    None => None,
+                }
+            }
+            _ => vector_size,
+        };
+        // Java's vector branch never opens terms, even when the same field
+        // also indexes postings. Only norms and doc values use their count.
+        let terms_doc_count = match source {
+            Some(
+                crate::doc_value_query::FieldExistsSource::Norms
+                | crate::doc_value_query::FieldExistsSource::DocValues,
+            ) => self.field_stats(field)?.map(|(_, doc_count)| doc_count),
             _ => None,
         };
         Ok(crate::weight_count::FieldExistsLeaf {
@@ -1489,28 +1598,24 @@ impl SegmentReader {
             is_indexed: info.is_some_and(|fi| {
                 fi.index_options != lucene_codecs::field_infos::IndexOptions::None
             }),
-            terms_doc_count: self.field_stats(field).map(|(_, doc_count)| doc_count),
+            terms_doc_count,
             vector_size,
             points_doc_count,
-            skipper_doc_count: info.and_then(|fi| {
-                self.doc_values_meta()
-                    .and_then(|meta| meta.skipper_meta(fi.number))
-                    .map(|skipper| skipper.doc_count)
-            }),
+            skipper_doc_count,
         })
     }
 
     /// `FieldExistsQuery`'s matches in this segment: the documents its
     /// `FieldInfo`-chosen source ([`crate::doc_value_query::field_exists_source`])
     /// has a value for, deletions ignored (the scorer's caller applies them),
-    /// read as one set off the source's `IndexedDISI` rather than document by
-    /// document. A field not in this segment matches nothing, as a `null`
-    /// scorer does.
+    /// read from the binary source's `IndexedDISI` or SimpleText's generic
+    /// values iterator. A field not in this segment matches nothing, as a
+    /// `null` scorer does.
     ///
     /// # Errors
     /// [`crate::Error::FieldExistsUnsupported`] for a field indexing none of
     /// norms, vectors or doc values (Java's `IllegalStateException`) and for a
-    /// vectors-sourced one, which this reader does not open; a corrupt
+    /// binary vectors-sourced one, which this path does not open; a corrupt
     /// docs-with-field region.
     pub fn field_exists_docs(&self, field: &str) -> crate::Result<ExistsDocs> {
         use crate::doc_value_query::{
@@ -1519,9 +1624,13 @@ impl SegmentReader {
         let Some(info) = self.field_infos.fields.iter().find(|f| f.name == field) else {
             return Ok(ExistsDocs::None);
         };
+        let source = field_exists_source(info)?;
+        if self.simpletext.is_some() {
+            return self.simpletext_field_exists_docs(info, source);
+        }
         // (offset, length, dense rank power) of the docs-with-field region, and
         // the data holding it.
-        let (data, offset, length, drp) = match field_exists_source(info)? {
+        let (data, offset, length, drp) = match source {
             FieldExistsSource::Norms => {
                 let (Some(e), Some(data)) = (self.norms_entry(info.number), self.norms_data())
                 else {
@@ -1924,6 +2033,8 @@ enum NormSource {
     Unnormed,
     /// The segment's `.nvd` at this entry.
     Stored(NormsEntry),
+    /// The SimpleText codec's numeric norms in `.len`.
+    SimpleText,
 }
 
 impl DirectoryReader {
@@ -2180,19 +2291,19 @@ impl DirectoryReader {
     /// into a [`crate::field_norms::FieldNorms`]'s 256-entry `cache[]` table
     /// when that is *constructed*, which happens here, before any search
     /// function sees it.
-    pub fn avg_field_length(&self, field: &str) -> Option<f32> {
+    pub fn avg_field_length(&self, field: &str) -> Result<Option<f32>> {
         let mut sum_total_term_freq = 0i64;
         let mut doc_count = 0i64;
         let mut seen = false;
         for seg in &self.segments {
-            let Some((stf, dc)) = seg.field_stats(field) else {
+            let Some((stf, dc)) = seg.field_stats(field)? else {
                 continue;
             };
             seen = true;
             sum_total_term_freq += stf;
             doc_count += dc as i64;
         }
-        seen.then(|| crate::field_norms::avg_field_length(sum_total_term_freq, doc_count))
+        Ok(seen.then(|| crate::field_norms::avg_field_length(sum_total_term_freq, doc_count)))
     }
 
     /// `IndexReader.docFreq(term)`: the segments' [`SegmentReader::doc_freq`]
@@ -2211,8 +2322,11 @@ impl DirectoryReader {
     /// An entry is `None` when that segment has no norms for the field (norms
     /// omitted, field absent, or no `.nvd`/`.nvm` pair), which the search
     /// functions already treat as "score this leaf unnormed".
-    pub fn field_norms(&self, field: &str) -> Vec<Option<crate::field_norms::FieldNorms<'_>>> {
-        let avg = match self.avg_field_length(field) {
+    pub fn field_norms(
+        &self,
+        field: &str,
+    ) -> Result<Vec<Option<crate::field_norms::FieldNorms<'_>>>> {
+        let avg = match self.avg_field_length(field)? {
             Some(avg) => avg,
             // No leaf has the field: no leaf will produce norms for it either,
             // so the value is never read.
@@ -2227,29 +2341,31 @@ impl DirectoryReader {
 
     /// `field`'s [`NormsPlan`], resolved on first use and kept; `None` when no
     /// segment has the field.
-    fn norms_plan(&self, field: &str) -> Option<Arc<NormsPlan>> {
+    fn norms_plan(&self, field: &str) -> Result<Option<Arc<NormsPlan>>> {
         if let Some(p) = self
             .norms_plans
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(field)
         {
-            return Some(p.clone());
+            return Ok(Some(p.clone()));
         }
-        let avg = self.avg_field_length(field)?;
+        let Some(avg) = self.avg_field_length(field)? else {
+            return Ok(None);
+        };
         let table = self.norm_table(avg);
         let segments = self
             .segments
             .iter()
             .map(|seg| seg.norm_source(field))
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
         let plan = Arc::new(NormsPlan {
             avg,
             table,
             segments,
         });
         let mut plans = self.norms_plans.lock().unwrap_or_else(|e| e.into_inner());
-        Some(plans.entry(field.to_string()).or_insert(plan).clone())
+        Ok(Some(plans.entry(field.to_string()).or_insert(plan).clone()))
     }
 
     /// [`DirectoryReader::field_norms`] for several fields at once, as the
@@ -2261,38 +2377,28 @@ impl DirectoryReader {
     pub fn field_norms_by_field(
         &self,
         fields: &[String],
-    ) -> Vec<HashMap<String, crate::field_norms::FieldNorms<'_>>> {
-        let plans: Vec<(&String, Arc<NormsPlan>)> = fields
-            .iter()
-            .filter_map(|f| self.norms_plan(f).map(|p| (f, p)))
-            .collect();
+    ) -> Result<Vec<HashMap<String, crate::field_norms::FieldNorms<'_>>>> {
+        let mut plans = Vec::new();
+        for field in fields {
+            if let Some(plan) = self.norms_plan(field)? {
+                plans.push((field, plan));
+            }
+        }
         self.segments
             .iter()
             .enumerate()
             .map(|(i, seg)| {
-                plans
-                    .iter()
-                    .filter_map(|(field, plan)| {
-                        let norms = match plan.segments.get(i).copied().flatten()? {
-                            NormSource::Unnormed => {
-                                crate::field_norms::FieldNorms::unnormed_with_table(
-                                    seg.max_doc,
-                                    plan.avg,
-                                    plan.table.clone(),
-                                )
-                            }
-                            NormSource::Stored(entry) => {
-                                crate::field_norms::FieldNorms::with_inverse_table(
-                                    seg.norms_data()?,
-                                    entry,
-                                    plan.avg,
-                                    plan.table.clone(),
-                                )
-                            }
-                        };
-                        Some(((*field).clone(), norms))
-                    })
-                    .collect()
+                let mut norms = HashMap::new();
+                for (field, plan) in &plans {
+                    if let Some(source) = plan.segments.get(i).copied().flatten() {
+                        if let Some(values) =
+                            seg.norms_from_source(field, source, plan.avg, plan.table.clone())?
+                        {
+                            norms.insert((*field).clone(), values);
+                        }
+                    }
+                }
+                Ok(norms)
             })
             .collect()
     }
@@ -2301,6 +2407,15 @@ impl DirectoryReader {
     /// to build `OpenSegment`s -- see this module's doc comment for why this
     /// is a separate call from [`OpenedSegments::as_open_segments`].
     pub fn open_segments(&self) -> Result<OpenedSegments<'_>> {
+        if self
+            .segments
+            .iter()
+            .any(|segment| segment.simpletext.is_some())
+        {
+            return Err(Error::UnsupportedCodecOperation(
+                "SimpleText search routing is not implemented",
+            ));
+        }
         let mut doc_ins = Vec::with_capacity(self.segments.len());
         let mut pos_ins = Vec::with_capacity(self.segments.len());
         let mut pay_ins = Vec::with_capacity(self.segments.len());
@@ -2351,6 +2466,12 @@ impl SegmentReader {
         doc_base: i32,
         f: impl FnOnce(&crate::multi_segment::OpenSegment<'_>) -> crate::Result<R>,
     ) -> crate::Result<R> {
+        if self.simpletext.is_some() {
+            return Err(Error::UnsupportedCodecOperation(
+                "SimpleText search routing is not implemented",
+            )
+            .into());
+        }
         let open = |e: Error| crate::Error::from(e);
         use std::sync::atomic::Ordering;
         let validated = self.postings_validated.load(Ordering::Acquire);
@@ -3496,12 +3617,12 @@ mod tests {
         // A field the segment does not have has no norms entry.
         assert!(seg.norms_entry(9999).is_none());
 
-        let norms = seg.field_norms("body").expect("body has norms");
+        let norms = seg.field_norms("body").unwrap().expect("body has norms");
         assert!(
             norms.avg_field_length > 0.0,
             "avgFieldLength must come from the field's real .tmd counters"
         );
-        assert!(seg.field_norms("no_such_field").is_none());
+        assert!(seg.field_norms("no_such_field").unwrap().is_none());
 
         // Scoring with real norms must actually differ from the no-norms
         // fallback -- otherwise wiring them in would be decoration.
@@ -3543,7 +3664,7 @@ mod tests {
         let seg = &reader.segment_readers()[0];
         assert!(seg.norms_data().is_none());
         assert!(seg.norms_entry(0).is_none());
-        assert!(seg.field_norms("title").is_none());
+        assert!(seg.field_norms("title").unwrap().is_none());
         assert!(seg.soft_deletes_field().is_none());
 
         std::fs::remove_dir_all(&dir_path).ok();

@@ -1,0 +1,8 @@
+float	normal	ok	cost,bits
+float	query-error	query-error	
+float	zero-k	ok	
+float	cost-error	io:cost failure	cost
+byte	normal	ok	cost,bits
+byte	query-error	query-error	
+byte	zero-k	ok	
+byte	cost-error	io:cost failure	cost

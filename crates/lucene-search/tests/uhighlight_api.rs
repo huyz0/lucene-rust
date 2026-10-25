@@ -38,7 +38,7 @@ fn with_index<R>(body: impl FnOnce(&DirectoryReader, &IndexSearcher<'_, '_>, Vec
     let segments = opened.as_open_segments();
     let mut owned: Vec<HashMap<String, FieldNorms<'_>>> = Vec::new();
     for field in ["id", "offs", "pos", "docs", "tv", "both", "tvpos"] {
-        for (i, n) in reader.field_norms(field).into_iter().enumerate() {
+        for (i, n) in reader.field_norms(field).unwrap().into_iter().enumerate() {
             if owned.len() <= i {
                 owned.push(HashMap::new());
             }
