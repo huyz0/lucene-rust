@@ -156,6 +156,18 @@ scores, score modes, top hits/paging, counts, managers/slices and timeouts.
 Supplier traps check that specialized bulk scoring and top-level notifications
 are bypassed. Its `scorer_index_searcher.tsv` also records Java's null-supplier
 failure for an absent term; Rust deliberately returns an empty scorer result.
+`GenCorruptUnknownFiles` runs actual `MockDirectoryWrapper.corruptUnknownFiles`
+with a recording `corruptFiles` override. It checks unknown-file selection over
+all retained commits, Java's codec filename pattern, UTF-16 commit-generation
+aliases, missing or corrupt segment-info files, checksum-valid deletion,
+version and `maxDoc` corruption, filename normalization, and zero callback
+invocations after scan errors. The generator reads the Java-produced
+`data/merge_policies/commits_index` and SimpleText flush/merged corpora, checks
+all-commit unions and missing/corrupt live-doc positive controls, and writes
+`testframework/data/corrupt_unknown_files.tsv`; the Rust replay is
+`corrupt_unknown_files_fixtures.rs`. Rust exposes the override as
+`corrupt_unknown_files_with` and requires a quiescent directory because
+it does not hold Java's synchronized monitor across the scan and corruption.
 `GenConfigurableM` records default and explicit connectivity settings, inherited
 accessor identities and failures, and native float/byte dense, sparse and empty
 fields. Four segments combine M=128/4 with sparse counts 647/648 at the tiny-graph

@@ -72,6 +72,242 @@ fn kind(e: &Error) -> Option<io::ErrorKind> {
     }
 }
 
+#[test]
+fn corrupt_unknown_files_calls_the_replacement_once_even_when_empty() {
+    let dir = mock(31);
+    let calls = std::cell::Cell::new(0);
+    dir.corrupt_unknown_files_with(|files| {
+        calls.set(calls.get() + 1);
+        assert!(files.is_empty());
+        // Re-entering the directory must not deadlock on its state mutex.
+        assert!(dir.list_all()?.is_empty());
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(calls.get(), 1);
+
+    let error = dir
+        .corrupt_unknown_files_with(|files| {
+            calls.set(calls.get() + 1);
+            assert!(files.is_empty());
+            Err(Error::AlreadyClosed("callback failure".into()))
+        })
+        .unwrap_err();
+    assert_eq!(calls.get(), 2);
+    assert!(matches!(
+        error,
+        lucene_index::index_file_deleter::Error::Store(Error::AlreadyClosed(message))
+            if message == "callback failure"
+    ));
+}
+
+#[test]
+fn corrupt_unknown_files_classifies_names_without_a_commit() {
+    let dir = mock(32);
+    let expected = BTreeSet::from([
+        "_0.".to_string(),
+        "_a_Lucene90_0.dvd".to_string(),
+        "pending_segments".to_string(),
+        "pending_segments_1".to_string(),
+        "pending_segments\n".to_string(),
+    ]);
+    for name in expected.iter().map(String::as_str).chain([
+        "_A.si",
+        "_.si",
+        "_0",
+        "_0_x",
+        "notes.txt",
+        "write.lock",
+        "_0.write.lock",
+        "pending_segments_write.lock",
+        "_0.\n",
+        "_0_\r.si",
+        "_0.\u{0085}",
+        "_0.\u{2028}",
+        "_0.\u{2029}",
+    ]) {
+        write(&dir, name, b"unchanged").unwrap();
+    }
+    dir.corrupt_unknown_files_with(|files| {
+        assert_eq!(files, &expected);
+        Ok(())
+    })
+    .unwrap();
+    for name in dir.list_all().unwrap() {
+        assert_eq!(&dir.open(&name).unwrap()[..], b"unchanged");
+    }
+}
+
+#[test]
+fn corrupt_unknown_files_default_damages_only_selected_files() {
+    let delegate = Arc::new(ByteBuffersDirectory::new());
+    let dir = MockDirectoryWrapper::new(&mut JavaRandom::new(33), Arc::clone(&delegate));
+    dir.set_always_corrupt(true);
+    let original: Vec<u8> = (0..64u8).map(|b| b | 0x40).collect();
+    let victims: Vec<String> = (0..64).map(|n| format!("_{n}.orphan")).collect();
+    for name in &victims {
+        write(&dir, name, &original).unwrap();
+    }
+    for name in ["notes.txt", "_0.write.lock", "pending_segments_write.lock"] {
+        write(&dir, name, &original).unwrap();
+    }
+    dir.corrupt_unknown_files().unwrap();
+    assert!(
+        !dir.crashed(),
+        "corruption does not mark the directory crashed"
+    );
+    for name in victims {
+        match delegate.open(&name) {
+            Ok(bytes) => assert_ne!(&bytes[..], &original[..], "{name}"),
+            Err(error) => assert_eq!(kind(&error), Some(io::ErrorKind::NotFound), "{error}"),
+        }
+    }
+    for name in ["notes.txt", "_0.write.lock", "pending_segments_write.lock"] {
+        assert_eq!(&delegate.open(name).unwrap()[..], &original[..], "{name}");
+    }
+    assert_eq!(dir.file_handle_count(), 0);
+}
+
+/// Fails one of the scan's two listings, without any commit reads adding
+/// the wrapper's file-existence listings to the count.
+struct FailingListing {
+    inner: ByteBuffersDirectory,
+    calls: std::sync::atomic::AtomicUsize,
+    fail_at: usize,
+}
+
+impl Directory for FailingListing {
+    fn list_all(&self) -> lucene_store::Result<Vec<String>> {
+        use std::sync::atomic::Ordering;
+        if self.calls.fetch_add(1, Ordering::SeqCst) + 1 == self.fail_at {
+            return Err(Error::AlreadyClosed(format!("listing {}", self.fail_at)));
+        }
+        self.inner.list_all()
+    }
+    fn open(&self, name: &str) -> lucene_store::Result<Input> {
+        self.inner.open(name)
+    }
+    fn create_output(&self, name: &str) -> lucene_store::Result<FsIndexOutput> {
+        self.inner.create_output(name)
+    }
+    fn sync(&self, names: &[String]) -> lucene_store::Result<()> {
+        self.inner.sync(names)
+    }
+    fn rename(&self, source: &str, dest: &str) -> lucene_store::Result<()> {
+        self.inner.rename(source, dest)
+    }
+    fn delete_file(&self, name: &str) -> lucene_store::Result<()> {
+        self.inner.delete_file(name)
+    }
+    fn sync_meta_data(&self) -> lucene_store::Result<()> {
+        self.inner.sync_meta_data()
+    }
+    fn obtain_lock(&self, name: &str) -> lucene_store::Result<Box<dyn Lock>> {
+        self.inner.obtain_lock(name)
+    }
+}
+
+#[test]
+fn corrupt_unknown_files_never_calls_corruption_after_either_listing_fails() {
+    for fail_at in [1, 2] {
+        let delegate = Arc::new(FailingListing {
+            inner: ByteBuffersDirectory::new(),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            fail_at,
+        });
+        write(&delegate.inner, "_0.orphan", b"preserved").unwrap();
+        let dir = MockDirectoryWrapper::new(&mut JavaRandom::new(34), Arc::clone(&delegate));
+        let error = dir
+            .corrupt_unknown_files_with(|_| panic!("scan failed"))
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            lucene_index::index_file_deleter::Error::Store(Error::AlreadyClosed(message))
+                if message == format!("listing {fail_at}")
+        ));
+        assert_eq!(
+            delegate.calls.load(std::sync::atomic::Ordering::SeqCst),
+            fail_at
+        );
+        assert_eq!(&delegate.inner.open("_0.orphan").unwrap()[..], b"preserved");
+    }
+}
+
+#[test]
+fn corrupt_unknown_files_preserves_commit_scan_error_variants() {
+    use lucene_index::index_file_deleter::Error as ScanError;
+    for name in ["segments_1", "segments.gen", "segments!"] {
+        let dir = mock(35);
+        write(&dir, name, b"not a commit").unwrap();
+        write(&dir, "_0.orphan", b"preserved").unwrap();
+        let fail = FailOn::once(|ctx| {
+            ctx.op == FailureOp::OpenInput
+                && ctx.name.starts_with("segments")
+                && ctx.name != "segments_1"
+        });
+        dir.fail_on(fail.clone());
+        let error = dir
+            .corrupt_unknown_files_with(|_| panic!("bad commit"))
+            .unwrap_err();
+        if name == "segments_1" {
+            assert!(matches!(error, ScanError::SegmentInfos(_)), "{error}");
+        } else {
+            assert!(
+                matches!(error, ScanError::Store(Error::Corrupted(_))),
+                "{error}"
+            );
+        }
+        assert_eq!(fail.fired(), 0, "invalid generations fail before opening");
+        assert_eq!(
+            dir.file_handle_count(),
+            0,
+            "failed reads release their input"
+        );
+        assert_eq!(&dir.open("_0.orphan").unwrap()[..], b"preserved");
+    }
+
+    let dir = mock(36);
+    write(&dir, "segments_1", b"not read").unwrap();
+    let fail = FailOn::once(|ctx| ctx.op == FailureOp::OpenInput && ctx.name == "segments_1");
+    dir.fail_on(fail.clone());
+    let error = dir
+        .corrupt_unknown_files_with(|_| panic!("open failed"))
+        .unwrap_err();
+    assert!(
+        matches!(&error, ScanError::Store(error) if is_fake_io_exception(error)),
+        "{error}"
+    );
+    assert_eq!(fail.fired(), 1);
+    assert_eq!(dir.file_handle_count(), 0);
+}
+
+#[test]
+fn corrupt_unknown_files_stops_before_corruption_when_segment_info_cannot_be_read() {
+    let delegate = Arc::new(ByteBuffersDirectory::new());
+    {
+        let mut writer = open_writer(delegate.as_ref()).unwrap();
+        add_doc(&mut writer);
+        writer.commit().unwrap();
+    }
+    let dir = MockDirectoryWrapper::new(&mut JavaRandom::new(37), Arc::clone(&delegate));
+    write(&dir, "_z.orphan", b"preserved").unwrap();
+    let fail = FailOn::once(|ctx| ctx.op == FailureOp::OpenInput && ctx.name.ends_with(".si"));
+    dir.fail_on(fail.clone());
+    let error = dir
+        .corrupt_unknown_files_with(|_| panic!("segment info failed"))
+        .unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            lucene_index::index_file_deleter::Error::Store(error) if is_fake_io_exception(error)
+        ),
+        "{error}"
+    );
+    assert_eq!(fail.fired(), 1);
+    assert_eq!(dir.file_handle_count(), 0);
+    assert_eq!(&dir.open("_z.orphan").unwrap()[..], b"preserved");
+}
+
 /// `testDiskFull`: the write past the limit fails; what fit is kept.
 #[test]
 fn test_disk_full() {
