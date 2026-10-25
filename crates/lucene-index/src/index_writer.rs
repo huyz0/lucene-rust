@@ -3379,7 +3379,7 @@ impl IndexingConfig {
         // was already in memory, for a segment whose *data* files were written
         // exactly once. Only the last write survived; the six before it were
         // pure I/O.
-        let mut flushed = segment_writer::write_stored_only_segment_files(
+        let mut flushed = segment_writer::write_stored_only_segment_files_with_codec(
             dir,
             segment_name,
             segment_id,
@@ -3387,11 +3387,11 @@ impl IndexingConfig {
             self.lucene_version,
             &fnm_fields,
             buf.docs,
-            false,
             // `DocumentsWriterPerThread.updateDocuments`: set once any
             // `add_documents`/`update_documents` call in this buffer
             // carried more than one document.
             buf.has_blocks,
+            self.codec.as_deref(),
         )?;
 
         let mut record = |names: Vec<String>| {
@@ -4666,6 +4666,9 @@ impl<'d> IndexWriter<'d> {
     /// [`IndexWriter::set_knn_vectors_format_for_field`]) routed that field,
     /// which wins. `None` returns to `Lucene104Codec()`'s defaults (with
     /// [`IndexWriter::set_hnsw_parameters`]' graph for vectors).
+    /// An optional stored-fields writer factory is also installed for the next
+    /// flush and merge. Its writer must produce the existing Lucene90 files;
+    /// formats without a factory retain the native bulk encoding path.
     ///
     /// The codec's name must be the one this port writes (`Lucene104`);
     /// anything else is refused, as this writer has no other codec's formats.

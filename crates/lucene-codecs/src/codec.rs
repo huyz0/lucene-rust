@@ -1,21 +1,16 @@
-//! `IndexWriterConfig.setCodec`'s per-field half: `Lucene104Codec`'s three
-//! overridable routing methods -- `getPostingsFormatForField`,
-//! `getDocValuesFormatForField`, `getKnnVectorsFormatForField` -- as a trait
-//! whose every method defaults to what `Lucene104Codec` answers
-//! ([`Lucene104Codec`]).
+//! `Lucene104Codec` per-field routing and optional same-wire stored-fields writers.
 //!
-//! Java's `Codec` also names the segment-level formats (stored fields, norms,
-//! points, compound, ...); this port writes exactly `Lucene104Codec`'s, so
-//! the codec a writer is configured with is only ever its per-field routing.
-//! A codec's formats are the ones this port writes: `Lucene104PostingsFormat`
-//! instances, `Lucene90DocValuesFormat` instances and the
-//! [`crate::per_field_knn_vectors::KnnVectorsFormat`]s.
+//! Postings, doc-values and vector selection use native format descriptors.
+//! An optional stored-fields factory wraps the real document writer lifecycle
+//! while retaining the native reader graph and `Lucene104` on-disk formats.
+//! Other segment-level formats remain fixed to the native codec.
 
 use std::fmt;
 
 use crate::per_field_doc_values::Lucene90DocValuesFormat;
 use crate::per_field_knn_vectors::KnnVectorsFormat;
 use crate::per_field_postings::Lucene104PostingsFormat;
+use crate::stored_fields_writer::StoredFieldsWriterFactory;
 
 /// `Lucene104Codec` with its `get*FormatForField` methods overridable: a
 /// subclass in Java, an implementation of this trait here.
@@ -23,6 +18,14 @@ pub trait Lucene104Codec: Send + Sync + fmt::Debug {
     /// `Codec.getName()`, what the `.si`/`segments_N` record.
     fn name(&self) -> &str {
         "Lucene104"
+    }
+
+    /// Optional lifecycle wrapper for native stored-fields flushes and merges.
+    ///
+    /// `None` retains the direct native encoder and its bulk merge paths.
+    /// A factory must preserve the native wire format and segment codec name.
+    fn stored_fields_writer_factory(&self) -> Option<&dyn StoredFieldsWriterFactory> {
+        None
     }
 
     /// `getPostingsFormatForField(field)`: `Lucene104PostingsFormat()`.
@@ -68,6 +71,7 @@ mod tests {
     fn the_defaults_are_lucene104codecs() {
         let c = DefaultLucene104Codec;
         assert_eq!(c.name(), "Lucene104");
+        assert!(c.stored_fields_writer_factory().is_none());
         assert_eq!(
             c.postings_format_for_field("f"),
             Lucene104PostingsFormat::default()
