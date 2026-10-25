@@ -74,6 +74,11 @@ validation, double-close errors, merge-thread checks, independently closed
 merge handles and real norms pairs. `GenAssertingStoredFields` records writer
 state assertions, delegate-error recovery, reader thread/clone/merge lifecycles,
 double-close precedence and real Lucene90 triples in both compression modes.
+`GenStoredFieldsWriterRouting` installs the actual asserting stored-fields format
+in a registered FilterCodec and runs real flushes, imports, deletes and sorted or
+unsorted merges. Its source values, decoded document snapshots and field-number
+maps are replayed by `stored_fields_writer_routing.rs`. Java delegate traces
+are retained as provenance; Rust separately checks lifecycle callback counts.
 `GenAssertingTermVectors` records document/field/term/position count assertions,
 delegate failures and retries, inherited proximity and mapped merge callbacks,
 reader lifecycles and real SimpleText bytes. The harness enables Java assertions

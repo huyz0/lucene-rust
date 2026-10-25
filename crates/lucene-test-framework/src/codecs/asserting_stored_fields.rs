@@ -21,7 +21,9 @@
 //! handles use the ordinary native range decoder, without Java's merge-only
 //! decompressed-chunk cache. The writer retains the existing buffered document,
 //! output/error timing and accounting limits; IOContext, SegmentInfo routing and
-//! Codec/IndexWriter installation remain outside this explicit format seam.
+//! full Codec graph installation remain outside this explicit format seam.
+//! [`super::asserting_stored_fields_writer::AssertingStoredFieldsCodec`] installs
+//! its BestSpeed writer in native IndexWriter flushes and merges.
 
 use std::fmt;
 use std::thread::{self, ThreadId};

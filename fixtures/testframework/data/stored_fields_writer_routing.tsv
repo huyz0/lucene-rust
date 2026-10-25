@@ -1,0 +1,630 @@
+# Scope: stored-fields writer routing only; all other codec components delegate to Lucene104Codec
+# CASE case phase maxDoc numDocs leaves; DOC case phase liveOrdinal physicalDoc fields; FIELD case phase leaf name number
+# field=name:type:value; b/s values hex bytes/UTF8; f/d unsigned raw bits; empty fields=-; TRACE real delegate events
+# INPUT ordinal id rank fields: raw source values before codec NaN canonicalization
+INPUT	0	a	40	binary:b:00ff0a80;text:s:;int:i:-2147483648;long:l:-9223372036854775808;float:f:2147483648;double:d:9223372036854775808
+INPUT	1	b	10	-
+INPUT	2	c	30	double:d:9221120237041090626;float:f:0;long:l:9223372036854775807;int:i:2147483647;text:s:68656c6c6f20cebb090a;binary:b:
+INPUT	3	d	20	double:d:9218868437227405312;float:f:2143289410;long:l:-9007199254740993;int:i:-17;text:s:7461696c00656e64;binary:b:010200fe
+INPUT	4	e	60	int:i:0;binary:b:ff007f8009;double:d:1;text:s:f09f9982;float:f:4286578688;long:l:0
+INPUT	5	f	50	-
+CASE	direct_unsorted	initial	6	6	3
+DOC	direct_unsorted	initial	0	0	binary:b:00ff0a80;text:s:;int:i:-2147483648;long:l:-9223372036854775808;float:f:2147483648;double:d:9223372036854775808
+DOC	direct_unsorted	initial	1	1	-
+FIELD	direct_unsorted	initial	0	id	0
+FIELD	direct_unsorted	initial	0	rank	1
+FIELD	direct_unsorted	initial	0	binary	2
+FIELD	direct_unsorted	initial	0	text	3
+FIELD	direct_unsorted	initial	0	int	4
+FIELD	direct_unsorted	initial	0	long	5
+FIELD	direct_unsorted	initial	0	float	6
+FIELD	direct_unsorted	initial	0	double	7
+DOC	direct_unsorted	initial	2	2	double:d:9221120237041090560;float:f:0;long:l:9223372036854775807;int:i:2147483647;text:s:68656c6c6f20cebb090a;binary:b:
+DOC	direct_unsorted	initial	3	3	double:d:9218868437227405312;float:f:2143289344;long:l:-9007199254740993;int:i:-17;text:s:7461696c00656e64;binary:b:010200fe
+FIELD	direct_unsorted	initial	1	id	0
+FIELD	direct_unsorted	initial	1	rank	1
+FIELD	direct_unsorted	initial	1	binary	2
+FIELD	direct_unsorted	initial	1	text	3
+FIELD	direct_unsorted	initial	1	int	4
+FIELD	direct_unsorted	initial	1	long	5
+FIELD	direct_unsorted	initial	1	float	6
+FIELD	direct_unsorted	initial	1	double	7
+DOC	direct_unsorted	initial	4	4	int:i:0;binary:b:ff007f8009;double:d:1;text:s:f09f9982;float:f:4286578688;long:l:0
+DOC	direct_unsorted	initial	5	5	-
+FIELD	direct_unsorted	initial	2	id	0
+FIELD	direct_unsorted	initial	2	rank	1
+FIELD	direct_unsorted	initial	2	binary	2
+FIELD	direct_unsorted	initial	2	text	3
+FIELD	direct_unsorted	initial	2	int	4
+FIELD	direct_unsorted	initial	2	long	5
+FIELD	direct_unsorted	initial	2	float	6
+FIELD	direct_unsorted	initial	2	double	7
+CASE	direct_unsorted	before	6	5	3
+DOC	direct_unsorted	before	0	0	binary:b:00ff0a80;text:s:;int:i:-2147483648;long:l:-9223372036854775808;float:f:2147483648;double:d:9223372036854775808
+DOC	direct_unsorted	before	1	1	-
+FIELD	direct_unsorted	before	0	id	0
+FIELD	direct_unsorted	before	0	rank	1
+FIELD	direct_unsorted	before	0	binary	2
+FIELD	direct_unsorted	before	0	text	3
+FIELD	direct_unsorted	before	0	int	4
+FIELD	direct_unsorted	before	0	long	5
+FIELD	direct_unsorted	before	0	float	6
+FIELD	direct_unsorted	before	0	double	7
+DOC	direct_unsorted	before	2	3	double:d:9218868437227405312;float:f:2143289344;long:l:-9007199254740993;int:i:-17;text:s:7461696c00656e64;binary:b:010200fe
+FIELD	direct_unsorted	before	1	id	0
+FIELD	direct_unsorted	before	1	rank	1
+FIELD	direct_unsorted	before	1	binary	2
+FIELD	direct_unsorted	before	1	text	3
+FIELD	direct_unsorted	before	1	int	4
+FIELD	direct_unsorted	before	1	long	5
+FIELD	direct_unsorted	before	1	float	6
+FIELD	direct_unsorted	before	1	double	7
+DOC	direct_unsorted	before	3	4	int:i:0;binary:b:ff007f8009;double:d:1;text:s:f09f9982;float:f:4286578688;long:l:0
+DOC	direct_unsorted	before	4	5	-
+FIELD	direct_unsorted	before	2	id	0
+FIELD	direct_unsorted	before	2	rank	1
+FIELD	direct_unsorted	before	2	binary	2
+FIELD	direct_unsorted	before	2	text	3
+FIELD	direct_unsorted	before	2	int	4
+FIELD	direct_unsorted	before	2	long	5
+FIELD	direct_unsorted	before	2	float	6
+FIELD	direct_unsorted	before	2	double	7
+CASE	direct_unsorted	after	5	5	1
+DOC	direct_unsorted	after	0	0	binary:b:00ff0a80;text:s:;int:i:-2147483648;long:l:-9223372036854775808;float:f:2147483648;double:d:9223372036854775808
+DOC	direct_unsorted	after	1	1	-
+DOC	direct_unsorted	after	2	2	double:d:9218868437227405312;float:f:2143289344;long:l:-9007199254740993;int:i:-17;text:s:7461696c00656e64;binary:b:010200fe
+DOC	direct_unsorted	after	3	3	int:i:0;binary:b:ff007f8009;double:d:1;text:s:f09f9982;float:f:4286578688;long:l:0
+DOC	direct_unsorted	after	4	4	-
+FIELD	direct_unsorted	after	0	id	0
+FIELD	direct_unsorted	after	0	rank	1
+FIELD	direct_unsorted	after	0	binary	2
+FIELD	direct_unsorted	after	0	text	3
+FIELD	direct_unsorted	after	0	int	4
+FIELD	direct_unsorted	after	0	long	5
+FIELD	direct_unsorted	after	0	float	6
+FIELD	direct_unsorted	after	0	double	7
+TRACE	direct_unsorted	0	0:open
+TRACE	direct_unsorted	1	0:start
+TRACE	direct_unsorted	2	0:field:binary:2:b:00ff0a80
+TRACE	direct_unsorted	3	0:field:text:3:s:
+TRACE	direct_unsorted	4	0:field:int:4:i:-2147483648
+TRACE	direct_unsorted	5	0:field:long:5:l:-9223372036854775808
+TRACE	direct_unsorted	6	0:field:float:6:f:2147483648
+TRACE	direct_unsorted	7	0:field:double:7:d:9223372036854775808
+TRACE	direct_unsorted	8	0:end
+TRACE	direct_unsorted	9	0:start
+TRACE	direct_unsorted	10	0:end
+TRACE	direct_unsorted	11	0:finish:2
+TRACE	direct_unsorted	12	0:close
+TRACE	direct_unsorted	13	0:close
+TRACE	direct_unsorted	14	1:open
+TRACE	direct_unsorted	15	1:start
+TRACE	direct_unsorted	16	1:field:double:7:d:9221120237041090626
+TRACE	direct_unsorted	17	1:field:float:6:f:0
+TRACE	direct_unsorted	18	1:field:long:5:l:9223372036854775807
+TRACE	direct_unsorted	19	1:field:int:4:i:2147483647
+TRACE	direct_unsorted	20	1:field:text:3:s:68656c6c6f20cebb090a
+TRACE	direct_unsorted	21	1:field:binary:2:b:
+TRACE	direct_unsorted	22	1:end
+TRACE	direct_unsorted	23	1:start
+TRACE	direct_unsorted	24	1:field:double:7:d:9218868437227405312
+TRACE	direct_unsorted	25	1:field:float:6:f:2143289410
+TRACE	direct_unsorted	26	1:field:long:5:l:-9007199254740993
+TRACE	direct_unsorted	27	1:field:int:4:i:-17
+TRACE	direct_unsorted	28	1:field:text:3:s:7461696c00656e64
+TRACE	direct_unsorted	29	1:field:binary:2:b:010200fe
+TRACE	direct_unsorted	30	1:end
+TRACE	direct_unsorted	31	1:finish:2
+TRACE	direct_unsorted	32	1:close
+TRACE	direct_unsorted	33	1:close
+TRACE	direct_unsorted	34	2:open
+TRACE	direct_unsorted	35	2:start
+TRACE	direct_unsorted	36	2:field:int:4:i:0
+TRACE	direct_unsorted	37	2:field:binary:2:b:ff007f8009
+TRACE	direct_unsorted	38	2:field:double:7:d:1
+TRACE	direct_unsorted	39	2:field:text:3:s:f09f9982
+TRACE	direct_unsorted	40	2:field:float:6:f:4286578688
+TRACE	direct_unsorted	41	2:field:long:5:l:0
+TRACE	direct_unsorted	42	2:end
+TRACE	direct_unsorted	43	2:start
+TRACE	direct_unsorted	44	2:end
+TRACE	direct_unsorted	45	2:finish:2
+TRACE	direct_unsorted	46	2:close
+TRACE	direct_unsorted	47	2:close
+TRACE	direct_unsorted	48	3:open
+TRACE	direct_unsorted	49	3:start
+TRACE	direct_unsorted	50	3:field:binary:2:input:4
+TRACE	direct_unsorted	51	3:field:text:3:s:
+TRACE	direct_unsorted	52	3:field:int:4:i:-2147483648
+TRACE	direct_unsorted	53	3:field:long:5:l:-9223372036854775808
+TRACE	direct_unsorted	54	3:field:float:6:f:2147483648
+TRACE	direct_unsorted	55	3:field:double:7:d:9223372036854775808
+TRACE	direct_unsorted	56	3:end
+TRACE	direct_unsorted	57	3:start
+TRACE	direct_unsorted	58	3:end
+TRACE	direct_unsorted	59	3:start
+TRACE	direct_unsorted	60	3:field:double:7:d:9218868437227405312
+TRACE	direct_unsorted	61	3:field:float:6:f:2143289344
+TRACE	direct_unsorted	62	3:field:long:5:l:-9007199254740993
+TRACE	direct_unsorted	63	3:field:int:4:i:-17
+TRACE	direct_unsorted	64	3:field:text:3:s:7461696c00656e64
+TRACE	direct_unsorted	65	3:field:binary:2:input:4
+TRACE	direct_unsorted	66	3:end
+TRACE	direct_unsorted	67	3:start
+TRACE	direct_unsorted	68	3:field:int:4:i:0
+TRACE	direct_unsorted	69	3:field:binary:2:input:5
+TRACE	direct_unsorted	70	3:field:double:7:d:1
+TRACE	direct_unsorted	71	3:field:text:3:s:f09f9982
+TRACE	direct_unsorted	72	3:field:float:6:f:4286578688
+TRACE	direct_unsorted	73	3:field:long:5:l:0
+TRACE	direct_unsorted	74	3:end
+TRACE	direct_unsorted	75	3:start
+TRACE	direct_unsorted	76	3:end
+TRACE	direct_unsorted	77	3:finish:5
+TRACE	direct_unsorted	78	3:close
+TRACE	direct_unsorted	79	3:close
+CASE	direct_sorted	initial	6	6	3
+DOC	direct_sorted	initial	0	0	-
+DOC	direct_sorted	initial	1	1	binary:b:00ff0a80;text:s:;int:i:-2147483648;long:l:-9223372036854775808;float:f:2147483648;double:d:9223372036854775808
+FIELD	direct_sorted	initial	0	id	0
+FIELD	direct_sorted	initial	0	rank	1
+FIELD	direct_sorted	initial	0	binary	2
+FIELD	direct_sorted	initial	0	text	3
+FIELD	direct_sorted	initial	0	int	4
+FIELD	direct_sorted	initial	0	long	5
+FIELD	direct_sorted	initial	0	float	6
+FIELD	direct_sorted	initial	0	double	7
+DOC	direct_sorted	initial	2	2	double:d:9218868437227405312;float:f:2143289344;long:l:-9007199254740993;int:i:-17;text:s:7461696c00656e64;binary:b:010200fe
+DOC	direct_sorted	initial	3	3	double:d:9221120237041090560;float:f:0;long:l:9223372036854775807;int:i:2147483647;text:s:68656c6c6f20cebb090a;binary:b:
+FIELD	direct_sorted	initial	1	id	0
+FIELD	direct_sorted	initial	1	rank	1
+FIELD	direct_sorted	initial	1	binary	2
+FIELD	direct_sorted	initial	1	text	3
+FIELD	direct_sorted	initial	1	int	4
+FIELD	direct_sorted	initial	1	long	5
+FIELD	direct_sorted	initial	1	float	6
+FIELD	direct_sorted	initial	1	double	7
+DOC	direct_sorted	initial	4	4	-
+DOC	direct_sorted	initial	5	5	int:i:0;binary:b:ff007f8009;double:d:1;text:s:f09f9982;float:f:4286578688;long:l:0
+FIELD	direct_sorted	initial	2	id	0
+FIELD	direct_sorted	initial	2	rank	1
+FIELD	direct_sorted	initial	2	binary	2
+FIELD	direct_sorted	initial	2	text	3
+FIELD	direct_sorted	initial	2	int	4
+FIELD	direct_sorted	initial	2	long	5
+FIELD	direct_sorted	initial	2	float	6
+FIELD	direct_sorted	initial	2	double	7
+CASE	direct_sorted	before	6	5	3
+DOC	direct_sorted	before	0	0	-
+DOC	direct_sorted	before	1	1	binary:b:00ff0a80;text:s:;int:i:-2147483648;long:l:-9223372036854775808;float:f:2147483648;double:d:9223372036854775808
+FIELD	direct_sorted	before	0	id	0
+FIELD	direct_sorted	before	0	rank	1
+FIELD	direct_sorted	before	0	binary	2
+FIELD	direct_sorted	before	0	text	3
+FIELD	direct_sorted	before	0	int	4
+FIELD	direct_sorted	before	0	long	5
+FIELD	direct_sorted	before	0	float	6
+FIELD	direct_sorted	before	0	double	7
+DOC	direct_sorted	before	2	2	double:d:9218868437227405312;float:f:2143289344;long:l:-9007199254740993;int:i:-17;text:s:7461696c00656e64;binary:b:010200fe
+FIELD	direct_sorted	before	1	id	0
+FIELD	direct_sorted	before	1	rank	1
+FIELD	direct_sorted	before	1	binary	2
+FIELD	direct_sorted	before	1	text	3
+FIELD	direct_sorted	before	1	int	4
+FIELD	direct_sorted	before	1	long	5
+FIELD	direct_sorted	before	1	float	6
+FIELD	direct_sorted	before	1	double	7
+DOC	direct_sorted	before	3	4	-
+DOC	direct_sorted	before	4	5	int:i:0;binary:b:ff007f8009;double:d:1;text:s:f09f9982;float:f:4286578688;long:l:0
+FIELD	direct_sorted	before	2	id	0
+FIELD	direct_sorted	before	2	rank	1
+FIELD	direct_sorted	before	2	binary	2
+FIELD	direct_sorted	before	2	text	3
+FIELD	direct_sorted	before	2	int	4
+FIELD	direct_sorted	before	2	long	5
+FIELD	direct_sorted	before	2	float	6
+FIELD	direct_sorted	before	2	double	7
+CASE	direct_sorted	after	5	5	1
+DOC	direct_sorted	after	0	0	-
+DOC	direct_sorted	after	1	1	double:d:9218868437227405312;float:f:2143289344;long:l:-9007199254740993;int:i:-17;text:s:7461696c00656e64;binary:b:010200fe
+DOC	direct_sorted	after	2	2	binary:b:00ff0a80;text:s:;int:i:-2147483648;long:l:-9223372036854775808;float:f:2147483648;double:d:9223372036854775808
+DOC	direct_sorted	after	3	3	-
+DOC	direct_sorted	after	4	4	int:i:0;binary:b:ff007f8009;double:d:1;text:s:f09f9982;float:f:4286578688;long:l:0
+FIELD	direct_sorted	after	0	id	0
+FIELD	direct_sorted	after	0	rank	1
+FIELD	direct_sorted	after	0	binary	2
+FIELD	direct_sorted	after	0	text	3
+FIELD	direct_sorted	after	0	int	4
+FIELD	direct_sorted	after	0	long	5
+FIELD	direct_sorted	after	0	float	6
+FIELD	direct_sorted	after	0	double	7
+TRACE	direct_sorted	0	0:open
+TRACE	direct_sorted	1	0:start
+TRACE	direct_sorted	2	0:end
+TRACE	direct_sorted	3	0:start
+TRACE	direct_sorted	4	0:field:binary:2:input:4
+TRACE	direct_sorted	5	0:field:text:3:s:
+TRACE	direct_sorted	6	0:field:int:4:i:-2147483648
+TRACE	direct_sorted	7	0:field:long:5:l:-9223372036854775808
+TRACE	direct_sorted	8	0:field:float:6:f:2147483648
+TRACE	direct_sorted	9	0:field:double:7:d:9223372036854775808
+TRACE	direct_sorted	10	0:end
+TRACE	direct_sorted	11	0:finish:2
+TRACE	direct_sorted	12	0:close
+TRACE	direct_sorted	13	0:close
+TRACE	direct_sorted	14	1:open
+TRACE	direct_sorted	15	1:start
+TRACE	direct_sorted	16	1:field:double:7:d:9218868437227405312
+TRACE	direct_sorted	17	1:field:float:6:f:2143289344
+TRACE	direct_sorted	18	1:field:long:5:l:-9007199254740993
+TRACE	direct_sorted	19	1:field:int:4:i:-17
+TRACE	direct_sorted	20	1:field:text:3:s:7461696c00656e64
+TRACE	direct_sorted	21	1:field:binary:2:input:4
+TRACE	direct_sorted	22	1:end
+TRACE	direct_sorted	23	1:start
+TRACE	direct_sorted	24	1:field:double:7:d:9221120237041090560
+TRACE	direct_sorted	25	1:field:float:6:f:0
+TRACE	direct_sorted	26	1:field:long:5:l:9223372036854775807
+TRACE	direct_sorted	27	1:field:int:4:i:2147483647
+TRACE	direct_sorted	28	1:field:text:3:s:68656c6c6f20cebb090a
+TRACE	direct_sorted	29	1:field:binary:2:input:0
+TRACE	direct_sorted	30	1:end
+TRACE	direct_sorted	31	1:finish:2
+TRACE	direct_sorted	32	1:close
+TRACE	direct_sorted	33	1:close
+TRACE	direct_sorted	34	2:open
+TRACE	direct_sorted	35	2:start
+TRACE	direct_sorted	36	2:end
+TRACE	direct_sorted	37	2:start
+TRACE	direct_sorted	38	2:field:int:4:i:0
+TRACE	direct_sorted	39	2:field:binary:2:input:5
+TRACE	direct_sorted	40	2:field:double:7:d:1
+TRACE	direct_sorted	41	2:field:text:3:s:f09f9982
+TRACE	direct_sorted	42	2:field:float:6:f:4286578688
+TRACE	direct_sorted	43	2:field:long:5:l:0
+TRACE	direct_sorted	44	2:end
+TRACE	direct_sorted	45	2:finish:2
+TRACE	direct_sorted	46	2:close
+TRACE	direct_sorted	47	2:close
+TRACE	direct_sorted	48	3:open
+TRACE	direct_sorted	49	3:start
+TRACE	direct_sorted	50	3:end
+TRACE	direct_sorted	51	3:start
+TRACE	direct_sorted	52	3:field:double:7:d:9218868437227405312
+TRACE	direct_sorted	53	3:field:float:6:f:2143289344
+TRACE	direct_sorted	54	3:field:long:5:l:-9007199254740993
+TRACE	direct_sorted	55	3:field:int:4:i:-17
+TRACE	direct_sorted	56	3:field:text:3:s:7461696c00656e64
+TRACE	direct_sorted	57	3:field:binary:2:input:4
+TRACE	direct_sorted	58	3:end
+TRACE	direct_sorted	59	3:start
+TRACE	direct_sorted	60	3:field:binary:2:input:4
+TRACE	direct_sorted	61	3:field:text:3:s:
+TRACE	direct_sorted	62	3:field:int:4:i:-2147483648
+TRACE	direct_sorted	63	3:field:long:5:l:-9223372036854775808
+TRACE	direct_sorted	64	3:field:float:6:f:2147483648
+TRACE	direct_sorted	65	3:field:double:7:d:9223372036854775808
+TRACE	direct_sorted	66	3:end
+TRACE	direct_sorted	67	3:start
+TRACE	direct_sorted	68	3:end
+TRACE	direct_sorted	69	3:start
+TRACE	direct_sorted	70	3:field:int:4:i:0
+TRACE	direct_sorted	71	3:field:binary:2:input:5
+TRACE	direct_sorted	72	3:field:double:7:d:1
+TRACE	direct_sorted	73	3:field:text:3:s:f09f9982
+TRACE	direct_sorted	74	3:field:float:6:f:4286578688
+TRACE	direct_sorted	75	3:field:long:5:l:0
+TRACE	direct_sorted	76	3:end
+TRACE	direct_sorted	77	3:finish:5
+TRACE	direct_sorted	78	3:close
+TRACE	direct_sorted	79	3:close
+CASE	imported_unsorted	initial	6	6	3
+DOC	imported_unsorted	initial	0	0	binary:b:00ff0a80;text:s:;int:i:-2147483648;long:l:-9223372036854775808;float:f:2147483648;double:d:9223372036854775808
+DOC	imported_unsorted	initial	1	1	-
+FIELD	imported_unsorted	initial	0	id	0
+FIELD	imported_unsorted	initial	0	rank	1
+FIELD	imported_unsorted	initial	0	binary	2
+FIELD	imported_unsorted	initial	0	text	3
+FIELD	imported_unsorted	initial	0	int	4
+FIELD	imported_unsorted	initial	0	long	5
+FIELD	imported_unsorted	initial	0	float	6
+FIELD	imported_unsorted	initial	0	double	7
+DOC	imported_unsorted	initial	2	2	double:d:9221120237041090560;float:f:0;long:l:9223372036854775807;int:i:2147483647;text:s:68656c6c6f20cebb090a;binary:b:
+DOC	imported_unsorted	initial	3	3	double:d:9218868437227405312;float:f:2143289344;long:l:-9007199254740993;int:i:-17;text:s:7461696c00656e64;binary:b:010200fe
+FIELD	imported_unsorted	initial	1	id	0
+FIELD	imported_unsorted	initial	1	rank	1
+FIELD	imported_unsorted	initial	1	double	2
+FIELD	imported_unsorted	initial	1	float	3
+FIELD	imported_unsorted	initial	1	long	4
+FIELD	imported_unsorted	initial	1	int	5
+FIELD	imported_unsorted	initial	1	text	6
+FIELD	imported_unsorted	initial	1	binary	7
+DOC	imported_unsorted	initial	4	4	int:i:0;binary:b:ff007f8009;double:d:1;text:s:f09f9982;float:f:4286578688;long:l:0
+DOC	imported_unsorted	initial	5	5	-
+FIELD	imported_unsorted	initial	2	id	0
+FIELD	imported_unsorted	initial	2	rank	1
+FIELD	imported_unsorted	initial	2	int	2
+FIELD	imported_unsorted	initial	2	binary	3
+FIELD	imported_unsorted	initial	2	double	4
+FIELD	imported_unsorted	initial	2	text	5
+FIELD	imported_unsorted	initial	2	float	6
+FIELD	imported_unsorted	initial	2	long	7
+CASE	imported_unsorted	before	6	5	3
+DOC	imported_unsorted	before	0	0	binary:b:00ff0a80;text:s:;int:i:-2147483648;long:l:-9223372036854775808;float:f:2147483648;double:d:9223372036854775808
+DOC	imported_unsorted	before	1	1	-
+FIELD	imported_unsorted	before	0	id	0
+FIELD	imported_unsorted	before	0	rank	1
+FIELD	imported_unsorted	before	0	binary	2
+FIELD	imported_unsorted	before	0	text	3
+FIELD	imported_unsorted	before	0	int	4
+FIELD	imported_unsorted	before	0	long	5
+FIELD	imported_unsorted	before	0	float	6
+FIELD	imported_unsorted	before	0	double	7
+DOC	imported_unsorted	before	2	3	double:d:9218868437227405312;float:f:2143289344;long:l:-9007199254740993;int:i:-17;text:s:7461696c00656e64;binary:b:010200fe
+FIELD	imported_unsorted	before	1	id	0
+FIELD	imported_unsorted	before	1	rank	1
+FIELD	imported_unsorted	before	1	double	2
+FIELD	imported_unsorted	before	1	float	3
+FIELD	imported_unsorted	before	1	long	4
+FIELD	imported_unsorted	before	1	int	5
+FIELD	imported_unsorted	before	1	text	6
+FIELD	imported_unsorted	before	1	binary	7
+DOC	imported_unsorted	before	3	4	int:i:0;binary:b:ff007f8009;double:d:1;text:s:f09f9982;float:f:4286578688;long:l:0
+DOC	imported_unsorted	before	4	5	-
+FIELD	imported_unsorted	before	2	id	0
+FIELD	imported_unsorted	before	2	rank	1
+FIELD	imported_unsorted	before	2	int	2
+FIELD	imported_unsorted	before	2	binary	3
+FIELD	imported_unsorted	before	2	double	4
+FIELD	imported_unsorted	before	2	text	5
+FIELD	imported_unsorted	before	2	float	6
+FIELD	imported_unsorted	before	2	long	7
+CASE	imported_unsorted	after	5	5	1
+DOC	imported_unsorted	after	0	0	binary:b:00ff0a80;text:s:;int:i:-2147483648;long:l:-9223372036854775808;float:f:2147483648;double:d:9223372036854775808
+DOC	imported_unsorted	after	1	1	-
+DOC	imported_unsorted	after	2	2	double:d:9218868437227405312;float:f:2143289344;long:l:-9007199254740993;int:i:-17;text:s:7461696c00656e64;binary:b:010200fe
+DOC	imported_unsorted	after	3	3	int:i:0;binary:b:ff007f8009;double:d:1;text:s:f09f9982;float:f:4286578688;long:l:0
+DOC	imported_unsorted	after	4	4	-
+FIELD	imported_unsorted	after	0	id	0
+FIELD	imported_unsorted	after	0	rank	1
+FIELD	imported_unsorted	after	0	binary	2
+FIELD	imported_unsorted	after	0	text	3
+FIELD	imported_unsorted	after	0	int	4
+FIELD	imported_unsorted	after	0	long	5
+FIELD	imported_unsorted	after	0	float	6
+FIELD	imported_unsorted	after	0	double	7
+TRACE	imported_unsorted	0	0:open
+TRACE	imported_unsorted	1	0:start
+TRACE	imported_unsorted	2	0:field:binary:2:b:00ff0a80
+TRACE	imported_unsorted	3	0:field:text:3:s:
+TRACE	imported_unsorted	4	0:field:int:4:i:-2147483648
+TRACE	imported_unsorted	5	0:field:long:5:l:-9223372036854775808
+TRACE	imported_unsorted	6	0:field:float:6:f:2147483648
+TRACE	imported_unsorted	7	0:field:double:7:d:9223372036854775808
+TRACE	imported_unsorted	8	0:end
+TRACE	imported_unsorted	9	0:start
+TRACE	imported_unsorted	10	0:end
+TRACE	imported_unsorted	11	0:finish:2
+TRACE	imported_unsorted	12	0:close
+TRACE	imported_unsorted	13	0:close
+TRACE	imported_unsorted	14	1:open
+TRACE	imported_unsorted	15	1:start
+TRACE	imported_unsorted	16	1:field:double:2:d:9221120237041090626
+TRACE	imported_unsorted	17	1:field:float:3:f:0
+TRACE	imported_unsorted	18	1:field:long:4:l:9223372036854775807
+TRACE	imported_unsorted	19	1:field:int:5:i:2147483647
+TRACE	imported_unsorted	20	1:field:text:6:s:68656c6c6f20cebb090a
+TRACE	imported_unsorted	21	1:field:binary:7:b:
+TRACE	imported_unsorted	22	1:end
+TRACE	imported_unsorted	23	1:start
+TRACE	imported_unsorted	24	1:field:double:2:d:9218868437227405312
+TRACE	imported_unsorted	25	1:field:float:3:f:2143289410
+TRACE	imported_unsorted	26	1:field:long:4:l:-9007199254740993
+TRACE	imported_unsorted	27	1:field:int:5:i:-17
+TRACE	imported_unsorted	28	1:field:text:6:s:7461696c00656e64
+TRACE	imported_unsorted	29	1:field:binary:7:b:010200fe
+TRACE	imported_unsorted	30	1:end
+TRACE	imported_unsorted	31	1:finish:2
+TRACE	imported_unsorted	32	1:close
+TRACE	imported_unsorted	33	1:close
+TRACE	imported_unsorted	34	2:open
+TRACE	imported_unsorted	35	2:start
+TRACE	imported_unsorted	36	2:field:int:2:i:0
+TRACE	imported_unsorted	37	2:field:binary:3:b:ff007f8009
+TRACE	imported_unsorted	38	2:field:double:4:d:1
+TRACE	imported_unsorted	39	2:field:text:5:s:f09f9982
+TRACE	imported_unsorted	40	2:field:float:6:f:4286578688
+TRACE	imported_unsorted	41	2:field:long:7:l:0
+TRACE	imported_unsorted	42	2:end
+TRACE	imported_unsorted	43	2:start
+TRACE	imported_unsorted	44	2:end
+TRACE	imported_unsorted	45	2:finish:2
+TRACE	imported_unsorted	46	2:close
+TRACE	imported_unsorted	47	2:close
+TRACE	imported_unsorted	48	3:open
+TRACE	imported_unsorted	49	3:start
+TRACE	imported_unsorted	50	3:field:binary:2:input:4
+TRACE	imported_unsorted	51	3:field:text:3:s:
+TRACE	imported_unsorted	52	3:field:int:4:i:-2147483648
+TRACE	imported_unsorted	53	3:field:long:5:l:-9223372036854775808
+TRACE	imported_unsorted	54	3:field:float:6:f:2147483648
+TRACE	imported_unsorted	55	3:field:double:7:d:9223372036854775808
+TRACE	imported_unsorted	56	3:end
+TRACE	imported_unsorted	57	3:start
+TRACE	imported_unsorted	58	3:end
+TRACE	imported_unsorted	59	3:start
+TRACE	imported_unsorted	60	3:field:double:7:d:9218868437227405312
+TRACE	imported_unsorted	61	3:field:float:6:f:2143289344
+TRACE	imported_unsorted	62	3:field:long:5:l:-9007199254740993
+TRACE	imported_unsorted	63	3:field:int:4:i:-17
+TRACE	imported_unsorted	64	3:field:text:3:s:7461696c00656e64
+TRACE	imported_unsorted	65	3:field:binary:2:input:4
+TRACE	imported_unsorted	66	3:end
+TRACE	imported_unsorted	67	3:start
+TRACE	imported_unsorted	68	3:field:int:4:i:0
+TRACE	imported_unsorted	69	3:field:binary:2:input:5
+TRACE	imported_unsorted	70	3:field:double:7:d:1
+TRACE	imported_unsorted	71	3:field:text:3:s:f09f9982
+TRACE	imported_unsorted	72	3:field:float:6:f:4286578688
+TRACE	imported_unsorted	73	3:field:long:5:l:0
+TRACE	imported_unsorted	74	3:end
+TRACE	imported_unsorted	75	3:start
+TRACE	imported_unsorted	76	3:end
+TRACE	imported_unsorted	77	3:finish:5
+TRACE	imported_unsorted	78	3:close
+TRACE	imported_unsorted	79	3:close
+CASE	imported_sorted	initial	6	6	3
+DOC	imported_sorted	initial	0	0	-
+DOC	imported_sorted	initial	1	1	binary:b:00ff0a80;text:s:;int:i:-2147483648;long:l:-9223372036854775808;float:f:2147483648;double:d:9223372036854775808
+FIELD	imported_sorted	initial	0	id	0
+FIELD	imported_sorted	initial	0	rank	1
+FIELD	imported_sorted	initial	0	binary	2
+FIELD	imported_sorted	initial	0	text	3
+FIELD	imported_sorted	initial	0	int	4
+FIELD	imported_sorted	initial	0	long	5
+FIELD	imported_sorted	initial	0	float	6
+FIELD	imported_sorted	initial	0	double	7
+DOC	imported_sorted	initial	2	2	double:d:9218868437227405312;float:f:2143289344;long:l:-9007199254740993;int:i:-17;text:s:7461696c00656e64;binary:b:010200fe
+DOC	imported_sorted	initial	3	3	double:d:9221120237041090560;float:f:0;long:l:9223372036854775807;int:i:2147483647;text:s:68656c6c6f20cebb090a;binary:b:
+FIELD	imported_sorted	initial	1	id	0
+FIELD	imported_sorted	initial	1	rank	1
+FIELD	imported_sorted	initial	1	double	2
+FIELD	imported_sorted	initial	1	float	3
+FIELD	imported_sorted	initial	1	long	4
+FIELD	imported_sorted	initial	1	int	5
+FIELD	imported_sorted	initial	1	text	6
+FIELD	imported_sorted	initial	1	binary	7
+DOC	imported_sorted	initial	4	4	-
+DOC	imported_sorted	initial	5	5	int:i:0;binary:b:ff007f8009;double:d:1;text:s:f09f9982;float:f:4286578688;long:l:0
+FIELD	imported_sorted	initial	2	id	0
+FIELD	imported_sorted	initial	2	rank	1
+FIELD	imported_sorted	initial	2	int	2
+FIELD	imported_sorted	initial	2	binary	3
+FIELD	imported_sorted	initial	2	double	4
+FIELD	imported_sorted	initial	2	text	5
+FIELD	imported_sorted	initial	2	float	6
+FIELD	imported_sorted	initial	2	long	7
+CASE	imported_sorted	before	6	5	3
+DOC	imported_sorted	before	0	0	-
+DOC	imported_sorted	before	1	1	binary:b:00ff0a80;text:s:;int:i:-2147483648;long:l:-9223372036854775808;float:f:2147483648;double:d:9223372036854775808
+FIELD	imported_sorted	before	0	id	0
+FIELD	imported_sorted	before	0	rank	1
+FIELD	imported_sorted	before	0	binary	2
+FIELD	imported_sorted	before	0	text	3
+FIELD	imported_sorted	before	0	int	4
+FIELD	imported_sorted	before	0	long	5
+FIELD	imported_sorted	before	0	float	6
+FIELD	imported_sorted	before	0	double	7
+DOC	imported_sorted	before	2	2	double:d:9218868437227405312;float:f:2143289344;long:l:-9007199254740993;int:i:-17;text:s:7461696c00656e64;binary:b:010200fe
+FIELD	imported_sorted	before	1	id	0
+FIELD	imported_sorted	before	1	rank	1
+FIELD	imported_sorted	before	1	double	2
+FIELD	imported_sorted	before	1	float	3
+FIELD	imported_sorted	before	1	long	4
+FIELD	imported_sorted	before	1	int	5
+FIELD	imported_sorted	before	1	text	6
+FIELD	imported_sorted	before	1	binary	7
+DOC	imported_sorted	before	3	4	-
+DOC	imported_sorted	before	4	5	int:i:0;binary:b:ff007f8009;double:d:1;text:s:f09f9982;float:f:4286578688;long:l:0
+FIELD	imported_sorted	before	2	id	0
+FIELD	imported_sorted	before	2	rank	1
+FIELD	imported_sorted	before	2	int	2
+FIELD	imported_sorted	before	2	binary	3
+FIELD	imported_sorted	before	2	double	4
+FIELD	imported_sorted	before	2	text	5
+FIELD	imported_sorted	before	2	float	6
+FIELD	imported_sorted	before	2	long	7
+CASE	imported_sorted	after	5	5	1
+DOC	imported_sorted	after	0	0	-
+DOC	imported_sorted	after	1	1	double:d:9218868437227405312;float:f:2143289344;long:l:-9007199254740993;int:i:-17;text:s:7461696c00656e64;binary:b:010200fe
+DOC	imported_sorted	after	2	2	binary:b:00ff0a80;text:s:;int:i:-2147483648;long:l:-9223372036854775808;float:f:2147483648;double:d:9223372036854775808
+DOC	imported_sorted	after	3	3	-
+DOC	imported_sorted	after	4	4	int:i:0;binary:b:ff007f8009;double:d:1;text:s:f09f9982;float:f:4286578688;long:l:0
+FIELD	imported_sorted	after	0	id	0
+FIELD	imported_sorted	after	0	rank	1
+FIELD	imported_sorted	after	0	binary	2
+FIELD	imported_sorted	after	0	text	3
+FIELD	imported_sorted	after	0	int	4
+FIELD	imported_sorted	after	0	long	5
+FIELD	imported_sorted	after	0	float	6
+FIELD	imported_sorted	after	0	double	7
+TRACE	imported_sorted	0	0:open
+TRACE	imported_sorted	1	0:start
+TRACE	imported_sorted	2	0:end
+TRACE	imported_sorted	3	0:start
+TRACE	imported_sorted	4	0:field:binary:2:input:4
+TRACE	imported_sorted	5	0:field:text:3:s:
+TRACE	imported_sorted	6	0:field:int:4:i:-2147483648
+TRACE	imported_sorted	7	0:field:long:5:l:-9223372036854775808
+TRACE	imported_sorted	8	0:field:float:6:f:2147483648
+TRACE	imported_sorted	9	0:field:double:7:d:9223372036854775808
+TRACE	imported_sorted	10	0:end
+TRACE	imported_sorted	11	0:finish:2
+TRACE	imported_sorted	12	0:close
+TRACE	imported_sorted	13	0:close
+TRACE	imported_sorted	14	1:open
+TRACE	imported_sorted	15	1:start
+TRACE	imported_sorted	16	1:field:double:2:d:9218868437227405312
+TRACE	imported_sorted	17	1:field:float:3:f:2143289344
+TRACE	imported_sorted	18	1:field:long:4:l:-9007199254740993
+TRACE	imported_sorted	19	1:field:int:5:i:-17
+TRACE	imported_sorted	20	1:field:text:6:s:7461696c00656e64
+TRACE	imported_sorted	21	1:field:binary:7:input:4
+TRACE	imported_sorted	22	1:end
+TRACE	imported_sorted	23	1:start
+TRACE	imported_sorted	24	1:field:double:2:d:9221120237041090560
+TRACE	imported_sorted	25	1:field:float:3:f:0
+TRACE	imported_sorted	26	1:field:long:4:l:9223372036854775807
+TRACE	imported_sorted	27	1:field:int:5:i:2147483647
+TRACE	imported_sorted	28	1:field:text:6:s:68656c6c6f20cebb090a
+TRACE	imported_sorted	29	1:field:binary:7:input:0
+TRACE	imported_sorted	30	1:end
+TRACE	imported_sorted	31	1:finish:2
+TRACE	imported_sorted	32	1:close
+TRACE	imported_sorted	33	1:close
+TRACE	imported_sorted	34	2:open
+TRACE	imported_sorted	35	2:start
+TRACE	imported_sorted	36	2:end
+TRACE	imported_sorted	37	2:start
+TRACE	imported_sorted	38	2:field:int:2:i:0
+TRACE	imported_sorted	39	2:field:binary:3:input:5
+TRACE	imported_sorted	40	2:field:double:4:d:1
+TRACE	imported_sorted	41	2:field:text:5:s:f09f9982
+TRACE	imported_sorted	42	2:field:float:6:f:4286578688
+TRACE	imported_sorted	43	2:field:long:7:l:0
+TRACE	imported_sorted	44	2:end
+TRACE	imported_sorted	45	2:finish:2
+TRACE	imported_sorted	46	2:close
+TRACE	imported_sorted	47	2:close
+TRACE	imported_sorted	48	3:open
+TRACE	imported_sorted	49	3:start
+TRACE	imported_sorted	50	3:end
+TRACE	imported_sorted	51	3:start
+TRACE	imported_sorted	52	3:field:double:7:d:9218868437227405312
+TRACE	imported_sorted	53	3:field:float:6:f:2143289344
+TRACE	imported_sorted	54	3:field:long:5:l:-9007199254740993
+TRACE	imported_sorted	55	3:field:int:4:i:-17
+TRACE	imported_sorted	56	3:field:text:3:s:7461696c00656e64
+TRACE	imported_sorted	57	3:field:binary:2:input:4
+TRACE	imported_sorted	58	3:end
+TRACE	imported_sorted	59	3:start
+TRACE	imported_sorted	60	3:field:binary:2:input:4
+TRACE	imported_sorted	61	3:field:text:3:s:
+TRACE	imported_sorted	62	3:field:int:4:i:-2147483648
+TRACE	imported_sorted	63	3:field:long:5:l:-9223372036854775808
+TRACE	imported_sorted	64	3:field:float:6:f:2147483648
+TRACE	imported_sorted	65	3:field:double:7:d:9223372036854775808
+TRACE	imported_sorted	66	3:end
+TRACE	imported_sorted	67	3:start
+TRACE	imported_sorted	68	3:end
+TRACE	imported_sorted	69	3:start
+TRACE	imported_sorted	70	3:field:int:4:i:0
+TRACE	imported_sorted	71	3:field:binary:2:input:5
+TRACE	imported_sorted	72	3:field:double:7:d:1
+TRACE	imported_sorted	73	3:field:text:3:s:f09f9982
+TRACE	imported_sorted	74	3:field:float:6:f:4286578688
+TRACE	imported_sorted	75	3:field:long:5:l:0
+TRACE	imported_sorted	76	3:end
+TRACE	imported_sorted	77	3:finish:5
+TRACE	imported_sorted	78	3:close
+TRACE	imported_sorted	79	3:close

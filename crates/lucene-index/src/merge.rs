@@ -1798,6 +1798,122 @@ fn write_merged_stored_fields(
     Ok(writer.finish())
 }
 
+/// Java's `StoredFieldsWriter.MergeVisitor`: forward each decoded value
+/// immediately, so an earlier writer failure precedes later source corruption.
+struct MergedStoredFieldsVisitor<'a> {
+    writer: &'a mut dyn lucene_codecs::stored_fields_writer::StoredFieldsWriteSink,
+    field_map: &'a HashMap<i32, i32>,
+    pruned: Option<PrunedField<'a>>,
+    doc_id: i32,
+    unknown_field: Option<i32>,
+}
+
+impl MergedStoredFieldsVisitor<'_> {
+    fn write_field(
+        &mut self,
+        field_number: i32,
+        value: stored_fields::FieldValue,
+    ) -> stored_fields::Result<()> {
+        if self
+            .pruned
+            .is_some_and(|pruned| pruned.drops(field_number, self.doc_id))
+        {
+            return Ok(());
+        }
+        let Some(&number) = self.field_map.get(&field_number) else {
+            // The lower-level visitor returns only stored-fields errors.
+            // Abort traversal immediately, then restore the typed merge error
+            // at the call site before propagating any decoder/writer error.
+            self.unknown_field = Some(field_number);
+            return Err(lucene_store::Error::Io(std::io::Error::other(
+                "stored-fields merge field mapping failed",
+            ))
+            .into());
+        };
+        self.writer.write_field(number, &value)
+    }
+}
+
+impl stored_fields::StoredFieldVisitor for MergedStoredFieldsVisitor<'_> {
+    fn needs_field(
+        &mut self,
+        _field_number: i32,
+    ) -> stored_fields::Result<stored_fields::VisitStatus> {
+        // Preserve validation of pruned values, then prune in source space
+        // before looking up the merged field number.
+        Ok(stored_fields::VisitStatus::Yes)
+    }
+
+    fn string_field(&mut self, number: i32, value: &str) -> stored_fields::Result<()> {
+        self.write_field(number, stored_fields::FieldValue::String(value.to_owned()))
+    }
+
+    fn binary_field(&mut self, number: i32, value: &[u8]) -> stored_fields::Result<()> {
+        self.write_field(number, stored_fields::FieldValue::Binary(value.to_vec()))
+    }
+
+    fn int_field(&mut self, number: i32, value: i32) -> stored_fields::Result<()> {
+        self.write_field(number, stored_fields::FieldValue::Int(value))
+    }
+
+    fn long_field(&mut self, number: i32, value: i64) -> stored_fields::Result<()> {
+        self.write_field(number, stored_fields::FieldValue::Long(value))
+    }
+
+    fn float_field(&mut self, number: i32, value: f32) -> stored_fields::Result<()> {
+        self.write_field(number, stored_fields::FieldValue::Float(value))
+    }
+
+    fn double_field(&mut self, number: i32, value: f64) -> stored_fields::Result<()> {
+        self.write_field(number, stored_fields::FieldValue::Double(value))
+    }
+}
+
+/// Java's `StoredFieldsWriter.merge` visitor path re-enters the installed
+/// writer for every live document, including when native fields could be
+/// copied as compressed chunks. This is necessary for lifecycle assertions.
+fn write_merged_stored_fields_with_factory(
+    factory: &dyn lucene_codecs::stored_fields_writer::StoredFieldsWriterFactory,
+    state: lucene_codecs::stored_fields_writer::StoredFieldsWriteState<'_>,
+    sources: &[MergeSource],
+    per_source_maps: &[HashMap<i32, i32>],
+    doc_order: &[(usize, i32)],
+) -> Result<()> {
+    let mut cursors: Vec<stored_fields::ChunkCursor> = (0..sources.len())
+        .map(|_| stored_fields::ChunkCursor::new())
+        .collect();
+    lucene_codecs::stored_fields_writer::with_writer(factory, state, |writer| -> Result<()> {
+        // Java opens the writer before its merge checks source integrity.
+        // Keep that error order and close the opened writer on corruption.
+        for source in sources {
+            source.reader.check_integrity()?;
+        }
+        for &(source_index, doc_id) in doc_order {
+            let source = &sources[source_index];
+            // Java starts the output document before visiting/decoding its
+            // source, so a start failure precedes a corrupt-document error.
+            writer.start_document()?;
+            let (count, bytes) = cursors[source_index].document(source.reader, doc_id)?;
+            let mut visitor = MergedStoredFieldsVisitor {
+                writer,
+                field_map: &per_source_maps[source_index],
+                pruned: source.pruned_field,
+                doc_id,
+                unknown_field: None,
+            };
+            let visited = stored_fields::visit_document(count, bytes, &mut visitor);
+            if let Some(field_number) = visitor.unknown_field {
+                return Err(Error::UnknownSourceFieldNumber { field_number });
+            }
+            visited?;
+            writer.finish_document()?;
+        }
+        // The same final document sequence supplies the segment's doc_count.
+        writer.finish(doc_order.len() as i32)?;
+        Ok(())
+    })
+}
+
 /// Merges `sources` (already-opened, in source order) into one brand-new
 /// segment named `merged_segment_name` inside `dir`, exactly as
 /// [`crate::segment_writer::flush_stored_only_segment`] writes a freshly
@@ -2251,14 +2367,35 @@ pub fn merge_segments_mapped(
 
     let mut files: Vec<String> = Vec::new();
 
-    let (fdt, fdx, fdm) =
-        write_merged_stored_fields(sources, &per_source_maps, &doc_order, &merged_segment_id)?;
     let fdt_name = format!("{merged_segment_name}.fdt");
     let fdx_name = format!("{merged_segment_name}.fdx");
     let fdm_name = format!("{merged_segment_name}.fdm");
-    for (name, bytes) in [(&fdt_name, &fdt), (&fdx_name, &fdx), (&fdm_name, &fdm)] {
-        write_file(dir, name, bytes)?;
-        files.push(name.clone());
+    if let Some(factory) = options
+        .codec
+        .as_deref()
+        .and_then(|codec| codec.stored_fields_writer_factory())
+    {
+        write_merged_stored_fields_with_factory(
+            factory,
+            lucene_codecs::stored_fields_writer::StoredFieldsWriteState {
+                directory: dir,
+                segment: merged_segment_name,
+                id: &merged_segment_id,
+                suffix: "",
+                mode: stored_fields::Mode::BestSpeed,
+            },
+            sources,
+            &per_source_maps,
+            &doc_order,
+        )?;
+        files.extend([fdt_name, fdx_name, fdm_name]);
+    } else {
+        let (fdt, fdx, fdm) =
+            write_merged_stored_fields(sources, &per_source_maps, &doc_order, &merged_segment_id)?;
+        for (name, bytes) in [(&fdt_name, &fdt), (&fdx_name, &fdx), (&fdm_name, &fdm)] {
+            write_file(dir, name, bytes)?;
+            files.push(name.clone());
+        }
     }
 
     let fnm_name = format!("{merged_segment_name}.fnm");
@@ -3708,7 +3845,8 @@ pub struct MergeOptions {
     /// ([`crate::index_writer::IndexWriter::set_knn_vectors_format_for_field`]).
     pub knn_vectors_formats: Vec<(String, per_field_knn_vectors::KnnVectorsFormat)>,
     /// The writer's codec ([`crate::index_writer::IndexWriter::set_codec`]),
-    /// consulted for a field the lists above do not route.
+    /// consulted for a field the lists above do not route and for its optional
+    /// stored-fields writer factory.
     pub codec: Option<std::sync::Arc<dyn lucene_codecs::codec::Lucene104Codec>>,
     /// `OneMerge.reorder`'s `Sorter.DocMap` as `newToOld` over every
     /// source's documents concatenated (deleted ones included): the merged
