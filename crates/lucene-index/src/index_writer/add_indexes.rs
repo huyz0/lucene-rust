@@ -254,8 +254,13 @@ impl IndexWriter<'_> {
         if hidden.is_empty() {
             return Ok(sci);
         }
-        Ok(crate::deletes::apply_deletes(
-            self.dir, &sci, None, max_doc, hidden,
+        Ok(crate::deletes::apply_deletes_with_codec(
+            self.dir,
+            &sci,
+            None,
+            max_doc,
+            hidden,
+            self.cfg.codec.as_deref(),
         )?)
     }
 
