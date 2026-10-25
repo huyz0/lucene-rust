@@ -1,0 +1,18 @@
+docs		NOT_FOUND	p00/t0000	6	6
+docs	p00/t0000	FOUND	p00/t0000	6	6
+docs	p00/t0001	FOUND	p00/t0001	6	6
+docs	p00/t007f	FOUND	p00/t007f	6	6
+docs	p01/t0080	FOUND	p01/t0080	6	6
+docs	p05/t02ff	FOUND	p05/t02ff	6	6
+docs	p0b/t05ff	FOUND	p0b/t05ff	6	6
+docs	p0b/t05ffx	END	
+docs	z	END	
+rich		NOT_FOUND	p00/t0000	6	6
+rich	p00/t0000	FOUND	p00/t0000	6	6
+rich	p00/t0001	FOUND	p00/t0001	6	6
+rich	p00/t007f	FOUND	p00/t007f	6	6
+rich	p01/t0080	FOUND	p01/t0080	6	6
+rich	p05/t02ff	FOUND	p05/t02ff	6	6
+rich	p0b/t05ff	FOUND	p0b/t05ff	6	6
+rich	p0b/t05ffx	END	
+rich	z	END	

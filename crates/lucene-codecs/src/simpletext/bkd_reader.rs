@@ -3,7 +3,8 @@
 //! `intersect` and `estimatePointCount` over that cursor.
 //!
 //! The index (leaf pointers, split values, bounds) is held in memory, as in
-//! Java; each leaf is read from the `.dim` bytes when visited.
+//! Java; each leaf is read from the `.dim` bytes when visited. Rebound
+//! readers share the immutable index arrays.
 //!
 //! What differs from Java: every walk returns a `Result` -- a leaf pointer
 //! outside the file, a line without its prefix, a bad number, a value of the
@@ -12,6 +13,8 @@
 //! `Math.toIntExact` failure too. The doc-id scratch grows with the blocks
 //! read rather than being sized from the file's `max leaf points` up front.
 //! `PointTree.clone()` is [`SimpleTextPointTree::clone_tree`].
+
+use std::sync::Arc;
 
 use super::points_writer::{BLOCK_COUNT, BLOCK_DOC_ID, BLOCK_VALUE};
 use super::util::{from_bytes_ref_string, parse_integer, read_line, read_value};
@@ -24,13 +27,13 @@ use crate::points::{IntersectVisitor, Relation};
 pub struct SimpleTextBkdReader<'a> {
     data: &'a [u8],
     /// Packed `bytesPerIndexEntry` entries, one per node id (entry 0 unused).
-    split_packed_values: Vec<u8>,
-    leaf_block_fps: Vec<i64>,
+    split_packed_values: Arc<[u8]>,
+    leaf_block_fps: Arc<[i64]>,
     leaf_node_offset: usize,
     config: BkdConfig,
     bytes_per_index_entry: usize,
-    min_packed_value: Vec<u8>,
-    max_packed_value: Vec<u8>,
+    min_packed_value: Arc<[u8]>,
+    max_packed_value: Arc<[u8]>,
     point_count: i64,
     doc_count: i32,
 }
@@ -101,16 +104,33 @@ impl<'a> SimpleTextBkdReader<'a> {
         }
         Ok(SimpleTextBkdReader {
             data,
-            split_packed_values,
-            leaf_block_fps,
+            split_packed_values: split_packed_values.into(),
+            leaf_block_fps: leaf_block_fps.into(),
             leaf_node_offset,
             config,
             bytes_per_index_entry,
-            min_packed_value,
-            max_packed_value,
+            min_packed_value: min_packed_value.into(),
+            max_packed_value: max_packed_value.into(),
             point_count,
             doc_count,
         })
+    }
+
+    /// Rebind the parsed index to the same `.dim` bytes. Immutable index
+    /// arrays are shared, as Java's cloned `IndexInput` readers share them.
+    pub fn rebind<'n>(&self, data: &'n [u8]) -> SimpleTextBkdReader<'n> {
+        SimpleTextBkdReader {
+            data,
+            split_packed_values: self.split_packed_values.clone(),
+            leaf_block_fps: self.leaf_block_fps.clone(),
+            leaf_node_offset: self.leaf_node_offset,
+            config: self.config,
+            bytes_per_index_entry: self.bytes_per_index_entry,
+            min_packed_value: self.min_packed_value.clone(),
+            max_packed_value: self.max_packed_value.clone(),
+            point_count: self.point_count,
+            doc_count: self.doc_count,
+        }
     }
 
     /// `getPointTree()`: a cursor on the root.
@@ -119,8 +139,8 @@ impl<'a> SimpleTextBkdReader<'a> {
             self,
             1,
             1,
-            self.min_packed_value.clone(),
-            self.max_packed_value.clone(),
+            self.min_packed_value.to_vec(),
+            self.max_packed_value.to_vec(),
         )
     }
 
@@ -682,7 +702,16 @@ mod tests {
 
     #[test]
     fn walks_a_two_leaf_tree() {
-        let r = reader(LEAF, vec![0, 0], 2).unwrap();
+        let metadata = reader(LEAF, vec![0, 0], 2).unwrap().rebind(&[]);
+        let r = metadata.rebind(LEAF);
+        assert!(Arc::ptr_eq(
+            &metadata.split_packed_values,
+            &r.split_packed_values
+        ));
+        assert!(Arc::ptr_eq(&metadata.leaf_block_fps, &r.leaf_block_fps));
+        assert!(Arc::ptr_eq(&metadata.min_packed_value, &r.min_packed_value));
+        assert!(Arc::ptr_eq(&metadata.max_packed_value, &r.max_packed_value));
+        assert!(metadata.intersect(&mut Count(0, Vec::new())).is_err());
         assert_eq!(r.max_points_in_leaf_node(), 1);
         let mut c = Count(0, Vec::new());
         r.intersect(&mut c).unwrap();

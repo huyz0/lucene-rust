@@ -194,6 +194,7 @@ fn terminate_after_matches_real_lucene() {
     assert!(segments.iter().any(|s| s.live_docs.is_none()));
     let owned: Vec<HashMap<String, FieldNorms<'_>>> = reader
         .field_norms("body")
+        .unwrap()
         .into_iter()
         .map(|n| n.into_iter().map(|n| ("body".to_string(), n)).collect())
         .collect();
@@ -447,7 +448,7 @@ fn counts_read_through_wrappers_and_refuse_unknown_slices() {
     )
     .unwrap_err();
     assert!(e.to_string().contains(&segments.len().to_string()), "{e}");
-    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
     let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
     let run = |min: Option<f32>, n: u64| {
         let m = min.map(|min| lucene_search::aggs::MinScore { min, norms: &norms });

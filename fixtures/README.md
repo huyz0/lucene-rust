@@ -59,6 +59,134 @@ declares `package org.apache.lucene.index` to reach the package-private
 `SlowCompositeCodecReaderWrapper` for `GenReaderApi` (compiled with the rest,
 on the class path, where the split package is allowed).
 
+The cranky test-framework generators live under `src/testframework/` and run
+through `scripts/gen-test-framework-fixtures.sh --only CrankyFieldInfos
+--only CrankyLiveDocs --only CrankySegmentInfo`. Their deterministic output
+is in `fixtures/testframework/data/`, separate from the main fixture tree.
+They invoke Lucene's actual fault-injection wrappers, record seeded callback
+results and RNG continuation, and save real `.fnm`, `.liv` and `.si` bytes
+for Rust to reproduce. Live-doc cases also exercise an error reported after
+output has been closed. `GenCrankyCompound` records real compound member bytes,
+and `GenCrankyNorms` covers dense/sparse/empty pairs and output-creation failures.
+`GenAssertingLiveDocs` records real asserting wrappers, masks, iterators and
+negative probes. `GenAssertingNorms` records producer identity, iterator
+validation, double-close errors, merge-thread checks, independently closed
+merge handles and real norms pairs. `GenAssertingStoredFields` records writer
+state assertions, delegate-error recovery, reader thread/clone/merge lifecycles,
+double-close precedence and real Lucene90 triples in both compression modes.
+`GenAssertingTermVectors` records document/field/term/position count assertions,
+delegate failures and retries, inherited proximity and mapped merge callbacks,
+reader lifecycles and real SimpleText bytes. The harness enables Java assertions
+for each asserting generator.
+`GenAssertingPoints` records visitor budgets, relation/bounds/order assertions,
+reader statistics, thread and lifecycle checks, and real point writes/merges.
+`GenCrankyStoredFields` covers every value overload, input consumption,
+visitor merges and real Lucene90 triples in both compression modes. Partial
+outputs also cover finish-count failure and retry, index-output creation and
+close failures, automatic chunk flushing before unfinished close, and
+metadata/data close-error precedence.
+`GenCrankyTermVectors` covers nested proximity guards, mapped merges and
+real SimpleText vectors, including payload and offset readback.
+`GenCrankyPoints` records guarded and unguarded callback traces, delegate and
+visitor failures, clone visits that bypass the wrapper, RNG continuation and
+real Lucene90 one- and two-dimensional point trees with multiple leaves.
+`GenCrankyPostings` records actual wrapper callbacks, inherited mapped merges,
+delegate failures and RNG tails, with real Lucene104 postings and all output bytes.
+Supplementary and private-use Unicode field names check Java UTF-16 field order
+in the native reader, ordinary write and both mapped merge orders.
+`GenCrankyDocValues` records the actual wrapper's five guarded add callbacks,
+inherited merges, delegate identity, failures and RNG continuation. Real native
+columns cover all five types, sparse and empty values, skip indexes, deleted-only
+terms and ordinal remapping in sequential and sorted merges, with complete
+`.dvm/.dvd/.dvs` files and readback manifests, including no-field consumer close.
+`GenAssertingKnnVectors` records actual Java reader/writer assertions, deferred
+merge callbacks, merge-reader lifecycle and AcceptDocs wrapping. A seeded sparse
+float/byte HNSW segment supplies native files, vector values, graph adjacency and
+filtered search scores and visits. Native float/byte probes record scorer failure,
+zero-k short-circuiting and cost-before-bits callback/error order.
+`GenAssertingPostings` records actual consumer validation after delegate write,
+field/term ordering, flags, iterator reuse, lazy failures, producer statistics and
+double-close behavior. Native ordinary and deleted sequential/sorted merges
+include all seven Lucene104 files and complete readback manifests.
+Rust tests are `cranky_*_fixtures.rs` and `asserting_*_fixtures.rs` under
+`crates/lucene-test-framework/tests/`; they run without a JVM.
+`GenAssertingDocValues` records all five prevalidation callbacks, producer
+identity, positioned iterator constructors, skipper assertion precedence,
+double-close errors and independent native merge handles. Native all-type
+Lucene90 columns include complete dictionaries, skip entries and file bytes.
+`GenAssertingDocValuesIterators` runs all five actual asserting leaf iterators
+with scripted delegates and assertions enabled. Its 163 cases record every
+callback and assertion/runtime/I/O outcome, including per-kind movement checks,
+duplicate count getters and iterator state after failed assertions or callbacks.
+The differential replay is `asserting_doc_values_iterator_fixtures.rs`.
+`GenCheapBastard` records the codec's actual accessor identities and 100/200
+postings block settings. Rich native postings, a default-block control and
+deleted sequential/sorted merges compare all seven files, values and seeks.
+`GenCrankyCodec` records all eleven actual codec factories, the ten fresh
+fault-injection wrappers and unwrapped KNN delegation, name/display behavior,
+factory failures and delegate identities. Seven seeds each interleave 384
+operations across simultaneously held wrappers, checking shared RNG continuation
+and guard/delegate error order; component bytes remain covered by their own
+generators.
+`GenAssertingCodec` observes all 64 suppression masks, inherited and duplicate
+annotations, and construction outside randomized context. It records cached
+format identities, per-field selector hooks, retained delegate callbacks and
+failures, live display, default KNN settings, RNG continuation and thread checks.
+These observations cover codec composition, without component file I/O.
+`GenCompressingCodec` records the base and six concrete codecs' actual settings,
+stable stored-field/term-vector formats, shared compression modes, inherited
+factory callbacks and errors. Seven seeded streams interleave five random
+construction cases, preserving invalid block shifts, validation order and
+RNG tails. These configuration fixtures do not encode compressed files.
+`GenRandomCodec` observes actual constructor state and retained candidate
+instances in four nightly/multiplier JVM configurations. It records filtering,
+shuffling, format settings, UTF-16 field selection, cached identity, RNG tails,
+signed-absolute-value errors and insertion-before-assert cache boundaries.
+The fixtures cover constructor/routing state, without component dispatch or I/O.
+`GenBulkScorerWrapper` drives the actual `BulkScorerWrapperScorer` through
+synthetic refill/advance/error traces and real indexed MatchAll/constant-term
+bulk scorers. It records document cursors, raw score bits, shared iterator state
+and retry behavior after partial collection in `bulk_scorer_wrapper.tsv`.
+`GenBlockScoreQueryWrapper` records real wrapper iteration, shallow block
+boundaries, max-score bits, no-score bypasses, query delegation and invalid
+block-length behavior in `block_score_query_wrapper.tsv`.
+`GenScorerIndexSearcher` exercises actual scorer-only search and disabling-query
+wrappers over three committed leaves with deletions. It records BM25/Boolean
+scores, score modes, top hits/paging, counts, managers/slices and timeouts.
+Supplier traps check that specialized bulk scoring and top-level notifications
+are bypassed. Its `scorer_index_searcher.tsv` also records Java's null-supplier
+failure for an absent term; Rust deliberately returns an empty scorer result.
+`GenConfigurableM` records default and explicit connectivity settings, inherited
+accessor identities and failures, and native float/byte dense, sparse and empty
+fields. Four segments combine M=128/4 with sparse counts 647/648 at the tiny-graph
+boundary; dense fields contain twice those counts. Fixed construction seeds
+produce complete `.vec/.vemf/.vex/.vem` files, graph adjacency, search scores and
+visits, plus wrong-segment-ID rejection.
+`GenShapeTestUtil` runs Lucene's actual eight XY shape helpers with assertions
+enabled and `java.util.Random` explicitly installed in randomizedtesting's
+context. Separate JVMs set nightly false/true; 128 seeds per operation produce
+16,384 calls with raw float bits and RNG continuation. Scripted draws cover all
+47 biased-float selections across eight seeds. Regular polygons cover 126
+side-count/input combinations, including signed zero, invalid counts, NaN and
+infinity; 210 slow-containment cases cover boundaries, exterior points, NaN and
+holes-first rejection. The five `shape_test_util_*.tsv` files live under
+`fixtures/testframework/data/`; `shape_test_util_fixtures.rs` and module unit
+tests compare them without a JVM.
+`GenBaseXYPoint` runs six inherited point-array generators through four capture
+hooks, preserving Java's callback and RNG order without constructing an index.
+Twenty seeds, including signed-long extremes, run in separate nightly false/true
+JVMs. Default coordinate/box/polygon/geometry hooks and rectangle-containment and
+Cartesian-distance oracles include raw float/double bits, missing coordinates,
+NaN, infinities and signed zero. The five `base_xy_point_*.tsv` files describe
+this bounded generator/oracle surface; they do not exercise the full indexing
+and query-verification suites.
+
+`GenFstTesterLists` runs Java's actual FST tester over scalar and expanded list
+outputs in both input modes, including invalid inputs, complete saved bytes,
+enumeration, compiler counts and RNG continuation. Its harness fixes
+`tests.multiplier=1` and enables assertions; Rust compares
+`fst_tester_lists_fixtures.rs` without a JVM.
+
 `GenRegexp.java` is the odd one out among the generators: it writes no index at
 all. It runs real `RegExp` + `Operations.determinize` + `ByteRunAutomaton` over a
 pattern/term matrix and records the accept/reject decision as two plain text
@@ -67,6 +195,80 @@ files (`regexp/terms.txt`, `regexp/cases.tsv`), which is what
 `RegExp` parser against. Lucene's regexp grammar is not PCRE, and the failure
 mode a fixture has to catch there is not "fails to parse" but "parses and
 quietly means something else".
+
+`GenCodecsSharedTermsMerge.java` writes `codecs_sharedterms_merge/`: three
+independent shared-terms source segments and their actual Java merge, for
+unsorted and index-sorted cases. Field numbers differ across sources; deletes
+remove individual documents and an entire field. Stored IDs independently
+derive `docmaps.tsv`; the merged reader supplies statistics, mapped norms,
+and postings dumps. `codecs_sharedterms_merge_fixtures.rs` checks all six Rust
+output files against Java. `scripts/bench-micro.sh --bench stmerge` measures
+the specialized merge over the unsorted source bytes in both languages.
+
+`GenSimpleTextDirectoryReader.java` opens the existing flush and compound
+merge indexes from `GenCodecsSimpleTextCodec.java` without rewriting them.
+`simpletext_directory_reader/{flush,merged}/segments.tsv` lists their leaf
+segments. `terms.SEG.tsv` records field statistics, every term and posting,
+positions/offsets/payloads and seek probes. `values.SEG.tsv` records each
+field's current doc-values generation, iterator cost, dictionary and values,
+norms and skip intervals through Java's `SegmentReader` (including deleted documents).
+`simpletext_directory_reader_fixtures.rs` checks the Rust generic reader's
+statistics, seeks and postings, all five doc-values types and norms, and
+`nextDoc`, `advance` and `advanceExact` against those Java expectations.
+`scores.SEG.tsv` records reader-wide collection/term statistics and BM25/Classic
+score bits for every posting, using its codec norm (or 1 for omitted norms).
+The scoring test checks full norm longs, scalar and batch BM25, and Classic
+against these Java scores.
+`exists.SEG.tsv` records Java `FieldExistsQuery`'s count shortcut (`-1` means
+scan), raw scorer documents, live documents, reader-wide match-all rewrite
+and unsupported fields. `simpletext_field_exists/{clean,deleted}` adds real
+indexes with point/term count proxies, fields combining norms or vectors with
+doc values, and norms for empty token streams. The reader fixture test checks
+source priority, all three sources, five doc-values
+types, deletions, generation routing, counts and rewrite decisions.
+The focused index also combines DOCS-only postings with vectors on one field.
+`clean/vector-corruption.pst` has a malformed document number and a valid
+checksum; `vector-corruption.tsv` records Java's successful vector count and
+rewrite plus its rejected terms lookup, proving unselected postings stay lazy.
+
+`GenSimpleTextPhraseScorer.java` records native Java phrase scorers in
+`simpletext_phrase_scorer/{codec,postings,deep}/{flush,merged}`. The first two
+families open existing indexes; `deep` writes 768 documents and asserts that
+every leaf exposes all four native impacts levels. `phrases.SEG.tsv` records
+query terms and positions, reader-wide statistics, BM25/Classic score bits,
+three score modes, boosts, exact/sloppy/repeated/overlapping/gapped phrases,
+missing fields/terms and fields without positions. `bound` rows record
+`advanceShallow` and `getMaxScore`; `threshold`/`competitive` rows record
+iteration after publishing a minimum score. These are raw leaf scorer
+documents, including deleted documents. The fixtures drive
+`native_phrases_match_java_documents_scores_bounds_and_competitive_iteration`,
+including reversed terms at equal positions and distinct skip boundaries.
+General reader-wide SimpleText query routing remains incomplete.
+
+`GenSimpleTextIndexSort.java` writes `simpletext_index_sort/`: 184 real
+`SimpleTextSegmentInfoFormat` files, read back by Java before publication.
+They cover all four sort providers, both directions, all numeric types,
+absent and explicit missing values (signed zeros, extrema, infinities and
+NaNs), every sorted-numeric and sorted-set selector, and a four-provider
+priority-ordered sort, plus prerelease segment and minimum versions. Field
+names include a newline, backslash and non-ASCII text. `cases.tsv` records
+IDs, Java's sort descriptions as hex UTF-8, and both version strings.
+`simpletext_index_sort_fixtures.rs` checks typed decoding and byte-identical
+rewrites; unit tests reject malformed/trailing provider bytes, wrong IDs,
+truncation and invalid file names. An observed negative case
+exposed decimal rendering of an extreme float where Java writes scientific
+notation; the shared Java-compatible formatter fixes it.
+
+`GenCodecsSharedTermsMergeBlocks.java` writes
+`codecs_sharedterms_merge_blocks/` through the same Java merge session. Each
+source's positional `common` term has 720 occurrences (two full 256-position
+blocks and a 208-position tail), with documents spanning block boundaries and
+live/deleted documents in both the full blocks and the tail. The `gonepos`
+field has 288 occurrences per source, all deleted. The Rust differential test
+checks these preconditions from the actual source postings and document maps,
+then compares all six Java merge files for sorted and unsorted cases. The
+full-block precondition was observed to fail on the 240-occurrence original
+fixture before these cases were generated.
 
 `data/` is checked in so `cargo test` works without Java installed; regenerate
 and re-commit whenever the pinned Lucene version changes. Note that "checked in"

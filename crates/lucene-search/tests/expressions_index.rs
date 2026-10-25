@@ -57,6 +57,7 @@ fn expressions_over_a_real_index() {
     let segments = opened.as_open_segments();
     let owned: Vec<HashMap<String, FieldNorms<'_>>> = reader
         .field_norms("body")
+        .unwrap()
         .into_iter()
         .map(|n| n.into_iter().map(|n| ("body".to_string(), n)).collect())
         .collect();
@@ -261,6 +262,7 @@ fn expressions_match_java_over_an_index() {
     let segments = opened.as_open_segments();
     let owned: Vec<HashMap<String, FieldNorms<'_>>> = reader
         .field_norms("body")
+        .unwrap()
         .into_iter()
         .map(|n| n.into_iter().map(|n| ("body".to_string(), n)).collect())
         .collect();

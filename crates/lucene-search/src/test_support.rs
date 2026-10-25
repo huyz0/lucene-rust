@@ -13,6 +13,8 @@
 
 use std::sync::{Arc, Mutex};
 
+pub mod scorer_only;
+
 use lucene_util::fixed_bit_set::FixedBitSet;
 use lucene_util::java_random::JavaRandom;
 
@@ -25,6 +27,12 @@ use crate::{Error, Result};
 
 /// `DocIdSetIterator.NO_MORE_DOCS`.
 pub const NO_MORE_DOCS: i32 = exec::NO_MORE_DOCS;
+
+/// `Query.toString()` with the default field empty, as explanations render it.
+/// Exposed only through the existing test seam for differential query checks.
+pub fn query_string(query: &Clause) -> String {
+    crate::explain::describe_clause(query)
+}
 
 /// While held, every search on this thread runs under the asserting
 /// wrappers (`new AssertingIndexSearcher(random, reader)`): each scorer the
@@ -51,9 +59,9 @@ pub fn asserting_active() -> bool {
 
 fn mode_of(score_mode: ScoreMode) -> Mode {
     match score_mode {
-        ScoreMode::CompleteNoScores => Mode::NoScores,
-        m if m.is_exhaustive() => Mode::Complete,
-        _ => Mode::TopScores,
+        m if !m.needs_scores() => Mode::NoScores,
+        ScoreMode::TopScores => Mode::TopScores,
+        _ => Mode::Complete,
     }
 }
 
@@ -74,8 +82,11 @@ impl<'q> Leaf<'q> {
     /// # Errors
     /// Whatever building the scorer tree reports.
     pub fn scorer(&self, score_mode: ScoreMode) -> Result<Option<LeafScorer<'q>>> {
-        let clause = Clause::Boolean(Box::new(self.query.clone()));
-        let s = exec::build::build(&self.ctx, &clause, 1.0, mode_of(score_mode), true)?;
+        let mode = mode_of(score_mode);
+        // Borrow the prepared query, as Weight.scorer does, instead of cloning its tree.
+        let s = exec::build::build_boolean(&self.ctx, self.query, 1.0, mode, true)?;
+        // Preserve build()'s AssertingWeight wrapper at this borrowed root.
+        let s = s.map(|inner| exec::asserting::wrap(inner, mode, true));
         Ok(s.map(|inner| LeafScorer { inner }))
     }
 
@@ -258,6 +269,11 @@ pub struct LeafBulkScorer<'a> {
 }
 
 impl LeafBulkScorer<'_> {
+    /// Test-only introspection of Java's `Weight.DefaultBulkScorer` path.
+    pub fn uses_default_scorer(&self) -> bool {
+        matches!(&self.bulk, Bulk::Scorer(..))
+    }
+
     /// `score(collector, acceptDocs, min, max)`: collects the matches in
     /// `[min, max)` not deleted in `accept_docs`, returning the next
     /// document to score.
@@ -279,12 +295,13 @@ impl LeafBulkScorer<'_> {
 }
 
 /// A query only tests build: lucene-test-framework's
-/// `RandomApproximationQuery`, or one of `TestQueryUtils`' broken queries.
+/// `RandomApproximationQuery`, `BlockScoreQueryWrapper`,
+/// `DisablingBulkScorerQuery`, or one of `TestQueryUtils`' broken queries.
 /// Into a [`Clause`] with [`TestQuery::random_approximation`] and
 /// [`TestQuery::broken`]; it reaches the scorer tree as
 /// [`crate::extended_query::ExtendedQuery::Test`]. Its explanation and
-/// matches are the wrapped query's (`FilterWeight`), and it is never cached
-/// (a cached bit set would hide the scorer under test).
+/// matches are the wrapped query's. Transparent wrappers delegate cacheability;
+/// random and broken scorers are never cached, so checks observe their scorers.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TestQuery {
     query: Clause,
@@ -298,6 +315,8 @@ pub(crate) enum TestKind {
     /// its own from (`new Random(random.nextLong())`).
     RandomApproximation(Arc<Mutex<JavaRandom>>),
     Broken(BrokenKind),
+    BlockScore(i32),
+    DisableBulk,
 }
 
 impl std::fmt::Debug for TestKind {
@@ -305,6 +324,8 @@ impl std::fmt::Debug for TestKind {
         match self {
             TestKind::RandomApproximation(_) => f.write_str("RandomApproximation"),
             TestKind::Broken(k) => write!(f, "Broken({k:?})"),
+            TestKind::BlockScore(length) => write!(f, "BlockScore({length})"),
+            TestKind::DisableBulk => f.write_str("DisableBulk"),
         }
     }
 }
@@ -316,6 +337,8 @@ impl PartialEq for TestKind {
         match (self, other) {
             (TestKind::RandomApproximation(_), TestKind::RandomApproximation(_)) => true,
             (TestKind::Broken(a), TestKind::Broken(b)) => a == b,
+            (TestKind::BlockScore(a), TestKind::BlockScore(b)) => a == b,
+            (TestKind::DisableBulk, TestKind::DisableBulk) => true,
             _ => false,
         }
     }
@@ -337,6 +360,36 @@ pub enum BrokenKind {
 }
 
 impl TestQuery {
+    /// `new BlockScoreQueryWrapper(query, blockLength)`.
+    /// Invalid lengths remain accepted at construction, as in Java.
+    pub fn block_score(query: impl Into<Clause>, block_length: i32) -> Clause {
+        Self::clause(Self {
+            query: query.into(),
+            kind: TestKind::BlockScore(block_length),
+        })
+    }
+
+    /// `new DisablingBulkScorerQuery(query)`: use the ordinary scorer path.
+    pub fn disabling_bulk_scorer(query: impl Into<Clause>) -> Clause {
+        Self::clause(Self {
+            query: query.into(),
+            kind: TestKind::DisableBulk,
+        })
+    }
+
+    /// Whether Java delegates visit, display, rewrite and cacheability.
+    pub(crate) fn delegates_query_semantics(&self) -> bool {
+        matches!(self.kind, TestKind::BlockScore(_) | TestKind::DisableBulk)
+    }
+
+    /// Java's transparent wrappers retain themselves around a rewritten child.
+    pub(crate) fn rewrite(mut self) -> Self {
+        if self.delegates_query_semantics() {
+            self.query = self.query.rewrite();
+        }
+        self
+    }
+
     /// `new RandomApproximationQuery(query, random)`.
     pub fn random_approximation(query: impl Into<Clause>, random: JavaRandom) -> Clause {
         Self::clause(TestQuery {
@@ -362,6 +415,11 @@ impl TestQuery {
         &self.query
     }
 
+    /// Mutable child for leaf-local MatchAll explanation preparation.
+    pub(crate) fn query_mut(&mut self) -> &mut Clause {
+        &mut self.query
+    }
+
     pub(crate) fn kind(&self) -> &TestKind {
         &self.kind
     }
@@ -371,6 +429,8 @@ impl TestQuery {
         match self.kind {
             TestKind::RandomApproximation(_) => "RandomApproximationQuery",
             TestKind::Broken(_) => "BrokenQuery",
+            TestKind::BlockScore(_) => "BlockScoreQueryWrapper",
+            TestKind::DisableBulk => "DisablingBulkScorerQuery",
         }
     }
 }

@@ -6,6 +6,8 @@
 //! - The reader borrows the file's bytes, not an `IndexInput`; values reach a
 //!   [`StoredFieldVisitor`] by field number (this crate's visitor never
 //!   holds a `FieldInfo`, so the reader takes no `FieldInfos`).
+//!   Clones and rebound readers share the immutable document offsets, as
+//!   Java's cloned inputs share the document index.
 //! - `Float.parseFloat`/`Double.parseDouble` accept what Java's `toString`
 //!   writes and the rest of Java's decimal grammar (`NaN`, `Infinity`, an
 //!   `f`/`d` suffix, surrounding whitespace); hexadecimal floating-point
@@ -16,6 +18,7 @@
 //!   (`IllegalArgument` for the document number).
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use super::stored_fields_writer::{
     DOC, END, FIELD, NAME, TYPE, TYPE_BINARY, TYPE_DOUBLE, TYPE_FLOAT, TYPE_INT, TYPE_LONG,
@@ -30,7 +33,7 @@ use crate::stored_fields::{Document, DocumentVisitor, StoredFieldVisitor, VisitS
 pub struct SimpleTextStoredFieldsReader<'d> {
     data: &'d [u8],
     /// docid -> offset in the `.fld`, just past its `doc` line.
-    offsets: Vec<usize>,
+    offsets: Arc<[usize]>,
 }
 
 impl<'d> SimpleTextStoredFieldsReader<'d> {
@@ -65,7 +68,19 @@ impl<'d> SimpleTextStoredFieldsReader<'d> {
                 offsets.len()
             )));
         }
-        Ok(SimpleTextStoredFieldsReader { data, offsets })
+        Ok(SimpleTextStoredFieldsReader {
+            data,
+            offsets: offsets.into(),
+        })
+    }
+
+    /// Rebind the immutable document index to the same `.fld` bytes. The
+    /// index is shared across reader clones, as in Java's `clone()`.
+    pub fn rebind<'n>(&self, data: &'n [u8]) -> SimpleTextStoredFieldsReader<'n> {
+        SimpleTextStoredFieldsReader {
+            data,
+            offsets: self.offsets.clone(),
+        }
     }
 
     /// The number of documents (`maxDoc`).
@@ -244,6 +259,20 @@ mod tests {
     fn body(data: &[u8]) -> Vec<u8> {
         let at = data.windows(9).rposition(|w| w == b"checksum ").unwrap();
         data[..at].to_vec()
+    }
+
+    #[test]
+    fn rebinding_shares_the_index_and_checks_the_live_bytes() {
+        let data = file();
+        let metadata = SimpleTextStoredFieldsReader::open(&data, 2)
+            .unwrap()
+            .rebind(&[]);
+        let rebound = metadata.rebind(&data);
+        assert!(Arc::ptr_eq(&metadata.offsets, &rebound.offsets));
+        assert_eq!(rebound.max_doc(), 2);
+        assert_eq!(rebound.document(0).unwrap().fields.len(), 6);
+        assert!(rebound.document(1).unwrap().fields.is_empty());
+        assert!(metadata.document(0).is_err());
     }
 
     #[test]

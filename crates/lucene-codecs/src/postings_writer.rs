@@ -1089,8 +1089,9 @@ impl FieldTermStates<'_> {
 /// [`WriteOptions`]'.
 ///
 /// # Errors
-/// What [`write_fields`] rejects in `inputs`, and what `terms_dict` fails
-/// with.
+/// What [`write_fields`] rejects in each field, and what `terms_dict` fails
+/// with. An empty field group is valid, as in Java: it writes the postings
+/// headers, footers and zero maxima without calling `terms_dict`.
 pub fn write_postings<T, E, F>(
     inputs: &[FieldPostingsInput<'_, T>],
     norms: &[FieldNorms<'_>],
@@ -1105,9 +1106,6 @@ where
     E: From<Error>,
     F: FnMut(&FieldTermStates<'_>) -> std::result::Result<(), E>,
 {
-    if inputs.is_empty() {
-        return Err(Error::EmptyTerms.into());
-    }
     write_any_postings(
         inputs,
         norms,
@@ -1119,8 +1117,8 @@ where
     )
 }
 
-/// [`write_postings`] without its non-empty check: no field writes the
-/// files' headers, footers and an all-zero `.psm`.
+/// Shared implementation for [`write_postings`] and the block-tree writer:
+/// no fields writes the files' headers, footers and an all-zero `.psm`.
 fn write_any_postings<T, E, F>(
     inputs: &[FieldPostingsInput<'_, T>],
     norms: &[FieldNorms<'_>],
@@ -1135,48 +1133,15 @@ where
     E: From<Error>,
     F: FnMut(&FieldTermStates<'_>) -> std::result::Result<(), E>,
 {
-    // Each field's per-term statistics come out of its validation pass, the
-    // one walk over every term's `docs` (see [`FieldStats`]).
     let mut field_stats = Vec::with_capacity(inputs.len());
     for input in inputs {
         field_stats.push(validate_field(input)?);
     }
-
-    // ---- .doc ----
-    let mut maxima = PostingsMaxima::default();
-    let initial = 256usize;
-    let mut doc = Vec::with_capacity(initial);
-    codec_util::write_index_header(
-        &mut doc,
-        DOC_CODEC,
-        DOC_VERSION_CURRENT,
-        segment_id,
-        segment_suffix,
-    );
-
-    // ---- .pos ----
-    // Only written at all if at least one field indexes positions, exactly
-    // like a real segment has no `.pos` file when no field needs one.
     let any_positions = has_prox.unwrap_or_else(|| {
         inputs
             .iter()
             .any(|input| input.index_options.subsumes_positions())
     });
-    let mut pos = Vec::new();
-    if any_positions {
-        pos.reserve(initial);
-        codec_util::write_index_header(
-            &mut pos,
-            POS_CODEC,
-            DOC_VERSION_CURRENT,
-            segment_id,
-            segment_suffix,
-        );
-    }
-
-    // ---- .pay ----
-    // Only written at all if at least one field indexes offsets and/or has
-    // payloads, same "no file needed" convention as `.pos`.
     let any_offsets = has_payloads_or_offsets.unwrap_or_else(|| {
         inputs
             .iter()
@@ -1184,23 +1149,108 @@ where
     });
     let any_payloads =
         has_payloads_or_offsets.unwrap_or_else(|| inputs.iter().any(|input| input.has_payloads));
-    let mut pay = Vec::new();
-    if any_offsets || any_payloads {
-        pay.reserve(initial);
-        codec_util::write_index_header(
-            &mut pay,
-            PAY_CODEC,
-            DOC_VERSION_CURRENT,
+    let mut writer = PostingsWriter::new(
+        any_positions,
+        any_offsets || any_payloads,
+        segment_id,
+        segment_suffix,
+    );
+    for (input, stats) in inputs.iter().zip(field_stats) {
+        writer.write_validated_field(input, stats, norms, &mut terms_dict)?;
+    }
+    Ok(writer.finish())
+}
+
+/// The postings streams kept open across `setField`/`writeTerm` calls.
+/// Shared-terms merges supply one term/field at a time instead of buffering
+/// an entire merged segment before the existing writer can consume it.
+pub(crate) struct PostingsWriter<'a> {
+    doc: Vec<u8>,
+    pos: Vec<u8>,
+    pay: Vec<u8>,
+    maxima: PostingsMaxima,
+    any_positions: bool,
+    any_offsets_or_payloads: bool,
+    segment_id: &'a [u8; ID_LENGTH],
+    segment_suffix: &'a str,
+}
+
+impl<'a> PostingsWriter<'a> {
+    /// `Lucene104PostingsWriter`'s constructor: headers for the files the
+    /// whole segment's FieldInfos require, including an empty field group.
+    pub(crate) fn new(
+        any_positions: bool,
+        any_offsets_or_payloads: bool,
+        segment_id: &'a [u8; ID_LENGTH],
+        segment_suffix: &'a str,
+    ) -> Self {
+        let header = |codec| {
+            let mut out = Vec::with_capacity(256);
+            codec_util::write_index_header(
+                &mut out,
+                codec,
+                DOC_VERSION_CURRENT,
+                segment_id,
+                segment_suffix,
+            );
+            out
+        };
+        Self {
+            doc: header(DOC_CODEC),
+            pos: if any_positions {
+                header(POS_CODEC)
+            } else {
+                Vec::new()
+            },
+            pay: if any_offsets_or_payloads {
+                header(PAY_CODEC)
+            } else {
+                Vec::new()
+            },
+            maxima: PostingsMaxima::default(),
+            any_positions,
+            any_offsets_or_payloads,
             segment_id,
             segment_suffix,
-        );
+        }
     }
 
-    for (input, stats) in inputs.iter().zip(field_stats) {
-        let FieldStats {
-            block_terms,
-            singletons,
-        } = stats;
+    /// `setField` and `writeTerm`, handing their states to the dictionary.
+    pub(crate) fn write_field<T, E, F>(
+        &mut self,
+        input: &FieldPostingsInput<'_, T>,
+        norms: &[FieldNorms<'_>],
+        terms_dict: F,
+    ) -> std::result::Result<(), E>
+    where
+        T: TermSource,
+        E: From<Error>,
+        F: FnMut(&FieldTermStates<'_>) -> std::result::Result<(), E>,
+    {
+        let stats = validate_field(input)?;
+        self.write_validated_field(input, stats, norms, terms_dict)
+    }
+
+    fn write_validated_field<'s, T, E, F>(
+        &mut self,
+        input: &FieldPostingsInput<'s, T>,
+        stats: FieldStats<'s>,
+        norms: &[FieldNorms<'_>],
+        mut terms_dict: F,
+    ) -> std::result::Result<(), E>
+    where
+        T: TermSource,
+        E: From<Error>,
+        F: FnMut(&FieldTermStates<'_>) -> std::result::Result<(), E>,
+    {
+        let Self {
+            doc,
+            pos,
+            pay,
+            maxima,
+            ..
+        } = self;
+        let (block_terms, singletons) = stats.slices();
         let index_has_positions = input.index_options.subsumes_positions();
         let index_has_freq = input.index_options != IndexOptions::Docs;
         // `Lucene104PostingsWriter.setField`'s `fieldHasNorms`: this field's
@@ -1222,20 +1272,32 @@ where
         // `.doc` the resulting [`PositionLayout`].
         //
         // `pos_start_fp[i]` is term `i`'s absolute byte offset into the
-        // shared `.pos` buffer, same convention as `doc_start_fp` below. Left
-        // at `0` (never read, see `write_term_metadata`) when this field
-        // doesn't index positions.
+        // shared `.pos` buffer, same convention as `doc_start_fp` below.
+        // Absent when this field doesn't index positions: term_metadata
+        // supplies zero, and write_term_metadata never reads the array.
         let index_has_offsets = input.index_options.subsumes_offsets();
         let index_has_payloads = input.has_payloads;
         let index_has_offsets_or_payloads = index_has_offsets || index_has_payloads;
-        let mut pos_start_fp = vec![0u64; input.terms.len()];
-        let mut pay_start_fp = vec![0u64; input.terms.len()];
+        let mut pos_start_fp = if index_has_positions {
+            vec![0u64; input.terms.len()]
+        } else {
+            Vec::new()
+        };
+        let mut pay_start_fp = if index_has_positions && index_has_offsets_or_payloads {
+            vec![0u64; input.terms.len()]
+        } else {
+            Vec::new()
+        };
         // `lastPosBlockOffset` per term: where this term's vint position tail
         // starts, relative to its own `posStartFP`. Only written to the term
         // metadata when `totalTermFreq > BLOCK_SIZE` (see
         // [`write_term_metadata`]), but computed for every term because
         // [`write_position_tail`] is the only place that knows it.
-        let mut last_pos_block_offset = vec![0i64; input.terms.len()];
+        let mut last_pos_block_offset = if index_has_positions {
+            vec![0i64; input.terms.len()]
+        } else {
+            Vec::new()
+        };
         // One layout per term when the field indexes positions, none at all
         // otherwise: a `Vec<Option<_>>` of `None`s would cost a 80-byte slot
         // per term (80 MB for a million-term field) for nothing.
@@ -1246,13 +1308,8 @@ where
                 if index_has_offsets_or_payloads {
                     pay_start_fp[i] = pay.len() as u64;
                 }
-                let layout = write_position_tail(
-                    &mut pos,
-                    &mut pay,
-                    t,
-                    index_has_offsets,
-                    index_has_payloads,
-                );
+                let layout =
+                    write_position_tail(pos, pay, t, index_has_offsets, index_has_payloads);
                 last_pos_block_offset[i] = layout.last_pos_block_offset as i64;
                 layouts.push(layout);
             }
@@ -1263,7 +1320,16 @@ where
         // absolute convention `postings::TermMetadata::doc_start_fp` decodes
         // into) where its tail block begins, or `0` for a singleton term
         // (never read for singletons, see `postings::singleton_postings`).
-        let mut doc_start_fp = vec![0u64; input.terms.len()];
+        // The incremental shared-terms merge supplies one term per call.
+        // Keep that pointer on the stack rather than allocating per term.
+        let mut one_doc_start_fp = [0u64; 1];
+        let mut many_doc_start_fp = Vec::new();
+        let doc_start_fp: &mut [u64] = if input.terms.len() == 1 {
+            &mut one_doc_start_fp
+        } else {
+            many_doc_start_fp.resize(input.terms.len(), 0);
+            &mut many_doc_start_fp
+        };
         for (i, t) in input.terms.iter().enumerate() {
             // `startTerm` samples `docOut.getFilePointer()` for every term,
             // singletons included: a singleton writes no `.doc` bytes, so its
@@ -1299,14 +1365,14 @@ where
             while docs.len() - start >= LEVEL1_NUM_DOCS as usize {
                 let span = &docs[start..start + LEVEL1_NUM_DOCS as usize];
                 prev_doc_id = write_level1_span(
-                    &mut doc,
+                    doc,
                     span,
                     prev_doc_id,
                     &mut level1_last_doc_id,
                     &mut BlockWriteCtx {
                         index_has_freq,
                         norms: field_norms,
-                        maxima: &mut maxima,
+                        maxima,
                         skip: &mut skip,
                     },
                 );
@@ -1317,20 +1383,20 @@ where
             while docs.len() - start >= BLOCK_SIZE as usize {
                 let block = &docs[start..start + BLOCK_SIZE as usize];
                 prev_doc_id = write_full_block(
-                    &mut doc,
+                    doc,
                     block,
                     prev_doc_id,
                     &mut BlockWriteCtx {
                         index_has_freq,
                         norms: field_norms,
-                        maxima: &mut maxima,
+                        maxima,
                         skip: &mut skip,
                     },
                 );
                 start += BLOCK_SIZE as usize;
             }
             if start < docs.len() {
-                write_tail_block(&mut doc, &docs[start..], prev_doc_id, index_has_freq);
+                write_tail_block(doc, &docs[start..], prev_doc_id, index_has_freq);
             }
         }
 
@@ -1339,49 +1405,64 @@ where
             index_options: input.index_options,
             has_payloads: input.has_payloads,
             doc_count: input.doc_count,
-            block_terms: &block_terms,
-            singletons: &singletons,
-            doc_start_fp: &doc_start_fp,
+            block_terms,
+            singletons,
+            doc_start_fp,
             pos_start_fp: &pos_start_fp,
             pay_start_fp: &pay_start_fp,
             last_pos_block_offset: &last_pos_block_offset,
         })?;
+        Ok(())
     }
 
-    codec_util::write_footer(&mut doc);
-    if any_positions {
-        codec_util::write_footer(&mut pos);
-    }
-    if any_offsets || any_payloads {
-        codec_util::write_footer(&mut pay);
-    }
-    // `.psm`, mirroring `Lucene104PostingsWriter.close()`: the impact maxima
-    // first, then each postings file's length *including* its footer (Java
-    // records `getFilePointer()` after writing the footer). Lucene sizes its
-    // impact-decoding buffers from these maxima before reading any block, so
-    // they must cover what was actually written.
-    let mut psm = Vec::with_capacity(initial);
-    codec_util::write_index_header(
-        &mut psm,
-        META_CODEC,
-        DOC_VERSION_CURRENT,
-        segment_id,
-        segment_suffix,
-    );
-    psm.write_i32(maxima.num_impacts_level0);
-    psm.write_i32(maxima.impact_bytes_level0);
-    psm.write_i32(maxima.num_impacts_level1);
-    psm.write_i32(maxima.impact_bytes_level1);
-    psm.write_i64(doc.len() as i64);
-    if any_positions {
-        psm.write_i64(pos.len() as i64);
-        if any_offsets || any_payloads {
-            psm.write_i64(pay.len() as i64);
+    /// `close`: footers and the `.psm` impact maxima and lengths.
+    pub(crate) fn finish(self) -> PostingsFiles {
+        let Self {
+            mut doc,
+            mut pos,
+            mut pay,
+            maxima,
+            any_positions,
+            any_offsets_or_payloads,
+            segment_id,
+            segment_suffix,
+        } = self;
+        let initial = 256;
+        codec_util::write_footer(&mut doc);
+        if any_positions {
+            codec_util::write_footer(&mut pos);
         }
-    }
-    codec_util::write_footer(&mut psm);
+        if any_offsets_or_payloads {
+            codec_util::write_footer(&mut pay);
+        }
+        // `.psm`, mirroring `Lucene104PostingsWriter.close()`: the impact maxima
+        // first, then each postings file's length *including* its footer (Java
+        // records `getFilePointer()` after writing the footer). Lucene sizes its
+        // impact-decoding buffers from these maxima before reading any block, so
+        // they must cover what was actually written.
+        let mut psm = Vec::with_capacity(initial);
+        codec_util::write_index_header(
+            &mut psm,
+            META_CODEC,
+            DOC_VERSION_CURRENT,
+            segment_id,
+            segment_suffix,
+        );
+        psm.write_i32(maxima.num_impacts_level0);
+        psm.write_i32(maxima.impact_bytes_level0);
+        psm.write_i32(maxima.num_impacts_level1);
+        psm.write_i32(maxima.impact_bytes_level1);
+        psm.write_i64(doc.len() as i64);
+        if any_positions {
+            psm.write_i64(pos.len() as i64);
+            if any_offsets_or_payloads {
+                psm.write_i64(pay.len() as i64);
+            }
+        }
+        codec_util::write_footer(&mut psm);
 
-    Ok(PostingsFiles { doc, psm, pos, pay })
+        PostingsFiles { doc, psm, pos, pay }
+    }
 }
 
 /// Validates one field's structural invariants (sortedness, `docFreq`/
@@ -1412,24 +1493,23 @@ fn validate_field<'a, T: TermSource>(input: &FieldPostingsInput<'a, T>) -> Resul
     }
     let index_has_positions = input.index_options.subsumes_positions();
     let index_has_offsets = input.index_options.subsumes_offsets();
-    let mut stats = FieldStats {
-        block_terms: Vec::with_capacity(input.terms.len()),
-        singletons: Vec::with_capacity(input.terms.len()),
-    };
+    let mut stats = FieldStats::new(input.terms.len());
     for (i, t) in input.terms.iter().enumerate() {
         let docs = t.docs();
         if docs.is_empty() {
             return Err(Error::EmptyPostings(i));
         }
-        stats.block_terms.push(blocktree_writer::BlockTerm {
-            bytes: t.term(),
-            doc_freq: docs.len() as i32,
-            total_term_freq: docs.iter().map(|&(_, f)| i64::from(f)).sum(),
-        });
-        stats.singletons.push(match docs {
-            [(only, _)] => *only,
-            _ => -1,
-        });
+        stats.push(
+            blocktree_writer::BlockTerm {
+                bytes: t.term(),
+                doc_freq: docs.len() as i32,
+                total_term_freq: docs.iter().map(|&(_, f)| i64::from(f)).sum(),
+            },
+            match docs {
+                [(only, _)] => *only,
+                _ => -1,
+            },
+        );
         // Checked on the first doc only: the ascending check below carries it
         // to the rest. This is what bounds every `docID - lastDocID` delta
         // below to `1..=i32::MAX`, and it is the same rejection
@@ -1566,11 +1646,70 @@ fn validate_field<'a, T: TermSource>(input: &FieldPostingsInput<'a, T>) -> Resul
 /// and the `.tmd` sums read these compact arrays instead of walking each
 /// term's `docs` again -- for a million-term field every such walk is a
 /// million cache misses, where Java streams each term once.
-struct FieldStats<'a> {
-    /// `docFreq`/`totalTermFreq` per term, with its bytes.
-    block_terms: Vec<blocktree_writer::BlockTerm<'a>>,
-    /// The term's only doc id, or `-1` when it has more than one document.
-    singletons: Vec<i32>,
+enum FieldStats<'a> {
+    /// Incremental merge: no heap allocation for the current term's stats.
+    One {
+        term: blocktree_writer::BlockTerm<'a>,
+        singleton: i32,
+    },
+    /// Flush: compact arrays over the entire field.
+    Many {
+        block_terms: Vec<blocktree_writer::BlockTerm<'a>>,
+        singletons: Vec<i32>,
+    },
+}
+
+impl<'a> FieldStats<'a> {
+    fn new(terms: usize) -> Self {
+        if terms == 1 {
+            Self::One {
+                term: blocktree_writer::BlockTerm {
+                    bytes: &[],
+                    doc_freq: 0,
+                    total_term_freq: 0,
+                },
+                singleton: -1,
+            }
+        } else {
+            Self::Many {
+                block_terms: Vec::with_capacity(terms),
+                singletons: Vec::with_capacity(terms),
+            }
+        }
+    }
+
+    /// Called once per input term by validate_field; the One variant is
+    /// selected only when that loop has exactly one iteration.
+    fn push(&mut self, term: blocktree_writer::BlockTerm<'a>, singleton: i32) {
+        match self {
+            Self::One {
+                term: value,
+                singleton: doc,
+            } => {
+                *value = term;
+                *doc = singleton;
+            }
+            Self::Many {
+                block_terms,
+                singletons,
+            } => {
+                block_terms.push(term);
+                singletons.push(singleton);
+            }
+        }
+    }
+
+    fn slices(&self) -> (&[blocktree_writer::BlockTerm<'a>], &[i32]) {
+        match self {
+            Self::One { term, singleton } => {
+                (std::slice::from_ref(term), std::slice::from_ref(singleton))
+            }
+            Self::Many {
+                block_terms,
+                singletons,
+            } => (block_terms, singletons),
+        }
+    }
 }
 
 /// `Lucene104PostingsWriter.writeVInt15`'s write-side companion to
@@ -4437,6 +4576,38 @@ mod tests {
             write_fields::<TermPostings>(&[], &SEG_ID, SUFFIX),
             Err(Error::EmptyTerms)
         ));
+    }
+
+    #[test]
+    fn shared_postings_writer_accepts_an_empty_field_group() {
+        for (has_prox, has_pay) in [(false, false), (true, false), (true, true)] {
+            let files = write_postings::<TermPostings, Error, _>(
+                &[],
+                &[],
+                Some(has_prox),
+                Some(has_pay),
+                &SEG_ID,
+                SUFFIX,
+                |_| panic!("an empty group must not call its terms dictionary"),
+            )
+            .unwrap();
+            crate::postings::DocInput::open(&files.doc, &SEG_ID, SUFFIX).unwrap();
+            assert_eq!(!files.pos.is_empty(), has_prox);
+            assert_eq!(!files.pay.is_empty(), has_pay);
+            if has_prox {
+                crate::postings::PosInput::open(&files.pos, &SEG_ID, SUFFIX).unwrap();
+            }
+            if has_pay {
+                crate::postings::PayInput::open(&files.pay, &SEG_ID, SUFFIX).unwrap();
+            }
+            for bytes in [&files.doc, &files.psm, &files.pos, &files.pay]
+                .into_iter()
+                .filter(|b| !b.is_empty())
+            {
+                let footer = bytes.len().checked_sub(codec_util::FOOTER_LENGTH).unwrap();
+                codec_util::check_whole_file_footer(bytes, footer).unwrap();
+            }
+        }
     }
 
     #[test]

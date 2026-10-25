@@ -1,0 +1,39 @@
+visitor	g:2,v:0:00,v:1:ff	ok;ok;ok	grow:2,value:0:00,value:1:ff
+visitor	v:0:00	assert	
+visitor	g:1,d:0,d:1	ok;ok;assert	grow:1,doc:0
+visitor	g:1,c:00:ff,v:0:00	ok;ok;ok	grow:1,compare:00:ff,value:0:00
+visitor	g:1,in,c:00:ff,d:0	ok;ok;ok;ok	grow:1,compare:00:ff,doc:0
+visitor	g:1,in,c:00:ff,v:0:00	ok;ok;ok;assert	grow:1,compare:00:ff
+visitor	g:1,c:00:ff,d:0	ok;ok;assert	grow:1,compare:00:ff
+visitor	g:1,out,c:00:ff,d:0	ok;ok;ok;assert	grow:1,compare:00:ff
+visitor	g:1,c:20:10,v:0:20	ok;assert;ok	grow:1,value:0:20
+visitor	g:1,c:20:30,v:0:10	ok;ok;assert	grow:1,compare:20:30
+visitor	g:1,c:20:30,v:0:40	ok;ok;assert	grow:1,compare:20:30
+visitor	g:2,v:0:80,v:1:7f	ok;ok;assert	grow:2,value:0:80
+visitor	g:2,v:1:80,v:0:80	ok;ok;assert	grow:2,value:1:80
+visitor	g:2,v:0:80,v:1:80	ok;ok;ok	grow:2,value:0:80,value:1:80
+visitor	g:1,v:0:0001	ok;assert	grow:1
+visitor	g:2,c:10:20,v:0:15,v:1:30	ok;ok;ok;ok	grow:2,compare:10:20,value:0:15,value:1:30
+visitor	g:1,fail,v:0:10,ok,v:1:20	ok;ok;io:visitor failure;ok;assert	grow:1,value:0:10
+visitor	g:1,d:0,g:1,d:1	ok;ok;ok;ok	grow:1,doc:0,grow:1,doc:1
+reader	missing-field	assert	
+reader	null	ok	get:f
+reader	size0	assert	get:f,size
+reader	docs0	assert	get:f,size,docs
+reader	docs-size	assert	get:f,size,docs,docs,size
+reader	docs-max	assert	get:f,size,docs,docs,size,docs
+reader	all	ok	get:f,size,docs,docs,size,docs,min,max,dims,index,bytes,size,docs,tree,child,sibling,parent,treeMin,treeMax,treeSize,dims,index,bytes,ids,grow:1,doc:1,dims,index,bytes,values,grow:2,value:0:00,value:1:ff,clone,dims,index,bytes,values,grow:2,value:0:00,value:1:ff,integrity,close,close
+reader	tree0	assert	get:f,size,docs,docs,size,docs,tree,treeSize
+reader	tree-error	io:delegate failure	get:f,size,docs,docs,size,docs,tree
+reader	dims-error	io:delegate failure	get:f,size,docs,docs,size,docs,tree,dims
+reader	close-error	io:delegate failure	close
+reader	integrity-error	io:delegate failure	integrity
+reader	merge	ok	merge,get:f,size,docs,docs,size,docs,close,close
+reader	thread	ok	get:f,size,docs,docs,size,docs
+reader	merge-thread	assert	merge
+reader	values-thread	assert	get:f,size,docs,docs,size,docs
+reader	display	ok	
+writer	all	ok	write,merge,finish,close,close
+writer	zero	illegal:writing field="f" but pointDimensionalCount is 0	
+writer	write-error	io:delegate failure	write
+writer	close-error	io:delegate failure	close

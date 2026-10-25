@@ -1,0 +1,81 @@
+field dense_norms
+  term term
+    doc 0
+      freq 1
+      pos 0
+    doc 1
+      freq 1
+      pos 0
+    doc 2
+      freq 1
+      pos 0
+    doc 3
+      freq 1
+      pos 0
+    doc 4
+      freq 1
+      pos 0
+    doc 5
+      freq 1
+      pos 0
+    doc 6
+      freq 1
+      pos 0
+    doc 7
+      freq 1
+      pos 0
+    skipList 
+      level 0
+        skipDoc 7
+        skipDocFP 30
+        impacts 
+          impact 
+            freq 1
+            norm 1
+        impactsEnd 
+field id
+  term 0
+    doc 0
+  term 1
+    doc 1
+  term 2
+    doc 2
+  term 3
+    doc 3
+  term 4
+    doc 4
+  term 5
+    doc 5
+  term 6
+    doc 6
+  term 7
+    doc 7
+field norms_dv
+  term term
+    doc 0
+      freq 1
+      pos 0
+    doc 2
+      freq 1
+      pos 0
+    doc 4
+      freq 1
+      pos 0
+    doc 6
+      freq 1
+      pos 0
+field terms_dv
+  term term
+    doc 1
+    doc 2
+    doc 4
+    doc 5
+    doc 7
+field vector_terms
+  term term
+    doc x
+    doc 2
+    doc 4
+    doc 6
+END
+checksum 00000000001540499655

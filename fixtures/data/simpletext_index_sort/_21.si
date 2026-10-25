@@ -1,0 +1,21 @@
+    version 10.5.0
+    min version null
+    number of documents 7
+    uses compound file false
+    has blocks false
+    diagnostics 1
+      key source
+      value fixture
+    attributes 1
+      key note
+      value line\
+break\\
+    files 2
+      file _21.other
+      file _21.si
+    id [49 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0]
+    sort 1
+      name SortField
+      type <string: "text">
+      bytes [4 74 65 78 74 6 53 54 52 49 4e 47 0 0 0 0 0 0 0 0]
+checksum 00000000003546791087

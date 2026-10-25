@@ -1867,6 +1867,45 @@ impl StoredFieldsWriter {
         Ok(())
     }
 
+    /// Already-flushed `.fdt` bytes, excluding a footer. Test-framework codec
+    /// adapters copy these to their directory outputs at Java callback boundaries.
+    #[cfg(feature = "test-support")]
+    pub fn flushed_data(&self) -> &[u8] {
+        &self.fdt
+    }
+
+    /// Java's initial `finish(numDocs)` flush, before document-count validation
+    /// and before opening `.fdx`. Kept separate for fault-injection adapters.
+    #[cfg(feature = "test-support")]
+    pub fn flush_for_finish(&mut self) -> &[u8] {
+        if self.num_buffered_docs() > 0 {
+            self.flush(true);
+        }
+        &self.fdt
+    }
+
+    /// Finish bytes plus the `.fdm` boundary written by `FieldsIndexWriter.finish`
+    /// before its `.fdx` output closes. Chunk statistics and both outer footers
+    /// belong after that close succeeds. Only test-framework adapters need it.
+    #[cfg(feature = "test-support")]
+    pub fn finish_staged(mut self) -> (Vec<u8>, Vec<u8>, Vec<u8>, usize) {
+        self.flush_for_finish();
+        let mut statistics = Vec::new();
+        let chunks = i64::try_from(self.docs_values.len())
+            .expect("chunk count fits a Vec length")
+            .checked_sub(1)
+            .expect("initial chunk index entry");
+        statistics.write_vlong(chunks);
+        statistics.write_vlong(self.num_dirty_chunks);
+        statistics.write_vlong(self.num_dirty_docs);
+        let (fdt, fdx, fdm) = self.finish();
+        let index_end = fdm
+            .len()
+            .checked_sub(codec_util::FOOTER_LENGTH)
+            .and_then(|length| length.checked_sub(statistics.len()))
+            .expect("metadata includes statistics and footer");
+        (fdt, fdx, fdm, index_end)
+    }
     /// Java's `finish(numDocs)`: flush whatever is buffered as a final dirty
     /// chunk, then assemble `.fdt`/`.fdx`/`.fdm`.
     pub fn finish(mut self) -> (Vec<u8>, Vec<u8>, Vec<u8>) {

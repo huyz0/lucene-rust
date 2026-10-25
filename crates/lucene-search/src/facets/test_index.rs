@@ -85,7 +85,7 @@ impl FacetIndex {
         let reader = DirectoryReader::open(&self.index).unwrap();
         let opened = reader.open_segments().unwrap();
         let segments = opened.as_open_segments();
-        let owned = reader.field_norms_by_field(&["id".to_string()]);
+        let owned = reader.field_norms_by_field(&["id".to_string()]).unwrap();
         let norms: Vec<_> = owned.iter().map(Some).collect();
         let searcher = IndexSearcher::new(&segments, &norms).unwrap();
         let taxo = DirectoryTaxonomyReader::open(&self.taxo).unwrap();

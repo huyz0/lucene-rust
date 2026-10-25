@@ -1,0 +1,22 @@
+    version 10.5.0
+    min version 10.0.0
+    number of documents 7
+    uses compound file true
+    has blocks false
+    diagnostics 1
+      key source
+      value fixture
+    attributes 1
+      key note
+      value line\
+break\\
+    files 2
+      file _1g.si
+      file _1g.other
+    id [34 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0]
+    sort 1
+      name SortField
+      type <double: "plain\\\
+é"> missingValue=-0.0
+      bytes [9 70 6c 61 69 6e 5c a c3 a9 6 44 4f 55 42 4c 45 0 0 0 0 1 0 0 0 ff ff ff ff ff ff ff ff]
+checksum 00000000003267935101

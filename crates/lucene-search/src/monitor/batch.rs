@@ -99,7 +99,7 @@ impl DocumentBatch {
                 let mut opened = reader.open_segments()?;
                 opened.open_points()?;
                 let segments = opened.as_open_segments();
-                let owned = reader.field_norms_by_field(fields);
+                let owned = reader.field_norms_by_field(fields)?;
                 let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
                 let mut searcher = IndexSearcher::new(&segments, &norms)?;
                 if let Some(s) = &self.similarity {

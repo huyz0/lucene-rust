@@ -197,7 +197,7 @@ fn multi_segment_fuzzy_scores_match_real_lucene_bit_for_bit() {
     let reader = DirectoryReader::open(&FsDirectory::open(fixture_dir())).expect("open reader");
     let opened = reader.open_segments().expect("open postings");
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
     let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
 
     for case in m.cases() {

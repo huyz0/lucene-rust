@@ -67,7 +67,13 @@ WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
 javac -nowarn -proc:none -cp "$CP" -d "$WORK/classes" "$SRC"/*.java
 
 run() { # <generator> <outdir>
-  java "${LUCENE_FIXTURE_JVM_OPTS[@]}" -cp "$WORK/classes:$CP" "Gen$1" "$2" "$EXCERPT"
+  local assertion_opts=()
+  # These generators record assertions in Lucene's asserting wrappers.
+  case "$1" in
+    AssertingCodec|AssertingDocValues|AssertingDocValuesIterators|AssertingKnnVectors|AssertingLiveDocs|AssertingNorms|AssertingPoints|AssertingPostings|AssertingStoredFields|AssertingTermVectors|CompressingCodec|ConfigurableM|CrankyDocValues|CrankyPostings|ScorerIndexSearcher) assertion_opts=(-ea) ;;
+    FstTesterLists) assertion_opts=(-ea -Dtests.multiplier=1) ;;
+  esac
+  java "${LUCENE_FIXTURE_JVM_OPTS[@]}" "${assertion_opts[@]}" -cp "$WORK/classes:$CP" "Gen$1" "$2" "$EXCERPT"
 }
 
 if [ "$CHECK" = 1 ]; then

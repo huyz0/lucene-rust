@@ -260,7 +260,7 @@ pub(crate) fn build<'a>(
             super::function::function_score(ctx, q, boost, mode, top_level)
         }
         #[cfg(any(test, feature = "asserting"))]
-        ExtendedQuery::Test(q) => super::test_queries::build(ctx, q, boost, mode),
+        ExtendedQuery::Test(q) => super::test_queries::build(ctx, q, boost, mode, top_level),
         // `CommonTermsQuery` has no weight of its own: `rewrite(searcher)`
         // turns it into the boolean of its rare and frequent terms first.
         ExtendedQuery::CommonTerms(_) => Err(crate::Error::IllegalState(
@@ -520,7 +520,7 @@ pub(crate) fn positional_phrase<'a>(
         return Ok(None);
     };
     let scorer = sim_scorer(ctx, &p.field, boost, &collection, &stats);
-    let repeats = sloppy_phrase::PhraseRepeats::for_phrase(&p.terms);
+    let repeats = sloppy_phrase::PhraseRepeats::for_phrase_positions(&p.terms, &offsets);
     if let Some(doc_in) = ctx.doc_in.filter(|_| found.iter().all(|s| s.doc_freq > 1)) {
         let mut match_cost = 0.0f32;
         let mut terms = Vec::with_capacity(p.terms.len());
@@ -531,11 +531,12 @@ pub(crate) fn positional_phrase<'a>(
                 return Ok(None);
             };
             terms.push(super::phrase::PhraseTerm {
-                cursor,
+                cursor: cursor.into(),
                 slot,
                 cost: i64::from(s.doc_freq),
             });
         }
+        super::phrase::sort_exact_phrase_terms(&mut terms, p, &offsets);
         return Ok(Some(Box::new(
             super::phrase::PhraseScorer::new(
                 terms,
@@ -1617,9 +1618,13 @@ fn blended<'a>(
             top_level,
         ),
         BlendedRewrite::DisjunctionMax(tie) => {
+            // Java's rewritten DisjunctionMaxQuery forwards to a sole present
+            // supplier, or to all suppliers only when its tie breaker is zero.
+            let term_top_level =
+                mode == Mode::TopScores && top_level && (children.len() == 1 || tie == 0.0);
             let mut terms: Vec<TermScorer<'a>> = children
                 .into_iter()
-                .map(|c| TermScorer::new(c.into_leg(), mode == Mode::TopScores))
+                .map(|c| TermScorer::new(c.into_leg(), term_top_level))
                 .collect();
             Ok(match terms.len() {
                 0 => None,

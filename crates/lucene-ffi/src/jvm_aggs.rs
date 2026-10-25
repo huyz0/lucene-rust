@@ -60,6 +60,7 @@ use lucene_search::BooleanQuery;
 
 use crate::error::{set_last_error, FfiStatus};
 use crate::jvm_reader::{self, Cursor};
+use crate::query::map_search_error;
 
 const AGG_METRIC: u8 = 0;
 const AGG_CARDINALITY: u8 = 1;
@@ -536,7 +537,10 @@ pub(crate) fn aggregate_tree_blobs(
     } else {
         Vec::new()
     };
-    let owned = h.reader.field_norms_by_field(&norm_fields);
+    let owned = h
+        .reader
+        .field_norms_by_field(&norm_fields)
+        .map_err(|error| map_search_error(error.into()))?;
     let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
     let min = min_score.map(|min| MinScore { min, norms: &norms });

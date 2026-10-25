@@ -1,0 +1,55 @@
+writer	finish0,close,close	ok;ok;ok	finish:0,close:1,close:2,close:3,close:4	0
+writer	finish-1	assert	finish:-1	0
+writer	start,int,long,float,double,binary,input,string,end,finish1,resources,close	ok;ok;ok;ok;ok;ok;ok;ok;ok;ok;ok;ok	start,int,long,float,double,binary,input,string,end,finish:1,ram,children,close:1,close:2	2
+writer	end	assert		0
+writer	start,start,end,end	ok;assert;ok;assert	start,end	0
+writer	start,finish1,end,finish1	ok;assert;ok;ok	start,end,finish:1	0
+writer	start,end,finish0	ok;ok;assert	start,end	0
+writer	start,end,finish2	ok;ok;assert	start,end,finish:2	0
+writer	start,end,finish2!	ok;ok;io:delegate failure	start,end,finish:2	0
+writer	start!,start,end,finish1	io:delegate failure;ok;ok;ok	start,start,end,finish:1	0
+writer	start,end!,end,finish1	ok;io:delegate failure;ok;ok	start,end,end,finish:1	0
+writer	start,int!,int,end,finish1	ok;io:delegate failure;ok;ok;ok	start,int,int,end,finish:1	0
+writer	start,input!,input,end,finish1	ok;io:delegate failure;ok;ok;ok	start,input,input,end,finish:1	2
+writer	start,end,finish1,finish1	ok;ok;ok;ok	start,end,finish:1,finish:1	0
+writer	close!	io:close failure	close:1	0
+writer	close2!	io:close failure	close:1,close:2	0
+writer	close,close	ok;ok	close:1,close:2,close:3,close:4	0
+writer	start,end,start,end,finish2	ok;ok;ok;ok;ok	start,end,start,end,finish:2	0
+writer	int	assert		0
+writer	start,end,int	ok;ok;assert	start,end	0
+writer	long	assert		0
+writer	start,end,long	ok;ok;assert	start,end	0
+writer	float	assert		0
+writer	start,end,float	ok;ok;assert	start,end	0
+writer	double	assert		0
+writer	start,end,double	ok;ok;assert	start,end	0
+writer	binary	assert		0
+writer	start,end,binary	ok;ok;assert	start,end	0
+writer	input	assert		0
+writer	start,end,input	ok;ok;assert	start,end	0
+writer	string	assert		0
+writer	start,end,string	ok;ok;assert	start,end	0
+reader	valid	ok	r:doc:0,r:doc:1,r:integrity,r:close:1,r:close:2
+reader	negative	assert	
+reader	past-end	assert	
+reader	document-error	io:reader failure	r:doc:0
+reader	visitor-error	io:visitor failure	r:doc:0
+reader	integrity-error	io:reader failure	r:integrity
+reader	close-first	io:close failure	r:close:1
+reader	close-second	io:close failure	r:close:1,r:close:2
+reader	clone	ok	r:clone,r:close:1,r:close:2,rc:doc:1,rc:close:1,rc:close:2
+reader	merge	ok	r:merge,r:close:1,r:close:2,rm:doc:1,rm:close:1,rm:close:2
+reader	merge-close	ok	r:merge,rm:close:1,rm:close:2,r:doc:0,r:close:1,r:close:2
+reader	merge-clone	assert	
+reader	merge-merge	ok	r:merge,rm:merge,rmm:doc:0
+reader	display	ok	
+reader	thread	assert	
+reader	merge-thread	assert	r:merge
+reader	thread-clone	ok	r:clone,rc:doc:0
+format	writer	ok	open-writer
+format	writer-error	io:open failure	open-writer
+format	reader	ok	open-reader
+format	reader-error	io:open failure	open-reader
+merge	sequential	ok	a:integrity,b:integrity,start,a:doc:0,int,end,start,b:doc:0,int,end,start,b:doc:1,int,end,finish:3
+merge	sorted	ok	a:integrity,b:integrity,start,b:doc:0,int,end,start,a:doc:0,int,end,start,b:doc:1,int,end,finish:3

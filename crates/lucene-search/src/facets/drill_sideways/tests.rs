@@ -24,7 +24,7 @@ fn with_slices<R>(
     let reader = DirectoryReader::open(&index.index).unwrap();
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["id".to_string()]);
+    let owned = reader.field_norms_by_field(&["id".to_string()]).unwrap();
     let norms: Vec<_> = owned.iter().map(Some).collect();
     let mut searcher = IndexSearcher::new(&segments, &norms).unwrap();
     if let Some(s) = slices {

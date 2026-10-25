@@ -1,0 +1,375 @@
+reader	3	12	9
+hits	scorer_searcher	bm25	0	COMPLETE	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007,11:3e3985c9
+hits	scorer_searcher	bm25	0	COMPLETE_NO_SCORES	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+hits	scorer_searcher	bm25	0	TOP_DOCS	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+hits	scorer_searcher	bm25	0	TOP_DOCS_WITH_SCORES	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007,11:3e3985c9
+top	scorer_searcher	bm25	0	6:EQUAL_TO:0:3e821007,3:3e821007,9:3e821007
+after	scorer_searcher	bm25	0	6:EQUAL_TO:3:3e821007,9:3e821007,2:3e3985c9
+count	scorer_searcher	bm25	0	6
+manager	scorer_searcher	bm25	0	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007,11:3e3985c9
+slice	scorer_searcher	bm25	0	0:3e821007,2:3e3985c9,3:3e821007,9:3e821007,11:3e3985c9
+hits	scorer_searcher	bm25	1	COMPLETE	0:3eded2ec,2:3eb985c9,3:3e821007,4:3e59e442,5:3eb985c9,7:3e59e442,9:3eded2ec,11:3eb985c9
+hits	scorer_searcher	bm25	1	COMPLETE_NO_SCORES	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+hits	scorer_searcher	bm25	1	TOP_DOCS	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+hits	scorer_searcher	bm25	1	TOP_DOCS_WITH_SCORES	0:3eded2ec,2:3eb985c9,3:3e821007,4:3e59e442,5:3eb985c9,7:3e59e442,9:3eded2ec,11:3eb985c9
+top	scorer_searcher	bm25	1	8:EQUAL_TO:0:3eded2ec,9:3eded2ec,2:3eb985c9
+after	scorer_searcher	bm25	1	8:EQUAL_TO:9:3eded2ec,2:3eb985c9,5:3eb985c9
+count	scorer_searcher	bm25	1	8
+manager	scorer_searcher	bm25	1	0:3eded2ec,2:3eb985c9,3:3e821007,4:3e59e442,5:3eb985c9,7:3e59e442,9:3eded2ec,11:3eb985c9
+slice	scorer_searcher	bm25	1	0:3eded2ec,2:3eb985c9,3:3e821007,9:3eded2ec,11:3eb985c9
+hits	scorer_searcher	bm25	2	COMPLETE	0:3eded2ec,2:3eb985c9,5:3eb985c9,9:3eded2ec,11:3eb985c9
+hits	scorer_searcher	bm25	2	COMPLETE_NO_SCORES	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+hits	scorer_searcher	bm25	2	TOP_DOCS	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+hits	scorer_searcher	bm25	2	TOP_DOCS_WITH_SCORES	0:3eded2ec,2:3eb985c9,5:3eb985c9,9:3eded2ec,11:3eb985c9
+top	scorer_searcher	bm25	2	5:EQUAL_TO:0:3eded2ec,9:3eded2ec,2:3eb985c9
+after	scorer_searcher	bm25	2	5:EQUAL_TO:9:3eded2ec,2:3eb985c9,5:3eb985c9
+count	scorer_searcher	bm25	2	5
+manager	scorer_searcher	bm25	2	0:3eded2ec,2:3eb985c9,5:3eb985c9,9:3eded2ec,11:3eb985c9
+slice	scorer_searcher	bm25	2	0:3eded2ec,2:3eb985c9,9:3eded2ec,11:3eb985c9
+hits	scorer_searcher	bm25	3	COMPLETE	0:3eded2ec,2:3eb985c9,3:3e821007,5:3eb985c9,9:3eded2ec,11:3eb985c9
+hits	scorer_searcher	bm25	3	COMPLETE_NO_SCORES	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+hits	scorer_searcher	bm25	3	TOP_DOCS	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+hits	scorer_searcher	bm25	3	TOP_DOCS_WITH_SCORES	0:3eded2ec,2:3eb985c9,3:3e821007,5:3eb985c9,9:3eded2ec,11:3eb985c9
+top	scorer_searcher	bm25	3	6:EQUAL_TO:0:3eded2ec,9:3eded2ec,2:3eb985c9
+after	scorer_searcher	bm25	3	6:EQUAL_TO:9:3eded2ec,2:3eb985c9,5:3eb985c9
+count	scorer_searcher	bm25	3	6
+manager	scorer_searcher	bm25	3	0:3eded2ec,2:3eb985c9,3:3e821007,5:3eb985c9,9:3eded2ec,11:3eb985c9
+slice	scorer_searcher	bm25	3	0:3eded2ec,2:3eb985c9,3:3e821007,9:3eded2ec,11:3eb985c9
+hits	scorer_searcher	bm25	4	COMPLETE	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007
+hits	scorer_searcher	bm25	4	COMPLETE_NO_SCORES	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+hits	scorer_searcher	bm25	4	TOP_DOCS	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+hits	scorer_searcher	bm25	4	TOP_DOCS_WITH_SCORES	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007
+top	scorer_searcher	bm25	4	5:EQUAL_TO:0:3e821007,3:3e821007,9:3e821007
+after	scorer_searcher	bm25	4	5:EQUAL_TO:3:3e821007,9:3e821007,2:3e3985c9
+count	scorer_searcher	bm25	4	5
+manager	scorer_searcher	bm25	4	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007
+slice	scorer_searcher	bm25	4	0:3e821007,2:3e3985c9,3:3e821007,9:3e821007
+hits	scorer_searcher	bm25	5	COMPLETE	0:3eb985c9,5:3eb985c9,9:3eb985c9,11:3eb985c9
+hits	scorer_searcher	bm25	5	COMPLETE_NO_SCORES	0:00000000,5:00000000,9:00000000,11:00000000
+hits	scorer_searcher	bm25	5	TOP_DOCS	0:00000000,5:00000000,9:00000000,11:00000000
+hits	scorer_searcher	bm25	5	TOP_DOCS_WITH_SCORES	0:3eb985c9,5:3eb985c9,9:3eb985c9,11:3eb985c9
+top	scorer_searcher	bm25	5	4:EQUAL_TO:0:3eb985c9,5:3eb985c9,9:3eb985c9
+after	scorer_searcher	bm25	5	4:EQUAL_TO:5:3eb985c9,9:3eb985c9,11:3eb985c9
+count	scorer_searcher	bm25	5	4
+manager	scorer_searcher	bm25	5	0:3eb985c9,5:3eb985c9,9:3eb985c9,11:3eb985c9
+slice	scorer_searcher	bm25	5	0:3eb985c9,9:3eb985c9,11:3eb985c9
+hits	scorer_searcher	bm25	6	COMPLETE	0:3e821007,5:3e3985c9,9:3e821007,11:3e3985c9
+hits	scorer_searcher	bm25	6	COMPLETE_NO_SCORES	0:00000000,5:00000000,9:00000000,11:00000000
+hits	scorer_searcher	bm25	6	TOP_DOCS	0:00000000,5:00000000,9:00000000,11:00000000
+hits	scorer_searcher	bm25	6	TOP_DOCS_WITH_SCORES	0:3e821007,5:3e3985c9,9:3e821007,11:3e3985c9
+top	scorer_searcher	bm25	6	4:EQUAL_TO:0:3e821007,9:3e821007,5:3e3985c9
+after	scorer_searcher	bm25	6	4:EQUAL_TO:9:3e821007,5:3e3985c9,11:3e3985c9
+count	scorer_searcher	bm25	6	4
+manager	scorer_searcher	bm25	6	0:3e821007,5:3e3985c9,9:3e821007,11:3e3985c9
+slice	scorer_searcher	bm25	6	0:3e821007,9:3e821007,11:3e3985c9
+hits	scorer_searcher	bm25	7	COMPLETE	0:3f800000,5:3f800000,9:3f800000,11:3f800000
+hits	scorer_searcher	bm25	7	COMPLETE_NO_SCORES	0:00000000,5:00000000,9:00000000,11:00000000
+hits	scorer_searcher	bm25	7	TOP_DOCS	0:00000000,5:00000000,9:00000000,11:00000000
+hits	scorer_searcher	bm25	7	TOP_DOCS_WITH_SCORES	0:3f800000,5:3f800000,9:3f800000,11:3f800000
+top	scorer_searcher	bm25	7	4:EQUAL_TO:0:3f800000,5:3f800000,9:3f800000
+after	scorer_searcher	bm25	7	4:EQUAL_TO:5:3f800000,9:3f800000,11:3f800000
+count	scorer_searcher	bm25	7	4
+manager	scorer_searcher	bm25	7	0:3f800000,5:3f800000,9:3f800000,11:3f800000
+slice	scorer_searcher	bm25	7	0:3f800000,9:3f800000,11:3f800000
+hits	scorer_searcher	bm25	8	COMPLETE	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,8:3f800000,9:3f800000,11:3f800000
+hits	scorer_searcher	bm25	8	COMPLETE_NO_SCORES	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,8:00000000,9:00000000,11:00000000
+hits	scorer_searcher	bm25	8	TOP_DOCS	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,8:00000000,9:00000000,11:00000000
+hits	scorer_searcher	bm25	8	TOP_DOCS_WITH_SCORES	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,8:3f800000,9:3f800000,11:3f800000
+top	scorer_searcher	bm25	8	9:EQUAL_TO:0:3f800000,2:3f800000,3:3f800000
+after	scorer_searcher	bm25	8	9:EQUAL_TO:2:3f800000,3:3f800000,4:3f800000
+count	scorer_searcher	bm25	8	9
+manager	scorer_searcher	bm25	8	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,8:3f800000,9:3f800000,11:3f800000
+slice	scorer_searcher	bm25	8	0:3f800000,2:3f800000,3:3f800000,8:3f800000,9:3f800000,11:3f800000
+hits	scorer_searcher	bm25	9	COMPLETE	
+hits	scorer_searcher	bm25	9	COMPLETE_NO_SCORES	
+hits	scorer_searcher	bm25	9	TOP_DOCS	
+hits	scorer_searcher	bm25	9	TOP_DOCS_WITH_SCORES	
+top	scorer_searcher	bm25	9	0:EQUAL_TO:
+after	scorer_searcher	bm25	9	0:EQUAL_TO:
+count	scorer_searcher	bm25	9	0
+manager	scorer_searcher	bm25	9	
+slice	scorer_searcher	bm25	9	
+trap	scorer_searcher	bm25	3	0	0	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007,11:3e3985c9
+threshold	scorer_searcher	bm25	direct	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007,11:3e3985c9
+threshold	scorer_searcher	bm25	dismax	0:3e821007,2:3e3985c9,3:3e821007,4:3e59e442,5:3e3985c9,7:3e59e442,9:3e821007,11:3e3985c9
+threshold	scorer_searcher	bm25	dismax_tie	0:3eb07179,2:3e8b2457,3:3e821007,4:3e59e442,5:3e8b2457,7:3e59e442,9:3eb07179,11:3e8b2457
+threshold	scorer_searcher	bm25	dismax_singleton	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007,11:3e3985c9
+threshold	scorer_searcher	bm25	dismax_singleton_tie	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007,11:3e3985c9
+threshold	scorer_searcher	bm25	blended	0:3e821007,2:3e3985c9,3:3e821007,4:3e59e442,5:3e3985c9,7:3e59e442,9:3e821007,11:3e3985c9
+threshold	scorer_searcher	bm25	single_phrase	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007,11:3e3985c9
+threshold	scorer_searcher	bm25	required_filter	0:3e821007,2:3e3985c9,5:3e3985c9,9:3e821007,11:3e3985c9
+threshold	scorer_searcher	bm25	required_exclusion	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007
+ordinary_threshold	scorer_searcher	bm25	TOP_DOCS_WITH_SCORES	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007,11:3e3985c9
+timeout	scorer_searcher	bm25	0	true
+hits	scorer_searcher	boolean	0	COMPLETE	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+hits	scorer_searcher	boolean	0	COMPLETE_NO_SCORES	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+hits	scorer_searcher	boolean	0	TOP_DOCS	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+hits	scorer_searcher	boolean	0	TOP_DOCS_WITH_SCORES	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+top	scorer_searcher	boolean	0	6:EQUAL_TO:0:3f800000,2:3f800000,3:3f800000
+after	scorer_searcher	boolean	0	6:EQUAL_TO:2:3f800000,3:3f800000,5:3f800000
+count	scorer_searcher	boolean	0	6
+manager	scorer_searcher	boolean	0	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+slice	scorer_searcher	boolean	0	0:3f800000,2:3f800000,3:3f800000,9:3f800000,11:3f800000
+hits	scorer_searcher	boolean	1	COMPLETE	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+hits	scorer_searcher	boolean	1	COMPLETE_NO_SCORES	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+hits	scorer_searcher	boolean	1	TOP_DOCS	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+hits	scorer_searcher	boolean	1	TOP_DOCS_WITH_SCORES	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+top	scorer_searcher	boolean	1	8:EQUAL_TO:0:40000000,2:40000000,5:40000000
+after	scorer_searcher	boolean	1	8:EQUAL_TO:2:40000000,5:40000000,9:40000000
+count	scorer_searcher	boolean	1	8
+manager	scorer_searcher	boolean	1	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+slice	scorer_searcher	boolean	1	0:40000000,2:40000000,3:3f800000,9:40000000,11:40000000
+hits	scorer_searcher	boolean	2	COMPLETE	0:40000000,2:40000000,5:40000000,9:40000000,11:40000000
+hits	scorer_searcher	boolean	2	COMPLETE_NO_SCORES	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+hits	scorer_searcher	boolean	2	TOP_DOCS	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+hits	scorer_searcher	boolean	2	TOP_DOCS_WITH_SCORES	0:40000000,2:40000000,5:40000000,9:40000000,11:40000000
+top	scorer_searcher	boolean	2	5:EQUAL_TO:0:40000000,2:40000000,5:40000000
+after	scorer_searcher	boolean	2	5:EQUAL_TO:2:40000000,5:40000000,9:40000000
+count	scorer_searcher	boolean	2	5
+manager	scorer_searcher	boolean	2	0:40000000,2:40000000,5:40000000,9:40000000,11:40000000
+slice	scorer_searcher	boolean	2	0:40000000,2:40000000,9:40000000,11:40000000
+hits	scorer_searcher	boolean	3	COMPLETE	0:40000000,2:40000000,3:3f800000,5:40000000,9:40000000,11:40000000
+hits	scorer_searcher	boolean	3	COMPLETE_NO_SCORES	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+hits	scorer_searcher	boolean	3	TOP_DOCS	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+hits	scorer_searcher	boolean	3	TOP_DOCS_WITH_SCORES	0:40000000,2:40000000,3:3f800000,5:40000000,9:40000000,11:40000000
+top	scorer_searcher	boolean	3	6:EQUAL_TO:0:40000000,2:40000000,5:40000000
+after	scorer_searcher	boolean	3	6:EQUAL_TO:2:40000000,5:40000000,9:40000000
+count	scorer_searcher	boolean	3	6
+manager	scorer_searcher	boolean	3	0:40000000,2:40000000,3:3f800000,5:40000000,9:40000000,11:40000000
+slice	scorer_searcher	boolean	3	0:40000000,2:40000000,3:3f800000,9:40000000,11:40000000
+hits	scorer_searcher	boolean	4	COMPLETE	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+hits	scorer_searcher	boolean	4	COMPLETE_NO_SCORES	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+hits	scorer_searcher	boolean	4	TOP_DOCS	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+hits	scorer_searcher	boolean	4	TOP_DOCS_WITH_SCORES	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+top	scorer_searcher	boolean	4	5:EQUAL_TO:0:3f800000,2:3f800000,3:3f800000
+after	scorer_searcher	boolean	4	5:EQUAL_TO:2:3f800000,3:3f800000,5:3f800000
+count	scorer_searcher	boolean	4	5
+manager	scorer_searcher	boolean	4	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+slice	scorer_searcher	boolean	4	0:3f800000,2:3f800000,3:3f800000,9:3f800000
+hits	scorer_searcher	boolean	5	COMPLETE	0:3f800000,5:3f800000,9:3f800000,11:3f800000
+hits	scorer_searcher	boolean	5	COMPLETE_NO_SCORES	0:00000000,5:00000000,9:00000000,11:00000000
+hits	scorer_searcher	boolean	5	TOP_DOCS	0:00000000,5:00000000,9:00000000,11:00000000
+hits	scorer_searcher	boolean	5	TOP_DOCS_WITH_SCORES	0:3f800000,5:3f800000,9:3f800000,11:3f800000
+top	scorer_searcher	boolean	5	4:EQUAL_TO:0:3f800000,5:3f800000,9:3f800000
+after	scorer_searcher	boolean	5	4:EQUAL_TO:5:3f800000,9:3f800000,11:3f800000
+count	scorer_searcher	boolean	5	4
+manager	scorer_searcher	boolean	5	0:3f800000,5:3f800000,9:3f800000,11:3f800000
+slice	scorer_searcher	boolean	5	0:3f800000,9:3f800000,11:3f800000
+hits	scorer_searcher	boolean	6	COMPLETE	0:3f800000,5:3f800000,9:3f800000,11:3f800000
+hits	scorer_searcher	boolean	6	COMPLETE_NO_SCORES	0:00000000,5:00000000,9:00000000,11:00000000
+hits	scorer_searcher	boolean	6	TOP_DOCS	0:00000000,5:00000000,9:00000000,11:00000000
+hits	scorer_searcher	boolean	6	TOP_DOCS_WITH_SCORES	0:3f800000,5:3f800000,9:3f800000,11:3f800000
+top	scorer_searcher	boolean	6	4:EQUAL_TO:0:3f800000,5:3f800000,9:3f800000
+after	scorer_searcher	boolean	6	4:EQUAL_TO:5:3f800000,9:3f800000,11:3f800000
+count	scorer_searcher	boolean	6	4
+manager	scorer_searcher	boolean	6	0:3f800000,5:3f800000,9:3f800000,11:3f800000
+slice	scorer_searcher	boolean	6	0:3f800000,9:3f800000,11:3f800000
+hits	scorer_searcher	boolean	7	COMPLETE	0:3f800000,5:3f800000,9:3f800000,11:3f800000
+hits	scorer_searcher	boolean	7	COMPLETE_NO_SCORES	0:00000000,5:00000000,9:00000000,11:00000000
+hits	scorer_searcher	boolean	7	TOP_DOCS	0:00000000,5:00000000,9:00000000,11:00000000
+hits	scorer_searcher	boolean	7	TOP_DOCS_WITH_SCORES	0:3f800000,5:3f800000,9:3f800000,11:3f800000
+top	scorer_searcher	boolean	7	4:EQUAL_TO:0:3f800000,5:3f800000,9:3f800000
+after	scorer_searcher	boolean	7	4:EQUAL_TO:5:3f800000,9:3f800000,11:3f800000
+count	scorer_searcher	boolean	7	4
+manager	scorer_searcher	boolean	7	0:3f800000,5:3f800000,9:3f800000,11:3f800000
+slice	scorer_searcher	boolean	7	0:3f800000,9:3f800000,11:3f800000
+hits	scorer_searcher	boolean	8	COMPLETE	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,8:3f800000,9:3f800000,11:3f800000
+hits	scorer_searcher	boolean	8	COMPLETE_NO_SCORES	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,8:00000000,9:00000000,11:00000000
+hits	scorer_searcher	boolean	8	TOP_DOCS	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,8:00000000,9:00000000,11:00000000
+hits	scorer_searcher	boolean	8	TOP_DOCS_WITH_SCORES	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,8:3f800000,9:3f800000,11:3f800000
+top	scorer_searcher	boolean	8	9:EQUAL_TO:0:3f800000,2:3f800000,3:3f800000
+after	scorer_searcher	boolean	8	9:EQUAL_TO:2:3f800000,3:3f800000,4:3f800000
+count	scorer_searcher	boolean	8	9
+manager	scorer_searcher	boolean	8	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,8:3f800000,9:3f800000,11:3f800000
+slice	scorer_searcher	boolean	8	0:3f800000,2:3f800000,3:3f800000,8:3f800000,9:3f800000,11:3f800000
+hits	scorer_searcher	boolean	9	COMPLETE	
+hits	scorer_searcher	boolean	9	COMPLETE_NO_SCORES	
+hits	scorer_searcher	boolean	9	TOP_DOCS	
+hits	scorer_searcher	boolean	9	TOP_DOCS_WITH_SCORES	
+top	scorer_searcher	boolean	9	0:EQUAL_TO:
+after	scorer_searcher	boolean	9	0:EQUAL_TO:
+count	scorer_searcher	boolean	9	0
+manager	scorer_searcher	boolean	9	
+slice	scorer_searcher	boolean	9	
+trap	scorer_searcher	boolean	3	0	0	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+threshold	scorer_searcher	boolean	direct	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+threshold	scorer_searcher	boolean	dismax	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+threshold	scorer_searcher	boolean	dismax_tie	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+threshold	scorer_searcher	boolean	dismax_singleton	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+threshold	scorer_searcher	boolean	dismax_singleton_tie	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+threshold	scorer_searcher	boolean	blended	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+threshold	scorer_searcher	boolean	single_phrase	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+threshold	scorer_searcher	boolean	required_filter	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+threshold	scorer_searcher	boolean	required_exclusion	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+ordinary_threshold	scorer_searcher	boolean	TOP_DOCS_WITH_SCORES	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+timeout	scorer_searcher	boolean	0	true
+hits	disabling_query	bm25	0	COMPLETE	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007,11:3e3985c9
+hits	disabling_query	bm25	0	COMPLETE_NO_SCORES	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+hits	disabling_query	bm25	0	TOP_DOCS	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+hits	disabling_query	bm25	0	TOP_DOCS_WITH_SCORES	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007,11:3e3985c9
+top	disabling_query	bm25	0	6:EQUAL_TO:0:3e821007,3:3e821007,9:3e821007
+after	disabling_query	bm25	0	6:EQUAL_TO:3:3e821007,9:3e821007,2:3e3985c9
+count	disabling_query	bm25	0	6
+manager	disabling_query	bm25	0	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007,11:3e3985c9
+hits	disabling_query	bm25	1	COMPLETE	0:3eded2ec,2:3eb985c9,3:3e821007,4:3e59e442,5:3eb985c9,7:3e59e442,9:3eded2ec,11:3eb985c9
+hits	disabling_query	bm25	1	COMPLETE_NO_SCORES	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+hits	disabling_query	bm25	1	TOP_DOCS	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+hits	disabling_query	bm25	1	TOP_DOCS_WITH_SCORES	0:3eded2ec,2:3eb985c9,3:3e821007,4:3e59e442,5:3eb985c9,7:3e59e442,9:3eded2ec,11:3eb985c9
+top	disabling_query	bm25	1	8:EQUAL_TO:0:3eded2ec,9:3eded2ec,2:3eb985c9
+after	disabling_query	bm25	1	8:EQUAL_TO:9:3eded2ec,2:3eb985c9,5:3eb985c9
+count	disabling_query	bm25	1	8
+manager	disabling_query	bm25	1	0:3eded2ec,2:3eb985c9,3:3e821007,4:3e59e442,5:3eb985c9,7:3e59e442,9:3eded2ec,11:3eb985c9
+hits	disabling_query	bm25	2	COMPLETE	0:3eded2ec,2:3eb985c9,5:3eb985c9,9:3eded2ec,11:3eb985c9
+hits	disabling_query	bm25	2	COMPLETE_NO_SCORES	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+hits	disabling_query	bm25	2	TOP_DOCS	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+hits	disabling_query	bm25	2	TOP_DOCS_WITH_SCORES	0:3eded2ec,2:3eb985c9,5:3eb985c9,9:3eded2ec,11:3eb985c9
+top	disabling_query	bm25	2	5:EQUAL_TO:0:3eded2ec,9:3eded2ec,2:3eb985c9
+after	disabling_query	bm25	2	5:EQUAL_TO:9:3eded2ec,2:3eb985c9,5:3eb985c9
+count	disabling_query	bm25	2	5
+manager	disabling_query	bm25	2	0:3eded2ec,2:3eb985c9,5:3eb985c9,9:3eded2ec,11:3eb985c9
+hits	disabling_query	bm25	3	COMPLETE	0:3eded2ec,2:3eb985c9,3:3e821007,5:3eb985c9,9:3eded2ec,11:3eb985c9
+hits	disabling_query	bm25	3	COMPLETE_NO_SCORES	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+hits	disabling_query	bm25	3	TOP_DOCS	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+hits	disabling_query	bm25	3	TOP_DOCS_WITH_SCORES	0:3eded2ec,2:3eb985c9,3:3e821007,5:3eb985c9,9:3eded2ec,11:3eb985c9
+top	disabling_query	bm25	3	6:EQUAL_TO:0:3eded2ec,9:3eded2ec,2:3eb985c9
+after	disabling_query	bm25	3	6:EQUAL_TO:9:3eded2ec,2:3eb985c9,5:3eb985c9
+count	disabling_query	bm25	3	6
+manager	disabling_query	bm25	3	0:3eded2ec,2:3eb985c9,3:3e821007,5:3eb985c9,9:3eded2ec,11:3eb985c9
+hits	disabling_query	bm25	4	COMPLETE	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007
+hits	disabling_query	bm25	4	COMPLETE_NO_SCORES	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+hits	disabling_query	bm25	4	TOP_DOCS	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+hits	disabling_query	bm25	4	TOP_DOCS_WITH_SCORES	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007
+top	disabling_query	bm25	4	5:EQUAL_TO:0:3e821007,3:3e821007,9:3e821007
+after	disabling_query	bm25	4	5:EQUAL_TO:3:3e821007,9:3e821007,2:3e3985c9
+count	disabling_query	bm25	4	5
+manager	disabling_query	bm25	4	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007
+hits	disabling_query	bm25	5	COMPLETE	0:3eb985c9,5:3eb985c9,9:3eb985c9,11:3eb985c9
+hits	disabling_query	bm25	5	COMPLETE_NO_SCORES	0:00000000,5:00000000,9:00000000,11:00000000
+hits	disabling_query	bm25	5	TOP_DOCS	0:00000000,5:00000000,9:00000000,11:00000000
+hits	disabling_query	bm25	5	TOP_DOCS_WITH_SCORES	0:3eb985c9,5:3eb985c9,9:3eb985c9,11:3eb985c9
+top	disabling_query	bm25	5	4:EQUAL_TO:0:3eb985c9,5:3eb985c9,9:3eb985c9
+after	disabling_query	bm25	5	4:EQUAL_TO:5:3eb985c9,9:3eb985c9,11:3eb985c9
+count	disabling_query	bm25	5	4
+manager	disabling_query	bm25	5	0:3eb985c9,5:3eb985c9,9:3eb985c9,11:3eb985c9
+hits	disabling_query	bm25	6	COMPLETE	0:3e821007,5:3e3985c9,9:3e821007,11:3e3985c9
+hits	disabling_query	bm25	6	COMPLETE_NO_SCORES	0:00000000,5:00000000,9:00000000,11:00000000
+hits	disabling_query	bm25	6	TOP_DOCS	0:00000000,5:00000000,9:00000000,11:00000000
+hits	disabling_query	bm25	6	TOP_DOCS_WITH_SCORES	0:3e821007,5:3e3985c9,9:3e821007,11:3e3985c9
+top	disabling_query	bm25	6	4:EQUAL_TO:0:3e821007,9:3e821007,5:3e3985c9
+after	disabling_query	bm25	6	4:EQUAL_TO:9:3e821007,5:3e3985c9,11:3e3985c9
+count	disabling_query	bm25	6	4
+manager	disabling_query	bm25	6	0:3e821007,5:3e3985c9,9:3e821007,11:3e3985c9
+hits	disabling_query	bm25	7	COMPLETE	0:3f800000,5:3f800000,9:3f800000,11:3f800000
+hits	disabling_query	bm25	7	COMPLETE_NO_SCORES	0:00000000,5:00000000,9:00000000,11:00000000
+hits	disabling_query	bm25	7	TOP_DOCS	0:00000000,5:00000000,9:00000000,11:00000000
+hits	disabling_query	bm25	7	TOP_DOCS_WITH_SCORES	0:3f800000,5:3f800000,9:3f800000,11:3f800000
+top	disabling_query	bm25	7	4:EQUAL_TO:0:3f800000,5:3f800000,9:3f800000
+after	disabling_query	bm25	7	4:EQUAL_TO:5:3f800000,9:3f800000,11:3f800000
+count	disabling_query	bm25	7	4
+manager	disabling_query	bm25	7	0:3f800000,5:3f800000,9:3f800000,11:3f800000
+hits	disabling_query	bm25	8	COMPLETE	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,8:3f800000,9:3f800000,11:3f800000
+hits	disabling_query	bm25	8	COMPLETE_NO_SCORES	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,8:00000000,9:00000000,11:00000000
+hits	disabling_query	bm25	8	TOP_DOCS	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,8:00000000,9:00000000,11:00000000
+hits	disabling_query	bm25	8	TOP_DOCS_WITH_SCORES	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,8:3f800000,9:3f800000,11:3f800000
+top	disabling_query	bm25	8	9:EQUAL_TO:0:3f800000,2:3f800000,3:3f800000
+after	disabling_query	bm25	8	9:EQUAL_TO:2:3f800000,3:3f800000,4:3f800000
+count	disabling_query	bm25	8	9
+manager	disabling_query	bm25	8	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,8:3f800000,9:3f800000,11:3f800000
+error	disabling_query	bm25	9	NullPointerException:null-supplier
+trap	disabling_query	bm25	3	0	0	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007,11:3e3985c9
+threshold	disabling_query	bm25	direct	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007,11:3e3985c9
+threshold	disabling_query	bm25	dismax	0:3e821007,2:3e3985c9,3:3e821007,4:3e59e442,5:3e3985c9,7:3e59e442,9:3e821007,11:3e3985c9
+threshold	disabling_query	bm25	dismax_tie	0:3eb07179,2:3e8b2457,3:3e821007,4:3e59e442,5:3e8b2457,7:3e59e442,9:3eb07179,11:3e8b2457
+threshold	disabling_query	bm25	dismax_singleton	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007,11:3e3985c9
+threshold	disabling_query	bm25	dismax_singleton_tie	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007,11:3e3985c9
+threshold	disabling_query	bm25	blended	0:3e821007,2:3e3985c9,3:3e821007,4:3e59e442,5:3e3985c9,7:3e59e442,9:3e821007,11:3e3985c9
+threshold	disabling_query	bm25	single_phrase	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007,11:3e3985c9
+threshold	disabling_query	bm25	required_filter	0:3e821007,2:3e3985c9,5:3e3985c9,9:3e821007,11:3e3985c9
+threshold	disabling_query	bm25	required_exclusion	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007
+ordinary_threshold	disabling_query	bm25	TOP_DOCS_WITH_SCORES	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007,11:3e3985c9
+timeout	disabling_query	bm25	0	true
+hits	disabling_query	boolean	0	COMPLETE	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+hits	disabling_query	boolean	0	COMPLETE_NO_SCORES	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+hits	disabling_query	boolean	0	TOP_DOCS	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+hits	disabling_query	boolean	0	TOP_DOCS_WITH_SCORES	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+top	disabling_query	boolean	0	6:EQUAL_TO:0:3f800000,2:3f800000,3:3f800000
+after	disabling_query	boolean	0	6:EQUAL_TO:2:3f800000,3:3f800000,5:3f800000
+count	disabling_query	boolean	0	6
+manager	disabling_query	boolean	0	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+hits	disabling_query	boolean	1	COMPLETE	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+hits	disabling_query	boolean	1	COMPLETE_NO_SCORES	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+hits	disabling_query	boolean	1	TOP_DOCS	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+hits	disabling_query	boolean	1	TOP_DOCS_WITH_SCORES	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+top	disabling_query	boolean	1	8:EQUAL_TO:0:40000000,2:40000000,5:40000000
+after	disabling_query	boolean	1	8:EQUAL_TO:2:40000000,5:40000000,9:40000000
+count	disabling_query	boolean	1	8
+manager	disabling_query	boolean	1	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+hits	disabling_query	boolean	2	COMPLETE	0:40000000,2:40000000,5:40000000,9:40000000,11:40000000
+hits	disabling_query	boolean	2	COMPLETE_NO_SCORES	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+hits	disabling_query	boolean	2	TOP_DOCS	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+hits	disabling_query	boolean	2	TOP_DOCS_WITH_SCORES	0:40000000,2:40000000,5:40000000,9:40000000,11:40000000
+top	disabling_query	boolean	2	5:EQUAL_TO:0:40000000,2:40000000,5:40000000
+after	disabling_query	boolean	2	5:EQUAL_TO:2:40000000,5:40000000,9:40000000
+count	disabling_query	boolean	2	5
+manager	disabling_query	boolean	2	0:40000000,2:40000000,5:40000000,9:40000000,11:40000000
+hits	disabling_query	boolean	3	COMPLETE	0:40000000,2:40000000,3:3f800000,5:40000000,9:40000000,11:40000000
+hits	disabling_query	boolean	3	COMPLETE_NO_SCORES	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+hits	disabling_query	boolean	3	TOP_DOCS	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+hits	disabling_query	boolean	3	TOP_DOCS_WITH_SCORES	0:40000000,2:40000000,3:3f800000,5:40000000,9:40000000,11:40000000
+top	disabling_query	boolean	3	6:EQUAL_TO:0:40000000,2:40000000,5:40000000
+after	disabling_query	boolean	3	6:EQUAL_TO:2:40000000,5:40000000,9:40000000
+count	disabling_query	boolean	3	6
+manager	disabling_query	boolean	3	0:40000000,2:40000000,3:3f800000,5:40000000,9:40000000,11:40000000
+hits	disabling_query	boolean	4	COMPLETE	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+hits	disabling_query	boolean	4	COMPLETE_NO_SCORES	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+hits	disabling_query	boolean	4	TOP_DOCS	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+hits	disabling_query	boolean	4	TOP_DOCS_WITH_SCORES	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+top	disabling_query	boolean	4	5:EQUAL_TO:0:3f800000,2:3f800000,3:3f800000
+after	disabling_query	boolean	4	5:EQUAL_TO:2:3f800000,3:3f800000,5:3f800000
+count	disabling_query	boolean	4	5
+manager	disabling_query	boolean	4	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+hits	disabling_query	boolean	5	COMPLETE	0:3f800000,5:3f800000,9:3f800000,11:3f800000
+hits	disabling_query	boolean	5	COMPLETE_NO_SCORES	0:00000000,5:00000000,9:00000000,11:00000000
+hits	disabling_query	boolean	5	TOP_DOCS	0:00000000,5:00000000,9:00000000,11:00000000
+hits	disabling_query	boolean	5	TOP_DOCS_WITH_SCORES	0:3f800000,5:3f800000,9:3f800000,11:3f800000
+top	disabling_query	boolean	5	4:EQUAL_TO:0:3f800000,5:3f800000,9:3f800000
+after	disabling_query	boolean	5	4:EQUAL_TO:5:3f800000,9:3f800000,11:3f800000
+count	disabling_query	boolean	5	4
+manager	disabling_query	boolean	5	0:3f800000,5:3f800000,9:3f800000,11:3f800000
+hits	disabling_query	boolean	6	COMPLETE	0:3f800000,5:3f800000,9:3f800000,11:3f800000
+hits	disabling_query	boolean	6	COMPLETE_NO_SCORES	0:00000000,5:00000000,9:00000000,11:00000000
+hits	disabling_query	boolean	6	TOP_DOCS	0:00000000,5:00000000,9:00000000,11:00000000
+hits	disabling_query	boolean	6	TOP_DOCS_WITH_SCORES	0:3f800000,5:3f800000,9:3f800000,11:3f800000
+top	disabling_query	boolean	6	4:EQUAL_TO:0:3f800000,5:3f800000,9:3f800000
+after	disabling_query	boolean	6	4:EQUAL_TO:5:3f800000,9:3f800000,11:3f800000
+count	disabling_query	boolean	6	4
+manager	disabling_query	boolean	6	0:3f800000,5:3f800000,9:3f800000,11:3f800000
+hits	disabling_query	boolean	7	COMPLETE	0:3f800000,5:3f800000,9:3f800000,11:3f800000
+hits	disabling_query	boolean	7	COMPLETE_NO_SCORES	0:00000000,5:00000000,9:00000000,11:00000000
+hits	disabling_query	boolean	7	TOP_DOCS	0:00000000,5:00000000,9:00000000,11:00000000
+hits	disabling_query	boolean	7	TOP_DOCS_WITH_SCORES	0:3f800000,5:3f800000,9:3f800000,11:3f800000
+top	disabling_query	boolean	7	4:EQUAL_TO:0:3f800000,5:3f800000,9:3f800000
+after	disabling_query	boolean	7	4:EQUAL_TO:5:3f800000,9:3f800000,11:3f800000
+count	disabling_query	boolean	7	4
+manager	disabling_query	boolean	7	0:3f800000,5:3f800000,9:3f800000,11:3f800000
+hits	disabling_query	boolean	8	COMPLETE	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,8:3f800000,9:3f800000,11:3f800000
+hits	disabling_query	boolean	8	COMPLETE_NO_SCORES	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,8:00000000,9:00000000,11:00000000
+hits	disabling_query	boolean	8	TOP_DOCS	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,8:00000000,9:00000000,11:00000000
+hits	disabling_query	boolean	8	TOP_DOCS_WITH_SCORES	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,8:3f800000,9:3f800000,11:3f800000
+top	disabling_query	boolean	8	9:EQUAL_TO:0:3f800000,2:3f800000,3:3f800000
+after	disabling_query	boolean	8	9:EQUAL_TO:2:3f800000,3:3f800000,4:3f800000
+count	disabling_query	boolean	8	9
+manager	disabling_query	boolean	8	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,8:3f800000,9:3f800000,11:3f800000
+error	disabling_query	boolean	9	NullPointerException:null-supplier
+trap	disabling_query	boolean	3	0	0	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+threshold	disabling_query	boolean	direct	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+threshold	disabling_query	boolean	dismax	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+threshold	disabling_query	boolean	dismax_tie	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+threshold	disabling_query	boolean	dismax_singleton	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+threshold	disabling_query	boolean	dismax_singleton_tie	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+threshold	disabling_query	boolean	blended	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+threshold	disabling_query	boolean	single_phrase	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+threshold	disabling_query	boolean	required_filter	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+threshold	disabling_query	boolean	required_exclusion	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+ordinary_threshold	disabling_query	boolean	TOP_DOCS_WITH_SCORES	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+timeout	disabling_query	boolean	0	true

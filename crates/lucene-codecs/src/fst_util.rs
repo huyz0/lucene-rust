@@ -26,7 +26,7 @@ use crate::fst::{
 use crate::fst_compiler::{CompiledFst, FstOutputs, FstReadError, ReverseReader};
 
 mod fst_enum;
-pub use fst_enum::BytesRefFstEnum;
+pub use fst_enum::{BytesRefFstEnum, IntsRefFstEnum};
 
 /// `FST.END_LABEL`.
 pub const END_LABEL: i32 = -1;

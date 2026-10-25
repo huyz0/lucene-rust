@@ -463,15 +463,13 @@ fn doc_values_misuse_fires() {
     fires("takeOrds() called on a document without a value", || {
         let _ = r.sorted_set_doc_values("ss").unwrap().unwrap().take_ords();
     });
-    fires(
-        "docValueCount() called on a document without a value",
-        || {
-            let _ = r
-                .sorted_set_doc_values("ss")
-                .unwrap()
-                .unwrap()
-                .doc_value_count();
-        },
+    // Java's sorted-set docValueCount forwards even before positioning.
+    assert_eq!(
+        r.sorted_set_doc_values("ss")
+            .unwrap()
+            .unwrap()
+            .doc_value_count(),
+        0
     );
     fires("nextOrd() called more than docValueCount() times", || {
         let mut ss = r.sorted_set_doc_values("ss").unwrap().unwrap();
@@ -721,6 +719,83 @@ impl Terms for FakeTerms {
     fn has_payloads(&self) -> bool {
         false
     }
+}
+
+/// Statistics checks preserve delegate order and stop at Java's first failure.
+#[test]
+fn term_statistics_preserve_java_callback_order_and_short_circuit() {
+    use std::cell::RefCell;
+
+    struct ObservedTerms<'a> {
+        inner: FakeTerms,
+        calls: &'a RefCell<Vec<&'static str>>,
+    }
+    impl Terms for ObservedTerms<'_> {
+        fn iterator(&self) -> Result<Box<dyn TermsEnum + '_>> {
+            self.inner.iterator()
+        }
+        fn size(&self) -> i64 {
+            self.inner.size()
+        }
+        fn sum_total_term_freq(&self) -> i64 {
+            self.calls.borrow_mut().push("sum-total");
+            self.inner.sum_total_term_freq()
+        }
+        fn sum_doc_freq(&self) -> i64 {
+            self.calls.borrow_mut().push("sum-doc");
+            self.inner.sum_doc_freq()
+        }
+        fn doc_count(&self) -> i32 {
+            self.calls.borrow_mut().push("doc-count");
+            self.inner.doc_count()
+        }
+        fn has_freqs(&self) -> bool {
+            self.calls.borrow_mut().push("has-freqs");
+            self.inner.has_freqs()
+        }
+        fn has_offsets(&self) -> bool {
+            false
+        }
+        fn has_positions(&self) -> bool {
+            false
+        }
+        fn has_payloads(&self) -> bool {
+            false
+        }
+    }
+    for freqs in [true, false] {
+        let calls = RefCell::new(Vec::new());
+        let terms = AssertingTerms::new(Box::new(ObservedTerms {
+            inner: FakeTerms {
+                doc_count: 1,
+                sum_df: 2,
+                sum_ttf: 2,
+                freqs,
+            },
+            calls: &calls,
+        }));
+        assert_eq!(terms.sum_total_term_freq(), 2);
+        let expected = if freqs {
+            vec!["sum-total", "has-freqs", "sum-doc", "doc-count"]
+        } else {
+            vec!["sum-total", "has-freqs", "sum-doc", "sum-doc", "doc-count"]
+        };
+        assert_eq!(*calls.borrow(), expected);
+    }
+    let calls = RefCell::new(Vec::new());
+    let terms = AssertingTerms::new(Box::new(ObservedTerms {
+        inner: FakeTerms {
+            doc_count: 0,
+            sum_df: 2,
+            sum_ttf: 3,
+            freqs: false,
+        },
+        calls: &calls,
+    }));
+    fires("sumTotalTermFreq=3 != sumDocFreq=2 without freqs", || {
+        terms.sum_total_term_freq();
+    });
+    assert_eq!(*calls.borrow(), ["sum-total", "has-freqs", "sum-doc"]);
 }
 
 /// A `TermsEnum` of one term with the given statistics.
@@ -1094,6 +1169,32 @@ fn numeric(dv: FakeDv) -> AssertingNumericDocValues<'static> {
 }
 
 #[test]
+fn doc_value_constructors_preserve_javas_position_checks() {
+    let positioned = || {
+        Box::new(FakeDv {
+            doc: 2,
+            moves: vec![3],
+            ..FakeDv::default()
+        })
+    };
+    let mut sorted = AssertingSortedDocValues::new(positioned(), 4);
+    let mut numeric = AssertingSortedNumericDocValues::new(positioned(), 4);
+    let mut set = AssertingSortedSetDocValues::new(positioned(), 4);
+    assert_eq!(sorted.doc_id(), 2);
+    assert_eq!(numeric.doc_id(), 2);
+    assert_eq!(set.doc_id(), 2);
+    assert_eq!(sorted.next_doc().unwrap(), 3);
+    assert_eq!(numeric.next_doc().unwrap(), 3);
+    assert_eq!(set.next_doc().unwrap(), 3);
+    assert_eq!(sorted.ord_value(), 0);
+    assert_eq!(numeric.next_value().unwrap(), 7);
+    assert_eq!(set.next_ord().unwrap(), 0);
+    fires("Binary doc values start on doc 2", || {
+        AssertingBinaryDocValues::new(positioned(), 4);
+    });
+}
+
+#[test]
 fn faulty_doc_value_iterators_fire() {
     fires("Numeric doc values start on doc 2", || {
         numeric(FakeDv {
@@ -1125,13 +1226,16 @@ fn faulty_doc_value_iterators_fire() {
         });
         let _ = lying.next_doc();
     });
-    fires("Numeric doc values: docID() disagrees", || {
-        let _ = numeric(FakeDv {
+    // Java's single-valued advance does not query docID() after delegation.
+    assert_eq!(
+        numeric(FakeDv {
             doc_id_lie: Some(-1),
             ..FakeDv::default()
         })
-        .advance(0);
-    });
+        .advance(0)
+        .unwrap(),
+        0
+    );
     fires("backwards advance from: 2 to: 1", || {
         let _ = numeric(FakeDv {
             moves: vec![1],
@@ -1206,14 +1310,14 @@ fn faulty_doc_value_iterators_fire() {
             ..FakeDv::default()
         });
     });
-    fires("docValueCount=0", || {
-        let mut dv = sorted_set(FakeDv {
-            count: 0,
-            ..FakeDv::default()
-        });
-        dv.next_doc().unwrap();
-        let _ = dv.doc_value_count();
+    let mut empty = sorted_set(FakeDv {
+        count: 0,
+        ..FakeDv::default()
     });
+    // Java forwards this getter even before positioning and for zero counts.
+    assert_eq!(empty.doc_value_count(), 0);
+    empty.next_doc().unwrap();
+    assert_eq!(empty.doc_value_count(), 0);
     fires("ord=2 of valueCount=2", || {
         let mut dv = sorted_set(FakeDv {
             ord: 2,

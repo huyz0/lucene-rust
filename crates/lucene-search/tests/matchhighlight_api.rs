@@ -36,7 +36,7 @@ fn query(reader: &DirectoryReader, text: &str) -> Clause {
 fn norms(reader: &DirectoryReader) -> Vec<HashMap<String, FieldNorms<'_>>> {
     let mut owned: Vec<HashMap<String, FieldNorms<'_>>> = Vec::new();
     for field in ["id", "offs", "pos", "docs", "title"] {
-        for (i, n) in reader.field_norms(field).into_iter().enumerate() {
+        for (i, n) in reader.field_norms(field).unwrap().into_iter().enumerate() {
             if owned.len() <= i {
                 owned.push(HashMap::new());
             }

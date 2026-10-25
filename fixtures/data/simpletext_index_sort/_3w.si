@@ -1,0 +1,21 @@
+    version 10.5.0
+    min version 10.0.0
+    number of documents 7
+    uses compound file true
+    has blocks false
+    diagnostics 1
+      key source
+      value fixture
+    attributes 1
+      key note
+      value line\
+break\\
+    files 2
+      file _3w.si
+      file _3w.other
+    id [8c 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0]
+    sort 1
+      name SortedNumericSortField
+      type <sortednumeric: "multi">! selector=MIN type=DOUBLE
+      bytes [5 6d 75 6c 74 69 6 44 4f 55 42 4c 45 1 0 0 0 0 0 0 0 0 0 0 0]
+checksum 00000000002521164796

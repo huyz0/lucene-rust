@@ -22,14 +22,15 @@
 //! norm as stored, `1` without one); BM25 keeps its weight and norm-inverse
 //! table.
 
-use lucene_codecs::postings::{Impact, LazyDocsCursor, PositionsCursor};
+use lucene_codecs::postings::Impact;
 
 use std::sync::Arc;
 
 use super::{Scorer, NO_MORE_DOCS};
+use crate::bulk_scorer::PhrasePostings;
 use crate::field_norms::FieldNormsCursor;
 use crate::similarities::SimScorer;
-use crate::{blocktree, similarity, sloppy_phrase, Result};
+use crate::{similarity, sloppy_phrase, Result};
 
 /// `PhraseQuery.TERM_POSNS_SEEK_OPS_PER_DOC`.
 const TERM_POSNS_SEEK_OPS_PER_DOC: f32 = 256.0;
@@ -45,9 +46,26 @@ pub(crate) fn term_positions_cost(doc_freq: i64, total_term_freq: i64) -> f32 {
 
 /// One term of the phrase: its cursor and its slot in the phrase's order.
 pub(crate) struct PhraseTerm<'a> {
-    pub(crate) cursor: PositionsCursor<'a>,
+    pub(crate) cursor: PhrasePostings<'a>,
     pub(crate) slot: usize,
     pub(crate) cost: i64,
+}
+
+/// Java: `PhraseQuery.PostingsAndFreq.compareTo`, before the conjunction's
+/// stable cost sort. Equal-cost terms at the same position must use lexical
+/// order so `ExactPhraseMatcher.mergeImpacts` chooses the same lead.
+pub(crate) fn sort_exact_phrase_terms(
+    terms: &mut [PhraseTerm<'_>],
+    query: &crate::query::PhraseQuery,
+    positions: &[i32],
+) {
+    if query.slop == 0 {
+        terms.sort_by(|a, b| {
+            positions[a.slot]
+                .cmp(&positions[b.slot])
+                .then_with(|| query.terms[a.slot].cmp(&query.terms[b.slot]))
+        });
+    }
 }
 
 pub(crate) struct PhraseScorer<'a> {
@@ -82,7 +100,7 @@ pub(crate) struct PhraseScorer<'a> {
     /// Scratch for rebasing positions onto slots.
     shifted: Vec<Vec<i32>>,
     /// `MaxScoreCache.maxScoreCache` / `maxScoreCacheUpTo`, per lead level.
-    max_score_cache: [(i32, f32); 2],
+    max_score_cache: [(i32, f32); 4],
     /// `ImpactsDISI.upTo`: `NO_MORE_DOCS` until a threshold is set.
     impacts_up_to: i32,
     /// Scratch for [`merge_impacts`]: each term's level, copied.
@@ -96,41 +114,6 @@ const DUMMY_IMPACT: Impact = Impact {
     freq: i32::MAX,
     norm: 1,
 };
-
-/// `Lucene104PostingsReader`'s `Impacts.numLevels()` for one term.
-fn num_levels(c: &LazyDocsCursor<'_>) -> usize {
-    if !c.has_freqs() || c.level1_last_doc_id() == NO_MORE_DOCS {
-        1
-    } else {
-        2
-    }
-}
-
-/// `Impacts.getDocIdUpTo(level)` for one term.
-fn doc_id_up_to(c: &LazyDocsCursor<'_>, level: usize) -> i32 {
-    if !c.has_freqs() {
-        return NO_MORE_DOCS;
-    }
-    match level {
-        0 => c.level0_last_doc_id(),
-        1 => c.level1_last_doc_id(),
-        _ => NO_MORE_DOCS,
-    }
-}
-
-/// `Impacts.getImpacts(level)` for one term, into `out`.
-fn level_impacts(c: &mut LazyDocsCursor<'_>, level: usize, out: &mut Vec<Impact>) {
-    out.clear();
-    if !c.has_freqs() {
-        out.push(Impact { freq: 1, norm: 1 });
-    } else if level == 0 && c.level0_last_doc_id() != NO_MORE_DOCS {
-        out.extend_from_slice(c.level0_impacts());
-    } else if level == 1 {
-        out.extend_from_slice(c.level1_impacts());
-    } else {
-        out.push(DUMMY_IMPACT);
-    }
-}
 
 /// `ExactPhraseMatcher.mergeImpacts(...).getImpacts().getImpacts(level)`'s
 /// walk: the terms' lists merged by frequency, each step the lowest
@@ -225,7 +208,7 @@ impl<'a> PhraseScorer<'a> {
             lazy: vec![(0, 0); n],
             offsets: None,
             shifted: Vec::new(),
-            max_score_cache: [(-1, 0.0); 2],
+            max_score_cache: [(-1, 0.0); 4],
             impacts_up_to: NO_MORE_DOCS,
             term_impacts: vec![Vec::new(); n],
             merged: Vec::new(),
@@ -262,7 +245,7 @@ impl<'a> PhraseScorer<'a> {
     /// The merged impacts' `numLevels()`: the lead's, or a sloppy phrase's one.
     fn merged_num_levels(&self) -> usize {
         if self.slop == 0 {
-            num_levels(self.terms[0].cursor.docs())
+            self.terms[0].cursor.num_levels()
         } else {
             1
         }
@@ -271,7 +254,7 @@ impl<'a> PhraseScorer<'a> {
     /// The merged impacts' `getDocIdUpTo(level)`: the lead's.
     fn merged_doc_id_up_to(&self, level: usize) -> i32 {
         if self.slop == 0 {
-            doc_id_up_to(self.terms[0].cursor.docs(), level)
+            self.terms[0].cursor.doc_id_up_to(level)
         } else {
             NO_MORE_DOCS
         }
@@ -297,14 +280,14 @@ impl<'a> PhraseScorer<'a> {
     fn merged_level_max(&mut self, level_up_to: i32) -> f32 {
         let mut used = 0;
         for t in self.terms.iter_mut() {
-            let c = t.cursor.docs_mut();
+            let c = &mut t.cursor;
             // `getLevel`: the term's first level reaching the lead's bound.
-            let Some(term_level) = (0..num_levels(c)).find(|&l| doc_id_up_to(c, l) >= level_up_to)
+            let Some(term_level) = (0..c.num_levels()).find(|&l| c.doc_id_up_to(l) >= level_up_to)
             else {
                 continue;
             };
             let out = &mut self.term_impacts[used];
-            level_impacts(c, term_level, out);
+            c.level_impacts(term_level, out);
             if out.is_empty() || out[0] == DUMMY_IMPACT {
                 continue;
             }
@@ -419,10 +402,9 @@ impl<'a> PhraseScorer<'a> {
     /// the phrase occurs at all, reading each term's positions only as far as
     /// the search needs. The rest are left for the cursor to skip.
     fn exact_occurs(&mut self) -> Result<bool> {
-        let pe = |e| -> crate::Error { blocktree::Error::Postings(e).into() };
         let offsets: Vec<i32> = (0..self.terms.len()).map(|s| self.offset(s)).collect();
         for t in self.terms.iter_mut() {
-            let first = t.cursor.next_position().map_err(pe)?;
+            let first = t.cursor.next_position()?;
             self.lazy[t.slot] = (first - offsets[t.slot], t.cursor.freq() - 1);
         }
         loop {
@@ -436,7 +418,7 @@ impl<'a> PhraseScorer<'a> {
                         return Ok(false);
                     }
                     *left -= 1;
-                    *rel = t.cursor.next_position().map_err(pe)? - offsets[t.slot];
+                    *rel = t.cursor.next_position()? - offsets[t.slot];
                 }
                 aligned &= *rel == target;
             }
@@ -447,7 +429,6 @@ impl<'a> PhraseScorer<'a> {
     }
 
     fn do_next(&mut self, mut doc: i32) -> Result<i32> {
-        let pe = |e| -> crate::Error { blocktree::Error::Postings(e).into() };
         'head: loop {
             if doc == NO_MORE_DOCS {
                 return Ok(doc);
@@ -455,10 +436,10 @@ impl<'a> PhraseScorer<'a> {
             for i in 1..self.terms.len() {
                 let mut other = self.terms[i].cursor.doc_id();
                 if other < doc {
-                    other = self.terms[i].cursor.advance(doc).map_err(pe)?;
+                    other = self.terms[i].cursor.advance(doc)?;
                 }
                 if other != doc {
-                    doc = self.terms[0].cursor.advance(other).map_err(pe)?;
+                    doc = self.terms[0].cursor.advance(other)?;
                     continue 'head;
                 }
             }
@@ -481,10 +462,7 @@ impl<'a> PhraseScorer<'a> {
 
     /// Moves the lead cursor past the last document: `NO_MORE_DOCS`.
     fn exhaust(&mut self) -> Result<i32> {
-        self.terms[0]
-            .cursor
-            .advance(NO_MORE_DOCS)
-            .map_err(|e| crate::Error::from(blocktree::Error::Postings(e)))
+        self.terms[0].cursor.advance(NO_MORE_DOCS)
     }
 
     fn norm_inverse(&mut self, doc: i32) -> Result<f32> {
@@ -514,10 +492,7 @@ impl Scorer for PhraseScorer<'_> {
         } else if self.cannot_compete() {
             return self.exhaust();
         }
-        let doc = self.terms[0]
-            .cursor
-            .next_doc()
-            .map_err(|e| crate::Error::from(blocktree::Error::Postings(e)))?;
+        let doc = self.terms[0].cursor.next_doc()?;
         self.do_next(doc)
     }
 
@@ -527,10 +502,7 @@ impl Scorer for PhraseScorer<'_> {
         } else if self.cannot_compete() {
             return self.exhaust();
         }
-        let doc = self.terms[0]
-            .cursor
-            .advance(target)
-            .map_err(|e| crate::Error::from(blocktree::Error::Postings(e)))?;
+        let doc = self.terms[0].cursor.advance(target)?;
         self.do_next(doc)
     }
 
@@ -576,11 +548,10 @@ impl Scorer for PhraseScorer<'_> {
         if !self.needs_scores && self.slop == 0 {
             return self.exact_occurs();
         }
-        let pe = |e| -> crate::Error { blocktree::Error::Postings(e).into() };
         for t in self.terms.iter_mut() {
             let buf = &mut self.positions[t.slot];
             buf.clear();
-            t.cursor.positions_into(buf).map_err(pe)?;
+            t.cursor.positions_into(buf)?;
         }
         if let Some(offsets) = &self.offsets {
             self.freq = super::extended::phrase_freq_at(
@@ -638,10 +609,7 @@ impl Scorer for PhraseScorer<'_> {
             return Ok(NO_MORE_DOCS);
         }
         for t in self.terms.iter_mut() {
-            t.cursor
-                .docs_mut()
-                .advance_shallow(target)
-                .map_err(|e| crate::Error::from(blocktree::Error::Postings(e)))?;
+            t.cursor.advance_shallow(target)?;
         }
         Ok(self.merged_doc_id_up_to(0))
     }

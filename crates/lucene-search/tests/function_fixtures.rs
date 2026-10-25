@@ -775,7 +775,9 @@ fn function_queries_match_lucene() {
     let reader = DirectoryReader::open(&FsDirectory::open(dir.join("index"))).unwrap();
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["body".to_string(), "id".to_string()]);
+    let owned = reader
+        .field_norms_by_field(&["body".to_string(), "id".to_string()])
+        .unwrap();
     let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
     let bm25 = IndexSearcher::new(&segments, &norms).unwrap();
     let classic_sim = ClassicSimilarity::default();
@@ -880,7 +882,7 @@ fn value_source_grouping_matches_lucene() {
     let reader = DirectoryReader::open(&FsDirectory::open(dir.join("index"))).unwrap();
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
     let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
     let bm25 = IndexSearcher::new(&segments, &norms).unwrap();
     let text = std::fs::read_to_string(dir.join("groups.tsv")).unwrap();

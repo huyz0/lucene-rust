@@ -31,7 +31,9 @@
 //! `SegmentInfo` (`lucene-codecs` sits below `lucene-index`). An index-sort
 //! field is kept as its three lines ([`SortFieldEntry`]): the provider name
 //! is checked against the providers Lucene ships (`SortFieldProvider.forName`),
-//! but the serialized bytes are not decoded (`readSortField`) here.
+//! but the serialized bytes are not decoded (`readSortField`) here. The
+//! `lucene_index::segment_info::{parse_simpletext, write_simpletext}` adapters
+//! use the same typed providers as binary segment infos.
 
 use std::collections::HashSet;
 
@@ -111,7 +113,7 @@ pub struct SortFieldEntry {
 
 /// What `SimpleTextSegmentInfoFormat` reads and writes of a `SegmentInfo`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SimpleTextSegmentInfo {
+pub struct SimpleTextSegmentInfo<S = SortFieldEntry> {
     /// `SegmentInfo.name` (not in the file: the caller names the segment).
     pub name: String,
     /// `getVersion()`.
@@ -133,7 +135,7 @@ pub struct SimpleTextSegmentInfo {
     /// `getId()`.
     pub id: [u8; ID_LENGTH],
     /// `getIndexSort()`; empty is Java's `null`.
-    pub index_sort: Vec<SortFieldEntry>,
+    pub index_sort: Vec<S>,
 }
 
 /// A count read off the file, for Java's `HashMap.newHashMap(n)` /

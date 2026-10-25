@@ -1,0 +1,41 @@
+unsupported	6964
+field	6e6f726d735f6476	-1
+raw	0,2,4,6
+live	2,4,6
+rewrite	false
+field	666c6f61745f6476	-1
+raw	0,2,4,6
+live	2,4,6
+rewrite	false
+field	627974655f6476	-1
+raw	0,2,4,6
+live	2,4,6
+rewrite	false
+field	766563746f725f7465726d73	-1
+raw	0,2,4,6
+live	2,4,6
+rewrite	false
+field	64656e73655f6e6f726d73	6
+raw	0,1,2,3,4,5,6,7
+live	2,3,4,5,6,7
+rewrite	true
+field	656d7074795f6e6f726d73	-1
+raw	0,1,2,3,4,5,6,7
+live	2,3,4,5,6,7
+rewrite	false
+field	64656e73655f736b6970	6
+raw	0,1,2,3,4,5,6,7
+live	2,3,4,5,6,7
+rewrite	true
+field	706f696e74735f6476	-1
+raw	1,2,4,5,7
+live	2,4,5,7
+rewrite	false
+field	7465726d735f6476	-1
+raw	1,2,4,5,7
+live	2,4,5,7
+rewrite	false
+field	616273656e742d70726f6265	0
+raw	
+live	
+rewrite	false

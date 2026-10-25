@@ -266,7 +266,7 @@ pub fn write(
 /// format uses and aren't constrained here) and its `Footer` checksum, port
 /// of the checks `CodecUtil.verifyAndCopyIndexHeader`/`CodecUtil.checkFooter`
 /// perform in Java's `writeCompoundFile` before trusting a sub-file's bytes.
-fn verify_sub_file(name: &str, bytes: &[u8], segment_id: &[u8; ID_LENGTH]) -> Result<()> {
+pub fn verify_sub_file(name: &str, bytes: &[u8], segment_id: &[u8; ID_LENGTH]) -> Result<()> {
     let mut input = SliceInput::new(bytes);
     let magic = input.read_be_u32()?;
     if magic != codec_util::CODEC_MAGIC {

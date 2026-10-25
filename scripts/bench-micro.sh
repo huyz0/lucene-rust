@@ -26,6 +26,7 @@ WARMUP=""
 # Set by a bench below, never taken from the environment.
 BENCH_WARMUP=""
 CASES=""
+REPORT_ARGS=()
 MEASURE=2000
 JARS="$PWD/fixtures/.jars"
 # Same pinning rationale as bench-compare.sh: this is a hybrid P/E-core part,
@@ -430,6 +431,35 @@ case "$BENCH" in
     PREP_ARGS=(build "$INDEX")
     JAVA_ARGS=(run)
     NEEDS_INDEX=1 ;;
+  ints_ref_fst_enum)
+    MAIN=IntsRefFstEnumMicro
+    SRC=benchmarks/micro/java/IntsRefFstEnumMicro.java
+    EXTRA_SRC=benchmarks/micro/java/SweepMicro.java
+    JAR_MODULES="lucene-core"
+    for check in ints_enum_ceil ints_enum_exact ints_enum_floor ints_enum_next; do
+      REPORT_ARGS+=(--require-check "$check")
+    done ;;
+  stphrase)
+    MAIN=SimpleTextPhraseMicro
+    SRC=benchmarks/micro/java/SimpleTextPhraseMicro.java
+    JAR_MODULES="lucene-core lucene-codecs"
+    INDEX="${INDEX_ARG:-$PWD/fixtures/data/simpletext_phrase_scorer/deep/merged/index}"
+    CASES="cx_st_phrase_exact_all cx_st_phrase_exact_top cx_st_phrase_sloppy_all cx_st_phrase_sloppy_top cx_st_phrase_repeat_all cx_st_phrase_repeat_top"
+    NEEDS_INDEX=1 ;;
+  stsi)
+    MAIN=SimpleTextSiMicro
+    SRC=benchmarks/micro/java/SimpleTextSiMicro.java
+    JAR_MODULES="lucene-core lucene-codecs"
+    INDEX="${INDEX_ARG:-$PWD/fixtures/data/simpletext_index_sort}"
+    NEEDS_INDEX=1 ;;
+  stmerge)
+    # Direct specialized FieldsConsumer.merge over the exact fixture bytes
+    # used by Rust; excludes IndexWriter's other formats and reader opening.
+    MAIN=StMergeMicro
+    SRC=benchmarks/micro/java/StMergeMicro.java
+    JAR_MODULES="lucene-core lucene-codecs"
+    INDEX="${INDEX_ARG:-$PWD/fixtures/data/codecs_sharedterms_merge/unsorted}"
+    NEEDS_INDEX=1 ;;
   codecs)
     # M14.g's pair (CodecsMicro.java / micro_codecs.rs): lucene-codecs'
     # non-default formats, each over the index CodecsMicro builds (once) in
@@ -517,7 +547,7 @@ if awk "BEGIN{exit !($LOAD > $MAXLOAD)}"; then
 fi
 
 echo "bench-micro: building" >&2
-( cd benchmarks/rust-runner && cargo build --release --quiet )
+( cd benchmarks/rust-runner && cargo build --release --quiet --bin "${RUST_BIN:-micro}" )
 # Where cargo actually put it. `scripts/docker-test.sh` exports
 # CARGO_TARGET_DIR, so inside the container the build lands there and NOT in
 # `benchmarks/rust-runner/target` -- which, being a bind mount of the host
@@ -573,4 +603,4 @@ for rep in $(seq 1 "$REPS"); do
   done
 done
 
-python3 scripts/bench-micro-report.py "$OUT" "$REPS"
+python3 scripts/bench-micro-report.py "$OUT" "$REPS" "${REPORT_ARGS[@]}"

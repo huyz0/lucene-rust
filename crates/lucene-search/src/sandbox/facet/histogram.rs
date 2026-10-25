@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use lucene_codecs::doc_values::DocValuesSkipper;
+use crate::reader::DocValuesSkipper;
 use lucene_codecs::field_infos::DocValuesType;
 use lucene_codecs::points::IntersectVisitor;
 use lucene_util::numeric_utils::{sortable_bytes_to_int, sortable_bytes_to_long};

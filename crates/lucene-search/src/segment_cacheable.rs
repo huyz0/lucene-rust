@@ -58,7 +58,9 @@ pub fn is_cacheable(clause: &Clause, reader: Option<&SegmentReader>) -> bool {
             crate::extended_query::ExtendedQuery::ParentChildrenBlockJoin(_) => false,
             // A test query's scorer is what the test checks.
             #[cfg(any(test, feature = "asserting"))]
-            crate::extended_query::ExtendedQuery::Test(_) => false,
+            crate::extended_query::ExtendedQuery::Test(q) => {
+                q.delegates_query_semantics() && is_cacheable(q.query(), reader)
+            }
             // `GlobalOrdinals*Query.W.isCacheable`: never.
             crate::extended_query::ExtendedQuery::GlobalOrdinals(_)
             | crate::extended_query::ExtendedQuery::GlobalOrdinalsWithScore(_) => false,

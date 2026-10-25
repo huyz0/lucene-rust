@@ -4,6 +4,8 @@
 
 use std::collections::HashMap;
 
+mod simpletext;
+
 use lucene_codecs::blocktree::BlockTreeFields;
 use lucene_codecs::postings::{DocInput, PayInput, PosInput, PostingsFlags};
 use lucene_util::fixed_bit_set::FixedBitSet;
@@ -116,7 +118,7 @@ fn build_unchecked<'a>(
         TermForm::Leg(leg) => {
             return Ok(Some(Box::new(TermScorer::new(
                 *leg,
-                mode == Mode::TopScores,
+                mode == Mode::TopScores && top_level,
             ))));
         }
         TermForm::Absent => return Ok(None),
@@ -152,13 +154,11 @@ fn build_unchecked<'a>(
             // Every disjunct a term, scored: `TermDisMaxScorer`, which a
             // disjunction around it can read a block at a time.
             if mode.needs_scores() && d.disjuncts.len() > 1 {
-                let mut terms = Vec::with_capacity(d.disjuncts.len());
+                let mut legs = Vec::with_capacity(d.disjuncts.len());
                 let mut all_terms = true;
                 for disjunct in &d.disjuncts {
                     match term_leg(ctx, disjunct, boost, mode)? {
-                        TermForm::Leg(leg) => {
-                            terms.push(TermScorer::new(*leg, mode == Mode::TopScores))
-                        }
+                        TermForm::Leg(leg) => legs.push(*leg),
                         TermForm::Absent => {}
                         TermForm::Other => {
                             all_terms = false;
@@ -167,6 +167,15 @@ fn build_unchecked<'a>(
                     }
                 }
                 if all_terms {
+                    // Java returns a sole present supplier unchanged; otherwise
+                    // only a zero-tie dismax forwards the top-level notification.
+                    let term_top_level = mode == Mode::TopScores
+                        && top_level
+                        && (legs.len() == 1 || d.tie_breaker == 0.0);
+                    let mut terms: Vec<_> = legs
+                        .into_iter()
+                        .map(|leg| TermScorer::new(leg, term_top_level))
+                        .collect();
                     return Ok(match terms.len() {
                         0 => None,
                         1 => terms.pop().map(|t| -> super::BoxScorer<'a> { Box::new(t) }),
@@ -239,11 +248,14 @@ fn build_unchecked<'a>(
         // `PhraseWeight.getPhraseMatcher`'s positions check, ahead of every
         // shape below.
         Clause::Phrase(p) => {
+            if let Some(core) = ctx.reader.and_then(|reader| reader.simpletext.as_deref()) {
+                return simpletext::phrase(ctx, core.postings.as_ref(), p, boost, mode, top_level);
+            }
             crate::require_phrase_positions(ctx.fields, p)?;
             if !p.has_implicit_positions() {
                 return super::extended::positional_phrase(ctx, p, boost, mode);
             }
-            match phrase(ctx, p, boost, mode)? {
+            match phrase(ctx, p, boost, mode, top_level)? {
                 PhraseForm::Scorer(s) => Ok(Some(s)),
                 PhraseForm::Absent => Ok(None),
                 PhraseForm::Other => materialized(ctx, clause, boost, mode),
@@ -367,6 +379,7 @@ fn phrase<'a>(
     p: &PhraseQuery,
     boost: f32,
     mode: Mode,
+    top_level: bool,
 ) -> Result<PhraseForm<'a>> {
     if p.terms.len() < 2 {
         // Empty matches nothing and one term is a term query, as
@@ -376,9 +389,10 @@ fn phrase<'a>(
         if let ([only], Some(_)) = (p.terms.as_slice(), ctx.similarity) {
             let t = TermQuery::new(p.field.clone(), only.clone());
             return Ok(match term(ctx, &t, None, boost, mode)? {
-                TermForm::Leg(leg) => {
-                    PhraseForm::Scorer(Box::new(TermScorer::new(*leg, mode == Mode::TopScores)))
-                }
+                TermForm::Leg(leg) => PhraseForm::Scorer(Box::new(TermScorer::new(
+                    *leg,
+                    mode == Mode::TopScores && top_level,
+                ))),
                 TermForm::Absent => PhraseForm::Absent,
                 TermForm::Other => PhraseForm::Other,
             });
@@ -418,7 +432,7 @@ fn phrase<'a>(
             return Ok(PhraseForm::Absent);
         };
         terms.push(PhraseTerm {
-            cursor,
+            cursor: cursor.into(),
             slot,
             cost: stats.doc_freq as i64,
         });
@@ -510,7 +524,7 @@ fn sim_phrase<'a>(
             return Ok(PhraseForm::Absent);
         };
         terms.push(PhraseTerm {
-            cursor,
+            cursor: cursor.into(),
             slot,
             cost: stats.doc_freq as i64,
         });
@@ -612,6 +626,9 @@ fn term<'a>(
     boost: f32,
     mode: Mode,
 ) -> Result<TermForm<'a>> {
+    if let Some(core) = ctx.reader.and_then(|reader| reader.simpletext.as_deref()) {
+        return simpletext::term(ctx, core.postings.as_ref(), t, constant, boost, mode);
+    }
     let Some(doc_in) = ctx.doc_in else {
         return Ok(TermForm::Other);
     };
@@ -687,8 +704,16 @@ pub(crate) enum Child<'a> {
 
 impl<'a> Child<'a> {
     pub(crate) fn into_scorer(self, mode: Mode) -> BoxScorer<'a> {
+        self.into_scorer_at_level(mode, true)
+    }
+
+    /// `TermQuery`'s supplier enables `ImpactsDISI` only after
+    /// `setTopLevelScoringClause`, even when its score mode is `TOP_SCORES`.
+    fn into_scorer_at_level(self, mode: Mode, top_level: bool) -> BoxScorer<'a> {
         match self {
-            Child::Leg(leg) => Box::new(TermScorer::new(*leg, mode == Mode::TopScores)),
+            Child::Leg(leg) => {
+                Box::new(TermScorer::new(*leg, mode == Mode::TopScores && top_level))
+            }
             Child::Scorer(s) => s,
             Child::TermSum(legs) => Box::new(term_sum(legs, mode)),
         }
@@ -1017,7 +1042,8 @@ pub(crate) fn build_boolean<'a>(
     mode: Mode,
     top_level: bool,
 ) -> Result<Option<BoxScorer<'a>>> {
-    Ok(build_boolean_child(ctx, q, boost, mode, top_level)?.map(|c| c.into_scorer(mode)))
+    Ok(build_boolean_child(ctx, q, boost, mode, top_level)?
+        .map(|c| c.into_scorer_at_level(mode, top_level)))
 }
 
 /// [`build_boolean`], as a [`Child`] (see [`compose_child`]).
@@ -1075,7 +1101,7 @@ pub(crate) fn compose<'a>(
         mode,
         top_level,
     )?
-    .map(|c| c.into_scorer(mode)))
+    .map(|c| c.into_scorer_at_level(mode, top_level)))
 }
 
 /// [`compose`], as a [`Child`]: a boolean that is one of its clauses
@@ -1142,7 +1168,11 @@ pub(crate) fn compose_child<'a>(
     };
 
     let filter_only = should.is_empty() && must.is_empty();
-    let should: Vec<BoxScorer<'a>> = should.into_iter().map(|c| c.into_scorer(mode)).collect();
+    let child_top_level = top_level && must.len() + should.len() == 1;
+    let should: Vec<BoxScorer<'a>> = should
+        .into_iter()
+        .map(|c| c.into_scorer_at_level(mode, child_top_level))
+        .collect();
     let must_not: Vec<BoxScorer<'a>> = must_not
         .into_iter()
         .map(|c| c.into_scorer(Mode::NoScores))
@@ -1182,7 +1212,7 @@ fn req<'a>(
 ) -> Result<BoxScorer<'a>> {
     if filter.len() + must.len() == 1 {
         if let Some(s) = must.into_iter().next() {
-            return Ok(s.into_scorer(mode));
+            return Ok(s.into_scorer_at_level(mode, top_level));
         }
         let s = filter
             .into_iter()
@@ -1199,14 +1229,18 @@ fn req<'a>(
         return Ok(Box::new(LegConjunctionScorer::new(
             filter.into_iter().map(Child::into_leg).collect(),
             must.into_iter().map(Child::into_leg).collect(),
-            mode == Mode::TopScores,
+            mode == Mode::TopScores && top_level,
         )));
     }
     let filter: Vec<BoxScorer<'a>> = filter
         .into_iter()
         .map(|c| c.into_scorer(Mode::NoScores))
         .collect();
-    let mut must: Vec<BoxScorer<'a>> = must.into_iter().map(|c| c.into_scorer(mode)).collect();
+    let child_top_level = top_level && must.len() == 1;
+    let mut must: Vec<BoxScorer<'a>> = must
+        .into_iter()
+        .map(|c| c.into_scorer_at_level(mode, child_top_level))
+        .collect();
     if mode == Mode::TopScores && must.len() > 1 && top_level {
         let block_max: BoxScorer<'a> = Box::new(BlockMaxConjunctionScorer::new(must)?);
         if filter.is_empty() {

@@ -56,6 +56,9 @@ pub struct IndexSearcher<'s, 'a> {
     timeout: Option<Arc<dyn QueryTimeout>>,
     /// `partialResult`: set by the first search a timeout stopped.
     partial_result: AtomicBool,
+    /// Test-framework ScorerIndexSearcher dispatch, carried to every slice.
+    #[cfg(any(test, feature = "asserting"))]
+    pub(crate) scorer_only: bool,
 }
 
 impl<'s, 'a> IndexSearcher<'s, 'a> {
@@ -80,7 +83,20 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
             slices: vec![(0..segments.len()).collect()],
             timeout: None,
             partial_result: AtomicBool::new(false),
+            #[cfg(any(test, feature = "asserting"))]
+            scorer_only: false,
         })
+    }
+
+    fn scorer_only_enabled(&self) -> bool {
+        #[cfg(any(test, feature = "asserting"))]
+        {
+            self.scorer_only
+        }
+        #[cfg(not(any(test, feature = "asserting")))]
+        {
+            false
+        }
     }
 
     /// `setTimeout(queryTimeout)`: every search from now on asks `timeout`
@@ -177,7 +193,7 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
     /// does -- [`Self::timed_out`] is the flag.
     pub fn search(&self, query: &BooleanQuery, n: usize) -> Result<TopDocs> {
         let sim = self.similarity.filter(|s| !s.is_default_bm25());
-        if sim.is_some() || self.timeout.is_some() {
+        if sim.is_some() || self.timeout.is_some() || self.scorer_only_enabled() {
             let mut c = crate::collector::TopDocsCollector::with_total_hits_threshold(
                 n,
                 TOTAL_HITS_THRESHOLD,
@@ -414,6 +430,21 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
             let seg = &self.segments[i];
             let norms = self.norms(i);
             let mut leaf = LeafCollector::new(&mut *collector, seg.doc_base);
+            #[cfg(any(test, feature = "asserting"))]
+            if self.scorer_only {
+                if crate::test_support::scorer_only::score_leaf(
+                    seg,
+                    query,
+                    norms,
+                    global,
+                    sim,
+                    &mut leaf,
+                    self.timeout.as_deref(),
+                )? {
+                    self.partial_result.store(true, Ordering::Relaxed);
+                }
+                continue;
+            }
             if let Some(timeout) = &self.timeout {
                 // `searchLeaf`: `new TimeLimitingBulkScorer(scorer,
                 // queryTimeout)`; a `TimeExceededException` marks the
@@ -644,11 +675,16 @@ fn set_match_all_max_doc(clause: &mut Clause, max_doc: i32) {
         }
         Clause::ConstantScore(c) => set_match_all_max_doc(&mut c.inner, max_doc),
         Clause::Boost(b) => set_match_all_max_doc(&mut b.inner, max_doc),
-        Clause::Extended(e) => {
-            if let crate::extended_query::ExtendedQuery::FunctionScore(f) = e.as_mut() {
+        Clause::Extended(e) => match e.as_mut() {
+            crate::extended_query::ExtendedQuery::FunctionScore(f) => {
                 set_match_all_max_doc(&mut f.in_query, max_doc);
             }
-        }
+            #[cfg(any(test, feature = "asserting"))]
+            crate::extended_query::ExtendedQuery::Test(t) if t.delegates_query_semantics() => {
+                set_match_all_max_doc(t.query_mut(), max_doc);
+            }
+            _ => {}
+        },
         _ => {}
     }
 }

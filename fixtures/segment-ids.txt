@@ -118,6 +118,38 @@ codecs_sharedterms/flush/index/_0.si 71a2f7bf981b125a05b8405c5ca96cc8
 codecs_sharedterms/flush/index/segments_1 71a2f7bf981b125a05b8405c5ca96ccc
 codecs_sharedterms/merged/index/_3.si 71a2f7bf981b125a05b8405c5ca96cdc
 codecs_sharedterms/merged/index/segments_1 71a2f7bf981b125a05b8405c5ca96cdf
+codecs_sharedterms_merge/sorted/merged/_0.si ac70036f28af15214be038f860acbfd3
+codecs_sharedterms_merge/sorted/merged/segments_1 ac70036f28af15214be038f860acbfd5
+codecs_sharedterms_merge/sorted/source0/_0.si ac70036f28af15214be038f860acbfc1
+codecs_sharedterms_merge/sorted/source0/segments_2 ac70036f28af15214be038f860acbfc6
+codecs_sharedterms_merge/sorted/source1/_0.si ac70036f28af15214be038f860acbfc7
+codecs_sharedterms_merge/sorted/source1/segments_2 ac70036f28af15214be038f860acbfcc
+codecs_sharedterms_merge/sorted/source2/_0.si ac70036f28af15214be038f860acbfcd
+codecs_sharedterms_merge/sorted/source2/segments_2 ac70036f28af15214be038f860acbfd2
+codecs_sharedterms_merge/unsorted/merged/_0.si ac70036f28af15214be038f860acbfbe
+codecs_sharedterms_merge/unsorted/merged/segments_1 ac70036f28af15214be038f860acbfc0
+codecs_sharedterms_merge/unsorted/source0/_0.si ac70036f28af15214be038f860acbfac
+codecs_sharedterms_merge/unsorted/source0/segments_2 ac70036f28af15214be038f860acbfb1
+codecs_sharedterms_merge/unsorted/source1/_0.si ac70036f28af15214be038f860acbfb2
+codecs_sharedterms_merge/unsorted/source1/segments_2 ac70036f28af15214be038f860acbfb7
+codecs_sharedterms_merge/unsorted/source2/_0.si ac70036f28af15214be038f860acbfb8
+codecs_sharedterms_merge/unsorted/source2/segments_2 ac70036f28af15214be038f860acbfbd
+codecs_sharedterms_merge_blocks/sorted/merged/_0.si 7e415bf5fdf0dc3d6bc4e7aa7eaf53a7
+codecs_sharedterms_merge_blocks/sorted/merged/segments_1 7e415bf5fdf0dc3d6bc4e7aa7eaf53a9
+codecs_sharedterms_merge_blocks/sorted/source0/_0.si 7e415bf5fdf0dc3d6bc4e7aa7eaf5395
+codecs_sharedterms_merge_blocks/sorted/source0/segments_2 7e415bf5fdf0dc3d6bc4e7aa7eaf539a
+codecs_sharedterms_merge_blocks/sorted/source1/_0.si 7e415bf5fdf0dc3d6bc4e7aa7eaf539b
+codecs_sharedterms_merge_blocks/sorted/source1/segments_2 7e415bf5fdf0dc3d6bc4e7aa7eaf53a0
+codecs_sharedterms_merge_blocks/sorted/source2/_0.si 7e415bf5fdf0dc3d6bc4e7aa7eaf53a1
+codecs_sharedterms_merge_blocks/sorted/source2/segments_2 7e415bf5fdf0dc3d6bc4e7aa7eaf53a6
+codecs_sharedterms_merge_blocks/unsorted/merged/_0.si 7e415bf5fdf0dc3d6bc4e7aa7eaf5392
+codecs_sharedterms_merge_blocks/unsorted/merged/segments_1 7e415bf5fdf0dc3d6bc4e7aa7eaf5394
+codecs_sharedterms_merge_blocks/unsorted/source0/_0.si 7e415bf5fdf0dc3d6bc4e7aa7eaf5380
+codecs_sharedterms_merge_blocks/unsorted/source0/segments_2 7e415bf5fdf0dc3d6bc4e7aa7eaf5385
+codecs_sharedterms_merge_blocks/unsorted/source1/_0.si 7e415bf5fdf0dc3d6bc4e7aa7eaf5386
+codecs_sharedterms_merge_blocks/unsorted/source1/segments_2 7e415bf5fdf0dc3d6bc4e7aa7eaf538b
+codecs_sharedterms_merge_blocks/unsorted/source2/_0.si 7e415bf5fdf0dc3d6bc4e7aa7eaf538c
+codecs_sharedterms_merge_blocks/unsorted/source2/segments_2 7e415bf5fdf0dc3d6bc4e7aa7eaf5391
 codecs_simpletext/codec/flush/index/_0.si <unreadable: not a Lucene codec header>
 codecs_simpletext/codec/flush/index/_1.si <unreadable: not a Lucene codec header>
 codecs_simpletext/codec/flush/index/segments_2 3102f20101c39c66782325569a450d95
@@ -515,6 +547,200 @@ similarity_search_index/segments_4 52197dc40445d8b476180a5d945c91c7
 similarity_timeout_index/_0.si 90c240a4ce8b78f2ac5b666e9de6f37e
 similarity_timeout_index/_1.si 90c240a4ce8b78f2ac5b666e9de6f382
 similarity_timeout_index/segments_3 90c240a4ce8b78f2ac5b666e9de6f387
+simpletext_field_exists/clean/index/_0.si <unreadable: not a Lucene codec header>
+simpletext_field_exists/clean/index/segments_1 8cc526b78a777ee10a0b619d5d100aaa
+simpletext_field_exists/deleted/index/_0.si <unreadable: not a Lucene codec header>
+simpletext_field_exists/deleted/index/segments_2 8cc526b78a777ee10a0b619d5d100ab0
+simpletext_index_sort/_0.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_1.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_10.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_11.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_12.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_13.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_14.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_15.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_16.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_17.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_18.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_19.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_1a.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_1b.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_1c.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_1d.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_1e.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_1f.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_1g.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_1h.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_1i.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_1j.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_1k.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_1l.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_1m.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_1n.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_1o.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_1p.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_1q.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_1r.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_1s.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_1t.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_1u.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_1v.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_1w.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_1x.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_1y.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_1z.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_2.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_20.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_21.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_22.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_23.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_24.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_25.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_26.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_27.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_28.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_29.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_2a.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_2b.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_2c.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_2d.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_2e.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_2f.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_2g.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_2h.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_2i.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_2j.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_2k.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_2l.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_2m.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_2n.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_2o.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_2p.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_2q.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_2r.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_2s.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_2t.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_2u.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_2v.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_2w.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_2x.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_2y.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_2z.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_3.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_30.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_31.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_32.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_33.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_34.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_35.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_36.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_37.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_38.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_39.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_3a.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_3b.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_3c.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_3d.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_3e.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_3f.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_3g.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_3h.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_3i.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_3j.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_3k.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_3l.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_3m.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_3n.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_3o.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_3p.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_3q.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_3r.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_3s.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_3t.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_3u.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_3v.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_3w.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_3x.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_3y.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_3z.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_4.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_40.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_41.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_42.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_43.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_44.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_45.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_46.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_47.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_48.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_49.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_4a.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_4b.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_4c.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_4d.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_4e.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_4f.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_4g.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_4h.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_4i.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_4j.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_4k.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_4l.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_4m.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_4n.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_4o.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_4p.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_4q.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_4r.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_4s.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_4t.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_4u.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_4v.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_4w.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_4x.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_4y.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_4z.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_5.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_50.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_51.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_52.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_53.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_6.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_7.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_8.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_9.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_a.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_b.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_c.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_d.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_e.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_f.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_g.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_h.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_i.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_j.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_k.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_l.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_m.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_n.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_o.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_p.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_q.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_r.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_s.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_t.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_u.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_v.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_w.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_x.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_y.si <unreadable: not a Lucene codec header>
+simpletext_index_sort/_z.si <unreadable: not a Lucene codec header>
+simpletext_phrase_scorer/deep/flush/index/_0.si <unreadable: not a Lucene codec header>
+simpletext_phrase_scorer/deep/flush/index/_1.si <unreadable: not a Lucene codec header>
+simpletext_phrase_scorer/deep/flush/index/_2.si <unreadable: not a Lucene codec header>
+simpletext_phrase_scorer/deep/flush/index/segments_1 ea30d8b2463d0350cb60e97ca5b99032
+simpletext_phrase_scorer/deep/merged/index/_3.si <unreadable: not a Lucene codec header>
+simpletext_phrase_scorer/deep/merged/index/segments_1 ea30d8b2463d0350cb60e97ca5b99040
 sort_val_index/_0.si b112e5607d3e2a71c51385126d837092
 sort_val_index/_1.si b112e5607d3e2a71c51385126d837096
 sort_val_index/segments_3 b112e5607d3e2a71c51385126d83709b

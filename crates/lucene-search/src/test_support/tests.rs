@@ -53,7 +53,7 @@ fn with_searcher<R>(f: impl FnOnce(&IndexSearcher<'_, '_>) -> R) -> R {
     let reader = DirectoryReader::open(&dir).unwrap();
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["f".to_string()]);
+    let owned = reader.field_norms_by_field(&["f".to_string()]).unwrap();
     let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
     let searcher = IndexSearcher::new(&segments, &norms).unwrap();
     f(&searcher)
@@ -61,6 +61,53 @@ fn with_searcher<R>(f: impl FnOnce(&IndexSearcher<'_, '_>) -> R) -> R {
 
 fn term(t: &str) -> Clause {
     Clause::Term(TermQuery::new("f", t))
+}
+
+#[test]
+fn term_supplier_ignores_competitive_threshold_until_marked_top_level() {
+    with_searcher(|searcher| {
+        let query = must(term("a"));
+        with_leaf(searcher, &query, 0, |leaf| {
+            let mut field_sorted = leaf.scorer(ScoreMode::TopDocsWithScores)?.unwrap();
+            field_sorted.set_min_competitive_score(f32::INFINITY)?;
+            assert_eq!(field_sorted.exact_next()?, 0);
+            assert!(field_sorted.score()?.is_finite());
+            for (clause, first_doc) in [
+                (term("a"), 0),
+                (Clause::Boolean(Box::new(query.clone())), 0),
+                (
+                    Clause::Boolean(Box::new(BooleanQuery {
+                        must: vec![term("a")],
+                        filter: vec![term("c")],
+                        ..Default::default()
+                    })),
+                    2,
+                ),
+                (
+                    Clause::Boolean(Box::new(BooleanQuery {
+                        must: vec![term("a")],
+                        must_not: vec![term("b")],
+                        ..Default::default()
+                    })),
+                    2,
+                ),
+            ] {
+                for top_level in [false, true] {
+                    let mut scorer =
+                        exec::build::build(&leaf.ctx, &clause, 1.0, Mode::TopScores, top_level)?
+                            .unwrap();
+                    scorer.set_min_competitive_score(f32::INFINITY)?;
+                    assert_eq!(
+                        exec::exact_next(&mut *scorer)?,
+                        if top_level { NO_MORE_DOCS } else { first_doc },
+                        "{clause:?}, top_level={top_level}"
+                    );
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+    });
 }
 
 fn must(clause: Clause) -> BooleanQuery {
