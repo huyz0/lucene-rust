@@ -348,6 +348,7 @@ pub(crate) fn map_writer_error(context: &str, e: index_writer::Error) -> FfiStat
         | index_writer::Error::Deleter(_)
         | index_writer::Error::Merge(_)
         | index_writer::Error::SegmentInfo(_)
+        | index_writer::Error::SimpleText(_)
         | index_writer::Error::StoredFields(_)
         | index_writer::Error::LiveDocs(_)
         | index_writer::Error::PostingsWriter(_)
@@ -2341,6 +2342,15 @@ mod tests {
     use lucene_index::segment_infos;
 
     use lucene_util::test_support::TempDir;
+
+    #[test]
+    fn simpletext_metadata_errors_are_io_failures_with_their_original_message() {
+        let source = lucene_codecs::simpletext::field_infos::read(b"truncated").unwrap_err();
+        let expected = format!("metadata: {source}");
+        let status = map_writer_error("metadata", index_writer::Error::SimpleText(source));
+        assert_eq!(status, FfiStatus::Io);
+        assert_eq!(crate::error::last_error(), expected);
+    }
 
     /// A scratch directory that removes itself when the test ends -- unless
     /// the test is panicking, in which case its bytes stay for inspection.

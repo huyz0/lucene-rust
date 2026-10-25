@@ -247,6 +247,8 @@ pub enum Error {
     /// `.fnm` several thousand documents later.
     #[error(transparent)]
     FieldInfos(#[from] lucene_codecs::field_infos::Error),
+    #[error(transparent)]
+    SimpleText(#[from] lucene_codecs::simpletext::Error),
     /// A source segment's `.tim`/`.tip`/`.tmd` term dictionary couldn't be
     /// opened while [`IndexWriter::execute_merge`] was assembling that
     /// segment's [`crate::merge::SourcePostings`].
@@ -3498,6 +3500,34 @@ pub(crate) fn segment_field_infos(
     dir: &dyn Directory,
     sci: &SegmentCommitInfo,
 ) -> Result<lucene_codecs::field_infos::FieldInfos> {
+    // Java reads updated FieldInfos outside the compound file, without
+    // opening the base archive. Updates take precedence for both codecs.
+    if sci.codec_name == "SimpleText" {
+        use lucene_codecs::simpletext::{compound, field_infos};
+        let suffix = if sci.field_infos_gen == -1 {
+            String::new()
+        } else {
+            lucene_util::base36::to_base36(sci.field_infos_gen)
+        };
+        let name = field_infos::field_infos_file_name(&sci.segment_name, &suffix);
+        if sci.field_infos_gen != -1 {
+            return Ok(field_infos::read(&dir.open(&name)?)?);
+        }
+        let si = segment_info::parse_simpletext(
+            &dir.open(&format!("{}.si", sci.segment_name))?,
+            &sci.segment_name,
+            &sci.segment_id,
+        )?;
+        if si.is_compound_file {
+            let data = dir.open(&compound::compound_file_name(&sci.segment_name))?;
+            let archive = compound::SimpleTextCompoundReader::open(&data, &sci.segment_name)?;
+            return Ok(field_infos::read(archive.open_input(&data, &name)?)?);
+        }
+        return Ok(field_infos::read(&dir.open(&name)?)?);
+    }
+    if sci.field_infos_gen != -1 {
+        return crate::field_updates::read_current_field_infos(dir, sci, &[]).map_err(Error::from);
+    }
     let si = segment_info::parse_for_codec(
         &dir.open(&format!("{}.si", sci.segment_name))?,
         &sci.segment_id,
@@ -3510,6 +3540,39 @@ pub(crate) fn segment_field_infos(
             .map_err(Error::from);
     }
     crate::field_updates::read_current_field_infos(dir, sci, &si.files).map_err(Error::from)
+}
+
+/// `IndexWriter.getFieldNumberMap` for an `IndexWriterConfig` whose parent
+/// and soft-deletes fields are unset. Validate before the deleter can remove
+/// files, and compare every occurrence with the first schema for its name.
+fn validate_default_field_config(dir: &dyn Directory, infos: &SegmentInfos) -> Result<()> {
+    let mut schemas = std::collections::HashMap::<String, FieldInfo>::new();
+    for sci in &infos.segments {
+        for field in segment_field_infos(dir, sci)?.fields {
+            if field.soft_deletes_field {
+                return Err(explicit::explicit_error(format!(
+                    "this index has [{}] as soft-deletes already but soft-deletes field is not \
+                     configured in IWC",
+                    field.name
+                )));
+            }
+            if field.parent_field {
+                return Err(explicit::explicit_error(format!(
+                    "can't add field [{}] as parent document field; this IndexWriter has no \
+                     parent document field configured",
+                    field.name
+                )));
+            }
+            if let Some(previous) = schemas.get(&field.name) {
+                if let Some(message) = explicit::schema_change(previous, &field) {
+                    return Err(explicit::explicit_error(message));
+                }
+            } else {
+                schemas.insert(field.name.clone(), field);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Live documents of `sci` with a value in the soft-deletes field `soft`. A
@@ -4802,7 +4865,7 @@ impl<'d> IndexWriter<'d> {
         codec_name: impl Into<String>,
         lucene_version: LuceneVersion,
     ) -> Result<Self> {
-        Self::open_inner(dir, fields, codec_name, lucene_version, None)
+        Self::open_inner(dir, fields, codec_name, lucene_version, None, false)
     }
 
     /// [`IndexWriter::open`] under a pluggable deletion policy --
@@ -4818,7 +4881,25 @@ impl<'d> IndexWriter<'d> {
         lucene_version: LuceneVersion,
         policy: std::sync::Arc<dyn crate::deletion_policy::IndexDeletionPolicy>,
     ) -> Result<Self> {
-        Self::open_inner(dir, fields, codec_name, lucene_version, Some(policy))
+        Self::open_inner(dir, fields, codec_name, lucene_version, Some(policy), false)
+    }
+
+    /// Opens with Java's default field configuration: no parent or soft-deletes
+    /// field, and consistent schemas across the current commit's segments.
+    /// Unlike [`Self::open`], this validates those defaults before deleting any
+    /// files. Use [`Self::open`] when configuring field roles through setters.
+    /// `None` selects the default keep-only-last-commit deletion policy.
+    ///
+    /// # Errors
+    /// An existing field requires a parent/soft-deletes configuration, segment
+    /// schemas disagree, or index metadata cannot be read.
+    pub fn open_with_default_config(
+        dir: &'d dyn Directory,
+        codec_name: impl Into<String>,
+        lucene_version: LuceneVersion,
+        policy: Option<std::sync::Arc<dyn crate::deletion_policy::IndexDeletionPolicy>>,
+    ) -> Result<Self> {
+        Self::open_inner(dir, Vec::new(), codec_name, lucene_version, policy, true)
     }
 
     fn open_inner(
@@ -4827,6 +4908,7 @@ impl<'d> IndexWriter<'d> {
         codec_name: impl Into<String>,
         lucene_version: LuceneVersion,
         policy: Option<std::sync::Arc<dyn crate::deletion_policy::IndexDeletionPolicy>>,
+        validate_default_fields: bool,
     ) -> Result<Self> {
         // `writeLock = d.obtainLock(WRITE_LOCK_NAME)`: before anything reads
         // the index, and held by the writer from here on. A held lock is
@@ -4848,6 +4930,10 @@ impl<'d> IndexWriter<'d> {
         } else {
             segment_infos::read_latest(dir)?
         };
+
+        if validate_default_fields {
+            validate_default_field_config(dir, &segment_infos)?;
+        }
 
         // Real `IndexWriter`'s constructor builds its `IndexFileDeleter` here,
         // and that construction is what reclaims whatever a previous session
@@ -10509,13 +10595,34 @@ impl IndexWriter<'_> {
     /// `IndexWriter.rollback()` also closes the writer and permanently
     /// releases its write lock, so the `IndexWriter` instance itself becomes
     /// unusable afterward (any further call throws
-    /// `AlreadyClosedException`). This facade's only close is drop -- which is
-    /// what releases its `write.lock` ([`WRITE_LOCK_NAME`]) -- so this
-    /// `rollback()` keeps the lock and leaves the writer fully usable for
+    /// `AlreadyClosedException`). This facade's `rollback()` keeps its
+    /// `write.lock` ([`WRITE_LOCK_NAME`]) and leaves the writer fully usable for
     /// further [`IndexWriter::add_document`]/[`IndexWriter::commit`] calls
-    /// immediately afterward -- the same choice this facade already made for
-    /// having no `close()` method at all.
+    /// immediately afterward. Drop releases that lock. Cleanup errors are
+    /// ignored by this compatibility method; [`Self::try_rollback`] propagates
+    /// them as Java does.
     pub fn rollback(&mut self) {
+        self.rollback_state();
+        let live = self.live_infos();
+        let _ = self.deleter.checkpoint(&live, false);
+        let _ = self.deleter.refresh();
+    }
+
+    /// Discards uncommitted changes and propagates deleter cleanup failures,
+    /// as Java's `IndexWriter.rollbackInternal` does. Like [`Self::rollback`],
+    /// this keeps the writer usable and retains its lock until it drops.
+    ///
+    /// # Errors
+    /// The deleter cannot checkpoint the restored commit or refresh its files.
+    pub fn try_rollback(&mut self) -> Result<()> {
+        self.rollback_state();
+        let live = self.live_infos();
+        self.deleter.checkpoint(&live, false)?;
+        self.deleter.refresh()?;
+        Ok(())
+    }
+
+    fn rollback_state(&mut self) {
         // `ReaderPool.dropAll()`: nothing opened for the discarded changes
         // survives the rollback.
         self.cfg.reader_pool.clear();
@@ -10559,17 +10666,6 @@ impl IndexWriter<'_> {
             // remove it must not turn a rollback into an error).
             segment_infos::rollback_pending(&prepared, self.dir);
         }
-        // `IndexWriter.rollbackInternal`: `deleter.checkpoint(segmentInfos,
-        // false)` then `deleter.refresh()`. The checkpoint releases the flushed
-        // segments' references (deleting their files); the refresh catches
-        // anything written by an operation that failed before any checkpoint saw
-        // it. Both failures are ignored for the same reason the pending-file
-        // deletion above is: an unreclaimed orphan is inert, and must not turn a
-        // rollback into an error. Use [`IndexWriter::delete_unused_files`] when
-        // you want that failure surfaced.
-        let live = self.live_infos();
-        let _ = self.deleter.checkpoint(&live, false);
-        let _ = self.deleter.refresh();
     }
 
     /// Port of `IndexWriter.deleteAll()`: drops every buffered document *and*
@@ -11616,6 +11712,249 @@ pub(crate) mod tests {
     /// the test is panicking, in which case its bytes stay for inspection.
     fn tempdir(tag: &str) -> TempDir {
         TempDir::new(&format!("index-writer-{tag}"))
+    }
+
+    fn strict_fixture(relative: &str) -> lucene_store::ByteBuffersDirectory {
+        let dir = lucene_store::ByteBuffersDirectory::new();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/data")
+            .join(relative);
+        for entry in std::fs::read_dir(root).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name();
+            let name = name.to_str().unwrap();
+            if entry.file_type().unwrap().is_file()
+                && !name.ends_with(".raw")
+                && name != "manifest.properties"
+            {
+                write_file(&dir, name, &std::fs::read(entry.path()).unwrap()).unwrap();
+            }
+        }
+        dir
+    }
+
+    fn strict_snapshot(dir: &dyn Directory) -> std::collections::BTreeMap<String, Vec<u8>> {
+        dir.list_all()
+            .unwrap()
+            .into_iter()
+            .map(|name| {
+                let bytes = dir.open(&name).unwrap().to_vec();
+                (name, bytes)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn default_config_rejects_existing_field_roles_before_reclaiming_files() {
+        for (fixture, marker) in [
+            (
+                "field_infos_index",
+                "soft-deletes field is not configured in IWC",
+            ),
+            ("misc/bp_blocks", "has no parent document field configured"),
+            (
+                "codecs_simpletext/codec/flush/index",
+                "has no parent document field configured",
+            ),
+        ] {
+            let dir = strict_fixture(fixture);
+            write_file(&dir, "_z.orphan", b"must survive validation failure").unwrap();
+            let before = strict_snapshot(&dir);
+            let error = IndexWriter::open_with_default_config(&dir, "Lucene104", version(), None)
+                .err()
+                .expect("default field configuration must be rejected");
+            assert!(error.to_string().contains(marker), "{fixture}: {error}");
+            assert_eq!(strict_snapshot(&dir), before, "{fixture}");
+            // Failed construction releases the lock before returning.
+            drop(dir.obtain_lock(WRITE_LOCK_NAME).unwrap());
+        }
+    }
+
+    fn seed_strict_schema_segment(
+        dir: &dyn Directory,
+        name: &str,
+        salt: u8,
+        fields: &[FieldInfo],
+    ) -> SegmentCommitInfo {
+        let id = [salt; ID_LENGTH];
+        let field_file = format!("{name}.fnm");
+        write_file(dir, &field_file, &fi::write(fields, &id, "")).unwrap();
+        let info = segment_info::SegmentInfo {
+            id,
+            version: version(),
+            min_version: None,
+            doc_count: 1,
+            is_compound_file: false,
+            has_blocks: false,
+            diagnostics: Vec::new(),
+            files: vec![format!("{name}.si"), field_file],
+            attributes: Vec::new(),
+            index_sort: None,
+        };
+        write_file(dir, &format!("{name}.si"), &segment_info::write(&info, "")).unwrap();
+        SegmentCommitInfo {
+            segment_name: name.into(),
+            segment_id: id,
+            codec_name: "Lucene104".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn default_config_compares_schemas_across_segments_before_deletion_policy() {
+        let dir = lucene_store::ByteBuffersDirectory::new();
+        let numeric = FieldInfo::new("value", 0).with_doc_values(
+            DocValuesType::Numeric,
+            DocValuesSkipIndexType::None,
+            -1,
+        );
+        let binary = FieldInfo::new("value", 7).with_doc_values(
+            DocValuesType::Binary,
+            DocValuesSkipIndexType::None,
+            -1,
+        );
+        let mut infos = empty_segment_infos(version());
+        infos.generation = 1;
+        infos.counter = 2;
+        infos.segments = vec![
+            seed_strict_schema_segment(&dir, "_0", 1, std::slice::from_ref(&numeric)),
+            seed_strict_schema_segment(&dir, "_1", 2, &[binary]),
+        ];
+        segment_infos::write(&infos, &dir).unwrap();
+        write_file(&dir, "_z.orphan", b"not reclaimed on failure").unwrap();
+        let before = strict_snapshot(&dir);
+        let error = IndexWriter::open_with_default_config(&dir, "Lucene104", version(), None)
+            .err()
+            .expect("inconsistent field schemas must fail at open");
+        assert!(error.to_string().contains(
+            "cannot change field \"value\" from doc values type=NUMERIC to inconsistent doc values type=BINARY"
+        ), "{error}");
+        assert_eq!(strict_snapshot(&dir), before);
+        drop(dir.obtain_lock(WRITE_LOCK_NAME).unwrap());
+
+        // Field numbers, update generations and attributes are per segment,
+        // so their differences must not be mistaken for schema changes.
+        let mut consistent = numeric;
+        consistent.number = 7;
+        consistent.doc_values_gen = 3;
+        consistent.attributes = vec![("per_segment".into(), "value".into())];
+        dir.delete_file("_1.fnm").unwrap();
+        write_file(
+            &dir,
+            "_1.fnm",
+            &fi::write(&[consistent], &[2; ID_LENGTH], ""),
+        )
+        .unwrap();
+        let writer = IndexWriter::open_with_default_config(
+            &dir,
+            "Lucene104",
+            version(),
+            Some(std::sync::Arc::new(
+                crate::deletion_policy::NoDeletionPolicy,
+            )),
+        )
+        .unwrap();
+        assert!(!dir.list_all().unwrap().contains(&"_z.orphan".to_string()));
+        assert_eq!(writer.segment_infos().segments.len(), 2);
+        drop(writer);
+        drop(dir.obtain_lock(WRITE_LOCK_NAME).unwrap());
+    }
+
+    #[test]
+    fn default_config_opens_empty_and_normal_java_indices() {
+        let empty = lucene_store::ByteBuffersDirectory::new();
+        let writer =
+            IndexWriter::open_with_default_config(&empty, "Lucene104", version(), None).unwrap();
+        assert!(writer.segment_infos().segments.is_empty());
+        drop(writer);
+        let dir = strict_fixture("compound_index");
+        let before = strict_snapshot(&dir);
+        let writer =
+            IndexWriter::open_with_default_config(&dir, "Lucene104", version(), None).unwrap();
+        assert_eq!(writer.segment_infos().segments.len(), 1);
+        assert_eq!(strict_snapshot(&dir), before);
+    }
+
+    #[test]
+    fn current_field_infos_updates_do_not_require_base_segment_or_compound_files() {
+        for codec in ["Lucene104", "SimpleText"] {
+            let dir = lucene_store::ByteBuffersDirectory::new();
+            let sci = SegmentCommitInfo {
+                segment_name: "_0".into(),
+                segment_id: [4; ID_LENGTH],
+                codec_name: codec.into(),
+                field_infos_gen: 2,
+                ..Default::default()
+            };
+            let fields = vec![FieldInfo::new("updated", 3).with_doc_values(
+                DocValuesType::Numeric,
+                DocValuesSkipIndexType::None,
+                -1,
+            )];
+            let (name, bytes) = if codec == "SimpleText" {
+                (
+                    "_0_2.inf",
+                    lucene_codecs::simpletext::field_infos::write(&fields),
+                )
+            } else {
+                ("_0_2.fnm", fi::write(&fields, &sci.segment_id, "2"))
+            };
+            write_file(&dir, name, &bytes).unwrap();
+            let actual = segment_field_infos(&dir, &sci).unwrap();
+            assert_eq!(actual.fields.len(), 1);
+            assert_eq!(actual.fields[0].name, "updated");
+            assert_eq!(actual.fields[0].number, 3);
+            dir.delete_file(name).unwrap();
+            assert!(segment_field_infos(&dir, &sci).is_err());
+        }
+    }
+
+    #[test]
+    fn simpletext_current_and_base_field_infos_match_java_fixture_metadata() {
+        use lucene_codecs::simpletext::{compound, field_infos};
+        for stage in ["flush", "merged"] {
+            let dir = strict_fixture(&format!("codecs_simpletext/codec/{stage}/index"));
+            let infos = segment_infos::read_latest(&dir).unwrap();
+            for sci in &infos.segments {
+                let current = segment_field_infos(&dir, sci).unwrap();
+                assert!(!current.fields.is_empty());
+                if sci.field_infos_gen != -1 {
+                    let name = field_infos::field_infos_file_name(
+                        &sci.segment_name,
+                        &lucene_util::base36::to_base36(sci.field_infos_gen),
+                    );
+                    let expected = field_infos::read(&dir.open(&name).unwrap()).unwrap();
+                    assert_eq!(
+                        field_infos::write(&current.fields),
+                        field_infos::write(&expected.fields)
+                    );
+                }
+                let mut base = sci.clone();
+                base.field_infos_gen = -1;
+                let actual = segment_field_infos(&dir, &base).unwrap();
+                let info = segment_info::parse_simpletext(
+                    &dir.open(&format!("{}.si", sci.segment_name)).unwrap(),
+                    &sci.segment_name,
+                    &sci.segment_id,
+                )
+                .unwrap();
+                let name = field_infos::field_infos_file_name(&sci.segment_name, "");
+                let expected = if info.is_compound_file {
+                    let data = dir
+                        .open(&compound::compound_file_name(&sci.segment_name))
+                        .unwrap();
+                    let archive =
+                        compound::SimpleTextCompoundReader::open(&data, &sci.segment_name).unwrap();
+                    field_infos::read(archive.open_input(&data, &name).unwrap()).unwrap()
+                } else {
+                    field_infos::read(&dir.open(&name).unwrap()).unwrap()
+                };
+                assert_eq!(
+                    field_infos::write(&actual.fields),
+                    field_infos::write(&expected.fields)
+                );
+            }
+        }
     }
 
     /// Reads every document out of every segment `segment_infos` lists, in

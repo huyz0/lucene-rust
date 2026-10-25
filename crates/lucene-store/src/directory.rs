@@ -242,6 +242,13 @@ pub trait Directory: Send + Sync {
         None
     }
 
+    /// Disables test filesystem virus checkers beneath this directory, returning
+    /// whether any checker was previously enabled. Wrappers forward this hook.
+    #[cfg(any(test, feature = "test-util"))]
+    fn disable_virus_checker(&self) -> bool {
+        false
+    }
+
     /// Port of `Directory.copyFrom(from, src, dest, context)`: copies a file
     /// from another directory, deleting the partial `dest` on failure.
     fn copy_from(&self, from: &dyn Directory, src: &str, dest: &str) -> Result<()> {
@@ -325,6 +332,10 @@ macro_rules! forward_directory {
             fn pending_deletions(&self) -> Result<BTreeSet<String>> {
                 (**self).pending_deletions()
             }
+            #[cfg(any(test, feature = "test-util"))]
+            fn disable_virus_checker(&self) -> bool {
+                (**self).disable_virus_checker()
+            }
             fn fs_directory_path(&self) -> Option<&Path> {
                 (**self).fs_directory_path()
             }
@@ -335,7 +346,7 @@ macro_rules! forward_directory {
     )*};
 }
 
-forward_directory!(&T, Arc<T>);
+forward_directory!(&T, Arc<T>, Box<T>);
 
 /// A directory every output of which is created with one size estimate:
 /// the Rust shape of the single `IOContext` (`new IOContext(flushInfo)` or
@@ -415,6 +426,10 @@ impl Directory for EstimatedWrites<'_> {
     fn pending_deletions(&self) -> Result<BTreeSet<String>> {
         self.inner.pending_deletions()
     }
+    #[cfg(any(test, feature = "test-util"))]
+    fn disable_virus_checker(&self) -> bool {
+        self.inner.disable_virus_checker()
+    }
     fn fs_directory_path(&self) -> Option<&Path> {
         self.inner.fs_directory_path()
     }
@@ -489,9 +504,20 @@ pub trait FsFaults: Send + Sync {
     fn check_delete(&self, path: &Path) -> std::io::Result<()>;
     /// Before `source` is moved onto `dest`: an error refuses the move.
     fn check_rename(&self, source: &Path, dest: &Path) -> std::io::Result<()>;
+    /// Disables this test filesystem's virus checker, returning its prior state.
+    fn disable_virus_checker(&self) -> bool {
+        false
+    }
 }
 
 impl FsCore {
+    #[cfg(any(test, feature = "test-util"))]
+    fn disable_virus_checker(&self) -> bool {
+        self.faults
+            .as_ref()
+            .is_some_and(|faults| faults.disable_virus_checker())
+    }
+
     fn new(root: PathBuf, lock_factory: Arc<dyn LockFactory>) -> Self {
         Self {
             root,
@@ -811,6 +837,10 @@ impl Directory for FsDirectory {
         self.core.pending_deletions()
     }
 
+    #[cfg(any(test, feature = "test-util"))]
+    fn disable_virus_checker(&self) -> bool {
+        self.core.disable_virus_checker()
+    }
     fn fs_directory_path(&self) -> Option<&Path> {
         Some(&self.core.root)
     }
@@ -968,6 +998,10 @@ impl Directory for MmapDirectory {
         self.core.pending_deletions()
     }
 
+    #[cfg(any(test, feature = "test-util"))]
+    fn disable_virus_checker(&self) -> bool {
+        self.core.disable_virus_checker()
+    }
     fn fs_directory_path(&self) -> Option<&Path> {
         Some(&self.core.root)
     }
@@ -1726,6 +1760,7 @@ mod tests {
         assert!(matches!(&err, Error::Io(e) if e.kind() == std::io::ErrorKind::Unsupported));
         assert!(only.pending_deletions().unwrap().is_empty());
         assert!(only.fs_directory_path().is_none());
+        assert!(!only.disable_virus_checker());
         let mut out = only.create_output("f").unwrap();
         out.write_bytes(b"four");
         out.close().unwrap();
@@ -1758,6 +1793,51 @@ mod tests {
             return Err(std::io::Error::other(format!("access denied: {name}")));
         }
         Ok(())
+    }
+
+    #[test]
+    fn disabling_virus_checkers_reaches_filesystems_through_wrappers() {
+        struct Virus(std::sync::atomic::AtomicBool);
+        impl FsFaults for Virus {
+            fn check_delete(&self, _path: &Path) -> std::io::Result<()> {
+                if self.0.load(Ordering::SeqCst) {
+                    Err(std::io::Error::other("virus checker refused delete"))
+                } else {
+                    Ok(())
+                }
+            }
+            fn check_rename(&self, _source: &Path, _dest: &Path) -> std::io::Result<()> {
+                Ok(())
+            }
+            fn disable_virus_checker(&self) -> bool {
+                self.0.swap(false, Ordering::SeqCst)
+            }
+        }
+        let root = tempdir();
+        assert!(!FsDirectory::open(&root).disable_virus_checker());
+        assert!(!MmapDirectory::open(&root).disable_virus_checker());
+        assert!(!Refusing.disable_virus_checker());
+        for mmap in [false, true] {
+            let faults = Arc::new(Virus(std::sync::atomic::AtomicBool::new(true)));
+            let backend: Box<dyn Directory> = if mmap {
+                Box::new(MmapDirectory::open(&root).with_fs_faults(faults.clone()))
+            } else {
+                Box::new(FsDirectory::open(&root).with_fs_faults(faults.clone()))
+            };
+            backend.create_output("orphan").unwrap().close().unwrap();
+            assert!(faults.check_delete(&root.join("orphan")).is_err());
+            faults
+                .check_rename(&root.join("orphan"), &root.join("other"))
+                .unwrap();
+            let shared = Arc::new(backend);
+            let reference = &shared;
+            let estimated = EstimatedWrites::new(&reference, 0);
+            assert!(estimated.disable_virus_checker());
+            assert!(!estimated.disable_virus_checker());
+            estimated.delete_file("orphan").unwrap();
+            assert!(!root.join("orphan").exists());
+            assert!(estimated.pending_deletions().unwrap().is_empty());
+        }
     }
 
     /// A refused delete becomes a pending delete -- hidden from the listing,

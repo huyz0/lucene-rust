@@ -1087,3 +1087,235 @@ fn copy_from_and_lengths_forward() {
     out.close().unwrap();
     assert!(dir.pending_deletions().unwrap().is_empty());
 }
+
+fn committed_close_fixture() -> MockDirectoryWrapper {
+    let dir = mock(71);
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/data/merge_policies/commits_index");
+    // Construct through the delegate: these are already durable Java bytes,
+    // not unsynced outputs that the optional close-time crash should damage.
+    for entry in std::fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        write(
+            dir.delegate(),
+            &entry.file_name().into_string().unwrap(),
+            &std::fs::read(entry.path()).unwrap(),
+        )
+        .unwrap();
+    }
+    dir
+}
+
+#[test]
+fn unreferenced_close_assertion_is_off_by_default_and_skips_non_indexes() {
+    for toggle in [false, true] {
+        let dir = committed_close_fixture();
+        dir.set_check_index_on_close(false);
+        if toggle {
+            dir.set_assert_no_unreferenced_files_on_close(true);
+            dir.set_assert_no_unreferenced_files_on_close(false);
+        }
+        write(&dir, "_orphan.si", b"unused").unwrap();
+        dir.close().unwrap();
+        assert_eq!(&*dir.delegate().open("_orphan.si").unwrap(), b"unused");
+        assert!(!dir.crashed(), "assertion disabled must not crash");
+    }
+    let dir = mock(72);
+    dir.set_assert_no_unreferenced_files_on_close(true);
+    write(&dir, "_orphan.si", b"not an index").unwrap();
+    dir.close().unwrap();
+    assert!(
+        !dir.crashed(),
+        "no segments_ prefix means no close-time checks"
+    );
+    assert_eq!(
+        &*dir.delegate().open("_orphan.si").unwrap(),
+        b"not an index"
+    );
+}
+
+#[test]
+fn unreferenced_close_assertion_uses_keep_all_then_default_policy() {
+    use lucene_search::directory_reader::DirectoryReader;
+    let dir = committed_close_fixture();
+    dir.set_check_index_on_close(false);
+    dir.set_assert_no_unreferenced_files_on_close(true);
+    let before = DirectoryReader::open(dir.delegate()).unwrap().num_docs();
+    assert!(dir.list_all().unwrap().contains(&"segments_1".to_owned()));
+    dir.set_random_io_exception_rate(1.0);
+    dir.set_random_io_exception_rate_on_open(1.0);
+    dir.close().unwrap();
+    assert_eq!(dir.random_io_exception_rate(), 0.0);
+    assert_eq!(dir.random_io_exception_rate_on_open(), 0.0);
+    assert!(!dir.is_open());
+    assert!(!dir.crashed());
+    let files = dir.delegate().list_all().unwrap();
+    assert!(!files.contains(&"segments_1".to_owned()));
+    assert!(!files.contains(&"segments_2".to_owned()));
+    assert!(files.contains(&"segments_3".to_owned()));
+    assert_eq!(
+        DirectoryReader::open(dir.delegate()).unwrap().num_docs(),
+        before
+    );
+    assert_eq!(dir.file_handle_count(), 0);
+    drop(dir.delegate().obtain_lock("write.lock").unwrap());
+    dir.close().unwrap();
+    assert_eq!(
+        dir.delegate().list_all().unwrap(),
+        files,
+        "second close must not rerun writers"
+    );
+}
+
+#[test]
+fn unreferenced_close_assertion_reports_orphans_before_second_writer() {
+    let dir = committed_close_fixture();
+    dir.set_check_index_on_close(false);
+    dir.set_assert_no_unreferenced_files_on_close(true);
+    write(&dir, "_orphan.si", b"unused").unwrap();
+    let error = dir.close().unwrap_err();
+    assert!(error.contains("unreferenced files"), "{error}");
+    assert!(
+        error.contains("These files were removed: [\"_orphan.si\"]"),
+        "{error}"
+    );
+    assert!(!error.contains("These files were added"), "{error}");
+    assert!(!dir.is_open());
+    assert!(!dir
+        .delegate()
+        .list_all()
+        .unwrap()
+        .contains(&"_orphan.si".to_owned()));
+    assert!(
+        dir.delegate()
+            .list_all()
+            .unwrap()
+            .contains(&"segments_1".to_owned()),
+        "the failure must precede default-policy pruning"
+    );
+    assert_eq!(dir.file_handle_count(), 0);
+    drop(dir.delegate().obtain_lock("write.lock").unwrap());
+    dir.close().unwrap();
+}
+
+#[test]
+fn unreferenced_close_assertion_propagates_commit_and_lock_errors_without_leaks() {
+    let broken = mock(73);
+    broken.set_check_index_on_close(false);
+    broken.set_assert_no_unreferenced_files_on_close(true);
+    write(&broken, "segments_1", b"not a commit").unwrap();
+    assert!(broken.close().is_err());
+    assert_eq!(broken.file_handle_count(), 0);
+    drop(broken.delegate().obtain_lock("write.lock").unwrap());
+    broken.close().unwrap();
+    let locked = committed_close_fixture();
+    locked.set_check_index_on_close(false);
+    locked.set_assert_no_unreferenced_files_on_close(true);
+    let lock = locked.obtain_lock("write.lock").unwrap();
+    let error = locked.close().unwrap_err();
+    assert!(error.contains("lock"), "{error}");
+    assert_eq!(locked.file_handle_count(), 0);
+    lock.close().unwrap();
+    drop(locked.delegate().obtain_lock("write.lock").unwrap());
+    locked.close().unwrap();
+}
+
+#[test]
+fn unreferenced_close_assertion_preserves_the_check_index_crash_state() {
+    let dir = committed_close_fixture();
+    dir.set_assert_no_unreferenced_files_on_close(true);
+    let error = dir.close().unwrap_err();
+    assert!(dir.crashed());
+    assert!(error.contains("after crash"), "{error}");
+    assert_eq!(dir.file_handle_count(), 0);
+    drop(dir.delegate().obtain_lock("write.lock").unwrap());
+    dir.close().unwrap();
+}
+
+#[test]
+fn index_existence_listing_failure_propagates() {
+    use lucene_test_framework::store::base_directory_wrapper::index_exists;
+    let delegate = FailingListing {
+        inner: ByteBuffersDirectory::new(),
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        fail_at: 1,
+    };
+    assert!(
+        matches!(index_exists(&delegate), Err(Error::AlreadyClosed(message))
+        if message == "listing 1")
+    );
+}
+
+#[test]
+fn nested_close_disables_the_filesystem_checker_without_duplicate_handles() {
+    use lucene_test_framework::store::base_directory_wrapper::RawDirectoryWrapper;
+    let (inner, fs, temp) = over_fs(MockFsConfig {
+        virus_checker: Some(0),
+        ..MockFsConfig::default()
+    });
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/data/merge_policies/commits_index");
+    for entry in std::fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        write(
+            inner.delegate(),
+            &entry.file_name().into_string().unwrap(),
+            &std::fs::read(entry.path()).unwrap(),
+        )
+        .unwrap();
+    }
+    let outer = MockDirectoryWrapper::new(
+        &mut JavaRandom::new(91),
+        RawDirectoryWrapper::new(inner.clone()),
+    );
+    let segment = outer
+        .list_all()
+        .unwrap()
+        .into_iter()
+        .find(|name| name.ends_with(".si"))
+        .unwrap();
+    let input = outer.open(&segment).unwrap();
+    assert_eq!(fs.open_handles().get(&segment), Some(&1));
+    drop(input);
+    assert!(fs.open_handles().is_empty());
+    // Prove the real underlying checker refuses a codec-file deletion before
+    // close disables it. All probe files remain for the writer to clean up.
+    let mut refused = None;
+    for id in 0..100 {
+        let name = format!("_orphan{id}.si");
+        write(inner.delegate(), &name, b"unused").unwrap();
+        if FsFaults::check_delete(fs.as_ref(), &temp.path().join(&name)).is_err() {
+            refused = Some(name);
+            break;
+        }
+    }
+    let refused = refused.expect("virus checker must refuse a probe");
+    outer.set_check_index_on_close(false);
+    outer.set_assert_no_unreferenced_files_on_close(true);
+    let error = outer.close().unwrap_err();
+    assert!(error.contains(&refused), "{error}");
+    assert!(!temp.path().join(&refused).exists());
+    assert!(inner.pending_deletions().unwrap().is_empty());
+    assert!(fs.open_handles().is_empty());
+    assert!(!fs.disable_virus_checker(), "close leaves checker disabled");
+    drop(inner.delegate().obtain_lock("write.lock").unwrap());
+    outer.close().unwrap();
+}
+
+#[test]
+fn nested_distinct_filesystem_checkers_are_both_disabled() {
+    let (inner, inner_fs, _temp) = over_fs(MockFsConfig {
+        virus_checker: Some(0),
+        ..MockFsConfig::default()
+    });
+    let outer_fs = MockFs::new(MockFsConfig {
+        virus_checker: Some(1),
+        ..MockFsConfig::default()
+    });
+    let outer =
+        MockDirectoryWrapper::with_mock_fs(&mut JavaRandom::new(92), inner, outer_fs.clone());
+    assert!(outer.disable_virus_checker());
+    assert!(!inner_fs.disable_virus_checker());
+    assert!(!outer_fs.disable_virus_checker());
+    assert!(!outer.disable_virus_checker());
+}

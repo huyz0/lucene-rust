@@ -168,6 +168,17 @@ all-commit unions and missing/corrupt live-doc positive controls, and writes
 `corrupt_unknown_files_fixtures.rs`. Rust exposes the override as
 `corrupt_unknown_files_with` and requires a quiescent directory because
 it does not hold Java's synchronized monitor across the scan and corruption.
+`GenNoUnreferencedFilesOnClose` records actual mock-directory close calls with
+Java assertions enabled: both writer passes, retained-commit pruning, exact
+file sets and document counts, first-pass added/removed files, disabled random
+fault rates, held locks, leaked inputs, injected I/O failures, corrupt metadata
+and live docs, parent/soft-delete configuration errors, field metadata failures
+before deletion, combined crash/check flags, and binary/SimpleText indexes.
+Its `no_unreferenced_files_on_close.tsv` replay uses a tracing delegate to
+compare each writer phase. Java delegate close calls are recorded separately:
+Rust directories release their resources when their owners drop.
+Independently armed rollback and close-without-commit probes check that refresh
+listing failures propagate, preserve committed files and release writer locks.
 `GenConfigurableM` records default and explicit connectivity settings, inherited
 accessor identities and failures, and native float/byte dense, sparse and empty
 fields. Four segments combine M=128/4 with sparse counts 647/648 at the tiny-graph
