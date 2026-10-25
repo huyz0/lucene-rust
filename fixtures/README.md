@@ -210,6 +210,11 @@ infinity; 210 slow-containment cases cover boundaries, exterior points, NaN and
 holes-first rejection. The five `shape_test_util_*.tsv` files live under
 `fixtures/testframework/data/`; `shape_test_util_fixtures.rs` and module unit
 tests compare them without a JVM.
+`GenGeoContainsSlowly` records actual geographic polygon containment results
+for 8,009 raw-double queries across 16 polygons: concave and reversed rings,
+repeated vertices, geographic extrema, thin and subnormal geometry, one-ULP
+boundary neighbors, NaN/infinity inputs and exact holes-first refusals.
+`geo_contains_slowly.tsv` is replayed by `geo_contains_slowly_fixtures.rs`.
 `GenBaseXYPoint` runs six inherited point-array generators through four capture
 hooks, preserving Java's callback and RNG order without constructing an index.
 Twenty seeds, including signed-long extremes, run in separate nightly false/true

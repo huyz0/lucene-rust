@@ -1,12 +1,16 @@
-//! `GeoTestUtil`'s point, box and circle generators: values that favour
-//! the edges, zero, a 360-way grid and one-ulp neighbours.
+//! `GeoTestUtil`'s point, box and circle generators and slow geographic
+//! polygon containment oracle. Generated values favour the edges, zero,
+//! a 360-way grid and one-ulp neighbours.
 //!
 //! Java draws from the test's `random()`; here each takes the stream.
+//! The containment oracle borrows immutable polygon coordinates instead
+//! of Java's cloned getter arrays, and returns a typed error for holes.
+//! Its boundary tests and floating-point operation order remain Java's.
 //! The polygon and line generators (`nextPolygon`, `createRegularPolygon`,
 //! `nextPointNear`, `nextBoxNear`) and `toSVG` are not ported (see the
 //! ledger).
 
-use lucene_util::geo::GeoUtils;
+use lucene_util::geo::{GeoUtils, Polygon};
 use lucene_util::java_random::JavaRandom;
 use lucene_util::numeric_utils::{double_to_sortable_long, sortable_long_to_double};
 
@@ -136,4 +140,117 @@ pub fn next_circle(random: &mut JavaRandom) -> (f64, f64, f64) {
     let lat = next_latitude(random);
     let lon = next_longitude(random);
     (lat, lon, next_radius_meters(random))
+}
+
+// Copyright (c) 1970-2003, Wm. Randolph Franklin
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy of this software
+// and associated
+// documentation files (the "Software"), to deal in the Software without restriction, including
+// without limitation
+// the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+// the Software, and
+// to permit persons to whom the Software is furnished to do so, subject to the following
+// conditions:
+//
+// 1. Redistributions of source code must retain the above copyright
+//    notice, this list of conditions and the following disclaimers.
+// 2. Redistributions in binary form must reproduce the above copyright
+//    notice in the documentation and/or other materials provided with
+//    the distribution.
+// 3. The name of W. Randolph Franklin may not be used to endorse or
+//    promote products derived from this Software without specific
+//    prior written permission.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING
+// BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+// NO EVENT SHALL
+// THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+// IN AN ACTION OF
+// CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE
+// OR OTHER DEALINGS
+// IN THE SOFTWARE.
+/// Java: `GeoTestUtil.containsSlowly`, with inclusive polygon boundaries.
+/// Rejects holes before inspecting the bounding box.
+pub fn contains_slowly(
+    polygon: &Polygon,
+    latitude: f64,
+    longitude: f64,
+) -> Result<bool, &'static str> {
+    if !polygon.holes().is_empty() {
+        return Err("this testing method does not support holes");
+    }
+    let x = longitude;
+    let y = latitude;
+    let ys = polygon.poly_lats();
+    let xs = polygon.poly_lons();
+    if y < polygon.min_lat || y > polygon.max_lat || x < polygon.min_lon || x > polygon.max_lon {
+        return Ok(false);
+    }
+    let mut c = false;
+    for i in 0..xs.len() - 1 {
+        let j = i + 1;
+        if (y == ys[j] && y == ys[i]) || ((y <= ys[j] && y >= ys[i]) != (y >= ys[j] && y <= ys[i]))
+        {
+            if (x == xs[j] && x == xs[i])
+                || (((x <= xs[j] && x >= xs[i]) != (x >= xs[j] && x <= xs[i]))
+                    && GeoUtils::orient(xs[i], ys[i], xs[j], ys[j], x, y) == 0)
+            {
+                return Ok(true);
+            } else if ((ys[i] > y) != (ys[j] > y))
+                && x < (xs[j] - xs[i]) * (y - ys[i]) / (ys[j] - ys[i]) + xs[i]
+            {
+                c = !c;
+            }
+        }
+    }
+    Ok(c)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn geographic_ray_crossing_includes_edges_and_rejects_bbox_and_concavity() {
+        let polygon = Polygon::new(
+            &[0., 6., 6., 2., 2., 0., 0.],
+            &[0., 0., 2., 2., 6., 6., 0.],
+            vec![],
+        )
+        .unwrap();
+        for (lat, lon, expected) in [
+            (1., 1., true),
+            (5., 1., true),
+            (1., 5., true),
+            (5., 5., false),
+            (0., 3., true),
+            (3., 0., true),
+            (2., 6., true),
+            (0., -0.0, true),
+            (-1., 1., false),
+            (7., 1., false),
+            (1., -1., false),
+            (1., 7., false),
+            (f64::NAN, 1., false),
+            (1., f64::NAN, false),
+        ] {
+            assert_eq!(contains_slowly(&polygon, lat, lon), Ok(expected));
+        }
+    }
+
+    #[test]
+    fn holes_are_refused_before_bbox_or_nonfinite_query_checks() {
+        let ring = &[0., 4., 4., 0., 0.];
+        let lons = &[0., 0., 4., 4., 0.];
+        let hole = Polygon::new(&[1., 2., 2., 1., 1.], &[1., 1., 2., 2., 1.], vec![]).unwrap();
+        let polygon = Polygon::new(ring, lons, vec![hole]).unwrap();
+        for (lat, lon) in [(1., 1.), (89., 179.), (f64::NAN, f64::INFINITY)] {
+            assert_eq!(
+                contains_slowly(&polygon, lat, lon),
+                Err("this testing method does not support holes")
+            );
+        }
+    }
 }
