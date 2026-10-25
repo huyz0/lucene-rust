@@ -250,7 +250,10 @@ fn field_exists_counts_and_rewrites_match_real_lucene() {
                     let source = leaf.source.expect("a field with no source cannot decline");
                     match source {
                         lucene_search::doc_value_query::FieldExistsSource::Norms => {
-                            let norms = seg.field_norms(field).expect("norms for a normed field");
+                            let norms = seg
+                                .field_norms(field)
+                                .unwrap()
+                                .expect("norms for a normed field");
                             lucene_search::doc_value_query::search_field_exists_norms(
                                 &norms,
                                 seg.live_docs(),
@@ -356,7 +359,7 @@ fn field_exists_docs_are_the_scans_documents() {
             match seg.field_exists_leaf(field, None).unwrap().source.unwrap() {
                 lucene_search::doc_value_query::FieldExistsSource::Norms => {
                     lucene_search::doc_value_query::search_field_exists_norms(
-                        &seg.field_norms(field).unwrap(),
+                        &seg.field_norms(field).unwrap().unwrap(),
                         seg.live_docs(),
                         seg.max_doc,
                         &mut scan,

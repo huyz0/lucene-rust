@@ -534,6 +534,12 @@ impl FieldInfos {
     /// gap the sweep recorded as "a caller can still build combinations Java
     /// makes unrepresentable and find out at `parse` time or not at all".
     pub fn new(fields: Vec<FieldInfo>) -> Result<Self> {
+        // The cranky field-info benchmark exposed iterator/error machinery
+        // even for zero fields. No per-field or cross-field check can fail
+        // here; drop any reserved input storage and return an empty value.
+        if fields.is_empty() {
+            return Ok(Self { fields: Vec::new() });
+        }
         let fields = fields
             .into_iter()
             .map(FieldInfo::checked)

@@ -1,0 +1,21 @@
+    version 10.5.0
+    min version null
+    number of documents 7
+    uses compound file false
+    has blocks true
+    diagnostics 1
+      key source
+      value fixture
+    attributes 1
+      key note
+      value line\
+break\\
+    files 2
+      file _r.other
+      file _r.si
+    id [1b 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0]
+    sort 1
+      name SortedNumericSortField
+      type <sortednumeric: "multi"> selector=MAX type=FLOAT
+      bytes [5 6d 75 6c 74 69 5 46 4c 4f 41 54 0 0 0 0 1 0 0 0 0 0 0 0]
+checksum 00000000000126103770

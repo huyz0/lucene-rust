@@ -1,0 +1,52 @@
+case	direct:reader:pass	42	-	ok	reader	-1170105035	1008396158678580193	-1	-1	-1
+case	direct:reader:delegate	42	reader	delegate reader	reader	-1170105035	1008396158678580193	-1	-1	-1
+case	direct:open:pass	42	-	ok	open	234785527	-5843495416241995736	-1	-1	-1
+case	direct:open:inject	18	-	Fake IOException from TermVectorsFormat.vectorsWriter()	-	-47841287	3481588434689577437	-1	-1	-1
+case	direct:open:delegate	42	open	delegate open	open	234785527	-5843495416241995736	-1	-1	-1
+case	direct:startDoc:pass	42	-	ok	startDoc:1	234785527	-5843495416241995736	-1	-1	-1
+case	direct:startDoc:inject	5781	-	Fake IOException from TermVectorsWriter.startDocument()	-	-1230569018	-6636938047747595892	-1	-1	-1
+case	direct:startDoc:delegate	42	startDoc	delegate startDoc	startDoc:1	234785527	-5843495416241995736	-1	-1	-1
+case	direct:finishDoc:pass	42	-	ok	finishDoc	234785527	-5843495416241995736	-1	-1	-1
+case	direct:finishDoc:inject	5781	-	Fake IOException from TermVectorsWriter.finishDocument()	-	-1230569018	-6636938047747595892	-1	-1	-1
+case	direct:finishDoc:delegate	42	finishDoc	delegate finishDoc	finishDoc	234785527	-5843495416241995736	-1	-1	-1
+case	direct:startField:pass	42	-	ok	startField:f:7:1:true:true:true	234785527	-5843495416241995736	-1	-1	-1
+case	direct:startField:inject	5781	-	Fake IOException from TermVectorsWriter.startField()	-	-1230569018	-6636938047747595892	-1	-1	-1
+case	direct:startField:delegate	42	startField	delegate startField	startField:f:7:1:true:true:true	234785527	-5843495416241995736	-1	-1	-1
+case	direct:finishField:pass	42	-	ok	finishField	234785527	-5843495416241995736	-1	-1	-1
+case	direct:finishField:inject	5781	-	Fake IOException from TermVectorsWriter.finishField()	-	-1230569018	-6636938047747595892	-1	-1	-1
+case	direct:finishField:delegate	42	finishField	delegate finishField	finishField	234785527	-5843495416241995736	-1	-1	-1
+case	direct:startTerm:pass	42	-	ok	startTerm:000a5cff:3	234785527	-5843495416241995736	-1	-1	-1
+case	direct:startTerm:inject	5781	-	Fake IOException from TermVectorsWriter.startTerm()	-	-1230569018	-6636938047747595892	-1	-1	-1
+case	direct:startTerm:delegate	42	startTerm	delegate startTerm	startTerm:000a5cff:3	234785527	-5843495416241995736	-1	-1	-1
+case	direct:finishTerm:pass	42	-	ok	finishTerm	234785527	-5843495416241995736	-1	-1	-1
+case	direct:finishTerm:inject	5781	-	Fake IOException from TermVectorsWriter.finishTerm()	-	-1230569018	-6636938047747595892	-1	-1	-1
+case	direct:finishTerm:delegate	42	finishTerm	delegate finishTerm	finishTerm	234785527	-5843495416241995736	-1	-1	-1
+case	direct:position:pass	42	-	ok	position:7:10:13:e	234785527	-5843495416241995736	-1	-1	-1
+case	direct:position:inject	5781	-	Fake IOException from TermVectorsWriter.addPosition()	-	-1230569018	-6636938047747595892	-1	-1	-1
+case	direct:position:delegate	42	position	delegate position	position:7:10:13:e	234785527	-5843495416241995736	-1	-1	-1
+case	direct:finish:pass	42	-	ok	finish:2	234785527	-5843495416241995736	-1	-1	-1
+case	direct:finish:inject	18	-	Fake IOException from TermVectorsWriter.finish()	-	-47841287	3481588434689577437	-1	-1	-1
+case	direct:finish:delegate	42	finish	delegate finish	finish:2	234785527	-5843495416241995736	-1	-1	-1
+case	direct:close:pass	42	-	ok	close	234785527	-5843495416241995736	-1	-1	-1
+case	direct:close:inject	18	-	Fake IOException from TermVectorsWriter.close()	close	-47841287	3481588434689577437	-1	-1	-1
+case	direct:close:delegate	42	close	delegate close	close	-1170105035	1008396158678580193	-1	-1	-1
+case	direct:resources:pass	42	-	ok	ram	-1170105035	1008396158678580193	-1	-1	-1
+case	prox:both	42	-	ok	position:1:0:2:000a;position:3:3:6:-;position:3:6:6:e	1325939940	-1068554554583376509	7	6	-1
+case	prox:positions	42	-	ok	position:1:-1:-1:000a;position:3:-1:-1:-;position:3:-1:-1:e	1325939940	-1068554554583376509	7	-1	-1
+case	prox:offsets	42	-	ok	position:-1:0:2:-;position:-1:3:6:-;position:-1:6:6:-	1325939940	-1068554554583376509	-1	6	-1
+case	prox:none	42	-	ok	position:-1:-1:-1:-;position:-1:-1:-1:-;position:-1:-1:-1:-	1325939940	-1068554554583376509	-1	-1	-1
+case	prox:zero	42	-	ok	-	234785527	-5843495416241995736	0	0	-1
+case	prox:negative	42	-	ok	-	234785527	-5843495416241995736	0	0	-1
+case	prox:shortpos	42	-	input	-	234785527	-5843495416241995736	1	0	-1
+case	prox:shortoff	42	-	input	-	234785527	-5843495416241995736	4	1	-1
+case	prox:inject	5781	-	Fake IOException from TermVectorsWriter.addProx()	-	-1230569018	-6636938047747595892	0	0	-1
+case	prox:nested1	2837	-	Fake IOException from TermVectorsWriter.addPosition()	-	-1924188590	4294681699534732531	4	2	-1
+case	prox:nested2	3954	-	Fake IOException from TermVectorsWriter.addPosition()	position:1:0:2:000a	-639588778	2438597070562587841	5	4	-1
+case	prox:delegate2	42	position#2	delegate position#2	position:1:0:2:000a;position:3:3:6:-	205897768	5694868678511409995	5	4	-1
+case	merge:sequential	42	-	ok	integrity:a;integrity:b;get:a:0;startDoc:1;startField:f:7:1:true:true:true;startTerm:000a5cff:3;position:1:0:2:000a;position:3:3:6:-;position:3:6:6:-;finishTerm;finishField;finishDoc;startDoc:0;finishDoc;get:b:0;startDoc:1;startField:f:7:1:true:true:true;startTerm:000a5cff:3;position:1:0:2:000a;position:3:3:6:-;position:3:6:6:-;finishTerm;finishField;finishDoc;get:b:1;startDoc:0;finishDoc;finish:4	-1074144810	-1279628870744142884	-1	-1	4
+case	merge:sorted	42	-	ok	integrity:a;integrity:b;startDoc:0;finishDoc;get:b:0;startDoc:1;startField:f:7:1:true:true:true;startTerm:000a5cff:3;position:1:0:2:000a;position:3:3:6:-;position:3:6:6:-;finishTerm;finishField;finishDoc;get:a:0;startDoc:1;startField:f:7:1:true:true:true;startTerm:000a5cff:3;position:1:0:2:000a;position:3:3:6:-;position:3:6:6:-;finishTerm;finishField;finishDoc;get:b:1;startDoc:0;finishDoc;finish:4	-1074144810	-1279628870744142884	-1	-1	4
+case	merge:integrity	42	integrity:b	delegate integrity:b	integrity:a;integrity:b	234785527	-5843495416241995736	-1	-1	-1
+case	merge:get	42	get:a:0	delegate get:a:0	integrity:a;integrity:b;get:a:0	234785527	-5843495416241995736	-1	-1	-1
+case	merge:callback	42	startTerm	delegate startTerm	integrity:a;integrity:b;get:a:0;startDoc:1;startField:f:7:1:true:true:true;startTerm:000a5cff:3	1325939940	-1068554554583376509	-1	-1	-1
+case	merge:inject	18	-	Fake IOException from TermVectorsWriter.merge()	-	-47841287	3481588434689577437	-1	-1	-1
+case	merge:nested	2837	-	Fake IOException from TermVectorsWriter.startDocument()	integrity:a;integrity:b;get:a:0	-1924188590	4294681699534732531	-1	-1	-1

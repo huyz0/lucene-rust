@@ -67,7 +67,7 @@ impl FstDictionary {
         match block_encoder {
             None => out.write_bytes(&bytes),
             Some(encoder) => {
-                let encoded = encoder.encode(&bytes)?;
+                let encoded = encoder.encode_dictionary(&bytes)?;
                 out.write_vlong(encoded.len() as i64);
                 out.write_bytes(&encoded);
             }

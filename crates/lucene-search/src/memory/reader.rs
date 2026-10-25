@@ -401,7 +401,7 @@ impl MemoryIndexReader {
             .iter()
             .map(|f| f.info.name.clone())
             .collect();
-        let owned = reader.field_norms_by_field(&names);
+        let owned = reader.field_norms_by_field(&names)?;
         let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
         let mut searcher = IndexSearcher::new(&segments, &norms)?;
         searcher.set_similarity(self.similarity.as_ref());

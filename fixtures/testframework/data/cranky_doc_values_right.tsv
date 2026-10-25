@@ -1,0 +1,85 @@
+maxDoc	12
+field	0	numeric	NUMERIC	RANGE
+numeric	0	0	-9223372036854775808
+numeric	0	1	71
+numeric	0	3	213
+numeric	0	4	284
+numeric	0	6	426
+numeric	0	7	497
+numeric	0	9	9223372036854775807
+numeric	0	10	710
+skipGlobal	0	-9223372036854775808	9223372036854775807	8	1
+skip	0	0	0	4	-9223372036854775808	284	4
+skip	0	0	6	10	426	9223372036854775807	4
+field	1	binary	BINARY	NONE
+binary	1	0	-
+binary	1	2	0102ff
+binary	1	3	0103ff
+binary	1	4	0104ff
+binary	1	6	0106ff
+binary	1	7	0107ff
+binary	1	8	0108ff
+binary	1	10	010aff
+binary	1	11	010bff
+field	2	sorted	SORTED	RANGE
+term	2	0	-
+term	2	1	6161
+term	2	2	676f6e652d31
+term	2	3	7269676874
+sorted	2	0	0
+sorted	2	2	1
+sorted	2	3	2
+sorted	2	5	3
+sorted	2	6	0
+sorted	2	8	1
+sorted	2	9	3
+sorted	2	11	3
+skipGlobal	2	0	3	8	1
+skip	2	0	0	5	0	3	4
+skip	2	0	6	11	0	3	4
+field	3	sortedNumeric	SORTED_NUMERIC	RANGE
+sortedNumeric	3	0	0
+sortedNumeric	3	1	-1	1	1
+sortedNumeric	3	3	-3	3	3
+sortedNumeric	3	4	4
+sortedNumeric	3	5	-5	5	5
+sortedNumeric	3	7	-7	7	7
+sortedNumeric	3	8	8
+sortedNumeric	3	9	-9	9	9
+sortedNumeric	3	11	-11	11	11
+skipGlobal	3	-11	11	9	3
+skip	3	0	0	4	-3	4	4
+skip	3	0	5	9	-9	9	4
+skip	3	0	11	11	-11	11	1
+field	4	sortedSet	SORTED_SET	RANGE
+term	4	0	-
+term	4	1	6161
+term	4	2	6363
+term	4	3	676f6e652d31
+term	4	4	7269676874
+sortedSet	4	0	0	2
+sortedSet	4	1	2	4
+sortedSet	4	3	3
+sortedSet	4	4	1	2
+sortedSet	4	5	2	4
+sortedSet	4	7	2	4
+sortedSet	4	8	1	2
+sortedSet	4	9	2	4
+sortedSet	4	11	2	4
+skipGlobal	4	0	4	9	2
+skip	4	0	0	4	0	4	4
+skip	4	0	5	9	1	4	4
+skip	4	0	11	11	2	4	1
+field	5	emptyNumeric	NUMERIC	NONE
+numeric	5	3	1
+field	6	emptyBinary	BINARY	NONE
+binary	6	3	72656d6f766564
+field	7	emptySorted	SORTED	NONE
+term	7	0	72656d6f766564
+sorted	7	3	0
+field	8	emptySortedNumeric	SORTED_NUMERIC	NONE
+sortedNumeric	8	3	1
+field	9	emptySortedSet	SORTED_SET	NONE
+term	9	0	72656d6f766564
+sortedSet	9	3	0
+rng	1583910553

@@ -30,12 +30,12 @@ use std::sync::Arc;
 
 use lucene_codecs::automaton::ByteDfa;
 use lucene_codecs::blocktree::SeekStatus;
-use lucene_codecs::doc_values::DocValuesSkipper;
 use lucene_codecs::field_infos::{DocValuesType, FieldInfo, FieldInfos, IndexOptions};
 use lucene_codecs::stored_fields::StoredFieldVisitor;
 use lucene_index::segment_info::IndexSortField;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::reader::filter::{FilterDirectoryReader, SubReaderWrapper};
+use lucene_search::reader::DocValuesSkipper;
 use lucene_search::reader::{
     BinaryDocValues, ByteVectorValues, CacheHelper, DocIdSetIterator, DocValuesIterator,
     FloatVectorValues, ImpactsEnum, IndexReader, LeafReader, LeafReaderContext, NumericDocValues,
@@ -340,14 +340,16 @@ impl Terms for AssertingTerms<'_> {
         self.in_.size()
     }
     fn sum_total_term_freq(&self) -> i64 {
+        // Java: AssertingLeafReader.AssertingTerms.getSumTotalTermFreq.
         let sum_ttf = self.in_.sum_total_term_freq();
-        let sum_df = self.sum_doc_freq();
         if !self.in_.has_freqs() {
+            let sum_df = self.in_.sum_doc_freq();
             assert!(
                 sum_ttf == sum_df,
                 "sumTotalTermFreq={sum_ttf} != sumDocFreq={sum_df} without freqs"
             );
         }
+        let sum_df = self.sum_doc_freq();
         assert!(
             sum_ttf >= sum_df,
             "sumTotalTermFreq={sum_ttf} < sumDocFreq={sum_df}"
@@ -670,8 +672,7 @@ struct DvCheck {
 }
 
 impl DvCheck {
-    fn new(kind: &'static str, max_doc: i32, in_doc: i32) -> Self {
-        assert!(in_doc == -1, "{kind} doc values start on doc {in_doc}");
+    fn new(kind: &'static str, max_doc: i32) -> Self {
         Self {
             kind,
             max_doc,
@@ -689,7 +690,7 @@ impl DvCheck {
         );
     }
 
-    fn after_next(&mut self, doc: i32, in_doc: i32) {
+    fn after_next(&mut self, doc: i32, in_doc: impl FnOnce() -> i32) {
         assert!(
             doc > self.last_doc_id,
             "{} doc values: backwards nextDoc from {} to {doc}",
@@ -697,14 +698,24 @@ impl DvCheck {
             self.last_doc_id
         );
         self.in_range(doc);
-        assert!(doc == in_doc, "{} doc values: docID() disagrees", self.kind);
+        assert!(
+            doc == in_doc(),
+            "{} doc values: docID() disagrees",
+            self.kind
+        );
         self.last_doc_id = doc;
         self.exists = doc != NO_MORE_DOCS;
     }
 
-    fn before_advance(&self, target: i32, in_doc: i32) {
+    fn before_advance(&self, target: i32, in_doc: impl FnOnce() -> i32) {
         assert!(
-            target >= 0 && target > in_doc,
+            target >= 0,
+            "{} doc values: advance({target}) on negative target",
+            self.kind
+        );
+        let in_doc = in_doc();
+        assert!(
+            target > in_doc,
             "{} doc values: advance({target}) from doc {in_doc}",
             self.kind
         );
@@ -721,23 +732,34 @@ impl DvCheck {
         self.exists = doc != NO_MORE_DOCS;
     }
 
-    fn before_advance_exact(&self, target: i32, in_doc: i32) {
+    fn before_advance_exact(&self, target: i32, in_doc: impl FnOnce() -> i32) {
         assert!(
-            target >= 0 && target >= in_doc && target < self.max_doc,
+            target >= 0,
+            "{} doc values: advanceExact({target}) on negative target",
+            self.kind
+        );
+        let in_doc = in_doc();
+        assert!(
+            target >= in_doc,
+            "{} doc values: advanceExact({target}) from doc {in_doc}, maxDoc={}",
+            self.kind,
+            self.max_doc
+        );
+        assert!(
+            target < self.max_doc,
             "{} doc values: advanceExact({target}) from doc {in_doc}, maxDoc={}",
             self.kind,
             self.max_doc
         );
     }
 
-    fn after_advance_exact(&mut self, target: i32, exists: bool, in_doc: i32) {
+    fn after_advance_exact(&mut self, target: i32, in_doc: i32) {
         assert!(
             in_doc == target,
             "{} doc values: advanceExact({target}) left the iterator on {in_doc}",
             self.kind
         );
         self.last_doc_id = target;
-        self.exists = exists;
     }
 
     fn exists(&self, method: &str) {
@@ -757,14 +779,16 @@ impl DvCheck {
 /// `DocIdSetIterator` and `DocValuesIterator` for an asserting wrapper with
 /// `in_` and `check: DvCheck`, running `$reset` (if any) whenever it moves.
 macro_rules! asserting_dv_iterator {
-    ($ty:ident $(, |$s:ident| $reset:expr)?) => {
+    ($ty:ident, $check_advanced_doc:literal $(, |$s:ident| $reset:expr)?) => {
         impl DocIdSetIterator for $ty<'_> {
             fn doc_id(&self) -> i32 {
                 self.in_.doc_id()
             }
             fn next_doc(&mut self) -> Result<i32> {
                 let doc = self.in_.next_doc()?;
-                self.check.after_next(doc, self.in_.doc_id());
+                // Java checks monotonicity and bounds before calling docID().
+                let in_ = &self.in_;
+                self.check.after_next(doc, || in_.doc_id());
                 $(
                     let $s = &mut *self;
                     $reset;
@@ -772,13 +796,16 @@ macro_rules! asserting_dv_iterator {
                 Ok(doc)
             }
             fn advance(&mut self, target: i32) -> Result<i32> {
-                self.check.before_advance(target, self.in_.doc_id());
+                self.check.before_advance(target, || self.in_.doc_id());
                 let doc = self.in_.advance(target)?;
-                assert!(
-                    doc == self.in_.doc_id(),
-                    "{} doc values: docID() disagrees",
-                    self.check.kind
-                );
+                // Only Java's multi-valued wrappers check docID() after advance.
+                if $check_advanced_doc {
+                    assert!(
+                        doc == self.in_.doc_id(),
+                        "{} doc values: docID() disagrees",
+                        self.check.kind
+                    );
+                }
                 self.check.after_advance(target, doc);
                 $(
                     let $s = &mut *self;
@@ -793,15 +820,17 @@ macro_rules! asserting_dv_iterator {
 
         impl DocValuesIterator for $ty<'_> {
             fn advance_exact(&mut self, target: i32) -> Result<bool> {
-                self.check.before_advance_exact(target, self.in_.doc_id());
-                let exists = self.in_.advance_exact(target)?;
+                self.check.before_advance_exact(target, || self.in_.doc_id());
+                // Java commits exists before the post-call assertion, but leaves
+                // lastDocID and per-document counters unchanged if it fails.
+                self.check.exists = self.in_.advance_exact(target)?;
                 self.check
-                    .after_advance_exact(target, exists, self.in_.doc_id());
+                    .after_advance_exact(target, self.in_.doc_id());
                 $(
                     let $s = &mut *self;
                     $reset;
                 )?
-                Ok(exists)
+                Ok(self.check.exists)
             }
         }
     };
@@ -816,12 +845,14 @@ pub struct AssertingNumericDocValues<'a> {
 impl<'a> AssertingNumericDocValues<'a> {
     /// Wraps `in_`, an unpositioned iterator over a leaf of `max_doc`.
     pub fn new(in_: Box<dyn NumericDocValues + 'a>, max_doc: i32) -> Self {
-        let check = DvCheck::new("Numeric", max_doc, in_.doc_id());
+        let in_doc = in_.doc_id();
+        assert!(in_doc == -1, "Numeric doc values start on doc {in_doc}");
+        let check = DvCheck::new("Numeric", max_doc);
         Self { in_, check }
     }
 }
 
-asserting_dv_iterator!(AssertingNumericDocValues);
+asserting_dv_iterator!(AssertingNumericDocValues, false);
 
 impl NumericDocValues for AssertingNumericDocValues<'_> {
     fn long_value(&self) -> i64 {
@@ -839,12 +870,14 @@ pub struct AssertingBinaryDocValues<'a> {
 impl<'a> AssertingBinaryDocValues<'a> {
     /// Wraps `in_`, an unpositioned iterator over a leaf of `max_doc`.
     pub fn new(in_: Box<dyn BinaryDocValues + 'a>, max_doc: i32) -> Self {
-        let check = DvCheck::new("Binary", max_doc, in_.doc_id());
+        let in_doc = in_.doc_id();
+        assert!(in_doc == -1, "Binary doc values start on doc {in_doc}");
+        let check = DvCheck::new("Binary", max_doc);
         Self { in_, check }
     }
 }
 
-asserting_dv_iterator!(AssertingBinaryDocValues);
+asserting_dv_iterator!(AssertingBinaryDocValues, false);
 
 impl BinaryDocValues for AssertingBinaryDocValues<'_> {
     fn binary_value(&self) -> &[u8] {
@@ -861,9 +894,9 @@ pub struct AssertingSortedDocValues<'a> {
 }
 
 impl<'a> AssertingSortedDocValues<'a> {
-    /// Wraps `in_`, an unpositioned iterator over a leaf of `max_doc`.
+    /// Wraps `in_` over a leaf of `max_doc`, checking its value count.
     pub fn new(in_: Box<dyn SortedDocValues + 'a>, max_doc: i32) -> Self {
-        let check = DvCheck::new("Sorted", max_doc, in_.doc_id());
+        let check = DvCheck::new("Sorted", max_doc);
         let value_count = in_.value_count();
         assert!(
             value_count >= 0 && value_count <= max_doc,
@@ -877,7 +910,7 @@ impl<'a> AssertingSortedDocValues<'a> {
     }
 }
 
-asserting_dv_iterator!(AssertingSortedDocValues);
+asserting_dv_iterator!(AssertingSortedDocValues, false);
 
 impl SortedDocValues for AssertingSortedDocValues<'_> {
     fn ord_value(&self) -> i32 {
@@ -926,9 +959,9 @@ pub struct AssertingSortedNumericDocValues<'a> {
 }
 
 impl<'a> AssertingSortedNumericDocValues<'a> {
-    /// Wraps `in_`, an unpositioned iterator over a leaf of `max_doc`.
+    /// Wraps `in_` over a leaf of `max_doc` without inspecting its position.
     pub fn new(in_: Box<dyn SortedNumericDocValues + 'a>, max_doc: i32) -> Self {
-        let check = DvCheck::new("Sorted numeric", max_doc, in_.doc_id());
+        let check = DvCheck::new("Sorted numeric", max_doc);
         Self {
             in_,
             check,
@@ -937,22 +970,22 @@ impl<'a> AssertingSortedNumericDocValues<'a> {
     }
 }
 
-asserting_dv_iterator!(AssertingSortedNumericDocValues, |s| s.value_upto = 0);
+asserting_dv_iterator!(AssertingSortedNumericDocValues, true, |s| s.value_upto = 0);
 
 impl SortedNumericDocValues for AssertingSortedNumericDocValues<'_> {
     fn doc_value_count(&self) -> i32 {
         self.check.exists("docValueCount");
         let count = self.in_.doc_value_count();
         assert!(count > 0, "docValueCount={count}");
-        count
+        self.in_.doc_value_count()
     }
     fn next_value(&mut self) -> Result<i64> {
         self.check.exists("nextValue");
-        let count = self.in_.doc_value_count();
         assert!(
-            self.value_upto < count,
-            "valueUpto={} in.docValueCount()={count}",
-            self.value_upto
+            self.value_upto < self.in_.doc_value_count(),
+            "valueUpto={} in.docValueCount()={}",
+            self.value_upto,
+            self.in_.doc_value_count()
         );
         self.value_upto += 1;
         self.in_.next_value()
@@ -973,9 +1006,9 @@ pub struct AssertingSortedSetDocValues<'a> {
 }
 
 impl<'a> AssertingSortedSetDocValues<'a> {
-    /// Wraps `in_`, an unpositioned iterator over a leaf of `max_doc`.
+    /// Wraps `in_` over a leaf of `max_doc`, checking its value count.
     pub fn new(in_: Box<dyn SortedSetDocValues + 'a>, max_doc: i32) -> Self {
-        let check = DvCheck::new("Sorted set", max_doc, in_.doc_id());
+        let check = DvCheck::new("Sorted set", max_doc);
         let value_count = in_.value_count();
         assert!(
             value_count >= 0,
@@ -990,14 +1023,11 @@ impl<'a> AssertingSortedSetDocValues<'a> {
     }
 }
 
-asserting_dv_iterator!(AssertingSortedSetDocValues, |s| s.ords_retrieved = 0);
+asserting_dv_iterator!(AssertingSortedSetDocValues, true, |s| s.ords_retrieved = 0);
 
 impl SortedSetDocValues for AssertingSortedSetDocValues<'_> {
     fn doc_value_count(&self) -> i32 {
-        self.check.exists("docValueCount");
-        let count = self.in_.doc_value_count();
-        assert!(count > 0, "docValueCount={count}");
-        count
+        self.in_.doc_value_count()
     }
     fn next_ord(&mut self) -> Result<i64> {
         self.check.exists("nextOrd");
@@ -1052,5 +1082,303 @@ impl SortedSetDocValues for AssertingSortedSetDocValues<'_> {
             self.value_count
         );
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod doc_values_callback_tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::rc::Rc;
+
+    struct State {
+        calls: Vec<&'static str>,
+        doc: i32,
+        returned_doc: i32,
+        reported_doc: i32,
+        exists: bool,
+        counts: Vec<i32>,
+        count_calls: usize,
+        panic_count_at: Option<usize>,
+        fail_value: bool,
+    }
+    impl Default for State {
+        fn default() -> Self {
+            Self {
+                calls: Vec::new(),
+                doc: -1,
+                returned_doc: 0,
+                reported_doc: 0,
+                exists: true,
+                counts: vec![1],
+                count_calls: 0,
+                panic_count_at: None,
+                fail_value: false,
+            }
+        }
+    }
+    type Shared = Rc<RefCell<State>>;
+    struct Probe(Shared);
+    impl Probe {
+        fn step(&self, call: &'static str) -> i32 {
+            let mut state = self.0.borrow_mut();
+            state.calls.push(call);
+            state.doc = state.reported_doc;
+            state.returned_doc
+        }
+        fn count(&self) -> i32 {
+            let mut state = self.0.borrow_mut();
+            state.calls.push("count");
+            state.count_calls += 1;
+            assert_ne!(
+                Some(state.count_calls),
+                state.panic_count_at,
+                "count callback"
+            );
+            state.counts[(state.count_calls - 1).min(state.counts.len() - 1)]
+        }
+        fn value(&self, call: &'static str) -> Result<i64> {
+            let mut state = self.0.borrow_mut();
+            state.calls.push(call);
+            if state.fail_value {
+                return Err(lucene_store::Error::Io(std::io::Error::other("value failure")).into());
+            }
+            Ok(0)
+        }
+    }
+    impl DocIdSetIterator for Probe {
+        fn doc_id(&self) -> i32 {
+            let mut state = self.0.borrow_mut();
+            state.calls.push("docID");
+            state.doc
+        }
+        fn next_doc(&mut self) -> Result<i32> {
+            Ok(self.step("next"))
+        }
+        fn advance(&mut self, _: i32) -> Result<i32> {
+            Ok(self.step("advance"))
+        }
+        fn cost(&self) -> i64 {
+            1
+        }
+    }
+    impl DocValuesIterator for Probe {
+        fn advance_exact(&mut self, _: i32) -> Result<bool> {
+            self.step("exact");
+            Ok(self.0.borrow().exists)
+        }
+    }
+    impl NumericDocValues for Probe {
+        fn long_value(&self) -> i64 {
+            7
+        }
+    }
+    impl BinaryDocValues for Probe {
+        fn binary_value(&self) -> &[u8] {
+            b"v"
+        }
+    }
+    impl SortedDocValues for Probe {
+        fn ord_value(&self) -> i32 {
+            0
+        }
+        fn lookup_ord(&mut self, _: i32) -> Result<Vec<u8>> {
+            Ok(vec![0])
+        }
+        fn value_count(&self) -> i32 {
+            2
+        }
+    }
+    impl SortedNumericDocValues for Probe {
+        fn doc_value_count(&self) -> i32 {
+            self.count()
+        }
+        fn next_value(&mut self) -> Result<i64> {
+            self.value("value")
+        }
+    }
+    impl SortedSetDocValues for Probe {
+        fn doc_value_count(&self) -> i32 {
+            self.count()
+        }
+        fn next_ord(&mut self) -> Result<i64> {
+            self.value("ord")
+        }
+        fn lookup_ord(&mut self, _: i64) -> Result<Vec<u8>> {
+            Ok(vec![0])
+        }
+        fn value_count(&self) -> i64 {
+            2
+        }
+    }
+    fn iterator(kind: usize, state: &Shared) -> Box<dyn DocValuesIterator> {
+        let probe = Box::new(Probe(state.clone()));
+        let iterator: Box<dyn DocValuesIterator> = match kind {
+            0 => Box::new(AssertingNumericDocValues::new(probe, 4)),
+            1 => Box::new(AssertingBinaryDocValues::new(probe, 4)),
+            2 => Box::new(AssertingSortedDocValues::new(probe, 4)),
+            3 => Box::new(AssertingSortedNumericDocValues::new(probe, 4)),
+            4 => Box::new(AssertingSortedSetDocValues::new(probe, 4)),
+            _ => unreachable!(),
+        };
+        state.borrow_mut().calls.clear();
+        iterator
+    }
+    fn panics(action: impl FnOnce()) {
+        assert!(catch_unwind(AssertUnwindSafe(action)).is_err());
+    }
+
+    #[test]
+    fn movement_short_circuits_before_observing_delegate_position() {
+        for kind in 0..5 {
+            for returned_doc in [-1, 4] {
+                let state = Shared::default();
+                let mut values = iterator(kind, &state);
+                state.borrow_mut().returned_doc = returned_doc;
+                panics(|| {
+                    values.next_doc().unwrap();
+                });
+                assert_eq!(state.borrow().calls, ["next"], "kind={kind}");
+            }
+            for exact in [false, true] {
+                let state = Shared::default();
+                let mut values = iterator(kind, &state);
+                panics(|| {
+                    if exact {
+                        values.advance_exact(-1).unwrap();
+                    } else {
+                        values.advance(-1).unwrap();
+                    }
+                });
+                assert!(state.borrow().calls.is_empty(), "kind={kind}");
+            }
+            let state = Shared::default();
+            let mut values = iterator(kind, &state);
+            state.borrow_mut().reported_doc = 1;
+            if kind < 3 {
+                // Java accepts the returned document without querying docID again.
+                assert_eq!(values.advance(0).unwrap(), 0);
+                assert_eq!(state.borrow().calls, ["docID", "advance"]);
+            } else {
+                panics(|| {
+                    values.advance(0).unwrap();
+                });
+                assert_eq!(state.borrow().calls, ["docID", "advance", "docID"]);
+            }
+        }
+    }
+
+    #[test]
+    fn advance_exact_commits_exists_before_failed_postcondition_only() {
+        macro_rules! check {
+            ($wrapper:ident) => {
+                for exists in [false, true] {
+                    let state = Shared::default();
+                    let mut values = $wrapper::new(Box::new(Probe(state.clone())), 4);
+                    values.check.exists = !exists;
+                    state.borrow_mut().reported_doc = 1;
+                    state.borrow_mut().exists = exists;
+                    panics(|| {
+                        values.advance_exact(0).unwrap();
+                    });
+                    assert_eq!(values.check.exists, exists);
+                    assert_eq!(values.check.last_doc_id, -1);
+                }
+            };
+        }
+        check!(AssertingNumericDocValues);
+        check!(AssertingBinaryDocValues);
+        check!(AssertingSortedDocValues);
+        check!(AssertingSortedNumericDocValues);
+        check!(AssertingSortedSetDocValues);
+
+        let state = Shared::default();
+        let mut numeric = AssertingSortedNumericDocValues::new(Box::new(Probe(state.clone())), 4);
+        numeric.value_upto = 1;
+        state.borrow_mut().reported_doc = 1;
+        panics(|| {
+            numeric.advance_exact(0).unwrap();
+        });
+        assert_eq!(numeric.value_upto, 1);
+        assert!(numeric.advance_exact(1).unwrap());
+        assert_eq!(numeric.value_upto, 0);
+
+        let state = Shared::default();
+        let mut set = AssertingSortedSetDocValues::new(Box::new(Probe(state.clone())), 4);
+        set.ords_retrieved = 1;
+        state.borrow_mut().reported_doc = 1;
+        panics(|| {
+            set.advance_exact(0).unwrap();
+        });
+        assert_eq!(set.ords_retrieved, 1);
+        assert!(set.advance_exact(1).unwrap());
+        assert_eq!(set.ords_retrieved, 0);
+    }
+
+    #[test]
+    fn per_kind_count_getters_preserve_duplicate_and_unchecked_calls() {
+        let state = Shared::default();
+        let mut numeric = AssertingSortedNumericDocValues::new(Box::new(Probe(state.clone())), 4);
+        numeric.next_doc().unwrap();
+        state.borrow_mut().counts = vec![1, 0];
+        state.borrow_mut().calls.clear();
+        assert_eq!(numeric.doc_value_count(), 0);
+        assert_eq!(state.borrow().calls, ["count", "count"]);
+
+        state.borrow_mut().count_calls = 0;
+        state.borrow_mut().counts = vec![0];
+        state.borrow_mut().calls.clear();
+        panics(|| {
+            numeric.doc_value_count();
+        });
+        assert_eq!(state.borrow().calls, ["count"]);
+
+        let state = Shared::default();
+        state.borrow_mut().counts = vec![0];
+        let mut set = AssertingSortedSetDocValues::new(Box::new(Probe(state.clone())), 4);
+        assert_eq!(set.doc_value_count(), 0);
+        assert_eq!(state.borrow().calls, ["count"]);
+        set.next_doc().unwrap();
+        state.borrow_mut().calls.clear();
+        assert_eq!(set.doc_value_count(), 0);
+        assert_eq!(state.borrow().calls, ["count"]);
+    }
+
+    #[test]
+    fn failed_value_callbacks_keep_increment_and_assertion_message_reads() {
+        let state = Shared::default();
+        let mut numeric = AssertingSortedNumericDocValues::new(Box::new(Probe(state.clone())), 4);
+        numeric.next_doc().unwrap();
+        state.borrow_mut().fail_value = true;
+        state.borrow_mut().calls.clear();
+        assert!(numeric.next_value().is_err());
+        assert_eq!(numeric.value_upto, 1);
+        assert_eq!(state.borrow().calls, ["count", "value"]);
+        state.borrow_mut().calls.clear();
+        // The failing condition reads count, then its message reads count again.
+        state.borrow_mut().panic_count_at = Some(3);
+        let failure = catch_unwind(AssertUnwindSafe(|| numeric.next_value())).unwrap_err();
+        assert!(failure
+            .downcast_ref::<String>()
+            .unwrap()
+            .contains("count callback"));
+        assert_eq!(state.borrow().calls, ["count", "count"]);
+        assert_eq!(numeric.value_upto, 1);
+
+        let state = Shared::default();
+        let mut set = AssertingSortedSetDocValues::new(Box::new(Probe(state.clone())), 4);
+        set.next_doc().unwrap();
+        state.borrow_mut().fail_value = true;
+        state.borrow_mut().calls.clear();
+        assert!(set.next_ord().is_err());
+        assert_eq!(set.ords_retrieved, 1);
+        assert_eq!(state.borrow().calls, ["count", "ord"]);
+        state.borrow_mut().calls.clear();
+        panics(|| {
+            set.next_ord().unwrap();
+        });
+        assert_eq!(set.ords_retrieved, 1);
+        assert_eq!(state.borrow().calls, ["count"]);
     }
 }

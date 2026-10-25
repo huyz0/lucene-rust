@@ -405,6 +405,10 @@ pub(crate) fn describe_clause(clause: &Clause) -> String {
         Clause::Exists(q) => format!("FieldExistsQuery [field={}]", q.field),
         // The function queries' own `toString`.
         Clause::Extended(q) => match q.as_ref() {
+            #[cfg(any(test, feature = "asserting"))]
+            crate::extended_query::ExtendedQuery::Test(q) if q.delegates_query_semantics() => {
+                describe_clause(q.query())
+            }
             crate::extended_query::ExtendedQuery::Function(f) => format!("{f:?}"),
             crate::extended_query::ExtendedQuery::FunctionRange(f) => format!("{f:?}"),
             crate::extended_query::ExtendedQuery::FunctionMatch(f) => format!("{f:?}"),

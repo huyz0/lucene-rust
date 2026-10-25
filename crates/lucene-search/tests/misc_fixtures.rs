@@ -109,7 +109,9 @@ mod sweet_spot {
         let reader = DirectoryReader::open(&FsDirectory::open(data().join("high_freq"))).unwrap();
         let opened = reader.open_segments().unwrap();
         let segments = opened.as_open_segments();
-        let owned = reader.field_norms_by_field(&["body".to_string(), "title".to_string()]);
+        let owned = reader
+            .field_norms_by_field(&["body".to_string(), "title".to_string()])
+            .unwrap();
         let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
         let (mut functions, mut hits, mut strings) = (0, 0, 0);
         // The hits of each (config, query) in rank order, as Java listed them.

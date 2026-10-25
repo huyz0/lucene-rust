@@ -276,7 +276,7 @@ impl LeafReader for ParallelLeafReader {
     fn doc_values_skipper(
         &self,
         field: &str,
-    ) -> Result<Option<lucene_codecs::doc_values::DocValuesSkipper<'_>>> {
+    ) -> Result<Option<crate::reader::DocValuesSkipper<'_>>> {
         self.reader_for(field)
             .map_or(Ok(None), |r| r.doc_values_skipper(field))
     }

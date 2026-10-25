@@ -8,6 +8,8 @@
 //! - The reader borrows the file's bytes, not an `IndexInput`; fields are
 //!   looked up by name (Java takes a `FieldInfo` and reads only its name,
 //!   and [`SimpleTextDocValuesReader::skipper`] its doc-values type).
+//!   Cached headers can be rebound to the same file's independently owned
+//!   bytes; `*_from_data` borrows those bytes together with the headers.
 //!   Iterators are typed structs, not anonymous `DocValues` subclasses; a
 //!   [`Error::IllegalArgument`] stands for Java's `IndexOutOfBoundsException`
 //!   (a document or ord outside the field) and for the `NullPointerException`
@@ -256,6 +258,17 @@ impl<'d> SimpleTextDocValuesReader<'d> {
         self.max_doc
     }
 
+    /// Bind the parsed field headers to the same file's bytes under a new
+    /// lifetime. An empty binding can retain metadata in a segment core;
+    /// the `*_from_data` factories then take the live file bytes explicitly.
+    pub fn rebind<'n>(&self, data: &'n [u8]) -> SimpleTextDocValuesReader<'n> {
+        SimpleTextDocValuesReader {
+            data,
+            max_doc: self.max_doc,
+            fields: self.fields.clone(),
+        }
+    }
+
     /// The field named `name`'s header.
     pub fn field(&self, name: &str) -> Option<&OneField> {
         self.fields.get(name)
@@ -272,9 +285,9 @@ impl<'d> SimpleTextDocValuesReader<'d> {
             .ok_or_else(|| Error::IllegalArgument(format!("no doc values for field \"{name}\"")))
     }
 
-    fn cursor<'r>(&'r self, name: &str) -> Result<Cursor<'r>> {
+    fn cursor<'r>(&'r self, name: &str, data: &'r [u8]) -> Result<Cursor<'r>> {
         Ok(Cursor {
-            data: self.data,
+            data,
             max_doc: self.max_doc,
             field: self.one_field(name)?,
             doc: -1,
@@ -288,8 +301,20 @@ impl<'d> SimpleTextDocValuesReader<'d> {
     /// [`Error::IllegalArgument`] for an unknown field; `Corrupted` for a
     /// pattern that is not all `0`s.
     pub fn numeric(&self, name: &str) -> Result<SimpleTextNumericDocValues<'_>> {
+        self.numeric_from_data(name, self.data)
+    }
+
+    /// [`Self::numeric`] using the same file's live bytes with cached headers.
+    ///
+    /// # Errors
+    /// As [`Self::numeric`].
+    pub fn numeric_from_data<'r>(
+        &'r self,
+        name: &str,
+        data: &'r [u8],
+    ) -> Result<SimpleTextNumericDocValues<'r>> {
         // Java: SimpleTextDocValuesReader.getNumeric
-        let c = self.cursor(name)?;
+        let c = self.cursor(name, data)?;
         decimal_format::check_pattern(&c.field.pattern)?;
         Ok(SimpleTextNumericDocValues { c })
     }
@@ -299,8 +324,20 @@ impl<'d> SimpleTextDocValuesReader<'d> {
     /// # Errors
     /// As [`Self::numeric`].
     pub fn binary(&self, name: &str) -> Result<SimpleTextBinaryDocValues<'_>> {
+        self.binary_from_data(name, self.data)
+    }
+
+    /// [`Self::binary`] using the same file's live bytes with cached headers.
+    ///
+    /// # Errors
+    /// As [`Self::binary`].
+    pub fn binary_from_data<'r>(
+        &'r self,
+        name: &str,
+        data: &'r [u8],
+    ) -> Result<SimpleTextBinaryDocValues<'r>> {
         // Java: SimpleTextDocValuesReader.getBinary
-        let c = self.cursor(name)?;
+        let c = self.cursor(name, data)?;
         decimal_format::check_pattern(&c.field.pattern)?;
         Ok(SimpleTextBinaryDocValues { c })
     }
@@ -310,8 +347,20 @@ impl<'d> SimpleTextDocValuesReader<'d> {
     /// # Errors
     /// As [`Self::numeric`], for the pattern and the ord pattern.
     pub fn sorted(&self, name: &str) -> Result<SimpleTextSortedDocValues<'_>> {
+        self.sorted_from_data(name, self.data)
+    }
+
+    /// [`Self::sorted`] using the same file's live bytes with cached headers.
+    ///
+    /// # Errors
+    /// As [`Self::sorted`].
+    pub fn sorted_from_data<'r>(
+        &'r self,
+        name: &str,
+        data: &'r [u8],
+    ) -> Result<SimpleTextSortedDocValues<'r>> {
         // Java: SimpleTextDocValuesReader.getSorted
-        let c = self.cursor(name)?;
+        let c = self.cursor(name, data)?;
         decimal_format::check_pattern(&c.field.pattern)?;
         decimal_format::check_pattern(&c.field.ord_pattern)?;
         Ok(SimpleTextSortedDocValues { c, ord: -1 })
@@ -322,9 +371,21 @@ impl<'d> SimpleTextDocValuesReader<'d> {
     /// # Errors
     /// As [`Self::numeric`].
     pub fn sorted_numeric(&self, name: &str) -> Result<SimpleTextSortedNumericDocValues<'_>> {
+        self.sorted_numeric_from_data(name, self.data)
+    }
+
+    /// [`Self::sorted_numeric`] with cached headers and the same file's bytes.
+    ///
+    /// # Errors
+    /// As [`Self::sorted_numeric`].
+    pub fn sorted_numeric_from_data<'r>(
+        &'r self,
+        name: &str,
+        data: &'r [u8],
+    ) -> Result<SimpleTextSortedNumericDocValues<'r>> {
         // Java: SimpleTextDocValuesReader.getSortedNumeric
         Ok(SimpleTextSortedNumericDocValues {
-            binary: self.binary(name)?,
+            binary: self.binary_from_data(name, data)?,
             values: Vec::new(),
             index: 0,
         })
@@ -335,8 +396,20 @@ impl<'d> SimpleTextDocValuesReader<'d> {
     /// # Errors
     /// As [`Self::numeric`].
     pub fn sorted_set(&self, name: &str) -> Result<SimpleTextSortedSetDocValues<'_>> {
+        self.sorted_set_from_data(name, self.data)
+    }
+
+    /// [`Self::sorted_set`] with cached headers and the same file's bytes.
+    ///
+    /// # Errors
+    /// As [`Self::sorted_set`].
+    pub fn sorted_set_from_data<'r>(
+        &'r self,
+        name: &str,
+        data: &'r [u8],
+    ) -> Result<SimpleTextSortedSetDocValues<'r>> {
         // Java: SimpleTextDocValuesReader.getSortedSet
-        let c = self.cursor(name)?;
+        let c = self.cursor(name, data)?;
         decimal_format::check_pattern(&c.field.pattern)?;
         Ok(SimpleTextSortedSetDocValues {
             c,
@@ -1330,6 +1403,37 @@ mod tests {
 
     fn text(data: &[u8]) -> String {
         String::from_utf8(data.to_vec()).unwrap()
+    }
+
+    #[test]
+    fn cached_headers_borrow_live_bytes_for_each_value_type() {
+        let data = file();
+        let metadata = SimpleTextDocValuesReader::open(&data, MAX_DOC)
+            .unwrap()
+            .rebind(&[]);
+        let mut numeric = metadata.numeric_from_data("num", &data).unwrap();
+        assert!(numeric.advance_exact(2).unwrap());
+        assert_eq!(numeric.long_value().unwrap(), -3);
+        let mut binary = metadata.binary_from_data("bin", &data).unwrap();
+        assert!(binary.advance_exact(1).unwrap());
+        assert_eq!(binary.binary_value().unwrap(), b"a\nb");
+        let mut sorted = metadata.sorted_from_data("sorted", &data).unwrap();
+        assert!(sorted.advance_exact(4).unwrap());
+        assert_eq!(sorted.lookup_ord(sorted.ord_value()).unwrap(), b"x");
+        let mut numeric = metadata.sorted_numeric_from_data("snum", &data).unwrap();
+        assert!(numeric.advance_exact(2).unwrap());
+        assert_eq!(numeric.doc_value_count(), 2);
+        assert_eq!(numeric.next_value().unwrap(), -1);
+        assert_eq!(numeric.next_value().unwrap(), 7);
+        let mut set = metadata.sorted_set_from_data("sset", &data).unwrap();
+        assert!(set.advance_exact(0).unwrap());
+        assert_eq!(set.doc_value_count(), 2);
+        let ord = set.next_ord().unwrap();
+        assert_eq!(set.lookup_ord(ord).unwrap(), b"p");
+        let ord = set.next_ord().unwrap();
+        assert_eq!(set.lookup_ord(ord).unwrap(), b"r");
+        assert!(metadata.numeric("num").unwrap().next_doc().is_err());
+        assert!(metadata.check_integrity().is_err());
     }
 
     #[test]

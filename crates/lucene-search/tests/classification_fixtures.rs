@@ -533,8 +533,8 @@ fn classification_matches_lucene() {
     let random_opened = random.open_segments().unwrap();
     let sample_segments = sample_opened.as_open_segments();
     let random_segments = random_opened.as_open_segments();
-    let sample_owned = sample.field_norms_by_field(&fields);
-    let random_owned = random.field_norms_by_field(&fields);
+    let sample_owned = sample.field_norms_by_field(&fields).unwrap();
+    let random_owned = random.field_norms_by_field(&fields).unwrap();
     let sample_norms: Vec<SegmentNorms<'_, '_>> = sample_owned.iter().map(Some).collect();
     let random_norms: Vec<SegmentNorms<'_, '_>> = random_owned.iter().map(Some).collect();
     let sample_index =
@@ -604,7 +604,7 @@ fn classification_matches_lucene() {
     let fuzzy = open("fuzzy");
     let fuzzy_opened = fuzzy.open_segments().unwrap();
     let fuzzy_segments = fuzzy_opened.as_open_segments();
-    let fuzzy_owned = fuzzy.field_norms_by_field(&fields);
+    let fuzzy_owned = fuzzy.field_norms_by_field(&fields).unwrap();
     let fuzzy_norms: Vec<SegmentNorms<'_, '_>> = fuzzy_owned.iter().map(Some).collect();
     let fuzzy_index =
         TrainingIndex::new(&fuzzy, &fuzzy_segments, &fuzzy_norms).with_hash_seed(hash_seed());

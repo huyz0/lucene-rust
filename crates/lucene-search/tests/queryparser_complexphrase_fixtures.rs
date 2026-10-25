@@ -124,7 +124,7 @@ fn complex_phrase_parser_matches_lucene() {
     let segments = opened.as_open_segments();
     let mut owned: Vec<HashMap<String, FieldNorms<'_>>> = Vec::new();
     for field in ["body", "title"] {
-        for (i, n) in reader.field_norms(field).into_iter().enumerate() {
+        for (i, n) in reader.field_norms(field).unwrap().into_iter().enumerate() {
             if owned.len() <= i {
                 owned.push(HashMap::new());
             }

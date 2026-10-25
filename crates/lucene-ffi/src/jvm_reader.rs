@@ -1474,7 +1474,10 @@ pub(crate) fn aggregate_counting_blobs_seen(
     } else {
         Vec::new()
     };
-    let owned = h.reader.field_norms_by_field(&fields);
+    let owned = h
+        .reader
+        .field_norms_by_field(&fields)
+        .map_err(|error| map_search_error(error.into()))?;
     let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
     let min = min_score.map(|min| lucene_search::aggs::MinScore { min, norms: &norms });
@@ -1608,7 +1611,10 @@ pub(crate) fn count_terminates_blobs(
     } else {
         Vec::new()
     };
-    let owned = h.reader.field_norms_by_field(&fields);
+    let owned = h
+        .reader
+        .field_norms_by_field(&fields)
+        .map_err(|error| map_search_error(error.into()))?;
     let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
     let min = min_score.map(|min| lucene_search::aggs::MinScore { min, norms: &norms });
@@ -1733,7 +1739,10 @@ pub(crate) fn search_sorted(
     } else {
         Vec::new()
     };
-    let owned = h.reader.field_norms_by_field(&fields);
+    let owned = h
+        .reader
+        .field_norms_by_field(&fields)
+        .map_err(|error| map_search_error(error.into()))?;
     let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
     // `i64::MAX` is Java's `Integer.MAX_VALUE` threshold: count exactly, and
@@ -1910,7 +1919,10 @@ pub(crate) fn search(
     } else {
         Some(match query {
             JvmQuery::Term(q) => {
-                let owned = h.reader.field_norms(&q.field);
+                let owned = h
+                    .reader
+                    .field_norms(&q.field)
+                    .map_err(|error| map_search_error(error.into()))?;
                 let norms: Vec<Option<&FieldNorms<'_>>> =
                     owned.iter().map(Option::as_ref).collect();
                 search_term_query_multi_segment_counting(&segments, q, &norms, top_n, threshold)
@@ -1921,7 +1933,10 @@ pub(crate) fn search(
                     .into_iter()
                     .map(str::to_string)
                     .collect();
-                let owned = h.reader.field_norms_by_field(&fields);
+                let owned = h
+                    .reader
+                    .field_norms_by_field(&fields)
+                    .map_err(|error| map_search_error(error.into()))?;
                 let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
                     owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
                 search_boolean_query_multi_segment_maxscore_counting(
@@ -1984,7 +1999,10 @@ pub(crate) fn search_min_score(
         .into_iter()
         .map(str::to_string)
         .collect();
-    let owned = h.reader.field_norms_by_field(&fields);
+    let owned = h
+        .reader
+        .field_norms_by_field(&fields)
+        .map_err(|error| map_search_error(error.into()))?;
     let norms: Vec<Option<&std::collections::HashMap<String, FieldNorms<'_>>>> =
         owned.iter().map(|m| (!m.is_empty()).then_some(m)).collect();
     let threshold = u64::try_from(count_limit).unwrap_or(0);

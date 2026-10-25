@@ -33,49 +33,49 @@ tests/analysis/ValidatingTokenFilter	ported	crates/lucene-test-framework/src/ana
 tests/analysis/VocabularyAssert	partial	crates/lucene-test-framework/src/analysis/vocabulary_assert.rs::assert_vocabulary -- M14: the zip-file overloads (assertVocabulary over an entry of a vocabulary zip), which need a zip reader the test framework does not have
 tests/analysis/standard/EmojiTokenizationTestUnicode_12_1	not-needed	test data, not infrastructure: crates/lucene-analysis/tools/extract_uax29_inputs.py takes its inputs and GenStandardTokenizer records Lucene's tokens for them (crates/lucene-analysis/tests/standard_tokenizer_fixtures.rs)
 tests/analysis/standard/WordBreakTestUnicode_12_1_0	not-needed	test data, not infrastructure: crates/lucene-analysis/tools/extract_uax29_inputs.py takes its inputs and GenStandardTokenizer records Lucene's tokens for them (crates/lucene-analysis/tests/standard_tokenizer_fixtures.rs)
-tests/codecs/asserting/AssertingCodec	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
-tests/codecs/asserting/AssertingDocValuesFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
-tests/codecs/asserting/AssertingKnnVectorsFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
-tests/codecs/asserting/AssertingLiveDocsFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
-tests/codecs/asserting/AssertingNormsFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
-tests/codecs/asserting/AssertingPointsFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
-tests/codecs/asserting/AssertingPostingsFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
-tests/codecs/asserting/AssertingStoredFieldsFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
-tests/codecs/asserting/AssertingTermVectorsFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
-tests/codecs/blockterms/LuceneFixedGap	todo:M14	h6: test postings format (read side vs Java)
-tests/codecs/blockterms/LuceneVarGapDocFreqInterval	todo:M14	h6: test postings format (read side vs Java)
-tests/codecs/blockterms/LuceneVarGapFixedInterval	todo:M14	h6: test postings format (read side vs Java)
-tests/codecs/bloom/TestBloomFilteredLucenePostings	todo:M14	h6: test postings format (read side vs Java)
-tests/codecs/cheapbastard/CheapBastardCodec	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
-tests/codecs/compressing/CompressingCodec	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
-tests/codecs/compressing/DeflateWithPresetCompressingCodec	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
-tests/codecs/compressing/FastCompressingCodec	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
-tests/codecs/compressing/FastDecompressionCompressingCodec	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
-tests/codecs/compressing/HighCompressionCompressingCodec	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
-tests/codecs/compressing/LZ4WithPresetCompressingCodec	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
-tests/codecs/compressing/dummy/DummyCompressingCodec	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
-tests/codecs/cranky/CrankyCodec	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
-tests/codecs/cranky/CrankyCompoundFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
-tests/codecs/cranky/CrankyDocValuesFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
-tests/codecs/cranky/CrankyFieldInfosFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
-tests/codecs/cranky/CrankyLiveDocsFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
-tests/codecs/cranky/CrankyNormsFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
-tests/codecs/cranky/CrankyPointsFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
-tests/codecs/cranky/CrankyPostingsFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
-tests/codecs/cranky/CrankySegmentInfoFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
-tests/codecs/cranky/CrankyStoredFieldsFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
-tests/codecs/cranky/CrankyTermVectorsFormat	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
-tests/codecs/mockrandom/MockRandomPostingsFormat	todo:M14	h6: test postings format (read side vs Java)
-tests/codecs/ramonly/RAMOnlyPostingsFormat	todo:M14	h6: test postings format (read side vs Java)
-tests/codecs/uniformsplit/Rot13CypherTestUtil	todo:M14	h6: test postings format (read side vs Java)
-tests/codecs/uniformsplit/UniformSplitRot13PostingsFormat	todo:M14	h6: test postings format (read side vs Java)
-tests/codecs/uniformsplit/sharedterms/STUniformSplitRot13PostingsFormat	todo:M14	h6: test postings format (read side vs Java)
-tests/codecs/vector/ConfigurableMCodec	todo:M14	h4: RandomCodec ingredient (asserting/cranky/compressing codecs)
+tests/codecs/asserting/AssertingCodec	partial	crates/lucene-test-framework/src/codecs/asserting_codec.rs::AssertingCodec -- M14: typed eager composition, cached selectors, suppression, delegates/display/thread checks; native default graph, operational per-field I/O and SPI/IndexWriter routing absent
+tests/codecs/asserting/AssertingDocValuesFormat	partial	crates/lucene-test-framework/src/codecs/asserting_doc_values.rs::AssertingDocValuesFormat -- M14: checked iterator consumer/producer and native Lucene90 adapter; inherited iterator merge, bulk/singleton/null/fallible getters, streaming writer acquisition, Directory/IOContext and Codec routing remain absent
+tests/codecs/asserting/AssertingKnnVectorsFormat	partial	crates/lucene-test-framework/src/codecs/asserting_knn_vectors.rs::AssertingKnnVectorsFormat -- M14: local reader/writer assertions, deferred merge lifecycle and native Lucene99 reader; native writer, IOContext and Codec routing absent
+tests/codecs/asserting/AssertingLiveDocsFormat	partial	crates/lucene-test-framework/src/codecs/asserting_live_docs.rs::AssertingLiveDocsFormat -- M14: explicit directory adapter; no Codec/IndexWriter routing or IOContext; see parity ledger for adaptations
+tests/codecs/asserting/AssertingNormsFormat	partial	crates/lucene-test-framework/src/codecs/asserting_norms.rs::AssertingNormsFormat -- M14: explicit producer-aware adapter; no Codec/IndexWriter routing or IOContext; see parity ledger for adaptations
+tests/codecs/asserting/AssertingPointsFormat	partial	crates/lucene-test-framework/src/codecs/asserting_points.rs::AssertingPointsFormat -- M14: explicit native adapter and full point assertions; IOContext and Codec/IndexWriter routing absent
+tests/codecs/asserting/AssertingPostingsFormat	partial	crates/lucene-test-framework/src/codecs/asserting_postings.rs::AssertingPostingsFormat -- M14: post-write validation, checked producer and explicit native Lucene104 adapter; lazy production enums, IOContext and Codec routing incomplete
+tests/codecs/asserting/AssertingStoredFieldsFormat	partial	crates/lucene-test-framework/src/codecs/asserting_stored_fields.rs::AssertingStoredFieldsFormat -- M14: explicit Lucene90 state/lifecycle adapter; no Codec/IndexWriter routing or IOContext; see parity ledger
+tests/codecs/asserting/AssertingTermVectorsFormat	partial	crates/lucene-test-framework/src/codecs/asserting_term_vectors.rs::AssertingTermVectorsFormat -- M14: full writer assertions and explicit owned SimpleText lifecycle adapter; lazy reader assertions and routing remain; see parity ledger
+tests/codecs/blockterms/LuceneFixedGap	partial	crates/lucene-test-framework/src/codecs/blockterms.rs::BlockTermsFormat -- M14: IndexWriter codec selection; fieldsProducer and fieldsConsumer are ported
+tests/codecs/blockterms/LuceneVarGapDocFreqInterval	partial	crates/lucene-test-framework/src/codecs/blockterms.rs::BlockTermsFormat -- M14: IndexWriter codec selection; fieldsProducer and fieldsConsumer are ported
+tests/codecs/blockterms/LuceneVarGapFixedInterval	partial	crates/lucene-test-framework/src/codecs/blockterms.rs::BlockTermsFormat -- M14: IndexWriter codec selection; fieldsProducer and fieldsConsumer are ported
+tests/codecs/bloom/TestBloomFilteredLucenePostings	partial	crates/lucene-test-framework/src/codecs/bloom.rs::TestBloomFilteredLucenePostings -- M14: IndexWriter codec selection; low-memory factory and reader/writer match actual Java bytes, including saturated filters
+tests/codecs/cheapbastard/CheapBastardCodec	partial	crates/lucene-test-framework/src/codecs/cheap_bastard.rs::CheapBastardCodec -- M14: direct 100/200 Lucene104 postings and ten generic delegate callbacks; native top-level factories, SPI installation and Codec/IndexWriter routing absent
+tests/codecs/compressing/CompressingCodec	partial	crates/lucene-test-framework/src/codecs/compressing_codec.rs::CompressingCodec -- M14: constructor/settings/RNG/delegate state only; native compressor factories, custom-header/geometry stored-field and binary term-vector I/O, default graph/SPI/IndexWriter routing absent
+tests/codecs/compressing/DeflateWithPresetCompressingCodec	partial	crates/lucene-test-framework/src/codecs/compressing_codec.rs::CompressingCodec -- M14: constructor/settings/RNG/delegate state only; native compressor factories, custom-header/geometry stored-field and binary term-vector I/O, default graph/SPI/IndexWriter routing absent
+tests/codecs/compressing/FastCompressingCodec	partial	crates/lucene-test-framework/src/codecs/compressing_codec.rs::CompressingCodec -- M14: constructor/settings/RNG/delegate state only; native compressor factories, custom-header/geometry stored-field and binary term-vector I/O, default graph/SPI/IndexWriter routing absent
+tests/codecs/compressing/FastDecompressionCompressingCodec	partial	crates/lucene-test-framework/src/codecs/compressing_codec.rs::CompressingCodec -- M14: constructor/settings/RNG/delegate state only; native compressor factories, custom-header/geometry stored-field and binary term-vector I/O, default graph/SPI/IndexWriter routing absent
+tests/codecs/compressing/HighCompressionCompressingCodec	partial	crates/lucene-test-framework/src/codecs/compressing_codec.rs::CompressingCodec -- M14: constructor/settings/RNG/delegate state only; native compressor factories, custom-header/geometry stored-field and binary term-vector I/O, default graph/SPI/IndexWriter routing absent
+tests/codecs/compressing/LZ4WithPresetCompressingCodec	partial	crates/lucene-test-framework/src/codecs/compressing_codec.rs::CompressingCodec -- M14: constructor/settings/RNG/delegate state only; native compressor factories, custom-header/geometry stored-field and binary term-vector I/O, default graph/SPI/IndexWriter routing absent
+tests/codecs/compressing/dummy/DummyCompressingCodec	partial	crates/lucene-test-framework/src/codecs/compressing_codec.rs::CompressingCodec -- M14: constructor/settings/RNG/delegate state only; native compressor factories, custom-header/geometry stored-field and binary term-vector I/O, default graph/SPI/IndexWriter routing absent
+tests/codecs/cranky/CrankyCodec	partial	crates/lucene-test-framework/src/codecs/cranky_codec.rs::CrankyCodec -- M14: typed eleven-factory composition, identities, errors and shared RNG; native default codec graph, SPI/IndexWriter and per-field routing absent
+tests/codecs/cranky/CrankyCompoundFormat	partial	crates/lucene-test-framework/src/codecs/cranky_compound.rs::CrankyCompoundFormat -- M14: explicit directory adapter; no Codec/IndexWriter routing or IOContext; see parity ledger for adaptations
+tests/codecs/cranky/CrankyDocValuesFormat	partial	crates/lucene-test-framework/src/codecs/cranky_doc_values.rs::CrankyDocValuesFormat -- M14: five guarded adds, unchanged producer, inherited mapped merges and native Lucene90 buffers; eager columns, buffered publication, no IOContext/Codec routing
+tests/codecs/cranky/CrankyFieldInfosFormat	partial	crates/lucene-test-framework/src/codecs/cranky_field_infos.rs::CrankyFieldInfosFormat -- M14: explicit Lucene94 directory adapter; no Codec/IndexWriter routing or IOContext; single-threaded shared RNG
+tests/codecs/cranky/CrankyLiveDocsFormat	partial	crates/lucene-test-framework/src/codecs/cranky_live_docs.rs::CrankyLiveDocsFormat -- M14: explicit Lucene90 directory adapter; no Codec/IndexWriter routing or IOContext; single-threaded shared RNG
+tests/codecs/cranky/CrankyNormsFormat	partial	crates/lucene-test-framework/src/codecs/cranky_norms.rs::CrankyNormsFormat -- M14: explicit directory adapter; no Codec/IndexWriter routing or IOContext; see parity ledger for adaptations
+tests/codecs/cranky/CrankyPointsFormat	partial	crates/lucene-test-framework/src/codecs/cranky_points.rs::CrankyPointsFormat -- M14: explicit Lucene90 wrapper, point tree and BKD writer; no Codec/IndexWriter routing or IOContext; see parity ledger
+tests/codecs/cranky/CrankyPostingsFormat	partial	crates/lucene-test-framework/src/codecs/cranky_postings.rs::CrankyPostingsFormat -- M14: explicit native adapter and inherited mapped merge; IOContext and Codec/IndexWriter routing absent
+tests/codecs/cranky/CrankySegmentInfoFormat	partial	crates/lucene-test-framework/src/codecs/cranky_segment_info.rs::CrankySegmentInfoFormat -- M14: explicit Lucene99 directory adapter; no Codec/IndexWriter routing or IOContext; single-threaded shared RNG
+tests/codecs/cranky/CrankyStoredFieldsFormat	partial	crates/lucene-test-framework/src/codecs/cranky_stored_fields.rs::CrankyStoredFieldsFormat -- M14: explicit Lucene90 adapter and base visitor merge; no Codec/IndexWriter routing or IOContext; see parity ledger for adaptations
+tests/codecs/cranky/CrankyTermVectorsFormat	partial	crates/lucene-test-framework/src/codecs/cranky_term_vectors.rs::CrankyTermVectorsFormat -- M14: explicit SimpleText adapter and base prox/merge callbacks; no binary adapter, Codec/IndexWriter routing or IOContext; see parity ledger for adaptations
+tests/codecs/mockrandom/MockRandomPostingsFormat	partial	crates/lucene-test-framework/src/codecs/mockrandom.rs::MockRandomPostingsFormat -- M14: IndexWriter codec selection and inherited codec gaps; every seeded dictionary/selector branch, successive writes, readback and all file bytes vs actual Java
+tests/codecs/ramonly/RAMOnlyPostingsFormat	partial	crates/lucene-test-framework/src/codecs/ramonly.rs::RamOnlyPostingsFormat -- M14: IndexWriter codec selection, internal RAMDoc JVM-array memory estimator and docs/frequencies-only writes; source flag selection, instance state, tokens, postings, payloads and enums vs actual Java
+tests/codecs/uniformsplit/Rot13CypherTestUtil	ported	crates/lucene-test-framework/src/codecs/rot13.rs::Rot13Cypher
+tests/codecs/uniformsplit/UniformSplitRot13PostingsFormat	partial	crates/lucene-test-framework/src/codecs/rot13.rs::UniformSplitRot13PostingsFormat -- M14: IndexWriter routing and inherited reader gaps; Java bytes, flags and readback on empty/singleton/many groups
+tests/codecs/uniformsplit/sharedterms/STUniformSplitRot13PostingsFormat	partial	crates/lucene-test-framework/src/codecs/rot13.rs::StUniformSplitRot13PostingsFormat -- M14: IndexWriter routing, merge(MergeState), inherited reader gaps; Java bytes, flags and readback on empty/singleton/many groups
+tests/codecs/vector/ConfigurableMCodec	partial	crates/lucene-test-framework/src/codecs/configurable_m.rs::ConfigurableMCodec -- M14: direct configured-M native flush/read plus generic delegates; streaming/sorted flush, configured-M merge reuse, SPI/IndexWriter routing and inherited displays/dimension accessor absent
 tests/geo/BaseGeoPointTestCase	partial	crates/lucene-test-framework/src/geo/base_geo_point.rs::BaseGeoPoint -- M14: the polygon and geometry verifies; testMultiValued, testRandomBig, testRandomDistance(Huge), testRectBoundariesAreInclusive, testEquals, the fixed-input (testBoxBasics, testDistanceBasics, testSmallSet*, polygon) and invalid-argument tests; RandomIndexWriter, newIndexWriterConfig and newSearcher draws, forceMerge
-tests/geo/BaseXYPointTestCase	todo:M14	h7 deferral: the XY twin of BaseGeoPointTestCase (XYPointField queries)
+tests/geo/BaseXYPointTestCase	partial	crates/lucene-test-framework/src/geo/base_xy_point.rs::BaseXYPoint -- M14: six generators and default shape hooks/oracles; full indexing/search verifiers, fixed/multivalued tests, codec configuration and query equality/hash checks absent
 tests/geo/EarthDebugger	not-needed	a debugging aid that renders shapes as an HTML/SVG globe; no check depends on it
 tests/geo/GeoTestUtil	partial	crates/lucene-test-framework/src/geo/geo_test_util.rs::next_double_internal -- M14: the polygon, line and near-point generators, toSVG
-tests/geo/ShapeTestUtil	todo:M14	h7 deferral: XY shape generators, with BaseXYPointTestCase
+tests/geo/ShapeTestUtil	ported	crates/lucene-test-framework/src/geo/shape_test_util.rs::next_float -- explicit JavaRandom/nightly inputs; all eight helpers, Java float bits/RNG continuation and polygon oracle fixtures
 tests/index/AlcoholicMergePolicy	ported	crates/lucene-test-framework/src/index/merge_policies.rs::AlcoholicMergePolicy
 tests/index/AllDeletedFilterReader	ported	crates/lucene-test-framework/src/index/reader_wrappers.rs::AllDeletedFilterReader
 tests/index/AssertingDirectoryReader	ported	crates/lucene-test-framework/src/index/asserting_leaf_reader.rs::asserting_directory_reader
@@ -85,7 +85,7 @@ tests/index/BaseCompressingDocValuesFormatTestCase	partial	crates/lucene-test-fr
 tests/index/BaseDocValuesFormatTestCase	partial	crates/lucene-test-framework/src/index/base_doc_values_format.rs::TESTS -- M14: intoBitSet is the nextDoc loop (no port of DocIdSetIterator.intoBitSet)
 tests/index/BaseFieldInfoFormatTestCase	partial	crates/lucene-test-framework/src/index/base_field_info_format.rs::FieldInfoSuite -- M14: no testExceptionOnCloseInput (a read has no input close)
 tests/index/BaseIndexFileFormatTestCase	partial	crates/lucene-test-framework/src/index/base_index_file_format.rs::IndexFileFormatSuite -- M14: testMultiClose (no codec-level writer/reader objects); checkIntegrity is checked by damaging bytes, not by tracking reads
-tests/index/BaseKnnVectorsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_knn_vectors_format.rs::KnnVectorsSuite -- M14: testSearchWithVisitedLimit and testMergeOffHeapByteSizeMaps (the search reader has no graph), testFieldSetValue (vector fields are immutable), testDifferentCodecs1/2 (no SimpleText writer)
+tests/index/BaseKnnVectorsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_knn_vectors_format.rs::KnnVectorsSuite -- M14: off-heap byte accounting and testMergeOffHeapByteSizeMaps (no accounting API); graph searches and visited limits are ported, testFieldSetValue (vector fields are immutable), testDifferentCodecs1/2 (no SimpleText writer)
 tests/index/BaseLiveDocsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_live_docs_format.rs::TESTS -- M14: one FixedBitSet pass (the writer takes no other Bits)
 tests/index/BaseMergePolicyTestCase	ported	crates/lucene-test-framework/src/index/base_merge_policy.rs::BaseMergePolicyTestCase
 tests/index/BaseNormsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_norms_format.rs::NormsSuite -- M14: bulk longValues is the advanceExact walk (not ported)
@@ -110,7 +110,7 @@ tests/index/MockRandomMergePolicy	ported	crates/lucene-test-framework/src/index/
 tests/index/OwnCacheKeyMultiReader	ported	crates/lucene-test-framework/src/index/reader_wrappers.rs::OwnCacheKeyMultiReader
 tests/index/PerThreadPKLookup	ported	crates/lucene-test-framework/src/index/per_thread_pk_lookup.rs::PerThreadPkLookup
 tests/index/PointsStackTracker	ported	crates/lucene-test-framework/src/index/points_stack_tracker.rs::PointsStackTracker
-tests/index/RandomCodec	todo:M14	h4 deferral: a per-field random codec; only Lucene104 postings and doc-values formats are writable here, so the draw has nothing to choose between
+tests/index/RandomCodec	partial	crates/lucene-test-framework/src/index/random_codec.rs::RandomCodec -- M14: constructor and identity-preserving UTF-16 routing descriptors; native mixed-format dispatch, identity-based suffix grouping, randomized BKD writers and inherited AssertingCodec/SPI/IndexWriter routing absent
 tests/index/RandomIndexWriter	partial	crates/lucene-test-framework/src/index/random_index_writer.rs::RandomIndexWriter -- M14: soft deletes (the readers do not resolve them) and update by query
 tests/index/RandomPostingsTester	partial	crates/lucene-test-framework/src/index/random_postings_tester.rs::RandomPostingsTester -- M14: TermState, enum reuse, intoBitSet, nextPostings; builds through IndexWriter, not a FieldsConsumer
 tests/index/SuppressingConcurrentMergeScheduler	ported	crates/lucene-test-framework/src/index/suppressing_concurrent_merge_scheduler.rs::SuppressingConcurrentMergeScheduler
@@ -136,7 +136,7 @@ tests/mockfile/VerboseFS	not-needed	logs every filesystem call to the infoStream
 tests/mockfile/VirusCheckingFS	ported	crates/lucene-test-framework/src/mockfile/mock_fs.rs::disable_virus_checker
 tests/mockfile/WindowsFS	ported	crates/lucene-test-framework/src/mockfile/mock_fs.rs::check_delete
 tests/mockfile/WindowsPath	not-needed	a java.nio.file.Path that refuses Windows-illegal characters; Rust paths are std::path::Path, and the Windows delete/rename semantics are MockFs::check_delete
-tests/search/AssertingAcceptDocs	not-needed	accept docs are a borrowed FixedBitSet whose reads are bounds-checked (the FixedBitSet gate), not a wrappable Bits
+tests/search/AssertingAcceptDocs	partial	crates/lucene-test-framework/src/codecs/asserting_knn_vectors.rs::AssertingAcceptDocs -- M14: local vector seam checks creation thread, fresh iterator and wrapper identity; production AcceptDocs integration absent
 tests/search/AssertingBulkScorer	ported	crates/lucene-search/src/exec/asserting.rs::AssertingBulk -- the leaf's maxDoc from score_segment
 tests/search/AssertingCollector	ported	crates/lucene-test-framework/src/search/asserting.rs::AssertingCollector
 tests/search/AssertingIndexSearcher	partial	crates/lucene-test-framework/src/search/asserting.rs::AssertingIndexSearcher -- M14: no random executor/slices, no rewrite or createWeight assertions (no Weight); the thread-local guard does not assert searches on the rayon *_concurrent paths
@@ -149,16 +149,16 @@ tests/search/AssertingScorer	ported	crates/lucene-search/src/exec/asserting.rs::
 tests/search/AssertingWeight	partial	crates/lucene-search/src/exec/asserting.rs::wrap -- M14: no Weight; each built scorer wrapped; no count/cost/get-once checks or usually() bulk-vs-scorer pick
 tests/search/BaseExplanationTestCase	partial	crates/lucene-test-framework/src/search/base_explanation.rs::BaseExplanation -- M14: RandomIndexWriter and newTextField/newStringField random field types
 tests/search/BaseRangeFieldQueryTestCase	partial	crates/lucene-test-framework/src/search/base_range_field.rs::BaseRangeField -- M14: testRandomBig; random IndexWriterConfig (and its draws), newSearcher and forceMerge (one segment here)
-tests/search/BlockScoreQueryWrapper	todo:M14	h7 deferral: re-blocks a query's impacts to exercise block-max scoring; needs a Weight to wrap
-tests/search/BulkScorerWrapperScorer	todo:M14	h7 deferral: a BulkScorer seen as a Scorer; the scorer tree is private to lucene-search
+tests/search/BlockScoreQueryWrapper	partial	crates/lucene-test-framework/src/search/block_score_query_wrapper.rs::wrap -- M14: feature-only operational buffered scorer; Java fixture replay, measured exact buffer storage and paired bounds/construction scope in docs/benchmarks/block-score-query.md
+tests/search/BulkScorerWrapperScorer	partial	crates/lucene-test-framework/src/search/bulk_scorer_wrapper_scorer.rs::BulkScorerWrapperScorer -- M14: real bulk adapter needs caller-supplied cost; exact iteration/error traces and paired traversal benchmarks in docs/benchmarks/bulk-scorer-wrapper.md
 tests/search/CheckHits	partial	crates/lucene-test-framework/src/search/check_hits.rs::check_hits -- M14: wrapUnderlyingReader passes (no MultiReader over arbitrary readers)
-tests/search/DisablingBulkScorerQuery	todo:M14	h7 deferral: hides a query's bulk scorer; needs a Weight to wrap
-tests/search/DummyTotalHitCountCollector	todo:M14	h7 deferral: a hit counter without TotalHitCountCollector's shortcuts
+tests/search/DisablingBulkScorerQuery	partial	crates/lucene-test-framework/src/search/disabling_bulk_scorer_query.rs::wrap -- M14: feature-only ordinary scorer/default bulk dispatch; null supplier safely returns empty; Java differential checks and complete/no-score pair 4.47/4.60x in docs/benchmarks/scorer-index-searcher.md
+tests/search/DummyTotalHitCountCollector	ported	crates/lucene-test-framework/src/search/dummy_total_hit_count.rs::DummyTotalHitCountCollector -- callback and manager parity; callbacks 1.262x Java
 tests/search/FixedBitSetCollector	ported	crates/lucene-test-framework/src/search/check_hits.rs::all_hits
 tests/search/MatchesTestBase	partial	crates/lucene-test-framework/src/search/matches_test_base.rs::MatchesTestBase -- M14: NamedQuery as a clause (named clauses passed alongside), RandomIndexWriter
 tests/search/QueryUtils	partial	crates/lucene-test-framework/src/search/query_utils.rs::check_with_searcher -- M14: wrapUnderlyingReader/MultiReader passes (and their draws)
 tests/search/RandomApproximationQuery	partial	crates/lucene-search/src/test_support.rs::TestQuery -- M14: no Weight: each scorer seeded from the query's own JavaRandom, not one per weight (createWeight) and one per scorer from it
-tests/search/ScorerIndexSearcher	todo:M14	h7 deferral: a searcher that scores through Scorer, never BulkScorer; the scorer tree is private to lucene-search
+tests/search/ScorerIndexSearcher	partial	crates/lucene-test-framework/src/search/scorer_index_searcher.rs::ScorerIndexSearcher -- M14: top/after/count/collector/manager/slice dispatch; field-sort/facet and sub-leaf ranges absent; Java differential checks and complete/no-score pair 4.82/4.91x in docs/benchmarks/scorer-index-searcher.md
 tests/search/SearchEquivalenceTestBase	partial	crates/lucene-test-framework/src/search/search_equivalence.rs::SearchEquivalence -- M14: RandomIndexWriter and two newSearcher wrappers (one plain searcher here)
 tests/search/ShardSearchingTestBase	todo:M14	h8 deferral: its ShardIndexSearcher overrides IndexSearcher.termStatistics/collectionStatistics with statistics gathered from the other nodes; the port's searcher computes them from its own segments and has no override hook
 tests/search/similarities/AssertingSimilarity	ported	crates/lucene-test-framework/src/search/similarities.rs::AssertingSimilarity
@@ -192,7 +192,7 @@ tests/util/RamUsageTester	not-needed	reflection over the JVM heap; Rust types re
 tests/util/RemoveUponClose	ported	crates/lucene-util/src/test_support.rs::TempDir
 tests/util/Rethrow	not-needed	sneaky-throws a checked exception; Rust has no checked exceptions
 tests/util/RunListenerPrintReproduceInfo	ported	crates/lucene-test-framework/src/util/lucene_test_case.rs::reproduce_line
-tests/util/StringMockResourceLoader	todo:M14	h3: a ResourceLoader over an in-memory string
+tests/util/StringMockResourceLoader	ported	crates/lucene-test-framework/src/util/string_mock_resource_loader.rs::StringMockResourceLoader -- UTF-8 resources; class loading follows static factory SPI
 tests/util/TestObjectInputFilterFactory	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
 tests/util/TestRuleAssertionsRequired	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
 tests/util/TestRuleDelegate	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
@@ -213,4 +213,4 @@ tests/util/ThrottledIndexOutput	ported	crates/lucene-test-framework/src/store/mo
 tests/util/TimeUnits	not-needed	millisecond constants for JUnit `@Timeout` annotations
 tests/util/VerifyTestClassNamingConvention	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
 tests/util/automaton/AutomatonTestUtil	ported	crates/lucene-test-framework/src/util/automaton_test_util.rs::RandomAcceptedStrings
-tests/util/fst/FSTTester	partial	crates/lucene-test-framework/src/util/fst_tester.rs::FstTester -- M14: inputMode 1 (UTF-32) next/seek checks need an IntsRefFSTEnum over a typed FST
+tests/util/fst/FSTTester	ported	crates/lucene-test-framework/src/util/fst_tester.rs::FstTester -- M14: UTF-8/UTF-32 integer enumeration and typed list expansion, Java RNG continuation, paired tester benchmark and measured scratch reuse

@@ -50,6 +50,9 @@ python3 scripts/check-arith-allows.py
 echo "gate: check-port-invariants (the defect shapes clippy cannot see)"
 python3 scripts/check-port-invariants.py
 
+echo "gate: benchmark report rejects malformed or incomplete paired results"
+python3 scripts/test-bench-micro-report.py
+
 echo "gate: check-parity (the parity ledger: paths, items, index links, budgets)"
 python3 scripts/check-parity.py
 

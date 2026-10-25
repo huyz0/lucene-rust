@@ -1,7 +1,7 @@
 //! `BaseKnnVectorsFormatTestCase`: KNN vector fields written through
 //! `IndexWriter` with the default codec (`Lucene99HnswVectorsFormat` behind
 //! `PerFieldKnnVectorsFormat`) and read back as the flat vectors, their
-//! ordinals and documents, and an exhaustive nearest-neighbour search.
+//! ordinals and documents, and nearest-neighbour searches on the stored graph.
 //!
 //! Differs:
 //!
@@ -16,12 +16,11 @@
 //!   (each score non-negative) and checks the values' documents ascend,
 //!   where Java walks the scorer's iterator against the values'; an empty
 //!   field has a scorer too (Java's is `null`).
-//! - `LeafReader.searchNearestVectors` is
-//!   [`search_knn_float_vector_query`] over the leaf's flat vectors with no
-//!   graph: the exhaustive search Java runs once a visit limit is reached.
-//!   `testSearchWithVisitedLimit` (graph visits, `TotalHits.relation`) and
-//!   `assertOffHeapByteSize`/`testMergeOffHeapByteSizeMaps`
-//!   (`getOffHeapByteSize`) have no counterpart.
+//! - `LeafReader.searchNearestVectors` opens the default format's graph
+//!   beside the flat vectors, through a compound reader when necessary.
+//!   A codec collector reports visits and early termination directly;
+//!   there is no query-level exact-search fallback. `assertOffHeapByteSize`
+//!   and `testMergeOffHeapByteSizeMaps` (`getOffHeapByteSize`) have no counterpart.
 //! - A field's schema cannot change within a segment either: the writer
 //!   keeps one schema per index, so `testIllegalDimChangeTwoDocs` and
 //!   `testIllegalSimilarityFunctionChange` get
@@ -48,21 +47,21 @@
 //! - `testMergeStability` is suppressed, as in Java (`mergeIsStable`).
 
 use lucene_codecs::field_infos::{FieldInfo, VectorEncoding, VectorSimilarityFunction};
+use lucene_codecs::hnsw::{KnnCollector, VectorScorer};
+use lucene_codecs::hnsw_vectors::{self, HnswVectorsReader, SearchOptions};
 use lucene_codecs::vectors::{ByteVectorValues, FloatVectorValues};
 use lucene_index::buffered_updates::Term;
+use lucene_index::compound_reader::CompoundReader;
 use lucene_index::document::{
     Document, Field, IndexableField, KnnByteVectorField, KnnFloatVectorField,
     NumericDocValuesField, Store, StoredValue, StringField,
 };
 use lucene_index::index_writer::IndexWriter;
-use lucene_index::segment_info::{IndexSortField, IndexSortKind, NumericSortKey};
-use lucene_search::collector::ScoreDoc;
+use lucene_index::segment_info::{self, IndexSortField, IndexSortKind, NumericSortKey};
+use lucene_search::collector::{ScoreDoc, TotalHits, TotalHitsRelation};
 use lucene_search::directory_reader::{DirectoryReader, SegmentReader};
-use lucene_search::vector_query::{
-    search_knn_byte_vector_query, search_knn_float_vector_query, KnnByteVectorQuery,
-    KnnFloatVectorQuery, VectorsInput,
-};
 use lucene_store::Directory;
+use lucene_util::fixed_bit_set::FixedBitSet;
 use lucene_util::java_random::JavaRandom;
 use lucene_util::vector_util;
 
@@ -358,47 +357,203 @@ fn is_live(leaf: &SegmentReader, doc: i32) -> bool {
     leaf.live_docs().is_none_or(|l| l.get(doc as usize))
 }
 
-/// `leaf.searchNearestVectors(field, target, k, liveDocs, MAX_VALUE)`.
-fn search_nearest(leaf: &SegmentReader, field: &str, target: Vec<f32>, k: usize) -> Vec<ScoreDoc> {
-    let fi = vector_field(leaf, field).expect("a vector field");
-    let flat = leaf
-        .flat_vectors_reader_for(fi.number)
-        .expect("open the vectors")
-        .expect("a vectors reader");
-    let input = VectorsInput {
-        flat,
-        hnsw: None,
-        field_infos: leaf.field_infos(),
-        live_docs: leaf.live_docs(),
-        filter: None,
-        max_doc: leaf.max_doc,
-    };
-    let query = KnnFloatVectorQuery::new(field, target, k).expect("a KNN query");
-    search_knn_float_vector_query(&input, &query).expect("searchNearestVectors")
+/// `TopDocs` returned by a leaf's vector search. `total_hits` counts scored
+/// vectors, rather than the number of retained hits.
+pub struct NearestVectorsResult {
+    pub total_hits: TotalHits,
+    pub score_docs: Vec<ScoreDoc>,
 }
 
-/// [`search_nearest`] for a byte field.
-fn search_nearest_bytes(
+/// Open the default format's graph using the field's per-format suffix.
+/// The test framework owns these temporary inputs, as Java's leaf reader does.
+fn with_graph<R>(
+    dir: &dyn Directory,
     leaf: &SegmentReader,
     field: &str,
-    target: Vec<u8>,
+    f: impl FnOnce(&HnswVectorsReader<'_>, i32) -> R,
+) -> R {
+    let fi = vector_field(leaf, field).expect("a vector field");
+    let attr = |name: &str| {
+        &fi.attributes
+            .iter()
+            .find(|(key, _)| key == name)
+            .expect("per-field vector format attribute")
+            .1
+    };
+    assert_eq!(
+        attr("PerFieldKnnVectorsFormat.format"),
+        "Lucene99HnswVectorsFormat"
+    );
+    let suffix = format!(
+        "{}_{}",
+        attr("PerFieldKnnVectorsFormat.format"),
+        attr("PerFieldKnnVectorsFormat.suffix")
+    );
+    let si = dir
+        .open(&format!("{}.si", leaf.segment_name))
+        .expect("segment info");
+    let info = segment_info::parse(&si, &leaf.segment_id()).expect("read segment info");
+    let compound = info.is_compound_file.then(|| {
+        CompoundReader::open(dir, &leaf.segment_name, &leaf.segment_id())
+            .expect("getCompoundReader")
+    });
+    let source: &dyn Directory = compound.as_ref().map_or(dir, |c| c);
+    let prefix = format!("{}_{suffix}", leaf.segment_name);
+    let meta = source
+        .open(&format!("{prefix}.vem"))
+        .expect("open graph metadata");
+    let index = source
+        .open(&format!("{prefix}.vex"))
+        .expect("open graph data");
+    let graph = HnswVectorsReader::open(&meta, &index, &leaf.segment_id(), &suffix)
+        .expect("open HNSW reader");
+    f(&graph, fi.number)
+}
+
+/// `LeafReader.searchNearestVectors`, using Java's collector/codec path.
+fn search_vectors<S: VectorScorer>(
+    reader: &HnswVectorsReader<'_>,
+    field: i32,
+    leaf: &SegmentReader,
+    scorer: &mut S,
+    ord_to_doc: impl Fn(i32) -> i32,
+    k: usize,
+    visited_limit: u64,
+) -> NearestVectorsResult {
+    let graph = reader.graph(field).expect("getGraph");
+    let accept = leaf.live_docs().map(|live| {
+        let mut bits = FixedBitSet::new(scorer.max_ord() as usize);
+        let bits_len = bits.len();
+        for ord in 0..bits_len {
+            let doc = ord_to_doc(ord as i32) as usize;
+            let live_len = live.len();
+            assert!(doc < live_len);
+            if live.get(doc) {
+                bits.set(ord);
+            }
+        }
+        bits
+    });
+    let mut collector = KnnCollector::new(k, visited_limit);
+    hnsw_vectors::search_with(
+        scorer,
+        graph.as_ref(),
+        &mut collector,
+        SearchOptions {
+            accept_ords: accept.as_ref(),
+            // Lucene's DenseLiveDocs/SparseLiveDocs are Bits, not BitSet:
+            // AcceptDocs.cost() returns maxDoc even when there are deletions.
+            ..SearchOptions::default()
+        },
+    )
+    .expect("searchNearestVectors");
+    let total_hits = TotalHits {
+        value: collector.visited_count(),
+        relation: if collector.early_terminated() {
+            TotalHitsRelation::GreaterThanOrEqualTo
+        } else {
+            TotalHitsRelation::EqualTo
+        },
+    };
+    let score_docs = collector
+        .top_docs()
+        .into_iter()
+        .map(|(ord, score)| ScoreDoc {
+            doc_id: ord_to_doc(ord),
+            score,
+        })
+        .collect();
+    NearestVectorsResult {
+        total_hits,
+        score_docs,
+    }
+}
+
+/// Java: `LeafReader.searchNearestVectors(field, float[], k, liveDocs, visitedLimit)`.
+///
+/// # Panics
+/// Invalid test input, a non-default vector format, or unreadable vector files.
+pub fn search_nearest_float(
+    dir: &dyn Directory,
+    leaf: &SegmentReader,
+    field: &str,
+    target: &[f32],
+    k: usize,
+    visited_limit: u64,
+) -> NearestVectorsResult {
+    let Some(values) = float_values(leaf, field) else {
+        return empty_nearest_vectors();
+    };
+    let k = k.min(values.size() as usize);
+    if k == 0 {
+        return empty_nearest_vectors();
+    }
+    let mut scorer = values.scorer(target).expect("float scorer");
+    with_graph(dir, leaf, field, |reader, number| {
+        search_vectors(
+            reader,
+            number,
+            leaf,
+            &mut scorer,
+            |ord| values.ord_to_doc(ord).expect("ordToDoc"),
+            k,
+            visited_limit,
+        )
+    })
+}
+
+/// Java: `LeafReader.searchNearestVectors(field, byte[], k, liveDocs, visitedLimit)`.
+///
+/// # Panics
+/// Invalid test input, a non-default vector format, or unreadable vector files.
+pub fn search_nearest_byte(
+    dir: &dyn Directory,
+    leaf: &SegmentReader,
+    field: &str,
+    target: &[u8],
+    k: usize,
+    visited_limit: u64,
+) -> NearestVectorsResult {
+    let Some(values) = byte_values(leaf, field) else {
+        return empty_nearest_vectors();
+    };
+    let k = k.min(values.size() as usize);
+    if k == 0 {
+        return empty_nearest_vectors();
+    }
+    let mut scorer = values.scorer(target).expect("byte scorer");
+    with_graph(dir, leaf, field, |reader, number| {
+        search_vectors(
+            reader,
+            number,
+            leaf,
+            &mut scorer,
+            |ord| values.ord_to_doc(ord).expect("ordToDoc"),
+            k,
+            visited_limit,
+        )
+    })
+}
+
+fn empty_nearest_vectors() -> NearestVectorsResult {
+    NearestVectorsResult {
+        total_hits: TotalHits {
+            value: 0,
+            relation: TotalHitsRelation::EqualTo,
+        },
+        score_docs: Vec::new(),
+    }
+}
+
+/// `leaf.searchNearestVectors(field, target, k, liveDocs, MAX_VALUE)`.
+fn search_nearest(
+    dir: &dyn Directory,
+    leaf: &SegmentReader,
+    field: &str,
+    target: Vec<f32>,
     k: usize,
 ) -> Vec<ScoreDoc> {
-    let fi = vector_field(leaf, field).expect("a vector field");
-    let flat = leaf
-        .flat_vectors_reader_for(fi.number)
-        .expect("open the vectors")
-        .expect("a vectors reader");
-    let input = VectorsInput {
-        flat,
-        hnsw: None,
-        field_infos: leaf.field_infos(),
-        live_docs: leaf.live_docs(),
-        filter: None,
-        max_doc: leaf.max_doc,
-    };
-    let query = KnnByteVectorQuery::new(field, target, k).expect("a KNN query");
-    search_knn_byte_vector_query(&input, &query).expect("searchNearestVectors")
+    search_nearest_float(dir, leaf, field, &target, k, i32::MAX as u64).score_docs
 }
 
 /// `testFieldConstructor`.
@@ -802,7 +957,7 @@ pub fn test_delete_all_vector_docs(t: &mut LuceneTestCase) {
     assert_eq!(0, float_values(leaf, "v").expect("values").size());
     // A KNN search over a field whose every document is deleted.
     let target = random_normalized_vector(t.random(), 4);
-    assert!(search_nearest(leaf, "v", target, 1).is_empty());
+    assert!(search_nearest(&*dir, leaf, "v", target, 1).is_empty());
 }
 
 /// `testKnnVectorFieldMissingFromOneSegment`.
@@ -1026,11 +1181,15 @@ fn empty_vector_data(t: &mut LuceneTestCase, bytes: bool) {
     if bytes {
         let values = byte_values(leaf, "v").expect("values");
         assert_eq!(0, values.size());
-        assert!(search_nearest_bytes(leaf, "v", vec![2, 3, 5, 6], 1).is_empty());
+        assert!(
+            search_nearest_byte(&*dir, leaf, "v", &[2, 3, 5, 6], 1, i32::MAX as u64)
+                .score_docs
+                .is_empty()
+        );
     } else {
         let values = float_values(leaf, "v").expect("values");
         assert_eq!(0, values.size());
-        assert!(search_nearest(leaf, "v", vec![2.0, 3.0, 5.0, 6.0], 1).is_empty());
+        assert!(search_nearest(&*dir, leaf, "v", vec![2.0, 3.0, 5.0, 6.0], 1).is_empty());
     }
 }
 
@@ -1271,6 +1430,80 @@ pub fn test_random_bytes(t: &mut LuceneTestCase) {
     random_vectors(t, true);
 }
 
+/// Java: `BaseKnnVectorsFormatTestCase.testSearchWithVisitedLimit`.
+/// Sparse vectors and deletions exercise ordinal-to-document translation;
+/// small budgets report a lower bound and a budget above the vector count
+/// finishes exactly. Off-heap byte accounting has no counterpart here.
+pub fn test_search_with_visited_limit(t: &mut LuceneTestCase) {
+    let dir = t.new_directory();
+    let mut w = new_writer(t, &*dir);
+    let dimension = 10;
+    for id in 0..300 {
+        let vector = if t.random().next_int_bounded(7) != 3 {
+            Some(Vector::Float(random_normalized_vector(
+                t.random(),
+                dimension,
+            )))
+        } else {
+            None
+        };
+        add_random_key(
+            t,
+            &mut w,
+            "field",
+            id,
+            vector,
+            VectorSimilarityFunction::Euclidean,
+        );
+    }
+    force_merge(&mut w, 1);
+    for _ in 0..30 {
+        let id = t.random().next_int_bounded(300);
+        w.delete_documents_by_term(&[Term::new("id", id.to_string())])
+            .expect("deleteDocuments");
+    }
+    let r = open(&mut w, &*dir);
+    let mut searched = 0;
+    for leaf in r.segment_readers() {
+        let Some(values) = float_values(leaf, "field") else {
+            continue;
+        };
+        let k = 5 + t.random().next_int_bounded(45) as usize;
+        let visited_limit = k as u64 + t.random().next_int_bounded(5) as u64;
+        let target = random_normalized_vector(t.random(), dimension);
+        let limited = search_nearest_float(&*dir, leaf, "field", &target, k, visited_limit);
+        assert_eq!(
+            limited.total_hits.relation,
+            TotalHitsRelation::GreaterThanOrEqualTo
+        );
+        // Java: Lucene99HnswVectorsReader.EXHAUSTIVE_BULK_SCORE_ORDS.
+        let size = 64;
+        assert!(limited.total_hits.value <= visited_limit.div_ceil(size) * size);
+        assert!(limited
+            .score_docs
+            .iter()
+            .all(|hit| is_live(leaf, hit.doc_id)));
+
+        let k = values.size() as usize;
+        let visited_limit = k as u64 + 30;
+        let target = random_normalized_vector(t.random(), dimension);
+        let complete = search_nearest_float(&*dir, leaf, "field", &target, k, visited_limit);
+        assert_eq!(complete.total_hits.relation, TotalHitsRelation::EqualTo);
+        assert!(complete.total_hits.value <= visited_limit);
+        let live_vectors = float_docs(&values)
+            .iter()
+            .filter(|(doc, _)| is_live(leaf, *doc))
+            .count();
+        assert_eq!(complete.score_docs.len(), live_vectors);
+        assert!(complete
+            .score_docs
+            .iter()
+            .all(|hit| is_live(leaf, hit.doc_id)));
+        searched += 1;
+    }
+    assert!(searched > 0, "no leaf was searched");
+}
+
 /// `testRandomWithUpdatesAndGraph`: random updates of random ids, read back
 /// by id, then a nearest-neighbour search per leaf returning `k` results in
 /// descending score order.
@@ -1326,7 +1559,7 @@ pub fn test_random_with_updates_and_graph(t: &mut LuceneTestCase) {
         let size = values.size();
         let k = (t.random().next_int_bounded(size / 10 + 1) + 1).min(num_live_docs_with_vectors);
         let target = random_normalized_vector(t.random(), dimension);
-        let results = search_nearest(leaf, "field", target, k as usize);
+        let results = search_nearest(&*dir, leaf, "field", target, k as usize);
         assert_eq!(k.min(size) as usize, results.len());
         assert!(results.windows(2).all(|p| p[0].score >= p[1].score));
         searched += 1;
@@ -1654,6 +1887,7 @@ pub const TESTS: &[SuiteTest] = &[
     ),
     ("testRandom", test_random),
     ("testRandomBytes", test_random_bytes),
+    ("testSearchWithVisitedLimit", test_search_with_visited_limit),
     (
         "testRandomWithUpdatesAndGraph",
         test_random_with_updates_and_graph,

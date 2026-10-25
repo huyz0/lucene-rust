@@ -1137,7 +1137,7 @@ fn dump(dir: &std::path::Path) -> Vec<String> {
             }
         }
         for f in &infos {
-            if let Some(n) = r.field_norms(&f.name) {
+            if let Some(n) = r.field_norms(&f.name).unwrap() {
                 let mut c = n.cursor();
                 let norms: Vec<Option<i64>> =
                     (0..r.max_doc).map(|d| c.norm_long(d).unwrap()).collect();

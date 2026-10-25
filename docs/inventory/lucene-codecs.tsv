@@ -31,7 +31,7 @@ codecs/memory/FSTTermsReader	ported	crates/lucene-codecs/src/memory/fst_terms.rs
 codecs/memory/FSTTermsWriter	ported	crates/lucene-codecs/src/memory/fst_terms.rs::FstTermsWriter
 codecs/simpletext/SimpleTextBKDReader	ported	crates/lucene-codecs/src/simpletext/bkd_reader.rs::SimpleTextBkdReader
 codecs/simpletext/SimpleTextBKDWriter	ported	crates/lucene-codecs/src/simpletext/bkd_writer.rs::SimpleTextBkdWriter
-codecs/simpletext/SimpleTextCodec	partial	crates/lucene-codecs/src/simpletext/codec.rs::SimpleTextCodec -- M14: names its formats only; IndexWriter/DirectoryReader do not route through it
+codecs/simpletext/SimpleTextCodec	partial	crates/lucene-codecs/src/simpletext/codec.rs::SimpleTextCodec -- M14: DirectoryReader all component readers and doc-values skippers, reader-wide scoring statistics/norms; search and IndexWriter routing incomplete
 codecs/simpletext/SimpleTextCompoundFormat	ported	crates/lucene-codecs/src/simpletext/compound.rs::SimpleTextCompoundReader
 codecs/simpletext/SimpleTextDocValuesFormat	ported	crates/lucene-codecs/src/simpletext/doc_values_writer.rs::doc_values_file_name
 codecs/simpletext/SimpleTextDocValuesReader	ported	crates/lucene-codecs/src/simpletext/doc_values_reader.rs::SimpleTextDocValuesReader
@@ -48,7 +48,7 @@ codecs/simpletext/SimpleTextPointsFormat	ported	crates/lucene-codecs/src/simplet
 codecs/simpletext/SimpleTextPointsReader	ported	crates/lucene-codecs/src/simpletext/points_reader.rs::SimpleTextPointsReader
 codecs/simpletext/SimpleTextPointsWriter	ported	crates/lucene-codecs/src/simpletext/points_writer.rs::SimpleTextPointsWriter
 codecs/simpletext/SimpleTextPostingsFormat	ported	crates/lucene-codecs/src/simpletext/fields_writer.rs::write
-codecs/simpletext/SimpleTextSegmentInfoFormat	partial	crates/lucene-codecs/src/simpletext/segment_info.rs::read -- M14: index sort fields kept as provider/toString/bytes, not decoded to SortField
+codecs/simpletext/SimpleTextSegmentInfoFormat	ported	crates/lucene-index/src/segment_info.rs::parse_simpletext -- M14: typed read/write of all four sort providers; full prerelease versions; 184 Java byte-exact cases
 codecs/simpletext/SimpleTextSkipReader	ported	crates/lucene-codecs/src/simpletext/skip.rs::SimpleTextSkipReader
 codecs/simpletext/SimpleTextSkipWriter	ported	crates/lucene-codecs/src/simpletext/skip.rs::SimpleTextSkipWriter
 codecs/simpletext/SimpleTextStoredFieldsFormat	ported	crates/lucene-codecs/src/simpletext/stored_fields_writer.rs::stored_fields_file_name
@@ -81,9 +81,9 @@ codecs/uniformsplit/sharedterms/STBlockReader	ported	crates/lucene-codecs/src/un
 codecs/uniformsplit/sharedterms/STBlockWriter	ported	crates/lucene-codecs/src/uniformsplit/sharedterms/writer.rs::StBlockSink
 codecs/uniformsplit/sharedterms/STIntersectBlockReader	ported	crates/lucene-codecs/src/uniformsplit/sharedterms/block_reader.rs::StIntersectBlockReader
 codecs/uniformsplit/sharedterms/STMergingBlockReader	ported	crates/lucene-codecs/src/uniformsplit/sharedterms/block_reader.rs::StMergingBlockReader
-codecs/uniformsplit/sharedterms/STMergingTermsEnum	todo:M14	merge(MergeState)'s cross-segment postings enum (docMap remap); the Rust writer takes already-merged postings
+codecs/uniformsplit/sharedterms/STMergingTermsEnum	ported	crates/lucene-codecs/src/uniformsplit/sharedterms/merge.rs::StMergingTermsEnum
 codecs/uniformsplit/sharedterms/STUniformSplitPostingsFormat	ported	crates/lucene-codecs/src/uniformsplit/sharedterms/mod.rs::StUniformSplitPostingsFormat
 codecs/uniformsplit/sharedterms/STUniformSplitTerms	ported	crates/lucene-codecs/src/uniformsplit/sharedterms/reader.rs::StUniformSplitTerms
 codecs/uniformsplit/sharedterms/STUniformSplitTermsReader	ported	crates/lucene-codecs/src/uniformsplit/sharedterms/reader.rs::StUniformSplitTermsReader
-codecs/uniformsplit/sharedterms/STUniformSplitTermsWriter	partial	crates/lucene-codecs/src/uniformsplit/sharedterms/writer.rs::StUniformSplitTermsWriter -- M14: merge(MergeState) (mergeSegments, SegmentTerms, MergingFieldTerms) not ported
+codecs/uniformsplit/sharedterms/STUniformSplitTermsWriter	ported	crates/lucene-codecs/src/uniformsplit/sharedterms/writer.rs::StUniformSplitTermsWriter; crates/lucene-codecs/src/uniformsplit/sharedterms/merge.rs::SegmentTerms
 codecs/uniformsplit/sharedterms/UnionFieldMetadataBuilder	ported	crates/lucene-codecs/src/uniformsplit/sharedterms/reader.rs::UnionFieldMetadataBuilder

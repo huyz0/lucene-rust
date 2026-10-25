@@ -413,7 +413,7 @@ impl<'d> SpellChecker<'d> {
         let opened = reader.open_segments()?;
         let segments = opened.as_open_segments();
         // the gram fields are `StringField`s, which omit norms
-        let owned = reader.field_norms_by_field(&[]);
+        let owned = reader.field_norms_by_field(&[])?;
         let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
         let searcher = IndexSearcher::new(&segments, &norms)?;
         let top = searcher.search(&query, max_hits)?;

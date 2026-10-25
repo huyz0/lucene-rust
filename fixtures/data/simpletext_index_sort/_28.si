@@ -1,0 +1,21 @@
+    version 10.5.0
+    min version 10.0.0
+    number of documents 7
+    uses compound file true
+    has blocks false
+    diagnostics 1
+      key source
+      value fixture
+    attributes 1
+      key note
+      value line\
+break\\
+    files 2
+      file _28.si
+      file _28.other
+    id [50 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0]
+    sort 1
+      name BinarySortField
+      type <binary: "binary"> missingValue=SortField.STRING_FIRST
+      bytes [6 62 69 6e 61 72 79 0 0 0 0 1 0 0 0]
+checksum 00000000001176300136

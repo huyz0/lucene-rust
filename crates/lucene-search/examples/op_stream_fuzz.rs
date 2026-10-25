@@ -432,10 +432,10 @@ fn dump(path: &Path) -> Result<String, String> {
     let opened = reader.open_segments().map_err(|e| e.to_string())?;
     let segments = opened.as_open_segments();
     let top_n = id_of.len().max(1);
-    let norms = reader.field_norms("body");
+    let norms = reader.field_norms("body").unwrap();
     let norms: Vec<Option<&_>> = norms.iter().map(Option::as_ref).collect();
     let fields = vec!["body".to_string()];
-    let by_field = reader.field_norms_by_field(&fields);
+    let by_field = reader.field_norms_by_field(&fields).unwrap();
     let bool_norms: Vec<Option<&_>> = by_field.iter().map(Some).collect();
     let ids = |hits: Vec<lucene_search::collector::ScoreDoc>| -> BTreeSet<i64> {
         hits.iter().map(|h| id_of[h.doc_id as usize]).collect()

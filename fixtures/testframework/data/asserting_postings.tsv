@@ -1,0 +1,119 @@
+maxDoc	9
+field	docs	0	1	false	true
+posting	docs	6161	0	1	-	-	-
+posting	docs	6161	1	1	-	-	-
+posting	docs	6161	2	1	-	-	-
+posting	docs	6161	3	1	-	-	-
+posting	docs	6161	4	1	-	-	-
+posting	docs	6161	5	1	-	-	-
+posting	docs	6161	6	1	-	-	-
+posting	docs	6161	7	1	-	-	-
+posting	docs	6161	8	1	-	-	-
+posting	docs	6262	0	1	-	-	-
+posting	docs	6262	1	1	-	-	-
+posting	docs	6262	2	1	-	-	-
+posting	docs	6262	3	1	-	-	-
+posting	docs	6262	4	1	-	-	-
+posting	docs	6262	5	1	-	-	-
+posting	docs	6262	6	1	-	-	-
+posting	docs	6262	7	1	-	-	-
+posting	docs	6262	8	1	-	-	-
+posting	docs	676f6e65	1	1	-	-	-
+field	empty	4	1	false	true
+field	freqs	1	2	false	true
+posting	freqs	6161	0	2	-	-	-
+posting	freqs	6161	1	2	-	-	-
+posting	freqs	6161	3	2	-	-	-
+posting	freqs	6161	4	2	-	-	-
+posting	freqs	6161	6	2	-	-	-
+posting	freqs	6161	7	2	-	-	-
+posting	freqs	6262	0	1	-	-	-
+posting	freqs	6262	1	1	-	-	-
+posting	freqs	6262	3	1	-	-	-
+posting	freqs	6262	4	1	-	-	-
+posting	freqs	6262	6	1	-	-	-
+posting	freqs	6262	7	1	-	-	-
+posting	freqs	676f6e65	1	1	-	-	-
+field	positions	2	3	false	true
+posting	positions	6161	0	2	0,3	-1:-1,-1:-1	-,-
+posting	positions	6161	1	2	0,3	-1:-1,-1:-1	-,-
+posting	positions	6161	3	2	0,3	-1:-1,-1:-1	-,-
+posting	positions	6161	4	2	0,3	-1:-1,-1:-1	-,-
+posting	positions	6161	6	2	0,3	-1:-1,-1:-1	-,-
+posting	positions	6161	7	2	0,3	-1:-1,-1:-1	-,-
+posting	positions	6262	0	1	2	-1:-1	-
+posting	positions	6262	1	1	2	-1:-1	-
+posting	positions	6262	3	1	2	-1:-1	-
+posting	positions	6262	4	1	2	-1:-1	-
+posting	positions	6262	6	1	2	-1:-1	-
+posting	positions	6262	7	1	2	-1:-1	-
+posting	positions	676f6e65	1	1	4	-1:-1	-
+field	rich	3	4	true	false
+norm	rich	0	3
+norm	rich	1	4
+norm	rich	2	3
+norm	rich	3	3
+norm	rich	4	3
+norm	rich	5	3
+norm	rich	6	3
+norm	rich	7	3
+norm	rich	8	3
+posting	rich	6161	0	2	0,3	0:2,8:10	0001ff,0003ff
+posting	rich	6161	1	2	0,3	0:2,8:10	0101ff,0103ff
+posting	rich	6161	2	2	0,3	0:2,8:10	0201ff,0203ff
+posting	rich	6161	3	2	0,3	0:2,8:10	0301ff,0303ff
+posting	rich	6161	4	2	0,3	0:2,8:10	0401ff,0403ff
+posting	rich	6161	5	2	0,3	0:2,8:10	0501ff,0503ff
+posting	rich	6161	6	2	0,3	0:2,8:10	0601ff,0603ff
+posting	rich	6161	7	2	0,3	0:2,8:10	0701ff,0703ff
+posting	rich	6161	8	2	0,3	0:2,8:10	0801ff,0803ff
+posting	rich	6262	0	1	2	4:6	-
+posting	rich	6262	1	1	2	4:6	-
+posting	rich	6262	2	1	2	4:6	-
+posting	rich	6262	3	1	2	4:6	-
+posting	rich	6262	4	1	2	4:6	-
+posting	rich	6262	5	1	2	4:6	-
+posting	rich	6262	6	1	2	4:6	-
+posting	rich	6262	7	1	2	4:6	-
+posting	rich	6262	8	1	2	4:6	-
+posting	rich	676f6e65	1	1	4	12:14	-
+field	𐀀	5	4	true	true
+posting	𐀀	6161	0	2	0,3	0:2,8:10	0001ff,0003ff
+posting	𐀀	6161	1	2	0,3	0:2,8:10	0101ff,0103ff
+posting	𐀀	6161	2	2	0,3	0:2,8:10	0201ff,0203ff
+posting	𐀀	6161	3	2	0,3	0:2,8:10	0301ff,0303ff
+posting	𐀀	6161	4	2	0,3	0:2,8:10	0401ff,0403ff
+posting	𐀀	6161	5	2	0,3	0:2,8:10	0501ff,0503ff
+posting	𐀀	6161	6	2	0,3	0:2,8:10	0601ff,0603ff
+posting	𐀀	6161	7	2	0,3	0:2,8:10	0701ff,0703ff
+posting	𐀀	6161	8	2	0,3	0:2,8:10	0801ff,0803ff
+posting	𐀀	6262	0	1	2	4:6	-
+posting	𐀀	6262	1	1	2	4:6	-
+posting	𐀀	6262	2	1	2	4:6	-
+posting	𐀀	6262	3	1	2	4:6	-
+posting	𐀀	6262	4	1	2	4:6	-
+posting	𐀀	6262	5	1	2	4:6	-
+posting	𐀀	6262	6	1	2	4:6	-
+posting	𐀀	6262	7	1	2	4:6	-
+posting	𐀀	6262	8	1	2	4:6	-
+posting	𐀀	676f6e65	1	1	4	12:14	-
+field		6	4	true	true
+posting		6161	0	2	0,3	0:2,8:10	0001ff,0003ff
+posting		6161	1	2	0,3	0:2,8:10	0101ff,0103ff
+posting		6161	2	2	0,3	0:2,8:10	0201ff,0203ff
+posting		6161	3	2	0,3	0:2,8:10	0301ff,0303ff
+posting		6161	4	2	0,3	0:2,8:10	0401ff,0403ff
+posting		6161	5	2	0,3	0:2,8:10	0501ff,0503ff
+posting		6161	6	2	0,3	0:2,8:10	0601ff,0603ff
+posting		6161	7	2	0,3	0:2,8:10	0701ff,0703ff
+posting		6161	8	2	0,3	0:2,8:10	0801ff,0803ff
+posting		6262	0	1	2	4:6	-
+posting		6262	1	1	2	4:6	-
+posting		6262	2	1	2	4:6	-
+posting		6262	3	1	2	4:6	-
+posting		6262	4	1	2	4:6	-
+posting		6262	5	1	2	4:6	-
+posting		6262	6	1	2	4:6	-
+posting		6262	7	1	2	4:6	-
+posting		6262	8	1	2	4:6	-
+posting		676f6e65	1	1	4	12:14	-

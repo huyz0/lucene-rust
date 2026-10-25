@@ -10,6 +10,7 @@
 //!   (`TreeMap<BytesRef>`); a repeated name or term keeps its last value,
 //!   as `put` does. A `null` payload is an empty one.
 //!   The field number Java parses and drops is kept.
+//!   Rebound readers share the immutable document index, as Java's clones do.
 //!   [`SimpleTextTvTermsEnum`] and [`SimpleTextTvPostings`] are
 //!   `SimpleTVTermsEnum` and its two postings enums in one.
 //! - Java's `assert`s on each line's prefix and on the document count, its
@@ -19,6 +20,7 @@
 //!   grow as lines are read rather than being sized from `freq`.
 
 use std::cmp::Ordering;
+use std::sync::Arc;
 
 use super::term_vectors_writer::{
     DOC, END, ENDOFFSET, FIELD, FIELDNAME, FIELDOFFSETS, FIELDPAYLOADS, FIELDPOSITIONS,
@@ -35,7 +37,7 @@ use crate::term_vectors::{TermVectorField, TermVectorTerm};
 pub struct SimpleTextTermVectorsReader<'d> {
     data: &'d [u8],
     /// docid -> offset in the `.tvc`, just past its `doc` line.
-    offsets: Vec<usize>,
+    offsets: Arc<[usize]>,
 }
 
 /// Java's `String.compareTo`: UTF-16 code units.
@@ -75,7 +77,19 @@ impl<'d> SimpleTextTermVectorsReader<'d> {
                 offsets.len()
             )));
         }
-        Ok(SimpleTextTermVectorsReader { data, offsets })
+        Ok(SimpleTextTermVectorsReader {
+            data,
+            offsets: offsets.into(),
+        })
+    }
+
+    /// Rebind the immutable document index to the same `.tvc` bytes.
+    /// Clones share this index, as Java's cloned reader does.
+    pub fn rebind<'n>(&self, data: &'n [u8]) -> SimpleTextTermVectorsReader<'n> {
+        SimpleTextTermVectorsReader {
+            data,
+            offsets: self.offsets.clone(),
+        }
     }
 
     /// The number of documents (`maxDoc`).
@@ -506,6 +520,10 @@ mod tests {
     fn documents_read_back_with_fields_by_name() {
         let data = write(&docs(), &infos()).unwrap();
         let r = SimpleTextTermVectorsReader::open(&data, 3).unwrap();
+        let metadata = r.rebind(&[]);
+        let r = metadata.rebind(&data);
+        assert!(Arc::ptr_eq(&metadata.offsets, &r.offsets));
+        assert!(metadata.get(0).is_err());
         assert_eq!(r.max_doc(), 3);
         let d0 = r.get(0).unwrap().unwrap();
         assert_eq!(

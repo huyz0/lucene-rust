@@ -450,7 +450,7 @@ pub(super) fn write_fields_metadata(
     match block_encoder {
         None => block_output.write_bytes(fields_output),
         Some(encoder) => {
-            let encoded = encoder.encode(fields_output)?;
+            let encoded = encoder.encode_fields_metadata(fields_output)?;
             block_output.write_vlong(encoded.len() as i64);
             block_output.write_bytes(&encoded);
         }

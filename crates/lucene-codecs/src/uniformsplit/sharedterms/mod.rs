@@ -35,16 +35,13 @@
 //!
 //! - [`StUniformSplitPostingsFormat::write`] is a flush of the fields as
 //!   given (Java's `write(Fields, norms)`: the fields in the order the
-//!   `Fields` iterate, name order for a flush). Java's
-//!   `merge(MergeState, norms)` -- `STMergingTermsEnum` and the
-//!   `SegmentTerms`/`MergingFieldTerms` queues, which re-read each
-//!   segment's lines through `STMergingBlockReader` and remap their
-//!   documents -- is not ported: its output is a flush of the merged
-//!   postings with the fields in field-number order (`mergeFieldInfos`), so
-//!   the caller passes the merged fields that way (the fixture test rebuilds
-//!   Java's merged segment so); remapping documents across segments belongs
-//!   to `lucene-index`'s merge, as for every module-level format here.
-//!   [`StMergingBlockReader`] is ported, for reading a segment line by line.
+//!   `Fields` iterate, name order for a flush).
+//!   [`StUniformSplitPostingsFormat::merge`] scans each source union once,
+//!   groups equal terms, remaps documents and drops deletes, with target
+//!   fields in field-number order (`mergeFieldInfos`). The index layer
+//!   supplies document maps, mapped norms, and the generic merge callback
+//!   for sorted indexes or foreign/wrapped terms. Rust buffers only the
+//!   current term/field's postings; Java uses reusable postings iterators.
 //! - The postings writer validates each (term, field) pair alone, so an
 //!   `EmptyPostings`/`UnsupportedIndexOptions` error names term index 0;
 //!   `EmptyTerms` and `TermsNotSorted` are checked per field before (with
@@ -61,11 +58,12 @@
 //!   one wins).
 //! - The rest as [`super`]: whole-slice encoders, the dictionary decoded at
 //!   open, `Unsupported` for Java's `NullPointerException`s and
-//!   `UnsupportedOperationException`s, no `.psm`, no `reuse`, no
+//!   `UnsupportedOperationException`s, no `.psm` reader, no `reuse`, no
 //!   `Accountable`.
 
 mod block_line;
 mod block_reader;
+mod merge;
 mod reader;
 #[cfg(test)]
 mod tests;
@@ -76,6 +74,7 @@ use std::sync::Arc;
 pub use block_line::FieldMetadataTermState;
 pub(crate) use block_line::SharedFieldInfos;
 pub use block_reader::{StBlockReader, StIntersectBlockReader, StMergingBlockReader};
+pub use merge::StMergeSegment;
 pub use reader::{StUniformSplitTerms, StUniformSplitTermsReader, UnionFieldMetadataBuilder};
 pub use writer::StUniformSplitTermsWriter;
 

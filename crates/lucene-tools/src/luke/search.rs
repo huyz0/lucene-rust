@@ -416,7 +416,8 @@ impl<'r> Search<'r> {
         let opened = self.reader.open_segments().map_err(failed)?;
         let segments = opened.as_open_segments();
         let fields = self.field_names();
-        let owned: Vec<HashMap<String, FieldNorms<'_>>> = self.reader.field_norms_by_field(&fields);
+        let owned: Vec<HashMap<String, FieldNorms<'_>>> =
+            self.reader.field_norms_by_field(&fields).map_err(failed)?;
         let norms: Vec<Option<&HashMap<String, FieldNorms<'_>>>> = owned.iter().map(Some).collect();
         let mut searcher = IndexSearcher::new(&segments, &norms).map_err(failed)?;
         let s = self.similarity;

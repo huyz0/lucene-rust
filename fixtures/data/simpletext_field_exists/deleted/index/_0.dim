@@ -1,0 +1,26 @@
+block count 5
+  doc 1
+  doc 2
+  doc 4
+  doc 5
+  doc 7
+  block value [80 0 0 1]
+  block value [80 0 0 2]
+  block value [80 0 0 4]
+  block value [80 0 0 5]
+  block value [80 0 0 7]
+num data dims 1
+num index dims 1
+bytes per dim 4
+max leaf points 5
+index count 1
+min value [80 0 0 1]
+max value [80 0 0 7]
+point count 5
+doc count 5
+  block fp 0
+split count 1
+  split dim 0
+  split value [0 0 0 0]
+END
+checksum 00000000002616071263

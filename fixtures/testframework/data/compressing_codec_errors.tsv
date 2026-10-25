@@ -1,0 +1,107 @@
+invalid	fast:0:0:0	IllegalArgumentException	chunkSize must be >= 1
+invalid	fast:-1:1:2	IllegalArgumentException	chunkSize must be >= 1
+invalid	fast:1:0:0	IllegalArgumentException	maxDocsPerChunk must be >= 1
+invalid	fast:1:-1:2	IllegalArgumentException	maxDocsPerChunk must be >= 1
+invalid	fast:1:1:0	IllegalArgumentException	blockSize must be in 2-22, got 0
+invalid	fast:1:1:1	IllegalArgumentException	blockSize must be in 2-22, got 1
+invalid	fast:1:1:23	IllegalArgumentException	blockSize must be in 2-22, got 23
+invalid	fast:1:1:2147483647	IllegalArgumentException	blockSize must be in 2-22, got 2147483647
+invalid	fast_decompression:0:0:0	IllegalArgumentException	chunkSize must be >= 1
+invalid	fast_decompression:-1:1:2	IllegalArgumentException	chunkSize must be >= 1
+invalid	fast_decompression:1:0:0	IllegalArgumentException	maxDocsPerChunk must be >= 1
+invalid	fast_decompression:1:-1:2	IllegalArgumentException	maxDocsPerChunk must be >= 1
+invalid	fast_decompression:1:1:0	IllegalArgumentException	blockSize must be in 2-22, got 0
+invalid	fast_decompression:1:1:1	IllegalArgumentException	blockSize must be in 2-22, got 1
+invalid	fast_decompression:1:1:23	IllegalArgumentException	blockSize must be in 2-22, got 23
+invalid	fast_decompression:1:1:2147483647	IllegalArgumentException	blockSize must be in 2-22, got 2147483647
+invalid	high_compression:0:0:0	IllegalArgumentException	chunkSize must be >= 1
+invalid	high_compression:-1:1:2	IllegalArgumentException	chunkSize must be >= 1
+invalid	high_compression:1:0:0	IllegalArgumentException	maxDocsPerChunk must be >= 1
+invalid	high_compression:1:-1:2	IllegalArgumentException	maxDocsPerChunk must be >= 1
+invalid	high_compression:1:1:0	IllegalArgumentException	blockSize must be in 2-22, got 0
+invalid	high_compression:1:1:1	IllegalArgumentException	blockSize must be in 2-22, got 1
+invalid	high_compression:1:1:23	IllegalArgumentException	blockSize must be in 2-22, got 23
+invalid	high_compression:1:1:2147483647	IllegalArgumentException	blockSize must be in 2-22, got 2147483647
+invalid	dummy:0:0:0	IllegalArgumentException	chunkSize must be >= 1
+invalid	dummy:-1:1:2	IllegalArgumentException	chunkSize must be >= 1
+invalid	dummy:1:0:0	IllegalArgumentException	maxDocsPerChunk must be >= 1
+invalid	dummy:1:-1:2	IllegalArgumentException	maxDocsPerChunk must be >= 1
+invalid	dummy:1:1:0	IllegalArgumentException	blockSize must be in 2-22, got 0
+invalid	dummy:1:1:1	IllegalArgumentException	blockSize must be in 2-22, got 1
+invalid	dummy:1:1:23	IllegalArgumentException	blockSize must be in 2-22, got 23
+invalid	dummy:1:1:2147483647	IllegalArgumentException	blockSize must be in 2-22, got 2147483647
+invalid	deflate_preset:0:0:0	IllegalArgumentException	chunkSize must be >= 1
+invalid	deflate_preset:-1:1:2	IllegalArgumentException	chunkSize must be >= 1
+invalid	deflate_preset:1:0:0	IllegalArgumentException	maxDocsPerChunk must be >= 1
+invalid	deflate_preset:1:-1:2	IllegalArgumentException	maxDocsPerChunk must be >= 1
+invalid	deflate_preset:1:1:0	IllegalArgumentException	blockSize must be in 2-22, got 0
+invalid	deflate_preset:1:1:1	IllegalArgumentException	blockSize must be in 2-22, got 1
+invalid	deflate_preset:1:1:23	IllegalArgumentException	blockSize must be in 2-22, got 23
+invalid	deflate_preset:1:1:2147483647	IllegalArgumentException	blockSize must be in 2-22, got 2147483647
+invalid	lz4_preset:0:0:0	IllegalArgumentException	chunkSize must be >= 1
+invalid	lz4_preset:-1:1:2	IllegalArgumentException	chunkSize must be >= 1
+invalid	lz4_preset:1:0:0	IllegalArgumentException	maxDocsPerChunk must be >= 1
+invalid	lz4_preset:1:-1:2	IllegalArgumentException	maxDocsPerChunk must be >= 1
+invalid	lz4_preset:1:1:0	IllegalArgumentException	blockSize must be in 2-22, got 0
+invalid	lz4_preset:1:1:1	IllegalArgumentException	blockSize must be in 2-22, got 1
+invalid	lz4_preset:1:1:23	IllegalArgumentException	blockSize must be in 2-22, got 23
+invalid	lz4_preset:1:1:2147483647	IllegalArgumentException	blockSize must be in 2-22, got 2147483647
+invalid	base-name:bad-name	IllegalArgumentException	Illegal service name: 'bad-name' must be simple ascii alphanumeric.
+invalid	base-name:é	IllegalArgumentException	Illegal service name: 'é' must be simple ascii alphanumeric.
+invalid	base-name:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa	IllegalArgumentException	Illegal service name: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' is too long (must be < 128 chars).
+random-invalid	0	0	0	0	IllegalArgumentException	chunkSize must be >= 1	int(6)=0	-723955400
+random-invalid	0	-1	1	2	IllegalArgumentException	chunkSize must be >= 1	int(6)=0	-723955400
+random-invalid	0	1	0	0	IllegalArgumentException	maxDocsPerChunk must be >= 1	int(6)=0	-723955400
+random-invalid	0	1	-1	2	IllegalArgumentException	maxDocsPerChunk must be >= 1	int(6)=0	-723955400
+random-invalid	0	1	1	0	IllegalArgumentException	blockSize must be in 2-22, got 0	int(6)=0	-723955400
+random-invalid	0	1	1	1	IllegalArgumentException	blockSize must be in 2-22, got 1	int(6)=0	-723955400
+random-invalid	0	1	1	23	IllegalArgumentException	blockSize must be in 2-22, got 23	int(6)=0	-723955400
+random-invalid	0	1	1	2147483647	IllegalArgumentException	blockSize must be in 2-22, got 2147483647	int(6)=0	-723955400
+random-invalid	1	0	0	0	IllegalArgumentException	chunkSize must be >= 1	int(6)=3	431529176
+random-invalid	1	-1	1	2	IllegalArgumentException	chunkSize must be >= 1	int(6)=3	431529176
+random-invalid	1	1	0	0	IllegalArgumentException	maxDocsPerChunk must be >= 1	int(6)=3	431529176
+random-invalid	1	1	-1	2	IllegalArgumentException	maxDocsPerChunk must be >= 1	int(6)=3	431529176
+random-invalid	1	1	1	0	IllegalArgumentException	blockSize must be in 2-22, got 0	int(6)=3	431529176
+random-invalid	1	1	1	1	IllegalArgumentException	blockSize must be in 2-22, got 1	int(6)=3	431529176
+random-invalid	1	1	1	23	IllegalArgumentException	blockSize must be in 2-22, got 23	int(6)=3	431529176
+random-invalid	1	1	1	2147483647	IllegalArgumentException	blockSize must be in 2-22, got 2147483647	int(6)=3	431529176
+random-invalid	18	0	0	0	IllegalArgumentException	chunkSize must be >= 1	int(6)=2	-47841287
+random-invalid	18	-1	1	2	IllegalArgumentException	chunkSize must be >= 1	int(6)=2	-47841287
+random-invalid	18	1	0	0	IllegalArgumentException	maxDocsPerChunk must be >= 1	int(6)=2	-47841287
+random-invalid	18	1	-1	2	IllegalArgumentException	maxDocsPerChunk must be >= 1	int(6)=2	-47841287
+random-invalid	18	1	1	0	IllegalArgumentException	blockSize must be in 2-22, got 0	int(6)=2	-47841287
+random-invalid	18	1	1	1	IllegalArgumentException	blockSize must be in 2-22, got 1	int(6)=2	-47841287
+random-invalid	18	1	1	23	IllegalArgumentException	blockSize must be in 2-22, got 23	int(6)=2	-47841287
+random-invalid	18	1	1	2147483647	IllegalArgumentException	blockSize must be in 2-22, got 2147483647	int(6)=2	-47841287
+random-invalid	42	0	0	0	IllegalArgumentException	chunkSize must be >= 1	int(6)=2	234785527
+random-invalid	42	-1	1	2	IllegalArgumentException	chunkSize must be >= 1	int(6)=2	234785527
+random-invalid	42	1	0	0	IllegalArgumentException	maxDocsPerChunk must be >= 1	int(6)=2	234785527
+random-invalid	42	1	-1	2	IllegalArgumentException	maxDocsPerChunk must be >= 1	int(6)=2	234785527
+random-invalid	42	1	1	0	IllegalArgumentException	blockSize must be in 2-22, got 0	int(6)=2	234785527
+random-invalid	42	1	1	1	IllegalArgumentException	blockSize must be in 2-22, got 1	int(6)=2	234785527
+random-invalid	42	1	1	23	IllegalArgumentException	blockSize must be in 2-22, got 23	int(6)=2	234785527
+random-invalid	42	1	1	2147483647	IllegalArgumentException	blockSize must be in 2-22, got 2147483647	int(6)=2	234785527
+random-invalid	-1	0	0	0	IllegalArgumentException	chunkSize must be >= 1	int(6)=5	1887904451
+random-invalid	-1	-1	1	2	IllegalArgumentException	chunkSize must be >= 1	int(6)=5	1887904451
+random-invalid	-1	1	0	0	IllegalArgumentException	maxDocsPerChunk must be >= 1	int(6)=5	1887904451
+random-invalid	-1	1	-1	2	IllegalArgumentException	maxDocsPerChunk must be >= 1	int(6)=5	1887904451
+random-invalid	-1	1	1	0	IllegalArgumentException	blockSize must be in 2-22, got 0	int(6)=5	1887904451
+random-invalid	-1	1	1	1	IllegalArgumentException	blockSize must be in 2-22, got 1	int(6)=5	1887904451
+random-invalid	-1	1	1	23	IllegalArgumentException	blockSize must be in 2-22, got 23	int(6)=5	1887904451
+random-invalid	-1	1	1	2147483647	IllegalArgumentException	blockSize must be in 2-22, got 2147483647	int(6)=5	1887904451
+random-invalid	-9223372036854775808	0	0	0	IllegalArgumentException	chunkSize must be >= 1	int(6)=0	-723955400
+random-invalid	-9223372036854775808	-1	1	2	IllegalArgumentException	chunkSize must be >= 1	int(6)=0	-723955400
+random-invalid	-9223372036854775808	1	0	0	IllegalArgumentException	maxDocsPerChunk must be >= 1	int(6)=0	-723955400
+random-invalid	-9223372036854775808	1	-1	2	IllegalArgumentException	maxDocsPerChunk must be >= 1	int(6)=0	-723955400
+random-invalid	-9223372036854775808	1	1	0	IllegalArgumentException	blockSize must be in 2-22, got 0	int(6)=0	-723955400
+random-invalid	-9223372036854775808	1	1	1	IllegalArgumentException	blockSize must be in 2-22, got 1	int(6)=0	-723955400
+random-invalid	-9223372036854775808	1	1	23	IllegalArgumentException	blockSize must be in 2-22, got 23	int(6)=0	-723955400
+random-invalid	-9223372036854775808	1	1	2147483647	IllegalArgumentException	blockSize must be in 2-22, got 2147483647	int(6)=0	-723955400
+random-invalid	9223372036854775807	0	0	0	IllegalArgumentException	chunkSize must be >= 1	int(6)=5	1887904451
+random-invalid	9223372036854775807	-1	1	2	IllegalArgumentException	chunkSize must be >= 1	int(6)=5	1887904451
+random-invalid	9223372036854775807	1	0	0	IllegalArgumentException	maxDocsPerChunk must be >= 1	int(6)=5	1887904451
+random-invalid	9223372036854775807	1	-1	2	IllegalArgumentException	maxDocsPerChunk must be >= 1	int(6)=5	1887904451
+random-invalid	9223372036854775807	1	1	0	IllegalArgumentException	blockSize must be in 2-22, got 0	int(6)=5	1887904451
+random-invalid	9223372036854775807	1	1	1	IllegalArgumentException	blockSize must be in 2-22, got 1	int(6)=5	1887904451
+random-invalid	9223372036854775807	1	1	23	IllegalArgumentException	blockSize must be in 2-22, got 23	int(6)=5	1887904451
+random-invalid	9223372036854775807	1	1	2147483647	IllegalArgumentException	blockSize must be in 2-22, got 2147483647	int(6)=5	1887904451

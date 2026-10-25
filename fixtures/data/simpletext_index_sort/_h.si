@@ -1,0 +1,21 @@
+    version 10.5.0
+    min version null
+    number of documents 7
+    uses compound file false
+    has blocks false
+    diagnostics 1
+      key source
+      value fixture
+    attributes 1
+      key note
+      value line\
+break\\
+    files 2
+      file _h.si
+      file _h.other
+    id [11 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0]
+    sort 1
+      name SortedNumericSortField
+      type <sortednumeric: "multi"> missingValue=-9223372036854775808 selector=MIN type=LONG
+      bytes [5 6d 75 6c 74 69 4 4c 4f 4e 47 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0 80]
+checksum 00000000001847313594

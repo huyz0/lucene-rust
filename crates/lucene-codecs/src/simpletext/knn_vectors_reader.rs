@@ -60,6 +60,18 @@ impl FieldEntry {
     pub fn size(&self) -> usize {
         self.ord_to_doc.len()
     }
+
+    /// Decode this entry's vectors from the same `.vec` file. The result
+    /// borrows only the entry; decoded elements are owned, as in Java.
+    ///
+    /// # Errors
+    /// `Corrupted` or `Eof` for an invalid slice, dimension or vector line.
+    pub fn vector_values<T: VectorElement>(
+        &self,
+        vector_data: &[u8],
+    ) -> Result<SimpleTextVectorValues<'_, T>> {
+        SimpleTextVectorValues::new(self, slice(vector_data, self)?)
+    }
 }
 
 /// A vector element type: Java's `float` (`f32`) or `byte` (`u8`, a Java
@@ -195,6 +207,13 @@ impl<'a> SimpleTextKnnVectorsReader<'a> {
         self.field_entries.get(&number)
     }
 
+    /// Move the parsed, owned `.gri` entries into a segment core. Values
+    /// can then borrow these entries and decode from independently owned
+    /// file bytes without a self-referential reader.
+    pub fn into_field_entries(self) -> HashMap<i32, FieldEntry> {
+        self.field_entries
+    }
+
     /// `getFloatVectorValues(field)`.
     ///
     /// # Errors
@@ -249,8 +268,7 @@ impl<'a> SimpleTextKnnVectorsReader<'a> {
                 entry.dimension
             )));
         }
-        let bytes_slice = slice(self.data_in, entry)?;
-        SimpleTextVectorValues::new(entry, bytes_slice).map(Some)
+        entry.vector_values(self.data_in).map(Some)
     }
 
     /// `search(field, target, knnCollector, acceptDocs)` for either target

@@ -52,6 +52,7 @@ mod micro_grouping;
 mod micro_highlight;
 mod micro_hunspell;
 mod micro_infix;
+mod micro_ints_ref_fst_enum;
 mod micro_join;
 mod micro_m7;
 mod micro_memory_index;
@@ -65,6 +66,9 @@ mod micro_snowball;
 mod micro_spatial_extras;
 mod micro_spell;
 mod micro_ssdv_facets;
+mod micro_stmerge;
+mod micro_stphrase;
+mod micro_stsi;
 mod micro_taxonomy;
 mod micro_value_facets;
 mod sexpr;
@@ -2167,6 +2171,27 @@ fn main() {
                 .nth(2)
                 .expect("aggs needs the benchmark corpus directory");
             micro_aggs::bench_aggs(warmup, measure, &index);
+        }
+        "ints_ref_fst_enum" => {
+            micro_ints_ref_fst_enum::bench_ints_ref_fst_enum(warmup, measure);
+        }
+        "stphrase" => {
+            let index = std::env::args()
+                .nth(2)
+                .expect("stphrase needs the single-segment SimpleText phrase fixture");
+            micro_stphrase::bench(warmup, measure, &index);
+        }
+        "stsi" => {
+            let index = std::env::args()
+                .nth(2)
+                .expect("stsi needs the SimpleText index-sort fixture directory");
+            micro_stsi::bench(warmup, measure, &index);
+        }
+        "stmerge" => {
+            let index = std::env::args()
+                .nth(2)
+                .expect("stmerge needs the shared-terms fixture directory");
+            micro_stmerge::bench(warmup, measure, &index);
         }
         "codecs" => {
             let index = std::env::args()

@@ -77,7 +77,7 @@ fn open<T>(f: impl FnOnce(&IndexSearcher<'_, '_>) -> T) -> T {
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
     let fields = vec!["body".to_string()];
-    let owned = reader.field_norms_by_field(&fields);
+    let owned = reader.field_norms_by_field(&fields).unwrap();
     let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
     let searcher = IndexSearcher::new(&segments, &norms).unwrap();
     f(&searcher)

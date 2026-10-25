@@ -689,7 +689,7 @@ fn queries_score_explain_and_prepare() {
     let reader = index();
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
     let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
     let searcher = IndexSearcher::new(&segments, &norms).unwrap();
     let i: Arc<dyn ValueSource> = Arc::new(IntFieldSource::new("i"));
@@ -859,7 +859,7 @@ fn bridges_sorts_and_scorer_edges() {
     let reader = index();
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
     let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
     let searcher = IndexSearcher::new(&segments, &norms).unwrap();
     let vctx = ValuesContext::new(&searcher);
@@ -1316,7 +1316,7 @@ fn a_booleans_explanation_is_its_score_under_the_searchers_similarity() {
     let reader = index();
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
     let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
     let classic = crate::similarities::ClassicSimilarity::default();
     let mut cs = IndexSearcher::new(&segments, &norms).unwrap();
@@ -1936,7 +1936,7 @@ mod batches {
         for seg in &mut segments {
             seg.cache = None;
         }
-        let owned = reader.field_norms_by_field(&["body".to_string()]);
+        let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
         let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
         let searcher = IndexSearcher::new(&segments, &norms).unwrap();
         for q in queries() {
@@ -1982,7 +1982,7 @@ fn a_source_may_take_the_boost_onto_its_wrapped_query() {
     let reader = index();
     let opened = reader.open_segments().unwrap();
     let segments = opened.as_open_segments();
-    let owned = reader.field_norms_by_field(&["body".to_string()]);
+    let owned = reader.field_norms_by_field(&["body".to_string()]).unwrap();
     let norms: Vec<SegmentNorms<'_, '_>> = owned.iter().map(Some).collect();
     let searcher = IndexSearcher::new(&segments, &norms).unwrap();
     assert!(!dvs::scores().boosts_wrapped_query());

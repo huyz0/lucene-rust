@@ -1,0 +1,21 @@
+    version 10.5.0
+    min version null
+    number of documents 7
+    uses compound file false
+    has blocks false
+    diagnostics 1
+      key source
+      value fixture
+    attributes 1
+      key note
+      value line\
+break\\
+    files 2
+      file _4t.other
+      file _4t.si
+    id [ad 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0]
+    sort 1
+      name SortedSetSortField
+      type <sortedset: "set">! missingValue=SortField.STRING_FIRST selector=MIDDLE_MIN
+      bytes [3 73 65 74 1 0 0 0 2 0 0 0 1 0 0 0]
+checksum 00000000004118224865

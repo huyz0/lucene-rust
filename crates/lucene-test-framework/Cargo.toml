@@ -13,7 +13,8 @@ publish = false
 # `test-framework-dev-only` rule enforces it). Per package: a whole-workspace
 # build unifies the `test-support` feature below into its lucene-util, the
 # `asserting` feature into its lucene-search, and the `test-util` feature
-# into its lucene-store (the fault seams the mock directory hooks); a
+# into its lucene-store (the fault seams the mock directory hooks), and
+# `test-support` into lucene-codecs (stored-fields publication seams); a
 # `-p lucene-ffi` build has none of them, as with the other crates'
 # dev-dependencies. See the architecture skill and
 # PLAN.md section 1.
@@ -25,7 +26,7 @@ publish = false
 [dependencies]
 lucene-util = { path = "../lucene-util", features = ["test-support"] }
 lucene-store = { path = "../lucene-store", features = ["test-util"] }
-lucene-codecs = { path = "../lucene-codecs" }
+lucene-codecs = { path = "../lucene-codecs", features = ["test-support"] }
 lucene-index = { path = "../lucene-index" }
 # `asserting`: the scorer-tree seam the search checks (`search::query_utils`,
 # `search::asserting`) drive -- lucene-search's `test_support` module.
@@ -37,8 +38,10 @@ lucene-analysis = { path = "../lucene-analysis" }
 miniz_oxide.workspace = true
 # `BaseDirectoryTestCase.testChecksum`'s reference CRC32.
 crc32fast.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 # `tests/check_random_data_all_analyzers.rs` runs `check_random_data` over
 # every Analyzer in the workspace, the M12 modules' included.
 lucene-analysis-icu = { path = "../lucene-analysis-icu" }

@@ -698,6 +698,25 @@ disposable VMs).
 
 The target trim was run for real on the 151 GB volume, not on a stub.
 
+Each checkout uses its own `lucene-rust-target-<path-hash>` volume. All
+checkouts appear at `/work` inside the container, so sharing one target volume
+can make Cargo reuse another worktree's artifact when an older source mtime
+appears unchanged. A linked-worktree build encountered exactly this: its
+source exported `IntsRefFstEnum`, but Cargo reused a codec artifact lacking
+that export. The registry remains shared; the target cache name is printed
+at startup and supplied to the container's disk-space diagnostic. The 160 GB
+target trim applies per checkout; host free-space checks cover the shared
+Docker disk.
+
+Isolation was exercised through the official runner in two real checkouts:
+the root used `lucene-rust-target-39807d234921` and the linked worker used
+`lucene-rust-target-ba9fa96c55e7`. A marker written under the root's
+`CARGO_TARGET_DIR` was absent in the worker, then remained intact when the
+root reopened its cache; the marker was removed. This tests distinct storage,
+not Cargo's incremental invalidation within one checkout. It cannot detect a
+path-hash collision, aliases of the same checkout receiving separate caches,
+or stale artifacts caused by source timestamps inside one cache.
+
 Seen to fail, each by forcing its input: an unreachable `DOCKER_HOST` (fails in
 the timeout, not a hang), `MIN_FREE_GB`/`MIN_REPO_FREE_GB` above the real free
 space, `DOCKER_VHDX_MAX_GB=0` (refuses only with `VHDX_HARD_FREE_GB` above the real free space, else warns: a 306 GB disk on a drive with 398 GB free once blocked every run for a compaction only the user can schedule), and a stub `docker` reporting a 57 GB build cache
@@ -713,8 +732,8 @@ drive; lower the ceilings, do not set `PREFLIGHT=0`, on a smaller one.
 ### One job at a time
 
 `docker-test.sh` also serialises its containers across every checkout and
-session on the machine. Two concurrent runs share the `lucene-rust-target`
-volume, where cargo corrupts its own state, and each may take 16 GiB, which can
+session on the machine. Two concurrent runs for one checkout share its target
+volume, where cargo can corrupt its own state, and each may take 16 GiB, which can
 exhaust the WSL2 VM -- and parallel agent sessions made "check `docker ps`
 first" a rule nobody could follow reliably. The lock is a directory under
 `$HOME` (`mkdir` is atomic; Git Bash has no `flock`) holding an `owner` line,
@@ -978,6 +997,31 @@ reordering merge. Blind to: binary and sorted doc-values updates, soft deletes
 and update-by-query (none in the stream), concurrency (one thread), I/O
 faults (see `test-framework-faults`), and any field the model does not read
 (only `id` and `n` are compared; the rest is left to `CheckIndex`).
+
+## Benchmark result reports
+
+`scripts/test-bench-micro-report.py` runs in the gate. It plants malformed
+paired output in temporary files and invokes `bench-micro-report.py` itself:
+duplicate timing/check rows, missing timings/checks in later repetitions,
+changed digests or operation counts, malformed/empty checks, and nonnumeric,
+zero, negative or nonfinite timing values must fail. Valid paired reports,
+including zero-byte memory rows, must pass; memory rows must not enter timing
+statistics. The loader and integer-FST scripts pass explicit `--require-check`
+case names so removing both twins' checks cannot make them pass unchecked.
+
+The regression suite itself was seen to fail against three temporary report
+copies: accepting duplicate timing rows produced one failed test; ignoring
+required checks produced three; letting memory rows enter timing ratios
+produced two. The production report stayed unchanged and the temporary
+copies were removed. These mutations exercise the suite's ability to reject
+the targeted implementation defects, in addition to its malformed-input
+cases.
+
+Blind to: algorithm correctness, digest collisions, misleading operation
+counts that both twins print identically, and checks omitted by both engines
+throughout a legacy benchmark that does not pass `--require-check`. Timings
+can still be noisy; the report describes that uncertainty rather than proving
+a speed difference. Fixture tests separately establish Java parity.
 
 ## Each of these has been seen to fail
 

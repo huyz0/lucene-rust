@@ -205,6 +205,7 @@ fn mixed_boolean_queries_match_real_lucene_pruned_and_exact() {
     );
     let owned: Vec<HashMap<String, FieldNorms<'_>>> = reader
         .field_norms("body")
+        .unwrap()
         .into_iter()
         .map(|n| n.into_iter().map(|n| ("body".to_string(), n)).collect())
         .collect();

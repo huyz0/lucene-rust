@@ -1,0 +1,30 @@
+    version 10.5.0
+    min version null
+    number of documents 7
+    uses compound file false
+    has blocks false
+    diagnostics 1
+      key source
+      value fixture
+    attributes 1
+      key note
+      value line\
+break\\
+    files 2
+      file _51.si
+      file _51.other
+    id [b5 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0]
+    sort 4
+      name SortField
+      type <long: "first">!
+      bytes [5 66 69 72 73 74 4 4c 4f 4e 47 1 0 0 0 0 0 0 0]
+      name SortedNumericSortField
+      type <sortednumeric: "second"> selector=MAX type=FLOAT
+      bytes [6 73 65 63 6f 6e 64 5 46 4c 4f 41 54 0 0 0 0 1 0 0 0 0 0 0 0]
+      name SortedSetSortField
+      type <sortedset: "third">! selector=MIDDLE_MAX
+      bytes [5 74 68 69 72 64 1 0 0 0 3 0 0 0 0 0 0 0]
+      name BinarySortField
+      type <binary: "fourth">
+      bytes [6 66 6f 75 72 74 68 0 0 0 0 0 0 0 0]
+checksum 00000000002163362482
