@@ -116,9 +116,10 @@ fn build_unchecked<'a>(
 ) -> Result<Option<BoxScorer<'a>>> {
     match term_leg(ctx, clause, boost, mode)? {
         TermForm::Leg(leg) => {
-            return Ok(Some(Box::new(TermScorer::new(
+            return Ok(Some(Box::new(TermScorer::at_level(
                 *leg,
-                mode == Mode::TopScores && top_level,
+                mode == Mode::TopScores,
+                top_level,
             ))));
         }
         TermForm::Absent => return Ok(None),
@@ -169,12 +170,12 @@ fn build_unchecked<'a>(
                 if all_terms {
                     // Java returns a sole present supplier unchanged; otherwise
                     // only a zero-tie dismax forwards the top-level notification.
-                    let term_top_level = mode == Mode::TopScores
-                        && top_level
-                        && (legs.len() == 1 || d.tie_breaker == 0.0);
+                    let term_top_level = top_level && (legs.len() == 1 || d.tie_breaker == 0.0);
                     let mut terms: Vec<_> = legs
                         .into_iter()
-                        .map(|leg| TermScorer::new(leg, term_top_level))
+                        .map(|leg| {
+                            TermScorer::at_level(leg, mode == Mode::TopScores, term_top_level)
+                        })
                         .collect();
                     return Ok(match terms.len() {
                         0 => None,
@@ -707,13 +708,15 @@ impl<'a> Child<'a> {
         self.into_scorer_at_level(mode, true)
     }
 
-    /// `TermQuery`'s supplier enables `ImpactsDISI` only after
-    /// `setTopLevelScoringClause`, even when its score mode is `TOP_SCORES`.
+    /// Preserve the distinct `TermQuery` and fused `ConstantScoreQuery`
+    /// threshold eligibility rules.
     fn into_scorer_at_level(self, mode: Mode, top_level: bool) -> BoxScorer<'a> {
         match self {
-            Child::Leg(leg) => {
-                Box::new(TermScorer::new(*leg, mode == Mode::TopScores && top_level))
-            }
+            Child::Leg(leg) => Box::new(TermScorer::at_level(
+                *leg,
+                mode == Mode::TopScores,
+                top_level,
+            )),
             Child::Scorer(s) => s,
             Child::TermSum(legs) => Box::new(term_sum(legs, mode)),
         }
@@ -1226,10 +1229,13 @@ fn req<'a>(
     }
     let block_max = mode == Mode::TopScores && must.len() > 1 && top_level;
     if !block_max && must.iter().chain(&filter).all(Child::is_leg) {
+        // Java: `ConjunctionScorer` forwards to its sole scoring child;
+        // `ConstantScoreScorer` accepts it without top-level notification.
+        let constant = matches!(must.as_slice(), [Child::Leg(leg)] if leg.is_constant_scorer());
         return Ok(Box::new(LegConjunctionScorer::new(
             filter.into_iter().map(Child::into_leg).collect(),
             must.into_iter().map(Child::into_leg).collect(),
-            mode == Mode::TopScores && top_level,
+            mode == Mode::TopScores && (top_level || constant),
         )));
     }
     let filter: Vec<BoxScorer<'a>> = filter

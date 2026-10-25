@@ -6,8 +6,8 @@ use lucene_search::collector::{ScoreMode, ScoringCollector, TotalHitsRelation};
 use lucene_search::collectors::CollectorManager;
 use lucene_search::extended_query::{BlendedRewrite, BlendedTermQuery};
 use lucene_search::query::{
-    BooleanQuery, Clause, ConstantScoreQuery, DisjunctionMaxQuery, MatchAllDocsQuery, PhraseQuery,
-    TermQuery,
+    BooleanQuery, BoostQuery, Clause, ConstantScoreQuery, DisjunctionMaxQuery, MatchAllDocsQuery,
+    PhraseQuery, TermQuery,
 };
 use lucene_search::top_docs::TopDocs;
 use lucene_search::Result;
@@ -147,6 +147,78 @@ pub fn threshold_clauses() -> Vec<(&'static str, Clause, usize)> {
             }
             .into(),
             5,
+        ),
+    ]
+}
+pub fn constant_threshold_clauses() -> Vec<(&'static str, Clause)> {
+    let constant = || -> Clause { ConstantScoreQuery::new(term("a"), 1.0).into() };
+    vec![
+        ("constant_term", constant()),
+        (
+            "boosted_constant_term",
+            BoostQuery::new(constant(), 2.0).into(),
+        ),
+        (
+            "nested_boosted_constant_term",
+            BoostQuery::new(
+                ConstantScoreQuery::new(BoostQuery::new(constant(), 3.0), 1.0),
+                2.0,
+            )
+            .into(),
+        ),
+        (
+            "constant_required_filter",
+            BooleanQuery {
+                must: vec![constant()],
+                filter: vec![term("b")],
+                ..BooleanQuery::default()
+            }
+            .into(),
+        ),
+        (
+            "constant_required_exclusion",
+            BooleanQuery {
+                must: vec![constant()],
+                must_not: vec![term("d")],
+                ..BooleanQuery::default()
+            }
+            .into(),
+        ),
+        (
+            "constant_disjunction",
+            BooleanQuery {
+                should: vec![constant(), ConstantScoreQuery::new(term("b"), 1.0).into()],
+                ..BooleanQuery::default()
+            }
+            .into(),
+        ),
+        (
+            "constant_dismax",
+            DisjunctionMaxQuery::new(
+                [constant(), ConstantScoreQuery::new(term("b"), 1.0).into()],
+                0.0,
+            )
+            .into(),
+        ),
+        (
+            "constant_dismax_tie",
+            DisjunctionMaxQuery::new(
+                [constant(), ConstantScoreQuery::new(term("b"), 1.0).into()],
+                0.5,
+            )
+            .into(),
+        ),
+        (
+            "constant_dismax_singleton",
+            DisjunctionMaxQuery::new([constant(), term("absent")], 0.0).into(),
+        ),
+        (
+            "constant_dismax_singleton_tie",
+            DisjunctionMaxQuery::new([constant(), term("absent")], 0.5).into(),
+        ),
+        (
+            "constant_dismax_mixed",
+            DisjunctionMaxQuery::new([constant(), term("b")], 0.0).into(),
         ),
     ]
 }

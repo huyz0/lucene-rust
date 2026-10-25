@@ -23,6 +23,14 @@ pub(crate) struct TermScorer<'a> {
 }
 
 impl<'a> TermScorer<'a> {
+    /// Java: `TermQuery` requires `setTopLevelScoringClause` before pruning,
+    /// while `ConstantScoreScorer` uses only `TOP_SCORES`, including when a
+    /// constant-scored term is fused into this scorer.
+    pub(crate) fn at_level(leg: TermLeg<'a>, top_scores: bool, top_level: bool) -> Self {
+        let prune = top_scores && (top_level || leg.is_constant_scorer());
+        Self::new(leg, prune)
+    }
+
     /// The term's leg, for a caller that reads its postings a block at a
     /// time ([`super::term_dismax::TermDisMaxScorer`]). Its threshold is
     /// this scorer's: the leg iterates through its impacts exactly when this

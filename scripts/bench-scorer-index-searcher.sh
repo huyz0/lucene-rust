@@ -26,8 +26,10 @@ for rep in 1 2 3; do
 done
 python3 scripts/bench-micro-report.py "$OUT" 3 \
   --require-check scorer_searcher_complete --require-check scorer_searcher_no_scores \
-  --require-check disabling_query_complete --require-check disabling_query_no_scores
+  --require-check disabling_query_complete --require-check disabling_query_no_scores \
+  --require-check scorer_searcher_constant_term_top_scores \
+  --require-check disabling_query_constant_term_top_scores
 for engine in rust java; do for rep in 1 2 3; do sed "s/^/$engine rep=$rep /" "$OUT/$engine.$rep.tsv"; done; done
-echo 'Each step searches the same nine queries across three committed leaves of 768 documents, 192 deletions, under COMPLETE or COMPLETE_NO_SCORES. Both engines hash every global doc id and score bit, counts and query order; four mandatory checks must agree.'
+echo 'Each step searches the same nine queries across three committed leaves of 768 documents, 192 deletions, under COMPLETE or COMPLETE_NO_SCORES. Both engines hash every global doc id and score bit, counts and query order. Six mandatory checks must agree; two extra TOP_SCORES cases wrap a constant-scored term and raise the threshold to infinity after the first live hit, requiring exactly one hit per search.'
 echo 'Actual ScorerIndexSearcher and DisablingBulkScorerQuery APIs; both deliberately suppress specialized bulk scorers and top-level supplier optimization. Preparation/rewriting, weight/scorer creation and digest collectors are timed; index construction, reader opening and query construction are not.'
 echo 'Memory: wrapper shallow increment over the same underlying IndexSearcher only; Rust owns its searcher by value without a size increment; Java subclass has no added fields; neither wrapper adds a heap allocation. Excludes complete reader/searcher graphs, per-search temporary allocations, query-wrapper memory, allocator/GC/RSS. Field sorts/facets and leaf subranges are not benchmarked.'
