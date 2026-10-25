@@ -78,6 +78,20 @@ public class GenScorerIndexSearcher {
       bool(term("a"), Occur.MUST, term("b"), Occur.FILTER),
       bool(term("a"), Occur.MUST, term("d"), Occur.MUST_NOT)};
   }
+  static final String[] CONSTANT_THRESHOLD_NAMES = {"constant_term", "boosted_constant_term", "nested_boosted_constant_term", "constant_required_filter", "constant_required_exclusion", "constant_disjunction", "constant_dismax", "constant_dismax_tie", "constant_dismax_singleton", "constant_dismax_singleton_tie", "constant_dismax_mixed"};
+  static Query[] constantThresholdQueries() {
+    return new Query[] {new ConstantScoreQuery(term("a")),
+      new BoostQuery(new ConstantScoreQuery(term("a")), 2f),
+      new BoostQuery(new ConstantScoreQuery(new BoostQuery(new ConstantScoreQuery(term("a")), 3f)), 2f),
+      bool(new ConstantScoreQuery(term("a")), Occur.MUST, term("b"), Occur.FILTER),
+      bool(new ConstantScoreQuery(term("a")), Occur.MUST, term("d"), Occur.MUST_NOT),
+      bool(new ConstantScoreQuery(term("a")), Occur.SHOULD, new ConstantScoreQuery(term("b")), Occur.SHOULD),
+      new DisjunctionMaxQuery(List.of(new ConstantScoreQuery(term("a")), new ConstantScoreQuery(term("b"))), 0f),
+      new DisjunctionMaxQuery(List.of(new ConstantScoreQuery(term("a")), new ConstantScoreQuery(term("b"))), 0.5f),
+      new DisjunctionMaxQuery(List.of(new ConstantScoreQuery(term("a")), term("absent")), 0f),
+      new DisjunctionMaxQuery(List.of(new ConstantScoreQuery(term("a")), term("absent")), 0.5f),
+      new DisjunctionMaxQuery(List.of(new ConstantScoreQuery(term("a")), term("b")), 0f)};
+  }
   static class Searcher extends ScorerIndexSearcher {
     Searcher(DirectoryReader reader, ExecutorService pool) { super(reader, pool); }
     @Override protected LeafSlice[] slices(List<LeafReaderContext> leaves) {
@@ -94,18 +108,19 @@ public class GenScorerIndexSearcher {
   record Hit(int doc, int bits) {}
   static class Hits implements Collector {
     final ScoreMode mode;
-    final boolean infinity;
+    final float minimumScore;
     final List<Hit> hits = new ArrayList<>();
-    Hits(ScoreMode mode) { this(mode, false); }
-    Hits(ScoreMode mode, boolean infinity) { this.mode = mode; this.infinity = infinity; }
+    Hits(ScoreMode mode) { this(mode, Float.NEGATIVE_INFINITY); }
+    Hits(ScoreMode mode, boolean infinity) { this(mode, infinity ? Float.POSITIVE_INFINITY : Float.NEGATIVE_INFINITY); }
+    Hits(ScoreMode mode, float minimumScore) { this.mode = mode; this.minimumScore = minimumScore; }
     @Override public ScoreMode scoreMode() { return mode; }
     @Override public LeafCollector getLeafCollector(LeafReaderContext ctx) {
       return new LeafCollector() {
         Scorable scorer;
-        @Override public void setScorer(Scorable scorer) throws IOException { this.scorer = scorer; if (infinity) scorer.setMinCompetitiveScore(Float.POSITIVE_INFINITY); }
+        @Override public void setScorer(Scorable scorer) throws IOException { this.scorer = scorer; if (minimumScore != Float.NEGATIVE_INFINITY) scorer.setMinCompetitiveScore(minimumScore); }
         @Override public void collect(int doc) throws IOException {
           hits.add(new Hit(ctx.docBase + doc, mode.needsScores() ? Float.floatToRawIntBits(scorer.score()) : 0));
-          if (infinity) scorer.setMinCompetitiveScore(Float.POSITIVE_INFINITY);
+          if (minimumScore != Float.NEGATIVE_INFINITY) scorer.setMinCompetitiveScore(minimumScore);
         }
       };
     }
@@ -193,6 +208,18 @@ public class GenScorerIndexSearcher {
           Query thresholdQuery = mode.equals("disabling_query") ? new DisablingBulkScorerQuery(thresholdQueries[t]) : thresholdQueries[t];
           Hits threshold = new Hits(ScoreMode.TOP_SCORES, true); searcher.search(thresholdQuery, threshold);
           row("threshold", mode, sim, THRESHOLD_NAMES[t], threshold.text());
+        }
+        // ConstantScoreScorer responds to scoreMode, independently of the
+        // supplier top-level notification that real TermScorer requires.
+        Query[] constantQueries = constantThresholdQueries();
+        String[] thresholdLabels = {"one", "two", "infinity"};
+        float[] minimumScores = {1f, 2f, Float.POSITIVE_INFINITY};
+        for (int q = 0; q < constantQueries.length; q++) {
+          Query constantQuery = mode.equals("disabling_query") ? new DisablingBulkScorerQuery(constantQueries[q]) : constantQueries[q];
+          for (ScoreMode scoreMode : ScoreMode.values()) for (int t = 0; t < minimumScores.length; t++) {
+            Hits threshold = new Hits(scoreMode, minimumScores[t]); searcher.search(constantQuery, threshold);
+            row("constant_threshold", mode, sim, CONSTANT_THRESHOLD_NAMES[q], scoreMode, thresholdLabels[t], threshold.text());
+          }
         }
         List<Hit> ordinaryThreshold = new ArrayList<>();
         Weight ordinaryWeight = plain.createWeight(plain.rewrite(term("a")), ScoreMode.TOP_DOCS_WITH_SCORES, 1f);

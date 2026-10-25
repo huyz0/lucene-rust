@@ -24,8 +24,8 @@ impl lucene_search::reader::exitable::QueryTimeout for AlwaysTimeout {
     }
 }
 
-struct InfiniteThreshold(Hits);
-impl ScoringCollector for InfiniteThreshold {
+struct Threshold(Hits, f32);
+impl ScoringCollector for Threshold {
     fn collect(&mut self, doc: i32, score: f32) {
         self.0.collect(doc, score)
     }
@@ -33,7 +33,10 @@ impl ScoringCollector for InfiniteThreshold {
         self.0.mode
     }
     fn min_competitive_score(&self) -> Option<f32> {
-        Some(f32::INFINITY)
+        // The collector reports an exclusive bound; DefaultBulkScorer adds
+        // one ULP before the scorer setter. Java's fixture calls that setter
+        // directly, so translate its inclusive minimum back to this bound.
+        Some(self.1.next_down())
     }
 }
 
@@ -171,7 +174,7 @@ fn indexed_searches_match_actual_java_wrappers() {
                     } else {
                         clause
                     });
-                    let mut threshold = InfiniteThreshold(Hits::new(ScoreMode::TopScores));
+                    let mut threshold = Threshold(Hits::new(ScoreMode::TopScores), f32::INFINITY);
                     if mode == "scorer_searcher" {
                         forced.search_collector(&query, &mut threshold).unwrap()
                     } else {
@@ -182,6 +185,24 @@ fn indexed_searches_match_actual_java_wrappers() {
                         "threshold\t{mode}\t{sim}\t{name}\t{}",
                         hits_text(&threshold.0.hits)
                     ));
+                }
+                // Constant-score scorers prune by mode alone, whereas real
+                // terms above also require top-level supplier notification.
+                for (name, clause) in constant_threshold_clauses() {
+                    let query = top_level(if mode == "disabling_query" { disabling_bulk_scorer_query::wrap(clause) } else { clause });
+                    for (score_mode, label) in [
+                        (ScoreMode::Complete, "COMPLETE"),
+                        (ScoreMode::CompleteNoScores, "COMPLETE_NO_SCORES"),
+                        (ScoreMode::TopScores, "TOP_SCORES"),
+                        (ScoreMode::TopDocs, "TOP_DOCS"),
+                        (ScoreMode::TopDocsWithScores, "TOP_DOCS_WITH_SCORES"),
+                    ] {
+                        for (threshold_label, minimum) in [("one", 1.0), ("two", 2.0), ("infinity", f32::INFINITY)] {
+                            let mut threshold = Threshold(Hits::new(score_mode), minimum);
+                            if mode == "scorer_searcher" { forced.search_collector(&query, &mut threshold).unwrap(); } else { plain.search_collector(&query, &mut threshold).unwrap(); }
+                            rows.push(format!("constant_threshold\t{mode}\t{sim}\t{name}\t{label}\t{threshold_label}\t{}", hits_text(&threshold.0.hits)));
+                        }
+                    }
                 }
                 // Observe the ordinary scorer API directly: a specialized bulk
                 // scorer may separately filter against a collector threshold.
