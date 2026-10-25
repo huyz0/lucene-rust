@@ -1600,6 +1600,76 @@ fn conjunction_membership_fallback_and_leg_thresholds() {
     );
 }
 
+/// A fused constant term follows ConstantScoreScorer's mode-only threshold
+/// rule; a genuine term still needs its supplier's top-level notification.
+#[test]
+fn fused_constant_term_thresholds_preserve_iterator_state_and_score_boundaries() {
+    use crate::directory_reader::DirectoryReader;
+    use crate::query::{Clause, ConstantScoreQuery, TermQuery};
+    let reader = DirectoryReader::open(&lucene_store::FsDirectory::open(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/data/mixed_boolean_scoring_index"
+    )))
+    .unwrap();
+    let opened = reader.open_segments().unwrap();
+    let seg = &opened.as_open_segments()[0];
+    let ctx = super::build::LeafContext {
+        fields: seg.fields,
+        doc_in: seg.doc_in,
+        pos_in: seg.pos_in,
+        pay_in: seg.pay_in,
+        live_docs: None,
+        points: None,
+        norms: None,
+        global: None,
+        max_doc: seg.max_doc,
+        cache: None,
+        reader: None,
+        similarity: None,
+    };
+    for constant in [false, true] {
+        let term = Clause::Term(TermQuery::new("body", "w0"));
+        let query = if constant {
+            ConstantScoreQuery::new(term, 2.0).into()
+        } else {
+            term
+        };
+        for mode in [Mode::TopScores, Mode::Complete, Mode::NoScores] {
+            for top_level in [false, true] {
+                for positioned in [false, true] {
+                    for advance in [false, true] {
+                        let mut scorer = super::build::build(&ctx, &query, 1.0, mode, top_level)
+                            .unwrap()
+                            .unwrap();
+                        if constant {
+                            scorer.set_min_competitive_score(2.0).unwrap();
+                        }
+                        if positioned {
+                            assert_ne!(scorer.next_doc().unwrap(), NO_MORE_DOCS);
+                            if constant && mode.needs_scores() {
+                                assert_eq!(scorer.score().unwrap(), 2.0);
+                            }
+                        }
+                        let before = scorer.doc_id();
+                        scorer.set_min_competitive_score(f32::INFINITY).unwrap();
+                        assert_eq!(scorer.doc_id(), before, "setting a threshold does not move");
+                        let next = if advance {
+                            scorer.advance(before.saturating_add(1)).unwrap()
+                        } else {
+                            scorer.next_doc().unwrap()
+                        };
+                        let prunes = mode == Mode::TopScores && (constant || top_level);
+                        assert_eq!(next == NO_MORE_DOCS, prunes);
+                        if !prunes {
+                            assert!(next > before);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// A phrase on a segment without norms scores every document at the
 /// unnormed length, like a term does.
 #[test]
@@ -2708,6 +2778,166 @@ fn index_or_doc_values_picks_its_side_by_the_lead_cost() {
             .push(Clause::Term(TermQuery::new("body", b"t7".to_vec())));
         Clause::Boolean(Box::new(q))
     }
+}
+
+#[test]
+fn constant_and_zero_wrappers_preserve_cached_membership_until_pruned() {
+    use super::cache::{CachedScorer, CachedSet};
+    use super::leaf::ZeroScorer;
+    use lucene_util::fixed_bit_set::FixedBitSet;
+    use std::sync::Arc;
+
+    let mut bits = FixedBitSet::new(8);
+    for doc in [1, 2, 5] {
+        assert!(doc < bits.len());
+        bits.set(doc);
+    }
+    let set = Arc::new(CachedSet::Bits {
+        bits,
+        cardinality: 3,
+    });
+    for top_scores in [false, true] {
+        let cached = CachedScorer::constant(Arc::clone(&set), 9.0, false);
+        let mut scorer = ConstantScorer::new(Box::new(cached), 2.0, top_scores);
+        let (forwarded, score) = scorer.constant_bits().unwrap();
+        assert!(Arc::ptr_eq(&forwarded, &set));
+        assert_eq!(score, 2.0, "outer constant replaces the cached score");
+        for (doc, present) in [(-1, false), (0, false), (1, true), (5, true), (8, false)] {
+            assert_eq!(scorer.contains(doc), Some(present));
+        }
+        assert_eq!(scorer.next_doc().unwrap(), 1);
+        assert_eq!(scorer.doc_id_run_end(), 3);
+        scorer.set_min_competitive_score(2.0).unwrap();
+        assert!(scorer.constant_bits().is_some(), "ties remain competitive");
+        assert_eq!(scorer.contains(2), Some(true));
+        scorer.set_min_competitive_score(2.0_f32.next_up()).unwrap();
+        assert_eq!(
+            scorer.doc_id(),
+            1,
+            "publishing a bound does not move the cursor"
+        );
+        if top_scores {
+            assert!(scorer.constant_bits().is_none());
+            assert_eq!(scorer.contains(2), None);
+            assert_eq!(scorer.constant_score(), None);
+            assert!(!scorer.batch_matches());
+            assert_eq!(scorer.doc_id_run_end(), 2);
+            assert_eq!(scorer.advance(2).unwrap(), NO_MORE_DOCS);
+            assert_eq!(scorer.doc_id_run_end(), NO_MORE_DOCS);
+        } else {
+            assert!(scorer.constant_bits().is_some());
+            assert_eq!(scorer.contains(2), Some(true));
+            assert_eq!(scorer.constant_score(), Some(2.0));
+            assert_eq!(scorer.advance(2).unwrap(), 2);
+        }
+    }
+
+    let mut zero = ZeroScorer(Box::new(CachedScorer::new(set)));
+    assert_eq!(zero.contains(1), Some(true));
+    assert_eq!(zero.contains(3), Some(false));
+    assert_eq!(zero.contains(-1), Some(false));
+    assert_eq!(zero.contains(8), Some(false));
+    assert_eq!(zero.next_doc().unwrap(), 1);
+    assert_eq!(zero.score().unwrap(), 0.0);
+    assert_eq!(
+        zero.contains(5),
+        Some(true),
+        "membership does not move the cursor"
+    );
+    assert_eq!(zero.doc_id(), 1);
+    let unknown = ZeroScorer(Box::new(DocList::new(vec![1, 5], vec![])));
+    assert_eq!(unknown.contains(1), None, "unknown membership is preserved");
+}
+
+#[test]
+fn constant_wrapper_batch_confirmation_tracks_the_inner_approximation() {
+    use super::cache::CachedSet;
+    use std::sync::Arc;
+
+    struct EvenDocuments(AllDocs, Arc<CachedSet>);
+    impl Scorer for EvenDocuments {
+        fn doc_id(&self) -> i32 {
+            self.0.doc_id()
+        }
+        fn next_doc(&mut self) -> Result<i32> {
+            self.0.next_doc()
+        }
+        fn advance(&mut self, target: i32) -> Result<i32> {
+            self.0.advance(target)
+        }
+        fn cost(&self) -> i64 {
+            self.0.cost()
+        }
+        fn two_phase(&self) -> bool {
+            true
+        }
+        fn matches(&mut self) -> Result<bool> {
+            Ok(self.doc_id() % 2 == 0)
+        }
+        fn batch_matches(&self) -> bool {
+            true
+        }
+        fn score(&mut self) -> Result<f32> {
+            Ok(19.0)
+        }
+        fn max_score(&mut self, _: i32) -> Result<f32> {
+            Ok(19.0)
+        }
+        fn constant_bits(&self) -> Option<(Arc<CachedSet>, f32)> {
+            Some((Arc::clone(&self.1), 19.0))
+        }
+    }
+
+    // A dense approximation with selective confirmation is the batch contract
+    // used by function ranges; the trait default confirms each requested doc.
+    let mut bits = lucene_util::fixed_bit_set::FixedBitSet::new(8);
+    for doc in 0..bits.len() {
+        bits.set(doc);
+    }
+    let approximation = Arc::new(CachedSet::Bits {
+        bits,
+        cardinality: 8,
+    });
+    let inner = EvenDocuments(AllDocs::new(8), approximation);
+    assert!(inner.constant_bits().is_some());
+    let mut scorer = ConstantScorer::new(Box::new(inner), 6.0, true);
+    assert!(scorer.two_phase());
+    assert!(scorer.batch_matches());
+    assert!(
+        scorer.constant_bits().is_none(),
+        "two-phase confirmation cannot be skipped"
+    );
+    let mut keep = [false, true, true, false];
+    scorer.matches_batch(&[0, 1, 3, 4], &mut keep).unwrap();
+    assert_eq!(keep, [true, false, false, true]);
+    assert_eq!(scorer.doc_id(), 4);
+    assert!(scorer.matches().unwrap());
+    assert_eq!(scorer.score().unwrap(), 6.0);
+    assert_eq!(scorer.next_doc().unwrap(), 5);
+    assert!(!scorer.matches().unwrap());
+    scorer.matches_batch(&[], &mut []).unwrap();
+    assert_eq!(
+        scorer.doc_id(),
+        5,
+        "an empty batch leaves both cursors unchanged"
+    );
+    let mut keep = [false, true];
+    scorer.matches_batch(&[6, 7], &mut keep).unwrap();
+    assert_eq!(keep, [true, false]);
+    assert_eq!(
+        scorer.doc_id(),
+        7,
+        "the cursor ends on the last approximation, even a nonmatch"
+    );
+    scorer.set_min_competitive_score(6.0).unwrap();
+    assert!(scorer.batch_matches());
+    scorer.set_min_competitive_score(6.0_f32.next_up()).unwrap();
+    assert!(
+        !scorer.batch_matches(),
+        "an emptied scorer must not advertise batch confirmation"
+    );
+    assert_eq!(scorer.doc_id(), 7);
+    assert_eq!(scorer.next_doc().unwrap(), NO_MORE_DOCS);
 }
 
 #[test]

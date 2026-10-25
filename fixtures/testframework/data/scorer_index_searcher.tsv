@@ -99,6 +99,171 @@ threshold	scorer_searcher	bm25	blended	0:3e821007,2:3e3985c9,3:3e821007,4:3e59e4
 threshold	scorer_searcher	bm25	single_phrase	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007,11:3e3985c9
 threshold	scorer_searcher	bm25	required_filter	0:3e821007,2:3e3985c9,5:3e3985c9,9:3e821007,11:3e3985c9
 threshold	scorer_searcher	bm25	required_exclusion	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007
+constant_threshold	scorer_searcher	bm25	constant_term	COMPLETE	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_term	COMPLETE	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_term	COMPLETE	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_term	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_term	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_term	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_term	TOP_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_term	TOP_SCORES	two	
+constant_threshold	scorer_searcher	bm25	constant_term	TOP_SCORES	infinity	
+constant_threshold	scorer_searcher	bm25	constant_term	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_term	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_term	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_term	TOP_DOCS_WITH_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_term	TOP_DOCS_WITH_SCORES	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_term	TOP_DOCS_WITH_SCORES	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	boosted_constant_term	COMPLETE	one	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	bm25	boosted_constant_term	COMPLETE	two	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	bm25	boosted_constant_term	COMPLETE	infinity	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	bm25	boosted_constant_term	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	boosted_constant_term	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	boosted_constant_term	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	boosted_constant_term	TOP_SCORES	one	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	bm25	boosted_constant_term	TOP_SCORES	two	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	bm25	boosted_constant_term	TOP_SCORES	infinity	
+constant_threshold	scorer_searcher	bm25	boosted_constant_term	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	boosted_constant_term	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	boosted_constant_term	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	boosted_constant_term	TOP_DOCS_WITH_SCORES	one	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	bm25	boosted_constant_term	TOP_DOCS_WITH_SCORES	two	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	bm25	boosted_constant_term	TOP_DOCS_WITH_SCORES	infinity	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	bm25	nested_boosted_constant_term	COMPLETE	one	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	bm25	nested_boosted_constant_term	COMPLETE	two	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	bm25	nested_boosted_constant_term	COMPLETE	infinity	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	bm25	nested_boosted_constant_term	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	nested_boosted_constant_term	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	nested_boosted_constant_term	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	nested_boosted_constant_term	TOP_SCORES	one	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	bm25	nested_boosted_constant_term	TOP_SCORES	two	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	bm25	nested_boosted_constant_term	TOP_SCORES	infinity	
+constant_threshold	scorer_searcher	bm25	nested_boosted_constant_term	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	nested_boosted_constant_term	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	nested_boosted_constant_term	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	nested_boosted_constant_term	TOP_DOCS_WITH_SCORES	one	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	bm25	nested_boosted_constant_term	TOP_DOCS_WITH_SCORES	two	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	bm25	nested_boosted_constant_term	TOP_DOCS_WITH_SCORES	infinity	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	bm25	constant_required_filter	COMPLETE	one	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_required_filter	COMPLETE	two	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_required_filter	COMPLETE	infinity	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_required_filter	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_required_filter	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_required_filter	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_required_filter	TOP_SCORES	one	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_required_filter	TOP_SCORES	two	
+constant_threshold	scorer_searcher	bm25	constant_required_filter	TOP_SCORES	infinity	
+constant_threshold	scorer_searcher	bm25	constant_required_filter	TOP_DOCS	one	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_required_filter	TOP_DOCS	two	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_required_filter	TOP_DOCS	infinity	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_required_filter	TOP_DOCS_WITH_SCORES	one	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_required_filter	TOP_DOCS_WITH_SCORES	two	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_required_filter	TOP_DOCS_WITH_SCORES	infinity	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_required_exclusion	COMPLETE	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	scorer_searcher	bm25	constant_required_exclusion	COMPLETE	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	scorer_searcher	bm25	constant_required_exclusion	COMPLETE	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	scorer_searcher	bm25	constant_required_exclusion	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+constant_threshold	scorer_searcher	bm25	constant_required_exclusion	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+constant_threshold	scorer_searcher	bm25	constant_required_exclusion	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+constant_threshold	scorer_searcher	bm25	constant_required_exclusion	TOP_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	scorer_searcher	bm25	constant_required_exclusion	TOP_SCORES	two	
+constant_threshold	scorer_searcher	bm25	constant_required_exclusion	TOP_SCORES	infinity	
+constant_threshold	scorer_searcher	bm25	constant_required_exclusion	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+constant_threshold	scorer_searcher	bm25	constant_required_exclusion	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+constant_threshold	scorer_searcher	bm25	constant_required_exclusion	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+constant_threshold	scorer_searcher	bm25	constant_required_exclusion	TOP_DOCS_WITH_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	scorer_searcher	bm25	constant_required_exclusion	TOP_DOCS_WITH_SCORES	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	scorer_searcher	bm25	constant_required_exclusion	TOP_DOCS_WITH_SCORES	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	scorer_searcher	bm25	constant_disjunction	COMPLETE	one	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	bm25	constant_disjunction	COMPLETE	two	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	bm25	constant_disjunction	COMPLETE	infinity	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	bm25	constant_disjunction	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_disjunction	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_disjunction	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_disjunction	TOP_SCORES	one	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	bm25	constant_disjunction	TOP_SCORES	two	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	bm25	constant_disjunction	TOP_SCORES	infinity	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	bm25	constant_disjunction	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_disjunction	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_disjunction	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_disjunction	TOP_DOCS_WITH_SCORES	one	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	bm25	constant_disjunction	TOP_DOCS_WITH_SCORES	two	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	bm25	constant_disjunction	TOP_DOCS_WITH_SCORES	infinity	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	bm25	constant_dismax	COMPLETE	one	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_dismax	COMPLETE	two	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_dismax	COMPLETE	infinity	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_dismax	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax	TOP_SCORES	one	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_dismax	TOP_SCORES	two	
+constant_threshold	scorer_searcher	bm25	constant_dismax	TOP_SCORES	infinity	
+constant_threshold	scorer_searcher	bm25	constant_dismax	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax	TOP_DOCS_WITH_SCORES	one	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_dismax	TOP_DOCS_WITH_SCORES	two	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_dismax	TOP_DOCS_WITH_SCORES	infinity	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_dismax_tie	COMPLETE	one	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	scorer_searcher	bm25	constant_dismax_tie	COMPLETE	two	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	scorer_searcher	bm25	constant_dismax_tie	COMPLETE	infinity	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	scorer_searcher	bm25	constant_dismax_tie	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax_tie	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax_tie	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax_tie	TOP_SCORES	one	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	scorer_searcher	bm25	constant_dismax_tie	TOP_SCORES	two	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	scorer_searcher	bm25	constant_dismax_tie	TOP_SCORES	infinity	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	scorer_searcher	bm25	constant_dismax_tie	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax_tie	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax_tie	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax_tie	TOP_DOCS_WITH_SCORES	one	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	scorer_searcher	bm25	constant_dismax_tie	TOP_DOCS_WITH_SCORES	two	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	scorer_searcher	bm25	constant_dismax_tie	TOP_DOCS_WITH_SCORES	infinity	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton	COMPLETE	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton	COMPLETE	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton	COMPLETE	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton	TOP_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton	TOP_SCORES	two	
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton	TOP_SCORES	infinity	
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton	TOP_DOCS_WITH_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton	TOP_DOCS_WITH_SCORES	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton	TOP_DOCS_WITH_SCORES	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton_tie	COMPLETE	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton_tie	COMPLETE	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton_tie	COMPLETE	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton_tie	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton_tie	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton_tie	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton_tie	TOP_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton_tie	TOP_SCORES	two	
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton_tie	TOP_SCORES	infinity	
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton_tie	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton_tie	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton_tie	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton_tie	TOP_DOCS_WITH_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton_tie	TOP_DOCS_WITH_SCORES	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_dismax_singleton_tie	TOP_DOCS_WITH_SCORES	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_dismax_mixed	COMPLETE	one	0:3f800000,2:3f800000,3:3f800000,4:3e59e442,5:3f800000,7:3e59e442,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_dismax_mixed	COMPLETE	two	0:3f800000,2:3f800000,3:3f800000,4:3e59e442,5:3f800000,7:3e59e442,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_dismax_mixed	COMPLETE	infinity	0:3f800000,2:3f800000,3:3f800000,4:3e59e442,5:3f800000,7:3e59e442,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_dismax_mixed	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax_mixed	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax_mixed	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax_mixed	TOP_SCORES	one	0:3f800000,2:3f800000,3:3f800000,4:3e59e442,5:3f800000,7:3e59e442,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_dismax_mixed	TOP_SCORES	two	0:3e3985c9,2:3e3985c9,4:3e59e442,5:3e3985c9,7:3e59e442,9:3e3985c9,11:3e3985c9
+constant_threshold	scorer_searcher	bm25	constant_dismax_mixed	TOP_SCORES	infinity	0:3e3985c9,2:3e3985c9,4:3e59e442,5:3e3985c9,7:3e59e442,9:3e3985c9,11:3e3985c9
+constant_threshold	scorer_searcher	bm25	constant_dismax_mixed	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax_mixed	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax_mixed	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	bm25	constant_dismax_mixed	TOP_DOCS_WITH_SCORES	one	0:3f800000,2:3f800000,3:3f800000,4:3e59e442,5:3f800000,7:3e59e442,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_dismax_mixed	TOP_DOCS_WITH_SCORES	two	0:3f800000,2:3f800000,3:3f800000,4:3e59e442,5:3f800000,7:3e59e442,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	bm25	constant_dismax_mixed	TOP_DOCS_WITH_SCORES	infinity	0:3f800000,2:3f800000,3:3f800000,4:3e59e442,5:3f800000,7:3e59e442,9:3f800000,11:3f800000
 ordinary_threshold	scorer_searcher	bm25	TOP_DOCS_WITH_SCORES	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007,11:3e3985c9
 timeout	scorer_searcher	bm25	0	true
 hits	scorer_searcher	boolean	0	COMPLETE	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
@@ -201,6 +366,171 @@ threshold	scorer_searcher	boolean	blended	0:3f800000,2:3f800000,3:3f800000,4:3f8
 threshold	scorer_searcher	boolean	single_phrase	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
 threshold	scorer_searcher	boolean	required_filter	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
 threshold	scorer_searcher	boolean	required_exclusion	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	scorer_searcher	boolean	constant_term	COMPLETE	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_term	COMPLETE	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_term	COMPLETE	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_term	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_term	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_term	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_term	TOP_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_term	TOP_SCORES	two	
+constant_threshold	scorer_searcher	boolean	constant_term	TOP_SCORES	infinity	
+constant_threshold	scorer_searcher	boolean	constant_term	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_term	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_term	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_term	TOP_DOCS_WITH_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_term	TOP_DOCS_WITH_SCORES	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_term	TOP_DOCS_WITH_SCORES	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	boosted_constant_term	COMPLETE	one	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	boolean	boosted_constant_term	COMPLETE	two	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	boolean	boosted_constant_term	COMPLETE	infinity	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	boolean	boosted_constant_term	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	boosted_constant_term	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	boosted_constant_term	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	boosted_constant_term	TOP_SCORES	one	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	boolean	boosted_constant_term	TOP_SCORES	two	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	boolean	boosted_constant_term	TOP_SCORES	infinity	
+constant_threshold	scorer_searcher	boolean	boosted_constant_term	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	boosted_constant_term	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	boosted_constant_term	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	boosted_constant_term	TOP_DOCS_WITH_SCORES	one	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	boolean	boosted_constant_term	TOP_DOCS_WITH_SCORES	two	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	boolean	boosted_constant_term	TOP_DOCS_WITH_SCORES	infinity	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	boolean	nested_boosted_constant_term	COMPLETE	one	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	boolean	nested_boosted_constant_term	COMPLETE	two	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	boolean	nested_boosted_constant_term	COMPLETE	infinity	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	boolean	nested_boosted_constant_term	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	nested_boosted_constant_term	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	nested_boosted_constant_term	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	nested_boosted_constant_term	TOP_SCORES	one	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	boolean	nested_boosted_constant_term	TOP_SCORES	two	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	boolean	nested_boosted_constant_term	TOP_SCORES	infinity	
+constant_threshold	scorer_searcher	boolean	nested_boosted_constant_term	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	nested_boosted_constant_term	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	nested_boosted_constant_term	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	nested_boosted_constant_term	TOP_DOCS_WITH_SCORES	one	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	boolean	nested_boosted_constant_term	TOP_DOCS_WITH_SCORES	two	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	boolean	nested_boosted_constant_term	TOP_DOCS_WITH_SCORES	infinity	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	boolean	constant_required_filter	COMPLETE	one	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_required_filter	COMPLETE	two	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_required_filter	COMPLETE	infinity	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_required_filter	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_required_filter	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_required_filter	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_required_filter	TOP_SCORES	one	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_required_filter	TOP_SCORES	two	
+constant_threshold	scorer_searcher	boolean	constant_required_filter	TOP_SCORES	infinity	
+constant_threshold	scorer_searcher	boolean	constant_required_filter	TOP_DOCS	one	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_required_filter	TOP_DOCS	two	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_required_filter	TOP_DOCS	infinity	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_required_filter	TOP_DOCS_WITH_SCORES	one	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_required_filter	TOP_DOCS_WITH_SCORES	two	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_required_filter	TOP_DOCS_WITH_SCORES	infinity	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_required_exclusion	COMPLETE	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	scorer_searcher	boolean	constant_required_exclusion	COMPLETE	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	scorer_searcher	boolean	constant_required_exclusion	COMPLETE	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	scorer_searcher	boolean	constant_required_exclusion	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+constant_threshold	scorer_searcher	boolean	constant_required_exclusion	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+constant_threshold	scorer_searcher	boolean	constant_required_exclusion	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+constant_threshold	scorer_searcher	boolean	constant_required_exclusion	TOP_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	scorer_searcher	boolean	constant_required_exclusion	TOP_SCORES	two	
+constant_threshold	scorer_searcher	boolean	constant_required_exclusion	TOP_SCORES	infinity	
+constant_threshold	scorer_searcher	boolean	constant_required_exclusion	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+constant_threshold	scorer_searcher	boolean	constant_required_exclusion	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+constant_threshold	scorer_searcher	boolean	constant_required_exclusion	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+constant_threshold	scorer_searcher	boolean	constant_required_exclusion	TOP_DOCS_WITH_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	scorer_searcher	boolean	constant_required_exclusion	TOP_DOCS_WITH_SCORES	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	scorer_searcher	boolean	constant_required_exclusion	TOP_DOCS_WITH_SCORES	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	scorer_searcher	boolean	constant_disjunction	COMPLETE	one	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	boolean	constant_disjunction	COMPLETE	two	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	boolean	constant_disjunction	COMPLETE	infinity	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	boolean	constant_disjunction	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_disjunction	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_disjunction	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_disjunction	TOP_SCORES	one	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	boolean	constant_disjunction	TOP_SCORES	two	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	boolean	constant_disjunction	TOP_SCORES	infinity	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	boolean	constant_disjunction	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_disjunction	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_disjunction	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_disjunction	TOP_DOCS_WITH_SCORES	one	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	boolean	constant_disjunction	TOP_DOCS_WITH_SCORES	two	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	boolean	constant_disjunction	TOP_DOCS_WITH_SCORES	infinity	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	scorer_searcher	boolean	constant_dismax	COMPLETE	one	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_dismax	COMPLETE	two	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_dismax	COMPLETE	infinity	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_dismax	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax	TOP_SCORES	one	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_dismax	TOP_SCORES	two	
+constant_threshold	scorer_searcher	boolean	constant_dismax	TOP_SCORES	infinity	
+constant_threshold	scorer_searcher	boolean	constant_dismax	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax	TOP_DOCS_WITH_SCORES	one	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_dismax	TOP_DOCS_WITH_SCORES	two	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_dismax	TOP_DOCS_WITH_SCORES	infinity	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_dismax_tie	COMPLETE	one	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	scorer_searcher	boolean	constant_dismax_tie	COMPLETE	two	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	scorer_searcher	boolean	constant_dismax_tie	COMPLETE	infinity	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	scorer_searcher	boolean	constant_dismax_tie	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax_tie	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax_tie	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax_tie	TOP_SCORES	one	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	scorer_searcher	boolean	constant_dismax_tie	TOP_SCORES	two	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	scorer_searcher	boolean	constant_dismax_tie	TOP_SCORES	infinity	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	scorer_searcher	boolean	constant_dismax_tie	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax_tie	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax_tie	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax_tie	TOP_DOCS_WITH_SCORES	one	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	scorer_searcher	boolean	constant_dismax_tie	TOP_DOCS_WITH_SCORES	two	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	scorer_searcher	boolean	constant_dismax_tie	TOP_DOCS_WITH_SCORES	infinity	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton	COMPLETE	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton	COMPLETE	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton	COMPLETE	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton	TOP_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton	TOP_SCORES	two	
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton	TOP_SCORES	infinity	
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton	TOP_DOCS_WITH_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton	TOP_DOCS_WITH_SCORES	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton	TOP_DOCS_WITH_SCORES	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton_tie	COMPLETE	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton_tie	COMPLETE	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton_tie	COMPLETE	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton_tie	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton_tie	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton_tie	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton_tie	TOP_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton_tie	TOP_SCORES	two	
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton_tie	TOP_SCORES	infinity	
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton_tie	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton_tie	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton_tie	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton_tie	TOP_DOCS_WITH_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton_tie	TOP_DOCS_WITH_SCORES	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_dismax_singleton_tie	TOP_DOCS_WITH_SCORES	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_dismax_mixed	COMPLETE	one	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_dismax_mixed	COMPLETE	two	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_dismax_mixed	COMPLETE	infinity	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_dismax_mixed	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax_mixed	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax_mixed	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax_mixed	TOP_SCORES	one	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_dismax_mixed	TOP_SCORES	two	0:3f800000,2:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_dismax_mixed	TOP_SCORES	infinity	0:3f800000,2:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_dismax_mixed	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax_mixed	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax_mixed	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	scorer_searcher	boolean	constant_dismax_mixed	TOP_DOCS_WITH_SCORES	one	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_dismax_mixed	TOP_DOCS_WITH_SCORES	two	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	scorer_searcher	boolean	constant_dismax_mixed	TOP_DOCS_WITH_SCORES	infinity	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
 ordinary_threshold	scorer_searcher	boolean	TOP_DOCS_WITH_SCORES	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
 timeout	scorer_searcher	boolean	0	true
 hits	disabling_query	bm25	0	COMPLETE	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007,11:3e3985c9
@@ -286,6 +616,171 @@ threshold	disabling_query	bm25	blended	0:3e821007,2:3e3985c9,3:3e821007,4:3e59e4
 threshold	disabling_query	bm25	single_phrase	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007,11:3e3985c9
 threshold	disabling_query	bm25	required_filter	0:3e821007,2:3e3985c9,5:3e3985c9,9:3e821007,11:3e3985c9
 threshold	disabling_query	bm25	required_exclusion	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007
+constant_threshold	disabling_query	bm25	constant_term	COMPLETE	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_term	COMPLETE	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_term	COMPLETE	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_term	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_term	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_term	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_term	TOP_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_term	TOP_SCORES	two	
+constant_threshold	disabling_query	bm25	constant_term	TOP_SCORES	infinity	
+constant_threshold	disabling_query	bm25	constant_term	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_term	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_term	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_term	TOP_DOCS_WITH_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_term	TOP_DOCS_WITH_SCORES	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_term	TOP_DOCS_WITH_SCORES	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	boosted_constant_term	COMPLETE	one	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	bm25	boosted_constant_term	COMPLETE	two	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	bm25	boosted_constant_term	COMPLETE	infinity	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	bm25	boosted_constant_term	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	boosted_constant_term	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	boosted_constant_term	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	boosted_constant_term	TOP_SCORES	one	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	bm25	boosted_constant_term	TOP_SCORES	two	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	bm25	boosted_constant_term	TOP_SCORES	infinity	
+constant_threshold	disabling_query	bm25	boosted_constant_term	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	boosted_constant_term	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	boosted_constant_term	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	boosted_constant_term	TOP_DOCS_WITH_SCORES	one	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	bm25	boosted_constant_term	TOP_DOCS_WITH_SCORES	two	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	bm25	boosted_constant_term	TOP_DOCS_WITH_SCORES	infinity	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	bm25	nested_boosted_constant_term	COMPLETE	one	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	bm25	nested_boosted_constant_term	COMPLETE	two	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	bm25	nested_boosted_constant_term	COMPLETE	infinity	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	bm25	nested_boosted_constant_term	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	nested_boosted_constant_term	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	nested_boosted_constant_term	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	nested_boosted_constant_term	TOP_SCORES	one	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	bm25	nested_boosted_constant_term	TOP_SCORES	two	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	bm25	nested_boosted_constant_term	TOP_SCORES	infinity	
+constant_threshold	disabling_query	bm25	nested_boosted_constant_term	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	nested_boosted_constant_term	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	nested_boosted_constant_term	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	nested_boosted_constant_term	TOP_DOCS_WITH_SCORES	one	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	bm25	nested_boosted_constant_term	TOP_DOCS_WITH_SCORES	two	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	bm25	nested_boosted_constant_term	TOP_DOCS_WITH_SCORES	infinity	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	bm25	constant_required_filter	COMPLETE	one	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_required_filter	COMPLETE	two	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_required_filter	COMPLETE	infinity	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_required_filter	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_required_filter	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_required_filter	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_required_filter	TOP_SCORES	one	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_required_filter	TOP_SCORES	two	
+constant_threshold	disabling_query	bm25	constant_required_filter	TOP_SCORES	infinity	
+constant_threshold	disabling_query	bm25	constant_required_filter	TOP_DOCS	one	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_required_filter	TOP_DOCS	two	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_required_filter	TOP_DOCS	infinity	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_required_filter	TOP_DOCS_WITH_SCORES	one	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_required_filter	TOP_DOCS_WITH_SCORES	two	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_required_filter	TOP_DOCS_WITH_SCORES	infinity	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_required_exclusion	COMPLETE	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	disabling_query	bm25	constant_required_exclusion	COMPLETE	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	disabling_query	bm25	constant_required_exclusion	COMPLETE	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	disabling_query	bm25	constant_required_exclusion	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+constant_threshold	disabling_query	bm25	constant_required_exclusion	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+constant_threshold	disabling_query	bm25	constant_required_exclusion	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+constant_threshold	disabling_query	bm25	constant_required_exclusion	TOP_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	disabling_query	bm25	constant_required_exclusion	TOP_SCORES	two	
+constant_threshold	disabling_query	bm25	constant_required_exclusion	TOP_SCORES	infinity	
+constant_threshold	disabling_query	bm25	constant_required_exclusion	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+constant_threshold	disabling_query	bm25	constant_required_exclusion	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+constant_threshold	disabling_query	bm25	constant_required_exclusion	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+constant_threshold	disabling_query	bm25	constant_required_exclusion	TOP_DOCS_WITH_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	disabling_query	bm25	constant_required_exclusion	TOP_DOCS_WITH_SCORES	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	disabling_query	bm25	constant_required_exclusion	TOP_DOCS_WITH_SCORES	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	disabling_query	bm25	constant_disjunction	COMPLETE	one	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	disabling_query	bm25	constant_disjunction	COMPLETE	two	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	disabling_query	bm25	constant_disjunction	COMPLETE	infinity	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	disabling_query	bm25	constant_disjunction	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_disjunction	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_disjunction	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_disjunction	TOP_SCORES	one	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	disabling_query	bm25	constant_disjunction	TOP_SCORES	two	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	disabling_query	bm25	constant_disjunction	TOP_SCORES	infinity	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	disabling_query	bm25	constant_disjunction	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_disjunction	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_disjunction	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_disjunction	TOP_DOCS_WITH_SCORES	one	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	disabling_query	bm25	constant_disjunction	TOP_DOCS_WITH_SCORES	two	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	disabling_query	bm25	constant_disjunction	TOP_DOCS_WITH_SCORES	infinity	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	disabling_query	bm25	constant_dismax	COMPLETE	one	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_dismax	COMPLETE	two	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_dismax	COMPLETE	infinity	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_dismax	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax	TOP_SCORES	one	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_dismax	TOP_SCORES	two	
+constant_threshold	disabling_query	bm25	constant_dismax	TOP_SCORES	infinity	
+constant_threshold	disabling_query	bm25	constant_dismax	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax	TOP_DOCS_WITH_SCORES	one	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_dismax	TOP_DOCS_WITH_SCORES	two	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_dismax	TOP_DOCS_WITH_SCORES	infinity	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_dismax_tie	COMPLETE	one	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	disabling_query	bm25	constant_dismax_tie	COMPLETE	two	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	disabling_query	bm25	constant_dismax_tie	COMPLETE	infinity	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	disabling_query	bm25	constant_dismax_tie	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax_tie	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax_tie	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax_tie	TOP_SCORES	one	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	disabling_query	bm25	constant_dismax_tie	TOP_SCORES	two	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	disabling_query	bm25	constant_dismax_tie	TOP_SCORES	infinity	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	disabling_query	bm25	constant_dismax_tie	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax_tie	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax_tie	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax_tie	TOP_DOCS_WITH_SCORES	one	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	disabling_query	bm25	constant_dismax_tie	TOP_DOCS_WITH_SCORES	two	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	disabling_query	bm25	constant_dismax_tie	TOP_DOCS_WITH_SCORES	infinity	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	disabling_query	bm25	constant_dismax_singleton	COMPLETE	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_dismax_singleton	COMPLETE	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_dismax_singleton	COMPLETE	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_dismax_singleton	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax_singleton	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax_singleton	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax_singleton	TOP_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_dismax_singleton	TOP_SCORES	two	
+constant_threshold	disabling_query	bm25	constant_dismax_singleton	TOP_SCORES	infinity	
+constant_threshold	disabling_query	bm25	constant_dismax_singleton	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax_singleton	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax_singleton	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax_singleton	TOP_DOCS_WITH_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_dismax_singleton	TOP_DOCS_WITH_SCORES	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_dismax_singleton	TOP_DOCS_WITH_SCORES	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_dismax_singleton_tie	COMPLETE	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_dismax_singleton_tie	COMPLETE	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_dismax_singleton_tie	COMPLETE	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_dismax_singleton_tie	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax_singleton_tie	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax_singleton_tie	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax_singleton_tie	TOP_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_dismax_singleton_tie	TOP_SCORES	two	
+constant_threshold	disabling_query	bm25	constant_dismax_singleton_tie	TOP_SCORES	infinity	
+constant_threshold	disabling_query	bm25	constant_dismax_singleton_tie	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax_singleton_tie	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax_singleton_tie	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax_singleton_tie	TOP_DOCS_WITH_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_dismax_singleton_tie	TOP_DOCS_WITH_SCORES	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_dismax_singleton_tie	TOP_DOCS_WITH_SCORES	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_dismax_mixed	COMPLETE	one	0:3f800000,2:3f800000,3:3f800000,4:3e59e442,5:3f800000,7:3e59e442,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_dismax_mixed	COMPLETE	two	0:3f800000,2:3f800000,3:3f800000,4:3e59e442,5:3f800000,7:3e59e442,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_dismax_mixed	COMPLETE	infinity	0:3f800000,2:3f800000,3:3f800000,4:3e59e442,5:3f800000,7:3e59e442,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_dismax_mixed	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax_mixed	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax_mixed	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax_mixed	TOP_SCORES	one	0:3f800000,2:3f800000,3:3f800000,4:3e59e442,5:3f800000,7:3e59e442,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_dismax_mixed	TOP_SCORES	two	0:3e3985c9,2:3e3985c9,4:3e59e442,5:3e3985c9,7:3e59e442,9:3e3985c9,11:3e3985c9
+constant_threshold	disabling_query	bm25	constant_dismax_mixed	TOP_SCORES	infinity	0:3e3985c9,2:3e3985c9,4:3e59e442,5:3e3985c9,7:3e59e442,9:3e3985c9,11:3e3985c9
+constant_threshold	disabling_query	bm25	constant_dismax_mixed	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax_mixed	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax_mixed	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	bm25	constant_dismax_mixed	TOP_DOCS_WITH_SCORES	one	0:3f800000,2:3f800000,3:3f800000,4:3e59e442,5:3f800000,7:3e59e442,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_dismax_mixed	TOP_DOCS_WITH_SCORES	two	0:3f800000,2:3f800000,3:3f800000,4:3e59e442,5:3f800000,7:3e59e442,9:3f800000,11:3f800000
+constant_threshold	disabling_query	bm25	constant_dismax_mixed	TOP_DOCS_WITH_SCORES	infinity	0:3f800000,2:3f800000,3:3f800000,4:3e59e442,5:3f800000,7:3e59e442,9:3f800000,11:3f800000
 ordinary_threshold	disabling_query	bm25	TOP_DOCS_WITH_SCORES	0:3e821007,2:3e3985c9,3:3e821007,5:3e3985c9,9:3e821007,11:3e3985c9
 timeout	disabling_query	bm25	0	true
 hits	disabling_query	boolean	0	COMPLETE	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
@@ -371,5 +866,170 @@ threshold	disabling_query	boolean	blended	0:3f800000,2:3f800000,3:3f800000,4:3f8
 threshold	disabling_query	boolean	single_phrase	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
 threshold	disabling_query	boolean	required_filter	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
 threshold	disabling_query	boolean	required_exclusion	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	disabling_query	boolean	constant_term	COMPLETE	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_term	COMPLETE	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_term	COMPLETE	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_term	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_term	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_term	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_term	TOP_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_term	TOP_SCORES	two	
+constant_threshold	disabling_query	boolean	constant_term	TOP_SCORES	infinity	
+constant_threshold	disabling_query	boolean	constant_term	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_term	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_term	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_term	TOP_DOCS_WITH_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_term	TOP_DOCS_WITH_SCORES	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_term	TOP_DOCS_WITH_SCORES	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	boosted_constant_term	COMPLETE	one	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	boolean	boosted_constant_term	COMPLETE	two	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	boolean	boosted_constant_term	COMPLETE	infinity	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	boolean	boosted_constant_term	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	boosted_constant_term	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	boosted_constant_term	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	boosted_constant_term	TOP_SCORES	one	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	boolean	boosted_constant_term	TOP_SCORES	two	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	boolean	boosted_constant_term	TOP_SCORES	infinity	
+constant_threshold	disabling_query	boolean	boosted_constant_term	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	boosted_constant_term	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	boosted_constant_term	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	boosted_constant_term	TOP_DOCS_WITH_SCORES	one	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	boolean	boosted_constant_term	TOP_DOCS_WITH_SCORES	two	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	boolean	boosted_constant_term	TOP_DOCS_WITH_SCORES	infinity	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	boolean	nested_boosted_constant_term	COMPLETE	one	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	boolean	nested_boosted_constant_term	COMPLETE	two	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	boolean	nested_boosted_constant_term	COMPLETE	infinity	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	boolean	nested_boosted_constant_term	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	nested_boosted_constant_term	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	nested_boosted_constant_term	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	nested_boosted_constant_term	TOP_SCORES	one	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	boolean	nested_boosted_constant_term	TOP_SCORES	two	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	boolean	nested_boosted_constant_term	TOP_SCORES	infinity	
+constant_threshold	disabling_query	boolean	nested_boosted_constant_term	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	nested_boosted_constant_term	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	nested_boosted_constant_term	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	nested_boosted_constant_term	TOP_DOCS_WITH_SCORES	one	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	boolean	nested_boosted_constant_term	TOP_DOCS_WITH_SCORES	two	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	boolean	nested_boosted_constant_term	TOP_DOCS_WITH_SCORES	infinity	0:40000000,2:40000000,3:40000000,5:40000000,9:40000000,11:40000000
+constant_threshold	disabling_query	boolean	constant_required_filter	COMPLETE	one	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_required_filter	COMPLETE	two	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_required_filter	COMPLETE	infinity	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_required_filter	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_required_filter	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_required_filter	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_required_filter	TOP_SCORES	one	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_required_filter	TOP_SCORES	two	
+constant_threshold	disabling_query	boolean	constant_required_filter	TOP_SCORES	infinity	
+constant_threshold	disabling_query	boolean	constant_required_filter	TOP_DOCS	one	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_required_filter	TOP_DOCS	two	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_required_filter	TOP_DOCS	infinity	0:00000000,2:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_required_filter	TOP_DOCS_WITH_SCORES	one	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_required_filter	TOP_DOCS_WITH_SCORES	two	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_required_filter	TOP_DOCS_WITH_SCORES	infinity	0:3f800000,2:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_required_exclusion	COMPLETE	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	disabling_query	boolean	constant_required_exclusion	COMPLETE	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	disabling_query	boolean	constant_required_exclusion	COMPLETE	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	disabling_query	boolean	constant_required_exclusion	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+constant_threshold	disabling_query	boolean	constant_required_exclusion	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+constant_threshold	disabling_query	boolean	constant_required_exclusion	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+constant_threshold	disabling_query	boolean	constant_required_exclusion	TOP_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	disabling_query	boolean	constant_required_exclusion	TOP_SCORES	two	
+constant_threshold	disabling_query	boolean	constant_required_exclusion	TOP_SCORES	infinity	
+constant_threshold	disabling_query	boolean	constant_required_exclusion	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+constant_threshold	disabling_query	boolean	constant_required_exclusion	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+constant_threshold	disabling_query	boolean	constant_required_exclusion	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000
+constant_threshold	disabling_query	boolean	constant_required_exclusion	TOP_DOCS_WITH_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	disabling_query	boolean	constant_required_exclusion	TOP_DOCS_WITH_SCORES	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	disabling_query	boolean	constant_required_exclusion	TOP_DOCS_WITH_SCORES	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000
+constant_threshold	disabling_query	boolean	constant_disjunction	COMPLETE	one	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	disabling_query	boolean	constant_disjunction	COMPLETE	two	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	disabling_query	boolean	constant_disjunction	COMPLETE	infinity	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	disabling_query	boolean	constant_disjunction	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_disjunction	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_disjunction	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_disjunction	TOP_SCORES	one	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	disabling_query	boolean	constant_disjunction	TOP_SCORES	two	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	disabling_query	boolean	constant_disjunction	TOP_SCORES	infinity	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	disabling_query	boolean	constant_disjunction	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_disjunction	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_disjunction	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_disjunction	TOP_DOCS_WITH_SCORES	one	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	disabling_query	boolean	constant_disjunction	TOP_DOCS_WITH_SCORES	two	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	disabling_query	boolean	constant_disjunction	TOP_DOCS_WITH_SCORES	infinity	0:40000000,2:40000000,3:3f800000,4:3f800000,5:40000000,7:3f800000,9:40000000,11:40000000
+constant_threshold	disabling_query	boolean	constant_dismax	COMPLETE	one	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_dismax	COMPLETE	two	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_dismax	COMPLETE	infinity	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_dismax	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax	TOP_SCORES	one	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_dismax	TOP_SCORES	two	
+constant_threshold	disabling_query	boolean	constant_dismax	TOP_SCORES	infinity	
+constant_threshold	disabling_query	boolean	constant_dismax	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax	TOP_DOCS_WITH_SCORES	one	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_dismax	TOP_DOCS_WITH_SCORES	two	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_dismax	TOP_DOCS_WITH_SCORES	infinity	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_dismax_tie	COMPLETE	one	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	disabling_query	boolean	constant_dismax_tie	COMPLETE	two	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	disabling_query	boolean	constant_dismax_tie	COMPLETE	infinity	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	disabling_query	boolean	constant_dismax_tie	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax_tie	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax_tie	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax_tie	TOP_SCORES	one	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	disabling_query	boolean	constant_dismax_tie	TOP_SCORES	two	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	disabling_query	boolean	constant_dismax_tie	TOP_SCORES	infinity	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	disabling_query	boolean	constant_dismax_tie	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax_tie	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax_tie	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax_tie	TOP_DOCS_WITH_SCORES	one	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	disabling_query	boolean	constant_dismax_tie	TOP_DOCS_WITH_SCORES	two	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	disabling_query	boolean	constant_dismax_tie	TOP_DOCS_WITH_SCORES	infinity	0:3fc00000,2:3fc00000,3:3f800000,4:3f800000,5:3fc00000,7:3f800000,9:3fc00000,11:3fc00000
+constant_threshold	disabling_query	boolean	constant_dismax_singleton	COMPLETE	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_dismax_singleton	COMPLETE	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_dismax_singleton	COMPLETE	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_dismax_singleton	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax_singleton	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax_singleton	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax_singleton	TOP_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_dismax_singleton	TOP_SCORES	two	
+constant_threshold	disabling_query	boolean	constant_dismax_singleton	TOP_SCORES	infinity	
+constant_threshold	disabling_query	boolean	constant_dismax_singleton	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax_singleton	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax_singleton	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax_singleton	TOP_DOCS_WITH_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_dismax_singleton	TOP_DOCS_WITH_SCORES	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_dismax_singleton	TOP_DOCS_WITH_SCORES	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_dismax_singleton_tie	COMPLETE	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_dismax_singleton_tie	COMPLETE	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_dismax_singleton_tie	COMPLETE	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_dismax_singleton_tie	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax_singleton_tie	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax_singleton_tie	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax_singleton_tie	TOP_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_dismax_singleton_tie	TOP_SCORES	two	
+constant_threshold	disabling_query	boolean	constant_dismax_singleton_tie	TOP_SCORES	infinity	
+constant_threshold	disabling_query	boolean	constant_dismax_singleton_tie	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax_singleton_tie	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax_singleton_tie	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,5:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax_singleton_tie	TOP_DOCS_WITH_SCORES	one	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_dismax_singleton_tie	TOP_DOCS_WITH_SCORES	two	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_dismax_singleton_tie	TOP_DOCS_WITH_SCORES	infinity	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_dismax_mixed	COMPLETE	one	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_dismax_mixed	COMPLETE	two	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_dismax_mixed	COMPLETE	infinity	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_dismax_mixed	COMPLETE_NO_SCORES	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax_mixed	COMPLETE_NO_SCORES	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax_mixed	COMPLETE_NO_SCORES	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax_mixed	TOP_SCORES	one	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_dismax_mixed	TOP_SCORES	two	0:3f800000,2:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_dismax_mixed	TOP_SCORES	infinity	0:3f800000,2:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_dismax_mixed	TOP_DOCS	one	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax_mixed	TOP_DOCS	two	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax_mixed	TOP_DOCS	infinity	0:00000000,2:00000000,3:00000000,4:00000000,5:00000000,7:00000000,9:00000000,11:00000000
+constant_threshold	disabling_query	boolean	constant_dismax_mixed	TOP_DOCS_WITH_SCORES	one	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_dismax_mixed	TOP_DOCS_WITH_SCORES	two	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
+constant_threshold	disabling_query	boolean	constant_dismax_mixed	TOP_DOCS_WITH_SCORES	infinity	0:3f800000,2:3f800000,3:3f800000,4:3f800000,5:3f800000,7:3f800000,9:3f800000,11:3f800000
 ordinary_threshold	disabling_query	boolean	TOP_DOCS_WITH_SCORES	0:3f800000,2:3f800000,3:3f800000,5:3f800000,9:3f800000,11:3f800000
 timeout	disabling_query	boolean	0	true
