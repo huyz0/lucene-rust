@@ -4669,6 +4669,8 @@ impl<'d> IndexWriter<'d> {
     /// An optional stored-fields writer factory is also installed for the next
     /// flush and merge. Its writer must produce the existing Lucene90 files;
     /// formats without a factory retain the native bulk encoding path.
+    /// An optional same-wire live-docs writer handles subsequent deletions;
+    /// the index layer retains generation advancement, sync and cleanup.
     ///
     /// The codec's name must be the one this port writes (`Lucene104`);
     /// anything else is refused, as this writer has no other codec's formats.
@@ -10005,7 +10007,14 @@ impl IndexWriter<'_> {
             }
         }
         if !carried.is_empty() {
-            info = deletes::apply_deletes(self.dir, &info, None, merged_max_doc, carried)?;
+            info = deletes::apply_deletes_with_codec(
+                self.dir,
+                &info,
+                None,
+                merged_max_doc,
+                carried,
+                self.cfg.codec.as_deref(),
+            )?;
         }
 
         // `merge_segments` stamps the merged `.si` with this writer's version.
@@ -11111,8 +11120,14 @@ impl IndexingConfig {
             // `apply_deletes` itself is order-insensitive (it clears bits).
             let mut deleted: Vec<i32> = deleted.into_iter().collect();
             deleted.sort_unstable();
-            let updated =
-                deletes::apply_deletes(dir, sci, opened.live_docs, opened.max_doc, deleted);
+            let updated = deletes::apply_deletes_with_codec(
+                dir,
+                sci,
+                opened.live_docs,
+                opened.max_doc,
+                deleted,
+                self.codec.as_deref(),
+            );
             if updated.is_err() {
                 // `PendingDeletes.writeLiveDocs`' failure path:
                 // `info.advanceNextWriteDelGen()`, so a retry never asks for

@@ -49,6 +49,7 @@ pub mod hnsw_vectors;
 pub mod idversion;
 pub mod indexed_disi;
 pub mod live_docs;
+pub mod live_docs_writer;
 pub mod lowercase_ascii;
 pub mod lz4;
 pub mod memory;

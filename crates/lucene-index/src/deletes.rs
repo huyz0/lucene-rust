@@ -1,51 +1,128 @@
-//! Doc-ID-level delete mechanics for one already-flushed segment: "mark these
-//! doc IDs deleted, write the updated `.liv` file, bump `del_gen`/`del_count`
-//! on its [`SegmentCommitInfo`]".
+//! Resolved document deletes for an already-flushed segment.
 //!
-//! # Scope: what this is
-//!
-//! Real Lucene's delete path has two halves: (1) `BufferedUpdates` +
-//! `ReaderPool` resolve *which* doc IDs a delete-by-term/delete-by-query
-//! actually names, per segment, by running the query against each segment's
-//! live postings/doc-values reader; (2) `ReadersAndUpdates.writeLiveDocs`
-//! takes that resolved set of doc IDs and turns it into an updated live-docs
-//! bitset, a new `_<segment>_<delGen>.liv` file, and a bumped
-//! `SegmentCommitInfo.delGen`/`delCount`. This module is only half (2).
-//!
-//! # Scope: what this deliberately is not
-//!
-//! **No delete-by-term/delete-by-query resolution.** This port has no
-//! `IndexWriter` with a live, per-segment postings/doc-values reader wired to
-//! a query executor across all open segments (real `TestDeletes`-style
-//! `writer.deleteDocuments(new Term("id", "1"))` needs exactly that: search
-//! every segment for docs matching the term, union the resulting doc IDs).
-//! That is a genuinely separate, larger feature -- it depends on a live
-//! multi-segment index reader + query execution being wired into the write
-//! path, which nothing in this port does yet (search and index/write are
-//! still separate, unconnected halves). Building a fake version of it here
-//! (e.g. a linear scan over in-memory `Document`s) would not match real
-//! Lucene's `BufferedUpdates` semantics (generation-ordered resolution against
-//! whatever segments existed *at delete time*, not at flush time) and would
-//! have no real caller to prove it against. Deferred; see `docs/parity.md`.
-//!
-//! **No `updateDocument`.** Real `IndexWriter.updateDocument(Term, doc)` is
-//! defined as delete-by-term (see above, not in scope) followed by
-//! `addDocument`. Since delete-by-term isn't here, a faithful
-//! `updateDocument` can't be either -- an "update" that instead took a raw
-//! doc ID would silently diverge from real semantics (a caller must already
-//! know which doc ID currently holds that logical document, which is exactly
-//! the mapping `updateDocument`'s `Term` lookup exists to avoid requiring).
-//! Rather than force a misleading abstraction, this module exposes the two
-//! primitives a caller already has enough context to use correctly by hand:
-//! delete the old doc ID via [`apply_deletes`], then add the replacement doc
-//! via a separate [`crate::segment_writer::flush_stored_only_segment`] or
-//! merge call. Revisit real `updateDocument` once delete-by-term exists.
+//! Java: PendingDeletes.writeLiveDocs and ReadersAndUpdates.writeLiveDocs.
+//! Term/query resolution belongs to the writer; this module clears the resolved
+//! IDs, writes and syncs the next live-docs generation, and updates segment
+//! metadata only after success. The optional codec writer supplies native
+//! Lucene90 bytes; the index retains generation and cleanup ownership.
 
+use lucene_codecs::codec::Lucene104Codec;
 use lucene_codecs::live_docs;
+use lucene_codecs::live_docs_writer::LiveDocsWriteState;
 use lucene_store::directory::Directory;
 use lucene_util::fixed_bit_set::FixedBitSet;
 
 use crate::segment_infos::SegmentCommitInfo;
+
+/// Operation-local subset of Java's `TrackingDirectoryWrapper` used by
+/// `PendingDeletes.writeLiveDocs`. Delegation preserves directory policy;
+/// the set contains only outputs successfully created during this attempt.
+struct LiveDocsOutputs<'a> {
+    inner: &'a dyn Directory,
+    created: std::sync::Mutex<std::collections::BTreeSet<String>>,
+}
+
+impl<'a> LiveDocsOutputs<'a> {
+    fn new(inner: &'a dyn Directory) -> Self {
+        Self {
+            inner,
+            created: Default::default(),
+        }
+    }
+
+    fn files(&self) -> std::sync::MutexGuard<'_, std::collections::BTreeSet<String>> {
+        self.created.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn output(
+        &self,
+        output: lucene_store::Result<lucene_store::FsIndexOutput>,
+    ) -> lucene_store::Result<lucene_store::FsIndexOutput> {
+        use lucene_store::IndexOutput;
+        let output = output?;
+        self.files().insert(output.name().to_owned());
+        Ok(output)
+    }
+}
+
+impl Directory for LiveDocsOutputs<'_> {
+    fn list_all(&self) -> lucene_store::Result<Vec<String>> {
+        self.inner.list_all()
+    }
+    fn open(&self, name: &str) -> lucene_store::Result<lucene_store::Input> {
+        self.inner.open(name)
+    }
+    fn file_length(&self, name: &str) -> lucene_store::Result<u64> {
+        self.inner.file_length(name)
+    }
+    fn create_output(&self, name: &str) -> lucene_store::Result<lucene_store::FsIndexOutput> {
+        self.output(self.inner.create_output(name))
+    }
+    fn create_output_with_estimate(
+        &self,
+        name: &str,
+        estimated_bytes: Option<u64>,
+    ) -> lucene_store::Result<lucene_store::FsIndexOutput> {
+        self.output(
+            self.inner
+                .create_output_with_estimate(name, estimated_bytes),
+        )
+    }
+    fn create_temp_output(
+        &self,
+        prefix: &str,
+        suffix: &str,
+    ) -> lucene_store::Result<lucene_store::FsIndexOutput> {
+        self.output(self.inner.create_temp_output(prefix, suffix))
+    }
+    fn create_temp_output_with_estimate(
+        &self,
+        prefix: &str,
+        suffix: &str,
+        estimated_bytes: Option<u64>,
+    ) -> lucene_store::Result<lucene_store::FsIndexOutput> {
+        self.output(
+            self.inner
+                .create_temp_output_with_estimate(prefix, suffix, estimated_bytes),
+        )
+    }
+    fn sync(&self, names: &[String]) -> lucene_store::Result<()> {
+        self.inner.sync(names)
+    }
+    fn rename(&self, source: &str, dest: &str) -> lucene_store::Result<()> {
+        self.inner.rename(source, dest)?;
+        let mut created = self.files();
+        created.insert(dest.to_owned());
+        created.remove(source);
+        Ok(())
+    }
+    fn delete_file(&self, name: &str) -> lucene_store::Result<()> {
+        self.inner.delete_file(name)?;
+        self.files().remove(name);
+        Ok(())
+    }
+    fn sync_meta_data(&self) -> lucene_store::Result<()> {
+        self.inner.sync_meta_data()
+    }
+    fn obtain_lock(&self, name: &str) -> lucene_store::Result<Box<dyn lucene_store::Lock>> {
+        self.inner.obtain_lock(name)
+    }
+    fn pending_deletions(&self) -> lucene_store::Result<std::collections::BTreeSet<String>> {
+        self.inner.pending_deletions()
+    }
+    fn fs_directory_path(&self) -> Option<&std::path::Path> {
+        self.inner.fs_directory_path()
+    }
+    #[cfg(test)]
+    fn disable_virus_checker(&self) -> bool {
+        self.inner.disable_virus_checker()
+    }
+    fn copy_from(&self, from: &dyn Directory, src: &str, dest: &str) -> lucene_store::Result<()> {
+        self.inner.copy_from(from, src, dest)?;
+        self.files().insert(dest.to_owned());
+        Ok(())
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -199,6 +276,19 @@ pub fn apply_deletes(
     max_doc: usize,
     doc_ids: impl IntoIterator<Item = i32>,
 ) -> Result<SegmentCommitInfo> {
+    apply_deletes_with_codec(dir, sci, current_live_docs, max_doc, doc_ids, None)
+}
+
+/// `PendingDeletes.writeLiveDocs`: the configured same-wire writer, with
+/// generation publication and failed-output cleanup retained by the index.
+pub(crate) fn apply_deletes_with_codec(
+    dir: &dyn Directory,
+    sci: &SegmentCommitInfo,
+    current_live_docs: Option<&FixedBitSet>,
+    max_doc: usize,
+    doc_ids: impl IntoIterator<Item = i32>,
+    codec: Option<&dyn Lucene104Codec>,
+) -> Result<SegmentCommitInfo> {
     let (new_bits, newly_deleted) = mark_deleted(current_live_docs, max_doc, doc_ids)?;
 
     // `SegmentCommitInfo.getNextDelGen()`, not a fresh `del_gen + 1`
@@ -222,6 +312,7 @@ pub fn apply_deletes(
     // into the commit.
     let computed = i32::try_from(newly_deleted)
         .ok()
+        .filter(|_| sci.del_count >= 0)
         .and_then(|n| sci.del_count.checked_add(n));
     let new_del_count = match computed {
         Some(n) if n >= 0 && n as usize <= max_doc => n,
@@ -233,33 +324,67 @@ pub fn apply_deletes(
                 segment: sci.segment_name.clone(),
                 del_count: other.unwrap_or(i32::MAX),
                 max_doc,
-            })
+            });
         }
     };
 
-    let liv_bytes = live_docs::write(
-        &new_bits,
-        &sci.segment_id,
-        next_del_gen,
-        new_del_count as usize,
-    )?;
     let file_name = liv_file_name(&sci.segment_name, next_del_gen);
-    let mut out = dir.create_output(&file_name)?;
-    let written = (|| {
-        use lucene_store::data_output::DataOutput;
-        out.write_bytes(&liv_bytes);
-        out.close()?;
-        dir.sync(std::slice::from_ref(&file_name))
-    })();
-    if let Err(e) = written {
-        // `PendingDeletes.writeLiveDocs`' `finally`: on failure,
-        // `IOUtils.deleteFilesIgnoringExceptions(dir, createdFiles)`. A partial
-        // `.liv` left under this generation's name would make a retry at the
-        // same generation fail, since `createOutput` refuses an existing name.
-        // (Java also calls `advanceNextWriteDelGen()`; callers holding the
-        // live `SegmentCommitInfo` do that, see `IndexWriter`.)
-        let _ = dir.delete_file(&file_name);
-        return Err(e.into());
+    if let Some(writer) = codec.and_then(Lucene104Codec::live_docs_writer) {
+        // Java: PendingDeletes.writeLiveDocs uses TrackingDirectoryWrapper so
+        // a callback that fails before creating an output cannot delete an
+        // existing file. Keep this operation's created files local as well.
+        let tracked = LiveDocsOutputs::new(dir);
+        let written = writer
+            .write_live_docs(
+                &new_bits,
+                LiveDocsWriteState {
+                    directory: &tracked,
+                    segment: &sci.segment_name,
+                    id: &sci.segment_id,
+                    max_doc,
+                    del_gen: sci.del_gen,
+                    next_del_gen,
+                    // `new_del_count` already proves the previous count is
+                    // nonnegative and representable above.
+                    del_count: usize::try_from(sci.del_count).unwrap_or(0),
+                },
+                newly_deleted,
+            )
+            .map_err(lucene_store::Error::from)
+            .and_then(|()| dir.sync(std::slice::from_ref(&file_name)));
+        if let Err(error) = written {
+            for name in tracked
+                .created
+                .into_inner()
+                .unwrap_or_else(|e| e.into_inner())
+            {
+                let _ = dir.delete_file(&name);
+            }
+            return Err(error.into());
+        }
+    } else {
+        let liv_bytes = live_docs::write(
+            &new_bits,
+            &sci.segment_id,
+            next_del_gen,
+            new_del_count as usize,
+        )?;
+        let mut out = dir.create_output(&file_name)?;
+        let written = (|| {
+            use lucene_store::data_output::DataOutput;
+            out.write_bytes(&liv_bytes);
+            out.close()?;
+            dir.sync(std::slice::from_ref(&file_name))
+        })();
+        if let Err(e) = written {
+            // `PendingDeletes.writeLiveDocs`' `finally`: on failure,
+            // `IOUtils.deleteFilesIgnoringExceptions(dir, createdFiles)`. A partial
+            // `.liv` must not remain available to a later commit after a failure.
+            // (Java also calls `advanceNextWriteDelGen()`; callers holding the
+            // live `SegmentCommitInfo` do that, see `IndexWriter`.)
+            let _ = dir.delete_file(&file_name);
+            return Err(e.into());
+        }
     }
 
     // `ReadersAndUpdates.writeLiveDocs`: the same `SegmentCommitInfo`, with
@@ -282,6 +407,63 @@ mod tests {
     use super::*;
     use lucene_store::codec_util::ID_LENGTH;
     use lucene_store::directory::FsDirectory;
+
+    #[test]
+    fn tracked_outputs_forward_directory_policy_and_track_successful_changes() {
+        use lucene_store::{DataOutput, Directory, IndexOutput};
+        let tmp = lucene_util::test_support::TempDir::new("live-docs-output-tracking");
+        let dir = FsDirectory::open(&tmp);
+        let tracked = LiveDocsOutputs::new(&dir);
+        let mut output = tracked.create_output("original").unwrap();
+        output.write_bytes(&[1, 2, 3]);
+        output.close().unwrap();
+        assert_eq!(tracked.file_length("original").unwrap(), 3);
+        assert_eq!(&*tracked.open("original").unwrap(), &[1, 2, 3]);
+        assert_eq!(tracked.list_all().unwrap(), ["original"]);
+        tracked.sync(&["original".into()]).unwrap();
+        tracked.sync_meta_data().unwrap();
+        assert_eq!(tracked.fs_directory_path(), dir.fs_directory_path());
+        assert!(tracked.pending_deletions().unwrap().is_empty());
+        assert!(!tracked.disable_virus_checker());
+        drop(tracked.obtain_lock("write.lock").unwrap());
+        tracked.copy_from(&dir, "original", "copy").unwrap();
+        tracked.rename("copy", "renamed").unwrap();
+        tracked.delete_file("original").unwrap();
+        assert_eq!(
+            *tracked.files(),
+            std::collections::BTreeSet::from(["renamed".into()])
+        );
+        assert!(tracked.rename("missing", "never").is_err());
+        assert!(tracked.delete_file("missing").is_err());
+        assert!(tracked.copy_from(&dir, "missing", "never").is_err());
+        let estimated = tracked
+            .create_output_with_estimate("estimated", Some(12))
+            .unwrap();
+        estimated.close().unwrap();
+        let temp = tracked.create_temp_output("live", "docs").unwrap();
+        let temp_name = temp.name().to_owned();
+        temp.close().unwrap();
+        let estimated_temp = tracked
+            .create_temp_output_with_estimate("live", "docs", Some(10))
+            .unwrap();
+        let estimated_temp_name = estimated_temp.name().to_owned();
+        estimated_temp.close().unwrap();
+        assert_eq!(
+            *tracked.files(),
+            std::collections::BTreeSet::from([
+                "renamed".into(),
+                "estimated".into(),
+                temp_name,
+                estimated_temp_name,
+            ])
+        );
+
+        let memory = lucene_store::ByteBuffersDirectory::new();
+        let tracked = LiveDocsOutputs::new(&memory);
+        memory.create_output("occupied").unwrap().close().unwrap();
+        assert!(tracked.create_output("occupied").is_err());
+        assert!(tracked.files().is_empty());
+    }
 
     fn sci(segment_name: &str, del_gen: i64, del_count: i32) -> SegmentCommitInfo {
         SegmentCommitInfo {
@@ -468,6 +650,17 @@ mod tests {
             "unexpected error: {err}"
         );
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn negative_previous_delete_count_is_rejected_before_output() {
+        let directory = lucene_store::ByteBuffersDirectory::new();
+        let info = sci("_0", 1, -1);
+        assert!(matches!(
+            apply_deletes(&directory, &info, None, 3, [0]),
+            Err(Error::DelCountExceedsMaxDoc { .. })
+        ));
+        assert!(directory.list_all().unwrap().is_empty());
     }
 
     // --- mark_deleted ---

@@ -79,6 +79,12 @@ in a registered FilterCodec and runs real flushes, imports, deletes and sorted o
 unsorted merges. Its source values, decoded document snapshots and field-number
 maps are replayed by `stored_fields_writer_routing.rs`. Java delegate traces
 are retained as provenance; Rust separately checks lifecycle callback counts.
+`GenLiveDocsWriterRouting` installs only the asserting live-docs writer in a
+registered FilterCodec. Sorted and unsorted real IndexWriter sessions record
+committed masks, deletion generations/counts, physical stored IDs and actual
+delegate calls across term/query/noop deletes, reopen, append and merge.
+`live_docs_writer_routing.rs` compares complete snapshots and callback-state
+multisets; segment names and callback ordering are excluded from that multiset.
 `GenAssertingTermVectors` records document/field/term/position count assertions,
 delegate failures and retries, inherited proximity and mapped merge callbacks,
 reader lifecycles and real SimpleText bytes. The harness enables Java assertions
