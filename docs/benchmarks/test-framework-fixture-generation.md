@@ -46,3 +46,8 @@ This change leaves the disk safeguards intact. Safely retaining multiple live
 variants needs an artifact inventory tied to successful builds; newest mtime
 alone cannot prove that another hash is obsolete. No cache-retention improvement
 or reduction in Rust gate time is claimed here.
+
+The [Cargo debug-information trial](cargo-debug-info.md) separately measures
+one library's artifact size, build times, backtraces and coverage fidelity.
+Its changed-file timings do not justify a workspace profile change; the current
+profiles and final benchmark settings remain in place.
