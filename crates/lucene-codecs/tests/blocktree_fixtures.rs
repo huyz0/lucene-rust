@@ -1195,6 +1195,10 @@ fn enum_accessors_agree_with_lookups_by_term() {
         assert!(it.try_stats().unwrap().is_none());
         assert!(it.try_seeked_term().unwrap().is_none());
         assert!(it.try_current_postings(Some(&doc_in)).unwrap().is_none());
+        assert!(it
+            .try_current_postings_and_occurrences_flat(Some(&doc_in), &pos_in, Some(&pay_in))
+            .unwrap()
+            .is_none());
         let mut reuse = None;
         while let Some(t) = it.try_next_term().unwrap() {
             let t = t.to_vec();
@@ -1309,6 +1313,56 @@ fn enum_accessors_agree_with_lookups_by_term() {
                     .unwrap()
                     .unwrap();
                 assert_eq!(docs.docs, want.docs);
+                let (flat_docs, flat) = it
+                    .try_current_postings_and_occurrences_flat(
+                        Some(&doc_in),
+                        &pos_in,
+                        Some(&pay_in),
+                    )
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(flat_docs.docs, want.docs);
+                assert_eq!(flat_docs.freqs, want.freqs);
+                for (index, expected) in positions.iter().enumerate() {
+                    let actual = flat.document(index).unwrap();
+                    assert_eq!(
+                        actual.positions,
+                        expected.iter().map(|p| p.position).collect::<Vec<_>>()
+                    );
+                    if field.index_options().subsumes_offsets() {
+                        assert_eq!(
+                            actual.start_offsets,
+                            expected.iter().map(|p| p.start_offset).collect::<Vec<_>>()
+                        );
+                        assert_eq!(
+                            actual.end_offsets,
+                            expected.iter().map(|p| p.end_offset).collect::<Vec<_>>()
+                        );
+                    } else {
+                        assert!(actual.start_offsets.is_empty());
+                        assert!(actual.end_offsets.is_empty());
+                    }
+                    if field.has_payloads() {
+                        assert_eq!(
+                            actual.payload_lengths,
+                            expected
+                                .iter()
+                                .map(|p| p.payload.len() as u32)
+                                .collect::<Vec<_>>()
+                        );
+                        assert_eq!(
+                            actual.payload_bytes,
+                            expected
+                                .iter()
+                                .flat_map(|p| p.payload.iter().copied())
+                                .collect::<Vec<_>>()
+                        );
+                    } else {
+                        assert!(actual.payload_lengths.is_empty());
+                        assert!(actual.payload_bytes.is_empty());
+                    }
+                }
+                assert!(flat.document(positions.len()).is_none());
                 assert_eq!(
                     Some(positions),
                     field
@@ -1321,6 +1375,10 @@ fn enum_accessors_agree_with_lookups_by_term() {
         assert!(it.try_stats().unwrap().is_none());
         assert!(it
             .try_current_postings_and_positions(Some(&doc_in), &pos_in, Some(&pay_in))
+            .unwrap()
+            .is_none());
+        assert!(it
+            .try_current_postings_and_occurrences_flat(Some(&doc_in), &pos_in, Some(&pay_in))
             .unwrap()
             .is_none());
     }
@@ -1338,4 +1396,7 @@ fn enum_accessors_agree_with_lookups_by_term() {
     let mut it = ids.iter();
     let first = it.try_next_term().unwrap().unwrap().to_vec();
     assert!(ids.lazy_positions(&first, &doc_in, &pos_in).is_err());
+    assert!(it
+        .try_current_postings_and_occurrences_flat(Some(&doc_in), &pos_in, Some(&pay_in))
+        .is_err());
 }

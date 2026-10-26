@@ -454,7 +454,7 @@ fn integrity_checks_each_original_postings_file_for_native_and_installed_groups(
 }
 
 #[test]
-fn merge_checks_every_source_postings_file_before_acquiring_any_consumer() {
+fn merge_checks_source_postings_and_norms_before_acquiring_any_consumer() {
     let dir = ByteBuffersDirectory::new();
     let probe = Arc::new(Probe::default());
     let mut writer = writer(&dir, probe.clone());
@@ -465,16 +465,18 @@ fn merge_checks_every_source_postings_file_before_acquiring_any_consumer() {
     let infos = segment_infos::read_latest(&dir).unwrap();
     assert_eq!(infos.segments.len(), 2);
     let prefix = format!("{}_Lucene104_", infos.segments[0].segment_name);
+    let norms_file = format!("{}.nvd", infos.segments[0].segment_name);
     let files: Vec<_> = committed_bytes(&dir)
         .into_iter()
         .filter(|(name, _)| {
-            name.starts_with(&prefix)
+            (name.starts_with(&prefix)
                 && EXTS
                     .iter()
-                    .any(|extension| name.ends_with(&format!(".{extension}")))
+                    .any(|extension| name.ends_with(&format!(".{extension}"))))
+                || name == &norms_file
         })
         .collect();
-    assert_eq!(files.len(), 14);
+    assert_eq!(files.len(), 15);
     for (name, bytes) in files {
         let mut corrupted = bytes.clone();
         *corrupted.last_mut().unwrap() ^= 1;
@@ -492,6 +494,10 @@ fn merge_checks_every_source_postings_file_before_acquiring_any_consumer() {
         assert!(
             probe.events.lock().unwrap().is_empty(),
             "consumer acquired before source integrity check: {name}"
+        );
+        assert!(
+            probe.attempts.lock().unwrap().is_empty(),
+            "consumer attempted before source integrity check: {name}"
         );
         assert_eq!(
             committed_bytes(&dir),
@@ -513,6 +519,185 @@ fn merge_checks_every_source_postings_file_before_acquiring_any_consumer() {
     writer.commit().unwrap();
     assert_eq!(visible(&dir), ["after", "before"]);
     assert_held_until_all_callbacks(&probe, "merge");
+}
+
+#[test]
+fn merge_validates_deleted_document_payloads_before_acquiring_any_consumer() {
+    use lucene_codecs::{
+        blocktree,
+        per_field_postings::{PER_FIELD_FORMAT_KEY, PER_FIELD_SUFFIX_KEY},
+        postings::{self, DocInput, PayInput, PosInput},
+    };
+    use lucene_index::{
+        buffered_updates::Term,
+        document::{FieldToken, FieldTokens},
+    };
+    use lucene_store::codec_util::{check_whole_file_footer, write_footer, FOOTER_LENGTH};
+
+    fn add_payloads(writer: &mut IndexWriter<'_>, id: &str, count: i32) {
+        let mut document = Document::new();
+        document.add(StringField::new("id", id, Store::Yes));
+        let mut ty = FieldType::new();
+        ty.set_tokenized(true).unwrap();
+        ty.set_index_options(IndexOptions::DocsAndFreqsAndPositions)
+            .unwrap();
+        let tokens = (0..count)
+            .map(|offset| {
+                let mut token = FieldToken::new(b"shared".to_vec(), offset, offset + 1);
+                token.payload = Some(vec![7]);
+                token
+            })
+            .collect();
+        document.add(
+            Field::from_token_stream(
+                "p",
+                FieldTokens {
+                    tokens,
+                    final_offset: count,
+                    ..FieldTokens::default()
+                },
+                ty,
+            )
+            .unwrap(),
+        );
+        writer.add_fields_document(&document).unwrap();
+    }
+
+    let dir = ByteBuffersDirectory::new();
+    let probe = Arc::new(Probe::default());
+    let mut writer = writer(&dir, probe.clone());
+    // The entire full payload block belongs to the document that will be
+    // deleted; the remaining live occurrence is in the inline .pos tail.
+    add_payloads(&mut writer, "deleted", 256);
+    add_payloads(&mut writer, "live", 1);
+    writer.commit().unwrap();
+    add_payloads(&mut writer, "other-segment", 1);
+    writer.commit().unwrap();
+    writer
+        .delete_documents_by_term(&[Term::new("id", "deleted")])
+        .unwrap();
+    writer.commit().unwrap();
+
+    let infos = segment_infos::read_latest(&dir).unwrap();
+    assert_eq!(infos.segments.len(), 2);
+    let source = &infos.segments[0];
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let segment = &reader.segment_readers()[0];
+    assert_eq!(segment.segment_id(), source.segment_id);
+    assert_eq!(segment.max_doc(), 2);
+    let live = segment.live_docs().unwrap();
+    assert!(!live.get_doc(0));
+    assert!(live.get_doc(1));
+    let field_infos = segment.field_infos();
+    let field = field_infos.field_by_name("p").unwrap();
+    assert!(field.store_payloads);
+    let attribute = |key| {
+        field
+            .attributes
+            .iter()
+            .find(|(name, _)| name == key)
+            .unwrap()
+            .1
+            .as_str()
+    };
+    let suffix = format!(
+        "{}_{}",
+        attribute(PER_FIELD_FORMAT_KEY),
+        attribute(PER_FIELD_SUFFIX_KEY)
+    );
+    let stem = format!("{}_{}", source.segment_name, suffix);
+    let tim = dir.open(&format!("{stem}.tim")).unwrap();
+    let tip = dir.open(&format!("{stem}.tip")).unwrap();
+    let tmd = dir.open(&format!("{stem}.tmd")).unwrap();
+    let fields = blocktree::open(
+        &tim,
+        &tip,
+        &tmd,
+        field_infos,
+        &source.segment_id,
+        &suffix,
+        2,
+    )
+    .unwrap();
+    let terms = fields.field("p").unwrap();
+    let stats = terms.try_seek_exact(b"shared").unwrap().unwrap();
+    assert_eq!(stats.doc_freq, 2);
+    assert_eq!(stats.total_term_freq, 257);
+    let meta = terms.term_metadata(b"shared").unwrap().unwrap();
+    let doc = dir.open(&format!("{stem}.doc")).unwrap();
+    let doc_input = DocInput::open(&doc, &source.segment_id, &suffix).unwrap();
+    let docs = terms
+        .postings(b"shared", Some(&doc_input))
+        .unwrap()
+        .unwrap();
+    assert_eq!(docs.docs, [0, 1]);
+    assert_eq!(docs.freqs, [256, 1]);
+    let pos = dir.open(&format!("{stem}.pos")).unwrap();
+    let pos_input = PosInput::open(&pos, &source.segment_id, &suffix).unwrap();
+    let pay_name = format!("{stem}.pay");
+    let original = dir.open(&pay_name).unwrap().to_vec();
+    let pay_input = PayInput::open(&original, &source.segment_id, &suffix).unwrap();
+    let occurrences = postings::read_positions(
+        &pos_input,
+        Some(&pay_input),
+        meta,
+        &docs.freqs,
+        stats.total_term_freq,
+        field.index_options,
+        true,
+    )
+    .unwrap();
+    assert_eq!(occurrences[0].len(), 256);
+    assert_eq!(occurrences[1].len(), 1);
+    assert!(occurrences.iter().flatten().all(|p| p.payload == [7]));
+    drop(reader);
+
+    let mut corrupted = original.clone();
+    let block_start = usize::try_from(meta.pay_start_fp).unwrap();
+    // PForUtil's constant block is token 0 followed by its single VInt value.
+    // A one-byte replacement keeps every file pointer and payload run intact.
+    assert_eq!(&corrupted[block_start..block_start + 2], &[0, 1]);
+    corrupted[block_start + 1] = 127;
+    corrupted.truncate(corrupted.len() - FOOTER_LENGTH);
+    write_footer(&mut corrupted);
+    assert_eq!(corrupted.len(), original.len());
+    check_whole_file_footer(&corrupted, corrupted.len() - FOOTER_LENGTH).unwrap();
+    PayInput::open(&corrupted, &source.segment_id, &suffix).unwrap();
+    dir.delete_file(&pay_name).unwrap();
+    let mut output = dir.create_output(&pay_name).unwrap();
+    output.write_bytes(&corrupted);
+    output.close().unwrap();
+
+    let before = committed_bytes(&dir);
+    let names = dir.list_all().unwrap();
+    let all_bytes: Vec<_> = names
+        .iter()
+        .map(|name| dir.open(name).unwrap().to_vec())
+        .collect();
+    clear(&probe);
+    let error = writer.force_merge(1).unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("payload length"), "{message}");
+    assert!(message.contains("exceeds"), "{message}");
+    assert!(probe.events.lock().unwrap().is_empty());
+    assert!(probe.attempts.lock().unwrap().is_empty());
+    assert_eq!(committed_bytes(&dir), before);
+    assert_eq!(dir.list_all().unwrap(), names);
+    for (name, bytes) in names.iter().zip(&all_bytes) {
+        assert_eq!(&*dir.open(name).unwrap(), bytes, "changed source {name}");
+    }
+
+    dir.delete_file(&pay_name).unwrap();
+    let mut output = dir.create_output(&pay_name).unwrap();
+    output.write_bytes(&original);
+    output.close().unwrap();
+    writer.force_merge(1).unwrap();
+    writer.commit().unwrap();
+    assert_held_until_all_callbacks(&probe, "merge");
+    let reader = DirectoryReader::open(&dir).unwrap();
+    assert_eq!(reader.segment_readers().len(), 1);
+    assert_eq!(reader.segment_readers()[0].max_doc(), 2);
+    reader.segment_readers()[0].check_integrity().unwrap();
 }
 
 #[test]

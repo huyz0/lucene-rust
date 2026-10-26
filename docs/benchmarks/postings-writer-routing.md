@@ -351,3 +351,156 @@ Writer-accounted bytes and encoded/logical byte counts are unchanged from the
 baseline. Raw timing TSVs, all 36 RSS samples, 108 accounting rows and the complete
 run log are preserved under
 `target/postings-writer-routing-optimized-20261026/`.
+
+## Bounded merge diagnostic
+
+A separate diagnostic identifies Rust's decoded occurrence materialization and
+mapping as the largest measured postings stage on this corpus. It does not
+identify the cause of the earlier native merge gap. The short controls did not
+reproduce that gap, so these stage measurements motivate an allocation-focused
+experiment rather than explain the steady-state comparison above.
+
+The diagnostic ran native and asserting unsorted/sorted merges with three fresh
+children per engine, case and variant. Each child performed four warmups and
+eight recorded operations: 48 children and 384 recorded operations across the
+instrumented and control variants. Verification ran outside the timers. All
+192 recorded Rust indexes were exported and checked by native Java readers,
+including decoded values and encoded postings length.
+
+The following are pooled medians of 24 instrumented native Rust samples per
+case. Stages are inclusive. Encode/publication is sequential with
+decode/materialize/map; source checks and file opening/copying belong to source
+acquisition, outside those two stages.
+
+| Native operation | Decode/materialize/map ms | Group encode/publication ms | Postings source CRC ms | Postings source open/copy ms |
+| --- | ---: | ---: | ---: | ---: |
+| Unsorted merge | 11.400 | 4.517 | 0.0096 | 0.0351 |
+| Sorted merge | 13.182 | 4.810 | 0.0096 | 0.0413 |
+
+The separately clocked checksums and source file opening/copying contribute
+little to these observed totals. Decoding and document mapping interleave
+inside the larger stage; this profile does not separate their costs or measure
+allocation counts. Group encode/publication includes input adaptation,
+construction and close. Java's delegated write includes lazy source decoding
+and mapped iteration, while factory, close and asserting post-write enumeration
+are outside it. Comparing that Java clock with Rust encoding alone would omit
+substantial Rust work. Even adding Rust materialization and group work leaves
+some constructor/close and assertion-scope differences.
+
+The native control Java/Rust whole-operation ratios were 1.001339x for unsorted
+merge and 1.136057x for sorted merge, using medians of the three independent
+child medians. These differ from the earlier 0.783504x and 0.782302x results.
+Instrumented/control ratios also varied in both directions. The controls use
+the exact uninstrumented Rust core with the fixed outer driver and ordinary
+Java codecs without profiling wrappers; outer force-merge/commit clocks remain
+in both variants. Instrumented runs precede controls, and engine order alternates
+within repetitions. Process, JIT, cache, thermal and order effects remain.
+Rust export/printing and both engines' verification occur outside the whole
+timer but can affect subsequent operations; only Rust exports indexes.
+
+Nested-stage residuals are calculated from disjoint direct children for each
+sample before aggregation. Aggregated medians are not subtracted, and negative
+residuals are errors. The diagnostic provides no proof of the original gap's
+cause, optimization speedup, allocation reduction or memory parity. Final
+performance claims require rerunning the unchanged benchmark pair after a
+verified implementation change. Analysis, stage trees and raw-derived tables
+are preserved under `target/postings-merge-analysis-20261026/`.
+
+## Flat-source intermediate experiment (October 27, 2026)
+
+The flat-source experiment preserves the encoded output and semantic checks, but it does not establish a speedup over the previous borrowed-term implementation. Native default merge remains slower than Java, at 0.812901x for unsorted merge and 0.812197x for sorted merge.
+
+This is an intermediate experiment. The tables in “Borrowed-term optimization and final measurement” provide the prior baseline. The source log is `target/postings-flat-validation-bench-20261026.log` (exit 0). The accompanying `target/postings-flat-analysis-20261027/flat-source-results.json` preserves all 72 raw timing rows, all 72 semantic rows, byte counters, RSS samples, and derived statistics.
+
+### Timing
+
+Each median uses six fresh paired timing repetitions per engine and case. Java/Rust ratios greater than 1 favor Rust. Own spread is the larger of each engine's maximum/minimum ratio; the common noise floor is the median of the six own spreads, 1.041154x (prior baseline: 1.046501x).
+
+| Case | Prior Rust ms | Flat-source Rust ms | Java ms | Rust median change | Prior Java/Rust | Current Java/Rust | Current own spread |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| default_flush | 11.955181 | 12.126969 | 12.832668 | +1.44% | 1.060317x | 1.058193x | 1.029734x |
+| asserting_flush | 15.375714 | 16.213873 | 15.085290 | +5.45% | 0.970832x | 0.930394x | 1.059149x |
+| default_merge | 22.128123 | 21.598505 | 17.557446 | -2.39% | 0.783504x | 0.812901x | 1.038161x |
+| asserting_merge | 24.460918 | 23.730153 | 25.264599 | -2.99% | 1.028385x | 1.064662x | 1.044147x |
+| default_sorted_merge | 24.117589 | 23.421478 | 19.022860 | -2.89% | 0.782302x | 0.812197x | 1.037468x |
+| asserting_sorted_merge | 26.755051 | 25.848975 | 27.950700 | -3.39% | 1.032515x | 1.081308x | 1.047439x |
+
+Current paired asserting merge observations favor Rust beyond both the current own spreads and common noise floor. That comparison is between engines in this run. The 2.39–3.39% reductions in Rust merge medians between runs are inside both prior and current per-case spreads, so they do not establish an optimization speedup. Java medians also rose by 0.43–1.27% across cases. Asserting flush's Rust median rose 5.45%, but its prior own spread was 1.143249x, so the change cannot be attributed from this comparison. Flat decoding targets merges.
+
+### Process memory
+
+The RSS run uses three fresh children per engine and case, with eight iterations per child. Samples and medians are whole-process peak RSS in KiB.
+
+| Case | Rust samples | Prior Rust median | Current Rust median | Rust change | Java samples | Prior Java median | Current Java median |
+|---|---|---:|---:|---:|---|---:|---:|
+| default_flush | 39940, 39760, 40124 | 40132 | 39940 | -0.48% | 384820, 379420, 381500 | 384128 | 381500 |
+| asserting_flush | 41108, 40444, 40960 | 40436 | 40960 | +1.30% | 380340, 378980, 380984 | 382616 | 380340 |
+| default_merge | 35652, 35528, 35984 | 35944 | 35652 | -0.81% | 301624, 295352, 300604 | 299224 | 300604 |
+| asserting_merge | 36828, 36080, 36280 | 36012 | 36280 | +0.74% | 299832, 299668, 302668 | 300344 | 299832 |
+| default_sorted_merge | 34720, 35148, 34804 | 34792 | 34804 | +0.03% | 298568, 302340, 302772 | 298600 | 302340 |
+| asserting_sorted_merge | 35480, 35516, 35716 | 35376 | 35516 | +0.40% | 300652, 298632, 300560 | 297008 | 300560 |
+
+Rust medians are roughly unchanged (−0.81% to +1.30%). Whole-process peaks include setup/source buffers, verification, runtime/JIT, GC/allocator retention, and directory data. These samples do not isolate adapter allocations or prove memory reduction or parity.
+
+### Correctness and accounting
+
+All 72 timing semantic rows agree with the prior digest and counts, with one distinct tuple per case across both engines and all repetitions.
+
+| Operation | Digest | Documents | Fields | Terms | Postings | Occurrences | Payload bytes | Encoded bytes |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Flush | 7714994368418590615 | 8192 | 6 | 39574 | 152916 | 243017 | 114681 | 624131 |
+| Merge | 10842432580584821407 | 7021 | 6 | 34110 | 131060 | 208288 | 98292 | 530993 |
+| Sorted merge | 15136451210058707053 | 7021 | 6 | 34110 | 131060 | 208288 | 98292 | 513792 |
+
+Encoded bytes and writer-accounted bytes are unchanged for both routing modes and engines. Flush writer accounting remains 9,749,437 bytes for Rust and 3,729,908 bytes for Java; either merge reports zero in both engines. There are 72 rows each for encoded bytes, logical payload bytes, and timing writer accounting, plus 108 RSS-run accounting rows.
+
+The completed job includes focused correctness checks and native Java readbacks. This section does not claim a full gate pass. It also does not prove an allocation reduction or identify the cause of the original whole native merge gap.
+
+## Norms reuse and final flat-storage experiment (October 27, 2026)
+
+Native unsorted and sorted merge ratios are 1.009500x and 0.985161x. Both fall inside the measured spreads, so this run cannot distinguish their times from Java. The paired observations below apply only to this workload and run. The sorted native ratio below 1.0 is inside the 1.048271x common noise floor and does not establish a slowdown.
+
+The completed run contains six timing repetitions per engine and case and three fresh RSS children per engine and case. All 72 semantic checks, 216 timing byte counters and 108 RSS accounting rows match the unchanged workload invariants. Encoded bytes, logical payload bytes and writer-accounted bytes are unchanged from the flat-source experiment.
+
+This run includes norms-reader reuse, final flat merged-term storage and merge-output cleanup. It measures their combined implementation. Separate screens motivate the mechanisms but do not establish a paired causal effect for either optimization. The earlier tables remain prior measurements.
+
+The common noise floor is 1.048271x. Java/Rust ratios greater than 1 favor Rust. Own spread is the larger engine maximum/minimum ratio; the common floor is the median of six own spreads. The paired interpretation below requires the ratio in either direction to exceed both own spread and common floor.
+
+| Case | Rust ms | Java ms | Java/Rust | Own spread | Paired observation |
+|---|---:|---:|---:|---:|---|
+| default_flush | 12.195516 | 12.821724 | 1.051347x | 1.045998x | Rust |
+| asserting_flush | 15.784613 | 15.087855 | 0.955858x | 1.073368x | Unresolved |
+| default_merge | 17.202650 | 17.366069 | 1.009500x | 1.049940x | Unresolved |
+| asserting_merge | 19.621150 | 24.837229 | 1.265840x | 1.033438x | Rust |
+| default_sorted_merge | 19.325047 | 19.038282 | 0.985161x | 1.046601x | Unresolved |
+| asserting_sorted_merge | 21.624971 | 27.765938 | 1.283976x | 1.052502x | Rust |
+
+### Comparison with the intermediate flat-source run
+
+| Case | Prior Rust ms | Current Rust ms | Rust change | Java change | Rust change inside both own spreads |
+|---|---:|---:|---:|---:|---|
+| default_flush | 12.126969 | 12.195516 | +0.57% | -0.09% | yes |
+| asserting_flush | 16.213873 | 15.784613 | -2.65% | +0.02% | yes |
+| default_merge | 21.598505 | 17.202650 | -20.35% | -1.09% | no |
+| asserting_merge | 23.730153 | 19.621150 | -17.32% | -1.69% | no |
+| default_sorted_merge | 23.421478 | 19.325047 | -17.49% | +0.08% | no |
+| asserting_sorted_merge | 25.848975 | 21.624971 | -16.34% | -0.66% | no |
+
+Crossrun median shifts include process, JIT, cache, thermal and order effects. A shift inside both measured spreads is unresolved. Even a shift outside those spreads is an observation across runs, not a controlled attribution to one mechanism.
+
+### Whole-process peak RSS
+
+Samples and medians are KiB. Each child performs eight iterations.
+
+| Case | Rust samples | Rust median | Java samples | Java median | Rust change from flat source |
+|---|---|---:|---|---:|---:|
+| default_flush | 39012, 39932, 39740 | 39740 | 385768, 387188, 378588 | 385768 | -0.50% |
+| asserting_flush | 40444, 40828, 40864 | 40828 | 382524, 386800, 386468 | 386468 | -0.32% |
+| default_merge | 32552, 31244, 32800 | 32552 | 299132, 299232, 302612 | 299232 | -8.70% |
+| asserting_merge | 33212, 33364, 33012 | 33212 | 300532, 301196, 299000 | 300532 | -8.46% |
+| default_sorted_merge | 31972, 31900, 32152 | 31972 | 298572, 302276, 294168 | 298572 | -8.14% |
+| asserting_sorted_merge | 31836, 34000, 33204 | 33204 | 295640, 295616, 305388 | 295640 | -6.51% |
+
+Whole-process peaks include setup/source buffers, verification, runtime/JIT, GC/allocator retention and directory data. They do not isolate adapter allocations or prove memory reduction or parity. Unchanged writer-accounted bytes are a separate narrow counter. Adapter-only allocation counts and peak live bytes remain unmeasured.
+
+Source log: target/postings-final-validation-bench-20261027-retry1.log. Its terminal exit code was confirmed as zero. Raw-derived JSON records its SHA-256 and all checks. Benchmark-job completion does not establish a full gate pass; record the gate separately.

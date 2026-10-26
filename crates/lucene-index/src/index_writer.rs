@@ -10080,8 +10080,9 @@ impl IndexWriter<'_> {
     }
 
     /// A merge that failed before [`Self::finish_merge`]: release its hold on
-    /// the sources. What it wrote is referenced by nothing; a later
-    /// `delete_unused_files` or reopen reclaims it.
+    /// the sources. Returned merge errors remove outputs owned by that attempt.
+    /// A later `delete_unused_files` or reopen reclaims any leftovers, including
+    /// files from a completed merge that failed before publication.
     pub(crate) fn abort_merge(&mut self, plan: MergePlan) -> Result<()> {
         self.deleter.release_files(&plan.held)?;
         Ok(())

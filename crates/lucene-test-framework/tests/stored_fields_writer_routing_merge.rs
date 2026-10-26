@@ -291,13 +291,14 @@ fn unknown_source_field_closes_the_writer_and_preserves_mapping_error_over_close
             *probe.events.lock().unwrap(),
             ["open", "start", "field:0", "close"]
         );
-        // Partial fdm/fdt outputs are closed but intentionally unreferenced.
-        // The public merge helper cannot publish a segment or a commit on error.
-        assert!(directory.open("_candidate.fdm").is_ok());
-        assert!(directory.open("_candidate.fdt").is_ok());
+        // Returned merge errors close the writer and remove every output owned
+        // by this attempt, while preserving the primary mapping error.
+        assert!(directory.open("_candidate.fdm").is_err());
+        assert!(directory.open("_candidate.fdt").is_err());
         assert!(directory.open("_candidate.fdx").is_err());
         assert!(directory.open("_candidate.fnm").is_err());
         assert!(directory.open("_candidate.si").is_err());
+        assert!(directory.list_all().unwrap().is_empty());
         assert!(segment_infos::read_latest(&directory).is_err());
     }
 }
@@ -362,11 +363,12 @@ fn start_document_precedes_semantic_decode_and_its_error_wins_over_invalid_field
         // Both paths close despite a secondary close error. No field can be
         // delivered, no document can finish and no candidate can publish.
         assert_eq!(*probe.events.lock().unwrap(), ["open", "start", "close"]);
-        assert!(directory.open("_candidate.fdm").is_ok());
-        assert!(directory.open("_candidate.fdt").is_ok());
+        assert!(directory.open("_candidate.fdm").is_err());
+        assert!(directory.open("_candidate.fdt").is_err());
         assert!(directory.open("_candidate.fdx").is_err());
         assert!(directory.open("_candidate.fnm").is_err());
         assert!(directory.open("_candidate.si").is_err());
+        assert!(directory.list_all().unwrap().is_empty());
         assert!(segment_infos::read_latest(&directory).is_err());
     }
 }
@@ -438,11 +440,12 @@ fn a_field_callback_precedes_later_decode_failure_and_its_error_keeps_precedence
             *probe.events.lock().unwrap(),
             ["open", "start", "field:0", "close"]
         );
-        assert!(directory.open("_candidate.fdm").is_ok());
-        assert!(directory.open("_candidate.fdt").is_ok());
+        assert!(directory.open("_candidate.fdm").is_err());
+        assert!(directory.open("_candidate.fdt").is_err());
         assert!(directory.open("_candidate.fdx").is_err());
         assert!(directory.open("_candidate.fnm").is_err());
         assert!(directory.open("_candidate.si").is_err());
+        assert!(directory.list_all().unwrap().is_empty());
         assert!(segment_infos::read_latest(&directory).is_err());
     }
 }
@@ -488,10 +491,11 @@ fn a_mapping_error_precedes_later_decode_failure_and_keeps_its_typed_merge_varia
         Err(merge::Error::UnknownSourceFieldNumber { field_number: 0 })
     ));
     assert_eq!(*probe.events.lock().unwrap(), ["open", "start", "close"]);
-    assert!(directory.open("_candidate.fdm").is_ok());
-    assert!(directory.open("_candidate.fdt").is_ok());
+    assert!(directory.open("_candidate.fdm").is_err());
+    assert!(directory.open("_candidate.fdt").is_err());
     assert!(directory.open("_candidate.fdx").is_err());
     assert!(directory.open("_candidate.fnm").is_err());
     assert!(directory.open("_candidate.si").is_err());
+    assert!(directory.list_all().unwrap().is_empty());
     assert!(segment_infos::read_latest(&directory).is_err());
 }
