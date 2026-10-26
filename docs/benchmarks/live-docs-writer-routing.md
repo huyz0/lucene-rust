@@ -9,6 +9,20 @@ outputs so returned failures attempt to reclaim only those outputs while
 preserving the primary error and preexisting files. Cleanup failures can leave
 an abandoned file; the retry uses a later generation.
 
+Renaming a preexisting file does not make it owned by the operation. Copies
+open their source before tracked destination creation; source-open failures
+and destination collisions preserve existing files. Partial-write and close
+errors remain primary, and a failed deletion retains ownership for the
+enclosing operation's cleanup retry. Unit regressions check these paths and
+failed callbacks that rename both owned and preexisting files.
+
+The ownership correction passes the full gate, including release search tests;
+workspace line coverage is 97.65%. For `deletes.rs`, the summary reports 94.76%
+because test binaries contain separate copies of functions. The combined
+`--show-missing-lines` report lists 30 uncovered lines across at least 649
+counted lines, establishing more than 95.37% line coverage. This uses the
+[documented combined view](../mechanical-gates.md#coverage-objects).
+
 This is a writer-only installation. Native readers and the `Lucene104` codec
 name remain fixed. Whole AssertingCodec composition, reader routing and
 IOContext remain partial. Standalone delete helpers and ConcurrentIndexWriter's
