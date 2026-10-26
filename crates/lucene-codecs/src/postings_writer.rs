@@ -75,6 +75,9 @@ use crate::postings::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// Native installed consumer output acquisition, writing or close failure.
+    #[error(transparent)]
+    Store(#[from] lucene_store::Error),
     #[error("write_single_field: terms must be non-empty")]
     EmptyTerms,
     /// `Lucene103BlockTreeTermsWriter.validateSettings`'s
@@ -281,6 +284,33 @@ pub trait TermSource {
     fn payload_bytes(&self) -> &[u8];
     /// See [`TermPostings::payload_bytes`].
     fn payload_lengths(&self) -> &[u32];
+}
+
+impl<T: TermSource + ?Sized> TermSource for &T {
+    fn term(&self) -> &[u8] {
+        (**self).term()
+    }
+    fn docs(&self) -> &[(i32, i32)] {
+        (**self).docs()
+    }
+    fn position_lists(&self) -> usize {
+        (**self).position_lists()
+    }
+    fn positions(&self, doc: usize) -> &[i32] {
+        (**self).positions(doc)
+    }
+    fn offset_lists(&self) -> usize {
+        (**self).offset_lists()
+    }
+    fn offsets(&self, doc: usize) -> &[(i32, i32)] {
+        (**self).offsets(doc)
+    }
+    fn payload_bytes(&self) -> &[u8] {
+        (**self).payload_bytes()
+    }
+    fn payload_lengths(&self) -> &[u32] {
+        (**self).payload_lengths()
+    }
 }
 
 impl TermSource for TermPostings {

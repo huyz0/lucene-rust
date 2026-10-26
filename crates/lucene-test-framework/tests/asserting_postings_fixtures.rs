@@ -167,7 +167,7 @@ struct ProbeTerms {
     events: Events,
 }
 impl WriteTerms for ProbeTerms {
-    fn iterator(&self) -> Result<Box<dyn WriteTermsEnum + '_>> {
+    fn iterator(&self) -> Result<Box<dyn WriteTermsEnum<'_> + '_>> {
         event(&self.events, "iterator");
         if self.c.iterator_fail {
             return Err(error("iterator failure"));
@@ -198,7 +198,7 @@ struct ProbeEnum {
     next: usize,
     previous: Option<usize>,
 }
-impl WriteTermsEnum for ProbeEnum {
+impl<'a> WriteTermsEnum<'a> for ProbeEnum {
     fn next(&mut self) -> Result<Option<Vec<u8>>> {
         event(&self.events, "term-next");
         if self.c.next_fail {
@@ -210,9 +210,9 @@ impl WriteTermsEnum for ProbeEnum {
     }
     fn postings(
         &mut self,
-        reuse: Option<Box<dyn WritePostings>>,
+        reuse: Option<Box<dyn WritePostings + 'a>>,
         flags: u32,
-    ) -> Result<Box<dyn WritePostings>> {
+    ) -> Result<Box<dyn WritePostings + 'a>> {
         let id = reuse
             .as_ref()
             .map(|value| &**value as *const dyn WritePostings as *const () as usize);

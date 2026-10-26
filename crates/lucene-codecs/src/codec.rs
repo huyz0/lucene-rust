@@ -3,7 +3,7 @@
 //! Postings, doc-values and vector selection use native format descriptors.
 //! An optional stored-fields factory wraps the real document writer lifecycle
 //! while retaining the native reader graph and `Lucene104` on-disk formats.
-//! Optional live-docs, norms and points writers add checks to their native
+//! Optional live-docs, norms, points and postings writers add checks to their native
 //! output. Other segment-level formats remain fixed to the native codec.
 
 use std::fmt;
@@ -14,6 +14,7 @@ use crate::per_field_doc_values::Lucene90DocValuesFormat;
 use crate::per_field_knn_vectors::KnnVectorsFormat;
 use crate::per_field_postings::Lucene104PostingsFormat;
 use crate::points_writer::PointsWriterFactory;
+use crate::postings_consumer::PostingsWriterFactory;
 use crate::stored_fields_writer::StoredFieldsWriterFactory;
 
 /// `Lucene104Codec` with its `get*FormatForField` methods overridable: a
@@ -49,6 +50,12 @@ pub trait Lucene104Codec: Send + Sync + fmt::Debug {
     /// Optional same-wire points writer for native flushes and merges.
     /// `None` retains the direct native encoder and reader graph.
     fn points_writer_factory(&self) -> Option<&dyn PointsWriterFactory> {
+        None
+    }
+
+    /// Optional same-wire consumer for native Lucene104 postings groups.
+    /// Completion groups retain their own native writer.
+    fn postings_writer_factory(&self) -> Option<&dyn PostingsWriterFactory> {
         None
     }
 
@@ -99,6 +106,7 @@ mod tests {
         assert!(c.live_docs_writer().is_none());
         assert!(c.norms_writer_factory().is_none());
         assert!(c.points_writer_factory().is_none());
+        assert!(c.postings_writer_factory().is_none());
         assert_eq!(
             c.postings_format_for_field("f"),
             Lucene104PostingsFormat::default()

@@ -2296,7 +2296,12 @@ pub fn merge_segments_mapped(
         .codec
         .as_deref()
         .and_then(|codec| codec.points_writer_factory());
-    let installed_segment_writer = norms_factory.is_some() || points_factory.is_some();
+    let postings_factory = options
+        .codec
+        .as_deref()
+        .and_then(|codec| codec.postings_writer_factory());
+    let installed_segment_writer =
+        norms_factory.is_some() || points_factory.is_some() || postings_factory.is_some();
     // Java: SegmentMerger.merge writes stored fields before norms, and closes
     // norms before selecting postings/doc-values/vector formats. Source columns
     // here remain Rust-owned decoded inputs; no source NormsProducer is routed.
@@ -2355,6 +2360,15 @@ pub fn merge_segments_mapped(
             )?);
         }
     }
+    if installed_segment_writer && norms_factory.is_none() && !merged_norms.is_empty() {
+        let (nvm, nvd) = norms::write_fields(&norms_fields, doc_count, &merged_segment_id, "")?;
+        for (ext, bytes) in [("nvm", &nvm), ("nvd", &nvd)] {
+            let name = format!("{merged_segment_name}.{ext}");
+            write_file(dir, &name, bytes)?;
+            files.push(name);
+        }
+    }
+
     let tv_files =
         write_merged_term_vectors(sources, &per_source_maps, &doc_order, &merged_segment_id)?;
     let wrote_term_vectors = tv_files.is_some();
@@ -2415,6 +2429,103 @@ pub fn merge_segments_mapped(
         write_stored(&mut files)?;
     }
 
+    let write_postings = |files: &mut Vec<String>| -> Result<()> {
+        if !merged_postings_fields.is_empty() {
+            let inputs: Vec<FieldPostingsInput<'_>> = merged_postings_fields
+                .iter()
+                .map(|f| FieldPostingsInput {
+                    field_number: f.field_number,
+                    index_options: f.index_options,
+                    doc_count: f.doc_count,
+                    has_payloads: f.has_payloads,
+                    terms: &f.terms,
+                })
+                .collect();
+            // The very columns the `.nvd` above was written from, handed to the
+            // postings writer so its level-0/level-1 impacts are real
+            // `(freq, norm)` pairs rather than `(maxFreq, 1)` -- item 18.
+            // `Lucene104PostingsWriter` gets them the same way, from the
+            // `NormsProducer` its `FieldsConsumer.write` call is given. Borrowed,
+            // not rebuilt: see `impact_norms`' own comment above.
+            let norms_for_impacts: Vec<postings_writer::FieldNorms<'_>> = merged_norms
+                .iter()
+                .zip(&impact_norms)
+                .map(|((number, _), values)| postings_writer::FieldNorms {
+                    field_number: *number,
+                    values,
+                })
+                .collect();
+            let name_of = |n: i32| {
+                postings_field_names
+                    .iter()
+                    .find(|(number, _)| *number == n)
+                    .map(|(_, name)| name.clone())
+            };
+            let groups = if let Some(factory) = postings_factory {
+                crate::postings_writer::write_installed(
+                    factory,
+                    lucene_codecs::postings_consumer::PostingsWriteState {
+                        directory: dir,
+                        segment: merged_segment_name,
+                        id: &merged_segment_id,
+                        suffix: "",
+                        max_doc: doc_count,
+                        field_infos: &merged_fields,
+                        format: per_field_postings::Lucene104PostingsFormat::default(),
+                    },
+                    &inputs,
+                    &norms_for_impacts,
+                    &name_of,
+                    &format_for,
+                    true,
+                )?
+            } else {
+                per_field_postings::write(
+                    &inputs,
+                    &merged_fields,
+                    &norms_for_impacts,
+                    &name_of,
+                    &format_for,
+                    &merged_segment_id,
+                )?
+            };
+            for group in &groups {
+                if !group.written_files.is_empty() {
+                    files.extend(group.written_files.iter().cloned());
+                    continue;
+                }
+                let output = &group.output;
+                let mut exts: Vec<(&str, &[u8])> = vec![
+                    ("doc", &output.doc),
+                    ("psm", &output.psm),
+                    ("tim", &output.tim),
+                    ("tip", &output.tip),
+                    ("tmd", &output.tmd),
+                ];
+                if !output.pos.is_empty() {
+                    exts.push(("pos", &output.pos));
+                }
+                if !output.pay.is_empty() {
+                    exts.push(("pay", &output.pay));
+                }
+                if let Some(completion) = &group.completion {
+                    exts.push(("lkp", &completion.lkp));
+                    exts.push(("cmp", &completion.cmp));
+                }
+                let suffix = group.codec_suffix();
+                for (ext, bytes) in exts {
+                    let name = format!("{merged_segment_name}_{suffix}.{ext}");
+                    write_file(dir, &name, bytes)?;
+                    files.push(name);
+                }
+            }
+        }
+        Ok(())
+    };
+    if postings_factory.is_some() {
+        write_postings(&mut files)?;
+    }
+
     // Every doc-values field of the merged segment shares one
     // `.dvm`/`.dvd`/`.dvs` triple, which is what a real multi-field
     // `Lucene90DocValuesFormat` segment looks like.
@@ -2452,7 +2563,7 @@ pub fn merge_segments_mapped(
         }
     }
 
-    if norms_factory.is_none() && !merged_norms.is_empty() {
+    if !installed_segment_writer && norms_factory.is_none() && !merged_norms.is_empty() {
         let (nvm, nvd) = norms::write_fields(&norms_fields, doc_count, &merged_segment_id, "")?;
         for (ext, bytes) in [("nvm", &nvm), ("nvd", &nvd)] {
             let name = format!("{merged_segment_name}.{ext}");
@@ -2469,71 +2580,8 @@ pub fn merge_segments_mapped(
         }
     }
 
-    if !merged_postings_fields.is_empty() {
-        let inputs: Vec<FieldPostingsInput<'_>> = merged_postings_fields
-            .iter()
-            .map(|f| FieldPostingsInput {
-                field_number: f.field_number,
-                index_options: f.index_options,
-                doc_count: f.doc_count,
-                has_payloads: f.has_payloads,
-                terms: &f.terms,
-            })
-            .collect();
-        // The very columns the `.nvd` above was written from, handed to the
-        // postings writer so its level-0/level-1 impacts are real
-        // `(freq, norm)` pairs rather than `(maxFreq, 1)` -- item 18.
-        // `Lucene104PostingsWriter` gets them the same way, from the
-        // `NormsProducer` its `FieldsConsumer.write` call is given. Borrowed,
-        // not rebuilt: see `impact_norms`' own comment above.
-        let norms_for_impacts: Vec<postings_writer::FieldNorms<'_>> = merged_norms
-            .iter()
-            .zip(&impact_norms)
-            .map(|((number, _), values)| postings_writer::FieldNorms {
-                field_number: *number,
-                values,
-            })
-            .collect();
-        let name_of = |n: i32| {
-            postings_field_names
-                .iter()
-                .find(|(number, _)| *number == n)
-                .map(|(_, name)| name.clone())
-        };
-        let groups = per_field_postings::write(
-            &inputs,
-            &merged_fields,
-            &norms_for_impacts,
-            &name_of,
-            &format_for,
-            &merged_segment_id,
-        )?;
-        for group in &groups {
-            let output = &group.output;
-            let mut exts: Vec<(&str, &[u8])> = vec![
-                ("doc", &output.doc),
-                ("psm", &output.psm),
-                ("tim", &output.tim),
-                ("tip", &output.tip),
-                ("tmd", &output.tmd),
-            ];
-            if !output.pos.is_empty() {
-                exts.push(("pos", &output.pos));
-            }
-            if !output.pay.is_empty() {
-                exts.push(("pay", &output.pay));
-            }
-            if let Some(completion) = &group.completion {
-                exts.push(("lkp", &completion.lkp));
-                exts.push(("cmp", &completion.cmp));
-            }
-            let suffix = group.codec_suffix();
-            for (ext, bytes) in exts {
-                let name = format!("{merged_segment_name}_{suffix}.{ext}");
-                write_file(dir, &name, bytes)?;
-                files.push(name);
-            }
-        }
+    if postings_factory.is_none() {
+        write_postings(&mut files)?;
     }
 
     // Java: SegmentMerger opens a PointsWriter from merged FieldInfos, even
@@ -4658,8 +4706,23 @@ fn merge_postings(
             // exemption as merge_numeric_doc_values.
             continue;
         }
-        for pf in source.postings {
-            if let Some(&merged_number) = map.get(&pf.field_number) {
+        // Java: PerFieldPostingsFormat.FieldsReader.iterator retains routed
+        // fields even when an earlier merge removed their last term. A later
+        // merge must still open their group and preserve routing attributes.
+        let routed = source.field_infos.iter().filter(|field| {
+            field.index_options != IndexOptions::None
+                && field
+                    .attributes
+                    .iter()
+                    .any(|(key, _)| key == per_field_postings::PER_FIELD_FORMAT_KEY)
+        });
+        for number in source
+            .postings
+            .iter()
+            .map(|field| field.field_number)
+            .chain(routed.map(|field| field.number))
+        {
+            if let Some(&merged_number) = map.get(&number) {
                 if !candidates.contains(&merged_number) {
                     candidates.push(merged_number);
                 }
@@ -4933,17 +4996,10 @@ fn merge_postings(
             }
         }
 
-        if per_source_field.iter().all(Option::is_none) {
-            // No live source's term dictionary lists the field, so
-            // `PerFieldPostingsFormat.FieldsWriter.merge`'s `MergedIterator`
-            // over the sources' fields never names it.
-            continue;
-        }
-        // A field whose every term was pruned through `SourcePostings::live`
-        // stays: the sources list it, so `PerFieldPostingsFormat` routes it
-        // to a group and writes that group's files (the field itself gets no
-        // `.tmd` record -- `per_field_postings::write` drops it). Dropping it
-        // here left a merged `.fnm` claiming postings with no `.tim` beside it.
+        // Candidates come from live source dictionaries or routed FieldInfos,
+        // including a prior merge's termless field with no SourcePostings.
+        // Keep its group even when every source Terms is null or every posting
+        // was pruned. The encoder omits only the empty field's `.tmd` record.
         let doc_count = docs_seen.cardinality() as i32;
 
         result.push(MergedPostingsField {

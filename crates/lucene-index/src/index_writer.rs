@@ -1392,9 +1392,8 @@ impl IndexingConfig {
     pub(crate) fn write_postings_groups<T: postings_writer::TermSource>(
         &self,
         inputs: &[FieldPostingsInput<'_, T>],
-        segment_fields: &[FieldInfo],
         norms: &[postings_writer::FieldNorms<'_>],
-        segment_id: &[u8; ID_LENGTH],
+        state: lucene_codecs::postings_consumer::PostingsWriteState<'_>,
     ) -> Result<PostingsGroups> {
         let name_of = |n: i32| {
             self.fields
@@ -1403,13 +1402,28 @@ impl IndexingConfig {
                 .map(|f| f.name.clone())
         };
         let format_for = |name: &str| self.postings_format_for(name);
+        if let Some(factory) = self
+            .codec
+            .as_deref()
+            .and_then(|c| c.postings_writer_factory())
+        {
+            return Ok(crate::postings_writer::write_installed(
+                factory,
+                state,
+                inputs,
+                norms,
+                &name_of,
+                &format_for,
+                false,
+            )?);
+        }
         Ok(per_field_postings::write(
             inputs,
-            segment_fields,
+            state.field_infos,
             norms,
             &name_of,
             &format_for,
-            segment_id,
+            state.id,
         )?)
     }
 
@@ -1620,7 +1634,7 @@ impl IndexingConfig {
                             None
                         })
                     };
-                    Ok(RawPostings {
+                    let raw = RawPostings {
                         tim: seg_dir.open(&format!("{seg}.tim"))?.to_vec(),
                         tip: seg_dir.open(&format!("{seg}.tip"))?.to_vec(),
                         tmd: seg_dir.open(&format!("{seg}.tmd"))?.to_vec(),
@@ -1629,7 +1643,30 @@ impl IndexingConfig {
                         pay: read_optional("pay")?,
                         suffix,
                         other_groups: Vec::new(),
-                    })
+                    };
+                    // Java: FieldsConsumer.merge checks each source producer's
+                    // integrity before consuming postings. Metadata is checked
+                    // on acquisition by Java's reader; native open only checks
+                    // footer structure, so verify every original group here.
+                    let metadata = read_optional("psm")?;
+                    for bytes in [
+                        Some(raw.tim.as_slice()),
+                        Some(raw.tip.as_slice()),
+                        Some(raw.tmd.as_slice()),
+                        Some(raw.doc.as_slice()),
+                        raw.pos.as_deref(),
+                        raw.pay.as_deref(),
+                        metadata.as_deref(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        let footer = bytes
+                            .len()
+                            .saturating_sub(lucene_store::codec_util::FOOTER_LENGTH);
+                        lucene_store::codec_util::check_whole_file_footer(bytes, footer)?;
+                    }
+                    Ok(raw)
                 };
                 let suffixes = per_field_postings::group_suffixes(&seg_files, name);
                 if suffixes.len() > 1 {
@@ -1666,6 +1703,8 @@ impl IndexingConfig {
             // column.
             let current_infos =
                 crate::field_updates::read_current_field_infos(seg_dir, &sci, &seg_files)?;
+            per_field_postings::validate_routed_groups(&current_infos.fields, &seg_files)
+                .map_err(|message| Error::Store(lucene_store::Error::Corrupted(message)))?;
             // `SegmentMerger` reads every source through that source's own
             // `FieldInfos`: a segment real Lucene wrote numbers its fields
             // its own way, and relabelling its stored fields, term
@@ -1695,6 +1734,10 @@ impl IndexingConfig {
                         Some(declared) => FieldInfo {
                             number: f.number,
                             store_payloads: f.store_payloads,
+                            // Per-field readers enumerate routed fields even when
+                            // a prior merge removed their final term. Routing is
+                            // source segment state, not the writer's schema.
+                            attributes: f.attributes.clone(),
                             // Point dimensions belong to the source segment, including
                             // a declared shape with no surviving BKD entry.
                             point_dimension_count: f.point_dimension_count,
@@ -3253,6 +3296,15 @@ impl IndexingConfig {
             suffix: "",
             max_doc: buf.docs.len() as i32,
         };
+        let postings_state = lucene_codecs::postings_consumer::PostingsWriteState {
+            directory: dir,
+            segment: segment_name,
+            id: &segment_id,
+            suffix: "",
+            max_doc: buf.docs.len() as i32,
+            field_infos: &self.fields,
+            format: per_field_postings::Lucene104PostingsFormat::default(),
+        };
         let build_doc_values = || -> Result<_> {
             Ok(if self.doc_values_fields.is_empty() {
                 None
@@ -3338,7 +3390,7 @@ impl IndexingConfig {
                 &self.postings_fields,
                 inverters,
                 impact_norms,
-                &segment_id,
+                postings_state,
                 flush_deletes,
             )?;
         } else {
@@ -3401,7 +3453,7 @@ impl IndexingConfig {
                     &self.postings_fields,
                     inverted,
                     impact_norms,
-                    &segment_id,
+                    postings_state,
                 )?
             } else {
                 drop(inverted);
@@ -3411,7 +3463,7 @@ impl IndexingConfig {
                         buf.docs,
                         buf.custom_freq_terms,
                         cfg,
-                        &segment_id,
+                        postings_state,
                     )?,
                     None => None,
                 }
@@ -7506,10 +7558,10 @@ impl IndexWriter<'_> {
         let ticket = self.begin_segment();
         let (segment_name, segment_id) = (ticket.segment_name.clone(), ticket.segment_id);
 
-        // Built and validated entirely in memory before anything is
-        // written to `dir` -- see `prepare_commit`'s own doc comment on why
-        // that ordering is what makes a docFreq-too-large rejection
-        // atomic.
+        // Installed consumers can create and write files during the build.
+        // The segment remains unpublished until the build succeeds; returned
+        // errors below restore the buffer and refresh unreferenced outputs,
+        // preserving the committed view and the original error.
         // `postings_fields`/`custom_freq_postings_field` are enforced
         // mutually exclusive by `set_postings_field`/`add_postings_field`/
         // `set_custom_freq_postings_field` (see those methods' doc
@@ -7950,7 +8002,7 @@ impl IndexWriter<'_> {
         configs: &[PostingsFieldConfig],
         inverted: InMemoryInvertedIndex,
         norms: &[(i32, Vec<i64>)],
-        segment_id: &[u8; ID_LENGTH],
+        state: lucene_codecs::postings_consumer::PostingsWriteState<'_>,
     ) -> Result<Option<PostingsGroups>> {
         struct FieldData {
             config: PostingsFieldConfig,
@@ -8112,12 +8164,7 @@ impl IndexWriter<'_> {
                 values,
             })
             .collect();
-        let output = routing.write_postings_groups(
-            &inputs,
-            &routing.fields,
-            &norms_for_impacts,
-            segment_id,
-        )?;
+        let output = routing.write_postings_groups(&inputs, &norms_for_impacts, state)?;
         Ok(Some(output))
     }
 
@@ -8206,7 +8253,7 @@ impl IndexWriter<'_> {
         configs: &[PostingsFieldConfig],
         inverters: Vec<(i32, crate::inverter::FieldInverter)>,
         norms: &[(i32, Vec<i64>)],
-        segment_id: &[u8; ID_LENGTH],
+        state: lucene_codecs::postings_consumer::PostingsWriteState<'_>,
         mut flush_deletes: Option<&mut FlushDeletes<'_>>,
     ) -> Result<Option<PostingsGroups>> {
         let mut per_field: Vec<(PostingsFieldConfig, i32, Vec<TermPostings>)> = Vec::new();
@@ -8246,9 +8293,8 @@ impl IndexWriter<'_> {
             .collect();
         Ok(Some(routing.write_postings_groups(
             &inputs,
-            &routing.fields,
             &norms_for_impacts,
-            segment_id,
+            state,
         )?))
     }
 
@@ -8292,7 +8338,7 @@ impl IndexWriter<'_> {
         docs: &[Document],
         custom_freq_terms: &[Vec<(String, i32)>],
         config: &CustomFreqPostingsFieldConfig,
-        segment_id: &[u8; ID_LENGTH],
+        state: lucene_codecs::postings_consumer::PostingsWriteState<'_>,
     ) -> Result<Option<PostingsGroups>> {
         let mut per_term: std::collections::BTreeMap<Vec<u8>, Vec<(i32, i32)>> =
             std::collections::BTreeMap::new();
@@ -8334,7 +8380,7 @@ impl IndexWriter<'_> {
             has_payloads: false,
             terms: &terms,
         }];
-        let output = routing.write_postings_groups(&inputs, &routing.fields, &[], segment_id)?;
+        let output = routing.write_postings_groups(&inputs, &[], state)?;
         Ok(Some(output))
     }
 
@@ -9621,6 +9667,10 @@ impl IndexWriter<'_> {
     ) -> Result<Vec<String>> {
         let mut names = Vec::new();
         for group in groups {
+            if !group.written_files.is_empty() {
+                names.extend(group.written_files.iter().cloned());
+                continue;
+            }
             let seg = format!("{segment_name}_{}", group.codec_suffix());
             names.extend(Self::write_postings_group_files(dir, &seg, &group.output)?);
             if let Some(completion) = &group.completion {

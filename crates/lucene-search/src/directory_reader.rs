@@ -203,10 +203,10 @@ pub struct SegmentReader {
     /// that opening it did. A refcount bump is what that comment always
     /// described.
     doc_buf: Option<Arc<Input>>,
-    /// Every `.tim` and `.tip` the term dictionary navigates (one pair per
-    /// postings format), the same shared bytes, held for
-    /// [`Self::check_integrity`].
-    dictionary_files: Vec<Arc<Input>>,
+    /// Original `.tim`, `.tip`, `.doc`, `.pos` and `.pay` files for each
+    /// postings format, shared for [`Self::check_integrity`]. Multi-format
+    /// iteration buffers concatenate files and have no whole-buffer checksum.
+    postings_files: Vec<Arc<Input>>,
     /// The core's query cache: shared by every reopen that keeps the
     /// segment, like the core itself, and valid across new deletions because
     /// entries are computed without live docs (`LRUQueryCache` keys on the
@@ -398,6 +398,12 @@ impl SegmentReader {
             Arc::new(field_infos::parse(&fnm_bytes, &segment_id, "")?)
         };
 
+        let postings_names = compound.as_ref().map_or_else(
+            || si.files.clone(),
+            |c| c.entries.names().map(str::to_string).collect(),
+        );
+        per_field_postings::validate_routed_groups(&field_infos.fields, &postings_names)
+            .map_err(|message| Error::Store(lucene_store::Error::Corrupted(message)))?;
         let tim_bytes = open_segment_file(dir, compound.as_ref(), &si.files, ".tim")?;
         let tip_bytes = open_segment_file(dir, compound.as_ref(), &si.files, ".tip")?;
         let tmd_bytes = open_segment_file(dir, compound.as_ref(), &si.files, ".tmd")?;
@@ -408,17 +414,10 @@ impl SegmentReader {
         // `PerFieldPostingsFormat`: a segment whose fields were routed to
         // more than one postings format has one `.tim`/`.tip`/`.tmd` (and
         // `.doc`/`.pos`/`.pay`) per format and suffix.
-        let postings_suffixes = per_field_postings::group_suffixes(
-            &compound.as_ref().map_or_else(
-                || si.files.clone(),
-                |c| c.entries.names().map(str::to_string).collect(),
-            ),
-            &segment_name,
-        );
+        let postings_suffixes = per_field_postings::group_suffixes(&postings_names, &segment_name);
         let multi_format = postings_suffixes.len() > 1;
 
-        let (fields, segment_suffix, doc_buf, pos_buf, pay_buf, dictionary_files) = if multi_format
-        {
+        let (fields, segment_suffix, doc_buf, pos_buf, pay_buf, postings_files) = if multi_format {
             open_per_field_postings(
                 dir,
                 compound.as_ref(),
@@ -474,17 +473,23 @@ impl SegmentReader {
             let pos_buf = open_segment_file(dir, compound.as_ref(), &si.files, ".pos")?;
             let pay_buf = open_segment_file(dir, compound.as_ref(), &si.files, ".pay")?;
 
-            let dictionary_files = vec![
-                tim_bytes.clone().expect("found == 3"),
-                tip_bytes.clone().expect("found == 3"),
-            ];
+            let postings_files = [
+                tim_bytes.clone(),
+                tip_bytes.clone(),
+                doc_buf.clone(),
+                pos_buf.clone(),
+                pay_buf.clone(),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
             (
                 Arc::new(fields),
                 segment_suffix,
                 doc_buf,
                 pos_buf,
                 pay_buf,
-                dictionary_files,
+                postings_files,
             )
         } else if found == 0 {
             (
@@ -852,7 +857,7 @@ impl SegmentReader {
             segment_suffix,
             fields,
             doc_buf,
-            dictionary_files,
+            postings_files,
             pos_buf,
             pay_buf,
             live_docs,
@@ -1045,9 +1050,6 @@ impl SegmentReader {
         }
         let mut files: Vec<&[u8]> = Vec::new();
         for f in [
-            &self.doc_buf,
-            &self.pos_buf,
-            &self.pay_buf,
             &self.dv_data,
             &self.norms_data,
             &self.kdi_buf,
@@ -1055,7 +1057,7 @@ impl SegmentReader {
         ]
         .into_iter()
         .flatten()
-        .chain(&self.dictionary_files)
+        .chain(&self.postings_files)
         {
             files.push(f);
         }
@@ -1863,9 +1865,19 @@ fn open_per_field_postings(
         .collect();
     let combined = per_field_postings::open_groups(&groups, field_infos, segment_id, doc_count)?;
     let owned = |bytes: Vec<u8>| (!bytes.is_empty()).then(|| Arc::new(Input::Owned(bytes)));
-    let dictionary_files = opened
+    let postings_files = opened
         .iter()
-        .flat_map(|(_, tim, tip, ..)| [Arc::clone(tim), Arc::clone(tip)])
+        .flat_map(|(_, tim, tip, _, doc, pos, pay)| {
+            [
+                Some(Arc::clone(tim)),
+                Some(Arc::clone(tip)),
+                doc.clone(),
+                pos.clone(),
+                pay.clone(),
+            ]
+            .into_iter()
+            .flatten()
+        })
         .collect();
     Ok((
         Arc::new(combined.fields),
@@ -1873,7 +1885,7 @@ fn open_per_field_postings(
         owned(combined.doc),
         owned(combined.pos),
         owned(combined.pay),
-        dictionary_files,
+        postings_files,
     ))
 }
 

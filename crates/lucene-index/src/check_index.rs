@@ -37,7 +37,8 @@
 //! - `live_docs` cardinality vs `SegmentCommitInfo.del_count`'s implied live
 //!   count (`max_doc - del_count`).
 //! - `.fnm`'s per-field flags (doc values, norms, term vectors, postings via
-//!   `index_options != None`) cross-checked against which of
+//!   indexed fields with routing attributes or existing direct-format files)
+//!   cross-checked against which of
 //!   `.dvd`/`.dvm`/`.nvd`/`.nvm`/`.tvd`/`.tvx`/`.tvm`/`.tim`/`.tip`/`.tmd`
 //!   the segment's file list actually includes, in both directions (a field
 //!   claiming doc-values with no `.dvd`/`.dvm` file is flagged, and so is a
@@ -1119,10 +1120,19 @@ fn check_field_flags_vs_files(fields: &FieldInfos, files: &[String], checks: &mu
         .iter()
         .any(|f| !f.omit_norms && f.index_options != field_infos::IndexOptions::None);
     let any_field_claims_tv = fields.fields.iter().any(|f| f.store_term_vectors);
-    let any_field_claims_postings = fields
-        .fields
-        .iter()
-        .any(|f| f.index_options != field_infos::IndexOptions::None);
+    // Java's FreqProxTermsWriter.flush only routes fields with terms. A
+    // zero-token field remains indexed (and may have norms) without any
+    // postings files. Routing attributes claim files even after a merge
+    // removes the last term; legacy direct formats have no such attributes,
+    // so their indexed fields claim postings only when files are present.
+    let any_field_claims_postings = fields.fields.iter().any(|f| {
+        f.index_options != field_infos::IndexOptions::None
+            && (has_postings_files
+                || f.attributes.iter().any(|(key, _)| {
+                    key == lucene_codecs::per_field_postings::PER_FIELD_FORMAT_KEY
+                        || key == lucene_codecs::per_field_postings::PER_FIELD_SUFFIX_KEY
+                }))
+    });
 
     check_claim_vs_files(
         "fnm.doc_values_vs_files",
@@ -1145,13 +1155,16 @@ fn check_field_flags_vs_files(fields: &FieldInfos, files: &[String], checks: &mu
         ".tvd/.tvx/.tvm",
         checks,
     );
-    check_claim_vs_files(
-        "fnm.postings_vs_files",
-        any_field_claims_postings,
-        has_postings_files,
-        ".tim/.tip/.tmd",
-        checks,
-    );
+    match lucene_codecs::per_field_postings::validate_routed_groups(&fields.fields, files) {
+        Err(message) => checks.push(Check::fail("fnm.postings_vs_files", message)),
+        Ok(()) => check_claim_vs_files(
+            "fnm.postings_vs_files",
+            any_field_claims_postings,
+            has_postings_files,
+            ".tim/.tip/.tmd",
+            checks,
+        ),
+    }
 }
 
 fn check_claim_vs_files(
@@ -11040,7 +11053,16 @@ mod tests {
             doc_values_type: field_infos::DocValuesType::Numeric,
             doc_values_skip_index_type: field_infos::DocValuesSkipIndexType::None,
             doc_values_gen: -1,
-            attributes: vec![],
+            attributes: vec![
+                (
+                    lucene_codecs::per_field_postings::PER_FIELD_FORMAT_KEY.to_string(),
+                    "Lucene104".to_string(),
+                ),
+                (
+                    lucene_codecs::per_field_postings::PER_FIELD_SUFFIX_KEY.to_string(),
+                    "0".to_string(),
+                ),
+            ],
             point_dimension_count: 1,
             point_index_dimension_count: 1,
             point_num_bytes: 8,
@@ -11048,6 +11070,65 @@ mod tests {
             vector_encoding: field_infos::VectorEncoding::Float32,
             vector_similarity_function: field_infos::VectorSimilarityFunction::Euclidean,
         }
+    }
+
+    #[test]
+    fn zero_token_fields_and_legacy_direct_postings_have_distinct_file_claims() {
+        let mut field = field_infos::FieldInfo::new("empty", 0);
+        field.index_options = field_infos::IndexOptions::DocsAndFreqsAndPositions;
+        field.omit_norms = false;
+        let mut fields = FieldInfos {
+            fields: vec![field],
+        };
+        let norm_files = vec!["_0.nvm".to_string(), "_0.nvd".to_string()];
+        let mut checks = Vec::new();
+        check_field_flags_vs_files(&fields, &norm_files, &mut checks);
+        assert!(checks.iter().all(Check::passed), "{checks:?}");
+
+        // A per-field reader retains a routed field after its last term is
+        // deleted. Even without terms it still requires its native group.
+        let routing = all_claiming_field_info().attributes;
+        // A partial routing pair also cannot excuse absent postings files.
+        for attributes in [
+            routing.clone(),
+            vec![routing[0].clone()],
+            vec![routing[1].clone()],
+        ] {
+            fields.fields[0].attributes = attributes;
+            checks.clear();
+            check_field_flags_vs_files(&fields, &norm_files, &mut checks);
+            assert_eq!(
+                checks
+                    .iter()
+                    .filter(|check| !check.passed())
+                    .map(|check| check.name.as_str())
+                    .collect::<Vec<_>>(),
+                ["fnm.postings_vs_files"]
+            );
+        }
+
+        // Older direct/no-suffix writers have indexed fields without routing
+        // attributes. Their existing files must agree with the indexed field.
+        fields.fields[0].attributes.clear();
+        let mut direct_files = norm_files;
+        direct_files.extend(["_0.tim", "_0.tip", "_0.tmd"].map(str::to_string));
+        checks.clear();
+        check_field_flags_vs_files(&fields, &direct_files, &mut checks);
+        assert!(checks.iter().all(Check::passed), "{checks:?}");
+
+        // The reverse check still rejects postings files with no indexed
+        // field, regardless of whether a legacy writer used routing metadata.
+        fields.fields[0].index_options = field_infos::IndexOptions::None;
+        checks.clear();
+        check_field_flags_vs_files(&fields, &["_0.tim".to_string()], &mut checks);
+        assert_eq!(
+            checks
+                .iter()
+                .filter(|check| !check.passed())
+                .map(|check| check.name.as_str())
+                .collect::<Vec<_>>(),
+            ["fnm.postings_vs_files"]
+        );
     }
 
     const CLAIMS_SEG_ID: [u8; ID_LENGTH] = [31u8; ID_LENGTH];
