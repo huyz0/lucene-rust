@@ -92,8 +92,9 @@ impl Directory for LiveDocsOutputs<'_> {
     fn rename(&self, source: &str, dest: &str) -> lucene_store::Result<()> {
         self.inner.rename(source, dest)?;
         let mut created = self.files();
-        created.insert(dest.to_owned());
-        created.remove(source);
+        if created.remove(source) {
+            created.insert(dest.to_owned());
+        }
         Ok(())
     }
     fn delete_file(&self, name: &str) -> lucene_store::Result<()> {
@@ -118,8 +119,18 @@ impl Directory for LiveDocsOutputs<'_> {
         self.inner.disable_virus_checker()
     }
     fn copy_from(&self, from: &dyn Directory, src: &str, dest: &str) -> lucene_store::Result<()> {
-        self.inner.copy_from(from, src, dest)?;
-        self.files().insert(dest.to_owned());
+        use lucene_store::DataOutput;
+        // Opening or creating can fail without owning dest. The Directory
+        // default deletes dest even then, so copy through tracked creation.
+        let bytes = from.open(src)?;
+        let mut output = self.create_output(dest)?;
+        output.write_bytes(&bytes);
+        if let Err(error) = output.close() {
+            // A failed deletion keeps this creation tracked for the enclosing
+            // operation's cleanup retry. The copy error remains primary.
+            let _ = self.delete_file(dest);
+            return Err(error);
+        }
         Ok(())
     }
 }
@@ -407,6 +418,186 @@ mod tests {
     use super::*;
     use lucene_store::codec_util::ID_LENGTH;
     use lucene_store::directory::FsDirectory;
+    use lucene_store::{ByteBuffersDirectory, DataOutput};
+
+    #[test]
+    fn failed_live_docs_callback_cleans_renamed_creations_and_preserves_renamed_preexisting_file() {
+        use lucene_codecs::live_docs_writer::LiveDocsWriter;
+        #[derive(Debug)]
+        struct RenameThenFail;
+        impl Lucene104Codec for RenameThenFail {
+            fn live_docs_writer(&self) -> Option<&dyn LiveDocsWriter> {
+                Some(self)
+            }
+        }
+        impl LiveDocsWriter for RenameThenFail {
+            fn write_live_docs(
+                &self,
+                _: &FixedBitSet,
+                state: LiveDocsWriteState<'_>,
+                _: usize,
+            ) -> std::io::Result<()> {
+                let mut output = state
+                    .directory
+                    .create_output("owned")
+                    .map_err(std::io::Error::other)?;
+                output.write_bytes(&[1, 2]);
+                output.close().map_err(std::io::Error::other)?;
+                state
+                    .directory
+                    .rename("owned", "owned_renamed")
+                    .map_err(std::io::Error::other)?;
+                state
+                    .directory
+                    .rename("preexisting", "renamed")
+                    .map_err(std::io::Error::other)?;
+                Err(std::io::Error::other("after rename"))
+            }
+        }
+        let dir = ByteBuffersDirectory::new();
+        let mut output = dir.create_output("preexisting").unwrap();
+        output.write_bytes(&[8, 5]);
+        output.close().unwrap();
+        let info = sci("_0", -1, 0);
+        let error =
+            apply_deletes_with_codec(&dir, &info, None, 1, [0], Some(&RenameThenFail)).unwrap_err();
+        assert_eq!(error.to_string(), "after rename");
+        assert_eq!(dir.list_all().unwrap(), ["renamed"]);
+        assert_eq!(&*dir.open("renamed").unwrap(), &[8, 5]);
+        assert_eq!(info.del_gen, -1);
+        assert_eq!(info.del_count, 0);
+    }
+
+    #[test]
+    fn copy_failures_before_creation_preserve_unowned_destination() {
+        let dir = ByteBuffersDirectory::new();
+        for (name, bytes) in [("source", &[1, 2][..]), ("occupied", &[8, 5][..])] {
+            let mut output = dir.create_output(name).unwrap();
+            output.write_bytes(bytes);
+            output.close().unwrap();
+        }
+        let tracked = LiveDocsOutputs::new(&dir);
+        for source in ["source", "missing"] {
+            assert!(tracked.copy_from(&dir, source, "occupied").is_err());
+            assert_eq!(&*dir.open("occupied").unwrap(), &[8, 5]);
+            assert_eq!(&*dir.open("source").unwrap(), &[1, 2]);
+            assert!(tracked.files().is_empty());
+        }
+    }
+
+    struct CopyFault {
+        fail_write: bool,
+    }
+    impl lucene_store::index_output::OutputFaults for CopyFault {
+        fn before_write(&mut self, _: &str, _: usize) -> lucene_store::index_output::WriteVerdict {
+            use lucene_store::index_output::WriteVerdict;
+            if self.fail_write {
+                WriteVerdict::Fail {
+                    keep: 1,
+                    error: std::io::Error::other("copy write"),
+                }
+            } else {
+                WriteVerdict::Write
+            }
+        }
+        fn on_close(&mut self, _: &str) -> lucene_store::index_output::CloseVerdict {
+            use lucene_store::index_output::CloseVerdict;
+            if self.fail_write {
+                CloseVerdict::Close
+            } else {
+                CloseVerdict::FailAfterFlush(std::io::Error::other("copy close"))
+            }
+        }
+    }
+    struct CopyFaultDirectory {
+        inner: ByteBuffersDirectory,
+        fail_write: bool,
+        fail_delete: std::sync::atomic::AtomicBool,
+    }
+    impl Directory for CopyFaultDirectory {
+        fn list_all(&self) -> lucene_store::Result<Vec<String>> {
+            self.inner.list_all()
+        }
+        fn open(&self, name: &str) -> lucene_store::Result<lucene_store::Input> {
+            self.inner.open(name)
+        }
+        fn file_length(&self, name: &str) -> lucene_store::Result<u64> {
+            self.inner.file_length(name)
+        }
+        fn create_output(&self, name: &str) -> lucene_store::Result<lucene_store::FsIndexOutput> {
+            let mut output = self.inner.create_output(name)?;
+            output.set_faults(Box::new(CopyFault {
+                fail_write: self.fail_write,
+            }));
+            Ok(output)
+        }
+        fn sync(&self, names: &[String]) -> lucene_store::Result<()> {
+            self.inner.sync(names)
+        }
+        fn rename(&self, source: &str, dest: &str) -> lucene_store::Result<()> {
+            self.inner.rename(source, dest)
+        }
+        fn delete_file(&self, name: &str) -> lucene_store::Result<()> {
+            if self.fail_delete.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(lucene_store::Error::Io(std::io::Error::other(
+                    "cleanup delete",
+                )));
+            }
+            self.inner.delete_file(name)
+        }
+        fn sync_meta_data(&self) -> lucene_store::Result<()> {
+            self.inner.sync_meta_data()
+        }
+        fn obtain_lock(&self, name: &str) -> lucene_store::Result<Box<dyn lucene_store::Lock>> {
+            self.inner.obtain_lock(name)
+        }
+    }
+    #[test]
+    fn failed_copy_cleans_its_partial_output_and_retains_failed_cleanup_for_retry() {
+        let source = ByteBuffersDirectory::new();
+        let mut output = source.create_output("source").unwrap();
+        output.write_bytes(&[1, 2, 3]);
+        output.close().unwrap();
+        for fail_write in [false, true] {
+            for fail_delete in [false, true] {
+                let dir = CopyFaultDirectory {
+                    inner: ByteBuffersDirectory::new(),
+                    fail_write,
+                    fail_delete: std::sync::atomic::AtomicBool::new(fail_delete),
+                };
+                let tracked = LiveDocsOutputs::new(&dir);
+                let error = tracked.copy_from(&source, "source", "dest").unwrap_err();
+                assert_eq!(
+                    error.to_string(),
+                    if fail_write {
+                        "copy write"
+                    } else {
+                        "copy close"
+                    }
+                );
+                if fail_delete {
+                    assert_eq!(
+                        *tracked.files(),
+                        std::collections::BTreeSet::from(["dest".into()])
+                    );
+                    assert_eq!(
+                        dir.file_length("dest").unwrap(),
+                        if fail_write { 1 } else { 3 }
+                    );
+                    assert_eq!(
+                        &*dir.open("dest").unwrap(),
+                        if fail_write { &[1][..] } else { &[1, 2, 3][..] }
+                    );
+                    dir.fail_delete
+                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                    tracked.delete_file("dest").unwrap();
+                }
+                assert!(tracked.files().is_empty());
+                assert!(dir.list_all().unwrap().is_empty());
+                assert_eq!(&*source.open("source").unwrap(), &[1, 2, 3]);
+            }
+        }
+    }
 
     #[test]
     fn tracked_outputs_forward_directory_policy_and_track_successful_changes() {
