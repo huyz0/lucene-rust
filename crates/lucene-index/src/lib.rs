@@ -48,3 +48,4 @@ pub(crate) mod norms_writer;
 pub(crate) mod created_outputs;
 /// Installed points writer orchestration.
 pub(crate) mod points_writer;
+pub(crate) mod postings_writer;

@@ -913,7 +913,7 @@ store/RefCountedSharedArena	ported	crates/lucene-store/src/directory.rs::Input
 store/SimpleFSLockFactory	ported	crates/lucene-store/src/fs_lock_factory.rs::SimpleFsLockFactory
 store/SingleInstanceLockFactory	ported	crates/lucene-store/src/lock.rs::SingleInstanceLockFactory
 store/SleepingLockWrapper	ported	crates/lucene-store/src/lock_wrappers.rs::SleepingLockWrapper
-store/TrackingDirectoryWrapper	ported	crates/lucene-index/src/concurrent_writer.rs::TrackingDirectory -- operation-local norms/points creation ownership also uses created_outputs.rs::CreatedOutputs; panic cleanup absent
+store/TrackingDirectoryWrapper	ported	crates/lucene-index/src/concurrent_writer.rs::TrackingDirectory -- operation-local norms/points/postings creation ownership also uses created_outputs.rs::CreatedOutputs; panic cleanup absent
 store/VerifyingLockFactory	ported	crates/lucene-store/src/lock.rs::VerifyingLockFactory
 util/Accountable	not-needed	RAM-accounting interface; the port exposes ad hoc ram_bytes_used() methods where accounting matters (e.g. RoaringDocIdSet::ram_bytes_used)
 util/Accountables	not-needed	toString/child-resource helpers for the Accountable interface, which the port does not have
