@@ -43,3 +43,8 @@ pub mod update_document;
 
 /// Installed norms consumer orchestration.
 pub(crate) mod norms_writer;
+
+/// Codec output creation ownership.
+pub(crate) mod created_outputs;
+/// Installed points writer orchestration.
+pub(crate) mod points_writer;

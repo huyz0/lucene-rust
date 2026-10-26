@@ -985,6 +985,18 @@ crate (`lucene-util`'s `test-support` is unified the same way, and is
 covered only by `cargo tree -p lucene-ffi -e normal,build` showing it off);
 and tests, which run feature-on only.
 
+## points structural checks
+
+`CheckIndex` opens the complete `.kdm`/`.kdi`/`.kdd` triple before walking
+point fields. A field can retain its declared dimensions after a merge deletes
+all its points; Lucene's `testPoints` accepts its null `PointValues`, and the
+port records `points.field_empty:<field>` without leaf checks. The focused
+empty-triple regression also checks that an absent `.kdd` and a damaged `.kdm`
+checksum still fail. A missing BKD entry alone cannot distinguish that valid
+empty field from a removed entry whose metadata and checksums were repaired;
+the previous field-number mutation expectation claimed a catch it could not
+validly require.
+
 ## test-framework-faults
 
 `scripts/test-framework-faults.sh` (CI job `write-path`, step "Test-framework fault run"): 300 seeds of

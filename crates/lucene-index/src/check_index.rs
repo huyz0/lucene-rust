@@ -4614,21 +4614,11 @@ fn check_points_structural_invariants(
             let field = match reader.field(field_info.number) {
                 Some(f) => f,
                 None => {
-                    field_checks.push(Check::fail(
-                        format!("points.field_present:{field_name}"),
-                        "field claims points in .fnm but has no entry in .kdm",
-                    ));
-                    skip_families(
-                        &mut field_checks,
-                        &POINTS_PER_FIELD
-                            .iter()
-                            .map(|f| format!("{f}:{field_name}"))
-                            .collect::<Vec<_>>()
-                            .iter()
-                            .map(String::as_str)
-                            .collect::<Vec<_>>(),
-                        &format!("points.field_present:{field_name}"),
-                    );
+                    // CheckIndex.testPoints skips a null PointValues. A merge
+                    // retains the field's dimensions even when every point
+                    // was deleted, so an absent BKD entry is legitimate. The
+                    // triple was opened above; there are no leaves to inspect.
+                    field_checks.push(Check::pass(format!("points.field_empty:{field_name}")));
                     continue;
                 }
             };
@@ -4794,7 +4784,7 @@ fn check_points_structural_invariants(
     }
 }
 
-/// The per-field checks a field's own `points.field_present`/`points.decode`
+/// The per-field checks a field's own `points.decode`
 /// failure takes down -- everything that walks the field's leaves.
 const POINTS_PER_FIELD: &[&str] = &[
     "points.value_within_field_bounds",
@@ -4805,7 +4795,7 @@ const POINTS_PER_FIELD: &[&str] = &[
 
 /// The per-field families a failed `points.open` takes down.
 const POINTS_FAMILIES: &[&str] = &[
-    "points.field_present",
+    "points.field_empty",
     "points.value_within_field_bounds",
     "points.leaf_bounds_subset_of_field",
     "points.doc_count_matches",
@@ -9578,27 +9568,51 @@ mod tests {
             .any(|c| c.name.starts_with("points.")));
     }
 
+    /// FieldInfo retains dimensions after a merge deletes every point in
+    /// the field. The valid points triple then contains no field entry.
     #[test]
-    fn mismatched_field_number_fails_field_present_check() {
+    fn declared_points_field_with_empty_triple_passes() {
         let points = vec![(0, vec![0, 0, 0, 0, 0, 0, 0, 1])];
         let dst_dir = tempdir();
-        // write_points_fixture always writes the .kdm field under number 5;
-        // overwrite .fnm afterwards with a field claiming a *different*
-        // number (99) so `reader.field(99)` finds nothing.
         let commit = write_points_fixture(&dst_dir, &points, 1, None);
-        let mut mismatched_field = points_field_info();
-        mismatched_field.number = 99;
-        let fields = field_infos::write(&[mismatched_field], &POINTS_SEG_ID, "");
-        std::fs::write(dst_dir.join("_0.fnm"), &fields).unwrap();
+        let (kdm, kdi, kdd) = points::write_packed(
+            Vec::new(),
+            points::DEFAULT_MAX_POINTS_IN_LEAF_NODE,
+            1,
+            &POINTS_SEG_ID,
+            "",
+        )
+        .unwrap();
+        std::fs::write(dst_dir.join("_0.kdm"), &kdm).unwrap();
+        std::fs::write(dst_dir.join("_0.kdi"), &kdi).unwrap();
+        std::fs::write(dst_dir.join("_0.kdd"), &kdd).unwrap();
 
         let dir = FsDirectory::open(&dst_dir);
         let result = check_segment(&dir, &commit);
+        assert!(result.all_passed(), "{:?}", result.failures());
         let check = result
             .checks
             .iter()
-            .find(|c| c.name == "points.field_present:loc")
-            .expect("field_present check must have run");
-        assert!(!check.passed());
+            .find(|c| c.name == "points.field_empty:loc")
+            .expect("empty field must be recorded");
+        assert!(check.passed());
+        assert!(!result.checks.iter().any(|c| POINTS_PER_FIELD
+            .iter()
+            .any(|family| c.name == format!("{family}:loc"))));
+
+        // Null-field handling cannot hide a damaged or absent triple.
+        // Corrupt only the checksum, leaving the empty metadata readable.
+        let mut corrupt = kdm.clone();
+        *corrupt.last_mut().unwrap() ^= 1;
+        std::fs::write(dst_dir.join("_0.kdm"), corrupt).unwrap();
+        let result = check_segment(&dir, &commit);
+        assert!(!result.all_passed());
+        assert!(result.failures().iter().any(|c| c.name == "file:_0.kdm"));
+
+        std::fs::write(dst_dir.join("_0.kdm"), kdm).unwrap();
+        std::fs::remove_file(dst_dir.join("_0.kdd")).unwrap();
+        let result = check_segment(&dir, &commit);
+        assert!(result.failures().iter().any(|c| c.name == "points.open"));
 
         std::fs::remove_dir_all(&dst_dir).ok();
     }
@@ -12745,7 +12759,7 @@ mod tests {
 
     /// The suppression inventory, pinned so it cannot drift silently.
     ///
-    /// Eleven prerequisites in this module can take a family of checks down
+    /// Prerequisites in this module can take a family of checks down
     /// with them. The danger is not that they do -- there is genuinely
     /// nothing to check once the file will not open -- it is that before c25
     /// they did it *invisibly*, so a caller could not tell a region that was
@@ -12765,7 +12779,6 @@ mod tests {
             ("postings.open", FAMILIES_BELOW_POSTINGS),
             ("liv.open", LIV_FAMILIES),
             ("points.open", POINTS_FAMILIES),
-            ("points.field_present:<f>", POINTS_PER_FIELD),
             ("points.decode:<f>", POINTS_PER_FIELD),
             ("vectors.open", VECTOR_FAMILIES),
             ("hnsw.open", HNSW_FAMILIES),
@@ -12828,7 +12841,7 @@ mod tests {
 
         assert_eq!(
             inventory.len(),
-            17,
+            16,
             "a prerequisite was added or removed without updating the audit"
         );
         let mut families: Vec<&str> = inventory.iter().flat_map(|(_, f)| *f).copied().collect();
@@ -13478,9 +13491,9 @@ mod tests {
     /// in `decode_leaves`: `points.decode:<field>`, and the four per-field
     /// families it takes down.
     ///
-    /// c25 drove `points.field_present` (a `.kdm` with no entry for the
-    /// field) but not this one, which is the more common failure: the tree's
-    /// *metadata* is fine and its **leaf blocks** are not. Every check below
+    /// The tree's *metadata* is fine and its **leaf blocks** are not.
+    /// A missing field entry alone is legitimate after all its points were
+    /// deleted; this mutation instead exercises an existing tree. Every check below
     /// it -- the value/bounds check, the doc-count check, the point-count
     /// check -- reads the decoded leaves, so all four have to be named as
     /// not run rather than silently omitted.

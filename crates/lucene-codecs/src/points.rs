@@ -3174,6 +3174,34 @@ pub fn write_merged(
     segment_id: &[u8; codec_util::ID_LENGTH],
     segment_suffix: &str,
 ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    write_merged_with_mode(
+        fields,
+        max_points_in_leaf_node,
+        max_doc,
+        temp_dir,
+        temp_prefix,
+        segment_id,
+        segment_suffix,
+        true,
+    )
+}
+
+/// `Lucene90PointsWriter.merge`'s native-reader dispatch. `native_merge` is
+/// true only when every original source has a native points reader; even a
+/// null reader selects Java's generic add/finish path for one dimension.
+/// Empty fields retain their declared schema outside these files and add no
+/// BKD entry; an empty operation still writes the complete header/footer triple.
+#[allow(clippy::too_many_arguments)]
+pub fn write_merged_with_mode(
+    fields: Vec<MergePointsField>,
+    max_points_in_leaf_node: i32,
+    max_doc: i32,
+    temp_dir: &dyn lucene_store::directory::Directory,
+    temp_prefix: &str,
+    segment_id: &[u8; codec_util::ID_LENGTH],
+    segment_suffix: &str,
+    native_merge: bool,
+) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
     let mut out = PointsOutputs::new(segment_id, segment_suffix);
     for field in fields {
         let count: usize = field.sources.iter().map(|s| s.docs.len()).sum();
@@ -3211,7 +3239,7 @@ pub fn write_merged(
             field.max_point_count,
             bkd_writer::VERSION_CURRENT,
         )?;
-        let plan = if field.num_dims == 1 {
+        let plan = if native_merge && field.num_dims == 1 {
             let sources: Vec<Box<dyn Iterator<Item = (Vec<u8>, i32)> + '_>> = field
                 .sources
                 .iter()
@@ -3919,6 +3947,72 @@ mod tests {
         footer(&mut kdm);
 
         (kdm, kdi, kdd)
+    }
+
+    #[test]
+    fn merged_empty_fields_and_empty_operations_emit_valid_empty_triples() {
+        let dir = lucene_store::ByteBuffersDirectory::new();
+        for native_merge in [false, true] {
+            for fields in [
+                Vec::new(),
+                vec![MergePointsField {
+                    field_number: 3,
+                    num_dims: 1,
+                    num_index_dims: 1,
+                    bytes_per_dim: 4,
+                    sources: vec![PointsMergeSource::default()],
+                    max_point_count: 2,
+                }],
+            ] {
+                let (meta, index, data) =
+                    write_merged_with_mode(fields, 4, 1, &dir, "_empty", &id(), "", native_merge)
+                        .unwrap();
+                let reader = open(&meta, &index, &data, &id(), "").unwrap();
+                assert_eq!(reader.field_numbers().count(), 0);
+                assert!(meta.len() > codec_util::FOOTER_LENGTH);
+                assert!(index.len() > codec_util::FOOTER_LENGTH);
+                assert!(data.len() > codec_util::FOOTER_LENGTH);
+            }
+        }
+    }
+
+    #[test]
+    fn generic_one_dimensional_merge_sorts_unsorted_source_values() {
+        let dir = lucene_store::ByteBuffersDirectory::new();
+        let field = MergePointsField {
+            field_number: 3,
+            num_dims: 1,
+            num_index_dims: 1,
+            bytes_per_dim: 4,
+            sources: vec![PointsMergeSource {
+                docs: vec![0, 1, 2, 2],
+                values: [9u32, 1, 5, 5]
+                    .into_iter()
+                    .flat_map(u32::to_be_bytes)
+                    .collect(),
+            }],
+            max_point_count: 9,
+        };
+        let (meta, index, data) =
+            write_merged_with_mode(vec![field], 2, 3, &dir, "_generic", &id(), "", false).unwrap();
+        let reader = open(&meta, &index, &data, &id(), "").unwrap();
+        assert_eq!(reader.field(3).unwrap().point_count, 4);
+        let mut actual: Vec<_> = reader
+            .decode_all_points(3)
+            .unwrap()
+            .into_iter()
+            .map(|point| (point.doc_id, point.packed_value))
+            .collect();
+        actual.sort();
+        assert_eq!(
+            actual,
+            vec![
+                (0, 9u32.to_be_bytes().to_vec()),
+                (1, 1u32.to_be_bytes().to_vec()),
+                (2, 5u32.to_be_bytes().to_vec()),
+                (2, 5u32.to_be_bytes().to_vec()),
+            ]
+        );
     }
 
     #[test]
