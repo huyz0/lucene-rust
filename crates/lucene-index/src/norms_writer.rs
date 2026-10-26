@@ -1,8 +1,10 @@
 //! Operation-local installed norms output and returned-error cleanup.
 
+use crate::created_outputs::CreatedOutputs;
 use lucene_codecs::field_infos::FieldInfo;
 use lucene_codecs::norms::{self, NormsField};
 use lucene_codecs::norms_writer::{self, NormsWriteState, NormsWriterFactory};
+#[cfg(test)]
 use lucene_store::Directory;
 
 /// Writes borrowed columns through the installed consumer before publication.
@@ -13,7 +15,7 @@ pub(crate) fn write_installed(
     field_infos: &[FieldInfo],
     fields: &[NormsField<'_>],
 ) -> norms::Result<Vec<String>> {
-    let outputs = NormsOutputs::new(state.directory);
+    let outputs = CreatedOutputs::new(state.directory);
     let result = norms_writer::with_writer(
         factory,
         NormsWriteState {
@@ -46,124 +48,6 @@ pub(crate) fn write_installed(
     }
     let files = outputs.files().iter().cloned().collect();
     Ok(files)
-}
-
-struct NormsOutputs<'a> {
-    inner: &'a dyn Directory,
-    created: std::sync::Mutex<std::collections::BTreeSet<String>>,
-}
-
-impl<'a> NormsOutputs<'a> {
-    fn new(inner: &'a dyn Directory) -> Self {
-        Self {
-            inner,
-            created: Default::default(),
-        }
-    }
-
-    fn files(&self) -> std::sync::MutexGuard<'_, std::collections::BTreeSet<String>> {
-        self.created.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    fn output(
-        &self,
-        output: lucene_store::Result<lucene_store::FsIndexOutput>,
-    ) -> lucene_store::Result<lucene_store::FsIndexOutput> {
-        use lucene_store::IndexOutput;
-        let output = output?;
-        self.files().insert(output.name().to_owned());
-        Ok(output)
-    }
-}
-
-impl Directory for NormsOutputs<'_> {
-    fn list_all(&self) -> lucene_store::Result<Vec<String>> {
-        self.inner.list_all()
-    }
-    fn open(&self, name: &str) -> lucene_store::Result<lucene_store::Input> {
-        self.inner.open(name)
-    }
-    fn file_length(&self, name: &str) -> lucene_store::Result<u64> {
-        self.inner.file_length(name)
-    }
-    fn create_output(&self, name: &str) -> lucene_store::Result<lucene_store::FsIndexOutput> {
-        self.output(self.inner.create_output(name))
-    }
-    fn create_output_with_estimate(
-        &self,
-        name: &str,
-        estimated_bytes: Option<u64>,
-    ) -> lucene_store::Result<lucene_store::FsIndexOutput> {
-        self.output(
-            self.inner
-                .create_output_with_estimate(name, estimated_bytes),
-        )
-    }
-    fn create_temp_output(
-        &self,
-        prefix: &str,
-        suffix: &str,
-    ) -> lucene_store::Result<lucene_store::FsIndexOutput> {
-        self.output(self.inner.create_temp_output(prefix, suffix))
-    }
-    fn create_temp_output_with_estimate(
-        &self,
-        prefix: &str,
-        suffix: &str,
-        estimated_bytes: Option<u64>,
-    ) -> lucene_store::Result<lucene_store::FsIndexOutput> {
-        self.output(
-            self.inner
-                .create_temp_output_with_estimate(prefix, suffix, estimated_bytes),
-        )
-    }
-    fn sync(&self, names: &[String]) -> lucene_store::Result<()> {
-        self.inner.sync(names)
-    }
-    fn rename(&self, source: &str, dest: &str) -> lucene_store::Result<()> {
-        self.inner.rename(source, dest)?;
-        let mut created = self.files();
-        if created.remove(source) {
-            created.insert(dest.to_owned());
-        }
-        Ok(())
-    }
-    fn delete_file(&self, name: &str) -> lucene_store::Result<()> {
-        self.inner.delete_file(name)?;
-        self.files().remove(name);
-        Ok(())
-    }
-    fn sync_meta_data(&self) -> lucene_store::Result<()> {
-        self.inner.sync_meta_data()
-    }
-    fn obtain_lock(&self, name: &str) -> lucene_store::Result<Box<dyn lucene_store::Lock>> {
-        self.inner.obtain_lock(name)
-    }
-    fn pending_deletions(&self) -> lucene_store::Result<std::collections::BTreeSet<String>> {
-        self.inner.pending_deletions()
-    }
-    fn fs_directory_path(&self) -> Option<&std::path::Path> {
-        self.inner.fs_directory_path()
-    }
-    #[cfg(test)]
-    fn disable_virus_checker(&self) -> bool {
-        self.inner.disable_virus_checker()
-    }
-    fn copy_from(&self, from: &dyn Directory, src: &str, dest: &str) -> lucene_store::Result<()> {
-        use lucene_store::DataOutput;
-        // Opening or creating can fail without owning dest. The Directory
-        // default deletes dest even then, so copy through tracked creation.
-        let bytes = from.open(src)?;
-        let mut output = self.create_output(dest)?;
-        output.write_bytes(&bytes);
-        if let Err(error) = output.close() {
-            // A failed deletion keeps this creation tracked for the enclosing
-            // operation's cleanup retry. The copy error remains primary.
-            let _ = self.delete_file(dest);
-            return Err(error);
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -335,7 +219,7 @@ mod tests {
             output.write_bytes(bytes);
             output.close().unwrap();
         }
-        let tracked = NormsOutputs::new(&dir);
+        let tracked = CreatedOutputs::new(&dir);
         for source in ["source", "missing"] {
             assert!(tracked.copy_from(&dir, source, "occupied").is_err());
             assert_eq!(&*dir.open("occupied").unwrap(), &[8, 5]);
@@ -424,7 +308,7 @@ mod tests {
                     fail_write,
                     fail_delete: std::sync::atomic::AtomicBool::new(fail_delete),
                 };
-                let tracked = NormsOutputs::new(&dir);
+                let tracked = CreatedOutputs::new(&dir);
                 let error = tracked.copy_from(&source, "source", "dest").unwrap_err();
                 assert_eq!(
                     error.to_string(),
@@ -459,7 +343,7 @@ mod tests {
         use lucene_store::{DataOutput, Directory, IndexOutput};
         let tmp = lucene_util::test_support::TempDir::new("norms-output-tracking");
         let dir = lucene_store::FsDirectory::open(&tmp);
-        let tracked = NormsOutputs::new(&dir);
+        let tracked = CreatedOutputs::new(&dir);
         let mut output = tracked.create_output("original").unwrap();
         output.write_bytes(&[1, 2, 3]);
         output.close().unwrap();
@@ -505,7 +389,7 @@ mod tests {
         );
 
         let memory = lucene_store::ByteBuffersDirectory::new();
-        let tracked = NormsOutputs::new(&memory);
+        let tracked = CreatedOutputs::new(&memory);
         memory.create_output("occupied").unwrap().close().unwrap();
         assert!(tracked.create_output("occupied").is_err());
         assert!(tracked.files().is_empty());

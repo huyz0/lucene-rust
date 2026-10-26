@@ -92,6 +92,14 @@ norm presence/values and BM25 score bits across append, delete and merge.
 `norms_writer_routing.rs` compares these snapshots and configured column inputs.
 Writer producer passes and double-close traces remain provenance; native reader
 acquisitions form a sorted multiset because their teardown order is independent.
+`GenPointsWriterRouting` installs the actual asserting points writer with native
+readers. Sorted/unsorted explicit flush, append, delete and merge sessions include
+point-free segments, sparse duplicate 1D and multidimensional values. A mixed-source
+multi-leaf case checks unfiltered source budgets, all-deleted point fields and
+complete range-query hits. `points_writer_routing.rs` compares schemas, stored IDs,
+live bits, point multisets/bounds, tree counts and hits; callback checks preserve
+lifecycle order while canonicalizing Java field-hash order and segment names.
+Source reader acquisition remains native; this does not install the whole codec.
 `GenAssertingTermVectors` records document/field/term/position count assertions,
 delegate failures and retries, inherited proximity and mapped merge callbacks,
 reader lifecycles and real SimpleText bytes. The harness enables Java assertions

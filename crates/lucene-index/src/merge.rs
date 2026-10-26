@@ -251,10 +251,10 @@
 //! logic was written for this merge), drops non-live docs and remaps
 //! surviving doc ids to the merged id space (reusing
 //! [`build_doc_id_maps`], the same mechanism [`merge_postings`] uses), and
-//! hands the per-source streams to [`lucene_codecs::points::write_merged`]:
-//! a one-dimensional field is k-way merged by value there, as
-//! `BKDWriter.merge` does, and any other is added source by source and
-//! re-indexed, as `PointsWriter.mergeOneField` does -- both through the
+//! hands the per-source streams to [`lucene_codecs::points::write_merged_with_mode`]:
+//! a one-dimensional field is k-way merged by value when every source has a
+//! native points reader, as `BKDWriter.merge` does. A point-free source selects
+//! the generic add/finish path, as does every other dimensionality -- through the
 //! byte-identical `BKDWriter` port, with the merged segment's `maxDoc`.
 //!
 //! A source whose own `FieldInfos` never saw the points field simply
@@ -267,10 +267,9 @@
 //! that ends up with zero surviving points overall, e.g. every
 //! contributing doc's point belonged to a deleted doc) is not an error --
 //! points are naturally sparse the same way postings are. A field that ends
-//! up with zero points after the merge is simply omitted from the merged
-//! segment (matching real Lucene's `finish()` returning `null`/omitting the
-//! field, and [`lucene_codecs::points::write_packed`]'s own documented
-//! `EmptyField` restriction).
+//! up with zero points after the merge has no BKD entry, matching Java's
+//! `finish()` returning a null finalizer. Its declared dimensions remain in
+//! FieldInfos, and the segment still has a valid empty points file triple.
 //!
 //! **Scope: single packed-value shape per field across all sources,
 //! `num_index_dims` may be less than `num_dims`.**
@@ -1494,7 +1493,7 @@ fn describe_written_files(
     doc_values_suffixes: &[(i32, u32)],
     wrote_term_vectors: bool,
     vector_fields: &[(i32, &'static str, u32)],
-    points_field_numbers: &[i32],
+    _points_field_numbers: &[i32],
 ) {
     for f in merged_fields.iter_mut() {
         f.attributes.retain(|(key, _)| {
@@ -1565,17 +1564,8 @@ fn describe_written_files(
             // vector-capable and yields nothing, with no error anywhere.
             f.vector_dimension = 0;
         }
-        if !points_field_numbers.contains(&f.number) {
-            // The points twin, and the rule flush applies
-            // (`IndexWriter::fields_with_per_field_attributes`): a positive
-            // point dimension makes `FieldInfos.hasPointValues()` true, and
-            // `SegmentCoreReaders` then opens `.kdm` -- which a merge that
-            // wrote no points for any field never created, leaving an index
-            // real Lucene cannot open.
-            f.point_dimension_count = 0;
-            f.point_index_dimension_count = 0;
-            f.point_num_bytes = 0;
-        }
+        // Java: SegmentMerger keeps merged point dimensions even when every
+        // point was deleted. The writer still emits an empty points triple.
     }
 }
 
@@ -2302,10 +2292,15 @@ pub fn merge_segments_mapped(
         .codec
         .as_deref()
         .and_then(|codec| codec.norms_writer_factory());
+    let points_factory = options
+        .codec
+        .as_deref()
+        .and_then(|codec| codec.points_writer_factory());
+    let installed_segment_writer = norms_factory.is_some() || points_factory.is_some();
     // Java: SegmentMerger.merge writes stored fields before norms, and closes
     // norms before selecting postings/doc-values/vector formats. Source columns
     // here remain Rust-owned decoded inputs; no source NormsProducer is routed.
-    if norms_factory.is_some() {
+    if installed_segment_writer {
         write_stored(&mut files)?;
     }
 
@@ -2362,6 +2357,7 @@ pub fn merge_segments_mapped(
     }
     let tv_files =
         write_merged_term_vectors(sources, &per_source_maps, &doc_order, &merged_segment_id)?;
+    let wrote_term_vectors = tv_files.is_some();
     let merged_postings_fields = merge_postings(
         sources,
         &per_source_maps,
@@ -2377,16 +2373,6 @@ pub fn merge_segments_mapped(
         &doc_id_maps,
         &merged_fields,
     )?;
-    let merged_vectors = merge_vectors(
-        sources,
-        &per_source_maps,
-        &doc_id_maps,
-        &merged_fields,
-        doc_count,
-        options,
-        &merged_segment_id,
-    )?;
-
     // What the merged `.fnm` is allowed to claim, captured before the values
     // below are consumed by their writers (see `describe_written_files`).
     let postings_field_names: Vec<(i32, String)> = merged_postings_fields
@@ -2425,34 +2411,9 @@ pub fn merge_segments_mapped(
         .iter()
         .flat_map(|g| g.field_numbers.iter().map(move |&n| (n, g.suffix)))
         .collect();
-    let vector_field_numbers: Vec<(i32, &'static str, u32)> = merged_vectors
-        .as_ref()
-        .map(|v| v.written.clone())
-        .unwrap_or_default();
-    let wrote_term_vectors = tv_files.is_some();
-    let points_field_numbers: Vec<i32> = merged_points_fields
-        .iter()
-        .filter(|f| f.sources.iter().any(|s| !s.docs.is_empty()))
-        .map(|f| f.field_number)
-        .collect();
-
-    if norms_factory.is_none() {
+    if !installed_segment_writer {
         write_stored(&mut files)?;
     }
-
-    let fnm_name = format!("{merged_segment_name}.fnm");
-    let mut merged_fields = merged_fields;
-    describe_written_files(
-        &mut merged_fields,
-        &postings_suffixes,
-        &doc_values_suffixes,
-        wrote_term_vectors,
-        &vector_field_numbers,
-        &points_field_numbers,
-    );
-    let fnm = field_infos::write(&merged_fields, &merged_segment_id, "");
-    write_file(dir, &fnm_name, &fnm)?;
-    files.push(fnm_name);
 
     // Every doc-values field of the merged segment shares one
     // `.dvm`/`.dvd`/`.dvs` triple, which is what a real multi-field
@@ -2575,29 +2536,83 @@ pub fn merge_segments_mapped(
         }
     }
 
-    // A merged field with zero surviving points (every contributing live
-    // doc happened to have none) is omitted, as Java's `finish()` returns no
-    // finalizer for it; so are the files when no field has any.
-    let inputs: Vec<points::MergePointsField> = merged_points_fields
-        .into_iter()
-        .filter(|f| f.sources.iter().any(|s| !s.docs.is_empty()))
-        .collect();
-    if !inputs.is_empty() {
-        let (kdm, kdi, kdd) = points::write_merged(
-            inputs,
-            points::DEFAULT_MAX_POINTS_IN_LEAF_NODE,
-            doc_count,
-            dir,
-            merged_segment_name,
-            &merged_segment_id,
-            "",
-        )?;
-        for (ext, bytes) in [("kdm", &kdm), ("kdi", &kdi), ("kdd", &kdd)] {
-            let name = format!("{merged_segment_name}.{ext}");
-            write_file(dir, &name, bytes)?;
-            files.push(name);
+    // Java: SegmentMerger opens a PointsWriter from merged FieldInfos, even
+    // when every point was deleted. finish() then emits a header/footer-only
+    // triple, while the field's dimensions remain in the merged .fnm.
+    if merged_fields.iter().any(|f| f.point_dimension_count > 0) {
+        // Lucene90PointsWriter's instanceof dispatch: a point-free source
+        // has no PointsReader and selects generic merging, including for 1D.
+        let native_merge = sources.iter().all(|source| {
+            source
+                .field_infos
+                .iter()
+                .any(|f| f.point_dimension_count > 0)
+        });
+        if let Some(factory) = points_factory {
+            files.extend(crate::points_writer::merge(
+                factory,
+                lucene_codecs::points_writer::PointsWriteState {
+                    directory: dir,
+                    segment: merged_segment_name,
+                    id: &merged_segment_id,
+                    suffix: "",
+                    max_doc: doc_count,
+                },
+                merged_points_fields,
+                native_merge,
+            )?);
+        } else {
+            let (kdm, kdi, kdd) = points::write_merged_with_mode(
+                merged_points_fields,
+                points::DEFAULT_MAX_POINTS_IN_LEAF_NODE,
+                doc_count,
+                dir,
+                merged_segment_name,
+                &merged_segment_id,
+                "",
+                native_merge,
+            )?;
+            for (ext, bytes) in [("kdm", &kdm), ("kdi", &kdi), ("kdd", &kdd)] {
+                let name = format!("{merged_segment_name}.{ext}");
+                write_file(dir, &name, bytes)?;
+                files.push(name);
+            }
         }
     }
+
+    let merged_vectors = merge_vectors(
+        sources,
+        &per_source_maps,
+        &doc_id_maps,
+        &merged_fields,
+        doc_count,
+        options,
+        &merged_segment_id,
+    )?;
+
+    let vector_field_numbers: Vec<(i32, &'static str, u32)> = merged_vectors
+        .as_ref()
+        .map(|v| v.written.clone())
+        .unwrap_or_default();
+    let points_field_numbers: Vec<i32> = merged_fields
+        .iter()
+        .filter(|f| f.point_dimension_count > 0)
+        .map(|f| f.number)
+        .collect();
+
+    let fnm_name = format!("{merged_segment_name}.fnm");
+    let mut merged_fields = merged_fields;
+    describe_written_files(
+        &mut merged_fields,
+        &postings_suffixes,
+        &doc_values_suffixes,
+        wrote_term_vectors,
+        &vector_field_numbers,
+        &points_field_numbers,
+    );
+    let fnm = field_infos::write(&merged_fields, &merged_segment_id, "");
+    write_file(dir, &fnm_name, &fnm)?;
+    files.push(fnm_name);
 
     if let Some(vector_files) = merged_vectors {
         for (suffix, group_files) in &vector_files.groups {
@@ -4991,8 +5006,8 @@ impl points::IntersectVisitor for CollectPoints<'_> {
 
 /// Merges BKD points (`.kdm`/`.kdi`/`.kdd`) data across `sources` for every
 /// field any source declares points for, returning one [`points::MergePointsField`]
-/// per distinct merged field number that has points data in at least one
-/// source -- or an empty `Vec` if no source supplied any points data at all.
+/// per distinct merged field number declaring points, even when all of its
+/// source values are null or deleted. No declared points returns an empty Vec.
 ///
 /// Unlike SORTED doc values or postings, a points field has no shared
 /// dictionary to resolve ordinals against -- it's fundamentally a per-doc set
@@ -5021,10 +5036,10 @@ impl points::IntersectVisitor for CollectPoints<'_> {
 /// points and docs with zero points for a field are both realistic and
 /// simply mean fewer points end up in the merged tree for that doc). What
 /// *is* an error, matching the same philosophy as doc-values/norms/postings:
-/// if a merged field has points data in at least one source that contributes
-/// live docs, but another live-doc-contributing source has no points *field*
-/// at all for it (schema mismatch across sources), this returns
-/// [`Error::PointsFieldMissingInSource`].
+/// a source declaring point dimensions must supply its opened reader via
+/// SourcePoints, otherwise this returns [`Error::PointsFieldMissingInSource`].
+/// A supplied reader without a BKD entry is legitimate: an earlier merge may
+/// have deleted every point while preserving the field's declared shape.
 ///
 /// # Cross-source shape validation
 ///
@@ -5040,25 +5055,17 @@ impl points::IntersectVisitor for CollectPoints<'_> {
 pub(crate) fn merge_points(
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],
-    per_source_live_ids: &[Vec<i32>],
+    _per_source_live_ids: &[Vec<i32>],
     doc_id_maps: &[Vec<i32>],
     merged_fields: &[FieldInfo],
 ) -> Result<Vec<points::MergePointsField>> {
-    let mut candidates: Vec<i32> = Vec::new();
-    for ((source, map), live_ids) in sources.iter().zip(per_source_maps).zip(per_source_live_ids) {
-        if live_ids.is_empty() {
-            // Same "fully-deleted source can't affect the merged output"
-            // exemption as merge_numeric_doc_values.
-            continue;
-        }
-        for sp in source.points {
-            if let Some(&merged_number) = map.get(&sp.field_number) {
-                if !candidates.contains(&merged_number) {
-                    candidates.push(merged_number);
-                }
-            }
-        }
-    }
+    // Java iterates merged FieldInfos, including fields whose reader has no
+    // BKD entry because an earlier merge deleted every point.
+    let mut candidates: Vec<i32> = merged_fields
+        .iter()
+        .filter(|field| field.point_dimension_count > 0)
+        .map(|field| field.number)
+        .collect();
     candidates.sort_unstable();
     if candidates.is_empty() {
         return Ok(Vec::new());
@@ -5090,15 +5097,7 @@ pub(crate) fn merge_points(
         // documents' points included -- `BKDWriter` sizes its heap buffer
         // (or decides to spill) from it.
         let mut max_point_count = 0u64;
-        for (src_idx, ((source, reverse), live_ids)) in sources
-            .iter()
-            .zip(&reverse_maps)
-            .zip(per_source_live_ids)
-            .enumerate()
-        {
-            if live_ids.is_empty() {
-                continue;
-            }
+        for (src_idx, (source, reverse)) in sources.iter().zip(&reverse_maps).enumerate() {
             let Some(&original_number) = reverse.get(&merged_field_number) else {
                 // This source's own `FieldInfos` never saw the field --
                 // `PointsWriter.merge`'s `if (readerFieldInfo == null)
@@ -5117,9 +5116,9 @@ pub(crate) fn merge_points(
                 });
             };
             let Some(field_meta) = sp.reader.field(original_number) else {
-                return Err(Error::PointsFieldMissingInSource {
-                    merged_field_number,
-                });
+                // Lucene90PointsReader.getValues may return null with a
+                // declared shape: an earlier merge deleted every point.
+                continue;
             };
             if field_meta.num_dims != merged_num_dims
                 || field_meta.bytes_per_dim != merged_bytes_per_dim
@@ -13870,9 +13869,24 @@ mod tests {
             pruned_field: None,
         };
 
+        let sources = [source0, source1];
+        let (merged_fields, maps) =
+            reconcile_field_numbers(&[&stored0.fields, &stored1.fields]).unwrap();
+        let merged_points = merge_points(
+            &sources,
+            &maps,
+            &[vec![0], vec![]],
+            &[vec![0], vec![-1]],
+            &merged_fields,
+        )
+        .unwrap();
+        assert_eq!(merged_points[0].max_point_count, 2);
+        assert_eq!(merged_points[0].sources.len(), 2);
+        assert!(merged_points[0].sources[1].docs.is_empty());
+
         merge_stored_only_segments(
             &dir,
-            &[source0, source1],
+            &sources,
             "_merged_points_fully_deleted",
             [9u8; ID_LENGTH],
             "Lucene104",
@@ -13892,6 +13906,107 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(0, packed4(10))]
         );
+    }
+
+    #[test]
+    fn deleting_every_point_keeps_the_shape_empty_files_and_null_entry_on_remerge() {
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let source_id = [1u8; ID_LENGTH];
+        let merged_id = [9u8; ID_LENGTH];
+        let fields = vec![points_field("loc", 0, 1, 4)];
+        let stored = flush(
+            &dir,
+            &tmp,
+            "_source",
+            source_id,
+            &fields,
+            &[doc_with(0, "deleted"), doc_with(0, "live_without_points")],
+        );
+        let stored_reader = open_reader(&stored);
+        let (meta, index, data) =
+            write_one_field_points(0, 1, 4, vec![(0, packed4(42))], &source_id);
+        let points_reader = points::open(&meta, &index, &data, &source_id, "").unwrap();
+        let source_points = [SourcePoints {
+            field_number: 0,
+            reader: &points_reader,
+        }];
+        let mut live = FixedBitSet::new(2);
+        live.set(1);
+        let source = MergeSource {
+            points: &source_points,
+            ..MergeSource::stored_only(&stored.fields, &stored_reader, Some(&live), Some(version()))
+        };
+        let merged = merge_stored_only_segments(
+            &dir,
+            &[source],
+            "_empty_points",
+            merged_id,
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+        assert_eq!(merged.segment_name, "_empty_points");
+        for extension in ["kdm", "kdi", "kdd"] {
+            assert!(tmp.join(format!("_empty_points.{extension}")).is_file());
+        }
+        let merged_fields = field_infos::parse(
+            &std::fs::read(tmp.join("_empty_points.fnm")).unwrap(),
+            &merged_id,
+            "",
+        )
+        .unwrap();
+        assert_eq!(merged_fields.fields[0].point_dimension_count, 1);
+        assert_eq!(merged_fields.fields[0].point_index_dimension_count, 1);
+        assert_eq!(merged_fields.fields[0].point_num_bytes, 4);
+        let meta = std::fs::read(tmp.join("_empty_points.kdm")).unwrap();
+        let index = std::fs::read(tmp.join("_empty_points.kdi")).unwrap();
+        let data = std::fs::read(tmp.join("_empty_points.kdd")).unwrap();
+        let empty_points = points::open(&meta, &index, &data, &merged_id, "").unwrap();
+        assert!(empty_points.field(0).is_none());
+        let merged_stored = FlushedSegment {
+            fdt: std::fs::read(tmp.join("_empty_points.fdt")).unwrap(),
+            fdx: std::fs::read(tmp.join("_empty_points.fdx")).unwrap(),
+            fdm: std::fs::read(tmp.join("_empty_points.fdm")).unwrap(),
+            fields: merged_fields.fields,
+            segment_id: merged_id,
+        };
+        let merged_stored_reader = open_reader(&merged_stored);
+        let empty_source_points = [SourcePoints {
+            field_number: 0,
+            reader: &empty_points,
+        }];
+        let source = MergeSource {
+            points: &empty_source_points,
+            ..MergeSource::stored_only(
+                &merged_stored.fields,
+                &merged_stored_reader,
+                None,
+                Some(version()),
+            )
+        };
+        merge_stored_only_segments(
+            &dir,
+            &[source],
+            "_empty_again",
+            [8u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+        let meta = std::fs::read(tmp.join("_empty_again.kdm")).unwrap();
+        let index = std::fs::read(tmp.join("_empty_again.kdi")).unwrap();
+        let data = std::fs::read(tmp.join("_empty_again.kdd")).unwrap();
+        let reopened = points::open(&meta, &index, &data, &[8u8; ID_LENGTH], "").unwrap();
+        assert_eq!(reopened.field_numbers().count(), 0);
+        let infos = field_infos::parse(
+            &std::fs::read(tmp.join("_empty_again.fnm")).unwrap(),
+            &[8u8; ID_LENGTH],
+            "",
+        )
+        .unwrap();
+        assert_eq!(infos.fields[0].point_dimension_count, 1);
+        assert_eq!(infos.fields[0].point_num_bytes, 4);
     }
 
     #[test]

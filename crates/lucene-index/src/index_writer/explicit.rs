@@ -834,34 +834,6 @@ impl IndexingConfig {
         } else {
             None
         };
-        let postings_output = if term_lists.is_empty() {
-            None
-        } else {
-            let inputs: Vec<FieldPostingsInput<'_, _>> = term_lists
-                .iter()
-                .map(|(n, options, docs, terms)| FieldPostingsInput {
-                    field_number: *n,
-                    index_options: *options,
-                    doc_count: *docs,
-                    has_payloads: payload_fields.contains(n),
-                    terms,
-                })
-                .collect();
-            let norms_for_impacts: Vec<postings_writer::FieldNorms<'_>> = norm_columns
-                .iter()
-                .map(|(n, column)| postings_writer::FieldNorms {
-                    field_number: *n,
-                    values: &column.dense,
-                })
-                .collect();
-            Some(self.write_postings_groups(
-                &inputs,
-                &segment_fields,
-                &norms_for_impacts,
-                &segment_id,
-            )?)
-        };
-
         if !installed_norms {
             norms_output = build_norms()?;
         }
@@ -919,7 +891,14 @@ impl IndexingConfig {
         let points_output = if point_configs.is_empty() {
             None
         } else {
-            IndexWriter::build_points_output(&in_place(|f| &f.points), &point_configs, &segment_id)?
+            IndexWriter::build_points_output(
+                self,
+                &in_place(|f| &f.points),
+                &point_configs,
+                &segment_id,
+                dir,
+                segment_name,
+            )?
         };
 
         let vector_configs: Vec<super::VectorFieldConfig> = self
@@ -945,6 +924,34 @@ impl IndexingConfig {
                 &segment_id,
             )?
         };
+        let postings_output = if term_lists.is_empty() {
+            None
+        } else {
+            let inputs: Vec<FieldPostingsInput<'_, _>> = term_lists
+                .iter()
+                .map(|(n, options, docs, terms)| FieldPostingsInput {
+                    field_number: *n,
+                    index_options: *options,
+                    doc_count: *docs,
+                    has_payloads: payload_fields.contains(n),
+                    terms,
+                })
+                .collect();
+            let norms_for_impacts: Vec<postings_writer::FieldNorms<'_>> = norm_columns
+                .iter()
+                .map(|(n, column)| postings_writer::FieldNorms {
+                    field_number: *n,
+                    values: &column.dense,
+                })
+                .collect();
+            Some(self.write_postings_groups(
+                &inputs,
+                &segment_fields,
+                &norms_for_impacts,
+                &segment_id,
+            )?)
+        };
+
         // Term vectors: each document's fields in name order
         // (`TermVectorsConsumer.finishDocument` sorts its `perFields` by
         // name). Written when some document inverts a field that stores term
