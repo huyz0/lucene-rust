@@ -1695,6 +1695,11 @@ impl IndexingConfig {
                         Some(declared) => FieldInfo {
                             number: f.number,
                             store_payloads: f.store_payloads,
+                            // Point dimensions belong to the source segment, including
+                            // a declared shape with no surviving BKD entry.
+                            point_dimension_count: f.point_dimension_count,
+                            point_index_dimension_count: f.point_index_dimension_count,
+                            point_num_bytes: f.point_num_bytes,
                             ..declared.clone()
                         },
                         None => f.clone(),
@@ -2384,7 +2389,7 @@ impl IndexingConfig {
             .collect();
 
         // Points: one reader per source, and a `SourcePoints` for every field
-        // its `.kdm` has an entry for.
+        // its FieldInfos declares, including legitimate null BKD entries.
         let opened_points: Vec<Option<lucene_codecs::points::PointsReader>> = opened
             .iter()
             .map(|o| match &o.points {
@@ -2400,11 +2405,14 @@ impl IndexingConfig {
             .collect::<std::result::Result<Vec<_>, Error>>()?;
         let per_source_points: Vec<Vec<merge::SourcePoints>> = opened_points
             .iter()
-            .map(|reader| match reader {
-                Some(reader) => reader
-                    .field_numbers()
-                    .map(|field_number| merge::SourcePoints {
-                        field_number,
+            .zip(&opened)
+            .map(|(reader, source)| match reader {
+                Some(reader) => source
+                    .field_infos
+                    .iter()
+                    .filter(|field| field.point_dimension_count > 0)
+                    .map(|field| merge::SourcePoints {
+                        field_number: field.number,
                         reader,
                     })
                     .collect(),
@@ -3004,6 +3012,21 @@ impl IndexingConfig {
 
         self.fields
             .iter()
+            // Java discovers point-only fields from actual documents. An
+            // opted-in but absent point-only field must not manufacture a
+            // zero-dimensional schema that conflicts with a later pointful segment.
+            // A field not opted into points still belongs to stored fields.
+            .filter(|field| {
+                field.point_dimension_count == 0
+                    || !self
+                        .points_fields
+                        .iter()
+                        .any(|points| points.field_number == field.number)
+                    || points_fields_written.iter().any(|name| name == &field.name)
+                    || field.index_options != IndexOptions::None
+                    || field.doc_values_type != DocValuesType::None
+                    || field.vector_dimension != 0
+            })
             .map(|f| {
                 let mut f = f.clone();
                 // No norms coercion here any more. Until c35 this writer's
@@ -3091,11 +3114,10 @@ impl IndexingConfig {
                 } else {
                     f.vector_dimension = 0;
                 }
-                // And for points: `FieldInfo.getPointDimensionCount() > 0` is
-                // what `CheckIndex.testPoints` and `PointsReader.getValues`
-                // key off, so a field that got no point in this flush must
-                // not claim a shape (Java's `.fnm` gets it from the first
-                // document that carried the field).
+                // PointsOutput retains the declared shape for an opted-in
+                // field needed by another feature, even without point values.
+                // Its empty points triple makes the null BKD entry readable
+                // and avoids a schema mismatch with later pointful segments.
                 if !points_fields_written.iter().any(|n| n == &f.name) {
                     f.point_dimension_count = 0;
                     f.point_index_dimension_count = 0;
@@ -3249,6 +3271,34 @@ impl IndexingConfig {
         } else {
             build_doc_values()?
         };
+        let build_points = || -> Result<_> {
+            if self.points_fields.is_empty() {
+                Ok(None)
+            } else {
+                IndexWriter::build_points_output(
+                    self,
+                    buf.docs,
+                    &self.points_fields,
+                    &segment_id,
+                    dir,
+                    segment_name,
+                )
+            }
+        };
+        let build_vectors = || -> Result<_> {
+            Ok(if self.vector_fields.is_empty() {
+                None
+            } else {
+                IndexWriter::build_vectors_output(
+                    buf.vectors,
+                    &self.vector_fields,
+                    buf.docs.len() as i32,
+                    &|name: &str| self.knn_vectors_format_for(name),
+                    &segment_id,
+                )?
+            })
+        };
+        let (points_output, vectors_output);
         let (norms_output, term_vectors_output, postings_output);
         if self.fast_inversion_applies(&norms_configs) {
             // `IndexingChain`'s own shape: a term hash per field, lengths
@@ -3275,6 +3325,9 @@ impl IndexingConfig {
             if installed_norms {
                 doc_values_output = build_doc_values()?;
             }
+            points_output = build_points()?;
+            vectors_output = build_vectors()?;
+
             term_vectors_output = None;
             let impact_norms: &[(i32, Vec<i64>)] = norms_output
                 .as_ref()
@@ -3322,6 +3375,9 @@ impl IndexingConfig {
             if installed_norms {
                 doc_values_output = build_doc_values()?;
             }
+            points_output = build_points()?;
+            vectors_output = build_vectors()?;
+
             // Borrowed out of `norms_output` before the postings consume
             // `inverted`, because the postings writer needs them for its
             // impacts.
@@ -3361,24 +3417,6 @@ impl IndexingConfig {
                 }
             };
         }
-
-        let vectors_output = if self.vector_fields.is_empty() {
-            None
-        } else {
-            IndexWriter::build_vectors_output(
-                buf.vectors,
-                &self.vector_fields,
-                buf.docs.len() as i32,
-                &|name: &str| self.knn_vectors_format_for(name),
-                &segment_id,
-            )?
-        };
-
-        let points_output = if self.points_fields.is_empty() {
-            None
-        } else {
-            IndexWriter::build_points_output(buf.docs, &self.points_fields, &segment_id)?
-        };
 
         let fnm_fields = self.fields_with_per_field_attributes(
             postings_output.as_ref(),
@@ -4245,11 +4283,10 @@ struct VectorFieldConfig {
 }
 
 /// [`IndexWriter::build_points_output`]'s three files, plus the names of the
-/// fields that got at least one point in this flush.
+/// fields whose point dimensions this flush retains.
 struct PointsOutput {
-    kdm: Vec<u8>,
-    kdi: Vec<u8>,
-    kdd: Vec<u8>,
+    bytes: Option<(Vec<u8>, Vec<u8>, Vec<u8>)>,
+    files: Vec<String>,
     written_fields: Vec<String>,
 }
 
@@ -9367,11 +9404,15 @@ impl IndexWriter<'_> {
 
     /// Builds this flush's `.kdm`/`.kdi`/`.kdd` for every points field any
     /// pending document has a value for -- `PointValuesWriter.flush` into
-    /// `Lucene90PointsWriter.writeField` -- or `None` when none has one.
+    /// `Lucene90PointsWriter.writeField`. An opted-in field retained by another
+    /// feature keeps its shape and an empty triple even without point values.
     fn build_points_output<D: DocValueFields>(
+        config: &IndexingConfig,
         docs: &[D],
         configs: &[PointsFieldConfig],
         segment_id: &[u8; ID_LENGTH],
+        dir: &dyn Directory,
+        segment_name: &str,
     ) -> Result<Option<PointsOutput>> {
         // One pass over the documents, appending each point straight onto
         // its field's flat buffers -- `PointValuesWriter.addPackedValue`'s
@@ -9406,15 +9447,49 @@ impl IndexWriter<'_> {
         let written_fields: Vec<String> = configs
             .iter()
             .zip(&fields)
-            .filter(|(_, f)| !f.docs.is_empty())
+            .filter(|(points, values)| {
+                !values.docs.is_empty()
+                    || config.fields.iter().any(|field| {
+                        field.number == points.field_number
+                            && (field.index_options != IndexOptions::None
+                                || field.doc_values_type != DocValuesType::None
+                                || field.vector_dimension != 0)
+                    })
+            })
             .map(|(c, _)| c.name.clone())
             .collect();
         fields.retain(|f| !f.docs.is_empty());
-        if fields.is_empty() {
+        if fields.is_empty() && written_fields.is_empty() {
             return Ok(None);
         }
-        // `Lucene90PointsWriter` writes fields in `FieldInfos` order.
+        // Empty retained fields have no write_field callback or BKD entry.
+        // finish still emits a valid triple for their declared dimensions.
+        // Deterministic field-number order. Java flush traverses field-hash
+        // buckets; merge uses FieldInfos order. Packed values are unchanged.
         fields.sort_by_key(|f| f.field_number);
+        if let Some(factory) = config
+            .codec
+            .as_deref()
+            .and_then(|codec| codec.points_writer_factory())
+        {
+            let files = crate::points_writer::flush(
+                factory,
+                lucene_codecs::points_writer::PointsWriteState {
+                    directory: dir,
+                    segment: segment_name,
+                    id: segment_id,
+                    suffix: "",
+                    max_doc: docs.len() as i32,
+                },
+                &config.fields,
+                fields,
+            )?;
+            return Ok(Some(PointsOutput {
+                bytes: None,
+                files,
+                written_fields,
+            }));
+        }
         // The segment's `maxDoc`: `BKDWriter` sizes its doc-id keys from it.
         let (kdm, kdi, kdd) = lucene_codecs::points::write_packed(
             fields,
@@ -9424,9 +9499,8 @@ impl IndexWriter<'_> {
             "",
         )?;
         Ok(Some(PointsOutput {
-            kdm,
-            kdi,
-            kdd,
+            bytes: Some((kdm, kdi, kdd)),
+            files: Vec::new(),
             written_fields,
         }))
     }
@@ -9439,12 +9513,15 @@ impl IndexWriter<'_> {
         segment_name: &str,
         output: &PointsOutput,
     ) -> Result<Vec<String>> {
+        let Some((kdm, kdi, kdd)) = &output.bytes else {
+            return Ok(output.files.clone());
+        };
         let names = [
             format!("{segment_name}.kdm"),
             format!("{segment_name}.kdi"),
             format!("{segment_name}.kdd"),
         ];
-        for (name, bytes) in names.iter().zip([&output.kdm, &output.kdi, &output.kdd]) {
+        for (name, bytes) in names.iter().zip([kdm, kdi, kdd]) {
             let mut out = dir.create_output(name)?;
             out.write_bytes(bytes);
             out.close()?;
@@ -23359,7 +23436,7 @@ pub(crate) mod tests {
     #[test]
     fn a_merge_whose_sources_have_no_points_claims_none() {
         // Two flushes of a declared points field no document carries: each
-        // flushed `.fnm` already drops the shape, and the merged one must too
+        // flushed `.fnm` omits the absent field, and the merged one must too
         // -- a merged `.fnm` claiming point dimensions over a segment with no
         // `.kdm` is one real Lucene refuses to open.
         let tmp = tempdir("points-none-merged");
@@ -23384,15 +23461,8 @@ pub(crate) mod tests {
         let sci = &sis.segments[0];
         let fnm = dir.open(&format!("{}.fnm", sci.segment_name)).unwrap();
         let fis = lucene_codecs::field_infos::parse(&fnm, &sci.segment_id, "").unwrap();
-        let n = fis.fields.iter().find(|f| f.name == "n").unwrap();
-        assert_eq!(
-            (
-                n.point_dimension_count,
-                n.point_index_dimension_count,
-                n.point_num_bytes
-            ),
-            (0, 0, 0)
-        );
+        assert!(fis.fields.iter().all(|f| f.name != "n"));
+
         let names: Vec<String> = std::fs::read_dir(&tmp)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())

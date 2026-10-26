@@ -17,7 +17,11 @@
 //! arrays/delegates are unrepresentable;
 //! grow uses usize instead of signed Java counts. The underlying native buffered
 //! writer retains publication/sticky-write-error timing and accounting limits.
-//! IOContext, Codec/IndexWriter routing and invalidating input backends are absent.
+//! [`AssertingPointsCodec`] installs the writer only in native codec routing.
+//! Its flush sink buffers packed fields until finish; merge preserves native
+//! source order, deleted-inclusive sizing and native-reader dispatch. The
+//! existing explicit reader seam remains separate. IOContext and invalidating
+//! input backends are absent.
 
 use super::cranky_points::{self as byte, PointsFormat as ByteFormat};
 use byte::PointsReader as ByteReader;
@@ -25,8 +29,12 @@ pub use byte::{
     Error, IntersectVisitor, MergeSource, MergeState, PointTree, PointValues, PointsWriter, Result,
     WriteState,
 };
+use lucene_codecs::codec::Lucene104Codec;
 use lucene_codecs::field_infos::{FieldInfo, FieldInfos};
 use lucene_codecs::points::Relation;
+use lucene_codecs::points_writer::{
+    NativePointsWriter, PointsWriteSink, PointsWriteState, PointsWriterFactory,
+};
 use std::fmt;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -98,12 +106,7 @@ impl<W> AssertingPointsWriter<W> {
 impl<W: PointsWriter> PointsWriter for AssertingPointsWriter<W> {
     /// Java: `AssertingPointsWriter.writeField`.
     fn write_field<R: ByteReader>(&mut self, field: &FieldInfo, reader: &R) -> Result<()> {
-        if field.point_dimension_count == 0 {
-            return Err(Error::Message(format!(
-                "writing field=\"{}\" but pointDimensionalCount is 0",
-                field.name
-            )));
-        }
+        check_write_field_dimensions(field).map_err(Error::Message)?;
         self.delegate.write_field(field, reader)
     }
     fn merge<R: ByteReader>(&mut self, state: &MergeState<'_, R>) -> Result<()> {
@@ -113,6 +116,76 @@ impl<W: PointsWriter> PointsWriter for AssertingPointsWriter<W> {
         self.delegate.finish()
     }
     fn close(&mut self) -> Result<()> {
+        self.delegate.close()?;
+        self.delegate.close()
+    }
+}
+
+/// Java: `AssertingPointsWriter.writeField`, shared by both writer surfaces.
+fn check_write_field_dimensions(field: &FieldInfo) -> std::result::Result<(), String> {
+    if field.point_dimension_count == 0 {
+        Err(format!(
+            "writing field=\"{}\" but pointDimensionalCount is 0",
+            field.name
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Native `Lucene104` codec identity with assertions on points writers only.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct AssertingPointsCodec;
+
+impl Lucene104Codec for AssertingPointsCodec {
+    fn points_writer_factory(&self) -> Option<&dyn PointsWriterFactory> {
+        Some(self)
+    }
+}
+
+impl PointsWriterFactory for AssertingPointsCodec {
+    fn fields_writer<'a>(
+        &self,
+        state: PointsWriteState<'a>,
+    ) -> lucene_codecs::points::Result<Box<dyn PointsWriteSink + 'a>> {
+        if !state.suffix.is_empty() {
+            return Err(lucene_store::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "asserting points routing requires an empty suffix",
+            ))
+            .into());
+        }
+        Ok(Box::new(AssertingPointsWriter::new(
+            NativePointsWriter::new(state)?,
+        )))
+    }
+}
+
+impl<W: PointsWriteSink> PointsWriteSink for AssertingPointsWriter<W> {
+    fn write_field(
+        &mut self,
+        field: &FieldInfo,
+        values: lucene_codecs::points::PackedPointsField,
+    ) -> lucene_codecs::points::Result<()> {
+        check_write_field_dimensions(field).map_err(|message| {
+            lucene_store::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                message,
+            ))
+        })?;
+        self.delegate.write_field(field, values)
+    }
+    fn merge(
+        &mut self,
+        fields: Vec<lucene_codecs::points::MergePointsField>,
+        native_readers: bool,
+    ) -> lucene_codecs::points::Result<()> {
+        self.delegate.merge(fields, native_readers)
+    }
+    fn finish(&mut self) -> lucene_codecs::points::Result<()> {
+        self.delegate.finish()
+    }
+    fn close(&mut self) -> lucene_codecs::points::Result<()> {
         self.delegate.close()?;
         self.delegate.close()
     }
@@ -523,6 +596,378 @@ impl fmt::Display for Lucene90PointsReader<'_> {
 mod tests {
     use super::*;
     use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    const WRITE_ID: [u8; 16] = [53; 16];
+    fn write_state(directory: &dyn lucene_store::Directory) -> PointsWriteState<'_> {
+        PointsWriteState {
+            directory,
+            segment: "_ap",
+            id: &WRITE_ID,
+            suffix: "",
+            max_doc: 2,
+        }
+    }
+    fn write_field_info() -> FieldInfo {
+        let mut field = FieldInfo::new("p", 4);
+        field.point_dimension_count = 1;
+        field.point_index_dimension_count = 1;
+        field.point_num_bytes = 1;
+        field
+    }
+    fn write_values() -> lucene_codecs::points::PackedPointsField {
+        lucene_codecs::points::PackedPointsField {
+            field_number: 4,
+            num_dims: 1,
+            num_index_dims: 1,
+            bytes_per_dim: 1,
+            docs: vec![1, 0, 1],
+            values: vec![255, 0, 255],
+        }
+    }
+
+    #[test]
+    fn installed_points_codec_retains_native_identity_and_flush_bytes() {
+        use lucene_store::{ByteBuffersDirectory, Directory};
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<AssertingPointsCodec>();
+        let codec: &dyn Lucene104Codec = &AssertingPointsCodec;
+        assert_eq!(codec.name(), "Lucene104");
+        assert!(codec.norms_writer_factory().is_none());
+        assert!(codec.live_docs_writer().is_none());
+        assert!(codec.stored_fields_writer_factory().is_none());
+        let directory = ByteBuffersDirectory::new();
+        let result: lucene_codecs::points::Result<_> = lucene_codecs::points_writer::with_writer(
+            codec.points_writer_factory().unwrap(),
+            write_state(&directory),
+            |writer| {
+                writer.write_field(&write_field_info(), write_values())?;
+                writer.finish()
+            },
+        );
+        result.unwrap();
+        let expected =
+            lucene_codecs::points::write_packed(vec![write_values()], 512, 2, &WRITE_ID, "")
+                .unwrap();
+        for (extension, bytes) in [
+            ("kdm", expected.0),
+            ("kdi", expected.1),
+            ("kdd", expected.2),
+        ] {
+            assert_eq!(
+                &*directory.open(&format!("_ap.{extension}")).unwrap(),
+                bytes
+            );
+        }
+        let meta = directory.open("_ap.kdm").unwrap();
+        let index = directory.open("_ap.kdi").unwrap();
+        let data = directory.open("_ap.kdd").unwrap();
+        let reader = lucene_codecs::points::open(&meta, &index, &data, &WRITE_ID, "").unwrap();
+        let decoded = reader.decode_all_points(4).unwrap();
+        assert_eq!(
+            decoded.iter().map(|point| point.doc_id).collect::<Vec<_>>(),
+            [0, 1, 1]
+        );
+    }
+
+    #[test]
+    fn installed_factory_rejects_suffix_before_creating_outputs_and_supports_empty_finish() {
+        use lucene_store::{ByteBuffersDirectory, Directory};
+        let directory = ByteBuffersDirectory::new();
+        let mut state = write_state(&directory);
+        state.suffix = "s";
+        let error = AssertingPointsCodec.fields_writer(state).err().unwrap();
+        assert_eq!(
+            error.to_string(),
+            "asserting points routing requires an empty suffix"
+        );
+        assert!(directory.list_all().unwrap().is_empty());
+        let mut writer = AssertingPointsCodec
+            .fields_writer(write_state(&directory))
+            .unwrap();
+        writer.finish().unwrap();
+        writer.close().unwrap();
+        writer.close().unwrap();
+        assert_eq!(
+            writer.finish().unwrap_err().to_string(),
+            "closed points writer"
+        );
+        let meta = directory.open("_ap.kdm").unwrap();
+        let index = directory.open("_ap.kdi").unwrap();
+        let data = directory.open("_ap.kdd").unwrap();
+        assert!(
+            lucene_codecs::points::open(&meta, &index, &data, &WRITE_ID, "")
+                .unwrap()
+                .field_numbers()
+                .next()
+                .is_none()
+        );
+    }
+
+    struct LowerProbe {
+        calls: Vec<&'static str>,
+        failure: &'static str,
+        close_count: usize,
+        fail_close_at: usize,
+    }
+    impl LowerProbe {
+        fn call(&mut self, name: &'static str) -> lucene_codecs::points::Result<()> {
+            self.calls.push(name);
+            if self.failure == name {
+                Err(lucene_store::Error::Io(std::io::Error::other(name)).into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+    impl PointsWriteSink for LowerProbe {
+        fn write_field(
+            &mut self,
+            field: &FieldInfo,
+            values: lucene_codecs::points::PackedPointsField,
+        ) -> lucene_codecs::points::Result<()> {
+            assert_eq!(field.number, values.field_number);
+            assert_eq!(values.docs, [1, 0, 1]);
+            self.call("write")
+        }
+        fn merge(
+            &mut self,
+            fields: Vec<lucene_codecs::points::MergePointsField>,
+            native: bool,
+        ) -> lucene_codecs::points::Result<()> {
+            assert!(!native);
+            assert_eq!(fields[0].max_point_count, 17);
+            assert_eq!(fields[0].sources[0].docs, [1]);
+            self.call("merge")
+        }
+        fn finish(&mut self) -> lucene_codecs::points::Result<()> {
+            self.call("finish")
+        }
+        fn close(&mut self) -> lucene_codecs::points::Result<()> {
+            self.close_count += 1;
+            self.calls.push("close");
+            if self.close_count == self.fail_close_at {
+                Err(lucene_store::Error::Io(std::io::Error::other("close")).into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+    fn lower_probe(
+        failure: &'static str,
+        fail_close_at: usize,
+    ) -> AssertingPointsWriter<LowerProbe> {
+        AssertingPointsWriter::new(LowerProbe {
+            calls: vec![],
+            failure,
+            close_count: 0,
+            fail_close_at,
+        })
+    }
+    fn lower_merge_fields() -> Vec<lucene_codecs::points::MergePointsField> {
+        vec![lucene_codecs::points::MergePointsField {
+            max_point_count: 17,
+            sources: vec![lucene_codecs::points::PointsMergeSource {
+                docs: vec![1],
+                values: vec![255],
+            }],
+            ..lucene_codecs::points::MergePointsField::default()
+        }]
+    }
+
+    #[test]
+    fn installed_asserting_sink_checks_dimensions_and_preserves_callback_errors_and_merge_identity()
+    {
+        let mut writer = lower_probe("", 0);
+        let mut field = write_field_info();
+        field.point_dimension_count = 0;
+        let error = PointsWriteSink::write_field(&mut writer, &field, write_values()).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "writing field=\"p\" but pointDimensionalCount is 0"
+        );
+        assert!(writer.delegate().calls.is_empty());
+        for failure in ["", "write", "merge", "finish"] {
+            let mut writer = lower_probe(failure, 0);
+            let write =
+                PointsWriteSink::write_field(&mut writer, &write_field_info(), write_values());
+            let merge = PointsWriteSink::merge(&mut writer, lower_merge_fields(), false);
+            let finish = PointsWriteSink::finish(&mut writer);
+            for (name, result) in [("write", write), ("merge", merge), ("finish", finish)] {
+                if name == failure {
+                    assert_eq!(result.unwrap_err().to_string(), name);
+                } else {
+                    result.unwrap();
+                }
+            }
+            assert_eq!(writer.delegate().calls, ["write", "merge", "finish"]);
+        }
+    }
+
+    #[test]
+    fn installed_asserting_double_close_stops_after_first_failure() {
+        for fail_close_at in [0, 1, 2] {
+            let mut writer = lower_probe("", fail_close_at);
+            let result = PointsWriteSink::close(&mut writer);
+            if fail_close_at == 0 {
+                result.unwrap();
+            } else {
+                assert_eq!(result.unwrap_err().to_string(), "close");
+            }
+            assert_eq!(
+                writer.delegate().close_count,
+                if fail_close_at == 1 { 1 } else { 2 }
+            );
+        }
+    }
+
+    #[derive(Default)]
+    struct OutputDirectory {
+        inner: lucene_store::ByteBuffersDirectory,
+        events: Arc<std::sync::Mutex<Vec<String>>>,
+        fail_open: &'static str,
+        fail_close: bool,
+        fail_write: bool,
+    }
+    struct OutputFailures {
+        events: Arc<std::sync::Mutex<Vec<String>>>,
+        fail_close: bool,
+        fail_write: bool,
+    }
+    impl lucene_store::index_output::OutputFaults for OutputFailures {
+        fn before_write(
+            &mut self,
+            name: &str,
+            _: usize,
+        ) -> lucene_store::index_output::WriteVerdict {
+            if self.fail_write {
+                lucene_store::index_output::WriteVerdict::Fail {
+                    keep: 1,
+                    error: std::io::Error::other(format!("write {name}")),
+                }
+            } else {
+                lucene_store::index_output::WriteVerdict::Write
+            }
+        }
+        fn on_close(&mut self, name: &str) -> lucene_store::index_output::CloseVerdict {
+            self.events.lock().unwrap().push(format!("close:{name}"));
+            if self.fail_close {
+                lucene_store::index_output::CloseVerdict::FailAfterFlush(std::io::Error::other(
+                    format!("close {name}"),
+                ))
+            } else {
+                lucene_store::index_output::CloseVerdict::Close
+            }
+        }
+    }
+    impl lucene_store::Directory for OutputDirectory {
+        fn list_all(&self) -> lucene_store::Result<Vec<String>> {
+            self.inner.list_all()
+        }
+        fn open(&self, name: &str) -> lucene_store::Result<lucene_store::Input> {
+            self.inner.open(name)
+        }
+        fn create_output(&self, name: &str) -> lucene_store::Result<lucene_store::FsIndexOutput> {
+            self.events.lock().unwrap().push(format!("open:{name}"));
+            if name == self.fail_open {
+                return Err(std::io::Error::other("open failure").into());
+            }
+            let mut output = self.inner.create_output(name)?;
+            output.set_faults(Box::new(OutputFailures {
+                events: self.events.clone(),
+                fail_close: self.fail_close,
+                fail_write: self.fail_write,
+            }));
+            Ok(output)
+        }
+        fn sync(&self, names: &[String]) -> lucene_store::Result<()> {
+            self.inner.sync(names)
+        }
+        fn rename(&self, from: &str, to: &str) -> lucene_store::Result<()> {
+            self.inner.rename(from, to)
+        }
+        fn delete_file(&self, name: &str) -> lucene_store::Result<()> {
+            self.inner.delete_file(name)
+        }
+        fn sync_meta_data(&self) -> lucene_store::Result<()> {
+            self.inner.sync_meta_data()
+        }
+        fn obtain_lock(&self, name: &str) -> lucene_store::Result<Box<dyn lucene_store::Lock>> {
+            self.inner.obtain_lock(name)
+        }
+    }
+
+    #[test]
+    fn native_sink_opens_and_closes_in_java_order_preserving_first_io_error() {
+        for fail_write in [false, true] {
+            for fail_close in [false, true] {
+                let directory = OutputDirectory {
+                    fail_write,
+                    fail_close,
+                    ..OutputDirectory::default()
+                };
+                let mut writer = AssertingPointsCodec
+                    .fields_writer(write_state(&directory))
+                    .unwrap();
+                writer
+                    .write_field(&write_field_info(), write_values())
+                    .unwrap();
+                writer.finish().unwrap();
+                let result = writer.close();
+                if fail_write {
+                    assert_eq!(result.unwrap_err().to_string(), "write _ap.kdm");
+                } else if fail_close {
+                    assert_eq!(result.unwrap_err().to_string(), "close _ap.kdm");
+                } else {
+                    result.unwrap();
+                }
+                writer.close().unwrap();
+                assert_eq!(
+                    *directory.events.lock().unwrap(),
+                    [
+                        "open:_ap.kdd",
+                        "open:_ap.kdm",
+                        "open:_ap.kdi",
+                        "close:_ap.kdm",
+                        "close:_ap.kdi",
+                        "close:_ap.kdd"
+                    ]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn failed_factory_closes_every_opened_output_without_replacing_open_error() {
+        for (fail_open, expected) in [
+            ("_ap.kdd", vec!["open:_ap.kdd"]),
+            (
+                "_ap.kdm",
+                vec!["open:_ap.kdd", "open:_ap.kdm", "close:_ap.kdd"],
+            ),
+            (
+                "_ap.kdi",
+                vec![
+                    "open:_ap.kdd",
+                    "open:_ap.kdm",
+                    "open:_ap.kdi",
+                    "close:_ap.kdm",
+                    "close:_ap.kdd",
+                ],
+            ),
+        ] {
+            let directory = OutputDirectory {
+                fail_open,
+                fail_close: true,
+                ..OutputDirectory::default()
+            };
+            let error = AssertingPointsCodec
+                .fields_writer(write_state(&directory))
+                .err()
+                .unwrap();
+            assert_eq!(error.to_string(), "open failure");
+            assert_eq!(*directory.events.lock().unwrap(), expected);
+        }
+    }
     #[derive(Default)]
     struct Recorder {
         values: Vec<(i32, Vec<u8>)>,

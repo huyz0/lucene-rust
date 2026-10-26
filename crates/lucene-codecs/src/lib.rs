@@ -63,6 +63,7 @@ pub mod per_field_doc_values;
 pub mod per_field_knn_vectors;
 pub mod per_field_postings;
 pub mod points;
+pub mod points_writer;
 pub mod postings;
 pub mod postings_writer;
 pub mod quantization;

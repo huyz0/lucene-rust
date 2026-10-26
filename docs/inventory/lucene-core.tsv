@@ -82,7 +82,7 @@ codecs/NormsFormat	ported	crates/lucene-codecs/src/norms.rs::parse_meta
 codecs/NormsProducer	ported	crates/lucene-codecs/src/norms.rs::NormsReader
 codecs/PointsFormat	ported	crates/lucene-codecs/src/points.rs::PointsReader
 codecs/PointsReader	ported	crates/lucene-codecs/src/points.rs::PointsReader
-codecs/PointsWriter	ported	crates/lucene-codecs/src/points.rs::write
+codecs/PointsWriter	ported	crates/lucene-codecs/src/points_writer.rs::PointsWriteSink -- native writer callbacks; source reader graph and IOContext remain partial
 codecs/PostingsFormat	ported	crates/lucene-codecs/src/postings.rs::DocInput
 codecs/PostingsReaderBase	ported	crates/lucene-codecs/src/postings.rs::LazyDocsCursor
 codecs/PostingsWriterBase	ported	crates/lucene-codecs/src/postings_writer.rs::write_fields
@@ -149,7 +149,7 @@ codecs/lucene90/Lucene90NormsFormat	ported	crates/lucene-codecs/src/norms.rs::pa
 codecs/lucene90/Lucene90NormsProducer	ported	crates/lucene-codecs/src/norms.rs::NormsReader
 codecs/lucene90/Lucene90PointsFormat	ported	crates/lucene-codecs/src/points.rs::PointsReader
 codecs/lucene90/Lucene90PointsReader	ported	crates/lucene-codecs/src/points.rs::PointsReader
-codecs/lucene90/Lucene90PointsWriter	ported	crates/lucene-codecs/src/points.rs::write_packed
+codecs/lucene90/Lucene90PointsWriter	ported	crates/lucene-codecs/src/points.rs::write_packed -- optional operation-local NativePointsWriter installation; generic/null-reader dispatch and empty triples supported; see parity ledger
 codecs/lucene90/Lucene90StoredFieldsFormat	ported	crates/lucene-codecs/src/stored_fields.rs::StoredFieldsReader
 codecs/lucene90/Lucene90TermVectorsFormat	ported	crates/lucene-codecs/src/term_vectors.rs::TermVectorsReader
 codecs/lucene90/compressing/FieldsIndex	ported	crates/lucene-codecs/src/stored_fields.rs::ChunkIndexEntry
@@ -913,7 +913,7 @@ store/RefCountedSharedArena	ported	crates/lucene-store/src/directory.rs::Input
 store/SimpleFSLockFactory	ported	crates/lucene-store/src/fs_lock_factory.rs::SimpleFsLockFactory
 store/SingleInstanceLockFactory	ported	crates/lucene-store/src/lock.rs::SingleInstanceLockFactory
 store/SleepingLockWrapper	ported	crates/lucene-store/src/lock_wrappers.rs::SleepingLockWrapper
-store/TrackingDirectoryWrapper	ported	crates/lucene-index/src/concurrent_writer.rs::TrackingDirectory
+store/TrackingDirectoryWrapper	ported	crates/lucene-index/src/concurrent_writer.rs::TrackingDirectory -- operation-local norms/points creation ownership also uses created_outputs.rs::CreatedOutputs; panic cleanup absent
 store/VerifyingLockFactory	ported	crates/lucene-store/src/lock.rs::VerifyingLockFactory
 util/Accountable	not-needed	RAM-accounting interface; the port exposes ad hoc ram_bytes_used() methods where accounting matters (e.g. RoaringDocIdSet::ram_bytes_used)
 util/Accountables	not-needed	toString/child-resource helpers for the Accountable interface, which the port does not have
