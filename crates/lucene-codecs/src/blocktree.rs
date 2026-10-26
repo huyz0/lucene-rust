@@ -2368,6 +2368,37 @@ impl<'a> TermsEnum<'a> {
         )?;
         Ok(Some((docs, positions)))
     }
+
+    /// The current term's docs and complete occurrence streams, without a
+    /// `Position` object or payload allocation per occurrence. A merge can
+    /// select each live document's slices before building its writer inputs.
+    ///
+    /// Java: `TermsEnum.postings` and `PostingsEnum.nextPosition`. Like
+    /// [`Self::try_current_postings_and_positions`], this reads metadata and
+    /// docs once and validates the whole source stream before live filtering.
+    /// Returns `None` when the cursor is not positioned on a term.
+    pub fn try_current_postings_and_occurrences_flat(
+        &mut self,
+        doc_in: Option<&DocInput<'_>>,
+        pos_in: &postings::PosInput<'_>,
+        pay_in: Option<&postings::PayInput<'_>>,
+    ) -> Result<Option<(Postings, postings::FlatOccurrences)>> {
+        if !self.st.on_term {
+            return Ok(None);
+        }
+        let (stats, meta) = self.ste().stats_and_meta()?;
+        let docs = self.field.postings_from(stats, meta, doc_in)?;
+        let occurrences = postings::read_occurrences_flat(
+            pos_in,
+            pay_in,
+            meta,
+            &docs.freqs,
+            stats.total_term_freq,
+            self.field.index_options,
+            self.field.has_payloads,
+        )?;
+        Ok(Some((docs, occurrences)))
+    }
 }
 
 /// One field's term dictionary: the `.tmd` record plus the `.tim`/`.tip`

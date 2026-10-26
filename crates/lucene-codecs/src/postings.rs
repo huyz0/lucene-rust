@@ -3124,6 +3124,175 @@ pub fn read_positions(
     Ok(result)
 }
 
+/// One term's absolute occurrence streams, retaining one allocation per stream.
+///
+/// [`read_occurrences_flat`] shares the wire decoder with [`read_positions`],
+/// transforms its position/offset arrays in place, and moves its payload bytes.
+/// Document boundaries are private and validated before exposing borrowed slices.
+/// This representation targets measured merge decode/materialization cost; it
+/// does not skip validation of occurrences belonging to deleted documents.
+#[derive(Debug)]
+pub struct FlatOccurrences {
+    positions: Vec<i32>,
+    start_offsets: Vec<i32>,
+    end_offsets: Vec<i32>,
+    payload_lengths: Vec<u32>,
+    payload_bytes: Vec<u8>,
+    doc_starts: Vec<usize>,
+    payload_starts: Vec<usize>,
+    has_offsets: bool,
+    has_payloads: bool,
+}
+
+/// Borrowed occurrences of one document in a [`FlatOccurrences`] result.
+/// Offsets and payload streams are empty when the field does not index them.
+/// Otherwise the offset/length slices have one entry per position; payload
+/// lengths partition `payload_bytes` in occurrence order, including zero lengths.
+#[derive(Debug, PartialEq, Eq)]
+pub struct DocOccurrences<'a> {
+    pub positions: &'a [i32],
+    pub start_offsets: &'a [i32],
+    pub end_offsets: &'a [i32],
+    pub payload_lengths: &'a [u32],
+    pub payload_bytes: &'a [u8],
+}
+
+impl FlatOccurrences {
+    /// The decoded occurrences at this source document's postings-list index.
+    /// Returns `None` outside that list or if any private boundary is invalid.
+    pub fn document(&self, index: usize) -> Option<DocOccurrences<'_>> {
+        let next = index.checked_add(1)?;
+        let start = *self.doc_starts.get(index)?;
+        let end = *self.doc_starts.get(next)?;
+        let positions = self.positions.get(start..end)?;
+        let (start_offsets, end_offsets) = if self.has_offsets {
+            (
+                self.start_offsets.get(start..end)?,
+                self.end_offsets.get(start..end)?,
+            )
+        } else {
+            (&[][..], &[][..])
+        };
+        let (payload_lengths, payload_bytes) = if self.has_payloads {
+            let from = *self.payload_starts.get(index)?;
+            let to = *self.payload_starts.get(next)?;
+            (
+                self.payload_lengths.get(start..end)?,
+                self.payload_bytes.get(from..to)?,
+            )
+        } else {
+            (&[][..], &[][..])
+        };
+        Some(DocOccurrences {
+            positions,
+            start_offsets,
+            end_offsets,
+            payload_lengths,
+            payload_bytes,
+        })
+    }
+}
+
+/// [`read_positions`] without intermediate per-document or per-payload buffers.
+///
+/// Java: `Lucene104PostingsReader.BlockPostingsEnum.nextPosition`; accumulators
+/// reset at document boundaries and wrap as Java `int`s do. Retired formats use
+/// their own 128-occurrence blocks through the same wire decoder. Every source
+/// occurrence is checked before the result is returned, including those a merge
+/// later discards. Frequency reconciliation and payload range errors match
+/// [`read_positions`].
+pub fn read_occurrences_flat(
+    pos: &PosInput<'_>,
+    pay: Option<&PayInput<'_>>,
+    meta: TermMetadata,
+    freqs: &[i32],
+    total_term_freq: i64,
+    index_options: IndexOptions,
+    has_payloads: bool,
+) -> Result<FlatOccurrences> {
+    let has_offsets = index_options.subsumes_offsets();
+    let n = wire_count(total_term_freq, "total_term_freq")?;
+    let PositionStreams {
+        mut pos_deltas,
+        payload_lengths,
+        payload_bytes,
+        mut offset_start_deltas,
+        mut offset_lengths,
+    } = decode_position_streams(pos, pay, meta, total_term_freq, index_options, has_payloads)?;
+    // ARITH: `freqs` is a live slice of i32, so its length is at most
+    // isize::MAX / 4; adding the terminal boundary cannot overflow usize.
+    #[allow(clippy::arithmetic_side_effects)]
+    let boundaries = freqs.len() + 1;
+    let mut doc_starts = Vec::with_capacity(boundaries);
+    let mut payload_starts = Vec::with_capacity(if has_payloads { boundaries } else { 0 });
+    let mut payload_upto = 0usize;
+    let mut idx = 0usize;
+    for &freq in freqs {
+        doc_starts.push(idx);
+        if has_payloads {
+            payload_starts.push(payload_upto);
+        }
+        let mut position = 0i32;
+        let mut start_offset = 0i32;
+        for _ in 0..freq {
+            if idx >= pos_deltas.len() {
+                return Err(corrupted("sum of per-doc freqs exceeds total_term_freq"));
+            }
+            position = position.wrapping_add(pos_deltas[idx]);
+            pos_deltas[idx] = position;
+            if has_payloads {
+                let end = usize::try_from(payload_lengths[idx])
+                    .ok()
+                    .and_then(|len| payload_upto.checked_add(len));
+                let Some(end) = end.filter(|&end| payload_bytes.get(payload_upto..end).is_some())
+                else {
+                    return Err(corrupted(format!(
+                        "payload length {} at occurrence {idx} exceeds the {} decoded \
+                         payload bytes from offset {payload_upto}",
+                        payload_lengths[idx],
+                        payload_bytes.len()
+                    )));
+                };
+                payload_upto = end;
+            }
+            if has_offsets {
+                start_offset = start_offset.wrapping_add(offset_start_deltas[idx]);
+                offset_start_deltas[idx] = start_offset;
+                offset_lengths[idx] = start_offset.wrapping_add(offset_lengths[idx]);
+            }
+            // ARITH: the loop's guard established `idx < pos_deltas.len()`,
+            // and a live slice is at most isize::MAX elements long.
+            #[allow(clippy::arithmetic_side_effects)]
+            {
+                idx += 1;
+            }
+        }
+    }
+    doc_starts.push(idx);
+    if has_payloads {
+        payload_starts.push(payload_upto);
+    }
+    if idx != n {
+        return Err(corrupted(
+            "sum of per-doc freqs is less than total_term_freq",
+        ));
+    }
+    // Every retained length was checked non-negative and within payload_bytes
+    // above. Converting the stream does not allocate one buffer per occurrence.
+    let payload_lengths = payload_lengths.into_iter().map(|len| len as u32).collect();
+    Ok(FlatOccurrences {
+        positions: pos_deltas,
+        start_offsets: offset_start_deltas,
+        end_offsets: offset_lengths,
+        payload_lengths,
+        payload_bytes,
+        doc_starts,
+        payload_starts,
+        has_offsets,
+        has_payloads,
+    })
+}
+
 /// `writeVInt15`'s companion reader
 /// (`Lucene104PostingsReader.readVInt15`): a 2-byte fast path for values that
 /// fit in 15 bits, else the top bit of the `short` flags a following vint
@@ -6483,6 +6652,237 @@ mod tests {
     use super::*;
     use lucene_store::data_output::DataOutput;
 
+    /// Run the existing nested oracle and the allocation-reduced decoder on
+    /// every valid and corrupt case below, including the old regression cases.
+    fn read_positions_and_flat(
+        pos: &PosInput<'_>,
+        pay: Option<&PayInput<'_>>,
+        meta: TermMetadata,
+        freqs: &[i32],
+        total_term_freq: i64,
+        index_options: IndexOptions,
+        has_payloads: bool,
+    ) -> Result<Vec<Vec<Position>>> {
+        let nested = super::read_positions(
+            pos,
+            pay,
+            meta,
+            freqs,
+            total_term_freq,
+            index_options,
+            has_payloads,
+        );
+        let flat = read_occurrences_flat(
+            pos,
+            pay,
+            meta,
+            freqs,
+            total_term_freq,
+            index_options,
+            has_payloads,
+        );
+        match (&nested, &flat) {
+            (Ok(expected), Ok(flat)) => {
+                for (index, expected) in expected.iter().enumerate() {
+                    let actual = flat.document(index).expect("decoded document boundaries");
+                    assert_eq!(
+                        actual.positions,
+                        expected.iter().map(|p| p.position).collect::<Vec<_>>()
+                    );
+                    if index_options.subsumes_offsets() {
+                        assert_eq!(
+                            actual.start_offsets,
+                            expected.iter().map(|p| p.start_offset).collect::<Vec<_>>()
+                        );
+                        assert_eq!(
+                            actual.end_offsets,
+                            expected.iter().map(|p| p.end_offset).collect::<Vec<_>>()
+                        );
+                    } else {
+                        assert!(actual.start_offsets.is_empty() && actual.end_offsets.is_empty());
+                    }
+                    if has_payloads {
+                        assert_eq!(
+                            actual.payload_lengths,
+                            expected
+                                .iter()
+                                .map(|p| p.payload.len() as u32)
+                                .collect::<Vec<_>>()
+                        );
+                        assert_eq!(
+                            actual.payload_bytes,
+                            expected
+                                .iter()
+                                .flat_map(|p| p.payload.iter().copied())
+                                .collect::<Vec<_>>()
+                        );
+                    } else {
+                        assert!(
+                            actual.payload_lengths.is_empty() && actual.payload_bytes.is_empty()
+                        );
+                    }
+                }
+                assert!(flat.document(expected.len()).is_none());
+                assert!(flat.document(usize::MAX).is_none());
+            }
+            (Err(nested), Err(flat)) => assert_eq!(nested.to_string(), flat.to_string()),
+            _ => panic!("nested/flat decode disagree: {nested:?} versus {flat:?}"),
+        }
+        nested
+    }
+
+    #[test]
+    fn flat_occurrences_empty_documents_and_wrapping_accumulators() {
+        let id = [61; ID_LENGTH];
+        let (mut pos, footer) = pos_header_and_footer(&id);
+        let pos_start_fp = pos.len() as u64;
+        // No payloads: raw position deltas can reach i32::MAX. Offset start
+        // deltas use unsigned-shifted codes, so two maximum deltas wrap.
+        for delta in [i32::MAX, 1, 1] {
+            pos.write_vint(delta);
+            pos.write_vint(-1); // unsigned >> 1 = i32::MAX; length changes
+            pos.write_vint(2);
+        }
+        pos.extend_from_slice(&footer);
+        let pos_in = PosInput::open(&pos, &id, "").unwrap();
+        let meta = TermMetadata {
+            pos_start_fp,
+            ..TermMetadata::EMPTY
+        };
+        let nested = read_positions_and_flat(
+            &pos_in,
+            None,
+            meta,
+            &[0, 2, -1, 1, 0],
+            3,
+            IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            nested.iter().map(Vec::len).collect::<Vec<_>>(),
+            [0, 2, 0, 1, 0]
+        );
+        assert_eq!(nested[1][1].position, i32::MIN);
+        assert_eq!(nested[1][0].end_offset, i32::MIN + 1);
+        assert_eq!(nested[1][1].start_offset, -2);
+        assert_eq!(nested[3][0].start_offset, i32::MAX);
+        let empty = read_occurrences_flat(
+            &pos_in,
+            None,
+            meta,
+            &[],
+            0,
+            IndexOptions::DocsAndFreqsAndPositions,
+            false,
+        )
+        .unwrap();
+        assert!(empty.document(0).is_none());
+        let zero_docs = read_occurrences_flat(
+            &pos_in,
+            None,
+            meta,
+            &[0, -1],
+            0,
+            IndexOptions::DocsAndFreqsAndPositions,
+            true,
+        )
+        .unwrap();
+        for index in 0..2 {
+            assert_eq!(zero_docs.document(index).unwrap().positions, []);
+            assert!(zero_docs.document(index).unwrap().payload_bytes.is_empty());
+        }
+    }
+
+    #[test]
+    fn flat_occurrences_truncation_and_invalid_counts_match_nested_errors() {
+        let options = IndexOptions::DocsAndFreqsAndPositions;
+        for bytes in [&[][..], &[0x80][..]] {
+            let pos = PosInput {
+                buf: bytes,
+                format: PostingsFormat::Lucene104,
+            };
+            assert!(read_positions_and_flat(
+                &pos,
+                None,
+                TermMetadata::EMPTY,
+                &[1],
+                1,
+                options,
+                false,
+            )
+            .is_err());
+        }
+        let pos = PosInput {
+            buf: &[],
+            format: PostingsFormat::Lucene104,
+        };
+        assert!(
+            read_positions_and_flat(&pos, None, TermMetadata::EMPTY, &[], -1, options, false,)
+                .is_err()
+        );
+        let past_end = TermMetadata {
+            pos_start_fp: 1,
+            ..TermMetadata::EMPTY
+        };
+        assert!(read_positions_and_flat(&pos, None, past_end, &[], 0, options, false,).is_err());
+        // A tail's explicit payload length larger than the remaining file and
+        // a negative length are rejected by the common wire decoder before
+        // either representation can return partially decoded documents.
+        for bytes in [&[3, 4, 7][..], &[3, 255, 255, 255, 255, 15][..]] {
+            let pos = PosInput {
+                buf: bytes,
+                format: PostingsFormat::Lucene104,
+            };
+            assert!(read_positions_and_flat(
+                &pos,
+                None,
+                TermMetadata::EMPTY,
+                &[1],
+                1,
+                options,
+                true,
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn flat_occurrences_document_accessor_checks_private_boundaries() {
+        let mut flat = FlatOccurrences {
+            positions: vec![1],
+            start_offsets: vec![2],
+            end_offsets: vec![3],
+            payload_lengths: vec![1],
+            payload_bytes: vec![7],
+            doc_starts: vec![0, 1],
+            payload_starts: vec![0, 1],
+            has_offsets: true,
+            has_payloads: true,
+        };
+        assert_eq!(flat.document(0).unwrap().payload_bytes, [7]);
+        flat.doc_starts[1] = 2;
+        assert!(flat.document(0).is_none());
+        flat.doc_starts = vec![1, 0];
+        assert!(flat.document(0).is_none());
+        flat.doc_starts = vec![0, 1];
+        flat.start_offsets.clear();
+        assert!(flat.document(0).is_none());
+        flat.start_offsets.push(2);
+        flat.end_offsets.clear();
+        assert!(flat.document(0).is_none());
+        flat.end_offsets.push(3);
+        flat.payload_lengths.clear();
+        assert!(flat.document(0).is_none());
+        flat.payload_lengths.push(1);
+        flat.payload_starts[1] = 2;
+        assert!(flat.document(0).is_none());
+        flat.payload_starts = vec![1, 0];
+        assert!(flat.document(0).is_none());
+        flat.payload_starts.clear();
+        assert!(flat.document(0).is_none());
+    }
+
     /// `postings_skip_index` (`GenPostingsSkip.java`) opened: its `pskip`
     /// field, the `.doc`/`.pos`/`.pay` inputs, and its dense term -- in all
     /// 8 500 documents, one to three positions each, so a positions block
@@ -8232,7 +8632,7 @@ mod tests {
             );
             assert!(!matches!(err, Error::Unsupported(_)));
             // The whole-term reader guards the same value the same way.
-            assert!(read_positions(
+            assert!(read_positions_and_flat(
                 &pos_in,
                 None,
                 meta,
@@ -8267,7 +8667,7 @@ mod tests {
             ..TermMetadata::EMPTY
         };
         // Both the whole-term reader and the wanted-documents walk.
-        assert!(read_positions(
+        assert!(read_positions_and_flat(
             &pos_in,
             None,
             meta,
@@ -9239,6 +9639,91 @@ mod tests {
     }
 
     #[test]
+    fn flat_occurrences_exact_total_frequency_boundaries_with_every_extra_stream() {
+        for total in [127usize, 128, 129, 255, 256, 257] {
+            for has_offsets in [false, true] {
+                for has_payloads in [false, true] {
+                    let id = [62; ID_LENGTH];
+                    let (mut pos, pos_footer) = pos_header_and_footer(&id);
+                    let (mut pay, pay_footer) = pay_header_and_footer(&id);
+                    let meta = TermMetadata {
+                        pos_start_fp: pos.len() as u64,
+                        pay_start_fp: pay.len() as u64,
+                        ..TermMetadata::EMPTY
+                    };
+                    for _ in 0..total / BLOCK_SIZE as usize {
+                        // Constant PForUtil block: every position delta is one.
+                        pos.write_byte(0);
+                        pos.write_vint(1);
+                        if has_payloads {
+                            pay.write_byte(0);
+                            pay.write_vint(2); // two payload bytes per occurrence
+                            pay.write_vint(2 * BLOCK_SIZE);
+                            for _ in 0..BLOCK_SIZE {
+                                pay.write_bytes(&[7, 9]);
+                            }
+                        }
+                        if has_offsets {
+                            pay.write_byte(0);
+                            pay.write_vint(2); // start-offset delta
+                            pay.write_byte(0);
+                            pay.write_vint(5); // offset length
+                        }
+                    }
+                    for _ in 0..total % BLOCK_SIZE as usize {
+                        if has_payloads {
+                            pos.write_vint(3); // position delta one, length changes
+                            pos.write_vint(2);
+                            pos.write_bytes(&[7, 9]);
+                        } else {
+                            pos.write_vint(1);
+                        }
+                        if has_offsets {
+                            pos.write_vint(5); // start delta two, length changes
+                            pos.write_vint(5);
+                        }
+                    }
+                    pos.extend_from_slice(&pos_footer);
+                    pay.extend_from_slice(&pay_footer);
+                    let pos_in = PosInput::open(&pos, &id, "").unwrap();
+                    let pay_in = PayInput::open(&pay, &id, "").unwrap();
+                    let freqs = [(total / 2) as i32, 0, (total - total / 2) as i32];
+                    let options = if has_offsets {
+                        IndexOptions::DocsAndFreqsAndPositionsAndOffsets
+                    } else {
+                        IndexOptions::DocsAndFreqsAndPositions
+                    };
+                    let nested = read_positions_and_flat(
+                        &pos_in,
+                        (has_offsets || has_payloads).then_some(&pay_in),
+                        meta,
+                        &freqs,
+                        total as i64,
+                        options,
+                        has_payloads,
+                    )
+                    .unwrap();
+                    assert!(nested[1].is_empty());
+                    for (doc, &freq) in nested.iter().zip(&freqs) {
+                        assert_eq!(doc.len(), freq as usize);
+                        for (index, occurrence) in doc.iter().enumerate() {
+                            assert_eq!(occurrence.position, index as i32 + 1);
+                            if has_offsets {
+                                assert_eq!(occurrence.start_offset, 2 * (index as i32 + 1));
+                                assert_eq!(occurrence.end_offset, 2 * (index as i32 + 1) + 5);
+                            }
+                            assert_eq!(
+                                occurrence.payload,
+                                if has_payloads { vec![7, 9] } else { vec![] }
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn read_positions_single_position_no_offsets_no_payloads() {
         // One doc, one occurrence: total_term_freq=1 < BLOCK_SIZE, so it's
         // entirely the vint tail (`refillLastPositionBlock`), no PForUtil
@@ -9255,7 +9740,7 @@ mod tests {
             pos_start_fp,
             ..TermMetadata::EMPTY
         };
-        let result = read_positions(
+        let result = read_positions_and_flat(
             &pos_in,
             None,
             meta,
@@ -9302,7 +9787,7 @@ mod tests {
             pos_start_fp,
             ..TermMetadata::EMPTY
         };
-        let result = read_positions(
+        let result = read_positions_and_flat(
             &pos_in,
             None,
             meta,
@@ -9349,7 +9834,7 @@ mod tests {
             pos_start_fp,
             ..TermMetadata::EMPTY
         };
-        let result = read_positions(
+        let result = read_positions_and_flat(
             &pos_in,
             None,
             meta,
@@ -9380,7 +9865,7 @@ mod tests {
         pos.write_vint(1);
         pos.extend_from_slice(&pos_footer);
         let pos_in = PosInput::open(&pos, &id, "").unwrap();
-        let err = read_positions(
+        let err = read_positions_and_flat(
             &pos_in,
             None,
             TermMetadata::EMPTY,
@@ -9413,7 +9898,7 @@ mod tests {
         };
         // freqs claims 2 occurrences for a single doc, but total_term_freq
         // (and thus the decoded pos_deltas array) only has 1.
-        let err = read_positions(
+        let err = read_positions_and_flat(
             &pos_in,
             None,
             meta,
@@ -9446,7 +9931,7 @@ mod tests {
             pos_start_fp,
             ..TermMetadata::EMPTY
         };
-        let err = read_positions(
+        let err = read_positions_and_flat(
             &pos_in,
             None,
             meta,
@@ -9468,7 +9953,7 @@ mod tests {
         let (mut pos, pos_footer) = pos_header_and_footer(&id);
         pos.extend_from_slice(&pos_footer);
         let pos_in = PosInput::open(&pos, &id, "").unwrap();
-        let err = read_positions(
+        let err = read_positions_and_flat(
             &pos_in,
             None,
             TermMetadata::EMPTY,
@@ -9510,7 +9995,7 @@ mod tests {
             pay_start_fp,
             ..TermMetadata::EMPTY
         };
-        let result = read_positions(
+        let result = read_positions_and_flat(
             &pos_in,
             Some(&pay_in),
             meta,
@@ -9883,7 +10368,7 @@ mod tests {
             pay_start_fp,
             ..TermMetadata::EMPTY
         };
-        let err = read_positions(
+        let err = read_positions_and_flat(
             &pos_in,
             Some(&pay_in),
             meta,
@@ -9931,7 +10416,7 @@ mod tests {
             pay_start_fp,
             ..TermMetadata::EMPTY
         };
-        let result = read_positions(
+        let result = read_positions_and_flat(
             &pos_in,
             Some(&pay_in),
             meta,
@@ -10084,7 +10569,7 @@ mod tests {
             std::hint::black_box(&r);
         });
         let whole_term_positions = min_of(reps, || {
-            let r = read_positions(
+            let r = super::read_positions(
                 &pos_in,
                 Some(&pay_in),
                 pos_meta,

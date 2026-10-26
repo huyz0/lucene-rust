@@ -172,6 +172,72 @@ fn check_version(version: &str, format: PostingsFormat) {
                 .unwrap()
                 .unwrap();
 
+            // The full-flat merge decoder on the same Java-produced bytes
+            // and term metadata as the established whole-term decode. The
+            // BwcWrite manifests/digests prove that oracle against each release.
+            let flat_occurrences = lucene_codecs::postings::read_occurrences_flat(
+                &pos_in,
+                Some(&pay_in),
+                terms.term_metadata(&term).unwrap().unwrap(),
+                &eager.freqs,
+                stats.total_term_freq,
+                fi.index_options,
+                fi.store_payloads,
+            )
+            .unwrap();
+            for (index, expected) in positions.iter().enumerate() {
+                let actual = flat_occurrences.document(index).unwrap();
+                assert_eq!(
+                    actual.positions,
+                    expected.iter().map(|p| p.position).collect::<Vec<_>>(),
+                    "{ctx}"
+                );
+                if fi.index_options.subsumes_offsets() {
+                    assert_eq!(
+                        actual.start_offsets,
+                        expected.iter().map(|p| p.start_offset).collect::<Vec<_>>(),
+                        "{ctx}"
+                    );
+                    assert_eq!(
+                        actual.end_offsets,
+                        expected.iter().map(|p| p.end_offset).collect::<Vec<_>>(),
+                        "{ctx}"
+                    );
+                } else {
+                    assert!(
+                        actual.start_offsets.is_empty() && actual.end_offsets.is_empty(),
+                        "{ctx}"
+                    );
+                }
+                if fi.store_payloads {
+                    assert_eq!(
+                        actual.payload_lengths,
+                        expected
+                            .iter()
+                            .map(|p| p.payload.len() as u32)
+                            .collect::<Vec<_>>(),
+                        "{ctx}"
+                    );
+                    assert_eq!(
+                        actual.payload_bytes,
+                        expected
+                            .iter()
+                            .flat_map(|p| p.payload.iter().copied())
+                            .collect::<Vec<_>>(),
+                        "{ctx}"
+                    );
+                } else {
+                    assert!(
+                        actual.payload_lengths.is_empty() && actual.payload_bytes.is_empty(),
+                        "{ctx}"
+                    );
+                }
+            }
+            assert!(
+                flat_occurrences.document(positions.len()).is_none(),
+                "{ctx}"
+            );
+
             // The positions cursor.
             let mut pc = terms
                 .lazy_positions(&term, &doc_in, &pos_in)

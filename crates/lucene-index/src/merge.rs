@@ -176,65 +176,36 @@
 //!
 //! # Postings
 //!
-//! [`merge_postings`] merges each source's term dictionary + doc/freq data
-//! (`.tim`/`.tip`/`.tmd`/`.doc`) for every field any source declares
-//! postings for ([`SourcePostings`], attached per source via
-//! [`MergeSource::postings`]), re-encoding the result with
-//! [`lucene_codecs::postings_writer::write_fields`]. Because each source's
-//! term dictionary is independent (same reason SORTED doc values need
-//! special handling above), this resolves each source's own terms straight
-//! to bytes via that source's already-opened
-//! [`lucene_codecs::blocktree::FieldTerms`], unions those bytes across
-//! sources into one sorted term set, and for each term concatenates every
-//! contributing source's `(mergedDocId, freq)` pairs in source order --
-//! ascending overall for free, since merged doc ids occupy disjoint,
-//! increasing per-source ranges (see [`build_doc_id_maps`]'s doc comment).
-//! `write_fields` already accepts any number of fields in one call, so
-//! unlike doc-values/norms there is no single-field-per-merge-call limit
-//! for postings. Unlike doc values/norms there is no "sparse across
-//! sources" restriction here: a source whose own `FieldInfos` never saw the
-//! field simply contributes no terms, matching `FieldsConsumer.merge`'s
-//! `Terms terms = fields.terms(field); if (terms == null) continue;` (this
-//! is the normal state of a segment written before the field existed). So
-//! does a source that declares the field but has no [`SourcePostings`] for
-//! it: a segment whose every document had an empty value for the field
-//! declares it in its `.fnm` and has no terms for it in its `.tim`, in Java
-//! as here. (A source whose `.tim` was never opened at all is a different
-//! matter, and [`check_format_coverage`] refuses it.) Ordinary per-doc/
-//! per-term sparsity (most docs don't contain most terms) is of course not
-//! an error either.
+//! [`merge_postings`] walks each source's term dictionary with [`TermCursor`]
+//! and selects the smallest current term across sources. It maps each source's
+//! doc/frequency pairs through [`build_doc_id_maps`], drops deleted documents,
+//! and sorts mapped documents when the merged index sort interleaves sources.
+//! A source with no terms for a field contributes nothing, matching
+//! `FieldsConsumer.merge`. [`check_format_coverage`] rejects an unopened
+//! postings format rather than silently omitting its data.
 //!
-//! **Scope: `Docs`/`DocsAndFreqs`/`DocsAndCustomFreqs`, plus positions/
-//! offsets/payloads.** A field whose merged `index_options` indexes
-//! positions ([`IndexOptions::DocsAndFreqsAndPositions`] or
-//! [`IndexOptions::DocsAndFreqsAndPositionsAndOffsets`]) has every
-//! contributing source's positions read back via
-//! [`lucene_codecs::blocktree::FieldTerms::positions`] (the same read path
-//! `lucene_search`'s phrase matching uses) and concatenated in the same
-//! source order as docs/freqs; offsets are carried along automatically
-//! since `Position` bundles them, and payloads whenever the merged field's
-//! `FieldInfo::store_payloads` is set. Any other `index_options` this port
-//! doesn't model (there are none left in the [`IndexOptions`] enum) would
-//! still be rejected with [`Error::PostingsIndexOptionsNotSupported`].
-//! Because field-number reconciliation
-//! records the *first-seen* source's `FieldInfo` as the merged one, every
-//! other source sharing that field name must agree on `index_options`
-//! ([`Error::PostingsIndexOptionsDisagreement`], raised by
-//! [`reconcile_field_numbers`]) -- otherwise a source with positions could
-//! have them silently dropped whenever an earlier, positions-free source
-//! happened to be picked as canonical. `store_payloads` is the one
-//! attribute that is *merged* (ORed) rather than verified, matching
-//! `FieldInfos.Builder.add`: a source without payloads contributes empty
-//! `Position::payload`s, which the postings writer encodes as "no payload
-//! at this occurrence".
+//! All [`IndexOptions`] are supported, including positions, offsets and
+//! payloads. The current term's metadata and doc/frequency stream are decoded
+//! once; [`lucene_codecs::postings::read_occurrences_flat`] validates its whole
+//! occurrence stream before live-document filtering. This keeps corruption in
+//! a deleted document from being hidden when its source still contributes.
+//! [`MergedTermPostings`] owns flat occurrence buffers and document boundaries,
+//! and implements [`TermSource`] for the native writer. Sorted merges apply
+//! the same permutation to documents, positions, offsets and payload runs.
 //!
-//! Same caveat as doc values/norms/term vectors: nothing in this port's
-//! normal flush path produces a segment with postings yet (`.tim`/`.tip`/
-//! `.tmd`/`.doc` are written by
-//! [`lucene_codecs::postings_writer::write_fields`] as a standalone
-//! function, not from a per-field indexing flush path), so this merge
-//! logic is real and tested on its own, but not yet reachable from a real
-//! end-to-end "flush two segments, merge them" caller.
+//! [`reconcile_field_numbers`] requires all sources sharing a field name to
+//! agree on `index_options` ([`Error::PostingsIndexOptionsDisagreement`]). It
+//! ORs `store_payloads` as `FieldInfos.Builder.add` does: a payload-free source
+//! contributes a zero payload length for every occurrence when another source
+//! enables payloads for the merged field.
+//!
+//! Both buffered and explicit [`crate::index_writer::IndexWriter`] flushes
+//! produce the native postings groups consumed here. The merge publishes them
+//! through [`lucene_codecs::postings_writer::write_fields`] or optional installed
+//! consumers via [`crate::postings_writer::write_installed`]. The enclosing
+//! [`merge_segments_mapped`] tracks successful file creations and removes its
+//! own outputs on returned errors, including files completed before a later
+//! occurrence decoder or consumer fails.
 //!
 //! # Points
 //!
@@ -336,7 +307,7 @@ use lucene_codecs::per_field_knn_vectors;
 use lucene_codecs::per_field_postings;
 use lucene_codecs::points;
 use lucene_codecs::postings::DocInput;
-use lucene_codecs::postings_writer::{self, FieldPostingsInput, TermPostings};
+use lucene_codecs::postings_writer::{self, FieldPostingsInput, TermSource};
 use lucene_codecs::scalar_quantized_vectors;
 use lucene_codecs::stored_fields;
 use lucene_codecs::term_vectors::{self, TermVectorsDocument, TermVectorsReader};
@@ -628,7 +599,9 @@ pub struct SourceNumericDocValues<'a> {
 }
 
 /// One source's norms data for a single field -- same shape as
-/// [`SourceNumericDocValues`], for [`NormsEntry`]/`.nvd` instead.
+/// [`SourceNumericDocValues`], for [`NormsEntry`]/`.nvd` instead. `data` is
+/// the whole `.nvd` file, including its header and footer, so a contributing
+/// source's integrity can be checked before any merged output is created.
 pub struct SourceNorms<'a> {
     pub data: &'a [u8],
     pub entry: NormsEntry,
@@ -2126,6 +2099,42 @@ pub fn merge_segments_mapped(
     codec_name: &str,
     lucene_version: LuceneVersion,
 ) -> Result<MergedSegment> {
+    // Java: IndexWriter.mergeMiddle tracks every successfully created output.
+    // Track the whole merge, including files completed before a later source
+    // decoder or codec fails. Per-format consumers only clean their own writes.
+    let outputs = crate::created_outputs::CreatedOutputs::new(dir);
+    let result = merge_segments_mapped_inner(
+        &outputs,
+        sources,
+        sort_fields,
+        options,
+        merged_segment_name,
+        merged_segment_id,
+        codec_name,
+        lucene_version,
+    );
+    if result.is_err() {
+        // Successful creations establish ownership; a failed create must never
+        // make a colliding, preexisting file eligible for deletion. Preserve
+        // the merge error if a best-effort cleanup deletion also fails.
+        for name in outputs.files().iter() {
+            let _ = dir.delete_file(name);
+        }
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn merge_segments_mapped_inner(
+    dir: &dyn Directory,
+    sources: &[MergeSource],
+    sort_fields: Option<&[MergeSortKeySpec<'_>]>,
+    options: &MergeOptions,
+    merged_segment_name: &str,
+    merged_segment_id: [u8; ID_LENGTH],
+    codec_name: &str,
+    lucene_version: LuceneVersion,
+) -> Result<MergedSegment> {
     // Reported, not asserted: this is a `pub` entry point, and a caller that
     // hands it a mis-shaped key table gets a named error rather than a panic
     // (the same call this module's `read`-side errors already make).
@@ -2200,6 +2209,29 @@ pub fn merge_segments_mapped(
             }
         }
         per_source_live_ids.push(live_ids);
+    }
+
+    // Java: NormsConsumer.merge calls each source NormsProducer.checkIntegrity;
+    // Lucene90NormsProducer checks the entire .nvd checksum before consuming it.
+    // Preserve this API's fully-deleted-source exemption, but validate all bytes
+    // (including deleted documents) of every source that still contributes.
+    // Several fields borrow one file: pointer and length identify that borrowed
+    // file without hashing its contents once per field. No semantic DISI scan is
+    // implied by a valid checksum, just as in Java's checkIntegrity.
+    for (source, live_ids) in sources.iter().zip(&per_source_live_ids) {
+        if live_ids.is_empty() {
+            continue;
+        }
+        let mut checked = HashSet::new();
+        for norms in source.norms {
+            if checked.insert((norms.data.as_ptr(), norms.data.len())) {
+                let footer = norms
+                    .data
+                    .len()
+                    .saturating_sub(lucene_store::codec_util::FOOTER_LENGTH);
+                lucene_store::codec_util::check_whole_file_footer(norms.data, footer)?;
+            }
+        }
     }
 
     let per_source_max_doc: Vec<i32> = sources.iter().map(|s| s.reader.max_doc()).collect();
@@ -2431,7 +2463,7 @@ pub fn merge_segments_mapped(
 
     let write_postings = |files: &mut Vec<String>| -> Result<()> {
         if !merged_postings_fields.is_empty() {
-            let inputs: Vec<FieldPostingsInput<'_>> = merged_postings_fields
+            let inputs: Vec<FieldPostingsInput<'_, MergedTermPostings>> = merged_postings_fields
                 .iter()
                 .map(|f| FieldPostingsInput {
                     field_number: f.field_number,
@@ -3629,7 +3661,11 @@ fn merge_norms(
 
     let mut merged: Vec<(i32, Vec<Option<i64>>)> = Vec::with_capacity(candidates.len());
     for merged_field_number in candidates {
-        let mut per_source_entry: Vec<Option<&SourceNorms>> = vec![None; sources.len()];
+        // Java: NormsConsumer.mergeNormsField retains one NumericDocValues
+        // iterator per source. Reuse sparse cursors instead of rescanning each
+        // source's document prefix for every merged document.
+        let mut per_source_readers: Vec<Option<norms::NormsReader<'_>>> =
+            (0..sources.len()).map(|_| None).collect();
         for (idx, ((source, map), live_ids)) in sources
             .iter()
             .zip(per_source_maps)
@@ -3650,16 +3686,17 @@ fn merge_norms(
                 // never declared the field, so it adds no sub.
                 continue;
             };
-            per_source_entry[idx] = source
+            per_source_readers[idx] = source
                 .norms
                 .iter()
-                .find(|nf| nf.entry.field_number == original_number);
+                .find(|nf| nf.entry.field_number == original_number)
+                .map(|entry| norms::NormsReader::new(entry.data, &entry.entry));
         }
 
         let mut values: Vec<Option<i64>> = Vec::with_capacity(doc_order.len());
         for &(src_idx, doc_id) in doc_order {
-            let value = match per_source_entry[src_idx] {
-                Some(entry) => norms::norm_value(entry.data, &entry.entry, doc_id)?,
+            let value = match per_source_readers[src_idx].as_mut() {
+                Some(reader) => reader.value(doc_id)?,
                 None => None,
             };
             values.push(value);
@@ -4503,19 +4540,6 @@ fn source_ord_to_doc(
     }
 }
 
-/// Reorders `values` by `permutation` (`permutation[n]` is the index of the
-/// element that becomes position `n`), moving each element rather than
-/// cloning it -- the per-document position/offset/payload lists a positional
-/// postings merge builds are one `Vec` each, and cloning them to reorder a
-/// term would double the merge's peak footprint for nothing.
-fn take_permuted<T: Default>(values: &mut [T], permutation: &[usize]) -> Vec<T> {
-    debug_assert_eq!(values.len(), permutation.len());
-    permutation
-        .iter()
-        .map(|&i| std::mem::take(&mut values[i]))
-        .collect()
-}
-
 /// Builds, per source, `MergeState.docMaps[i]`: a map from that source's own
 /// (pre-merge) doc ids to the merged doc id space, `-1` for a document the
 /// merge drops.
@@ -4644,6 +4668,171 @@ impl<'a> TermCursor<'a> {
     }
 }
 
+/// Final owned postings for one merged term, with one buffer per occurrence
+/// stream instead of one allocation per retained document. This representation
+/// targets the decode/materialization stage measured by the routing benchmark.
+/// Java: `MappedMultiPostingsEnum`, materialized for the native writer.
+#[derive(Debug, Default)]
+struct MergedTermPostings {
+    term: Vec<u8>,
+    docs: Vec<(i32, i32)>,
+    positions: Vec<i32>,
+    offsets: Vec<(i32, i32)>,
+    doc_starts: Vec<usize>,
+    payload_bytes: Vec<u8>,
+    payload_lengths: Vec<u32>,
+    has_positions: bool,
+    has_offsets: bool,
+    has_payloads: bool,
+}
+
+impl MergedTermPostings {
+    fn new(term: Vec<u8>, has_positions: bool, has_offsets: bool, has_payloads: bool) -> Self {
+        Self {
+            term,
+            doc_starts: if has_positions { vec![0] } else { Vec::new() },
+            has_positions,
+            has_offsets,
+            has_payloads,
+            ..Self::default()
+        }
+    }
+
+    /// The source reader has validated every occurrence before live filtering.
+    /// Append only the retained document's borrowed slices, including one zero
+    /// payload length per occurrence from a payload-free contributing source.
+    fn push_document(
+        &mut self,
+        doc: i32,
+        freq: i32,
+        occurrences: Option<lucene_codecs::postings::DocOccurrences<'_>>,
+    ) {
+        self.docs.push((doc, freq));
+        if let Some(occurrences) = occurrences {
+            self.positions.extend_from_slice(occurrences.positions);
+            self.doc_starts.push(self.positions.len());
+            if self.has_offsets {
+                self.offsets.extend(
+                    occurrences
+                        .start_offsets
+                        .iter()
+                        .copied()
+                        .zip(occurrences.end_offsets.iter().copied()),
+                );
+            }
+            if self.has_payloads {
+                if occurrences.payload_lengths.is_empty() {
+                    self.payload_lengths
+                        .extend(std::iter::repeat_n(0, occurrences.positions.len()));
+                } else {
+                    self.payload_lengths
+                        .extend_from_slice(occurrences.payload_lengths);
+                    self.payload_bytes
+                        .extend_from_slice(occurrences.payload_bytes);
+                }
+            }
+        }
+    }
+
+    fn document_range(&self, doc: usize) -> Option<std::ops::Range<usize>> {
+        let next = doc.checked_add(1)?;
+        Some(*self.doc_starts.get(doc)?..*self.doc_starts.get(next)?)
+    }
+
+    /// `DocIDMerger` order: plain merges already ascend, while sorted merges
+    /// interleave sources. Every occurrence stream follows the same permutation.
+    fn sort_documents(&mut self) {
+        if self.docs.windows(2).all(|w| w[0].0 < w[1].0) {
+            return;
+        }
+        let mut permutation: Vec<usize> = (0..self.docs.len()).collect();
+        permutation.sort_unstable_by_key(|&i| self.docs[i].0);
+        // Counts come from the same spans that built the payload run, before
+        // changing any document order. Each span is one validated i32 freq, so
+        // its length fits u32; no count read from disk sizes an allocation here.
+        let counts: Vec<u32> = if self.payload_lengths.is_empty() {
+            Vec::new()
+        } else {
+            self.doc_starts
+                .windows(2)
+                .map(|w| w[1].saturating_sub(w[0]) as u32)
+                .collect()
+        };
+        // ALLOC: capacities are lengths of already-owned buffers; each original
+        // document span is appended once by a permutation of 0..docs.len().
+        let mut positions = Vec::with_capacity(self.positions.len());
+        let mut offsets = Vec::with_capacity(self.offsets.len());
+        let mut doc_starts = Vec::with_capacity(self.doc_starts.len());
+        if self.has_positions {
+            doc_starts.push(0);
+            for &doc in &permutation {
+                positions.extend_from_slice(self.positions(doc));
+                if self.has_offsets {
+                    offsets.extend_from_slice(self.offsets(doc));
+                }
+                doc_starts.push(positions.len());
+            }
+        }
+        // Release the old occurrence buffers before rebuilding the payload run.
+        self.positions = positions;
+        self.offsets = offsets;
+        self.doc_starts = doc_starts;
+        if !self.payload_lengths.is_empty() {
+            let (bytes, lengths) = postings_writer::permute_payload_run(
+                &self.payload_bytes,
+                &self.payload_lengths,
+                &counts,
+                &permutation,
+            );
+            self.payload_bytes = bytes;
+            self.payload_lengths = lengths;
+        }
+        self.docs = permutation.iter().map(|&i| self.docs[i]).collect();
+    }
+}
+
+impl TermSource for MergedTermPostings {
+    fn term(&self) -> &[u8] {
+        &self.term
+    }
+    fn docs(&self) -> &[(i32, i32)] {
+        &self.docs
+    }
+    fn position_lists(&self) -> usize {
+        if self.has_positions {
+            self.docs.len()
+        } else {
+            0
+        }
+    }
+    fn positions(&self, doc: usize) -> &[i32] {
+        self.document_range(doc)
+            .and_then(|range| self.positions.get(range))
+            .unwrap_or_default()
+    }
+    fn offset_lists(&self) -> usize {
+        if self.has_offsets {
+            self.docs.len()
+        } else {
+            0
+        }
+    }
+    fn offsets(&self, doc: usize) -> &[(i32, i32)] {
+        if !self.has_offsets {
+            return &[];
+        }
+        self.document_range(doc)
+            .and_then(|range| self.offsets.get(range))
+            .unwrap_or_default()
+    }
+    fn payload_bytes(&self) -> &[u8] {
+        &self.payload_bytes
+    }
+    fn payload_lengths(&self) -> &[u32] {
+        &self.payload_lengths
+    }
+}
+
 /// One merged field's postings, ready to hand to
 /// [`lucene_codecs::postings_writer::write_fields`] (via a borrowed
 /// [`FieldPostingsInput`] built from `terms`).
@@ -4652,7 +4841,7 @@ struct MergedPostingsField {
     index_options: IndexOptions,
     doc_count: i32,
     has_payloads: bool,
-    terms: Vec<TermPostings>,
+    terms: Vec<MergedTermPostings>,
 }
 
 /// Merges postings (term dictionaries + doc/freq data) across `sources` for
@@ -4836,7 +5025,7 @@ fn merge_postings(
             });
         }
 
-        let mut terms_out: Vec<TermPostings> = Vec::new();
+        let mut terms_out: Vec<MergedTermPostings> = Vec::new();
         let mut docs_seen = FixedBitSet::new(merged_doc_count.max(1));
         loop {
             // Smallest term across the live cursors.
@@ -4847,23 +5036,17 @@ fn merge_postings(
                 }
             }
             let Some(smallest) = smallest else { break };
-            let term = smallest.to_vec();
-
-            let mut docs: Vec<(i32, i32)> = Vec::new();
-            let mut positions: Vec<Vec<i32>> = Vec::new();
-            let mut offsets: Vec<Vec<(i32, i32)>> = Vec::new();
-            // Flat, matching `TermPostings`' own layout: one length per
-            // occurrence and every payload concatenated, so the merge builds
-            // the run the writer consumes rather than a `Vec<u8>` per
-            // occurrence that `write_position_tail` would have to flatten
-            // again (`docs/sweep/m2/c38-allocation-shape.md`).
-            let mut payload_bytes: Vec<u8> = Vec::new();
-            let mut payload_lengths: Vec<u32> = Vec::new();
+            let mut term = MergedTermPostings::new(
+                smallest.to_vec(),
+                has_positions,
+                has_offsets,
+                has_payloads,
+            );
             for src_idx in 0..cursors.len() {
                 let Some(cursor) = cursors[src_idx].as_mut() else {
                     continue;
                 };
-                if cursor.term != term {
+                if cursor.term != term.term {
                     continue;
                 }
                 let pf = per_source_field[src_idx]
@@ -4871,7 +5054,7 @@ fn merge_postings(
                 let (source_postings, source_positions) = if has_positions {
                     let (docs, positions) = cursor
                         .terms
-                        .try_current_postings_and_positions(
+                        .try_current_postings_and_occurrences_flat(
                             pf.doc_in,
                             pf.pos_in.expect(
                                 "checked as Error::PostingsPositionsInputMissingInSource above",
@@ -4901,7 +5084,6 @@ fn merge_postings(
                         continue;
                     }
                     if let Some(merged_doc_id) = mapped_doc_id(doc_id_map, doc_id) {
-                        docs.push((merged_doc_id, freq));
                         // Java's `docsSeen` bitset, not a `HashSet<i32>`: the
                         // merged doc id space is dense and known up front.
                         //
@@ -4913,24 +5095,12 @@ fn merge_postings(
                         // `mapped_doc_id` result is in `0..doc_order.len()`,
                         // which is this bitset's `len()`.
                         docs_seen.set(merged_doc_id as usize);
-                        if let Some(source_positions) = &source_positions {
-                            let doc_positions = &source_positions[doc_idx];
-                            positions.push(doc_positions.iter().map(|p| p.position).collect());
-                            if has_offsets {
-                                offsets.push(
-                                    doc_positions
-                                        .iter()
-                                        .map(|p| (p.start_offset, p.end_offset))
-                                        .collect(),
-                                );
-                            }
-                            if has_payloads {
-                                for p in doc_positions {
-                                    payload_lengths.push(p.payload.len() as u32);
-                                    payload_bytes.extend_from_slice(&p.payload);
-                                }
-                            }
-                        }
+                        let occurrences = source_positions.as_ref().map(|positions| {
+                            positions
+                                .document(doc_idx)
+                                .expect("occurrence boundaries came from these same decoded freqs")
+                        });
+                        term.push_document(merged_doc_id, freq, occurrences);
                     }
                 }
                 cursor.advance()?;
@@ -4938,61 +5108,9 @@ fn merge_postings(
                     cursors[src_idx] = None;
                 }
             }
-            if !docs.is_empty() {
-                // `DocIDMerger.of(subs, mergeState.needsIndexSort)`: each
-                // source contributed its own postings for this term already
-                // ascending in the merged space (`build_doc_id_maps` is
-                // monotone within a source), but a sorted merge interleaves
-                // the sources, so the concatenation above is only globally
-                // ascending when the merged ranges are source-disjoint --
-                // i.e. for the plain merge. Where it is not, the four
-                // parallel lists are re-ordered together; the check costs one
-                // linear scan and moves nothing in the plain case.
-                //
-                // This is not cosmetic. `postings_writer` encodes doc ids as
-                // deltas, so a descending step writes a negative delta that
-                // decodes to a doc id no reader can resolve -- and a *pair* of
-                // interleaved sources whose deltas happen to stay positive
-                // would encode postings against the wrong documents.
-                if !docs.windows(2).all(|w| w[0].0 < w[1].0) {
-                    let mut permutation: Vec<usize> = (0..docs.len()).collect();
-                    permutation.sort_unstable_by_key(|&i| docs[i].0);
-                    // Taken before `docs` is permuted: the flat payload run is
-                    // laid out in the *old* doc order, so re-ordering it needs
-                    // the old order's per-doc occurrence counts. Counted off
-                    // `positions`, which is what the run was *built* from
-                    // (`doc_positions` above), and not off `docs`' decoded
-                    // `freq` -- the two agree in every valid index, and
-                    // deriving the re-slice from the same structure that laid
-                    // the run down is what makes them unable to disagree.
-                    let pre_permutation_freqs: Vec<u32> =
-                        positions.iter().map(|p| p.len() as u32).collect();
-                    docs = permutation.iter().map(|&i| docs[i]).collect();
-                    if !positions.is_empty() {
-                        positions = take_permuted(&mut positions, &permutation);
-                    }
-                    if !offsets.is_empty() {
-                        offsets = take_permuted(&mut offsets, &permutation);
-                    }
-                    if !payload_lengths.is_empty() {
-                        let (bytes, lengths) = postings_writer::permute_payload_run(
-                            &payload_bytes,
-                            &payload_lengths,
-                            &pre_permutation_freqs,
-                            &permutation,
-                        );
-                        payload_bytes = bytes;
-                        payload_lengths = lengths;
-                    }
-                }
-                terms_out.push(TermPostings {
-                    term,
-                    docs,
-                    positions,
-                    offsets,
-                    payload_bytes,
-                    payload_lengths,
-                });
+            if !term.docs.is_empty() {
+                term.sort_documents();
+                terms_out.push(term);
             }
         }
 
@@ -5245,6 +5363,7 @@ mod tests {
         DocValuesSkipIndexType, DocValuesType, IndexOptions, VectorEncoding,
         VectorSimilarityFunction,
     };
+    use lucene_codecs::postings_writer::TermPostings;
     use lucene_codecs::stored_fields::{self, Document, FieldValue, StoredField};
     use lucene_codecs::term_vectors::{TermVectorField, TermVectorTerm};
     use lucene_store::directory::FsDirectory;
@@ -5672,6 +5791,66 @@ mod tests {
 
     fn open_reader(seg: &FlushedSegment) -> stored_fields::StoredFieldsReader<'_> {
         stored_fields::open(&seg.fdt, &seg.fdx, &seg.fdm, &seg.segment_id, "").unwrap()
+    }
+
+    #[test]
+    fn failed_merge_removes_earlier_outputs_and_preserves_each_colliding_file() {
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let fields = [field("id", 0)];
+        let stored = flush(
+            &dir,
+            &tmp,
+            "_0",
+            [1u8; ID_LENGTH],
+            &fields,
+            &[doc_with(0, "source")],
+        );
+        let reader = open_reader(&stored);
+        for extension in ["fdt", "fdx", "fdm", "fnm", "si"] {
+            let collision = format!("_merged.{extension}");
+            let mut output = dir.create_output(&collision).unwrap();
+            output.write_bytes(b"other owner");
+            output.close().unwrap();
+            let snapshot = || {
+                dir.list_all()
+                    .unwrap()
+                    .into_iter()
+                    .map(|name| {
+                        let bytes = dir.open(&name).unwrap().to_vec();
+                        (name, bytes)
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let before = snapshot();
+            let source = MergeSource::stored_only(&stored.fields, &reader, None, None);
+            assert!(merge_stored_only_segments(
+                &dir,
+                &[source],
+                "_merged",
+                [2u8; ID_LENGTH],
+                "Lucene104",
+                version(),
+            )
+            .is_err());
+            assert_eq!(snapshot(), before, "collision at {extension}");
+            dir.delete_file(&collision).unwrap();
+        }
+        let source = MergeSource::stored_only(&stored.fields, &reader, None, None);
+        let merged = merge_stored_only_segments(
+            &dir,
+            &[source],
+            "_merged",
+            [2u8; ID_LENGTH],
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+        assert_eq!(merged.segment_name, "_merged");
+        let si = dir.open("_merged.si").unwrap();
+        let info = segment_info::parse(&si, &[2u8; ID_LENGTH]).unwrap();
+        assert_eq!(info.doc_count, 1);
+        assert!(info.files.iter().all(|name| dir.open(name).is_ok()));
     }
 
     // --- the merge-completeness gate (`check_format_coverage`) ---
@@ -8131,6 +8310,243 @@ mod tests {
             merged_reader.is_ok(),
             "merge should succeed, not reject on source 1's unrelated deleted-only binary field"
         );
+    }
+
+    #[test]
+    fn merge_checks_contributing_norms_crc_before_creating_outputs() {
+        let id0 = [71; ID_LENGTH];
+        let id1 = [72; ID_LENGTH];
+        let fields = vec![norms_field("body", 0)];
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let stored0 = flush(
+            &dir,
+            &tmp,
+            "_0",
+            id0,
+            &fields,
+            &[doc_with(0, "a"), doc_with(0, "b")],
+        );
+        let stored1 = flush(&dir, &tmp, "_1", id1, &fields, &[doc_with(0, "c")]);
+        let reader0 = open_reader(&stored0);
+        let reader1 = open_reader(&stored1);
+        let norms0 = flush_norms(0, &[11, 13], id0);
+        let norms1 = flush_norms(0, &[17], id1);
+        let mut corrupt = norms0.data.clone();
+        // Only the stored CRC changes. Ordinary value reads remain successful,
+        // so this case would pass without whole-source checksum validation.
+        *corrupt.last_mut().unwrap() ^= 1;
+        assert_eq!(
+            norms::norm_value(&corrupt, &norms0.entry, 0).unwrap(),
+            Some(11)
+        );
+        assert_eq!(
+            norms::norm_value(&corrupt, &norms0.entry, 1).unwrap(),
+            Some(13)
+        );
+        let bad_columns = [SourceNorms {
+            data: &corrupt,
+            entry: norms0.entry,
+        }];
+        let mut corrupt1 = norms1.data.clone();
+        *corrupt1.last_mut().unwrap() ^= 1;
+        let bad_columns1 = [SourceNorms {
+            data: &corrupt1,
+            entry: norms1.entry,
+        }];
+        let good_columns0 = [norms0.source()];
+        let good_columns1 = [norms1.source()];
+        let mut partial_live = FixedBitSet::new(2);
+        partial_live.set(1);
+        let snapshot = || {
+            dir.list_all()
+                .unwrap()
+                .into_iter()
+                .map(|name| {
+                    let bytes = dir.open(&name).unwrap().to_vec();
+                    (name, bytes)
+                })
+                .collect::<Vec<_>>()
+        };
+        let before = snapshot();
+        let corrupt_before = corrupt.clone();
+        for (bad_source, live) in [(0, None), (0, Some(&partial_live)), (1, None)] {
+            let mut source0 = MergeSource::stored_only(&stored0.fields, &reader0, live, None);
+            source0.norms = if bad_source == 0 {
+                &bad_columns
+            } else {
+                &good_columns0
+            };
+            let mut source1 = MergeSource::stored_only(&stored1.fields, &reader1, None, None);
+            source1.norms = if bad_source == 1 {
+                &bad_columns1
+            } else {
+                &good_columns1
+            };
+            let Err(err) = merge_stored_only_segments(
+                &dir,
+                &[source0, source1],
+                "_bad_norms_crc",
+                [73; ID_LENGTH],
+                "Lucene104",
+                version(),
+            ) else {
+                panic!("a contributing source's .nvd CRC must be verified");
+            };
+            assert!(
+                matches!(err, Error::Store(lucene_store::Error::Corrupted(ref message))
+                if message.contains("checksum failed")),
+                "{err:?}"
+            );
+            assert_eq!(
+                snapshot(),
+                before,
+                "failed merge created output or changed a source"
+            );
+            assert_eq!(corrupt, corrupt_before);
+        }
+        // An entirely deleted source remains intentionally ignored by this
+        // public merge API. Another source still contributes an ordinary norm.
+        let all_deleted = FixedBitSet::new(2);
+        let mut source0 =
+            MergeSource::stored_only(&stored0.fields, &reader0, Some(&all_deleted), None);
+        source0.norms = &bad_columns;
+        let mut source1 = MergeSource::stored_only(&stored1.fields, &reader1, None, None);
+        source1.norms = &good_columns1;
+        let ignored = merge_stored_only_segments(
+            &dir,
+            &[source0, source1],
+            "_ignored_norms_crc",
+            [74; ID_LENGTH],
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+        let si = dir.open(&format!("{}.si", ignored.segment_name)).unwrap();
+        assert_eq!(
+            segment_info::parse(&si, &[74; ID_LENGTH])
+                .unwrap()
+                .doc_count,
+            1
+        );
+        let nvm = dir.open("_ignored_norms_crc.nvm").unwrap().to_vec();
+        let nvd = dir.open("_ignored_norms_crc.nvd").unwrap().to_vec();
+        let (_, meta) = norms::parse_meta(&nvm, &[74; ID_LENGTH], "").unwrap();
+        assert_eq!(
+            norms::norm_value(&nvd, meta.entry(0).unwrap(), 0).unwrap(),
+            Some(17)
+        );
+
+        // Supplying restored original bytes succeeds on the same inputs after
+        // the failed attempts and preserves every surviving source value.
+        let mut source0 = MergeSource::stored_only(&stored0.fields, &reader0, None, None);
+        source0.norms = &good_columns0;
+        let mut source1 = MergeSource::stored_only(&stored1.fields, &reader1, None, None);
+        source1.norms = &good_columns1;
+        let restored = merge_stored_only_segments(
+            &dir,
+            &[source0, source1],
+            "_restored_norms_crc",
+            [75; ID_LENGTH],
+            "Lucene104",
+            version(),
+        )
+        .unwrap();
+        let si = dir.open(&format!("{}.si", restored.segment_name)).unwrap();
+        assert_eq!(
+            segment_info::parse(&si, &[75; ID_LENGTH])
+                .unwrap()
+                .doc_count,
+            3
+        );
+        let nvm = dir.open("_restored_norms_crc.nvm").unwrap().to_vec();
+        let nvd = dir.open("_restored_norms_crc.nvd").unwrap().to_vec();
+        let (_, meta) = norms::parse_meta(&nvm, &[75; ID_LENGTH], "").unwrap();
+        let values: Vec<_> = (0..3)
+            .map(|doc| norms::norm_value(&nvd, meta.entry(0).unwrap(), doc).unwrap())
+            .collect();
+        assert_eq!(values, [Some(11), Some(13), Some(17)]);
+    }
+
+    #[test]
+    fn merge_norms_reuses_sparse_readers_across_forward_interleaved_and_backward_visits() {
+        let id0 = [1u8; ID_LENGTH];
+        let id1 = [2u8; ID_LENGTH];
+        let id2 = [3u8; ID_LENGTH];
+        let fields0 = vec![norms_field("body", 0)];
+        let fields1 = vec![norms_field("body", 7)];
+        let fields2 = vec![field("other", 2)];
+        let (meta0, data0) =
+            norms::write_single_sparse_field(0, &[(0, 0), (2, 13)], 4, &id0, "").unwrap();
+        let (meta1, data1) =
+            norms::write_single_sparse_field(7, &[(1, 21), (3, 23)], 4, &id1, "").unwrap();
+        let (_, parsed0) = norms::parse_meta(&meta0, &id0, "").unwrap();
+        let (_, parsed1) = norms::parse_meta(&meta1, &id1, "").unwrap();
+        let norms0 = [SourceNorms {
+            data: &data0,
+            entry: *parsed0.entry(0).unwrap(),
+        }];
+        let norms1 = [SourceNorms {
+            data: &data1,
+            entry: *parsed1.entry(7).unwrap(),
+        }];
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let docs0: Vec<_> = (0..4).map(|_| doc_with(0, "a")).collect();
+        let docs1: Vec<_> = (0..4).map(|_| doc_with(7, "b")).collect();
+        let docs2: Vec<_> = (0..4).map(|_| doc_with(2, "c")).collect();
+        let stored0 = flush(&dir, &tmp, "_0", id0, &fields0, &docs0);
+        let stored1 = flush(&dir, &tmp, "_1", id1, &fields1, &docs1);
+        let stored2 = flush(&dir, &tmp, "_2", id2, &fields2, &docs2);
+        let reader0 = open_reader(&stored0);
+        let reader1 = open_reader(&stored1);
+        let reader2 = open_reader(&stored2);
+        let mut source0 = MergeSource::stored_only(&stored0.fields, &reader0, None, None);
+        source0.norms = &norms0;
+        let mut source1 = MergeSource::stored_only(&stored1.fields, &reader1, None, None);
+        source1.norms = &norms1;
+        let source2 = MergeSource::stored_only(&stored2.fields, &reader2, None, None);
+        let sources = [source0, source1, source2];
+        let maps = [
+            HashMap::from([(0, 9)]),
+            HashMap::from([(7, 9)]),
+            HashMap::from([(2, 10)]),
+        ];
+        let live_ids = vec![vec![0, 1, 2, 3]; 3];
+        let merged_fields = [norms_field("body", 9)];
+        let expected_by_source = [
+            [Some(0), None, Some(13), None],
+            [None, Some(21), None, Some(23)],
+            [None, None, None, None],
+        ];
+        let sequential = concat_doc_order(&live_ids);
+        // A sorted merge interleaves sources while each source walks forward.
+        let interleaved: Vec<_> = (0..4)
+            .flat_map(|doc| (0..3).map(move |source| (source, doc)))
+            .collect();
+        // A merge reordering hook can visit a source behind its previous doc.
+        let backward = vec![
+            (0, 2),
+            (1, 3),
+            (0, 0),
+            (1, 1),
+            (2, 3),
+            (0, 3),
+            (1, 0),
+            (2, 0),
+            (0, 1),
+            (1, 2),
+            (2, 2),
+            (2, 1),
+        ];
+        for order in [sequential, interleaved, backward] {
+            let merged = merge_norms(&sources, &merged_fields, &maps, &live_ids, &order).unwrap();
+            let expected: Vec<_> = order
+                .iter()
+                .map(|&(source, doc)| expected_by_source[source][doc as usize])
+                .collect();
+            assert_eq!(merged, [(9, expected)], "order={order:?}");
+        }
     }
 
     /// A sparse norm column across sources: source 0 has a gap at one
@@ -11390,17 +11806,192 @@ mod tests {
         ));
     }
 
-    /// `take_permuted` moves rather than clones, and applies the permutation
-    /// in the "which element becomes position n" direction -- the same
-    /// direction confusion `segment_writer::permute_in_place` was once caught
-    /// by, so it is pinned with a 3-cycle, which no involution could catch.
     #[test]
-    fn take_permuted_moves_each_element_to_its_named_position() {
-        let mut values = vec![vec![1], vec![2], vec![3]];
-        assert_eq!(
-            take_permuted(&mut values, &[2, 0, 1]),
-            vec![vec![3], vec![1], vec![2]]
+    fn merged_term_flat_slices_and_absent_extras() {
+        use lucene_codecs::postings::DocOccurrences;
+        let mut term = MergedTermPostings::new(b"term".to_vec(), true, false, false);
+        term.push_document(
+            1,
+            2,
+            Some(DocOccurrences {
+                positions: &[3, 7],
+                start_offsets: &[],
+                end_offsets: &[],
+                payload_lengths: &[],
+                payload_bytes: &[],
+            }),
         );
+        term.push_document(
+            4,
+            1,
+            Some(DocOccurrences {
+                positions: &[9],
+                start_offsets: &[],
+                end_offsets: &[],
+                payload_lengths: &[],
+                payload_bytes: &[],
+            }),
+        );
+        assert_eq!(term.term(), b"term");
+        assert_eq!(term.docs(), &[(1, 2), (4, 1)]);
+        assert_eq!(term.position_lists(), 2);
+        assert_eq!(term.positions(0), &[3, 7]);
+        assert_eq!(term.positions(1), &[9]);
+        assert!(term.positions(2).is_empty());
+        assert!(term.positions(usize::MAX).is_empty());
+        assert_eq!(term.offset_lists(), 0);
+        assert!(term.offsets(0).is_empty());
+        assert!(term.payload_bytes().is_empty());
+        assert!(term.payload_lengths().is_empty());
+        let positions_ptr = term.positions.as_ptr();
+        let starts_ptr = term.doc_starts.as_ptr();
+        term.sort_documents();
+        assert_eq!(term.positions.as_ptr(), positions_ptr);
+        assert_eq!(term.doc_starts.as_ptr(), starts_ptr);
+        assert_eq!(term.positions(0), &[3, 7]);
+    }
+
+    #[test]
+    fn merged_term_empty_and_docs_only() {
+        let mut empty = MergedTermPostings::new(Vec::new(), true, true, true);
+        empty.sort_documents();
+        assert!(empty.term().is_empty());
+        assert!(empty.docs().is_empty());
+        assert_eq!(empty.position_lists(), 0);
+        assert_eq!(empty.offset_lists(), 0);
+        assert!(empty.positions(0).is_empty());
+        assert!(empty.offsets(0).is_empty());
+        assert!(empty.offsets(usize::MAX).is_empty());
+        assert!(empty.payload_bytes().is_empty());
+        assert!(empty.payload_lengths().is_empty());
+        let mut docs = MergedTermPostings::new(b"docs".to_vec(), false, false, false);
+        docs.push_document(4, 3, None);
+        docs.push_document(1, 2, None);
+        docs.sort_documents();
+        assert_eq!(docs.docs(), &[(1, 2), (4, 3)]);
+        assert_eq!(docs.position_lists(), 0);
+        assert_eq!(docs.offset_lists(), 0);
+        assert!(docs.positions(0).is_empty());
+        assert!(docs.doc_starts.is_empty());
+    }
+
+    #[test]
+    fn merged_term_sorted_spans_keep_offsets_and_mixed_payloads_aligned() {
+        use lucene_codecs::postings::DocOccurrences;
+        let mut term = MergedTermPostings::new(b"mixed".to_vec(), true, true, true);
+        term.push_document(
+            2,
+            2,
+            Some(DocOccurrences {
+                positions: &[1, 3],
+                start_offsets: &[10, 30],
+                end_offsets: &[12, 35],
+                payload_lengths: &[1, 2],
+                payload_bytes: b"abc",
+            }),
+        );
+        term.push_document(
+            3,
+            1,
+            Some(DocOccurrences {
+                positions: &[5],
+                start_offsets: &[50],
+                end_offsets: &[55],
+                payload_lengths: &[],
+                payload_bytes: &[],
+            }),
+        );
+        term.push_document(
+            1,
+            3,
+            Some(DocOccurrences {
+                positions: &[2, 4, 8],
+                start_offsets: &[20, 40, 80],
+                end_offsets: &[22, 45, 88],
+                payload_lengths: &[0, 1, 0],
+                payload_bytes: b"d",
+            }),
+        );
+        assert_eq!(term.payload_lengths(), &[1, 2, 0, 0, 1, 0]);
+        // A three-cycle catches a permutation accidentally applied backwards.
+        term.sort_documents();
+        assert_eq!(term.docs(), &[(1, 3), (2, 2), (3, 1)]);
+        assert_eq!(term.position_lists(), 3);
+        assert_eq!(term.offset_lists(), 3);
+        assert_eq!(term.positions(0), &[2, 4, 8]);
+        assert_eq!(term.positions(1), &[1, 3]);
+        assert_eq!(term.positions(2), &[5]);
+        assert_eq!(term.offsets(0), &[(20, 22), (40, 45), (80, 88)]);
+        assert_eq!(term.offsets(1), &[(10, 12), (30, 35)]);
+        assert_eq!(term.offsets(2), &[(50, 55)]);
+        assert!(term.offsets(3).is_empty());
+        assert_eq!(term.payload_lengths(), &[0, 1, 0, 1, 2, 0]);
+        assert_eq!(term.payload_bytes(), b"dabc");
+        assert_eq!(term.doc_starts, &[0, 3, 5, 6]);
+    }
+
+    #[test]
+    fn merged_term_sorted_positions_without_offsets_or_payloads() {
+        use lucene_codecs::postings::DocOccurrences;
+        let mut term = MergedTermPostings::new(b"positions".to_vec(), true, false, false);
+        for (doc, positions) in [(2, &[5, 7][..]), (0, &[1][..])] {
+            term.push_document(
+                doc,
+                positions.len() as i32,
+                Some(DocOccurrences {
+                    positions,
+                    start_offsets: &[],
+                    end_offsets: &[],
+                    payload_lengths: &[],
+                    payload_bytes: &[],
+                }),
+            );
+        }
+        term.sort_documents();
+        assert_eq!(term.docs(), &[(0, 1), (2, 2)]);
+        assert_eq!(term.positions(0), &[1]);
+        assert_eq!(term.positions(1), &[5, 7]);
+        assert!(term.offsets(1).is_empty());
+        assert!(term.payload_lengths().is_empty());
+    }
+
+    #[test]
+    fn merged_term_sorted_zero_length_document_span() {
+        use lucene_codecs::postings::DocOccurrences;
+        let mut term = MergedTermPostings::new(b"empty-span".to_vec(), true, true, true);
+        term.push_document(
+            2,
+            0,
+            Some(DocOccurrences {
+                positions: &[],
+                start_offsets: &[],
+                end_offsets: &[],
+                payload_lengths: &[],
+                payload_bytes: &[],
+            }),
+        );
+        term.push_document(
+            0,
+            1,
+            Some(DocOccurrences {
+                positions: &[4],
+                start_offsets: &[8],
+                end_offsets: &[10],
+                payload_lengths: &[1],
+                payload_bytes: b"p",
+            }),
+        );
+        term.sort_documents();
+        assert_eq!(term.docs(), &[(0, 1), (2, 0)]);
+        assert_eq!(term.position_lists(), 2);
+        assert_eq!(term.offset_lists(), 2);
+        assert_eq!(term.positions(0), &[4]);
+        assert_eq!(term.offsets(0), &[(8, 10)]);
+        assert!(term.positions(1).is_empty());
+        assert!(term.offsets(1).is_empty());
+        assert_eq!(term.doc_starts, &[0, 1, 1]);
+        assert_eq!(term.payload_lengths(), &[1]);
+        assert_eq!(term.payload_bytes(), b"p");
     }
 
     // --- postings ---
