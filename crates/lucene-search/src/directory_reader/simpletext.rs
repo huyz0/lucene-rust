@@ -497,7 +497,7 @@ impl SegmentReader {
             doc_buf: None,
             pos_buf: None,
             pay_buf: None,
-            dictionary_files: Vec::new(),
+            postings_files: Vec::new(),
             dv_data: None,
             dv_meta: None,
             dv_generations: Vec::new(),

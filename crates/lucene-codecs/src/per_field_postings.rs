@@ -46,6 +46,58 @@ use crate::postings_writer::{
 pub const PER_FIELD_FORMAT_KEY: &str = "PerFieldPostingsFormat.format";
 /// `PerFieldPostingsFormat.PER_FIELD_SUFFIX_KEY`.
 pub const PER_FIELD_SUFFIX_KEY: &str = "PerFieldPostingsFormat.suffix";
+
+/// Verify every indexed field's routing pair names an existing dictionary group.
+/// Java's `FieldsReader` opens groups from `FieldInfos`, including fields whose
+/// last term was removed by an earlier merge. Looking only at surviving files
+/// would silently omit a group missing from the segment's file list.
+/// Unrouted zero-token fields and legacy direct formats require no group here.
+/// File names may be loose segment names or compound archive member names.
+pub fn validate_routed_groups(fields: &[FieldInfo], files: &[String]) -> Result<(), String> {
+    for field in fields {
+        if field.index_options == crate::field_infos::IndexOptions::None {
+            continue;
+        }
+        let attribute = |key| {
+            field
+                .attributes
+                .iter()
+                .find(|(name, _)| name == key)
+                .map(|(_, value)| value.as_str())
+        };
+        let (format, suffix) = match (
+            attribute(PER_FIELD_FORMAT_KEY),
+            attribute(PER_FIELD_SUFFIX_KEY),
+        ) {
+            (None, None) => continue,
+            (Some(format), Some(suffix)) if !format.is_empty() && !suffix.is_empty() => {
+                (format, suffix)
+            }
+            _ => {
+                return Err(format!(
+                    "field {:?} has incomplete postings routing",
+                    field.name
+                ));
+            }
+        };
+        // SimpleTextPostingsFormat.getPostingsFileName uses the same group
+        // suffix but stores the dictionary and postings together in `.pst`.
+        let extension = if format == crate::simpletext::fields_writer::FORMAT_NAME {
+            crate::simpletext::fields_writer::POSTINGS_EXTENSION
+        } else {
+            "tmd"
+        };
+        let dictionary = format!("_{format}_{suffix}.{extension}");
+        if !files.iter().any(|file| file.ends_with(&dictionary)) {
+            return Err(format!(
+                "field {:?} routes to missing postings group {format}_{suffix}",
+                field.name
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// `Lucene104PostingsFormat.getName()`.
 pub const FORMAT_NAME: &str = "Lucene104";
 /// `Completion104PostingsFormat.getName()`, also the codec name of its
@@ -167,6 +219,9 @@ impl Lucene104PostingsFormat {
 /// record, their numbers, and its files.
 #[derive(Debug)]
 pub struct GroupOutput {
+    /// Files already published by an installed consumer. The ordinary path
+    /// leaves this empty and hands buffered bytes to the index layer instead.
+    pub written_files: Vec<String>,
     pub format_name: &'static str,
     pub suffix: u32,
     pub field_numbers: Vec<i32>,
@@ -276,6 +331,7 @@ pub fn write<T: TermSource>(
             ),
         };
         out.push(GroupOutput {
+            written_files: Vec::new(),
             format_name: format.name(),
             suffix,
             field_numbers: group_inputs.iter().map(|i| i.field_number).collect(),
@@ -284,6 +340,125 @@ pub fn write<T: TermSource>(
         });
     }
     Ok(out)
+}
+
+/// Installed native consumers over the same grouping and borrowed term runs.
+/// Java: `PerFieldPostingsFormat.FieldsWriter.write/merge/close`. Every acquired
+/// native consumer stays open until all groups finish, including when a later
+/// group fails. Completion groups keep their ordinary encoder and publication.
+/// Group visitation uses first-field order; Java's HashMap order is unspecified.
+pub fn write_installed<T: TermSource>(
+    inputs: &[FieldPostingsInput<'_, T>],
+    norms: &[FieldNorms<'_>],
+    name_of: &dyn Fn(i32) -> Option<String>,
+    format_for: &dyn Fn(&str) -> Lucene104PostingsFormat,
+    factory: &dyn crate::postings_consumer::PostingsWriterFactory,
+    state: crate::postings_consumer::PostingsWriteState<'_>,
+    merge: bool,
+) -> postings_writer::Result<Vec<GroupOutput>> {
+    use crate::postings_consumer::PostingsWriteSink;
+    let names: Vec<_> = inputs
+        .iter()
+        .map(|i| name_of(i.field_number).unwrap_or_else(|| i.field_number.to_string()))
+        .collect();
+    let plans: Vec<_> = group(&names, format_for)
+        .into_iter()
+        .map(|(format, suffix, members)| {
+            (format, suffix, members, codec_suffix(format.name(), suffix))
+        })
+        .collect();
+    let mut consumers: Vec<Box<dyn PostingsWriteSink + '_>> = Vec::new();
+    let result = (|| {
+        let mut groups = Vec::with_capacity(plans.len());
+        for (format, suffix, members, codec_suffix) in &plans {
+            let selected: Vec<_> = members.iter().map(|&i| inputs[i]).collect();
+            if format.kind == PostingsFormatKind::Completion104 {
+                let options = WriteOptions {
+                    has_prox: Some(crate::field_infos::has_prox(state.field_infos)),
+                    has_payloads_or_offsets: Some(crate::field_infos::has_payloads_or_offsets(
+                        state.field_infos,
+                    )),
+                    ..format.write_options()
+                };
+                let populated: Vec<_> = selected
+                    .iter()
+                    .copied()
+                    .filter(|i| !i.terms.is_empty())
+                    .collect();
+                let output = if populated.is_empty() {
+                    postings_writer::write_no_fields(&options, state.id, codec_suffix)?
+                } else {
+                    postings_writer::write_fields_with_options(
+                        &populated,
+                        norms,
+                        &options,
+                        state.id,
+                        codec_suffix,
+                    )?
+                };
+                let completion =
+                    write_completion(&selected, members, &names, state.id, codec_suffix)
+                        .map_err(postings_writer::Error::Completion)?;
+                groups.push(GroupOutput {
+                    written_files: Vec::new(),
+                    format_name: format.name(),
+                    suffix: *suffix,
+                    field_numbers: selected.iter().map(|i| i.field_number).collect(),
+                    output,
+                    completion: Some(completion),
+                });
+                continue;
+            }
+            let group_state = crate::postings_consumer::PostingsWriteState {
+                suffix: codec_suffix,
+                format: *format,
+                ..state
+            };
+            consumers.push(factory.fields_consumer(group_state)?);
+            // One pointer per term; all document, position, offset and payload
+            // runs retain their original allocation and native source type.
+            let terms: Vec<Vec<&dyn TermSource>> = selected
+                .iter()
+                .map(|i| i.terms.iter().map(|term| term as &dyn TermSource).collect())
+                .collect();
+            let erased: Vec<_> = selected
+                .iter()
+                .zip(&terms)
+                .map(|(input, terms)| FieldPostingsInput {
+                    field_number: input.field_number,
+                    index_options: input.index_options,
+                    doc_count: input.doc_count,
+                    has_payloads: input.has_payloads,
+                    terms: terms.as_slice(),
+                })
+                .collect();
+            let consumer = consumers.last_mut().expect("acquired consumer");
+            if merge {
+                consumer.merge(&erased, norms)?;
+            } else {
+                consumer.write(&erased, norms)?;
+            }
+            groups.push(GroupOutput {
+                written_files: crate::postings_consumer::output_files(group_state),
+                format_name: format.name(),
+                suffix: *suffix,
+                field_numbers: selected.iter().map(|i| i.field_number).collect(),
+                output: Output::default(),
+                completion: None,
+            });
+        }
+        Ok(groups)
+    })();
+    let mut first_close = None;
+    for consumer in &mut consumers {
+        if let Err(error) = consumer.close() {
+            first_close.get_or_insert(error);
+        }
+    }
+    match result {
+        Err(error) => Err(error),
+        Ok(groups) => first_close.map_or(Ok(groups), Err),
+    }
 }
 
 /// `CompletionFieldsConsumer.write` after its delegate: each field of the
@@ -358,7 +533,7 @@ fn group(
     format_for: &dyn Fn(&str) -> Lucene104PostingsFormat,
 ) -> Vec<(Lucene104PostingsFormat, u32, Vec<usize>)> {
     let mut order: Vec<usize> = (0..names.len()).collect();
-    order.sort_by(|&a, &b| names[a].cmp(&names[b]));
+    order.sort_by(|&a, &b| names[a].encode_utf16().cmp(names[b].encode_utf16()));
     let mut groups: Vec<(Lucene104PostingsFormat, u32, Vec<usize>)> = Vec::new();
     for i in order {
         let format = format_for(&names[i]);
@@ -497,6 +672,119 @@ mod tests {
     use super::*;
     use crate::field_infos::IndexOptions;
     use crate::postings_writer::TermPostings;
+
+    #[test]
+    fn routed_groups_require_their_own_dictionary_even_without_terms() {
+        let routed = |name: &str, suffix: &str| {
+            let mut field = FieldInfo::new(name, 0);
+            field.index_options = crate::field_infos::IndexOptions::Docs;
+            field.attributes = vec![
+                (PER_FIELD_FORMAT_KEY.into(), FORMAT_NAME.into()),
+                (PER_FIELD_SUFFIX_KEY.into(), suffix.into()),
+            ];
+            field
+        };
+        let fields = [routed("populated", "0"), routed("termless", "1")];
+        for prefix in ["_0_", "_"] {
+            let files = vec![
+                format!("{prefix}Lucene104_0.tmd"),
+                format!("{prefix}Lucene104_1.tmd"),
+            ];
+            assert!(validate_routed_groups(&fields, &files).is_ok());
+            let error = validate_routed_groups(&fields, &files[..1]).unwrap_err();
+            assert!(error.contains("termless") && error.contains("Lucene104_1"));
+        }
+        let mut field = fields[0].clone();
+        for attributes in [
+            vec![field.attributes[0].clone()],
+            vec![field.attributes[1].clone()],
+            vec![
+                (PER_FIELD_FORMAT_KEY.into(), String::new()),
+                (PER_FIELD_SUFFIX_KEY.into(), "0".into()),
+            ],
+        ] {
+            field.attributes = attributes;
+            assert!(validate_routed_groups(&[field.clone()], &[])
+                .unwrap_err()
+                .contains("incomplete"));
+        }
+        field.attributes.clear();
+        assert!(validate_routed_groups(&[field.clone()], &[]).is_ok());
+        assert!(validate_routed_groups(&[field.clone()], &["_0.tmd".into()]).is_ok());
+        field.index_options = crate::field_infos::IndexOptions::None;
+        field.attributes = fields[0].attributes.clone();
+        assert!(validate_routed_groups(&[field], &[]).is_ok());
+    }
+
+    #[test]
+    fn routed_simpletext_groups_require_their_own_postings_text_file() {
+        let mut text = FieldInfo::new("text", 0);
+        text.index_options = IndexOptions::Docs;
+        text.attributes = vec![
+            (PER_FIELD_FORMAT_KEY.into(), "SimpleText".into()),
+            (PER_FIELD_SUFFIX_KEY.into(), "0".into()),
+        ];
+        let mut binary = text.clone();
+        binary.name = "binary".into();
+        binary.number = 1;
+        binary.attributes[0].1 = FORMAT_NAME.into();
+        let fields = [text, binary];
+        for prefix in ["_0_", "_"] {
+            let files = vec![
+                format!("{prefix}SimpleText_0.pst"),
+                format!("{prefix}Lucene104_0.tmd"),
+            ];
+            assert!(validate_routed_groups(&fields, &files).is_ok());
+            assert!(validate_routed_groups(&fields, &files[1..])
+                .unwrap_err()
+                .contains("missing postings group SimpleText_0"));
+            assert!(validate_routed_groups(&fields, &files[..1])
+                .unwrap_err()
+                .contains("missing postings group Lucene104_0"));
+            let wrong_extension = vec![format!("{prefix}SimpleText_0.tmd"), files[1].clone()];
+            assert!(validate_routed_groups(&fields, &wrong_extension).is_err());
+            let wrong_suffix = vec![format!("{prefix}SimpleText_1.pst"), files[1].clone()];
+            assert!(validate_routed_groups(&fields, &wrong_suffix).is_err());
+        }
+    }
+
+    #[test]
+    fn suffix_assignment_and_group_iteration_follow_java_utf16_order() {
+        // UTF-8 puts U+E000 first; Java compares the U+D800 surrogate first.
+        let names = vec![
+            "\u{e000}".to_string(),
+            "\u{10000}".to_string(),
+            "a".to_string(),
+        ];
+        let route = |name: &str| {
+            if name == "\u{e000}" {
+                Lucene104PostingsFormat::new(2, 3).unwrap()
+            } else {
+                Lucene104PostingsFormat::default()
+            }
+        };
+        let groups = group(&names, &route);
+        assert_eq!(
+            groups
+                .iter()
+                .map(|(_, suffix, members)| (*suffix, members.clone()))
+                .collect::<Vec<_>>(),
+            [(0, vec![2, 1]), (1, vec![0])]
+        );
+        let fields = vec![
+            (0, names[0].clone()),
+            (1, names[1].clone()),
+            (2, names[2].clone()),
+        ];
+        assert_eq!(
+            field_suffixes(&fields, &route),
+            [
+                (0, "Lucene104", 1),
+                (1, "Lucene104", 0),
+                (2, "Lucene104", 0)
+            ]
+        );
+    }
 
     fn terms(n: usize, doc: i32) -> Vec<TermPostings> {
         (0..n)

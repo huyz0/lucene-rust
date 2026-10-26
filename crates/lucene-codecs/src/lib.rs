@@ -65,6 +65,7 @@ pub mod per_field_postings;
 pub mod points;
 pub mod points_writer;
 pub mod postings;
+pub mod postings_consumer;
 pub mod postings_writer;
 pub mod quantization;
 pub mod regexp;

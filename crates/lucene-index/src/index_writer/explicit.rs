@@ -946,9 +946,16 @@ impl IndexingConfig {
                 .collect();
             Some(self.write_postings_groups(
                 &inputs,
-                &segment_fields,
                 &norms_for_impacts,
-                &segment_id,
+                lucene_codecs::postings_consumer::PostingsWriteState {
+                    directory: dir,
+                    segment: segment_name,
+                    id: &segment_id,
+                    suffix: "",
+                    max_doc: max_doc as i32,
+                    field_infos: &segment_fields,
+                    format: lucene_codecs::per_field_postings::Lucene104PostingsFormat::default(),
+                },
             )?)
         };
 

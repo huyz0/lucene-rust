@@ -22,6 +22,23 @@ stops anyone looking.
 So each rule below states what it cannot catch, in the same words it would take
 to describe a defect that got past it.
 
+`CheckIndex`'s `fnm.postings_vs_files` requires postings files for indexed
+fields with per-field routing attributes. Indexed fields without routing may
+have seen only zero-token streams: Java's `FreqProxTermsWriter.flush` never
+routes them, and they legitimately retain norms without any postings group.
+Legacy direct writers without routing attributes still have their postings
+files opened and checked when present, but losing every postings file from
+such a segment is indistinguishable from the valid zero-token case using
+`FieldInfos` alone. The check cannot detect that loss. Each routed field must
+name an existing dictionary group, so omitting one group's files and its `.si`
+entries while retaining another group is rejected by CheckIndex, SegmentReader
+and merge acquisition. Partial routing pairs are invalid. The regression removes
+all seven group files and rewrites a valid `.si`, then requires rejection before
+any output consumer opens. On unguarded code it failed at the named-check
+assertion, confirming the aggregate check missed this defect. Its unit boundary cases
+cover zero-token fields with norms, routed missing files and direct files;
+the installed Java writer fixture also exercises real zero-token segments.
+
 | rule | script | catches | blind to |
 |---|---|---|---|
 | [`fixed-bitset-bound`](#fixed-bitset-bound) | `check-port-invariants.py` | a `FixedBitSet` index whose enclosing fn never takes that bitset's `len()` | an index bounded by the right `len()` but *derived* wrongly; a bitset reached through a name this file neither types nor rebinds from one it does |

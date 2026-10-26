@@ -669,6 +669,10 @@ scripts/docker-test.sh bash scripts/bench-asserting-points.sh 1000 1500
 
 ## Asserting postings
 
+Remeasured on October 26, 2026 after adding borrowed-term enumeration.
+The standalone model retains its compatible owned enumeration path; these
+results are regression measurements, not an isolated optimization comparison.
+
 The actual Java wrapper and Rust use the same nine-document Lucene104 segment
 and two-source deleted sequential/sorted merges. Frequencies, positions, offsets,
 payloads, norms and empty fields are included. Three alternating repetitions use
@@ -680,11 +684,11 @@ are independently checked against Java trace fixtures.
 
 | Case | Rust ns/call | Java ns/call | Java/Rust | Noise |
 |---|---:|---:|---:|---:|
-| Open, integrity, checked walk and close | 28,761.218 | 29,091.747 | 1.01x | 1.04x |
-| Write, validate and consume all bytes | 35,433.391 | 66,942.611 | 1.89x | 1.13x |
-| Sequential mapped merge | 74,409.040 | 145,452.327 | 1.95x | 1.47x |
-| Sorted mapped merge | 72,722.261 | 105,224.725 | 1.45x | 1.13x |
-| Validation | 3,568.889 | 11,210.459 | 3.14x | 1.09x |
+| Open, integrity, checked walk and close | 24,913.634 | 23,260.014 | 0.93x | 1.06x |
+| Write, validate and consume all bytes | 31,024.185 | 51,876.559 | 1.67x | 1.04x |
+| Sequential mapped merge | 64,141.203 | 86,317.077 | 1.35x | 1.05x |
+| Sorted mapped merge | 64,322.417 | 86,910.115 | 1.35x | 1.03x |
+| Validation | 3,145.421 | 9,674.211 | 3.08x | 1.03x |
 
 The faithful baseline ratios were read 0.43x, write 0.57x, sequential/sorted merge
 0.30x/0.30x and validation 0.35x. A temporary phase probe over 4,096 operations
@@ -703,9 +707,9 @@ Document-count computation sorts and deduplicates at most 128 posting IDs
 (512 logical scratch bytes); larger fields retain a tree set proportional to
 unique documents. Boundary and duplicate-heavy cases verify both paths.
 
-The full-read ratio is 1.01x, inside its 1.04x repetition spread; this run
-establishes no read-speed advantage. This explicit adapter eagerly decodes all
-fields, copies the newly decoded model into
+The full-read ratio is 0.93x, just outside its 1.06x repetition spread;
+Rust remains slower on this acquisition and checked-walk case. This explicit
+adapter eagerly decodes all fields, copies the newly decoded model into
 its shared snapshot once, and computes reader statistics from that model; Java
 opens lazy enums and reads stored statistics. The profile identified acquisition
 and checked enumeration as the remaining work. Removing the acquisition copy
@@ -718,8 +722,9 @@ Source readers, field metadata, norms, maps, format configuration and reflected
 Java merge/consumer setup are outside timing. Read includes open, full integrity,
 checked statistics/enumeration and close. Write/merge include native encoding,
 the fresh assertion walk and double close. Rust owns eager decoded snapshots
-and file buffers; Java uses lazy enums and ByteBuffersDirectory. IOContext,
-Directory error timing and Codec/IndexWriter routing remain absent.
+and file buffers; Java uses lazy enums and ByteBuffersDirectory. IOContext and
+Directory error timing remain absent from this standalone pair. Optional
+Codec/IndexWriter routing has its own [installed measurement](postings-writer-routing.md).
 
 The validation consumer and stateless delegate occupy 8/40 bytes Rust/Java.
 Native Rust reader bookkeeping occupies 136 bytes, versus 160 in the faithful

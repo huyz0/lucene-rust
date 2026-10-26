@@ -100,6 +100,17 @@ complete range-query hits. `points_writer_routing.rs` compares schemas, stored I
 live bits, point multisets/bounds, tree counts and hits; callback checks preserve
 lifecycle order while canonicalizing Java field-hash order and segment names.
 Source reader acquisition remains native; this does not install the whole codec.
+`GenPostingsWriterRouting` installs the actual reflected asserting postings
+consumer around cached native Lucene104 per-field formats, with native readers.
+Sorted/unsorted rich and zero-token sessions record append, delete, merge and
+remerge; a larger corpus checks 127/128/129-document posting boundaries. Three
+descriptor groups expose UTF-16 field ordering, segment-wide proximity files,
+an entirely deleted group and null-reader stored-only sources. The TSV includes
+input tokens, complete terms/statistics/postings/positions/offsets/payloads,
+norms, field routing attributes and file-group presence. Per-consumer events
+preserve write-before-validation and repeated-close order; Java's HashMap
+cross-group execution order is canonicalized, and encoded file lengths remain
+provenance.
 `GenAssertingTermVectors` records document/field/term/position count assertions,
 delegate failures and retries, inherited proximity and mapped merge callbacks,
 reader lifecycles and real SimpleText bytes. The harness enables Java assertions
