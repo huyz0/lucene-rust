@@ -85,6 +85,13 @@ committed masks, deletion generations/counts, physical stored IDs and actual
 delegate calls across term/query/noop deletes, reopen, append and merge.
 `live_docs_writer_routing.rs` compares complete snapshots and callback-state
 multisets; segment names and callback ordering are excluded from that multiset.
+`GenNormsWriterRouting` installs the actual asserting norms consumer in a
+registered oracle codec with native readers. Six fast/general/explicit,
+sorted/unsorted sessions record complete field schemas, physical IDs, live bits,
+norm presence/values and BM25 score bits across append, delete and merge.
+`norms_writer_routing.rs` compares these snapshots and configured column inputs.
+Writer producer passes and double-close traces remain provenance; native reader
+acquisitions form a sorted multiset because their teardown order is independent.
 `GenAssertingTermVectors` records document/field/term/position count assertions,
 delegate failures and retries, inherited proximity and mapped merge callbacks,
 reader lifecycles and real SimpleText bytes. The harness enables Java assertions

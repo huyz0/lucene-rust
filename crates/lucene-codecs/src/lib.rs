@@ -55,6 +55,7 @@ pub mod lz4;
 pub mod memory;
 pub mod monotonic_block_packed;
 pub mod norms;
+pub mod norms_writer;
 pub mod offline_sorter;
 pub mod packed_data;
 pub mod packed_ints;
