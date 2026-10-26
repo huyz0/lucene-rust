@@ -5,6 +5,7 @@ pub mod asserting_knn_vectors;
 pub mod asserting_live_docs;
 pub mod asserting_live_docs_writer;
 pub mod asserting_norms;
+pub mod asserting_norms_writer;
 pub mod asserting_points;
 pub mod asserting_postings;
 pub mod asserting_stored_fields;

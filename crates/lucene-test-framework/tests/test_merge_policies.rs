@@ -352,7 +352,13 @@ mod merge_on_flush {
         fn assert_merge(&self, _: &MergeOnFlushMergePolicy, _: &MergeSpecification) {}
     }
 
-    base_merge_policy_tests!(Suite);
+    // Java: TestMergeOnFlushMergePolicy.testNoPathologicalMerges is a no-op:
+    // this policy makes no effort to avoid O(n^2) merges. Keep the other
+    // inherited scenarios; the generic amplification bound still tests the
+    // policies whose Java suites retain it.
+    base_merge_policy_tests!(@each Suite;
+        test_force_merge_not_needed, test_find_forced_deletes_merges,
+        test_simulate_append_only, test_simulate_updates);
 
     #[test]
     fn test_find_full_flush_merges() {

@@ -27,6 +27,11 @@
 //! `FieldInfos.FieldNumbers`. A registered field's schema is fixed, as
 //! Lucene's is; re-registering it with a different one is an error.
 //!
+//! [`IndexWriter::delete_all`] releases reservations and schemas inherited
+//! only from source segments. This facade retains explicitly configured field
+//! schemas, their returned IDs, and parent/soft-delete roles across that call;
+//! Java clears all field properties and may assign new numbers afterward.
+//!
 //! # What a flush writes
 //!
 //! A segment lists **only the fields its documents carry** (Lucene's
@@ -36,8 +41,9 @@
 //! same facts `PerFieldPostingsFormat`/`PerFieldDocValuesFormat` stamp. Every
 //! format is written by the codec writers the rest of this module uses:
 //! postings through [`postings_writer::write_fields_with_norms`] (so impacts
-//! use the real norms), norms through [`norms::write_fields`], doc values and
-//! points through [`IndexWriter::build_doc_values_output`] and
+//! use the real norms), norms through the installed consumer or
+//! [`norms::write_fields`], doc values and points through
+//! [`IndexWriter::build_doc_values_output`] and
 //! [`IndexWriter::build_points_output`] over one synthetic value list per
 //! document.
 //!
@@ -88,10 +94,6 @@ use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
 use lucene_codecs::term_vectors::{self, TermVectorField, TermVectorsDocument};
 use lucene_store::codec_util::ID_LENGTH;
 use lucene_store::directory::Directory;
-
-/// One field's norms for [`IndexingConfig::build_and_write_explicit_segment`]:
-/// `(field, dense column when every document has one, sparse pairs otherwise)`.
-type NormsColumn = (i32, Option<Vec<i64>>, Vec<(i32, i64)>);
 
 /// One document, indexing decided: see the module doc.
 #[derive(Debug, Clone, Default)]
@@ -741,12 +743,22 @@ impl IndexingConfig {
                 }
             }
         }
-        // Dense norm columns for the postings writer's impacts: a document
-        // without the field never appears in its postings, so its slot is
-        // never read.
-        let dense_norms: Vec<(i32, Vec<i64>)> = norm_values
-            .iter()
-            .map(|(&n, col)| (n, col.iter().map(|v| v.unwrap_or(1)).collect()))
+        // A present norms field still owns an empty sparse column when no
+        // document supplied a value, as Java's norms flush does.
+        for field in &self.fields {
+            if present.contains(&field.number)
+                && field.index_options != IndexOptions::None
+                && !field.omit_norms
+            {
+                norm_values
+                    .entry(field.number)
+                    .or_insert_with(|| vec![None; max_doc]);
+            }
+        }
+        // Dense impact values and sparse presence share one owned column.
+        let norm_columns: Vec<_> = norm_values
+            .into_iter()
+            .map(|(number, values)| (number, super::NormsColumn::from_values(values)))
             .collect();
         let remapped = buf.old_to_new.map(|map| pending.remap(map)).transpose()?;
         let term_lists: Vec<(i32, IndexOptions, i32, Vec<_>)> = pending
@@ -770,6 +782,58 @@ impl IndexingConfig {
                 ..f.clone()
             })
             .collect();
+        let build_norms = || -> Result<_> {
+            if norm_columns.is_empty() {
+                return Ok(None);
+            }
+            let fields: Vec<_> = norm_columns
+                .iter()
+                .map(|(number, column)| match &column.sparse {
+                    None => norms::NormsField::Dense(*number, &column.dense),
+                    Some(pairs) => norms::NormsField::Sparse(*number, pairs),
+                })
+                .collect();
+            let factory = self
+                .codec
+                .as_deref()
+                .and_then(|codec| codec.norms_writer_factory());
+            let output = if let Some(factory) = factory {
+                let files = crate::norms_writer::write_installed(
+                    factory,
+                    lucene_codecs::norms_writer::NormsWriteState {
+                        directory: dir,
+                        segment: segment_name,
+                        id: &segment_id,
+                        suffix: "",
+                        max_doc: max_doc as i32,
+                    },
+                    &segment_fields,
+                    &fields,
+                )?;
+                (None, files)
+            } else {
+                (
+                    Some(norms::write_fields(
+                        &fields,
+                        max_doc as i32,
+                        &segment_id,
+                        "",
+                    )?),
+                    Vec::new(),
+                )
+            };
+            Ok(Some(output))
+        };
+        let installed_norms = self
+            .codec
+            .as_deref()
+            .and_then(|codec| codec.norms_writer_factory())
+            .is_some();
+        let mut norms_output = if installed_norms {
+            build_norms()?
+        } else {
+            None
+        };
         let postings_output = if term_lists.is_empty() {
             None
         } else {
@@ -783,11 +847,11 @@ impl IndexingConfig {
                     terms,
                 })
                 .collect();
-            let norms_for_impacts: Vec<postings_writer::FieldNorms<'_>> = dense_norms
+            let norms_for_impacts: Vec<postings_writer::FieldNorms<'_>> = norm_columns
                 .iter()
-                .map(|(n, values)| postings_writer::FieldNorms {
+                .map(|(n, column)| postings_writer::FieldNorms {
                     field_number: *n,
-                    values,
+                    values: &column.dense,
                 })
                 .collect();
             Some(self.write_postings_groups(
@@ -798,44 +862,9 @@ impl IndexingConfig {
             )?)
         };
 
-        // Norms: a column for every present indexed field with norms, dense
-        // when every document has it -- `Lucene90NormsConsumer`'s choice.
-        let norms_output = if norm_values.is_empty() {
-            None
-        } else {
-            let columns: Vec<NormsColumn> = norm_values
-                .iter()
-                .map(|(&n, col)| {
-                    if col.iter().all(Option::is_some) {
-                        (
-                            n,
-                            Some(col.iter().map(|v| v.unwrap_or(0)).collect()),
-                            Vec::new(),
-                        )
-                    } else {
-                        let pairs = col
-                            .iter()
-                            .enumerate()
-                            .filter_map(|(d, v)| v.map(|v| (d as i32, v)))
-                            .collect();
-                        (n, None, pairs)
-                    }
-                })
-                .collect();
-            let fields: Vec<norms::NormsField<'_>> = columns
-                .iter()
-                .map(|(n, dense, pairs)| match dense {
-                    Some(values) => norms::NormsField::Dense(*n, values),
-                    None => norms::NormsField::Sparse(*n, pairs),
-                })
-                .collect();
-            Some(norms::write_fields(
-                &fields,
-                max_doc as i32,
-                &segment_id,
-                "",
-            )?)
-        };
+        if !installed_norms {
+            norms_output = build_norms()?;
+        }
 
         // Doc values and points through the native builders, each
         // document's values read in place.
@@ -1031,13 +1060,16 @@ impl IndexingConfig {
                 group,
             )?);
         }
-        if let Some((nvm, nvd)) = norms_output {
-            record(IndexWriter::write_norms_files(
-                dir,
-                segment_name,
-                &nvm,
-                &nvd,
-            )?);
+        if let Some((bytes, files)) = norms_output {
+            record(files);
+            if let Some((nvm, nvd)) = bytes {
+                record(IndexWriter::write_norms_files(
+                    dir,
+                    segment_name,
+                    &nvm,
+                    &nvd,
+                )?);
+            }
         }
         if let Some(output) = &points_output {
             record(IndexWriter::write_points_files(dir, segment_name, output)?);
@@ -1067,6 +1099,63 @@ impl IndexingConfig {
     }
 }
 
+/// `FieldInfos.FieldNumbers`' number reservations. Source segments supply
+/// preferred numbers; newly registered explicit fields request the first free
+/// number. Keeping this separate from the configured schema preserves fields
+/// that have not reappeared yet, even after their source segments are removed.
+/// Their schema remains fixed for the same lifetime as their reserved number.
+#[derive(Clone, Default)]
+pub(super) struct FieldNumbers {
+    by_name: BTreeMap<String, i32>,
+    schemas: BTreeMap<String, FieldInfo>,
+    used: BTreeSet<i32>,
+    lowest_unassigned: i32,
+}
+
+impl FieldNumbers {
+    pub(super) fn schema(&self, name: &str) -> Option<&FieldInfo> {
+        self.schemas.get(name)
+    }
+
+    pub(super) fn register(&mut self, info: &FieldInfo, preferred: Option<i32>) -> Result<i32> {
+        if let Some(existing) = self.schema(&info.name) {
+            if let Some(message) = schema_change(existing, info) {
+                return Err(explicit_error(message));
+            }
+        }
+        let number = self.add_or_get(&info.name, preferred)?;
+        self.schemas.entry(info.name.clone()).or_insert_with(|| {
+            let mut schema = info.clone();
+            schema.number = number;
+            schema.doc_values_gen = -1;
+            schema.attributes.clear();
+            schema.store_payloads = false;
+            schema
+        });
+        Ok(number)
+    }
+
+    fn add_or_get(&mut self, name: &str, preferred: Option<i32>) -> Result<i32> {
+        if let Some(&number) = self.by_name.get(name) {
+            return Ok(number);
+        }
+        let number = if let Some(number) = preferred.filter(|n| *n >= 0 && !self.used.contains(n)) {
+            number
+        } else {
+            while self.used.contains(&self.lowest_unassigned) {
+                self.lowest_unassigned = self
+                    .lowest_unassigned
+                    .checked_add(1)
+                    .ok_or_else(|| explicit_error("field number limit exceeded"))?;
+            }
+            self.lowest_unassigned
+        };
+        self.used.insert(number);
+        self.by_name.insert(name.to_owned(), number);
+        Ok(number)
+    }
+}
+
 impl<'d> IndexWriter<'d> {
     /// Switches this writer to [`ExplicitDocument`]s. Must be called before
     /// any document is buffered; refused with an index sort, and once on, the
@@ -1083,8 +1172,66 @@ impl<'d> IndexWriter<'d> {
         // An index sort's fields were checked against the registered ones by
         // `set_index_sort`; fields registered from here are checked by
         // `register_field`.
-        self.cfg_mut().explicit = true;
+        // `IndexWriter.getFieldNumberMap`: reserve every opened field before
+        // the first new document can introduce another name. Preferred source
+        // numbers may conflict across segments; the first name keeps its
+        // number, and later conflicts take the first free number.
+        let mut numbers = FieldNumbers::default();
+        for field in &self.cfg.fields {
+            numbers.register(field, Some(field.number))?;
+        }
+        for segment in self
+            .segment_infos
+            .segments
+            .iter()
+            .chain(&self.flushed_segments)
+        {
+            let mut fields = super::segment_field_infos(self.dir, segment)?.fields;
+            // Java's FieldInfos iterator visits ascending field numbers even
+            // when an imported file recorded entries in another order.
+            fields.sort_by_key(|field| field.number);
+            for field in fields {
+                numbers.register(&field, Some(field.number))?;
+            }
+        }
+        let cfg = self.cfg_mut();
+        cfg.explicit_field_numbers = numbers;
+        cfg.explicit = true;
         Ok(())
+    }
+
+    /// Drops source-only field properties after deleteAll while retaining
+    /// this facade's configured schemas and the field IDs callers hold.
+    pub(super) fn reset_explicit_field_numbers(&mut self) -> Result<()> {
+        if self.cfg.explicit {
+            let mut numbers = FieldNumbers::default();
+            for field in &self.cfg.fields {
+                numbers.register(field, Some(field.number))?;
+            }
+            self.cfg_mut().explicit_field_numbers = numbers;
+        }
+        Ok(())
+    }
+
+    /// Checks the restored sources before a reusable rollback changes any
+    /// document state. A schema registered after deleteAll may conflict with
+    /// those sources; rejecting the rollback keeps the current writer coherent.
+    pub(super) fn prepare_rollback_field_numbers(&self) -> Result<Option<FieldNumbers>> {
+        if !self.cfg.explicit {
+            return Ok(None);
+        }
+        let mut numbers = self.cfg.explicit_field_numbers.clone();
+        for field in &self.cfg.fields {
+            numbers.register(field, Some(field.number))?;
+        }
+        for segment in &self.rollback_segments {
+            let mut fields = super::segment_field_infos(self.dir, segment)?.fields;
+            fields.sort_by_key(|field| field.number);
+            for field in fields {
+                numbers.register(&field, Some(field.number))?;
+            }
+        }
+        Ok(Some(numbers))
     }
 
     /// `FieldInfos.FieldNumbers.addOrGet`: the global number of a field with
@@ -1180,12 +1327,9 @@ impl<'d> IndexWriter<'d> {
             }
         }
         let number = self
-            .cfg
-            .fields
-            .iter()
-            .map(|f| f.number)
-            .max()
-            .map_or(0, |m| m.saturating_add(1));
+            .cfg_mut()
+            .explicit_field_numbers
+            .register(&info, None)?;
         let mut info = info;
         info.number = number;
         info.doc_values_gen = -1;
@@ -1894,6 +2038,287 @@ mod tests {
         let mut payloads = FieldInfo::new("p", 0).with_index_options(IndexOptions::DocsAndFreqs);
         payloads.store_payloads = true;
         assert!(w.register_field(payloads).is_err());
+    }
+
+    #[test]
+    fn reopened_writer_reserves_all_source_numbers_before_a_new_field_appears() {
+        let dir = lucene_store::ByteBuffersDirectory::new();
+        {
+            let mut writer = IndexWriter::open(
+                &dir,
+                vec![
+                    FieldInfo::new("old_a", 2)
+                        .with_index_options(IndexOptions::Docs)
+                        .with_omit_norms(true),
+                    FieldInfo::new("old_b", 5),
+                ],
+                "Lucene104",
+                VERSION,
+            )
+            .unwrap();
+            writer.enable_explicit_documents().unwrap();
+            writer
+                .add_explicit_documents(vec![ExplicitDocument {
+                    stored: vec![
+                        StoredField {
+                            field_number: 2,
+                            value: FieldValue::String("a".into()),
+                        },
+                        StoredField {
+                            field_number: 5,
+                            value: FieldValue::String("b".into()),
+                        },
+                    ],
+                    fields: ExplicitFields {
+                        inverted: vec![InvertedField {
+                            field_number: 2,
+                            terms: vec![InvertedTerm {
+                                term: b"drop".to_vec(),
+                                freq: 1,
+                                positions: Vec::new(),
+                                offsets: Vec::new(),
+                                payloads: Vec::new(),
+                            }],
+                            norm: None,
+                        }],
+                        ..ExplicitFields::default()
+                    },
+                }])
+                .unwrap();
+            writer.commit().unwrap();
+        }
+        let mut writer = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+        writer.enable_explicit_documents().unwrap();
+        assert!(
+            writer.cfg.fields.is_empty(),
+            "reservations must not populate configured schemas"
+        );
+        assert_eq!(
+            writer.register_field(FieldInfo::new("late", 99)).unwrap(),
+            0
+        );
+        assert_eq!(
+            writer
+                .register_field(
+                    FieldInfo::new("old_a", 99)
+                        .with_index_options(IndexOptions::Docs)
+                        .with_omit_norms(true)
+                )
+                .unwrap(),
+            2
+        );
+        assert!(
+            writer
+                .register_field(FieldInfo::new("old_b", 99).with_index_options(IndexOptions::Docs))
+                .is_err(),
+            "source schemas are still checked"
+        );
+        // The source carrying old_b can disappear before this session has
+        // registered it. Its reserved number survives for the writer's life.
+        writer
+            .delete_documents_by_term(&[Term::new("old_a", "drop")])
+            .unwrap();
+        writer.commit().unwrap();
+        assert!(writer.segment_infos.segments.is_empty());
+        assert_eq!(
+            writer.register_field(FieldInfo::new("old_b", 99)).unwrap(),
+            5
+        );
+        assert_eq!(
+            writer
+                .register_field(FieldInfo::new("another", 99))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            writer
+                .register_field(FieldInfo::new("after_gap", 99))
+                .unwrap(),
+            3
+        );
+    }
+
+    #[test]
+    fn delete_all_rollback_restores_source_numbers_and_schema_before_new_fields() {
+        for (fallible, configured) in [(false, false), (true, false), (false, true), (true, true)] {
+            let dir = lucene_store::ByteBuffersDirectory::new();
+            let original = FieldInfo::new("old", 0).with_index_options(IndexOptions::DocsAndFreqs);
+            {
+                let mut writer =
+                    IndexWriter::open(&dir, vec![original.clone()], "Lucene104", VERSION).unwrap();
+                writer.enable_explicit_documents().unwrap();
+                writer
+                    .add_explicit_documents(vec![ExplicitDocument {
+                        fields: ExplicitFields {
+                            inverted: vec![InvertedField {
+                                field_number: 0,
+                                terms: Vec::new(),
+                                norm: Some(0),
+                            }],
+                            ..ExplicitFields::default()
+                        },
+                        ..ExplicitDocument::default()
+                    }])
+                    .unwrap();
+                writer.commit().unwrap();
+            }
+            let mut writer = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+            writer.enable_explicit_documents().unwrap();
+            if configured {
+                assert_eq!(
+                    writer.register_field(FieldInfo::new("pinned", 99)).unwrap(),
+                    1
+                );
+            }
+            writer.delete_all().unwrap();
+            if fallible {
+                writer.try_rollback().unwrap();
+            } else {
+                writer.rollback();
+            }
+            assert_eq!(
+                writer.register_field(FieldInfo::new("new", 99)).unwrap(),
+                if configured { 2 } else { 1 }
+            );
+            if configured {
+                assert_eq!(
+                    writer.register_field(FieldInfo::new("pinned", 99)).unwrap(),
+                    1
+                );
+            }
+            assert!(writer.register_field(FieldInfo::new("old", 99)).is_err());
+            assert!(writer
+                .register_field(original.clone().with_omit_norms(true))
+                .is_err());
+            assert_eq!(writer.register_field(original).unwrap(), 0);
+        }
+    }
+
+    #[test]
+    fn rollback_schema_conflict_keeps_current_writer_state_coherent() {
+        for fallible in [false, true] {
+            let dir = lucene_store::ByteBuffersDirectory::new();
+            {
+                let mut writer = IndexWriter::open(
+                    &dir,
+                    vec![FieldInfo::new("field", 0).with_index_options(IndexOptions::DocsAndFreqs)],
+                    "Lucene104",
+                    VERSION,
+                )
+                .unwrap();
+                writer.enable_explicit_documents().unwrap();
+                writer
+                    .add_explicit_documents(vec![ExplicitDocument {
+                        fields: ExplicitFields {
+                            inverted: vec![InvertedField {
+                                field_number: 0,
+                                terms: Vec::new(),
+                                norm: Some(0),
+                            }],
+                            ..ExplicitFields::default()
+                        },
+                        ..ExplicitDocument::default()
+                    }])
+                    .unwrap();
+                writer.commit().unwrap();
+            }
+            let mut writer = IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).unwrap();
+            writer.enable_explicit_documents().unwrap();
+            let original_files: Vec<_> = dir
+                .list_all()
+                .unwrap()
+                .into_iter()
+                .map(|name| {
+                    let bytes = dir.open(&name).unwrap().to_vec();
+                    (name, bytes)
+                })
+                .collect();
+            writer.delete_all().unwrap();
+            let changed = writer.register_field(FieldInfo::new("field", 99)).unwrap();
+            assert_eq!(changed, 0);
+            writer
+                .add_explicit_documents(vec![ExplicitDocument {
+                    stored: vec![StoredField {
+                        field_number: changed,
+                        value: FieldValue::String("replacement".into()),
+                    }],
+                    ..ExplicitDocument::default()
+                }])
+                .unwrap();
+            if fallible {
+                assert!(matches!(writer.try_rollback(), Err(Error::Explicit(_))));
+            } else {
+                writer.rollback();
+            }
+            assert!(
+                writer.segment_infos.segments.is_empty(),
+                "incompatible committed sources were not restored"
+            );
+            for (name, bytes) in &original_files {
+                assert_eq!(
+                    &*dir.open(name).unwrap(),
+                    bytes.as_slice(),
+                    "rejected rollback preserves committed source bytes"
+                );
+            }
+            assert_eq!(
+                writer.pending_docs.len(),
+                1,
+                "failed rollback leaves the current buffer intact"
+            );
+            assert_eq!(
+                writer.register_field(FieldInfo::new("field", 99)).unwrap(),
+                changed
+            );
+            let committed = writer.commit().unwrap().clone();
+            assert_eq!(committed.segments.len(), 1);
+            let fields = super::super::segment_field_infos(&dir, &committed.segments[0]).unwrap();
+            assert_eq!(fields.fields[0].index_options, IndexOptions::None);
+            for result in crate::check_index::check_directory(&dir).unwrap() {
+                assert!(
+                    result.all_passed(),
+                    "{}: {:?}",
+                    result.segment_name,
+                    result.failures()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reserved_schemas_keep_only_global_properties_and_reject_changes() {
+        let mut numbers = FieldNumbers::default();
+        let mut info = FieldInfo::new("field", 3).with_index_options(IndexOptions::DocsAndFreqs);
+        info.store_payloads = true;
+        info.doc_values_gen = 19;
+        info.attributes.push(("segment".into(), "attribute".into()));
+        assert_eq!(numbers.register(&info, Some(3)).unwrap(), 3);
+        let retained = numbers.schema("field").unwrap();
+        assert_eq!(retained.number, 3);
+        assert!(!retained.store_payloads);
+        assert_eq!(retained.doc_values_gen, -1);
+        assert!(retained.attributes.is_empty());
+        assert_eq!(numbers.register(&info, None).unwrap(), 3);
+        assert!(numbers.register(&info.with_omit_norms(true), None).is_err());
+    }
+
+    #[test]
+    fn source_number_conflicts_use_first_preference_then_lowest_free_number() {
+        let mut numbers = FieldNumbers::default();
+        assert_eq!(numbers.add_or_get("first", Some(2)).unwrap(), 2);
+        assert_eq!(numbers.add_or_get("second", Some(2)).unwrap(), 0);
+        // A repeated name keeps its first global assignment, regardless of
+        // the number a later source segment assigned to the same name.
+        assert_eq!(numbers.add_or_get("first", Some(1)).unwrap(), 2);
+        assert_eq!(numbers.add_or_get("third", Some(0)).unwrap(), 1);
+        assert_eq!(numbers.add_or_get("preferred", Some(7)).unwrap(), 7);
+        assert_eq!(numbers.add_or_get("new", None).unwrap(), 3);
+        assert_eq!(numbers.add_or_get("unset_source", Some(-1)).unwrap(), 4);
+        // Saturating a field number must report exhaustion instead of
+        // returning another field's already reserved number.
+        numbers.lowest_unassigned = i32::MAX;
+        assert_eq!(numbers.add_or_get("last", None).unwrap(), i32::MAX);
+        assert!(numbers.add_or_get("overflow", None).is_err());
     }
 
     /// Term vectors arrive built; `validate_explicit` checks their shape

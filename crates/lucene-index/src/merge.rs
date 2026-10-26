@@ -67,36 +67,12 @@
 //! [`reconcile_field_numbers`], which ports `FieldInfos.Builder.add`'s
 //! `verifySameSchema` + `setStorePayloads` behaviour.)
 //!
-//! # Doc values / norms / term vectors: mergeable, and now real flush callers exist
+//! # Doc values / norms / term vectors
 //!
-//! [`crate::segment_writer::flush_stored_only_segment`] itself still only ever
-//! writes stored-fields-only segments. But `IndexWriter::commit`
-//! (`index_writer.rs`) is a real caller for postings, term vectors, doc
-//! values, and norms: postings and term vectors support multiple fields per
-//! commit (`add_postings_field`/`add_term_vector_field`), while doc values
-//! and norms are still single-field-per-commit
-//! (`set_doc_values_field`/`set_norms_field`). Each produces a real segment
-//! carrying that format, decodable by this module's merge sources. This
-//! module still cannot be exercised end-to-end for the *general*
-//! multi-doc-values/norms-field-per-source case ("flush two real segments
-//! each with several doc-values/norms fields, merge them") from a single
-//! commit, since those two formats are only wired one field at a time today.
-//!
-//! What *is* real: the write-side encoders for these formats already exist
-//! as standalone functions ([`lucene_codecs::doc_values::write_single_dense_numeric_field`],
-//! [`lucene_codecs::norms::write_single_dense_field`],
-//! [`lucene_codecs::term_vectors::write_best_speed`]), and their read-side
-//! counterparts can decode arbitrary per-source data (including data written
-//! by a test, or by some future caller once a real per-field flush path
-//! exists). [`merge_stored_only_segments`] therefore accepts, per source,
-//! *optional* already-decoded doc-values/norms/term-vectors data (see
-//! [`MergeSource`]) and, if supplied, merges it the same way stored fields
-//! are merged (drop deleted docs, renumber contiguously, reconcile field
-//! numbers) and re-encodes it with the existing write functions. This makes
-//! the merge logic real and testable without requiring a new flush path --
-//! but until a caller exists that can *produce* per-field doc-values/norms/
-//! term-vectors data for a real segment, nothing in this port actually
-//! drives this code outside of its own tests.
+//! Buffered and explicit IndexWriter flushes supply multiple fields per
+//! segment. MergeSource accepts their decoded doc-values, norms and term-vector
+//! columns, reconciles field numbers, drops deleted documents and writes the
+//! resulting columns in merged physical document order.
 //!
 //! ## Scope of the doc-values/norms merge
 //!
@@ -136,8 +112,9 @@
 //!   `Lucene90DocValuesConsumer` uses, and a column **no** merged document
 //!   has a value for is still written, as its all-missing form
 //!   (`docsWithFieldOffset = -2`).
-//! - **Norms** must still be dense over the merged segment
-//!   ([`Error::NormsFieldMissingInSource`]).
+//! - **Norms** may be absent in a whole source or individual documents. Their
+//!   gaps remain absent on disk; a present zero remains a value. A field with
+//!   no surviving values is written as an empty sparse column.
 //!
 //! Term vectors have no such constraint: a source with no term-vectors
 //! reader at all, or a doc with none, simply contributes an empty
@@ -2282,6 +2259,56 @@ pub fn merge_segments_mapped(
     )?);
     merged_doc_values.sort_by_key(|f| f.field_number());
 
+    let mut files: Vec<String> = Vec::new();
+    let write_stored = |files: &mut Vec<String>| -> Result<()> {
+        let fdt_name = format!("{merged_segment_name}.fdt");
+        let fdx_name = format!("{merged_segment_name}.fdx");
+        let fdm_name = format!("{merged_segment_name}.fdm");
+        if let Some(factory) = options
+            .codec
+            .as_deref()
+            .and_then(|codec| codec.stored_fields_writer_factory())
+        {
+            write_merged_stored_fields_with_factory(
+                factory,
+                lucene_codecs::stored_fields_writer::StoredFieldsWriteState {
+                    directory: dir,
+                    segment: merged_segment_name,
+                    id: &merged_segment_id,
+                    suffix: "",
+                    mode: stored_fields::Mode::BestSpeed,
+                },
+                sources,
+                &per_source_maps,
+                &doc_order,
+            )?;
+            files.extend([fdt_name, fdx_name, fdm_name]);
+        } else {
+            let (fdt, fdx, fdm) = write_merged_stored_fields(
+                sources,
+                &per_source_maps,
+                &doc_order,
+                &merged_segment_id,
+            )?;
+            for (name, bytes) in [(&fdt_name, &fdt), (&fdx_name, &fdx), (&fdm_name, &fdm)] {
+                write_file(dir, name, bytes)?;
+                files.push(name.clone());
+            }
+        }
+
+        Ok(())
+    };
+    let norms_factory = options
+        .codec
+        .as_deref()
+        .and_then(|codec| codec.norms_writer_factory());
+    // Java: SegmentMerger.merge writes stored fields before norms, and closes
+    // norms before selecting postings/doc-values/vector formats. Source columns
+    // here remain Rust-owned decoded inputs; no source NormsProducer is routed.
+    if norms_factory.is_some() {
+        write_stored(&mut files)?;
+    }
+
     let merged_norms = merge_norms(
         sources,
         &merged_fields,
@@ -2289,6 +2316,50 @@ pub fn merge_segments_mapped(
         &per_source_live_ids,
         &doc_order,
     )?;
+    // Missing values use one only for postings impacts. Sparse wire columns
+    // omit them, and a present zero remains zero.
+    let impact_norms: Vec<Vec<i64>> = merged_norms
+        .iter()
+        .map(|(_, values)| values.iter().map(|v| v.unwrap_or(1)).collect())
+        .collect();
+    let sparse_columns: Vec<Vec<(i32, i64)>> = merged_norms
+        .iter()
+        .map(|(_, values)| {
+            values
+                .iter()
+                .enumerate()
+                .filter_map(|(doc, v)| v.map(|v| (doc as i32, v)))
+                .collect()
+        })
+        .collect();
+    let norms_fields: Vec<norms::NormsField<'_>> = merged_norms
+        .iter()
+        .zip(&impact_norms)
+        .zip(&sparse_columns)
+        .map(|(((number, values), dense), sparse)| {
+            if values.iter().all(|v| v.is_some()) {
+                norms::NormsField::Dense(*number, dense)
+            } else {
+                norms::NormsField::Sparse(*number, sparse)
+            }
+        })
+        .collect();
+    if let Some(factory) = norms_factory {
+        if !norms_fields.is_empty() {
+            files.extend(crate::norms_writer::write_installed(
+                factory,
+                lucene_codecs::norms_writer::NormsWriteState {
+                    directory: dir,
+                    segment: merged_segment_name,
+                    id: &merged_segment_id,
+                    suffix: "",
+                    max_doc: doc_count,
+                },
+                &merged_fields,
+                &norms_fields,
+            )?);
+        }
+    }
     let tv_files =
         write_merged_term_vectors(sources, &per_source_maps, &doc_order, &merged_segment_id)?;
     let merged_postings_fields = merge_postings(
@@ -2365,37 +2436,8 @@ pub fn merge_segments_mapped(
         .map(|f| f.field_number)
         .collect();
 
-    let mut files: Vec<String> = Vec::new();
-
-    let fdt_name = format!("{merged_segment_name}.fdt");
-    let fdx_name = format!("{merged_segment_name}.fdx");
-    let fdm_name = format!("{merged_segment_name}.fdm");
-    if let Some(factory) = options
-        .codec
-        .as_deref()
-        .and_then(|codec| codec.stored_fields_writer_factory())
-    {
-        write_merged_stored_fields_with_factory(
-            factory,
-            lucene_codecs::stored_fields_writer::StoredFieldsWriteState {
-                directory: dir,
-                segment: merged_segment_name,
-                id: &merged_segment_id,
-                suffix: "",
-                mode: stored_fields::Mode::BestSpeed,
-            },
-            sources,
-            &per_source_maps,
-            &doc_order,
-        )?;
-        files.extend([fdt_name, fdx_name, fdm_name]);
-    } else {
-        let (fdt, fdx, fdm) =
-            write_merged_stored_fields(sources, &per_source_maps, &doc_order, &merged_segment_id)?;
-        for (name, bytes) in [(&fdt_name, &fdt), (&fdx_name, &fdx), (&fdm_name, &fdm)] {
-            write_file(dir, name, bytes)?;
-            files.push(name.clone());
-        }
+    if norms_factory.is_none() {
+        write_stored(&mut files)?;
     }
 
     let fnm_name = format!("{merged_segment_name}.fnm");
@@ -2449,60 +2491,7 @@ pub fn merge_segments_mapped(
         }
     }
 
-    // Every norms field of the merged segment shares one `.nvm`/`.nvd`
-    // pair, which is what a real `Lucene90NormsFormat` segment is
-    // (`Lucene90NormsConsumer` gets one `addNormsField` call per field into
-    // one pair) -- and what `write_dense_fields` already did for doc values.
-    // Until c26 this was one `write_single_dense_field` call, so a merge of
-    // segments with norms on two fields was `Error::TooManyNormsFields`.
-    // One dense-by-doc-id column per norms field, read twice: by
-    // `NormsField::Dense` when the `.nvd` is written just below, and by the
-    // postings writer's impacts further down
-    // (`postings_writer::FieldNorms` wants exactly this shape). Built once
-    // rather than once each -- these used to be two separate `Vec<i64>`s over
-    // the same numbers, on top of `merged_norms` itself, and this merge holds
-    // every one of them live at the same time.
-    //
-    // A doc with no norm for the field reads as `1`, Java's own
-    // `advanceExact == false` fallback. It is never on the wire (the `Dense`
-    // arm is only taken when no doc is absent) and never read through an
-    // impact (a doc with an occurrence of the field has a norm for it);
-    // `norm == 0`, which `CheckIndex.checkImpacts` rejects outright, is
-    // deliberately not used as the filler.
-    //
-    // Declared out here rather than inside the `.nvd` block below because the
-    // postings write is its own block further down and borrows this.
-    let impact_norms: Vec<Vec<i64>> = merged_norms
-        .iter()
-        .map(|(_, values)| values.iter().map(|v| v.unwrap_or(1)).collect())
-        .collect();
-
-    if !merged_norms.is_empty() {
-        // `Dense` when every merged document has a norm, `Sparse` otherwise --
-        // the same `numDocsWithValue == maxDoc` branch `Lucene90NormsConsumer`
-        // takes, and the same choice the flush side makes.
-        let sparse_columns: Vec<Vec<(i32, i64)>> = merged_norms
-            .iter()
-            .map(|(_, values)| {
-                values
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(doc, v)| v.map(|v| (doc as i32, v)))
-                    .collect()
-            })
-            .collect();
-        let norms_fields: Vec<norms::NormsField<'_>> = merged_norms
-            .iter()
-            .zip(&impact_norms)
-            .zip(&sparse_columns)
-            .map(|(((number, values), dense), sparse)| {
-                if values.iter().all(|v| v.is_some()) {
-                    norms::NormsField::Dense(*number, dense)
-                } else {
-                    norms::NormsField::Sparse(*number, sparse)
-                }
-            })
-            .collect();
+    if norms_factory.is_none() && !merged_norms.is_empty() {
         let (nvm, nvd) = norms::write_fields(&norms_fields, doc_count, &merged_segment_id, "")?;
         for (ext, bytes) in [("nvm", &nvm), ("nvd", &nvd)] {
             let name = format!("{merged_segment_name}.{ext}");

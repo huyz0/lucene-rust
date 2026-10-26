@@ -40,3 +40,6 @@ pub mod similarity;
 pub mod stall_control;
 pub mod term_delete;
 pub mod update_document;
+
+/// Installed norms consumer orchestration.
+pub(crate) mod norms_writer;

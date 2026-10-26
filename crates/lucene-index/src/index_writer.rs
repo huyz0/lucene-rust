@@ -807,6 +807,9 @@ pub(crate) struct IndexingConfig {
     /// when the configuration is.
     reader_pool: std::sync::Arc<crate::reader_pool::ReaderPool>,
     fields: Vec<FieldInfo>,
+    /// Writer-lifetime reservations, including fields in opened segments that
+    /// explicit documents have not registered yet.
+    explicit_field_numbers: explicit::FieldNumbers,
     codec_name: String,
     lucene_version: LuceneVersion,
     /// Every field this writer is currently opted into building real
@@ -3216,16 +3219,35 @@ impl IndexingConfig {
         // indexed field that has not opted out gets a norm column, and the
         // shared invert pass has to analyze all of them.
         let norms_configs = self.norms_field_configs();
-        let doc_values_output = if self.doc_values_fields.is_empty() {
+        let installed_norms = self
+            .codec
+            .as_deref()
+            .and_then(|codec| codec.norms_writer_factory())
+            .is_some();
+        let norms_state = lucene_codecs::norms_writer::NormsWriteState {
+            directory: dir,
+            segment: segment_name,
+            id: &segment_id,
+            suffix: "",
+            max_doc: buf.docs.len() as i32,
+        };
+        let build_doc_values = || -> Result<_> {
+            Ok(if self.doc_values_fields.is_empty() {
+                None
+            } else {
+                let names: Vec<&str> = self.fields.iter().map(|f| f.name.as_str()).collect();
+                Some(self.build_doc_values_groups(
+                    buf.docs,
+                    &self.doc_values_fields,
+                    &names,
+                    &segment_id,
+                )?)
+            })
+        };
+        let mut doc_values_output = if installed_norms {
             None
         } else {
-            let names: Vec<&str> = self.fields.iter().map(|f| f.name.as_str()).collect();
-            Some(self.build_doc_values_groups(
-                buf.docs,
-                &self.doc_values_fields,
-                &names,
-                &segment_id,
-            )?)
+            build_doc_values()?
         };
         let (norms_output, term_vectors_output, postings_output);
         if self.fast_inversion_applies(&norms_configs) {
@@ -3246,13 +3268,17 @@ impl IndexingConfig {
                     &norms_configs,
                     &inverters,
                     self.norm_similarity(),
-                    &segment_id,
+                    self,
+                    norms_state,
                 )?)
             };
+            if installed_norms {
+                doc_values_output = build_doc_values()?;
+            }
             term_vectors_output = None;
             let impact_norms: &[(i32, Vec<i64>)] = norms_output
                 .as_ref()
-                .map(|(_, _, columns)| columns.as_slice())
+                .map(|output| output.impact_norms.as_slice())
                 .unwrap_or(&[]);
             postings_output = IndexWriter::build_postings_output_fast(
                 self,
@@ -3289,15 +3315,19 @@ impl IndexingConfig {
                         .as_ref()
                         .map(|cfg| (cfg.field_number, buf.custom_freq_terms)),
                     self.norm_similarity(),
-                    &segment_id,
+                    self,
+                    norms_state,
                 )?)
             };
+            if installed_norms {
+                doc_values_output = build_doc_values()?;
+            }
             // Borrowed out of `norms_output` before the postings consume
             // `inverted`, because the postings writer needs them for its
             // impacts.
             let impact_norms: &[(i32, Vec<i64>)] = norms_output
                 .as_ref()
-                .map(|(_, _, columns)| columns.as_slice())
+                .map(|output| output.impact_norms.as_slice())
                 .unwrap_or(&[]);
             term_vectors_output = if self.term_vector_fields.is_empty() {
                 None
@@ -3421,13 +3451,16 @@ impl IndexingConfig {
                 group,
             )?);
         }
-        if let Some((nvm, nvd, _)) = norms_output {
-            record(IndexWriter::write_norms_files(
-                dir,
-                segment_name,
-                &nvm,
-                &nvd,
-            )?);
+        if let Some(output) = norms_output {
+            record(output.files);
+            if let Some((nvm, nvd)) = output.bytes {
+                record(IndexWriter::write_norms_files(
+                    dir,
+                    segment_name,
+                    &nvm,
+                    &nvd,
+                )?);
+            }
         }
         if let Some(output) = &vectors_output {
             record(IndexWriter::write_vector_files(dir, segment_name, output)?);
@@ -3449,6 +3482,52 @@ impl IndexingConfig {
                 segment_writer::create_compound_file(dir, segment_name, &mut flushed.info)?;
         }
         segment_writer::seal_flushed_segment(dir, segment_name, flushed).map_err(Error::from)
+    }
+
+    fn finish_norms_output(
+        &self,
+        columns: Vec<NormsColumn>,
+        configs: &[NormsFieldConfig],
+        state: lucene_codecs::norms_writer::NormsWriteState<'_>,
+    ) -> Result<NormsOutput> {
+        let fields: Vec<_> = configs
+            .iter()
+            .zip(&columns)
+            .map(|(config, column)| match &column.sparse {
+                None => norms::NormsField::Dense(config.field_number, &column.dense),
+                Some(pairs) => norms::NormsField::Sparse(config.field_number, pairs),
+            })
+            .collect();
+        let factory = self
+            .codec
+            .as_deref()
+            .and_then(|codec| codec.norms_writer_factory());
+        let (bytes, files) = if let Some(factory) = factory {
+            (
+                None,
+                crate::norms_writer::write_installed(factory, state, &self.fields, &fields)?,
+            )
+        } else {
+            (
+                Some(norms::write_fields(
+                    &fields,
+                    state.max_doc,
+                    state.id,
+                    state.suffix,
+                )?),
+                Vec::new(),
+            )
+        };
+        let impact_norms = configs
+            .iter()
+            .zip(columns)
+            .map(|(config, column)| (config.field_number, column.dense))
+            .collect();
+        Ok(NormsOutput {
+            bytes,
+            files,
+            impact_norms,
+        })
     }
 }
 
@@ -3901,7 +3980,11 @@ type PayloadSourceRef<'a> = &'a (dyn Fn(&PayloadContext<'_>) -> Option<Vec<u8>> 
 /// plus each norms field's per-document column as `(field number, norms by
 /// doc id)` -- the input the postings writer's impacts need. See that
 /// method's doc comment for why the columns come back at all.
-type NormsOutput = (Vec<u8>, Vec<u8>, Vec<(i32, Vec<i64>)>);
+struct NormsOutput {
+    bytes: Option<(Vec<u8>, Vec<u8>)>,
+    files: Vec<String>,
+    impact_norms: Vec<(i32, Vec<i64>)>,
+}
 
 /// for, resolved once by [`IndexWriter::set_postings_field`]/
 /// [`IndexWriter::add_postings_field`] against this writer's fixed `fields`
@@ -4980,6 +5063,7 @@ impl<'d> IndexWriter<'d> {
             default_analyzer: None,
             cfg: std::sync::Arc::new(IndexingConfig {
                 fields,
+                explicit_field_numbers: Default::default(),
                 codec_name: codec_name.into(),
                 lucene_version,
                 postings_fields: Vec::new(),
@@ -8038,7 +8122,8 @@ impl IndexWriter<'_> {
         configs: &[NormsFieldConfig],
         inverters: &[(i32, crate::inverter::FieldInverter)],
         similarity: &dyn NormSimilarity,
-        segment_id: &[u8; ID_LENGTH],
+        routing: &IndexingConfig,
+        state: lucene_codecs::norms_writer::NormsWriteState<'_>,
     ) -> Result<NormsOutput> {
         let columns: Vec<NormsColumn> = configs
             .iter()
@@ -8074,22 +8159,7 @@ impl IndexWriter<'_> {
             })
             .collect::<Result<_>>()?;
 
-        let fields: Vec<norms::NormsField<'_>> = configs
-            .iter()
-            .zip(&columns)
-            .map(|(config, column)| match &column.sparse {
-                None => norms::NormsField::Dense(config.field_number, &column.dense),
-                Some(pairs) => norms::NormsField::Sparse(config.field_number, pairs),
-            })
-            .collect();
-
-        let (nvm, nvd) = norms::write_fields(&fields, docs.len() as i32, segment_id, "")?;
-        let impact_norms: Vec<(i32, Vec<i64>)> = configs
-            .iter()
-            .zip(columns)
-            .map(|(config, column)| (config.field_number, column.dense))
-            .collect();
-        Ok((nvm, nvd, impact_norms))
+        routing.finish_norms_output(columns, configs, state)
     }
 
     /// [`Self::build_postings_output`] over the inverters' terms, already in
@@ -8297,7 +8367,8 @@ impl IndexWriter<'_> {
         inverted: &InMemoryInvertedIndex,
         custom_freq: Option<CustomFreqTerms<'_>>,
         similarity: &dyn NormSimilarity,
-        segment_id: &[u8; ID_LENGTH],
+        routing: &IndexingConfig,
+        state: lucene_codecs::norms_writer::NormsWriteState<'_>,
     ) -> Result<NormsOutput> {
         // One column per configured field, all into the same `.nvm`/`.nvd`
         // pair -- `Lucene90NormsConsumer` gets one `addNormsField` call per
@@ -8398,24 +8469,7 @@ impl IndexWriter<'_> {
             })
             .collect::<Result<_>>()?;
 
-        let fields: Vec<norms::NormsField<'_>> = configs
-            .iter()
-            .zip(&columns)
-            .map(|(config, column)| match &column.sparse {
-                None => norms::NormsField::Dense(config.field_number, &column.dense),
-                Some(pairs) => norms::NormsField::Sparse(config.field_number, pairs),
-            })
-            .collect();
-
-        let (nvm, nvd) = norms::write_fields(&fields, docs.len() as i32, segment_id, "")?;
-        // The dense columns move out to the postings writer, which is the
-        // whole reason they are built dense -- no copy is made.
-        let impact_norms: Vec<(i32, Vec<i64>)> = configs
-            .iter()
-            .zip(columns)
-            .map(|(config, column)| (config.field_number, column.dense))
-            .collect();
-        Ok((nvm, nvd, impact_norms))
+        routing.finish_norms_output(columns, configs, state)
     }
 
     /// Builds one [`TermVectorsDocument`] per entry in `docs` (in the same
@@ -10612,9 +10666,14 @@ impl IndexWriter<'_> {
     /// further [`IndexWriter::add_document`]/[`IndexWriter::commit`] calls
     /// immediately afterward. Drop releases that lock. Cleanup errors are
     /// ignored by this compatibility method; [`Self::try_rollback`] propagates
-    /// them as Java does.
+    /// them as Java does. If restored source metadata cannot be read or its
+    /// schema conflicts with fields configured since `delete_all`, rollback
+    /// leaves the writer's current document state unchanged; this method
+    /// ignores that error, while `try_rollback` reports it.
     pub fn rollback(&mut self) {
-        self.rollback_state();
+        if self.rollback_state().is_err() {
+            return;
+        }
         let live = self.live_infos();
         let _ = self.deleter.checkpoint(&live, false);
         let _ = self.deleter.refresh();
@@ -10625,16 +10684,20 @@ impl IndexWriter<'_> {
     /// this keeps the writer usable and retains its lock until it drops.
     ///
     /// # Errors
-    /// The deleter cannot checkpoint the restored commit or refresh its files.
+    /// Restored field metadata cannot be read or reconciled, or the deleter
+    /// cannot checkpoint the restored commit or refresh its files.
     pub fn try_rollback(&mut self) -> Result<()> {
-        self.rollback_state();
+        self.rollback_state()?;
         let live = self.live_infos();
         self.deleter.checkpoint(&live, false)?;
         self.deleter.refresh()?;
         Ok(())
     }
 
-    fn rollback_state(&mut self) {
+    fn rollback_state(&mut self) -> Result<()> {
+        // Retained configuration may conflict with fields from the restored
+        // commit after deleteAll. Reject before changing any document state.
+        let field_numbers = self.prepare_rollback_field_numbers()?;
         // `ReaderPool.dropAll()`: nothing opened for the discarded changes
         // survives the rollback.
         self.cfg.reader_pool.clear();
@@ -10678,6 +10741,10 @@ impl IndexWriter<'_> {
             // remove it must not turn a rollback into an error).
             segment_infos::rollback_pending(&prepared, self.dir);
         }
+        if let Some(numbers) = field_numbers {
+            self.cfg_mut().explicit_field_numbers = numbers;
+        }
+        Ok(())
     }
 
     /// Port of `IndexWriter.deleteAll()`: drops every buffered document *and*
@@ -10692,10 +10759,9 @@ impl IndexWriter<'_> {
     /// [`crate::segment_infos::read_latest`] still sees the previous commit,
     /// exactly as in Java.
     ///
-    /// Also like Java's, the dropped segments' files are *not* deleted from
-    /// `dir`: Java hands that to `IndexFileDeleter.checkpoint`, which this port
-    /// has no equivalent of (see the module doc comment), so the files linger
-    /// as unreferenced orphans no commit points at.
+    /// Like Java's, this checkpoints the empty view with `IndexFileDeleter`.
+    /// Uncommitted segment files are reclaimed; files referenced by a retained
+    /// commit survive until that commit is removed by the deletion policy.
     ///
     /// Refused while a [`IndexWriter::prepare_commit`] is outstanding, for the
     /// same reason [`IndexWriter::delete_documents_by_term`] is.
@@ -10726,6 +10792,7 @@ impl IndexWriter<'_> {
         // is exactly why `deleteAll` is not itself durable.
         let live = self.live_infos();
         self.deleter.checkpoint(&live, false)?;
+        self.reset_explicit_field_numbers()?;
         Ok(())
     }
 

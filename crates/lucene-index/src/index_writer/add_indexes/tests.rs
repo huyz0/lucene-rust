@@ -528,3 +528,184 @@ fn a_remap_of_the_index_sort_is_refused() {
         other => panic!("{other:?}"),
     }
 }
+
+/// Imports update the writer-lifetime number reservations before a new
+/// explicit field can consume an imported name's number. Source removal must
+/// not discard a reservation for a name this writer has not registered yet.
+#[test]
+fn explicit_field_numbers_reserve_imported_names_for_copied_and_merged_sources() {
+    use crate::index_writer::explicit::{
+        ExplicitDocument, ExplicitFields, InvertedField, InvertedTerm,
+    };
+    use lucene_store::ByteBuffersDirectory;
+    let version = LuceneVersion {
+        major: 10,
+        minor: 5,
+        bugfix: 0,
+    };
+    let source = ByteBuffersDirectory::new();
+    {
+        let mut writer = IndexWriter::open(
+            &source,
+            vec![
+                FieldInfo::new("imported", 0).with_index_options(IndexOptions::DocsAndFreqs),
+                FieldInfo::new("unseen", 2),
+            ],
+            "Lucene104",
+            version,
+        )
+        .unwrap();
+        writer.enable_explicit_documents().unwrap();
+        writer
+            .add_explicit_documents(vec![ExplicitDocument {
+                stored: vec![
+                    StoredField {
+                        field_number: 0,
+                        value: FieldValue::String("imported".into()),
+                    },
+                    StoredField {
+                        field_number: 2,
+                        value: FieldValue::String("unseen".into()),
+                    },
+                ],
+                fields: ExplicitFields {
+                    inverted: vec![InvertedField {
+                        field_number: 0,
+                        terms: vec![InvertedTerm {
+                            term: b"drop".to_vec(),
+                            freq: 1,
+                            positions: Vec::new(),
+                            offsets: Vec::new(),
+                            payloads: Vec::new(),
+                        }],
+                        norm: Some(1),
+                    }],
+                    ..ExplicitFields::default()
+                },
+            }])
+            .unwrap();
+        writer.commit().unwrap();
+    }
+    let changed_source = ByteBuffersDirectory::new();
+    {
+        let mut writer = IndexWriter::open(
+            &changed_source,
+            vec![FieldInfo::new("imported", 0)],
+            "Lucene104",
+            version,
+        )
+        .unwrap();
+        writer
+            .add_document(Document {
+                fields: vec![StoredField {
+                    field_number: 0,
+                    value: FieldValue::String("changed".into()),
+                }],
+            })
+            .unwrap();
+        writer.commit().unwrap();
+    }
+    for merged in [false, true] {
+        let destination = ByteBuffersDirectory::new();
+        let mut writer = IndexWriter::open(&destination, Vec::new(), "Lucene104", version).unwrap();
+        writer.enable_explicit_documents().unwrap();
+        assert_eq!(
+            writer.register_field(FieldInfo::new("local", 9)).unwrap(),
+            0
+        );
+        if merged {
+            writer.add_indexes_merged(&[&source]).unwrap();
+        } else {
+            writer.add_indexes(&[&source]).unwrap();
+        }
+        assert!(writer.registered_field("imported").is_none());
+        assert!(writer.registered_field("unseen").is_none());
+        writer
+            .delete_documents_by_term(&[Term::new("imported", "drop")])
+            .unwrap();
+        writer.commit().unwrap();
+        assert!(writer.segment_infos.segments.is_empty());
+        for changed in [
+            FieldInfo::new("imported", 9),
+            FieldInfo::new("imported", 9)
+                .with_index_options(IndexOptions::DocsAndFreqs)
+                .with_omit_norms(true),
+        ] {
+            assert!(
+                matches!(writer.register_field(changed), Err(Error::Explicit(_))),
+                "the removed source's index options and norms remain fixed"
+            );
+        }
+        let changed_import = if merged {
+            writer.add_indexes_merged(&[&changed_source])
+        } else {
+            writer.add_indexes(&[&changed_source])
+        };
+        assert!(
+            matches!(changed_import, Err(Error::AddIndexes(_))),
+            "imports also verify the retained source schema"
+        );
+        assert_eq!(writer.register_field(FieldInfo::new("late", 9)).unwrap(), 3);
+        assert_eq!(
+            writer
+                .register_field(
+                    FieldInfo::new("imported", 9).with_index_options(IndexOptions::DocsAndFreqs)
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            writer.register_field(FieldInfo::new("unseen", 9)).unwrap(),
+            2
+        );
+        assert_eq!(writer.register_field(FieldInfo::new("next", 9)).unwrap(), 4);
+    }
+}
+
+#[test]
+fn delete_all_releases_unregistered_source_properties_and_preserves_configured_roles() {
+    let source_tmp = TempDir::new("explicit-delete-all-source-properties");
+    let source = source(&source_tmp);
+    let destination_tmp = TempDir::new("explicit-delete-all-configured-properties");
+    let destination = FsDirectory::open(&destination_tmp);
+    let numeric = |name, number| {
+        FieldInfo::new(name, number).with_doc_values(
+            DocValuesType::Numeric,
+            DocValuesSkipIndexType::None,
+            -1,
+        )
+    };
+    let parent = numeric("parent", 2).with_parent_field(true);
+    let soft = numeric("soft", 5).with_soft_deletes_field(true);
+    let mut writer = IndexWriter::open(
+        &destination,
+        vec![parent.clone(), soft.clone()],
+        "Lucene104",
+        LuceneVersion {
+            major: 10,
+            minor: 5,
+            bugfix: 0,
+        },
+    )
+    .unwrap();
+    writer.set_parent_field(Some("parent")).unwrap();
+    writer.add_indexes(&[&source]).unwrap();
+    assert!(
+        writer.register_field(FieldInfo::new("id", 99)).is_err(),
+        "the imported indexed schema remains fixed before deleteAll"
+    );
+    writer.delete_all().unwrap();
+    writer.commit().unwrap();
+    // Source-only fields lose their numbers and properties, as Java clears
+    // FieldNumbers. The facade's configured schemas and IDs remain intact.
+    assert_eq!(writer.register_field(FieldInfo::new("id", 99)).unwrap(), 0);
+    assert_eq!(
+        writer.register_field(FieldInfo::new("rank", 99)).unwrap(),
+        1
+    );
+    assert_eq!(writer.register_field(parent).unwrap(), 2);
+    assert_eq!(writer.register_field(soft).unwrap(), 5);
+    assert_eq!(writer.parent_field(), Some("parent"));
+    assert!(writer.registered_field("parent").unwrap().parent_field);
+    assert!(writer.registered_field("soft").unwrap().soft_deletes_field);
+}
