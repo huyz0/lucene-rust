@@ -282,7 +282,7 @@ impl IndexWriter<'_> {
     /// writer's and the earlier incoming segments' (`incoming_fields`, which
     /// this call extends).
     fn check_addable(
-        &self,
+        &mut self,
         src: &dyn Directory,
         sci: &SegmentCommitInfo,
         si: &segment_info::SegmentInfo,
@@ -301,25 +301,33 @@ impl IndexWriter<'_> {
             }
         }
         // Through the segment's compound file when it has one.
-        let incoming = super::segment_field_infos(src, sci)?;
-        for theirs in &incoming.fields {
+        let mut incoming = super::segment_field_infos(src, sci)?.fields;
+        // Java's FieldInfos iterator visits ascending field numbers.
+        incoming.sort_by_key(|field| field.number);
+        for theirs in &incoming {
             let ours = match self.cfg.fields.iter().find(|f| f.name == theirs.name) {
-                Some(ours) => ours.clone(),
-                None => match self.segments_schema(&theirs.name)? {
-                    Some(ours) => ours,
-                    None => match incoming_fields.get(&theirs.name) {
-                        Some(earlier) => earlier.clone(),
-                        None => {
-                            incoming_fields.insert(theirs.name.clone(), theirs.clone());
-                            continue;
-                        }
-                    },
-                },
+                Some(ours) => Some(ours.clone()),
+                None => self
+                    .cfg
+                    .explicit_field_numbers
+                    .schema(&theirs.name)
+                    .cloned()
+                    .or(self.segments_schema(&theirs.name)?)
+                    .or_else(|| incoming_fields.get(&theirs.name).cloned()),
             };
             // `FieldNumbers.verifyFieldInfo`, for every field of every
-            // incoming segment.
-            if let Some(message) = super::explicit::schema_change(&ours, theirs) {
-                return Err(Error::AddIndexes(message));
+            // incoming segment, followed by addOrGet's persistent reservation.
+            if let Some(ours) = ours {
+                if let Some(message) = super::explicit::schema_change(&ours, theirs) {
+                    return Err(Error::AddIndexes(message));
+                }
+            } else {
+                incoming_fields.insert(theirs.name.clone(), theirs.clone());
+            }
+            if self.cfg.explicit {
+                self.cfg_mut()
+                    .explicit_field_numbers
+                    .register(theirs, Some(theirs.number))?;
             }
         }
         Ok(())
