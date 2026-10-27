@@ -114,8 +114,8 @@ fn asserting_dyn_collector_preserves_all_optional_collector_hooks() {
 }
 
 /// Exercise the native text term leg through the existing scorer builder.
-/// The top-level search guard stays in place until the other query families
-/// can use native text cursors too.
+/// The other query families read the segment's binary forms
+/// (`directory_reader/simpletext_search.rs`).
 #[test]
 fn simpletext_term_legs_score_java_postings_in_scalar_and_bulk_modes() {
     use super::build::{term_leg, LeafContext, TermForm};

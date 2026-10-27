@@ -32,6 +32,8 @@ pub(crate) struct SimpleTextCore {
     doc_values: BTreeMap<String, SimpleTextDocValuesReader<'static>>,
     points: BTreeMap<String, text::bkd_reader::SimpleTextBkdReader<'static>>,
     vector_entries: std::collections::HashMap<i32, text::knn_vectors_reader::FieldEntry>,
+    /// The binary forms searches read, built on first use.
+    pub(crate) search: super::simpletext_search::SearchForms,
 }
 
 impl SimpleTextCore {
@@ -200,6 +202,7 @@ impl SimpleTextCore {
             doc_values,
             points,
             vector_entries,
+            search: Default::default(),
         })
     }
 

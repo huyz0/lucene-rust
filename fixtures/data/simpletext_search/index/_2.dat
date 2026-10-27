@@ -1,0 +1,308 @@
+field num
+  type NUMERIC
+  minalue -17
+  maxvalue 97
+  doccount 29
+  maxvaluecount 1
+  origin -17
+  pattern 000
+104
+T
+057
+T
+085
+T
+095
+T
+016
+T
+111
+T
+076
+T
+005
+T
+002
+T
+114
+T
+094
+T
+000
+T
+070
+T
+067
+T
+043
+T
+028
+T
+109
+T
+017
+F
+081
+T
+043
+T
+002
+T
+096
+T
+098
+T
+045
+T
+099
+T
+028
+T
+065
+T
+096
+T
+089
+T
+017
+T
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 7
+      minValue -12
+      maxValue 94
+      docCount 8
+    interval
+      minDocID 8
+      maxDocID 15
+      minValue -17
+      maxValue 97
+      docCount 8
+    interval
+      minDocID 16
+      maxDocID 24
+      minValue -15
+      maxValue 92
+      docCount 8
+    interval
+      minDocID 25
+      maxDocID 29
+      minValue 0
+      maxValue 79
+      docCount 5
+  skipend
+field snum
+  type SORTED_NUMERIC
+  minalue 0
+  maxvalue 97
+  doccount 30
+  maxvaluecount 1
+  maxlength 7
+  pattern 0
+length 4
+[30]   
+T
+length 4
+[36]   
+T
+length 7
+[31 30]
+T
+length 7
+[31 35]
+T
+length 7
+[31 37]
+T
+length 7
+[32 32]
+T
+length 7
+[32 34]
+T
+length 7
+[32 39]
+T
+length 7
+[32 39]
+T
+length 7
+[33 33]
+T
+length 7
+[33 33]
+T
+length 7
+[33 33]
+T
+length 7
+[33 34]
+T
+length 7
+[33 34]
+T
+length 7
+[34 32]
+T
+length 7
+[34 39]
+T
+length 7
+[35 30]
+T
+length 7
+[35 31]
+T
+length 7
+[35 39]
+T
+length 7
+[36 37]
+T
+length 7
+[39 33]
+T
+length 7
+[39 34]
+T
+length 7
+[39 35]
+T
+length 7
+[39 35]
+T
+length 7
+[39 35]
+T
+length 7
+[39 36]
+T
+length 7
+[39 37]
+T
+length 7
+[39 37]
+T
+length 7
+[39 37]
+T
+length 7
+[39 37]
+T
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 7
+      minValue 0
+      maxValue 29
+      docCount 8
+    interval
+      minDocID 8
+      maxDocID 15
+      minValue 29
+      maxValue 49
+      docCount 8
+    interval
+      minDocID 16
+      maxDocID 23
+      minValue 50
+      maxValue 95
+      docCount 8
+    interval
+      minDocID 24
+      maxDocID 29
+      minValue 95
+      maxValue 97
+      docCount 6
+  skipend
+field tag
+  type SORTED_SET
+  doccount 21
+  maxvaluecount 3
+  numvalues 15
+  maxlength 3
+  pattern 0
+  ordpattern XXXXXX
+length 3
+k00
+length 3
+k01
+length 3
+k02
+length 3
+k03
+length 3
+k04
+length 3
+k05
+length 3
+k06
+length 3
+k07
+length 3
+k09
+length 3
+k11
+length 3
+k13
+length 3
+k15
+length 3
+k16
+length 3
+k17
+length 3
+k19
+5,10  
+1,4   
+      
+7     
+11    
+13    
+11    
+6,8,12
+6,12  
+      
+3,8,10
+0     
+0,4,13
+2     
+12    
+      
+      
+0     
+6,8,10
+7,9,14
+      
+0,8   
+      
+0,4,11
+      
+      
+      
+2,11  
+6     
+7,14  
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 8
+      minValue 1
+      maxValue 13
+      docCount 8
+    interval
+      minDocID 10
+      maxDocID 19
+      minValue 0
+      maxValue 14
+      docCount 8
+    interval
+      minDocID 21
+      maxDocID 29
+      minValue 0
+      maxValue 14
+      docCount 5
+  skipend
+END
+checksum 00000000000058902659

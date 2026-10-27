@@ -49,7 +49,7 @@ pub mod merge_readers;
 pub mod multi_doc_values;
 pub mod multi_reader;
 pub mod parallel;
-mod segment;
+pub(crate) mod segment;
 mod simpletext;
 mod skipper;
 pub(crate) use segment::SparseDocs;
