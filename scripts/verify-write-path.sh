@@ -104,6 +104,14 @@ CASES=(
   # Lucene's own writer re-writes it from its reader with the same norms and
   # the two files must be equal byte for byte, skip lists and impacts too.
   "lucene-codecs|write_simpletext_fixture|simpletext|VerifyCodecsSimpleText"
+  # IndexWriter with SimpleTextCodec (M14.g): the port's writer publishing
+  # through SimpleTextDirectory -- two segments (one compound), deletions,
+  # two doc-values update rounds, then force-merged. Lucene writes the same
+  # with SimpleTextCodec: the same segments, generations and files, every
+  # file but the .si byte for byte (compound entries unpacked, each updated
+  # field's generation file against its own); CheckIndex passes and Lucene
+  # reads every component of the port's index as of its own.
+  "lucene-search|write_simpletext_index_fixture|simpletext-index|VerifySimpleTextWritePath"
   # lucene-codecs' FSTPostingsFormat and DirectPostingsFormat (M14.g): an
   # FST50 group (.tfp over Lucene104 postings) and a Direct group (Lucene104's
   # files) opened by real Lucene's own formats; every term walked with its

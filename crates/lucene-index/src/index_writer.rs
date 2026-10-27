@@ -1465,7 +1465,8 @@ impl IndexingConfig {
             /// `per_field_postings::dictionary_extensions` order for the
             /// suffix's format (`.tim`/`.tip`/`.tmd` for a block tree).
             dictionary: Vec<Vec<u8>>,
-            doc: Vec<u8>,
+            /// `None` for a format keeping its own postings (`RAMOnly`).
+            doc: Option<Vec<u8>>,
             pos: Option<Vec<u8>>,
             pay: Option<Vec<u8>>,
             /// The codec suffix the files were written under -- the
@@ -1644,6 +1645,9 @@ impl IndexingConfig {
                         })
                     };
                     let format = per_field_postings::format_of_suffix(&suffix);
+                    let checksummed = !per_field_postings::is_unchecksummed_dictionary_file(
+                        &format!("{seg}.{}", per_field_postings::marker_extension(format)),
+                    );
                     let dictionary = per_field_postings::dictionary_extensions(format)
                         .iter()
                         .map(|ext| {
@@ -1658,7 +1662,7 @@ impl IndexingConfig {
                         .collect::<Result<Vec<_>>>()?;
                     let raw = RawPostings {
                         dictionary,
-                        doc: seg_dir.open(&format!("{seg}.doc"))?.to_vec(),
+                        doc: read_optional("doc")?,
                         pos: read_optional("pos")?,
                         pay: read_optional("pay")?,
                         suffix,
@@ -1671,10 +1675,14 @@ impl IndexingConfig {
                     let metadata = read_optional("psm")?;
                     // An empty dictionary entry is a file the format left
                     // unwritten (`dictionary_file_required`).
-                    let written = raw.dictionary.iter().filter(|d| !d.is_empty());
+                    // A footerless dictionary (`RAMOnly`'s token) is not.
+                    let written = raw
+                        .dictionary
+                        .iter()
+                        .filter(|d| !d.is_empty() && checksummed);
                     for bytes in written.map(Vec::as_slice).chain(
                         [
-                            Some(raw.doc.as_slice()),
+                            raw.doc.as_deref(),
                             raw.pos.as_deref(),
                             raw.pay.as_deref(),
                             metadata.as_deref(),
@@ -2112,7 +2120,7 @@ impl IndexingConfig {
                         .map(|g| per_field_postings::GroupFiles {
                             suffix: &g.suffix,
                             dictionary: g.dictionary.iter().map(Vec::as_slice).collect(),
-                            doc: Some(&g.doc),
+                            doc: g.doc.as_deref(),
                             pos: g.pos.as_deref(),
                             pay: g.pay.as_deref(),
                         })
@@ -2153,7 +2161,12 @@ impl IndexingConfig {
                             reader.max_doc(),
                         )?;
                         let doc_in = lucene_codecs::postings::DocInput::open(
-                            &raw.doc,
+                            raw.doc.as_deref().ok_or_else(|| {
+                                lucene_store::Error::Corrupted(format!(
+                                    "postings group {} has no .doc",
+                                    raw.suffix
+                                ))
+                            })?,
                             &o.sci.segment_id,
                             &raw.suffix,
                         )?;
@@ -11815,14 +11828,19 @@ impl IndexingConfig {
                         open(ext)
                     })
                     .collect::<lucene_store::Result<Vec<_>>>()?;
-                opened.push((suffix, dictionary, open("doc")?));
+                let doc = if seg_files.contains(&format!("{seg}.doc")) {
+                    Some(open("doc")?)
+                } else {
+                    None
+                };
+                opened.push((suffix, dictionary, doc));
             }
             let groups: Vec<per_field_postings::GroupFiles<'_>> = opened
                 .iter()
                 .map(|(suffix, dictionary, doc)| per_field_postings::GroupFiles {
                     suffix,
                     dictionary: dictionary.iter().map(|d| &**d).collect(),
-                    doc: Some(doc),
+                    doc: doc.as_deref(),
                     pos: None,
                     pay: None,
                 })
