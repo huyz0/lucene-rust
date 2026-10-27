@@ -13,7 +13,7 @@
 
 use super::prelude::*;
 use super::serializable::{read_bit_set, write_bit_set};
-use super::shape::GeoPolygon;
+use super::shape::{shapes_equal, shapes_hash, shapes_string, GeoPolygon};
 use super::standard_objects::{
     read_point_array, read_polygon_array, write_point_array, write_polygon_array,
 };
@@ -46,6 +46,23 @@ impl std::fmt::Debug for dyn GeoPolygon {
     }
 }
 
+/// `BitSet.equals`: the same set bits (trailing clear flags do not count).
+fn bit_set_equals(a: &[bool], b: &[bool]) -> bool {
+    let (long, short) = if a.len() >= b.len() { (a, b) } else { (b, a) };
+    long[..short.len()] == *short && !long[short.len()..].contains(&true)
+}
+
+/// `BitSet.toString`: the set indices, `{0, 3}`.
+fn bit_set_string(bits: &[bool]) -> String {
+    let set: Vec<String> = bits
+        .iter()
+        .enumerate()
+        .filter(|(_, &b)| b)
+        .map(|(i, _)| i.to_string())
+        .collect();
+    format!("{{{}}}", set.join(", "))
+}
+
 /// Java's `List.toString()` of points.
 pub(crate) fn points_string(points: &[GeoPoint]) -> String {
     let parts: Vec<String> = points.iter().map(|p| p.to_string()).collect();
@@ -70,6 +87,54 @@ fn sided_equals(a: &SidedPlane, b: &SidedPlane) -> bool {
 }
 
 impl EdgePolygon {
+    /// `equals` past `BasePlanetObject`'s: the internal-edge `BitSet`, the
+    /// holes and the points. Java's absent holes (`null`) never meet an
+    /// empty list: every constructor turns an empty list into `null`, as
+    /// [`EdgePolygon::new`] turns one into `None`, so comparing the lists
+    /// is Java's `null` handling.
+    fn java_equals(&self, other: &EdgePolygon) -> bool {
+        fn holes(p: &EdgePolygon) -> Vec<&dyn GeoShape> {
+            p.holes
+                .iter()
+                .flatten()
+                .map(|h| &**h as &dyn GeoShape)
+                .collect()
+        }
+        bit_set_equals(&other.is_internal_edges, &self.is_internal_edges)
+            && shapes_equal(holes(other).into_iter(), holes(self).into_iter())
+            && other.points == self.points
+    }
+
+    /// `hashCode`: the planet's, the points', then the holes' when present.
+    fn java_hash_code(&self) -> i32 {
+        let mut result = self.planet_model.java_hash_code();
+        result = hash_step(result, points_hash(&self.points));
+        if let Some(holes) = &self.holes {
+            result = hash_step(
+                result,
+                shapes_hash(holes.iter().map(|h| &**h as &dyn GeoShape)),
+            );
+        }
+        result
+    }
+
+    /// `toString`, under the class's simple name.
+    fn java_to_string(&self, class: &str) -> String {
+        let holes = match &self.holes {
+            None => String::new(),
+            Some(holes) => format!(
+                ", holes={}",
+                shapes_string(holes.iter().map(|h| &**h as &dyn GeoShape))
+            ),
+        };
+        format!(
+            "{class}: {{planetmodel={}, points={}, internalEdges={}{holes}}}",
+            self.planet_model.java_to_string(),
+            points_string(&self.points),
+            bit_set_string(&self.is_internal_edges)
+        )
+    }
+
     /// The constructors' shared body: `done(isInternalReturnEdge)`.
     pub(crate) fn new(
         planet_model: &Arc<PlanetModel>,
@@ -537,6 +602,19 @@ macro_rules! edge_polygon_type {
         }
 
         impl GeoShape for $t {
+            fn java_equals(&self, other: &dyn GeoShape) -> bool {
+                same_planet_as::<$t>(&self.planet_model, other)
+                    .is_some_and(|o| self.inner.java_equals(&o.inner))
+            }
+
+            fn java_hash_code(&self) -> i32 {
+                self.inner.java_hash_code()
+            }
+
+            fn java_to_string(&self) -> String {
+                self.inner.java_to_string($java)
+            }
+
             fn edge_points(&self) -> Cow<'_, [GeoPoint]> {
                 Cow::Borrowed(&self.inner.edge_points)
             }

@@ -198,6 +198,27 @@ impl Bounded for GeoStandardCircle {
 }
 
 impl GeoShape for GeoStandardCircle {
+    fn java_equals(&self, other: &dyn GeoShape) -> bool {
+        same_planet_as::<GeoStandardCircle>(&self.planet_model, other)
+            .is_some_and(|o| o.center == self.center && o.cutoff_angle == self.cutoff_angle)
+    }
+
+    fn java_hash_code(&self) -> i32 {
+        let mut result = self.planet_model.java_hash_code();
+        result = hash_step(result, self.center.java_hash_code());
+        result = hash_step(result, super::jmath::double_hash(self.cutoff_angle));
+        result
+    }
+
+    fn java_to_string(&self) -> String {
+        format!(
+            "GeoStandardCircle: {{planetmodel={}, center={}, radius={}}}",
+            self.planet_model.java_to_string(),
+            self.center,
+            radians_string(self.cutoff_angle)
+        )
+    }
+
     fn edge_points(&self) -> Cow<'_, [GeoPoint]> {
         Cow::Borrowed(&self.edge_points)
     }
