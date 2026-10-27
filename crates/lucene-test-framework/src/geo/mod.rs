@@ -5,4 +5,5 @@
 pub mod base_geo_point;
 pub mod base_xy_point;
 pub mod geo_test_util;
+mod point_index;
 pub mod shape_test_util;

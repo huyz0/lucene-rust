@@ -59,6 +59,75 @@ pub trait GeoShape: GeoBounds {
         notable_points: &[GeoPoint],
         bounds: &[&dyn Membership],
     ) -> bool;
+
+    /// `equals(Object)`: Java's `instanceof` is a downcast to the same
+    /// concrete type (no geo3d shape subclasses another), then the class's
+    /// own field comparisons, doubles by `==`.
+    fn java_equals(&self, other: &dyn GeoShape) -> bool;
+
+    /// `hashCode()`.
+    fn java_hash_code(&self) -> i32;
+
+    /// `toString()`.
+    fn java_to_string(&self) -> String;
+}
+
+impl std::fmt::Display for dyn GeoShape {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.java_to_string())
+    }
+}
+
+/// `other` as `T` when it is one (Java's `instanceof T`) on `planet_model`
+/// (`BasePlanetObject.equals`).
+pub(crate) fn same_planet_as<'a, T: 'static>(
+    planet_model: &PlanetModel,
+    other: &'a dyn GeoShape,
+) -> Option<&'a T> {
+    other
+        .as_any()
+        .downcast_ref::<T>()
+        .filter(|_| **other.planet_model() == *planet_model)
+}
+
+/// `31 * result + h`, Java's `int` arithmetic.
+#[inline]
+pub(crate) fn hash_step(result: i32, h: i32) -> i32 {
+    result.wrapping_mul(31).wrapping_add(h)
+}
+
+/// `List<GeoPoint>.hashCode()`.
+pub(crate) fn points_hash(points: &[GeoPoint]) -> i32 {
+    points
+        .iter()
+        .fold(1, |h, p| hash_step(h, p.java_hash_code()))
+}
+
+/// `List<? extends GeoShape>.equals(other)`, over the members upcast
+/// to `GeoShape`.
+pub(crate) fn shapes_equal<'a, 'b>(
+    a: impl ExactSizeIterator<Item = &'a dyn GeoShape>,
+    b: impl ExactSizeIterator<Item = &'b dyn GeoShape>,
+) -> bool {
+    a.len() == b.len() && a.zip(b).all(|(x, y)| x.java_equals(y))
+}
+
+/// `List<? extends GeoShape>.hashCode()`.
+pub(crate) fn shapes_hash<'a>(shapes: impl Iterator<Item = &'a dyn GeoShape>) -> i32 {
+    shapes.fold(1, |h, s| hash_step(h, s.java_hash_code()))
+}
+
+/// `List<? extends GeoShape>.toString()`.
+pub(crate) fn shapes_string<'a>(shapes: impl Iterator<Item = &'a dyn GeoShape>) -> String {
+    let parts: Vec<String> = shapes.map(|s| s.java_to_string()).collect();
+    format!("[{}]", parts.join(", "))
+}
+
+/// `v + "(" + v * 180.0 / Math.PI + ")"`, the radians-and-degrees pair
+/// every shape's `toString` prints.
+pub(crate) fn radians_string(v: f64) -> String {
+    use crate::geo::java_double_string as d;
+    format!("{}({})", d(v), d(v * 180.0 / std::f64::consts::PI))
 }
 
 /// `GeoOutsideDistance`: distances to points outside the shape.

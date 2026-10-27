@@ -198,6 +198,11 @@ impl<'a, C: RangeFieldCase> BaseRangeField<'a, C> {
         self.do_test_random(1000, false);
     }
 
+    /// `testRandomBig` (nightly).
+    pub fn random_big(&mut self) {
+        self.do_test_random(200_000, false);
+    }
+
     /// `testMultiValued`.
     pub fn multi_valued(&mut self) {
         self.do_test_random(1000, true);

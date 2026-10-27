@@ -1439,6 +1439,26 @@ impl Bounded for GeoStandardPath {
 }
 
 impl GeoShape for GeoStandardPath {
+    fn java_equals(&self, other: &dyn GeoShape) -> bool {
+        same_planet_as::<GeoStandardPath>(&self.planet_model, other)
+            .is_some_and(|p| self.cutoff_angle == p.cutoff_angle && self.points == p.points)
+    }
+
+    fn java_hash_code(&self) -> i32 {
+        let mut result = self.planet_model.java_hash_code();
+        result = hash_step(result, super::jmath::double_hash(self.cutoff_angle));
+        hash_step(result, points_hash(&self.points))
+    }
+
+    fn java_to_string(&self) -> String {
+        format!(
+            "GeoStandardPath: {{planetmodel={}, width={}, points={{{}}}}}",
+            self.planet_model.java_to_string(),
+            radians_string(self.cutoff_angle),
+            points_string(&self.points)
+        )
+    }
+
     fn edge_points(&self) -> Cow<'_, [GeoPoint]> {
         Cow::Borrowed(&self.edge_points)
     }

@@ -166,6 +166,35 @@ impl Bounded for GeoS2Shape {
 }
 
 impl GeoShape for GeoS2Shape {
+    fn java_equals(&self, other: &dyn GeoShape) -> bool {
+        same_planet_as::<GeoS2Shape>(&self.planet_model, other).is_some_and(|o| {
+            o.point1 == self.point1
+                && o.point2 == self.point2
+                && o.point3 == self.point3
+                && o.point4 == self.point4
+        })
+    }
+
+    fn java_hash_code(&self) -> i32 {
+        let mut result = self.planet_model.java_hash_code();
+        result = hash_step(result, self.point1.java_hash_code());
+        result = hash_step(result, self.point2.java_hash_code());
+        result = hash_step(result, self.point3.java_hash_code());
+        result = hash_step(result, self.point4.java_hash_code());
+        result
+    }
+
+    fn java_to_string(&self) -> String {
+        format!(
+            "GeoS2Shape: {{planetmodel={}, point1={}, point2={}, point3={}, point4={}}}",
+            self.planet_model.java_to_string(),
+            self.point1,
+            self.point2,
+            self.point3,
+            self.point4
+        )
+    }
+
     fn edge_points(&self) -> Cow<'_, [GeoPoint]> {
         Cow::Borrowed(&self.edge_points)
     }

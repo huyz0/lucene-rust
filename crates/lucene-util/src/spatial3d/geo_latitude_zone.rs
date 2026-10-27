@@ -111,6 +111,28 @@ impl Bounded for GeoLatitudeZone {
 }
 
 impl GeoShape for GeoLatitudeZone {
+    fn java_equals(&self, other: &dyn GeoShape) -> bool {
+        same_planet_as::<GeoLatitudeZone>(&self.planet_model, other).is_some_and(|o| {
+            o.edge_points[0] == self.edge_points[0] && o.edge_points[1] == self.edge_points[1]
+        })
+    }
+
+    fn java_hash_code(&self) -> i32 {
+        let mut result = self.planet_model.java_hash_code();
+        result = hash_step(result, self.edge_points[0].java_hash_code());
+        result = hash_step(result, self.edge_points[1].java_hash_code());
+        result
+    }
+
+    fn java_to_string(&self) -> String {
+        format!(
+            "GeoLatitudeZone: {{planetmodel={}, toplat={}, bottomlat={}}}",
+            self.planet_model.java_to_string(),
+            radians_string(self.top_lat),
+            radians_string(self.bottom_lat)
+        )
+    }
+
     fn edge_points(&self) -> Cow<'_, [GeoPoint]> {
         Cow::Borrowed(&self.edge_points)
     }
@@ -261,6 +283,25 @@ impl Bounded for GeoNorthLatitudeZone {
 }
 
 impl GeoShape for GeoNorthLatitudeZone {
+    fn java_equals(&self, other: &dyn GeoShape) -> bool {
+        same_planet_as::<GeoNorthLatitudeZone>(&self.planet_model, other)
+            .is_some_and(|o| o.edge_points[0] == self.edge_points[0])
+    }
+
+    fn java_hash_code(&self) -> i32 {
+        let mut result = self.planet_model.java_hash_code();
+        result = hash_step(result, self.edge_points[0].java_hash_code());
+        result
+    }
+
+    fn java_to_string(&self) -> String {
+        format!(
+            "GeoNorthLatitudeZone: {{planetmodel={}, bottomlat={}}}",
+            self.planet_model.java_to_string(),
+            radians_string(self.bottom_lat)
+        )
+    }
+
     fn edge_points(&self) -> Cow<'_, [GeoPoint]> {
         Cow::Borrowed(&self.edge_points)
     }
@@ -396,6 +437,25 @@ impl Bounded for GeoSouthLatitudeZone {
 }
 
 impl GeoShape for GeoSouthLatitudeZone {
+    fn java_equals(&self, other: &dyn GeoShape) -> bool {
+        same_planet_as::<GeoSouthLatitudeZone>(&self.planet_model, other)
+            .is_some_and(|o| o.edge_points[0] == self.edge_points[0])
+    }
+
+    fn java_hash_code(&self) -> i32 {
+        let mut result = self.planet_model.java_hash_code();
+        result = hash_step(result, self.edge_points[0].java_hash_code());
+        result
+    }
+
+    fn java_to_string(&self) -> String {
+        format!(
+            "GeoSouthLatitudeZone: {{planetmodel={}, toplat={}}}",
+            self.planet_model.java_to_string(),
+            radians_string(self.top_lat)
+        )
+    }
+
     fn edge_points(&self) -> Cow<'_, [GeoPoint]> {
         Cow::Borrowed(&self.edge_points)
     }
