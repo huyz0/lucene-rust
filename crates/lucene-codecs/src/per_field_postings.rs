@@ -28,9 +28,10 @@
 //! the `.lkp`/`.cmp` that `CompletionFieldsConsumer` builds from the same
 //! terms and payloads ([`CompletionOutput`]).
 //!
-//! What this does not model: Java groups by format *instance* identity, so
-//! two distinct but equal instances get two suffixes; here a format is its
-//! block sizes and kind, and equal ones share a group.
+//! Java groups by format *instance* identity, so two distinct but equal
+//! instances get two suffixes; here a format is its block sizes and kind,
+//! and equal ones share a group unless [`Lucene104PostingsFormat::as_instance`]
+//! numbers them apart (Differs: identity is an explicit number).
 
 use lucene_store::codec_util::ID_LENGTH;
 
@@ -185,6 +186,9 @@ pub struct Lucene104PostingsFormat {
     /// (`AssertingPostingsFormat`'s `Asserting`), recorded in place of
     /// [`FORMAT_NAME`]. See [`Lucene104PostingsFormat::named`].
     pub wrapper_name: Option<&'static str>,
+    /// Distinguishes equal formats Java holds as separate instances; see
+    /// [`Lucene104PostingsFormat::as_instance`].
+    pub instance: u32,
 }
 
 impl Default for Lucene104PostingsFormat {
@@ -196,6 +200,7 @@ impl Default for Lucene104PostingsFormat {
             kind: PostingsFormatKind::Lucene104,
             direct: false,
             wrapper_name: None,
+            instance: 0,
         }
     }
 }
@@ -213,6 +218,7 @@ impl Lucene104PostingsFormat {
             kind: PostingsFormatKind::Lucene104,
             direct: false,
             wrapper_name: None,
+            instance: 0,
         };
         format.write_options().validate()?;
         Ok(format)
@@ -285,6 +291,14 @@ impl Lucene104PostingsFormat {
             wrapper_name: Some(name),
             ..self
         }
+    }
+
+    /// This format as Java's `instance`th separate object with equal
+    /// settings (`RandomCodec`'s two `Lucene104` candidates):
+    /// `PerFieldPostingsFormat` groups by identity, so its fields get their
+    /// own group under the next suffix of its name.
+    pub fn as_instance(self, instance: u32) -> Self {
+        Lucene104PostingsFormat { instance, ..self }
     }
 
     /// `getName()`: the name recorded in a field's

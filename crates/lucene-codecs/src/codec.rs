@@ -4,10 +4,13 @@
 //! An optional stored-fields factory wraps the real document writer lifecycle
 //! while retaining the native reader graph and `Lucene104` on-disk formats.
 //! Optional live-docs, norms, points, postings and term-vector writers add checks
-//! to their native output. Other segment-level formats remain fixed to the codec.
+//! to their native output. Stored fields and term vectors may instead be a
+//! `CompressingCodec`'s compressing formats. Other segment-level formats
+//! remain fixed to the codec.
 
 use std::fmt;
 
+use crate::compression::CompressingFormat;
 use crate::live_docs_writer::LiveDocsWriter;
 use crate::norms_writer::NormsWriterFactory;
 use crate::per_field_doc_values::Lucene90DocValuesFormat;
@@ -66,6 +69,24 @@ pub trait Lucene104Codec: Send + Sync + fmt::Debug {
         None
     }
 
+    /// `storedFieldsFormat()` and `termVectorsFormat()` when both are a
+    /// `Lucene90Compressing*Format` built from these settings
+    /// (`CompressingCodec`). Their files then carry the format's data codec
+    /// name and segment suffix, and the segment records no
+    /// `Lucene90StoredFieldsFormat.mode`. `None` keeps
+    /// `Lucene90StoredFieldsFormat(BEST_SPEED)` and `Lucene90TermVectorsFormat`.
+    fn compressing_format(&self) -> Option<&'static CompressingFormat> {
+        None
+    }
+
+    /// The stored-fields format [`Self::compressing_format`] implies.
+    fn stored_fields_mode(&self) -> crate::stored_fields::Mode {
+        self.compressing_format().map_or(
+            crate::stored_fields::Mode::BestSpeed,
+            crate::stored_fields::Mode::Compressing,
+        )
+    }
+
     /// `getPostingsFormatForField(field)`: `Lucene104PostingsFormat()`.
     fn postings_format_for_field(&self, _field: &str) -> Lucene104PostingsFormat {
         Lucene104PostingsFormat::default()
@@ -90,6 +111,66 @@ pub trait Lucene104Codec: Send + Sync + fmt::Debug {
     fn knn_vectors_format_is_direct(&self) -> bool {
         false
     }
+
+    /// Called just before the writer does `point` with a format this trait
+    /// has no writer factory for (doc values, field infos, segment info,
+    /// compound files); an error fails that write as the format's own
+    /// `IOException` would (`CrankyCodec`'s fake ones). The files themselves
+    /// are always the native ones. The default never fails.
+    ///
+    /// # Errors
+    /// The failure to inject.
+    fn before_write(&self, _point: WritePoint) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    /// Shown each doc-values instance's encoded files before the writer
+    /// writes them -- at flush, merge and doc-values update alike -- as a
+    /// wrapping `DocValuesConsumer` sees each field's values go by
+    /// (`AssertingDocValuesConsumer`'s checks). The default looks at nothing.
+    ///
+    /// # Errors
+    /// The files cannot be read back.
+    fn check_doc_values(&self, _write: &DocValuesWrite<'_>) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// One doc-values instance's files, as [`Lucene104Codec::check_doc_values`]
+/// is shown them.
+#[derive(Debug, Clone, Copy)]
+pub struct DocValuesWrite<'a> {
+    /// The segment's document count.
+    pub max_doc: i32,
+    /// The segment's id.
+    pub segment_id: &'a [u8; lucene_store::codec_util::ID_LENGTH],
+    /// The files' segment suffix (`Asserting_0`, or a generation's).
+    pub segment_suffix: &'a str,
+    /// The per-field format the instance is (`Asserting`, `Lucene90`).
+    pub format_name: &'a str,
+    /// The instance's fields.
+    pub field_infos: &'a crate::field_infos::FieldInfos,
+    /// `.dvm`, `.dvd` and `.dvs`.
+    pub dvm: &'a [u8],
+    pub dvd: &'a [u8],
+    pub dvs: &'a [u8],
+}
+
+/// A write [`Lucene104Codec::before_write`] can fail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WritePoint {
+    /// `DocValuesFormat.fieldsConsumer(state)`: one per format instance.
+    DocValuesConsumer,
+    /// `DocValuesConsumer.add*Field`: one per field of the instance.
+    DocValuesField,
+    /// `DocValuesConsumer.close()`, after the instance's files are written.
+    DocValuesClose,
+    /// `FieldInfosFormat.write`: a segment's `.fnm`.
+    FieldInfos,
+    /// `SegmentInfoFormat.write`: a segment's `.si`.
+    SegmentInfo,
+    /// `CompoundFormat.write`: a segment's `.cfs`/`.cfe`.
+    Compound,
 }
 
 /// `new Lucene104Codec()`: every field on the default formats.
@@ -126,6 +207,7 @@ mod tests {
         assert!(c.postings_writer_factory().is_none());
         assert!(c.term_vectors_writer_factory().is_none());
         assert!(!c.knn_vectors_format_is_direct());
+        assert!(c.before_write(WritePoint::SegmentInfo).is_ok());
         assert_eq!(
             c.postings_format_for_field("f"),
             Lucene104PostingsFormat::default()

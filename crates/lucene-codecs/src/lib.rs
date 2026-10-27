@@ -30,6 +30,7 @@ pub mod codec;
 pub mod codecs;
 pub mod completion;
 pub mod compound_format;
+pub mod compression;
 mod deflate;
 pub(crate) mod deflater;
 pub mod direct_monotonic;

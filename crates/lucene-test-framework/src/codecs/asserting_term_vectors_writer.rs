@@ -415,6 +415,7 @@ mod tests {
                 id: &id,
                 suffix: "",
                 max_doc: 0,
+                format: None,
             })
             .unwrap();
         writer.finish(0).unwrap();
@@ -481,6 +482,7 @@ mod tests {
                     id: &id,
                     suffix: "",
                     max_doc: count,
+                    format: None,
                 },
                 |writer| -> term_vectors::Result<()> {
                     if populated {

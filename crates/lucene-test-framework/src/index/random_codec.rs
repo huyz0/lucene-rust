@@ -14,11 +14,10 @@
 //! Native caches own boxed UTF-16 slices, rather than retaining Java String
 //! objects; standard map hashing and full slice equality preserve borrowed lookup.
 //! Java assertion/exception paths become [`Error`] with assertions enabled.
-//! Point configuration records the seed, leaf size and heap limit without
-//! creating a BKD writer. Gap: heterogeneous postings/doc-values dispatch,
-//! identity-based per-field suffix groups, randomized BKD splitting,
-//! Codec/SPI/IndexWriter installation, inherited AssertingCodec composition and
-//! Java's display (including HashMap iteration order).
+//! Point configuration records the seed, leaf size and heap limit;
+//! [`RandomCodec::installed`] (`codecs::random_installed`) turns these
+//! descriptors into the native formats, randomly splitting BKD writer and
+//! `toString()` that IndexWriter uses.
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};

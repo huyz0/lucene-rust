@@ -286,8 +286,22 @@ pub(crate) fn write_stored_only_segment_files_with_codec(
         docs,
         false,
         has_blocks,
-        codec.and_then(|codec| codec.stored_fields_writer_factory()),
+        codec,
     )
+}
+
+/// `Lucene90StoredFieldsFormat.fieldsWriter`'s `.si` attribute naming its
+/// mode; a `CompressingCodec` format records none.
+pub(crate) fn stored_fields_mode_attribute(mode: stored_fields::Mode) -> Vec<(String, String)> {
+    let value = match mode {
+        stored_fields::Mode::BestSpeed => "BEST_SPEED",
+        stored_fields::Mode::BestCompression => "BEST_COMPRESSION",
+        stored_fields::Mode::Compressing(_) => return Vec::new(),
+    };
+    vec![(
+        "Lucene90StoredFieldsFormat.mode".to_string(),
+        value.to_string(),
+    )]
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -301,9 +315,14 @@ fn write_stored_only_segment_files_inner(
     docs: &[Document],
     use_compound_file: bool,
     has_blocks: bool,
-    factory: Option<&dyn lucene_codecs::stored_fields_writer::StoredFieldsWriterFactory>,
+    codec: Option<&dyn lucene_codecs::codec::Lucene104Codec>,
 ) -> Result<FlushedSegment> {
     let doc_count = docs.len() as i32;
+    let factory = codec.and_then(|codec| codec.stored_fields_writer_factory());
+    let mode = codec.map_or(stored_fields::Mode::BestSpeed, |codec| {
+        codec.stored_fields_mode()
+    });
+    let suffix = mode.segment_suffix();
 
     let native = if let Some(factory) = factory {
         use lucene_codecs::stored_fields_writer::{with_writer, StoredFieldsWriteState};
@@ -315,8 +334,8 @@ fn write_stored_only_segment_files_inner(
                 directory: dir,
                 segment: segment_name,
                 id: &segment_id,
-                suffix: "",
-                mode: stored_fields::Mode::BestSpeed,
+                suffix,
+                mode,
             },
             |writer| -> stored_fields::Result<()> {
                 for doc in docs {
@@ -331,21 +350,27 @@ fn write_stored_only_segment_files_inner(
         )?;
         None
     } else {
-        Some(stored_fields::write_best_speed(docs, &segment_id, ""))
+        let mut writer = stored_fields::StoredFieldsWriter::new(mode, &segment_id, suffix);
+        for doc in docs {
+            writer.add_document(doc);
+        }
+        Some(writer.finish())
     };
     let fnm = field_infos::write(fields, &segment_id, "");
 
-    let fdt_name = format!("{segment_name}.fdt");
-    let fdx_name = format!("{segment_name}.fdx");
-    let fdm_name = format!("{segment_name}.fdm");
+    let stored_name = |ext| crate::index_writer::segment_file_name(segment_name, suffix, ext);
+    let (fdt_name, fdx_name, fdm_name) =
+        (stored_name("fdt"), stored_name("fdx"), stored_name("fdm"));
     let fnm_name = format!("{segment_name}.fnm");
 
     let (files, written_names) = if let Some((fdt, fdx, fdm)) = native {
         if use_compound_file {
+            // Compound entries are file names without the segment name.
+            let member = |ext| crate::index_writer::segment_file_name("", suffix, ext);
             let sub_files = vec![
-                (".fdt".to_string(), fdt),
-                (".fdx".to_string(), fdx),
-                (".fdm".to_string(), fdm),
+                (member("fdt"), fdt),
+                (member("fdx"), fdx),
+                (member("fdm"), fdm),
                 (".fnm".to_string(), fnm),
             ];
             let (cfs, cfe) = compound_format::write(&segment_id, &sub_files)?;
@@ -401,10 +426,7 @@ fn write_stored_only_segment_files_inner(
             &[],
         ),
         files,
-        attributes: vec![(
-            "Lucene90StoredFieldsFormat.mode".to_string(),
-            "BEST_SPEED".to_string(),
-        )],
+        attributes: stored_fields_mode_attribute(mode),
         index_sort: None,
     };
     Ok(FlushedSegment {

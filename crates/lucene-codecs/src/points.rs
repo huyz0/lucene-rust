@@ -3143,6 +3143,9 @@ pub struct PointsMergeSource {
 #[derive(Debug, Clone, Default)]
 pub struct MergePointsField {
     pub field_number: i32,
+    /// The merged field's name, which a `writeField` override may key on
+    /// (`RandomCodec` seeds its split choices from its hash).
+    pub field_name: String,
     pub num_dims: i32,
     pub num_index_dims: i32,
     pub bytes_per_dim: i32,
@@ -3202,6 +3205,32 @@ pub fn write_merged_with_mode(
     segment_suffix: &str,
     native_merge: bool,
 ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    write_fields(
+        fields,
+        max_points_in_leaf_node,
+        DEFAULT_MAX_MB_SORT_IN_HEAP,
+        None,
+        max_doc,
+        temp_dir,
+        (temp_prefix, segment_id, segment_suffix),
+        native_merge,
+    )
+}
+
+/// The `.kdm`/`.kdi`/`.kdd` of [`write_merged_with_mode`] and [`write_added`]:
+/// `Lucene90PointsWriter` with its leaf size and heap budget, and a
+/// subclass's `split` override when `split` is given.
+#[allow(clippy::too_many_arguments)]
+fn write_fields(
+    fields: Vec<MergePointsField>,
+    max_points_in_leaf_node: i32,
+    max_mb_sort_in_heap: f64,
+    split: Option<SplitFor<'_>>,
+    max_doc: i32,
+    temp_dir: &dyn lucene_store::directory::Directory,
+    (temp_prefix, segment_id, segment_suffix): (&str, &[u8; codec_util::ID_LENGTH], &str),
+    native_merge: bool,
+) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
     let mut out = PointsOutputs::new(segment_id, segment_suffix);
     for field in fields {
         let count: usize = field.sources.iter().map(|s| s.docs.len()).sum();
@@ -3235,10 +3264,13 @@ pub fn write_merged_with_mode(
             Some(temp_dir),
             temp_prefix,
             config,
-            DEFAULT_MAX_MB_SORT_IN_HEAP,
+            max_mb_sort_in_heap,
             field.max_point_count,
             bkd_writer::VERSION_CURRENT,
         )?;
+        if let Some(split) = split.and_then(|split| split(&field.field_name)) {
+            writer = writer.with_split(split);
+        }
         let plan = if native_merge && field.num_dims == 1 {
             let sources: Vec<Box<dyn Iterator<Item = (Vec<u8>, i32)> + '_>> = field
                 .sources
@@ -3264,6 +3296,47 @@ pub fn write_merged_with_mode(
         out.finish_field(field.field_number, &writer, plan);
     }
     Ok(out.finish())
+}
+
+/// A field's `BKDWriter.split` override, by field name, if any.
+pub type SplitFor<'s> = &'s dyn Fn(&str) -> Option<bkd_writer::SplitOverride<'static>>;
+
+/// A `Lucene90PointsWriter` subclass whose `writeField` adds every point
+/// of a field to a fresh `BKDWriter` and finishes it, as `RandomCodec`'s
+/// points format does at flush and, through `PointsWriter.merge`'s
+/// `mergeOneField`, at merge.
+pub struct AddFinishPoints<'s> {
+    pub max_points_in_leaf_node: i32,
+    pub max_mb_sort_in_heap: f64,
+    /// The field's `BKDWriter.split` override.
+    pub split: SplitFor<'s>,
+}
+
+/// The `.kdm`, `.kdi` and `.kdd` of an [`AddFinishPoints`] writer: each
+/// field's points added in source order (a flush passes one source, its
+/// insertion order), `totalPointCount` its `max_point_count`, spilling to
+/// `temp_dir` past the heap budget. A field whose every point was deleted
+/// writes nothing.
+#[allow(clippy::too_many_arguments)]
+pub fn write_added(
+    fields: Vec<MergePointsField>,
+    options: &AddFinishPoints<'_>,
+    max_doc: i32,
+    temp_dir: &dyn lucene_store::directory::Directory,
+    temp_prefix: &str,
+    segment_id: &[u8; codec_util::ID_LENGTH],
+    segment_suffix: &str,
+) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    write_fields(
+        fields,
+        options.max_points_in_leaf_node,
+        options.max_mb_sort_in_heap,
+        Some(options.split),
+        max_doc,
+        temp_dir,
+        (temp_prefix, segment_id, segment_suffix),
+        false,
+    )
 }
 
 /// [`check_write_config`] plus the flat buffers' own consistency.
@@ -3957,6 +4030,7 @@ mod tests {
                 Vec::new(),
                 vec![MergePointsField {
                     field_number: 3,
+                    field_name: String::new(),
                     num_dims: 1,
                     num_index_dims: 1,
                     bytes_per_dim: 4,
@@ -3981,6 +4055,7 @@ mod tests {
         let dir = lucene_store::ByteBuffersDirectory::new();
         let field = MergePointsField {
             field_number: 3,
+            field_name: String::new(),
             num_dims: 1,
             num_index_dims: 1,
             bytes_per_dim: 4,

@@ -422,11 +422,13 @@ impl StoredFieldsFormat for Lucene90StoredFieldsFormat {
             fdt_prefix: 0,
         };
         prefix.clear();
-        let codec = match state.mode {
-            Mode::BestSpeed => "Lucene90StoredFieldsFastData",
-            Mode::BestCompression => "Lucene90StoredFieldsHighData",
-        };
-        codec_util::write_index_header(&mut prefix, codec, 1, state.id, state.suffix);
+        codec_util::write_index_header(
+            &mut prefix,
+            state.mode.data_codec(),
+            1,
+            state.id,
+            state.suffix,
+        );
         result.outputs.as_mut().unwrap().1.write_bytes(&prefix);
         result.fdt_prefix = prefix.len();
         result
@@ -434,10 +436,7 @@ impl StoredFieldsFormat for Lucene90StoredFieldsFormat {
             .as_mut()
             .unwrap()
             .0
-            .write_vint(match state.mode {
-                Mode::BestSpeed => 80 * 1024,
-                Mode::BestCompression => 480 * 1024,
-            });
+            .write_vint(state.mode.chunk_size());
         // Chunk size follows the metadata header in both production encoders.
         result.fdm_prefix = result.outputs.as_ref().unwrap().0.file_pointer() as usize;
         Ok(result)
