@@ -41,6 +41,7 @@
 //!   through field names, as Java's `remap(FieldInfo)` does.
 
 pub mod doc_values;
+pub mod doc_values_terms_enum;
 pub mod exitable;
 pub mod filter;
 pub mod filtered_terms_enum;
@@ -55,6 +56,7 @@ pub(crate) use segment::SparseDocs;
 pub use skipper::DocValuesSkipper;
 pub mod slow_codec;
 pub mod sorting;
+pub mod term_vector_terms;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -457,6 +459,21 @@ pub trait DocValuesIterator: DocIdSetIterator {
 pub trait NumericDocValues: DocValuesIterator {
     /// `longValue()` of the current document.
     fn long_value(&self) -> i64;
+
+    /// `longValues(size, docs, values, defaultValue)`: `values[i]` is
+    /// `docs[i]`'s value, or `default_value` when it has none. `docs` must
+    /// ascend without duplicates; `values` is at least as long as `docs`.
+    /// Java's default body: an `advanceExact` per document.
+    fn long_values(&mut self, docs: &[i32], values: &mut [i64], default_value: i64) -> Result<()> {
+        for (&doc, value) in docs.iter().zip(values.iter_mut()) {
+            *value = if self.advance_exact(doc)? {
+                self.long_value()
+            } else {
+                default_value
+            };
+        }
+        Ok(())
+    }
 }
 
 /// `BinaryDocValues`.

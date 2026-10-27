@@ -20,10 +20,12 @@
 //!   memory whole, three times over while it is packed.
 //! - `testListAll`'s fields are plain `StringField`/`TextField`, not
 //!   `newStringField`/`newTextField`'s, so no term vectors are packed.
-//! - Not ported: `testDoubleClose` (a reader closes by being dropped, once),
-//!   `testPassIOContext` (no `IOContext`), `testResourceNameInsideCompoundFile`
-//!   (an input has no resource description). `testMergeStability` is a
-//!   no-op in Java's suite too.
+//! - `testDoubleClose`: a reader closes by being dropped, once.
+//!   `testPassIOContext`: the context is the size estimate a directory
+//!   sees (`None` is `DEFAULT`). `testResourceNameInsideCompoundFile`: an
+//!   input has no resource description, so the member's bytes and the
+//!   reader's errors are checked. `testMergeStability` is a no-op in Java's
+//!   suite too.
 
 use lucene_codecs::compound_format;
 use lucene_index::compound_reader::CompoundReader;
@@ -521,6 +523,113 @@ pub fn test_random_access_clones(t: &mut LuceneTestCase) {
     dir.close().expect("close");
 }
 
+/// `testDoubleClose`: one member; the reader closes by being dropped,
+/// which happens once by construction (Java's second `close` has no
+/// counterpart), and the directory under it closes after.
+pub fn test_double_close(t: &mut LuceneTestCase) {
+    let testfile = "_123.test";
+    let dir = t.new_directory();
+    let mut si = new_segment_info(t, "_123");
+    let mut bytes = Vec::new();
+    codec_util::write_index_header(&mut bytes, "Foo", 0, &si.id, "suffix");
+    bytes.extend_from_slice(&3i32.to_be_bytes());
+    codec_util::write_footer(&mut bytes);
+    write_file(&*dir, testfile, &bytes).expect("createOutput");
+    si.files = vec![testfile.to_string()];
+    let cfs = write_and_open(&*dir, "_123", &si);
+    assert_eq!(1, cfs.member_files().len());
+    drop(cfs);
+    dir.close().expect("close");
+}
+
+/// A `FilterDirectory` recording the context of every output it creates:
+/// the size estimate, the part of an `IOContext` the port carries (`None`
+/// is `IOContext.DEFAULT`).
+struct ContextRecording<'d> {
+    inner: &'d dyn Directory,
+    contexts: std::sync::Mutex<Vec<Option<u64>>>,
+}
+
+impl Directory for ContextRecording<'_> {
+    fn list_all(&self) -> lucene_store::Result<Vec<String>> {
+        self.inner.list_all()
+    }
+    fn open(&self, name: &str) -> lucene_store::Result<lucene_store::Input> {
+        self.inner.open(name)
+    }
+    fn create_output(&self, name: &str) -> lucene_store::Result<lucene_store::FsIndexOutput> {
+        self.create_output_with_estimate(name, None)
+    }
+    fn create_output_with_estimate(
+        &self,
+        name: &str,
+        estimated_bytes: Option<u64>,
+    ) -> lucene_store::Result<lucene_store::FsIndexOutput> {
+        self.contexts
+            .lock()
+            .expect("contexts")
+            .push(estimated_bytes);
+        self.inner
+            .create_output_with_estimate(name, estimated_bytes)
+    }
+    fn sync(&self, names: &[String]) -> lucene_store::Result<()> {
+        self.inner.sync(names)
+    }
+    fn rename(&self, source: &str, dest: &str) -> lucene_store::Result<()> {
+        self.inner.rename(source, dest)
+    }
+    fn delete_file(&self, name: &str) -> lucene_store::Result<()> {
+        self.inner.delete_file(name)
+    }
+    fn sync_meta_data(&self) -> lucene_store::Result<()> {
+        self.inner.sync_meta_data()
+    }
+    fn obtain_lock(&self, name: &str) -> lucene_store::Result<Box<dyn lucene_store::Lock>> {
+        self.inner.obtain_lock(name)
+    }
+}
+
+/// `testPassIOContext` (LUCENE-5724): every output the compound write
+/// creates carries the caller's context, `IOContext.DEFAULT` (no estimate).
+pub fn test_pass_io_context(t: &mut LuceneTestCase) {
+    let testfile = "_123.test";
+    let base = t.new_directory();
+    let dir = ContextRecording {
+        inner: &*base,
+        contexts: std::sync::Mutex::new(Vec::new()),
+    };
+    let mut si = new_segment_info(t, "_123");
+    create_sequence_file(&dir, testfile, 0, 4, &si.id, "suffix");
+    si.files = vec![testfile.to_string()];
+    write_compound(&dir, "_123", &si).expect("compoundFormat().write");
+    let contexts = dir.contexts.into_inner().expect("contexts");
+    assert_eq!(3, contexts.len(), "the test file, .cfs and .cfe");
+    assert!(contexts.iter().all(Option::is_none), "{contexts:?}");
+    base.close().expect("close");
+}
+
+/// `testResourceNameInsideCompoundFile`: an `Input` carries no resource
+/// description to name its slice, so what a caller sees of the member is
+/// checked instead -- its bytes, and errors naming the member and the
+/// compound segment.
+pub fn test_resource_name_inside_compound_file(t: &mut LuceneTestCase) {
+    let dir = t.new_directory();
+    let sub_file = "_123.xyz";
+    let mut si = new_segment_info(t, "_123");
+    create_sequence_file(&*dir, sub_file, 0, 10, &si.id, "suffix");
+    si.files = vec![sub_file.to_string()];
+    let cfs = write_and_open(&*dir, "_123", &si);
+    let input = cfs.open(sub_file).expect("openInput");
+    assert_eq!(&dir.open(sub_file).expect("the sub-file")[..], &input[..]);
+    let err = cfs.open("_123.abc").expect_err("not a member").to_string();
+    assert!(
+        err.contains("_123.abc") && err.contains("compound segment _123"),
+        "the error hides that it is inside a compound file: {err}"
+    );
+    drop(cfs);
+    dir.close().expect("close");
+}
+
 /// `testFileNotFound`.
 pub fn test_file_not_found(t: &mut LuceneTestCase) {
     let dir = t.new_directory();
@@ -625,6 +734,12 @@ pub const TESTS: &[SuiteTest] = &[
     ("testClonedStreamsClosing", test_cloned_streams_closing),
     ("testRandomAccess", test_random_access),
     ("testRandomAccessClones", test_random_access_clones),
+    ("testDoubleClose", test_double_close),
+    ("testPassIOContext", test_pass_io_context),
+    (
+        "testResourceNameInsideCompoundFile",
+        test_resource_name_inside_compound_file,
+    ),
     ("testFileNotFound", test_file_not_found),
     ("testReadPastEOF", test_read_past_eof),
     (

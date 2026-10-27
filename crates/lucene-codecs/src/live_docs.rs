@@ -18,6 +18,7 @@
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
 use lucene_store::data_output::DataOutput;
+use lucene_util::bits::Bits;
 use lucene_util::fixed_bit_set::{bits2words, FixedBitSet};
 
 const CODEC_NAME: &str = "Lucene90LiveDocs";
@@ -157,6 +158,52 @@ pub fn write(
     Ok(buf)
 }
 
+/// `Lucene90LiveDocsFormat.writeLiveDocs` over any [`Bits`], not only a
+/// [`FixedBitSet`]: `writeBits` copies 1024 bits at a time through
+/// [`Bits::apply_mask`], ghost bits past `length()` cleared, and counts the
+/// deletions as it goes. Writes the same bytes [`write`] writes for the
+/// equivalent bitset.
+///
+/// # Errors
+/// [`Error::DelCountMismatch`] when the deletions counted differ from
+/// `expected_del_count`.
+pub fn write_bits(
+    live_docs: &dyn Bits,
+    segment_id: &[u8; ID_LENGTH],
+    del_gen: i64,
+    expected_del_count: usize,
+) -> Result<Vec<u8>> {
+    const BATCH: usize = 1024;
+    let suffix = lucene_util::base36::to_base36(del_gen);
+    let mut buf: Vec<u8> = Vec::new();
+    codec_util::write_index_header(&mut buf, CODEC_NAME, VERSION_CURRENT, segment_id, &suffix);
+    let length = live_docs.length();
+    let mut live = 0usize;
+    let mut copy = FixedBitSet::new(BATCH);
+    let mut offset = 0usize;
+    while offset < length {
+        let num_bits = BATCH.min(length.saturating_sub(offset));
+        copy.set_range(0, BATCH);
+        // Clear the ghost bits past the last document.
+        copy.clear_range(num_bits, BATCH);
+        live_docs.apply_mask(&mut copy, offset);
+        live = live.saturating_add(copy.cardinality());
+        for &word in copy.words().iter().take(bits2words(num_bits)) {
+            buf.write_i64(word as i64);
+        }
+        offset = offset.saturating_add(BATCH);
+    }
+    codec_util::write_footer(&mut buf);
+    let actual_del_count = length.saturating_sub(live);
+    if actual_del_count != expected_del_count {
+        return Err(Error::DelCountMismatch {
+            actual: actual_del_count,
+            expected: expected_del_count,
+        });
+    }
+    Ok(buf)
+}
+
 #[cfg(test)]
 mod write_tests {
     use super::*;
@@ -173,6 +220,37 @@ mod write_tests {
             expected_del_count,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn write_bits_matches_write_for_any_bits() {
+        struct View<'a>(&'a FixedBitSet);
+        impl Bits for View<'_> {
+            fn get(&self, index: usize) -> bool {
+                self.0.get(index)
+            }
+            fn length(&self) -> usize {
+                self.0.len()
+            }
+        }
+        for max_doc in [0usize, 1, 63, 64, 1023, 1024, 1025, 3000] {
+            let mut live = FixedBitSet::new(max_doc);
+            let mut deleted = 0;
+            for i in 0..max_doc {
+                if i % 3 == 0 {
+                    deleted += 1;
+                } else {
+                    live.set(i);
+                }
+            }
+            let expected = write(&live, &SEGMENT_ID, 2, deleted).unwrap();
+            let bytes = write_bits(&View(&live), &SEGMENT_ID, 2, deleted).unwrap();
+            assert_eq!(bytes, expected, "maxDoc={max_doc}");
+            assert!(matches!(
+                write_bits(&View(&live), &SEGMENT_ID, 2, deleted + 1),
+                Err(Error::DelCountMismatch { .. })
+            ));
+        }
     }
 
     #[test]
