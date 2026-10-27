@@ -8,9 +8,9 @@
 //! and returned as `String` once they are known to be well formed (every
 //! generator here produces well-formed UTF-16).
 //!
-//! [`check_index`] is `TestUtil.checkIndex`. The other index helpers
-//! (`docs`, `cloneDocument`, the codec pickers) arrive with
-//! `RandomIndexWriter` (M14.h batch h4). [`random_pattern`] compiles through
+//! [`check_index`] is `TestUtil.checkIndex`; [`clone_document`] is
+//! `cloneDocument` (the codec pickers belong to the codec track).
+//! [`random_pattern`] compiles through
 //! lucene-analysis's `java.util.regex` port ([`JavaPattern`]). [`unzip`]
 //! reads through [`super::zip`]. The reader and directory helpers
 //! ([`docs`], [`assert_consistent`], [`ram_copy_of`], [`check_iterator`],
@@ -908,6 +908,72 @@ pub fn assert_consistent_field_docs(
             "wrong sort field values"
         );
     }
+}
+
+/// `cloneDocument(doc)`: a new document rebuilding each field from its
+/// type and value, as Java does -- a `KeywordField` or `IntField` as one
+/// again, a numeric, binary or sorted doc value as that doc-values field, a
+/// point as a `BinaryPoint` of the same type, anything else as a `Field` of
+/// its string value and type. Rust cannot ask a boxed field its class, so
+/// `KeywordField` is a sorted-set doc value with a string, and `IntField` a
+/// sorted-numeric one over a 4-byte, one-dimension point with an `int`.
+///
+/// # Panics
+/// As Java fails: on a sorted-set or sorted-numeric doc value of any
+/// other field ("unknown Type"), a doc value without its value, or a plain
+/// field without a string value.
+pub fn clone_document(doc: &lucene_index::document::Document) -> lucene_index::document::Document {
+    use lucene_index::document::{
+        BinaryDocValuesField, BinaryPoint, DocValuesType, Document, Field, IntField, KeywordField,
+        Number, NumericDocValuesField, SortedDocValuesField, Store,
+    };
+    let mut doc2 = Document::new();
+    for f in doc.fields() {
+        let ft = f.field_type();
+        let name = f.name();
+        let store = if ft.stored() { Store::Yes } else { Store::No };
+        let dv = ft.doc_values_type();
+        let keyword = dv == DocValuesType::SortedSet && f.string_value().is_some();
+        let int = dv == DocValuesType::SortedNumeric
+            && ft.point_dimension_count() == 1
+            && ft.point_num_bytes() == 4
+            && matches!(f.numeric_value(), Some(Number::Int(_)));
+        let value_missing = || -> ! { panic!("field {name} has no value") };
+        if keyword {
+            let s = f.string_value().unwrap_or_else(|| value_missing());
+            doc2.add(KeywordField::new(name, s.into_owned(), store));
+        } else if int {
+            let v = f.numeric_value().unwrap_or_else(|| value_missing());
+            doc2.add(IntField::new(name, v.int_value(), store));
+        } else if dv != DocValuesType::None {
+            match dv {
+                DocValuesType::Numeric => {
+                    let v = f.numeric_value().unwrap_or_else(|| value_missing());
+                    doc2.add(NumericDocValuesField::new(name, v.long_value()));
+                }
+                DocValuesType::Binary => {
+                    let b = f.binary_value().unwrap_or_else(|| value_missing());
+                    doc2.add(BinaryDocValuesField::new(name, b.into_owned()));
+                }
+                DocValuesType::Sorted => {
+                    let b = f.binary_value().unwrap_or_else(|| value_missing());
+                    doc2.add(SortedDocValuesField::new(name, b.into_owned()));
+                }
+                other => panic!("unknown Type: {other:?}"),
+            }
+        } else if ft.point_dimension_count() != 0 {
+            let b = f.binary_value().unwrap_or_else(|| value_missing());
+            let point = BinaryPoint::from_packed(name, b.into_owned(), ft.clone())
+                .unwrap_or_else(|e| panic!("{e}"));
+            doc2.add(point);
+        } else {
+            let s = f.string_value().unwrap_or_else(|| value_missing());
+            let field = Field::from_string(name, s.into_owned(), ft.clone())
+                .unwrap_or_else(|e| panic!("{e}"));
+            doc2.add(field);
+        }
+    }
+    doc2
 }
 
 #[cfg(test)]
