@@ -477,7 +477,7 @@ index/SlowCodecReaderWrapper	ported	crates/lucene-search/src/reader/slow_codec.r
 index/SlowCompositeCodecReaderWrapper	ported	crates/lucene-search/src/reader/slow_codec.rs::SlowCompositeCodecReaderWrapper
 index/SlowImpactsEnum	ported	crates/lucene-search/src/reader/mod.rs::SlowImpactsEnum
 index/SnapshotDeletionPolicy	ported	crates/lucene-index/src/deletion_policy.rs::SnapshotDeletionPolicy
-index/SoftDeletesDirectoryReaderWrapper	ported	crates/lucene-search/src/soft_deletes.rs::effective_live_docs
+index/SoftDeletesDirectoryReaderWrapper	ported	crates/lucene-search/src/soft_deletes.rs::soft_deletes_wrapper
 index/SoftDeletesRetentionMergePolicy	ported	crates/lucene-index/src/index_writer.rs::SoftDeletesRetention
 index/SortFieldProvider	ported	crates/lucene-index/src/segment_info.rs::read_sort_field
 index/SortedDocValues	ported	crates/lucene-codecs/src/doc_values.rs::sorted_ord

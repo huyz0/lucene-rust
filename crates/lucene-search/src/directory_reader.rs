@@ -127,6 +127,10 @@ pub enum Error {
     IndexWriter(#[from] lucene_index::index_writer::Error),
     #[error("segment {segment} has {found} of .tvd/.tvx/.tvm (need all three or none)")]
     PartialTermVectorsFiles { segment: String, found: usize },
+    /// Reading the soft-deletes field's doc values failed while wrapping a
+    /// reader (`crate::soft_deletes`).
+    #[error("soft deletes: {0}")]
+    SoftDeletes(Box<crate::Error>),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -336,6 +340,16 @@ impl SegmentReader {
     /// `oldReader.incRef()`, not a copy of the segment's decoded state.
     fn clone_reader(&self) -> Self {
         self.clone()
+    }
+
+    /// This segment with `live_docs` in place of its own: the same core, a
+    /// new reader (`FilterLeafReader` over it, with a `DelegatingCacheHelper`
+    /// of its own key).
+    pub(crate) fn with_live_docs(&self, live_docs: FixedBitSet) -> Self {
+        let mut reader = self.clone_reader();
+        reader.live_docs = Some(Arc::new(live_docs));
+        reader.reader_cache = crate::reader::CacheHelper::new();
+        reader
     }
 
     /// The core's query cache (and its decoded sort columns).
@@ -1620,13 +1634,38 @@ impl SegmentReader {
     /// binary vectors-sourced one, which this path does not open; a corrupt
     /// docs-with-field region.
     pub fn field_exists_docs(&self, field: &str) -> crate::Result<ExistsDocs> {
-        use crate::doc_value_query::{
-            doc_values_field, field_exists_source, DocValuesField, FieldExistsSource,
-        };
+        use crate::doc_value_query::field_exists_source;
         let Some(info) = self.field_infos.fields.iter().find(|f| f.name == field) else {
             return Ok(ExistsDocs::None);
         };
-        let source = field_exists_source(info)?;
+        self.exists_docs_from(info, field_exists_source(info)?)
+    }
+
+    /// `FieldExistsQuery.getDocValuesDocIdSetIterator(field, reader)`'s
+    /// documents: those `field`'s doc values have a value for, deletions
+    /// ignored; `None` (Java's `null` iterator) when the segment has no such
+    /// field or it has no doc values.
+    ///
+    /// # Errors
+    /// A corrupt docs-with-field region.
+    pub fn doc_values_exists_docs(&self, field: &str) -> crate::Result<Option<ExistsDocs>> {
+        let Some(info) = self.field_infos.fields.iter().find(|f| {
+            f.name == field && f.doc_values_type != lucene_codecs::field_infos::DocValuesType::None
+        }) else {
+            return Ok(None);
+        };
+        let source = crate::doc_value_query::FieldExistsSource::DocValues;
+        self.exists_docs_from(info, source).map(Some)
+    }
+
+    /// [`Self::field_exists_docs`] from `source`.
+    fn exists_docs_from(
+        &self,
+        info: &lucene_codecs::field_infos::FieldInfo,
+        source: crate::doc_value_query::FieldExistsSource,
+    ) -> crate::Result<ExistsDocs> {
+        use crate::doc_value_query::{doc_values_field, DocValuesField, FieldExistsSource};
+        let field = info.name.as_str();
         if self.simpletext.is_some() {
             return self.simpletext_field_exists_docs(info, source);
         }
@@ -2024,6 +2063,10 @@ pub struct DirectoryReader {
     pub(crate) nrt_hold: Option<Arc<lucene_index::nrt::NrtFileHold>>,
     /// `getReaderCacheHelper()`: this reader's own key.
     reader_cache: crate::reader::CacheHelper,
+    /// The soft-deletes field when this reader is a
+    /// `SoftDeletesDirectoryReaderWrapper` (see `crate::soft_deletes`):
+    /// every reopen wraps again, as Java's `doWrapDirectoryReader` does.
+    pub(crate) soft_deletes: Option<Arc<str>>,
 }
 
 /// One field's norms over a reader's segments: the reader-wide
@@ -2114,7 +2157,7 @@ impl DirectoryReader {
     /// disk. `lucene-ffi`'s JVM reader uses it so that a refresh which only
     /// flushed one new segment re-opens that segment and nothing else.
     pub fn reopen_at(&self, dir: &dyn Directory, segment_infos: SegmentInfos) -> Result<Self> {
-        Self::open_at_reusing(dir, segment_infos, &self.segments)
+        self.rewrap(Self::open_at_reusing(dir, segment_infos, &self.segments)?)
     }
 
     /// Shared by [`Self::open_at`] (no reuse candidates) and
@@ -2174,6 +2217,7 @@ impl DirectoryReader {
             norms_plans: std::sync::Mutex::default(),
             nrt_hold: None,
             reader_cache: crate::reader::CacheHelper::new(),
+            soft_deletes: None,
         })
     }
 
@@ -2243,7 +2287,8 @@ impl DirectoryReader {
         if latest.generation == self.segment_infos.generation {
             return Ok(None);
         }
-        Some(Self::open_at_reusing(dir, latest, &self.segments)).transpose()
+        Some(Self::open_at_reusing(dir, latest, &self.segments).and_then(|r| self.rewrap(r)))
+            .transpose()
     }
 
     /// `DirectoryReader.openIfChanged(reader, IndexCommit)`: the index as of
@@ -2259,7 +2304,8 @@ impl DirectoryReader {
         }
         let bytes = dir.open(commit.segments_file_name())?.to_vec();
         let segment_infos = segment_infos::parse(&bytes, commit.generation())?;
-        Some(Self::open_at_reusing(dir, segment_infos, &self.segments)).transpose()
+        Some(Self::open_at_reusing(dir, segment_infos, &self.segments).and_then(|r| self.rewrap(r)))
+            .transpose()
     }
 
     /// `getReaderCacheHelper()`: this reader's cache key and closed
@@ -2278,6 +2324,39 @@ impl DirectoryReader {
     /// `BaseCompositeReader(subReaders, subReadersSorter)`, which
     /// [`crate::segment_order::SegmentOrder`] builds. The segments are
     /// shared, not reopened; the per-reader caches start empty.
+    /// `SoftDeletesDirectoryReaderWrapper` again over a reopened `reader`,
+    /// when this one is such a wrapper.
+    fn rewrap(&self, reader: Self) -> Result<Self> {
+        match &self.soft_deletes {
+            Some(field) => reader.soft_deletes_wrapper(field),
+            None => Ok(reader),
+        }
+    }
+
+    /// A reader over `segments` (doc bases recomputed) sharing this one's
+    /// commit and file pin, under a new cache key.
+    pub(crate) fn with_segments(&self, segments: Vec<SegmentReader>, soft: Arc<str>) -> Self {
+        let mut doc_base = 0i32;
+        let segments = segments
+            .into_iter()
+            .map(|mut reader| {
+                reader.doc_base = doc_base;
+                doc_base = doc_base.saturating_add(reader.max_doc);
+                reader
+            })
+            .collect();
+        DirectoryReader {
+            segment_infos: self.segment_infos.clone(),
+            segments,
+            global_ords: std::sync::Mutex::default(),
+            norm_tables: std::sync::Mutex::default(),
+            norms_plans: std::sync::Mutex::default(),
+            nrt_hold: self.nrt_hold.clone(),
+            reader_cache: crate::reader::CacheHelper::new(),
+            soft_deletes: Some(soft),
+        }
+    }
+
     pub(crate) fn with_segment_order(&self, order: &[usize]) -> Self {
         debug_assert_eq!(order.len(), self.segments.len());
         let mut doc_base = 0i32;
@@ -2298,6 +2377,7 @@ impl DirectoryReader {
             norms_plans: std::sync::Mutex::default(),
             nrt_hold: self.nrt_hold.clone(),
             reader_cache: crate::reader::CacheHelper::new(),
+            soft_deletes: self.soft_deletes.clone(),
         }
     }
 
