@@ -346,7 +346,7 @@ GENERATED_NOISE='(^|/)write\.lock$'
 # runs here agree, so they would be held to the committed bytes, which another
 # JDK build or kernel cannot reproduce. Their Rust tests read them beside the
 # index they were generated with (sizes, ids) or compare order-insensitively.
-MACHINE_DEPENDENT='^(misc/index_splitter\.tsv|monitor/debug\.tsv|tools/demo/out/walk-[^/]*\.out|tools/luke/out/commits\.out|tools/misc/out/[^/]*list[^/]*\.out)$'
+MACHINE_DEPENDENT='^(misc/index_splitter\.tsv|monitor/debug\.tsv|tools/demo/out/walk-(create-again(-search)?|knn)\.out|tools/luke/out/commits\.out|tools/misc/out/[^/]*list[^/]*\.out)$'
 
 while IFS= read -r rel; do
   if [[ "$rel" =~ $GENERATED_NOISE ]]; then continue; fi
