@@ -15,10 +15,16 @@
 //! deletes the published one and every SimpleText file no remaining commit
 //! names, as Java's `IndexFileDeleter` would.
 //!
+//! An index the wrapped directory already holds is opened as Java's writer
+//! opens it: its latest commit is mirrored into memory first, each
+//! SimpleText segment re-encoded natively ([`to_native`]) at its own
+//! generations, and its files counted as published.
+//!
 //! What lands in the wrapped directory is what Java's `IndexWriter` with
 //! `SimpleTextCodec` writes for the same segments; the in-memory mirror is
-//! this port's structural difference. A wrapped directory that already holds
-//! an index is refused: the writer cannot yet read SimpleText segments back.
+//! this port's structural difference. Java's writer, opening an index,
+//! also deletes the files no commit it keeps references (older commits, a
+//! crashed session's leftovers); this leaves those in the wrapped directory.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -30,6 +36,7 @@ use lucene_store::directory::{generation_from_segments_file_name, Input};
 use lucene_store::DataOutput;
 use lucene_store::{ByteBuffersDirectory, Directory, FsIndexOutput, Lock};
 
+use crate::simpletext_native::to_native;
 use crate::simpletext_transcode::{base_commit, generation_files, to_simpletext};
 
 /// The codec name the published commit gives every segment.
@@ -70,26 +77,66 @@ impl std::fmt::Debug for SimpleTextDirectory<'_> {
 }
 
 impl<'d> SimpleTextDirectory<'d> {
-    /// Publishes into `real`, which must hold no index yet.
+    /// Publishes into `real`. An index `real` already holds (its latest
+    /// commit, every segment SimpleText) is mirrored first, so the writer
+    /// opens it and appends: each segment re-encoded natively
+    /// ([`to_native`]) and its files counted as published, so the next
+    /// commit names them as they are and the writer's deletion policy
+    /// retires them as Java's would.
     ///
     /// # Errors
-    /// `real` already holds a `segments_N`, or listing it fails.
-    pub fn new(real: &'d dyn Directory) -> StoreResult<Self> {
-        if let Some(existing) = real
-            .list_all()?
-            .into_iter()
-            .find(|f| f.starts_with("segments_"))
-        {
-            return Err(lucene_store::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                format!("appending to an existing SimpleText index ({existing}) is not supported"),
-            )));
-        }
-        Ok(SimpleTextDirectory {
+    /// Listing or reading `real` fails, a segment of its latest commit is
+    /// not SimpleText, or one does not re-encode.
+    pub fn new(real: &'d dyn Directory) -> crate::Result<Self> {
+        let dir = SimpleTextDirectory {
             real,
             native: ByteBuffersDirectory::new(),
             published: Mutex::new(Published::default()),
-        })
+        };
+        if real.list_all()?.iter().any(|f| is_commit(f)) {
+            dir.mirror()?;
+        }
+        Ok(dir)
+    }
+
+    /// Mirrors `real`'s latest commit into the writer's directory.
+    fn mirror(&self) -> crate::Result<()> {
+        let mut infos =
+            segment_infos::read_latest(self.real).map_err(crate::directory_reader::Error::from)?;
+        let mut published = self.lock();
+        let mut referenced = BTreeSet::new();
+        for sci in &mut infos.segments {
+            if sci.codec_name != CODEC_NAME {
+                return Err(crate::Error::IllegalArgument(format!(
+                    "segment {} is {}, not {CODEC_NAME}",
+                    sci.segment_name, sci.codec_name
+                )));
+            }
+            let si_name = format!("{}.si", sci.segment_name);
+            let info = segment_info::parse_simpletext(
+                &self
+                    .real
+                    .open(&si_name)
+                    .map_err(crate::directory_reader::Error::from)?,
+                &sci.segment_name,
+                &sci.segment_id,
+            )
+            .map_err(crate::directory_reader::Error::from)?;
+            let mut base = info.files.clone();
+            if !base.contains(&si_name) {
+                base.push(si_name);
+            }
+            referenced.extend(sci.files(&base));
+            published.bases.insert(sci.segment_name.clone(), base);
+            *sci = to_native(self.real, sci, &self.native)?;
+        }
+        segment_infos::write(&infos, &self.native).map_err(crate::directory_reader::Error::from)?;
+        referenced.extend(lucene_store::directory::segments_file_name(
+            infos.generation,
+        ));
+        published.files.extend(referenced.iter().cloned());
+        published.commits.insert(infos.generation, referenced);
+        Ok(())
     }
 
     /// The directory commits are published to.

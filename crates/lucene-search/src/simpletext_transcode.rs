@@ -54,11 +54,11 @@ pub struct SimpleTextSegment {
     pub live_docs: Option<(String, Vec<u8>)>,
 }
 
-fn text_error(e: text::Error) -> crate::Error {
+pub(crate) fn text_error(e: text::Error) -> crate::Error {
     crate::directory_reader::Error::SimpleText(e).into()
 }
 
-fn version(v: LuceneVersion) -> crate::Result<Version> {
+pub(crate) fn version(v: LuceneVersion) -> crate::Result<Version> {
     Version::new(v.major, v.minor, v.bugfix, 0)
         .map_err(|e| crate::Error::IllegalArgument(format!("segment version: {e}")))
 }
@@ -121,22 +121,9 @@ pub fn to_simpletext(
     let mut norms: Vec<(i32, Vec<i64>)> = Vec::new();
     let mut norms_consumer = text::norms::SimpleTextNormsConsumer::new(max_doc);
     for field in infos.fields.iter().filter(|f| has_norms(f)) {
-        let Some(mut values) = reader.norm_values(&field.name)? else {
+        let Some((sparse, dense)) = norms_of(&reader, field, docs)? else {
             continue;
         };
-        let mut sparse = Vec::new();
-        let mut dense = vec![1i64; docs];
-        loop {
-            let doc = values.next_doc()?;
-            if doc == NO_MORE_DOCS {
-                break;
-            }
-            let value = values.long_value();
-            sparse.push((doc, value));
-            if let Some(slot) = usize::try_from(doc).ok().and_then(|d| dense.get_mut(d)) {
-                *slot = value;
-            }
-        }
         norms_consumer
             .add_norms_field(field, &sparse)
             .map_err(text_error)?;
@@ -145,68 +132,7 @@ pub fn to_simpletext(
     let any_norms = !norms.is_empty();
 
     // Postings, by field name.
-    let mut indexed: Vec<&FieldInfo> = infos
-        .fields
-        .iter()
-        .filter(|f| f.index_options != IndexOptions::None)
-        .collect();
-    indexed.sort_by(|a, b| a.name.cmp(&b.name));
-    let mut postings: Vec<(&FieldInfo, i32, Vec<TermPostings>)> = Vec::new();
-    for field in &indexed {
-        let Some(terms) = reader.terms(&field.name)? else {
-            continue;
-        };
-        let doc_count = terms.doc_count();
-        let flags = if field.index_options.subsumes_offsets() || field.store_payloads {
-            PostingsFlags::All
-        } else if field.index_options.subsumes_positions() {
-            PostingsFlags::Positions
-        } else {
-            PostingsFlags::Freqs
-        };
-        let positions = field.index_options.subsumes_positions();
-        let offsets = field.index_options.subsumes_offsets();
-        let mut out = Vec::new();
-        let mut terms_enum = terms.iterator()?;
-        while let Some(term) = terms_enum.next()? {
-            let mut posting = TermPostings {
-                term: term.to_vec(),
-                ..TermPostings::default()
-            };
-            let mut p = terms_enum.postings(flags)?;
-            loop {
-                let doc = p.next_doc()?;
-                if doc == NO_MORE_DOCS {
-                    break;
-                }
-                let freq = p.freq();
-                posting.docs.push((doc, freq));
-                if positions {
-                    let mut ps = Vec::new();
-                    let mut os = Vec::new();
-                    for _ in 0..freq {
-                        ps.push(p.next_position()?);
-                        if offsets {
-                            os.push((p.start_offset(), p.end_offset()));
-                        }
-                        if field.store_payloads {
-                            let payload = p.payload().unwrap_or_default();
-                            posting
-                                .payload_lengths
-                                .push(u32::try_from(payload.len()).unwrap_or(u32::MAX));
-                            posting.payload_bytes.extend_from_slice(payload);
-                        }
-                    }
-                    posting.positions.push(ps);
-                    if offsets {
-                        posting.offsets.push(os);
-                    }
-                }
-            }
-            out.push(posting);
-        }
-        postings.push((field, doc_count, out));
-    }
+    let postings = postings_of(&reader, &infos)?;
     if !postings.is_empty() {
         let inputs: Vec<FieldPostingsInput<'_, TermPostings>> = postings
             .iter()
@@ -518,14 +444,115 @@ pub fn generation_files(
     Ok(out)
 }
 
-fn has_norms(field: &FieldInfo) -> bool {
+/// A field's norms by document, and as a column of every document.
+pub(crate) type FieldNormValues = (Vec<(i32, i64)>, Vec<i64>);
+
+/// One field's norms: the documents that have one, and a column of every
+/// document's (`1` where missing); `None` when the field has none.
+pub(crate) fn norms_of(
+    reader: &SegmentReader,
+    field: &FieldInfo,
+    docs: usize,
+) -> crate::Result<Option<FieldNormValues>> {
+    let Some(mut values) = reader.norm_values(&field.name)? else {
+        return Ok(None);
+    };
+    let mut sparse = Vec::new();
+    let mut dense = vec![1i64; docs];
+    loop {
+        let doc = values.next_doc()?;
+        if doc == NO_MORE_DOCS {
+            break;
+        }
+        let value = values.long_value();
+        sparse.push((doc, value));
+        if let Some(slot) = usize::try_from(doc).ok().and_then(|d| dense.get_mut(d)) {
+            *slot = value;
+        }
+    }
+    Ok(Some((sparse, dense)))
+}
+
+/// Every indexed field's postings, by field name: each field with its
+/// `docCount` and its terms' documents, frequencies, positions, offsets and
+/// payloads.
+pub(crate) fn postings_of<'i>(
+    reader: &SegmentReader,
+    infos: &'i FieldInfos,
+) -> crate::Result<Vec<(&'i FieldInfo, i32, Vec<TermPostings>)>> {
+    let mut indexed: Vec<&FieldInfo> = infos
+        .fields
+        .iter()
+        .filter(|f| f.index_options != IndexOptions::None)
+        .collect();
+    indexed.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut postings = Vec::new();
+    for field in &indexed {
+        let Some(terms) = reader.terms(&field.name)? else {
+            continue;
+        };
+        let doc_count = terms.doc_count();
+        let flags = if field.index_options.subsumes_offsets() || field.store_payloads {
+            PostingsFlags::All
+        } else if field.index_options.subsumes_positions() {
+            PostingsFlags::Positions
+        } else {
+            PostingsFlags::Freqs
+        };
+        let positions = field.index_options.subsumes_positions();
+        let offsets = field.index_options.subsumes_offsets();
+        let mut out = Vec::new();
+        let mut terms_enum = terms.iterator()?;
+        while let Some(term) = terms_enum.next()? {
+            let mut posting = TermPostings {
+                term: term.to_vec(),
+                ..TermPostings::default()
+            };
+            let mut p = terms_enum.postings(flags)?;
+            loop {
+                let doc = p.next_doc()?;
+                if doc == NO_MORE_DOCS {
+                    break;
+                }
+                let freq = p.freq();
+                posting.docs.push((doc, freq));
+                if positions {
+                    let mut ps = Vec::new();
+                    let mut os = Vec::new();
+                    for _ in 0..freq {
+                        ps.push(p.next_position()?);
+                        if offsets {
+                            os.push((p.start_offset(), p.end_offset()));
+                        }
+                        if field.store_payloads {
+                            let payload = p.payload().unwrap_or_default();
+                            posting
+                                .payload_lengths
+                                .push(u32::try_from(payload.len()).unwrap_or(u32::MAX));
+                            posting.payload_bytes.extend_from_slice(payload);
+                        }
+                    }
+                    posting.positions.push(ps);
+                    if offsets {
+                        posting.offsets.push(os);
+                    }
+                }
+            }
+            out.push(posting);
+        }
+        postings.push((*field, doc_count, out));
+    }
+    Ok(postings)
+}
+
+pub(crate) fn has_norms(field: &FieldInfo) -> bool {
     field.index_options != IndexOptions::None && !field.omit_norms
 }
 
 /// Every point of a field with its document, in `intersect` order.
 #[derive(Default)]
-struct AllPoints {
-    points: Vec<(Vec<u8>, i32)>,
+pub(crate) struct AllPoints {
+    pub(crate) points: Vec<(Vec<u8>, i32)>,
 }
 
 impl IntersectVisitor for AllPoints {
@@ -538,18 +565,23 @@ impl IntersectVisitor for AllPoints {
     }
 }
 
-/// One field's doc values into the SimpleText writer.
-fn add_doc_values(
+/// One field's doc values, read through the [`LeafReader`] API.
+pub(crate) enum Column {
+    Numeric(Vec<(i32, i64)>),
+    Binary(BinaryColumn),
+    Sorted(SortedOrdsColumn),
+    SortedNumeric(SortedNumericColumn),
+    SortedSet(SortedSetOrdsColumn),
+}
+
+/// `field`'s doc values (empty when the reader has none for it); `None` for
+/// a field without doc values.
+pub(crate) fn column_of(
     reader: &SegmentReader,
     field: &FieldInfo,
-    dv: &mut text::doc_values_writer::SimpleTextDocValuesWriter,
-) -> crate::Result<()> {
-    use text::doc_values_writer::DocValuesInput;
-    let add =
-        |dv: &mut text::doc_values_writer::SimpleTextDocValuesWriter,
-         values: DocValuesInput<'_>| dv.add_field(field, values).map_err(text_error);
-    match field.doc_values_type {
-        DocValuesType::None => Ok(()),
+) -> crate::Result<Option<Column>> {
+    Ok(Some(match field.doc_values_type {
+        DocValuesType::None => return Ok(None),
         DocValuesType::Numeric => {
             let mut values = Vec::new();
             if let Some(mut it) = reader.numeric_doc_values(&field.name)? {
@@ -557,7 +589,7 @@ fn add_doc_values(
                     values.push((it.doc_id(), it.long_value()));
                 }
             }
-            add(dv, DocValuesInput::Numeric(&values))
+            Column::Numeric(values)
         }
         DocValuesType::Binary => {
             let mut column = BinaryColumn::default();
@@ -571,7 +603,7 @@ fn add_doc_values(
                     column.bytes.extend_from_slice(value);
                 }
             }
-            add(dv, DocValuesInput::Binary(&column))
+            Column::Binary(column)
         }
         DocValuesType::Sorted => {
             let mut column = SortedOrdsColumn::default();
@@ -584,7 +616,7 @@ fn add_doc_values(
                     column.ords.push(i64::from(it.ord_value()));
                 }
             }
-            add(dv, DocValuesInput::Sorted(&column))
+            Column::Sorted(column)
         }
         DocValuesType::SortedNumeric => {
             let mut column = SortedNumericColumn::default();
@@ -598,7 +630,7 @@ fn add_doc_values(
                     }
                 }
             }
-            add(dv, DocValuesInput::SortedNumeric(&column))
+            Column::SortedNumeric(column)
         }
         DocValuesType::SortedSet => {
             let mut column = SortedSetOrdsColumn::default();
@@ -615,7 +647,27 @@ fn add_doc_values(
                     }
                 }
             }
-            add(dv, DocValuesInput::SortedSet(&column))
+            Column::SortedSet(column)
         }
-    }
+    }))
+}
+
+/// One field's doc values into the SimpleText writer.
+fn add_doc_values(
+    reader: &SegmentReader,
+    field: &FieldInfo,
+    dv: &mut text::doc_values_writer::SimpleTextDocValuesWriter,
+) -> crate::Result<()> {
+    use text::doc_values_writer::DocValuesInput;
+    let Some(column) = column_of(reader, field)? else {
+        return Ok(());
+    };
+    let values = match &column {
+        Column::Numeric(values) => DocValuesInput::Numeric(values),
+        Column::Binary(column) => DocValuesInput::Binary(column),
+        Column::Sorted(column) => DocValuesInput::Sorted(column),
+        Column::SortedNumeric(column) => DocValuesInput::SortedNumeric(column),
+        Column::SortedSet(column) => DocValuesInput::SortedSet(column),
+    };
+    dv.add_field(field, values).map_err(text_error)
 }
