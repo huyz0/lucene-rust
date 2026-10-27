@@ -3606,12 +3606,16 @@ pub fn count_boolean_query_segment(
                 None => leaf.max_doc,
             };
             if let Some(n) = weight_count::count_field_exists_leaf(&leaf) {
+                #[cfg(any(test, feature = "asserting"))]
+                exec::asserting::check_count(n, seg.max_doc, seg.live_docs);
                 return Ok(u64::try_from(n).unwrap_or(0));
             }
         }
         (Some(Clause::Term(t)), _) => {
             if let Some(n) = weight_count::count_term_query_shortcut(seg.fields, seg.live_docs, t)?
             {
+                #[cfg(any(test, feature = "asserting"))]
+                exec::asserting::check_count(n, seg.max_doc, seg.live_docs);
                 return Ok(u64::try_from(n).unwrap_or(0));
             }
         }

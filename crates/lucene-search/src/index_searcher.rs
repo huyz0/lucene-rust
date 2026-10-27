@@ -474,6 +474,29 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
         crate::rescorer::rewrite_rescore_clauses(query, &ctx)
     }
 
+    /// `rewrite(query)`: the query as every search here scores it -- its
+    /// points ranges and rescore clauses rewritten against the segments,
+    /// then [`rewrite_structure`]d.
+    ///
+    /// # Errors
+    /// Whatever rewriting a rescore clause reports.
+    pub fn rewrite(&self, query: &BooleanQuery) -> Result<BooleanQuery> {
+        let rewritten = self.rewrite_against_segments(query)?;
+        // One owned copy rewritten in place: no second clone, no comparison
+        // with the original.
+        Ok(rewrite_structure(
+            rewritten.unwrap_or_else(|| query.clone()),
+        ))
+    }
+
+    /// The points ranges and rescore clauses of `query` rewritten against
+    /// the segments; `None` when neither moved.
+    fn rewrite_against_segments(&self, query: &BooleanQuery) -> Result<Option<BooleanQuery>> {
+        let rescored = self.rewrite_rescore(query)?;
+        let base = rescored.as_ref().unwrap_or(query);
+        Ok(rewrite_points_ranges(base, self.segments).or(rescored))
+    }
+
     /// The query rewritten against the segments (and its rescore clauses)
     /// and [`rewrite_structure`]d -- always `Some` -- with its reader-wide
     /// statistics: what every search here does before scoring a segment.
@@ -493,16 +516,11 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
         query: &BooleanQuery,
         structure: bool,
     ) -> Result<(Option<BooleanQuery>, crate::GlobalStats)> {
-        let rescored = self.rewrite_rescore(query)?;
-        let base = rescored.as_ref().unwrap_or(query);
-        let mut rewritten = rewrite_points_ranges(base, self.segments).or(rescored);
-        if structure {
-            // One owned copy rewritten in place: no second clone, no
-            // comparison with the original (`Some` whether or not it moved).
-            rewritten = Some(rewrite_structure(
-                rewritten.unwrap_or_else(|| query.clone()),
-            ));
-        }
+        let rewritten = if structure {
+            Some(self.rewrite(query)?)
+        } else {
+            self.rewrite_against_segments(query)?
+        };
         let mut global = crate::multi_segment::global_boolean_stats_with_similarity(
             self.segments,
             rewritten.as_ref().unwrap_or(query),

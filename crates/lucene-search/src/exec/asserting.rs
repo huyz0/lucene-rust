@@ -53,7 +53,7 @@ impl Drop for AssertingGuard {
 
 /// `random.nextLong()` from the installed searcher random, `None` when no
 /// [`AssertingGuard`] is held.
-fn next_seed() -> Option<i64> {
+pub(crate) fn next_seed() -> Option<i64> {
     ACTIVE.with(|a| a.borrow_mut().as_mut().map(JavaRandom::next_long))
 }
 
@@ -62,12 +62,53 @@ pub(crate) fn active() -> bool {
     ACTIVE.with(|a| a.borrow().is_some())
 }
 
+/// `AssertingWeight.scorerSupplier(...).bulkScorer()`'s `usually(random)`,
+/// from the installed searcher random: whether the query's own bulk scorer
+/// scores the segment (else the default bulk scorer over its scorer does).
+/// Always `true` when no [`AssertingGuard`] is held.
+pub(crate) fn usually_own_bulk() -> bool {
+    // `rarely()` at the default multiplier: `nextInt(100) >= 99`.
+    ACTIVE.with(|a| {
+        a.borrow_mut()
+            .as_mut()
+            .is_none_or(|r| r.next_int_bounded(100) < 99)
+    })
+}
+
+/// `AssertingWeight.count(context)`: `-1` (count by iterating) or no more
+/// than the segment's live documents, when the wrappers are installed.
+pub(crate) fn check_count(count: i64, max_doc: Option<i32>, live_docs: Option<&FixedBitSet>) {
+    if !active() {
+        return;
+    }
+    let num_docs = match (live_docs, max_doc) {
+        (Some(live), _) => Some(i64::try_from(live.cardinality()).unwrap_or(i64::MAX)),
+        (None, Some(max_doc)) => Some(i64::from(max_doc)),
+        (None, None) => None,
+    };
+    assert!(
+        count >= -1 && num_docs.is_none_or(|n| count <= n),
+        "count={count}, numDocs={num_docs:?}"
+    );
+}
+
+/// `AssertingWeight.scorerSupplier(...).get(leadCost)`'s `leadCost >= 0`,
+/// when the wrappers are installed.
+pub(crate) fn check_lead_cost(lead_cost: i64) {
+    if active() {
+        assert!(lead_cost >= 0, "{lead_cost}");
+    }
+}
+
 /// `AssertingWeight.scorerSupplier(...).get(leadCost)`: `scorer` wrapped
-/// when the wrappers are installed, as is otherwise.
+/// when the wrappers are installed, as is otherwise; its `cost()` checked
+/// non-negative, as the supplier's is.
 pub(crate) fn wrap<'a>(scorer: BoxScorer<'a>, mode: Mode, top_level: bool) -> BoxScorer<'a> {
     if !active() {
         return scorer;
     }
+    let cost = scorer.cost();
+    assert!(cost >= 0, "cost={cost}");
     Box::new(AssertingScorer::new(
         scorer,
         mode.needs_scores(),
