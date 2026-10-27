@@ -1,0 +1,6 @@
+dir/
+dir/sub/
+dir/sub/big.txt	2100	8a8652c0
+dir/voc_out.txt	33	5ee9e57c
+out.txt	15	a01908d9
+voc.txt	17	1fbbeab7

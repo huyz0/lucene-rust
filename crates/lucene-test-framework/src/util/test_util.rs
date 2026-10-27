@@ -11,7 +11,8 @@
 //! [`check_index`] is `TestUtil.checkIndex`. The other index helpers
 //! (`docs`, `cloneDocument`, the codec pickers) arrive with
 //! `RandomIndexWriter` (M14.h batch h4). [`random_pattern`] compiles through
-//! lucene-analysis's `java.util.regex` port ([`JavaPattern`]).
+//! lucene-analysis's `java.util.regex` port ([`JavaPattern`]). [`unzip`]
+//! reads through [`super::zip`].
 
 use std::cmp::Ordering;
 
@@ -669,6 +670,27 @@ const BLOCK_ENDS: [i32; 194] = [
     0x1247F, 0x1342F, 0x1D0FF, 0x1D1FF, 0x1D24F, 0x1D35F, 0x1D37F, 0x1D7FF, 0x1F02F, 0x1F09F,
     0x1F1FF, 0x1F2FF, 0x2A6DF, 0x2B73F, 0x2FA1F, 0xE007F, 0xE01EF, 0xFFFFF, 0x10FFFF,
 ];
+
+/// `TestUtil.unzip(in, destDir)`: every entry of `zip` written under
+/// `dest_dir`, its parent directories created first. As Java, a directory
+/// entry creates only its parent (`d/` resolves to `d`, whose parent is
+/// `dest_dir`); `d` itself appears with its first file. `dest_dir` should be
+/// clean, as Java asks.
+///
+/// # Errors
+/// A corrupt zip, or a file that cannot be written.
+pub fn unzip(zip: &[u8], dest_dir: &std::path::Path) -> std::io::Result<()> {
+    for entry in super::zip::entries(zip)? {
+        let target = dest_dir.join(entry.name.trim_end_matches('/'));
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        if !entry.is_directory() {
+            std::fs::write(&target, &entry.data)?;
+        }
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {

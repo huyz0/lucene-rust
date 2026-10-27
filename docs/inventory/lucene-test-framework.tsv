@@ -3,7 +3,7 @@
 # M14.h batches: h1 util/ suites and generators; h2 store/mockfile; h3 analysis; h4 index infrastructure; h5-h6 format suites; h7 search/geo; h8 stress.
 # class	status	detail
 tests/analysis/BaseTokenStreamFactoryTestCase	ported	crates/lucene-test-framework/src/analysis/base_token_stream_factory.rs::tokenizer_factory
-tests/analysis/BaseTokenStreamTestCase	partial	crates/lucene-test-framework/src/analysis/base_token_stream.rs::check_random_data -- M14: newAttributeFactory (the port's attributes are a fixed struct); checkResetException's missing-close half has no counterpart (an AnalyzerTokenStream closes on drop)
+tests/analysis/BaseTokenStreamTestCase	ported	crates/lucene-test-framework/src/analysis/base_token_stream.rs::check_random_data -- newAttributeFactory draws Java's nextInt(3) but every factory builds the one fixed AttributeSource; checkResetException's missing-close half checks that a dropped stream closes itself
 tests/analysis/CannedBinaryTokenStream	ported	crates/lucene-test-framework/src/analysis/canned.rs::CannedBinaryTokenStream
 tests/analysis/CannedTokenStream	ported	crates/lucene-test-framework/src/analysis/canned.rs::CannedTokenStream
 tests/analysis/CollationTestBase	not-needed	its subclasses (TestCollationKeyAnalyzer, TestICUCollationKeyAnalyzer) index collation keys and range-query them through a RandomIndexWriter; the ICU crate tests ICUCollationKeyAnalyzer's keys against Java fixtures directly, and the JDK-collator half has no Rust collator to test
@@ -30,7 +30,7 @@ tests/analysis/SimplePayloadFilter	ported	crates/lucene-test-framework/src/analy
 tests/analysis/Token	ported	crates/lucene-test-framework/src/analysis/token.rs::Token
 tests/analysis/TokenStreamToDot	ported	crates/lucene-test-framework/src/analysis/token_stream_to_dot.rs::TokenStreamToDot
 tests/analysis/ValidatingTokenFilter	ported	crates/lucene-test-framework/src/analysis/validating_token_filter.rs::ValidatingTokenFilter
-tests/analysis/VocabularyAssert	partial	crates/lucene-test-framework/src/analysis/vocabulary_assert.rs::assert_vocabulary -- M14: the zip-file overloads (assertVocabulary over an entry of a vocabulary zip), which need a zip reader the test framework does not have
+tests/analysis/VocabularyAssert	ported	crates/lucene-test-framework/src/analysis/vocabulary_assert.rs::assert_vocabulary -- zip overloads: assert_vocabulary_zip/assert_vocabulary_tsv_zip read the entries through util/zip.rs
 tests/analysis/standard/EmojiTokenizationTestUnicode_12_1	not-needed	test data, not infrastructure: crates/lucene-analysis/tools/extract_uax29_inputs.py takes its inputs and GenStandardTokenizer records Lucene's tokens for them (crates/lucene-analysis/tests/standard_tokenizer_fixtures.rs)
 tests/analysis/standard/WordBreakTestUnicode_12_1_0	not-needed	test data, not infrastructure: crates/lucene-analysis/tools/extract_uax29_inputs.py takes its inputs and GenStandardTokenizer records Lucene's tokens for them (crates/lucene-analysis/tests/standard_tokenizer_fixtures.rs)
 tests/codecs/asserting/AssertingCodec	partial	crates/lucene-test-framework/src/codecs/asserting_codec.rs::AssertingCodec -- M14: typed eager composition, cached selectors, suppression, delegates/display/thread checks; native default graph, operational per-field I/O and SPI/IndexWriter routing absent
@@ -208,7 +208,7 @@ tests/util/TestRuleStoreClassName	not-needed	JUnit/randomizedtesting runner infr
 tests/util/TestRuleTemporaryFilesCleanup	ported	crates/lucene-util/src/test_support.rs::TempDir
 tests/util/TestRuleThreadAndTestName	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
 tests/util/TestSecurityManager	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
-tests/util/TestUtil	partial	crates/lucene-test-framework/src/util/test_util.rs::random_realistic_unicode_string -- M14: index/codec helpers (getDefaultCodec, docs, checkReader, cloneDocument, ...) (checkIndex: test_util.rs::check_index; randomPattern: test_util.rs::random_pattern)
+tests/util/TestUtil	partial	crates/lucene-test-framework/src/util/test_util.rs::random_realistic_unicode_string -- M14: index/codec helpers (getDefaultCodec, docs, checkReader, cloneDocument, ...) (checkIndex: test_util.rs::check_index; randomPattern: test_util.rs::random_pattern; unzip: test_util.rs::unzip)
 tests/util/ThrottledIndexOutput	ported	crates/lucene-test-framework/src/store/mock_directory_wrapper.rs::set_throttling
 tests/util/TimeUnits	not-needed	millisecond constants for JUnit `@Timeout` annotations
 tests/util/VerifyTestClassNamingConvention	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
