@@ -6,7 +6,7 @@
 //!
 //! Differs:
 //!
-//! - `DocIdSetIterator.intoBitSet` has no port; [`into_bit_set`] is Java's
+//! - `DocIdSetIterator.intoBitSet` has no port; [`fill_bit_set`] is Java's
 //!   default loop over `nextDoc`, and the expected bits come from
 //!   `advanceExact` on each document, so the test still compares two ways
 //!   of reaching the same documents.
@@ -711,7 +711,7 @@ pub fn test_mismatched_fields(_t: &mut LuceneTestCase) {
 /// `DocIdSetIterator.intoBitSet(upTo, bitSet, offset)`, Java's default:
 /// every document from the current one below `up_to`, the iterator left on
 /// the first at or past it.
-pub fn into_bit_set<I: DocIdSetIterator + ?Sized>(
+pub fn fill_bit_set<I: DocIdSetIterator + ?Sized>(
     it: &mut I,
     up_to: i32,
     bits: &mut [bool],
@@ -840,7 +840,7 @@ pub fn random_into_bit_set(
             assert_eq!(NO_MORE_DOCS, advance(expected.as_mut(), start));
             continue;
         }
-        into_bit_set(values.as_mut(), up_to, &mut bits, offset);
+        fill_bit_set(values.as_mut(), up_to, &mut bits, offset);
         // The expected bits by `advanceExact`, document by document.
         for doc in start..up_to {
             if exact(expected.as_mut(), doc) {
@@ -1209,7 +1209,7 @@ mod tests {
         let mut it = Docs(vec![1, 3, 6], 0);
         advance(&mut it, 2);
         let mut bits = vec![false; 5];
-        into_bit_set(&mut it, 6, &mut bits, 1);
+        fill_bit_set(&mut it, 6, &mut bits, 1);
         assert_eq!(vec![false, false, true, false, false], bits);
         assert_eq!(6, it.doc_id());
     }

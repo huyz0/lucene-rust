@@ -89,6 +89,28 @@ pub trait DocIdSetIterator {
     fn advance(&mut self, target: i32) -> Result<i32>;
     /// `cost()`.
     fn cost(&self) -> i64;
+
+    /// `intoBitSet(upTo, bitSet, offset)`: sets `doc - offset` in `bit_set`
+    /// for every document from the current one up to (excluding) `up_to`,
+    /// leaving the iterator on the first document `>= up_to`.
+    ///
+    /// # Panics
+    ///
+    /// When `offset` is past the current document (Java's assertion), or a
+    /// document lands past `bit_set`'s length (Java's
+    /// `IndexOutOfBoundsException`).
+    fn fill_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
+        let mut doc = self.doc_id();
+        assert!(offset <= doc, "offset={offset} docID()={doc} upTo={up_to}");
+        while doc < up_to {
+            // FBS: `doc - offset` is non-negative (`offset <= doc` was
+            // asserted, documents only grow); one past `bit_set.len()`
+            // panics as Java's `IndexOutOfBoundsException` does.
+            bit_set.set((doc - offset) as usize);
+            doc = self.next_doc()?;
+        }
+        Ok(())
+    }
 }
 
 /// `PostingsEnum.flags`: what a caller of [`TermsEnum::postings`] will read.

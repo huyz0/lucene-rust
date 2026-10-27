@@ -83,7 +83,7 @@ tests/index/AssertingLeafReader	partial	crates/lucene-test-framework/src/index/a
 tests/index/BaseCompoundFormatTestCase	partial	crates/lucene-test-framework/src/index/base_compound_format.rs::CompoundSuite -- M14: listAll is member_files; no testDoubleClose/testPassIOContext/testResourceNameInsideCompoundFile (no IOContext or resource names)
 tests/index/BaseCompressingDocValuesFormatTestCase	partial	crates/lucene-test-framework/src/index/base_doc_values_format.rs::COMPRESSING_TESTS -- M14: bounds on Lucene90 only (no other codec)
 tests/index/BaseDocValuesFormatTestCase	partial	crates/lucene-test-framework/src/index/base_doc_values_format.rs::TESTS -- M14: intoBitSet is the nextDoc loop (no port of DocIdSetIterator.intoBitSet)
-tests/index/BaseFieldInfoFormatTestCase	partial	crates/lucene-test-framework/src/index/base_field_info_format.rs::FieldInfoSuite -- M14: no testExceptionOnCloseInput (a read has no input close)
+tests/index/BaseFieldInfoFormatTestCase	ported	crates/lucene-test-framework/src/index/base_field_info_format.rs::FieldInfoSuite
 tests/index/BaseIndexFileFormatTestCase	partial	crates/lucene-test-framework/src/index/base_index_file_format.rs::IndexFileFormatSuite -- M14: testMultiClose (no codec-level writer/reader objects); checkIntegrity is checked by damaging bytes, not by tracking reads
 tests/index/BaseKnnVectorsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_knn_vectors_format.rs::KnnVectorsSuite -- M14: off-heap byte accounting and testMergeOffHeapByteSizeMaps (no accounting API); graph searches and visited limits are ported, testFieldSetValue (vector fields are immutable), testDifferentCodecs1/2 (no SimpleText writer)
 tests/index/BaseLiveDocsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_live_docs_format.rs::TESTS -- M14: one FixedBitSet pass (the writer takes no other Bits)
@@ -91,7 +91,7 @@ tests/index/BaseMergePolicyTestCase	ported	crates/lucene-test-framework/src/inde
 tests/index/BaseNormsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_norms_format.rs::NormsSuite -- M14: bulk longValues is the advanceExact walk (not ported)
 tests/index/BasePointsFormatTestCase	ported	crates/lucene-test-framework/src/index/base_points_format.rs::PointsSuite
 tests/index/BasePostingsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_postings_format.rs::TESTS -- M14: testInvertedWrite (no codec plug-in point); enum reuse
-tests/index/BaseSegmentInfoFormatTestCase	partial	crates/lucene-test-framework/src/index/base_segment_info_format.rs::SegmentInfoSuite -- M14: no testExceptionOnCloseInput (a read has no input close)
+tests/index/BaseSegmentInfoFormatTestCase	ported	crates/lucene-test-framework/src/index/base_segment_info_format.rs::SegmentInfoSuite
 tests/index/BaseStoredFieldsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_stored_fields_format.rs::TESTS -- M14: the merging reader wrappers (the merge reads files, not readers); SimpleText switch
 tests/index/BaseTermVectorsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_term_vectors_format.rs::TESTS -- M14: term vectors are read as a value, so the enum seeks and reuse are not exercised
 tests/index/BaseTestCheckIndex	ported	crates/lucene-test-framework/src/index/base_test_check_index.rs::test_deleted_docs
@@ -170,15 +170,15 @@ tests/store/BaseDirectoryWrapper	ported	crates/lucene-test-framework/src/store/b
 tests/store/BaseLockFactoryTestCase	ported	crates/lucene-test-framework/src/store/base_lock_factory.rs::BaseLockFactoryTestCase
 tests/store/CorruptingIndexOutput	ported	crates/lucene-test-framework/src/store/corrupting_index_output.rs::CorruptingIndexOutput
 tests/store/MockDirectoryWrapper	partial	crates/lucene-test-framework/src/store/mock_directory_wrapper.rs::MockDirectoryWrapper -- M14: corruptUnknownFiles scans all retained commits and calls the supplied corruption callback only after a successful scan; requires a quiescent directory (Java synchronizes); setAssertNoUnrefencedFilesOnClose checks actual writer cleanup and document counts; getLevelForCheckOnClose, the input clone count and the READONCE segments check are not ported yet (no IOContext; inputs are byte buffers)
-tests/store/MockIndexInputWrapper	partial	crates/lucene-test-framework/src/store/mock_directory_wrapper.rs::MockInput -- M14: only open/close bookkeeping; the read-side checks (reads after close, clone tracking) need a reading IndexInput, which the byte-buffer Input is not
-tests/store/MockIndexOutputWrapper	partial	crates/lucene-test-framework/src/store/mock_directory_wrapper.rs::MockOutput -- M14: no AlreadyClosedException on a write after close (the output is consumed by close), no separate copyBytes path, and a write fault is latched until close rather than thrown by the write
+tests/store/MockIndexInputWrapper	ported	crates/lucene-test-framework/src/store/mock_directory_wrapper.rs::MockInput
+tests/store/MockIndexOutputWrapper	ported	crates/lucene-test-framework/src/store/mock_directory_wrapper.rs::MockOutput
 tests/store/RawDirectoryWrapper	ported	crates/lucene-test-framework/src/store/base_directory_wrapper.rs::RawDirectoryWrapper
 tests/store/SerialIOCountingDirectory	not-needed	counts random-access reads per IOContext ReadAdvice; the Rust Directory::open takes no IOContext or read advice to count
 tests/store/SlowClosingMockIndexInputWrapper	ported	crates/lucene-test-framework/src/store/mock_directory_wrapper.rs::set_use_slow_open_closers
 tests/store/SlowOpeningMockIndexInputWrapper	ported	crates/lucene-test-framework/src/store/mock_directory_wrapper.rs::set_use_slow_open_closers
 tests/util/AbstractBeforeAfterRule	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
 tests/util/BaseBitSetTestCase	ported	crates/lucene-test-framework/src/util/base_bit_set.rs::BaseBitSetTestCase
-tests/util/BaseDocIdSetTestCase	partial	crates/lucene-test-framework/src/util/base_doc_id_set.rs::BaseDocIdSetTestCase -- M14: intoBitSet/ramBytesUsed have no Rust counterpart on DocIdSet (testIntoBitSet, testIntoBitSetBoundChecks, testRamBytesUsed)
+tests/util/BaseDocIdSetTestCase	ported	crates/lucene-test-framework/src/util/base_doc_id_set.rs::BaseDocIdSetTestCase
 tests/util/CloseableDirectory	ported	crates/lucene-test-framework/src/util/closeable_directory.rs::CloseableDirectory
 tests/util/English	ported	crates/lucene-test-framework/src/util/english.rs::long_to_english
 tests/util/FailOnNonBulkMergesInfoStream	not-needed	an InfoStream asserting on merge messages; this port has no InfoStream
@@ -208,7 +208,7 @@ tests/util/TestRuleStoreClassName	not-needed	JUnit/randomizedtesting runner infr
 tests/util/TestRuleTemporaryFilesCleanup	ported	crates/lucene-util/src/test_support.rs::TempDir
 tests/util/TestRuleThreadAndTestName	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
 tests/util/TestSecurityManager	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
-tests/util/TestUtil	partial	crates/lucene-test-framework/src/util/test_util.rs::random_realistic_unicode_string -- M14: index/codec helpers (getDefaultCodec, docs, ...) arrive with h5 (checkIndex: test_util.rs::check_index); randomPattern (java.util.regex) is not ported
+tests/util/TestUtil	partial	crates/lucene-test-framework/src/util/test_util.rs::random_realistic_unicode_string -- M14: index/codec helpers (getDefaultCodec, docs, checkReader, cloneDocument, ...) (checkIndex: test_util.rs::check_index; randomPattern: test_util.rs::random_pattern)
 tests/util/ThrottledIndexOutput	ported	crates/lucene-test-framework/src/store/mock_directory_wrapper.rs::set_throttling
 tests/util/TimeUnits	not-needed	millisecond constants for JUnit `@Timeout` annotations
 tests/util/VerifyTestClassNamingConvention	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
