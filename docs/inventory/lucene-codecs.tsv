@@ -31,7 +31,7 @@ codecs/memory/FSTTermsReader	ported	crates/lucene-codecs/src/memory/fst_terms.rs
 codecs/memory/FSTTermsWriter	ported	crates/lucene-codecs/src/memory/fst_terms.rs::FstTermsWriter
 codecs/simpletext/SimpleTextBKDReader	ported	crates/lucene-codecs/src/simpletext/bkd_reader.rs::SimpleTextBkdReader
 codecs/simpletext/SimpleTextBKDWriter	ported	crates/lucene-codecs/src/simpletext/bkd_writer.rs::SimpleTextBkdWriter
-codecs/simpletext/SimpleTextCodec	partial	crates/lucene-codecs/src/simpletext/codec.rs::SimpleTextCodec -- M14: DirectoryReader all component readers and doc-values skippers, reader-wide scoring statistics/norms; search and IndexWriter routing incomplete
+codecs/simpletext/SimpleTextCodec	ported	crates/lucene-codecs/src/simpletext/codec.rs::SimpleTextCodec -- M14: DirectoryReader, every query family, and IndexWriter writing and appending (lucene-search simpletext_writer::SimpleTextDirectory; VerifySimpleTextWritePath)
 codecs/simpletext/SimpleTextCompoundFormat	ported	crates/lucene-codecs/src/simpletext/compound.rs::SimpleTextCompoundReader
 codecs/simpletext/SimpleTextDocValuesFormat	ported	crates/lucene-codecs/src/simpletext/doc_values_writer.rs::doc_values_file_name
 codecs/simpletext/SimpleTextDocValuesReader	ported	crates/lucene-codecs/src/simpletext/doc_values_reader.rs::SimpleTextDocValuesReader
