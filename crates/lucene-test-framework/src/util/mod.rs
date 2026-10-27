@@ -13,3 +13,4 @@ pub mod lucene_test_case;
 pub mod random_numbers;
 pub mod string_mock_resource_loader;
 pub mod test_util;
+pub mod zip;

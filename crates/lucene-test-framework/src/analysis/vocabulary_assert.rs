@@ -1,9 +1,13 @@
 //! `VocabularyAssert`: vocabulary-based stemming tests -- every input word
 //! must analyze to its expected stem.
 //!
-//! The text variants are ported. Java's zip variants unzip into a temp dir
-//! and run these on the files; a caller here reads the zip entry itself
-//! and passes its text.
+//! Java's zip variants unzip into a temp dir and read the named files back;
+//! [`assert_vocabulary_zip`] and [`assert_vocabulary_tsv_zip`] read the same
+//! entries straight out of the zip ([`crate::util::zip`]): the last entry of
+//! a name wins, as the last write to that file does in Java. Text is decoded
+//! as Java's `InputStreamReader(UTF_8)`, malformed bytes as U+FFFD.
+
+use std::path::Path;
 
 use lucene_analysis::{AnalysisError, Analyzer};
 use lucene_util::java_random::JavaRandom;
@@ -75,6 +79,59 @@ pub fn assert_vocabulary_tsv(
         check_one_term(random, a, input, expected)?;
     }
     Ok(())
+}
+
+/// The text of entry `name` in the zip at `zip_file`.
+fn zip_entry_text(zip_file: &Path, name: &str) -> Result<String, AnalysisError> {
+    let io = |e: std::io::Error| AnalysisError::Io(format!("{}: {e}", zip_file.display()));
+    let bytes = std::fs::read(zip_file).map_err(io)?;
+    let entries = crate::util::zip::entries(&bytes).map_err(io)?;
+    let entry = entries
+        .iter()
+        .rev()
+        .find(|e| e.name == name && !e.is_directory())
+        .ok_or_else(|| AnalysisError::Io(format!("NoSuchFileException: {name}")))?;
+    Ok(String::from_utf8_lossy(&entry.data).into_owned())
+}
+
+/// `assertVocabulary(a, zipFile, voc, out)`: [`assert_vocabulary`] over the
+/// zip's entries `voc` and `out`.
+///
+/// # Panics
+/// As [`assert_vocabulary`].
+///
+/// # Errors
+/// An unreadable or corrupt zip, a missing entry, or what the analyzer
+/// returns.
+pub fn assert_vocabulary_zip(
+    random: &mut JavaRandom,
+    a: &Analyzer,
+    zip_file: &Path,
+    voc: &str,
+    out: &str,
+) -> Result<(), AnalysisError> {
+    let voc = zip_entry_text(zip_file, voc)?;
+    let out = zip_entry_text(zip_file, out)?;
+    assert_vocabulary(random, a, &voc, &out)
+}
+
+/// `assertVocabulary(a, zipFile, vocOut)`: [`assert_vocabulary_tsv`] over
+/// the zip's entry `voc_out`.
+///
+/// # Panics
+/// As [`assert_vocabulary_tsv`].
+///
+/// # Errors
+/// An unreadable or corrupt zip, a missing entry, or what the analyzer
+/// returns.
+pub fn assert_vocabulary_tsv_zip(
+    random: &mut JavaRandom,
+    a: &Analyzer,
+    zip_file: &Path,
+    voc_out: &str,
+) -> Result<(), AnalysisError> {
+    let voc_out = zip_entry_text(zip_file, voc_out)?;
+    assert_vocabulary_tsv(random, a, &voc_out)
 }
 
 #[cfg(test)]

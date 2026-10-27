@@ -2347,3 +2347,25 @@ fn sparse_doc_sets_follow_the_segment_core_across_reopens() {
 
     drop(w);
 }
+
+#[test]
+fn next_postings_batches_sixteen_docs_below_up_to() {
+    let docs: Vec<i32> = (0..40).map(|d| d * 2).collect();
+    let freqs: Vec<i32> = (1..=40).collect();
+    let mut pe = super::MaterializedPostings::new(docs, freqs, None).unwrap();
+    let mut buffer = super::DocAndFloatFeatureBuffer::default();
+    pe.next_doc().unwrap();
+    pe.next_postings(100, &mut buffer).unwrap();
+    assert_eq!(buffer.docs, (0..16).map(|d| d * 2).collect::<Vec<_>>());
+    assert_eq!(
+        buffer.features,
+        (1..=16).map(|f| f as f32).collect::<Vec<_>>()
+    );
+    assert_eq!(pe.doc_id(), 32, "moved past the batch");
+    pe.next_postings(37, &mut buffer).unwrap();
+    assert_eq!(buffer.docs, [32, 34, 36]);
+    assert_eq!(pe.doc_id(), 38);
+    pe.next_postings(38, &mut buffer).unwrap();
+    assert!(buffer.docs.is_empty() && buffer.features.is_empty());
+    assert_eq!(pe.doc_id(), 38);
+}

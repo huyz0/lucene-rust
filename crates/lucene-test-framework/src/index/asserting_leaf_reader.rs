@@ -9,8 +9,7 @@
 //! - `assertThread` has no counterpart: the iterators borrow their reader
 //!   and are not `Send`, so the compiler already refuses to hand one to
 //!   another thread.
-//! - Not wrapped (they pass through unchecked): the doc-values skipper
-//!   (`AssertingDocValuesSkipper`), points (`AssertingPointValues`,
+//! - Not wrapped (they pass through unchecked): points (`AssertingPointValues`,
 //!   `AssertingPointTree`, `AssertingIntersectVisitor`) and vectors
 //!   (`searchNearestVectors`). Stored fields and term vectors pass through
 //!   too: Java checks only the calling thread of the former, and a
@@ -32,19 +31,21 @@ use std::sync::Arc;
 
 use lucene_codecs::automaton::ByteDfa;
 use lucene_codecs::blocktree::SeekStatus;
-use lucene_codecs::field_infos::{DocValuesType, FieldInfo, FieldInfos, IndexOptions};
+use lucene_codecs::field_infos::{
+    DocValuesSkipIndexType, DocValuesType, FieldInfo, FieldInfos, IndexOptions,
+};
 use lucene_codecs::postings::Impact;
 use lucene_codecs::stored_fields::StoredFieldVisitor;
 use lucene_index::segment_info::IndexSortField;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::reader::filter::{FilterDirectoryReader, SubReaderWrapper};
-use lucene_search::reader::DocValuesSkipper;
 use lucene_search::reader::{
     BinaryDocValues, ByteVectorValues, CacheHelper, DocIdSetIterator, DocValuesIterator,
     FloatVectorValues, ImpactsEnum, IndexReader, LeafReader, LeafReaderContext, NumericDocValues,
     PointValues, PostingsEnum, PostingsFlags, SortedDocValues, SortedNumericDocValues,
     SortedSetDocValues, TermVectorsDocument, Terms, TermsEnum, NO_MORE_DOCS,
 };
+use lucene_search::reader::{DocValuesSkipper, SkipperImpl};
 use lucene_search::Result;
 use lucene_util::fixed_bit_set::FixedBitSet;
 
@@ -273,7 +274,28 @@ impl LeafReader for AssertingLeafReader {
     }
 
     fn doc_values_skipper(&self, field: &str) -> Result<Option<DocValuesSkipper<'_>>> {
-        self.in_.doc_values_skipper(field)
+        let skipper = self.in_.doc_values_skipper(field)?;
+        let indexed = self
+            .field(field)
+            .is_some_and(|fi| fi.doc_values_skip_index_type != DocValuesSkipIndexType::None);
+        match skipper {
+            Some(skipper) => {
+                assert!(
+                    indexed,
+                    "a skipper for {field}, whose field info has no skip index"
+                );
+                Ok(Some(DocValuesSkipper::from_impl(Box::new(
+                    AssertingDocValuesSkipper::new(skipper),
+                ))))
+            }
+            None => {
+                assert!(
+                    !indexed,
+                    "no skipper for {field}, whose field info has a skip index"
+                );
+                Ok(None)
+            }
+        }
     }
 
     /// Java's `AssertingSortedNumericDocValues.create` keeps a singleton a
@@ -1517,5 +1539,117 @@ mod doc_values_callback_tests {
         });
         assert_eq!(set.ords_retrieved, 1);
         assert_eq!(state.borrow().calls, ["count"]);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Doc values skipper
+// ---------------------------------------------------------------------------
+
+/// `AssertingDocValuesSkipper`: unpositioned at -1 when created, advanced
+/// only beyond its current interval, each level nested in the one above,
+/// and value statistics read only while positioned. Java's
+/// `Objects.checkIndex(level, numLevels())` is an index panic here too.
+#[derive(Debug, Clone)]
+pub struct AssertingDocValuesSkipper<'a> {
+    in_: DocValuesSkipper<'a>,
+}
+
+impl<'a> AssertingDocValuesSkipper<'a> {
+    /// `new AssertingDocValuesSkipper(in)`.
+    ///
+    /// # Panics
+    /// When `in_` is already positioned.
+    pub fn new(in_: DocValuesSkipper<'a>) -> Self {
+        let s = Self { in_ };
+        assert_eq!(s.min_doc_id(0), -1);
+        assert_eq!(s.max_doc_id(0), -1);
+        s
+    }
+
+    fn check_index(&self, level: usize) {
+        let n = self.in_.num_levels();
+        assert!(level < n, "Index {level} out of bounds for length {n}");
+    }
+
+    fn iterating(&self) -> bool {
+        let (min, max) = (self.min_doc_id(0), self.max_doc_id(0));
+        max != -1 && min != -1 && max != NO_MORE_DOCS && min != NO_MORE_DOCS
+    }
+}
+
+impl SkipperImpl for AssertingDocValuesSkipper<'_> {
+    fn advance(&mut self, target: i32) {
+        assert!(
+            target > self.max_doc_id(0),
+            "Illegal to call advance() on a target that is not beyond the current interval"
+        );
+        self.in_.advance(target);
+        assert!(self.in_.min_doc_id(0) <= self.in_.max_doc_id(0));
+    }
+
+    fn num_levels(&self) -> usize {
+        self.in_.num_levels()
+    }
+
+    fn min_doc_id(&self, level: usize) -> i32 {
+        self.check_index(level);
+        let min = self.in_.min_doc_id(level);
+        assert!(min <= self.in_.max_doc_id(level));
+        if level > 0 {
+            assert!(min <= self.in_.min_doc_id(level - 1));
+        }
+        min
+    }
+
+    fn max_doc_id(&self, level: usize) -> i32 {
+        self.check_index(level);
+        let max = self.in_.max_doc_id(level);
+        assert!(max >= self.in_.min_doc_id(level));
+        if level > 0 {
+            assert!(max >= self.in_.max_doc_id(level - 1));
+        }
+        max
+    }
+
+    fn min_value(&self, level: usize) -> i64 {
+        assert!(self.iterating(), "Unpositioned iterator");
+        self.check_index(level);
+        self.in_.min_value(level)
+    }
+
+    fn max_value(&self, level: usize) -> i64 {
+        assert!(self.iterating(), "Unpositioned iterator");
+        self.check_index(level);
+        self.in_.max_value(level)
+    }
+
+    fn doc_count(&self, level: usize) -> i32 {
+        assert!(self.iterating(), "Unpositioned iterator");
+        self.check_index(level);
+        self.in_.doc_count(level)
+    }
+
+    fn global_min_value(&self) -> i64 {
+        self.in_.global_min_value()
+    }
+
+    fn global_max_value(&self) -> i64 {
+        self.in_.global_max_value()
+    }
+
+    fn global_doc_count(&self) -> i32 {
+        self.in_.global_doc_count()
+    }
+
+    fn max_value_count(&self) -> i32 {
+        self.in_.max_value_count()
+    }
+
+    fn clone_box<'s>(&self) -> Box<dyn SkipperImpl + 's>
+    where
+        Self: 's,
+    {
+        Box::new(self.clone())
     }
 }

@@ -53,7 +53,7 @@ mod segment;
 mod simpletext;
 mod skipper;
 pub(crate) use segment::SparseDocs;
-pub use skipper::DocValuesSkipper;
+pub use skipper::{DocValuesSkipper, SkipperImpl};
 pub mod slow_codec;
 pub mod sorting;
 pub mod term_vector_terms;
@@ -157,6 +157,33 @@ pub trait PostingsEnum: DocIdSetIterator {
     fn end_offset(&self) -> i32;
     /// `getPayload()` of the last position read.
     fn payload(&self) -> Option<&[u8]>;
+
+    /// `nextPostings(upTo, buffer)`: up to 16 documents from the current one
+    /// (inclusive) below `up_to`, each with its `freq()` as a float feature,
+    /// moving past them (Java's default; the block decoders batch theirs in
+    /// [`crate::bulk_scorer`]).
+    fn next_postings(&mut self, up_to: i32, buffer: &mut DocAndFloatFeatureBuffer) -> Result<()> {
+        const BATCH_SIZE: usize = 16; // arbitrary
+        buffer.docs.clear();
+        buffer.features.clear();
+        let mut doc = self.doc_id();
+        while doc < up_to && buffer.docs.len() < BATCH_SIZE {
+            buffer.docs.push(doc);
+            buffer.features.push(self.freq() as f32);
+            doc = self.next_doc()?;
+        }
+        Ok(())
+    }
+}
+
+/// `DocAndFloatFeatureBuffer`: a batch of documents and one float feature
+/// (a frequency, a score) each; `docs.len()` is Java's `size`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DocAndFloatFeatureBuffer {
+    /// The documents, ascending.
+    pub docs: Vec<i32>,
+    /// One feature per document.
+    pub features: Vec<f32>,
 }
 
 /// `ImpactsEnum`: a [`PostingsEnum`] that also reports, per block of

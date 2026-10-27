@@ -18,10 +18,10 @@
 //!   explicit documents define it; the checks key off what the suite meant
 //!   to index (`currentFieldInfos`), which agrees whenever a payload exists.
 //! - **What has no Rust counterpart is not exercised**: `TermState`
-//!   (`Option::TermState` saves nothing, so no seek goes through one),
+//!   (`Option::TermState` saves nothing, so no seek goes through one) and
 //!   `PostingsEnum` reuse (`Option::ReuseEnums` draws but every call returns
-//!   a fresh enum), `DocIdSetIterator.intoBitSet` (`Option::IntoBitSet`) and
-//!   `PostingsEnum.nextPostings` (`Option::NextDocsAndFreqs`).
+//!   a fresh enum). `intoBitSet` (`Option::IntoBitSet`) is
+//!   [`DocIdSetIterator::fill_bit_set`](lucene_search::reader::DocIdSetIterator::fill_bit_set).
 //! - The segment reader's `TermsEnum.impacts` is a `SlowImpactsEnum`
 //!   (`(Integer.MAX_VALUE, 1)` over every document), so the impacts checks
 //!   run but can only find a malformed list; the real per-block impacts are
@@ -39,7 +39,8 @@ use lucene_codecs::postings::Impact;
 use lucene_index::index_writer::{ExplicitDocument, InvertedField, InvertedTerm};
 use lucene_search::directory_reader::{DirectoryReader, SegmentReader};
 use lucene_search::reader::{
-    ImpactsEnum, LeafReader, PostingsEnum, PostingsFlags, TermsEnum, NO_MORE_DOCS,
+    DocAndFloatFeatureBuffer, ImpactsEnum, LeafReader, PostingsEnum, PostingsFlags, TermsEnum,
+    NO_MORE_DOCS,
 };
 use lucene_search::Error as SearchError;
 use lucene_store::Directory;
@@ -119,9 +120,9 @@ pub enum TestOption {
     PartialDocConsume,
     /// Sometimes don't fully consume a document's positions.
     PartialPosConsume,
-    /// `DocIdSetIterator#intoBitSet` (no counterpart here).
+    /// `DocIdSetIterator#intoBitSet` (`fill_bit_set`).
     IntoBitSet,
-    /// `PostingsEnum#nextPostings` (no counterpart here).
+    /// `PostingsEnum#nextPostings`.
     NextDocsAndFreqs,
     /// Sometimes check payloads.
     Payloads,
@@ -1059,6 +1060,111 @@ impl RandomPostingsTester {
                 do_check_positions && do_check_payloads,
             );
             check_impacts_enum(r, te, flags, do_check_offsets, do_check_payloads);
+        }
+
+        let tail_flags = postings_flags(
+            true,
+            do_check_positions,
+            do_check_positions && do_check_offsets,
+            do_check_positions && do_check_payloads,
+        );
+        if c.options.contains(TestOption::IntoBitSet) {
+            check_into_bit_set(r, te, tail_flags, self.max_doc);
+        }
+        if c.options.contains(TestOption::NextDocsAndFreqs) {
+            check_next_postings(r, te, tail_flags, self.max_doc);
+        }
+    }
+}
+
+/// `verifyEnum`'s `INTO_BIT_SET` tail: `intoBitSet` over random windows
+/// sets exactly the documents a second enum walks to, and leaves both on
+/// the same document. Java's "reuse" re-pull after an `advance(maxDoc / 2)`
+/// is drawn and done, though a port enum always starts fresh.
+fn check_into_bit_set(
+    r: &mut JavaRandom,
+    te: &mut dyn TermsEnum,
+    flags: PostingsFlags,
+    max_doc: i32,
+) {
+    use lucene_util::fixed_bit_set::FixedBitSet;
+    let mut pe1 = te.postings(flags).expect("postings");
+    if r.next_boolean() {
+        pe1.advance(max_doc / 2).expect("advance");
+        pe1 = te.postings(flags).expect("postings");
+    }
+    let mut pe2 = te.postings(flags).expect("postings");
+    let mut set1 = FixedBitSet::new(1024);
+    let mut set2 = FixedBitSet::new(1024);
+    let len = 1024i32;
+    loop {
+        pe1.next_doc().expect("nextDoc");
+        pe2.next_doc().expect("nextDoc");
+        let offset = next_int(r, 0.max(pe1.doc_id() - len), pe1.doc_id());
+        // Java int arithmetic: past the last document it wraps negative.
+        let up_to = offset.wrapping_add(r.next_int_bounded(len));
+        pe1.fill_bit_set(up_to, &mut set1, offset)
+            .expect("intoBitSet");
+        let mut d = pe2.doc_id();
+        while d < up_to {
+            // FBS: d < upTo = offset + nextInt(1024), so d - offset < 1024.
+            set2.set((d - offset) as usize);
+            d = pe2.next_doc().expect("nextDoc");
+        }
+        assert_eq!(set1, set2, "intoBitSet set other documents");
+        assert_eq!(pe1.doc_id(), pe2.doc_id());
+        if pe1.doc_id() == NO_MORE_DOCS {
+            break;
+        }
+        set1.clear_all();
+        set2.clear_all();
+    }
+}
+
+/// `verifyEnum`'s `NEXT_DOCS_AND_FREQS` tail: `nextPostings` batches, from
+/// the postings and then the impacts enum, hold the documents and freqs a
+/// second enum walks to.
+fn check_next_postings(
+    r: &mut JavaRandom,
+    te: &mut dyn TermsEnum,
+    flags: PostingsFlags,
+    max_doc: i32,
+) {
+    for impacts in [false, true] {
+        let mut pe1: Box<dyn PostingsEnum> = if impacts {
+            te.impacts(flags).expect("impacts")
+        } else {
+            let mut pe1 = te.postings(flags).expect("postings");
+            if r.next_boolean() {
+                // test reuse
+                pe1.advance(max_doc / 2).expect("advance");
+                pe1 = te.postings(flags).expect("postings");
+            }
+            pe1
+        };
+        let mut pe2 = te.postings(flags).expect("postings");
+        pe1.next_doc().expect("nextDoc");
+        pe2.next_doc().expect("nextDoc");
+        let mut buffer = DocAndFloatFeatureBuffer::default();
+        loop {
+            let cur_doc = pe1.doc_id();
+            let up_to = next_int(
+                r,
+                cur_doc,
+                (i64::from(cur_doc) + 512).min(i64::from(i32::MAX)) as i32,
+            );
+            pe1.next_postings(up_to, &mut buffer).expect("nextPostings");
+            assert_eq!(buffer.docs.is_empty(), cur_doc >= up_to);
+            for (&doc, &feature) in buffer.docs.iter().zip(&buffer.features) {
+                assert!(doc < up_to);
+                assert_eq!(pe2.doc_id(), doc);
+                assert_eq!(pe2.freq() as f32, feature);
+                pe2.next_doc().expect("nextDoc");
+            }
+            assert_eq!(pe1.doc_id(), pe2.doc_id());
+            if pe1.doc_id() == NO_MORE_DOCS {
+                break;
+            }
         }
     }
 }

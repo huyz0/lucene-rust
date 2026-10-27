@@ -1,7 +1,10 @@
 //! `DocValuesSkipper` at the reader boundary, dispatching to each codec's
 //! cursor. Java's abstract class is a Rust enum over borrowed codec cursors;
 //! interval traversal remains in the codec. `advance_range` is Java's
-//! format-independent default method.
+//! format-independent default method. A skipper that is neither (Java's
+//! other subclasses: the test framework's `AssertingDocValuesSkipper`)
+//! implements [`SkipperImpl`] and is wrapped with
+//! [`DocValuesSkipper::from_impl`].
 
 use lucene_codecs::doc_values::{DocValuesSkipIndex, DocValuesSkipper as BinarySkipper};
 use lucene_codecs::simpletext::doc_values_reader::SimpleTextSkipper;
@@ -12,10 +15,53 @@ use super::NO_MORE_DOCS;
 #[derive(Debug, Clone)]
 pub struct DocValuesSkipper<'a>(Kind<'a>);
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 enum Kind<'a> {
     Binary(BinarySkipper<'a>),
     SimpleText(SimpleTextSkipper<'a>),
+    Other(Box<dyn SkipperImpl + 'a>),
+}
+
+impl Clone for Kind<'_> {
+    fn clone(&self) -> Self {
+        match self {
+            Kind::Binary(cursor) => Kind::Binary(cursor.clone()),
+            Kind::SimpleText(cursor) => Kind::SimpleText(cursor.clone()),
+            Kind::Other(other) => Kind::Other(other.clone_box()),
+        }
+    }
+}
+
+/// `DocValuesSkipper`'s abstract methods, for a skipper outside the codecs
+/// (a wrapper such as the test framework's asserting one). Levels are
+/// `usize`, as [`DocValuesSkipper`]'s getters take them.
+pub trait SkipperImpl: std::fmt::Debug + Send {
+    /// `advance(target)`.
+    fn advance(&mut self, target: i32);
+    /// `numLevels()`.
+    fn num_levels(&self) -> usize;
+    /// `minDocID(level)`.
+    fn min_doc_id(&self, level: usize) -> i32;
+    /// `maxDocID(level)`.
+    fn max_doc_id(&self, level: usize) -> i32;
+    /// `minValue(level)`.
+    fn min_value(&self, level: usize) -> i64;
+    /// `maxValue(level)`.
+    fn max_value(&self, level: usize) -> i64;
+    /// `docCount(level)`.
+    fn doc_count(&self, level: usize) -> i32;
+    /// `minValue()`.
+    fn global_min_value(&self) -> i64;
+    /// `maxValue()`.
+    fn global_max_value(&self) -> i64;
+    /// `docCount()`.
+    fn global_doc_count(&self) -> i32;
+    /// `maxValueCount()`.
+    fn max_value_count(&self) -> i32;
+    /// A copy at the same position (the skipper is `Clone`).
+    fn clone_box<'s>(&self) -> Box<dyn SkipperImpl + 's>
+    where
+        Self: 's;
 }
 
 macro_rules! level_getter {
@@ -25,6 +71,7 @@ macro_rules! level_getter {
             match &self.0 {
                 Kind::Binary(cursor) => cursor.$method(level),
                 Kind::SimpleText(cursor) => cursor.$text_method(level as i32),
+                Kind::Other(other) => other.$method(level),
             }
         }
     };
@@ -36,6 +83,7 @@ macro_rules! global_getter {
             match &self.0 {
                 Kind::Binary(cursor) => cursor.$method(),
                 Kind::SimpleText(cursor) => cursor.$text_method(),
+                Kind::Other(other) => other.$method(),
             }
         }
     };
@@ -51,12 +99,19 @@ impl<'a> DocValuesSkipper<'a> {
         Self(Kind::SimpleText(cursor))
     }
 
+    /// A skipper implemented outside the codecs (a `DocValuesSkipper`
+    /// subclass in Java).
+    pub fn from_impl(skipper: Box<dyn SkipperImpl + 'a>) -> Self {
+        Self(Kind::Other(skipper))
+    }
+
     /// `advance(target)`: the first interval that may contain a document
     /// at or after `target`; target must exceed the current level-0 maximum.
     pub fn advance(&mut self, target: i32) {
         match &mut self.0 {
             Kind::Binary(cursor) => cursor.advance(target),
             Kind::SimpleText(cursor) => cursor.advance(target),
+            Kind::Other(other) => other.advance(target),
         }
     }
 
@@ -65,6 +120,7 @@ impl<'a> DocValuesSkipper<'a> {
         match &self.0 {
             Kind::Binary(cursor) => cursor.num_levels(),
             Kind::SimpleText(cursor) => cursor.num_levels() as usize,
+            Kind::Other(other) => other.num_levels(),
         }
     }
 
@@ -264,5 +320,81 @@ mod tests {
             DocValuesSkipper::simpletext(reader.skipper("n", DocValuesType::Numeric).unwrap());
         initial_range.advance_range(9, 10);
         assert_eq!(initial_range.min_doc_id(0), 8);
+    }
+
+    /// One fixed interval, at `-1` until advanced.
+    #[derive(Debug, Clone)]
+    struct Fixed(i32);
+
+    impl SkipperImpl for Fixed {
+        fn advance(&mut self, target: i32) {
+            self.0 = if target > 9 { NO_MORE_DOCS } else { 0 };
+        }
+        fn num_levels(&self) -> usize {
+            1
+        }
+        fn min_doc_id(&self, _level: usize) -> i32 {
+            self.0
+        }
+        fn max_doc_id(&self, _level: usize) -> i32 {
+            if self.0 == 0 {
+                9
+            } else {
+                self.0
+            }
+        }
+        fn min_value(&self, _level: usize) -> i64 {
+            3
+        }
+        fn max_value(&self, _level: usize) -> i64 {
+            4
+        }
+        fn doc_count(&self, _level: usize) -> i32 {
+            10
+        }
+        fn global_min_value(&self) -> i64 {
+            3
+        }
+        fn global_max_value(&self) -> i64 {
+            4
+        }
+        fn global_doc_count(&self) -> i32 {
+            10
+        }
+        fn max_value_count(&self) -> i32 {
+            1
+        }
+        fn clone_box<'s>(&self) -> Box<dyn SkipperImpl + 's>
+        where
+            Self: 's,
+        {
+            Box::new(self.clone())
+        }
+    }
+
+    #[test]
+    fn a_skipper_outside_the_codecs_dispatches_through_its_impl() {
+        let mut s = DocValuesSkipper::from_impl(Box::new(Fixed(-1)));
+        assert_eq!(
+            (s.min_doc_id(0), s.max_doc_id(0), s.num_levels()),
+            (-1, -1, 1)
+        );
+        assert_eq!(
+            (
+                s.global_min_value(),
+                s.global_max_value(),
+                s.global_doc_count()
+            ),
+            (3, 4, 10)
+        );
+        assert_eq!(s.max_value_count(), 1);
+        let copy = s.clone();
+        s.advance_range(3, 3);
+        assert_eq!((s.min_doc_id(0), s.max_doc_id(0)), (0, 9));
+        assert_eq!((s.min_value(0), s.max_value(0), s.doc_count(0)), (3, 4, 10));
+        assert_eq!(copy.min_doc_id(0), -1, "the copy kept its position");
+        s.advance_range(5, 6);
+        assert_eq!(s.min_doc_id(0), NO_MORE_DOCS);
+        assert!(format!("{copy:?}").contains("Fixed"));
     }
 }
