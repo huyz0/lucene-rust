@@ -266,6 +266,74 @@ impl PointInGeo3DShapeQuery {
             bounds,
         })
     }
+
+    /// `getField()`.
+    pub fn field(&self) -> &str {
+        &self.field
+    }
+
+    /// `getShape()`.
+    pub fn shape(&self) -> &Arc<dyn GeoShape> {
+        &self.shape
+    }
+
+    /// `hashCode()`: `classHash()`, then the field's and the shape's.
+    pub fn java_hash_code(&self) -> i32 {
+        let class_hash = crate::mlt::java_string_hash(JAVA_CLASS_NAME);
+        let mut result = class_hash;
+        result = result
+            .wrapping_mul(31)
+            .wrapping_add(crate::mlt::java_string_hash(&self.field));
+        result
+            .wrapping_mul(31)
+            .wrapping_add(self.shape.java_hash_code())
+    }
+
+    /// `toString(field)`: the field named only when it is not `field`.
+    pub fn to_string_with_field(&self, field: &str) -> String {
+        let mut sb = String::from("PointInGeo3DShapeQuery:");
+        if self.field != field {
+            sb.push_str(" field=");
+            sb.push_str(&self.field);
+            sb.push(':');
+        }
+        sb.push_str(" Shape: ");
+        sb.push_str(&self.shape.java_to_string());
+        sb
+    }
+
+    /// `ramBytesUsed()` as a 64-bit HotSpot with compressed oops counts
+    /// it: the instance (header, `Query`'s class-name hash, three
+    /// references), the field name, and `RamUsageEstimator`'s 256-byte
+    /// default for each of the shape and its bounds, which are not
+    /// `Accountable`.
+    pub fn ram_bytes_used(&self) -> u64 {
+        /// `NUM_BYTES_OBJECT_HEADER` + an `int` + three references, aligned.
+        const BASE_RAM_BYTES: u64 = align(12 + 4 + 3 * 4);
+        /// `RamUsageEstimator.UNKNOWN_DEFAULT_RAM_BYTES_USED`.
+        const UNKNOWN: u64 = 256;
+        // `sizeOf(String)`: `String`'s shallow size (24), an array header
+        // (16) and two bytes a UTF-16 unit.
+        let units = self.field.encode_utf16().count() as u64;
+        BASE_RAM_BYTES + align(24 + 16 + 2 * units) + UNKNOWN + UNKNOWN
+    }
+}
+
+/// `RamUsageEstimator.alignObjectSize`: up to a multiple of 8.
+const fn align(size: u64) -> u64 {
+    size.div_ceil(8) * 8
+}
+
+/// `PointInGeo3DShapeQuery`'s `getClass().getName()`, which `classHash`
+/// hashes.
+const JAVA_CLASS_NAME: &str = "org.apache.lucene.spatial3d.PointInGeo3DShapeQuery";
+
+/// `equals(other)`: the same field and an equal shape (the shape's own
+/// `equals`).
+impl PartialEq for PointInGeo3DShapeQuery {
+    fn eq(&self, other: &Self) -> bool {
+        self.field == other.field && self.shape.java_equals(&*other.shape)
+    }
 }
 
 /// `PointInShapeIntersectVisitor`.
@@ -346,6 +414,11 @@ impl IntersectVisitor for ShapeVisitor<'_> {
 }
 
 impl DocumentQuery for PointInGeo3DShapeQuery {
+    /// `visit`: a leaf on its field.
+    fn field(&self) -> Option<&str> {
+        Some(&self.field)
+    }
+
     fn score_leaf(
         &self,
         leaf: &OpenSegment<'_>,

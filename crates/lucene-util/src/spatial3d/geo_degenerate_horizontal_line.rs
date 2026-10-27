@@ -251,6 +251,28 @@ impl Bounded for GeoDegenerateHorizontalLine {
 }
 
 impl GeoShape for GeoDegenerateHorizontalLine {
+    fn java_equals(&self, other: &dyn GeoShape) -> bool {
+        same_planet_as::<GeoDegenerateHorizontalLine>(&self.planet_model, other)
+            .is_some_and(|o| o.LHC == self.LHC && o.RHC == self.RHC)
+    }
+
+    fn java_hash_code(&self) -> i32 {
+        let mut result = self.planet_model.java_hash_code();
+        result = hash_step(result, self.LHC.java_hash_code());
+        result = hash_step(result, self.RHC.java_hash_code());
+        result
+    }
+
+    fn java_to_string(&self) -> String {
+        format!(
+            "GeoDegenerateHorizontalLine: {{planetmodel={}, latitude={}, leftlon={}, rightLon={}}}",
+            self.planet_model.java_to_string(),
+            radians_string(self.latitude),
+            radians_string(self.left_lon),
+            radians_string(self.right_lon)
+        )
+    }
+
     fn edge_points(&self) -> Cow<'_, [GeoPoint]> {
         Cow::Borrowed(&self.edge_points)
     }
@@ -420,6 +442,25 @@ impl Bounded for GeoWideDegenerateHorizontalLine {
 }
 
 impl GeoShape for GeoWideDegenerateHorizontalLine {
+    fn java_equals(&self, other: &dyn GeoShape) -> bool {
+        same_planet_as::<GeoWideDegenerateHorizontalLine>(&self.planet_model, other)
+            .is_some_and(|o| o.LHC == self.LHC && o.RHC == self.RHC)
+    }
+
+    fn java_hash_code(&self) -> i32 {
+        let mut result = self.planet_model.java_hash_code();
+        result = hash_step(result, self.LHC.java_hash_code());
+        result = hash_step(result, self.RHC.java_hash_code());
+        result
+    }
+
+    fn java_to_string(&self) -> String {
+        format!(
+            "GeoWideDegenerateHorizontalLine: {{planetmodel={}, latitude={}, leftlon={}, rightLon={}}}",
+            self.planet_model.java_to_string(), radians_string(self.latitude), radians_string(self.left_lon), radians_string(self.right_lon)
+        )
+    }
+
     fn edge_points(&self) -> Cow<'_, [GeoPoint]> {
         Cow::Borrowed(&self.edge_points)
     }

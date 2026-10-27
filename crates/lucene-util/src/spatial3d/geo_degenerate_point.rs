@@ -68,6 +68,33 @@ impl Bounded for GeoDegeneratePoint {
 }
 
 impl GeoShape for GeoDegeneratePoint {
+    /// `GeoDegeneratePoint.equals`: `GeoPoint`'s (`Vector`'s x/y/z, no
+    /// planet model) plus the latitude and longitude.
+    fn java_equals(&self, other: &dyn GeoShape) -> bool {
+        other
+            .as_any()
+            .downcast_ref::<GeoDegeneratePoint>()
+            .is_some_and(|o| {
+                let (a, b) = (&self.point[0], &o.point[0]);
+                a == b && b.latitude() == a.latitude() && b.longitude() == a.longitude()
+            })
+    }
+
+    /// `Vector.hashCode` (`GeoDegeneratePoint` does not override it).
+    fn java_hash_code(&self) -> i32 {
+        self.point[0].java_hash_code()
+    }
+
+    fn java_to_string(&self) -> String {
+        let p = &self.point[0];
+        format!(
+            "GeoDegeneratePoint: {{planetmodel={}, lat={}, lon={}}}",
+            self.planet_model.java_to_string(),
+            radians_string(p.latitude()),
+            radians_string(p.longitude())
+        )
+    }
+
     fn edge_points(&self) -> Cow<'_, [GeoPoint]> {
         Cow::Borrowed(&self.point)
     }
