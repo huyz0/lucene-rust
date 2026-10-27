@@ -11,6 +11,7 @@ pub mod asserting_postings;
 pub mod asserting_stored_fields;
 pub mod asserting_stored_fields_writer;
 pub mod asserting_term_vectors;
+pub mod asserting_term_vectors_writer;
 pub mod blockterms;
 pub mod bloom;
 pub mod cheap_bastard;

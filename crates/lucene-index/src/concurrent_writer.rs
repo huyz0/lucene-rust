@@ -317,6 +317,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         if let Some(what) = writer.shared_config().concurrent_unsupported() {
             return Err(crate::index_writer::Error::ConcurrentUnsupported(what));
         }
+        writer.validate_configured_term_vector_schema()?;
         writer.flush()?;
         writer.set_merges_by_caller(true);
         let slots = slots.max(1);

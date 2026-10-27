@@ -709,3 +709,101 @@ fn delete_all_releases_unregistered_source_properties_and_preserves_configured_r
     assert!(writer.registered_field("parent").unwrap().parent_field);
     assert!(writer.registered_field("soft").unwrap().soft_deletes_field);
 }
+
+#[test]
+fn imports_cannot_hide_persisted_vector_schema_behind_configured_capability() {
+    use lucene_store::ByteBuffersDirectory;
+
+    fn vector_fields() -> Vec<FieldInfo> {
+        vec![FieldInfo::new("body", 0)
+            .with_index_options(IndexOptions::DocsAndFreqs)
+            .with_omit_norms(true)
+            .with_store_term_vectors(true)]
+    }
+    fn vector_document(text: &str) -> Document {
+        Document {
+            fields: vec![StoredField {
+                field_number: 0,
+                value: FieldValue::String(text.into()),
+            }],
+        }
+    }
+    fn snapshot(directory: &dyn Directory) -> Vec<(String, Vec<u8>)> {
+        let mut files: Vec<_> = directory
+            .list_all()
+            .unwrap()
+            .into_iter()
+            .map(|name| {
+                let bytes = directory.open(&name).unwrap().to_vec();
+                (name, bytes)
+            })
+            .collect();
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        files
+    }
+
+    let version = LuceneVersion {
+        major: 10,
+        minor: 5,
+        bugfix: 0,
+    };
+    let source = ByteBuffersDirectory::new();
+    {
+        let mut writer = IndexWriter::open(&source, vector_fields(), "Lucene104", version).unwrap();
+        writer.set_postings_field(Some("body")).unwrap();
+        writer.set_term_vector_field(Some("body")).unwrap();
+        writer.add_document(vector_document("source")).unwrap();
+        writer.commit().unwrap();
+    }
+    let source_before = snapshot(&source);
+    for merged in [false, true] {
+        for committed in [false, true] {
+            let destination = ByteBuffersDirectory::new();
+            let mut writer =
+                IndexWriter::open(&destination, vector_fields(), "Lucene104", version).unwrap();
+            writer.set_postings_field(Some("body")).unwrap();
+            // The declaration permits vectors, but no configured TV writer
+            // was enabled: the real segment records hasVectors=false.
+            writer.add_document(vector_document("own")).unwrap();
+            if committed {
+                writer.commit().unwrap();
+            } else {
+                writer.flush().unwrap();
+            }
+            let before = writer.live_infos();
+            assert_eq!(before.segments.len(), 1);
+            let fields =
+                super::super::segment_field_infos(&destination, &before.segments[0]).unwrap();
+            assert!(!fields.fields[0].store_term_vectors);
+            let files_before = snapshot(&destination);
+
+            let error = if merged {
+                writer.add_indexes_merged(&[&source]).unwrap_err()
+            } else {
+                writer.add_indexes(&[&source]).unwrap_err()
+            };
+            assert!(
+                matches!(error, Error::AddIndexes(ref message)
+                    if message.contains("storeTermVector=false")
+                        && message.contains("storeTermVector=true")),
+                "merged={merged}, committed={committed}: {error}"
+            );
+            let after = writer.live_infos();
+            assert_eq!(after.segments, before.segments);
+            assert_eq!(after.counter, before.counter);
+            assert_eq!(snapshot(&destination), files_before);
+            assert_eq!(snapshot(&source), source_before);
+
+            writer.commit().unwrap();
+            let final_infos = segment_infos::read_latest(&destination).unwrap();
+            assert_eq!(final_infos.segments.len(), 1);
+            assert_eq!(
+                final_infos.segments[0].segment_name,
+                before.segments[0].segment_name
+            );
+            let fields =
+                super::super::segment_field_infos(&destination, &final_infos.segments[0]).unwrap();
+            assert!(!fields.fields[0].store_term_vectors);
+        }
+    }
+}
