@@ -161,7 +161,7 @@ pub fn write(
 /// `Lucene90LiveDocsFormat.writeLiveDocs` over any [`Bits`], not only a
 /// [`FixedBitSet`]: `writeBits` copies 1024 bits at a time through
 /// [`Bits::apply_mask`], ghost bits past `length()` cleared, and counts the
-/// deletions as it goes. Writes the same bytes [`write`] writes for the
+/// deletions as it goes. Writes the same bytes [`write()`] writes for the
 /// equivalent bitset.
 ///
 /// # Errors
