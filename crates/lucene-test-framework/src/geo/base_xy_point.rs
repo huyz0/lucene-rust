@@ -1,26 +1,40 @@
-//! Bounded `BaseXYPointTestCase` helpers: six inherited point generators,
-//! overridable random-shape hooks, four ordered verification callbacks and the
-//! rectangle/distance oracles. A NaN Y coordinate marks a missing document.
+//! `BaseXYPointTestCase`: six inherited point generators, overridable
+//! random-shape hooks, four ordered verification callbacks and the
+//! rectangle/distance oracles; [`XYIndexed`], Java's own verifiers over a
+//! subclass's [`XYQueries`], with the multi-valued, inclusive-edge,
+//! random-distance, fixed-input (`testSmallSet*`, the box/distance/polygon
+//! basics) and invalid-value tests. A NaN Y coordinate marks a missing
+//! document.
 //!
-//! RandomizedContext, TEST_NIGHTLY and RANDOM_MULTIPLIER are explicit arguments.
-//! Mutable trait methods replace subclass overrides; owned float vectors replace
-//! Java arrays, and `Result` propagates shape/verification exceptions. This seam
-//! does not implement the four query verifiers, fixed/multivalued tests, nightly
-//! test selection, leaf-codec configuration or query equality/hash assertions.
-//! Capturing callbacks consume none of the writer/searcher configuration draws
-//! that the full Java verifiers consume. Java's all-Y copy-branch typo is retained.
+//! RandomizedContext, TEST_NIGHTLY and RANDOM_MULTIPLIER are explicit
+//! arguments. Mutable trait methods replace subclass overrides; owned float
+//! vectors replace Java arrays, and `Result` propagates shape exceptions.
+//! Every draw the base makes is Java's; as in [`super::base_geo_point`], each
+//! index is one segment under a plain `IndexWriter`, skipping the draws of
+//! `newIndexWriterConfig`, `RandomIndexWriter` and `newSearcher`, and
+//! `testRandomDistance` keeps the default leaf size (drawing Java's).
+//! `testEquals` needs query `equals`, which the XY queries do not port; the
+//! `null`-field tests cannot be written against `&str`. Java's all-Y
+//! copy-branch typo is retained.
 
+use std::collections::BTreeSet;
+
+use lucene_index::document::{Document, Store, StringField};
+use lucene_search::query::Clause;
 use lucene_util::geo::{GeoError, XYGeometry, XYPoint, XYPolygon, XYRectangle};
 use lucene_util::java_random::JavaRandom;
 
-use super::shape_test_util;
+use super::{point_index, shape_test_util};
+use crate::search::test_index::TestIndex;
 use crate::util::{lucene_test_case, test_util};
 
 /// Java: `BaseXYPointTestCase.FIELD_NAME`.
 pub const FIELD_NAME: &str = "point";
 
-/// Subclass hooks used by the bounded generators. Verification receives the
-/// same slices in rectangles, distances, polygons, geometries order.
+/// Subclass hooks used by the generators. Verification receives the same
+/// slices in rectangles, distances, polygons, geometries order, with the
+/// test's stream and `RANDOM_MULTIPLIER` (what Java's verifiers draw from);
+/// [`XYIndexed`] is Java's own verifiers, over a subclass's [`XYQueries`].
 pub trait XYPointCase {
     /// Shape constructor errors and verification failures propagate to the caller.
     type Error: From<GeoError>;
@@ -68,13 +82,37 @@ pub trait XYPointCase {
         Ok(geometries)
     }
     /// Java: `BaseXYPointTestCase.verifyRandomRectangles` override.
-    fn verify_random_rectangles(&mut self, xs: &[f32], ys: &[f32]) -> Result<(), Self::Error>;
+    fn verify_random_rectangles(
+        &mut self,
+        random: &mut JavaRandom,
+        multiplier: i32,
+        xs: &[f32],
+        ys: &[f32],
+    ) -> Result<(), Self::Error>;
     /// Java: `BaseXYPointTestCase.verifyRandomDistances` override.
-    fn verify_random_distances(&mut self, xs: &[f32], ys: &[f32]) -> Result<(), Self::Error>;
+    fn verify_random_distances(
+        &mut self,
+        random: &mut JavaRandom,
+        multiplier: i32,
+        xs: &[f32],
+        ys: &[f32],
+    ) -> Result<(), Self::Error>;
     /// Java: `BaseXYPointTestCase.verifyRandomPolygons` override.
-    fn verify_random_polygons(&mut self, xs: &[f32], ys: &[f32]) -> Result<(), Self::Error>;
+    fn verify_random_polygons(
+        &mut self,
+        random: &mut JavaRandom,
+        multiplier: i32,
+        xs: &[f32],
+        ys: &[f32],
+    ) -> Result<(), Self::Error>;
     /// Java: `BaseXYPointTestCase.verifyRandomGeometries` override.
-    fn verify_random_geometries(&mut self, xs: &[f32], ys: &[f32]) -> Result<(), Self::Error>;
+    fn verify_random_geometries(
+        &mut self,
+        random: &mut JavaRandom,
+        multiplier: i32,
+        xs: &[f32],
+        ys: &[f32],
+    ) -> Result<(), Self::Error>;
 }
 
 /// Six inherited generator entry points, parameterized by subclass callbacks.
@@ -134,10 +172,14 @@ impl<'a, C: XYPointCase> BaseXYPoint<'a, C> {
 
     // Java: BaseXYPointTestCase.verify. Errors stop dispatch immediately.
     fn verify(&mut self, xs: &[f32], ys: &[f32]) -> Result<(), C::Error> {
-        self.case.verify_random_rectangles(xs, ys)?;
-        self.case.verify_random_distances(xs, ys)?;
-        self.case.verify_random_polygons(xs, ys)?;
-        self.case.verify_random_geometries(xs, ys)
+        self.case
+            .verify_random_rectangles(self.random, self.multiplier, xs, ys)?;
+        self.case
+            .verify_random_distances(self.random, self.multiplier, xs, ys)?;
+        self.case
+            .verify_random_polygons(self.random, self.multiplier, xs, ys)?;
+        self.case
+            .verify_random_geometries(self.random, self.multiplier, xs, ys)
     }
 
     /// Java: `BaseXYPointTestCase.testRandomTiny`.
@@ -282,6 +324,569 @@ pub fn cartesian_distance(x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
     (diff_x * diff_x + diff_y * diff_y).sqrt()
 }
 
+/// A subclass's field and queries (`BaseXYPointTestCase`'s abstract
+/// methods). Each returns Java's `IllegalArgumentException` message as the
+/// error.
+pub trait XYQueries {
+    /// `addPointToDoc(field, doc, x, y)`.
+    ///
+    /// # Errors
+    /// An invalid coordinate.
+    fn add_point_to_doc(
+        &self,
+        field: &str,
+        doc: &mut Document,
+        x: f32,
+        y: f32,
+    ) -> Result<(), String>;
+    /// `newRectQuery(field, minX, maxX, minY, maxY)`.
+    ///
+    /// # Errors
+    /// An invalid box.
+    fn new_rect_query(
+        &self,
+        field: &str,
+        min_x: f32,
+        max_x: f32,
+        min_y: f32,
+        max_y: f32,
+    ) -> Result<Clause, String>;
+    /// `newDistanceQuery(field, centerX, centerY, radius)`.
+    ///
+    /// # Errors
+    /// An invalid centre or radius.
+    fn new_distance_query(
+        &self,
+        field: &str,
+        x: f32,
+        y: f32,
+        radius: f32,
+    ) -> Result<Clause, String>;
+    /// `newPolygonQuery(field, polygons...)`.
+    ///
+    /// # Errors
+    /// An invalid polygon.
+    fn new_polygon_query(&self, field: &str, polygons: &[XYPolygon]) -> Result<Clause, String>;
+    /// `newGeometryQuery(field, geometries...)`.
+    ///
+    /// # Errors
+    /// An invalid geometry.
+    fn new_geometry_query(&self, field: &str, geometries: &[XYGeometry]) -> Result<Clause, String>;
+}
+
+/// A subclass with Java's own verifiers: each indexes the points (a `NaN`
+/// coordinate = missing) in one segment, as the geo base does (see
+/// [`super::base_geo_point`]), and checks every hit of random boxes,
+/// circles, polygons and geometry sets against `rectContainsPoint`,
+/// `cartesianDistance`, `ShapeTestUtil.containsSlowly` and the geometries'
+/// `Component2D`.
+pub struct XYIndexed<Q> {
+    /// The subclass's field and queries.
+    pub queries: Q,
+    /// `TEST_NIGHTLY`, for the shape hooks.
+    pub nightly: bool,
+}
+
+impl<Q: XYQueries> XYIndexed<Q> {
+    fn index_points(&self, random: &mut JavaRandom, xs: &[f32], ys: &[f32]) -> Indexed {
+        point_index::index_points(random, xs.len(), |id, doc| {
+            if !xs[id].is_nan() && !ys[id].is_nan() {
+                self.queries
+                    .add_point_to_doc(FIELD_NAME, doc, xs[id], ys[id])
+                    .expect("a valid point");
+            }
+        })
+    }
+
+    fn check(
+        (index, deleted): &Indexed,
+        xs: &[f32],
+        ys: &[f32],
+        q: Clause,
+        what: &str,
+        expected: impl Fn(f64, f64) -> bool,
+    ) {
+        point_index::check(
+            index,
+            deleted,
+            xs.len(),
+            q,
+            what,
+            |id| xs[id].is_nan() || ys[id].is_nan(),
+            |id| expected(f64::from(xs[id]), f64::from(ys[id])),
+        );
+    }
+}
+
+type Indexed = (TestIndex, BTreeSet<usize>);
+
+fn at_least(random: &mut JavaRandom, multiplier: i32, i: i32) -> i32 {
+    lucene_test_case::at_least(random, multiplier, i)
+}
+
+impl<Q: XYQueries> XYPointCase for XYIndexed<Q> {
+    type Error = GeoError;
+
+    /// `verifyRandomRectangles`.
+    fn verify_random_rectangles(
+        &mut self,
+        random: &mut JavaRandom,
+        multiplier: i32,
+        xs: &[f32],
+        ys: &[f32],
+    ) -> Result<(), GeoError> {
+        let index = self.index_points(random, xs, ys);
+        for _ in 0..at_least(random, multiplier, 25) {
+            let rect = self.next_box(random);
+            let q = self
+                .queries
+                .new_rect_query(FIELD_NAME, rect.min_x, rect.max_x, rect.min_y, rect.max_y)
+                .expect("a valid box");
+            Self::check(&index, xs, ys, q, &format!("{rect:?}"), |x, y| {
+                rect_contains_point(&rect, x, y)
+            });
+        }
+        Ok(())
+    }
+
+    /// `verifyRandomDistances`: circles covering at most half the space.
+    fn verify_random_distances(
+        &mut self,
+        random: &mut JavaRandom,
+        multiplier: i32,
+        xs: &[f32],
+        ys: &[f32],
+    ) -> Result<(), GeoError> {
+        let index = self.index_points(random, xs, ys);
+        for _ in 0..at_least(random, multiplier, 25) {
+            let cx = self.next_x(random);
+            let cy = self.next_y(random);
+            let mut radius = 0.0;
+            while radius == 0.0 {
+                radius = random.next_float() * f32::MAX / 2.0;
+            }
+            let q = self
+                .queries
+                .new_distance_query(FIELD_NAME, cx, cy, radius)
+                .expect("a valid circle");
+            let what = format!("centerX={cx} centerY={cy} radius={radius}");
+            Self::check(&index, xs, ys, q, &what, |x, y| {
+                cartesian_distance(f64::from(cx), f64::from(cy), x, y) <= f64::from(radius)
+            });
+        }
+        Ok(())
+    }
+
+    /// `verifyRandomPolygons`: hits against `containsSlowly`.
+    fn verify_random_polygons(
+        &mut self,
+        random: &mut JavaRandom,
+        multiplier: i32,
+        xs: &[f32],
+        ys: &[f32],
+    ) -> Result<(), GeoError> {
+        let index = self.index_points(random, xs, ys);
+        for _ in 0..at_least(random, multiplier, 75) {
+            let polygon = self.next_polygon(random, self.nightly)?;
+            let q = self
+                .queries
+                .new_polygon_query(FIELD_NAME, std::slice::from_ref(&polygon))
+                .expect("a valid polygon");
+            Self::check(&index, xs, ys, q, &format!("{polygon:?}"), |x, y| {
+                shape_test_util::contains_slowly(&polygon, x, y).expect("no holes")
+            });
+        }
+        Ok(())
+    }
+
+    /// `verifyRandomGeometries`: hits against the geometries' component.
+    fn verify_random_geometries(
+        &mut self,
+        random: &mut JavaRandom,
+        multiplier: i32,
+        xs: &[f32],
+        ys: &[f32],
+    ) -> Result<(), GeoError> {
+        let index = self.index_points(random, xs, ys);
+        for _ in 0..at_least(random, multiplier, 75) {
+            let geometries = self.next_geometry(random, self.nightly)?;
+            let q = self
+                .queries
+                .new_geometry_query(FIELD_NAME, &geometries)
+                .expect("valid geometries");
+            let component = XYGeometry::create(&geometries)?;
+            Self::check(&index, xs, ys, q, &format!("{geometries:?}"), |x, y| {
+                component.contains(x, y)
+            });
+        }
+        Ok(())
+    }
+}
+
+/// `searchSmallSet`'s points (Java's doubles, indexed as floats).
+const SMALL_SET: [[f64; 2]; 16] = [
+    [32.763_420, -96.774],
+    [32.755_952_992_140_7, -96.775_989_532_470_7],
+    [32.778_669_420_109_77, -96.777_019_500_732_42],
+    [32.775_674_575_542_3, -96.770_603_656_768_8],
+    [27.703_618_681_345_585, -139.734_581_708_908_08],
+    [32.948_235_888_393_68, -96.453_811_302_781_1],
+    [33.060_471_419_708_14, -96.650_848_388_671_88],
+    [32.778_650, -96.7772],
+    [-88.560_293_717_309_83, -177.235_376_760_363_58],
+    [33.541_429_799_076_354, -26.779_373_834_241_003],
+    [26.774_024_500_421_728, -77.353_792_761_064_97],
+    [-90.0, -14.796_283_808_944_777],
+    [32.948_235_888_393_68, -178.853_811_302_781_1],
+    [32.948_235_888_393_68, 178.853_811_302_781_1],
+    [40.720_611, -73.998_776],
+    [-44.5, -179.5],
+];
+
+/// The fixed-input and index tests of `BaseXYPointTestCase`, over a
+/// subclass with Java's verifiers.
+impl<Q: XYQueries> BaseXYPoint<'_, XYIndexed<Q>> {
+    fn queries(&self) -> &Q {
+        &self.case.queries
+    }
+
+    fn add_point(&self, field: &str, doc: &mut Document, x: f32, y: f32) {
+        self.queries()
+            .add_point_to_doc(field, doc, x, y)
+            .expect("a valid point");
+    }
+
+    fn rect_query(&self, field: &str, min_x: f32, max_x: f32, min_y: f32, max_y: f32) -> Clause {
+        self.queries()
+            .new_rect_query(field, min_x, max_x, min_y, max_y)
+            .expect("a valid box")
+    }
+
+    fn distance_query(&self, field: &str, x: f32, y: f32, radius: f32) -> Clause {
+        self.queries()
+            .new_distance_query(field, x, y, radius)
+            .expect("a valid circle")
+    }
+
+    fn polygon_query(&self, field: &str, polygons: &[XYPolygon]) -> Clause {
+        self.queries()
+            .new_polygon_query(field, polygons)
+            .expect("a valid polygon")
+    }
+
+    /// `testRandomBig` (nightly).
+    ///
+    /// # Errors
+    /// A shape hook's.
+    pub fn random_big(&mut self) -> Result<(), GeoError> {
+        self.do_test_random(200_000)
+    }
+
+    /// `testMultiValued`: two points a document, hits for either.
+    pub fn multi_valued(&mut self) {
+        let n = self.at_least(1000);
+        let (mut xs, mut ys) = (vec![0.0; 2 * n], vec![0.0; 2 * n]);
+        let mut docs = Vec::with_capacity(n);
+        for id in 0..n {
+            let mut doc = Document::new();
+            doc.add(StringField::new("id", id.to_string(), Store::Yes));
+            for k in [2 * id, 2 * id + 1] {
+                xs[k] = self.case.next_x(self.random);
+                ys[k] = self.case.next_y(self.random);
+                self.add_point(FIELD_NAME, &mut doc, xs[k], ys[k]);
+            }
+            docs.push(doc);
+        }
+        let _force_merge = self.random.next_boolean();
+        let index = point_index::build(docs, &[]);
+        let iters = self.at_least(25);
+        for _ in 0..iters {
+            let rect = self.case.next_box(self.random);
+            let q = self.rect_query(FIELD_NAME, rect.min_x, rect.max_x, rect.min_y, rect.max_y);
+            let either = |id: usize| {
+                [2 * id, 2 * id + 1]
+                    .iter()
+                    .any(|&k| rect_contains_point(&rect, f64::from(xs[k]), f64::from(ys[k])))
+            };
+            let what = format!("{rect:?}");
+            point_index::check(&index, &BTreeSet::new(), n, q, &what, |_| false, either);
+        }
+    }
+
+    /// `testRectBoundariesAreInclusive`: points on a box's corners and edge
+    /// midpoints match it, and still match it one ulp larger.
+    pub fn rect_boundaries_are_inclusive(&mut self) {
+        let rect = shape_test_util::next_box(self.random);
+        let mid = |a: f32, b: f32| {
+            #[allow(clippy::cast_possible_truncation)]
+            let m = ((f64::from(a) + f64::from(b)) / 2.0) as f32;
+            m
+        };
+        let mut docs = Vec::new();
+        for i in 0..3 {
+            let y = match i {
+                0 => rect.min_y,
+                1 => mid(rect.min_y, rect.max_y),
+                _ => rect.max_y,
+            };
+            for j in 0..3 {
+                let x = match j {
+                    0 => rect.min_x,
+                    1 if i == 1 => continue,
+                    1 => mid(rect.min_x, rect.max_x),
+                    _ => rect.max_x,
+                };
+                let mut doc = Document::new();
+                self.add_point(FIELD_NAME, &mut doc, x, y);
+                docs.push(doc);
+            }
+        }
+        let index = point_index::build(docs, &[]);
+        let count = |b: [f32; 4]| {
+            point_index::hits(&index, self.rect_query(FIELD_NAME, b[0], b[1], b[2], b[3])).len()
+        };
+        let exact = [rect.min_x, rect.max_x, rect.min_y, rect.max_y];
+        assert_eq!(count(exact), 8, "exact edges of {rect:?}");
+        #[allow(clippy::float_cmp)]
+        for (k, limit) in [(0, -f32::MAX), (1, f32::MAX), (2, -f32::MAX), (3, f32::MAX)] {
+            if exact[k] != limit {
+                let mut b = exact;
+                b[k] = if k % 2 == 0 {
+                    b[k].next_down()
+                } else {
+                    b[k].next_up()
+                };
+                assert_eq!(count(b), 8, "{b:?}");
+            }
+        }
+    }
+
+    /// `testRandomDistance`: a few ten-document indexes, a hundred circles
+    /// each.
+    pub fn random_distance(&mut self) {
+        let iters = self.at_least(1);
+        for _ in 0..iters {
+            self.do_random_distance_test(10, 100);
+        }
+    }
+
+    /// `testRandomDistanceHuge` (nightly).
+    pub fn random_distance_huge(&mut self) {
+        for _ in 0..10 {
+            self.do_random_distance_test(2000, 100);
+        }
+    }
+
+    /// `doRandomDistanceTest(numDocs, numQueries)`: hits against the
+    /// cartesian distance; the default points format where Java installs
+    /// 2-5 points per leaf (the size is still drawn).
+    pub fn do_random_distance_test(&mut self, num_docs: usize, num_queries: usize) {
+        let _points_in_leaf = 2 + self.random.next_int_bounded(4);
+        let mut points = Vec::with_capacity(num_docs);
+        let mut docs = Vec::with_capacity(num_docs);
+        for _ in 0..num_docs {
+            let x = self.case.next_x(self.random);
+            let y = self.case.next_y(self.random);
+            let mut doc = Document::new();
+            self.add_point("field", &mut doc, x, y);
+            docs.push(doc);
+            points.push((f64::from(x), f64::from(y)));
+        }
+        let index = point_index::build(docs, &[]);
+        for _ in 0..num_queries {
+            let circle = shape_test_util::next_circle(self.random);
+            let (x, y, radius) = (circle.x(), circle.y(), circle.radius());
+            let expected: BTreeSet<usize> = (0..num_docs)
+                .filter(|&d| {
+                    cartesian_distance(f64::from(x), f64::from(y), points[d].0, points[d].1)
+                        <= f64::from(radius)
+                })
+                .collect();
+            let actual = point_index::hits(&index, self.distance_query("field", x, y, radius));
+            assert_eq!(actual, expected, "center: ({x},{y}), radius={radius}");
+        }
+    }
+
+    /// `testBoxBasics`, `testDistanceBasics`, `testPolygonBasics`,
+    /// `testPolygonHole`, `testPolygonHoleExcludes` and
+    /// `testMultiPolygonBasics`: one point, found (or excluded by a hole).
+    // Java's float literals, as written.
+    #[allow(clippy::excessive_precision)]
+    pub fn basics(&mut self) {
+        let square = |xs: [f32; 2], ys: [f32; 2], holes: Vec<XYPolygon>| {
+            XYPolygon::new(
+                &[xs[0], xs[0], xs[1], xs[1], xs[0]],
+                &[ys[0], ys[1], ys[1], ys[0], ys[0]],
+                holes,
+            )
+            .expect("a valid polygon")
+        };
+        let outer = |hole: Option<XYPolygon>| {
+            square([18.0, 19.0], [-66.0, -65.0], hole.into_iter().collect())
+        };
+        let cases = [
+            ("box", self.rect_query("field", 18.0, 19.0, -66.0, -65.0), 1),
+            (
+                "distance",
+                self.distance_query("field", 18.0, -65.0, 20.0),
+                1,
+            ),
+            ("polygon", self.polygon_query("field", &[outer(None)]), 1),
+            (
+                "hole",
+                self.polygon_query(
+                    "field",
+                    &[outer(Some(square([18.5, 18.7], [-65.7, -65.4], vec![])))],
+                ),
+                1,
+            ),
+            (
+                "excluding hole",
+                self.polygon_query(
+                    "field",
+                    &[outer(Some(square([18.2, 18.4], [-65.3, -65.2], vec![])))],
+                ),
+                0,
+            ),
+            (
+                "multi-polygon",
+                self.polygon_query(
+                    "field",
+                    &[square([28.0, 29.0], [-56.0, -55.0], vec![]), outer(None)],
+                ),
+                1,
+            ),
+        ];
+        for (what, q, want) in cases {
+            let mut doc = Document::new();
+            self.add_point("field", &mut doc, 18.313_694, -65.227_444);
+            assert_eq!(point_index::count(vec![doc], q), want, "{what}");
+        }
+    }
+
+    /// `testIndexExtremeValues`, `testIndexNaNValues` and
+    /// `testIndexInfValues`.
+    pub fn index_values(&mut self) {
+        let mut doc = Document::new();
+        let m = f32::MAX;
+        for (x, y) in [(m, m), (m, -m), (-m, m), (-m, -m)] {
+            self.add_point("foo", &mut doc, x, y);
+        }
+        for (x, y) in [
+            (f32::NAN, 50.0),
+            (50.0, f32::NAN),
+            (f32::INFINITY, 0.0),
+            (f32::NEG_INFINITY, 0.0),
+            (0.0, f32::INFINITY),
+            (0.0, f32::NEG_INFINITY),
+        ] {
+            let result = self.queries().add_point_to_doc("foo", &mut doc, x, y);
+            point_index::assert_rejected(result, &["invalid value"]);
+        }
+    }
+
+    /// `testBoxInvalidCoordinates`, `testDistanceIllegal`,
+    /// `testDistanceNegative`, `testDistanceNaN` and `testDistanceInf`.
+    pub fn invalid_queries(&mut self) {
+        let nan = f32::NAN;
+        let q = self.queries();
+        point_index::assert_rejected(q.new_rect_query("field", nan, nan, nan, nan), &[]);
+        point_index::assert_rejected(q.new_distance_query("field", nan, nan, 120_000.0), &[]);
+        for (radius, parts) in [
+            (-1.0, &["radius"][..]),
+            (nan, &["radius", "NaN"][..]),
+            (f32::INFINITY, &["radius", "finite"][..]),
+            (f32::NEG_INFINITY, &["radius", "bigger than 0"][..]),
+        ] {
+            point_index::assert_rejected(q.new_distance_query("field", 18.0, 19.0, radius), parts);
+        }
+    }
+
+    /// `searchSmallSet(query, size)`'s hit count: sixteen points in
+    /// `"point"`, eight documents holding two of them, and up to nine
+    /// documents without.
+    fn search_small_set(&mut self, query: Clause) -> usize {
+        #[allow(clippy::cast_possible_truncation)]
+        let point = |p: [f64; 2]| (p[0] as f32, p[1] as f32);
+        let mut docs = Vec::new();
+        for p in SMALL_SET {
+            let mut doc = Document::new();
+            let (x, y) = point(p);
+            self.add_point("point", &mut doc, x, y);
+            docs.push(doc);
+        }
+        for pair in SMALL_SET.chunks(2) {
+            let mut doc = Document::new();
+            for &p in pair {
+                let (x, y) = point(p);
+                self.add_point("point", &mut doc, x, y);
+            }
+            docs.push(doc);
+        }
+        point_index::small_set_string_docs(self.random, &mut docs);
+        point_index::count(docs, query)
+    }
+
+    /// The `testSmallSet*` family over [`Self::search_small_set`].
+    // Java's float literals, as written.
+    #[allow(clippy::excessive_precision)]
+    pub fn small_set(&mut self) {
+        let m = f32::MAX;
+        let poly = XYPolygon::new(
+            &[
+                33.073130, 32.9942669, 32.938386, 33.0374494, 33.1369762, 33.1162747, 33.073130,
+                33.073130,
+            ],
+            &[
+                -96.7682647,
+                -96.8280029,
+                -96.6288757,
+                -96.4929199,
+                -96.6041564,
+                -96.7449188,
+                -96.76826477,
+                -96.7682647,
+            ],
+            vec![],
+        )
+        .expect("a valid polygon");
+        let whole = XYPolygon::new(&[-m, m, m, -m, -m], &[-m, -m, m, m, -m], vec![])
+            .expect("a valid polygon");
+        let (cx, cy) = (32.94823588839368_f32, -96.4538113027811_f32);
+        let cases: Vec<(&str, Clause, usize)> = vec![
+            (
+                "Rect",
+                self.rect_query("point", 32.778, 32.779, -96.778, -96.777),
+                4,
+            ),
+            (
+                "Rect2",
+                self.rect_query("point", -45.0, -44.0, -180.0, 180.0),
+                2,
+            ),
+            // 3 single-valued docs + 2 multi-valued docs.
+            (
+                "MultiValued",
+                self.rect_query("point", 32.755, 32.776, -180.0, 180.77),
+                5,
+            ),
+            ("WholeSpace", self.rect_query("point", -m, m, -m, m), 24),
+            ("Poly", self.polygon_query("point", &[poly]), 2),
+            ("PolyWholeSpace", self.polygon_query("point", &[whole]), 24),
+            ("Distance", self.distance_query("point", cx, cy, 6.0), 11),
+            (
+                "TinyDistance",
+                self.distance_query("point", 40.720611, -73.998776, 0.1),
+                2,
+            ),
+            ("HugeDistance", self.distance_query("point", cx, cy, m), 24),
+        ];
+        for (what, q, want) in cases {
+            assert_eq!(self.search_small_set(q), want, "testSmallSet{what}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,16 +951,40 @@ mod tests {
             }
             XYPolygon::new(&[0.0, 1.0, 0.0, 0.0], &[0.0, 0.0, 1.0, 0.0], vec![])
         }
-        fn verify_random_rectangles(&mut self, xs: &[f32], ys: &[f32]) -> Result<(), GeoError> {
+        fn verify_random_rectangles(
+            &mut self,
+            _: &mut JavaRandom,
+            _: i32,
+            xs: &[f32],
+            ys: &[f32],
+        ) -> Result<(), GeoError> {
             self.visit(0, xs, ys)
         }
-        fn verify_random_distances(&mut self, xs: &[f32], ys: &[f32]) -> Result<(), GeoError> {
+        fn verify_random_distances(
+            &mut self,
+            _: &mut JavaRandom,
+            _: i32,
+            xs: &[f32],
+            ys: &[f32],
+        ) -> Result<(), GeoError> {
             self.visit(1, xs, ys)
         }
-        fn verify_random_polygons(&mut self, xs: &[f32], ys: &[f32]) -> Result<(), GeoError> {
+        fn verify_random_polygons(
+            &mut self,
+            _: &mut JavaRandom,
+            _: i32,
+            xs: &[f32],
+            ys: &[f32],
+        ) -> Result<(), GeoError> {
             self.visit(2, xs, ys)
         }
-        fn verify_random_geometries(&mut self, xs: &[f32], ys: &[f32]) -> Result<(), GeoError> {
+        fn verify_random_geometries(
+            &mut self,
+            _: &mut JavaRandom,
+            _: i32,
+            xs: &[f32],
+            ys: &[f32],
+        ) -> Result<(), GeoError> {
             self.visit(3, xs, ys)
         }
     }

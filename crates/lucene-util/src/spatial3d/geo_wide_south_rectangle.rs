@@ -193,6 +193,28 @@ impl Bounded for GeoWideSouthRectangle {
 }
 
 impl GeoShape for GeoWideSouthRectangle {
+    fn java_equals(&self, other: &dyn GeoShape) -> bool {
+        same_planet_as::<GeoWideSouthRectangle>(&self.planet_model, other)
+            .is_some_and(|o| o.ULHC == self.ULHC && o.URHC == self.URHC)
+    }
+
+    fn java_hash_code(&self) -> i32 {
+        let mut result = self.planet_model.java_hash_code();
+        result = hash_step(result, self.ULHC.java_hash_code());
+        result = hash_step(result, self.URHC.java_hash_code());
+        result
+    }
+
+    fn java_to_string(&self) -> String {
+        format!(
+            "GeoWideSouthRectangle: {{planetmodel={}, toplat={}, leftlon={}, rightlon={}}}",
+            self.planet_model.java_to_string(),
+            radians_string(self.top_lat),
+            radians_string(self.left_lon),
+            radians_string(self.right_lon)
+        )
+    }
+
     fn edge_points(&self) -> Cow<'_, [GeoPoint]> {
         Cow::Borrowed(&self.edge_points)
     }

@@ -44,8 +44,10 @@
 //!   Vector` become `Deref`. Where Java's dispatch depends on a `GeoPoint`'s
 //!   cached magnitude, the method takes a `GeoPoint` (see
 //!   [`geo_point::GeoPoint::arc_distance`]).
-//! - Shapes are not `PartialEq` (Java's `equals` is only used by
-//!   `equals`/`hashCode` themselves); serialized bytes are compared instead.
+//! - Shapes' `equals`/`hashCode`/`toString` are [`shape::GeoShape`]'s
+//!   `java_equals`/`java_hash_code`/`java_to_string` (Java's `instanceof` a
+//!   downcast to the same type), not `PartialEq`/`Hash`: Java compares
+//!   doubles with `==` and hashes their bits, which neither trait allows.
 
 #![forbid(unsafe_code)]
 // Java's range checks (`lat > PI * 0.5 || lat < -PI * 0.5`) let NaN through;

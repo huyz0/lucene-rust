@@ -770,6 +770,62 @@ impl Bounded for GeoComplexPolygon {
 }
 
 impl GeoShape for GeoComplexPolygon {
+    fn java_equals(&self, other: &dyn GeoShape) -> bool {
+        same_planet_as::<GeoComplexPolygon>(&self.planet_model, other).is_some_and(|o| {
+            self.test_point1_in_set == o.test_point1_in_set
+                && self.test_point1 == o.test_point1
+                && self.points_list == o.points_list
+        })
+    }
+
+    fn java_hash_code(&self) -> i32 {
+        let mut result = self.planet_model.java_hash_code();
+        // `Boolean.hashCode`.
+        result = hash_step(result, if self.test_point1_in_set { 1231 } else { 1237 });
+        result = hash_step(result, self.test_point1.java_hash_code());
+        let points_list = self
+            .points_list
+            .iter()
+            .fold(1, |h, points| hash_step(h, points_hash(points)));
+        hash_step(result, points_list)
+    }
+
+    /// Each ring's first 20 edge start points (then `...`); the `address`
+    /// is `Integer.toHexString(hashCode())`.
+    fn java_to_string(&self) -> String {
+        let mut edge_description = String::new();
+        for &start_edge in &self.shape_start_edges {
+            edge_description.push_str(" {");
+            let mut current_edge = start_edge;
+            let mut edge_counter = 0;
+            loop {
+                if edge_counter > 0 {
+                    edge_description.push_str(", ");
+                }
+                if edge_counter >= 20 {
+                    edge_description.push_str("...");
+                    break;
+                }
+                let e = &self.inner.edges[current_edge];
+                edge_description.push_str(&e.start_point.to_string());
+                current_edge = e.next;
+                if current_edge == start_edge {
+                    break;
+                }
+                edge_counter += 1;
+            }
+        }
+        format!(
+            "GeoComplexPolygon: {{planetmodel={}, number of shapes={}, address={:x}, testPoint={}, testPointInSet={}, shapes={{{}}}}}",
+            self.planet_model.java_to_string(),
+            self.shape_start_edges.len(),
+            self.java_hash_code() as u32,
+            self.test_point1,
+            self.test_point1_in_set,
+            edge_description
+        )
+    }
+
     fn edge_points(&self) -> Cow<'_, [GeoPoint]> {
         Cow::Borrowed(&self.edge_points)
     }

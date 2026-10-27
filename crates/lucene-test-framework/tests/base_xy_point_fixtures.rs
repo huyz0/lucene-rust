@@ -38,16 +38,40 @@ impl Capture {
 }
 impl XYPointCase for Capture {
     type Error = GeoError;
-    fn verify_random_rectangles(&mut self, xs: &[f32], ys: &[f32]) -> Result<(), GeoError> {
+    fn verify_random_rectangles(
+        &mut self,
+        _: &mut JavaRandom,
+        _: i32,
+        xs: &[f32],
+        ys: &[f32],
+    ) -> Result<(), GeoError> {
         self.capture("rectangles", xs, ys)
     }
-    fn verify_random_distances(&mut self, xs: &[f32], ys: &[f32]) -> Result<(), GeoError> {
+    fn verify_random_distances(
+        &mut self,
+        _: &mut JavaRandom,
+        _: i32,
+        xs: &[f32],
+        ys: &[f32],
+    ) -> Result<(), GeoError> {
         self.capture("distances", xs, ys)
     }
-    fn verify_random_polygons(&mut self, xs: &[f32], ys: &[f32]) -> Result<(), GeoError> {
+    fn verify_random_polygons(
+        &mut self,
+        _: &mut JavaRandom,
+        _: i32,
+        xs: &[f32],
+        ys: &[f32],
+    ) -> Result<(), GeoError> {
         self.capture("polygons", xs, ys)
     }
-    fn verify_random_geometries(&mut self, xs: &[f32], ys: &[f32]) -> Result<(), GeoError> {
+    fn verify_random_geometries(
+        &mut self,
+        _: &mut JavaRandom,
+        _: i32,
+        xs: &[f32],
+        ys: &[f32],
+    ) -> Result<(), GeoError> {
         self.capture("geometries", xs, ys)
     }
 }

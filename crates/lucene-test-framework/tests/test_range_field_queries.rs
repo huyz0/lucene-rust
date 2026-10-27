@@ -198,18 +198,23 @@ impl RangeFieldCase for InetCase {
 }
 
 /// Every test method of the base, for one subclass, each with its own
-/// stream as each Java test method has.
+/// stream as each Java test method has; `testRandomBig` only under
+/// `tests.nightly`.
 fn run_all<C: RangeFieldCase>(name: &str, make: impl Fn() -> C) {
     type Method<C> = fn(&mut BaseRangeField<'_, C>);
-    let methods: [(&str, Method<C>); 5] = [
-        ("random_tiny", |b| b.random_tiny()),
-        ("random_medium", |b| b.random_medium()),
-        ("multi_valued", |b| b.multi_valued()),
-        ("all_equal", |b| b.all_equal()),
-        ("low_cardinality", |b| b.low_cardinality()),
+    let methods: [(&str, Method<C>, bool); 6] = [
+        ("random_tiny", |b| b.random_tiny(), false),
+        ("random_medium", |b| b.random_medium(), false),
+        ("random_big", |b| b.random_big(), true),
+        ("multi_valued", |b| b.multi_valued(), false),
+        ("all_equal", |b| b.all_equal(), false),
+        ("low_cardinality", |b| b.low_cardinality(), false),
     ];
-    for (method, run) in methods {
+    for (method, run, nightly) in methods {
         let mut tc = LuceneTestCase::new(&format!("{name}::{method}"));
+        if nightly && !tc.nightly() {
+            continue;
+        }
         let multiplier = tc.multiplier();
         run(&mut BaseRangeField::new(make(), tc.random(), multiplier));
     }

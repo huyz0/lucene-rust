@@ -177,6 +177,27 @@ impl Bounded for GeoDegenerateVerticalLine {
 }
 
 impl GeoShape for GeoDegenerateVerticalLine {
+    fn java_equals(&self, other: &dyn GeoShape) -> bool {
+        same_planet_as::<GeoDegenerateVerticalLine>(&self.planet_model, other)
+            .is_some_and(|o| o.UHC == self.UHC && o.LHC == self.LHC)
+    }
+
+    fn java_hash_code(&self) -> i32 {
+        let mut result = self.planet_model.java_hash_code();
+        result = hash_step(result, self.UHC.java_hash_code());
+        result = hash_step(result, self.LHC.java_hash_code());
+        result
+    }
+
+    fn java_to_string(&self) -> String {
+        format!(
+            "GeoDegenerateVerticalLine: {{longitude={}, toplat={}, bottomlat={}}}",
+            radians_string(self.longitude),
+            radians_string(self.top_lat),
+            radians_string(self.bottom_lat)
+        )
+    }
+
     fn edge_points(&self) -> Cow<'_, [GeoPoint]> {
         Cow::Borrowed(&self.edge_points)
     }
@@ -333,6 +354,25 @@ impl Bounded for GeoDegenerateLongitudeSlice {
 }
 
 impl GeoShape for GeoDegenerateLongitudeSlice {
+    fn java_equals(&self, other: &dyn GeoShape) -> bool {
+        same_planet_as::<GeoDegenerateLongitudeSlice>(&self.planet_model, other)
+            .is_some_and(|o| o.longitude == self.longitude)
+    }
+
+    fn java_hash_code(&self) -> i32 {
+        let mut result = self.planet_model.java_hash_code();
+        result = hash_step(result, super::jmath::double_hash(self.longitude));
+        result
+    }
+
+    fn java_to_string(&self) -> String {
+        format!(
+            "GeoDegenerateLongitudeSlice: {{planetmodel={}, longitude={}}}",
+            self.planet_model.java_to_string(),
+            radians_string(self.longitude)
+        )
+    }
+
     fn edge_points(&self) -> Cow<'_, [GeoPoint]> {
         Cow::Borrowed(&self.edge_points)
     }
@@ -474,6 +514,25 @@ impl Bounded for GeoDegenerateLatitudeZone {
 }
 
 impl GeoShape for GeoDegenerateLatitudeZone {
+    fn java_equals(&self, other: &dyn GeoShape) -> bool {
+        same_planet_as::<GeoDegenerateLatitudeZone>(&self.planet_model, other)
+            .is_some_and(|o| o.latitude == self.latitude)
+    }
+
+    fn java_hash_code(&self) -> i32 {
+        let mut result = self.planet_model.java_hash_code();
+        result = hash_step(result, super::jmath::double_hash(self.latitude));
+        result
+    }
+
+    fn java_to_string(&self) -> String {
+        format!(
+            "GeoDegenerateLatitudeZone: {{planetmodel={}, lat={}}}",
+            self.planet_model.java_to_string(),
+            radians_string(self.latitude)
+        )
+    }
+
     fn edge_points(&self) -> Cow<'_, [GeoPoint]> {
         Cow::Borrowed(&self.edge_points)
     }

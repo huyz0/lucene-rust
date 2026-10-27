@@ -73,6 +73,12 @@ pub use range_queries::{
 /// One document-package query: `Query.rewrite` plus the `Weight`'s scorer
 /// over a segment. See the module doc.
 pub trait DocumentQuery: fmt::Debug + Send + Sync {
+    /// The field `Query.visit` checks `QueryVisitor.acceptField` against
+    /// before visiting the query as a leaf; `None` visits it unconditionally.
+    fn field(&self) -> Option<&str> {
+        None
+    }
+
     /// `Query.rewrite(IndexSearcher)` over the reader's `leaves`: `None` when
     /// the query rewrites to itself.
     fn rewrite(&self, leaves: &[OpenSegment<'_>]) -> Result<Option<Box<dyn DocumentQuery>>> {
