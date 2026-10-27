@@ -13,18 +13,13 @@
 //!
 //! - Documents are this port's [`Document`]s, added through the document
 //!   API (`add_fields_document`).
-//! - Soft deletes: `useSoftDeletes` is drawn as Java draws it, and the
-//!   soft-deletes field is registered, but updates are hard deletes. This
-//!   port's readers do not resolve soft deletes (there is no
-//!   `SoftDeletesDirectoryReaderWrapper`, and a near-real-time reader's live
-//!   documents are the hard ones), so a soft update would leave the old
-//!   document visible. Deferred until the readers resolve them. Because
-//!   explicit-documents mode is enabled only with soft deletes, a
-//!   doc-values update of a field no document has yet creates it only when
-//!   `useSoftDeletes` was drawn; tests should index the field first.
-//! - `updateDocuments(TermQuery, docs)` (Java's 30% branch) updates by the
-//!   term: the document API has no update by query, and a `TermQuery`
-//!   matches what the term does.
+//! - Soft deletes: Java's near-real-time reader resolves them itself; this
+//!   port's is wrapped in a `SoftDeletesDirectoryReaderWrapper`
+//!   ([`DirectoryReader::soft_deletes_wrapper`]) to the same effect, as the
+//!   reader opened from the directory is in both. Because explicit-documents
+//!   mode is enabled only with soft deletes, a doc-values update of a field
+//!   no document has yet creates it only when `useSoftDeletes` was drawn;
+//!   tests should index the field first.
 //! - `mockIndexWriter`'s test point (a `Thread.yield`) and its open from a
 //!   reader's commit are drawn but do nothing: the writer is single-threaded
 //!   and opens the latest commit, which is the reader's.
@@ -96,6 +91,7 @@ pub struct RandomIndexWriter<'d> {
     flush_at: i32,
     flush_at_factor: f64,
     get_reader_called: bool,
+    soft_deletes: bool,
     soft_deletes_ratio: f64,
     do_random_force_merge: bool,
     do_random_force_merge_assert: bool,
@@ -200,6 +196,7 @@ impl<'d> RandomIndexWriter<'d> {
             flush_at,
             flush_at_factor: 1.0,
             get_reader_called: false,
+            soft_deletes: use_soft_deletes,
             soft_deletes_ratio,
             do_random_force_merge,
             do_random_force_merge_assert: true,
@@ -334,14 +331,29 @@ impl<'d> RandomIndexWriter<'d> {
     /// What the writer fails with.
     pub fn update_documents(&mut self, del_term: Term, docs: &[Document]) -> Result<SeqNo> {
         self.maybe_change()?;
-        // A soft update is a hard one here; the TermQuery branch updates by
-        // the term (see the module doc).
-        if !self.use_soft_deletes() {
-            let _by_query = self.r.next_int_bounded(10) < 3;
-        }
-        let seq_no = self.writer().update_fields_documents(del_term, docs)?;
+        let seq_no = if self.use_soft_deletes() {
+            let soft = self.soft_delete(&del_term);
+            self.writer()
+                .soft_update_fields_documents(del_term, docs, &[soft])?
+        } else if self.r.next_int_bounded(10) < 3 {
+            // 30% chance
+            self.writer()
+                .update_fields_documents_by_query(DeleteQuery::Term(del_term), docs)?
+        } else {
+            self.writer().update_fields_documents(del_term, docs)?
+        };
         self.maybe_flush_or_commit()?;
         Ok(seq_no)
+    }
+
+    /// The `NumericDocValuesField(softDeletesField, 1)` a soft update
+    /// writes.
+    fn soft_delete(&self, term: &Term) -> DocValuesUpdate {
+        DocValuesUpdate::Numeric {
+            term: term.clone(),
+            field: SOFT_DELETES_FIELD.to_string(),
+            value: Some(1),
+        }
     }
 
     /// `updateDocument(t, doc)`: one time in five as a block of one.
@@ -350,12 +362,17 @@ impl<'d> RandomIndexWriter<'d> {
     /// What the writer fails with.
     pub fn update_document(&mut self, t: Term, doc: &Document) -> Result<SeqNo> {
         self.maybe_change()?;
-        let _soft = self.use_soft_deletes();
+        let soft = self.use_soft_deletes();
         // Both spellings, a block of one or one document, are one call here.
         let _as_block = self.r.next_int_bounded(5) == 3;
-        let seq_no = self
-            .writer()
-            .update_fields_documents(t, std::slice::from_ref(doc))?;
+        let docs = std::slice::from_ref(doc);
+        let seq_no = if soft {
+            let soft = self.soft_delete(&t);
+            self.writer()
+                .soft_update_fields_documents(t, docs, &[soft])?
+        } else {
+            self.writer().update_fields_documents(t, docs)?
+        };
         self.maybe_flush_or_commit()?;
         Ok(seq_no)
     }
@@ -531,16 +548,38 @@ impl<'d> RandomIndexWriter<'d> {
             if self.r.next_int_bounded(5) == 1 {
                 self.writer().commit()?;
             }
-            DirectoryReader::open_nrt(&self.w, apply_deletions, write_all_deletes)
+            self.nrt_reader(apply_deletions, write_all_deletes)
         } else {
             self.writer().commit()?;
             if self.r.next_boolean() {
-                // Java wraps it in a SoftDeletesDirectoryReaderWrapper under
-                // soft deletes; every delete here is hard (see the module doc).
-                DirectoryReader::open(self.dir)
+                let reader = DirectoryReader::open(self.dir)?;
+                match self.soft_deletes_field() {
+                    Some(field) => reader.soft_deletes_wrapper(field),
+                    None => Ok(reader),
+                }
             } else {
-                DirectoryReader::open_nrt(&self.w, apply_deletions, write_all_deletes)
+                self.nrt_reader(apply_deletions, write_all_deletes)
             }
+        }
+    }
+
+    /// `config.getSoftDeletesField()`.
+    pub fn soft_deletes_field(&self) -> Option<&'static str> {
+        self.soft_deletes.then_some(SOFT_DELETES_FIELD)
+    }
+
+    /// `IndexWriter.getReader(applyDeletions, writeAllDeletes)`. Java's
+    /// near-real-time reader resolves soft deletes itself (its live docs are
+    /// `PendingSoftDeletes`'); this port's is wrapped to the same effect.
+    fn nrt_reader(
+        &self,
+        apply_deletions: bool,
+        write_all_deletes: bool,
+    ) -> Result<DirectoryReader> {
+        let reader = DirectoryReader::open_nrt(&self.w, apply_deletions, write_all_deletes)?;
+        match self.soft_deletes_field() {
+            Some(field) => reader.soft_deletes_wrapper(field),
+            None => Ok(reader),
         }
     }
 
