@@ -27,8 +27,10 @@
 //! - `IndexSortSortedNumericDocValuesRangeQuery`, which `IntField` and
 //!   `LongField` wrap their range query in, is not applied: it only chooses a
 //!   cheaper way to the same hits.
-//! - `QueryVisitor`, `equals`/`hashCode`/`toString` and query caching are not
-//!   ported.
+//! - `QueryVisitor`, `hashCode`/`toString` and query caching are not
+//!   ported. `equals` is [`DocumentQuery::equals`]: Java's value equality
+//!   for the geo point queries (and the queries they build), `Object`'s
+//!   identity for the rest.
 
 pub(crate) mod dense_bulk;
 mod distance_feature;
@@ -38,6 +40,7 @@ pub mod geo;
 mod point_queries;
 mod range_queries;
 
+use std::any::Any;
 use std::fmt;
 
 use lucene_codecs::field_infos::FieldInfo;
@@ -70,9 +73,27 @@ pub use range_queries::{
     long_range_doc_values_field, BinaryRangeDocValues, BinaryRangeFieldRangeQuery, RangeFieldQuery,
 };
 
+/// Any query as [`Any`], so [`DocumentQuery::equals`] can check
+/// `sameClassAs`.
+pub trait AsAnyQuery {
+    /// `self` as [`Any`].
+    fn as_any_query(&self) -> &dyn Any;
+}
+
+impl<T: Any> AsAnyQuery for T {
+    fn as_any_query(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// `sameClassAs(other)`: `other` as a `T`, if it is one.
+pub(crate) fn same_class<T: Any>(other: &dyn DocumentQuery) -> Option<&T> {
+    other.as_any_query().downcast_ref::<T>()
+}
+
 /// One document-package query: `Query.rewrite` plus the `Weight`'s scorer
 /// over a segment. See the module doc.
-pub trait DocumentQuery: fmt::Debug + Send + Sync {
+pub trait DocumentQuery: AsAnyQuery + fmt::Debug + Send + Sync {
     /// The field `Query.visit` checks `QueryVisitor.acceptField` against
     /// before visiting the query as a leaf; `None` visits it unconditionally.
     fn field(&self) -> Option<&str> {
@@ -94,6 +115,18 @@ pub trait DocumentQuery: fmt::Debug + Send + Sync {
         boost: f32,
         collector: &mut dyn ScoringCollector,
     ) -> Result<()>;
+
+    /// `Query.equals(Object)`: `Object`'s identity unless the query
+    /// overrides it with Java's value equality.
+    fn equals(&self, other: &dyn DocumentQuery) -> bool {
+        std::ptr::addr_eq(self.as_any_query(), other.as_any_query())
+    }
+}
+
+impl PartialEq for dyn DocumentQuery {
+    fn eq(&self, other: &Self) -> bool {
+        self.equals(other)
+    }
 }
 
 /// `IndexSearcher.rewrite(query)`: rewritten until it stops changing.
@@ -183,6 +216,12 @@ impl Boosted {
 }
 
 impl DocumentQuery for Boosted {
+    fn equals(&self, other: &dyn DocumentQuery) -> bool {
+        same_class::<Self>(other).is_some_and(|o| {
+            self.boost.to_bits() == o.boost.to_bits() && self.query.equals(&*o.query)
+        })
+    }
+
     /// `BoostQuery.rewrite`: the inner query rewritten, the boost kept.
     fn rewrite(&self, leaves: &[OpenSegment<'_>]) -> Result<Option<Box<dyn DocumentQuery>>> {
         Ok(self
@@ -206,6 +245,11 @@ impl DocumentQuery for Boosted {
 pub struct MatchNoDocs;
 
 impl DocumentQuery for MatchNoDocs {
+    /// `MatchNoDocsQuery.equals`: `sameClassAs` alone.
+    fn equals(&self, other: &dyn DocumentQuery) -> bool {
+        same_class::<Self>(other).is_some()
+    }
+
     fn score_leaf(
         &self,
         _leaf: &OpenSegment<'_>,

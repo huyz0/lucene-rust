@@ -166,7 +166,7 @@ impl GeoPointCase for DocValuesCase {
 /// ones only under `tests.nightly`.
 fn run_all<C: GeoPointCase>(name: &str, make: impl Fn() -> C) {
     type Method<C> = fn(&mut BaseGeoPoint<'_, C>);
-    let methods: [(&str, Method<C>, bool); 15] = [
+    let methods: [(&str, Method<C>, bool); 16] = [
         ("random_tiny", |b| b.random_tiny(), false),
         ("random_medium", |b| b.random_medium(), false),
         ("random_big", |b| b.random_big(), true),
@@ -190,6 +190,7 @@ fn run_all<C: GeoPointCase>(name: &str, make: impl Fn() -> C) {
         ("index_values", |b| b.index_values(), false),
         ("invalid_queries", |b| b.invalid_queries(), false),
         ("small_set", |b| b.small_set(), false),
+        ("equals", |b| b.equals(), false),
     ];
     for (method, run, nightly) in methods {
         let mut tc = LuceneTestCase::new(&format!("{name}::{method}"));

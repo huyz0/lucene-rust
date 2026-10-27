@@ -560,3 +560,106 @@ fn document_clauses_join_the_scorer_tree() {
     leaves[1].reader = None;
     assert!(run(&leaves[1..], &filtered).is_err());
 }
+
+#[test]
+fn queries_have_java_equality() {
+    use crate::document::{Boosted, FieldExists, MatchNoDocs};
+    use lucene_util::geo::{XYCircle, XYRectangle};
+
+    let eq = |a: &dyn DocumentQuery, b: &dyn DocumentQuery| a.equals(b) && b.equals(a);
+
+    // Points: a box, a dateline box (two SHOULD clauses), a circle, a polygon.
+    let lp = |f: &str| lat_lon_point::new_box_query(f, -10.0, 10.0, -20.0, 20.0).unwrap();
+    assert!(eq(&*lp("f"), &*lp("f")));
+    assert!(!eq(&*lp("f"), &*lp("g")));
+    let dl = |f: &str| lat_lon_point::new_box_query(f, -10.0, 10.0, 170.0, -170.0).unwrap();
+    assert!(eq(&*dl("f"), &*dl("f")));
+    assert!(!eq(&*dl("f"), &*dl("g")));
+    assert!(!eq(&*dl("f"), &*lp("f")));
+    let circle = |f: &str, r: f64| lat_lon_point::new_distance_query(f, 1.0, 2.0, r).unwrap();
+    assert!(eq(&*circle("f", 5.0), &*circle("f", 5.0)));
+    assert!(!eq(&*circle("f", 5.0), &*circle("f", 6.0)));
+    assert!(!eq(&*circle("f", 5.0), &*circle("g", 5.0)));
+    let square = Polygon::new(
+        &[0.0, 0.0, 1.0, 1.0, 0.0],
+        &[0.0, 1.0, 1.0, 0.0, 0.0],
+        vec![],
+    )
+    .unwrap();
+    let poly =
+        |f: &str| lat_lon_point::new_polygon_query(f, std::slice::from_ref(&square)).unwrap();
+    assert!(eq(&*poly("f"), &*poly("f")));
+    assert!(!eq(&*poly("f"), &*poly("g")));
+    let g = [LatLonGeometry::Polygon(square.clone())];
+    let within = lat_lon_point::new_geometry_query("f", QueryRelation::Within, &g).unwrap();
+    assert!(!eq(&*poly("f"), &*within));
+
+    // Clause multisets ignore order; CONTAINS of points is a conjunction.
+    let pts = |a: f64, b: f64| {
+        [
+            LatLonGeometry::Point(Point::new(a, 0.0).unwrap()),
+            LatLonGeometry::Point(Point::new(b, 0.0).unwrap()),
+        ]
+    };
+    let contains = |g: &[LatLonGeometry]| {
+        lat_lon_point::new_geometry_query("f", QueryRelation::Contains, g).unwrap()
+    };
+    assert!(eq(&*contains(&pts(1.0, 2.0)), &*contains(&pts(2.0, 1.0))));
+    assert!(!eq(&*contains(&pts(1.0, 2.0)), &*contains(&pts(1.0, 1.0))));
+    let must = |q: fn(&str) -> Box<dyn DocumentQuery>| MustConjunction {
+        clauses: vec![q("f"), q("g")],
+    };
+    let short = MustConjunction {
+        clauses: vec![lp("f")],
+    };
+    assert!(eq(&must(lp), &must(lp)));
+    assert!(!eq(&must(lp), &must(dl)));
+    assert!(!eq(&must(lp), &short));
+
+    // Doc values.
+    let dvb = |f: &str| {
+        lat_lon_doc_values_field::new_slow_box_query(f, -10.0, 10.0, -20.0, 20.0).unwrap()
+    };
+    assert!(eq(&*dvb("f"), &*dvb("f")));
+    assert!(!eq(&*dvb("f"), &*dvb("g")));
+    assert!(!eq(&*dvb("f"), &*lp("f")));
+    let dvc =
+        |f: &str| lat_lon_doc_values_field::new_slow_distance_query(f, 1.0, 2.0, 5.0).unwrap();
+    assert!(eq(&*dvc("f"), &*dvc("f")));
+    assert!(!eq(&*dvc("f"), &*dvc("g")));
+
+    // XY.
+    let rect = XYRectangle::new(0.0, 1.0, 0.0, 1.0).unwrap();
+    let xy = |f: &str| xy_point_field::new_box_query(f, 0.0, 1.0, 0.0, 1.0).unwrap();
+    assert!(eq(&xy("f"), &xy("f")));
+    assert!(!eq(&xy("f"), &xy("g")));
+    let c = XYGeometry::Circle(XYCircle::new(0.0, 0.0, 1.0).unwrap());
+    assert!(!eq(
+        &xy("f"),
+        &xy_point_field::new_geometry_query("f", &[c]).unwrap()
+    ));
+    let xdv = |f: &str| {
+        xy_doc_values_field::new_slow_geometry_query(f, &[XYGeometry::Rectangle(rect)]).unwrap()
+    };
+    assert!(eq(&xdv("f"), &xdv("f")));
+    assert!(!eq(&xdv("f"), &xdv("g")));
+    assert!(!eq(&xdv("f"), &xy("f")));
+
+    // MatchNoDocs, BoostQuery, and identity for the rest.
+    assert!(eq(&MatchNoDocs, &MatchNoDocs));
+    assert!(!eq(&MatchNoDocs, &*lp("f")));
+    let boosted = |f: &str, b: f32| Boosted::new(lp(f), b);
+    assert!(eq(&boosted("f", 2.0), &boosted("f", 2.0)));
+    assert!(!eq(&boosted("f", 2.0), &boosted("f", 3.0)));
+    assert!(!eq(&boosted("f", 2.0), &boosted("g", 2.0)));
+    let exists = FieldExists {
+        field: "f".to_string(),
+    };
+    let twin = FieldExists {
+        field: "f".to_string(),
+    };
+    assert!(eq(&exists, &exists));
+    assert!(!eq(&exists, &twin));
+    let boxed: Box<dyn DocumentQuery> = lp("f");
+    assert!(*boxed == *lp("f"));
+}

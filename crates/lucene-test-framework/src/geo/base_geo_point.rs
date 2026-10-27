@@ -16,9 +16,9 @@
 //! skipped and the `forceMerge` coin is drawn and ignored.
 //! `testRandomDistance` keeps the default points format where Java
 //! installs one with 2-5 points per leaf (it still draws that size).
-//! `testEquals` needs query `equals`, which the geo queries do not port,
-//! and the `null`-field tests cannot be written against `&str` (see the
-//! ledger).
+//! `testEquals` compares the queries a clause wraps by
+//! `DocumentQuery::equals`. The `null`-field tests cannot be written
+//! against `&str` (see the ledger).
 
 use std::collections::BTreeSet;
 
@@ -567,6 +567,58 @@ impl<'a, C: GeoPointCase> BaseGeoPoint<'a, C> {
                 assert_eq!(count(shrunk), 0, "shrunk {shrunk:?}");
             }
         }
+    }
+
+    /// `testEquals`: the box, distance and polygon queries equal their
+    /// twins and differ from the same query on another field (a box that
+    /// is `MatchNoDocsQuery` excepted).
+    pub fn equals(&mut self) {
+        let rect = geo_test_util::next_box(self.random);
+        let q1 = self.rect_query("field", &rect);
+        let q2 = self.rect_query("field", &rect);
+        assert!(point_index::query_equals(&q1, &q2), "{q1:?} != {q2:?}");
+        if !point_index::is_match_no_docs(&q1) {
+            let other = self.rect_query("field2", &rect);
+            assert!(
+                !point_index::query_equals(&q1, &other),
+                "{q1:?} == {other:?}"
+            );
+        }
+
+        let lat = geo_test_util::next_latitude(self.random);
+        let lon = geo_test_util::next_longitude(self.random);
+        let q1 = self.distance_query("field", lat, lon, 10000.0);
+        let q2 = self.distance_query("field", lat, lon, 10000.0);
+        assert!(point_index::query_equals(&q1, &q2), "{q1:?} != {q2:?}");
+        let other = self.distance_query("field2", lat, lon, 10000.0);
+        assert!(
+            !point_index::query_equals(&q1, &other),
+            "{q1:?} == {other:?}"
+        );
+
+        let lats = [
+            rect.min_lat,
+            rect.max_lat,
+            rect.max_lat,
+            rect.min_lat,
+            rect.min_lat,
+        ];
+        let lons = [
+            rect.min_lon,
+            rect.min_lon,
+            rect.max_lon,
+            rect.max_lon,
+            rect.min_lon,
+        ];
+        let polygon = || Polygon::new(&lats, &lons, Vec::new()).expect("a box's polygon");
+        let q1 = self.polygon_query("field", &[polygon()]);
+        let q2 = self.polygon_query("field", &[polygon()]);
+        assert!(point_index::query_equals(&q1, &q2), "{q1:?} != {q2:?}");
+        let other = self.polygon_query("field2", &[polygon()]);
+        assert!(
+            !point_index::query_equals(&q1, &other),
+            "{q1:?} == {other:?}"
+        );
     }
 
     /// `testRandomDistance`: a few ten-document indexes, a hundred

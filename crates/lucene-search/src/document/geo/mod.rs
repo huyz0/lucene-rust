@@ -59,7 +59,7 @@ use lucene_codecs::field_infos::{DocValuesType, FieldInfo};
 use lucene_util::fixed_bit_set::FixedBitSet;
 use lucene_util::geo::GeoError;
 
-use super::{collect_live, field_info, reader, DocumentQuery};
+use super::{collect_live, field_info, reader, same_class, DocumentQuery};
 use crate::collector::ScoringCollector;
 use crate::directory_reader::SegmentReader;
 use crate::multi_segment::OpenSegment;
@@ -277,6 +277,17 @@ pub struct ConstantScoreBoolean {
     pub must: bool,
 }
 
+/// `BooleanQuery`'s clause multisets: each clause of `a` matched to a
+/// distinct equal clause of `b`.
+fn same_clauses(a: &[Box<dyn DocumentQuery>], b: &[Box<dyn DocumentQuery>]) -> bool {
+    let mut used = vec![false; b.len()];
+    a.len() == b.len()
+        && a.iter().all(|x| {
+            let hit = (0..b.len()).find(|&i| !used[i] && x.equals(&*b[i]));
+            hit.inspect(|&i| used[i] = true).is_some()
+        })
+}
+
 /// A collector keeping a segment's hits as a bitset.
 struct BitsCollector(FixedBitSet);
 
@@ -293,6 +304,13 @@ impl ScoringCollector for BitsCollector {
 }
 
 impl DocumentQuery for ConstantScoreBoolean {
+    /// `ConstantScoreQuery.equals` over `BooleanQuery.equals`: the same
+    /// occur and the same multiset of clauses.
+    fn equals(&self, other: &dyn DocumentQuery) -> bool {
+        same_class::<Self>(other)
+            .is_some_and(|o| self.must == o.must && same_clauses(&self.clauses, &o.clauses))
+    }
+
     fn score_leaf(
         &self,
         leaf: &OpenSegment<'_>,
@@ -337,6 +355,10 @@ pub struct MustConjunction {
 }
 
 impl DocumentQuery for MustConjunction {
+    fn equals(&self, other: &dyn DocumentQuery) -> bool {
+        same_class::<Self>(other).is_some_and(|o| same_clauses(&self.clauses, &o.clauses))
+    }
+
     fn score_leaf(
         &self,
         leaf: &OpenSegment<'_>,
