@@ -1837,12 +1837,15 @@ fn open_per_field_postings(
     let mut opened = Vec::with_capacity(suffixes.len());
     for suffix in suffixes {
         let open = |ext: &str| open_segment_file(dir, compound, files, &format!("_{suffix}{ext}"));
-        let extensions =
-            per_field_postings::dictionary_extensions(per_field_postings::format_of_suffix(suffix));
+        let format = per_field_postings::format_of_suffix(suffix);
+        let extensions = per_field_postings::dictionary_extensions(format);
         let mut dictionary = Vec::with_capacity(extensions.len());
         for ext in extensions {
             match open(&format!(".{ext}"))? {
                 Some(bytes) => dictionary.push(bytes),
+                None if !per_field_postings::dictionary_file_required(format, ext) => {
+                    dictionary.push(std::sync::Arc::new(lucene_store::Input::Owned(Vec::new())));
+                }
                 None => {
                     return Err(Error::PartialBlockTreeFiles {
                         segment: format!("{suffix} of a per-field segment"),

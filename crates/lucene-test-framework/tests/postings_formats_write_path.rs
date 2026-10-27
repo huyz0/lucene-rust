@@ -1,7 +1,8 @@
 //! The test framework's terms-dictionary postings formats through
 //! [`IndexWriter`]: `LuceneFixedGap`, `LuceneVarGapFixedInterval`,
 //! `LuceneVarGapDocFreqInterval`, `UniformSplitRot13`, `STUniformSplitRot13`
-//! and `TestBloomFilteredLucenePostings`. Fields routed to one are flushed as
+//! `TestBloomFilteredLucenePostings` and `MockRandom` (seeds covering its
+//! dictionaries). Fields routed to one are flushed as
 //! `_<Format>_0.<dictionary>` beside their postings, a buffered delete by a
 //! routed field's term finds its documents, a merge reads and rewrites the
 //! group, CheckIndex passes, and [`DirectoryReader`] answers term and phrase
@@ -21,10 +22,12 @@ use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::{search_phrase_query, search_term_query, PhraseQuery, TermQuery, VecCollector};
 use lucene_store::{Directory, FsDirectory};
 use lucene_test_framework::codecs::bloom::TestBloomFilteredLucenePostings;
+use lucene_test_framework::codecs::mockrandom::MockRandomPostingsFormat;
 use lucene_test_framework::codecs::rot13::{
     StUniformSplitRot13PostingsFormat, UniformSplitRot13PostingsFormat,
 };
 use lucene_test_framework::codecs::{blockterms, register_postings_formats};
+use lucene_util::java_random::JavaRandom;
 use lucene_util::test_support::TempDir;
 
 const PER_SEGMENT: usize = 200;
@@ -82,10 +85,19 @@ fn write(dir: &FsDirectory, routed: Option<Lucene104PostingsFormat>, merge: bool
     }
 }
 
-/// Every query's live hits, as (segment, doc) pairs.
-fn hits(dir: &FsDirectory) -> Vec<(String, Vec<(usize, i32)>)> {
+/// Every query's live hits, as their documents' sorted stored ids: a merge
+/// may order its sources by size, which differs between formats.
+fn hits(dir: &FsDirectory) -> Vec<(String, Vec<String>)> {
     let reader = DirectoryReader::open(dir).unwrap();
     let opened = reader.open_segments().unwrap();
+    let readers = reader.segment_readers();
+    let id = |index: usize, doc: i32| {
+        let stored = readers[index].stored_document(doc).unwrap().unwrap();
+        let FieldValue::String(id) = &stored.fields[0].value else {
+            panic!("an id");
+        };
+        id.clone()
+    };
     let mut out = Vec::new();
     let mut terms: Vec<(&str, String)> = vec![("body", "shared".into()), ("body", "zzz".into())];
     terms.extend((0..13).map(|i| ("body", format!("a{i}"))));
@@ -104,8 +116,9 @@ fn hits(dir: &FsDirectory) -> Vec<(String, Vec<(usize, i32)>)> {
                 &mut collector,
             )
             .unwrap();
-            docs.extend(collector.docs.iter().map(|&d| (index, d)));
+            docs.extend(collector.docs.iter().map(|&d| id(index, d)));
         }
+        docs.sort();
         out.push((format!("{field}:{term}"), docs));
     }
     for (words, slop) in [(["shared", "a3"], 0), (["a2", "b7"], 0), (["a1", "a1"], 2)] {
@@ -122,14 +135,20 @@ fn hits(dir: &FsDirectory) -> Vec<(String, Vec<(usize, i32)>)> {
                 &mut collector,
             )
             .unwrap();
-            docs.extend(collector.docs.iter().map(|&d| (index, d)));
+            docs.extend(collector.docs.iter().map(|&d| id(index, d)));
         }
+        docs.sort();
         out.push((format!("body:\"{words:?}\"~{slop}"), docs));
     }
     out
 }
 
-fn check(routed: Lucene104PostingsFormat, dictionary: &dyn TermsDictionaryFormat, merge: bool) {
+/// Returns the routed index's file names.
+fn check(
+    routed: Lucene104PostingsFormat,
+    dictionary: &dyn TermsDictionaryFormat,
+    merge: bool,
+) -> Vec<String> {
     let default_path = TempDir::new("tf-dictionary-write-path-default");
     let ords_path = TempDir::new("tf-dictionary-write-path-routed");
     let (default_dir, ords_dir) = (
@@ -141,8 +160,10 @@ fn check(routed: Lucene104PostingsFormat, dictionary: &dyn TermsDictionaryFormat
 
     let files = ords_dir.list_all().unwrap();
     let name = dictionary.name();
-    let exts = dictionary.extensions().iter().copied();
-    for ext in exts.chain(["doc", "pos", "psm"]) {
+    // The marker: a format may leave its other dictionary files unwritten
+    // (MockRandom's seed picks its dictionary).
+    let marker = dictionary.extensions()[0];
+    for ext in [marker, "doc", "pos", "psm"] {
         assert!(
             files
                 .iter()
@@ -179,6 +200,7 @@ fn check(routed: Lucene104PostingsFormat, dictionary: &dyn TermsDictionaryFormat
         .unwrap()
         .1
         .is_empty());
+    files
 }
 
 fn formats() -> Vec<&'static dyn TermsDictionaryFormat> {
@@ -197,24 +219,56 @@ fn formats() -> Vec<&'static dyn TermsDictionaryFormat> {
     ]
 }
 
-#[test]
-fn flushed_segments_read_back_like_the_default_format() {
+/// `MockRandomPostingsFormat(new Random(seed))` for seeds whose flushes and
+/// merge between them select every dictionary kind.
+fn mock_randoms() -> Vec<&'static dyn TermsDictionaryFormat> {
+    register_postings_formats();
+    (0..6)
+        .map(|seed| {
+            MockRandomPostingsFormat::new(&mut JavaRandom::new(seed)).into_dictionary_format()
+        })
+        .collect()
+}
+
+fn check_all(merge: bool) {
     for dictionary in formats() {
         check(
             Lucene104PostingsFormat::dictionary(dictionary),
             dictionary,
-            false,
+            merge,
+        );
+    }
+    let mut written = Vec::new();
+    for dictionary in mock_randoms() {
+        written.extend(check(
+            Lucene104PostingsFormat::dictionary(dictionary),
+            dictionary,
+            merge,
+        ));
+    }
+    // Flushed segments keep every seed's choice; a merge reads them all as
+    // its sources and leaves only its own.
+    let kinds: &[&str] = if merge {
+        &[]
+    } else {
+        &["tfp", "tim", "tii", "tmv", "tio"]
+    };
+    for ext in kinds {
+        assert!(
+            written
+                .iter()
+                .any(|f| f.ends_with(&format!("_MockRandom_0.{ext}"))),
+            "no MockRandom seed chose .{ext}: {written:?}"
         );
     }
 }
 
 #[test]
+fn flushed_segments_read_back_like_the_default_format() {
+    check_all(false);
+}
+
+#[test]
 fn a_merge_rewrites_the_group_and_reads_back() {
-    for dictionary in formats() {
-        check(
-            Lucene104PostingsFormat::dictionary(dictionary),
-            dictionary,
-            true,
-        );
-    }
+    check_all(true);
 }

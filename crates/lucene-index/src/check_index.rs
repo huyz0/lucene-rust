@@ -2095,12 +2095,17 @@ fn open_postings_groups(
             postings::PayInput::open(&bytes, id, &suffix).map_err(|e| err(&e))?;
             pay.extend_from_slice(&bytes);
         }
-        let dictionary = per_field_postings::dictionary_extensions(
-            per_field_postings::format_of_suffix(&suffix),
-        )
-        .iter()
-        .map(|ext| open(&file(ext)))
-        .collect::<Result<Vec<_>, String>>()?;
+        let format = per_field_postings::format_of_suffix(&suffix);
+        let dictionary = per_field_postings::dictionary_extensions(format)
+            .iter()
+            .map(|ext| {
+                if has(ext) || per_field_postings::dictionary_file_required(format, ext) {
+                    open(&file(ext))
+                } else {
+                    Ok(lucene_store::directory::Input::Owned(Vec::new()))
+                }
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         groups.push(PostingsGroupBytes {
             dictionary,
             suffix,

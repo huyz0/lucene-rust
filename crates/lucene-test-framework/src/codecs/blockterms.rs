@@ -22,8 +22,7 @@ use lucene_codecs::blockterms::{
 };
 use lucene_codecs::blocktree;
 use lucene_codecs::postings_writer::{
-    self, DictionaryField, DictionaryTerm, FieldNorms, FieldPostingsInput, PostingsFiles,
-    TermSource, WriteOptions,
+    self, DictionaryField, FieldNorms, FieldPostingsInput, PostingsFiles, TermSource, WriteOptions,
 };
 use lucene_codecs::segment_state::{SegmentReadState, SegmentWriteState};
 use lucene_codecs::terms_dictionary::{ErasedInput, TermsDictionaryFormat};
@@ -247,34 +246,9 @@ impl TermsDictionaryFormat for BlockTermsFormat {
             .zip(files)
             .map(|(ext, bytes)| (ext.to_string(), bytes.to_vec()))
             .collect();
-        let reader = self.fields_producer(&files, state).map_err(err)?;
-        let mut fields = Vec::with_capacity(reader.size());
-        for field_name in reader.field_names() {
-            let Some(terms) = reader.terms(field_name) else {
-                continue;
-            };
-            let info = terms.info();
-            let mut field = DictionaryField {
-                field_number: info.number,
-                index_options: info.index_options,
-                has_payloads: info.store_payloads,
-                doc_count: terms.doc_count(),
-                terms: Vec::new(),
-            };
-            let mut it = terms.iterator();
-            while let Some(bytes) = it.next().map_err(err)? {
-                let bytes = bytes.to_vec();
-                let state = it.term_state().map_err(err)?;
-                field.terms.push(DictionaryTerm {
-                    bytes,
-                    doc_freq: state.doc_freq,
-                    total_term_freq: state.total_term_freq,
-                    meta: state.meta,
-                });
-            }
-            fields.push(field);
-        }
-        Ok(fields)
+        self.fields_producer(&files, state)
+            .and_then(|reader| reader.dictionary_fields())
+            .map_err(err)
     }
 }
 

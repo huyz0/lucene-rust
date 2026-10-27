@@ -1,5 +1,5 @@
 //! Terms-dictionary formats through [`IndexWriter`] (`BlockTreeOrds`,
-//! `UniformSplit`, `SharedTermsUniformSplit`): fields routed to one are
+//! `FST50`, `UniformSplit`, `SharedTermsUniformSplit`): fields routed to one are
 //! flushed as `_<Format>_0.<dictionary>` beside their postings, a
 //! buffered delete by a routed field's term finds its documents, a merge
 //! reads and rewrites the group, and [`DirectoryReader`] answers term and
@@ -76,10 +76,19 @@ fn write(dir: &FsDirectory, routed: Option<Lucene104PostingsFormat>, merge: bool
     }
 }
 
-/// Every query's live hits, as (segment, doc) pairs.
-fn hits(dir: &FsDirectory) -> Vec<(String, Vec<(usize, i32)>)> {
+/// Every query's live hits, as their documents' sorted stored ids: a merge
+/// may order its sources by size, which differs between formats.
+fn hits(dir: &FsDirectory) -> Vec<(String, Vec<String>)> {
     let reader = DirectoryReader::open(dir).unwrap();
     let opened = reader.open_segments().unwrap();
+    let readers = reader.segment_readers();
+    let id = |index: usize, doc: i32| {
+        let stored = readers[index].stored_document(doc).unwrap().unwrap();
+        let FieldValue::String(id) = &stored.fields[0].value else {
+            panic!("an id");
+        };
+        id.clone()
+    };
     let mut out = Vec::new();
     let mut terms: Vec<(&str, String)> = vec![("body", "shared".into()), ("body", "zzz".into())];
     terms.extend((0..13).map(|i| ("body", format!("a{i}"))));
@@ -98,8 +107,9 @@ fn hits(dir: &FsDirectory) -> Vec<(String, Vec<(usize, i32)>)> {
                 &mut collector,
             )
             .unwrap();
-            docs.extend(collector.docs.iter().map(|&d| (index, d)));
+            docs.extend(collector.docs.iter().map(|&d| id(index, d)));
         }
+        docs.sort();
         out.push((format!("{field}:{term}"), docs));
     }
     for (words, slop) in [(["shared", "a3"], 0), (["a2", "b7"], 0), (["a1", "a1"], 2)] {
@@ -116,8 +126,9 @@ fn hits(dir: &FsDirectory) -> Vec<(String, Vec<(usize, i32)>)> {
                 &mut collector,
             )
             .unwrap();
-            docs.extend(collector.docs.iter().map(|&d| (index, d)));
+            docs.extend(collector.docs.iter().map(|&d| id(index, d)));
         }
+        docs.sort();
         out.push((format!("body:\"{words:?}\"~{slop}"), docs));
     }
     out
@@ -135,8 +146,10 @@ fn check(routed: Lucene104PostingsFormat, dictionary: &dyn TermsDictionaryFormat
 
     let files = ords_dir.list_all().unwrap();
     let name = dictionary.name();
-    let exts = dictionary.extensions().iter().copied();
-    for ext in exts.chain(["doc", "pos", "psm"]) {
+    // The marker: a format may leave its other dictionary files unwritten
+    // (MockRandom's seed picks its dictionary).
+    let marker = dictionary.extensions()[0];
+    for ext in [marker, "doc", "pos", "psm"] {
         assert!(
             files
                 .iter()
@@ -186,6 +199,11 @@ fn uniform_split() -> (Lucene104PostingsFormat, &'static dyn TermsDictionaryForm
     (Lucene104PostingsFormat::dictionary(dictionary), dictionary)
 }
 
+fn fst() -> (Lucene104PostingsFormat, &'static dyn TermsDictionaryFormat) {
+    let dictionary = &lucene_codecs::memory::DEFAULT_FORMAT;
+    (Lucene104PostingsFormat::dictionary(dictionary), dictionary)
+}
+
 fn shared_terms() -> (Lucene104PostingsFormat, &'static dyn TermsDictionaryFormat) {
     let dictionary = &lucene_codecs::uniformsplit::sharedterms::DEFAULT_FORMAT;
     (Lucene104PostingsFormat::dictionary(dictionary), dictionary)
@@ -193,14 +211,14 @@ fn shared_terms() -> (Lucene104PostingsFormat, &'static dyn TermsDictionaryForma
 
 #[test]
 fn flushed_segments_read_back_like_the_default_format() {
-    for (format, dictionary) in [ords(), uniform_split(), shared_terms()] {
+    for (format, dictionary) in [ords(), fst(), uniform_split(), shared_terms()] {
         check(format, dictionary, false);
     }
 }
 
 #[test]
 fn a_merge_rewrites_the_group_and_reads_back() {
-    for (format, dictionary) in [ords(), uniform_split(), shared_terms()] {
+    for (format, dictionary) in [ords(), fst(), uniform_split(), shared_terms()] {
         check(format, dictionary, true);
     }
 }

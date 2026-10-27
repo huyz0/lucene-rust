@@ -35,8 +35,9 @@ pub mod rot13;
 /// Makes the test framework's terms-dictionary postings formats readable by
 /// name (`PostingsFormat`'s SPI): `LuceneFixedGap`,
 /// `LuceneVarGapFixedInterval`, `LuceneVarGapDocFreqInterval`,
-/// `UniformSplitRot13`, `STUniformSplitRot13` and
-/// `TestBloomFilteredLucenePostings`. Idempotent.
+/// `UniformSplitRot13`, `STUniformSplitRot13`,
+/// `TestBloomFilteredLucenePostings` and (read-only) `MockRandom`.
+/// Idempotent.
 pub fn register_postings_formats() {
     use lucene_codecs::terms_dictionary::register;
     register(&blockterms::FIXED_GAP);
@@ -52,4 +53,5 @@ pub fn register_postings_formats() {
         register(format);
     }
     register(bloom::TestBloomFilteredLucenePostings::dictionary_format());
+    register(mockrandom::MockRandomPostingsFormat::read_only());
 }

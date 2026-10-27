@@ -316,19 +316,23 @@ CASES=(
   # postings, number every term by ord and seek back to it, and pass
   # CheckIndex.
   "lucene-index|write_per_field_formats_fixture ords|block-tree-ords|VerifyPerFieldFormats|BlockTreeOrds"
-  # And to UniformSplitPostingsFormat / STUniformSplitPostingsFormat (M14):
-  # Lucene must read their .ustd/.ustb (.stustd/.stustb) dictionaries.
+  # And to UniformSplitPostingsFormat / STUniformSplitPostingsFormat and
+  # FSTPostingsFormat (M14): Lucene must read their .ustd/.ustb
+  # (.stustd/.stustb) and .tfp dictionaries.
   "lucene-index|write_per_field_formats_fixture UniformSplit|uniform-split|VerifyPerFieldFormats|UniformSplit"
   "lucene-index|write_per_field_formats_fixture SharedTermsUniformSplit|shared-terms|VerifyPerFieldFormats|SharedTermsUniformSplit"
+  "lucene-index|write_per_field_formats_fixture FST50|fst50|VerifyPerFieldFormats|FST50"
   # And to the test framework's terms-dictionary formats (M14), which its
   # jar registers with Lucene's SPI: block terms over each terms index, the
-  # ROT13 uniform-split pair and the low-memory bloom filter.
+  # ROT13 uniform-split pair, the low-memory bloom filter, and MockRandom's
+  # seeded dictionaries.
   "lucene-test-framework|write_test_framework_postings_fixture LuceneFixedGap|tf-fixed-gap|VerifyPerFieldFormats|LuceneFixedGap"
   "lucene-test-framework|write_test_framework_postings_fixture LuceneVarGapFixedInterval|tf-var-gap-fixed|VerifyPerFieldFormats|LuceneVarGapFixedInterval"
   "lucene-test-framework|write_test_framework_postings_fixture LuceneVarGapDocFreqInterval|tf-var-gap-doc-freq|VerifyPerFieldFormats|LuceneVarGapDocFreqInterval"
   "lucene-test-framework|write_test_framework_postings_fixture UniformSplitRot13|tf-uniform-split-rot13|VerifyPerFieldFormats|UniformSplitRot13"
   "lucene-test-framework|write_test_framework_postings_fixture STUniformSplitRot13|tf-st-uniform-split-rot13|VerifyPerFieldFormats|STUniformSplitRot13"
   "lucene-test-framework|write_test_framework_postings_fixture TestBloomFilteredLucenePostings|tf-bloom|VerifyPerFieldFormats|TestBloomFilteredLucenePostings"
+  "lucene-test-framework|write_test_framework_postings_fixture MockRandom|tf-mock-random|VerifyPerFieldFormats|MockRandom"
   # PerFieldDocValuesFormat through IndexWriter (M7): the s_ fields routed to
   # Lucene90DocValuesFormat(16), two flushed segments and a force-merge, whose
   # instances are numbered in opposite orders. Lucene must read every value

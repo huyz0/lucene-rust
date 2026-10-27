@@ -1635,12 +1635,19 @@ impl IndexingConfig {
                             None
                         })
                     };
-                    let dictionary = per_field_postings::dictionary_extensions(
-                        per_field_postings::format_of_suffix(&suffix),
-                    )
-                    .iter()
-                    .map(|ext| Ok(seg_dir.open(&format!("{seg}.{ext}"))?.to_vec()))
-                    .collect::<Result<Vec<_>>>()?;
+                    let format = per_field_postings::format_of_suffix(&suffix);
+                    let dictionary = per_field_postings::dictionary_extensions(format)
+                        .iter()
+                        .map(|ext| {
+                            let name = format!("{seg}.{ext}");
+                            if !seg_files.contains(&name)
+                                && !per_field_postings::dictionary_file_required(format, ext)
+                            {
+                                return Ok(Vec::new());
+                            }
+                            Ok(seg_dir.open(&name)?.to_vec())
+                        })
+                        .collect::<Result<Vec<_>>>()?;
                     let raw = RawPostings {
                         dictionary,
                         doc: seg_dir.open(&format!("{seg}.doc"))?.to_vec(),
@@ -1654,7 +1661,10 @@ impl IndexingConfig {
                     // on acquisition by Java's reader; native open only checks
                     // footer structure, so verify every original group here.
                     let metadata = read_optional("psm")?;
-                    for bytes in raw.dictionary.iter().map(Vec::as_slice).chain(
+                    // An empty dictionary entry is a file the format left
+                    // unwritten (`dictionary_file_required`).
+                    let written = raw.dictionary.iter().filter(|d| !d.is_empty());
+                    for bytes in written.map(Vec::as_slice).chain(
                         [
                             Some(raw.doc.as_slice()),
                             raw.pos.as_deref(),
@@ -11566,12 +11576,18 @@ impl IndexingConfig {
             for suffix in &suffixes {
                 let seg = format!("{}_{suffix}", sci.segment_name);
                 let open = |ext: &str| seg_dir.open(&format!("{seg}.{ext}"));
-                let dictionary = per_field_postings::dictionary_extensions(
-                    per_field_postings::format_of_suffix(suffix),
-                )
-                .iter()
-                .map(|ext| open(ext))
-                .collect::<lucene_store::Result<Vec<_>>>()?;
+                let format = per_field_postings::format_of_suffix(suffix);
+                let dictionary = per_field_postings::dictionary_extensions(format)
+                    .iter()
+                    .map(|ext| {
+                        if !seg_files.contains(&format!("{seg}.{ext}"))
+                            && !per_field_postings::dictionary_file_required(format, ext)
+                        {
+                            return Ok(lucene_store::directory::Input::Owned(Vec::new()));
+                        }
+                        open(ext)
+                    })
+                    .collect::<lucene_store::Result<Vec<_>>>()?;
                 opened.push((suffix, dictionary, open("doc")?));
             }
             let groups: Vec<per_field_postings::GroupFiles<'_>> = opened

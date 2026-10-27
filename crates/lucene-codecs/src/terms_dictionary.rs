@@ -15,7 +15,8 @@
 //! Reading finds the format by the name a field's
 //! `PerFieldPostingsFormat.format` attribute records -- Java's
 //! `PostingsFormat.forName`, whose SPI registry is [`register`] here.
-//! `BlockTreeOrds` is registered from the start; a crate that defines more
+//! `BlockTreeOrds`, `FST50`, `UniformSplit` and `SharedTermsUniformSplit`
+//! are registered from the start; a crate that defines more
 //! (the test framework) registers them before reading their segments.
 
 use std::fmt;
@@ -110,9 +111,10 @@ pub fn register(format: &'static dyn TermsDictionaryFormat) {
 }
 
 /// The formats `lucene-codecs` itself defines, under their SPI names.
-fn builtin() -> [&'static dyn TermsDictionaryFormat; 3] {
+fn builtin() -> [&'static dyn TermsDictionaryFormat; 4] {
     [
         &crate::blocktreeords::DEFAULT_FORMAT,
+        &crate::memory::DEFAULT_FORMAT,
         &crate::uniformsplit::DEFAULT_FORMAT,
         &crate::uniformsplit::sharedterms::DEFAULT_FORMAT,
     ]

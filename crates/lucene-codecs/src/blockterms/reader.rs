@@ -947,3 +947,40 @@ impl<'r> SegmentTermsEnum<'r> {
         Ok(())
     }
 }
+
+impl BlockTermsReader {
+    /// Every field's terms with their statistics and postings metadata
+    /// ([`crate::terms_dictionary::TermsDictionaryFormat::read`]).
+    ///
+    /// # Errors
+    /// A block or term metadata that does not decode.
+    pub fn dictionary_fields(&self) -> Result<Vec<crate::postings_writer::DictionaryField>> {
+        let mut fields = Vec::with_capacity(self.size());
+        for name in self.field_names() {
+            let Some(terms) = self.terms(name) else {
+                continue;
+            };
+            let info = terms.info();
+            let mut field = crate::postings_writer::DictionaryField {
+                field_number: info.number,
+                index_options: info.index_options,
+                has_payloads: info.store_payloads,
+                doc_count: terms.doc_count(),
+                terms: Vec::new(),
+            };
+            let mut it = terms.iterator();
+            while let Some(bytes) = it.next()? {
+                let bytes = bytes.to_vec();
+                let state = it.term_state()?;
+                field.terms.push(crate::postings_writer::DictionaryTerm {
+                    bytes,
+                    doc_freq: state.doc_freq,
+                    total_term_freq: state.total_term_freq,
+                    meta: state.meta,
+                });
+            }
+            fields.push(field);
+        }
+        Ok(fields)
+    }
+}

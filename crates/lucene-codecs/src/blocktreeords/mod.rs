@@ -205,9 +205,20 @@ impl crate::terms_dictionary::TermsDictionaryFormat for BlockTreeOrdsPostingsFor
             ));
         };
         let reader = OrdsBlockTreeTermsReader::open(tio.to_vec(), tipo, state).map_err(err)?;
-        let mut fields = Vec::with_capacity(reader.size());
-        for name in reader.field_names() {
-            let Some(terms) = reader.terms(name) else {
+        reader.dictionary_fields().map_err(err)
+    }
+}
+
+impl OrdsBlockTreeTermsReader {
+    /// Every field's terms with their statistics and postings metadata
+    /// ([`crate::terms_dictionary::TermsDictionaryFormat::read`]).
+    ///
+    /// # Errors
+    /// A block that does not decode.
+    pub fn dictionary_fields(&self) -> Result<Vec<postings_writer::DictionaryField>> {
+        let mut fields = Vec::with_capacity(self.size());
+        for name in self.field_names() {
+            let Some(terms) = self.terms(name) else {
                 continue;
             };
             let info = terms.field_info();
@@ -219,13 +230,13 @@ impl crate::terms_dictionary::TermsDictionaryFormat for BlockTreeOrdsPostingsFor
                 terms: Vec::new(),
             };
             let mut it = terms.iter();
-            while let Some(bytes) = it.next().map_err(err)? {
+            while let Some(bytes) = it.next()? {
                 let bytes = bytes.to_vec();
                 field.terms.push(postings_writer::DictionaryTerm {
                     bytes,
-                    doc_freq: it.doc_freq().map_err(err)?,
-                    total_term_freq: it.total_term_freq().map_err(err)?,
-                    meta: it.term_metadata().map_err(err)?,
+                    doc_freq: it.doc_freq()?,
+                    total_term_freq: it.total_term_freq()?,
+                    meta: it.term_metadata()?,
                 });
             }
             fields.push(field);

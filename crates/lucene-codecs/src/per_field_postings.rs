@@ -306,9 +306,11 @@ impl GroupOutput {
         let mut files: Vec<(&'static str, &[u8])> =
             vec![("doc", &output.doc), ("psm", &output.psm)];
         match &self.dictionary {
+            // A dictionary file the format left unused is not written.
             Some(dictionary) => files.extend(
                 dictionary
                     .iter()
+                    .filter(|(_, bytes)| !bytes.is_empty())
                     .map(|(ext, bytes)| (*ext, bytes.as_slice())),
             ),
             None => files.extend([
@@ -787,6 +789,14 @@ pub fn marker_extension(format: &str) -> &'static str {
         Some(f) => f.extensions()[0],
         None => "tmd",
     }
+}
+
+/// Whether a group of `format` must have its dictionary file `.ext`: every
+/// block tree file, and a foreign format's marker. A foreign format writes
+/// only the dictionary files it uses (MockRandom's seed picks its
+/// dictionary), and a missing one reads as empty.
+pub fn dictionary_file_required(format: &str, ext: &str) -> bool {
+    !is_foreign_format(format) || marker_extension(format) == ext
 }
 
 /// Whether `files` hold any postings group's terms dictionary.
