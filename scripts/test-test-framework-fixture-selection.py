@@ -126,6 +126,27 @@ class FixtureSelectionTests(unittest.TestCase):
             "other.txt": EXPECTED["other.txt"],
         })
 
+    def test_term_vectors_routing_resolves_non_generator_helper_with_assertions(self):
+        # A selected routing generator depends on a plain shared Java source,
+        # also compiled by its benchmark. It must not become a generator entry.
+        (self.source / "TermVectorsRoutingSupport.java").write_text(
+            'public class TermVectorsRoutingSupport { '
+            'static String value() { return "native helper"; } }\n', encoding="utf-8")
+        (self.source / "GenTermVectorsWriterRouting.java").write_text(
+            'import java.nio.file.*; public class GenTermVectorsWriterRouting { '
+            'public static void main(String[] args) throws Exception { '
+            'if (!GenTermVectorsWriterRouting.class.desiredAssertionStatus()) '
+            'throw new AssertionError("missing -ea"); '
+            'Path out = Path.of(args[0]); Files.createDirectories(out); '
+            'Files.writeString(out.resolve("term-vectors.txt"), '
+            'TermVectorsRoutingSupport.value()); } }\n', encoding="utf-8")
+        result = self.run_script("--only", "GenTermVectorsWriterRouting")
+        self.assertEqual(result.returncode, 0, self.diagnostics(result))
+        self.assertEqual(self.fixtures(), {"term-vectors.txt": "native helper"})
+        listed = self.run_script("--list")
+        self.assertEqual(listed.returncode, 0, self.diagnostics(listed))
+        self.assertNotIn("GenTermVectorsRoutingSupport", listed.stdout.splitlines())
+
     def test_check_compiles_and_executes_every_generator(self):
         self.prepare_check()
         result = self.run_script("--check")

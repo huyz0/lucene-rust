@@ -78,7 +78,7 @@ run() { # <generator> <outdir>
   local assertion_opts=()
   # These generators record assertions in Lucene's asserting wrappers.
   case "$1" in
-    AssertingCodec|AssertingImpacts|AssertingDocValues|AssertingDocValuesIterators|AssertingKnnVectors|AssertingLiveDocs|LiveDocsWriterRouting|NormsWriterRouting|PointsWriterRouting|PostingsWriterRouting|AssertingNorms|AssertingPoints|AssertingPostings|AssertingStoredFields|StoredFieldsWriterRouting|AssertingTermVectors|CompressingCodec|ConfigurableM|CorruptUnknownFiles|CrankyDocValues|CrankyPostings|ScorerIndexSearcher|NoUnreferencedFilesOnClose) assertion_opts=(-ea) ;;
+    AssertingCodec|AssertingImpacts|AssertingDocValues|AssertingDocValuesIterators|AssertingKnnVectors|AssertingLiveDocs|LiveDocsWriterRouting|NormsWriterRouting|PointsWriterRouting|PostingsWriterRouting|AssertingNorms|AssertingPoints|AssertingPostings|AssertingStoredFields|StoredFieldsWriterRouting|TermVectorsWriterRouting|AssertingTermVectors|CompressingCodec|ConfigurableM|CorruptUnknownFiles|CrankyDocValues|CrankyPostings|ScorerIndexSearcher|NoUnreferencedFilesOnClose) assertion_opts=(-ea) ;;
     FstTesterLists) assertion_opts=(-ea -Dtests.multiplier=1) ;;
   esac
   java "${LUCENE_FIXTURE_JVM_OPTS[@]}" "${assertion_opts[@]}" -cp "$WORK/classes:$CP" "Gen$1" "$2" "$EXCERPT"

@@ -91,7 +91,7 @@ use lucene_codecs::norms;
 use lucene_codecs::per_field_doc_values;
 use lucene_codecs::postings_writer::{self, FieldPostingsInput};
 use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
-use lucene_codecs::term_vectors::{self, TermVectorField, TermVectorsDocument};
+use lucene_codecs::term_vectors::{TermVectorField, TermVectorsDocument};
 use lucene_store::codec_util::ID_LENGTH;
 use lucene_store::directory::Directory;
 
@@ -989,7 +989,17 @@ impl IndexingConfig {
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
-            Some(term_vectors::write_best_speed(&docs, &segment_id, ""))
+            Some(self.write_term_vectors_output(
+                &docs,
+                &segment_fields,
+                lucene_codecs::term_vectors_writer::TermVectorsWriteState {
+                    directory: dir,
+                    segment: segment_name,
+                    id: &segment_id,
+                    suffix: "",
+                    max_doc: max_doc as i32,
+                },
+            )?)
         };
         let vector_fields_written: Vec<super::WrittenVectorField> = vectors_output
             .as_ref()
@@ -1091,14 +1101,17 @@ impl IndexingConfig {
         if let Some(output) = &vectors_output {
             record(IndexWriter::write_vector_files(dir, segment_name, output)?);
         }
-        if let Some((tvd, tvx, tvm)) = &term_vectors_output {
-            record(IndexWriter::write_term_vector_files(
-                dir,
-                segment_name,
-                tvd,
-                tvx,
-                tvm,
-            )?);
+        if let Some(output) = term_vectors_output {
+            record(output.files);
+            if let Some((tvd, tvx, tvm)) = output.bytes {
+                record(IndexWriter::write_term_vector_files(
+                    dir,
+                    segment_name,
+                    &tvd,
+                    &tvx,
+                    &tvm,
+                )?);
+            }
         }
         // The buffer was put in sort order before this build (`sort_buffer`);
         // the `.si` records the sort, as the native path's does.

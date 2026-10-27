@@ -2332,8 +2332,14 @@ fn merge_segments_mapped_inner(
         .codec
         .as_deref()
         .and_then(|codec| codec.postings_writer_factory());
-    let installed_segment_writer =
-        norms_factory.is_some() || points_factory.is_some() || postings_factory.is_some();
+    let term_vectors_factory = options
+        .codec
+        .as_deref()
+        .and_then(|codec| codec.term_vectors_writer_factory());
+    let installed_segment_writer = norms_factory.is_some()
+        || points_factory.is_some()
+        || postings_factory.is_some()
+        || term_vectors_factory.is_some();
     // Java: SegmentMerger.merge writes stored fields before norms, and closes
     // norms before selecting postings/doc-values/vector formats. Source columns
     // here remain Rust-owned decoded inputs; no source NormsProducer is routed.
@@ -2401,9 +2407,12 @@ fn merge_segments_mapped_inner(
         }
     }
 
-    let tv_files =
-        write_merged_term_vectors(sources, &per_source_maps, &doc_order, &merged_segment_id)?;
-    let wrote_term_vectors = tv_files.is_some();
+    let tv_files = if term_vectors_factory.is_none() {
+        write_merged_term_vectors(sources, &per_source_maps, &doc_order, &merged_segment_id)?
+    } else {
+        None
+    };
+    let wrote_term_vectors = sources.iter().any(|source| source.term_vectors.is_some());
     let merged_postings_fields = merge_postings(
         sources,
         &per_source_maps,
@@ -2669,6 +2678,28 @@ fn merge_segments_mapped_inner(
         options,
         &merged_segment_id,
     )?;
+
+    // Java: SegmentMerger.mergeTermVectors follows postings, doc values,
+    // points and KNN merging. Source checks precede the vectors factory.
+    // The default native path above retains its compressed-chunk fast path.
+    if let Some(factory) = term_vectors_factory {
+        if wrote_term_vectors {
+            files.extend(write_installed_term_vectors(
+                factory,
+                lucene_codecs::term_vectors_writer::TermVectorsWriteState {
+                    directory: dir,
+                    segment: merged_segment_name,
+                    id: &merged_segment_id,
+                    suffix: "",
+                    max_doc: doc_count,
+                },
+                sources,
+                &per_source_maps,
+                &doc_order,
+                &merged_fields,
+            )?);
+        }
+    }
 
     let vector_field_numbers: Vec<(i32, &'static str, u32)> = merged_vectors
         .as_ref()
@@ -3737,6 +3768,47 @@ fn term_vectors_merge_strategy(
         }
         _ => TermVectorsMergeStrategy::PerDoc,
     }
+}
+
+/// Java: `TermVectorsWriter.merge`, over mapped owned document values.
+fn write_installed_term_vectors(
+    factory: &dyn lucene_codecs::term_vectors_writer::TermVectorsWriterFactory,
+    state: lucene_codecs::term_vectors_writer::TermVectorsWriteState<'_>,
+    sources: &[MergeSource],
+    per_source_maps: &[HashMap<i32, i32>],
+    doc_order: &[(usize, i32)],
+    infos: &[FieldInfo],
+) -> Result<Vec<String>> {
+    // Java checks every supplied reader, including a fully deleted source.
+    for source in sources {
+        if let Some(reader) = source.term_vectors {
+            reader.check_integrity()?;
+        }
+    }
+    let mut cursors: Vec<_> = sources
+        .iter()
+        .map(|_| term_vectors::ChunkCursor::new())
+        .collect();
+    crate::term_vectors_writer::write_installed(factory, state, |writer| -> Result<()> {
+        for &(source, doc_id) in doc_order {
+            let mut document = match sources[source].term_vectors {
+                Some(reader) => cursors[source]
+                    .document(reader, doc_id)?
+                    .unwrap_or_default(),
+                None => TermVectorsDocument::default(),
+            };
+            for field in &mut document.fields {
+                field.field_number = *per_source_maps[source].get(&field.field_number).ok_or(
+                    Error::UnknownSourceFieldNumber {
+                        field_number: field.field_number,
+                    },
+                )?;
+            }
+            crate::term_vectors_writer::write_document(writer, &document, infos)?;
+        }
+        writer.finish(state.max_doc)?;
+        Ok(())
+    })
 }
 
 /// Writes the merged segment's `.tvd`/`.tvx`/`.tvm` by walking `doc_order`
@@ -9043,6 +9115,277 @@ mod tests {
         // flush.
         assert_eq!(merged.num_dirty_chunks(), 2);
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[derive(Debug, Default)]
+    struct InstalledTvMergeCalls {
+        opens: std::sync::atomic::AtomicUsize,
+        closes: std::sync::atomic::AtomicUsize,
+    }
+
+    #[derive(Debug, Default)]
+    struct CountingInstalledTvFactory(std::sync::Arc<InstalledTvMergeCalls>);
+
+    impl lucene_codecs::term_vectors_writer::TermVectorsWriterFactory for CountingInstalledTvFactory {
+        fn vectors_writer<'a>(
+            &self,
+            state: lucene_codecs::term_vectors_writer::TermVectorsWriteState<'a>,
+        ) -> term_vectors::Result<
+            Box<dyn lucene_codecs::term_vectors_writer::TermVectorsWriteSink + 'a>,
+        > {
+            self.0
+                .opens
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Box::new(CountingInstalledTvSink {
+                native: lucene_codecs::term_vectors_writer::NativeTermVectorsWriter::new(state)?,
+                calls: self.0.clone(),
+            }))
+        }
+    }
+
+    struct CountingInstalledTvSink<'a> {
+        native: lucene_codecs::term_vectors_writer::NativeTermVectorsWriter<'a>,
+        calls: std::sync::Arc<InstalledTvMergeCalls>,
+    }
+
+    impl lucene_codecs::term_vectors_writer::TermVectorsWriteSink for CountingInstalledTvSink<'_> {
+        fn start_document(&mut self, fields: i32) -> term_vectors::Result<()> {
+            self.native.start_document(fields)
+        }
+        fn finish_document(&mut self) -> term_vectors::Result<()> {
+            self.native.finish_document()
+        }
+        fn start_field(
+            &mut self,
+            info: &FieldInfo,
+            terms: i32,
+            positions: bool,
+            offsets: bool,
+            payloads: bool,
+        ) -> term_vectors::Result<()> {
+            self.native
+                .start_field(info, terms, positions, offsets, payloads)
+        }
+        fn finish_field(&mut self) -> term_vectors::Result<()> {
+            self.native.finish_field()
+        }
+        fn start_term(&mut self, term: &[u8], frequency: i32) -> term_vectors::Result<()> {
+            self.native.start_term(term, frequency)
+        }
+        fn finish_term(&mut self) -> term_vectors::Result<()> {
+            self.native.finish_term()
+        }
+        fn add_position(
+            &mut self,
+            position: i32,
+            start: i32,
+            end: i32,
+            payload: Option<&[u8]>,
+        ) -> term_vectors::Result<()> {
+            self.native.add_position(position, start, end, payload)
+        }
+        fn finish(&mut self, documents: i32) -> term_vectors::Result<()> {
+            self.native.finish(documents)
+        }
+        fn close(&mut self) -> term_vectors::Result<()> {
+            self.calls
+                .closes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.native.close()
+        }
+        fn ram_bytes_used(&self) -> usize {
+            self.native.ram_bytes_used()
+        }
+    }
+
+    fn installed_tv_directory_snapshot(dir: &dyn Directory) -> Vec<(String, Vec<u8>)> {
+        let mut names = dir.list_all().unwrap();
+        names.sort();
+        names
+            .into_iter()
+            .map(|name| {
+                let bytes = dir.open(&name).unwrap().to_vec();
+                (name, bytes)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn installed_term_vectors_check_fully_deleted_source_crc_before_factory_acquisition() {
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let source_id = [81; ID_LENGTH];
+        let output_id = [82; ID_LENGTH];
+        let infos = vec![tv_field("body", 0)];
+        let stored = flush(
+            &dir,
+            &tmp,
+            "_source",
+            source_id,
+            &infos,
+            &[doc_with(0, "x")],
+        );
+        let stored_reader = open_reader(&stored);
+        let original = flush_term_vectors(&[tv_doc(0, &[("x", 0)])], source_id);
+        let mut bad = original.tvd.clone();
+        // Change only the stored checksum. Structural open and document decode
+        // succeed; integrity checking must reject it even with no live docs.
+        *bad.last_mut().unwrap() ^= 1;
+        let vectors =
+            term_vectors::open(&bad, &original.tvx, &original.tvm, &source_id, "").unwrap();
+        assert_eq!(vectors.document(0).unwrap(), Some(tv_doc(0, &[("x", 0)])));
+        let deleted = FixedBitSet::new(1);
+        let source = MergeSource {
+            term_vectors: Some(&vectors),
+            ..MergeSource::stored_only(
+                &stored.fields,
+                &stored_reader,
+                Some(&deleted),
+                Some(version()),
+            )
+        };
+        // A colliding name must not hide the CRC failure or become owned by
+        // an operation that must never acquire its native output writer.
+        let mut collision = dir.create_output("_crc.tvm").unwrap();
+        collision.write_bytes(b"preexisting metadata belongs to another attempt");
+        collision.close().unwrap();
+        let before = installed_tv_directory_snapshot(&dir);
+        let maps = [HashMap::from([(0, 0)])];
+        let factory = CountingInstalledTvFactory::default();
+        let error = write_installed_term_vectors(
+            &factory,
+            lucene_codecs::term_vectors_writer::TermVectorsWriteState {
+                directory: &dir,
+                segment: "_crc",
+                id: &output_id,
+                suffix: "",
+                max_doc: 0,
+            },
+            &[source],
+            &maps,
+            &[],
+            &infos,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, Error::TermVectors(term_vectors::Error::Store(lucene_store::Error::Corrupted(ref message)))
+            if message.contains("checksum failed")),
+            "{error:?}"
+        );
+        assert_eq!(factory.0.opens.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            factory.0.closes.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(installed_tv_directory_snapshot(&dir), before);
+        assert_eq!(bad.len(), original.tvd.len());
+
+        // The same fully deleted source succeeds after restoring its checksum.
+        // A zero-document output still runs finish/close on the native writer.
+        dir.delete_file("_crc.tvm").unwrap();
+        let good_vectors = original.reader();
+        let restored = MergeSource {
+            term_vectors: Some(&good_vectors),
+            ..MergeSource::stored_only(
+                &stored.fields,
+                &stored_reader,
+                Some(&deleted),
+                Some(version()),
+            )
+        };
+        let files = write_installed_term_vectors(
+            &factory,
+            lucene_codecs::term_vectors_writer::TermVectorsWriteState {
+                directory: &dir,
+                segment: "_crc",
+                id: &output_id,
+                suffix: "",
+                max_doc: 0,
+            },
+            &[restored],
+            &maps,
+            &[],
+            &infos,
+        )
+        .unwrap();
+        assert_eq!(files, ["_crc.tvd", "_crc.tvm", "_crc.tvx"]);
+        assert_eq!(factory.0.opens.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            factory.0.closes.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        let data = dir.open("_crc.tvd").unwrap();
+        let index = dir.open("_crc.tvx").unwrap();
+        let meta = dir.open("_crc.tvm").unwrap();
+        let reader = term_vectors::open(&data, &index, &meta, &output_id, "").unwrap();
+        reader.check_integrity().unwrap();
+        assert_eq!(reader.max_doc(), 0);
+    }
+
+    #[test]
+    fn installed_term_vectors_unknown_source_field_keeps_typed_error_after_acquire_and_close() {
+        let tmp = tempdir();
+        let dir = FsDirectory::open(&tmp);
+        let source_id = [83; ID_LENGTH];
+        let output_id = [84; ID_LENGTH];
+        let infos = vec![tv_field("body", 0)];
+        let stored = flush(
+            &dir,
+            &tmp,
+            "_source",
+            source_id,
+            &infos,
+            &[doc_with(0, "x")],
+        );
+        let stored_reader = open_reader(&stored);
+        // Native bytes have a valid CRC but reference field 7, absent from the
+        // source FieldInfos and its reconciled map. This is a source-mapping
+        // error, not write_document's merged-field Corrupted error.
+        let encoded = flush_term_vectors(&[tv_doc(7, &[("x", 0)])], source_id);
+        let vectors = encoded.reader();
+        vectors.check_integrity().unwrap();
+        assert_eq!(
+            vectors.document(0).unwrap().unwrap().fields[0].field_number,
+            7
+        );
+        let source = MergeSource {
+            term_vectors: Some(&vectors),
+            ..MergeSource::stored_only(&stored.fields, &stored_reader, None, Some(version()))
+        };
+        let mut unrelated = dir.create_output("_other.tvd").unwrap();
+        unrelated.write_bytes(b"unrelated native candidate");
+        unrelated.close().unwrap();
+        let before = installed_tv_directory_snapshot(&dir);
+        let (merged, maps) = reconcile_field_numbers(&[&stored.fields]).unwrap();
+        let factory = CountingInstalledTvFactory::default();
+        let error = write_installed_term_vectors(
+            &factory,
+            lucene_codecs::term_vectors_writer::TermVectorsWriteState {
+                directory: &dir,
+                segment: "_unknown",
+                id: &output_id,
+                suffix: "",
+                max_doc: 1,
+            },
+            &[source],
+            &maps,
+            &[(0, 0)],
+            &merged,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, Error::UnknownSourceFieldNumber { field_number: 7 }),
+            "{error:?}"
+        );
+        assert_eq!(factory.0.opens.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            factory.0.closes.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(installed_tv_directory_snapshot(&dir), before);
+        for extension in ["tvm", "tvd", "tvx"] {
+            assert!(dir.open(&format!("_unknown.{extension}")).is_err());
+        }
     }
 
     #[test]
