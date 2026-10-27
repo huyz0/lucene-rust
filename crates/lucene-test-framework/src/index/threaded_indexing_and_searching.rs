@@ -38,8 +38,7 @@
 //! - The threads run iteration counts, not `RUN_TIME_SEC`; a
 //!   `SearcherManager` search thread whose searcher is still empty while
 //!   documents are indexed does not use one up.
-//! - `advanceSegmentInfosCounter` is not ported (its draw is kept), nor
-//!   `FailOnNonBulkMergesInfoStream` or `ensureSaneIWCOnNightly`.
+//! - The port has no `InfoStream`, so no `FailOnNonBulkMergesInfoStream`.
 //! - The merged-segment warmer records the merged segment's name (the port's
 //!   warmer is handed the directory and the segment, not a reader); the
 //!   search threads check every `source=merge` segment they see was warmed,
@@ -71,6 +70,7 @@ use lucene_util::java_random::JavaRandom;
 use lucene_util::test_support::TempDir;
 
 use super::base_index_file_format::{docs_with_term, get, new_config, stored, writer_with};
+use super::index_writer_config::ensure_sane_iwc_on_nightly;
 use crate::analysis::mock_analyzer::MockAnalyzer;
 use crate::store::base_directory_wrapper::BaseDirectoryWrapper;
 use crate::store::mock_directory_wrapper::MockDirectoryWrapper;
@@ -234,8 +234,14 @@ impl<'d> Shared<'_, 'd> {
                 }
                 doc
             };
-            // Maybe advance the segment counter: not ported, the draw kept.
-            let _ = r.next_int_bounded(7) == 5;
+            // Maybe advance the segment counter.
+            if r.next_int_bounded(7) == 5 {
+                self.write(|w| {
+                    let counter = w.segment_infos_counter().saturating_add(100);
+                    w.advance_segment_infos_counter(counter);
+                    Ok(())
+                })?;
+            }
             if r.next_boolean() {
                 if r.next_boolean() {
                     self.add_pack(r, line, &build, &mut to_delete_sub_docs)?;
@@ -926,6 +932,8 @@ pub fn run_test(t: &mut LuceneTestCase, test_name: &str, mode: ReaderMode) -> Th
     );
     let mut config = new_config(t, analyzer);
     config.commit_on_close = false;
+    // `setInfoStream(new FailOnNonBulkMergesInfoStream())`: no InfoStream.
+    ensure_sane_iwc_on_nightly(t.nightly(), &mut config);
     let warmed = Arc::new(Mutex::new(HashSet::new()));
     let mut writer = writer_with(&dir, &config);
     writer.set_merged_segment_warmer(Some(Arc::new(Warmer(Arc::clone(&warmed)))));

@@ -10822,6 +10822,23 @@ impl IndexWriter<'_> {
         &self.rollback_segments
     }
 
+    /// `IndexWriter.getSegmentInfosCounter()`: the counter the next
+    /// segment's name is drawn from.
+    pub fn segment_infos_counter(&self) -> i64 {
+        self.segment_infos.counter
+    }
+
+    /// `IndexWriter.advanceSegmentInfosCounter(newCounter)`: the next
+    /// segment names start at `new_counter`; a lower value changes nothing.
+    /// Java's `changed()` bumps the version too; here the next commit
+    /// publishes the counter and the next snapshot's version comes from
+    /// its segments (see [`crate::nrt`]).
+    pub fn advance_segment_infos_counter(&mut self, new_counter: i64) {
+        if self.segment_infos.counter < new_counter {
+            self.segment_infos.counter = new_counter;
+        }
+    }
+
     /// `IndexWriter.getSegmentCount()`: the segments of the writer's
     /// in-memory view -- the last commit's and those flushed since.
     pub fn segment_count(&self) -> usize {
