@@ -82,7 +82,7 @@ run() { # <generator> <outdir>
     FstTesterLists) assertion_opts=(-ea -Dtests.multiplier=1) ;;
     # Math.sin/cos as StrictMath's fdlibm on every CPU, as the port computes
     # (see crates/lucene-util/src/spatial3d/mod.rs, "Trigonometry").
-    GeoTestUtil) assertion_opts=(-XX:+UnlockDiagnosticVMOptions -XX:DisableIntrinsic=_dsin,_dcos) ;;
+    GeoTestUtil|BaseGeoPoint) assertion_opts=(-XX:+UnlockDiagnosticVMOptions -XX:DisableIntrinsic=_dsin,_dcos) ;;
   esac
   java "${LUCENE_FIXTURE_JVM_OPTS[@]}" "${assertion_opts[@]}" -cp "$WORK/classes:$CP" "Gen$1" "$2" "$EXCERPT"
 }
