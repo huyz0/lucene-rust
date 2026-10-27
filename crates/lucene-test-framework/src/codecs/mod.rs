@@ -33,6 +33,7 @@ pub mod cranky_stored_fields;
 pub mod cranky_term_vectors;
 pub mod mockrandom;
 pub mod ramonly;
+pub mod random_installed;
 pub mod rot13;
 
 /// Makes the test framework's terms-dictionary postings formats readable by

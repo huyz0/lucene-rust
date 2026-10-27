@@ -5477,6 +5477,7 @@ pub(crate) fn merge_points(
 
         result.push(points::MergePointsField {
             field_number: merged_field_number,
+            field_name: merged_field.name.clone(),
             num_dims: merged_num_dims,
             num_index_dims: merged_num_index_dims,
             bytes_per_dim: merged_bytes_per_dim,

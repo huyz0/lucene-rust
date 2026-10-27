@@ -76,6 +76,18 @@ pub struct InstalledAssertingCodec {
     postings_for_field: Select<Lucene104PostingsFormat>,
     doc_values_for_field: Select<Lucene90DocValuesFormat>,
     knn_vectors_for_field: Select<KnnVectorsFormat>,
+    points_format: Option<Arc<dyn PointsWriterFactory>>,
+    display: Option<Arc<dyn Fn() -> String + Send + Sync>>,
+}
+
+/// `toString()`: `Codec.toString()`'s name, or a subclass's override.
+impl fmt::Display for InstalledAssertingCodec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.display {
+            Some(display) => f.write_str(&display()),
+            None => f.write_str(NAME),
+        }
+    }
 }
 
 impl fmt::Debug for InstalledAssertingCodec {
@@ -87,6 +99,7 @@ impl fmt::Debug for InstalledAssertingCodec {
                 "knn_vectors_for_field",
                 &self.knn_vectors_for_field.is_some(),
             )
+            .field("points_format", &self.points_format)
             .finish()
     }
 }
@@ -123,6 +136,19 @@ impl InstalledAssertingCodec {
         self.knn_vectors_for_field = Some(Arc::new(select));
         self
     }
+
+    /// `pointsFormat()` overridden (`RandomCodec`'s): `factory` writes the
+    /// points instead of the asserting native writer.
+    pub fn with_points_format(mut self, factory: Arc<dyn PointsWriterFactory>) -> Self {
+        self.points_format = Some(factory);
+        self
+    }
+
+    /// `toString()` overridden.
+    pub fn with_display(mut self, display: impl Fn() -> String + Send + Sync + 'static) -> Self {
+        self.display = Some(Arc::new(display));
+        self
+    }
 }
 
 impl Lucene104Codec for InstalledAssertingCodec {
@@ -143,7 +169,10 @@ impl Lucene104Codec for InstalledAssertingCodec {
     }
 
     fn points_writer_factory(&self) -> Option<&dyn PointsWriterFactory> {
-        Some(&self.points)
+        match &self.points_format {
+            Some(factory) => Some(factory.as_ref()),
+            None => Some(&self.points),
+        }
     }
 
     fn postings_writer_factory(&self) -> Option<&dyn PostingsWriterFactory> {

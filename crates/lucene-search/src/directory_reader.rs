@@ -1083,7 +1083,9 @@ impl SegmentReader {
         ]
         .into_iter()
         .flatten()
-        .chain(&self.postings_files)
+        // A foreign dictionary's optional file it never wrote (MockRandom's
+        // unchosen terms index) stands in empty: there is nothing to check.
+        .chain(self.postings_files.iter().filter(|f| !f.is_empty()))
         {
             files.push(f);
         }
