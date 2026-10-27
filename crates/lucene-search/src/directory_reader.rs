@@ -84,6 +84,7 @@ use std::sync::{Arc, OnceLock};
 use crate::multi_segment::OpenSegment;
 
 mod simpletext;
+mod simpletext_search;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -95,8 +96,6 @@ pub enum Error {
     SegmentInfo(#[from] segment_info::Error),
     #[error(transparent)]
     SimpleText(#[from] lucene_codecs::simpletext::Error),
-    #[error("{0}")]
-    UnsupportedCodecOperation(&'static str),
     #[error(transparent)]
     FieldInfos(#[from] field_infos::Error),
     #[error(transparent)]
@@ -985,6 +984,9 @@ impl SegmentReader {
     pub fn flat_vectors_reader(
         &self,
     ) -> crate::Result<Option<lucene_codecs::vectors::FlatVectorsReader<'_>>> {
+        if self.simpletext.is_some() {
+            return self.simpletext_flat_vectors();
+        }
         let Some(f) = self.vectors.first() else {
             return Ok(None);
         };
@@ -1008,6 +1010,10 @@ impl SegmentReader {
         &self,
         field_number: i32,
     ) -> crate::Result<Option<lucene_codecs::vectors::FlatVectorsReader<'_>>> {
+        if self.simpletext.is_some() {
+            let reader = self.simpletext_flat_vectors()?;
+            return Ok(reader.filter(|reader| reader.field(field_number).is_some()));
+        }
         let named = self
             .field_infos
             .fields
@@ -1144,8 +1150,14 @@ impl SegmentReader {
     }
 
     /// The segment's `.kdm`/`.kdi`/`.kdd` bytes, or `None` when it indexes no
-    /// points. All three are present together or not at all.
+    /// points. All three are present together or not at all. A SimpleText
+    /// segment's are the binary form its first points search builds
+    /// ([`OpenedSegments::open_points`]), `None` before.
     pub fn points_files(&self) -> Option<(&[u8], &[u8], &[u8])> {
+        if let Some(core) = &self.simpletext {
+            let files = core.search.built_points()?;
+            return Some((&files.kdm, &files.kdi, &files.kdd));
+        }
         Some((
             &***self.kdm_buf.as_ref()?,
             &***self.kdi_buf.as_ref()?,
@@ -1271,13 +1283,21 @@ impl SegmentReader {
     /// already self-describes dense vs. sparse (`IndexedDISI`-backed); feed
     /// it and [`Self::doc_values_data`] straight into the existing
     /// `lucene_codecs::doc_values::{numeric_value, binary_value, sorted_ord,
-    /// sorted_numeric_values}` readers, unchanged.
+    /// sorted_numeric_values}` readers, unchanged. A SimpleText segment's is
+    /// the binary form [`DirectoryReader::open_segments`] builds, `None`
+    /// before.
     pub fn doc_values_meta(&self) -> Option<&DocValuesMeta> {
+        if let Some(core) = &self.simpletext {
+            return core.search.built_doc_values().map(|form| &form.meta);
+        }
         self.dv_meta.as_deref()
     }
 
     /// The segment's `.dvd`, or `None` if it has no doc-values files at all.
     pub fn doc_values_data(&self) -> Option<&[u8]> {
+        if let Some(core) = &self.simpletext {
+            return core.search.built_doc_values().map(|form| &*form.data);
+        }
         // Two derefs: `Option<Arc<Input>>` -> `&Arc<Input>` -> `&[u8]`.
         self.dv_data.as_ref().map(|d| &***d)
     }
@@ -1292,6 +1312,12 @@ impl SegmentReader {
     /// keeps working for un-updated fields rather than silently reading a
     /// column that has been superseded for one field and not another.
     pub fn doc_values_for_field(&self, field_number: i32) -> Option<(&DocValuesMeta, &[u8])> {
+        if let Some(core) = &self.simpletext {
+            return core
+                .search
+                .built_doc_values()
+                .map(|form| (&form.meta, &*form.data));
+        }
         if let Some(gen) = self
             .dv_generations
             .iter()
@@ -1324,8 +1350,19 @@ impl SegmentReader {
         if let Some(map) = self.skip_indexes.get() {
             return Ok(map.get(&field_number));
         }
-        let (Some((dvs, suffix)), Some(meta)) = (&self.dvs, self.dv_meta.as_deref()) else {
-            return Ok(None);
+        let form = self
+            .simpletext
+            .as_ref()
+            .and_then(|core| core.search.built_doc_values());
+        let (dvs, suffix, meta): (&[u8], &str, &DocValuesMeta) = match (form, &self.dvs) {
+            (Some(form), _) => (&form.skip, "", &form.meta),
+            (None, Some((dvs, suffix))) if self.simpletext.is_none() => {
+                let Some(meta) = self.dv_meta.as_deref() else {
+                    return Ok(None);
+                };
+                (dvs, suffix, meta)
+            }
+            _ => return Ok(None),
         };
         let mut map = HashMap::new();
         for field in &self.field_infos.fields {
@@ -2544,20 +2581,19 @@ impl DirectoryReader {
     /// to build `OpenSegment`s -- see this module's doc comment for why this
     /// is a separate call from [`OpenedSegments::as_open_segments`].
     pub fn open_segments(&self) -> Result<OpenedSegments<'_>> {
-        if self
-            .segments
-            .iter()
-            .any(|segment| segment.simpletext.is_some())
-        {
-            return Err(Error::UnsupportedCodecOperation(
-                "SimpleText search routing is not implemented",
-            ));
-        }
         let mut doc_ins = Vec::with_capacity(self.segments.len());
         let mut pos_ins = Vec::with_capacity(self.segments.len());
         let mut pay_ins = Vec::with_capacity(self.segments.len());
         use std::sync::atomic::Ordering;
         for seg in &self.segments {
+            if let Some(core) = &seg.simpletext {
+                core.search_doc_values(&seg.segment_id)?;
+                let forms = core.search_postings(&seg.segment_id)?;
+                doc_ins.push(forms.doc.as_deref().map(DocInput::validated));
+                pos_ins.push(forms.pos.as_deref().map(PosInput::validated));
+                pay_ins.push(forms.pay.as_deref().map(PayInput::validated));
+                continue;
+            }
             // Validated the first time; each search after touches neither end
             // of the files (six cache lines a segment a search, all misses on
             // a busy node).
@@ -2603,40 +2639,51 @@ impl SegmentReader {
         doc_base: i32,
         f: impl FnOnce(&crate::multi_segment::OpenSegment<'_>) -> crate::Result<R>,
     ) -> crate::Result<R> {
-        if self.simpletext.is_some() {
-            return Err(Error::UnsupportedCodecOperation(
-                "SimpleText search routing is not implemented",
-            )
-            .into());
-        }
         let open = |e: Error| crate::Error::from(e);
-        use std::sync::atomic::Ordering;
-        let validated = self.postings_validated.load(Ordering::Acquire);
-        let doc_in = match &self.doc_buf {
-            Some(buf) if validated => Some(DocInput::validated(buf)),
-            Some(buf) => Some(
-                DocInput::open(buf, &self.segment_id, &self.segment_suffix)
-                    .map_err(|e| open(e.into()))?,
-            ),
+        let forms = match &self.simpletext {
+            Some(core) => {
+                core.search_doc_values(&self.segment_id).map_err(open)?;
+                Some(core.search_postings(&self.segment_id).map_err(open)?)
+            }
             None => None,
         };
-        let pos_in = match &self.pos_buf {
-            Some(buf) if validated => Some(PosInput::validated(buf)),
-            Some(buf) => Some(
-                PosInput::open(buf, &self.segment_id, &self.segment_suffix)
-                    .map_err(|e| open(e.into()))?,
+        let (doc_in, pos_in, pay_in) = match forms {
+            Some(forms) => (
+                forms.doc.as_deref().map(DocInput::validated),
+                forms.pos.as_deref().map(PosInput::validated),
+                forms.pay.as_deref().map(PayInput::validated),
             ),
-            None => None,
+            None => {
+                use std::sync::atomic::Ordering;
+                let validated = self.postings_validated.load(Ordering::Acquire);
+                let doc_in = match &self.doc_buf {
+                    Some(buf) if validated => Some(DocInput::validated(buf)),
+                    Some(buf) => Some(
+                        DocInput::open(buf, &self.segment_id, &self.segment_suffix)
+                            .map_err(|e| open(e.into()))?,
+                    ),
+                    None => None,
+                };
+                let pos_in = match &self.pos_buf {
+                    Some(buf) if validated => Some(PosInput::validated(buf)),
+                    Some(buf) => Some(
+                        PosInput::open(buf, &self.segment_id, &self.segment_suffix)
+                            .map_err(|e| open(e.into()))?,
+                    ),
+                    None => None,
+                };
+                let pay_in = match &self.pay_buf {
+                    Some(buf) if validated => Some(PayInput::validated(buf)),
+                    Some(buf) => Some(
+                        PayInput::open(buf, &self.segment_id, &self.segment_suffix)
+                            .map_err(|e| open(e.into()))?,
+                    ),
+                    None => None,
+                };
+                (doc_in, pos_in, pay_in)
+            }
         };
-        let pay_in = match &self.pay_buf {
-            Some(buf) if validated => Some(PayInput::validated(buf)),
-            Some(buf) => Some(
-                PayInput::open(buf, &self.segment_id, &self.segment_suffix)
-                    .map_err(|e| open(e.into()))?,
-            ),
-            None => None,
-        };
-        let points = match self.points_files() {
+        let points = match self.search_points_files().map_err(open)? {
             Some((kdm, kdi, kdd)) => {
                 if self.points_meta.get().is_none() {
                     let parsed =
@@ -2656,7 +2703,7 @@ impl SegmentReader {
             },
         };
         let seg = crate::multi_segment::OpenSegment {
-            fields: &self.fields,
+            fields: self.search_fields(),
             doc_in: doc_in.as_ref(),
             pos_in: pos_in.as_ref(),
             pay_in: pay_in.as_ref(),
@@ -2694,7 +2741,7 @@ impl<'a> OpenedSegments<'a> {
             return Ok(());
         }
         for r in self.readers {
-            let opened = match r.points_files() {
+            let opened = match r.search_points_files()? {
                 Some((kdm, kdi, kdd)) => {
                     if r.points_meta.get().is_none() {
                         let parsed =
@@ -2730,7 +2777,7 @@ impl<'a> OpenedSegments<'a> {
             .iter()
             .enumerate()
             .map(|(i, r)| OpenSegment {
-                fields: &r.fields,
+                fields: r.search_fields(),
                 doc_in: self.doc_ins[i].as_ref(),
                 pos_in: self.pos_ins[i].as_ref(),
                 pay_in: self.pay_ins[i].as_ref(),
