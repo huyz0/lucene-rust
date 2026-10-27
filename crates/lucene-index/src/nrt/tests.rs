@@ -104,6 +104,30 @@ fn a_snapshot_sees_uncommitted_segments_and_deletes() {
     assert!(format!("{:?}", s3.hold).contains("files"));
 }
 
+/// A delete applied to a committed segment changes that segment in place,
+/// with no commit: the snapshot is a new view and gets a new version, or
+/// `openIfChanged` takes it for the committed one and returns nothing.
+/// Seen to fail when a view matching the writer's in-memory segment list
+/// took the last commit's version.
+#[test]
+fn a_delete_in_a_committed_segment_gets_a_new_version() {
+    let tmp = TempDir::new("nrt-delete-committed");
+    let dir = FsDirectory::open(&tmp);
+    let mut w = writer(&dir);
+    for i in 0..10 {
+        w.add_document(doc(&format!("d{i}"))).unwrap();
+    }
+    w.commit().unwrap();
+    let s0 = w.nrt_snapshot(true, false).unwrap();
+    assert_eq!(s0.segment_infos.version, w.segment_infos().version);
+    w.delete_documents_by_term(&[Term::new("id", "d3")])
+        .unwrap();
+    let s1 = w.nrt_snapshot(true, false).unwrap();
+    assert_eq!(s1.segment_infos.segments.len(), 1);
+    assert_eq!(live_docs(&s1.segment_infos, &dir), 9);
+    assert!(s1.segment_infos.version > s0.segment_infos.version);
+}
+
 /// The pin is the point: a snapshot's segments are merged away and their
 /// commit superseded, and the files stay until the reader lets go -- then
 /// the writer's next operation reclaims them.
