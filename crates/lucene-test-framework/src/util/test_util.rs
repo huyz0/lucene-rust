@@ -976,6 +976,56 @@ pub fn clone_document(doc: &lucene_index::document::Document) -> lucene_index::d
     doc2
 }
 
+/// `reduceOpenFiles(w)`: keeps the number of open files lowish -- every
+/// segment compound (`noCFSRatio` 1.0), a log policy's merge factor or a
+/// tiered policy's `maxMergeAtOnce` and `segmentsPerTier` at most 5, and a
+/// concurrent scheduler at 3 merges on 2 threads. `w.getConfig()`'s two
+/// live objects are passed in: the writer's shared policy and, when it
+/// merges concurrently, its scheduler.
+///
+/// # Panics
+/// Never for Java's values (a ratio in `0..=1`, a merge factor of at
+/// least 2, limits Java's own `setMaxMergesAndThreads` takes).
+pub fn reduce_open_files(
+    policy: &crate::index::index_writer_config::LiveMergePolicy,
+    scheduler: Option<&lucene_index::merge_scheduler::ConcurrentMergeScheduler>,
+) {
+    use crate::index::index_writer_config::PolicyKind;
+    policy.change(|kind| {
+        kind.policy_mut()
+            .compound_file_settings_mut()
+            .set_no_cfs_ratio(1.0)
+            .expect("1.0 is a ratio");
+        match kind {
+            PolicyKind::Log(lmp) => {
+                let factor = lmp.merge_factor().min(5);
+                lmp.set_merge_factor(factor).expect("a merge factor >= 2");
+            }
+            PolicyKind::Tiered(tmp) => {
+                tmp.config.max_merge_at_once = tmp.config.max_merge_at_once.min(5);
+                tmp.config.segments_per_tier = tmp.config.segments_per_tier.min(5);
+            }
+            _ => {}
+        }
+    });
+    if let Some(cms) = scheduler {
+        cms.set_max_merges_and_threads(3, 2)
+            .expect("Java's own limits");
+    }
+}
+
+/// `syncConcurrentMerges(ms)`: waits for the concurrent scheduler's running
+/// merges (a serial scheduler has none to wait for, so takes no call).
+///
+/// # Errors
+/// What [`ConcurrentMergeScheduler::sync`](lucene_index::merge_scheduler::ConcurrentMergeScheduler::sync)
+/// returns.
+pub fn sync_concurrent_merges(
+    scheduler: &lucene_index::merge_scheduler::ConcurrentMergeScheduler,
+) -> lucene_index::index_writer::Result<()> {
+    scheduler.sync()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
