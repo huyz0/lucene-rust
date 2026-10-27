@@ -10,11 +10,12 @@
 //!
 //! [`check_index`] is `TestUtil.checkIndex`. The other index helpers
 //! (`docs`, `cloneDocument`, the codec pickers) arrive with
-//! `RandomIndexWriter` (M14.h batch h4); `randomPattern` needs
-//! `java.util.regex` and is not ported.
+//! `RandomIndexWriter` (M14.h batch h4). [`random_pattern`] compiles through
+//! lucene-analysis's `java.util.regex` port ([`JavaPattern`]).
 
 use std::cmp::Ordering;
 
+use lucene_analysis::util::java_regex::{JavaMatcher, JavaPattern};
 use lucene_util::automaton::{java_to_lower_case, java_to_upper_case};
 use lucene_util::java_random::JavaRandom;
 
@@ -218,6 +219,47 @@ pub fn random_regexpish_string_max(r: &mut JavaRandom, max_length: i32) -> Strin
         i -= 1;
     }
     s
+}
+
+/// `TestUtil.randomPattern(random)`: a [`random_regexpish_string`] that
+/// compiles and whose `replaceAll("_")` over `"AB\uD840\uDC00C"` leaves
+/// well-formed UTF-16 (LUCENE-4078: no match boundary inside the surrogate
+/// pair). Returns the pattern's source (`Pattern.pattern()`) with it.
+pub fn random_pattern(r: &mut JavaRandom) -> (String, JavaPattern) {
+    loop {
+        let source = random_regexpish_string(r);
+        // A `PatternSyntaxException`: draw again.
+        let Ok(pattern) = JavaPattern::compile(&source) else {
+            continue;
+        };
+        if replaces_to_valid_utf16(&pattern) {
+            return (source, pattern);
+        }
+    }
+}
+
+/// `p.matcher("AB\uD840\uDC00C").replaceAll("_")` in UTF-16 units, then
+/// `UnicodeUtil.validUTF16String` over it. A match the backtracking matcher
+/// gives up on (Java's `StackOverflowError`) counts as invalid.
+fn replaces_to_valid_utf16(pattern: &JavaPattern) -> bool {
+    let text = "AB\u{20000}C";
+    let mut m = JavaMatcher::new(pattern, text);
+    let mut out: Vec<u16> = Vec::new();
+    let mut last = 0;
+    loop {
+        match m.try_find() {
+            Ok(true) => {}
+            Ok(false) => break,
+            Err(_) => return false,
+        }
+        m.slice_utf16_into(last, m.start(0), &mut out);
+        if m.expand_replacement("_", &mut out).is_err() {
+            return false;
+        }
+        last = m.end(0);
+    }
+    m.slice_utf16_into(last, m.len_utf16(), &mut out);
+    char::decode_utf16(out).all(|c| c.is_ok())
 }
 
 /// `"    ".substring(n)` and friends: `width - n` copies of `c`.

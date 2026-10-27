@@ -559,6 +559,11 @@ pub struct RoaringDocIdSet {
 }
 
 impl RoaringDocIdSet {
+    /// The in-line size of one block slot, which [`Self::ram_bytes_used`]
+    /// charges per block whatever its encoding: what a test-side heap walk
+    /// (`RamUsageTester`) needs to measure a set it cannot see inside.
+    pub const BLOCK_SLOT_BYTES: usize = std::mem::size_of::<Block>();
+
     /// How many documents are in the set.
     pub fn cardinality(&self) -> usize {
         self.cardinality

@@ -4,16 +4,18 @@
 //! The set under test is a [`TestDocIdSet`]: its `iterator()` (`None` is
 //! Java's `null`, "no documents") and optional `bits()`.
 //!
-//! Not ported: `testRamBytesUsed` (`RamUsageTester`), and
-//! `testIntoBitSet`/`testIntoBitSetBoundChecks` -- the Rust iterators have
-//! no `intoBitSet`.
+//! `testRamBytesUsed` compares the set's own [`TestDocIdSet::ram_bytes_used`]
+//! with [`TestDocIdSet::measured_ram_bytes`], a walk over what the set holds
+//! that stands in for `RamUsageTester` (there is no reflective heap walk in
+//! Rust): each implementation measures its own allocation from the outside.
 
 use lucene_search::docid_set::RoaringDocIdSet;
 use lucene_search::facets::DocIdSet;
 use lucene_search::reader::{DocIdSetIterator, NO_MORE_DOCS};
 use lucene_util::bits::{BitSet, Bits};
+use lucene_util::fixed_bit_set::FixedBitSet;
 
-use super::base_bit_set::{random_set_load, JavaUtilBitSet};
+use super::base_bit_set::{random_set, random_set_load, JavaUtilBitSet};
 use super::lucene_test_case::LuceneTestCase;
 use super::test_util::next_int;
 
@@ -25,6 +27,12 @@ pub trait TestDocIdSet {
     fn bits(&self) -> Option<&dyn Bits> {
         None
     }
+    /// `ramBytesUsed()`.
+    fn ram_bytes_used(&self) -> usize;
+    /// `RamUsageTester.ramUsed`'s answer for this set, built over a
+    /// `length`-document space: measured from what the set holds, not
+    /// from its own estimate.
+    fn measured_ram_bytes(&self, length: usize) -> usize;
 }
 
 impl TestDocIdSet for DocIdSet {
@@ -38,6 +46,20 @@ impl TestDocIdSet for DocIdSet {
             DocIdSet::Bits { bits, .. } => Some(bits),
             _ => None,
         }
+    }
+
+    fn ram_bytes_used(&self) -> usize {
+        DocIdSet::ram_bytes_used(self)
+    }
+
+    /// The enum's own bytes plus the heap of the variant it holds.
+    fn measured_ram_bytes(&self, _length: usize) -> usize {
+        let heap = match self {
+            DocIdSet::Empty => 0,
+            DocIdSet::Array(docs) => docs.capacity() * std::mem::size_of::<i32>(),
+            DocIdSet::Bits { bits, .. } => bits.len().div_ceil(64) * 8,
+        };
+        std::mem::size_of::<DocIdSet>() + heap
     }
 }
 
@@ -53,6 +75,45 @@ impl TestDocIdSet for RoaringDocIdSet {
                 self.cardinality() as i64,
             )))
         }
+    }
+
+    fn ram_bytes_used(&self) -> usize {
+        RoaringDocIdSet::ram_bytes_used(self)
+    }
+
+    /// Re-derives each 65536-document block's encoding from the documents
+    /// the set iterates (Java's thresholds: all-set and contiguous runs are
+    /// free, up to 4096 documents a `u16` array, a full block missing fewer
+    /// than 4096 its complement, anything else a block-local bitset), then
+    /// adds what each costs to one slot per block.
+    fn measured_ram_bytes(&self, length: usize) -> usize {
+        const BLOCK: usize = 1 << 16;
+        const MAX_ARRAY: usize = 1 << 12;
+        let num_blocks = length.div_ceil(BLOCK);
+        let mut per_block: Vec<Vec<usize>> = vec![Vec::new(); num_blocks];
+        for doc in self.iter() {
+            let doc = doc as usize;
+            per_block[doc / BLOCK].push(doc % BLOCK);
+        }
+        let payload: usize = per_block
+            .iter()
+            .enumerate()
+            .map(|(b, docs)| {
+                let card = docs.len();
+                let block_len = BLOCK.min(length - b * BLOCK);
+                match (docs.first(), docs.last()) {
+                    (None, _) | (_, None) => 0,
+                    _ if card == BLOCK => 0,
+                    (Some(&first), Some(&last)) if card == last - first + 1 => 0,
+                    _ if card <= MAX_ARRAY => card * 2,
+                    _ if block_len == BLOCK && BLOCK - card < MAX_ARRAY => (BLOCK - card) * 2,
+                    _ => block_len.div_ceil(64) * 8,
+                }
+            })
+            .sum();
+        std::mem::size_of::<RoaringDocIdSet>()
+            + num_blocks * RoaringDocIdSet::BLOCK_SLOT_BYTES
+            + payload
     }
 }
 
@@ -129,6 +190,9 @@ impl<T: TestDocIdSet, F: FnMut(&JavaUtilBitSet, usize) -> T> BaseDocIdSetTestCas
         self.test_1_bit(t);
         self.test_2_bits(t);
         self.test_against_bit_set(t);
+        self.test_ram_bytes_used(t);
+        self.test_into_bit_set(t);
+        self.test_into_bit_set_bound_checks(t);
     }
 
     fn check(&mut self, t: &mut LuceneTestCase, num_bits: usize, bs: &JavaUtilBitSet) -> T {
@@ -199,6 +263,108 @@ impl<T: TestDocIdSet, F: FnMut(&JavaUtilBitSet, usize) -> T> BaseDocIdSetTestCas
             inc += next_int(t.random(), 1, 100) as usize;
         }
     }
+}
+
+impl<T: TestDocIdSet, F: FnMut(&JavaUtilBitSet, usize) -> T> BaseDocIdSetTestCase<T, F> {
+    /// `testRamBytesUsed`: random sizes and loads, the set's estimate
+    /// against the measured heap.
+    pub fn test_ram_bytes_used(&mut self, t: &mut LuceneTestCase) {
+        for _ in 0..100 {
+            let pow = t.random().next_int_bounded(20);
+            let max_doc = next_int(t.random(), 1, 1 << pow) as usize;
+            let bound = next_int(t.random(), 0, pow);
+            let num_docs = next_int(t.random(), 0, (max_doc as i32).min(1 << bound)) as usize;
+            let set = random_set(t.random(), max_doc, num_docs);
+            let copy = (self.copy_of)(&set, max_doc);
+            assert_eq!(
+                copy.measured_ram_bytes(max_doc),
+                copy.ram_bytes_used(),
+                "maxDoc={max_doc} numDocs={num_docs}"
+            );
+        }
+    }
+
+    /// `testIntoBitSet`: from a random position up to a random bound, the
+    /// bits match a `nextDoc` walk and both iterators stand on the same
+    /// document after.
+    pub fn test_into_bit_set(&mut self, t: &mut LuceneTestCase) {
+        let num_bits = next_int(t.random(), 100, 1 << 20);
+        let random_load = t.random().next_float();
+        for p in [0.0, 0.0001, random_load, 0.9, 1.0] {
+            let set = random_set_load(t.random(), num_bits as usize, p);
+            let copy = (self.copy_of)(&set, num_bits as usize);
+            let from = next_int(t.random(), 0, num_bits - 1);
+            let to = next_int(t.random(), from, num_bits + 5);
+            let mut actual = FixedBitSet::new((to - from) as usize);
+            let Some(mut it1) = copy.iterator() else {
+                continue;
+            };
+            let from_doc = io(it1.advance(from));
+            // No docs to set.
+            io(it1.fill_bit_set(from, &mut actual, from).map(|()| 0));
+            assert_eq!(actual.cardinality(), 0);
+            assert_eq!(from_doc, it1.doc_id());
+
+            io(it1.fill_bit_set(to, &mut actual, from).map(|()| 0));
+            let mut expected = FixedBitSet::new((to - from) as usize);
+            let mut it2 = copy.iterator().expect("the same set has an iterator");
+            let mut doc = io(it2.advance(from));
+            while doc < to {
+                // FBS: `from <= doc < to`, and `expected` holds `to - from` bits.
+                expected.set((doc - from) as usize);
+                doc = io(it2.next_doc());
+            }
+            assert_eq!(expected.words(), actual.words(), "from={from} to={to}");
+            assert_eq!(it2.doc_id(), it1.doc_id());
+            if it2.doc_id() != NO_MORE_DOCS {
+                assert_eq!(io(it2.next_doc()), io(it1.next_doc()));
+            }
+        }
+    }
+
+    /// `testIntoBitSetBoundChecks`: a bit past the target's end, and an
+    /// offset past the current document, both fail.
+    pub fn test_into_bit_set_bound_checks(&mut self, t: &mut LuceneTestCase) {
+        let mut set = JavaUtilBitSet::new(256);
+        BitSet::set(&mut set, 20);
+        BitSet::set(&mut set, 42);
+        let copy = (self.copy_of)(&set, 256);
+        let from = next_int(t.random(), 0, 20);
+        let to = next_int(t.random(), 43, 256);
+        let offset = next_int(t.random(), 0, from);
+
+        let mut dest1 = FixedBitSet::new((42 - offset + 1) as usize);
+        let mut it1 = copy.iterator().expect("two documents");
+        io(it1.advance(from));
+        // Legal: every set bit is in range.
+        io(it1.fill_bit_set(to, &mut dest1, offset).map(|()| 0));
+        for i in 0..dest1.len() {
+            let doc = offset + i as i32;
+            assert_eq!(doc == 20 || doc == 42, dest1.get(i), "bit {i}");
+        }
+
+        let expect_failure = |offset_arg: i32, len: i32| {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut dest = FixedBitSet::new(len as usize);
+                let mut it = copy.iterator().expect("two documents");
+                io(it.advance(from));
+                it.fill_bit_set(to, &mut dest, offset_arg)
+            }));
+            assert!(
+                !matches!(outcome, Ok(Ok(()))),
+                "intoBitSet(offset={offset_arg}) into {len} bits should fail"
+            );
+        };
+        // One set bit lands past the end of the target.
+        expect_failure(offset, 42 - offset);
+        // The offset is past the current document.
+        expect_failure(21, 42 - offset + 1);
+    }
+}
+
+/// An in-memory iterator's result: it does not fail.
+fn io(r: lucene_search::Result<i32>) -> i32 {
+    r.expect("an in-memory iterator does not fail")
 }
 
 /// `assertEquals(numBits, ds1, ds2)`: `nextDoc` walks, a random
@@ -338,6 +504,12 @@ mod tests {
             fn iterator(&self) -> Option<Box<dyn DocIdSetIterator + '_>> {
                 TestDocIdSet::iterator(&self.0)
             }
+            fn ram_bytes_used(&self) -> usize {
+                0
+            }
+            fn measured_ram_bytes(&self, _length: usize) -> usize {
+                0
+            }
             fn bits(&self) -> Option<&dyn Bits> {
                 Some(&self.1)
             }
@@ -356,6 +528,12 @@ mod tests {
         impl TestDocIdSet for Extra {
             fn iterator(&self) -> Option<Box<dyn DocIdSetIterator + '_>> {
                 TestDocIdSet::iterator(&self.0)
+            }
+            fn ram_bytes_used(&self) -> usize {
+                0
+            }
+            fn measured_ram_bytes(&self, _length: usize) -> usize {
+                0
             }
             fn bits(&self) -> Option<&dyn Bits> {
                 Some(&self.1)

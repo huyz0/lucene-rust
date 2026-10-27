@@ -6,10 +6,6 @@
 //!
 //! Differs:
 //!
-//! - `DocIdSetIterator.intoBitSet` has no port; [`into_bit_set`] is Java's
-//!   default loop over `nextDoc`, and the expected bits come from
-//!   `advanceExact` on each document, so the test still compares two ways
-//!   of reaching the same documents.
 //! - `CheckIndex.testDocValues` is
 //!   [`super::legacy_base_doc_values_format::check_leaf_doc_values`].
 //! - `testMismatchedFields` reaches a mismatched field numbering by indexing
@@ -30,10 +26,10 @@ use lucene_search::directory_reader::{DirectoryReader, SegmentReader};
 use lucene_search::reader::DocValuesSkipper;
 use lucene_search::reader::IndexReader as _;
 use lucene_search::reader::{
-    DocIdSetIterator, DocValuesIterator, LeafReader, SortedNumericDocValues, SortedSetDocValues,
-    NO_MORE_DOCS,
+    DocValuesIterator, LeafReader, SortedNumericDocValues, SortedSetDocValues, NO_MORE_DOCS,
 };
 use lucene_store::{ByteBuffersDirectory, Directory};
+use lucene_util::fixed_bit_set::FixedBitSet;
 use lucene_util::java_random::JavaRandom;
 
 use super::base_index_file_format::{
@@ -708,22 +704,6 @@ pub fn test_mismatched_fields(_t: &mut LuceneTestCase) {
 
 // --- intoBitSet ------------------------------------------------------------
 
-/// `DocIdSetIterator.intoBitSet(upTo, bitSet, offset)`, Java's default:
-/// every document from the current one below `up_to`, the iterator left on
-/// the first at or past it.
-pub fn into_bit_set<I: DocIdSetIterator + ?Sized>(
-    it: &mut I,
-    up_to: i32,
-    bits: &mut [bool],
-    offset: i32,
-) {
-    let mut doc = it.doc_id();
-    while doc < up_to {
-        bits[(doc - offset) as usize] = true;
-        doc = next(it);
-    }
-}
-
 /// The kinds `doTestRandomIntoBitSet` reads back, each under `num`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BitSetKind {
@@ -825,8 +805,8 @@ pub fn random_into_bit_set(
             t.random().next_int_bounded(start)
         };
         let len = (num_docs - offset) as usize;
-        let mut bits = vec![false; len];
-        let mut expected_bits = vec![false; len];
+        let mut bit_set = FixedBitSet::new(len);
+        let mut expected_bit_set = FixedBitSet::new(len);
 
         let values = kind.produce(leaf);
         let expected = kind.produce(leaf);
@@ -836,20 +816,23 @@ pub fn random_into_bit_set(
         }
         let (mut values, mut expected) = (values.expect("values"), expected.expect("values"));
         advance(values.as_mut(), start);
+        advance(expected.as_mut(), start);
+        assert_eq!(expected.doc_id(), values.doc_id());
         if values.doc_id() == NO_MORE_DOCS {
-            assert_eq!(NO_MORE_DOCS, advance(expected.as_mut(), start));
             continue;
         }
-        into_bit_set(values.as_mut(), up_to, &mut bits, offset);
-        // The expected bits by `advanceExact`, document by document.
-        for doc in start..up_to {
-            if exact(expected.as_mut(), doc) {
-                expected_bits[(doc - offset) as usize] = true;
-            }
+        values
+            .fill_bit_set(up_to, &mut bit_set, offset)
+            .expect("intoBitSet");
+        let mut doc = expected.doc_id();
+        while doc < up_to {
+            // FBS: `offset <= start <= doc < upTo <= numDocs`, and the
+            // bit set holds `numDocs - offset` bits.
+            expected_bit_set.set((doc - offset) as usize);
+            doc = next(expected.as_mut());
         }
-        let after = kind.produce(leaf).map(|mut it| advance(it.as_mut(), up_to));
-        assert_eq!(after, Some(values.doc_id()));
-        assert_eq!(expected_bits, bits);
+        assert_eq!(expected.doc_id(), values.doc_id());
+        assert_eq!(expected_bit_set.words(), bit_set.words());
     }
 }
 
@@ -1179,39 +1162,6 @@ mod tests {
         for n in NIGHTLY {
             assert!(names.contains(n));
         }
-    }
-
-    #[test]
-    fn into_bit_set_stops_at_up_to() {
-        struct Docs(Vec<i32>, usize);
-        impl DocIdSetIterator for Docs {
-            fn doc_id(&self) -> i32 {
-                if self.1 == 0 {
-                    -1
-                } else {
-                    self.0.get(self.1 - 1).copied().unwrap_or(NO_MORE_DOCS)
-                }
-            }
-            fn next_doc(&mut self) -> lucene_search::Result<i32> {
-                self.1 += 1;
-                Ok(self.doc_id())
-            }
-            fn advance(&mut self, target: i32) -> lucene_search::Result<i32> {
-                while self.doc_id() < target {
-                    self.next_doc()?;
-                }
-                Ok(self.doc_id())
-            }
-            fn cost(&self) -> i64 {
-                self.0.len() as i64
-            }
-        }
-        let mut it = Docs(vec![1, 3, 6], 0);
-        advance(&mut it, 2);
-        let mut bits = vec![false; 5];
-        into_bit_set(&mut it, 6, &mut bits, 1);
-        assert_eq!(vec![false, false, true, false, false], bits);
-        assert_eq!(6, it.doc_id());
     }
 
     #[test]
