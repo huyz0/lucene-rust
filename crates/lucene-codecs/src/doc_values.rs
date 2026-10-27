@@ -3074,6 +3074,10 @@ pub fn write_fields_with_skip_indexes(
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Lucene90DocValuesFormat {
     skip_index_interval_size: i32,
+    /// `getName()`: [`Self::NAME`], or the name of a format that wraps this
+    /// one without changing its files (`AssertingDocValuesFormat`'s
+    /// `Asserting`).
+    name: &'static str,
 }
 
 impl Lucene90DocValuesFormat {
@@ -3092,6 +3096,7 @@ impl Lucene90DocValuesFormat {
         }
         Ok(Lucene90DocValuesFormat {
             skip_index_interval_size,
+            name: Self::NAME,
         })
     }
 
@@ -3099,12 +3104,25 @@ impl Lucene90DocValuesFormat {
     pub fn skip_index_interval_size(&self) -> i32 {
         self.skip_index_interval_size
     }
+
+    /// `getName()`: what `PerFieldDocValuesFormat.format` records and the
+    /// stem of the instance's codec suffix.
+    pub fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// This format's files under another format's name: a wrapper such as
+    /// `AssertingDocValuesFormat` whose files are its delegate's.
+    pub fn named(self, name: &'static str) -> Self {
+        Lucene90DocValuesFormat { name, ..self }
+    }
 }
 
 impl Default for Lucene90DocValuesFormat {
     fn default() -> Self {
         Lucene90DocValuesFormat {
             skip_index_interval_size: Self::DEFAULT_SKIP_INDEX_INTERVAL_SIZE,
+            name: Self::NAME,
         }
     }
 }
