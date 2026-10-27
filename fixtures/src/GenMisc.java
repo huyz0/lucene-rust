@@ -47,7 +47,10 @@ public class GenMisc {
     Random rnd = new Random(1464L);
     try (Directory dir = FSDirectory.open(index);
         IndexWriter w =
-            new IndexWriter(dir, new IndexWriterConfig(new WhitespaceAnalyzer()))) {
+            new IndexWriter(
+                dir,
+                new IndexWriterConfig(new WhitespaceAnalyzer())
+                    .setOpenMode(IndexWriterConfig.OpenMode.CREATE))) {
       // Three commits: three segments, so the terms are merged across leaves.
       for (int commit = 0; commit < 3; commit++) {
         for (int d = 0; d < 40; d++) {

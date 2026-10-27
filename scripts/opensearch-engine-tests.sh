@@ -10,6 +10,8 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
+# The plugin compiles against the image's own jars; a fresh target/ has none.
+scripts/opensearch-dist.sh
 gradle --no-daemon -q -p opensearch-plugin engineTestClasspath
 # The JDK 25 the classes were compiled for, not whatever `java` is on PATH.
 java_bin=$(cat opensearch-plugin/build/java-launcher.txt)

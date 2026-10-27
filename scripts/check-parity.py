@@ -79,10 +79,13 @@ MAX_FILE = 80_000
 # KNN and test-postings rows and h8's are still to come, so it is 600 KB.
 # h8 left it at 599,973 with the last ~80 test-framework rows (test codecs,
 # search, geo, index, util) and M14.j's closing rows still unwritten, at
-# roughly 500 bytes each, so it is 660 KB: the last raise M14 should need.
+# roughly 500 bytes each, so it was 660 KB. On 2026-10-27 four M14 tracks
+# (test codecs, search, geo, format suites) started in parallel against a
+# ledger at 659,860: 760 KB lets each write its rows without trimming true
+# Differs from the others'.
 # The per-row and per-file budgets
 # are what keep a row short; the total only says how many rows there may be.
-MAX_TOTAL = 660_000
+MAX_TOTAL = 760_000
 
 # A line of the index's area table: its link and its row count.
 AREA_ROW = re.compile(r"^\|\s*\[[^\]]*\]\(([^)]+\.md)\)\s*\|.*\|\s*(\d+)\s*\|\s*$")

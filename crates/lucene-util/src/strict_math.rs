@@ -1784,9 +1784,18 @@ mod tests {
                 }
                 _ => (1.0 + (unit(s) - 0.5) * 1e-6, (unit(s) - 0.5) * 1e10),
             };
-            h = (h ^ pow(x, y).to_bits()).wrapping_mul(0x0100_0000_01b3);
+            // `Double.doubleToLongBits`: one NaN, whatever sign the platform
+            // gives `(x - x) / (x - x)` (negative on x86-64, positive on
+            // aarch64).
+            let got = pow(x, y);
+            let bits = if got.is_nan() {
+                f64::NAN.to_bits()
+            } else {
+                got.to_bits()
+            };
+            h = (h ^ bits).wrapping_mul(0x0100_0000_01b3);
         }
-        assert_eq!(h, 0x4929_8d43_7950_60a9);
+        assert_eq!(h, 0xc929_8d43_7950_60a9);
     }
 
     /// Every branch of `expm1`, `cosh`, `sinh`, `tanh` and `log10` against

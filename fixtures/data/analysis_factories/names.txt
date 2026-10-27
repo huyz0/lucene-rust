@@ -108,6 +108,7 @@ F	spanishMinimalStem
 F	spanishPluralStem
 F	stemmerOverride
 F	stop
+F	suggestStop
 F	swedishLightStem
 F	swedishMinimalStem
 F	synonym

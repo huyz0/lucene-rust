@@ -213,7 +213,7 @@ a dependency the shipped library links is not under a licence listed here.
     `fixtures/data/analysis_icu_breaks/*.brk` are ICU's compiled character,
     line, sentence and title rules, copied from the jar by
     `GenAnalysisIcuBreaks.java` (Unicode License v3, as above): test data
-    only, never shipped. `fixtures/data/analysis_icu_rules_src/*.rbbi` are
+    only, never shipped. `fixtures/corpus/analysis-icu-rules/*.rbbi` are
     the five break rule files of Lucene 10.5.0's `analysis-icu` (its
     `Default` and `MyanmarSyllable` rules and the three its tokenizer
     factory's tests use; Apache-2.0, as this project), plus `Bad.rbbi`,

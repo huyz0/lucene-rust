@@ -332,12 +332,21 @@ generate_into "$TMP_A" "${GENERATORS[@]}" "${APPENDERS[@]}"
 generate_into "$TMP_B" "${GENERATORS[@]}" "${APPENDERS[@]}"
 
 status=0
-deterministic=0; nondeterministic=0; missing=0; mismatched=0; extra=0
+deterministic=0; nondeterministic=0; machine_dependent=0; missing=0; mismatched=0; extra=0
 manifest_bad=0; id_bad=0
 
 # write.lock is an IndexWriter lock artifact, not a fixture: generators leave it
 # behind and it is deliberately not committed.
 GENERATED_NOISE='(^|/)write\.lock$'
+
+# Deterministic on one machine, but not across machines: segment sizes include
+# the .si diagnostics (Runtime.version(), os.version, java.vendor, which no
+# system property pins); monitor's debug(), presearch and tree rows list tied terms in the JDK's
+# hash order; a walked demo index numbers documents in file-system order. Two
+# runs here agree, so they would be held to the committed bytes, which another
+# JDK build or kernel cannot reproduce. Their Rust tests read them beside the
+# index they were generated with (sizes, ids) or compare order-insensitively.
+MACHINE_DEPENDENT='^(misc/index_splitter\.tsv|monitor/(debug|presearch|tree)\.tsv|tools/demo/out/walk-(create-again(-search)?|knn)\.out|tools/luke/out/commits\.out|tools/misc/out/[^/]*list[^/]*\.out)$'
 
 while IFS= read -r rel; do
   if [[ "$rel" =~ $GENERATED_NOISE ]]; then continue; fi
@@ -345,7 +354,9 @@ while IFS= read -r rel; do
   if [ ! -e "$c" ]; then
     echo "  MISSING from committed fixtures: $rel"; missing=$((missing+1)); status=1; continue
   fi
-  if cmp -s "$a" "$b"; then
+  if [[ "$rel" =~ $MACHINE_DEPENDENT ]]; then
+    machine_dependent=$((machine_dependent+1))
+  elif cmp -s "$a" "$b"; then
     deterministic=$((deterministic+1))
     if ! cmp -s "$a" "$c"; then
       echo "  MISMATCH (deterministic file differs from committed): $rel"
@@ -359,11 +370,11 @@ done < <(cd "$TMP_A" && find . -type f | sed 's|^\./||' | sort)
 # Files committed under fixtures/data that no Java generator produces. These are
 # written by Rust examples (see scripts/verify-write-path.sh) and are expected.
 RUST_WRITTEN='^sparse_numeric_doc_values/'
-# bwc/, bwc-big/ and bwc-quantized/ are written by old Lucene jars through
-# scripts/gen-bwc-fixtures.sh (bwc/ and bwc-quantized/ are verified by its own --check; bwc-big/
+# bwc/, bwc-big/, bwc-quantized/ and bwc-completion/ are written by old Lucene jars through
+# scripts/gen-bwc-fixtures.sh (bwc/, bwc-quantized/ and bwc-completion/ are verified by its own --check; bwc-big/
 # has no dump, its tests read the index directly); the segment ids of both are
 # in the baseline below.
-BWC_OWNED='^bwc(-big|-quantized)?/'
+BWC_OWNED='^bwc(-big|-quantized|-completion)?/'
 # Written under JDK 25 only (GenAnalysisDateLocales --jdk25), and verified by
 # scripts/check-date-locales-jdk25.sh in CI's JDK 25 step.
 JDK25_OWNED='^analysis_date_locales/(dates_jdk25\.txt|numbers_jdk25\.tsv)$'
@@ -434,6 +445,7 @@ echo
 echo "gen-fixtures --check summary:"
 echo "  deterministic files verified byte-identical : $((deterministic - mismatched))"
 echo "  non-deterministic files (random segment id) : $nondeterministic"
+echo "  machine-dependent files (not byte-compared)  : $machine_dependent"
 echo "  deterministic mismatches                    : $mismatched"
 echo "  missing from committed tree                 : $missing"
 echo "  unexplained extras in committed tree        : $extra"
