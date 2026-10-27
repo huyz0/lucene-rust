@@ -51,6 +51,11 @@ fn hash_seed() -> i32 {
 }
 
 fn hex(d: f64) -> String {
+    // A NaN's sign bit is the FPU's choice (x86 produces fff8..., arm64
+    // 7ff8...), in Java as in Rust: print every NaN as the canonical one.
+    if d.is_nan() {
+        return format!("{:x}", f64::NAN.to_bits());
+    }
     format!("{:x}", d.to_bits())
 }
 
@@ -622,6 +627,11 @@ fn classification_matches_lucene() {
     }
 
     let want = std::fs::read_to_string(data().join("classification.tsv")).unwrap();
+    // The fixture was written on x86, whose NaNs carry the sign bit; see `hex`.
+    let want = want.replace(
+        &format!("{:x}", (-f64::NAN).to_bits()),
+        &format!("{:x}", f64::NAN.to_bits()),
+    );
     let want: Vec<&str> = want.lines().collect();
     let mut bad = 0;
     for (i, (w, g)) in want.iter().zip(&rows).enumerate() {

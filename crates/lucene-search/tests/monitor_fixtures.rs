@@ -156,6 +156,47 @@ fn same_terms(want: &str, got: &str, tree: &str) -> bool {
     w == g
 }
 
+/// Whether `debug()`'s cells agree: the same queries, the same match
+/// verdicts, and per field the same presearcher terms -- except that Java may
+/// name fewer of a field's terms than this port. Which of a conjunction's
+/// equally weighted terms the multipass presearcher indexes in each pass is
+/// Java's hash order (see [`same_terms`]); it has changed between JDK builds
+/// (`a AND b` over `body=a b`: `body:(a b)` on one, `body:(a)` on another), so
+/// the port's terms must cover Java's rather than equal them.
+fn same_debug_cells(want: &[String], got: &[String]) -> bool {
+    fn split(cell: &str) -> Option<(&str, &str, &str)> {
+        let (id, rest) = cell.split_once('=')?;
+        let (matches, verdict) = rest.rsplit_once('=')?;
+        Some((id, matches, verdict))
+    }
+    fn terms(matches: &str) -> std::collections::BTreeMap<&str, Vec<&str>> {
+        let mut out = std::collections::BTreeMap::<&str, Vec<&str>>::new();
+        for group in matches.split(')').map(str::trim).filter(|g| !g.is_empty()) {
+            if let Some((field, ts)) = group.split_once(":(") {
+                out.entry(field).or_default().extend(ts.split(' '));
+            }
+        }
+        out
+    }
+    want.len() == got.len()
+        && want.iter().zip(got).all(|(w, g)| {
+            let (Some((wi, wm, wv)), Some((gi, gm, gv))) = (split(w), split(g)) else {
+                return false;
+            };
+            if wi != gi || wv != gv {
+                return false;
+            }
+            if wm == gm {
+                return true;
+            }
+            let (wt, gt) = (terms(wm), terms(gm));
+            wt.keys().eq(gt.keys())
+                && wt
+                    .iter()
+                    .all(|(f, ts)| ts.iter().all(|t| gt[f].contains(t)))
+        })
+}
+
 /// Whether a tree's text has a line naming `term` (`field:text^weight`).
 fn tree_has_term(tree: &str, term: &str) -> bool {
     tree.split('\n')
@@ -1026,7 +1067,10 @@ fn debug_explains_the_presearcher_as_lucene_does() {
                 ));
             }
         }
-        assert_eq!(got_cells, want_cells, "document {doc:?}");
+        assert!(
+            same_debug_cells(&want_cells, &got_cells),
+            "document {doc:?}\n  want {want_cells:?}\n  got  {got_cells:?}"
+        );
         explained += got_cells.len();
     }
     assert!(explained >= 50, "{explained}");

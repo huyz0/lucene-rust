@@ -1,34 +1,34 @@
-quick	P	quick	Term(body:quick)	[0,1,3,7,9,10,11,13,17,19,20,21,23,27,29,30,31,33,37,39]	Term(body:quick)
+quick	P	quick	Term(body:quick)	[0,1,3,7,9]	Term(body:quick)
 QUICK	P	QUICK	None	-	None
 quick fox	E	Encountered " <TERM> "fox "" at line 1, column 6.\nWas expecting one of:\n    <EOF> \n    <OR> ...\n    <AND> ...\n    <NOT> ...\n    <W> ...\n    <N> ...\n    "^" ...\n    
-quick OR fox	P	(quick OR fox)	Bool(Term(body:quick) Term(body:fox) )	[0,1,3,7,9,10,11,13,17,19,20,21,23,27,29,30,31,33,37,39]	Bool(Term(body:quick) Term(body:fox) )
-quick or fox	P	(quick or fox)	Bool(Term(body:quick) Term(body:fox) )	[0,1,3,7,9,10,11,13,17,19,20,21,23,27,29,30,31,33,37,39]	Bool(Term(body:quick) Term(body:fox) )
-quick AND fox	P	(quick AND fox)	Bool(+Term(body:quick) +Term(body:fox) )	[0,1,7,10,11,17,20,21,27,30,31,37]	Bool(+Term(body:quick) +Term(body:fox) )
-quick and fox	P	(quick and fox)	Bool(+Term(body:quick) +Term(body:fox) )	[0,1,7,10,11,17,20,21,27,30,31,37]	Bool(+Term(body:quick) +Term(body:fox) )
-quick NOT fox	P	(quick NOT fox)	Bool(+Term(body:quick) -Term(body:fox) )	[3,9,13,19,23,29,33,39]	Bool(+Term(body:quick) -Term(body:fox) )
-quick not fox	P	(quick not fox)	Bool(+Term(body:quick) -Term(body:fox) )	[3,9,13,19,23,29,33,39]	Bool(+Term(body:quick) -Term(body:fox) )
-quick OR fox OR dog	P	(quick OR fox OR dog)	Bool(Term(body:quick) Term(body:fox) Term(body:dog) )	[0,1,3,7,9,10,11,13,17,19,20,21,23,27,29,30,31,33,37,39]	Bool(Term(body:quick) Term(body:fox) Term(body:dog) )
-quick AND fox AND dog	P	(quick AND fox AND dog)	Bool(+Term(body:quick) +Term(body:fox) +Term(body:dog) )	[0,1,7,10,11,17,20,21,27,30,31,37]	Bool(+Term(body:quick) +Term(body:fox) +Term(body:dog) )
-quick OR fox AND dog	P	(quick OR (fox AND dog))	Bool(Term(body:quick) Bool(+Term(body:fox) +Term(body:dog) ) )	[0,1,3,7,9,10,11,13,17,19,20,21,23,27,29,30,31,33,37,39]	Bool(Term(body:quick) Bool(+Term(body:fox) +Term(body:dog) ) )
-quick AND fox OR dog	P	((quick AND fox) OR dog)	Bool(Bool(+Term(body:quick) +Term(body:fox) ) Term(body:dog) )	[0,1,7,9,10,11,17,19,20,21,27,29,30,31,37,39]	Bool(Bool(+Term(body:quick) +Term(body:fox) ) Term(body:dog) )
-quick NOT fox NOT dog	P	(quick NOT fox NOT dog)	Bool(+Term(body:quick) -Term(body:fox) -Term(body:dog) )	[3,13,23,33]	Bool(+Term(body:quick) -Term(body:fox) -Term(body:dog) )
-(quick OR fox) AND dog	P	((quick OR fox) AND dog)	Bool(+Bool(Term(body:quick) Term(body:fox) ) +Term(body:dog) )	[0,1,7,9,10,11,17,19,20,21,27,29,30,31,37,39]	Bool(+Bool(Term(body:quick) Term(body:fox) ) +Term(body:dog) )
-quick AND (fox OR dog)	P	(quick AND (fox OR dog))	Bool(+Term(body:quick) +Bool(Term(body:fox) Term(body:dog) ) )	[0,1,7,9,10,11,17,19,20,21,27,29,30,31,37,39]	Bool(+Term(body:quick) +Bool(Term(body:fox) Term(body:dog) ) )
-OR(quick, fox)	P	OR(quick, fox)	Bool(Term(body:quick) Term(body:fox) )	[0,1,3,7,9,10,11,13,17,19,20,21,23,27,29,30,31,33,37,39]	Bool(Term(body:quick) Term(body:fox) )
-AND(quick, fox, dog)	P	AND(quick, fox, dog)	Bool(+Term(body:quick) +Term(body:fox) +Term(body:dog) )	[0,1,7,10,11,17,20,21,27,30,31,37]	Bool(+Term(body:quick) +Term(body:fox) +Term(body:dog) )
+quick OR fox	P	(quick OR fox)	Bool(Term(body:quick) Term(body:fox) )	[0,1,3,7,9]	Bool(Term(body:quick) Term(body:fox) )
+quick or fox	P	(quick or fox)	Bool(Term(body:quick) Term(body:fox) )	[0,1,3,7,9]	Bool(Term(body:quick) Term(body:fox) )
+quick AND fox	P	(quick AND fox)	Bool(+Term(body:quick) +Term(body:fox) )	[0,1,7]	Bool(+Term(body:quick) +Term(body:fox) )
+quick and fox	P	(quick and fox)	Bool(+Term(body:quick) +Term(body:fox) )	[0,1,7]	Bool(+Term(body:quick) +Term(body:fox) )
+quick NOT fox	P	(quick NOT fox)	Bool(+Term(body:quick) -Term(body:fox) )	[3,9]	Bool(+Term(body:quick) -Term(body:fox) )
+quick not fox	P	(quick not fox)	Bool(+Term(body:quick) -Term(body:fox) )	[3,9]	Bool(+Term(body:quick) -Term(body:fox) )
+quick OR fox OR dog	P	(quick OR fox OR dog)	Bool(Term(body:quick) Term(body:fox) Term(body:dog) )	[0,1,3,7,9]	Bool(Term(body:quick) Term(body:fox) Term(body:dog) )
+quick AND fox AND dog	P	(quick AND fox AND dog)	Bool(+Term(body:quick) +Term(body:fox) +Term(body:dog) )	[0,1,7]	Bool(+Term(body:quick) +Term(body:fox) +Term(body:dog) )
+quick OR fox AND dog	P	(quick OR (fox AND dog))	Bool(Term(body:quick) Bool(+Term(body:fox) +Term(body:dog) ) )	[0,1,3,7,9]	Bool(Term(body:quick) Bool(+Term(body:fox) +Term(body:dog) ) )
+quick AND fox OR dog	P	((quick AND fox) OR dog)	Bool(Bool(+Term(body:quick) +Term(body:fox) ) Term(body:dog) )	[0,1,7,9]	Bool(Bool(+Term(body:quick) +Term(body:fox) ) Term(body:dog) )
+quick NOT fox NOT dog	P	(quick NOT fox NOT dog)	Bool(+Term(body:quick) -Term(body:fox) -Term(body:dog) )	[3]	Bool(+Term(body:quick) -Term(body:fox) -Term(body:dog) )
+(quick OR fox) AND dog	P	((quick OR fox) AND dog)	Bool(+Bool(Term(body:quick) Term(body:fox) ) +Term(body:dog) )	[0,1,7,9]	Bool(+Bool(Term(body:quick) Term(body:fox) ) +Term(body:dog) )
+quick AND (fox OR dog)	P	(quick AND (fox OR dog))	Bool(+Term(body:quick) +Bool(Term(body:fox) Term(body:dog) ) )	[0,1,7,9]	Bool(+Term(body:quick) +Bool(Term(body:fox) Term(body:dog) ) )
+OR(quick, fox)	P	OR(quick, fox)	Bool(Term(body:quick) Term(body:fox) )	[0,1,3,7,9]	Bool(Term(body:quick) Term(body:fox) )
+AND(quick, fox, dog)	P	AND(quick, fox, dog)	Bool(+Term(body:quick) +Term(body:fox) +Term(body:dog) )	[0,1,7]	Bool(+Term(body:quick) +Term(body:fox) +Term(body:dog) )
 NOT(quick, fox)	E	Encountered " <NOT> "NOT "" at line 1, column 0.\nWas expecting one of:\n    <OR> ...\n    <AND> ...\n    <W> ...\n    <N> ...\n    "(" ...\n    <TRUNCQUOTED> ...\n    <QUOTED> ...\n    <SUFFIXTERM> ...\n    <TRUNCTERM> ...\n    <TERM> ...\n    <TERM> ...\n    
 OR(quick)	E	Encountered " ")" ") "" at line 1, column 8.\nWas expecting one of:\n    <OR> ...\n    <AND> ...\n    <NOT> ...\n    <W> ...\n    <N> ...\n    "," ...\n    "^" ...\n    
 OR(quick fox)	E	Encountered " <TERM> "fox "" at line 1, column 9.\nWas expecting one of:\n    <OR> ...\n    <AND> ...\n    <NOT> ...\n    <W> ...\n    <N> ...\n    "," ...\n    "^" ...\n    
 OR(quick, )	E	Encountered " ")" ") "" at line 1, column 10.\nWas expecting one of:\n    <OR> ...\n    <AND> ...\n    <W> ...\n    <N> ...\n    "(" ...\n    <TRUNCQUOTED> ...\n    <QUOTED> ...\n    <SUFFIXTERM> ...\n    <TRUNCTERM> ...\n    <TERM> ...\n    <TERM> ...\n    
 OR quick, fox)	E	Encountered " <TERM> "quick "" at line 1, column 3.\nWas expecting:\n    "(" ...\n    
-quick W fox	P	(quick W fox)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,true)	[1,7,11,17,21,27,31,37]	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,true)
-quick w fox	P	(quick w fox)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,true)	[1,7,11,17,21,27,31,37]	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,true)
-quick N fox	P	(quick N fox)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,false)	[1,7,11,17,21,27,31,37]	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,false)
-quick n fox	P	(quick n fox)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,false)	[1,7,11,17,21,27,31,37]	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,false)
-quick 2W fox	P	(quick 2W fox)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],1,true)	[0,1,7,10,11,17,20,21,27,30,31,37]	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],1,true)
-quick 3N fox	P	(quick 3N fox)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],2,false)	[0,1,7,10,11,17,20,21,27,30,31,37]	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],2,false)
-quick 10N fox	P	(quick 10N fox)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],9,false)	[0,1,7,10,11,17,20,21,27,30,31,37]	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],9,false)
-quick 99W fox	P	(quick 99W fox)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],98,true)	[0,1,7,10,11,17,20,21,27,30,31,37]	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],98,true)
+quick W fox	P	(quick W fox)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,true)	[1,7]	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,true)
+quick w fox	P	(quick w fox)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,true)	[1,7]	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,true)
+quick N fox	P	(quick N fox)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,false)	[1,7]	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,false)
+quick n fox	P	(quick n fox)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,false)	[1,7]	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,false)
+quick 2W fox	P	(quick 2W fox)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],1,true)	[0,1,7]	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],1,true)
+quick 3N fox	P	(quick 3N fox)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],2,false)	[0,1,7]	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],2,false)
+quick 10N fox	P	(quick 10N fox)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],9,false)	[0,1,7]	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],9,false)
+quick 99W fox	P	(quick 99W fox)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],98,true)	[0,1,7]	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],98,true)
 quick 1W fox	E	Encountered " <TERM> "1W "" at line 1, column 6.\nWas expecting one of:\n    <EOF> \n    <OR> ...\n    <AND> ...\n    <NOT> ...\n    <W> ...\n    <N> ...\n    "^" ...\n    
 quick 100W fox	E	Encountered " <TERM> "100W "" at line 1, column 6.\nWas expecting one of:\n    <EOF> \n    <OR> ...\n    <AND> ...\n    <NOT> ...\n    <W> ...\n    <N> ...\n    "^" ...\n    
 quick 0N fox	E	Encountered " <TERM> "0N "" at line 1, column 6.\nWas expecting one of:\n    <EOF> \n    <OR> ...\n    <AND> ...\n    <NOT> ...\n    <W> ...\n    <N> ...\n    "^" ...\n    
@@ -36,76 +36,76 @@ quick W fox W dog	P	((quick W fox) W dog)	SpanNear([SpanNear([SpanTerm(body:quic
 quick N fox N dog	P	((quick N fox) N dog)	SpanNear([SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,false),SpanTerm(body:dog)],0,false)	-	SpanNear([SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,false),SpanTerm(body:dog)],0,false)
 quick W fox N dog	P	((quick W fox) N dog)	SpanNear([SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,true),SpanTerm(body:dog)],0,false)	-	SpanNear([SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,true),SpanTerm(body:dog)],0,false)
 quick N fox W dog	P	(quick N (fox W dog))	SpanNear([SpanTerm(body:quick),SpanNear([SpanTerm(body:fox),SpanTerm(body:dog)],0,true)],0,false)	-	SpanNear([SpanTerm(body:quick),SpanNear([SpanTerm(body:fox),SpanTerm(body:dog)],0,true)],0,false)
-W(quick, fox)	P	W(quick, fox)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,true)	[1,7,11,17,21,27,31,37]	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,true)
-N(quick, fox)	P	N(quick, fox)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,false)	[1,7,11,17,21,27,31,37]	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,false)
+W(quick, fox)	P	W(quick, fox)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,true)	[1,7]	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,true)
+N(quick, fox)	P	N(quick, fox)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,false)	[1,7]	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,false)
 2W(quick, fox, dog)	P	2W(quick, fox, dog)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox),SpanTerm(body:dog)],1,true)	-	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox),SpanTerm(body:dog)],1,true)
-3N(quick, fox, dog)	P	3N(quick, fox, dog)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox),SpanTerm(body:dog)],2,false)	[1,11,21,31]	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox),SpanTerm(body:dog)],2,false)
+3N(quick, fox, dog)	P	3N(quick, fox, dog)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox),SpanTerm(body:dog)],2,false)	[1]	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox),SpanTerm(body:dog)],2,false)
 W(quick, fox, dog)	P	W(quick, fox, dog)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox),SpanTerm(body:dog)],0,true)	-	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox),SpanTerm(body:dog)],0,true)
-quick W (fox OR dog)	P	(quick W (fox OR dog))	SpanNear([SpanTerm(body:quick),SpanOr(SpanTerm(body:dog),SpanTerm(body:fox))],0,true)	[1,7,11,17,21,27,31,37]	SpanNear([SpanTerm(body:quick),SpanOr(SpanTerm(body:dog),SpanTerm(body:fox))],0,true)
-(quick OR brown) W fox	P	((quick OR brown) W fox)	SpanNear([SpanOr(SpanTerm(body:brown),SpanTerm(body:quick)),SpanTerm(body:fox)],0,true)	[0,1,7,10,11,17,20,21,27,30,31,37]	SpanNear([SpanOr(SpanTerm(body:brown),SpanTerm(body:quick)),SpanTerm(body:fox)],0,true)
-(quick OR brown) N (fox OR dog)	P	((quick OR brown) N (fox OR dog))	SpanNear([SpanOr(SpanTerm(body:brown),SpanTerm(body:quick)),SpanOr(SpanTerm(body:dog),SpanTerm(body:fox))],0,false)	[0,1,7,9,10,11,17,19,20,21,27,29,30,31,37,39]	X TooManyBasicQueries: Exceeded maximum of 3 basic queries.
+quick W (fox OR dog)	P	(quick W (fox OR dog))	SpanNear([SpanTerm(body:quick),SpanOr(SpanTerm(body:dog),SpanTerm(body:fox))],0,true)	[1,7]	SpanNear([SpanTerm(body:quick),SpanOr(SpanTerm(body:dog),SpanTerm(body:fox))],0,true)
+(quick OR brown) W fox	P	((quick OR brown) W fox)	SpanNear([SpanOr(SpanTerm(body:brown),SpanTerm(body:quick)),SpanTerm(body:fox)],0,true)	[0,1,7]	SpanNear([SpanOr(SpanTerm(body:brown),SpanTerm(body:quick)),SpanTerm(body:fox)],0,true)
+(quick OR brown) N (fox OR dog)	P	((quick OR brown) N (fox OR dog))	SpanNear([SpanOr(SpanTerm(body:brown),SpanTerm(body:quick)),SpanOr(SpanTerm(body:dog),SpanTerm(body:fox))],0,false)	[0,1,7,9]	X TooManyBasicQueries: Exceeded maximum of 3 basic queries.
 quick W (fox AND dog)	E	Operator W: Operator W does not allow subquery (fox AND dog)
 quick W (fox NOT dog)	E	Operator W: Operator W does not allow subquery (fox NOT dog)
 quick W (fox W dog)	P	(quick W (fox W dog))	SpanNear([SpanTerm(body:quick),SpanNear([SpanTerm(body:fox),SpanTerm(body:dog)],0,true)],0,true)	-	SpanNear([SpanTerm(body:quick),SpanNear([SpanTerm(body:fox),SpanTerm(body:dog)],0,true)],0,true)
 quick W (fox N dog)	P	(quick W (fox N dog))	SpanNear([SpanTerm(body:quick),SpanNear([SpanTerm(body:fox),SpanTerm(body:dog)],0,false)],0,true)	-	SpanNear([SpanTerm(body:quick),SpanNear([SpanTerm(body:fox),SpanTerm(body:dog)],0,false)],0,true)
-quick W fox*	P	(quick W fox*)	SpanNear([SpanTerm(body:quick),SpanOr(SpanTerm(body:fox),SpanTerm(body:foxes))],0,true)	[1,7,11,17,21,27,31,37]	SpanNear([SpanTerm(body:quick),SpanOr(SpanTerm(body:fox),SpanTerm(body:foxes))],0,true)
-qui* W fox	P	(qui* W fox)	SpanNear([SpanOr(SpanTerm(body:quick),SpanTerm(body:quickly)),SpanTerm(body:fox)],0,true)	[1,7,11,17,21,27,31,37]	SpanNear([SpanOr(SpanTerm(body:quick),SpanTerm(body:quickly)),SpanTerm(body:fox)],0,true)
-qui* N bro*	P	(qui* N bro*)	SpanNear([SpanOr(SpanTerm(body:quick),SpanTerm(body:quickly)),SpanTerm(body:brown)],0,false)	[0,1,9,10,11,19,20,21,29,30,31,39]	SpanNear([SpanOr(SpanTerm(body:quick),SpanTerm(body:quickly)),SpanTerm(body:brown)],0,false)
-qu?ck N fox	P	(qu?ck N fox)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,false)	[1,7,11,17,21,27,31,37]	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,false)
+quick W fox*	P	(quick W fox*)	SpanNear([SpanTerm(body:quick),SpanOr(SpanTerm(body:fox),SpanTerm(body:foxes))],0,true)	[1,7]	SpanNear([SpanTerm(body:quick),SpanOr(SpanTerm(body:fox),SpanTerm(body:foxes))],0,true)
+qui* W fox	P	(qui* W fox)	SpanNear([SpanOr(SpanTerm(body:quick),SpanTerm(body:quickly)),SpanTerm(body:fox)],0,true)	[1,7]	SpanNear([SpanOr(SpanTerm(body:quick),SpanTerm(body:quickly)),SpanTerm(body:fox)],0,true)
+qui* N bro*	P	(qui* N bro*)	SpanNear([SpanOr(SpanTerm(body:quick),SpanTerm(body:quickly)),SpanTerm(body:brown)],0,false)	[0,1,9]	SpanNear([SpanOr(SpanTerm(body:quick),SpanTerm(body:quickly)),SpanTerm(body:brown)],0,false)
+qu?ck N fox	P	(qu?ck N fox)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,false)	[1,7]	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,false)
 quick N f?x	E	Too unrestrictive truncation: f?x
 q*k N fox	E	Too unrestrictive truncation: q*k
-qui*	P	qui*	Bool(Term(body:quick) Term(body:quickly) )	[0,1,3,5,7,9,10,11,13,15,17,19,20,21,23,25,27,29,30,31,33,35,37,39]	Bool(Term(body:quick) Term(body:quickly) )
-bro*	P	bro*	Term(body:brown)	[0,1,9,10,11,19,20,21,29,30,31,39]	Term(body:brown)
-brow*	P	brow*	Term(body:brown)	[0,1,9,10,11,19,20,21,29,30,31,39]	Term(body:brown)
-bro?n	P	bro?n	Term(body:brown)	[0,1,9,10,11,19,20,21,29,30,31,39]	Term(body:brown)
-br*n	P	br*n	Term(body:brown)	[0,1,9,10,11,19,20,21,29,30,31,39]	Term(body:brown)
+qui*	P	qui*	Bool(Term(body:quick) Term(body:quickly) )	[0,1,3,5,7,9]	Bool(Term(body:quick) Term(body:quickly) )
+bro*	P	bro*	Term(body:brown)	[0,1,9]	Term(body:brown)
+brow*	P	brow*	Term(body:brown)	[0,1,9]	Term(body:brown)
+bro?n	P	bro?n	Term(body:brown)	[0,1,9]	Term(body:brown)
+br*n	P	br*n	Term(body:brown)	[0,1,9]	Term(body:brown)
 b*	E	Too unrestrictive truncation: b*
 *	E	Lexical error at line 1, column 2.  Encountered: <EOF> (in lexical state 1)
 ?	E	Lexical error at line 1, column 2.  Encountered: <EOF> (in lexical state 1)
 qu*	E	Too unrestrictive truncation: qu*
-qui?k	P	qui?k	Term(body:quick)	[0,1,3,7,9,10,11,13,17,19,20,21,23,27,29,30,31,33,37,39]	Term(body:quick)
-qu?ck	P	qu?ck	Term(body:quick)	[0,1,3,7,9,10,11,13,17,19,20,21,23,27,29,30,31,33,37,39]	Term(body:quick)
-quic*	P	quic*	Bool(Term(body:quick) Term(body:quickly) )	[0,1,3,5,7,9,10,11,13,15,17,19,20,21,23,25,27,29,30,31,33,35,37,39]	Bool(Term(body:quick) Term(body:quickly) )
+qui?k	P	qui?k	Term(body:quick)	[0,1,3,7,9]	Term(body:quick)
+qu?ck	P	qu?ck	Term(body:quick)	[0,1,3,7,9]	Term(body:quick)
+quic*	P	quic*	Bool(Term(body:quick) Term(body:quickly) )	[0,1,3,5,7,9]	Bool(Term(body:quick) Term(body:quickly) )
 fo*	E	Too unrestrictive truncation: fo*
 f?x	E	Too unrestrictive truncation: f?x
 "quick brown"	P	"quick brown"	None	-	None
-"quick"	P	"quick"	Term(body:quick)	[0,1,3,7,9,10,11,13,17,19,20,21,23,27,29,30,31,33,37,39]	Term(body:quick)
+"quick"	P	"quick"	Term(body:quick)	[0,1,3,7,9]	Term(body:quick)
 "quick brown"*	P	"quick brown"*	None	-	None
-"qui"*	P	"qui"*	Bool(Term(body:quick) Term(body:quickly) )	[0,1,3,5,7,9,10,11,13,15,17,19,20,21,23,25,27,29,30,31,33,35,37,39]	Bool(Term(body:quick) Term(body:quickly) )
-"quic"*	P	"quic"*	Bool(Term(body:quick) Term(body:quickly) )	[0,1,3,5,7,9,10,11,13,15,17,19,20,21,23,25,27,29,30,31,33,35,37,39]	Bool(Term(body:quick) Term(body:quickly) )
+"qui"*	P	"qui"*	Bool(Term(body:quick) Term(body:quickly) )	[0,1,3,5,7,9]	Bool(Term(body:quick) Term(body:quickly) )
+"quic"*	P	"quic"*	Bool(Term(body:quick) Term(body:quickly) )	[0,1,3,5,7,9]	Bool(Term(body:quick) Term(body:quickly) )
 "quick brown" W fox	P	("quick brown" W fox)	None	-	None
 "quick brown" N fox	P	("quick brown" N fox)	None	-	None
-quick^2	P	quick^2.0	Boost(Term(body:quick)^2.0)	[0,1,3,7,9,10,11,13,17,19,20,21,23,27,29,30,31,33,37,39]	Boost(Term(body:quick)^2.0)
-quick ^2	P	quick^2.0	Boost(Term(body:quick)^2.0)	[0,1,3,7,9,10,11,13,17,19,20,21,23,27,29,30,31,33,37,39]	Boost(Term(body:quick)^2.0)
+quick^2	P	quick^2.0	Boost(Term(body:quick)^2.0)	[0,1,3,7,9]	Boost(Term(body:quick)^2.0)
+quick ^2	P	quick^2.0	Boost(Term(body:quick)^2.0)	[0,1,3,7,9]	Boost(Term(body:quick)^2.0)
 quick^0	E	Cannot handle boost value: 0
 quick^-1	E	Lexical error at line 1, column 7.  Encountered: '45' (45),
-quick^1.5	P	quick^1.5	Boost(Term(body:quick)^1.5)	[0,1,3,7,9,10,11,13,17,19,20,21,23,27,29,30,31,33,37,39]	Boost(Term(body:quick)^1.5)
+quick^1.5	P	quick^1.5	Boost(Term(body:quick)^1.5)	[0,1,3,7,9]	Boost(Term(body:quick)^1.5)
 quick^2.5 fox	E	Encountered " <TERM> "fox "" at line 1, column 10.\nWas expecting one of:\n    <EOF> \n    <OR> ...\n    <AND> ...\n    <NOT> ...\n    <W> ...\n    <N> ...\n    "^" ...\n    
-quick^2^3	P	quick^6.0	Boost(Term(body:quick)^6.0)	[0,1,3,7,9,10,11,13,17,19,20,21,23,27,29,30,31,33,37,39]	Boost(Term(body:quick)^6.0)
-quick^2 OR fox^3	P	(quick^2.0 OR fox^3.0)	Bool(Boost(Term(body:quick)^2.0) Boost(Term(body:fox)^3.0) )	[0,1,3,7,9,10,11,13,17,19,20,21,23,27,29,30,31,33,37,39]	Bool(Boost(Term(body:quick)^2.0) Boost(Term(body:fox)^3.0) )
-(quick OR fox)^2	P	(quick OR fox)^2.0	Boost(Bool(Term(body:quick) Term(body:fox) )^2.0)	[0,1,3,7,9,10,11,13,17,19,20,21,23,27,29,30,31,33,37,39]	Boost(Bool(Term(body:quick) Term(body:fox) )^2.0)
-OR(quick, fox)^2	P	OR(quick, fox)^2.0	Boost(Bool(Term(body:quick) Term(body:fox) )^2.0)	[0,1,3,7,9,10,11,13,17,19,20,21,23,27,29,30,31,33,37,39]	Boost(Bool(Term(body:quick) Term(body:fox) )^2.0)
-quick W fox^2	P	(quick W fox^2.0)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,true)	[1,7,11,17,21,27,31,37]	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,true)
-quick^2 W fox	P	(quick^2.0 W fox)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,true)	[1,7,11,17,21,27,31,37]	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,true)
-(quick W fox)^2	P	(quick W fox)^2.0	Boost(SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,true)^2.0)	[1,7,11,17,21,27,31,37]	Boost(SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,true)^2.0)
+quick^2^3	P	quick^6.0	Boost(Term(body:quick)^6.0)	[0,1,3,7,9]	Boost(Term(body:quick)^6.0)
+quick^2 OR fox^3	P	(quick^2.0 OR fox^3.0)	Bool(Boost(Term(body:quick)^2.0) Boost(Term(body:fox)^3.0) )	[0,1,3,7,9]	Bool(Boost(Term(body:quick)^2.0) Boost(Term(body:fox)^3.0) )
+(quick OR fox)^2	P	(quick OR fox)^2.0	Boost(Bool(Term(body:quick) Term(body:fox) )^2.0)	[0,1,3,7,9]	Boost(Bool(Term(body:quick) Term(body:fox) )^2.0)
+OR(quick, fox)^2	P	OR(quick, fox)^2.0	Boost(Bool(Term(body:quick) Term(body:fox) )^2.0)	[0,1,3,7,9]	Boost(Bool(Term(body:quick) Term(body:fox) )^2.0)
+quick W fox^2	P	(quick W fox^2.0)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,true)	[1,7]	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,true)
+quick^2 W fox	P	(quick^2.0 W fox)	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,true)	[1,7]	SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,true)
+(quick W fox)^2	P	(quick W fox)^2.0	Boost(SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,true)^2.0)	[1,7]	Boost(SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,true)^2.0)
 quick^	E	Encountered "<EOF>" at line 1, column 6.\nWas expecting:\n    <NUMBER> ...\n    
 quick^x	E	Lexical error at line 1, column 8.  Encountered: <EOF>
 quick^99999999999999999999999999999999999999999	P	quick^Infinity	X IllegalArgumentException: boost must be a positive float, got Infinity		X IllegalArgumentException: boost must be a positive float, got Infinity
 quick^0.0	E	Cannot handle boost value: 0.0
 quick^.5	E	Lexical error at line 1, column 7.  Encountered: '46' (46),
-body:quick	P	(body:quick)	Term(body:quick)	[0,1,3,7,9,10,11,13,17,19,20,21,23,27,29,30,31,33,37,39]	Term(body:quick)
-title:quick	P	(title:quick)	Term(title:quick)	[9,19,29,39]	Term(title:quick)
-body:title:quick	P	(body:title:quick)	Bool(Term(body:quick) Term(title:quick) )	[0,1,3,7,9,10,11,13,17,19,20,21,23,27,29,30,31,33,37,39]	Bool(Term(body:quick) Term(title:quick) )
-body:quick OR fox	P	(body:(quick OR fox))	Bool(Term(body:quick) Term(body:fox) )	[0,1,3,7,9,10,11,13,17,19,20,21,23,27,29,30,31,33,37,39]	Bool(Term(body:quick) Term(body:fox) )
-body:(quick OR fox)	P	(body:(quick OR fox))	Bool(Term(body:quick) Term(body:fox) )	[0,1,3,7,9,10,11,13,17,19,20,21,23,27,29,30,31,33,37,39]	Bool(Term(body:quick) Term(body:fox) )
+body:quick	P	(body:quick)	Term(body:quick)	[0,1,3,7,9]	Term(body:quick)
+title:quick	P	(title:quick)	Term(title:quick)	[9]	Term(title:quick)
+body:title:quick	P	(body:title:quick)	Bool(Term(body:quick) Term(title:quick) )	[0,1,3,7,9]	Bool(Term(body:quick) Term(title:quick) )
+body:quick OR fox	P	(body:(quick OR fox))	Bool(Term(body:quick) Term(body:fox) )	[0,1,3,7,9]	Bool(Term(body:quick) Term(body:fox) )
+body:(quick OR fox)	P	(body:(quick OR fox))	Bool(Term(body:quick) Term(body:fox) )	[0,1,3,7,9]	Bool(Term(body:quick) Term(body:fox) )
 body:quick AND title:fox	E	Encountered " ":" ": "" at line 1, column 20.\nWas expecting one of:\n    <EOF> \n    <OR> ...\n    <AND> ...\n    <NOT> ...\n    <W> ...\n    <N> ...\n    "^" ...\n    
 title:quick W fox	P	(title:(quick W fox))	SpanNear([SpanTerm(title:quick),SpanTerm(title:fox)],0,true)	-	SpanNear([SpanTerm(title:quick),SpanTerm(title:fox)],0,true)
-title:body:quick	P	(title:body:quick)	Bool(Term(title:quick) Term(body:quick) )	[0,1,3,7,9,10,11,13,17,19,20,21,23,27,29,30,31,33,37,39]	Bool(Term(title:quick) Term(body:quick) )
+title:body:quick	P	(title:body:quick)	Bool(Term(title:quick) Term(body:quick) )	[0,1,3,7,9]	Bool(Term(title:quick) Term(body:quick) )
 body:	E	Encountered "<EOF>" at line 1, column 5.\nWas expecting one of:\n    <OR> ...\n    <AND> ...\n    <W> ...\n    <N> ...\n    "(" ...\n    <TRUNCQUOTED> ...\n    <QUOTED> ...\n    <SUFFIXTERM> ...\n    <TRUNCTERM> ...\n    <TERM> ...\n    <TERM> ...\n    
 :quick	E	Encountered " ":" ": "" at line 1, column 0.\nWas expecting one of:\n    <OR> ...\n    <AND> ...\n    <W> ...\n    <N> ...\n    "(" ...\n    <TRUNCQUOTED> ...\n    <QUOTED> ...\n    <SUFFIXTERM> ...\n    <TRUNCTERM> ...\n    <TERM> ...\n    <TERM> ...\n    
 body:(quick	E	Encountered "<EOF>" at line 1, column 11.\nWas expecting one of:\n    <OR> ...\n    <AND> ...\n    <NOT> ...\n    <W> ...\n    <N> ...\n    ")" ...\n    "^" ...\n    
 body:quick)	E	Encountered " ")" ") "" at line 1, column 10.\nWas expecting one of:\n    <EOF> \n    <OR> ...\n    <AND> ...\n    <NOT> ...\n    <W> ...\n    <N> ...\n    "^" ...\n    
-((quick))	P	quick	Term(body:quick)	[0,1,3,7,9,10,11,13,17,19,20,21,23,27,29,30,31,33,37,39]	Term(body:quick)
+((quick))	P	quick	Term(body:quick)	[0,1,3,7,9]	Term(body:quick)
 (quick	E	Encountered "<EOF>" at line 1, column 6.\nWas expecting one of:\n    <OR> ...\n    <AND> ...\n    <NOT> ...\n    <W> ...\n    <N> ...\n    ")" ...\n    "^" ...\n    
 quick)	E	Encountered " ")" ") "" at line 1, column 5.\nWas expecting one of:\n    <EOF> \n    <OR> ...\n    <AND> ...\n    <NOT> ...\n    <W> ...\n    <N> ...\n    "^" ...\n    
 ()	E	Encountered " ")" ") "" at line 1, column 1.\nWas expecting one of:\n    <OR> ...\n    <AND> ...\n    <W> ...\n    <N> ...\n    "(" ...\n    <TRUNCQUOTED> ...\n    <QUOTED> ...\n    <SUFFIXTERM> ...\n    <TRUNCTERM> ...\n    <TERM> ...\n    <TERM> ...\n    
@@ -129,14 +129,14 @@ quick fox	E	Encountered " <TERM> "fox "" at line 1, column 6.\nWas expecting one
 quick quick	E	Encountered " <TERM> "quick "" at line 1, column 6.\nWas expecting one of:\n    <EOF> \n    <OR> ...\n    <AND> ...\n    <NOT> ...\n    <W> ...\n    <N> ...\n    "^" ...\n    
 quick   fox	E	Encountered " <TERM> "fox "" at line 1, column 8.\nWas expecting one of:\n    <EOF> \n    <OR> ...\n    <AND> ...\n    <NOT> ...\n    <W> ...\n    <N> ...\n    "^" ...\n    
 quick\tfox	E	Encountered " <TERM> "fox "" at line 1, column 6.\nWas expecting one of:\n    <EOF> \n    <OR> ...\n    <AND> ...\n    <NOT> ...\n    <W> ...\n    <N> ...\n    "^" ...\n    
-quick	P	quick	Term(body:quick)	[0,1,3,7,9,10,11,13,17,19,20,21,23,27,29,30,31,33,37,39]	Term(body:quick)
-fox	P	fox	Term(body:fox)	[0,1,7,10,11,17,20,21,27,30,31,37]	Term(body:fox)
-quick	P	quick	Term(body:quick)	[0,1,3,7,9,10,11,13,17,19,20,21,23,27,29,30,31,33,37,39]	Term(body:quick)
+quick	P	quick	Term(body:quick)	[0,1,3,7,9]	Term(body:quick)
+fox	P	fox	Term(body:fox)	[0,1,7]	Term(body:fox)
+quick	P	quick	Term(body:quick)	[0,1,3,7,9]	Term(body:quick)
 	E	Encountered "<EOF>" at line 1, column 0.\nWas expecting one of:\n    <OR> ...\n    <AND> ...\n    <W> ...\n    <N> ...\n    "(" ...\n    <TRUNCQUOTED> ...\n    <QUOTED> ...\n    <SUFFIXTERM> ...\n    <TRUNCTERM> ...\n    <TERM> ...\n    <TERM> ...\n    
 zebra	P	zebra	None	-	None
-zebras	P	zebras	Term(body:zebras)	[3,13,23,33]	Term(body:zebras)
+zebras	P	zebras	Term(body:zebras)	[3]	Term(body:zebras)
 nonexistent	P	nonexistent	None	-	None
-nonexistent OR fox	P	(nonexistent OR fox)	Term(body:fox)	[0,1,7,10,11,17,20,21,27,30,31,37]	Term(body:fox)
+nonexistent OR fox	P	(nonexistent OR fox)	Term(body:fox)	[0,1,7]	Term(body:fox)
 nonexistent AND fox	P	(nonexistent AND fox)	None	-	None
 nonexistent W fox	P	(nonexistent W fox)	None	-	None
 quick W nonexistent	P	(quick W nonexistent)	None	-	None
@@ -144,43 +144,43 @@ nonexistent N nonexistent	P	(nonexistent N nonexistent)	None	-	None
 non* W fox	P	(non* W fox)	None	-	None
 fo* W nonexistent	E	Too unrestrictive truncation: fo*
 qui* OR bro* OR fo* OR do*	E	Too unrestrictive truncation: fo*
-qui* AND bro*	P	(qui* AND bro*)	Bool(+Bool(Term(body:quick) Term(body:quickly) ) +Term(body:brown) )	[0,1,9,10,11,19,20,21,29,30,31,39]	Bool(+Bool(Term(body:quick) Term(body:quickly) ) +Term(body:brown) )
-qui* NOT bro*	P	(qui* NOT bro*)	Bool(Term(body:quick) Term(body:quickly) -Term(body:brown) )~1	[3,5,7,13,15,17,23,25,27,33,35,37]	Bool(Term(body:quick) Term(body:quickly) -Term(body:brown) )~1
+qui* AND bro*	P	(qui* AND bro*)	Bool(+Bool(Term(body:quick) Term(body:quickly) ) +Term(body:brown) )	[0,1,9]	Bool(+Bool(Term(body:quick) Term(body:quickly) ) +Term(body:brown) )
+qui* NOT bro*	P	(qui* NOT bro*)	Bool(Term(body:quick) Term(body:quickly) -Term(body:brown) )~1	[3,5,7]	Bool(Term(body:quick) Term(body:quickly) -Term(body:brown) )~1
 j*	E	Too unrestrictive truncation: j*
 ju*	E	Too unrestrictive truncation: ju*
-jum*	P	jum*	Bool(Term(body:jump) Term(body:jumps) )	[0,3,5,10,13,15,20,23,25,30,33,35]	Bool(Term(body:jump) Term(body:jumps) )
-jump*	P	jump*	Bool(Term(body:jump) Term(body:jumps) )	[0,3,5,10,13,15,20,23,25,30,33,35]	Bool(Term(body:jump) Term(body:jumps) )
-j?mp	P	j?mp	Term(body:jump)	[3,5,13,15,23,25,33,35]	Term(body:jump)
-ja?k*	P	ja?k*	Term(body:jackdaws)	[6,16,26,36]	Term(body:jackdaws)
+jum*	P	jum*	Bool(Term(body:jump) Term(body:jumps) )	[0,3,5]	Bool(Term(body:jump) Term(body:jumps) )
+jump*	P	jump*	Bool(Term(body:jump) Term(body:jumps) )	[0,3,5]	Bool(Term(body:jump) Term(body:jumps) )
+j?mp	P	j?mp	Term(body:jump)	[3,5]	Term(body:jump)
+ja?k*	P	ja?k*	Term(body:jackdaws)	[6]	Term(body:jackdaws)
 ???	E	Lexical error at line 1, column 1.  Encountered: '63' (63), (in lexical state 1)
 ???*	E	Lexical error at line 1, column 1.  Encountered: '63' (63), (in lexical state 1)
 *??	E	Lexical error at line 1, column 1.  Encountered: '42' (42), (in lexical state 1)
 a*	E	Too unrestrictive truncation: a*
-the	P	the	Term(body:the)	[0,5,7,10,15,17,20,25,27,30,35,37]	Term(body:the)
+the	P	the	Term(body:the)	[0,5,7]	Term(body:the)
 the quick	E	Encountered " <TERM> "quick "" at line 1, column 4.\nWas expecting one of:\n    <EOF> \n    <OR> ...\n    <AND> ...\n    <NOT> ...\n    <W> ...\n    <N> ...\n    "^" ...\n    
-the W quick	P	(the W quick)	SpanNear([SpanTerm(body:the),SpanTerm(body:quick)],0,true)	[0,7,10,17,20,27,30,37]	SpanNear([SpanTerm(body:the),SpanTerm(body:quick)],0,true)
-the N lazy	P	(the N lazy)	SpanNear([SpanTerm(body:the),SpanTerm(body:lazy)],0,false)	[0,7,10,17,20,27,30,37]	SpanNear([SpanTerm(body:the),SpanTerm(body:lazy)],0,false)
-quick W brown W fox	P	((quick W brown) W fox)	SpanNear([SpanNear([SpanTerm(body:quick),SpanTerm(body:brown)],0,true),SpanTerm(body:fox)],0,true)	[0,10,20,30]	SpanNear([SpanNear([SpanTerm(body:quick),SpanTerm(body:brown)],0,true),SpanTerm(body:fox)],0,true)
-quick N brown N fox	P	((quick N brown) N fox)	SpanNear([SpanNear([SpanTerm(body:quick),SpanTerm(body:brown)],0,false),SpanTerm(body:fox)],0,false)	[0,10,20,30]	SpanNear([SpanNear([SpanTerm(body:quick),SpanTerm(body:brown)],0,false),SpanTerm(body:fox)],0,false)
-quick 2N brown 2N fox	P	((quick 2N brown) 2N fox)	SpanNear([SpanNear([SpanTerm(body:quick),SpanTerm(body:brown)],1,false),SpanTerm(body:fox)],1,false)	[0,10,20,30]	SpanNear([SpanNear([SpanTerm(body:quick),SpanTerm(body:brown)],1,false),SpanTerm(body:fox)],1,false)
-quick 3W brown 3W fox	P	((quick 3W brown) 3W fox)	SpanNear([SpanNear([SpanTerm(body:quick),SpanTerm(body:brown)],2,true),SpanTerm(body:fox)],2,true)	[0,10,20,30]	SpanNear([SpanNear([SpanTerm(body:quick),SpanTerm(body:brown)],2,true),SpanTerm(body:fox)],2,true)
+the W quick	P	(the W quick)	SpanNear([SpanTerm(body:the),SpanTerm(body:quick)],0,true)	[0,7]	SpanNear([SpanTerm(body:the),SpanTerm(body:quick)],0,true)
+the N lazy	P	(the N lazy)	SpanNear([SpanTerm(body:the),SpanTerm(body:lazy)],0,false)	[0,7]	SpanNear([SpanTerm(body:the),SpanTerm(body:lazy)],0,false)
+quick W brown W fox	P	((quick W brown) W fox)	SpanNear([SpanNear([SpanTerm(body:quick),SpanTerm(body:brown)],0,true),SpanTerm(body:fox)],0,true)	[0]	SpanNear([SpanNear([SpanTerm(body:quick),SpanTerm(body:brown)],0,true),SpanTerm(body:fox)],0,true)
+quick N brown N fox	P	((quick N brown) N fox)	SpanNear([SpanNear([SpanTerm(body:quick),SpanTerm(body:brown)],0,false),SpanTerm(body:fox)],0,false)	[0]	SpanNear([SpanNear([SpanTerm(body:quick),SpanTerm(body:brown)],0,false),SpanTerm(body:fox)],0,false)
+quick 2N brown 2N fox	P	((quick 2N brown) 2N fox)	SpanNear([SpanNear([SpanTerm(body:quick),SpanTerm(body:brown)],1,false),SpanTerm(body:fox)],1,false)	[0]	SpanNear([SpanNear([SpanTerm(body:quick),SpanTerm(body:brown)],1,false),SpanTerm(body:fox)],1,false)
+quick 3W brown 3W fox	P	((quick 3W brown) 3W fox)	SpanNear([SpanNear([SpanTerm(body:quick),SpanTerm(body:brown)],2,true),SpanTerm(body:fox)],2,true)	[0]	SpanNear([SpanNear([SpanTerm(body:quick),SpanTerm(body:brown)],2,true),SpanTerm(body:fox)],2,true)
 quick N fox W dog	P	(quick N (fox W dog))	SpanNear([SpanTerm(body:quick),SpanNear([SpanTerm(body:fox),SpanTerm(body:dog)],0,true)],0,false)	-	SpanNear([SpanTerm(body:quick),SpanNear([SpanTerm(body:fox),SpanTerm(body:dog)],0,true)],0,false)
 (quick N fox) W dog	P	((quick N fox) W dog)	SpanNear([SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,false),SpanTerm(body:dog)],0,true)	-	SpanNear([SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,false),SpanTerm(body:dog)],0,true)
 quick N (fox W dog)	P	(quick N (fox W dog))	SpanNear([SpanTerm(body:quick),SpanNear([SpanTerm(body:fox),SpanTerm(body:dog)],0,true)],0,false)	-	SpanNear([SpanTerm(body:quick),SpanNear([SpanTerm(body:fox),SpanTerm(body:dog)],0,true)],0,false)
 W(quick, W(fox, dog))	P	W(quick, W(fox, dog))	SpanNear([SpanTerm(body:quick),SpanNear([SpanTerm(body:fox),SpanTerm(body:dog)],0,true)],0,true)	-	SpanNear([SpanTerm(body:quick),SpanNear([SpanTerm(body:fox),SpanTerm(body:dog)],0,true)],0,true)
-N(W(quick, brown), fox)	P	N(W(quick, brown), fox)	SpanNear([SpanNear([SpanTerm(body:quick),SpanTerm(body:brown)],0,true),SpanTerm(body:fox)],0,false)	[0,10,20,30]	SpanNear([SpanNear([SpanTerm(body:quick),SpanTerm(body:brown)],0,true),SpanTerm(body:fox)],0,false)
-OR(W(quick, fox), N(lazy, dog))	P	OR(W(quick, fox), N(lazy, dog))	Bool(SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,true) SpanNear([SpanTerm(body:lazy),SpanTerm(body:dog)],0,false) )	[0,1,7,10,11,17,20,21,27,30,31,37]	X TooManyBasicQueries: Exceeded maximum of 3 basic queries.
-AND(OR(quick, brown), OR(fox, dog))	P	AND(OR(quick, brown), OR(fox, dog))	Bool(+Bool(Term(body:quick) Term(body:brown) ) +Bool(Term(body:fox) Term(body:dog) ) )	[0,1,7,9,10,11,17,19,20,21,27,29,30,31,37,39]	X TooManyBasicQueries: Exceeded maximum of 3 basic queries.
+N(W(quick, brown), fox)	P	N(W(quick, brown), fox)	SpanNear([SpanNear([SpanTerm(body:quick),SpanTerm(body:brown)],0,true),SpanTerm(body:fox)],0,false)	[0]	SpanNear([SpanNear([SpanTerm(body:quick),SpanTerm(body:brown)],0,true),SpanTerm(body:fox)],0,false)
+OR(W(quick, fox), N(lazy, dog))	P	OR(W(quick, fox), N(lazy, dog))	Bool(SpanNear([SpanTerm(body:quick),SpanTerm(body:fox)],0,true) SpanNear([SpanTerm(body:lazy),SpanTerm(body:dog)],0,false) )	[0,1,7]	X TooManyBasicQueries: Exceeded maximum of 3 basic queries.
+AND(OR(quick, brown), OR(fox, dog))	P	AND(OR(quick, brown), OR(fox, dog))	Bool(+Bool(Term(body:quick) Term(body:brown) ) +Bool(Term(body:fox) Term(body:dog) ) )	[0,1,7,9]	X TooManyBasicQueries: Exceeded maximum of 3 basic queries.
 NOT(OR(quick, brown), fox)	E	Encountered " <NOT> "NOT "" at line 1, column 0.\nWas expecting one of:\n    <OR> ...\n    <AND> ...\n    <W> ...\n    <N> ...\n    "(" ...\n    <TRUNCQUOTED> ...\n    <QUOTED> ...\n    <SUFFIXTERM> ...\n    <TRUNCTERM> ...\n    <TERM> ...\n    <TERM> ...\n    
-W(OR(quick, brown), fox)	P	W(OR(quick, brown), fox)	SpanNear([SpanOr(SpanTerm(body:brown),SpanTerm(body:quick)),SpanTerm(body:fox)],0,true)	[0,1,7,10,11,17,20,21,27,30,31,37]	SpanNear([SpanOr(SpanTerm(body:brown),SpanTerm(body:quick)),SpanTerm(body:fox)],0,true)
+W(OR(quick, brown), fox)	P	W(OR(quick, brown), fox)	SpanNear([SpanOr(SpanTerm(body:brown),SpanTerm(body:quick)),SpanTerm(body:fox)],0,true)	[0,1,7]	SpanNear([SpanOr(SpanTerm(body:brown),SpanTerm(body:quick)),SpanTerm(body:fox)],0,true)
 W(AND(quick, brown), fox)	E	Operator W: Operator W does not allow subquery AND(quick, brown)
 N(NOT(quick, brown), fox)	E	Encountered " <NOT> "NOT "" at line 1, column 2.\nWas expecting one of:\n    <OR> ...\n    <AND> ...\n    <W> ...\n    <N> ...\n    "(" ...\n    <TRUNCQUOTED> ...\n    <QUOTED> ...\n    <SUFFIXTERM> ...\n    <TRUNCTERM> ...\n    <TERM> ...\n    <TERM> ...\n    
 W(quick, title:fox)	E	Operator W: Operator W does not allow subquery (title:fox)
 W(title:quick, fox)	E	Operator W: Operator W does not allow subquery (title:quick)
 title:W(quick, fox)	P	(title:W(quick, fox))	SpanNear([SpanTerm(title:quick),SpanTerm(title:fox)],0,true)	-	SpanNear([SpanTerm(title:quick),SpanTerm(title:fox)],0,true)
 title:quick W body:fox	E	Encountered " ":" ": "" at line 1, column 18.\nWas expecting one of:\n    <EOF> \n    <OR> ...\n    <AND> ...\n    <NOT> ...\n    <W> ...\n    <N> ...\n    "^" ...\n    
-OR(title:quick, body:fox)	P	OR((title:quick), (body:fox))	Bool(Term(title:quick) Term(body:fox) )	[0,1,7,9,10,11,17,19,20,21,27,29,30,31,37,39]	Bool(Term(title:quick) Term(body:fox) )
-title:OR(quick, fox)	P	(title:OR(quick, fox))	Bool(Term(title:quick) Term(title:fox) )	[0,7,9,10,17,19,20,27,29,30,37,39]	Bool(Term(title:quick) Term(title:fox) )
+OR(title:quick, body:fox)	P	OR((title:quick), (body:fox))	Bool(Term(title:quick) Term(body:fox) )	[0,1,7,9]	Bool(Term(title:quick) Term(body:fox) )
+title:OR(quick, fox)	P	(title:OR(quick, fox))	Bool(Term(title:quick) Term(title:fox) )	[0,7,9]	Bool(Term(title:quick) Term(title:fox) )
 quick W fox W	E	Encountered "<EOF>" at line 1, column 13.\nWas expecting one of:\n    <OR> ...\n    <AND> ...\n    <W> ...\n    <N> ...\n    "(" ...\n    <TRUNCQUOTED> ...\n    <QUOTED> ...\n    <SUFFIXTERM> ...\n    <TRUNCTERM> ...\n    <TERM> ...\n    
 9b-b	P	9b-b	None	-	None
 9b-b,m	E	Encountered " "," ", "" at line 1, column 4.\nWas expecting one of:\n    <EOF> \n    <OR> ...\n    <AND> ...\n    <NOT> ...\n    <W> ...\n    <N> ...\n    "^" ...\n    
