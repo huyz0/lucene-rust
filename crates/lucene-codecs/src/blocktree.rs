@@ -3459,6 +3459,49 @@ impl BlockTreeFields {
         self.fields.iter().map(|(n, f)| (n.as_str(), f))
     }
 
+    /// Every field's terms with their statistics and postings metadata, as
+    /// a [`crate::terms_dictionary::TermsDictionaryFormat`] whose dictionary
+    /// is a block tree under a wrapper (`BloomFilteringPostingsFormat`)
+    /// reads its group back. `field_infos` numbers the fields.
+    ///
+    /// # Errors
+    /// A block that does not decode, or a field `field_infos` lacks.
+    pub fn dictionary_fields(
+        &self,
+        field_infos: &FieldInfos,
+    ) -> Result<Vec<crate::postings_writer::DictionaryField>> {
+        let mut out = Vec::with_capacity(self.fields.len());
+        for (name, terms) in &self.fields {
+            let info = field_infos.field_by_name(name).ok_or_else(|| {
+                Error::Store(lucene_store::Error::Corrupted(format!(
+                    "field {name} not in FieldInfos"
+                )))
+            })?;
+            let mut field = crate::postings_writer::DictionaryField {
+                field_number: info.number,
+                index_options: terms.index_options(),
+                has_payloads: terms.has_payloads(),
+                doc_count: terms.doc_count,
+                terms: Vec::new(),
+            };
+            let mut it = terms.iter();
+            while let Some(bytes) = it.try_next_term()? {
+                let bytes = bytes.to_vec();
+                let Some((stats, meta)) = terms.term_state(&bytes)? else {
+                    continue;
+                };
+                field.terms.push(crate::postings_writer::DictionaryTerm {
+                    bytes,
+                    doc_freq: stats.doc_freq,
+                    total_term_freq: stats.total_term_freq,
+                    meta,
+                });
+            }
+            out.push(field);
+        }
+        Ok(out)
+    }
+
     /// A fields producer for a segment with no postings at all (no
     /// `.tim`/`.tip`/`.tmd` files) -- e.g. a stored-fields-only segment,
     /// where `FieldInfos.hasPostings()` is false for every field. Every

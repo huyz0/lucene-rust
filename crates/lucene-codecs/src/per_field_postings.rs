@@ -924,8 +924,14 @@ pub fn group_suffixes(files: &[String], segment_name: &str) -> Vec<String> {
             f.strip_suffix(".tmd").or_else(|| {
                 crate::terms_dictionary::all().into_iter().find_map(|d| {
                     let stem = f.strip_suffix(&format!(".{}", d.extensions()[0]))?;
-                    // A marker extension only counts under its own format.
-                    stem.contains(&format!("{}_", d.name())).then_some(stem)
+                    // A marker extension only counts under its own format:
+                    // the stem ends `<name>_<n>`, not merely contains it
+                    // (`SharedTermsUniformSplit_0` is no `UniformSplit_0`).
+                    let (head, n) = stem.rsplit_once('_')?;
+                    let own = head
+                        .strip_suffix(d.name())
+                        .is_some_and(|rest| rest.is_empty() || rest.ends_with('_'));
+                    (own && n.bytes().all(|b| b.is_ascii_digit())).then_some(stem)
                 })
             })
         })
@@ -1294,6 +1300,19 @@ mod tests {
                 "_0"
             ),
             ["", "Lucene104_0", "Lucene104_1"]
+        );
+        // A foreign marker counts only under its own format's name.
+        assert_eq!(
+            group_suffixes(
+                &[
+                    "_0_SharedTermsUniformSplit_0.stustd".into(),
+                    "_0_SharedTermsUniformSplit_0.ustd".into(),
+                    "_0_UniformSplit_1.ustd".into(),
+                    "_0_BlockTreeOrds_0.ustd".into(),
+                ],
+                "_0"
+            ),
+            ["SharedTermsUniformSplit_0", "UniformSplit_1"]
         );
     }
 

@@ -43,7 +43,10 @@ done
 # shellcheck source=scripts/lib-lucene-jars.sh
 source "$(dirname "$0")/lib-lucene-jars.sh"
 # lucene-spatial-extras' Spatial4j and S2 jars, for VerifySpatialExtras.
-CP=$(lucene_classpath "${LUCENE_MODULES[@]}"):$(thirdparty_classpath "${SPATIAL_EXTRAS_DEPS[@]}")
+# lucene-test-framework (and the JUnit, Hamcrest and randomizedtesting jars
+# its classes link against), whose postings formats VerifyPerFieldFormats
+# reads through Lucene's SPI.
+CP=$(lucene_classpath "${LUCENE_MODULES[@]}" lucene-test-framework):$(thirdparty_classpath "${SPATIAL_EXTRAS_DEPS[@]}" "${TEST_FRAMEWORK_DEPS[@]}")
 
 WORK=$(mktemp -d)
 CLASSES=$(mktemp -d)
@@ -315,8 +318,17 @@ CASES=(
   "lucene-index|write_per_field_formats_fixture ords|block-tree-ords|VerifyPerFieldFormats|BlockTreeOrds"
   # And to UniformSplitPostingsFormat / STUniformSplitPostingsFormat (M14):
   # Lucene must read their .ustd/.ustb (.stustd/.stustb) dictionaries.
-  "lucene-index|write_per_field_formats_fixture uniform-split|uniform-split|VerifyPerFieldFormats|UniformSplit"
-  "lucene-index|write_per_field_formats_fixture shared-terms|shared-terms|VerifyPerFieldFormats|SharedTermsUniformSplit"
+  "lucene-index|write_per_field_formats_fixture UniformSplit|uniform-split|VerifyPerFieldFormats|UniformSplit"
+  "lucene-index|write_per_field_formats_fixture SharedTermsUniformSplit|shared-terms|VerifyPerFieldFormats|SharedTermsUniformSplit"
+  # And to the test framework's terms-dictionary formats (M14), which its
+  # jar registers with Lucene's SPI: block terms over each terms index, the
+  # ROT13 uniform-split pair and the low-memory bloom filter.
+  "lucene-test-framework|write_test_framework_postings_fixture LuceneFixedGap|tf-fixed-gap|VerifyPerFieldFormats|LuceneFixedGap"
+  "lucene-test-framework|write_test_framework_postings_fixture LuceneVarGapFixedInterval|tf-var-gap-fixed|VerifyPerFieldFormats|LuceneVarGapFixedInterval"
+  "lucene-test-framework|write_test_framework_postings_fixture LuceneVarGapDocFreqInterval|tf-var-gap-doc-freq|VerifyPerFieldFormats|LuceneVarGapDocFreqInterval"
+  "lucene-test-framework|write_test_framework_postings_fixture UniformSplitRot13|tf-uniform-split-rot13|VerifyPerFieldFormats|UniformSplitRot13"
+  "lucene-test-framework|write_test_framework_postings_fixture STUniformSplitRot13|tf-st-uniform-split-rot13|VerifyPerFieldFormats|STUniformSplitRot13"
+  "lucene-test-framework|write_test_framework_postings_fixture TestBloomFilteredLucenePostings|tf-bloom|VerifyPerFieldFormats|TestBloomFilteredLucenePostings"
   # PerFieldDocValuesFormat through IndexWriter (M7): the s_ fields routed to
   # Lucene90DocValuesFormat(16), two flushed segments and a force-merge, whose
   # instances are numbered in opposite orders. Lucene must read every value

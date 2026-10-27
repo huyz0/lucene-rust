@@ -14,11 +14,13 @@
 //!
 //! With `ords` as a second argument `key` and `tag` go to
 //! `BlockTreeOrdsPostingsFormat(10, 20)` instead, under `_BlockTreeOrds_0`;
-//! with `uniform-split` or `shared-terms`, to `UniformSplitPostingsFormat`
-//! or `STUniformSplitPostingsFormat`.
+//! with any other registered terms-dictionary format's name
+//! (`lucene_codecs::terms_dictionary::lookup`: `UniformSplit`,
+//! `SharedTermsUniformSplit`, or one a caller registered first, as
+//! lucene-test-framework's `write_test_framework_postings_fixture` does), to
+//! that format's default instance.
 //!
-//! Usage: `write_per_field_formats_fixture <output-dir>
-//! [ords|uniform-split|shared-terms]`.
+//! Usage: `write_per_field_formats_fixture <output-dir> [ords|<format>]`.
 // Test-support code opts out of the arithmetic gate at the file boundary:
 // see `docs/arithmetic-gate.md`.
 #![allow(clippy::arithmetic_side_effects)]
@@ -80,13 +82,10 @@ fn write(dir: &FsDirectory, merge: bool, routed: Option<&str>) {
     let small = match routed {
         None => Lucene104PostingsFormat::new(10, 20).expect("block sizes"),
         Some("ords") => Lucene104PostingsFormat::block_tree_ords(10, 20).expect("block sizes"),
-        Some("uniform-split") => {
-            Lucene104PostingsFormat::dictionary(&lucene_codecs::uniformsplit::DEFAULT_FORMAT)
-        }
-        Some("shared-terms") => Lucene104PostingsFormat::dictionary(
-            &lucene_codecs::uniformsplit::sharedterms::DEFAULT_FORMAT,
+        Some(name) => Lucene104PostingsFormat::dictionary(
+            lucene_codecs::terms_dictionary::lookup(name)
+                .unwrap_or_else(|| panic!("no terms-dictionary format {name}")),
         ),
-        Some(other) => panic!("unknown routed format {other}"),
     };
     writer.set_postings_format_for_field("tag", small);
     writer.set_postings_format_for_field("key", small);
@@ -125,7 +124,7 @@ fn write(dir: &FsDirectory, merge: bool, routed: Option<&str>) {
     }
 }
 
-fn main() {
+pub fn main() {
     let out = std::env::args().nth(1).expect(
         "usage: write_per_field_formats_fixture <output-dir> [ords|uniform-split|shared-terms]",
     );
