@@ -162,7 +162,14 @@ jobs:
       # lucene-ffi's never-loaded cdylib from the report (its phantom copies of
       # the `#[no_mangle]` entry points hid the executed ones); see
       # docs/mechanical-gates.md#coverage-objects.
+      # Coverage maps come from the instrumentation, not DWARF: without debug
+      # info the test binaries are a fraction of the size, which is what kept
+      # running the runner's disk out (rustc "No space left on device", ld
+      # "signal 7 [Bus error]" on a full disk's mmap).
       - name: Tests + coverage gate
+        env:
+          CARGO_PROFILE_DEV_DEBUG: '0'
+          CARGO_PROFILE_TEST_DEBUG: '0'
         run: |
           set -o pipefail
           scripts/coverage.sh --workspace -- --summary-only --fail-under-lines 95 | tee coverage.txt
