@@ -18,10 +18,12 @@ use lucene_index::segment_info::LuceneVersion;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
 use lucene_search::multi_segment::OpenSegment;
+use lucene_search::reader::{IndexReader, LeafReader};
 use lucene_search::similarities::Similarity;
 use lucene_store::ByteBuffersDirectory;
 use lucene_util::java_random::JavaRandom;
 
+use crate::index::index_writer_config::RandomIndexWriterConfig;
 use crate::index::random_index_writer::{RandomIndexWriter, WriterEnv};
 
 const VERSION: LuceneVersion = LuceneVersion {
@@ -130,6 +132,66 @@ impl TestIndex {
             norm_fields: norm_fields.iter().map(|f| (*f).to_string()).collect(),
             reader: Some(reader),
         }
+    }
+
+    /// `new IndexWriter(dir, config)`, then `write`, then `close()`: an
+    /// index written by a plain writer under a random configuration (Java's
+    /// `DirectoryReader.open(w)` before `close()` sees the same documents
+    /// the closing commit holds), searched through its last commit.
+    ///
+    /// # Panics
+    /// When writing the index fails.
+    pub fn write_with(
+        config: &RandomIndexWriterConfig,
+        norm_fields: &[&str],
+        write: impl FnOnce(&mut IndexWriter<'_>),
+    ) -> Self {
+        let dir = ByteBuffersDirectory::new();
+        {
+            let mut w =
+                IndexWriter::open(&dir, Vec::new(), "Lucene104", VERSION).expect("open writer");
+            config.apply(&mut w).expect("apply the configuration");
+            write(&mut w);
+            w.close().expect("close writer");
+        }
+        Self {
+            dir,
+            norm_fields: norm_fields.iter().map(|f| (*f).to_string()).collect(),
+            reader: None,
+        }
+    }
+
+    /// Each document's `field` numeric doc value, by global doc id (`None`
+    /// for a document without one).
+    ///
+    /// # Panics
+    /// When reading the index fails.
+    pub fn numeric_values(&self, field: &str) -> Vec<Option<i64>> {
+        let opened_reader;
+        let reader = match &self.reader {
+            Some(r) => r,
+            None => {
+                opened_reader = DirectoryReader::open(&self.dir).expect("open reader");
+                &opened_reader
+            }
+        };
+        let mut values = Vec::new();
+        for sub in reader.segment_readers() {
+            let base = values.len();
+            let max_doc = usize::try_from(sub.max_doc()).expect("a maxDoc");
+            values.resize(base + max_doc, None);
+            if let Some(mut dv) = sub.numeric_doc_values(field).expect("doc values") {
+                loop {
+                    let doc = dv.next_doc().expect("nextDoc");
+                    let Ok(doc) = usize::try_from(doc) else { break };
+                    if doc >= max_doc {
+                        break;
+                    }
+                    values[base + doc] = Some(dv.long_value());
+                }
+            }
+        }
+        values
     }
 
     /// Runs `f` over the index's segments and their norms, from which

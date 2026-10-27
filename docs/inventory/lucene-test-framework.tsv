@@ -148,7 +148,7 @@ tests/search/AssertingScorable	ported	crates/lucene-search/src/exec/asserting.rs
 tests/search/AssertingScorer	ported	crates/lucene-search/src/exec/asserting.rs::AssertingScorer
 tests/search/AssertingWeight	partial	crates/lucene-search/src/exec/asserting.rs::wrap -- M14: no Weight; each built scorer wrapped; no count/cost/get-once checks or usually() bulk-vs-scorer pick
 tests/search/BaseExplanationTestCase	ported	crates/lucene-test-framework/src/search/base_explanation.rs::BaseExplanation -- newStringField/newTextField random types, RandomIndexWriter with a random LogMergePolicy, newSearcher
-tests/search/BaseRangeFieldQueryTestCase	ported	crates/lucene-test-framework/src/search/base_range_field.rs::BaseRangeField
+tests/search/BaseRangeFieldQueryTestCase	ported	crates/lucene-test-framework/src/search/base_range_field.rs::BaseRangeField -- default codec; newDirectory draws not made (memory directory)
 tests/search/BlockScoreQueryWrapper	partial	crates/lucene-test-framework/src/search/block_score_query_wrapper.rs::wrap -- M14: feature-only operational buffered scorer; Java fixture replay, measured exact buffer storage and paired bounds/construction scope in docs/benchmarks/block-score-query.md
 tests/search/BulkScorerWrapperScorer	partial	crates/lucene-test-framework/src/search/bulk_scorer_wrapper_scorer.rs::BulkScorerWrapperScorer -- M14: real bulk adapter needs caller-supplied cost; exact iteration/error traces and paired traversal benchmarks in docs/benchmarks/bulk-scorer-wrapper.md
 tests/search/CheckHits	ported	crates/lucene-test-framework/src/search/check_hits.rs::check_hits -- wrapUnderlyingReader passes over query_utils::with_wrapped_underlying_reader
