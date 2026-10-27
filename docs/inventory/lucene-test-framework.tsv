@@ -185,7 +185,7 @@ tests/util/FailOnNonBulkMergesInfoStream	not-needed	an InfoStream asserting on m
 tests/util/FailureMarker	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
 tests/util/LineFileDocs	ported	crates/lucene-test-framework/src/util/line_file_docs.rs::LineFileDocs
 tests/util/LuceneJUnit3MethodProvider	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
-tests/util/LuceneTestCase	partial	crates/lucene-test-framework/src/util/lucene_test_case.rs::LuceneTestCase -- M14: newSearcher/newField arrive with h7 (newDirectory and its family: crates/lucene-test-framework/src/store/new_directory.rs; newIndexWriterConfig: crates/lucene-test-framework/src/index/index_writer_config.rs)
+tests/util/LuceneTestCase	partial	crates/lucene-test-framework/src/util/lucene_test_case.rs::LuceneTestCase -- M14: newSearcher arrives with AssertingIndexSearcher's executor/slices (newField family: lucene_test_case.rs::new_field; newDirectory and its family: crates/lucene-test-framework/src/store/new_directory.rs; newIndexWriterConfig: crates/lucene-test-framework/src/index/index_writer_config.rs)
 tests/util/NullInfoStream	not-needed	an InfoStream that discards messages; this port has no InfoStream
 tests/util/QuickPatchThreadsFilter	not-needed	JUnit/randomizedtesting runner infrastructure (rules, listeners, thread filters, security manager); `cargo test` runs the Rust tests
 tests/util/RamUsageTester	not-needed	reflection over the JVM heap; Rust types report their own heap (`ram_bytes_used`)

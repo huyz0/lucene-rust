@@ -1,6 +1,8 @@
 //! `LuceneTestCase`'s randomized configuration: the per-test seed, the
 //! `RANDOM_MULTIPLIER`/`TEST_NIGHTLY` knobs, `atLeast`, `rarely`, `usually`,
-//! and the line that reproduces a failure.
+//! the line that reproduces a failure, and `newField`/`newStringField`/
+//! `newTextField` ([`new_field`]: Java's random stored/term-vector upgrade,
+//! remembered per field name in a [`FieldTypes`]).
 //!
 //! Java gets its seeds from randomizedtesting's runner, which seeds each test
 //! method from the master seed (`-Dtests.seed`). There is no runner here, so
@@ -25,6 +27,9 @@
 //! When a test panics while its [`LuceneTestCase`] is alive, the drop prints
 //! the reproduce line to stderr, the way Lucene prints `NOTE: reproduce with`.
 
+use std::collections::HashMap;
+
+use lucene_index::document::{Field, FieldType, IndexOptions, Store, StringField, TextField};
 use lucene_util::java_random::JavaRandom;
 use lucene_util::strict_math;
 
@@ -65,6 +70,8 @@ pub struct LuceneTestCase {
     nightly: bool,
     multiplier: i32,
     random: JavaRandom,
+    /// `fieldToType`: the type [`Self::new_field`] settled on per name.
+    field_types: FieldTypes,
     /// `cargo test ... -- --exact <path>`: what reruns this test alone.
     command: String,
 }
@@ -120,6 +127,7 @@ impl LuceneTestCase {
             nightly,
             multiplier,
             random: JavaRandom::new(seed),
+            field_types: FieldTypes::default(),
             command: cargo_test_command(
                 std::env::var("CARGO_PKG_NAME").ok().as_deref(),
                 std::env::current_exe().ok().as_deref(),
@@ -172,6 +180,21 @@ impl LuceneTestCase {
     /// `usually()` on this test's stream.
     pub fn usually(&mut self) -> bool {
         !self.rarely()
+    }
+
+    /// `newField(name, value, type)` on this test's stream and field types.
+    pub fn new_field(&mut self, name: &str, value: FieldValue<'_>, ft: &FieldType) -> Field {
+        new_field(&mut self.random, &mut self.field_types, name, value, ft)
+    }
+
+    /// `newStringField(name, value, stored)` on this test's stream.
+    pub fn new_string_field(&mut self, name: &str, value: FieldValue<'_>, stored: Store) -> Field {
+        new_string_field(&mut self.random, &mut self.field_types, name, value, stored)
+    }
+
+    /// `newTextField(name, value, stored)` on this test's stream.
+    pub fn new_text_field(&mut self, name: &str, value: &str, stored: Store) -> Field {
+        new_text_field(&mut self.random, &mut self.field_types, name, value, stored)
     }
 
     /// The command line that reruns this test with this configuration.
@@ -277,6 +300,123 @@ pub fn rarely(r: &mut JavaRandom, nightly: bool, multiplier: i32) -> bool {
 /// `LuceneTestCase.usually(random)`.
 pub fn usually(r: &mut JavaRandom, nightly: bool, multiplier: i32) -> bool {
     !rarely(r, nightly, multiplier)
+}
+
+/// `LuceneTestCase.fieldToType`: the type [`new_field`] chose for each
+/// field name, so every instance of a name is indexed alike. Java keeps one
+/// per suite (cleared after it); here a test owns one ([`LuceneTestCase`]
+/// carries its own).
+#[derive(Debug, Default, Clone)]
+pub struct FieldTypes(HashMap<String, FieldType>);
+
+impl FieldTypes {
+    /// The type chosen for `name`, if one was.
+    pub fn get(&self, name: &str) -> Option<&FieldType> {
+        self.0.get(name)
+    }
+
+    /// `fieldToType.clear()`.
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
+/// A [`new_field`] value: Java's `Object value`, a `String` or a `BytesRef`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldValue<'a> {
+    /// A `String`.
+    String(&'a str),
+    /// A `BytesRef`.
+    Bytes(&'a [u8]),
+}
+
+/// `newField(random, name, value, type)`: the type chosen for `name`
+/// before, or `ft` randomly upgraded -- stored when it is not (one
+/// `nextBoolean`), and for an indexed type without term vectors (and not
+/// `DOCS_AND_CUSTOM_FREQS`), term vectors when a `nextBoolean` says so,
+/// then positions, payloads (with positions) and offsets (string values
+/// only) each by a `nextBoolean`, as Java draws them. The type is frozen
+/// and remembered for `name`.
+///
+/// # Panics
+/// When the type cannot carry the value (Java's `IllegalArgumentException`
+/// from the `Field` constructor).
+pub fn new_field(
+    random: &mut JavaRandom,
+    types: &mut FieldTypes,
+    name: &str,
+    value: FieldValue<'_>,
+    ft: &FieldType,
+) -> Field {
+    if let Some(prev) = types.get(name) {
+        // always use the same fieldType for the same field name
+        return create_field(name, value, prev.clone());
+    }
+    let mut new_type = FieldType::copy_of(ft);
+    let set = |r: lucene_index::document::Result<()>| r.expect("an unfrozen copy");
+    if !new_type.stored() && random.next_boolean() {
+        set(new_type.set_stored(true)); // randomly store it
+    }
+    if new_type.index_options() != IndexOptions::None
+        && new_type.index_options() != IndexOptions::DocsAndCustomFreqs
+        && !new_type.store_term_vectors()
+        && random.next_boolean()
+    {
+        set(new_type.set_store_term_vectors(true));
+        if !new_type.store_term_vector_positions() {
+            set(new_type.set_store_term_vector_positions(random.next_boolean()));
+            if new_type.store_term_vector_positions() && !new_type.store_term_vector_payloads() {
+                set(new_type.set_store_term_vector_payloads(random.next_boolean()));
+            }
+        }
+        // offsets are disallowed on binary fields
+        if matches!(value, FieldValue::String(_)) && !new_type.store_term_vector_offsets() {
+            set(new_type.set_store_term_vector_offsets(random.next_boolean()));
+        }
+    }
+    new_type.freeze();
+    types.0.insert(name.to_string(), new_type.clone());
+    create_field(name, value, new_type)
+}
+
+fn create_field(name: &str, value: FieldValue<'_>, ft: FieldType) -> Field {
+    match value {
+        FieldValue::String(s) => Field::from_string(name, s, ft),
+        FieldValue::Bytes(b) => Field::from_bytes(name, b, ft),
+    }
+    .unwrap_or_else(|e| panic!("newField({name}): {e}"))
+}
+
+/// `newStringField(random, name, value, stored)`: [`new_field`] over
+/// `StringField`'s type.
+pub fn new_string_field(
+    random: &mut JavaRandom,
+    types: &mut FieldTypes,
+    name: &str,
+    value: FieldValue<'_>,
+    stored: Store,
+) -> Field {
+    let ft = match stored {
+        Store::Yes => StringField::type_stored(),
+        Store::No => StringField::type_not_stored(),
+    };
+    new_field(random, types, name, value, &ft)
+}
+
+/// `newTextField(random, name, value, stored)`: [`new_field`] over
+/// `TextField`'s type.
+pub fn new_text_field(
+    random: &mut JavaRandom,
+    types: &mut FieldTypes,
+    name: &str,
+    value: &str,
+    stored: Store,
+) -> Field {
+    let ft = match stored {
+        Store::Yes => TextField::type_stored(),
+        Store::No => TextField::type_not_stored(),
+    };
+    new_field(random, types, name, FieldValue::String(value), &ft)
 }
 
 #[cfg(test)]
