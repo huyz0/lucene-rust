@@ -7,8 +7,8 @@
 //! `iterator()` borrows the wrapper exclusively; successive borrows share its
 //! cursor just as Java's anonymous iterators do. Zero/negative buffer sizes
 //! are rejected (Java can loop forever with zero), and overflowing refill
-//! windows return an error instead of wrapping. The real search adapter needs
-//! the caller's known cost: `LeafBulkScorer` has no common cost accessor.
+//! windows return an error instead of wrapping. The real search adapter
+//! reports the bulk scorer's own cost, as Java's does.
 
 use std::fmt;
 
@@ -36,16 +36,15 @@ pub trait BulkScorer {
     ) -> Result<i32, Self::Error>;
 }
 
-/// Adapts an actual indexed query's bulk scorer, with its caller-known cost.
+/// Adapts an actual indexed query's bulk scorer.
 pub struct LeafBulkSource<'a> {
     inner: LeafBulkScorer<'a>,
-    known_cost: u64,
 }
 
 impl<'a> LeafBulkSource<'a> {
-    /// Keep this exact bulk scorer; no second scorer is constructed for cost.
-    pub fn new(inner: LeafBulkScorer<'a>, known_cost: u64) -> Self {
-        Self { inner, known_cost }
+    /// Keep this exact bulk scorer.
+    pub fn new(inner: LeafBulkScorer<'a>) -> Self {
+        Self { inner }
     }
 }
 
@@ -53,7 +52,7 @@ impl BulkScorer for LeafBulkSource<'_> {
     type Error = lucene_search::Error;
 
     fn cost(&self) -> u64 {
-        self.known_cost
+        u64::try_from(self.inner.cost()).unwrap_or(0)
     }
 
     fn score(

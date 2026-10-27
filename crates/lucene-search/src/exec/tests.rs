@@ -2113,9 +2113,30 @@ mod fixture {
                     reader: None,
                     similarity: None,
                 };
-                for mode in [Mode::TopScores, Mode::Complete] {
+                for mode in [Mode::TopScores, Mode::Complete, Mode::NoScores] {
                     if let Some(b) = bulk_boolean(&ctx, &q, 1.0, mode).unwrap() {
                         kinds.insert(b.kind());
+                        // `BulkScorer.cost()` is the scorer supplier's cost
+                        // whichever bulk scorer is picked, but for
+                        // `filteredOptionalBulkScorer`'s `MaxScoreBulkScorer`,
+                        // which sums its optional clauses and leaves its filter
+                        // out.
+                        if matches!(
+                            b,
+                            crate::exec::Bulk::Disjunction(_, Some(_), _)
+                                | crate::exec::Bulk::ScorerDisjunction(_, Some(_), _)
+                        ) {
+                            continue;
+                        }
+                        let tree = crate::exec::build::build_boolean(&ctx, &q, 1.0, mode, true)
+                            .unwrap()
+                            .unwrap();
+                        assert_eq!(
+                            b.cost(),
+                            tree.cost(),
+                            "{} {mode:?}: cost",
+                            m[&format!("query.{i}")]
+                        );
                     }
                 }
                 if let Some(mut b) = bulk_boolean(&ctx, &q, 1.0, Mode::NoScores).unwrap() {

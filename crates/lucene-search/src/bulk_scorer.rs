@@ -1454,7 +1454,25 @@ pub(crate) struct MsmBulk {
     buf: DocScores,
 }
 
+/// `ScorerUtil.costWithMinShouldMatch`: the summed costs of the
+/// `costs.len() - msm + 1` cheapest clauses.
+#[cfg_attr(not(any(test, feature = "asserting")), allow(dead_code))]
+pub(crate) fn cost_with_min_should_match(costs: impl Iterator<Item = i64>, msm: usize) -> i64 {
+    let mut costs: Vec<i64> = costs.collect();
+    costs.sort_unstable();
+    let keep = (costs.len() + 1).saturating_sub(msm);
+    costs[..keep.min(costs.len())]
+        .iter()
+        .fold(0i64, |c, &x| c.saturating_add(x))
+}
+
 impl MsmBulk {
+    /// The `minimum_should_match` it scores.
+    #[cfg_attr(not(any(test, feature = "asserting")), allow(dead_code))]
+    pub(crate) fn msm(&self) -> usize {
+        self.msm as usize
+    }
+
     pub(crate) fn new(msm: usize) -> Self {
         MsmBulk {
             msm: u32::try_from(msm).unwrap_or(u32::MAX),

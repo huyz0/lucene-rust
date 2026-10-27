@@ -1326,6 +1326,7 @@ pub fn search_boolean_query_multi_segment_with_deadline(
                     mode,
                     seg.live_docs,
                     local,
+                    seg.max_doc,
                     deadline,
                 )?;
             }

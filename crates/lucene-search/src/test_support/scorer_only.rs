@@ -56,14 +56,19 @@ pub(crate) fn score_leaf<C: ScoringCollector + ?Sized>(
     };
     let mode = Mode::of(collector);
     // The supplier wrapper does not forward setTopLevelScoringClause.
-    let Some(scorer) = exec::build::build_boolean(&ctx, query, 1.0, mode, false)? else {
+    let Some(scorer) = exec::build::build_boolean_root(&ctx, query, 1.0, mode, false)? else {
         return Ok(false);
     };
     let mut bulk = Bulk::scorer(scorer);
     if let Some(timeout) = timeout {
-        exec::score_segment_time_limited(&mut bulk, mode, seg.live_docs, collector, || {
-            timeout.should_exit()
-        })
+        exec::score_segment_time_limited(
+            &mut bulk,
+            mode,
+            seg.live_docs,
+            collector,
+            seg.max_doc,
+            || timeout.should_exit(),
+        )
     } else {
         exec::score_segment(&mut bulk, mode, seg.live_docs, collector, seg.max_doc)?;
         Ok(false)

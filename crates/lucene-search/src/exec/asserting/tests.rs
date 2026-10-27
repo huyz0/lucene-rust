@@ -535,3 +535,35 @@ fn random_int_between_matches_random_numbers() {
         assert!((0..3).contains(&v));
     }
 }
+
+#[test]
+fn time_limited_windows_go_through_one_asserting_bulk_scorer() {
+    let docs: Vec<i32> = (0..3000).step_by(7).collect();
+    let expected: Vec<(i32, f32)> = docs.iter().map(|&d| (d, 1.0)).collect();
+    let run = |guarded: bool| {
+        let _guard = guarded.then(|| AssertingGuard::new(3));
+        let mut bulk = Bulk::scorer(Box::new(fake(&docs)));
+        let mut all = All::default();
+        let stopped = crate::exec::score_segment_time_limited(
+            &mut bulk,
+            Mode::Complete,
+            None,
+            &mut all,
+            Some(3000),
+            || false,
+        )
+        .unwrap();
+        assert!(!stopped);
+        (all.0, next_seed())
+    };
+    let (hits, after) = run(true);
+    assert_eq!(hits, expected);
+    // The wrapper drew its seed from the guard: the guard's next one is its
+    // second draw, not its first.
+    let first = {
+        let _guard = AssertingGuard::new(3);
+        next_seed()
+    };
+    assert!(after.is_some() && after != first);
+    assert_eq!(run(false), (expected, None));
+}

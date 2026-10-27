@@ -7,7 +7,7 @@ use lucene_analysis::Analyzer;
 use lucene_index::document::{Document, Store, StringField};
 use lucene_search::collector::{ScoreMode, ScoringCollector};
 use lucene_search::query::{
-    BooleanQuery, Clause, ConstantScoreQuery, MatchAllDocsQuery, TermQuery,
+    BooleanQuery, Clause, ConstantScoreQuery, DisjunctionMaxQuery, MatchAllDocsQuery, TermQuery,
 };
 use lucene_search::test_support::with_leaf;
 use lucene_test_framework::search::bulk_scorer_wrapper_scorer::{
@@ -199,17 +199,16 @@ fn java_actual_indexed_bulk_scorers() {
             must: vec![clause],
             ..Default::default()
         };
-        let known_cost = if header[1] == "all" { 97 } else { 9 };
-        assert_eq!(known_cost, header[4].parse::<u64>().unwrap());
+        let java_cost = header[4].parse::<u64>().unwrap();
         index.with_searcher(|searcher| {
             with_leaf(searcher, &query, 0, |leaf| {
                 let bulk = leaf.bulk_scorer(ScoreMode::Complete)?.unwrap();
                 let mut wrapper = BulkScorerWrapperScorer::new(
-                    LeafBulkSource::new(bulk, known_cost),
+                    LeafBulkSource::new(bulk),
                     header[2].parse().unwrap(),
                 )
                 .unwrap();
-                assert_eq!(wrapper.cost(), known_cost);
+                assert_eq!(wrapper.cost(), java_cost);
                 let mut target = 0;
                 loop {
                     let expected = &rows[row];
@@ -238,4 +237,142 @@ fn java_actual_indexed_bulk_scorers() {
         cases += 1;
     }
     assert_eq!(cases, 16);
+}
+
+fn t(term: &str) -> Clause {
+    Clause::Term(TermQuery::new("body", term))
+}
+
+/// A boolean of `must`, `filter`, `should` and `must_not` clauses.
+fn bool_of(
+    must: Vec<Clause>,
+    filter: Vec<Clause>,
+    should: Vec<Clause>,
+    not: Vec<Clause>,
+) -> Clause {
+    Clause::Boolean(Box::new(BooleanQuery {
+        must,
+        filter,
+        should,
+        must_not: not,
+        ..Default::default()
+    }))
+}
+
+/// Each query shape's real bulk scorer reports Java's `BulkScorer.cost()`
+/// under every score mode, whichever bulk variant scores it.
+#[test]
+fn java_bulk_scorer_costs() {
+    let fixture = include_str!("../../../fixtures/testframework/data/bulk_scorer_wrapper.tsv");
+    let docs = (0..3000)
+        .map(|id| {
+            let mut doc = Document::new();
+            for (term, m) in [("a", 2), ("b", 3), ("c", 5), ("d", 7)] {
+                if id % m == 0 {
+                    doc.add(StringField::new("body", term, Store::No));
+                }
+            }
+            doc.add(StringField::new("body", "z", Store::No));
+            doc
+        })
+        .collect();
+    let index = TestIndex::build(
+        Arc::new(Analyzer::new(WhitespaceAnalyzer::default())),
+        &[docs],
+        &[],
+        &[],
+    );
+    let (a, b, c, d) = (t("a"), t("b"), t("c"), t("d"));
+    let query = |label: &str| -> Clause {
+        match label {
+            "a" => bool_of(vec![a.clone()], vec![], vec![], vec![]),
+            "+a +b" => bool_of(vec![a.clone(), b.clone()], vec![], vec![], vec![]),
+            "+a #b" => bool_of(vec![a.clone()], vec![b.clone()], vec![], vec![]),
+            "a b" => bool_of(vec![], vec![], vec![a.clone(), b.clone()], vec![]),
+            "a b c d msm2" => {
+                let Clause::Boolean(mut q) = bool_of(
+                    vec![],
+                    vec![],
+                    vec![a.clone(), b.clone(), c.clone(), d.clone()],
+                    vec![],
+                ) else {
+                    unreachable!()
+                };
+                q.minimum_should_match = 2;
+                Clause::Boolean(q)
+            }
+            "+a ?b" => bool_of(vec![a.clone()], vec![], vec![b.clone()], vec![]),
+            "+a ?b ?c" => bool_of(vec![a.clone()], vec![], vec![b.clone(), c.clone()], vec![]),
+            "#a ?b ?c" => bool_of(vec![], vec![a.clone()], vec![b.clone(), c.clone()], vec![]),
+            "+a -b" => bool_of(vec![a.clone()], vec![], vec![], vec![b.clone()]),
+            "a b -c" => bool_of(vec![], vec![], vec![a.clone(), b.clone()], vec![c.clone()]),
+            "+a +b ?c -d" => bool_of(
+                vec![a.clone(), b.clone()],
+                vec![],
+                vec![c.clone()],
+                vec![d.clone()],
+            ),
+            "+(a b) +c" => bool_of(
+                vec![
+                    bool_of(vec![], vec![], vec![a.clone(), b.clone()], vec![]),
+                    c.clone(),
+                ],
+                vec![],
+                vec![],
+                vec![],
+            ),
+            "(+a +b) (+c +d)" => bool_of(
+                vec![],
+                vec![],
+                vec![
+                    bool_of(vec![a.clone(), b.clone()], vec![], vec![], vec![]),
+                    bool_of(vec![c.clone(), d.clone()], vec![], vec![], vec![]),
+                ],
+                vec![],
+            ),
+            "dismax(a b)" => bool_of(
+                vec![Clause::DisjunctionMax(Box::new(DisjunctionMaxQuery {
+                    disjuncts: vec![a.clone(), b.clone()],
+                    tie_breaker: 0.0,
+                }))],
+                vec![],
+                vec![],
+                vec![],
+            ),
+            "+const(a) ?b" => bool_of(
+                vec![Clause::ConstantScore(Box::new(ConstantScoreQuery::new(
+                    a.clone(),
+                    1.0,
+                )))],
+                vec![],
+                vec![b.clone()],
+                vec![],
+            ),
+            "+z #d" => bool_of(vec![t("z")], vec![d.clone()], vec![], vec![]),
+            other => panic!("unknown query {other}"),
+        }
+    };
+    let mut cases = 0;
+    for line in fixture.lines().filter(|l| l.starts_with("cost\t")) {
+        let row: Vec<_> = line.split('\t').collect();
+        let Clause::Boolean(q) = query(row[1]) else {
+            unreachable!()
+        };
+        let mode = match row[2] {
+            "COMPLETE" => ScoreMode::Complete,
+            "COMPLETE_NO_SCORES" => ScoreMode::CompleteNoScores,
+            "TOP_SCORES" => ScoreMode::TopScores,
+            other => panic!("unknown mode {other}"),
+        };
+        let cost = index.with_searcher(|searcher| {
+            with_leaf(searcher, &q, 0, |leaf| {
+                Ok(leaf.bulk_scorer(mode)?.map(|bulk| bulk.cost()))
+            })
+            .unwrap()
+        });
+        let expected = (row[3] != "-").then(|| row[3].parse::<i64>().unwrap());
+        assert_eq!(cost, expected, "{} {}", row[1], row[2]);
+        cases += 1;
+    }
+    assert_eq!(cases, 48);
 }

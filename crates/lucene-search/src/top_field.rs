@@ -4075,6 +4075,7 @@ pub(crate) fn search_sorted_leaves(
         min_score,
         similarity,
         None,
+        false,
     )
 }
 
@@ -4097,6 +4098,7 @@ pub(crate) fn search_sorted_leaves_with_statistics(
     min_score: Option<f32>,
     similarity: Option<&dyn crate::similarities::Similarity>,
     statistics: Option<&dyn crate::index_searcher::StatisticsSource>,
+    scorer_only: bool,
 ) -> Result<TopFieldDocs> {
     if sort.is_empty() {
         return Err(SortError::NoKeys.into());
@@ -4161,6 +4163,7 @@ pub(crate) fn search_sorted_leaves_with_statistics(
         until,
         min_score,
         similarity,
+        scorer_only,
     };
     search_segments(&run, &all)
 }
@@ -4262,6 +4265,7 @@ pub fn search_sorted_min_score(
         until: None,
         min_score,
         similarity: None,
+        scorer_only: false,
     };
     let parallel =
         crate::slices::estimated_matches(segments, query) >= crate::slices::SEQUENTIAL_BELOW;
@@ -4395,6 +4399,27 @@ struct Run<'r, 'a> {
     min_score: Option<f32>,
     /// The searcher's similarity when it is not the default BM25.
     similarity: Option<&'r dyn crate::similarities::Similarity>,
+    /// The test framework's `ScorerIndexSearcher`: every leaf's bulk scorer
+    /// is `DefaultBulkScorer` over the query's scorer tree.
+    scorer_only: bool,
+}
+
+/// The bulk scorer of one segment: the query's own, or under
+/// [`Run::scorer_only`] `DefaultBulkScorer` over its scorer tree
+/// (`ScorerIndexSearcher.searchLeaf`; the supplier wrapper does not forward
+/// `setTopLevelScoringClause`).
+fn leaf_bulk<'a>(
+    ctx: &exec::LeafContext<'a>,
+    query: &BooleanQuery,
+    mode: Mode,
+    scorer_only: bool,
+) -> Result<Option<exec::Bulk<'a>>> {
+    if scorer_only {
+        return Ok(
+            exec::build::build_boolean_root(ctx, query, 1.0, mode, false)?.map(exec::Bulk::scorer),
+        );
+    }
+    exec::bulk_boolean(ctx, query, 1.0, mode)
 }
 
 /// One collector over the segments at `order`, in that order.
@@ -4413,6 +4438,7 @@ fn search_segments(run: &Run<'_, '_>, order: &[usize]) -> Result<TopFieldDocs> {
         until,
         min_score,
         similarity,
+        scorer_only,
     } = *run;
     let mut tf = TopField::new(sort, top_n, total_hits_threshold, after);
     let want_scores = tf.needs_scores || track || min_score.is_some();
@@ -4457,7 +4483,7 @@ fn search_segments(run: &Run<'_, '_>, order: &[usize]) -> Result<TopFieldDocs> {
         };
         if sort[0].ty == SortType::Score {
             // No competitive iterator: the bulk scorers, pruning by score.
-            let Some(mut bulk) = exec::bulk_boolean(&ctx, query, 1.0, mode)? else {
+            let Some(mut bulk) = leaf_bulk(&ctx, query, mode, scorer_only)? else {
                 continue;
             };
             let mut leaf = open_leaf(&mut tf, reader, seg, i64::from(reader.max_doc))?;
@@ -4482,7 +4508,7 @@ fn search_segments(run: &Run<'_, '_>, order: &[usize]) -> Result<TopFieldDocs> {
             // collector wants `TOP_SCORES` -- a score-led sort, above): the
             // bulk scorers, a window of documents at a time, as
             // `BooleanWeight`'s bulk scorer serves such a collector.
-            let Some(mut bulk) = exec::bulk_boolean(&ctx, query, 1.0, Mode::Complete)? else {
+            let Some(mut bulk) = leaf_bulk(&ctx, query, Mode::Complete, scorer_only)? else {
                 continue;
             };
             let mut leaf = open_leaf(&mut tf, reader, seg, i64::from(reader.max_doc))?;

@@ -65,6 +65,9 @@ public class GenScorerIndexSearcher {
       bool(term("a"), Occur.MUST, phrase, Occur.FILTER), new ConstantScoreQuery(phrase),
       new MatchAllDocsQuery(), term("absent")};
   }
+  static final String[] SORT_NAMES = {"score", "score_doc", "doc"};
+  static final Sort[] SORTS = {new Sort(SortField.FIELD_SCORE),
+    new Sort(SortField.FIELD_SCORE, SortField.FIELD_DOC), new Sort(SortField.FIELD_DOC)};
   static final String[] THRESHOLD_NAMES = {"direct", "dismax", "dismax_tie", "dismax_singleton", "dismax_singleton_tie", "blended", "single_phrase", "required_filter", "required_exclusion"};
   static Query[] thresholdQueries() {
     return new Query[] {term("a"),
@@ -189,6 +192,12 @@ public class GenScorerIndexSearcher {
             row("after", mode, sim, q, topText(after));
             row("count", mode, sim, q, searcher.count(query));
             row("manager", mode, sim, q, hitsText(searcher.search(query, new Manager())));
+            for (int k = 0; k < SORTS.length; k++) {
+              TopFieldDocs sorted = searcher.search(query, 3, SORTS[k]);
+              StringBuilder docs = new StringBuilder();
+              for (ScoreDoc hit : sorted.scoreDocs) { if (!docs.isEmpty()) docs.append(','); docs.append(hit.doc); }
+              row("sorted", mode, sim, q, SORT_NAMES[k], sorted.totalHits.value() + ":" + sorted.totalHits.relation() + ":" + docs);
+            }
             if (mode.equals("scorer_searcher")) {
               Hits slice = new Hits(ScoreMode.COMPLETE); forced.selected(query, slice);
               row("slice", mode, sim, q, slice.text());
