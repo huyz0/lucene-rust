@@ -3,9 +3,11 @@
 //! reports for each document -- positions and offsets, labels, sub-matches,
 //! named matches, term matches.
 //!
-//! Java writes the documents through `RandomIndexWriter` and force-merges
-//! to one segment; here they are one segment under a plain `IndexWriter`.
-//! `NamedQuery` has no `Clause` here, so [`MatchesTestBase::check_sub_matches`]
+//! The documents are written as Java writes them: `newField`'s random field
+//! types ([`FieldTypes`]), through a `RandomIndexWriter` under a random
+//! configuration with a random `LogMergePolicy`, force-merged to one
+//! segment and searched through a `newSearcher` ([`NewSearcher`]) under its
+//! asserting wrappers. `NamedQuery` has no `Clause` here, so [`MatchesTestBase::check_sub_matches`]
 //! takes the named clauses `NamedMatches.wrapQuery` would wrap (see
 //! `lucene_search::matches::named_matches`).
 
@@ -13,7 +15,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use lucene_index::document::{
-    Document, Field, FieldType, IndexOptions, IntPoint, NumericDocValuesField, TextField,
+    Document, FieldType, IndexOptions, IntPoint, NumericDocValuesField, TextField,
 };
 use lucene_search::index_searcher::IndexSearcher;
 use lucene_search::matches::{self, BoxMatchesIterator};
@@ -21,8 +23,15 @@ use lucene_search::query::Clause;
 use lucene_util::java_random::JavaRandom;
 
 use super::asserting_matches::AssertingMatches;
+use super::new_searcher::NewSearcher;
 use super::test_index::TestIndex;
 use crate::analysis::mock_analyzer::MockAnalyzer;
+use crate::index::index_writer_config::{
+    new_index_writer_config, new_log_merge_policy, Draws, LiveMergePolicy, PolicyKind,
+};
+use crate::index::random_index_writer::RandomIndexWriter;
+use crate::util::lucene_test_case;
+use crate::util::lucene_test_case::{new_field, FieldTypes, FieldValue};
 
 /// `FIELD_WITH_OFFSETS`.
 pub const FIELD_WITH_OFFSETS: &str = "field_offsets";
@@ -78,6 +87,7 @@ fn text_type(options: IndexOptions) -> FieldType {
 /// `setUp`'s index over [`Self::new`]'s documents.
 pub struct MatchesTestBase {
     index: TestIndex,
+    searcher: NewSearcher,
 }
 
 impl MatchesTestBase {
@@ -87,37 +97,82 @@ impl MatchesTestBase {
     /// # Panics
     /// When building a field fails.
     pub fn new(random: &mut JavaRandom, documents: &[&str]) -> Self {
+        let (nightly, multiplier) = lucene_test_case::knobs();
         let analyzer = Arc::new(MockAnalyzer::new(random).build());
         let offsets = text_type(IndexOptions::DocsAndFreqsAndPositionsAndOffsets);
         let docs_only = text_type(IndexOptions::Docs);
         let freqs = text_type(IndexOptions::DocsAndFreqs);
-        let field = |name: &str, text: &str, ft: &FieldType| {
-            Field::from_string(name, text, ft.clone()).expect("an indexed field")
-        };
-        let docs: Vec<Document> = documents
-            .iter()
-            .zip(0i64..)
-            .map(|(text, i)| {
-                let mut doc = Document::new();
-                doc.add(field(FIELD_WITH_OFFSETS, text, &offsets));
-                doc.add(field(FIELD_NO_OFFSETS, text, &TextField::type_stored()));
-                doc.add(field(FIELD_DOCS_ONLY, text, &docs_only));
-                doc.add(field(FIELD_FREQS, text, &freqs));
-                doc.add(IntPoint::new(FIELD_POINT, &[10]).expect("a point"));
-                doc.add(NumericDocValuesField::new(FIELD_POINT, 10));
-                doc.add(NumericDocValuesField::new("id", i));
-                doc.add(field("id", &i.to_string(), &TextField::type_stored()));
-                doc
-            })
-            .collect();
+        let stored = TextField::type_stored();
+        let index = TestIndex::write_random_with(
+            random,
+            |random, dir, env| {
+                let mut config = new_index_writer_config(&mut Draws::new(random), analyzer, 0);
+                let log = new_log_merge_policy(&mut Draws::new(random));
+                config.merge_policy = LiveMergePolicy::new(PolicyKind::Log(log));
+                RandomIndexWriter::with_config(random, dir, config, env)
+            },
+            &[],
+            |w, random| {
+                let mut fields = FieldTypes::default();
+                for (text, i) in documents.iter().zip(0i64..) {
+                    let mut doc = Document::new();
+                    doc.add(new_field(
+                        random,
+                        &mut fields,
+                        FIELD_WITH_OFFSETS,
+                        FieldValue::String(text),
+                        &offsets,
+                    ));
+                    doc.add(new_field(
+                        random,
+                        &mut fields,
+                        FIELD_NO_OFFSETS,
+                        FieldValue::String(text),
+                        &stored,
+                    ));
+                    doc.add(new_field(
+                        random,
+                        &mut fields,
+                        FIELD_DOCS_ONLY,
+                        FieldValue::String(text),
+                        &docs_only,
+                    ));
+                    doc.add(new_field(
+                        random,
+                        &mut fields,
+                        FIELD_FREQS,
+                        FieldValue::String(text),
+                        &freqs,
+                    ));
+                    doc.add(IntPoint::new(FIELD_POINT, &[10]).expect("a point"));
+                    doc.add(NumericDocValuesField::new(FIELD_POINT, 10));
+                    doc.add(NumericDocValuesField::new("id", i));
+                    doc.add(new_field(
+                        random,
+                        &mut fields,
+                        "id",
+                        FieldValue::String(&i.to_string()),
+                        &stored,
+                    ));
+                    w.add_document(&doc).expect("addDocument");
+                }
+                w.force_merge(1).expect("forceMerge");
+            },
+        );
         Self {
-            index: TestIndex::build(analyzer, &[docs], &[], &[]),
+            index,
+            searcher: NewSearcher::draw(random, nightly, multiplier),
         }
     }
 
-    /// Runs `f` over the index's searcher.
+    /// Runs `f` over the index's `newSearcher`, under its asserting
+    /// wrappers.
     pub fn with_searcher<R>(&self, f: impl FnOnce(&IndexSearcher<'_, '_>) -> R) -> R {
-        self.index.with_searcher(f)
+        self.index.with_segments(|segments, norms| {
+            let mut s = IndexSearcher::new(segments, norms).expect("searcher");
+            self.searcher.configure(&mut s);
+            self.searcher.searching(|| f(&s))
+        })
     }
 
     /// `q`'s matches of `doc`, wrapped as `AssertingWeight.matches` wraps

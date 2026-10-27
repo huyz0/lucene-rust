@@ -197,3 +197,31 @@ fn test_queries_compare_by_their_wrapped_query() {
     assert!(format!("{e:?}").contains("Broken(Advance)"));
     assert!(format!("{a:?}").contains("RandomApproximation"));
 }
+
+/// `wrapUnderlyingReader`: the searcher's segments first, then the empty,
+/// fully deleted readers of each edge; the same hits, and every check
+/// still passing over it.
+#[test]
+fn wrapped_reader_pads_with_deleted_leaves() {
+    let index = index(5);
+    let q = query(term());
+    index.with_searcher(|s| {
+        let hits = s.search(&q, 10).expect("search").score_docs;
+        for (edge, padding) in [(-1, 16), (0, 12), (1, 0)] {
+            query_utils::with_wrapped_underlying_reader(s, edge, |w| {
+                let extra = query_utils::wrap_padding(edge).len();
+                assert_eq!(w.segments().len(), s.segments().len() + extra);
+                assert_eq!(w.max_doc(), s.max_doc() + padding);
+                let wrapped = w.search(&q, 10)?.score_docs;
+                assert_eq!(
+                    wrapped.iter().map(|h| (h.doc, h.score)).collect::<Vec<_>>(),
+                    hits.iter().map(|h| (h.doc, h.score)).collect::<Vec<_>>()
+                );
+                assert_eq!(w.count(&q)?, 5);
+                Ok(())
+            })
+            .expect("wrapped searcher");
+        }
+        query_utils::check_with_searcher(&mut JavaRandom::new(7), &q, s).expect("checks pass");
+    });
+}

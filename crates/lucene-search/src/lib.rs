@@ -3317,6 +3317,57 @@ impl GlobalStats {
             .map(|(_, s)| *s)
     }
 
+    /// Replaces every gathered term's statistics with what `source` says
+    /// (`IndexSearcher.termStatistics` / `collectionStatistics` overridden):
+    /// each field's collection statistics once, from the reader's, then
+    /// each term the reader holds (a term absent here has no
+    /// `TermStatistics` to ask about, as in Java, and matches nothing here).
+    ///
+    /// # Errors
+    /// Whatever `source` reports.
+    pub(crate) fn override_statistics(
+        &mut self,
+        source: &dyn index_searcher::StatisticsSource,
+    ) -> Result<()> {
+        for (field, terms) in &mut self.terms {
+            let Some(local) = terms.values().map(|e| e.stats).find(|s| s.max_doc > 0) else {
+                continue;
+            };
+            let local = similarities::CollectionStatistics {
+                max_doc: local.max_doc,
+                doc_count: local.doc_count,
+                sum_total_term_freq: local.sum_total_term_freq,
+                sum_doc_freq: local.sum_doc_freq,
+            };
+            let collection = source
+                .collection_statistics(field, Some(local))?
+                .unwrap_or(local);
+            for (term, entry) in terms.iter_mut() {
+                let stats = &mut entry.stats;
+                if stats.doc_freq <= 0 {
+                    continue;
+                }
+                let t = source.term_statistics(
+                    field,
+                    term,
+                    similarities::TermStatistics {
+                        doc_freq: stats.doc_freq,
+                        total_term_freq: stats.total_term_freq,
+                    },
+                )?;
+                *stats = CollectionStats {
+                    doc_freq: t.doc_freq,
+                    doc_count: collection.doc_count,
+                    total_term_freq: t.total_term_freq,
+                    max_doc: collection.max_doc,
+                    sum_total_term_freq: collection.sum_total_term_freq,
+                    sum_doc_freq: collection.sum_doc_freq,
+                };
+            }
+        }
+        Ok(())
+    }
+
     /// One term's reader-wide statistics, or `None` when the caller did not
     /// gather them (in which case the segment's own are already right).
     pub fn term(&self, field: &str, term: &[u8]) -> Option<&CollectionStats> {
@@ -3555,12 +3606,16 @@ pub fn count_boolean_query_segment(
                 None => leaf.max_doc,
             };
             if let Some(n) = weight_count::count_field_exists_leaf(&leaf) {
+                #[cfg(any(test, feature = "asserting"))]
+                exec::asserting::check_count(n, seg.max_doc, seg.live_docs);
                 return Ok(u64::try_from(n).unwrap_or(0));
             }
         }
         (Some(Clause::Term(t)), _) => {
             if let Some(n) = weight_count::count_term_query_shortcut(seg.fields, seg.live_docs, t)?
             {
+                #[cfg(any(test, feature = "asserting"))]
+                exec::asserting::check_count(n, seg.max_doc, seg.live_docs);
                 return Ok(u64::try_from(n).unwrap_or(0));
             }
         }

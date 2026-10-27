@@ -107,6 +107,16 @@ fn an_nrt_reader_sees_uncommitted_documents_and_deletes() {
     assert_eq!(r1.num_docs(), 8);
     assert!(r2.segment_infos.version > r1.segment_infos.version);
 
+    // A delete matching nothing is a buffered change, but changes no
+    // segment: the version stays, so there is nothing to reopen.
+    w.lock()
+        .unwrap()
+        .delete_documents_by_term(&[Term::new("id", "absent")])
+        .unwrap();
+    assert!(!r2.is_current_nrt(&w).unwrap());
+    assert!(r2.open_if_changed_nrt(&w).unwrap().is_none());
+    assert!(r2.is_current_nrt(&w).unwrap());
+
     w.lock().unwrap().add_document(doc("n")).unwrap();
     let r3 = DirectoryReader::open_nrt(&w, false, true).unwrap();
     assert_eq!(r3.num_docs(), 7);

@@ -6,9 +6,7 @@
 //! since a collector of this port is handed `(doc, score)` and cannot call
 //! back into the searcher it is collecting for. What is checked, and in
 //! which order, is Java's. A failed check panics with Java's message.
-//! `wrapUnderlyingReader` (the same hits through a `MultiReader` with empty
-//! sub-readers around the searcher's) has no counterpart: this port has no
-//! `MultiReader` over arbitrary readers yet, so those passes are skipped.
+//! `wrapUnderlyingReader` is [`query_utils::with_wrapped_underlying_reader`].
 
 use std::collections::BTreeSet;
 
@@ -103,13 +101,22 @@ pub fn check_hit_collector(
         .map(|(d, _)| d)
         .collect();
     assert_eq!(correct, actual, "Simple: {query:?}");
+    for edge in -1..2 {
+        let actual: BTreeSet<i32> =
+            query_utils::with_wrapped_underlying_reader(searcher, edge, |s| {
+                all_hits(s, query, ScoreMode::CompleteNoScores)
+            })?
+            .into_iter()
+            .map(|(d, _)| d)
+            .collect();
+        assert_eq!(correct, actual, "Wrap Reader {edge}: {query:?}");
+    }
     Ok(())
 }
 
 /// `checkHits`: the top `max(10, 2 * results.len())` hits are exactly
-/// `results` (as a set), then [`query_utils::check_with_searcher`]. Java
-/// passes `rarely(random)` as `wrap`; the draw is kept so the random stream
-/// stays Java's, though the wrapped passes are not run.
+/// `results` (as a set), then [`query_utils::check_with_searcher_wrap`]
+/// with `rarely(random)` as `wrap`.
 ///
 /// # Errors
 /// Whatever searching reports.
@@ -124,9 +131,8 @@ pub fn check_hits(
     let correct: BTreeSet<i32> = results.iter().copied().collect();
     let actual: BTreeSet<i32> = hits.iter().map(|h| h.doc).collect();
     assert_eq!(correct, actual, "{query:?}");
-    let _wrap =
-        lucene_test_case::rarely(random, false, lucene_test_case::default_multiplier(false));
-    query_utils::check_with_searcher(random, query, searcher)
+    let wrap = lucene_test_case::rarely(random, false, lucene_test_case::default_multiplier(false));
+    query_utils::check_with_searcher_wrap(random, query, searcher, wrap)
 }
 
 /// `checkDocIds`: `hits` are `results`, in order.

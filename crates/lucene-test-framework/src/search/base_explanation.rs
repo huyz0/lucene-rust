@@ -3,10 +3,13 @@
 //! `QueryUtils` check, explanations and matches included -- and asserts
 //! exactly which documents it hits.
 //!
-//! Java writes the documents through `RandomIndexWriter` (a random codec,
-//! flush and merge schedule); here they are one segment under a plain
-//! `IndexWriter`. `newTextField`/`newStringField`'s random field types are
-//! not drawn.
+//! The documents are written as Java writes them: `newStringField` and
+//! `newTextField`'s random field types ([`FieldTypes`]), through a
+//! `RandomIndexWriter` under a random configuration with a random
+//! `LogMergePolicy` ([`TestIndex::write_random_with`]), searched through a
+//! `newSearcher` ([`NewSearcher`]). Differs: the codec is the default (the
+//! writer's), and the searcher's similarity is the default or the one
+//! [`BaseExplanation::with_similarity`] sets, not the class environment's.
 
 use std::sync::Arc;
 
@@ -17,8 +20,15 @@ use lucene_search::similarities::Similarity;
 use lucene_util::java_random::JavaRandom;
 
 use super::check_hits;
+use super::new_searcher::NewSearcher;
 use super::test_index::TestIndex;
 use crate::analysis::mock_analyzer::MockAnalyzer;
+use crate::index::index_writer_config::{
+    new_index_writer_config, new_log_merge_policy, Draws, LiveMergePolicy, PolicyKind,
+};
+use crate::index::random_index_writer::RandomIndexWriter;
+use crate::util::lucene_test_case;
+use crate::util::lucene_test_case::{new_string_field, new_text_field, FieldTypes, FieldValue};
 
 /// `KEY`: each document's number, as a string field and sorted doc values.
 pub const KEY: &str = "KEY";
@@ -35,7 +45,43 @@ pub const DOC_FIELDS: [&str; 4] = [
     "w1 w3 xx w2 yy w3 zz",
 ];
 
-/// `createDoc(index)`.
+/// `createDoc(index)`, its fields of `newStringField`/`newTextField`'s
+/// random types.
+pub fn create_random_doc(
+    fields: &mut FieldTypes,
+    random: &mut JavaRandom,
+    index: usize,
+) -> Document {
+    let mut doc = Document::new();
+    doc.add(new_string_field(
+        random,
+        fields,
+        KEY,
+        FieldValue::String(&index.to_string()),
+        Store::No,
+    ));
+    doc.add(SortedDocValuesField::new(
+        KEY,
+        index.to_string().into_bytes(),
+    ));
+    doc.add(new_text_field(
+        random,
+        fields,
+        FIELD,
+        DOC_FIELDS[index],
+        Store::No,
+    ));
+    doc.add(new_text_field(
+        random,
+        fields,
+        ALTFIELD,
+        DOC_FIELDS[index],
+        Store::No,
+    ));
+    doc
+}
+
+/// `createDoc(index)` with the plain field types (no random upgrade).
 #[must_use]
 pub fn create_doc(index: usize) -> Document {
     let mut doc = Document::new();
@@ -52,6 +98,7 @@ pub fn create_doc(index: usize) -> Document {
 /// `beforeClassTestExplanations`'s index, and the test case's helpers.
 pub struct BaseExplanation {
     index: TestIndex,
+    searcher: NewSearcher,
     similarity: Option<Box<dyn Similarity>>,
 }
 
@@ -75,13 +122,33 @@ fn never_match() -> Clause {
 
 impl BaseExplanation {
     /// `beforeClassTestExplanations`: the documents analysed by a
-    /// `MockAnalyzer(random)`.
+    /// `MockAnalyzer(random)`, written through a `RandomIndexWriter`, and
+    /// the `newSearcher` over them, everything drawn from `random` (the
+    /// environment's `TEST_NIGHTLY` and multiplier).
     #[must_use]
     pub fn new(random: &mut JavaRandom) -> Self {
+        let (nightly, multiplier) = lucene_test_case::knobs();
         let analyzer = Arc::new(MockAnalyzer::new(random).build());
-        let docs: Vec<Document> = (0..DOC_FIELDS.len()).map(create_doc).collect();
+        let index = TestIndex::write_random_with(
+            random,
+            |random, dir, env| {
+                let mut config = new_index_writer_config(&mut Draws::new(random), analyzer, 0);
+                let log = new_log_merge_policy(&mut Draws::new(random));
+                config.merge_policy = LiveMergePolicy::new(PolicyKind::Log(log));
+                RandomIndexWriter::with_config(random, dir, config, env)
+            },
+            &[FIELD, ALTFIELD],
+            |w, random| {
+                let mut fields = FieldTypes::default();
+                for i in 0..DOC_FIELDS.len() {
+                    let doc = create_random_doc(&mut fields, random, i);
+                    w.add_document(&doc).expect("addDocument");
+                }
+            },
+        );
         Self {
-            index: TestIndex::build(analyzer, &[docs], &[], &[FIELD, ALTFIELD]),
+            index,
+            searcher: NewSearcher::draw(random, nightly, multiplier),
             similarity: None,
         }
     }
@@ -93,10 +160,17 @@ impl BaseExplanation {
         self
     }
 
-    /// Runs `f` over the index's searcher.
+    /// Runs `f` over the index's `newSearcher`, under its asserting
+    /// wrappers.
     pub fn with_searcher<R>(&self, f: impl FnOnce(&IndexSearcher<'_, '_>) -> R) -> R {
-        self.index
-            .with_searcher_similarity(self.similarity.as_deref(), f)
+        self.index.with_segments(|segments, norms| {
+            let mut s = IndexSearcher::new(segments, norms).expect("searcher");
+            if let Some(sim) = self.similarity.as_deref() {
+                s.set_similarity(sim);
+            }
+            self.searcher.configure(&mut s);
+            self.searcher.searching(|| f(&s))
+        })
     }
 
     /// `qtest(q, expDocNrs)`: half the time `q` is first wrapped as a
