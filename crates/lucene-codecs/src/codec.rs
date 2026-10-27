@@ -80,6 +80,16 @@ pub trait Lucene104Codec: Send + Sync + fmt::Debug {
     fn knn_vectors_format_for_field(&self, _field: &str) -> KnnVectorsFormat {
         KnnVectorsFormat::default()
     }
+
+    /// Whether `knnVectorsFormat()` is the format itself rather than a
+    /// `PerFieldKnnVectorsFormat` (`ConfigurableMCodec`): every field's
+    /// vectors go to one set of files with no codec suffix (`_0.vec`), in the
+    /// format [`Self::knn_vectors_format_for_field`] answers (the same for
+    /// every field), and no field records the per-field attributes. The
+    /// postings twin is [`Lucene104PostingsFormat::direct`].
+    fn knn_vectors_format_is_direct(&self) -> bool {
+        false
+    }
 }
 
 /// `new Lucene104Codec()`: every field on the default formats.
@@ -115,6 +125,7 @@ mod tests {
         assert!(c.points_writer_factory().is_none());
         assert!(c.postings_writer_factory().is_none());
         assert!(c.term_vectors_writer_factory().is_none());
+        assert!(!c.knn_vectors_format_is_direct());
         assert_eq!(
             c.postings_format_for_field("f"),
             Lucene104PostingsFormat::default()

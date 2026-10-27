@@ -51,6 +51,14 @@ pub enum KnnVectorsFormat {
     /// `Lucene104ScalarQuantizedVectorsFormat(encoding)`: the raw vectors and
     /// their codes, no graph (every search is exhaustive).
     ScalarQuantized { encoding: ScalarEncoding },
+    /// A format that wraps `format` without changing its files
+    /// (`AssertingKnnVectorsFormat`'s `Asserting`): fields record `name` and
+    /// the instance's files carry it (`_0_Asserting_0.vec`). Readers find
+    /// the files by their extensions, whatever the name.
+    Named {
+        name: &'static str,
+        format: &'static KnnVectorsFormat,
+    },
 }
 
 impl Default for KnnVectorsFormat {
@@ -114,10 +122,26 @@ impl KnnVectorsFormat {
         KnnVectorsFormat::ScalarQuantized { encoding }
     }
 
+    /// `format`'s files under a wrapping format's `name`
+    /// ([`KnnVectorsFormat::Named`]).
+    pub const fn named(name: &'static str, format: &'static KnnVectorsFormat) -> Self {
+        KnnVectorsFormat::Named { name, format }
+    }
+
+    /// The format whose files this one writes: itself, or a
+    /// [`KnnVectorsFormat::Named`] wrapper's delegate.
+    pub fn files_format(&self) -> &KnnVectorsFormat {
+        match self {
+            KnnVectorsFormat::Named { format, .. } => format.files_format(),
+            other => other,
+        }
+    }
+
     /// `KnnVectorsFormat.getName()`: what `PerFieldKnnVectorsFormat.format`
     /// records and the suffix numbering is per.
     pub fn name(&self) -> &'static str {
         match self {
+            KnnVectorsFormat::Named { name, .. } => name,
             KnnVectorsFormat::Hnsw { .. } => HNSW_NAME,
             KnnVectorsFormat::HnswScalarQuantized { .. } => scalar_quantized_vectors::HNSW_NAME,
             KnnVectorsFormat::ScalarQuantized { .. } => scalar_quantized_vectors::NAME,
@@ -127,7 +151,7 @@ impl KnnVectorsFormat {
     /// The graph parameters `(maxConn, beamWidth)`, `None` for a format
     /// without a graph.
     pub fn graph(&self) -> Option<(i32, i32)> {
-        match *self {
+        match *self.files_format() {
             KnnVectorsFormat::Hnsw {
                 max_conn,
                 beam_width,
@@ -137,18 +161,55 @@ impl KnnVectorsFormat {
                 beam_width,
                 ..
             } => Some((max_conn, beam_width)),
-            KnnVectorsFormat::ScalarQuantized { .. } => None,
+            KnnVectorsFormat::ScalarQuantized { .. } | KnnVectorsFormat::Named { .. } => None,
         }
     }
 
     /// The quantization, `None` for plain HNSW.
     pub fn quantization(&self) -> Option<ScalarEncoding> {
-        match *self {
-            KnnVectorsFormat::Hnsw { .. } => None,
+        match *self.files_format() {
+            KnnVectorsFormat::Hnsw { .. } | KnnVectorsFormat::Named { .. } => None,
             KnnVectorsFormat::HnswScalarQuantized { encoding, .. }
             | KnnVectorsFormat::ScalarQuantized { encoding } => Some(encoding),
         }
     }
+}
+
+static WRAPPERS: std::sync::RwLock<Vec<KnnVectorsFormat>> = std::sync::RwLock::new(Vec::new());
+
+/// `KnnVectorsFormat`'s SPI for a [`KnnVectorsFormat::Named`] wrapper: makes
+/// a segment's `<name>_<n>` instances readable as their delegate's files. A
+/// later registration under a name replaces the earlier one; a format that
+/// is not a wrapper is ignored (the built-in formats need none).
+pub fn register_wrapper(format: KnnVectorsFormat) {
+    if !matches!(format, KnnVectorsFormat::Named { .. }) {
+        return;
+    }
+    let mut wrappers = WRAPPERS.write().unwrap_or_else(|e| e.into_inner());
+    wrappers.retain(|w| w.name() != format.name());
+    wrappers.push(format);
+}
+
+/// `KnnVectorsFormat.forName(name)` among this release's formats: the three
+/// built-in ones (a default instance of each; a reader takes the settings
+/// from the files) and every registered wrapper ([`register_wrapper`]).
+pub fn for_name(name: &str) -> Option<KnnVectorsFormat> {
+    let builtin = [
+        KnnVectorsFormat::default(),
+        KnnVectorsFormat::HnswScalarQuantized {
+            encoding: ScalarEncoding::UnsignedByte,
+            max_conn: hnsw::DEFAULT_MAX_CONN,
+            beam_width: hnsw::DEFAULT_BEAM_WIDTH,
+        },
+        KnnVectorsFormat::ScalarQuantized {
+            encoding: ScalarEncoding::UnsignedByte,
+        },
+    ];
+    if let Some(format) = builtin.into_iter().find(|f| f.name() == name) {
+        return Some(format);
+    }
+    let wrappers = WRAPPERS.read().unwrap_or_else(|e| e.into_inner());
+    wrappers.iter().copied().find(|w| w.name() == name)
 }
 
 /// One format instance's share of a segment: its format, its suffix number
@@ -159,14 +220,37 @@ pub struct Group {
     pub format: KnnVectorsFormat,
     pub suffix: u32,
     pub field_numbers: Vec<i32>,
+    /// The codec's `knnVectorsFormat()` itself, not a per-field instance
+    /// ([`direct_group`]): no codec suffix, no per-field attributes.
+    pub direct: bool,
 }
 
 impl Group {
     /// `PerFieldKnnVectorsFormat.getSuffix(formatName, suffix)`: the codec
-    /// suffix this instance's files and headers carry.
+    /// suffix this instance's files and headers carry; none for a
+    /// [`direct`](Self::direct) group.
     pub fn codec_suffix(&self) -> String {
-        format!("{}_{}", self.format.name(), self.suffix)
+        if self.direct {
+            String::new()
+        } else {
+            format!("{}_{}", self.format.name(), self.suffix)
+        }
     }
+}
+
+/// A codec whose `knnVectorsFormat()` is `format` itself: every one of
+/// `fields` (`(number, name)`) in one unsuffixed group, none when there are
+/// no fields.
+pub fn direct_group(fields: &[(i32, &str)], format: KnnVectorsFormat) -> Vec<Group> {
+    if fields.is_empty() {
+        return Vec::new();
+    }
+    vec![Group {
+        format,
+        suffix: 0,
+        field_numbers: fields.iter().map(|&(number, _)| number).collect(),
+        direct: true,
+    }]
 }
 
 /// `FieldsWriter.getInstance` over `fields` (`(number, name)`) in the order
@@ -191,6 +275,7 @@ pub fn group_fields(
                     format,
                     suffix: u32::try_from(same_name).unwrap_or(u32::MAX),
                     field_numbers: vec![number],
+                    direct: false,
                 });
             }
         }
@@ -229,6 +314,11 @@ mod tests {
             ]
         );
         assert!(group_fields(&[], &route).is_empty());
+        let direct = direct_group(&[(0, "b"), (2, "c")], small);
+        assert_eq!(direct.len(), 1);
+        assert_eq!(direct[0].codec_suffix(), "");
+        assert_eq!(direct[0].field_numbers, vec![0, 2]);
+        assert!(direct_group(&[], small).is_empty());
     }
 
     #[test]

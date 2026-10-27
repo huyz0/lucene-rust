@@ -293,7 +293,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::index_writer::DOC_VALUES_FORMAT_NAME;
 use crate::segment_info::{self, IndexSortField, LuceneVersion, SegmentInfo, SortKeyComparator};
 use crate::segment_infos::SegmentCommitInfo;
 use lucene_codecs::blocktree::{self, FieldTerms};
@@ -1490,9 +1489,9 @@ fn concat_doc_order(per_source_live_ids: &[Vec<i32>]) -> Vec<(usize, i32)> {
 fn describe_written_files(
     merged_fields: &mut [FieldInfo],
     postings_suffixes: &[(i32, &'static str, u32)],
-    doc_values_suffixes: &[(i32, u32)],
+    doc_values_suffixes: &[(i32, &'static str, u32)],
     wrote_term_vectors: bool,
-    vector_fields: &[(i32, &'static str, u32)],
+    vector_fields: &[(i32, Option<(&'static str, u32)>)],
     _points_field_numbers: &[i32],
 ) {
     for f in merged_fields.iter_mut() {
@@ -1516,10 +1515,12 @@ fn describe_written_files(
                 suffix.to_string(),
             ));
         }
-        if let Some((_, suffix)) = doc_values_suffixes.iter().find(|(n, _)| *n == f.number) {
+        if let Some((_, format_name, suffix)) =
+            doc_values_suffixes.iter().find(|(n, _, _)| *n == f.number)
+        {
             f.attributes.push((
                 "PerFieldDocValuesFormat.format".to_string(),
-                DOC_VALUES_FORMAT_NAME.to_string(),
+                format_name.to_string(),
             ));
             f.attributes.push((
                 "PerFieldDocValuesFormat.suffix".to_string(),
@@ -1539,15 +1540,17 @@ fn describe_written_files(
         if !wrote_term_vectors {
             f.store_term_vectors = false;
         }
-        if let Some((_, format, suffix)) = vector_fields.iter().find(|(n, _, _)| *n == f.number) {
-            f.attributes.push((
-                per_field_knn_vectors::PER_FIELD_FORMAT_KEY.to_string(),
-                format.to_string(),
-            ));
-            f.attributes.push((
-                per_field_knn_vectors::PER_FIELD_SUFFIX_KEY.to_string(),
-                suffix.to_string(),
-            ));
+        if let Some((_, routing)) = vector_fields.iter().find(|(n, _)| *n == f.number) {
+            if let Some((format, suffix)) = routing {
+                f.attributes.push((
+                    per_field_knn_vectors::PER_FIELD_FORMAT_KEY.to_string(),
+                    format.to_string(),
+                ));
+                f.attributes.push((
+                    per_field_knn_vectors::PER_FIELD_SUFFIX_KEY.to_string(),
+                    suffix.to_string(),
+                ));
+            }
         } else {
             // The vectors twin of the doc-values rule above, for a field the
             // vectors merge wrote no entry for. That is every vector field
@@ -2489,9 +2492,13 @@ fn merge_segments_mapped_inner(
         let format_for = |name: &str| options.doc_values_format_for(name);
         per_field_doc_values::group_fields(&fields, &format_for)
     };
-    let doc_values_suffixes: Vec<(i32, u32)> = doc_values_groups
+    let doc_values_suffixes: Vec<(i32, &'static str, u32)> = doc_values_groups
         .iter()
-        .flat_map(|g| g.field_numbers.iter().map(move |&n| (n, g.suffix)))
+        .flat_map(|g| {
+            g.field_numbers
+                .iter()
+                .map(move |&n| (n, g.format.name(), g.suffix))
+        })
         .collect();
     if !installed_segment_writer {
         write_stored(&mut files)?;
@@ -2562,10 +2569,8 @@ fn merge_segments_mapped_inner(
                     files.extend(group.written_files.iter().cloned());
                     continue;
                 }
-                let exts = group.files();
-                let suffix = group.codec_suffix();
-                for (ext, bytes) in exts {
-                    let name = format!("{merged_segment_name}_{suffix}.{ext}");
+                for (ext, bytes) in group.files() {
+                    let name = group.file_name(merged_segment_name, ext);
                     write_file(dir, &name, bytes)?;
                     files.push(name);
                 }
@@ -2598,7 +2603,7 @@ fn merge_segments_mapped_inner(
             })
             .map(|f| f.number)
             .collect();
-        let codec_suffix = per_field_doc_values::codec_suffix(group.suffix);
+        let codec_suffix = group.codec_suffix();
         let (dvm, dvd, dvs) = doc_values::write_fields_with_format(
             &dense_fields,
             &skip_indexes,
@@ -2711,7 +2716,7 @@ fn merge_segments_mapped_inner(
         }
     }
 
-    let vector_field_numbers: Vec<(i32, &'static str, u32)> = merged_vectors
+    let vector_field_numbers: Vec<(i32, Option<(&'static str, u32)>)> = merged_vectors
         .as_ref()
         .map(|v| v.written.clone())
         .unwrap_or_default();
@@ -2738,7 +2743,7 @@ fn merge_segments_mapped_inner(
     if let Some(vector_files) = merged_vectors {
         for (suffix, group_files) in &vector_files.groups {
             for (ext, bytes) in group_files {
-                let name = format!("{merged_segment_name}_{suffix}.{ext}");
+                let name = crate::index_writer::segment_file_name(merged_segment_name, suffix, ext);
                 write_file(dir, &name, bytes)?;
                 files.push(name);
             }
@@ -4109,6 +4114,14 @@ impl SortedNumericRemap {
 }
 
 impl MergeOptions {
+    /// Whether the codec's `knnVectorsFormat()` is a format itself rather
+    /// than per-field routing.
+    fn knn_vectors_direct(&self) -> bool {
+        self.codec
+            .as_ref()
+            .is_some_and(|c| c.knn_vectors_format_is_direct())
+    }
+
     /// The KNN vectors format `field` is routed to.
     fn knn_vectors_format_for(&self, field: &str) -> per_field_knn_vectors::KnnVectorsFormat {
         self.knn_vectors_formats
@@ -4178,8 +4191,9 @@ struct MergedVectorFiles {
     /// One per `PerFieldKnnVectorsFormat` instance: its codec suffix and its
     /// files by extension.
     groups: Vec<(String, GroupFiles)>,
-    /// Every field written: `(number, format name, suffix number)`.
-    written: Vec<(i32, &'static str, u32)>,
+    /// Every field written: `(number, (format name, suffix number))`, no
+    /// pair for a direct `knnVectorsFormat()` (no per-field attributes).
+    written: Vec<(i32, Option<(&'static str, u32)>)>,
 }
 
 /// Merges KNN vectors across `sources` -- the port of `SegmentMerger`'s
@@ -4281,7 +4295,12 @@ fn merge_vectors(
         .map(|(f, _)| (f.number, f.name.as_str()))
         .collect();
     let format_for = |name: &str| options.knn_vectors_format_for(name);
-    let groups = per_field_knn_vectors::group_fields(&names, &format_for);
+    let groups = match names.first() {
+        Some(&(_, first)) if options.knn_vectors_direct() => {
+            per_field_knn_vectors::direct_group(&names, format_for(first))
+        }
+        _ => per_field_knn_vectors::group_fields(&names, &format_for),
+    };
     let mut out = MergedVectorFiles {
         groups: Vec::with_capacity(groups.len()),
         written: Vec::new(),
@@ -4303,7 +4322,10 @@ fn merge_vectors(
             &suffix,
         )?;
         for n in &group.field_numbers {
-            out.written.push((*n, group.format.name(), group.suffix));
+            out.written.push((
+                *n,
+                (!group.direct).then_some((group.format.name(), group.suffix)),
+            ));
         }
         out.groups.push((suffix, files));
     }
@@ -5438,8 +5460,8 @@ mod tests {
     #![allow(clippy::arithmetic_side_effects)]
 
     use super::*;
-    use crate::index_writer::POSTINGS_FORMAT_NAME;
     use crate::index_writer::{per_field_codec_suffix, per_field_segment, PER_FIELD_SUFFIX};
+    use crate::index_writer::{DOC_VALUES_FORMAT_NAME, POSTINGS_FORMAT_NAME};
     use crate::segment_writer;
     use lucene_codecs::field_infos::{
         DocValuesSkipIndexType, DocValuesType, IndexOptions, VectorEncoding,
@@ -16141,7 +16163,14 @@ mod tests {
     fn a_merged_doc_values_field_gets_its_per_field_format_attributes() {
         let mut fields = vec![field("score", 0)];
         fields[0].doc_values_type = DocValuesType::Numeric;
-        describe_written_files(&mut fields, &[], &[(0, 0)], false, &[], &[]);
+        describe_written_files(
+            &mut fields,
+            &[],
+            &[(0, DOC_VALUES_FORMAT_NAME, 0)],
+            false,
+            &[],
+            &[],
+        );
         assert!(fields[0].attributes.contains(&(
             "PerFieldDocValuesFormat.format".to_string(),
             DOC_VALUES_FORMAT_NAME.to_string()

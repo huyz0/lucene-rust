@@ -764,12 +764,14 @@ impl SegmentReader {
         let mut vectors = Vec::new();
         let mut graph_meta = Vec::new();
         for suffix in segment_codec_suffixes(&si.files, compound.as_ref(), &segment_name, ".vemf") {
+            // No suffix: a codec whose `knnVectorsFormat()` is the format
+            // itself, not `PerFieldKnnVectorsFormat` (`ConfigurableMCodec`).
             let open = |ext: &str| {
                 open_segment_file(
                     dir,
                     compound.as_ref(),
                     &si.files,
-                    &format!("_{suffix}{ext}"),
+                    &suffixed_ext(&suffix, ext),
                 )
             };
             if let (Some(data), Some(meta)) = (open(".vec")?, open(".vemf")?) {
@@ -1823,6 +1825,16 @@ fn codec_suffix_of(file_name: &str, segment_name: &str, ext: &str) -> String {
         .and_then(|s| s.strip_suffix(ext))
         .unwrap_or_default()
         .to_string()
+}
+
+/// The extension [`open_segment_file`] finds a `suffix` group's `ext` file by:
+/// `_<suffix><ext>`, or `ext` alone for a format written without a suffix.
+fn suffixed_ext(suffix: &str, ext: &str) -> String {
+    if suffix.is_empty() {
+        ext.to_string()
+    } else {
+        format!("_{suffix}{ext}")
+    }
 }
 
 /// The codec suffixes of every file of the segment ending in `ext`, sorted:
