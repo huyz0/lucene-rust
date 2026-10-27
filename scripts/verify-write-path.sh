@@ -333,6 +333,12 @@ CASES=(
   "lucene-test-framework|write_test_framework_postings_fixture STUniformSplitRot13|tf-st-uniform-split-rot13|VerifyPerFieldFormats|STUniformSplitRot13"
   "lucene-test-framework|write_test_framework_postings_fixture TestBloomFilteredLucenePostings|tf-bloom|VerifyPerFieldFormats|TestBloomFilteredLucenePostings"
   "lucene-test-framework|write_test_framework_postings_fixture MockRandom|tf-mock-random|VerifyPerFieldFormats|MockRandom"
+  # The test framework's Lucene104 filter codecs installed in IndexWriter
+  # (M14): CheapBastard's direct postings and ConfigurableMCodec's direct
+  # HNSW vectors, unsuffixed and without per-field attributes. Lucene reads
+  # them through Codec.forName, appends a segment of its own, and leaves the
+  # index for filter_codecs_write_path::java_written_segments (below).
+  "lucene-test-framework|write_filter_codecs_fixture|filter-codecs|VerifyFilterCodecs"
   # PerFieldDocValuesFormat through IndexWriter (M7): the s_ fields routed to
   # Lucene90DocValuesFormat(16), two flushed segments and a force-merge, whose
   # instances are numbered in opposite orders. Lucene must read every value
@@ -472,6 +478,25 @@ for case in "${CASES[@]}"; do
   fi
 done
 
+# VerifyFilterCodecs leaves each filter codec's index with a Lucene-written
+# segment appended; this port must read it and merge it under the same codec.
+# Without the directory the test skips, so here a skip fails.
+if [ -z "$ONLY" ] || [ "$ONLY" = VerifyFilterCodecs ]; then
+  if [ ! -d "$WORK/filter-codecs" ]; then
+    echo "  FAIL (no index)     filter_codecs_write_path"; failed=$((failed+1))
+  elif FILTER_CODECS_INDEX_DIR="$WORK/filter-codecs" \
+      cargo test --quiet -p lucene-test-framework --test filter_codecs_write_path java_written_segments -- --nocapture 2>&1 \
+      | tee "$WORK/filter-codecs.log" | grep -q "skipped"; then
+    echo "  FAIL (skipped)      filter_codecs_write_path"; failed=$((failed+1))
+  elif grep -q "test result: ok" "$WORK/filter-codecs.log"; then
+    echo "  ok                  filter_codecs_write_path <- VerifyFilterCodecs"
+  else
+    echo "  FAIL                filter_codecs_write_path"
+    tail -15 "$WORK/filter-codecs.log" | sed 's/^/      /'
+    failed=$((failed+1))
+  fi
+fi
+
 # Not a file format but the same contract: the Rust writer's write.lock and
 # Lucene's NativeFSLockFactory must exclude each other on one directory, or a
 # Rust and a Java IndexWriter could both open an index. The Rust test drives
@@ -482,7 +507,7 @@ if [ -n "$ONLY" ]; then
   [ "$failed" -eq 0 ] && echo "verify-write-path: ok (--only $ONLY)" || echo "verify-write-path: FAILED (--only $ONLY)"
   exit "$failed"
 fi
-total=$(( ${#CASES[@]} + 2 ))
+total=$(( ${#CASES[@]} + 3 ))
 if LUCENE_CORE_JAR=$(lucene_resolve_jar lucene-core) \
     cargo test --quiet -p lucene-store --test native_lock_interop -- --nocapture 2>&1 \
     | tee "$WORK/native-lock.log" | grep -q "skipped"; then

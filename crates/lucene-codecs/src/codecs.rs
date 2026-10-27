@@ -22,6 +22,8 @@
 //! a `hasBlocks` byte. That is why [`CodecFormats::segment_info`] exists and
 //! is looked up by codec name, as `SegmentInfos.readCommit` does.
 
+use std::sync::RwLock;
+
 /// The `.si` format a codec reads its segment infos with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SegmentInfoFormat {
@@ -143,9 +145,43 @@ pub const CODECS: &[CodecFormats] = &[
     },
 ];
 
-/// `Codec.forName(name)`, restricted to the codecs this port reads.
+static REGISTERED: RwLock<Vec<&'static CodecFormats>> = RwLock::new(Vec::new());
+
+/// `Codec`'s SPI: makes a codec defined outside this crate (the test
+/// framework's `Asserting`, `CheapBastard`, ...) readable by its name. Such a
+/// codec composes formats this port reads already; `formats` says which
+/// generation, as the built-in entries do. A later registration under a name
+/// replaces the earlier one; a built-in name cannot be replaced.
+pub fn register(formats: CodecFormats) {
+    if CODECS.iter().any(|c| c.name == formats.name) {
+        return;
+    }
+    let mut registered = REGISTERED.write().unwrap_or_else(|e| e.into_inner());
+    if registered.iter().any(|c| **c == formats) {
+        return;
+    }
+    registered.retain(|c| c.name != formats.name);
+    registered.push(Box::leak(Box::new(formats)));
+}
+
+/// `formats` under another codec name: what a `FilterCodec` that keeps its
+/// delegate's file formats reads with.
+pub const fn renamed(formats: &CodecFormats, name: &'static str) -> CodecFormats {
+    CodecFormats { name, ..*formats }
+}
+
+/// `Codec.forName(name)`, restricted to the codecs this port reads: the
+/// built-in ones and those [`register`]ed.
 pub fn for_name(name: &str) -> Option<&'static CodecFormats> {
-    CODECS.iter().find(|c| c.name == name)
+    CODECS.iter().find(|c| c.name == name).or_else(|| {
+        let registered = REGISTERED.read().unwrap_or_else(|e| e.into_inner());
+        registered.iter().copied().find(|c| c.name == name)
+    })
+}
+
+/// The current codec, `Lucene104`.
+pub fn lucene104() -> &'static CodecFormats {
+    for_name("Lucene104").expect("the current codec")
 }
 
 #[cfg(test)]
@@ -159,6 +195,22 @@ mod tests {
         }
         assert_eq!(for_name("Lucene87"), None);
         assert_eq!(for_name("lucene104"), None);
+    }
+
+    #[test]
+    fn a_registered_codec_resolves_and_cannot_shadow_a_builtin() {
+        assert_eq!(for_name("RenamedForTest"), None);
+        register(renamed(lucene104(), "RenamedForTest"));
+        let c = for_name("RenamedForTest").unwrap();
+        assert_eq!(c.segment_info, SegmentInfoFormat::Lucene99);
+        assert_eq!(c.default_postings, "Lucene104");
+        register(renamed(for_name("Lucene95").unwrap(), "Lucene104"));
+        assert_eq!(lucene104().segment_info, SegmentInfoFormat::Lucene99);
+        register(renamed(for_name("Lucene95").unwrap(), "RenamedForTest"));
+        assert_eq!(
+            for_name("RenamedForTest").unwrap().segment_info,
+            SegmentInfoFormat::Lucene90
+        );
     }
 
     #[test]

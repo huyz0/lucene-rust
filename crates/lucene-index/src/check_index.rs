@@ -663,7 +663,7 @@ pub fn check_segment_in_commit(
     // `CheckIndex` gets the same sharing from one `CodecReader`.
     let postings_bytes = field_infos
         .as_ref()
-        .and_then(|_| open_postings_bytes(dir, &si));
+        .and_then(|_| open_postings_bytes(dir, &si, &commit.segment_name));
     let postings = match (&postings_bytes, &field_infos) {
         (Some(Ok(bytes)), Some(fi)) => match bytes.handles(commit, fi, &si) {
             Ok(h) => Some(h),
@@ -2003,9 +2003,10 @@ struct PostingsHandles<'a> {
 fn open_postings_bytes(
     dir: &dyn Directory,
     si: &SegmentInfo,
+    segment_name: &str,
 ) -> Option<Result<PostingsFileBytes, String>> {
     let find = |ext: &str| si.files.iter().find(|f| f.ends_with(ext));
-    let markers = group_markers(si);
+    let markers = group_markers(si, segment_name);
     if markers.len() > 1
         || markers.iter().any(|(_, suffix)| {
             per_field_postings::is_foreign_format(per_field_postings::format_of_suffix(suffix))
@@ -2024,7 +2025,7 @@ fn open_postings_bytes(
     // duplicated here rather than shared since that logic lives in a crate
     // this module has no dependency on (see this module's own top doc
     // comment on why it doesn't build on `lucene-search`).
-    let segment_suffix = suffix_of(&tim_name, ".tim");
+    let segment_suffix = suffix_of(&tim_name, segment_name, ".tim");
     let open = |name: &str| dir.open(name).map_err(|e| e.to_string());
     Some((|| {
         Ok(PostingsFileBytes {
@@ -2043,12 +2044,12 @@ fn open_postings_bytes(
 /// Every postings group's marker file -- its `.tmd`, or a foreign
 /// dictionary's first file (`per_field_postings::marker_extension`) -- with
 /// the group's codec suffix, in file order.
-fn group_markers(si: &SegmentInfo) -> Vec<(&String, String)> {
+fn group_markers<'a>(si: &'a SegmentInfo, segment_name: &str) -> Vec<(&'a String, String)> {
     si.files
         .iter()
         .filter_map(|f| {
             let (_, ext) = f.rsplit_once('.')?;
-            let suffix = suffix_of(f, &format!(".{ext}"));
+            let suffix = suffix_of(f, segment_name, &format!(".{ext}"));
             let format = per_field_postings::format_of_suffix(&suffix);
             (per_field_postings::marker_extension(format) == ext
                 && (ext == "tmd" || per_field_postings::is_foreign_format(format)))
@@ -2130,30 +2131,12 @@ fn open_postings_groups(
 }
 
 /// The postings codec suffix embedded in a sub-file's own name.
-fn suffix_of(file_name: &str, ext: &str) -> String {
-    let tim_name = file_name;
-    tim_name
-        .rsplit_once('_')
-        .map(|(_, tail)| tail)
-        .and_then(|tail| tail.strip_suffix(ext))
-        .map(|counter| {
-            // ARITH: `rsplit_once('_')` succeeded and `strip_suffix(".tim")`
-            // succeeded, so `tim_name` is exactly `<stem>_<counter>.tim` and
-            // `len - counter.len() - 4 - 1 == stem.len() >= 0`. `i` is a byte
-            // index `rfind` returned, so `i + 1 <= stem.len()`. Both are char
-            // boundaries because both split on ASCII `_`.
-            #[allow(clippy::arithmetic_side_effects)]
-            let stem = &tim_name[..tim_name.len() - counter.len() - ext.len() - 1];
-            // ARITH: `i` is a byte index `rfind` returned, so
-            // `i + 1 <= stem.len()`, and it is a char boundary because the
-            // split is on ASCII `_`.
-            #[allow(clippy::arithmetic_side_effects)]
-            match stem.rfind('_') {
-                Some(i) => format!("{}_{counter}", &stem[i + 1..]),
-                None => counter.to_string(),
-            }
-        })
-        .unwrap_or_default()
+fn suffix_of(file_name: &str, segment_name: &str, ext: &str) -> String {
+    let stem = file_name.strip_suffix(ext).unwrap_or(file_name);
+    // A loose file is `<segment>_<suffix>.ext` or `<segment>.ext`; a compound
+    // member drops the segment name (`_<suffix>.ext`, `.ext`).
+    let rest = stem.strip_prefix(segment_name).unwrap_or(stem);
+    rest.strip_prefix('_').unwrap_or(rest).to_string()
 }
 
 impl PostingsFileBytes {
@@ -5334,9 +5317,13 @@ fn check_current_vector_group(
     stats: &mut CheckStats,
     checks: &mut Vec<Check>,
 ) {
-    let name = |ext: &str| format!("{}_{suffix}.{ext}", commit.segment_name);
+    let name = |ext: &str| match suffix {
+        // A codec whose vectors format is not per-field (`ConfigurableMCodec`).
+        "" => format!("{}.{ext}", commit.segment_name),
+        _ => format!("{}_{suffix}.{ext}", commit.segment_name),
+    };
     let (vec_name, vemf_name) = (name("vec"), name("vemf"));
-    if suffix.is_empty() || !si.files.contains(&vec_name) || !si.files.contains(&vemf_name) {
+    if !si.files.contains(&vec_name) || !si.files.contains(&vemf_name) {
         checks.push(Check::fail(
             "vectors.open",
             format!(
@@ -9983,7 +9970,9 @@ mod tests {
         let dir = FsDirectory::open(&dst);
         let si = open_si(&dir, &commit).unwrap();
         let fnm = open_fnm(&dir, &commit, &si).unwrap();
-        let bytes = open_postings_bytes(&dir, &si).unwrap().unwrap();
+        let bytes = open_postings_bytes(&dir, &si, &commit.segment_name)
+            .unwrap()
+            .unwrap();
         let handles = bytes.handles(&commit, &fnm, &si).unwrap();
         let info = fnm.fields.iter().find(|f| f.number == 0).unwrap().clone();
 
@@ -11406,7 +11395,7 @@ mod tests {
         );
         assert!(
             matches!(
-                open_postings_bytes(&dir, &claiming_si(true, claiming_files())),
+                open_postings_bytes(&dir, &claiming_si(true, claiming_files()), "_0"),
                 Some(Err(_))
             ),
             "the postings walk must not skip a compound-flagged segment either"
