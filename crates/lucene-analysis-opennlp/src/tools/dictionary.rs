@@ -1,8 +1,9 @@
 //! OpenNLP's dictionaries: `Dictionary` (the abbreviations of the sentence
 //! detector and tokenizer, the POS tagger's n-gram dictionary) and
 //! `POSDictionary` (the tag dictionary), both read by
-//! `DictionaryEntryPersistor` from XML, and `DictionaryLemmatizer`'s
-//! tab-separated word list.
+//! `DictionaryEntryPersistor` from XML, `DictionaryLemmatizer`'s
+//! tab-separated word list, and the name finder's word clusters
+//! (`BrownCluster`, `WordClusterDictionary`).
 //!
 //! Differs: a case-insensitive `Dictionary` is a `HashSet` of
 //! `StringList`s hashed on their lower-cased text and compared with
@@ -132,6 +133,7 @@ pub struct Dictionary {
     /// The entries as first inserted, in insertion order.
     entries: Vec<Vec<JString>>,
     keys: HashSet<Vec<JString>>,
+    max_token_count: usize,
 }
 
 impl Dictionary {
@@ -161,8 +163,9 @@ impl Dictionary {
     }
 
     /// `put(StringList)`: a `HashSet` add (an equal entry is kept as first
-    /// added).
+    /// added); the longest entry's length counts every put.
     pub fn put(&mut self, tokens: Vec<JString>) {
+        self.max_token_count = self.max_token_count.max(tokens.len());
         if self.keys.insert(self.key(&tokens)) {
             self.entries.push(tokens);
         }
@@ -176,6 +179,11 @@ impl Dictionary {
     /// `asStringSet().contains(str)`: the one-token entry `s`.
     pub fn contains_string(&self, s: &[u16]) -> bool {
         self.contains(&[s.to_vec()])
+    }
+
+    /// `getMaxTokenCount()`: the most tokens of an entry.
+    pub fn max_token_count(&self) -> usize {
+        self.max_token_count
     }
 
     /// Every entry's first token (`asStringSet()`'s iteration; the
@@ -303,6 +311,64 @@ impl DictionaryLemmatizer {
     }
 }
 
+/// `BrownCluster` and `WordClusterDictionary`: each token's cluster, read
+/// from UTF-8 lines (malformed bytes replaced, as `InputStreamReader`).
+#[derive(Debug, Clone, Default)]
+pub struct ClusterDictionary {
+    map: HashMap<JString, JString>,
+}
+
+impl ClusterDictionary {
+    /// `new BrownCluster(InputStream)`: `cluster<TAB>token<TAB>frequency`
+    /// lines (a token seen more than five times kept) or `token<TAB>cluster`
+    /// ones; a bad frequency is `Integer.parseInt`'s
+    /// `NumberFormatException`.
+    pub fn read_brown(bytes: &[u8]) -> Result<ClusterDictionary, FactoryError> {
+        let content = String::from_utf8_lossy(bytes);
+        let mut map = HashMap::new();
+        for line in java_lines(&content) {
+            let parts = java_split(&text::units(line), 0x09);
+            match parts.as_slice() {
+                [cluster, token, freq] => {
+                    let freq = text::parse_int(freq).ok_or_else(|| {
+                        FactoryError::new(
+                            JavaException::NumberFormat,
+                            format!("For input string: \"{}\"", text::to_string(freq)),
+                        )
+                    })?;
+                    if freq > 5 {
+                        map.insert(token.clone(), cluster.clone());
+                    }
+                }
+                [token, cluster] => {
+                    map.insert(token.clone(), cluster.clone());
+                }
+                _ => {}
+            }
+        }
+        Ok(ClusterDictionary { map })
+    }
+
+    /// `new WordClusterDictionary(InputStream)`: `token cluster [...]`
+    /// lines of two or three space-separated fields.
+    pub fn read_word_clusters(bytes: &[u8]) -> Result<ClusterDictionary, FactoryError> {
+        let content = String::from_utf8_lossy(bytes);
+        let mut map = HashMap::new();
+        for line in java_lines(&content) {
+            let parts = java_split(&text::units(line), 0x20);
+            if parts.len() == 2 || parts.len() == 3 {
+                map.insert(parts[0].clone(), parts[1].clone());
+            }
+        }
+        Ok(ClusterDictionary { map })
+    }
+
+    /// `lookupToken(token)`.
+    pub fn lookup(&self, token: &[u16]) -> Option<&JString> {
+        self.map.get(token)
+    }
+}
+
 /// `BufferedReader.readLine()`'s lines: ended by `\n`, `\r` or `\r\n`, the
 /// last one only if non-empty.
 // ARITH: offsets within the string, from `find`.
@@ -418,5 +484,29 @@ mod tests {
         assert_eq!(java_split(&[], 9), vec![Vec::<u16>::new()]);
         assert_eq!(java_split(&u("\t\t"), 9), Vec::<JString>::new());
         assert_eq!(java_lines(""), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn cluster_dictionaries() {
+        let b = ClusterDictionary::read_brown(
+            b"0110\tdog\t6\n0111\tcat\t5\nhouse\t10\none\n\ta\tb\tc\td",
+        )
+        .unwrap();
+        assert_eq!(b.lookup(&u("dog")), Some(&u("0110")));
+        assert_eq!(b.lookup(&u("cat")), None);
+        assert_eq!(b.lookup(&u("house")), Some(&u("10")));
+        let e = ClusterDictionary::read_brown(b"1\tdog\tmany").unwrap_err();
+        assert_eq!(e.kind, JavaException::NumberFormat);
+        assert_eq!(e.message, "For input string: \"many\"");
+        let w = ClusterDictionary::read_word_clusters(b"dog c1\ncat c2 0.5\nx\na b c d\n").unwrap();
+        assert_eq!(w.lookup(&u("dog")), Some(&u("c1")));
+        assert_eq!(w.lookup(&u("cat")), Some(&u("c2")));
+        assert_eq!(w.lookup(&u("x")), None);
+        assert_eq!(w.lookup(&u("a")), None);
+        let mut d = Dictionary::default();
+        d.put(vec![u("a"), u("b"), u("c")]);
+        d.put(vec![u("a"), u("b"), u("c")]);
+        d.put(vec![u("x")]);
+        assert_eq!(d.max_token_count(), 3);
     }
 }

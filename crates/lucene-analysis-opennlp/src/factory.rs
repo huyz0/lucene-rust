@@ -1,7 +1,9 @@
 //! The module's SPI factories -- `OpenNLPTokenizerFactory` (`openNlp`),
 //! `OpenNLPPOSFilterFactory` (`openNlppos`), `OpenNLPChunkerFilterFactory`
 //! (`openNlpChunker`), `OpenNLPLemmatizerFilterFactory`
-//! (`openNlpLemmatizer`) -- and [`register_factories`].
+//! (`openNlpLemmatizer`) -- [`register_factories`], and
+//! [`ner_tagger_model`] (`OpenNLPOpsFactory.getNERTaggerModel`, which no
+//! factory calls).
 //!
 //! Each reads its models from the resource loader in `inform`; the
 //! taggers themselves are created in `create`, as Lucene's are (so a
@@ -33,6 +35,7 @@ use crate::tokenizer::open_nlp_tokenizer;
 use crate::tools::chunker::{Chunker, ChunkerModel};
 use crate::tools::dictionary::DictionaryLemmatizer;
 use crate::tools::lemmatizer::{Lemmatizer, LemmatizerModel};
+use crate::tools::namefind::NameFinderModel;
 use crate::tools::postag::{PosModel, PosTagger};
 use crate::tools::sentdetect::{SentenceDetector, SentenceModel};
 use crate::tools::tokenize::{Tokenizer, TokenizerModel};
@@ -270,6 +273,16 @@ impl TokenFilterFactory for OpenNlpLemmatizerFilterFactory {
         let op = LemmatizerOp::new(self.dictionary.clone(), lemmatizer);
         Ok(Box::new(OpenNlpLemmatizerFilter::new(input, op)))
     }
+}
+
+/// `OpenNLPOpsFactory.getNERTaggerModel(modelName, loader)` (read anew,
+/// not cached by name: see the module notes); its `IOException`s pass
+/// through. `NerTaggerOp::new` over it is `getNERTagger`.
+pub fn ner_tagger_model(
+    model_name: &str,
+    loader: &dyn ResourceLoader,
+) -> Result<NameFinderModel, FactoryError> {
+    NameFinderModel::load(&loader.open_resource(model_name)?)
 }
 
 /// Adds the module's factories to `lucene-analysis`' SPI registry (Java

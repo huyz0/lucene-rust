@@ -1,6 +1,7 @@
 //! `org.apache.lucene.analysis.opennlp.tools.NLPLemmatizerOp`: the
 //! dictionary lemmatizer first, the statistical one for the words the
-//! dictionary lacks (or alone), a word without a lemma kept as it is.
+//! dictionary lacks (or alone), a word without a lemma kept as it is; and
+//! `NLPNERTaggerOp`, a `NameFinderME` whose adaptive data `reset` clears.
 //! (The other `NLP*Op`s are the tools themselves here: Lucene's wrap one
 //! OpenNLP call each.)
 
@@ -10,6 +11,7 @@ use lucene_analysis::AnalysisError;
 
 use crate::tools::dictionary::DictionaryLemmatizer;
 use crate::tools::lemmatizer::Lemmatizer;
+use crate::tools::namefind::{NameFinder, NameFinderModel, NameSpan};
 use crate::tools::text::{self, JString};
 
 /// `NLPLemmatizerOp`: at least one of the two lemmatizers.
@@ -74,5 +76,29 @@ impl LemmatizerOp {
             };
         }
         Ok(lemmas)
+    }
+}
+
+/// `NLPNERTaggerOp`: named entities of tokenized sentences.
+pub struct NerTaggerOp {
+    finder: NameFinder,
+}
+
+impl NerTaggerOp {
+    /// `new NLPNERTaggerOp(model)`.
+    pub fn new(model: &NameFinderModel) -> Result<Self, AnalysisError> {
+        Ok(NerTaggerOp {
+            finder: NameFinder::new(model)?,
+        })
+    }
+
+    /// `getNames(words)`: the names of one sentence.
+    pub fn get_names(&mut self, words: &[JString]) -> Result<Vec<NameSpan>, AnalysisError> {
+        self.finder.find(words)
+    }
+
+    /// `reset()`: the adaptive data cleared, as between documents.
+    pub fn reset(&mut self) {
+        self.finder.clear_adaptive_data();
     }
 }

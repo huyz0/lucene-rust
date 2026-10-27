@@ -1,6 +1,6 @@
 # Lucene 10.5.0 lucene-analysis-opennlp: every top-level class of the jar, and what became of it.
 # Checked by scripts/check-port-inventory.py --module analysis-opennlp (see its docstring for the statuses).
-# M12 T12.5 (OpenNLP model loading and inference, over a port of the OpenNLP 2.5.3 runtime reading its model packages); docs/milestones/m12-language-analysis.md.
+# M12 T12.5 (OpenNLP model loading and inference, over a port of the OpenNLP 2.5.3 runtime reading its model packages); docs/milestones/m12-language-analysis.md. NLPNERTaggerOp: M14.
 # class	status	detail
 analysis/opennlp/OpenNLPChunkerFilter	ported	crates/lucene-analysis-opennlp/src/filters.rs::OpenNlpChunkerFilter
 analysis/opennlp/OpenNLPChunkerFilterFactory	ported	crates/lucene-analysis-opennlp/src/factory.rs::OpenNlpChunkerFilterFactory
@@ -14,7 +14,7 @@ analysis/opennlp/OpenNLPTokenizerFactory	ported	crates/lucene-analysis-opennlp/s
 analysis/opennlp/SentenceAttributeExtractor	ported	crates/lucene-analysis-opennlp/src/filters.rs::SentenceAttributeExtractor
 analysis/opennlp/tools/NLPChunkerOp	ported	crates/lucene-analysis-opennlp/src/tools/chunker.rs::Chunker
 analysis/opennlp/tools/NLPLemmatizerOp	ported	crates/lucene-analysis-opennlp/src/ops.rs::LemmatizerOp
-analysis/opennlp/tools/NLPNERTaggerOp	deferred:M14	NameFinderME over a TokenNameFinderModel (its own feature generators: dictionaries, word clusters and embeddings, adaptive data); no Lucene filter or factory calls it
+analysis/opennlp/tools/NLPNERTaggerOp	ported	crates/lucene-analysis-opennlp/src/ops.rs::NerTaggerOp
 analysis/opennlp/tools/NLPPOSTaggerOp	ported	crates/lucene-analysis-opennlp/src/tools/postag.rs::PosTagger
 analysis/opennlp/tools/NLPSentenceDetectorOp	ported	crates/lucene-analysis-opennlp/src/tools/sentdetect.rs::SentenceDetector
 analysis/opennlp/tools/NLPTokenizerOp	ported	crates/lucene-analysis-opennlp/src/tools/tokenize.rs::Tokenizer
