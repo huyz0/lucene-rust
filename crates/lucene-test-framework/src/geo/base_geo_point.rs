@@ -21,19 +21,15 @@
 //! ledger).
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
 
-use lucene_analysis::Analyzer;
-use lucene_index::document::{Document, NumericDocValuesField, Store, StringField};
-use lucene_search::collector::ScoreMode;
+use lucene_index::document::{Document, Store, StringField};
 use lucene_search::query::Clause;
 use lucene_util::geo::{GeoEncodingUtils, GeoUtils, LatLonGeometry, Polygon, Rectangle};
 use lucene_util::java_random::JavaRandom;
 use lucene_util::sloppy_math::haversin_meters;
 
 use super::geo_test_util::{self, Rect};
-use crate::search::base_explanation::top_level;
-use crate::search::check_hits;
+use super::point_index;
 use crate::search::test_index::TestIndex;
 use crate::util::{lucene_test_case, test_util};
 
@@ -319,7 +315,7 @@ impl<'a, C: GeoPointCase> BaseGeoPoint<'a, C> {
             docs.push(doc);
         }
         let _force_merge = self.random.next_boolean();
-        let index = Self::build(docs, &[]);
+        let index = point_index::build(docs, &[]);
         let iters = self.at_least(25);
         for _ in 0..iters {
             let rect = geo_test_util::next_box(self.random);
@@ -375,56 +371,18 @@ impl<'a, C: GeoPointCase> BaseGeoPoint<'a, C> {
             .expect("a valid polygon")
     }
 
-    /// One segment of `docs`, `deletes` by `id` term in a last commit.
-    fn build(docs: Vec<Document>, deletes: &[(&str, &str)]) -> TestIndex {
-        TestIndex::build(Arc::new(Analyzer::standard(None)), &[docs], deletes, &[])
-    }
-
-    /// `indexPoints`: one document per id (the `id` field as a term and a
-    /// doc value), deletes drawn as Java draws them.
+    /// `indexPoints`.
     fn index_points(&mut self, lats: &[f64], lons: &[f64]) -> (TestIndex, BTreeSet<usize>) {
-        let mut deleted = BTreeSet::new();
-        let mut written = Vec::with_capacity(lats.len());
-        for id in 0..lats.len() {
-            let mut doc = Document::new();
-            doc.add(StringField::new("id", id.to_string(), Store::No));
-            doc.add(NumericDocValuesField::new(
-                "id",
-                i64::try_from(id).expect("small"),
-            ));
+        let case = &self.case;
+        point_index::index_points(self.random, lats.len(), |id, doc| {
             if !lats[id].is_nan() {
-                self.add_point(FIELD_NAME, &mut doc, lats[id], lons[id]);
+                case.add_point_to_doc(FIELD_NAME, doc, lats[id], lons[id])
+                    .expect("a valid point");
             }
-            written.push(doc);
-            if id > 0 && self.random.next_int_bounded(100) == 42 {
-                deleted.insert(self.next_index(id));
-            }
-        }
-        let _force_merge = self.random.next_boolean();
-        let ids: Vec<String> = deleted.iter().map(ToString::to_string).collect();
-        let deletes: Vec<(&str, &str)> = ids.iter().map(|id| ("id", id.as_str())).collect();
-        (Self::build(written, &deletes), deleted)
-    }
-
-    /// The doc ids `q` matches.
-    fn hits(index: &TestIndex, q: Clause) -> BTreeSet<usize> {
-        let q = top_level(q);
-        index.with_searcher(|s| {
-            check_hits::all_hits(s, &q, ScoreMode::CompleteNoScores)
-                .expect("search")
-                .into_iter()
-                .map(|(doc, _)| usize::try_from(doc).expect("a doc id"))
-                .collect()
         })
     }
 
-    /// `searcher.count(q)` over one segment of `docs`.
-    fn count(docs: Vec<Document>, q: Clause) -> usize {
-        Self::hits(&Self::build(docs, &[]), q).len()
-    }
-
-    /// Checks one query's hits against `expected(id)` for every live,
-    /// non-missing id; one segment, so doc id == id.
+    /// [`point_index::check`] with a `NaN` latitude as missing.
     fn check(
         index: &TestIndex,
         deleted: &BTreeSet<usize>,
@@ -433,16 +391,14 @@ impl<'a, C: GeoPointCase> BaseGeoPoint<'a, C> {
         what: &str,
         expected: impl Fn(usize) -> bool,
     ) {
-        let hits = Self::hits(index, q);
-        let wrong: Vec<usize> = (0..lats.len())
-            .filter(|&id| {
-                let want = !deleted.contains(&id) && !lats[id].is_nan() && expected(id);
-                hits.contains(&id) != want
-            })
-            .collect();
-        assert!(
-            wrong.is_empty(),
-            "some hits were wrong: ids {wrong:?} for {what}"
+        point_index::check(
+            index,
+            deleted,
+            lats.len(),
+            q,
+            what,
+            |id| lats[id].is_nan(),
+            expected,
         );
     }
 
@@ -574,8 +530,8 @@ impl<'a, C: GeoPointCase> BaseGeoPoint<'a, C> {
                 docs.push(doc);
             }
         }
-        let index = Self::build(docs, &[]);
-        let count = |r: Rect| Self::hits(&index, self.rect_query(FIELD_NAME, &r)).len();
+        let index = point_index::build(docs, &[]);
+        let count = |r: Rect| point_index::hits(&index, self.rect_query(FIELD_NAME, &r)).len();
         assert_eq!(count(rect), 8, "exact edges of {rect:?}");
         #[allow(clippy::float_cmp)]
         {
@@ -648,7 +604,7 @@ impl<'a, C: GeoPointCase> BaseGeoPoint<'a, C> {
             docs.push(doc);
             points.push((lat, lon));
         }
-        let index = Self::build(docs, &[]);
+        let index = point_index::build(docs, &[]);
         for _ in 0..num_queries {
             let lat = geo_test_util::next_latitude(self.random);
             let lon = geo_test_util::next_longitude(self.random);
@@ -656,7 +612,7 @@ impl<'a, C: GeoPointCase> BaseGeoPoint<'a, C> {
             let expected: BTreeSet<usize> = (0..num_docs)
                 .filter(|&d| haversin_meters(lat, lon, points[d].0, points[d].1) <= radius)
                 .collect();
-            let actual = Self::hits(&index, self.distance_query("field", lat, lon, radius));
+            let actual = point_index::hits(&index, self.distance_query("field", lat, lon, radius));
             assert_eq!(actual, expected, "center: ({lat},{lon}), radius={radius}");
         }
     }
@@ -723,18 +679,7 @@ impl<'a, C: GeoPointCase> BaseGeoPoint<'a, C> {
             ),
         ];
         for (what, q, want) in cases {
-            assert_eq!(Self::count(self.one_point_doc(), q), want, "{what}");
-        }
-    }
-
-    /// Asserts `result` failed with a message containing every one of
-    /// `parts`.
-    fn assert_rejected<T>(result: Result<T, String>, parts: &[&str]) {
-        let Err(message) = result else {
-            panic!("expected an IllegalArgumentException containing {parts:?}");
-        };
-        for part in parts {
-            assert!(message.contains(part), "{message:?} lacks {part:?}");
+            assert_eq!(point_index::count(self.one_point_doc(), q), want, "{what}");
         }
     }
 
@@ -765,7 +710,7 @@ impl<'a, C: GeoPointCase> BaseGeoPoint<'a, C> {
             (50.0, f64::NEG_INFINITY, lon),
         ] {
             let result = self.case.add_point_to_doc("foo", &mut doc, la, lo);
-            Self::assert_rejected(result, &[want]);
+            point_index::assert_rejected(result, &[want]);
         }
     }
 
@@ -778,14 +723,14 @@ impl<'a, C: GeoPointCase> BaseGeoPoint<'a, C> {
             min_lon: 179.0,
             max_lon: 181.0,
         };
-        Self::assert_rejected(self.case.new_rect_query("field", &bad_box), &[]);
-        Self::assert_rejected(
+        point_index::assert_rejected(self.case.new_rect_query("field", &bad_box), &[]);
+        point_index::assert_rejected(
             self.case
                 .new_distance_query("field", 92.0, 181.0, 120_000.0),
             &[],
         );
         for radius in [-1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            Self::assert_rejected(
+            point_index::assert_rejected(
                 self.case.new_distance_query("field", 18.0, 19.0, radius),
                 &["radiusMeters", "invalid"],
             );
@@ -827,15 +772,8 @@ impl<'a, C: GeoPointCase> BaseGeoPoint<'a, C> {
             }
             docs.push(doc);
         }
-        // Java's loop bound draws again every iteration.
-        let mut i = 0;
-        while i < self.random.next_int_bounded(10) {
-            let mut doc = Document::new();
-            doc.add(StringField::new("string", i.to_string(), Store::No));
-            docs.push(doc);
-            i += 1;
-        }
-        Self::count(docs, query)
+        point_index::small_set_string_docs(self.random, &mut docs);
+        point_index::count(docs, query)
     }
 
     /// The `testSmallSet*` family: boxes (one across the dateline, one
@@ -989,6 +927,6 @@ impl<'a, C: GeoPointCase> BaseGeoPoint<'a, C> {
         )
         .expect("a valid polygon");
         let q = self.polygon_query(FIELD_NAME, &[polygon]);
-        assert_eq!(Self::count(vec![doc], q), 1);
+        assert_eq!(point_index::count(vec![doc], q), 1);
     }
 }
