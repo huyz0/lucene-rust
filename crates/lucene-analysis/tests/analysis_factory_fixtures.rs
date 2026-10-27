@@ -120,5 +120,8 @@ fn the_registered_names_are_lucenes() {
     assert_eq!(set(spi::available_char_filters()), lucene_names("C"));
     let mut filters = set(spi::available_token_filters());
     filters.insert(SEARCH_ONLY.to_string());
+    // lucene-suggest's `SuggestStopFilterFactory`, which `lucene-search`
+    // registers (the generator has lucene-suggest on its classpath)
+    filters.insert("suggestStop".to_string());
     assert_eq!(filters, lucene_names("F"));
 }

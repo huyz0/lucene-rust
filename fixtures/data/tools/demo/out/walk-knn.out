@@ -1,12 +1,12 @@
 Indexing to directory '{tmp}/knn'...
-adding {fixture}/docs/a.txt
-adding {fixture}/docs/b.txt
-adding {fixture}/docs/c.txt
-adding {fixture}/docs/d.txt
-adding {fixture}/docs/e.txt
 adding {fixture}/docs/f.txt
-adding {fixture}/docs/g.txt
+adding {fixture}/docs/e.txt
+adding {fixture}/docs/b.txt
 adding {fixture}/docs/h.txt
 adding {fixture}/docs/sub/i.txt
 adding {fixture}/docs/sub/j.txt
+adding {fixture}/docs/g.txt
+adding {fixture}/docs/d.txt
+adding {fixture}/docs/c.txt
+adding {fixture}/docs/a.txt
 Indexed 10 documents in {ms} ms

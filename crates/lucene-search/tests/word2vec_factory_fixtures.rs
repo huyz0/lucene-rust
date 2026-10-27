@@ -68,6 +68,8 @@ fn word2vec_configurations_match_lucene() {
 #[test]
 fn the_registry_then_holds_lucenes_names() {
     register_factories().unwrap();
+    // lucene-suggest's `suggestStop`, on the generator's classpath too
+    lucene_search::suggest::suggest_stop_factory::register_factories().unwrap();
     let names = |kind: &str| -> BTreeSet<String> {
         std::fs::read_to_string(format!("{}names.txt", data_dir("analysis_factories")))
             .unwrap()

@@ -71,7 +71,7 @@ public class GenQueryParserSurround {
     type.setStored(false);
     type.freeze();
     try (FSDirectory dir = FSDirectory.open(indexDir);
-        IndexWriter w = new IndexWriter(dir, new IndexWriterConfig(new StandardAnalyzer()).setMergePolicy(NoMergePolicy.INSTANCE))) {
+        IndexWriter w = new IndexWriter(dir, new IndexWriterConfig(new StandardAnalyzer()).setOpenMode(IndexWriterConfig.OpenMode.CREATE).setMergePolicy(NoMergePolicy.INSTANCE))) {
       for (int i = 0; i < BODIES.length; i++) {
         Document d = new Document();
         d.add(new Field("body", BODIES[i], type));
