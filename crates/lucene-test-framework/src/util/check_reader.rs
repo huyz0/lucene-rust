@@ -84,7 +84,9 @@ fn max_doc_bits(reader: &dyn LeafReader) -> FixedBitSet {
 }
 
 fn is_live(reader: &dyn LeafReader, doc: i32) -> bool {
-    reader.live_docs().is_none_or(|bits| bits.get(idx(doc)))
+    reader
+        .live_docs()
+        .is_none_or(|bits| idx(doc) < bits.len() && bits.get(idx(doc)))
 }
 
 /// `BytesRef.toString()`: `[61 62]`.
@@ -355,6 +357,7 @@ fn check_term_postings(
             break;
         }
         if doc >= 0 && doc < max_doc {
+            // FBS: `visited` holds `maxDoc` bits and `doc` was just bounded by it.
             visited.set(idx(doc));
         }
         let freq = postings.freq();
@@ -576,7 +579,7 @@ fn check_norms_vs_postings(reader: &dyn LeafReader, field: &str, visited: &Fixed
         if !is_live(reader, doc) {
             continue;
         }
-        let seen = visited.get(idx(doc));
+        let seen = idx(doc) < visited.len() && visited.get(idx(doc));
         if norms.long_value() != 0 {
             actual = actual.saturating_add(1);
             if !seen {
@@ -595,7 +598,10 @@ fn check_norms_vs_postings(reader: &dyn LeafReader, field: &str, visited: &Fixed
     }
     let mut expected = 0usize;
     visited.for_each_set_bit(|doc| {
-        if reader.live_docs().is_none_or(|bits| bits.get(doc)) {
+        if reader
+            .live_docs()
+            .is_none_or(|bits| doc < bits.len() && bits.get(doc))
+        {
             expected = expected.saturating_add(1);
         }
     });
@@ -937,6 +943,7 @@ fn check_sorted(reader: &dyn LeafReader, f: &str) -> Check {
             return err(format!("ord out of bounds: {ord}"));
         }
         max_ord2 = max_ord2.max(ord);
+        // FBS: `seen` holds `valueCount` bits and `ord` was checked to be in `0..=maxOrd`.
         seen.set(idx(ord));
         if !io!(b.advance_exact(doc)) {
             return err(format!("advanceExact did not find matching doc ID: {doc}"));
@@ -1026,6 +1033,7 @@ fn check_sorted_set(reader: &dyn LeafReader, f: &str) -> Check {
             }
             last_ord = ord;
             max_ord2 = max_ord2.max(ord);
+            // FBS: `seen` holds `valueCount` bits and `ord` was checked to be in `0..=maxOrd`.
             seen.set(usize::try_from(ord).unwrap_or(0));
         }
     }
@@ -1164,6 +1172,7 @@ impl IntersectVisitor for VerifyPoints<'_> {
             ));
             return;
         }
+        // FBS: `docs` holds `max_doc` bits and `doc_id` was just bounded by it.
         self.docs.set(idx(doc_id));
         let want = self.num_dims.saturating_mul(self.bytes_per_dim);
         if packed.len() != want {
