@@ -349,6 +349,20 @@ impl TermsEnum for MemoryTermsEnum<'_> {
         self.upto = Some(u);
         Ok(())
     }
+    /// An `OrdTermState` of `termUpto` (`-1` before the first term).
+    fn term_state(&mut self) -> Result<crate::reader::TermState> {
+        let ord = self
+            .upto
+            .map_or(-1, |u| i64::try_from(u).unwrap_or(i64::MAX));
+        Ok(crate::reader::TermState::ord(ord))
+    }
+    /// `seekExact(state.ord)`.
+    fn seek_exact_state(&mut self, _term: &[u8], state: &crate::reader::TermState) -> Result<()> {
+        let ord = state
+            .as_ord()
+            .ok_or_else(|| Error::IllegalArgument("not an OrdTermState".into()))?;
+        self.seek_exact_ord(ord)
+    }
 }
 
 // ---------------------------------------------------------------------------

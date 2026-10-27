@@ -499,7 +499,7 @@ index/StoredFields	ported	crates/lucene-search/src/directory_reader.rs::stored_d
 index/StoredFieldsConsumer	ported	crates/lucene-index/src/segment_writer.rs::write_stored_only_segment_files
 index/TemporalMergePolicy	ported	crates/lucene-index/src/merge_policy/temporal.rs::TemporalMergePolicy
 index/Term	ported	crates/lucene-index/src/buffered_updates.rs::Term
-index/TermState	ported	crates/lucene-codecs/src/blocktree.rs::SeekedTerm
+index/TermState	ported	crates/lucene-search/src/reader/mod.rs::TermState
 index/TermStates	ported	crates/lucene-search/src/multi_segment.rs::TermStates
 index/TermVectors	ported	crates/lucene-codecs/src/term_vectors.rs::TermVectorsReader
 index/TermVectorsConsumer	ported	crates/lucene-index/src/index_writer.rs::build_term_vectors_output

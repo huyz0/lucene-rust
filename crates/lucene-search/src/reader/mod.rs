@@ -385,6 +385,61 @@ impl ImpactsEnum for SlowImpactsEnum {
     }
 }
 
+/// `BytesRef.toString()`: `[61 62]`.
+pub(crate) fn bytes_ref_string(bytes: &[u8]) -> String {
+    let hex: Vec<String> = bytes.iter().map(|b| format!("{b:x}")).collect();
+    format!("[{}]", hex.join(" "))
+}
+
+/// `TermState`: what [`TermsEnum::term_state`] saves of the term an enum is
+/// on, for [`TermsEnum::seek_exact_state`] to come back to it without
+/// another dictionary seek. Only meaningful for the field that produced it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TermState(TermStateKind);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TermStateKind {
+    /// `BaseTermsEnum.termState()`'s empty state: a seek through it seeks
+    /// by the term.
+    Empty,
+    /// A block-tree term's statistics and postings pointers
+    /// (`BlockTermState`).
+    BlockTree(lucene_codecs::blocktree::SeekedTerm),
+    /// An ordinal-addressed dictionary's `OrdTermState`.
+    Ord(i64),
+}
+
+impl TermState {
+    /// The empty state `BaseTermsEnum.termState()` returns.
+    pub fn empty() -> Self {
+        TermState(TermStateKind::Empty)
+    }
+
+    /// `OrdTermState`: the term at ordinal `ord`.
+    pub fn ord(ord: i64) -> Self {
+        TermState(TermStateKind::Ord(ord))
+    }
+
+    /// The ordinal of an `OrdTermState`.
+    pub fn as_ord(&self) -> Option<i64> {
+        match self.0 {
+            TermStateKind::Ord(ord) => Some(ord),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn block_tree(term: lucene_codecs::blocktree::SeekedTerm) -> Self {
+        TermState(TermStateKind::BlockTree(term))
+    }
+
+    pub(crate) fn as_block_tree(&self) -> Option<&lucene_codecs::blocktree::SeekedTerm> {
+        match &self.0 {
+            TermStateKind::BlockTree(term) => Some(term),
+            _ => None,
+        }
+    }
+}
+
 /// `TermsEnum`.
 pub trait TermsEnum {
     /// `next()`: the next term, `None` past the last.
@@ -419,6 +474,24 @@ pub trait TermsEnum {
         Err(Error::Unsupported(
             "this TermsEnum does not support seekExact(ord)".into(),
         ))
+    }
+    /// `termState()` of the current term. `BaseTermsEnum`'s default is an
+    /// empty state, which [`Self::seek_exact_state`] seeks by the term.
+    fn term_state(&mut self) -> Result<TermState> {
+        Ok(TermState::empty())
+    }
+    /// `seekExact(term, state)`: position on `term`, whose `state` an enum
+    /// of the same field saved, without seeking the dictionary when the
+    /// implementation can. `BaseTermsEnum`'s default seeks by the term,
+    /// refusing one that does not exist.
+    fn seek_exact_state(&mut self, term: &[u8], _state: &TermState) -> Result<()> {
+        if !self.try_seek_exact(term)? {
+            return Err(Error::IllegalArgument(format!(
+                "term={} does not exist",
+                bytes_ref_string(term)
+            )));
+        }
+        Ok(())
     }
 }
 

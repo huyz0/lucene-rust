@@ -17,10 +17,11 @@
 //!   segment's own (set when one occurrence carries a non-empty payload), as
 //!   explicit documents define it; the checks key off what the suite meant
 //!   to index (`currentFieldInfos`), which agrees whenever a payload exists.
-//! - **What has no Rust counterpart is not exercised**: `TermState`
-//!   (`Option::TermState` saves nothing, so no seek goes through one) and
-//!   `PostingsEnum` reuse (`Option::ReuseEnums` draws but every call returns
-//!   a fresh enum). `intoBitSet` (`Option::IntoBitSet`) is
+//! - **`PostingsEnum` reuse has no Rust counterpart**: `postings` takes no
+//!   enum to reuse and hands back an owned one, so `Option::ReuseEnums`
+//!   draws but every call returns a fresh enum. `TermState`
+//!   (`Option::TermState`) is [`TermsEnum::term_state`] and
+//!   [`TermsEnum::seek_exact_state`]. `intoBitSet` (`Option::IntoBitSet`) is
 //!   [`DocIdSetIterator::fill_bit_set`](lucene_search::reader::DocIdSetIterator::fill_bit_set).
 //! - The segment reader's `TermsEnum.impacts` is a `SlowImpactsEnum`
 //!   (`(Integer.MAX_VALUE, 1)` over every document), so the impacts checks
@@ -39,8 +40,8 @@ use lucene_codecs::postings::Impact;
 use lucene_index::index_writer::{ExplicitDocument, InvertedField, InvertedTerm};
 use lucene_search::directory_reader::{DirectoryReader, SegmentReader};
 use lucene_search::reader::{
-    DocAndFloatFeatureBuffer, ImpactsEnum, LeafReader, PostingsEnum, PostingsFlags, TermsEnum,
-    NO_MORE_DOCS,
+    DocAndFloatFeatureBuffer, ImpactsEnum, LeafReader, PostingsEnum, PostingsFlags, TermState,
+    TermsEnum, NO_MORE_DOCS,
 };
 use lucene_search::Error as SearchError;
 use lucene_store::Directory;
@@ -114,7 +115,7 @@ pub enum TestOption {
     ReuseEnums,
     /// Sometimes pass non-null live docs (unused in Java too).
     LiveDocs,
-    /// Sometimes seek through a saved `TermState` (no `TermState` here).
+    /// Sometimes seek through a saved `TermState`.
     TermState,
     /// Sometimes don't fully consume a term's documents.
     PartialDocConsume,
@@ -698,29 +699,46 @@ impl RandomPostingsTester {
             options,
             always_test_max,
         };
+        // Test random terms/fields:
+        let mut term_states: Vec<TermState> = Vec::new();
+        let mut term_state_terms: Vec<&FieldAndTerm> = Vec::new();
         let mut supports_ords = true;
         let mut all_terms = self.all_terms.clone();
         shuffle(r, &mut all_terms);
-        for fat in &all_terms {
-            // No `TermState` in this port: every seek is by term or by ord.
-            let use_term_ord = supports_ords && r.next_int_bounded(5) == 1;
+        let mut upto = 0;
+        while upto < all_terms.len() {
+            let use_term_state = !term_states.is_empty() && r.next_int_bounded(5) == 1;
+            let use_term_ord = supports_ords && !use_term_state && r.next_int_bounded(5) == 1;
+            let (fat, term_state) = if use_term_state {
+                // Seek by previous saved TermState
+                let idx = r.next_int_bounded(term_states.len() as i32) as usize;
+                (term_state_terms[idx], Some(term_states[idx].clone()))
+            } else {
+                // Seek by random field+term:
+                upto += 1;
+                (&all_terms[upto - 1], None)
+            };
             let terms = leaf
                 .terms(&fat.field)
                 .expect("terms")
                 .expect("the field has terms");
             let mut te = terms.iterator().expect("iterator");
-            if use_term_ord {
-                // Try seek by ord sometimes:
-                match te.seek_exact_ord(fat.ord) {
-                    Ok(()) => {}
-                    Err(SearchError::Unsupported(_)) => {
-                        supports_ords = false;
-                        assert!(te.try_seek_exact(&fat.term).expect("seekExact"));
+            match &term_state {
+                Some(state) => te
+                    .seek_exact_state(&fat.term, state)
+                    .expect("seekExact(term, state)"),
+                None if use_term_ord => {
+                    // Try seek by ord sometimes:
+                    match te.seek_exact_ord(fat.ord) {
+                        Ok(()) => {}
+                        Err(SearchError::Unsupported(_)) => {
+                            supports_ords = false;
+                            assert!(te.try_seek_exact(&fat.term).expect("seekExact"));
+                        }
+                        Err(e) => panic!("seekExact(ord): {e}"),
                     }
-                    Err(e) => panic!("seekExact(ord): {e}"),
                 }
-            } else {
-                assert!(te.try_seek_exact(&fat.term).expect("seekExact"));
+                None => assert!(te.try_seek_exact(&fat.term).expect("seekExact")),
             }
             // check we really seeked to the right place
             assert_eq!(te.term(), Some(fat.term.as_slice()));
@@ -740,7 +758,22 @@ impl RandomPostingsTester {
                 // PostingsFormat supports ords
                 assert_eq!(fat.ord, term_ord);
             }
+            let saves = options.contains(TestOption::TermState) && !use_term_state;
+            let mut saved_term_state = false;
+            if saves && r.next_int_bounded(5) == 1 {
+                // Save away this TermState:
+                term_states.push(te.term_state().expect("termState"));
+                term_state_terms.push(fat);
+                saved_term_state = true;
+            }
             self.verify_enum(r, &fat.field, &fat.term, te.as_mut(), &check);
+            // Sometimes save term state after pulling the enum:
+            if saves && !saved_term_state && r.next_int_bounded(5) == 1 {
+                // Save away this TermState:
+                // (Java then sets `useTermState`, which nothing reads.)
+                term_states.push(te.term_state().expect("termState"));
+                term_state_terms.push(fat);
+            }
             // 10% of the time make sure you can pull another enum from the
             // same term:
             if always_test_max || r.next_int_bounded(10) == 7 {
