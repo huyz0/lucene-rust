@@ -6,12 +6,15 @@ import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.SegmentInfos;
 import org.apache.lucene.index.StoredFields;
 import org.apache.lucene.index.Term;
+import org.apache.lucene.index.Terms;
+import org.apache.lucene.index.TermsEnum;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.PhraseQuery;
 import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 import org.apache.lucene.util.Bits;
+import org.apache.lucene.util.BytesRef;
 
 import java.nio.file.Path;
 import java.util.function.IntPredicate;
@@ -24,19 +27,27 @@ import java.util.function.IntPredicate;
  * suffix 1, Lucene's {@code PerFieldPostingsFormat.FieldsReader} finds every
  * field's terms in its own group's files, the delete removed exactly the
  * {@code t3} documents, and {@code CheckIndex} is clean.
+ *
+ * <p>With {@code BlockTreeOrds} as the second argument, {@code key}/{@code tag}
+ * are expected under {@code BlockTreeOrds} suffix 0, and their terms enums
+ * must number the terms 0, 1, 2, ... and seek back to each by its ord. With
+ * {@code UniformSplit} or {@code SharedTermsUniformSplit}, they are expected
+ * under that format's suffix 0.
  */
 public class VerifyPerFieldFormats {
   static final int TOTAL = 1200;
+  static String routed = "Lucene104";
 
   public static void main(String[] args) throws Exception {
+    if (args.length > 1) routed = args[1];
     verify(Path.of(args[0]).resolve("flushed"), 3);
     verify(Path.of(args[0]).resolve("merged"), 1);
     System.out.println("VerifyPerFieldFormats: ok");
   }
 
-  static void expectSuffix(LeafReader leaf, String field, String suffix) {
+  static void expectSuffix(LeafReader leaf, String field, String format, String suffix) {
     FieldInfo fi = leaf.getFieldInfos().fieldInfo(field);
-    if (!"Lucene104".equals(fi.getAttribute("PerFieldPostingsFormat.format"))
+    if (!format.equals(fi.getAttribute("PerFieldPostingsFormat.format"))
         || !suffix.equals(fi.getAttribute("PerFieldPostingsFormat.suffix"))) {
       throw new AssertionError(field + " attributes " + fi.attributes());
     }
@@ -49,6 +60,28 @@ public class VerifyPerFieldFormats {
       if (i % 7 != 3 && p.test(i)) n++;
     }
     return n;
+  }
+
+  /** {@code OrdsBlockTreeTermsReader}: ords count up in term order and seek back. */
+  static void checkOrds(Terms terms, String field) throws Exception {
+    TermsEnum it = terms.iterator();
+    java.util.List<BytesRef> seen = new java.util.ArrayList<>();
+    for (BytesRef term = it.next(); term != null; term = it.next()) {
+      if (it.ord() != seen.size()) {
+        throw new AssertionError(field + ": ord " + it.ord() + " at term " + seen.size());
+      }
+      seen.add(BytesRef.deepCopyOf(term));
+    }
+    if (seen.size() != terms.size()) {
+      throw new AssertionError(field + ": " + seen.size() + " terms, size " + terms.size());
+    }
+    TermsEnum seeker = terms.iterator();
+    for (int ord = seen.size() - 1; ord >= 0; ord--) {
+      seeker.seekExact(ord);
+      if (!seeker.term().equals(seen.get(ord))) {
+        throw new AssertionError(field + ": seekExact(" + ord + ") found " + seeker.term());
+      }
+    }
   }
 
   static void verify(Path path, int segments) throws Exception {
@@ -81,9 +114,15 @@ public class VerifyPerFieldFormats {
         }
         for (LeafReaderContext ctx : reader.leaves()) {
           LeafReader leaf = ctx.reader();
-          expectSuffix(leaf, "body", "0");
-          expectSuffix(leaf, "key", "1");
-          expectSuffix(leaf, "tag", "1");
+          String routedSuffix = routed.equals("Lucene104") ? "1" : "0";
+          expectSuffix(leaf, "body", "Lucene104", "0");
+          expectSuffix(leaf, "key", routed, routedSuffix);
+          expectSuffix(leaf, "tag", routed, routedSuffix);
+          if (routed.equals("BlockTreeOrds")) {
+            for (String field : new String[] {"key", "tag"}) {
+              checkOrds(leaf.terms(field), field);
+            }
+          }
           if (leaf.getFieldInfos().fieldInfo("id").getAttribute("PerFieldPostingsFormat.format")
               != null) {
             throw new AssertionError("a stored-only field names a postings format");

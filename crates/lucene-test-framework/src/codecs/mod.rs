@@ -31,3 +31,27 @@ pub mod cranky_term_vectors;
 pub mod mockrandom;
 pub mod ramonly;
 pub mod rot13;
+
+/// Makes the test framework's terms-dictionary postings formats readable by
+/// name (`PostingsFormat`'s SPI): `LuceneFixedGap`,
+/// `LuceneVarGapFixedInterval`, `LuceneVarGapDocFreqInterval`,
+/// `UniformSplitRot13`, `STUniformSplitRot13`,
+/// `TestBloomFilteredLucenePostings` and (read-only) `MockRandom`.
+/// Idempotent.
+pub fn register_postings_formats() {
+    use lucene_codecs::terms_dictionary::register;
+    register(&blockterms::FIXED_GAP);
+    register(&blockterms::VAR_GAP_FIXED_INTERVAL);
+    register(&blockterms::VAR_GAP_DOC_FREQ_INTERVAL);
+    for format in [
+        rot13::UniformSplitRot13PostingsFormat::default().dictionary_format(),
+        rot13::StUniformSplitRot13PostingsFormat.dictionary_format(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        register(format);
+    }
+    register(bloom::TestBloomFilteredLucenePostings::dictionary_format());
+    register(mockrandom::MockRandomPostingsFormat::read_only());
+}

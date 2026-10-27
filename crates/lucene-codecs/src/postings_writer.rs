@@ -80,6 +80,9 @@ pub enum Error {
     Store(#[from] lucene_store::Error),
     #[error("write_single_field: terms must be non-empty")]
     EmptyTerms,
+    /// A terms dictionary other than the block tree failed to write a field.
+    #[error("terms dictionary: {0}")]
+    Dictionary(String),
     /// `Lucene103BlockTreeTermsWriter.validateSettings`'s
     /// `IllegalArgumentException` ([`WriteOptions::validate`]).
     #[error("{0}")]
@@ -874,41 +877,7 @@ fn write_any_fields<T: TermSource>(
     segment_suffix: &str,
 ) -> Result<Output> {
     options.validate()?;
-    // Every file starts at a size a small segment fits: growing an empty
-    // buffer through 8, 16, 32 ... bytes was a measurable share of a
-    // one-document flush (`MemoryIndex`).
-    let initial = 256usize;
-
-    // ---- .tim / .tip headers ----
-    let mut tim = Vec::with_capacity(initial);
-    codec_util::write_index_header(
-        &mut tim,
-        TERMS_CODEC_NAME,
-        BLOCKTREE_VERSION_CURRENT,
-        segment_id,
-        segment_suffix,
-    );
-    let mut tip = Vec::with_capacity(initial);
-    codec_util::write_index_header(
-        &mut tip,
-        TERMS_INDEX_CODEC_NAME,
-        BLOCKTREE_VERSION_CURRENT,
-        segment_id,
-        segment_suffix,
-    );
-
-    // ---- .tmd header ----
-    let mut tmd = Vec::with_capacity(initial);
-    codec_util::write_index_header(
-        &mut tmd,
-        TERMS_META_CODEC_NAME,
-        BLOCKTREE_VERSION_CURRENT,
-        segment_id,
-        segment_suffix,
-    );
-    write_postings_terms_header(&mut tmd, segment_id, segment_suffix);
-    tmd.write_vint(inputs.len() as i32); // numFields
-
+    let mut dict = BlockTreeDictionary::new(inputs.len(), options, segment_id, segment_suffix);
     let postings = write_any_postings(
         inputs,
         norms,
@@ -917,57 +886,11 @@ fn write_any_fields<T: TermSource>(
         segment_id,
         segment_suffix,
         |field| -> Result<()> {
-            // ---- this field's .tim blocks + .tip trie ----
-            // `Lucene103BlockTreeTermsWriter`'s block splitting and
-            // `TrieBuilder`, in `crate::blocktree_writer`; each block's term
-            // metadata is encoded by the postings writer, against this
-            // field's per-term file pointers.
-            let block_terms = field.block_terms;
-            let trie = blocktree_writer::write_field_terms(
-                &mut tim,
-                &mut tip,
-                block_terms,
-                (options.min_items_in_block, options.max_items_in_block),
-                field.index_options != IndexOptions::Docs,
-                |meta, indices| field.encode_terms(meta, indices),
-            );
-
-            // ---- this field's .tmd record ----
-            tmd.write_vint(field.field_number);
-            tmd.write_vlong(block_terms.len() as i64);
-            let sum_doc_freq: i64 = block_terms.iter().map(|t| i64::from(t.doc_freq)).sum();
-            if field.index_options != IndexOptions::Docs {
-                let sum_total_term_freq: i64 = block_terms.iter().map(|t| t.total_term_freq).sum();
-                tmd.write_vlong(sum_total_term_freq);
-            }
-            tmd.write_vlong(sum_doc_freq);
-            tmd.write_vint(field.doc_count);
-            let min_term = block_terms[0].bytes;
-            // ARITH: `validate_field` rejected an empty `terms`.
-            #[allow(clippy::arithmetic_side_effects)]
-            let max_term = block_terms[block_terms.len() - 1].bytes;
-            tmd.write_vint(min_term.len() as i32);
-            tmd.write_bytes(min_term);
-            tmd.write_vint(max_term.len() as i32);
-            tmd.write_bytes(max_term);
-            tmd.write_vlong(trie.index_start as i64);
-            tmd.write_vlong(trie.root_fp as i64);
-            tmd.write_vlong(trie.index_end as i64);
+            dict.write_field(field);
             Ok(())
         },
     )?;
-
-    codec_util::write_footer(&mut tim);
-    codec_util::write_footer(&mut tip);
-
-    // Both lengths are the *whole* file, footer included: Java writes each
-    // footer and only then records `getFilePointer()`, and its reader feeds
-    // these straight to `CodecUtil.retrieveChecksum`, which rejects any file
-    // whose real length disagrees.
-    tmd.write_i64(tip.len() as i64); // indexLength
-    tmd.write_i64(tim.len() as i64); // termsLength
-    codec_util::write_footer(&mut tmd);
-
+    let (tim, tip, tmd) = dict.finish();
     Ok(Output {
         doc: postings.doc,
         psm: postings.psm,
@@ -977,6 +900,205 @@ fn write_any_fields<T: TermSource>(
         tip,
         tmd,
     })
+}
+
+/// `Lucene103BlockTreeTermsWriter` over [`FieldTermStates`]: the `.tim`,
+/// `.tip` and `.tmd` of one postings format instance, one field at a time.
+struct BlockTreeDictionary {
+    tim: Vec<u8>,
+    tip: Vec<u8>,
+    tmd: Vec<u8>,
+    block_sizes: (usize, usize),
+}
+
+impl BlockTreeDictionary {
+    /// The three headers and `numFields`. `options` must be validated.
+    fn new(
+        num_fields: usize,
+        options: &WriteOptions,
+        segment_id: &[u8; ID_LENGTH],
+        segment_suffix: &str,
+    ) -> Self {
+        // Every file starts at a size a small segment fits: growing an empty
+        // buffer through 8, 16, 32 ... bytes was a measurable share of a
+        // one-document flush (`MemoryIndex`).
+        let initial = 256usize;
+        let header = |codec| {
+            let mut out = Vec::with_capacity(initial);
+            codec_util::write_index_header(
+                &mut out,
+                codec,
+                BLOCKTREE_VERSION_CURRENT,
+                segment_id,
+                segment_suffix,
+            );
+            out
+        };
+        let tim = header(TERMS_CODEC_NAME);
+        let tip = header(TERMS_INDEX_CODEC_NAME);
+        let mut tmd = header(TERMS_META_CODEC_NAME);
+        write_postings_terms_header(&mut tmd, segment_id, segment_suffix);
+        tmd.write_vint(num_fields as i32); // numFields
+        BlockTreeDictionary {
+            tim,
+            tip,
+            tmd,
+            block_sizes: (options.min_items_in_block, options.max_items_in_block),
+        }
+    }
+
+    /// One field's `.tim` blocks, `.tip` trie and `.tmd` record. `field`
+    /// must have terms.
+    fn write_field(&mut self, field: &FieldTermStates<'_>) {
+        let Self { tim, tip, tmd, .. } = self;
+        // ---- this field's .tim blocks + .tip trie ----
+        // `Lucene103BlockTreeTermsWriter`'s block splitting and
+        // `TrieBuilder`, in `crate::blocktree_writer`; each block's term
+        // metadata is encoded by the postings writer, against this
+        // field's per-term file pointers.
+        let block_terms = field.block_terms;
+        let trie = blocktree_writer::write_field_terms(
+            tim,
+            tip,
+            block_terms,
+            self.block_sizes,
+            field.index_options != IndexOptions::Docs,
+            |meta, indices| field.encode_terms(meta, indices),
+        );
+
+        // ---- this field's .tmd record ----
+        tmd.write_vint(field.field_number);
+        tmd.write_vlong(block_terms.len() as i64);
+        let sum_doc_freq: i64 = block_terms.iter().map(|t| i64::from(t.doc_freq)).sum();
+        if field.index_options != IndexOptions::Docs {
+            let sum_total_term_freq: i64 = block_terms.iter().map(|t| t.total_term_freq).sum();
+            tmd.write_vlong(sum_total_term_freq);
+        }
+        tmd.write_vlong(sum_doc_freq);
+        tmd.write_vint(field.doc_count);
+        let min_term = block_terms[0].bytes;
+        // ARITH: a written field has terms (`validate_field`,
+        // `write_block_tree_dictionary`).
+        #[allow(clippy::arithmetic_side_effects)]
+        let max_term = block_terms[block_terms.len() - 1].bytes;
+        tmd.write_vint(min_term.len() as i32);
+        tmd.write_bytes(min_term);
+        tmd.write_vint(max_term.len() as i32);
+        tmd.write_bytes(max_term);
+        tmd.write_vlong(trie.index_start as i64);
+        tmd.write_vlong(trie.root_fp as i64);
+        tmd.write_vlong(trie.index_end as i64);
+    }
+
+    /// The footers, and the `.tmd`'s two lengths: both are the *whole* file,
+    /// footer included -- Java writes each footer and only then records
+    /// `getFilePointer()`, and its reader feeds these straight to
+    /// `CodecUtil.retrieveChecksum`, which rejects any file whose real length
+    /// disagrees.
+    fn finish(self) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let Self {
+            mut tim,
+            mut tip,
+            mut tmd,
+            ..
+        } = self;
+        codec_util::write_footer(&mut tim);
+        codec_util::write_footer(&mut tip);
+        tmd.write_i64(tip.len() as i64); // indexLength
+        tmd.write_i64(tim.len() as i64); // termsLength
+        codec_util::write_footer(&mut tmd);
+        (tim, tip, tmd)
+    }
+}
+
+/// One term of a dictionary some other terms dictionary wrote over
+/// `Lucene104PostingsWriter`'s postings: its bytes, statistics and
+/// `IntBlockTermState`, as that dictionary's reader decodes them.
+#[derive(Debug, Clone)]
+pub struct DictionaryTerm {
+    pub bytes: Vec<u8>,
+    pub doc_freq: i32,
+    pub total_term_freq: i64,
+    pub meta: crate::postings::TermMetadata,
+}
+
+/// One field of such a dictionary, its terms in ascending order.
+#[derive(Debug, Clone)]
+pub struct DictionaryField {
+    pub field_number: i32,
+    pub index_options: IndexOptions,
+    pub has_payloads: bool,
+    pub doc_count: i32,
+    pub terms: Vec<DictionaryTerm>,
+}
+
+/// Rewrites another terms dictionary's fields as a `Lucene103` block-tree
+/// `.tim`/`.tip`/`.tmd` under `segment_suffix`, every term pointing at the
+/// same postings it pointed at before -- so a reader that only knows the
+/// block tree serves a segment whose postings went to `BlockTreeOrds`,
+/// `UniformSplit` or any other dictionary over `Lucene104PostingsWriter`.
+/// Fields without terms are left out, as `Lucene103BlockTreeTermsWriter`
+/// leaves them out.
+///
+/// # Errors
+/// [`Error::InvalidBlockSizes`] for `options`; [`Error::TermsNotSorted`]
+/// when a field's terms are not strictly ascending.
+pub fn write_block_tree_dictionary(
+    fields: &[DictionaryField],
+    options: &WriteOptions,
+    segment_id: &[u8; ID_LENGTH],
+    segment_suffix: &str,
+) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    options.validate()?;
+    let written: Vec<&DictionaryField> = fields.iter().filter(|f| !f.terms.is_empty()).collect();
+    let mut dict = BlockTreeDictionary::new(written.len(), options, segment_id, segment_suffix);
+    for field in written {
+        if let Some(i) = field
+            .terms
+            .windows(2)
+            .position(|pair| pair[0].bytes >= pair[1].bytes)
+        {
+            // ARITH: `i` indexes a window, so `i + 1` is a term index.
+            #[allow(clippy::arithmetic_side_effects)]
+            return Err(Error::TermsNotSorted(i + 1));
+        }
+        let block_terms: Vec<blocktree_writer::BlockTerm<'_>> = field
+            .terms
+            .iter()
+            .map(|t| blocktree_writer::BlockTerm {
+                bytes: &t.bytes,
+                doc_freq: t.doc_freq,
+                total_term_freq: t.total_term_freq,
+            })
+            .collect();
+        let column = |f: fn(&DictionaryTerm) -> u64| field.terms.iter().map(f).collect::<Vec<_>>();
+        let singletons: Vec<i32> = field
+            .terms
+            .iter()
+            .map(|t| t.meta.singleton_doc_id)
+            .collect();
+        let doc_start_fp = column(|t| t.meta.doc_start_fp);
+        let pos_start_fp = column(|t| t.meta.pos_start_fp);
+        let pay_start_fp = column(|t| t.meta.pay_start_fp);
+        let last_pos_block_offset: Vec<i64> = field
+            .terms
+            .iter()
+            .map(|t| t.meta.last_pos_block_offset)
+            .collect();
+        dict.write_field(&FieldTermStates {
+            field_number: field.field_number,
+            index_options: field.index_options,
+            has_payloads: field.has_payloads,
+            doc_count: field.doc_count,
+            block_terms: &block_terms,
+            singletons: &singletons,
+            doc_start_fp: &doc_start_fp,
+            pos_start_fp: &pos_start_fp,
+            pay_start_fp: &pay_start_fp,
+            last_pos_block_offset: &last_pos_block_offset,
+        });
+    }
+    Ok(dict.finish())
 }
 
 /// `Lucene104PostingsWriter.init(termsOut, state)`: the postings writer's
