@@ -3,8 +3,8 @@
 //! -- `OpenNLPTokenizer` (sentence detection, then tokenization, each token
 //! with its sentence index), `OpenNLPPOSFilter` (the part-of-speech tag as
 //! the token type), `OpenNLPChunkerFilter` (the chunk tag as the type),
-//! `OpenNLPLemmatizerFilter` (dictionary and/or statistical lemmas) and
-//! their factories -- over a port of the Apache OpenNLP 2.5.3 inference
+//! `OpenNLPLemmatizerFilter` (dictionary and/or statistical lemmas),
+//! their factories and the `NLPNERTaggerOp` no filter calls -- over a port of the Apache OpenNLP 2.5.3 inference
 //! runtime they call ([`tools`]), reading OpenNLP's own model packages.
 //!
 //! **Why a port and not a JVM call.** The models are zips of a manifest,
@@ -16,9 +16,8 @@
 //! trained by OpenNLP itself. Training is not ported: Lucene never trains.
 //!
 //! Refused (`UnsupportedOperationException`): `QN` and `NaiveBayes` event
-//! models, feature generators beyond the POS tagger's defaults, and user
+//! models, feature generator classes outside OpenNLP's, and user
 //! tool-factory or serializer classes -- each named in its error.
-//! `NLPNERTaggerOp` (no Lucene filter calls it) is not ported.
 
 pub mod factory;
 pub mod filters;
@@ -31,5 +30,5 @@ pub use factory::{
     OpenNlpPosFilterFactory, OpenNlpTokenizerFactory,
 };
 pub use filters::{OpenNlpChunkerFilter, OpenNlpLemmatizerFilter, OpenNlpPosFilter};
-pub use ops::LemmatizerOp;
+pub use ops::{LemmatizerOp, NerTaggerOp};
 pub use tokenizer::{open_nlp_tokenizer, OpenNlpSentenceBreakIterator, OpenNlpTokenizer};
