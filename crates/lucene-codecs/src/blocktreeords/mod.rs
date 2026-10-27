@@ -157,6 +157,104 @@ impl Default for BlockTreeOrdsPostingsFormat {
     }
 }
 
+/// `new BlockTreeOrdsPostingsFormat()`, the instance
+/// [`crate::terms_dictionary::lookup`] reads `BlockTreeOrds` groups with.
+pub static DEFAULT_FORMAT: BlockTreeOrdsPostingsFormat = BlockTreeOrdsPostingsFormat {
+    min_terms_in_block: DEFAULT_MIN_BLOCK_SIZE,
+    max_terms_in_block: DEFAULT_MAX_BLOCK_SIZE,
+};
+
+impl crate::terms_dictionary::TermsDictionaryFormat for BlockTreeOrdsPostingsFormat {
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn extensions(&self) -> &'static [&'static str] {
+        &[TERMS_EXTENSION, TERMS_INDEX_EXTENSION]
+    }
+
+    fn write(
+        &self,
+        inputs: &[crate::terms_dictionary::ErasedInput<'_, '_>],
+        norms: &[FieldNorms<'_>],
+        options: &WriteOptions,
+        state: &SegmentWriteState<'_>,
+    ) -> postings_writer::Result<(PostingsFiles, Vec<Vec<u8>>)> {
+        let mut terms =
+            OrdsBlockTreeTermsWriter::new(state, self.min_terms_in_block, self.max_terms_in_block);
+        let postings = crate::terms_dictionary::write_field_by_field(
+            inputs,
+            norms,
+            options,
+            state,
+            |field| terms.write_field(field).map_err(to_writer_error),
+        )?;
+        let (tio, tipo) = terms.finish();
+        Ok((postings, vec![tio, tipo]))
+    }
+
+    fn read(
+        &self,
+        files: &[&[u8]],
+        state: &SegmentReadState<'_>,
+    ) -> crate::blocktree::Result<Vec<postings_writer::DictionaryField>> {
+        let err = to_blocktree_error;
+        let [tio, tipo] = files else {
+            return Err(crate::blocktree::Error::Unsupported(
+                "a BlockTreeOrds group needs its .tio and .tipo",
+            ));
+        };
+        let reader = OrdsBlockTreeTermsReader::open(tio.to_vec(), tipo, state).map_err(err)?;
+        let mut fields = Vec::with_capacity(reader.size());
+        for name in reader.field_names() {
+            let Some(terms) = reader.terms(name) else {
+                continue;
+            };
+            let info = terms.field_info();
+            let mut field = postings_writer::DictionaryField {
+                field_number: info.number,
+                index_options: info.index_options,
+                has_payloads: info.store_payloads,
+                doc_count: terms.doc_count(),
+                terms: Vec::new(),
+            };
+            let mut it = terms.iter();
+            while let Some(bytes) = it.next().map_err(err)? {
+                let bytes = bytes.to_vec();
+                field.terms.push(postings_writer::DictionaryTerm {
+                    bytes,
+                    doc_freq: it.doc_freq().map_err(err)?,
+                    total_term_freq: it.total_term_freq().map_err(err)?,
+                    meta: it.term_metadata().map_err(err)?,
+                });
+            }
+            fields.push(field);
+        }
+        Ok(fields)
+    }
+}
+
+/// This module's [`Error`] as the block tree reader's.
+fn to_blocktree_error(e: Error) -> crate::blocktree::Error {
+    match e {
+        Error::Store(e) => crate::blocktree::Error::Store(e),
+        Error::Postings(e) => crate::blocktree::Error::Postings(e),
+        e => crate::blocktree::Error::ForeignDictionary {
+            format: BlockTreeOrdsPostingsFormat::NAME,
+            message: e.to_string(),
+        },
+    }
+}
+
+/// This module's [`Error`] as the postings writer's.
+fn to_writer_error(e: Error) -> postings_writer::Error {
+    match e {
+        Error::Write(e) => e,
+        Error::Store(e) => postings_writer::Error::Store(e),
+        e => postings_writer::Error::Dictionary(e.to_string()),
+    }
+}
+
 /// What [`BlockTreeOrdsPostingsFormat::write`] produces.
 #[derive(Debug, Clone, Default)]
 pub struct BlockTreeOrdsOutput {

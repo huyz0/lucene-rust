@@ -410,3 +410,112 @@ fn read_slice<'b>(buf: &'b [u8], pos: &mut usize, n: usize) -> Result<&'b [u8]> 
 fn length(n: i64) -> Result<usize> {
     usize::try_from(n).map_err(|_| corrupt(format!("negative length {n}")))
 }
+
+/// A uniform-split format under the name it is registered by: `UniformSplit`
+/// itself, or a subclass that only changes its settings and block codec
+/// (the test framework's `UniformSplitRot13`).
+#[derive(Debug, Clone)]
+pub struct NamedUniformSplit {
+    /// `getName()`.
+    pub name: &'static str,
+    pub format: UniformSplitPostingsFormat,
+}
+
+/// `new UniformSplitPostingsFormat()`, the instance
+/// [`crate::terms_dictionary::lookup`] reads `UniformSplit` groups with.
+pub static DEFAULT_FORMAT: NamedUniformSplit = NamedUniformSplit {
+    name: NAME,
+    format: UniformSplitPostingsFormat {
+        target_num_block_lines: DEFAULT_TARGET_NUM_BLOCK_LINES,
+        delta_num_lines: DEFAULT_DELTA_NUM_LINES,
+        block_encoder: None,
+        block_decoder: None,
+        dictionary_on_heap: false,
+    },
+};
+
+impl crate::terms_dictionary::TermsDictionaryFormat for NamedUniformSplit {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn extensions(&self) -> &'static [&'static str] {
+        &[TERMS_DICTIONARY_EXTENSION, TERMS_BLOCKS_EXTENSION]
+    }
+
+    fn write(
+        &self,
+        inputs: &[crate::terms_dictionary::ErasedInput<'_, '_>],
+        norms: &[FieldNorms<'_>],
+        _options: &WriteOptions,
+        state: &SegmentWriteState<'_>,
+    ) -> postings_writer::Result<(PostingsFiles, Vec<Vec<u8>>)> {
+        let out = self
+            .format
+            .write(inputs, norms, state)
+            .map_err(to_writer_error)?;
+        Ok((out.postings, vec![out.ustd, out.ustb]))
+    }
+
+    fn read(
+        &self,
+        files: &[&[u8]],
+        state: &SegmentReadState<'_>,
+    ) -> crate::blocktree::Result<Vec<postings_writer::DictionaryField>> {
+        let err = |e| to_blocktree_error(self.name, e);
+        let [ustd, ustb] = files else {
+            return Err(crate::blocktree::Error::Unsupported(
+                "a UniformSplit group needs its .ustd and .ustb",
+            ));
+        };
+        let reader = self.format.open(ustb.to_vec(), ustd, state).map_err(err)?;
+        let mut fields = Vec::with_capacity(reader.size());
+        for name in reader.field_names() {
+            let Some(terms) = reader.terms(name) else {
+                continue;
+            };
+            let info = terms.field_info();
+            let mut field = postings_writer::DictionaryField {
+                field_number: info.number,
+                index_options: info.index_options,
+                has_payloads: info.store_payloads,
+                doc_count: terms.doc_count(),
+                terms: Vec::new(),
+            };
+            let mut it = terms.iter();
+            while let Some(bytes) = it.next().map_err(err)? {
+                let bytes = bytes.to_vec();
+                let state = it.term_state().map_err(err)?;
+                field.terms.push(postings_writer::DictionaryTerm {
+                    bytes,
+                    doc_freq: state.doc_freq,
+                    total_term_freq: state.total_term_freq,
+                    meta: state.meta,
+                });
+            }
+            fields.push(field);
+        }
+        Ok(fields)
+    }
+}
+
+/// This module's [`Error`] as the block tree reader's, for format `name`.
+pub(crate) fn to_blocktree_error(name: &'static str, e: Error) -> crate::blocktree::Error {
+    match e {
+        Error::Store(e) => crate::blocktree::Error::Store(e),
+        Error::Postings(e) => crate::blocktree::Error::Postings(e),
+        e => crate::blocktree::Error::ForeignDictionary {
+            format: name,
+            message: e.to_string(),
+        },
+    }
+}
+
+/// This module's [`Error`] as the postings writer's.
+pub(crate) fn to_writer_error(e: Error) -> postings_writer::Error {
+    match e {
+        Error::Write(e) => e,
+        Error::Store(e) => postings_writer::Error::Store(e),
+        e => postings_writer::Error::Dictionary(e.to_string()),
+    }
+}

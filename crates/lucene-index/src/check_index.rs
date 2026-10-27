@@ -1101,7 +1101,8 @@ fn check_field_flags_vs_files(fields: &FieldInfos, files: &[String], checks: &mu
     let has_dv_files = has_any_ext(files, &[".dvd", ".dvm"]);
     let has_norms_files = has_any_ext(files, &[".nvd", ".nvm"]);
     let has_tv_files = has_any_ext(files, &[".tvd", ".tvx", ".tvm"]);
-    let has_postings_files = has_any_ext(files, &[".tim", ".tip", ".tmd", ".tio", ".tipo"]);
+    let has_postings_files = has_any_ext(files, &[".tim", ".tip", ".tmd"])
+        || per_field_postings::has_postings_files(files);
 
     let any_field_claims_dv = fields
         .fields

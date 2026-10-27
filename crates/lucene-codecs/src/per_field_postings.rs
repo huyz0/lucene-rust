@@ -41,6 +41,7 @@ use crate::postings::{DocInput, PayInput, PosInput};
 use crate::postings_writer::{
     self, FieldNorms, FieldPostingsInput, Output, TermSource, WriteOptions,
 };
+use crate::terms_dictionary::TermsDictionaryFormat;
 
 /// `PerFieldPostingsFormat.PER_FIELD_FORMAT_KEY`.
 pub const PER_FIELD_FORMAT_KEY: &str = "PerFieldPostingsFormat.format";
@@ -134,7 +135,7 @@ pub fn is_completion_format(name: &str) -> bool {
 }
 
 /// Which postings format a field is routed to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub enum PostingsFormatKind {
     /// `Lucene104PostingsFormat`.
     #[default]
@@ -142,10 +143,24 @@ pub enum PostingsFormatKind {
     /// `Completion104PostingsFormat`: a default `Lucene104PostingsFormat`
     /// delegate plus the suggester files.
     Completion104,
-    /// `BlockTreeOrdsPostingsFormat`: `Lucene104PostingsWriter`'s postings
-    /// under an `OrdsBlockTreeTermsWriter` dictionary (`.tio`/`.tipo`).
-    BlockTreeOrds,
+    /// A format that is another terms dictionary over
+    /// `Lucene104PostingsWriter`'s postings (`BlockTreeOrds`, ...). Equal
+    /// when it is the same instance, as Java's `buildFieldsGroupMapping`
+    /// groups by instance identity.
+    Dictionary(&'static dyn TermsDictionaryFormat),
 }
+
+impl PartialEq for PostingsFormatKind {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Lucene104, Self::Lucene104) | (Self::Completion104, Self::Completion104) => true,
+            (Self::Dictionary(a), Self::Dictionary(b)) => std::ptr::addr_eq(*a, *b),
+            _ => false,
+        }
+    }
+}
+
+impl Eq for PostingsFormatKind {}
 
 /// `PerFieldPostingsFormat.getSuffix(formatName, suffix)`: the codec suffix
 /// a group's files and headers carry.
@@ -199,16 +214,40 @@ impl Lucene104PostingsFormat {
         }
     }
 
+    /// A field routed to `format`, a terms dictionary over the default
+    /// postings. The block sizes are unused: the format has its own.
+    pub fn dictionary(format: &'static dyn TermsDictionaryFormat) -> Self {
+        Lucene104PostingsFormat {
+            kind: PostingsFormatKind::Dictionary(format),
+            ..Self::default()
+        }
+    }
+
     /// `new BlockTreeOrdsPostingsFormat(minTermsInBlock, maxTermsInBlock)`,
-    /// with `validateSettings`' checks.
+    /// with `validateSettings`' checks. The default sizes are the shared
+    /// [`crate::blocktreeords::DEFAULT_FORMAT`]; other sizes make a new
+    /// instance that lives as long as the process, as a codec's format
+    /// instances do in Java.
     pub fn block_tree_ords(
         min_terms_in_block: usize,
         max_terms_in_block: usize,
     ) -> postings_writer::Result<Self> {
-        Ok(Lucene104PostingsFormat {
-            kind: PostingsFormatKind::BlockTreeOrds,
-            ..Self::new(min_terms_in_block, max_terms_in_block)?
-        })
+        use crate::blocktreeords::{self, BlockTreeOrdsPostingsFormat};
+        let format: &'static BlockTreeOrdsPostingsFormat =
+            if (min_terms_in_block, max_terms_in_block)
+                == (
+                    blocktreeords::DEFAULT_MIN_BLOCK_SIZE,
+                    blocktreeords::DEFAULT_MAX_BLOCK_SIZE,
+                )
+            {
+                &blocktreeords::DEFAULT_FORMAT
+            } else {
+                Box::leak(Box::new(
+                    BlockTreeOrdsPostingsFormat::new(min_terms_in_block, max_terms_in_block)
+                        .map_err(|e| postings_writer::Error::InvalidBlockSizes(e.to_string()))?,
+                ))
+            };
+        Ok(Self::dictionary(format))
     }
 
     /// `getName()`: the name recorded in a field's
@@ -217,9 +256,7 @@ impl Lucene104PostingsFormat {
         match self.kind {
             PostingsFormatKind::Lucene104 => FORMAT_NAME,
             PostingsFormatKind::Completion104 => COMPLETION_FORMAT_NAME,
-            PostingsFormatKind::BlockTreeOrds => {
-                crate::blocktreeords::BlockTreeOrdsPostingsFormat::NAME
-            }
+            PostingsFormatKind::Dictionary(format) => format.name(),
         }
     }
 
@@ -346,6 +383,9 @@ pub fn write<T: TermSource>(
         .map(|input| name_of(input.field_number).unwrap_or_else(|| input.field_number.to_string()))
         .collect();
     let groups = group(&named, format_for);
+    let segment_infos = FieldInfos {
+        fields: segment_fields.to_vec(),
+    };
     let mut out = Vec::with_capacity(groups.len());
     for (format, suffix, members) in groups {
         let codec_suffix = codec_suffix(format.name(), suffix);
@@ -371,6 +411,7 @@ pub fn write<T: TermSource>(
             .collect();
         let (output, dictionary) = write_group_files(
             &format,
+            &segment_infos,
             &with_terms,
             norms,
             &options,
@@ -378,7 +419,7 @@ pub fn write<T: TermSource>(
             &codec_suffix,
         )?;
         let completion = match format.kind {
-            PostingsFormatKind::Lucene104 | PostingsFormatKind::BlockTreeOrds => None,
+            PostingsFormatKind::Lucene104 | PostingsFormatKind::Dictionary(_) => None,
             PostingsFormatKind::Completion104 => Some(
                 write_completion(&group_inputs, &members, &named, segment_id, &codec_suffix)
                     .map_err(postings_writer::Error::Completion)?,
@@ -407,13 +448,13 @@ pub type DictionaryFiles = Vec<(&'static str, Vec<u8>)>;
 /// beside it, `Output`'s `.tim`/`.tip`/`.tmd` left empty.
 fn write_group_files<T: TermSource>(
     format: &Lucene104PostingsFormat,
+    segment_field_infos: &FieldInfos,
     inputs: &[FieldPostingsInput<'_, T>],
     norms: &[FieldNorms<'_>],
     options: &WriteOptions,
     segment_id: &[u8; ID_LENGTH],
     codec_suffix: &str,
 ) -> postings_writer::Result<(Output, Option<DictionaryFiles>)> {
-    use crate::blocktreeords::{self, OrdsBlockTreeTermsWriter};
     match format.kind {
         PostingsFormatKind::Lucene104 | PostingsFormatKind::Completion104 => {
             let output = if inputs.is_empty() {
@@ -429,37 +470,38 @@ fn write_group_files<T: TermSource>(
             };
             Ok((output, None))
         }
-        PostingsFormatKind::BlockTreeOrds => {
+        PostingsFormatKind::Dictionary(dictionary) => {
             options.validate()?;
-            // `OrdsBlockTreeTermsWriter` reads only the id and suffix off
-            // its state.
-            let field_infos = FieldInfos { fields: Vec::new() };
+            let terms: Vec<Vec<&dyn TermSource>> = inputs
+                .iter()
+                .map(|i| i.terms.iter().map(|t| t as &dyn TermSource).collect())
+                .collect();
+            let erased: Vec<FieldPostingsInput<'_, &dyn TermSource>> = inputs
+                .iter()
+                .zip(&terms)
+                .map(|(input, terms)| FieldPostingsInput {
+                    field_number: input.field_number,
+                    index_options: input.index_options,
+                    doc_count: input.doc_count,
+                    has_payloads: input.has_payloads,
+                    terms: terms.as_slice(),
+                })
+                .collect();
             let state = crate::segment_state::SegmentWriteState {
                 max_doc: 0,
                 segment_id,
                 segment_suffix: codec_suffix,
-                field_infos: &field_infos,
+                field_infos: segment_field_infos,
             };
-            let mut terms = OrdsBlockTreeTermsWriter::new(
-                &state,
-                format.min_term_block_size,
-                format.max_term_block_size,
-            );
-            let postings = postings_writer::write_postings(
-                inputs,
-                norms,
-                options.has_prox,
-                options.has_payloads_or_offsets,
-                segment_id,
-                codec_suffix,
-                |field| terms.write_field(field),
-            )
-            .map_err(|e| match e {
-                blocktreeords::Error::Write(e) => e,
-                blocktreeords::Error::Store(e) => postings_writer::Error::Store(e),
-                e => postings_writer::Error::Dictionary(e.to_string()),
-            })?;
-            let (tio, tipo) = terms.finish();
+            let (postings, files) = dictionary.write(&erased, norms, options, &state)?;
+            if files.len() != dictionary.extensions().len() {
+                return Err(postings_writer::Error::Dictionary(format!(
+                    "{} wrote {} files for {} extensions",
+                    dictionary.name(),
+                    files.len(),
+                    dictionary.extensions().len()
+                )));
+            }
             let output = Output {
                 doc: postings.doc,
                 psm: postings.psm,
@@ -469,10 +511,7 @@ fn write_group_files<T: TermSource>(
             };
             Ok((
                 output,
-                Some(vec![
-                    (blocktreeords::TERMS_EXTENSION, tio),
-                    (blocktreeords::TERMS_INDEX_EXTENSION, tipo),
-                ]),
+                Some(dictionary.extensions().iter().copied().zip(files).collect()),
             ))
         }
     }
@@ -497,6 +536,9 @@ pub fn write_installed<T: TermSource>(
         .iter()
         .map(|i| name_of(i.field_number).unwrap_or_else(|| i.field_number.to_string()))
         .collect();
+    let segment_infos = FieldInfos {
+        fields: state.field_infos.to_vec(),
+    };
     let plans: Vec<_> = group(&names, format_for)
         .into_iter()
         .map(|(format, suffix, members)| {
@@ -523,8 +565,15 @@ pub fn write_installed<T: TermSource>(
                     .copied()
                     .filter(|i| !i.terms.is_empty())
                     .collect();
-                let (output, dictionary) =
-                    write_group_files(format, &populated, norms, &options, state.id, codec_suffix)?;
+                let (output, dictionary) = write_group_files(
+                    format,
+                    &segment_infos,
+                    &populated,
+                    norms,
+                    &options,
+                    state.id,
+                    codec_suffix,
+                )?;
                 let completion = if format.kind == PostingsFormatKind::Completion104 {
                     Some(
                         write_completion(&selected, members, &names, state.id, codec_suffix)
@@ -707,18 +756,6 @@ pub fn field_suffixes(
     out
 }
 
-/// The terms dictionaries a group can be written with besides the block
-/// tree, each over `Lucene104PostingsWriter`'s `.doc`/`.pos`/`.pay`/`.psm`:
-/// the format name and its dictionary's file extensions, the first of
-/// which marks the group's presence.
-const FOREIGN_DICTIONARIES: [(&str, &[&str]); 1] = [(
-    crate::blocktreeords::BlockTreeOrdsPostingsFormat::NAME,
-    &[
-        crate::blocktreeords::TERMS_EXTENSION,
-        crate::blocktreeords::TERMS_INDEX_EXTENSION,
-    ],
-)];
-
 /// The block tree's dictionary extensions, in [`GroupFiles::dictionary`]
 /// order.
 const BLOCK_TREE_EXTENSIONS: &[&str] = &["tim", "tip", "tmd"];
@@ -730,9 +767,10 @@ pub fn format_of_suffix(suffix: &str) -> &str {
 }
 
 /// Whether a group of `format` is written with a terms dictionary other than
-/// the block tree, which [`open_groups`] rewrites as one on open.
+/// the block tree ([`crate::terms_dictionary`]), which [`open_groups`]
+/// rewrites as one on open.
 pub fn is_foreign_format(format: &str) -> bool {
-    FOREIGN_DICTIONARIES.iter().any(|(name, _)| *name == format)
+    crate::terms_dictionary::lookup(format).is_some()
 }
 
 /// The dictionary files a group of `format` has, in the order
@@ -740,19 +778,13 @@ pub fn is_foreign_format(format: &str) -> bool {
 /// block tree (every format not in this port's foreign list, including the
 /// completion formats' delegates and older Lucene's own block trees).
 pub fn dictionary_extensions(format: &str) -> &'static [&'static str] {
-    FOREIGN_DICTIONARIES
-        .iter()
-        .find(|(name, _)| *name == format)
-        .map_or(BLOCK_TREE_EXTENSIONS, |(_, extensions)| extensions)
+    crate::terms_dictionary::lookup(format).map_or(BLOCK_TREE_EXTENSIONS, |f| f.extensions())
 }
 
 /// The dictionary file whose presence marks a group of `format`.
 pub fn marker_extension(format: &str) -> &'static str {
-    match FOREIGN_DICTIONARIES
-        .iter()
-        .find(|(name, _)| *name == format)
-    {
-        Some((_, extensions)) => extensions[0],
+    match crate::terms_dictionary::lookup(format) {
+        Some(f) => f.extensions()[0],
         None => "tmd",
     }
 }
@@ -761,9 +793,9 @@ pub fn marker_extension(format: &str) -> &'static str {
 pub fn has_postings_files(files: &[String]) -> bool {
     files.iter().any(|f| {
         f.ends_with(".tim")
-            || FOREIGN_DICTIONARIES
+            || crate::terms_dictionary::all()
                 .iter()
-                .any(|(_, extensions)| f.ends_with(&format!(".{}", extensions[0])))
+                .any(|d| f.ends_with(&format!(".{}", d.extensions()[0])))
     })
 }
 
@@ -857,65 +889,18 @@ pub fn rewrite_group_as_block_tree(
     segment_id: &[u8; ID_LENGTH],
     max_doc: i32,
 ) -> blocktree::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-    use crate::blocktreeords::{self, BlockTreeOrdsPostingsFormat};
-    use postings_writer::{DictionaryField, DictionaryTerm};
-
     let state = crate::segment_state::SegmentReadState {
         max_doc,
         segment_id,
         segment_suffix: group.suffix,
         field_infos,
     };
-    let format = format_of_suffix(group.suffix);
-    let foreign = |format: &'static str| {
-        move |e: blocktreeords::Error| match e {
-            blocktreeords::Error::Store(e) => blocktree::Error::Store(e),
-            blocktreeords::Error::Postings(e) => blocktree::Error::Postings(e),
-            e => blocktree::Error::ForeignDictionary {
-                format,
-                message: e.to_string(),
-            },
-        }
-    };
-    let fields = if format == BlockTreeOrdsPostingsFormat::NAME {
-        let err = foreign(BlockTreeOrdsPostingsFormat::NAME);
-        let reader = blocktreeords::OrdsBlockTreeTermsReader::open(
-            group.dictionary[0].to_vec(),
-            group.dictionary[1],
-            &state,
-        )
-        .map_err(&err)?;
-        let mut fields = Vec::with_capacity(reader.size());
-        for name in reader.field_names() {
-            let Some(terms) = reader.terms(name) else {
-                continue;
-            };
-            let info = terms.field_info();
-            let mut out = DictionaryField {
-                field_number: info.number,
-                index_options: info.index_options,
-                has_payloads: info.store_payloads,
-                doc_count: terms.doc_count(),
-                terms: Vec::new(),
-            };
-            let mut it = terms.iter();
-            while let Some(bytes) = it.next().map_err(&err)? {
-                let bytes = bytes.to_vec();
-                out.terms.push(DictionaryTerm {
-                    bytes,
-                    doc_freq: it.doc_freq().map_err(&err)?,
-                    total_term_freq: it.total_term_freq().map_err(&err)?,
-                    meta: it.term_metadata().map_err(&err)?,
-                });
-            }
-            fields.push(out);
-        }
-        fields
-    } else {
+    let Some(format) = crate::terms_dictionary::lookup(format_of_suffix(group.suffix)) else {
         return Err(blocktree::Error::Unsupported(
             "a foreign postings group with no dictionary reader",
         ));
     };
+    let fields = format.read(&group.dictionary, &state)?;
     postings_writer::write_block_tree_dictionary(
         &fields,
         &WriteOptions::default(),
@@ -937,13 +922,11 @@ pub fn group_suffixes(files: &[String], segment_name: &str) -> Vec<String> {
         .iter()
         .filter_map(|f| {
             f.strip_suffix(".tmd").or_else(|| {
-                FOREIGN_DICTIONARIES
-                    .iter()
-                    .find_map(|(format, extensions)| {
-                        let stem = f.strip_suffix(&format!(".{}", extensions[0]))?;
-                        // A marker extension only counts under its own format.
-                        stem.contains(&format!("{format}_")).then_some(stem)
-                    })
+                crate::terms_dictionary::all().into_iter().find_map(|d| {
+                    let stem = f.strip_suffix(&format!(".{}", d.extensions()[0]))?;
+                    // A marker extension only counts under its own format.
+                    stem.contains(&format!("{}_", d.name())).then_some(stem)
+                })
             })
         })
         .map(|stem| {

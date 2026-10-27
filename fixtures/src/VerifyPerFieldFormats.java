@@ -30,7 +30,9 @@ import java.util.function.IntPredicate;
  *
  * <p>With {@code BlockTreeOrds} as the second argument, {@code key}/{@code tag}
  * are expected under {@code BlockTreeOrds} suffix 0, and their terms enums
- * must number the terms 0, 1, 2, ... and seek back to each by its ord.
+ * must number the terms 0, 1, 2, ... and seek back to each by its ord. With
+ * {@code UniformSplit} or {@code SharedTermsUniformSplit}, they are expected
+ * under that format's suffix 0.
  */
 public class VerifyPerFieldFormats {
   static final int TOTAL = 1200;

@@ -1,5 +1,6 @@
-//! `BlockTreeOrdsPostingsFormat` through [`IndexWriter`]: fields routed to it
-//! are flushed as `_BlockTreeOrds_0.tio`/`.tipo` beside their postings, a
+//! Terms-dictionary formats through [`IndexWriter`] (`BlockTreeOrds`,
+//! `UniformSplit`, `SharedTermsUniformSplit`): fields routed to one are
+//! flushed as `_<Format>_0.<dictionary>` beside their postings, a
 //! buffered delete by a routed field's term finds its documents, a merge
 //! reads and rewrites the group, and [`DirectoryReader`] answers term and
 //! phrase queries over it exactly as over the same documents on the default
@@ -11,6 +12,7 @@
 use lucene_codecs::field_infos::{FieldInfo, IndexOptions};
 use lucene_codecs::per_field_postings::Lucene104PostingsFormat;
 use lucene_codecs::stored_fields::{Document, FieldValue, StoredField};
+use lucene_codecs::terms_dictionary::TermsDictionaryFormat;
 use lucene_index::buffered_updates::Term;
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::segment_info::LuceneVersion;
@@ -30,7 +32,7 @@ fn version() -> LuceneVersion {
     }
 }
 
-fn write(dir: &FsDirectory, ords: bool, merge: bool) {
+fn write(dir: &FsDirectory, routed: Option<Lucene104PostingsFormat>, merge: bool) {
     let fields = vec![
         FieldInfo::new("id", 0),
         FieldInfo::new("body", 1).with_index_options(IndexOptions::DocsAndFreqsAndPositions),
@@ -41,9 +43,7 @@ fn write(dir: &FsDirectory, ords: bool, merge: bool) {
     for name in ["body", "tag", "key"] {
         writer.add_postings_field(name).unwrap();
     }
-    if ords {
-        // Small blocks, so the dictionary has floor and sub-blocks.
-        let format = Lucene104PostingsFormat::block_tree_ords(4, 8).unwrap();
+    if let Some(format) = routed {
         writer.set_postings_format_for_field("body", format);
         writer.set_postings_format_for_field("tag", format);
     }
@@ -123,23 +123,25 @@ fn hits(dir: &FsDirectory) -> Vec<(String, Vec<(usize, i32)>)> {
     out
 }
 
-fn check(merge: bool) {
-    let default_path = TempDir::new("ords-write-path-default");
-    let ords_path = TempDir::new("ords-write-path-ords");
+fn check(routed: Lucene104PostingsFormat, dictionary: &dyn TermsDictionaryFormat, merge: bool) {
+    let default_path = TempDir::new("dictionary-write-path-default");
+    let ords_path = TempDir::new("dictionary-write-path-routed");
     let (default_dir, ords_dir) = (
         FsDirectory::open(&default_path),
         FsDirectory::open(&ords_path),
     );
-    write(&default_dir, false, merge);
-    write(&ords_dir, true, merge);
+    write(&default_dir, None, merge);
+    write(&ords_dir, Some(routed), merge);
 
     let files = ords_dir.list_all().unwrap();
-    for ext in ["tio", "tipo", "doc", "pos", "psm"] {
+    let name = dictionary.name();
+    let exts = dictionary.extensions().iter().copied();
+    for ext in exts.chain(["doc", "pos", "psm"]) {
         assert!(
             files
                 .iter()
-                .any(|f| f.ends_with(&format!("_BlockTreeOrds_0.{ext}"))),
-            "no BlockTreeOrds .{ext} in {files:?}"
+                .any(|f| f.ends_with(&format!("_{name}_0.{ext}"))),
+            "no {name} .{ext} in {files:?}"
         );
     }
     assert!(files.iter().any(|f| f.ends_with("_Lucene104_0.tmd")));
@@ -173,12 +175,32 @@ fn check(merge: bool) {
         .is_empty());
 }
 
+fn ords() -> (Lucene104PostingsFormat, &'static dyn TermsDictionaryFormat) {
+    // Small blocks, so the dictionary has floor and sub-blocks.
+    let format = Lucene104PostingsFormat::block_tree_ords(4, 8).unwrap();
+    (format, &lucene_codecs::blocktreeords::DEFAULT_FORMAT)
+}
+
+fn uniform_split() -> (Lucene104PostingsFormat, &'static dyn TermsDictionaryFormat) {
+    let dictionary = &lucene_codecs::uniformsplit::DEFAULT_FORMAT;
+    (Lucene104PostingsFormat::dictionary(dictionary), dictionary)
+}
+
+fn shared_terms() -> (Lucene104PostingsFormat, &'static dyn TermsDictionaryFormat) {
+    let dictionary = &lucene_codecs::uniformsplit::sharedterms::DEFAULT_FORMAT;
+    (Lucene104PostingsFormat::dictionary(dictionary), dictionary)
+}
+
 #[test]
 fn flushed_segments_read_back_like_the_default_format() {
-    check(false);
+    for (format, dictionary) in [ords(), uniform_split(), shared_terms()] {
+        check(format, dictionary, false);
+    }
 }
 
 #[test]
 fn a_merge_rewrites_the_group_and_reads_back() {
-    check(true);
+    for (format, dictionary) in [ords(), uniform_split(), shared_terms()] {
+        check(format, dictionary, true);
+    }
 }

@@ -13,9 +13,12 @@
 //! writing both again (`PerFieldMergeState`).
 //!
 //! With `ords` as a second argument `key` and `tag` go to
-//! `BlockTreeOrdsPostingsFormat(10, 20)` instead, under `_BlockTreeOrds_0`.
+//! `BlockTreeOrdsPostingsFormat(10, 20)` instead, under `_BlockTreeOrds_0`;
+//! with `uniform-split` or `shared-terms`, to `UniformSplitPostingsFormat`
+//! or `STUniformSplitPostingsFormat`.
 //!
-//! Usage: `write_per_field_formats_fixture <output-dir> [ords]`.
+//! Usage: `write_per_field_formats_fixture <output-dir>
+//! [ords|uniform-split|shared-terms]`.
 // Test-support code opts out of the arithmetic gate at the file boundary:
 // see `docs/arithmetic-gate.md`.
 #![allow(clippy::arithmetic_side_effects)]
@@ -58,7 +61,7 @@ fn field(name: &str, number: i32, index_options: IndexOptions) -> FieldInfo {
     }
 }
 
-fn write(dir: &FsDirectory, merge: bool, ords: bool) {
+fn write(dir: &FsDirectory, merge: bool, routed: Option<&str>) {
     let fields = vec![
         field("id", 0, IndexOptions::None),
         field("body", 1, IndexOptions::DocsAndFreqsAndPositions),
@@ -74,12 +77,17 @@ fn write(dir: &FsDirectory, merge: bool, ords: bool) {
     for name in ["body", "tag", "key"] {
         writer.add_postings_field(name).expect("postings");
     }
-    let small = if ords {
-        Lucene104PostingsFormat::block_tree_ords(10, 20)
-    } else {
-        Lucene104PostingsFormat::new(10, 20)
-    }
-    .expect("block sizes");
+    let small = match routed {
+        None => Lucene104PostingsFormat::new(10, 20).expect("block sizes"),
+        Some("ords") => Lucene104PostingsFormat::block_tree_ords(10, 20).expect("block sizes"),
+        Some("uniform-split") => {
+            Lucene104PostingsFormat::dictionary(&lucene_codecs::uniformsplit::DEFAULT_FORMAT)
+        }
+        Some("shared-terms") => Lucene104PostingsFormat::dictionary(
+            &lucene_codecs::uniformsplit::sharedterms::DEFAULT_FORMAT,
+        ),
+        Some(other) => panic!("unknown routed format {other}"),
+    };
     writer.set_postings_format_for_field("tag", small);
     writer.set_postings_format_for_field("key", small);
     for i in 0..PER_SEGMENT * SEGMENTS {
@@ -118,14 +126,14 @@ fn write(dir: &FsDirectory, merge: bool, ords: bool) {
 }
 
 fn main() {
-    let out = std::env::args()
-        .nth(1)
-        .expect("usage: write_per_field_formats_fixture <output-dir> [ords]");
-    let ords = std::env::args().nth(2).as_deref() == Some("ords");
+    let out = std::env::args().nth(1).expect(
+        "usage: write_per_field_formats_fixture <output-dir> [ords|uniform-split|shared-terms]",
+    );
+    let routed = std::env::args().nth(2);
     for (sub, merge) in [("flushed", false), ("merged", true)] {
         let path = format!("{out}/{sub}");
         std::fs::create_dir_all(&path).expect("create output dir");
-        write(&FsDirectory::open(&path), merge, ords);
+        write(&FsDirectory::open(&path), merge, routed.as_deref());
     }
     println!("wrote per-field postings format indexes to {out}");
 }

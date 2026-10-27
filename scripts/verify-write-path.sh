@@ -313,6 +313,10 @@ CASES=(
   # postings, number every term by ord and seek back to it, and pass
   # CheckIndex.
   "lucene-index|write_per_field_formats_fixture ords|block-tree-ords|VerifyPerFieldFormats|BlockTreeOrds"
+  # And to UniformSplitPostingsFormat / STUniformSplitPostingsFormat (M14):
+  # Lucene must read their .ustd/.ustb (.stustd/.stustb) dictionaries.
+  "lucene-index|write_per_field_formats_fixture uniform-split|uniform-split|VerifyPerFieldFormats|UniformSplit"
+  "lucene-index|write_per_field_formats_fixture shared-terms|shared-terms|VerifyPerFieldFormats|SharedTermsUniformSplit"
   # PerFieldDocValuesFormat through IndexWriter (M7): the s_ fields routed to
   # Lucene90DocValuesFormat(16), two flushed segments and a force-merge, whose
   # instances are numbered in opposite orders. Lucene must read every value

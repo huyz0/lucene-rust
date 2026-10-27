@@ -980,10 +980,12 @@ impl SegmentFormat {
             // `.lkp`/`.cmp` are `Completion104`'s suggester files: its
             // `merge` rebuilds them from the merged postings' payloads, so
             // the postings being opened is what they need.
-            // `.tio`/`.tipo`: a `BlockTreeOrds` group's dictionary, which
-            // `per_field_postings::open_groups` reads with the rest.
+            // Another terms dictionary's files (`BlockTreeOrds`' `.tio`, ...)
+            // are claimed through `lucene_codecs::terms_dictionary` in
+            // `for_extension`: `per_field_postings::open_groups` reads them
+            // with the rest.
             SegmentFormat::Postings => &[
-                "tim", "tip", "tmd", "tio", "tipo", "doc", "psm", "pos", "pay", "lkp", "cmp",
+                "tim", "tip", "tmd", "doc", "psm", "pos", "pay", "lkp", "cmp",
             ],
             SegmentFormat::DocValues => &["dvd", "dvm", "dvs"],
             SegmentFormat::Norms => &["nvd", "nvm"],
@@ -1001,6 +1003,12 @@ impl SegmentFormat {
         SegmentFormat::ALL
             .into_iter()
             .find(|f| f.extensions().contains(&extension))
+            .or_else(|| {
+                lucene_codecs::terms_dictionary::all()
+                    .iter()
+                    .any(|d| d.extensions().contains(&extension))
+                    .then_some(SegmentFormat::Postings)
+            })
     }
 
     /// Whether `source` carries this format's opened readers -- i.e. whether
