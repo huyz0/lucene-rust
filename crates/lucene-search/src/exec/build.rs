@@ -1085,6 +1085,21 @@ pub(crate) fn build_boolean<'a>(
         .map(|c| c.into_scorer_at_level(mode, top_level)))
 }
 
+/// [`build_boolean`] for a search's root query, which [`build`] does not
+/// see: wrapped as `AssertingWeight` wraps every scorer it supplies.
+pub(crate) fn build_boolean_root<'a>(
+    ctx: &LeafContext<'a>,
+    q: &BooleanQuery,
+    boost: f32,
+    mode: Mode,
+    top_level: bool,
+) -> Result<Option<BoxScorer<'a>>> {
+    let scorer = build_boolean(ctx, q, boost, mode, top_level)?;
+    #[cfg(any(test, feature = "asserting"))]
+    let scorer = scorer.map(|s| super::asserting::wrap(s, mode, top_level));
+    Ok(scorer)
+}
+
 /// [`build_boolean`], as a [`Child`] (see [`compose_child`]).
 fn build_boolean_child<'a>(
     ctx: &LeafContext<'a>,

@@ -1328,7 +1328,7 @@ fn bulk_boolean_tree<'a>(
     boost: f32,
     mode: Mode,
 ) -> Result<Option<Bulk<'a>>> {
-    Ok(super::build::build_boolean(ctx, q, boost, mode, true)?.map(Bulk::scorer))
+    Ok(super::build::build_boolean_root(ctx, q, boost, mode, true)?.map(Bulk::scorer))
 }
 
 /// `filteredOptionalBulkScorer`'s filter: the `FILTER` clauses as one
@@ -1537,9 +1537,10 @@ pub(crate) fn score_segment_with_deadline<C: ScoringCollector + ?Sized>(
     mode: Mode,
     live_docs: Option<&FixedBitSet>,
     collector: &mut C,
+    max_doc: Option<i32>,
     deadline: std::time::Instant,
 ) -> Result<bool> {
-    score_segment_time_limited(bulk, mode, live_docs, collector, || {
+    score_segment_time_limited(bulk, mode, live_docs, collector, max_doc, || {
         std::time::Instant::now() >= deadline
     })
 }
@@ -1550,13 +1551,20 @@ pub(crate) fn score_segment_with_deadline<C: ScoringCollector + ?Sized>(
 /// wide again, starting where the wrapped bulk scorer said the last one
 /// ended. Returns `true` when `should_exit` stopped it
 /// (`TimeExceededException`); what was collected before that stands.
+/// Under the asserting searcher each window goes through one
+/// `AssertingBulkScorer`, which the time-limiting scorer wraps in Java.
 pub(crate) fn score_segment_time_limited<C: ScoringCollector + ?Sized>(
     bulk: &mut Bulk<'_>,
     mode: Mode,
     live_docs: Option<&FixedBitSet>,
     collector: &mut C,
+    max_doc: Option<i32>,
     mut should_exit: impl FnMut() -> bool,
 ) -> Result<bool> {
+    #[cfg(any(test, feature = "asserting"))]
+    let mut asserting = super::asserting::AssertingBulk::installed(max_doc);
+    #[cfg(not(any(test, feature = "asserting")))]
+    let _ = max_doc;
     let (mut min, max) = (0i32, NO_MORE_DOCS);
     let mut interval = TIME_LIMIT_INTERVAL;
     while min < max {
@@ -1569,6 +1577,12 @@ pub(crate) fn score_segment_time_limited<C: ScoringCollector + ?Sized>(
         }
         if should_exit() {
             return Ok(true);
+        }
+        #[cfg(any(test, feature = "asserting"))]
+        if let Some(asserting) = asserting.as_mut() {
+            let collector: &mut dyn ScoringCollector = &mut AsDyn(&mut *collector);
+            min = asserting.score(bulk, mode, live_docs, collector, min, new_max)?;
+            continue;
         }
         min = bulk.score(mode, live_docs, collector, min, new_max)?;
     }
