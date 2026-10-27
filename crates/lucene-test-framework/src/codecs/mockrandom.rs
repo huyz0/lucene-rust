@@ -143,6 +143,14 @@ impl MockRandomPostingsFormat {
         }
     }
 
+    /// `MockRandomPostingsFormat(Random)` whose `random.nextLong()` was
+    /// `seed` (as [`crate::index::random_codec`] records it).
+    pub fn from_seed(seed: i64) -> Self {
+        Self {
+            seed_random: Some(JavaRandom::new(seed)),
+        }
+    }
+
     pub fn name(&self) -> &'static str {
         "MockRandom"
     }
