@@ -71,8 +71,8 @@ tests/codecs/uniformsplit/Rot13CypherTestUtil	ported	crates/lucene-test-framewor
 tests/codecs/uniformsplit/UniformSplitRot13PostingsFormat	ported	crates/lucene-test-framework/src/codecs/rot13.rs::UniformSplitRot13PostingsFormat -- routed through IndexWriter; Lucene reads the groups
 tests/codecs/uniformsplit/sharedterms/STUniformSplitRot13PostingsFormat	ported	crates/lucene-test-framework/src/codecs/rot13.rs::StUniformSplitRot13PostingsFormat -- routed through IndexWriter; Lucene reads the groups
 tests/codecs/vector/ConfigurableMCodec	ported	crates/lucene-test-framework/src/codecs/configurable_m.rs::ConfigurableMCodec -- M14: direct configured-M native flush/read plus generic delegates; SPI name and IndexWriter::set_codec routing, sorted flush and merge
-tests/geo/BaseGeoPointTestCase	partial	crates/lucene-test-framework/src/geo/base_geo_point.rs::BaseGeoPoint -- M14: testEquals (the geo point queries have no Java equals)
-tests/geo/BaseXYPointTestCase	partial	crates/lucene-test-framework/src/geo/base_xy_point.rs::BaseXYPoint -- M14: testEquals (the XY point queries have no Java equals)
+tests/geo/BaseGeoPointTestCase	ported	crates/lucene-test-framework/src/geo/base_geo_point.rs::BaseGeoPoint
+tests/geo/BaseXYPointTestCase	ported	crates/lucene-test-framework/src/geo/base_xy_point.rs::BaseXYPoint
 tests/geo/EarthDebugger	not-needed	a debugging aid that renders shapes as an HTML/SVG globe; no check depends on it
 tests/geo/GeoTestUtil	ported	crates/lucene-test-framework/src/geo/geo_test_util.rs::next_polygon -- M14: every generator (points, boxes, circles, polygons, lines, near points/boxes, regular polygons) with Java's draws, and containsSlowly; fixtures GenGeoTestUtil, GenGeoContainsSlowly. toSVG (a debugging aid) and readShape (the Java tests' classpath resources) are not needed
 tests/geo/ShapeTestUtil	ported	crates/lucene-test-framework/src/geo/shape_test_util.rs::next_float -- explicit JavaRandom/nightly inputs; all eight helpers, Java float bits/RNG continuation and polygon oracle fixtures

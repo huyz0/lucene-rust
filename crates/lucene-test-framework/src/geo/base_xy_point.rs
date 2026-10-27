@@ -13,8 +13,9 @@
 //! index is one segment under a plain `IndexWriter`, skipping the draws of
 //! `newIndexWriterConfig`, `RandomIndexWriter` and `newSearcher`, and
 //! `testRandomDistance` keeps the default leaf size (drawing Java's).
-//! `testEquals` needs query `equals`, which the XY queries do not port; the
-//! `null`-field tests cannot be written against `&str`. Java's all-Y
+//! `testEquals` compares the queries a clause wraps by
+//! `DocumentQuery::equals`; the `null`-field tests cannot be written
+//! against `&str`. Java's all-Y
 //! copy-branch typo is retained.
 
 use std::collections::BTreeSet;
@@ -572,6 +573,40 @@ impl<Q: XYQueries> BaseXYPoint<'_, XYIndexed<Q>> {
         self.queries()
             .new_polygon_query(field, polygons)
             .expect("a valid polygon")
+    }
+
+    /// `testEquals`: the box queries equal their twins, and the distance
+    /// and polygon queries also differ from the same query on another
+    /// field.
+    pub fn equals(&mut self) {
+        let rect = self.case.next_box(self.random);
+        let (min_x, max_x, min_y, max_y) = (rect.min_x, rect.max_x, rect.min_y, rect.max_y);
+        let q1 = self.rect_query("field", min_x, max_x, min_y, max_y);
+        let q2 = self.rect_query("field", min_x, max_x, min_y, max_y);
+        assert!(point_index::query_equals(&q1, &q2), "{q1:?} != {q2:?}");
+
+        let x = self.case.next_x(self.random);
+        let y = self.case.next_y(self.random);
+        let q1 = self.distance_query("field", x, y, 10000.0);
+        let q2 = self.distance_query("field", x, y, 10000.0);
+        assert!(point_index::query_equals(&q1, &q2), "{q1:?} != {q2:?}");
+        let other = self.distance_query("field2", x, y, 10000.0);
+        assert!(
+            !point_index::query_equals(&q1, &other),
+            "{q1:?} == {other:?}"
+        );
+
+        let xs = [min_x, max_x, max_x, min_x, min_x];
+        let ys = [min_y, min_y, max_y, max_y, min_y];
+        let polygon = || XYPolygon::new(&xs, &ys, Vec::new()).expect("a box's polygon");
+        let q1 = self.polygon_query("field", &[polygon()]);
+        let q2 = self.polygon_query("field", &[polygon()]);
+        assert!(point_index::query_equals(&q1, &q2), "{q1:?} != {q2:?}");
+        let other = self.polygon_query("field2", &[polygon()]);
+        assert!(
+            !point_index::query_equals(&q1, &other),
+            "{q1:?} == {other:?}"
+        );
     }
 
     /// `testRandomBig` (nightly).

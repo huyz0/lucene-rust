@@ -12,7 +12,7 @@ use lucene_util::geo::{
 
 use super::{geo, illegal, sorted_numeric_only, GeoValues, QueryRelation};
 use crate::collector::ScoringCollector;
-use crate::document::{collect_live, reader, DocumentQuery};
+use crate::document::{collect_live, reader, same_class, DocumentQuery};
 use crate::multi_segment::OpenSegment;
 use crate::Result;
 
@@ -103,6 +103,10 @@ impl LatLonDocValuesBoxQuery {
 }
 
 impl DocumentQuery for LatLonDocValuesBoxQuery {
+    fn equals(&self, other: &dyn DocumentQuery) -> bool {
+        same_class::<Self>(other).is_some_and(|o| self == o)
+    }
+
     fn score_leaf(
         &self,
         leaf: &OpenSegment<'_>,
@@ -226,6 +230,14 @@ impl LatLonDocValuesQuery {
 }
 
 impl DocumentQuery for LatLonDocValuesQuery {
+    fn equals(&self, other: &dyn DocumentQuery) -> bool {
+        same_class::<Self>(other).is_some_and(|o| {
+            self.field == o.field
+                && self.query_relation == o.query_relation
+                && self.geometries == o.geometries
+        })
+    }
+
     fn score_leaf(
         &self,
         leaf: &OpenSegment<'_>,
@@ -264,6 +276,11 @@ impl XYDocValuesPointInGeometryQuery {
 }
 
 impl DocumentQuery for XYDocValuesPointInGeometryQuery {
+    fn equals(&self, other: &dyn DocumentQuery) -> bool {
+        same_class::<Self>(other)
+            .is_some_and(|o| self.field == o.field && self.geometries == o.geometries)
+    }
+
     fn score_leaf(
         &self,
         leaf: &OpenSegment<'_>,
