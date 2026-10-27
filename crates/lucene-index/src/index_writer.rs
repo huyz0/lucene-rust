@@ -10815,6 +10815,13 @@ impl IndexWriter<'_> {
         &self.segment_infos
     }
 
+    /// The segments of the last commit as it was written
+    /// (`rollbackSegments`): [`Self::segment_infos`] also takes deletes
+    /// applied since.
+    pub(crate) fn committed_segments(&self) -> &[SegmentCommitInfo] {
+        &self.rollback_segments
+    }
+
     /// `IndexWriter.getSegmentCount()`: the segments of the writer's
     /// in-memory view -- the last commit's and those flushed since.
     pub fn segment_count(&self) -> usize {

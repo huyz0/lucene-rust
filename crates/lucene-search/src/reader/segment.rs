@@ -25,7 +25,7 @@ use super::{
     DocValuesIterator, DynVisitor, FloatVectorValues, IndexReader, IntersectVisitor, LeafReader,
     LeafReaderContext, MaterializedPostings, NumericDocValues, PointValues, PostingsEnum,
     PostingsFlags, SortedDocValues, SortedNumericDocValues, SortedSetDocValues, StoredFieldVisitor,
-    SubReader, TermVectorsDocument, Terms, TermsEnum, NO_MORE_DOCS,
+    SubReader, TermState, TermVectorsDocument, Terms, TermsEnum, NO_MORE_DOCS,
 };
 use crate::directory_reader::{DirectoryReader, SegmentReader};
 use crate::{Error, Result};
@@ -595,6 +595,8 @@ impl Terms for SegmentTerms<'_> {
         Ok(Box::new(SegmentTermsEnum {
             te: self.field.iter(),
             terms: self,
+            pinned: None,
+            fresh: true,
         }))
     }
     fn size(&self) -> i64 {
@@ -639,24 +641,49 @@ impl Terms for SegmentTerms<'_> {
 struct SegmentTermsEnum<'s> {
     te: blocktree::TermsEnum<'s>,
     terms: &'s SegmentTerms<'s>,
+    /// The term and state of a `seekExact(term, state)`, until the enum
+    /// moves: Java's `SegmentTermsEnum` takes the state as the current
+    /// frame's without reading the dictionary.
+    pinned: Option<(Vec<u8>, blocktree::SeekedTerm)>,
+    /// Whether the dictionary was never read (Java's `in == null`).
+    fresh: bool,
 }
 
 impl SegmentTermsEnum<'_> {
     fn stats(&mut self) -> Result<blocktree::TermStats> {
-        self.te
-            .try_stats()?
-            .ok_or_else(|| Error::IllegalState("the TermsEnum is not positioned on a term".into()))
+        if let Some((_, state)) = &self.pinned {
+            return Ok(state.stats);
+        }
+        self.te.try_stats()?.ok_or_else(not_positioned)
     }
+}
+
+fn not_positioned() -> Error {
+    Error::IllegalState("the TermsEnum is not positioned on a term".into())
 }
 
 impl TermsEnum for SegmentTermsEnum<'_> {
     fn next(&mut self) -> Result<Option<&[u8]>> {
+        if let Some((term, _)) = self.pinned.take() {
+            // `next()` after `seekExact(term, state)`: catch the frames up
+            // on the term first, unless the enum never read the dictionary,
+            // where Java's `in == null` branch starts from the first term.
+            if !self.fresh {
+                self.te.try_seek_ceil(&term)?;
+            }
+        }
+        self.fresh = false;
         Ok(self.te.try_next_term()?)
     }
     fn term(&self) -> Option<&[u8]> {
-        self.te.term()
+        match &self.pinned {
+            Some((term, _)) => Some(term),
+            None => self.te.term(),
+        }
     }
     fn try_seek_ceil(&mut self, target: &[u8]) -> Result<SeekStatus> {
+        self.pinned = None;
+        self.fresh = false;
         Ok(self.te.try_seek_ceil(target)?)
     }
     fn doc_freq(&mut self) -> Result<i32> {
@@ -668,27 +695,35 @@ impl TermsEnum for SegmentTermsEnum<'_> {
     fn postings(&mut self, flags: PostingsFlags) -> Result<Box<dyn PostingsEnum>> {
         let t = self.terms;
         let positional = flags.wants_positions() && t.has_positions();
+        let pinned = self.pinned.as_ref().map(|(_, state)| state);
         let (docs, freqs, positions) = match (&t.pos_in, positional) {
             (Some(pos_in), true) => {
-                let (p, positions) = self
-                    .te
-                    .try_current_postings_and_positions(
+                let (p, positions) = match pinned {
+                    Some(state) => t.field.postings_and_positions_for(
+                        state,
                         t.doc_in.as_ref(),
                         pos_in,
                         t.pay_in.as_ref(),
-                    )?
-                    .ok_or_else(|| {
-                        Error::IllegalState("the TermsEnum is not positioned on a term".into())
-                    })?;
+                    )?,
+                    None => self
+                        .te
+                        .try_current_postings_and_positions(
+                            t.doc_in.as_ref(),
+                            pos_in,
+                            t.pay_in.as_ref(),
+                        )?
+                        .ok_or_else(not_positioned)?,
+                };
                 (p.docs, p.freqs, Some(positions))
             }
             _ => {
-                let p = self
-                    .te
-                    .try_current_postings(t.doc_in.as_ref())?
-                    .ok_or_else(|| {
-                        Error::IllegalState("the TermsEnum is not positioned on a term".into())
-                    })?;
+                let p = match pinned {
+                    Some(state) => t.field.postings_for(state, t.doc_in.as_ref())?,
+                    None => self
+                        .te
+                        .try_current_postings(t.doc_in.as_ref())?
+                        .ok_or_else(not_positioned)?,
+                };
                 (p.docs, p.freqs, None)
             }
         };
@@ -699,6 +734,33 @@ impl TermsEnum for SegmentTermsEnum<'_> {
             vec![1; docs.len()]
         };
         Ok(Box::new(MaterializedPostings::new(docs, freqs, positions)?))
+    }
+    /// `BlockTermState` of the current term.
+    fn term_state(&mut self) -> Result<TermState> {
+        if let Some((_, state)) = &self.pinned {
+            return Ok(TermState::block_tree(*state));
+        }
+        let state = self.te.try_seeked_term()?.ok_or_else(not_positioned)?;
+        Ok(TermState::block_tree(state))
+    }
+    /// Takes a block-tree `state` as the current term's without reading the
+    /// dictionary; any other state seeks by the term.
+    fn seek_exact_state(&mut self, term: &[u8], state: &TermState) -> Result<()> {
+        match state.as_block_tree() {
+            Some(state) => {
+                self.pinned = Some((term.to_vec(), *state));
+                Ok(())
+            }
+            None => {
+                if !self.try_seek_exact(term)? {
+                    return Err(Error::IllegalArgument(format!(
+                        "term={} does not exist",
+                        super::bytes_ref_string(term)
+                    )));
+                }
+                Ok(())
+            }
+        }
     }
 }
 

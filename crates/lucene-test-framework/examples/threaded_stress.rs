@@ -41,7 +41,7 @@ fn main() {
         let mode = if seed % 2 == 0 {
             ReaderMode::Nrt
         } else {
-            ReaderMode::Reopen
+            ReaderMode::SearcherManager
         };
         let result = std::panic::catch_unwind(|| {
             let mut t = LuceneTestCase::with_config("threadedStress", seed, false, multiplier);

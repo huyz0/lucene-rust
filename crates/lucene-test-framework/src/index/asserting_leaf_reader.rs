@@ -1,6 +1,6 @@
 //! `AssertingLeafReader` and `AssertingDirectoryReader`: a leaf (and a
 //! directory reader whose every leaf is one) that checks how its terms,
-//! postings and doc values are used and what they answer, panicking where
+//! postings, doc values and points are used and what they answer, panicking where
 //! Java's `assert` would throw.
 //!
 //! Each Java check that has a counterpart here is kept, with Java's message
@@ -9,15 +9,18 @@
 //! - `assertThread` has no counterpart: the iterators borrow their reader
 //!   and are not `Send`, so the compiler already refuses to hand one to
 //!   another thread.
-//! - Not wrapped (they pass through unchecked): points (`AssertingPointValues`,
-//!   `AssertingPointTree`, `AssertingIntersectVisitor`) and vectors
-//!   (`searchNearestVectors`). Stored fields and term vectors pass through
-//!   too: Java checks only the calling thread of the former, and a
+//! - Points are walked by `intersect`, not a `PointTree`, so
+//!   `AssertingPointTree` has no counterpart: [`AssertingPointValues`] hands
+//!   each walk an [`AssertingIntersectVisitor`], which also checks
+//!   `visit_many` (Java's `visit(DocIdSetIterator)`) as one `visit` per id.
+//! - Vectors pass through: the reader has no `searchNearestVectors` for
+//!   Java's `AssertingAcceptDocs` wrap. Stored fields and term vectors pass
+//!   through too: Java checks only the calling thread of the former, and a
 //!   `TermVectorsDocument` is data with no `Terms` to wrap.
 //! - `hasDeletions()` is `liveDocs != null` rather than Java's
 //!   `numDeletedDocs() > 0`, so a leaf exposing a live-docs bitset with no
 //!   deletions fails the constructor's check -- a deliberate strengthening.
-//! - `prepareSeekExact`, `termState`, `intoBitSet`, `docIDRunEnd`,
+//! - `prepareSeekExact`, `intoBitSet`, `docIDRunEnd`,
 //!   `nextPostings` and `longValues` have no Rust counterpart, nor has the
 //!   `TWO_PHASE_SEEKING` state they need. `BytesRef.isValid` is a slice here.
 //! - Impacts are owned snapshots, so Java's stale `AssertingImpacts` view
@@ -41,11 +44,12 @@ use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::reader::filter::{FilterDirectoryReader, SubReaderWrapper};
 use lucene_search::reader::{
     BinaryDocValues, ByteVectorValues, CacheHelper, DocIdSetIterator, DocValuesIterator,
-    FloatVectorValues, ImpactsEnum, IndexReader, LeafReader, LeafReaderContext, NumericDocValues,
-    PointValues, PostingsEnum, PostingsFlags, SortedDocValues, SortedNumericDocValues,
-    SortedSetDocValues, TermVectorsDocument, Terms, TermsEnum, NO_MORE_DOCS,
+    FloatVectorValues, ImpactsEnum, IndexReader, IntersectVisitor, LeafReader, LeafReaderContext,
+    NumericDocValues, PointValues, PostingsEnum, PostingsFlags, Relation, SortedDocValues,
+    SortedNumericDocValues, SortedSetDocValues, TermVectorsDocument, Terms, TermsEnum,
+    NO_MORE_DOCS,
 };
-use lucene_search::reader::{DocValuesSkipper, SkipperImpl};
+use lucene_search::reader::{DocValuesSkipper, SkipperImpl, TermState};
 use lucene_search::Result;
 use lucene_util::fixed_bit_set::FixedBitSet;
 
@@ -246,7 +250,10 @@ impl LeafReader for AssertingLeafReader {
     }
 
     fn point_values(&self, field: &str) -> Result<Option<Box<dyn PointValues + '_>>> {
-        self.in_.point_values(field)
+        let max_doc = self.max_doc();
+        Ok(self.in_.point_values(field)?.map(|values| {
+            Box::new(AssertingPointValues::new(values, max_doc)) as Box<dyn PointValues + '_>
+        }))
     }
 
     fn float_vector_values(&self, field: &str) -> Result<Option<Box<dyn FloatVectorValues + '_>>> {
@@ -527,6 +534,15 @@ impl TermsEnum for AssertingTermsEnum<'_> {
     }
     fn seek_exact_ord(&mut self, ord: i64) -> Result<()> {
         self.in_.seek_exact_ord(ord)?;
+        self.state = TermsState::Positioned;
+        Ok(())
+    }
+    fn term_state(&mut self) -> Result<TermState> {
+        self.positioned("termState()");
+        self.in_.term_state()
+    }
+    fn seek_exact_state(&mut self, term: &[u8], state: &TermState) -> Result<()> {
+        self.in_.seek_exact_state(term, state)?;
         self.state = TermsState::Positioned;
         Ok(())
     }
@@ -1651,5 +1667,218 @@ impl SkipperImpl for AssertingDocValuesSkipper<'_> {
         Self: 's,
     {
         Box::new(self.clone())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Points
+// ---------------------------------------------------------------------------
+
+/// `AssertingPointValues`: checks the field's statistics when wrapped, and
+/// hands every walk an [`AssertingIntersectVisitor`]. Java's `PointTree` has
+/// no counterpart here (the walk is `intersect`), so `AssertingPointTree`'s
+/// one check, a non-empty cell, has nothing to read.
+pub struct AssertingPointValues<'a> {
+    in_: Box<dyn PointValues + 'a>,
+}
+
+impl<'a> AssertingPointValues<'a> {
+    /// `new AssertingPointValues(in, maxDoc)`.
+    pub fn new(in_: Box<dyn PointValues + 'a>, max_doc: i32) -> Self {
+        let (size, doc_count) = (in_.size(), in_.doc_count());
+        assert!(size > 0, "size={size}");
+        assert!(doc_count > 0, "docCount={doc_count}");
+        assert!(
+            i64::from(doc_count) <= size,
+            "docCount={doc_count} > size={size}"
+        );
+        assert!(
+            doc_count <= max_doc,
+            "docCount={doc_count} > maxDoc={max_doc}"
+        );
+        Self { in_ }
+    }
+
+    /// `getWrapped()`.
+    pub fn wrapped(&self) -> &dyn PointValues {
+        self.in_.as_ref()
+    }
+
+    fn checked<'v>(&self, visitor: &'v mut dyn IntersectVisitor) -> AssertingIntersectVisitor<'v> {
+        AssertingIntersectVisitor::new(
+            self.in_.num_dimensions(),
+            self.in_.num_index_dimensions(),
+            self.in_.bytes_per_dimension(),
+            visitor,
+        )
+    }
+}
+
+impl PointValues for AssertingPointValues<'_> {
+    fn intersect(&self, visitor: &mut dyn IntersectVisitor) -> Result<()> {
+        self.in_.intersect(&mut self.checked(visitor))
+    }
+    fn estimate_point_count(&self, visitor: &mut dyn IntersectVisitor) -> Result<i64> {
+        self.in_.estimate_point_count(&mut self.checked(visitor))
+    }
+    fn min_packed_value(&self) -> &[u8] {
+        self.in_.min_packed_value()
+    }
+    fn max_packed_value(&self) -> &[u8] {
+        self.in_.max_packed_value()
+    }
+    fn num_dimensions(&self) -> i32 {
+        self.in_.num_dimensions()
+    }
+    fn num_index_dimensions(&self) -> i32 {
+        self.in_.num_index_dimensions()
+    }
+    fn bytes_per_dimension(&self) -> i32 {
+        self.in_.bytes_per_dimension()
+    }
+    fn size(&self) -> i64 {
+        self.in_.size()
+    }
+    fn doc_count(&self) -> i32 {
+        self.in_.doc_count()
+    }
+}
+
+/// `AssertingIntersectVisitor`: every cell's bounds are ordered, a cell
+/// inside the query hands over doc ids and a crossing one values, the first
+/// value after a `compare` lies in that cell, no more documents arrive than
+/// the last `grow` reserved, and one-dimensional values arrive in order
+/// (doc ids ascending among equal values).
+pub struct AssertingIntersectVisitor<'v> {
+    in_: &'v mut dyn IntersectVisitor,
+    num_data_dims: usize,
+    num_index_dims: usize,
+    bytes_per_dim: usize,
+    last_doc_value: Option<Vec<u8>>,
+    last_min: Vec<u8>,
+    last_max: Vec<u8>,
+    last_compare: Option<Relation>,
+    last_doc: i32,
+    budget: i64,
+}
+
+impl<'v> AssertingIntersectVisitor<'v> {
+    /// `new AssertingIntersectVisitor(numDataDims, numIndexDims, bytesPerDim, in)`.
+    pub fn new(
+        num_data_dims: i32,
+        num_index_dims: i32,
+        bytes_per_dim: i32,
+        in_: &'v mut dyn IntersectVisitor,
+    ) -> Self {
+        let dims = usize::try_from(num_data_dims).expect("numDataDims >= 0");
+        let width = usize::try_from(bytes_per_dim).expect("bytesPerDim >= 0");
+        Self {
+            in_,
+            num_data_dims: dims,
+            num_index_dims: usize::try_from(num_index_dims).expect("numIndexDims >= 0"),
+            bytes_per_dim: width,
+            last_doc_value: (dims == 1).then(|| vec![0; width]),
+            last_min: vec![0; dims * width],
+            last_max: vec![0; dims * width],
+            last_compare: None,
+            last_doc: -1,
+            budget: 0,
+        }
+    }
+
+    fn spend(&mut self, docs: usize) {
+        self.budget -= i64::try_from(docs).unwrap_or(i64::MAX);
+        assert!(
+            self.budget >= 0,
+            "called add() more times than the last call to grow() reserved"
+        );
+    }
+
+    fn check_inside(&self) {
+        assert!(
+            self.last_compare
+                .is_none_or(|r| r == Relation::CellInsideQuery),
+            "visit(docID) after compare returned {:?}",
+            self.last_compare
+        );
+    }
+
+    fn dim(&self, dim: usize) -> std::ops::Range<usize> {
+        dim * self.bytes_per_dim..(dim + 1) * self.bytes_per_dim
+    }
+}
+
+impl IntersectVisitor for AssertingIntersectVisitor<'_> {
+    fn compare(&mut self, min_packed: &[u8], max_packed: &[u8]) -> Relation {
+        for dim in 0..self.num_index_dims {
+            let r = self.dim(dim);
+            assert!(
+                min_packed[r.clone()] <= max_packed[r],
+                "dim={dim}: the cell's min is above its max"
+            );
+        }
+        let len = self.num_index_dims * self.bytes_per_dim;
+        self.last_max[..len].copy_from_slice(&max_packed[..len]);
+        self.last_min[..len].copy_from_slice(&min_packed[..len]);
+        let relation = self.in_.compare(min_packed, max_packed);
+        self.last_compare = Some(relation);
+        relation
+    }
+
+    fn visit(&mut self, doc_id: i32) {
+        self.spend(1);
+        self.check_inside();
+        self.in_.visit(doc_id);
+    }
+
+    fn visit_many(&mut self, doc_ids: &[i32]) {
+        self.spend(doc_ids.len());
+        self.check_inside();
+        self.in_.visit_many(doc_ids);
+    }
+
+    fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) {
+        self.spend(1);
+        assert!(
+            self.last_compare
+                .is_none_or(|r| r == Relation::CellCrossesQuery),
+            "visit(docID, packedValue) after compare returned {:?}",
+            self.last_compare
+        );
+        if self.last_compare.take().is_some() {
+            // The value lies in the last cell passed to compare.
+            for dim in 0..self.num_index_dims {
+                let r = self.dim(dim);
+                assert!(
+                    self.last_min[r.clone()] <= packed_value[r.clone()]
+                        && self.last_max[r.clone()] >= packed_value[r],
+                    "dim={dim} of {} value={packed_value:?}",
+                    self.num_data_dims
+                );
+            }
+        }
+        assert_eq!(
+            packed_value.len(),
+            self.num_data_dims * self.bytes_per_dim,
+            "packed value length"
+        );
+        if let Some(last) = self.last_doc_value.as_mut() {
+            match last.as_slice().cmp(packed_value) {
+                std::cmp::Ordering::Less => {}
+                std::cmp::Ordering::Equal => assert!(
+                    self.last_doc <= doc_id,
+                    "doc ids are out of order when point values are the same!"
+                ),
+                std::cmp::Ordering::Greater => panic!("point values are out of order"),
+            }
+            last.copy_from_slice(packed_value);
+            self.last_doc = doc_id;
+        }
+        self.in_.visit_with_value(doc_id, packed_value);
+    }
+
+    fn grow(&mut self, count: usize) {
+        self.in_.grow(count);
+        self.budget = i64::try_from(count).unwrap_or(i64::MAX);
     }
 }
