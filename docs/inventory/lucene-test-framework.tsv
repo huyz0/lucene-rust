@@ -136,7 +136,7 @@ tests/mockfile/VerboseFS	not-needed	logs every filesystem call to the infoStream
 tests/mockfile/VirusCheckingFS	ported	crates/lucene-test-framework/src/mockfile/mock_fs.rs::disable_virus_checker
 tests/mockfile/WindowsFS	ported	crates/lucene-test-framework/src/mockfile/mock_fs.rs::check_delete
 tests/mockfile/WindowsPath	not-needed	a java.nio.file.Path that refuses Windows-illegal characters; Rust paths are std::path::Path, and the Windows delete/rename semantics are MockFs::check_delete
-tests/search/AssertingAcceptDocs	partial	crates/lucene-test-framework/src/codecs/asserting_knn_vectors.rs::AssertingAcceptDocs -- M14: local vector seam checks creation thread, fresh iterator and wrapper identity; production AcceptDocs integration absent
+tests/search/AssertingAcceptDocs	ported	crates/lucene-test-framework/src/codecs/asserting_knn_vectors.rs::AssertingAcceptDocs -- M14: vector seam checks creation thread, fresh iterator and wrapper identity; production KNN accept sets are immutable borrowed FixedBitSets (structural difference, see parity ledger)
 tests/search/AssertingBulkScorer	ported	crates/lucene-search/src/exec/asserting.rs::AssertingBulk -- the leaf's maxDoc from score_segment
 tests/search/AssertingCollector	ported	crates/lucene-test-framework/src/search/asserting.rs::AssertingCollector
 tests/search/AssertingIndexSearcher	ported	crates/lucene-test-framework/src/search/asserting.rs::AssertingIndexSearcher -- rewrite checks QueryUtils.check before and after; slices drawn by newSearcher (search/new_searcher.rs); slices on other threads run under the caller's guard; the *_concurrent multi-segment functions are not searcher searches
