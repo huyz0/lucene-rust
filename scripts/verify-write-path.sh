@@ -50,7 +50,7 @@ CLASSES=$(mktemp -d)
 cleanup() { [ "$KEEP" -eq 1 ] && echo "verify-write-path: fixtures kept in $WORK" || rm -rf "$WORK"; rm -rf "$CLASSES"; }
 trap cleanup EXIT
 
-# crate | example | output subdir | verifier class | optional verifier args
+# crate | example [example args] | output subdir | verifier class | optional verifier args
 CASES=(
   "lucene-codecs|write_stored_fields_fixture|stored-fields|VerifyStoredFields"
   "lucene-codecs|write_field_infos_fixture|field-infos|VerifyFieldInfos"
@@ -308,6 +308,11 @@ CASES=(
   # must find each field in its own group's files under the suffix its .fnm
   # records, see exactly the deleted documents gone, and pass CheckIndex.
   "lucene-index|write_per_field_formats_fixture|per-field-formats|VerifyPerFieldFormats"
+  # The same, key and tag routed to BlockTreeOrdsPostingsFormat(10, 20)
+  # (M14): Lucene must read their .tio/.tipo dictionaries over the group's
+  # postings, number every term by ord and seek back to it, and pass
+  # CheckIndex.
+  "lucene-index|write_per_field_formats_fixture ords|block-tree-ords|VerifyPerFieldFormats|BlockTreeOrds"
   # PerFieldDocValuesFormat through IndexWriter (M7): the s_ fields routed to
   # Lucene90DocValuesFormat(16), two flushed segments and a force-merge, whose
   # instances are numbered in opposite orders. Lucene must read every value
@@ -431,7 +436,9 @@ for case in "${CASES[@]}"; do
     continue
   fi
   out="$WORK/$subdir"
-  if ! cargo run --quiet -p "$crate" --example "$example" -- "$out" >/dev/null; then
+  read -r example example_args <<<"$example"
+  # shellcheck disable=SC2086 -- $example_args is a deliberate word split
+  if ! cargo run --quiet -p "$crate" --example "$example" -- "$out" $example_args >/dev/null; then
     echo "  FAIL (rust write)   $example"; failed=$((failed+1)); continue
   fi
   # shellcheck disable=SC2086 -- $extra is a deliberate word split

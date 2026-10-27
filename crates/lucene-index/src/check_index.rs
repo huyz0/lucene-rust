@@ -296,6 +296,7 @@ use lucene_codecs::hnsw::HnswGraphView;
 use lucene_codecs::hnsw_vectors;
 use lucene_codecs::live_docs;
 use lucene_codecs::norms;
+use lucene_codecs::per_field_postings;
 use lucene_codecs::points;
 use lucene_codecs::postings::{self, DocInput};
 use lucene_codecs::stored_fields;
@@ -1100,7 +1101,7 @@ fn check_field_flags_vs_files(fields: &FieldInfos, files: &[String], checks: &mu
     let has_dv_files = has_any_ext(files, &[".dvd", ".dvm"]);
     let has_norms_files = has_any_ext(files, &[".nvd", ".nvm"]);
     let has_tv_files = has_any_ext(files, &[".tvd", ".tvx", ".tvm"]);
-    let has_postings_files = has_any_ext(files, &[".tim", ".tip", ".tmd"]);
+    let has_postings_files = has_any_ext(files, &[".tim", ".tip", ".tmd", ".tio", ".tipo"]);
 
     let any_field_claims_dv = fields
         .fields
@@ -1977,9 +1978,8 @@ struct PostingsFileBytes {
 /// One postings format's dictionary of a multi-format segment.
 struct PostingsGroupBytes {
     suffix: String,
-    tim: lucene_store::directory::Input,
-    tip: lucene_store::directory::Input,
-    tmd: lucene_store::directory::Input,
+    /// In `per_field_postings::dictionary_extensions` order.
+    dictionary: Vec<lucene_store::directory::Input>,
     base: [u64; 3],
 }
 
@@ -2004,6 +2004,14 @@ fn open_postings_bytes(
     si: &SegmentInfo,
 ) -> Option<Result<PostingsFileBytes, String>> {
     let find = |ext: &str| si.files.iter().find(|f| f.ends_with(ext));
+    let markers = group_markers(si);
+    if markers.len() > 1
+        || markers.iter().any(|(_, suffix)| {
+            per_field_postings::is_foreign_format(per_field_postings::format_of_suffix(suffix))
+        })
+    {
+        return Some(open_postings_groups(dir, si, &markers));
+    }
     let (tim_name, tip_name, tmd_name) = match (find(".tim"), find(".tip"), find(".tmd")) {
         (Some(a), Some(b), Some(c)) => (a.clone(), b.clone(), c.clone()),
         _ => return None,
@@ -2017,10 +2025,6 @@ fn open_postings_bytes(
     // comment on why it doesn't build on `lucene-search`).
     let segment_suffix = suffix_of(&tim_name, ".tim");
     let open = |name: &str| dir.open(name).map_err(|e| e.to_string());
-    let tmds: Vec<&String> = si.files.iter().filter(|f| f.ends_with(".tmd")).collect();
-    if tmds.len() > 1 {
-        return Some(open_postings_groups(dir, si, &tmds));
-    }
     Some((|| {
         Ok(PostingsFileBytes {
             tim: open(&tim_name)?,
@@ -2035,22 +2039,42 @@ fn open_postings_bytes(
     })())
 }
 
-/// [`open_postings_bytes`] for a segment with one `.tmd` per postings
-/// format: `PerFieldPostingsFormat.FieldsReader`, every group's header and
-/// footer checked here, their `.doc`/`.pos`/`.pay` concatenated.
+/// Every postings group's marker file -- its `.tmd`, or a foreign
+/// dictionary's first file (`per_field_postings::marker_extension`) -- with
+/// the group's codec suffix, in file order.
+fn group_markers(si: &SegmentInfo) -> Vec<(&String, String)> {
+    si.files
+        .iter()
+        .filter_map(|f| {
+            let (_, ext) = f.rsplit_once('.')?;
+            let suffix = suffix_of(f, &format!(".{ext}"));
+            let format = per_field_postings::format_of_suffix(&suffix);
+            (per_field_postings::marker_extension(format) == ext
+                && (ext == "tmd" || per_field_postings::is_foreign_format(format)))
+            .then_some((f, suffix))
+        })
+        .collect()
+}
+
+/// [`open_postings_bytes`] for a segment with one group per postings
+/// format, or with a group of a dictionary other than the block tree:
+/// `PerFieldPostingsFormat.FieldsReader`, every group's header and footer
+/// checked here, their `.doc`/`.pos`/`.pay` concatenated.
 fn open_postings_groups(
     dir: &dyn Directory,
     si: &SegmentInfo,
-    tmds: &[&String],
+    markers: &[(&String, String)],
 ) -> Result<PostingsFileBytes, String> {
     let id = &si.id;
     let err = |e: &dyn std::fmt::Display| e.to_string();
     let open = |name: &str| dir.open(name).map_err(|e| err(&e));
     let (mut doc, mut pos, mut pay) = (Vec::new(), Vec::new(), Vec::new());
-    let mut groups = Vec::with_capacity(tmds.len());
-    for tmd_name in tmds {
-        let stem = tmd_name.strip_suffix(".tmd").unwrap_or(tmd_name);
-        let suffix = suffix_of(tmd_name, ".tmd");
+    let mut groups = Vec::with_capacity(markers.len());
+    for (marker, suffix) in markers {
+        let suffix = suffix.clone();
+        let stem = marker
+            .rsplit_once('.')
+            .map_or(marker.as_str(), |(stem, _)| stem);
         let file = |ext: &str| format!("{stem}.{ext}");
         let has = |ext: &str| si.files.contains(&file(ext));
         let offset = |v: &Vec<u8>| u64::try_from(v.len()).unwrap_or(u64::MAX);
@@ -2070,10 +2094,14 @@ fn open_postings_groups(
             postings::PayInput::open(&bytes, id, &suffix).map_err(|e| err(&e))?;
             pay.extend_from_slice(&bytes);
         }
+        let dictionary = per_field_postings::dictionary_extensions(
+            per_field_postings::format_of_suffix(&suffix),
+        )
+        .iter()
+        .map(|ext| open(&file(ext)))
+        .collect::<Result<Vec<_>, String>>()?;
         groups.push(PostingsGroupBytes {
-            tim: open(&file("tim"))?,
-            tip: open(&file("tip"))?,
-            tmd: open(tmd_name)?,
+            dictionary,
             suffix,
             base,
         });
@@ -2179,10 +2207,39 @@ impl PostingsFileBytes {
     ) -> Result<PostingsHandles<'_>, String> {
         let mut opened = Vec::with_capacity(self.groups.len());
         for g in &self.groups {
+            let dictionary: Vec<&[u8]> = g.dictionary.iter().map(|d| &**d).collect();
+            let rewritten = if per_field_postings::is_foreign_format(
+                per_field_postings::format_of_suffix(&g.suffix),
+            ) {
+                Some(
+                    per_field_postings::rewrite_group_as_block_tree(
+                        &per_field_postings::GroupFiles {
+                            suffix: &g.suffix,
+                            dictionary: dictionary.clone(),
+                            doc: None,
+                            pos: None,
+                            pay: None,
+                        },
+                        field_infos,
+                        &commit.segment_id,
+                        si.doc_count,
+                    )
+                    .map_err(|e| e.to_string())?,
+                )
+            } else {
+                None
+            };
+            let (tim, tip, tmd) = match &rewritten {
+                Some((tim, tip, tmd)) => (&tim[..], &tip[..], &tmd[..]),
+                None => match dictionary[..] {
+                    [tim, tip, tmd] => (tim, tip, tmd),
+                    _ => return Err(format!("postings group {} is incomplete", g.suffix)),
+                },
+            };
             let fields = blocktree::open(
-                &g.tim,
-                &g.tip,
-                &g.tmd,
+                tim,
+                tip,
+                tmd,
                 field_infos,
                 &commit.segment_id,
                 &g.suffix,

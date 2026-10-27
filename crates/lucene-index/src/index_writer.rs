@@ -1459,9 +1459,10 @@ impl IndexingConfig {
         /// `postings::read_positions`), so it is separately optional.
         type RawPostingsFiles = Option<RawPostings>;
         struct RawPostings {
-            tim: Vec<u8>,
-            tip: Vec<u8>,
-            tmd: Vec<u8>,
+            /// The terms dictionary's files, in
+            /// `per_field_postings::dictionary_extensions` order for the
+            /// suffix's format (`.tim`/`.tip`/`.tmd` for a block tree).
+            dictionary: Vec<Vec<u8>>,
             doc: Vec<u8>,
             pos: Option<Vec<u8>>,
             pay: Option<Vec<u8>>,
@@ -1624,7 +1625,7 @@ impl IndexingConfig {
             } else {
                 None
             };
-            let postings = if seg_files.iter().any(|f| f.ends_with(".tim")) {
+            let postings = if per_field_postings::has_postings_files(&seg_files) {
                 let read_group = |seg: &str, suffix: String| -> Result<RawPostings> {
                     let read_optional = |ext: &str| -> Result<Option<Vec<u8>>> {
                         let file = format!("{seg}.{ext}");
@@ -1634,10 +1635,14 @@ impl IndexingConfig {
                             None
                         })
                     };
+                    let dictionary = per_field_postings::dictionary_extensions(
+                        per_field_postings::format_of_suffix(&suffix),
+                    )
+                    .iter()
+                    .map(|ext| Ok(seg_dir.open(&format!("{seg}.{ext}"))?.to_vec()))
+                    .collect::<Result<Vec<_>>>()?;
                     let raw = RawPostings {
-                        tim: seg_dir.open(&format!("{seg}.tim"))?.to_vec(),
-                        tip: seg_dir.open(&format!("{seg}.tip"))?.to_vec(),
-                        tmd: seg_dir.open(&format!("{seg}.tmd"))?.to_vec(),
+                        dictionary,
                         doc: seg_dir.open(&format!("{seg}.doc"))?.to_vec(),
                         pos: read_optional("pos")?,
                         pay: read_optional("pay")?,
@@ -1649,18 +1654,16 @@ impl IndexingConfig {
                     // on acquisition by Java's reader; native open only checks
                     // footer structure, so verify every original group here.
                     let metadata = read_optional("psm")?;
-                    for bytes in [
-                        Some(raw.tim.as_slice()),
-                        Some(raw.tip.as_slice()),
-                        Some(raw.tmd.as_slice()),
-                        Some(raw.doc.as_slice()),
-                        raw.pos.as_deref(),
-                        raw.pay.as_deref(),
-                        metadata.as_deref(),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    {
+                    for bytes in raw.dictionary.iter().map(Vec::as_slice).chain(
+                        [
+                            Some(raw.doc.as_slice()),
+                            raw.pos.as_deref(),
+                            raw.pay.as_deref(),
+                            metadata.as_deref(),
+                        ]
+                        .into_iter()
+                        .flatten(),
+                    ) {
                         let footer = bytes
                             .len()
                             .saturating_sub(lucene_store::codec_util::FOOTER_LENGTH);
@@ -1669,7 +1672,7 @@ impl IndexingConfig {
                     Ok(raw)
                 };
                 let suffixes = per_field_postings::group_suffixes(&seg_files, name);
-                if suffixes.len() > 1 {
+                if suffixes.len() > 1 || suffixes.iter().any(|s| is_foreign_postings_group(s)) {
                     let mut groups = suffixes
                         .into_iter()
                         .map(|suffix| read_group(&format!("{name}_{suffix}"), suffix))
@@ -2074,14 +2077,14 @@ impl IndexingConfig {
             .zip(readers.iter())
             .zip(&postings_field_infos)
             .map(|((o, reader), postings_field_infos)| match &o.postings {
-                Some(raw) if !raw.other_groups.is_empty() => {
+                Some(raw)
+                    if !raw.other_groups.is_empty() || is_foreign_postings_group(&raw.suffix) =>
+                {
                     let groups: Vec<per_field_postings::GroupFiles<'_>> = std::iter::once(raw)
                         .chain(&raw.other_groups)
                         .map(|g| per_field_postings::GroupFiles {
                             suffix: &g.suffix,
-                            tim: &g.tim,
-                            tip: &g.tip,
-                            tmd: &g.tmd,
+                            dictionary: g.dictionary.iter().map(Vec::as_slice).collect(),
                             doc: Some(&g.doc),
                             pos: g.pos.as_deref(),
                             pay: g.pay.as_deref(),
@@ -2114,9 +2117,9 @@ impl IndexingConfig {
                     ))),
                     (Some(raw), None) => {
                         let fields = lucene_codecs::blocktree::open(
-                            &raw.tim,
-                            &raw.tip,
-                            &raw.tmd,
+                            &raw.dictionary[0],
+                            &raw.dictionary[1],
+                            &raw.dictionary[2],
                             postings_field_infos,
                             &o.sci.segment_id,
                             &raw.suffix,
@@ -4671,6 +4674,12 @@ pub fn per_field_segment(segment_name: &str, format: &str) -> String {
 /// default postings format (M8), which is also the suffix inside every
 /// header; this writer's own segments give `Lucene104_0`. Falls back to that
 /// when the segment lists no `.tim` at all.
+/// Whether a postings group's terms dictionary is not a block tree, so it
+/// is read through `per_field_postings::open_groups`' rewrite even alone.
+fn is_foreign_postings_group(suffix: &str) -> bool {
+    per_field_postings::is_foreign_format(per_field_postings::format_of_suffix(suffix))
+}
+
 fn postings_file_base(seg_files: &[String], segment_name: &str) -> (String, String) {
     let prefix = format!("{segment_name}_");
     seg_files
@@ -9794,68 +9803,17 @@ impl IndexWriter<'_> {
                 continue;
             }
             let seg = format!("{segment_name}_{}", group.codec_suffix());
-            names.extend(Self::write_postings_group_files(dir, &seg, &group.output)?);
-            if let Some(completion) = &group.completion {
-                // `CompletionFieldsConsumer`: `.lkp` opened with the
-                // delegate, `.cmp` written at close.
-                for (ext, bytes) in [("lkp", &completion.lkp), ("cmp", &completion.cmp)] {
-                    let name = format!("{seg}.{ext}");
-                    write_file(dir, &name, bytes)?;
-                    names.push(name);
-                }
+            // `.pos`/`.pay` only exist when some field of the segment indexes
+            // positions/offsets; `GroupOutput::files` leaves the empty ones
+            // out, so no dangling name reaches `si.files`. A completion
+            // group's `.lkp`/`.cmp` (`CompletionFieldsConsumer`) come last.
+            for (ext, bytes) in group.files() {
+                let name = format!("{seg}.{ext}");
+                write_file(dir, &name, bytes)?;
+                names.push(name);
             }
         }
         Ok(names)
-    }
-
-    /// One postings format's files, under `seg` (`_0_Lucene104_0`).
-    fn write_postings_group_files(
-        dir: &dyn Directory,
-        seg: &str,
-        output: &postings_writer::Output,
-    ) -> Result<Vec<String>> {
-        let doc_name = format!("{seg}.doc");
-        let tim_name = format!("{seg}.tim");
-        let tip_name = format!("{seg}.tip");
-        let tmd_name = format!("{seg}.tmd");
-        let pos_name = format!("{seg}.pos");
-        let pay_name = format!("{seg}.pay");
-
-        let psm_name = format!("{seg}.psm");
-        let mut written_names = vec![
-            doc_name.clone(),
-            psm_name.clone(),
-            tim_name.clone(),
-            tip_name.clone(),
-            tmd_name.clone(),
-        ];
-        let mut written_bytes: Vec<(&String, &Vec<u8>)> = vec![
-            (&doc_name, &output.doc),
-            (&psm_name, &output.psm),
-            (&tim_name, &output.tim),
-            (&tip_name, &output.tip),
-            (&tmd_name, &output.tmd),
-        ];
-        // `.pos`/`.pay` only exist when at least one field in this call
-        // indexes positions/offsets -- see `postings_writer::Output`'s doc
-        // comment ("`pos` is empty when `index_options` doesn't index
-        // positions ... no `.pos` file is needed in that case"). Registering
-        // an empty, never-written `.pos`/`.pay` name in `si.files` for a
-        // Docs/DocsAndFreqs-only commit would leave a dangling filename no
-        // reader could ever open.
-        if !output.pos.is_empty() {
-            written_names.push(pos_name.clone());
-            written_bytes.push((&pos_name, &output.pos));
-        }
-        if !output.pay.is_empty() {
-            written_names.push(pay_name.clone());
-            written_bytes.push((&pay_name, &output.pay));
-        }
-
-        for (name, bytes) in &written_bytes {
-            write_file(dir, name, bytes)?;
-        }
-        Ok(written_names)
     }
 
     /// The automatic-merge-triggering step [`IndexWriter::commit`] runs when
@@ -11577,7 +11535,7 @@ impl IndexingConfig {
         // its files (and frames their headers) after it, not after this
         // writer's.
         let (seg, suffix) = postings_file_base(&seg_files, &sci.segment_name);
-        if !seg_files.iter().any(|f| f.ends_with(".tim")) {
+        if !per_field_postings::has_postings_files(&seg_files) {
             return Ok(crate::reader_pool::PooledPostings {
                 fields: lucene_codecs::blocktree::BlockTreeFields::empty(),
                 doc_input: None,
@@ -11603,32 +11561,28 @@ impl IndexingConfig {
         // `PerFieldPostingsFormat` with more than one format: every group,
         // combined into one dictionary over one concatenated `.doc`.
         let suffixes = per_field_postings::group_suffixes(&seg_files, &sci.segment_name);
-        if suffixes.len() > 1 {
+        if suffixes.len() > 1 || suffixes.iter().any(|s| is_foreign_postings_group(s)) {
             let mut opened = Vec::with_capacity(suffixes.len());
             for suffix in &suffixes {
                 let seg = format!("{}_{suffix}", sci.segment_name);
                 let open = |ext: &str| seg_dir.open(&format!("{seg}.{ext}"));
-                opened.push((
-                    suffix,
-                    open("tim")?,
-                    open("tip")?,
-                    open("tmd")?,
-                    open("doc")?,
-                ));
+                let dictionary = per_field_postings::dictionary_extensions(
+                    per_field_postings::format_of_suffix(suffix),
+                )
+                .iter()
+                .map(|ext| open(ext))
+                .collect::<lucene_store::Result<Vec<_>>>()?;
+                opened.push((suffix, dictionary, open("doc")?));
             }
             let groups: Vec<per_field_postings::GroupFiles<'_>> = opened
                 .iter()
-                .map(
-                    |(suffix, tim, tip, tmd, doc)| per_field_postings::GroupFiles {
-                        suffix,
-                        tim,
-                        tip,
-                        tmd,
-                        doc: Some(doc),
-                        pos: None,
-                        pay: None,
-                    },
-                )
+                .map(|(suffix, dictionary, doc)| per_field_postings::GroupFiles {
+                    suffix,
+                    dictionary: dictionary.iter().map(|d| &**d).collect(),
+                    doc: Some(doc),
+                    pos: None,
+                    pay: None,
+                })
                 .collect();
             let combined = per_field_postings::open_groups(
                 &groups,

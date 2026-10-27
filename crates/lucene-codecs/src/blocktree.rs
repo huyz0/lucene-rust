@@ -236,6 +236,13 @@ pub enum Error {
     Postings(#[from] postings::Error),
     #[error("unsupported: {0}")]
     Unsupported(&'static str),
+    /// Another terms dictionary a per-field group was routed to failed to
+    /// decode, while [`crate::per_field_postings::open_groups`] read it.
+    #[error("{format} terms dictionary: {message}")]
+    ForeignDictionary {
+        format: &'static str,
+        message: String,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

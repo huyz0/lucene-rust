@@ -12,7 +12,10 @@
 //! into one segment, the merge reading both formats of every source and
 //! writing both again (`PerFieldMergeState`).
 //!
-//! Usage: `write_per_field_formats_fixture <output-dir>`.
+//! With `ords` as a second argument `key` and `tag` go to
+//! `BlockTreeOrdsPostingsFormat(10, 20)` instead, under `_BlockTreeOrds_0`.
+//!
+//! Usage: `write_per_field_formats_fixture <output-dir> [ords]`.
 // Test-support code opts out of the arithmetic gate at the file boundary:
 // see `docs/arithmetic-gate.md`.
 #![allow(clippy::arithmetic_side_effects)]
@@ -55,7 +58,7 @@ fn field(name: &str, number: i32, index_options: IndexOptions) -> FieldInfo {
     }
 }
 
-fn write(dir: &FsDirectory, merge: bool) {
+fn write(dir: &FsDirectory, merge: bool, ords: bool) {
     let fields = vec![
         field("id", 0, IndexOptions::None),
         field("body", 1, IndexOptions::DocsAndFreqsAndPositions),
@@ -71,7 +74,12 @@ fn write(dir: &FsDirectory, merge: bool) {
     for name in ["body", "tag", "key"] {
         writer.add_postings_field(name).expect("postings");
     }
-    let small = Lucene104PostingsFormat::new(10, 20).expect("block sizes");
+    let small = if ords {
+        Lucene104PostingsFormat::block_tree_ords(10, 20)
+    } else {
+        Lucene104PostingsFormat::new(10, 20)
+    }
+    .expect("block sizes");
     writer.set_postings_format_for_field("tag", small);
     writer.set_postings_format_for_field("key", small);
     for i in 0..PER_SEGMENT * SEGMENTS {
@@ -112,11 +120,12 @@ fn write(dir: &FsDirectory, merge: bool) {
 fn main() {
     let out = std::env::args()
         .nth(1)
-        .expect("usage: write_per_field_formats_fixture <output-dir>");
+        .expect("usage: write_per_field_formats_fixture <output-dir> [ords]");
+    let ords = std::env::args().nth(2).as_deref() == Some("ords");
     for (sub, merge) in [("flushed", false), ("merged", true)] {
         let path = format!("{out}/{sub}");
         std::fs::create_dir_all(&path).expect("create output dir");
-        write(&FsDirectory::open(&path), merge);
+        write(&FsDirectory::open(&path), merge, ords);
     }
     println!("wrote per-field postings format indexes to {out}");
 }
