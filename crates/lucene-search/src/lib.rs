@@ -258,6 +258,7 @@ pub mod segment_order;
 pub mod similarities;
 pub mod similarity;
 pub mod simpletext_transcode;
+pub mod simpletext_writer;
 mod slices;
 pub mod sloppy_phrase;
 pub mod soft_deletes;

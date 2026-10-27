@@ -238,12 +238,14 @@ pub fn to_simpletext(
         ));
     }
 
-    // Doc values, by field number.
+    // Doc values, in `IndexingChain`'s field-hash order for a flush, by
+    // field number for a merge.
     let mut dv = text::doc_values_writer::SimpleTextDocValuesWriter::new(max_doc);
     let mut any_dv = false;
-    for field in infos
-        .fields
+    let walk = flush_order(info, &infos);
+    for field in walk
         .iter()
+        .copied()
         .filter(|f| f.doc_values_type != DocValuesType::None)
     {
         add_doc_values(&reader, field, &mut dv)?;
@@ -277,10 +279,10 @@ pub fn to_simpletext(
         ));
     }
 
-    // Points, by field number.
-    let point_fields: Vec<&FieldInfo> = infos
-        .fields
+    // Points, in the doc values' order (`IndexingChain.writePoints`).
+    let point_fields: Vec<&FieldInfo> = walk
         .iter()
+        .copied()
         .filter(|f| f.point_dimension_count > 0)
         .collect();
     if !point_fields.is_empty() {
@@ -385,6 +387,135 @@ pub fn to_simpletext(
         files,
         live_docs,
     })
+}
+
+/// The order a segment's flush or merge hands fields to the doc-values and
+/// points writers: `IndexingChain`'s field-hash walk for a flushed segment
+/// (its fields first seen in field-number order), field-number order for a
+/// merge.
+fn flush_order<'a>(info: &SegmentInfo, infos: &'a FieldInfos) -> Vec<&'a FieldInfo> {
+    let mut by_number: Vec<&FieldInfo> = infos.fields.iter().collect();
+    by_number.sort_by_key(|f| f.number);
+    let flushed = info
+        .diagnostics
+        .iter()
+        .any(|(k, v)| k == "source" && v == "flush");
+    if !flushed {
+        return by_number;
+    }
+    let names: Vec<&str> = by_number.iter().map(|f| f.name.as_str()).collect();
+    lucene_index::indexing_chain::field_hash_order(&names)
+        .into_iter()
+        .map(|i| by_number[i])
+        .collect()
+}
+
+/// `commit` without its generations: the segment as its flush or merge
+/// wrote it, which [`to_simpletext`] turns into the SimpleText segment's
+/// base files; [`generation_files`] adds the rest.
+pub fn base_commit(commit: &SegmentCommitInfo) -> SegmentCommitInfo {
+    SegmentCommitInfo {
+        del_gen: -1,
+        del_count: 0,
+        field_infos_gen: -1,
+        doc_values_gen: -1,
+        field_infos_files: Vec::new(),
+        dv_update_files: Vec::new(),
+        ..commit.clone()
+    }
+}
+
+/// The SimpleText files a commit's generations add to its segment's base
+/// files, as Java's `SimpleTextLiveDocsFormat`, `SimpleTextFieldInfosFormat`
+/// and `SimpleTextDocValuesFormat` write them for a deletion, field-infos or
+/// doc-values update generation (`_<seg>_<gen>.liv`, `.inf`, `.dat`).
+#[derive(Debug, Default)]
+pub struct GenerationFiles {
+    /// Every file, with its bytes unless the caller had it already.
+    pub files: Vec<(String, Option<Vec<u8>>)>,
+    /// `SegmentCommitInfo.getFieldInfosFiles()`.
+    pub field_infos_files: Vec<String>,
+    /// `SegmentCommitInfo.getDocValuesUpdatesFiles()`, by field number.
+    pub dv_update_files: Vec<(i32, Vec<String>)>,
+}
+
+/// [`GenerationFiles`] of `commit` (a `Lucene104` segment of `dir`); `known`
+/// names the files already written, whose bytes are not built again.
+///
+/// A doc-values generation's `.dat` holds the fields whose latest update is
+/// that generation, with their current values: the fields Java's
+/// `ReadersAndUpdates.writeFieldUpdates` wrote into it that no later
+/// generation superseded.
+///
+/// # Errors
+/// What reading the segment or a SimpleText writer fails with.
+pub fn generation_files(
+    dir: &dyn Directory,
+    commit: &SegmentCommitInfo,
+    known: &dyn Fn(&str) -> bool,
+) -> crate::Result<GenerationFiles> {
+    let mut out = GenerationFiles::default();
+    if commit.del_gen <= 0 && commit.field_infos_gen <= 0 {
+        return Ok(out);
+    }
+    let reader = SegmentReader::open_one(dir, commit)?;
+    let name = &commit.segment_name;
+    if let Some(file) = text::live_docs::live_docs_file_name(name, commit.del_gen) {
+        let bytes = if known(&file) {
+            None
+        } else {
+            let bits = reader.live_docs().ok_or_else(|| {
+                crate::Error::IllegalArgument(format!("{name}: no live docs at {file}"))
+            })?;
+            Some(text::live_docs::write(bits))
+        };
+        out.files.push((file, bytes));
+    }
+    if commit.field_infos_gen > 0 {
+        let infos = simpletext_field_infos(reader.field_infos());
+        let file = text::field_infos::field_infos_file_name(
+            name,
+            &lucene_util::base36::to_base36(commit.field_infos_gen),
+        );
+        let bytes = (!known(&file)).then(|| text::field_infos::write(&infos.fields));
+        out.field_infos_files.push(file.clone());
+        out.files.push((file, bytes));
+
+        let mut generations: std::collections::BTreeMap<i64, Vec<&FieldInfo>> =
+            std::collections::BTreeMap::new();
+        for field in infos
+            .fields
+            .iter()
+            .filter(|f| f.doc_values_gen > 0 && f.doc_values_type != DocValuesType::None)
+        {
+            generations
+                .entry(field.doc_values_gen)
+                .or_default()
+                .push(field);
+        }
+        for (generation, fields) in generations {
+            let file = text::doc_values_writer::doc_values_file_name(
+                name,
+                &lucene_util::base36::to_base36(generation),
+                text::doc_values_writer::DOC_VALUES_EXTENSION,
+            );
+            out.dv_update_files
+                .extend(fields.iter().map(|f| (f.number, vec![file.clone()])));
+            let bytes = if known(&file) {
+                None
+            } else {
+                let mut dv =
+                    text::doc_values_writer::SimpleTextDocValuesWriter::new(reader.max_doc);
+                for field in &fields {
+                    add_doc_values(&reader, field, &mut dv)?;
+                }
+                Some(dv.finish().map_err(text_error)?)
+            };
+            out.files.push((file, bytes));
+        }
+        out.dv_update_files.sort_by_key(|(number, _)| *number);
+    }
+    Ok(out)
 }
 
 fn has_norms(field: &FieldInfo) -> bool {

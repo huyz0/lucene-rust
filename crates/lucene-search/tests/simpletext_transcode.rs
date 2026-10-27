@@ -24,6 +24,7 @@ use lucene_index::segment_infos;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::reader::{IntersectVisitor, LeafReader, PostingsFlags, Relation, NO_MORE_DOCS};
 use lucene_search::simpletext_transcode::to_simpletext;
+use lucene_search::simpletext_writer::SimpleTextDirectory;
 use lucene_store::{DataOutput, Directory, FsDirectory};
 use lucene_util::test_support::TempDir;
 
@@ -110,6 +111,12 @@ fn doc(i: usize) -> Document {
 }
 
 fn write(dir: &dyn Directory, merge: bool) {
+    write_with(dir, merge, false);
+}
+
+/// `write`, with two doc-values update generations before the merge when
+/// `updates`.
+fn write_with(dir: &dyn Directory, merge: bool, updates: bool) {
     let mut w = IndexWriter::open(dir, Vec::new(), "Lucene104", version()).unwrap();
     w.set_max_full_flush_merge_wait_millis(0);
     for seg in 0..2 {
@@ -125,6 +132,18 @@ fn write(dir: &dyn Directory, merge: bool) {
         .collect();
     w.delete_documents_by_term(&terms).unwrap();
     w.commit().unwrap();
+    if updates {
+        w.update_numeric_doc_value(Term::new("id", "d3"), "num", 1000)
+            .unwrap();
+        w.update_numeric_doc_value(Term::new("id", "d71"), "num", -1000)
+            .unwrap();
+        w.commit().unwrap();
+        w.update_numeric_doc_value(Term::new("id", "d3"), "num", 2000)
+            .unwrap();
+        w.update_binary_doc_value(Term::new("id", "d7"), "bin", &[9, 9])
+            .unwrap();
+        w.commit().unwrap();
+    }
     if merge {
         w.force_merge(1).unwrap();
         w.commit().unwrap();
@@ -324,6 +343,22 @@ fn dump(reader: &dyn LeafReader, max_doc: i32) -> String {
     out
 }
 
+fn assert_same_segments(native: &dyn Directory, text: &dyn Directory) {
+    let (a, b) = (
+        DirectoryReader::open(native).unwrap(),
+        DirectoryReader::open(text).unwrap(),
+    );
+    assert_eq!(a.segment_readers().len(), b.segment_readers().len());
+    for (x, y) in a.segment_readers().iter().zip(b.segment_readers()) {
+        assert_eq!(x.max_doc, y.max_doc);
+        let (dx, dy) = (dump(x, x.max_doc), dump(y, y.max_doc));
+        for (lx, ly) in dx.lines().zip(dy.lines()) {
+            assert_eq!(lx, ly);
+        }
+        assert_eq!(dx, dy);
+    }
+}
+
 fn check(merge: bool) {
     let tmp = TempDir::new("simpletext-transcode");
     let native_path = tmp.path().join("native");
@@ -350,19 +385,7 @@ fn check(merge: bool) {
         assert!(files.iter().any(|f| f.ends_with(".scf")), "{files:?}");
     }
 
-    let (a, b) = (
-        DirectoryReader::open(&native).unwrap(),
-        DirectoryReader::open(&text).unwrap(),
-    );
-    assert_eq!(a.segment_readers().len(), b.segment_readers().len());
-    for (x, y) in a.segment_readers().iter().zip(b.segment_readers()) {
-        assert_eq!(x.max_doc, y.max_doc);
-        let (dx, dy) = (dump(x, x.max_doc), dump(y, y.max_doc));
-        for (lx, ly) in dx.lines().zip(dy.lines()) {
-            assert_eq!(lx, ly);
-        }
-        assert_eq!(dx, dy);
-    }
+    assert_same_segments(&native, &text);
 }
 
 #[test]
@@ -373,4 +396,91 @@ fn flushed_segments_read_back_alike() {
 #[test]
 fn a_merged_segment_reads_back_alike() {
     check(true);
+}
+
+/// The SimpleText extensions, and the files every index has.
+fn is_simpletext_file(name: &str) -> bool {
+    const EXTENSIONS: [&str; 13] = [
+        "si", "pst", "fld", "inf", "dat", "len", "tvc", "dim", "dii", "vec", "gri", "liv", "scf",
+    ];
+    name.starts_with("segments_")
+        || name == "write.lock"
+        || name
+            .rsplit_once('.')
+            .is_some_and(|(_, ext)| EXTENSIONS.contains(&ext))
+}
+
+/// IndexWriter through [`SimpleTextDirectory`]: the same documents,
+/// deletes, doc-values updates and merges as a native writer, published as
+/// a SimpleText index that holds exactly the latest commit's files and
+/// reads back as the native index does.
+fn check_writer(merge: bool) {
+    let tmp = TempDir::new("simpletext-writer");
+    let native_path = tmp.path().join("native");
+    let text_path = tmp.path().join("text");
+    std::fs::create_dir_all(&native_path).unwrap();
+    std::fs::create_dir_all(&text_path).unwrap();
+    let (native, text) = (
+        FsDirectory::open(&native_path),
+        FsDirectory::open(&text_path),
+    );
+    write_with(&native, merge, true);
+    {
+        let publishing = SimpleTextDirectory::new(&text).unwrap();
+        write_with(&publishing, merge, true);
+    }
+
+    let files = text.list_all().unwrap();
+    for file in &files {
+        assert!(is_simpletext_file(file), "{file} in {files:?}");
+    }
+    let infos = segment_infos::read_latest(&text).unwrap();
+    let mut referenced =
+        vec![lucene_store::directory::segments_file_name(infos.generation).unwrap()];
+    for sci in &infos.segments {
+        assert_eq!(sci.codec_name, "SimpleText");
+        let si = segment_info::parse_simpletext(
+            &text.open(&format!("{}.si", sci.segment_name)).unwrap(),
+            &sci.segment_name,
+            &sci.segment_id,
+        )
+        .unwrap();
+        referenced.extend(sci.files(&si.files));
+    }
+    referenced.sort();
+    referenced.dedup();
+    let on_disk: Vec<String> = files.into_iter().filter(|f| f != "write.lock").collect();
+    assert_eq!(on_disk, referenced);
+    if !merge {
+        assert!(on_disk.iter().any(|f| f.ends_with(".scf")), "{on_disk:?}");
+        // Both segments' update generations: `.inf` and `.dat` each.
+        let updates = on_disk
+            .iter()
+            .filter(|f| {
+                let stem = f.split('.').next().unwrap_or_default();
+                stem.matches('_').count() == 2 && (f.ends_with(".dat") || f.ends_with(".inf"))
+            })
+            .count();
+        assert!(updates >= 5, "{on_disk:?}");
+    }
+
+    assert_same_segments(&native, &text);
+}
+
+#[test]
+fn index_writer_publishes_flushed_and_updated_segments_as_simpletext() {
+    check_writer(false);
+}
+
+#[test]
+fn index_writer_publishes_a_merged_segment_as_simpletext() {
+    check_writer(true);
+}
+
+#[test]
+fn an_existing_index_is_refused() {
+    let tmp = TempDir::new("simpletext-writer-existing");
+    let dir = FsDirectory::open(tmp.path());
+    write(&dir, false);
+    assert!(SimpleTextDirectory::new(&dir).is_err());
 }
