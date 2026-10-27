@@ -79,7 +79,7 @@ tests/geo/ShapeTestUtil	ported	crates/lucene-test-framework/src/geo/shape_test_u
 tests/index/AlcoholicMergePolicy	ported	crates/lucene-test-framework/src/index/merge_policies.rs::AlcoholicMergePolicy
 tests/index/AllDeletedFilterReader	ported	crates/lucene-test-framework/src/index/reader_wrappers.rs::AllDeletedFilterReader
 tests/index/AssertingDirectoryReader	ported	crates/lucene-test-framework/src/index/asserting_leaf_reader.rs::asserting_directory_reader
-tests/index/AssertingLeafReader	partial	crates/lucene-test-framework/src/index/asserting_leaf_reader.rs::AssertingLeafReader -- M14: the doc-values skipper, points and vectors pass through unchecked
+tests/index/AssertingLeafReader	partial	crates/lucene-test-framework/src/index/asserting_leaf_reader.rs::AssertingLeafReader -- M14: points and vectors pass through unchecked (skipper: AssertingDocValuesSkipper)
 tests/index/BaseCompoundFormatTestCase	ported	crates/lucene-test-framework/src/index/base_compound_format.rs::CompoundSuite
 tests/index/BaseCompressingDocValuesFormatTestCase	partial	crates/lucene-test-framework/src/index/base_doc_values_format.rs::COMPRESSING_TESTS -- M14: bounds on Lucene90 only (no other codec)
 tests/index/BaseDocValuesFormatTestCase	ported	crates/lucene-test-framework/src/index/base_doc_values_format.rs::TESTS

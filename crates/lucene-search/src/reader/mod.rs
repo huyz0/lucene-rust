@@ -53,7 +53,7 @@ mod segment;
 mod simpletext;
 mod skipper;
 pub(crate) use segment::SparseDocs;
-pub use skipper::DocValuesSkipper;
+pub use skipper::{DocValuesSkipper, SkipperImpl};
 pub mod slow_codec;
 pub mod sorting;
 pub mod term_vector_terms;
