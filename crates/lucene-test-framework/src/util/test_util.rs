@@ -9,7 +9,10 @@
 //! generator here produces well-formed UTF-16).
 //!
 //! [`check_index`] is `TestUtil.checkIndex`; [`clone_document`] is
-//! `cloneDocument` (the codec pickers belong to the codec track).
+//! `cloneDocument`. The codec pickers ([`get_default_codec`],
+//! [`always_postings_format`], [`get_postings_format_of`], ...) answer this
+//! port's `Lucene104Codec` routing types; `always*Format`'s anonymous
+//! `AssertingCodec` subclass is [`AlwaysFormatCodec`].
 //! [`random_pattern`] compiles through
 //! lucene-analysis's `java.util.regex` port ([`JavaPattern`]). [`unzip`]
 //! reads through [`super::zip`]. The reader and directory helpers
@@ -20,12 +23,25 @@
 //! exhausted iterator stays exhausted (Java's `NoSuchElementException`).
 
 use std::cmp::Ordering;
+use std::sync::Arc;
+
+use lucene_codecs::codec::{DefaultLucene104Codec, Lucene104Codec};
+use lucene_codecs::live_docs_writer::LiveDocsWriter;
+use lucene_codecs::norms_writer::NormsWriterFactory;
+use lucene_codecs::per_field_doc_values::Lucene90DocValuesFormat;
+use lucene_codecs::per_field_knn_vectors::KnnVectorsFormat;
+use lucene_codecs::per_field_postings::Lucene104PostingsFormat;
+use lucene_codecs::points_writer::PointsWriterFactory;
+use lucene_codecs::postings_consumer::PostingsWriterFactory;
+use lucene_codecs::stored_fields_writer::StoredFieldsWriterFactory;
+use lucene_codecs::term_vectors_writer::TermVectorsWriterFactory;
 
 use lucene_analysis::util::java_regex::{JavaMatcher, JavaPattern};
 use lucene_util::automaton::{java_to_lower_case, java_to_upper_case};
 use lucene_util::java_random::JavaRandom;
 
 use super::random_numbers::{random_from, random_int_between};
+use crate::codecs::asserting_installed::InstalledAssertingCodec;
 
 /// `TestUtil.checkIndex(dir)`: this port's `CheckIndex` over the latest
 /// commit; the `Err` names each segment that failed and why.
@@ -1026,10 +1042,237 @@ pub fn sync_concurrent_merges(
     scheduler.sync()
 }
 
+/// `TestUtil.getDefaultCodec()`: `new Lucene104Codec()`.
+pub fn get_default_codec() -> Arc<dyn Lucene104Codec> {
+    Arc::new(DefaultLucene104Codec)
+}
+
+/// `TestUtil.getDefaultPostingsFormat()`: `new Lucene104PostingsFormat()`.
+pub fn get_default_postings_format() -> Lucene104PostingsFormat {
+    Lucene104PostingsFormat::default()
+}
+
+/// `TestUtil.getDefaultPostingsFormat(minItemsPerBlock, maxItemsPerBlock)`.
+///
+/// # Errors
+/// Java's `IllegalArgumentException` for block sizes
+/// `Lucene103BlockTreeTermsWriter.validateSettings` refuses.
+pub fn get_default_postings_format_sized(
+    min_items_per_block: usize,
+    max_items_per_block: usize,
+) -> lucene_codecs::postings_writer::Result<Lucene104PostingsFormat> {
+    Lucene104PostingsFormat::new(min_items_per_block, max_items_per_block)
+}
+
+/// `TestUtil.getPostingsFormatWithOrds(r)`: one draw, `LuceneFixedGap` or
+/// `BlockTreeOrdsPostingsFormat`, the two formats whose terms enums support
+/// ordinals.
+pub fn get_postings_format_with_ords(r: &mut JavaRandom) -> Lucene104PostingsFormat {
+    match r.next_int_bounded(2) {
+        0 => Lucene104PostingsFormat::dictionary(&crate::codecs::blockterms::FIXED_GAP),
+        _ => Lucene104PostingsFormat::dictionary(&lucene_codecs::blocktreeords::DEFAULT_FORMAT),
+    }
+}
+
+/// `TestUtil.getDefaultDocValuesFormat()`: `new Lucene90DocValuesFormat()`.
+pub fn get_default_doc_values_format() -> Lucene90DocValuesFormat {
+    Lucene90DocValuesFormat::default()
+}
+
+/// `TestUtil.getDefaultKnnVectorsFormat()`:
+/// `new Lucene99HnswVectorsFormat(16, 100, 0)`, the default graph.
+pub fn get_default_knn_vectors_format() -> KnnVectorsFormat {
+    KnnVectorsFormat::Hnsw {
+        max_conn: lucene_codecs::hnsw::DEFAULT_MAX_CONN,
+        beam_width: lucene_codecs::hnsw::DEFAULT_BEAM_WIDTH,
+    }
+}
+
+/// `TestUtil.getPostingsFormat(field)`: the name of the postings format
+/// `Codec.getDefault()` gives `field`. The port's default codec is
+/// `Lucene104` (no class environment randomizes it).
+pub fn get_postings_format(field: &str) -> &'static str {
+    get_postings_format_of(&DefaultLucene104Codec, field)
+}
+
+/// `TestUtil.getPostingsFormat(codec, field)`: the name of the postings
+/// format `codec` gives `field`, per field or, for a direct format, the
+/// codec's one format.
+pub fn get_postings_format_of(codec: &dyn Lucene104Codec, field: &str) -> &'static str {
+    codec.postings_format_for_field(field).name()
+}
+
+/// `TestUtil.getDocValuesFormat(field)`, over the default `Lucene104`.
+pub fn get_doc_values_format(field: &str) -> &'static str {
+    get_doc_values_format_of(&DefaultLucene104Codec, field)
+}
+
+/// `TestUtil.getDocValuesFormat(codec, field)`: the name of the doc-values
+/// format `codec` gives `field`.
+pub fn get_doc_values_format_of(codec: &dyn Lucene104Codec, field: &str) -> &'static str {
+    codec.doc_values_format_for_field(field).name()
+}
+
+/// The format an [`AlwaysFormatCodec`] gives every field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlwaysFormat {
+    Postings(Lucene104PostingsFormat),
+    DocValues(Lucene90DocValuesFormat),
+    KnnVectors(KnnVectorsFormat),
+}
+
+/// The anonymous `AssertingCodec` subclasses `TestUtil.always*Format`
+/// return: `Asserting` everywhere except the one family whose
+/// `get*FormatForField` answers the given format for every field.
+#[derive(Debug, Clone, Copy)]
+pub struct AlwaysFormatCodec {
+    asserting: InstalledAssertingCodec,
+    format: AlwaysFormat,
+}
+
+impl AlwaysFormatCodec {
+    /// The format every field of its family gets.
+    pub fn format(&self) -> AlwaysFormat {
+        self.format
+    }
+}
+
+impl Lucene104Codec for AlwaysFormatCodec {
+    fn name(&self) -> &str {
+        self.asserting.name()
+    }
+
+    fn stored_fields_writer_factory(&self) -> Option<&dyn StoredFieldsWriterFactory> {
+        self.asserting.stored_fields_writer_factory()
+    }
+
+    fn live_docs_writer(&self) -> Option<&dyn LiveDocsWriter> {
+        self.asserting.live_docs_writer()
+    }
+
+    fn norms_writer_factory(&self) -> Option<&dyn NormsWriterFactory> {
+        self.asserting.norms_writer_factory()
+    }
+
+    fn points_writer_factory(&self) -> Option<&dyn PointsWriterFactory> {
+        self.asserting.points_writer_factory()
+    }
+
+    fn postings_writer_factory(&self) -> Option<&dyn PostingsWriterFactory> {
+        self.asserting.postings_writer_factory()
+    }
+
+    fn term_vectors_writer_factory(&self) -> Option<&dyn TermVectorsWriterFactory> {
+        self.asserting.term_vectors_writer_factory()
+    }
+
+    fn postings_format_for_field(&self, field: &str) -> Lucene104PostingsFormat {
+        match self.format {
+            AlwaysFormat::Postings(f) => f,
+            _ => self.asserting.postings_format_for_field(field),
+        }
+    }
+
+    fn doc_values_format_for_field(&self, field: &str) -> Lucene90DocValuesFormat {
+        match self.format {
+            AlwaysFormat::DocValues(f) => f,
+            _ => self.asserting.doc_values_format_for_field(field),
+        }
+    }
+
+    fn knn_vectors_format_for_field(&self, field: &str) -> KnnVectorsFormat {
+        match self.format {
+            AlwaysFormat::KnnVectors(f) => f,
+            _ => self.asserting.knn_vectors_format_for_field(field),
+        }
+    }
+}
+
+fn always(format: AlwaysFormat) -> Arc<dyn Lucene104Codec> {
+    Arc::new(AlwaysFormatCodec {
+        asserting: InstalledAssertingCodec::new(),
+        format,
+    })
+}
+
+/// `TestUtil.alwaysPostingsFormat(format)`: an `Asserting` codec whose
+/// every field's postings go to `format`. Install it with
+/// `IndexWriter::set_codec`.
+pub fn always_postings_format(format: Lucene104PostingsFormat) -> Arc<dyn Lucene104Codec> {
+    always(AlwaysFormat::Postings(format))
+}
+
+/// `TestUtil.alwaysDocValuesFormat(format)`: an `Asserting` codec whose
+/// every field's doc values go to `format`.
+pub fn always_doc_values_format(format: Lucene90DocValuesFormat) -> Arc<dyn Lucene104Codec> {
+    always(AlwaysFormat::DocValues(format))
+}
+
+/// `TestUtil.alwaysKnnVectorsFormat(format)`: an `Asserting` codec whose
+/// every field's vectors go to `format`.
+pub fn always_knn_vectors_format(format: KnnVectorsFormat) -> Arc<dyn Lucene104Codec> {
+    always(AlwaysFormat::KnnVectors(format))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn codec_pickers_answer_javas_formats() {
+        let codec = get_default_codec();
+        assert_eq!(codec.name(), "Lucene104");
+        assert_eq!(get_postings_format("f"), "Lucene104");
+        assert_eq!(get_doc_values_format("f"), "Lucene90");
+        assert_eq!(
+            get_default_postings_format(),
+            Lucene104PostingsFormat::default()
+        );
+        let sized = get_default_postings_format_sized(10, 20).unwrap();
+        assert_eq!(
+            (sized.min_term_block_size, sized.max_term_block_size),
+            (10, 20)
+        );
+        assert!(get_default_postings_format_sized(30, 40).is_err());
+        assert_eq!(
+            get_default_doc_values_format(),
+            Lucene90DocValuesFormat::default()
+        );
+        assert_eq!(get_default_knn_vectors_format().graph(), Some((16, 100)));
+
+        let asserting = InstalledAssertingCodec::new();
+        assert_eq!(get_postings_format_of(&asserting, "f"), "Asserting");
+        assert_eq!(get_doc_values_format_of(&asserting, "f"), "Asserting");
+        let ords = get_postings_format_with_ords(&mut JavaRandom::new(1));
+        let codec = always_postings_format(ords);
+        assert_eq!(codec.name(), "Asserting");
+        assert_eq!(get_postings_format_of(codec.as_ref(), "x"), ords.name());
+        assert_eq!(get_doc_values_format_of(codec.as_ref(), "x"), "Asserting");
+        let codec = always_doc_values_format(Lucene90DocValuesFormat::default());
+        assert_eq!(get_postings_format_of(codec.as_ref(), "x"), "Asserting");
+        assert_eq!(get_doc_values_format_of(codec.as_ref(), "x"), "Lucene90");
+        let codec = always_knn_vectors_format(get_default_knn_vectors_format());
+        assert_eq!(
+            codec.knn_vectors_format_for_field("x"),
+            get_default_knn_vectors_format()
+        );
+        assert!(codec.stored_fields_writer_factory().is_some());
+    }
+
+    #[test]
+    fn postings_format_with_ords_is_one_next_int_draw() {
+        for seed in 0..64 {
+            let want = JavaRandom::new(seed * 7919).next_int_bounded(2);
+            let got = get_postings_format_with_ords(&mut JavaRandom::new(seed * 7919));
+            let name = if want == 0 {
+                "LuceneFixedGap"
+            } else {
+                "BlockTreeOrds"
+            };
+            assert_eq!(got.name(), name);
+        }
+    }
 
     #[test]
     fn next_long_small_and_large_ranges() {
