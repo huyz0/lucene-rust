@@ -22,7 +22,7 @@ import java.util.TreeMap;
  *
  * <p>{@code analysis_icu_rules/*.rbbi}: the rule sources -- the five {@code .rbbi} files of
  * Lucene 10.5.0's analysis-icu (Default, MyanmarSyllable, and the three of its tokenizer factory
- * test), copied from {@code analysis_icu_rules_src/}, and {@code inline_*.rbbi}, written here:
+ * test), copied from {@code fixtures/corpus/analysis-icu-rules/}, and {@code inline_*.rbbi}, written here:
  * each ICU rule feature, and rule sets ICU rejects. {@code texts.txt}: the corpus, UTF-16 units in
  * hex. {@code <name>.tsv}: per text, the boundaries {@code first()}..{@code next()} as {@code
  * position:ruleStatus:statusVector}, or a single line {@code ERROR <message>} when ICU4J refuses
@@ -163,7 +163,8 @@ public class GenAnalysisIcuRules {
     Files.writeString(out.resolve("texts.txt"), t.toString(), StandardCharsets.UTF_8);
 
     // Lucene's own rule files, compiled as ICUTokenizerFactory.parseRules reads them
-    Path src = data.resolve("analysis_icu_rules_src");
+    Path src =
+        Path.of(System.getenv().getOrDefault("FIXTURES_CORPUS", "fixtures/corpus"), "analysis-icu-rules");
     List<Path> files = new ArrayList<>();
     try (var stream = Files.list(src)) {
       stream.filter(p -> p.toString().endsWith(".rbbi")).sorted().forEach(files::add);
