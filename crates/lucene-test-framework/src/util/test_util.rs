@@ -11,7 +11,13 @@
 //! [`check_index`] is `TestUtil.checkIndex`. The other index helpers
 //! (`docs`, `cloneDocument`, the codec pickers) arrive with
 //! `RandomIndexWriter` (M14.h batch h4). [`random_pattern`] compiles through
-//! lucene-analysis's `java.util.regex` port ([`JavaPattern`]).
+//! lucene-analysis's `java.util.regex` port ([`JavaPattern`]). [`unzip`]
+//! reads through [`super::zip`]. The reader and directory helpers
+//! ([`docs`], [`assert_consistent`], [`ram_copy_of`], [`check_iterator`],
+//! ...) follow Java's draws and assertions; Rust's shape changes two:
+//! an iterator cannot `remove` and a shared collection cannot `add`, so
+//! [`check_iterator`]/[`check_read_only`] check counts and that an
+//! exhausted iterator stays exhausted (Java's `NoSuchElementException`).
 
 use std::cmp::Ordering;
 
@@ -670,9 +676,244 @@ const BLOCK_ENDS: [i32; 194] = [
     0x1F1FF, 0x1F2FF, 0x2A6DF, 0x2B73F, 0x2FA1F, 0xE007F, 0xE01EF, 0xFFFFF, 0x10FFFF,
 ];
 
+/// `TestUtil.unzip(in, destDir)`: every entry of `zip` written under
+/// `dest_dir`, its parent directories created first. As Java, a directory
+/// entry creates only its parent (`d/` resolves to `d`, whose parent is
+/// `dest_dir`); `d` itself appears with its first file. `dest_dir` should be
+/// clean, as Java asks.
+///
+/// # Errors
+/// A corrupt zip, or a file that cannot be written.
+pub fn unzip(zip: &[u8], dest_dir: &std::path::Path) -> std::io::Result<()> {
+    for entry in super::zip::entries(zip)? {
+        let target = dest_dir.join(entry.name.trim_end_matches('/'));
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        if !entry.is_directory() {
+            std::fs::write(&target, &entry.data)?;
+        }
+    }
+    Ok(())
+}
+
+/// `checkIterator(iterator, expectedSize, allowNull)`: exactly
+/// `expected_size` items, none `None` unless `allow_null`, then exhausted
+/// for good.
+///
+/// # Panics
+/// On a wrong count, a disallowed `None`, or an item after the end.
+pub fn check_iterator_sized<T>(
+    mut iterator: impl Iterator<Item = Option<T>>,
+    expected_size: u64,
+    allow_null: bool,
+) {
+    for i in 0..expected_size {
+        let v = iterator
+            .next()
+            .unwrap_or_else(|| panic!("iterator ended after {i} of {expected_size} items"));
+        assert!(allow_null || v.is_some(), "null element {i}");
+    }
+    assert!(
+        iterator.next().is_none(),
+        "iterator has more than {expected_size} items"
+    );
+    assert!(
+        iterator.next().is_none(),
+        "broken iterator (allows next() when hasNext==false)"
+    );
+}
+
+/// `checkIterator(iterator)`: no `None` items, then exhausted for good.
+///
+/// # Panics
+/// On a `None` item or an item after the end.
+pub fn check_iterator<T>(mut iterator: impl Iterator<Item = Option<T>>) {
+    for v in iterator.by_ref() {
+        assert!(v.is_some(), "null element");
+    }
+    assert!(
+        iterator.next().is_none(),
+        "broken iterator (allows next() when hasNext==false)"
+    );
+}
+
+/// `checkReadOnly(coll)`: the reported size is what iterating yields.
+/// (Java's `remove`/`add` refusals are the borrow checker's here: the
+/// collection is only ever seen through `&`.)
+///
+/// # Panics
+/// When `len()` and the iteration disagree.
+pub fn check_read_only<I: ExactSizeIterator>(coll: I) {
+    let reported = coll.len();
+    let size = coll.count();
+    assert_eq!(
+        size, reported,
+        "broken collection, reported size is {reported} but iterator has {size} elements"
+    );
+}
+
+/// `anyFilesExceptWriteLock(dir)`.
+///
+/// # Errors
+/// What listing the directory returns.
+pub fn any_files_except_write_lock(
+    dir: &dyn lucene_store::Directory,
+) -> lucene_store::Result<bool> {
+    let files = dir.list_all()?;
+    Ok(files.len() > 1 || (files.len() == 1 && files[0] != "write.lock"))
+}
+
+/// `ramCopyOf(dir)`: the segments and codec files of `dir`, copied into a
+/// `ByteBuffersDirectory`.
+///
+/// # Errors
+/// What reading `dir` returns.
+pub fn ram_copy_of(
+    dir: &dyn lucene_store::Directory,
+) -> lucene_store::Result<lucene_store::ByteBuffersDirectory> {
+    let ram = lucene_store::ByteBuffersDirectory::new();
+    for file in dir.list_all()? {
+        if file.starts_with("segments") || crate::store::new_directory::is_codec_file(&file) {
+            lucene_store::Directory::copy_from(&ram, dir, &file, &file)?;
+        }
+    }
+    Ok(ram)
+}
+
+/// `bytesRefToString(br)`: `"<utf8> [hex]"`, or just the hex when the bytes
+/// are not UTF-8; `"(null)"` for `None`.
+pub fn bytes_ref_to_string(br: Option<&[u8]>) -> String {
+    let Some(br) = br else {
+        return "(null)".into();
+    };
+    let hex = format!(
+        "[{}]",
+        br.iter()
+            .map(|b| format!("{b:x}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    match std::str::from_utf8(br) {
+        Ok(s) => format!("{s} {hex}"),
+        Err(_) => hex,
+    }
+}
+
+/// `bytesToCharSequence(ref, random)`: Java's `nextInt(5)` picks a
+/// `CharsRef`, a `CharBuffer` or a `String`; all three hold the same
+/// characters, which is what this returns.
+///
+/// # Panics
+/// When `bytes` is not UTF-8.
+pub fn bytes_to_char_sequence(bytes: &[u8], random: &mut JavaRandom) -> String {
+    let _kind = random.next_int_bounded(5);
+    String::from_utf8(bytes.to_vec()).expect("UTF-8 bytes")
+}
+
+/// `stringToCharSequence(string, random)`.
+pub fn string_to_char_sequence(string: &str, random: &mut JavaRandom) -> String {
+    bytes_to_char_sequence(string.as_bytes(), random)
+}
+
+/// `docs(random, termsEnum, reuse, flags)`: the term's postings with
+/// randomly more features -- half the time `flags` gains `FREQS`, and half
+/// of that time a random positions/offsets/payloads/all request replaces
+/// it -- drawn as Java draws. (No `reuse`: a port postings enum is fresh.)
+///
+/// # Errors
+/// What the terms enum returns.
+pub fn docs(
+    random: &mut JavaRandom,
+    terms_enum: &mut dyn lucene_search::reader::TermsEnum,
+    flags: lucene_search::reader::PostingsFlags,
+) -> lucene_search::Result<Box<dyn lucene_search::reader::PostingsEnum>> {
+    use lucene_search::reader::PostingsFlags;
+    let mut flags = flags;
+    if random.next_boolean() {
+        if random.next_boolean() {
+            let pos_flags = match random.next_int_bounded(4) {
+                0 => PostingsFlags::Positions,
+                1 => PostingsFlags::Offsets,
+                2 => PostingsFlags::Payloads,
+                _ => PostingsFlags::All,
+            };
+            return terms_enum.postings(pos_flags);
+        }
+        flags = flags.max(PostingsFlags::Freqs);
+    }
+    terms_enum.postings(flags)
+}
+
+/// The `totalHits` half of `assertConsistent`: both zero or neither; equal
+/// when both are exact, otherwise bounded by the exact one.
+fn assert_consistent_totals(
+    expected: lucene_search::collector::TotalHits,
+    actual: lucene_search::collector::TotalHits,
+) {
+    use lucene_search::collector::TotalHitsRelation::EqualTo;
+    assert_eq!(expected.value == 0, actual.value == 0, "wrong total hits");
+    match (expected.relation, actual.relation) {
+        (EqualTo, EqualTo) => assert_eq!(actual.value, expected.value, "wrong total hits"),
+        (EqualTo, _) => assert!(actual.value <= expected.value, "wrong total hits"),
+        (_, EqualTo) => assert!(actual.value >= expected.value, "wrong total hits"),
+        _ => {}
+    }
+}
+
+/// `assertConsistent(expected, actual)` over score-sorted hits: consistent
+/// totals, then the same docs with exactly the same scores.
+///
+/// # Panics
+/// On the first inconsistency.
+pub fn assert_consistent(
+    expected: &lucene_search::top_docs::TopDocs,
+    actual: &lucene_search::top_docs::TopDocs,
+) {
+    assert_consistent_totals(expected.total_hits, actual.total_hits);
+    assert_eq!(
+        actual.score_docs.len(),
+        expected.score_docs.len(),
+        "wrong hit count"
+    );
+    for (e, a) in expected.score_docs.iter().zip(&actual.score_docs) {
+        assert_eq!(a.doc, e.doc, "wrong hit docID");
+        // assertEquals(float, float, 0.0): NaN matches NaN, -0 matches 0
+        assert!(
+            a.score == e.score || (a.score.is_nan() && e.score.is_nan()),
+            "wrong hit score: {} vs {}",
+            e.score,
+            a.score
+        );
+    }
+}
+
+/// `assertConsistent(expected, actual)` over field-sorted hits (Java's
+/// `FieldDoc` branch): consistent totals, then the same docs with the same
+/// sort values.
+///
+/// # Panics
+/// On the first inconsistency.
+pub fn assert_consistent_field_docs(
+    expected: &lucene_search::top_field::TopFieldDocs,
+    actual: &lucene_search::top_field::TopFieldDocs,
+) {
+    assert_consistent_totals(expected.total, actual.total);
+    assert_eq!(actual.hits.len(), expected.hits.len(), "wrong hit count");
+    for (e, a) in expected.hits.iter().zip(&actual.hits) {
+        assert_eq!(a.doc, e.doc, "wrong hit docID");
+        assert_eq!(
+            (&a.values, &a.terms),
+            (&e.values, &e.terms),
+            "wrong sort field values"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn next_long_small_and_large_ranges() {
@@ -859,5 +1100,234 @@ mod tests {
             .zip(BLOCK_ENDS.iter())
             .all(|(s, e)| s < e));
         assert_eq!(HTML_CHAR_ENTITIES[0], "AElig");
+    }
+
+    #[test]
+    fn iterators_and_read_only_collections() {
+        check_iterator_sized([Some(1), None].into_iter(), 2, true);
+        check_iterator([Some(1), Some(2)].into_iter());
+        check_read_only([1, 2, 3].iter());
+        let short =
+            std::panic::catch_unwind(|| check_iterator_sized([Some(1)].into_iter(), 2, false));
+        assert!(short.is_err());
+        let long =
+            std::panic::catch_unwind(|| check_iterator_sized([Some(1)].into_iter(), 0, false));
+        assert!(long.is_err());
+        let null =
+            std::panic::catch_unwind(|| check_iterator_sized([None::<i32>].into_iter(), 1, false));
+        assert!(null.is_err());
+        let null = std::panic::catch_unwind(|| check_iterator([None::<i32>].into_iter()));
+        assert!(null.is_err());
+
+        /// An iterator that yields again after its end, and lies about its size.
+        struct Broken(u32);
+        impl Iterator for Broken {
+            type Item = Option<u32>;
+            fn next(&mut self) -> Option<Option<u32>> {
+                self.0 += 1;
+                (self.0 != 2).then_some(Some(self.0))
+            }
+        }
+        impl ExactSizeIterator for Broken {
+            fn len(&self) -> usize {
+                7
+            }
+        }
+        assert!(std::panic::catch_unwind(|| check_iterator(Broken(1))).is_err());
+        assert!(std::panic::catch_unwind(|| check_iterator_sized(Broken(1), 0, false)).is_err());
+        struct Finite(Broken);
+        impl Iterator for Finite {
+            type Item = Option<u32>;
+            fn next(&mut self) -> Option<Option<u32>> {
+                (self.0 .0 < 3).then(|| self.0.next()).flatten()
+            }
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                (7, Some(7))
+            }
+        }
+        impl ExactSizeIterator for Finite {}
+        assert!(std::panic::catch_unwind(|| check_read_only(Finite(Broken(5)))).is_err());
+    }
+
+    #[test]
+    fn directory_helpers() {
+        use lucene_store::{ByteBuffersDirectory, DataOutput, Directory};
+        let dir = ByteBuffersDirectory::new();
+        assert!(!any_files_except_write_lock(&dir).unwrap());
+        for name in [
+            "write.lock",
+            "segments_1",
+            "_0.cfs",
+            "_0_Lucene104_0.doc",
+            "extra0",
+            "notes",
+        ] {
+            let mut out = dir.create_output(name).unwrap();
+            out.write_bytes(name.as_bytes());
+            out.close().unwrap();
+            assert_eq!(
+                any_files_except_write_lock(&dir).unwrap(),
+                name != "write.lock"
+            );
+        }
+        let ram = ram_copy_of(&dir).unwrap();
+        let mut copied = ram.list_all().unwrap();
+        copied.sort();
+        assert_eq!(copied, ["_0.cfs", "_0_Lucene104_0.doc", "segments_1"]);
+        assert_eq!(&*ram.open("_0.cfs").unwrap(), b"_0.cfs");
+    }
+
+    #[test]
+    fn strings_of_bytes() {
+        assert_eq!(bytes_ref_to_string(None), "(null)");
+        assert_eq!(bytes_ref_to_string(Some(b"ab")), "ab [61 62]");
+        assert_eq!(bytes_ref_to_string(Some(&[0xff, 0x0a])), "[ff a]");
+        let mut r = JavaRandom::new(1);
+        let mut twin = JavaRandom::new(1);
+        assert_eq!(string_to_char_sequence("héllo", &mut r), "héllo");
+        twin.next_int_bounded(5);
+        assert_eq!(r.next_int(), twin.next_int(), "one nextInt(5) drawn");
+    }
+
+    #[test]
+    fn docs_draws_its_postings_features_like_java() {
+        use lucene_codecs::blocktree::SeekStatus;
+        use lucene_search::reader::{PostingsEnum, PostingsFlags, TermsEnum};
+
+        /// Refuses every postings request, naming the flags it was asked for.
+        struct Flags;
+        impl TermsEnum for Flags {
+            fn next(&mut self) -> lucene_search::Result<Option<&[u8]>> {
+                Ok(None)
+            }
+            fn term(&self) -> Option<&[u8]> {
+                None
+            }
+            fn try_seek_ceil(&mut self, _: &[u8]) -> lucene_search::Result<SeekStatus> {
+                Ok(SeekStatus::End)
+            }
+            fn doc_freq(&mut self) -> lucene_search::Result<i32> {
+                Ok(0)
+            }
+            fn total_term_freq(&mut self) -> lucene_search::Result<i64> {
+                Ok(0)
+            }
+            fn postings(
+                &mut self,
+                flags: PostingsFlags,
+            ) -> lucene_search::Result<Box<dyn PostingsEnum>> {
+                Err(lucene_search::Error::Unsupported(format!("{flags:?}")))
+            }
+        }
+        let mut seen = HashSet::new();
+        let mut r = JavaRandom::new(17);
+        let mut twin = JavaRandom::new(17);
+        for i in 0..200 {
+            let expected = if twin.next_boolean() {
+                if twin.next_boolean() {
+                    ["Positions", "Offsets", "Payloads", "All"][twin.next_int_bounded(4) as usize]
+                } else {
+                    "Freqs"
+                }
+            } else {
+                "None"
+            };
+            let mut replay = r.clone();
+            let Err(lucene_search::Error::Unsupported(got)) =
+                docs(&mut r, &mut Flags, PostingsFlags::None)
+            else {
+                panic!("the stub refuses");
+            };
+            assert_eq!(got, expected, "draw {i}");
+            seen.insert(got);
+            let Err(lucene_search::Error::Unsupported(kept)) =
+                docs(&mut replay, &mut Flags, PostingsFlags::All)
+            else {
+                panic!("the stub refuses");
+            };
+            // the random position request replaces the caller's flags; FREQS
+            // never lowers ALL
+            let replaced = !matches!(expected, "None" | "Freqs");
+            assert_eq!(kept, if replaced { expected } else { "All" }, "draw {i}");
+        }
+        assert_eq!(seen.len(), 6);
+    }
+
+    #[test]
+    fn consistent_top_docs() {
+        use lucene_search::collector::{TotalHits, TotalHitsRelation as Rel};
+        use lucene_search::top_docs::{ShardScoreDoc, TopDocs};
+        use lucene_search::top_field::{FieldDoc, TopFieldDocs};
+        let hits = |v, relation| TotalHits { value: v, relation };
+        let td = |total, scores: &[(i32, f32)]| TopDocs {
+            total_hits: total,
+            score_docs: scores
+                .iter()
+                .map(|&(doc, score)| ShardScoreDoc {
+                    doc,
+                    score,
+                    shard_index: -1,
+                })
+                .collect(),
+        };
+        let a = td(hits(5, Rel::EqualTo), &[(1, 2.0), (3, f32::NAN)]);
+        assert_consistent(&a, &a.clone());
+        assert_consistent(
+            &a,
+            &td(
+                hits(4, Rel::GreaterThanOrEqualTo),
+                &[(1, 2.0), (3, f32::NAN)],
+            ),
+        );
+        let lower = td(
+            hits(3, Rel::GreaterThanOrEqualTo),
+            &[(1, 2.0), (3, f32::NAN)],
+        );
+        assert_consistent(&lower, &a);
+        assert_consistent(&lower, &lower.clone());
+        let zero = td(hits(0, Rel::EqualTo), &[]);
+        for bad in [
+            td(hits(6, Rel::EqualTo), &[(1, 2.0), (3, f32::NAN)]),
+            td(
+                hits(6, Rel::GreaterThanOrEqualTo),
+                &[(1, 2.0), (3, f32::NAN)],
+            ),
+            td(hits(5, Rel::EqualTo), &[(1, 2.0)]),
+            td(hits(5, Rel::EqualTo), &[(2, 2.0), (3, f32::NAN)]),
+            td(hits(5, Rel::EqualTo), &[(1, 2.5), (3, f32::NAN)]),
+            zero.clone(),
+        ] {
+            let a = a.clone();
+            assert!(std::panic::catch_unwind(move || assert_consistent(&a, &bad)).is_err());
+        }
+        let small = td(hits(2, Rel::EqualTo), &[(1, 2.0), (3, f32::NAN)]);
+        assert!(std::panic::catch_unwind(move || assert_consistent(&lower, &small)).is_err());
+
+        let tf = |values: Vec<i64>| TopFieldDocs {
+            hits: vec![FieldDoc {
+                doc: 4,
+                values,
+                terms: vec![],
+            }],
+            total: hits(1, Rel::EqualTo),
+            max_score: f32::NAN,
+        };
+        assert_consistent_field_docs(&tf(vec![7]), &tf(vec![7]));
+        assert!(std::panic::catch_unwind(|| assert_consistent_field_docs(
+            &tf(vec![7]),
+            &tf(vec![8])
+        ))
+        .is_err());
+        let mut none = tf(vec![7]);
+        none.hits.clear();
+        assert!(
+            std::panic::catch_unwind(|| assert_consistent_field_docs(&tf(vec![7]), &none)).is_err()
+        );
+        let mut other = tf(vec![7]);
+        other.hits[0].doc = 5;
+        assert!(
+            std::panic::catch_unwind(|| assert_consistent_field_docs(&tf(vec![7]), &other))
+                .is_err()
+        );
     }
 }
