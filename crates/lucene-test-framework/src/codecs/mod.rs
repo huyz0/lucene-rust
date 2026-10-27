@@ -22,6 +22,7 @@ pub mod cranky_codec;
 pub mod cranky_compound;
 pub mod cranky_doc_values;
 pub mod cranky_field_infos;
+pub mod cranky_installed;
 pub mod cranky_live_docs;
 pub mod cranky_norms;
 pub mod cranky_points;
