@@ -64,7 +64,10 @@ import java.util.TreeMap;
  * Verifies {@code crates/lucene-search/examples/write_simpletext_index_fixture.rs}: this port's
  * IndexWriter publishing through {@code SimpleTextDirectory} wrote {@code <dir>/flushed} (two
  * segments, the second compound, with deletions and two doc-values update rounds) and {@code
- * <dir>/merged} (the same force-merged into one).
+ * <dir>/merged} (the same force-merged into one), and {@code <dir>/appended} and {@code
+ * <dir>/appended-merged}: an index written in two sessions, the second a writer opened on the
+ * first's SimpleText index (another update round on its segments, a third segment, deletions,
+ * and a force merge for the second).
  *
  * <p>Lucene writes the same documents, deletions and updates with {@link SimpleTextCodec}
  * itself. Every segment of the port's index must name the SimpleText codec, carry Lucene's
@@ -135,15 +138,71 @@ public class VerifySimpleTextWritePath {
     }
   }
 
+  static IndexWriterConfig config() {
+    IndexWriterConfig config = new IndexWriterConfig();
+    config.setCodec(new SimpleTextCodec());
+    config.setMaxBufferedDocs(IndexWriterConfig.DISABLE_AUTO_FLUSH);
+    config.setRAMBufferSizeMB(256);
+    config.setMergePolicy(new CompoundAsConfigured());
+    return config;
+  }
+
+  /** {@code write_simpletext_index_fixture::deleted}. */
+  static Term[] deleted() {
+    List<Term> deleted = new ArrayList<>();
+    for (int i = 0; i < 2 * PER_SEGMENT; i++) {
+      if (i % 11 == 4) {
+        deleted.add(new Term("id", "d" + i));
+      }
+    }
+    return deleted.toArray(new Term[0]);
+  }
+
+  /** {@code write_simpletext_index_fixture::write_first}. */
+  static void writeFirst(Path path) throws Exception {
+    try (Directory dir = FSDirectory.open(path);
+        IndexWriter w = new IndexWriter(dir, config())) {
+      for (int seg = 0; seg < 2; seg++) {
+        w.getConfig().setUseCompoundFile(seg == 1);
+        for (int i = seg * PER_SEGMENT; i < (seg + 1) * PER_SEGMENT; i++) {
+          w.addDocument(doc(i));
+        }
+        w.commit();
+      }
+      w.deleteDocuments(deleted());
+      w.commit();
+      w.updateNumericDocValue(new Term("id", "d3"), "num", 1000);
+      w.updateNumericDocValue(new Term("id", "d71"), "num", -1000);
+      w.commit();
+    }
+  }
+
+  /** {@code write_simpletext_index_fixture::write_second}: a writer opened on an existing index. */
+  static void writeSecond(Path path, boolean merge) throws Exception {
+    try (Directory dir = FSDirectory.open(path);
+        IndexWriter w = new IndexWriter(dir, config())) {
+      w.updateNumericDocValue(new Term("id", "d3"), "num", 2000);
+      w.updateBinaryDocValue(new Term("id", "d75"), "bin", new BytesRef(new byte[] {9, 9}));
+      w.commit();
+      w.getConfig().setUseCompoundFile(false);
+      for (int i = 2 * PER_SEGMENT; i < 2 * PER_SEGMENT + 30; i++) {
+        w.addDocument(doc(i));
+      }
+      w.commit();
+      w.deleteDocuments(new Term("id", "d5"), new Term("id", "d130"));
+      w.updateNumericDocValue(new Term("id", "d125"), "num", 7);
+      w.commit();
+      if (merge) {
+        w.forceMerge(1);
+        w.commit();
+      }
+    }
+  }
+
   /** {@code write_simpletext_index_fixture::write}. */
   static void write(Path path, boolean merge) throws Exception {
     try (Directory dir = FSDirectory.open(path)) {
-      IndexWriterConfig config = new IndexWriterConfig();
-      config.setCodec(new SimpleTextCodec());
-      config.setMaxBufferedDocs(IndexWriterConfig.DISABLE_AUTO_FLUSH);
-      config.setRAMBufferSizeMB(256);
-      config.setMergePolicy(new CompoundAsConfigured());
-      try (IndexWriter w = new IndexWriter(dir, config)) {
+      try (IndexWriter w = new IndexWriter(dir, config())) {
         for (int seg = 0; seg < 2; seg++) {
           w.getConfig().setUseCompoundFile(seg == 1);
           for (int i = seg * PER_SEGMENT; i < (seg + 1) * PER_SEGMENT; i++) {
@@ -151,13 +210,7 @@ public class VerifySimpleTextWritePath {
           }
           w.commit();
         }
-        List<Term> deleted = new ArrayList<>();
-        for (int i = 0; i < 2 * PER_SEGMENT; i++) {
-          if (i % 11 == 4) {
-            deleted.add(new Term("id", "d" + i));
-          }
-        }
-        w.deleteDocuments(deleted.toArray(new Term[0]));
+        w.deleteDocuments(deleted());
         w.commit();
         w.updateNumericDocValue(new Term("id", "d3"), "num", 1000);
         w.updateNumericDocValue(new Term("id", "d71"), "num", -1000);
@@ -175,10 +228,15 @@ public class VerifySimpleTextWritePath {
 
   public static void main(String[] args) throws Exception {
     Path root = Path.of(args[0]);
-    for (String name : new String[] {"flushed", "merged"}) {
+    for (String name : new String[] {"flushed", "merged", "appended", "appended-merged"}) {
       Path rust = root.resolve(name);
       Path java = Files.createTempDirectory("simpletext-write-path");
-      write(java, name.equals("merged"));
+      if (name.startsWith("appended")) {
+        writeFirst(java);
+        writeSecond(java, name.endsWith("merged"));
+      } else {
+        write(java, name.equals("merged"));
+      }
       try (Directory r = FSDirectory.open(rust);
           Directory j = FSDirectory.open(java)) {
         compare(rust, r, j);
