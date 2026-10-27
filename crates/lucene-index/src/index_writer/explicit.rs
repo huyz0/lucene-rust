@@ -999,8 +999,9 @@ impl IndexingConfig {
                     directory: dir,
                     segment: segment_name,
                     id: &segment_id,
-                    suffix: "",
+                    suffix: self.term_vectors_format().map_or("", |f| f.segment_suffix),
                     max_doc: max_doc as i32,
+                    format: self.term_vectors_format(),
                 },
             )?)
         };
@@ -1119,6 +1120,7 @@ impl IndexingConfig {
                 record(IndexWriter::write_term_vector_files(
                     dir,
                     segment_name,
+                    self.term_vectors_format().map_or("", |f| f.segment_suffix),
                     &tvd,
                     &tvx,
                     &tvm,

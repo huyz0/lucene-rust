@@ -18,6 +18,7 @@ pub mod blockterms;
 pub mod bloom;
 pub mod cheap_bastard;
 pub mod compressing_codec;
+pub mod compressing_installed;
 pub mod configurable_m;
 pub mod cranky_codec;
 pub mod cranky_compound;
@@ -64,6 +65,18 @@ pub fn register_postings_formats() {
 /// name `Codec.forName` resolves (the jar's `META-INF/services` entries).
 pub const LUCENE104_FILTER_CODECS: &[&str] = &["Asserting", "CheapBastard", "ConfigurableMCodec"];
 
+/// The six `CompressingCodec`s' SPI names, which keep `Lucene104`'s formats
+/// but for stored fields and term vectors, whose readers tell those formats
+/// apart by their headers.
+pub const COMPRESSING_CODECS: &[&str] = &[
+    "FastCompressingStoredFieldsData",
+    "FastDecompressionCompressingStoredFieldsData",
+    "HighCompressionCompressingStoredFieldsData",
+    "DummyCompressingStoredFieldsData",
+    "DeflateWithPresetCompressingStoredFieldsData",
+    "LZ4WithPresetCompressingStoredFieldsData",
+];
+
 /// Makes the test framework's codecs readable by name (`Codec`'s SPI), and
 /// their postings formats ([`register_postings_formats`]) and
 /// `AssertingKnnVectorsFormat` too. Idempotent.
@@ -74,7 +87,7 @@ pub fn register_codecs() {
     lucene_codecs::per_field_knn_vectors::register_wrapper(
         asserting_installed::InstalledAssertingCodec::new().knn_vectors_format_for_field(""),
     );
-    for name in LUCENE104_FILTER_CODECS {
+    for name in LUCENE104_FILTER_CODECS.iter().chain(COMPRESSING_CODECS) {
         register(renamed(lucene104(), name));
     }
 }

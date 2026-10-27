@@ -4,10 +4,13 @@
 //! An optional stored-fields factory wraps the real document writer lifecycle
 //! while retaining the native reader graph and `Lucene104` on-disk formats.
 //! Optional live-docs, norms, points, postings and term-vector writers add checks
-//! to their native output. Other segment-level formats remain fixed to the codec.
+//! to their native output. Stored fields and term vectors may instead be a
+//! `CompressingCodec`'s compressing formats. Other segment-level formats
+//! remain fixed to the codec.
 
 use std::fmt;
 
+use crate::compression::CompressingFormat;
 use crate::live_docs_writer::LiveDocsWriter;
 use crate::norms_writer::NormsWriterFactory;
 use crate::per_field_doc_values::Lucene90DocValuesFormat;
@@ -64,6 +67,24 @@ pub trait Lucene104Codec: Send + Sync + fmt::Debug {
     /// `None` retains the direct native encoder and bulk chunk-copy merge paths.
     fn term_vectors_writer_factory(&self) -> Option<&dyn TermVectorsWriterFactory> {
         None
+    }
+
+    /// `storedFieldsFormat()` and `termVectorsFormat()` when both are a
+    /// `Lucene90Compressing*Format` built from these settings
+    /// (`CompressingCodec`). Their files then carry the format's data codec
+    /// name and segment suffix, and the segment records no
+    /// `Lucene90StoredFieldsFormat.mode`. `None` keeps
+    /// `Lucene90StoredFieldsFormat(BEST_SPEED)` and `Lucene90TermVectorsFormat`.
+    fn compressing_format(&self) -> Option<&'static CompressingFormat> {
+        None
+    }
+
+    /// The stored-fields format [`Self::compressing_format`] implies.
+    fn stored_fields_mode(&self) -> crate::stored_fields::Mode {
+        self.compressing_format().map_or(
+            crate::stored_fields::Mode::BestSpeed,
+            crate::stored_fields::Mode::Compressing,
+        )
     }
 
     /// `getPostingsFormatForField(field)`: `Lucene104PostingsFormat()`.

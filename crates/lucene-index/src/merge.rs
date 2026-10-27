@@ -1657,16 +1657,14 @@ fn stored_fields_merge_strategy(
 /// merge the runs are whatever the k-way merge produces, and `copy_chunks`
 /// falls back to per-document copying at each run's ragged ends.
 fn write_merged_stored_fields(
+    mode: stored_fields::Mode,
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],
     doc_order: &[(usize, i32)],
     merged_segment_id: &[u8; ID_LENGTH],
 ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-    let mut writer = stored_fields::StoredFieldsWriter::new(
-        stored_fields::Mode::BestSpeed,
-        merged_segment_id,
-        "",
-    );
+    let mut writer =
+        stored_fields::StoredFieldsWriter::new(mode, merged_segment_id, mode.segment_suffix());
     // Java's per-reader cached `BlockState`: the DOC path reads a run of
     // documents out of the same chunk, and decompressing that chunk once per
     // document instead of once per chunk is the difference between a merge
@@ -2312,10 +2310,23 @@ fn merge_segments_mapped_inner(
     merged_doc_values.sort_by_key(|f| f.field_number());
 
     let mut files: Vec<String> = Vec::new();
+    // A `CompressingCodec`'s stored fields and term vectors take its format's
+    // name, settings and segment suffix.
+    let compressing = options
+        .codec
+        .as_deref()
+        .and_then(|codec| codec.compressing_format());
+    let stored_mode = compressing.map_or(
+        stored_fields::Mode::BestSpeed,
+        stored_fields::Mode::Compressing,
+    );
+    let format_suffix = stored_mode.segment_suffix();
+    let format_file =
+        |ext| crate::index_writer::segment_file_name(merged_segment_name, format_suffix, ext);
     let write_stored = |files: &mut Vec<String>| -> Result<()> {
-        let fdt_name = format!("{merged_segment_name}.fdt");
-        let fdx_name = format!("{merged_segment_name}.fdx");
-        let fdm_name = format!("{merged_segment_name}.fdm");
+        let fdt_name = format_file("fdt");
+        let fdx_name = format_file("fdx");
+        let fdm_name = format_file("fdm");
         if let Some(factory) = options
             .codec
             .as_deref()
@@ -2327,8 +2338,8 @@ fn merge_segments_mapped_inner(
                     directory: dir,
                     segment: merged_segment_name,
                     id: &merged_segment_id,
-                    suffix: "",
-                    mode: stored_fields::Mode::BestSpeed,
+                    suffix: format_suffix,
+                    mode: stored_mode,
                 },
                 sources,
                 &per_source_maps,
@@ -2337,6 +2348,7 @@ fn merge_segments_mapped_inner(
             files.extend([fdt_name, fdx_name, fdm_name]);
         } else {
             let (fdt, fdx, fdm) = write_merged_stored_fields(
+                stored_mode,
                 sources,
                 &per_source_maps,
                 &doc_order,
@@ -2438,7 +2450,13 @@ fn merge_segments_mapped_inner(
     }
 
     let tv_files = if term_vectors_factory.is_none() {
-        write_merged_term_vectors(sources, &per_source_maps, &doc_order, &merged_segment_id)?
+        write_merged_term_vectors(
+            compressing,
+            sources,
+            &per_source_maps,
+            &doc_order,
+            &merged_segment_id,
+        )?
     } else {
         None
     };
@@ -2657,7 +2675,7 @@ fn merge_segments_mapped_inner(
 
     if let Some((tvd, tvx, tvm)) = tv_files {
         for (ext, bytes) in [("tvd", &tvd), ("tvx", &tvx), ("tvm", &tvm)] {
-            let name = format!("{merged_segment_name}.{ext}");
+            let name = format_file(ext);
             write_file(dir, &name, bytes)?;
             files.push(name);
         }
@@ -2732,8 +2750,9 @@ fn merge_segments_mapped_inner(
                     directory: dir,
                     segment: merged_segment_name,
                     id: &merged_segment_id,
-                    suffix: "",
+                    suffix: format_suffix,
                     max_doc: doc_count,
+                    format: compressing,
                 },
                 sources,
                 &per_source_maps,
@@ -2803,10 +2822,7 @@ fn merge_segments_mapped_inner(
         has_blocks: sources.iter().any(|s| s.has_blocks),
         diagnostics: options.kind.diagnostics(sources.len(), lucene_version),
         files: files.clone(),
-        attributes: vec![(
-            "Lucene90StoredFieldsFormat.mode".to_string(),
-            "BEST_SPEED".to_string(),
-        )],
+        attributes: crate::segment_writer::stored_fields_mode_attribute(stored_mode),
         // The merged segment claims the sort exactly when this merge produced
         // it. A concatenating merge must not claim one (it would describe an
         // order the bytes do not have); the k-way merge genuinely preserves
@@ -3884,6 +3900,7 @@ fn write_installed_term_vectors(
 /// doc, exactly as `TermVectorsWriter.merge` does when
 /// `mergeState.termVectorsReaders[i]` is null.
 fn write_merged_term_vectors(
+    format: Option<&'static lucene_codecs::compression::CompressingFormat>,
     sources: &[MergeSource],
     per_source_maps: &[HashMap<i32, i32>],
     doc_order: &[(usize, i32)],
@@ -3893,7 +3910,10 @@ fn write_merged_term_vectors(
         return Ok(None);
     }
 
-    let mut writer = term_vectors::TermVectorsWriter::new(merged_segment_id, "");
+    let mut writer = match format {
+        None => term_vectors::TermVectorsWriter::new(merged_segment_id, ""),
+        Some(format) => term_vectors::TermVectorsWriter::with_format(merged_segment_id, format),
+    };
     let matching = matching_readers(sources, per_source_maps);
     let mut strategies: Vec<TermVectorsMergeStrategy> = Vec::with_capacity(sources.len());
     for (source, &m) in sources.iter().zip(&matching) {
@@ -9342,6 +9362,7 @@ mod tests {
                 id: &output_id,
                 suffix: "",
                 max_doc: 0,
+                format: None,
             },
             &[source],
             &maps,
@@ -9383,6 +9404,7 @@ mod tests {
                 id: &output_id,
                 suffix: "",
                 max_doc: 0,
+                format: None,
             },
             &[restored],
             &maps,
@@ -9448,6 +9470,7 @@ mod tests {
                 id: &output_id,
                 suffix: "",
                 max_doc: 1,
+                format: None,
             },
             &[source],
             &maps,
