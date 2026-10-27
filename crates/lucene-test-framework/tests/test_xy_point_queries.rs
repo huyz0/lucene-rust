@@ -107,7 +107,7 @@ type Method<Q> = fn(&mut BaseXYPoint<'_, XYIndexed<Q>>);
 /// Every test method of the base, each on its own stream; the nightly ones
 /// only under `tests.nightly`.
 fn run_all<Q: XYQueries>(name: &str, make: impl Fn() -> Q) {
-    let methods: [(&str, Method<Q>, bool); 15] = [
+    let methods: [(&str, Method<Q>, bool); 16] = [
         ("random_tiny", |b| b.random_tiny().unwrap(), false),
         ("random_medium", |b| b.random_medium().unwrap(), false),
         ("random_big", |b| b.random_big().unwrap(), true),
@@ -131,6 +131,7 @@ fn run_all<Q: XYQueries>(name: &str, make: impl Fn() -> Q) {
         ("index_values", |b| b.index_values(), false),
         ("invalid_queries", |b| b.invalid_queries(), false),
         ("small_set", |b| b.small_set(), false),
+        ("equals", |b| b.equals(), false),
     ];
     for (method, run, nightly) in methods {
         let mut tc = LuceneTestCase::new(&format!("{name}::{method}"));
