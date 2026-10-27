@@ -656,7 +656,7 @@ pub fn invert_documents_with_payloads(
 
 /// Java's `String.hashCode()`: `s[0]*31^(n-1) + ... + s[n-1]` over the
 /// UTF-16 code units, wrapping.
-pub(crate) fn java_string_hash(s: &str) -> i32 {
+pub fn java_string_hash(s: &str) -> i32 {
     s.encode_utf16().fold(0i32, |h, unit| {
         h.wrapping_mul(31).wrapping_add(i32::from(unit))
     })
@@ -672,7 +672,7 @@ pub(crate) fn java_string_hash(s: &str) -> i32 {
 /// bucket `hashCode() & hashMask`, and once there are at least half as many
 /// fields as buckets the table doubles (`rehash`, which moves each old
 /// bucket's chain, head first, onto the heads of the new buckets).
-pub(crate) fn field_hash_order(names: &[&str]) -> Vec<usize> {
+pub fn field_hash_order(names: &[&str]) -> Vec<usize> {
     let mut buckets: Vec<Vec<usize>> = vec![Vec::new(); 2];
     for (i, name) in names.iter().enumerate() {
         let mask = buckets.len().saturating_sub(1);
@@ -698,12 +698,47 @@ pub(crate) fn field_hash_order(names: &[&str]) -> Vec<usize> {
     buckets.into_iter().flatten().collect()
 }
 
+/// The order a `java.util.HashMap<String, _>` iterates `names`, inserted in
+/// the order given: bucket by bucket at the table's final capacity (16,
+/// doubling once more than three quarters full), each bucket in insertion
+/// order (a resize keeps it). A key's bucket is `h ^ (h >>> 16)` of its
+/// `hashCode()`, masked. Returns the names' indexes in that order; a bucket
+/// long enough to be a tree (eight keys) is not modelled.
+pub fn java_hash_map_order(names: &[&str]) -> Vec<usize> {
+    let mut capacity = 16usize;
+    while names.len().saturating_mul(4) > capacity.saturating_mul(3) {
+        capacity = capacity.saturating_mul(2);
+    }
+    let bucket = |name: &str| {
+        #[allow(clippy::cast_sign_loss)]
+        let h = java_string_hash(name) as u32;
+        ((h ^ (h >> 16)) as usize) & capacity.saturating_sub(1)
+    };
+    let mut order: Vec<usize> = (0..names.len()).collect();
+    order.sort_by_key(|&i| (bucket(names[i]), i));
+    order
+}
+
 #[cfg(test)]
 mod tests {
 
     /// Checked against Java: the first `GenPerFieldFormats` segment's
     /// doc-values fields reach `PerFieldDocValuesFormat` as `dva_num` (4),
     /// then the two `dvb_` fields, which is why `dva_num` is `Lucene90_0`.
+    /// `new HashMap<String, Object>()` with `bin`, `num` and `sorted` put in
+    /// any order iterates `sorted` (bucket 2), `bin` (6), `num` (7).
+    #[test]
+    fn java_hash_map_order_walks_buckets() {
+        assert_eq!(super::java_hash_map_order(&["num", "bin"]), vec![1, 0]);
+        assert_eq!(
+            super::java_hash_map_order(&["sorted", "num", "bin"]),
+            vec![0, 2, 1]
+        );
+        let many: Vec<String> = (0..13).map(|i| format!("f{i}")).collect();
+        let refs: Vec<&str> = many.iter().map(String::as_str).collect();
+        assert_eq!(super::java_hash_map_order(&refs).len(), 13);
+    }
+
     #[test]
     fn field_hash_order_walks_javas_table() {
         assert_eq!(super::java_string_hash(""), 0);

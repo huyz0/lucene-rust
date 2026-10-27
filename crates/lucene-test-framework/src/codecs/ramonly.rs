@@ -13,19 +13,25 @@
 //! Invalid UTF-8 and malformed postings return errors; Java assumes valid
 //! UTF-8 and asserts or throws on malformed input. Infallible postings
 //! accessors return -1/0 before positioning where Java dereferences null.
-//! IndexWriter does not select this test format. The internal RAMDoc's
-//! JVM-array memory estimator has no Rust counterpart.
+//! IndexWriter routes fields to [`RamOnlyPostingsFormat::spi`] as a terms
+//! dictionary that keeps its own postings: a group writes only its `.id`
+//! token, and readers re-encode the slot's postings as a block tree. The
+//! internal RAMDoc's JVM-array memory estimator has no Rust counterpart.
 
 use std::collections::btree_map::Range;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Bound;
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
-use lucene_codecs::blocktree::SeekStatus;
+use lucene_codecs::blocktree::{self, SeekStatus};
 use lucene_codecs::field_infos::FieldInfo;
-use lucene_codecs::postings_writer::{FieldPostingsInput, TermPostings, TermSource};
-use lucene_codecs::segment_state::SegmentWriteState;
+use lucene_codecs::postings_writer::{
+    self, DictionaryField, FieldNorms, FieldPostingsInput, PostingsFiles, TermPostings, TermSource,
+    WriteOptions,
+};
+use lucene_codecs::segment_state::{SegmentReadState, SegmentWriteState};
+use lucene_codecs::terms_dictionary::{ErasedInput, OwnedFieldPostings, TermsDictionaryFormat};
 use lucene_search::reader::{
     DocIdSetIterator, PostingsEnum, PostingsFlags, Terms, TermsEnum, NO_MORE_DOCS,
 };
@@ -530,6 +536,146 @@ impl PostingsEnum for RamDocsEnum {
             .get(self.pos.checked_sub(1)?)
             .map(Vec::as_slice)
             .filter(|p| !p.is_empty())
+    }
+}
+
+/// The `id` token file: `IndexFileNames.segmentFileName(segment, suffix,
+/// ID_EXTENSION)`.
+pub const ID_EXTENSION: &str = "id";
+
+impl RamOnlyPostingsFormat {
+    /// `PostingsFormat.forName("RAMOnly")`: the one instance IndexWriter
+    /// writes routed fields through and every reader looks their postings
+    /// up in, as Java's SPI-loaded format does for `PerFieldPostingsFormat`.
+    pub fn spi() -> &'static RamOnlyPostingsFormat {
+        static FORMAT: LazyLock<RamOnlyPostingsFormat> =
+            LazyLock::new(RamOnlyPostingsFormat::default);
+        &FORMAT
+    }
+}
+
+fn dictionary_error(e: Error) -> postings_writer::Error {
+    match e {
+        Error::Store(e) => postings_writer::Error::Store(e),
+        e => postings_writer::Error::Dictionary(e.to_string()),
+    }
+}
+
+/// `RAMOnly` as IndexWriter routes fields to it
+/// (`Lucene104PostingsFormat::dictionary(RamOnlyPostingsFormat::spi())`):
+/// each flush or merge group allocates a slot, keeps the group's postings
+/// in it and writes only the `.id` token. Readers re-encode the slot's
+/// postings ([`TermsDictionaryFormat::read_postings`]), so a segment is
+/// readable only in the process that wrote it, as in Java.
+impl TermsDictionaryFormat for RamOnlyPostingsFormat {
+    fn name(&self) -> &'static str {
+        "RAMOnly"
+    }
+
+    fn extensions(&self) -> &'static [&'static str] {
+        &[ID_EXTENSION]
+    }
+
+    fn write(
+        &self,
+        inputs: &[ErasedInput<'_, '_>],
+        _norms: &[FieldNorms<'_>],
+        _options: &WriteOptions,
+        state: &SegmentWriteState<'_>,
+    ) -> postings_writer::Result<(PostingsFiles, Vec<Vec<u8>>)> {
+        // The routed write does not know maxDoc (`0`): the documents bound it.
+        let max_doc = inputs
+            .iter()
+            .flat_map(|input| input.terms.iter())
+            .filter_map(|term| term.docs().last())
+            .map(|&(doc, _)| doc.saturating_add(1))
+            .fold(state.max_doc, i32::max);
+        let state = SegmentWriteState { max_doc, ..*state };
+        let mut consumer = self.fields_consumer();
+        consumer
+            .write_materialized(inputs, &state)
+            .map_err(dictionary_error)?;
+        Ok((PostingsFiles::default(), vec![consumer.token().to_vec()]))
+    }
+
+    fn read(
+        &self,
+        _files: &[&[u8]],
+        _state: &SegmentReadState<'_>,
+    ) -> blocktree::Result<Vec<DictionaryField>> {
+        Err(blocktree::Error::Unsupported(
+            "RAMOnly keeps no Lucene104 postings: read_postings serves it",
+        ))
+    }
+
+    fn writes_postings(&self) -> bool {
+        false
+    }
+
+    fn checksummed(&self) -> bool {
+        false
+    }
+
+    fn read_postings(
+        &self,
+        files: &[&[u8]],
+        state: &SegmentReadState<'_>,
+    ) -> Option<blocktree::Result<Vec<OwnedFieldPostings>>> {
+        let err = |message: String| blocktree::Error::ForeignDictionary {
+            format: "RAMOnly",
+            message,
+        };
+        Some((|| {
+            let token = files.first().copied().unwrap_or_default();
+            let postings = self
+                .fields_producer(token)
+                .map_err(|e| err(e.to_string()))?
+                .ok_or_else(|| err("no postings in this process for the segment's token".into()))?;
+            let fields = postings
+                .fields
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let mut out = Vec::with_capacity(fields.len());
+            for field in fields.values() {
+                let info = state
+                    .field_infos
+                    .field_by_name(&field.info.name)
+                    .ok_or_else(|| {
+                        err(format!("field {:?} is not in the segment", field.info.name))
+                    })?;
+                let mut terms: Vec<TermPostings> = field
+                    .terms
+                    .values()
+                    .map(|term| {
+                        let mut posting = TermPostings {
+                            term: term.bytes.clone(),
+                            ..TermPostings::default()
+                        };
+                        for doc in &term.docs {
+                            posting.docs.push((doc.id, doc.positions.len() as i32));
+                            posting.positions.push(doc.positions.clone());
+                            if info.store_payloads {
+                                for payload in &doc.payloads {
+                                    posting.payload_lengths.push(payload.len() as u32);
+                                    posting.payload_bytes.extend_from_slice(payload);
+                                }
+                            }
+                        }
+                        posting
+                    })
+                    .collect();
+                // The map is in UTF-16 order; the block tree takes bytes.
+                terms.sort_by(|a, b| a.term.cmp(&b.term));
+                out.push(OwnedFieldPostings {
+                    field_number: info.number,
+                    index_options: info.index_options,
+                    doc_count: field.doc_count,
+                    has_payloads: info.store_payloads,
+                    terms,
+                });
+            }
+            Ok(out)
+        })())
     }
 }
 

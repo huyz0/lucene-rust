@@ -71,6 +71,46 @@ pub trait TermsDictionaryFormat: Send + Sync + fmt::Debug {
         files: &[&[u8]],
         state: &SegmentReadState<'_>,
     ) -> blocktree::Result<Vec<DictionaryField>>;
+
+    /// Whether [`Self::write`] produces the default postings files. A format
+    /// that keeps its postings outside the directory (the test framework's
+    /// `RAMOnly`) returns empty [`PostingsFiles`] and says so here: its group
+    /// then has no `.doc`/`.psm`/`.pos`/`.pay`.
+    fn writes_postings(&self) -> bool {
+        true
+    }
+
+    /// Whether the dictionary files end in a `CodecUtil` footer, which
+    /// `checkIntegrity` verifies. `RAMOnly`'s footerless token does not.
+    fn checksummed(&self) -> bool {
+        true
+    }
+
+    /// For a format that [does not write](Self::writes_postings) the default
+    /// postings: `fieldsProducer(state)`, every field's terms and postings,
+    /// terms in byte order, which the reader encodes as a block tree with
+    /// postings of its own ([`crate::per_field_postings::reencode_group`]).
+    /// `None` for a format over the default postings, read through
+    /// [`Self::read`].
+    fn read_postings(
+        &self,
+        _files: &[&[u8]],
+        _state: &SegmentReadState<'_>,
+    ) -> Option<blocktree::Result<Vec<OwnedFieldPostings>>> {
+        None
+    }
+}
+
+/// One field of a format that keeps its own postings
+/// ([`TermsDictionaryFormat::read_postings`]).
+#[derive(Debug, Clone)]
+pub struct OwnedFieldPostings {
+    pub field_number: i32,
+    pub index_options: crate::field_infos::IndexOptions,
+    pub doc_count: i32,
+    pub has_payloads: bool,
+    /// In ascending byte order.
+    pub terms: Vec<postings_writer::TermPostings>,
 }
 
 /// [`TermsDictionaryFormat::write`] for the usual format, whose terms writer

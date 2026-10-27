@@ -59,6 +59,7 @@ pub fn register_postings_formats() {
     }
     register(bloom::TestBloomFilteredLucenePostings::dictionary_format());
     register(mockrandom::MockRandomPostingsFormat::read_only());
+    register(ramonly::RamOnlyPostingsFormat::spi());
 }
 
 /// The test framework's codecs that keep `Lucene104`'s file formats, by the
