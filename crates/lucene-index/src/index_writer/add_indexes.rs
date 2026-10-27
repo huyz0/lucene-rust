@@ -305,6 +305,14 @@ impl IndexWriter<'_> {
         // Java's FieldInfos iterator visits ascending field numbers.
         incoming.sort_by_key(|field| field.number);
         for theirs in &incoming {
+            // Configured fields retain their declared capabilities, while
+            // optional writers determine the effective persisted schema. A
+            // matching declaration must not hide a conflicting live segment.
+            if let Some(persisted) = self.segments_schema(&theirs.name)? {
+                if let Some(message) = super::explicit::schema_change(&persisted, theirs) {
+                    return Err(Error::AddIndexes(message));
+                }
+            }
             let ours = match self.cfg.fields.iter().find(|f| f.name == theirs.name) {
                 Some(ours) => Some(ours.clone()),
                 None => self

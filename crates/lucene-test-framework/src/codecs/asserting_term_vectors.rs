@@ -12,9 +12,11 @@
 //! state, matching SimpleText's inherited `getMergeInstance`. Close releases
 //! shared data when the final independent group closes, even if closed
 //! handles remain alive. Closed get/clone
-//! use I/O errors instead of Java runtime exceptions. There is no IOContext or
-//! Codec/IndexWriter installation. The underlying writer's buffered publication
-//! and private-buffer accounting limits remain unchanged.
+//! use I/O errors instead of Java runtime exceptions. The optional
+//! [`super::asserting_term_vectors_writer::AssertingTermVectorsCodec`] installs
+//! this writer state machine over native binary output. Lazy reader assertions,
+//! IOContext and whole-codec composition remain absent. The underlying writer's
+//! buffered publication and private-buffer accounting limits remain unchanged.
 
 use std::cell::{Ref, RefCell};
 use std::fmt;
