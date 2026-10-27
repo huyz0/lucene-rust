@@ -257,6 +257,7 @@ pub mod segment_cacheable;
 pub mod segment_order;
 pub mod similarities;
 pub mod similarity;
+pub mod simpletext_transcode;
 mod slices;
 pub mod sloppy_phrase;
 pub mod soft_deletes;

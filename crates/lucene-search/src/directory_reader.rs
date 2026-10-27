@@ -360,6 +360,14 @@ impl SegmentReader {
 }
 
 impl SegmentReader {
+    /// One segment of `dir` on its own, at document base 0.
+    pub(crate) fn open_one(
+        dir: &dyn Directory,
+        commit: &segment_infos::SegmentCommitInfo,
+    ) -> Result<Self> {
+        Self::open(dir, commit, 0)
+    }
+
     /// Opens one segment: reads its `.si`, then whichever of `.fnm`/
     /// `.tim`/`.tip`/`.tmd`/`.doc`/`.pos`/`.pay`/`.liv` it actually has
     /// (checked via `SegmentInfo.files` -- a segment missing postings, e.g.
