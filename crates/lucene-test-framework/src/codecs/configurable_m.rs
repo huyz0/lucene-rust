@@ -14,12 +14,11 @@
 //! the existing flat writer, scorer and HNSW builder without changing their
 //! representations. Validation/build failures therefore occur at flush rather
 //! than `addValue`, and no streaming writer lifecycle is claimed. Directory,
-//! IOContext, sorted flush and configured-M merge graph reuse remain with
-//! this adapter's limits; installed in `IndexWriter` (its `Lucene104Codec`
-//! impl) the writer's own flush and merge write the direct format. The borrowed native reader
+//! IOContext, sorted flush and configured-M merge graph reuse are beyond
+//! this adapter; installed in `IndexWriter` (its `Lucene104Codec` impl) the
+//! writer's own flush and merge write the direct format, sorted or not, and
+//! a merge reuses a source graph as Java's does. The borrowed native reader
 //! checks all four CRCs on open; Java defers data CRCs to `checkIntegrity`.
-//! Inherited codec display, format display and the format's fixed
-//! `getMaxDimensions(fieldName) == 1024` accessor are not exposed by this API.
 
 use std::collections::HashSet;
 use std::io;
@@ -69,6 +68,13 @@ impl<D> ConfigurableMCodec<D> {
     }
     pub fn knn_vectors_format(&self) -> &ConfigurableMHnswFormat {
         &self.vectors
+    }
+}
+
+/// `Codec.toString()`: the codec's name.
+impl<D> std::fmt::Display for ConfigurableMCodec<D> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
     }
 }
 
@@ -126,6 +132,23 @@ impl<D: CodecDelegate> ConfigurableMCodec<D> {
     }
 }
 
+/// `Lucene99HnswVectorsFormat.toString()`, with the scalar
+/// `DefaultFlatVectorScorer` (Java names its vector-API scorer when that is
+/// enabled).
+impl std::fmt::Display for ConfigurableMHnswFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Lucene99HnswVectorsFormat(name=Lucene99HnswVectorsFormat, maxConn={}, beamWidth={}, \
+             tinySegmentsThreshold={}, flatVectorFormat=Lucene99FlatVectorsFormat(\
+             vectorsScorer=DefaultFlatVectorScorer()))",
+            self.max_conn,
+            self.beam_width(),
+            self.tiny_segments_threshold()
+        )
+    }
+}
+
 /// Fixed two-argument Lucene99 format settings selected by the codec.
 #[derive(Debug, PartialEq, Eq)]
 pub struct ConfigurableMHnswFormat {
@@ -152,6 +175,10 @@ impl ConfigurableMHnswFormat {
     }
     pub fn merge_executor(&self) -> Option<()> {
         None
+    }
+    /// `getMaxDimensions(fieldName)`: `Lucene99HnswVectorsFormat`'s 1024.
+    pub fn max_dimensions(&self, _field_name: &str) -> i32 {
+        1024
     }
 
     /// Unsorted, buffered flush in Java's field insertion order. Each field
@@ -283,6 +310,19 @@ mod tests {
     use lucene_codecs::field_infos::{FieldInfo, FieldInfos, VectorSimilarityFunction};
     use lucene_codecs::hnsw_vectors::HnswVectorsReader;
     use lucene_codecs::vectors::FieldVectorData;
+
+    #[test]
+    fn displays_and_max_dimensions_follow_java() {
+        let codec = ConfigurableMCodec::with_max_conn(16).unwrap();
+        assert_eq!(codec.to_string(), "ConfigurableMCodec");
+        assert_eq!(
+            codec.knn_vectors_format().to_string(),
+            "Lucene99HnswVectorsFormat(name=Lucene99HnswVectorsFormat, maxConn=16, beamWidth=100, \
+             tinySegmentsThreshold=100, flatVectorFormat=Lucene99FlatVectorsFormat(\
+             vectorsScorer=DefaultFlatVectorScorer()))"
+        );
+        assert_eq!(codec.knn_vectors_format().max_dimensions("any"), 1024);
+    }
 
     #[test]
     fn boundary_connection_settings_survive_empty_and_singleton_metadata() {

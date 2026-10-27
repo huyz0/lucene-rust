@@ -206,6 +206,21 @@ pub fn write_field_updates_with_schema(
     per_field_suffix: &str,
     schema: &[FieldInfo],
 ) -> Result<()> {
+    write_field_updates_with_codec(dir, sci, numeric, binary, per_field_suffix, schema, None)
+}
+
+/// [`write_field_updates_with_schema`] with the writer's installed codec,
+/// whose [`lucene_codecs::codec::Lucene104Codec::before_write`] can fail each
+/// generation's doc-values write and the round's `.fnm`.
+pub(crate) fn write_field_updates_with_codec(
+    dir: &dyn Directory,
+    sci: &mut SegmentCommitInfo,
+    numeric: &[NumericFieldUpdates],
+    binary: &[BinaryFieldUpdates],
+    per_field_suffix: &str,
+    schema: &[FieldInfo],
+    codec: Option<&dyn lucene_codecs::codec::Lucene104Codec>,
+) -> Result<()> {
     let mut created: Vec<String> = Vec::new();
     let snapshot = sci.clone();
     match write_field_updates_inner(
@@ -215,6 +230,7 @@ pub fn write_field_updates_with_schema(
         binary,
         per_field_suffix,
         schema,
+        codec,
         &mut created,
     ) {
         Ok(()) => Ok(()),
@@ -242,6 +258,7 @@ pub fn write_field_updates_with_schema(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_field_updates_inner(
     dir: &dyn Directory,
     sci: &mut SegmentCommitInfo,
@@ -249,6 +266,7 @@ fn write_field_updates_inner(
     binary: &[BinaryFieldUpdates],
     per_field_suffix: &str,
     schema: &[FieldInfo],
+    codec: Option<&dyn lucene_codecs::codec::Lucene104Codec>,
     created: &mut Vec<String>,
 ) -> Result<()> {
     let segment = sci.segment_name.clone();
@@ -326,11 +344,23 @@ fn write_field_updates_inner(
         } else {
             doc_values_updates::write_numeric_generation_with_skip_index
         };
-        let (dvm, dvd, dvs) = write(
-            infos.fields[index].number,
-            &column,
-            &sci.segment_id,
+        let (dvm, dvd, dvs) = crate::index_writer::with_doc_values_faults(codec, 1, || {
+            write(
+                infos.fields[index].number,
+                &column,
+                &sci.segment_id,
+                &suffix,
+            )
+            .map_err(Error::from)
+        })?;
+        check_generation(
+            codec,
+            sci,
+            &infos,
+            index,
+            max_doc,
             &suffix,
+            (&dvm, &dvd, &dvs),
         )?;
         finish_generation(
             dir, sci, &mut infos, index, gen, &per_field, dvm, dvd, dvs, created,
@@ -358,11 +388,23 @@ fn write_field_updates_inner(
         )?;
         let gen = sci.next_write_doc_values_gen();
         let suffix = generation_segment_suffix(gen, &per_field);
-        let (dvm, dvd, dvs) = doc_values_updates::write_binary_generation(
-            infos.fields[index].number,
-            &column,
-            &sci.segment_id,
+        let (dvm, dvd, dvs) = crate::index_writer::with_doc_values_faults(codec, 1, || {
+            doc_values_updates::write_binary_generation(
+                infos.fields[index].number,
+                &column,
+                &sci.segment_id,
+                &suffix,
+            )
+            .map_err(Error::from)
+        })?;
+        check_generation(
+            codec,
+            sci,
+            &infos,
+            index,
+            max_doc,
             &suffix,
+            (&dvm, &dvd, &dvs),
         )?;
         finish_generation(
             dir, sci, &mut infos, index, gen, &per_field, dvm, dvd, dvs, created,
@@ -372,6 +414,7 @@ fn write_field_updates_inner(
     // `ReadersAndUpdates.writeFieldInfosGen`, once for the whole round.
     let fi_gen = sci.next_write_field_infos_gen();
     let fnm_name = field_infos_gen_file_name(&segment, fi_gen);
+    crate::index_writer::before_write(codec, lucene_codecs::codec::WritePoint::FieldInfos)?;
     let fnm = lucene_codecs::field_infos::write(
         &infos.fields,
         &sci.segment_id,
@@ -383,6 +426,51 @@ fn write_field_updates_inner(
     sci.field_infos_files = vec![fnm_name];
 
     dir.sync(created)?;
+    Ok(())
+}
+
+/// The codec's look ([`crate::index_writer::check_doc_values`]) at one
+/// field's update generation before it is written.
+fn check_generation(
+    codec: Option<&dyn lucene_codecs::codec::Lucene104Codec>,
+    sci: &SegmentCommitInfo,
+    infos: &FieldInfos,
+    index: usize,
+    max_doc: i32,
+    suffix: &str,
+    (dvm, dvd, dvs): (&[u8], &[u8], &[u8]),
+) -> Result<()> {
+    let field = &infos.fields[index];
+    // The field's per-field format, or the one the codec routes it to.
+    let format_name = field
+        .attributes
+        .iter()
+        .find(|(k, _)| k == lucene_codecs::per_field_doc_values::PER_FIELD_FORMAT_KEY)
+        .map(|(_, v)| v.clone())
+        .or_else(|| {
+            codec.map(|c| {
+                c.doc_values_format_for_field(&field.name)
+                    .name()
+                    .to_string()
+            })
+        })
+        .unwrap_or_else(|| "Lucene90".to_string());
+    let field_infos = FieldInfos {
+        fields: vec![field.clone()],
+    };
+    crate::index_writer::check_doc_values(
+        codec,
+        &lucene_codecs::codec::DocValuesWrite {
+            max_doc,
+            segment_id: &sci.segment_id,
+            segment_suffix: suffix,
+            format_name: &format_name,
+            field_infos: &field_infos,
+            dvm,
+            dvd,
+            dvs,
+        },
+    )?;
     Ok(())
 }
 

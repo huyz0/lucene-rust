@@ -492,7 +492,7 @@ impl SegmentReader {
             core_cache: crate::reader::CacheHelper::new(),
             reader_cache: crate::reader::CacheHelper::new(),
             query_cache: Arc::default(),
-            dvs: None,
+            dvs: Vec::new(),
             skip_indexes: Arc::default(),
             docs_with_field: Arc::default(),
             segment_suffix: String::new(),

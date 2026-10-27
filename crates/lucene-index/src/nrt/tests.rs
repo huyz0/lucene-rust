@@ -389,3 +389,32 @@ fn advancing_the_version_moves_the_next_snapshot_above_it() {
     w.commit().unwrap();
     assert!(w.segment_infos().version > advanced);
 }
+
+/// `advanceSegmentInfosCounter`: the next segment is named from the new
+/// counter, a lower one changes nothing, and the commit keeps it.
+#[test]
+fn advancing_the_counter_names_the_next_segment_from_it() {
+    let tmp = TempDir::new("nrt-advance-counter");
+    let dir = FsDirectory::open(&tmp);
+    let mut w = writer(&dir);
+    w.add_document(doc("a")).unwrap();
+    w.commit().unwrap();
+    let before = w.segment_infos_counter();
+    w.advance_segment_infos_counter(before + 100);
+    w.advance_segment_infos_counter(before);
+    assert_eq!(w.segment_infos_counter(), before + 100);
+    w.add_document(doc("b")).unwrap();
+    w.commit().unwrap();
+    let names: Vec<&str> = w
+        .segment_infos()
+        .segments
+        .iter()
+        .map(|s| s.segment_name.as_str())
+        .collect();
+    let expected = format!("_{}", lucene_util::base36::to_base36(before + 100));
+    assert!(names.contains(&expected.as_str()), "{names:?}");
+    assert_eq!(
+        crate::segment_infos::read_latest(&dir).unwrap().counter,
+        before + 101
+    );
+}

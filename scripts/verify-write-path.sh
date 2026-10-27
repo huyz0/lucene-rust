@@ -339,6 +339,20 @@ CASES=(
   # them through Codec.forName, appends a segment of its own, and leaves the
   # index for filter_codecs_write_path::java_written_segments (below).
   "lucene-test-framework|write_filter_codecs_fixture|filter-codecs|VerifyFilterCodecs"
+  # RandomCodec installed in IndexWriter (M14): six seeds' shuffled postings
+  # and doc-values candidates and RandomlySplittingBKDWriter points. Lucene
+  # writes the same documents with new RandomCodec(new Random(seed)) itself:
+  # every segment must hold the same per-field instances' files and the same
+  # points bytes (leaf size and split dimensions), flushed and merged; the
+  # port's index must pass CheckIndex and answer every term, doc-value and
+  # point-range question.
+  "lucene-test-framework|write_random_codec_fixture|random-codec|VerifyRandomCodec"
+  # The six CompressingCodecs installed in IndexWriter (M14): eight
+  # configurations (compression, chunk geometry, block shift, segment
+  # suffix). Lucene writes the same documents with the same codec: the same
+  # files, stored-fields bytes identical, flushed and merged; Lucene reads
+  # every stored field and term vector of the port's index.
+  "lucene-test-framework|write_compressing_codec_fixture|compressing-codecs|VerifyCompressingCodecs"
   # PerFieldDocValuesFormat through IndexWriter (M7): the s_ fields routed to
   # Lucene90DocValuesFormat(16), two flushed segments and a force-merge, whose
   # instances are numbered in opposite orders. Lucene must read every value

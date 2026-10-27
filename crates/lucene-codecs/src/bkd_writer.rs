@@ -531,7 +531,13 @@ pub struct BkdWriter<'d> {
     point_writer: Option<PointStore>,
     common_prefix_lengths: Vec<usize>,
     random: SplittableRandom,
+    /// A subclass's `split` override; see [`BkdWriter::with_split`].
+    split_override: Option<std::cell::RefCell<SplitOverride<'d>>>,
 }
+
+/// `BKDWriter.split(minPackedValue, maxPackedValue, parentDims)` as a
+/// subclass overrides it: the index dimension to split a cell on.
+pub type SplitOverride<'d> = Box<dyn FnMut(&[u8], &[u8], &[i32]) -> usize + 'd>;
 
 impl<'d> BkdWriter<'d> {
     /// `new BKDWriter(maxDoc, tempDir, tempFileNamePrefix, config,
@@ -580,6 +586,7 @@ impl<'d> BkdWriter<'d> {
             point_writer: None,
             common_prefix_lengths: vec![0; config.num_dims],
             random: SplittableRandom::new(0x5eed),
+            split_override: None,
         })
     }
 
@@ -616,7 +623,17 @@ impl<'d> BkdWriter<'d> {
             point_writer: None,
             common_prefix_lengths: vec![0; config.num_dims],
             random: SplittableRandom::new(0x5eed),
+            split_override: None,
         }
+    }
+
+    /// A subclass overriding `split` (`RandomCodec`'s
+    /// `RandomlySplittingBKDWriter`): `split` chooses each inner node's
+    /// dimension, of more than one index dimension, instead of the widest.
+    /// It must return an index dimension below `numIndexDims`.
+    pub fn with_split(mut self, split: SplitOverride<'d>) -> Self {
+        self.split_override = Some(std::cell::RefCell::new(split));
+        self
     }
 
     /// Whether `finish` already ran.
@@ -870,6 +887,9 @@ impl<'d> BkdWriter<'d> {
     // ARITH: split counts and offsets.
     #[allow(clippy::arithmetic_side_effects)]
     fn split(&self, min: &[u8], max: &[u8], parent_splits: &[i32]) -> usize {
+        if let Some(split) = &self.split_override {
+            return (split.borrow_mut())(min, max, parent_splits);
+        }
         let c = self.config;
         let max_num_splits = parent_splits.iter().copied().max().unwrap_or(0);
         for (dim, &splits) in parent_splits.iter().enumerate().take(c.num_index_dims) {
