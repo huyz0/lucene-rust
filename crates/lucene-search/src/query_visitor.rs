@@ -482,6 +482,11 @@ pub fn visit(clause: &Clause, visitor: &mut dyn QueryVisitor) {
             crate::extended_query::ExtendedQuery::MultiTerm(m) => {
                 visit_source(&m.source, clause, visitor);
             }
+            crate::extended_query::ExtendedQuery::Document(d) => {
+                if d.query.field().is_none_or(|f| visitor.accept_field(f)) {
+                    visitor.visit_leaf(clause);
+                }
+            }
             _ => visitor.visit_leaf(clause),
         },
         Clause::PointsRange(q) => {

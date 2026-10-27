@@ -299,6 +299,25 @@ impl Bounded for GeoWideRectangle {
 }
 
 impl GeoShape for GeoWideRectangle {
+    fn java_equals(&self, other: &dyn GeoShape) -> bool {
+        same_planet_as::<GeoWideRectangle>(&self.planet_model, other)
+            .is_some_and(|o| o.ULHC == self.ULHC && o.LRHC == self.LRHC)
+    }
+
+    fn java_hash_code(&self) -> i32 {
+        let mut result = self.planet_model.java_hash_code();
+        result = hash_step(result, self.ULHC.java_hash_code());
+        result = hash_step(result, self.LRHC.java_hash_code());
+        result
+    }
+
+    fn java_to_string(&self) -> String {
+        format!(
+            "GeoWideRectangle: {{planetmodel={}, toplat={}, bottomlat={}, leftlon={}, rightlon={}}}",
+            self.planet_model.java_to_string(), radians_string(self.top_lat), radians_string(self.bottom_lat), radians_string(self.left_lon), radians_string(self.right_lon)
+        )
+    }
+
     fn edge_points(&self) -> Cow<'_, [GeoPoint]> {
         Cow::Borrowed(&self.edge_points)
     }

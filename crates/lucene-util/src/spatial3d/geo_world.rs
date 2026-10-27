@@ -60,6 +60,21 @@ impl Bounded for GeoWorld {
 }
 
 impl GeoShape for GeoWorld {
+    fn java_equals(&self, other: &dyn GeoShape) -> bool {
+        same_planet_as::<GeoWorld>(&self.planet_model, other).is_some()
+    }
+
+    fn java_hash_code(&self) -> i32 {
+        self.planet_model.java_hash_code()
+    }
+
+    fn java_to_string(&self) -> String {
+        format!(
+            "GeoWorld: {{planetmodel={}}}",
+            self.planet_model.java_to_string()
+        )
+    }
+
     fn edge_points(&self) -> Cow<'_, [GeoPoint]> {
         Cow::Borrowed(&[])
     }

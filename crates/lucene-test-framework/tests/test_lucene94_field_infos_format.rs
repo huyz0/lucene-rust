@@ -34,6 +34,7 @@ suite_tests! {
     test_exception_on_create_output => "testExceptionOnCreateOutput",
     test_exception_on_close_output => "testExceptionOnCloseOutput",
     test_exception_on_open_input => "testExceptionOnOpenInput",
+    test_exception_on_close_input => "testExceptionOnCloseInput",
     test_random => "testRandom",
 }
 

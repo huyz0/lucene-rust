@@ -356,6 +356,32 @@ impl Bounded for GeoExactCircle {
 }
 
 impl GeoShape for GeoExactCircle {
+    fn java_equals(&self, other: &dyn GeoShape) -> bool {
+        same_planet_as::<GeoExactCircle>(&self.planet_model, other).is_some_and(|o| {
+            o.center == self.center
+                && o.radius == self.radius
+                && o.actual_accuracy == self.actual_accuracy
+        })
+    }
+
+    fn java_hash_code(&self) -> i32 {
+        let mut result = self.planet_model.java_hash_code();
+        result = hash_step(result, self.center.java_hash_code());
+        result = hash_step(result, super::jmath::double_hash(self.radius));
+        result = hash_step(result, super::jmath::double_hash(self.actual_accuracy));
+        result
+    }
+
+    fn java_to_string(&self) -> String {
+        format!(
+            "GeoExactCircle: {{planetmodel={}, center={}, radius={}, accuracy={}}}",
+            self.planet_model.java_to_string(),
+            self.center,
+            radians_string(self.radius),
+            java_double_string(self.actual_accuracy)
+        )
+    }
+
     fn edge_points(&self) -> Cow<'_, [GeoPoint]> {
         Cow::Borrowed(&self.edge_points)
     }

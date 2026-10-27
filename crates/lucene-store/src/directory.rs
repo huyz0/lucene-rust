@@ -249,6 +249,19 @@ pub trait Directory: Send + Sync {
         false
     }
 
+    /// `IndexInput.close()` of an input [`Directory::open`] handed out, by a
+    /// caller that closes explicitly where Java's try-with-resources would
+    /// (feature `test-util`): the test framework's `MockDirectoryWrapper`
+    /// lets a failure fire here, as `MockIndexInputWrapper.close` does. The
+    /// default drops the input, which is how every other directory closes
+    /// it. Wrappers forward this hook.
+    #[cfg(any(test, feature = "test-util"))]
+    fn close_input(&self, name: &str, input: Input) -> Result<()> {
+        let _ = name;
+        drop(input);
+        Ok(())
+    }
+
     /// Port of `Directory.copyFrom(from, src, dest, context)`: copies a file
     /// from another directory, deleting the partial `dest` on failure.
     fn copy_from(&self, from: &dyn Directory, src: &str, dest: &str) -> Result<()> {
@@ -335,6 +348,10 @@ macro_rules! forward_directory {
             #[cfg(any(test, feature = "test-util"))]
             fn disable_virus_checker(&self) -> bool {
                 (**self).disable_virus_checker()
+            }
+            #[cfg(any(test, feature = "test-util"))]
+            fn close_input(&self, name: &str, input: Input) -> Result<()> {
+                (**self).close_input(name, input)
             }
             fn fs_directory_path(&self) -> Option<&Path> {
                 (**self).fs_directory_path()
@@ -1109,6 +1126,17 @@ pub fn read_latest_commit(dir: &(impl Directory + ?Sized)) -> Result<(i64, Input
 mod tests {
     use super::*;
     use crate::data_output::DataOutput;
+
+    #[test]
+    fn close_input_drops_the_input_and_forwards_through_a_box() {
+        let dir: Box<dyn Directory> = Box::new(crate::ByteBuffersDirectory::new());
+        let mut out = dir.create_output("f").unwrap();
+        out.write_bytes(b"abc");
+        out.close().unwrap();
+        let input = dir.open("f").unwrap();
+        assert_eq!(&input[..], b"abc");
+        dir.close_input("f", input).unwrap();
+    }
 
     #[test]
     fn generation_from_segments_file_name_valid_cases() {

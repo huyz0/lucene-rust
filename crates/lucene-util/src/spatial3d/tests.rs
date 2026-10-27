@@ -1044,3 +1044,70 @@ fn nested_composites_stop_at_the_nesting_limit() {
         "the depth is restored on the way out"
     );
 }
+
+/// Java's polygon `equals` branches the fixture corpus does not reach: holes
+/// on one side only, `BitSet` equality past the last set flag, and a
+/// complex polygon's edge description cut at twenty points.
+#[test]
+fn polygon_equality_edge_cases() {
+    let pm = sphere();
+    let ring = vec![
+        pt(&pm, 0.0, 0.0),
+        pt(&pm, 0.0, 20.0),
+        pt(&pm, 20.0, 20.0),
+        pt(&pm, 20.0, 0.0),
+    ];
+    let hole: Arc<dyn GeoPolygon> = make_geo_concave_polygon(
+        &pm,
+        vec![
+            pt(&pm, 10.0, 5.0),
+            pt(&pm, 10.0, 10.0),
+            pt(&pm, 5.0, 10.0),
+            pt(&pm, 5.0, 5.0),
+        ],
+    )
+    .unwrap();
+    let plain = GeoConvexPolygon::with_holes(&pm, ring.clone(), None).unwrap();
+    let no_holes = GeoConvexPolygon::with_holes(&pm, ring.clone(), Some(vec![])).unwrap();
+    let holed = GeoConvexPolygon::with_holes(&pm, ring.clone(), Some(vec![hole.clone()])).unwrap();
+    assert!(plain.java_equals(&plain));
+    // An empty hole list is no holes, as in Java's constructors.
+    assert!(plain.java_equals(&no_holes) && no_holes.java_equals(&plain));
+    assert!(!no_holes.java_equals(&holed) && !holed.java_equals(&plain));
+    assert!(holed.java_equals(&holed.clone()));
+    assert_ne!(plain.java_hash_code(), holed.java_hash_code());
+    assert!(holed
+        .java_to_string()
+        .contains(", holes=[GeoConcavePolygon: {"));
+    assert!(!plain.java_to_string().contains("holes"));
+    // Clear flags past the last set one do not count; a set one does.
+    let flagged =
+        |flags: Vec<bool>| GeoConvexPolygon::new(&pm, ring.clone(), None, flags, false).unwrap();
+    let short = flagged(vec![true]);
+    assert!(short.java_equals(&flagged(vec![true, false, false])));
+    assert!(flagged(vec![true, false, false]).java_equals(&short));
+    assert!(!short.java_equals(&flagged(vec![true, false, true])));
+    assert!(!short.java_equals(&plain));
+    assert!(short.java_to_string().contains("internalEdges={0}"));
+    assert!(plain.java_to_string().contains("internalEdges={}"));
+    // Another class with the same points.
+    let concave =
+        GeoConcavePolygon::with_holes(&pm, ring.iter().rev().cloned().collect(), None).unwrap();
+    assert!(!plain.java_equals(&concave) && !concave.java_equals(&plain));
+    // A ring of more than twenty points prints its first twenty.
+    let many: Vec<GeoPoint> = (0..30)
+        .map(|i| {
+            let a = rad(f64::from(i) * 12.0);
+            pt(&pm, 10.0 + 5.0 * a.sin(), 20.0 + 5.0 * a.cos())
+        })
+        .collect();
+    let complex = GeoComplexPolygon::new(&pm, vec![many], pt(&pm, 10.0, 20.0), true).unwrap();
+    let text = complex.java_to_string();
+    assert!(text.contains(", ...}}"), "{text}");
+    assert_eq!(
+        text.matches("[lat=").count(),
+        21,
+        "the test point and 20 edges"
+    );
+    assert!(text.contains(&format!("address={:x}", complex.java_hash_code() as u32)));
+}

@@ -469,6 +469,26 @@ impl Bounded for GeoDegeneratePath {
 }
 
 impl GeoShape for GeoDegeneratePath {
+    fn java_equals(&self, other: &dyn GeoShape) -> bool {
+        same_planet_as::<GeoDegeneratePath>(&self.planet_model, other)
+            .is_some_and(|p| self.points == p.points)
+    }
+
+    fn java_hash_code(&self) -> i32 {
+        hash_step(
+            self.planet_model.java_hash_code(),
+            points_hash(&self.points),
+        )
+    }
+
+    fn java_to_string(&self) -> String {
+        format!(
+            "GeoDegeneratePath: {{planetmodel={}, points={{{}}}}}",
+            self.planet_model.java_to_string(),
+            points_string(&self.points)
+        )
+    }
+
     fn edge_points(&self) -> Cow<'_, [GeoPoint]> {
         Cow::Borrowed(&self.edge_points)
     }

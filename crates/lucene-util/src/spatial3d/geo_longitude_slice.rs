@@ -166,6 +166,27 @@ impl Bounded for GeoLongitudeSlice {
 }
 
 impl GeoShape for GeoLongitudeSlice {
+    fn java_equals(&self, other: &dyn GeoShape) -> bool {
+        same_planet_as::<GeoLongitudeSlice>(&self.planet_model, other)
+            .is_some_and(|o| o.left_lon == self.left_lon && o.right_lon == self.right_lon)
+    }
+
+    fn java_hash_code(&self) -> i32 {
+        let mut result = self.planet_model.java_hash_code();
+        result = hash_step(result, super::jmath::double_hash(self.left_lon));
+        result = hash_step(result, super::jmath::double_hash(self.right_lon));
+        result
+    }
+
+    fn java_to_string(&self) -> String {
+        format!(
+            "GeoLongitudeSlice: {{planetmodel={}, leftlon={}, rightlon={}}}",
+            self.planet_model.java_to_string(),
+            radians_string(self.left_lon),
+            radians_string(self.right_lon)
+        )
+    }
+
     fn edge_points(&self) -> Cow<'_, [GeoPoint]> {
         Cow::Borrowed(&self.edge_points)
     }
@@ -341,6 +362,27 @@ impl Bounded for GeoWideLongitudeSlice {
 }
 
 impl GeoShape for GeoWideLongitudeSlice {
+    fn java_equals(&self, other: &dyn GeoShape) -> bool {
+        same_planet_as::<GeoWideLongitudeSlice>(&self.planet_model, other)
+            .is_some_and(|o| o.left_lon == self.left_lon && o.right_lon == self.right_lon)
+    }
+
+    fn java_hash_code(&self) -> i32 {
+        let mut result = self.planet_model.java_hash_code();
+        result = hash_step(result, super::jmath::double_hash(self.left_lon));
+        result = hash_step(result, super::jmath::double_hash(self.right_lon));
+        result
+    }
+
+    fn java_to_string(&self) -> String {
+        format!(
+            "GeoWideLongitudeSlice: {{planetmodel={}, leftlon={}, rightlon={}}}",
+            self.planet_model.java_to_string(),
+            radians_string(self.left_lon),
+            radians_string(self.right_lon)
+        )
+    }
+
     fn edge_points(&self) -> Cow<'_, [GeoPoint]> {
         Cow::Borrowed(&self.edge_points)
     }

@@ -9,7 +9,8 @@
 
 use super::prelude::*;
 use super::shape::{
-    base_get_relationship, GeoMembershipShape, GeoOutsideDistance, GeoPolygon, PlanetObject,
+    base_get_relationship, shapes_equal, shapes_hash, shapes_string, GeoMembershipShape,
+    GeoOutsideDistance, GeoPolygon, PlanetObject,
 };
 use super::standard_objects::{
     read_heterogeneous_array, write_heterogeneous_array, StandardObject,
@@ -114,6 +115,31 @@ macro_rules! composite_shape {
         }
 
         impl GeoShape for $t {
+            fn java_equals(&self, other: &dyn GeoShape) -> bool {
+                same_planet_as::<$t>(&self.planet_model, other).is_some_and(|o| {
+                    shapes_equal(
+                        self.shapes.iter().map(|s| &**s as &dyn GeoShape),
+                        o.shapes.iter().map(|s| &**s as &dyn GeoShape),
+                    )
+                })
+            }
+
+            /// `GeoBaseCompositeShape.hashCode`: the planet's plus (not
+            /// times 31) the list's.
+            fn java_hash_code(&self) -> i32 {
+                self.planet_model.java_hash_code().wrapping_add(shapes_hash(
+                    self.shapes.iter().map(|s| &**s as &dyn GeoShape),
+                ))
+            }
+
+            fn java_to_string(&self) -> String {
+                format!(
+                    "{}: {{{}}}",
+                    $java,
+                    shapes_string(self.shapes.iter().map(|s| &**s as &dyn GeoShape))
+                )
+            }
+
             fn edge_points(&self) -> Cow<'_, [GeoPoint]> {
                 let mut edge_points = Vec::new();
                 for shape in &self.shapes {
