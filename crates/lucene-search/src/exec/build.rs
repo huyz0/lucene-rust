@@ -106,8 +106,10 @@ fn asserting_active() -> bool {
     false
 }
 
-/// [`build`] without the asserting wrapper.
-fn build_unchecked<'a>(
+/// [`build`] without the asserting wrapper around the scorer itself (its
+/// sub-scorers keep theirs): `weight.scorer(context)` of a weight explaining
+/// itself, which reaches its own scorer, not the `AssertingWeight` around it.
+pub(crate) fn build_unchecked<'a>(
     ctx: &LeafContext<'a>,
     clause: &Clause,
     boost: f32,

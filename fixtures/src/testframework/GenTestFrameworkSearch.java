@@ -79,6 +79,7 @@ import org.apache.lucene.tests.analysis.MockAnalyzer;
 import org.apache.lucene.tests.analysis.MockTokenizer;
 import org.apache.lucene.tests.search.CheckHits;
 import org.apache.lucene.tests.search.similarities.RandomSimilarity;
+import org.apache.lucene.tests.index.RandomIndexWriter;
 import org.apache.lucene.tests.util.LuceneTestCase;
 import org.apache.lucene.tests.util.TestUtil;
 import org.apache.lucene.util.BytesRef;
@@ -109,8 +110,10 @@ import org.junit.runner.notification.Failure;
  *   <li>{@code rsim}: the {@code allSims} index {@code RandomSimilarity.get} picks per field.
  *   <li>{@code exp}: {@code BaseExplanationTestCase}'s four documents searched under BM25 and
  *       {@code ClassicSimilarity}: top docs, score bits and each hit's explanation.
- *   <li>{@code eq}: {@code SearchEquivalenceTestBase}'s corpus draws (in the order the Rust base
- *       draws them: no {@code RandomIndexWriter}) and BM25 top docs over it.
+ *   <li>{@code eq}: {@code SearchEquivalenceTestBase}'s corpus draws, written through a {@code
+ *       RandomIndexWriter}, and each term's live hit count over it.
+ *   <li>{@code nf}: {@code newStringField}/{@code newTextField}'s random field types.
+ *   <li>{@code slices}: {@code IndexSearcher.slices} groupings, as {@code newSearcher} slices.
  * </ul>
  *
  * <p>Run with no {@code tests.*} system properties: {@code atLeast}/{@code rarely} see multiplier
@@ -859,42 +862,57 @@ public class GenTestFrameworkSearch {
     return sb.toString();
   }
 
+  /**
+   * {@code SearchEquivalenceTestBase.beforeClass}'s corpus, written as it writes it: through a
+   * {@code RandomIndexWriter} handed the seeded stream the corpus is drawn from (Java's
+   * {@code beforeClass} hands it {@code random()} itself, whose draws the writer's live changes
+   * share; here those go to the test's own {@code random()}). The hits are counted, not scored:
+   * the writer's flushes and concurrent merges decide which deleted documents still count in a
+   * term's statistics, and so the scores, from run to run.
+   */
   static void equivalence() throws Exception {
     for (int seed = 0; seed < 4; seed++) {
       Random random = new Random(seed);
       String stopword = "" + randomChar(random);
       CharacterRunAutomaton stopset = new CharacterRunAutomaton(Automata.makeString(stopword));
       Analyzer analyzer = new MockAnalyzer(random, MockTokenizer.WHITESPACE, false, stopset);
-      int numDocs = LuceneTestCase.atLeast(random, 100);
-      List<String> contents = new ArrayList<>();
-      for (int i = 0; i < numDocs; i++) contents.add(randomFieldContents(random));
-      List<Integer> deletes = new ArrayList<>();
-      for (int i = 0; i < numDocs / 20; i++) {
-        deletes.add(random.nextInt(numDocs));
-        random.nextBoolean();
-      }
-      line("eq", seed, stopword, numDocs);
-      for (int i = 0; i < numDocs; i++) line("doc", i, "[" + contents.get(i) + "]");
-      line("del", deletes.toString().replace(" ", ""));
-      ByteBuffersDirectory dir = new ByteBuffersDirectory();
-      try (IndexWriter w = new IndexWriter(dir, new IndexWriterConfig(analyzer))) {
+      try (ByteBuffersDirectory dir = new ByteBuffersDirectory()) {
+        RandomIndexWriter iw = new RandomIndexWriter(random, dir, analyzer);
+        int numDocs = LuceneTestCase.atLeast(random, 100);
+        List<String> contents = new ArrayList<>();
         for (int i = 0; i < numDocs; i++) {
+          String text = randomFieldContents(random);
           Document doc = new Document();
           doc.add(new StringField("id", "" + i, Field.Store.NO));
-          doc.add(new TextField("field", contents.get(i), Field.Store.NO));
-          w.addDocument(doc);
+          doc.add(new TextField("field", text, Field.Store.NO));
+          iw.addDocument(doc);
+          contents.add(text);
         }
-        w.commit();
-        for (int id : deletes) w.deleteDocuments(new Term("id", "" + id));
-      }
-      try (DirectoryReader reader = DirectoryReader.open(dir)) {
-        IndexSearcher searcher = new IndexSearcher(reader);
-        for (String term : new String[] {"a", "b", "c", "e", stopword}) {
-          TopDocs td = searcher.search(new TermQuery(new Term("field", term)), 5);
-          StringBuilder hits = new StringBuilder();
-          for (ScoreDoc sd : td.scoreDocs) hits.append(' ').append(sd.doc).append(':').append(bits(sd.score));
-          line("eqhits", term, td.totalHits.value() + hits.toString());
+        List<Integer> deletes = new ArrayList<>();
+        for (int i = 0; i < numDocs / 20; i++) {
+          int id = random.nextInt(numDocs);
+          Term toDelete = new Term("id", Integer.toString(id));
+          if (random.nextBoolean()) {
+            iw.deleteDocuments(toDelete);
+          } else {
+            iw.deleteDocuments(new TermQuery(toDelete));
+          }
+          deletes.add(id);
         }
+        line("eq", seed, stopword, numDocs);
+        for (int i = 0; i < numDocs; i++) line("doc", i, "[" + contents.get(i) + "]");
+        line("del", deletes.toString().replace(" ", ""));
+        try (DirectoryReader reader = iw.getReader()) {
+          IndexSearcher searcher = new IndexSearcher(reader);
+          for (String term : new String[] {"a", "b", "c", "e", stopword}) {
+            line(
+                "eqhits",
+                term,
+                searcher.count(new TermQuery(new Term("field", term))),
+                reader.numDocs());
+          }
+        }
+        iw.close();
       }
     }
   }
@@ -913,7 +931,6 @@ public class GenTestFrameworkSearch {
     line("shuffle", shuffled.toString().replace(" ", ""));
     randomSimilarity();
     explanations();
-    equivalence();
   }
 
   /** {@link MockTokenizer} reads the randomized-testing context, so the dump runs as a test. */
@@ -926,6 +943,93 @@ public class GenTestFrameworkSearch {
   }
 
   /**
+   * {@code LuceneTestCase.newStringField}/{@code newTextField} over {@code new Random(seed)}: each
+   * field's type the first time it is named (and the same type again on a second naming, with no
+   * draws), then the stream's next long.
+   */
+  static void newFields() {
+    for (int seed = 0; seed < 40; seed++) {
+      Random r = new Random(seed);
+      Field[] fields = {
+        LuceneTestCase.newStringField(r, "s" + seed, "v", Field.Store.NO),
+        LuceneTestCase.newTextField(r, "t" + seed, "a b", Field.Store.NO),
+        LuceneTestCase.newTextField(r, "t" + seed, "c d", Field.Store.YES),
+        LuceneTestCase.newStringField(r, "ss" + seed, "v", Field.Store.YES),
+        LuceneTestCase.newTextField(r, "ts" + seed, "a b", Field.Store.YES),
+      };
+      for (Field f : fields) {
+        org.apache.lucene.index.IndexableFieldType t = f.fieldType();
+        line(
+            "nf",
+            seed,
+            f.name(),
+            t.stored(),
+            t.storeTermVectors(),
+            t.storeTermVectorPositions(),
+            t.storeTermVectorPayloads(),
+            t.storeTermVectorOffsets());
+      }
+      line("nftail", seed, r.nextLong());
+    }
+  }
+
+  /**
+   * {@code IndexSearcher.slices(leaves, maxDocsPerSlice, maxSegmentsPerSlice, false)} over a reader
+   * of random segment sizes (one commit each, nothing merged): each slice's leaf ordinals.
+   */
+  static void slices() throws Exception {
+    for (int seed = 0; seed < 60; seed++) {
+      Random r = new Random(seed);
+      int numSegments = 1 + r.nextInt(8);
+      int[] sizes = new int[numSegments];
+      for (int i = 0; i < numSegments; i++) sizes[i] = 1 + r.nextInt(r.nextBoolean() ? 5 : 40);
+      int maxDocs = r.nextBoolean() ? 1 : 1 + r.nextInt(60);
+      int maxSegments = r.nextBoolean() ? 1 : 1 + r.nextInt(5);
+      try (ByteBuffersDirectory dir = new ByteBuffersDirectory()) {
+        IndexWriterConfig iwc = new IndexWriterConfig();
+        iwc.setMergePolicy(org.apache.lucene.index.NoMergePolicy.INSTANCE);
+        try (IndexWriter w = new IndexWriter(dir, iwc)) {
+          for (int size : sizes) {
+            for (int d = 0; d < size; d++) w.addDocument(new Document());
+            w.commit();
+          }
+        }
+        try (DirectoryReader reader = DirectoryReader.open(dir)) {
+          StringBuilder groups = new StringBuilder();
+          for (IndexSearcher.LeafSlice slice :
+              IndexSearcher.slices(reader.leaves(), maxDocs, maxSegments, false)) {
+            groups.append(' ');
+            StringBuilder ords = new StringBuilder();
+            for (IndexSearcher.LeafReaderContextPartition p : slice.partitions) {
+              if (ords.length() > 0) ords.append(',');
+              ords.append(p.ctx.ord);
+            }
+            groups.append(ords);
+          }
+          StringBuilder sz = new StringBuilder();
+          for (org.apache.lucene.index.LeafReaderContext leaf : reader.leaves()) {
+            if (sz.length() > 0) sz.append(',');
+            sz.append(leaf.reader().maxDoc());
+          }
+          line("slices", sz, maxDocs, maxSegments, groups.toString().trim());
+        }
+      }
+    }
+  }
+
+  /**
+   * {@code RandomIndexWriter} and {@code newField} read the class environment, so they dump from
+   * one.
+   */
+  public static class EquivalenceDump extends LuceneTestCase {
+    public void testDump() throws Exception {
+      equivalence();
+      newFields();
+      slices();
+    }
+  }
+
+  /**
    * {@code tests.seed}, pinned: {@code StringHelper.GOOD_FAST_HASH_SEED} (a {@code BytesRef}'s
    * hash, so a {@code TermQuery}'s) is drawn from it, else from the clock, and a {@code
    * DisjunctionMaxQuery} explains its disjuncts in its hash set's order. This one orders the {@code
@@ -933,17 +1037,27 @@ public class GenTestFrameworkSearch {
    */
   static final String TESTS_SEED = "E";
 
-  public static void main(String[] args) throws Exception {
-    if (System.getProperty("tests.seed") == null) {
-      System.setProperty("tests.seed", TESTS_SEED);
-    }
-    Result result = JUnitCore.runClasses(Dump.class);
+  static void run(Class<?> dump) {
+    Result result = JUnitCore.runClasses(dump);
     for (Failure f : result.getFailures()) {
       System.err.println(f.getTrace());
     }
     if (!result.wasSuccessful() || result.getRunCount() != 1) {
-      throw new AssertionError("GenTestFrameworkSearch: the dump did not run cleanly");
+      throw new AssertionError("GenTestFrameworkSearch: " + dump.getSimpleName() + " did not run cleanly");
     }
+  }
+
+  public static void main(String[] args) throws Exception {
+    if (System.getProperty("tests.seed") == null) {
+      System.setProperty("tests.seed", TESTS_SEED);
+    }
+    // LuceneTestCase's rules otherwise refuse to run without assertions (-ea would reorder the
+    // dis-max disjuncts' hash order).
+    System.setProperty("tests.asserts", "false");
+    // The plain dump first, as it always ran: its dis-max disjuncts explain in hash order,
+    // which the class environment's own hashing would reshuffle.
+    run(Dump.class);
+    run(EquivalenceDump.class);
     Path out = Path.of(args[0]);
     Files.createDirectories(out);
     Files.writeString(out.resolve("search.txt"), OUT.toString());

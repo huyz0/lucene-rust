@@ -1674,7 +1674,10 @@ fn scorer_score(
             reader,
             similarity,
         };
-        let Some(mut s) = crate::exec::build::build(
+        // `BooleanWeight.explain`/`ConstantScoreWeight.explain` pull the
+        // weight's own scorer, which no `AssertingWeight` wraps (a
+        // no-scores weight's own scorer is scored, its sub-scorers are not).
+        let Some(mut s) = crate::exec::build::build_unchecked(
             &ctx,
             clause,
             weight_boost(),

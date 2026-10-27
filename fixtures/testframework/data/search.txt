@@ -3382,576 +3382,825 @@ miss ClassicSimilarity phrase_xx 0 0.0 = no matching terms
 miss ClassicSimilarity phrase_xx 1 0.0 = no matching terms
 miss ClassicSimilarity phrase_xx 2 1.1228753 = weight(field:"w1 xx" in 2) [ClassicSimilarity], result of:
 miss ClassicSimilarity phrase_xx 3 0.0 = no matching phrase
-eq 0 h 150
-doc 0 [m d n a v b w a x f o]
-doc 1 []
-doc 2 [m j b n j a o f]
-doc 3 [b l f s m a h]
-doc 4 []
-doc 5 [k h]
-doc 6 [x h j h]
-doc 7 [r f l]
-doc 8 []
-doc 9 [r a t c a w j b b q c r d c]
-doc 10 [f b g p h n a]
-doc 11 [s m j j a s a d]
-doc 12 [o]
-doc 13 [h g]
-doc 14 [e d d c]
-doc 15 [s w l k g h x h a]
-doc 16 [e k c s m r f]
-doc 17 []
-doc 18 [f]
-doc 19 [a i g i i c j b a]
-doc 20 [h x c o a i g b c a]
-doc 21 [i u z e f q v d d r e m t]
-doc 22 [a m c h f f k m j h]
-doc 23 [s z q]
-doc 24 [a b q]
-doc 25 [k k c p m b c a c l d]
-doc 26 []
-doc 27 [g o]
-doc 28 [p f c h]
-doc 29 [a u l f j g i d q u n o]
-doc 30 [c i h k k j p k o]
-doc 31 [p a b e n l]
-doc 32 [a d e e a m f q p]
-doc 33 [n r b j b]
-doc 34 [a s n r n t k l c a c e p]
-doc 35 [p m u]
-doc 36 []
-doc 37 [m c o v c f]
-doc 38 [u c x l c o]
-doc 39 [c k q g q c t l s i s h o]
-doc 40 [n t]
-doc 41 [d d a]
-doc 42 []
-doc 43 [z c q u p]
-doc 44 [k e n]
-doc 45 [r e j b]
-doc 46 [n b t o f j j t g c]
-doc 47 [c x c c b b o s r x b]
-doc 48 [u m k c c p a a e]
-doc 49 [c i l q b k p p]
-doc 50 []
-doc 51 [z j d d f b s q]
-doc 52 [f e m x d u v]
-doc 53 [g]
-doc 54 [r l b b j u]
-doc 55 [a f o b a t l b e b]
-doc 56 [h q r l q d o l g d]
-doc 57 [e a c t g m g y b e]
-doc 58 [o b s q y c]
-doc 59 [e p k d b c e d m b]
-doc 60 [g u k h k g a w q j r k d a]
-doc 61 [o w d h n p u w]
-doc 62 [p b b o j c v c p]
-doc 63 []
-doc 64 [d z]
-doc 65 [c b p p h f y c y]
-doc 66 [c g i]
-doc 67 [a]
-doc 68 [d f e a f t f d a a]
-doc 69 [m p]
-doc 70 [c]
-doc 71 [k a s u s r f y y c i w]
-doc 72 [r l m]
-doc 73 [q i b s b d o]
-doc 74 [e k]
-doc 75 [b y y d d]
-doc 76 [h b u o a b n v b a a]
-doc 77 [h p w t e v a j]
-doc 78 [b t c u d k t j b e]
-doc 79 [j g z a m i a]
-doc 80 [a g i g h d]
-doc 81 [b]
-doc 82 [w m j a a r j y j]
-doc 83 [r]
-doc 84 [g i c i s h m f d c]
-doc 85 [f]
-doc 86 [a b m y u]
-doc 87 [d d c c]
-doc 88 [n w p c y b c t a o f x c]
-doc 89 [q k a i]
-doc 90 [e q o e w d p c e e t]
-doc 91 [c l m u p h u p b b]
-doc 92 [g t g v]
-doc 93 [h c f d b o c b u t e q l z]
-doc 94 [e c h b u d y]
-doc 95 [a i n g l r]
-doc 96 [b g k v f c]
-doc 97 [j d k i a r w l b z a]
-doc 98 [d z w m e]
-doc 99 [n k y t m b u k g b a t]
-doc 100 [s k h n x]
-doc 101 []
-doc 102 [i h f]
-doc 103 [w k c e c m a b t l a f b]
-doc 104 [x a e]
-doc 105 [e q h p i]
-doc 106 [s o w z s f r c e j z]
-doc 107 [b f]
-doc 108 [c q e p u i h m b a l d]
-doc 109 [b s s d a f b]
-doc 110 [q b d]
-doc 111 [o o b r e x s e d x d]
-doc 112 [g n i e i n q]
-doc 113 [m d o d d j n]
-doc 114 [a n n]
-doc 115 [g f l n l b f k b e i a d n]
-doc 116 [b b l b a d b v c e w]
-doc 117 [v d e p d h b c q x d c z]
-doc 118 [f b d d a n e a n t i q]
-doc 119 [t h a h a h]
-doc 120 [t o t d l j z j b t z]
-doc 121 [a]
-doc 122 [p i p]
-doc 123 [f g j g a j h d q g a]
-doc 124 [g a k l u a i]
-doc 125 [d e h w f e h g]
-doc 126 [q n f g]
-doc 127 [a e j g m j d i]
-doc 128 [q r r l c j m d]
-doc 129 [i l f a w y p]
-doc 130 [g b h n e l g b f e]
-doc 131 [f o g m e b d]
-doc 132 [y]
-doc 133 []
-doc 134 [c u]
-doc 135 [e c k g c i m d d o t y]
-doc 136 [l d]
-doc 137 [a f b e y n y g l]
-doc 138 [i c a z j g c j w]
-doc 139 []
-doc 140 [q a p c b m h]
-doc 141 [c c e x i z b g h p j]
-doc 142 [h]
-doc 143 [a n a f d b m f b]
-doc 144 [e k e]
-doc 145 [k a a g g x]
-doc 146 [v m d l f b b q m k o g f f]
-doc 147 [a a k j l k b a i e d g d s]
-doc 148 [a k a m h g u x r m j m]
-doc 149 [v m v f g b b v y g d]
-del [119,144,13,2,25,81,85]
-eqhits a 53 67:3f1fb0c4 121:3f1fb0c4 68:3f1494aa 76:3f1494aa 145:3f13fd90
-eqhits b 53 116:3f1f1a77 33:3f1a92fa 55:3f1494aa 76:3f1494aa 54:3f13fd90
-eqhits c 45 87:3f450e9a 70:3f4285e0 37:3f344558 38:3f344558 134:3f3225d6
-eqhits e 40 90:3f56135a 125:3f471f80 74:3f44c728 44:3f357fc8 104:3f357fc8
-eqhits h 0
-eq 1 r 147
-doc 0 [k k p g]
-doc 1 [e a p d p c j g k r g c]
-doc 2 [p b f b g i y]
-doc 3 [f j m d t q g z]
-doc 4 [o e h s]
-doc 5 [w j w b x e p e e]
-doc 6 [d h w i a]
-doc 7 [a]
-doc 8 [u]
-doc 9 [y k a a d l]
-doc 10 [x h]
-doc 11 [a a b c l c a d]
-doc 12 [a a a j h i b e t]
-doc 13 [c c z m t c]
-doc 14 [g u e o a i b c a h]
-doc 15 [a o l c y t t f q l g g b i]
-doc 16 [o s b d h l j a a p g g q e]
-doc 17 [b j i]
-doc 18 [j e k x b i d o j f b l f]
-doc 19 [c h]
-doc 20 [t b b t a o a r a g d]
-doc 21 [b l y c m d d l j c x a u]
-doc 22 [k v d j n f j v]
-doc 23 [f]
-doc 24 [v b v e]
-doc 25 [m b z d v x f k g k]
-doc 26 [o j v v y m l e u]
-doc 27 [h c l l l t b w p]
-doc 28 [l t e h b d h z g s j j e]
-doc 29 [f n k d h n o a e h v b j]
-doc 30 [y x i d]
-doc 31 [i g q a c]
-doc 32 [f v r b p k d v j m e l]
-doc 33 [k a]
-doc 34 [h y f l y c l t d m a b a o]
-doc 35 [l s s a a n k m a u m]
-doc 36 []
-doc 37 [t v k a a n a e n a h y]
-doc 38 [a d o c b q o a]
+eq 0 h 125
+doc 0 [b n j a o]
+doc 1 [l b]
+doc 2 [m n o h h o k h a h]
+doc 3 [a g m f l d]
+doc 4 [z z t c a w j b b q c r]
+doc 5 [c]
+doc 6 [r f b g]
+doc 7 [r g n a o v l p l q a]
+doc 8 [f b l e e c d]
+doc 9 [l w s h g y a a a y m]
+doc 10 [l a k c s]
+doc 11 [g f f o a i g i i c j b]
+doc 12 [m g g z k e b g b c a r]
+doc 13 [u z e f q v d d r e]
+doc 14 [g t i b t a w f f k m]
+doc 15 [w h c z q k l q i o y e]
+doc 16 [m b c a c]
+doc 17 [w b x f o r d l d h r c p]
+doc 18 [f j g i d q u n o d e i h]
+doc 19 [c j p k o]
+doc 20 [p a b e n l]
+doc 21 [a d e e a m f q p]
+doc 22 [n r b j b]
+doc 23 [a s n r n t k l c a c e p]
+doc 24 [p m u]
+doc 25 []
+doc 26 [m c o v c f]
+doc 27 [u c x l c o]
+doc 28 [c k q g q c t l s i s h o]
+doc 29 [n t]
+doc 30 [d d a]
+doc 31 []
+doc 32 [z c q u p]
+doc 33 [k e n]
+doc 34 [r e j b]
+doc 35 [n b t o f j j t g c]
+doc 36 [c x c c b b o s r x b]
+doc 37 [u m k c c p a a e]
+doc 38 [c i l q b k p p]
 doc 39 []
-doc 40 []
-doc 41 [d o]
-doc 42 [j d d e e b u l d l q j]
-doc 43 []
-doc 44 [p i y j b r b e l]
-doc 45 [k o r g s i u g e z]
-doc 46 [y e o h j j i l q f]
-doc 47 [h c m e f t j d]
-doc 48 [i a k b m c h]
-doc 49 [d e m l f d p f x h k f]
-doc 50 [v h m h x o s a]
-doc 51 [c g s b o j v g r g w w b]
+doc 40 [z j d d f b s q]
+doc 41 [f e m x d u v]
+doc 42 [g]
+doc 43 [r l b b j u]
+doc 44 [a f o b a t l b e b]
+doc 45 [h q r l q d o l g d]
+doc 46 [e a c t g m g y b e]
+doc 47 [o b s q y c]
+doc 48 [e p k d b c e d m b]
+doc 49 [g u k h k g a w q j r k d a]
+doc 50 [o w d h n p u w]
+doc 51 [p b b o j c v c p]
 doc 52 []
-doc 53 [u h h o c b y h t f g a v g]
-doc 54 [b m k b t a l c l]
-doc 55 [g s b]
-doc 56 [l i z a b b]
-doc 57 [v q h y b c e y o s d k o]
-doc 58 [g c t z k g c c e d]
-doc 59 [o g r q j b b m l i l f e]
-doc 60 [q c g e m a a l w n]
-doc 61 [c c j o p v b t a l v]
-doc 62 [l x d t d t c d a c n]
-doc 63 []
-doc 64 [m b v y u z]
-doc 65 [d g n p b]
-doc 66 [z m]
-doc 67 [a d x e f t t]
-doc 68 [g n z c]
-doc 69 [g q k c h e f f l y]
-doc 70 [b c b p e m b]
-doc 71 [o k a e b f d l t i]
-doc 72 []
-doc 73 [s v l n b c d b e b]
-doc 74 []
-doc 75 [l z c q]
-doc 76 [h y z c y p a k d]
-doc 77 [a b k g b g b i b]
-doc 78 [b m a i a s]
-doc 79 [b d u c b t g s c]
-doc 80 [z v h u y l v d c e]
-doc 81 [h x v o]
-doc 82 [m a q w a o a u a k c]
+doc 53 [d z]
+doc 54 [c b p p h f y c y]
+doc 55 [c g i]
+doc 56 [a]
+doc 57 [d f e a f t f d a a]
+doc 58 [m p]
+doc 59 [c]
+doc 60 [k a s u s r f y y c i w]
+doc 61 [r l m]
+doc 62 [q i b s b d o]
+doc 63 [e k]
+doc 64 [b y y d d]
+doc 65 [h b u o a b n v b a a]
+doc 66 [h p w t e v a j]
+doc 67 [b t c u d k t j b e]
+doc 68 [j g z a m i a]
+doc 69 [a g i g h d]
+doc 70 [b]
+doc 71 [w m j a a r j y j]
+doc 72 [r]
+doc 73 [g i c i s h m f d c]
+doc 74 [f]
+doc 75 [a b m y u]
+doc 76 [d d c c]
+doc 77 [n w p c y b c t a o f x c]
+doc 78 [q k a i]
+doc 79 [e q o e w d p c e e t]
+doc 80 [c l m u p h u p b b]
+doc 81 [g t g v]
+doc 82 [h c f d b o c b u t e q l z]
+doc 83 [e c h b u d y]
+doc 84 [a i n g l r]
+doc 85 [b g k v f c]
+doc 86 [j d k i a r w l b z a]
+doc 87 [d z w m e]
+doc 88 [n k y t m b u k g b a t]
+doc 89 [s k h n x]
+doc 90 []
+doc 91 [i h f]
+doc 92 [w k c e c m a b t l a f b]
+doc 93 [x a e]
+doc 94 [e q h p i]
+doc 95 [s o w z s f r c e j z]
+doc 96 [b f]
+doc 97 [c q e p u i h m b a l d]
+doc 98 [b s s d a f b]
+doc 99 [q b d]
+doc 100 [o o b r e x s e d x d]
+doc 101 [g n i e i n q]
+doc 102 [m d o d d j n]
+doc 103 [a n n]
+doc 104 [g f l n l b f k b e i a d n]
+doc 105 [b b l b a d b v c e w]
+doc 106 [v d e p d h b c q x d c z]
+doc 107 [f b d d a n e a n t i q]
+doc 108 [t h a h a h]
+doc 109 [t o t d l j z j b t z]
+doc 110 [a]
+doc 111 [p i p]
+doc 112 [f g j g a j h d q g a]
+doc 113 [g a k l u a i]
+doc 114 [d e h w f e h g]
+doc 115 [q n f g]
+doc 116 [a e j g m j d i]
+doc 117 [q r r l c j m d]
+doc 118 [i l f a w y p]
+doc 119 [g b h n e l g b f e]
+doc 120 [f o g m e b d]
+doc 121 [y]
+doc 122 []
+doc 123 [c u]
+doc 124 [e c k g c i m d d o t y]
+del [62,28,12,24,24,65]
+eqhits a 45 120
+eqhits b 47 120
+eqhits c 42 120
+eqhits e 38 120
+eqhits h 0 120
+eq 1 r 129
+doc 0 [p m m p b f b]
+doc 1 [b]
+doc 2 [a h f j m d]
+doc 3 [b g]
+doc 4 [a j e h s c a w b x e p e e]
+doc 5 [d h w i a]
+doc 6 [a]
+doc 7 [u]
+doc 8 [y k a a d l]
+doc 9 [x h]
+doc 10 [a a b c l c a d]
+doc 11 [a a a j h i b e t]
+doc 12 [c c z m t c]
+doc 13 [g u e o a i b c a h]
+doc 14 [a o l c y t t f q l g g b i]
+doc 15 [o s b d h l j a a p g g q e]
+doc 16 [b j i]
+doc 17 [j e k x b i d o j f b l f]
+doc 18 [c h]
+doc 19 [t b b t a o a r a g d]
+doc 20 [b l y c m d d l j c x a u]
+doc 21 [k v d j n f j v]
+doc 22 [f]
+doc 23 [v b v e]
+doc 24 [m b z d v x f k g k]
+doc 25 [o j v v y m l e u]
+doc 26 [h c l l l t b w p]
+doc 27 [l t e h b d h z g s j j e]
+doc 28 [f n k d h n o a e h v b j]
+doc 29 [y x i d]
+doc 30 [i g q a c]
+doc 31 [f v r b p k d v j m e l]
+doc 32 [k a]
+doc 33 [h y f l y c l t d m a b a o]
+doc 34 [l s s a a n k m a u m]
+doc 35 []
+doc 36 [t v k a a n a e n a h y]
+doc 37 [a d o c b q o a]
+doc 38 []
+doc 39 []
+doc 40 [d o]
+doc 41 [j d d e e b u l d l q j]
+doc 42 []
+doc 43 [p i y j b r b e l]
+doc 44 [k o r g s i u g e z]
+doc 45 [y e o h j j i l q f]
+doc 46 [h c m e f t j d]
+doc 47 [i a k b m c h]
+doc 48 [d e m l f d p f x h k f]
+doc 49 [v h m h x o s a]
+doc 50 [c g s b o j v g r g w w b]
+doc 51 []
+doc 52 [u h h o c b y h t f g a v g]
+doc 53 [b m k b t a l c l]
+doc 54 [g s b]
+doc 55 [l i z a b b]
+doc 56 [v q h y b c e y o s d k o]
+doc 57 [g c t z k g c c e d]
+doc 58 [o g r q j b b m l i l f e]
+doc 59 [q c g e m a a l w n]
+doc 60 [c c j o p v b t a l v]
+doc 61 [l x d t d t c d a c n]
+doc 62 []
+doc 63 [m b v y u z]
+doc 64 [d g n p b]
+doc 65 [z m]
+doc 66 [a d x e f t t]
+doc 67 [g n z c]
+doc 68 [g q k c h e f f l y]
+doc 69 [b c b p e m b]
+doc 70 [o k a e b f d l t i]
+doc 71 []
+doc 72 [s v l n b c d b e b]
+doc 73 []
+doc 74 [l z c q]
+doc 75 [h y z c y p a k d]
+doc 76 [a b k g b g b i b]
+doc 77 [b m a i a s]
+doc 78 [b d u c b t g s c]
+doc 79 [z v h u y l v d c e]
+doc 80 [h x v o]
+doc 81 [m a q w a o a u a k c]
+doc 82 []
+doc 83 []
+doc 84 [d d b d c p m i i b]
+doc 85 [m c]
+doc 86 [g x p v c j a i g r]
+doc 87 [h p c g j h]
+doc 88 [d j e h m n a h e r b k e]
+doc 89 [j g r z u g n]
+doc 90 [h u i n s a o g v]
+doc 91 [c c y q b r p e]
+doc 92 [c b]
+doc 93 [l]
+doc 94 [x e e j b g y a m k]
+doc 95 [p j h e j a b e p]
+doc 96 [g l e]
+doc 97 [b k q l e r k o c]
+doc 98 [a z e t w f]
+doc 99 [h d b m i g b k f r p u c o]
+doc 100 [h]
+doc 101 [m a m e b h r c e c g]
+doc 102 [a f e d]
+doc 103 [c j x a b x n b s b a a b d]
+doc 104 [q n h c g e s d]
+doc 105 [e p b d q j q i g]
+doc 106 [a w c p a w t e h r i z]
+doc 107 [d t j c p h k d d i n k c k]
+doc 108 [q d e q]
+doc 109 [e f b k f a d c]
+doc 110 [h b b l k m a n z j k d i]
+doc 111 [p a a e s w p g v a k n]
+doc 112 []
+doc 113 [k t r a d r f l a e]
+doc 114 [c]
+doc 115 [b d]
+doc 116 [g x r d x]
+doc 117 [f h a e]
+doc 118 [d a n a n c k]
+doc 119 [d h k t h g n h j t b h s g]
+doc 120 [d t j f f a s h r l]
+doc 121 [p d g a j n d b q k g y]
+doc 122 [s u]
+doc 123 [g]
+doc 124 [h c b e u j f h]
+doc 125 [n n i c i e g p l q b]
+doc 126 [f d c f m c n a m n a b]
+doc 127 [j i]
+doc 128 [o]
+del [2,120,109,71,67,60]
+eqhits a 48 123
+eqhits b 57 123
+eqhits c 46 123
+eqhits e 45 123
+eqhits r 0 123
+eq 2 s 125
+doc 0 [k k k c i c i r g a b b]
+doc 1 [b n y]
+doc 2 []
+doc 3 [j s h o j l e g z b x g i]
+doc 4 [w g h j r q a e f f]
+doc 5 [d x c w e a]
+doc 6 [s j j b c q p b j k d]
+doc 7 [i e]
+doc 8 [j h v f e e k g]
+doc 9 [a u a d h b o a d q]
+doc 10 [f o j b x o x d b z v m a v]
+doc 11 [w x v g]
+doc 12 [a r y s j e b f f]
+doc 13 []
+doc 14 []
+doc 15 [j]
+doc 16 [f q k h a u s c a t w]
+doc 17 [r q i]
+doc 18 [m d p v b n a]
+doc 19 [z h e m b a j i]
+doc 20 [k s d z s u g e]
+doc 21 [m a p k w m d s]
+doc 22 [y]
+doc 23 [g e u z q j d r r w f]
+doc 24 [e o]
+doc 25 [d u l a n f f e g o]
+doc 26 [d x m b i a g]
+doc 27 [j c a a a f a n o a z b m b]
+doc 28 [f t x h s d]
+doc 29 [m a i x h c l b u]
+doc 30 [o w e x c r c b]
+doc 31 [b n v y k g t e a]
+doc 32 [u b y w a g h k]
+doc 33 [r r]
+doc 34 [e d r d a y a t]
+doc 35 [z b d a l p a a q l b a d]
+doc 36 [a r i a q f e l d m u t l k]
+doc 37 [c i f c h]
+doc 38 [h k h a g e d b c m l f s]
+doc 39 [e f f t b s i q]
+doc 40 [v a]
+doc 41 [e m p]
+doc 42 [s w y e f]
+doc 43 [k g b a d z a]
+doc 44 [c e s u r z g k a f a c q e]
+doc 45 []
+doc 46 [p h s z d u j q]
+doc 47 [a a g c x j f v o y f u t]
+doc 48 [b i p k g y k z h s h f q]
+doc 49 [c d]
+doc 50 [u e]
+doc 51 [b a c g t b d a b]
+doc 52 [c b l l y j f]
+doc 53 [y h o d k d d a e m]
+doc 54 [b j b i b o v d h j]
+doc 55 []
+doc 56 [d k g u b i d s x g g h]
+doc 57 [i t a g i p u d z d l d]
+doc 58 [k s b h a d a v n a b l]
+doc 59 []
+doc 60 [j u h r i p f q b f c o]
+doc 61 [k c a]
+doc 62 [s b t c t]
+doc 63 [i]
+doc 64 [j u u k l f]
+doc 65 [o z j e b b f h]
+doc 66 [g y r v e k]
+doc 67 [y f b k f g i a b d q k]
+doc 68 []
+doc 69 [a l]
+doc 70 [y y]
+doc 71 [r c]
+doc 72 [m y p f o l b d c j h e c m]
+doc 73 [w j y p j z c j p t]
+doc 74 [o l c e y]
+doc 75 [t v f t f a p e b]
+doc 76 [f]
+doc 77 [g d a x x b]
+doc 78 [x c k a s]
+doc 79 [a u w n j e k c m a]
+doc 80 [i b x d n p l p b e o o]
+doc 81 [r y f n b z]
+doc 82 [e k]
 doc 83 []
 doc 84 []
-doc 85 [d d b d c p m i i b]
-doc 86 [m c]
-doc 87 [g x p v c j a i g r]
-doc 88 [h p c g j h]
-doc 89 [d j e h m n a h e r b k e]
-doc 90 [j g r z u g n]
-doc 91 [h u i n s a o g v]
-doc 92 [c c y q b r p e]
-doc 93 [c b]
-doc 94 [l]
-doc 95 [x e e j b g y a m k]
-doc 96 [p j h e j a b e p]
-doc 97 [g l e]
-doc 98 [b k q l e r k o c]
-doc 99 [a z e t w f]
-doc 100 [h d b m i g b k f r p u c o]
-doc 101 [h]
-doc 102 [m a m e b h r c e c g]
-doc 103 [a f e d]
-doc 104 [c j x a b x n b s b a a b d]
-doc 105 [q n h c g e s d]
-doc 106 [e p b d q j q i g]
-doc 107 [a w c p a w t e h r i z]
-doc 108 [d t j c p h k d d i n k c k]
-doc 109 [q d e q]
-doc 110 [e f b k f a d c]
-doc 111 [h b b l k m a n z j k d i]
-doc 112 [p a a e s w p g v a k n]
-doc 113 []
-doc 114 [k t r a d r f l a e]
-doc 115 [c]
-doc 116 [b d]
-doc 117 [g x r d x]
-doc 118 [f h a e]
-doc 119 [d a n a n c k]
-doc 120 [d h k t h g n h j t b h s g]
-doc 121 [d t j f f a s h r l]
-doc 122 [p d g a j n d b q k g y]
-doc 123 [s u]
-doc 124 [g]
-doc 125 [h c b e u j f h]
-doc 126 [n n i c i e g p l q b]
-doc 127 [f d c f m c n a m n a b]
-doc 128 [j i]
-doc 129 [o]
-doc 130 [w t e o i p d b p v c x d j]
-doc 131 [d w c h b]
-doc 132 [j s j f q r]
-doc 133 [f e h k o s t i]
-doc 134 [a c a w c g]
-doc 135 [m e a p r h k g]
-doc 136 [l k s]
-doc 137 [b s e h b b d a d u z]
-doc 138 [m f u x d l a b]
-doc 139 [y c d j e x l d c e]
-doc 140 [m j q m u e]
-doc 141 [q a c j a p a r i g p c]
-doc 142 [k x n j a v a b i h e y]
-doc 143 [g h d g n r h s c c x p]
-doc 144 [g g s m n h]
-doc 145 [t a l f t c p m k f]
-doc 146 [g f w h c j p z u b o b y]
-del [51,81,67,134,94,137,123]
-eqhits a 55 82:3f1cbc9b 11:3f1b033e 7:3f1a020d 37:3f1992e6 12:3f16ea01
-eqhits b 61 77:3f13b71c 70:3f0ffbb5 104:3f0563a3 73:3f04db47 56:3f03cdcb
-eqhits c 55 13:3f273cbd 115:3f1d20e4 58:3f160174 19:3f115ca3 86:3f115ca3
-eqhits e 53 5:3f204012 89:3f147928 97:3f0cbfca 96:3f0ae930 95:3f064b42
-eqhits r 0
-eq 2 s 121
-doc 0 []
-doc 1 [e c b f a b]
-doc 2 [w]
-doc 3 [c b k b f]
-doc 4 [r k k k c i c i]
-doc 5 [g g a b b t h n y j j s h o]
-doc 6 [e t r g]
-doc 7 [t a k a d w g]
-doc 8 [b l]
-doc 9 [l a e f f x d]
-doc 10 []
-doc 11 [c d c n s j j b c q p]
-doc 12 [d o d p b e l j r h k]
-doc 13 [d]
-doc 14 [f g w w u a d h b o a d]
-doc 15 [z b b j b]
-doc 16 [h x d b z v m a v y j v g]
-doc 17 [a r y s j e b f f]
-doc 18 []
-doc 19 []
-doc 20 [j]
-doc 21 [f q k h a u s c a t w]
-doc 22 [r q i]
-doc 23 [m d p v b n a]
-doc 24 [z h e m b a j i]
-doc 25 [k s d z s u g e]
-doc 26 [m a p k w m d s]
-doc 27 [y]
-doc 28 [g e u z q j d r r w f]
-doc 29 [e o]
-doc 30 [d u l a n f f e g o]
-doc 31 [d x m b i a g]
-doc 32 [j c a a a f a n o a z b m b]
-doc 33 [f t x h s d]
-doc 34 [m a i x h c l b u]
-doc 35 [o w e x c r c b]
-doc 36 [b n v y k g t e a]
-doc 37 [u b y w a g h k]
-doc 38 [r r]
-doc 39 [e d r d a y a t]
-doc 40 [z b d a l p a a q l b a d]
-doc 41 [a r i a q f e l d m u t l k]
-doc 42 [c i f c h]
-doc 43 [h k h a g e d b c m l f s]
-doc 44 [e f f t b s i q]
-doc 45 [v a]
-doc 46 [e m p]
-doc 47 [s w y e f]
-doc 48 [k g b a d z a]
-doc 49 [c e s u r z g k a f a c q e]
-doc 50 []
-doc 51 [p h s z d u j q]
-doc 52 [a a g c x j f v o y f u t]
-doc 53 [b i p k g y k z h s h f q]
-doc 54 [c d]
-doc 55 [u e]
-doc 56 [b a c g t b d a b]
-doc 57 [c b l l y j f]
-doc 58 [y h o d k d d a e m]
-doc 59 [b j b i b o v d h j]
-doc 60 []
-doc 61 [d k g u b i d s x g g h]
-doc 62 [i t a g i p u d z d l d]
-doc 63 [k s b h a d a v n a b l]
-doc 64 []
-doc 65 [j u h r i p f q b f c o]
-doc 66 [k c a]
-doc 67 [s b t c t]
-doc 68 [i]
-doc 69 [j u u k l f]
-doc 70 [o z j e b b f h]
-doc 71 [g y r v e k]
-doc 72 [y f b k f g i a b d q k]
-doc 73 []
-doc 74 [a l]
-doc 75 [y y]
-doc 76 [r c]
-doc 77 [m y p f o l b d c j h e c m]
-doc 78 [w j y p j z c j p t]
-doc 79 [o l c e y]
-doc 80 [t v f t f a p e b]
-doc 81 [f]
-doc 82 [g d a x x b]
-doc 83 [x c k a s]
-doc 84 [a u w n j e k c m a]
-doc 85 [i b x d n p l p b e o o]
-doc 86 [r y f n b z]
-doc 87 [e k]
-doc 88 []
-doc 89 []
-doc 90 [z]
-doc 91 []
-doc 92 []
-doc 93 [o k]
-doc 94 [w p t b h c c o w]
-doc 95 [f k l d k e f c f f b]
-doc 96 [a z y g u k e]
-doc 97 [m]
-doc 98 [i k]
-doc 99 []
-doc 100 [s f j n s w c u s a t e h a]
-doc 101 [b o d b e s f b]
-doc 102 [l u a c c n q c]
-doc 103 [x u h g a z e y e d a]
-doc 104 [m g e j a e]
-doc 105 [c b w k j m d g r l o]
-doc 106 [a h d q]
-doc 107 [i a h c d k]
-doc 108 [d h]
-doc 109 [v m g r b y n]
-doc 110 [m c y p v o]
-doc 111 [c a p l s b h l f j u f a v]
-doc 112 []
-doc 113 [t b m c w i i b d d j y f]
-doc 114 [e x p e z u c d]
-doc 115 []
-doc 116 [e k a w y k a t z e c u v k]
-doc 117 [y c b f j u t d f a l x d a]
-doc 118 [f j c a q]
-doc 119 [f n p o a m m x x]
-doc 120 [d s b]
-del [2,15,23,117,24,113]
-eqhits a 45 32:3f0f9b2d 40:3f08b164 45:3f02a736 74:3f02a736 63:3f01ed64
-eqhits b 41 101:3f194033 3:3f11d3d3 56:3f109516 59:3f0c9b16 1:3f0bd804
-eqhits c 35 102:3f3b323e 42:3f3777ec 11:3f30e626 54:3f2d202a 76:3f2d202a
-eqhits e 36 104:3f2ff0b9 29:3f2d202a 55:3f2d202a 87:3f2d202a 114:3f2298ce
-eqhits s 0
-eq 3 p 127
-doc 0 [g k b z e m f s h]
-doc 1 [p b l e h h y k a b x]
-doc 2 [t i q z h b u p w o z w q]
-doc 3 [a c a c a o]
-doc 4 [o]
-doc 5 [z r t g n b q n f o j]
-doc 6 [i s e a g e l l j r a i k]
-doc 7 [i g c h u j s u m o f k]
-doc 8 [k y j d d]
-doc 9 [f e p w w e t f l s r f c h]
-doc 10 [y p t l f t h]
-doc 11 [k d]
-doc 12 [a c i n h]
-doc 13 [d k p h c r o m o]
-doc 14 [b t h o f g h s l f]
-doc 15 [y k]
-doc 16 [d h n f c j]
-doc 17 [a t x f a a w]
-doc 18 [b c p x h g]
-doc 19 [i b b k k]
-doc 20 [j r f v k e]
-doc 21 [a n j n e h g n p l]
-doc 22 [g d k f j z n e k b i z]
-doc 23 [e k f u i p]
-doc 24 [n a e s b p u e g m d t b]
-doc 25 [a]
-doc 26 [e p h z r f b c s w f]
-doc 27 [c c o]
-doc 28 [c a a j a c g d d i e a a]
-doc 29 [i a q v f u b f g d d s n]
-doc 30 [s j v x d e]
-doc 31 []
-doc 32 [f b n b o j o]
-doc 33 [v p x a d a h m h]
-doc 34 [a f]
-doc 35 [d h b n]
-doc 36 [x x h o t o o i i n u b f k]
-doc 37 [x c]
-doc 38 [g z k f l g k e c a b j]
-doc 39 [d t f j n c]
-doc 40 [a f w b k k m]
-doc 41 [a j k]
-doc 42 [l a]
-doc 43 []
-doc 44 [g r e a l k l a m e]
-doc 45 [k s b y d u i c a v n]
-doc 46 [k p a p r k]
-doc 47 [r j e s h q l l d g d a x a]
-doc 48 [b l b e l]
-doc 49 [a w e y x o k x l]
-doc 50 [f c k f g]
-doc 51 [c l t w]
-doc 52 [b a g d n b c e k l g u]
-doc 53 [d h y e g a d a]
-doc 54 [s p q e d a q o a m d]
-doc 55 [k g h h j u d k a p]
-doc 56 [c e]
-doc 57 [d a]
-doc 58 [w b a b f d b b i h q r]
-doc 59 [b h l b]
-doc 60 [w f g a f r x n r q s l d]
-doc 61 [f r y w k j w b v]
-doc 62 [c s]
-doc 63 [d]
-doc 64 [u i h u u f r z b f t w i]
-doc 65 [a x f z c y g d f]
-doc 66 [s u]
-doc 67 [y w h f w m t i a a i b]
-doc 68 [d u u b g i e]
-doc 69 []
-doc 70 [b]
-doc 71 [s f c s]
-doc 72 [h n e a h i b q f p e g]
-doc 73 [y y m n d a f s o q h r n h]
-doc 74 [c h m i]
-doc 75 [h k p h o n x s a]
-doc 76 [a n o p q u z f]
-doc 77 [b b o c m l a b b a u a e k]
-doc 78 [c z f p z b o c s]
-doc 79 [a]
-doc 80 [c]
-doc 81 [s c j t a d a d f a a d]
-doc 82 [m x s x]
-doc 83 [p b a p d l o l g e e b z l]
-doc 84 [i i a k k l p b a]
-doc 85 [f e a c j e m q h]
-doc 86 [x b f x b f i n]
-doc 87 [h t n z]
-doc 88 [i f c f w b j a]
-doc 89 [s]
-doc 90 [i a c q]
-doc 91 [c c b o b j g m w a]
-doc 92 [u g a s v e k f u q c x e]
-doc 93 [u n d d m d t z l r b j b]
+doc 85 [z]
+doc 86 []
+doc 87 []
+doc 88 [o k]
+doc 89 [w p t b h c c o w]
+doc 90 [f k l d k e f c f f b]
+doc 91 [a z y g u k e]
+doc 92 [m]
+doc 93 [i k]
 doc 94 []
-doc 95 [e b a a]
-doc 96 [f l u u n g a]
-doc 97 [f b g g m c e]
-doc 98 [v m n p z]
-doc 99 [g j q b p h b g c w d]
-doc 100 [c d b n h z d n]
-doc 101 [i h f a n s a n a j g z]
-doc 102 [e n c c l v a f j a i]
-doc 103 []
-doc 104 []
-doc 105 [l k g b b p h d m m s p]
-doc 106 [y g a f x e d c]
-doc 107 [e s f o j]
-doc 108 [g l b g c a d l y j p]
-doc 109 [u]
-doc 110 [n w]
-doc 111 [j a]
-doc 112 [x c h k]
-doc 113 [g x d v h j i]
-doc 114 [k c s a d g d j x b u q e]
-doc 115 [a n]
-doc 116 [f d]
-doc 117 [g b l d k y n a]
-doc 118 [c e f q a d f c q b e]
-doc 119 [s k i t c j h r n c c i]
-doc 120 [h a j i c d]
-doc 121 [n a q d l]
-doc 122 [p c b t n c i o f p c]
-doc 123 [i y d a e i z f g e]
-doc 124 [n y i b r i]
-doc 125 [r e]
-doc 126 [f n]
-del [26,100,41,43,74,83]
-eqhits a 56 3:3f0b6e10 28:3f07eb99 17:3f07431f 95:3f0672ce 25:3f0410a2
-eqhits b 43 59:3f307178 70:3f2d50b6 58:3f2a631b 19:3f28ea48 48:3f28ea48
-eqhits c 40 27:3f457133 80:3f394c6a 122:3f331424 3:3f2d344b 37:3f2a6184
-eqhits e 34 56:3f475e2e 125:3f475e2e 85:3f348312 44:3f2e2a1a 123:3f2e2a1a
-eqhits p 0
+doc 95 [s f j n s w c u s a t e h a]
+doc 96 [b o d b e s f b]
+doc 97 [l u a c c n q c]
+doc 98 [x u h g a z e y e d a]
+doc 99 [m g e j a e]
+doc 100 [c b w k j m d g r l o]
+doc 101 [a h d q]
+doc 102 [i a h c d k]
+doc 103 [d h]
+doc 104 [v m g r b y n]
+doc 105 [m c y p v o]
+doc 106 [c a p l s b h l f j u f a v]
+doc 107 []
+doc 108 [t b m c w i i b d d j y f]
+doc 109 [e x p e z u c d]
+doc 110 []
+doc 111 [e k a w y k a t z e c u v k]
+doc 112 [y c b f j u t d f a l x d a]
+doc 113 [f j c a q]
+doc 114 [f n p o a m m x x]
+doc 115 [d s b]
+doc 116 [d l b d h t c g a b i]
+doc 117 []
+doc 118 []
+doc 119 [g w h e s]
+doc 120 [c q b]
+doc 121 [b o d]
+doc 122 [i j m c p m]
+doc 123 [q p f e p b z a]
+doc 124 [m c g g g h n x]
+del [119,114,91,87,84,91]
+eqhits a 47 120
+eqhits b 47 120
+eqhits c 40 120
+eqhits e 38 120
+eqhits s 0 120
+eq 3 p 115
+doc 0 [h h y]
+doc 1 [s a b x d i q]
+doc 2 [e t f p w o z w q b]
+doc 3 [o i]
+doc 4 []
+doc 5 [c o l a f z r]
+doc 6 [a j f h g s o j b s e a g]
+doc 7 [m l l j r a i k l g c h u]
+doc 8 [p m m o f k g n g]
+doc 9 [d d q c m]
+doc 10 [l]
+doc 11 [i e e s r f c h m s]
+doc 12 [t l f t h u c f c]
+doc 13 [u n h z x a p h c r o m o n]
+doc 14 [k]
+doc 15 [b i b g h s l f c o h]
+doc 16 [h n f c j s]
+doc 17 [i b f]
+doc 18 [f a w z d n i h g n w]
+doc 19 [b k k m e f v k e d a h]
+doc 20 [c y c r t a l o i k e j x i]
+doc 21 [e k b i z d]
+doc 22 []
+doc 23 [j f]
+doc 24 [h p k a e s]
+doc 25 [o p u e]
+doc 26 [m f a b j b s p h z]
+doc 27 [s b c s w f v r c]
+doc 28 [n c a a]
+doc 29 []
+doc 30 [a c g d d i]
+doc 31 [k]
+doc 32 [j b i a q v f u b f g d d s]
+doc 33 [z s j v x]
+doc 34 [q a t b n]
+doc 35 [o b l o d f x y i]
+doc 36 [n a h m h d i c d h b]
+doc 37 [a x x h]
+doc 38 [t l y o]
+doc 39 [q a]
+doc 40 [n b f k a c e h f m b]
+doc 41 []
+doc 42 [f k]
+doc 43 [j c a]
+doc 44 [a i d t f j n c]
+doc 45 [a f w b k k m]
+doc 46 [a j k]
+doc 47 [l a]
+doc 48 []
+doc 49 [g r e a l k l a m e]
+doc 50 [k s b y d u i c a v n]
+doc 51 [k p a p r k]
+doc 52 [r j e s h q l l d g d a x a]
+doc 53 [b l b e l]
+doc 54 [a w e y x o k x l]
+doc 55 [f c k f g]
+doc 56 [c l t w]
+doc 57 [b a g d n b c e k l g u]
+doc 58 [d h y e g a d a]
+doc 59 [s p q e d a q o a m d]
+doc 60 [k g h h j u d k a p]
+doc 61 [c e]
+doc 62 [d a]
+doc 63 [w b a b f d b b i h q r]
+doc 64 [b h l b]
+doc 65 [w f g a f r x n r q s l d]
+doc 66 [f r y w k j w b v]
+doc 67 [c s]
+doc 68 [d]
+doc 69 [u i h u u f r z b f t w i]
+doc 70 [a x f z c y g d f]
+doc 71 [s u]
+doc 72 [y w h f w m t i a a i b]
+doc 73 [d u u b g i e]
+doc 74 []
+doc 75 [b]
+doc 76 [s f c s]
+doc 77 [h n e a h i b q f p e g]
+doc 78 [y y m n d a f s o q h r n h]
+doc 79 [c h m i]
+doc 80 [h k p h o n x s a]
+doc 81 [a n o p q u z f]
+doc 82 [b b o c m l a b b a u a e k]
+doc 83 [c z f p z b o c s]
+doc 84 [a]
+doc 85 [c]
+doc 86 [s c j t a d a d f a a d]
+doc 87 [m x s x]
+doc 88 [p b a p d l o l g e e b z l]
+doc 89 [i i a k k l p b a]
+doc 90 [f e a c j e m q h]
+doc 91 [x b f x b f i n]
+doc 92 [h t n z]
+doc 93 [i f c f w b j a]
+doc 94 [s]
+doc 95 [i a c q]
+doc 96 [c c b o b j g m w a]
+doc 97 [u g a s v e k f u q c x e]
+doc 98 [u n d d m d t z l r b j b]
+doc 99 []
+doc 100 [e b a a]
+doc 101 [f l u u n g a]
+doc 102 [f b g g m c e]
+doc 103 [v m n p z]
+doc 104 [g j q b p h b g c w d]
+doc 105 [c d b n h z d n]
+doc 106 [i h f a n s a n a j g z]
+doc 107 [e n c c l v a f j a i]
+doc 108 []
+doc 109 []
+doc 110 [l k g b b p h d m m s p]
+doc 111 [y g a f x e d c]
+doc 112 [e s f o j]
+doc 113 [g l b g c a d l y j p]
+doc 114 [u]
+del [62,52,51,9,66]
+eqhits a 54 110
+eqhits b 39 110
+eqhits c 39 110
+eqhits e 27 110
+eqhits p 0 110
+nf 0 s0 true true false false true
+nf 0 t0 true false false false false
+nf 0 t0 true false false false false
+nf 0 ss0 true true false false true
+nf 0 ts0 true true false false false
+nftail 0 7105486291024734541
+nf 1 s1 true false false false false
+nf 1 t1 false false false false false
+nf 1 t1 false false false false false
+nf 1 ss1 true false false false false
+nf 1 ts1 true false false false false
+nftail 1 6137546356583794141
+nf 2 s2 true false false false false
+nf 2 t2 true false false false false
+nf 2 t2 true false false false false
+nf 2 ss2 true false false false false
+nf 2 ts2 true true true false true
+nftail 2 -1418100099845219172
+nf 3 s3 true true false false true
+nf 3 t3 false true true true false
+nf 3 t3 false true true true false
+nf 3 ss3 true true true false true
+nf 3 ts3 true false false false false
+nftail 3 550039120288444364
+nf 4 s4 true true true true true
+nf 4 t4 false true false false false
+nf 4 t4 false true false false false
+nf 4 ss4 true false false false false
+nf 4 ts4 true false false false false
+nftail 4 -2718749861988915072
+nf 5 s5 true false false false false
+nf 5 t5 false true false false true
+nf 5 t5 false true false false true
+nf 5 ss5 true false false false false
+nf 5 ts5 true true false false false
+nftail 5 -5576223184683215057
+nf 6 s6 true false false false false
+nf 6 t6 true false false false false
+nf 6 t6 true false false false false
+nf 6 ss6 true true true false false
+nf 6 ts6 true false false false false
+nftail 6 -6641849157192254023
+nf 7 s7 true true true false false
+nf 7 t7 false true true true true
+nf 7 t7 false true true true true
+nf 7 ss7 true false false false false
+nf 7 ts7 true true false false false
+nftail 7 -2768614539681141252
+nf 8 s8 true true true false false
+nf 8 t8 false true false false true
+nf 8 t8 false true false false true
+nf 8 ss8 true false false false false
+nf 8 ts8 true true false false false
+nftail 8 -269799457619304615
+nf 9 s9 true false false false false
+nf 9 t9 true true true true true
+nf 9 t9 true true true true true
+nf 9 ss9 true true true false false
+nf 9 ts9 true false false false false
+nftail 9 -7529411146044166908
+nf 10 s10 true false false false false
+nf 10 t10 false false false false false
+nf 10 t10 false false false false false
+nf 10 ss10 true false false false false
+nf 10 ts10 true true false false false
+nftail 10 -3342383633144681140
+nf 11 s11 true true false false false
+nf 11 t11 true false false false false
+nf 11 t11 true false false false false
+nf 11 ss11 true false false false false
+nf 11 ts11 true true false false false
+nftail 11 802616123117823677
+nf 12 s12 true false false false false
+nf 12 t12 false false false false false
+nf 12 t12 false false false false false
+nf 12 ss12 true false false false false
+nf 12 ts12 true false false false false
+nftail 12 -1147433994031419585
+nf 13 s13 true false false false false
+nf 13 t13 false false false false false
+nf 13 t13 false false false false false
+nf 13 ss13 true false false false false
+nf 13 ts13 true true true false false
+nftail 13 -2560414976154662711
+nf 14 s14 true true true true false
+nf 14 t14 true false false false false
+nf 14 t14 true false false false false
+nf 14 ss14 true true false false false
+nf 14 ts14 true false false false false
+nftail 14 4655523629362823692
+nf 15 s15 true true false false false
+nf 15 t15 true false false false false
+nf 15 t15 true false false false false
+nf 15 ss15 true false false false false
+nf 15 ts15 true false false false false
+nftail 15 -6089968677426900432
+nf 16 s16 true true true true true
+nf 16 t16 true false false false false
+nf 16 t16 true false false false false
+nf 16 ss16 true false false false false
+nf 16 ts16 true true true true true
+nftail 16 2378508276134102594
+nf 17 s17 true true true true false
+nf 17 t17 false true true false true
+nf 17 t17 false true true false true
+nf 17 ss17 true false false false false
+nf 17 ts17 true true true false true
+nftail 17 7637460808219702055
+nf 18 s18 true true false false false
+nf 18 t18 false false false false false
+nf 18 t18 false false false false false
+nf 18 ss18 true false false false false
+nf 18 ts18 true false false false false
+nftail 18 -1222021871687707183
+nf 19 s19 true false false false false
+nf 19 t19 false true true true false
+nf 19 t19 false true true true false
+nf 19 ss19 true true false false true
+nf 19 ts19 true true true true false
+nftail 19 -4622090330722633972
+nf 20 s20 true true false false true
+nf 20 t20 true true false false true
+nf 20 t20 true true false false true
+nf 20 ss20 true false false false false
+nf 20 ts20 true true false false false
+nftail 20 8171938801505373957
+nf 21 s21 true true false false true
+nf 21 t21 false false false false false
+nf 21 t21 false false false false false
+nf 21 ss21 true true false false true
+nf 21 ts21 true true true false false
+nftail 21 -7358950826367929739
+nf 22 s22 true false false false false
+nf 22 t22 true false false false false
+nf 22 t22 true false false false false
+nf 22 ss22 true true false false true
+nf 22 ts22 true true false false true
+nftail 22 -1611592380874423450
+nf 23 s23 true false false false false
+nf 23 t23 false false false false false
+nf 23 t23 false false false false false
+nf 23 ss23 true false false false false
+nf 23 ts23 true true false false false
+nftail 23 -3969606915969926474
+nf 24 s24 true true true false false
+nf 24 t24 false false false false false
+nf 24 t24 false false false false false
+nf 24 ss24 true true true false true
+nf 24 ts24 true false false false false
+nftail 24 -4481374751127873592
+nf 25 s25 true true false false true
+nf 25 t25 true false false false false
+nf 25 t25 true false false false false
+nf 25 ss25 true false false false false
+nf 25 ts25 true false false false false
+nftail 25 111988666388185236
+nf 26 s26 true false false false false
+nf 26 t26 true true true false true
+nf 26 t26 true true true false true
+nf 26 ss26 true true true false true
+nf 26 ts26 true false false false false
+nftail 26 -7378090013813509274
+nf 27 s27 true false false false false
+nf 27 t27 true false false false false
+nf 27 t27 true false false false false
+nf 27 ss27 true true true true false
+nf 27 ts27 true false false false false
+nftail 27 7723460739774673578
+nf 28 s28 true true true false false
+nf 28 t28 false false false false false
+nf 28 t28 false false false false false
+nf 28 ss28 true true false false false
+nf 28 ts28 true true true false false
+nftail 28 3039029358823182632
+nf 29 s29 true false false false false
+nf 29 t29 true false false false false
+nf 29 t29 true false false false false
+nf 29 ss29 true true false false false
+nf 29 ts29 true false false false false
+nftail 29 8981967073470153854
+nf 30 s30 true false false false false
+nf 30 t30 false true false false true
+nf 30 t30 false true false false true
+nf 30 ss30 true true true false false
+nf 30 ts30 true false false false false
+nftail 30 -2711376295572133737
+nf 31 s31 true false false false false
+nf 31 t31 false true true true true
+nf 31 t31 false true true true true
+nf 31 ss31 true false false false false
+nf 31 ts31 true true false false true
+nftail 31 -4556788057866780114
+nf 32 s32 true false false false false
+nf 32 t32 true false false false false
+nf 32 t32 true false false false false
+nf 32 ss32 true true true true false
+nf 32 ts32 true false false false false
+nftail 32 -8926478901221206510
+nf 33 s33 true true true false false
+nf 33 t33 false false false false false
+nf 33 t33 false false false false false
+nf 33 ss33 true true true false true
+nf 33 ts33 true true false false true
+nftail 33 -9211772889973677980
+nf 34 s34 true true false false true
+nf 34 t34 true false false false false
+nf 34 t34 true false false false false
+nf 34 ss34 true false false false false
+nf 34 ts34 true false false false false
+nftail 34 -5462745394601655097
+nf 35 s35 true false false false false
+nf 35 t35 false false false false false
+nf 35 t35 false false false false false
+nf 35 ss35 true false false false false
+nf 35 ts35 true true true true false
+nftail 35 -7620541639031931445
+nf 36 s36 true true false false false
+nf 36 t36 false false false false false
+nf 36 t36 false false false false false
+nf 36 ss36 true true true true false
+nf 36 ts36 true true true false false
+nftail 36 6745980940906168072
+nf 37 s37 true true true false true
+nf 37 t37 false false false false false
+nf 37 t37 false false false false false
+nf 37 ss37 true false false false false
+nf 37 ts37 true false false false false
+nftail 37 2990578857247002486
+nf 38 s38 true true false false true
+nf 38 t38 false false false false false
+nf 38 t38 false false false false false
+nf 38 ss38 true false false false false
+nf 38 ts38 true true false false false
+nftail 38 3906598485393569983
+nf 39 s39 true false false false false
+nf 39 t39 false true true true true
+nf 39 t39 false true true true true
+nf 39 ss39 true false false false false
+nf 39 ts39 true true false false true
+nftail 39 -4586282323533905453
+slices 5,1,12,40,3,34 1 1 3 5 2 0 4 1
+slices 8,15,35,4,5,38 43 1 5 2 1 0 4 3
+slices 1,30,2,8,5,35 1 2 5 1 3 4 2 0
+slices 1,4,5,5,1,38 22 2 5 2,3 0,1 4
+slices 4,3,32,23,13,3 1 1 2 3 4 0 1 5
+slices 35,2,5,3,32,3 9 1 0 4 2 3 5 1
+slices 27,2,3,31,4,33 1 1 5 3 0 4 2 1
+slices 1,21,9,1,1,4 56 1 1 2 5 0 3 4
+slices 1,13,12,14,35,23 1 1 4 5 3 1 2 0
+slices 29,5,4,4,7,27 1 1 0 5 4 1 2 3
+slices 14,7,3,22,4,2 1 1 3 0 1 4 2 5
+slices 2,34,21,4,15,3 23 1 1 2 4 3 5 0
+slices 37,25,31,2,4,22 56 1 0 2 1 5 4 3
+slices 16,4,4,17,1,1 1 5 3 0 1 2 4,5
+slices 3,4,2,1,18,23 43 1 5 4 1 0 2 3
+slices 4,6,40,25,38,26 1 2 2 4 5 3 1 0
+slices 1,4,4,11,2,2 1 1 3 1 2 4 5 0
+slices 5,3,5,3,4,1 49 3 0,2,4 1,3,5
+slices 4,28,9,19,21,16 1 1 1 4 3 5 2 0
+slices 17,5,1,1,1,2 35 1 0 1 5 2 3 4
+slices 2,1,4,4,2,6 9 5 2,5 0,1,3,4
+slices 1,5,25,14,1,2 1 5 2 3 1 5 0,4
+slices 33,40,28,2,3,2 1 1 1 0 2 4 3 5
+slices 4,19,1,22,5,5 1 1 3 1 4 5 0 2
+slices 2,11,13,5,9,5 35 3 1,2,4 0,3,5
+slices 3,3,36,37,21,5 1 1 3 2 4 5 0 1
+slices 20,3,8,4,18,5 22 2 0,4 2,5 1,3
+slices 38,32,1,5,30,1 1 3 0 1 4 3 2,5
+slices 3,23,33,3,24,5 2 1 2 4 1 5 0 3
+slices 22,10,16,28,5,4 1 4 3 0 2 1 4 5
+slices 6,2,2,2,32,4 48 1 4 0 5 1 2 3
+slices 25,4,5,37,12,5 1 1 3 0 4 2 5 1
+slices 26,40,1,17,3,7 17 2 1 0 3,5 2,4
+slices 4,19,24,2,29,3 1 1 4 2 1 0 5 3
+slices 3,4,27,26,1,8 4 4 2 3 5 0,1 4
+slices 7,13,3,2,3,4 1 1 1 0 5 2 4 3
+slices 2,4,20,3,32,3 43 1 4 2 1 3 5 0
+slices 1,31,3,20,4,2 1 5 1 3 4 2 5 0
+slices 5,3,7,4,1,4 30 4 0,2,3,5 1,4
+slices 33,5,2,29,20,2 1 5 0 3 4 1 2 5
+slices 3,2,40,2,2,37 10 1 2 5 0 1 3 4
+slices 2,36,23,11,1,32 17 2 1 5 2 0,3 4
+slices 9,11,1,5,23,37 57 1 5 4 1 0 3 2
+slices 28,3,4,12,35,1 1 3 4 0 3 2 1 5
+slices 3,4,19,3,4,5 1 4 2 5 1 4 0 3
+slices 2,3,2,5,1,1 51 1 3 1 0 2 4 5
+slices 36,23,1,3,3,36 1 4 0 5 1 3 4 2
+slices 14,2,4,3,4,2 30 1 0 2 4 3 1 5
+slices 32,38,3,3,4,1 23 5 1 0 2,3,4,5
+slices 2,17,4,8,3,1 1 1 1 3 2 4 0 5
+slices 4,2,37,2,1,1 9 1 2 0 1 3 4 5
+slices 3,1,20,9,2,2 1 3 2 3 0 4 5 1
+slices 18,2,2,2,6,19 1 4 5 0 4 1 2 3
+slices 37,29,3,31,18,15 56 1 0 3 1 4 5 2
+slices 1,4,16,5,5,20 36 4 2,3,5 0,1,4
+slices 5,3,39,40,27,16 1 4 3 2 4 5 0 1
+slices 5,5,2,3,21,5 1 1 4 0 1 5 3 2
+slices 3,2,25,3,32,4 30 2 4 2,5 0,3 1
+slices 5,9,36,11,30,11 1 1 2 4 3 5 1 0
+slices 26,36,19,3,9,4 17 5 1 0 2 3,4,5

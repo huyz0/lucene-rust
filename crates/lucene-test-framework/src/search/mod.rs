@@ -15,6 +15,7 @@ pub mod check_hits;
 pub mod disabling_bulk_scorer_query;
 pub mod dummy_total_hit_count;
 pub mod matches_test_base;
+pub mod new_searcher;
 pub mod query_utils;
 pub mod scorer_index_searcher;
 pub mod search_equivalence;
