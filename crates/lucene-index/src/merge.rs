@@ -1036,6 +1036,11 @@ impl SegmentFormat {
 /// and what `CheckIndex` walks, so there is no third place for a format to
 /// hide.
 ///
+/// `postings_opened` is, per source, whether the caller opened that source's
+/// term dictionary at all. It is needed because a routed field outlives its
+/// last term (see `merge_postings`), so an opened dictionary can hand the
+/// merge no [`SourcePostings`] entry and still be complete.
+///
 /// # What makes it hard to rot
 ///
 /// Two properties, and neither is a hand-maintained list of "the formats we
@@ -1080,10 +1085,17 @@ pub fn check_format_coverage(
     source_names: &[&str],
     source_files: &[&[String]],
     sources: &[MergeSource<'_>],
+    postings_opened: &[bool],
 ) -> Result<()> {
     debug_assert_eq!(source_names.len(), sources.len());
     debug_assert_eq!(source_files.len(), sources.len());
-    for ((name, files), source) in source_names.iter().zip(source_files).zip(sources) {
+    debug_assert_eq!(postings_opened.len(), sources.len());
+    for (((name, files), source), &postings_opened) in source_names
+        .iter()
+        .zip(source_files)
+        .zip(sources)
+        .zip(postings_opened)
+    {
         // Which formats this source's own `.si` says it has, and one example
         // file per format for the message.
         let mut present: Vec<(SegmentFormat, Vec<&str>)> = Vec::new();
@@ -1109,7 +1121,12 @@ pub fn check_format_coverage(
             }
         }
         for (format, seen) in present {
-            if !format.is_opened(source) {
+            // A routed field survives a merge that removed its last term
+            // (`merge_postings`' Java note), so a source can hold postings
+            // files that its caller opened and that still name no term: an
+            // empty `source.postings` alone does not mean "never opened".
+            let opened_empty = format == SegmentFormat::Postings && postings_opened;
+            if !opened_empty && !format.is_opened(source) {
                 return Err(Error::MergeFormatNotOpened {
                     segment: (*name).to_string(),
                     format: format.name(),
@@ -6012,8 +6029,9 @@ mod tests {
             "_0.nvm".to_string(),
             "_0.nvd".to_string(),
         ];
-        let err = check_format_coverage(&["_0"], &[&files], std::slice::from_ref(&source))
-            .expect_err("a `.nvd` the merge never opened must be refused");
+        let err =
+            check_format_coverage(&["_0"], &[&files], std::slice::from_ref(&source), &[false])
+                .expect_err("a `.nvd` the merge never opened must be refused");
         match &err {
             Error::MergeFormatNotOpened {
                 segment,
@@ -6038,7 +6056,13 @@ mod tests {
             .filter(|f| !f.ends_with(".nvm") && !f.ends_with(".nvd"))
             .cloned()
             .collect();
-        check_format_coverage(&["_0"], &[&without_norms], std::slice::from_ref(&source)).unwrap();
+        check_format_coverage(
+            &["_0"],
+            &[&without_norms],
+            std::slice::from_ref(&source),
+            &[false],
+        )
+        .unwrap();
     }
 
     /// One case per format, so no `is_opened` arm can be wrong in the
@@ -6074,8 +6098,9 @@ mod tests {
             for ext in format.extensions() {
                 files.push(format!("_0.{ext}"));
             }
-            let err = check_format_coverage(&["_0"], &[&files], std::slice::from_ref(&source))
-                .unwrap_err();
+            let err =
+                check_format_coverage(&["_0"], &[&files], std::slice::from_ref(&source), &[false])
+                    .unwrap_err();
             match err {
                 Error::MergeFormatNotOpened { format: named, .. } => {
                     assert_eq!(named, format.name(), "{format:?}");
@@ -6114,8 +6139,9 @@ mod tests {
                 "_0.si".to_string(),
                 bad.to_string(),
             ];
-            let err = check_format_coverage(&["_0"], &[&files], std::slice::from_ref(&source))
-                .unwrap_err();
+            let err =
+                check_format_coverage(&["_0"], &[&files], std::slice::from_ref(&source), &[false])
+                    .unwrap_err();
             match err {
                 Error::UnknownSegmentFormat { file, .. } => assert_eq!(file, bad),
                 other => panic!("expected UnknownSegmentFormat for {bad}, got {other:?}"),
@@ -6163,8 +6189,13 @@ mod tests {
             .iter()
             .map(|e| format!("_1.{e}"))
             .collect();
-        let err =
-            check_format_coverage(&["_0", "_1"], &[&plain, &with_vectors], &sources).unwrap_err();
+        let err = check_format_coverage(
+            &["_0", "_1"],
+            &[&plain, &with_vectors],
+            &sources,
+            &[false, false],
+        )
+        .unwrap_err();
         match err {
             Error::MergeFormatNotOpened {
                 segment, format, ..
