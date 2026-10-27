@@ -296,10 +296,18 @@ fn round(seed: u64, base: &Path, num_ops: i32, java_cp: Option<&str>) -> Result<
     }
     verify(&mut w, &model, &mut out)?;
     out.live = model.len();
+    let soft_deletes = w.soft_deletes_field();
     w.close().map_err(e)?;
 
-    // The committed index, read cold, is the model too.
-    let reader = DirectoryReader::open(&dir).map_err(|e| e.to_string())?;
+    // The committed index, read cold, is the model too -- through
+    // `SoftDeletesDirectoryReaderWrapper` when the writer soft-deleted, as
+    // a reader of soft deletes must read them.
+    let mut reader = DirectoryReader::open(&dir).map_err(|e| e.to_string())?;
+    if let Some(field) = soft_deletes {
+        reader = reader
+            .soft_deletes_wrapper(field)
+            .map_err(|e| e.to_string())?;
+    }
     let (live, _) = read(&reader)?;
     if live != model {
         return Err(format!(

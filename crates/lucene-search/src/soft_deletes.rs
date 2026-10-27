@@ -368,6 +368,76 @@ pub fn effective_live_docs_with_overlay(
     Ok(Some(bits))
 }
 
+impl crate::directory_reader::DirectoryReader {
+    /// `new SoftDeletesDirectoryReaderWrapper(reader, field)`: this reader
+    /// with every document that has a doc value for `field` deleted, and the
+    /// segments left without a live document dropped. A segment with no
+    /// such document (or no such field) is shared as it is; one with some
+    /// gets new live documents (hard and soft) under a new reader cache key,
+    /// its core shared. Reopening the result wraps again.
+    ///
+    /// # Errors
+    /// [`crate::directory_reader::Error::SoftDeletes`] when a segment's
+    /// docs-with-field region for `field` does not decode.
+    pub fn soft_deletes_wrapper(&self, field: &str) -> crate::directory_reader::Result<Self> {
+        let mut segments = Vec::with_capacity(self.segment_readers().len());
+        for reader in self.segment_readers() {
+            let wrapped = soft_deletes_leaf(reader, field)
+                .map_err(|e| crate::directory_reader::Error::SoftDeletes(Box::new(e)))?;
+            let wrapped = wrapped.unwrap_or_else(|| reader.clone());
+            if wrapped.num_docs() != 0 {
+                segments.push(wrapped);
+            }
+        }
+        Ok(self.with_segments(segments, field.into()))
+    }
+}
+
+/// `SoftDeletesDirectoryReaderWrapper.wrap(reader, field)`: `reader` with
+/// its soft deletes applied, or `None` when it has none to apply (`wrap`
+/// returning the reader itself).
+fn soft_deletes_leaf(
+    reader: &crate::directory_reader::SegmentReader,
+    field: &str,
+) -> crate::Result<Option<crate::directory_reader::SegmentReader>> {
+    use crate::directory_reader::ExistsDocs;
+    let Some(exists) = reader.doc_values_exists_docs(field)? else {
+        return Ok(None);
+    };
+    let max_doc = usize::try_from(reader.max_doc).unwrap_or(0);
+    let mut bits = match reader.live_docs() {
+        Some(live) => live.clone(),
+        None => {
+            let mut all = FixedBitSet::new(max_doc);
+            all.set_range(0, max_doc);
+            all
+        }
+    };
+    // `PendingSoftDeletes.applySoftDeletes`: the live documents cleared.
+    let mut num_soft_deletes = 0usize;
+    let mut clear = |bits: &mut FixedBitSet, doc: usize| {
+        if doc < bits.len() && bits.get(doc) {
+            bits.clear(doc);
+            num_soft_deletes += 1;
+        }
+    };
+    match exists {
+        ExistsDocs::None => {}
+        ExistsDocs::All => (0..max_doc).for_each(|doc| clear(&mut bits, doc)),
+        ExistsDocs::Bits(docs) => {
+            let mut from = 0;
+            while let Some(doc) = docs.next_set_bit(from).filter(|&d| d < max_doc) {
+                clear(&mut bits, doc);
+                from = doc + 1;
+            }
+        }
+    }
+    if num_soft_deletes == 0 {
+        return Ok(None);
+    }
+    Ok(Some(reader.with_live_docs(bits)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

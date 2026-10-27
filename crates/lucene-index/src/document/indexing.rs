@@ -843,6 +843,22 @@ impl IndexWriter<'_> {
         self.add_fields_documents_with_vectors(docs, Some(term))
     }
 
+    /// `IndexWriter.updateDocuments(Query, docs)`: `docs` are added as one
+    /// block and every earlier document `query` matches is deleted,
+    /// atomically. Unlike [`IndexWriter::delete_documents_by_query`], a
+    /// `MatchAll` query is buffered like any other, as Java's is.
+    pub fn update_fields_documents_by_query(
+        &mut self,
+        query: crate::buffered_updates::DeleteQuery,
+        docs: &[Document],
+    ) -> Result<SeqNo> {
+        self.enable_explicit_documents()?;
+        let delete = Some(crate::index_writer::DeleteNode::Queries(vec![query]));
+        self.buffer_inverted_block(docs, Vec::new(), |w, explicit, vectors| {
+            w.add_explicit_documents_with_node(delete, explicit, vectors)
+        })
+    }
+
     /// `IndexWriter.softUpdateDocuments(term, docs, softDeletes...)`: `docs`
     /// are added as one block and every earlier document matching `term`
     /// gets the `soft_deletes` doc-values updates, atomically.

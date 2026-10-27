@@ -1588,6 +1588,19 @@ impl<'d> IndexWriter<'d> {
         docs: Vec<ExplicitDocument>,
         vectors: Vec<Vec<super::DocumentVector>>,
     ) -> Result<super::SeqNo> {
+        let delete = delete.map(|term| super::DeleteNode::Terms(vec![std::sync::Arc::new(term)]));
+        self.add_explicit_documents_with_node(delete, docs, vectors)
+    }
+
+    /// [`Self::add_explicit_documents_with_vectors`] deleting what `delete`
+    /// matches: `updateDocuments(Node, docs)`, the shared tail of the term
+    /// and query updates.
+    pub(crate) fn add_explicit_documents_with_node(
+        &mut self,
+        delete: Option<super::DeleteNode>,
+        docs: Vec<ExplicitDocument>,
+        vectors: Vec<Vec<super::DocumentVector>>,
+    ) -> Result<super::SeqNo> {
         // The document API builds these documents itself, from fields it has
         // just registered: they hold by construction what
         // `validate_explicit` checks of a caller's, so the check runs only
@@ -1602,7 +1615,6 @@ impl<'d> IndexWriter<'d> {
         for doc_vectors in &vectors {
             self.cfg.validate_explicit_vectors(doc_vectors)?;
         }
-        let delete = delete.map(|term| super::DeleteNode::Terms(vec![std::sync::Arc::new(term)]));
         self.add_explicit_with_delete(delete, docs, Some(vectors))
     }
 

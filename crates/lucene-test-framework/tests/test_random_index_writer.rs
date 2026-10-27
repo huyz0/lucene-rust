@@ -191,9 +191,9 @@ fn config(seed: i64) -> (JavaRandom, WriterEnv, Arc<Analyzer>) {
     (r, env(seed, LiveFlushMode::ByDocs), analyzer)
 }
 
-/// Soft deletes, when drawn, register the soft-deletes field (`___soft_deletes`);
-/// the updates are hard ones (see the module doc), so a reader never sees
-/// the old version.
+/// Soft deletes, when drawn, register the soft-deletes field (`___soft_deletes`)
+/// and every update is a soft one: the old versions stay in the index, and
+/// the writer's readers hide them.
 #[test]
 fn soft_deletes_hide_the_old_version() {
     let dir = ByteBuffersDirectory::new();
@@ -211,6 +211,13 @@ fn soft_deletes_hide_the_old_version() {
     w.commit_with(true).unwrap();
     let reader = w.get_reader().unwrap();
     assert_eq!(reader.num_docs(), 20);
+    assert_eq!(w.soft_deletes_field(), Some("___soft_deletes"));
+    let unwrapped = DirectoryReader::open(&dir).unwrap();
+    assert_eq!(
+        unwrapped.num_docs(),
+        60,
+        "soft deletes leave the old versions"
+    );
     drop(reader);
     w.close().unwrap();
     check_index(&dir).unwrap();
