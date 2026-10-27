@@ -64,6 +64,15 @@ impl Drop for CachedSet {
 }
 
 impl CachedSet {
+    /// How many documents it holds: its iterator's cost.
+    #[cfg_attr(not(any(test, feature = "asserting")), allow(dead_code))]
+    pub(crate) fn cardinality(&self) -> i64 {
+        match self {
+            CachedSet::Bits { cardinality, .. } => *cardinality,
+            CachedSet::Docs(docs) => docs.len() as i64,
+        }
+    }
+
     /// Whether the set holds no document (a cached empty answer).
     fn is_empty(&self) -> bool {
         match self {

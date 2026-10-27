@@ -82,7 +82,8 @@ pub fn terminate_after(segments: &[OpenSegment<'_>], query: &BooleanQuery, n: u6
             reader: seg.reader,
             similarity: None,
         };
-        let Some(mut scorer) = exec::build::build_boolean(&ctx, query, 1.0, Mode::NoScores, true)?
+        let Some(mut scorer) =
+            exec::build::build_boolean_root(&ctx, query, 1.0, Mode::NoScores, true)?
         else {
             // No scorer, but `getLeafCollector` is still asked: once `n` are in,
             // this segment ends the search -- which the return below already
@@ -319,7 +320,8 @@ pub fn count_terminates(
                 reader: seg.reader,
                 similarity: None,
             };
-            let Some(mut scorer) = exec::build::build_boolean(&ctx, query, 1.0, mode, true)? else {
+            let Some(mut scorer) = exec::build::build_boolean_root(&ctx, query, 1.0, mode, true)?
+            else {
                 continue;
             };
             let mut doc = exec::exact_next(scorer.as_mut())?;
