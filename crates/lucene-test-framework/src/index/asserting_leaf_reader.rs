@@ -17,7 +17,7 @@
 //! - `hasDeletions()` is `liveDocs != null` rather than Java's
 //!   `numDeletedDocs() > 0`, so a leaf exposing a live-docs bitset with no
 //!   deletions fails the constructor's check -- a deliberate strengthening.
-//! - `prepareSeekExact`, `termState`, `intoBitSet`, `docIDRunEnd`,
+//! - `prepareSeekExact`, `intoBitSet`, `docIDRunEnd`,
 //!   `nextPostings` and `longValues` have no Rust counterpart, nor has the
 //!   `TWO_PHASE_SEEKING` state they need. `BytesRef.isValid` is a slice here.
 //! - Impacts are owned snapshots, so Java's stale `AssertingImpacts` view
@@ -45,7 +45,7 @@ use lucene_search::reader::{
     PointValues, PostingsEnum, PostingsFlags, SortedDocValues, SortedNumericDocValues,
     SortedSetDocValues, TermVectorsDocument, Terms, TermsEnum, NO_MORE_DOCS,
 };
-use lucene_search::reader::{DocValuesSkipper, SkipperImpl};
+use lucene_search::reader::{DocValuesSkipper, SkipperImpl, TermState};
 use lucene_search::Result;
 use lucene_util::fixed_bit_set::FixedBitSet;
 
@@ -527,6 +527,15 @@ impl TermsEnum for AssertingTermsEnum<'_> {
     }
     fn seek_exact_ord(&mut self, ord: i64) -> Result<()> {
         self.in_.seek_exact_ord(ord)?;
+        self.state = TermsState::Positioned;
+        Ok(())
+    }
+    fn term_state(&mut self) -> Result<TermState> {
+        self.positioned("termState()");
+        self.in_.term_state()
+    }
+    fn seek_exact_state(&mut self, term: &[u8], state: &TermState) -> Result<()> {
+        self.in_.seek_exact_state(term, state)?;
         self.state = TermsState::Positioned;
         Ok(())
     }

@@ -583,6 +583,12 @@ impl TermsEnum for SortingTermsEnum<'_> {
     fn impacts(&mut self, flags: PostingsFlags) -> Result<Box<dyn ImpactsEnum>> {
         Ok(Box::new(SlowImpactsEnum::new(self.postings(flags)?)))
     }
+    fn term_state(&mut self) -> Result<super::TermState> {
+        self.in_.term_state()
+    }
+    fn seek_exact_state(&mut self, term: &[u8], state: &super::TermState) -> Result<()> {
+        self.in_.seek_exact_state(term, state)
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -358,6 +358,12 @@ impl TermsEnum for ExitableTermsEnum<'_> {
     fn seek_exact_ord(&mut self, ord: i64) -> Result<()> {
         self.in_.seek_exact_ord(ord)
     }
+    fn term_state(&mut self) -> Result<super::TermState> {
+        self.in_.term_state()
+    }
+    fn seek_exact_state(&mut self, term: &[u8], state: &super::TermState) -> Result<()> {
+        self.in_.seek_exact_state(term, state)
+    }
 }
 
 // ---------------------------------------------------------------------------

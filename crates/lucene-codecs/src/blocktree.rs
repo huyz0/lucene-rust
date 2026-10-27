@@ -2830,6 +2830,38 @@ impl FieldTerms {
         }
     }
 
+    /// The docs and freqs of a term restored from its [`SeekedTerm`]
+    /// (`seekExact(term, state)`, then `postings`): no dictionary seek.
+    pub fn postings_for(
+        &self,
+        term: &SeekedTerm,
+        doc_in: Option<&DocInput<'_>>,
+    ) -> Result<Postings> {
+        self.postings_from(term.stats, term.meta, doc_in)
+    }
+
+    /// [`Self::postings_for`] plus the term's positions, as
+    /// [`TermsEnum::try_current_postings_and_positions`] reads them.
+    pub fn postings_and_positions_for(
+        &self,
+        term: &SeekedTerm,
+        doc_in: Option<&DocInput<'_>>,
+        pos_in: &postings::PosInput<'_>,
+        pay_in: Option<&postings::PayInput<'_>>,
+    ) -> Result<(Postings, Vec<Vec<postings::Position>>)> {
+        let docs = self.postings_from(term.stats, term.meta, doc_in)?;
+        let positions = postings::read_positions(
+            pos_in,
+            pay_in,
+            term.meta,
+            &docs.freqs,
+            term.stats.total_term_freq,
+            self.index_options,
+            self.has_payloads,
+        )?;
+        Ok((docs, positions))
+    }
+
     /// `TermsEnum.postings(null, flags)` on a term already found by
     /// [`Self::seek_term_state`] on this same field: no second seek.
     pub fn lazy_postings_for<'d>(

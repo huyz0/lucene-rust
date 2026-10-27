@@ -90,7 +90,7 @@ tests/index/BaseLiveDocsFormatTestCase	ported	crates/lucene-test-framework/src/i
 tests/index/BaseMergePolicyTestCase	ported	crates/lucene-test-framework/src/index/base_merge_policy.rs::BaseMergePolicyTestCase
 tests/index/BaseNormsFormatTestCase	ported	crates/lucene-test-framework/src/index/base_norms_format.rs::NormsSuite
 tests/index/BasePointsFormatTestCase	ported	crates/lucene-test-framework/src/index/base_points_format.rs::PointsSuite
-tests/index/BasePostingsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_postings_format.rs::TESTS -- M14: testInvertedWrite (no codec plug-in point); enum reuse
+tests/index/BasePostingsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_postings_format.rs::TESTS -- M14: testInvertedWrite (no codec plug-in point); enum reuse differs (no reuse)
 tests/index/BaseSegmentInfoFormatTestCase	ported	crates/lucene-test-framework/src/index/base_segment_info_format.rs::SegmentInfoSuite
 tests/index/BaseStoredFieldsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_stored_fields_format.rs::TESTS -- M14: the merging reader wrappers (the merge reads files, not readers); SimpleText switch
 tests/index/BaseTermVectorsFormatTestCase	ported	crates/lucene-test-framework/src/index/base_term_vectors_format.rs::TESTS
@@ -112,7 +112,7 @@ tests/index/PerThreadPKLookup	ported	crates/lucene-test-framework/src/index/per_
 tests/index/PointsStackTracker	ported	crates/lucene-test-framework/src/index/points_stack_tracker.rs::PointsStackTracker
 tests/index/RandomCodec	partial	crates/lucene-test-framework/src/index/random_codec.rs::RandomCodec -- M14: constructor and identity-preserving UTF-16 routing descriptors; native mixed-format dispatch, identity-based suffix grouping, randomized BKD writers and inherited AssertingCodec/SPI/IndexWriter routing absent
 tests/index/RandomIndexWriter	ported	crates/lucene-test-framework/src/index/random_index_writer.rs::RandomIndexWriter
-tests/index/RandomPostingsTester	partial	crates/lucene-test-framework/src/index/random_postings_tester.rs::RandomPostingsTester -- M14: TermState, enum reuse (intoBitSet: fill_bit_set; nextPostings: PostingsEnum::next_postings); builds through IndexWriter, not a FieldsConsumer
+tests/index/RandomPostingsTester	partial	crates/lucene-test-framework/src/index/random_postings_tester.rs::RandomPostingsTester -- M14: enum reuse differs (no reuse); TermState done (intoBitSet: fill_bit_set; nextPostings: PostingsEnum::next_postings); builds through IndexWriter, not a FieldsConsumer
 tests/index/SuppressingConcurrentMergeScheduler	ported	crates/lucene-test-framework/src/index/suppressing_concurrent_merge_scheduler.rs::SuppressingConcurrentMergeScheduler
 tests/index/ThreadedIndexingAndSearchingTestCase	partial	crates/lucene-test-framework/src/index/threaded_indexing_and_searching.rs::run_test -- M14: TestNRTThreads' openIfChanged loop over one searcher and its open-but-deleted-files check; TestSearcherManager's reopen thread and SearcherLifetimeManager; advanceSegmentInfosCounter, FailOnNonBulkMergesInfoStream, ensureSaneIWCOnNightly, reduceOpenFiles
 tests/mockfile/DisableFsyncFS	ported	crates/lucene-test-framework/src/mockfile/mock_fs.rs::fsync_disabled

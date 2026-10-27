@@ -162,6 +162,19 @@ impl TermsEnum for DocValuesTermsEnum<'_> {
         self.term = Some(self.values.lookup_ord(ord)?);
         Ok(())
     }
+
+    /// An `OrdTermState` of the current ordinal.
+    fn term_state(&mut self) -> Result<super::TermState> {
+        Ok(super::TermState::ord(self.current_ord))
+    }
+
+    /// `seekExact(state.ord)`: the term is not looked at.
+    fn seek_exact_state(&mut self, _term: &[u8], state: &super::TermState) -> Result<()> {
+        let ord = state
+            .as_ord()
+            .ok_or_else(|| Error::IllegalArgument("not an OrdTermState".into()))?;
+        self.seek_exact_ord(ord)
+    }
 }
 
 fn unsupported(what: &str) -> Error {

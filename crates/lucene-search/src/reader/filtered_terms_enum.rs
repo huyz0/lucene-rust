@@ -137,6 +137,14 @@ impl<F: TermFilter> TermsEnum for FilteredTermsEnum<'_, F> {
         Err(Self::unsupported())
     }
 
+    fn term_state(&mut self) -> Result<super::TermState> {
+        self.tenum.term_state()
+    }
+
+    fn seek_exact_state(&mut self, _term: &[u8], _state: &super::TermState) -> Result<()> {
+        Err(Self::unsupported())
+    }
+
     fn doc_freq(&mut self) -> Result<i32> {
         self.tenum.doc_freq()
     }
@@ -241,5 +249,11 @@ impl TermsEnum for AutomatonTermsEnum<'_> {
     }
     fn ord(&self) -> Result<i64> {
         self.0.ord()
+    }
+    fn term_state(&mut self) -> Result<super::TermState> {
+        self.0.term_state()
+    }
+    fn seek_exact_state(&mut self, term: &[u8], state: &super::TermState) -> Result<()> {
+        self.0.seek_exact_state(term, state)
     }
 }
