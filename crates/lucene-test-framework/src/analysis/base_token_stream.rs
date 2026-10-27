@@ -15,9 +15,9 @@
 //!   `check_analysis_consistency` always takes Java's "offset + pos +
 //!   posLength + type" branch (the one a default-factory chain takes).
 //! - `checkResetException`'s second half (a missing `close()` makes the
-//!   next `tokenStream` throw) has no counterpart: the port's
+//!   next `tokenStream` throw) checks the port's contract instead: an
 //!   [`lucene_analysis::AnalyzerTokenStream`] closes itself when dropped, so
-//!   a stream cannot be left unclosed.
+//!   the next `tokenStream` after an unclosed one must work.
 //! - `checkRandomData`'s indexing pass (Java's, when `rarely(random)`)
 //!   hands the `RandomIndexWriter` each text pre-analyzed by the analyzer
 //!   under test, through the same readers Java's `setReaderValue` gives it:
@@ -27,8 +27,9 @@
 //!   directory is a plain `FsDirectory` under a temporary directory, checked
 //!   with `CheckIndex` after the writer closes, as Java's mock directory is
 //!   on close.
-//! - `newAttributeFactory` is not ported: the port's attributes are a fixed
-//!   struct with no factory to vary.
+//! - [`new_attribute_factory`] draws Java's `nextInt(3)` and names the
+//!   factory Java would pick, but all three build the port's one fixed
+//!   [`AttributeSource`] struct, so the choice changes no attribute.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -497,7 +498,44 @@ pub fn check_reset_exception(a: &Analyzer, input: &str) -> Result<(), AnalysisEr
     ts.reset()?;
     while ts.increment_token()? {}
     ts.end()?;
+    ts.close()?;
+    drop(ts);
+
+    // check for a missing close(): Java's next tokenStream throws; a
+    // dropped stream closes itself here, so the next one must work.
+    let mut ts = a.token_stream("bogus", input)?;
+    ts.reset()?;
+    while ts.increment_token()? {}
+    ts.end()?;
+    drop(ts);
+    let mut ts = a.token_stream("bogus", input)?;
+    ts.reset()?;
+    while ts.increment_token()? {}
+    ts.end()?;
     ts.close()
+}
+
+/// The `AttributeFactory` [`new_attribute_factory`] picks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttributeFactoryKind {
+    /// `TokenStream.DEFAULT_TOKEN_ATTRIBUTE_FACTORY`.
+    TokenStreamDefault,
+    /// `Token.TOKEN_ATTRIBUTE_FACTORY`.
+    Token,
+    /// `AttributeFactory.DEFAULT_ATTRIBUTE_FACTORY`.
+    Default,
+}
+
+/// `newAttributeFactory(random)`: one `nextInt(3)` choosing among Java's
+/// three factories. Each builds the same [`AttributeSource`] here (the
+/// port's attributes are one fixed struct), so a caller uses the draw to
+/// stay in step with a Java seed, not to vary attributes.
+pub fn new_attribute_factory(random: &mut JavaRandom) -> AttributeFactoryKind {
+    match random.next_int_bounded(3) {
+        0 => AttributeFactoryKind::TokenStreamDefault,
+        1 => AttributeFactoryKind::Token,
+        _ => AttributeFactoryKind::Default,
+    }
 }
 
 /// `assertStreamHasNumberOfTokens`.
@@ -1533,6 +1571,24 @@ mod tests {
             ..scripted(vec![t("a", 0, 1, 1, 1)], 1)
         });
         check_reset_exception(&a, "a").unwrap();
+    }
+
+    #[test]
+    fn attribute_factory_draws_like_java() {
+        let mut r = JavaRandom::new(42);
+        let mut twin = JavaRandom::new(42);
+        let mut seen = HashSet::new();
+        for _ in 0..30 {
+            let kind = new_attribute_factory(&mut r);
+            let expected = match twin.next_int_bounded(3) {
+                0 => AttributeFactoryKind::TokenStreamDefault,
+                1 => AttributeFactoryKind::Token,
+                _ => AttributeFactoryKind::Default,
+            };
+            assert_eq!(kind, expected);
+            seen.insert(format!("{kind:?}"));
+        }
+        assert_eq!(seen.len(), 3);
     }
 
     #[test]

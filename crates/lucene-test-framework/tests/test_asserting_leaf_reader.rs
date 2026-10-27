@@ -1600,3 +1600,181 @@ fn faulty_doc_value_iterators_fire() {
     assert_eq!(b.next_doc().unwrap(), 0);
     assert_eq!(b.binary_value(), b"v");
 }
+
+// ---------------------------------------------------------------------------
+// Doc values skipper
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_skipper_is_checked() {
+    use lucene_test_framework::index::asserting_leaf_reader::AssertingDocValuesSkipper;
+
+    let dir = ByteBuffersDirectory::new();
+    let mut w = IndexWriter::open(
+        &dir,
+        Vec::new(),
+        "Lucene104",
+        LuceneVersion {
+            major: 10,
+            minor: 5,
+            bugfix: 0,
+        },
+    )
+    .unwrap();
+    for k in 0..10_000i64 {
+        let mut d = Document::new();
+        d.add(NumericDocValuesField::indexed_field("k", k));
+        d.add(NumericDocValuesField::new("plain", k));
+        w.add_fields_document(&d).unwrap();
+    }
+    w.commit().unwrap();
+    w.close().unwrap();
+    let reader = DirectoryReader::open(&dir).unwrap();
+    let inner: Arc<dyn LeafReader> = Arc::new(reader.segment_readers()[0].clone());
+    let r = AssertingLeafReader::new(inner);
+    assert!(r.doc_values_skipper("plain").unwrap().is_none());
+    assert!(r.doc_values_skipper("missing").unwrap().is_none());
+
+    let mut s = r.doc_values_skipper("k").unwrap().unwrap();
+    assert_eq!((s.min_doc_id(0), s.max_doc_id(0)), (-1, -1));
+    assert_eq!((s.global_min_value(), s.global_max_value()), (0, 9_999));
+    assert_eq!((s.global_doc_count(), s.max_value_count()), (10_000, 1));
+    fires("Unpositioned iterator", || {
+        s.min_value(0);
+    });
+    s.advance(0);
+    let levels = s.num_levels();
+    assert!(levels >= 1);
+    assert_eq!(s.min_doc_id(0), 0);
+    assert!(s.min_value(levels - 1) <= s.max_value(levels - 1));
+    assert!(s.doc_count(0) > 0);
+    let mut copy = s.clone();
+    fires("not beyond the current interval", || copy.advance(0));
+    fires("out of bounds", || {
+        s.max_doc_id(levels);
+    });
+    s.advance_range(9_000, 9_001);
+    assert!(s.min_doc_id(0) <= 9_000 && 9_000 <= s.max_doc_id(0));
+    s.advance(NO_MORE_DOCS);
+    assert_eq!(s.min_doc_id(0), NO_MORE_DOCS);
+    fires("Unpositioned iterator", || {
+        s.doc_count(0);
+    });
+    fires("Unpositioned iterator", || {
+        s.max_value(0);
+    });
+
+    // A positioned skipper cannot be wrapped.
+    let mut positioned = reader.segment_readers()[0]
+        .doc_values_skipper("k")
+        .unwrap()
+        .unwrap();
+    positioned.advance(0);
+    fires("left == right", || {
+        AssertingDocValuesSkipper::new(positioned);
+    });
+}
+
+/// A skipper whose levels are not nested, or whose intervals are inverted.
+#[derive(Debug, Clone)]
+struct BadSkipper {
+    levels: Vec<(i32, i32)>,
+}
+
+impl lucene_search::reader::SkipperImpl for BadSkipper {
+    fn advance(&mut self, _target: i32) {
+        self.levels = vec![(5, 9), (6, 20)];
+    }
+    fn num_levels(&self) -> usize {
+        self.levels.len()
+    }
+    fn min_doc_id(&self, level: usize) -> i32 {
+        self.levels[level].0
+    }
+    fn max_doc_id(&self, level: usize) -> i32 {
+        self.levels[level].1
+    }
+    fn min_value(&self, _level: usize) -> i64 {
+        0
+    }
+    fn max_value(&self, _level: usize) -> i64 {
+        0
+    }
+    fn doc_count(&self, _level: usize) -> i32 {
+        0
+    }
+    fn global_min_value(&self) -> i64 {
+        0
+    }
+    fn global_max_value(&self) -> i64 {
+        0
+    }
+    fn global_doc_count(&self) -> i32 {
+        0
+    }
+    fn max_value_count(&self) -> i32 {
+        0
+    }
+    fn clone_box<'s>(&self) -> Box<dyn lucene_search::reader::SkipperImpl + 's>
+    where
+        Self: 's,
+    {
+        Box::new(self.clone())
+    }
+}
+
+#[test]
+fn a_faulty_skipper_fires() {
+    use lucene_search::reader::DocValuesSkipper;
+    use lucene_search::reader::SkipperImpl;
+    use lucene_test_framework::index::asserting_leaf_reader::AssertingDocValuesSkipper;
+
+    let bad = |levels| {
+        AssertingDocValuesSkipper::new(DocValuesSkipper::from_impl(Box::new(BadSkipper { levels })))
+    };
+    // level 1 starts after level 0
+    let mut s = bad(vec![(-1, -1)]);
+    s.advance(0);
+    fires("assertion failed", || {
+        s.min_doc_id(1);
+    });
+    // level 1 ends before level 0 once inverted
+    let s = bad(vec![(-1, -1), (-1, -1)]);
+    let mut inverted = s.clone();
+    inverted.advance(0);
+    assert_eq!(inverted.max_doc_id(1), 20);
+    let s = DocValuesSkipper::from_impl(Box::new(BadSkipper {
+        levels: vec![(-1, -1), (-1, -2)],
+    }));
+    let checked = AssertingDocValuesSkipper::new(s);
+    fires("assertion failed", || {
+        checked.max_doc_id(1);
+    });
+    let checked =
+        AssertingDocValuesSkipper::new(DocValuesSkipper::from_impl(Box::new(BadSkipper {
+            levels: vec![(-1, -1), (-3, -2)],
+        })));
+    fires("assertion failed", || {
+        checked.max_doc_id(1);
+    });
+    let checked =
+        AssertingDocValuesSkipper::new(DocValuesSkipper::from_impl(Box::new(BadSkipper {
+            levels: vec![(-1, -1), (0, 3)],
+        })));
+    fires("assertion failed", || {
+        checked.min_doc_id(1);
+    });
+    let checked =
+        AssertingDocValuesSkipper::new(DocValuesSkipper::from_impl(Box::new(BadSkipper {
+            levels: vec![(-1, -1), (2, 1)],
+        })));
+    fires("assertion failed", || {
+        checked.min_doc_id(1);
+    });
+    // the inner skipper ends an advance inverted
+    let mut inner = DocValuesSkipper::from_impl(Box::new(BadSkipper {
+        levels: vec![(-1, -1)],
+    }));
+    inner.advance(0);
+    assert_eq!(inner.num_levels(), 2);
+}
