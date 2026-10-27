@@ -10,7 +10,10 @@ import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.Term;
+import org.apache.lucene.search.BooleanClause.Occur;
+import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.ConstantScoreQuery;
+import org.apache.lucene.search.DisjunctionMaxQuery;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.Query;
@@ -23,6 +26,7 @@ import org.apache.lucene.search.LeafCollector;
 import org.apache.lucene.search.Scorable;
 import org.apache.lucene.tests.search.BulkScorerWrapperScorer;
 import org.apache.lucene.util.Bits;
+import java.util.List;
 
 /** Calls the real wrapper over a deterministic, range-respecting BulkScorer. */
 public class GenBulkScorerWrapper {
@@ -130,6 +134,63 @@ public class GenBulkScorerWrapper {
       }
     }
   }
+  static Query t(String term) { return new TermQuery(new Term("body", term)); }
+  /** A boolean of `(occur, query)` pairs and a minimum should-match. */
+  static Query bool(int msm, Object... clauses) {
+    var b = new BooleanQuery.Builder().setMinimumNumberShouldMatch(msm);
+    for (int i = 0; i < clauses.length; i += 2) b.add((Query) clauses[i + 1], (Occur) clauses[i]);
+    return b.build();
+  }
+  /** The real bulk scorer's cost under each score mode, for query shapes whose
+   *  bulk scorers differ: the cost wrapping it reports. */
+  static void costs() throws Exception {
+    try (var dir = new ByteBuffersDirectory()) {
+      try (var writer = new IndexWriter(dir, new IndexWriterConfig())) {
+        for (int id = 0; id < 3000; ++id) {
+          var doc = new Document();
+          String[] terms = {"a", "b", "c", "d"};
+          int[] mods = {2, 3, 5, 7};
+          for (int k = 0; k < 4; ++k) {
+            if (id % mods[k] == 0) doc.add(new StringField("body", terms[k], Field.Store.NO));
+          }
+          doc.add(new StringField("body", "z", Field.Store.NO));
+          writer.addDocument(doc);
+        }
+        writer.forceMerge(1);
+      }
+      Occur M = Occur.MUST, S = Occur.SHOULD, F = Occur.FILTER, N = Occur.MUST_NOT;
+      Object[][] queries = {
+        {"a", bool(0, M, t("a"))},
+        {"+a +b", bool(0, M, t("a"), M, t("b"))},
+        {"+a #b", bool(0, M, t("a"), F, t("b"))},
+        {"a b", bool(0, S, t("a"), S, t("b"))},
+        {"a b c d msm2", bool(2, S, t("a"), S, t("b"), S, t("c"), S, t("d"))},
+        {"+a ?b", bool(0, M, t("a"), S, t("b"))},
+        {"+a ?b ?c", bool(0, M, t("a"), S, t("b"), S, t("c"))},
+        {"#a ?b ?c", bool(0, F, t("a"), S, t("b"), S, t("c"))},
+        {"+a -b", bool(0, M, t("a"), N, t("b"))},
+        {"a b -c", bool(0, S, t("a"), S, t("b"), N, t("c"))},
+        {"+a +b ?c -d", bool(0, M, t("a"), M, t("b"), S, t("c"), N, t("d"))},
+        {"+(a b) +c", bool(0, M, bool(0, S, t("a"), S, t("b")), M, t("c"))},
+        {"(+a +b) (+c +d)", bool(0, S, bool(0, M, t("a"), M, t("b")), S, bool(0, M, t("c"), M, t("d")))},
+        {"dismax(a b)", bool(0, M, new DisjunctionMaxQuery(List.of(t("a"), t("b")), 0f))},
+        {"+const(a) ?b", bool(0, M, new ConstantScoreQuery(t("a")), S, t("b"))},
+        {"+z #d", bool(0, M, t("z"), F, t("d"))},
+      };
+      try (var reader = DirectoryReader.open(dir)) {
+        var searcher = new IndexSearcher(reader);
+        searcher.setQueryCache(null);
+        ScoreMode[] modes = {ScoreMode.COMPLETE, ScoreMode.COMPLETE_NO_SCORES, ScoreMode.TOP_SCORES};
+        for (Object[] q : queries) {
+          for (ScoreMode mode : modes) {
+            var weight = searcher.createWeight(searcher.rewrite((Query) q[1]), mode, 1);
+            var bulk = weight.bulkScorer(reader.leaves().get(0));
+            row("cost", q[0], mode, bulk == null ? "-" : bulk.cost());
+          }
+        }
+      }
+    }
+  }
   public static void main(String[] args) throws Exception {
     int[] docs = {0, 1, 3, 4, 9, 21, 22, 70, 71, 95};
     int[] bits = {0, 0x80000000, 1, 0x3f800000, 0xbf800000, 0x7f800000,
@@ -152,6 +213,7 @@ public class GenBulkScorerWrapper {
     row("shared", a.nextDoc(), b.docID(), b.nextDoc(), a.docID(), wrapper.docID(),
         Integer.toUnsignedString(Float.floatToRawIntBits(wrapper.score())));
     indexed();
+    costs();
     Path out = Path.of(args[0]);
     Files.createDirectories(out);
     Files.writeString(out.resolve("bulk_scorer_wrapper.tsv"), OUT);

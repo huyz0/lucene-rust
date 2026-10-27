@@ -394,6 +394,7 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
             None,
             self.similarity.filter(|s| !s.is_default_bm25()),
             self.statistics,
+            self.scorer_only_enabled(),
         )
     }
 
@@ -427,6 +428,7 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
             None,
             self.similarity.filter(|s| !s.is_default_bm25()),
             self.statistics,
+            self.scorer_only_enabled(),
         )
     }
 

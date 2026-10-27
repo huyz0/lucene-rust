@@ -5,14 +5,16 @@
 //! configured `IndexSearcher`, whose feature-gated dispatch is explicit state
 //! carried to executor slices. Query rewriting, reader-wide statistics,
 //! similarities, live documents, doc bases and timeouts use the normal searcher.
-//! The supported entry points are top hits, search-after, count, collector and
-//! collector-manager searches. Field sorting/facets and leaf subranges are not
-//! exposed: those APIs have separate dispatch in the current Rust searcher.
+//! The supported entry points are top hits, search-after, count, collector,
+//! collector-manager and field-sorted searches, and the facet searches through
+//! [`ScorerIndexSearcher::searcher`]. A slice never partitions a segment, so
+//! there are no leaf subranges to search.
 
 use std::sync::Arc;
 
 use lucene_search::collector::{ScoreDoc, ScoringCollector};
 use lucene_search::collectors::CollectorManager;
+use lucene_search::directory_reader::SegmentReader;
 use lucene_search::explain::Explanation;
 use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
 use lucene_search::multi_segment::OpenSegment;
@@ -21,6 +23,7 @@ use lucene_search::reader::exitable::QueryTimeout;
 use lucene_search::similarities::Similarity;
 use lucene_search::test_support::scorer_only;
 use lucene_search::top_docs::TopDocs;
+use lucene_search::top_field::{FieldDoc, SortField, TopFieldDocs};
 use lucene_search::Result;
 
 /// A searcher that always drives a `Scorer` through `DefaultBulkScorer`.
@@ -90,6 +93,28 @@ impl<'s, 'a> ScorerIndexSearcher<'s, 'a> {
     /// Whatever query preparation or scorer execution reports.
     pub fn search(&self, query: &BooleanQuery, n: usize) -> Result<TopDocs> {
         self.inner.search(query, n)
+    }
+
+    /// Java: `IndexSearcher.search(Query, int, Sort)` and its search-after
+    /// form; `readers` as [`IndexSearcher::search_sorted`] takes them.
+    ///
+    /// # Errors
+    /// Whatever query preparation, the sort or scorer execution reports.
+    pub fn search_sorted(
+        &self,
+        readers: &[SegmentReader],
+        query: &BooleanQuery,
+        n: usize,
+        sort: &[SortField],
+        after: Option<&FieldDoc>,
+    ) -> Result<TopFieldDocs> {
+        self.inner.search_sorted(readers, query, n, sort, after)
+    }
+
+    /// The configured searcher, for the APIs that take one (the facet
+    /// searches); its leaves keep the scorer-only dispatch.
+    pub fn searcher(&self) -> &IndexSearcher<'s, 'a> {
+        &self.inner
     }
 
     /// Java: `IndexSearcher.searchAfter`.

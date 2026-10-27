@@ -1,10 +1,12 @@
 //! Actual Java ScorerIndexSearcher and DisablingBulkScorerQuery over identical
 //! three-leaf corpora, including deletions, two-phase phrases and similarities.
 mod scorer_index_searcher_cases;
+use lucene_search::collector::TotalHitsRelation;
 use lucene_search::collector::{ScoreDoc, ScoreMode, ScoringCollector};
 use lucene_search::index_searcher::IndexSearcher;
 use lucene_search::similarities::BooleanSimilarity;
 use lucene_search::test_support::{self, scorer_only};
+use lucene_search::top_field::SortField;
 use lucene_test_framework::search::disabling_bulk_scorer_query;
 use lucene_test_framework::search::scorer_index_searcher::ScorerIndexSearcher;
 use scorer_index_searcher_cases::*;
@@ -45,6 +47,8 @@ const DATA: &str = include_str!("../../../fixtures/testframework/data/scorer_ind
 #[test]
 fn indexed_searches_match_actual_java_wrappers() {
     let index = index(1);
+    let reader = index.open_reader();
+    let readers = reader.segment_readers();
     index.with_searcher(|base| {
         assert_eq!(base.segments().len(), 3);
         assert_eq!(base.max_doc(), 12);
@@ -131,6 +135,28 @@ fn indexed_searches_match_actual_java_wrappers() {
                         plain.search_manager(&query, &Manager).unwrap()
                     };
                     rows.push(format!("manager\t{mode}\t{sim}\t{q}\t{}", hits_text(&hits)));
+                    for (name, sort) in [
+                        ("score", vec![SortField::score()]),
+                        ("score_doc", vec![SortField::score(), SortField::doc()]),
+                        ("doc", vec![SortField::doc()]),
+                    ] {
+                        let sorted = if mode == "scorer_searcher" {
+                            forced.search_sorted(readers, &query, 3, &sort, None)
+                        } else {
+                            plain.search_sorted(readers, &query, 3, &sort, None)
+                        }
+                        .unwrap();
+                        let relation = match sorted.total.relation {
+                            TotalHitsRelation::EqualTo => "EQUAL_TO",
+                            TotalHitsRelation::GreaterThanOrEqualTo => "GREATER_THAN_OR_EQUAL_TO",
+                        };
+                        let docs: Vec<_> = sorted.hits.iter().map(|h| h.doc.to_string()).collect();
+                        rows.push(format!(
+                            "sorted\t{mode}\t{sim}\t{q}\t{name}\t{}:{relation}:{}",
+                            sorted.total.value,
+                            docs.join(",")
+                        ));
+                    }
                     if mode == "scorer_searcher" {
                         let mut hits = Hits::new(ScoreMode::Complete);
                         forced

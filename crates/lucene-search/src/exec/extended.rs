@@ -1463,6 +1463,15 @@ pub(crate) struct CombinedWindow<'a> {
 }
 
 impl<'a> CombinedWindow<'a> {
+    /// `CombinedFieldScorer.iterator().cost()`: the disjunction of its
+    /// members.
+    #[cfg_attr(not(any(test, feature = "asserting")), allow(dead_code))]
+    pub(crate) fn cost(&self) -> i64 {
+        self.members
+            .iter()
+            .fold(0i64, |c, (m, _)| c.saturating_add(m.cost))
+    }
+
     fn new(parts: CombinedParts<'a>) -> Self {
         Self {
             members: parts.members.into_iter().zip(parts.weights).collect(),
