@@ -95,9 +95,9 @@ codecs/TermStats	ported	crates/lucene-codecs/src/blocktree.rs::TermStats
 codecs/TermVectorsFormat	ported	crates/lucene-codecs/src/term_vectors.rs::TermVectorsReader
 codecs/TermVectorsReader	ported	crates/lucene-codecs/src/term_vectors.rs::TermVectorsReader
 codecs/TermVectorsWriter	ported	crates/lucene-codecs/src/term_vectors.rs::TermVectorsWriter
-codecs/compressing/CompressionMode	ported	crates/lucene-codecs/src/lz4.rs::compress_with_dictionary
-codecs/compressing/Compressor	ported	crates/lucene-codecs/src/lz4.rs::compress_with_dictionary
-codecs/compressing/Decompressor	ported	crates/lucene-codecs/src/lz4.rs::decompress
+codecs/compressing/CompressionMode	ported	crates/lucene-codecs/src/compression.rs::Compression
+codecs/compressing/Compressor	ported	crates/lucene-codecs/src/compression.rs::Compressor
+codecs/compressing/Decompressor	ported	crates/lucene-codecs/src/compression.rs::decompress
 codecs/compressing/MatchingReaders	ported	crates/lucene-index/src/merge.rs::matching_readers
 codecs/hnsw/DefaultFlatVectorScorer	ported	crates/lucene-codecs/src/vectors.rs::FloatVectorScorer
 codecs/hnsw/FlatFieldVectorsWriter	ported	crates/lucene-codecs/src/vectors.rs::FlatVectorsWriter

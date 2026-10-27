@@ -7,7 +7,7 @@
 //! this bounded sink reports encoder failures at finish and sticky output errors
 //! at close. Native readers and BKD merge dispatch remain unchanged.
 
-use std::{fmt, io};
+use std::{fmt, io, sync::Arc};
 
 use lucene_store::{DataOutput, Directory, FsIndexOutput};
 
@@ -68,10 +68,26 @@ fn lifecycle_error(message: &str) -> points::Error {
     lucene_store::Error::Io(io::Error::new(io::ErrorKind::InvalidInput, message)).into()
 }
 
+/// A `Lucene90PointsWriter` subclass overriding `writeField` to add each
+/// point to a fresh `BKDWriter` and finish it (`RandomCodec`): its leaf
+/// size, heap budget and `split` override. Its flush and merge both go
+/// through [`points::write_added`], as Java's inherited `merge` reaches the
+/// override through `mergeOneField` whenever a source is not a plain
+/// `Lucene90PointsReader`.
+pub trait AddFinishPolicy: Send + Sync + fmt::Debug {
+    fn max_points_in_leaf_node(&self) -> i32;
+    fn max_mb_sort_in_heap(&self) -> f64;
+    /// The `BKDWriter.split` override for the field named `field_name`.
+    fn split(&self, field_name: &str) -> Option<crate::bkd_writer::SplitOverride<'static>>;
+}
+
 /// Buffered production encoder retaining native field order and BKD settings.
 pub struct NativePointsWriter<'a> {
     state: PointsWriteState<'a>,
     fields: Vec<PackedPointsField>,
+    /// Each buffered field's name, for [`AddFinishPolicy::split`].
+    names: Vec<String>,
+    add_finish: Option<Arc<dyn AddFinishPolicy>>,
     meta: Option<FsIndexOutput>,
     index: Option<FsIndexOutput>,
     data: Option<FsIndexOutput>,
@@ -87,6 +103,8 @@ impl<'a> NativePointsWriter<'a> {
         let mut writer = Self {
             state,
             fields: Vec::new(),
+            names: Vec::new(),
+            add_finish: None,
             meta: None,
             index: None,
             data: None,
@@ -109,6 +127,38 @@ impl<'a> NativePointsWriter<'a> {
             return Err(error.into());
         }
         Ok(writer)
+    }
+
+    /// [`Self::new`] for an [`AddFinishPolicy`] subclass.
+    pub fn with_add_finish(
+        state: PointsWriteState<'a>,
+        policy: Arc<dyn AddFinishPolicy>,
+    ) -> points::Result<Self> {
+        let mut writer = Self::new(state)?;
+        writer.add_finish = Some(policy);
+        Ok(writer)
+    }
+
+    /// The policy's `.kdm`/`.kdi`/`.kdd` for `fields`.
+    fn write_added(
+        &self,
+        policy: &dyn AddFinishPolicy,
+        fields: Vec<MergePointsField>,
+    ) -> points::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+        let split = |name: &str| policy.split(name);
+        points::write_added(
+            fields,
+            &points::AddFinishPoints {
+                max_points_in_leaf_node: policy.max_points_in_leaf_node(),
+                max_mb_sort_in_heap: policy.max_mb_sort_in_heap(),
+                split: &split,
+            },
+            self.state.max_doc,
+            self.state.directory,
+            self.state.segment,
+            self.state.id,
+            self.state.suffix,
+        )
     }
 
     fn writable(&self) -> points::Result<()> {
@@ -149,6 +199,7 @@ impl PointsWriteSink for NativePointsWriter<'_> {
             ));
         }
         self.fields.push(values);
+        self.names.push(field.name.clone());
         Ok(())
     }
 
@@ -158,6 +209,11 @@ impl PointsWriteSink for NativePointsWriter<'_> {
             return Err(lifecycle_error("cannot merge after writing flush fields"));
         }
         self.finished = true;
+        if let Some(policy) = self.add_finish.clone() {
+            let bytes = self.write_added(policy.as_ref(), fields)?;
+            self.publish(bytes);
+            return Ok(());
+        }
         let bytes = points::write_merged_with_mode(
             fields,
             points::DEFAULT_MAX_POINTS_IN_LEAF_NODE,
@@ -175,6 +231,27 @@ impl PointsWriteSink for NativePointsWriter<'_> {
     fn finish(&mut self) -> points::Result<()> {
         self.writable()?;
         self.finished = true;
+        if let Some(policy) = self.add_finish.clone() {
+            let fields = std::mem::take(&mut self.fields)
+                .into_iter()
+                .zip(std::mem::take(&mut self.names))
+                .map(|(field, field_name)| MergePointsField {
+                    field_number: field.field_number,
+                    field_name,
+                    num_dims: field.num_dims,
+                    num_index_dims: field.num_index_dims,
+                    bytes_per_dim: field.bytes_per_dim,
+                    max_point_count: field.docs.len() as u64,
+                    sources: vec![points::PointsMergeSource {
+                        docs: field.docs,
+                        values: field.values,
+                    }],
+                })
+                .collect();
+            let bytes = self.write_added(policy.as_ref(), fields)?;
+            self.publish(bytes);
+            return Ok(());
+        }
         let bytes = points::write_packed(
             std::mem::take(&mut self.fields),
             points::DEFAULT_MAX_POINTS_IN_LEAF_NODE,
@@ -191,6 +268,7 @@ impl PointsWriteSink for NativePointsWriter<'_> {
     fn close(&mut self) -> points::Result<()> {
         self.closed = true;
         self.fields.clear();
+        self.names.clear();
         let mut first_error = None;
         for output in [&mut self.meta, &mut self.index, &mut self.data] {
             if let Some(output) = output.take() {
@@ -318,6 +396,7 @@ mod tests {
             let fields = vec![
                 MergePointsField {
                     field_number: 3,
+                    field_name: String::new(),
                     num_dims: 1,
                     num_index_dims: 1,
                     bytes_per_dim: 1,
@@ -329,6 +408,7 @@ mod tests {
                 },
                 MergePointsField {
                     field_number: 4,
+                    field_name: String::new(),
                     num_dims: 1,
                     num_index_dims: 1,
                     bytes_per_dim: 1,
@@ -391,6 +471,124 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Splits on dimension 1 (of two) and counts its calls.
+    #[derive(Debug, Default)]
+    struct Policy {
+        calls: Arc<Mutex<Vec<(String, usize)>>>,
+    }
+    impl AddFinishPolicy for Policy {
+        fn max_points_in_leaf_node(&self) -> i32 {
+            4
+        }
+        fn max_mb_sort_in_heap(&self) -> f64 {
+            1.0
+        }
+        fn split(&self, field_name: &str) -> Option<crate::bkd_writer::SplitOverride<'static>> {
+            let calls = self.calls.clone();
+            let name = field_name.to_string();
+            Some(Box::new(move |_, _, parent_splits: &[i32]| {
+                calls
+                    .lock()
+                    .unwrap()
+                    .push((name.clone(), parent_splits.len()));
+                1
+            }))
+        }
+    }
+
+    // ARITH: fixture values for at most 32 documents.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn two_dims(field_name: &str, docs: usize) -> (FieldInfo, PackedPointsField) {
+        let mut info = FieldInfo::new(field_name, 3);
+        info.point_dimension_count = 2;
+        info.point_index_dimension_count = 2;
+        info.point_num_bytes = 1;
+        let values = PackedPointsField {
+            field_number: 3,
+            num_dims: 2,
+            num_index_dims: 2,
+            bytes_per_dim: 1,
+            docs: (0..docs as i32).collect(),
+            values: (0..docs)
+                .flat_map(|d| [(d * 7 % 32) as u8, d as u8])
+                .collect(),
+        };
+        (info, values)
+    }
+
+    // ARITH: fixture slices of 32 two-byte points.
+    #[allow(clippy::arithmetic_side_effects)]
+    #[test]
+    fn an_add_finish_policy_adds_flush_and_merge_points_with_its_split() {
+        let policy = Arc::new(Policy::default());
+        let directory = ByteBuffersDirectory::new();
+        let mut state = state(&directory);
+        state.max_doc = 32;
+        let (info, values) = two_dims("q", 32);
+        let mut writer = NativePointsWriter::with_add_finish(state, policy.clone()).unwrap();
+        writer.write_field(&info, values.clone()).unwrap();
+        writer.finish().unwrap();
+        writer.close().unwrap();
+        // Eight leaves of four: seven inner nodes, each split by the policy.
+        assert_eq!(*policy.calls.lock().unwrap(), vec![("q".to_string(), 2); 7]);
+        let read = |directory: &ByteBuffersDirectory| {
+            let meta = directory.open("_p.kdm").unwrap();
+            let index = directory.open("_p.kdi").unwrap();
+            let data = directory.open("_p.kdd").unwrap();
+            let reader = points::open(&meta, &index, &data, &ID, "").unwrap();
+            let mut points: Vec<_> = reader
+                .decode_all_points(3)
+                .unwrap()
+                .into_iter()
+                .map(|p| (p.doc_id, p.packed_value))
+                .collect();
+            points.sort();
+            (reader.decode_leaves(3).unwrap().len(), points)
+        };
+        let flushed = read(&directory);
+        assert_eq!(flushed.0, 8);
+        let expected: Vec<_> = (0..32)
+            .map(|d| {
+                (
+                    d,
+                    values.values[d as usize * 2..d as usize * 2 + 2].to_vec(),
+                )
+            })
+            .collect();
+        assert_eq!(flushed.1, expected);
+        // Every split on dimension 1 differs from the widest-dimension tree.
+        assert_ne!(
+            &*directory.open("_p.kdi").unwrap(),
+            points::write_packed(vec![values.clone()], 4, 32, &ID, "")
+                .unwrap()
+                .1
+        );
+
+        // A merge goes through the same writer, sources in order.
+        policy.calls.lock().unwrap().clear();
+        let directory = ByteBuffersDirectory::new();
+        let mut state = super::tests::state(&directory);
+        state.max_doc = 32;
+        let half = |range: std::ops::Range<usize>| points::PointsMergeSource {
+            docs: values.docs[range.clone()].to_vec(),
+            values: values.values[range.start * 2..range.end * 2].to_vec(),
+        };
+        let merged = MergePointsField {
+            field_number: 3,
+            field_name: "q".to_string(),
+            num_dims: 2,
+            num_index_dims: 2,
+            bytes_per_dim: 1,
+            sources: vec![half(0..16), half(16..32)],
+            max_point_count: 32,
+        };
+        let mut writer = NativePointsWriter::with_add_finish(state, policy.clone()).unwrap();
+        writer.merge(vec![merged], true).unwrap();
+        writer.close().unwrap();
+        assert_eq!(policy.calls.lock().unwrap().len(), 7);
+        assert_eq!(read(&directory), flushed);
     }
 
     #[derive(Debug, Default)]

@@ -240,7 +240,11 @@ export FIXTURES_CORPUS="$FIXTURES/corpus"
 # --- compile -----------------------------------------------------------------
 CLASSES=$(mktemp -d)
 trap 'rm -rf "$CLASSES" ${TMP_A:-} ${TMP_B:-}' EXIT
-javac -nowarn -cp "$CP:$M12_COMPILE_CP" -d "$CLASSES" "$FIXTURES"/src/*.java
+# Verifiers built on lucene-test-framework classes (VerifyRandomCodec,
+# VerifyCompressingCodecs) compile and run in verify-write-path.sh, whose
+# classpath has that jar; no generator needs them.
+mapfile -t SOURCES < <(grep -L '^import org\.apache\.lucene\.tests\.' "$FIXTURES"/src/*.java)
+javac -nowarn -cp "$CP:$M12_COMPILE_CP" -d "$CLASSES" "${SOURCES[@]}"
 
 # JVM flags one generator needs on top of LUCENE_FIXTURE_JVM_OPTS. The geo3d
 # generators run with HotSpot's Math.sin/cos/tan intrinsics disabled: on x86-64

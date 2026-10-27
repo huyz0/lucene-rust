@@ -4,7 +4,10 @@
 //! and `Mode.BEST_COMPRESSION` (DEFLATE, ~480KB chunks). The mode is baked
 //! into the `.fdt` data codec name itself (`...FastData` vs `...HighData`),
 //! so `open` detects it there rather than needing the caller to specify it;
-//! see [`Mode`] and [`decompress_unit`].
+//! see [`Mode`] and [`compression::decompress`]. The test framework's
+//! `CompressingCodec` formats (`Lucene90CompressingStoredFieldsFormat` with
+//! its own name, suffix, [`Compression`] and geometry) are read and written
+//! the same way, through [`Mode::Compressing`].
 //!
 //! Stored fields (the original field values, as opposed to their indexed or
 //! doc-values forms) are grouped into **chunks** of up to ~1024 (BEST_SPEED)
@@ -15,7 +18,7 @@
 //!   `dirty = token & 2` -- the last only matters to a writer's merge
 //!   heuristics, ignored here), each doc's field count and length (via
 //!   [`read_bulk_ints`]), then the compressed payload -- one
-//!   [`decompress_unit`] if `!sliced`, or several `chunk_size`-decompressed
+//!   [`compression::decompress`] if `!sliced`, or several `chunk_size`-decompressed
 //!   units back to back if `sliced` (only large chunks get split this way;
 //!   `chunk_size` is read from `.fdm`, not hardcoded, since it differs
 //!   between the two modes).
@@ -36,10 +39,8 @@ use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
 use lucene_store::data_output::DataOutput;
 
-use crate::deflate;
-use crate::deflater::Deflater;
+use crate::compression::{self, CompressingFormat, Compression, Compressor};
 use crate::direct_monotonic;
-use crate::lz4;
 
 const DATA_CODEC_BEST_SPEED: &str = "Lucene90StoredFieldsFastData";
 const DATA_CODEC_BEST_COMPRESSION: &str = "Lucene90StoredFieldsHighData";
@@ -59,19 +60,6 @@ const TYPE_NUMERIC_LONG: i64 = 0x04;
 const TYPE_NUMERIC_DOUBLE: i64 = 0x05;
 const TYPE_BITS: i64 = 3;
 const TYPE_MASK: i64 = (1 << TYPE_BITS) - 1;
-
-/// The LZ4 block format's worst-case expansion ratio: the cheapest way to
-/// emit output bytes is a match whose length is extended by `0xFF`
-/// continuation bytes, each of which contributes 255 bytes, so no LZ4 block
-/// inflates to more than 255x its own compressed size. Same constant, same
-/// reasoning, as `term_vectors.rs`'s `LZ4_MAX_EXPANSION`.
-const LZ4_MAX_EXPANSION: usize = 255;
-/// DEFLATE's worst-case expansion ratio, the figure zlib documents: a
-/// length-258 match can cost as little as two bits once the Huffman tables
-/// are amortised, so 258 * 8 / 2 = 1032 output bytes per input byte.
-/// Deliberately the loose end of the range -- this is a ceiling that must
-/// never reject a file `Mode.BEST_COMPRESSION` actually wrote.
-const DEFLATE_MAX_EXPANSION: usize = 1032;
 
 const SECOND: i64 = 1000;
 const HOUR: i64 = 60 * 60 * SECOND;
@@ -145,13 +133,64 @@ pub struct Document {
     pub fields: Vec<StoredField>,
 }
 
-/// Which per-unit compressor was used to write this segment's `.fdt` --
-/// baked into the data codec name itself, so `open` detects it from the
-/// header rather than needing the caller to specify it.
+/// Which stored-fields format a writer writes: `Lucene90StoredFieldsFormat`'s
+/// two modes, or a `Lucene90CompressingStoredFieldsFormat` with its own name,
+/// suffix, compression and geometry (the test framework's
+/// `CompressingCodec`). The compression is baked into the data codec name,
+/// so `open` detects it from the header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     BestSpeed,
     BestCompression,
+    Compressing(&'static CompressingFormat),
+}
+
+impl Mode {
+    /// The `.fdt` codec name.
+    pub fn data_codec(self) -> &'static str {
+        match self {
+            Self::BestSpeed => DATA_CODEC_BEST_SPEED,
+            Self::BestCompression => DATA_CODEC_BEST_COMPRESSION,
+            Self::Compressing(format) => format.format_name,
+        }
+    }
+    /// The files' segment suffix (empty for both `Lucene90` modes).
+    pub fn segment_suffix(self) -> &'static str {
+        match self {
+            Self::BestSpeed | Self::BestCompression => "",
+            Self::Compressing(format) => format.segment_suffix,
+        }
+    }
+    pub fn compression(self) -> Compression {
+        match self {
+            Self::BestSpeed => Compression::Lz4WithPreset,
+            Self::BestCompression => Compression::DeflateWithPreset,
+            Self::Compressing(format) => format.compression,
+        }
+    }
+    /// `chunkSize`: the buffered bytes that close a chunk.
+    pub fn chunk_size(self) -> i32 {
+        match self {
+            Self::BestSpeed => BEST_SPEED_CHUNK_SIZE as i32,
+            Self::BestCompression => BEST_COMPRESSION_CHUNK_SIZE as i32,
+            Self::Compressing(format) => format.chunk_size,
+        }
+    }
+    /// `maxDocsPerChunk`: the documents that close a chunk.
+    pub fn max_docs_per_chunk(self) -> i32 {
+        match self {
+            Self::BestSpeed => BEST_SPEED_MAX_DOCS_PER_CHUNK as i32,
+            Self::BestCompression => BEST_COMPRESSION_MAX_DOCS_PER_CHUNK as i32,
+            Self::Compressing(format) => format.max_docs_per_chunk,
+        }
+    }
+    /// `blockShift` of the `.fdx` monotonic arrays.
+    pub fn block_shift(self) -> i32 {
+        match self {
+            Self::BestSpeed | Self::BestCompression => INDEX_BLOCK_SHIFT as i32,
+            Self::Compressing(format) => format.block_shift,
+        }
+    }
 }
 
 /// Parsed `.fdm` metadata plus the `.fdx`-relative pointers/arrays it
@@ -159,7 +198,11 @@ pub enum Mode {
 pub struct StoredFieldsReader<'d> {
     fdt: &'d [u8],
     fdx: &'d [u8],
-    mode: Mode,
+    /// The `.fdt` codec name `open` matched, and what it says about the
+    /// writer: the compression and the most documents one chunk can hold.
+    data_codec: &'static str,
+    compression: Compression,
+    max_docs_per_chunk: i32,
     chunk_size: i32,
     max_doc: i32,
     num_chunks: i64,
@@ -203,15 +246,33 @@ pub fn open<'d>(
         .into());
     }
     let data_codec = fdt_input.read_string()?;
-    let mode = match data_codec.as_str() {
-        DATA_CODEC_BEST_SPEED => Mode::BestSpeed,
-        DATA_CODEC_BEST_COMPRESSION => Mode::BestCompression,
-        other => {
-            return Err(lucene_store::Error::Corrupted(format!(
-                "unknown stored fields data codec: {other}"
-            ))
-            .into())
-        }
+    let (data_codec_name, compression, max_docs_per_chunk) = match data_codec.as_str() {
+        DATA_CODEC_BEST_SPEED => (
+            DATA_CODEC_BEST_SPEED,
+            Compression::Lz4WithPreset,
+            BEST_SPEED_MAX_DOCS_PER_CHUNK as i32,
+        ),
+        DATA_CODEC_BEST_COMPRESSION => (
+            DATA_CODEC_BEST_COMPRESSION,
+            Compression::DeflateWithPreset,
+            BEST_COMPRESSION_MAX_DOCS_PER_CHUNK as i32,
+        ),
+        other => match compression::COMPRESSING_DATA_CODECS
+            .iter()
+            .find(|(name, _)| *name == other)
+        {
+            Some(&(name, compression)) => (
+                name,
+                compression,
+                compression::COMPRESSING_MAX_DOCS_PER_CHUNK,
+            ),
+            None => {
+                return Err(lucene_store::Error::Corrupted(format!(
+                    "unknown stored fields data codec: {other}"
+                ))
+                .into())
+            }
+        },
     };
     fdt_input.seek(header_start)?;
 
@@ -344,7 +405,9 @@ pub fn open<'d>(
     Ok(StoredFieldsReader {
         fdt,
         fdx,
-        mode,
+        data_codec: data_codec_name,
+        compression,
+        max_docs_per_chunk,
         chunk_size,
         max_doc,
         num_chunks,
@@ -372,7 +435,9 @@ impl<'d> StoredFieldsReader<'d> {
         StoredFieldsReader {
             fdt,
             fdx,
-            mode: self.mode,
+            data_codec: self.data_codec,
+            compression: self.compression,
+            max_docs_per_chunk: self.max_docs_per_chunk,
             chunk_size: self.chunk_size,
             max_doc: self.max_doc,
             num_chunks: self.num_chunks,
@@ -398,19 +463,13 @@ impl<'d> StoredFieldsReader<'d> {
     /// name and it pins the value per mode. Used as a hard upper bound on a
     /// chunk header's document count; see [`Self::read_chunk_header`].
     fn max_docs_per_chunk(&self) -> i32 {
-        match self.mode {
-            Mode::BestSpeed => BEST_SPEED_MAX_DOCS_PER_CHUNK as i32,
-            Mode::BestCompression => BEST_COMPRESSION_MAX_DOCS_PER_CHUNK as i32,
-        }
+        self.max_docs_per_chunk
     }
 
     /// The most this segment's compressor can inflate a byte by, per
-    /// [`LZ4_MAX_EXPANSION`]/[`DEFLATE_MAX_EXPANSION`].
+    /// [`Compression::max_expansion`].
     fn max_expansion(&self) -> usize {
-        match self.mode {
-            Mode::BestSpeed => LZ4_MAX_EXPANSION,
-            Mode::BestCompression => DEFLATE_MAX_EXPANSION,
-        }
+        self.compression.max_expansion()
     }
 
     fn docs_region(&self) -> Result<&'d [u8]> {
@@ -500,8 +559,8 @@ impl<'d> StoredFieldsReader<'d> {
         // that no intermediate can overflow: `doc_id - doc_base` is evaluated
         // only once
         // `doc_base <= doc_id` holds (so it lands in `0..=i32::MAX`), and
-        // `max_doc - chunk_docs` only once `0 <= chunk_docs <= 4096` and
-        // `max_doc >= 0` do (so it lands in `-4096..=i32::MAX`).
+        // `max_doc - chunk_docs` only once `0 <= chunk_docs <= 2^16` and
+        // `max_doc >= 0` do (so it lands in `-2^16..=i32::MAX`).
         //
         // `chunk_docs <= max_docs_per_chunk` is the one bound Java does not
         // state, and it is what turns the count into something safe to
@@ -516,13 +575,16 @@ impl<'d> StoredFieldsReader<'d> {
         // path) emits can exceed it. Without it, `maxDoc` and a token are the
         // only things standing between a 40-byte file and a
         // `vec![0i64; 2^31]` -- a 17 GB reservation, which *aborts* rather
-        // than unwinding (`docs/arithmetic-gate.md`).
+        // than unwinding (`docs/arithmetic-gate.md`). A `CompressingCodec`
+        // name pins no cap, so those take
+        // `compression::COMPRESSING_MAX_DOCS_PER_CHUNK`, which their writers
+        // refuse to exceed.
         //
         // ARITH: `&&` short-circuits left to right, so `doc_id - doc_base` is
         // only evaluated under `doc_id >= doc_base >= 0` (difference in
         // `0..=i32::MAX`) and `self.max_doc - chunk_docs` only under
-        // `0 <= chunk_docs <= 4096` with `max_doc >= 0` (`open` rejects a
-        // negative one), so the difference is in `-4096..=i32::MAX`.
+        // `0 <= chunk_docs <= 2^16` with `max_doc >= 0` (`open` rejects a
+        // negative one), so the difference is in `-2^16..=i32::MAX`.
         #[allow(clippy::arithmetic_side_effects)]
         let bounds_ok = doc_base >= 0
             && chunk_docs <= self.max_docs_per_chunk()
@@ -552,7 +614,7 @@ impl<'d> StoredFieldsReader<'d> {
         } else {
             let num_stored_fields = read_bulk_ints(&mut input, chunk_docs as usize)?;
             let raw_lengths = read_bulk_ints(&mut input, chunk_docs as usize)?;
-            // ARITH: `chunk_docs` is in `1..=4096` (checked above), so
+            // ARITH: `chunk_docs` is in `1..=2^16` (checked above), so
             // `chunk_docs + 1` is far inside `i32`, and both `as usize` casts
             // are of a non-negative value.
             #[allow(clippy::arithmetic_side_effects)]
@@ -561,8 +623,8 @@ impl<'d> StoredFieldsReader<'d> {
             // ARITH: `read_bulk_ints` guarantees every value it returns is
             // non-negative and at most `u32::MAX` (the widest shape is
             // 32-bit, read unsigned; the all-equal shape rejects a negative
-            // constant), so over at most 4096 documents the running sum stays
-            // under 2^44. Non-negativity is also what keeps `offsets`
+            // constant), so over at most 2^16 documents the running sum stays
+            // under 2^48. Non-negativity is also what keeps `offsets`
             // monotonic, which `serialized_document`'s
             // `offsets[i + 1] as usize - offsets[i]` depends on -- a
             // decreasing pair underflowed that to a ~2^64 slice length.
@@ -586,8 +648,8 @@ impl<'d> StoredFieldsReader<'d> {
         // output `Vec` and `decompress_unit`'s `vec![0u8; dictLength +
         // blockLength]`. Bound it by what the bytes that are left could
         // possibly inflate to -- checked **once per chunk**, never per
-        // document or per sub-block. See [`LZ4_MAX_EXPANSION`] and
-        // [`DEFLATE_MAX_EXPANSION`] for where the two ratios come from.
+        // document or per sub-block. See [`Compression::max_expansion`]
+        // for where the ratios come from.
         //
         // This is a ceiling, not a tight bound: on a large `.fdt` it rejects
         // nothing a well-formed chunk could claim. What it does remove is the
@@ -625,7 +687,7 @@ impl<'d> StoredFieldsReader<'d> {
     /// Java's `Decompressor.decompress(in, originalLength, offset, length,
     /// bytes)` does: whole sub-blocks the range does not intersect are
     /// skipped by their recorded compressed length rather than inflated and
-    /// discarded (see [`decompress_unit`]).
+    /// discarded (see [`compression::decompress`]).
     fn decompress_range(
         &self,
         header: &ChunkHeader,
@@ -636,7 +698,7 @@ impl<'d> StoredFieldsReader<'d> {
         // ARITH: the invariant the whole function rests on is that `header` can
         // only have come from `read_chunk_header`, which established that
         // `offsets` is non-decreasing from 0 and that its last entry (this
-        // `total_length`) is non-negative, under 2^44, and no larger than the
+        // `total_length`) is non-negative, under 2^48, and no larger than the
         // remaining `.fdt` bytes could inflate to. Both call sites derive
         // `want_start <= want_end <= total_length` from that same array:
         // `serialized_document` passes `offsets[i] .. offsets[i+1]` and
@@ -668,8 +730,8 @@ impl<'d> StoredFieldsReader<'d> {
                 let unit_len = chunk_size.min(total_length - unit_start);
                 let lo = want_start.max(unit_start).min(unit_start + unit_len);
                 let hi = want_end.min(unit_start + unit_len);
-                decompress_unit(
-                    self.mode,
+                compression::decompress(
+                    self.compression,
                     input,
                     unit_len,
                     lo - unit_start,
@@ -679,8 +741,8 @@ impl<'d> StoredFieldsReader<'d> {
                 unit_start += unit_len;
             }
         } else {
-            decompress_unit(
-                self.mode,
+            compression::decompress(
+                self.compression,
                 input,
                 total_length,
                 want_start,
@@ -758,12 +820,18 @@ impl<'d> StoredFieldsReader<'d> {
         Ok(DecompressedChunk { header, bytes })
     }
 
-    /// Which compressor this segment's `.fdt` was written with -- a
-    /// bulk chunk copy is only legal into a writer using the same one
+    /// The `.fdt` codec name, which names the format that wrote it -- a
+    /// bulk chunk copy is only legal into a writer of the same one
     /// (`Lucene90CompressingStoredFieldsWriter.getMergeStrategy`'s
-    /// `reader.getCompressionMode() == compressionMode`).
-    pub fn mode(&self) -> Mode {
-        self.mode
+    /// `reader.getCompressionMode() == compressionMode`, a mode being one
+    /// format's in practice).
+    pub fn data_codec(&self) -> &'static str {
+        self.data_codec
+    }
+
+    /// The compression the `.fdt` was written with.
+    pub fn compression(&self) -> Compression {
+        self.compression
     }
 
     /// `getChunkSize()` -- the writer's plaintext-bytes-per-chunk trigger,
@@ -1120,7 +1188,7 @@ impl ChunkHeader {
 
     // ARITH: a `ChunkHeader` is only ever constructed by
     // `read_chunk_header`, which rejects the chunk unless
-    // `0 <= doc_base <= max_doc - chunk_docs` and `0 < chunk_docs <= 4096`.
+    // `0 <= doc_base <= max_doc - chunk_docs` and `0 < chunk_docs <= 2^16`.
     // So `doc_base + chunk_docs <= max_doc <= i32::MAX`, and `index_of`'s
     // subtraction is guarded by the `contains` its two callers check first
     // (`DecompressedChunk::document`) or by `read_chunk_header`'s own
@@ -1265,145 +1333,6 @@ const BEST_COMPRESSION_CHUNK_SIZE: usize = 10 * 48 * 1024;
 const BEST_COMPRESSION_MAX_DOCS_PER_CHUNK: usize = 4096;
 /// `blockShift` for the `.fdx` monotonic arrays -- the `10` both modes pass.
 const INDEX_BLOCK_SHIFT: u32 = 10;
-/// `NUM_SUB_BLOCKS` in both `LZ4WithPresetDictCompressionMode` and
-/// `DeflateWithPresetDictCompressionMode`: every chunk is framed as a
-/// dictionary prefix plus this many equal-sized sub-blocks.
-const NUM_SUB_BLOCKS: usize = 10;
-/// `LZ4WithPresetDictCompressionMode.DICT_SIZE_FACTOR` -- the dictionary is
-/// about 2x smaller than a sub-block.
-const LZ4_DICT_SIZE_FACTOR: usize = 2;
-/// `DeflateWithPresetDictCompressionMode.DICT_SIZE_FACTOR` -- about 6x
-/// smaller than a sub-block.
-const DEFLATE_DICT_SIZE_FACTOR: usize = 6;
-
-/// Per-chunk compressor scratch, hoisted out of the flush path exactly as
-/// Java's `Compressor` instances are: the LZ4 hash table is 16 kB and is
-/// deliberately never cleared, and the two byte buffers are reused across
-/// every chunk of a segment.
-#[derive(Default)]
-struct UnitScratch {
-    ht: lz4::FastCompressionHashTable,
-    buffer: Vec<u8>,
-    compressed: Vec<u8>,
-    lengths: Vec<usize>,
-    /// `DeflateWithPresetDictCompressor.compressor`, created with the first
-    /// `BEST_COMPRESSION` chunk and kept for the writer's life: zlib's window
-    /// and chain state survive `reset()`, and the bytes depend on them.
-    deflater: Option<Box<Deflater>>,
-}
-
-/// Appends one self-contained compression unit for `payload` -- the only
-/// part of the chunk format that differs between [`Mode::BestSpeed`] and
-/// [`Mode::BestCompression`]. Both emit a dictionary prefix plus
-/// [`NUM_SUB_BLOCKS`] sub-blocks, with different geometry and a different
-/// compressor; note the vint framing differs too (LZ4 batches every
-/// sub-block's compressed length up front, DEFLATE interleaves each one
-/// immediately before its bytes -- see [`decompress_unit`]).
-// ARITH: for the whole function -- `len` is `payload.len()`, a slice of this
-// process's own chunk buffer, so `len <= isize::MAX`. In both arms
-// `dict_length <= len / 60 <= len` (`NUM_SUB_BLOCKS * DICT_SIZE_FACTOR` is 20
-// or 60, and the LZ4 arm only shrinks it further with `.min(MAX_DISTANCE)`),
-// which makes `len - dict_length` non-negative; `block_length` is then at
-// most `ceil(len / 10)`, so `dict_length + block_length < len` for any `len`
-// past the handful of bytes where both round to zero, and can never leave
-// `usize`. The sub-block loop keeps `start < len`, so `len - start` is
-// positive, `l <= len - start` bounds `start + l` by `len`, and
-// `dict_length + l <= dict_length + block_length` is exactly the buffer
-// length resized to above. `compressed.len() - mark` subtracts a length
-// recorded before a call that only appends.
-#[allow(clippy::arithmetic_side_effects)]
-fn write_unit(mode: Mode, scratch: &mut UnitScratch, out: &mut Vec<u8>, payload: &[u8]) {
-    let len = payload.len();
-    match mode {
-        Mode::BestSpeed => {
-            let dict_length =
-                (len / (NUM_SUB_BLOCKS * LZ4_DICT_SIZE_FACTOR)).min(lz4::MAX_DISTANCE);
-            let block_length = (len - dict_length).div_ceil(NUM_SUB_BLOCKS);
-            out.write_vint(dict_length as i32);
-            out.write_vint(block_length as i32);
-
-            // `resize`, not `clear` + `resize`: this is Java's
-            // `ArrayUtil.growNoCopy`, and re-zeroing the whole buffer every
-            // chunk would be pure waste. Every byte the compressor reads
-            // (`buffer[..dictLength + l]`) is written below before it does;
-            // a shorter final sub-block leaves stale bytes past `l`, which
-            // are outside the range `compress_with_dictionary` looks at.
-            scratch.buffer.resize(dict_length + block_length, 0);
-            scratch.compressed.clear();
-            scratch.lengths.clear();
-
-            // The dictionary is compressed with no dictionary of its own.
-            scratch.buffer[..dict_length].copy_from_slice(&payload[..dict_length]);
-            let mark = scratch.compressed.len();
-            lz4::compress_with_dictionary(
-                &scratch.buffer,
-                0,
-                0,
-                dict_length,
-                &mut scratch.compressed,
-                &mut scratch.ht,
-            );
-            scratch.lengths.push(scratch.compressed.len() - mark);
-
-            // ...then each sub-block, back-referencing into it.
-            let mut start = dict_length;
-            while start < len {
-                let l = block_length.min(len - start);
-                scratch.buffer[dict_length..dict_length + l]
-                    .copy_from_slice(&payload[start..start + l]);
-                let mark = scratch.compressed.len();
-                lz4::compress_with_dictionary(
-                    &scratch.buffer,
-                    0,
-                    dict_length,
-                    l,
-                    &mut scratch.compressed,
-                    &mut scratch.ht,
-                );
-                scratch.lengths.push(scratch.compressed.len() - mark);
-                start += l;
-            }
-
-            // Java writes every unit's compressed length up front (that is
-            // what lets a reader skip whole sub-blocks), then the bytes.
-            for &l in scratch.lengths.iter() {
-                out.write_vint(l as i32);
-            }
-            out.write_bytes(&scratch.compressed);
-        }
-        Mode::BestCompression => {
-            let dict_length = len / (NUM_SUB_BLOCKS * DEFLATE_DICT_SIZE_FACTOR);
-            let block_length = (len - dict_length).div_ceil(NUM_SUB_BLOCKS);
-
-            out.write_vint(dict_length as i32);
-            out.write_vint(block_length as i32);
-
-            // `DeflateWithPresetDictCompressor.compress`: the dictionary on
-            // its own, then every sub-block with the dictionary preset.
-            let deflater = scratch
-                .deflater
-                .get_or_insert_with(|| Box::new(Deflater::new()));
-            let dict = &payload[..dict_length];
-            deflater.reset();
-            write_deflate_unit(deflater, &mut scratch.compressed, out, dict);
-
-            let mut start = dict_length;
-            while start < len {
-                let this_block = block_length.min(len - start);
-                deflater.reset();
-                deflater.set_dictionary(dict);
-                write_deflate_unit(
-                    deflater,
-                    &mut scratch.compressed,
-                    out,
-                    &payload[start..start + this_block],
-                );
-                start += this_block;
-            }
-        }
-    }
-}
-
 /// A streaming port of `Lucene90CompressingStoredFieldsWriter`'s
 /// buffer/`triggerFlush`/`flush` cycle, plus its three merge paths.
 ///
@@ -1454,29 +1383,39 @@ pub struct StoredFieldsWriter {
     /// (since buffered docs are always the tail) is also the number of
     /// documents already flushed.
     doc_base: i32,
-    scratch: UnitScratch,
+    scratch: Compressor,
 }
 
 impl StoredFieldsWriter {
     /// A fresh writer for `mode`'s chunk geometry, with the `.fdt` index
     /// header already written.
+    ///
+    /// # Panics
+    /// A [`Mode::Compressing`] format whose chunk size or document cap is not
+    /// positive, whose cap is above
+    /// [`compression::COMPRESSING_MAX_DOCS_PER_CHUNK`], or whose block shift
+    /// is outside `DirectMonotonicWriter`'s 2..=22 (Java's constructors
+    /// reject the first and last).
     pub fn new(mode: Mode, segment_id: &[u8; ID_LENGTH], segment_suffix: &str) -> Self {
-        let (data_codec, chunk_size, max_docs_per_chunk) = match mode {
-            Mode::BestSpeed => (
-                DATA_CODEC_BEST_SPEED,
-                BEST_SPEED_CHUNK_SIZE,
-                BEST_SPEED_MAX_DOCS_PER_CHUNK,
-            ),
-            Mode::BestCompression => (
-                DATA_CODEC_BEST_COMPRESSION,
-                BEST_COMPRESSION_CHUNK_SIZE,
-                BEST_COMPRESSION_MAX_DOCS_PER_CHUNK,
-            ),
-        };
+        let (chunk_size, max_docs_per_chunk) = (mode.chunk_size(), mode.max_docs_per_chunk());
+        assert!(
+            chunk_size > 0,
+            "chunkSize must be positive, got {chunk_size}"
+        );
+        assert!(
+            (1..=compression::COMPRESSING_MAX_DOCS_PER_CHUNK).contains(&max_docs_per_chunk),
+            "maxDocsPerChunk out of range: {max_docs_per_chunk}"
+        );
+        assert!(
+            (2..=22).contains(&mode.block_shift()),
+            "blockShift out of range: {}",
+            mode.block_shift()
+        );
+        let (chunk_size, max_docs_per_chunk) = (chunk_size as usize, max_docs_per_chunk as usize);
         let mut fdt = Vec::new();
         codec_util::write_index_header(
             &mut fdt,
-            data_codec,
+            mode.data_codec(),
             VERSION_CURRENT,
             segment_id,
             segment_suffix,
@@ -1497,7 +1436,7 @@ impl StoredFieldsWriter {
             lengths: Vec::new(),
             num_stored_fields: Vec::new(),
             doc_base: 0,
-            scratch: UnitScratch::default(),
+            scratch: Compressor::default(),
         }
     }
 
@@ -1535,7 +1474,7 @@ impl StoredFieldsWriter {
     /// (The version check Java also makes is `open`'s job here -- this port
     /// has exactly one `VERSION_CURRENT` and refuses to open anything else.)
     pub fn can_bulk_copy(&self, reader: &StoredFieldsReader<'_>) -> bool {
-        reader.mode() == self.mode
+        reader.data_codec() == self.mode.data_codec()
             && reader.chunk_size() == self.chunk_size as i32
             && !self.too_dirty(reader)
     }
@@ -1570,8 +1509,7 @@ impl StoredFieldsWriter {
         // at least the four `.fdt` bytes of a chunk header, so they are
         // bounded by `fdt.len() / 4` -- a `Vec` length, hence `isize::MAX`.
         // `chunk_docs` is `lengths.len()`, capped at `max_docs_per_chunk`
-        // (4096) by `trigger_flush`. `2 * self.chunk_size` is twice a
-        // per-mode constant (81 920 or 491 520).
+        // (at most 2^16, `new`) by `trigger_flush`.
         #[allow(clippy::arithmetic_side_effects)]
         if force {
             self.num_dirty_chunks += 1;
@@ -1581,9 +1519,8 @@ impl StoredFieldsWriter {
         // since every other chunk closes on the first doc that crosses
         // `chunk_size`.
         //
-        // ARITH: `chunk_size` is a per-mode constant (81 920 or 491 520)
-        // chosen in `StoredFieldsWriter::new` and never assigned again, so
-        // doubling it is nowhere near `usize`.
+        // ARITH: `chunk_size` is a positive `i32` (`StoredFieldsWriter::new`)
+        // never assigned again, so doubling it is nowhere near `usize`.
         #[allow(clippy::arithmetic_side_effects)]
         let sliced = self.chunk_buf.len() >= 2 * self.chunk_size;
 
@@ -1606,10 +1543,12 @@ impl StoredFieldsWriter {
             let payload = std::mem::take(&mut self.chunk_buf);
             if sliced {
                 for slice in payload.chunks(self.chunk_size) {
-                    write_unit(self.mode, &mut self.scratch, &mut self.fdt, slice);
+                    self.scratch
+                        .compress(self.mode.compression(), slice, &mut self.fdt);
                 }
             } else {
-                write_unit(self.mode, &mut self.scratch, &mut self.fdt, &payload);
+                self.scratch
+                    .compress(self.mode.compression(), &payload, &mut self.fdt);
             }
             self.chunk_buf = payload;
         }
@@ -1735,7 +1674,7 @@ impl StoredFieldsWriter {
             return Err(Error::BulkCopyNotPermitted {
                 reader_chunk_size: reader.chunk_size(),
                 writer_chunk_size: self.chunk_size as i32,
-                same_mode: reader.mode() == self.mode,
+                same_mode: reader.data_codec() == self.mode.data_codec(),
                 too_dirty: self.too_dirty(reader),
             });
         }
@@ -1923,6 +1862,7 @@ impl StoredFieldsWriter {
             &self.start_pointers_values,
             max_pointer,
             self.chunk_size as i32,
+            self.mode.block_shift() as u32,
             self.num_dirty_chunks,
             self.num_dirty_docs,
         );
@@ -1933,9 +1873,9 @@ impl StoredFieldsWriter {
 /// Shared `.fdx`/`.fdm` assembly for both modes: `docs_values` and
 /// `start_pointers_values` each hold one entry per chunk plus a trailing
 /// sentinel (`maxDoc` and `maxPointer` respectively), so the chunk count both
-/// files record is one less than their length. The two modes differ only in
-/// the `chunkSize` written to `.fdm`, which real Lucene needs in order to
-/// split a `sliced` chunk back into its compression units.
+/// files record is one less than their length. Formats differ only in the
+/// `chunkSize` written to `.fdm`, which real Lucene needs in order to split a
+/// `sliced` chunk back into its compression units, and in the block shift.
 #[allow(clippy::too_many_arguments)]
 fn write_index_and_meta(
     segment_id: &[u8; ID_LENGTH],
@@ -1945,11 +1885,11 @@ fn write_index_and_meta(
     start_pointers_values: &[i64],
     max_pointer: i64,
     chunk_size: i32,
+    block_shift: u32,
     num_dirty_chunks: i64,
     num_dirty_docs: i64,
 ) -> (Vec<u8>, Vec<u8>) {
     debug_assert_eq!(docs_values.len(), start_pointers_values.len());
-    let block_shift = INDEX_BLOCK_SHIFT;
 
     let mut fdx = Vec::new();
     codec_util::write_index_header(
@@ -2005,15 +1945,15 @@ fn write_index_and_meta(
 /// `DeflateWithPresetDictCompressionMode`'s own
 /// `dictLength = len / (NUM_SUB_BLOCKS * DICT_SIZE_FACTOR)`,
 /// `blockLength = ceil((len - dictLength) / NUM_SUB_BLOCKS)` formulas
-/// ([`NUM_SUB_BLOCKS`], [`DEFLATE_DICT_SIZE_FACTOR`]) -- real Lucene reuses
+/// (`NUM_SUB_BLOCKS`, `DEFLATE_DICT_SIZE_FACTOR` in [`compression`]) -- real Lucene reuses
 /// this sizing regardless of a chunk's actual size, so this port does too
 /// rather than inventing a different threshold. Note the vint framing is
 /// *not* the same shape as LZ4's: DEFLATE interleaves each unit's compressed
 /// length immediately before that unit's bytes, where LZ4 batches all of
-/// them up front (see [`decompress_unit`]).
+/// them up front (see [`compression::decompress`]).
 ///
 /// Each sub-block is compressed with the chunk's dictionary preset
-/// (`Deflater.setDictionary`), through [`Deflater`] -- a port of the zlib
+/// (`Deflater.setDictionary`), through `deflater::Deflater` -- a port of the zlib
 /// `deflate` Java's `Deflater` runs -- so the `.fdt` bytes are Lucene's.
 pub fn write_best_compression(
     docs: &[Document],
@@ -2025,32 +1965,6 @@ pub fn write_best_compression(
         writer.add_document(doc);
     }
     writer.finish()
-}
-
-/// One `DeflateWithPresetDictCompressor.doCompress` unit: a vint compressed
-/// length followed by that many raw-DEFLATE bytes.
-///
-/// The zero-length shortcut is Java's, verbatim (`if (len == 0) { writeVInt(0);
-/// return; }`), and it is the common case for small chunks: every chunk under
-/// `NUM_SUB_BLOCKS * DEFLATE_DICT_SIZE_FACTOR` (60) bytes has a zero-length
-/// dictionary. Compressing the empty input instead would emit a real 2-byte
-/// empty DEFLATE stream, which Java's reader does in fact still accept
-/// (verified against Lucene 10.5.0 via `VerifyStoredFields`, segment `_3`) --
-/// so this is a framing-fidelity and size fix, not a corruption fix.
-fn write_deflate_unit(
-    deflater: &mut Deflater,
-    compressed: &mut Vec<u8>,
-    out: &mut Vec<u8>,
-    plain: &[u8],
-) {
-    if plain.is_empty() {
-        out.write_vint(0);
-        return;
-    }
-    compressed.clear();
-    deflater.compress(plain, compressed);
-    out.write_vint(compressed.len() as i32);
-    out.write_bytes(compressed);
 }
 
 /// Port of `StoredFieldsInts`'s bulk per-doc array encode, the exact inverse
@@ -2459,7 +2373,7 @@ fn read_bulk_ints(input: &mut SliceInput, count: usize) -> Result<Vec<i64>> {
         // `(values_per_word - 1) * bpv == 64 - bpv == 56`, *not* 64, which
         // would be the panicking shift. `k` only ever advances while
         // `k + 128 <= count` or `k < count`, so it stays within `0..=count`
-        // and `count` is a chunk's document count, at most 4096
+        // and `count` is a chunk's document count, at most 2^16
         // (`read_chunk_header`); every write index `k + i + lane * num_words`
         // is under `k + num_words * values_per_word == k + 128 <= count`.
         #[allow(clippy::arithmetic_side_effects)]
@@ -2511,220 +2425,6 @@ fn read_scalar(input: &mut SliceInput, bpv: u8) -> Result<i64> {
     })
 }
 
-/// One sub-block's *compressed* byte count, as a length rather than as a raw
-/// vint: these are only ever used to skip or to bound a decompressor, and a
-/// negative one sign-extended through `as usize` into ~2^64 -- which then
-/// overflowed the running total the `length == 0` skip path sums up.
-fn read_compressed_length(input: &mut SliceInput) -> Result<usize> {
-    let len = input.read_vint()?;
-    if len < 0 {
-        return Err(lucene_store::Error::Corrupted(format!(
-            "negative compressed sub-block length: {len}"
-        ))
-        .into());
-    }
-    Ok(len as usize)
-}
-
-/// Decompresses the `[offset, offset+length)` slice of one preset-dictionary
-/// compression unit (`LZ4WithPresetDictCompressionMode` for
-/// `Mode.BEST_SPEED`, `DeflateWithPresetDictCompressionMode` for
-/// `Mode.BEST_COMPRESSION`) and appends it to `out`: a dictionary prefix
-/// followed by fixed-size sub-blocks, each able to back-reference into the
-/// dictionary but not into each other. `input` is always left positioned at
-/// the end of the unit, whether or not anything was wanted from it, because
-/// a `sliced` chunk's units are read back to back off the same reader.
-///
-/// The sub-blocks a request does not intersect are **skipped by their
-/// recorded compressed length**, not decompressed and thrown away -- this is
-/// Java's `Decompressor.decompress(in, originalLength, offset, length, bytes)`
-/// contract, and it is why the format bothers to record those lengths at all.
-/// Fetching one document out of a full 80kB BEST_SPEED chunk therefore costs
-/// one sub-block (~8kB) plus the dictionary, not the whole chunk.
-///
-/// Both formats share `dictLength`/`blockLength` framing up front, but
-/// differ in where each unit's *compressed*-length vint sits relative to
-/// its own compressed bytes -- easy to get backwards, so this is worth
-/// spelling out precisely:
-/// - LZ4 (`LZ4WithPresetDictCompressionMode.readCompressedLengths`) batches
-///   **every** unit's compressed length (the dictionary's, then each
-///   block's) together up front, before any of the actual compressed bytes.
-/// - DEFLATE (`DeflateWithPresetDictCompressionMode.decompress`/
-///   `doDecompress`) interleaves each unit's compressed-length vint
-///   immediately before that same unit's compressed bytes -- not batched at
-///   all. DEFLATE isn't self-terminating, so [`deflate::decompress`] needs
-///   that length passed in explicitly, read at the point of use.
-fn decompress_unit(
-    mode: Mode,
-    input: &mut SliceInput,
-    original_length: usize,
-    offset: usize,
-    length: usize,
-    out: &mut Vec<u8>,
-) -> Result<()> {
-    if original_length == 0 {
-        // The writer emits nothing at all for an empty unit.
-        return Ok(());
-    }
-    // A negative vint sign-extends through `as usize` into ~2^64, which the
-    // `> original_length` test below rejects along with every other
-    // impossible value -- `original_length` is at most 2^44 (see
-    // `read_chunk_header`), so no negative can slip under it.
-    let dict_length = input.read_vint()? as usize;
-    let block_length = input.read_vint()? as usize;
-    // A corrupt header must not spin forever (or allocate wildly): Java
-    // divides by `blockLength` when sizing its length array and would throw
-    // ArithmeticException on zero, and `new byte[dictLength + blockLength]`
-    // would throw rather than abort the process the way `vec![0u8; n]` does.
-    // A well-formed unit always has `dictLength <= originalLength`,
-    // `blockLength <= originalLength` and `blockLength > 0` whenever the
-    // sub-blocks have anything left to cover.
-    if dict_length > original_length
-        || block_length > original_length
-        || (block_length == 0 && dict_length < original_length)
-    {
-        return Err(lucene_store::Error::Corrupted(format!(
-            "invalid compression unit framing: dictLength={dict_length}, blockLength={block_length}, originalLength={original_length}"
-        ))
-        .into());
-    }
-    // ARITH: `dict_length <= original_length` was just established, and
-    // `.max(1)` keeps the divisor non-zero. `offset + length` is bounded by
-    // `original_length` at both call sites in `decompress_range` -- the
-    // non-sliced one passes a sub-range of `0..total_length` with
-    // `original_length == total_length`, the sliced one clamps both ends to
-    // the unit's own `unit_len` -- and `original_length` is itself at most
-    // 2^44, so neither sum can leave `usize`.
-    #[allow(clippy::arithmetic_side_effects)]
-    let (num_blocks, want_end) = (
-        (original_length - dict_length).div_ceil(block_length.max(1)),
-        offset + length,
-    );
-    debug_assert!(want_end <= original_length);
-
-    match mode {
-        Mode::BestSpeed => {
-            let dict_compressed_length = read_compressed_length(input)?;
-            // Not `with_capacity(num_blocks)`: `num_blocks` is derived from
-            // on-disk lengths, and a corrupt one would reserve gigabytes
-            // before the first `read_vint` had a chance to hit EOF.
-            let mut block_compressed_lengths = Vec::new();
-            for _ in 0..num_blocks {
-                block_compressed_lengths.push(read_compressed_length(input)?);
-            }
-            if length == 0 {
-                // `checked_add`, folded over the run: these are byte counts
-                // off disk, and even with each one bounded to `i32::MAX` a
-                // long enough run wraps the total to a small skip that then
-                // leaves the reader mid-unit -- the next `sliced` unit would
-                // parse compressed bytes as a framing header and decode
-                // plausible garbage.
-                let mut total = dict_compressed_length;
-                for &l in &block_compressed_lengths {
-                    total = total.checked_add(l).ok_or_else(|| {
-                        lucene_store::Error::Corrupted(
-                            "compression unit's sub-block lengths overflow".into(),
-                        )
-                    })?;
-                }
-                input.skip(total)?;
-                return Ok(());
-            }
-
-            // ARITH: both lengths were bounded by `original_length` above, so
-            // the buffer is at most twice a value already bounded by what the
-            // remaining bytes could inflate to (`read_chunk_header`).
-            #[allow(clippy::arithmetic_side_effects)]
-            let buffer_len = dict_length + block_length;
-            let mut buffer = vec![0u8; buffer_len];
-            // The dictionary is always decompressed: even when none of its
-            // bytes are wanted, the sub-blocks back-reference into it.
-            if lz4::decompress_slice(input, dict_length, &mut buffer, 0)? != dict_length {
-                return Err(lucene_store::Error::Corrupted(
-                    "illegal dict length in LZ4 compression unit".into(),
-                )
-                .into());
-            }
-            if offset < dict_length {
-                out.extend_from_slice(&buffer[offset..dict_length.min(want_end)]);
-            }
-
-            let mut plain = dict_length;
-            // ARITH: `plain` starts at `dict_length <= original_length` and
-            // advances by `this_len = min(block_length, original_length -
-            // plain)`, so it never passes `original_length`; the loop runs
-            // exactly `num_blocks = ceil((original_length - dict_length) /
-            // block_length)` times, which is the number of steps that takes.
-            // `lo >= plain` by the `.max(plain)` and `hi <= plain + this_len`
-            // by the `.min`, so `lo - plain` and `hi - plain` are both in
-            // `0..=this_len <= block_length`, keeping every `dict_length + ..`
-            // index inside `buffer`.
-            #[allow(clippy::arithmetic_side_effects)]
-            for &compressed_length in &block_compressed_lengths {
-                let this_len = block_length.min(original_length - plain);
-                let lo = offset.max(plain);
-                let hi = want_end.min(plain + this_len);
-                if lo < hi {
-                    lz4::decompress_slice(input, this_len, &mut buffer, dict_length)?;
-                    out.extend_from_slice(
-                        &buffer[dict_length + lo - plain..dict_length + hi - plain],
-                    );
-                } else {
-                    input.skip(compressed_length)?;
-                }
-                plain += this_len;
-            }
-        }
-        Mode::BestCompression => {
-            let dict_compressed_length = read_compressed_length(input)?;
-            if length == 0 {
-                input.skip(dict_compressed_length)?;
-                for _ in 0..num_blocks {
-                    let compressed_length = read_compressed_length(input)?;
-                    input.skip(compressed_length)?;
-                }
-                return Ok(());
-            }
-
-            // ARITH: as in the `BestSpeed` arm -- both lengths are bounded by
-            // `original_length`.
-            #[allow(clippy::arithmetic_side_effects)]
-            let buffer_len = dict_length + block_length;
-            let mut buffer = vec![0u8; buffer_len];
-            deflate::decompress(input, dict_compressed_length, dict_length, &mut buffer, 0)?;
-            if offset < dict_length {
-                out.extend_from_slice(&buffer[offset..dict_length.min(want_end)]);
-            }
-
-            let mut plain = dict_length;
-            // ARITH: identical to the `BestSpeed` arm's loop above.
-            #[allow(clippy::arithmetic_side_effects)]
-            for _ in 0..num_blocks {
-                let this_len = block_length.min(original_length - plain);
-                let compressed_length = read_compressed_length(input)?;
-                let lo = offset.max(plain);
-                let hi = want_end.min(plain + this_len);
-                if lo < hi {
-                    deflate::decompress(
-                        input,
-                        compressed_length,
-                        this_len,
-                        &mut buffer,
-                        dict_length,
-                    )?;
-                    out.extend_from_slice(
-                        &buffer[dict_length + lo - plain..dict_length + hi - plain],
-                    );
-                } else {
-                    input.skip(compressed_length)?;
-                }
-                plain += this_len;
-            }
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     // The arithmetic gate is about values read off disk; a test's `i + 1` is
@@ -2732,6 +2432,26 @@ mod tests {
     #![allow(clippy::arithmetic_side_effects)]
 
     use super::*;
+
+    /// The unit decoder the reader calls, with this module's error type.
+    fn decompress_unit(
+        mode: Mode,
+        input: &mut SliceInput,
+        original_length: usize,
+        offset: usize,
+        length: usize,
+        out: &mut Vec<u8>,
+    ) -> Result<()> {
+        let compression = mode.compression();
+        Ok(compression::decompress(
+            compression,
+            input,
+            original_length,
+            offset,
+            length,
+            out,
+        )?)
+    }
 
     fn write_vint(out: &mut Vec<u8>, mut v: i32) {
         loop {
@@ -4366,7 +4086,7 @@ mod tests {
             let encoded = encode_literal_lz4(&payload);
             let mut input = SliceInput::new(&encoded);
             let mut dest = vec![0u8; payload.len()];
-            lz4::decompress(&mut input, payload.len(), &mut dest, 0).unwrap();
+            crate::lz4::decompress(&mut input, payload.len(), &mut dest, 0).unwrap();
             assert_eq!(dest, payload);
         }
     }
@@ -4619,7 +4339,7 @@ mod tests {
         let docs = merge_docs("c", 20);
         let (fdt, fdx, fdm) = write_best_compression(&docs, &id_write(), "");
         let src = open(&fdt, &fdx, &fdm, &id_write(), "").unwrap();
-        assert_eq!(src.mode(), Mode::BestCompression);
+        assert_eq!(src.data_codec(), Mode::BestCompression.data_codec());
         assert_eq!(src.chunk_size(), BEST_COMPRESSION_CHUNK_SIZE as i32);
 
         let w = StoredFieldsWriter::new(Mode::BestSpeed, &id_write(), "");
@@ -4633,7 +4353,7 @@ mod tests {
         }
         let (fdt, fdx, fdm) = w.finish();
         let merged = open(&fdt, &fdx, &fdm, &id_write(), "").unwrap();
-        assert_eq!(merged.mode(), Mode::BestSpeed);
+        assert_eq!(merged.data_codec(), Mode::BestSpeed.data_codec());
         for i in 0..docs.len() {
             assert_doc_is(&merged, i as i32, "c", i);
         }

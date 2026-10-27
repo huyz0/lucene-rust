@@ -2,16 +2,18 @@
 //! [`lucene_index::index_writer::IndexWriter`] (`IndexWriter::set_codec`),
 //! in the spirit of Java's `TestIndexWriterExceptions2`: documents with
 //! stored fields, term vectors, norms, points, postings and doc values are
-//! added, deleted, committed and merged while the codec's writers fail with
-//! fake I/O errors. After any error the writer is dropped and a new one
-//! opened, which goes back to the last commit. Whatever fails, the index must
-//! hold exactly the committed documents, each intact, keep its `Lucene104`
-//! codec name and pass CheckIndex.
+//! added, updated, deleted, committed and merged, into compound segments for
+//! half the seeds, while the codec's writers (and its doc-values,
+//! field-infos, segment-info and compound writes) fail with fake I/O errors.
+//! After any error the writer is dropped and a new one opened, which goes
+//! back to the last commit. Whatever fails, the index must hold exactly the
+//! committed documents and doc-values updates, keep its `Lucene104` codec
+//! name and pass CheckIndex.
 // Test-support code opts out of the arithmetic gate at the file boundary:
 // see `docs/arithmetic-gate.md`.
 #![allow(clippy::arithmetic_side_effects)]
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use lucene_codecs::stored_fields::FieldValue;
@@ -56,14 +58,15 @@ fn open(dir: &dyn Directory, seed: i64) -> IndexWriter<'_> {
     w.set_codec(Some(Arc::new(InstalledCrankyCodec::new(seed))))
         .unwrap();
     w.set_max_full_flush_merge_wait_millis(0);
+    // Half the seeds write compound segments.
+    w.set_use_compound_file(seed % 2 == 0);
     w
 }
 
-/// The index's live documents, each checked: its stored id, doc value and
-/// point agree.
-fn live_ids(dir: &dyn Directory) -> BTreeSet<i64> {
+/// The index's live documents by stored id, with each one's `n`.
+fn live_ids(dir: &dyn Directory) -> BTreeMap<i64, i64> {
     let reader = DirectoryReader::open(dir).unwrap();
-    let mut ids = BTreeSet::new();
+    let mut ids = BTreeMap::new();
     for seg in reader.segment_readers() {
         let mut n = seg.numeric_doc_values("n").unwrap().expect("the n field");
         for doc in 0..seg.max_doc {
@@ -76,8 +79,7 @@ fn live_ids(dir: &dyn Directory) -> BTreeSet<i64> {
             };
             let id: i64 = id[1..].parse().unwrap();
             assert!(n.advance_exact(doc).unwrap());
-            assert_eq!(n.long_value(), id);
-            assert!(ids.insert(id), "d{id} twice");
+            assert!(ids.insert(id, n.long_value()).is_none(), "d{id} twice");
         }
     }
     ids
@@ -90,7 +92,8 @@ fn run(seed: i64, ops: usize) -> usize {
     let tmp = TempDir::new("cranky-write-path");
     let dir = FsDirectory::open(tmp.path());
     let mut random = JavaRandom::new(seed);
-    let mut committed: BTreeSet<i64> = BTreeSet::new();
+    // Live id -> `n`, as of the last commit and as of the last operation.
+    let mut committed: BTreeMap<i64, i64> = BTreeMap::new();
     let mut pending = committed.clone();
     let mut next = 0_i64;
     let mut failures = 0;
@@ -102,9 +105,20 @@ fn run(seed: i64, ops: usize) -> usize {
             let id = next;
             next += 1;
             writer.add_fields_document(&doc(id)).map(|_| {
-                pending.insert(id);
+                pending.insert(id, id);
             })
-        } else if op < 85 {
+        } else if op < 80 {
+            // A doc-values update generation (and its `.fnm` generation).
+            let id = i64::from(random.next_int_bounded(next.max(1) as i32));
+            let value = -id - 1;
+            writer
+                .update_numeric_doc_value(Term::new("id", format!("d{id}")), "n", value)
+                .map(|_| {
+                    if let Some(n) = pending.get_mut(&id) {
+                        *n = value;
+                    }
+                })
+        } else if op < 87 {
             let id = i64::from(random.next_int_bounded(next.max(1) as i32));
             writer
                 .delete_documents_by_term(&[Term::new("id", format!("d{id}"))])

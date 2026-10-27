@@ -13,6 +13,7 @@ use std::{fmt, io, mem};
 
 use lucene_store::{DataOutput, Directory, FsIndexOutput};
 
+use crate::compression::CompressingFormat;
 use crate::field_infos::FieldInfo;
 use crate::term_vectors::{self, TermVectorField, TermVectorTerm, TermVectorsDocument};
 
@@ -24,6 +25,10 @@ pub struct TermVectorsWriteState<'a> {
     pub id: &'a [u8; 16],
     pub suffix: &'a str,
     pub max_doc: i32,
+    /// A `CompressingCodec`'s format, whose name, suffix and settings the
+    /// files take (`suffix` is then the format's); `None` is
+    /// `Lucene90TermVectorsFormat`.
+    pub format: Option<&'static CompressingFormat>,
 }
 
 /// Java's document, field, term, occurrence, finish and close callbacks.
@@ -146,9 +151,16 @@ impl<'a> NativeTermVectorsWriter<'a> {
                 "term-vector suffix must be ASCII and shorter than 256 bytes",
             ));
         }
+        let encoder = match state.format {
+            None => term_vectors::TermVectorsWriter::new(state.id, state.suffix),
+            Some(format) if format.segment_suffix == state.suffix => {
+                term_vectors::TermVectorsWriter::with_format(state.id, format)
+            }
+            Some(_) => return Err(invalid("term-vector suffix differs from its format's")),
+        };
         let mut writer = Self {
             state,
-            encoder: Some(term_vectors::TermVectorsWriter::new(state.id, state.suffix)),
+            encoder: Some(encoder),
             document: None,
             field: None,
             term: None,
@@ -481,6 +493,7 @@ mod tests {
             id: &ID,
             suffix: "",
             max_doc: 1,
+            format: None,
         }
     }
     fn field() -> FieldInfo {

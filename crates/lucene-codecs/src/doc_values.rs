@@ -3070,10 +3070,13 @@ pub fn write_fields_with_skip_indexes(
 /// [`Self::DEFAULT_SKIP_INDEX_INTERVAL_SIZE`].
 ///
 /// Java groups fields by format *instance*; this port compares formats by
-/// value, so two equal instances share one set of files.
+/// value, so two equal instances share one set of files unless
+/// [`Self::as_instance`] tells them apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Lucene90DocValuesFormat {
     skip_index_interval_size: i32,
+    /// Distinguishes equal formats Java holds as separate instances.
+    instance: u32,
     /// `getName()`: [`Self::NAME`], or the name of a format that wraps this
     /// one without changing its files (`AssertingDocValuesFormat`'s
     /// `Asserting`).
@@ -3096,6 +3099,7 @@ impl Lucene90DocValuesFormat {
         }
         Ok(Lucene90DocValuesFormat {
             skip_index_interval_size,
+            instance: 0,
             name: Self::NAME,
         })
     }
@@ -3116,12 +3120,20 @@ impl Lucene90DocValuesFormat {
     pub fn named(self, name: &'static str) -> Self {
         Lucene90DocValuesFormat { name, ..self }
     }
+
+    /// This format as Java's `instance`th separate object with equal
+    /// settings (`RandomCodec`'s two default candidates): it groups its
+    /// fields apart from the others, under the next suffix of its name.
+    pub fn as_instance(self, instance: u32) -> Self {
+        Lucene90DocValuesFormat { instance, ..self }
+    }
 }
 
 impl Default for Lucene90DocValuesFormat {
     fn default() -> Self {
         Lucene90DocValuesFormat {
             skip_index_interval_size: Self::DEFAULT_SKIP_INDEX_INTERVAL_SIZE,
+            instance: 0,
             name: Self::NAME,
         }
     }

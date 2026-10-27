@@ -1360,7 +1360,10 @@ fn check_stored_fields_doc_count(
         let fdt = dir.open(fdt_name).map_err(|e| e.to_string())?;
         let fdx = dir.open(fdx_name).map_err(|e| e.to_string())?;
         let fdm = dir.open(fdm_name).map_err(|e| e.to_string())?;
-        let reader = stored_fields::open(&fdt, &fdx, &fdm, &commit.segment_id, "")
+        // A `CompressingCodec` format's files carry its segment suffix.
+        let suffix = crate::index_writer::format_suffix(&si.files, &commit.segment_name, "fdt")
+            .unwrap_or_default();
+        let reader = stored_fields::open(&fdt, &fdx, &fdm, &commit.segment_id, &suffix)
             .map_err(|e| e.to_string())?;
         let max_doc = reader.max_doc();
         // `CheckIndex.testStoredFields` pulls *every* document, deleted ones
@@ -1471,7 +1474,9 @@ fn check_term_vectors(
         let tvd = dir.open(tvd).map_err(|e| e.to_string())?;
         let tvx = dir.open(tvx).map_err(|e| e.to_string())?;
         let tvm = dir.open(tvm).map_err(|e| e.to_string())?;
-        let reader = term_vectors::open(&tvd, &tvx, &tvm, &commit.segment_id, "")
+        let suffix = crate::index_writer::format_suffix(&si.files, &commit.segment_name, "tvd")
+            .unwrap_or_default();
+        let reader = term_vectors::open(&tvd, &tvx, &tvm, &commit.segment_id, &suffix)
             .map_err(|e| e.to_string())?;
 
         let mut out = Vec::new();

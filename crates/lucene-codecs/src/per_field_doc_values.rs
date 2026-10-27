@@ -18,9 +18,10 @@
 //! format its `.fnm` attribute names, looked up *by name* -- the default
 //! instance -- under the field's own suffix.
 //!
-//! What this does not model: Java keys instances by identity, so two
-//! distinct but equal instances get two suffixes; a format here is its
-//! setting, and equal settings share one group. The read side is
+//! Java keys instances by identity, so two distinct but equal instances get
+//! two suffixes; a format here is its setting, and equal settings share one
+//! group unless `Lucene90DocValuesFormat::as_instance` numbers them apart
+//! (Differs: identity is an explicit number). The read side is
 //! `lucene-index`'s `field_updates::read_current_column` (each field opens the
 //! instance its attributes name).
 

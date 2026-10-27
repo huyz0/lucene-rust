@@ -3,7 +3,9 @@
 //! files (`Lucene104`), and its stored-fields, term-vectors, norms, points,
 //! postings and live-docs writers fail with Java's fake `IOException`s at
 //! Java's draws (`random.nextInt(100) == 0` and friends), so the writer's
-//! failure paths run against a real index.
+//! failure paths run against a real index. Its doc-values, field-infos,
+//! segment-info and compound writes fail the same way through
+//! [`Lucene104Codec::before_write`].
 //!
 //! The guards and their bounds are those of the explicit adapters
 //! ([`super::cranky_stored_fields`], [`super::cranky_term_vectors`],
@@ -16,14 +18,15 @@
 //!
 //! Differences from Java: one `Mutex<JavaRandom>` replaces the shared
 //! `Random`, so the codec is `Send + Sync` and draws in the order this
-//! port's writer calls its sinks (not Java's `IndexingChain` order); doc
-//! values, field infos, segment info and compound files have no writer hook
-//! here and are written without faults.
+//! port's writer calls its sinks (not Java's `IndexingChain` order); the
+//! doc-values, field-infos, segment-info and compound files are the native
+//! writer's, failed before or around their writes rather than inside a
+//! wrapped format.
 
 use std::io;
 use std::sync::{Arc, Mutex};
 
-use lucene_codecs::codec::Lucene104Codec;
+use lucene_codecs::codec::{Lucene104Codec, WritePoint};
 use lucene_codecs::field_infos::FieldInfo;
 use lucene_codecs::live_docs_writer::{LiveDocsWriteState, LiveDocsWriter};
 use lucene_codecs::norms::{self, NormsField};
@@ -51,7 +54,10 @@ use lucene_util::java_random::JavaRandom;
 use super::asserting_live_docs_writer::AssertingLiveDocsCodec;
 use super::asserting_norms_writer::AssertingNormsCodec;
 use super::asserting_stored_fields_writer::AssertingStoredFieldsCodec;
-use super::{cranky_norms, cranky_points, cranky_postings, cranky_stored_fields};
+use super::{
+    cranky_compound, cranky_field_infos, cranky_norms, cranky_points, cranky_postings,
+    cranky_stored_fields,
+};
 
 type Random = Arc<Mutex<JavaRandom>>;
 
@@ -107,6 +113,29 @@ impl Lucene104Codec for InstalledCrankyCodec {
 
     fn term_vectors_writer_factory(&self) -> Option<&dyn TermVectorsWriterFactory> {
         Some(self)
+    }
+
+    /// `CrankyDocValuesFormat`, `CrankyFieldInfosFormat`,
+    /// `CrankySegmentInfoFormat` and `CrankyCompoundFormat`: one
+    /// `nextInt(100)` draw at each write. The doc-values field draw cannot
+    /// tell the `add*Field` overloads apart and names the numeric one.
+    fn before_write(&self, point: WritePoint) -> io::Result<()> {
+        if !draw(&self.random, 100) {
+            return Ok(());
+        }
+        let message = match point {
+            WritePoint::DocValuesConsumer => {
+                "Fake IOException from DocValuesFormat.fieldsConsumer()"
+            }
+            WritePoint::DocValuesField => {
+                "Fake IOException from DocValuesConsumer.addNumericField()"
+            }
+            WritePoint::DocValuesClose => "Fake IOException from DocValuesConsumer.close()",
+            WritePoint::FieldInfos => cranky_field_infos::FAKE_WRITE_ERROR,
+            WritePoint::SegmentInfo => "Fake IOException from SegmentInfoFormat.write()",
+            WritePoint::Compound => cranky_compound::FAKE_WRITE_ERROR,
+        };
+        Err(io::Error::other(message))
     }
 }
 
