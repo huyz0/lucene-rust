@@ -1,0 +1,40 @@
+    version 10.5.0
+    min version 10.5.0
+    number of documents 60
+    uses compound file false
+    has blocks false
+    diagnostics 8
+      key os
+      value Linux
+      key java.vendor
+      value Ubuntu
+      key java.runtime.version
+      value 21.0.12.1+1-1-24.04.4-Ubuntu
+      key timestamp
+      value 1793115423696
+      key source
+      value flush
+      key lucene.version
+      value 10.5.0
+      key os.version
+      value 6.18.44-fc-v165
+      key os.arch
+      value amd64
+    attributes 0
+    files 10
+      file _1.pst
+      file _1.inf
+      file _1.si
+      file _1.gri
+      file _1.fld
+      file _1.dim
+      file _1.len
+      file _1.vec
+      file _1.dii
+      file _1.dat
+    id [51 48 82 82 f ed 13 c8 6c b7 5b d3 b5 b6 fa f7]
+    sort 1
+      name SortedNumericSortField
+      type <sortednumeric: "snum"> selector=MIN type=LONG
+      bytes [4 73 6e 75 6d 4 4c 4f 4e 47 0 0 0 0 0 0 0 0 0 0 0 0]
+checksum 00000000001531751177
