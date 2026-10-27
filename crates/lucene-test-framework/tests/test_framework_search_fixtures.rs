@@ -117,7 +117,8 @@ fn verbatim(c: &ScoringCase) -> String {
 }
 
 /// Every `BaseSimilarityTestCase` subclass's `testRandomScoring` and
-/// `testBulkScore`: the same cases, the same score bits.
+/// `testBulkScore`: the same cases, the same score bits, the same
+/// `SimScorer.explain` text.
 #[test]
 fn similarity_scores_are_javas_bit_for_bit() {
     let sims: Vec<_> = lines("sim").collect();
@@ -133,14 +134,33 @@ fn similarity_scores_are_javas_bit_for_bit() {
                 .filter(|c| c[0] == name && c[1] == seed)
                 .map(|c| c[3..].join(" "))
                 .collect();
+            let want_explanations: Vec<String> = lines("sexp")
+                .filter(|c| c[0] == name && c[1] == seed)
+                .map(|c| c[3..].join(" "))
+                .collect();
+            let mut explanations = Vec::new();
+            let mut eh = Fnv::new();
             let mut n = 0;
             random_scoring(&mut random, KNOBS, get, |c| {
                 if n < want.len() {
                     assert_eq!(verbatim(c), want[n], "{name} seed {seed} case {n}");
                 }
                 feed_case(&mut h, c);
+                for text in &c.explanations {
+                    if explanations.len() < want_explanations.len() {
+                        explanations.push(text.trim().replace('\n', " | "));
+                    }
+                    for &b in text.as_bytes() {
+                        eh.feed(i64::from(b));
+                    }
+                }
                 n += 1;
             });
+            assert_eq!(explanations, want_explanations, "{name} seed {seed}");
+            let simexp = lines("simexp")
+                .find(|l| l[0] == name && l[1] == seed)
+                .expect("a simexp line");
+            assert_eq!(eh.hex(), simexp[3], "{name} seed {seed}: explanation hash");
             n
         } else {
             let batches = bulk_score(&mut random, KNOBS, get);
@@ -233,17 +253,13 @@ fn explanation_query(name: &str) -> Clause {
 enum Compared {
     /// Every line.
     All,
-    /// The top line's value: the ledger's "multi-term, span flat", and a
-    /// term or a phrase under a similarity other than BM25's and
-    /// `TFIDFSimilarity`'s, explained in `SimScorer.explain`'s default
-    /// layout rather than its own breakdown.
+    /// The top line's value: the ledger's "multi-term, span flat".
     Top,
 }
 
-fn compared_part(sim_name: &str, q_name: &str) -> Compared {
+fn compared_part(_sim_name: &str, q_name: &str) -> Compared {
     match q_name {
         "mpq" | "synonym" => Compared::Top,
-        _ if sim_name.starts_with("DFR") => Compared::Top,
         _ => Compared::All,
     }
 }

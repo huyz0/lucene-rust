@@ -292,6 +292,16 @@ impl Explanation {
         }
     }
 
+    /// `getValue().toString()`: the value as Java prints the `Number` this
+    /// node holds (`7991` for a `Long`, `0.5` for a `Float` or a `Double`).
+    pub fn value_string(&self) -> String {
+        match (self.long_value, self.double_value) {
+            (Some(v), _) => v.to_string(),
+            (None, Some(d)) => crate::function::java_double(d),
+            (None, None) => java_float(self.value),
+        }
+    }
+
     /// `getValue().doubleValue()`.
     pub fn double_value(&self) -> f64 {
         match (self.double_value, self.long_value) {
@@ -338,16 +348,7 @@ impl Explanation {
         for _ in 0..depth {
             f.write_str("  ")?;
         }
-        match (self.long_value, self.double_value) {
-            (Some(v), _) => writeln!(f, "{v} = {}", self.description)?,
-            (None, Some(d)) => writeln!(
-                f,
-                "{} = {}",
-                crate::function::java_double(d),
-                self.description
-            )?,
-            (None, None) => writeln!(f, "{} = {}", java_float(self.value), self.description)?,
-        }
+        writeln!(f, "{} = {}", self.value_string(), self.description)?;
         for detail in &self.details {
             detail.fmt_at_depth(f, depth + 1)?;
         }
@@ -355,37 +356,14 @@ impl Explanation {
     }
 }
 
-/// Renders `v` the way Java's `Float.toString`/`String.valueOf(float)` does
-/// -- shortest representation that round-trips, but **always** with a decimal
-/// point (`2` renders as `"2.0"`, not `"2"`). Rust's own `Display` for `f32`
-/// drops the trailing `.0`, which would make every `score(freq=2.0)`-style
-/// description in this module differ from real Lucene's by one character;
-/// `{:?}` keeps it, and matches Java's shortest-round-trip choice for every
-/// value a score/idf/tf can take.
-///
-/// Outside `[1e-3, 1e7)` Java switches to computerized scientific notation
-/// (`1.0E-4`, `1.2345678E7`), the mantissa again always with a decimal point.
+/// Renders `v` the way Java's `Float.toString`/`String.valueOf(float)` does:
+/// the shortest decimal that round-trips, always with a decimal point
+/// (`2.0`), in computerized scientific notation outside `[1e-3, 1e7)`
+/// (`1.0E-4`), with Java's choices where Rust's formatter differs (a tie
+/// goes to the even digit; the smallest subnormals take two digits:
+/// `Float.MIN_VALUE` is `1.4E-45`).
 pub(crate) fn java_float(v: f32) -> String {
-    let a = v.abs();
-    if !v.is_finite() {
-        return if v.is_nan() {
-            "NaN".to_string()
-        } else if v > 0.0 {
-            "Infinity".to_string()
-        } else {
-            "-Infinity".to_string()
-        };
-    }
-    if a == 0.0 || (1e-3..1e7).contains(&a) {
-        return format!("{v:?}");
-    }
-    let sci = format!("{v:e}");
-    let (mantissa, exp) = sci.split_once('e').unwrap_or((&sci, "0"));
-    if mantissa.contains('.') {
-        format!("{mantissa}E{exp}")
-    } else {
-        format!("{mantissa}.0E{exp}")
-    }
+    lucene_util::geo::java_float_string(v)
 }
 
 /// Renders `clause` the way real Lucene's `Query.toString()` does for the
@@ -1062,7 +1040,7 @@ fn explain_term(
 
 /// One term's `idf` node, `TFIDFSimilarity.idfExplain(CollectionStatistics,
 /// TermStatistics)`.
-fn tfidf_idf_explanation(
+pub(crate) fn tfidf_idf_explanation(
     tfidf: &dyn crate::similarities::TfIdfSimilarity,
     doc_freq: i64,
     doc_count: i64,
@@ -1083,7 +1061,7 @@ fn tfidf_idf_explanation(
 /// idf` and reported as its own node when not 1, in the scorer's order of
 /// operations (`queryWeight * tf * norm`) over the similarity's own
 /// `normTable`.
-fn explain_tfidf(
+pub(crate) fn explain_tfidf(
     tfidf: &dyn crate::similarities::TfIdfSimilarity,
     boost: f32,
     idf: Explanation,
@@ -1119,7 +1097,7 @@ fn explain_tfidf(
 /// frequency the weight hands it; `dl` is `LENGTH_TABLE[norm]` and `avgdl`
 /// the collection's (`BM25Similarity.avgFieldLength`), which the scorer's
 /// cache was built from.
-fn explain_bm25(
+pub(crate) fn explain_bm25(
     bm25: &crate::similarities::Bm25Similarity,
     boost: f32,
     value: f32,
@@ -1169,7 +1147,7 @@ fn explain_bm25(
 /// `idfExplain(collectionStats, termStats[])`'s node over one idf node per
 /// term: the one term's, or `description` over their sum in a double,
 /// narrowed once.
-fn summed_idf_explanation(mut idfs: Vec<Explanation>, description: &str) -> Explanation {
+pub(crate) fn summed_idf_explanation(mut idfs: Vec<Explanation>, description: &str) -> Explanation {
     if idfs.len() == 1 {
         return idfs.remove(0);
     }
@@ -1183,10 +1161,11 @@ fn summed_idf_explanation(mut idfs: Vec<Explanation>, description: &str) -> Expl
 /// it is not the default BM25 (`None` under the default): `TermWeight`'s
 /// and `PhraseWeight`'s `weight(q in doc) [Similarity], result of:` over
 /// `similarity.scorer(boost, collectionStats, termStats...).explain(freq,
-/// norm)`. A `TFIDFSimilarity` and a `BM25Similarity` explain their own
-/// breakdowns; any other similarity explains its scorer's score in
-/// `SimScorer.explain`'s default layout (`score(freq=f), with freq of:`),
-/// not its own breakdown. The value is the scorer's: the hit's score.
+/// norm)`. A `TFIDFSimilarity` and a `BM25Similarity` (here, or unwrapped
+/// from a `PerFieldSimilarityWrapper`) explain their breakdowns from the
+/// weight's statistics; any other similarity explains through its own
+/// [`crate::similarities::SimScorer::explain`]. The value is the scorer's:
+/// the hit's score.
 #[allow(clippy::too_many_arguments)]
 fn explain_under_similarity(
     fields: &BlockTreeFields,
@@ -1230,9 +1209,8 @@ fn explain_under_similarity(
             let idf = summed_idf_explanation(idfs, "idf(), sum of:");
             explain_tfidf(tfidf, boost, idf, freq, encoded)
         } else {
-            let value = sim
-                .scorer(field, boost, &collection, &term_stats)
-                .score(freq.value, encoded);
+            let scorer = sim.scorer(field, boost, &collection, &term_stats);
+            let value = scorer.score(freq.value, encoded);
             if let Some(bm25) = sim.as_bm25(field) {
                 let idfs = term_stats
                     .iter()
@@ -1247,11 +1225,7 @@ fn explain_under_similarity(
                 let idf = summed_idf_explanation(idfs, "idf, sum of:");
                 explain_bm25(bm25, boost, value, idf, freq, encoded, &collection)
             } else {
-                Explanation::match_(
-                    value,
-                    format!("score(freq={}), with freq of:", java_float(freq.value)),
-                )
-                .with_details(vec![freq])
+                scorer.explain(freq, encoded)
             }
         };
         Ok(Some(

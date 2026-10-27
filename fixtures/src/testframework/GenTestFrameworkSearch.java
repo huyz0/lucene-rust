@@ -103,7 +103,8 @@ import org.junit.runner.notification.Failure;
  *       {@code + 1} (bulk), {@code random()} and the {@code random} argument being one stream as
  *       they are inside a test. Each run is one line: the case count and an FNV-1a hash of every
  *       statistic, frequency, boost and score bit pattern it compared; the first cases also
- *       verbatim, so a divergence can be located.
+ *       verbatim, so a divergence can be located. Each scoring run's {@code SimScorer.explain}
+ *       texts are hashed apart ({@code simexp}), the first two verbatim ({@code sexp}).
  *   <li>{@code shuffle}: {@code Collections.shuffle} of 0..9 under {@code new Random(42)}.
  *   <li>{@code rsim}: the {@code allSims} index {@code RandomSimilarity.get} picks per field.
  *   <li>{@code exp}: {@code BaseExplanationTestCase}'s four documents searched under BM25 and
@@ -356,11 +357,19 @@ public class GenTestFrameworkSearch {
 
   static int cases;
 
+  static String currentName;
+
+  static int currentSeed;
+
   /** {@code testRandomScoring}. */
   static void randomScoring(String name, int seed, Function<Random, Similarity> get)
       throws Exception {
     Random random = new Random(seed);
     hash = 0xcbf29ce484222325L;
+    explanationHash = 0xcbf29ce484222325L;
+    explanations = 0;
+    currentName = name;
+    currentSeed = seed;
     cases = 0;
     final int iterations = LuceneTestCase.atLeast(random, 1);
     for (int i = 0; i < iterations; i++) {
@@ -412,7 +421,13 @@ public class GenTestFrameworkSearch {
       }
     }
     line("sim", name, "scoring", seed, cases, String.format("%016x", hash));
+    line("simexp", name, seed, explanations, String.format("%016x", explanationHash));
   }
+
+  /** FNV-1a over every checked explanation's text, apart from {@link #hash}. */
+  static long explanationHash;
+
+  static int explanations;
 
   static void checkExplanation(Random random, SimScorer scorer, float freq, long norm, float score) {
     Explanation explanation =
@@ -420,6 +435,15 @@ public class GenTestFrameworkSearch {
     if (score != explanation.getValue().doubleValue()) {
       throw new AssertionError("expected: " + score + ", got: " + explanation);
     }
+    String text = explanation.toString();
+    for (byte b : text.getBytes(java.nio.charset.StandardCharsets.UTF_8)) {
+      explanationHash ^= b & 0xff;
+      explanationHash *= 0x100000001b3L;
+    }
+    if (explanations < 2) {
+      line("sexp", currentName, currentSeed, explanations, text.strip().replace("\n", " | "));
+    }
+    explanations++;
     if (LuceneTestCase.rarely(random)) {
       CheckHits.verifyExplanation("<test query>", 0, score, true, explanation);
     }
