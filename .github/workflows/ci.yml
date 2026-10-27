@@ -38,6 +38,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The coverage build's test binaries (lucene-test-framework alone has
+      # dozens, each with full debug info) outgrew the runner's free disk:
+      # rustc died with "No space left on device". Drop the preinstalled
+      # toolsets this job never uses (~30 GB on the x64 image).
+      - name: Free runner disk space
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
+            /usr/share/swift /usr/local/julia* /opt/microsoft || true
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          df -h / | tail -1
+
       # No toolchain action: rust-toolchain.toml pins the version and its
       # components, and rustup installs it on the first cargo invocation. That
       # keeps CI honest -- if the pin is wrong, this is where it shows up.
@@ -149,7 +162,14 @@ jobs:
       # lucene-ffi's never-loaded cdylib from the report (its phantom copies of
       # the `#[no_mangle]` entry points hid the executed ones); see
       # docs/mechanical-gates.md#coverage-objects.
+      # Coverage maps come from the instrumentation, not DWARF: without debug
+      # info the test binaries are a fraction of the size, which is what kept
+      # running the runner's disk out (rustc "No space left on device", ld
+      # "signal 7 [Bus error]" on a full disk's mmap).
       - name: Tests + coverage gate
+        env:
+          CARGO_PROFILE_DEV_DEBUG: '0'
+          CARGO_PROFILE_TEST_DEBUG: '0'
         run: |
           set -o pipefail
           scripts/coverage.sh --workspace -- --summary-only --fail-under-lines 95 | tee coverage.txt

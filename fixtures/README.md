@@ -1522,7 +1522,7 @@ outright.
   `crates/lucene-analysis-icu/tests/icu_breaks_fixtures.rs`.
 - `GenAnalysisIcuRules.java` — M12 T12.4: ICU4J's break rule compiler
   (`new RuleBasedBreakIterator(String)`, `ICU_DEPS`, own classpath,
-  `analysis_icu_rules/`; inputs in `analysis_icu_rules_src/`: the five
+  `analysis_icu_rules/`; inputs in `fixtures/corpus/analysis-icu-rules/`: the five
   `.rbbi` files of Lucene 10.5.0's analysis-icu, copied, and `Bad.rbbi`):
   every rule set (those, and 27 `inline_*.rbbi` written here, one per rule
   feature, and 24 ICU4J rejects) with, per 360 texts, every boundary, rule

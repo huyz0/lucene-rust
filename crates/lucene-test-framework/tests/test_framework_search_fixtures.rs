@@ -282,6 +282,41 @@ fn compared(part: Compared, line: &str, seen_top: &mut bool) -> Option<String> {
     line.split(" = ").next().map(str::to_string)
 }
 
+/// `text`'s lines with the details of every `max ... of:` node sorted by
+/// their text, as `GenTestFrameworkSearch.canonicalMaxOrder` records Java's:
+/// `DisjunctionMaxQuery`'s disjunct order follows identity hashes there.
+fn canonical_max_order(text: &str) -> Vec<String> {
+    fn indent(line: &str) -> usize {
+        line.len() - line.trim_start_matches(' ').len()
+    }
+    fn node(lines: &[&str], at: usize, out: &mut Vec<String>) -> usize {
+        let depth = indent(lines[at]);
+        let mut end = at + 1;
+        let mut children = Vec::new();
+        while end < lines.len() && indent(lines[end]) > depth {
+            let mut child = Vec::new();
+            end = node(lines, end, &mut child);
+            children.push(child);
+        }
+        let head = lines[at].trim();
+        let is_max = head.ends_with(" times others of:") && head.contains(" = max plus ")
+            || head.ends_with(" = max of:");
+        if is_max {
+            children.sort_by_key(|c: &Vec<String>| c.join("\n"));
+        }
+        out.push(lines[at].to_string());
+        out.extend(children.into_iter().flatten());
+        end
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = Vec::new();
+    let mut at = 0;
+    while at < lines.len() {
+        at = node(&lines, at, &mut out);
+    }
+    out
+}
+
 /// `BaseExplanationTestCase`'s index under BM25, `ClassicSimilarity` and
 /// (some queries) BM25 with its own `k1` and `b`, DFR and
 /// `SweetSpotSimilarity` with a document outside its sweet spot: the same
@@ -317,12 +352,12 @@ fn explanations_are_javas() {
             writeln!(got, "exp {sim_name} {q_name} {}", td.total_hits.value).expect("write");
             for sd in &td.score_docs {
                 let text = s.explain(&q, sd.doc).expect("explain").to_string();
-                let text = text.trim_end_matches('\n');
+                let text = canonical_max_order(text.trim_end_matches('\n'));
                 let mut lines = vec![
                     format!("hit {} {}", sd.doc, bits(sd.score)),
-                    format!("expl {}", text.lines().count()),
+                    format!("expl {}", text.len()),
                 ];
-                lines.extend(text.lines().map(|line| format!("| {line}")));
+                lines.extend(text.iter().map(|line| format!("| {line}")));
                 let mut seen_top = false;
                 for line in lines {
                     if let Some(line) = compared(part, &line, &mut seen_top) {

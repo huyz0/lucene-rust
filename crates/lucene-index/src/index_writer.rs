@@ -2514,7 +2514,8 @@ impl IndexingConfig {
         // exhaustive `match`es then force this method to open it.
         let source_names: Vec<&str> = plan.names.iter().map(|s| s.as_str()).collect();
         let source_files: Vec<&[String]> = opened.iter().map(|o| o.files.as_slice()).collect();
-        merge::check_format_coverage(&source_names, &source_files, &sources)?;
+        let postings_opened: Vec<bool> = opened_postings.iter().map(Option::is_some).collect();
+        merge::check_format_coverage(&source_names, &source_files, &sources, &postings_opened)?;
 
         // `MultiSorter.sort`'s `IndexSorter.getComparableValues`: each sort
         // tier's key for every document of every source, read out of the very
@@ -15647,6 +15648,41 @@ pub(crate) mod tests {
             "{}.tim",
             per_field_segment(&sci.segment_name, POSTINGS_FORMAT_NAME)
         )));
+    }
+
+    #[test]
+    fn a_merged_routed_field_without_terms_merges_again() {
+        // A routed field outlives a merge that drops its last term, so the
+        // merged segment keeps postings files whose dictionary names no term.
+        // The next merge opens them and gets no `SourcePostings` back; the
+        // coverage gate must not mistake that for files it never opened.
+        let tmp = tempdir("routed-field-without-terms");
+        let dir = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0), body_field(1)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.set_postings_field(Some("body")).unwrap();
+        writer.add_document(doc_with_body("a", "apple")).unwrap();
+        writer.add_document(doc_with_body("b", "")).unwrap();
+        writer.commit().unwrap();
+        writer
+            .delete_documents_by_term(&[Term::new("body", "apple")])
+            .unwrap();
+        writer.commit().unwrap();
+        writer.force_merge(1).unwrap();
+
+        writer.add_document(doc_with_body("c", "")).unwrap();
+        writer.commit().unwrap();
+        writer.force_merge(1).unwrap();
+        writer.commit().unwrap();
+
+        let segments = &writer.segment_infos().segments;
+        assert_eq!(segments.len(), 1);
+        let si_bytes = dir
+            .open(&format!("{}.si", segments[0].segment_name))
+            .unwrap();
+        let si = segment_info::parse(&si_bytes, &segments[0].segment_id).unwrap();
+        assert_eq!(si.doc_count, 2);
+        assert!(si.files.iter().any(|f| f.ends_with(".tim")));
     }
 
     #[test]

@@ -101,6 +101,23 @@ fn sorted_lines(s: &str) -> Vec<&str> {
     lines
 }
 
+/// `doc=N` with the number masked, the lines then compared as a multiset:
+/// see [`sorted_lines`].
+fn mask_doc_ids(s: &str) -> Vec<String> {
+    let mut lines: Vec<String> = s
+        .lines()
+        .map(|l| match l.strip_prefix("doc=") {
+            Some(rest) => {
+                let tail = rest.trim_start_matches(|c: char| c.is_ascii_digit());
+                format!("doc=#{tail}")
+            }
+            None => l.to_string(),
+        })
+        .collect();
+    lines.sort_unstable();
+    lines
+}
+
 fn run_case(tool: &str, args: &[String], stdin: &str) -> (i32, String, String) {
     let (mut out, mut err) = (Vec::new(), Vec::new());
     let code = if tool == "SearchFiles" {
@@ -176,6 +193,10 @@ fn demo_tools_print_what_lucene_prints() {
         let err = clean(&err, &docs, &fixture, &scratch);
         let same_out = if id.starts_with("walk-") && tool == "IndexFiles" {
             sorted_lines(&out) == sorted_lines(&want_out)
+        } else if id.starts_with("walk-") {
+            // the walk's order numbered the documents, so a search over a
+            // walked index names the same hits under other doc ids
+            mask_doc_ids(&out) == mask_doc_ids(&want_out)
         } else {
             out == want_out
         };

@@ -21,7 +21,10 @@ fn read(file: &str) -> String {
 fn rulefiles_chains_match_lucene() {
     lucene_analysis_icu::register_factories().unwrap();
     let lines = corpus("analysis-icu.txt");
-    let src = data_dir("analysis_icu_rules_src");
+    let src = format!(
+        "{}/../../fixtures/corpus/analysis-icu-rules/",
+        env!("CARGO_MANIFEST_DIR")
+    );
     let mut compared = 0;
     let mut refused = 0;
     for spec in read("rulefiles_specs.tsv").lines() {

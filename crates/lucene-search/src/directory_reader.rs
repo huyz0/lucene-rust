@@ -2051,9 +2051,35 @@ enum NormSource {
 
 impl DirectoryReader {
     /// Opens every segment listed in the latest commit found in `dir`.
+    ///
+    /// `SegmentInfos.FindSegmentsFile.run`: a writer committing concurrently
+    /// may delete that commit's files between the listing and the open, so a
+    /// failure is retried for as long as the latest commit generation keeps
+    /// advancing, and the first failure reported once it stops.
     pub fn open(dir: &dyn Directory) -> Result<Self> {
-        let segment_infos = segment_infos::read_latest(dir)?;
-        Self::open_at(dir, segment_infos)
+        let mut last_gen = -1i64;
+        let mut first_err = None;
+        loop {
+            let gen = dir
+                .list_all()
+                .and_then(|files| lucene_store::directory::last_commit_generation(&files))
+                .unwrap_or(-1);
+            if gen <= last_gen {
+                if let Some(e) = first_err {
+                    return Err(e);
+                }
+            }
+            let opened = segment_infos::read_latest(dir)
+                .map_err(Error::from)
+                .and_then(|segment_infos| Self::open_at(dir, segment_infos));
+            match opened {
+                Ok(reader) => return Ok(reader),
+                Err(e) => {
+                    first_err.get_or_insert(e);
+                }
+            }
+            last_gen = gen;
+        }
     }
 
     /// `DirectoryReader.listCommits(dir)`: every commit point in `dir`,

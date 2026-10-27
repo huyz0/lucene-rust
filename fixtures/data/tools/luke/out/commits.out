@@ -2,14 +2,14 @@ commit 3 deleted=false segments=3 user data={note=a deletion, source=GenToolsLuk
   same commit: true
   file _0.cfe 842 B
   file _0.cfs 7 KB
-  file _0.si 352 B
+  file _0.si 337 B
   file _1.cfe 842 B
   file _1.cfs 6 KB
-  file _1.si 352 B
+  file _1.si 337 B
   file _1_1.liv 67 B
   file _2.cfe 842 B
   file _2.cfs 5 KB
-  file _2.si 352 B
+  file _2.si 337 B
   file segments_3 364 B
   segment _0 maxDoc=3 delGen=-1 delCount=0 version=10.5.0 codec=Lucene104 size=8 KB compound=true
     attributes: {Lucene90StoredFieldsFormat.mode=BEST_SPEED}
@@ -27,10 +27,10 @@ commit 2 deleted=false segments=2 user data={source=GenToolsLuke, step=2}
   same commit: true
   file _0.cfe 842 B
   file _0.cfs 7 KB
-  file _0.si 352 B
+  file _0.si 337 B
   file _1.cfe 842 B
   file _1.cfs 6 KB
-  file _1.si 352 B
+  file _1.si 337 B
   file segments_2 265 B
   segment _0 maxDoc=3 delGen=-1 delCount=0 version=10.5.0 codec=Lucene104 size=8 KB compound=true
     attributes: {Lucene90StoredFieldsFormat.mode=BEST_SPEED}
@@ -44,7 +44,7 @@ commit 1 deleted=false segments=1 user data={source=GenToolsLuke, step=1}
   same commit: true
   file _0.cfe 842 B
   file _0.cfs 7 KB
-  file _0.si 352 B
+  file _0.si 337 B
   file segments_1 182 B
   segment _0 maxDoc=3 delGen=-1 delCount=0 version=10.5.0 codec=Lucene104 size=8 KB compound=true
     attributes: {Lucene90StoredFieldsFormat.mode=BEST_SPEED}

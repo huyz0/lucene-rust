@@ -755,6 +755,44 @@ public class GenTestFrameworkSearch {
     }
   }
 
+  /**
+   * {@code lines} with the details of every {@code max ... of:} node sorted
+   * by their text: {@code DisjunctionMaxQuery} keeps its disjuncts in a
+   * {@code Multiset}, so their order follows {@code Query.hashCode}, whose
+   * {@code classHash()} is the class's identity hash and differs between
+   * JVM runs. The Rust test sorts its own the same way.
+   */
+  static String[] canonicalMaxOrder(String[] lines) {
+    List<String> out = new ArrayList<>();
+    canonicalNode(lines, 0, out);
+    return out.toArray(new String[0]);
+  }
+
+  static int indent(String line) {
+    int i = 0;
+    while (i < line.length() && line.charAt(i) == ' ') i++;
+    return i;
+  }
+
+  /** Appends the subtree rooted at {@code lines[at]} to {@code out}; returns its end. */
+  static int canonicalNode(String[] lines, int at, List<String> out) {
+    int depth = indent(lines[at]);
+    int end = at + 1;
+    List<List<String>> children = new ArrayList<>();
+    while (end < lines.length && indent(lines[end]) > depth) {
+      List<String> child = new ArrayList<>();
+      end = canonicalNode(lines, end, child);
+      children.add(child);
+    }
+    String head = lines[at].trim();
+    if (head.matches(".* = max (plus .* times others )?of:")) {
+      children.sort((a, b) -> String.join("\n", a).compareTo(String.join("\n", b)));
+    }
+    out.add(lines[at]);
+    for (List<String> c : children) out.addAll(c);
+    return end;
+  }
+
   /** {@code exp} rows: each query's top docs under {@code sim} and each hit's explanation. */
   static void explain(DirectoryReader reader, String name, Similarity sim, List<Object[]> queries)
       throws Exception {
@@ -769,7 +807,8 @@ public class GenTestFrameworkSearch {
       line("exp", name, nq[0], td.totalHits.value());
       for (ScoreDoc sd : td.scoreDocs) {
         line("hit", sd.doc, bits(sd.score));
-        String[] lines = searcher.explain(q, sd.doc).toString().split("\n");
+        String[] lines =
+            canonicalMaxOrder(searcher.explain(q, sd.doc).toString().split("\n"));
         line("expl", lines.length);
         for (String l : lines) line("|", l);
       }
