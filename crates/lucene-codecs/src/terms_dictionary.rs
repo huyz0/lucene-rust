@@ -7,7 +7,7 @@
 //! Such a format writes the same `.doc`/`.pos`/`.pay`/`.psm` as the default
 //! one and differs only in the dictionary files; a [`TermsDictionaryFormat`]
 //! is that difference. `per_field_postings` writes a field routed to one
-//! through its [`TermsDictionaryWriter`], and reads a group of one back by
+//! through its [`TermsDictionaryFormat::write`], and reads a group of one back by
 //! decoding its dictionary ([`TermsDictionaryFormat::read`]) and rewriting
 //! it as a block tree over the group's own postings
 //! (`postings_writer::write_block_tree_dictionary`).
