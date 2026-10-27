@@ -8,9 +8,10 @@ use lucene_index::similarity::NormSimilarity;
 use lucene_util::geo::{java_double_string, java_float_string};
 use lucene_util::{small_float, strict_math};
 
+use crate::explain::Explanation;
 use crate::similarities::{
     summed_idf, ClassicSimilarity, CollectionStatistics, SimScorer, Similarity, TermStatistics,
-    TfIdfSimilarity,
+    TfIdfExplain, TfIdfSimilarity,
 };
 
 /// `SweetSpotSimilarity`. The defaults are Java's: a flat length norm at one
@@ -154,12 +155,17 @@ struct SweetSpotScorer {
     query_weight: f32,
     sim: SweetSpotSimilarity,
     norm_table: [f32; 256],
+    explain: TfIdfExplain,
 }
 
 impl SimScorer for SweetSpotScorer {
     fn score(&self, freq: f32, norm: i64) -> f32 {
         let raw = self.sim.baseline_tf(freq) * self.query_weight;
         raw * self.norm_table[(norm & 0xFF) as usize]
+    }
+    /// `TFIDFScorer.explain`, as `SweetSpotSimilarity` inherits it.
+    fn explain(&self, freq: Explanation, norm: i64) -> Explanation {
+        self.explain.explain(&self.sim, freq, norm)
     }
 }
 
@@ -189,6 +195,7 @@ impl Similarity for SweetSpotSimilarity {
             query_weight: boost * idf,
             sim: *self,
             norm_table: self.length_norm_table(),
+            explain: TfIdfExplain::new(boost, collection, terms),
         })
     }
 
@@ -219,6 +226,31 @@ impl TfIdfSimilarity for SweetSpotSimilarity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `TFIDFScorer.explain` with the baseline `tf`: the score, the idf
+    /// over each term and the length norm.
+    #[test]
+    fn scorer_explains_as_tfidf() {
+        let mut s = SweetSpotSimilarity::default();
+        s.set_length_norm_factors(3, 5, 0.5);
+        let collection = CollectionStatistics::new(10, 10, 50, 20).unwrap();
+        let term = TermStatistics::new(2, 4).unwrap();
+        let scorer = s.scorer("f", 2.0, &collection, &[term, term]);
+        let freq = Explanation::match_(2.0, "freq, occurrences of term within document");
+        let e = scorer.explain(freq, 9);
+        assert_eq!(e.value, scorer.score(2.0, 9));
+        assert_eq!(e.description, "score(freq=2.0), product of:");
+        let parts: Vec<&str> = e.details.iter().map(|d| d.description.as_str()).collect();
+        assert_eq!(
+            parts,
+            [
+                "boost",
+                "idf(), sum of:",
+                "tf(freq=2.0), with freq of:",
+                "fieldNorm"
+            ]
+        );
+    }
 
     #[test]
     fn length_norm_is_flat_between_min_and_max() {

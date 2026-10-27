@@ -20,6 +20,8 @@ use lucene_search::top_docs::{ShardScoreDoc, TopDocs};
 use lucene_search::Result;
 use lucene_util::java_random::JavaRandom;
 
+use super::query_utils;
+
 /// `AssertingCollector`: every document is collected once, in ascending
 /// global order across the whole search (not only within a segment), with a
 /// score that is a number at or above zero.
@@ -116,9 +118,22 @@ impl<'r, 's, 'a> AssertingIndexSearcher<'r, 's, 'a> {
         query: &BooleanQuery,
         collector: &mut C,
     ) -> Result<()> {
+        self.rewrite(query)?;
         let _guard = self.guard();
         let mut asserting = AssertingCollector::wrap(collector);
         self.inner.search_collector(query, &mut asserting)
+    }
+
+    /// `rewrite(query)`: `QueryUtils.check` of the query and of its
+    /// rewritten form, as every search here makes it.
+    ///
+    /// # Errors
+    /// Whatever rewriting reports.
+    pub fn rewrite(&self, query: &BooleanQuery) -> Result<BooleanQuery> {
+        query_utils::check(query);
+        let rewritten = self.inner.rewrite(query)?;
+        query_utils::check(&rewritten);
+        Ok(rewritten)
     }
 
     /// `search(query, n)`: through a `TopScoreDocCollector` (so through the
@@ -145,6 +160,7 @@ impl<'r, 's, 'a> AssertingIndexSearcher<'r, 's, 'a> {
     /// # Errors
     /// Whatever the search reports.
     pub fn count(&self, query: &BooleanQuery) -> Result<u64> {
+        self.rewrite(query)?;
         let _guard = self.guard();
         self.inner.count(query)
     }
