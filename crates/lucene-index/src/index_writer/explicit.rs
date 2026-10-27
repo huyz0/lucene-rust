@@ -80,9 +80,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::pending_postings::PendingPostings;
+#[cfg(test)]
+use super::DOC_VALUES_FORMAT_NAME;
 use super::{
     DocValuesFieldConfig, DocumentBuffer, Error, IndexWriter, IndexingConfig, PointsFieldConfig,
-    Result, DOC_VALUES_FORMAT_NAME,
+    Result,
 };
 use crate::segment_infos::SegmentCommitInfo;
 use crate::segment_writer;
@@ -874,7 +876,7 @@ impl IndexingConfig {
             doc_values_output
                 .as_deref()
                 .and_then(|groups| groups.iter().find(|g| g.field_numbers.contains(&number)))
-                .map(|g| g.suffix)
+                .map(|g| (g.format_name, g.suffix))
         };
         let point_configs: Vec<PointsFieldConfig> = self
             .fields
@@ -921,6 +923,7 @@ impl IndexingConfig {
                 &vector_configs,
                 i32::try_from(max_doc).map_err(|_| explicit_error("too many documents"))?,
                 &|name: &str| self.knn_vectors_format_for(name),
+                self.knn_vectors_direct(),
                 &segment_id,
             )?
         };
@@ -1013,10 +1016,12 @@ impl IndexingConfig {
             .map(|f| {
                 let mut f = f.clone();
                 f.attributes.retain(|(k, _)| !k.starts_with("PerField"));
+                // A direct postings group's fields record no attributes.
                 let postings_suffix = postings_output.as_ref().and_then(|groups| {
                     groups
                         .iter()
                         .find(|g| g.field_numbers.contains(&f.number))
+                        .filter(|g| !g.direct)
                         .map(|g| (g.format_name, g.suffix))
                 });
                 if let (true, Some((format_name, suffix))) =
@@ -1031,17 +1036,20 @@ impl IndexingConfig {
                         suffix.to_string(),
                     ));
                 }
-                if let Some(suffix) = dv_suffix(f.number) {
+                if let Some((format_name, suffix)) = dv_suffix(f.number) {
                     f.attributes.push((
                         per_field_doc_values::PER_FIELD_FORMAT_KEY.to_string(),
-                        DOC_VALUES_FORMAT_NAME.to_string(),
+                        format_name.to_string(),
                     ));
                     f.attributes.push((
                         per_field_doc_values::PER_FIELD_SUFFIX_KEY.to_string(),
                         suffix.to_string(),
                     ));
                 }
-                if let Some(written) = vector_fields_written.iter().find(|w| w.name == f.name) {
+                if let Some(written) = vector_fields_written
+                    .iter()
+                    .find(|w| w.name == f.name && !w.direct)
+                {
                     f.attributes.push((
                         "PerFieldKnnVectorsFormat.format".to_string(),
                         written.format.to_string(),

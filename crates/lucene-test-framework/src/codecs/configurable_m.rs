@@ -14,8 +14,9 @@
 //! the existing flat writer, scorer and HNSW builder without changing their
 //! representations. Validation/build failures therefore occur at flush rather
 //! than `addValue`, and no streaming writer lifecycle is claimed. Directory,
-//! IOContext, sorted flush, configured-M merge graph reuse and installation in
-//! IndexWriter/Codec SPI remain unimplemented. The borrowed native reader
+//! IOContext, sorted flush and configured-M merge graph reuse remain with
+//! this adapter's limits; installed in `IndexWriter` (its `Lucene104Codec`
+//! impl) the writer's own flush and merge write the direct format. The borrowed native reader
 //! checks all four CRCs on open; Java defers data CRCs to `checkIntegrity`.
 //! Inherited codec display, format display and the format's fixed
 //! `getMaxDimensions(fieldName) == 1024` accessor are not exposed by this API.
@@ -68,6 +69,33 @@ impl<D> ConfigurableMCodec<D> {
     }
     pub fn knn_vectors_format(&self) -> &ConfigurableMHnswFormat {
         &self.vectors
+    }
+}
+
+impl<D> std::fmt::Debug for ConfigurableMCodec<D> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConfigurableMCodec")
+            .field("max_conn", &self.vectors.max_conn)
+            .finish()
+    }
+}
+
+/// Installation in `IndexWriter::set_codec`: Java's codec as `IndexWriter`
+/// runs it. Every field's vectors go to the one direct
+/// `Lucene99HnswVectorsFormat(M, 100)` (unsuffixed `_0.vec`, no per-field
+/// attributes) and every other format is `Lucene104`'s; segments record
+/// `ConfigurableMCodec`, which [`super::register_codecs`] makes readable.
+impl lucene_codecs::codec::Lucene104Codec for ConfigurableMCodec<DefaultLucene104Codec> {
+    fn name(&self) -> &str {
+        ConfigurableMCodec::name(self)
+    }
+
+    fn knn_vectors_format_for_field(&self, _field: &str) -> KnnVectorsFormat {
+        KnnVectorsFormat::hnsw(self.vectors.max_conn, 100).expect("validated at construction")
+    }
+
+    fn knn_vectors_format_is_direct(&self) -> bool {
+        true
     }
 }
 
