@@ -31,6 +31,7 @@ macro_rules! suite_tests {
 
 suite_tests! {
     test_docs_only => "testDocsOnly",
+    test_inverted_write => "testInvertedWrite",
     test_docs_and_freqs => "testDocsAndFreqs",
     test_docs_and_freqs_and_positions => "testDocsAndFreqsAndPositions",
     test_docs_and_freqs_and_positions_and_payloads => "testDocsAndFreqsAndPositionsAndPayloads",
@@ -127,4 +128,18 @@ fn check_integrity_reads_all_bytes() {
     run("testCheckIntegrityReadsAllBytes", |t| {
         test_check_integrity_reads_all_bytes(&PostingsSuite, t);
     });
+}
+
+/// `testInvertedWrite`'s consumer saw flushes and merges, so its checks
+/// ran on both.
+#[test]
+fn inverted_write_sees_flushes_and_merges() {
+    let mut merges = 0;
+    for seed in SEEDS {
+        let mut t = LuceneTestCase::with_config("testInvertedWrite", seed, false, 1);
+        let stats = lucene_test_framework::index::inverted_write::inverted_write(&mut t, 100, true);
+        assert!(stats.flushes > 0, "{stats:?}");
+        merges += stats.merges;
+    }
+    assert!(merges > 0, "no merge was seen");
 }
