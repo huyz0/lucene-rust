@@ -1124,7 +1124,7 @@ pub enum AlwaysFormat {
 /// The anonymous `AssertingCodec` subclasses `TestUtil.always*Format`
 /// return: `Asserting` everywhere except the one family whose
 /// `get*FormatForField` answers the given format for every field.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct AlwaysFormatCodec {
     asserting: InstalledAssertingCodec,
     format: AlwaysFormat,

@@ -738,6 +738,10 @@ simpletext_phrase_scorer/deep/flush/index/_2.si <unreadable: not a Lucene codec 
 simpletext_phrase_scorer/deep/flush/index/segments_1 ea30d8b2463d0350cb60e97ca5b99032
 simpletext_phrase_scorer/deep/merged/index/_3.si <unreadable: not a Lucene codec header>
 simpletext_phrase_scorer/deep/merged/index/segments_1 ea30d8b2463d0350cb60e97ca5b99040
+simpletext_search/index/_0.si <unreadable: not a Lucene codec header>
+simpletext_search/index/_1.si <unreadable: not a Lucene codec header>
+simpletext_search/index/_2.si <unreadable: not a Lucene codec header>
+simpletext_search/index/segments_4 514882820fed13c86cb75bd3b5b6fb01
 sort_val_index/_0.si b112e5607d3e2a71c51385126d837092
 sort_val_index/_1.si b112e5607d3e2a71c51385126d837096
 sort_val_index/segments_3 b112e5607d3e2a71c51385126d83709b

@@ -1,0 +1,564 @@
+field num
+  type NUMERIC
+  minalue -18
+  maxvalue 99
+  doccount 53
+  maxvaluecount 1
+  origin -18
+  pattern 000
+029
+T
+086
+T
+015
+T
+052
+T
+018
+F
+061
+T
+027
+T
+055
+T
+117
+T
+095
+T
+039
+T
+017
+T
+030
+T
+077
+T
+025
+T
+000
+T
+074
+T
+018
+F
+060
+T
+030
+T
+052
+T
+093
+T
+093
+T
+047
+T
+030
+T
+106
+T
+029
+T
+067
+T
+065
+T
+046
+T
+046
+T
+081
+T
+018
+F
+046
+T
+088
+T
+033
+T
+085
+T
+019
+T
+062
+T
+061
+T
+012
+T
+018
+F
+085
+T
+018
+F
+088
+T
+056
+T
+018
+F
+074
+T
+084
+T
+051
+T
+016
+T
+078
+T
+014
+T
+100
+T
+027
+T
+103
+T
+102
+T
+050
+T
+096
+T
+018
+F
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 8
+      minValue -3
+      maxValue 99
+      docCount 8
+    interval
+      minDocID 9
+      maxDocID 16
+      minValue -18
+      maxValue 77
+      docCount 8
+    interval
+      minDocID 18
+      maxDocID 25
+      minValue 12
+      maxValue 88
+      docCount 8
+    interval
+      minDocID 26
+      maxDocID 34
+      minValue 11
+      maxValue 70
+      docCount 8
+    interval
+      minDocID 35
+      maxDocID 44
+      minValue -6
+      maxValue 70
+      docCount 8
+    interval
+      minDocID 45
+      maxDocID 53
+      minValue -4
+      maxValue 82
+      docCount 8
+    interval
+      minDocID 54
+      maxDocID 58
+      minValue 9
+      maxValue 85
+      docCount 5
+  skipend
+field snum
+  type SORTED_NUMERIC
+  minalue 0
+  maxvalue 97
+  doccount 60
+  maxvaluecount 1
+  maxlength 7
+  pattern 0
+length 4
+[30]   
+T
+length 4
+[30]   
+T
+length 4
+[31]   
+T
+length 4
+[34]   
+T
+length 7
+[31 30]
+T
+length 7
+[31 30]
+T
+length 7
+[31 32]
+T
+length 7
+[31 32]
+T
+length 7
+[31 33]
+T
+length 7
+[31 37]
+T
+length 7
+[31 38]
+T
+length 7
+[32 32]
+T
+length 7
+[32 33]
+T
+length 7
+[32 36]
+T
+length 7
+[32 38]
+T
+length 7
+[32 39]
+T
+length 7
+[33 32]
+T
+length 7
+[33 33]
+T
+length 7
+[33 33]
+T
+length 7
+[33 34]
+T
+length 7
+[33 37]
+T
+length 7
+[34 32]
+T
+length 7
+[34 33]
+T
+length 7
+[34 35]
+T
+length 7
+[34 36]
+T
+length 7
+[34 36]
+T
+length 7
+[34 39]
+T
+length 7
+[34 39]
+T
+length 7
+[35 30]
+T
+length 7
+[35 33]
+T
+length 7
+[35 34]
+T
+length 7
+[35 35]
+T
+length 7
+[35 36]
+T
+length 7
+[35 37]
+T
+length 7
+[36 31]
+T
+length 7
+[36 32]
+T
+length 7
+[36 32]
+T
+length 7
+[36 33]
+T
+length 7
+[36 34]
+T
+length 7
+[36 35]
+T
+length 7
+[36 36]
+T
+length 7
+[36 38]
+T
+length 7
+[36 39]
+T
+length 7
+[37 30]
+T
+length 7
+[37 30]
+T
+length 7
+[37 34]
+T
+length 7
+[37 36]
+T
+length 7
+[37 37]
+T
+length 7
+[38 33]
+T
+length 7
+[38 34]
+T
+length 7
+[38 37]
+T
+length 7
+[38 37]
+T
+length 7
+[38 38]
+T
+length 7
+[39 30]
+T
+length 7
+[39 30]
+T
+length 7
+[39 34]
+T
+length 7
+[39 35]
+T
+length 7
+[39 36]
+T
+length 7
+[39 36]
+T
+length 7
+[39 37]
+T
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 7
+      minValue 0
+      maxValue 12
+      docCount 8
+    interval
+      minDocID 8
+      maxDocID 15
+      minValue 13
+      maxValue 29
+      docCount 8
+    interval
+      minDocID 16
+      maxDocID 23
+      minValue 32
+      maxValue 45
+      docCount 8
+    interval
+      minDocID 24
+      maxDocID 31
+      minValue 46
+      maxValue 55
+      docCount 8
+    interval
+      minDocID 32
+      maxDocID 39
+      minValue 56
+      maxValue 65
+      docCount 8
+    interval
+      minDocID 40
+      maxDocID 47
+      minValue 66
+      maxValue 77
+      docCount 8
+    interval
+      minDocID 48
+      maxDocID 55
+      minValue 83
+      maxValue 94
+      docCount 8
+    interval
+      minDocID 56
+      maxDocID 59
+      minValue 95
+      maxValue 97
+      docCount 4
+  skipend
+field tag
+  type SORTED_SET
+  doccount 50
+  maxvaluecount 3
+  numvalues 20
+  maxlength 3
+  pattern 0
+  ordpattern XXXXXXX
+length 3
+k00
+length 3
+k01
+length 3
+k02
+length 3
+k03
+length 3
+k04
+length 3
+k05
+length 3
+k06
+length 3
+k07
+length 3
+k08
+length 3
+k09
+length 3
+k10
+length 3
+k11
+length 3
+k12
+length 3
+k13
+length 3
+k14
+length 3
+k15
+length 3
+k16
+length 3
+k17
+length 3
+k18
+length 3
+k19
+       
+2,5,15 
+8      
+17     
+9      
+7,19   
+       
+2,8,10 
+7,11   
+1,17   
+11     
+0,9    
+9      
+9      
+19     
+       
+0,12,18
+5,7    
+8,13,18
+2,7    
+3,9    
+9,15   
+9,17   
+       
+0,9    
+4,12,17
+5,6,13 
+4,14,19
+       
+0,16   
+14,19  
+9,12   
+2,10   
+2,9    
+13     
+10,16  
+12     
+16     
+1,7,14 
+14     
+1,2,14 
+2,17   
+       
+13     
+2,14   
+       
+11,19  
+15,18  
+1,7,9  
+11     
+1,3,4  
+       
+       
+16     
+       
+1,7,15 
+3,7,10 
+12,16  
+12     
+9      
+  skipdata
+    interval
+      minDocID 1
+      maxDocID 9
+      minValue 1
+      maxValue 19
+      docCount 8
+    interval
+      minDocID 10
+      maxDocID 18
+      minValue 0
+      maxValue 19
+      docCount 8
+    interval
+      minDocID 19
+      maxDocID 27
+      minValue 0
+      maxValue 19
+      docCount 8
+    interval
+      minDocID 29
+      maxDocID 36
+      minValue 0
+      maxValue 19
+      docCount 8
+    interval
+      minDocID 37
+      maxDocID 46
+      minValue 1
+      maxValue 19
+      docCount 8
+    interval
+      minDocID 47
+      maxDocID 57
+      minValue 1
+      maxValue 18
+      docCount 8
+    interval
+      minDocID 58
+      maxDocID 59
+      minValue 9
+      maxValue 12
+      docCount 2
+  skipend
+END
+checksum 00000000001078668034

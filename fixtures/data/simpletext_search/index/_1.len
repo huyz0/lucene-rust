@@ -1,0 +1,524 @@
+field body
+  type NUMERIC
+  minalue 1
+  maxvalue 44
+  doccount 60
+  maxvaluecount 1
+  origin 1
+  pattern 00
+02
+T
+04
+T
+08
+T
+09
+T
+08
+T
+20
+T
+00
+T
+03
+T
+04
+T
+11
+T
+04
+T
+10
+T
+03
+T
+10
+T
+10
+T
+05
+T
+43
+T
+04
+T
+04
+T
+09
+T
+03
+T
+07
+T
+00
+T
+08
+T
+01
+T
+03
+T
+07
+T
+43
+T
+11
+T
+10
+T
+03
+T
+02
+T
+08
+T
+06
+T
+11
+T
+31
+T
+10
+T
+00
+T
+04
+T
+09
+T
+18
+T
+11
+T
+03
+T
+05
+T
+03
+T
+05
+T
+10
+T
+05
+T
+11
+T
+06
+T
+08
+T
+12
+T
+10
+T
+39
+T
+07
+T
+10
+T
+04
+T
+01
+T
+26
+T
+00
+T
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 7
+      minValue 1
+      maxValue 21
+      docCount 8
+    interval
+      minDocID 8
+      maxDocID 15
+      minValue 4
+      maxValue 12
+      docCount 8
+    interval
+      minDocID 16
+      maxDocID 23
+      minValue 1
+      maxValue 44
+      docCount 8
+    interval
+      minDocID 24
+      maxDocID 31
+      minValue 2
+      maxValue 44
+      docCount 8
+    interval
+      minDocID 32
+      maxDocID 39
+      minValue 1
+      maxValue 32
+      docCount 8
+    interval
+      minDocID 40
+      maxDocID 47
+      minValue 4
+      maxValue 19
+      docCount 8
+    interval
+      minDocID 48
+      maxDocID 55
+      minValue 7
+      maxValue 40
+      docCount 8
+    interval
+      minDocID 56
+      maxDocID 59
+      minValue 1
+      maxValue 27
+      docCount 4
+  skipend
+field gram
+  type NUMERIC
+  minalue 2
+  maxvalue 11
+  doccount 60
+  maxvaluecount 1
+  origin 2
+  pattern 0
+2
+T
+9
+T
+5
+T
+4
+T
+3
+T
+3
+T
+5
+T
+7
+T
+0
+T
+0
+T
+1
+T
+6
+T
+9
+T
+3
+T
+1
+T
+3
+T
+6
+T
+3
+T
+7
+T
+1
+T
+4
+T
+5
+T
+8
+T
+1
+T
+0
+T
+4
+T
+2
+T
+6
+T
+9
+T
+9
+T
+7
+T
+4
+T
+4
+T
+2
+T
+1
+T
+5
+T
+8
+T
+0
+T
+6
+T
+7
+T
+6
+T
+6
+T
+0
+T
+1
+T
+8
+T
+7
+T
+6
+T
+7
+T
+7
+T
+7
+T
+0
+T
+3
+T
+6
+T
+0
+T
+3
+T
+9
+T
+1
+T
+7
+T
+9
+T
+2
+T
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 7
+      minValue 4
+      maxValue 11
+      docCount 8
+    interval
+      minDocID 8
+      maxDocID 15
+      minValue 2
+      maxValue 11
+      docCount 8
+    interval
+      minDocID 16
+      maxDocID 23
+      minValue 3
+      maxValue 10
+      docCount 8
+    interval
+      minDocID 24
+      maxDocID 31
+      minValue 2
+      maxValue 11
+      docCount 8
+    interval
+      minDocID 32
+      maxDocID 39
+      minValue 2
+      maxValue 10
+      docCount 8
+    interval
+      minDocID 40
+      maxDocID 47
+      minValue 2
+      maxValue 10
+      docCount 8
+    interval
+      minDocID 48
+      maxDocID 55
+      minValue 2
+      maxValue 11
+      docCount 8
+    interval
+      minDocID 56
+      maxDocID 59
+      minValue 3
+      maxValue 11
+      docCount 4
+  skipend
+field title
+  type NUMERIC
+  minalue 1
+  maxvalue 5
+  doccount 47
+  maxvaluecount 1
+  origin 0
+  pattern 0
+2
+T
+1
+T
+0
+F
+2
+T
+3
+T
+5
+T
+1
+T
+4
+T
+0
+F
+3
+T
+3
+T
+1
+T
+0
+F
+3
+T
+3
+T
+5
+T
+0
+F
+0
+F
+2
+T
+2
+T
+2
+T
+5
+T
+3
+T
+2
+T
+3
+T
+3
+T
+1
+T
+4
+T
+3
+T
+3
+T
+0
+F
+5
+T
+1
+T
+4
+T
+3
+T
+3
+T
+0
+F
+2
+T
+1
+T
+4
+T
+0
+F
+3
+T
+5
+T
+1
+T
+1
+T
+5
+T
+0
+F
+2
+T
+0
+F
+4
+T
+3
+T
+4
+T
+4
+T
+0
+F
+5
+T
+5
+T
+1
+T
+0
+F
+0
+F
+5
+T
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 9
+      minValue 1
+      maxValue 5
+      docCount 8
+    interval
+      minDocID 10
+      maxDocID 20
+      minValue 1
+      maxValue 5
+      docCount 8
+    interval
+      minDocID 21
+      maxDocID 28
+      minValue 1
+      maxValue 5
+      docCount 8
+    interval
+      minDocID 29
+      maxDocID 38
+      minValue 1
+      maxValue 5
+      docCount 8
+    interval
+      minDocID 39
+      maxDocID 49
+      minValue 1
+      maxValue 5
+      docCount 8
+    interval
+      minDocID 50
+      maxDocID 59
+      minValue 1
+      maxValue 5
+      docCount 7
+  skipend
+END
+checksum 00000000003481144130

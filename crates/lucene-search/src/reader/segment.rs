@@ -583,11 +583,11 @@ impl SortedSetDocValues for SegSortedSet<'_> {
 // ---------------------------------------------------------------------------
 
 /// One field's terms in a segment, with the postings inputs they decode from.
-struct SegmentTerms<'a> {
-    field: &'a FieldTerms,
-    doc_in: Option<DocInput<'a>>,
-    pos_in: Option<PosInput<'a>>,
-    pay_in: Option<PayInput<'a>>,
+pub(crate) struct SegmentTerms<'a> {
+    pub(crate) field: &'a FieldTerms,
+    pub(crate) doc_in: Option<DocInput<'a>>,
+    pub(crate) pos_in: Option<PosInput<'a>>,
+    pub(crate) pay_in: Option<PayInput<'a>>,
 }
 
 impl Terms for SegmentTerms<'_> {
