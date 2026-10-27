@@ -38,7 +38,9 @@ use lucene_index::merge_policy::api::{
     CompoundFileSettings, MergeContext, MergePolicy, MergeSegment, MergeSpecification,
     MergeTrigger, NoMergePolicy, Result, TieredMergePolicy,
 };
-use lucene_index::merge_policy::log::{LogByteSizeMergePolicy, LogDocMergePolicy, LogMergePolicy};
+use lucene_index::merge_policy::log::{
+    LogByteSizeMergePolicy, LogDocMergePolicy, LogMergePolicy, LogSizeUnit,
+};
 use lucene_index::merge_scheduler::{
     ConcurrentMergeScheduler, MergeScheduler, SerialMergeScheduler,
 };
@@ -597,6 +599,32 @@ impl RandomIndexWriterConfig {
     pub fn is_tiered_merge_policy(&self) -> bool {
         matches!(*self.merge_policy.kind(), PolicyKind::Tiered(_))
     }
+}
+
+/// `LuceneTestCase.ensureSaneIWCOnNightly(conf)`: on a nightly run, caps
+/// the merged segment size (a small one makes very many segments), turns
+/// on compound files for flushes and keeps `noCFSRatio` at least 0.25. A
+/// non-nightly run is left as it is.
+pub fn ensure_sane_iwc_on_nightly(nightly: bool, conf: &mut RandomIndexWriterConfig) {
+    if !nightly {
+        return;
+    }
+    conf.merge_policy.change(|kind| {
+        match kind {
+            PolicyKind::Tiered(tmp) => {
+                tmp.config.max_merged_segment_size = 5000 * 1024 * 1024;
+            }
+            PolicyKind::Log(lmp) if lmp.unit() == LogSizeUnit::Bytes => {
+                lmp.max_merge_size = 1000 * 1024 * 1024;
+            }
+            PolicyKind::Log(lmp) => lmp.max_merge_docs = 100_000,
+            _ => {}
+        }
+        let compound = kind.policy_mut().compound_file_settings_mut();
+        let ratio = compound.no_cfs_ratio.max(0.25);
+        compound.set_no_cfs_ratio(ratio).expect("a ratio");
+    });
+    conf.use_compound_file = true;
 }
 
 /// `maybeChangeLiveIndexWriterConfig(r, c)`: now and then, new flush
