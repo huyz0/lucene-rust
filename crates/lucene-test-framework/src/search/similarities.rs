@@ -2,16 +2,15 @@
 //! [`RandomSimilarity`] and `BaseSimilarityTestCase` ([`new_corpus`],
 //! [`new_term`], [`random_scoring`], [`bulk_score`]).
 //!
-//! `SimScorer.explain` is not ported for similarities other than BM25
-//! (`lucene_search::similarities`), so `doTestScoring`'s checks that a
-//! score equals its explanation, and its `verifyExplanation` passes, are
-//! not made; their `rarely()` draws are, so the random stream stays Java's.
+//! `doTestScoring` checks each score against its `SimScorer.explain`, and
+//! rarely (Java's draws) runs `verifyExplanation` over it.
 //! `BaseSimilarityTestCase.beforeClass`'s one-document index is not built:
 //! nothing in the base reads it.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use lucene_search::explain::Explanation;
 use lucene_search::similarities::{
     AfterEffect, AxiomaticSimilarity, AxiomaticVariant, BasicModel, Bm25Similarity,
     BooleanSimilarity, ClassicSimilarity, CollectionModel, CollectionStatistics, DfiSimilarity,
@@ -22,6 +21,7 @@ use lucene_search::similarities::{
 use lucene_util::java_random::JavaRandom;
 use lucene_util::small_float;
 
+use crate::search::check_hits::verify_explanation;
 use crate::util::{lucene_test_case, test_util};
 
 // ---------------------------------------------------------------------------
@@ -117,6 +117,20 @@ impl SimScorer for AssertingSimScorer {
             assert!(s.is_finite(), "score {s}");
             assert!(s >= 0.0, "score {s}");
         }
+    }
+
+    fn explain(&self, freq: Explanation, norm: i64) -> Explanation {
+        // freq in bounds
+        let f = freq.value;
+        assert!(f.is_finite(), "freq {f}");
+        // result in bounds
+        let explanation = self.delegate.explain(freq, norm);
+        let value = explanation.value;
+        assert!(value.is_finite(), "explanation value {value}");
+        // result matches score exactly
+        let score = self.delegate.score(f, norm);
+        assert!(value == score, "explanation value {value} != score {score}");
+        explanation
     }
 }
 
@@ -368,7 +382,7 @@ pub fn new_term(random: &mut JavaRandom, corpus: &CollectionStatistics) -> TermS
 }
 
 /// One `doTestScoring` call: its inputs, and the scores it compared.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ScoringCase {
     /// The corpus.
     pub corpus: CollectionStatistics,
@@ -392,6 +406,8 @@ pub struct ScoringCase {
     pub prev_norm_score: Option<f32>,
     /// The rarer term's score, when the term is not the rarest possible.
     pub prev_term_score: Option<f32>,
+    /// The text of each explanation checked against its score, in order.
+    pub explanations: Vec<String>,
 }
 
 /// The test run's knobs `rarely()` reads.
@@ -510,6 +526,28 @@ pub fn do_test_scoring(
     };
     let non_negative = similarity.simple_name() != "IndriDirichletSimilarity";
     let rarely = |r: &mut JavaRandom| lucene_test_case::rarely(r, knobs.nightly, knobs.multiplier);
+    let mut explanations = Vec::with_capacity(4);
+    // the score equals its explanation's value; rarely, `verifyExplanation`
+    let mut check_explanation = |random: &mut JavaRandom,
+                                 scorer: &dyn SimScorer,
+                                 freq: f32,
+                                 norm: i64,
+                                 score: f32,
+                                 q: &str| {
+        let explanation = scorer.explain(
+            Explanation::match_(freq, "freq, occurrences of term within document"),
+            norm,
+        );
+        assert!(
+            f64::from(score) == explanation.double_value(),
+            "expected: {score}, got: {explanation}: {}",
+            ctx()
+        );
+        if rarely(random) {
+            verify_explanation(q, 0, score, true, &explanation);
+        }
+        explanations.push(explanation.to_string());
+    };
     let scorer = similarity.scorer("field", boost, &corpus, &[term]);
     let n = i64::from(norm);
     let max_score = scorer.score(f32::MAX, 1);
@@ -524,8 +562,7 @@ pub fn do_test_scoring(
         "greater than maxScore: {score}>{max_score}: {}",
         ctx()
     );
-    // `verifyExplanation`, rarely: no explanation to verify
-    let _ = rarely(random);
+    check_explanation(random, scorer.as_ref(), freq, n, score, "<test query>");
 
     let prev_freq =
         if random.next_boolean() && freq == freq.trunc() && freq > 1.0 && term.doc_freq > 1 {
@@ -538,7 +575,14 @@ pub fn do_test_scoring(
     if non_negative {
         assert!(prev_score >= 0.0, "{}", ctx());
     }
-    let _ = rarely(random);
+    check_explanation(
+        random,
+        scorer.as_ref(),
+        prev_freq,
+        n,
+        prev_score,
+        "test query (prevFreq)",
+    );
     assert!(
         prev_score <= score,
         "score({prev_freq})={prev_score} > score({freq})={score}: {}",
@@ -552,7 +596,14 @@ pub fn do_test_scoring(
         if non_negative {
             assert!(s >= 0.0, "{}", ctx());
         }
-        let _ = rarely(random);
+        check_explanation(
+            random,
+            scorer.as_ref(),
+            freq,
+            n - 1,
+            s,
+            "test query (prevNorm)",
+        );
         assert!(
             s >= score,
             "score({freq},{})={s} < score({freq},{norm})={score}: {}",
@@ -572,7 +623,14 @@ pub fn do_test_scoring(
         if non_negative {
             assert!(s >= 0.0, "{}", ctx());
         }
-        let _ = rarely(random);
+        check_explanation(
+            random,
+            prev_term_scorer.as_ref(),
+            freq,
+            n,
+            s,
+            "test query (prevTerm)",
+        );
         assert!(s >= score, "prevTerm score {s} < {score}: {}", ctx());
         prev_term_score = Some(s);
     }
@@ -588,6 +646,7 @@ pub fn do_test_scoring(
         prev_score,
         prev_norm_score,
         prev_term_score,
+        explanations,
     }
 }
 

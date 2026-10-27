@@ -980,6 +980,10 @@ impl SegmentFormat {
             // `.lkp`/`.cmp` are `Completion104`'s suggester files: its
             // `merge` rebuilds them from the merged postings' payloads, so
             // the postings being opened is what they need.
+            // Another terms dictionary's files (`BlockTreeOrds`' `.tio`, ...)
+            // are claimed through `lucene_codecs::terms_dictionary` in
+            // `for_extension`: `per_field_postings::open_groups` reads them
+            // with the rest.
             SegmentFormat::Postings => &[
                 "tim", "tip", "tmd", "doc", "psm", "pos", "pay", "lkp", "cmp",
             ],
@@ -999,6 +1003,12 @@ impl SegmentFormat {
         SegmentFormat::ALL
             .into_iter()
             .find(|f| f.extensions().contains(&extension))
+            .or_else(|| {
+                lucene_codecs::terms_dictionary::all()
+                    .iter()
+                    .any(|d| d.extensions().contains(&extension))
+                    .then_some(SegmentFormat::Postings)
+            })
     }
 
     /// Whether `source` carries this format's opened readers -- i.e. whether
@@ -2552,24 +2562,7 @@ fn merge_segments_mapped_inner(
                     files.extend(group.written_files.iter().cloned());
                     continue;
                 }
-                let output = &group.output;
-                let mut exts: Vec<(&str, &[u8])> = vec![
-                    ("doc", &output.doc),
-                    ("psm", &output.psm),
-                    ("tim", &output.tim),
-                    ("tip", &output.tip),
-                    ("tmd", &output.tmd),
-                ];
-                if !output.pos.is_empty() {
-                    exts.push(("pos", &output.pos));
-                }
-                if !output.pay.is_empty() {
-                    exts.push(("pay", &output.pay));
-                }
-                if let Some(completion) = &group.completion {
-                    exts.push(("lkp", &completion.lkp));
-                    exts.push(("cmp", &completion.cmp));
-                }
+                let exts = group.files();
                 let suffix = group.codec_suffix();
                 for (ext, bytes) in exts {
                     let name = format!("{merged_segment_name}_{suffix}.{ext}");

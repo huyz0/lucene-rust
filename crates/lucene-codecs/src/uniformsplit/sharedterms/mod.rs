@@ -251,3 +251,96 @@ fn term_major_inputs<'a, T: TermSource>(
     }
     Ok(lines)
 }
+
+/// A shared-terms uniform-split format under the name it is registered by:
+/// `SharedTermsUniformSplit`, or the test framework's
+/// `SharedTermsUniformSplitRot13`.
+#[derive(Debug, Clone)]
+pub struct NamedStUniformSplit {
+    /// `getName()`.
+    pub name: &'static str,
+    pub format: StUniformSplitPostingsFormat,
+}
+
+/// `new STUniformSplitPostingsFormat()`, the instance
+/// [`crate::terms_dictionary::lookup`] reads its groups with.
+pub static DEFAULT_FORMAT: NamedStUniformSplit = NamedStUniformSplit {
+    name: NAME,
+    format: StUniformSplitPostingsFormat {
+        base: UniformSplitPostingsFormat {
+            target_num_block_lines: super::DEFAULT_TARGET_NUM_BLOCK_LINES,
+            delta_num_lines: super::DEFAULT_DELTA_NUM_LINES,
+            block_encoder: None,
+            block_decoder: None,
+            dictionary_on_heap: false,
+        },
+    },
+};
+
+impl crate::terms_dictionary::TermsDictionaryFormat for NamedStUniformSplit {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn extensions(&self) -> &'static [&'static str] {
+        &[TERMS_DICTIONARY_EXTENSION, TERMS_BLOCKS_EXTENSION]
+    }
+
+    fn write(
+        &self,
+        inputs: &[crate::terms_dictionary::ErasedInput<'_, '_>],
+        norms: &[FieldNorms<'_>],
+        _options: &WriteOptions,
+        state: &SegmentWriteState<'_>,
+    ) -> postings_writer::Result<(postings_writer::PostingsFiles, Vec<Vec<u8>>)> {
+        let out = self
+            .format
+            .write(inputs, norms, state)
+            .map_err(super::to_writer_error)?;
+        Ok((out.postings, vec![out.ustd, out.ustb]))
+    }
+
+    fn read(
+        &self,
+        files: &[&[u8]],
+        state: &SegmentReadState<'_>,
+    ) -> crate::blocktree::Result<Vec<postings_writer::DictionaryField>> {
+        let err = |e| super::to_blocktree_error(self.name, e);
+        let [stustd, stustb] = files else {
+            return Err(crate::blocktree::Error::Unsupported(
+                "a SharedTermsUniformSplit group needs its .stustd and .stustb",
+            ));
+        };
+        let reader = self
+            .format
+            .open(stustb.to_vec(), stustd, state)
+            .map_err(err)?;
+        let mut fields = Vec::with_capacity(reader.size());
+        for name in reader.field_names() {
+            let Some(terms) = reader.terms(name) else {
+                continue;
+            };
+            let info = terms.field_info();
+            let mut field = postings_writer::DictionaryField {
+                field_number: info.number,
+                index_options: info.index_options,
+                has_payloads: info.store_payloads,
+                doc_count: terms.doc_count(),
+                terms: Vec::new(),
+            };
+            let mut it = terms.iter();
+            while let Some(bytes) = it.next().map_err(err)? {
+                let bytes = bytes.to_vec();
+                let state = it.term_state().map_err(err)?;
+                field.terms.push(postings_writer::DictionaryTerm {
+                    bytes,
+                    doc_freq: state.doc_freq,
+                    total_term_freq: state.total_term_freq,
+                    meta: state.meta,
+                });
+            }
+            fields.push(field);
+        }
+        Ok(fields)
+    }
+}

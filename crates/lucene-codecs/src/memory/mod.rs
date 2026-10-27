@@ -170,3 +170,92 @@ impl FstPostingsFormat {
         FstTermsReader::open(tfp, state)
     }
 }
+
+impl FstTermsReader {
+    /// Every field's terms with their statistics and postings metadata
+    /// ([`crate::terms_dictionary::TermsDictionaryFormat::read`]).
+    ///
+    /// # Errors
+    /// An FST or term metadata that does not decode.
+    pub fn dictionary_fields(&self) -> Result<Vec<postings_writer::DictionaryField>> {
+        let mut fields = Vec::with_capacity(self.size());
+        for name in self.field_names() {
+            let Some(terms) = self.terms(name) else {
+                continue;
+            };
+            let info = terms.field_info();
+            let mut field = postings_writer::DictionaryField {
+                field_number: info.number,
+                index_options: info.index_options,
+                has_payloads: info.store_payloads,
+                doc_count: terms.doc_count(),
+                terms: Vec::new(),
+            };
+            let mut it = terms.iter();
+            while let Some(bytes) = it.next()? {
+                let bytes = bytes.to_vec();
+                field.terms.push(postings_writer::DictionaryTerm {
+                    bytes,
+                    doc_freq: it.doc_freq(),
+                    total_term_freq: it.total_term_freq(),
+                    meta: it.term_metadata()?,
+                });
+            }
+            fields.push(field);
+        }
+        Ok(fields)
+    }
+}
+
+/// `new FSTPostingsFormat()`, the instance
+/// [`crate::terms_dictionary::lookup`] reads `FST50` groups with.
+pub static DEFAULT_FORMAT: FstPostingsFormat = FstPostingsFormat;
+
+impl crate::terms_dictionary::TermsDictionaryFormat for FstPostingsFormat {
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn extensions(&self) -> &'static [&'static str] {
+        &["tfp"]
+    }
+
+    fn write(
+        &self,
+        inputs: &[crate::terms_dictionary::ErasedInput<'_, '_>],
+        norms: &[FieldNorms<'_>],
+        _options: &crate::postings_writer::WriteOptions,
+        state: &SegmentWriteState<'_>,
+    ) -> postings_writer::Result<(PostingsFiles, Vec<Vec<u8>>)> {
+        let out = FstPostingsFormat::write(self, inputs, norms, state).map_err(|e| match e {
+            Error::Write(e) => e,
+            Error::Store(e) => postings_writer::Error::Store(e),
+            e => postings_writer::Error::Dictionary(e.to_string()),
+        })?;
+        Ok((out.postings, vec![out.tfp]))
+    }
+
+    fn read(
+        &self,
+        files: &[&[u8]],
+        state: &SegmentReadState<'_>,
+    ) -> crate::blocktree::Result<Vec<postings_writer::DictionaryField>> {
+        let err = |e| match e {
+            Error::Store(e) => crate::blocktree::Error::Store(e),
+            Error::BlockTree(e) => e,
+            Error::Postings(e) => crate::blocktree::Error::Postings(e),
+            e => crate::blocktree::Error::ForeignDictionary {
+                format: Self::NAME,
+                message: e.to_string(),
+            },
+        };
+        let [tfp] = files else {
+            return Err(crate::blocktree::Error::Unsupported(
+                "an FST50 group needs its .tfp",
+            ));
+        };
+        FstTermsReader::open(tfp, state)
+            .and_then(|reader| reader.dictionary_fields())
+            .map_err(err)
+    }
+}

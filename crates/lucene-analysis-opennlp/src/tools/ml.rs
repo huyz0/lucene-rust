@@ -503,11 +503,12 @@ pub fn java_double_compare(a: f64, b: f64) -> std::cmp::Ordering {
     bits(a).cmp(&bits(b))
 }
 
-/// `Sequence`: the outcomes so far and the sum of their log
-/// probabilities.
+/// `Sequence`: the outcomes so far, the sum of their log probabilities
+/// and (when a caller asks for them) the probabilities themselves.
 #[derive(Debug, Clone)]
 struct Sequence {
     outcomes: Vec<u32>,
+    probs: Vec<f64>,
     score: f64,
 }
 
@@ -620,14 +621,35 @@ impl BeamSearch {
     /// `NullPointerException`. A size below 1 is the
     /// `IllegalArgumentException` of `new PriorityQueue<>(size)`, the
     /// search's first statement, whatever the sentence.
-    // ARITH: counts of the beam (at most its size) and a sequence one longer than its prefix.
-    #[allow(clippy::arithmetic_side_effects)]
     pub fn best_sequence(
         &self,
         model: &MaxentModel,
         len: usize,
         cg: &mut dyn SequenceContext,
     ) -> Result<Vec<u32>, AnalysisError> {
+        self.search(model, len, cg, false).map(|(o, _)| o)
+    }
+
+    /// [`best_sequence`](Self::best_sequence) with each outcome's
+    /// probability (`Sequence.getProbs()`).
+    pub fn best_sequence_with_probs(
+        &self,
+        model: &MaxentModel,
+        len: usize,
+        cg: &mut dyn SequenceContext,
+    ) -> Result<(Vec<u32>, Vec<f64>), AnalysisError> {
+        self.search(model, len, cg, true)
+    }
+
+    // ARITH: counts of the beam (at most its size) and a sequence one longer than its prefix.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn search(
+        &self,
+        model: &MaxentModel,
+        len: usize,
+        cg: &mut dyn SequenceContext,
+        with_probs: bool,
+    ) -> Result<(Vec<u32>, Vec<f64>), AnalysisError> {
         let size = match usize::try_from(self.size) {
             Ok(n) if n >= 1 => n,
             _ => return Err(AnalysisError::IllegalArgument(String::new())),
@@ -637,6 +659,7 @@ impl BeamSearch {
         let mut next = JavaPriorityQueue::default();
         prev.add(Sequence {
             outcomes: Vec::new(),
+            probs: Vec::new(),
             score: 0.0,
         });
         let mut probs = vec![0.0; model.num_outcomes()];
@@ -661,7 +684,17 @@ impl BeamSearch {
                             let mut o = Vec::with_capacity(top.outcomes.len() + 1);
                             o.extend_from_slice(&top.outcomes);
                             o.push(p as u32);
-                            next.add(Sequence { outcomes: o, score });
+                            let mut probs_so_far = Vec::new();
+                            if with_probs {
+                                probs_so_far.reserve(top.probs.len() + 1);
+                                probs_so_far.extend_from_slice(&top.probs);
+                                probs_so_far.push(probs[p]);
+                            }
+                            next.add(Sequence {
+                                outcomes: o,
+                                probs: probs_so_far,
+                                score,
+                            });
                         }
                     }
                 };
@@ -680,7 +713,7 @@ impl BeamSearch {
             prev.clear();
             std::mem::swap(&mut prev, &mut next);
         }
-        prev.poll().map(|s| s.outcomes).ok_or_else(|| {
+        prev.poll().map(|s| (s.outcomes, s.probs)).ok_or_else(|| {
             AnalysisError::IllegalState(
                 "NullPointerException: the beam search pruned every sequence".to_string(),
             )

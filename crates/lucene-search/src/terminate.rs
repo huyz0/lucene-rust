@@ -196,10 +196,20 @@ pub(crate) fn leaf_count(seg: &OpenSegment<'_>, query: &BooleanQuery) -> Result<
             _ => LeafCount::Unknown,
         })
     }
-    match query.lone_clause() {
-        Some(only) => clause(seg, only),
-        None => Ok(LeafCount::Unknown),
+    let count = match query.lone_clause() {
+        Some(only) => clause(seg, only)?,
+        None => LeafCount::Unknown,
+    };
+    // `AssertingWeight.count`, under the test framework's asserting searcher.
+    #[cfg(any(test, feature = "asserting"))]
+    if let LeafCount::Whole(n) = count {
+        crate::exec::asserting::check_count(
+            i64::try_from(n).unwrap_or(i64::MAX),
+            seg.max_doc,
+            seg.live_docs,
+        );
     }
+    Ok(count)
 }
 
 /// [`crate::top_field::search_sorted_tracking`] behind `terminate_after(n)`: the top

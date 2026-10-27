@@ -429,7 +429,12 @@ impl SegmentReader {
         // more than one postings format has one `.tim`/`.tip`/`.tmd` (and
         // `.doc`/`.pos`/`.pay`) per format and suffix.
         let postings_suffixes = per_field_postings::group_suffixes(&postings_names, &segment_name);
-        let multi_format = postings_suffixes.len() > 1;
+        // A group with another terms dictionary is read through the same
+        // path: `open_groups` rewrites its dictionary as a block tree.
+        let multi_format = postings_suffixes.len() > 1
+            || postings_suffixes.iter().any(|s| {
+                per_field_postings::is_foreign_format(per_field_postings::format_of_suffix(s))
+            });
 
         let (fields, segment_suffix, doc_buf, pos_buf, pay_buf, postings_files) = if multi_format {
             open_per_field_postings(
@@ -1871,18 +1876,26 @@ fn open_per_field_postings(
     let mut opened = Vec::with_capacity(suffixes.len());
     for suffix in suffixes {
         let open = |ext: &str| open_segment_file(dir, compound, files, &format!("_{suffix}{ext}"));
-        let (Some(tim), Some(tip), Some(tmd)) = (open(".tim")?, open(".tip")?, open(".tmd")?)
-        else {
-            return Err(Error::PartialBlockTreeFiles {
-                segment: format!("{suffix} of a per-field segment"),
-                found: 1,
-            });
-        };
+        let format = per_field_postings::format_of_suffix(suffix);
+        let extensions = per_field_postings::dictionary_extensions(format);
+        let mut dictionary = Vec::with_capacity(extensions.len());
+        for ext in extensions {
+            match open(&format!(".{ext}"))? {
+                Some(bytes) => dictionary.push(bytes),
+                None if !per_field_postings::dictionary_file_required(format, ext) => {
+                    dictionary.push(std::sync::Arc::new(lucene_store::Input::Owned(Vec::new())));
+                }
+                None => {
+                    return Err(Error::PartialBlockTreeFiles {
+                        segment: format!("{suffix} of a per-field segment"),
+                        found: dictionary.len(),
+                    })
+                }
+            }
+        }
         opened.push((
             suffix,
-            tim,
-            tip,
-            tmd,
+            dictionary,
             open(".doc")?,
             open(".pos")?,
             open(".pay")?,
@@ -1891,11 +1904,9 @@ fn open_per_field_postings(
     let groups: Vec<per_field_postings::GroupFiles<'_>> = opened
         .iter()
         .map(
-            |(suffix, tim, tip, tmd, doc, pos, pay)| per_field_postings::GroupFiles {
+            |(suffix, dictionary, doc, pos, pay)| per_field_postings::GroupFiles {
                 suffix,
-                tim,
-                tip,
-                tmd,
+                dictionary: dictionary.iter().map(|d| &***d).collect(),
                 doc: doc.as_deref().map(|d| &**d),
                 pos: pos.as_deref().map(|d| &**d),
                 pay: pay.as_deref().map(|d| &**d),
@@ -1906,16 +1917,12 @@ fn open_per_field_postings(
     let owned = |bytes: Vec<u8>| (!bytes.is_empty()).then(|| Arc::new(Input::Owned(bytes)));
     let postings_files = opened
         .iter()
-        .flat_map(|(_, tim, tip, _, doc, pos, pay)| {
-            [
-                Some(Arc::clone(tim)),
-                Some(Arc::clone(tip)),
-                doc.clone(),
-                pos.clone(),
-                pay.clone(),
-            ]
-            .into_iter()
-            .flatten()
+        .flat_map(|(_, dictionary, doc, pos, pay)| {
+            dictionary.iter().cloned().chain(
+                [doc.clone(), pos.clone(), pay.clone()]
+                    .into_iter()
+                    .flatten(),
+            )
         })
         .collect();
     Ok((

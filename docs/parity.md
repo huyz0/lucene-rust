@@ -46,7 +46,7 @@ Milestones (M1-M12, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [util.md](parity/util.md) | `lucene-util`: bits, packed ints, `BytesRef*`, FST, automata, hashing, sorting | 32 |
 | [util-geo.md](parity/util-geo.md) | `lucene-util` geo: encodings, tessellator, polygons, distance (M9 T9.1) | 10 |
 | [store.md](parity/store.md) | `lucene-store`: directories, inputs/outputs, locks, checksums | 22 |
-| [codecs.md](parity/codecs.md) | `lucene-codecs`: the `Lucene104` codec, every format read and written | 72 |
+| [codecs.md](parity/codecs.md) | `lucene-codecs`: the `Lucene104` codec, every format read and written | 73 |
 | [backward-codecs.md](parity/backward-codecs.md) | `lucene-backward-codecs`: Lucene 9.0-10.4 formats (M8) | 18 |
 | [analysis.md](parity/analysis.md) | `lucene-analysis`: analyzers, tokenizers, filters | 18 |
 | [analysis-common.md](parity/analysis-common.md) | `lucene-analysis-common` (M11) | 22 |
@@ -65,7 +65,7 @@ Milestones (M1-M12, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [codecs-extra.md](parity/codecs-extra.md) | `lucene-codecs` (M14.g): the non-default postings formats -- bloom, memory, bitvectors, blocktreeords, uniformsplit (with sharedterms), blockterms and simpletext so far | 32 |
 | [test-framework.md](parity/test-framework.md) | `lucene-test-framework` (M14.h): randomized generators, mock analysis/directories, index/format suites, readers and writers | 30 |
 | [test-framework-codecs.md](parity/test-framework-codecs.md) | `lucene-test-framework` (M14.h): asserting/cranky/compressing and other test codecs, installed writer seams | 33 |
-| [test-framework-search.md](parity/test-framework-search.md) | `lucene-test-framework` (M14.h): query/scoring assertions, search bases, scorer wrappers | 10 |
+| [test-framework-search.md](parity/test-framework-search.md) | `lucene-test-framework` (M14.h): query/scoring assertions, search bases, scorer wrappers | 11 |
 | [test-framework-geo.md](parity/test-framework-geo.md) | `lucene-test-framework` (M14.h): geo helpers, geo-point/XY/range bases | 4 |
 | [misc.md](parity/misc.md) | `lucene-misc`: index and search utilities (M14 T14.3; the rest of the jar is M14.b-i) | 25 |
 | [tools.md](parity/tools.md) | `lucene-tools` (M14.i): the command-line tools of `lucene-misc` and `lucene-demo` (its toy word-vector dictionary included), Luke's index inspector models, and lucene-benchmark's search-quality tools | 24 |
@@ -81,7 +81,7 @@ Milestones (M1-M12, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [queries.md](parity/queries.md) | `lucene-queries` intervals, payloads, more-like-this, common terms, spans (M10 T10.6); sandbox fuzzy-like-this (M13) | 13 |
 | [analysis-lang.md](parity/analysis-lang.md) | `lucene-analysis-common` synonyms, classic, language packages (M11 part 3), Thai, collation, `SegmentingTokenizerBase` | 14 |
 | [analysis-icu.md](parity/analysis-icu.md) | `lucene-analysis-icu` (M12 T12.4): the ICU4J runtime port, normalization, folding, `ICUTokenizer`, collation keys, transliteration, the break rule compiler, character names | 16 |
-| [analysis-opennlp.md](parity/analysis-opennlp.md) | `lucene-analysis-opennlp` (M12 T12.5): the OpenNLP 2.5.3 runtime port (models, maxent/perceptron, beam search, the five tools), `OpenNLPTokenizer` and the POS, chunker and lemmatizer filters | 14 |
+| [analysis-opennlp.md](parity/analysis-opennlp.md) | `lucene-analysis-opennlp` (M12 T12.5): the OpenNLP 2.5.3 runtime port (models, maxent/perceptron, beam search, the six tools), `OpenNLPTokenizer` and the POS, chunker and lemmatizer filters | 14 |
 | [analysis-lang-modules.md](parity/analysis-lang-modules.md) | The M12 language modules: `lucene-analysis-phonetic` (with Commons Codec), Stempel (with Egothor), Morfologik, `lucene-analysis`' `morph` base, Kuromoji, Nori, SmartCN | 19 |
 | [ffi.md](parity/ffi.md) | `lucene-ffi`: the general C ABI (handles, searches, writer) | 17 |
 | [plugin.md](parity/plugin.md) | `lucene-ffi`: the OpenSearch plugin boundary (JVM reader, FFM, query phase), M10 query shapes, M13 term ranges and completion-field indexes (suggester/highlighter execution deferred: `NamedRegistry` forbids replacing them) | 10 |

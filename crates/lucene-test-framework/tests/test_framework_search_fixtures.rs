@@ -14,7 +14,7 @@ use explanation_dsl::{
     a, boost, bq, bq_msm, csq, dmq, match_all, mpq, phrase, synonym, t, F, M, N, S,
 };
 use lucene_search::misc::SweetSpotSimilarity;
-use lucene_search::query::{Clause, TermQuery};
+use lucene_search::query::{Clause, MatchAllDocsQuery, TermQuery};
 use lucene_search::similarities::{
     AfterEffect, BasicModel, Bm25Similarity, ClassicSimilarity, DfrSimilarity, Normalization,
     Similarity,
@@ -117,7 +117,8 @@ fn verbatim(c: &ScoringCase) -> String {
 }
 
 /// Every `BaseSimilarityTestCase` subclass's `testRandomScoring` and
-/// `testBulkScore`: the same cases, the same score bits.
+/// `testBulkScore`: the same cases, the same score bits, the same
+/// `SimScorer.explain` text.
 #[test]
 fn similarity_scores_are_javas_bit_for_bit() {
     let sims: Vec<_> = lines("sim").collect();
@@ -133,14 +134,33 @@ fn similarity_scores_are_javas_bit_for_bit() {
                 .filter(|c| c[0] == name && c[1] == seed)
                 .map(|c| c[3..].join(" "))
                 .collect();
+            let want_explanations: Vec<String> = lines("sexp")
+                .filter(|c| c[0] == name && c[1] == seed)
+                .map(|c| c[3..].join(" "))
+                .collect();
+            let mut explanations = Vec::new();
+            let mut eh = Fnv::new();
             let mut n = 0;
             random_scoring(&mut random, KNOBS, get, |c| {
                 if n < want.len() {
                     assert_eq!(verbatim(c), want[n], "{name} seed {seed} case {n}");
                 }
                 feed_case(&mut h, c);
+                for text in &c.explanations {
+                    if explanations.len() < want_explanations.len() {
+                        explanations.push(text.trim().replace('\n', " | "));
+                    }
+                    for &b in text.as_bytes() {
+                        eh.feed(i64::from(b));
+                    }
+                }
                 n += 1;
             });
+            assert_eq!(explanations, want_explanations, "{name} seed {seed}");
+            let simexp = lines("simexp")
+                .find(|l| l[0] == name && l[1] == seed)
+                .expect("a simexp line");
+            assert_eq!(eh.hex(), simexp[3], "{name} seed {seed}: explanation hash");
             n
         } else {
             let batches = bulk_score(&mut random, KNOBS, get);
@@ -233,17 +253,13 @@ fn explanation_query(name: &str) -> Clause {
 enum Compared {
     /// Every line.
     All,
-    /// The top line's value: the ledger's "multi-term, span flat", and a
-    /// term or a phrase under a similarity other than BM25's and
-    /// `TFIDFSimilarity`'s, explained in `SimScorer.explain`'s default
-    /// layout rather than its own breakdown.
+    /// The top line's value: the ledger's "multi-term, span flat".
     Top,
 }
 
-fn compared_part(sim_name: &str, q_name: &str) -> Compared {
+fn compared_part(_sim_name: &str, q_name: &str) -> Compared {
     match q_name {
         "mpq" | "synonym" => Compared::Top,
-        _ if sim_name.starts_with("DFR") => Compared::Top,
         _ => Compared::All,
     }
 }
@@ -410,8 +426,10 @@ fn phrase_misses_explain_as_javas() {
     assert_eq!(n, 16);
 }
 
-/// `SearchEquivalenceTestBase`'s corpus: the same stop letter, documents
-/// and deletes, and BM25 top docs over it bit for bit.
+/// `SearchEquivalenceTestBase`'s corpus, written through a
+/// `RandomIndexWriter`: the same stop letter, documents and deletes, and
+/// each term's live hit count over it (the scores depend on which deleted
+/// documents the writer's merges dropped, which differs between runs).
 #[test]
 fn search_equivalence_corpus_is_javas() {
     let mut l = DATA
@@ -419,9 +437,8 @@ fn search_equivalence_corpus_is_javas() {
         .skip_while(|l| !l.starts_with("eq "))
         .peekable();
     let mut corpora = 0;
-    while let Some(head) = l.next() {
+    while let Some(head) = l.next_if(|x| x.starts_with("eq ")) {
         let parts: Vec<&str> = head.split(' ').collect();
-        assert_eq!(parts[0], "eq");
         let seed: i64 = parts[1].parse().expect("seed");
         let s = SearchEquivalence::new(&mut JavaRandom::new(seed), false, 1);
         assert_eq!(s.stopword().to_string(), parts[2], "seed {seed}");
@@ -442,12 +459,11 @@ fn search_equivalence_corpus_is_javas() {
             let term = hits.split(' ').nth(1).expect("a term");
             let q = top_level(Clause::Term(TermQuery::new("field", term)));
             let got = s.with_searcher(|searcher| {
-                let td = searcher.search(&q, 5).expect("search");
-                let mut out = format!("eqhits {term} {}", td.total_hits.value);
-                for sd in &td.score_docs {
-                    write!(out, " {}:{}", sd.doc, bits(sd.score)).expect("write");
-                }
-                out
+                let live = searcher
+                    .count(&top_level(Clause::MatchAllDocs(MatchAllDocsQuery::new(0))))
+                    .expect("count");
+                let count = searcher.count(&q).expect("count");
+                format!("eqhits {term} {count} {live}")
             });
             assert_eq!(got, hits, "seed {seed}");
         }
@@ -464,4 +480,91 @@ fn classic_is_named_as_java() {
         ClassicSimilarity::default().simple_name(),
         "ClassicSimilarity"
     );
+}
+
+/// `newStringField`/`newTextField`: each field's random type the first time
+/// it is named, the same type (and no draws) the second time, and the
+/// stream left where Java's is.
+#[test]
+fn new_field_types_are_javas() {
+    use lucene_index::document::{IndexableField, Store};
+    use lucene_test_framework::util::lucene_test_case::{
+        new_string_field, new_text_field, FieldTypes, FieldValue,
+    };
+    let mut l = DATA.lines().filter(|l| l.starts_with("nf")).peekable();
+    let mut seeds = 0;
+    while l.peek().is_some() {
+        let mut fields = FieldTypes::default();
+        let first: Vec<&str> = l.peek().expect("a line").split(' ').collect();
+        let seed: i64 = first[1].parse().expect("seed");
+        let mut r = JavaRandom::new(seed);
+        let made = [
+            new_string_field(
+                &mut r,
+                &mut fields,
+                &format!("s{seed}"),
+                FieldValue::String("v"),
+                Store::No,
+            ),
+            new_text_field(&mut r, &mut fields, &format!("t{seed}"), "a b", Store::No),
+            new_text_field(&mut r, &mut fields, &format!("t{seed}"), "c d", Store::Yes),
+            new_string_field(
+                &mut r,
+                &mut fields,
+                &format!("ss{seed}"),
+                FieldValue::String("v"),
+                Store::Yes,
+            ),
+            new_text_field(&mut r, &mut fields, &format!("ts{seed}"), "a b", Store::Yes),
+        ];
+        for f in &made {
+            let t = f.field_type();
+            let got = format!(
+                "nf {seed} {} {} {} {} {} {}",
+                f.name(),
+                t.stored(),
+                t.store_term_vectors(),
+                t.store_term_vector_positions(),
+                t.store_term_vector_payloads(),
+                t.store_term_vector_offsets()
+            );
+            assert_eq!(got, l.next().expect("an nf line"));
+        }
+        assert_eq!(
+            format!("nftail {seed} {}", r.next_long()),
+            l.next().expect("a tail line")
+        );
+        assert!(fields.get(&format!("t{seed}")).is_some());
+        fields.clear();
+        assert!(fields.get(&format!("t{seed}")).is_none());
+        seeds += 1;
+    }
+    assert_eq!(seeds, 40);
+}
+
+/// `IndexSearcher.slices(leaves, maxDocsPerSlice, maxSegmentsPerSlice,
+/// false)`, which `newSearcher`'s concurrent searchers slice by: the same
+/// groups, in the same order.
+#[test]
+fn leaf_slices_are_javas() {
+    use lucene_test_framework::search::new_searcher::leaf_slices;
+    let mut n = 0;
+    for line in DATA.lines().filter(|l| l.starts_with("slices ")) {
+        let parts: Vec<&str> = line.split(' ').collect();
+        let sizes: Vec<i32> = parts[1].split(',').map(|s| s.parse().unwrap()).collect();
+        let max_docs: i32 = parts[2].parse().unwrap();
+        let max_segments: i32 = parts[3].parse().unwrap();
+        let got: Vec<String> = leaf_slices(&sizes, max_docs, max_segments)
+            .iter()
+            .map(|g| {
+                g.iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .collect();
+        assert_eq!(got.join(" "), parts[4..].join(" "), "{line}");
+        n += 1;
+    }
+    assert_eq!(n, 60);
 }

@@ -106,6 +106,41 @@ fn wrap_is_a_no_op_without_a_guard_and_guards_nest() {
 }
 
 #[test]
+fn the_weight_checks_hold_sound_values_and_reject_the_rest() {
+    // No guard: nothing is checked, and a query's own bulk scorer is used.
+    check_count(-5, Some(1), None);
+    check_lead_cost(-1);
+    assert!(usually_own_bulk());
+
+    let _guard = AssertingGuard::new(0);
+    check_count(-1, Some(3), None);
+    check_count(3, Some(3), None);
+    check_count(9, None, None);
+    let mut live = FixedBitSet::new(3);
+    // FBS: 0 is below the 3 bits just made.
+    live.set(0);
+    check_count(1, Some(3), Some(&live));
+    check_lead_cost(0);
+    let rejects: [&dyn Fn(); 4] = [
+        &|| check_count(-2, Some(3), None),
+        &|| check_count(4, Some(3), None),
+        &|| check_count(2, Some(3), Some(&live)),
+        &|| check_lead_cost(-1),
+    ];
+    for reject in rejects {
+        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(reject));
+        assert!(err.is_err());
+    }
+}
+
+#[test]
+fn a_segment_is_rarely_scored_through_its_plain_scorer() {
+    let _guard = AssertingGuard::new(7);
+    let plain = (0..2000).filter(|_| !usually_own_bulk()).count();
+    assert!((1..=60).contains(&plain), "{plain}");
+}
+
+#[test]
 fn a_sound_scorer_passes_and_every_call_is_forwarded() {
     let mut f = fake(&[1, 2, 5, 9]);
     f.matching = Some(vec![2, 9]);

@@ -8,7 +8,9 @@
 //! reader directly, and writes supplied postings in one call. The caller
 //! supplies fields in name order, as Java's Fields iterator does. Resource
 //! cleanup uses ownership instead of Java's close-on-failure blocks.
-//! IndexWriter codec selection is not implemented here.
+//! IndexWriter routes a field to one through
+//! `Lucene104PostingsFormat::dictionary` with the statics below, once
+//! [`super::register_postings_formats`] has made them readable by name.
 
 use std::collections::BTreeMap;
 
@@ -18,8 +20,12 @@ use lucene_codecs::blockterms::{
     FixedGapTermsIndexWriter, Result, TermsIndexReader, VariableGapTermsIndexReader,
     VariableGapTermsIndexWriter,
 };
-use lucene_codecs::postings_writer::{FieldNorms, FieldPostingsInput, TermSource};
+use lucene_codecs::blocktree;
+use lucene_codecs::postings_writer::{
+    self, DictionaryField, FieldNorms, FieldPostingsInput, PostingsFiles, TermSource, WriteOptions,
+};
 use lucene_codecs::segment_state::{SegmentReadState, SegmentWriteState};
+use lucene_codecs::terms_dictionary::{ErasedInput, TermsDictionaryFormat};
 
 /// The test-framework's three block-terms postings formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,13 +116,49 @@ impl BlockTermsFormat {
         norms: &[FieldNorms<'_>],
         state: &SegmentWriteState<'_>,
     ) -> Result<BTreeMap<String, Vec<u8>>> {
-        let (postings, tib, indexes) = match self {
+        let (postings, dictionary) = self.write_parts(inputs, norms, state)?;
+        let mut files: BTreeMap<String, Vec<u8>> = self
+            .dictionary_extensions()
+            .iter()
+            .zip(dictionary)
+            .map(|(ext, bytes)| (ext.to_string(), bytes))
+            .collect();
+        files.insert("doc".to_string(), postings.doc);
+        files.insert("psm".to_string(), postings.psm);
+        if !postings.pos.is_empty() {
+            files.insert("pos".to_string(), postings.pos);
+        }
+        if !postings.pay.is_empty() {
+            files.insert("pay".to_string(), postings.pay);
+        }
+        Ok(files)
+    }
+
+    /// The dictionary's files: `.tib`, then the terms index's.
+    fn dictionary_extensions(self) -> &'static [&'static str] {
+        match self {
+            Self::FixedGap { .. } => &["tib", "tii"],
+            Self::VarGapFixedInterval { .. } | Self::VarGapDocFreqInterval { .. } => {
+                &["tib", "tmv", "tiv"]
+            }
+        }
+    }
+
+    /// The postings, and the dictionary's files in
+    /// [`Self::dictionary_extensions`] order.
+    fn write_parts<T: TermSource>(
+        self,
+        inputs: &[FieldPostingsInput<'_, T>],
+        norms: &[FieldNorms<'_>],
+        state: &SegmentWriteState<'_>,
+    ) -> Result<(PostingsFiles, Vec<Vec<u8>>)> {
+        Ok(match self {
             Self::FixedGap {
                 term_index_interval,
             } => {
                 let index = FixedGapTermsIndexWriter::new(state, term_index_interval)?;
                 let out = blockterms::write(index, inputs, norms, state)?;
-                (out.postings, out.tib, vec![("tii", out.index)])
+                (out.postings, vec![out.tib, out.index])
             }
             Self::VarGapFixedInterval {
                 term_index_interval,
@@ -126,11 +168,7 @@ impl BlockTermsFormat {
                     EveryNTermSelector::new(term_index_interval),
                 );
                 let out = blockterms::write(index, inputs, norms, state)?;
-                (
-                    out.postings,
-                    out.tib,
-                    vec![("tmv", out.index.tmv), ("tiv", out.index.tiv)],
-                )
+                (out.postings, vec![out.tib, out.index.tmv, out.index.tiv])
             }
             Self::VarGapDocFreqInterval {
                 doc_freq_threshold,
@@ -141,27 +179,76 @@ impl BlockTermsFormat {
                     EveryNOrDocFreqTermSelector::new(doc_freq_threshold, term_index_interval),
                 );
                 let out = blockterms::write(index, inputs, norms, state)?;
-                (
-                    out.postings,
-                    out.tib,
-                    vec![("tmv", out.index.tmv), ("tiv", out.index.tiv)],
-                )
+                (out.postings, vec![out.tib, out.index.tmv, out.index.tiv])
             }
+        })
+    }
+}
+
+/// `new LuceneFixedGap()`, as IndexWriter routes fields to it
+/// ([`lucene_codecs::per_field_postings::Lucene104PostingsFormat::dictionary`])
+/// and reads its groups back.
+pub static FIXED_GAP: BlockTermsFormat = BlockTermsFormat::FixedGap {
+    term_index_interval: DEFAULT_TERM_INDEX_INTERVAL,
+};
+
+/// `new LuceneVarGapFixedInterval()`.
+pub static VAR_GAP_FIXED_INTERVAL: BlockTermsFormat = BlockTermsFormat::VarGapFixedInterval {
+    term_index_interval: DEFAULT_TERM_INDEX_INTERVAL,
+};
+
+/// `new LuceneVarGapDocFreqInterval()`.
+pub static VAR_GAP_DOC_FREQ_INTERVAL: BlockTermsFormat = BlockTermsFormat::VarGapDocFreqInterval {
+    doc_freq_threshold: 1_000_000,
+    term_index_interval: DEFAULT_TERM_INDEX_INTERVAL,
+};
+
+impl TermsDictionaryFormat for BlockTermsFormat {
+    fn name(&self) -> &'static str {
+        BlockTermsFormat::name(*self)
+    }
+
+    fn extensions(&self) -> &'static [&'static str] {
+        self.dictionary_extensions()
+    }
+
+    fn write(
+        &self,
+        inputs: &[ErasedInput<'_, '_>],
+        norms: &[FieldNorms<'_>],
+        _options: &WriteOptions,
+        state: &SegmentWriteState<'_>,
+    ) -> postings_writer::Result<(PostingsFiles, Vec<Vec<u8>>)> {
+        self.write_parts(inputs, norms, state).map_err(|e| match e {
+            Error::Write(e) => e,
+            Error::Store(e) => postings_writer::Error::Store(e),
+            e => postings_writer::Error::Dictionary(e.to_string()),
+        })
+    }
+
+    fn read(
+        &self,
+        files: &[&[u8]],
+        state: &SegmentReadState<'_>,
+    ) -> blocktree::Result<Vec<DictionaryField>> {
+        let name = BlockTermsFormat::name(*self);
+        let err = |e: Error| match e {
+            Error::Store(e) => blocktree::Error::Store(e),
+            Error::Postings(e) => blocktree::Error::Postings(e),
+            e => blocktree::Error::ForeignDictionary {
+                format: name,
+                message: e.to_string(),
+            },
         };
-        let mut files: BTreeMap<String, Vec<u8>> = indexes
-            .into_iter()
-            .map(|(ext, bytes)| (ext.to_string(), bytes))
+        let files: BTreeMap<String, Vec<u8>> = self
+            .dictionary_extensions()
+            .iter()
+            .zip(files)
+            .map(|(ext, bytes)| (ext.to_string(), bytes.to_vec()))
             .collect();
-        files.insert("tib".to_string(), tib);
-        files.insert("doc".to_string(), postings.doc);
-        files.insert("psm".to_string(), postings.psm);
-        if !postings.pos.is_empty() {
-            files.insert("pos".to_string(), postings.pos);
-        }
-        if !postings.pay.is_empty() {
-            files.insert("pay".to_string(), postings.pay);
-        }
-        Ok(files)
+        self.fields_producer(&files, state)
+            .and_then(|reader| reader.dictionary_fields())
+            .map_err(err)
     }
 }
 

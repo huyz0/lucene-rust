@@ -14,11 +14,13 @@
 //! constructor checks the seed and dictionary files, not the postings files.
 //! Fields must be in name order. Ownership replaces close-on-failure; a failed write
 //! returns no files, while Java may leave partial files in its Directory.
-//! IndexWriter does not route fields here; inherited reader limitations are
-//! recorded with the underlying formats in the parity ledger.
+//! IndexWriter routes fields to an instance through
+//! [`MockRandomPostingsFormat::into_dictionary_format`]; a group is read back
+//! by the read-only instance [`super::register_postings_formats`] registers.
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::{LazyLock, Mutex};
 
 use lucene_codecs::blockterms::{self, IndexTermSelector, TermStats, VariableGapTermsIndexWriter};
 use lucene_codecs::blocktree::{self, BlockTreeFields};
@@ -26,9 +28,10 @@ use lucene_codecs::blocktreeords::{BlockTreeOrdsPostingsFormat, OrdsBlockTreeTer
 use lucene_codecs::field_infos::FieldInfo;
 use lucene_codecs::memory::{FstPostingsFormat, FstTermsReader};
 use lucene_codecs::postings_writer::{
-    self, FieldNorms, FieldPostingsInput, PostingsFiles, TermSource, WriteOptions,
+    self, DictionaryField, FieldNorms, FieldPostingsInput, PostingsFiles, TermSource, WriteOptions,
 };
 use lucene_codecs::segment_state::{SegmentReadState, SegmentWriteState};
+use lucene_codecs::terms_dictionary::{ErasedInput, TermsDictionaryFormat};
 use lucene_store::codec_util;
 use lucene_store::data_input::{DataInput, SliceInput};
 use lucene_store::data_output::DataOutput;
@@ -310,6 +313,100 @@ impl MockRandomPostingsFormat {
                 state,
             )?),
         })
+    }
+}
+
+/// Every dictionary file a seed may select, the seed file first.
+const DICTIONARY_EXTENSIONS: &[&str] = &[
+    "sd", "tfp", "tim", "tip", "tmd", "tib", "tii", "tmv", "tiv", "tio", "tipo",
+];
+
+/// A `MockRandomPostingsFormat` as IndexWriter routes fields to it: every
+/// flush and merge draws the next writer's seed, so the format sits behind
+/// a lock.
+#[derive(Debug)]
+pub struct RoutedMockRandom(Mutex<MockRandomPostingsFormat>);
+
+impl MockRandomPostingsFormat {
+    /// This instance as `Lucene104PostingsFormat::dictionary` takes it. It
+    /// is leaked: a routed format lives as long as the writers using it, as
+    /// Java's codec instance does.
+    pub fn into_dictionary_format(self) -> &'static dyn TermsDictionaryFormat {
+        Box::leak(Box::new(RoutedMockRandom(Mutex::new(self))))
+    }
+
+    /// The read-only SPI instance, which reads every `MockRandom` group.
+    pub fn read_only() -> &'static dyn TermsDictionaryFormat {
+        static FORMAT: LazyLock<RoutedMockRandom> =
+            LazyLock::new(|| RoutedMockRandom(Mutex::new(MockRandomPostingsFormat::default())));
+        &*FORMAT
+    }
+}
+
+impl TermsDictionaryFormat for RoutedMockRandom {
+    fn name(&self) -> &'static str {
+        "MockRandom"
+    }
+
+    /// The seed picks the dictionary, so only `.sd` is always written.
+    fn extensions(&self) -> &'static [&'static str] {
+        DICTIONARY_EXTENSIONS
+    }
+
+    fn write(
+        &self,
+        inputs: &[ErasedInput<'_, '_>],
+        norms: &[FieldNorms<'_>],
+        _options: &WriteOptions,
+        state: &SegmentWriteState<'_>,
+    ) -> postings_writer::Result<(PostingsFiles, Vec<Vec<u8>>)> {
+        let mut format = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut files = format
+            .fields_consumer(inputs, norms, state)
+            .map_err(|e| match e {
+                Error::Write(e) => e,
+                Error::Store(e) => postings_writer::Error::Store(e),
+                e => postings_writer::Error::Dictionary(e.to_string()),
+            })?;
+        let mut take = |ext: &str| files.remove(ext).unwrap_or_default();
+        let postings = PostingsFiles {
+            doc: take("doc"),
+            psm: take("psm"),
+            pos: take("pos"),
+            pay: take("pay"),
+        };
+        let dictionary = DICTIONARY_EXTENSIONS.iter().map(|ext| take(ext)).collect();
+        Ok((postings, dictionary))
+    }
+
+    fn read(
+        &self,
+        files: &[&[u8]],
+        state: &SegmentReadState<'_>,
+    ) -> blocktree::Result<Vec<DictionaryField>> {
+        let err = |e: Error| match e {
+            Error::Store(e) => blocktree::Error::Store(e),
+            Error::BlockTree(e) => e,
+            e => blocktree::Error::ForeignDictionary {
+                format: "MockRandom",
+                message: e.to_string(),
+            },
+        };
+        let files: BTreeMap<String, Vec<u8>> = DICTIONARY_EXTENSIONS
+            .iter()
+            .zip(files)
+            .filter(|(_, bytes)| !bytes.is_empty())
+            .map(|(ext, bytes)| (ext.to_string(), bytes.to_vec()))
+            .collect();
+        let format = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        match format.fields_producer(&files, state).map_err(err)? {
+            MockRandomFieldsProducer::Fst(r) => r.dictionary_fields().map_err(|e| err(e.into())),
+            MockRandomFieldsProducer::BlockTree(f) => f.dictionary_fields(state.field_infos),
+            MockRandomFieldsProducer::BlockTerms(r) => {
+                r.dictionary_fields().map_err(|e| err(e.into()))
+            }
+            MockRandomFieldsProducer::Ords(r) => r.dictionary_fields().map_err(|e| err(e.into())),
+        }
     }
 }
 

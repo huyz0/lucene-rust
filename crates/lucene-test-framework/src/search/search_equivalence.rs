@@ -3,15 +3,17 @@
 //! scored the same as) another's -- alone, under a random filter, and
 //! filtered.
 //!
-//! Java writes the corpus through `RandomIndexWriter` and searches it with
-//! two `newSearcher`s; here it is one segment under a plain `IndexWriter`,
-//! deleted in one last commit, and both sides search the same plain
-//! `IndexSearcher`. `Sort.INDEXORDER` is every matching document collected
-//! unscored (the same set `TopFieldDocs` would hold at `n = maxDoc`).
+//! The corpus is written through `RandomIndexWriter`
+//! ([`TestIndex::write_random`]) and searched with two `newSearcher`s
+//! ([`NewSearcher`]): `q1` on the first, `q2` on the second. Differs:
+//! `Sort.INDEXORDER` is every matching document collected unscored (the
+//! same set `TopFieldDocs` would hold at `n = maxDoc`); `setQueryCache(null)`
+//! has nothing to disable (the searchers cache no queries).
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use lucene_index::buffered_updates::{DeleteQuery, Term};
 use lucene_index::document::{Document, Store, StringField, TextField};
 use lucene_search::collector::ScoreMode;
 use lucene_search::extended_query::{
@@ -24,6 +26,7 @@ use lucene_util::automaton::CharacterRunAutomaton;
 use lucene_util::java_random::JavaRandom;
 
 use super::base_explanation::top_level;
+use super::new_searcher::NewSearcher;
 use super::test_index::TestIndex;
 use super::{check_hits, query_utils};
 use crate::analysis::mock_analyzer::MockAnalyzer;
@@ -36,6 +39,8 @@ pub const FIELD: &str = "field";
 /// `beforeClass`'s corpus, and the assertions over it.
 pub struct SearchEquivalence {
     index: TestIndex,
+    s1: NewSearcher,
+    s2: NewSearcher,
     stopword: char,
     num_docs: i32,
     contents: Vec<String>,
@@ -120,34 +125,39 @@ impl SearchEquivalence {
                 .test_knobs(nightly, multiplier)
                 .build(),
         );
-        let num_docs =
-            lucene_test_case::at_least(random, multiplier, if nightly { 1000 } else { 100 });
-        let contents: Vec<String> = (0..num_docs)
-            .map(|_| random_field_contents(random))
-            .collect();
-        let docs: Vec<Document> = contents
-            .iter()
-            .zip(0..)
-            .map(|(text, i): (&String, i32)| {
+        let mut num_docs = 0;
+        let mut contents = Vec::new();
+        let mut deleted = Vec::new();
+        let index = TestIndex::write_random(random, analyzer, &[FIELD], |iw, random| {
+            num_docs =
+                lucene_test_case::at_least(random, multiplier, if nightly { 1000 } else { 100 });
+            for i in 0..num_docs {
+                let text = random_field_contents(random);
                 let mut doc = Document::new();
                 doc.add(StringField::new("id", i.to_string(), Store::No));
                 doc.add(TextField::new(FIELD, text.clone(), Store::No));
-                doc
-            })
-            .collect();
-        // Java deletes by term or by the same term as a `TermQuery`, drawing
-        // which; both delete the same document
-        let deleted: Vec<i32> = (0..num_docs / 20)
-            .map(|_| {
+                iw.add_document(&doc).expect("addDocument");
+                contents.push(text);
+            }
+            // delete some docs, by term or by the same term as a `TermQuery`
+            for _ in 0..num_docs / 20 {
                 let id = random.next_int_bounded(num_docs);
-                let _by_query = random.next_boolean();
-                id
-            })
-            .collect();
-        let ids: Vec<String> = deleted.iter().map(ToString::to_string).collect();
-        let deletes: Vec<(&str, &str)> = ids.iter().map(|id| ("id", id.as_str())).collect();
+                let term = Term::new("id", id.to_string());
+                if random.next_boolean() {
+                    iw.delete_documents(term).expect("deleteDocuments");
+                } else {
+                    iw.delete_documents_by_query(DeleteQuery::Term(term))
+                        .expect("deleteDocuments");
+                }
+                deleted.push(id);
+            }
+        });
+        let s1 = NewSearcher::draw(random, nightly, multiplier);
+        let s2 = NewSearcher::draw(random, nightly, multiplier);
         Self {
-            index: TestIndex::build(analyzer, &[docs], &deletes, &[FIELD]),
+            index,
+            s1,
+            s2,
             stopword,
             num_docs,
             contents,
@@ -186,6 +196,30 @@ impl SearchEquivalence {
         self.index.with_searcher(f)
     }
 
+    /// Runs `f` over `s1` and `s2`, the two `newSearcher`s, and runs each
+    /// search through its searcher's asserting wrappers.
+    fn with_searchers<R>(
+        &self,
+        f: impl FnOnce(&Searching<'_, '_, '_>, &Searching<'_, '_, '_>) -> R,
+    ) -> R {
+        self.index.with_segments(|segments, norms| {
+            let mut s1 = IndexSearcher::new(segments, norms).expect("searcher");
+            let mut s2 = IndexSearcher::new(segments, norms).expect("searcher");
+            self.s1.configure(&mut s1);
+            self.s2.configure(&mut s2);
+            f(
+                &Searching {
+                    searcher: &s1,
+                    draws: &self.s1,
+                },
+                &Searching {
+                    searcher: &s2,
+                    draws: &self.s2,
+                },
+            )
+        })
+    }
+
     fn num_filters(&self, random: &mut JavaRandom) -> i32 {
         lucene_test_case::at_least(random, self.multiplier, if self.nightly { 10 } else { 3 })
     }
@@ -221,28 +255,28 @@ impl SearchEquivalence {
         let (q1, q2) = with_filter(q1, q2, filter);
         query_utils::check(&q1);
         query_utils::check(&q2);
-        self.with_searcher(|s| {
-            let n = usize::try_from(s.max_doc()).expect("maxDoc is non-negative");
+        self.with_searchers(|s1, s2| {
+            let n = usize::try_from(s1.searcher.max_doc()).expect("maxDoc is non-negative");
             for relevance in [false, true] {
                 let (td1, td2): (Vec<i32>, Vec<i32>) = if relevance {
-                    let docs = |q: &BooleanQuery| -> Vec<i32> {
-                        s.search(q, n)
+                    let docs = |s: &Searching<'_, '_, '_>, q: &BooleanQuery| -> Vec<i32> {
+                        s.run(|s| s.search(q, n))
                             .expect("search")
                             .score_docs
                             .iter()
                             .map(|d| d.doc)
                             .collect()
                     };
-                    (docs(&q1), docs(&q2))
+                    (docs(s1, &q1), docs(s2, &q2))
                 } else {
-                    let docs = |q: &BooleanQuery| -> Vec<i32> {
-                        check_hits::all_hits(s, q, ScoreMode::CompleteNoScores)
+                    let docs = |s: &Searching<'_, '_, '_>, q: &BooleanQuery| -> Vec<i32> {
+                        s.run(|s| check_hits::all_hits(s, q, ScoreMode::CompleteNoScores))
                             .expect("search")
                             .into_iter()
                             .map(|(d, _)| d)
                             .collect()
                     };
-                    (docs(&q1), docs(&q2))
+                    (docs(s1, &q1), docs(s2, &q2))
                 };
                 assert!(
                     td1.len() <= td2.len(),
@@ -281,10 +315,10 @@ impl SearchEquivalence {
     /// When the hits differ.
     pub fn assert_same_scores_filtered(&self, q1: &Clause, q2: &Clause, filter: Option<&Clause>) {
         let (q1, q2) = with_filter(q1, q2, filter);
-        self.with_searcher(|s| {
-            let n = usize::try_from(s.max_doc()).expect("maxDoc is non-negative");
-            let td1 = s.search(&q1, n).expect("search");
-            let td2 = s.search(&q2, n).expect("search");
+        self.with_searchers(|s1, s2| {
+            let n = usize::try_from(s1.searcher.max_doc()).expect("maxDoc is non-negative");
+            let td1 = s1.run(|s| s.search(&q1, n)).expect("search");
+            let td2 = s2.run(|s| s.search(&q2, n)).expect("search");
             assert_eq!(
                 td1.total_hits.value, td2.total_hits.value,
                 "{q1:?} vs {q2:?}"
@@ -300,6 +334,19 @@ impl SearchEquivalence {
                 );
             }
         });
+    }
+}
+
+/// One of the two searchers, with what `newSearcher` drew for it.
+struct Searching<'r, 's, 'a> {
+    searcher: &'r IndexSearcher<'s, 'a>,
+    draws: &'r NewSearcher,
+}
+
+impl<'s, 'a> Searching<'_, 's, 'a> {
+    /// One search, under this searcher's asserting wrappers.
+    fn run<R>(&self, f: impl FnOnce(&IndexSearcher<'s, 'a>) -> R) -> R {
+        self.draws.searching(|| f(self.searcher))
     }
 }
 

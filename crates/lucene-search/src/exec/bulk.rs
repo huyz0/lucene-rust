@@ -723,12 +723,12 @@ pub(crate) fn bulk_clause<'a>(
     mode: Mode,
 ) -> Result<Option<Bulk<'a>>> {
     if let Clause::Boolean(b) = clause {
-        return bulk_boolean(ctx, b, boost, mode);
+        return bulk_boolean_own(ctx, b, boost, mode);
     }
     if let Clause::Boost(b) = clause {
         let (chain, inner) = boost_chain(b);
         if let Clause::Boolean(inner) = inner {
-            return bulk_boolean(ctx, inner, chain * boost, mode);
+            return bulk_boolean_own(ctx, inner, chain * boost, mode);
         }
     }
     let (dismax_boost, inner) = match clause {
@@ -890,10 +890,29 @@ fn lone<'a>(
     })
 }
 
+/// `weight.bulkScorer(leaf)` of a search's top-level boolean: the
+/// boolean's own bulk scorer ([`bulk_boolean_own`]), or -- under the test
+/// framework's asserting searcher, one segment in a hundred, as
+/// `AssertingWeight` picks it -- the default bulk scorer over its scorer
+/// tree, so the plain scorers are also checked through a bulk scorer.
+pub(crate) fn bulk_boolean<'a>(
+    ctx: &LeafContext<'a>,
+    q: &BooleanQuery,
+    boost: f32,
+    mode: Mode,
+) -> Result<Option<Bulk<'a>>> {
+    #[cfg(any(test, feature = "asserting"))]
+    if !super::asserting::usually_own_bulk() {
+        let clause = Clause::Boolean(Box::new(q.clone()));
+        return Ok(super::build::build(ctx, &clause, boost, mode, true)?.map(Bulk::scorer));
+    }
+    bulk_boolean_own(ctx, q, boost, mode)
+}
+
 /// `BooleanWeight.bulkScorer`: `BooleanQuery.rewrite`'s single-clause
 /// unwrapping, then `BooleanScorerSupplier.booleanScorer()`, then
 /// `DefaultBulkScorer` over the scorer tree when that declines.
-pub(crate) fn bulk_boolean<'a>(
+pub(crate) fn bulk_boolean_own<'a>(
     ctx: &LeafContext<'a>,
     q: &BooleanQuery,
     boost: f32,

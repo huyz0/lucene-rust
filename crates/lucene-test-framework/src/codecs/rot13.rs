@@ -8,22 +8,25 @@
 //! ownership replaces close-on-failure, and files are passed by extension.
 //! Readers expose native dictionaries; callers open postings separately.
 //! Dictionary-on-heap is recorded as in the underlying uniform-split format
-//! (all dictionaries are decoded at open). IndexWriter routing, shared-terms
-//! merge-state support and other inherited gaps remain in the parity ledger.
+//! (all dictionaries are decoded at open). IndexWriter routes fields to
+//! either through `dictionary_format()`, once
+//! [`super::register_postings_formats`] has made them readable by name.
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use lucene_codecs::postings_writer::{FieldNorms, FieldPostingsInput, TermSource};
 use lucene_codecs::segment_state::{SegmentReadState, SegmentWriteState};
+use lucene_codecs::terms_dictionary::TermsDictionaryFormat;
 use lucene_codecs::uniformsplit::sharedterms::{
-    StUniformSplitPostingsFormat, StUniformSplitTermsReader,
+    NamedStUniformSplit, StUniformSplitPostingsFormat, StUniformSplitTermsReader,
 };
 use lucene_codecs::uniformsplit::{
-    BlockDecoder, BlockEncoder, Error, Result, UniformSplitOutput, UniformSplitPostingsFormat,
-    UniformSplitTermsReader, DEFAULT_DELTA_NUM_LINES, DEFAULT_TARGET_NUM_BLOCK_LINES,
+    BlockDecoder, BlockEncoder, Error, NamedUniformSplit, Result, UniformSplitOutput,
+    UniformSplitPostingsFormat, UniformSplitTermsReader, DEFAULT_DELTA_NUM_LINES,
+    DEFAULT_TARGET_NUM_BLOCK_LINES,
 };
 
 /// Java: `Rot13CypherTestUtil`, including its untracked block encoder/decoder.
@@ -219,6 +222,24 @@ impl UniformSplitRot13PostingsFormat {
             .open(file(files, "ustb")?.to_vec(), file(files, "ustd")?, state)
     }
 
+    /// This format as IndexWriter routes a field to it
+    /// (`Lucene104PostingsFormat::dictionary`) and reads its groups back.
+    ///
+    /// # Errors
+    /// None in practice: the block-line settings are Java's defaults.
+    pub fn dictionary_format(&self) -> Result<&'static dyn TermsDictionaryFormat> {
+        static FORMATS: [OnceLock<NamedUniformSplit>; 2] = [OnceLock::new(), OnceLock::new()];
+        let cell = &FORMATS[usize::from(self.dictionary_on_heap)];
+        if let Some(format) = cell.get() {
+            return Ok(format);
+        }
+        let format = NamedUniformSplit {
+            name: self.name(),
+            format: self.format()?,
+        };
+        Ok(cell.get_or_init(|| format))
+    }
+
     fn format(&self) -> Result<UniformSplitPostingsFormat> {
         UniformSplitPostingsFormat::new(
             DEFAULT_TARGET_NUM_BLOCK_LINES,
@@ -266,6 +287,23 @@ impl StUniformSplitRot13PostingsFormat {
             file(files, "stustd")?,
             state,
         )
+    }
+
+    /// This format as IndexWriter routes a field to it
+    /// (`Lucene104PostingsFormat::dictionary`) and reads its groups back.
+    ///
+    /// # Errors
+    /// None in practice: the block-line settings are Java's defaults.
+    pub fn dictionary_format(&self) -> Result<&'static dyn TermsDictionaryFormat> {
+        static FORMAT: OnceLock<NamedStUniformSplit> = OnceLock::new();
+        if let Some(format) = FORMAT.get() {
+            return Ok(format);
+        }
+        let format = NamedStUniformSplit {
+            name: self.name(),
+            format: self.format()?,
+        };
+        Ok(FORMAT.get_or_init(|| format))
     }
 
     fn format(&self) -> Result<StUniformSplitPostingsFormat> {
