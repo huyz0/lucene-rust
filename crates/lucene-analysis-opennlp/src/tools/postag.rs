@@ -181,6 +181,17 @@ impl PosTagger {
     /// `new POSTaggerME(model, POSTagFormat.PENN)`: the beam size read from
     /// the manifest, the context generator built.
     pub fn new(model: &PosModel) -> Result<PosTagger, AnalysisError> {
+        Self::with_format(model, true)
+    }
+
+    /// `new POSTaggerME(model, POSTagFormatMapper.guessFormat(model))`, as
+    /// the name finder's `POSTaggerNameFeatureGenerator` makes it: the
+    /// format asked for is the one guessed, so the model's own tags.
+    pub fn new_untranslated(model: &PosModel) -> Result<PosTagger, AnalysisError> {
+        Self::with_format(model, false)
+    }
+
+    fn with_format(model: &PosModel, penn: bool) -> Result<PosTagger, AnalysisError> {
         let beam_size = model.base.beam_size(3)?;
         let version: Version = model.base.version();
         let generator = if version.major == 1 && version.minor < 8 {
@@ -190,11 +201,19 @@ impl PosTagger {
                 .descriptor
                 .as_deref()
                 .map_or(DEFAULT_FEATURES, |d| d.as_slice());
-            ContextGenerator::Configurable(featuregen::create(descriptor)?)
+            ContextGenerator::Configurable(featuregen::create_with(
+                descriptor,
+                &*model.base,
+                featuregen::Owner::PosTagger,
+            )?)
         };
         let maxent = model.base.maxent_model();
         Ok(PosTagger {
-            penn: penn_tags(&maxent),
+            penn: if penn {
+                penn_tags(&maxent)
+            } else {
+                maxent.outcomes().to_vec()
+            },
             model: maxent,
             generator,
             cache: ContextCache::new(usize::try_from(beam_size).unwrap_or(0)),

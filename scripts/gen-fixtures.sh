@@ -281,7 +281,7 @@ generator_classpath() {
     GenAnalysisNori) echo ":$NORI_CP" ;;
     GenAnalysisSmartcn) echo ":$SMARTCN_CP" ;;
     GenAnalysisIcu|GenAnalysisIcuCollation|GenAnalysisIcuTransform|GenAnalysisIcuTries|GenAnalysisIcuBreaks|GenAnalysisIcuRules) echo ":$ICU_CP" ;;
-    GenAnalysisOpenNLP) echo ":$OPENNLP_CP" ;;
+    GenAnalysisOpenNLP|GenAnalysisOpenNLPNer) echo ":$OPENNLP_CP" ;;
     GenExpressions*) echo ":$EXPRESSIONS_CP" ;;
   esac
 }

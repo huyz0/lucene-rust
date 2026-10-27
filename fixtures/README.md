@@ -1550,6 +1550,22 @@ outright.
   (`featuregen.tsv`). Read by
   `crates/lucene-analysis-opennlp/tests/opennlp_fixtures.rs` and
   `opennlp_hostile.rs`.
+- `GenAnalysisOpenNLPNer.java` — M14: `NLPNERTaggerOp` over OpenNLP 2.5.3's
+  `NameFinderME` (`OPENNLP_DEPS`, own classpath, `analysis_opennlp_ner/`).
+  Trains a POS model and seven name finders on 600 seeded synthetic
+  sentences naming people, places and organizations: GIS/BIO with the
+  default descriptor, copies without it, with an unknown codec class and
+  with beam size 1; an untyped perceptron; a perceptron BILOU model over a
+  dictionary and a nested POS model with most other generators; the
+  perceptron sequence trainer -- repacked as `GenAnalysisOpenNLP` does, the
+  nested POS model's bytes as written. Over `ner_text.txt` (9 documents):
+  names, types and probability bits per sentence, and each token's
+  probability (`ner.tsv`); 17 generators' features over resources from a map
+  (`ner_featuregen.tsv`, descriptors in `ner_featuregen_descriptors.txt`;
+  OpenNLP's cluster serializers close the zip stream, so no package holds
+  `word.clusters` or `brown.clusters`). Read by
+  `crates/lucene-analysis-opennlp/tests/opennlp_ner_fixtures.rs` and
+  `opennlp_ner_hostile.rs`.
 - `GenAnalysisDateLocales.java` — M12 T12.7: `SimpleDateFormat`'s parse
   outside `Locale.ENGLISH`, for `DateRecognizerFilterFactory`'s `locale`:
   over the locales of `corpus/date-locales.txt` (the 886 whose record --

@@ -1,33 +1,83 @@
-//! `opennlp.tools.util.featuregen`: the feature generators a POS model's
+//! `opennlp.tools.util.featuregen`: the feature generators a model's
 //! `generator.featuregen` descriptor configures (`GeneratorFactory.create`
-//! over its DOM), and `StringPattern`/`FeatureGeneratorUtil`'s token
-//! classes.
+//! over its DOM, resources looked up among the model's artifacts), and
+//! `StringPattern`/`FeatureGeneratorUtil`'s token classes.
 //!
-//! The generator factories ported are those of OpenNLP's default POS
-//! descriptor (`pos-default-features.xml`): `Definition`, `Suffix`,
-//! `Prefix`, `Window`, `Token`, `Sentence`, `TokenClass` and `PosTagger`
-//! (each `opennlp.tools.util.featuregen.<Name>FeatureGeneratorFactory`),
-//! and `cache="true"`'s `CachedFeatureGenerator` -- which caches a
-//! position's features by index alone, so the previous tags in them are
-//! those of the first sequence the beam search scored there, as in Java.
-//! Any other generator class (the name finder's dictionary, cluster and
-//! brown generators, a user's own) is refused as an
-//! `UnsupportedOperationException` when the tagger is created.
+//! Every generator factory OpenNLP 2.5.3 ships is ported (each
+//! `opennlp.tools.util.featuregen.<Name>FeatureGeneratorFactory`): the POS
+//! tagger's `Definition`, `Suffix`, `Prefix`, `Window`, `Token`,
+//! `Sentence`, `TokenClass` and `PosTagger`; the name finder's
+//! `PreviousMap`, `BigramName`, `TrigramName`, `DocumentBegin`,
+//! `CharacterNgram`, `TokenPattern` (over `SimpleTokenizer`),
+//! `Dictionary` (an `InSpanGenerator` over a `DictionaryNameFinder`),
+//! `WordCluster`, `BrownClusterToken`/`TokenClass`/`Bigram` and
+//! `POSTaggerName` (a nested POS model's own tags); and `Aggregated` and
+//! `Cached`. `cache="true"` (or `Cached`) caches a position's features by
+//! index alone, so the previous tags in them are those of the first
+//! sequence the beam search scored there, as in Java.
+//!
+//! A generator's identity checks on the token array (the cache, the
+//! dictionary's names, `DocumentBegin`'s first sentence) are a sentence
+//! number here: every call of a tool is a new sentence, as every array a
+//! Lucene op passes is a new one.
+//!
+//! Refused (`UnsupportedOperationException`): any other generator class (a
+//! user's own, which Java loads by reflection). Differs:
+//! `Character.isAlphabetic` (`TokenPattern`) takes the JDK's general
+//! categories but Rust's `Other_Alphabetic` property for marks and symbols.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 use lucene_analysis::java_character as jc;
 use lucene_analysis::java_unicode_script::{unicode_script_name, unicode_script_of};
 use lucene_analysis::AnalysisError;
 
+use super::dictionary::{ClusterDictionary, Dictionary};
+use super::model::{Artifact, BaseModel};
+use super::postag::PosTagger;
 use super::supplementary_scripts::RUNS;
 use super::text::{self, JString};
 use super::xml::{self, Element, Node};
 
+/// Who builds the generators: the tool factory decides how an
+/// `InvalidFormatException` out of `GeneratorFactory.create` surfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Owner {
+    /// `POSTaggerFactory`: an `IllegalStateException` around it.
+    PosTagger,
+    /// `TokenNameFinderFactory`: a `FeatureGeneratorCreationError` around
+    /// it.
+    NameFinder,
+}
+
+/// `FeatureGeneratorResourceProvider`: a resource by its key (the model's
+/// artifacts).
+pub trait Resources {
+    /// `getResource(key)`.
+    fn resource(&self, key: &str) -> Option<&Artifact>;
+}
+
+impl Resources for BaseModel {
+    fn resource(&self, key: &str) -> Option<&Artifact> {
+        self.artifact(key)
+    }
+}
+
+/// A provider without resources (`key -> null`).
+pub struct NoResources;
+
+impl Resources for NoResources {
+    fn resource(&self, _key: &str) -> Option<&Artifact> {
+        None
+    }
+}
+
 /// An error building the generators: Java's class, so that the message
 /// says which (`InvalidFormatException` escaping `GeneratorFactory.create`
-/// becomes `POSTaggerFactory`'s `IllegalStateException`; one inside a
-/// nested generator is first wrapped in a `RuntimeException`).
+/// is wrapped by the tool factory; one inside a factory is first wrapped
+/// in a `RuntimeException` by `buildGenerator`; anything else escapes as
+/// it is).
 #[derive(Debug)]
 enum BuildError {
     InvalidFormat(String),
@@ -36,7 +86,7 @@ enum BuildError {
 }
 
 impl BuildError {
-    /// What `GeneratorFactory.create` throws out of `buildGenerator`.
+    /// What `buildGenerator`'s `catch` makes of an error inside a factory.
     fn wrapped(self) -> BuildError {
         match self {
             BuildError::InvalidFormat(m) => {
@@ -46,11 +96,16 @@ impl BuildError {
         }
     }
 
-    fn into_analysis(self) -> AnalysisError {
+    fn into_analysis(self, owner: Owner) -> AnalysisError {
         match self {
-            BuildError::InvalidFormat(m) => AnalysisError::IllegalState(format!(
-                "IllegalStateException: opennlp.tools.util.InvalidFormatException: {m}"
-            )),
+            BuildError::InvalidFormat(m) => AnalysisError::IllegalState(match owner {
+                Owner::PosTagger => format!(
+                    "IllegalStateException: opennlp.tools.util.InvalidFormatException: {m}"
+                ),
+                Owner::NameFinder => format!(
+                    "TokenNameFinderModel.FeatureGeneratorCreationError: opennlp.tools.util.InvalidFormatException: {m}"
+                ),
+            }),
             BuildError::Runtime(m) => AnalysisError::IllegalState(format!("RuntimeException: {m}")),
             BuildError::Analysis(e) => e,
         }
@@ -94,6 +149,58 @@ pub enum Generator {
     },
     /// `PosTaggerFeatureGenerator`.
     PosTagger,
+    /// `PreviousMapFeatureGenerator`: each token's outcome in the
+    /// sentences tagged since the adaptive data was last cleared.
+    PreviousMap(HashMap<JString, JString>),
+    /// `BigramNameFeatureGenerator`.
+    BigramName,
+    /// `TrigramNameFeatureGenerator`.
+    TrigramName,
+    /// `DocumentBeginFeatureGenerator`: the first sentence it saw since the
+    /// adaptive data was last cleared.
+    DocumentBegin(Option<u64>),
+    /// `CharacterNgramFeatureGenerator`.
+    CharacterNgram {
+        /// `minLength`.
+        min: i32,
+        /// `maxLength`.
+        max: i32,
+    },
+    /// `TokenPatternFeatureGenerator` over `SimpleTokenizer`.
+    TokenPattern,
+    /// `DictionaryFeatureGenerator`: an `InSpanGenerator` (prefix `""`)
+    /// over a `DictionaryNameFinder`, the current sentence's names cached.
+    Dictionary {
+        /// The dictionary.
+        dictionary: Arc<Dictionary>,
+        /// The sentence `names` are of.
+        sentence: Option<u64>,
+        /// Its names, `[start, end)` token spans.
+        names: Vec<(usize, usize)>,
+    },
+    /// `WordClusterFeatureGenerator`.
+    WordCluster {
+        /// The clusters.
+        clusters: Arc<ClusterDictionary>,
+        /// The resource's key, the feature's prefix.
+        name: JString,
+        /// Whether the token is lower-cased before its lookup.
+        lowercase: bool,
+    },
+    /// `BrownTokenFeatureGenerator`.
+    BrownToken(Arc<ClusterDictionary>),
+    /// `BrownTokenClassFeatureGenerator`.
+    BrownTokenClass(Arc<ClusterDictionary>),
+    /// `BrownBigramFeatureGenerator`.
+    BrownBigram(Arc<ClusterDictionary>),
+    /// `POSTaggerNameFeatureGenerator`: a nested POS model's tags, the
+    /// last sentence's kept while the next has the same tokens.
+    PosTaggerName {
+        /// The tagger.
+        tagger: Box<PosTagger>,
+        /// The last sentence's tokens and tags.
+        cached: Option<(Vec<JString>, Vec<JString>)>,
+    },
     /// `AggregatedFeatureGenerator`.
     Aggregated(Vec<Generator>),
     /// `CachedFeatureGenerator`.
@@ -117,8 +224,27 @@ const FEATURE_CACHE_CAPACITY: usize = 100;
 enum Arg {
     Int(i32),
     Bool(bool),
+    Str(JString),
     Other,
     Generator(Generator),
+}
+
+/// `AbstractXmlFeatureGeneratorFactory.args`: a `LinkedHashMap`, so a
+/// repeated name keeps its first place.
+#[derive(Debug, Default)]
+struct Args(Vec<(String, Arg)>);
+
+impl Args {
+    fn put(&mut self, name: String, value: Arg) {
+        match self.0.iter_mut().find(|(n, _)| *n == name) {
+            Some((_, v)) => *v = value,
+            None => self.0.push((name, value)),
+        }
+    }
+
+    fn get(&self, name: &str) -> Option<&Arg> {
+        self.0.iter().find(|(n, _)| n == name).map(|(_, v)| v)
+    }
 }
 
 fn text_of(el: &Element) -> Result<JString, BuildError> {
@@ -143,13 +269,13 @@ fn number_format(s: &[u16]) -> BuildError {
 /// `AbstractXmlFeatureGeneratorFactory.init`: the element's child
 /// generators (`generator#<n>`, more than one aggregated as
 /// `generator#0`) and typed arguments.
-fn read_args(el: &Element) -> Result<HashMap<String, Arg>, BuildError> {
-    let mut args = HashMap::new();
+fn read_args(el: &Element, resources: &dyn Resources) -> Result<Args, BuildError> {
+    let mut args = Args::default();
     let mut generators = Vec::new();
     for child in el.elements() {
         if child.name == "generator" {
-            let g = build(child).map_err(BuildError::wrapped)?;
-            args.insert(
+            let g = build(child, resources)?;
+            args.put(
                 format!("generator#{}", generators.len()),
                 Arg::Generator(g.clone()),
             );
@@ -180,20 +306,17 @@ fn read_args(el: &Element) -> Result<HashMap<String, Arg>, BuildError> {
                     s.parse::<f64>().map_err(|_| number_format(&t))?;
                     Arg::Other
                 }
-                "str" => {
-                    text_of(child)?;
-                    Arg::Other
-                }
+                "str" => Arg::Str(text_of(child)?),
                 "bool" => Arg::Bool(text::parse_boolean(&text::to_string(&text_of(child)?))),
                 _ => return Err(BuildError::InvalidFormat(
                     "child element must be one of generator, int, long, float, double, str or bool"
                         .into(),
                 )),
             };
-        args.insert(name, value);
+        args.put(name, value);
     }
     if generators.len() > 1 {
-        args.insert(
+        args.put(
             "generator#0".into(),
             Arg::Generator(Generator::Aggregated(generators)),
         );
@@ -201,11 +324,7 @@ fn read_args(el: &Element) -> Result<HashMap<String, Arg>, BuildError> {
     Ok(args)
 }
 
-fn get_int(
-    args: &HashMap<String, Arg>,
-    name: &str,
-    default: Option<i32>,
-) -> Result<i32, BuildError> {
+fn get_int(args: &Args, name: &str, default: Option<i32>) -> Result<i32, BuildError> {
     match (args.get(name), default) {
         (None, Some(d)) => Ok(d),
         (None, None) => Err(BuildError::InvalidFormat(format!(
@@ -218,18 +337,75 @@ fn get_int(
     }
 }
 
-fn get_bool(args: &HashMap<String, Arg>, name: &str, default: bool) -> Result<bool, BuildError> {
-    match args.get(name) {
-        None => Ok(default),
-        Some(Arg::Bool(b)) => Ok(*b),
-        Some(_) => Err(BuildError::InvalidFormat(format!(
+fn get_bool(args: &Args, name: &str, default: Option<bool>) -> Result<bool, BuildError> {
+    match (args.get(name), default) {
+        (None, Some(d)) => Ok(d),
+        (None, None) => Err(BuildError::InvalidFormat(format!(
+            "parameter {name} must be set!"
+        ))),
+        (Some(Arg::Bool(b)), _) => Ok(*b),
+        (Some(_), _) => Err(BuildError::InvalidFormat(format!(
             "parameter {name} must be boolean!"
         ))),
     }
 }
 
-/// `GeneratorFactory.buildGenerator`: a `<generator class="...">`.
-fn build(el: &Element) -> Result<Generator, BuildError> {
+/// `getStr(name)` (without a default; its type error says "double", as
+/// Java's does).
+fn get_str(args: &Args, name: &str) -> Result<JString, BuildError> {
+    match args.get(name) {
+        None => Err(BuildError::InvalidFormat(format!(
+            "parameter {name} must be set!"
+        ))),
+        Some(Arg::Str(s)) => Ok(s.clone()),
+        Some(_) => Err(BuildError::InvalidFormat(format!(
+            "parameter {name} must be double!"
+        ))),
+    }
+}
+
+/// The resource a factory's `str` argument `name` names: its key and the
+/// artifact, if any.
+fn lookup<'r>(
+    args: &Args,
+    name: &str,
+    resources: &'r dyn Resources,
+) -> Result<(JString, Option<&'r Artifact>), BuildError> {
+    let key = get_str(args, name)?;
+    let artifact = resources.resource(&text::to_string(&key));
+    Ok((key, artifact))
+}
+
+/// The factory class names this port builds, without their package.
+const FACTORIES: [&str; 22] = [
+    "AggregatedFeatureGeneratorFactory",
+    "BigramNameFeatureGeneratorFactory",
+    "BrownClusterBigramFeatureGeneratorFactory",
+    "BrownClusterTokenClassFeatureGeneratorFactory",
+    "BrownClusterTokenFeatureGeneratorFactory",
+    "CachedFeatureGeneratorFactory",
+    "CharacterNgramFeatureGeneratorFactory",
+    "DefinitionFeatureGeneratorFactory",
+    "DictionaryFeatureGeneratorFactory",
+    "DocumentBeginFeatureGeneratorFactory",
+    "POSTaggerNameFeatureGeneratorFactory",
+    "PosTaggerFeatureGeneratorFactory",
+    "PrefixFeatureGeneratorFactory",
+    "PreviousMapFeatureGeneratorFactory",
+    "SentenceFeatureGeneratorFactory",
+    "SuffixFeatureGeneratorFactory",
+    "TokenClassFeatureGeneratorFactory",
+    "TokenFeatureGeneratorFactory",
+    "TokenPatternFeatureGeneratorFactory",
+    "TrigramNameFeatureGeneratorFactory",
+    "WindowFeatureGeneratorFactory",
+    "WordClusterFeatureGeneratorFactory",
+];
+
+/// `GeneratorFactory.buildGenerator`: a `<generator class="...">`. A
+/// missing class is thrown as it is; what the factory's `init` and
+/// `create` throw is wrapped.
+fn build(el: &Element, resources: &dyn Resources) -> Result<Generator, BuildError> {
     let class = el
         .attribute("class")
         .map(|c| text::to_string(c))
@@ -241,25 +417,33 @@ fn build(el: &Element) -> Result<Generator, BuildError> {
     }
     const PACKAGE: &str = "opennlp.tools.util.featuregen.";
     let simple = class.strip_prefix(PACKAGE).unwrap_or("");
-    let known = [
-        "DefinitionFeatureGeneratorFactory",
-        "SuffixFeatureGeneratorFactory",
-        "PrefixFeatureGeneratorFactory",
-        "WindowFeatureGeneratorFactory",
-        "TokenFeatureGeneratorFactory",
-        "SentenceFeatureGeneratorFactory",
-        "TokenClassFeatureGeneratorFactory",
-        "PosTaggerFeatureGeneratorFactory",
-    ];
-    if !known.contains(&simple) {
+    if !FACTORIES.contains(&simple) {
         return Err(BuildError::Analysis(AnalysisError::UnsupportedOperation(
             format!("the feature generator {class} is not supported by this port"),
         )));
     }
-    let args = read_args(el)?;
+    build_factory(simple, el, resources).map_err(BuildError::wrapped)
+}
+
+/// The factory's `init(element)` and `create()`.
+fn build_factory(
+    simple: &str,
+    el: &Element,
+    resources: &dyn Resources,
+) -> Result<Generator, BuildError> {
+    let args = read_args(el, resources)?;
     let length = |name: &str| -> Result<usize, BuildError> {
         // `min(length, lex.length())` of a negative length is no feature
         Ok(usize::try_from(get_int(&args, name, Some(4))?).unwrap_or(0))
+    };
+    let brown = |args: &Args| -> Result<Arc<ClusterDictionary>, BuildError> {
+        match lookup(args, "dict", resources)? {
+            (_, Some(Artifact::BrownCluster(c))) => Ok(Arc::clone(c)),
+            (key, _) => Err(BuildError::InvalidFormat(format!(
+                "Not a BrownLexicon resource for key: {}",
+                text::to_string(&key)
+            ))),
+        }
     };
     Ok(match simple {
         "DefinitionFeatureGeneratorFactory" => Generator::Definition,
@@ -281,27 +465,133 @@ fn build(el: &Element) -> Result<Generator, BuildError> {
             }
         }
         "TokenFeatureGeneratorFactory" => Generator::Token {
-            lowercase: get_bool(&args, "lowercase", true)?,
+            lowercase: get_bool(&args, "lowercase", Some(true))?,
         },
         "SentenceFeatureGeneratorFactory" => Generator::Sentence {
-            begin: get_bool(&args, "begin", true)?,
-            end: get_bool(&args, "end", true)?,
+            begin: get_bool(&args, "begin", Some(true))?,
+            end: get_bool(&args, "end", Some(true))?,
         },
         "TokenClassFeatureGeneratorFactory" => Generator::TokenClass {
-            word_and_class: get_bool(&args, "wordAndClass", true)?,
+            word_and_class: get_bool(&args, "wordAndClass", Some(true))?,
         },
-        _ => Generator::PosTagger,
+        "PosTaggerFeatureGeneratorFactory" => Generator::PosTagger,
+        "PreviousMapFeatureGeneratorFactory" => Generator::PreviousMap(HashMap::new()),
+        "BigramNameFeatureGeneratorFactory" => Generator::BigramName,
+        "TrigramNameFeatureGeneratorFactory" => Generator::TrigramName,
+        "DocumentBeginFeatureGeneratorFactory" => Generator::DocumentBegin(None),
+        "TokenPatternFeatureGeneratorFactory" => Generator::TokenPattern,
+        "CharacterNgramFeatureGeneratorFactory" => Generator::CharacterNgram {
+            min: get_int(&args, "min", None)?,
+            max: get_int(&args, "max", None)?,
+        },
+        "AggregatedFeatureGeneratorFactory" => {
+            // every `generator#` argument in the map's order: with more
+            // than one child, `generator#0` is already their aggregate
+            let mut generators = Vec::new();
+            for (name, value) in &args.0 {
+                if !name.starts_with("generator#") {
+                    continue;
+                }
+                match value {
+                    Arg::Generator(g) => generators.push(g.clone()),
+                    _ => {
+                        return Err(BuildError::Runtime(format!(
+                            "ClassCastException: the argument {name} is not a generator"
+                        )))
+                    }
+                }
+            }
+            Generator::Aggregated(generators)
+        }
+        "CachedFeatureGeneratorFactory" => match args.get("generator#0") {
+            Some(Arg::Generator(g)) => {
+                Generator::Cached(Box::new(g.clone()), FeatureCache::default())
+            }
+            _ => {
+                return Err(BuildError::InvalidFormat(
+                    "Could not find containing generator element!".into(),
+                ))
+            }
+        },
+        "DictionaryFeatureGeneratorFactory" => match lookup(&args, "dict", resources)? {
+            (_, Some(Artifact::Dictionary(d))) => Generator::Dictionary {
+                dictionary: Arc::clone(d),
+                sentence: None,
+                names: Vec::new(),
+            },
+            (key, _) => {
+                return Err(BuildError::InvalidFormat(format!(
+                    "No dictionary resource for key: {}",
+                    text::to_string(&key)
+                )))
+            }
+        },
+        "WordClusterFeatureGeneratorFactory" => {
+            let key = get_str(&args, "dict")?;
+            let lowercase = get_bool(&args, "lowerCase", None)?;
+            match resources.resource(&text::to_string(&key)) {
+                Some(Artifact::WordClusters(c)) => Generator::WordCluster {
+                    clusters: Arc::clone(c),
+                    name: key,
+                    lowercase,
+                },
+                _ => {
+                    return Err(BuildError::InvalidFormat(format!(
+                        "Not a WordClusterDictionary resource for key: {}",
+                        text::to_string(&key)
+                    )))
+                }
+            }
+        }
+        "BrownClusterTokenFeatureGeneratorFactory" => Generator::BrownToken(brown(&args)?),
+        "BrownClusterTokenClassFeatureGeneratorFactory" => {
+            Generator::BrownTokenClass(brown(&args)?)
+        }
+        "BrownClusterBigramFeatureGeneratorFactory" => Generator::BrownBigram(brown(&args)?),
+        _ => {
+            // POSTaggerNameFeatureGeneratorFactory: `(POSModel)` cast of
+            // the resource, then `new POSTaggerME(model, guessFormat(model))`
+            // -- their exceptions escape unwrapped
+            let model = match lookup(&args, "model", resources)? {
+                (_, Some(Artifact::PosModel(m))) => Arc::clone(m),
+                (_, None) => {
+                    return Err(BuildError::Analysis(AnalysisError::IllegalState(
+                        "NullPointerException: POSModel must not be NULL.".into(),
+                    )))
+                }
+                (key, Some(a)) => {
+                    return Err(BuildError::Analysis(AnalysisError::IllegalState(format!(
+                        "ClassCastException: the resource {} is not a POSModel but {}",
+                        text::to_string(&key),
+                        a.describe()
+                    ))))
+                }
+            };
+            let tagger = PosTagger::new_untranslated(&model).map_err(BuildError::Analysis)?;
+            Generator::PosTaggerName {
+                tagger: Box::new(tagger),
+                cached: None,
+            }
+        }
     })
 }
 
-/// `GeneratorFactory.create(descriptor)` as `POSTaggerFactory`'s
-/// `createFeatureGenerators` calls it.
+/// `GeneratorFactory.create(descriptor, key -> null)` as
+/// `POSTaggerFactory` wraps its errors.
 pub fn create(descriptor: &[u8]) -> Result<Generator, AnalysisError> {
+    create_with(descriptor, &NoResources, Owner::PosTagger)
+}
+
+/// `GeneratorFactory.create(descriptor, resources)` as `owner`'s
+/// `createFeatureGenerators` calls it.
+pub fn create_with(
+    descriptor: &[u8],
+    resources: &dyn Resources,
+    owner: Owner,
+) -> Result<Generator, AnalysisError> {
     let root = xml::parse(descriptor).map_err(|e| {
-        AnalysisError::IllegalState(format!(
-            "IllegalStateException: opennlp.tools.util.InvalidFormatException: Descriptor is not valid XML! {}",
-            e.message
-        ))
+        BuildError::InvalidFormat(format!("Descriptor is not valid XML! {}", e.message))
+            .into_analysis(owner)
     })?;
     if root.name != "featureGenerators" {
         return Err(AnalysisError::IllegalArgument(
@@ -316,7 +606,7 @@ pub fn create(descriptor: &[u8]) -> Result<Generator, AnalysisError> {
                     "Unexpected element: featureGenerators".into(),
                 ));
             }
-            generators.push(build(child).map_err(BuildError::wrapped)?);
+            generators.push(build(child, resources)?);
         }
         let generator = match generators.len() {
             0 => {
@@ -327,6 +617,12 @@ pub fn create(descriptor: &[u8]) -> Result<Generator, AnalysisError> {
             1 => generators.pop().unwrap_or(Generator::Definition),
             _ => Generator::Aggregated(generators),
         };
+        if matches!(generator, Generator::Cached(..)) {
+            return Err(BuildError::InvalidFormat(
+                "CachedFeatureGeneratorFactory cannot be specified manually.Use cache=\"true\" attribute in featureGenerators element instead."
+                    .into(),
+            ));
+        }
         let cache = root.attribute("cache").map(|c| text::to_string(c));
         Ok(if cache.as_deref().is_some_and(text::parse_boolean) {
             Generator::Cached(Box::new(generator), FeatureCache::default())
@@ -334,11 +630,173 @@ pub fn create(descriptor: &[u8]) -> Result<Generator, AnalysisError> {
             generator
         })
     };
-    build_all().map_err(BuildError::into_analysis)
+    build_all().map_err(|e| e.into_analysis(owner))
 }
 
 fn cat(prefix: &str, rest: &[u16]) -> JString {
     text::concat(&[&text::units(prefix), rest])
+}
+
+/// `a + "," + b`.
+fn comma(prefix: &str, parts: &[&[u16]]) -> JString {
+    let mut f = text::units(prefix);
+    for (i, p) in parts.iter().enumerate() {
+        if i > 0 {
+            f.push(u16::from(b','));
+        }
+        f.extend_from_slice(p);
+    }
+    f
+}
+
+/// `String.valueOf(map.get(key))`: `"null"` for an absent key.
+fn or_null(v: Option<&JString>) -> JString {
+    v.cloned().unwrap_or_else(|| text::units("null"))
+}
+
+/// `BrownTokenClasses.getWordClasses`: the cluster's bit-string prefixes
+/// of 4, 6, 10 and 20 units, each only while the previous was shorter
+/// than the whole.
+fn word_classes(token: &[u16], clusters: &ClusterDictionary) -> Vec<JString> {
+    const PATH_LENGTHS: [usize; 4] = [4, 6, 10, 20];
+    let Some(class) = clusters.lookup(token) else {
+        return Vec::new();
+    };
+    let mut classes = vec![class[..class.len().min(PATH_LENGTHS[0])].to_vec()];
+    for w in PATH_LENGTHS.windows(2) {
+        if w[0] < class.len() {
+            classes.push(class[..class.len().min(w[1])].to_vec());
+        }
+    }
+    classes
+}
+
+/// `DictionaryNameFinder.find`: from each token, the longest entry
+/// starting there (no longer than the longest entry), the search going on
+/// after it.
+// ARITH: token offsets below the sentence's length.
+#[allow(clippy::arithmetic_side_effects)]
+fn dictionary_names(dictionary: &Dictionary, tokens: &[JString]) -> Vec<(usize, usize)> {
+    let mut names = Vec::new();
+    let mut from = 0;
+    while from < tokens.len() {
+        let mut found = None;
+        for to in from..tokens.len() {
+            if to - from + 1 > dictionary.max_token_count() {
+                break;
+            }
+            if dictionary.contains(&tokens[from..=to]) {
+                found = Some((from, to + 1));
+            }
+        }
+        if let Some((start, end)) = found {
+            names.push((start, end));
+            from += end - start - 1;
+        }
+        from += 1;
+    }
+    names
+}
+
+/// `Character.isAlphabetic(c)` of a UTF-16 unit: the letters and letter
+/// numbers by the JDK's categories, `Other_Alphabetic` (marks and
+/// symbols) by Rust's.
+fn is_alphabetic(c: u16) -> bool {
+    match jc::get_type(u32::from(c)) {
+        jc::UPPERCASE_LETTER
+        | jc::LOWERCASE_LETTER
+        | jc::TITLECASE_LETTER
+        | jc::MODIFIER_LETTER
+        | jc::OTHER_LETTER
+        | jc::LETTER_NUMBER => true,
+        jc::NON_SPACING_MARK | jc::COMBINING_SPACING_MARK | jc::OTHER_SYMBOL => {
+            char::from_u32(u32::from(c)).is_some_and(char::is_alphabetic)
+        }
+        _ => false,
+    }
+}
+
+/// `SimpleTokenizer.INSTANCE.tokenize(s)`: runs of white space split off,
+/// letters, digits and other characters apart, each different other
+/// character on its own.
+// ARITH: offsets within the string.
+#[allow(clippy::arithmetic_side_effects)]
+pub fn simple_tokenize(s: &[u16]) -> Vec<JString> {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Kind {
+        Whitespace,
+        Alphabetic,
+        Numeric,
+        Other,
+    }
+    let mut tokens = Vec::new();
+    let mut kind = Kind::Whitespace;
+    let mut state = kind;
+    let mut start = 0;
+    let mut pc = 0u16;
+    for (ci, &c) in s.iter().enumerate() {
+        kind = if text::is_whitespace(c) {
+            Kind::Whitespace
+        } else if is_alphabetic(c) {
+            Kind::Alphabetic
+        } else if jc::is_digit(u32::from(c)) {
+            Kind::Numeric
+        } else {
+            Kind::Other
+        };
+        if state == Kind::Whitespace {
+            if kind != Kind::Whitespace {
+                start = ci;
+            }
+        } else if kind != state || (kind == Kind::Other && c != pc) {
+            tokens.push(s[start..ci].to_vec());
+            start = ci;
+        }
+        state = kind;
+        pc = c;
+    }
+    if kind != Kind::Whitespace {
+        tokens.push(s[start..].to_vec());
+    }
+    tokens
+}
+
+/// `CharacterNgramFeatureGenerator`'s `NGramModel.add(token, min, max)`:
+/// the lower-cased token's distinct grams in insertion order (a length
+/// past `Integer.MAX_VALUE - 1` overflows Java's loop bound: none).
+// ARITH: gram offsets within the token; lengths checked against it.
+#[allow(clippy::arithmetic_side_effects)]
+fn character_ngrams(token: &[u16], min: i32, max: i32) -> Result<Vec<JString>, AnalysisError> {
+    let lower = text::to_lower_case(token);
+    let mut grams: Vec<JString> = Vec::new();
+    let Some(end) = max.checked_add(1) else {
+        return Ok(grams);
+    };
+    let mut seen = HashSet::new();
+    let n = token.len();
+    let top = i64::from(end).min(n as i64 + 1);
+    for len in i64::from(min)..top {
+        if len < 0 {
+            // `subSequence(0, len)`
+            return Err(AnalysisError::IllegalState(format!(
+                "IndexOutOfBoundsException: subSequence(0, {len})"
+            )));
+        }
+        let len = len as usize;
+        let mut at = 0;
+        while at + len <= n {
+            let gram = lower.get(at..at + len).ok_or_else(|| {
+                AnalysisError::IllegalState(
+                    "BufferOverflowException: the lower-cased token is longer".into(),
+                )
+            })?;
+            if seen.insert(gram) {
+                grams.push(gram.to_vec());
+            }
+            at += 1;
+        }
+    }
+    Ok(grams)
 }
 
 impl Generator {
@@ -434,6 +892,157 @@ impl Generator {
                     }
                 }
             }
+            Generator::PreviousMap(map) => {
+                features.push(cat("pd=", &or_null(map.get(&tokens[index]))));
+            }
+            Generator::BigramName => {
+                let wc = text::units(token_feature(&tokens[index]));
+                if index > 0 {
+                    features.push(comma("pw,w=", &[&tokens[index - 1], &tokens[index]]));
+                    let pwc = text::units(token_feature(&tokens[index - 1]));
+                    features.push(comma("pwc,wc=", &[&pwc, &wc]));
+                }
+                if index + 1 < tokens.len() {
+                    features.push(comma("w,nw=", &[&tokens[index], &tokens[index + 1]]));
+                    let nwc = text::units(token_feature(&tokens[index + 1]));
+                    features.push(comma("wc,nc=", &[&wc, &nwc]));
+                }
+            }
+            Generator::TrigramName => {
+                let class = |i: usize| text::units(token_feature(&tokens[i]));
+                let wc = class(index);
+                if index > 1 {
+                    features.push(comma(
+                        "ppw,pw,w=",
+                        &[&tokens[index - 2], &tokens[index - 1], &tokens[index]],
+                    ));
+                    features.push(comma(
+                        "ppwc,pwc,wc=",
+                        &[&class(index - 2), &class(index - 1), &wc],
+                    ));
+                }
+                if index + 2 < tokens.len() {
+                    features.push(comma(
+                        "w,nw,nnw=",
+                        &[&tokens[index], &tokens[index + 1], &tokens[index + 2]],
+                    ));
+                    features.push(comma(
+                        "wc,nwc,nnwc=",
+                        &[&wc, &class(index + 1), &class(index + 2)],
+                    ));
+                }
+            }
+            Generator::DocumentBegin(first) => {
+                let first = *first.get_or_insert(sentence);
+                if first == sentence && index == 0 {
+                    features.push(text::units("D=begin"));
+                }
+            }
+            Generator::CharacterNgram { min, max } => {
+                for gram in character_ngrams(&tokens[index], *min, *max)? {
+                    features.push(cat("ng=", &text::to_lower_case(&gram)));
+                }
+            }
+            Generator::TokenPattern => {
+                let token = &tokens[index];
+                let tokenized = simple_tokenize(token);
+                if tokenized.len() == 1 {
+                    features.push(cat("st=", &text::to_lower_case(token)));
+                    return Ok(());
+                }
+                features.push(cat("stn=", &text::int_units(tokenized.len())));
+                let classes: Vec<&str> = tokenized.iter().map(|t| token_feature(t)).collect();
+                let mut pattern = String::new();
+                for (i, t) in tokenized.iter().enumerate() {
+                    if i + 1 < tokenized.len() {
+                        features.push(text::units(&format!(
+                            "pt2={}{}",
+                            classes[i],
+                            classes[i + 1]
+                        )));
+                    }
+                    if i + 2 < tokenized.len() {
+                        features.push(text::units(&format!(
+                            "pt3={}{}{}",
+                            classes[i],
+                            classes[i + 1],
+                            classes[i + 2]
+                        )));
+                    }
+                    pattern.push_str(classes[i]);
+                    // `[^a-zA-Z]` found nowhere: letters only
+                    if t.iter()
+                        .all(|c| u8::try_from(*c).is_ok_and(|b| b.is_ascii_alphabetic()))
+                    {
+                        features.push(cat("st=", &text::to_lower_case(t)));
+                    }
+                }
+                features.push(text::units(&format!("pta={pattern}")));
+            }
+            Generator::Dictionary {
+                dictionary,
+                sentence: current,
+                names,
+            } => {
+                if *current != Some(sentence) {
+                    *current = Some(sentence);
+                    *names = dictionary_names(dictionary, tokens);
+                }
+                if names.iter().any(|&(s, e)| s <= index && index < e) {
+                    features.push(text::units(":w=dic"));
+                    features.push(cat(":w=dic=", &tokens[index]));
+                }
+            }
+            Generator::WordCluster {
+                clusters,
+                name,
+                lowercase,
+            } => {
+                let id = if *lowercase {
+                    clusters.lookup(&text::to_lower_case(&tokens[index]))
+                } else {
+                    clusters.lookup(&tokens[index])
+                };
+                if let Some(id) = id {
+                    features.push(text::concat(&[name, id]));
+                }
+            }
+            Generator::BrownToken(clusters) => {
+                for class in word_classes(&tokens[index], clusters) {
+                    features.push(cat("browncluster=", &class));
+                }
+            }
+            Generator::BrownTokenClass(clusters) => {
+                let shape = token_feature(&tokens[index]);
+                for class in word_classes(&tokens[index], clusters) {
+                    features.push(cat(&format!("c,browncluster={shape},"), &class));
+                }
+            }
+            Generator::BrownBigram(clusters) => {
+                let wc = word_classes(&tokens[index], clusters);
+                if index > 0 {
+                    let prev = word_classes(&tokens[index - 1], clusters);
+                    for (p, w) in prev.iter().zip(&wc) {
+                        features.push(comma("pbrowncluster,browncluster=", &[p, w]));
+                    }
+                }
+                if index + 1 < tokens.len() {
+                    let next = word_classes(&tokens[index + 1], clusters);
+                    for (w, n) in wc.iter().zip(&next) {
+                        features.push(comma("browncluster,nbrowncluster=", &[w, n]));
+                    }
+                }
+            }
+            Generator::PosTaggerName { tagger, cached } => {
+                let hit = cached.as_ref().is_some_and(|(t, _)| t == tokens);
+                if !hit {
+                    let tags = tagger.tag(tokens)?;
+                    *cached = Some((tokens.to_vec(), tags));
+                }
+                if let Some((_, tags)) = cached {
+                    features.push(cat("pos=", &tags[index]));
+                }
+            }
             Generator::Aggregated(gens) => {
                 for g in gens {
                     g.create_features(features, tokens, index, prior, sentence)?;
@@ -463,6 +1072,46 @@ impl Generator {
             }
         }
         Ok(())
+    }
+
+    /// `updateAdaptiveData(tokens, outcomes)`: the previous-map generators
+    /// learn each token's outcome; wrappers pass it on.
+    pub fn update_adaptive_data(&mut self, tokens: &[JString], outcomes: &[JString]) {
+        match self {
+            Generator::PreviousMap(map) => {
+                for (t, o) in tokens.iter().zip(outcomes) {
+                    map.insert(t.clone(), o.clone());
+                }
+            }
+            Generator::Window { inner, .. } | Generator::Cached(inner, _) => {
+                inner.update_adaptive_data(tokens, outcomes);
+            }
+            Generator::Aggregated(gens) => {
+                for g in gens {
+                    g.update_adaptive_data(tokens, outcomes);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// `clearAdaptiveData()`: the previous maps emptied, the document
+    /// begun again; wrappers pass it on (the cache keeps its sentence, as
+    /// Java's).
+    pub fn clear_adaptive_data(&mut self) {
+        match self {
+            Generator::PreviousMap(map) => map.clear(),
+            Generator::DocumentBegin(first) => *first = None,
+            Generator::Window { inner, .. } | Generator::Cached(inner, _) => {
+                inner.clear_adaptive_data();
+            }
+            Generator::Aggregated(gens) => {
+                for g in gens {
+                    g.clear_adaptive_data();
+                }
+            }
+            _ => {}
+        }
     }
 }
 
