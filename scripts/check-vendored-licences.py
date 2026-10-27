@@ -121,8 +121,8 @@ VENDORED = {
         ("Lucene's utr30.nrm (Apache-2.0)", "LICENSE", APACHE),
     ],
     "crates/lucene-analysis-opennlp/src/resources": [
-        ("Apache OpenNLP 2.5.3's pos-default-features.xml (Apache-2.0; OpenNLP "
-         "named in NOTICE)", "LICENSE", APACHE),
+        ("Apache OpenNLP 2.5.3's pos-default-features.xml and ner-default-features.xml "
+         "(Apache-2.0; OpenNLP named in NOTICE)", "LICENSE", APACHE),
     ],
     "crates/lucene-ffi/fuzz/seeds/jvm_search": [
         ("this project's own fuzz seeds, read by a test (Apache-2.0)", "LICENSE", APACHE),

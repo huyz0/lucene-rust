@@ -487,7 +487,8 @@ Part 5 (T12.5 OpenNLP):
   (typed `UnsupportedOperation`): `QN`/`NaiveBayes` models, feature
   generators outside the POS default set, user factory or serializer
   classes. Training is out of scope; `NLPNERTaggerOp` (no Lucene filter
-  calls it) is deferred to M14.
+  calls it) was deferred to M14, which ported it with the name finder's
+  feature generators (`docs/parity/analysis-opennlp.md`).
 - **Lucene's classes** -- `OpenNLPTokenizer` (on `SegmentingTokenizerBase`,
   with `OpenNLPSentenceBreakIterator`), `OpenNLPPOSFilter`,
   `OpenNLPChunkerFilter`, `OpenNLPLemmatizerFilter`,

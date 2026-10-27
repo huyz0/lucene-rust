@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?><dictionary case_sensitive="false">
+    <entry>
+        <token>Acme</token>
+        <token>Corp</token>
+    </entry>
+    <entry>
+        <token>New</token>
+        <token>York</token>
+    </entry>
+    <entry>
+        <token>red</token>
+        <token>cross</token>
+        <token>society</token>
+    </entry>
+    <entry>
+        <token>John</token>
+        <token>Smith</token>
+    </entry>
+    <entry>
+        <token>Paris</token>
+    </entry>
+</dictionary>

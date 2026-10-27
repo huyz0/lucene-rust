@@ -1,0 +1,48 @@
+#doc
+s:John visited London yesterday .
+s:Mary works for IBM in Paris .
+s:John met Mary in London .
+s:London .
+#doc
+s:Yesterday Ilse Müller and Kenji met in 東京 .
+s:The Red Cross praised Jean-Luc Picard
+s:A car from Globex Inc. reached São Paulo in 2003 .
+s:
+s:Smith
+s:Zork Blarg visited Qux Quux and Wibble met Flob in Narnia .
+#doc
+s:JOHN VISITED LONDON .
+s:john visited london .
+s:New York New York Acme Corp John Smith Paris Paris .
+s:the report was quietly empty .
+s:O'Brien called O'Brien again and again .
+s:Anna Lee joined the UN team in Berlin in 1999 , then left Berlin for Paris .
+#doc
+s:The Acme Corp met John .
+s:Jean-Luc Picard visited São Paulo again .
+#doc
+s:the car was quietly empty .
+s:Yesterday John and Smith met in Paris .
+s:Kenji met 東京 yesterday .
+s:Ilse Müller visited São Paulo again .
+#doc
+s:John works for UN in London .
+s:the meeting was again empty .
+s:Today Smith and Anna Lee met in Paris .
+s:the team was yesterday empty .
+s:the team was yesterday empty .
+#doc
+s:the office was quietly empty .
+s:John works for Red Cross in São Paulo .
+s:Kenji works for UN in London .
+s:Yesterday Anna Lee and Kenji met in London .
+#doc
+s:A report from Acme Corp reached Paris in 2004 .
+s:Smith met New York .
+s:Ilse Müller works for UN in 東京 .
+s:Ilse Müller joined London yesterday .
+#doc
+s:The UN praised Anna Lee .
+s:the city was yesterday empty .
+s:Anna Lee joined Paris again .
+s:the city was quietly empty .

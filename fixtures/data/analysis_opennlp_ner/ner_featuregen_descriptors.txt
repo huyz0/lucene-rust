@@ -1,0 +1,17 @@
+<featureGenerators><generator class="opennlp.tools.util.featuregen.BigramNameFeatureGeneratorFactory"/></featureGenerators>
+<featureGenerators><generator class="opennlp.tools.util.featuregen.TrigramNameFeatureGeneratorFactory"/></featureGenerators>
+<featureGenerators><generator class="opennlp.tools.util.featuregen.PreviousMapFeatureGeneratorFactory"/></featureGenerators>
+<featureGenerators><generator class="opennlp.tools.util.featuregen.DocumentBeginFeatureGeneratorFactory"/></featureGenerators>
+<featureGenerators><generator class="opennlp.tools.util.featuregen.CharacterNgramFeatureGeneratorFactory"><int name="min">2</int><int name="max">4</int></generator></featureGenerators>
+<featureGenerators><generator class="opennlp.tools.util.featuregen.CharacterNgramFeatureGeneratorFactory"><int name="min">0</int><int name="max">1</int></generator></featureGenerators>
+<featureGenerators><generator class="opennlp.tools.util.featuregen.CharacterNgramFeatureGeneratorFactory"><int name="min">3</int><int name="max">2147483647</int></generator></featureGenerators>
+<featureGenerators><generator class="opennlp.tools.util.featuregen.TokenPatternFeatureGeneratorFactory"/></featureGenerators>
+<featureGenerators><generator class="opennlp.tools.util.featuregen.DictionaryFeatureGeneratorFactory"><str name="dict">names.dict</str></generator></featureGenerators>
+<featureGenerators><generator class="opennlp.tools.util.featuregen.WordClusterFeatureGeneratorFactory"><str name="dict">word.clusters</str><bool name="lowerCase">true</bool></generator></featureGenerators>
+<featureGenerators><generator class="opennlp.tools.util.featuregen.WordClusterFeatureGeneratorFactory"><str name="dict">word.clusters</str><bool name="lowerCase">false</bool></generator></featureGenerators>
+<featureGenerators><generator class="opennlp.tools.util.featuregen.BrownClusterTokenFeatureGeneratorFactory"><str name="dict">brown.clusters</str></generator></featureGenerators>
+<featureGenerators><generator class="opennlp.tools.util.featuregen.BrownClusterTokenClassFeatureGeneratorFactory"><str name="dict">brown.clusters</str></generator></featureGenerators>
+<featureGenerators><generator class="opennlp.tools.util.featuregen.BrownClusterBigramFeatureGeneratorFactory"><str name="dict">brown.clusters</str></generator></featureGenerators>
+<featureGenerators><generator class="opennlp.tools.util.featuregen.POSTaggerNameFeatureGeneratorFactory"><str name="model">pos.bin</str></generator></featureGenerators>
+<featureGenerators><generator class="opennlp.tools.util.featuregen.AggregatedFeatureGeneratorFactory"><generator class="opennlp.tools.util.featuregen.DefinitionFeatureGeneratorFactory"/><int name="x">1</int><generator class="opennlp.tools.util.featuregen.TokenFeatureGeneratorFactory"/></generator></featureGenerators>
+<featureGenerators><generator class="opennlp.tools.util.featuregen.WindowFeatureGeneratorFactory"><int name="prevLength">1</int><int name="nextLength">1</int><generator class="opennlp.tools.util.featuregen.CachedFeatureGeneratorFactory"><generator class="opennlp.tools.util.featuregen.PreviousMapFeatureGeneratorFactory"/></generator></generator></featureGenerators>

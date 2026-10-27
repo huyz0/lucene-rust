@@ -1,7 +1,8 @@
-//! `BaseModel` and its five subclasses Lucene loads: a model package is a
+//! `BaseModel` and its six subclasses Lucene loads: a model package is a
 //! zip of artifacts -- `manifest.properties`, the event model (`.model`),
 //! dictionaries (`.dictionary`, `.tagdict`), the feature generator
-//! descriptor (`.featuregen`) -- read in `BaseModel.loadModel`'s two passes
+//! descriptor (`.featuregen`), the name finder's feature resources
+//! (dictionaries, a nested POS model) -- read in `BaseModel.loadModel`'s two passes
 //! (the manifest first, which names the tool factory, then every entry
 //! through the serializer its extension or its `serializer-class-<entry>`
 //! property names) and checked by `validateArtifactMap`.
@@ -20,8 +21,9 @@ use std::sync::Arc;
 
 use lucene_analysis::factory::{FactoryError, JavaException};
 
-use super::dictionary::{Dictionary, PosDictionary};
+use super::dictionary::{ClusterDictionary, Dictionary, PosDictionary};
 use super::ml::MaxentModel;
+use super::postag::PosModel;
 use super::properties::Properties;
 use super::text;
 use super::zip::ZipReader;
@@ -44,16 +46,19 @@ pub enum Component {
     Chunker,
     /// `LemmatizerModel`.
     Lemmatizer,
+    /// `TokenNameFinderModel`.
+    NameFinder,
 }
 
 impl Component {
     /// Every component.
-    const ALL: [Component; 5] = [
+    const ALL: [Component; 6] = [
         Component::SentenceDetector,
         Component::Tokenizer,
         Component::PosTagger,
         Component::Chunker,
         Component::Lemmatizer,
+        Component::NameFinder,
     ];
 
     /// `COMPONENT_NAME`.
@@ -64,6 +69,7 @@ impl Component {
             Component::PosTagger => "POSTaggerME",
             Component::Chunker => "ChunkerME",
             Component::Lemmatizer => "StatisticalLemmatizer",
+            Component::NameFinder => "NameFinderME",
         }
     }
 
@@ -75,6 +81,7 @@ impl Component {
             Component::PosTagger => "opennlp.tools.postag.POSTaggerFactory",
             Component::Chunker => "opennlp.tools.chunker.ChunkerFactory",
             Component::Lemmatizer => "opennlp.tools.lemmatizer.LemmatizerFactory",
+            Component::NameFinder => "opennlp.tools.namefind.TokenNameFinderFactory",
         }
     }
 
@@ -86,6 +93,7 @@ impl Component {
             Component::PosTagger => "pos.model",
             Component::Chunker => "chunker.model",
             Component::Lemmatizer => "lemmatizer.model",
+            Component::NameFinder => "nameFinder.model",
         }
     }
 }
@@ -103,17 +111,27 @@ pub enum Artifact {
     PosDictionary(Arc<PosDictionary>),
     /// Raw bytes (`.txt`, `.html`, `.featuregen`).
     Bytes(Arc<Vec<u8>>),
+    /// A `BrownCluster`: a feature resource a caller provides (no package
+    /// loads with one: OpenNLP's serializer closes the zip stream).
+    BrownCluster(Arc<ClusterDictionary>),
+    /// A `WordClusterDictionary`, likewise.
+    WordClusters(Arc<ClusterDictionary>),
+    /// A nested `POSModel` (`POSModelSerializer`, by its class only).
+    PosModel(Arc<PosModel>),
 }
 
 impl Artifact {
     /// `artifact.toString()`, as a validation message prints it.
-    fn describe(&self) -> &'static str {
+    pub(crate) fn describe(&self) -> &'static str {
         match self {
             Artifact::Properties(_) => "Properties",
             Artifact::Model(_) => "MaxentModel",
             Artifact::Dictionary(_) => "Dictionary",
             Artifact::PosDictionary(_) => "POSDictionary",
             Artifact::Bytes(_) => "byte[]",
+            Artifact::BrownCluster(_) => "BrownCluster",
+            Artifact::WordClusters(_) => "WordClusterDictionary",
+            Artifact::PosModel(_) => "POSModel",
         }
     }
 }
@@ -218,7 +236,8 @@ fn extension(entry: &str) -> Result<&str, FactoryError> {
 /// The serializers a component's model registers: `BaseModel`'s
 /// (`model`, `properties`, `dictionary`, `txt`, `html`) plus the POS
 /// tagger factory's `tagdict` (by the manifest's factory) and
-/// `POSModel`'s `featuregen` (by the model class).
+/// `POSModel`'s and `TokenNameFinderModel`'s `featuregen` (by the model
+/// class).
 fn read_artifact(
     component: Component,
     factory: Component,
@@ -233,9 +252,17 @@ fn read_artifact(
         "tagdict" if factory == Component::PosTagger => {
             Artifact::PosDictionary(Arc::new(PosDictionary::read(&data)?))
         }
-        "featuregen" if component == Component::PosTagger => Artifact::Bytes(Arc::new(data)),
+        "featuregen" if matches!(component, Component::PosTagger | Component::NameFinder) => {
+            Artifact::Bytes(Arc::new(data))
+        }
         other => return Err(invalid_format(format!("Unknown artifact format: {other}"))),
     })
+}
+
+/// `ZipInputStream.ensureOpen`'s `IOException` once a serializer closed
+/// the stream.
+fn stream_closed() -> FactoryError {
+    FactoryError::new(JavaException::Io, "IOException: Stream closed")
 }
 
 /// An artifact through the serializer class a manifest names for it.
@@ -254,6 +281,20 @@ fn read_with_serializer(class: &str, data: Vec<u8>) -> Result<Artifact, FactoryE
             Artifact::Properties(Properties::load(&data)?)
         }
         "opennlp.tools.util.model.ByteArraySerializer" => Artifact::Bytes(Arc::new(data)),
+        // both read the entry, then close the zip stream they were handed
+        // (`try (BufferedReader ...)`): the next `closeEntry` fails, so
+        // OpenNLP 2.5.3 loads no package holding a cluster artifact
+        "opennlp.tools.util.featuregen.BrownCluster$BrownClusterSerializer" => {
+            ClusterDictionary::read_brown(&data)?;
+            return Err(stream_closed());
+        }
+        "opennlp.tools.util.featuregen.WordClusterDictionary$WordClusterDictionarySerializer" => {
+            ClusterDictionary::read_word_clusters(&data)?;
+            return Err(stream_closed());
+        }
+        "opennlp.tools.util.model.POSModelSerializer" => {
+            Artifact::PosModel(Arc::new(PosModel::load(&data)?))
+        }
         other => {
             return Err(unsupported(format!(
                 "the artifact serializer {other} is not supported by this port"
@@ -383,12 +424,7 @@ impl BaseModel {
         artifacts: &HashMap<String, Artifact>,
     ) -> Result<(), FactoryError> {
         let wrong_dictionary = |entry: &str| match artifacts.get(entry) {
-            Some(
-                a @ (Artifact::Properties(_)
-                | Artifact::Model(_)
-                | Artifact::PosDictionary(_)
-                | Artifact::Bytes(_)),
-            ) => Err(a.describe()),
+            Some(a) if !matches!(a, Artifact::Dictionary(_)) => Err(a.describe()),
             _ => Ok(()),
         };
         match component {
@@ -416,7 +452,7 @@ impl BaseModel {
                 wrong_dictionary("ngram.dictionary")
                     .map_err(|_| invalid("NGram dictionary has wrong type!"))
             }
-            Component::Chunker | Component::Lemmatizer => Ok(()),
+            Component::Chunker | Component::Lemmatizer | Component::NameFinder => Ok(()),
         }
     }
 
@@ -453,6 +489,9 @@ impl BaseModel {
             Component::Lemmatizer => {
                 model.ok_or_else(|| invalid("Lemmatizer model is incomplete!"))?
             }
+            Component::NameFinder => {
+                model.ok_or_else(|| invalid("Token Name Finder model is incomplete!"))?
+            }
         };
         Ok(Arc::clone(m))
     }
@@ -475,6 +514,11 @@ impl BaseModel {
     /// The component the package was read as.
     pub fn component(&self) -> Component {
         self.component
+    }
+
+    /// `getArtifact(entry)`: the artifact, whatever its type.
+    pub fn artifact(&self, entry: &str) -> Option<&Artifact> {
+        self.artifacts.get(entry)
     }
 
     /// The `Dictionary` artifact `entry`, if it is one.
