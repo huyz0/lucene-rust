@@ -9,6 +9,8 @@ use std::sync::Arc;
 use lucene_analysis::Analyzer;
 use lucene_index::document::{Document, NumericDocValuesField, Store, StringField};
 use lucene_search::collector::ScoreMode;
+use lucene_search::document::{DocumentQuery, MatchNoDocs};
+use lucene_search::extended_query::ExtendedQuery;
 use lucene_search::query::Clause;
 use lucene_util::java_random::JavaRandom;
 
@@ -121,4 +123,29 @@ pub(crate) fn small_set_string_docs(random: &mut JavaRandom, docs: &mut Vec<Docu
         docs.push(doc);
         i += 1;
     }
+}
+
+/// The document-package query a clause wraps, if it wraps one.
+fn document_query(c: &Clause) -> Option<&dyn DocumentQuery> {
+    match c {
+        Clause::Extended(e) => match e.as_ref() {
+            ExtendedQuery::Document(d) => Some(&*d.query),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// `Query.equals` over clauses: a document-package query by its own
+/// [`DocumentQuery::equals`], anything else by `==`.
+pub(crate) fn query_equals(a: &Clause, b: &Clause) -> bool {
+    match (document_query(a), document_query(b)) {
+        (Some(x), Some(y)) => x.equals(y),
+        _ => a == b,
+    }
+}
+
+/// `q instanceof MatchNoDocsQuery`.
+pub(crate) fn is_match_no_docs(q: &Clause) -> bool {
+    document_query(q).is_some_and(|d| d.as_any_query().is::<MatchNoDocs>())
 }

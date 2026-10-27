@@ -17,7 +17,7 @@ use super::{
     check_walk, clear_doc, collect_bits, geo, get_doc, idx, illegal, set_doc, QueryRelation,
 };
 use crate::collector::ScoringCollector;
-use crate::document::{field_info, reader, DocumentQuery};
+use crate::document::{field_info, reader, same_class, DocumentQuery};
 use crate::multi_segment::OpenSegment;
 use crate::points_query::estimate_doc_count;
 use crate::Result;
@@ -285,6 +285,15 @@ impl IntersectVisitor for InverseDistanceVisitor<'_> {
 }
 
 impl DocumentQuery for LatLonPointDistanceQuery {
+    fn equals(&self, other: &dyn DocumentQuery) -> bool {
+        same_class::<Self>(other).is_some_and(|o| {
+            self.field == o.field
+                && self.latitude.to_bits() == o.latitude.to_bits()
+                && self.longitude.to_bits() == o.longitude.to_bits()
+                && self.radius_meters.to_bits() == o.radius_meters.to_bits()
+        })
+    }
+
     fn score_leaf(
         &self,
         leaf: &OpenSegment<'_>,
@@ -758,6 +767,15 @@ impl SpatialVisitor for LatLonPointVisitor {
 }
 
 impl DocumentQuery for LatLonPointQuery {
+    /// `SpatialQuery.equals`.
+    fn equals(&self, other: &dyn DocumentQuery) -> bool {
+        same_class::<Self>(other).is_some_and(|o| {
+            self.field == o.field
+                && self.query_relation == o.query_relation
+                && self.geometries == o.geometries
+        })
+    }
+
     fn score_leaf(
         &self,
         leaf: &OpenSegment<'_>,
@@ -848,6 +866,11 @@ impl IntersectVisitor for XYVisitor<'_> {
 }
 
 impl DocumentQuery for XYPointInGeometryQuery {
+    fn equals(&self, other: &dyn DocumentQuery) -> bool {
+        same_class::<Self>(other)
+            .is_some_and(|o| self.field == o.field && self.geometries == o.geometries)
+    }
+
     fn score_leaf(
         &self,
         leaf: &OpenSegment<'_>,

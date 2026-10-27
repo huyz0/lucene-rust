@@ -19,7 +19,7 @@ use lucene_index::document::{
 };
 
 use super::doc_values_queries::{SortedNumericDocValuesRangeQuery, SortedNumericDocValuesSetQuery};
-use super::{field_info, reader, Boosted, DocumentQuery, MatchNoDocs};
+use super::{field_info, reader, same_class, Boosted, DocumentQuery, MatchNoDocs};
 use crate::collector::ScoringCollector;
 use crate::exec::{self, BoxScorer, Bulk, LeafContext, Mode};
 pub use crate::extended_query::{PointInSetQuery, PointRangeQuery};
@@ -99,6 +99,10 @@ fn score_points_leaf(
 /// with Java's messages, then the scorer tree's `PointRangeQuery`
 /// ([`crate::extended_query::PointRangeQuery`], which this is).
 impl DocumentQuery for PointRangeQuery {
+    fn equals(&self, other: &dyn DocumentQuery) -> bool {
+        same_class::<Self>(other).is_some_and(|o| self == o)
+    }
+
     fn score_leaf(
         &self,
         leaf: &OpenSegment<'_>,
