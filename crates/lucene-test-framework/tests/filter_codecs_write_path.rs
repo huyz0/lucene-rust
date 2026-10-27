@@ -20,12 +20,15 @@ mod fixture;
 
 use lucene_codecs::compound_format;
 use lucene_codecs::hnsw_vectors::HnswVectorsReader;
-use lucene_codecs::stored_fields::FieldValue;
+use lucene_codecs::stored_fields::{self, FieldValue, StoredFieldVisitor, VisitStatus};
 use lucene_codecs::{per_field_doc_values, per_field_knn_vectors, per_field_postings};
 use lucene_index::index_writer::IndexWriter;
+use lucene_index::segment_info::IndexSortField;
 use lucene_search::directory_reader::DirectoryReader;
+use lucene_search::reader::{IndexReader, LeafReader, PostingsFlags, NO_MORE_DOCS};
 use lucene_search::{search_term_query, TermQuery, VecCollector};
 use lucene_store::{Directory, FsDirectory};
+use lucene_test_framework::codecs::asserting_reader::AssertingCodecReader;
 use lucene_util::test_support::TempDir;
 
 use fixture::CODECS;
@@ -74,6 +77,64 @@ fn read_back(dir: &dyn Directory) -> (Vec<String>, Vec<(String, Vec<String>)>) {
         terms.push((word, docs));
     }
     (live, terms)
+}
+
+/// Every live document's id, read through `Asserting`'s producers
+/// ([`AssertingCodecReader`]), each with its `n`, its vector and its `body`
+/// postings walked.
+fn read_back_asserting(dir: &dyn Directory) -> Vec<String> {
+    let reader = AssertingCodecReader::open(dir).unwrap();
+    let mut live = Vec::new();
+    for ctx in reader.leaves() {
+        let leaf = ctx.reader;
+        leaf.check_integrity().unwrap();
+        let mut n = leaf.numeric_doc_values("n").unwrap().expect("n");
+        let v = leaf.float_vector_values("v").unwrap().expect("v");
+        assert_eq!(v.size(), leaf.max_doc());
+        let mut ids = Vec::new();
+        for doc in 0..leaf.max_doc() {
+            let mut id = IdVisitor::default();
+            leaf.document(doc, &mut id).unwrap();
+            let id = id.0.expect("a stored id");
+            assert!(n.advance_exact(doc).unwrap());
+            let i: usize = id[1..].parse().unwrap();
+            assert_eq!(n.long_value(), i as i64);
+            // Every document has a vector: ordinals are documents.
+            assert_eq!(v.ord_to_doc(doc).unwrap(), doc);
+            assert_eq!(v.vector_value(doc).unwrap(), fixture::vector(i));
+            ids.push(id);
+        }
+        let terms = leaf.terms("body").unwrap().expect("body");
+        let mut te = terms.iterator().unwrap();
+        while te.next().unwrap().is_some() {
+            let mut postings = te.postings(PostingsFlags::Positions).unwrap();
+            while postings.next_doc().unwrap() != NO_MORE_DOCS {
+                postings.next_position().unwrap();
+            }
+        }
+        for (doc, id) in ids.into_iter().enumerate() {
+            if leaf.live_docs().is_none_or(|bits| bits.get(doc)) {
+                live.push(id);
+            }
+        }
+    }
+    live.sort();
+    live
+}
+
+/// The stored id.
+#[derive(Default)]
+struct IdVisitor(Option<String>);
+
+impl StoredFieldVisitor for IdVisitor {
+    fn needs_field(&mut self, _field_number: i32) -> stored_fields::Result<VisitStatus> {
+        Ok(VisitStatus::Yes)
+    }
+    // `id` is the only stored field.
+    fn string_field(&mut self, _field_number: i32, value: &str) -> stored_fields::Result<()> {
+        self.0 = Some(value.to_string());
+        Ok(())
+    }
 }
 
 /// What [`read_back`] must find in the documents `0..count` the fixture
@@ -243,11 +304,11 @@ fn filter_codecs_write_their_direct_formats_through_index_writer() {
                 "{codec}"
             );
             check_segments(&dir, codec);
-            assert_eq!(
-                read_back(&dir),
-                expected(fixture::PER_SEGMENT * fixture::SEGMENTS),
-                "{codec} merge={merge}"
-            );
+            let want = expected(fixture::PER_SEGMENT * fixture::SEGMENTS);
+            assert_eq!(read_back(&dir), want, "{codec} merge={merge}");
+            if codec == "Asserting" {
+                assert_eq!(read_back_asserting(&dir), want.0);
+            }
         }
     }
 }
@@ -306,6 +367,10 @@ fn java_written_segments() {
         let total = fixture::PER_SEGMENT * (fixture::SEGMENTS + 1);
         check_segments(&dir, codec);
         assert_eq!(read_back(&dir), expected(total), "{codec}");
+        if codec == "Asserting" {
+            // Lucene's segment too, through the asserting producers.
+            assert_eq!(read_back_asserting(&dir), expected(total).0);
+        }
         let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", fixture::version()).unwrap();
         w.set_codec(Some(fixture::codec(codec))).unwrap();
         w.force_merge(1).unwrap();
@@ -313,5 +378,55 @@ fn java_written_segments() {
         drop(w);
         check_segments(&dir, codec);
         assert_eq!(read_back(&dir), expected(total), "{codec} merged");
+        if codec == "Asserting" {
+            assert_eq!(read_back_asserting(&dir), expected(total).0);
+        }
     }
+}
+
+/// `ConfigurableMCodec` under an index sort: the sorted flush and the sorted
+/// merge keep the configured M, and every vector stays with its document.
+#[test]
+fn configurable_m_sorted_flush_and_merge() {
+    lucene_test_framework::codecs::register_codecs();
+    let tmp = TempDir::new("configurable-m-sorted");
+    let dir = FsDirectory::open(tmp.path());
+    let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", fixture::version()).unwrap();
+    w.set_codec(Some(fixture::codec("ConfigurableMCodec")))
+        .unwrap();
+    w.enable_explicit_documents().unwrap();
+    w.set_index_sort(Some(&[IndexSortField::long("n", true, None)]))
+        .unwrap();
+    w.set_max_full_flush_merge_wait_millis(0);
+    for seg in 0..2 {
+        for i in seg * 150..(seg + 1) * 150 {
+            w.add_fields_document(&fixture::doc(i)).unwrap();
+        }
+        w.commit().unwrap();
+    }
+    let check = |segments: usize| {
+        let infos = lucene_index::segment_infos::read_latest(&dir).unwrap();
+        assert_eq!(infos.segments.len(), segments);
+        check_segments(&dir, "ConfigurableMCodec");
+        let reader = DirectoryReader::open(&dir).unwrap();
+        for seg in reader.segment_readers() {
+            let v = seg.float_vector_values("v").unwrap().expect("v");
+            let mut last = i64::MAX;
+            for doc in 0..seg.max_doc {
+                let mut id = IdVisitor::default();
+                seg.document(doc, &mut id).unwrap();
+                let i: usize = id.0.unwrap()[1..].parse().unwrap();
+                // Sorted by `n` (the id) descending.
+                assert!((i as i64) < last);
+                last = i as i64;
+                assert_eq!(v.ord_to_doc(doc).unwrap(), doc);
+                assert_eq!(v.vector_value(doc).unwrap(), fixture::vector(i));
+            }
+        }
+    };
+    check(2);
+    w.force_merge(1).unwrap();
+    w.commit().unwrap();
+    drop(w);
+    check(1);
 }

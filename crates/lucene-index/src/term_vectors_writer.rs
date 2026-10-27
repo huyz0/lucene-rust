@@ -519,6 +519,7 @@ mod tests {
             id: &[75; 16],
             suffix: "",
             max_doc: 0,
+            format: None,
         };
         let identity = Arc::new(());
         let error = write_installed(&factory, state, |_| {
@@ -568,6 +569,7 @@ mod tests {
                 id: &id,
                 suffix: "",
                 max_doc: 2,
+                format: None,
             },
             &infos,
             &docs,
@@ -598,6 +600,7 @@ mod tests {
             id: &id,
             suffix: "",
             max_doc: 1,
+            format: None,
         };
         let bad = [TermVectorsDocument {
             fields: vec![field(0, vec![term(b"x", 0)])],

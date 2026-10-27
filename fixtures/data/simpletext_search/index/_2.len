@@ -1,0 +1,278 @@
+field body
+  type NUMERIC
+  minalue 2
+  maxvalue 43
+  doccount 30
+  maxvaluecount 1
+  origin 2
+  pattern 00
+01
+T
+05
+T
+06
+T
+07
+T
+00
+T
+27
+T
+26
+T
+08
+T
+41
+T
+24
+T
+00
+T
+06
+T
+04
+T
+10
+T
+22
+T
+04
+T
+06
+T
+00
+T
+04
+T
+06
+T
+38
+T
+09
+T
+04
+T
+00
+T
+03
+T
+01
+T
+10
+T
+08
+T
+05
+T
+08
+T
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 7
+      minValue 2
+      maxValue 29
+      docCount 8
+    interval
+      minDocID 8
+      maxDocID 15
+      minValue 2
+      maxValue 43
+      docCount 8
+    interval
+      minDocID 16
+      maxDocID 23
+      minValue 2
+      maxValue 40
+      docCount 8
+    interval
+      minDocID 24
+      maxDocID 29
+      minValue 3
+      maxValue 12
+      docCount 6
+  skipend
+field gram
+  type NUMERIC
+  minalue 2
+  maxvalue 11
+  doccount 30
+  maxvaluecount 1
+  origin 2
+  pattern 0
+6
+T
+0
+T
+2
+T
+0
+T
+6
+T
+2
+T
+8
+T
+4
+T
+1
+T
+0
+T
+9
+T
+1
+T
+5
+T
+5
+T
+5
+T
+4
+T
+7
+T
+4
+T
+4
+T
+9
+T
+0
+T
+3
+T
+4
+T
+1
+T
+7
+T
+6
+T
+0
+T
+8
+T
+1
+T
+3
+T
+  skipdata
+    interval
+      minDocID 0
+      maxDocID 7
+      minValue 2
+      maxValue 10
+      docCount 8
+    interval
+      minDocID 8
+      maxDocID 15
+      minValue 2
+      maxValue 11
+      docCount 8
+    interval
+      minDocID 16
+      maxDocID 23
+      minValue 2
+      maxValue 11
+      docCount 8
+    interval
+      minDocID 24
+      maxDocID 29
+      minValue 2
+      maxValue 10
+      docCount 6
+  skipend
+field title
+  type NUMERIC
+  minalue 1
+  maxvalue 5
+  doccount 23
+  maxvaluecount 1
+  origin 0
+  pattern 0
+0
+F
+3
+T
+3
+T
+0
+F
+2
+T
+4
+T
+4
+T
+4
+T
+4
+T
+3
+T
+2
+T
+3
+T
+0
+F
+4
+T
+5
+T
+5
+T
+3
+T
+4
+T
+2
+T
+5
+T
+4
+T
+1
+T
+0
+F
+2
+T
+0
+F
+1
+T
+5
+T
+3
+T
+0
+F
+0
+F
+  skipdata
+    interval
+      minDocID 1
+      maxDocID 9
+      minValue 2
+      maxValue 4
+      docCount 8
+    interval
+      minDocID 10
+      maxDocID 18
+      minValue 2
+      maxValue 5
+      docCount 8
+    interval
+      minDocID 19
+      maxDocID 27
+      minValue 1
+      maxValue 5
+      docCount 7
+  skipend
+END
+checksum 00000000000263339661

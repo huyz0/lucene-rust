@@ -46,7 +46,7 @@ Milestones (M1-M12, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [util.md](parity/util.md) | `lucene-util`: bits, packed ints, `BytesRef*`, FST, automata, hashing, sorting | 32 |
 | [util-geo.md](parity/util-geo.md) | `lucene-util` geo: encodings, tessellator, polygons, distance (M9 T9.1) | 10 |
 | [store.md](parity/store.md) | `lucene-store`: directories, inputs/outputs, locks, checksums | 22 |
-| [codecs.md](parity/codecs.md) | `lucene-codecs`: the `Lucene104` codec, every format read and written | 73 |
+| [codecs.md](parity/codecs.md) | `lucene-codecs`: the `Lucene104` codec, every format read and written | 74 |
 | [backward-codecs.md](parity/backward-codecs.md) | `lucene-backward-codecs`: Lucene 9.0-10.4 formats (M8) | 18 |
 | [analysis.md](parity/analysis.md) | `lucene-analysis`: analyzers, tokenizers, filters | 18 |
 | [analysis-common.md](parity/analysis-common.md) | `lucene-analysis-common` (M11) | 22 |
@@ -62,7 +62,7 @@ Milestones (M1-M12, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [classification.md](parity/classification.md) | `lucene-classification`: naive Bayes, k-NN and perceptron classifiers, their evaluation and dataset splitting (M14 T14.3) | 5 |
 | [replicator.md](parity/replicator.md) | `lucene-replicator`: near-real-time replication -- primary and replica nodes, copy jobs, file ref-counting (M14 T14.3) | 9 |
 | [sandbox.md](parity/sandbox.md) | `lucene-sandbox` (M14.f): half-float, big-integer and bounding-box points, nearest neighbours, multi-range point and doc-values queries, combined-field, covering, term-automaton and phrase-wildcard queries, the large-hits collector and the collector profilers, `PayloadSpanUtil`, `MergeOnFlushMergePolicy`, the `IDVersion` postings format, k-means clustering, the facet package (collectors, cutters, recorders, builders, orchestrators, histograms) | 19 |
-| [codecs-extra.md](parity/codecs-extra.md) | `lucene-codecs` (M14.g): the non-default postings formats -- bloom, memory, bitvectors, blocktreeords, uniformsplit (with sharedterms), blockterms and simpletext so far | 32 |
+| [codecs-extra.md](parity/codecs-extra.md) | `lucene-codecs` (M14.g): the non-default postings formats -- bloom, memory, bitvectors, blocktreeords, uniformsplit (with sharedterms), blockterms and simpletext so far | 33 |
 | [test-framework.md](parity/test-framework.md) | `lucene-test-framework` (M14.h): randomized generators, mock analysis/directories, index/format suites, readers and writers | 31 |
 | [test-framework-codecs.md](parity/test-framework-codecs.md) | `lucene-test-framework` (M14.h): asserting/cranky/compressing and other test codecs, installed writer seams | 33 |
 | [test-framework-search.md](parity/test-framework-search.md) | `lucene-test-framework` (M14.h): query/scoring assertions, search bases, scorer wrappers | 11 |

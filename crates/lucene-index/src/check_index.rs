@@ -663,7 +663,8 @@ pub fn check_segment_in_commit(
     // `CheckIndex` gets the same sharing from one `CodecReader`.
     let postings_bytes = field_infos
         .as_ref()
-        .and_then(|_| open_postings_bytes(dir, &si, &commit.segment_name));
+        .as_ref()
+        .and_then(|fi| open_postings_bytes(dir, &si, &commit.segment_name, Some(fi)));
     let postings = match (&postings_bytes, &field_infos) {
         (Some(Ok(bytes)), Some(fi)) => match bytes.handles(commit, fi, &si) {
             Ok(h) => Some(h),
@@ -1080,6 +1081,14 @@ fn check_files_exist_and_validate(
     // `si.files` skipped exactly the files a delete/update round wrote.
     for file in &commit.files(&si.files) {
         let name = format!("file:{file}");
+        if per_field_postings::is_unchecksummed_dictionary_file(file) {
+            // `RAMOnly`'s token: its format's `checkIntegrity` is a no-op.
+            match dir.file_length(file) {
+                Ok(_) => checks.push(Check::pass(name)),
+                Err(e) => checks.push(Check::fail(name, e.to_string())),
+            }
+            continue;
+        }
         match dir.open(file) {
             Ok(bytes) => {
                 let payload_end = bytes.len().saturating_sub(codec_util::FOOTER_LENGTH);
@@ -1360,7 +1369,10 @@ fn check_stored_fields_doc_count(
         let fdt = dir.open(fdt_name).map_err(|e| e.to_string())?;
         let fdx = dir.open(fdx_name).map_err(|e| e.to_string())?;
         let fdm = dir.open(fdm_name).map_err(|e| e.to_string())?;
-        let reader = stored_fields::open(&fdt, &fdx, &fdm, &commit.segment_id, "")
+        // A `CompressingCodec` format's files carry its segment suffix.
+        let suffix = crate::index_writer::format_suffix(&si.files, &commit.segment_name, "fdt")
+            .unwrap_or_default();
+        let reader = stored_fields::open(&fdt, &fdx, &fdm, &commit.segment_id, &suffix)
             .map_err(|e| e.to_string())?;
         let max_doc = reader.max_doc();
         // `CheckIndex.testStoredFields` pulls *every* document, deleted ones
@@ -1471,7 +1483,9 @@ fn check_term_vectors(
         let tvd = dir.open(tvd).map_err(|e| e.to_string())?;
         let tvx = dir.open(tvx).map_err(|e| e.to_string())?;
         let tvm = dir.open(tvm).map_err(|e| e.to_string())?;
-        let reader = term_vectors::open(&tvd, &tvx, &tvm, &commit.segment_id, "")
+        let suffix = crate::index_writer::format_suffix(&si.files, &commit.segment_name, "tvd")
+            .unwrap_or_default();
+        let reader = term_vectors::open(&tvd, &tvx, &tvm, &commit.segment_id, &suffix)
             .map_err(|e| e.to_string())?;
 
         let mut out = Vec::new();
@@ -1982,6 +1996,9 @@ struct PostingsGroupBytes {
     /// In `per_field_postings::dictionary_extensions` order.
     dictionary: Vec<lucene_store::directory::Input>,
     base: [u64; 3],
+    /// The dictionary is already a block tree: a re-encoded group
+    /// (`per_field_postings::reencode_group`).
+    block_tree: bool,
 }
 
 /// The opened readers over [`PostingsFileBytes`].
@@ -2004,6 +2021,7 @@ fn open_postings_bytes(
     dir: &dyn Directory,
     si: &SegmentInfo,
     segment_name: &str,
+    field_infos: Option<&FieldInfos>,
 ) -> Option<Result<PostingsFileBytes, String>> {
     let find = |ext: &str| si.files.iter().find(|f| f.ends_with(ext));
     let markers = group_markers(si, segment_name);
@@ -2012,7 +2030,7 @@ fn open_postings_bytes(
             per_field_postings::is_foreign_format(per_field_postings::format_of_suffix(suffix))
         })
     {
-        return Some(open_postings_groups(dir, si, &markers));
+        return Some(open_postings_groups(dir, si, &markers, field_infos));
     }
     let (tim_name, tip_name, tmd_name) = match (find(".tim"), find(".tip"), find(".tmd")) {
         (Some(a), Some(b), Some(c)) => (a.clone(), b.clone(), c.clone()),
@@ -2066,6 +2084,7 @@ fn open_postings_groups(
     dir: &dyn Directory,
     si: &SegmentInfo,
     markers: &[(&String, String)],
+    field_infos: Option<&FieldInfos>,
 ) -> Result<PostingsFileBytes, String> {
     let id = &si.id;
     let err = |e: &dyn std::fmt::Display| e.to_string();
@@ -2081,6 +2100,48 @@ fn open_postings_groups(
         let has = |ext: &str| si.files.contains(&file(ext));
         let offset = |v: &Vec<u8>| u64::try_from(v.len()).unwrap_or(u64::MAX);
         let base = [offset(&doc), offset(&pos), offset(&pay)];
+        let format = per_field_postings::format_of_suffix(&suffix);
+        if let Some(Some(reencoded)) = field_infos
+            .map(|fi| {
+                // A format keeping its own postings (`RAMOnly`): read as the
+                // block tree and postings it re-encodes to.
+                let dictionary = per_field_postings::dictionary_extensions(format)
+                    .iter()
+                    .map(|ext| {
+                        if has(ext) {
+                            open(&file(ext))
+                        } else {
+                            Ok(lucene_store::directory::Input::Owned(Vec::new()))
+                        }
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                let group = per_field_postings::GroupFiles {
+                    suffix: &suffix,
+                    dictionary: dictionary.iter().map(|d| &**d).collect(),
+                    doc: None,
+                    pos: None,
+                    pay: None,
+                };
+                per_field_postings::reencode_group(&group, fi, id, si.doc_count)
+                    .transpose()
+                    .map_err(|e| err(&e))
+            })
+            .transpose()?
+        {
+            doc.extend_from_slice(&reencoded.doc);
+            pos.extend_from_slice(&reencoded.pos);
+            pay.extend_from_slice(&reencoded.pay);
+            groups.push(PostingsGroupBytes {
+                dictionary: [reencoded.tim, reencoded.tip, reencoded.tmd]
+                    .into_iter()
+                    .map(lucene_store::directory::Input::Owned)
+                    .collect(),
+                suffix,
+                base,
+                block_tree: true,
+            });
+            continue;
+        }
         if has("doc") {
             let bytes = open(&file("doc"))?;
             DocInput::open(&bytes, id, &suffix).map_err(|e| err(&e))?;
@@ -2096,7 +2157,6 @@ fn open_postings_groups(
             postings::PayInput::open(&bytes, id, &suffix).map_err(|e| err(&e))?;
             pay.extend_from_slice(&bytes);
         }
-        let format = per_field_postings::format_of_suffix(&suffix);
         let dictionary = per_field_postings::dictionary_extensions(format)
             .iter()
             .map(|ext| {
@@ -2111,6 +2171,7 @@ fn open_postings_groups(
             dictionary,
             suffix,
             base,
+            block_tree: false,
         });
     }
     let owned = |bytes: Vec<u8>| {
@@ -2197,9 +2258,10 @@ impl PostingsFileBytes {
         let mut opened = Vec::with_capacity(self.groups.len());
         for g in &self.groups {
             let dictionary: Vec<&[u8]> = g.dictionary.iter().map(|d| &**d).collect();
-            let rewritten = if per_field_postings::is_foreign_format(
-                per_field_postings::format_of_suffix(&g.suffix),
-            ) {
+            let rewritten = if !g.block_tree
+                && per_field_postings::is_foreign_format(per_field_postings::format_of_suffix(
+                    &g.suffix,
+                )) {
                 Some(
                     per_field_postings::rewrite_group_as_block_tree(
                         &per_field_postings::GroupFiles {
@@ -9970,7 +10032,7 @@ mod tests {
         let dir = FsDirectory::open(&dst);
         let si = open_si(&dir, &commit).unwrap();
         let fnm = open_fnm(&dir, &commit, &si).unwrap();
-        let bytes = open_postings_bytes(&dir, &si, &commit.segment_name)
+        let bytes = open_postings_bytes(&dir, &si, &commit.segment_name, None)
             .unwrap()
             .unwrap();
         let handles = bytes.handles(&commit, &fnm, &si).unwrap();
@@ -11395,7 +11457,7 @@ mod tests {
         );
         assert!(
             matches!(
-                open_postings_bytes(&dir, &claiming_si(true, claiming_files()), "_0"),
+                open_postings_bytes(&dir, &claiming_si(true, claiming_files()), "_0", None),
                 Some(Err(_))
             ),
             "the postings walk must not skip a compound-flagged segment either"

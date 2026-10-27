@@ -56,9 +56,9 @@ use lucene_store::data_input::{DataInput, SliceInput};
 use lucene_store::data_output::DataOutput;
 
 use crate::block_packed;
+use crate::compression::{self, CompressingFormat, Compression, Compressor};
 use crate::direct_monotonic;
 use crate::direct_reader;
-use crate::lz4;
 use crate::packed_ints;
 
 const DATA_CODEC: &str = "Lucene90TermVectorsData";
@@ -168,6 +168,9 @@ pub struct TermVectorsDocument {
 pub struct TermVectorsReader<'d> {
     tvd: &'d [u8],
     tvx: &'d [u8],
+    /// The `.tvd` codec name `open` matched, and the compression it names.
+    data_codec: &'static str,
+    compression: Compression,
     max_doc: i32,
     chunk_size: i32,
     max_pointer: i64,
@@ -192,9 +195,33 @@ pub fn open<'d>(
     segment_suffix: &str,
 ) -> Result<TermVectorsReader<'d>> {
     let mut tvd_input = SliceInput::new(tvd);
+    // `Lucene90TermVectorsFormat` writes `FAST`; the test framework's
+    // `CompressingCodec`s write their own names and modes. Peek the name
+    // before the real header check, the way stored fields do.
+    let header_start = tvd_input.position();
+    let peek_magic = tvd_input.read_be_u32()?;
+    if peek_magic != codec_util::CODEC_MAGIC {
+        return Err(lucene_store::Error::Corrupted(format!(
+            "codec header mismatch: actual header={peek_magic:#x} vs expected header={:#x}",
+            codec_util::CODEC_MAGIC
+        ))
+        .into());
+    }
+    let name = tvd_input.read_string()?;
+    let (data_codec, compression) = if name == DATA_CODEC {
+        (DATA_CODEC, Compression::Fast)
+    } else {
+        *compression::COMPRESSING_DATA_CODECS
+            .iter()
+            .find(|(codec, _)| *codec == name)
+            .ok_or_else(|| {
+                lucene_store::Error::Corrupted(format!("unknown term vectors data codec: {name}"))
+            })?
+    };
+    tvd_input.seek(header_start)?;
     let tvd_header = codec_util::check_index_header(
         &mut tvd_input,
-        DATA_CODEC,
+        data_codec,
         VERSION_START,
         VERSION_CURRENT,
         segment_id,
@@ -314,6 +341,8 @@ pub fn open<'d>(
     Ok(TermVectorsReader {
         tvd,
         tvx,
+        data_codec,
+        compression,
         max_doc,
         chunk_size,
         max_pointer,
@@ -332,6 +361,17 @@ pub fn open<'d>(
 impl<'d> TermVectorsReader<'d> {
     pub fn max_doc(&self) -> i32 {
         self.max_doc
+    }
+
+    /// The `.tvd` codec name: a bulk chunk copy is only legal into a writer
+    /// of the same format (Java compares the compression modes).
+    pub fn data_codec(&self) -> &'static str {
+        self.data_codec
+    }
+
+    /// The compression the `.tvd` chunks were written with.
+    pub fn compression(&self) -> Compression {
+        self.compression
     }
 
     fn docs_region(&self) -> Result<&'d [u8]> {
@@ -835,18 +875,24 @@ impl<'d> TermVectorsReader<'d> {
             lucene_store::Error::Corrupted("term vector chunk is larger than usize".into())
         })?;
         let compressed_left = input.len().saturating_sub(input.position());
-        let ceiling = compressed_left.saturating_mul(LZ4_MAX_EXPANSION);
+        let ceiling = compressed_left.saturating_mul(self.compression.max_expansion());
         if decompressed_len > ceiling {
             return Err(lucene_store::Error::Corrupted(format!(
                 "term vector chunk claims {decompressed_len} decompressed bytes, which no \
-                 {compressed_left} byte LZ4 block can produce"
+                 {compressed_left} byte {} unit can produce",
+                self.compression
             ))
             .into());
         }
-        let mut decompressed = vec![0u8; decompressed_len];
-        if decompressed_len > 0 {
-            lz4::decompress(&mut input, decompressed_len, &mut decompressed, 0)?;
-        }
+        let mut decompressed = Vec::with_capacity(decompressed_len);
+        compression::decompress(
+            self.compression,
+            &mut input,
+            decompressed_len,
+            0,
+            decompressed_len,
+            &mut decompressed,
+        )?;
         // The LZ4 unit is NOT laid out as [all suffixes][all payloads]; it's
         // grouped **per document**: each document's fields' suffix bytes
         // (in field order), followed immediately by that same document's
@@ -1266,6 +1312,11 @@ fn common_prefix_len(a: &[u8], b: &[u8]) -> usize {
 pub struct TermVectorsWriter {
     segment_id: [u8; ID_LENGTH],
     segment_suffix: String,
+    /// `None` for `Lucene90TermVectorsFormat` (`FAST`, written as one
+    /// literal run); a `CompressingCodec`'s format otherwise, whose units
+    /// `compressor` writes as Java's compressor does.
+    format: Option<&'static CompressingFormat>,
+    compressor: Compressor,
     /// `Lucene90CompressingTermVectorsWriter`'s `chunkSize` constructor
     /// parameter -- [`CHUNK_SIZE`] for `Lucene90TermVectorsFormat`.
     chunk_size: usize,
@@ -1316,6 +1367,41 @@ impl TermVectorsWriter {
         chunk_size: usize,
         max_docs_per_chunk: usize,
     ) -> Self {
+        Self::build(
+            segment_id,
+            segment_suffix,
+            chunk_size,
+            max_docs_per_chunk,
+            None,
+        )
+    }
+
+    /// `Lucene90CompressingTermVectorsWriter` for a `CompressingCodec`'s
+    /// format: its data codec name, segment suffix, compression, chunk
+    /// geometry and block shift.
+    ///
+    /// # Panics
+    /// A chunk size or document cap that is not positive, or a block shift
+    /// outside `DirectMonotonicWriter`'s 2..=22.
+    pub fn with_format(segment_id: &[u8; ID_LENGTH], format: &'static CompressingFormat) -> Self {
+        assert!(format.chunk_size > 0 && format.max_docs_per_chunk > 0);
+        assert!((2..=22).contains(&format.block_shift));
+        Self::build(
+            segment_id,
+            format.segment_suffix,
+            format.chunk_size as usize,
+            format.max_docs_per_chunk as usize,
+            Some(format),
+        )
+    }
+
+    fn build(
+        segment_id: &[u8; ID_LENGTH],
+        segment_suffix: &str,
+        chunk_size: usize,
+        max_docs_per_chunk: usize,
+        format: Option<&'static CompressingFormat>,
+    ) -> Self {
         // `.tvm` records `chunkSize` as a vint, and `too_dirty` compares
         // `maxDocsPerChunk` against an `i64` doc count, so both must survive
         // the narrowing.
@@ -1324,7 +1410,7 @@ impl TermVectorsWriter {
         let mut tvd = Vec::new();
         codec_util::write_index_header(
             &mut tvd,
-            DATA_CODEC,
+            format.map_or(DATA_CODEC, |format| format.format_name),
             VERSION_CURRENT,
             segment_id,
             segment_suffix,
@@ -1333,6 +1419,8 @@ impl TermVectorsWriter {
         Self {
             segment_id: *segment_id,
             segment_suffix: segment_suffix.to_string(),
+            format,
+            compressor: Compressor::default(),
             chunk_size,
             max_docs_per_chunk,
             tvd,
@@ -1378,9 +1466,21 @@ impl TermVectorsWriter {
     /// `canPerformBulkMerge`'s `compressionMode`/`chunkSize`/`version`/
     /// `packedIntsVersion`/`tooDirty` half. (The version checks are [`open`]'s
     /// job here: this port has exactly one `VERSION_CURRENT` and refuses to
-    /// open anything else. There is only one compression mode.)
+    /// open anything else. The data codec name stands for the compression.)
     pub fn can_bulk_copy(&self, reader: &TermVectorsReader<'_>) -> bool {
-        reader.chunk_size() == self.chunk_size as i32 && !self.too_dirty(reader)
+        reader.data_codec() == self.data_codec()
+            && reader.chunk_size() == self.chunk_size as i32
+            && !self.too_dirty(reader)
+    }
+
+    /// The `.tvd` codec name this writer writes.
+    pub fn data_codec(&self) -> &'static str {
+        self.format.map_or(DATA_CODEC, |format| format.format_name)
+    }
+
+    fn block_shift(&self) -> u32 {
+        self.format
+            .map_or(INDEX_BLOCK_SHIFT, |format| format.block_shift as u32)
     }
 
     fn trigger_flush(&self) -> bool {
@@ -1539,7 +1639,13 @@ impl TermVectorsWriter {
             flush_positions(&mut out, &self.pending_docs);
             flush_offsets(&mut out, &self.pending_docs, &field_nums);
             flush_payload_lengths(&mut out, &self.pending_docs);
-            out.write_bytes(&encode_literal_lz4(&self.term_suffixes));
+            match self.format {
+                None => out.write_bytes(&encode_literal_lz4(&self.term_suffixes)),
+                Some(format) => {
+                    self.compressor
+                        .compress(format.compression, &self.term_suffixes, &mut out)
+                }
+            }
         }
         self.tvd = out;
 
@@ -1749,11 +1855,11 @@ impl TermVectorsWriter {
         );
         let docs_start_pointer = tvx.len() as i64;
         let (docs_meta_bytes, docs_data_bytes) =
-            direct_monotonic::write(&self.docs_values, INDEX_BLOCK_SHIFT);
+            direct_monotonic::write(&self.docs_values, self.block_shift());
         tvx.write_bytes(&docs_data_bytes);
         let docs_end_pointer = tvx.len() as i64;
         let (start_pointers_meta_bytes, start_pointers_data_bytes) =
-            direct_monotonic::write(&self.start_pointers_values, INDEX_BLOCK_SHIFT);
+            direct_monotonic::write(&self.start_pointers_values, self.block_shift());
         tvx.write_bytes(&start_pointers_data_bytes);
         let start_pointers_end_pointer = tvx.len() as i64;
         codec_util::write_footer(&mut tvx);
@@ -1771,7 +1877,7 @@ impl TermVectorsWriter {
         tvm.write_vint(2);
         tvm.write_vint(self.chunk_size as i32);
         tvm.write_i32(max_doc);
-        tvm.write_i32(INDEX_BLOCK_SHIFT as i32);
+        tvm.write_i32(self.block_shift() as i32);
         tvm.write_i32(self.docs_values.len() as i32); // real chunks + 1 sentinel
         tvm.write_i64(docs_start_pointer);
         tvm.write_bytes(&docs_meta_bytes);
@@ -2228,13 +2334,6 @@ fn encode_literal_lz4(bytes: &[u8]) -> Vec<u8> {
     out.extend_from_slice(bytes);
     out
 }
-
-/// The LZ4 block format's worst-case expansion ratio: one 0xFF
-/// length-extension byte contributes 255 output bytes, so no LZ4 block can
-/// inflate to more than 255 times its own compressed size. Used only as a
-/// *bound* -- a real chunk is nowhere near it -- so that a decompressed
-/// length read off disk can be rejected before it sizes an allocation.
-const LZ4_MAX_EXPANSION: usize = 255;
 
 struct FieldDecodeInput<'a> {
     field_number: i32,
@@ -4138,7 +4237,7 @@ mod tests {
             let mut input = SliceInput::new(&encoded);
             let mut out = vec![0u8; payload.len()];
             if !payload.is_empty() {
-                lz4::decompress(&mut input, payload.len(), &mut out, 0).unwrap();
+                crate::lz4::decompress(&mut input, payload.len(), &mut out, 0).unwrap();
             }
             assert_eq!(out, payload);
         }

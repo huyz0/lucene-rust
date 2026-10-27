@@ -927,7 +927,7 @@ pub(crate) struct IndexingConfig {
     /// `IndexWriterConfig.setCodec`: the per-field routing every field
     /// without a per-field setting of its own follows -- see
     /// [`IndexWriter::set_codec`]. `None` is `Lucene104Codec()`.
-    codec: Option<std::sync::Arc<dyn lucene_codecs::codec::Lucene104Codec>>,
+    pub(crate) codec: Option<std::sync::Arc<dyn lucene_codecs::codec::Lucene104Codec>>,
 }
 
 /// The doc-values type an index-sort field reads (`SortField.getIndexSorter`'s
@@ -1465,7 +1465,8 @@ impl IndexingConfig {
             /// `per_field_postings::dictionary_extensions` order for the
             /// suffix's format (`.tim`/`.tip`/`.tmd` for a block tree).
             dictionary: Vec<Vec<u8>>,
-            doc: Vec<u8>,
+            /// `None` for a format keeping its own postings (`RAMOnly`).
+            doc: Option<Vec<u8>>,
             pos: Option<Vec<u8>>,
             pay: Option<Vec<u8>>,
             /// The codec suffix the files were written under -- the
@@ -1479,7 +1480,8 @@ impl IndexingConfig {
         }
         /// Raw `.tvd`/`.tvx`/`.tvm` bytes for a source that has term vectors
         /// -- `None` when that source's `.si` lists no `.tvd` file.
-        type RawTermVectorFiles = Option<(Vec<u8>, Vec<u8>, Vec<u8>)>;
+        // `.tvd`, `.tvx`, `.tvm` and their segment suffix.
+        type RawTermVectorFiles = Option<(Vec<u8>, Vec<u8>, Vec<u8>, String)>;
         /// Raw `.nvm`/`.nvd` bytes for a source that has norms.
         type RawNormsFiles = Option<(Vec<u8>, Vec<u8>)>;
         /// One current-format `PerFieldKnnVectorsFormat` instance of a
@@ -1520,6 +1522,9 @@ impl IndexingConfig {
             fdt: Vec<u8>,
             fdx: Vec<u8>,
             fdm: Vec<u8>,
+            /// The stored-fields files' segment suffix (a `CompressingCodec`
+            /// format's, or empty).
+            stored_suffix: String,
             live_docs: Option<FixedBitSet>,
             /// The documents whose postings for the pruned field survive --
             /// see [`SoftDeletesRetention::prune_postings_field`].
@@ -1592,9 +1597,11 @@ impl IndexingConfig {
                 None => si.files.clone(),
             };
 
-            let fdt = seg_dir.open(&format!("{name}.fdt"))?.to_vec();
-            let fdx = seg_dir.open(&format!("{name}.fdx"))?.to_vec();
-            let fdm = seg_dir.open(&format!("{name}.fdm"))?.to_vec();
+            let stored_suffix = format_suffix(&seg_files, name, "fdt").unwrap_or_default();
+            let stored_file = |ext: &str| segment_file_name(name, &stored_suffix, ext);
+            let fdt = seg_dir.open(&stored_file("fdt"))?.to_vec();
+            let fdx = seg_dir.open(&stored_file("fdx"))?.to_vec();
+            let fdm = seg_dir.open(&stored_file("fdm"))?.to_vec();
 
             // `stored_fields::open` checks only that its own `maxDoc` is
             // non-negative, and `merge_segments` sizes this source's live-id
@@ -1604,7 +1611,7 @@ impl IndexingConfig {
             // below already takes the count from the `.si` for exactly this
             // reason. Disagreement is corruption whichever file is right.
             let stored_fields_max_doc =
-                stored_fields::open(&fdt, &fdx, &fdm, &sci.segment_id, "")?.max_doc();
+                stored_fields::open(&fdt, &fdx, &fdm, &sci.segment_id, &stored_suffix)?.max_doc();
             if stored_fields_max_doc != si.doc_count {
                 return Err(Error::SegmentDocCountMismatch {
                     segment: name.clone(),
@@ -1638,6 +1645,9 @@ impl IndexingConfig {
                         })
                     };
                     let format = per_field_postings::format_of_suffix(&suffix);
+                    let checksummed = !per_field_postings::is_unchecksummed_dictionary_file(
+                        &format!("{seg}.{}", per_field_postings::marker_extension(format)),
+                    );
                     let dictionary = per_field_postings::dictionary_extensions(format)
                         .iter()
                         .map(|ext| {
@@ -1652,7 +1662,7 @@ impl IndexingConfig {
                         .collect::<Result<Vec<_>>>()?;
                     let raw = RawPostings {
                         dictionary,
-                        doc: seg_dir.open(&format!("{seg}.doc"))?.to_vec(),
+                        doc: read_optional("doc")?,
                         pos: read_optional("pos")?,
                         pay: read_optional("pay")?,
                         suffix,
@@ -1665,10 +1675,14 @@ impl IndexingConfig {
                     let metadata = read_optional("psm")?;
                     // An empty dictionary entry is a file the format left
                     // unwritten (`dictionary_file_required`).
-                    let written = raw.dictionary.iter().filter(|d| !d.is_empty());
+                    // A footerless dictionary (`RAMOnly`'s token) is not.
+                    let written = raw
+                        .dictionary
+                        .iter()
+                        .filter(|d| !d.is_empty() && checksummed);
                     for bytes in written.map(Vec::as_slice).chain(
                         [
-                            Some(raw.doc.as_slice()),
+                            raw.doc.as_deref(),
                             raw.pos.as_deref(),
                             raw.pay.as_deref(),
                             metadata.as_deref(),
@@ -1700,13 +1714,15 @@ impl IndexingConfig {
                 None
             };
 
-            let term_vectors = if seg_files.iter().any(|f| f.ends_with(".tvd")) {
-                let tvd = seg_dir.open(&format!("{name}.tvd"))?.to_vec();
-                let tvx = seg_dir.open(&format!("{name}.tvx"))?.to_vec();
-                let tvm = seg_dir.open(&format!("{name}.tvm"))?.to_vec();
-                Some((tvd, tvx, tvm))
-            } else {
-                None
+            let term_vectors = match format_suffix(&seg_files, name, "tvd") {
+                Some(suffix) => {
+                    let file = |ext: &str| segment_file_name(name, &suffix, ext);
+                    let tvd = seg_dir.open(&file("tvd"))?.to_vec();
+                    let tvx = seg_dir.open(&file("tvx"))?.to_vec();
+                    let tvm = seg_dir.open(&file("tvm"))?.to_vec();
+                    Some((tvd, tvx, tvm, suffix))
+                }
+                None => None,
             };
 
             // `IndexWriter.readFieldInfos(SegmentCommitInfo)`: the
@@ -1932,6 +1948,7 @@ impl IndexingConfig {
                 fdt,
                 fdx,
                 fdm,
+                stored_suffix,
                 live_docs,
                 postings_live,
                 recovery_source,
@@ -2009,7 +2026,9 @@ impl IndexingConfig {
 
         let readers: Vec<_> = opened
             .iter()
-            .map(|o| stored_fields::open(&o.fdt, &o.fdx, &o.fdm, &o.sci.segment_id, ""))
+            .map(|o| {
+                stored_fields::open(&o.fdt, &o.fdx, &o.fdm, &o.sci.segment_id, &o.stored_suffix)
+            })
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
         // `IndexWriter.mergeMiddle`: `if (merger.shouldMerge()) merger.merge();`
@@ -2101,7 +2120,7 @@ impl IndexingConfig {
                         .map(|g| per_field_postings::GroupFiles {
                             suffix: &g.suffix,
                             dictionary: g.dictionary.iter().map(Vec::as_slice).collect(),
-                            doc: Some(&g.doc),
+                            doc: g.doc.as_deref(),
                             pos: g.pos.as_deref(),
                             pay: g.pay.as_deref(),
                         })
@@ -2142,7 +2161,12 @@ impl IndexingConfig {
                             reader.max_doc(),
                         )?;
                         let doc_in = lucene_codecs::postings::DocInput::open(
-                            &raw.doc,
+                            raw.doc.as_deref().ok_or_else(|| {
+                                lucene_store::Error::Corrupted(format!(
+                                    "postings group {} has no .doc",
+                                    raw.suffix
+                                ))
+                            })?,
                             &o.sci.segment_id,
                             &raw.suffix,
                         )?;
@@ -2214,9 +2238,15 @@ impl IndexingConfig {
             opened
                 .iter()
                 .map(|o| match &o.term_vectors {
-                    Some((tvd, tvx, tvm)) => Ok::<_, Error>(Some(
-                        lucene_codecs::term_vectors::open(tvd, tvx, tvm, &o.sci.segment_id, "")?,
-                    )),
+                    Some((tvd, tvx, tvm, suffix)) => {
+                        Ok::<_, Error>(Some(lucene_codecs::term_vectors::open(
+                            tvd,
+                            tvx,
+                            tvm,
+                            &o.sci.segment_id,
+                            suffix,
+                        )?))
+                    }
                     None => Ok(None),
                 })
                 .collect::<std::result::Result<Vec<_>, Error>>()?;
@@ -3038,6 +3068,27 @@ impl IndexingConfig {
                     group.suffix,
                     group.format,
                 )?;
+                let field_infos = lucene_codecs::field_infos::FieldInfos {
+                    fields: self
+                        .fields
+                        .iter()
+                        .filter(|f| group.field_numbers.contains(&f.number))
+                        .cloned()
+                        .collect(),
+                };
+                check_doc_values(
+                    self.codec.as_deref(),
+                    &lucene_codecs::codec::DocValuesWrite {
+                        max_doc: i32::try_from(docs.len()).unwrap_or(i32::MAX),
+                        segment_id,
+                        segment_suffix: &group.codec_suffix(),
+                        format_name: group.format.name(),
+                        field_infos: &field_infos,
+                        dvm: &dvm,
+                        dvd: &dvd,
+                        dvs: &dvs,
+                    },
+                )?;
                 Ok(DocValuesGroupOutput {
                     format_name: group.format.name(),
                     suffix: group.suffix,
@@ -3496,8 +3547,9 @@ impl IndexingConfig {
                             directory: dir,
                             segment: segment_name,
                             id: &segment_id,
-                            suffix: "",
+                            suffix: self.term_vectors_format().map_or("", |f| f.segment_suffix),
                             max_doc: buf.docs.len() as i32,
+                            format: self.term_vectors_format(),
                         },
                     )
                 })
@@ -3555,6 +3607,10 @@ impl IndexingConfig {
         // was already in memory, for a segment whose *data* files were written
         // exactly once. Only the last write survived; the six before it were
         // pure I/O.
+        before_write(
+            self.codec.as_deref(),
+            lucene_codecs::codec::WritePoint::FieldInfos,
+        )?;
         let mut flushed = segment_writer::write_stored_only_segment_files_with_codec(
             dir,
             segment_name,
@@ -3587,6 +3643,7 @@ impl IndexingConfig {
                 record(IndexWriter::write_term_vector_files(
                     dir,
                     segment_name,
+                    self.term_vectors_format().map_or("", |f| f.segment_suffix),
                     &tvd,
                     &tvx,
                     &tvm,
@@ -3594,10 +3651,10 @@ impl IndexingConfig {
             }
         }
         for group in doc_values_output.iter().flatten() {
-            record(IndexWriter::write_doc_values_files(
-                dir,
-                segment_name,
-                group,
+            record(with_doc_values_faults(
+                self.codec.as_deref(),
+                group.field_numbers.len(),
+                || IndexWriter::write_doc_values_files(dir, segment_name, group),
             )?);
         }
         if let Some(output) = norms_output {
@@ -3627,14 +3684,32 @@ impl IndexingConfig {
         if self.use_compound_file {
             // Before the `.si`, so the `.si` records the compound layout and
             // is not itself packed.
+            before_write(
+                self.codec.as_deref(),
+                lucene_codecs::codec::WritePoint::Compound,
+            )?;
             flushed.pending_sync =
                 segment_writer::create_compound_file(dir, segment_name, &mut flushed.info)?;
         }
+        before_write(
+            self.codec.as_deref(),
+            lucene_codecs::codec::WritePoint::SegmentInfo,
+        )?;
         segment_writer::seal_flushed_segment(dir, segment_name, flushed).map_err(Error::from)
     }
 
     /// Java: `TermVectorsConsumer.flush`. Installed sinks keep the native
     /// wire format; codecs without a sink retain the direct encoder path.
+    /// The installed codec's `CompressingCodec` format, which its term
+    /// vectors (and stored fields) are written in.
+    fn term_vectors_format(
+        &self,
+    ) -> Option<&'static lucene_codecs::compression::CompressingFormat> {
+        self.codec
+            .as_deref()
+            .and_then(|codec| codec.compressing_format())
+    }
+
     fn write_term_vectors_output(
         &self,
         documents: &[TermVectorsDocument],
@@ -3652,11 +3727,17 @@ impl IndexingConfig {
             }),
             None => Ok(TermVectorsOutput {
                 files: Vec::new(),
-                bytes: Some(term_vectors::write_best_speed(
-                    documents,
-                    state.id,
-                    state.suffix,
-                )),
+                bytes: Some(match state.format {
+                    None => term_vectors::write_best_speed(documents, state.id, state.suffix),
+                    Some(format) => {
+                        let mut writer =
+                            term_vectors::TermVectorsWriter::with_format(state.id, format);
+                        for document in documents {
+                            writer.add_document(document);
+                        }
+                        writer.finish()
+                    }
+                }),
             }),
         }
     }
@@ -4673,6 +4754,49 @@ pub const DEFAULT_MAX_FULL_FLUSH_MERGE_WAIT_MILLIS: i64 = 500;
 
 pub const POSTINGS_FORMAT_NAME: &str = "Lucene104";
 pub const DOC_VALUES_FORMAT_NAME: &str = "Lucene90";
+
+/// [`lucene_codecs::codec::Lucene104Codec::before_write`] of the installed
+/// codec, if any: the injected failure as a store error.
+pub(crate) fn before_write(
+    codec: Option<&dyn lucene_codecs::codec::Lucene104Codec>,
+    point: lucene_codecs::codec::WritePoint,
+) -> std::result::Result<(), lucene_store::Error> {
+    match codec {
+        Some(codec) => codec.before_write(point).map_err(lucene_store::Error::Io),
+        None => Ok(()),
+    }
+}
+
+/// [`Lucene104Codec::check_doc_values`](lucene_codecs::codec::Lucene104Codec::check_doc_values)
+/// of the writer's codec, if any.
+pub(crate) fn check_doc_values(
+    codec: Option<&dyn lucene_codecs::codec::Lucene104Codec>,
+    write: &lucene_codecs::codec::DocValuesWrite<'_>,
+) -> std::result::Result<(), lucene_store::Error> {
+    match codec {
+        Some(codec) => codec
+            .check_doc_values(write)
+            .map_err(lucene_store::Error::Io),
+        None => Ok(()),
+    }
+}
+
+/// [`before_write`] around one doc-values instance: the consumer's open,
+/// each of its fields, then `write` (its files), then its close.
+pub(crate) fn with_doc_values_faults<T, E: From<lucene_store::Error>>(
+    codec: Option<&dyn lucene_codecs::codec::Lucene104Codec>,
+    fields: usize,
+    write: impl FnOnce() -> std::result::Result<T, E>,
+) -> std::result::Result<T, E> {
+    use lucene_codecs::codec::WritePoint;
+    before_write(codec, WritePoint::DocValuesConsumer)?;
+    for _ in 0..fields {
+        before_write(codec, WritePoint::DocValuesField)?;
+    }
+    let out = write()?;
+    before_write(codec, WritePoint::DocValuesClose)?;
+    Ok(out)
+}
 /// `PerFieldKnnVectorsFormat`'s per-field format name for
 /// `Lucene99HnswVectorsFormat` -- the value that goes in the `.fnm`'s
 /// `PerFieldKnnVectorsFormat.format` attribute and, joined with
@@ -4694,6 +4818,22 @@ pub(crate) type PostingsGroups = Vec<per_field_postings::GroupOutput>;
 /// every one of those files' index headers.
 pub fn per_field_codec_suffix(format: &str) -> String {
     format!("{format}_{PER_FIELD_SUFFIX}")
+}
+
+/// The segment suffix of `segment`'s `.ext` file among `files` -- empty for
+/// `_0.fdt`, a `CompressingCodec` format's for `_0_<suffix>.fdt` -- or `None`
+/// when the segment has no such file.
+pub(crate) fn format_suffix(files: &[String], segment: &str, ext: &str) -> Option<String> {
+    files.iter().find_map(|file| {
+        let stem = file
+            .strip_prefix(segment)?
+            .strip_suffix(ext)?
+            .strip_suffix('.')?;
+        match stem.strip_prefix('_') {
+            Some(suffix) => Some(suffix.to_string()),
+            None => stem.is_empty().then(String::new),
+        }
+    })
 }
 
 /// `IndexFileNames.segmentFileName(segmentName, segmentSuffix, ext)`:
@@ -9845,19 +9985,20 @@ impl IndexWriter<'_> {
     }
 
     /// Writes [`IndexWriter::build_term_vectors_output`]'s three files
-    /// (`<segment_name>.tvd`/`.tvx`/`.tvm`) into `dir` and returns their
+    /// (`<segment_name>[_<suffix>].tvd`/`.tvx`/`.tvm`) into `dir` and returns their
     /// names for the segment's still-unwritten `.si`.
     fn write_term_vector_files(
         dir: &dyn Directory,
         segment_name: &str,
+        suffix: &str,
         tvd: &[u8],
         tvx: &[u8],
         tvm: &[u8],
     ) -> Result<Vec<String>> {
         let names = vec![
-            format!("{segment_name}.tvd"),
-            format!("{segment_name}.tvx"),
-            format!("{segment_name}.tvm"),
+            segment_file_name(segment_name, suffix, "tvd"),
+            segment_file_name(segment_name, suffix, "tvx"),
+            segment_file_name(segment_name, suffix, "tvm"),
         ];
         for (name, bytes) in names.iter().zip([tvd, tvx, tvm]) {
             write_file(dir, name, bytes)?;
@@ -10295,6 +10436,10 @@ impl IndexWriter<'_> {
         // merge.info, this)`, then `createCompoundFile` -- before deletes that
         // arrived during the merge are carried over, as there.
         if self.merged_segment_uses_compound_file(&merged)? {
+            before_write(
+                self.cfg.codec.as_deref(),
+                lucene_codecs::codec::WritePoint::Compound,
+            )?;
             merged.files = segment_writer::convert_to_compound(
                 self.dir,
                 &merged.info.segment_name,
@@ -11522,6 +11667,7 @@ impl IndexingConfig {
                 &numeric_updates,
                 &binary_updates,
                 &self.fields,
+                self.codec.as_deref(),
             )?;
         }
         // `PendingDeletes.isFullyDeleted`: `getDelCount() == info.info.maxDoc()`.
@@ -11544,14 +11690,16 @@ impl IndexingConfig {
         numeric: &[PerFieldNumericUpdates],
         binary: &[PerFieldBinaryUpdates],
         schema: &[FieldInfo],
+        codec: Option<&dyn lucene_codecs::codec::Lucene104Codec>,
     ) -> Result<()> {
-        crate::field_updates::write_field_updates_with_schema(
+        crate::field_updates::write_field_updates_with_codec(
             dir,
             sci,
             numeric,
             binary,
             &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
             schema,
+            codec,
         )?;
         Ok(())
     }
@@ -11680,14 +11828,19 @@ impl IndexingConfig {
                         open(ext)
                     })
                     .collect::<lucene_store::Result<Vec<_>>>()?;
-                opened.push((suffix, dictionary, open("doc")?));
+                let doc = if seg_files.contains(&format!("{seg}.doc")) {
+                    Some(open("doc")?)
+                } else {
+                    None
+                };
+                opened.push((suffix, dictionary, doc));
             }
             let groups: Vec<per_field_postings::GroupFiles<'_>> = opened
                 .iter()
                 .map(|(suffix, dictionary, doc)| per_field_postings::GroupFiles {
                     suffix,
                     dictionary: dictionary.iter().map(|d| &**d).collect(),
-                    doc: Some(doc),
+                    doc: doc.as_deref(),
                     pos: None,
                     pay: None,
                 })

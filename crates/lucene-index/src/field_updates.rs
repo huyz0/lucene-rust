@@ -206,6 +206,21 @@ pub fn write_field_updates_with_schema(
     per_field_suffix: &str,
     schema: &[FieldInfo],
 ) -> Result<()> {
+    write_field_updates_with_codec(dir, sci, numeric, binary, per_field_suffix, schema, None)
+}
+
+/// [`write_field_updates_with_schema`] with the writer's installed codec,
+/// whose [`lucene_codecs::codec::Lucene104Codec::before_write`] can fail each
+/// generation's doc-values write and the round's `.fnm`.
+pub(crate) fn write_field_updates_with_codec(
+    dir: &dyn Directory,
+    sci: &mut SegmentCommitInfo,
+    numeric: &[NumericFieldUpdates],
+    binary: &[BinaryFieldUpdates],
+    per_field_suffix: &str,
+    schema: &[FieldInfo],
+    codec: Option<&dyn lucene_codecs::codec::Lucene104Codec>,
+) -> Result<()> {
     let mut created: Vec<String> = Vec::new();
     let snapshot = sci.clone();
     match write_field_updates_inner(
@@ -215,6 +230,7 @@ pub fn write_field_updates_with_schema(
         binary,
         per_field_suffix,
         schema,
+        codec,
         &mut created,
     ) {
         Ok(()) => Ok(()),
@@ -242,6 +258,7 @@ pub fn write_field_updates_with_schema(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_field_updates_inner(
     dir: &dyn Directory,
     sci: &mut SegmentCommitInfo,
@@ -249,6 +266,7 @@ fn write_field_updates_inner(
     binary: &[BinaryFieldUpdates],
     per_field_suffix: &str,
     schema: &[FieldInfo],
+    codec: Option<&dyn lucene_codecs::codec::Lucene104Codec>,
     created: &mut Vec<String>,
 ) -> Result<()> {
     let segment = sci.segment_name.clone();
@@ -284,16 +302,57 @@ fn write_field_updates_inner(
     // which are the generational ones when a previous update round wrote some.
     let mut infos = read_current_field_infos(read_dir, sci, &files)?;
 
-    // Deterministic order: Java iterates a `HashMap`, so the generation a
-    // field lands at is arbitrary there. Field-number order makes this port's
-    // output reproducible without changing what any reader sees (each field
-    // records its own generation).
+    // Each field takes the next generation in the order Java's
+    // `handleDVUpdates` walks `pendingDVUpdates`, a `HashMap` by field name
+    // ([`crate::indexing_chain::java_hash_map_order`]); fields enter it in
+    // field-number order here, which only decides between names that share a
+    // bucket.
     let mut numeric: Vec<&NumericFieldUpdates> = numeric.iter().collect();
     numeric.sort_by_key(|(n, _)| *n);
     let mut binary: Vec<&BinaryFieldUpdates> = binary.iter().collect();
     binary.sort_by_key(|(n, _)| *n);
+    let mut rounds: Vec<(i32, bool, usize)> = numeric
+        .iter()
+        .enumerate()
+        .map(|(k, (n, _))| (*n, false, k))
+        .chain(binary.iter().enumerate().map(|(k, (n, _))| (*n, true, k)))
+        .collect();
+    rounds.sort_by_key(|(n, binary, _)| (*n, *binary));
+    let names: Vec<String> = rounds
+        .iter()
+        .map(|(n, _, _)| {
+            infos
+                .fields
+                .iter()
+                .chain(schema)
+                .find(|f| f.number == *n)
+                .map_or_else(|| n.to_string(), |f| f.name.clone())
+        })
+        .collect();
+    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let order = crate::indexing_chain::java_hash_map_order(&name_refs);
 
-    for (field_number, updates) in numeric {
+    for (is_binary, k) in order.into_iter().map(|i| (rounds[i].1, rounds[i].2)) {
+        if is_binary {
+            let (field_number, updates) = binary[k];
+            write_binary_round(
+                dir,
+                sci,
+                &mut infos,
+                read_dir,
+                &files,
+                *field_number,
+                updates,
+                per_field_suffix,
+                schema,
+                codec,
+                &segment,
+                max_doc,
+                created,
+            )?;
+            continue;
+        }
+        let (field_number, updates) = numeric[k];
         let index = field_index_or_construct(
             &mut infos,
             &segment,
@@ -326,43 +385,23 @@ fn write_field_updates_inner(
         } else {
             doc_values_updates::write_numeric_generation_with_skip_index
         };
-        let (dvm, dvd, dvs) = write(
-            infos.fields[index].number,
-            &column,
-            &sci.segment_id,
-            &suffix,
-        )?;
-        finish_generation(
-            dir, sci, &mut infos, index, gen, &per_field, dvm, dvd, dvs, created,
-        )?;
-    }
-
-    for (field_number, updates) in binary {
-        let index = field_index_or_construct(
-            &mut infos,
-            &segment,
-            *field_number,
-            schema,
-            DocValuesType::Binary,
-        )?;
-        check_updatable(&infos.fields[index], &segment, DocValuesType::Binary)?;
-        // `verifyOrCreateDvOnlyField`'s create half: the generational `.fnm`
-        // is where a doc-values-only field first declares its type.
-        infos.fields[index].doc_values_type = DocValuesType::Binary;
-        let per_field = per_field_component(&infos.fields[index], per_field_suffix);
-        let base = read_base_binary(read_dir, sci, &files, &infos, index, &per_field)?;
-        let column = doc_values_updates::merge_binary_column(
-            base.as_ref().map(|(e, d)| (e, d.as_slice())),
-            updates,
+        let (dvm, dvd, dvs) = crate::index_writer::with_doc_values_faults(codec, 1, || {
+            write(
+                infos.fields[index].number,
+                &column,
+                &sci.segment_id,
+                &suffix,
+            )
+            .map_err(Error::from)
+        })?;
+        check_generation(
+            codec,
+            sci,
+            &infos,
+            index,
             max_doc,
-        )?;
-        let gen = sci.next_write_doc_values_gen();
-        let suffix = generation_segment_suffix(gen, &per_field);
-        let (dvm, dvd, dvs) = doc_values_updates::write_binary_generation(
-            infos.fields[index].number,
-            &column,
-            &sci.segment_id,
             &suffix,
+            (&dvm, &dvd, &dvs),
         )?;
         finish_generation(
             dir, sci, &mut infos, index, gen, &per_field, dvm, dvd, dvs, created,
@@ -372,6 +411,7 @@ fn write_field_updates_inner(
     // `ReadersAndUpdates.writeFieldInfosGen`, once for the whole round.
     let fi_gen = sci.next_write_field_infos_gen();
     let fnm_name = field_infos_gen_file_name(&segment, fi_gen);
+    crate::index_writer::before_write(codec, lucene_codecs::codec::WritePoint::FieldInfos)?;
     let fnm = lucene_codecs::field_infos::write(
         &infos.fields,
         &sci.segment_id,
@@ -383,6 +423,51 @@ fn write_field_updates_inner(
     sci.field_infos_files = vec![fnm_name];
 
     dir.sync(created)?;
+    Ok(())
+}
+
+/// The codec's look ([`crate::index_writer::check_doc_values`]) at one
+/// field's update generation before it is written.
+fn check_generation(
+    codec: Option<&dyn lucene_codecs::codec::Lucene104Codec>,
+    sci: &SegmentCommitInfo,
+    infos: &FieldInfos,
+    index: usize,
+    max_doc: i32,
+    suffix: &str,
+    (dvm, dvd, dvs): (&[u8], &[u8], &[u8]),
+) -> Result<()> {
+    let field = &infos.fields[index];
+    // The field's per-field format, or the one the codec routes it to.
+    let format_name = field
+        .attributes
+        .iter()
+        .find(|(k, _)| k == lucene_codecs::per_field_doc_values::PER_FIELD_FORMAT_KEY)
+        .map(|(_, v)| v.clone())
+        .or_else(|| {
+            codec.map(|c| {
+                c.doc_values_format_for_field(&field.name)
+                    .name()
+                    .to_string()
+            })
+        })
+        .unwrap_or_else(|| "Lucene90".to_string());
+    let field_infos = FieldInfos {
+        fields: vec![field.clone()],
+    };
+    crate::index_writer::check_doc_values(
+        codec,
+        &lucene_codecs::codec::DocValuesWrite {
+            max_doc,
+            segment_id: &sci.segment_id,
+            segment_suffix: suffix,
+            format_name: &format_name,
+            field_infos: &field_infos,
+            dvm,
+            dvd,
+            dvs,
+        },
+    )?;
     Ok(())
 }
 
@@ -459,6 +544,63 @@ fn put_attribute(field: &mut FieldInfo, key: &str, value: &str) {
         Some(slot) => slot.1 = value.to_string(),
         None => field.attributes.push((key.to_string(), value.to_string())),
     }
+}
+
+/// One BINARY field's generation of a round: [`write_field_updates_inner`]'s
+/// BINARY arm.
+#[allow(clippy::too_many_arguments)]
+fn write_binary_round(
+    dir: &dyn Directory,
+    sci: &mut SegmentCommitInfo,
+    infos: &mut FieldInfos,
+    read_dir: &dyn Directory,
+    files: &[String],
+    field_number: i32,
+    updates: &[(i32, Option<Vec<u8>>)],
+    per_field_suffix: &str,
+    schema: &[FieldInfo],
+    codec: Option<&dyn lucene_codecs::codec::Lucene104Codec>,
+    segment: &str,
+    max_doc: i32,
+    created: &mut Vec<String>,
+) -> Result<()> {
+    let index =
+        field_index_or_construct(infos, segment, field_number, schema, DocValuesType::Binary)?;
+    check_updatable(&infos.fields[index], segment, DocValuesType::Binary)?;
+    // `verifyOrCreateDvOnlyField`'s create half: the generational `.fnm`
+    // is where a doc-values-only field first declares its type.
+    infos.fields[index].doc_values_type = DocValuesType::Binary;
+    let per_field = per_field_component(&infos.fields[index], per_field_suffix);
+    let base = read_base_binary(read_dir, sci, files, infos, index, &per_field)?;
+    let column = doc_values_updates::merge_binary_column(
+        base.as_ref().map(|(e, d)| (e, d.as_slice())),
+        updates,
+        max_doc,
+    )?;
+    let gen = sci.next_write_doc_values_gen();
+    let suffix = generation_segment_suffix(gen, &per_field);
+    let (dvm, dvd, dvs) = crate::index_writer::with_doc_values_faults(codec, 1, || {
+        doc_values_updates::write_binary_generation(
+            infos.fields[index].number,
+            &column,
+            &sci.segment_id,
+            &suffix,
+        )
+        .map_err(Error::from)
+    })?;
+    check_generation(
+        codec,
+        sci,
+        infos,
+        index,
+        max_doc,
+        &suffix,
+        (&dvm, &dvd, &dvs),
+    )?;
+    finish_generation(
+        dir, sci, infos, index, gen, &per_field, dvm, dvd, dvs, created,
+    )?;
+    Ok(())
 }
 
 /// The segment's own entry for the updated field, found **by name** as
