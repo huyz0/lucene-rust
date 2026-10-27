@@ -448,6 +448,27 @@ impl VectorFiles {
     }
 }
 
+/// Where the vector ops find each segment's vectors, under per-segment
+/// filters.
+pub trait KnnSource {
+    fn knn_segments<'s>(
+        &'s self,
+        filters: Option<&'s [lucene_util::fixed_bit_set::FixedBitSet]>,
+    ) -> Vec<KnnSegment<'s>>;
+}
+
+/// [`VectorFiles`] over the reader they were read for.
+pub struct FileVectors<'r>(pub &'r VectorFiles, pub &'r DirectoryReader);
+
+impl KnnSource for FileVectors<'_> {
+    fn knn_segments<'s>(
+        &'s self,
+        filters: Option<&'s [lucene_util::fixed_bit_set::FixedBitSet]>,
+    ) -> Vec<KnnSegment<'s>> {
+        self.0.segments(self.1, filters)
+    }
+}
+
 /// The vector ops' rewrite against `reader`: `(op, field, argument, the
 /// filter or seed clause)` to the clause Lucene's `rewrite` produces (KNN
 /// hits as a `DocAndScoreQuery`, a similarity threshold's matches).
@@ -463,11 +484,27 @@ pub fn knn_clause(
     vectors: &VectorFiles,
     qvec: &[f32],
 ) -> Option<Clause> {
+    let source = FileVectors(vectors, reader);
+    knn_clause_from(op, field, arg, clause, segments, norms, &source, qvec)
+}
+
+/// [`knn_clause`] over any [`KnnSource`].
+#[allow(clippy::too_many_arguments)]
+pub fn knn_clause_from(
+    op: &str,
+    field: &str,
+    arg: &str,
+    clause: Option<Clause>,
+    segments: &[OpenSegment<'_>],
+    norms: &[Option<&HashMap<String, FieldNorms<'_>>>],
+    source: &dyn KnnSource,
+    qvec: &[f32],
+) -> Option<Clause> {
     let filters = match (op, &clause) {
         ("KFF" | "VSFF" | "KFS", Some(f)) => Some(filter_bitsets(segments, f).unwrap()),
         _ => None,
     };
-    let knn_segments = vectors.segments(reader, filters.as_deref());
+    let knn_segments = source.knn_segments(filters.as_deref());
     let float = || qvec.to_vec();
     Some(match op {
         "KF" | "KFF" => {

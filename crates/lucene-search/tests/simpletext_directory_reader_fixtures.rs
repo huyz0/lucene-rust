@@ -218,29 +218,37 @@ fn simpletext_compound_merge_with_updates_and_deletes_opens_as_java() {
     check_metadata("merged");
 }
 
+/// Both search entry points open SimpleText segments: their postings, doc
+/// values and points as the binary forms the scorer tree reads
+/// (`tests/simpletext_search_fixtures.rs` compares searches with Lucene's).
 #[test]
-fn unfinished_search_routing_refuses_both_entry_points() {
+fn search_routing_opens_both_entry_points() {
     for variant in ["flush", "merged"] {
         let reader =
             DirectoryReader::open(&FsDirectory::open(fixture(variant).join("index"))).unwrap();
-        let error = reader.open_segments().err().unwrap().to_string();
-        assert!(
-            error.contains("SimpleText search routing is not implemented"),
-            "{error}"
+        let opened = reader.open_segments().unwrap();
+        assert_eq!(
+            opened.as_open_segments().len(),
+            reader.segment_readers().len()
         );
-        assert!(!reader.segment_readers().is_empty());
-        for segment in reader.segment_readers() {
-            let error = segment
-                .with_open_segment::<()>(segment.doc_base, |_| {
-                    panic!("unfinished SimpleText routing must not execute a binary search")
+        for (segment, open) in reader
+            .segment_readers()
+            .iter()
+            .zip(opened.as_open_segments())
+        {
+            assert!(open.doc_in.is_some());
+            assert!(open.fields.field("freqs").is_some());
+            assert!(segment.doc_values_meta().is_some());
+            let points = segment
+                .with_open_segment(segment.doc_base, |seg| {
+                    assert!(seg.fields.field("offs").is_some() && seg.pay_in.is_some());
+                    let points = seg.points.unwrap();
+                    let number = segment.field_infos().field_by_name("ipt").unwrap().number;
+                    Ok(points.reader.field(number).map(|f| f.point_count))
                 })
-                .err()
-                .unwrap()
-                .to_string();
-            assert!(
-                error.contains("SimpleText search routing is not implemented"),
-                "{error}"
-            );
+                .unwrap();
+            assert!(points.is_some_and(|count| count > 0), "{variant}");
+            assert!(segment.points_files().is_some());
         }
     }
 }
