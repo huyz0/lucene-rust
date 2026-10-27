@@ -18,5 +18,6 @@ pub mod matches_test_base;
 pub mod query_utils;
 pub mod scorer_index_searcher;
 pub mod search_equivalence;
+pub mod shard_searching;
 pub mod similarities;
 pub mod test_index;

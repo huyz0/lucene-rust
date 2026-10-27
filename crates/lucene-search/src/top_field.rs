@@ -4060,6 +4060,44 @@ pub(crate) fn search_sorted_leaves(
     min_score: Option<f32>,
     similarity: Option<&dyn crate::similarities::Similarity>,
 ) -> Result<TopFieldDocs> {
+    search_sorted_leaves_with_statistics(
+        segments,
+        readers,
+        query,
+        norms,
+        sort,
+        top_n,
+        total_hits_threshold,
+        after,
+        track_max_score,
+        leaves,
+        until,
+        min_score,
+        similarity,
+        None,
+    )
+}
+
+/// [`search_sorted_leaves`] with the searcher's
+/// [`crate::index_searcher::StatisticsSource`] applied to the statistics a
+/// score key reads.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn search_sorted_leaves_with_statistics(
+    segments: &[OpenSegment<'_>],
+    readers: &[SegmentReader],
+    query: &BooleanQuery,
+    norms: &[Option<&HashMap<String, FieldNorms<'_>>>],
+    sort: &[SortField],
+    top_n: usize,
+    total_hits_threshold: u64,
+    after: Option<&FieldDoc>,
+    track_max_score: bool,
+    leaves: Option<&[usize]>,
+    until: Option<(usize, i32)>,
+    min_score: Option<f32>,
+    similarity: Option<&dyn crate::similarities::Similarity>,
+    statistics: Option<&dyn crate::index_searcher::StatisticsSource>,
+) -> Result<TopFieldDocs> {
     if sort.is_empty() {
         return Err(SortError::NoKeys.into());
     }
@@ -4095,13 +4133,16 @@ pub(crate) fn search_sorted_leaves(
     let query = rewritten.as_ref().unwrap_or(query);
     // The score leading the sort gives the max score itself (the first hit).
     let track = track_max_score && sort[0].ty != SortType::Score;
-    let global = global_stats(
+    let mut global = global_stats(
         segments,
         query,
         sort,
         track || min_score.is_some(),
         similarity,
     )?;
+    if let (Some(g), Some(source)) = (global.as_mut(), statistics) {
+        g.override_statistics(source)?;
+    }
     let all: Vec<usize> = match leaves {
         Some(l) => l.to_vec(),
         None => (0..segments.len().min(readers.len())).collect(),

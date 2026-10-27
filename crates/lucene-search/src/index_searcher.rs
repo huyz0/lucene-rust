@@ -35,7 +35,7 @@ use crate::multi_segment::{
 };
 use crate::query::{BooleanQuery, Clause};
 use crate::reader::exitable::QueryTimeout;
-use crate::similarities::Similarity;
+use crate::similarities::{CollectionStatistics, Similarity, TermStatistics};
 use crate::top_docs::{ShardScoreDoc, TopDocs};
 use crate::{Error, Result};
 
@@ -46,11 +46,44 @@ pub const TOTAL_HITS_THRESHOLD: u64 = 1000;
 /// Per-segment norms, as the multi-segment functions take them.
 pub type SegmentNorms<'s, 'a> = Option<&'s HashMap<String, FieldNorms<'a>>>;
 
+/// `IndexSearcher.termStatistics(term, docFreq, totalTermFreq)` and
+/// `collectionStatistics(field)` as a subclass overrides them (Java's
+/// `ShardIndexSearcher` sums every node's): handed this searcher's own
+/// statistics, the statistics scoring uses instead. Every scored term's
+/// statistics pass through it, under every similarity, in every search but
+/// [`IndexSearcher::count`], which does not score.
+pub trait StatisticsSource: Send + Sync {
+    /// `termStatistics`: `local` is the reader's (`super.termStatistics`),
+    /// asked only for a term the reader holds.
+    ///
+    /// # Errors
+    /// Whatever gathering the statistics reports.
+    fn term_statistics(
+        &self,
+        field: &str,
+        term: &[u8],
+        local: TermStatistics,
+    ) -> Result<TermStatistics>;
+
+    /// `collectionStatistics`: `local` is the reader's
+    /// (`super.collectionStatistics`, `None` where no document has the
+    /// field); `None` back keeps the reader's.
+    ///
+    /// # Errors
+    /// Whatever gathering the statistics reports.
+    fn collection_statistics(
+        &self,
+        field: &str,
+        local: Option<CollectionStatistics>,
+    ) -> Result<Option<CollectionStatistics>>;
+}
+
 /// `IndexSearcher` over already-opened segments.
 pub struct IndexSearcher<'s, 'a> {
     segments: &'s [OpenSegment<'a>],
     norms: &'s [SegmentNorms<'s, 'a>],
     similarity: Option<&'s dyn Similarity>,
+    statistics: Option<&'s dyn StatisticsSource>,
     slices: Vec<Vec<usize>>,
     /// `queryTimeout`.
     timeout: Option<Arc<dyn QueryTimeout>>,
@@ -80,6 +113,7 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
             segments,
             norms,
             similarity: None,
+            statistics: None,
             slices: vec![(0..segments.len()).collect()],
             timeout: None,
             partial_result: AtomicBool::new(false),
@@ -125,6 +159,77 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
     /// `getSimilarity()`: `None` is the default BM25.
     pub fn similarity(&self) -> Option<&'s dyn Similarity> {
         self.similarity
+    }
+
+    /// Overrides `termStatistics`/`collectionStatistics` with `source`
+    /// (`None`: the reader's own, the default).
+    pub fn set_statistics(&mut self, source: Option<&'s dyn StatisticsSource>) {
+        self.statistics = source;
+    }
+
+    /// The [`StatisticsSource`] set, if any.
+    pub fn statistics(&self) -> Option<&'s dyn StatisticsSource> {
+        self.statistics
+    }
+
+    /// `collectionStatistics(field)`: the field's `docCount`,
+    /// `sumTotalTermFreq` and `sumDocFreq` summed over the segments holding
+    /// it, with the reader's `maxDoc`; `None` when no document has the
+    /// field. Through the [`StatisticsSource`], when one is set.
+    ///
+    /// # Errors
+    /// Whatever the [`StatisticsSource`] reports.
+    pub fn collection_statistics(&self, field: &str) -> Result<Option<CollectionStatistics>> {
+        let (mut doc_count, mut sum_total_term_freq, mut sum_doc_freq) = (0i64, 0i64, 0i64);
+        for seg in self.segments {
+            if let Some(terms) = seg.fields.field(field) {
+                doc_count += i64::from(terms.doc_count);
+                sum_total_term_freq += terms.sum_total_term_freq;
+                sum_doc_freq += terms.sum_doc_freq;
+            }
+        }
+        let local = (doc_count > 0).then(|| CollectionStatistics {
+            max_doc: i64::from(self.max_doc()),
+            doc_count,
+            sum_total_term_freq,
+            sum_doc_freq,
+        });
+        match self.statistics {
+            Some(source) => Ok(source.collection_statistics(field, local)?.or(local)),
+            None => Ok(local),
+        }
+    }
+
+    /// `termStatistics(term, docFreq, totalTermFreq)` over
+    /// `TermStates.build(searcher, term)`: the term's `docFreq` and
+    /// `totalTermFreq` summed over the segments (deleted documents
+    /// included); `None` when no segment holds it. Through the
+    /// [`StatisticsSource`], when one is set.
+    ///
+    /// # Errors
+    /// Whatever reading the terms dictionaries, or the
+    /// [`StatisticsSource`], reports.
+    pub fn term_statistics(&self, field: &str, term: &[u8]) -> Result<Option<TermStatistics>> {
+        let query = BooleanQuery {
+            should: vec![Clause::Term(crate::query::TermQuery::new(field, term))],
+            ..BooleanQuery::default()
+        };
+        let global = crate::multi_segment::global_boolean_stats_with_similarity(
+            self.segments,
+            &query,
+            None,
+        )?;
+        let Some(stats) = global.term(field, term).filter(|s| s.doc_freq > 0) else {
+            return Ok(None);
+        };
+        let local = TermStatistics {
+            doc_freq: stats.doc_freq,
+            total_term_freq: stats.total_term_freq,
+        };
+        match self.statistics {
+            Some(source) => source.term_statistics(field, term, local).map(Some),
+            None => Ok(Some(local)),
+        }
     }
 
     /// The slices a [`CollectorManager`] search runs (`getSlices()`): each a
@@ -193,7 +298,11 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
     /// does -- [`Self::timed_out`] is the flag.
     pub fn search(&self, query: &BooleanQuery, n: usize) -> Result<TopDocs> {
         let sim = self.similarity.filter(|s| !s.is_default_bm25());
-        if sim.is_some() || self.timeout.is_some() || self.scorer_only_enabled() {
+        if sim.is_some()
+            || self.timeout.is_some()
+            || self.statistics.is_some()
+            || self.scorer_only_enabled()
+        {
             let mut c = crate::collector::TopDocsCollector::with_total_hits_threshold(
                 n,
                 TOTAL_HITS_THRESHOLD,
@@ -270,7 +379,7 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
             (0..self.segments.len()).map(|i| self.norms(i)).collect();
         let rewritten = rewrite_structure(query.clone());
         let query = &rewritten;
-        crate::top_field::search_sorted_leaves(
+        crate::top_field::search_sorted_leaves_with_statistics(
             self.segments,
             readers,
             query,
@@ -284,6 +393,7 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
             None,
             None,
             self.similarity.filter(|s| !s.is_default_bm25()),
+            self.statistics,
         )
     }
 
@@ -302,7 +412,7 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
             (0..self.segments.len()).map(|i| self.norms(i)).collect();
         let rewritten = rewrite_structure(query.clone());
         let query = &rewritten;
-        crate::top_field::search_sorted_leaves(
+        crate::top_field::search_sorted_leaves_with_statistics(
             self.segments,
             readers,
             query,
@@ -316,6 +426,7 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
             None,
             None,
             self.similarity.filter(|s| !s.is_default_bm25()),
+            self.statistics,
         )
     }
 
@@ -392,11 +503,14 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
                 rewritten.unwrap_or_else(|| query.clone()),
             ));
         }
-        let global = crate::multi_segment::global_boolean_stats_with_similarity(
+        let mut global = crate::multi_segment::global_boolean_stats_with_similarity(
             self.segments,
             rewritten.as_ref().unwrap_or(query),
             self.similarity.filter(|s| !s.is_default_bm25()),
         )?;
+        if let Some(source) = self.statistics {
+            global.override_statistics(source)?;
+        }
         Ok((rewritten, global))
     }
 
