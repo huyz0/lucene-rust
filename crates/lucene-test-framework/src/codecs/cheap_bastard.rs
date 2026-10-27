@@ -18,8 +18,9 @@
 //! and the first delegate error. The native default descriptor supplies no such
 //! factories; FilterCodec SPI/name installation and Directory/IOContext callbacks
 //! are not modeled.
-//! IndexWriter accepts only Lucene104: this codec is not installed under a false
-//! name and does not silently replace Java's direct format by per-field routing.
+//! Installed in `IndexWriter` (its `Lucene104Codec` impl), segments record
+//! `CheapBastard` and the writer's own flush and merge write the direct
+//! format, unsuffixed and without per-field attributes, as Java's does.
 
 use super::cranky_postings::{self as native, Fields, FieldsConsumer, PostingsFormat};
 use lucene_codecs::codec::DefaultLucene104Codec;
@@ -75,6 +76,30 @@ impl<D> CheapBastardCodec<D> {
     }
     pub fn postings_format_mut(&mut self) -> &mut CheapPostingsFormat {
         &mut self.postings
+    }
+}
+
+impl<D> std::fmt::Debug for CheapBastardCodec<D> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CheapBastardCodec").finish_non_exhaustive()
+    }
+}
+
+/// Installation in `IndexWriter::set_codec`: Java's codec as `IndexWriter`
+/// runs it. Every field's postings go to the one direct
+/// `Lucene104PostingsFormat(100, 200)` (unsuffixed `_0.tim`, no per-field
+/// attributes) and every other format is `Lucene104`'s; segments record
+/// `CheapBastard`, which [`super::register_codecs`] makes readable.
+impl lucene_codecs::codec::Lucene104Codec for CheapBastardCodec<DefaultLucene104Codec> {
+    fn name(&self) -> &str {
+        CheapBastardCodec::name(self)
+    }
+
+    fn postings_format_for_field(
+        &self,
+        _field: &str,
+    ) -> per_field_postings::Lucene104PostingsFormat {
+        self.postings.settings.direct()
     }
 }
 

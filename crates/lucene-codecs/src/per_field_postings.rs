@@ -176,6 +176,11 @@ pub struct Lucene104PostingsFormat {
     pub min_term_block_size: usize,
     pub max_term_block_size: usize,
     pub kind: PostingsFormatKind,
+    /// The codec's `postingsFormat()` itself rather than a
+    /// `PerFieldPostingsFormat` delegate (`CheapBastardCodec`): its files
+    /// carry no codec suffix and its fields no `PerFieldPostingsFormat`
+    /// attributes. See [`Lucene104PostingsFormat::direct`].
+    pub direct: bool,
 }
 
 impl Default for Lucene104PostingsFormat {
@@ -185,6 +190,7 @@ impl Default for Lucene104PostingsFormat {
             min_term_block_size: options.min_items_in_block,
             max_term_block_size: options.max_items_in_block,
             kind: PostingsFormatKind::Lucene104,
+            direct: false,
         }
     }
 }
@@ -200,6 +206,7 @@ impl Lucene104PostingsFormat {
             min_term_block_size,
             max_term_block_size,
             kind: PostingsFormatKind::Lucene104,
+            direct: false,
         };
         format.write_options().validate()?;
         Ok(format)
@@ -250,6 +257,18 @@ impl Lucene104PostingsFormat {
         Ok(Self::dictionary(format))
     }
 
+    /// This format as a codec's whole `postingsFormat()`, not one
+    /// `PerFieldPostingsFormat` routes fields to: every field is written in
+    /// one group whose files have no codec suffix (`_0.tim`) and no field
+    /// records the per-field attributes. Every field of a segment must get
+    /// the same direct format.
+    pub fn direct(self) -> Self {
+        Lucene104PostingsFormat {
+            direct: true,
+            ..self
+        }
+    }
+
     /// `getName()`: the name recorded in a field's
     /// [`PER_FIELD_FORMAT_KEY`] and the stem of its codec suffix.
     pub fn name(&self) -> &'static str {
@@ -286,12 +305,30 @@ pub struct GroupOutput {
     /// A group written with another terms dictionary: its files by
     /// extension, in place of `output`'s `.tim`/`.tip`/`.tmd`.
     pub dictionary: Option<DictionaryFiles>,
+    /// Written by a [`Lucene104PostingsFormat::direct`] format: no codec
+    /// suffix, no per-field attributes.
+    pub direct: bool,
 }
 
 impl GroupOutput {
-    /// The group's codec suffix (`Completion104_0`).
+    /// The group's codec suffix (`Completion104_0`), empty for a
+    /// [`direct`](Self::direct) group.
     pub fn codec_suffix(&self) -> String {
-        codec_suffix(self.format_name, self.suffix)
+        if self.direct {
+            String::new()
+        } else {
+            codec_suffix(self.format_name, self.suffix)
+        }
+    }
+
+    /// The group's file name for extension `ext` in segment `segment_name`:
+    /// `_0_Lucene104_0.tim`, or `_0.tim` for a direct group.
+    pub fn file_name(&self, segment_name: &str, ext: &str) -> String {
+        if self.direct {
+            format!("{segment_name}.{ext}")
+        } else {
+            format!("{segment_name}_{}.{ext}", self.codec_suffix())
+        }
     }
 
     /// Every file of the group by extension, for a caller that writes the
@@ -389,8 +426,9 @@ pub fn write<T: TermSource>(
         fields: segment_fields.to_vec(),
     };
     let mut out = Vec::with_capacity(groups.len());
+    check_direct(&groups)?;
     for (format, suffix, members) in groups {
-        let codec_suffix = codec_suffix(format.name(), suffix);
+        let codec_suffix = group_codec_suffix(&format, suffix);
         // Each group keeps its fields in name order: `FreqProxFields` (the
         // flush, `FreqProxTermsWriter.flush` sorts its fields by name) and
         // `MultiFields` (a merge) both iterate that way, and the blocktree
@@ -435,9 +473,33 @@ pub fn write<T: TermSource>(
             output,
             completion,
             dictionary,
+            direct: format.direct,
         });
     }
     Ok(out)
+}
+
+/// The codec suffix a group of `format` numbered `suffix` writes its files
+/// and headers with: none for a [`Lucene104PostingsFormat::direct`] one.
+fn group_codec_suffix(format: &Lucene104PostingsFormat, suffix: u32) -> String {
+    if format.direct {
+        String::new()
+    } else {
+        codec_suffix(format.name(), suffix)
+    }
+}
+
+/// A direct format is the codec's only postings format: a segment cannot
+/// mix it with another, or two groups would share the unsuffixed files.
+fn check_direct(
+    groups: &[(Lucene104PostingsFormat, u32, Vec<usize>)],
+) -> postings_writer::Result<()> {
+    if groups.len() > 1 && groups.iter().any(|(f, _, _)| f.direct) {
+        return Err(postings_writer::Error::Dictionary(
+            "a direct postings format must be every field's format".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// A non-block-tree dictionary's files by extension ([`GroupOutput::dictionary`]).
@@ -541,10 +603,12 @@ pub fn write_installed<T: TermSource>(
     let segment_infos = FieldInfos {
         fields: state.field_infos.to_vec(),
     };
-    let plans: Vec<_> = group(&names, format_for)
+    let grouped = group(&names, format_for);
+    check_direct(&grouped)?;
+    let plans: Vec<_> = grouped
         .into_iter()
         .map(|(format, suffix, members)| {
-            (format, suffix, members, codec_suffix(format.name(), suffix))
+            (format, suffix, members, group_codec_suffix(&format, suffix))
         })
         .collect();
     let mut consumers: Vec<Box<dyn PostingsWriteSink + '_>> = Vec::new();
@@ -592,6 +656,7 @@ pub fn write_installed<T: TermSource>(
                     output,
                     completion,
                     dictionary,
+                    direct: format.direct,
                 });
                 continue;
             }
@@ -632,6 +697,7 @@ pub fn write_installed<T: TermSource>(
                 output: Output::default(),
                 completion: None,
                 dictionary: None,
+                direct: format.direct,
             });
         }
         Ok(groups)
@@ -741,13 +807,19 @@ fn group(
 /// The format name and suffix number [`write()`] gives each of `fields`
 /// (`(number, name)`), for a caller that records the `.fnm` attributes
 /// before writing the files (`SegmentMerger` via `PerFieldMergeState`).
+/// Fields of a [`Lucene104PostingsFormat::direct`] format are left out:
+/// they record none.
 pub fn field_suffixes(
     fields: &[(i32, String)],
     format_for: &dyn Fn(&str) -> Lucene104PostingsFormat,
 ) -> Vec<(i32, &'static str, u32)> {
     let names: Vec<String> = fields.iter().map(|(_, name)| name.clone()).collect();
     let mut out = Vec::with_capacity(fields.len());
-    for (format, suffix, members) in group(&names, format_for) {
+    // A direct format's fields record no per-field attributes.
+    for (format, suffix, members) in group(&names, format_for)
+        .into_iter()
+        .filter(|(format, _, _)| !format.direct)
+    {
         out.extend(
             members
                 .into_iter()

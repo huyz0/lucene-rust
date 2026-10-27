@@ -1492,7 +1492,7 @@ fn describe_written_files(
     postings_suffixes: &[(i32, &'static str, u32)],
     doc_values_suffixes: &[(i32, u32)],
     wrote_term_vectors: bool,
-    vector_fields: &[(i32, &'static str, u32)],
+    vector_fields: &[(i32, Option<(&'static str, u32)>)],
     _points_field_numbers: &[i32],
 ) {
     for f in merged_fields.iter_mut() {
@@ -1539,15 +1539,17 @@ fn describe_written_files(
         if !wrote_term_vectors {
             f.store_term_vectors = false;
         }
-        if let Some((_, format, suffix)) = vector_fields.iter().find(|(n, _, _)| *n == f.number) {
-            f.attributes.push((
-                per_field_knn_vectors::PER_FIELD_FORMAT_KEY.to_string(),
-                format.to_string(),
-            ));
-            f.attributes.push((
-                per_field_knn_vectors::PER_FIELD_SUFFIX_KEY.to_string(),
-                suffix.to_string(),
-            ));
+        if let Some((_, routing)) = vector_fields.iter().find(|(n, _)| *n == f.number) {
+            if let Some((format, suffix)) = routing {
+                f.attributes.push((
+                    per_field_knn_vectors::PER_FIELD_FORMAT_KEY.to_string(),
+                    format.to_string(),
+                ));
+                f.attributes.push((
+                    per_field_knn_vectors::PER_FIELD_SUFFIX_KEY.to_string(),
+                    suffix.to_string(),
+                ));
+            }
         } else {
             // The vectors twin of the doc-values rule above, for a field the
             // vectors merge wrote no entry for. That is every vector field
@@ -2562,10 +2564,8 @@ fn merge_segments_mapped_inner(
                     files.extend(group.written_files.iter().cloned());
                     continue;
                 }
-                let exts = group.files();
-                let suffix = group.codec_suffix();
-                for (ext, bytes) in exts {
-                    let name = format!("{merged_segment_name}_{suffix}.{ext}");
+                for (ext, bytes) in group.files() {
+                    let name = group.file_name(merged_segment_name, ext);
                     write_file(dir, &name, bytes)?;
                     files.push(name);
                 }
@@ -2711,7 +2711,7 @@ fn merge_segments_mapped_inner(
         }
     }
 
-    let vector_field_numbers: Vec<(i32, &'static str, u32)> = merged_vectors
+    let vector_field_numbers: Vec<(i32, Option<(&'static str, u32)>)> = merged_vectors
         .as_ref()
         .map(|v| v.written.clone())
         .unwrap_or_default();
@@ -2738,7 +2738,7 @@ fn merge_segments_mapped_inner(
     if let Some(vector_files) = merged_vectors {
         for (suffix, group_files) in &vector_files.groups {
             for (ext, bytes) in group_files {
-                let name = format!("{merged_segment_name}_{suffix}.{ext}");
+                let name = crate::index_writer::segment_file_name(merged_segment_name, suffix, ext);
                 write_file(dir, &name, bytes)?;
                 files.push(name);
             }
@@ -4109,6 +4109,14 @@ impl SortedNumericRemap {
 }
 
 impl MergeOptions {
+    /// Whether the codec's `knnVectorsFormat()` is a format itself rather
+    /// than per-field routing.
+    fn knn_vectors_direct(&self) -> bool {
+        self.codec
+            .as_ref()
+            .is_some_and(|c| c.knn_vectors_format_is_direct())
+    }
+
     /// The KNN vectors format `field` is routed to.
     fn knn_vectors_format_for(&self, field: &str) -> per_field_knn_vectors::KnnVectorsFormat {
         self.knn_vectors_formats
@@ -4178,8 +4186,9 @@ struct MergedVectorFiles {
     /// One per `PerFieldKnnVectorsFormat` instance: its codec suffix and its
     /// files by extension.
     groups: Vec<(String, GroupFiles)>,
-    /// Every field written: `(number, format name, suffix number)`.
-    written: Vec<(i32, &'static str, u32)>,
+    /// Every field written: `(number, (format name, suffix number))`, no
+    /// pair for a direct `knnVectorsFormat()` (no per-field attributes).
+    written: Vec<(i32, Option<(&'static str, u32)>)>,
 }
 
 /// Merges KNN vectors across `sources` -- the port of `SegmentMerger`'s
@@ -4281,7 +4290,12 @@ fn merge_vectors(
         .map(|(f, _)| (f.number, f.name.as_str()))
         .collect();
     let format_for = |name: &str| options.knn_vectors_format_for(name);
-    let groups = per_field_knn_vectors::group_fields(&names, &format_for);
+    let groups = match names.first() {
+        Some(&(_, first)) if options.knn_vectors_direct() => {
+            per_field_knn_vectors::direct_group(&names, format_for(first))
+        }
+        _ => per_field_knn_vectors::group_fields(&names, &format_for),
+    };
     let mut out = MergedVectorFiles {
         groups: Vec::with_capacity(groups.len()),
         written: Vec::new(),
@@ -4303,7 +4317,10 @@ fn merge_vectors(
             &suffix,
         )?;
         for n in &group.field_numbers {
-            out.written.push((*n, group.format.name(), group.suffix));
+            out.written.push((
+                *n,
+                (!group.direct).then_some((group.format.name(), group.suffix)),
+            ));
         }
         out.groups.push((suffix, files));
     }

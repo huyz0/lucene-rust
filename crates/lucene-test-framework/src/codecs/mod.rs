@@ -55,3 +55,17 @@ pub fn register_postings_formats() {
     register(bloom::TestBloomFilteredLucenePostings::dictionary_format());
     register(mockrandom::MockRandomPostingsFormat::read_only());
 }
+
+/// The test framework's codecs that keep `Lucene104`'s file formats, by the
+/// name `Codec.forName` resolves (the jar's `META-INF/services` entries).
+pub const LUCENE104_FILTER_CODECS: &[&str] = &["Asserting", "CheapBastard", "ConfigurableMCodec"];
+
+/// Makes the test framework's codecs readable by name (`Codec`'s SPI), and
+/// their postings formats too ([`register_postings_formats`]). Idempotent.
+pub fn register_codecs() {
+    use lucene_codecs::codecs::{lucene104, register, renamed};
+    register_postings_formats();
+    for name in LUCENE104_FILTER_CODECS {
+        register(renamed(lucene104(), name));
+    }
+}

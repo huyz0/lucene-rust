@@ -1860,7 +1860,11 @@ impl IndexingConfig {
             let mut vectors: RawVectorFiles = Vec::new();
             if retired_vectors.is_none() {
                 for suffix in current_vector_suffixes(&seg_files, name) {
-                    let seg = format!("{name}_{suffix}");
+                    let seg = if suffix.is_empty() {
+                        name.to_string()
+                    } else {
+                        format!("{name}_{suffix}")
+                    };
                     let listed = |ext: &str| seg_files.contains(&format!("{seg}.{ext}"));
                     let pair = |a: &str, b: &str| -> Result<Option<(Vec<u8>, Vec<u8>)>> {
                         Ok(if listed(a) {
@@ -2946,6 +2950,14 @@ impl IndexingConfig {
     /// the default `Lucene90DocValuesFormat()`.
     /// `getKnnVectorsFormatForField(name)`: the routed format, or the
     /// default `Lucene99HnswVectorsFormat(hnsw_m, hnsw_beam_width)`.
+    /// [`lucene_codecs::codec::Lucene104Codec::knn_vectors_format_is_direct`]
+    /// of the configured codec.
+    pub(crate) fn knn_vectors_direct(&self) -> bool {
+        self.codec
+            .as_ref()
+            .is_some_and(|c| c.knn_vectors_format_is_direct())
+    }
+
     pub(crate) fn knn_vectors_format_for(
         &self,
         name: &str,
@@ -3054,10 +3066,12 @@ impl IndexingConfig {
         vector_fields_written: &[WrittenVectorField],
         points_fields_written: &[String],
     ) -> Vec<FieldInfo> {
+        let postings_group =
+            |number: i32| postings?.iter().find(|g| g.field_numbers.contains(&number));
+        // A direct group's fields carry no per-field attributes.
         let postings_suffix = |number: i32| -> Option<(&'static str, u32)> {
-            postings?
-                .iter()
-                .find(|g| g.field_numbers.contains(&number))
+            postings_group(number)
+                .filter(|g| !g.direct)
                 .map(|g| (g.format_name, g.suffix))
         };
         let dv_suffix = |number: i32| -> Option<u32> {
@@ -3119,7 +3133,7 @@ impl IndexingConfig {
                 // Java's segment would not list it. (With norms its column
                 // is written regardless, so the claim stays.)
                 if f.omit_norms
-                    && postings_suffix(f.number).is_none()
+                    && postings_group(f.number).is_none()
                     && self
                         .custom_freq_postings_field
                         .as_ref()
@@ -3168,14 +3182,17 @@ impl IndexingConfig {
                         lucene_codecs::field_infos::DocValuesSkipIndexType::None;
                 }
                 if let Some(written) = vector_fields_written.iter().find(|w| w.name == f.name) {
-                    f.attributes.push((
-                        per_field_knn_vectors::PER_FIELD_FORMAT_KEY.to_string(),
-                        written.format.to_string(),
-                    ));
-                    f.attributes.push((
-                        per_field_knn_vectors::PER_FIELD_SUFFIX_KEY.to_string(),
-                        written.suffix.to_string(),
-                    ));
+                    // A direct `knnVectorsFormat()` records no attributes.
+                    if !written.direct {
+                        f.attributes.push((
+                            per_field_knn_vectors::PER_FIELD_FORMAT_KEY.to_string(),
+                            written.format.to_string(),
+                        ));
+                        f.attributes.push((
+                            per_field_knn_vectors::PER_FIELD_SUFFIX_KEY.to_string(),
+                            written.suffix.to_string(),
+                        ));
+                    }
                 } else {
                     f.vector_dimension = 0;
                 }
@@ -3368,6 +3385,7 @@ impl IndexingConfig {
                     &self.vector_fields,
                     buf.docs.len() as i32,
                     &|name: &str| self.knn_vectors_format_for(name),
+                    self.knn_vectors_direct(),
                     &segment_id,
                 )?
             })
@@ -4502,6 +4520,8 @@ pub(crate) struct WrittenVectorField {
     pub(crate) name: String,
     pub(crate) format: &'static str,
     pub(crate) suffix: u32,
+    /// Written by a direct `knnVectorsFormat()`: no per-field attributes.
+    pub(crate) direct: bool,
 }
 
 /// One doc-values field's whole dense column, owned, so the multi-field
@@ -4673,6 +4693,17 @@ pub fn per_field_codec_suffix(format: &str) -> String {
     format!("{format}_{PER_FIELD_SUFFIX}")
 }
 
+/// `IndexFileNames.segmentFileName(segmentName, segmentSuffix, ext)`:
+/// `_0_<suffix>.ext`, or `_0.ext` for an empty suffix (a format that is a
+/// codec's own, not a per-field instance).
+pub fn segment_file_name(segment_name: &str, suffix: &str, ext: &str) -> String {
+    if suffix.is_empty() {
+        format!("{segment_name}.{ext}")
+    } else {
+        format!("{segment_name}_{suffix}.{ext}")
+    }
+}
+
 /// The suffixed segment name a per-field format's files are written under.
 pub fn per_field_segment(segment_name: &str, format: &str) -> String {
     format!("{segment_name}_{}", per_field_codec_suffix(format))
@@ -4696,6 +4727,10 @@ fn postings_file_base(seg_files: &[String], segment_name: &str) -> (String, Stri
         .iter()
         .filter_map(|f| f.strip_suffix(".tim"))
         .find_map(|stem| {
+            if stem == segment_name {
+                // A codec's direct postings format (`CheapBastard`): no suffix.
+                return Some((stem.to_string(), String::new()));
+            }
             stem.strip_prefix(&prefix)
                 .map(|suffix| (stem.to_string(), suffix.to_string()))
         })
@@ -4718,7 +4753,12 @@ pub(crate) fn current_vector_suffixes(seg_files: &[String], segment_name: &str) 
     let mut out: Vec<String> = seg_files
         .iter()
         .filter_map(|f| {
-            let suffix = f.strip_suffix(".vemf")?.strip_prefix(&prefix)?;
+            let stem = f.strip_suffix(".vemf")?;
+            if stem == segment_name {
+                // The format itself, not per-field (`ConfigurableMCodec`).
+                return Some(String::new());
+            }
+            let suffix = stem.strip_prefix(&prefix)?;
             let (format, n) = suffix.rsplit_once('_')?;
             let current = [
                 per_field_knn_vectors::HNSW_NAME,
@@ -4968,20 +5008,41 @@ impl<'d> IndexWriter<'d> {
     /// An optional same-wire live-docs writer handles subsequent deletions;
     /// the index layer retains generation advancement, sync and cleanup.
     ///
-    /// The codec's name must be the one this port writes (`Lucene104`);
-    /// anything else is refused, as this writer has no other codec's formats.
+    /// The codec's name must be the one this port writes (`Lucene104`), or
+    /// the name of a `FilterCodec` that keeps `Lucene104`'s file formats and
+    /// is [registered](lucene_codecs::codecs::register) as such
+    /// (`CheapBastard`, `Asserting`, ...): new segments then record that name,
+    /// as Java's would, and `None` returns to `Lucene104`. Anything else is
+    /// refused, as this writer has no other codec's formats.
     pub fn set_codec(
         &mut self,
         codec: Option<std::sync::Arc<dyn lucene_codecs::codec::Lucene104Codec>>,
     ) -> Result<()> {
-        if let Some(c) = &codec {
-            if c.name() != self.cfg.codec_name {
+        use lucene_codecs::codecs;
+        let lucene104_like = |name: &str| {
+            codecs::for_name(name).is_some_and(|c| {
+                codecs::renamed(c, codecs::lucene104().name) == *codecs::lucene104()
+            })
+        };
+        let name = match &codec {
+            Some(c) if c.name() == self.cfg.codec_name => None,
+            Some(c) if lucene104_like(&self.cfg.codec_name) && lucene104_like(c.name()) => {
+                Some(c.name().to_string())
+            }
+            Some(c) => {
                 return Err(Error::Explicit(format!(
                     "codec {:?} is not the codec this writer writes ({:?})",
                     c.name(),
                     self.cfg.codec_name
                 )));
             }
+            None if lucene104_like(&self.cfg.codec_name) => {
+                Some(codecs::lucene104().name.to_string())
+            }
+            None => None,
+        };
+        if let Some(name) = name {
+            self.cfg_mut().codec_name = name;
         }
         self.cfg_mut().codec = codec;
         Ok(())
@@ -9379,6 +9440,7 @@ impl IndexWriter<'_> {
         configs: &[VectorFieldConfig],
         max_doc: i32,
         format_for: &dyn Fn(&str) -> per_field_knn_vectors::KnnVectorsFormat,
+        direct: bool,
         segment_id: &[u8; ID_LENGTH],
     ) -> Result<Option<VectorsOutput>> {
         debug_assert_eq!(
@@ -9453,7 +9515,12 @@ impl IndexWriter<'_> {
             return Ok(None);
         }
         let name_refs: Vec<(i32, &str)> = names.iter().map(|(n, s)| (*n, s.as_str())).collect();
-        let groups = per_field_knn_vectors::group_fields(&name_refs, format_for);
+        let groups = match name_refs.first() {
+            Some(&(_, first)) if direct => {
+                per_field_knn_vectors::direct_group(&name_refs, format_for(first))
+            }
+            _ => per_field_knn_vectors::group_fields(&name_refs, format_for),
+        };
 
         let mut output = VectorsOutput {
             groups: Vec::with_capacity(groups.len()),
@@ -9475,6 +9542,7 @@ impl IndexWriter<'_> {
                         name: name.clone(),
                         format: group.format.name(),
                         suffix: group.suffix,
+                        direct: group.direct,
                     });
                 }
             }
@@ -9728,7 +9796,7 @@ impl IndexWriter<'_> {
         let mut names = Vec::new();
         for group in &output.groups {
             for (ext, data) in &group.files {
-                let name = format!("{segment_name}_{}.{ext}", group.suffix);
+                let name = segment_file_name(segment_name, &group.suffix, ext);
                 write_file(dir, &name, data)?;
                 names.push(name);
             }
@@ -9812,13 +9880,12 @@ impl IndexWriter<'_> {
                 names.extend(group.written_files.iter().cloned());
                 continue;
             }
-            let seg = format!("{segment_name}_{}", group.codec_suffix());
             // `.pos`/`.pay` only exist when some field of the segment indexes
             // positions/offsets; `GroupOutput::files` leaves the empty ones
             // out, so no dangling name reaches `si.files`. A completion
             // group's `.lkp`/`.cmp` (`CompletionFieldsConsumer`) come last.
             for (ext, bytes) in group.files() {
-                let name = format!("{seg}.{ext}");
+                let name = group.file_name(segment_name, ext);
                 write_file(dir, &name, bytes)?;
                 names.push(name);
             }

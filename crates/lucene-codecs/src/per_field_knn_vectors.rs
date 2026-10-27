@@ -159,14 +159,37 @@ pub struct Group {
     pub format: KnnVectorsFormat,
     pub suffix: u32,
     pub field_numbers: Vec<i32>,
+    /// The codec's `knnVectorsFormat()` itself, not a per-field instance
+    /// ([`direct_group`]): no codec suffix, no per-field attributes.
+    pub direct: bool,
 }
 
 impl Group {
     /// `PerFieldKnnVectorsFormat.getSuffix(formatName, suffix)`: the codec
-    /// suffix this instance's files and headers carry.
+    /// suffix this instance's files and headers carry; none for a
+    /// [`direct`](Self::direct) group.
     pub fn codec_suffix(&self) -> String {
-        format!("{}_{}", self.format.name(), self.suffix)
+        if self.direct {
+            String::new()
+        } else {
+            format!("{}_{}", self.format.name(), self.suffix)
+        }
     }
+}
+
+/// A codec whose `knnVectorsFormat()` is `format` itself: every one of
+/// `fields` (`(number, name)`) in one unsuffixed group, none when there are
+/// no fields.
+pub fn direct_group(fields: &[(i32, &str)], format: KnnVectorsFormat) -> Vec<Group> {
+    if fields.is_empty() {
+        return Vec::new();
+    }
+    vec![Group {
+        format,
+        suffix: 0,
+        field_numbers: fields.iter().map(|&(number, _)| number).collect(),
+        direct: true,
+    }]
 }
 
 /// `FieldsWriter.getInstance` over `fields` (`(number, name)`) in the order
@@ -191,6 +214,7 @@ pub fn group_fields(
                     format,
                     suffix: u32::try_from(same_name).unwrap_or(u32::MAX),
                     field_numbers: vec![number],
+                    direct: false,
                 });
             }
         }
@@ -229,6 +253,11 @@ mod tests {
             ]
         );
         assert!(group_fields(&[], &route).is_empty());
+        let direct = direct_group(&[(0, "b"), (2, "c")], small);
+        assert_eq!(direct.len(), 1);
+        assert_eq!(direct[0].codec_suffix(), "");
+        assert_eq!(direct[0].field_numbers, vec![0, 2]);
+        assert!(direct_group(&[], small).is_empty());
     }
 
     #[test]
