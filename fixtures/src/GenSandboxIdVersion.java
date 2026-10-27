@@ -39,12 +39,12 @@ import org.apache.lucene.index.IndexOptions;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
 import org.apache.lucene.index.LeafReader;
+import org.apache.lucene.index.LogDocMergePolicy;
 import org.apache.lucene.index.NoMergePolicy;
 import org.apache.lucene.index.PostingsEnum;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.index.Terms;
 import org.apache.lucene.index.TermsEnum;
-import org.apache.lucene.index.TieredMergePolicy;
 import org.apache.lucene.sandbox.codecs.idversion.IDVersionPostingsFormat;
 import org.apache.lucene.sandbox.codecs.idversion.IDVersionSegmentTermsEnum;
 import org.apache.lucene.store.Directory;
@@ -153,11 +153,13 @@ public class GenSandboxIdVersion {
     PostingsFormat id2Format = new IDVersionPostingsFormat(4, 9);
     IndexWriterConfig cfg = new IndexWriterConfig();
     cfg.setUseCompoundFile(false);
-    // No natural merges; forceMerge(1) still merges under a TieredMergePolicy.
-    TieredMergePolicy tmp = new TieredMergePolicy();
-    tmp.setSegmentsPerTier(50);
-    tmp.setNoCFSRatio(0.0);
-    cfg.setMergePolicy(merged ? tmp : NoMergePolicy.INSTANCE);
+    // No natural merges; forceMerge(1) still merges, keeping the segments in
+    // order (TieredMergePolicy orders them by byte size, and the .si
+    // diagnostics make that machine-dependent).
+    LogDocMergePolicy mp = new LogDocMergePolicy();
+    mp.setMergeFactor(1000);
+    mp.setNoCFSRatio(0.0);
+    cfg.setMergePolicy(merged ? mp : NoMergePolicy.INSTANCE);
     cfg.setMaxBufferedDocs(100000);
     cfg.setRAMBufferSizeMB(256);
     cfg.setCodec(
