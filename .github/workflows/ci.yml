@@ -38,6 +38,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The coverage build's test binaries (lucene-test-framework alone has
+      # dozens, each with full debug info) outgrew the runner's free disk:
+      # rustc died with "No space left on device". Drop the preinstalled
+      # toolsets this job never uses (~30 GB on the x64 image).
+      - name: Free runner disk space
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
+            /usr/share/swift /usr/local/julia* /opt/microsoft || true
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          df -h / | tail -1
+
       # No toolchain action: rust-toolchain.toml pins the version and its
       # components, and rustup installs it on the first cargo invocation. That
       # keeps CI honest -- if the pin is wrong, this is where it shows up.
