@@ -1,13 +1,16 @@
 //! Writes an index through `IndexWriter` with one of the test framework's
 //! `Lucene104` filter codecs installed (`IndexWriter::set_codec`), for
 //! `VerifyFilterCodecs`: `CheapBastard` (its direct
-//! `Lucene104PostingsFormat(100, 200)`) or `ConfigurableMCodec` (its direct
-//! `Lucene99HnswVectorsFormat(128, 100)`).
+//! `Lucene104PostingsFormat(100, 200)`), `ConfigurableMCodec` (its direct
+//! `Lucene99HnswVectorsFormat(128, 100)`) or `Asserting` (its `Asserting`
+//! postings, doc-values and vectors formats over the defaults, and asserting
+//! writers for everything else).
 //!
 //! Three flushed segments of [`PER_SEGMENT`] documents, `d5` and `d150`
 //! deleted, then a force-merge to one when `merge` is asked for. Every
-//! segment records the codec's name, and the direct format's files have no
-//! codec suffix (`_0.tim`, `_0.vec`).
+//! segment records the codec's name; a direct format's files have no codec
+//! suffix (`_0.tim`, `_0.vec`), `Asserting`'s carry its name
+//! (`_0_Asserting_0.tim`).
 //!
 //! Usage: `write_filter_codecs_fixture <output-dir> [<codec> [merge]]`; with
 //! no codec, every one of [`CODECS`] into `<output-dir>/<codec>/flushed` and
@@ -28,11 +31,12 @@ use lucene_index::document::{
 use lucene_index::index_writer::IndexWriter;
 use lucene_index::segment_info::LuceneVersion;
 use lucene_store::Directory;
+use lucene_test_framework::codecs::asserting_installed::InstalledAssertingCodec;
 use lucene_test_framework::codecs::cheap_bastard::CheapBastardCodec;
 use lucene_test_framework::codecs::configurable_m::ConfigurableMCodec;
 
 /// The installable filter codecs, by name.
-pub const CODECS: [&str; 2] = ["CheapBastard", "ConfigurableMCodec"];
+pub const CODECS: [&str; 3] = ["CheapBastard", "ConfigurableMCodec", "Asserting"];
 
 /// Documents per flushed segment.
 pub const PER_SEGMENT: usize = 100;
@@ -54,6 +58,7 @@ pub fn codec(name: &str) -> Arc<dyn Lucene104Codec> {
     match name {
         "CheapBastard" => Arc::new(CheapBastardCodec::new()),
         "ConfigurableMCodec" => Arc::new(ConfigurableMCodec::new()),
+        "Asserting" => Arc::new(InstalledAssertingCodec::new()),
         other => panic!("no installable filter codec {other:?}"),
     }
 }

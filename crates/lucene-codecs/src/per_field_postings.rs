@@ -181,6 +181,10 @@ pub struct Lucene104PostingsFormat {
     /// carry no codec suffix and its fields no `PerFieldPostingsFormat`
     /// attributes. See [`Lucene104PostingsFormat::direct`].
     pub direct: bool,
+    /// The name of a format that wraps this one without changing its files
+    /// (`AssertingPostingsFormat`'s `Asserting`), recorded in place of
+    /// [`FORMAT_NAME`]. See [`Lucene104PostingsFormat::named`].
+    pub wrapper_name: Option<&'static str>,
 }
 
 impl Default for Lucene104PostingsFormat {
@@ -191,6 +195,7 @@ impl Default for Lucene104PostingsFormat {
             max_term_block_size: options.max_items_in_block,
             kind: PostingsFormatKind::Lucene104,
             direct: false,
+            wrapper_name: None,
         }
     }
 }
@@ -207,6 +212,7 @@ impl Lucene104PostingsFormat {
             max_term_block_size,
             kind: PostingsFormatKind::Lucene104,
             direct: false,
+            wrapper_name: None,
         };
         format.write_options().validate()?;
         Ok(format)
@@ -269,9 +275,24 @@ impl Lucene104PostingsFormat {
         }
     }
 
+    /// This format's files under a wrapping format's name, as
+    /// `AssertingPostingsFormat` writes its `Lucene104PostingsFormat`
+    /// delegate's: fields record `name` and its group's files carry it
+    /// (`_0_Asserting_0.tim`). Readers find the files by their extensions,
+    /// whatever the name.
+    pub fn named(self, name: &'static str) -> Self {
+        Lucene104PostingsFormat {
+            wrapper_name: Some(name),
+            ..self
+        }
+    }
+
     /// `getName()`: the name recorded in a field's
     /// [`PER_FIELD_FORMAT_KEY`] and the stem of its codec suffix.
     pub fn name(&self) -> &'static str {
+        if let Some(name) = self.wrapper_name {
+            return name;
+        }
         match self.kind {
             PostingsFormatKind::Lucene104 => FORMAT_NAME,
             PostingsFormatKind::Completion104 => COMPLETION_FORMAT_NAME,

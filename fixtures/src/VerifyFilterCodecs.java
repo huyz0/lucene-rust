@@ -30,20 +30,26 @@ import java.util.function.IntPredicate;
 
 /**
  * Verifies {@code crates/lucene-test-framework/examples/write_filter_codecs_fixture.rs}:
- * for each of the test framework's {@code CheapBastard} and {@code ConfigurableMCodec},
+ * for each of the test framework's {@code CheapBastard}, {@code ConfigurableMCodec} and
+ * {@code Asserting},
  * {@code <dir>/<codec>/flushed} (three segments, {@code d5} and {@code d150} deleted) and
  * {@code <dir>/<codec>/merged} (the same force-merged into one) were written by this port's
  * IndexWriter with the codec installed. Lucene must find the codec's name on every segment,
  * read it through that codec ({@code Codec.forName}, from the test framework's SPI), find
  * the direct format's files without a codec suffix and its fields without per-field
- * attributes, see every document, term, doc value and vector, and pass CheckIndex.
+ * attributes ({@code Asserting}: every field's postings, doc values and vectors in one
+ * {@code Asserting_0} instance of each), see every document, term, doc value and vector, and
+ * pass CheckIndex.
  *
  * <p>Then Lucene appends documents 300..399 to each {@code merged} index with its own
  * IndexWriter under the same codec (a compound segment, no merge) and checks again, leaving
  * the index for {@code filter_codecs_write_path::java_written_segments} to read and merge.
  */
 public class VerifyFilterCodecs {
-  static final String[] CODECS = {"CheapBastard", "ConfigurableMCodec"};
+  static final String[] CODECS = {"CheapBastard", "ConfigurableMCodec", "Asserting"};
+  static final String[] PER_FIELD_KEYS = {
+    "PerFieldPostingsFormat.format", "PerFieldDocValuesFormat.format", "PerFieldKnnVectorsFormat.format"
+  };
   static final int PER_SEGMENT = 100;
 
   public static void main(String[] args) throws Exception {
@@ -110,7 +116,11 @@ public class VerifyFilterCodecs {
           throw new AssertionError(path + ": segment " + sci.info.name + " has codec "
               + sci.info.getCodec().getName());
         }
-        String direct = codec.equals("CheapBastard") ? ".tim" : ".vemf";
+        String direct = switch (codec) {
+          case "CheapBastard" -> ".tim";
+          case "ConfigurableMCodec" -> ".vemf";
+          default -> "_Asserting_0.tim";
+        };
         String name = sci.info.name + direct;
         if (!sci.files().contains(name) && !sci.info.getUseCompoundFile()) {
           throw new AssertionError(path + ": no " + name + " in " + sci.files());
@@ -145,8 +155,25 @@ public class VerifyFilterCodecs {
         for (LeafReaderContext ctx : reader.leaves()) {
           LeafReader leaf = ctx.reader();
           for (FieldInfo fi : leaf.getFieldInfos()) {
-            if (fi.getAttribute(directKey) != null) {
+            if (codec.equals("Asserting")) {
+              for (String key : PER_FIELD_KEYS) {
+                String format = fi.getAttribute(key);
+                if (format != null && !format.equals("Asserting")) {
+                  throw new AssertionError(path + ": " + fi.name + " has " + fi.attributes());
+                }
+              }
+            } else if (fi.getAttribute(directKey) != null) {
               throw new AssertionError(path + ": " + fi.name + " has " + fi.attributes());
+            }
+          }
+          if (codec.equals("Asserting")) {
+            FieldInfo body = leaf.getFieldInfos().fieldInfo("body");
+            FieldInfo n = leaf.getFieldInfos().fieldInfo("n");
+            FieldInfo v = leaf.getFieldInfos().fieldInfo("v");
+            if (!"Asserting".equals(body.getAttribute(PER_FIELD_KEYS[0]))
+                || !"Asserting".equals(n.getAttribute(PER_FIELD_KEYS[1]))
+                || !"Asserting".equals(v.getAttribute(PER_FIELD_KEYS[2]))) {
+              throw new AssertionError(path + ": per-field formats are not Asserting");
             }
           }
           if (leaf.getFloatVectorValues("v").size() != leaf.maxDoc()) {

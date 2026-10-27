@@ -46,10 +46,18 @@ pub struct Group {
     pub field_numbers: Vec<i32>,
 }
 
+impl Group {
+    /// `PerFieldDocValuesFormat.getSuffix(formatName, suffix)`: the codec
+    /// suffix this instance's files and headers carry.
+    pub fn codec_suffix(&self) -> String {
+        format!("{}_{}", self.format.name(), self.suffix)
+    }
+}
+
 /// `FieldsWriter.getInstance` over `fields` (`(number, name)`) in the order
 /// the consumer receives them: each field joins the group of
 /// `format_for(name)`, a new format opening the next group, numbered from 0
-/// in order of first appearance.
+/// in order of first appearance among the groups of its format name.
 pub fn group_fields(
     fields: &[(i32, &str)],
     format_for: &dyn Fn(&str) -> Lucene90DocValuesFormat,
@@ -60,7 +68,11 @@ pub fn group_fields(
         match groups.iter_mut().find(|g| g.format == format) {
             Some(group) => group.field_numbers.push(number),
             None => {
-                let suffix = u32::try_from(groups.len()).unwrap_or(u32::MAX);
+                let same_name = groups
+                    .iter()
+                    .filter(|g| g.format.name() == format.name())
+                    .count();
+                let suffix = u32::try_from(same_name).unwrap_or(u32::MAX);
                 groups.push(Group {
                     suffix,
                     format,

@@ -4,7 +4,9 @@
 //! `Lucene104PostingsFormat(100, 200)` and `ConfigurableMCodec` every
 //! field's vectors with its direct `Lucene99HnswVectorsFormat(128, 100)`.
 //! Both direct formats' files carry no codec suffix and their fields no
-//! per-field attributes, flushed and merged alike, as Java writes them; every
+//! per-field attributes, flushed and merged alike, as Java writes them.
+//! `Asserting` routes every field to its `Asserting` postings, doc-values
+//! and vectors formats, whose files and attributes carry that name; every
 //! segment records the codec's name; CheckIndex passes and the reader serves
 //! every term, document and vector. `VerifyFilterCodecs` (verify-write-path)
 //! has Lucene read the same indexes; [`java_written_segments`] reads
@@ -19,7 +21,7 @@ mod fixture;
 use lucene_codecs::compound_format;
 use lucene_codecs::hnsw_vectors::HnswVectorsReader;
 use lucene_codecs::stored_fields::FieldValue;
-use lucene_codecs::{per_field_knn_vectors, per_field_postings};
+use lucene_codecs::{per_field_doc_values, per_field_knn_vectors, per_field_postings};
 use lucene_index::index_writer::IndexWriter;
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::{search_term_query, TermQuery, VecCollector};
@@ -158,6 +160,36 @@ fn check_segments(dir: &dyn Directory, codec: &str) {
                 assert!(!names.iter().any(|f| f.contains("_Lucene104_")));
                 assert!(!attr(per_field_postings::PER_FIELD_FORMAT_KEY));
                 assert!(attr(per_field_knn_vectors::PER_FIELD_FORMAT_KEY));
+            }
+            "Asserting" => {
+                // One `Asserting` instance per per-field format, named so.
+                let group = format!("{name}_Asserting_0");
+                for ext in [
+                    "tim", "tip", "tmd", "doc", "pos", "psm", "dvd", "dvm", "vec", "vemf", "vem",
+                    "vex",
+                ] {
+                    assert!(has(&format!("{group}.{ext}")), "{group}.{ext} in {names:?}");
+                }
+                assert!(!names.iter().any(|f| f.contains("_Lucene")), "{names:?}");
+                for key in [
+                    per_field_postings::PER_FIELD_FORMAT_KEY,
+                    per_field_doc_values::PER_FIELD_FORMAT_KEY,
+                    per_field_knn_vectors::PER_FIELD_FORMAT_KEY,
+                ] {
+                    let values: Vec<&str> = seg
+                        .field_infos()
+                        .fields
+                        .iter()
+                        .flat_map(|f| f.attributes.iter())
+                        .filter(|(k, _)| k == key)
+                        .map(|(_, v)| v.as_str())
+                        .collect();
+                    assert!(!values.is_empty(), "{key}");
+                    assert!(
+                        values.iter().all(|v| *v == "Asserting"),
+                        "{key}: {values:?}"
+                    );
+                }
             }
             _ => {
                 for ext in ["vec", "vemf", "vem", "vex"] {

@@ -945,6 +945,8 @@ pub(crate) fn sort_doc_values_type(sf: &segment_info::IndexSortField) -> DocValu
 /// One `PerFieldDocValuesFormat` instance's files for a flushed segment:
 /// its suffix number, its fields, and its `.dvm`/`.dvd`/`.dvs`.
 pub(crate) struct DocValuesGroupOutput {
+    /// The instance's format name (`PerFieldDocValuesFormat.format`).
+    pub(crate) format_name: &'static str,
     pub(crate) suffix: u32,
     pub(crate) field_numbers: Vec<i32>,
     pub(crate) dvm: Vec<u8>,
@@ -3037,6 +3039,7 @@ impl IndexingConfig {
                     group.format,
                 )?;
                 Ok(DocValuesGroupOutput {
+                    format_name: group.format.name(),
                     suffix: group.suffix,
                     field_numbers: group.field_numbers,
                     dvm,
@@ -3074,11 +3077,11 @@ impl IndexingConfig {
                 .filter(|g| !g.direct)
                 .map(|g| (g.format_name, g.suffix))
         };
-        let dv_suffix = |number: i32| -> Option<u32> {
+        let dv_suffix = |number: i32| -> Option<(&'static str, u32)> {
             doc_values?
                 .iter()
                 .find(|g| g.field_numbers.contains(&number))
-                .map(|g| g.suffix)
+                .map(|g| (g.format_name, g.suffix))
         };
 
         self.fields
@@ -3205,10 +3208,10 @@ impl IndexingConfig {
                     f.point_index_dimension_count = 0;
                     f.point_num_bytes = 0;
                 }
-                if let Some(suffix) = dv_suffix(f.number) {
+                if let Some((format_name, suffix)) = dv_suffix(f.number) {
                     f.attributes.push((
                         per_field_doc_values::PER_FIELD_FORMAT_KEY.to_string(),
-                        DOC_VALUES_FORMAT_NAME.to_string(),
+                        format_name.to_string(),
                     ));
                     f.attributes.push((
                         per_field_doc_values::PER_FIELD_SUFFIX_KEY.to_string(),
@@ -4760,12 +4763,9 @@ pub(crate) fn current_vector_suffixes(seg_files: &[String], segment_name: &str) 
             }
             let suffix = stem.strip_prefix(&prefix)?;
             let (format, n) = suffix.rsplit_once('_')?;
-            let current = [
-                per_field_knn_vectors::HNSW_NAME,
-                lucene_codecs::scalar_quantized_vectors::HNSW_NAME,
-                lucene_codecs::scalar_quantized_vectors::NAME,
-            ];
-            (current.contains(&format) && n.parse::<u32>().is_ok()).then(|| suffix.to_string())
+            // A current format, or a registered wrapper of one (`Asserting`).
+            (per_field_knn_vectors::for_name(format).is_some() && n.parse::<u32>().is_ok())
+                .then(|| suffix.to_string())
         })
         .collect();
     out.sort();
@@ -8975,7 +8975,11 @@ impl IndexWriter<'_> {
             .map(|c| c.field_number)
             .collect();
         // The one-field builders write the first instance's suffix.
-        if configs.len() == 1 && skip_indexes.is_empty() && suffix == 0 {
+        if configs.len() == 1
+            && skip_indexes.is_empty()
+            && suffix == 0
+            && format.name() == per_field_doc_values::Lucene90DocValuesFormat::NAME
+        {
             let config = &configs[0];
             return match config.doc_values_type {
                 DocValuesType::Binary => {
@@ -9005,7 +9009,7 @@ impl IndexWriter<'_> {
             &skip_indexes,
             docs.len() as i32,
             segment_id,
-            &per_field_doc_values::codec_suffix(suffix),
+            &format!("{}_{suffix}", format.name()),
             format,
         )?)
     }
@@ -9812,10 +9816,7 @@ impl IndexWriter<'_> {
         segment_name: &str,
         group: &DocValuesGroupOutput,
     ) -> Result<Vec<String>> {
-        let seg = format!(
-            "{segment_name}_{}",
-            per_field_doc_values::codec_suffix(group.suffix)
-        );
+        let seg = format!("{segment_name}_{}_{}", group.format_name, group.suffix);
         let names = vec![
             format!("{seg}.dvm"),
             format!("{seg}.dvd"),

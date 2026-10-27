@@ -293,7 +293,6 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::index_writer::DOC_VALUES_FORMAT_NAME;
 use crate::segment_info::{self, IndexSortField, LuceneVersion, SegmentInfo, SortKeyComparator};
 use crate::segment_infos::SegmentCommitInfo;
 use lucene_codecs::blocktree::{self, FieldTerms};
@@ -1490,7 +1489,7 @@ fn concat_doc_order(per_source_live_ids: &[Vec<i32>]) -> Vec<(usize, i32)> {
 fn describe_written_files(
     merged_fields: &mut [FieldInfo],
     postings_suffixes: &[(i32, &'static str, u32)],
-    doc_values_suffixes: &[(i32, u32)],
+    doc_values_suffixes: &[(i32, &'static str, u32)],
     wrote_term_vectors: bool,
     vector_fields: &[(i32, Option<(&'static str, u32)>)],
     _points_field_numbers: &[i32],
@@ -1516,10 +1515,12 @@ fn describe_written_files(
                 suffix.to_string(),
             ));
         }
-        if let Some((_, suffix)) = doc_values_suffixes.iter().find(|(n, _)| *n == f.number) {
+        if let Some((_, format_name, suffix)) =
+            doc_values_suffixes.iter().find(|(n, _, _)| *n == f.number)
+        {
             f.attributes.push((
                 "PerFieldDocValuesFormat.format".to_string(),
-                DOC_VALUES_FORMAT_NAME.to_string(),
+                format_name.to_string(),
             ));
             f.attributes.push((
                 "PerFieldDocValuesFormat.suffix".to_string(),
@@ -2491,9 +2492,13 @@ fn merge_segments_mapped_inner(
         let format_for = |name: &str| options.doc_values_format_for(name);
         per_field_doc_values::group_fields(&fields, &format_for)
     };
-    let doc_values_suffixes: Vec<(i32, u32)> = doc_values_groups
+    let doc_values_suffixes: Vec<(i32, &'static str, u32)> = doc_values_groups
         .iter()
-        .flat_map(|g| g.field_numbers.iter().map(move |&n| (n, g.suffix)))
+        .flat_map(|g| {
+            g.field_numbers
+                .iter()
+                .map(move |&n| (n, g.format.name(), g.suffix))
+        })
         .collect();
     if !installed_segment_writer {
         write_stored(&mut files)?;
@@ -2598,7 +2603,7 @@ fn merge_segments_mapped_inner(
             })
             .map(|f| f.number)
             .collect();
-        let codec_suffix = per_field_doc_values::codec_suffix(group.suffix);
+        let codec_suffix = group.codec_suffix();
         let (dvm, dvd, dvs) = doc_values::write_fields_with_format(
             &dense_fields,
             &skip_indexes,
@@ -5455,8 +5460,8 @@ mod tests {
     #![allow(clippy::arithmetic_side_effects)]
 
     use super::*;
-    use crate::index_writer::POSTINGS_FORMAT_NAME;
     use crate::index_writer::{per_field_codec_suffix, per_field_segment, PER_FIELD_SUFFIX};
+    use crate::index_writer::{DOC_VALUES_FORMAT_NAME, POSTINGS_FORMAT_NAME};
     use crate::segment_writer;
     use lucene_codecs::field_infos::{
         DocValuesSkipIndexType, DocValuesType, IndexOptions, VectorEncoding,
@@ -16158,7 +16163,14 @@ mod tests {
     fn a_merged_doc_values_field_gets_its_per_field_format_attributes() {
         let mut fields = vec![field("score", 0)];
         fields[0].doc_values_type = DocValuesType::Numeric;
-        describe_written_files(&mut fields, &[], &[(0, 0)], false, &[], &[]);
+        describe_written_files(
+            &mut fields,
+            &[],
+            &[(0, DOC_VALUES_FORMAT_NAME, 0)],
+            false,
+            &[],
+            &[],
+        );
         assert!(fields[0].attributes.contains(&(
             "PerFieldDocValuesFormat.format".to_string(),
             DOC_VALUES_FORMAT_NAME.to_string()
