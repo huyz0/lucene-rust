@@ -4,7 +4,7 @@
 //! exactly which documents it hits.
 //!
 //! The documents are written as Java writes them: `newStringField` and
-//! `newTextField`'s random field types ([`NewFields`]), through a
+//! `newTextField`'s random field types ([`FieldTypes`]), through a
 //! `RandomIndexWriter` under a random configuration with a random
 //! `LogMergePolicy` ([`TestIndex::write_random_with`]), searched through a
 //! `newSearcher` ([`NewSearcher`]). Differs: the codec is the default (the
@@ -28,7 +28,7 @@ use crate::index::index_writer_config::{
 };
 use crate::index::random_index_writer::RandomIndexWriter;
 use crate::util::lucene_test_case;
-use crate::util::new_field::NewFields;
+use crate::util::lucene_test_case::{new_string_field, new_text_field, FieldTypes, FieldValue};
 
 /// `KEY`: each document's number, as a string field and sorted doc values.
 pub const KEY: &str = "KEY";
@@ -48,18 +48,36 @@ pub const DOC_FIELDS: [&str; 4] = [
 /// `createDoc(index)`, its fields of `newStringField`/`newTextField`'s
 /// random types.
 pub fn create_random_doc(
-    fields: &mut NewFields,
+    fields: &mut FieldTypes,
     random: &mut JavaRandom,
     index: usize,
 ) -> Document {
     let mut doc = Document::new();
-    doc.add(fields.new_string_field(random, KEY, &index.to_string(), Store::No));
+    doc.add(new_string_field(
+        random,
+        fields,
+        KEY,
+        FieldValue::String(&index.to_string()),
+        Store::No,
+    ));
     doc.add(SortedDocValuesField::new(
         KEY,
         index.to_string().into_bytes(),
     ));
-    doc.add(fields.new_text_field(random, FIELD, DOC_FIELDS[index], Store::No));
-    doc.add(fields.new_text_field(random, ALTFIELD, DOC_FIELDS[index], Store::No));
+    doc.add(new_text_field(
+        random,
+        fields,
+        FIELD,
+        DOC_FIELDS[index],
+        Store::No,
+    ));
+    doc.add(new_text_field(
+        random,
+        fields,
+        ALTFIELD,
+        DOC_FIELDS[index],
+        Store::No,
+    ));
     doc
 }
 
@@ -121,7 +139,7 @@ impl BaseExplanation {
             },
             &[FIELD, ALTFIELD],
             |w, random| {
-                let mut fields = NewFields::new();
+                let mut fields = FieldTypes::default();
                 for i in 0..DOC_FIELDS.len() {
                     let doc = create_random_doc(&mut fields, random, i);
                     w.add_document(&doc).expect("addDocument");

@@ -488,20 +488,34 @@ fn classic_is_named_as_java() {
 #[test]
 fn new_field_types_are_javas() {
     use lucene_index::document::{IndexableField, Store};
-    use lucene_test_framework::util::new_field::NewFields;
+    use lucene_test_framework::util::lucene_test_case::{
+        new_string_field, new_text_field, FieldTypes, FieldValue,
+    };
     let mut l = DATA.lines().filter(|l| l.starts_with("nf")).peekable();
     let mut seeds = 0;
     while l.peek().is_some() {
-        let mut fields = NewFields::new();
+        let mut fields = FieldTypes::default();
         let first: Vec<&str> = l.peek().expect("a line").split(' ').collect();
         let seed: i64 = first[1].parse().expect("seed");
         let mut r = JavaRandom::new(seed);
         let made = [
-            fields.new_string_field(&mut r, &format!("s{seed}"), "v", Store::No),
-            fields.new_text_field(&mut r, &format!("t{seed}"), "a b", Store::No),
-            fields.new_text_field(&mut r, &format!("t{seed}"), "c d", Store::Yes),
-            fields.new_string_field(&mut r, &format!("ss{seed}"), "v", Store::Yes),
-            fields.new_text_field(&mut r, &format!("ts{seed}"), "a b", Store::Yes),
+            new_string_field(
+                &mut r,
+                &mut fields,
+                &format!("s{seed}"),
+                FieldValue::String("v"),
+                Store::No,
+            ),
+            new_text_field(&mut r, &mut fields, &format!("t{seed}"), "a b", Store::No),
+            new_text_field(&mut r, &mut fields, &format!("t{seed}"), "c d", Store::Yes),
+            new_string_field(
+                &mut r,
+                &mut fields,
+                &format!("ss{seed}"),
+                FieldValue::String("v"),
+                Store::Yes,
+            ),
+            new_text_field(&mut r, &mut fields, &format!("ts{seed}"), "a b", Store::Yes),
         ];
         for f in &made {
             let t = f.field_type();
@@ -520,9 +534,9 @@ fn new_field_types_are_javas() {
             format!("nftail {seed} {}", r.next_long()),
             l.next().expect("a tail line")
         );
-        assert!(fields.field_type(&format!("t{seed}")).is_some());
+        assert!(fields.get(&format!("t{seed}")).is_some());
         fields.clear();
-        assert!(fields.field_type(&format!("t{seed}")).is_none());
+        assert!(fields.get(&format!("t{seed}")).is_none());
         seeds += 1;
     }
     assert_eq!(seeds, 40);

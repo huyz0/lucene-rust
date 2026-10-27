@@ -4,7 +4,7 @@
 //! named matches, term matches.
 //!
 //! The documents are written as Java writes them: `newField`'s random field
-//! types ([`NewFields`]), through a `RandomIndexWriter` under a random
+//! types ([`FieldTypes`]), through a `RandomIndexWriter` under a random
 //! configuration with a random `LogMergePolicy`, force-merged to one
 //! segment and searched through a `newSearcher` ([`NewSearcher`]) under its
 //! asserting wrappers. `NamedQuery` has no `Clause` here, so [`MatchesTestBase::check_sub_matches`]
@@ -31,7 +31,7 @@ use crate::index::index_writer_config::{
 };
 use crate::index::random_index_writer::RandomIndexWriter;
 use crate::util::lucene_test_case;
-use crate::util::new_field::NewFields;
+use crate::util::lucene_test_case::{new_field, FieldTypes, FieldValue};
 
 /// `FIELD_WITH_OFFSETS`.
 pub const FIELD_WITH_OFFSETS: &str = "field_offsets";
@@ -113,17 +113,47 @@ impl MatchesTestBase {
             },
             &[],
             |w, random| {
-                let mut fields = NewFields::new();
+                let mut fields = FieldTypes::default();
                 for (text, i) in documents.iter().zip(0i64..) {
                     let mut doc = Document::new();
-                    doc.add(fields.new_field(random, FIELD_WITH_OFFSETS, text, &offsets));
-                    doc.add(fields.new_field(random, FIELD_NO_OFFSETS, text, &stored));
-                    doc.add(fields.new_field(random, FIELD_DOCS_ONLY, text, &docs_only));
-                    doc.add(fields.new_field(random, FIELD_FREQS, text, &freqs));
+                    doc.add(new_field(
+                        random,
+                        &mut fields,
+                        FIELD_WITH_OFFSETS,
+                        FieldValue::String(text),
+                        &offsets,
+                    ));
+                    doc.add(new_field(
+                        random,
+                        &mut fields,
+                        FIELD_NO_OFFSETS,
+                        FieldValue::String(text),
+                        &stored,
+                    ));
+                    doc.add(new_field(
+                        random,
+                        &mut fields,
+                        FIELD_DOCS_ONLY,
+                        FieldValue::String(text),
+                        &docs_only,
+                    ));
+                    doc.add(new_field(
+                        random,
+                        &mut fields,
+                        FIELD_FREQS,
+                        FieldValue::String(text),
+                        &freqs,
+                    ));
                     doc.add(IntPoint::new(FIELD_POINT, &[10]).expect("a point"));
                     doc.add(NumericDocValuesField::new(FIELD_POINT, 10));
                     doc.add(NumericDocValuesField::new("id", i));
-                    doc.add(fields.new_field(random, "id", &i.to_string(), &stored));
+                    doc.add(new_field(
+                        random,
+                        &mut fields,
+                        "id",
+                        FieldValue::String(&i.to_string()),
+                        &stored,
+                    ));
                     w.add_document(&doc).expect("addDocument");
                 }
                 w.force_merge(1).expect("forceMerge");

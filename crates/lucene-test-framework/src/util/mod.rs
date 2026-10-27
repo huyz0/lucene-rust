@@ -10,7 +10,6 @@ pub mod english;
 pub mod fst_tester;
 pub mod line_file_docs;
 pub mod lucene_test_case;
-pub mod new_field;
 pub mod random_numbers;
 pub mod string_mock_resource_loader;
 pub mod test_util;

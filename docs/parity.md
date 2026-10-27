@@ -65,7 +65,7 @@ Milestones (M1-M12, task ids such as T9.4) are [`docs/roadmap.md`](roadmap.md)'s
 | [codecs-extra.md](parity/codecs-extra.md) | `lucene-codecs` (M14.g): the non-default postings formats -- bloom, memory, bitvectors, blocktreeords, uniformsplit (with sharedterms), blockterms and simpletext so far | 32 |
 | [test-framework.md](parity/test-framework.md) | `lucene-test-framework` (M14.h): randomized generators, mock analysis/directories, index/format suites, readers and writers | 30 |
 | [test-framework-codecs.md](parity/test-framework-codecs.md) | `lucene-test-framework` (M14.h): asserting/cranky/compressing and other test codecs, installed writer seams | 33 |
-| [test-framework-search.md](parity/test-framework-search.md) | `lucene-test-framework` (M14.h): query/scoring assertions, search bases, scorer wrappers | 10 |
+| [test-framework-search.md](parity/test-framework-search.md) | `lucene-test-framework` (M14.h): query/scoring assertions, search bases, scorer wrappers | 11 |
 | [test-framework-geo.md](parity/test-framework-geo.md) | `lucene-test-framework` (M14.h): geo helpers, geo-point/XY/range bases | 4 |
 | [misc.md](parity/misc.md) | `lucene-misc`: index and search utilities (M14 T14.3; the rest of the jar is M14.b-i) | 25 |
 | [tools.md](parity/tools.md) | `lucene-tools` (M14.i): the command-line tools of `lucene-misc` and `lucene-demo` (its toy word-vector dictionary included), Luke's index inspector models, and lucene-benchmark's search-quality tools | 24 |
