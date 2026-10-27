@@ -3550,9 +3550,14 @@ pub(crate) fn search_boolean_query_scored_segment_time_limited<C: ScoringCollect
     };
     let mode = exec::Mode::of(collector);
     match exec::bulk_boolean(&ctx, query, 1.0, mode)? {
-        Some(mut bulk) => {
-            exec::score_segment_time_limited(&mut bulk, mode, seg.live_docs, collector, should_exit)
-        }
+        Some(mut bulk) => exec::score_segment_time_limited(
+            &mut bulk,
+            mode,
+            seg.live_docs,
+            collector,
+            seg.max_doc,
+            should_exit,
+        ),
         None => Ok(false),
     }
 }

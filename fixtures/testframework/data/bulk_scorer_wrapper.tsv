@@ -717,3 +717,51 @@ indexedStep	66	1065353216
 indexedStep	77	1065353216
 indexedStep	88	1065353216
 indexedStep	2147483647	-
+cost	a	COMPLETE	1500
+cost	a	COMPLETE_NO_SCORES	1500
+cost	a	TOP_SCORES	1500
+cost	+a +b	COMPLETE	1000
+cost	+a +b	COMPLETE_NO_SCORES	1000
+cost	+a +b	TOP_SCORES	1000
+cost	+a #b	COMPLETE	1000
+cost	+a #b	COMPLETE_NO_SCORES	1000
+cost	+a #b	TOP_SCORES	1000
+cost	a b	COMPLETE	2500
+cost	a b	COMPLETE_NO_SCORES	2500
+cost	a b	TOP_SCORES	2500
+cost	a b c d msm2	COMPLETE	2029
+cost	a b c d msm2	COMPLETE_NO_SCORES	2029
+cost	a b c d msm2	TOP_SCORES	2029
+cost	+a ?b	COMPLETE	1500
+cost	+a ?b	COMPLETE_NO_SCORES	1500
+cost	+a ?b	TOP_SCORES	1500
+cost	+a ?b ?c	COMPLETE	1500
+cost	+a ?b ?c	COMPLETE_NO_SCORES	1500
+cost	+a ?b ?c	TOP_SCORES	1500
+cost	#a ?b ?c	COMPLETE	1500
+cost	#a ?b ?c	COMPLETE_NO_SCORES	1500
+cost	#a ?b ?c	TOP_SCORES	1500
+cost	+a -b	COMPLETE	1500
+cost	+a -b	COMPLETE_NO_SCORES	1500
+cost	+a -b	TOP_SCORES	1500
+cost	a b -c	COMPLETE	2500
+cost	a b -c	COMPLETE_NO_SCORES	2500
+cost	a b -c	TOP_SCORES	2500
+cost	+a +b ?c -d	COMPLETE	1000
+cost	+a +b ?c -d	COMPLETE_NO_SCORES	1000
+cost	+a +b ?c -d	TOP_SCORES	1000
+cost	+(a b) +c	COMPLETE	600
+cost	+(a b) +c	COMPLETE_NO_SCORES	600
+cost	+(a b) +c	TOP_SCORES	600
+cost	(+a +b) (+c +d)	COMPLETE	1429
+cost	(+a +b) (+c +d)	COMPLETE_NO_SCORES	1429
+cost	(+a +b) (+c +d)	TOP_SCORES	1429
+cost	dismax(a b)	COMPLETE	2500
+cost	dismax(a b)	COMPLETE_NO_SCORES	2500
+cost	dismax(a b)	TOP_SCORES	2500
+cost	+const(a) ?b	COMPLETE	1500
+cost	+const(a) ?b	COMPLETE_NO_SCORES	1500
+cost	+const(a) ?b	TOP_SCORES	1500
+cost	+z #d	COMPLETE	429
+cost	+z #d	COMPLETE_NO_SCORES	429
+cost	+z #d	TOP_SCORES	429

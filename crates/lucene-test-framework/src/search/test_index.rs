@@ -194,6 +194,15 @@ impl TestIndex {
         values
     }
 
+    /// A reader of the index: its segment readers serve the sorted searches'
+    /// doc values and field infos.
+    ///
+    /// # Panics
+    /// When opening the index fails.
+    pub fn open_reader(&self) -> DirectoryReader {
+        DirectoryReader::open(&self.dir).expect("open reader")
+    }
+
     /// Runs `f` over the index's segments and their norms, from which
     /// searchers are made.
     ///

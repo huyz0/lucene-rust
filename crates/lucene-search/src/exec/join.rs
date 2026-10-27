@@ -422,6 +422,12 @@ pub(crate) struct BlockJoinBulk<'a> {
 }
 
 impl BlockJoinBulk<'_> {
+    /// `BlockJoinBulkScorer.cost()`: the child bulk scorer's.
+    #[cfg_attr(not(any(test, feature = "asserting")), allow(dead_code))]
+    pub(crate) fn cost(&self) -> i64 {
+        self.child.cost()
+    }
+
     /// `score(collector, acceptDocs, min, max)`.
     pub(crate) fn score<C: ScoringCollector + ?Sized>(
         &mut self,

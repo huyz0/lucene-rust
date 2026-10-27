@@ -274,6 +274,12 @@ impl LeafBulkScorer<'_> {
         matches!(&self.bulk, Bulk::Scorer(..))
     }
 
+    /// `cost()`: the bulk scorer's own, which `AssertingBulkScorer`
+    /// forwards.
+    pub fn cost(&self) -> i64 {
+        self.bulk.cost()
+    }
+
     /// `score(collector, acceptDocs, min, max)`: collects the matches in
     /// `[min, max)` not deleted in `accept_docs`, returning the next
     /// document to score.
