@@ -1063,6 +1063,10 @@ impl IndexingConfig {
             })
             .collect();
 
+        super::before_write(
+            self.codec.as_deref(),
+            lucene_codecs::codec::WritePoint::FieldInfos,
+        )?;
         let mut flushed = segment_writer::write_stored_only_segment_files_with_codec(
             dir,
             segment_name,
@@ -1086,10 +1090,10 @@ impl IndexingConfig {
             )?);
         }
         for group in doc_values_output.iter().flatten() {
-            record(IndexWriter::write_doc_values_files(
-                dir,
-                segment_name,
-                group,
+            record(super::with_doc_values_faults(
+                self.codec.as_deref(),
+                group.field_numbers.len(),
+                || IndexWriter::write_doc_values_files(dir, segment_name, group),
             )?);
         }
         if let Some((bytes, files)) = norms_output {
@@ -1127,9 +1131,17 @@ impl IndexingConfig {
             flushed.info.index_sort = Some(sort.clone());
         }
         if self.use_compound_file {
+            super::before_write(
+                self.codec.as_deref(),
+                lucene_codecs::codec::WritePoint::Compound,
+            )?;
             flushed.pending_sync =
                 segment_writer::create_compound_file(dir, segment_name, &mut flushed.info)?;
         }
+        super::before_write(
+            self.codec.as_deref(),
+            lucene_codecs::codec::WritePoint::SegmentInfo,
+        )?;
         segment_writer::seal_flushed_segment(dir, segment_name, flushed).map_err(Error::from)
     }
 }

@@ -90,6 +90,35 @@ pub trait Lucene104Codec: Send + Sync + fmt::Debug {
     fn knn_vectors_format_is_direct(&self) -> bool {
         false
     }
+
+    /// Called just before the writer does `point` with a format this trait
+    /// has no writer factory for (doc values, field infos, segment info,
+    /// compound files); an error fails that write as the format's own
+    /// `IOException` would (`CrankyCodec`'s fake ones). The files themselves
+    /// are always the native ones. The default never fails.
+    ///
+    /// # Errors
+    /// The failure to inject.
+    fn before_write(&self, _point: WritePoint) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A write [`Lucene104Codec::before_write`] can fail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WritePoint {
+    /// `DocValuesFormat.fieldsConsumer(state)`: one per format instance.
+    DocValuesConsumer,
+    /// `DocValuesConsumer.add*Field`: one per field of the instance.
+    DocValuesField,
+    /// `DocValuesConsumer.close()`, after the instance's files are written.
+    DocValuesClose,
+    /// `FieldInfosFormat.write`: a segment's `.fnm`.
+    FieldInfos,
+    /// `SegmentInfoFormat.write`: a segment's `.si`.
+    SegmentInfo,
+    /// `CompoundFormat.write`: a segment's `.cfs`/`.cfe`.
+    Compound,
 }
 
 /// `new Lucene104Codec()`: every field on the default formats.
@@ -126,6 +155,7 @@ mod tests {
         assert!(c.postings_writer_factory().is_none());
         assert!(c.term_vectors_writer_factory().is_none());
         assert!(!c.knn_vectors_format_is_direct());
+        assert!(c.before_write(WritePoint::SegmentInfo).is_ok());
         assert_eq!(
             c.postings_format_for_field("f"),
             Lucene104PostingsFormat::default()

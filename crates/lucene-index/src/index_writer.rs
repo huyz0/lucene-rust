@@ -3555,6 +3555,10 @@ impl IndexingConfig {
         // was already in memory, for a segment whose *data* files were written
         // exactly once. Only the last write survived; the six before it were
         // pure I/O.
+        before_write(
+            self.codec.as_deref(),
+            lucene_codecs::codec::WritePoint::FieldInfos,
+        )?;
         let mut flushed = segment_writer::write_stored_only_segment_files_with_codec(
             dir,
             segment_name,
@@ -3594,10 +3598,10 @@ impl IndexingConfig {
             }
         }
         for group in doc_values_output.iter().flatten() {
-            record(IndexWriter::write_doc_values_files(
-                dir,
-                segment_name,
-                group,
+            record(with_doc_values_faults(
+                self.codec.as_deref(),
+                group.field_numbers.len(),
+                || IndexWriter::write_doc_values_files(dir, segment_name, group),
             )?);
         }
         if let Some(output) = norms_output {
@@ -3627,9 +3631,17 @@ impl IndexingConfig {
         if self.use_compound_file {
             // Before the `.si`, so the `.si` records the compound layout and
             // is not itself packed.
+            before_write(
+                self.codec.as_deref(),
+                lucene_codecs::codec::WritePoint::Compound,
+            )?;
             flushed.pending_sync =
                 segment_writer::create_compound_file(dir, segment_name, &mut flushed.info)?;
         }
+        before_write(
+            self.codec.as_deref(),
+            lucene_codecs::codec::WritePoint::SegmentInfo,
+        )?;
         segment_writer::seal_flushed_segment(dir, segment_name, flushed).map_err(Error::from)
     }
 
@@ -4673,6 +4685,35 @@ pub const DEFAULT_MAX_FULL_FLUSH_MERGE_WAIT_MILLIS: i64 = 500;
 
 pub const POSTINGS_FORMAT_NAME: &str = "Lucene104";
 pub const DOC_VALUES_FORMAT_NAME: &str = "Lucene90";
+
+/// [`lucene_codecs::codec::Lucene104Codec::before_write`] of the installed
+/// codec, if any: the injected failure as a store error.
+pub(crate) fn before_write(
+    codec: Option<&dyn lucene_codecs::codec::Lucene104Codec>,
+    point: lucene_codecs::codec::WritePoint,
+) -> std::result::Result<(), lucene_store::Error> {
+    match codec {
+        Some(codec) => codec.before_write(point).map_err(lucene_store::Error::Io),
+        None => Ok(()),
+    }
+}
+
+/// [`before_write`] around one doc-values instance: the consumer's open,
+/// each of its fields, then `write` (its files), then its close.
+pub(crate) fn with_doc_values_faults<T, E: From<lucene_store::Error>>(
+    codec: Option<&dyn lucene_codecs::codec::Lucene104Codec>,
+    fields: usize,
+    write: impl FnOnce() -> std::result::Result<T, E>,
+) -> std::result::Result<T, E> {
+    use lucene_codecs::codec::WritePoint;
+    before_write(codec, WritePoint::DocValuesConsumer)?;
+    for _ in 0..fields {
+        before_write(codec, WritePoint::DocValuesField)?;
+    }
+    let out = write()?;
+    before_write(codec, WritePoint::DocValuesClose)?;
+    Ok(out)
+}
 /// `PerFieldKnnVectorsFormat`'s per-field format name for
 /// `Lucene99HnswVectorsFormat` -- the value that goes in the `.fnm`'s
 /// `PerFieldKnnVectorsFormat.format` attribute and, joined with
@@ -10295,6 +10336,10 @@ impl IndexWriter<'_> {
         // merge.info, this)`, then `createCompoundFile` -- before deletes that
         // arrived during the merge are carried over, as there.
         if self.merged_segment_uses_compound_file(&merged)? {
+            before_write(
+                self.cfg.codec.as_deref(),
+                lucene_codecs::codec::WritePoint::Compound,
+            )?;
             merged.files = segment_writer::convert_to_compound(
                 self.dir,
                 &merged.info.segment_name,
@@ -11498,6 +11543,7 @@ impl IndexingConfig {
                 &numeric_updates,
                 &binary_updates,
                 &self.fields,
+                self.codec.as_deref(),
             )?;
         }
         // `PendingDeletes.isFullyDeleted`: `getDelCount() == info.info.maxDoc()`.
@@ -11520,14 +11566,16 @@ impl IndexingConfig {
         numeric: &[PerFieldNumericUpdates],
         binary: &[PerFieldBinaryUpdates],
         schema: &[FieldInfo],
+        codec: Option<&dyn lucene_codecs::codec::Lucene104Codec>,
     ) -> Result<()> {
-        crate::field_updates::write_field_updates_with_schema(
+        crate::field_updates::write_field_updates_with_codec(
             dir,
             sci,
             numeric,
             binary,
             &per_field_codec_suffix(DOC_VALUES_FORMAT_NAME),
             schema,
+            codec,
         )?;
         Ok(())
     }

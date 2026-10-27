@@ -171,7 +171,12 @@ impl IndexWriter<'_> {
         let schema = self.cfg.fields.clone();
         let mut sci = self.target_mut(&target).clone();
         super::IndexingConfig::write_doc_values_update_generation(
-            dir, &mut sci, &numeric, &binary, &schema,
+            dir,
+            &mut sci,
+            &numeric,
+            &binary,
+            &schema,
+            self.cfg.codec.as_deref(),
         )?;
         *self.target_mut(&target) = sci;
         let live_infos = self.live_infos();

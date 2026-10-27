@@ -2604,19 +2604,26 @@ fn merge_segments_mapped_inner(
             .map(|f| f.number)
             .collect();
         let codec_suffix = group.codec_suffix();
-        let (dvm, dvd, dvs) = doc_values::write_fields_with_format(
-            &dense_fields,
-            &skip_indexes,
-            doc_count,
-            &merged_segment_id,
-            &codec_suffix,
-            group.format,
+        crate::index_writer::with_doc_values_faults(
+            options.codec.as_deref(),
+            group.field_numbers.len(),
+            || -> Result<()> {
+                let (dvm, dvd, dvs) = doc_values::write_fields_with_format(
+                    &dense_fields,
+                    &skip_indexes,
+                    doc_count,
+                    &merged_segment_id,
+                    &codec_suffix,
+                    group.format,
+                )?;
+                for (ext, bytes) in [("dvm", &dvm), ("dvd", &dvd), ("dvs", &dvs)] {
+                    let name = format!("{merged_segment_name}_{codec_suffix}.{ext}");
+                    write_file(dir, &name, bytes)?;
+                    files.push(name);
+                }
+                Ok(())
+            },
         )?;
-        for (ext, bytes) in [("dvm", &dvm), ("dvd", &dvd), ("dvs", &dvs)] {
-            let name = format!("{merged_segment_name}_{codec_suffix}.{ext}");
-            write_file(dir, &name, bytes)?;
-            files.push(name);
-        }
     }
 
     if !installed_segment_writer && norms_factory.is_none() && !merged_norms.is_empty() {
@@ -2736,6 +2743,10 @@ fn merge_segments_mapped_inner(
         &vector_field_numbers,
         &points_field_numbers,
     );
+    crate::index_writer::before_write(
+        options.codec.as_deref(),
+        lucene_codecs::codec::WritePoint::FieldInfos,
+    )?;
     let fnm = field_infos::write(&merged_fields, &merged_segment_id, "");
     write_file(dir, &fnm_name, &fnm)?;
     files.push(fnm_name);
@@ -2783,6 +2794,10 @@ fn merge_segments_mapped_inner(
         index_sort: sort_fields
             .map(|sort_fields| sort_fields.iter().map(|spec| spec.sort.clone()).collect()),
     };
+    crate::index_writer::before_write(
+        options.codec.as_deref(),
+        lucene_codecs::codec::WritePoint::SegmentInfo,
+    )?;
     let si_bytes = segment_info::write(&si, "");
     write_file(dir, &si_name, &si_bytes)?;
 
