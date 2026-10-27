@@ -81,18 +81,18 @@ tests/index/AllDeletedFilterReader	ported	crates/lucene-test-framework/src/index
 tests/index/AssertingDirectoryReader	ported	crates/lucene-test-framework/src/index/asserting_leaf_reader.rs::asserting_directory_reader
 tests/index/AssertingLeafReader	ported	crates/lucene-test-framework/src/index/asserting_leaf_reader.rs::AssertingLeafReader -- (skipper: AssertingDocValuesSkipper; points: AssertingPointValues)
 tests/index/BaseCompoundFormatTestCase	ported	crates/lucene-test-framework/src/index/base_compound_format.rs::CompoundSuite
-tests/index/BaseCompressingDocValuesFormatTestCase	partial	crates/lucene-test-framework/src/index/base_doc_values_format.rs::COMPRESSING_TESTS -- M14: bounds on Lucene90 only (no other codec)
+tests/index/BaseCompressingDocValuesFormatTestCase	ported	crates/lucene-test-framework/src/index/base_doc_values_format.rs::COMPRESSING_TESTS -- M14: differs: bounds checked on Lucene90 only (the one doc-values codec)
 tests/index/BaseDocValuesFormatTestCase	ported	crates/lucene-test-framework/src/index/base_doc_values_format.rs::TESTS
 tests/index/BaseFieldInfoFormatTestCase	ported	crates/lucene-test-framework/src/index/base_field_info_format.rs::FieldInfoSuite
-tests/index/BaseIndexFileFormatTestCase	partial	crates/lucene-test-framework/src/index/base_index_file_format.rs::IndexFileFormatSuite -- M14: testMultiClose (no codec-level writer/reader objects); checkIntegrity is checked by damaging bytes, not by tracking reads
-tests/index/BaseKnnVectorsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_knn_vectors_format.rs::KnnVectorsSuite -- M14: off-heap byte accounting and testMergeOffHeapByteSizeMaps (no accounting API); graph searches and visited limits are ported, testFieldSetValue (vector fields are immutable), testDifferentCodecs1/2 (no SimpleText writer)
+tests/index/BaseIndexFileFormatTestCase	ported	crates/lucene-test-framework/src/index/base_index_file_format.rs::IndexFileFormatSuite -- M14: differs: testMultiClose has no codec-level writer/reader objects to close twice; checkIntegrity is checked by damaging bytes, not by tracking reads
+tests/index/BaseKnnVectorsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_knn_vectors_format.rs::KnnVectorsSuite -- M14: testDifferentCodecs1/2 need a SimpleText writer (lead codec track); differs: no off-heap accounting API (testMergeOffHeapByteSizeMaps), vector fields are immutable (testFieldSetValue); graph searches and visited limits ported
 tests/index/BaseLiveDocsFormatTestCase	ported	crates/lucene-test-framework/src/index/base_live_docs_format.rs::TESTS
 tests/index/BaseMergePolicyTestCase	ported	crates/lucene-test-framework/src/index/base_merge_policy.rs::BaseMergePolicyTestCase
 tests/index/BaseNormsFormatTestCase	ported	crates/lucene-test-framework/src/index/base_norms_format.rs::NormsSuite
 tests/index/BasePointsFormatTestCase	ported	crates/lucene-test-framework/src/index/base_points_format.rs::PointsSuite
-tests/index/BasePostingsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_postings_format.rs::TESTS -- M14: testInvertedWrite (no codec plug-in point); enum reuse differs (no reuse)
+tests/index/BasePostingsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_postings_format.rs::TESTS -- M14: testInvertedWrite needs a codec plug-in point (lead codec track); differs: no enum reuse
 tests/index/BaseSegmentInfoFormatTestCase	ported	crates/lucene-test-framework/src/index/base_segment_info_format.rs::SegmentInfoSuite
-tests/index/BaseStoredFieldsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_stored_fields_format.rs::TESTS -- M14: the merging reader wrappers (the merge reads files, not readers); SimpleText switch
+tests/index/BaseStoredFieldsFormatTestCase	partial	crates/lucene-test-framework/src/index/base_stored_fields_format.rs::TESTS -- M14: SimpleText switch (lead codec track); differs: no merging reader wrappers (the merge reads files, not readers)
 tests/index/BaseTermVectorsFormatTestCase	ported	crates/lucene-test-framework/src/index/base_term_vectors_format.rs::TESTS
 tests/index/BaseTestCheckIndex	ported	crates/lucene-test-framework/src/index/base_test_check_index.rs::test_deleted_docs
 tests/index/DocHelper	ported	crates/lucene-test-framework/src/index/doc_helper.rs::setup_doc
@@ -112,7 +112,7 @@ tests/index/PerThreadPKLookup	ported	crates/lucene-test-framework/src/index/per_
 tests/index/PointsStackTracker	ported	crates/lucene-test-framework/src/index/points_stack_tracker.rs::PointsStackTracker
 tests/index/RandomCodec	partial	crates/lucene-test-framework/src/index/random_codec.rs::RandomCodec -- M14: constructor and identity-preserving UTF-16 routing descriptors; native mixed-format dispatch, identity-based suffix grouping, randomized BKD writers and inherited AssertingCodec/SPI/IndexWriter routing absent
 tests/index/RandomIndexWriter	ported	crates/lucene-test-framework/src/index/random_index_writer.rs::RandomIndexWriter
-tests/index/RandomPostingsTester	partial	crates/lucene-test-framework/src/index/random_postings_tester.rs::RandomPostingsTester -- M14: enum reuse differs (no reuse); TermState done (intoBitSet: fill_bit_set; nextPostings: PostingsEnum::next_postings); builds through IndexWriter, not a FieldsConsumer
+tests/index/RandomPostingsTester	ported	crates/lucene-test-framework/src/index/random_postings_tester.rs::RandomPostingsTester -- M14: differs: no enum reuse; builds through IndexWriter, not a FieldsConsumer (TermState: seek_exact_state; intoBitSet: fill_bit_set; nextPostings: PostingsEnum::next_postings)
 tests/index/SuppressingConcurrentMergeScheduler	ported	crates/lucene-test-framework/src/index/suppressing_concurrent_merge_scheduler.rs::SuppressingConcurrentMergeScheduler
 tests/index/ThreadedIndexingAndSearchingTestCase	partial	crates/lucene-test-framework/src/index/threaded_indexing_and_searching.rs::run_test -- M14: TestSearcherManager's reopen thread and SearcherLifetimeManager; advanceSegmentInfosCounter, FailOnNonBulkMergesInfoStream, ensureSaneIWCOnNightly, reduceOpenFiles
 tests/mockfile/DisableFsyncFS	ported	crates/lucene-test-framework/src/mockfile/mock_fs.rs::fsync_disabled
@@ -169,7 +169,7 @@ tests/store/BaseDirectoryTestCase	ported	crates/lucene-test-framework/src/store/
 tests/store/BaseDirectoryWrapper	ported	crates/lucene-test-framework/src/store/base_directory_wrapper.rs::BaseDirectoryWrapper
 tests/store/BaseLockFactoryTestCase	ported	crates/lucene-test-framework/src/store/base_lock_factory.rs::BaseLockFactoryTestCase
 tests/store/CorruptingIndexOutput	ported	crates/lucene-test-framework/src/store/corrupting_index_output.rs::CorruptingIndexOutput
-tests/store/MockDirectoryWrapper	partial	crates/lucene-test-framework/src/store/mock_directory_wrapper.rs::MockDirectoryWrapper -- M14: corruptUnknownFiles scans all retained commits and calls the supplied corruption callback only after a successful scan; requires a quiescent directory (Java synchronizes); setAssertNoUnrefencedFilesOnClose checks actual writer cleanup and document counts; getLevelForCheckOnClose, the input clone count and the READONCE segments check are not ported yet (no IOContext; inputs are byte buffers)
+tests/store/MockDirectoryWrapper	ported	crates/lucene-test-framework/src/store/mock_directory_wrapper.rs::MockDirectoryWrapper -- M14: differs: corruptUnknownFiles scans all retained commits and calls the supplied corruption callback only after a successful scan; requires a quiescent directory (Java synchronizes); setAssertNoUnrefencedFilesOnClose checks actual writer cleanup and document counts; no IOContext (READONCE check, input clone count) and one CheckIndex level (getLevelForCheckOnClose)
 tests/store/MockIndexInputWrapper	ported	crates/lucene-test-framework/src/store/mock_directory_wrapper.rs::MockInput
 tests/store/MockIndexOutputWrapper	ported	crates/lucene-test-framework/src/store/mock_directory_wrapper.rs::MockOutput
 tests/store/RawDirectoryWrapper	ported	crates/lucene-test-framework/src/store/base_directory_wrapper.rs::RawDirectoryWrapper
