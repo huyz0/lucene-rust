@@ -14,20 +14,19 @@
 //!   searches run concurrently with them, over readers the writer handed
 //!   out.
 //! - Java's abstract `getCurrentSearcher`/`doSearching` (filled in by
-//!   `TestNRTThreads`, `TestSearcherManager`, ...) are a [`ReaderMode`],
-//!   simplified. Java's `TestNRTThreads` runs one loop on the main thread
-//!   that reopens (`openIfChanged`) or commits and opens, then runs
-//!   `runSearchThreads(100)` over that one searcher; here each search
-//!   thread opens its own reader every iteration (after a commit half the
-//!   time), never through `openIfChanged`, and walks at most
-//!   `maxIterations` terms (Java's search threads, 100). Its
-//!   open-but-deleted-files assertion is not ported. `TestSearcherManager`'s
-//!   reopen thread, its 1-in-10 `maybeRefresh` in `getCurrentSearcher`,
+//!   `TestNRTThreads`, `TestSearcherManager`, ...) are a [`ReaderMode`].
+//!   [`ReaderMode::Nrt`] is `TestNRTThreads`: its `setUp` coin, the
+//!   no-delete-open-file directory for NRT-only runs, the pooling reader of
+//!   `doAfterWriter`, the main-thread loop that reopens (`openIfChanged`) or
+//!   closes, commits and opens one reader, `runSearchThreads(100)` over it,
+//!   the open-but-deleted-files check, and the final searcher that may
+//!   commit and open the directory. Each search thread draws from its own
+//!   stream, seeded off the test's. `TestSearcherManager`'s reopen thread,
+//!   its 1-in-10 `maybeRefresh` in `getCurrentSearcher`,
 //!   `SearcherLifetimeManager`, the non-NRT `SearcherManager(dir)` branch
 //!   and its warming factory are not ported: [`ReaderMode::Reopen`] commits
-//!   and reopens one shared reader before each search. Each thread draws
-//!   from its own stream, seeded off the test's. `getDirectory`,
-//!   `doAfterWriter` and the `addDocument` hooks have no overrides to make.
+//!   and reopens one shared reader before each search, on search threads
+//!   launched once. The `addDocument` hooks have no overrides to make.
 //! - The port's writer merges on commit, not on flush, so the merged
 //!   segments the searches check come from the commits `doSearching`
 //!   makes: `TestNRTThreads` commits before half its reopens,
@@ -67,6 +66,7 @@ use lucene_util::test_support::TempDir;
 use super::base_index_file_format::{docs_with_term, get, new_config, stored, writer_with};
 use crate::analysis::mock_analyzer::MockAnalyzer;
 use crate::store::base_directory_wrapper::BaseDirectoryWrapper;
+use crate::store::mock_directory_wrapper::MockDirectoryWrapper;
 use crate::util::line_file_docs::{LineDoc, LineFileDocs};
 use crate::util::lucene_test_case::LuceneTestCase;
 use crate::util::test_util;
@@ -77,8 +77,8 @@ const MAX_TERM_LENGTH: i32 = 32766;
 /// Java's `getCurrentSearcher`: where a search thread's reader comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReaderMode {
-    /// `TestNRTThreads`: `DirectoryReader.open(writer)` for every search,
-    /// after a commit half the time.
+    /// `TestNRTThreads`: one reader per `doSearching` pass, reopened or
+    /// opened anew after a commit, searched by every search thread.
     Nrt,
     /// `TestSearcherManager`: one reader shared by every search thread,
     /// replaced by `openIfChanged(reader, writer)` after a commit before
@@ -342,18 +342,13 @@ impl<'d> Shared<'_, 'd> {
         Ok(())
     }
 
-    /// `getCurrentSearcher()`, after the commit `doSearching` makes.
-    fn current_reader(&self, r: &mut JavaRandom) -> Result<Arc<DirectoryReader>, String> {
+    /// `getCurrentSearcher()`.
+    fn current_reader(&self) -> Result<Arc<DirectoryReader>, String> {
         match self.mode {
-            ReaderMode::Nrt => {
-                // `TestNRTThreads`: reopen, or commit and open anew.
-                if !r.next_boolean() {
-                    self.commit()?;
-                }
-                DirectoryReader::open_from_writer(self.writer)
-                    .map(Arc::new)
-                    .map_err(text)
-            }
+            // `TestNRTThreads`: the reader `doSearching` fixed for this pass.
+            ReaderMode::Nrt => lock(&self.current)
+                .clone()
+                .ok_or_else(|| "no fixed searcher".to_string()),
             ReaderMode::Reopen => {
                 // `TestSearcherManager`'s reopen thread commits, then
                 // refreshes.
@@ -372,14 +367,14 @@ impl<'d> Shared<'_, 'd> {
     }
 
     /// One search thread (`runSearchThreads`' `run`).
-    fn search(&self, r: &mut JavaRandom) -> Result<(), String> {
+    fn search(&self, r: &mut JavaRandom, max_iterations: i32) -> Result<(), String> {
         let mut iterations = 0;
         loop {
             iterations += 1;
-            if iterations >= self.max_iterations || self.failed.load(Ordering::SeqCst) {
+            if iterations >= max_iterations || self.failed.load(Ordering::SeqCst) {
                 break;
             }
-            let reader = self.current_reader(r)?;
+            let reader = self.current_reader()?;
             self.searches.fetch_add(1, Ordering::SeqCst);
             // Verify 1) the writer sets diagnostics, and 2) merged
             // segments are warmed.
@@ -407,7 +402,7 @@ impl<'d> Shared<'_, 'd> {
             }
             if reader.num_docs() > 0 {
                 with_searcher(&reader, |s| smoke_test_searcher(s, &reader))?;
-                self.search_body_terms(r, &reader)?;
+                self.search_body_terms(r, &reader, max_iterations)?;
             }
         }
         Ok(())
@@ -418,6 +413,7 @@ impl<'d> Shared<'_, 'd> {
         &self,
         r: &mut JavaRandom,
         reader: &DirectoryReader,
+        max_iterations: i32,
     ) -> Result<(), String> {
         let tot = self.tot_term_count.load(Ordering::SeqCst);
         let (shift, trigger) = if tot < 30 {
@@ -436,7 +432,7 @@ impl<'d> Shared<'_, 'd> {
             let mut te = leaf_terms.iterator().map_err(text)?;
             loop {
                 iters += 1;
-                if iters >= self.max_iterations {
+                if iters >= max_iterations {
                     break 'leaves;
                 }
                 let Some(term) = te.next().map_err(text)? else {
@@ -448,7 +444,7 @@ impl<'d> Shared<'_, 'd> {
                 }
             }
         }
-        if iters < self.max_iterations {
+        if iters < max_iterations {
             self.tot_term_count.store(seen_term_count, Ordering::SeqCst);
         }
         with_searcher(reader, |s| {
@@ -458,6 +454,100 @@ impl<'d> Shared<'_, 'd> {
             }
             Ok(())
         })
+    }
+}
+
+impl Shared<'_, '_> {
+    /// `runSearchThreads(maxIterations)`: search threads over
+    /// `getCurrentSearcher()`, joined before returning. Each draws from its
+    /// own stream, seeded off `random`.
+    fn run_search_threads(
+        &self,
+        random: &mut JavaRandom,
+        max_iterations: i32,
+    ) -> Result<(), String> {
+        let num_threads = if self.nightly {
+            test_util::next_int(random, 1, 5)
+        } else {
+            2
+        };
+        // Silly starting guess.
+        self.tot_term_count.store(100, Ordering::SeqCst);
+        let seeds: Vec<i64> = (0..num_threads).map(|_| random.next_long()).collect();
+        let failures: Vec<String> = std::thread::scope(|scope| {
+            let handles: Vec<_> = seeds
+                .iter()
+                .map(|&seed| {
+                    scope.spawn(move || {
+                        let outcome = self.search(&mut JavaRandom::new(seed), max_iterations);
+                        if outcome.is_err() {
+                            self.failed.store(true, Ordering::SeqCst);
+                        }
+                        outcome
+                    })
+                })
+                .collect();
+            handles.into_iter().filter_map(join).collect()
+        });
+        failures.into_iter().next().map_or(Ok(()), Err)
+    }
+
+    /// `TestNRTThreads.doSearching`: on the calling thread, while the
+    /// indexing threads run, reopen the reader (`openIfChanged`) or close
+    /// it, commit and open anew; then search the one reader with
+    /// `runSearchThreads(100)`. No file deleted while open, after any
+    /// commit or at the end.
+    fn do_searching_nrt(
+        &self,
+        dir: &MockDirectoryWrapper,
+        random: &mut JavaRandom,
+    ) -> Result<(), String> {
+        let mut any_open_del_files = false;
+        let mut r = Arc::new(DirectoryReader::open_from_writer(self.writer).map_err(text)?);
+        let mut iterations = 0;
+        loop {
+            iterations += 1;
+            if iterations >= self.max_iterations || self.failed.load(Ordering::SeqCst) {
+                break;
+            }
+            if random.next_boolean() {
+                if let Some(r2) = r.open_if_changed_nrt(self.writer).map_err(text)? {
+                    r = Arc::new(r2);
+                }
+            } else {
+                // `r.close()`: the fixed searcher holds the last reference.
+                *lock(&self.current) = None;
+                drop(r);
+                self.commit()?;
+                any_open_del_files |= !dir.open_deleted_files().is_empty();
+                r = Arc::new(DirectoryReader::open_from_writer(self.writer).map_err(text)?);
+            }
+            if r.num_docs() > 0 {
+                *lock(&self.current) = Some(Arc::clone(&r));
+                with_searcher(&r, |s| smoke_test_searcher(s, &r))?;
+                self.searches.fetch_add(1, Ordering::SeqCst);
+                self.run_search_threads(random, 100)?;
+            }
+        }
+        *lock(&self.current) = None;
+        drop(r);
+        any_open_del_files |= !dir.open_deleted_files().is_empty();
+        if any_open_del_files {
+            return Err(format!(
+                "saw non-zero open-but-deleted count: {:?}",
+                dir.open_deleted_files()
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// A thread's outcome as its failure, if any.
+fn join(h: std::thread::ScopedJoinHandle<'_, Result<(), String>>) -> Option<String> {
+    match h.join() {
+        Ok(Ok(())) => None,
+        Ok(Err(e)) => Some(e),
+        Err(_) => Some("a thread panicked".to_string()),
     }
 }
 
@@ -600,10 +690,16 @@ fn verify_final(
 /// # Panics
 /// When a thread failed or a check does not hold, with what differed.
 pub fn run_test(t: &mut LuceneTestCase, test_name: &str, mode: ReaderMode) -> ThreadedRunStats {
+    // `TestNRTThreads.setUp`.
+    let use_non_nrt_readers = mode == ReaderMode::Nrt && t.random().next_boolean();
     let mut random = JavaRandom::new(t.random().next_long());
     let docs = LineFileDocs::new(&mut random).expect("LineFileDocs");
     let tmp = TempDir::new(test_name);
     let dir = t.new_mock_fs_directory(tmp.path());
+    // `TestNRTThreads.getDirectory`.
+    if mode == ReaderMode::Nrt && !use_non_nrt_readers {
+        dir.set_assert_no_delete_open_file(true);
+    }
     // Don't double-checkIndex; this test checks it itself.
     dir.set_check_index_on_close(false);
     let max_token_length = test_util::next_int(t.random(), 1, MAX_TERM_LENGTH);
@@ -618,16 +714,22 @@ pub fn run_test(t: &mut LuceneTestCase, test_name: &str, mode: ReaderMode) -> Th
     let mut writer = writer_with(&dir, &config);
     writer.set_merged_segment_warmer(Some(Arc::new(Warmer(Arc::clone(&warmed)))));
     let writer = Mutex::new(writer);
+    if mode == ReaderMode::Nrt {
+        // `TestNRTThreads.doAfterWriter`: pool readers from the start.
+        drop(DirectoryReader::open_from_writer(&writer).expect("doAfterWriter"));
+    }
 
     let nightly = t.nightly();
     // The `ExecutorService` coin: searches here run on their own threads.
     let _ = t.random().next_boolean();
     let num_index_threads = test_util::next_int(t.random(), 2, 4);
     let max_iterations = if nightly { 200 } else { 10 * t.multiplier() };
-    let num_search_threads = if nightly {
-        test_util::next_int(t.random(), 1, 5)
-    } else {
-        2
+    // `TestSearcherManager` searches from the start, on threads launched
+    // once; `TestNRTThreads` launches them from `doSearching`.
+    let num_search_threads = match mode {
+        ReaderMode::Reopen if nightly => test_util::next_int(t.random(), 1, 5),
+        ReaderMode::Reopen => 2,
+        ReaderMode::Nrt => 0,
     };
     let shared = Shared {
         writer: &writer,
@@ -663,7 +765,7 @@ pub fn run_test(t: &mut LuceneTestCase, test_name: &str, mode: ReaderMode) -> Th
             move || {
                 let mut r = JavaRandom::new(seed);
                 let outcome = if search {
-                    shared.search(&mut r)
+                    shared.search(&mut r, max_iterations)
                 } else {
                     shared.index(&mut r)
                 };
@@ -684,20 +786,29 @@ pub fn run_test(t: &mut LuceneTestCase, test_name: &str, mode: ReaderMode) -> Th
                 .iter()
                 .map(|&seed| scope.spawn(run(seed, true))),
         );
-        handles
-            .into_iter()
-            .filter_map(|h| match h.join() {
-                Ok(Ok(())) => None,
-                Ok(Err(e)) => Some(e),
-                Err(_) => Some("a thread panicked".to_string()),
-            })
-            .collect()
+        let mut failures = Vec::new();
+        if mode == ReaderMode::Nrt {
+            if let Err(e) = shared.do_searching_nrt(&dir, t.random()) {
+                shared.failed.store(true, Ordering::SeqCst);
+                failures.push(e);
+            }
+        }
+        failures.extend(handles.into_iter().filter_map(join));
+        failures
     });
     assert!(failures.is_empty(), "{test_name}: {failures:?}");
     assert!(!shared.failed.load(Ordering::SeqCst));
     *lock(&shared.current) = None;
 
-    let s = DirectoryReader::open_from_writer(&writer).expect("getFinalSearcher");
+    // `getFinalSearcher()`: `TestNRTThreads` may commit and open the
+    // directory instead.
+    let s = if use_non_nrt_readers && !t.random().next_boolean() {
+        lock(&writer).commit().expect("commit");
+        DirectoryReader::open(&dir)
+    } else {
+        DirectoryReader::open_from_writer(&writer)
+    }
+    .expect("getFinalSearcher");
     let del_ids = lock(&shared.del_ids).clone();
     let end_id = lock(&shared.docs).next_doc().expect("nextDoc").id;
     let problems = verify_final(
