@@ -1055,7 +1055,14 @@ impl<'d> ConcurrentIndexWriter<'d> {
             if !deleted.is_empty() {
                 deleted.sort_unstable();
                 deleted.dedup();
-                sci = deletes::apply_deletes(tracking, &sci, None, docs.len(), deleted)?;
+                sci = deletes::apply_deletes_with_codec(
+                    tracking,
+                    &sci,
+                    None,
+                    docs.len(),
+                    deleted,
+                    self.cfg.codec.as_deref(),
+                )?;
             }
         }
         // Then whatever needs the written segment: query deletes, doc-values

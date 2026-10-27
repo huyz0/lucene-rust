@@ -2616,6 +2616,26 @@ fn merge_segments_mapped_inner(
                     &codec_suffix,
                     group.format,
                 )?;
+                let field_infos = field_infos::FieldInfos {
+                    fields: merged_fields
+                        .iter()
+                        .filter(|f| group.field_numbers.contains(&f.number))
+                        .cloned()
+                        .collect(),
+                };
+                crate::index_writer::check_doc_values(
+                    options.codec.as_deref(),
+                    &lucene_codecs::codec::DocValuesWrite {
+                        max_doc: doc_count,
+                        segment_id: &merged_segment_id,
+                        segment_suffix: &codec_suffix,
+                        format_name: group.format.name(),
+                        field_infos: &field_infos,
+                        dvm: &dvm,
+                        dvd: &dvd,
+                        dvs: &dvs,
+                    },
+                )?;
                 for (ext, bytes) in [("dvm", &dvm), ("dvd", &dvd), ("dvs", &dvs)] {
                     let name = format!("{merged_segment_name}_{codec_suffix}.{ext}");
                     write_file(dir, &name, bytes)?;

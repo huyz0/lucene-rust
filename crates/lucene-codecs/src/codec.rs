@@ -102,6 +102,37 @@ pub trait Lucene104Codec: Send + Sync + fmt::Debug {
     fn before_write(&self, _point: WritePoint) -> std::io::Result<()> {
         Ok(())
     }
+
+    /// Shown each doc-values instance's encoded files before the writer
+    /// writes them -- at flush, merge and doc-values update alike -- as a
+    /// wrapping `DocValuesConsumer` sees each field's values go by
+    /// (`AssertingDocValuesConsumer`'s checks). The default looks at nothing.
+    ///
+    /// # Errors
+    /// The files cannot be read back.
+    fn check_doc_values(&self, _write: &DocValuesWrite<'_>) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// One doc-values instance's files, as [`Lucene104Codec::check_doc_values`]
+/// is shown them.
+#[derive(Debug, Clone, Copy)]
+pub struct DocValuesWrite<'a> {
+    /// The segment's document count.
+    pub max_doc: i32,
+    /// The segment's id.
+    pub segment_id: &'a [u8; lucene_store::codec_util::ID_LENGTH],
+    /// The files' segment suffix (`Asserting_0`, or a generation's).
+    pub segment_suffix: &'a str,
+    /// The per-field format the instance is (`Asserting`, `Lucene90`).
+    pub format_name: &'a str,
+    /// The instance's fields.
+    pub field_infos: &'a crate::field_infos::FieldInfos,
+    /// `.dvm`, `.dvd` and `.dvs`.
+    pub dvm: &'a [u8],
+    pub dvd: &'a [u8],
+    pub dvs: &'a [u8],
 }
 
 /// A write [`Lucene104Codec::before_write`] can fail.

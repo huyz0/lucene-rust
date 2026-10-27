@@ -157,10 +157,11 @@ pub struct SegmentReader {
     /// `SegmentInfo.getIndexSort()`: the sort this segment's documents are
     /// in, `None` for an unsorted segment.
     index_sort: Option<Arc<Vec<lucene_index::segment_info::IndexSortField>>>,
-    /// The segment's `.dvs` and its codec suffix, when it has one: every
-    /// field's doc-values skip index, parsed on first use into
+    /// Each doc-values format instance's `.dvs`, with its codec suffix and
+    /// the `.dvm` that locates its fields' skip indexes in it: every field's
+    /// doc-values skip index, parsed on first use into
     /// [`Self::skip_indexes`].
-    dvs: Option<(Arc<Input>, String)>,
+    dvs: Vec<(Arc<Input>, String, Arc<doc_values::DocValuesMeta>)>,
     skip_indexes: Arc<OnceLock<HashMap<i32, doc_values::DocValuesSkipIndex>>>,
     /// Sparse doc-values fields' documents (their `IndexedDISI`), decoded on
     /// first use and shared by every iterator opened over them since, under
@@ -594,7 +595,7 @@ impl SegmentReader {
         };
         let dvm_bytes = open_segment_file(dir, compound.as_ref(), &si.files, &dv_ext(".dvm"))?;
         let dvd_bytes = open_segment_file(dir, compound.as_ref(), &si.files, &dv_ext(".dvd"))?;
-        let mut dvs = None;
+        let mut dvs = Vec::new();
         let mut base_dv_suffix = None;
         let (dv_meta, dv_data) = match (dvm_bytes, dvd_bytes) {
             (Some(dvm), Some(dvd)) => {
@@ -609,13 +610,14 @@ impl SegmentReader {
                 let dv_suffix = codec_suffix_of(&dvm_file_name, &segment_name, ".dvm");
                 let (_, meta) =
                     doc_values::parse_meta(&dvm, &segment_id, &dv_suffix, &field_infos)?;
+                let meta = Arc::new(meta);
                 if let Some(bytes) =
                     open_segment_file(dir, compound.as_ref(), &si.files, &dv_ext(".dvs"))?
                 {
-                    dvs = Some((bytes, dv_suffix.clone()));
+                    dvs.push((bytes, dv_suffix.clone(), Arc::clone(&meta)));
                 }
                 base_dv_suffix = Some(dv_suffix);
-                (Some(Arc::new(meta)), Some(dvd))
+                (Some(meta), Some(dvd))
             }
             _ => (None, None),
         };
@@ -647,6 +649,9 @@ impl SegmentReader {
             };
             let (_, meta) = doc_values::parse_meta(&meta_bytes, &segment_id, suffix, &field_infos)?;
             let meta = Arc::new(meta);
+            if let Some(bytes) = open(".dvs")? {
+                dvs.push((bytes, suffix.clone(), Arc::clone(&meta)));
+            }
             for field in &field_infos.fields {
                 if field.doc_values_gen == -1 && dv_per_field_suffix(field).as_ref() == Some(suffix)
                 {
@@ -1087,7 +1092,7 @@ impl SegmentReader {
         }
         // `Lucene90DocValuesProducer.checkIntegrity` checksums the skip
         // index too.
-        if let Some((dvs, _)) = &self.dvs {
+        for (dvs, _, _) in &self.dvs {
             files.push(dvs);
         }
         for c in self.term_vectors.iter().chain(&self.vectors) {
@@ -1324,14 +1329,19 @@ impl SegmentReader {
         if let Some(map) = self.skip_indexes.get() {
             return Ok(map.get(&field_number));
         }
-        let (Some((dvs, suffix)), Some(meta)) = (&self.dvs, self.dv_meta.as_deref()) else {
+        if self.dvs.is_empty() {
             return Ok(None);
-        };
+        }
+        // `PerFieldDocValuesFormat`: each format instance's `.dvm` locates
+        // its own fields' skip indexes in its own `.dvs`.
         let mut map = HashMap::new();
-        for field in &self.field_infos.fields {
-            if let Some(skipper) = meta.skipper_meta(field.number) {
-                let index = doc_values::parse_skip_index(dvs, &self.segment_id, suffix, skipper)?;
-                map.insert(field.number, index);
+        for (dvs, suffix, meta) in &self.dvs {
+            for field in &self.field_infos.fields {
+                if let Some(skipper) = meta.skipper_meta(field.number) {
+                    let index =
+                        doc_values::parse_skip_index(dvs, &self.segment_id, suffix, skipper)?;
+                    map.insert(field.number, index);
+                }
             }
         }
         // A race loses nothing: both parsed the same bytes.

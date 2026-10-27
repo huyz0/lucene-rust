@@ -927,7 +927,7 @@ pub(crate) struct IndexingConfig {
     /// `IndexWriterConfig.setCodec`: the per-field routing every field
     /// without a per-field setting of its own follows -- see
     /// [`IndexWriter::set_codec`]. `None` is `Lucene104Codec()`.
-    codec: Option<std::sync::Arc<dyn lucene_codecs::codec::Lucene104Codec>>,
+    pub(crate) codec: Option<std::sync::Arc<dyn lucene_codecs::codec::Lucene104Codec>>,
 }
 
 /// The doc-values type an index-sort field reads (`SortField.getIndexSorter`'s
@@ -3038,6 +3038,27 @@ impl IndexingConfig {
                     group.suffix,
                     group.format,
                 )?;
+                let field_infos = lucene_codecs::field_infos::FieldInfos {
+                    fields: self
+                        .fields
+                        .iter()
+                        .filter(|f| group.field_numbers.contains(&f.number))
+                        .cloned()
+                        .collect(),
+                };
+                check_doc_values(
+                    self.codec.as_deref(),
+                    &lucene_codecs::codec::DocValuesWrite {
+                        max_doc: i32::try_from(docs.len()).unwrap_or(i32::MAX),
+                        segment_id,
+                        segment_suffix: &group.codec_suffix(),
+                        format_name: group.format.name(),
+                        field_infos: &field_infos,
+                        dvm: &dvm,
+                        dvd: &dvd,
+                        dvs: &dvs,
+                    },
+                )?;
                 Ok(DocValuesGroupOutput {
                     format_name: group.format.name(),
                     suffix: group.suffix,
@@ -4694,6 +4715,20 @@ pub(crate) fn before_write(
 ) -> std::result::Result<(), lucene_store::Error> {
     match codec {
         Some(codec) => codec.before_write(point).map_err(lucene_store::Error::Io),
+        None => Ok(()),
+    }
+}
+
+/// [`Lucene104Codec::check_doc_values`](lucene_codecs::codec::Lucene104Codec::check_doc_values)
+/// of the writer's codec, if any.
+pub(crate) fn check_doc_values(
+    codec: Option<&dyn lucene_codecs::codec::Lucene104Codec>,
+    write: &lucene_codecs::codec::DocValuesWrite<'_>,
+) -> std::result::Result<(), lucene_store::Error> {
+    match codec {
+        Some(codec) => codec
+            .check_doc_values(write)
+            .map_err(lucene_store::Error::Io),
         None => Ok(()),
     }
 }

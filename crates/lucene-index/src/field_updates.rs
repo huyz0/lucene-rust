@@ -353,6 +353,15 @@ fn write_field_updates_inner(
             )
             .map_err(Error::from)
         })?;
+        check_generation(
+            codec,
+            sci,
+            &infos,
+            index,
+            max_doc,
+            &suffix,
+            (&dvm, &dvd, &dvs),
+        )?;
         finish_generation(
             dir, sci, &mut infos, index, gen, &per_field, dvm, dvd, dvs, created,
         )?;
@@ -388,6 +397,15 @@ fn write_field_updates_inner(
             )
             .map_err(Error::from)
         })?;
+        check_generation(
+            codec,
+            sci,
+            &infos,
+            index,
+            max_doc,
+            &suffix,
+            (&dvm, &dvd, &dvs),
+        )?;
         finish_generation(
             dir, sci, &mut infos, index, gen, &per_field, dvm, dvd, dvs, created,
         )?;
@@ -408,6 +426,51 @@ fn write_field_updates_inner(
     sci.field_infos_files = vec![fnm_name];
 
     dir.sync(created)?;
+    Ok(())
+}
+
+/// The codec's look ([`crate::index_writer::check_doc_values`]) at one
+/// field's update generation before it is written.
+fn check_generation(
+    codec: Option<&dyn lucene_codecs::codec::Lucene104Codec>,
+    sci: &SegmentCommitInfo,
+    infos: &FieldInfos,
+    index: usize,
+    max_doc: i32,
+    suffix: &str,
+    (dvm, dvd, dvs): (&[u8], &[u8], &[u8]),
+) -> Result<()> {
+    let field = &infos.fields[index];
+    // The field's per-field format, or the one the codec routes it to.
+    let format_name = field
+        .attributes
+        .iter()
+        .find(|(k, _)| k == lucene_codecs::per_field_doc_values::PER_FIELD_FORMAT_KEY)
+        .map(|(_, v)| v.clone())
+        .or_else(|| {
+            codec.map(|c| {
+                c.doc_values_format_for_field(&field.name)
+                    .name()
+                    .to_string()
+            })
+        })
+        .unwrap_or_else(|| "Lucene90".to_string());
+    let field_infos = FieldInfos {
+        fields: vec![field.clone()],
+    };
+    crate::index_writer::check_doc_values(
+        codec,
+        &lucene_codecs::codec::DocValuesWrite {
+            max_doc,
+            segment_id: &sci.segment_id,
+            segment_suffix: suffix,
+            format_name: &format_name,
+            field_infos: &field_infos,
+            dvm,
+            dvd,
+            dvs,
+        },
+    )?;
     Ok(())
 }
 
