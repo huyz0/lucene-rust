@@ -97,9 +97,25 @@ pub(crate) fn run_slices<T: Send>(
     let mut out: Vec<Option<T>> = std::iter::repeat_with(|| None).take(slices.len()).collect();
     let (head, tail) = out.split_at_mut(1);
     let f = &f;
+    // Under the test framework's asserting searcher, each slice handed to
+    // another thread runs under the asserting wrappers too (the switch is
+    // thread-local), seeded from this thread's searcher random.
+    #[cfg(any(test, feature = "asserting"))]
+    let seeds: Vec<Option<i64>> = rest
+        .iter()
+        .map(|_| crate::exec::asserting::next_seed())
+        .collect();
+    #[cfg(not(any(test, feature = "asserting")))]
+    let seeds: Vec<Option<i64>> = vec![None; rest.len()];
     rayon::in_place_scope(|scope| {
-        for (slot, slice) in tail.iter_mut().zip(rest) {
-            scope.spawn(move |_| *slot = Some(f(slice)));
+        for ((slot, slice), seed) in tail.iter_mut().zip(rest).zip(seeds) {
+            scope.spawn(move |_| {
+                #[cfg(any(test, feature = "asserting"))]
+                let _asserting = seed.map(crate::exec::asserting::AssertingGuard::new);
+                #[cfg(not(any(test, feature = "asserting")))]
+                let _ = seed;
+                *slot = Some(f(slice));
+            });
         }
         if let Some(slot) = head.first_mut() {
             *slot = Some(f(first));
@@ -113,6 +129,15 @@ pub(crate) fn run_slices<T: Send>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_slice_runs_under_the_asserting_switch_its_caller_holds() {
+        use crate::exec::asserting::{active, AssertingGuard};
+        let slices: Vec<Vec<usize>> = (0..6).map(|i| vec![i]).collect();
+        assert!(run_slices(&slices, |_| active()).iter().all(|a| !a));
+        let _guard = AssertingGuard::new(3);
+        assert!(run_slices(&slices, |_| active()).iter().all(|a| *a));
+    }
 
     #[test]
     fn every_slice_runs_once_and_answers_in_order() {

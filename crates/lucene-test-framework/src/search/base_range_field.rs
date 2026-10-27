@@ -3,26 +3,35 @@
 //! document, some multi-valued -- indexed as range fields and queried by
 //! each relation, every hit checked against the relation computed by hand.
 //!
-//! Java writes through `newIndexWriterConfig` (a random codec, merge policy
-//! and buffer) and may `forceMerge(1)`; here the documents are one segment
-//! under a plain `IndexWriter`, deleted in one last commit (the same
-//! documents: each delete names an id already added), and the
-//! `forceMerge` coin is drawn and ignored. Hits are collected unscored, as
-//! `FixedBitSetCollector` does.
+//! The index is written as Java writes it: a plain `IndexWriter` under
+//! `newIndexWriterConfig` (random merge policy and buffering, a serial
+//! merge scheduler), deleting as it adds, maybe `forceMerge(1)`, searched
+//! through `newSearcher`; a hit's id is its `id` doc value. Hits are
+//! collected unscored, as `FixedBitSetCollector` does.
+//!
+//! Differs: the codec is the default (the class environment's random codec
+//! is not drawn), `newDirectory`'s draws are not made (the directory is
+//! always in memory), and the corpus above 50000 boxes is not written to a
+//! file-system directory.
 
 use std::collections::BTreeSet;
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use lucene_analysis::Analyzer;
+use lucene_index::buffered_updates::Term;
 use lucene_index::document::{Document, IndexableField, NumericDocValuesField, Store, StringField};
 use lucene_search::collector::ScoreMode;
+use lucene_search::index_searcher::IndexSearcher;
 use lucene_search::query::Clause;
 use lucene_util::java_random::JavaRandom;
 
 use super::base_explanation::top_level;
 use super::check_hits;
+use super::new_searcher::NewSearcher;
 use super::test_index::TestIndex;
+use crate::analysis::mock_analyzer::MockAnalyzer;
+use crate::index::base_index_file_format::force_merge;
+use crate::index::index_writer_config::{new_index_writer_config, Draws, MergeSchedulerChoice};
 use crate::util::{lucene_test_case, test_util};
 
 /// `Range.QueryType`: the relation a query asks of each indexed box.
@@ -321,37 +330,53 @@ impl<'a, C: RangeFieldCase> BaseRangeField<'a, C> {
     /// # Panics
     /// On the first wrong hit.
     pub fn verify(&mut self, docs: &[Doc<C::R>]) {
+        let analyzer = Arc::new(MockAnalyzer::new(self.random).build());
+        let mut config = new_index_writer_config(
+            &mut Draws::new(self.random).knobs(false, self.multiplier),
+            analyzer,
+            0,
+        );
+        // Else seeds may not reproduce:
+        config.merge_scheduler = MergeSchedulerChoice::Serial;
+        // Else we can get O(N^2) merging
+        let per_hundred = i32::try_from(docs.len() / 100).expect("an int count");
+        if config
+            .max_buffered_docs
+            .is_some_and(|mbd| mbd < per_hundred)
+        {
+            config.max_buffered_docs = Some(per_hundred);
+        }
+
         let mut deleted = BTreeSet::new();
-        let mut written = Vec::with_capacity(docs.len());
-        for (id, d) in docs.iter().enumerate() {
-            let mut doc = Document::new();
-            doc.add(StringField::new("id", id.to_string(), Store::No));
-            doc.add(NumericDocValuesField::new(
-                "id",
-                i64::try_from(id).expect("small"),
-            ));
-            if !d.missing {
-                for r in &d.ranges {
-                    doc.add_boxed(self.case.new_range_field(r));
+        let random = &mut *self.random;
+        let case = &self.case;
+        let index = TestIndex::write_with(&config, &[], |w| {
+            for (id, d) in docs.iter().enumerate() {
+                let mut doc = Document::new();
+                doc.add(StringField::new("id", id.to_string(), Store::No));
+                doc.add(NumericDocValuesField::new(
+                    "id",
+                    i64::try_from(id).expect("small"),
+                ));
+                if !d.missing {
+                    for r in &d.ranges {
+                        doc.add_boxed(case.new_range_field(r));
+                    }
+                }
+                w.add_fields_document(&doc).expect("addDocument");
+                if id > 0 && random.next_int_bounded(100) == 1 {
+                    let to_delete = random.next_int_bounded(i32::try_from(id).expect("an int id"));
+                    w.delete_documents_by_term(&[Term::new("id", to_delete.to_string().as_str())])
+                        .expect("deleteDocuments");
+                    deleted.insert(usize::try_from(to_delete).expect("non-negative"));
                 }
             }
-            written.push(doc);
-            if id > 0 && self.random.next_int_bounded(100) == 1 {
-                let to_delete = self
-                    .random
-                    .next_int_bounded(i32::try_from(id).expect("an int id"));
-                deleted.insert(usize::try_from(to_delete).expect("non-negative"));
+            if random.next_boolean() {
+                force_merge(w, 1);
             }
-        }
-        let _force_merge = self.random.next_boolean();
-        let ids: Vec<String> = deleted.iter().map(ToString::to_string).collect();
-        let deletes: Vec<(&str, &str)> = ids.iter().map(|id| ("id", id.as_str())).collect();
-        let index = TestIndex::build(
-            Arc::new(Analyzer::standard(None)),
-            &[written],
-            &deletes,
-            &[],
-        );
+        });
+        let searcher = NewSearcher::draw(self.random, false, self.multiplier);
+        let doc_to_id = index.numeric_values("id");
 
         let dims = docs[0].ranges[0].num_dimensions();
         let iters = self.at_least(25);
@@ -364,25 +389,33 @@ impl<'a, C: RangeFieldCase> BaseRangeField<'a, C> {
                 _ => QueryType::Crosses,
             };
             let q = top_level(self.case.new_query(&query_range, query_type));
-            let hits: BTreeSet<usize> = index.with_searcher(|s| {
-                check_hits::all_hits(s, &q, ScoreMode::CompleteNoScores)
-                    .expect("search")
-                    .into_iter()
-                    .map(|(doc, _)| usize::try_from(doc).expect("a doc id"))
-                    .collect()
+            let hits: BTreeSet<usize> = index.with_segments(|segments, norms| {
+                let mut s = IndexSearcher::new(segments, norms).expect("searcher");
+                searcher.configure(&mut s);
+                searcher.searching(|| {
+                    check_hits::all_hits(&s, &q, ScoreMode::CompleteNoScores)
+                        .expect("search")
+                        .into_iter()
+                        .map(|(doc, _)| {
+                            let doc = usize::try_from(doc).expect("a doc id");
+                            let id = doc_to_id[doc].expect("an id");
+                            usize::try_from(id).expect("an id")
+                        })
+                        .collect()
+                })
             });
-            // one segment, deletes in place: doc id == id
             for (id, d) in docs.iter().enumerate() {
-                let expected = !deleted.contains(&id)
-                    && !d.missing
-                    && expected_result(&query_range, &d.ranges, query_type);
+                if deleted.contains(&id) {
+                    assert!(!hits.contains(&id), "deleted id={id} matched");
+                    continue;
+                }
+                let expected = !d.missing && expected_result(&query_range, &d.ranges, query_type);
                 assert_eq!(
                     hits.contains(&id),
                     expected,
-                    "FAIL (iter {iter}): id={id} {} \n queryRange={query_range:?}\n boxes={:?}\n queryType={query_type:?}\n deleted?={}",
+                    "FAIL (iter {iter}): id={id} {} \n queryRange={query_range:?}\n boxes={:?}\n queryType={query_type:?}",
                     if expected { "should match but did not" } else { "should not match but did" },
                     d.ranges,
-                    deleted.contains(&id)
                 );
             }
         }

@@ -45,7 +45,8 @@ impl DirectoryReader {
 
     /// `DirectoryReader.openIfChanged(reader, writer)`: `None` when `writer`
     /// has nothing this reader does not already show
-    /// (`IndexWriter.nrtIsCurrent`), otherwise a new near-real-time reader
+    /// (`IndexWriter.nrtIsCurrent`), or when what it has changes no segment
+    /// (the snapshot's version is this reader's), otherwise a new near-real-time reader
     /// sharing every segment of this one that did not change.
     pub fn open_if_changed_nrt(&self, writer: &dyn NrtSource) -> Result<Option<Self>> {
         self.open_if_changed_nrt_with(writer, true, false)
@@ -62,6 +63,11 @@ impl DirectoryReader {
             return Ok(None);
         }
         let snapshot = writer.nrt_snapshot(apply_all_deletes, write_all_deletes)?;
+        // `doOpenFromWriterNoApplyDeletes`: buffered changes that changed no
+        // segment (a delete matching nothing) leave the version as it was.
+        if snapshot.segment_infos.version == self.segment_infos.version {
+            return Ok(None);
+        }
         let mut reader = self.reopen_at(writer.directory(), snapshot.segment_infos)?;
         reader.nrt_hold = Some(snapshot.hold);
         Ok(Some(reader))

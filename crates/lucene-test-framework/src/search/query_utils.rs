@@ -4,15 +4,18 @@
 //! matches.
 //!
 //! The scorers are `lucene-search`'s, reached through its `test_support`
-//! seam. `wrapUnderlyingReader` (the same checks through a `MultiReader`
-//! padded with empty readers) has no counterpart yet, so
-//! [`check_with_searcher`] runs the unwrapped checks only.
+//! seam. [`with_wrapped_underlying_reader`] is `wrapUnderlyingReader`: the
+//! searcher's segments as leaves of a `MultiReader` padded with empty,
+//! fully deleted readers.
 
+use lucene_codecs::blocktree::BlockTreeFields;
 use lucene_search::collector::{ScoreMode, ScoringCollector};
-use lucene_search::index_searcher::IndexSearcher;
+use lucene_search::index_searcher::{IndexSearcher, SegmentNorms};
+use lucene_search::multi_segment::OpenSegment;
 use lucene_search::query::{BooleanQuery, Clause};
 use lucene_search::test_support::{self, LeafScorer, NO_MORE_DOCS};
 use lucene_search::Result;
+use lucene_util::fixed_bit_set::FixedBitSet;
 use lucene_util::java_random::JavaRandom;
 
 use super::check_hits;
@@ -50,10 +53,8 @@ pub fn check_explanations(query: &BooleanQuery, searcher: &IndexSearcher<'_, '_>
     check_hits::check_explanations(query, searcher, true)
 }
 
-/// `QueryUtils.check(random, q, s)`: [`check`], then
-/// [`check_first_skip_to`], [`check_skip_to`],
-/// [`check_bulk_scorer_skip_to`], [`check_count`], [`check_explanations`]
-/// and [`check_hits::check_matches`].
+/// `QueryUtils.check(random, q, s)`: [`check_with_searcher_wrap`] with
+/// `wrap`.
 ///
 /// # Errors
 /// Whatever searching reports.
@@ -62,13 +63,117 @@ pub fn check_with_searcher(
     query: &BooleanQuery,
     searcher: &IndexSearcher<'_, '_>,
 ) -> Result<()> {
+    check_with_searcher_wrap(random, query, searcher, true)
+}
+
+/// `QueryUtils.check(random, q, s, wrap)`: [`check`], then
+/// [`check_first_skip_to`], [`check_skip_to`],
+/// [`check_bulk_scorer_skip_to`], [`check_count`], with `wrap` the same
+/// checks (unwrapped) over [`with_wrapped_underlying_reader`] at edges -1,
+/// 0 and +1, then [`check_explanations`] and [`check_hits::check_matches`].
+///
+/// # Errors
+/// Whatever searching reports.
+pub fn check_with_searcher_wrap(
+    random: &mut JavaRandom,
+    query: &BooleanQuery,
+    searcher: &IndexSearcher<'_, '_>,
+    wrap: bool,
+) -> Result<()> {
     check(query);
     check_first_skip_to(query, searcher)?;
     check_skip_to(query, searcher)?;
     check_bulk_scorer_skip_to(random, query, searcher)?;
     check_count(query, searcher)?;
+    if wrap {
+        for edge in [-1, 0, 1] {
+            with_wrapped_underlying_reader(searcher, edge, |s| {
+                check_with_searcher_wrap(random, query, s, false)
+            })?;
+        }
+    }
     check_explanations(query, searcher)?;
     check_hits::check_matches(query, searcher)
+}
+
+/// The `maxDoc`s of the empty readers `wrapUnderlyingReader` places after
+/// the searcher's reader at `edge`, in leaf order. Java nests them in
+/// `MultiReader`s with empty `MultiReader`s between them, which contribute
+/// no leaf: below 0 the reader comes first, then empty readers of 4, 7 and
+/// 5 documents; at 0, of 7 and 5; above 0 it is the only leaf (last, past
+/// the empty composites). "we can't put deleted docs before the nested
+/// reader, because it will throw off the docIds".
+#[must_use]
+pub fn wrap_padding(edge: i32) -> &'static [i32] {
+    match edge {
+        e if e < 0 => &[4, 7, 5],
+        0 => &[7, 5],
+        _ => &[],
+    }
+}
+
+/// `wrapUnderlyingReader(random, s, edge)`: runs `f` over a searcher of the
+/// searcher's segments followed by [`wrap_padding`]`(edge)`'s empty
+/// readers -- no fields, every document deleted (`Bits.MatchNoBits`) --
+/// under the searcher's similarity. Java's `newSearcher` wrapping of the
+/// result (and the global random it draws from) is not reproduced: the
+/// searcher is plain.
+///
+/// # Errors
+/// Whatever `f` reports, or building the searcher.
+pub fn with_wrapped_underlying_reader<R>(
+    searcher: &IndexSearcher<'_, '_>,
+    edge: i32,
+    f: impl FnOnce(&IndexSearcher<'_, '_>) -> Result<R>,
+) -> Result<R> {
+    let empty_fields = BlockTreeFields::empty();
+    let padding = wrap_padding(edge);
+    let deleted: Vec<FixedBitSet> = padding
+        .iter()
+        .map(|&n| FixedBitSet::new(n as usize))
+        .collect();
+    let mut segments: Vec<OpenSegment<'_>> = searcher
+        .segments()
+        .iter()
+        .map(|s| OpenSegment {
+            fields: s.fields,
+            doc_in: s.doc_in,
+            pos_in: s.pos_in,
+            pay_in: s.pay_in,
+            live_docs: s.live_docs,
+            doc_base: s.doc_base,
+            max_doc: s.max_doc,
+            cache: s.cache,
+            points: s.points,
+            reader: s.reader,
+            index_sort_prefix: s.index_sort_prefix,
+        })
+        .collect();
+    let mut norms: Vec<SegmentNorms<'_, '_>> =
+        (0..segments.len()).map(|i| searcher.norms(i)).collect();
+    let mut doc_base = searcher.max_doc();
+    for (&n, live) in padding.iter().zip(&deleted) {
+        segments.push(OpenSegment {
+            fields: &empty_fields,
+            doc_in: None,
+            pos_in: None,
+            pay_in: None,
+            live_docs: Some(live),
+            doc_base,
+            max_doc: Some(n),
+            cache: None,
+            points: None,
+            reader: None,
+            index_sort_prefix: false,
+        });
+        norms.push(None);
+        doc_base += n;
+    }
+    let mut wrapped = IndexSearcher::new(&segments, &norms)?;
+    if let Some(sim) = searcher.similarity() {
+        wrapped.set_similarity(sim);
+    }
+    f(&wrapped)
 }
 
 /// The hits of `query` per segment, leaf-local, in collection order

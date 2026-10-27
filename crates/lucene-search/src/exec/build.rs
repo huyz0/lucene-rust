@@ -106,8 +106,10 @@ fn asserting_active() -> bool {
     false
 }
 
-/// [`build`] without the asserting wrapper.
-fn build_unchecked<'a>(
+/// [`build`] without the asserting wrapper around the scorer itself (its
+/// sub-scorers keep theirs): `weight.scorer(context)` of a weight explaining
+/// itself, which reaches its own scorer, not the `AssertingWeight` around it.
+pub(crate) fn build_unchecked<'a>(
     ctx: &LeafContext<'a>,
     clause: &Clause,
     boost: f32,
@@ -789,6 +791,10 @@ fn build_led<'a>(
     top_level: bool,
     lead_cost: Option<i64>,
 ) -> Result<Option<BoxScorer<'a>>> {
+    #[cfg(any(test, feature = "asserting"))]
+    if let Some(lead) = lead_cost {
+        super::asserting::check_lead_cost(lead);
+    }
     match index_or_doc_values_of(clause) {
         Some(q) if lead_cost.is_some() => {
             super::extended::index_or_doc_values(ctx, q, boost, mode, top_level, lead_cost)

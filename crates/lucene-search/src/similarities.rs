@@ -21,10 +21,12 @@
 //! are the closed sets Lucene ships, as enums; a user-defined similarity is a
 //! type implementing [`Similarity`], as it is a subclass in Java.
 //!
-//! `SimScorer.explain` is `crate::explain`'s: BM25's and `TFIDFSimilarity`'s
-//! breakdowns are ported there; under any other similarity a term or a
-//! phrase explains the scorer's value in `SimScorer.explain`'s default
-//! layout, not that similarity's own breakdown.
+//! [`SimScorer::explain`] is each similarity's own breakdown, string for
+//! string: BM25's and `TFIDFSimilarity`'s reuse `crate::explain`'s nodes,
+//! `SimilarityBase`'s families explain their components (`BasicModel`,
+//! `AfterEffect`, `Normalization`, `Distribution`, `Lambda`, ...) as their
+//! Java classes do, and a similarity without one (`RawTFSimilarity`) keeps
+//! `SimScorer.explain`'s default layout.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -32,6 +34,8 @@ use std::sync::Arc;
 
 pub use lucene_index::similarity::{default_compute_norm, FieldInvertState, NormSimilarity};
 use lucene_util::small_float;
+
+use crate::explain::Explanation;
 
 /// `CollectionStatistics`: a field's reader-wide statistics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,6 +132,17 @@ pub trait SimScorer: Send + Sync {
     /// time). `None` for every other similarity.
     fn bm25_parts(&self) -> Option<(f32, &[f32; 256])> {
         None
+    }
+
+    /// `explain(freq, norm)`: how [`Self::score`] of `freq`'s value and
+    /// `norm` was computed, `freq` being the frequency's own explanation.
+    /// The default is `SimScorer.explain`'s: the score over `freq`.
+    fn explain(&self, freq: Explanation, norm: i64) -> Explanation {
+        Explanation::match_(
+            self.score(freq.value, norm),
+            format!("score(freq={}), with freq of:", freq.value_string()),
+        )
+        .with_details(vec![freq])
     }
 }
 
@@ -278,6 +293,12 @@ impl Bm25Similarity {
 struct Bm25Scorer {
     weight: f32,
     cache: [f32; 256],
+    /// What [`SimScorer::explain`] reports: Java builds the idf node
+    /// eagerly; this keeps the statistics and builds it when asked.
+    sim: Bm25Similarity,
+    boost: f32,
+    collection: CollectionStatistics,
+    terms: Vec<TermStatistics>,
 }
 
 impl SimScorer for Bm25Scorer {
@@ -287,6 +308,29 @@ impl SimScorer for Bm25Scorer {
     }
     fn bm25_parts(&self) -> Option<(f32, &[f32; 256])> {
         Some((self.weight, &self.cache))
+    }
+    /// `BM25Scorer.explain`.
+    fn explain(&self, freq: Explanation, norm: i64) -> Explanation {
+        let doc_count = self.collection.doc_count;
+        let idfs = self
+            .terms
+            .iter()
+            .map(|t| {
+                let idf = Bm25Similarity::idf(t.doc_freq, doc_count);
+                crate::explain::idf_explanation(idf, t.doc_freq, doc_count)
+            })
+            .collect();
+        let idf = crate::explain::summed_idf_explanation(idfs, "idf, sum of:");
+        let value = self.score(freq.value, norm);
+        crate::explain::explain_bm25(
+            &self.sim,
+            self.boost,
+            value,
+            idf,
+            freq,
+            norm,
+            &self.collection,
+        )
     }
 }
 
@@ -325,6 +369,10 @@ impl Similarity for Bm25Similarity {
         Arc::new(Bm25Scorer {
             weight: boost * idf,
             cache,
+            sim: *self,
+            boost,
+            collection: *collection,
+            terms: terms.to_vec(),
         })
     }
 
@@ -384,12 +432,56 @@ impl ClassicSimilarity {
 struct TfIdfScorer {
     query_weight: f32,
     norm_table: [f32; 256],
+    sim: ClassicSimilarity,
+    explain: TfIdfExplain,
 }
 
 impl SimScorer for TfIdfScorer {
     fn score(&self, freq: f32, norm: i64) -> f32 {
         let raw = ClassicSimilarity::tf(freq) * self.query_weight;
         raw * self.norm_table[(norm & 0xFF) as usize]
+    }
+    fn explain(&self, freq: Explanation, norm: i64) -> Explanation {
+        self.explain.explain(&self.sim, freq, norm)
+    }
+}
+
+/// What `TFIDFScorer.explain` reports beyond its score: the boost and the
+/// statistics its idf node is built from (when asked, where Java builds it
+/// in `scorer`).
+pub(crate) struct TfIdfExplain {
+    boost: f32,
+    doc_count: i64,
+    terms: Vec<TermStatistics>,
+}
+
+impl TfIdfExplain {
+    pub(crate) fn new(
+        boost: f32,
+        collection: &CollectionStatistics,
+        terms: &[TermStatistics],
+    ) -> Self {
+        Self {
+            boost,
+            doc_count: collection.doc_count,
+            terms: terms.to_vec(),
+        }
+    }
+
+    /// `TFIDFScorer.explain(freq, norm)` under `sim`.
+    pub(crate) fn explain(
+        &self,
+        sim: &dyn TfIdfSimilarity,
+        freq: Explanation,
+        norm: i64,
+    ) -> Explanation {
+        let idfs = self
+            .terms
+            .iter()
+            .map(|t| crate::explain::tfidf_idf_explanation(sim, t.doc_freq, self.doc_count))
+            .collect();
+        let idf = crate::explain::summed_idf_explanation(idfs, "idf(), sum of:");
+        crate::explain::explain_tfidf(sim, self.boost, idf, freq, norm)
     }
 }
 
@@ -415,6 +507,8 @@ impl Similarity for ClassicSimilarity {
         Arc::new(TfIdfScorer {
             query_weight: boost * idf,
             norm_table: Self::norm_table(),
+            sim: *self,
+            explain: TfIdfExplain::new(boost, collection, terms),
         })
     }
 
@@ -462,6 +556,12 @@ struct ConstantSimScorer(f32);
 impl SimScorer for ConstantSimScorer {
     fn score(&self, _freq: f32, _norm: i64) -> f32 {
         self.0
+    }
+    /// `BooleanSimilarity.BooleanWeight.explain`: the boost (the scorer's
+    /// class names itself).
+    fn explain(&self, _freq: Explanation, _norm: i64) -> Explanation {
+        Explanation::match_(self.0, "score(BooleanWeight), computed from:")
+            .with_details(vec![Explanation::match_(self.0, "boost, query boost")])
     }
 }
 
@@ -567,6 +667,69 @@ trait BaseModel: Send + Sync + fmt::Debug {
     fn collection_model(&self) -> Option<CollectionModel> {
         None
     }
+
+    /// `getClass().getSimpleName()`.
+    fn simple_name(&self) -> &'static str;
+
+    /// `SimilarityBase.explain(subExpls, stats, freq, docLen)`: the details
+    /// [`Self::explain`]'s default reports. `LMSimilarity`'s (the
+    /// collection probability) for a language model, none otherwise.
+    fn explain_details(
+        &self,
+        subs: &mut Vec<Explanation>,
+        stats: &BasicStats,
+        _freq: f64,
+        _doc_len: f64,
+    ) {
+        if let Some(model) = self.collection_model() {
+            subs.push(lm_collection_probability(stats, model));
+        }
+    }
+
+    /// `SimilarityBase.explain(stats, freq, docLen)`.
+    fn explain(&self, stats: &BasicStats, freq: Explanation, doc_len: f64) -> Explanation {
+        let f = f64::from(freq.value);
+        let mut subs = Vec::new();
+        self.explain_details(&mut subs, stats, f, doc_len);
+        Explanation::match_(
+            self.score(stats, f, doc_len) as f32,
+            format!(
+                "score({}, freq={}), computed from:",
+                self.simple_name(),
+                freq.value_string()
+            ),
+        )
+        .with_details(subs)
+    }
+}
+
+/// `SimilarityBase`'s subclasses' `score(<name>, freq=f), computed as ...`
+/// top line over `subs`; `freq.getValue().doubleValue()` is what they score.
+fn base_explanation(
+    model: &impl BaseModel,
+    stats: &BasicStats,
+    freq: &Explanation,
+    doc_len: f64,
+    computed_as: &str,
+    subs: Vec<Explanation>,
+) -> Explanation {
+    Explanation::match_(
+        model.score(stats, freq.double_value(), doc_len) as f32,
+        format!(
+            "score({}, freq={}), computed as {computed_as} from:",
+            model.simple_name(),
+            freq.value_string()
+        ),
+    )
+    .with_details(subs)
+}
+
+/// `subs.add(Explanation.match((float) stats.getBoost(), description))`
+/// unless the boost is 1.
+fn push_boost(subs: &mut Vec<Explanation>, stats: &BasicStats, description: &str) {
+    if stats.boost != 1.0 {
+        subs.push(Explanation::match_(stats.boost as f32, description));
+    }
 }
 
 struct BasicSimScorer<M> {
@@ -580,6 +743,10 @@ impl<M: BaseModel> SimScorer for BasicSimScorer<M> {
         let len = f64::from(self.lengths[norm as u8 as usize]);
         self.model.score(&self.stats, f64::from(freq), len) as f32
     }
+    fn explain(&self, freq: Explanation, norm: i64) -> Explanation {
+        let len = f64::from(self.lengths[norm as u8 as usize]);
+        self.model.explain(&self.stats, freq, len)
+    }
 }
 
 /// `MultiSimilarity.MultiSimScorer`: the float scores summed as a `double`.
@@ -591,6 +758,15 @@ impl SimScorer for MultiSimScorer {
             .iter()
             .map(|s| f64::from(s.score(freq, norm)))
             .sum::<f64>() as f32
+    }
+    fn explain(&self, freq: Explanation, norm: i64) -> Explanation {
+        let value = self.score(freq.value, norm);
+        let subs = self
+            .0
+            .iter()
+            .map(|s| s.explain(freq.clone(), norm))
+            .collect();
+        Explanation::match_(value, "sum of:").with_details(subs)
     }
 }
 
@@ -679,6 +855,88 @@ impl BasicModel {
             }
         }
     }
+
+    /// `getClass().getSimpleName()`.
+    pub fn simple_name(self) -> &'static str {
+        match self {
+            BasicModel::G => "BasicModelG",
+            BasicModel::IF => "BasicModelIF",
+            BasicModel::In => "BasicModelIn",
+            BasicModel::Ine => "BasicModelIne",
+        }
+    }
+
+    /// `BasicModel.explain(stats, tfn, aeTimes1pTfn)`.
+    pub fn explain(self, stats: &BasicStats, tfn: f64, ae_times_1p_tfn: f64) -> Explanation {
+        let value =
+            (self.score(stats, tfn, ae_times_1p_tfn) * (1.0 + tfn) / ae_times_1p_tfn) as f32;
+        let tfn_expl = Explanation::match_(tfn as f32, "tfn, normalized term frequency");
+        let n_docs = "N, total number of documents with field";
+        let (formula, details) = match self {
+            BasicModel::G => {
+                let f = (stats.total_term_freq + 1) as f64;
+                let n = stats.number_of_documents as f64;
+                let lambda = f / (n + f);
+                let lambda =
+                    Explanation::match_(lambda as f32, "lambda, computed as F / (N + F) from:")
+                        .with_details(vec![
+                            Explanation::match_(
+                                f as f32,
+                                "F, total number of occurrences of term across all docs + 1",
+                            ),
+                            Explanation::match_(n as f32, n_docs),
+                        ]);
+                (
+                    "log2(lambda + 1) + tfn * log2((1 + lambda) / lambda)",
+                    vec![tfn_expl, lambda],
+                )
+            }
+            BasicModel::IF => (
+                "tfn * log2(1 + (N + 1) / (F + 0.5))",
+                vec![
+                    tfn_expl,
+                    Explanation::match_long(stats.number_of_documents, n_docs),
+                    Explanation::match_long(
+                        stats.total_term_freq,
+                        "F, total number of occurrences of term across all documents",
+                    ),
+                ],
+            ),
+            BasicModel::In => (
+                "tfn * log2((N + 1) / (n + 0.5))",
+                vec![
+                    tfn_expl,
+                    Explanation::match_long(stats.number_of_documents, n_docs),
+                    Explanation::match_long(
+                        stats.doc_freq,
+                        "n, number of documents containing term",
+                    ),
+                ],
+            ),
+            BasicModel::Ine => {
+                let f = stats.total_term_freq as f64;
+                let n = stats.number_of_documents as f64;
+                let ne = n * (1.0 - ((n - 1.0) / n).powf(f));
+                let ne = Explanation::match_(
+                    ne as f32,
+                    "ne, computed as N * (1 - Math.pow((N - 1) / N, F)) from:",
+                )
+                .with_details(vec![
+                    Explanation::match_(
+                        f as f32,
+                        "F, total number of occurrences of term across all docs",
+                    ),
+                    Explanation::match_(n as f32, n_docs),
+                ]);
+                ("tfn * log2((N + 1) / (ne + 0.5))", vec![tfn_expl, ne])
+            }
+        };
+        Explanation::match_(
+            value,
+            format!("{}, computed as {formula} from:", self.simple_name()),
+        )
+        .with_details(details)
+    }
 }
 
 /// `AfterEffect`: DFR's first normalisation of information gain.
@@ -700,6 +958,34 @@ impl AfterEffect {
                 (f as f64 + 1.0) / n as f64
             }
             AfterEffect::L => 1.0,
+        }
+    }
+
+    /// `AfterEffect.explain(stats, tfn)`.
+    pub fn explain(self, stats: &BasicStats, tfn: f64) -> Explanation {
+        let value = (self.score_times_1p_tfn(stats) / (1.0 + tfn)) as f32;
+        let tfn_expl = || Explanation::match_(tfn as f32, "tfn, normalized term frequency");
+        match self {
+            AfterEffect::B => Explanation::match_(
+                value,
+                "AfterEffectB, computed as (F + 1) / (n * (tfn + 1)) from:",
+            )
+            .with_details(vec![
+                tfn_expl(),
+                Explanation::match_long(
+                    stats.total_term_freq,
+                    "F, total number of occurrences of term across all documents + 1",
+                ),
+                Explanation::match_long(
+                    stats.doc_freq,
+                    "n, number of documents containing term + 1",
+                ),
+                tfn_expl(),
+            ]),
+            AfterEffect::L => {
+                Explanation::match_(value, "AfterEffectL, computed as 1 / (tfn + 1) from:")
+                    .with_details(vec![tfn_expl()])
+            }
         }
     }
 }
@@ -761,6 +1047,77 @@ impl Normalization {
             Normalization::Z(z) => tf * (stats.avg_field_length / len).powf(f64::from(z)),
         }
     }
+
+    /// `Normalization.explain(stats, tf, len)`.
+    pub fn explain(self, stats: &BasicStats, tf: f64, len: f64) -> Explanation {
+        let value = self.tfn(stats, tf, len) as f32;
+        let tf_expl = || {
+            Explanation::match_(
+                tf as f32,
+                "tf, number of occurrences of term in the document",
+            )
+        };
+        let avgfl = || {
+            Explanation::match_(
+                stats.avg_field_length as f32,
+                "avgfl, average length of field across all documents",
+            )
+        };
+        let fl = || Explanation::match_(len as f32, "fl, field length of the document");
+        let (name, formula, details) = match self {
+            // `Explanation.match(1, ...)`: an `Integer`.
+            Normalization::None => return Explanation::match_long(1, "no normalization"),
+            Normalization::H1(c) => (
+                "NormalizationH1",
+                "tf * c * (avgfl / fl)",
+                vec![
+                    tf_expl(),
+                    Explanation::match_(c, "c, hyper-parameter"),
+                    avgfl(),
+                    fl(),
+                ],
+            ),
+            Normalization::H2(c) => (
+                "NormalizationH2",
+                "tf * log2(1 + c * avgfl / fl)",
+                vec![
+                    tf_expl(),
+                    Explanation::match_(c, "c, hyper-parameter"),
+                    avgfl(),
+                    fl(),
+                ],
+            ),
+            Normalization::H3(mu) => (
+                "NormalizationH3",
+                "(tf + mu * ((F+1) / (T+1))) / (fl + mu) * mu",
+                vec![
+                    tf_expl(),
+                    Explanation::match_(mu, "mu, smoothing parameter"),
+                    Explanation::match_(
+                        stats.total_term_freq as f32,
+                        "F,  total number of occurrences of term across all documents",
+                    ),
+                    Explanation::match_(
+                        stats.number_of_field_tokens as f32,
+                        "T, total number of tokens of the field across all documents",
+                    ),
+                    fl(),
+                ],
+            ),
+            Normalization::Z(z) => (
+                "NormalizationZ",
+                "tf * Math.pow(avgfl / fl, z)",
+                vec![
+                    tf_expl(),
+                    avgfl(),
+                    fl(),
+                    Explanation::match_(z, "z, relates to specificity of the language"),
+                ],
+            ),
+        };
+        Explanation::match_(value, format!("{name}, computed as {formula} from:"))
+            .with_details(details)
+    }
 }
 
 /// `DFRSimilarity`: divergence from randomness.
@@ -802,6 +1159,29 @@ impl BaseModel for DfrSimilarity {
         let ae_times_1p_tfn = self.after_effect.score_times_1p_tfn(stats);
         stats.boost * self.basic_model.score(stats, tfn, ae_times_1p_tfn)
     }
+
+    fn simple_name(&self) -> &'static str {
+        "DFRSimilarity"
+    }
+
+    fn explain(&self, stats: &BasicStats, freq: Explanation, doc_len: f64) -> Explanation {
+        let f = freq.double_value();
+        let mut subs = Vec::with_capacity(4);
+        push_boost(&mut subs, stats, "boost, query boost");
+        let tfn = self.normalization.tfn(stats, f, doc_len);
+        let ae_times_1p_tfn = self.after_effect.score_times_1p_tfn(stats);
+        subs.push(self.normalization.explain(stats, f, doc_len));
+        subs.push(self.basic_model.explain(stats, tfn, ae_times_1p_tfn));
+        subs.push(self.after_effect.explain(stats, tfn));
+        base_explanation(
+            self,
+            stats,
+            &freq,
+            doc_len,
+            "boost * basicModel.score(stats, tfn) * afterEffect.score(stats, tfn)",
+            subs,
+        )
+    }
 }
 
 /// `Distribution`: IB's probabilistic distribution.
@@ -834,6 +1214,15 @@ impl Distribution {
                 -((pow - lambda) / (1.0 - lambda)).ln()
             }
         }
+    }
+
+    /// `Distribution.explain(stats, tfn, lambda)`: the score, named.
+    pub fn explain(self, tfn: f64, lambda: f64) -> Explanation {
+        let name = match self {
+            Distribution::LL => "DistributionLL",
+            Distribution::SPL => "DistributionSPL",
+        };
+        Explanation::match_(self.score(tfn, lambda) as f32, name)
     }
 }
 
@@ -869,6 +1258,28 @@ impl Lambda {
                 }
             }
         }
+    }
+
+    /// `Lambda.explain(stats)`.
+    pub fn explain(self, stats: &BasicStats) -> Explanation {
+        let n_docs = Explanation::match_long(
+            stats.number_of_documents,
+            "N, total number of documents with field",
+        );
+        let (description, count) = match self {
+            Lambda::DF => (
+                "LambdaDF, computed as (n + 1) / (N + 1) from:",
+                Explanation::match_long(stats.doc_freq, "n, number of documents containing term"),
+            ),
+            Lambda::TTF => (
+                "LambdaTTF, computed as (F + 1) / (N + 1) from:",
+                Explanation::match_long(
+                    stats.total_term_freq,
+                    "F, total number of occurrences of term across all documents",
+                ),
+            ),
+        };
+        Explanation::match_(self.lambda(stats), description).with_details(vec![count, n_docs])
     }
 }
 
@@ -912,6 +1323,33 @@ impl BaseModel for IbSimilarity {
                 self.normalization.tfn(stats, freq, doc_len),
                 f64::from(self.lambda.lambda(stats)),
             )
+    }
+
+    fn simple_name(&self) -> &'static str {
+        "IBSimilarity"
+    }
+
+    fn explain(&self, stats: &BasicStats, freq: Explanation, doc_len: f64) -> Explanation {
+        let mut subs = Vec::with_capacity(4);
+        push_boost(&mut subs, stats, "boost, query boost");
+        let norm = self
+            .normalization
+            .explain(stats, freq.double_value(), doc_len);
+        let lambda = self.lambda.explain(stats);
+        // Java hands the distribution the two nodes' float values.
+        let distribution = self
+            .distribution
+            .explain(f64::from(norm.value), f64::from(lambda.value));
+        subs.extend([norm, lambda, distribution]);
+        base_explanation(
+            self,
+            stats,
+            &freq,
+            doc_len,
+            "boost * distribution.score(stats, normalization.tfn(stats, freq, docLen), \
+             lambda.lambda(stats))",
+            subs,
+        )
     }
 }
 
@@ -966,6 +1404,58 @@ impl BaseModel for DfiSimilarity {
         }
         let measure = self.independence.score(freq, expected);
         stats.boost * log2(measure + 1.0)
+    }
+
+    fn simple_name(&self) -> &'static str {
+        "DFISimilarity"
+    }
+
+    fn explain(&self, stats: &BasicStats, freq: Explanation, doc_len: f64) -> Explanation {
+        let f = freq.double_value();
+        let expected = (stats.total_term_freq + 1) as f64 * doc_len
+            / (stats.number_of_field_tokens + 1) as f64;
+        if f <= expected {
+            return Explanation::match_(
+                0.0,
+                format!(
+                    "score(DFISimilarity, freq={}), equals to 0",
+                    freq.value_string()
+                ),
+            );
+        }
+        let expected_expl = Explanation::match_(
+            expected as f32,
+            "expected, computed as (F + 1) * dl / (T + 1) from:",
+        )
+        .with_details(vec![
+            Explanation::match_long(
+                stats.total_term_freq,
+                "F, total number of occurrences of term across all docs",
+            ),
+            Explanation::match_(doc_len as f32, "dl, length of field"),
+            Explanation::match_long(
+                stats.number_of_field_tokens,
+                "T, total number of tokens in the field",
+            ),
+        ]);
+        let measure = self.independence.score(f, expected);
+        let measure = Explanation::match_(
+            measure as f32,
+            "measure, computed as independence.score(freq, expected) from:",
+        )
+        .with_details(vec![freq.clone(), expected_expl]);
+        let subs = vec![
+            Explanation::match_(stats.boost as f32, "boost, query boost"),
+            measure,
+        ];
+        base_explanation(
+            self,
+            stats,
+            &freq,
+            doc_len,
+            "boost * log2(measure + 1)",
+            subs,
+        )
     }
 }
 
@@ -1046,6 +1536,64 @@ impl BaseModel for LmDirichletSimilarity {
     fn collection_model(&self) -> Option<CollectionModel> {
         Some(self.collection_model)
     }
+
+    fn simple_name(&self) -> &'static str {
+        "LMDirichletSimilarity"
+    }
+
+    fn explain(&self, stats: &BasicStats, freq: Explanation, doc_len: f64) -> Explanation {
+        let f = freq.double_value();
+        let mu = f64::from(self.mu);
+        let p = stats.collection_probability;
+        let mut subs = Vec::with_capacity(6);
+        push_boost(&mut subs, stats, "query boost");
+        subs.push(Explanation::match_(self.mu, "mu"));
+        subs.push(
+            Explanation::match_(
+                (1.0 + f / (mu * p)).ln() as f32,
+                "term weight, computed as log(1 + freq /(mu * P)) from:",
+            )
+            .with_details(vec![lm_freq(f), lm_probability(p)]),
+        );
+        subs.push(Explanation::match_(
+            (mu / (doc_len + mu)).ln() as f32,
+            "document norm, computed as log(mu / (dl + mu))",
+        ));
+        subs.push(Explanation::match_(doc_len as f32, "dl, length of field"));
+        self.explain_details(&mut subs, stats, f, doc_len);
+        base_explanation(
+            self,
+            stats,
+            &freq,
+            doc_len,
+            "boost * (term weight + document norm)",
+            subs,
+        )
+    }
+}
+
+/// `LMSimilarity.explain(subs, ...)`: the collection probability.
+fn lm_collection_probability(stats: &BasicStats, model: CollectionModel) -> Explanation {
+    Explanation::match_(
+        model.compute_probability(stats) as f32,
+        "collection probability",
+    )
+}
+
+/// The language models' `freq` detail.
+fn lm_freq(freq: f64) -> Explanation {
+    Explanation::match_(
+        freq as f32,
+        "freq, number of occurrences of term in the document",
+    )
+}
+
+/// The language models' `P` detail.
+fn lm_probability(p: f64) -> Explanation {
+    Explanation::match_(
+        p as f32,
+        "P, probability that the current term is generated by the collection",
+    )
 }
 
 /// `LMJelinekMercerSimilarity`.
@@ -1087,6 +1635,29 @@ impl BaseModel for LmJelinekMercerSimilarity {
 
     fn collection_model(&self) -> Option<CollectionModel> {
         Some(self.collection_model)
+    }
+
+    fn simple_name(&self) -> &'static str {
+        "LMJelinekMercerSimilarity"
+    }
+
+    fn explain(&self, stats: &BasicStats, freq: Explanation, doc_len: f64) -> Explanation {
+        let f = freq.double_value();
+        let mut subs = Vec::with_capacity(6);
+        push_boost(&mut subs, stats, "boost");
+        subs.push(Explanation::match_(self.lambda, "lambda"));
+        subs.push(lm_probability(stats.collection_probability));
+        subs.push(lm_freq(f));
+        subs.push(Explanation::match_(doc_len as f32, "dl, length of field"));
+        self.explain_details(&mut subs, stats, f, doc_len);
+        base_explanation(
+            self,
+            stats,
+            &freq,
+            doc_len,
+            "boost * log(1 + ((1 - lambda) * freq / dl) /(lambda * P))",
+            subs,
+        )
     }
 }
 
@@ -1131,6 +1702,37 @@ impl BaseModel for IndriDirichletSimilarity {
 
     fn collection_model(&self) -> Option<CollectionModel> {
         Some(self.collection_model)
+    }
+
+    fn simple_name(&self) -> &'static str {
+        "IndriDirichletSimilarity"
+    }
+
+    /// `IndriDirichletSimilarity.explain(subs, ...)`, under
+    /// `SimilarityBase.explain`'s top line.
+    fn explain_details(
+        &self,
+        subs: &mut Vec<Explanation>,
+        stats: &BasicStats,
+        freq: f64,
+        doc_len: f64,
+    ) {
+        if stats.boost != 1.0 {
+            // `Explanation.match(stats.getBoost(), ...)`: a `Double`.
+            subs.push(Explanation::match_double(stats.boost, "boost"));
+        }
+        let mu = f64::from(self.mu);
+        subs.push(Explanation::match_(self.mu, "mu"));
+        let p = stats.collection_probability;
+        subs.push(Explanation::match_(
+            ((freq + mu * p) / (doc_len + mu)).ln() as f32,
+            "term weight",
+        ));
+        subs.push(Explanation::match_(
+            (mu / (doc_len + mu)).ln() as f32,
+            "document norm",
+        ));
+        subs.push(lm_collection_probability(stats, self.collection_model));
     }
 }
 
@@ -1207,42 +1809,226 @@ impl AxiomaticSimilarity {
     }
 }
 
-impl BaseModel for AxiomaticSimilarity {
-    fn score(&self, stats: &BasicStats, freq: f64, doc_len: f64) -> f64 {
+impl AxiomaticSimilarity {
+    /// `tf(stats, freq, docLen)`.
+    fn tf(&self, freq: f64) -> f64 {
         use AxiomaticVariant::*;
-        let s = f64::from(self.s);
-        let avgdl = stats.avg_field_length;
-        let tf = match self.variant {
+        match self.variant {
             F1Exp | F1Log | F3Exp | F3Log => Self::log_tf(freq),
             F2Exp | F2Log => 1.0,
-        };
-        let ln = match self.variant {
-            F1Exp | F1Log => (avgdl + s) / (avgdl + doc_len * s),
+        }
+    }
+
+    /// `ln(stats, freq, docLen)`.
+    fn ln(&self, stats: &BasicStats, doc_len: f64) -> f64 {
+        let s = f64::from(self.s);
+        let avgdl = stats.avg_field_length;
+        match self.variant {
+            AxiomaticVariant::F1Exp | AxiomaticVariant::F1Log => {
+                (avgdl + s) / (avgdl + doc_len * s)
+            }
             _ => 1.0,
-        };
-        let tfln = match self.variant {
-            F2Exp | F2Log => freq / (freq + s + s * doc_len / avgdl),
+        }
+    }
+
+    /// `tfln(stats, freq, docLen)`.
+    fn tfln(&self, stats: &BasicStats, freq: f64, doc_len: f64) -> f64 {
+        let s = f64::from(self.s);
+        match self.variant {
+            AxiomaticVariant::F2Exp | AxiomaticVariant::F2Log => {
+                freq / (freq + s + s * doc_len / stats.avg_field_length)
+            }
             _ => 1.0,
-        };
+        }
+    }
+
+    /// Whether `idf` is `Math.pow((N + 1) / n, k)` (the `EXP` variants)
+    /// rather than `log((N + 1) / n)`.
+    fn exp_idf(&self) -> bool {
+        use AxiomaticVariant::*;
+        matches!(self.variant, F1Exp | F2Exp | F3Exp)
+    }
+
+    /// `idf(stats, freq, docLen)`.
+    fn idf(&self, stats: &BasicStats) -> f64 {
         let ratio = (stats.number_of_documents as f64 + 1.0) / stats.doc_freq as f64;
-        let idf = match self.variant {
-            F1Exp | F2Exp | F3Exp => ratio.powf(f64::from(self.k)),
-            F1Log | F2Log | F3Log => ratio.ln(),
-        };
-        let gamma = match self.variant {
-            F3Exp | F3Log => {
-                (doc_len - f64::from(self.query_len)) * s * f64::from(self.query_len) / avgdl
+        if self.exp_idf() {
+            ratio.powf(f64::from(self.k))
+        } else {
+            ratio.ln()
+        }
+    }
+
+    /// `gamma(stats, freq, docLen)`.
+    fn gamma(&self, stats: &BasicStats, doc_len: f64) -> f64 {
+        match self.variant {
+            AxiomaticVariant::F3Exp | AxiomaticVariant::F3Log => {
+                let q = f64::from(self.query_len);
+                (doc_len - q) * f64::from(self.s) * q / stats.avg_field_length
             }
             _ => 0.0,
+        }
+    }
+
+    /// `tf * ln * tfln * idf - gamma`, before the boost.
+    fn unboosted(&self, stats: &BasicStats, freq: f64, doc_len: f64) -> f64 {
+        self.tf(freq) * self.ln(stats, doc_len) * self.tfln(stats, freq, doc_len) * self.idf(stats)
+            - self.gamma(stats, doc_len)
+    }
+
+    /// The subclasses' `tfExplain`, `lnExplain`, `tflnExplain` and
+    /// `idfExplain`.
+    fn component_explanations(
+        &self,
+        stats: &BasicStats,
+        freq: f64,
+        doc_len: f64,
+    ) -> [Explanation; 4] {
+        use AxiomaticVariant::*;
+        let freq_expl = || {
+            Explanation::match_(
+                freq as f32,
+                "freq, number of occurrences of term in the document",
+            )
         };
-        let mut score = tf * ln * tfln * idf - gamma;
+        let avgdl = || {
+            Explanation::match_(
+                stats.avg_field_length as f32,
+                "avgdl, average length of field across all documents",
+            )
+        };
+        let dl = || Explanation::match_(doc_len as f32, "dl, length of field");
+        let tf = self.tf(freq) as f32;
+        let tf = match self.variant {
+            F2Exp | F2Log => Explanation::match_(tf, "tf, term frequency, equals to 1"),
+            _ => Explanation::match_(
+                tf,
+                "tf, term frequency computed as 1 + log(1 + log(freq)) from:",
+            )
+            .with_details(vec![freq_expl()]),
+        };
+        let ln = self.ln(stats, doc_len) as f32;
+        let ln = match self.variant {
+            F1Exp | F1Log => Explanation::match_(
+                ln,
+                "ln, document length computed as (avgdl + s) / (avgdl + dl * s) from:",
+            )
+            .with_details(vec![avgdl(), dl()]),
+            _ => Explanation::match_(ln, "ln, document length, equals to 1"),
+        };
+        let tfln = self.tfln(stats, freq, doc_len) as f32;
+        let tfln = match self.variant {
+            F2Exp | F2Log => Explanation::match_(
+                tfln,
+                "tfln, mixed term frequency and document length, \
+                 computed as freq / (freq + s + s * dl / avgdl) from:",
+            )
+            .with_details(vec![freq_expl(), dl(), avgdl()]),
+            _ => Explanation::match_(
+                tfln,
+                "tfln, mixed term frequency and document length, equals to 1",
+            ),
+        };
+        let idf = Explanation::match_(
+            self.idf(stats) as f32,
+            if self.exp_idf() {
+                "idf, inverted document frequency computed as Math.pow((N + 1) / n, k) from:"
+            } else {
+                "idf, inverted document frequency computed as log((N + 1) / n) from:"
+            },
+        )
+        .with_details(vec![
+            Explanation::match_(
+                stats.number_of_documents as f32,
+                "N, total number of documents with field",
+            ),
+            Explanation::match_(
+                stats.doc_freq as f32,
+                "n, number of documents containing term",
+            ),
+        ]);
+        [tf, ln, tfln, idf]
+    }
+}
+
+impl BaseModel for AxiomaticSimilarity {
+    fn score(&self, stats: &BasicStats, freq: f64, doc_len: f64) -> f64 {
+        let mut score = self.unboosted(stats, freq, doc_len);
         score *= stats.boost;
         java_max(0.0, score)
+    }
+
+    fn simple_name(&self) -> &'static str {
+        self.variant.simple_name()
+    }
+
+    /// `Axiomatic.explain(subs, stats, freq, docLen)`.
+    fn explain_details(
+        &self,
+        subs: &mut Vec<Explanation>,
+        stats: &BasicStats,
+        freq: f64,
+        doc_len: f64,
+    ) {
+        push_boost(subs, stats, "boost, query boost");
+        subs.push(Explanation::match_(
+            self.k,
+            "k, hyperparam for the primitive weighting function",
+        ));
+        subs.push(Explanation::match_(
+            self.s,
+            "s, hyperparam for the growth function",
+        ));
+        subs.push(Explanation::match_long(
+            i64::from(self.query_len),
+            "queryLen, query length",
+        ));
+        subs.extend(self.component_explanations(stats, freq, doc_len));
+        subs.push(Explanation::match_(
+            self.gamma(stats, doc_len) as f32,
+            "gamma",
+        ));
+    }
+
+    /// `Axiomatic.explain(stats, freq, docLen)`: the unboosted score, then
+    /// the boost, then the floor at 0.
+    fn explain(&self, stats: &BasicStats, freq: Explanation, doc_len: f64) -> Explanation {
+        let f = freq.double_value();
+        let mut subs = Vec::with_capacity(10);
+        self.explain_details(&mut subs, stats, f, doc_len);
+        let score = self.unboosted(stats, f, doc_len);
+        let mut explanation = Explanation::match_(
+            score as f32,
+            format!(
+                "score({}, freq={}), computed from:",
+                self.variant.simple_name(),
+                freq.value_string()
+            ),
+        )
+        .with_details(subs);
+        if stats.boost != 1.0 {
+            explanation = Explanation::match_(
+                (score * stats.boost) as f32,
+                "Boosted score, computed as (score * boost) from:",
+            )
+            .with_details(vec![
+                explanation,
+                Explanation::match_(stats.boost as f32, "Query boost"),
+            ]);
+        }
+        if score < 0.0 {
+            // `Explanation.match(0, ...)`: `Integer`s.
+            explanation = Explanation::match_long(0, "max of:").with_details(vec![
+                Explanation::match_long(0, "Minimum legal score"),
+                explanation,
+            ]);
+        }
+        explanation
     }
 }
 
 macro_rules! base_similarity {
-    ($($t:ty => $name:expr),*) => {$(
+    ($($t:ty),*) => {$(
         impl NormSimilarity for $t {
             fn discount_overlaps(&self) -> bool {
                 self.discount_overlaps
@@ -1261,7 +2047,7 @@ macro_rules! base_similarity {
             }
 
             fn simple_name(&self) -> &str {
-                $name
+                BaseModel::simple_name(self)
             }
 
             fn shared(&self) -> Option<Arc<dyn Similarity>> {
@@ -1272,12 +2058,12 @@ macro_rules! base_similarity {
 }
 
 base_similarity!(
-    DfrSimilarity => "DFRSimilarity",
-    IbSimilarity => "IBSimilarity",
-    DfiSimilarity => "DFISimilarity",
-    LmDirichletSimilarity => "LMDirichletSimilarity",
-    LmJelinekMercerSimilarity => "LMJelinekMercerSimilarity",
-    IndriDirichletSimilarity => "IndriDirichletSimilarity"
+    DfrSimilarity,
+    IbSimilarity,
+    DfiSimilarity,
+    LmDirichletSimilarity,
+    LmJelinekMercerSimilarity,
+    IndriDirichletSimilarity
 );
 
 impl NormSimilarity for AxiomaticSimilarity {
@@ -1436,6 +2222,40 @@ mod tests {
 
     fn term() -> TermStatistics {
         TermStatistics::new(10, 40).unwrap()
+    }
+
+    /// `MultiSimScorer.explain`: "sum of:" each sub-scorer's explanation,
+    /// valued as the summed score -- for `MultiSimilarity` and for a
+    /// `SimilarityBase` over several terms.
+    #[test]
+    fn multi_scorers_explain_as_a_sum() {
+        let freq = || Explanation::match_(3.0, "freq, occurrences of term within document");
+        let multi = MultiSimilarity::new(vec![
+            Arc::new(Bm25Similarity::default()),
+            Arc::new(BooleanSimilarity),
+        ])
+        .unwrap();
+        let scorer = multi.scorer("f", 2.0, &coll(), &[term()]);
+        let e = scorer.explain(freq(), 7);
+        assert_eq!(e.description, "sum of:");
+        assert_eq!(e.value, scorer.score(3.0, 7));
+        assert_eq!(e.details.len(), 2);
+        assert!(e.details[0]
+            .description
+            .starts_with("score(freq=3.0), computed as boost * idf * tf"));
+        assert_eq!(
+            e.details[1].description,
+            "score(BooleanWeight), computed from:"
+        );
+
+        let dfi = DfiSimilarity::new(Independence::Saturated);
+        let scorer = dfi.scorer("f", 1.0, &coll(), &[term(), term()]);
+        let e = scorer.explain(freq(), 7);
+        assert_eq!(e.description, "sum of:");
+        assert_eq!(e.value, scorer.score(3.0, 7));
+        assert!(e.details[0]
+            .description
+            .starts_with("score(DFISimilarity, freq=3.0)"));
     }
 
     /// Each similarity reports its Java class's simple name, which an
