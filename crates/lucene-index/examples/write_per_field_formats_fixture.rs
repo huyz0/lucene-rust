@@ -12,7 +12,15 @@
 //! into one segment, the merge reading both formats of every source and
 //! writing both again (`PerFieldMergeState`).
 //!
-//! Usage: `write_per_field_formats_fixture <output-dir>`.
+//! With `ords` as a second argument `key` and `tag` go to
+//! `BlockTreeOrdsPostingsFormat(10, 20)` instead, under `_BlockTreeOrds_0`;
+//! with any other registered terms-dictionary format's name
+//! (`lucene_codecs::terms_dictionary::lookup`: `UniformSplit`,
+//! `SharedTermsUniformSplit`, or one a caller registered first, as
+//! lucene-test-framework's `write_test_framework_postings_fixture` does), to
+//! that format's default instance.
+//!
+//! Usage: `write_per_field_formats_fixture <output-dir> [ords|<format>]`.
 // Test-support code opts out of the arithmetic gate at the file boundary:
 // see `docs/arithmetic-gate.md`.
 #![allow(clippy::arithmetic_side_effects)]
@@ -55,7 +63,7 @@ fn field(name: &str, number: i32, index_options: IndexOptions) -> FieldInfo {
     }
 }
 
-fn write(dir: &FsDirectory, merge: bool) {
+fn write(dir: &FsDirectory, merge: bool, routed: Option<&str>) {
     let fields = vec![
         field("id", 0, IndexOptions::None),
         field("body", 1, IndexOptions::DocsAndFreqsAndPositions),
@@ -71,7 +79,14 @@ fn write(dir: &FsDirectory, merge: bool) {
     for name in ["body", "tag", "key"] {
         writer.add_postings_field(name).expect("postings");
     }
-    let small = Lucene104PostingsFormat::new(10, 20).expect("block sizes");
+    let small = match routed {
+        None => Lucene104PostingsFormat::new(10, 20).expect("block sizes"),
+        Some("ords") => Lucene104PostingsFormat::block_tree_ords(10, 20).expect("block sizes"),
+        Some(name) => Lucene104PostingsFormat::dictionary(
+            lucene_codecs::terms_dictionary::lookup(name)
+                .unwrap_or_else(|| panic!("no terms-dictionary format {name}")),
+        ),
+    };
     writer.set_postings_format_for_field("tag", small);
     writer.set_postings_format_for_field("key", small);
     for i in 0..PER_SEGMENT * SEGMENTS {
@@ -109,14 +124,15 @@ fn write(dir: &FsDirectory, merge: bool) {
     }
 }
 
-fn main() {
-    let out = std::env::args()
-        .nth(1)
-        .expect("usage: write_per_field_formats_fixture <output-dir>");
+pub fn main() {
+    let out = std::env::args().nth(1).expect(
+        "usage: write_per_field_formats_fixture <output-dir> [ords|uniform-split|shared-terms]",
+    );
+    let routed = std::env::args().nth(2);
     for (sub, merge) in [("flushed", false), ("merged", true)] {
         let path = format!("{out}/{sub}");
         std::fs::create_dir_all(&path).expect("create output dir");
-        write(&FsDirectory::open(&path), merge);
+        write(&FsDirectory::open(&path), merge, routed.as_deref());
     }
     println!("wrote per-field postings format indexes to {out}");
 }
