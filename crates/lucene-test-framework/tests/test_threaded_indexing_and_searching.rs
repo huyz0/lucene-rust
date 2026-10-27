@@ -1,7 +1,8 @@
 //! `ThreadedIndexingAndSearchingTestCase` as `TestNRTThreads` runs it (one
 //! reader per pass, reopened or opened after a commit, searched by every
-//! search thread), and with a shared reader reopened before each search, a
-//! few seeds each (`scripts/test-framework-stress.sh` runs 200).
+//! search thread), and as `TestSearcherManager` runs it (a reopen thread
+//! refreshing a `SearcherManager`, past searchers kept by a
+//! `SearcherLifetimeManager`), a few seeds each (`scripts/test-framework-stress.sh` runs 200).
 
 use lucene_test_framework::index::threaded_indexing_and_searching::{
     run_test, ReaderMode, ThreadedRunStats,
@@ -48,6 +49,6 @@ fn nrt_threads() {
 }
 
 #[test]
-fn reopened_reader_threads() {
-    assert_exercised(&runs("testSearcherManager", ReaderMode::Reopen, 3));
+fn searcher_manager_threads() {
+    assert_exercised(&runs("testSearcherManager", ReaderMode::SearcherManager, 1));
 }

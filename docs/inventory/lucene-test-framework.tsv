@@ -114,7 +114,7 @@ tests/index/RandomCodec	partial	crates/lucene-test-framework/src/index/random_co
 tests/index/RandomIndexWriter	ported	crates/lucene-test-framework/src/index/random_index_writer.rs::RandomIndexWriter
 tests/index/RandomPostingsTester	ported	crates/lucene-test-framework/src/index/random_postings_tester.rs::RandomPostingsTester -- M14: differs: no enum reuse; builds through IndexWriter, not a FieldsConsumer (TermState: seek_exact_state; intoBitSet: fill_bit_set; nextPostings: PostingsEnum::next_postings)
 tests/index/SuppressingConcurrentMergeScheduler	ported	crates/lucene-test-framework/src/index/suppressing_concurrent_merge_scheduler.rs::SuppressingConcurrentMergeScheduler
-tests/index/ThreadedIndexingAndSearchingTestCase	partial	crates/lucene-test-framework/src/index/threaded_indexing_and_searching.rs::run_test -- M14: TestSearcherManager's reopen thread and SearcherLifetimeManager; advanceSegmentInfosCounter, FailOnNonBulkMergesInfoStream, ensureSaneIWCOnNightly, reduceOpenFiles
+tests/index/ThreadedIndexingAndSearchingTestCase	partial	crates/lucene-test-framework/src/index/threaded_indexing_and_searching.rs::run_test -- M14: advanceSegmentInfosCounter, FailOnNonBulkMergesInfoStream, ensureSaneIWCOnNightly
 tests/mockfile/DisableFsyncFS	ported	crates/lucene-test-framework/src/mockfile/mock_fs.rs::fsync_disabled
 tests/mockfile/ExtrasFS	ported	crates/lucene-test-framework/src/mockfile/mock_fs.rs::create_directory
 tests/mockfile/FilterAsynchronousFileChannel	not-needed	java.nio.file FileSystem/Path/channel delegation plumbing the mock filesystems are built from; MockFs hooks the Rust directories (FsFaults, the output and input guards) instead

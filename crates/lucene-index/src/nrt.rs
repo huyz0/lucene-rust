@@ -177,7 +177,9 @@ impl IndexWriter<'_> {
         let committed = self.segment_infos().version;
         let version = match &self.nrt.last {
             Some((last, v)) if *last == keys => *v,
-            _ if keys == segment_keys(&self.segment_infos().segments)
+            // The last commit's segments, not the in-memory list: applying
+            // deletes changes a committed segment in place, with no commit.
+            _ if keys == segment_keys(self.committed_segments())
                 && self.nrt.max_version <= committed =>
             {
                 committed
