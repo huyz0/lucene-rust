@@ -12,8 +12,10 @@
 //! - Java's immutability checks (`files()`, `getDiagnostics()` and
 //!   `getAttributes()` refusing `add`/`put`) have nothing to check: a parsed
 //!   [`SegmentInfo`] is a value the caller owns.
-//! - `testExceptionOnCloseInput` is not ported: a directory hands out a
-//!   whole file, so a read has no input `close` a failure could hit.
+//! - [`read_segment_info`] closes its input through
+//!   [`Directory::close_input`] where Java's try-with-resources closes it,
+//!   so `testExceptionOnCloseInput`'s failure fires there (the op is
+//!   `FailureOp::CloseInput`, not a `close` frame on the call stack).
 //! - `getVersions()` is `Version.LATEST` alone, as
 //!   `TestLucene99SegmentInfoFormat`'s.
 //! - `testRandom`'s files and diagnostics are Java's draws, kept in draw
@@ -81,8 +83,12 @@ pub fn read_segment_info(
     name: &str,
     id: &[u8; ID_LENGTH],
 ) -> Result<SegmentInfo, String> {
-    let bytes = dir.open(&format!("{name}.si")).map_err(|e| e.to_string())?;
-    segment_info::parse(&bytes, id).map_err(|e| e.to_string())
+    let file = format!("{name}.si");
+    let bytes = dir.open(&file).map_err(|e| e.to_string())?;
+    // Java's try-with-resources: a parse failure wins over a close failure.
+    let info = segment_info::parse(&bytes, id).map_err(|e| e.to_string())?;
+    dir.close_input(&file, bytes).map_err(|e| e.to_string())?;
+    Ok(info)
 }
 
 /// `StringHelper.randomId()`: its own stream, not the test's.
@@ -352,6 +358,19 @@ pub fn test_exception_on_open_input(t: &mut LuceneTestCase) {
     dir.close().expect("close");
 }
 
+/// `testExceptionOnCloseInput`.
+pub fn test_exception_on_close_input(t: &mut LuceneTestCase) {
+    let (dir, fail) = failing(t, FailureOp::CloseInput);
+    let mut info = plain();
+    write_segment_info(&dir, "_123", &mut info).expect("write");
+    fail.set_do_fail();
+    let err = read_segment_info(&dir, "_123", &info.id).expect_err("the read must fail");
+    assert!(err.contains("FakeIOException"), "{err}");
+    fail.clear_do_fail();
+    assert!(fail.fired() > 0);
+    dir.close().expect("close");
+}
+
 /// `testRandom`.
 pub fn test_random(t: &mut LuceneTestCase) {
     for _ in 0..10 {
@@ -449,5 +468,6 @@ pub const TESTS: &[SuiteTest] = &[
     ),
     ("testExceptionOnCloseOutput", test_exception_on_close_output),
     ("testExceptionOnOpenInput", test_exception_on_open_input),
+    ("testExceptionOnCloseInput", test_exception_on_close_input),
     ("testRandom", test_random),
 ];

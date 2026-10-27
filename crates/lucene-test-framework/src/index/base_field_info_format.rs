@@ -12,8 +12,11 @@
 //!   name); its consistency checks are the same constructor checks.
 //! - `testImmutableAttributes` checks the attributes round trip: a parsed
 //!   [`FieldInfo`] is a value the caller owns, so there is no map to refuse
-//!   a `put`. `testExceptionOnCloseInput` is not ported: a read has no
-//!   input `close` to fail.
+//!   a `put`.
+//! - [`read_field_infos`] closes its input through
+//!   [`Directory::close_input`] where Java's try-with-resources closes it,
+//!   so `testExceptionOnCloseInput`'s failure fires there (the op is
+//!   [`FailureOp::CloseInput`], not a `close` frame on the call stack).
 //! - `testRandom`'s field names are Java's draws kept in draw order (not
 //!   `HashSet` order), so a seed does not number the fields as Java's does.
 
@@ -107,10 +110,12 @@ pub fn read_field_infos(
     segment: &str,
     id: &[u8; ID_LENGTH],
 ) -> Result<FieldInfos, String> {
-    let bytes = dir
-        .open(&format!("{segment}.fnm"))
-        .map_err(|e| e.to_string())?;
-    field_infos::parse(&bytes, id, "").map_err(|e| e.to_string())
+    let name = format!("{segment}.fnm");
+    let bytes = dir.open(&name).map_err(|e| e.to_string())?;
+    // Java's try-with-resources: a parse failure wins over a close failure.
+    let infos = field_infos::parse(&bytes, id, "").map_err(|e| e.to_string())?;
+    dir.close_input(&name, bytes).map_err(|e| e.to_string())?;
+    Ok(infos)
 }
 
 /// `newSegmentInfo(dir, "_123")`'s part the format reads: its id. Draws
@@ -223,6 +228,20 @@ pub fn test_exception_on_close_output(t: &mut LuceneTestCase) {
 /// `testExceptionOnOpenInput`.
 pub fn test_exception_on_open_input(t: &mut LuceneTestCase) {
     let (dir, fail) = failing(t, FailureOp::OpenInput);
+    let id = new_segment_id(t);
+    let infos = finish(vec![create_field_info()]);
+    write_field_infos(&dir, "_123", &id, &infos).expect("write");
+    fail.set_do_fail();
+    let err = read_field_infos(&dir, "_123", &id).expect_err("the read must fail");
+    assert!(err.contains("FakeIOException"), "{err}");
+    fail.clear_do_fail();
+    assert!(fail.fired() > 0);
+    dir.close().expect("close");
+}
+
+/// `testExceptionOnCloseInput`.
+pub fn test_exception_on_close_input(t: &mut LuceneTestCase) {
+    let (dir, fail) = failing(t, FailureOp::CloseInput);
     let id = new_segment_id(t);
     let infos = finish(vec![create_field_info()]);
     write_field_infos(&dir, "_123", &id, &infos).expect("write");
@@ -413,5 +432,6 @@ pub const TESTS: &[SuiteTest] = &[
     ),
     ("testExceptionOnCloseOutput", test_exception_on_close_output),
     ("testExceptionOnOpenInput", test_exception_on_open_input),
+    ("testExceptionOnCloseInput", test_exception_on_close_input),
     ("testRandom", test_random),
 ];

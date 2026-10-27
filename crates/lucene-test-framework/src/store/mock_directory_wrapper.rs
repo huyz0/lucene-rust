@@ -141,6 +141,9 @@ pub enum FailureOp {
     CloseOutput,
     /// `openInput`.
     OpenInput,
+    /// An input's `close` ([`Directory::close_input`]), after its handle
+    /// is released.
+    CloseInput,
     /// `sync`.
     Sync,
     /// `rename` (the name is the source).
@@ -1506,6 +1509,13 @@ impl Directory for MockDirectoryWrapper {
                 slow_close,
             },
         )))
+    }
+
+    /// `MockIndexInputWrapper.close()`: releases the handle (`removeIndexInput`),
+    /// then `maybeThrowDeterministicException`.
+    fn close_input(&self, name: &str, input: Input) -> Result<()> {
+        drop(input);
+        self.deterministic(FailureOp::CloseInput, name)
     }
 
     /// `createOutput`.

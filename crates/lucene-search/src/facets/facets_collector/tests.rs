@@ -314,3 +314,46 @@ fn a_range_collects_like_its_documents_one_by_one() {
         }
     });
 }
+
+#[test]
+fn into_bit_set_fills_up_to_the_bound_and_stops_there() {
+    let array = DocIdSet::Array(vec![3, 5, 8, 12]);
+    let mut it = array.iterator();
+    assert_eq!(it.advance(4).unwrap(), 5);
+    let mut bits = FixedBitSet::new(10);
+    // Nothing below the current document: no bit, no move.
+    it.fill_bit_set(5, &mut bits, 2).unwrap();
+    assert_eq!(bits.cardinality(), 0);
+    assert_eq!(it.doc_id(), 5);
+    it.fill_bit_set(10, &mut bits, 2).unwrap();
+    // FBS: 3 and 6 are below the 10 bits `bits` was built with.
+    assert!(bits.get(3) && bits.get(6));
+    assert_eq!(bits.cardinality(), 2);
+    assert_eq!(it.doc_id(), 12);
+    // To the end: the iterator is exhausted.
+    let mut rest = FixedBitSet::new(1);
+    it.fill_bit_set(NO_MORE_DOCS, &mut rest, 12).unwrap();
+    // FBS: `rest` holds one bit.
+    assert!(rest.get(0));
+    assert_eq!(it.doc_id(), NO_MORE_DOCS);
+}
+
+#[test]
+#[should_panic(expected = "offset=6 docID()=5")]
+fn into_bit_set_refuses_an_offset_past_the_current_document() {
+    let array = DocIdSet::Array(vec![5]);
+    let mut it = array.iterator();
+    it.next_doc().unwrap();
+    let _ = it.fill_bit_set(10, &mut FixedBitSet::new(10), 6);
+}
+
+#[test]
+fn ram_bytes_used_counts_the_owned_heap() {
+    let base = std::mem::size_of::<DocIdSet>();
+    assert_eq!(DocIdSet::Empty.ram_bytes_used(), base);
+    let mut docs = Vec::with_capacity(16);
+    docs.extend([1, 2, 3]);
+    assert_eq!(DocIdSet::Array(docs).ram_bytes_used(), base + 64);
+    let bits = FixedBitSet::new(130);
+    assert_eq!(DocIdSet::Bits { bits, cost: 0 }.ram_bytes_used(), base + 24);
+}
