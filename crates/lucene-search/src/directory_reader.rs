@@ -1941,12 +1941,24 @@ fn open_per_field_postings(
     let owned = |bytes: Vec<u8>| (!bytes.is_empty()).then(|| Arc::new(Input::Owned(bytes)));
     let postings_files = opened
         .iter()
-        .flat_map(|(_, dictionary, doc, pos, pay)| {
-            dictionary.iter().cloned().chain(
-                [doc.clone(), pos.clone(), pay.clone()]
-                    .into_iter()
-                    .flatten(),
+        .flat_map(|(suffix, dictionary, doc, pos, pay)| {
+            // A footerless dictionary (`RAMOnly`'s token) has nothing to check.
+            let checksummed = per_field_postings::dictionary_extensions(
+                per_field_postings::format_of_suffix(suffix),
             )
+            .iter()
+            .all(|ext| {
+                !per_field_postings::is_unchecksummed_dictionary_file(&format!("_{suffix}.{ext}"))
+            });
+            dictionary
+                .iter()
+                .filter(move |_| checksummed)
+                .cloned()
+                .chain(
+                    [doc.clone(), pos.clone(), pay.clone()]
+                        .into_iter()
+                        .flatten(),
+                )
         })
         .collect();
     Ok((

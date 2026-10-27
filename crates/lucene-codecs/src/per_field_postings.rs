@@ -375,8 +375,12 @@ impl GroupOutput {
             return Vec::new();
         }
         let output = &self.output;
-        let mut files: Vec<(&'static str, &[u8])> =
-            vec![("doc", &output.doc), ("psm", &output.psm)];
+        // A dictionary that keeps its own postings writes neither.
+        let mut files: Vec<(&'static str, &[u8])> = [("doc", &output.doc), ("psm", &output.psm)]
+            .into_iter()
+            .filter(|(_, bytes)| self.dictionary.is_none() || !bytes.is_empty())
+            .map(|(ext, bytes)| (ext, bytes.as_slice()))
+            .collect();
         match &self.dictionary {
             // A dictionary file the format left unused is not written.
             Some(dictionary) => files.extend(
@@ -906,6 +910,28 @@ pub fn dictionary_file_required(format: &str, ext: &str) -> bool {
     !is_foreign_format(format) || marker_extension(format) == ext
 }
 
+/// Whether `file` (a loose name or a compound entry) is a dictionary file
+/// of a group whose format writes no footer
+/// ([`TermsDictionaryFormat::checksummed`]), which no integrity check reads.
+pub fn is_unchecksummed_dictionary_file(file: &str) -> bool {
+    let Some((stem, ext)) = file.rsplit_once('.') else {
+        return false;
+    };
+    let Some((head, n)) = stem.rsplit_once('_') else {
+        return false;
+    };
+    if !n.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    crate::terms_dictionary::all().into_iter().any(|d| {
+        !d.checksummed()
+            && d.extensions().contains(&ext)
+            && head
+                .strip_suffix(d.name())
+                .is_some_and(|rest| rest.is_empty() || rest.ends_with('_'))
+    })
+}
+
 /// Whether `files` hold any postings group's terms dictionary.
 pub fn has_postings_files(files: &[String]) -> bool {
     files.iter().any(|f| {
@@ -963,7 +989,10 @@ pub fn open_groups(
             )));
         }
         let rewritten;
-        let (tim, tip, tmd) = if is_foreign_format(format) {
+        let reencoded = reencode_group(g, field_infos, segment_id, max_doc).transpose()?;
+        let (tim, tip, tmd) = if let Some(out) = &reencoded {
+            (&out.tim[..], &out.tip[..], &out.tmd[..])
+        } else if is_foreign_format(format) {
             rewritten = rewrite_group_as_block_tree(g, field_infos, segment_id, max_doc)?;
             (&rewritten.0[..], &rewritten.1[..], &rewritten.2[..])
         } else {
@@ -971,6 +1000,14 @@ pub fn open_groups(
         };
         let fields = blocktree::open(tim, tip, tmd, field_infos, segment_id, g.suffix, max_doc)?;
         let base = [doc.len() as u64, pos.len() as u64, pay.len() as u64];
+        if let Some(out) = &reencoded {
+            // Its own encoding, already consistent: no header to re-check.
+            doc.extend_from_slice(&out.doc);
+            pos.extend_from_slice(&out.pos);
+            pay.extend_from_slice(&out.pay);
+            combined.push((fields, base));
+            continue;
+        }
         if let Some(bytes) = g.doc {
             DocInput::open(bytes, segment_id, g.suffix)?;
             doc.extend_from_slice(bytes);
@@ -1028,6 +1065,61 @@ pub fn rewrite_group_as_block_tree(
         format: "block tree rewrite",
         message: e.to_string(),
     })
+}
+
+/// A group of a format that keeps its own postings
+/// ([`TermsDictionaryFormat::read_postings`]: `RAMOnly`), encoded as a
+/// block tree over `Lucene104` postings under the group's suffix: its
+/// `.tim`/`.tip`/`.tmd` and `.doc`/`.pos`/`.pay` in the returned output.
+/// `None` for any other group.
+///
+/// Differs from Java: Java serves such a group through the format's own
+/// `FieldsProducer`. The terms, statistics and postings are the same; terms
+/// enumerate in byte order, and impacts carry no norms (every bound is the
+/// loosest), since the format keeps none.
+pub fn reencode_group(
+    group: &GroupFiles<'_>,
+    field_infos: &FieldInfos,
+    segment_id: &[u8; ID_LENGTH],
+    max_doc: i32,
+) -> Option<blocktree::Result<Output>> {
+    let format = crate::terms_dictionary::lookup(format_of_suffix(group.suffix))?;
+    let state = crate::segment_state::SegmentReadState {
+        max_doc,
+        segment_id,
+        segment_suffix: group.suffix,
+        field_infos,
+    };
+    let fields = match format.read_postings(&group.dictionary, &state)? {
+        Ok(fields) => fields,
+        Err(e) => return Some(Err(e)),
+    };
+    let inputs: Vec<FieldPostingsInput<'_, postings_writer::TermPostings>> = fields
+        .iter()
+        .filter(|f| !f.terms.is_empty())
+        .map(|f| FieldPostingsInput {
+            field_number: f.field_number,
+            index_options: f.index_options,
+            doc_count: f.doc_count,
+            has_payloads: f.has_payloads,
+            terms: &f.terms,
+        })
+        .collect();
+    let written = if inputs.is_empty() {
+        postings_writer::write_no_fields(&WriteOptions::default(), segment_id, group.suffix)
+    } else {
+        postings_writer::write_fields_with_options(
+            &inputs,
+            &[],
+            &WriteOptions::default(),
+            segment_id,
+            group.suffix,
+        )
+    };
+    Some(written.map_err(|e| blocktree::Error::ForeignDictionary {
+        format: "postings re-encode",
+        message: e.to_string(),
+    }))
 }
 
 /// The codec suffixes of a segment's postings groups -- one per `.tmd`
