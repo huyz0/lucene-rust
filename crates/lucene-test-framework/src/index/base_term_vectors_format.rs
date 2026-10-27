@@ -3,18 +3,14 @@
 //!
 //! Differs:
 //!
-//! - This port reads a document's term vectors as a value
-//!   ([`TermVectorsDocument`]), not as `Fields`/`TermsEnum`/`PostingsEnum`.
-//!   `assertEquals(RandomDocument, Fields)` checks what Java checks (field
-//!   names, term count, flags, the sorted terms, each term's freq, and each
-//!   occurrence's position, offsets and payload against the token stream);
-//!   what only an enum can do -- `seekExact`/`seekCeil` back to a term,
-//!   reusing an enum, `nextPosition` past the last position throwing -- has
-//!   nothing here to call.
-//! - The six `testPostingsEnum*` tests ask one document's `bar` term for its
-//!   postings under every flag; here they check the term's value once: the
-//!   freq, and positions, offsets and payloads present exactly when the
-//!   field type stores them.
+//! - A document's term vectors decode into a [`TermVectorsDocument`];
+//!   `Terms`/`TermsEnum`/`PostingsEnum` are lucene-search's
+//!   [`TermVectorTermsEnum`] over one of its fields, so the field-level
+//!   statistics (`size`, `hasPositions`, ...) are read off the value.
+//! - Enum reuse (`postings(reuse, flags)`) has no counterpart: each call
+//!   hands out a new enum, checked as Java checks the reused one.
+//! - `assertEquals(RandomDocument, Fields)` seeks back to every term,
+//!   alternating `seekExact` and `seekCeil`, not to five random ones.
 //! - `RandomTokenStream`'s `PermissiveOffsetAttributeImpl` is not needed: a
 //!   [`FieldTokens`] carries its offsets unchecked.
 //! - `maybeWrapWithMergingReader` is not applied (see
@@ -23,6 +19,7 @@
 use super::base_index_file_format::SuiteTest;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use lucene_codecs::blocktree::SeekStatus;
 use lucene_codecs::term_vectors::TermVectorsDocument;
 use lucene_index::buffered_updates::Term;
 use lucene_index::document::{
@@ -31,7 +28,8 @@ use lucene_index::document::{
 };
 use lucene_index::segment_info::{IndexSortField, IndexSortKind, NumericSortKey};
 use lucene_search::directory_reader::{DirectoryReader, SegmentReader};
-use lucene_search::reader::LeafReader;
+use lucene_search::reader::term_vector_terms::TermVectorTermsEnum;
+use lucene_search::reader::{LeafReader, PostingsEnum, PostingsFlags, TermsEnum, NO_MORE_DOCS};
 use lucene_store::ByteBuffersDirectory;
 use lucene_util::java_random::JavaRandom;
 
@@ -366,46 +364,55 @@ pub fn assert_doc_equals(
             terms.has_payloads,
             "{name}: hasPayloads"
         );
-        for (expected, term) in unique.iter().zip(&terms.terms) {
-            assert_eq!(*expected, term.term.as_slice(), "{name}");
-            let text = std::str::from_utf8(&term.term).expect("a UTF-8 term");
-            assert_eq!(tk.freqs[text], term.freq, "{name}: freq of {text:?}");
+        let mut te = TermVectorTermsEnum::new(terms);
+        for expected in &unique {
+            let next = te.next().expect("next").map(<[u8]>::to_vec);
+            assert_eq!(Some(expected.to_vec()), next, "{name}");
+            assert_eq!(Some(*expected), te.term(), "{name}");
+            assert_eq!(1, te.doc_freq().expect("docFreq"), "{name}");
+            let text = std::str::from_utf8(expected).expect("a UTF-8 term");
+
+            let mut postings = te.postings(PostingsFlags::Freqs).expect("postings");
+            assert_eq!(0, postings.next_doc().expect("nextDoc"));
+            assert_eq!(0, postings.doc_id());
+            assert_eq!(tk.freqs[text], postings.freq(), "{name}: freq of {text:?}");
+            assert_eq!(NO_MORE_DOCS, postings.next_doc().expect("nextDoc"));
+
             if !(terms.has_positions || terms.has_offsets) {
                 continue;
             }
-            for k in 0..term.freq as usize {
-                let position = term.positions.as_ref().map(|p| p[k]);
-                let start = term.start_offsets.as_ref().map(|s| s[k]);
-                let end = term.end_offsets.as_ref().map(|e| e[k]);
+            let mut dpe = te.postings(PostingsFlags::Positions).expect("postings");
+            assert_eq!(0, dpe.next_doc().expect("nextDoc"));
+            let freq = dpe.freq();
+            assert_eq!(tk.freqs[text], freq, "{name}: freq of {text:?}");
+            for _ in 0..freq {
+                let position = dpe.next_position().expect("nextPosition");
+                let (start, end) = (dpe.start_offset(), dpe.end_offset());
                 let indexes = if terms.has_positions {
-                    tk.position_to_terms.get(&position.expect("a position"))
+                    tk.position_to_terms.get(&position)
                 } else {
-                    tk.start_offset_to_terms.get(&start.expect("an offset"))
+                    tk.start_offset_to_terms.get(&start)
                 }
                 .expect("a token there");
-                let is_term = |i: &usize| tk.terms[*i].as_bytes() == term.term.as_slice();
+                let is_term = |i: &usize| tk.terms[*i].as_bytes() == *expected;
                 if terms.has_positions {
                     assert!(
                         indexes
                             .iter()
-                            .any(|i| is_term(i) && Some(tk.positions[*i]) == position),
-                        "{name}: position {position:?}"
+                            .any(|i| is_term(i) && tk.positions[*i] == position),
+                        "{name}: position {position}"
                     );
                 }
                 if terms.has_offsets {
                     assert!(
                         indexes.iter().any(|i| is_term(i)
-                            && Some(tk.start_offsets[*i]) == start
-                            && Some(tk.end_offsets[*i]) == end),
-                        "{name}: offsets {start:?}-{end:?}"
+                            && tk.start_offsets[*i] == start
+                            && tk.end_offsets[*i] == end),
+                        "{name}: offsets {start}-{end}"
                     );
                 }
                 if terms.has_payloads {
-                    let got = term
-                        .payloads
-                        .as_ref()
-                        .map(|p| p[k].as_slice())
-                        .filter(|p| !p.is_empty());
+                    let got = dpe.payload();
                     assert!(
                         indexes
                             .iter()
@@ -413,6 +420,25 @@ pub fn assert_doc_equals(
                         "{name}: payload {got:?}"
                     );
                 }
+            }
+            assert!(
+                dpe.next_position().is_err(),
+                "{name}: read past last position"
+            );
+            assert_eq!(NO_MORE_DOCS, dpe.next_doc().expect("nextDoc"));
+        }
+        assert_eq!(None, te.next().expect("next"), "{name}");
+        // Java seeks to five random terms; here every term, alternating
+        // `seekExact` and `seekCeil`.
+        for (i, expected) in unique.iter().enumerate() {
+            if i % 2 == 0 {
+                assert!(te.try_seek_exact(expected).expect("seekExact"), "{name}");
+            } else {
+                assert_eq!(
+                    SeekStatus::Found,
+                    te.try_seek_ceil(expected).expect("seekCeil"),
+                    "{name}"
+                );
             }
         }
     }
@@ -777,19 +803,79 @@ fn postings_enum_case(t: &mut LuceneTestCase, positions: bool, offsets: bool, pa
     let leaf = only_leaf(&reader);
     let tv = leaf.term_vectors(0).expect("termVectors").expect("vectors");
     assert_eq!(tv.fields.len(), 1);
-    let field = &tv.fields[0];
-    assert_eq!(field.terms.len(), 1);
-    let bar = &field.terms[0];
-    assert_eq!(bar.term, b"bar");
-    assert_eq!(bar.freq, 2);
-    assert_eq!(bar.positions.clone(), positions.then(|| vec![0, 1]));
-    assert_eq!(bar.start_offsets.clone(), offsets.then(|| vec![0, 4]));
-    assert_eq!(bar.end_offsets.clone(), offsets.then(|| vec![3, 7]));
-    assert_eq!(
-        bar.payloads.clone(),
-        payloads.then(|| vec![b"pay1".to_vec(), b"pay2".to_vec()])
-    );
+    let mut te = TermVectorTermsEnum::new(&tv.fields[0]);
+    assert_eq!(Some(&b"bar"[..]), te.next().expect("next"));
+    let stored = Stored {
+        positions,
+        offsets,
+        payloads,
+    };
+    // Java asks twice per flag: the second time reusing the first enum.
+    for _reuse in 0..2 {
+        // Simple usage (FREQS).
+        let mut postings = te.postings(PostingsFlags::Freqs).expect("postings");
+        assert_eq!(-1, postings.doc_id());
+        assert_eq!(0, postings.next_doc().expect("nextDoc"));
+        assert_eq!(2, postings.freq());
+        assert_eq!(NO_MORE_DOCS, postings.next_doc().expect("nextDoc"));
+        // Asking for docs only: ok.
+        let mut docs_only = te.postings(PostingsFlags::None).expect("postings");
+        assert_eq!(-1, docs_only.doc_id());
+        assert_eq!(0, docs_only.next_doc().expect("nextDoc"));
+        assert!(docs_only.freq() == 1 || docs_only.freq() == 2);
+        assert_eq!(NO_MORE_DOCS, docs_only.next_doc().expect("nextDoc"));
+    }
+    for flags in [
+        PostingsFlags::Positions,
+        PostingsFlags::Payloads,
+        PostingsFlags::Offsets,
+        PostingsFlags::All,
+    ] {
+        for _reuse in 0..2 {
+            let mut dpe = te.postings(flags).expect("postings");
+            stored.check_bar(dpe.as_mut(), flags);
+        }
+    }
     iw.close().expect("close");
+}
+
+/// What a `testPostingsEnum*` field stores.
+struct Stored {
+    positions: bool,
+    offsets: bool,
+    payloads: bool,
+}
+
+impl Stored {
+    /// `bar`'s two occurrences read under `flags`: exact where the field
+    /// stores the data and the flags ask for it; where they do not, Java's
+    /// "we don't define what it is" (`-1`/`null`, or the stored value).
+    fn check_bar(&self, dpe: &mut dyn PostingsEnum, flags: PostingsFlags) {
+        let wants_offsets = matches!(flags, PostingsFlags::Offsets | PostingsFlags::All);
+        let wants_payloads = matches!(flags, PostingsFlags::Payloads | PostingsFlags::All);
+        let occurrences: [(i32, i32, i32, &[u8]); 2] = [(0, 0, 3, b"pay1"), (1, 4, 7, b"pay2")];
+        assert_eq!(-1, dpe.doc_id());
+        assert_eq!(0, dpe.next_doc().expect("nextDoc"));
+        assert_eq!(2, dpe.freq());
+        for (position, start, end, payload) in occurrences {
+            let expected = if self.positions { position } else { -1 };
+            assert_eq!(expected, dpe.next_position().expect("nextPosition"));
+            if self.offsets && wants_offsets {
+                assert_eq!((start, end), (dpe.start_offset(), dpe.end_offset()));
+            } else {
+                assert!(dpe.start_offset() == -1 || dpe.start_offset() == start);
+                assert!(dpe.end_offset() == -1 || dpe.end_offset() == end);
+            }
+            if self.payloads && wants_payloads {
+                assert_eq!(Some(payload), dpe.payload());
+            } else if !self.payloads {
+                assert_eq!(None, dpe.payload());
+            } else {
+                assert!(dpe.payload().is_none_or(|p| p == payload));
+            }
+        }
+        assert_eq!(NO_MORE_DOCS, dpe.next_doc().expect("nextDoc"));
+    }
 }
 
 /// `testPostingsEnumFreqs`.

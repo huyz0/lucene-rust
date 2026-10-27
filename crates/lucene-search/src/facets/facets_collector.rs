@@ -77,6 +77,17 @@ impl DocIdSet {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// `ramBytesUsed()`: the set itself plus the heap it owns (an array's
+    /// allocated capacity, a bitset's words).
+    pub fn ram_bytes_used(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + match self {
+                DocIdSet::Empty => 0,
+                DocIdSet::Array(docs) => docs.capacity() * std::mem::size_of::<i32>(),
+                DocIdSet::Bits { bits, .. } => std::mem::size_of_val(bits.words()),
+            }
+    }
 }
 
 /// [`DocIdSet::iterator`]: over a borrowed or an owned set.

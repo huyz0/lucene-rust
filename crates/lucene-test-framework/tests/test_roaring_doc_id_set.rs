@@ -39,4 +39,12 @@ macro_rules! base_tests {
     )*};
 }
 
-base_tests!(test_no_bit, test_1_bit, test_2_bits, test_against_bit_set);
+base_tests!(
+    test_no_bit,
+    test_1_bit,
+    test_2_bits,
+    test_against_bit_set,
+    test_ram_bytes_used,
+    test_into_bit_set,
+    test_into_bit_set_bound_checks
+);

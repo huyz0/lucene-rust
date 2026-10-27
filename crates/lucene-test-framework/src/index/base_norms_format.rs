@@ -4,9 +4,6 @@
 //!
 //! Differs:
 //!
-//! - `NumericDocValues.longValues(size, docs, values, default)`, the bulk
-//!   fetch, is not ported: its check walks the same documents with
-//!   `advanceExact`, which Java's default `longValues` calls.
 //! - `maybeWrapWithMergingReader` and `applyCreatedVersionMajor` are not
 //!   ported: the readers are `DirectoryReader`s, the index the current
 //!   major.
@@ -253,24 +250,33 @@ fn check_leaf(leaf: &SegmentReader) -> usize {
     }
     assert_eq!(NO_MORE_DOCS, next(actual.as_mut()));
 
-    // Java's bulk `longValues`: the same strides through `advanceExact`.
+    // Bulk fetching: `longValues` over strides of up to 16 documents, the
+    // default value the batch size.
     let mut expected = leaf.numeric_doc_values("dv").expect("dv").expect("dv");
     let mut actual = leaf.norm_values("indexed").expect("norms").expect("norms");
     let max_doc = leaf.max_doc();
+    let mut docs = [0i32; 16];
+    let mut expected_values = [0i64; 16];
+    let mut actual_values = [0i64; 16];
     let mut doc = -1;
     while doc < max_doc {
-        for j in 0..16 {
-            doc += 1 + (j & 0x03);
+        let mut size = 0;
+        for j in 0..docs.len() {
+            doc += 1 + (j as i32 & 0x03);
             if doc >= max_doc {
                 break;
             }
-            let e = expected.advance_exact(doc).expect("advanceExact");
-            let a = actual.advance_exact(doc).expect("advanceExact");
-            assert_eq!(e, a, "doc {doc}");
-            if e {
-                assert_eq!(expected.long_value(), actual.long_value(), "doc {doc}");
-            }
+            docs[size] = doc;
+            size += 1;
         }
+        let default = size as i64;
+        expected
+            .long_values(&docs[..size], &mut expected_values, default)
+            .expect("longValues");
+        actual
+            .long_values(&docs[..size], &mut actual_values, default)
+            .expect("longValues");
+        assert_eq!(expected_values, actual_values, "docs {:?}", &docs[..size]);
     }
     compared
 }

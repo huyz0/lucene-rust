@@ -239,4 +239,7 @@ impl TermsEnum for AutomatonTermsEnum<'_> {
     fn postings(&mut self, flags: PostingsFlags) -> Result<Box<dyn PostingsEnum>> {
         self.0.postings(flags)
     }
+    fn ord(&self) -> Result<i64> {
+        self.0.ord()
+    }
 }

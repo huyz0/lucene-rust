@@ -8,12 +8,10 @@
 //!   are postings lookups ([`docs_with_term`]): a `TermQuery` over one
 //!   term finds exactly the live documents holding it, and these tests
 //!   assert nothing about scores.
-//! - `SortedDocValues.termsEnum()`/`intersect` are [`DvTermsEnum`], Java's
-//!   `SortedDocValuesTermsEnum` over `lookupOrd`/`lookupTerm`: this port's
-//!   doc values have no terms enum of their own. Each enum opens its own
-//!   values, so two enums of one field never share an iterator. An
-//!   intersection is the list of accepted `(term, ord)` pairs, which is
-//!   what the tests walk.
+//! - `SortedDocValues.termsEnum()`/`intersect` are lucene-search's
+//!   `DocValuesTermsEnum` (wrapped as [`DvTermsEnum`]), which owns its
+//!   values: each enum opens its own, so two enums of one field never share
+//!   an iterator. An intersection is walked into its `(term, ord)` pairs.
 //! - `TestUtil.checkReader(reader)` is CheckIndex over the latest commit
 //!   (a commit first when a writer is still open), and
 //!   `CheckIndex.testDocValues(reader)` is [`check_leaf_doc_values`].
@@ -50,10 +48,11 @@ use lucene_index::document::{
 use lucene_index::index_writer::IndexWriter;
 use lucene_search::directory_reader::{DirectoryReader, SegmentReader};
 use lucene_search::reader::doc_values::{get_binary, get_numeric, get_sorted};
+use lucene_search::reader::doc_values_terms_enum::DocValuesTermsEnum;
 use lucene_search::reader::multi_doc_values;
 use lucene_search::reader::{
     BinaryDocValues, DocIdSetIterator, DocValuesIterator, LeafReader, NumericDocValues,
-    SortedDocValues, SortedNumericDocValues, SortedSetDocValues, NO_MORE_DOCS,
+    SortedDocValues, SortedNumericDocValues, SortedSetDocValues, TermsEnum, NO_MORE_DOCS,
 };
 use lucene_store::{ByteBuffersDirectory, Directory};
 use lucene_util::automaton::{
@@ -68,7 +67,7 @@ use super::base_index_file_format::{
 use super::index_writer_config::{new_log_merge_policy, Draws, LiveMergePolicy, PolicyKind};
 use super::merge_policies::shuffle;
 use super::random_index_writer::RandomIndexWriter;
-use super::random_postings_tester::run_bytes;
+use super::random_postings_tester::byte_dfa;
 use crate::util::lucene_test_case::LuceneTestCase;
 use crate::util::test_util;
 
@@ -176,132 +175,64 @@ pub fn current_term(dv: &mut (dyn SortedDocValues + '_)) -> Vec<u8> {
 
 // --- terms enums -----------------------------------------------------------
 
-/// The ordinal dictionary a [`DvTermsEnum`] walks.
-pub enum OrdValues<'a> {
-    /// A `SORTED` field's.
-    Sorted(Box<dyn SortedDocValues + 'a>),
-    /// A `SORTED_SET` field's.
-    SortedSet(Box<dyn SortedSetDocValues + 'a>),
-}
-
-impl OrdValues<'_> {
-    fn value_count(&self) -> i64 {
-        match self {
-            OrdValues::Sorted(v) => i64::from(v.value_count()),
-            OrdValues::SortedSet(v) => v.value_count(),
-        }
-    }
-
-    fn lookup_ord(&mut self, ord: i64) -> Vec<u8> {
-        match self {
-            OrdValues::Sorted(v) => v
-                .lookup_ord(i32::try_from(ord).expect("an int ord"))
-                .expect("lookupOrd"),
-            OrdValues::SortedSet(v) => v.lookup_ord(ord).expect("lookupOrd"),
-        }
-    }
-
-    fn lookup_term(&mut self, key: &[u8]) -> i64 {
-        match self {
-            OrdValues::Sorted(v) => i64::from(v.lookup_term(key).expect("lookupTerm")),
-            OrdValues::SortedSet(v) => v.lookup_term(key).expect("lookupTerm"),
-        }
-    }
-}
-
 /// A per-document value reader over one leaf.
 type LeafWalk = for<'l> fn(&'l SegmentReader) -> Box<dyn FnMut(i32) -> Option<Vec<u8>> + 'l>;
 
-/// `SortedDocValuesTermsEnum`/`SortedSetDocValuesTermsEnum`: a field's
-/// terms in ordinal order, positioned by `lookupTerm` and read by
-/// `lookupOrd`.
-pub struct DvTermsEnum<'a> {
-    values: OrdValues<'a>,
-    current_ord: i64,
-    term: Vec<u8>,
-}
+/// `values.termsEnum()`: lucene-search's [`DocValuesTermsEnum`] (Java's
+/// `SortedDocValuesTermsEnum`/`SortedSetDocValuesTermsEnum`), with the
+/// suite's assertions folded into plain returns.
+pub struct DvTermsEnum<'a>(DocValuesTermsEnum<'a>);
 
 /// `next()`: the next term in ordinal order.
 impl Iterator for DvTermsEnum<'_> {
     type Item = Vec<u8>;
 
     fn next(&mut self) -> Option<Vec<u8>> {
-        self.current_ord += 1;
-        if self.current_ord >= self.values.value_count() {
-            return None;
-        }
-        self.term = self.values.lookup_ord(self.current_ord);
-        Some(self.term.clone())
+        self.0.next().expect("next").map(<[u8]>::to_vec)
     }
 }
 
 impl<'a> DvTermsEnum<'a> {
-    /// `values.termsEnum()`.
-    pub fn new(values: OrdValues<'a>) -> Self {
-        DvTermsEnum {
-            values,
-            current_ord: -1,
-            term: Vec::new(),
-        }
-    }
-
     /// `termsEnum()` of `leaf`'s `SORTED` field.
     pub fn sorted(leaf: &'a SegmentReader, field: &str) -> Self {
-        Self::new(OrdValues::Sorted(sorted(leaf, field)))
+        DvTermsEnum(DocValuesTermsEnum::sorted(sorted(leaf, field)))
     }
 
     /// `termsEnum()` of `leaf`'s `SORTED_SET` field.
     pub fn sorted_set(leaf: &'a SegmentReader, field: &str) -> Self {
-        Self::new(OrdValues::SortedSet(sorted_set(leaf, field)))
+        DvTermsEnum(DocValuesTermsEnum::sorted_set(sorted_set(leaf, field)))
     }
 
     /// `term()`.
     pub fn term(&self) -> &[u8] {
-        &self.term
+        self.0.term().unwrap_or_default()
     }
 
     /// `ord()`.
     pub fn ord(&self) -> i64 {
-        self.current_ord
+        self.0.ord().expect("ord")
     }
 
     /// `seekCeil(text)`.
     pub fn seek_ceil_term(&mut self, text: &[u8]) -> SeekStatus {
-        let ord = self.values.lookup_term(text);
-        if ord >= 0 {
-            self.current_ord = ord;
-            self.term = text.to_vec();
-            return SeekStatus::Found;
-        }
-        self.current_ord = -ord - 1;
-        if self.current_ord == self.values.value_count() {
-            SeekStatus::End
-        } else {
-            self.term = self.values.lookup_ord(self.current_ord);
-            SeekStatus::NotFound
-        }
+        self.0.try_seek_ceil(text).expect("seekCeil")
     }
 
     /// `seekExact(text)`.
     pub fn seek_exact_term(&mut self, text: &[u8]) -> bool {
-        let ord = self.values.lookup_term(text);
-        if ord >= 0 {
-            self.current_ord = ord;
-            self.term = text.to_vec();
-            true
-        } else {
-            false
-        }
+        self.0.try_seek_exact(text).expect("seekExact")
     }
 
     /// `seekExact(ord)`.
     pub fn seek_exact_ord(&mut self, ord: i64) {
-        self.current_ord = ord;
-        self.term = self.values.lookup_ord(ord);
+        self.0.seek_exact_ord(ord).expect("seekExact(ord)");
     }
 
     /// `values.intersect(compiled)`, walked: every accepted term with its
-    /// ordinal, in order.
+    /// ordinal, in order. Java's switch on the automaton's type: `NONE` is
+    /// empty, `ALL` the enum itself, `SINGLE` a `SingleTermsEnum` (one
+    /// `seekExact`), `NORMAL` an `AutomatonTermsEnum` over the byte DFA of
+    /// the run automaton.
     pub fn intersect(mut self, compiled: &CompiledAutomaton) -> Vec<(Vec<u8>, i64)> {
         let mut out = Vec::new();
         match compiled.automaton_type {
@@ -312,12 +243,22 @@ impl<'a> DvTermsEnum<'a> {
                     out.push((term.to_vec(), self.ord()));
                 }
             }
-            AutomatonType::ALL | AutomatonType::NORMAL => {
-                let run = compiled.run_automaton.as_ref().map(|r| &r.0);
+            AutomatonType::ALL => {
                 while let Some(term) = self.next() {
-                    if run.is_none_or(|run| run_bytes(run, &term)) {
-                        out.push((term, self.ord()));
-                    }
+                    out.push((term, self.ord()));
+                }
+            }
+            AutomatonType::NORMAL => {
+                let run = &compiled
+                    .run_automaton
+                    .as_ref()
+                    .expect("a NORMAL automaton's run automaton")
+                    .0;
+                let dfa = byte_dfa(run);
+                let mut te = self.0.intersect(&dfa);
+                while let Some(term) = te.next().expect("next") {
+                    let term = term.to_vec();
+                    out.push((term, te.ord().expect("ord")));
                 }
             }
         }
@@ -340,10 +281,10 @@ pub fn compiled(re: &str) -> CompiledAutomaton {
 
 /// The terms enum checks every merged-away `SORTED`/`SORTED_SET` test ends
 /// with: nothing to find, `lookupTerm` says insert at 0.
-fn assert_empty_dictionary(mut te: DvTermsEnum<'_>) {
+fn assert_empty_dictionary(mut te: DvTermsEnum<'_>, lookup_term: i64) {
     assert!(!te.seek_exact_term(b"lucene"));
     assert_eq!(SeekStatus::End, te.seek_ceil_term(b"lucene"));
-    assert_eq!(-1, te.values.lookup_term(b"lucene"));
+    assert_eq!(-1, lookup_term);
 }
 
 // --- writers -----------------------------------------------------------------
@@ -972,7 +913,8 @@ pub fn test_sorted_merge_away_all_values(t: &mut LuceneTestCase) {
     let leaf = only_leaf(&reader);
     let mut dv = sorted(leaf, "field");
     assert_eq!(NO_MORE_DOCS, next(dv.as_mut()));
-    assert_empty_dictionary(DvTermsEnum::sorted(leaf, "field"));
+    let lookup = i64::from(dv.lookup_term(b"lucene").expect("lookupTerm"));
+    assert_empty_dictionary(DvTermsEnum::sorted(leaf, "field"), lookup);
 }
 
 /// `testBytesWithNewline`.
@@ -2038,8 +1980,10 @@ pub fn test_sorted_set_merge_away_all_values(t: &mut LuceneTestCase) {
     let dir = ByteBuffersDirectory::new();
     let reader = merged_away(t, &dir, ss("field", "hello"));
     let leaf = only_leaf(&reader);
-    assert_eq!(0, sorted_set(leaf, "field").value_count());
-    assert_empty_dictionary(DvTermsEnum::sorted_set(leaf, "field"));
+    let mut dv = sorted_set(leaf, "field");
+    assert_eq!(0, dv.value_count());
+    let lookup = dv.lookup_term(b"lucene").expect("lookupTerm");
+    assert_empty_dictionary(DvTermsEnum::sorted_set(leaf, "field"), lookup);
 }
 
 /// `testSortedSetTermsEnum`.
@@ -3144,7 +3088,8 @@ pub fn test_sorted_merge_away_all_values_large_segment(t: &mut LuceneTestCase) {
     let leaf = only_leaf(&reader);
     let mut dv = sorted(leaf, "field");
     assert_eq!(NO_MORE_DOCS, next(dv.as_mut()));
-    assert_empty_dictionary(DvTermsEnum::sorted(leaf, "field"));
+    let lookup = i64::from(dv.lookup_term(b"lucene").expect("lookupTerm"));
+    assert_empty_dictionary(DvTermsEnum::sorted(leaf, "field"), lookup);
 }
 
 /// `testSortedSetMergeAwayAllValuesLargeSegment`.
@@ -3154,7 +3099,8 @@ pub fn test_sorted_set_merge_away_all_values_large_segment(t: &mut LuceneTestCas
     let leaf = only_leaf(&reader);
     let mut dv = sorted_set(leaf, "field");
     assert_eq!(NO_MORE_DOCS, next(dv.as_mut()));
-    assert_empty_dictionary(DvTermsEnum::sorted_set(leaf, "field"));
+    let lookup = dv.lookup_term(b"lucene").expect("lookupTerm");
+    assert_empty_dictionary(DvTermsEnum::sorted_set(leaf, "field"), lookup);
 }
 
 /// `testNumericMergeAwayAllValuesLargeSegment`.
