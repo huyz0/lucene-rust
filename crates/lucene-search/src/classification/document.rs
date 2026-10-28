@@ -236,6 +236,9 @@ impl<'s, 'a> SimpleNaiveBayesDocumentClassifier<'s, 'a> {
     ) -> Result<f64> {
         let index = &self.base.index;
         let mut result = 0.0;
+        // the denominator does not depend on the token: read once, on the
+        // first (Java recomputes it per token, to the same bits)
+        let mut den = None;
         for word in tokens {
             let sub = BooleanQuery {
                 should: vec![Clause::Term(TermQuery::new(field, word.as_bytes()))],
@@ -253,9 +256,16 @@ impl<'s, 'a> SimpleNaiveBayesDocumentClassifier<'s, 'a> {
             }
             let hits = index.searcher(None)?.count(&q)? as i32;
             let num = f64::from(hits + 1);
-            let avg = avg_unique_terms(index, &[field.to_string()])?;
-            let den = avg * f64::from(doc_freq(index, &self.base.class_field, class)?)
-                + f64::from(docs_with_class);
+            let den = match den {
+                Some(d) => d,
+                None => {
+                    let avg = avg_unique_terms(index, &[field.to_string()])?;
+                    *den.insert(
+                        avg * f64::from(doc_freq(index, &self.base.class_field, class)?)
+                            + f64::from(docs_with_class),
+                    )
+                }
+            };
             result += log(num / den);
         }
         Ok(result / tokens.len() as f64)

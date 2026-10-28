@@ -15,7 +15,7 @@
 //! same candidate set, without a second on-disk index. The on-disk index and
 //! its purge cycle are the persistence half (T13.5d).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::monitor::analyzer::QueryDecomposer;
 use crate::monitor::config::{MonitorConfiguration, MonitorUpdateListener};
@@ -117,6 +117,154 @@ pub type BatchDoc = Vec<(String, Vec<Vec<u8>>)>;
 /// terms.
 pub type BatchTerms = BTreeMap<String, Vec<Vec<u8>>>;
 
+/// A batch's fields, each with its distinct terms (sorted) and the number of
+/// batch documents holding each: what `buildFilterClause` reads from the
+/// batch reader's terms dictionary.
+pub type BatchDocFreqs = BTreeMap<String, Vec<(Vec<u8>, usize)>>;
+
+/// A registered entry as the query index holds it: the cache entry, and its
+/// query as a searcher runs it (`IndexSearcher.rewrite` is batch-independent,
+/// so it is done once, at registration, not once per batch).
+pub struct CachedEntry {
+    entry: QueryCacheEntry,
+    search: Option<SearchQuery>,
+}
+
+impl CachedEntry {
+    fn new(entry: QueryCacheEntry) -> Self {
+        let search = as_search_query(&entry.match_query);
+        CachedEntry { entry, search }
+    }
+
+    /// The query as a searcher runs it; `None` for one that matches nothing.
+    pub fn search_query(&self) -> Option<&SearchQuery> {
+        self.search.as_ref()
+    }
+}
+
+impl std::ops::Deref for CachedEntry {
+    type Target = QueryCacheEntry;
+
+    fn deref(&self) -> &QueryCacheEntry {
+        &self.entry
+    }
+}
+
+/// FxHash's multiply-rotate, for the in-memory postings' keys (field names
+/// and terms the index itself wrote; no adversarial input).
+#[derive(Default, Clone, Copy)]
+struct FxHasher(u64);
+
+impl std::hash::Hasher for FxHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        const K: u64 = 0x51_7c_c1_b7_27_22_0a_95;
+        let mut words = bytes.chunks_exact(8);
+        for w in &mut words {
+            let v = u64::from_le_bytes(w.try_into().expect("an 8-byte chunk"));
+            self.0 = (self.0.rotate_left(5) ^ v).wrapping_mul(K);
+        }
+        for &b in words.remainder() {
+            self.0 = (self.0.rotate_left(5) ^ u64::from(b)).wrapping_mul(K);
+        }
+    }
+
+    fn write_u8(&mut self, i: u8) {
+        self.write(&[i]);
+    }
+
+    fn write_usize(&mut self, i: usize) {
+        self.write(&(i as u64).to_le_bytes());
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+type FxBuild = std::hash::BuildHasherDefault<FxHasher>;
+type FxMap<K, V> = HashMap<K, V, FxBuild>;
+
+/// The query index's inverted index: per field, per term, the slots of the
+/// entries whose presearcher document holds it (the terms and the filter
+/// fields' metadata values, as Java's query index document holds both), in
+/// ascending slot order. A removed entry's slot stays listed until the next
+/// compaction; it is skipped because its slot is empty.
+#[derive(Default)]
+struct Postings {
+    fields: FxMap<String, FxMap<Vec<u8>, Vec<u32>>>,
+}
+
+impl Postings {
+    fn add(&mut self, field: &str, term: &[u8], slot: u32) {
+        let terms = match self.fields.get_mut(field) {
+            Some(t) => t,
+            None => self.fields.entry(field.to_string()).or_default(),
+        };
+        let list = match terms.get_mut(term) {
+            Some(l) => l,
+            None => terms.entry(term.to_vec()).or_default(),
+        };
+        // a field can repeat in one document (a multipass presearcher's plain
+        // field, once per pass): list the slot once
+        if list.last() != Some(&slot) {
+            list.push(slot);
+        }
+    }
+
+    fn get(&self, field: &str, term: &[u8]) -> Option<&[u32]> {
+        self.fields.get(field)?.get(term).map(Vec::as_slice)
+    }
+}
+
+/// A set of entry slots, one bit each.
+struct SlotSet(Vec<u64>);
+
+impl SlotSet {
+    fn empty(slots: usize) -> Self {
+        SlotSet(vec![0; slots.div_ceil(64)])
+    }
+
+    fn insert_all(&mut self, slots: &[u32]) {
+        for &s in slots {
+            let s = s as usize;
+            self.0[s >> 6] |= 1u64 << (s & 63);
+        }
+    }
+
+    fn and(&mut self, other: &SlotSet) {
+        for (a, b) in self.0.iter_mut().zip(&other.0) {
+            *a &= *b;
+        }
+    }
+
+    fn or(&mut self, other: &SlotSet) {
+        for (a, b) in self.0.iter_mut().zip(&other.0) {
+            *a |= *b;
+        }
+    }
+
+    fn and_not(&mut self, other: &SlotSet) {
+        for (a, b) in self.0.iter_mut().zip(&other.0) {
+            *a &= !*b;
+        }
+    }
+
+    /// The slots, ascending.
+    fn iter(&self) -> impl Iterator<Item = usize> + '_ {
+        self.0.iter().enumerate().flat_map(|(w, &bits)| {
+            let mut bits = bits;
+            std::iter::from_fn(move || {
+                if bits == 0 {
+                    return None;
+                }
+                let b = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                Some(w * 64 + b)
+            })
+        })
+    }
+}
+
 /// `QueryIndex`: the registered queries, decomposed, and the presearcher that
 /// narrows a batch to them.
 pub struct QueryIndex {
@@ -124,8 +272,16 @@ pub struct QueryIndex {
     decomposer: QueryDecomposer,
     /// The queries as registered, by id.
     queries: BTreeMap<String, MonitorQuery>,
-    /// Each entry's id, its presearcher document, and the entry.
-    entries: Vec<(IndexedEntry, QueryCacheEntry)>,
+    /// Each entry's presearcher document and the entry, by slot, in
+    /// registration order; a removed entry leaves its slot empty until the
+    /// next compaction.
+    slots: Vec<Option<(IndexedEntry, CachedEntry)>>,
+    /// The occupied slots.
+    live: usize,
+    /// Each registered query's entry slots, by query id (only ids with one).
+    by_id: FxMap<String, Vec<u32>>,
+    /// The presearcher documents' terms, inverted.
+    postings: Postings,
     /// The on-disk index and the serializer that fills it, when persisted.
     persist: Option<Persist>,
     listeners: Vec<std::sync::Arc<dyn MonitorUpdateListener>>,
@@ -166,7 +322,10 @@ impl QueryIndex {
             presearcher,
             decomposer: QueryDecomposer,
             queries: BTreeMap::new(),
-            entries: Vec::new(),
+            slots: Vec::new(),
+            live: 0,
+            by_id: FxMap::default(),
+            postings: Postings::default(),
             persist: None,
             listeners: Vec::new(),
             last_purged: None,
@@ -228,7 +387,7 @@ impl QueryIndex {
                 fresh.push(p.serializer.deserialize(bytes)?);
             }
             self.queries.clear();
-            self.entries.clear();
+            self.clear_entries();
             self.register_in_memory(fresh)?;
         }
         self.last_purged = Some(std::time::SystemTime::now());
@@ -241,8 +400,8 @@ impl QueryIndex {
     /// `getQueryCacheStats()`.
     pub fn cache_stats(&self) -> QueryCacheStats {
         QueryCacheStats {
-            queries: self.entries.len(),
-            cached_queries: self.entries.len(),
+            queries: self.live,
+            cached_queries: self.live,
             last_purged: self.last_purged,
         }
     }
@@ -275,16 +434,14 @@ impl QueryIndex {
             for mq in &updates {
                 ids.push(mq.id.clone());
                 let mq_bytes = p.serializer.serialize(mq)?;
-                for (indexed, entry) in &self.entries {
-                    if entry.query_id == mq.id {
-                        docs.push(EntryDoc {
-                            query_id: entry.query_id.clone(),
-                            cache_id: entry.cache_id.clone(),
-                            mq: mq_bytes.clone(),
-                            fields: indexed.fields.clone(),
-                            metadata: indexed.metadata.clone(),
-                        });
-                    }
+                for (indexed, entry) in self.entries_of(&mq.id) {
+                    docs.push(EntryDoc {
+                        query_id: entry.query_id.clone(),
+                        cache_id: entry.cache_id.clone(),
+                        mq: mq_bytes.clone(),
+                        fields: indexed.fields.clone(),
+                        metadata: indexed.metadata.clone(),
+                    });
                 }
             }
             p.store.commit(&ids, &docs).map_err(|e| e.to_string())?;
@@ -302,22 +459,80 @@ impl QueryIndex {
                 let indexed = self
                     .presearcher
                     .index_query(&entry.match_query, &entry.metadata)?;
-                self.entries.push((
+                self.push_entry(
                     IndexedEntry {
                         fields: indexed.fields,
                         metadata: indexed.metadata,
                     },
-                    entry,
-                ));
+                    CachedEntry::new(entry),
+                );
             }
             self.queries.insert(mq.id.clone(), mq);
         }
+        self.maybe_compact();
         Ok(())
+    }
+
+    /// Adds an entry in the next slot and posts its presearcher document.
+    fn push_entry(&mut self, indexed: IndexedEntry, entry: CachedEntry) {
+        let slot = u32::try_from(self.slots.len()).expect("fewer than 2^32 query entries");
+        for (field, terms) in &indexed.fields {
+            for t in terms {
+                self.postings.add(field, t, slot);
+            }
+        }
+        for (field, value) in &indexed.metadata {
+            self.postings.add(field, value.as_bytes(), slot);
+        }
+        self.by_id
+            .entry(entry.query_id.clone())
+            .or_default()
+            .push(slot);
+        self.slots.push(Some((indexed, entry)));
+        self.live += 1;
+    }
+
+    /// The entries of one query, in registration order.
+    fn entries_of<'a>(
+        &'a self,
+        query_id: &str,
+    ) -> impl Iterator<Item = &'a (IndexedEntry, CachedEntry)> + 'a {
+        let slots = self.by_id.get(query_id).map_or(&[][..], Vec::as_slice);
+        slots
+            .iter()
+            .filter_map(|&s| self.slots[s as usize].as_ref())
     }
 
     fn remove(&mut self, query_id: &str) {
         self.queries.remove(query_id);
-        self.entries.retain(|(_, e)| e.query_id != query_id);
+        if let Some(slots) = self.by_id.remove(query_id) {
+            for s in slots {
+                if self.slots[s as usize].take().is_some() {
+                    self.live -= 1;
+                }
+            }
+        }
+    }
+
+    /// Renumbers the entries densely once over half the slots are empty, so
+    /// the postings and the slot sets stay proportional to the live entries.
+    fn maybe_compact(&mut self) {
+        if self.slots.len() < 64 || self.live * 2 >= self.slots.len() {
+            return;
+        }
+        let old = std::mem::take(&mut self.slots);
+        self.clear_entries();
+        for (indexed, entry) in old.into_iter().flatten() {
+            self.push_entry(indexed, entry);
+        }
+    }
+
+    /// Drops every entry (the queries map is the caller's).
+    fn clear_entries(&mut self) {
+        self.slots.clear();
+        self.live = 0;
+        self.by_id.clear();
+        self.postings = Postings::default();
     }
 
     /// `Monitor.deleteById`: the queries and their entries, if registered.
@@ -345,7 +560,7 @@ impl QueryIndex {
             );
         }
         self.queries.clear();
-        self.entries.clear();
+        self.clear_entries();
         if let Some(p) = &self.persist {
             p.store.clear().map_err(|e| e.to_string())?;
         }
@@ -358,7 +573,7 @@ impl QueryIndex {
     /// `Monitor.getQuery(id)`. Lucene reads the query back from its index
     /// documents, so a query whose decomposition is empty has none.
     pub fn get_query(&self, query_id: &str) -> Option<&MonitorQuery> {
-        if self.entries.iter().any(|(_, e)| e.query_id == query_id) {
+        if self.by_id.contains_key(query_id) {
             self.queries.get(query_id)
         } else {
             None
@@ -368,35 +583,133 @@ impl QueryIndex {
     /// `Monitor.getQueryIds()`: the ids that have a document, sorted (Lucene
     /// scans the index).
     pub fn query_ids(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self
-            .entries
-            .iter()
-            .map(|(_, e)| e.query_id.clone())
-            .collect();
-        ids.sort();
-        ids.dedup();
+        let mut ids: Vec<String> = self.by_id.keys().cloned().collect();
+        ids.sort_unstable();
         ids
     }
 
     /// `Monitor.getDisjunctCount()`: the entries, one per decomposed piece.
     pub fn disjunct_count(&self) -> usize {
-        self.entries.len()
+        self.live
+    }
+
+    /// The presearcher's filter fields.
+    pub fn filter_fields(&self) -> &[String] {
+        self.presearcher.filter_fields()
+    }
+
+    /// The filter-field clause of a batch (`buildFilterFields`): for each of
+    /// the presearcher's filter fields, its values in the batch, each of which
+    /// every batch document must carry. `values` holds the batch fields'
+    /// distinct terms with their document frequencies.
+    ///
+    /// # Errors
+    /// A filter-field value that only some of the batch's documents carry, as
+    /// Java's `buildFilterClause` refuses it.
+    pub fn batch_filter(
+        &self,
+        values: &BatchDocFreqs,
+        docs_in_batch: usize,
+    ) -> Result<Option<Clause>, String> {
+        let mut per_field = Vec::new();
+        for field in self.presearcher.filter_fields() {
+            let Some(v) = values.get(field) else {
+                continue;
+            };
+            let clause = self
+                .presearcher
+                .build_filter_clause(field, v, docs_in_batch)?;
+            per_field.push((field.clone(), clause));
+        }
+        Ok(self.presearcher.build_filter_fields(&per_field))
     }
 
     /// `QueryIndex.search(queryBuilder, matcher)`: every entry the presearcher's
-    /// batch query selects, in registration order.
+    /// batch query selects, in registration order. `filter` is the batch's
+    /// filter-field clause ([`QueryIndex::batch_filter`]).
     ///
-    /// The selection is evaluated over each entry's indexed fields: an entry is
-    /// selected when the batch query matches it, which for the presearcher's
-    /// `TermInSetQuery`/any-token shape is when one of its indexed terms is a
-    /// batch term, or it carries the any-token marker.
-    pub fn select(&self, batch: &BatchTerms, accept: &dyn TermAcceptor) -> Vec<&QueryCacheEntry> {
-        let query = self.presearcher.build_query(batch, accept, None);
-        self.entries
-            .iter()
-            .filter(|(indexed, _)| matches_presearcher(&query, indexed))
+    /// Java runs the presearcher's query against a Lucene index of the
+    /// entries' presearcher documents; this evaluates it over the same
+    /// documents' inverted terms: a term (or a term set) selects the entries
+    /// posted under it, and a boolean combines its clauses' selections by
+    /// their occurrences -- what `matches_presearcher` answers entry by
+    /// entry.
+    pub fn select(
+        &self,
+        batch: &BatchTerms,
+        accept: &dyn TermAcceptor,
+        filter: Option<Clause>,
+    ) -> Vec<&CachedEntry> {
+        let query = self.presearcher.build_query(batch, accept, filter);
+        self.selected(&query)
+            .into_iter()
             .map(|(_, entry)| entry)
             .collect()
+    }
+
+    /// The live entries `query` selects, in slot order.
+    fn selected(&self, query: &Clause) -> Vec<&(IndexedEntry, CachedEntry)> {
+        let Some(set) = self.eval(query) else {
+            return Vec::new();
+        };
+        set.iter().filter_map(|s| self.slots[s].as_ref()).collect()
+    }
+
+    /// The slots `query` matches; `None` for none.
+    fn eval(&self, query: &Clause) -> Option<SlotSet> {
+        let n = self.slots.len();
+        match query {
+            Clause::TermInSet(t) => {
+                let terms = self.postings.fields.get(&t.field)?;
+                let mut set = SlotSet::empty(n);
+                let mut any = false;
+                for term in &t.terms {
+                    if let Some(list) = terms.get(term.as_slice()) {
+                        set.insert_all(list);
+                        any = true;
+                    }
+                }
+                any.then_some(set)
+            }
+            Clause::Term(t) => {
+                let list = self.postings.get(&t.field, &t.term)?;
+                let mut set = SlotSet::empty(n);
+                set.insert_all(list);
+                Some(set)
+            }
+            // every `MUST` and `FILTER` clause, no `MUST_NOT`, and -- with no
+            // required clause -- at least one `SHOULD`
+            Clause::Boolean(b) => {
+                let required = !b.must.is_empty() || !b.filter.is_empty();
+                let mut acc: Option<SlotSet> = None;
+                if required {
+                    for c in b.must.iter().chain(&b.filter) {
+                        let s = self.eval(c)?;
+                        match &mut acc {
+                            Some(a) => a.and(&s),
+                            None => acc = Some(s),
+                        }
+                    }
+                } else {
+                    for c in &b.should {
+                        if let Some(s) = self.eval(c) {
+                            match &mut acc {
+                                Some(a) => a.or(&s),
+                                None => acc = Some(s),
+                            }
+                        }
+                    }
+                }
+                let mut acc = acc?;
+                for c in &b.must_not {
+                    if let Some(s) = self.eval(c) {
+                        acc.and_not(&s);
+                    }
+                }
+                Some(acc)
+            }
+            _ => None,
+        }
     }
 
     /// The entries `select` picks, each with why: the presearcher query's
@@ -406,10 +719,11 @@ impl QueryIndex {
         &self,
         batch: &BatchTerms,
         accept: &dyn TermAcceptor,
-    ) -> Vec<(&QueryCacheEntry, String)> {
-        let query = self.presearcher.build_query(batch, accept, None);
-        self.entries
-            .iter()
+        filter: Option<Clause>,
+    ) -> Vec<(&CachedEntry, String)> {
+        let query = self.presearcher.build_query(batch, accept, filter);
+        self.selected(&query)
+            .into_iter()
             .filter_map(|(indexed, entry)| {
                 let fields = presearcher_matches(&query, indexed)?;
                 let why: String = fields
@@ -423,22 +737,29 @@ impl QueryIndex {
     }
 }
 
-/// Whether the presearcher's batch query selects an entry's indexed document.
-/// The query is a `SHOULD`/`MUST` tree of `TermInSet` and `Term` clauses, so it
+/// Whether the presearcher's batch query selects an entry's indexed document,
+/// entry by entry: the reference [`QueryIndex::select`]'s inverted evaluation
+/// is tested against. A metadata value is a term of its field, as Java's
+/// query index document holds it (one `KeywordAnalyzer` token). The query is a `SHOULD`/`MUST` tree of `TermInSet` and `Term` clauses, so it
 /// is evaluated directly: a `TermInSet` matches when the entry indexes one of
 /// its terms in that field, a `Term` when it indexes that exact term, and a
 /// boolean by its occurrences (`MUST` all, `SHOULD` any, at least one `SHOULD`
 /// when there are no `MUST`s).
+#[cfg(test)]
 fn matches_presearcher(query: &Clause, indexed: &IndexedEntry) -> bool {
+    let holds = |field: &str, term: &[u8]| {
+        indexed
+            .fields
+            .iter()
+            .any(|(f, terms)| f == field && terms.iter().any(|x| x == term))
+            || indexed
+                .metadata
+                .iter()
+                .any(|(f, v)| f == field && v.as_bytes() == term)
+    };
     match query {
-        Clause::TermInSet(t) => indexed
-            .fields
-            .iter()
-            .any(|(f, terms)| *f == t.field && terms.iter().any(|x| t.terms.contains(x))),
-        Clause::Term(t) => indexed
-            .fields
-            .iter()
-            .any(|(f, terms)| *f == t.field && terms.contains(&t.term)),
+        Clause::TermInSet(t) => t.terms.iter().any(|x| holds(&t.field, x)),
+        Clause::Term(t) => holds(&t.field, &t.term),
         // a `BooleanQuery`: every `MUST` and `FILTER` clause, no `MUST_NOT`, and
         // -- with no required clause -- at least one `SHOULD`; with none at all
         // it matches nothing
@@ -479,6 +800,15 @@ fn presearcher_matches(query: &Clause, indexed: &IndexedEntry) -> Option<Vec<Fie
                     }
                     pos += 1;
                 }
+            }
+        }
+        // a filter field's metadata value, one token
+        for (f, v) in &indexed.metadata {
+            if f == field {
+                if wanted(v.as_bytes()) {
+                    hits.push((pos, shown.clone()));
+                }
+                pos += 1;
             }
         }
         (!hits.is_empty()).then(|| vec![(field.to_string(), hits)])
@@ -588,15 +918,15 @@ pub fn batch_terms(fields: &[(String, Vec<Vec<u8>>)], filter_fields: &[String]) 
         if filter_fields.contains(field) {
             continue;
         }
-        let v = out.entry(field.clone()).or_default();
-        for t in terms {
-            if !v.contains(t) {
-                v.push(t.clone());
-            }
-        }
+        let v = match out.get_mut(field) {
+            Some(v) => v,
+            None => out.entry(field.clone()).or_default(),
+        };
+        v.extend(terms.iter().cloned());
     }
     for v in out.values_mut() {
         v.sort_unstable();
+        v.dedup();
     }
     out
 }
@@ -641,7 +971,7 @@ pub fn match_batch(
         }
     }
     let batch = batch_terms(&union, filter_fields);
-    let candidates = index.select(&batch, &AcceptAll);
+    let candidates = index.select(&batch, &AcceptAll, None);
     let mut matches = vec![Vec::new(); batch_docs.len()];
     for entry in &candidates {
         for (doc, slot) in matches.iter_mut().enumerate() {
@@ -760,5 +1090,215 @@ mod tests {
         assert_eq!(result.queries_run, 2);
         assert_eq!(result.matches, vec![vec!["fox".to_string()], vec![]]);
         assert!(matches!(empty_query(), Clause::Boolean(_)));
+    }
+}
+
+#[cfg(test)]
+mod select_tests {
+    use super::*;
+    use crate::monitor::tree::TermWeightor;
+    use crate::query::{PrefixQuery, TermQuery};
+
+    struct Rng(u64);
+
+    impl Rng {
+        fn below(&mut self, n: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 % n as u64) as usize
+        }
+    }
+
+    const WORDS: [&str; 12] = [
+        "fox", "dog", "cat", "owl", "elk", "bee", "ant", "yak", "emu", "gnu", "ram", "hen",
+    ];
+
+    fn term(field: &str, text: &str) -> Clause {
+        Clause::Term(TermQuery::new(field, text.as_bytes().to_vec()))
+    }
+
+    /// A random query over two fields: a term, a prefix (any-token), or a
+    /// boolean of terms with every occurrence.
+    fn random_query(rng: &mut Rng, depth: usize) -> Clause {
+        let field = ["f", "g"][rng.below(2)];
+        match rng.below(if depth == 0 { 2 } else { 4 }) {
+            0 => term(field, WORDS[rng.below(WORDS.len())]),
+            1 if rng.below(4) == 0 => Clause::Prefix(PrefixQuery::new(field, b"z".to_vec())),
+            1 => term(field, WORDS[rng.below(WORDS.len())]),
+            _ => {
+                let mut b = BooleanQuery::new();
+                for _ in 0..1 + rng.below(3) {
+                    let c = random_query(rng, depth - 1);
+                    match rng.below(4) {
+                        0 => b.must.push(c),
+                        1 => b.filter.push(c),
+                        2 if !b.should.is_empty() || !b.must.is_empty() => b.must_not.push(c),
+                        _ => b.should.push(c),
+                    }
+                }
+                Clause::Boolean(Box::new(b))
+            }
+        }
+    }
+
+    fn random_batch(rng: &mut Rng) -> BatchTerms {
+        let mut batch = BatchTerms::new();
+        for field in ["f", "g"] {
+            let mut terms: Vec<Vec<u8>> = (0..rng.below(4))
+                .map(|_| WORDS[rng.below(WORDS.len())].as_bytes().to_vec())
+                .collect();
+            terms.sort_unstable();
+            terms.dedup();
+            batch.insert(field.to_string(), terms);
+        }
+        batch
+    }
+
+    fn ids(entries: &[&CachedEntry]) -> Vec<String> {
+        entries.iter().map(|e| e.cache_id.clone()).collect()
+    }
+
+    /// Every live entry `matches_presearcher` selects, entry by entry.
+    fn brute_force<'a>(index: &'a QueryIndex, query: &Clause) -> Vec<&'a CachedEntry> {
+        index
+            .slots
+            .iter()
+            .flatten()
+            .filter(|(indexed, _)| matches_presearcher(query, indexed))
+            .map(|(_, e)| e)
+            .collect()
+    }
+
+    #[test]
+    fn the_inverted_selection_equals_the_entry_by_entry_one() {
+        let presearchers = [
+            TermFilteredPresearcher::default(),
+            TermFilteredPresearcher::multipass(3, 0.0, TermWeightor::default(), Vec::new()),
+            TermFilteredPresearcher::new(TermWeightor::default(), vec!["lang".to_string()]),
+        ];
+        for (p, presearcher) in presearchers.into_iter().enumerate() {
+            let mut rng = Rng(0x9e37_79b9 + p as u64);
+            let mut index = QueryIndex::new(presearcher);
+            for round in 0..6 {
+                // registrations that replace earlier ids, and deletions, so
+                // slots empty out and the index compacts
+                let queries: Vec<MonitorQuery> = (0..60)
+                    .map(|_| {
+                        let id = format!("q{}", rng.below(120));
+                        let mut md = BTreeMap::new();
+                        if rng.below(2) == 0 {
+                            md.insert("lang".to_string(), Some(["en", "de"][rng.below(2)].into()));
+                        }
+                        MonitorQuery::new(id, random_query(&mut rng, 2), None, md).unwrap()
+                    })
+                    .collect();
+                index.register(queries).unwrap();
+                let gone: Vec<String> = (0..10).map(|_| format!("q{}", rng.below(120))).collect();
+                index.delete(&gone).unwrap();
+                assert_eq!(
+                    index.disjunct_count(),
+                    index.slots.iter().flatten().count(),
+                    "round {round}"
+                );
+                for _ in 0..40 {
+                    let batch = random_batch(&mut rng);
+                    let filter = match rng.below(3) {
+                        0 => None,
+                        _ => {
+                            let mut values = BatchDocFreqs::new();
+                            values.insert(
+                                "lang".to_string(),
+                                vec![(["en", "de"][rng.below(2)].as_bytes().to_vec(), 1)],
+                            );
+                            index.batch_filter(&values, 1).unwrap()
+                        }
+                    };
+                    let query = index
+                        .presearcher
+                        .build_query(&batch, &AcceptAll, filter.clone());
+                    let want = ids(&brute_force(&index, &query));
+                    let got = ids(&index.select(&batch, &AcceptAll, filter.clone()));
+                    assert_eq!(got, want, "presearcher {p} round {round} {query:?}");
+                    let debug: Vec<String> = index
+                        .select_debug(&batch, &AcceptAll, filter)
+                        .iter()
+                        .map(|(e, _)| e.cache_id.clone())
+                        .collect();
+                    assert_eq!(debug, want);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn replacing_and_deleting_keep_ids_and_compaction_keeps_order() {
+        let mut index = QueryIndex::new(TermFilteredPresearcher::default());
+        let mq =
+            |id: &str, t: &str| MonitorQuery::new(id, term("f", t), None, BTreeMap::new()).unwrap();
+        index
+            .register((0..100).map(|i| mq(&format!("q{i:03}"), "fox")).collect())
+            .unwrap();
+        // replace the even ids: over half the slots empty, so it compacts
+        index
+            .register(
+                (0..100)
+                    .step_by(2)
+                    .map(|i| mq(&format!("q{i:03}"), "fox"))
+                    .collect(),
+            )
+            .unwrap();
+        index
+            .register(
+                (0..100)
+                    .step_by(3)
+                    .map(|i| mq(&format!("q{i:03}"), "fox"))
+                    .collect(),
+            )
+            .unwrap();
+        assert_eq!(index.slots.len(), 184);
+        // the odd ids not a multiple of three: 217 slots for 100 entries,
+        // so the index compacts
+        index
+            .register(
+                (0..100)
+                    .filter(|i| i % 2 == 1 && i % 3 != 0)
+                    .map(|i| mq(&format!("q{i:03}"), "fox"))
+                    .collect(),
+            )
+            .unwrap();
+        assert_eq!(index.disjunct_count(), 100);
+        assert_eq!(index.slots.len(), 100);
+        let mut batch = BatchTerms::new();
+        batch.insert("f".into(), vec![b"fox".to_vec()]);
+        let got: Vec<String> = index
+            .select(&batch, &AcceptAll, None)
+            .iter()
+            .map(|e| e.query_id.clone())
+            .collect();
+        // registration order: each id where its last registration put it
+        let mut want: Vec<String> = Vec::new();
+        let last = |i: usize| {
+            if i.is_multiple_of(3) {
+                2
+            } else if i.is_multiple_of(2) {
+                1
+            } else {
+                3
+            }
+        };
+        for round in 1..=3 {
+            want.extend(
+                (0..100)
+                    .filter(|&i| last(i) == round)
+                    .map(|i| format!("q{i:03}")),
+            );
+        }
+        assert_eq!(got, want);
+        assert_eq!(index.query_ids().len(), 100);
+        assert!(index.get_query("q050").is_some());
+        index.delete(&["q050".to_string()]).unwrap();
+        assert!(index.get_query("q050").is_none());
+        assert_eq!(index.cache_stats().queries, 99);
     }
 }

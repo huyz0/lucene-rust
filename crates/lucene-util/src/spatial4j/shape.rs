@@ -161,6 +161,12 @@ pub trait Rectangle: Shape {
     fn relate_y_range(&self, min_y: f64, max_y: f64) -> Result<SpatialRelation>;
     /// `relateXRange(minX, maxX)`.
     fn relate_x_range(&self, min_x: f64, max_x: f64) -> Result<SpatialRelation>;
+    /// `getCenter()`'s x and y, for callers that only read them (no point
+    /// is built).
+    fn center_xy(&self) -> Result<(f64, f64)> {
+        let c = self.center()?;
+        Ok((c.x(), c.y()))
+    }
 }
 
 /// `Circle`: a point and a radius (degrees for geo).

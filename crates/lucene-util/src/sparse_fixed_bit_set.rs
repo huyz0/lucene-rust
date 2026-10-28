@@ -30,7 +30,22 @@ fn oversize(s: usize) -> usize {
     }
 }
 
+/// Out of line and `#[cold]`, so the bound check in `get`/`get_and_set` is a
+/// single never-taken branch rather than inlined formatting machinery.
+#[cold]
+#[inline(never)]
+fn out_of_range(i: usize, length: usize) -> ! {
+    panic!("index={i},length={length}");
+}
+
 /// `SparseFixedBitSet`.
+///
+/// Invariant (every method keeps it; `check_structure` verifies it):
+/// `indices.len() == bits.len() == block_count(length)`, and for every block
+/// `k`, `indices[k] != 0` implies `bits[k]` is `Some(block)` with
+/// `block.len() >= indices[k].count_ones()`. The unchecked reads in
+/// [`SparseFixedBitSet::get`] and [`SparseFixedBitSet::get_and_set`] rely on
+/// it.
 #[derive(Debug, Clone)]
 pub struct SparseFixedBitSet {
     indices: Vec<u64>,
@@ -65,7 +80,9 @@ impl SparseFixedBitSet {
 
     #[inline]
     fn check(&self, i: usize) {
-        assert!(i < self.length, "index={i},length={}", self.length);
+        if i >= self.length {
+            out_of_range(i, self.length);
+        }
     }
 
     /// `clear()`: every bit unset.
@@ -101,30 +118,48 @@ impl SparseFixedBitSet {
     pub fn get(&self, i: usize) -> bool {
         self.check(i);
         let i4096 = i >> 12;
-        let index = self.indices[i4096];
+        debug_assert!(i4096 < self.indices.len() && i4096 < self.bits.len());
+        // SAFETY: `i < length` (checked above), so `i >> 12 <
+        // block_count(length) == indices.len()` by the type invariant.
+        let index = unsafe { *self.indices.get_unchecked(i4096) };
         let i64bit = 1u64 << ((i >> 6) & 63);
         if index & i64bit == 0 {
             return false;
         }
         let o = (index & (i64bit - 1)).count_ones() as usize;
-        let block = self.bits[i4096]
-            .as_ref()
-            .expect("non-zero index has a block");
-        block[o] & (1u64 << (i & 63)) != 0
+        // SAFETY: `i4096 < bits.len()` as above; `index != 0` (its `i64bit`
+        // is set), so by the invariant `bits[i4096]` is `Some` and holds at
+        // least `index.count_ones()` words, more than `o`, the count of the
+        // index bits strictly below `i64bit`.
+        unsafe {
+            let block = self.bits.get_unchecked(i4096);
+            debug_assert!(block.as_ref().is_some_and(|b| o < b.len()));
+            let block = block.as_ref().unwrap_unchecked();
+            *block.get_unchecked(o) & (1u64 << (i & 63)) != 0
+        }
     }
 
     /// `getAndSet(i)`.
+    #[inline]
     pub fn get_and_set(&mut self, i: usize) -> bool {
         self.check(i);
         let i4096 = i >> 12;
-        let index = self.indices[i4096];
+        debug_assert!(i4096 < self.indices.len() && i4096 < self.bits.len());
+        // SAFETY: as in `get`: `i < length`, so `i4096 < indices.len()`.
+        let index = unsafe { *self.indices.get_unchecked(i4096) };
         let i64bit = 1u64 << ((i >> 6) & 63);
         if index & i64bit != 0 {
             let o = (index & (i64bit - 1)).count_ones() as usize;
             let bit = 1u64 << (i & 63);
-            let block = self.bits[i4096].as_mut().expect("block");
-            let was = block[o] & bit != 0;
-            block[o] |= bit;
+            // SAFETY: as in `get`: `index` has `i64bit` set, so the block
+            // exists and has more than `o` words.
+            let word = unsafe {
+                let block = self.bits.get_unchecked_mut(i4096);
+                debug_assert!(block.as_ref().is_some_and(|b| o < b.len()));
+                block.as_mut().unwrap_unchecked().get_unchecked_mut(o)
+            };
+            let was = *word & bit != 0;
+            *word |= bit;
             was
         } else {
             self.insert(i4096, i64bit, 1u64 << (i & 63), index);
@@ -356,6 +391,20 @@ impl SparseFixedBitSet {
         (r < upper_bound).then_some(r)
     }
 
+    /// The 64-bit word `w` (bits `64 * w ..`), zero when not stored.
+    /// `w` must be below `len().div_ceil(64)`.
+    #[inline]
+    pub fn word(&self, w: usize) -> u64 {
+        let i4096 = w >> 6;
+        let index = self.indices[i4096];
+        let i64bit = 1u64 << (w & 63);
+        if index & i64bit == 0 {
+            return 0;
+        }
+        let o = (index & (i64bit - 1)).count_ones() as usize;
+        self.bits[i4096].as_ref().expect("block")[o]
+    }
+
     /// `nextClearBit(index)`.
     pub fn next_clear_bit(&self, index: usize) -> Option<usize> {
         self.next_clear_bit_in_range(index, self.length)
@@ -365,7 +414,34 @@ impl SparseFixedBitSet {
     /// `start..upper_bound`.
     pub fn next_clear_bit_in_range(&self, start: usize, upper_bound: usize) -> Option<usize> {
         let upper_bound = upper_bound.min(self.length);
-        (start..upper_bound).find(|&i| !self.get(i))
+        if start >= upper_bound {
+            return None;
+        }
+        // Word by word: a word absent from its block's index is all clear;
+        // otherwise the first zero of the stored word (masked from `start`).
+        let mut w = start >> 6;
+        let mut from = start & 63;
+        let last = (upper_bound - 1) >> 6;
+        while w <= last {
+            let i4096 = w >> 6;
+            let index = self.indices[i4096];
+            let i64bit = 1u64 << (w & 63);
+            let r = if index & i64bit == 0 {
+                (w << 6) + from
+            } else {
+                let o = (index & (i64bit - 1)).count_ones() as usize;
+                let word = self.bits[i4096].as_ref().expect("block")[o];
+                let clear = !word & (u64::MAX << from);
+                if clear == 0 {
+                    w += 1;
+                    from = 0;
+                    continue;
+                }
+                (w << 6) + clear.trailing_zeros() as usize
+            };
+            return (r < upper_bound).then_some(r);
+        }
+        None
     }
 
     /// `lastDoc(i4096)`.
@@ -649,5 +725,55 @@ mod tests {
     #[should_panic(expected = "length needs to be >= 1")]
     fn zero_length_panics() {
         SparseFixedBitSet::new(0);
+    }
+
+    #[test]
+    fn next_clear_bit_word_wise_matches_model() {
+        let n = 10_000;
+        let mut b = SparseFixedBitSet::new(n);
+        b.set_range(0, 4200);
+        b.set_range(5000, 5130);
+        b.set(9999);
+        b.clear(70);
+        let model = |i: usize| b.get(i);
+        for start in (0..n)
+            .step_by(13)
+            .chain([4095, 4096, 4199, 4200, 9998, 9999])
+        {
+            for ub in [start, start + 1, start + 64, start + 5000, n] {
+                let want = (start..ub.min(n)).find(|&i| !model(i));
+                assert_eq!(b.next_clear_bit_in_range(start, ub), want, "{start} {ub}");
+            }
+        }
+        assert_eq!(b.next_clear_bit(0), Some(70));
+        assert_eq!(b.next_clear_bit(71), Some(4200));
+        assert_eq!(b.next_clear_bit(5000), Some(5130));
+        assert_eq!(b.next_clear_bit(9999), None);
+        let mut full = SparseFixedBitSet::new(130);
+        full.set_range(0, 130);
+        assert_eq!(full.next_clear_bit(0), None);
+        assert_eq!(full.next_clear_bit_in_range(3, 3), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "index=10,length=10")]
+    fn get_and_set_out_of_range_panics() {
+        SparseFixedBitSet::new(10).get_and_set(10);
+    }
+
+    #[test]
+    fn get_and_set_edges_of_blocks_and_words() {
+        // Exercises the unchecked reads at the first and last word of a
+        // block, the last block, and a block grown past its first word.
+        let n = 3 * 4096 + 5;
+        let mut b = SparseFixedBitSet::new(n);
+        for &i in &[0usize, 63, 64, 4095, 4096, 8191, 4032, n - 1, n - 5, 1] {
+            assert!(!b.get(i));
+            assert!(!b.get_and_set(i));
+            assert!(b.get(i));
+            assert!(b.get_and_set(i));
+        }
+        assert_eq!(b.check_structure(), Ok(()));
+        assert_eq!(b.cardinality(), 10);
     }
 }

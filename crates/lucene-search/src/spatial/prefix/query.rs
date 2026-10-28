@@ -21,6 +21,7 @@
 //! whose child node is one object `reset` to each sibling, is a stack of
 //! owned nodes here.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use lucene_codecs::blocktree::{self, FieldTerms, SeekStatus, TermsEnum};
@@ -1352,9 +1353,11 @@ impl ContainsVisitor<'_, '_> {
         if !self.t.on_term {
             return Ok(None); // signals all done
         }
-        // Get the AND of all child results
-        let mut combined: Option<SmallDocSet> = None;
-        let mut accept: Option<SmallDocSet> = accept_contains.cloned();
+        // Get the AND of all child results. Each sub-cell's result is the
+        // next one's filter, so the filter is the parent's set (borrowed, not
+        // copied) until the first sub-cell answers, and that answer after.
+        let mut ran = false;
+        let mut accept: Option<Cow<'_, SmallDocSet>> = accept_contains.map(Cow::Borrowed);
         // Optimization: no filter when the cell is within the query shape.
         let mut sub_cells_filter = Some(&self.q.base.query_shape);
         if cell.level() != 0
@@ -1365,27 +1368,35 @@ impl ContainsVisitor<'_, '_> {
         let mut sub_cells = cell.next_level_cells(sub_cells_filter)?;
         while sub_cells.has_next()? {
             let sub_cell = sub_cells.next()?;
-            combined = if !self.seek(&*sub_cell)? {
+            let filter = accept.as_deref();
+            let combined = if !self.seek(&*sub_cell)? {
                 None
             } else if sub_cell.level() == self.q.base.detail_level {
-                self.get_docs(&*sub_cell, accept.as_ref())?
+                self.get_docs(&*sub_cell, filter)?
             } else if !self.q.multi_overlapping_indexed_shapes
                 && sub_cell.shape_rel() == Some(SpatialRelation::Within)
             {
-                self.get_leaf_docs(&*sub_cell, accept.as_ref())?
+                self.get_leaf_docs(&*sub_cell, filter)?
             } else {
                 // OR the leaf docs with all child results
-                let leaf_docs = self.get_leaf_docs(&*sub_cell, accept.as_ref())?;
-                let sub_docs = self.visit(&*sub_cell, accept.as_ref())?; // recursion
+                let leaf_docs = self.get_leaf_docs(&*sub_cell, filter)?;
+                let sub_docs = self.visit(&*sub_cell, filter)?; // recursion
                 union(leaf_docs, sub_docs)
             };
-            match &combined {
-                None => break,
+            match combined {
+                None => return Ok(None),
                 // has the 'AND' effect on next iteration
-                Some(c) => accept = Some(c.clone()),
+                Some(c) => accept = Some(Cow::Owned(c)),
             }
+            ran = true;
         }
-        Ok(combined)
+        // the last sub-cell's answer (owned once any ran); none for no
+        // sub-cells
+        Ok(if ran {
+            accept.map(Cow::into_owned)
+        } else {
+            None
+        })
     }
 
     /// `seek(cell)`: whether the terms are now on `cell` (a leaf of it

@@ -10,13 +10,15 @@ use std::sync::Arc;
 use lucene_analysis::Analyzer;
 
 use crate::explain::Explanation;
+use crate::index_searcher::IndexSearcher;
 use crate::matches;
 use crate::monitor::batch::{DocFields, DocumentBatch};
 use crate::monitor::config::{MonitorConfiguration, MonitorUpdateListener, QueryTimeListener};
 use crate::monitor::index::{
-    as_search_query, batch_terms, AcceptAll, MonitorQuery, QueryCacheStats, QueryIndex,
+    batch_terms, AcceptAll, BatchTerms, CachedEntry, MonitorQuery, QueryCacheStats, QueryIndex,
 };
 use crate::monitor::presearcher::TermFilteredPresearcher;
+use crate::query::Clause;
 use crate::similarities::Similarity;
 use crate::{Error, Result};
 
@@ -401,6 +403,16 @@ impl Monitor {
         matcher: &Matcher,
         listener: &mut dyn QueryTimeListener,
     ) -> Result<MultiMatchingQueries> {
+        let prepared = self.prepare(docs, matcher)?;
+        let candidates = self
+            .index
+            .select(&prepared.terms, &AcceptAll, prepared.filter.clone());
+        let run = self.run_candidates(&prepared.batch, matcher, &candidates, Some(listener))?;
+        Ok(finish(run, prepared.build_nanos, prepared.made))
+    }
+
+    /// The batch, its presearcher terms and its filter-field clause.
+    fn prepare(&self, docs: &[DocFields<'_>], matcher: &Matcher) -> Result<Prepared> {
         let similarity = match matcher {
             Matcher::Scoring(s) => s.clone(),
             _ => None,
@@ -409,10 +421,21 @@ impl Monitor {
         let made = std::time::Instant::now();
         let built = std::time::Instant::now();
         let terms = batch_terms(batch.terms(), &self.filter_fields);
-        let build = nanos_since(built);
-        let candidates = self.index.select(&terms, &AcceptAll);
-        let run = self.run_candidates(&batch, matcher, &candidates, Some(listener))?;
-        Ok(finish(run, build, made))
+        let filter = self
+            .index
+            .batch_filter(
+                &batch.doc_freqs(self.index.filter_fields()),
+                batch.max_doc(),
+            )
+            .map_err(Error::IllegalArgument)?;
+        let build_nanos = nanos_since(built);
+        Ok(Prepared {
+            batch,
+            terms,
+            filter,
+            made,
+            build_nanos,
+        })
     }
 
     /// `debug(docs, matcher)`: the match, and for every query the presearcher
@@ -422,16 +445,10 @@ impl Monitor {
         docs: &[DocFields<'_>],
         matcher: &Matcher,
     ) -> Result<PresearcherMatches> {
-        let similarity = match matcher {
-            Matcher::Scoring(s) => s.clone(),
-            _ => None,
-        };
-        let batch = DocumentBatch::of(&self.analyzer, docs, similarity)?;
-        let made = std::time::Instant::now();
-        let built = std::time::Instant::now();
-        let terms = batch_terms(batch.terms(), &self.filter_fields);
-        let build = nanos_since(built);
-        let selected = self.index.select_debug(&terms, &AcceptAll);
+        let prepared = self.prepare(docs, matcher)?;
+        let selected =
+            self.index
+                .select_debug(&prepared.terms, &AcceptAll, prepared.filter.clone());
         let mut matching_terms: BTreeMap<String, String> = BTreeMap::new();
         for (entry, why) in &selected {
             matching_terms
@@ -439,12 +456,11 @@ impl Monitor {
                 .or_default()
                 .push_str(why);
         }
-        let candidates: Vec<&crate::monitor::index::QueryCacheEntry> =
-            selected.iter().map(|(e, _)| *e).collect();
+        let candidates: Vec<&CachedEntry> = selected.iter().map(|(e, _)| *e).collect();
         let matcher = finish(
-            self.run_candidates(&batch, matcher, &candidates, None)?,
-            build,
-            made,
+            self.run_candidates(&prepared.batch, matcher, &candidates, None)?,
+            prepared.build_nanos,
+            prepared.made,
         );
         Ok(PresearcherMatches {
             matching_terms,
@@ -460,18 +476,12 @@ impl Monitor {
         docs: &[DocFields<'_>],
         matcher: &Matcher,
     ) -> Result<MultiMatchingQueries> {
-        let similarity = match matcher {
-            Matcher::Scoring(s) => s.clone(),
-            _ => None,
-        };
-        let batch = DocumentBatch::of(&self.analyzer, docs, similarity)?;
-        let made = std::time::Instant::now();
-        let built = std::time::Instant::now();
-        let terms = batch_terms(batch.terms(), &self.filter_fields);
-        let build = nanos_since(built);
-        let candidates = self.index.select(&terms, &AcceptAll);
-        let run = self.run_candidates(&batch, matcher, &candidates, None)?;
-        Ok(finish(run, build, made))
+        let prepared = self.prepare(docs, matcher)?;
+        let candidates = self
+            .index
+            .select(&prepared.terms, &AcceptAll, prepared.filter.clone());
+        let run = self.run_candidates(&prepared.batch, matcher, &candidates, None)?;
+        Ok(finish(run, prepared.build_nanos, prepared.made))
     }
 
     /// Runs each candidate's query against the batch, under `matcher`.
@@ -479,85 +489,95 @@ impl Monitor {
         &self,
         batch: &DocumentBatch,
         matcher: &Matcher,
-        candidates: &[&crate::monitor::index::QueryCacheEntry],
-        mut timer: Option<&mut dyn QueryTimeListener>,
+        candidates: &[&CachedEntry],
+        timer: Option<&mut dyn QueryTimeListener>,
     ) -> Result<MultiMatchingQueries> {
         let max_doc = batch.max_doc();
-        let mut per_doc: Vec<BTreeMap<String, QueryMatch>> = vec![BTreeMap::new(); max_doc];
-        let mut errors = BTreeMap::new();
-        batch.with_searcher(|searcher| {
-            for entry in candidates {
-                let Some(query) = as_search_query(&entry.match_query) else {
-                    continue;
-                };
-                // a query's pieces on one document resolve into one match
-                let mut add = |doc: usize, m: QueryMatch| {
-                    let slot = &mut per_doc[doc];
-                    match slot.remove(&m.query_id) {
-                        Some(old) => {
-                            let id = m.query_id.clone();
-                            slot.insert(id, old.resolve(m));
-                        }
-                        None => {
-                            slot.insert(m.query_id.clone(), m);
-                        }
-                    }
-                };
-                let started = std::time::Instant::now();
-                let outcome: Result<()> = (|| {
-                    match matcher {
-                        Matcher::Simple | Matcher::Scoring(_) => {
-                            let top = searcher.search(&query.boolean, max_doc)?;
-                            for sd in &top.score_docs {
-                                let mut m = QueryMatch::plain(&entry.query_id);
-                                if matches!(matcher, Matcher::Scoring(_)) {
-                                    m.score = Some(sd.score);
-                                }
-                                add(usize::try_from(sd.doc).unwrap_or(0), m);
-                            }
-                        }
-                        Matcher::Explaining => {
-                            for doc in 0..max_doc {
-                                let ex = searcher
-                                    .explain(&query.boolean, i32::try_from(doc).unwrap_or(0))?;
-                                if ex.matched {
-                                    let mut m = QueryMatch::plain(&entry.query_id);
-                                    m.explanation = Some(ex);
-                                    add(doc, m);
-                                }
-                            }
-                        }
-                        Matcher::Highlights => {
-                            for doc in 0..max_doc {
-                                let d = i32::try_from(doc).unwrap_or(0);
-                                if let Some(found) = matches::matches(searcher, &query.clause, d)? {
-                                    let mut m = QueryMatch::plain(&entry.query_id);
-                                    m.hits = Some(build_hits(found.as_ref())?);
-                                    add(doc, m);
-                                }
-                            }
-                        }
-                    }
-                    Ok(())
-                })();
-                // `QueryTimeListener.timingMatcher`: each query's time, failed or not
-                if let Some(t) = timer.as_deref_mut() {
-                    let nanos = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-                    t.log_query_time(&entry.query_id, nanos);
+        batch.with_searcher(|searcher| run_on(searcher, max_doc, matcher, candidates, timer))
+    }
+}
+
+/// Runs each candidate's query with `searcher` over a batch of `max_doc`
+/// documents, under `matcher`.
+fn run_on(
+    searcher: &IndexSearcher<'_, '_>,
+    max_doc: usize,
+    matcher: &Matcher,
+    candidates: &[&CachedEntry],
+    mut timer: Option<&mut dyn QueryTimeListener>,
+) -> MultiMatchingQueries {
+    let mut per_doc: Vec<BTreeMap<String, QueryMatch>> = vec![BTreeMap::new(); max_doc];
+    let mut errors = BTreeMap::new();
+    for entry in candidates {
+        let Some(query) = entry.search_query() else {
+            continue;
+        };
+        // a query's pieces on one document resolve into one match
+        let mut add = |doc: usize, m: QueryMatch| {
+            let slot = &mut per_doc[doc];
+            match slot.remove(&m.query_id) {
+                Some(old) => {
+                    let id = m.query_id.clone();
+                    slot.insert(id, old.resolve(m));
                 }
-                if let Err(e) = outcome {
-                    errors.insert(entry.query_id.clone(), e.to_string());
+                None => {
+                    slot.insert(m.query_id.clone(), m);
                 }
             }
-        })?;
-        Ok(MultiMatchingQueries {
-            matches: per_doc,
-            errors,
-            queries_run: candidates.len(),
-            batch_size: max_doc,
-            query_build_time: 0,
-            search_time: 0,
-        })
+        };
+        let started = std::time::Instant::now();
+        let outcome: Result<()> = (|| {
+            match matcher {
+                Matcher::Simple | Matcher::Scoring(_) => {
+                    let top = searcher.search(&query.boolean, max_doc)?;
+                    for sd in &top.score_docs {
+                        let mut m = QueryMatch::plain(&entry.query_id);
+                        if matches!(matcher, Matcher::Scoring(_)) {
+                            m.score = Some(sd.score);
+                        }
+                        add(usize::try_from(sd.doc).unwrap_or(0), m);
+                    }
+                }
+                Matcher::Explaining => {
+                    for doc in 0..max_doc {
+                        let ex =
+                            searcher.explain(&query.boolean, i32::try_from(doc).unwrap_or(0))?;
+                        if ex.matched {
+                            let mut m = QueryMatch::plain(&entry.query_id);
+                            m.explanation = Some(ex);
+                            add(doc, m);
+                        }
+                    }
+                }
+                Matcher::Highlights => {
+                    for doc in 0..max_doc {
+                        let d = i32::try_from(doc).unwrap_or(0);
+                        if let Some(found) = matches::matches(searcher, &query.clause, d)? {
+                            let mut m = QueryMatch::plain(&entry.query_id);
+                            m.hits = Some(build_hits(found.as_ref())?);
+                            add(doc, m);
+                        }
+                    }
+                }
+            }
+            Ok(())
+        })();
+        // `QueryTimeListener.timingMatcher`: each query's time, failed or not
+        if let Some(t) = timer.as_deref_mut() {
+            let nanos = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            t.log_query_time(&entry.query_id, nanos);
+        }
+        if let Err(e) = outcome {
+            errors.insert(entry.query_id.clone(), e.to_string());
+        }
+    }
+    MultiMatchingQueries {
+        matches: per_doc,
+        errors,
+        queries_run: candidates.len(),
+        batch_size: max_doc,
+        query_build_time: 0,
+        search_time: 0,
     }
 }
 
@@ -581,98 +601,105 @@ pub fn partition<T>(items: &[T], slices: usize) -> Vec<&[T]> {
 }
 
 impl Monitor {
-    /// `match(docs, PartitionMatcher.factory(executor, matcher, threads))`: the
-    /// selected entries are split across `threads` workers, each running its
-    /// share against the batch, and the per-document matches merge into one
-    /// result. Equal to [`Monitor::match_docs`] for any thread count: a query
-    /// sits in exactly one partition, and `resolve` combines its pieces the
-    /// same way whichever partition they land in.
+    /// `match(docs, PartitionMatcher.factory(executor, matcher, threads))`:
+    /// the batch is built and the presearcher selects its candidates once;
+    /// the candidates are cut into `threads` runs (`PartitionMatcher`'s
+    /// tasks), each run on its own thread against the shared batch, and the
+    /// per-document matches merge in run order. Equal to
+    /// [`Monitor::match_docs`] for any thread count: a query's pieces resolve
+    /// in candidate order whichever run they land in.
+    ///
+    /// A run is never shorter than [`MIN_CANDIDATES_PER_THREAD`] candidates,
+    /// and there are no more runs than the machine has hardware threads
+    /// (fewer threads are used otherwise), so a small candidate set is not
+    /// slowed by thread start-up.
     pub fn match_docs_partitioned(
         &self,
         docs: &[DocFields<'_>],
         matcher: &Matcher,
         threads: usize,
     ) -> Result<MultiMatchingQueries> {
-        let threads = threads.max(1);
-        let made = std::time::Instant::now();
-        let whole = self.match_docs(docs, matcher)?;
-        // The partitions run over the selected entries; the result is the
-        // single-pass result, so the workers are the run's own parts. Each
-        // part's matches are computed on its own thread and merged.
-        let ids = self.index.query_ids();
-        let parts: Vec<Vec<String>> = partition(&ids, threads)
-            .into_iter()
-            .map(|p| p.to_vec())
-            .collect();
+        let prepared = self.prepare(docs, matcher)?;
+        let candidates = self
+            .index
+            .select(&prepared.terms, &AcceptAll, prepared.filter.clone());
+        let hardware = std::thread::available_parallelism().map_or(1, usize::from);
+        let threads = threads
+            .min(hardware)
+            .min(candidates.len().div_ceil(MIN_CANDIDATES_PER_THREAD))
+            .max(1);
+        if threads == 1 {
+            let run = self.run_candidates(&prepared.batch, matcher, &candidates, None)?;
+            return Ok(finish(run, prepared.build_nanos, prepared.made));
+        }
+        let max_doc = prepared.batch.max_doc();
+        let parts = partition(&candidates, threads);
+        // one searcher over the batch, shared by every run; the first run is
+        // this thread's own
+        let results: Result<Vec<MultiMatchingQueries>> =
+            prepared.batch.with_searcher(|searcher| {
+                std::thread::scope(|scope| {
+                    let handles: Vec<_> = parts[1..]
+                        .iter()
+                        .map(|part| {
+                            scope.spawn(move || run_on(searcher, max_doc, matcher, part, None))
+                        })
+                        .collect();
+                    let mut out = vec![run_on(searcher, max_doc, matcher, parts[0], None)];
+                    for h in handles {
+                        out.push(h.join().map_err(|_| {
+                            Error::IllegalState("a matcher worker panicked".into())
+                        })?);
+                    }
+                    Ok(out)
+                })
+            })?;
         let mut merged: Vec<BTreeMap<String, QueryMatch>> = vec![BTreeMap::new(); docs.len()];
         let mut errors = BTreeMap::new();
-        std::thread::scope(|scope| -> Result<()> {
-            let handles: Vec<_> = parts
-                .iter()
-                .map(|part| {
-                    scope.spawn(move || -> Result<MultiMatchingQueries> {
-                        // a worker's own match, over only its queries
-                        let mut own = self.match_docs_for(docs, matcher, part)?;
-                        own.queries_run = part.len();
-                        Ok(own)
-                    })
-                })
-                .collect();
-            for h in handles {
-                let part = h
-                    .join()
-                    .map_err(|_| Error::IllegalState("a matcher worker panicked".into()))??;
-                for (doc, found) in part.matches.into_iter().enumerate() {
-                    for (id, m) in found {
-                        // Partitions hold whole queries (`PartitionMatcher` splits
-                        // its tasks), so one query's pieces share a partition and
-                        // this merge sees a query once; it is kept for a partition
-                        // that splits a query's entries.
-                        match merged[doc].remove(&id) {
-                            Some(old) => {
-                                merged[doc].insert(id, old.resolve(m));
-                            }
-                            None => {
-                                merged[doc].insert(id, m);
-                            }
+        for part in results? {
+            for (doc, found) in part.matches.into_iter().enumerate() {
+                for (id, m) in found {
+                    // a query's pieces split across runs resolve in run order,
+                    // the order the single pass resolves them in
+                    match merged[doc].remove(&id) {
+                        Some(old) => {
+                            merged[doc].insert(id, old.resolve(m));
+                        }
+                        None => {
+                            merged[doc].insert(id, m);
                         }
                     }
                 }
-                errors.extend(part.errors);
             }
-            Ok(())
-        })?;
-        Ok(MultiMatchingQueries {
+            errors.extend(part.errors);
+        }
+        let run = MultiMatchingQueries {
             matches: merged,
             errors,
-            queries_run: whole.queries_run,
+            queries_run: candidates.len(),
             batch_size: docs.len(),
-            query_build_time: whole.query_build_time,
-            search_time: nanos_since(made) / 1_000_000,
-        })
-    }
-
-    /// [`Monitor::match_docs`] restricted to the queries named in `ids`.
-    fn match_docs_for(
-        &self,
-        docs: &[DocFields<'_>],
-        matcher: &Matcher,
-        ids: &[String],
-    ) -> Result<MultiMatchingQueries> {
-        let similarity = match matcher {
-            Matcher::Scoring(s) => s.clone(),
-            _ => None,
+            query_build_time: 0,
+            search_time: 0,
         };
-        let batch = DocumentBatch::of(&self.analyzer, docs, similarity)?;
-        let terms = batch_terms(batch.terms(), &self.filter_fields);
-        let candidates: Vec<_> = self
-            .index
-            .select(&terms, &AcceptAll)
-            .into_iter()
-            .filter(|e| ids.contains(&e.query_id))
-            .collect();
-        self.run_candidates(&batch, matcher, &candidates, None)
+        Ok(finish(run, prepared.build_nanos, prepared.made))
     }
+}
+
+/// The fewest candidates [`Monitor::match_docs_partitioned`] gives a thread.
+/// A candidate's query costs a few microseconds against a one-document
+/// batch; a thread's start-up and wake-up cost tens, so a thread is given at
+/// least a few hundred microseconds of work.
+pub const MIN_CANDIDATES_PER_THREAD: usize = 64;
+
+/// What a match needs before its candidates run: the batch, its presearcher
+/// terms and filter clause, when the matcher was made and how long the
+/// presearcher's query took to build.
+struct Prepared {
+    batch: DocumentBatch,
+    terms: BatchTerms,
+    filter: Option<Clause>,
+    made: std::time::Instant,
+    build_nanos: u64,
 }
 
 /// `HighlightsMatch.buildMatch`: every field's match positions and offsets,
@@ -1059,5 +1086,152 @@ mod cache_and_timing_tests {
         let debug = m.debug_docs(&docs, &Matcher::Simple).unwrap();
         assert_eq!(debug.matcher, partitioned);
         assert_eq!(nanos_since(std::time::Instant::now()) / 1_000_000_000, 0);
+    }
+}
+
+/// Lucene's `TestFieldFilterPresearcherComponent`: a presearcher's filter
+/// field narrows the candidates to the queries whose metadata carries the
+/// batch's value.
+#[cfg(test)]
+mod filter_field_tests {
+    use super::*;
+    use crate::monitor::tree::TermWeightor;
+    use crate::query::{Clause, MatchAllDocsQuery, TermQuery};
+    use lucene_analysis::StandardAnalyzer;
+
+    fn monitor() -> Monitor {
+        let language = vec!["language".to_string()];
+        let mut m = Monitor::with_presearcher(
+            Arc::new(Analyzer::new(StandardAnalyzer::new())),
+            TermFilteredPresearcher::new(TermWeightor::default(), language.clone()),
+            language,
+        );
+        let mq = |id: &str, q: Clause, lang: Option<&str>| {
+            let mut md = BTreeMap::new();
+            if let Some(l) = lang {
+                md.insert("language".to_string(), Some(l.to_string()));
+            }
+            MonitorQuery::new(id, q, None, md).unwrap()
+        };
+        let t = |s: &str| Clause::Term(TermQuery::new("f", s.as_bytes().to_vec()));
+        m.register(vec![
+            mq("1", t("test"), Some("en")),
+            mq("2", t("test"), Some("de")),
+            mq("3", t("wahl"), Some("de")),
+            mq("4", t("wahl"), Some("es")),
+            mq(
+                "5",
+                Clause::MatchAllDocs(MatchAllDocsQuery::new(0)),
+                Some("es"),
+            ),
+            mq("6", t("test"), None),
+        ])
+        .unwrap();
+        m
+    }
+
+    fn ids(found: &MatchingQueries) -> Vec<&str> {
+        found.matches.iter().map(|m| m.query_id.as_str()).collect()
+    }
+
+    #[test]
+    fn a_documents_filter_value_selects_only_the_queries_carrying_it() {
+        let m = monitor();
+        let en = m
+            .match_doc(&[("f", "this is a test wahl"), ("language", "en")])
+            .unwrap();
+        assert_eq!(en.queries_run, 1);
+        assert_eq!(ids(&en), vec!["1"]);
+        let de = m
+            .match_doc(&[("f", "das ist ein test wahl"), ("language", "de")])
+            .unwrap();
+        assert_eq!(de.queries_run, 2);
+        assert_eq!(ids(&de), vec!["2", "3"]);
+        // the any-token query of `es` runs only for an `es` document
+        let es = m
+            .match_doc(&[("f", "nothing here"), ("language", "es")])
+            .unwrap();
+        assert_eq!(es.queries_run, 1);
+        assert_eq!(ids(&es), vec!["5"]);
+        // two values on one document: either value selects
+        let both = m
+            .match_doc(&[("f", "test"), ("language", "en"), ("language", "de")])
+            .unwrap();
+        assert_eq!(both.queries_run, 2);
+        assert_eq!(ids(&both), vec!["1", "2"]);
+        // no filter value: every query the terms select, metadata or not
+        let none = m.match_doc(&[("f", "test wahl")]).unwrap();
+        assert_eq!(none.queries_run, 6);
+        assert_eq!(ids(&none), vec!["1", "2", "3", "4", "5", "6"]);
+    }
+
+    #[test]
+    fn a_batch_whose_documents_differ_in_filter_value_is_refused() {
+        let m = monitor();
+        let docs: [DocFields<'_>; 2] = [
+            &[("f", "test"), ("language", "en")],
+            &[("f", "test"), ("language", "de")],
+        ];
+        let err = m.match_docs(&docs, &Matcher::Simple).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Some documents in this batch do not have a term value of language:de"),
+            "{err}"
+        );
+        let docs: [DocFields<'_>; 2] = [
+            &[("f", "test"), ("language", "en")],
+            &[("f", "test wahl"), ("language", "en")],
+        ];
+        let found = m.match_docs(&docs, &Matcher::Simple).unwrap();
+        assert_eq!(found.queries_run, 1);
+        assert_eq!(found.match_count(0), 1);
+        assert_eq!(found.match_count(1), 1);
+        let parted = m
+            .match_docs_partitioned(&docs, &Matcher::Simple, 3)
+            .unwrap();
+        assert_eq!(parted, found);
+        // debug selects the same candidates, its why naming the filter value
+        let debug = m.debug_docs(&docs, &Matcher::Simple).unwrap();
+        let hit = debug.match_query("1", 0).unwrap();
+        assert!(hit.presearcher_matches.contains("language:en"), "{hit:?}");
+        assert!(debug.match_query("2", 0).is_none());
+    }
+
+    #[test]
+    fn partitioning_spreads_many_candidates_and_equals_one_thread() {
+        let mut m = Monitor::new(Arc::new(Analyzer::new(StandardAnalyzer::new())));
+        let words = ["alpha", "beta", "gamma", "delta"];
+        m.register(
+            (0..200)
+                .map(|i| {
+                    let mut b = crate::query::BooleanQuery::new();
+                    b.should.push(Clause::Term(TermQuery::new(
+                        "f",
+                        words[i % 4].as_bytes().to_vec(),
+                    )));
+                    b.should.push(Clause::Term(TermQuery::new(
+                        "f",
+                        words[(i + 1) % 4].as_bytes().to_vec(),
+                    )));
+                    MonitorQuery::new(
+                        format!("q{i}"),
+                        Clause::Boolean(Box::new(b)),
+                        None,
+                        BTreeMap::new(),
+                    )
+                    .unwrap()
+                })
+                .collect(),
+        )
+        .unwrap();
+        let docs: [DocFields<'_>; 1] = [&[("f", "alpha beta gamma delta")]];
+        for matcher in [Matcher::Simple, Matcher::Scoring(None), Matcher::Explaining] {
+            let whole = m.match_docs(&docs, &matcher).unwrap();
+            assert_eq!(whole.queries_run, 400);
+            for threads in [2, 4, 7, 64] {
+                let parted = m.match_docs_partitioned(&docs, &matcher, threads).unwrap();
+                assert_eq!(parted, whole, "threads {threads}");
+            }
+        }
     }
 }
