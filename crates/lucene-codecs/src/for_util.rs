@@ -1138,7 +1138,7 @@ pub fn pfor_skip<R: DataInput>(r: &mut R) -> Result<()> {
 /// and have no instance to reuse. A caller in a loop should hold a
 /// [`ForUtil`], which is what makes its scratch buffer worth having.
 pub fn pfor_decode<R: DataInput>(r: &mut R, ints: &mut [u32; BLOCK_SIZE]) -> Result<()> {
-    ForUtil::new().pfor_decode(r, ints)
+    with_scratch(|fu| fu.pfor_decode(r, ints))
 }
 
 /// One-shot [`ForUtil::decode`], for callers that decode a single block and
@@ -1148,7 +1148,25 @@ pub fn for_decode<R: DataInput>(
     r: &mut R,
     ints: &mut [u32; BLOCK_SIZE],
 ) -> Result<()> {
-    ForUtil::new().decode(bits_per_value, r, ints)
+    with_scratch(|fu| fu.decode(bits_per_value, r, ints))
+}
+
+thread_local! {
+    /// The one-shot helpers' [`ForUtil`]: reused per thread rather than a
+    /// fresh 1 KiB zero-filled scratch per block. Every path writes the
+    /// scratch before reading it, as a held instance relies on too.
+    static SCRATCH: std::cell::RefCell<ForUtil> = const {
+        std::cell::RefCell::new(ForUtil { tmp: [0u32; BLOCK_SIZE] })
+    };
+}
+
+/// Runs `f` on this thread's scratch [`ForUtil`], or on a fresh one if the
+/// scratch is already in use further up the stack.
+fn with_scratch<T>(f: impl FnOnce(&mut ForUtil) -> T) -> T {
+    SCRATCH.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut fu) => f(&mut fu),
+        Err(_) => f(&mut ForUtil::new()),
+    })
 }
 
 /// `ForUtil.collapse8`: interleave 4 consecutive values into one 32-bit int's
@@ -1278,8 +1296,14 @@ fn encode_generic<W: DataOutput>(
         }
     }
 
-    for &w in tmp.iter().take(num_ints_per_shift) {
-        out.write_bytes(&w.to_le_bytes());
+    // Sixteen words per `write_bytes` rather than one: the output's dispatch
+    // and capacity check run 1/16th as often.
+    for words in tmp[..num_ints_per_shift].chunks(16) {
+        let mut bytes = [0u8; 64];
+        for (dst, w) in bytes.chunks_exact_mut(4).zip(words) {
+            dst.copy_from_slice(&w.to_le_bytes());
+        }
+        out.write_bytes(&bytes[..4 * words.len()]);
     }
 }
 
@@ -1290,7 +1314,7 @@ fn encode_generic<W: DataOutput>(
 /// `values` is consumed destructively (lane-collapsed in place), exactly like
 /// Java's `ForUtil.encode(int[] ints, ...)`.
 pub fn for_encode<W: DataOutput>(values: &mut [u32; BLOCK_SIZE], bits_per_value: u32, out: &mut W) {
-    ForUtil::new().encode(values, bits_per_value, out);
+    with_scratch(|fu| fu.encode(values, bits_per_value, out));
 }
 
 /// `PackedInts.bitsRequired(int)`: the minimum number of bits needed to
@@ -1333,7 +1357,7 @@ fn all_equal(ints: &[u32; BLOCK_SIZE]) -> bool {
 /// Lucene doc deltas and term frequencies are non-negative Java `int`s, so
 /// `PackedInts.bitsRequired` never returns 32 for them in practice.
 pub fn pfor_encode<W: DataOutput>(ints: &mut [u32; BLOCK_SIZE], out: &mut W) {
-    pfor_encode_with(&mut ForUtil::new(), ints, out)
+    with_scratch(|fu| pfor_encode_with(fu, ints, out))
 }
 
 fn pfor_encode_with<W: DataOutput>(
@@ -1399,22 +1423,28 @@ fn pfor_encode_with<W: DataOutput>(
     );
 
     let max_unpatched_value = mask32(patched_bits_required);
-    // The one reservation in this module. It is safe from the abort that a
-    // disk-sized `Vec::with_capacity` risks on two counts: this is the encode
-    // side, so nothing here was read from a file at all, and the search loop
-    // above assigns `num_exceptions` only while `cumulative_exceptions` is
-    // still at or under `MAX_EXCEPTIONS`, so it is at most 7.
+    // The search loop above assigns `num_exceptions` only while
+    // `cumulative_exceptions` is still at or under `MAX_EXCEPTIONS`, so the
+    // patches fit a stack array: no allocation per block.
     debug_assert!(num_exceptions as usize <= MAX_EXCEPTIONS);
-    let mut exceptions: Vec<(u8, u8)> = Vec::with_capacity(num_exceptions as usize);
+    let mut patches = [(0u8, 0u8); MAX_EXCEPTIONS];
+    let mut num_patches = 0usize;
     if num_exceptions > 0 {
         for (i, v) in ints.iter_mut().enumerate() {
             if *v > max_unpatched_value {
-                exceptions.push((i as u8, (*v >> patched_bits_required) as u8));
+                // ARITH: exactly `num_exceptions <= MAX_EXCEPTIONS` values
+                // exceed `max_unpatched_value`, so the index stays in range.
+                #[allow(clippy::arithmetic_side_effects)]
+                {
+                    patches[num_patches] = (i as u8, (*v >> patched_bits_required) as u8);
+                    num_patches += 1;
+                }
                 *v &= max_unpatched_value;
             }
         }
-        debug_assert_eq!(exceptions.len(), num_exceptions as usize);
+        debug_assert_eq!(num_patches, num_exceptions as usize);
     }
+    let exceptions = &patches[..num_patches];
 
     if all_equal(ints) && max_bits_required <= 8 {
         // `PForUtil.encode`'s all-equal fast path pre-shifts each patch's
@@ -1438,7 +1468,7 @@ fn pfor_encode_with<W: DataOutput>(
         );
         out.write_byte((num_exceptions << 5) as u8);
         out.write_vint(ints[0] as i32);
-        for &(idx, patch) in &exceptions {
+        for &(idx, patch) in exceptions {
             out.write_byte(idx);
             out.write_byte(patch << patched_bits_required);
         }
@@ -1446,7 +1476,7 @@ fn pfor_encode_with<W: DataOutput>(
         let token = ((num_exceptions << 5) | patched_bits_required) as u8;
         out.write_byte(token);
         for_util.encode(ints, patched_bits_required, out);
-        for &(idx, patch) in &exceptions {
+        for &(idx, patch) in exceptions {
             out.write_byte(idx);
             out.write_byte(patch);
         }
