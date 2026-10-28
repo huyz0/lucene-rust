@@ -18,7 +18,11 @@
 //! An index the wrapped directory already holds is opened as Java's writer
 //! opens it: its latest commit is mirrored into memory first, each
 //! SimpleText segment re-encoded natively ([`to_native`]) at its own
-//! generations, and its files counted as published.
+//! generations, any other segment copied as it is, and its files counted
+//! as published. Each segment keeps its codec until a merge replaces it,
+//! as Java reads each segment with its own codec;
+//! [`SimpleTextDirectory::default_codec`] is the writer with the default
+//! codec over such an index, publishing its new segments as written.
 //!
 //! What lands in the wrapped directory is what Java's `IndexWriter` with
 //! `SimpleTextCodec` writes for the same segments; the in-memory mirror is
@@ -58,6 +62,9 @@ struct Published {
     /// Each published commit's files (its `segments_N` included), by
     /// generation.
     commits: BTreeMap<i64, BTreeSet<String>>,
+    /// The segments published in the writer's own format, files as they
+    /// are (not SimpleText).
+    native: BTreeSet<String>,
 }
 
 /// See the [module docs](self).
@@ -65,6 +72,9 @@ pub struct SimpleTextDirectory<'d> {
     real: &'d dyn Directory,
     native: ByteBuffersDirectory,
     published: Mutex<Published>,
+    /// Whether new segments are published SimpleText (the writer's codec
+    /// is `SimpleText`) or as written (the default codec).
+    simpletext: bool,
 }
 
 impl std::fmt::Debug for SimpleTextDirectory<'_> {
@@ -78,20 +88,39 @@ impl std::fmt::Debug for SimpleTextDirectory<'_> {
 
 impl<'d> SimpleTextDirectory<'d> {
     /// Publishes into `real`. An index `real` already holds (its latest
-    /// commit, every segment SimpleText) is mirrored first, so the writer
-    /// opens it and appends: each segment re-encoded natively
-    /// ([`to_native`]) and its files counted as published, so the next
+    /// commit) is mirrored first, so the writer opens it and appends: each
+    /// SimpleText segment re-encoded natively ([`to_native`]), any other
+    /// copied as it is, and their files counted as published, so the next
     /// commit names them as they are and the writer's deletion policy
-    /// retires them as Java's would.
+    /// retires them as Java's would. A segment in another codec stays in
+    /// it until a merge replaces it (Java reads each segment with its own
+    /// codec).
     ///
     /// # Errors
-    /// Listing or reading `real` fails, a segment of its latest commit is
-    /// not SimpleText, or one does not re-encode.
+    /// Listing or reading `real` fails, a segment's `.si` does not parse,
+    /// or a SimpleText one does not re-encode.
     pub fn new(real: &'d dyn Directory) -> crate::Result<Self> {
+        Self::open(real, true)
+    }
+
+    /// `IndexWriter` with the default codec over an index that may hold
+    /// SimpleText segments: what is already there is mirrored as
+    /// [`Self::new`] mirrors it, and every new segment is published in the
+    /// writer's own format, so a commit can name both (Java's per-segment
+    /// codec). A merge of SimpleText segments writes a native one.
+    ///
+    /// # Errors
+    /// As [`Self::new`].
+    pub fn default_codec(real: &'d dyn Directory) -> crate::Result<Self> {
+        Self::open(real, false)
+    }
+
+    fn open(real: &'d dyn Directory, simpletext: bool) -> crate::Result<Self> {
         let dir = SimpleTextDirectory {
             real,
             native: ByteBuffersDirectory::new(),
             published: Mutex::new(Published::default()),
+            simpletext,
         };
         if real.list_all()?.iter().any(|f| is_commit(f)) {
             dir.mirror()?;
@@ -106,13 +135,27 @@ impl<'d> SimpleTextDirectory<'d> {
         let mut published = self.lock();
         let mut referenced = BTreeSet::new();
         for sci in &mut infos.segments {
-            if sci.codec_name != CODEC_NAME {
-                return Err(crate::Error::IllegalArgument(format!(
-                    "segment {} is {}, not {CODEC_NAME}",
-                    sci.segment_name, sci.codec_name
-                )));
-            }
             let si_name = format!("{}.si", sci.segment_name);
+            if sci.codec_name != CODEC_NAME {
+                let info = segment_info::parse_for_codec(
+                    &self
+                        .real
+                        .open(&si_name)
+                        .map_err(crate::directory_reader::Error::from)?,
+                    &sci.segment_id,
+                    &sci.codec_name,
+                )
+                .map_err(crate::directory_reader::Error::from)?;
+                let base = with_si(info.files, si_name);
+                for file in sci.files(&base) {
+                    copy(self.real, &self.native, &file)
+                        .map_err(crate::directory_reader::Error::from)?;
+                    referenced.insert(file);
+                }
+                published.bases.insert(sci.segment_name.clone(), base);
+                published.native.insert(sci.segment_name.clone());
+                continue;
+            }
             let info = segment_info::parse_simpletext(
                 &self
                     .real
@@ -169,6 +212,34 @@ impl<'d> SimpleTextDirectory<'d> {
         let mut fresh = Vec::new();
         for sci in &mut infos.segments {
             let si_name = format!("{}.si", sci.segment_name);
+            if !self.simpletext && !published.bases.contains_key(&sci.segment_name) {
+                let info = segment_info::parse_for_codec(
+                    &self.native.open(&si_name)?,
+                    &sci.segment_id,
+                    &sci.codec_name,
+                )
+                .map_err(store_error)?;
+                let base = with_si(info.files, si_name.clone());
+                published.bases.insert(sci.segment_name.clone(), base);
+                published.native.insert(sci.segment_name.clone());
+            }
+            if published.native.contains(&sci.segment_name) {
+                // Published as written: the base and every generation are
+                // the writer's own files.
+                let base = published
+                    .bases
+                    .get(&sci.segment_name)
+                    .cloned()
+                    .unwrap_or_default();
+                for file in sci.files(&base) {
+                    if published.files.insert(file.clone()) {
+                        copy(&self.native, self.real, &file)?;
+                        fresh.push(file.clone());
+                    }
+                    referenced.insert(file);
+                }
+                continue;
+            }
             if !published.bases.contains_key(&sci.segment_name) {
                 let info = segment_info::parse_for_codec(
                     &self.native.open(&si_name)?,
@@ -240,9 +311,29 @@ impl<'d> SimpleTextDirectory<'d> {
         published
             .bases
             .retain(|segment, _| files.contains(&format!("{segment}.si")));
+        published
+            .native
+            .retain(|segment| files.contains(&format!("{segment}.si")));
         published.files = files;
         Ok(())
     }
+}
+
+/// A segment's base files, its `.si` included.
+fn with_si(mut files: Vec<String>, si_name: String) -> Vec<String> {
+    if !files.contains(&si_name) {
+        files.push(si_name);
+    }
+    files
+}
+
+/// Copies `name` from `from` to `to` as it is.
+fn copy(from: &dyn Directory, to: &dyn Directory, name: &str) -> StoreResult<()> {
+    let bytes = from.open(name)?;
+    let mut out = to.create_output(name)?;
+    out.write_bytes(&bytes);
+    out.close()?;
+    Ok(())
 }
 
 fn is_commit(name: &str) -> bool {

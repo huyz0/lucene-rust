@@ -8,9 +8,11 @@
 //!   reader is the same reader here.
 //! - `newField`'s random field types are the plain ones (see
 //!   [`super::base_index_file_format`]).
-//! - `testWriteReadMerge` cannot switch to `SimpleTextCodec` between
-//!   writers (this port writes `Lucene104` only), so it reopens the writer
-//!   on the same codec; its `IntPoint.newRangeQuery` deletes are term
+//! - `testWriteReadMerge` switches between the default codec and
+//!   `SimpleTextCodec` by opening each writer through a
+//!   [`SimpleTextDirectory`] (`default_codec` or `new`), which lets the
+//!   native writer read and merge the other codec's segments; its
+//!   `IntPoint.newRangeQuery` deletes are term
 //!   deletes over an unstored `StringField` id, which select the same
 //!   documents.
 //! - `testMergeFilterReader`'s `DummyFilterDirectoryReader` reverses the
@@ -44,6 +46,7 @@ use lucene_index::merge_policy::NoMergePolicy;
 use lucene_index::segment_info::{IndexSortField, IndexSortKind, NumericSortKey};
 use lucene_search::directory_reader::DirectoryReader;
 use lucene_search::reader::LeafReader;
+use lucene_search::simpletext_writer::SimpleTextDirectory;
 use lucene_store::{ByteBuffersDirectory, Directory, FsDirectory};
 
 use super::base_index_file_format::{
@@ -439,7 +442,10 @@ pub fn test_write_read_merge(t: &mut LuceneTestCase) {
     let analyzer = mock_analyzer(t);
     let mut config = new_config(t, analyzer);
     config.max_buffered_docs = Some(test_util::next_int(t.random(), 2, 30));
-    let mut iw = riw_with(t, &dir, config);
+    // Each writer gets its codec's directory over `dir` (see the module
+    // documentation); the first has the default codec, as in Java.
+    let first_dir = SimpleTextDirectory::default_codec(&dir).expect("open the index");
+    let first = riw_with(t, &first_dir, config);
     let doc_count = t.at_least(200);
     let mut data: Vec<Vec<Vec<u8>>> = Vec::with_capacity(doc_count as usize);
     for _ in 0..doc_count {
@@ -461,26 +467,70 @@ pub fn test_write_read_merge(t: &mut LuceneTestCase) {
         data.push(fields);
     }
     let ft = stored_only();
-    let tenth = (doc_count / 10).max(1);
-    for (i, fields) in data.iter().enumerate() {
-        let i = i as i32;
+    let mut docs = (0..doc_count).map(|i| {
         let mut doc = Document::new();
         doc.add(IntPoint::new("id", &[i]).expect("IntPoint"));
         doc.add(StringField::new("idt", i.to_string(), Store::No));
         doc.add(Field::stored("id", StoredValue::Int(i)));
-        for (j, bytes) in fields.iter().enumerate() {
+        for (j, bytes) in data[i as usize].iter().enumerate() {
             doc.add(
                 Field::from_bytes(format!("bytes{j}"), bytes.clone(), ft.clone()).expect("bytes"),
             );
         }
+        (i, doc)
+    });
+    let tenth = (doc_count / 10).max(1);
+    if let Some(iw) = add_until_reopen(t, first, &mut docs, tenth) {
+        write_read_merge_check(t, iw, &dir, &data, doc_count);
+        return;
+    }
+    // Test merging against a non-compressing codec: the codec alternates.
+    let mut simpletext = true;
+    loop {
+        let codec_dir = if simpletext {
+            SimpleTextDirectory::new(&dir)
+        } else {
+            SimpleTextDirectory::default_codec(&dir)
+        }
+        .expect("open the index");
+        let analyzer = mock_analyzer(t);
+        let config = new_config(t, analyzer);
+        let iw = riw_with(t, &codec_dir, config);
+        if let Some(iw) = add_until_reopen(t, iw, &mut docs, tenth) {
+            write_read_merge_check(t, iw, &dir, &data, doc_count);
+            return;
+        }
+        simpletext = !simpletext;
+    }
+}
+
+/// Adds `docs` until the coin closes the writer for a reopen (`None`), or
+/// none is left (the writer).
+fn add_until_reopen<'d>(
+    t: &mut LuceneTestCase,
+    iw: super::random_index_writer::RandomIndexWriter<'d>,
+    docs: &mut impl Iterator<Item = (i32, Document)>,
+    tenth: i32,
+) -> Option<super::random_index_writer::RandomIndexWriter<'d>> {
+    for (i, doc) in docs {
         iw.writer().add_fields_document(&doc).expect("addDocument");
         if t.random().next_boolean() && i % tenth == 0 {
             iw.close().expect("close");
-            let analyzer = mock_analyzer(t);
-            let config = new_config(t, analyzer);
-            iw = riw_with(t, &dir, config);
+            return None;
         }
     }
+    Some(iw)
+}
+
+/// The end of `testWriteReadMerge`: deletes, `forceMerge(2)`, every
+/// surviving document's fields, then `deleteAll` and `forceMerge(1)`.
+fn write_read_merge_check(
+    t: &mut LuceneTestCase,
+    mut iw: super::random_index_writer::RandomIndexWriter<'_>,
+    dir: &dyn Directory,
+    data: &[Vec<Vec<u8>>],
+    doc_count: i32,
+) {
     for _ in 0..10 {
         let min = t.random().next_int_bounded(doc_count);
         let max = min + t.random().next_int_bounded(20);
@@ -493,7 +543,7 @@ pub fn test_write_read_merge(t: &mut LuceneTestCase) {
     // force merges with deletions
     riw_force_merge(&mut iw, 2);
     iw.commit().expect("commit");
-    let ir = DirectoryReader::open(&dir).expect("open");
+    let ir = DirectoryReader::open(dir).expect("open");
     assert!(ir.num_docs() > 0);
     let mut num_docs = 0;
     for i in 0..ir.max_doc() {
