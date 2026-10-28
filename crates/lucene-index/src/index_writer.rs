@@ -4150,7 +4150,12 @@ pub struct IndexWriter<'d> {
     /// `MAX_DOC_ID_UPTO`, and that packet is applied inside the very
     /// `flush()` that created the segment, so this port can scope the map to
     /// that call instead of pooling a reader for the writer's lifetime.
-    pending_sort_map: Option<(String, Vec<usize>)>,
+    ///
+    /// A list, keyed by segment name, rather than one slot: when that apply
+    /// fails, the private packet goes back into the stream with its
+    /// pre-sort limits, and a later flush must not overwrite the map the
+    /// retry still needs. Cleared once an apply drains the stream.
+    pending_sort_map: Vec<(String, Vec<usize>)>,
     /// Set by [`IndexWriter::prepare_commit`], consumed by
     /// [`IndexWriter::finish_commit`] -- see [`IndexWriter::prepare_commit`]'s
     /// doc comment for exactly what "prepared" does and does not mean on
@@ -5553,7 +5558,7 @@ impl<'d> IndexWriter<'d> {
             max_full_flush_merge_wait_millis: DEFAULT_MAX_FULL_FLUSH_MERGE_WAIT_MILLIS,
             commit_on_close: true,
             pending_custom_freq_terms: Vec::new(),
-            pending_sort_map: None,
+            pending_sort_map: Vec::new(),
             prepared_commit: None,
             delete_queue: DeleteQueue::new(),
             updates_stream: BufferedUpdatesStream::new(),
@@ -6535,6 +6540,22 @@ impl<'d> IndexWriter<'d> {
     /// `pendingNumDocs`, every document of every segment plus the buffered
     /// ones; deleted documents count until a merge drops them.
     pub(crate) fn reserve_docs(&mut self, added: usize) -> Result<()> {
+        let segments = self.segment_doc_total()?;
+        let total = segments.saturating_add(self.pending_docs.len());
+        if total.saturating_add(added) > self.max_docs {
+            return Err(Error::TooManyDocs(self.max_docs));
+        }
+        Ok(())
+    }
+
+    /// [`IndexWriter::set_max_docs`]' limit.
+    pub(crate) fn max_docs_limit(&self) -> usize {
+        self.max_docs
+    }
+
+    /// Every committed and flushed segment's `maxDoc`, summed -- cached
+    /// until the segment lists change.
+    pub(crate) fn segment_doc_total(&mut self) -> Result<usize> {
         let generation = self.segment_infos.generation;
         let flushed = self.flushed_segments.len();
         let last = self
@@ -6556,11 +6577,7 @@ impl<'d> IndexWriter<'d> {
                 total
             }
         };
-        let total = segments.saturating_add(self.pending_docs.len());
-        if total.saturating_add(added) > self.max_docs {
-            return Err(Error::TooManyDocs(self.max_docs));
-        }
-        Ok(())
+        Ok(segments)
     }
 
     /// Every committed and flushed segment's `maxDoc`, summed.
@@ -8077,7 +8094,11 @@ impl IndexWriter<'_> {
         // `IndexWriter.publishFlushedSegment`: `rld.sortMap = sortMap`. See
         // [`Self::pending_sort_map`] for why this port scopes it to this call
         // rather than pooling a reader for the writer's lifetime.
-        self.pending_sort_map = sort_map.map(|m| (segment_name.clone(), m));
+        if let Some(m) = sort_map {
+            self.pending_sort_map
+                .retain(|(name, _)| name != &segment_name);
+            self.pending_sort_map.push((segment_name.clone(), m));
+        }
 
         // `IndexWriter.publishFlushedSegment`: the segment-private packet
         // (this segment's own deletes, each still carrying the buffer position
@@ -8121,7 +8142,7 @@ impl IndexWriter<'_> {
         // Every packet with a limit below `MAX_DOC_ID_UPTO` for this segment
         // was applied above (`apply_all_deletes_and_updates` drains the whole
         // stream), so the map has no further reader.
-        self.pending_sort_map = None;
+        self.pending_sort_map.clear();
 
         let live = self.live_infos();
         self.deleter.checkpoint(&live, false)?;
@@ -10156,8 +10177,7 @@ impl IndexWriter<'_> {
     fn segment_stats(&self) -> Result<Vec<merge_policy::SegmentStat>> {
         let mut stats = Vec::with_capacity(self.segment_infos.segments.len());
         for sci in &self.segment_infos.segments {
-            let si_bytes = self.dir.open(&format!("{}.si", sci.segment_name))?.to_vec();
-            let si = segment_info::parse_for_codec(&si_bytes, &sci.segment_id, &sci.codec_name)?;
+            let si = self.cfg.reader_pool.segment_info(self.dir, sci)?;
             let size_bytes = merge_policy::commit_byte_size(self.dir, sci, &si);
             stats.push(merge_policy::SegmentStat {
                 name: sci.segment_name.clone(),
@@ -10714,9 +10734,10 @@ impl IndexWriter<'_> {
         // the merged segment carries their live documents forward, so applying
         // it to the merged segment reaches exactly the same documents.
 
-        // `std::mem::take` rather than an index loop: the apply below needs
-        // `&mut self` for the `.liv`/doc-values-generation writes, and the segment lists are
-        // put back verbatim (plus their new generations) once it is done.
+        // `std::mem::take` rather than an index loop: the apply below mutates
+        // each segment while borrowing the writer's config, and the segment
+        // lists are put back verbatim (plus their new generations) once it is
+        // done.
         //
         // On a failed apply the lists still go back, and so do the packets:
         // returning early used to drop both, so the next commit published a
@@ -10726,38 +10747,39 @@ impl IndexWriter<'_> {
         // (`onTragicEvent(t, "applyUpdatesPacket")`); this writer stays
         // usable, so a retry re-applies the packets, which is idempotent for
         // the segments the failed round already reached.
-        let mut failure = None;
+        //
+        // Segments are applied in parallel: each one reads only its own
+        // files and writes only its own `.liv`/doc-values generations, the
+        // directory is `Sync`, and the reader pool is behind a lock. The
+        // results come back in segment order, and the first error in that
+        // order is the one returned.
+        use rayon::prelude::*;
+        let cfg = std::sync::Arc::clone(&self.cfg);
+        let dir = self.dir;
+        let sort_maps = &self.pending_sort_map;
+        let apply = |sci: &mut SegmentCommitInfo| {
+            let sort_map = sort_maps.iter().find(|(name, _)| name == &sci.segment_name);
+            cfg.apply_packets_to_segment(dir, &packets, sci, sort_map)
+        };
         let mut committed = std::mem::take(&mut self.segment_infos.segments);
-        let mut committed_fully_deleted = Vec::with_capacity(committed.len());
-        for sci in committed.iter_mut() {
-            match self.apply_packets_to_segment(&packets, sci) {
-                Ok(fully_deleted) => committed_fully_deleted.push(fully_deleted),
-                Err(e) => {
-                    failure = Some(e);
-                    break;
-                }
-            }
-        }
-        self.segment_infos.segments = committed;
-
         let mut flushed = std::mem::take(&mut self.flushed_segments);
-        let mut flushed_fully_deleted = Vec::with_capacity(flushed.len());
-        if failure.is_none() {
-            for sci in flushed.iter_mut() {
-                match self.apply_packets_to_segment(&packets, sci) {
-                    Ok(fully_deleted) => flushed_fully_deleted.push(fully_deleted),
-                    Err(e) => {
-                        failure = Some(e);
-                        break;
-                    }
-                }
-            }
-        }
+        let (committed_results, flushed_results): (Vec<Result<bool>>, Vec<Result<bool>>) =
+            rayon::join(
+                || committed.par_iter_mut().map(apply).collect(),
+                || flushed.par_iter_mut().map(apply).collect(),
+            );
+        self.segment_infos.segments = committed;
         self.flushed_segments = flushed;
-        if let Some(e) = failure {
-            self.updates_stream.restore_pending(packets);
-            return Err(e);
-        }
+        let committed_fully_deleted: Result<Vec<bool>> = committed_results.into_iter().collect();
+        let flushed_fully_deleted: Result<Vec<bool>> = flushed_results.into_iter().collect();
+        let (committed_fully_deleted, flushed_fully_deleted) =
+            match (committed_fully_deleted, flushed_fully_deleted) {
+                (Ok(c), Ok(f)) => (c, f),
+                (Err(e), _) | (_, Err(e)) => {
+                    self.updates_stream.restore_pending(packets);
+                    return Err(e);
+                }
+            };
 
         self.drop_fully_deleted_segments(&committed_fully_deleted, &flushed_fully_deleted);
         // `ReaderPool.drop` for what this round (or anything since the last
@@ -10842,17 +10864,6 @@ impl IndexWriter<'_> {
         self.flushed_segments
             .retain(|_| !keep.next().copied().unwrap_or(false));
         self.prune_segment_versions();
-    }
-
-    /// [`IndexingConfig::apply_packets_to_segment`] with this writer's
-    /// directory and pending sort map.
-    fn apply_packets_to_segment(
-        &mut self,
-        packets: &[FrozenBufferedUpdates],
-        sci: &mut SegmentCommitInfo,
-    ) -> Result<bool> {
-        let cfg = std::sync::Arc::clone(&self.cfg);
-        cfg.apply_packets_to_segment(self.dir, packets, sci, self.pending_sort_map.as_ref())
     }
 
     /// `FrozenBufferedUpdates.applyQueryDeletes`' inner
@@ -11099,8 +11110,7 @@ impl IndexWriter<'_> {
     pub fn committed_doc_count(&self) -> Result<usize> {
         let mut total = 0usize;
         for sci in &self.segment_infos.segments {
-            let si_bytes = self.dir.open(&format!("{}.si", sci.segment_name))?.to_vec();
-            let si = segment_info::parse_for_codec(&si_bytes, &sci.segment_id, &sci.codec_name)?;
+            let si = self.cfg.reader_pool.segment_info(self.dir, sci)?;
             // ARITH: `segment_info::parse` rejects a negative `doc_count`, so
             // each term is in `0..=i32::MAX`, and `segments_N`'s own parse
             // rejects a segment count above the number of bytes left in that
@@ -11206,11 +11216,11 @@ impl IndexWriter<'_> {
         self.pending_explicit.clear();
         self.pending_postings.clear();
         self.ram_bytes_used = 0;
-        // Only ever `Some` inside `flush()`, and cleared at its end -- but a
+        // Only ever non-empty inside `flush()`, and cleared at its end -- but a
         // `flush()` that fails *after* publishing the segment (in
         // `apply_all_deletes_and_updates`) leaves it set, and `rollback` is
         // the caller's answer to that.
-        self.pending_sort_map = None;
+        self.pending_sort_map.clear();
         self.pending_has_blocks = false;
         // `IndexWriter.rollbackInternal`: `docWriter.close()` (which discards
         // the delete queue's buffers) and `bufferedUpdatesStream.clear()`.
@@ -11796,8 +11806,7 @@ impl IndexingConfig {
         dir: &dyn Directory,
         sci: &SegmentCommitInfo,
     ) -> Result<OpenedDeleteSegment> {
-        let si_bytes = dir.open(&format!("{}.si", sci.segment_name))?;
-        let si = segment_info::parse_for_codec(&si_bytes, &sci.segment_id, &sci.codec_name)?;
+        let si = self.reader_pool.segment_info(dir, sci)?;
         let max_doc = si.doc_count as usize;
 
         let live_docs = if sci.del_gen >= 0 {
