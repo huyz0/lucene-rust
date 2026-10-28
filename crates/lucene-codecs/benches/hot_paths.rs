@@ -1255,8 +1255,20 @@ fn bench_bkd_offline_2d(c: &mut Criterion) {
     });
 }
 
+/// `decode_doc_ids` over 16 DENSE blocks (a third of each block's docs), the
+/// segment-open decode of a sparse norms or soft-deletes field.
+fn bench_indexed_disi_decode(c: &mut Criterion) {
+    use lucene_codecs::indexed_disi::{decode_doc_ids, write, NO_RANK};
+    let docs: Vec<i32> = (0..16 * 65_536).filter(|d| d % 3 == 0).collect();
+    let (region, _) = write(&docs);
+    c.bench_function("indexed_disi/decode_dense_16_blocks", |b| {
+        b.iter(|| black_box(decode_doc_ids(black_box(&region), NO_RANK).unwrap().len()))
+    });
+}
+
 criterion_group!(
     benches,
+    bench_indexed_disi_decode,
     bench_bkd_offline_2d,
     bench_byte_similarity,
     bench_fst_compile,
