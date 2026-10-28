@@ -1491,9 +1491,14 @@ impl IndexingConfig {
         let Some(limiter) = limiter else {
             return self.run_merge(dir, plan);
         };
+        // The same `IOContext(merge.getStoreMergeInfo())` as `run_merge`.
+        let estimate = Self::estimated_merge_bytes(dir, plan);
         let progress = std::sync::Arc::clone(limiter.merge_progress());
         let merge_dir = crate::merge_rate_limiter::MergeDirectory::new(dir, limiter);
-        let outcome = self.run_merge_unthrottled(&merge_dir, plan)?;
+        let outcome = self.run_merge_unthrottled(
+            &lucene_store::EstimatedWrites::new(&merge_dir, estimate),
+            plan,
+        )?;
         if progress.is_aborted() {
             return Err(Error::MergeAborted);
         }

@@ -150,6 +150,106 @@ fn bench_force_merge(c: &mut Criterion) {
     group.finish();
 }
 
+/// Text fields carrying norms (`f0`..`f3`, `f3` on every other document
+/// only) and NUMERIC doc-values fields (`n0`..`n3`, `n3` missing on every
+/// tenth document) next to `body`: the per-field merge stages -- norms,
+/// doc values -- rather than the one big postings field.
+const FIELDS_TEXT: usize = 4;
+const FIELDS_NUMERIC: usize = 4;
+
+fn fields_corpus() -> Vec<Document> {
+    let mut docs = corpus();
+    for (i, d) in docs.iter_mut().enumerate() {
+        for f in 0..FIELDS_TEXT {
+            if f == FIELDS_TEXT - 1 && i % 2 == 1 {
+                continue;
+            }
+            d.fields.push(StoredField {
+                field_number: (2 + f) as i32,
+                value: FieldValue::String(format!("w{} w{} x{}", i % 97, i % 13, f)),
+            });
+        }
+        for f in 0..FIELDS_NUMERIC {
+            if f == FIELDS_NUMERIC - 1 && i % 10 == 0 {
+                continue;
+            }
+            d.fields.push(StoredField {
+                field_number: (2 + FIELDS_TEXT + f) as i32,
+                value: FieldValue::Long((i as i64).wrapping_mul(2_654_435_761) >> (f * 3)),
+            });
+        }
+    }
+    docs
+}
+
+fn fields_writer(dir: &ByteBuffersDirectory) -> IndexWriter<'_> {
+    let mut fields = vec![
+        field("id", 0, IndexOptions::None),
+        field("body", 1, IndexOptions::DocsAndFreqs),
+    ];
+    for f in 0..FIELDS_TEXT {
+        fields.push(field(
+            &format!("f{f}"),
+            (2 + f) as i32,
+            IndexOptions::DocsAndFreqs,
+        ));
+    }
+    for f in 0..FIELDS_NUMERIC {
+        let mut info = field(
+            &format!("n{f}"),
+            (2 + FIELDS_TEXT + f) as i32,
+            IndexOptions::None,
+        );
+        info.doc_values_type = DocValuesType::Numeric;
+        fields.push(info);
+    }
+    let version = LuceneVersion {
+        major: 10,
+        minor: 5,
+        bugfix: 0,
+    };
+    let mut w = IndexWriter::open(dir, fields, "Lucene104", version).unwrap();
+    w.set_postings_field(Some("body")).unwrap();
+    for f in 0..FIELDS_TEXT {
+        w.add_postings_field(&format!("f{f}")).unwrap();
+    }
+    for f in 0..FIELDS_NUMERIC {
+        w.add_doc_values_field(&format!("n{f}")).unwrap();
+    }
+    w
+}
+
+/// `force_merge(1)` over four flushed segments of [`fields_corpus`].
+fn bench_force_merge_fields(c: &mut Criterion) {
+    let docs = fields_corpus();
+    let mut group = c.benchmark_group("force_merge");
+    group.sample_size(10);
+    group.throughput(Throughput::Elements(DOCS as u64));
+    group.bench_function("fields", |b| {
+        b.iter_batched(
+            || {
+                let dir = ByteBuffersDirectory::new();
+                {
+                    let mut w = fields_writer(&dir);
+                    w.set_max_buffered_docs((DOCS / 4) as i32).unwrap();
+                    for d in docs.clone() {
+                        w.add_document(d).unwrap();
+                    }
+                    w.commit().unwrap();
+                }
+                dir
+            },
+            |dir| {
+                let mut w = fields_writer(&dir);
+                w.force_merge(1).unwrap();
+                w.commit().unwrap();
+            },
+            BatchSize::LargeInput,
+        )
+    });
+    group.finish();
+}
+
 /// A writer indexing `id` (for the update term) as well as `body`.
 fn update_writer(dir: &ByteBuffersDirectory) -> IndexWriter<'_> {
     let fields = vec![
@@ -249,6 +349,7 @@ criterion_group!(
     benches,
     bench_flush,
     bench_force_merge,
+    bench_force_merge_fields,
     bench_update,
     bench_delete
 );
