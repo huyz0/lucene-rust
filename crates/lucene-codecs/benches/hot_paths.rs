@@ -875,8 +875,58 @@ fn bench_numeric_write_gcd(c: &mut Criterion) {
     });
 }
 
+/// Writing one positions-indexed field's postings and terms dictionary:
+/// 30k terms with Zipf-like document frequencies (most terms in a handful
+/// of documents, a few in thousands), as a text field's flush produces.
+fn bench_postings_write(c: &mut Criterion) {
+    use field_infos::IndexOptions;
+    const DOCS: i32 = 20_000;
+    let mut x = 0x9E37_79B9_7F4A_7C15u64;
+    let mut rnd = move || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    let mut terms: Vec<postings_writer::TermPostings> = (0..30_000u32)
+        .map(|t| {
+            let df = (DOCS as u32 / (t + 1)).max(1 + (t % 3)) as usize;
+            let step = (DOCS as usize / df).max(1);
+            let docs: Vec<(i32, i32)> = (0..df)
+                .map(|k| ((k * step) as i32, 1 + (rnd() % 3) as i32))
+                .collect();
+            let positions = docs
+                .iter()
+                .map(|&(_, f)| (0..f).map(|p| p * 5 + (rnd() % 5) as i32).collect())
+                .collect();
+            postings_writer::TermPostings {
+                term: format!("term{:06}{}", rnd() % 1_000_000, t).into_bytes(),
+                docs,
+                positions,
+                ..Default::default()
+            }
+        })
+        .collect();
+    terms.sort_by(|a, b| a.term.cmp(&b.term));
+    let input = postings_writer::FieldPostingsInput {
+        field_number: 0,
+        index_options: IndexOptions::DocsAndFreqsAndPositions,
+        doc_count: DOCS,
+        has_payloads: false,
+        terms: &terms,
+    };
+    let id = [9u8; 16];
+    let mut group = c.benchmark_group("postings_write");
+    group.sample_size(20);
+    group.bench_function("text_field_30k_terms", |b| {
+        b.iter(|| black_box(postings_writer::write_single_field(&input, &id, "").unwrap()))
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
+    bench_postings_write,
     bench_numeric_write_gcd,
     bench_sorted_numeric_varying_bpv,
     bench_direct_monotonic_get,
