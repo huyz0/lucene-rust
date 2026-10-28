@@ -203,5 +203,53 @@ fn bench_update(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_flush, bench_force_merge, bench_update);
+/// Deletes by `id` against an index of 32 committed segments, in rounds of
+/// 64 deletes each followed by a flush: every round resolves its terms
+/// against every segment and writes their `.liv` files.
+fn bench_delete(c: &mut Criterion) {
+    let docs = corpus();
+    let mut group = c.benchmark_group("delete");
+    group.sample_size(10);
+    group.bench_function("32_segments", |b| {
+        b.iter_batched(
+            || {
+                let dir = ByteBuffersDirectory::new();
+                {
+                    let mut w = update_writer(&dir);
+                    w.set_max_buffered_docs((DOCS / 32) as i32).unwrap();
+                    for d in docs.clone() {
+                        w.add_document(d).unwrap();
+                    }
+                    w.commit().unwrap();
+                }
+                dir
+            },
+            |dir| {
+                let mut w = update_writer(&dir);
+                for round in 0..16 {
+                    for k in 0..64 {
+                        let i = (k * 311 + round * 17) % DOCS;
+                        w.delete_documents_by_term(&[Term::new(
+                            "id",
+                            format!("doc{i}").into_bytes(),
+                        )])
+                        .unwrap();
+                    }
+                    w.flush().unwrap();
+                }
+                w.commit().unwrap();
+            },
+            BatchSize::LargeInput,
+        )
+    });
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_flush,
+    bench_force_merge,
+    bench_update,
+    bench_delete
+);
 criterion_main!(benches);

@@ -51,12 +51,17 @@ pub(crate) struct PooledPostings {
     pub(crate) combined: bool,
 }
 
-/// Which segment state an entry was opened from.
+/// Which segment an entry was opened from.
+///
+/// Not keyed by `field_infos_gen`: the pooled dictionary uses only the
+/// segment's indexed fields, and a doc-values update (the only thing that
+/// advances that generation) never changes those -- it adds doc-values-only
+/// fields or moves a doc-values generation. Keying on it threw the postings
+/// away after every update round, `soft_update_document` flushes included.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct PoolKey {
     name: String,
     id: [u8; ID_LENGTH],
-    field_infos_gen: i64,
 }
 
 impl PoolKey {
@@ -64,7 +69,6 @@ impl PoolKey {
         PoolKey {
             name: sci.segment_name.clone(),
             id: sci.segment_id,
-            field_infos_gen: sci.field_infos_gen,
         }
     }
 }
@@ -125,7 +129,7 @@ impl ReaderPool {
         self.opens.fetch_add(1, Ordering::Relaxed);
         let opened = Arc::new(open()?);
         let mut entries = self.entries();
-        // An older field-infos generation of the same segment is superseded.
+        // A segment of the same name with another id is superseded.
         entries.retain(|k, _| k.name != key.name || k == &key);
         Ok(Arc::clone(entries.entry(key).or_insert(opened)))
     }

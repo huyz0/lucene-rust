@@ -1818,7 +1818,7 @@ impl IndexingConfig {
                     // `Lucene90DocValuesConsumer.writeValues` does.
                     continue;
                 };
-                columns.push((meta, data));
+                columns.push((meta, data.to_vec()));
                 let at = columns.len().saturating_sub(1);
                 seen.push((key.0, key.1, at));
                 per_field.push((field.number, at));
@@ -3980,7 +3980,13 @@ fn count_soft_deletes(
         None => (dir, si.files.clone()),
     };
     let infos = crate::field_updates::read_current_field_infos(dir, sci, &files)?;
-    let column = |name: &str| -> Result<Option<(doc_values::DocValuesMeta, Vec<u8>, i32)>> {
+    let column = |name: &str| -> Result<
+        Option<(
+            doc_values::DocValuesMeta,
+            lucene_store::directory::Input,
+            i32,
+        )>,
+    > {
         let Some(index) = infos
             .fields
             .iter()
@@ -7267,10 +7273,16 @@ impl IndexWriter<'_> {
         // Java's `buildDocValuesUpdate(term, softDeletes)`: every supplied
         // field becomes an update *keyed by the same term*, so the marking hits
         // exactly the documents a hard `updateDocument` would have deleted.
-        let updates: Vec<DocValuesUpdate> = soft_deletes
-            .iter()
-            .map(|u| retarget_update(u, &term))
-            .collect();
+        // `buildDocValuesUpdate` also runs `verifyOrCreateDvOnlyField` on each
+        // one, as `update_doc_values` does: an unknown, index-sort or
+        // wrong-typed field is refused here rather than at apply time, where
+        // a failure would be restored and fail every later flush.
+        self.create_doc_values_only_fields(soft_deletes)?;
+        let mut updates: Vec<DocValuesUpdate> = Vec::with_capacity(soft_deletes.len());
+        for u in soft_deletes {
+            self.cfg.verify_doc_values_update_field(u)?;
+            updates.push(retarget_update(u, &term));
+        }
         self.add_documents_with_delete(Some(DeleteNode::DocValuesUpdates(updates)), docs)
     }
 
@@ -11565,15 +11577,27 @@ impl IndexingConfig {
         // "Is this doc id below the packet's pre-sort limit?" -- the one
         // predicate every filter below uses, so the mapping cannot be applied
         // in one place and forgotten in another.
-        let below_limit = |doc: i32, limit: i32| -> bool {
-            match &sort_map {
-                None => doc < limit,
-                Some(map) => (map[doc as usize] as i32) < limit,
-            }
-        };
-
         let owned = self.open_segment_for_deletes(dir, sci)?;
         let opened = owned.view()?;
+        let max_doc = opened.max_doc;
+        // A doc id the postings decoder produced out of range is the
+        // `DocOutOfRange` corruption `deletes::mark_deleted` reports; checking
+        // it here, before `below_limit` indexes the sort map or `deleted` sets
+        // a bit, keeps it an error rather than an index panic.
+        let in_range = |doc_id: i32| -> std::result::Result<usize, deletes::Error> {
+            usize::try_from(doc_id)
+                .ok()
+                .filter(|idx| *idx < max_doc)
+                .ok_or(deletes::Error::DocOutOfRange { doc_id, max_doc })
+        };
+        let below_limit = |doc: usize, limit: i32| -> bool {
+            match &sort_map {
+                None => i64::try_from(doc).is_ok_and(|d| d < i64::from(limit)),
+                Some(map) => map
+                    .get(doc)
+                    .is_some_and(|&old| i64::try_from(old).is_ok_and(|o| o < i64::from(limit))),
+            }
+        };
         // `below_limit` indexes the map by doc id. The invariant is
         // maintained by construction (the map is the permutation of the
         // buffer that became this segment, and the name filter above picks
@@ -11585,7 +11609,10 @@ impl IndexingConfig {
         );
         // A set, not a list: `applyDocValuesUpdates` has to ask whether a doc
         // is already dead, and the same doc can be named by several packets.
-        let mut deleted: std::collections::HashSet<i32> = std::collections::HashSet::new();
+        // A bitset over the segment's docs: one bit test per lookup, and it
+        // comes out in doc id order for `apply_deletes`.
+        let mut deleted = FixedBitSet::new(max_doc);
+        let mut any_deleted = false;
         // field number -> updates in ascending packet-generation order, so the
         // last write for a doc wins (`DocValuesFieldUpdates.mergedIterator`).
         let mut numeric_updates: Vec<PerFieldNumericUpdates> = Vec::new();
@@ -11601,7 +11628,13 @@ impl IndexingConfig {
                     &term.field,
                     &term.bytes,
                 )?;
-                deleted.extend(docs.into_iter().filter(|&d| below_limit(d, limit)));
+                for d in docs {
+                    let d = in_range(d)?;
+                    if below_limit(d, limit) {
+                        deleted.set(d);
+                        any_deleted = true;
+                    }
+                }
             }
             for (query, entry_limit) in &packet.delete_queries {
                 let limit = packet.limit_for(seg_gen, *entry_limit);
@@ -11615,7 +11648,13 @@ impl IndexingConfig {
                     query_bound(limit)
                 };
                 let docs = IndexWriter::resolve_delete_query(query, &opened, bound)?;
-                deleted.extend(docs.into_iter().filter(|&d| below_limit(d, limit)));
+                for d in docs {
+                    let d = in_range(d)?;
+                    if below_limit(d, limit) {
+                        deleted.set(d);
+                        any_deleted = true;
+                    }
+                }
             }
             for (field, buffer) in &packet.field_updates {
                 let Some(info) = self.fields.iter().find(|f| &f.name == field) else {
@@ -11642,10 +11681,13 @@ impl IndexingConfig {
                     // just killed takes no update. `resolve_term_doc_ids` has
                     // already filtered by the segment's pre-pass live docs;
                     // `deleted` is the rest of the answer.
-                    let matched: Vec<i32> = docs
-                        .into_iter()
-                        .filter(|&d| below_limit(d, limit) && !deleted.contains(&d))
-                        .collect();
+                    let mut matched: Vec<i32> = Vec::with_capacity(docs.len());
+                    for d in docs {
+                        let idx = in_range(d)?;
+                        if below_limit(idx, limit) && !deleted.get(idx) {
+                            matched.push(d);
+                        }
+                    }
                     if matched.is_empty() {
                         continue;
                     }
@@ -11669,17 +11711,19 @@ impl IndexingConfig {
             }
         }
 
-        if !deleted.is_empty() {
-            // Deterministic order so a `.liv` is byte-identical run to run --
-            // `apply_deletes` itself is order-insensitive (it clears bits).
-            let mut deleted: Vec<i32> = deleted.into_iter().collect();
-            deleted.sort_unstable();
+        if any_deleted {
+            // Ascending doc id order, straight off the bitset; every set bit
+            // is below `max_doc`, which fits an `i32` (it is a `.si` count).
+            let deleted_ids = std::iter::successors(deleted.next_set_bit(0), |&d| {
+                d.checked_add(1).and_then(|n| deleted.next_set_bit(n))
+            })
+            .filter_map(|d| i32::try_from(d).ok());
             let updated = deletes::apply_deletes_with_codec(
                 dir,
                 sci,
                 opened.live_docs,
                 opened.max_doc,
-                deleted,
+                deleted_ids,
                 self.codec.as_deref(),
             );
             if updated.is_err() {

@@ -4605,7 +4605,6 @@ fn check_soft_deletes(
             )
             .map_err(|e| e.to_string())
             .transpose()
-            .map(|r| r.map(|(meta, dvd)| (meta, lucene_store::directory::Input::Owned(dvd))))
         }
         _ => open_doc_values(dir, commit, si, field_infos),
     };
