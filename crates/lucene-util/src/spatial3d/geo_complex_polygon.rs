@@ -26,23 +26,32 @@ const DELTA_DISTANCE: f64 = MINIMUM_RESOLUTION;
 const MAX_ITERATIONS: usize = 100;
 const OFF_PLANE_AMOUNT: f64 = MINIMUM_RESOLUTION * 0.1;
 
-/// An edge of a ring.
+/// An edge of a ring. Java's `notablePoints` is `[startPoint, endPoint]`,
+/// so both live in `points` (start first) and are handed out as that slice;
+/// the edge's x/y/z bounds are only read while the trees are built, so they
+/// are not kept (see [`EdgeExtents`]).
 #[derive(Debug, Clone)]
 struct Edge {
-    start_point: GeoPoint,
-    end_point: GeoPoint,
-    notable_points: [GeoPoint; 2],
+    plane: Plane,
     start_plane: SidedPlane,
     end_plane: SidedPlane,
     backing_plane: SidedPlane,
-    plane: Plane,
-    plane_bounds: XYZBounds,
+    /// `[startPoint, endPoint]` (Java's `notablePoints`).
+    points: [GeoPoint; 2],
     /// The next edge of the ring (`next`).
     next: usize,
 }
 
+/// An edge's `planeBounds` per axis (`[x, y, z]`, each `(min, max)`), only
+/// needed to build the trees.
+type EdgeExtents = [(f64, f64); 3];
+
 impl Edge {
-    fn new(pm: &PlanetModel, start_point: GeoPoint, end_point: GeoPoint) -> Result<Edge> {
+    fn new(
+        pm: &PlanetModel,
+        start_point: GeoPoint,
+        end_point: GeoPoint,
+    ) -> Result<(Edge, EdgeExtents)> {
         let plane = Plane::from_vectors(&start_point, &end_point)?;
         let start_plane = SidedPlane::from_vectors(&end_point, &plane, &start_point)?;
         let end_plane = SidedPlane::from_vectors(&start_point, &plane, &end_point)?;
@@ -57,19 +66,38 @@ impl Edge {
         plane_bounds.add_point(&start_point);
         plane_bounds.add_point(&end_point);
         plane_bounds.add_plane(pm, &plane, &[&start_plane, &end_plane, &backing_plane]);
-        Ok(Edge {
-            notable_points: [start_point.clone(), end_point.clone()],
-            start_point,
-            end_point,
-            start_plane,
-            end_plane,
-            backing_plane,
-            plane,
-            plane_bounds,
-            next: 0,
-        })
+        // Every edge's bounds hold its two points.
+        let nan = f64::NAN;
+        let b = &plane_bounds;
+        let extents = [
+            (b.minimum_x().unwrap_or(nan), b.maximum_x().unwrap_or(nan)),
+            (b.minimum_y().unwrap_or(nan), b.maximum_y().unwrap_or(nan)),
+            (b.minimum_z().unwrap_or(nan), b.maximum_z().unwrap_or(nan)),
+        ];
+        Ok((
+            Edge {
+                plane,
+                start_plane,
+                end_plane,
+                backing_plane,
+                points: [start_point, end_point],
+                next: 0,
+            },
+            extents,
+        ))
     }
 
+    #[inline]
+    fn start_point(&self) -> &GeoPoint {
+        &self.points[0]
+    }
+
+    #[inline]
+    fn end_point(&self) -> &GeoPoint {
+        &self.points[1]
+    }
+
+    #[inline]
     fn is_within(&self, x: f64, y: f64, z: f64) -> bool {
         self.plane.evaluate_is_zero_xyz(x, y, z)
             && self.start_plane.is_within_xyz(x, y, z)
@@ -89,22 +117,26 @@ trait CountingEdgeIterator: EdgeIterator {
     fn is_on_edge(&self) -> bool;
 }
 
-/// A node of an interval tree.
+/// No child (`null`).
+const NO_NODE: u32 = u32::MAX;
+
+/// A node of an interval tree: 40 bytes, children by index ([`NO_NODE`] for
+/// none).
 #[derive(Debug, Clone)]
 struct Node {
-    edge: usize,
     low: f64,
     high: f64,
-    left: Option<usize>,
-    right: Option<usize>,
     max: f64,
+    edge: u32,
+    left: u32,
+    right: u32,
 }
 
 /// `Tree`: edges by their extent along one axis.
 #[derive(Debug, Clone)]
 struct Tree {
     nodes: Vec<Node>,
-    root: Option<usize>,
+    root: u32,
 }
 
 /// `Double.compare`.
@@ -129,28 +161,26 @@ enum Axis {
 }
 
 impl Tree {
-    fn new(edges: &[Edge], axis: Axis) -> Tree {
-        let bound = |e: &Edge| -> (f64, f64) {
-            let b = &e.plane_bounds;
-            let (lo, hi) = match axis {
-                Axis::X => (b.minimum_x(), b.maximum_x()),
-                Axis::Y => (b.minimum_y(), b.maximum_y()),
-                Axis::Z => (b.minimum_z(), b.maximum_z()),
-            };
-            // Every edge's bounds hold its two points.
-            (lo.unwrap_or(f64::NAN), hi.unwrap_or(f64::NAN))
+    fn new(extents: &[EdgeExtents], axis: Axis) -> Tree {
+        let a = match axis {
+            Axis::X => 0,
+            Axis::Y => 1,
+            Axis::Z => 2,
         };
-        let mut nodes: Vec<Node> = edges
+        // Edge and node indices are `u32` (a polygon of 4 billion edges
+        // could not be built in memory anyway).
+        assert!(extents.len() < NO_NODE as usize, "too many edges");
+        let mut nodes: Vec<Node> = extents
             .iter()
             .enumerate()
             .map(|(i, e)| {
-                let (low, high) = bound(e);
+                let (low, high) = e[a];
                 Node {
-                    edge: i,
+                    edge: i as u32,
                     low,
                     high,
-                    left: None,
-                    right: None,
+                    left: NO_NODE,
+                    right: NO_NODE,
                     max: high,
                 }
             })
@@ -159,74 +189,85 @@ impl Tree {
             java_double_compare(l.low, r.low).then_with(|| java_double_compare(l.max, r.max))
         });
         let root = if nodes.is_empty() {
-            None
+            NO_NODE
         } else {
-            {
-                let last = nodes.len() as isize - 1;
-                Self::create_tree(&mut nodes, 0, last)
-            }
+            let last = nodes.len() as isize - 1;
+            Self::create_tree(&mut nodes, 0, last)
         };
         Tree { nodes, root }
     }
 
-    fn create_tree(nodes: &mut [Node], low: isize, high: isize) -> Option<usize> {
+    fn create_tree(nodes: &mut [Node], low: isize, high: isize) -> u32 {
         if low > high {
-            return None;
+            return NO_NODE;
         }
         let mid = ((low + high) as usize) >> 1;
         let left = Self::create_tree(nodes, low, mid as isize - 1);
         let right = Self::create_tree(nodes, mid as isize + 1, high);
         nodes[mid].left = left;
         nodes[mid].right = right;
-        if let Some(l) = left {
-            nodes[mid].max = max(nodes[mid].max, nodes[l].max);
+        if left != NO_NODE {
+            nodes[mid].max = max(nodes[mid].max, nodes[left as usize].max);
         }
-        if let Some(r) = right {
-            nodes[mid].max = max(nodes[mid].max, nodes[r].max);
+        if right != NO_NODE {
+            nodes[mid].max = max(nodes[mid].max, nodes[right as usize].max);
         }
-        Some(mid)
+        mid as u32
     }
 
-    fn traverse_value(&self, poly: &Inner, it: &mut dyn EdgeIterator, value: f64) -> bool {
+    #[inline]
+    fn traverse_value<I: EdgeIterator + ?Sized>(
+        &self,
+        poly: &Inner,
+        it: &mut I,
+        value: f64,
+    ) -> bool {
         self.traverse(poly, it, value, value)
     }
 
-    fn traverse(
+    /// Generic over the iterator so each iterator's `matches` inlines into
+    /// the walk (HotSpot sees one implementation per call site).
+    #[inline]
+    fn traverse<I: EdgeIterator + ?Sized>(
         &self,
         poly: &Inner,
-        it: &mut dyn EdgeIterator,
+        it: &mut I,
         min_value: f64,
         max_value: f64,
     ) -> bool {
-        match self.root {
-            None => true,
-            Some(r) => self.traverse_node(poly, r, it, min_value, max_value),
+        if self.root == NO_NODE {
+            return true;
         }
+        self.traverse_node(poly, self.root, it, min_value, max_value)
     }
 
-    fn traverse_node(
+    fn traverse_node<I: EdgeIterator + ?Sized>(
         &self,
         poly: &Inner,
-        n: usize,
-        it: &mut dyn EdgeIterator,
+        n: u32,
+        it: &mut I,
         min_value: f64,
         max_value: f64,
     ) -> bool {
-        let node = &self.nodes[n];
+        let node = &self.nodes[n as usize];
         if min_value <= node.max {
             // Does this node overlap?
-            if min_value <= node.high && max_value >= node.low && !it.matches(poly, node.edge) {
+            if min_value <= node.high
+                && max_value >= node.low
+                && !it.matches(poly, node.edge as usize)
+            {
                 return false;
             }
-            if let Some(l) = node.left {
-                if !self.traverse_node(poly, l, it, min_value, max_value) {
-                    return false;
-                }
+            if node.left != NO_NODE
+                && !self.traverse_node(poly, node.left, it, min_value, max_value)
+            {
+                return false;
             }
-            if let Some(r) = node.right {
-                if max_value >= node.low && !self.traverse_node(poly, r, it, min_value, max_value) {
-                    return false;
-                }
+            if node.right != NO_NODE
+                && max_value >= node.low
+                && !self.traverse_node(poly, node.right, it, min_value, max_value)
+            {
+                return false;
             }
         }
         true
@@ -295,6 +336,7 @@ impl GeoComplexPolygon {
         let mut edge_points = Vec::with_capacity(points_list.len());
         let mut shape_start_edges = Vec::with_capacity(points_list.len());
         let mut all_edges: Vec<Edge> = Vec::new();
+        let mut extents: Vec<EdgeExtents> = Vec::new();
         for shape_points in &points_list {
             let Some(mut last_geo_point) = shape_points.last() else {
                 return Err(Error::IndexOutOfBounds(
@@ -304,7 +346,8 @@ impl GeoComplexPolygon {
             edge_points.push(last_geo_point.clone());
             let first_edge = all_edges.len();
             for this_geo_point in shape_points {
-                let edge = Edge::new(pm, last_geo_point.clone(), this_geo_point.clone())?;
+                let (edge, edge_extents) =
+                    Edge::new(pm, last_geo_point.clone(), this_geo_point.clone())?;
                 if edge.is_within(test_point.x, test_point.y, test_point.z) {
                     return Err(illegal("Test point is on polygon edge: not allowed"));
                 }
@@ -313,6 +356,7 @@ impl GeoComplexPolygon {
                     all_edges[index - 1].next = index;
                 }
                 all_edges.push(edge);
+                extents.push(edge_extents);
                 last_geo_point = this_geo_point;
             }
             let last = all_edges.len() - 1;
@@ -321,9 +365,9 @@ impl GeoComplexPolygon {
         }
         let inner = Inner {
             planet_model: planet_model.clone(),
-            x_tree: Tree::new(&all_edges, Axis::X),
-            y_tree: Tree::new(&all_edges, Axis::Y),
-            z_tree: Tree::new(&all_edges, Axis::Z),
+            x_tree: Tree::new(&extents, Axis::X),
+            y_tree: Tree::new(&extents, Axis::Y),
+            z_tree: Tree::new(&extents, Axis::Z),
             edges: all_edges,
         };
         let fy = Plane::new(0.0, 1.0, 0.0, -test_point.y);
@@ -374,7 +418,7 @@ impl GeoComplexPolygon {
         if test_point.is_numerically_identical_xyz(x, y, z) {
             return Ok(test_point_in_set);
         }
-        let parity = |it: &dyn CountingEdgeIterator, in_set: bool| -> bool {
+        let parity = |it: &LinearCrossingIter<'_>, in_set: bool| -> bool {
             it.is_on_edge()
                 || if (it.crossing_count() & 1) == 0 {
                     in_set
@@ -411,12 +455,11 @@ impl GeoComplexPolygon {
         for (plane, above, below, tree, value) in fixed {
             if let (Some(above), Some(below)) = (above, below) {
                 if plane.evaluate_is_zero_xyz(x, y, z) {
-                    let it = create_linear_crossing_edge_iterator(
-                        poly, test_point, plane, above, below, x, y, z,
-                    );
-                    let mut it = it?;
-                    tree.traverse_value(poly, &mut *it, value);
-                    return Ok(parity(&*it, test_point_in_set));
+                    let mut it = create_linear_crossing_edge_iterator(
+                        test_point, plane, above, below, x, y, z,
+                    )?;
+                    tree.traverse_value(poly, &mut it, value);
+                    return Ok(parity(&it, test_point_in_set));
                 }
             }
         }
@@ -435,154 +478,63 @@ impl GeoComplexPolygon {
         let fixed_z_above_plane = offset_plane(pm, &travel_plane_fixed_z, true, Axis::Z);
         let fixed_z_below_plane = offset_plane(pm, &travel_plane_fixed_z, false, Axis::Z);
         // Find the intersection points for each one of these and the
-        // complementary test point planes.
-        let mut traversal_strategies: Vec<TraversalStrategy<'_>> = Vec::with_capacity(12);
+        // complementary test point planes: at most six combinations of two
+        // points each, held on the stack rather than in a `Vec` per point.
+        let mut strategies: [Option<TraversalStrategy<'_>>; 12] = [const { None }; 12];
+        let mut count = 0usize;
         let ixy = pm.inverse_xy_scaling_squared;
         let iz = pm.inverse_z_scaling_squared;
-        let ts = |tpa: &Option<Plane>,
-                  tpb: &Option<Plane>,
-                  fa: &Option<Plane>,
-                  fb: &Option<Plane>|
-         -> Option<(Plane, Plane, Plane, Plane)> {
-            match (tpa, tpb, fa, fb) {
-                (Some(a), Some(b), Some(c), Some(d)) => Some((*a, *b, *c, *d)),
-                _ => None,
-            }
-        };
-        // The six combinations, in Java's order. Each: the test point's fixed
-        // plane (and the coordinate along it), the travel plane, the
-        // inverse-scaling factors of the two check terms, and the trees.
         let tp = test_point;
-        #[allow(clippy::type_complexity)]
-        let combos: [(
-            Option<(Plane, Plane, Plane, Plane)>,
-            f64,
-            f64,
-            Plane,
-            Plane,
-            f64,
-            f64,
-            &Tree,
-            &Tree,
-            u8,
-        ); 6] = [
+        let (ty, tx, tz) = (
             (
-                ts(
-                    &self.test_point1_fixed_y_above_plane,
-                    &self.test_point1_fixed_y_below_plane,
-                    &fixed_x_above_plane,
-                    &fixed_x_below_plane,
-                ),
-                ixy,
-                ixy,
-                self.test_point1_fixed_y_plane,
-                travel_plane_fixed_x,
-                tp.y,
-                x,
-                &poly.y_tree,
-                &poly.x_tree,
-                0,
+                &self.test_point1_fixed_y_plane,
+                &self.test_point1_fixed_y_above_plane,
+                &self.test_point1_fixed_y_below_plane,
             ),
             (
-                ts(
-                    &self.test_point1_fixed_z_above_plane,
-                    &self.test_point1_fixed_z_below_plane,
-                    &fixed_x_above_plane,
-                    &fixed_x_below_plane,
-                ),
-                ixy,
-                iz,
-                self.test_point1_fixed_z_plane,
-                travel_plane_fixed_x,
-                tp.z,
-                x,
-                &poly.z_tree,
-                &poly.x_tree,
-                1,
+                &self.test_point1_fixed_x_plane,
+                &self.test_point1_fixed_x_above_plane,
+                &self.test_point1_fixed_x_below_plane,
             ),
             (
-                ts(
-                    &self.test_point1_fixed_x_above_plane,
-                    &self.test_point1_fixed_x_below_plane,
-                    &fixed_y_above_plane,
-                    &fixed_y_below_plane,
-                ),
-                ixy,
-                ixy,
-                self.test_point1_fixed_x_plane,
-                travel_plane_fixed_y,
-                tp.x,
-                y,
-                &poly.x_tree,
-                &poly.y_tree,
-                2,
+                &self.test_point1_fixed_z_plane,
+                &self.test_point1_fixed_z_above_plane,
+                &self.test_point1_fixed_z_below_plane,
             ),
-            (
-                ts(
-                    &self.test_point1_fixed_z_above_plane,
-                    &self.test_point1_fixed_z_below_plane,
-                    &fixed_y_above_plane,
-                    &fixed_y_below_plane,
-                ),
-                iz,
-                ixy,
-                self.test_point1_fixed_z_plane,
-                travel_plane_fixed_y,
-                tp.z,
-                y,
-                &poly.z_tree,
-                &poly.y_tree,
-                3,
-            ),
-            (
-                ts(
-                    &self.test_point1_fixed_x_above_plane,
-                    &self.test_point1_fixed_x_below_plane,
-                    &fixed_z_above_plane,
-                    &fixed_z_below_plane,
-                ),
-                ixy,
-                iz,
-                self.test_point1_fixed_x_plane,
-                travel_plane_fixed_z,
-                tp.x,
-                z,
-                &poly.x_tree,
-                &poly.z_tree,
-                4,
-            ),
-            (
-                ts(
-                    &self.test_point1_fixed_y_above_plane,
-                    &self.test_point1_fixed_y_below_plane,
-                    &fixed_z_above_plane,
-                    &fixed_z_below_plane,
-                ),
-                ixy,
-                iz,
-                self.test_point1_fixed_y_plane,
-                travel_plane_fixed_z,
-                tp.y,
-                z,
-                &poly.y_tree,
-                &poly.z_tree,
-                5,
-            ),
+        );
+        let fx = (
+            &travel_plane_fixed_x,
+            &fixed_x_above_plane,
+            &fixed_x_below_plane,
+        );
+        let fy = (
+            &travel_plane_fixed_y,
+            &fixed_y_above_plane,
+            &fixed_y_below_plane,
+        );
+        let fz = (
+            &travel_plane_fixed_z,
+            &fixed_z_above_plane,
+            &fixed_z_below_plane,
+        );
+        // The six combinations, in Java's order: the test point's fixed
+        // planes, the travel planes, the inverse-scaling factors of the two
+        // check terms, the coordinates along the two legs and their trees.
+        let combos: [Combo<'_>; 6] = [
+            (ty, fx, ixy, ixy, tp.y, x, &poly.y_tree, &poly.x_tree),
+            (tz, fx, ixy, iz, tp.z, x, &poly.z_tree, &poly.x_tree),
+            (tx, fy, ixy, ixy, tp.x, y, &poly.x_tree, &poly.y_tree),
+            (tz, fy, iz, ixy, tp.z, y, &poly.z_tree, &poly.y_tree),
+            (tx, fz, ixy, iz, tp.x, z, &poly.x_tree, &poly.z_tree),
+            (ty, fz, ixy, iz, tp.y, z, &poly.y_tree, &poly.z_tree),
         ];
-        for (
-            planes,
-            scale_a,
-            scale_b,
-            test_point_plane,
-            travel_plane,
-            first_leg_value,
-            second_leg_value,
-            first_tree,
-            second_tree,
-            which,
-        ) in combos
+        for (which, &(tpp, fp, scale_a, scale_b, first_leg_value, second_leg_value, t1, t2)) in
+            combos.iter().enumerate()
         {
-            let Some((tp_above, tp_below, f_above, f_below)) = planes else {
+            let (test_point_plane, Some(tp_above), Some(tp_below)) = tpp else {
+                continue;
+            };
+            let (travel_plane, Some(f_above), Some(f_below)) = fp else {
                 continue;
             };
             // Java's check terms, operand order as written in each case.
@@ -605,10 +557,8 @@ impl GeoComplexPolygon {
             {
                 continue;
             }
-            let intersections = travel_plane
-                .find_intersections(pm, &test_point_plane, &[])
-                .unwrap_or_default();
-            for p in intersections {
+            let intersections = travel_plane.find_intersections_two(pm, test_point_plane, &[]);
+            for p in intersections.into_iter().flatten() {
                 // Java's per-case distance terms.
                 let (tp_delta1, tp_delta2, cp_delta1, cp_delta2) = match which {
                     0 => (tp.x - p.x, tp.z - p.z, y - p.y, z - p.z),
@@ -622,7 +572,7 @@ impl GeoComplexPolygon {
                     + tp_delta2 * tp_delta2
                     + cp_delta1 * cp_delta1
                     + cp_delta2 * cp_delta2;
-                traversal_strategies.push(TraversalStrategy {
+                strategies[count] = Some(TraversalStrategy {
                     traversal_distance: new_distance,
                     first_leg_value,
                     second_leg_value,
@@ -632,27 +582,42 @@ impl GeoComplexPolygon {
                     second_leg_plane: travel_plane,
                     second_leg_above_plane: f_above,
                     second_leg_below_plane: f_below,
-                    first_leg_tree: first_tree,
-                    second_leg_tree: second_tree,
+                    first_leg_tree: t1,
+                    second_leg_tree: t2,
                     intersection_point: p,
                 });
+                count += 1;
             }
         }
-        traversal_strategies.sort_by(|a, b| {
-            if a.traversal_distance < b.traversal_distance {
+        if count == 0 {
+            return Err(illegal("No dual-plane travel strategies were found"));
+        }
+        let strategies = &strategies[..count];
+        let distance = |i: u8| {
+            strategies[usize::from(i)]
+                .as_ref()
+                .map_or(f64::NAN, |s| s.traversal_distance)
+        };
+        // Sort indices, not the strategies themselves; `sort_by` is stable,
+        // as Java's `Collections.sort` is.
+        let mut order: [u8; 12] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+        let order = &mut order[..count];
+        order.sort_by(|&a, &b| {
+            let (da, db) = (distance(a), distance(b));
+            if da < db {
                 std::cmp::Ordering::Less
-            } else if a.traversal_distance > b.traversal_distance {
+            } else if da > db {
                 std::cmp::Ordering::Greater
             } else {
                 std::cmp::Ordering::Equal
             }
         });
-        if traversal_strategies.is_empty() {
-            return Err(illegal("No dual-plane travel strategies were found"));
-        }
         // Loop through travel strategies, in order, until we find one that
         // works.
-        for ts in &traversal_strategies {
+        for ts in order
+            .iter()
+            .filter_map(|&i| strategies[usize::from(i)].as_ref())
+        {
             match ts.apply(poly, test_point, test_point_in_set, x, y, z) {
                 Ok(v) => return Ok(v),
                 Err(Error::IllegalArgument(_)) => {
@@ -670,7 +635,7 @@ impl GeoComplexPolygon {
             let mut shape_edge = shape_start_edge;
             loop {
                 let e = &self.inner.edges[shape_edge];
-                let new_dist = style.compute_distance(&e.start_point, x, y, z);
+                let new_dist = style.compute_distance(e.start_point(), x, y, z);
                 if new_dist < minimum_distance {
                     minimum_distance = new_dist;
                 }
@@ -695,7 +660,7 @@ impl GeoComplexPolygon {
     }
 
     /// The narrowest axis's tree traversal shared by both `intersects`.
-    fn traverse_narrowest(&self, it: &mut dyn EdgeIterator, b: &XYZBounds) -> bool {
+    fn traverse_narrowest<I: EdgeIterator>(&self, it: &mut I, b: &XYZBounds) -> bool {
         let poly = &self.inner;
         let nan = f64::NAN;
         let (min_x, max_x) = (b.minimum_x().unwrap_or(nan), b.maximum_x().unwrap_or(nan));
@@ -754,7 +719,7 @@ impl Bounded for GeoComplexPolygon {
             let mut current_edge = start_edge;
             loop {
                 let e = &self.inner.edges[current_edge];
-                bounds.add_point(&e.start_point);
+                bounds.add_point(e.start_point());
                 bounds.add_plane(
                     &self.planet_model,
                     &e.plane,
@@ -807,7 +772,7 @@ impl GeoShape for GeoComplexPolygon {
                     break;
                 }
                 let e = &self.inner.edges[current_edge];
-                edge_description.push_str(&e.start_point.to_string());
+                edge_description.push_str(&e.start_point().to_string());
                 current_edge = e.next;
                 if current_edge == start_edge {
                     break;
@@ -877,17 +842,36 @@ impl GeoAreaShape for GeoComplexPolygon {
 
 impl GeoPolygon for GeoComplexPolygon {}
 
+/// A plane with its above/below offset planes (`None` off the planet).
+type PlaneTriple<'a> = (&'a Plane, &'a Option<Plane>, &'a Option<Plane>);
+
+/// One of `isInSet`'s six two-leg combinations: the test point's planes,
+/// the travel planes, the two check-term scaling factors, the two leg
+/// values and the two leg trees.
+type Combo<'a> = (
+    PlaneTriple<'a>,
+    PlaneTriple<'a>,
+    f64,
+    f64,
+    f64,
+    f64,
+    &'a Tree,
+    &'a Tree,
+);
+
 /// `TraversalStrategy`: a two-leg path from the test point to the point.
+/// The planes are borrowed (from the polygon or `isInSet`'s locals) rather
+/// than copied.
 struct TraversalStrategy<'a> {
     traversal_distance: f64,
     first_leg_value: f64,
     second_leg_value: f64,
-    first_leg_plane: Plane,
-    first_leg_above_plane: Plane,
-    first_leg_below_plane: Plane,
-    second_leg_plane: Plane,
-    second_leg_above_plane: Plane,
-    second_leg_below_plane: Plane,
+    first_leg_plane: &'a Plane,
+    first_leg_above_plane: &'a Plane,
+    first_leg_below_plane: &'a Plane,
+    second_leg_plane: &'a Plane,
+    second_leg_above_plane: &'a Plane,
+    second_leg_below_plane: &'a Plane,
     first_leg_tree: &'a Tree,
     second_leg_tree: &'a Tree,
     intersection_point: GeoPoint,
@@ -909,22 +893,20 @@ impl TraversalStrategy<'_> {
         let first_try = catch(|| -> Result<bool> {
             // First, we'll determine if the intersection point is in set or
             // not
-            let test_point_edge_iterator = create_linear_crossing_edge_iterator(
-                poly,
+            let mut test_point_edge_iterator = create_linear_crossing_edge_iterator(
                 test_point,
-                &self.first_leg_plane,
-                &self.first_leg_above_plane,
-                &self.first_leg_below_plane,
+                self.first_leg_plane,
+                self.first_leg_above_plane,
+                self.first_leg_below_plane,
                 ip.x,
                 ip.y,
                 ip.z,
-            );
-            let mut test_point_edge_iterator = test_point_edge_iterator?;
+            )?;
             // Traverse our way from the test point to the check point.  Use
             // the z tree because that's fixed.
             self.first_leg_tree.traverse_value(
                 poly,
-                &mut *test_point_edge_iterator,
+                &mut test_point_edge_iterator,
                 self.first_leg_value,
             );
             let intersection_point_on_edge = test_point_edge_iterator.is_on_edge();
@@ -943,21 +925,19 @@ impl TraversalStrategy<'_> {
                     !test_point_in_set
                 };
             // Now do the final leg
-            let travel_edge_iterator = create_linear_crossing_edge_iterator(
-                poly,
+            let mut travel_edge_iterator = create_linear_crossing_edge_iterator(
                 ip,
-                &self.second_leg_plane,
-                &self.second_leg_above_plane,
-                &self.second_leg_below_plane,
+                self.second_leg_plane,
+                self.second_leg_above_plane,
+                self.second_leg_below_plane,
                 x,
                 y,
                 z,
-            );
-            let mut travel_edge_iterator = travel_edge_iterator?;
+            )?;
             // Traverse our way from the test point to the check point.
             self.second_leg_tree.traverse_value(
                 poly,
-                &mut *travel_edge_iterator,
+                &mut travel_edge_iterator,
                 self.second_leg_value,
             );
             Ok(travel_edge_iterator.is_on_edge()
@@ -974,14 +954,13 @@ impl TraversalStrategy<'_> {
                 // Try other iterator
                 catch(|| -> Result<bool> {
                     let edge_iterator = DualCrossingEdgeIterator::new(
-                        poly,
                         test_point,
-                        &self.first_leg_plane,
-                        &self.first_leg_above_plane,
-                        &self.first_leg_below_plane,
-                        &self.second_leg_plane,
-                        &self.second_leg_above_plane,
-                        &self.second_leg_below_plane,
+                        self.first_leg_plane,
+                        self.first_leg_above_plane,
+                        self.first_leg_below_plane,
+                        self.second_leg_plane,
+                        self.second_leg_above_plane,
+                        self.second_leg_below_plane,
                         x,
                         y,
                         z,
@@ -1024,13 +1003,14 @@ struct IntersectorEdgeIterator<'a> {
 }
 
 impl EdgeIterator for IntersectorEdgeIterator<'_> {
+    #[inline]
     fn matches(&mut self, poly: &Inner, edge: usize) -> bool {
         let e = &poly.edges[edge];
         !self.plane.intersects(
             &poly.planet_model,
             &e.plane,
             self.notable_points,
-            &e.notable_points,
+            &e.points,
             self.bounds,
             &[&e.start_plane, &e.end_plane],
         )
@@ -1043,19 +1023,52 @@ struct IntersectorShapeIterator<'a> {
 }
 
 impl EdgeIterator for IntersectorShapeIterator<'_> {
+    #[inline]
     fn matches(&mut self, poly: &Inner, edge: usize) -> bool {
         let e = &poly.edges[edge];
         !self
             .shape
-            .intersects(&e.plane, &e.notable_points, &[&e.start_plane, &e.end_plane])
+            .intersects(&e.plane, &e.points, &[&e.start_plane, &e.end_plane])
+    }
+}
+
+/// What `createLinearCrossingEdgeIterator` returns: one of the two linear
+/// iterators, by value (Java's interface reference; a `Box<dyn>` here would
+/// allocate per leg and hide `matches` from the tree walk).
+enum LinearCrossingIter<'a> {
+    Sector(SectorLinearCrossingEdgeIterator<'a>),
+    Full(FullLinearCrossingEdgeIterator<'a>),
+}
+
+impl EdgeIterator for LinearCrossingIter<'_> {
+    #[inline]
+    fn matches(&mut self, poly: &Inner, edge: usize) -> bool {
+        match self {
+            LinearCrossingIter::Sector(it) => it.matches(poly, edge),
+            LinearCrossingIter::Full(it) => it.matches(poly, edge),
+        }
+    }
+}
+
+impl CountingEdgeIterator for LinearCrossingIter<'_> {
+    fn crossing_count(&self) -> i32 {
+        match self {
+            LinearCrossingIter::Sector(it) => it.crossing_count(),
+            LinearCrossingIter::Full(it) => it.crossing_count(),
+        }
+    }
+
+    fn is_on_edge(&self) -> bool {
+        match self {
+            LinearCrossingIter::Sector(it) => it.is_on_edge(),
+            LinearCrossingIter::Full(it) => it.is_on_edge(),
+        }
     }
 }
 
 /// `createLinearCrossingEdgeIterator(...)`: the sector iterator, or the full
 /// one where the sector's bound planes cannot be built.
-#[allow(clippy::too_many_arguments)]
 fn create_linear_crossing_edge_iterator<'a>(
-    poly: &Inner,
     test_point: &GeoPoint,
     plane: &'a Plane,
     above_plane: &'a Plane,
@@ -1063,8 +1076,7 @@ fn create_linear_crossing_edge_iterator<'a>(
     the_point_x: f64,
     the_point_y: f64,
     the_point_z: f64,
-) -> Result<Box<dyn CountingEdgeIterator + 'a>> {
-    let _ = poly;
+) -> Result<LinearCrossingIter<'a>> {
     match SectorLinearCrossingEdgeIterator::new(
         test_point,
         plane,
@@ -1074,16 +1086,18 @@ fn create_linear_crossing_edge_iterator<'a>(
         the_point_y,
         the_point_z,
     ) {
-        Ok(it) => Ok(Box::new(it)),
-        Err(Error::IllegalArgument(_)) => Ok(Box::new(FullLinearCrossingEdgeIterator::new(
-            test_point,
-            plane,
-            above_plane,
-            below_plane,
-            the_point_x,
-            the_point_y,
-            the_point_z,
-        )?)),
+        Ok(it) => Ok(LinearCrossingIter::Sector(it)),
+        Err(Error::IllegalArgument(_)) => Ok(LinearCrossingIter::Full(
+            FullLinearCrossingEdgeIterator::new(
+                test_point,
+                plane,
+                above_plane,
+                below_plane,
+                the_point_x,
+                the_point_y,
+                the_point_z,
+            )?,
+        )),
         Err(e) => Err(e),
     }
 }
@@ -1238,8 +1252,8 @@ impl EdgeIterator for FullLinearCrossingEdgeIterator<'_> {
         );
         if let Some(c) = &plane_crossings {
             if c[0].is_none()
-                && !self.plane.evaluate_is_zero(&edge.start_point)
-                && !self.plane.evaluate_is_zero(&edge.end_point)
+                && !self.plane.evaluate_is_zero(edge.start_point())
+                && !self.plane.evaluate_is_zero(edge.end_point())
             {
                 return true;
             }
@@ -1380,8 +1394,8 @@ impl EdgeIterator for SectorLinearCrossingEdgeIterator<'_> {
         );
         if let Some(c) = &plane_crossings {
             if c[0].is_none()
-                && !self.plane.evaluate_is_zero(&edge.start_point)
-                && !self.plane.evaluate_is_zero(&edge.end_point)
+                && !self.plane.evaluate_is_zero(edge.start_point())
+                && !self.plane.evaluate_is_zero(edge.end_point())
             {
                 return true;
             }
@@ -1429,9 +1443,52 @@ struct InsideOutside {
     outside_travel_cutoff_plane: SidedPlane,
 }
 
+/// How many seen edges [`SeenEdges`] keeps in its list before it switches to
+/// a bitset.
+const SEEN_LINEAR_MAX: usize = 32;
+
+/// Java's `seenEdges` (a `HashSet<Edge>` grown as edges are visited): few
+/// edges are visited per traversal, so a short list searched linearly, and
+/// a bitset over all the polygon's edges once that list fills. Nothing is
+/// allocated until the first edge is seen.
+#[derive(Default)]
+struct SeenEdges {
+    list: Vec<u32>,
+    bits: Vec<u64>,
+}
+
+impl SeenEdges {
+    /// Marks `edge` (of `edge_count`) seen; `false` when it already was.
+    fn insert(&mut self, edge: usize, edge_count: usize) -> bool {
+        if self.bits.is_empty() {
+            if self.list.iter().any(|&e| e as usize == edge) {
+                return false;
+            }
+            if self.list.len() < SEEN_LINEAR_MAX {
+                self.list.push(edge as u32);
+                return true;
+            }
+            self.bits = vec![0; edge_count.div_ceil(64)];
+            for &e in &self.list {
+                self.bits[e as usize / 64] |= 1 << (e % 64);
+            }
+        }
+        let (word, bit) = (edge / 64, edge % 64);
+        let was_seen = (self.bits[word] >> bit) & 1 != 0;
+        self.bits[word] |= 1 << bit;
+        !was_seen
+    }
+}
+
+/// The first `n` points of a `findIntersections` result that are present
+/// (they are always a prefix), as Java's array of them.
+fn present(points: &[Option<GeoPoint>; 2]) -> usize {
+    points.iter().take_while(|p| p.is_some()).count()
+}
+
 /// `DualCrossingEdgeIterator`.
 struct DualCrossingEdgeIterator<'a> {
-    seen_edges: Vec<bool>,
+    seen_edges: SeenEdges,
     test_point: &'a GeoPoint,
     test_point_plane: &'a Plane,
     test_point_above_plane: &'a Plane,
@@ -1456,7 +1513,6 @@ struct DualCrossingEdgeIterator<'a> {
 impl<'a> DualCrossingEdgeIterator<'a> {
     #[allow(clippy::too_many_arguments)]
     fn new(
-        poly: &Inner,
         test_point: &'a GeoPoint,
         test_point_plane: &'a Plane,
         test_point_above_plane: &'a Plane,
@@ -1501,7 +1557,7 @@ impl<'a> DualCrossingEdgeIterator<'a> {
             ));
         }
         Ok(DualCrossingEdgeIterator {
-            seen_edges: vec![false; poly.edges.len()],
+            seen_edges: SeenEdges::default(),
             test_point,
             test_point_plane,
             test_point_above_plane,
@@ -1542,7 +1598,7 @@ impl<'a> DualCrossingEdgeIterator<'a> {
         );
         let intersection_bound2 = intersection_bound2?;
         let b: [&dyn Membership; 2] = [&intersection_bound1, &intersection_bound2];
-        let find = |p: &Plane, q: &Plane| p.find_intersections(pm, q, &b).unwrap_or_default();
+        let find = |p: &Plane, q: &Plane| p.find_intersections_two(pm, q, &b);
         let above_above = find(self.travel_above_plane, self.test_point_above_plane);
         let above_below = find(self.travel_above_plane, self.test_point_below_plane);
         let below_below = find(self.travel_below_plane, self.test_point_below_plane);
@@ -1553,7 +1609,7 @@ impl<'a> DualCrossingEdgeIterator<'a> {
             travel_outside_plane,
             test_point_outside_plane,
             inside_inside_points,
-        ) = if !above_above.is_empty() {
+        ) = if above_above[0].is_some() {
             (
                 self.travel_above_plane,
                 self.test_point_above_plane,
@@ -1561,7 +1617,7 @@ impl<'a> DualCrossingEdgeIterator<'a> {
                 self.test_point_below_plane,
                 above_above,
             )
-        } else if !above_below.is_empty() {
+        } else if above_below[0].is_some() {
             (
                 self.travel_above_plane,
                 self.test_point_below_plane,
@@ -1569,7 +1625,7 @@ impl<'a> DualCrossingEdgeIterator<'a> {
                 self.test_point_above_plane,
                 above_below,
             )
-        } else if !below_below.is_empty() {
+        } else if below_below[0].is_some() {
             (
                 self.travel_below_plane,
                 self.test_point_below_plane,
@@ -1577,7 +1633,7 @@ impl<'a> DualCrossingEdgeIterator<'a> {
                 self.test_point_above_plane,
                 below_below,
             )
-        } else if !below_above.is_empty() {
+        } else if below_above[0].is_some() {
             (
                 self.travel_below_plane,
                 self.test_point_above_plane,
@@ -1599,9 +1655,8 @@ impl<'a> DualCrossingEdgeIterator<'a> {
         // planes; we just pick the one closest to the intersection point.
         let inside_inside_point = self.pick_proximate(&inside_inside_points)?;
         // Get the outside-outside intersection point
-        let outside_outside_points = test_point_outside_plane
-            .find_intersections(pm, travel_outside_plane, &[])
-            .unwrap_or_default();
+        let outside_outside_points =
+            test_point_outside_plane.find_intersections_two(pm, travel_outside_plane, &[]);
         let outside_outside_point = self.pick_proximate(&outside_outside_points)?;
         let (tx, ty, tz) = (self.the_point_x, self.the_point_y, self.the_point_z);
         let io = InsideOutside {
@@ -1638,23 +1693,27 @@ impl<'a> DualCrossingEdgeIterator<'a> {
         Ok(())
     }
 
-    fn pick_proximate(&self, points: &[GeoPoint]) -> Result<GeoPoint> {
-        match points.len() {
+    /// `pickProximate(points)` over a `findIntersections` result (its
+    /// present points first, in Java's order).
+    fn pick_proximate(&self, points: &[Option<GeoPoint>; 2]) -> Result<GeoPoint> {
+        let n = present(points);
+        let point = |i: usize| points[i].as_ref().expect("present");
+        match n {
             0 => Err(illegal(
                 "No off-plane intersection points were found; can't compute traversal",
             )),
-            1 => Ok(points[0].clone()),
+            1 => Ok(point(0).clone()),
             _ => {
-                let p1dist = compute_squared_distance(&points[0], &self.intersection_point);
-                let p2dist = compute_squared_distance(&points[1], &self.intersection_point);
+                let p1dist = compute_squared_distance(point(0), &self.intersection_point);
+                let p2dist = compute_squared_distance(point(1), &self.intersection_point);
                 if p1dist < p2dist {
-                    Ok(points[0].clone())
+                    Ok(point(0).clone())
                 } else if p2dist < p1dist {
-                    Ok(points[1].clone())
+                    Ok(point(1).clone())
                 } else {
                     Err(Error::IllegalArgument(format!(
                         "Neither off-plane intersection point matched intersection point; intersection = {}; offplane choice 0: {}; offplane choice 1: {}",
-                        self.intersection_point, points[0], points[1]
+                        self.intersection_point, point(0), point(1)
                     )))
                 }
             }
@@ -1674,26 +1733,26 @@ impl<'a> DualCrossingEdgeIterator<'a> {
         test_point_envelope_bound2: &dyn Membership,
     ) -> i32 {
         let pm = &*poly.planet_model;
-        let travel_intersections = edge.plane.find_intersections(
+        let travel_intersections = edge.plane.find_intersections_arr(
             pm,
             travel_envelope_plane,
             &[travel_envelope_bound1, travel_envelope_bound2],
         );
-        let test_point_intersections = edge.plane.find_intersections(
+        let test_point_intersections = edge.plane.find_intersections_arr(
             pm,
             test_point_envelope_plane,
             &[test_point_envelope_bound1, test_point_envelope_bound2],
         );
         let mut crossings = 0;
         if let Some(travel_intersections) = &travel_intersections {
-            for intersection in travel_intersections {
+            for intersection in travel_intersections.iter().flatten() {
                 if edge.start_plane.strictly_within(intersection)
                     && edge.end_plane.strictly_within(intersection)
                 {
                     // Make sure it's not a dup
                     let mut not_dup = true;
                     if let Some(tpi) = &test_point_intersections {
-                        for other_intersection in tpi {
+                        for other_intersection in tpi.iter().flatten() {
                             if edge.start_plane.strictly_within(other_intersection)
                                 && edge.end_plane.strictly_within(other_intersection)
                                 && intersection.is_numerically_identical(other_intersection)
@@ -1716,7 +1775,7 @@ impl<'a> DualCrossingEdgeIterator<'a> {
             }
         }
         if let Some(tpi) = &test_point_intersections {
-            for intersection in tpi {
+            for intersection in tpi.iter().flatten() {
                 if edge.start_plane.strictly_within(intersection)
                     && edge.end_plane.strictly_within(intersection)
                 {
@@ -1774,17 +1833,16 @@ impl EdgeIterator for DualCrossingEdgeIterator<'_> {
         // for each intersecting edge on both legs: (1) If the edge contains
         // the intersection point, we analyze it on only one leg.  For the
         // other leg, we do nothing.
-        if self.seen_edges[edge_index] {
+        if !self.seen_edges.insert(edge_index, poly.edges.len()) {
             return true;
         }
-        self.seen_edges[edge_index] = true;
         // We've never seen this edge before.  Evaluate it in the context of
         // inner and outer planes.
         if let Err(e) = self.compute_inside_outside(pm) {
             raise(e);
             return true;
         }
-        let travel_crossings = self.travel_plane.find_intersections(
+        let travel_crossings = self.travel_plane.find_intersections_arr(
             pm,
             &edge.plane,
             &[
@@ -1795,9 +1853,9 @@ impl EdgeIterator for DualCrossingEdgeIterator<'_> {
             ],
         );
         if let Some(tc) = &travel_crossings {
-            if tc.is_empty() {
+            if tc[0].is_none() {
                 // Check test point plane
-                let test_point_crossings = self.test_point_plane.find_intersections(
+                let test_point_crossings = self.test_point_plane.find_intersections_arr(
                     pm,
                     &edge.plane,
                     &[
@@ -1808,11 +1866,11 @@ impl EdgeIterator for DualCrossingEdgeIterator<'_> {
                     ],
                 );
                 if let Some(tpc) = &test_point_crossings {
-                    if tpc.is_empty()
-                        && !self.travel_plane.evaluate_is_zero(&edge.start_point)
-                        && !self.travel_plane.evaluate_is_zero(&edge.end_point)
-                        && !self.test_point_plane.evaluate_is_zero(&edge.start_point)
-                        && !self.test_point_plane.evaluate_is_zero(&edge.end_point)
+                    if tpc[0].is_none()
+                        && !self.travel_plane.evaluate_is_zero(edge.start_point())
+                        && !self.travel_plane.evaluate_is_zero(edge.end_point())
+                        && !self.test_point_plane.evaluate_is_zero(edge.start_point())
+                        && !self.test_point_plane.evaluate_is_zero(edge.end_point())
                     {
                         return true;
                     }
@@ -1865,4 +1923,52 @@ fn compute_squared_distance(check_point: &GeoPoint, intersection_point: &GeoPoin
     let distance_y = check_point.y - intersection_point.y;
     let distance_z = check_point.z - intersection_point.z;
     distance_x * distance_x + distance_y * distance_y + distance_z * distance_z
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seen_edges_switches_from_list_to_bitset() {
+        let edge_count = 200;
+        let mut seen = SeenEdges::default();
+        // Past the list's capacity, in an order that is not sorted.
+        let order: Vec<usize> = (0..edge_count).map(|i| (i * 37) % edge_count).collect();
+        for (n, &e) in order.iter().enumerate() {
+            assert!(seen.insert(e, edge_count), "first visit of {e}");
+            assert!(!seen.insert(e, edge_count), "second visit of {e}");
+            assert_eq!(seen.bits.is_empty(), n < SEEN_LINEAR_MAX, "{n}");
+        }
+        // Every edge, list-held or not, stays seen after the switch.
+        assert!(order.iter().all(|&e| !seen.insert(e, edge_count)));
+    }
+
+    #[test]
+    fn present_counts_the_leading_points() {
+        let p = || Some(GeoPoint::new(1.0, 0.0, 0.0));
+        assert_eq!(present(&[None, None]), 0);
+        assert_eq!(present(&[p(), None]), 1);
+        assert_eq!(present(&[p(), p()]), 2);
+    }
+
+    #[test]
+    fn an_empty_tree_traverses_nothing() {
+        struct Never;
+        impl EdgeIterator for Never {
+            fn matches(&mut self, _: &Inner, _: usize) -> bool {
+                unreachable!("no edges")
+            }
+        }
+        let tree = Tree::new(&[], Axis::X);
+        assert_eq!(tree.root, NO_NODE);
+        let poly = Inner {
+            planet_model: PlanetModel::sphere(),
+            edges: Vec::new(),
+            x_tree: tree.clone(),
+            y_tree: tree.clone(),
+            z_tree: tree.clone(),
+        };
+        assert!(tree.traverse_value(&poly, &mut Never, 0.5));
+    }
 }
