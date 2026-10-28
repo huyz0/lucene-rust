@@ -1078,8 +1078,7 @@ impl IndexingConfig {
             None,
         )?;
         let mut record = |names: Vec<String>| {
-            flushed.info.files.extend(names.iter().cloned());
-            flushed.pending_sync.extend(names);
+            flushed.info.files.extend(names);
         };
         if let Some(output) = postings_output {
             record(IndexWriter::write_postings_files(
@@ -1135,8 +1134,7 @@ impl IndexingConfig {
                 self.codec.as_deref(),
                 lucene_codecs::codec::WritePoint::Compound,
             )?;
-            flushed.pending_sync =
-                segment_writer::create_compound_file(dir, segment_name, &mut flushed.info)?;
+            segment_writer::create_compound_file(dir, segment_name, &mut flushed.info)?;
         }
         super::before_write(
             self.codec.as_deref(),

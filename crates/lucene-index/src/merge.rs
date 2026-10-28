@@ -2895,8 +2895,8 @@ fn merge_segments_mapped_inner(
     )?;
     let si_bytes = segment_info::write(&si, "");
     write_file(dir, &si_name, &si_bytes)?;
-
-    dir.sync(&files)?;
+    // Not synced: like a flushed segment, a merged one becomes durable when
+    // the first commit that names it syncs it (`IndexWriter.startCommit`).
 
     let info = SegmentCommitInfo {
         segment_name: merged_segment_name.to_string(),

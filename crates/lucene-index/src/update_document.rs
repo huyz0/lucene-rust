@@ -38,8 +38,10 @@
 //!    `.fdt`/`.fdx`/`.fdm`/`.fnm`/`.si`, exactly as
 //!    [`crate::segment_writer::flush_stored_only_segment`] already does
 //!    standalone).
-//! 3. Commit the updated segment list (old segments with bumped `del_gen`s +
-//!    the one new segment) as the next `segments_N` generation.
+//! 3. Sync every file steps 1 and 2 wrote (neither primitive syncs; Java
+//!    leaves that to `IndexWriter.startCommit` too), then commit the updated
+//!    segment list (old segments with bumped `del_gen`s + the one new
+//!    segment) as the next `segments_N` generation.
 //!
 //! If step 1 or 2 fails, [`update_document`] returns `Err` before step 3 ever
 //! runs: no `segments_N` is written, so the previous commit is still the
@@ -84,6 +86,9 @@ pub enum Error {
     SegmentWriter(#[from] segment_writer::Error),
     #[error(transparent)]
     SegmentInfos(#[from] segment_infos::Error),
+    /// Syncing the written files before the commit failed.
+    #[error(transparent)]
+    Store(#[from] lucene_store::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -135,8 +140,9 @@ pub fn update_document(
     new_fields: &[FieldInfo],
     new_docs: &[Document],
 ) -> Result<SegmentInfos> {
+    let created = crate::created_outputs::CreatedOutputs::new(dir);
     let updated_segments = update_segments(
-        dir,
+        &created,
         segment_infos,
         delete_sources,
         field,
@@ -154,7 +160,8 @@ pub fn update_document(
 
     // Step 3: the single atomic commit point. Everything above has already
     // succeeded, so this is the only write that can make the update visible
-    // -- and it makes both halves visible together, in one fsync'd file.
+    // -- and it makes both halves visible together, in one fsync'd file,
+    // after the files it names were synced.
     let mut new_segment_infos = segment_infos.clone();
     // ARITH: both counters are capped at `segment_infos::MAX_GENERATION`
     // (`i64::MAX / 2`) on the way in (`segment_infos::parse`) and on the way
@@ -170,6 +177,9 @@ pub fn update_document(
     }
     new_segment_infos.segments = updated_segments;
 
+    // The files it names are synced first (`startCommit`).
+    let written: Vec<String> = created.files().iter().cloned().collect();
+    dir.sync(&written)?;
     segment_infos::write(&new_segment_infos, dir)?;
 
     Ok(new_segment_infos)
