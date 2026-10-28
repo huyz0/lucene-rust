@@ -17,6 +17,7 @@
 //! segment per `build`, `refresh` or reopen of the writer; a merge of
 //! segments is not modelled.
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Bound;
@@ -118,9 +119,15 @@ impl Snapshot {
         }
     }
 
-    /// The documents `query` matches, ascending (so in index order).
-    fn matching(&self, query: &Query) -> Vec<usize> {
-        let postings = |list: Option<&Vec<usize>>| list.cloned().unwrap_or_default();
+    /// The documents `query` matches, ascending (so in index order). A term's
+    /// are its posting list, borrowed; only a combination allocates.
+    fn matching(&self, query: &Query) -> Cow<'_, [usize]> {
+        fn postings(list: Option<&Vec<usize>>) -> Cow<'_, [usize]> {
+            match list {
+                Some(l) => Cow::Borrowed(l.as_slice()),
+                None => Cow::Owned(Vec::new()),
+            }
+        }
         match query {
             Query::Term(Field::Text, t) => {
                 postings(std::str::from_utf8(t).ok().and_then(|t| self.text.get(t)))
@@ -131,7 +138,7 @@ impl Snapshot {
             Query::Term(Field::Contexts, t) => postings(self.contexts.get(t)),
             Query::Prefix(p) => {
                 let Ok(p) = std::str::from_utf8(p) else {
-                    return Vec::new();
+                    return Cow::Owned(Vec::new());
                 };
                 // terms sort by their bytes, so a prefix's terms are contiguous
                 let mut out: Vec<usize> = self
@@ -142,10 +149,10 @@ impl Snapshot {
                     .collect();
                 out.sort_unstable();
                 out.dedup();
-                out
+                Cow::Owned(out)
             }
             Query::Bool(clauses) => {
-                let mut required: Option<Vec<usize>> = None;
+                let mut required: Option<Cow<'_, [usize]>> = None;
                 let mut optional: Option<Vec<usize>> = None;
                 let mut excluded: Vec<usize> = Vec::new();
                 for (occur, q) in clauses {
@@ -154,15 +161,15 @@ impl Snapshot {
                         Occur::Must | Occur::Filter => {
                             required = Some(match required {
                                 None => docs,
-                                Some(r) => intersect(&r, &docs),
+                                Some(r) => Cow::Owned(intersect(&r, &docs)),
                             });
                         }
                         Occur::Should => {
                             let mut u = optional.unwrap_or_default();
-                            u.extend(docs);
+                            u.extend_from_slice(&docs);
                             optional = Some(u);
                         }
-                        Occur::MustNot => excluded.extend(docs),
+                        Occur::MustNot => excluded.extend_from_slice(&docs),
                     }
                 }
                 // a query with no positive clause matches nothing; with only
@@ -172,13 +179,13 @@ impl Snapshot {
                     (None, Some(mut o)) => {
                         o.sort_unstable();
                         o.dedup();
-                        o
+                        Cow::Owned(o)
                     }
-                    (None, None) => return Vec::new(),
+                    (None, None) => return Cow::Owned(Vec::new()),
                 };
                 if !excluded.is_empty() {
                     excluded.sort_unstable();
-                    out.retain(|d| excluded.binary_search(d).is_err());
+                    out.to_mut().retain(|d| excluded.binary_search(d).is_err());
                 }
                 out
             }
@@ -608,9 +615,9 @@ impl AnalyzingInfixSuggester {
         // index sort
         let hits: Vec<&Doc> = snapshot
             .matching(&query)
-            .into_iter()
+            .iter()
             .take(num)
-            .filter_map(|d| snapshot.docs.get(d))
+            .filter_map(|&d| snapshot.docs.get(d))
             .collect();
 
         match blend {
