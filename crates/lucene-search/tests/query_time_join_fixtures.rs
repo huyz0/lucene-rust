@@ -712,6 +712,30 @@ fn query_time_join_edges() {
     assert_eq!(walks[1].entered, vec![1, 3]);
     let total: usize = walks.iter().map(|w| w.docs).sum();
     assert_eq!(total as u64, searcher.count(&all(from.clone())).unwrap());
+    // The concurrent form hands back the same collectors in slice order.
+    let concurrent = lucene_search::leaf_collector::search_slices_concurrent(
+        &sliced,
+        &all(from.clone()),
+        || {
+            Ok(Walk {
+                entered: Vec::new(),
+                finished: 0,
+                docs: 0,
+                fail_at: None,
+            })
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        concurrent
+            .iter()
+            .map(|w| (w.entered.clone(), w.docs))
+            .collect::<Vec<_>>(),
+        walks
+            .iter()
+            .map(|w| (w.entered.clone(), w.docs))
+            .collect::<Vec<_>>()
+    );
     let mut w = Walk {
         entered: Vec::new(),
         finished: 0,
@@ -731,6 +755,20 @@ fn query_time_join_edges() {
             fail_at: None,
         })
     })
+    .unwrap();
+    assert_eq!(walks.len(), 1, "no slices: one empty collector");
+    let walks = lucene_search::leaf_collector::search_slices_concurrent(
+        &sliced,
+        &all(term("x", "y")),
+        || {
+            Ok(Walk {
+                entered: Vec::new(),
+                finished: 0,
+                docs: 0,
+                fail_at: None,
+            })
+        },
+    )
     .unwrap();
     assert_eq!(walks.len(), 1, "no slices: one empty collector");
 }
