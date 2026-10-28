@@ -902,6 +902,15 @@ pub(crate) fn decode_sort(blob: &[u8]) -> Result<DecodedSort, FfiStatus> {
         None
     };
     let slices = decode_slices(&mut c, &bad)?;
+    // A sorted search's slices partition the segments
+    // (`IndexSearcher.LeafSlice`) and their totals are summed: a segment in
+    // two slices would count its hits twice, past the index's document count.
+    let mut seen = std::collections::HashSet::new();
+    if let Some(segment) = slices.iter().flatten().find(|&&s| !seen.insert(s)) {
+        return Err(bad(format!(
+            "sort blob: segment {segment} in more than one slice"
+        )));
+    }
     let mut index_sorted = Vec::new();
     if options & SORT_INDEX_SORTED != 0 {
         let n = c.len()?;
@@ -4074,6 +4083,17 @@ pub(crate) mod tests {
         assert_eq!(
             run_sorted(h, &q, &missing, 3, i64::MAX).unwrap_err(),
             FfiStatus::Search.code()
+        );
+        // A segment in two slices would be counted twice (a fuzz finding:
+        // 17 total hits over an 8-document index): refused at decode.
+        let mut twice = plain.clone();
+        twice.truncate(twice.len() - 4);
+        for v in [2i32, 1, 0, 1, 0] {
+            twice.extend_from_slice(&v.to_le_bytes());
+        }
+        assert_eq!(
+            decode_sort(&twice).map(|_| ()),
+            Err(FfiStatus::InvalidArgument)
         );
         ffi_close_jvm_reader(h);
     }
