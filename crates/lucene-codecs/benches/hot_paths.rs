@@ -986,6 +986,61 @@ fn bench_postings_write(c: &mut Criterion) {
         b.iter(|| black_box(postings_writer::write_single_field(&input, &id, "").unwrap()))
     });
     group.finish();
+
+    // The same dictionary, read: exact seeks of every 7th term from 1 and
+    // from 4 threads at once on one shared field, as concurrent searches
+    // over one segment do.
+    use field_infos::{
+        DocValuesSkipIndexType, DocValuesType, FieldInfo, FieldInfos, VectorEncoding,
+        VectorSimilarityFunction,
+    };
+    let out = postings_writer::write_single_field(&input, &id, "").unwrap();
+    let fis = FieldInfos {
+        fields: vec![FieldInfo {
+            name: "f".to_string(),
+            number: 0,
+            store_term_vectors: false,
+            omit_norms: false,
+            store_payloads: false,
+            soft_deletes_field: false,
+            parent_field: false,
+            index_options: IndexOptions::DocsAndFreqsAndPositions,
+            doc_values_type: DocValuesType::None,
+            doc_values_skip_index_type: DocValuesSkipIndexType::None,
+            doc_values_gen: -1,
+            attributes: Vec::new(),
+            point_dimension_count: 0,
+            point_index_dimension_count: 0,
+            point_num_bytes: 0,
+            vector_dimension: 0,
+            vector_encoding: VectorEncoding::Float32,
+            vector_similarity_function: VectorSimilarityFunction::Euclidean,
+        }],
+    };
+    let fields = blocktree::open(&out.tim, &out.tip, &out.tmd, &fis, &id, "", DOCS).unwrap();
+    let field = fields.field("f").unwrap();
+    let probes: Vec<&[u8]> = terms.iter().step_by(7).map(|t| t.term.as_slice()).collect();
+    let mut group = c.benchmark_group("blocktree_seek");
+    group.sample_size(20);
+    for threads in [1usize, 4] {
+        group.bench_function(format!("seek_exact_4k_terms_x{threads}_threads"), |b| {
+            b.iter(|| {
+                std::thread::scope(|s| {
+                    for t in 0..threads {
+                        let probes = &probes;
+                        s.spawn(move || {
+                            let mut found = 0usize;
+                            for p in probes.iter().skip(t % 3) {
+                                found += usize::from(field.try_seek_exact(p).unwrap().is_some());
+                            }
+                            black_box(found)
+                        });
+                    }
+                })
+            })
+        });
+    }
+    group.finish();
 }
 
 /// Compiling a 200k-key FST with suffix sharing (`NodeHash`), as a
