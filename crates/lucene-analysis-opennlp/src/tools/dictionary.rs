@@ -133,6 +133,9 @@ pub struct Dictionary {
     /// The entries as first inserted, in insertion order.
     entries: Vec<Vec<JString>>,
     keys: HashSet<Vec<JString>>,
+    /// The one-token keys of `keys`, so a one-token lookup needs no
+    /// `Vec<JString>` built to ask.
+    singles: HashSet<JString>,
     max_token_count: usize,
 }
 
@@ -166,19 +169,30 @@ impl Dictionary {
     /// added); the longest entry's length counts every put.
     pub fn put(&mut self, tokens: Vec<JString>) {
         self.max_token_count = self.max_token_count.max(tokens.len());
-        if self.keys.insert(self.key(&tokens)) {
+        let key = self.key(&tokens);
+        if let [single] = key.as_slice() {
+            self.singles.insert(single.clone());
+        }
+        if self.keys.insert(key) {
             self.entries.push(tokens);
         }
     }
 
     /// `contains(StringList)`.
     pub fn contains(&self, tokens: &[JString]) -> bool {
-        self.keys.contains(&self.key(tokens))
+        match tokens {
+            [single] => self.contains_string(single),
+            _ => self.keys.contains(&self.key(tokens)),
+        }
     }
 
     /// `asStringSet().contains(str)`: the one-token entry `s`.
     pub fn contains_string(&self, s: &[u16]) -> bool {
-        self.contains(&[s.to_vec()])
+        if self.case_sensitive {
+            self.singles.contains(s)
+        } else {
+            self.singles.contains(&text::to_lower_case(s))
+        }
     }
 
     /// `getMaxTokenCount()`: the most tokens of an entry.
