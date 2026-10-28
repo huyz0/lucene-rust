@@ -53,27 +53,39 @@ impl BytesRefBlockPool {
         *self = Self::new();
     }
 
-    fn next_buffer(&mut self) {
+    /// `nextBuffer`. Offsets are Java `int`s: a block whose start would pass
+    /// `i32::MAX` is refused, as `Math.addExact` throws there, instead of
+    /// handing out offsets that wrap negative.
+    fn next_buffer(&mut self) -> Result<(), BytesRefHashError> {
+        let next = self.byte_offset + BYTE_BLOCK_SIZE as i64;
+        if next > i64::from(i32::MAX) {
+            return Err(BytesRefHashError::PoolOverflow);
+        }
         self.blocks.push(vec![0; BYTE_BLOCK_SIZE]);
         self.byte_upto = 0;
-        self.byte_offset += BYTE_BLOCK_SIZE as i64;
+        self.byte_offset = next;
+        Ok(())
     }
 
     /// `addBytesRef`: appends `bytes` with its length prefix, returning its
-    /// start offset. `None` when longer than `BYTE_BLOCK_SIZE - 2`
-    /// (`MaxBytesLengthExceededException`).
-    pub fn add_bytes_ref(&mut self, bytes: &[u8]) -> Option<i32> {
+    /// start offset. Fails when longer than `BYTE_BLOCK_SIZE - 2`
+    /// (`MaxBytesLengthExceededException`) or when the pool would pass 2 GiB.
+    pub fn add_bytes_ref(&mut self, bytes: &[u8]) -> Result<i32, BytesRefHashError> {
         let length = bytes.len();
         let len2 = 2 + length;
         if len2 + self.byte_upto > BYTE_BLOCK_SIZE {
             if len2 > BYTE_BLOCK_SIZE {
-                return None;
+                return Err(BytesRefHashError::MaxBytesLengthExceeded(length));
             }
-            self.next_buffer();
+            self.next_buffer()?;
         }
         let upto = self.byte_upto;
+        // In range: `next_buffer` keeps `byte_offset + BYTE_BLOCK_SIZE` within `i32`.
         let text_start = (upto as i64 + self.byte_offset) as i32;
-        let buffer = self.blocks.last_mut()?;
+        let buffer = self
+            .blocks
+            .last_mut()
+            .ok_or(BytesRefHashError::NotInitialized)?;
         if length < 128 {
             buffer[upto] = length as u8;
             buffer[upto + 1..upto + 1 + length].copy_from_slice(bytes);
@@ -83,7 +95,7 @@ impl BytesRefBlockPool {
             buffer[upto + 2..upto + 2 + length].copy_from_slice(bytes);
             self.byte_upto += length + 2;
         }
-        Some(text_start)
+        Ok(text_start)
     }
 
     /// `fillBytesRef(term, start)`: the bytes stored at `start`.
@@ -111,6 +123,10 @@ pub enum BytesRefHashError {
     /// Used after `clear` without `reinit` (Java: a `NullPointerException`).
     #[error("bytesStart is null - not initialized")]
     NotInitialized,
+    /// The byte pool would pass 2 GiB (Java: `ArithmeticException` from
+    /// `ByteBlockPool.nextBuffer`'s `Math.addExact`).
+    #[error("byte pool overflow: more than 2 GiB of terms")]
+    PoolOverflow,
     /// `capacity` is not a positive power of two.
     #[error("capacity must be a power of two, got {0}")]
     BadCapacity(usize),
@@ -313,10 +329,7 @@ impl BytesRefHash {
         if e != -1 {
             return Ok(-((e & self.hash_mask) + 1));
         }
-        let start = self
-            .pool
-            .add_bytes_ref(bytes)
-            .ok_or(BytesRefHashError::MaxBytesLengthExceeded(bytes.len()))?;
+        let start = self.pool.add_bytes_ref(bytes)?;
         let id = self.count as i32;
         self.bytes_start
             .as_mut()
@@ -467,5 +480,28 @@ mod tests {
         c.reinit();
         assert_eq!(c.size(), 0);
         assert_eq!(BytesRefBlockPool::default().blocks.len(), 0);
+    }
+
+    #[test]
+    fn pool_refuses_offsets_past_2_gib() {
+        // The pool as it stands with its last legal block at the head: that
+        // block's start plus BYTE_BLOCK_SIZE is exactly 2^31.
+        let last_start = (1i64 << 31) - BYTE_BLOCK_SIZE as i64;
+        let mut pool = BytesRefBlockPool {
+            blocks: vec![vec![0; BYTE_BLOCK_SIZE]],
+            byte_upto: 0,
+            byte_offset: last_start,
+        };
+        assert_eq!(pool.add_bytes_ref(b"tail"), Ok(last_start as i32));
+        let big = vec![7u8; BYTE_BLOCK_SIZE - 2];
+        assert_eq!(
+            pool.add_bytes_ref(&big),
+            Err(BytesRefHashError::PoolOverflow)
+        );
+        assert_eq!(pool.blocks.len(), 1);
+        assert_eq!(
+            BytesRefHashError::PoolOverflow.to_string(),
+            "byte pool overflow: more than 2 GiB of terms"
+        );
     }
 }
