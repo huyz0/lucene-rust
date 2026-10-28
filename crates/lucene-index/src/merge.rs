@@ -2761,12 +2761,16 @@ fn merge_segments_mapped_inner(
     if merged_fields.iter().any(|f| f.point_dimension_count > 0) {
         // Lucene90PointsWriter's instanceof dispatch: a point-free source
         // has no PointsReader and selects generic merging, including for 1D.
+        //
+        // Java also falls back to generic merging when `needsIndexSort`: the
+        // native 1D merge emits equal values in each source's mapped doc
+        // order, which is only ascending when every source's doc map is.
         let native_merge = sources.iter().all(|source| {
             source
                 .field_infos
                 .iter()
                 .any(|f| f.point_dimension_count > 0)
-        });
+        }) && doc_id_maps.iter().all(|map| doc_map_is_monotonic(map));
         if let Some(factory) = points_factory {
             files.extend(crate::points_writer::merge(
                 factory,
@@ -2906,8 +2910,8 @@ fn merge_segments_mapped_inner(
     )?;
     let si_bytes = segment_info::write(&si, "");
     write_file(dir, &si_name, &si_bytes)?;
-
-    dir.sync(&files)?;
+    // Not synced: like a flushed segment, a merged one becomes durable when
+    // the first commit that names it syncs it (`IndexWriter.startCommit`).
 
     let info = SegmentCommitInfo {
         segment_name: merged_segment_name.to_string(),
@@ -4916,6 +4920,17 @@ fn build_doc_id_maps(per_source_max_doc: &[i32], doc_order: &[(usize, i32)]) -> 
     maps
 }
 
+/// Whether a source's live docs keep their relative order in the merged
+/// segment (deleted docs, `-1`, are skipped).
+fn doc_map_is_monotonic(map: &[i32]) -> bool {
+    let mut previous = -1;
+    map.iter().filter(|&&merged| merged >= 0).all(|&merged| {
+        let ascending = merged > previous;
+        previous = merged;
+        ascending
+    })
+}
+
 /// One source's `DocMap.get`: the merged doc id for `doc_id`, or `None` if
 /// that doc was deleted (or is past the source's last live doc).
 #[inline]
@@ -6090,6 +6105,17 @@ mod tests {
         let maps = build_doc_id_maps(&[0], &[]);
         assert!(maps[0].is_empty());
         assert_eq!(mapped_doc_id(&maps[0], 0), None);
+    }
+
+    #[test]
+    fn only_order_preserving_doc_maps_allow_the_native_points_merge() {
+        assert!(doc_map_is_monotonic(&[0, -1, 1, 4, -1]));
+        assert!(doc_map_is_monotonic(&[]));
+        // A reorder or an index sort can move a later doc ahead of an
+        // earlier one; equal 1D values would then leave the k-way merge
+        // with doc ids out of order.
+        assert!(!doc_map_is_monotonic(&[3, -1, 1]));
+        assert!(!doc_map_is_monotonic(&[2, 2]));
     }
 
     #[test]

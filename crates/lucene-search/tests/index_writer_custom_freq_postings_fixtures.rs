@@ -244,9 +244,9 @@ fn custom_freq_postings_round_trip_and_drive_real_bm25_scoring() {
 
 #[test]
 fn custom_freq_postings_field_rejects_a_zero_custom_freq() {
-    // The codec layer's existing "freq < 1" rejection applies unchanged to
-    // DocsAndCustomFreqs -- an IndexWriter caller can't silently commit a
-    // meaningless zero/negative custom score.
+    // A zero/negative custom score is refused when the document is added
+    // (Java: "Term frequency must be 1 or greater"), so it never reaches a
+    // flush that could not succeed.
     let tmp = tempdir("custom-freq-rejects-zero");
     let dir = FsDirectory::open(&tmp);
     let fields = vec![
@@ -258,8 +258,8 @@ fn custom_freq_postings_field_rejects_a_zero_custom_freq() {
         .set_custom_freq_postings_field(Some("score"))
         .unwrap();
 
-    writer
+    assert!(writer
         .add_document_with_custom_freq_terms(doc("a"), vec![("score".to_string(), 0)])
-        .unwrap();
-    assert!(writer.commit().is_err());
+        .is_err());
+    assert_eq!(writer.pending_doc_count(), 0);
 }

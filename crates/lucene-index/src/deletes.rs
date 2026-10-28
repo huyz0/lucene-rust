@@ -2,7 +2,8 @@
 //!
 //! Java: PendingDeletes.writeLiveDocs and ReadersAndUpdates.writeLiveDocs.
 //! Term/query resolution belongs to the writer; this module clears the resolved
-//! IDs, writes and syncs the next live-docs generation, and updates segment
+//! IDs, writes the next live-docs generation (unsynced: the commit that names
+//! it syncs it, as Java's `IndexWriter.startCommit` does), and updates segment
 //! metadata only after success. The optional codec writer supplies native
 //! Lucene90 bytes; the index retains generation and cleanup ownership.
 
@@ -264,7 +265,7 @@ pub fn mark_deleted(
 /// segment's current [`SegmentCommitInfo`]): resolves the updated live-docs
 /// bitset via [`mark_deleted`], writes it as that segment's next-generation
 /// `.liv` file (via [`liv_file_name`] + [`lucene_codecs::live_docs::write`]),
-/// syncs it through `dir`, and returns a new `SegmentCommitInfo` with
+/// and returns a new `SegmentCommitInfo` with
 /// `del_gen` incremented (starting at `1` the first time a segment gets any
 /// deletions, matching real `SegmentCommitInfo.getNextDelGen()`: `delGen ==
 /// -1` -> next is `1`, otherwise `delGen + 1`) and `del_count` increased by
@@ -361,8 +362,7 @@ pub(crate) fn apply_deletes_with_codec(
                 },
                 newly_deleted,
             )
-            .map_err(lucene_store::Error::from)
-            .and_then(|()| dir.sync(std::slice::from_ref(&file_name)));
+            .map_err(lucene_store::Error::from);
         if let Err(error) = written {
             for name in tracked
                 .created
@@ -381,12 +381,12 @@ pub(crate) fn apply_deletes_with_codec(
             new_del_count as usize,
         )?;
         let mut out = dir.create_output(&file_name)?;
-        let written = (|| {
-            use lucene_store::data_output::DataOutput;
-            out.write_bytes(&liv_bytes);
-            out.close()?;
-            dir.sync(std::slice::from_ref(&file_name))
-        })();
+        use lucene_store::data_output::DataOutput;
+        out.write_bytes(&liv_bytes);
+        // Not synced: the commit that names this generation syncs it
+        // (`IndexWriter.startCommit`); a generation superseded before any
+        // commit names it is never synced at all.
+        let written = out.close();
         if let Err(e) = written {
             // `PendingDeletes.writeLiveDocs`' `finally`: on failure,
             // `IOUtils.deleteFilesIgnoringExceptions(dir, createdFiles)`. A partial
@@ -731,13 +731,24 @@ mod tests {
         assert_eq!(after_second.del_count, 2);
     }
 
-    /// Fails every `sync` while `fail` is set; everything else passes through.
-    struct FailingSync<'a> {
+    /// Fails the close of every output created while `fail` is set (after
+    /// its bytes reached the file); everything else passes through.
+    struct FailingClose<'a> {
         inner: &'a FsDirectory,
         fail: std::sync::atomic::AtomicBool,
     }
 
-    impl Directory for FailingSync<'_> {
+    struct CloseFault;
+    impl lucene_store::index_output::OutputFaults for CloseFault {
+        fn before_write(&mut self, _: &str, _: usize) -> lucene_store::index_output::WriteVerdict {
+            lucene_store::index_output::WriteVerdict::Write
+        }
+        fn on_close(&mut self, _: &str) -> lucene_store::index_output::CloseVerdict {
+            lucene_store::index_output::CloseVerdict::FailAfterFlush(std::io::Error::other("close"))
+        }
+    }
+
+    impl Directory for FailingClose<'_> {
         fn list_all(&self) -> lucene_store::Result<Vec<String>> {
             self.inner.list_all()
         }
@@ -745,12 +756,13 @@ mod tests {
             self.inner.open(name)
         }
         fn create_output(&self, name: &str) -> lucene_store::Result<lucene_store::FsIndexOutput> {
-            self.inner.create_output(name)
+            let mut output = self.inner.create_output(name)?;
+            if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
+                output.set_faults(Box::new(CloseFault));
+            }
+            Ok(output)
         }
         fn sync(&self, names: &[String]) -> lucene_store::Result<()> {
-            if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
-                return Err(lucene_store::Error::Io(std::io::Error::other("sync")));
-            }
             self.inner.sync(names)
         }
         fn rename(&self, source: &str, dest: &str) -> lucene_store::Result<()> {
@@ -774,7 +786,7 @@ mod tests {
     fn a_failed_live_docs_write_leaves_no_partial_file_behind() {
         let tmp = lucene_util::test_support::TempDir::new("deletes-failed-liv-cleaned");
         let fs = FsDirectory::open(&tmp);
-        let dir = FailingSync {
+        let dir = FailingClose {
             inner: &fs,
             fail: std::sync::atomic::AtomicBool::new(true),
         };

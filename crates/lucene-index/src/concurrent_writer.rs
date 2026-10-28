@@ -226,7 +226,7 @@ struct Built {
 /// `IndexWriterConfig.getRAMPerThreadHardLimitMB()`'s default (1945 MB) in
 /// bytes: a slot holding more is marked for flushing whatever the policy
 /// says (`DocumentsWriterFlushControl.hardMaxBytesPerDWPT`).
-const HARD_MAX_BYTES_PER_SLOT: usize = 1945 * 1024 * 1024;
+pub(crate) const HARD_MAX_BYTES_PER_SLOT: usize = 1945 * 1024 * 1024;
 
 /// A slot's advertised slice while it holds no document: it has nothing a
 /// log entry could reach, so it holds back no trimming, and its next add
@@ -628,6 +628,7 @@ impl<'d> ConcurrentIndexWriter<'d> {
         doc: Document,
         terms: Vec<(String, i32)>,
     ) -> Result<SeqNo> {
+        crate::index_writer::summed_custom_freq_terms(&terms)?;
         self.add_entries(
             None,
             vec![Entry {
@@ -911,8 +912,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
             // `DocumentsWriterFlushControl.doAfterDocument`: the policy runs
             // unless the slot is already marked (its growth then counts as
             // flushing), then a marked slot is flushed by this thread. Without
-            // a RAM buffer only the document count can mark it, so it is
-            // checked here without the accounting lock.
+            // a RAM buffer only the document count and the hard per-slot cap
+            // can mark it, so they are checked here without the accounting
+            // lock.
             let full = if self.ram_buffer_bytes.is_some() {
                 let (num_docs, ram_bytes) = (dwpt.docs.len(), dwpt.ram_bytes);
                 self.update_ram(|c| {
@@ -927,7 +929,9 @@ impl<'d> ConcurrentIndexWriter<'d> {
                     c.is_flush_pending(i)
                 })
             } else {
+                // `hardMaxBytesPerDWPT` applies whatever the RAM setting.
                 self.max_buffered_docs.is_some_and(|m| dwpt.docs.len() >= m)
+                    || dwpt.ram_bytes > HARD_MAX_BYTES_PER_SLOT
             };
             let batch = if full {
                 self.begin_flush(i, &mut dwpt)
@@ -1200,6 +1204,12 @@ impl<'d> ConcurrentIndexWriter<'d> {
     /// files go, and the published segments still get what its ticket froze.
     /// Errors here are secondary to the build's own and are dropped.
     fn abandon(core: &mut Core<'_>, ticket: SegmentTicket, tracking: &TrackingDirectory<'_>) {
+        // The batch held operations already acknowledged to their callers,
+        // and they are gone. Java treats such an abort as a tragic event and
+        // closes the writer; this writer goes on, but its next commit must
+        // not report success without writing (skipping it as "no changes"
+        // would hide a failing directory behind an `Ok`).
+        core.writer.changed();
         core.writer.abandon_segment(ticket);
         let _ = core.writer.delete_new_files(&tracking.created());
         let _ = core.writer.apply_pending_packets();
@@ -2370,6 +2380,104 @@ mod tests {
         fn obtain_lock(&self, name: &str) -> lucene_store::Result<Box<dyn lucene_store::Lock>> {
             self.inner.obtain_lock(name)
         }
+    }
+
+    /// A directory that records every name it syncs.
+    struct SyncLogDirectory<'a> {
+        inner: &'a FsDirectory,
+        synced: Mutex<Vec<String>>,
+    }
+
+    impl Directory for SyncLogDirectory<'_> {
+        fn list_all(&self) -> lucene_store::Result<Vec<String>> {
+            self.inner.list_all()
+        }
+        fn open(&self, name: &str) -> lucene_store::Result<Input> {
+            self.inner.open(name)
+        }
+        fn create_output(&self, name: &str) -> lucene_store::Result<FsIndexOutput> {
+            self.inner.create_output(name)
+        }
+        fn sync(&self, names: &[String]) -> lucene_store::Result<()> {
+            self.inner.sync(names)?;
+            lock(&self.synced).extend(names.iter().cloned());
+            Ok(())
+        }
+        fn rename(&self, source: &str, dest: &str) -> lucene_store::Result<()> {
+            self.inner.rename(source, dest)
+        }
+        fn delete_file(&self, name: &str) -> lucene_store::Result<()> {
+            self.inner.delete_file(name)
+        }
+        fn sync_meta_data(&self) -> lucene_store::Result<()> {
+            self.inner.sync_meta_data()
+        }
+        fn obtain_lock(&self, name: &str) -> lucene_store::Result<Box<dyn lucene_store::Lock>> {
+            self.inner.obtain_lock(name)
+        }
+    }
+
+    /// The concurrent writer's flushes run on many threads but publish
+    /// through the one inner writer, whose deleter tracks what is synced: no
+    /// flush syncs anything, the commit syncs each file it names once, and a
+    /// commit with nothing new writes no generation and syncs nothing.
+    #[test]
+    fn concurrent_flushes_sync_nothing_and_the_commit_syncs_each_file_once() {
+        let tmp = TempDir::new("concurrent-sync-at-commit");
+        let fs = FsDirectory::open(&tmp);
+        let dir = SyncLogDirectory {
+            inner: &fs,
+            synced: Mutex::new(Vec::new()),
+        };
+        let version = LuceneVersion {
+            major: 10,
+            minor: 5,
+            bugfix: 0,
+        };
+        let mut single = IndexWriter::open(&dir, fields(), "Lucene104", version).unwrap();
+        single.set_postings_field(Some("id")).unwrap();
+        single.add_postings_field("body").unwrap();
+        single.set_max_buffered_docs(5).unwrap();
+        single
+            .set_ram_buffer_size_mb(DISABLE_AUTO_FLUSH_MB)
+            .unwrap();
+        let w = ConcurrentIndexWriter::new(single, 3).unwrap();
+        std::thread::scope(|scope| {
+            for t in 0..3 {
+                let w = &w;
+                scope.spawn(move || {
+                    for k in 0..20 {
+                        w.add_document(doc(&format!("t{t}k{k:02}"), 0)).unwrap();
+                    }
+                });
+            }
+        });
+        w.flush().unwrap();
+        assert!(lock(&dir.synced).is_empty(), "a flush synced files");
+
+        w.commit().unwrap();
+        let infos = segment_infos::read_latest(&fs).unwrap();
+        assert!(infos.segments.len() > 1);
+        let mut named = crate::index_file_deleter::files_of_infos(&fs, &infos, false).unwrap();
+        named.sort();
+        let mut synced: Vec<String> = lock(&dir.synced)
+            .iter()
+            .filter(|n| !n.contains("segments"))
+            .cloned()
+            .collect();
+        synced.sort();
+        assert_eq!(synced, named, "each named file synced exactly once");
+
+        let before = lock(&dir.synced).len();
+        w.commit().unwrap();
+        assert_eq!(
+            segment_infos::read_latest(&fs).unwrap().generation,
+            infos.generation,
+            "nothing changed, so no new generation"
+        );
+        assert_eq!(lock(&dir.synced).len(), before);
+        let (docs, _) = live_documents(&fs);
+        assert_eq!(docs.len(), 60);
     }
 
     /// Waits (bounded) until `cond` holds.

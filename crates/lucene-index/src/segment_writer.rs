@@ -8,12 +8,13 @@
 //! [`flush_stored_only_segment`] takes an in-memory batch of already-built
 //! [`Document`]s and [`FieldInfo`]s, "flushes" them to a brand-new segment
 //! (`.fdt`/`.fdx`/`.fdm` stored fields + `.fnm` field infos + `.si` segment
-//! info, all written and synced through a real [`Directory`]), and returns
+//! info, all written through a real [`Directory`]), and returns
 //! the [`SegmentCommitInfo`] that describes it -- ready to push into a
 //! [`crate::segment_infos::SegmentInfos::segments`] list. Call it more than once against the same
 //! `Directory` with distinct segment names, collect the resulting
-//! [`SegmentCommitInfo`]s, and pass all of them to one [`crate::segment_infos::write()`]
-//! call: that produces a single commit (`segments_N`) that lists multiple,
+//! [`SegmentCommitInfo`]s, sync their files, and pass all of them to one
+//! [`crate::segment_infos::write()`] call: that produces a single commit
+//! (`segments_N`) that lists multiple,
 //! independently-flushed segments -- exactly what `IndexWriter.commit()`
 //! does after several `DocumentsWriterPerThread.flush()` calls, minus
 //! everything this port hasn't earned yet (see "What this deliberately is
@@ -194,8 +195,7 @@ pub fn flush_stored_only_segment_with_blocks(
 
 /// A segment whose codec files are on disk but whose `.si` is **not yet
 /// written**: the in-memory `SegmentInfo` that will become it, the
-/// `SegmentCommitInfo` that will describe it in `segments_N`, and the file
-/// names still to be fsynced.
+/// `SegmentCommitInfo` that will describe it in `segments_N`.
 ///
 /// # Why this exists
 ///
@@ -206,24 +206,19 @@ pub fn flush_stored_only_segment_with_blocks(
 /// is not finished yet", so each of
 /// [`crate::index_writer::IndexWriter`]'s five per-format file groups --
 /// postings, term vectors, doc values, norms, vectors -- plus the index-sort
-/// descriptor re-opened, re-parsed, extended and re-wrote the `.si` and
-/// fsynced it again: up to seven `.si` writes and six parses per commit, of
+/// descriptor re-opened, re-parsed, extended and re-wrote the `.si`: up to
+/// seven `.si` writes and six parses per commit, of
 /// a file whose whole content was already in memory.
 ///
 /// A caller that writes more than stored fields therefore takes
 /// [`write_stored_only_segment_files`], pushes its own file names into
-/// [`Self::info`]`.files` and [`Self::pending_sync`], and finishes with
-/// [`seal_flushed_segment`].
+/// [`Self::info`]`.files`, and finishes with [`seal_flushed_segment`].
 pub struct FlushedSegment {
     /// The segment's `.si` content, still only in memory. A caller extends
     /// `files` (and may set `index_sort`) before sealing.
     pub info: SegmentInfo,
     /// The `segments_N` entry for this segment.
     pub commit: SegmentCommitInfo,
-    /// Every file written for this segment so far, to be fsynced together
-    /// with the `.si` by [`seal_flushed_segment`]. A caller appends the names
-    /// it writes itself.
-    pub pending_sync: Vec<String>,
 }
 
 /// [`flush_stored_only_segment_with_blocks`] up to but **not including** the
@@ -392,7 +387,7 @@ fn write_stored_only_segment_files_inner(
         (stored_name("fdt"), stored_name("fdx"), stored_name("fdm"));
     let fnm_name = format!("{segment_name}.fnm");
 
-    let (files, written_names) = if let Some((fdt, fdx, fdm)) = native {
+    let files = if let Some((fdt, fdx, fdm)) = native {
         if use_compound_file {
             // Compound entries are file names without the segment name.
             let member = |ext| crate::index_writer::segment_file_name("", suffix, ext);
@@ -407,29 +402,17 @@ fn write_stored_only_segment_files_inner(
             let cfe_name = format!("{segment_name}.cfe");
             write_file(dir, &cfs_name, &cfs)?;
             write_file(dir, &cfe_name, &cfe)?;
-            (
-                vec![cfs_name.clone(), cfe_name.clone()],
-                vec![cfs_name, cfe_name],
-            )
+            vec![cfs_name, cfe_name]
         } else {
             for (name, bytes) in [(&fdt_name, &fdt), (&fdx_name, &fdx), (&fdm_name, &fdm)] {
                 write_file(dir, name, bytes)?;
             }
             write_file(dir, &fnm_name, &fnm)?;
-            (
-                vec![
-                    fdt_name.clone(),
-                    fdx_name.clone(),
-                    fdm_name.clone(),
-                    fnm_name.clone(),
-                ],
-                vec![fdt_name, fdx_name, fdm_name, fnm_name],
-            )
+            vec![fdt_name, fdx_name, fdm_name, fnm_name]
         }
     } else {
         write_file(dir, &fnm_name, &fnm)?;
-        let names = vec![fdt_name, fdx_name, fdm_name, fnm_name];
-        (names.clone(), names)
+        vec![fdt_name, fdx_name, fdm_name, fnm_name]
     };
 
     // `Lucene99SegmentInfoFormat.write` calls `si.addFile(fileName)` before
@@ -479,36 +462,29 @@ fn write_stored_only_segment_files_inner(
             dv_update_files: vec![],
             ..Default::default()
         },
-        pending_sync: written_names,
     })
 }
 
 /// `IndexWriter.sealFlushedSegment`'s tail: writes the segment's `.si` from
-/// the in-memory [`SegmentInfo`] -- **once** -- and fsyncs it together with
-/// every file the segment's formats wrote.
+/// the in-memory [`SegmentInfo`] -- **once**.
 ///
-/// `flushed.info.files` is the authority on what the `.si` records;
-/// `flushed.pending_sync` is what actually gets fsynced. They differ by
-/// exactly the `.si` itself, which is in the first (a `.si` lists itself) and
-/// is appended to the second here.
+/// Nothing is fsynced here, as in Java: a flushed segment's files become
+/// durable when the first commit that names them syncs them
+/// ([`crate::index_file_deleter::IndexFileDeleter::sync_commit_files`]). A
+/// caller that writes its own `segments_N` over this segment without an
+/// `IndexWriter` must sync `info.files` first.
 pub fn seal_flushed_segment(
     dir: &dyn Directory,
     segment_name: &str,
     flushed: FlushedSegment,
 ) -> Result<(SegmentCommitInfo, Vec<String>)> {
-    let FlushedSegment {
-        info,
-        commit,
-        mut pending_sync,
-    } = flushed;
+    let FlushedSegment { info, commit } = flushed;
     let si_name = format!("{segment_name}.si");
     debug_assert!(
         info.files.contains(&si_name),
         "a segment's own `.si` must be a member of the file set it records"
     );
     write_file(dir, &si_name, &segment_info::write(&info, ""))?;
-    pending_sync.push(si_name);
-    dir.sync(&pending_sync)?;
     // The file list travels out with the commit so
     // `IndexFileDeleter::record_segment_files` can reference-count the segment
     // without opening and re-parsing the `.si` this function just wrote --
@@ -615,8 +591,7 @@ pub fn flush_sorted_stored_only_segment(
     // The index-sort descriptor goes into the `SegmentInfo` *before* the `.si`
     // is written, not into a second copy of it afterwards:
     // `write_stored_only_segment_files` hands back the in-memory
-    // `SegmentInfo`, so there is nothing to re-read, re-parse, rewrite and
-    // re-fsync.
+    // `SegmentInfo`, so there is nothing to re-read, re-parse and rewrite.
     let mut flushed = write_stored_only_segment_files(
         dir,
         segment_name,
@@ -709,7 +684,7 @@ pub fn permute_in_place<T>(items: &mut [T], new_to_old: &[usize]) {
 /// `_Lucene104_0.doc`, ...), deletes the loose files, and records the new
 /// layout in `info` (`setFiles`, `setUseCompoundFile(true)`) -- the step both
 /// `DocumentsWriterPerThread.sealFlushedSegment` and `IndexWriter.mergeMiddle`
-/// take before the `.si` is written. Returns the two new files, for syncing.
+/// take before the `.si` is written.
 ///
 /// `.liv` and doc-values/field-infos update files are never packed: they are
 /// written after the `.si`, per generation, outside `info.files`.
@@ -717,7 +692,7 @@ pub fn create_compound_file(
     dir: &dyn Directory,
     segment_name: &str,
     info: &mut SegmentInfo,
-) -> Result<Vec<String>> {
+) -> Result<()> {
     let si_name = format!("{segment_name}.si");
     let mut sub_files = Vec::with_capacity(info.files.len());
     let mut packed = Vec::with_capacity(info.files.len());
@@ -744,12 +719,12 @@ pub fn create_compound_file(
         info.files.push(si_name);
     }
     info.is_compound_file = true;
-    Ok(vec![cfs_name, cfe_name])
+    Ok(())
 }
 
 /// [`create_compound_file`] for a segment whose `.si` is already on disk (a
 /// merge writes it before the writer's `useCompoundFile` decision): packs,
-/// then rewrites and syncs the `.si` so it records the compound layout --
+/// then rewrites the `.si` so it records the compound layout --
 /// the same bytes Java's single, later `.si` write produces. Returns the
 /// segment's new file list.
 pub fn convert_to_compound(
@@ -760,11 +735,9 @@ pub fn convert_to_compound(
     let si_name = format!("{segment_name}.si");
     let si_bytes = dir.open(&si_name)?.to_vec();
     let mut info = segment_info::parse(&si_bytes, segment_id)?;
-    let mut sync = create_compound_file(dir, segment_name, &mut info)?;
+    create_compound_file(dir, segment_name, &mut info)?;
     dir.delete_file(&si_name)?;
     write_file(dir, &si_name, &segment_info::write(&info, ""))?;
-    sync.push(si_name);
-    dir.sync(&sync)?;
     Ok(info.files)
 }
 

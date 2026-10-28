@@ -225,6 +225,20 @@ pub struct IndexFileDeleter<'d> {
     /// name, which cannot happen within one index but is cheap to rule out and
     /// would otherwise be a silently wrong file set.
     si_files: HashMap<String, ([u8; ID_LENGTH], Vec<String>)>,
+    /// Files known to be fsynced: every file a commit found on disk at
+    /// [`Self::open`] names (a commit is only ever published after its files
+    /// were synced), plus every file [`Self::sync_commit_files`] has synced
+    /// since. A name leaves the set when the deleter deletes the file.
+    ///
+    /// This is the complement of Java's model, in which `IndexWriter.startCommit`
+    /// syncs every file the new commit references: a file this writer wrote
+    /// (a flushed or merged segment, a `.liv` or doc-values generation, a
+    /// copied `addIndexes` segment) is not in the set, so the first commit that
+    /// names it syncs it, and no later commit syncs it again. A file no commit
+    /// ever names -- a superseded `.liv` generation, a segment merged away
+    /// before it was committed -- is never synced at all; the deleter reclaims
+    /// it.
+    synced: HashSet<String>,
 }
 
 impl<'d> IndexFileDeleter<'d> {
@@ -281,6 +295,7 @@ impl<'d> IndexFileDeleter<'d> {
             commits: Vec::new(),
             last_files: Vec::new(),
             si_files: HashMap::new(),
+            synced: HashSet::new(),
         };
 
         let files = dir.list_all()?;
@@ -304,6 +319,8 @@ impl<'d> IndexFileDeleter<'d> {
             let sis = segment_infos::parse(&bytes, generation)?;
             let commit_files = deleter.commit_files(&sis, true)?;
             deleter.inc_ref_all(&commit_files);
+            // Whoever published this commit synced its files first.
+            deleter.synced.extend(commit_files.iter().cloned());
             deleter.commits.push(CommitPoint {
                 generation,
                 segments_file_name: file_name.clone(),
@@ -692,6 +709,37 @@ impl<'d> IndexFileDeleter<'d> {
         Ok(out)
     }
 
+    /// The sync half of `IndexWriter.startCommit`
+    /// (`directory.sync(toSync.files(false))`): fsyncs every file `infos`
+    /// names that is not yet known to be synced, so a commit about to name
+    /// them can be published. Called immediately before a `segments_N` (or
+    /// `pending_segments_N`) for `infos` is written.
+    ///
+    /// Each file is synced at most once per writer: a file a previous commit
+    /// already synced, or one named by a commit that was on disk when this
+    /// deleter opened, is skipped. On failure nothing is recorded as synced,
+    /// so the next attempt syncs the same files again.
+    pub fn sync_commit_files(&mut self, infos: &SegmentInfos) -> Result<()> {
+        let mut to_sync: Vec<String> = self
+            .commit_files(infos, false)?
+            .into_iter()
+            .filter(|name| !self.synced.contains(name))
+            .collect();
+        if to_sync.is_empty() {
+            return Ok(());
+        }
+        to_sync.sort();
+        self.dir.sync(&to_sync)?;
+        self.synced.extend(to_sync);
+        Ok(())
+    }
+
+    /// Whether [`Self::sync_commit_files`] (or a commit found at open) has
+    /// already made `name` durable.
+    pub fn is_synced(&self, name: &str) -> bool {
+        self.synced.contains(name)
+    }
+
     /// Records a segment's `.si` file list from an in-memory `SegmentInfo`,
     /// so no checkpoint ever has to open and parse the file.
     ///
@@ -903,6 +951,10 @@ impl<'d> IndexFileDeleter<'d> {
             for name in names {
                 if is_segments_file_name(name) == segments_pass {
                     self.ref_counts.remove(name);
+                    // Before the delete, not after: a delete that fails
+                    // partway may still have removed the file, and a later
+                    // file of the same name must then be synced afresh.
+                    self.synced.remove(name);
                     if let Err(e) = self.dir.delete_file(name) {
                         first.get_or_insert(e.into());
                     }

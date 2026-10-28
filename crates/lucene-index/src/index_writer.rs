@@ -3741,8 +3741,7 @@ impl IndexingConfig {
         )?;
 
         let mut record = |names: Vec<String>| {
-            flushed.info.files.extend(names.iter().cloned());
-            flushed.pending_sync.extend(names);
+            flushed.info.files.extend(names);
         };
         if let Some(output) = postings_output {
             record(IndexWriter::write_postings_files(
@@ -3802,8 +3801,7 @@ impl IndexingConfig {
                 self.codec.as_deref(),
                 lucene_codecs::codec::WritePoint::Compound,
             )?;
-            flushed.pending_sync =
-                segment_writer::create_compound_file(dir, segment_name, &mut flushed.info)?;
+            segment_writer::create_compound_file(dir, segment_name, &mut flushed.info)?;
         }
         before_write(
             self.codec.as_deref(),
@@ -4245,12 +4243,35 @@ pub struct IndexWriter<'d> {
     /// Set by [`IndexWriter::prepare_commit`], consumed by
     /// [`IndexWriter::finish_commit`] -- see [`IndexWriter::prepare_commit`]'s
     /// doc comment for exactly what "prepared" does and does not mean on
-    /// this port's on-disk format (in short: the *segment* files it flushes
-    /// are already durable and synced when this is `Some`, but the
-    /// `segments_N` commit file that would make them discoverable to a
+    /// this port's on-disk format (in short: every file the commit names is
+    /// synced and `pending_segments_N` is written when this is `Some`, but
+    /// the `segments_N` commit file that would make them discoverable to a
     /// fresh [`IndexWriter::open`]/reader has deliberately not been written
     /// yet).
     prepared_commit: Option<SegmentInfos>,
+    /// `IndexWriter.changeCount`: bumped by every change that has to reach the
+    /// next commit even though it leaves the segment list alone
+    /// ([`IndexWriter::delete_all`], [`IndexWriter::set_live_commit_data`],
+    /// `addIndexes`), and starting one above
+    /// [`Self::last_commit_change_count`] on a directory with no commit yet, so
+    /// a new index's first commit is always written. Changes to the segment
+    /// list itself -- a flush, a merge, an applied delete or doc-values
+    /// update -- are seen by comparing it with [`Self::rollback_segments`]
+    /// instead (see [`IndexWriter::prepare_commit`]).
+    change_count: u64,
+    /// `IndexWriter.lastCommitChangeCount`: [`Self::change_count`] as of the
+    /// last commit this writer published.
+    last_commit_change_count: u64,
+    /// `IndexWriter.pendingCommitChangeCount`: [`Self::change_count`] when the
+    /// outstanding [`IndexWriter::prepare_commit`] ran, which
+    /// [`IndexWriter::finish_commit`] records as committed -- so a change made
+    /// between the two still counts for the commit after.
+    pending_commit_change_count: u64,
+    /// The last [`IndexWriter::prepare_commit`] found nothing to commit and
+    /// wrote nothing (Java's "skip startCommit(): no changes pending"), so
+    /// [`IndexWriter::finish_commit`] has nothing to publish and succeeds
+    /// without writing (Java's `finishCommit` with `pendingCommit == null`).
+    prepared_nothing: bool,
     /// `DocumentsWriterDeleteQueue`: the sequence-number source, and the two
     /// buffers every delete/update lands in -- one for the segment currently
     /// being built, one for the segments already written. See
@@ -4576,14 +4597,18 @@ fn custom_freq_invert_state(terms: &[(String, i32)]) -> Option<FieldInvertState>
         return None;
     }
     let count = i32::try_from(terms.len()).unwrap_or(i32::MAX);
+    // Each token adds 1 to the length; a repeated term counts once in
+    // `uniqueTermCount` and its summed freq in `maxTermFrequency`. The terms
+    // were validated when the document was buffered.
+    let summed = summed_custom_freq_terms(terms).unwrap_or_default();
     Some(FieldInvertState {
         docs_only: false,
         position: count.saturating_sub(1),
         length: count,
         num_overlap: 0,
         offset: 0,
-        max_term_frequency: terms.iter().map(|(_, f)| *f).max().unwrap_or(0),
-        unique_term_count: count,
+        max_term_frequency: summed.iter().map(|(_, f)| *f).max().unwrap_or(0),
+        unique_term_count: i32::try_from(summed.len()).unwrap_or(i32::MAX),
         attribute_source: Some(crate::similarity::end_attributes(0, 0)),
     })
 }
@@ -5647,6 +5672,12 @@ impl<'d> IndexWriter<'d> {
             pending_custom_freq_terms: Vec::new(),
             pending_sort_map: Vec::new(),
             prepared_commit: None,
+            // `IndexWriter`'s constructor calls `changed()` for an index it
+            // creates, so the first commit of a new index is always written.
+            change_count: u64::from(generation < 0),
+            last_commit_change_count: 0,
+            pending_commit_change_count: 0,
+            prepared_nothing: false,
             delete_queue: DeleteQueue::new(),
             updates_stream: BufferedUpdatesStream::new(),
             nrt: crate::nrt::NrtState::new(),
@@ -7180,6 +7211,10 @@ impl IndexWriter<'_> {
                 return self.flush();
             }
         }
+        // `hardMaxBytesPerDWPT`, whatever the RAM setting.
+        if self.ram_bytes_used > crate::concurrent_writer::HARD_MAX_BYTES_PER_SLOT {
+            return self.flush();
+        }
         Ok(())
     }
 
@@ -7243,16 +7278,13 @@ impl IndexWriter<'_> {
     /// integer a similarity implementation interprets however it likes,
     /// **not** a literal term-occurrence count (see
     /// `crate::postings_writer`'s module doc comment's
-    /// `IndexOptions::DocsAndCustomFreqs` section). It must be `>= 1`: the
-    /// underlying codec layer ([`postings_writer::write_fields`]) rejects
-    /// `freq < 1` for every `IndexOptions` variant that carries a freq at
-    /// all, `DocsAndCustomFreqs` included, since the wire encoding has no
-    /// representation for a zero-or-negative freq. A `term` repeated more
-    /// than once in `terms` for the same doc contributes one postings entry
-    /// per occurrence in this list (i.e. the *last* one wins for that
-    /// `(doc, term)` pair's freq, since the codec's per-term-per-doc map
-    /// only ever keeps one freq value per doc) -- callers should supply each
-    /// distinct term at most once per doc to avoid relying on that.
+    /// `IndexOptions::DocsAndCustomFreqs` section). It must be `>= 1`
+    /// (Java's "Term frequency must be 1 or greater"), checked here before
+    /// anything is buffered: the wire encoding has no representation for a
+    /// zero-or-negative freq, and a value the codec refused at flush would
+    /// leave the buffer unflushable. A `term` repeated in `terms` sums its
+    /// freqs, as `FreqProxTermsWriterPerField` does with `Math.addExact`; a
+    /// sum past `i32::MAX` is refused the same way.
     ///
     /// A plain [`IndexWriter::add_document`] call is equivalent to calling
     /// this with an empty `terms` list -- both keep
@@ -7263,6 +7295,7 @@ impl IndexWriter<'_> {
         doc: Document,
         terms: Vec<(String, i32)>,
     ) -> Result<SeqNo> {
+        summed_custom_freq_terms(&terms)?;
         let seq_no = self.delete_queue.next_sequence_number();
         // ARITH: see [`VectorValue::ram_bytes`].
         #[allow(clippy::arithmetic_side_effects)]
@@ -7502,24 +7535,24 @@ impl IndexWriter<'_> {
     }
 
     /// The atomic delete-by-term + add-document real Lucene calls
-    /// `updateDocument`: delegates directly to
-    /// [`update_document::update_document`], flushing `doc` as a brand-new
-    /// segment and applying the term delete to every segment `delete_sources`
-    /// supplies an opened source for, all in one commit. Unlike
-    /// [`IndexWriter::add_document`], this is **not** buffered -- it commits
-    /// immediately (matching [`update_document::update_document`]'s own
-    /// all-or-nothing atomicity, which only makes sense as an immediate
-    /// commit; buffering it would let a later `commit()` observe a
-    /// half-applied update if that call somehow failed in between).
+    /// `updateDocument`, committed at once: the term delete is resolved
+    /// against every segment `delete_sources` supplies an opened source for
+    /// and `doc` is flushed as a brand-new segment
+    /// ([`update_document::update_segments`]), then both publish in one
+    /// `segments_N` through the same commit tail as
+    /// [`IndexWriter::delete_documents_with_sources`] (version above every NRT
+    /// snapshot, minimum segment version and soft-delete counts stamped).
+    /// Unlike [`IndexWriter::add_document`], this is **not** buffered.
     ///
-    /// Bumps this writer's in-memory [`IndexWriter::segment_infos`] to the
-    /// new commit on success and returns it; on `Err`, nothing was written
-    /// (see [`update_document::update_document`]'s own atomicity guarantee)
-    /// and every observable part of this writer's state -- its segment list,
-    /// generation, version and commit id -- is unchanged. The one thing that
-    /// does advance is `segment_infos.counter`: the segment name this attempt
-    /// claimed is burned, exactly as real `IndexWriter.newSegmentName()` burns
-    /// it, so a retry never writes over files the failed attempt may have left.
+    /// Live docs in `delete_sources` must be current: a source whose live
+    /// docs disagree with the commit's delete count is refused
+    /// ([`term_delete::Error::StaleLiveDocs`]).
+    ///
+    /// On `Err` nothing is published: the segment list, version and commit id
+    /// are unchanged. The segment name this attempt claimed is burned, as
+    /// `IndexWriter.newSegmentName()` burns it, and a failed `segments_N`
+    /// write still advances the generation (`startCommit`), so a retry never
+    /// writes over files the failed attempt may have left.
     #[allow(clippy::too_many_arguments)]
     pub fn update_document_with_sources(
         &mut self,
@@ -7534,46 +7567,26 @@ impl IndexWriter<'_> {
         let new_segment_name = self.new_segment_name();
         let new_segment_id = generate_segment_id(self.segment_infos.counter);
 
-        // Real `IndexWriter.newSegmentName()` increments `segmentInfos.counter`
-        // *at the moment it hands out a name*, so the counter that gets written
-        // into the very next commit already accounts for the segment being
-        // flushed. Bumping it only on `self` afterwards (as this method used
-        // to) left the on-disk `segments_N` carrying the pre-flush counter, so
-        // a fresh `IndexWriter::open` on the same directory handed out the
-        // *same* `_N` name again and the next flush overwrote a live segment's
-        // files. The bump therefore has to be on the `SegmentInfos` that is
-        // about to be written, not on a copy that never reaches disk.
-        let mut base = self.segment_infos.clone();
-        base.id = generate_segment_id(base.counter);
-
-        // Known difference: a failure here keeps the generation (most never
-        // reach `segments_N`). One whose `segments_N` write *and* cleanup
-        // both failed leaves a name the next commit asks for again, where
-        // Java's `startCommit` would have moved past it.
-        let updated = update_document::update_document(
+        // `new_segment_name` bumped `segment_infos.counter`, so the commit
+        // below carries a counter past the new segment and a fresh writer
+        // never hands out its name again.
+        let updated_segments = update_document::update_segments(
             self.dir,
-            &base,
+            &self.segment_infos,
             delete_sources,
             field,
             term,
-            &new_segment_name,
-            new_segment_id,
-            &self.cfg.codec_name,
-            self.cfg.lucene_version,
-            &self.cfg.fields,
-            std::slice::from_ref(&new_doc),
+            update_document::NewSegment {
+                name: &new_segment_name,
+                id: new_segment_id,
+                codec_name: &self.cfg.codec_name,
+                lucene_version: self.cfg.lucene_version,
+                fields: &self.cfg.fields,
+                docs: std::slice::from_ref(&new_doc),
+                use_compound_file: self.cfg.use_compound_file,
+            },
         )?;
-        // This wrote its own `segments_N`, so the deleter sees it as a commit:
-        // the superseded generation's commit point dies here, taking the `.liv`
-        // generation this update replaced with it.
-        self.segment_infos = updated;
-        // `finishCommit`: `rollbackSegments =
-        // pendingCommit.createBackupSegmentInfos()`. This is the one place a
-        // commit becomes durable, so it is the one place the rollback snapshot
-        // moves forward.
-        self.rollback_segments = self.segment_infos.segments.clone();
-        self.checkpoint_committed()?;
-        Ok(&self.segment_infos)
+        self.commit_updated_segments(updated_segments)
     }
 
     /// Deletes every live doc matching `(field, term)` in whichever of this
@@ -7621,6 +7634,17 @@ impl IndexWriter<'_> {
             }
         }
 
+        self.commit_updated_segments(updated_segments)
+    }
+
+    /// The commit tail of the with-sources update and delete: publishes
+    /// `updated_segments` as the next generation, with the version kept above
+    /// every NRT snapshot's, the minimum segment version and soft-delete
+    /// counts stamped, and the generation advanced on error as on success.
+    fn commit_updated_segments(
+        &mut self,
+        updated_segments: Vec<SegmentCommitInfo>,
+    ) -> Result<&SegmentInfos> {
         let mut new_segment_infos = self.segment_infos.clone();
         // ARITH: `segment_infos::parse` rejects any generation, version or
         // counter outside `-1..=MAX_GENERATION` (`i64::MAX / 2`), and
@@ -7644,10 +7668,14 @@ impl IndexWriter<'_> {
         new_segment_infos.segments = updated_segments;
         self.stamp_min_segment_version(&mut new_segment_infos)?;
         self.stamp_soft_delete_counts(&mut new_segment_infos)?;
+        // This commits on its own: sync what the commit names first
+        // (`startCommit`).
+        self.deleter.sync_commit_files(&new_segment_infos)?;
         let written = segment_infos::write(&new_segment_infos, self.dir);
         // `updateGeneration` on error as on success (`startCommit`).
         self.segment_infos.generation = new_segment_infos.generation;
         written?;
+        self.last_commit_change_count = self.change_count;
 
         self.segment_infos = new_segment_infos;
         // `finishCommit`: `rollbackSegments =
@@ -7672,11 +7700,20 @@ impl IndexWriter<'_> {
     /// merge policy set (the default), this method is unchanged from before
     /// that feature existed.
     ///
-    /// A `commit()` with an empty pending-document buffer still writes the
-    /// next `segments_N` generation (bumping `version`) with no new
-    /// segment appended -- matches real Lucene's `commit()` being a valid,
-    /// if unusual, no-op-content commit rather than a special "nothing to do"
-    /// case that skips writing. Returns the new committed [`SegmentInfos`].
+    /// A `commit()` with nothing to commit -- no buffered documents, deletes
+    /// or updates, no segment flushed, merged or changed since the last
+    /// commit, and no [`IndexWriter::delete_all`],
+    /// [`IndexWriter::set_live_commit_data`] or `add_indexes` call since --
+    /// writes nothing and leaves the current generation in place, as Java's
+    /// does ("skip startCommit(): no changes pending"); it still succeeds.
+    /// The first commit of a writer opened on a directory with no commit
+    /// always writes. Returns the current committed [`SegmentInfos`].
+    ///
+    /// Durability: the commit fsyncs every file it names that this writer
+    /// wrote and has not synced before (each file at most once), then
+    /// publishes `segments_N` and syncs the directory. Flushes, merges and
+    /// `.liv`/doc-values generations are never synced on their own: only
+    /// committed data is durable.
     ///
     /// If [`IndexWriter::set_postings_field`]/[`IndexWriter::add_postings_field`]
     /// have opted this writer into postings for one or more fields, this also
@@ -7836,8 +7873,11 @@ impl IndexWriter<'_> {
     /// # The on-disk protocol
     ///
     /// This is Lucene's real two-phase shape, not an in-memory imitation of
-    /// it. After flushing and syncing the new segment's data files, this
-    /// serializes the whole commit and writes it -- fsynced -- as
+    /// it. After flushing, this syncs every file the commit names that this
+    /// writer has not synced yet (`IndexWriter.startCommit`'s
+    /// `directory.sync(toSync.files(false))`; see
+    /// [`crate::index_file_deleter::IndexFileDeleter::sync_commit_files`]),
+    /// then serializes the whole commit and writes it -- fsynced -- as
     /// `pending_segments_N` (via [`crate::segment_infos::write_pending`]).
     /// `pending_segments_N` is deliberately not a name
     /// [`lucene_store::directory::last_commit_generation`] scans for, so:
@@ -7864,6 +7904,10 @@ impl IndexWriter<'_> {
     ///   clean up (Java gives that job to `IndexFileDeleter`, which this port
     ///   does not have). A leftover pending file is harmless but is never
     ///   reclaimed.
+    ///
+    /// With nothing to commit (see [`IndexWriter::commit`]) this writes
+    /// nothing, and the [`IndexWriter::finish_commit`] that follows succeeds
+    /// without writing either.
     ///
     /// Calling `prepare_commit()` again while a previous prepared commit has
     /// not been activated by [`IndexWriter::finish_commit`] is an error
@@ -7894,6 +7938,7 @@ impl IndexWriter<'_> {
         if self.prepared_commit.is_some() {
             return Err(Error::PrepareCommitAlreadyCalled);
         }
+        self.prepared_nothing = false;
         self.ensure_write_lock_valid()?;
 
         // Everything still buffered becomes one last segment; segments an
@@ -7934,6 +7979,25 @@ impl IndexWriter<'_> {
         self.stamp_min_segment_version(&mut new_segment_infos)?;
         self.stamp_soft_delete_counts(&mut new_segment_infos)?;
 
+        // `startCommit`: "skip startCommit(): no changes pending". Nothing
+        // that reaches a commit changed since the last one -- no counted
+        // change, and the segment list (flushed segments folded in) is what
+        // the last commit wrote -- so another generation would only repeat it.
+        if self.change_count == self.last_commit_change_count
+            && same_committed_segments(&new_segment_infos.segments, &self.rollback_segments)
+        {
+            self.prepared_nothing = true;
+            return Ok(());
+        }
+
+        // `startCommit`: `directory.sync(toSync.files(false))` -- every file
+        // the commit names that this writer wrote and has not synced yet
+        // (flushed, merged and copied segments, `.liv` and doc-values
+        // generations), each at most once. Nothing was synced as it was
+        // written. On failure nothing is recorded as synced, so a retry syncs
+        // the same files again.
+        self.deleter.sync_commit_files(&new_segment_infos)?;
+
         // Phase one of the real two-phase protocol: the commit is fully
         // serialized and fsynced under `pending_segments_N`, a name
         // `last_commit_generation` does not scan for, so a crash between here
@@ -7949,6 +8013,7 @@ impl IndexWriter<'_> {
         self.segment_infos.generation = new_segment_infos.generation;
         written?;
         self.prepared_commit = Some(new_segment_infos);
+        self.pending_commit_change_count = self.change_count;
         Ok(())
     }
 
@@ -7956,12 +8021,14 @@ impl IndexWriter<'_> {
     /// committing it: real Lucene's `DocumentsWriterPerThread.flush()` followed
     /// by `IndexWriter.publishFlushedSegment`.
     ///
-    /// The new segment's files are on disk and fsynced when this returns, and
-    /// the deleter has been checkpointed (non-commit) so nothing reclaims them,
-    /// but no `segments_N` names them yet -- a fresh reader still sees the
-    /// previous commit. [`IndexWriter::prepare_commit`] folds every segment
-    /// flushed this way into the commit it writes; [`IndexWriter::rollback`]
-    /// drops them and the deleter deletes their files.
+    /// The new segment's files are on disk when this returns, and the deleter
+    /// has been checkpointed (non-commit) so nothing reclaims them, but no
+    /// `segments_N` names them yet -- a fresh reader still sees the previous
+    /// commit. They are not fsynced: as in Java, the commit that first names
+    /// them syncs them, so a crash before it may lose them.
+    /// [`IndexWriter::prepare_commit`] folds every segment flushed this way
+    /// into the commit it writes; [`IndexWriter::rollback`] drops them and the
+    /// deleter deletes their files.
     ///
     /// A no-op with an empty buffer. Called automatically by
     /// [`IndexWriter::add_document`] once a configured threshold trips (see
@@ -8259,6 +8326,11 @@ impl IndexWriter<'_> {
     /// `finish_commit()` twice, or before ever calling `prepare_commit()`).
     pub fn finish_commit(&mut self) -> Result<&SegmentInfos> {
         if self.prepared_commit.is_none() {
+            // `finishCommit` with `pendingCommit == null`: the prepare found
+            // nothing to commit, so there is nothing to publish.
+            if std::mem::take(&mut self.prepared_nothing) {
+                return Ok(&self.segment_infos);
+            }
             return Err(Error::NoPreparedCommit);
         }
         // The last check before the publish: a lost lock leaves the prepared
@@ -8282,6 +8354,8 @@ impl IndexWriter<'_> {
         // segment this commit no longer names.
         self.segment_infos = new_segment_infos;
         self.flushed_segments.clear();
+        // `finishCommit`: `lastCommitChangeCount = pendingCommitChangeCount`.
+        self.last_commit_change_count = self.pending_commit_change_count;
         // `finishCommit`: `rollbackSegments =
         // pendingCommit.createBackupSegmentInfos()`. This is the one place a
         // commit becomes durable, so it is the one place the rollback snapshot
@@ -8849,11 +8923,11 @@ impl IndexWriter<'_> {
             let Some(terms) = custom_freq_terms.get(doc_id) else {
                 continue;
             };
-            for (term, custom_freq) in terms {
+            for (term, custom_freq) in summed_custom_freq_terms(terms)? {
                 per_term
                     .entry(term.as_bytes().to_vec())
                     .or_default()
-                    .push((doc_id as i32, *custom_freq));
+                    .push((doc_id as i32, custom_freq));
             }
         }
 
@@ -11206,6 +11280,7 @@ impl IndexWriter<'_> {
             || self.updates_stream.any()
             || !self.flushed_segments.is_empty()
             || self.segment_infos.segments != self.rollback_segments
+            || self.change_count != self.last_commit_change_count
     }
 
     /// Total number of documents actually committed to disk right now,
@@ -11366,6 +11441,7 @@ impl IndexWriter<'_> {
         // reclaims. `generation`/`version`/`counter` deliberately stay put:
         // Java leaves them alone too, and they only ever move forward.
         self.segment_infos.segments = self.rollback_segments.clone();
+        self.prepared_nothing = false;
         if let Some(prepared) = self.prepared_commit.take() {
             // `SegmentInfos.rollbackCommit`: drop the `pending_segments_N` the
             // prepare wrote, ignoring any failure (Java uses
@@ -11418,6 +11494,9 @@ impl IndexWriter<'_> {
         self.updates_stream.clear();
         self.flushed_segments.clear();
         self.segment_infos.segments.clear();
+        // `deleteAll`: `changed()` -- the next commit is written even when
+        // the index was already empty.
+        self.changed();
         // Java's `deleteAll` ends with `deleter.checkpoint(segmentInfos,
         // false)`. Segments that only this writer's in-memory view referenced
         // (an uncommitted flush) are reclaimed right here; segments the current
@@ -11440,14 +11519,19 @@ impl IndexWriter<'_> {
     /// every later clone (`commit`, `delete_documents`, `apply_merge`,
     /// `update_document`) carries it forward.
     ///
-    /// Note the one Java behaviour deliberately not copied: real
-    /// `setLiveCommitData(data)` defaults `doIncrementVersion` to `true`, i.e.
-    /// setting commit data alone counts as a change worth committing. This
-    /// facade's `commit()` already always writes a new generation whether or
-    /// not anything changed (see [`IndexWriter::commit`]), so there is no
-    /// change counter for this to increment.
+    /// Like Java's `setLiveCommitData(data)` (whose `doIncrementVersion`
+    /// defaults to `true`), setting commit data counts as a change: the next
+    /// [`IndexWriter::commit`] writes a new generation even if nothing else
+    /// changed.
     pub fn set_live_commit_data(&mut self, data: Vec<(String, String)>) {
         self.segment_infos.user_data = data;
+        self.changed();
+    }
+
+    /// `IndexWriter.changed()`: a change the next commit must write even if
+    /// the segment list is unchanged (see [`Self::change_count`]).
+    pub(crate) fn changed(&mut self) {
+        self.change_count = self.change_count.wrapping_add(1);
     }
 
     /// Port of `IndexWriter.getLiveCommitData()`: whatever
@@ -11563,10 +11647,14 @@ impl IndexWriter<'_> {
 
         self.stamp_min_segment_version(&mut new_segment_infos)?;
         self.stamp_soft_delete_counts(&mut new_segment_infos)?;
+        // This commits on its own: sync what the commit names first
+        // (`startCommit`).
+        self.deleter.sync_commit_files(&new_segment_infos)?;
         let written = segment_infos::write(&new_segment_infos, self.dir);
         // `updateGeneration` on error as on success (`startCommit`).
         self.segment_infos.generation = new_segment_infos.generation;
         written?;
+        self.last_commit_change_count = self.change_count;
         // The merge's source segments are no longer named by any live commit
         // once the superseded commit point dies here, so this is what actually
         // reclaims them -- `commitMerge` -> `checkpoint` in Java.
@@ -12191,18 +12279,6 @@ fn to_segment_infos_version(v: LuceneVersion) -> segment_infos::LuceneVersion {
     }
 }
 
-/// Generates a 16-byte segment/commit id from `salt` (this writer's current
-/// segment-name counter) plus the current time -- **not** a
-/// cryptographically random id the way real Lucene's
-/// `StringHelper.randomId()` (backed by a `SecureRandom`) is. This
-/// workspace has no `rand`-family dependency (see `Cargo.toml`'s
-/// `[workspace.dependencies]`), and the only property this port's readers
-/// actually rely on (verified: `.si`/`segments_N` parsing checks a
-/// referenced id *matches*, never that it looks statistically random) is
-/// "distinct segments get distinct ids" -- which salting a hash with a
-/// monotonically increasing counter already guarantees deterministically,
-/// without pulling in a new dependency for a property this scope doesn't
-/// need.
 /// Same minimal `create_output`/`write_bytes`/`close` sequence
 /// `crate::segment_writer`'s own private `write_file` helper uses -- kept as
 /// a separate copy here rather than made `pub(crate)` there, since this is
@@ -12268,6 +12344,38 @@ fn accumulate_field_length(so_far: u32, term_freq: i32) -> u32 {
     so_far.saturating_add(freq).min(i32::MAX as u32)
 }
 
+/// A document's custom-freq terms with each term once, in first-seen order:
+/// repeated terms sum their freqs (`Math.addExact`), and a freq below 1 is
+/// refused. Checked before a document is buffered, so the flush (which sums
+/// the same way) cannot fail on them.
+pub(crate) fn summed_custom_freq_terms(terms: &[(String, i32)]) -> Result<Vec<(&str, i32)>> {
+    let illegal = |m: String| Error::Document(crate::document::Error::IllegalArgument(m));
+    let mut index: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    let mut summed: Vec<(&str, i32)> = Vec::with_capacity(terms.len());
+    for (term, freq) in terms {
+        let freq = *freq;
+        if freq < 1 {
+            return Err(illegal(format!(
+                "Term frequency must be 1 or greater; got {freq} for term \"{term}\""
+            )));
+        }
+        match index.get(term.as_str()).and_then(|&i| summed.get_mut(i)) {
+            Some((_, slot)) => {
+                *slot = slot.checked_add(freq).ok_or_else(|| {
+                    illegal(format!(
+                        "custom term frequency of \"{term}\" overflows an int"
+                    ))
+                })?;
+            }
+            None => {
+                index.insert(term, summed.len());
+                summed.push((term, freq));
+            }
+        }
+    }
+    Ok(summed)
+}
+
 /// The buffered-side heap cost of one document's explicit
 /// [`IndexWriter::add_document_with_custom_freq_terms`] term list.
 /// ARITH: as [`VectorValue::ram_bytes`] -- a sum of live allocation sizes.
@@ -12298,25 +12406,56 @@ fn field_value_kind(value: &FieldValue) -> &'static str {
     }
 }
 
+/// Generates a 16-byte segment/commit id, the role of Java's
+/// `StringHelper.randomId()`. This workspace has no `rand`-family
+/// dependency, so the bytes come from SipHash under per-process random keys
+/// (`RandomState`) over the time, `salt` (a writer counter) and a
+/// process-wide sequence number. The sequence number makes every id this
+/// process draws distinct -- two ids drawn with the same salt in the same
+/// clock tick included -- and the random keys keep ids from separate
+/// processes (and so separate indexes) from coinciding, which a fixed-key
+/// hash of a small counter and the time did not.
 pub(crate) fn generate_segment_id(salt: i64) -> [u8; ID_LENGTH] {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
+    use std::hash::{BuildHasher, RandomState};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::OnceLock;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    static KEYS: OnceLock<RandomState> = OnceLock::new();
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let keys = KEYS.get_or_init(RandomState::new);
+    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
 
-    let mut h1 = DefaultHasher::new();
-    (nanos, salt, 1u8).hash(&mut h1);
-    let mut h2 = DefaultHasher::new();
-    (nanos, salt, 2u8).hash(&mut h2);
-
     let mut id = [0u8; ID_LENGTH];
-    id[0..8].copy_from_slice(&h1.finish().to_le_bytes());
-    id[8..16].copy_from_slice(&h2.finish().to_le_bytes());
+    id[0..8].copy_from_slice(&keys.hash_one((sequence, nanos, salt, 1u8)).to_le_bytes());
+    id[8..16].copy_from_slice(&keys.hash_one((sequence, nanos, salt, 2u8)).to_le_bytes());
     id
+}
+
+/// Whether two segment lists would be written identically into a
+/// `segments_N`: the same segments, in the same order, each with the same
+/// persisted per-commit state. The in-memory-only bookkeeping
+/// ([`SegmentCommitInfo::buffered_deletes_gen`], the `next_write_*_gen`
+/// counters) is not part of a commit and is ignored.
+fn same_committed_segments(a: &[SegmentCommitInfo], b: &[SegmentCommitInfo]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(x, y)| {
+            x.segment_name == y.segment_name
+                && x.segment_id == y.segment_id
+                && x.codec_name == y.codec_name
+                && x.del_gen == y.del_gen
+                && x.del_count == y.del_count
+                && x.field_infos_gen == y.field_infos_gen
+                && x.doc_values_gen == y.doc_values_gen
+                && x.soft_del_count == y.soft_del_count
+                && x.sci_id == y.sci_id
+                && x.field_infos_files == y.field_infos_files
+                && x.dv_update_files == y.dv_update_files
+        })
 }
 
 /// `SegmentInfos.applyMergeChanges(merge, dropSegment)`: the sources go
@@ -14165,14 +14304,17 @@ pub(crate) mod tests {
         assert_eq!(docs, vec!["b", "c", "d"]);
     }
 
-    /// A [`Directory`] that records every `create_output`, `open` and `sync`
-    /// by name -- the only way to see how many times one commit rewrites the
-    /// same file, which no assertion on the resulting bytes can.
+    /// A [`Directory`] that records every `create_output`, `open` and
+    /// successful `sync` by name -- the only way to see how many times one
+    /// commit rewrites or fsyncs the same file, which no assertion on the
+    /// resulting bytes can. While `fail_sync` is set, every `sync` fails
+    /// and records nothing.
     struct CountingDirectory<'a> {
         inner: &'a FsDirectory,
         created: std::sync::Mutex<Vec<String>>,
         opened: std::sync::Mutex<Vec<String>>,
         synced: std::sync::Mutex<Vec<String>>,
+        fail_sync: std::sync::atomic::AtomicBool,
     }
 
     impl<'a> CountingDirectory<'a> {
@@ -14182,7 +14324,19 @@ pub(crate) mod tests {
                 created: std::sync::Mutex::new(Vec::new()),
                 opened: std::sync::Mutex::new(Vec::new()),
                 synced: std::sync::Mutex::new(Vec::new()),
+                fail_sync: std::sync::atomic::AtomicBool::new(false),
             }
+        }
+        /// Every name synced so far, `segments`/`pending_segments` files
+        /// left out.
+        fn synced_index_files(&self) -> Vec<String> {
+            self.synced
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|n| !n.contains("segments"))
+                .cloned()
+                .collect()
         }
         fn count(list: &std::sync::Mutex<Vec<String>>, name: &str) -> usize {
             list.lock()
@@ -14206,8 +14360,12 @@ pub(crate) mod tests {
             self.inner.create_output(name)
         }
         fn sync(&self, names: &[String]) -> lucene_store::Result<()> {
+            if self.fail_sync.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(lucene_store::Error::Io(std::io::Error::other("sync")));
+            }
+            self.inner.sync(names)?;
             self.synced.lock().unwrap().extend(names.iter().cloned());
-            self.inner.sync(names)
+            Ok(())
         }
         fn rename(&self, source: &str, dest: &str) -> lucene_store::Result<()> {
             self.inner.rename(source, dest)
@@ -14223,10 +14381,10 @@ pub(crate) mod tests {
         }
     }
 
-    /// A [`Directory`] that, while `fail` is set, fails the fsync of a
-    /// `pending_segments_N` and then the delete that would clean it up --
-    /// leaving the pending file behind, as a failed commit on a sick disk
-    /// can.
+    /// A [`Directory`] that, while `fail` is set, fails the close (after the
+    /// bytes reached the file) and the fsync of a `pending_segments_N` and
+    /// then the delete that would clean it up -- leaving the file behind, as
+    /// a failed commit on a sick disk can.
     struct StuckPendingDirectory<'a> {
         inner: &'a FsDirectory,
         fail: std::sync::atomic::AtomicBool,
@@ -14243,6 +14401,17 @@ pub(crate) mod tests {
         }
     }
 
+    /// Fails an output's close after its bytes were flushed.
+    struct FailClose;
+    impl lucene_store::index_output::OutputFaults for FailClose {
+        fn before_write(&mut self, _: &str, _: usize) -> lucene_store::index_output::WriteVerdict {
+            lucene_store::index_output::WriteVerdict::Write
+        }
+        fn on_close(&mut self, _: &str) -> lucene_store::index_output::CloseVerdict {
+            lucene_store::index_output::CloseVerdict::FailAfterFlush(std::io::Error::other("stuck"))
+        }
+    }
+
     impl Directory for StuckPendingDirectory<'_> {
         fn list_all(&self) -> lucene_store::Result<Vec<String>> {
             self.inner.list_all()
@@ -14251,7 +14420,11 @@ pub(crate) mod tests {
             self.inner.open(name)
         }
         fn create_output(&self, name: &str) -> lucene_store::Result<lucene_store::FsIndexOutput> {
-            self.inner.create_output(name)
+            let mut output = self.inner.create_output(name)?;
+            if self.failing(name).is_err() {
+                output.set_faults(Box::new(FailClose));
+            }
+            Ok(output)
         }
         fn sync(&self, names: &[String]) -> lucene_store::Result<()> {
             for name in names {
@@ -14463,6 +14636,247 @@ pub(crate) mod tests {
                 si.files
             );
         }
+    }
+
+    /// Java's model: a flush writes a segment without syncing it, and
+    /// `IndexWriter.startCommit` syncs every file the commit names. Each file
+    /// is synced exactly once -- the next commit leaves the files the last one
+    /// synced alone.
+    #[test]
+    fn a_flush_syncs_nothing_and_each_commit_syncs_only_its_new_files_once() {
+        let tmp = tempdir("sync-at-commit");
+        let fs = FsDirectory::open(&tmp);
+        let dir = CountingDirectory::new(&fs);
+        let fields = vec![stored_only_field("id", 0)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+
+        writer.add_document(doc("a")).unwrap();
+        writer.flush().unwrap();
+        writer.add_document(doc("b")).unwrap();
+        writer.flush().unwrap();
+        assert!(
+            dir.synced.lock().unwrap().is_empty(),
+            "a flush synced {:?}",
+            dir.synced.lock().unwrap()
+        );
+
+        writer.commit().unwrap();
+        let committed = segment_infos::read_latest(&fs).unwrap();
+        let first = crate::index_file_deleter::files_of_infos(&fs, &committed, false).unwrap();
+        assert!(first.iter().any(|f| f.starts_with("_0.")));
+        assert!(first.iter().any(|f| f.starts_with("_1.")));
+        let mut synced = dir.synced_index_files();
+        synced.sort();
+        let mut expected = first.clone();
+        expected.sort();
+        assert_eq!(
+            synced, expected,
+            "the commit syncs exactly the files it names"
+        );
+
+        // A second commit with a new segment syncs that segment only.
+        writer.add_document(doc("c")).unwrap();
+        writer.commit().unwrap();
+        for f in &first {
+            assert_eq!(
+                CountingDirectory::count(&dir.synced, f),
+                1,
+                "{f} was synced again by the second commit"
+            );
+        }
+        let second = dir.synced_index_files();
+        assert!(second.iter().any(|f| f.starts_with("_2.")));
+        assert_eq!(
+            second.len(),
+            second
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            "no file was synced twice: {second:?}"
+        );
+    }
+
+    /// A writer that resumes an existing index trusts that commit's files to
+    /// be durable already: its first commit syncs only what it wrote itself.
+    #[test]
+    fn a_resumed_writer_does_not_resync_the_files_of_the_commit_it_opened() {
+        let tmp = tempdir("sync-resumed");
+        let fs = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        {
+            let mut writer =
+                IndexWriter::open(&fs, fields.clone(), "Lucene104", version()).unwrap();
+            writer.add_document(doc("a")).unwrap();
+            writer.commit().unwrap();
+        }
+        let dir = CountingDirectory::new(&fs);
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.add_document(doc("b")).unwrap();
+        writer.commit().unwrap();
+        let synced = dir.synced_index_files();
+        assert!(!synced.is_empty());
+        assert!(
+            synced.iter().all(|f| f.starts_with("_1.")),
+            "only the new segment is synced: {synced:?}"
+        );
+    }
+
+    /// A commit-time sync that fails publishes nothing and records nothing
+    /// as synced, so the next commit syncs the same files again.
+    #[test]
+    fn a_failed_commit_time_sync_is_retried_by_the_next_commit() {
+        let tmp = tempdir("sync-retry");
+        let fs = FsDirectory::open(&tmp);
+        let dir = CountingDirectory::new(&fs);
+        let fields = vec![stored_only_field("id", 0)];
+        let mut writer = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        writer.add_document(doc("a")).unwrap();
+        writer.commit().unwrap();
+        let generation = writer.segment_infos().generation;
+
+        writer.add_document(doc("b")).unwrap();
+        dir.fail_sync
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(writer.commit().is_err());
+        assert_eq!(
+            segment_infos::read_latest(&fs).unwrap().generation,
+            generation,
+            "a commit whose files could not be synced must not be published"
+        );
+
+        dir.fail_sync
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        writer.commit().unwrap();
+        let latest = segment_infos::read_latest(&fs).unwrap();
+        assert!(latest.generation > generation);
+        assert_eq!(latest.segments.len(), 2);
+        let new_files = crate::index_file_deleter::segment_files(&fs, &latest.segments[1]).unwrap();
+        for f in &new_files {
+            assert_eq!(
+                CountingDirectory::count(&dir.synced, f),
+                1,
+                "{f} was not synced by the retry"
+            );
+        }
+    }
+
+    /// A `.liv` generation that a later one supersedes before any commit
+    /// names it is never synced: only the generation the commit names is.
+    #[test]
+    fn a_superseded_live_docs_generation_is_never_synced() {
+        let tmp = tempdir("sync-superseded-liv");
+        let fs = FsDirectory::open(&tmp);
+        let dir = CountingDirectory::new(&fs);
+        let fields = vec![FieldInfo {
+            index_options: lucene_codecs::field_infos::IndexOptions::Docs,
+            omit_norms: true,
+            ..FieldInfo::new("id", 0)
+        }];
+        let mut w = IndexWriter::open(&dir, fields, "Lucene104", version()).unwrap();
+        w.set_postings_field(Some("id")).unwrap();
+        for id in ["d0", "d1", "d2"] {
+            w.add_document(doc(id)).unwrap();
+        }
+        w.commit().unwrap();
+
+        w.delete_documents_by_term(&[Term::new("id", "d0")])
+            .unwrap();
+        w.flush().unwrap();
+        w.delete_documents_by_term(&[Term::new("id", "d1")])
+            .unwrap();
+        w.flush().unwrap();
+        let livs: Vec<String> = dir
+            .created
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|n| n.ends_with(".liv"))
+            .cloned()
+            .collect();
+        assert_eq!(livs.len(), 2, "two delete generations: {livs:?}");
+        assert!(dir
+            .synced_index_files()
+            .iter()
+            .all(|f| !f.ends_with(".liv")));
+
+        w.commit().unwrap();
+        assert_eq!(CountingDirectory::count(&dir.synced, &livs[0]), 0);
+        assert_eq!(CountingDirectory::count(&dir.synced, &livs[1]), 1);
+        assert_eq!(
+            segment_infos::read_latest(&fs).unwrap().segments[0].del_count,
+            2
+        );
+    }
+
+    /// `prepareCommitInternal`/`startCommit`: "skip startCommit(): no changes
+    /// pending". A commit with nothing to commit writes no new generation and
+    /// still succeeds; the first commit of a new index always writes.
+    #[test]
+    fn a_commit_with_no_changes_writes_no_new_generation() {
+        let tmp = tempdir("skip-empty-commit");
+        let fs = FsDirectory::open(&tmp);
+        let fields = vec![stored_only_field("id", 0)];
+        let mut writer = IndexWriter::open(&fs, fields.clone(), "Lucene104", version()).unwrap();
+        assert!(
+            writer.has_uncommitted_changes(),
+            "a new index has its first commit pending"
+        );
+
+        // A new index's first commit is written even with nothing in it.
+        writer.commit().unwrap();
+        assert_eq!(segment_infos::read_latest(&fs).unwrap().generation, 1);
+        assert!(!writer.has_uncommitted_changes());
+
+        // Nothing changed: no new generation, but the call succeeds.
+        let same = writer.commit().unwrap().generation;
+        assert_eq!(same, 1);
+        assert_eq!(segment_infos::read_latest(&fs).unwrap().generation, 1);
+        writer.prepare_commit().unwrap();
+        writer.prepare_commit().unwrap();
+        writer.finish_commit().unwrap();
+        assert_eq!(segment_infos::read_latest(&fs).unwrap().generation, 1);
+        // Nothing is prepared after a skipped prepare.
+        assert!(matches!(
+            writer.finish_commit(),
+            Err(Error::NoPreparedCommit)
+        ));
+
+        // A document is a change.
+        writer.add_document(doc("a")).unwrap();
+        writer.commit().unwrap();
+        assert_eq!(segment_infos::read_latest(&fs).unwrap().generation, 2);
+        writer.commit().unwrap();
+        assert_eq!(segment_infos::read_latest(&fs).unwrap().generation, 2);
+
+        // Commit data alone is a change (`setLiveCommitData` increments).
+        writer.set_live_commit_data(vec![("k".into(), "v".into())]);
+        assert!(writer.has_uncommitted_changes());
+        writer.commit().unwrap();
+        let latest = segment_infos::read_latest(&fs).unwrap();
+        assert_eq!(latest.generation, 3);
+        assert_eq!(latest.user_data, vec![("k".to_string(), "v".to_string())]);
+
+        // A delete that matches nothing changes nothing.
+        writer
+            .delete_documents_by_term(&[Term::new("id", "missing")])
+            .unwrap();
+        writer.commit().unwrap();
+        assert_eq!(segment_infos::read_latest(&fs).unwrap().generation, 3);
+
+        // `deleteAll` is a change, and so is a second one on an empty index.
+        writer.delete_all().unwrap();
+        writer.commit().unwrap();
+        assert_eq!(segment_infos::read_latest(&fs).unwrap().generation, 4);
+        writer.delete_all().unwrap();
+        writer.commit().unwrap();
+        assert_eq!(segment_infos::read_latest(&fs).unwrap().generation, 5);
+        drop(writer);
+
+        // A writer resuming an existing index has nothing pending.
+        let mut resumed = IndexWriter::open(&fs, fields, "Lucene104", version()).unwrap();
+        assert!(!resumed.has_uncommitted_changes());
+        resumed.commit().unwrap();
+        assert_eq!(segment_infos::read_latest(&fs).unwrap().generation, 5);
     }
 
     /// `IndexWriter.mergeMiddle`: a merge whose result holds no live
@@ -15842,11 +16256,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn commit_rejects_a_custom_freq_below_one_and_leaves_the_writer_unchanged() {
-        // The codec layer's own "freq < 1" validation
-        // (`postings_writer::write_fields`) applies unchanged to
-        // `DocsAndCustomFreqs` -- a caller-supplied `custom_freq` of `0` (or
-        // negative) surfaces as an `Err`, not a silently-clamped value.
+    fn custom_freqs_below_one_are_refused_and_repeats_sum() {
+        // Java refuses a term frequency below 1 when the document is added
+        // (the wire encoding has none), so the buffer never holds one.
         let tmp = tempdir("custom-freq-below-one");
         let dir = FsDirectory::open(&tmp);
         let fields = vec![stored_only_field("id", 0), custom_freq_field(1)];
@@ -15855,14 +16267,29 @@ pub(crate) mod tests {
             .set_custom_freq_postings_field(Some("score"))
             .unwrap();
 
-        writer
+        let err = writer
             .add_document_with_custom_freq_terms(doc("a"), vec![("alpha".to_string(), 0)])
+            .unwrap_err();
+        assert!(matches!(err, Error::Document(_)));
+        // Refused before buffering: the writer still commits.
+        assert_eq!(writer.pending_doc_count(), 0);
+        writer.commit().unwrap();
+
+        // A repeated term sums its freqs (Java's `Math.addExact`) rather
+        // than leaving a flush that can never succeed.
+        writer
+            .add_document_with_custom_freq_terms(
+                doc("b"),
+                vec![("alpha".to_string(), 2), ("alpha".to_string(), 3)],
+            )
             .unwrap();
-        let err = writer.commit().unwrap_err();
-        assert!(matches!(err, Error::PostingsWriter(_)));
-        // Atomic failure: nothing committed, pending state untouched.
-        assert!(writer.segment_infos.segments.is_empty());
-        assert_eq!(writer.pending_doc_count(), 1);
+        writer.commit().unwrap();
+        assert!(writer
+            .add_document_with_custom_freq_terms(
+                doc("c"),
+                vec![("alpha".to_string(), i32::MAX), ("alpha".to_string(), 1)],
+            )
+            .is_err());
     }
 
     /// `IndexingChain.invert` counts a `DOCS_AND_CUSTOM_FREQS` field's tokens
@@ -15905,6 +16332,14 @@ pub(crate) mod tests {
         assert_eq!(norms::norm_value(&nvd, entry, 0).unwrap(), Some(encoded(3)));
         assert_eq!(norms::norm_value(&nvd, entry, 1).unwrap(), Some(encoded(1)));
         assert_eq!(norms::norm_value(&nvd, entry, 2).unwrap(), None);
+    }
+
+    #[test]
+    fn ids_drawn_with_the_same_salt_differ() {
+        // The update-with-sources path draws a segment id and a commit id
+        // from the same counter, possibly in the same clock tick.
+        let ids: std::collections::HashSet<_> = (0..1000).map(|_| generate_segment_id(7)).collect();
+        assert_eq!(ids.len(), 1000);
     }
 
     #[test]
@@ -20992,6 +21427,9 @@ pub(crate) mod tests {
         writer.add_document(doc_with_body("a", "shared")).unwrap();
         writer.commit().unwrap();
 
+        // A change, so the prepare really holds a commit open (one with
+        // nothing to commit prepares nothing, and defers nothing).
+        writer.set_live_commit_data(vec![("k".into(), "v".into())]);
         writer.prepare_commit().unwrap();
         writer
             .delete_documents_by_term(&[body_term("shared")])

@@ -348,7 +348,10 @@ fn preexisting_candidate_survives_precreate_and_already_exists_failures() {
 }
 
 #[test]
-fn sync_failure_and_cleanup_failure_preserve_primary_error_and_skip_abandoned_generation() {
+fn close_failure_and_cleanup_failure_preserve_primary_error_and_skip_abandoned_generation() {
+    // A `.liv` generation is not synced as it is written (the commit that
+    // names it syncs it), so the write's own last failure point is the
+    // output's close.
     for fail_cleanup in [false, true] {
         let directory =
             MockDirectoryWrapper::new(&mut JavaRandom::new(19), ByteBuffersDirectory::new());
@@ -363,10 +366,10 @@ fn sync_failure_and_cleanup_failure_preserve_primary_error_and_skip_abandoned_ge
         writer.commit().unwrap();
         probe.take();
         let committed = segment_infos::read_latest(&directory).unwrap();
-        let sync = FailOn::once(|context| {
-            context.op == FailureOp::Sync && context.name.ends_with("_2.liv")
+        let close = FailOn::once(|context| {
+            context.op == FailureOp::CloseOutput && context.name.ends_with("_2.liv")
         });
-        directory.fail_on(sync.clone());
+        directory.fail_on(close.clone());
         let cleanup = FailOn::new(move |context| {
             fail_cleanup && context.op == FailureOp::DeleteFile && context.name.ends_with("_2.liv")
         });
@@ -374,8 +377,8 @@ fn sync_failure_and_cleanup_failure_preserve_primary_error_and_skip_abandoned_ge
         let error = writer
             .try_delete_document(&snapshot.segment_infos, 1)
             .unwrap_err();
-        assert!(error.to_string().contains("Sync"), "{error}");
-        assert_eq!(sync.fired(), 1);
+        assert!(error.to_string().contains("CloseOutput"), "{error}");
+        assert_eq!(close.fired(), 1);
         assert_eq!(cleanup.fired(), usize::from(fail_cleanup));
         assert_committed_unchanged(&directory, &committed);
         let failed = probe.take();
