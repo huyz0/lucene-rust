@@ -525,3 +525,60 @@ fn doubles_compare_with_one_nan() {
         Ordering::Greater
     );
 }
+
+/// Enough distinct terms that the term selector walks the segment's
+/// dictionary (more than 32 unmapped ordinals): every group is still found
+/// once, in first-seen order, and each head is its group's first document.
+#[test]
+fn all_groups_and_heads_over_a_walked_dictionary() {
+    use crate::facets::test_index::{id_doc, match_all, plain_index};
+    use crate::leaf_collector::search_segments;
+    use lucene_index::document::SortedDocValuesField;
+    let group_of = |i: usize| (i * 37) % 150;
+    let docs: Vec<_> = (0..400)
+        .map(|i| {
+            let mut d = id_doc(&i.to_string());
+            if i % 7 != 3 {
+                let g = format!("group-value-{:012}", group_of(i));
+                d.add(SortedDocValuesField::new("g", g.into_bytes()));
+            }
+            d
+        })
+        .collect();
+    plain_index(docs, &[199]).with(|searcher, reader, _| {
+        assert_eq!(reader.segment_readers().len(), 2);
+        let q = match_all(reader);
+        let mut all = AllGroupsCollector::new(TermGroupSelector::new("g"));
+        search_segments(searcher, &q, &mut all).unwrap();
+        let mut heads = AllGroupHeadsCollector::new(TermGroupSelector::new("g"), Sort::relevance());
+        search_segments(searcher, &q, &mut heads).unwrap();
+        let mut want: Vec<Option<Vec<u8>>> = Vec::new();
+        let mut first_doc: Vec<i32> = Vec::new();
+        for i in 0..400 {
+            let v = (i % 7 != 3).then(|| format!("group-value-{:012}", group_of(i)).into_bytes());
+            if !want.contains(&v) {
+                want.push(v);
+                first_doc.push(i as i32);
+            }
+        }
+        assert_eq!(all.groups(), want.as_slice());
+        assert_eq!(heads.group_heads_size(), want.len());
+        let mut got = heads.retrieve_group_heads();
+        got.sort_unstable();
+        first_doc.sort_unstable();
+        assert_eq!(got, first_doc);
+    });
+}
+
+/// `FxHasher::finish` mixes the high bits down: keys differing only in the
+/// high bytes of their last word (ASCII digits, little-endian) still spread
+/// over the low bits a hash table takes its bucket from.
+#[test]
+fn fx_hashes_of_similar_keys_spread_over_the_low_bits() {
+    use std::hash::{BuildHasher, BuildHasherDefault};
+    let build = BuildHasherDefault::<FxHasher>::default();
+    let buckets: std::collections::HashSet<u64> = (0..4096)
+        .map(|g| build.hash_one(format!("group-value-{g:012}").into_bytes()) & 0xfff)
+        .collect();
+    assert!(buckets.len() > 2048, "{} distinct buckets", buckets.len());
+}

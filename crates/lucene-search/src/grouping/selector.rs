@@ -3,7 +3,7 @@
 //! source's value falls in, `LongRangeFactory`/`DoubleRangeFactory`) and
 //! `ValueSourceGroupSelector` (a function value source's value).
 
-use std::collections::HashSet;
+use super::FxHashSet;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -50,6 +50,11 @@ pub struct TermGroupSelector<'a> {
     ords_to_group_ids: OrdTable,
     /// The segment's group field: ordinals read straight off its column.
     doc_values: Option<SortedOrds<'a>>,
+    /// The segment's `SORTED` terms dictionary (its `.dvd` and entry), for
+    /// the walk of every ordinal: a forward cursor decodes each block once,
+    /// where a `lookup_ord` per ordinal re-seeks (and re-decompresses) its
+    /// block and allocates the term.
+    dict: Option<(&'a [u8], &'a lucene_codecs::terms_dict::TermsDictEntry)>,
     group_id: Option<usize>,
     second_pass: bool,
     include_empty: bool,
@@ -106,6 +111,20 @@ impl OrdTable {
     }
 }
 
+/// `reader`'s `SORTED` `field` dictionary as the codec stores it, `None`
+/// for a field of another type (or none).
+fn sorted_dict<'a>(
+    reader: &'a crate::directory_reader::SegmentReader,
+    field: &str,
+) -> Option<(&'a [u8], &'a lucene_codecs::terms_dict::TermsDictEntry)> {
+    let fi = reader.field_infos().field_by_name(field)?;
+    if fi.doc_values_type != lucene_codecs::field_infos::DocValuesType::Sorted {
+        return None;
+    }
+    let (meta, data) = reader.doc_values_for_field(fi.number)?;
+    Some((data, &meta.sorted_entry(fi.number)?.terms))
+}
+
 impl<'a> TermGroupSelector<'a> {
     /// `new TermGroupSelector(field)`.
     pub fn new(field: &str) -> Self {
@@ -115,6 +134,7 @@ impl<'a> TermGroupSelector<'a> {
             ids: FxHashMap::default(),
             ords_to_group_ids: OrdTable::default(),
             doc_values: None,
+            dict: None,
             group_id: None,
             second_pass: false,
             include_empty: false,
@@ -128,7 +148,9 @@ impl<'a> GroupSelector<'a> for TermGroupSelector<'a> {
     type Value = Vec<u8>;
 
     fn set_next_reader(&mut self, _ord: usize, leaf: &OpenSegment<'a>) -> Result<()> {
-        let mut ords = SortedOrds::open(leaf_reader(leaf)?, &self.field)?;
+        let reader = leaf_reader(leaf)?;
+        let mut ords = SortedOrds::open(reader, &self.field)?;
+        self.dict = sorted_dict(reader, &self.field);
         let values = ords.dict();
         let count = values.value_count();
         self.ords_to_group_ids.reset(count);
@@ -174,16 +196,50 @@ impl<'a> GroupSelector<'a> for TermGroupSelector<'a> {
         // Many documents with unmapped ordinals (a collector that sees every
         // document, `AllGroupsCollector`): map every known term at once by
         // walking the dictionary forward, rather than one random lookup
-        // each.
+        // each. With the codec's dictionary at hand the walk is a forward
+        // cursor (each block decoded once) and maps *every* term, giving the
+        // ones not seen yet their ids too, so the segment has no misses
+        // after it; it is then worth it as soon as the misses' random
+        // lookups (a block decode each) would have cost about as much.
         self.misses = self.misses.saturating_add(1);
         let count = values.value_count();
         let known = i32::try_from(self.values.len()).unwrap_or(i32::MAX);
-        if !self.walked && self.misses > 32 && known.saturating_mul(8) >= count {
+        let worth_walking = known.saturating_mul(8) >= count
+            || (self.dict.is_some() && self.misses.saturating_mul(64) >= count);
+        if !self.walked && self.misses > 32 && worth_walking {
             self.walked = true;
-            for o in 0..count {
-                let term = values.lookup_ord(o)?;
-                if let Some(&id) = self.ids.get(&term) {
-                    self.ords_to_group_ids.insert(o, id);
+            match self.dict {
+                Some((data, entry)) => {
+                    let mut cursor = lucene_codecs::terms_dict::TermsCursor::open(data, entry)
+                        .map_err(lucene_codecs::doc_values::Error::from)?;
+                    let mut o = 0i32;
+                    while o < count {
+                        let next = cursor
+                            .next_term()
+                            .map_err(lucene_codecs::doc_values::Error::from)?;
+                        let Some(term) = next else {
+                            break;
+                        };
+                        let id = match self.ids.get(term) {
+                            Some(&id) => id,
+                            None => {
+                                let id = self.values.len();
+                                self.ids.insert(term.to_vec(), id);
+                                self.values.push(term.to_vec());
+                                id
+                            }
+                        };
+                        self.ords_to_group_ids.insert(o, id);
+                        o = o.saturating_add(1);
+                    }
+                }
+                None => {
+                    for o in 0..count {
+                        let term = values.lookup_ord(o)?;
+                        if let Some(&id) = self.ids.get(&term) {
+                            self.ords_to_group_ids.insert(o, id);
+                        }
+                    }
                 }
             }
             if let Some(id) = self.ords_to_group_ids.get(ord) {
@@ -370,7 +426,7 @@ impl DoubleValues for CurrentScore {
 
 /// The selector shared by both range kinds.
 struct RangeState<R> {
-    in_second_pass: Option<HashSet<R>>,
+    in_second_pass: Option<FxHashSet<R>>,
     include_empty: bool,
     current: Option<R>,
 }
@@ -403,7 +459,7 @@ impl<R: Clone + Eq + Hash> RangeState<R> {
     }
 
     fn set_groups(&mut self, groups: &[SearchGroup<R>]) {
-        let mut set = HashSet::new();
+        let mut set = FxHashSet::default();
         for g in groups {
             match &g.group_value {
                 None => self.include_empty = true,
@@ -561,7 +617,7 @@ pub struct ValueSourceGroupSelector<'a> {
     top: Option<TopLevel<'a>>,
     values: Option<BoxValues<'a>>,
     value: MutableValue,
-    second_pass: Option<HashSet<MutableValue>>,
+    second_pass: Option<FxHashSet<MutableValue>>,
     include_empty: bool,
 }
 
@@ -631,7 +687,7 @@ impl<'a> GroupSelector<'a> for ValueSourceGroupSelector<'a> {
     }
 
     fn set_groups(&mut self, groups: &[SearchGroup<MutableValue>]) {
-        let mut set = HashSet::new();
+        let mut set = FxHashSet::default();
         for g in groups {
             match &g.group_value {
                 None => self.include_empty = true,

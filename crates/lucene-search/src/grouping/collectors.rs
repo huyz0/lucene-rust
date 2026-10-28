@@ -1043,6 +1043,9 @@ where
 pub struct AllGroupsCollector<'a, S: GroupSelector<'a>> {
     selector: S,
     index: GroupIndex<S::Value>,
+    /// The groups by the selector's dense value id, where it has one: a
+    /// document finds its group by index rather than by hashing its value.
+    by_id: IdIndex,
     groups: Vec<Option<S::Value>>,
 }
 
@@ -1052,6 +1055,7 @@ impl<'a, S: GroupSelector<'a>> AllGroupsCollector<'a, S> {
         Self {
             selector,
             index: GroupIndex::default(),
+            by_id: IdIndex::default(),
             groups: Vec::new(),
         }
     }
@@ -1083,11 +1087,22 @@ impl<'a, S: GroupSelector<'a>> SegmentCollector<'a> for AllGroupsCollector<'a, S
 
     fn collect(&mut self, doc: i32, score: f32) -> Result<()> {
         self.selector.advance_to(doc, score)?;
-        if self.index.get(self.selector.current_value()).is_some() {
+        let id = self.selector.current_id();
+        if id.is_some_and(|id| self.by_id.get(id).is_some()) {
+            return Ok(());
+        }
+        if let Some(g) = self.index.get(self.selector.current_value()) {
+            if let Some(id) = id {
+                self.by_id.set(id, g);
+            }
             return Ok(());
         }
         let v = self.selector.copy_value();
-        self.index.insert(v.clone(), self.groups.len());
+        let g = self.groups.len();
+        self.index.insert(v.clone(), g);
+        if let Some(id) = id {
+            self.by_id.set(id, g);
+        }
         self.groups.push(v);
         Ok(())
     }
@@ -1154,6 +1169,8 @@ pub struct AllGroupHeadsCollector<'a, S: GroupSelector<'a>> {
     reversed: Vec<i32>,
     scoring: bool,
     index: GroupIndex<S::Value>,
+    /// As [`AllGroupsCollector`]'s: the heads by the selector's value id.
+    by_id: IdIndex,
     heads: Vec<GroupHead<S::Value>>,
     keys: Option<LeafKeys<'a>>,
     doc_base: i32,
@@ -1169,6 +1186,7 @@ impl<'a, S: GroupSelector<'a>> AllGroupHeadsCollector<'a, S> {
             scoring: sort.is_relevance(),
             sort,
             index: GroupIndex::default(),
+            by_id: IdIndex::default(),
             heads: Vec::new(),
             keys: None,
             doc_base: 0,
@@ -1238,7 +1256,18 @@ impl<'a, S: GroupSelector<'a>> SegmentCollector<'a> for AllGroupHeadsCollector<'
     fn collect(&mut self, doc: i32, score: f32) -> Result<()> {
         self.selector.advance_to(doc, score)?;
         let global = self.doc_base.saturating_add(doc);
-        let Some(h) = self.index.get(self.selector.current_value()) else {
+        let id = self.selector.current_id();
+        let found = match id.and_then(|id| self.by_id.get(id)) {
+            Some(h) => Some(h),
+            None => {
+                let h = self.index.get(self.selector.current_value());
+                if let (Some(id), Some(h)) = (id, h) {
+                    self.by_id.set(id, h);
+                }
+                h
+            }
+        };
+        let Some(h) = found else {
             let sort_values = if self.scoring {
                 vec![GroupSortValue::Float(score)]
             } else {
@@ -1246,6 +1275,9 @@ impl<'a, S: GroupSelector<'a>> SegmentCollector<'a> for AllGroupHeadsCollector<'
                 keys.values(&self.sort, doc, score)?
             };
             let v = self.selector.copy_value();
+            if let Some(id) = id {
+                self.by_id.set(id, self.heads.len());
+            }
             self.index.insert(v.clone(), self.heads.len());
             self.heads.push(GroupHead {
                 group_value: v,
@@ -1260,7 +1292,10 @@ impl<'a, S: GroupSelector<'a>> SegmentCollector<'a> for AllGroupHeadsCollector<'
             let top = float_of(&head.sort_values);
             if super::sort::float_compare(score, top) == Ordering::Greater {
                 head.doc = global;
-                head.sort_values = vec![GroupSortValue::Float(score)];
+                match head.sort_values.first_mut() {
+                    Some(v) => *v = GroupSortValue::Float(score),
+                    None => head.sort_values.push(GroupSortValue::Float(score)),
+                }
             }
             return Ok(());
         }

@@ -33,6 +33,7 @@ impl GeoEncodingUtils {
     pub const MAX_LON_ENCODED: i32 = i32::MAX;
 
     /// `encodeLatitude`: floor quantization.
+    #[inline]
     pub fn encode_latitude(latitude: f64) -> Result<i32, GeoError> {
         GeoUtils::check_latitude(latitude)?;
         let latitude = if latitude == 90.0 {
@@ -44,6 +45,7 @@ impl GeoEncodingUtils {
     }
 
     /// `encodeLatitudeCeil`: ceil quantization.
+    #[inline]
     pub fn encode_latitude_ceil(latitude: f64) -> Result<i32, GeoError> {
         GeoUtils::check_latitude(latitude)?;
         let latitude = if latitude == 90.0 {
@@ -55,6 +57,7 @@ impl GeoEncodingUtils {
     }
 
     /// `encodeLongitude`: floor quantization.
+    #[inline]
     pub fn encode_longitude(longitude: f64) -> Result<i32, GeoError> {
         GeoUtils::check_longitude(longitude)?;
         let longitude = if longitude == 180.0 {
@@ -66,6 +69,7 @@ impl GeoEncodingUtils {
     }
 
     /// `encodeLongitudeCeil`: ceil quantization.
+    #[inline]
     pub fn encode_longitude_ceil(longitude: f64) -> Result<i32, GeoError> {
         GeoUtils::check_longitude(longitude)?;
         let longitude = if longitude == 180.0 {
@@ -83,6 +87,7 @@ impl GeoEncodingUtils {
     }
 
     /// `decodeLatitude(byte[], int)`.
+    #[inline]
     pub fn decode_latitude_bytes(src: &[u8], offset: usize) -> f64 {
         Self::decode_latitude(numeric_utils::sortable_bytes_to_int(src, offset))
     }
@@ -94,6 +99,7 @@ impl GeoEncodingUtils {
     }
 
     /// `decodeLongitude(byte[], int)`.
+    #[inline]
     pub fn decode_longitude_bytes(src: &[u8], offset: usize) -> f64 {
         Self::decode_longitude(numeric_utils::sortable_bytes_to_int(src, offset))
     }
@@ -183,10 +189,17 @@ struct Grid {
     lon_base: i32,
     max_lat_delta: i32,
     max_lon_delta: i32,
-    relations: Vec<u8>,
+    /// `relations[latDelta * maxLonDelta + lonDelta]`. `computeShift`
+    /// leaves at most `ARITY` cells per dimension, so a full `ARITY^2`
+    /// table holds every grid; indexing it under `GRID_MASK` lets the
+    /// compiler drop the bounds check without changing any in-grid index.
+    relations: Box<[u8; GRID_CELLS]>,
 }
 
 const ARITY: i64 = 64;
+/// `ARITY * ARITY`: the most cells a grid can have.
+const GRID_CELLS: usize = (ARITY * ARITY) as usize;
+const GRID_MASK: usize = GRID_CELLS - 1;
 
 /// `createSubBoxes`.
 fn create_sub_boxes(
@@ -209,7 +222,7 @@ fn create_sub_boxes(
             lon_base: 0,
             max_lat_delta: 0,
             max_lon_delta: 0,
-            relations: Vec::new(),
+            relations: Box::new([0; GRID_CELLS]),
         });
     }
     let (lat_shift, lat_base, max_lat_delta) = {
@@ -238,7 +251,9 @@ fn create_sub_boxes(
             .wrapping_add(1);
         (shift, base, delta)
     };
-    let mut relations = vec![0u8; (max_lat_delta * max_lon_delta) as usize];
+    debug_assert!((1..=ARITY as i32).contains(&max_lat_delta));
+    debug_assert!((1..=ARITY as i32).contains(&max_lon_delta));
+    let mut relations = Box::new([0u8; GRID_CELLS]);
     for i in 0..max_lat_delta {
         for j in 0..max_lon_delta {
             // Java int arithmetic: wraps.
@@ -305,10 +320,9 @@ impl Grid {
         // `lon2` wrapped past `i32::MAX` above (a lon shift of 1 adds
         // 2^31) is still the true cell minus 2^32, so the wrapping
         // difference is the true, in-grid offset.
-        Some(
-            self.relations[((lat2 - self.lat_base) * self.max_lon_delta
-                + lon2.wrapping_sub(self.lon_base)) as usize],
-        )
+        let idx = ((lat2 - self.lat_base) * self.max_lon_delta + lon2.wrapping_sub(self.lon_base))
+            as usize;
+        Some(self.relations[idx & GRID_MASK])
     }
 }
 
@@ -324,6 +338,7 @@ pub struct DistancePredicate {
 
 impl DistancePredicate {
     /// `test(int lat, int lon)`.
+    #[inline]
     pub fn test(&self, lat: i32, lon: i32) -> bool {
         match self.grid.relation(lat, lon) {
             None => false,
@@ -366,6 +381,7 @@ impl Component2DPredicate<'_> {
     }
 
     /// `test(int lat, int lon)`.
+    #[inline]
     pub fn test(&self, lat: i32, lon: i32) -> bool {
         match self.grid.relation(lat, lon) {
             None => false,
@@ -521,7 +537,7 @@ mod tests {
         let lat = GeoEncodingUtils::decode_latitude(1000);
         let grid =
             create_sub_boxes(lat + 1e-12, lat + 2e-12, 0.0, 1.0, |_| unreachable!()).unwrap();
-        assert!(grid.relations.is_empty());
+        assert_eq!((grid.max_lat_delta, grid.max_lon_delta), (0, 0));
         assert_eq!(grid.relation(1000, 0), None);
     }
 }

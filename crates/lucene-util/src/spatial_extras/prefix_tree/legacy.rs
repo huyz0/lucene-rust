@@ -25,11 +25,11 @@ pub(crate) trait LegacyGrid: fmt::Debug + Send + Sync {
     fn sub_cells(self: Arc<Self>, cell: &LegacyCell) -> Result<Vec<LegacyCell>>;
     /// `getSubCellsSize()`.
     fn sub_cells_size(&self) -> i32;
-    /// The byte each child appends to its parent's, in `getSubCells` order,
-    /// when every cell's children are exactly those (a quad tree's `ABCD`);
-    /// `None` makes `getNextLevelCells` build the list from
-    /// [`Self::sub_cells`].
-    fn child_labels(&self) -> Option<&'static [u8]> {
+    /// The byte each child of `cell` appends to its bytes, in `getSubCells`
+    /// order, when its children are exactly those (a quad tree's `ABCD`, a
+    /// geohash's base-32 alphabet); `None` makes `getNextLevelCells` build
+    /// the list from [`Self::sub_cells`].
+    fn child_labels(&self, _cell: &LegacyCell) -> Option<&'static [u8]> {
         None
     }
     /// `getShape()` before caching.
@@ -190,7 +190,7 @@ impl Cell for LegacyCell {
             cell.shape_rel = Some(SpatialRelation::Contains);
             return Ok(Box::new(SingletonCellIterator::new(Box::new(cell))));
         }
-        if let Some(labels) = self.grid.child_labels() {
+        if let Some(labels) = self.grid.child_labels(self) {
             return Ok(Box::new(LegacyChildren::new(
                 self,
                 labels,

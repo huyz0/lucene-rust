@@ -874,3 +874,125 @@ fn quad_cell_relater_answers_as_the_cells() {
         }
     }
 }
+
+/// S2's point iterator checks no levels, as Java's does: past S2's 30
+/// levels (an unchecked `maxLevels`) and at level 0 the parent level wraps
+/// as Java's masked shifts do; only a negative level is rejected, by
+/// Java's `new ArrayList<>(detailLevel)`.
+#[test]
+fn s2_point_iterator_levels_match_java() {
+    let point: Arc<dyn Shape> = geo3d().point_xy(1.0, 2.0).unwrap();
+    let t = S2PrefixTree::new(geo3d(), 32, 1).unwrap();
+    let mut it = t.tree_cell_iterator(&point, 32).unwrap();
+    let mut n = 0;
+    while it.has_next().unwrap() {
+        it.next().unwrap();
+        n += 1;
+    }
+    assert_eq!(n, 32);
+    let t3 = S2PrefixTree::new(geo3d(), 3, 3).unwrap();
+    let mut it = t3.tree_cell_iterator(&point, 0).unwrap();
+    assert!(it.has_next().unwrap());
+    it.next().unwrap();
+    assert!(!it.has_next().unwrap());
+    assert!(matches!(
+        t3.tree_cell_iterator(&point, -1),
+        Err(Error::IllegalArgument(m)) if m == "Illegal Capacity: -1"
+    ));
+}
+
+/// The tree iterator hands out the same cells through `next` and
+/// `next_detached`, and `this_cell` stays the cell `next` returned until
+/// the following `next` -- across the `has_next` that refills its level.
+#[test]
+fn tree_iterator_this_cell_and_detached_cells() {
+    let shape: Arc<dyn Shape> = geo().circle(10.0, 20.0, 3.0).unwrap();
+    let trees: Vec<Arc<dyn SpatialPrefixTree>> = vec![
+        Arc::new(QuadPrefixTree::new(geo(), 10).unwrap()),
+        Arc::new(GeohashPrefixTree::new(geo(), 4).unwrap()),
+    ];
+    for t in trees {
+        let detail = t.max_levels() - 1;
+        let mut a = t.tree_cell_iterator(&shape, detail).unwrap();
+        let mut b = t.tree_cell_iterator(&shape, detail).unwrap();
+        let mut n = 0;
+        while a.has_next().unwrap() {
+            let c = a.next().unwrap();
+            let shown = c.to_string();
+            assert_eq!(a.this_cell().unwrap().to_string(), shown);
+            if n % 7 == 3 {
+                a.remove(); // prune: b must prune the same cell
+                b.has_next().unwrap();
+                let d = b.next_detached().unwrap();
+                assert!(b.this_cell().is_none());
+                assert_eq!(d.to_string(), shown);
+                b.remove();
+            } else {
+                assert!(b.has_next().unwrap());
+                let d = b.next_detached().unwrap();
+                assert_eq!(d.to_string(), shown);
+                assert_eq!(d.is_leaf(), c.is_leaf());
+            }
+            let more = a.has_next().unwrap();
+            assert_eq!(a.this_cell().unwrap().to_string(), shown, "after hasNext");
+            if !more {
+                break;
+            }
+            n += 1;
+        }
+        assert!(n > 20, "{n}");
+        assert!(!b.has_next().unwrap());
+        assert!(b.next_detached().is_err());
+    }
+}
+
+/// A number-range cell compares to and prefixes another of its tree
+/// without building either term, with exactly the byte comparison's value
+/// -- also for cell numbers out of a level's range, whose bytes wrap.
+#[test]
+fn number_range_cells_compare_like_their_terms() {
+    let t = date_tree();
+    let nr = t.number_range_tree();
+    let maxes = nr.tree().base().max_sub_cells_by_level.clone();
+    let mut seed = 0x1234_5678_u64;
+    let mut rnd = |n: u64| {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (seed >> 33) % n
+    };
+    let mut cells = Vec::new();
+    for _ in 0..400 {
+        let len = rnd(maxes.len() as u64 + 1) as usize;
+        let vals: Vec<i32> = (0..len)
+            .map(|l| match rnd(10) {
+                0 => -1 - rnd(3) as i32,
+                1 => maxes[l] + 256 + rnd(300) as i32,
+                // few distinct values, so prefixes are common
+                _ => rnd(3) as i32,
+            })
+            .collect();
+        cells.push(nr.unit(vals));
+    }
+    for a in &cells {
+        for b in cells.iter().step_by(3) {
+            let (ta, tb) = (a.token_bytes_no_leaf(), b.token_bytes_no_leaf());
+            assert_eq!(
+                a.compare_to_no_leaf(b),
+                super::compare_bytes(&ta, &tb),
+                "{:?} {:?}",
+                a.vals(),
+                b.vals()
+            );
+            assert_eq!(a.is_prefix_of(b), tb.starts_with(&ta));
+        }
+    }
+    // another kind of cell: the bytes path
+    let quad = QuadPrefixTree::new(geo(), 3).unwrap().world_cell();
+    let t0 = cells[0].token_bytes_no_leaf();
+    assert_eq!(
+        cells[0].compare_to_no_leaf(&*quad),
+        super::compare_bytes(&t0, &[])
+    );
+    assert_eq!(cells[1].is_prefix_of(&*quad), cells[1].level() == 0);
+}

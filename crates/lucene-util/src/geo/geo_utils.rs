@@ -45,6 +45,31 @@ impl WindingOrder {
     }
 }
 
+/// `checkLatitude`'s message, kept out of line so the range test inlines
+/// into the per-point encoders.
+#[cold]
+#[inline(never)]
+fn invalid_latitude(latitude: f64) -> GeoError {
+    GeoError::illegal(format!(
+        "invalid latitude {}; must be between {} and {}",
+        java_double_string(latitude),
+        java_double_string(GeoUtils::MIN_LAT_INCL),
+        java_double_string(GeoUtils::MAX_LAT_INCL)
+    ))
+}
+
+/// `checkLongitude`'s message (see [`invalid_latitude`]).
+#[cold]
+#[inline(never)]
+fn invalid_longitude(longitude: f64) -> GeoError {
+    GeoError::illegal(format!(
+        "invalid longitude {}; must be between {} and {}",
+        java_double_string(longitude),
+        java_double_string(GeoUtils::MIN_LON_INCL),
+        java_double_string(GeoUtils::MAX_LON_INCL)
+    ))
+}
+
 impl GeoUtils {
     /// `MIN_LON_INCL`.
     pub const MIN_LON_INCL: f64 = -180.0;
@@ -75,27 +100,19 @@ impl GeoUtils {
     }
 
     /// `checkLatitude`: within `[-90, 90]` and not NaN.
+    #[inline]
     pub fn check_latitude(latitude: f64) -> Result<(), GeoError> {
         if !(Self::MIN_LAT_INCL..=Self::MAX_LAT_INCL).contains(&latitude) {
-            return Err(GeoError::illegal(format!(
-                "invalid latitude {}; must be between {} and {}",
-                java_double_string(latitude),
-                java_double_string(Self::MIN_LAT_INCL),
-                java_double_string(Self::MAX_LAT_INCL)
-            )));
+            return Err(invalid_latitude(latitude));
         }
         Ok(())
     }
 
     /// `checkLongitude`: within `[-180, 180]` and not NaN.
+    #[inline]
     pub fn check_longitude(longitude: f64) -> Result<(), GeoError> {
         if !(Self::MIN_LON_INCL..=Self::MAX_LON_INCL).contains(&longitude) {
-            return Err(GeoError::illegal(format!(
-                "invalid longitude {}; must be between {} and {}",
-                java_double_string(longitude),
-                java_double_string(Self::MIN_LON_INCL),
-                java_double_string(Self::MAX_LON_INCL)
-            )));
+            return Err(invalid_longitude(longitude));
         }
         Ok(())
     }

@@ -75,12 +75,10 @@ fn sinks_refuse_out_of_range_ordinals() {
     assert_eq!(plain, vec![0, 3i32.wrapping_add(i32::MAX)]);
     assert!(plain.as_mut_slice().add(2, 1).is_err());
     assert!(plain.as_mut_slice().add(-1, 1).is_err());
-    let atomics = [AtomicI32::new(0), AtomicI32::new(0)];
-    let mut sink: &[AtomicI32] = &atomics;
-    sink.add(0, 4).unwrap();
-    assert!(sink.add(2, 1).is_err());
-    assert!(sink.add(-5, 1).is_err());
-    assert_eq!(atomics[0].load(Ordering::Relaxed), 4);
+    // The concurrent counter's per-task arrays are summed wrapping.
+    let mut a = vec![i32::MAX, 1];
+    add_counts(&mut a, &[1, 2]);
+    assert_eq!(a, vec![i32::MIN, 3]);
 }
 
 #[test]

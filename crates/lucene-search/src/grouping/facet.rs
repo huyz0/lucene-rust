@@ -3,7 +3,9 @@
 //! counts in which each (group, facet value) pair counts once, merged
 //! across segments by term.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+
+use super::FxHashSet;
 
 use crate::collector::ScoreMode;
 use crate::leaf_collector::SegmentCollector;
@@ -174,7 +176,9 @@ pub struct TermGroupFacetCollector<'a> {
     grouped_facet_hits: Vec<GroupedFacetHit>,
     /// `segmentGroupedFacetHits`: the segment's pairs, as
     /// `groupOrd * (facetValueCount + 1) + facetOrd` in `int` arithmetic.
-    segment_grouped_facet_hits: HashSet<i32>,
+    segment_grouped_facet_hits: FxHashSet<i32>,
+    /// `MV`'s per-document ordinals, reused across documents.
+    ords_buf: Vec<i32>,
     segment_results: Vec<SegmentResult<'a>>,
     segment_facet_counts: Vec<i32>,
     segment_total_count: i32,
@@ -241,7 +245,8 @@ impl<'a> TermGroupFacetCollector<'a> {
             facet_prefix,
             multivalued: facet_field_multivalued,
             grouped_facet_hits: Vec::new(),
-            segment_grouped_facet_hits: HashSet::new(),
+            segment_grouped_facet_hits: FxHashSet::default(),
+            ords_buf: Vec::new(),
             segment_results: Vec::new(),
             segment_facet_counts: Vec::new(),
             segment_total_count: 0,
@@ -412,7 +417,8 @@ impl<'a> TermGroupFacetCollector<'a> {
             self.grouped_facet_hits.push((group_key, None));
             return Ok(());
         }
-        let mut ords = Vec::new();
+        let mut ords = std::mem::take(&mut self.ords_buf);
+        ords.clear();
         if let Some(FacetValues::Multi(f)) = self.facet.as_mut() {
             if doc > f.doc_id() {
                 f.advance(doc)?;
@@ -423,14 +429,15 @@ impl<'a> TermGroupFacetCollector<'a> {
                 }
             }
         }
-        if ords.is_empty() {
+        let r = if ords.is_empty() {
             // The facet ordinal reserved for documents without the field.
-            return self.process(group_ord, self.facet_num_terms);
-        }
-        for ord in ords {
-            self.process(group_ord, ord)?;
-        }
-        Ok(())
+            self.process(group_ord, self.facet_num_terms)
+        } else {
+            ords.iter()
+                .try_for_each(|&ord| self.process(group_ord, ord))
+        };
+        self.ords_buf = ords;
+        r
     }
 
     fn set_next_reader_sv(&mut self, leaf: &OpenSegment<'a>) -> Result<()> {

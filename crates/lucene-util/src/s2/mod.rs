@@ -439,9 +439,10 @@ impl S2CellId {
         (self.id & (Self::lowest_on_bit_for_level(0) - 1)) == 0
     }
 
-    /// `childPosition(level)`.
+    /// `childPosition(level)`. Java's `>>>` masks the shift to six bits,
+    /// so an out-of-range level wraps rather than panicking.
     pub fn child_position(&self, level: i32) -> i32 {
-        (((self.id as u64) >> (2 * (MAX_LEVEL - level) + 1)) as i32) & 3
+        (((self.id as u64).wrapping_shr((2 * (MAX_LEVEL - level) + 1) as u32)) as i32) & 3
     }
 
     /// `rangeMin()`.
@@ -575,9 +576,12 @@ impl S2CellId {
         self.id & self.id.wrapping_neg()
     }
 
-    /// `lowestOnBitForLevel(level)`.
+    /// `lowestOnBitForLevel(level)`. Java's `<<` masks the shift to six
+    /// bits; so does `wrapping_shl`, so a level outside `0..=30` (which
+    /// `S2PrefixTree` can ask for: Java does not check its `maxLevels`)
+    /// gives Java's bits instead of a debug-build overflow panic.
     pub fn lowest_on_bit_for_level(level: i32) -> i64 {
-        1i64 << (2 * (MAX_LEVEL - level))
+        1i64.wrapping_shl((2 * (MAX_LEVEL - level)) as u32)
     }
 }
 
@@ -631,7 +635,9 @@ impl S2Cell {
         let max_cell_size = 1i32 << MAX_LEVEL;
         let (face, i, j, orientation) = id.to_face_ij_orientation();
         let level = id.level();
-        let cell_size = 1i32 << (MAX_LEVEL - level);
+        // Java's int shift masks to five bits (an id with no level, from a
+        // corrupt term, asks for 32).
+        let cell_size = 1i32.wrapping_shl((MAX_LEVEL - level) as u32);
         let mut uv = [[0.0; 2]; 2];
         for (d, ij) in [i, j].into_iter().enumerate() {
             let sij_lo = (ij & cell_size.wrapping_neg())

@@ -149,8 +149,20 @@ pub struct CollectedSearchGroup<V> {
 pub(crate) struct FxHasher(u64);
 
 impl std::hash::Hasher for FxHasher {
+    /// The state through a final avalanche (`fmix64`'s first half): a
+    /// multiply carries entropy only upward, so the raw state's low bits --
+    /// which `hashbrown` takes the bucket from -- depend only on the low
+    /// bytes of the last word. Keys sharing those
+    /// (`"group-value-000000001234"`: the last word's low bytes are `"00"`)
+    /// fell in a handful of buckets, and every lookup walked a long probe
+    /// of `memcmp`s (a grouping search with all groups was 17x slower).
+    /// Folding the high half down and multiplying again makes every bit of
+    /// the result depend on every bit of the state.
     fn finish(&self) -> u64 {
-        self.0
+        let mut x = self.0;
+        x ^= x >> 33;
+        x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
+        x ^ (x >> 33)
     }
 
     fn write(&mut self, bytes: &[u8]) {
@@ -190,6 +202,10 @@ impl FxHasher {
 
 /// A `HashMap` under [`FxHasher`].
 pub(crate) type FxHashMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<FxHasher>>;
+
+/// A `HashSet` under [`FxHasher`].
+pub(crate) type FxHashSet<K> =
+    std::collections::HashSet<K, std::hash::BuildHasherDefault<FxHasher>>;
 
 /// A map from group values (`null` included) to an index, looked up by
 /// reference -- Java's `HashMap<T, ...>` with its one `null` key.

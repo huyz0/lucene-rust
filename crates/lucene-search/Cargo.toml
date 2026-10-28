@@ -120,3 +120,15 @@ harness = false
 [[bench]]
 name = "reader_open"
 harness = false
+
+# The facets/grouping/join perf pass: FFI facet and range counting, sorted-set
+# counting, `FacetsCollectorManager::search_sorted` -- see the bench's module doc.
+[[bench]]
+name = "facet_counting"
+harness = false
+
+# The facets/grouping/join perf pass: `GroupingSearch` and the query-time
+# joins -- see the bench's module doc.
+[[bench]]
+name = "grouping_join"
+harness = false

@@ -18,9 +18,23 @@ const LEAF: u8 = b'+';
 /// `S2PrefixTreeCell.TOKENS`.
 const TOKENS: &[u8; 64] = b"./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
-/// `S2PrefixTreeCell.PIXELS`: a token's value.
+/// `S2PrefixTreeCell.PIXELS` as a byte-indexed table: a token's value,
+/// or -1 for a byte that is no token.
+const PIXELS: [i8; 256] = {
+    let mut t = [-1i8; 256];
+    let mut i = 0;
+    while i < TOKENS.len() {
+        t[TOKENS[i] as usize] = i as i8;
+        i += 1;
+    }
+    t
+};
+
+/// `PIXELS.get(b)`: a token's value.
+#[inline]
 fn pixel(b: u8) -> Option<i64> {
-    TOKENS.iter().position(|&t| t == b).map(|p| p as i64)
+    let p = PIXELS[b as usize];
+    (p >= 0).then_some(i64::from(p))
 }
 
 /// `S2PrefixTreeCell.FACES`.
@@ -388,10 +402,18 @@ impl SpatialPrefixTree for S2PrefixTree {
             return super::default_tree_cell_iterator(self, shape, detail_level);
         };
         let arity = self.inner.arity;
+        // Java checks neither `detailLevel` nor `maxLevels` here: the parent
+        // level is computed with int arithmetic (and a masked shift), and
+        // only `new ArrayList<>(detailLevel)` rejects a negative level.
         let id = S2CellId::from_lat_lng(&S2LatLng::from_degrees(p.y(), p.x()))
-            .parent(arity * (detail_level - 1));
-        let mut cells: Vec<Box<dyn Cell>> = Vec::with_capacity(detail_level.max(0) as usize);
-        for i in 0..(detail_level - 1).max(0) {
+            .parent(arity.wrapping_mul(detail_level.wrapping_sub(1)));
+        if detail_level < 0 {
+            return Err(Error::IllegalArgument(format!(
+                "Illegal Capacity: {detail_level}"
+            )));
+        }
+        let mut cells: Vec<Box<dyn Cell>> = Vec::with_capacity(detail_level as usize);
+        for i in 0..detail_level - 1 {
             cells.push(Box::new(self.cell(Some(id.parent(i * arity)))));
         }
         cells.push(Box::new(self.cell(Some(id))));

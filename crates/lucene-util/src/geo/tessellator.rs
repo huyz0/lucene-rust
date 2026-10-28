@@ -22,8 +22,6 @@
 //! - Exceptions become [`GeoError::IllegalArgument`] with Java's messages.
 #![allow(clippy::too_many_arguments)]
 
-use std::collections::HashMap;
-
 use super::geo_encoding_utils::GeoEncodingUtils;
 use super::geo_utils::{GeoUtils, WindingOrder};
 use super::point::Point;
@@ -146,12 +144,34 @@ struct Node {
     y: i32,
     /// morton code for sorting
     morton: i64,
-    previous: usize,
-    next: usize,
-    previous_z: Option<usize>,
-    next_z: Option<usize>,
+    // The links are `u32` arena indices (the z-links [`NIL`] for Java's
+    // `null`): a node is 56 bytes instead of 88, so the ear scans and the
+    // z-order walks touch fewer cache lines. An arena past `u32::MAX - 1`
+    // nodes cannot be built (`insert_node` asserts it).
+    previous: u32,
+    next: u32,
+    previous_z: u32,
+    next_z: u32,
     /// if the edge from this node to the next node is part of the polygon edges
     is_next_edge_from_polygon: bool,
+}
+
+/// A missing z-link (Java's `null` `previousZ`/`nextZ`).
+const NIL: u32 = u32::MAX;
+
+/// A z-link as an index.
+#[inline(always)]
+fn z_get(link: u32) -> Option<usize> {
+    (link != NIL).then_some(link as usize)
+}
+
+/// An index (or `None`) as a z-link.
+#[inline(always)]
+fn z_link(i: Option<usize>) -> u32 {
+    match i {
+        Some(i) => i as u32,
+        None => NIL,
+    }
 }
 
 /// What `eliminateHoles` needs to know about each hole.
@@ -160,9 +180,26 @@ struct HoleInfo<'h> {
     max_x: f64,
     min_y: f64,
     max_y: f64,
-    /// `verticesToGeoJSON` of the hole, built only for the error message
-    /// (as Java builds it only when it throws).
-    geojson: Box<dyn Fn() -> String + 'h>,
+    /// The hole, for `verticesToGeoJSON` in the error message (built only
+    /// when it throws, as Java builds it).
+    hole: HoleRef<'h>,
+}
+
+/// The polygon a [`HoleInfo`] describes.
+#[derive(Clone, Copy)]
+enum HoleRef<'h> {
+    LatLon(&'h Polygon),
+    XY(&'h XYPolygon),
+}
+
+impl HoleInfo<'_> {
+    /// `verticesToGeoJSON` of the hole.
+    fn geojson(&self) -> String {
+        match self.hole {
+            HoleRef::LatLon(h) => Polygon::vertices_to_geojson(h.poly_lats(), h.poly_lons()),
+            HoleRef::XY(h) => XYPolygon::vertices_to_geojson(h.poly_x(), h.poly_y()),
+        }
+    }
 }
 
 /// The arena plus the optional monitor.
@@ -317,11 +354,37 @@ impl Tess<'_> {
     }
     #[inline]
     fn next(&self, i: usize) -> usize {
-        self.nodes[i].next
+        self.nodes[i].next as usize
     }
     #[inline]
     fn prev(&self, i: usize) -> usize {
-        self.nodes[i].previous
+        self.nodes[i].previous as usize
+    }
+    #[inline]
+    fn set_next(&mut self, i: usize, v: usize) {
+        self.nodes[i].next = v as u32;
+    }
+    #[inline]
+    fn set_prev(&mut self, i: usize, v: usize) {
+        self.nodes[i].previous = v as u32;
+    }
+    /// `previousZ`.
+    #[inline]
+    fn pz(&self, i: usize) -> Option<usize> {
+        z_get(self.nodes[i].previous_z)
+    }
+    /// `nextZ`.
+    #[inline]
+    fn nz(&self, i: usize) -> Option<usize> {
+        z_get(self.nodes[i].next_z)
+    }
+    #[inline]
+    fn set_pz(&mut self, i: usize, v: Option<usize>) {
+        self.nodes[i].previous_z = z_link(v);
+    }
+    #[inline]
+    fn set_nz(&mut self, i: usize, v: Option<usize>) {
+        self.nodes[i].next_z = z_link(v);
     }
 
     // ------------------------------------------------------------ entry
@@ -359,7 +422,10 @@ impl Tess<'_> {
         if check_self_intersections {
             self.check_intersection(outer, morton_optimized)?;
         }
-        let mut result = Vec::new();
+        // a triangulation of n vertices and h holes has n - 2 + 2h triangles
+        let mut result = Vec::with_capacity(
+            num_points + hole_points.iter().sum::<usize>() + 2 * hole_points.len(),
+        );
         self.earcut_linked_list(Some(outer), &mut result, State::Init, morton_optimized, 0)?;
         if result.is_empty() {
             self.notify_monitor_status(FAILED, None, &result)?;
@@ -403,8 +469,7 @@ impl Tess<'_> {
     }
 
     fn eliminate_holes_xy(&mut self, polygon: &XYPolygon, outer: usize) -> Result<usize, GeoError> {
-        let mut hole_list = Vec::new();
-        let mut infos = HashMap::new();
+        let mut infos = Vec::with_capacity(polygon.num_holes());
         let mut node_index = polygon.num_points() as i32;
         for hole in polygon.holes() {
             let list = self.create_doubly_linked_list(
@@ -417,23 +482,20 @@ impl Tess<'_> {
             )?;
             if let Some(list) = list {
                 let left_most = self.fetch_leftmost(list);
-                hole_list.push(left_most);
-                infos.insert(
+                infos.push((
                     left_most,
                     HoleInfo {
                         min_x: f64::from(hole.min_x),
                         max_x: f64::from(hole.max_x),
                         min_y: f64::from(hole.min_y),
                         max_y: f64::from(hole.max_y),
-                        geojson: Box::new(move || {
-                            XYPolygon::vertices_to_geojson(hole.poly_x(), hole.poly_y())
-                        }),
+                        hole: HoleRef::XY(hole),
                     },
-                );
+                ));
             }
             node_index += hole.num_points() as i32;
         }
-        self.eliminate_holes(hole_list, &infos, outer)
+        self.eliminate_holes(infos, outer)
     }
 
     fn eliminate_holes_latlon(
@@ -441,8 +503,7 @@ impl Tess<'_> {
         polygon: &Polygon,
         outer: usize,
     ) -> Result<usize, GeoError> {
-        let mut hole_list = Vec::new();
-        let mut infos = HashMap::new();
+        let mut infos = Vec::with_capacity(polygon.num_holes());
         let mut node_index = polygon.num_points() as i32;
         for hole in polygon.holes() {
             let list = self
@@ -461,32 +522,30 @@ impl Tess<'_> {
                 )));
             }
             let left_most = self.fetch_leftmost(list);
-            hole_list.push(left_most);
-            infos.insert(
+            infos.push((
                 left_most,
                 HoleInfo {
                     min_x: hole.min_lon,
                     max_x: hole.max_lon,
                     min_y: hole.min_lat,
                     max_y: hole.max_lat,
-                    geojson: Box::new(move || {
-                        Polygon::vertices_to_geojson(hole.poly_lats(), hole.poly_lons())
-                    }),
+                    hole: HoleRef::LatLon(hole),
                 },
-            );
+            ));
             node_index += hole.num_points() as i32;
         }
-        self.eliminate_holes(hole_list, &infos, outer)
+        self.eliminate_holes(infos, outer)
     }
 
+    /// `eliminateHoles`: `holes` pairs each hole's leftmost node (Java's
+    /// `holeList`) with what Java's `nodeToPolygon` map holds for it.
     fn eliminate_holes(
         &mut self,
-        mut hole_list: Vec<usize>,
-        infos: &HashMap<usize, HoleInfo<'_>>,
+        mut holes: Vec<(usize, HoleInfo<'_>)>,
         mut outer: usize,
     ) -> Result<usize, GeoError> {
         // Sort the hole vertices by x coordinate (List.sort: a stable sort).
-        hole_list.sort_by(|&a, &b| {
+        holes.sort_by(|&(a, _), &(b, _)| {
             let mut diff = self.nx(a) - self.nx(b);
             if diff == 0.0 {
                 diff = self.ny(a) - self.ny(b);
@@ -506,14 +565,14 @@ impl Tess<'_> {
             }
         });
         // Process holes from left to right.
-        for hole_node in hole_list {
-            let h = &infos[&hole_node];
+        for (hole_node, h) in &holes {
+            let hole_node = *hole_node;
             match self.eliminate_hole(hole_node, outer, h.min_x, h.max_x, h.min_y, h.max_y) {
                 Some(result) => {
                     outer = self.filter_points(result, Some(self.next(result)));
                 }
                 None => {
-                    let mut polygon = (h.geojson)();
+                    let mut polygon = h.geojson();
                     if polygon.chars().count() > 100 {
                         polygon = format!("{}...", polygon.chars().take(100).collect::<String>());
                     }
@@ -976,8 +1035,8 @@ impl Tess<'_> {
                 && self.node_area(q) >= 0.0
         };
         // look for points inside the triangle in both directions
-        let mut p = self.n(ear).previous_z;
-        let mut n = self.n(ear).next_z;
+        let mut p = self.pz(ear);
+        let mut n = self.nz(ear);
         while let (Some(pp), Some(nn)) = (p, n) {
             if !(ucmp(self.n(pp).morton) >= ucmp(min_z) && ucmp(self.n(nn).morton) <= ucmp(max_z)) {
                 break;
@@ -985,11 +1044,11 @@ impl Tess<'_> {
             if blocks(pp) {
                 return false;
             }
-            p = self.n(pp).previous_z;
+            p = self.pz(pp);
             if blocks(nn) {
                 return false;
             }
-            n = self.n(nn).next_z;
+            n = self.nz(nn);
         }
         // first look for points inside the triangle in decreasing z-order
         while let Some(pp) = p {
@@ -999,7 +1058,7 @@ impl Tess<'_> {
             if blocks(pp) {
                 return false;
             }
-            p = self.n(pp).previous_z;
+            p = self.pz(pp);
         }
         // then look for points in increasing z-order
         while let Some(nn) = n {
@@ -1009,7 +1068,7 @@ impl Tess<'_> {
             if blocks(nn) {
                 return false;
             }
-            n = self.n(nn).next_z;
+            n = self.nz(nn);
         }
         true
     }
@@ -1168,30 +1227,30 @@ impl Tess<'_> {
         let an = self.next(a);
         let (min_z, max_z) =
             self.z_range(&[self.n(a).x, self.n(an).x], &[self.n(a).y, self.n(an).y]);
-        let mut p = self.n(b).previous_z;
-        let mut n = self.n(b).next_z;
+        let mut p = self.pz(b);
+        let mut n = self.nz(b);
         while let (Some(pp), Some(nn)) = (p, n) {
             if !(ucmp(self.n(pp).morton) >= ucmp(min_z) && ucmp(self.n(nn).morton) <= ucmp(max_z)) {
                 break;
             }
             self.check_intersection_point(pp, a)?;
-            p = self.n(pp).previous_z;
+            p = self.pz(pp);
             self.check_intersection_point(nn, a)?;
-            n = self.n(nn).next_z;
+            n = self.nz(nn);
         }
         while let Some(pp) = p {
             if ucmp(self.n(pp).morton) < ucmp(min_z) {
                 break;
             }
             self.check_intersection_point(pp, a)?;
-            p = self.n(pp).previous_z;
+            p = self.pz(pp);
         }
         while let Some(nn) = n {
             if ucmp(self.n(nn).morton) > ucmp(max_z) {
                 break;
             }
             self.check_intersection_point(nn, a)?;
-            n = self.n(nn).next_z;
+            n = self.nz(nn);
         }
         Ok(())
     }
@@ -1276,8 +1335,8 @@ impl Tess<'_> {
     /// `isMortonEdgeFromPolygon`.
     fn is_morton_edge_from_polygon(&self, a: usize, b: usize) -> bool {
         let (min_z, max_z) = self.z_range(&[self.n(a).x, self.n(b).x], &[self.n(a).y, self.n(b).y]);
-        let mut p = self.n(a).previous_z;
-        let mut n = self.n(a).next_z;
+        let mut p = self.pz(a);
+        let mut n = self.nz(a);
         while let (Some(pp), Some(nn)) = (p, n) {
             if !(ucmp(self.n(pp).morton) >= ucmp(min_z) && ucmp(self.n(nn).morton) <= ucmp(max_z)) {
                 break;
@@ -1285,11 +1344,11 @@ impl Tess<'_> {
             if let Some(r) = self.edge_match(pp, a, b) {
                 return r;
             }
-            p = self.n(pp).previous_z;
+            p = self.pz(pp);
             if let Some(r) = self.edge_match(nn, a, b) {
                 return r;
             }
-            n = self.n(nn).next_z;
+            n = self.nz(nn);
         }
         while let Some(pp) = p {
             if ucmp(self.n(pp).morton) < ucmp(min_z) {
@@ -1298,7 +1357,7 @@ impl Tess<'_> {
             if let Some(r) = self.edge_match(pp, a, b) {
                 return r;
             }
-            p = self.n(pp).previous_z;
+            p = self.pz(pp);
         }
         while let Some(nn) = n {
             if ucmp(self.n(nn).morton) > ucmp(max_z) {
@@ -1307,7 +1366,7 @@ impl Tess<'_> {
             if let Some(r) = self.edge_match(nn, a, b) {
                 return r;
             }
-            n = self.n(nn).next_z;
+            n = self.nz(nn);
         }
         false
     }
@@ -1352,22 +1411,22 @@ impl Tess<'_> {
         let an = self.next(a);
         let bp = self.prev(b);
 
-        self.nodes[a].next = b;
+        self.set_next(a, b);
         self.nodes[a].is_next_edge_from_polygon = edge_from_polygon;
-        self.nodes[a].next_z = Some(b);
-        self.nodes[b].previous = a;
-        self.nodes[b].previous_z = Some(a);
-        self.nodes[a2].next = an;
-        self.nodes[a2].next_z = Some(an);
-        self.nodes[an].previous = a2;
-        self.nodes[an].previous_z = Some(a2);
-        self.nodes[b2].next = a2;
+        self.set_nz(a, Some(b));
+        self.set_prev(b, a);
+        self.set_pz(b, Some(a));
+        self.set_next(a2, an);
+        self.set_nz(a2, Some(an));
+        self.set_prev(an, a2);
+        self.set_pz(an, Some(a2));
+        self.set_next(b2, a2);
         self.nodes[b2].is_next_edge_from_polygon = edge_from_polygon;
-        self.nodes[b2].next_z = Some(a2);
-        self.nodes[a2].previous = b2;
-        self.nodes[a2].previous_z = Some(b2);
-        self.nodes[bp].next = b2;
-        self.nodes[bp].next_z = Some(b2);
+        self.set_nz(b2, Some(a2));
+        self.set_prev(a2, b2);
+        self.set_pz(a2, Some(b2));
+        self.set_next(bp, b2);
+        self.set_nz(bp, Some(b2));
         b2
     }
 
@@ -1505,8 +1564,8 @@ impl Tess<'_> {
     fn sort_by_morton_with_reset(&mut self, start: usize) {
         let mut next = start;
         loop {
-            self.nodes[next].previous_z = Some(self.prev(next));
-            self.nodes[next].next_z = Some(self.next(next));
+            self.set_pz(next, Some(self.prev(next)));
+            self.set_nz(next, Some(self.next(next)));
             next = self.next(next);
             if next == start {
                 break;
@@ -1517,10 +1576,10 @@ impl Tess<'_> {
 
     /// `sortByMorton`: interlinks the nodes in z-order.
     fn sort_by_morton(&mut self, start: usize) {
-        if let Some(pz) = self.nodes[start].previous_z {
-            self.nodes[pz].next_z = None;
+        if let Some(pz) = self.pz(start) {
+            self.set_nz(pz, None);
         }
-        self.nodes[start].previous_z = None;
+        self.set_pz(start, None);
         // Sort the generated ring using Z ordering.
         self.tatham_sort(start);
     }
@@ -1544,7 +1603,7 @@ impl Tess<'_> {
                 while p_size < in_size {
                     match q {
                         Some(qq) => {
-                            q = self.nodes[qq].next_z;
+                            q = self.nz(qq);
                             p_size += 1;
                         }
                         None => break,
@@ -1563,28 +1622,28 @@ impl Tess<'_> {
                     };
                     let e = if take_p {
                         let e = p_cur.expect("p_size > 0");
-                        p_cur = self.nodes[e].next_z;
+                        p_cur = self.nz(e);
                         p_size -= 1;
                         e
                     } else {
                         let e = q.expect("q present");
-                        q = self.nodes[e].next_z;
+                        q = self.nz(e);
                         q_size -= 1;
                         e
                     };
                     match tail {
-                        Some(t) => self.nodes[t].next_z = Some(e),
+                        Some(t) => self.set_nz(t, Some(e)),
                         None => list = Some(e),
                     }
                     // maintain reverse pointers
-                    self.nodes[e].previous_z = tail;
+                    self.set_pz(e, tail);
                     tail = Some(e);
                 }
                 // now p has stepped 'insize' places along, and q has too
                 p = q;
             }
             if let Some(t) = tail {
-                self.nodes[t].next_z = None;
+                self.set_nz(t, None);
             }
             in_size *= 2;
             if num_merges <= 1 {
@@ -1670,6 +1729,8 @@ impl Tess<'_> {
             XYEncodingUtils::encode(vx as f32)?
         };
         let node = self.nodes.len();
+        // 4G nodes would be over 200 GiB of arena: never reached.
+        assert!(node < NIL as usize, "tessellator arena overflow");
         let mut n = Node {
             idx: index,
             vx,
@@ -1677,26 +1738,26 @@ impl Tess<'_> {
             x: ex,
             y: ey,
             morton: bit_util::interleave(flip(ex), flip(ey)),
-            previous: node,
-            next: node,
-            previous_z: Some(node),
-            next_z: Some(node),
+            previous: node as u32,
+            next: node as u32,
+            previous_z: node as u32,
+            next_z: node as u32,
             is_next_edge_from_polygon: true,
         };
         match last_node {
             None => self.nodes.push(n),
             Some(last) => {
                 let last_next = self.next(last);
-                let last_next_z = self.n(last).next_z.expect("a fresh ring is z-linked");
-                n.next = last_next;
-                n.next_z = Some(last_next);
-                n.previous = last;
-                n.previous_z = Some(last);
+                let last_next_z = self.nz(last).expect("a fresh ring is z-linked");
+                n.next = last_next as u32;
+                n.next_z = last_next as u32;
+                n.previous = last as u32;
+                n.previous_z = last as u32;
                 self.nodes.push(n);
-                self.nodes[last_next].previous = node;
-                self.nodes[last_next_z].previous_z = Some(node);
-                self.nodes[last].next = node;
-                self.nodes[last].next_z = Some(node);
+                self.set_prev(last_next, node);
+                self.set_pz(last_next_z, Some(node));
+                self.set_next(last, node);
+                self.set_nz(last, Some(node));
             }
         }
         Ok(node)
@@ -1705,15 +1766,15 @@ impl Tess<'_> {
     /// `removeNode`: unlinks a node (whose own links are left as they were).
     fn remove_node(&mut self, node: usize, edge_from_polygon: bool) {
         let (prev, next) = (self.prev(node), self.next(node));
-        self.nodes[next].previous = prev;
-        self.nodes[prev].next = next;
+        self.set_prev(next, prev);
+        self.set_next(prev, next);
         self.nodes[prev].is_next_edge_from_polygon = edge_from_polygon;
-        let (pz, nz) = (self.n(node).previous_z, self.n(node).next_z);
+        let (pz, nz) = (self.pz(node), self.nz(node));
         if let Some(pz) = pz {
-            self.nodes[pz].next_z = nz;
+            self.set_nz(pz, nz);
         }
         if let Some(nz) = nz {
-            self.nodes[nz].previous_z = pz;
+            self.set_pz(nz, pz);
         }
     }
 
