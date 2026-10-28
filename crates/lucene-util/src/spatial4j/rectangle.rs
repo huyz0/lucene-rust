@@ -141,15 +141,22 @@ impl RectangleImpl {
 
     /// `getCenter()` as the concrete point.
     pub fn center_point(&self) -> PointImpl {
+        let (x, y) = self.center_values();
+        PointImpl::new(x, y, self.ctx.clone())
+    }
+
+    /// [`Self::center_point`]'s coordinates.
+    #[inline]
+    fn center_values(&self) -> (f64, f64) {
         if self.min_x.is_nan() {
-            return PointImpl::new(f64::NAN, f64::NAN, self.ctx.clone());
+            return (f64::NAN, f64::NAN);
         }
         let y = self.height() / 2.0 + self.min_y;
         let mut x = self.width() / 2.0 + self.min_x;
         if self.min_x > self.max_x {
             x = DistanceUtils::norm_lon_deg(x);
         }
-        PointImpl::new(x, y, self.ctx.clone())
+        (x, y)
     }
 }
 
@@ -291,6 +298,10 @@ impl Shape for RectangleImpl {
 }
 
 impl Rectangle for RectangleImpl {
+    fn center_xy(&self) -> Result<(f64, f64)> {
+        Ok(self.center_values())
+    }
+
     fn min_x(&self) -> f64 {
         self.min_x
     }

@@ -941,23 +941,24 @@ impl Plane {
                 // We need unconstrained values in order to compute D
                 let normalized_z_plane =
                     Plane::construct_normalized_z_plane(A, B).expect("A or B is non-zero");
-                let points =
-                    self.find_intersections_more(pm, &normalized_z_plane, bounds, NO_BOUNDS);
-                for point in &points {
+                let points = self.intersections(pm, &normalized_z_plane, bounds, NO_BOUNDS);
+                for point in points.iter().flatten() {
                     add_point(bounds_info, bounds, point);
                 }
             } else {
                 // Since a==b==0, any plane including the Z axis suffices.
-                let mut points =
-                    self.find_intersections_more(pm, &NORMAL_Y_PLANE, NO_BOUNDS, NO_BOUNDS);
-                if points.is_empty() {
-                    points =
-                        self.find_intersections_more(pm, &NORMAL_X_PLANE, NO_BOUNDS, NO_BOUNDS);
+                // The first point of either (they are a prefix of the pair).
+                let mut points = self.intersections(pm, &NORMAL_Y_PLANE, NO_BOUNDS, NO_BOUNDS);
+                if points[0].is_none() {
+                    points = self.intersections(pm, &NORMAL_X_PLANE, NO_BOUNDS, NO_BOUNDS);
                 }
-                if points.is_empty() {
-                    bounds_info.add_z_value(&GeoPoint::new(0.0, 0.0, -self.z));
-                } else {
-                    bounds_info.add_z_value(&points[0]);
+                match &points[0] {
+                    None => {
+                        bounds_info.add_z_value(&GeoPoint::new(0.0, 0.0, -self.z));
+                    }
+                    Some(first) => {
+                        bounds_info.add_z_value(first);
+                    }
                 }
             }
         }
@@ -1121,21 +1122,23 @@ impl Plane {
             if abs(A) >= MINIMUM_RESOLUTION || abs(B) >= MINIMUM_RESOLUTION {
                 let vertical_plane =
                     Plane::construct_normalized_z_plane(A, B).expect("A or B is non-zero");
-                let points = self.find_intersections_more(pm, &vertical_plane, bounds, NO_BOUNDS);
-                for point in &points {
+                let points = self.intersections(pm, &vertical_plane, bounds, NO_BOUNDS);
+                for point in points.iter().flatten() {
                     add_point(bounds_info, bounds, point);
                 }
             } else {
-                let mut points =
-                    self.find_intersections_more(pm, &NORMAL_X_PLANE, NO_BOUNDS, NO_BOUNDS);
-                if points.is_empty() {
-                    points =
-                        self.find_intersections_more(pm, &NORMAL_Y_PLANE, NO_BOUNDS, NO_BOUNDS);
+                // The first point of either (they are a prefix of the pair).
+                let mut points = self.intersections(pm, &NORMAL_X_PLANE, NO_BOUNDS, NO_BOUNDS);
+                if points[0].is_none() {
+                    points = self.intersections(pm, &NORMAL_Y_PLANE, NO_BOUNDS, NO_BOUNDS);
                 }
-                if points.is_empty() {
-                    bounds_info.add_z_value(&GeoPoint::new(0.0, 0.0, -self.z));
-                } else {
-                    bounds_info.add_z_value(&points[0]);
+                match &points[0] {
+                    None => {
+                        bounds_info.add_z_value(&GeoPoint::new(0.0, 0.0, -self.z));
+                    }
+                    Some(first) => {
+                        bounds_info.add_z_value(first);
+                    }
                 }
             }
         }
@@ -1452,9 +1455,8 @@ impl Plane {
 
     /// `getSampleIntersectionPoint(planetModel, q)`.
     pub fn sample_intersection_point(&self, pm: &PlanetModel, q: &Plane) -> Option<GeoPoint> {
-        self.find_intersections_more(pm, q, NO_BOUNDS, NO_BOUNDS)
-            .into_iter()
-            .next()
+        let [first, _] = self.intersections(pm, q, NO_BOUNDS, NO_BOUNDS);
+        first
     }
 
     /// `hashCode()`.

@@ -29,6 +29,16 @@ pub struct Packed64SingleBlock {
     bits_per_value: u32,
     values_per_block: usize,
     mask: u64,
+    /// `ceil(2^64 / values_per_block)`: `index / values_per_block` is
+    /// `(index * div_magic) >> 64`, one multiply instead of a 64-bit divide
+    /// (Java gets constant divisors from one subclass per width).
+    div_magic: u64,
+}
+
+/// `ceil(2^64 / d)` for `2 <= d <= 64`, as `u64::MAX / d + 1` (exact for a
+/// power of two, and `floor(2^64 / d) + 1` otherwise).
+fn div_magic(d: usize) -> u64 {
+    u64::MAX / d as u64 + 1
 }
 
 impl Packed64SingleBlock {
@@ -46,6 +56,7 @@ impl Packed64SingleBlock {
             bits_per_value,
             values_per_block,
             mask: (1u64 << bits_per_value) - 1,
+            div_magic: div_magic(values_per_block),
         }
     }
 
@@ -56,8 +67,16 @@ impl Packed64SingleBlock {
 
     #[inline]
     fn position(&self, index: usize) -> (usize, u32) {
-        let o = index / self.values_per_block;
-        let b = index % self.values_per_block;
+        // Exact while `index * e < 2^64`, where `e = div_magic * d - 2^64 <
+        // d <= 64`: any `index < 2^58`, far past any allocatable bitset (a
+        // larger index is out of range anyway and still bounds-checked).
+        debug_assert!((index as u64) < 1 << 58);
+        let o = ((index as u128 * self.div_magic as u128) >> 64) as usize;
+        let b = index - o * self.values_per_block;
+        debug_assert_eq!(
+            (o, b),
+            (index / self.values_per_block, index % self.values_per_block)
+        );
         (o, b as u32 * self.bits_per_value)
     }
 }
@@ -283,5 +302,29 @@ mod tests {
         p.set(3, 4);
         assert_eq!(p.blocks()[0], 1 | (2 << 21) | (3 << 42));
         assert_eq!(p.blocks()[1], 4);
+    }
+
+    #[test]
+    fn reciprocal_division_is_exact() {
+        for &bpv in &SUPPORTED_BITS_PER_VALUE {
+            let d = 64 / bpv as usize;
+            let m = div_magic(d);
+            let mut x = 0x9E37_79B9_7F4A_7C15u64;
+            let check = |i: usize| {
+                let q = ((i as u128 * m as u128) >> 64) as usize;
+                assert_eq!(q, i / d, "bpv={bpv} i={i}");
+            };
+            for i in 0..10_000 {
+                check(i);
+            }
+            for _ in 0..10_000 {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                check((x >> 6) as usize);
+            }
+            check((1 << 58) - 1);
+            check(u32::MAX as usize);
+        }
     }
 }

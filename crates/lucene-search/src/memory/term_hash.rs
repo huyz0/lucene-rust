@@ -15,9 +15,17 @@ pub(super) struct TermHash {
     /// `ord + 1` per slot, `0` for an empty one; its length a power of two,
     /// at least twice the number of terms.
     table: Vec<u32>,
+    /// `64 - log2(table.len())`: a term's home slot is its hash's top bits.
+    shift: u32,
 }
 
 /// FxHash's multiply-rotate over 8-byte words, and the length.
+///
+/// The slot is taken from the product's *high* bits ([`TermHash::home`]): a
+/// product's low `k` bits depend only on its operands' low `k` bits, so for
+/// a term under 8 bytes they are fixed by its length and first byte or two,
+/// and masking them sent every same-length term with a shared first letter
+/// to one slot.
 fn hash(bytes: &[u8]) -> u64 {
     const K: u64 = 0x51_7c_c1_b7_27_22_0a_95;
     let mut h = bytes.len() as u64;
@@ -47,13 +55,18 @@ impl TermHash {
         &self.pool[start..self.ends[ord]]
     }
 
+    /// The slot `term`'s probe starts at: the hash's top `log2(len)` bits.
+    fn home(&self, term: &[u8]) -> usize {
+        (hash(term) >> self.shift) as usize
+    }
+
     /// `BytesRefHash.add`: `term`'s ord, added when new.
     pub(super) fn add(&mut self, term: &[u8]) -> usize {
         if self.table.len() < self.ends.len().saturating_add(1).saturating_mul(2) {
             self.grow();
         }
         let mask = self.table.len() - 1;
-        let mut slot = hash(term) as usize & mask;
+        let mut slot = self.home(term);
         loop {
             match self.table[slot] {
                 0 => break,
@@ -77,9 +90,10 @@ impl TermHash {
     fn grow(&mut self) {
         let size = (self.table.len() * 2).max(16);
         self.table = vec![0; size];
+        self.shift = 64 - size.trailing_zeros();
         let mask = size - 1;
         for ord in 0..self.ends.len() {
-            let mut slot = hash(self.get(ord)) as usize & mask;
+            let mut slot = self.home(self.get(ord));
             while self.table[slot] != 0 {
                 slot = (slot + 1) & mask;
             }
@@ -91,6 +105,38 @@ impl TermHash {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The probes `add` makes for `term` (1 when its home slot answers).
+    fn probes(h: &TermHash, term: &[u8]) -> usize {
+        let mask = h.table.len() - 1;
+        let mut slot = h.home(term);
+        let mut n = 1;
+        while h.table[slot] != 0 && h.get(h.table[slot] as usize - 1) != term {
+            slot = (slot + 1) & mask;
+            n += 1;
+        }
+        n
+    }
+
+    #[test]
+    fn short_terms_sharing_a_first_letter_and_length_spread_out() {
+        // 26 * 26 five-letter terms, all starting with `a`: with the slot
+        // taken from the hash's low bits they shared a handful of home slots
+        let mut h = TermHash::default();
+        let terms: Vec<Vec<u8>> = (b'a'..=b'z')
+            .flat_map(|x| (b'a'..=b'z').map(move |y| vec![b'a', b'p', x, y, b'e']))
+            .collect();
+        for t in &terms {
+            h.add(t);
+        }
+        let total: usize = terms.iter().map(|t| probes(&h, t)).sum();
+        // a uniform hash at load <= 1/2 averages under 1.5 probes
+        assert!(
+            total < terms.len() * 2,
+            "{total} probes for {}",
+            terms.len()
+        );
+    }
 
     #[test]
     fn terms_keep_their_first_seen_ords_through_growth() {

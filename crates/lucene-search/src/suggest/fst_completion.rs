@@ -258,17 +258,17 @@ impl FstCompletion {
         // Look for an exact match first.
         let mut exact: Option<Completion> = None;
         if self.exact_first {
-            for i in 0..self.root_arcs.len() {
-                let bucket = self.exact_match_from_root_arc(i, key)?;
-                if bucket != -1 {
-                    // root arcs are sorted by decreasing weight so any first
-                    // exact match will always win.
-                    exact = Some(Completion {
-                        utf8: key.to_vec(),
-                        bucket,
-                    });
-                    break;
-                }
+            // Java asks from every root arc in turn, but the search from arc
+            // 0 already walks them all and stops at the first exact match:
+            // its answer is the loop's, and a miss is a miss from every arc
+            let bucket = self.exact_match_from_root_arc(0, key)?;
+            if bucket != -1 {
+                // root arcs are sorted by decreasing weight so any first
+                // exact match will always win.
+                exact = Some(Completion {
+                    utf8: key.to_vec(),
+                    bucket,
+                });
             }
         }
         if let Some(e) = &exact {

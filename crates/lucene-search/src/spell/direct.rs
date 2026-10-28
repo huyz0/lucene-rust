@@ -499,8 +499,7 @@ impl DirectSpellChecker {
             let Some(ed) = pattern.edits_within(candidate, max_edits as u8) else {
                 continue;
             };
-            let candidate = candidate.to_vec();
-            let mut score = pattern.boost_from_edits(&candidate, ed);
+            let mut score = pattern.boost_from_edits(candidate, ed);
             // Java's float `!=`: a NaN always differs, -0.0 equals 0.0
             if max_non_competitive != bottom {
                 bottom = max_non_competitive;
@@ -515,6 +514,10 @@ impl DirectSpellChecker {
             if candidate == query {
                 continue;
             }
+            // copied only once it survived the two cheap rejections (Java's
+            // `BytesRef.deepCopyOf` comes later still, but the terms enum
+            // is asked for the frequency next)
+            let candidate = candidate.to_vec();
             let df = te.doc_freq()?;
             // check docFreq if required
             if df <= docfreq {

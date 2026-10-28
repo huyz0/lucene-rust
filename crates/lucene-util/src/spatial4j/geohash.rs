@@ -16,9 +16,26 @@ pub const MAX_PRECISION: usize = 24;
 
 const BITS: [u32; 5] = [16, 8, 4, 2, 1];
 
-/// `BASE_32_IDX`: `'0'..='z'` to its index, `-500` where none.
-fn base32_idx(c: u8) -> Option<i32> {
-    BASE_32.iter().position(|&b| b == c).map(|i| i as i32)
+/// `BASE_32_IDX.length`: Java's sparse table spans `'0'..='z'`, `-500`
+/// (`Arrays.fill`) where a character is not in the alphabet.
+const BASE_32_IDX_LEN: usize = (b'z' - b'0' + 1) as usize;
+
+/// `BASE_32_IDX[c - BASE_32[0]]` for an ASCII character `c` that is not a
+/// (lowercased) geohash character, as Java indexes the table: unchecked, so
+/// a character between `'0'` and `'z'` reads `-500` (and decodes as its
+/// bits), and anything else -- including any non-ASCII unit, all past
+/// `'z'` -- is `ArrayIndexOutOfBoundsException`. `unit` is the UTF-16 unit
+/// Java reads there, for the message.
+#[cold]
+#[inline(never)]
+fn not_base32(c: u8, unit: u16) -> Result<u32> {
+    if (b'0'..=b'z').contains(&c) {
+        return Ok(-500i32 as u32);
+    }
+    let i = i32::from(unit) - i32::from(BASE_32[0]);
+    Err(Error::ArrayIndexOutOfBounds(format!(
+        "Index {i} out of bounds for length {BASE_32_IDX_LEN}"
+    )))
 }
 
 /// `encodeLatLon(latitude, longitude, precision)`.
@@ -60,17 +77,28 @@ pub fn encode_lat_lon(latitude: f64, longitude: f64, precision: usize) -> String
 }
 
 /// `decodeBoundary(geohash, ctx)` before the rectangle is made:
-/// `[minX, maxX, minY, maxY]`. Java indexes its lookup table with the
-/// character unchecked (`ArrayIndexOutOfBoundsException` outside `'0'..'z'`,
-/// garbage within it); this fails for any non-geohash character.
+/// `[minX, maxX, minY, maxY]`. As in Java, the lookup is unchecked: a
+/// character between `'0'` and `'z'` outside the alphabet decodes as
+/// `-500`'s bits, anything else is `ArrayIndexOutOfBoundsException` (see
+/// [`not_base32`]). Java walks UTF-16 units: an ASCII byte is its unit, and
+/// any non-ASCII unit is past `'z'`.
 pub fn decode_boundary_values(geohash: &str) -> Result<[f64; 4]> {
     let (mut min_y, mut max_y, mut min_x, mut max_x) = (-90.0f64, 90.0f64, -180.0f64, 180.0f64);
     let mut is_even = true;
-    for c in geohash.bytes() {
-        let c = c.to_ascii_lowercase();
-        let cd = base32_idx(c).ok_or_else(|| {
-            Error::IllegalArgument(format!("not a geohash character: {}", c as char))
-        })? as u32;
+    for (i, c) in geohash.bytes().enumerate() {
+        // Java lowercases `'A'..='Z'` only, as `to_ascii_lowercase` does.
+        // (A scan of the 32 sorted characters measured faster here than a
+        // lookup table.)
+        let lower = c.to_ascii_lowercase();
+        let cd = match BASE_32.iter().position(|&b| b == lower) {
+            Some(idx) => idx as u32,
+            None => {
+                // Every earlier byte was ASCII, so `i` starts a character:
+                // the unit Java reads there is its first UTF-16 unit.
+                let unit = geohash[i..].encode_utf16().next().unwrap_or(u16::from(c));
+                not_base32(lower, unit)?
+            }
+        };
         for mask in BITS {
             if is_even {
                 if cd & mask != 0 {

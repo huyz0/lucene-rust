@@ -26,3 +26,11 @@ miniz_oxide.workspace = true
 [[bench]]
 name = "util_ops"
 harness = false
+
+[[bench]]
+name = "util_core"
+harness = false
+
+[[bench]]
+name = "spatial3d_ops"
+harness = false

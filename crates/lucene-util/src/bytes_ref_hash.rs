@@ -5,8 +5,9 @@
 //! Terms are stored in 32 KiB blocks, each prefixed by a 1-byte (`< 128`) or
 //! 2-byte big-endian (`| 0x8000`) length, never straddling a block; an id's
 //! "byte start" is the global offset of that prefix. Everything observable
-//! -- ids, `-(id + 1)` for a duplicate, `find`, `sort`'s order, `compact`,
-//! byte starts, the shrink-on-clear table sizes -- matches Lucene; the table
+//! -- ids, `-(id + 1)` for a duplicate, `find`, `sort`'s order, byte starts,
+//! the shrink-on-clear table sizes -- matches Lucene, except the order of
+//! `compact`'s ids (see [`BytesRefHash::compact`]); the table
 //! is open-addressed with Java's linear probing and `murmurhash3_x86_32`
 //! under a per-instance seed (Java's `GOOD_FAST_HASH_SEED`), which decides
 //! slots but nothing a caller can see.
@@ -131,6 +132,17 @@ pub struct BytesRefHash {
     seed: i32,
 }
 
+/// The first eight bytes of `term`, big-endian, zero-padded: comparing two
+/// of these orders terms as unsigned bytes do, up to a tie when one is a
+/// prefix of the other or both share the first eight bytes.
+#[inline]
+fn be_prefix(term: &[u8]) -> u64 {
+    let mut buf = [0u8; 8];
+    let k = term.len().min(8);
+    buf[..k].copy_from_slice(&term[..k]);
+    u64::from_be_bytes(buf)
+}
+
 fn process_seed() -> i32 {
     use std::hash::{BuildHasher, Hasher};
     let mut h = std::collections::hash_map::RandomState::new().build_hasher();
@@ -202,30 +214,51 @@ impl BytesRefHash {
         murmurhash3_x86_32(bytes, self.seed)
     }
 
-    /// `compact()`: `0..count` then `-1`s, `hashSize` long.
+    /// `compact()`: the ids, then `-1`s, `hashSize` long.
+    ///
+    /// Java packs the ids in hash-slot order, which depends on the hash seed
+    /// and so is unspecified to every caller; this returns them in id order
+    /// (`0..count`). No caller in this port reads the order (every one that
+    /// needs an order calls [`Self::sort`]), so the cheaper fill is kept.
     pub fn compact(&mut self) -> Vec<i32> {
         self.last_count = self.count as i64;
-        let mut out: Vec<i32> = (0..self.count as i32).collect();
-        out.resize(self.hash_size, -1);
-        if let Some(ids) = &mut self.ids {
-            ids.copy_from_slice(&out);
-        }
-        out
+        let n = self.count as i32;
+        let ids = self.ids.get_or_insert_with(Vec::new);
+        ids.clear();
+        ids.extend(0..n);
+        ids.resize(self.hash_size, -1);
+        ids.clone()
     }
 
     /// `sort()`: the ids ordered by their bytes (unsigned), then `-1`s. Like
     /// Java, this destroys the table (`compact` first); only `clear` makes
     /// the hash usable again.
+    ///
+    /// Terms are unique, so the order is fully determined whatever the
+    /// algorithm (Java's `StringSorter` MSB radix sort gives the same).
+    /// Each id is resolved once to its bytes and a big-endian 8-byte prefix:
+    /// most comparisons are then a single integer compare, and only a tie on
+    /// the prefix compares the term bytes.
     pub fn sort(&mut self) -> Vec<i32> {
-        let mut out = self.compact();
+        self.last_count = self.count as i64;
         let n = self.count;
+        let mut out = Vec::with_capacity(self.hash_size);
         if let Some(starts) = &self.bytes_start {
             let pool = &self.pool;
-            out[..n].sort_unstable_by(|&a, &b| {
-                pool.get(starts[a as usize])
-                    .cmp(pool.get(starts[b as usize]))
-            });
+            let mut keyed: Vec<(u64, &[u8], i32)> = starts[..n]
+                .iter()
+                .enumerate()
+                .map(|(id, &start)| {
+                    let term = pool.get(start);
+                    (be_prefix(term), term, id as i32)
+                })
+                .collect();
+            keyed.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+            out.extend(keyed.iter().map(|k| k.2));
+        } else {
+            out.extend(0..n as i32);
         }
+        out.resize(self.hash_size, -1);
         if let Some(ids) = &mut self.ids {
             ids.copy_from_slice(&out);
         }
@@ -273,14 +306,15 @@ impl BytesRefHash {
         self.ids = None;
     }
 
-    /// `reinit()`. Faithful to Java, a table dropped by `close` comes back
-    /// zero-filled (not `-1`-filled), which Java never exercises.
+    /// `reinit()`. A table dropped by `close` comes back empty (`-1`-filled):
+    /// a zero-filled one would read every slot as occupied, and the next
+    /// `add` would probe forever.
     pub fn reinit(&mut self) {
         if self.bytes_start.is_none() {
             self.bytes_start = Some(Vec::new());
         }
         if self.ids.is_none() {
-            self.ids = Some(vec![0; self.hash_size]);
+            self.ids = Some(vec![-1; self.hash_size]);
         }
     }
 
@@ -466,6 +500,54 @@ mod tests {
         c.close();
         c.reinit();
         assert_eq!(c.size(), 0);
+        // Regression: `reinit` after `close` used to zero-fill the table,
+        // which made this `add` probe forever.
+        assert_eq!(c.add(b"q").unwrap(), 0);
+        assert_eq!(c.add(b"r").unwrap(), 1);
+        assert_eq!(c.add(b"q").unwrap(), -1);
+        assert_eq!(c.find(b"r").unwrap(), 1);
+        assert_eq!(c.find(b"s").unwrap(), -1);
         assert_eq!(BytesRefBlockPool::default().blocks.len(), 0);
+    }
+
+    #[test]
+    fn sort_matches_plain_byte_order() {
+        // Prefix ties (shared 8-byte prefixes, a term that is a prefix of
+        // another, embedded zero bytes) all resolve as unsigned byte order.
+        let mut words: Vec<Vec<u8>> = vec![
+            b"".to_vec(),
+            b"\0".to_vec(),
+            b"abcdefgh".to_vec(),
+            b"abcdefgh\0".to_vec(),
+            b"abcdefghi".to_vec(),
+            b"abcdefgg\xff".to_vec(),
+            b"\xff\xfe".to_vec(),
+            b"ab".to_vec(),
+            b"ab\0".to_vec(),
+        ];
+        let mut s = 7u64;
+        for _ in 0..500 {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let len = (s >> 60) as usize;
+            let w: Vec<u8> = (0..len).map(|i| (s >> (i * 4)) as u8 & 0x83).collect();
+            words.push(w);
+        }
+        let mut h = BytesRefHash::with_capacity(4, 3).unwrap();
+        for w in &words {
+            h.add(w).unwrap();
+        }
+        let n = h.size();
+        let sorted = h.sort();
+        let got: Vec<&[u8]> = sorted[..n]
+            .iter()
+            .map(|&id| h.get(id as usize).unwrap())
+            .collect();
+        let mut want: Vec<&[u8]> = got.clone();
+        want.sort();
+        want.dedup();
+        assert_eq!(got, want);
+        assert!(sorted[n..].iter().all(|&v| v == -1));
+        let compacted = h.compact();
+        assert_eq!(&compacted[..n], &(0..n as i32).collect::<Vec<_>>()[..]);
     }
 }
