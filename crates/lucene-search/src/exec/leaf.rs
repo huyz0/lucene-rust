@@ -76,6 +76,15 @@ impl Scorer for TermScorer<'_> {
         self.leg.cost
     }
 
+    /// A bit-set postings block answers membership with one bit test.
+    #[inline]
+    fn advance_exact_cheap(&mut self, target: i32) -> Option<bool> {
+        if self.impacts {
+            return None;
+        }
+        crate::bulk_scorer::BulkLeg::advance_exact_cheap(&mut self.leg, target)
+    }
+
     #[inline]
     fn score(&mut self) -> Result<f32> {
         self.leg.score()
