@@ -176,7 +176,7 @@
 //!
 //! # Postings
 //!
-//! [`merge_postings`] walks each source's term dictionary with [`TermCursor`]
+//! [`merge_term_range`] walks each source's term dictionary with [`TermCursor`]
 //! and selects the smallest current term across sources. It maps each source's
 //! doc/frequency pairs through [`build_doc_id_maps`], drops deleted documents,
 //! and sorts mapped documents when the merged index sort interleaves sources.
@@ -222,7 +222,7 @@
 //! `lucene_search`'s points range query already uses -- no new BKD decode
 //! logic was written for this merge), drops non-live docs and remaps
 //! surviving doc ids to the merged id space (reusing
-//! [`build_doc_id_maps`], the same mechanism [`merge_postings`] uses), and
+//! [`build_doc_id_maps`], the same mechanism [`merge_term_range`] uses), and
 //! hands the per-source streams to [`lucene_codecs::points::write_merged_with_mode`]:
 //! a one-dimensional field is k-way merged by value when every source has a
 //! native points reader, as `BKDWriter.merge` does. A point-free source selects
@@ -668,7 +668,7 @@ pub struct SourceSortedSetDocValues<'a> {
 ///
 /// `pos_in`/`pay_in` are this source's already-opened `.pos`/`.pay` file
 /// readers (via [`lucene_codecs::postings::PosInput::open`]/
-/// [`lucene_codecs::postings::PayInput::open`]), needed by [`merge_postings`]
+/// [`lucene_codecs::postings::PayInput::open`]), needed by [`merge_term_range`]
 /// whenever the merged field's `index_options` indexes positions
 /// ([`IndexOptions::DocsAndFreqsAndPositions`] or
 /// [`IndexOptions::DocsAndFreqsAndPositionsAndOffsets`]) -- both are `None`
@@ -4918,7 +4918,7 @@ fn source_ord_to_doc(
 /// entry points -- concatenation visits a source's live docs in ascending
 /// order, and the k-way sorted merge preserves each source's internal order
 /// because every source is already sorted by the same key. That is what lets
-/// [`merge_postings`] treat one source's contribution to a term as already
+/// [`merge_term_range`] treat one source's contribution to a term as already
 /// ascending and only interleave across sources.
 ///
 /// # Representation
@@ -4986,7 +4986,7 @@ fn in_source_order(
 
 /// Inverts the `original field number -> merged field number` maps
 /// [`reconcile_field_numbers`] returns, once per merge, so
-/// [`merge_postings`]/[`merge_points`] can answer "what did *this* source
+/// [`plan_postings`]/[`merge_points`] can answer "what did *this* source
 /// call the field the merged segment numbers `n`?" with a single hash lookup
 /// instead of a linear scan of the whole forward map per (candidate field,
 /// source) pair -- which is `O(fields^2 * sources)` on a wide schema.
@@ -5444,7 +5444,7 @@ struct PostingsFieldPlan<'a, 'b> {
     shape: FieldShape,
 }
 
-/// The fields [`merge_postings`] merges, in field-number order, each with its
+/// The fields the merge writes postings for, in field-number order, each with its
 /// contributing sources resolved: every check that needs no term decoded.
 fn plan_postings<'a, 'b>(
     sources: &'a [MergeSource<'b>],
@@ -5883,7 +5883,7 @@ impl points::IntersectVisitor for CollectPoints<'_> {
 /// query uses, walked by [`CollectPoints`] into a flat [`PointStream`]),
 /// drops non-live docs and remaps surviving doc ids to the
 /// merged id space via [`build_doc_id_maps`] (same mechanism
-/// [`merge_postings`] uses), and combines the sources' streams
+/// [`merge_term_range`] uses), and combines the sources' streams
 /// ([`points::write_merged`]). The BKD writer rebuilds the merged BKD
 /// tree (leaf plan, packed index, bounding boxes) from this flat list
 /// itself, so there is no tree-merging logic to get wrong here, and -- like

@@ -529,20 +529,20 @@ pub struct StreamedFieldSpec {
     pub has_payloads: bool,
 }
 
-/// [`write`], with each field's terms supplied as the writer reaches it
+/// [`write()`], with each field's terms supplied as the writer reaches it
 /// instead of up front -- `PerFieldPostingsFormat.FieldsWriter.merge` over a
 /// `MultiFields` view. `fill(i, writer)` adds field `fields[i]`'s terms in
 /// order ([`StreamingFieldsWriter::add_terms`], any number of batches) and
 /// returns its `docsSeen` count; fields are asked for group by group, each
-/// group in name order, as [`write`] writes them.
+/// group in name order, as [`write()`] writes them.
 ///
 /// `Ok(None)`, before anything is asked, when some field's format is not
 /// the block-tree `Lucene104` one (another terms dictionary, or
 /// `Completion104`): those encoders need the whole field, so the caller
-/// gathers it and calls [`write`].
+/// gathers it and calls [`write()`].
 ///
 /// # Errors
-/// What [`write`] rejects, and what `fill` fails with.
+/// What [`write()`] rejects, and what `fill` fails with.
 pub fn write_streaming<E: From<postings_writer::Error>>(
     fields: &[StreamedFieldSpec],
     segment_fields: &[FieldInfo],
