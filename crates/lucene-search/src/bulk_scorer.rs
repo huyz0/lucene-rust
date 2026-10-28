@@ -929,7 +929,7 @@ impl<'a> TermLeg<'a> {
         if self.constant_scorer {
             return self.constant_docs_and_scores(up_to, max, live_docs, out);
         }
-        self.next_docs_and_scores_limited(up_to, max, live_docs, |_| Ok(true), out)
+        self.next_docs_and_scores_limited::<false>(up_to, max, live_docs, |_| Ok(true), out)
     }
 
     /// `ConstantScoreScorer.nextDocsAndScores`: up to 64 live documents
@@ -971,10 +971,13 @@ impl<'a> TermLeg<'a> {
         accept: impl FnMut(i32) -> Result<bool>,
         out: &mut DocScores,
     ) -> Result<()> {
-        self.next_docs_and_scores_limited(up_to, usize::MAX, live_docs, accept, out)
+        self.next_docs_and_scores_limited::<true>(up_to, usize::MAX, live_docs, accept, out)
     }
 
-    fn next_docs_and_scores_limited(
+    /// `FILTERED` is false when `accept` takes every document: then a batch
+    /// with no deletions to drop is scored as read, without the compaction
+    /// pass copying every document and frequency onto itself.
+    fn next_docs_and_scores_limited<const FILTERED: bool>(
         &mut self,
         up_to: i32,
         max: usize,
@@ -989,6 +992,9 @@ impl<'a> TermLeg<'a> {
             if out.docs.is_empty() {
                 break;
             }
+            if !FILTERED && live_docs.is_none() {
+                break;
+            }
             // Branch-free compaction, as `filterCompetitiveHits`: every
             // document is written and the write position moves on only past
             // a kept one. A filter such as a cached range keeps a third of a
@@ -998,7 +1004,7 @@ impl<'a> TermLeg<'a> {
             let mut n = 0;
             for i in 0..out.docs.len() {
                 let d = out.docs[i];
-                let keep = live_docs.is_none_or(|l| l.get_doc(d)) && accept(d)?;
+                let keep = live_docs.is_none_or(|l| l.get_doc(d)) && (!FILTERED || accept(d)?);
                 out.docs[n] = d;
                 self.freqs[n] = self.freqs[i];
                 n += usize::from(keep);

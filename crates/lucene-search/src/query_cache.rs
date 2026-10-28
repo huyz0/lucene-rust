@@ -282,10 +282,16 @@ where
         }
 
         self.miss_count += 1;
-        let set = Arc::new(CachedDocIdSet::from_bitset(compute()?));
-        if policy.should_cache(&key.query) {
-            self.insert(key, Arc::clone(&set), now);
+        // Java asks the policy before it reads anything
+        // (`CachingWrapperWeight.scorerSupplier`); a set that will not be
+        // kept skips the roaring conversion it would only be cached in.
+        if !policy.should_cache(&key.query) {
+            let bits = compute()?;
+            let cardinality = bits.cardinality();
+            return Ok(Arc::new(CachedDocIdSet::Bits { bits, cardinality }));
         }
+        let set = Arc::new(CachedDocIdSet::from_bitset(compute()?));
+        self.insert(key, Arc::clone(&set), now);
         Ok(set)
     }
 

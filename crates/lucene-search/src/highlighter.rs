@@ -98,7 +98,7 @@
 //! [`TermOffsetSpan`]'s offsets, [`Fragment::start_offset`]/
 //! [`Fragment::end_offset`], [`FragmentConfig::window_chars`], and the
 //! `contentLength`/`passageLength` [`PassageScorer`] consumes (Java's are the
-//! same `String` lengths). [`utf16_offset_to_byte`] converts one to a UTF-8
+//! same `String` lengths). `utf16_offset_to_byte` converts one to a UTF-8
 //! byte offset by walking `char_indices()` and accumulating `len_utf16()`, so
 //! slicing `full_text` always lands on a valid UTF-8 boundary -- it cannot
 //! panic on a multi-byte character even if the input offsets are wrong or
@@ -499,6 +499,7 @@ use std::collections::HashMap;
 /// Lucene analyzer ever does -- a token boundary is always a code-point
 /// boundary) rounds down to that code point's start, which is the nearest
 /// valid UTF-8 boundary and keeps the slice well-formed.
+#[cfg(test)]
 fn utf16_offset_to_byte(text: &str, utf16_offset: usize) -> usize {
     let mut units = 0usize;
     for (byte_idx, c) in text.char_indices() {
@@ -513,6 +514,7 @@ fn utf16_offset_to_byte(text: &str, utf16_offset: usize) -> usize {
 
 /// `text`'s length in UTF-16 code units -- what `String.length()` returns for
 /// the same text in Java, and the unit every offset in this module is in.
+#[cfg(test)]
 fn utf16_len(text: &str) -> usize {
     text.chars().map(char::len_utf16).sum()
 }
@@ -521,7 +523,7 @@ fn utf16_len(text: &str) -> usize {
 /// a window end) to the nearest ASCII-or-Unicode whitespace boundary within
 /// `text`, so a fragment window doesn't start or end mid-word. Falls back
 /// to the original offset (which is always a valid char boundary, since
-/// [`utf16_offset_to_byte`] only ever returns char-boundary indices) if no
+/// `utf16_offset_to_byte` only ever returns char-boundary indices) if no
 /// whitespace is found before reaching the text's start/end.
 fn snap_start_to_whitespace(text: &str, byte_offset: usize) -> usize {
     let before = &text[..byte_offset];
@@ -540,6 +542,55 @@ fn snap_end_to_whitespace(text: &str, byte_offset: usize) -> usize {
     match after.find(char::is_whitespace) {
         Some(ws_byte_idx) => byte_offset + ws_byte_idx,
         None => text.len(),
+    }
+}
+
+/// [`snap_start_to_whitespace`] over a run of offsets, remembering the last
+/// answer: for a later offset only the text since the previous one is
+/// searched, so text with no whitespace (CJK) costs O(text) for the whole
+/// run instead of O(text) per match. Offsets that go backwards fall back to
+/// the plain scan.
+#[derive(Default)]
+struct SnapStart {
+    /// `(offset, answer)` of the previous call.
+    last: Option<(usize, usize)>,
+}
+
+impl SnapStart {
+    fn snap(&mut self, text: &str, byte_offset: usize) -> usize {
+        let answer = match self.last {
+            Some((prev, prev_answer)) if prev <= byte_offset => {
+                match text[prev..byte_offset].rfind(char::is_whitespace) {
+                    Some(_) => snap_start_to_whitespace(&text[..byte_offset], byte_offset),
+                    None => prev_answer,
+                }
+            }
+            _ => snap_start_to_whitespace(text, byte_offset),
+        };
+        self.last = Some((byte_offset, answer));
+        answer
+    }
+}
+
+/// [`snap_end_to_whitespace`], remembering the last answer: an offset at or
+/// after the previous one and not past its answer has the same answer
+/// (no whitespace lies between them).
+#[derive(Default)]
+struct SnapEnd {
+    /// `(offset, answer)` of the previous call.
+    last: Option<(usize, usize)>,
+}
+
+impl SnapEnd {
+    fn snap(&mut self, text: &str, byte_offset: usize) -> usize {
+        let answer = match self.last {
+            Some((prev, prev_answer)) if prev <= byte_offset && byte_offset <= prev_answer => {
+                prev_answer
+            }
+            _ => snap_end_to_whitespace(text, byte_offset),
+        };
+        self.last = Some((byte_offset, answer));
+        answer
     }
 }
 
@@ -574,7 +625,8 @@ pub fn assemble_fragments(
         return Vec::new();
     }
 
-    let total_utf16 = utf16_len(full_text);
+    let map = Utf16Map::new(full_text);
+    let total_utf16 = map.total_utf16;
 
     // Convert every valid span to (byte_start, byte_end, utf16_start,
     // utf16_end, term) and its own raw (unmerged) window, sorted by match
@@ -591,8 +643,8 @@ pub fn assemble_fragments(
             let start_utf16 = s.start_offset as usize;
             let end_utf16 = (s.end_offset as usize).min(total_utf16);
             (
-                utf16_offset_to_byte(full_text, start_utf16),
-                utf16_offset_to_byte(full_text, end_utf16),
+                map.to_byte(start_utf16),
+                map.to_byte(end_utf16),
                 start_utf16,
                 end_utf16,
                 s.term.clone(),
@@ -608,13 +660,15 @@ pub fn assemble_fragments(
     // Sweep matches left-to-right, merging into clusters whenever a
     // match's raw window overlaps (or abuts) the running cluster's window.
     let mut clusters: Vec<Cluster> = Vec::new();
+    let mut snap_start = SnapStart::default();
+    let mut snap_end = SnapEnd::default();
     for (match_start, match_end, start_utf16, end_utf16, term) in matches {
         let raw_window_start_utf16 = start_utf16.saturating_sub(config.window_chars);
         let raw_window_end_utf16 = (end_utf16 + config.window_chars).min(total_utf16);
-        let raw_window_start = utf16_offset_to_byte(full_text, raw_window_start_utf16);
-        let raw_window_end = utf16_offset_to_byte(full_text, raw_window_end_utf16);
-        let window_start = snap_start_to_whitespace(full_text, raw_window_start);
-        let window_end = snap_end_to_whitespace(full_text, raw_window_end);
+        let raw_window_start = map.to_byte(raw_window_start_utf16);
+        let raw_window_end = map.to_byte(raw_window_end_utf16);
+        let window_start = snap_start.snap(full_text, raw_window_start);
+        let window_end = snap_end.snap(full_text, raw_window_end);
 
         match clusters.last_mut() {
             Some(last) if window_start <= last.window_end => {
@@ -690,8 +744,8 @@ pub fn assemble_fragments(
     let mut scored: Vec<(f32, Cluster)> = clusters
         .into_iter()
         .map(|cluster| {
-            let start_utf16 = byte_offset_to_utf16(full_text, cluster.window_start);
-            let end_utf16 = byte_offset_to_utf16(full_text, cluster.window_end);
+            let start_utf16 = map.to_utf16(cluster.window_start);
+            let end_utf16 = map.to_utf16(cluster.window_end);
             let mut passage_freqs: HashMap<&str, usize> = HashMap::new();
             for (_, _, term) in &cluster.matches {
                 *passage_freqs.entry(term.as_str()).or_insert(0) += 1;
@@ -731,15 +785,77 @@ pub fn assemble_fragments(
 
     scored
         .into_iter()
-        .map(|(score, cluster)| render_cluster(full_text, &cluster, config, score))
+        .map(|(score, cluster)| render_cluster(&map, &cluster, config, score))
         .collect()
 }
 
 /// Inverse of [`utf16_offset_to_byte`]: how many UTF-16 code units precede
 /// `byte_offset` in `text`. Used to report a fragment's boundaries (and to
 /// feed [`PassageScorer`]) in the same unit [`TermOffsetSpan`] uses.
+#[cfg(test)]
 fn byte_offset_to_utf16(text: &str, byte_offset: usize) -> usize {
     utf16_len(&text[..byte_offset.min(text.len())])
+}
+
+/// `utf16_offset_to_byte` and `byte_offset_to_utf16` over one text,
+/// answered by binary search over a table built once, instead of a rescan
+/// from the text's start per offset (which made fragment assembly
+/// O(matches x text length)). ASCII text, where both units agree, needs no
+/// table at all.
+struct Utf16Map<'t> {
+    text: &'t str,
+    total_utf16: usize,
+    /// `(utf16 offset, byte offset)` of every char's start, ascending in
+    /// both; empty for ASCII text.
+    starts: Vec<(usize, usize)>,
+}
+
+impl<'t> Utf16Map<'t> {
+    fn new(text: &'t str) -> Self {
+        if text.is_ascii() {
+            return Utf16Map {
+                text,
+                total_utf16: text.len(),
+                starts: Vec::new(),
+            };
+        }
+        let mut starts = Vec::with_capacity(text.len());
+        let mut units = 0usize;
+        for (byte_idx, c) in text.char_indices() {
+            starts.push((units, byte_idx));
+            units += c.len_utf16();
+        }
+        Utf16Map {
+            text,
+            total_utf16: units,
+            starts,
+        }
+    }
+
+    /// `utf16_offset_to_byte`.
+    fn to_byte(&self, utf16_offset: usize) -> usize {
+        if utf16_offset >= self.total_utf16 {
+            return self.text.len();
+        }
+        if self.starts.is_empty() {
+            return utf16_offset;
+        }
+        // The char whose units cover `utf16_offset`: the last one starting
+        // at or before it (chars tile the unit space, and the first starts
+        // at 0, so there is one).
+        let i = self.starts.partition_point(|&(u, _)| u <= utf16_offset);
+        self.starts[i - 1].1
+    }
+
+    /// `byte_offset_to_utf16`, for a char-boundary `byte_offset`.
+    fn to_utf16(&self, byte_offset: usize) -> usize {
+        let byte_offset = byte_offset.min(self.text.len());
+        if self.starts.is_empty() {
+            return byte_offset;
+        }
+        let i = self.starts.partition_point(|&(_, b)| b < byte_offset);
+        self.starts.get(i).map_or(self.total_utf16, |&(u, _)| u)
+    }
 }
 
 /// Renders one cluster into a [`Fragment`], a port of
@@ -748,11 +864,12 @@ fn byte_offset_to_utf16(text: &str, byte_offset: usize) -> usize {
 /// any run of *overlapping* matches into a single wrapped span, exactly as
 /// Java does -- in `pre`/`post`, and finish with the passage's trailing text.
 fn render_cluster(
-    full_text: &str,
+    map: &Utf16Map<'_>,
     cluster: &Cluster,
     config: &FragmentConfig,
     score: f32,
 ) -> Fragment {
+    let full_text = map.text;
     // `matched_terms` in left-to-right first-occurrence order.
     let mut matched_terms: Vec<String> = Vec::new();
     for (_, _, term) in &cluster.matches {
@@ -804,8 +921,8 @@ fn render_cluster(
     Fragment {
         text,
         matched_terms,
-        start_offset: byte_offset_to_utf16(full_text, cluster.window_start),
-        end_offset: byte_offset_to_utf16(full_text, cluster.window_end),
+        start_offset: map.to_utf16(cluster.window_start),
+        end_offset: map.to_utf16(cluster.window_end),
         score,
     }
 }
@@ -1238,6 +1355,58 @@ fn sort_offsets_enum_order(spans: &mut [TermOffsetSpan]) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn utf16_map_agrees_with_the_scans_at_every_offset() {
+        for text in [
+            "",
+            "plain ascii",
+            "a\u{e9}\u{1F600}b \u{4e2d}\u{6587}",
+            "\u{1F600}\u{1F600}",
+        ] {
+            let map = Utf16Map::new(text);
+            assert_eq!(map.total_utf16, utf16_len(text));
+            for u in 0..=utf16_len(text) + 2 {
+                assert_eq!(
+                    map.to_byte(u),
+                    utf16_offset_to_byte(text, u),
+                    "{text:?} unit {u}"
+                );
+            }
+            for (b, _) in text.char_indices().chain([(text.len(), ' ')]) {
+                assert_eq!(
+                    map.to_utf16(b),
+                    byte_offset_to_utf16(text, b),
+                    "{text:?} byte {b}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn whitespace_snaps_with_memory_agree_with_the_scans() {
+        let text = "\u{4e2d}\u{6587}\u{6587} ab  cd\u{6587}\u{6587} e";
+        let offsets: Vec<usize> = text
+            .char_indices()
+            .map(|(b, _)| b)
+            .chain([text.len()])
+            .collect();
+        let mut start = SnapStart::default();
+        let mut end = SnapEnd::default();
+        // Ascending, then a step back, as cluster windows can do.
+        for &b in offsets.iter().chain(offsets.iter().rev().take(3)) {
+            assert_eq!(
+                start.snap(text, b),
+                snap_start_to_whitespace(text, b),
+                "start {b}"
+            );
+            assert_eq!(
+                end.snap(text, b),
+                snap_end_to_whitespace(text, b),
+                "end {b}"
+            );
+        }
+    }
+
     use super::*;
 
     fn span(term: &str, start: i32, end: i32) -> TermOffsetSpan {
