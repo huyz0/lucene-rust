@@ -959,6 +959,8 @@ pub(crate) struct OrSpans<'a> {
     last_match: Vec<i32>,
     last_non_match: Vec<i32>,
     heap: Vec<usize>,
+    /// [`Self::top_list`]'s output, kept to reuse its allocation.
+    list: Vec<usize>,
     by_position: IndexQueue,
     top_position: Option<usize>,
     last_doc_two_phase_matched: i32,
@@ -976,6 +978,7 @@ impl<'a> OrSpans<'a> {
             last_match: vec![-2; n],
             last_non_match: vec![-2; n],
             heap: Vec::with_capacity(n),
+            list: Vec::with_capacity(n),
             by_position: IndexQueue::new(n),
             top_position: None,
             last_doc_two_phase_matched: -1,
@@ -1058,7 +1061,8 @@ impl<'a> OrSpans<'a> {
         self.heap[0]
     }
 
-    /// `topList()`, in Java's linked-list order.
+    /// `topList()`, in Java's linked-list order, taken out of
+    /// [`Self::list`]; the caller puts it back when done.
     fn top_list(&mut self) -> Vec<usize> {
         let size = self.heap.len();
         let mut list = self.heap[0];
@@ -1071,7 +1075,8 @@ impl<'a> OrSpans<'a> {
             self.next[w] = Some(list);
             list = w;
         }
-        let mut out = Vec::new();
+        let mut out = std::mem::take(&mut self.list);
+        out.clear();
         let mut at = Some(list);
         while let Some(w) = at {
             out.push(w);
@@ -1115,7 +1120,8 @@ impl<'a> OrSpans<'a> {
 
     /// `fillPositionQueue()`.
     fn fill_position_queue(&mut self) -> Result<()> {
-        for w in self.top_list() {
+        let list = self.top_list();
+        for &w in &list {
             let mut include = true;
             if self.last_doc_two_phase_matched == self.docs[w] && self.subs[w].two_phase() {
                 // `matches()` said no, or (not asked yet) says no now.
@@ -1132,6 +1138,7 @@ impl<'a> OrSpans<'a> {
                 self.by_position = q;
             }
         }
+        self.list = list;
         Ok(())
     }
 }
@@ -1174,7 +1181,7 @@ impl Spans for OrSpans<'_> {
         let list = self.top_list();
         let current = self.docs[list[0]];
         let mut matched = false;
-        for w in list {
+        for &w in &list {
             if !self.subs[w].two_phase() {
                 matched = true;
                 break;
@@ -1186,6 +1193,7 @@ impl Spans for OrSpans<'_> {
             }
             self.last_non_match[w] = current;
         }
+        self.list = list;
         if !matched {
             return Ok(false);
         }
