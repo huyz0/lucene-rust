@@ -50,7 +50,7 @@ pub struct RunAutomaton {
     /// points are strictly increasing from `points[0] == 0`, so
     /// `points[i] >= i`, and class `i` of a label `j < 256` has
     /// `points[i] <= j`, so `i <= 255`.
-    classmap: [u8; 256],
+    classmap: Box<[u8; 256]>,
 }
 
 impl RunAutomaton {
@@ -105,7 +105,7 @@ impl RunAutomaton {
                 .all(|(&p, &d)| a.step(n, p) == d));
         }
         debug_assert!(np >= 1 && points[0] == 0);
-        let mut classmap = [0u8; 256];
+        let mut classmap = Box::new([0u8; 256]);
         let mut i = 0usize;
         for (j, slot) in classmap.iter_mut().enumerate() {
             if i + 1 < np && j as i32 == points[i + 1] {
