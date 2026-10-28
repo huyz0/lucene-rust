@@ -202,10 +202,50 @@ static RUN_SCRIPTS: [u8; 878] = [
 
 /// The script of a UTF-16 unit (`UnicodeScript.of(unit)`), as an index
 /// into [`SCRIPT_NAMES`]. Surrogates are `UNKNOWN`.
+#[inline]
 pub fn unicode_script_of(unit: u16) -> u8 {
+    BMP_SCRIPTS[usize::from(unit)]
+}
+
+/// [`unicode_script_of`] by run search; [`BMP_SCRIPTS`] is built from it.
+fn script_by_run(unit: u16) -> u8 {
     let run = RUN_STARTS.partition_point(|&s| s <= unit).saturating_sub(1);
     RUN_SCRIPTS.get(run).copied().unwrap_or(0)
 }
+
+/// Every unit's script, expanded once from the runs (one load per
+/// character where the run search took ten dependent steps).
+static BMP_SCRIPTS: std::sync::LazyLock<Box<[u8; 0x10000]>> = std::sync::LazyLock::new(|| {
+    let mut t = Box::new([0u8; 0x10000]);
+    for (unit, slot) in t.iter_mut().enumerate() {
+        *slot = script_by_run(unit as u16);
+    }
+    t
+});
+
+/// The index of `name` in [`SCRIPT_NAMES`] (`u8::MAX` if absent).
+const fn script_index(name: &str) -> u8 {
+    let mut i = 0;
+    while i < SCRIPT_NAMES.len() {
+        let (a, b) = (SCRIPT_NAMES[i].as_bytes(), name.as_bytes());
+        if a.len() == b.len() {
+            let mut j = 0;
+            while j < a.len() && a[j] == b[j] {
+                j += 1;
+            }
+            if j == a.len() {
+                return i as u8;
+            }
+        }
+        i += 1;
+    }
+    u8::MAX
+}
+
+/// [`unicode_script_of`]'s answer for `COMMON`.
+pub const COMMON: u8 = script_index("COMMON");
+/// [`unicode_script_of`]'s answer for `INHERITED`.
+pub const INHERITED: u8 = script_index("INHERITED");
 
 /// `UnicodeScript.name()` of [`unicode_script_of`]'s answer.
 pub fn unicode_script_name(script: u8) -> &'static str {
@@ -218,6 +258,13 @@ pub fn unicode_script_name(script: u8) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bmp_table_is_the_runs() {
+        for u in 0..=u16::MAX {
+            assert_eq!(unicode_script_of(u), script_by_run(u), "{u:#x}");
+        }
+    }
 
     #[test]
     fn scripts_of_the_jdk() {

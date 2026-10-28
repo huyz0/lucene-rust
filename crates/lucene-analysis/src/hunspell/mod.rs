@@ -35,9 +35,9 @@ pub use word_form_generator::{
     EverythingPossible, FragmentChecker, NGramFragmentChecker, WordFormGenerator,
 };
 
-use crate::attributes::State;
 use crate::token_stream::{TokenFilter, TokenStream};
 use crate::AnalysisError;
+use crate::StateSlot;
 
 /// `Dictionary.FLAG_UNSET`.
 pub(crate) const FLAG_UNSET: u16 = 0;
@@ -100,7 +100,7 @@ pub struct HunspellStemFilter<I> {
     buffer: Vec<Vec<u16>>,
     /// The current term's units (reused across tokens).
     term: Vec<u16>,
-    saved_state: Option<State>,
+    saved_state: StateSlot,
     dedup: bool,
     longest_only: bool,
 }
@@ -119,7 +119,7 @@ impl<I: TokenStream> HunspellStemFilter<I> {
             dictionary,
             buffer: Vec::new(),
             term: Vec::new(),
-            saved_state: None,
+            saved_state: StateSlot::new(),
             dedup: dedup && !longest_only,
             longest_only,
         }
@@ -138,7 +138,7 @@ impl<I: TokenStream> TokenFilter for HunspellStemFilter<I> {
         if !self.buffer.is_empty() {
             let next = self.buffer.remove(0);
             let a = self.input.attributes_mut();
-            if let Some(state) = &self.saved_state {
+            if let Some(state) = self.saved_state.get() {
                 a.restore_state(state);
             }
             a.set_position_increment(0)?;
@@ -171,7 +171,7 @@ impl<I: TokenStream> TokenFilter for HunspellStemFilter<I> {
         if self.longest_only {
             buffer.clear();
         } else if !buffer.is_empty() {
-            self.saved_state = Some(a.capture_state());
+            self.saved_state.save(a);
         }
         self.buffer = buffer;
         Ok(true)

@@ -6,8 +6,10 @@
 
 use std::sync::Arc;
 
-use lucene_analysis::java_character::{self as jc, get_type, is_digit, NON_SPACING_MARK};
-use lucene_analysis::java_unicode_script::{unicode_script_name, unicode_script_of};
+use lucene_analysis::java_character::{
+    self as jc, get_type, is_digit, DECIMAL_DIGIT_NUMBER, NON_SPACING_MARK,
+};
+use lucene_analysis::java_unicode_script::{unicode_script_of, COMMON, INHERITED};
 use lucene_analysis::morph::viterbi::{add, read_char, MAX_UNKNOWN_WORD_LENGTH};
 use lucene_analysis::morph::{
     GraphvizFormatter, MorphData, MorphToken, TokenType, Viterbi, ViterbiLang,
@@ -78,7 +80,7 @@ pub(crate) fn is_punctuation(ch: u16, cid: u8) -> bool {
 }
 
 fn is_common_or_inherited(script: u8) -> bool {
-    matches!(unicode_script_name(script), "INHERITED" | "COMMON")
+    script == COMMON || script == INHERITED
 }
 
 /// `isSameScript(one, two)`.
@@ -150,6 +152,15 @@ impl ViterbiLang<Token> for KoViterbi {
         }
     }
 
+    #[inline]
+    fn connection(&self, t: TokenType, word_id: i32) -> (i32, i32, i32) {
+        match (t, &self.user) {
+            (TokenType::User, Some(u)) => u.morph_attributes().connection(word_id),
+            (TokenType::Unknown, _) => self.unknown.morph_attributes().connection(word_id),
+            _ => self.known.morph_attributes().connection(word_id),
+        }
+    }
+
     fn known_word_ids(&self, source_id: i32) -> &[i32] {
         self.known.lookup_word_ids(source_id)
     }
@@ -198,7 +209,7 @@ impl ViterbiLang<Token> for KoViterbi {
         pos_data: i32,
     ) -> Result<i32, AnalysisError> {
         let first = read_char(v, reader, v.pos)? as u16;
-        let cd = Arc::clone(&self.character_definition);
+        let cd = &*self.character_definition;
         if any_matches && !cd.is_invoke(first) {
             return Ok(0);
         }
@@ -226,7 +237,7 @@ impl ViterbiLang<Token> for KoViterbi {
                 let same_script = is_same_script(script_code, sc) || ch_type == NON_SPACING_MARK;
                 if same_script
                     && is_punctuation(ch, ch_type) == is_punct
-                    && is_digit(u32::from(ch)) == first_is_digit
+                    && (ch_type == DECIMAL_DIGIT_NUMBER) == first_is_digit
                     && cd.is_group(ch)
                 {
                     unknown_word_length = unknown_word_length.wrapping_add(1);
@@ -243,7 +254,7 @@ impl ViterbiLang<Token> for KoViterbi {
             }
         }
         // characters in input text are supposed to be the same
-        let unknown = Arc::clone(&self.unknown);
+        let unknown = &*self.unknown;
         for &word_id in unknown.lookup_word_ids(i32::from(character_id)) {
             let word_pos = v.pos;
             add(
