@@ -55,7 +55,7 @@ use lucene_index::index_writer::{
     MergePolicyConfig, SoftDeletesRetention,
 };
 use lucene_index::segment_info::LuceneVersion;
-use lucene_store::directory::{Directory, FsDirectory};
+use lucene_store::directory::{Directory, MmapDirectory};
 
 use crate::error::{guard, set_last_error, FfiStatus};
 use crate::raw::{bytes_from_raw, str_from_raw, try_with_capacity};
@@ -563,7 +563,12 @@ pub unsafe extern "C" fn ffi_engine_writer_open(
         }
         // SAFETY: caller contract.
         let path = unsafe { str_from_raw(path, path_len)? };
-        let dir = Box::new(FsDirectory::open(path));
+        // Mapped, not read onto the heap: a merge opens every source file of
+        // every merged segment, and Lucene's own `MMapDirectory` -- what
+        // OpenSearch writes with -- maps them too. Segment files are written
+        // once and only deleted (never truncated) once unreferenced, which is
+        // the condition mapping needs.
+        let dir: Box<dyn Directory> = Box::new(MmapDirectory::open(path));
         let dir_ref: &dyn Directory = &*dir;
         // SAFETY: `WriterHandle`'s own argument -- the boxed directory
         // outlives the writer that borrows it (see `writer.rs`).
@@ -931,6 +936,7 @@ pub extern "C" fn ffi_engine_writer_close(handle: u64) -> i32 {
 mod tests {
     #![allow(clippy::arithmetic_side_effects)]
     use super::*;
+    use lucene_store::directory::FsDirectory;
     use lucene_util::test_support::TempDir;
 
     /// A little-endian blob builder mirroring the JVM side's.

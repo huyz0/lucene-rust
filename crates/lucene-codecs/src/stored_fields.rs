@@ -613,13 +613,15 @@ impl<'d> StoredFieldsReader<'d> {
             (vec![n], vec![0i64, len])
         } else {
             let num_stored_fields = read_bulk_ints(&mut input, chunk_docs as usize)?;
-            let raw_lengths = read_bulk_ints(&mut input, chunk_docs as usize)?;
             // ARITH: `chunk_docs` is in `1..=2^16` (checked above), so
             // `chunk_docs + 1` is far inside `i32`, and both `as usize` casts
             // are of a non-negative value.
             #[allow(clippy::arithmetic_side_effects)]
             let mut offsets = Vec::with_capacity(chunk_docs as usize + 1);
             offsets.push(0i64);
+            // The lengths are decoded into `offsets[1..]` and summed there in
+            // place: `offsets[i + 1] = offsets[i] + lengths[i]`.
+            read_bulk_ints_into(&mut input, chunk_docs as usize, &mut offsets)?;
             // ARITH: `read_bulk_ints` guarantees every value it returns is
             // non-negative and at most `u32::MAX` (the widest shape is
             // 32-bit, read unsigned; the all-equal shape rejects a negative
@@ -629,8 +631,9 @@ impl<'d> StoredFieldsReader<'d> {
             // `offsets[i + 1] as usize - offsets[i]` depends on -- a
             // decreasing pair underflowed that to a ~2^64 slice length.
             #[allow(clippy::arithmetic_side_effects)]
-            for (i, &len) in raw_lengths.iter().enumerate() {
-                offsets.push(offsets[i] + len);
+            for i in 0..chunk_docs as usize {
+                let len = offsets[i + 1];
+                offsets[i + 1] = offsets[i] + len;
                 // Java's "only the empty document has a serialized length of
                 // 0" check, folded into the same pass rather than a second
                 // one over the same two arrays.
@@ -984,6 +987,12 @@ pub trait StoredFieldVisitor {
     fn double_field(&mut self, _field_number: i32, _value: f64) -> Result<()> {
         Ok(())
     }
+
+    /// Called once before the first field with the document's serialized
+    /// length and stored-field count, so a visitor that copies the values
+    /// out can size its buffer once. Rust-only: Java's visitor has no such
+    /// hook (it grows its `byte[]`s instead).
+    fn document_size(&mut self, _serialized_len: usize, _num_stored_fields: i64) {}
 }
 
 /// Port of `DocumentStoredFieldVisitor`: collects the fields it is asked for
@@ -1092,6 +1101,7 @@ pub fn visit_document(
     bytes: &[u8],
     visitor: &mut dyn StoredFieldVisitor,
 ) -> Result<()> {
+    visitor.document_size(bytes.len(), num_stored_fields);
     let mut input = SliceInput::new(bytes);
     for field_idx in 0..num_stored_fields {
         let info_and_bits = input.read_vlong()?;
@@ -2355,6 +2365,15 @@ fn read_tlong(input: &mut SliceInput) -> Result<i64> {
 /// having), and only the remainder past the last whole block is stored
 /// value-by-value.
 fn read_bulk_ints(input: &mut SliceInput, count: usize) -> Result<Vec<i64>> {
+    let mut out = Vec::new();
+    read_bulk_ints_into(input, count, &mut out)?;
+    Ok(out)
+}
+
+/// [`read_bulk_ints`], appending the `count` values to `out` -- which lets
+/// `read_chunk_header` decode the lengths straight into the `offsets` array
+/// it turns them into, rather than through a second array.
+fn read_bulk_ints_into(input: &mut SliceInput, count: usize, out: &mut Vec<i64>) -> Result<()> {
     let bpv = input.read_byte()?;
     match bpv {
         0 => {
@@ -2372,7 +2391,8 @@ fn read_bulk_ints(input: &mut SliceInput, count: usize) -> Result<Vec<i64>> {
                 ))
                 .into());
             }
-            Ok(vec![i64::from(v); count])
+            out.resize(out.len().saturating_add(count), i64::from(v));
+            Ok(())
         }
         // ARITH: for the whole arm -- `bpv` is one of exactly 8, 16 and 32, so
         // `values_per_word` is 8, 4 or 2 and `num_words` is 16, 32 or 64 --
@@ -2397,14 +2417,17 @@ fn read_bulk_ints(input: &mut SliceInput, count: usize) -> Result<Vec<i64>> {
             let mask: u64 = (1u64 << bpv_usize) - 1;
             debug_assert!((values_per_word - 1) * bpv_usize <= 56);
 
-            let mut out = vec![0i64; count];
-            // Java reads each block through one reusable `long[]`; hoisting
-            // the scratch out of the loop keeps a 4096-document chunk to one
-            // allocation per array instead of one per 128-value block.
-            let mut words = vec![0i64; num_words];
+            // `base + count`: `out` holds at most one leading `0` (`offsets`).
+            let base = out.len();
+            out.resize(base + count, 0);
+            let out = &mut out[base..];
+            // Java reads each block through one reusable `long[]`; this one
+            // is on the stack (`num_words` is at most 64).
+            let mut words_buf = [0i64; 64];
+            let words = &mut words_buf[..num_words];
             let mut k = 0usize;
             while k + BLOCK_SIZE <= count {
-                input.read_i64s(&mut words)?;
+                input.read_i64s(words)?;
                 for (i, &w) in words.iter().enumerate() {
                     let uw = w as u64;
                     for lane in 0..values_per_word {
@@ -2418,7 +2441,7 @@ fn read_bulk_ints(input: &mut SliceInput, count: usize) -> Result<Vec<i64>> {
                 out[k] = read_scalar(input, bpv)?;
                 k += 1;
             }
-            Ok(out)
+            Ok(())
         }
         other => Err(Error::UnsupportedBulkIntWidth(other)),
     }

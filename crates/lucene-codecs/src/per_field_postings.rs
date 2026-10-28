@@ -40,7 +40,7 @@ use crate::completion::{CompletionFieldWriter, CompletionFilesWriter, TermDoc};
 use crate::field_infos::{FieldInfo, FieldInfos};
 use crate::postings::{DocInput, PayInput, PosInput};
 use crate::postings_writer::{
-    self, FieldNorms, FieldPostingsInput, Output, TermSource, WriteOptions,
+    self, FieldNorms, FieldPostingsInput, Output, StreamingFieldsWriter, TermSource, WriteOptions,
 };
 use crate::terms_dictionary::TermsDictionaryFormat;
 use std::borrow::Cow;
@@ -518,6 +518,92 @@ pub fn write<T: TermSource>(
         });
     }
     Ok(out)
+}
+
+/// One field [`write_streaming`] writes: what [`FieldPostingsInput`] says
+/// about it besides its terms, which the caller supplies when asked.
+#[derive(Debug, Clone, Copy)]
+pub struct StreamedFieldSpec {
+    pub field_number: i32,
+    pub index_options: crate::field_infos::IndexOptions,
+    pub has_payloads: bool,
+}
+
+/// [`write()`], with each field's terms supplied as the writer reaches it
+/// instead of up front -- `PerFieldPostingsFormat.FieldsWriter.merge` over a
+/// `MultiFields` view. `fill(i, writer)` adds field `fields[i]`'s terms in
+/// order ([`StreamingFieldsWriter::add_terms`], any number of batches) and
+/// returns its `docsSeen` count; fields are asked for group by group, each
+/// group in name order, as [`write()`] writes them.
+///
+/// `Ok(None)`, before anything is asked, when some field's format is not
+/// the block-tree `Lucene104` one (another terms dictionary, or
+/// `Completion104`): those encoders need the whole field, so the caller
+/// gathers it and calls [`write()`].
+///
+/// # Errors
+/// What [`write()`] rejects, and what `fill` fails with.
+pub fn write_streaming<E: From<postings_writer::Error>>(
+    fields: &[StreamedFieldSpec],
+    segment_fields: &[FieldInfo],
+    name_of: &dyn Fn(i32) -> Option<String>,
+    format_for: &dyn Fn(&str) -> Lucene104PostingsFormat,
+    segment_id: &[u8; ID_LENGTH],
+    fill: &mut dyn FnMut(usize, &mut StreamingFieldsWriter<'_>) -> Result<i32, E>,
+) -> Result<Option<Vec<GroupOutput>>, E> {
+    let (has_prox, has_payloads_or_offsets) = if segment_fields.is_empty() {
+        (
+            fields.iter().any(|f| f.index_options.subsumes_positions()),
+            fields
+                .iter()
+                .any(|f| f.index_options.subsumes_offsets() || f.has_payloads),
+        )
+    } else {
+        (
+            crate::field_infos::has_prox(segment_fields),
+            crate::field_infos::has_payloads_or_offsets(segment_fields),
+        )
+    };
+    let named: Vec<String> = fields
+        .iter()
+        .map(|f| name_of(f.field_number).unwrap_or_else(|| f.field_number.to_string()))
+        .collect();
+    let groups = group(&named, format_for);
+    if groups
+        .iter()
+        .any(|(format, _, _)| !matches!(format.kind, PostingsFormatKind::Lucene104))
+    {
+        return Ok(None);
+    }
+    check_direct(&groups)?;
+    let mut out = Vec::with_capacity(groups.len());
+    for (format, suffix, members) in groups {
+        let codec_suffix = group_codec_suffix(&format, suffix);
+        let options = WriteOptions {
+            has_prox: Some(has_prox),
+            has_payloads_or_offsets: Some(has_payloads_or_offsets),
+            ..format.write_options()
+        };
+        let mut writer = StreamingFieldsWriter::new(&options, segment_id, &codec_suffix)?;
+        for &i in &members {
+            let field = fields[i];
+            writer.start_field(field.field_number, field.index_options, field.has_payloads)?;
+            let doc_count = fill(i, &mut writer)?;
+            writer.finish_field(doc_count)?;
+        }
+        let output = writer.finish()?;
+        out.push(GroupOutput {
+            written_files: Vec::new(),
+            format_name: format.name(),
+            suffix,
+            field_numbers: members.iter().map(|&i| fields[i].field_number).collect(),
+            output,
+            completion: None,
+            dictionary: None,
+            direct: format.direct,
+        });
+    }
+    Ok(Some(out))
 }
 
 /// The codec suffix a group of `format` numbered `suffix` writes its files
