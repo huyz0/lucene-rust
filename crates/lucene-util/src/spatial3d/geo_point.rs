@@ -279,6 +279,7 @@ impl GeoPoint {
     }
 
     /// `arcDistance(x, y, z)`.
+    #[inline]
     pub fn arc_distance_xyz(&self, x: f64, y: f64, z: f64) -> f64 {
         safe_acos(
             self.v.dot_product_xyz(x, y, z) / (self.magnitude() * Vector::magnitude_of(x, y, z)),
@@ -312,6 +313,7 @@ impl GeoPoint {
     }
 
     /// `magnitude()` (overridden: cached).
+    #[inline]
     pub fn magnitude(&self) -> f64 {
         let mag = self.magnitude.get();
         if mag == f64::NEG_INFINITY {
@@ -328,6 +330,7 @@ impl GeoPoint {
     }
 
     /// `isIdentical(x, y, z)`.
+    #[inline]
     pub fn is_identical_xyz(&self, x: f64, y: f64, z: f64) -> bool {
         abs(self.v.x - x) < MINIMUM_RESOLUTION
             && abs(self.v.y - y) < MINIMUM_RESOLUTION

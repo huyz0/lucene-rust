@@ -262,6 +262,7 @@ impl PlanetModel {
 
     /// `decodeValue(x)`: the center of the encoded cell (the extremes decode
     /// to `-MAX_VALUE`/`MAX_VALUE` exactly).
+    #[inline]
     pub fn decode_value(&self, x: i32) -> f64 {
         if x == self.min_encoded_value {
             -self.max_value
@@ -283,6 +284,7 @@ impl PlanetModel {
     }
 
     /// `pointOnSurface(x, y, z)`.
+    #[inline]
     pub fn point_on_surface_xyz(&self, x: f64, y: f64, z: f64) -> bool {
         abs(x * x * self.inverse_xy_scaling * self.inverse_xy_scaling
             + y * y * self.inverse_xy_scaling * self.inverse_xy_scaling
@@ -297,6 +299,7 @@ impl PlanetModel {
     }
 
     /// `pointOutside(x, y, z)`.
+    #[inline]
     pub fn point_outside_xyz(&self, x: f64, y: f64, z: f64) -> bool {
         (x * x + y * y) * self.inverse_xy_scaling * self.inverse_xy_scaling
             + z * z * self.inverse_z_scaling * self.inverse_z_scaling
@@ -593,6 +596,7 @@ impl DocValueEncoder {
     }
 
     /// `decodePoint(docValue)`.
+    #[inline]
     pub fn decode_point(&self, doc_value: i64) -> GeoPoint {
         GeoPoint::new(
             self.decode_x_value(doc_value),
@@ -602,16 +606,19 @@ impl DocValueEncoder {
     }
 
     /// `decodeXValue(docValue)`.
+    #[inline]
     pub fn decode_x_value(&self, doc_value: i64) -> f64 {
         self.decode_x(((doc_value >> 42) as i32) & 0x1F_FFFF)
     }
 
     /// `decodeYValue(docValue)`.
+    #[inline]
     pub fn decode_y_value(&self, doc_value: i64) -> f64 {
         self.decode_y(((doc_value >> 21) as i32) & 0x1F_FFFF)
     }
 
     /// `decodeZValue(docValue)`.
+    #[inline]
     pub fn decode_z_value(&self, doc_value: i64) -> f64 {
         self.decode_z((doc_value as i32) & 0x1F_FFFF)
     }
@@ -659,6 +666,7 @@ impl DocValueEncoder {
         Ok(floor((x - self.min_x) * self.x_factor + 0.5) as i32)
     }
 
+    #[inline]
     fn decode_x(&self, x: i32) -> f64 {
         f64::from(x) * self.inverse_x_factor + self.min_x
     }
@@ -676,6 +684,7 @@ impl DocValueEncoder {
         Ok(floor((y - self.min_y) * self.y_factor + 0.5) as i32)
     }
 
+    #[inline]
     fn decode_y(&self, y: i32) -> f64 {
         f64::from(y) * self.inverse_y_factor + self.min_y
     }
@@ -693,6 +702,7 @@ impl DocValueEncoder {
         Ok(floor((z - self.min_z) * self.z_factor + 0.5) as i32)
     }
 
+    #[inline]
     fn decode_z(&self, z: i32) -> f64 {
         f64::from(z) * self.inverse_z_factor + self.min_z
     }
