@@ -139,6 +139,17 @@ pub fn edit_distance_at_most(
 // approximation of it.
 #[allow(clippy::arithmetic_side_effects)]
 fn distance_chars(a: &[char], b: &[char], transpositions: bool, max: usize) -> Option<usize> {
+    distance_chars_in(a, b, transpositions, max, &mut Vec::new())
+}
+
+/// [`distance_chars`] with its three DP rows in `buf`, reused across calls.
+fn distance_chars_in(
+    a: &[char],
+    b: &[char],
+    transpositions: bool,
+    max: usize,
+    buf: &mut Vec<usize>,
+) -> Option<usize> {
     let n = a.len();
     let m = b.len();
     if max != usize::MAX && n.abs_diff(m) > max {
@@ -149,7 +160,8 @@ fn distance_chars(a: &[char], b: &[char], transpositions: bool, max: usize) -> O
     // `saturating_add(1)`s below without wrapping into a plausible distance.
     let unreachable = usize::MAX / 4;
     let width = m + 1;
-    let mut buf = vec![unreachable; 3 * width];
+    buf.clear();
+    buf.resize(3 * width, unreachable);
 
     // Row 0: `dp[0][j] = j`, but only inside the budget.
     for (j, cell) in buf.iter_mut().enumerate().take(width) {
@@ -434,20 +446,33 @@ impl<'a> FuzzyMatch<'a> {
     pub fn edits_within(&self, candidate: &[u8], max_edits: u8) -> Option<usize> {
         if candidate.len() < self.prefix_bytes
             || candidate[..self.prefix_bytes] != self.term[..self.prefix_bytes]
-            || std::str::from_utf8(candidate).is_err()
         {
             return None;
         }
-        let candidate_chars = to_chars(candidate);
-        if candidate_chars.len() < self.prefix_chars {
+        let Ok(candidate) = std::str::from_utf8(candidate) else {
             return None;
+        };
+        // Called once per term a fuzzy walk tests: the decoded candidate and
+        // the DP rows live in per-thread scratch rather than fresh vectors.
+        thread_local! {
+            static SCRATCH: std::cell::RefCell<(Vec<char>, Vec<usize>)> =
+                const { std::cell::RefCell::new((Vec::new(), Vec::new())) };
         }
-        distance_chars(
-            &self.term_chars[self.prefix_chars..],
-            &candidate_chars[self.prefix_chars..],
-            self.transpositions,
-            max_edits as usize,
-        )
+        SCRATCH.with(|scratch| {
+            let (chars, rows) = &mut *scratch.borrow_mut();
+            chars.clear();
+            chars.extend(candidate.chars());
+            if chars.len() < self.prefix_chars {
+                return None;
+            }
+            distance_chars_in(
+                &self.term_chars[self.prefix_chars..],
+                &chars[self.prefix_chars..],
+                self.transpositions,
+                max_edits as usize,
+                rows,
+            )
+        })
     }
 
     /// This pattern's own edit budget -- `FuzzyQuery`'s `maxEdits`, the top of

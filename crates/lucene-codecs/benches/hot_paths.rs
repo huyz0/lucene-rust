@@ -1077,9 +1077,59 @@ fn bench_fst_compile(c: &mut Criterion) {
     group.finish();
 }
 
+/// The wildcard/regexp n-gram index over a 100k-term dictionary: the build
+/// (two map lookups per term byte) and a candidate query.
+fn bench_term_ngram(c: &mut Criterion) {
+    use lucene_codecs::term_ngram::{grams_of, padded, TermNgramIndex};
+    let mut s = 0x2545_f491_4f6c_dd1du64;
+    let mut terms: Vec<Vec<u8>> = (0..100_000)
+        .map(|_| {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            let len = 4 + (s % 9) as usize;
+            (0..len).map(|i| b'a' + ((s >> (i * 5)) % 26) as u8).collect()
+        })
+        .collect();
+    terms.sort();
+    terms.dedup();
+    c.bench_function("term_ngram/build_100k", |b| {
+        b.iter(|| black_box(TermNgramIndex::build(terms.iter().map(Vec::as_slice)).unwrap()))
+    });
+    let index = TermNgramIndex::build(terms.iter().map(Vec::as_slice)).unwrap();
+    let (mut sym, mut keys) = (Vec::new(), Vec::new());
+    padded(b"abc", &mut sym);
+    grams_of(&sym, &mut keys);
+    c.bench_function("term_ngram/candidates_abc", |b| {
+        b.iter(|| black_box(index.candidates(&keys, usize::MAX)))
+    });
+}
+
+/// `FuzzyMatch::edits` over 100k candidate terms, as a fuzzy scan tests
+/// every term of a block.
+fn bench_fuzzy_edits(c: &mut Criterion) {
+    use lucene_codecs::fuzzy::FuzzyMatch;
+    let mut s = 0x9e37_79b9_7f4a_7c15u64;
+    let terms: Vec<Vec<u8>> = (0..100_000)
+        .map(|_| {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            let len = 5 + (s % 6) as usize;
+            (0..len).map(|i| b'a' + ((s >> (i * 5)) % 6) as u8).collect()
+        })
+        .collect();
+    let m = FuzzyMatch::new(b"abcdef", 2, 1, true);
+    c.bench_function("fuzzy/edits_100k", |b| {
+        b.iter(|| terms.iter().filter(|t| m.edits(t).is_some()).count())
+    });
+}
+
 criterion_group!(
     benches,
     bench_fst_compile,
+    bench_term_ngram,
+    bench_fuzzy_edits,
     bench_postings_write,
     bench_numeric_write_gcd,
     bench_sorted_numeric_varying_bpv,
