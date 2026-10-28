@@ -31,6 +31,8 @@ macro_rules! suite_tests {
 suite_tests! {
     test_field_constructor => "testFieldConstructor",
     test_field_constructor_exceptions => "testFieldConstructorExceptions",
+    test_different_codecs1 => "testDifferentCodecs1",
+    test_different_codecs2 => "testDifferentCodecs2",
     test_illegal_dim_change_two_docs => "testIllegalDimChangeTwoDocs",
     test_illegal_similarity_function_change => "testIllegalSimilarityFunctionChange",
     test_illegal_dim_change_two_writers => "testIllegalDimChangeTwoWriters",

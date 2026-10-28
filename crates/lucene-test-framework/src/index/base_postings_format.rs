@@ -5,9 +5,8 @@
 //!
 //! - Java builds one [`RandomPostingsTester`] per class (`@BeforeClass`);
 //!   here each test builds its own from the test's stream.
-//! - `testInvertedWrite` is not ported: it wraps the codec's postings format
-//!   in a `FilterCodec` to visit the postings twice during flush and merge,
-//!   and this port's writer has no codec plug-in point.
+//! - `testInvertedWrite` is in [`super::inverted_write`], with its own
+//!   differences.
 //! - `testPostingsEnumReuse` and the `assertReused` halves of the
 //!   `testPostingsEnum*` tests: this port's `TermsEnum.postings` takes no
 //!   enum to reuse (`isPostingsEnumReuseImplemented() == false`), so they
@@ -47,6 +46,8 @@ use super::random_postings_tester::{RandomPostingsTester, TestOption, TestOption
 use crate::util::line_file_docs::LineFileDocs;
 use crate::util::lucene_test_case::LuceneTestCase;
 use crate::util::test_util;
+
+pub use super::inverted_write::test_inverted_write;
 
 /// `BasePostingsFormatTestCase` itself: its `addRandomFields`.
 #[derive(Debug, Default, Clone, Copy)]
@@ -739,6 +740,7 @@ pub fn test_doc_id_run_end(t: &mut LuceneTestCase) {
 /// Every test of the suite, with its name, for a runner to loop over.
 pub const TESTS: &[SuiteTest] = &[
     ("testDocsOnly", test_docs_only),
+    ("testInvertedWrite", test_inverted_write),
     ("testDocsAndFreqs", test_docs_and_freqs),
     (
         "testDocsAndFreqsAndPositions",

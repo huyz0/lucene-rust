@@ -19,6 +19,7 @@ pub mod base_term_vectors_format;
 pub mod base_test_check_index;
 pub mod doc_helper;
 pub mod index_writer_config;
+pub mod inverted_write;
 pub mod legacy_base_doc_values_format;
 pub mod merge_policies;
 pub mod per_thread_pk_lookup;

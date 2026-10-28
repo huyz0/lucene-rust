@@ -38,9 +38,10 @@
 //!   the setters of `testInvalidKnnVectorFieldUsage` have nothing to call,
 //!   and `testIndexedValueNotAliased` cannot alias (each field owns its
 //!   vector) but runs its three documents.
-//! - `testDifferentCodecs1`/`2` need a `SimpleText` segment written through
-//!   `IndexWriter`, which the writer cannot produce;
-//!   `testReadQuantizedVectorWithEmptyRawVectors` is skipped, as in Java,
+//! - `testDifferentCodecs1`/`2` open each writer through a
+//!   [`SimpleTextDirectory`] (`new` for `SimpleText`, `default_codec` for
+//!   the default codec), which lets the native writer read the other
+//!   codec's segment; `testReadQuantizedVectorWithEmptyRawVectors` is skipped, as in Java,
 //!   since the default format has no float-vector fallback.
 //! - `testCheckIndexIncludesVectors` reads CheckIndex's vector counts, not
 //!   its printed `test: vectors...` line.
@@ -60,6 +61,7 @@ use lucene_index::index_writer::IndexWriter;
 use lucene_index::segment_info::{self, IndexSortField, IndexSortKind, NumericSortKey};
 use lucene_search::collector::{ScoreDoc, TotalHits, TotalHitsRelation};
 use lucene_search::directory_reader::{DirectoryReader, SegmentReader};
+use lucene_search::simpletext_writer::SimpleTextDirectory;
 use lucene_store::Directory;
 use lucene_util::fixed_bit_set::FixedBitSet;
 use lucene_util::java_random::JavaRandom;
@@ -1805,9 +1807,60 @@ pub fn test_mismatched_fields(t: &mut LuceneTestCase) {
     assert_eq!(vec![1.0f32, 2.0], float_vector(&floats, 1));
 }
 
+/// `testDifferentCodecs1` and `2`: one segment from a writer with the
+/// default codec and one from a writer with `SimpleText`, in either order,
+/// then `forceMerge(1)` by the second writer. The merged segment is in the
+/// second writer's codec and holds both vectors.
+fn different_codecs(t: &mut LuceneTestCase, simpletext_first: bool) {
+    let dir = t.new_directory();
+    let dot = VectorSimilarityFunction::DotProduct;
+    for (pass, simpletext) in [simpletext_first, !simpletext_first]
+        .into_iter()
+        .enumerate()
+    {
+        // Java's writer reads each segment with its own codec; this one
+        // reads SimpleText through the wrapper either way.
+        let wrapper = if simpletext {
+            SimpleTextDirectory::new(&*dir)
+        } else {
+            SimpleTextDirectory::default_codec(&*dir)
+        }
+        .expect("open the index");
+        let mut w = plain_writer(&wrapper);
+        add(&mut w, &one_field(float_field("f", vec![0.0; 4], dot)));
+        if pass == 1 {
+            force_merge(&mut w, 1);
+        }
+        w.close().expect("close");
+    }
+    let infos = lucene_index::segment_infos::read_latest(&*dir).expect("the commit");
+    assert_eq!(1, infos.segments.len());
+    let codec = if simpletext_first {
+        "Lucene104"
+    } else {
+        "SimpleText"
+    };
+    assert_eq!(codec, infos.segments[0].codec_name);
+    let r = DirectoryReader::open(&*dir).expect("open a reader");
+    let values = float_values(only_leaf(&r), "f").expect("float vectors");
+    assert_eq!(2, values.size());
+}
+
+/// `testDifferentCodecs1`.
+pub fn test_different_codecs1(t: &mut LuceneTestCase) {
+    different_codecs(t, false);
+}
+
+/// `testDifferentCodecs2`.
+pub fn test_different_codecs2(t: &mut LuceneTestCase) {
+    different_codecs(t, true);
+}
+
 /// This suite's tests, by Java name.
 pub const TESTS: &[SuiteTest] = &[
     ("testFieldConstructor", test_field_constructor),
+    ("testDifferentCodecs1", test_different_codecs1),
+    ("testDifferentCodecs2", test_different_codecs2),
     (
         "testFieldConstructorExceptions",
         test_field_constructor_exceptions,
