@@ -30,14 +30,13 @@ fn collect_terms(tree: &QueryTree) -> FieldTerms {
     tree.collect_terms(&mut terms);
     let mut out: FieldTerms = BTreeMap::new();
     for t in terms {
-        let v = out.entry(t.field).or_default();
-        if !v.contains(&t.bytes) {
-            v.push(t.bytes);
-        }
+        out.entry(t.field).or_default().push(t.bytes);
     }
-    // `BytesRefHashIterator` walks each field's hash in sorted term order
+    // `BytesRefHashIterator` walks each field's hash in sorted term order,
+    // each term once
     for v in out.values_mut() {
         v.sort_unstable();
+        v.dedup();
     }
     out
 }
@@ -134,6 +133,11 @@ impl TermFilteredPresearcher {
             min_weight,
             ..Self::with_handlers(weightor, handlers, filter_fields)
         }
+    }
+
+    /// The fields whose batch values filter the queries (`filterFields`).
+    pub fn filter_fields(&self) -> &[String] {
+        &self.filter_fields
     }
 
     /// `indexQuery(query, metadata)`: the query's terms, per field, as the

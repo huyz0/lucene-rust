@@ -356,6 +356,62 @@ pub struct AttributeSource {
 /// [`AttributeSource::restore_state`].
 pub type State = AttributeSource;
 
+/// A filter's saved `State` field (`State state; ... state = null`) whose
+/// buffers outlive the value: [`Self::save`] captures into the previous
+/// capture's term, payload and custom attributes (`clone_from`), and
+/// [`Self::take`] hands the state out by reference, so a filter that saves
+/// and restores a token per input token allocates nothing once warm.
+#[derive(Debug, Default)]
+pub struct StateSlot {
+    state: AttributeSource,
+    live: bool,
+}
+
+impl StateSlot {
+    /// An empty slot (`state = null`).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `state = captureState()`.
+    #[inline]
+    pub fn save(&mut self, a: &AttributeSource) {
+        self.state.clone_from(a);
+        self.live = true;
+    }
+
+    /// `state != null`.
+    #[inline]
+    pub fn is_some(&self) -> bool {
+        self.live
+    }
+
+    /// `state == null`.
+    #[inline]
+    pub fn is_none(&self) -> bool {
+        !self.live
+    }
+
+    /// The saved state, if any, leaving it saved.
+    #[inline]
+    pub fn get(&self) -> Option<&State> {
+        self.live.then_some(&self.state)
+    }
+
+    /// The saved state, if any, emptying the slot (`s = state; state =
+    /// null`); the buffers stay for the next [`Self::save`].
+    #[inline]
+    pub fn take(&mut self) -> Option<&State> {
+        std::mem::take(&mut self.live).then_some(&self.state)
+    }
+
+    /// `state = null`.
+    #[inline]
+    pub fn clear(&mut self) {
+        self.live = false;
+    }
+}
+
 /// A parked buffer: capacity only, so it takes no part in a comparison or a
 /// debug print.
 #[derive(Default)]
@@ -735,32 +791,7 @@ impl AttributeSource {
     /// units; an unpaired surrogate becomes U+FFFD (see the module docs).
     pub fn set_term_utf16(&mut self, units: &[u16]) {
         self.term.clear();
-        // The common case, an ASCII term: each unit is its own byte.
-        if units.iter().all(|&u| u < 0x80) {
-            self.term.reserve(units.len());
-            self.term.extend(units.iter().map(|&u| char::from(u as u8)));
-            return;
-        }
-        // At most 3 UTF-8 bytes per UTF-16 unit (a pair is 4 bytes for 2).
-        self.term.reserve(units.len() * 3);
-        let mut i = 0;
-        while i < units.len() {
-            let u = units[i];
-            i += 1;
-            let c = if u < 0x80 {
-                u as u8 as char
-            } else if !(0xD800..=0xDFFF).contains(&u) {
-                char::from_u32(u32::from(u)).unwrap_or(char::REPLACEMENT_CHARACTER)
-            } else if u <= 0xDBFF && i < units.len() && (0xDC00..=0xDFFF).contains(&units[i]) {
-                let lo = units[i];
-                i += 1;
-                let cp = 0x10000 + ((u32::from(u) - 0xD800) << 10) + (u32::from(lo) - 0xDC00);
-                char::from_u32(cp).unwrap_or(char::REPLACEMENT_CHARACTER)
-            } else {
-                char::REPLACEMENT_CHARACTER
-            };
-            self.term.push(c);
-        }
+        crate::util::push_str_utf16(&mut self.term, units);
     }
 
     /// `CharTermAttribute.length()`: the term's length in UTF-16 code units.

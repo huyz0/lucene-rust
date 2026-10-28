@@ -63,8 +63,8 @@ fn count_inside(points: &[GeoPoint], within: impl Fn(&GeoPoint) -> bool) -> Insi
 
 /// The `getRelationship` every solid shares, with the face test `edges`
 /// (none for the solids whose faces are points).
-fn solid_relationship(
-    solid: &dyn Membership,
+fn solid_relationship<S: Membership + ?Sized>(
+    solid: &S,
     edge_points: &[GeoPoint],
     path: &dyn GeoShape,
     edges: impl FnOnce() -> bool,
@@ -94,32 +94,47 @@ fn solid_relationship(
     GeoAreaRelationship::Disjoint
 }
 
-/// `findIntersections` with varargs bounds: `null` cannot arise for the
-/// solids' perpendicular planes, and Java would dereference it.
+/// `findIntersections` with varargs bounds, without allocating: the (up to
+/// two) points in Java's order. `null` cannot arise for the solids'
+/// perpendicular planes (Java would dereference it); it reads as none.
 fn intersections(
     pm: &PlanetModel,
     p: &Plane,
     q: &Plane,
     bounds: &[&dyn Membership],
-) -> Vec<GeoPoint> {
-    p.find_intersections(pm, q, bounds).unwrap_or_default()
+) -> [Option<GeoPoint>; 2] {
+    p.find_intersections_two(pm, q, bounds)
+}
+
+/// The number of points in an [`intersections`] result.
+fn point_count(points: &[Option<GeoPoint>; 2]) -> usize {
+    points.iter().flatten().count()
 }
 
 /// The face edge point a solid adds when a face plane cuts the planet
 /// without any edge (`minXEdges` and friends): a sample intersection with
 /// the vertical plane.
-fn face_edge(pm: &PlanetModel, face: &Plane, vertical: &Plane, applies: bool) -> Vec<GeoPoint> {
+fn face_edge(pm: &PlanetModel, face: &Plane, vertical: &Plane, applies: bool) -> Option<GeoPoint> {
     if applies {
         face.sample_intersection_point(pm, vertical)
-            .into_iter()
-            .collect()
     } else {
-        Vec::new()
+        None
     }
 }
 
-fn glue(arrays: &[&[GeoPoint]]) -> Vec<GeoPoint> {
-    arrays.iter().flat_map(|a| a.iter().cloned()).collect()
+/// The edge points of a solid degenerate in one dimension: its face's four
+/// corner sets (Java's `notable*Points`, glued in order) then the face
+/// sample, in one allocation. Returns the points and how many of them are
+/// the notable ones (a prefix).
+fn glue_face(
+    corners: [[Option<GeoPoint>; 2]; 4],
+    face: Option<GeoPoint>,
+) -> (Vec<GeoPoint>, usize) {
+    let notable: usize = corners.iter().map(point_count).sum();
+    let mut points = Vec::with_capacity(notable + usize::from(face.is_some()));
+    points.extend(corners.into_iter().flatten().flatten());
+    points.extend(face);
+    (points, notable)
 }
 
 macro_rules! solid_boilerplate {
@@ -165,8 +180,16 @@ pub struct StandardXYZSolid {
     min_z: f64,
     max_z: f64,
     /// `None` when the box contains the whole world (`isWholeWorld`).
-    faces: Option<Box<StandardFaces>>,
+    faces: Option<StandardFaces>,
 }
+
+/// The faces' notable point sets, in [`StandardFaces::notable`]'s order.
+const MIN_X: usize = 0;
+const MAX_X: usize = 1;
+const MIN_Y: usize = 2;
+const MAX_Y: usize = 3;
+const MIN_Z: usize = 4;
+const MAX_Z: usize = 5;
 
 #[derive(Debug, Clone)]
 struct StandardFaces {
@@ -176,19 +199,27 @@ struct StandardFaces {
     max_y_plane: SidedPlane,
     min_z_plane: SidedPlane,
     max_z_plane: SidedPlane,
-    min_x_plane_intersects: bool,
-    max_x_plane_intersects: bool,
-    min_y_plane_intersects: bool,
-    max_y_plane_intersects: bool,
-    min_z_plane_intersects: bool,
-    max_z_plane_intersects: bool,
-    edge_points: Vec<GeoPoint>,
-    notable_min_x_points: Vec<GeoPoint>,
-    notable_max_x_points: Vec<GeoPoint>,
-    notable_min_y_points: Vec<GeoPoint>,
-    notable_max_y_points: Vec<GeoPoint>,
-    notable_min_z_points: Vec<GeoPoint>,
-    notable_max_z_points: Vec<GeoPoint>,
+    /// `{min,max}{X,Y,Z}PlaneIntersects`, by face.
+    plane_intersects: [bool; 6],
+    /// Every point the solid keeps, in one allocation: Java's `edgePoints`
+    /// (the twelve corner sets, then the six face samples) as the first
+    /// `edge_len`, then copies of the y and z faces' notable points (the x
+    /// faces' are contiguous runs of the corner sets).
+    points: Vec<GeoPoint>,
+    edge_len: usize,
+    /// Each face's `notable*Points` as a range of `points`.
+    notable: [(usize, usize); 6],
+}
+
+impl StandardFaces {
+    fn edge_points(&self) -> &[GeoPoint] {
+        &self.points[..self.edge_len]
+    }
+
+    fn notable(&self, face: usize) -> &[GeoPoint] {
+        let (start, end) = self.notable[face];
+        &self.points[start..end]
+    }
 }
 
 impl StandardXYZSolid {
@@ -241,30 +272,32 @@ impl StandardXYZSolid {
                 &min_z_plane,
                 &max_z_plane,
             );
-            let min_x_min_y = intersections(pm, nx, ny, &[xx, xy, nz, xz]);
-            let min_x_max_y = intersections(pm, nx, xy, &[xx, ny, nz, xz]);
-            let min_x_min_z = intersections(pm, nx, nz, &[xx, xz, ny, xy]);
-            let min_x_max_z = intersections(pm, nx, xz, &[xx, nz, ny, xy]);
-            let max_x_min_y = intersections(pm, xx, ny, &[nx, xy, nz, xz]);
-            let max_x_max_y = intersections(pm, xx, xy, &[nx, ny, nz, xz]);
-            let max_x_min_z = intersections(pm, xx, nz, &[nx, xz, ny, xy]);
-            let max_x_max_z = intersections(pm, xx, xz, &[nx, nz, ny, xy]);
-            let min_y_min_z = intersections(pm, ny, nz, &[xy, xz, nx, xx]);
-            let min_y_max_z = intersections(pm, ny, xz, &[xy, nz, nx, xx]);
-            let max_y_min_z = intersections(pm, xy, nz, &[ny, xz, nx, xx]);
-            let max_y_max_z = intersections(pm, xy, xz, &[ny, nz, nx, xx]);
-            let notable_min_x_points =
-                glue(&[&min_x_min_y, &min_x_max_y, &min_x_min_z, &min_x_max_z]);
-            let notable_max_x_points =
-                glue(&[&max_x_min_y, &max_x_max_y, &max_x_min_z, &max_x_max_z]);
-            let notable_min_y_points =
-                glue(&[&min_x_min_y, &max_x_min_y, &min_y_min_z, &min_y_max_z]);
-            let notable_max_y_points =
-                glue(&[&min_x_max_y, &max_x_max_y, &max_y_min_z, &max_y_max_z]);
-            let notable_min_z_points =
-                glue(&[&min_x_min_z, &max_x_min_z, &min_y_min_z, &max_y_min_z]);
-            let notable_max_z_points =
-                glue(&[&min_x_max_z, &max_x_max_z, &min_y_max_z, &max_y_max_z]);
+            // The twelve corner sets, in Java's `edgePoints` order.
+            let corners: [[Option<GeoPoint>; 2]; 12] = [
+                intersections(pm, nx, ny, &[xx, xy, nz, xz]), // 0: minXminY
+                intersections(pm, nx, xy, &[xx, ny, nz, xz]), // 1: minXmaxY
+                intersections(pm, nx, nz, &[xx, xz, ny, xy]), // 2: minXminZ
+                intersections(pm, nx, xz, &[xx, nz, ny, xy]), // 3: minXmaxZ
+                intersections(pm, xx, ny, &[nx, xy, nz, xz]), // 4: maxXminY
+                intersections(pm, xx, xy, &[nx, ny, nz, xz]), // 5: maxXmaxY
+                intersections(pm, xx, nz, &[nx, xz, ny, xy]), // 6: maxXminZ
+                intersections(pm, xx, xz, &[nx, nz, ny, xy]), // 7: maxXmaxZ
+                intersections(pm, ny, nz, &[xy, xz, nx, xx]), // 8: minYminZ
+                intersections(pm, ny, xz, &[xy, nz, nx, xx]), // 9: minYmaxZ
+                intersections(pm, xy, nz, &[ny, xz, nx, xx]), // 10: maxYminZ
+                intersections(pm, xy, xz, &[ny, nz, nx, xx]), // 11: maxYmaxZ
+            ];
+            // Each face's notable points: the corner sets glued in Java's
+            // order (`notableMinXPoints = glueTogether(minXminY, minXmaxY,
+            // minXminZ, minXmaxZ)` and so on).
+            const FACE_CORNERS: [[usize; 4]; 6] = [
+                [0, 1, 2, 3],
+                [4, 5, 6, 7],
+                [0, 4, 8, 9],
+                [1, 5, 10, 11],
+                [2, 6, 8, 10],
+                [3, 7, 9, 11],
+            ];
             let out = |x: f64, y: f64, z: f64| pm.point_outside_xyz(x, y, z);
             let min_x_min_y_min_z = out(min_x, min_y, min_z);
             let min_x_min_y_max_z = out(min_x, min_y, max_z);
@@ -275,136 +308,138 @@ impl StandardXYZSolid {
             let max_x_max_y_min_z = out(max_x, max_y, min_z);
             let max_x_max_y_max_z = out(max_x, max_y, max_z);
             let r = MINIMUM_RESOLUTION;
-            let min_x_edges = face_edge(
-                pm,
-                nx,
-                &X_VERTICAL_PLANE,
-                min_x - world_min_x >= -r
-                    && min_x - world_max_x <= r
-                    && min_y < 0.0
-                    && max_y > 0.0
-                    && min_z < 0.0
-                    && max_z > 0.0
-                    && min_x_min_y_min_z
-                    && min_x_min_y_max_z
-                    && min_x_max_y_min_z
-                    && min_x_max_y_max_z,
-            );
-            let max_x_edges = face_edge(
-                pm,
-                xx,
-                &X_VERTICAL_PLANE,
-                max_x - world_min_x >= -r
-                    && max_x - world_max_x <= r
-                    && min_y < 0.0
-                    && max_y > 0.0
-                    && min_z < 0.0
-                    && max_z > 0.0
-                    && max_x_min_y_min_z
-                    && max_x_min_y_max_z
-                    && max_x_max_y_min_z
-                    && max_x_max_y_max_z,
-            );
-            let min_y_edges = face_edge(
-                pm,
-                ny,
-                &Y_VERTICAL_PLANE,
-                min_y - world_min_y >= -r
-                    && min_y - world_max_y <= r
-                    && min_x < 0.0
-                    && max_x > 0.0
-                    && min_z < 0.0
-                    && max_z > 0.0
-                    && min_x_min_y_min_z
-                    && min_x_min_y_max_z
-                    && max_x_min_y_min_z
-                    && max_x_min_y_max_z,
-            );
-            let max_y_edges = face_edge(
-                pm,
-                xy,
-                &Y_VERTICAL_PLANE,
-                max_y - world_min_y >= -r
-                    && max_y - world_max_y <= r
-                    && min_x < 0.0
-                    && max_x > 0.0
-                    && min_z < 0.0
-                    && max_z > 0.0
-                    && min_x_max_y_min_z
-                    && min_x_max_y_max_z
-                    && max_x_max_y_min_z
-                    && max_x_max_y_max_z,
-            );
-            let min_z_edges = face_edge(
-                pm,
-                nz,
-                &X_VERTICAL_PLANE,
-                min_z - world_min_z >= -r
-                    && min_z - world_max_z <= r
-                    && min_x < 0.0
-                    && max_x > 0.0
-                    && min_y < 0.0
-                    && max_y > 0.0
-                    && min_x_min_y_min_z
-                    && min_x_max_y_min_z
-                    && max_x_min_y_min_z
-                    && max_x_max_y_min_z,
-            );
-            let max_z_edges = face_edge(
-                pm,
-                xz,
-                &X_VERTICAL_PLANE,
-                max_z - world_min_z >= -r
-                    && max_z - world_max_z <= r
-                    && min_x < 0.0
-                    && max_x > 0.0
-                    && min_y < 0.0
-                    && max_y > 0.0
-                    && min_x_min_y_max_z
-                    && min_x_max_y_max_z
-                    && max_x_min_y_max_z
-                    && max_x_max_y_max_z,
-            );
-            Some(Box::new(StandardFaces {
-                min_x_plane_intersects: notable_min_x_points.len() + min_x_edges.len() > 0,
-                max_x_plane_intersects: notable_max_x_points.len() + max_x_edges.len() > 0,
-                min_y_plane_intersects: notable_min_y_points.len() + min_y_edges.len() > 0,
-                max_y_plane_intersects: notable_max_y_points.len() + max_y_edges.len() > 0,
-                min_z_plane_intersects: notable_min_z_points.len() + min_z_edges.len() > 0,
-                max_z_plane_intersects: notable_max_z_points.len() + max_z_edges.len() > 0,
-                edge_points: glue(&[
-                    &min_x_min_y,
-                    &min_x_max_y,
-                    &min_x_min_z,
-                    &min_x_max_z,
-                    &max_x_min_y,
-                    &max_x_max_y,
-                    &max_x_min_z,
-                    &max_x_max_z,
-                    &min_y_min_z,
-                    &min_y_max_z,
-                    &max_y_min_z,
-                    &max_y_max_z,
-                    &min_x_edges,
-                    &max_x_edges,
-                    &min_y_edges,
-                    &max_y_edges,
-                    &min_z_edges,
-                    &max_z_edges,
-                ]),
-                notable_min_x_points,
-                notable_max_x_points,
-                notable_min_y_points,
-                notable_max_y_points,
-                notable_min_z_points,
-                notable_max_z_points,
+            let face_edges: [Option<GeoPoint>; 6] = [
+                face_edge(
+                    pm,
+                    nx,
+                    &X_VERTICAL_PLANE,
+                    min_x - world_min_x >= -r
+                        && min_x - world_max_x <= r
+                        && min_y < 0.0
+                        && max_y > 0.0
+                        && min_z < 0.0
+                        && max_z > 0.0
+                        && min_x_min_y_min_z
+                        && min_x_min_y_max_z
+                        && min_x_max_y_min_z
+                        && min_x_max_y_max_z,
+                ),
+                face_edge(
+                    pm,
+                    xx,
+                    &X_VERTICAL_PLANE,
+                    max_x - world_min_x >= -r
+                        && max_x - world_max_x <= r
+                        && min_y < 0.0
+                        && max_y > 0.0
+                        && min_z < 0.0
+                        && max_z > 0.0
+                        && max_x_min_y_min_z
+                        && max_x_min_y_max_z
+                        && max_x_max_y_min_z
+                        && max_x_max_y_max_z,
+                ),
+                face_edge(
+                    pm,
+                    ny,
+                    &Y_VERTICAL_PLANE,
+                    min_y - world_min_y >= -r
+                        && min_y - world_max_y <= r
+                        && min_x < 0.0
+                        && max_x > 0.0
+                        && min_z < 0.0
+                        && max_z > 0.0
+                        && min_x_min_y_min_z
+                        && min_x_min_y_max_z
+                        && max_x_min_y_min_z
+                        && max_x_min_y_max_z,
+                ),
+                face_edge(
+                    pm,
+                    xy,
+                    &Y_VERTICAL_PLANE,
+                    max_y - world_min_y >= -r
+                        && max_y - world_max_y <= r
+                        && min_x < 0.0
+                        && max_x > 0.0
+                        && min_z < 0.0
+                        && max_z > 0.0
+                        && min_x_max_y_min_z
+                        && min_x_max_y_max_z
+                        && max_x_max_y_min_z
+                        && max_x_max_y_max_z,
+                ),
+                face_edge(
+                    pm,
+                    nz,
+                    &X_VERTICAL_PLANE,
+                    min_z - world_min_z >= -r
+                        && min_z - world_max_z <= r
+                        && min_x < 0.0
+                        && max_x > 0.0
+                        && min_y < 0.0
+                        && max_y > 0.0
+                        && min_x_min_y_min_z
+                        && min_x_max_y_min_z
+                        && max_x_min_y_min_z
+                        && max_x_max_y_min_z,
+                ),
+                face_edge(
+                    pm,
+                    xz,
+                    &X_VERTICAL_PLANE,
+                    max_z - world_min_z >= -r
+                        && max_z - world_max_z <= r
+                        && min_x < 0.0
+                        && max_x > 0.0
+                        && min_y < 0.0
+                        && max_y > 0.0
+                        && min_x_min_y_max_z
+                        && min_x_max_y_max_z
+                        && max_x_min_y_max_z
+                        && max_x_max_y_max_z,
+                ),
+            ];
+            let counts: [usize; 12] = std::array::from_fn(|i| point_count(&corners[i]));
+            let notable_len: [usize; 6] =
+                std::array::from_fn(|f| FACE_CORNERS[f].iter().map(|&c| counts[c]).sum());
+            let corner_len: usize = counts.iter().sum();
+            let face_len = face_edges.iter().flatten().count();
+            let edge_len = corner_len + face_len;
+            let mut points =
+                Vec::with_capacity(edge_len + notable_len[MIN_Y..].iter().sum::<usize>());
+            // Where each corner set starts in `points`.
+            let mut starts = [0usize; 12];
+            for (i, set) in corners.iter().enumerate() {
+                starts[i] = points.len();
+                points.extend(set.iter().flatten().cloned());
+            }
+            points.extend(face_edges.iter().flatten().cloned());
+            let mut notable = [(0usize, 0usize); 6];
+            // The x faces' corner sets are adjacent runs of `edgePoints`.
+            notable[MIN_X] = (starts[0], starts[0] + notable_len[MIN_X]);
+            notable[MAX_X] = (starts[4], starts[4] + notable_len[MAX_X]);
+            for face in MIN_Y..=MAX_Z {
+                let start = points.len();
+                for &c in &FACE_CORNERS[face] {
+                    points.extend_from_within(starts[c]..starts[c] + counts[c]);
+                }
+                notable[face] = (start, points.len());
+            }
+            let plane_intersects: [bool; 6] =
+                std::array::from_fn(|f| notable_len[f] + usize::from(face_edges[f].is_some()) > 0);
+            Some(StandardFaces {
+                plane_intersects,
+                points,
+                edge_len,
+                notable,
                 min_x_plane,
                 max_x_plane,
                 min_y_plane,
                 max_y_plane,
                 min_z_plane,
                 max_z_plane,
-            }))
+            })
         };
         Ok(StandardXYZSolid {
             planet_model: planet_model.clone(),
@@ -444,6 +479,7 @@ solid_boilerplate!(
 );
 
 impl Membership for StandardXYZSolid {
+    #[inline]
     fn is_within_xyz(&self, x: f64, y: f64, z: f64) -> bool {
         let Some(f) = &self.faces else {
             return true;
@@ -465,11 +501,12 @@ impl GeoArea for StandardXYZSolid {
             }
             return Ok(GeoAreaRelationship::Overlaps);
         };
-        Ok(solid_relationship(self, &f.edge_points, path, || {
-            (f.min_x_plane_intersects
+        let pi = &f.plane_intersects;
+        Ok(solid_relationship(self, f.edge_points(), path, || {
+            (pi[MIN_X]
                 && path.intersects(
                     &f.min_x_plane,
-                    &f.notable_min_x_points,
+                    f.notable(MIN_X),
                     &[
                         &f.max_x_plane,
                         &f.min_y_plane,
@@ -478,10 +515,10 @@ impl GeoArea for StandardXYZSolid {
                         &f.max_z_plane,
                     ],
                 ))
-                || (f.max_x_plane_intersects
+                || (pi[MAX_X]
                     && path.intersects(
                         &f.max_x_plane,
-                        &f.notable_max_x_points,
+                        f.notable(MAX_X),
                         &[
                             &f.min_x_plane,
                             &f.min_y_plane,
@@ -490,10 +527,10 @@ impl GeoArea for StandardXYZSolid {
                             &f.max_z_plane,
                         ],
                     ))
-                || (f.min_y_plane_intersects
+                || (pi[MIN_Y]
                     && path.intersects(
                         &f.min_y_plane,
-                        &f.notable_min_y_points,
+                        f.notable(MIN_Y),
                         &[
                             &f.max_y_plane,
                             &f.min_x_plane,
@@ -502,10 +539,10 @@ impl GeoArea for StandardXYZSolid {
                             &f.max_z_plane,
                         ],
                     ))
-                || (f.max_y_plane_intersects
+                || (pi[MAX_Y]
                     && path.intersects(
                         &f.max_y_plane,
-                        &f.notable_max_y_points,
+                        f.notable(MAX_Y),
                         &[
                             &f.min_y_plane,
                             &f.min_x_plane,
@@ -514,10 +551,10 @@ impl GeoArea for StandardXYZSolid {
                             &f.max_z_plane,
                         ],
                     ))
-                || (f.min_z_plane_intersects
+                || (pi[MIN_Z]
                     && path.intersects(
                         &f.min_z_plane,
-                        &f.notable_min_z_points,
+                        f.notable(MIN_Z),
                         &[
                             &f.max_z_plane,
                             &f.min_x_plane,
@@ -526,10 +563,10 @@ impl GeoArea for StandardXYZSolid {
                             &f.max_y_plane,
                         ],
                     ))
-                || (f.max_z_plane_intersects
+                || (pi[MAX_Z]
                     && path.intersects(
                         &f.max_z_plane,
-                        &f.notable_max_z_points,
+                        f.notable(MAX_Z),
                         &[
                             &f.min_z_plane,
                             &f.min_x_plane,
@@ -556,8 +593,10 @@ pub struct DXYZSolid {
     max_y_plane: SidedPlane,
     min_z_plane: SidedPlane,
     max_z_plane: SidedPlane,
+    /// Java's `edgePoints`: `notableXPoints` (the first `notable_len`)
+    /// then the face sample.
     edge_points: Vec<GeoPoint>,
-    notable_x_points: Vec<GeoPoint>,
+    notable_len: usize,
 }
 
 impl DXYZSolid {
@@ -608,7 +647,6 @@ impl DXYZSolid {
             &max_z_plane,
             &[&min_z_plane, &min_y_plane, &max_y_plane],
         );
-        let notable_x_points = glue(&[&x_min_y, &x_max_y, &x_min_z, &x_max_z]);
         let out = |x: f64, y: f64, z: f64| pm.point_outside_xyz(x, y, z);
         let x_edges = face_edge(
             pm,
@@ -625,6 +663,7 @@ impl DXYZSolid {
                 && out(X, max_y, min_z)
                 && out(X, max_y, max_z),
         );
+        let (edge_points, notable_len) = glue_face([x_min_y, x_max_y, x_min_z, x_max_z], x_edges);
         Ok(DXYZSolid {
             planet_model: planet_model.clone(),
             X,
@@ -632,8 +671,8 @@ impl DXYZSolid {
             max_y,
             min_z,
             max_z,
-            edge_points: glue(&[&x_min_y, &x_max_y, &x_min_z, &x_max_z, &x_edges]),
-            notable_x_points,
+            edge_points,
+            notable_len,
             x_plane,
             min_y_plane,
             max_y_plane,
@@ -666,7 +705,7 @@ impl GeoArea for DXYZSolid {
         Ok(solid_relationship(self, &self.edge_points, path, || {
             path.intersects(
                 &self.x_plane,
-                &self.notable_x_points,
+                &self.edge_points[..self.notable_len],
                 &[
                     &self.min_y_plane,
                     &self.max_y_plane,
@@ -692,8 +731,10 @@ pub struct XdYZSolid {
     y_plane: Plane,
     min_z_plane: SidedPlane,
     max_z_plane: SidedPlane,
+    /// Java's `edgePoints`: `notableYPoints` (the first `notable_len`)
+    /// then the face sample.
     edge_points: Vec<GeoPoint>,
-    notable_y_points: Vec<GeoPoint>,
+    notable_len: usize,
 }
 
 impl XdYZSolid {
@@ -744,7 +785,6 @@ impl XdYZSolid {
             &max_z_plane,
             &[&min_z_plane, &min_x_plane, &max_x_plane],
         );
-        let notable_y_points = glue(&[&min_x_y, &max_x_y, &y_min_z, &y_max_z]);
         let out = |x: f64, y: f64, z: f64| pm.point_outside_xyz(x, y, z);
         let y_edges = face_edge(
             pm,
@@ -761,6 +801,7 @@ impl XdYZSolid {
                 && out(max_x, Y, min_z)
                 && out(max_x, Y, max_z),
         );
+        let (edge_points, notable_len) = glue_face([min_x_y, max_x_y, y_min_z, y_max_z], y_edges);
         Ok(XdYZSolid {
             planet_model: planet_model.clone(),
             min_x,
@@ -768,8 +809,8 @@ impl XdYZSolid {
             Y,
             min_z,
             max_z,
-            edge_points: glue(&[&min_x_y, &max_x_y, &y_min_z, &y_max_z, &y_edges]),
-            notable_y_points,
+            edge_points,
+            notable_len,
             min_x_plane,
             max_x_plane,
             y_plane,
@@ -802,7 +843,7 @@ impl GeoArea for XdYZSolid {
         Ok(solid_relationship(self, &self.edge_points, path, || {
             path.intersects(
                 &self.y_plane,
-                &self.notable_y_points,
+                &self.edge_points[..self.notable_len],
                 &[
                     &self.min_x_plane,
                     &self.max_x_plane,
@@ -828,8 +869,10 @@ pub struct XYdZSolid {
     min_y_plane: SidedPlane,
     max_y_plane: SidedPlane,
     z_plane: Plane,
+    /// Java's `edgePoints`: `notableZPoints` (the first `notable_len`)
+    /// then the face sample.
     edge_points: Vec<GeoPoint>,
-    notable_z_points: Vec<GeoPoint>,
+    notable_len: usize,
 }
 
 impl XYdZSolid {
@@ -880,7 +923,6 @@ impl XYdZSolid {
             &z_plane,
             &[&min_y_plane, &min_x_plane, &max_x_plane],
         );
-        let notable_z_points = glue(&[&min_x_z, &max_x_z, &min_y_z, &max_y_z]);
         let out = |x: f64, y: f64, z: f64| pm.point_outside_xyz(x, y, z);
         let z_edges = face_edge(
             pm,
@@ -897,6 +939,7 @@ impl XYdZSolid {
                 && out(max_x, min_y, Z)
                 && out(max_x, max_y, Z),
         );
+        let (edge_points, notable_len) = glue_face([min_x_z, max_x_z, min_y_z, max_y_z], z_edges);
         Ok(XYdZSolid {
             planet_model: planet_model.clone(),
             min_x,
@@ -904,8 +947,8 @@ impl XYdZSolid {
             min_y,
             max_y,
             Z,
-            edge_points: glue(&[&min_x_z, &max_x_z, &min_y_z, &max_y_z, &z_edges]),
-            notable_z_points,
+            edge_points,
+            notable_len,
             min_x_plane,
             max_x_plane,
             min_y_plane,
@@ -938,7 +981,7 @@ impl GeoArea for XYdZSolid {
         Ok(solid_relationship(self, &self.edge_points, path, || {
             path.intersects(
                 &self.z_plane,
-                &self.notable_z_points,
+                &self.edge_points[..self.notable_len],
                 &[
                     &self.min_x_plane,
                     &self.max_x_plane,
@@ -967,10 +1010,11 @@ macro_rules! two_degenerate_solid {
         impl $t {
             #[doc = concat!("`", $java, "(planetModel, ...)`.")]
             pub fn new(planet_model: &Arc<PlanetModel>, $a: f64, $b: f64, $c: f64, $d: f64) -> Result<Self> {
-                let build: fn(&PlanetModel, f64, f64, f64, f64) -> Result<Option<Vec<GeoPoint>>> = $build;
+                let build: fn(&PlanetModel, f64, f64, f64, f64) -> Result<Option<[Option<GeoPoint>; 2]>> = $build;
                 let Some(surface_points) = build(planet_model, $a, $b, $c, $d)? else {
                     return Err(illegal($check));
                 };
+                let surface_points = surface_points.into_iter().flatten().collect();
                 Ok($t {
                     planet_model: planet_model.clone(),
                     $a,
@@ -1091,7 +1135,7 @@ pub struct DXdYdZSolid {
     Y: f64,
     Z: f64,
     /// The point, when it is on the surface (`isOnSurface`).
-    edge_points: Vec<GeoPoint>,
+    edge_point: Option<GeoPoint>,
 }
 
 impl DXdYdZSolid {
@@ -1103,11 +1147,7 @@ impl DXdYdZSolid {
             X,
             Y,
             Z,
-            edge_points: if is_on_surface {
-                vec![GeoPoint::new(X, Y, Z)]
-            } else {
-                Vec::new()
-            },
+            edge_point: is_on_surface.then(|| GeoPoint::new(X, Y, Z)),
         }
     }
 
@@ -1122,18 +1162,23 @@ solid_boilerplate!(DXdYdZSolid, 27, [X, Y, Z]);
 
 impl Membership for DXdYdZSolid {
     fn is_within_xyz(&self, x: f64, y: f64, z: f64) -> bool {
-        self.edge_points
-            .first()
+        self.edge_point
+            .as_ref()
             .is_some_and(|p| p.is_identical_xyz(x, y, z))
     }
 }
 
 impl GeoArea for DXdYdZSolid {
     fn get_relationship(&self, path: &dyn GeoShape) -> Result<GeoAreaRelationship> {
-        if self.edge_points.is_empty() {
+        if self.edge_point.is_none() {
             return Ok(GeoAreaRelationship::Disjoint);
         }
-        Ok(solid_relationship(self, &self.edge_points, path, || false))
+        Ok(solid_relationship(
+            self,
+            self.edge_point.as_slice(),
+            path,
+            || false,
+        ))
     }
 }
 

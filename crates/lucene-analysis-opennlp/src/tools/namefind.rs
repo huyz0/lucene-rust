@@ -20,7 +20,7 @@ use std::sync::Arc;
 use lucene_analysis::factory::FactoryError;
 use lucene_analysis::AnalysisError;
 
-use super::featuregen::{self, Generator, Owner};
+use super::featuregen::{self, Generator, Owner, Prior};
 use super::ml::{BeamSearch, MaxentModel, SequenceContext};
 use super::model::{Artifact, BaseModel, Component};
 use super::text::{self, JString};
@@ -328,21 +328,25 @@ impl SequenceContext for NameContext<'_> {
         outcomes: &[JString],
         features: &mut Vec<JString>,
     ) {
-        let preds: Vec<JString> = prior
-            .iter()
-            .map(|&o| outcomes[o as usize].clone())
-            .collect();
+        // The previous outcomes by id (no copy of the sequence per call).
+        let preds = Prior::Ids {
+            ids: prior,
+            outcomes,
+        };
         let sentence = self.finder.sentence;
-        if let Err(e) =
-            self.finder
-                .generator
-                .create_features(features, self.tokens, index, &preds, sentence)
-        {
+        if let Err(e) = self.finder.generator.create_features_with(
+            features,
+            self.tokens,
+            index,
+            preds,
+            sentence,
+        ) {
             self.error.get_or_insert(e);
         }
         let other = text::units("other");
-        let po = if index > 0 { &preds[index - 1] } else { &other };
-        let ppo = if index > 1 { &preds[index - 2] } else { &other };
+        let pred = |i: usize| &outcomes[prior[i] as usize][..];
+        let po = if index > 0 { pred(index - 1) } else { &other };
+        let ppo = if index > 1 { pred(index - 2) } else { &other };
         let token = &self.tokens[index];
         let mut f = |parts: &[&[u16]]| features.push(text::concat(parts));
         f(&[&text::units("po="), po]);

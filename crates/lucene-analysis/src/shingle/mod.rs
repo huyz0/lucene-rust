@@ -1,6 +1,7 @@
 //! `org.apache.lucene.analysis.shingle`: `ShingleFilter` and
 //! `FixedShingleFilter`.
 
+use std::borrow::Cow;
 use std::collections::VecDeque;
 
 use crate::attributes::{AttributeSource, State};
@@ -71,7 +72,7 @@ pub struct ShingleFilter<I> {
     input_window: VecDeque<InputWindowToken>,
     gram_size: CircularSequence,
     gram_builder: String,
-    token_type: String,
+    token_type: Cow<'static, str>,
     token_separator: String,
     filler_token: String,
     output_unigrams: bool,
@@ -113,7 +114,7 @@ impl<I: TokenStream> ShingleFilter<I> {
             input_window: VecDeque::new(),
             gram_size: CircularSequence::new(1),
             gram_builder: String::new(),
-            token_type: DEFAULT_TOKEN_TYPE.to_string(),
+            token_type: Cow::Borrowed(DEFAULT_TOKEN_TYPE),
             token_separator: DEFAULT_TOKEN_SEPARATOR.to_string(),
             filler_token: DEFAULT_FILLER_TOKEN.to_string(),
             output_unigrams: true,
@@ -152,7 +153,13 @@ impl<I: TokenStream> ShingleFilter<I> {
 
     /// `setTokenType`.
     pub fn set_token_type(&mut self, token_type: &str) {
-        self.token_type = token_type.to_string();
+        // The default type stays borrowed, so each shingle's type costs no
+        // allocation.
+        self.token_type = if token_type == DEFAULT_TOKEN_TYPE {
+            Cow::Borrowed(DEFAULT_TOKEN_TYPE)
+        } else {
+            Cow::Owned(token_type.to_string())
+        };
     }
 
     /// `setOutputUnigrams`.
@@ -221,18 +228,19 @@ impl<I: TokenStream> ShingleFilter<I> {
     // here; Java's copyTo overwrites every attribute it holds)
     fn get_next_token(&mut self) -> Result<Option<InputWindowToken>, AnalysisError> {
         if self.num_filler_tokens_to_insert > 0 {
+            self.num_filler_tokens_to_insert -= 1;
             let next = self
                 .next_input_stream_token
-                .clone()
+                .as_ref()
                 .expect("set with the filler count");
-            self.num_filler_tokens_to_insert -= 1;
-            return Ok(Some(self.filler_from(&next)?));
+            return Ok(Some(self.filler_from(next)?));
         }
         if self.is_next_input_stream_token {
             self.is_next_input_stream_token = false;
+            // Nothing reads the token again before the next gap sets it.
             let next = self
                 .next_input_stream_token
-                .clone()
+                .take()
                 .expect("set with the flag");
             return Ok(Some(InputWindowToken {
                 att_source: next,
@@ -247,7 +255,7 @@ impl<I: TokenStream> ShingleFilter<I> {
             let inc = a.position_increment();
             if inc > 1 {
                 self.num_filler_tokens_to_insert = (inc - 1).min(self.max_shingle_size - 1);
-                self.next_input_stream_token = Some(a.capture_state());
+                self.next_input_stream_token = Some(capture(&mut self.spare, a));
                 self.is_next_input_stream_token = true;
                 let filler = self.filler_from(a)?;
                 self.num_filler_tokens_to_insert -= 1;
@@ -340,14 +348,13 @@ impl<I: TokenStream> TokenFilter for ShingleFilter<I> {
                 gram_num += 1;
             }
             if !is_all_filler && built_gram_size == self.gram_size.value {
-                let first = self
+                let first = &self
                     .input_window
                     .front()
                     .expect("non-empty window")
-                    .att_source
-                    .clone();
+                    .att_source;
                 let a = self.input.attributes_mut();
-                a.restore_state(&first);
+                a.restore_state(first);
                 a.set_position_increment(if self.is_output_here { 0 } else { 1 })?;
                 a.set_term(&self.gram_builder);
                 if self.gram_size.value > 1 {
@@ -373,8 +380,7 @@ impl<I: TokenStream> TokenFilter for ShingleFilter<I> {
     fn end_filter(&mut self) -> Result<(), AnalysisError> {
         match &self.end_state {
             Some(s) if self.exhausted => {
-                let s = s.clone();
-                self.input.attributes_mut().restore_state(&s);
+                self.input.attributes_mut().restore_state(s);
                 Ok(())
             }
             _ => self.input.end(),
@@ -413,6 +419,8 @@ pub struct FixedShingleFilter<I> {
     shingle_size: i32,
     token_separator: String,
     filler_token: String,
+    /// The shingle being built, kept from token to token for its capacity.
+    buffer: String,
 }
 
 impl<I: TokenStream> FixedShingleFilter<I> {
@@ -438,6 +446,7 @@ impl<I: TokenStream> FixedShingleFilter<I> {
             shingle_size,
             token_separator: sep.to_string(),
             filler_token: filler.to_string(),
+            buffer: String::new(),
         })
     }
 }
@@ -456,10 +465,11 @@ impl<I: TokenStream> TokenFilter for FixedShingleFilter<I> {
     // Java: FixedShingleFilter.incrementToken
     fn increment(&mut self) -> Result<bool, AnalysisError> {
         let (mut shingle_pos_inc, mut start_offset, mut end_offset);
-        let mut buffer = String::new();
+        let mut buffer = std::mem::take(&mut self.buffer);
         'outer: loop {
             if !self.graph.increment_graph()? {
                 if !self.graph.increment_base_token()? {
+                    self.buffer = buffer;
                     return Ok(false);
                 }
                 shingle_pos_inc = self.graph.attributes().position_increment();
@@ -488,7 +498,9 @@ impl<I: TokenStream> TokenFilter for FixedShingleFilter<I> {
                 let a = self.graph.attributes();
                 let mut pos_inc = a.position_increment();
                 if pos_inc > 1 {
-                    if i + pos_inc > self.shingle_size {
+                    // `i < shingle_size`, so this cannot overflow where
+                    // `i + pos_inc` could for a huge increment.
+                    if pos_inc > self.shingle_size - i {
                         while i < self.shingle_size {
                             buffer.push_str(&self.token_separator);
                             buffer.push_str(&self.filler_token);
@@ -516,6 +528,7 @@ impl<I: TokenStream> TokenFilter for FixedShingleFilter<I> {
         a.set_position_increment(shingle_pos_inc)?;
         a.set_term(&buffer);
         a.set_token_type("shingle");
+        self.buffer = buffer;
         Ok(true)
     }
 }

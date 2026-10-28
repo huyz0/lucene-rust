@@ -30,11 +30,11 @@ struct DictEntry {
 }
 
 /// `KStemmer.dict_ht` (a `CharArrayMap` over UTF-16 units; every key is
-/// ASCII, so a `str` key is the same lookup).
-static DICT: LazyLock<HashMap<&'static str, DictEntry, WordHash>> = LazyLock::new(|| {
+/// ASCII, so a byte key is the same lookup).
+static DICT: LazyLock<HashMap<&'static [u8], DictEntry, WordHash>> = LazyLock::new(|| {
     let mut d = HashMap::with_capacity_and_hasher(30_000, WordHash::default());
     let mut put = |k: &'static str, e: DictEntry, which: u8| {
-        let fresh = d.insert(k, e).is_none();
+        let fresh = d.insert(k.as_bytes(), e).is_none();
         assert!(fresh, "Warning: Entry [{k}] already in dictionary {which}");
     };
     for &w in &EXCEPTION_WORDS {
@@ -95,14 +95,24 @@ fn dict_get(chars: &[u16]) -> Option<DictEntry> {
     for (d, &c) in dst.iter_mut().zip(chars) {
         *d = c as u8;
     }
-    let key = std::str::from_utf8(dst).ok()?;
-    DICT.get(key).copied()
+    dict_get_ascii(dst)
+}
+
+/// [`dict_get`] for a word already narrowed to its (ASCII) bytes.
+#[inline]
+fn dict_get_ascii(word: &[u8]) -> Option<DictEntry> {
+    DICT.get(word).copied()
 }
 
 /// `org.apache.lucene.analysis.util.OpenStringBuilder`, as KStem uses it.
+///
+/// Its `char`s are stored as bytes: KStem only ever writes `a`-`z` into it
+/// (the word is refused unless every unit is one, and every suffix written
+/// is ASCII), so a byte holds each unit exactly and a dictionary probe needs
+/// no narrowing.
 #[derive(Debug, Clone)]
 struct OpenStringBuilder {
-    buf: Vec<u16>,
+    buf: Vec<u8>,
     len: usize,
 }
 
@@ -115,7 +125,7 @@ impl OpenStringBuilder {
     }
 
     fn resize(&mut self, len: usize) {
-        let mut nb = vec![0u16; (self.buf.len() << 1).max(len)];
+        let mut nb = vec![0u8; (self.buf.len() << 1).max(len)];
         nb[..self.len].copy_from_slice(&self.buf[..self.len]);
         self.buf = nb;
     }
@@ -131,14 +141,14 @@ impl OpenStringBuilder {
     }
 
     fn char_at(&self, i: usize) -> u16 {
-        self.buf[i]
+        u16::from(self.buf[i])
     }
 
     fn set_char_at(&mut self, i: usize, c: u8) {
-        self.buf[i] = u16::from(c);
+        self.buf[i] = c;
     }
 
-    fn unsafe_write(&mut self, c: u16) {
+    fn unsafe_write(&mut self, c: u8) {
         if self.len >= self.buf.len() {
             // Java would throw; the caller reserved enough. Grow instead.
             self.resize(self.len + 1);
@@ -150,11 +160,11 @@ impl OpenStringBuilder {
     fn append(&mut self, s: &str) {
         self.reserve(s.len());
         for b in s.bytes() {
-            self.unsafe_write(u16::from(b));
+            self.unsafe_write(b);
         }
     }
 
-    fn as_slice(&self) -> &[u16] {
+    fn as_slice(&self) -> &[u8] {
         &self.buf[..self.len]
     }
 }
@@ -219,11 +229,13 @@ impl KStemmer {
     }
 
     fn write(&mut self, c: u8) {
-        self.word.unsafe_write(u16::from(c));
+        self.word.unsafe_write(c);
     }
 
+    /// Writes back a unit read from the word, which is always `a`-`z`.
     fn write_unit(&mut self, c: u16) {
-        self.word.unsafe_write(c);
+        debug_assert!(c < 0x80, "KStem's word holds only a-z");
+        self.word.unsafe_write(c as u8);
     }
 
     fn set_at(&mut self, i: i32, c: u8) {
@@ -271,7 +283,7 @@ impl KStemmer {
         if self.matched_entry.is_some() {
             return self.matched_entry;
         }
-        let e = dict_get(self.word.as_slice());
+        let e = dict_get_ascii(self.word.as_slice());
         if let Some(e) = e {
             if !e.exception {
                 self.matched_entry = Some(e);
@@ -282,7 +294,7 @@ impl KStemmer {
 
     // Java: lookup
     fn lookup(&mut self) -> bool {
-        self.matched_entry = dict_get(self.word.as_slice());
+        self.matched_entry = dict_get_ascii(self.word.as_slice());
         self.matched_entry.is_some()
     }
 
@@ -984,8 +996,41 @@ impl KStemmer {
             if !(u16::from(b'a')..=u16::from(b'z')).contains(&ch) {
                 return false;
             }
+            self.word.unsafe_write(ch as u8);
+        }
+        self.stem_word()
+    }
+
+    /// [`Self::stem`] of an ASCII term, given as its bytes (each byte is the
+    /// UTF-16 unit Java sees), with no widening.
+    pub fn stem_ascii(&mut self, term: &[u8]) -> bool {
+        self.result = None;
+        let len = term.len();
+        self.k = len as i32 - 1;
+        if self.k <= 1 || self.k >= MAX_WORD_LEN as i32 - 1 {
+            return false;
+        }
+        if let Some(entry) = dict_get_ascii(term) {
+            if let Some(root) = entry.root {
+                self.result = Some(root);
+                return true;
+            }
+            return false;
+        }
+        // isAlpha: terms must be lowercased already.
+        if !term.iter().all(u8::is_ascii_lowercase) {
+            return false;
+        }
+        self.word.set_length(0);
+        self.word.reserve(len + 10);
+        for &ch in term {
             self.word.unsafe_write(ch);
         }
+        self.stem_word()
+    }
+
+    /// The rule steps of `stem` once the word is in [`Self::word`].
+    fn stem_word(&mut self) -> bool {
         self.matched_entry = None;
         let steps: [fn(&mut Self); 16] = [
             Self::plural,
@@ -1032,7 +1077,16 @@ impl KStemmer {
     pub fn as_utf16(&self) -> Vec<u16> {
         match self.result {
             Some(r) => r.encode_utf16().collect(),
-            None => self.word.as_slice().to_vec(),
+            None => self.word.as_slice().iter().map(|&b| u16::from(b)).collect(),
+        }
+    }
+
+    /// [`Self::as_utf16`] as a string, borrowed (the stem is ASCII).
+    pub fn as_str(&self) -> &str {
+        match self.result {
+            Some(r) => r,
+            // The word holds only a-z (see `OpenStringBuilder`).
+            None => std::str::from_utf8(self.word.as_slice()).unwrap_or_default(),
         }
     }
 }
@@ -1042,7 +1096,6 @@ impl KStemmer {
 pub struct KStemFilter<I> {
     input: I,
     stemmer: KStemmer,
-    buf: Vec<u16>,
 }
 
 impl<I: TokenStream> KStemFilter<I> {
@@ -1051,7 +1104,6 @@ impl<I: TokenStream> KStemFilter<I> {
         KStemFilter {
             input,
             stemmer: KStemmer::new(),
-            buf: Vec::new(),
         }
     }
 }
@@ -1064,13 +1116,10 @@ impl<I: TokenStream> TokenFilter for KStemFilter<I> {
             return Ok(false);
         }
         let a = self.input.attributes_mut();
-        if !a.is_keyword() {
-            self.buf.clear();
-            self.buf.extend(a.term().encode_utf16());
-            if self.stemmer.stem(&self.buf) {
-                let stem = self.stemmer.as_utf16();
-                a.set_term_utf16(&stem);
-            }
+        // A term with a non-ASCII unit is in no dictionary and fails
+        // `isAlpha`, so `stem` would leave it unchanged.
+        if !a.is_keyword() && a.term().is_ascii() && self.stemmer.stem_ascii(a.term().as_bytes()) {
+            a.set_term(self.stemmer.as_str());
         }
         Ok(true)
     }
@@ -1132,7 +1181,7 @@ mod tests {
         assert_eq!(s.word_in_dict().and_then(|e| e.root), Some("x"));
         let mut b = OpenStringBuilder::new();
         for _ in 0..40 {
-            b.unsafe_write(u16::from(b'a'));
+            b.unsafe_write(b'a');
         }
         assert_eq!(b.len, 40);
     }
@@ -1143,7 +1192,7 @@ mod tests {
         b.append("abcdef");
         b.set_length(2);
         b.set_length(4);
-        assert_eq!(String::from_utf16(b.as_slice()).unwrap(), "abcd");
+        assert_eq!(std::str::from_utf8(b.as_slice()).unwrap(), "abcd");
         b.set_length(31);
         b.append("xyz");
         assert_eq!(b.len, 34);

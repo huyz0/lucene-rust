@@ -53,7 +53,10 @@ impl TokenizerModel {
 pub struct Tokenizer {
     model: TokenizerModel,
     alphanumeric: JavaPattern,
-    split: usize,
+    /// Per outcome, whether its name is `TokenizerME.SPLIT` (Java compares the best
+    /// outcome's *name*: a model without the outcome never splits, and a
+    /// repeated name splits on either index).
+    split: Vec<bool>,
     probs: Vec<f64>,
     features: Vec<JString>,
 }
@@ -63,7 +66,9 @@ impl Tokenizer {
     /// `PatternSyntaxException` for a bad one).
     pub fn new(model: TokenizerModel) -> Result<Self, AnalysisError> {
         let alphanumeric = JavaPattern::compile(&model.alphanumeric)?;
-        let split = model.model.index("T").unwrap_or(0);
+        let split = (0..model.model.num_outcomes())
+            .map(|i| model.model.outcome_name(i) == "T")
+            .collect();
         let probs = vec![0.0; model.model.num_outcomes()];
         Ok(Tokenizer {
             model,
@@ -99,7 +104,7 @@ impl Tokenizer {
                     &mut self.features,
                 );
                 self.model.model.eval(&self.features, &mut self.probs);
-                if MaxentModel::best_outcome(&self.probs) == self.split {
+                if self.split[MaxentModel::best_outcome(&self.probs)] {
                     if self.is_acceptable_abbreviation(tok) {
                         tokens.push(span(start, end));
                         let dots = tok.iter().filter(|&&c| c == u16::from(b'.')).count();

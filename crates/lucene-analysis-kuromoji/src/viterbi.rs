@@ -64,6 +64,13 @@ pub struct JaViterbi {
     /// `pruneAndRescore`'s arcs, kept between calls.
     kept: Vec<(i32, i32, i32, TokenType)>,
     forwards: Vec<(i32, i32, TokenType)>,
+    /// The last unknown-word run `processUnknownWord` scanned to its natural
+    /// end, as `(start, end)` positions. Search mode processes unknown words
+    /// at every position, and a position inside the run starts a run of the
+    /// same class and punctuation that ends at the same place, so its length
+    /// is `end - pos` with no rescan (Java rescans: O(n^2) over a run).
+    /// Cleared per document ([`Self::reset_document`]).
+    unknown_run: Option<(i32, i32)>,
 }
 
 fn idx(i: i32) -> usize {
@@ -96,7 +103,13 @@ impl JaViterbi {
             dot_out: None,
             kept: Vec::new(),
             forwards: Vec::new(),
+            unknown_run: None,
         }
+    }
+
+    /// Forgets what the last document's scans cached.
+    pub(crate) fn reset_document(&mut self) {
+        self.unknown_run = None;
     }
 
     /// `getDict(type)`.
@@ -291,8 +304,9 @@ impl ViterbiLang<Token> for JaViterbi {
         any_matches: bool,
         pos_data: i32,
     ) -> Result<i32, AnalysisError> {
+        // SENTINEL-OK: the caller only processes positions that hold a character.
         let first = read_char(v, reader, v.pos)? as u16;
-        let cd = Arc::clone(&self.character_definition);
+        let cd = &*self.character_definition;
         if any_matches && !cd.is_invoke(first) {
             return Ok(0);
         }
@@ -303,26 +317,41 @@ impl ViterbiLang<Token> for JaViterbi {
         // NOTE: copied from UnknownDictionary.lookup:
         let mut unknown_word_length: i32 = 1;
         if cd.is_group(first) {
-            // Extract unknown word. Characters with the same character
-            // class are considered to be part of unknown word
-            let mut pos_ahead = v.pos.wrapping_add(1);
-            while unknown_word_length < MAX_UNKNOWN_WORD_LENGTH {
-                let ch = read_char(v, reader, pos_ahead)?;
-                if ch == -1 {
-                    break;
+            match self.unknown_run {
+                // Inside the run scanned last: same class and punctuation
+                // up to the same end (see `unknown_run`).
+                Some((start, end)) if start < v.pos && v.pos < end => {
+                    unknown_word_length = end.wrapping_sub(v.pos);
                 }
-                let ch = ch as u16;
-                if character_id == cd.character_class(ch) && is_punctuation(ch) == is_punct {
-                    unknown_word_length = unknown_word_length.wrapping_add(1);
-                } else {
-                    break;
+                _ => {
+                    // Extract unknown word. Characters with the same
+                    // character class are considered to be part of unknown
+                    // word
+                    let mut pos_ahead = v.pos.wrapping_add(1);
+                    while unknown_word_length < MAX_UNKNOWN_WORD_LENGTH {
+                        let ch = read_char(v, reader, pos_ahead)?;
+                        if ch == -1 {
+                            break;
+                        }
+                        let ch = ch as u16;
+                        if character_id == cd.character_class(ch) && is_punctuation(ch) == is_punct
+                        {
+                            unknown_word_length = unknown_word_length.wrapping_add(1);
+                        } else {
+                            break;
+                        }
+                        pos_ahead = pos_ahead.wrapping_add(1);
+                    }
+                    // A scan cut at the maximum length did not find the
+                    // run's end: a later position may reach past it.
+                    self.unknown_run = (unknown_word_length < MAX_UNKNOWN_WORD_LENGTH)
+                        .then(|| (v.pos, v.pos.wrapping_add(unknown_word_length)));
                 }
-                pos_ahead = pos_ahead.wrapping_add(1);
             }
         }
 
         // characters in input text are supposed to be the same
-        let unknown = Arc::clone(&self.unknown);
+        let unknown = &*self.unknown;
         for &word_id in unknown.lookup_word_ids(i32::from(character_id)) {
             let word_pos = v.pos;
             add(
@@ -415,7 +444,7 @@ impl ViterbiLang<Token> for JaViterbi {
 
                     // Finally, find 2nd best back-trace and resume
                     // backtrace there:
-                    let p2 = v.positions.at(pos).clone();
+                    let p2 = v.positions.at(pos);
                     let mut least_cost = i32::MAX;
                     let mut least_idx: i32 = -1;
                     for i in 0..p2.count() {
