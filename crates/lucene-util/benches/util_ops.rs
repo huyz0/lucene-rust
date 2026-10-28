@@ -120,8 +120,41 @@ fn bench_byte_vector_kernels(c: &mut Criterion) {
     });
 }
 
+/// Range combinators over a 1M-bit set at an unaligned offset: `apply_mask`
+/// (live docs applied to a doc-id slice) and `for_each_in_range`.
+fn bench_fixed_bit_set_ranges(c: &mut Criterion) {
+    const N: usize = 1 << 20;
+    let mut live = FixedBitSet::new(N);
+    for i in 0..N {
+        if i % 13 != 0 {
+            live.set(i);
+        }
+    }
+    let mut dest = FixedBitSet::new(N / 2);
+    for i in 0..dest.len() {
+        if i % 3 == 0 {
+            dest.set(i);
+        }
+    }
+    c.bench_function("fixed_bit_set/apply_mask_512k", |b| {
+        b.iter(|| {
+            let mut d = dest.clone();
+            live.apply_mask(&mut d, 1001).unwrap();
+            black_box(d)
+        })
+    });
+    c.bench_function("fixed_bit_set/for_each_in_range_512k", |b| {
+        b.iter(|| {
+            let mut sum = 0i64;
+            dest.for_each_in_range(17, dest.len() - 5, 0, |d| sum += i64::from(d));
+            black_box(sum)
+        })
+    });
+}
+
 criterion_group!(
     benches,
+    bench_fixed_bit_set_ranges,
     bench_byte_vector_kernels,
     bench_zigzag_roundtrip,
     bench_fixed_bit_set_get,

@@ -839,22 +839,54 @@ impl FixedBitSet {
     pub fn into_array(&self, from: usize, to: usize, base: i32, array: &mut [i32]) -> usize {
         assert!(from <= to && to <= self.num_bits);
         let mut n = 0;
-        let mut i = self.next_set_bit(from);
-        while let Some(b) = i.filter(|&b| b < to && n < array.len()) {
-            array[n] = base + b as i32;
-            n += 1;
-            i = self.next_set_bit(b + 1);
-        }
+        self.for_each_word_in_range(from, to, |w, mut bits| {
+            while bits != 0 && n < array.len() {
+                array[n] = base + ((w << 6) | bits.trailing_zeros() as usize) as i32;
+                n += 1;
+                bits &= bits - 1;
+            }
+            n < array.len()
+        });
         n
     }
 
     /// `FixedBitSet.forEach(from, to, base, consumer)`.
     pub fn for_each_in_range(&self, from: usize, to: usize, base: i32, mut f: impl FnMut(i32)) {
         assert!(from <= to && to <= self.num_bits);
-        let mut i = self.next_set_bit(from);
-        while let Some(b) = i.filter(|&b| b < to) {
-            f(base + b as i32);
-            i = self.next_set_bit(b + 1);
+        self.for_each_word_in_range(from, to, |w, mut bits| {
+            while bits != 0 {
+                f(base + ((w << 6) | bits.trailing_zeros() as usize) as i32);
+                bits &= bits - 1;
+            }
+            true
+        });
+    }
+
+    /// Calls `f(word_index, bits)` for each word overlapping `from..to`, with
+    /// the bits outside the range masked off; stops when `f` returns false.
+    #[inline]
+    fn for_each_word_in_range(
+        &self,
+        from: usize,
+        to: usize,
+        mut f: impl FnMut(usize, u64) -> bool,
+    ) {
+        if from >= to {
+            return;
+        }
+        let (first, last) = (from >> 6, (to - 1) >> 6);
+        let tail = u64::MAX >> (63 - ((to - 1) & 63));
+        for w in first..=last {
+            let mut bits = self.words[w];
+            if w == first {
+                bits &= u64::MAX << (from & 63);
+            }
+            if w == last {
+                bits &= tail;
+            }
+            if !f(w, bits) {
+                return;
+            }
         }
     }
 
@@ -874,13 +906,20 @@ impl FixedBitSet {
 
     /// `FixedBitSet.copyOf(Bits)` over any bit source of `len` bits.
     pub fn copy_of(len: usize, get: impl Fn(usize) -> bool) -> FixedBitSet {
-        let mut out = FixedBitSet::new(len);
-        for i in 0..out.len() {
-            if get(i) {
-                out.set(i);
+        let mut words = vec![0u64; bits2words(len)];
+        for (w, word) in words.iter_mut().enumerate() {
+            let base = w << 6;
+            let n = (len - base).min(64);
+            let mut acc = 0u64;
+            for b in 0..n {
+                acc |= u64::from(get(base + b)) << b;
             }
+            *word = acc;
         }
-        out
+        FixedBitSet {
+            words,
+            num_bits: len,
+        }
     }
 }
 
@@ -1350,6 +1389,55 @@ mod tests {
         // on its own -- but with the message of a slice index, not of a
         // bitset bound.
         FixedBitSet::new(0).get(0);
+    }
+
+    mod range_ops_props {
+        use super::super::FixedBitSet;
+        use proptest::prelude::*;
+
+        fn bitset(words: &[u64], len: usize) -> FixedBitSet {
+            FixedBitSet::copy_of(len, |i| words[i >> 6] >> (i & 63) & 1 == 1)
+        }
+
+        proptest! {
+            #[test]
+            fn range_ops_match_bit_by_bit(
+                sw in proptest::collection::vec(any::<u64>(), 4),
+                dw in proptest::collection::vec(any::<u64>(), 4),
+                slen in 0usize..=256, dlen in 0usize..=256,
+                a in 0usize..=256, b in 0usize..=256, c in 0usize..=256,
+            ) {
+                let src = bitset(&sw, slen);
+                let dst = bitset(&dw, dlen);
+                for i in 0..slen {
+                    prop_assert_eq!(src.get(i), sw[i >> 6] >> (i & 63) & 1 == 1);
+                }
+                let sf = a.min(slen);
+                let df = b.min(dlen);
+                let length = c.min(slen - sf).min(dlen - df);
+                let mut or = dst.clone();
+                FixedBitSet::or_range(&src, sf, &mut or, df, length);
+                let mut and = dst.clone();
+                FixedBitSet::and_range(&src, sf, &mut and, df, length);
+                for i in 0..dlen {
+                    let inside = i >= df && i < df + length;
+                    let s = inside && src.get(sf + i - df);
+                    prop_assert_eq!(or.get(i), dst.get(i) || s, "or bit {}", i);
+                    prop_assert_eq!(and.get(i), dst.get(i) && (!inside || s), "and bit {}", i);
+                }
+                let (from, to) = (a.min(slen), b.min(slen));
+                let (from, to) = (from.min(to), from.max(to));
+                let want: Vec<i32> = (from..to).filter(|&i| src.get(i)).map(|i| i as i32 + 7).collect();
+                prop_assert_eq!(src.cardinality_range(from, to), want.len());
+                let mut seen = Vec::new();
+                src.for_each_in_range(from, to, 7, |d| seen.push(d));
+                prop_assert_eq!(&seen, &want);
+                let mut arr = vec![0i32; c % 9];
+                let n = src.into_array(from, to, 7, &mut arr);
+                prop_assert_eq!(n, want.len().min(arr.len()));
+                prop_assert_eq!(&arr[..n], &want[..n]);
+            }
+        }
     }
 }
 

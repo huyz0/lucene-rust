@@ -1455,13 +1455,21 @@ impl<'a> PostingsWriter<'a> {
         // per term (80 MB for a million-term field) for nothing.
         let mut layouts: Vec<PositionLayout> = Vec::new();
         if index_has_positions {
+            layouts.reserve_exact(input.terms.len());
+            let mut scratch = PositionScratch::default();
             for (i, t) in input.terms.iter().enumerate() {
                 pos_start_fp[i] = pos.len() as u64;
                 if index_has_offsets_or_payloads {
                     pay_start_fp[i] = pay.len() as u64;
                 }
-                let layout =
-                    write_position_tail(pos, pay, t, index_has_offsets, index_has_payloads);
+                let layout = write_position_tail(
+                    pos,
+                    pay,
+                    t,
+                    index_has_offsets,
+                    index_has_payloads,
+                    &mut scratch,
+                );
                 last_pos_block_offset[i] = layout.last_pos_block_offset as i64;
                 layouts.push(layout);
             }
@@ -2355,20 +2363,24 @@ fn write_position_tail<T: TermSource>(
     term: &T,
     has_offsets: bool,
     has_payloads: bool,
+    scratch: &mut PositionScratch,
 ) -> PositionLayout {
     let (payload_bytes, payload_lengths) = (term.payload_bytes(), term.payload_lengths());
     let pos_out_start = pos_out.len();
     let pay_out_start = pay_out.len();
     let has_offsets_or_payloads = has_offsets || has_payloads;
-    let mut pos_block_fp: Vec<u64> = vec![pos_out_start as u64];
-    let mut pay_block_fp: Vec<u64> = if has_offsets_or_payloads {
-        vec![pay_out_start as u64]
-    } else {
-        Vec::new()
-    };
-    let mut deltas = Vec::new();
-    let mut offset_start_deltas = Vec::new();
-    let mut offset_lengths = Vec::new();
+    // Only the full blocks' end pointers go in these: most terms have none,
+    // and an empty `Vec` costs no allocation.
+    let mut pos_block_fp: Vec<u64> = Vec::new();
+    let mut pay_block_fp: Vec<u64> = Vec::new();
+    let PositionScratch {
+        deltas,
+        offset_start_deltas,
+        offset_lengths,
+    } = scratch;
+    deltas.clear();
+    offset_start_deltas.clear();
+    offset_lengths.clear();
     // Borrowed, not rebuilt: `TermPostings` already carries the payload run in
     // exactly the layout this function consumes -- the whole term's payloads
     // concatenated, one length per occurrence -- so there is nothing to
@@ -2563,6 +2575,8 @@ fn write_position_tail<T: TermSource>(
     };
 
     PositionLayout {
+        pos_start: pos_out_start as u64,
+        pay_start: has_offsets_or_payloads.then_some(pay_out_start as u64),
         pos_block_fp,
         pay_block_fp,
         payload_prefix,
@@ -2579,13 +2593,27 @@ fn write_position_tail<T: TermSource>(
 /// time, so the same samples are *reconstructed* — which is exactly as exact,
 /// because the flush schedule is arithmetic: a `.pos` block closes every 256
 /// occurrences, doc-boundary-agnostic.
+/// [`write_position_tail`]'s per-occurrence buffers, kept across a field's
+/// terms so each term reuses the last one's allocations instead of growing
+/// three fresh vectors push by push.
+#[derive(Default)]
+struct PositionScratch {
+    deltas: Vec<i32>,
+    offset_start_deltas: Vec<i32>,
+    offset_lengths: Vec<i32>,
+}
+
 struct PositionLayout {
-    /// `.pos` absolute offset after `k` full blocks, for `k` in
-    /// `0..=num_full_blocks`. Entry `0` is the term's `posStartFP`.
-    pos_block_fp: Vec<u64>,
-    /// The same for `.pay`. Empty when the field has neither offsets nor
+    /// The term's `posStartFP`.
+    pos_start: u64,
+    /// Its `.pay` start; `None` when the field has neither offsets nor
     /// payloads (no `.pay` bytes exist, and no `.pay` skip fields are
     /// written).
+    pay_start: Option<u64>,
+    /// `.pos` absolute offset after `k + 1` full blocks, for `k` in
+    /// `0..num_full_blocks`.
+    pos_block_fp: Vec<u64>,
+    /// The same for `.pay`, empty when `pay_start` is `None`.
     pay_block_fp: Vec<u64>,
     /// `payloadByteUpto` before occurrence `i`, reset at every full-block
     /// boundary. Empty when the field has no payloads.
@@ -2624,10 +2652,17 @@ impl PositionLayout {
             (occ / BLOCK_SIZE as u64) as usize,
             (occ % BLOCK_SIZE as u64) as u8,
         );
+        // `.pos`/`.pay` offset after `q` full blocks.
+        let after = |start: u64, ends: &[u64]| match q.checked_sub(1) {
+            None => start,
+            Some(k) => ends.get(k).copied().unwrap_or(0),
+        };
         PosSkipSample {
-            pos_fp: self.pos_block_fp.get(q).copied().unwrap_or(0),
+            pos_fp: after(self.pos_start, &self.pos_block_fp),
             pos_upto: r,
-            pay_fp: self.pay_block_fp.get(q).copied().unwrap_or(0),
+            pay_fp: self
+                .pay_start
+                .map_or(0, |start| after(start, &self.pay_block_fp)),
             pay_upto: self.payload_prefix.get(occ as usize).copied().unwrap_or(0) as i32,
         }
     }
@@ -2655,8 +2690,8 @@ struct PosSkipWriter<'a> {
 
 impl<'a> PosSkipWriter<'a> {
     fn new(layout: Option<&'a PositionLayout>, has_offsets_or_payloads: bool) -> Self {
-        let pos_start = layout.map_or(0, |l| l.pos_block_fp[0]);
-        let pay_start = layout.map_or(0, |l| l.pay_block_fp.first().copied().unwrap_or(0));
+        let pos_start = layout.map_or(0, |l| l.pos_start);
+        let pay_start = layout.and_then(|l| l.pay_start).unwrap_or(0);
         PosSkipWriter {
             layout,
             has_offsets_or_payloads,
