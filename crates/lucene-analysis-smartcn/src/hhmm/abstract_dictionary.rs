@@ -29,7 +29,13 @@ pub fn hash1_char(c: u16) -> i64 {
 
 /// `hash1(char[])`: FNV-1 over every unit's two bytes.
 pub fn hash1(carray: &[u16]) -> i64 {
-    carray.iter().fold(FNV_OFFSET, |hash, &d| {
+    hash1_from(FNV_OFFSET, carray)
+}
+
+/// [`hash1`] continued from the hash of a prefix: `hash1(a ++ b)` is
+/// `hash1_from(hash1(a), b)`.
+pub fn hash1_from(start: i64, carray: &[u16]) -> i64 {
+    carray.iter().fold(start, |hash, &d| {
         let hash = (hash ^ i64::from(d & 0x00FF)).wrapping_mul(FNV_PRIME);
         (hash ^ i64::from(d >> 8)).wrapping_mul(FNV_PRIME)
     })
@@ -57,7 +63,12 @@ pub fn hash2_char(c: u16) -> i32 {
 
 /// `hash2(char[])`.
 pub fn hash2(carray: &[u16]) -> i32 {
-    carray.iter().fold(5381, |h, &d| hash2_step(h, d))
+    hash2_from(5381, carray)
+}
+
+/// [`hash2`] continued from the hash of a prefix.
+pub fn hash2_from(start: i32, carray: &[u16]) -> i32 {
+    carray.iter().fold(start, |h, &d| hash2_step(h, d))
 }
 
 /// The probe start and step of a double-hashing table of `prime` slots:
@@ -89,6 +100,10 @@ mod tests {
         assert_eq!(hash1(&[]), FNV_OFFSET);
         assert_eq!(hash2(&[]), 5381);
         assert_eq!(hash2_char(0x4E2D), hash2(&[0x4E2D]));
+        let (a, b) = ([0x4E2D, 0x40], [0x56FD, 0x4E2D]);
+        let ab = [0x4E2D, 0x40, 0x56FD, 0x4E2D];
+        assert_eq!(hash1_from(hash1(&a), &b), hash1(&ab));
+        assert_eq!(hash2_from(hash2(&a), &b), hash2(&ab));
         assert_eq!(probe(-5, -3, 7), (2, 4));
         assert_eq!(probe(12, 10, 7), (5, 3));
     }

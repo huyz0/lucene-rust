@@ -213,7 +213,7 @@ pub enum Generator {
 #[derive(Debug, Clone, Default)]
 pub struct FeatureCache {
     sentence: Option<u64>,
-    map: HashMap<usize, Vec<JString>>,
+    map: super::ml::FxHashMap<usize, Vec<JString>>,
     order: VecDeque<usize>,
 }
 

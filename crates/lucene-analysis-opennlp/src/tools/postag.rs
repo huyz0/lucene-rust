@@ -8,7 +8,7 @@
 //! to Penn Treebank tags when the model's look like Universal Dependencies
 //! ones (`POSTagFormatMapper`).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use lucene_analysis::factory::FactoryError;
@@ -16,7 +16,7 @@ use lucene_analysis::AnalysisError;
 
 use super::dictionary::{Dictionary, PosDictionary};
 use super::featuregen::{self, Generator, Prior};
-use super::ml::{BeamSearch, MaxentModel, SequenceContext};
+use super::ml::{BeamSearch, FxHashMap, MaxentModel, SequenceContext};
 use super::model::{BaseModel, Component, Version};
 use super::text::{self, JString};
 
@@ -54,7 +54,7 @@ impl PosModel {
 struct ContextCache {
     capacity: usize,
     sentence: Option<u64>,
-    map: HashMap<JString, Vec<JString>>,
+    map: FxHashMap<JString, Vec<JString>>,
     order: VecDeque<JString>,
 }
 
@@ -64,7 +64,7 @@ impl ContextCache {
         (capacity > 0).then(|| ContextCache {
             capacity,
             sentence: None,
-            map: HashMap::new(),
+            map: FxHashMap::default(),
             order: VecDeque::new(),
         })
     }

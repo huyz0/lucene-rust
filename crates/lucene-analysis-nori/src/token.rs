@@ -61,6 +61,17 @@ impl Token {
         t: TokenType,
     ) -> Self {
         let units: Arc<[u16]> = surface_form.encode_utf16().collect();
+        Self::decompound_units(pos_tag, units, start_offset, end_offset, t)
+    }
+
+    /// [`Self::decompound`] of a surface form's UTF-16 units.
+    pub fn decompound_units(
+        pos_tag: Tag,
+        units: Arc<[u16]>,
+        start_offset: i32,
+        end_offset: i32,
+        t: TokenType,
+    ) -> Self {
         let length = i32::try_from(units.len()).unwrap_or(i32::MAX);
         Token {
             base: morph::Token::new(units, 0, length, start_offset, end_offset, t),
@@ -106,6 +117,16 @@ impl Token {
     pub fn reading(&self) -> Option<String> {
         match &self.kind {
             Kind::Dictionary { word_id, dict } => dict.reading(*word_id),
+            Kind::Decompound { .. } => None,
+        }
+    }
+
+    /// [`Self::morphemes`] with each surface form as its UTF-16 units.
+    pub fn morpheme_units(&self) -> Option<Vec<(Tag, Arc<[u16]>)>> {
+        match &self.kind {
+            Kind::Dictionary { word_id, dict } => {
+                dict.morpheme_units(*word_id, &self.base.surface_form, self.base.offset)
+            }
             Kind::Decompound { .. } => None,
         }
     }
