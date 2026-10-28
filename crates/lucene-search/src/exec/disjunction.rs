@@ -95,6 +95,12 @@ impl DisiQueue {
         self.heap.len()
     }
 
+    /// Whether the members are scanned in member order rather than heaped.
+    #[inline]
+    fn is_linear(&self) -> bool {
+        self.linear
+    }
+
     /// Linear mode needs `disis` to find the top; heap mode ignores it.
     pub(crate) fn top_of<S: Scorer + ?Sized>(&self, disis: &[Disi<'_, S>]) -> Option<usize> {
         if self.linear && !self.heap.is_empty() {
@@ -402,6 +408,20 @@ impl<S: Scorer + ?Sized> Scorer for DisjunctionScorer<'_, S> {
     }
 
     fn next_doc(&mut self) -> Result<i32> {
+        if self.heap.is_linear() {
+            // The heap loop below, unrolled: every member on the current
+            // document steps once, and the new document is the smallest.
+            let cur = self.doc;
+            let mut min = NO_MORE_DOCS;
+            for w in &mut self.subs {
+                if w.doc == cur {
+                    w.doc = w.scorer.next_doc()?;
+                }
+                min = min.min(w.doc);
+            }
+            self.doc = min;
+            return Ok(min);
+        }
         let Some(mut top) = self.heap.top_of(&self.subs) else {
             self.doc = NO_MORE_DOCS;
             return Ok(self.doc);
@@ -420,6 +440,19 @@ impl<S: Scorer + ?Sized> Scorer for DisjunctionScorer<'_, S> {
     }
 
     fn advance(&mut self, target: i32) -> Result<i32> {
+        if self.heap.is_linear() {
+            // The heap loop below, unrolled: each member behind `target`
+            // advances to it once, in whichever order.
+            let mut min = NO_MORE_DOCS;
+            for w in &mut self.subs {
+                if w.doc < target {
+                    w.doc = w.scorer.advance(target)?;
+                }
+                min = min.min(w.doc);
+            }
+            self.doc = min;
+            return Ok(min);
+        }
         let Some(mut top) = self.heap.top_of(&self.subs) else {
             self.doc = NO_MORE_DOCS;
             return Ok(self.doc);
@@ -478,6 +511,20 @@ impl<S: Scorer + ?Sized> Scorer for DisjunctionScorer<'_, S> {
     }
 
     fn score(&mut self) -> Result<f32> {
+        if !self.two_phase && self.heap.is_linear() {
+            if let Combine::Sum = self.combine {
+                // `topList()` of a linear queue is the members on the
+                // document in member order; sum them without listing them.
+                let doc = self.doc;
+                let mut score = 0.0f64;
+                for w in &mut self.subs {
+                    if w.doc == doc {
+                        score += f64::from(w.scorer.score()?);
+                    }
+                }
+                return Ok(score as f32);
+            }
+        }
         self.sub_matches()?;
         match self.combine {
             Combine::Sum => {

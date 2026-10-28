@@ -1877,6 +1877,9 @@ pub(crate) struct MaxScore {
     single: DocScores,
     acc: DocScoreAcc,
     min_competitive: f32,
+    /// `filterMatches`: the filter's documents in the current inner window,
+    /// when [`Self::with_filter`] chose the bit-set path over leapfrogging.
+    filter_matches: Option<FixedBitSet>,
 }
 
 /// `MaxScoreBulkScorer.score` over the whole segment.
@@ -1889,7 +1892,7 @@ pub(crate) fn score_disjunction<C: ScoringCollector + ?Sized>(
         return Ok(());
     }
     MaxScore::new(legs)
-        .score(legs, None, live_docs, collector, 0, NO_MORE_DOCS)
+        .score::<_, _, dyn crate::exec::Scorer>(legs, None, live_docs, collector, 0, NO_MORE_DOCS)
         .map(|_| ())
 }
 
@@ -1917,17 +1920,49 @@ impl MaxScore {
             single: DocScores::default(),
             acc: DocScoreAcc::default(),
             min_competitive: 0.0,
+            filter_matches: None,
         }
+    }
+
+    /// The constructor's filter heuristic: a filter without two phases, on
+    /// a segment of at least one inner window, is read a window at a time
+    /// into a bit set when the sparsest clause is no sparser than it, or
+    /// when more than four clauses together are no sparser -- the candidate
+    /// stream is then dense enough that bulk gating beats an `advance` per
+    /// candidate. Otherwise the filter leapfrogs with the essential clauses.
+    pub(crate) fn with_filter<L: MaxScoreLeg>(
+        mut self,
+        legs: &[L],
+        filter_cost: i64,
+        filter_two_phase: bool,
+        max_doc: Option<i32>,
+    ) -> Self {
+        let big_enough = max_doc.is_some_and(|m| m >= INNER_WINDOW_SIZE);
+        if !filter_two_phase && big_enough && !legs.is_empty() {
+            let min_cost = legs.iter().map(MaxScoreLeg::leg_cost).min().unwrap_or(0);
+            let cost = legs
+                .iter()
+                .map(MaxScoreLeg::leg_cost)
+                .fold(0i64, i64::saturating_add);
+            if min_cost >= filter_cost || (legs.len() > 4 && cost >= filter_cost) {
+                self.filter_matches = Some(FixedBitSet::new(INNER_WINDOW_SIZE as usize));
+            }
+        }
+        self
     }
 
     /// `MaxScoreBulkScorer.score(collector, acceptDocs, min, max)`: the
     /// disjunction's documents in `[min, max)` -- those also matching
     /// `filter`, when there is one (`filteredOptionalBulkScorer`). Returns the
     /// next document to score.
-    pub(crate) fn score<L: MaxScoreLeg, C: ScoringCollector + ?Sized>(
+    pub(crate) fn score<
+        L: MaxScoreLeg,
+        C: ScoringCollector + ?Sized,
+        F: crate::exec::Scorer + ?Sized,
+    >(
         &mut self,
         legs: &mut [L],
-        mut filter: Option<&mut (dyn crate::exec::Scorer + '_)>,
+        mut filter: Option<&mut F>,
         live_docs: Option<&FixedBitSet>,
         collector: &mut C,
         min: i32,
@@ -2007,10 +2042,14 @@ impl MaxScore {
     /// `scoreInnerWindowWithFilter` by leapfrog (`fillScoreBufferViaLeapFrog`):
     /// the essential clauses' documents that the filter also matches, summed,
     /// then the non-essential clauses as usual.
-    fn score_inner_window_with_filter<L: MaxScoreLeg, C: ScoringCollector + ?Sized>(
+    fn score_inner_window_with_filter<
+        L: MaxScoreLeg,
+        C: ScoringCollector + ?Sized,
+        F: crate::exec::Scorer + ?Sized,
+    >(
         &mut self,
         legs: &mut [L],
-        filter: &mut (dyn crate::exec::Scorer + '_),
+        filter: &mut F,
         live_docs: Option<&FixedBitSet>,
         collector: &mut C,
         max: i32,
@@ -2028,6 +2067,9 @@ impl MaxScore {
             return Ok(());
         }
         let inner_max = max.min(top_doc.saturating_add(INNER_WINDOW_SIZE));
+        if self.filter_matches.is_some() {
+            return self.fill_via_bit_set(legs, filter, live_docs, collector, top_doc, inner_max);
+        }
         self.acc.docs.clear();
         self.acc.scores.clear();
         while top_doc < inner_max {
@@ -2063,6 +2105,94 @@ impl MaxScore {
                 }
             }
         }
+        self.score_non_essential(legs, collector)
+    }
+
+    /// `fillScoreBufferViaBitSet`: the filter's documents in
+    /// `[inner_min, inner_max)` into `filterMatches` (`intoBitSet`), deleted
+    /// ones masked out, then every essential clause drained into the window
+    /// as `collectEssentialScoresIntoWindow` drains it, keeping only the
+    /// documents the filter set.
+    fn fill_via_bit_set<
+        L: MaxScoreLeg,
+        C: ScoringCollector + ?Sized,
+        F: crate::exec::Scorer + ?Sized,
+    >(
+        &mut self,
+        legs: &mut [L],
+        filter: &mut F,
+        live_docs: Option<&FixedBitSet>,
+        collector: &mut C,
+        inner_min: i32,
+        inner_max: i32,
+    ) -> Result<()> {
+        let Some(mut bits) = self.filter_matches.take() else {
+            return Ok(());
+        };
+        bits.clear_all();
+        let mut doc = filter.doc_id();
+        if doc < inner_max {
+            if doc < inner_min {
+                doc = filter.advance(inner_min)?;
+            }
+            // `DocIdSetIterator.intoBitSet`'s default loop.
+            while doc < inner_max {
+                // FBS: `inner_min <= doc < inner_max <= inner_min + INNER_WINDOW_SIZE`,
+                // the bit set's length.
+                bits.set((doc - inner_min) as usize);
+                doc = filter.next_doc()?;
+            }
+        }
+        if let Some(live) = live_docs {
+            // `acceptDocs.applyMask(filterMatches, innerWindowMin)`.
+            let mut i = bits.next_set_bit(0);
+            while let Some(b) = i {
+                if !live.get_doc(inner_min.wrapping_add(b as i32)) {
+                    // FBS: `b` came from `next_set_bit` on `bits`.
+                    bits.clear(b);
+                }
+                i = bits.next_set_bit(b + 1);
+            }
+        }
+        loop {
+            let (top, top_doc) = self.top();
+            if top_doc >= inner_max {
+                break;
+            }
+            loop {
+                legs[top].next_docs_and_scores(inner_max, None, &mut self.single)?;
+                if self.single.docs.is_empty() {
+                    break;
+                }
+                for (&doc, &score) in self.single.docs.iter().zip(&self.single.scores) {
+                    let i = (doc - inner_min) as usize;
+                    // FBS: `next_docs_and_scores(inner_max, ..)` only returns docs in
+                    // `inner_min..inner_max`, at most `INNER_WINDOW_SIZE` apart, and
+                    // both bit sets are that long.
+                    if !bits.get(i) {
+                        continue;
+                    }
+                    // FBS: as above.
+                    self.window_matches.set(i);
+                    self.window_scores[i] += score as f64;
+                }
+            }
+            legs[top].set_cur(legs[top].doc_id());
+            self.docs[top] = legs[top].cur();
+            self.sift_top();
+        }
+        self.filter_matches = Some(bits);
+        // `flushWindowToDocAndScoreAccBuffer`.
+        self.acc.docs.clear();
+        self.acc.scores.clear();
+        let window_scores = &mut self.window_scores;
+        let acc = &mut self.acc;
+        self.window_matches.for_each_set_bit(|i| {
+            acc.docs.push(inner_min + i as i32);
+            acc.scores.push(window_scores[i]);
+            window_scores[i] = 0.0;
+        });
+        self.window_matches.clear_all();
         self.score_non_essential(legs, collector)
     }
 
