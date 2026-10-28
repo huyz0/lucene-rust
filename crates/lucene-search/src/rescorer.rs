@@ -27,7 +27,7 @@ use crate::explain::Explanation;
 use crate::index_searcher::IndexSearcher;
 use crate::query::BooleanQuery;
 use crate::top_docs::{ShardFieldDoc, ShardScoreDoc, ShardTopFieldDocs, TopDocs};
-use crate::top_field::{compare_keys, FieldDoc, SortField, SortType};
+use crate::top_field::{FieldDoc, KeyOrder, SortField, SortType};
 use crate::values_source::{
     DoubleValuesSource, LateInteractionFloatValuesSource, ScoreFunction, ValuesContext,
 };
@@ -539,8 +539,11 @@ impl SortRescorer {
         }
         // `TopFieldCollector` over documents collected in ascending order: a
         // later document ties lose.
+        let order = KeyOrder::new(&self.sort);
         collected.sort_by(|a, b| {
-            compare_keys(&self.sort, &a.fields, &b.fields).then(a.fields.doc.cmp(&b.fields.doc))
+            order
+                .compare(&a.fields, &b.fields)
+                .then(a.fields.doc.cmp(&b.fields.doc))
         });
         collected.truncate(top_n);
         // `rescoredDocsClone` sorted by document gets `hits[i].score`: the

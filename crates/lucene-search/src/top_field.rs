@@ -4304,7 +4304,8 @@ fn merge_top_docs(sort: &[SortField], top_n: usize, parts: Vec<TopFieldDocs>) ->
         }
         hits.extend(p.hits);
     }
-    hits.sort_by(|a, b| compare_hits(sort, a, b));
+    let order = KeyOrder::new(sort);
+    hits.sort_by(|a, b| compare_hits(&order, a, b));
     hits.truncate(top_n);
     TopFieldDocs {
         hits,
@@ -4315,58 +4316,78 @@ fn merge_top_docs(sort: &[SortField], top_n: usize, parts: Vec<TopFieldDocs>) ->
 
 /// Two hits in the sort's order (`FieldComparator.compareValues` times
 /// `reverseMul`, key by key), then by document.
-fn compare_hits(sort: &[SortField], a: &FieldDoc, b: &FieldDoc) -> std::cmp::Ordering {
-    compare_keys(sort, a, b).then(a.doc.cmp(&b.doc))
+fn compare_hits(order: &KeyOrder<'_>, a: &FieldDoc, b: &FieldDoc) -> std::cmp::Ordering {
+    order.compare(a, b).then(a.doc.cmp(&b.doc))
 }
 
 /// Two hits by the sort's keys alone: `FieldComparator.compareValues` times
 /// `reverseMul`, key by key (`TopDocs.MergeSortQueue.lessThan` before its
-/// tie-breaker).
-pub(crate) fn compare_keys(sort: &[SortField], a: &FieldDoc, b: &FieldDoc) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-    for (k, key) in sort.iter().enumerate() {
-        let (x, y) = (
-            a.values.get(k).copied().unwrap_or(0),
-            b.values.get(k).copied().unwrap_or(0),
-        );
-        let ord = match key.ty {
-            // Stored as its f32 bits; relevance orders the highest first.
-            SortType::Score => {
-                score_value(f32::from_bits(x as u32)).cmp(&score_value(f32::from_bits(y as u32)))
-            }
-            SortType::Custom(id) => {
-                let Ok(c) = custom_comparator(id, key, 1) else {
-                    return Ordering::Equal;
-                };
-                let bytes = c.values_are_bytes();
-                let va = sort_value_of(bytes, x, a.terms.get(k).and_then(Option::as_ref));
-                let vb = sort_value_of(bytes, y, b.terms.get(k).and_then(Option::as_ref));
-                c.compare_values(&va, &vb)
-            }
-            SortType::String | SortType::StringVal => {
-                let missing_cmp = if key.missing != 0 {
-                    Ordering::Greater
-                } else {
-                    Ordering::Less
-                };
-                match (
-                    a.terms.get(k).and_then(Option::as_ref),
-                    b.terms.get(k).and_then(Option::as_ref),
-                ) {
-                    (None, None) => Ordering::Equal,
-                    (None, Some(_)) => missing_cmp,
-                    (Some(_), None) => missing_cmp.reverse(),
-                    (Some(p), Some(q)) => p.cmp(q),
-                }
-            }
-            _ => x.cmp(&y),
-        };
-        let ord = if key.reverse { ord.reverse() } else { ord };
-        if ord != Ordering::Equal {
-            return ord;
-        }
+/// tie-breaker), with each custom key's comparator resolved once up front
+/// (`MergeSortQueue` builds its comparators in its constructor).
+pub(crate) struct KeyOrder<'s> {
+    sort: &'s [SortField],
+    /// Per key: the custom comparator, `None` for built-in keys. A custom key
+    /// whose source cannot be resolved compares every pair as equal.
+    custom: Vec<Option<Result<Box<dyn FieldComparator>>>>,
+}
+
+impl<'s> KeyOrder<'s> {
+    pub(crate) fn new(sort: &'s [SortField]) -> Self {
+        let custom = sort
+            .iter()
+            .map(|key| match key.ty {
+                SortType::Custom(id) => Some(custom_comparator(id, key, 1)),
+                _ => None,
+            })
+            .collect();
+        KeyOrder { sort, custom }
     }
-    Ordering::Equal
+
+    pub(crate) fn compare(&self, a: &FieldDoc, b: &FieldDoc) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        for (k, key) in self.sort.iter().enumerate() {
+            let (x, y) = (
+                a.values.get(k).copied().unwrap_or(0),
+                b.values.get(k).copied().unwrap_or(0),
+            );
+            let ord = match key.ty {
+                // Stored as its f32 bits; relevance orders the highest first.
+                SortType::Score => score_value(f32::from_bits(x as u32))
+                    .cmp(&score_value(f32::from_bits(y as u32))),
+                SortType::Custom(_) => {
+                    let Some(Ok(c)) = &self.custom[k] else {
+                        return Ordering::Equal;
+                    };
+                    let bytes = c.values_are_bytes();
+                    let va = sort_value_of(bytes, x, a.terms.get(k).and_then(Option::as_ref));
+                    let vb = sort_value_of(bytes, y, b.terms.get(k).and_then(Option::as_ref));
+                    c.compare_values(&va, &vb)
+                }
+                SortType::String | SortType::StringVal => {
+                    let missing_cmp = if key.missing != 0 {
+                        Ordering::Greater
+                    } else {
+                        Ordering::Less
+                    };
+                    match (
+                        a.terms.get(k).and_then(Option::as_ref),
+                        b.terms.get(k).and_then(Option::as_ref),
+                    ) {
+                        (None, None) => Ordering::Equal,
+                        (None, Some(_)) => missing_cmp,
+                        (Some(_), None) => missing_cmp.reverse(),
+                        (Some(p), Some(q)) => p.cmp(q),
+                    }
+                }
+                _ => x.cmp(&y),
+            };
+            let ord = if key.reverse { ord.reverse() } else { ord };
+            if ord != Ordering::Equal {
+                return ord;
+            }
+        }
+        Ordering::Equal
+    }
 }
 
 /// The statistics a sorted search hands its leaves, index-wide: every
