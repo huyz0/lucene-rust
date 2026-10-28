@@ -23,9 +23,9 @@
 //!   stored one value per document) is not taken: every leaf is read as a
 //!   set, which counts the same;
 //! * the concurrent counter counts the segments on the rayon pool, not on a
-//!   caller's `ExecutorService`.
-
-use std::sync::atomic::{AtomicI32, Ordering};
+//!   caller's `ExecutorService`, and each task into counts of its own that are
+//!   summed at the end rather than into one shared `AtomicIntegerArray` (the
+//!   same sums: the additions wrap either way).
 
 use super::facet_utils::for_each_hit;
 use super::facets_collector::{FacetsCollector, MatchingDocs};
@@ -286,8 +286,7 @@ fn bad_ord(ord: i64) -> Error {
 // Counting
 // ---------------------------------------------------------------------------
 
-/// Where a segment's counts go: the plain counter's `int[]` or the
-/// concurrent counter's `AtomicIntegerArray`.
+/// Where a segment's counts go: an `int[]` of the state's ordinals.
 trait CountSink {
     /// `counts[ord] += n`.
     fn add(&mut self, ord: i64, n: i32) -> Result<()>;
@@ -301,19 +300,6 @@ impl CountSink for [i32] {
             .and_then(|o| self.get_mut(o))
             .ok_or_else(|| bad_ord(ord))?;
         *slot = slot.wrapping_add(n);
-        Ok(())
-    }
-}
-
-impl CountSink for &[AtomicI32] {
-    #[inline]
-    fn add(&mut self, ord: i64, n: i32) -> Result<()> {
-        let slot = usize::try_from(ord)
-            .ok()
-            .and_then(|o| self.get(o))
-            .ok_or_else(|| bad_ord(ord))?;
-        // `AtomicI32::fetch_add` wraps, as `AtomicIntegerArray.addAndGet`.
-        slot.fetch_add(n, Ordering::Relaxed);
         Ok(())
     }
 }
@@ -409,6 +395,13 @@ fn count_one_segment<S: CountSink + ?Sized>(
         }
     }
     Ok(())
+}
+
+/// `a[i] += b[i]`, wrapping as Java's `int` sums.
+fn add_counts(a: &mut [i32], b: &[i32]) {
+    for (x, &y) in a.iter_mut().zip(b) {
+        *x = x.wrapping_add(y);
+    }
 }
 
 /// `count(matchingDocs)`'s ordinal map: only when the hits span more than
@@ -575,17 +568,42 @@ impl<'s> ConcurrentSortedSetDocValuesFacetCounts<'s> {
         tasks: &[(LeafReaderContext<'_>, Option<&MatchingDocs<'_>>)],
     ) -> Result<Self> {
         use rayon::prelude::*;
-        let counts: Vec<AtomicI32> = (0..state.facets_state().size())
-            .map(|_| AtomicI32::new(0))
+        let n = state.facets_state().size();
+        let todo: Vec<&(LeafReaderContext<'_>, Option<&MatchingDocs<'_>>)> = tasks
+            .iter()
+            .filter(|(_, hits)| !hits.is_some_and(|h| h.total_hits == 0))
             .collect();
-        tasks.par_iter().try_for_each(|(context, hits)| {
-            if hits.is_some_and(|h| h.total_hits == 0) {
-                return Ok(());
+        // Each task counts into an array of its own (no atomic per ordinal),
+        // the arrays summed at the end; one task runs on this thread.
+        let counts = if todo.len() <= 1 {
+            let mut counts = vec![0i32; n];
+            for (context, hits) in todo {
+                count_one_segment(state.field(), map, context, *hits, counts.as_mut_slice())?;
             }
-            let mut sink: &[AtomicI32] = &counts;
-            count_one_segment(state.field(), map, context, *hits, &mut sink)
-        })?;
-        let counts = counts.into_iter().map(AtomicI32::into_inner).collect();
+            counts
+        } else {
+            todo.par_iter()
+                .try_fold(
+                    || vec![0i32; n],
+                    |mut counts, (context, hits)| {
+                        count_one_segment(
+                            state.field(),
+                            map,
+                            context,
+                            *hits,
+                            counts.as_mut_slice(),
+                        )?;
+                        Ok::<_, Error>(counts)
+                    },
+                )
+                .try_reduce(
+                    || vec![0i32; n],
+                    |mut a, b| {
+                        add_counts(&mut a, &b);
+                        Ok(a)
+                    },
+                )?
+        };
         Ok(ConcurrentSortedSetDocValuesFacetCounts {
             inner: SortedSetFacetCounts::from_counts(state.facets_state(), Some(counts)),
         })
