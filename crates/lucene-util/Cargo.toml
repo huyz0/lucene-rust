@@ -34,3 +34,7 @@ harness = false
 [[bench]]
 name = "spatial3d_ops"
 harness = false
+
+[[bench]]
+name = "geo_ops"
+harness = false

@@ -137,6 +137,49 @@ impl NrBase {
         self.max_sub_cells_by_level.len() as i32
     }
 
+    /// Level `level`'s (1-based) bytes of cell number `n`, as
+    /// [`Self::encode`] writes them (a one-byte level leaves `[1]` zero).
+    #[inline]
+    fn level_bytes(&self, level: usize, n: i32) -> [u8; 2] {
+        if self.term_len_by_level[level] - self.term_len_by_level[level - 1] > 1 {
+            [(n >> 7) as u8, ((n & 0x7F) + 1) as u8]
+        } else {
+            [(n + 1) as u8, 0]
+        }
+    }
+
+    /// `compare_bytes(encode(a), encode(b))` without building either term:
+    /// the same value (byte difference, then length difference), level by
+    /// level.
+    fn compare_encoded(&self, a: &[i32], b: &[i32]) -> i32 {
+        for (i, (&x, &y)) in a.iter().zip(b).enumerate() {
+            if x != y {
+                let (xb, yb) = (self.level_bytes(i + 1, x), self.level_bytes(i + 1, y));
+                // a one-byte level's second byte is 0 on both sides
+                for (p, q) in xb.into_iter().zip(yb) {
+                    let diff = i32::from(p) - i32::from(q);
+                    if diff != 0 {
+                        return diff;
+                    }
+                }
+            }
+        }
+        self.term_len_by_level[a.len()] as i32 - self.term_len_by_level[b.len()] as i32
+    }
+
+    /// Whether `encode(mine)` is a prefix of `encode(other)`.
+    fn is_prefix_encoded(&self, mine: &[i32], other: &[i32]) -> bool {
+        other.len() >= mine.len()
+            && mine.iter().zip(other).enumerate().all(|(i, (&x, &y))| {
+                x == y || self.level_bytes(i + 1, x) == self.level_bytes(i + 1, y)
+            })
+    }
+
+    /// Whether `other` encodes every level as this does.
+    fn same_layout(&self, other: &NrBase) -> bool {
+        std::ptr::eq(self, other) || self.term_len_by_level == other.term_len_by_level
+    }
+
     /// The term (no leaf byte) of a stack of cell numbers.
     fn encode(&self, vals: &[i32]) -> Vec<u8> {
         let mut term = Vec::with_capacity(self.term_len_by_level[vals.len()] + 1);
@@ -660,12 +703,26 @@ impl Cell for UnitNRShape {
     }
 
     fn is_prefix_of(&self, c: &dyn Cell) -> bool {
+        let base = self.tree.tree.base();
+        if let Some(o) = c.as_any().downcast_ref::<UnitNRShape>() {
+            if base.same_layout(o.tree.tree.base()) {
+                return base.is_prefix_encoded(&self.vals, &o.vals);
+            }
+        }
         let mine = self.token_bytes_no_leaf();
         let other = c.token_bytes_no_leaf();
         other.len() >= mine.len() && other[..mine.len()] == mine[..]
     }
 
     fn compare_to_no_leaf(&self, from_cell: &dyn Cell) -> i32 {
+        // Both terms' bytes compared level by level, unbuilt, when the other
+        // cell encodes as this one does (a cell of the same tree).
+        let base = self.tree.tree.base();
+        if let Some(o) = from_cell.as_any().downcast_ref::<UnitNRShape>() {
+            if base.same_layout(o.tree.tree.base()) {
+                return base.compare_encoded(&self.vals, &o.vals);
+            }
+        }
         super::compare_bytes(
             &self.token_bytes_no_leaf(),
             &from_cell.token_bytes_no_leaf(),
@@ -781,7 +838,8 @@ impl CellIterator for NRCellIterator {
         };
         let has_children = (self.cell_number == self.first && self.first_is_intersects)
             || (self.cell_number == self.last && self.last_is_intersects);
-        let mut vals = self.parent.vals.clone();
+        let mut vals = Vec::with_capacity(self.parent.vals.len() + 1);
+        vals.extend_from_slice(&self.parent.vals);
         vals.push(self.cell_number);
         let mut cell = self.parent.tree.unit(vals);
         cell.iter_filter = self.filter.clone();
@@ -806,6 +864,17 @@ impl CellIterator for NRCellIterator {
 
     fn this_cell(&self) -> Option<&dyn Cell> {
         self.st.this_cell.as_deref()
+    }
+
+    fn next_detached(&mut self) -> Result<Box<dyn Cell>> {
+        if self.st.next_cell.is_none() && !self.has_next()? {
+            return Err(Error::Runtime("java.util.NoSuchElementException".into()));
+        }
+        self.st.this_cell = None;
+        self.st
+            .next_cell
+            .take()
+            .ok_or_else(|| Error::Runtime("java.util.NoSuchElementException".into()))
     }
 }
 

@@ -429,7 +429,7 @@ impl LegacyGrid for QuadGrid {
         4
     }
 
-    fn child_labels(&self) -> Option<&'static [u8]> {
+    fn child_labels(&self, _cell: &LegacyCell) -> Option<&'static [u8]> {
         Some(b"ABCD")
     }
 

@@ -19,26 +19,39 @@ pub(crate) struct ComponentTree {
     max_y: f64,
     min_x: f64,
     max_x: f64,
+    /// The component's own `getMinX()`/`getMinY()` (the root's `min_x`/
+    /// `min_y` are pulled down to the global min), cached so the per-node
+    /// `right_reachable` test is not two virtual calls.
+    comp_min_x: f64,
+    comp_min_y: f64,
     left: Option<Box<ComponentTree>>,
     right: Option<Box<ComponentTree>>,
     component: Box<dyn Component2D>,
 }
 
+/// A component waiting to be placed, with its bounding box read once
+/// (`[min_x, max_x, min_y, max_y]`).
+struct Slot {
+    component: Option<Box<dyn Component2D>>,
+    bbox: [f64; 4],
+}
+
 /// `ArrayUtil.select`'s `IntroSelector` over the components, ordered by
 /// `X_COMPARATOR` or `Y_COMPARATOR` (`Double.compare` on min, then max).
 struct Select<'a> {
-    components: &'a mut [Option<Box<dyn Component2D>>],
+    components: &'a mut [Slot],
     split_x: bool,
     pivot: (f64, f64),
 }
 
 impl Select<'_> {
+    #[inline]
     fn key(&self, i: usize) -> (f64, f64) {
-        let c = self.components[i].as_ref().expect("component present");
+        let b = &self.components[i].bbox;
         if self.split_x {
-            (c.min_x(), c.max_x())
+            (b[0], b[1])
         } else {
-            (c.min_y(), c.max_y())
+            (b[2], b[3])
         }
     }
 }
@@ -63,12 +76,15 @@ impl IntroTarget for Select<'_> {
 }
 
 impl ComponentTree {
-    fn new(component: Box<dyn Component2D>) -> ComponentTree {
+    fn new(component: Box<dyn Component2D>, bbox: [f64; 4]) -> ComponentTree {
+        let [min_x, max_x, min_y, max_y] = bbox;
         ComponentTree {
-            min_y: component.min_y(),
-            max_y: component.max_y(),
-            min_x: component.min_x(),
-            max_x: component.max_x(),
+            min_y,
+            max_y,
+            min_x,
+            max_x,
+            comp_min_x: min_x,
+            comp_min_y: min_y,
             left: None,
             right: None,
             component,
@@ -80,39 +96,33 @@ impl ComponentTree {
         if components.len() == 1 {
             return components.into_iter().next().expect("one component");
         }
-        let mut slots: Vec<Option<Box<dyn Component2D>>> =
-            components.into_iter().map(Some).collect();
+        let mut slots: Vec<Slot> = components
+            .into_iter()
+            .map(|c| Slot {
+                bbox: [c.min_x(), c.max_x(), c.min_y(), c.max_y()],
+                component: Some(c),
+            })
+            .collect();
+        // Java's root min-pull-up folds `Math.min` over every component
+        // after the select has permuted them; `Math.min` is commutative and
+        // associative (NaN wins, -0.0 beats 0.0), so folding in input order
+        // gives the same bits.
+        let mut min_y = f64::INFINITY;
+        let mut min_x = f64::INFINITY;
+        for s in &slots {
+            min_y = java_min(min_y, s.bbox[2]);
+            min_x = java_min(min_x, s.bbox[0]);
+        }
         let high = slots.len() as isize - 1;
-        // Java's root min-pull-up reads every component; read them before
-        // the tree takes ownership.
         let mut root =
             Self::create_tree(&mut slots, 0, high, ROOT_SPLITX).expect("at least two components");
-        let mut stack: Vec<&ComponentTree> = Vec::new();
-        let (mut min_y, mut min_x) = (root.min_y, root.min_x);
-        stack.push(&root);
-        let mut all = Vec::new();
-        while let Some(n) = stack.pop() {
-            all.push((n.component.min_y(), n.component.min_x()));
-            if let Some(l) = &n.left {
-                stack.push(l);
-            }
-            if let Some(r) = &n.right {
-                stack.push(r);
-            }
-        }
-        // min is order-independent except for NaN/-0.0 ties, which a
-        // validated geometry never produces.
-        for (cy, cx) in all {
-            min_y = java_min(min_y, cy);
-            min_x = java_min(min_x, cx);
-        }
-        root.min_y = min_y;
-        root.min_x = min_x;
+        root.min_y = java_min(root.min_y, min_y);
+        root.min_x = java_min(root.min_x, min_x);
         root
     }
 
     fn create_tree(
-        components: &mut [Option<Box<dyn Component2D>>],
+        components: &mut [Slot],
         low: isize,
         high: isize,
         split_x: bool,
@@ -138,10 +148,9 @@ impl ComponentTree {
                 &mut random,
             );
         }
-        let component = components[mid as usize]
-            .take()
-            .expect("each component used once");
-        let mut new_node = Box::new(ComponentTree::new(component));
+        let slot = &mut components[mid as usize];
+        let component = slot.component.take().expect("each component used once");
+        let mut new_node = Box::new(ComponentTree::new(component, slot.bbox));
         // find children
         new_node.left = Self::create_tree(components, low, mid - 1, !split_x);
         new_node.right = Self::create_tree(components, mid + 1, high, !split_x);
@@ -161,7 +170,7 @@ impl ComponentTree {
     /// `(splitX == false && maxY >= component.getMinY()) || (splitX && maxX >= component.getMinX())`.
     #[inline]
     fn right_reachable(&self, split_x: bool, x: f64, y: f64) -> bool {
-        (!split_x && y >= self.component.min_y()) || (split_x && x >= self.component.min_x())
+        (!split_x && y >= self.comp_min_y) || (split_x && x >= self.comp_min_x)
     }
 
     fn contains_split(&self, x: f64, y: f64, split_x: bool) -> bool {

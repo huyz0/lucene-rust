@@ -363,13 +363,28 @@ impl CellIterator for SingletonCellIterator {
 
 /// `TreeCellIterator`: a depth-first walk of the cells intersecting a
 /// shape, down to a detail level (whose cells are leaves).
+///
+/// Java's cells are shared objects: the cell `next()` returns is also the
+/// level iterator's `thisCell()`, which the next `hasNext()` descends into.
+/// Here each level's last cell lives in `last_cell` (pulled from the level
+/// iterator with `next_detached`, so it is not copied there), `next()`
+/// hands out the one copy the caller owns, and `this_cell` reads the slot
+/// back. A cell that can never be descended into (a leaf, or one at the
+/// detail level) is moved out by `next_detached` with no copy at all.
 pub struct TreeCellIterator {
     shape_filter: Option<Arc<dyn Shape>>,
     iter_stack: Vec<Option<Box<dyn CellIterator>>>,
+    /// `iterStack[i].thisCell()`: the cell last pulled from level `i`.
+    last_cell: Vec<Option<Box<dyn Cell>>>,
     stack_idx: i32,
     descend: bool,
     shape_is_point: bool,
-    st: IterState,
+    /// `nextCell != null`: `last_cell[stack_idx]` is the next cell.
+    pending: bool,
+    /// `thisCell`, while it is still `last_cell[level]`.
+    returned: Option<usize>,
+    /// `thisCell`, once its slot was reused.
+    this_owned: Option<Box<dyn Cell>>,
 }
 
 impl fmt::Debug for TreeCellIterator {
@@ -396,10 +411,13 @@ impl TreeCellIterator {
         Ok(TreeCellIterator {
             shape_filter,
             iter_stack,
+            last_cell: (0..n).map(|_| None).collect(),
             stack_idx: 0,
             descend: false,
             shape_is_point,
-            st: IterState::default(),
+            pending: false,
+            returned: None,
+            this_owned: None,
         })
     }
 
@@ -408,11 +426,32 @@ impl TreeCellIterator {
             .as_mut()
             .expect("the stack index always points to an iterator")
     }
+
+    /// Replaces level `k`'s last cell, first moving it to `this_owned` if
+    /// it is `thisCell`.
+    fn set_last(&mut self, k: usize, cell: Option<Box<dyn Cell>>) {
+        let old = std::mem::replace(&mut self.last_cell[k], cell);
+        if self.returned == Some(k) {
+            self.returned = None;
+            self.this_owned = old;
+        }
+    }
+
+    /// `next()`'s shared head: fills `nextCell` and claims it.
+    fn claim_next(&mut self) -> Result<usize> {
+        if !self.pending && !self.has_next()? {
+            return Err(Error::Runtime("java.util.NoSuchElementException".into()));
+        }
+        self.pending = false;
+        self.returned = None;
+        self.this_owned = None;
+        Ok(self.stack_idx as usize)
+    }
 }
 
 impl CellIterator for TreeCellIterator {
     fn has_next(&mut self) -> Result<bool> {
-        if self.st.next_cell.is_some() {
+        if self.pending {
             return Ok(true);
         }
         let last = self.iter_stack.len() as i32 - 1;
@@ -420,35 +459,29 @@ impl CellIterator for TreeCellIterator {
             if self.stack_idx == -1 {
                 return Ok(false);
             }
-            // If we can descend...
-            if self.descend {
-                let this_cell_leaf = self
-                    .top()
-                    .this_cell()
-                    .expect("descend only after a cell was returned")
-                    .is_leaf();
-                if !(self.stack_idx == last || this_cell_leaf) {
-                    let filter = self.shape_filter.clone();
-                    let next_iter = self
-                        .top()
-                        .this_cell()
-                        .expect("checked above")
-                        .next_level_cells(filter.as_ref())?;
+            // If we can descend... (a cell `next_detached` moved out was
+            // one that cannot be descended into)
+            if self.descend && self.stack_idx != last {
+                let k = self.stack_idx as usize;
+                if let Some(this_cell) = self.last_cell[k].as_ref().filter(|c| !c.is_leaf()) {
+                    let next_iter = this_cell.next_level_cells(self.shape_filter.as_ref())?;
                     self.stack_idx += 1;
                     self.iter_stack[self.stack_idx as usize] = Some(next_iter);
                 }
             }
             // Get sibling...
             if self.top().has_next()? {
-                let mut next = self.top().next()?;
+                let mut next = self.top().next_detached()?;
                 if self.stack_idx == last && !self.shape_is_point {
                     next.set_leaf(); // because at bottom
                 }
-                self.st.next_cell = Some(next);
+                self.set_last(self.stack_idx as usize, Some(next));
+                self.pending = true;
                 break;
             }
             // Couldn't get next; go up...
             self.iter_stack[self.stack_idx as usize] = None;
+            self.set_last(self.stack_idx as usize, None);
             self.stack_idx -= 1;
             self.descend = false;
         }
@@ -457,14 +490,32 @@ impl CellIterator for TreeCellIterator {
     }
 
     fn next(&mut self) -> Result<Box<dyn Cell>> {
-        if self.st.next_cell.is_none() && !self.has_next()? {
-            return Err(Error::Runtime("java.util.NoSuchElementException".into()));
-        }
-        self.st.take_next()
+        let k = self.claim_next()?;
+        self.returned = Some(k);
+        Ok(self.last_cell[k]
+            .as_ref()
+            .expect("a pending cell is in its slot")
+            .clone_box())
     }
 
     fn this_cell(&self) -> Option<&dyn Cell> {
-        self.st.this_cell.as_deref()
+        match self.returned {
+            Some(k) => self.last_cell[k].as_deref(),
+            None => self.this_owned.as_deref(),
+        }
+    }
+
+    fn next_detached(&mut self) -> Result<Box<dyn Cell>> {
+        let k = self.claim_next()?;
+        let cell = self.last_cell[k]
+            .as_ref()
+            .expect("a pending cell is in its slot");
+        if k + 1 == self.iter_stack.len() || cell.is_leaf() {
+            // never descended into: hand it over
+            Ok(self.last_cell[k].take().expect("checked"))
+        } else {
+            Ok(cell.clone_box())
+        }
     }
 
     fn remove(&mut self) {

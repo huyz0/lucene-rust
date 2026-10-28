@@ -3,11 +3,10 @@
 #![allow(clippy::too_many_arguments)]
 
 use super::component2d::{self, Component2D, WithinRelation};
+use super::component_tree::ComponentTree;
 use super::edge_tree::EdgeTree;
-use super::lat_lon_geometry::LatLonGeometry;
 use super::polygon::Polygon;
 use super::xy_encoding_utils::XYEncodingUtils;
-use super::xy_geometry::XYGeometry;
 use super::xy_polygon::XYPolygon;
 use super::{GeoError, Relation};
 
@@ -25,14 +24,16 @@ pub(crate) struct Polygon2D {
 impl Polygon2D {
     /// `create(Polygon)`.
     pub(crate) fn create(polygon: &Polygon) -> Result<Polygon2D, GeoError> {
+        // Java wraps the holes in `LatLonGeometry.create(holes)`: the one
+        // hole's `Polygon2D`, or a `ComponentTree` over them all -- built
+        // here straight from the holes, without cloning their vertices.
         let holes = if polygon.num_holes() > 0 {
-            let geoms: Vec<LatLonGeometry> = polygon
+            let components = polygon
                 .holes()
                 .iter()
-                .cloned()
-                .map(LatLonGeometry::Polygon)
-                .collect();
-            Some(LatLonGeometry::create(&geoms)?)
+                .map(|h| Ok(Box::new(Polygon2D::create(h)?) as Box<dyn Component2D>))
+                .collect::<Result<Vec<_>, GeoError>>()?;
+            Some(ComponentTree::create(components))
         } else {
             None
         };
@@ -49,13 +50,12 @@ impl Polygon2D {
     /// `create(XYPolygon)`.
     pub(crate) fn create_xy(polygon: &XYPolygon) -> Result<Polygon2D, GeoError> {
         let holes = if polygon.num_holes() > 0 {
-            let geoms: Vec<XYGeometry> = polygon
+            let components = polygon
                 .holes()
                 .iter()
-                .cloned()
-                .map(XYGeometry::Polygon)
-                .collect();
-            Some(XYGeometry::create(&geoms)?)
+                .map(|h| Ok(Box::new(Polygon2D::create_xy(h)?) as Box<dyn Component2D>))
+                .collect::<Result<Vec<_>, GeoError>>()?;
+            Some(ComponentTree::create(components))
         } else {
             None
         };

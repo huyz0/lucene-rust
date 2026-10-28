@@ -121,3 +121,25 @@ fn java_round_ties_up() {
     assert_eq!(java_round(f64::NAN), 0);
     assert_eq!(java_round(-2.5), -2);
 }
+
+/// Levels outside `0..=30` shift as Java's masked `<<`/`>>>` do (the
+/// amount's low six bits) instead of panicking in a debug build.
+#[test]
+fn out_of_range_levels_shift_like_java() {
+    // 2 * (30 - 31) = -2, & 63 = 62
+    assert_eq!(S2CellId::lowest_on_bit_for_level(31), 1i64 << 62);
+    // 2 * (30 + 2) = 64, & 63 = 0
+    assert_eq!(S2CellId::lowest_on_bit_for_level(-2), 1);
+    let id = S2CellId::new(-1);
+    // 2 * (30 - 31) + 1 = -1, & 63 = 63: the top bit
+    assert_eq!(id.child_position(31), 1);
+    assert_eq!(S2CellId::new(1).child_position(31), 0);
+    // an id with no level (0 decodes to level -2) still builds a cell
+    let _ = S2Cell::new(S2CellId::new(0));
+    let leaf = S2CellId::from_lat_lng(&S2LatLng::from_degrees(1.0, 2.0));
+    let p = leaf.parent(33);
+    assert_eq!(
+        p.id(),
+        (leaf.id() & (1i64 << 58).wrapping_neg()) | (1i64 << 58)
+    );
+}

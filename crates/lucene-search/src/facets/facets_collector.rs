@@ -6,8 +6,9 @@
 //! [`SegmentCollector::finish`], for every segment, matching or not) and the
 //! matching documents in order, which it keeps as a [`DocIdSet`] per segment
 //! ([`MatchingDocs`]). [`FacetsCollectorManager::collect`] is
-//! `searcher.search(query, facetsCollectorManager)`: one collector per slice,
-//! then [`FacetsCollectorManager::reduce`].
+//! `searcher.search(query, facetsCollectorManager)`: one collector per slice
+//! (the slices on rayon's pool when there are several), then
+//! [`FacetsCollectorManager::reduce`].
 //!
 //! Differs:
 //! * `reduce` merges the matching docs of a segment searched in several
@@ -25,7 +26,7 @@ use crate::collector::TotalHitsRelation;
 use crate::collector::{ScoreDoc, ScoreMode, ScoringCollector, TopDocsCollector, TotalHits};
 use crate::directory_reader::SegmentReader;
 use crate::index_searcher::IndexSearcher;
-use crate::leaf_collector::{search_slices, PerSegment, SegmentCollector};
+use crate::leaf_collector::{search_slice, PerSegment, SegmentCollector};
 use crate::multi_segment::OpenSegment;
 use crate::query::BooleanQuery;
 use crate::reader::{DocIdSetIterator, IndexReader, LeafReaderContext, NO_MORE_DOCS};
@@ -335,6 +336,14 @@ impl<'a> FacetsCollector<'a> {
         &self.matching_docs
     }
 
+    /// Forgets the kept scores: the collector as one that never kept them.
+    pub(crate) fn drop_scores(&mut self) {
+        self.keep_scores = false;
+        for m in &mut self.matching_docs {
+            m.scores = None;
+        }
+    }
+
     /// `getMatchingDocs().add(..)`: what a caller collecting by hand appends.
     pub fn push_matching_docs(&mut self, docs: MatchingDocs<'a>) {
         self.matching_docs.push(docs);
@@ -474,14 +483,20 @@ impl FacetsCollectorManager {
                 .unwrap_or_else(|| FacetsCollector::new(false)));
         }
         let mut merged: Vec<MatchingDocs<'a>> = Vec::new();
+        // Each segment's position in `merged`, by `context.ord`: one probe per
+        // matching docs rather than a scan of everything merged so far.
+        let mut at: crate::grouping::FxHashMap<usize, usize> = Default::default();
         for c in collectors {
             for docs in c.matching_docs {
-                match merged
-                    .iter_mut()
-                    .find(|m| m.context.ord == docs.context.ord)
-                {
-                    Some(existing) => *existing = merge(existing, &docs)?,
-                    None => merged.push(docs),
+                match at.get(&docs.context.ord) {
+                    Some(&i) => {
+                        let existing = &mut merged[i];
+                        *existing = merge(existing, &docs)?;
+                    }
+                    None => {
+                        at.insert(docs.context.ord, merged.len());
+                        merged.push(docs);
+                    }
                 }
             }
         }
@@ -497,7 +512,24 @@ impl FacetsCollectorManager {
         searcher: &IndexSearcher<'_, 'a>,
         query: &BooleanQuery,
     ) -> Result<FacetsCollector<'a>> {
-        let collectors = search_slices(searcher, query, || Ok(self.new_collector()))?;
+        let slices = searcher.slices();
+        if slices.is_empty() {
+            return self.reduce(vec![self.new_collector()]);
+        }
+        // The slices are independent (each its own collector, merged by
+        // `reduce` in slice order), so several run concurrently, as Java's
+        // `IndexSearcher` hands them to its executor; a search too small to
+        // be worth a pool thread's wake-up runs them in turn here.
+        let parallel = slices.len() > 1
+            && crate::slices::estimated_matches(searcher.segments(), query)
+                >= crate::slices::SEQUENTIAL_BELOW;
+        let collectors = crate::slices::run_slices_if(parallel, slices, |slice| {
+            let mut c = self.new_collector();
+            search_slice(searcher, query, slice, &mut c)?;
+            Ok(c)
+        })
+        .into_iter()
+        .collect::<Result<Vec<_>>>()?;
         self.reduce(collectors)
     }
 
@@ -585,8 +617,12 @@ pub struct SortedFacetsResult<'a> {
 }
 
 /// `FacetsCollectorManager.doSearch` with a sort. The hits and the facets
-/// collector come from two searches of the query (the same documents), and
-/// the scores from a third that keeps them.
+/// collector come from two searches of the query (the same documents) --
+/// the field-sorted collector is driven by `top_field`, which takes no
+/// second collector -- run concurrently when the query is large enough to be
+/// worth a pool thread. The scores (`doDocScores`) are the facets
+/// collector's own: it keeps them for that search, and drops them again when
+/// `fcm` does not keep scores, rather than the query running a third time.
 #[allow(clippy::too_many_arguments)]
 fn do_search_sorted<'a>(
     searcher: &IndexSearcher<'_, 'a>,
@@ -614,8 +650,8 @@ fn do_search_sorted<'a>(
             )));
         }
     }
-    let facets_collector = fcm.collect(searcher, query)?;
     if n == 0 {
+        let facets_collector = fcm.collect(searcher, query)?;
         let total = facets_collector
             .matching_docs()
             .iter()
@@ -640,17 +676,28 @@ fn do_search_sorted<'a>(
                 .into(),
         ));
     };
-    let top_docs = searcher.search_sorted_counting_all(readers, query, top_n, sort, after)?;
+    // Scores for `populateScores` come from the facets collector of this
+    // same search, which keeps them when either side wants them.
+    let collect_manager = FacetsCollectorManager::new(fcm.keep_scores || do_doc_scores);
+    let facets = || collect_manager.collect(searcher, query);
+    let sorted = || searcher.search_sorted_counting_all(readers, query, top_n, sort, after);
+    let parallel = crate::slices::estimated_matches(searcher.segments(), query)
+        >= crate::slices::SEQUENTIAL_BELOW;
+    let (facets_collector, top_docs) = if parallel {
+        rayon::join(facets, sorted)
+    } else {
+        (facets(), sorted())
+    };
+    let (mut facets_collector, top_docs) = (facets_collector?, top_docs?);
     let scores = if do_doc_scores {
-        let scored = if fcm.keep_scores {
-            None
-        } else {
-            Some(FacetsCollectorManager::new(true).collect(searcher, query)?)
-        };
-        populate_scores(&top_docs.hits, scored.as_ref().unwrap_or(&facets_collector))
+        populate_scores(&top_docs.hits, &facets_collector)
     } else {
         vec![f32::NAN; top_docs.hits.len()]
     };
+    if !fcm.keep_scores && collect_manager.keep_scores {
+        // What `fcm` itself would have collected: no scores.
+        facets_collector.drop_scores();
+    }
     Ok(SortedFacetsResult {
         top_docs,
         scores,
@@ -661,21 +708,41 @@ fn do_search_sorted<'a>(
 /// `TopFieldCollector.populateScores`: each hit's score, read off a
 /// collector that kept the query's scores (`0` for a hit it did not see,
 /// which a collector of the same query cannot miss).
+///
+/// The segments are ordered by doc base once and each hit's found by binary
+/// search (the first segment ending past it), not by a scan per hit.
 pub(crate) fn populate_scores(hits: &[FieldDoc], scored: &FacetsCollector<'_>) -> Vec<f32> {
+    let matching = scored.matching_docs();
+    let mut by_base: Vec<&MatchingDocs<'_>> = matching.iter().collect();
+    by_base.sort_by_key(|m| m.context.doc_base);
+    let score_in = |m: &MatchingDocs<'_>, doc: i32| -> Option<f32> {
+        let local = doc.checked_sub(m.context.doc_base)?;
+        if local < 0 || local >= m.context.reader.max_doc() {
+            return None;
+        }
+        m.scores
+            .as_ref()?
+            .get(usize::try_from(local).ok()?)
+            .copied()
+    };
     hits.iter()
         .map(|h| {
-            scored
-                .matching_docs()
-                .iter()
-                .find_map(|m| {
-                    let local = h.doc.checked_sub(m.context.doc_base)?;
-                    if local < 0 || local >= m.context.reader.max_doc() {
-                        return None;
-                    }
-                    m.scores
-                        .as_ref()?
-                        .get(usize::try_from(local).ok()?)
-                        .copied()
+            // Segments partition the doc-id space, so at most the segment
+            // with the greatest base not above the hit holds it; any later
+            // one starting at the same base (an empty segment) is tried too.
+            let first = by_base
+                .partition_point(|m| m.context.doc_base <= h.doc)
+                .saturating_sub(1);
+            by_base
+                .get(first..)
+                .into_iter()
+                .flatten()
+                .take_while(|m| m.context.doc_base <= h.doc)
+                .find_map(|m| score_in(m, h.doc))
+                .or_else(|| {
+                    // A segment's matching docs listed twice (hand-built):
+                    // the original scan's answer.
+                    matching.iter().find_map(|m| score_in(m, h.doc))
                 })
                 .unwrap_or(0.0)
         })

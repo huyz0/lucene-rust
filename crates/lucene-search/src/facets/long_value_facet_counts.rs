@@ -132,7 +132,9 @@ impl LongValueFacetCounts {
 
     /// `new LongValueFacetCounts(field, valueSource, reader)`: every
     /// document's value (deleted documents included, as Java's loop over
-    /// `0..maxDoc` does), read through `ctx`, a context over `reader`.
+    /// `0..maxDoc` does -- `fixtures/data/value_facets`' `multi` index, which
+    /// has deletions, records Lucene 10.5 counting them here while the field
+    /// form skips them), read through `ctx`, a context over `reader`.
     ///
     /// # Errors
     /// Whatever reading the values reports.
@@ -268,6 +270,17 @@ impl LongValueFacetCounts {
         let limit = values.doc_value_count();
         if limit > 0 {
             self.tot_count = self.tot_count.wrapping_add(1);
+        }
+        // In bulk when the doc values hold the document's values decoded.
+        if let Some(all) = values.take_values() {
+            let mut previous = 0i64;
+            for (i, &value) in all.iter().enumerate() {
+                if i == 0 || value != previous {
+                    self.increment(value);
+                    previous = value;
+                }
+            }
+            return Ok(());
         }
         let mut previous = 0i64;
         for i in 0..limit {
