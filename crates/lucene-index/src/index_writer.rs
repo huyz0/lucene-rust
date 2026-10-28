@@ -7361,13 +7361,17 @@ impl IndexWriter<'_> {
         // field becomes an update *keyed by the same term*, so the marking hits
         // exactly the documents a hard `updateDocument` would have deleted.
         // `buildDocValuesUpdate` also runs `verifyOrCreateDvOnlyField` on each
-        // one, as `update_doc_values` does: an unknown, index-sort or
-        // wrong-typed field is refused here rather than at apply time, where
-        // a failure would be restored and fail every later flush.
+        // one: an index-sort or wrong-typed field is refused here rather than
+        // at apply time, where the failure would be restored and fail every
+        // later flush. A field a fixed field list does not name stays
+        // accepted, as it always was here -- the soft-deletes field of a
+        // caller that never declared it (the FFI's soft updates do this).
         self.create_doc_values_only_fields(soft_deletes)?;
         let mut updates: Vec<DocValuesUpdate> = Vec::with_capacity(soft_deletes.len());
         for u in soft_deletes {
-            self.cfg.verify_doc_values_update_field(u)?;
+            if self.cfg.field_by_name(u.field()).is_some() {
+                self.cfg.verify_doc_values_update_field(u)?;
+            }
             updates.push(retarget_update(u, &term));
         }
         self.add_documents_with_delete(Some(DeleteNode::DocValuesUpdates(updates)), docs)
@@ -11744,6 +11748,7 @@ impl IndexingConfig {
                 for d in docs {
                     let d = in_range(d)?;
                     if below_limit(d, limit) {
+                        // FBS: `deleted` is `FixedBitSet::new(max_doc)` and `in_range` returned `d < max_doc`.
                         deleted.set(d);
                         any_deleted = true;
                     }
@@ -11764,6 +11769,7 @@ impl IndexingConfig {
                 for d in docs {
                     let d = in_range(d)?;
                     if below_limit(d, limit) {
+                        // FBS: `deleted` is `FixedBitSet::new(max_doc)` and `in_range` returned `d < max_doc`.
                         deleted.set(d);
                         any_deleted = true;
                     }
@@ -11797,6 +11803,8 @@ impl IndexingConfig {
                     let mut matched: Vec<i32> = Vec::with_capacity(docs.len());
                     for d in docs {
                         let idx = in_range(d)?;
+                        // FBS: `deleted` is `FixedBitSet::new(max_doc)` and
+                        // `in_range` returned `idx < max_doc`.
                         if below_limit(idx, limit) && !deleted.get(idx) {
                             matched.push(d);
                         }
