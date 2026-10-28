@@ -62,6 +62,7 @@ impl IndexWriter<'_> {
     /// `IndexWriter.addIndexes(Directory...)`: see the module documentation.
     /// Returns the operation's sequence number.
     pub fn add_indexes(&mut self, sources: &[&dyn Directory]) -> Result<SeqNo> {
+        self.write_pending_try_deletes()?;
         let added = self.copy_segments_in(sources, None, true)?;
         self.segment_infos.segments.extend(added);
         self.prune_segment_versions();
@@ -77,6 +78,7 @@ impl IndexWriter<'_> {
     /// source's latest commit: one new segment holding all of their live
     /// documents. See the module documentation.
     pub fn add_indexes_merged(&mut self, sources: &[&dyn Directory]) -> Result<SeqNo> {
+        self.write_pending_try_deletes()?;
         self.add_merged(sources, None, None)
     }
 
@@ -90,6 +92,7 @@ impl IndexWriter<'_> {
         sources: &[&dyn Directory],
         remap: crate::merge::SortedNumericRemap,
     ) -> Result<SeqNo> {
+        self.write_pending_try_deletes()?;
         // The merge orders documents by the index sort's keys before the
         // remap rewrites any value, where Java sorts the wrapped (remapped)
         // reader: refused rather than sorted by the unmapped values.
@@ -123,6 +126,7 @@ impl IndexWriter<'_> {
         sources: &[&dyn Directory],
         keep: &dyn Fn(usize, usize, i32) -> bool,
     ) -> Result<SeqNo> {
+        self.write_pending_try_deletes()?;
         self.add_merged(sources, Some(keep), None)
     }
 
