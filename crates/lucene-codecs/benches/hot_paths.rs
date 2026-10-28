@@ -1425,8 +1425,42 @@ fn bench_completion_flush(c: &mut Criterion) {
     group.finish();
 }
 
+/// A field of 200 high-frequency terms over 20,000 docs (no positions):
+/// almost all of its `.doc` bytes are full 256-doc blocks.
+fn bench_postings_write_full_blocks(c: &mut Criterion) {
+    use field_infos::IndexOptions;
+    const DOCS: i32 = 20_000;
+    let terms: Vec<postings_writer::TermPostings> = (0..200u32)
+        .map(|t| {
+            let step = 1 + (t % 3) as i32;
+            postings_writer::TermPostings {
+                term: format!("hot{t:04}").into_bytes(),
+                docs: (0..DOCS / step)
+                    .map(|k| (k * step, 1 + (k + t as i32) % 4))
+                    .collect(),
+                ..Default::default()
+            }
+        })
+        .collect();
+    let input = postings_writer::FieldPostingsInput {
+        field_number: 0,
+        index_options: IndexOptions::DocsAndFreqs,
+        doc_count: DOCS,
+        has_payloads: false,
+        terms: &terms,
+    };
+    let id = [9u8; 16];
+    let mut group = c.benchmark_group("postings_write");
+    group.sample_size(20);
+    group.bench_function("full_blocks_200_terms", |b| {
+        b.iter(|| black_box(postings_writer::write_single_field(&input, &id, "").unwrap()))
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
+    bench_postings_write_full_blocks,
     bench_completion_flush,
     bench_term_vectors_flush,
     bench_scalar_quantized_flush,

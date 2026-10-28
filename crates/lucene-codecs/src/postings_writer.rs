@@ -1482,6 +1482,7 @@ impl<'a> PostingsWriter<'a> {
         // (never read for singletons, see `postings::singleton_postings`).
         // The incremental shared-terms merge supplies one term per call.
         // Keep that pointer on the stack rather than allocating per term.
+        let mut block_scratch = BlockScratch::default();
         let mut one_doc_start_fp = [0u64; 1];
         let mut many_doc_start_fp = Vec::new();
         let doc_start_fp: &mut [u64] = if input.terms.len() == 1 {
@@ -1543,6 +1544,7 @@ impl<'a> PostingsWriter<'a> {
                         norms: field_norms,
                         maxima,
                         skip: &mut skip,
+                        scratch: &mut block_scratch,
                     },
                 );
                 start += LEVEL1_NUM_DOCS as usize;
@@ -1560,6 +1562,7 @@ impl<'a> PostingsWriter<'a> {
                         norms: field_norms,
                         maxima,
                         skip: &mut skip,
+                        scratch: &mut block_scratch,
                     },
                 );
                 start += BLOCK_SIZE as usize;
@@ -1945,6 +1948,16 @@ struct BlockWriteCtx<'n, 'p> {
     norms: Option<&'n [i64]>,
     maxima: &'n mut PostingsMaxima,
     skip: &'n mut PosSkipWriter<'p>,
+    scratch: &'n mut BlockScratch,
+}
+
+/// [`write_full_block`]'s buffers, cleared and refilled per block rather
+/// than allocated per block.
+#[derive(Default)]
+struct BlockScratch {
+    rest: Vec<u8>,
+    impacts: Vec<u8>,
+    header: Vec<u8>,
 }
 
 /// Writes one full 256-doc `.doc` block — a level-0 skip header
@@ -1993,7 +2006,16 @@ fn write_full_block(
         norms,
         maxima,
         skip,
+        scratch,
     } = ctx;
+    let BlockScratch {
+        rest,
+        impacts,
+        header,
+    } = &mut **scratch;
+    rest.clear();
+    impacts.clear();
+    header.clear();
     let (index_has_freq, norms) = (*index_has_freq, *norms);
     debug_assert_eq!(block.len(), BLOCK_SIZE as usize);
     // `addPosition` has run for every occurrence of this block's documents by
@@ -2005,7 +2027,6 @@ fn write_full_block(
     // immediately after `blockLength` itself) -- build it in a scratch
     // buffer first so `blockLength`'s value is known before the header is
     // written.
-    let mut rest = Vec::new();
     if index_has_freq {
         // `flushDocBlock`'s level-0 impacts: the block's competitive
         // `(freq, norm)` frontier, from `CompetitiveImpactAccumulator`. With
@@ -2032,14 +2053,13 @@ fn write_full_block(
         // prevents it is no longer local to this expression (it used to be a
         // `.max(1)` on the line this replaced).
         debug_assert!(!block_impacts.is_empty());
-        let mut impacts = Vec::new();
-        write_impacts(&block_impacts, &mut impacts);
+        write_impacts(&block_impacts, impacts);
         maxima.observe_level0(block_impacts.len() as i32, impacts.len());
         rest.write_vint(impacts.len() as i32);
-        rest.write_bytes(&impacts);
+        rest.write_bytes(impacts);
         // `.pos`/`.pay` skip pointers, immediately after the impacts run and
         // still inside `writeFreqs` -- `Lucene104PostingsWriter.java:413-422`.
-        skip.write_level0(&mut rest);
+        skip.write_level0(rest);
     }
     // Java's `numSkipBytes = level0Output.size()` is sampled exactly here --
     // after the impacts region *and* the pos/pay skip fields, before the doc
@@ -2109,13 +2129,15 @@ fn write_full_block(
     // which asserts the chosen token, can.
     } else if num_bits_next_bits_per_value <= doc_range {
         rest.write_byte(bits_per_value as u8);
-        for_util::for_encode(&mut deltas, bits_per_value, &mut rest);
+        for_util::for_encode(&mut deltas, bits_per_value, rest);
     } else {
         // Dense unary bit-set encoding: doc IDs are the set-bit positions
         // (ascending) in a `num_bit_set_longs`-word bitset based at
         // `prev_doc_id + 1`, matching `FixedBitSet`'s word/bit layout
         // (word = bit_index / 64, bit = bit_index % 64).
-        let mut words = vec![0u64; num_bit_set_longs as usize];
+        // At most 128 words: this branch needs `doc_range < 32 * 256`.
+        let mut all_words = [0u64; 128];
+        let words = &mut all_words[..num_bit_set_longs as usize];
         let mut s: i64 = -1;
         // ARITH: `s` accumulates 256 deltas, each below 2^32, so it stays
         // under 2^41. It ends at `doc_range - 1` (the deltas telescope), and
@@ -2135,7 +2157,7 @@ fn write_full_block(
         #[allow(clippy::arithmetic_side_effects)]
         let token = (-(num_bit_set_longs as i32)) as u8;
         rest.write_byte(token);
-        for word in &words {
+        for word in words.iter() {
             rest.write_i64(*word as i64);
         }
     }
@@ -2145,7 +2167,7 @@ fn write_full_block(
         for (i, &(_, freq)) in block.iter().enumerate() {
             freqs[i] = freq as u32;
         }
-        for_util::pfor_encode(&mut freqs, &mut rest);
+        for_util::pfor_encode(&mut freqs, rest);
     }
 
     // `numSkipBytes` spans the two header fields below plus the impacts
@@ -2155,18 +2177,17 @@ fn write_full_block(
     // seeks by it, and a zero here sends it *backwards* to re-read the header
     // as block data and then off the end of the file. Measure the fields by
     // building them first, as Java does with its `scratchOutput`.
-    let mut header = Vec::new();
     // Java writes `docBuffer[BLOCK_SIZE - 1] - level0LastDocID` as an `int`;
     // see the per-doc delta above.
-    write_vint15(&mut header, last_doc_id.wrapping_sub(prev_doc_id));
-    write_vlong15(&mut header, rest.len() as i64);
+    write_vint15(header, last_doc_id.wrapping_sub(prev_doc_id));
+    write_vlong15(header, rest.len() as i64);
     // ARITH: both terms are lengths of in-memory scratch buffers this call
     // just built -- a few KiB each, and both bounded by `isize::MAX`.
     #[allow(clippy::arithmetic_side_effects)]
     let num_skip_bytes = impacts_region_len + header.len() as i64;
     out.write_vlong(num_skip_bytes);
-    out.write_bytes(&header);
-    out.write_bytes(&rest);
+    out.write_bytes(header);
+    out.write_bytes(rest);
 
     last_doc_id
 }
@@ -5007,6 +5028,7 @@ mod tests {
                 norms: None,
                 maxima: &mut PostingsMaxima::default(),
                 skip: &mut PosSkipWriter::new(None, &[], false),
+                scratch: &mut BlockScratch::default(),
             },
         );
         let mut r = SliceInput::new(&out);
