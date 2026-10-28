@@ -139,7 +139,9 @@ impl Info {
     /// bytes).
     fn sorted_ords(&self) -> Vec<usize> {
         let mut ords: Vec<usize> = (0..self.terms.len()).collect();
-        ords.sort_by(|&a, &b| self.terms.get(a).cmp(self.terms.get(b)));
+        // the ords' terms are distinct, so an unstable sort orders them the
+        // same
+        ords.sort_unstable_by(|&a, &b| self.terms.get(a).cmp(self.terms.get(b)));
         ords
     }
 
@@ -651,6 +653,23 @@ impl MemoryIndex {
         }
         self.frozen = true;
         Ok(())
+    }
+
+    /// Every field's distinct terms, the fields in name order and each
+    /// field's terms sorted: the terms dictionary a reader of this index
+    /// walks.
+    pub(crate) fn field_terms(&self) -> Vec<(String, Vec<Vec<u8>>)> {
+        self.fields
+            .iter()
+            .map(|(name, info)| {
+                let terms = info
+                    .sorted_ords()
+                    .into_iter()
+                    .map(|ord| info.terms.get(ord).to_vec())
+                    .collect();
+                (name.clone(), terms)
+            })
+            .collect()
     }
 
     /// `reset()`: empty again, unfrozen, with the default similarity.

@@ -88,6 +88,54 @@ pub fn next_clear_bit_in_words(words: &[u64], from: usize) -> usize {
     }
 }
 
+/// Total set bits of `words`. Four independent accumulators rather than one
+/// `map().sum()`: a single running sum serialises every `popcnt` behind the
+/// previous add, and the loop is then bound by that dependency chain rather
+/// than by the instruction's throughput.
+#[inline]
+fn popcount_words(words: &[u64]) -> usize {
+    let mut chunks = words.chunks_exact(4);
+    let (mut a, mut b, mut c, mut d) = (0usize, 0usize, 0usize, 0usize);
+    for w in &mut chunks {
+        a = a.wrapping_add(w[0].count_ones() as usize);
+        b = b.wrapping_add(w[1].count_ones() as usize);
+        c = c.wrapping_add(w[2].count_ones() as usize);
+        d = d.wrapping_add(w[3].count_ones() as usize);
+    }
+    let tail: usize = chunks
+        .remainder()
+        .iter()
+        .map(|w| w.count_ones() as usize)
+        .fold(0, usize::wrapping_add);
+    a.wrapping_add(b)
+        .wrapping_add(c)
+        .wrapping_add(d)
+        .wrapping_add(tail)
+}
+
+/// `sum(popcount(f(a[i], b[i])))` over two equal-length word slices, with
+/// the same four accumulators as [`popcount_words`].
+#[inline(always)]
+fn popcount_zip(a: &[u64], b: &[u64], f: impl Fn(u64, u64) -> u64) -> usize {
+    let n = a.len().min(b.len());
+    let (a, b) = (&a[..n], &b[..n]);
+    let mut ac = a.chunks_exact(4);
+    let mut bc = b.chunks_exact(4);
+    let mut acc = [0usize; 4];
+    for (x, y) in (&mut ac).zip(&mut bc) {
+        for k in 0..4 {
+            acc[k] = acc[k].wrapping_add(f(x[k], y[k]).count_ones() as usize);
+        }
+    }
+    let tail = ac
+        .remainder()
+        .iter()
+        .zip(bc.remainder())
+        .map(|(&x, &y)| f(x, y).count_ones() as usize)
+        .fold(0, usize::wrapping_add);
+    acc.iter().fold(tail, |s, v| s.wrapping_add(*v))
+}
+
 #[derive(Debug, Clone)]
 pub struct FixedBitSet {
     words: Vec<u64>,
@@ -229,23 +277,7 @@ impl FixedBitSet {
     /// instruction's throughput. Java's `Long.bitCount` loop gets the same
     /// unrolling from C2.
     pub fn cardinality(&self) -> usize {
-        let mut chunks = self.words.chunks_exact(4);
-        let (mut a, mut b, mut c, mut d) = (0usize, 0usize, 0usize, 0usize);
-        for w in &mut chunks {
-            a = a.wrapping_add(w[0].count_ones() as usize);
-            b = b.wrapping_add(w[1].count_ones() as usize);
-            c = c.wrapping_add(w[2].count_ones() as usize);
-            d = d.wrapping_add(w[3].count_ones() as usize);
-        }
-        let tail: usize = chunks
-            .remainder()
-            .iter()
-            .map(|w| w.count_ones() as usize)
-            .fold(0, usize::wrapping_add);
-        a.wrapping_add(b)
-            .wrapping_add(c)
-            .wrapping_add(d)
-            .wrapping_add(tail)
+        popcount_words(&self.words)
     }
 
     /// Port of `FixedBitSet.nextSetBit(index)`: the index of the first set bit
@@ -509,9 +541,16 @@ impl FixedBitSet {
     }
 
     /// `FixedBitSet.nextSetBit(start, upperBound)`: `None` when the first set
-    /// bit is at or past `upper_bound`.
+    /// bit is at or past `upper_bound`. Like Java, the scan stops at the word
+    /// holding `upper_bound - 1` instead of running to the end of the set.
+    #[inline]
     pub fn next_set_bit_in_range(&self, start: usize, upper_bound: usize) -> Option<usize> {
-        self.next_set_bit(start).filter(|&b| b < upper_bound)
+        let ub = upper_bound.min(self.num_bits);
+        if start >= ub {
+            return None;
+        }
+        // `start < ub <= num_bits`, so `bits2words(ub) <= words.len()`.
+        next_set_bit_in_words(&self.words[..bits2words(ub)], start).filter(|&b| b < ub)
     }
 
     /// `FixedBitSet.nextClearBit(index)`: `None` for Java's `NO_MORE_DOCS`.
@@ -524,8 +563,10 @@ impl FixedBitSet {
         if start >= upper_bound.min(self.num_bits) {
             return None;
         }
-        let b = next_clear_bit_in_words(&self.words, start);
-        (b < upper_bound.min(self.num_bits)).then_some(b)
+        let ub = upper_bound.min(self.num_bits);
+        // Scan only the words that hold `start..ub`, as Java does.
+        let b = next_clear_bit_in_words(&self.words[..bits2words(ub)], start);
+        (b < ub).then_some(b)
     }
 
     /// `FixedBitSet.cardinality(from, to)`: set bits in `from..to`.
@@ -535,21 +576,19 @@ impl FixedBitSet {
             "range {from}..{to} of {}",
             self.num_bits
         );
-        let mut count = 0usize;
-        let mut i = from;
-        while i < to {
-            let w = i >> 6;
-            let lo = i & 63;
-            let span = (to - i).min(64 - lo);
-            let mask = if span == 64 {
-                u64::MAX
-            } else {
-                ((1u64 << span) - 1) << lo
-            };
-            count += (self.words[w] & mask).count_ones() as usize;
-            i += span;
+        if from == to {
+            return 0;
         }
-        count
+        // Java 10's shape: a masked head word, the plain popcount kernel over
+        // the whole words between, a masked tail word.
+        let (fw, tw) = (from >> 6, (to - 1) >> 6);
+        let (startmask, endmask) = Self::range_masks(from, to);
+        if fw == tw {
+            return (self.words[fw] & startmask & endmask).count_ones() as usize;
+        }
+        (self.words[fw] & startmask).count_ones() as usize
+            + popcount_words(&self.words[fw + 1..tw])
+            + (self.words[tw] & endmask).count_ones() as usize
     }
 
     /// `FixedBitSet.approximateCardinality()`: exact up to 1024 words, else
@@ -578,31 +617,15 @@ impl FixedBitSet {
     /// `FixedBitSet.unionCount(a, b)`.
     pub fn union_count(a: &FixedBitSet, b: &FixedBitSet) -> usize {
         let n = a.words.len().min(b.words.len());
-        let mut tot: usize = (0..n)
-            .map(|i| (a.words[i] | b.words[i]).count_ones() as usize)
-            .sum();
-        tot += a.words[n..]
-            .iter()
-            .map(|w| w.count_ones() as usize)
-            .sum::<usize>();
-        tot += b.words[n..]
-            .iter()
-            .map(|w| w.count_ones() as usize)
-            .sum::<usize>();
-        tot
+        popcount_zip(&a.words, &b.words, |x, y| x | y)
+            + popcount_words(&a.words[n..])
+            + popcount_words(&b.words[n..])
     }
 
     /// `FixedBitSet.andNotCount(a, b)`.
     pub fn and_not_count(a: &FixedBitSet, b: &FixedBitSet) -> usize {
         let n = a.words.len().min(b.words.len());
-        let mut tot: usize = (0..n)
-            .map(|i| (a.words[i] & !b.words[i]).count_ones() as usize)
-            .sum();
-        tot += a.words[n..]
-            .iter()
-            .map(|w| w.count_ones() as usize)
-            .sum::<usize>();
-        tot
+        popcount_zip(&a.words, &b.words, |x, y| x & !y) + popcount_words(&a.words[n..])
     }
 
     /// `FixedBitSet.xor(FixedBitSet)`: `other` no longer than `self`.
@@ -641,6 +664,86 @@ impl FixedBitSet {
         }
     }
 
+    /// Java's package-private `getBits(from, numBits)`: bits
+    /// `from..from + n` as the low `n` bits of a word (`1 <= n <= 64`, the
+    /// range inside the set).
+    #[inline]
+    fn bits_at(&self, from: usize, n: usize) -> u64 {
+        debug_assert!((1..=64).contains(&n) && from + n <= self.num_bits);
+        let (w, sh) = (from >> 6, from & 63);
+        let mut v = self.words[w] >> sh;
+        if sh + n > 64 {
+            v |= self.words[w + 1] << (64 - sh);
+        }
+        if n < 64 {
+            v &= (1u64 << n) - 1;
+        }
+        v
+    }
+
+    /// The word-at-a-time walk behind [`Self::or_range`] and
+    /// [`Self::and_range`] (Java 10's): align `dest_from` to a word, combine
+    /// whole words (the source shifted into place), then the tail. `head`
+    /// combines `bits` (the low `n` bits) into a dest word at bit `sh`;
+    /// `word` combines a whole aligned source word.
+    #[inline(always)]
+    fn range_op(
+        source: &FixedBitSet,
+        mut source_from: usize,
+        dest: &mut FixedBitSet,
+        mut dest_from: usize,
+        mut length: usize,
+        head: impl Fn(&mut u64, u64, usize, usize),
+        word: impl Fn(&mut u64, u64),
+    ) {
+        assert!(
+            source_from
+                .checked_add(length)
+                .is_some_and(|e| e <= source.len())
+                && dest_from.checked_add(length).is_some_and(|e| e <= dest.len()),
+            "range out of bounds: source {source_from}+{length} of {}, dest {dest_from}+{length} of {}",
+            source.len(),
+            dest.len()
+        );
+        if length == 0 {
+            return;
+        }
+        if dest_from & 63 != 0 {
+            let n = (64 - (dest_from & 63)).min(length);
+            let bits = source.bits_at(source_from, n);
+            head(&mut dest.words[dest_from >> 6], bits, dest_from & 63, n);
+            source_from += n;
+            dest_from += n;
+            length -= n;
+            if length == 0 {
+                return;
+            }
+        }
+        let full = length >> 6;
+        let (sw, dw) = (source_from >> 6, dest_from >> 6);
+        let d = &mut dest.words[dw..dw + full];
+        let shift = source_from & 63;
+        if shift == 0 {
+            for (x, &y) in d.iter_mut().zip(&source.words[sw..sw + full]) {
+                word(x, y);
+            }
+        } else if full > 0 {
+            // The last full word reads source bits up to
+            // `source_from + 64 * full - 1 < source.len()`, which lie in word
+            // `sw + full` because `shift > 0`: that word exists.
+            for (x, y) in d.iter_mut().zip(source.words[sw..=sw + full].windows(2)) {
+                word(x, (y[0] >> shift) | (y[1] << (64 - shift)));
+            }
+        }
+        source_from += full << 6;
+        dest_from += full << 6;
+        length -= full << 6;
+        if length > 0 {
+            let bits = source.bits_at(source_from, length);
+            head(&mut dest.words[dest_from >> 6], bits, 0, length);
+        }
+    }
+
     /// `FixedBitSet.orRange(source, sourceFrom, dest, destFrom, length)`.
     pub fn or_range(
         source: &FixedBitSet,
@@ -649,12 +752,15 @@ impl FixedBitSet {
         dest_from: usize,
         length: usize,
     ) {
-        assert!(source_from + length <= source.len() && dest_from + length <= dest.len());
-        for i in 0..length {
-            if source.get(source_from + i) {
-                dest.set(dest_from + i);
-            }
-        }
+        Self::range_op(
+            source,
+            source_from,
+            dest,
+            dest_from,
+            length,
+            |d, bits, sh, _| *d |= bits << sh,
+            |d, w| *d |= w,
+        );
     }
 
     /// `FixedBitSet.andRange(source, sourceFrom, dest, destFrom, length)`:
@@ -666,12 +772,19 @@ impl FixedBitSet {
         dest_from: usize,
         length: usize,
     ) {
-        assert!(source_from + length <= source.len() && dest_from + length <= dest.len());
-        for i in 0..length {
-            if !source.get(source_from + i) {
-                dest.clear(dest_from + i);
-            }
-        }
+        Self::range_op(
+            source,
+            source_from,
+            dest,
+            dest_from,
+            length,
+            |d, bits, sh, n| {
+                // Keep every dest bit outside `sh..sh + n`.
+                let span = if n == 64 { u64::MAX } else { (1u64 << n) - 1 };
+                *d &= (bits << sh) | !(span << sh);
+            },
+            |d, w| *d &= w,
+        );
     }
 
     /// `FixedBitSet.ensureCapacity(bits, desiredBit)`: `bits` itself when it
@@ -1237,5 +1350,114 @@ mod tests {
         // on its own -- but with the message of a slice index, not of a
         // bitset bound.
         FixedBitSet::new(0).get(0);
+    }
+}
+
+#[cfg(test)]
+mod range_tests {
+    #![allow(clippy::needless_range_loop)]
+
+    use super::*;
+
+    fn model(n: usize, seed: u64) -> (FixedBitSet, Vec<bool>) {
+        let mut s = seed;
+        let mut b = FixedBitSet::new(n);
+        let mut m = vec![false; n];
+        for (i, slot) in m.iter_mut().enumerate() {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            if (s >> 60) & 1 == 1 {
+                b.set(i);
+                *slot = true;
+            }
+        }
+        (b, m)
+    }
+
+    #[test]
+    fn word_wise_range_ops_match_bitwise_model() {
+        let (src, sm) = model(700, 11);
+        for &(sf, df, len) in &[
+            (0, 0, 0),
+            (0, 0, 700),
+            (3, 17, 600),
+            (64, 0, 128),
+            (0, 64, 300),
+            (5, 5, 64),
+            (63, 1, 70),
+            (1, 63, 1),
+            (130, 200, 499),
+            (17, 3, 683),
+        ] {
+            let (d0, dm0) = model(720, 23);
+            let mut d = d0.clone();
+            FixedBitSet::or_range(&src, sf, &mut d, df, len);
+            let mut dm = dm0.clone();
+            for i in 0..len {
+                dm[df + i] |= sm[sf + i];
+            }
+            for i in 0..720 {
+                assert_eq!(d.get(i), dm[i], "or {sf} {df} {len} bit {i}");
+            }
+            let mut d = d0.clone();
+            FixedBitSet::and_range(&src, sf, &mut d, df, len);
+            let mut dm = dm0;
+            for i in 0..len {
+                dm[df + i] &= sm[sf + i];
+            }
+            for i in 0..720 {
+                assert_eq!(d.get(i), dm[i], "and {sf} {df} {len} bit {i}");
+            }
+            assert!(ghost_bits_clear(d.words(), d.len()));
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "range out of bounds")]
+    fn or_range_rejects_overrun() {
+        let s = FixedBitSet::new(10);
+        let mut d = FixedBitSet::new(100);
+        FixedBitSet::or_range(&s, 5, &mut d, 0, 6);
+    }
+
+    #[test]
+    fn bounded_scans_and_counts_match_model() {
+        let (b, m) = model(1000, 5);
+        let (c, cm) = model(900, 6);
+        for start in (0..1000).step_by(7) {
+            for ub in [
+                start,
+                start + 1,
+                start + 63,
+                start + 64,
+                start + 200,
+                1000,
+                5000,
+            ] {
+                let want = (start..ub.min(1000)).find(|&i| m[i]);
+                assert_eq!(b.next_set_bit_in_range(start, ub), want, "{start} {ub}");
+                let want = (start..ub.min(1000)).find(|&i| !m[i]);
+                assert_eq!(b.next_clear_bit_in_range(start, ub), want, "{start} {ub}");
+            }
+            for to in [start, start + 1, start + 64, 1000] {
+                if to <= 1000 {
+                    let want = (start..to).filter(|&i| m[i]).count();
+                    assert_eq!(b.cardinality_range(start, to), want);
+                }
+            }
+        }
+        let u = (0..1000).filter(|&i| m[i] || (i < 900 && cm[i])).count();
+        assert_eq!(FixedBitSet::union_count(&b, &c), u);
+        assert_eq!(FixedBitSet::union_count(&c, &b), u);
+        let an = (0..1000).filter(|&i| m[i] && !(i < 900 && cm[i])).count();
+        assert_eq!(FixedBitSet::and_not_count(&b, &c), an);
+        let an = (0..900).filter(|&i| cm[i] && !m[i]).count();
+        assert_eq!(FixedBitSet::and_not_count(&c, &b), an);
+        let mut full = FixedBitSet::new(130);
+        full.set_range(0, 130);
+        assert_eq!(full.next_clear_bit_in_range(0, 130), None);
+        assert_eq!(full.next_clear_bit(64), None);
+        assert_eq!(FixedBitSet::new(130).next_set_bit_in_range(0, 130), None);
     }
 }

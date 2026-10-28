@@ -124,71 +124,12 @@ impl BulkOperation {
 
     /// `decode(long[], int, long[], int, int)`.
     pub fn decode_longs(&self, blocks: &[u64], values: &mut [i64], iterations: usize) {
-        match self.format {
-            Format::Packed => {
-                let bpv = self.bits_per_value as i32;
-                let mut bits_left: i32 = 64;
-                let mut bo = 0usize;
-                for v in values[..self.long_value_count * iterations].iter_mut() {
-                    bits_left -= bpv;
-                    if bits_left < 0 {
-                        let high = blocks[bo] & ((1u64 << (bpv + bits_left)) - 1);
-                        bo += 1;
-                        // Java shifts mod 64: at 64 bits `high` is 0 and the shift by 64 is a
-                        // shift by 0, which `wrapping_shl` reproduces.
-                        *v = (high.wrapping_shl((-bits_left) as u32)
-                            | (blocks[bo] >> (64 + bits_left))) as i64;
-                        bits_left += 64;
-                    } else {
-                        *v = ((blocks[bo] >> bits_left) & self.mask) as i64;
-                    }
-                }
-            }
-            Format::PackedSingleBlock => {
-                let mut vo = 0usize;
-                for &block in &blocks[..iterations] {
-                    vo = self.decode_single(block, values, vo);
-                }
-            }
-        }
+        self.decode_longs_into(blocks, values, iterations);
     }
 
     /// `decode(byte[], int, long[], int, int)`.
     pub fn decode_bytes(&self, blocks: &[u8], values: &mut [i64], iterations: usize) {
-        match self.format {
-            Format::Packed => {
-                let bpv = self.bits_per_value;
-                let mut next_value: u64 = 0;
-                let mut bits_left = bpv;
-                let mut vo = 0usize;
-                for &b in &blocks[..iterations * self.byte_block_count] {
-                    let bytes = b as u64;
-                    if bits_left > 8 {
-                        bits_left -= 8;
-                        next_value |= bytes << bits_left;
-                    } else {
-                        let mut bits = 8 - bits_left;
-                        values[vo] = (next_value | (bytes >> bits)) as i64;
-                        vo += 1;
-                        while bits >= bpv {
-                            bits -= bpv;
-                            values[vo] = ((bytes >> bits) & self.mask) as i64;
-                            vo += 1;
-                        }
-                        bits_left = bpv - bits;
-                        next_value = (bytes & ((1u64 << bits) - 1)).wrapping_shl(bits_left);
-                    }
-                }
-                debug_assert_eq!(bits_left, bpv);
-            }
-            Format::PackedSingleBlock => {
-                let mut vo = 0usize;
-                for chunk in blocks[..iterations * 8].chunks_exact(8) {
-                    let block = u64::from_be_bytes(chunk.try_into().expect("8 bytes"));
-                    vo = self.decode_single(block, values, vo);
-                }
-            }
-        }
+        self.decode_bytes_into(blocks, values, iterations);
     }
 
     /// `decode(long[], int, int[], int, int)`. `None` for a width above 32,
@@ -202,11 +143,7 @@ impl BulkOperation {
         if self.bits_per_value > 32 {
             return None;
         }
-        let mut tmp = vec![0i64; self.long_value_count * iterations];
-        self.decode_longs(blocks, &mut tmp, iterations);
-        for (d, s) in values.iter_mut().zip(tmp) {
-            *d = s as i32;
-        }
+        self.decode_longs_into(blocks, values, iterations);
         Some(())
     }
 
@@ -220,16 +157,81 @@ impl BulkOperation {
         if self.bits_per_value > 32 {
             return None;
         }
-        let mut tmp = vec![0i64; self.byte_value_count * iterations];
-        self.decode_bytes(blocks, &mut tmp, iterations);
-        for (d, s) in values.iter_mut().zip(tmp) {
-            *d = s as i32;
-        }
+        self.decode_bytes_into(blocks, values, iterations);
         Some(())
+    }
+
+    fn decode_longs_into<O: Value>(&self, blocks: &[u64], values: &mut [O], iterations: usize) {
+        match self.format {
+            Format::Packed => {
+                let n = self.long_value_count * iterations;
+                let words = &blocks[..self.long_block_count * iterations];
+                let values = &mut values[..n];
+                dispatch_bpv!(self.bits_per_value, |bpv| packed_from_longs(
+                    words, values, bpv
+                ));
+            }
+            Format::PackedSingleBlock => {
+                let vpb = self.long_value_count;
+                for (&block, out) in blocks[..iterations]
+                    .iter()
+                    .zip(values[..iterations * vpb].chunks_exact_mut(vpb))
+                {
+                    self.decode_single(block, out);
+                }
+            }
+        }
+    }
+
+    fn decode_bytes_into<O: Value>(&self, blocks: &[u8], values: &mut [O], iterations: usize) {
+        match self.format {
+            Format::Packed => {
+                let n = self.byte_value_count * iterations;
+                let bytes = &blocks[..iterations * self.byte_block_count];
+                let values = &mut values[..n];
+                if self.bits_per_value <= MAX_WINDOW_BPV {
+                    dispatch_bpv!(self.bits_per_value, |bpv| packed_from_bytes(
+                        bytes, values, bpv
+                    ));
+                } else {
+                    packed_from_bytes_wide(bytes, values, self.bits_per_value, self.mask);
+                }
+            }
+            Format::PackedSingleBlock => {
+                let vpb = self.long_value_count;
+                for (chunk, out) in blocks[..iterations * 8]
+                    .chunks_exact(8)
+                    .zip(values[..iterations * vpb].chunks_exact_mut(vpb))
+                {
+                    let block = u64::from_be_bytes(chunk.try_into().expect("8 bytes"));
+                    self.decode_single(block, out);
+                }
+            }
+        }
     }
 
     /// `encode(long[], int, long[], int, int)`.
     pub fn encode_longs(&self, values: &[i64], blocks: &mut [u64], iterations: usize) {
+        self.encode_longs_from(values, blocks, iterations);
+    }
+
+    /// `encode(long[], int, byte[], int, int)`.
+    pub fn encode_bytes(&self, values: &[i64], blocks: &mut [u8], iterations: usize) {
+        self.encode_bytes_from(values, blocks, iterations);
+    }
+
+    /// `encode(int[], int, long[], int, int)`: `int` values are read unsigned,
+    /// as Java masks them with `0xFFFFFFFFL`.
+    pub fn encode_ints_to_longs(&self, values: &[i32], blocks: &mut [u64], iterations: usize) {
+        self.encode_longs_from(values, blocks, iterations);
+    }
+
+    /// `encode(int[], int, byte[], int, int)`.
+    pub fn encode_ints_to_bytes(&self, values: &[i32], blocks: &mut [u8], iterations: usize) {
+        self.encode_bytes_from(values, blocks, iterations);
+    }
+
+    fn encode_longs_from<I: Value>(&self, values: &[I], blocks: &mut [u64], iterations: usize) {
         match self.format {
             Format::Packed => {
                 let bpv = self.bits_per_value as i32;
@@ -237,7 +239,7 @@ impl BulkOperation {
                 let mut bits_left: i32 = 64;
                 let mut bo = 0usize;
                 for &v in &values[..self.long_value_count * iterations] {
-                    let v = v as u64;
+                    let v = v.to_u64();
                     bits_left -= bpv;
                     if bits_left > 0 {
                         next_block |= v << bits_left;
@@ -264,8 +266,7 @@ impl BulkOperation {
         }
     }
 
-    /// `encode(long[], int, byte[], int, int)`.
-    pub fn encode_bytes(&self, values: &[i64], blocks: &mut [u8], iterations: usize) {
+    fn encode_bytes_from<I: Value>(&self, values: &[I], blocks: &mut [u8], iterations: usize) {
         match self.format {
             Format::Packed => {
                 let bpv = self.bits_per_value;
@@ -273,7 +274,7 @@ impl BulkOperation {
                 let mut bits_left: u32 = 8;
                 let mut bo = 0usize;
                 for &v in &values[..self.byte_value_count * iterations] {
-                    let v = v as u64;
+                    let v = v.to_u64();
                     if bpv < bits_left {
                         next_block |= (v << (bits_left - bpv)) as u32;
                         bits_left -= bpv;
@@ -301,40 +302,180 @@ impl BulkOperation {
         }
     }
 
-    /// `encode(int[], int, long[], int, int)`: `int` values are read unsigned,
-    /// as Java masks them with `0xFFFFFFFFL`.
-    pub fn encode_ints_to_longs(&self, values: &[i32], blocks: &mut [u64], iterations: usize) {
-        let wide: Vec<i64> = values.iter().map(|&v| v as u32 as i64).collect();
-        self.encode_longs(&wide, blocks, iterations);
-    }
-
-    /// `encode(int[], int, byte[], int, int)`.
-    pub fn encode_ints_to_bytes(&self, values: &[i32], blocks: &mut [u8], iterations: usize) {
-        let wide: Vec<i64> = values.iter().map(|&v| v as u32 as i64).collect();
-        self.encode_bytes(&wide, blocks, iterations);
-    }
-
-    /// `BulkOperationPackedSingleBlock.decode(long, long[], int)`.
+    /// `BulkOperationPackedSingleBlock.decode(long, long[], int)`: fills
+    /// `out` (`longValueCount` values), least significant first.
     #[inline]
-    fn decode_single(&self, mut block: u64, values: &mut [i64], mut vo: usize) -> usize {
-        values[vo] = (block & self.mask) as i64;
-        vo += 1;
-        for _ in 1..self.long_value_count {
+    fn decode_single<O: Value>(&self, mut block: u64, out: &mut [O]) {
+        for v in out {
+            *v = O::from_u64(block & self.mask);
             block >>= self.bits_per_value;
-            values[vo] = (block & self.mask) as i64;
-            vo += 1;
         }
-        vo
     }
 
     /// `BulkOperationPackedSingleBlock.encode(long[], int)`.
     #[inline]
-    fn encode_single(&self, values: &[i64]) -> u64 {
-        let mut block = values[0] as u64;
+    fn encode_single<I: Value>(&self, values: &[I]) -> u64 {
+        let mut block = values[0].to_u64();
         for (j, &v) in values[1..self.long_value_count].iter().enumerate() {
-            block |= (v as u64) << ((j + 1) as u32 * self.bits_per_value);
+            block |= v.to_u64() << ((j + 1) as u32 * self.bits_per_value);
         }
         block
+    }
+}
+
+/// A decoded/encoded value: `long` or `int` (an `int` is read unsigned on
+/// encode, as Java masks it with `0xFFFFFFFFL`).
+trait Value: Copy {
+    fn from_u64(v: u64) -> Self;
+    fn to_u64(self) -> u64;
+}
+
+impl Value for i64 {
+    #[inline(always)]
+    fn from_u64(v: u64) -> Self {
+        v as i64
+    }
+    #[inline(always)]
+    fn to_u64(self) -> u64 {
+        self as u64
+    }
+}
+
+impl Value for i32 {
+    #[inline(always)]
+    fn from_u64(v: u64) -> Self {
+        v as i32
+    }
+    #[inline(always)]
+    fn to_u64(self) -> u64 {
+        u64::from(self as u32)
+    }
+}
+
+/// Calls `$f` with `$bpv` as a literal for the widths Java unrolls
+/// (`BulkOperationPacked1..24`), so the inlined decoder's shifts and offsets
+/// become constants; any other width goes through the same code with the
+/// width at run time.
+macro_rules! dispatch_bpv {
+    ($bpv:expr, |$b:ident| $call:expr) => {
+        dispatch_bpv!(@arms $bpv, $b, $call;
+            1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24)
+    };
+    (@arms $bpv:expr, $b:ident, $call:expr; $($n:literal)*) => {
+        match $bpv {
+            $($n => {
+                let $b = $n;
+                $call
+            })*
+            other => {
+                let $b = other;
+                $call
+            }
+        }
+    };
+}
+use dispatch_bpv;
+
+/// The widest value [`packed_from_bytes`] can cut from one 8-byte window:
+/// the value starts at most 7 bits into its first byte.
+const MAX_WINDOW_BPV: u32 = 57;
+
+/// PACKED decode from big-endian bytes: value `i` is bits `i * bpv ..` of
+/// the MSB-first stream. Each value is cut from the 8-byte big-endian
+/// window starting at its first byte, branch-free; the last few values,
+/// whose window would run past the end, read a zero-padded copy.
+#[inline(always)]
+fn packed_from_bytes<O: Value>(bytes: &[u8], values: &mut [O], bpv: u32) {
+    debug_assert!((1..=MAX_WINDOW_BPV).contains(&bpv));
+    debug_assert_eq!(values.len() * bpv as usize, bytes.len() * 8);
+    let bpv_us = bpv as usize;
+    let shift = 64 - bpv;
+    // Values with `(i * bpv) / 8 + 8 <= bytes.len()` have a whole window.
+    let fast = if bytes.len() >= 8 {
+        values.len().min(((bytes.len() - 8) * 8 + 7) / bpv_us + 1)
+    } else {
+        0
+    };
+    let (head, tail) = values.split_at_mut(fast);
+    for (i, v) in head.iter_mut().enumerate() {
+        let bit = i * bpv_us;
+        let at = bit >> 3;
+        debug_assert!(at + 8 <= bytes.len());
+        // SAFETY: `i < fast`, and `fast` is chosen so that every such `i`
+        // has `(i * bpv) / 8 + 8 <= bytes.len()`: `i <= ((len - 8) * 8 + 7)
+        // / bpv` gives `i * bpv <= (len - 8) * 8 + 7`, so `at <= len - 8`.
+        // The read is unaligned-safe (`read_unaligned`) of 8 in-bounds bytes.
+        let raw = unsafe { bytes.as_ptr().add(at).cast::<[u8; 8]>().read_unaligned() };
+        let window = u64::from_be_bytes(raw);
+        *v = O::from_u64((window << (bit & 7)) >> shift);
+    }
+    for (k, v) in tail.iter_mut().enumerate() {
+        let bit = (fast + k) * bpv_us;
+        let at = bit >> 3;
+        let mut buf = [0u8; 8];
+        let avail = (bytes.len() - at).min(8);
+        buf[..avail].copy_from_slice(&bytes[at..at + avail]);
+        *v = O::from_u64((u64::from_be_bytes(buf) << (bit & 7)) >> shift);
+    }
+}
+
+/// PACKED decode from bytes for widths above [`MAX_WINDOW_BPV`]: Java's
+/// generic byte loop.
+fn packed_from_bytes_wide<O: Value>(bytes: &[u8], values: &mut [O], bpv: u32, mask: u64) {
+    let mut next_value: u64 = 0;
+    let mut bits_left = bpv;
+    let mut vo = 0usize;
+    for &b in bytes {
+        let b = u64::from(b);
+        if bits_left > 8 {
+            bits_left -= 8;
+            next_value |= b << bits_left;
+        } else {
+            let mut bits = 8 - bits_left;
+            values[vo] = O::from_u64(next_value | (b >> bits));
+            vo += 1;
+            while bits >= bpv {
+                bits -= bpv;
+                values[vo] = O::from_u64((b >> bits) & mask);
+                vo += 1;
+            }
+            bits_left = bpv - bits;
+            next_value = (b & ((1u64 << bits) - 1)).wrapping_shl(bits_left);
+        }
+    }
+    debug_assert_eq!(bits_left, bpv);
+}
+
+/// PACKED decode from 64-bit words: Java's `BulkOperationPacked` loop
+/// (value `i` is bits `i * bpv ..` of the MSB-first stream), writing the
+/// output type directly. Measured against a per-value window cut, which was
+/// no faster on whole words.
+#[inline(always)]
+fn packed_from_longs<O: Value>(words: &[u64], values: &mut [O], bpv: u32) {
+    debug_assert!((1..=64).contains(&bpv));
+    debug_assert_eq!(values.len() * bpv as usize, words.len() * 64);
+    let bpv = bpv as i32;
+    let mask = if bpv == 64 {
+        u64::MAX
+    } else {
+        (1u64 << bpv) - 1
+    };
+    let mut bits_left: i32 = 64;
+    let mut bo = 0usize;
+    for v in values.iter_mut() {
+        bits_left -= bpv;
+        if bits_left < 0 {
+            let high = words[bo] & ((1u64 << (bpv + bits_left)) - 1);
+            bo += 1;
+            // Java shifts mod 64: at 64 bits `high` is 0 and the shift by 64
+            // is a shift by 0, which `wrapping_shl` reproduces.
+            *v = O::from_u64(
+                high.wrapping_shl((-bits_left) as u32) | (words[bo] >> (64 + bits_left)),
+            );
+            bits_left += 64;
+        } else {
+            *v = O::from_u64((words[bo] >> bits_left) & mask);
+        }
     }
 }
 
@@ -427,12 +568,11 @@ mod tests {
     #[test]
     fn long_and_byte_forms_agree_and_round_trip_for_every_width() {
         for format in [Format::Packed, Format::PackedSingleBlock] {
-            for bpv in 1..=64u32 {
+            for (bpv, iters) in (1..=64u32).flat_map(|b| [(b, 3usize), (b, 41)]) {
                 if !format.is_supported(bpv) {
                     continue;
                 }
                 let op = BulkOperation::of(format, bpv);
-                let iters = 3;
                 let n = op.long_value_count() * iters;
                 let vals = values(bpv, n, bpv as u64);
                 let mut longs = vec![0u64; op.long_block_count() * iters];

@@ -133,10 +133,18 @@ impl<'s, 'a> SimpleNaiveBayesClassifier<'s, 'a> {
 
     fn log_likelihood(&self, tokens: &[String], class: &[u8], docs_with_class: i32) -> Result<f64> {
         let mut result = 0.0;
+        // Java recomputes the denominator per token; it does not depend on
+        // the token, so it is read once (and only when there is a token)
+        let mut den = None;
         for word in tokens {
             let hits = self.word_freq_for_class(word, class)?;
             let num = f64::from(hits + 1);
-            let den = self.text_term_freq_for_class(class)? + f64::from(docs_with_class);
+            let den = match den {
+                Some(d) => d,
+                None => {
+                    *den.insert(self.text_term_freq_for_class(class)? + f64::from(docs_with_class))
+                }
+            };
             result += log(num / den);
         }
         Ok(result)

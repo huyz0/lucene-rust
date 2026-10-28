@@ -40,6 +40,60 @@ fn check_count(count: i64, max_doc: i32) -> Result<i32, DeletedCountOutOfRange> 
     Ok(count as i32)
 }
 
+/// The set bits below `n` of the words `word(0), word(1), ...`, ascending:
+/// each word is fetched once and its bits peeled with `trailing_zeros`.
+struct WordBitsIter<F> {
+    word: F,
+    n: usize,
+    /// Index of the word `cur` came from.
+    w: usize,
+    cur: u64,
+}
+
+impl<F: Fn(usize) -> u64> WordBitsIter<F> {
+    fn new(n: usize, word: F) -> Self {
+        let mut it = WordBitsIter {
+            word,
+            n,
+            w: 0,
+            cur: 0,
+        };
+        if n > 0 {
+            it.cur = it.load(0);
+        }
+        it
+    }
+
+    /// Word `w`, with the bits at or past `n` masked off.
+    fn load(&self, w: usize) -> u64 {
+        let v = (self.word)(w);
+        let end = self.n - (w << 6);
+        if end < 64 {
+            v & ((1u64 << end) - 1)
+        } else {
+            v
+        }
+    }
+}
+
+impl<F: Fn(usize) -> u64> Iterator for WordBitsIter<F> {
+    type Item = i32;
+
+    fn next(&mut self) -> Option<i32> {
+        let num_words = self.n.div_ceil(64);
+        while self.cur == 0 {
+            self.w += 1;
+            if self.w >= num_words {
+                return None;
+            }
+            self.cur = self.load(self.w);
+        }
+        let d = (self.w << 6) + self.cur.trailing_zeros() as usize;
+        self.cur &= self.cur - 1;
+        Some(d as i32)
+    }
+}
+
 /// `org.apache.lucene.util.DenseLiveDocs`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DenseLiveDocs {
@@ -109,11 +163,10 @@ impl LiveDocs for DenseLiveDocs {
 
     /// `new FilteredDocIdSetIterator(maxDoc, deletedCount, doc -> !live)`.
     fn deleted_docs_iter(&self) -> (Box<dyn Iterator<Item = i32> + '_>, i64) {
-        let bits = &self.live_docs;
-        let n = self.length();
-        // FBS: `d < n = max_doc <= live_docs.len()` (checked at build in debug,
-        // Java's assert).
-        let it = (0..n).filter(move |&d| !bits.get(d)).map(|d| d as i32);
+        let words = self.live_docs.words();
+        // Word by word over the complement, rather than a `get` per document.
+        // `n = max_doc <= live_docs.len()`, so every word read exists.
+        let it = WordBitsIter::new(self.length(), move |w| !words[w]);
         (Box::new(it), i64::from(self.deleted_count))
     }
 
@@ -188,9 +241,8 @@ impl LiveDocs for SparseLiveDocs {
     /// `new FilteredDocIdSetIterator(maxDoc, maxDoc - deletedCount, doc -> !deleted)`.
     fn live_docs_iter(&self) -> (Box<dyn Iterator<Item = i32> + '_>, i64) {
         let deleted = &self.deleted_docs;
-        let it = (0..self.length())
-            .filter(move |&d| !deleted.get(d))
-            .map(|d| d as i32);
+        // Word by word: one sparse lookup per 64 documents, not one each.
+        let it = WordBitsIter::new(self.length(), move |w| !deleted.word(w));
         (
             Box::new(it),
             i64::from(self.max_doc) - i64::from(self.deleted_count),
@@ -245,6 +297,14 @@ mod tests {
         assert_eq!(cost, 4);
         let (it, cost) = d.deleted_docs_iter();
         assert_eq!(it.collect::<Vec<_>>(), vec![1, 4, 5, 6, 7, 8]);
+        // A bitset longer than `max_doc`: its clear tail is not reported.
+        let mut wide = FixedBitSet::new(200);
+        wide.set_range(0, 200);
+        wide.clear(63);
+        wide.clear(64);
+        wide.clear(150);
+        let w = DenseLiveDocs::build(wide, 130, Some(2)).unwrap();
+        assert_eq!(w.deleted_docs_iter().0.collect::<Vec<_>>(), vec![63, 64]);
         assert_eq!(cost, 6);
         assert_eq!(
             d.to_string(),
@@ -282,6 +342,12 @@ mod tests {
             .starts_with("SparseLiveDocs(maxDoc=100000, deleted=2,"));
         assert!(s.ram_bytes_used() > 0);
         assert_eq!(s.deleted_docs().cardinality(), 2);
+        let all: Vec<i32> = s.live_docs_iter().0.collect();
+        assert_eq!(all.len(), 99_998);
+        assert!(!all.contains(&5) && !all.contains(&70_000));
+        assert_eq!(all.last(), Some(&99_999));
+        let empty = SparseLiveDocs::build(SparseFixedBitSet::new(1), 0, None).unwrap();
+        assert_eq!(empty.live_docs_iter().0.count(), 0);
         assert!(SparseLiveDocs::build(del, 100_000, Some(-1)).is_err());
     }
 }

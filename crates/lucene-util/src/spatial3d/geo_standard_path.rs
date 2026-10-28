@@ -56,6 +56,20 @@ struct PathNode {
     child1: Component,
     child2: Component,
     bounds: XYZBounds,
+    /// `bounds` unboxed, as Java compares against them: `[minX, maxX, minY,
+    /// maxY, minZ, maxZ]`, NaN where unset (never "out"; a node's bounds
+    /// always hold every child's points).
+    bbox: [f64; 6],
+}
+
+impl PathNode {
+    /// Whether the point is outside the node's bounding box (Java's
+    /// `isWithin` before it asks the children).
+    #[inline]
+    fn outside_bbox(&self, x: f64, y: f64, z: f64) -> bool {
+        let b = &self.bbox;
+        x < b[0] || x > b[1] || y < b[2] || y > b[3] || z < b[4] || z > b[5]
+    }
 }
 
 /// `BaseSegmentEndpoint`'s subclasses.
@@ -102,6 +116,9 @@ struct PathSegment {
     start: GeoPoint,
     end: GeoPoint,
     start_distance_cache: [OnceLock<f64>; 5],
+    /// `fullPathDistance(style)` per style: a pure function of the
+    /// segment, read by every later endpoint's `startingDistance`.
+    full_distance_cache: [OnceLock<f64>; 5],
     normalized_connecting_plane: Plane,
     upper_connecting_plane: SidedPlane,
     lower_connecting_plane: SidedPlane,
@@ -225,6 +242,7 @@ impl PathSegment {
             start,
             end,
             start_distance_cache: Default::default(),
+            full_distance_cache: Default::default(),
             normalized_connecting_plane,
             upper_connecting_plane,
             lower_connecting_plane,
@@ -240,12 +258,14 @@ impl PathSegment {
     }
 
     fn full_path_distance(&self, style: DistanceStyle) -> f64 {
-        style.to_aggregation_form(style.compute_distance(
-            &self.start,
-            self.end.x,
-            self.end.y,
-            self.end.z,
-        ))
+        *self.full_distance_cache[style_index(style)].get_or_init(|| {
+            style.to_aggregation_form(style.compute_distance(
+                &self.start,
+                self.end.x,
+                self.end.y,
+                self.end.z,
+            ))
+        })
     }
 
     fn is_within(&self, x: f64, y: f64, z: f64) -> bool {
@@ -979,16 +999,7 @@ impl Component {
     fn is_within(&self, parts: &Parts, x: f64, y: f64, z: f64) -> bool {
         match self {
             Component::Node(n) => {
-                let b = &n.bounds;
-                // Java compares against the unboxed bounds; a node's bounds
-                // always hold every child's points.
-                let out = |v: f64, lo: Option<f64>, hi: Option<f64>| {
-                    v < lo.unwrap_or(f64::NAN) || v > hi.unwrap_or(f64::NAN)
-                };
-                if out(x, b.minimum_x(), b.maximum_x())
-                    || out(y, b.minimum_y(), b.maximum_y())
-                    || out(z, b.minimum_z(), b.maximum_z())
-                {
+                if n.outside_bbox(x, y, z) {
                     return false;
                 }
                 n.child1.is_within(parts, x, y, z) || n.child2.is_within(parts, x, y, z)
@@ -1001,7 +1012,12 @@ impl Component {
     fn distance(&self, parts: &Parts, style: DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
         match self {
             Component::Node(n) => {
-                if !self.is_within(parts, x, y, z) {
+                // Java tests the whole subtree's `isWithin` here, and again
+                // at every level below. Only the bounding box is tested:
+                // every leaf's `distance` starts with its own `isWithin`
+                // (infinite outside), so a subtree with no leaf containing
+                // the point still comes out infinite, bit for bit.
+                if n.outside_bbox(x, y, z) {
                     return f64::INFINITY;
                 }
                 let child1_distance = n.child1.distance(parts, style, x, y, z);
@@ -1053,7 +1069,9 @@ impl Component {
     ) -> f64 {
         match self {
             Component::Node(n) => {
-                if !self.is_within(parts, x, y, z) {
+                // As in `distance`: each leaf's `pathDeltaDistance` tests its
+                // own `isWithin`, so the bounding box suffices here.
+                if n.outside_bbox(x, y, z) {
                     return f64::INFINITY;
                 }
                 min(
@@ -1168,11 +1186,21 @@ impl TreeBuilder {
         let mut bounds = XYZBounds::new();
         first.get_bounds(parts, &mut bounds);
         second.get_bounds(parts, &mut bounds);
+        let nan = f64::NAN;
+        let bbox = [
+            bounds.minimum_x().unwrap_or(nan),
+            bounds.maximum_x().unwrap_or(nan),
+            bounds.minimum_y().unwrap_or(nan),
+            bounds.maximum_y().unwrap_or(nan),
+            bounds.minimum_z().unwrap_or(nan),
+            bounds.maximum_z().unwrap_or(nan),
+        ];
         self.component_stack
             .push(Component::Node(Box::new(PathNode {
                 child1: first,
                 child2: second,
                 bounds,
+                bbox,
             })));
     }
 }
@@ -1502,6 +1530,156 @@ impl GeoPath for GeoStandardPath {
             Some(r) => {
                 style.from_aggregation_form(r.path_center_distance(&self.parts, style, x, y, z))
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The tree walk as Java (and this port, before the bounding-box
+    /// shortcut) writes it: every node tests its whole subtree's `isWithin`.
+    fn java_distance(
+        c: &Component,
+        parts: &Parts,
+        style: DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> f64 {
+        match c {
+            Component::Node(n) => {
+                if !c.is_within(parts, x, y, z) {
+                    return f64::INFINITY;
+                }
+                min(
+                    java_distance(&n.child1, parts, style, x, y, z),
+                    java_distance(&n.child2, parts, style, x, y, z),
+                )
+            }
+            Component::Endpoint(i) => parts.endpoints[*i].distance(parts, style, x, y, z),
+            Component::Segment(i) => parts.segments[*i].distance(parts, style, x, y, z),
+        }
+    }
+
+    fn java_delta(
+        c: &Component,
+        parts: &Parts,
+        style: DistanceStyle,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> f64 {
+        match c {
+            Component::Node(n) => {
+                if !c.is_within(parts, x, y, z) {
+                    return f64::INFINITY;
+                }
+                min(
+                    java_delta(&n.child1, parts, style, x, y, z),
+                    java_delta(&n.child2, parts, style, x, y, z),
+                )
+            }
+            Component::Endpoint(i) => parts.endpoints[*i].path_delta_distance(style, x, y, z),
+            Component::Segment(i) => parts.segments[*i].path_delta_distance(parts, style, x, y, z),
+        }
+    }
+
+    /// The minimum over every segment and endpoint, no tree at all.
+    fn brute_distance(parts: &Parts, style: DistanceStyle, x: f64, y: f64, z: f64) -> f64 {
+        let segments = parts
+            .segments
+            .iter()
+            .map(|s| s.distance(parts, style, x, y, z));
+        let endpoints = parts
+            .endpoints
+            .iter()
+            .map(|e| e.distance(parts, style, x, y, z));
+        segments.chain(endpoints).fold(f64::INFINITY, min)
+    }
+
+    struct Rng(u64);
+
+    impl Rng {
+        fn f(&mut self) -> f64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 >> 11) as f64 / (1u64 << 53) as f64
+        }
+    }
+
+    #[test]
+    fn bbox_tree_walk_matches_java_walk_and_brute_force_bit_for_bit() {
+        let styles = [
+            DistanceStyle::Arc,
+            DistanceStyle::Linear,
+            DistanceStyle::LinearSquared,
+            DistanceStyle::Normal,
+            DistanceStyle::NormalSquared,
+        ];
+        let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+        let (mut inside, mut total) = (0usize, 0usize);
+        for pm in [PlanetModel::wgs84(), PlanetModel::sphere()] {
+            for n in [1usize, 2, 3, 7, 33] {
+                let width = 0.001 + 0.05 * rng.f();
+                let pts: Vec<GeoPoint> = (0..n)
+                    .map(|i| {
+                        let t = i as f64 / n as f64;
+                        let lat = -0.5 + t + 0.1 * (t * 13.0).sin();
+                        let lon = -1.0 + 1.5 * t + 0.05 * rng.f();
+                        GeoPoint::from_lat_lon(&pm, lat, lon).unwrap()
+                    })
+                    .collect();
+                let path = GeoStandardPath::new(&pm, width, &pts).unwrap();
+                let root = path.root_component.as_ref().unwrap();
+                let parts = &path.parts;
+                for i in 0..2000 {
+                    // Half near the path's points, half anywhere near it.
+                    let base = &pts[i % n];
+                    let spread = if i % 2 == 0 { width * 2.0 } else { 0.6 };
+                    let p = GeoPoint::from_lat_lon(
+                        &pm,
+                        base.latitude() + spread * (rng.f() - 0.5),
+                        base.longitude() + spread * (rng.f() - 0.5),
+                    )
+                    .unwrap();
+                    let (x, y, z) = (p.x, p.y, p.z);
+                    total += 1;
+                    inside += usize::from(path.is_within_xyz(x, y, z));
+                    for style in styles {
+                        let got = root.distance(parts, style, x, y, z);
+                        let java = java_distance(root, parts, style, x, y, z);
+                        let brute = brute_distance(parts, style, x, y, z);
+                        assert_eq!(got.to_bits(), java.to_bits(), "{style:?} {p}");
+                        assert_eq!(got.to_bits(), brute.to_bits(), "{style:?} {p}");
+                        let got = root.path_delta_distance(parts, style, x, y, z);
+                        let java = java_delta(root, parts, style, x, y, z);
+                        assert_eq!(got.to_bits(), java.to_bits(), "{style:?} {p}");
+                    }
+                }
+            }
+        }
+        // The corpus exercises both sides of the path's boundary.
+        assert!(
+            inside > total / 10 && inside < total * 9 / 10,
+            "{inside}/{total}"
+        );
+    }
+
+    #[test]
+    fn full_path_distance_cache_returns_the_computed_value() {
+        let pm = PlanetModel::sphere();
+        let a = GeoPoint::from_lat_lon(&pm, 0.0, 0.0).unwrap();
+        let b = GeoPoint::from_lat_lon(&pm, 0.0, 0.25).unwrap();
+        let path = GeoStandardPath::new(&pm, 0.01, &[a.clone(), b.clone()]).unwrap();
+        let seg = &path.parts.segments[0];
+        for style in [DistanceStyle::Arc, DistanceStyle::LinearSquared] {
+            let want = style.to_aggregation_form(style.compute_distance(&a, b.x, b.y, b.z));
+            assert_eq!(seg.full_path_distance(style).to_bits(), want.to_bits());
+            // Cached: the same bits again.
+            assert_eq!(seg.full_path_distance(style).to_bits(), want.to_bits());
         }
     }
 }

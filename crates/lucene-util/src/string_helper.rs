@@ -19,8 +19,29 @@ pub const ID_LENGTH: usize = 16;
 /// equal).
 pub fn bytes_difference(prior: &[u8], current: &[u8]) -> Option<usize> {
     let common = prior.len().min(current.len());
-    match prior.iter().zip(current).position(|(a, b)| a != b) {
-        Some(i) => Some(i),
+    let (a, b) = (&prior[..common], &current[..common]);
+    // Eight bytes at a time, like Java's vectorised `Arrays.mismatch`: the
+    // first differing byte of two little-endian words is the lowest non-zero
+    // byte of their xor.
+    let mut ac = a.chunks_exact(8);
+    let mut bc = b.chunks_exact(8);
+    let mut i = 0;
+    for (x, y) in (&mut ac).zip(&mut bc) {
+        let x = u64::from_le_bytes(x.try_into().expect("8 bytes"));
+        let y = u64::from_le_bytes(y.try_into().expect("8 bytes"));
+        let diff = x ^ y;
+        if diff != 0 {
+            return Some(i + (diff.trailing_zeros() / 8) as usize);
+        }
+        i += 8;
+    }
+    match ac
+        .remainder()
+        .iter()
+        .zip(bc.remainder())
+        .position(|(x, y)| x != y)
+    {
+        Some(j) => Some(i + j),
         None if prior.len() != current.len() => Some(common),
         None => None,
     }
@@ -260,6 +281,17 @@ mod tests {
         assert_eq!(bytes_difference(b"ab", b"abc"), Some(2));
         assert_eq!(bytes_difference(b"", b"a"), Some(0));
         assert_eq!(bytes_difference(b"abc", b"abc"), None);
+        // Word-at-a-time path: the difference in each byte of a word, in a
+        // later word, in the tail, and a prefix ending on a word boundary.
+        let base: Vec<u8> = (0..40u8).collect();
+        for k in 0..40 {
+            let mut other = base.clone();
+            other[k] ^= 0x80;
+            assert_eq!(bytes_difference(&base, &other), Some(k));
+            assert_eq!(bytes_difference(&base[..k], &base), Some(k));
+        }
+        assert_eq!(bytes_difference(&base, &base.clone()), None);
+        assert_eq!(bytes_difference(&base[..16], &base[..24]), Some(16));
         assert_eq!(sort_key_length(b"abc", b"abd"), Some(3));
         assert_eq!(sort_key_length(b"x", b"x"), None);
         assert!(starts_with(b"foobar", b"foo"));

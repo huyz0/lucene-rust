@@ -238,11 +238,13 @@ impl SidedPlane {
     }
 
     /// `strictlyWithin(v)`: on the plane counts only when exactly on it.
+    #[inline]
     pub fn strictly_within(&self, v: &Vector) -> bool {
         self.strictly_within_xyz(v.x, v.y, v.z)
     }
 
     /// `strictlyWithin(x, y, z)`.
+    #[inline]
     pub fn strictly_within_xyz(&self, x: f64, y: f64, z: f64) -> bool {
         let s = signum(self.evaluate_xyz(x, y, z));
         s == 0.0 || s == self.sig_num

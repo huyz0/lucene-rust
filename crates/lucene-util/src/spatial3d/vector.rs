@@ -302,6 +302,7 @@ impl Vector {
     }
 
     /// `isParallel(x, y, z)`.
+    #[inline]
     pub fn is_parallel_xyz(&self, other_x: f64, other_y: f64, other_z: f64) -> bool {
         let this_x = self.y * other_z - self.z * other_y;
         let this_y = self.z * other_x - self.x * other_z;
@@ -310,6 +311,7 @@ impl Vector {
     }
 
     /// `isParallel(other)`.
+    #[inline]
     pub fn is_parallel(&self, other: &Vector) -> bool {
         self.is_parallel_xyz(other.x, other.y, other.z)
     }

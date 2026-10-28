@@ -6,25 +6,52 @@
 //! frozen states is keyed by what Java's `equals` compares (finality, labels
 //! and child *identity*), and a registered node is never modified again.
 
-use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 
 use super::automata::MAX_STRING_UNION_TERM_LENGTH;
 use super::automaton::{Automaton, Builder};
 use super::error::AutomatonError;
+use crate::fx_hash::{FxHashMap, FxHasher};
 
+/// A node: its outgoing `(label, child)` edges in label order (one `Vec`,
+/// so one allocation per node with children) and its finality.
 #[derive(Default)]
 struct Node {
-    labels: Vec<i32>,
-    states: Vec<usize>,
+    children: Vec<(i32, usize)>,
     is_final: bool,
 }
 
-type Key = (bool, Vec<i32>, Vec<usize>);
+impl Node {
+    /// The register key Java's `State.equals`/`hashCode` use: finality,
+    /// labels and child identity.
+    fn key_hash(&self) -> u64 {
+        let mut h = FxHasher::default();
+        self.is_final.hash(&mut h);
+        self.children.hash(&mut h);
+        h.finish()
+    }
+
+    fn same_key(&self, other: &Node) -> bool {
+        self.is_final == other.is_final && self.children == other.children
+    }
+}
+
+/// No next node in a register chain.
+const NONE: usize = usize::MAX;
 
 struct StringsBuilder {
     nodes: Vec<Node>,
-    registry: HashMap<Key, usize>,
-    previous: Option<Vec<u8>>,
+    /// The register: key hash -> first registered node with that hash; the
+    /// rest of the chain runs through `next_registered`. Nodes are compared
+    /// in place, so a probe clones nothing.
+    registry: FxHashMap<u64, usize>,
+    /// Per node: the next registered node with the same key hash.
+    next_registered: Vec<usize>,
+    /// The previous term (for the order check), reused across terms.
+    previous: Vec<u8>,
+    has_previous: bool,
+    /// Scratch for the current term's labels.
+    labels: Vec<i32>,
 }
 
 const ROOT: usize = 0;
@@ -33,15 +60,18 @@ impl StringsBuilder {
     fn new() -> Self {
         StringsBuilder {
             nodes: vec![Node::default()],
-            registry: HashMap::new(),
-            previous: None,
+            registry: FxHashMap::default(),
+            next_registered: Vec::new(),
+            previous: Vec::new(),
+            has_previous: false,
+            labels: Vec::new(),
         }
     }
 
     fn last_child_with(&self, s: usize, label: i32) -> Option<usize> {
         let n = &self.nodes[s];
-        match n.labels.last() {
-            Some(&l) if l == label => n.states.last().copied(),
+        match n.children.last() {
+            Some(&(l, child)) if l == label => Some(child),
             _ => None,
         }
     }
@@ -50,26 +80,30 @@ impl StringsBuilder {
         let id = self.nodes.len();
         self.nodes.push(Node::default());
         let n = &mut self.nodes[s];
-        n.labels.push(label);
-        n.states.push(id);
+        n.children.push((label, id));
         id
     }
 
     fn replace_or_register(&mut self, s: usize) {
-        let child = *self.nodes[s].states.last().expect("has children");
-        if !self.nodes[child].labels.is_empty() {
+        let child = self.nodes[s].children.last().expect("has children").1;
+        if !self.nodes[child].children.is_empty() {
             self.replace_or_register(child);
         }
-        let c = &self.nodes[child];
-        let key: Key = (c.is_final, c.labels.clone(), c.states.clone());
-        match self.registry.get(&key) {
-            Some(&registered) => {
-                *self.nodes[s].states.last_mut().expect("has children") = registered;
+        let hash = self.nodes[child].key_hash();
+        let head = self.registry.get(&hash).copied().unwrap_or(NONE);
+        let mut r = head;
+        while r != NONE {
+            if self.nodes[r].same_key(&self.nodes[child]) {
+                self.nodes[s].children.last_mut().expect("has children").1 = r;
+                return;
             }
-            None => {
-                self.registry.insert(key, child);
-            }
+            r = self.next_registered[r];
         }
+        if self.next_registered.len() < self.nodes.len() {
+            self.next_registered.resize(self.nodes.len(), NONE);
+        }
+        self.next_registered[child] = head;
+        self.registry.insert(hash, child);
     }
 
     fn add(&mut self, current: &[u8], as_binary: bool) -> Result<(), AutomatonError> {
@@ -79,21 +113,24 @@ impl StringsBuilder {
                 bytes_ref_string(current)
             )));
         }
-        if let Some(prev) = &self.previous {
-            if prev.as_slice() > current {
-                return Err(AutomatonError::IllegalArgument(format!(
-                    "Input must be in sorted UTF-8 order: {} >= {}",
-                    bytes_ref_string(prev),
-                    bytes_ref_string(current)
-                )));
-            }
+        if self.has_previous && self.previous.as_slice() > current {
+            return Err(AutomatonError::IllegalArgument(format!(
+                "Input must be in sorted UTF-8 order: {} >= {}",
+                bytes_ref_string(&self.previous),
+                bytes_ref_string(current)
+            )));
         }
-        self.previous = Some(current.to_vec());
-        let labels: Vec<i32> = if as_binary {
-            current.iter().map(|&b| i32::from(b)).collect()
-        } else {
-            decode_code_points(current)?
-        };
+        self.previous.clear();
+        self.previous.extend_from_slice(current);
+        self.has_previous = true;
+        let mut labels = std::mem::take(&mut self.labels);
+        labels.clear();
+        if as_binary {
+            labels.extend(current.iter().map(|&b| i32::from(b)));
+        } else if let Err(e) = decode_code_points(current, &mut labels) {
+            self.labels = labels;
+            return Err(e);
+        }
         let mut pos = 0;
         let mut state = ROOT;
         while pos < labels.len() {
@@ -105,7 +142,7 @@ impl StringsBuilder {
                 None => break,
             }
         }
-        if !self.nodes[state].labels.is_empty() {
+        if !self.nodes[state].children.is_empty() {
             self.replace_or_register(state);
         }
         while pos < labels.len() {
@@ -113,29 +150,32 @@ impl StringsBuilder {
             pos += 1;
         }
         self.nodes[state].is_final = true;
+        self.labels = labels;
         Ok(())
     }
 
-    fn convert(&self, b: &mut Builder, s: usize, visited: &mut HashMap<usize, i32>) -> i32 {
-        if let Some(&c) = visited.get(&s) {
-            return c;
+    /// `visited[node]` is its converted state, or -1.
+    fn convert(&self, b: &mut Builder, s: usize, visited: &mut [i32]) -> i32 {
+        if visited[s] != -1 {
+            return visited[s];
         }
         let converted = b.create_state();
         b.set_accept(converted, self.nodes[s].is_final);
-        visited.insert(s, converted);
-        for (i, &target) in self.nodes[s].states.iter().enumerate() {
+        visited[s] = converted;
+        for &(label, target) in &self.nodes[s].children {
             let dest = self.convert(b, target, visited);
-            b.add_transition_label(converted, dest, self.nodes[s].labels[i]);
+            b.add_transition_label(converted, dest, label);
         }
         converted
     }
 
     fn complete_and_convert(mut self) -> Automaton {
-        if !self.nodes[ROOT].labels.is_empty() {
+        if !self.nodes[ROOT].children.is_empty() {
             self.replace_or_register(ROOT);
         }
         let mut b = Builder::new();
-        self.convert(&mut b, ROOT, &mut HashMap::new());
+        let mut visited = vec![-1i32; self.nodes.len()];
+        self.convert(&mut b, ROOT, &mut visited);
         b.finish()
     }
 }
@@ -148,8 +188,7 @@ fn bytes_ref_string(b: &[u8]) -> String {
 
 /// `UnicodeUtil.codePointAt` over a whole UTF-8 string: lenient decoding of
 /// each lead byte's length, as Java does (no continuation-byte checks).
-fn decode_code_points(bytes: &[u8]) -> Result<Vec<i32>, AutomatonError> {
-    let mut out = Vec::new();
+fn decode_code_points(bytes: &[u8], out: &mut Vec<i32>) -> Result<(), AutomatonError> {
     let mut pos = 0;
     while pos < bytes.len() {
         let lead = i32::from(bytes[pos]);
@@ -175,7 +214,7 @@ fn decode_code_points(bytes: &[u8]) -> Result<Vec<i32>, AutomatonError> {
         out.push(v);
         pos += num;
     }
-    Ok(out)
+    Ok(())
 }
 
 /// `StringsToAutomaton.build(input, asBinary)`: the minimal automaton

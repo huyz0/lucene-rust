@@ -848,19 +848,17 @@ impl EdgeBuffer {
         self.one_edge = None;
     }
 
-    /// `iterator()`: from `pickOne()` around the ring once (a snapshot; no
-    /// caller changes the buffer while iterating).
-    fn iter(&self) -> Vec<usize> {
-        let mut rval = Vec::with_capacity(self.size);
-        let Some(first_edge) = self.one_edge else {
-            return rval;
-        };
-        let mut current = Some(first_edge);
-        while let Some(c) = current {
-            rval.push(c);
-            current = self.next[c].filter(|&n| n != first_edge);
-        }
-        rval
+    /// `iterator()`: from `pickOne()` around the ring once, following the
+    /// `next` links (borrowing, so no caller can change the buffer while
+    /// iterating; nothing is allocated).
+    fn iter(&self) -> impl Iterator<Item = usize> + '_ {
+        let first_edge = self.one_edge;
+        let mut current = first_edge;
+        std::iter::from_fn(move || {
+            let c = current?;
+            current = self.next[c].filter(|&n| Some(n) != first_edge);
+            Some(c)
+        })
     }
 }
 
@@ -1210,6 +1208,9 @@ impl Tiler<'_> {
         let mut first_edge = current_edge;
         let mut last_edge = current_edge;
         let eb = &*edge_buffer;
+        // `includedEdges.contains(edge)` (Java's `HashSet`), by edge index.
+        let mut included = vec![false; eb.edges.len()];
+        included[current_edge] = true;
         let ed = |e: usize| &eb.edges[e];
         let sp = |e: usize| ed(e).start_point;
         let ep = |e: usize| ed(e).end_point;
@@ -1262,7 +1263,7 @@ impl Tiler<'_> {
                 };
                 let mut found_point_inside = false;
                 for edge in eb.iter() {
-                    if !included_edges.contains(&edge) && edge != new_last_edge {
+                    if !included[edge] && edge != new_last_edge {
                         if ed(edge).start_point != ed(new_last_edge).end_point
                             && within_ext(
                                 ed(edge).start_point,
@@ -1289,6 +1290,7 @@ impl Tiler<'_> {
                 }
                 if !found_point_inside {
                     included_edges.push(new_last_edge);
+                    included[new_last_edge] = true;
                     last_edge = new_last_edge;
                     continue;
                 }
@@ -1323,7 +1325,7 @@ impl Tiler<'_> {
                 };
                 let mut found_point_inside = false;
                 for edge in eb.iter() {
-                    if !included_edges.contains(&edge) && edge != new_first_edge {
+                    if !included[edge] && edge != new_first_edge {
                         if ed(edge).start_point != ed(last_edge).end_point
                             && within_ext(
                                 ed(edge).start_point,
@@ -1350,6 +1352,7 @@ impl Tiler<'_> {
                 }
                 if !found_point_inside {
                     included_edges.push(new_first_edge);
+                    included[new_first_edge] = true;
                     first_edge = new_first_edge;
                     continue;
                 }

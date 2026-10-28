@@ -252,8 +252,7 @@ impl BufferedLine {
         if bbox_r == SpatialRelation::Disjoint || bbox_r == SpatialRelation::Within {
             return Ok(bbox_r);
         }
-        let pr_c = r.center()?;
-        let pr_c = (pr_c.x(), pr_c.y());
+        let pr_c = r.center_xy()?;
         let result = self.line_primary.relate(r, pr_c);
         if result == SpatialRelation::Disjoint {
             return Ok(SpatialRelation::Disjoint);

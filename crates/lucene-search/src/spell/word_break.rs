@@ -376,7 +376,9 @@ impl WordBreakSpellChecker {
         }
         let max_split_position = term_length - use_min_break_word_length;
         // Java's FixedBitSet over UTF-16 offsets, walked in order: the byte
-        // offsets of the same split points, in the same order
+        // offsets of the same split points, in the same order, each with its
+        // left word (Java looks it up again in the second phase; its
+        // frequency cannot have changed)
         let mut valid_left_split_positions = Vec::new();
         for i in use_min_break_word_length..=max_split_position {
             if total_evaluations >= self.max_evaluations {
@@ -387,7 +389,7 @@ impl WordBreakSpellChecker {
             let (left_text, right_text) = term_text.split_at(end);
             let left_word = Self::generate_suggest_word(ir, field, left_text)?;
             if left_word.freq >= use_min_suggestion_frequency {
-                valid_left_split_positions.push(end);
+                valid_left_split_positions.push((end, left_word.clone()));
                 let right_word = Self::generate_suggest_word(ir, field, right_text)?;
                 if right_word.freq >= use_min_suggestion_frequency {
                     suggestions.offer(SuggestWordArrayWrapper::new(Self::new_suggestion(
@@ -406,9 +408,8 @@ impl WordBreakSpellChecker {
         {
             return Ok(total_evaluations);
         }
-        for pos in valid_left_split_positions {
-            let (left_text, right_text) = term_text.split_at(pos);
-            let left_word = Self::generate_suggest_word(ir, field, left_text)?;
+        for (pos, left_word) in valid_left_split_positions {
+            let right_text = &term_text[pos..];
             let mut new_prefix = prefix.to_vec();
             new_prefix.push(left_word);
             total_evaluations = self.generate_break_up_suggestions(

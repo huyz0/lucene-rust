@@ -108,10 +108,12 @@ impl CompiledAutomaton {
                 return Ok(simple(AutomatonType::SINGLE, Some(term), true));
             }
         }
-        let binary = if is_binary {
-            automaton.clone()
+        // Borrowed when already binary: the one copy is made below, when the
+        // run automaton takes ownership.
+        let binary: std::borrow::Cow<'_, Automaton> = if is_binary {
+            std::borrow::Cow::Borrowed(automaton)
         } else {
-            Utf32ToUtf8::new().convert(automaton)
+            std::borrow::Cow::Owned(Utf32ToUtf8::new().convert(automaton))
         };
         let common_suffix_ref = if finite
             || automaton.get_num_states() + automaton.get_total_num_transitions() > 1000
@@ -135,10 +137,10 @@ impl CompiledAutomaton {
             sink_state: -1,
         };
         if !automaton.is_deterministic() && !binary.is_deterministic() {
-            out.nfa_run_automaton = Some(NfaRunAutomaton::with_alphabet(binary, 0xff));
+            out.nfa_run_automaton = Some(NfaRunAutomaton::with_alphabet(binary.into_owned(), 0xff));
         } else {
-            let det = operations::determinize(&binary, i32::MAX)?;
-            let run = ByteRunAutomaton::new(&det, true)?;
+            let det = operations::determinize_owned(binary.into_owned(), i32::MAX)?;
+            let run = ByteRunAutomaton::from_binary(det)?;
             // SENTINEL-OK: `sinkState` is public with the same `-1` meaning
             // in Java; it is stored, not used as an index.
             out.sink_state = find_sink_state(run.run_automaton().automaton());
