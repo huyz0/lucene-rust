@@ -3272,16 +3272,12 @@ fn write_fields(
             writer = writer.with_split(split);
         }
         let plan = if native_merge && field.num_dims == 1 {
-            let sources: Vec<Box<dyn Iterator<Item = (Vec<u8>, i32)> + '_>> = field
+            let sources: Vec<Box<dyn Iterator<Item = (&[u8], i32)> + '_>> = field
                 .sources
                 .iter()
                 .map(|s| {
-                    Box::new(
-                        s.values
-                            .chunks_exact(stride)
-                            .zip(s.docs.iter().copied())
-                            .map(|(v, d)| (v.to_vec(), d)),
-                    ) as Box<dyn Iterator<Item = (Vec<u8>, i32)> + '_>
+                    Box::new(s.values.chunks_exact(stride).zip(s.docs.iter().copied()))
+                        as Box<dyn Iterator<Item = (&[u8], i32)> + '_>
                 })
                 .collect();
             writer.merge(&mut out.data, sources)?

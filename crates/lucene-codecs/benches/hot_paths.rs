@@ -918,6 +918,28 @@ fn bench_sorted_numeric_varying_bpv(c: &mut Criterion) {
             black_box(sum)
         })
     });
+
+    // A single-width field read a 512-document window at a time, as the
+    // aggregations do.
+    let narrow: Vec<Vec<i64>> = (0..DOCS as i64).map(|d| vec![d % 97, d % 97 + 3]).collect();
+    let (dvm, dvd, _) = ndv::write_single_dense_sorted_numeric_field(0, &narrow, &id, "").unwrap();
+    let (_, meta) = ndv::parse_meta(&dvm, &id, "", &fis).unwrap();
+    let entry = meta.sorted_numeric_entry(0).unwrap();
+    c.bench_function("doc_values/sorted_numeric_fill_window_512", |b| {
+        let (mut offsets, mut values) = (Vec::new(), Vec::new());
+        b.iter(|| {
+            let mut r = ndv::SortedNumericReader::new(&dvd, entry);
+            let mut n = 0usize;
+            for start in (0..DOCS).step_by(512) {
+                let len = 512.min(DOCS - start);
+                assert!(r
+                    .fill_window(start as i32, len, &mut offsets, &mut values)
+                    .unwrap());
+                n += values.len();
+            }
+            black_box(n)
+        })
+    });
 }
 
 /// Flushing a dense NUMERIC field whose values share a large GCD (timestamps
@@ -1125,11 +1147,57 @@ fn bench_fuzzy_edits(c: &mut Criterion) {
     });
 }
 
+/// The one-dimensional BKD merge (`BKDWriter.merge`) of 10 sorted 50k-point
+/// sources, as an IntPoint/LongPoint merge runs it.
+fn bench_bkd_merge_1d(c: &mut Criterion) {
+    use lucene_codecs::bkd_writer::{BkdConfig, BkdWriter, VERSION_CURRENT};
+    const SOURCES: usize = 10;
+    const PER: usize = 50_000;
+    let segs: Vec<Vec<(Vec<u8>, i32)>> = (0..SOURCES)
+        .map(|s| {
+            let mut pts: Vec<(Vec<u8>, i32)> = (0..PER)
+                .map(|i| {
+                    let v = ((i * SOURCES + s) as u64).wrapping_mul(2_654_435_761) as u32;
+                    (v.to_be_bytes().to_vec(), (s * PER + i) as i32)
+                })
+                .collect();
+            pts.sort();
+            pts
+        })
+        .collect();
+    let config = BkdConfig::new(1, 1, 4, 512).unwrap();
+    c.bench_function("points/merge_1d_10x50k", |b| {
+        b.iter(|| {
+            let sources: Vec<Box<dyn Iterator<Item = (Vec<u8>, i32)>>> = segs
+                .iter()
+                .map(|s| {
+                    Box::new(s.iter().map(|(v, d)| (v.clone(), *d)))
+                        as Box<dyn Iterator<Item = (Vec<u8>, i32)>>
+                })
+                .collect();
+            let mut w = BkdWriter::new(
+                SOURCES * PER,
+                None,
+                "_m",
+                config,
+                16.0,
+                (SOURCES * PER) as u64,
+                VERSION_CURRENT,
+            )
+            .unwrap();
+            let mut data = Vec::new();
+            black_box(w.merge(&mut data, sources).unwrap());
+            black_box(data.len())
+        })
+    });
+}
+
 criterion_group!(
     benches,
     bench_fst_compile,
     bench_term_ngram,
     bench_fuzzy_edits,
+    bench_bkd_merge_1d,
     bench_postings_write,
     bench_numeric_write_gcd,
     bench_sorted_numeric_varying_bpv,
