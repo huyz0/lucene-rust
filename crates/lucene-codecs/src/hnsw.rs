@@ -71,6 +71,7 @@
 //!   choice is a memory trade-off, not a semantic one.
 
 use lucene_util::fixed_bit_set::FixedBitSet;
+use lucene_util::fx_hash::FxHashSet;
 use lucene_util::numeric_utils::{float_to_sortable_int, sortable_int_to_float};
 use lucene_util::splittable_random::SplittableRandom;
 use lucene_util::ternary_long_heap::TernaryLongHeap;
@@ -2065,10 +2066,10 @@ const CUMULATIVE_DEGREE_FLOOR_FACTOR: f64 = 0.5;
 /// neighbours -- which is where the merge saves its work. A join set that is
 /// too small makes those derived entry points useless; one that is the whole
 /// graph makes the merge no cheaper than a rebuild.
-pub fn compute_join_set<G: HnswGraphView>(graph: &G) -> Result<std::collections::HashSet<i32>> {
+pub fn compute_join_set<G: HnswGraphView>(graph: &G) -> Result<FxHashSet<i32>> {
     let size = graph.size();
     let mut heap = TernaryLongHeap::new(size.max(1) as usize);
-    let mut join: std::collections::HashSet<i32> = std::collections::HashSet::new();
+    let mut join: FxHashSet<i32> = FxHashSet::default();
     let mut stale = vec![false; size.max(0) as usize];
     // Java's `short[] counts`. Widened to `i32`: a node's cover count is
     // bounded only by its in-degree, so Java's `short` can in principle wrap
@@ -2657,7 +2658,7 @@ impl<S: UpdateableVectorScorer> HnswGraphBuilder<S> {
 
         let mut neighbors: Vec<i32> = Vec::new();
         let mut friends: Vec<i32> = Vec::new();
-        let mut seen: std::collections::HashSet<i32> = std::collections::HashSet::new();
+        let mut seen: FxHashSet<i32> = FxHashSet::default();
         let mut eps: Vec<i32> = Vec::new();
         for u in 0..size {
             if join.contains(&u) {

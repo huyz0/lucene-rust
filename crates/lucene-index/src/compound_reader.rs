@@ -23,12 +23,14 @@ use lucene_codecs::compound_format::{self, CompoundEntries};
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::{Directory, FsIndexOutput, Input};
 use lucene_store::{Error, Result};
+use std::sync::Arc;
 
 /// A compound segment's members, over the directory that holds it.
 pub struct CompoundReader<'d> {
     base: &'d dyn Directory,
     segment_name: String,
-    data: Input,
+    /// The `.cfs` as the directory produced it; members are slices of it.
+    data: Arc<Input>,
     entries: CompoundEntries,
 }
 
@@ -46,7 +48,7 @@ impl<'d> CompoundReader<'d> {
         };
         let cfe = base.open(&format!("{segment_name}.cfe"))?;
         let entries = compound_format::parse_entries(&cfe, segment_id).map_err(corrupt)?;
-        let data = base.open(&format!("{segment_name}.cfs"))?;
+        let data = Arc::new(base.open(&format!("{segment_name}.cfs"))?);
         compound_format::check_data_header_footer(&data, segment_id, &entries).map_err(corrupt)?;
         Ok(CompoundReader {
             base,
@@ -124,10 +126,13 @@ impl Directory for CompoundReader<'_> {
 
     fn open(&self, name: &str) -> Result<Input> {
         match self.member_id(name) {
-            // `openInput`'s slice, copied out: an `Input` owns its bytes.
+            // `openInput`'s slice: a window onto the archive, not a copy.
             Some(id) => compound_format::open_input(&self.data, &self.entries, id)
-                .map(|input| Input::Owned(input.as_slice().to_vec()))
-                .map_err(|e| Error::Corrupted(format!("{name}: {e}"))),
+                .map_err(|e| Error::Corrupted(format!("{name}: {e}")))
+                .and_then(|member| {
+                    let entry = self.entries.get(id).expect("open_input found it");
+                    Input::slice_of(&self.data, entry.offset as usize, member.len())
+                }),
             None if lives_beside_archive(name) => self.base.open(name),
             None => Err(Error::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,

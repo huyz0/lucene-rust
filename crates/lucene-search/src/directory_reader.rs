@@ -1986,7 +1986,22 @@ fn open_per_field_postings(
             },
         )
         .collect();
-    let combined = per_field_postings::open_groups(&groups, field_infos, segment_id, doc_count)?;
+    // Every group's `.tim`/`.tip` as opened (a mapping, or a compound
+    // member's slice), so the combined dictionary navigates them in place.
+    let shared: Vec<Option<[lucene_codecs::blocktree::SharedBytes; 2]>> = opened
+        .iter()
+        .map(|(_, dictionary, ..)| match &dictionary[..] {
+            [tim, tip, ..] => Some([tim.clone() as _, tip.clone() as _]),
+            _ => None,
+        })
+        .collect();
+    let combined = per_field_postings::open_groups_shared(
+        &groups,
+        &shared,
+        field_infos,
+        segment_id,
+        doc_count,
+    )?;
     let owned = |bytes: Vec<u8>| (!bytes.is_empty()).then(|| Arc::new(Input::Owned(bytes)));
     let postings_files = opened
         .iter()
@@ -2033,13 +2048,15 @@ fn find_file_ending(files: &[String], ext: &str) -> Option<String> {
 /// [`compound_format::open_input`]) -- nothing about the archive format
 /// itself is reimplemented here.
 struct CompoundArchive {
-    data: Vec<u8>,
+    /// The `.cfs` exactly as the directory produced it (for `MmapDirectory`
+    /// the mapping): members are [`Input::Slice`]s of it, never copies.
+    data: Arc<Input>,
     entries: compound_format::CompoundEntries,
 }
 
 impl CompoundArchive {
     fn open(dir: &dyn Directory, segment_name: &str, segment_id: &[u8; ID_LENGTH]) -> Result<Self> {
-        let cfs_bytes = dir.open(&format!("{segment_name}.cfs"))?.to_vec();
+        let cfs_bytes = Arc::new(dir.open(&format!("{segment_name}.cfs"))?);
         let cfe_bytes = dir.open(&format!("{segment_name}.cfe"))?;
         let entries = compound_format::parse_entries(&cfe_bytes, segment_id)?;
         compound_format::check_data_header_footer(&cfs_bytes, segment_id, &entries)?;
@@ -2096,15 +2113,17 @@ fn open_segment_file(
         None => return Ok(None),
     };
     match compound {
-        // A compound segment's archive is already one owned buffer, so its
-        // members have to be copied out of it; `Input::Owned` carries that.
-        // A loose file is handed back exactly as the directory produced it --
-        // for `MmapDirectory` that is the mapping itself, never a copy.
-        Some(archive) => Ok(Some(Arc::new(Input::Owned(
-            compound_format::open_input(&archive.data, &archive.entries, &name)?
-                .as_slice()
-                .to_vec(),
-        )))),
+        // A compound member is a window onto the archive (`openInput`'s
+        // `slice`), and a loose file is handed back exactly as the directory
+        // produced it: for `MmapDirectory` either one is the mapping itself,
+        // never a copy.
+        Some(archive) => {
+            // `open_input` checks the entry's range against the archive.
+            let member = compound_format::open_input(&archive.data, &archive.entries, &name)?;
+            let entry = archive.entries.get(&name).expect("open_input found it");
+            let slice = Input::slice_of(&archive.data, entry.offset as usize, member.len())?;
+            Ok(Some(Arc::new(slice)))
+        }
         None => Ok(Some(Arc::new(dir.open(&name)?))),
     }
 }
@@ -3341,6 +3360,9 @@ mod tests {
         );
         assert!(seg.pos_buf.is_none(), "compound fixture has no .pos");
         assert!(seg.pay_buf.is_none(), "compound fixture has no .pay");
+        // A member is a window onto the `.cfs`, not a copy of it.
+        let doc = seg.doc_buf.as_deref().unwrap();
+        assert!(matches!(doc, Input::Slice { .. }), "{doc:?}");
 
         // GenCompoundFormat.java indexes docs 0..5 with a `StringField("id",
         // ...)` -- confirms the `.fnm`/`.tim`/`.tip`/`.tmd`/`.doc` bytes
