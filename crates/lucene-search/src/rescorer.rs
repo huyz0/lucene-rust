@@ -27,7 +27,7 @@ use crate::explain::Explanation;
 use crate::index_searcher::IndexSearcher;
 use crate::query::BooleanQuery;
 use crate::top_docs::{ShardFieldDoc, ShardScoreDoc, ShardTopFieldDocs, TopDocs};
-use crate::top_field::{compare_keys, FieldDoc, SortField, SortType};
+use crate::top_field::{FieldDoc, KeyOrder, SortField, SortType};
 use crate::values_source::{
     DoubleValuesSource, LateInteractionFloatValuesSource, ScoreFunction, ValuesContext,
 };
@@ -156,18 +156,35 @@ impl Rescorer for QueryRescorer {
         let searcher = ctx.searcher()?;
         let mut hits = first_pass.score_docs.clone();
         hits.sort_by_key(|h| h.doc);
-        // One scorer per leaf, advanced through the leaf's hits in order.
-        let mut current: Option<(usize, Vec<(i32, f32)>)> = None;
-        for hit in &mut hits {
-            let (leaf, local) = leaf_of(searcher, hit.doc)?;
-            if current.as_ref().is_none_or(|(l, _)| *l != leaf) {
-                current = Some((leaf, searcher.leaf_scores(&self.query, leaf, true)?));
+        // One scorer per leaf, advanced through the leaf's hits in order;
+        // the query rewritten and its statistics gathered once, not per leaf.
+        let mut prepared = None;
+        let mut start = 0;
+        while start < hits.len() {
+            let (leaf, _) = leaf_of(searcher, hits[start].doc)?;
+            let mut locals = Vec::new();
+            let mut end = start;
+            while end < hits.len() {
+                let (l, local) = leaf_of(searcher, hits[end].doc)?;
+                if l != leaf {
+                    break;
+                }
+                locals.push(local);
+                end += 1;
             }
-            let scores = current.as_ref().map(|(_, s)| s.as_slice()).unwrap_or(&[]);
-            hit.score = match scores.binary_search_by_key(&local, |&(d, _)| d) {
-                Ok(i) => (self.combine)(hit.score, true, scores[i].1),
-                Err(_) => (self.combine)(hit.score, false, 0.0),
-            };
+            if prepared.is_none() {
+                prepared = Some(searcher.prepare(&self.query)?);
+            }
+            let (rewritten, global) = prepared.as_ref().expect("prepared above");
+            let query = rewritten.as_ref().unwrap_or(&self.query);
+            let scores = searcher.leaf_scores_at(query, global, leaf, &locals)?;
+            for (hit, second) in hits[start..end].iter_mut().zip(scores) {
+                hit.score = match second {
+                    Some(s) => (self.combine)(hit.score, true, s),
+                    None => (self.combine)(hit.score, false, 0.0),
+                };
+            }
+            start = end;
         }
         Ok(TopDocs {
             total_hits: first_pass.total_hits,
@@ -529,8 +546,11 @@ impl SortRescorer {
         }
         // `TopFieldCollector` over documents collected in ascending order: a
         // later document ties lose.
+        let order = KeyOrder::new(&self.sort);
         collected.sort_by(|a, b| {
-            compare_keys(&self.sort, &a.fields, &b.fields).then(a.fields.doc.cmp(&b.fields.doc))
+            order
+                .compare(&a.fields, &b.fields)
+                .then(a.fields.doc.cmp(&b.fields.doc))
         });
         collected.truncate(top_n);
         // `rescoredDocsClone` sorted by document gets `hits[i].score`: the
@@ -856,8 +876,11 @@ impl RescoreTopNQuery {
         let searcher = ctx.searcher()?;
         let mut all: Vec<ShardScoreDoc> = Vec::new();
         let mut original_count: u64 = 0;
+        // Rewritten, and its statistics gathered, once for every leaf.
+        let (rewritten, global) = searcher.prepare(&self.query)?;
+        let query = rewritten.as_ref().unwrap_or(&self.query);
         for leaf in 0..searcher.segments().len() {
-            let matches = searcher.leaf_scores(&self.query, leaf, true)?;
+            let matches = searcher.leaf_scores_prepared(query, &global, leaf, true)?;
             if matches.is_empty() {
                 continue;
             }

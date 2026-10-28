@@ -76,7 +76,15 @@ struct Run<'a> {
     p: &'a SimpleQueryParser,
     data: Vec<u16>,
     buffer: Vec<u16>,
+    /// How many `(` groups the parse is inside, bounded by
+    /// [`MAX_GROUP_DEPTH`].
+    depth: usize,
 }
+
+/// The deepest `(` nesting a parse accepts: each level recurses, and a Rust
+/// stack overflow aborts the process where Java's `StackOverflowError` can
+/// be caught, so a hostile `((((...` is refused instead.
+pub const MAX_GROUP_DEPTH: usize = 128;
 
 fn unit(c: char) -> u16 {
     c as u16
@@ -135,6 +143,7 @@ impl SimpleQueryParser {
             p: self,
             buffer: vec![0; length],
             data,
+            depth: 0,
         };
         let mut state = State::new(0, length);
         run.parse_sub_query(&mut state)?;
@@ -221,8 +230,16 @@ impl Run<'_> {
             state.current_operation = None;
             state.index += 1;
         } else {
+            if self.depth >= MAX_GROUP_DEPTH {
+                return Err(QueryParserError::illegal_argument(format!(
+                    "query nests more than {MAX_GROUP_DEPTH} groups"
+                )));
+            }
             let mut sub = State::new(start, state.index);
-            self.parse_sub_query(&mut sub)?;
+            self.depth += 1;
+            let parsed = self.parse_sub_query(&mut sub);
+            self.depth -= 1;
+            parsed?;
             self.build_query_tree(state, sub.top)?;
             state.index += 1;
         }

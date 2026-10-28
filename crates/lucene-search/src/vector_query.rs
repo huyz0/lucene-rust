@@ -649,26 +649,25 @@ fn accept_ords<'a, 'v>(
             }
         }
     }
-    if !identity {
-        if let Some(bits) = accept_ords_from_docs(input, size, values)? {
-            return Ok(Some(AcceptOrds::Owned(bits)));
-        }
+    if identity {
+        return Ok(Some(AcceptOrds::Owned(identity_accept_ords(
+            input.live_docs,
+            input.filter,
+            size.max(0) as usize,
+        ))));
+    }
+    if let Some(bits) = accept_ords_from_docs(input, size, values)? {
+        return Ok(Some(AcceptOrds::Owned(bits)));
     }
     let mut bits = FixedBitSet::new(size.max(0) as usize);
     // Every ordinal's document, decoded in one bulk pass (`ordToDoc` per
     // ordinal is a `DirectMonotonicReader` lookup each).
     let mut docs = Vec::new();
-    if !identity {
-        (values.ord_to_docs)(&mut docs)?;
-    }
+    (values.ord_to_docs)(&mut docs)?;
     for ord in 0..size {
-        let doc = if identity {
-            ord
-        } else {
-            // `ord_to_docs` yields exactly `size` documents; a short list
-            // would only leave the rest unaccepted.
-            docs.get(ord as usize).copied().unwrap_or(-1)
-        };
+        // `ord_to_docs` yields exactly `size` documents; a short list
+        // would only leave the rest unaccepted.
+        let doc = docs.get(ord as usize).copied().unwrap_or(-1);
         if doc < 0 {
             continue;
         }
@@ -685,6 +684,32 @@ fn accept_ords<'a, 'v>(
         }
     }
     Ok(Some(AcceptOrds::Owned(bits)))
+}
+
+/// [`accept_ords`] for a field whose ordinals are its doc ids: `live AND
+/// filter` a word at a time, instead of two `get_doc` probes and a `set` per
+/// ordinal. A source bitset shorter than `size` reads as zero past its end
+/// (its own ghost bits are clear), which is `get_doc`'s "past the end is not
+/// accepted"; the last word is masked to `size`.
+fn identity_accept_ords(
+    live: Option<&FixedBitSet>,
+    filter: Option<&FixedBitSet>,
+    size: usize,
+) -> FixedBitSet {
+    let num_words = size.div_ceil(64);
+    let word = |b: Option<&FixedBitSet>, i: usize| match b {
+        None => u64::MAX,
+        Some(b) => b.words().get(i).copied().unwrap_or(0),
+    };
+    let mut words: Vec<u64> = (0..num_words)
+        .map(|i| word(live, i) & word(filter, i))
+        .collect();
+    if !size.is_multiple_of(64) {
+        if let Some(last) = words.last_mut() {
+            *last &= (1u64 << (size % 64)) - 1;
+        }
+    }
+    FixedBitSet::from_words(words, size)
 }
 
 /// A leaf's two directions between ordinals and documents, as
@@ -868,12 +893,14 @@ fn exact_search<S: VectorScorer>(
     // against the bitset that is actually indexed rather than against the
     // scorer -- an ordinal the accept set does not cover is, by definition,
     // not accepted. Hoisted out of the loop: one load, not one per ordinal.
-    let accepted_ords = accept_ords.len();
-    for ord in 0..scorer.max_ord() {
-        let ord_idx = ord as usize;
-        if ord_idx >= accepted_ords || !accept_ords.get(ord_idx) {
-            continue;
-        }
+    // Walked a set bit at a time (`next_set_bit` skips whole zero words):
+    // this path runs when the filter is selective, so most ordinals are not
+    // accepted and a per-ordinal probe would dominate the scoring.
+    let end = scorer.max_ord().max(0) as usize;
+    let mut next = accept_ords.next_set_bit(0);
+    while let Some(ord_idx) = next.filter(|&o| o < end) {
+        next = accept_ords.next_set_bit(ord_idx + 1);
+        let ord = ord_idx as i32;
         ords[num_ords] = ord;
         num_ords += 1;
         if num_ords == EXHAUSTIVE_BULK_SCORE_ORDS {
@@ -2524,12 +2551,11 @@ fn diversified_exact_search<S: VectorScorer>(
             }
         }
     };
-    let accepted = accept_ords.len();
-    for ord in 0..scorer.max_ord() {
-        let o = ord as usize;
-        if o >= accepted || !accept_ords.get(o) {
-            continue;
-        }
+    let end = scorer.max_ord().max(0) as usize;
+    let mut next = accept_ords.next_set_bit(0);
+    while let Some(o) = next.filter(|&o| o < end) {
+        next = accept_ords.next_set_bit(o + 1);
+        let ord = o as i32;
         let doc = ord_to_doc(ord)?;
         let parent = usize::try_from(doc)
             .ok()
@@ -2738,6 +2764,39 @@ pub fn search_diversifying_children_byte_knn_multi_segment(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn identity_accept_ords_is_live_and_filter_bit_for_bit() {
+        let bits = |len: usize, every: usize| {
+            let mut b = FixedBitSet::new(len);
+            for i in (0..len).step_by(every) {
+                b.set(i);
+            }
+            b
+        };
+        // Sources shorter, equal and longer than the field, word-aligned or not.
+        for size in [0usize, 1, 63, 64, 65, 200] {
+            for (live_len, filter_len) in
+                [(size, size), (size / 2, size + 70), (size + 3, size / 3)]
+            {
+                let live = bits(live_len, 2);
+                let filter = bits(filter_len, 3);
+                for (l, f) in [
+                    (Some(&live), Some(&filter)),
+                    (Some(&live), None),
+                    (None, Some(&filter)),
+                ] {
+                    let got = identity_accept_ords(l, f, size);
+                    assert_eq!(got.len(), size);
+                    for ord in 0..size {
+                        let want = l.is_none_or(|b| b.get_doc(ord as i32))
+                            && f.is_none_or(|b| b.get_doc(ord as i32));
+                        assert_eq!(got.get(ord), want, "size {size} ord {ord}");
+                    }
+                }
+            }
+        }
+    }
+
     use super::*;
 
     /// `HitQueue`'s order through `Float.compare`: `-0.0` below `0.0`,

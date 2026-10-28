@@ -653,6 +653,26 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
                 true
             }
         }
+        // `TotalHitCountCollector`: each leaf asks `Weight.count` first, so a
+        // lone term is its `docFreq` and an `exists` its field statistics,
+        // without iterating postings or gathering scoring statistics. Any
+        // leaf without that answer counts through the search as before.
+        if self.timeout.is_none() && !self.scorer_only_enabled() {
+            let rewritten = self.rewrite(query)?;
+            let mut total = Some(0u64);
+            for seg in self.segments {
+                total = match (total, crate::count_boolean_query_shortcut(seg, &rewritten)?) {
+                    (Some(t), Some(n)) => Some(t.saturating_add(n)),
+                    _ => None,
+                };
+                if total.is_none() {
+                    break;
+                }
+            }
+            if let Some(total) = total {
+                return Ok(total);
+            }
+        }
         let mut c = Count(0);
         self.search_collector(query, &mut c)?;
         Ok(c.0)
@@ -723,6 +743,78 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
         leaf: usize,
         include_deleted: bool,
     ) -> Result<Vec<(i32, f32)>> {
+        let (rewritten, global) = self.prepare(query)?;
+        self.leaf_scores_prepared(
+            rewritten.as_ref().unwrap_or(query),
+            &global,
+            leaf,
+            include_deleted,
+        )
+    }
+
+    /// `QueryRescorer.rescore`'s second pass on segment `leaf`: one
+    /// `COMPLETE` scorer, advanced to each of `docs` (leaf-local, ascending)
+    /// and scored where it lands on it -- `None` where the query does not
+    /// match. Deleted documents score as any other, a `Scorer` never reading
+    /// live docs. Only the hits are visited, not every match of the leaf.
+    pub(crate) fn leaf_scores_at(
+        &self,
+        query: &BooleanQuery,
+        global: &crate::GlobalStats,
+        leaf: usize,
+        docs: &[i32],
+    ) -> Result<Vec<Option<f32>>> {
+        let seg = self.segments.get(leaf).ok_or(Error::SliceOutOfRange {
+            segment: leaf,
+            segments: self.segments.len(),
+        })?;
+        let ctx = crate::exec::LeafContext {
+            fields: seg.fields,
+            doc_in: seg.doc_in,
+            pos_in: seg.pos_in,
+            pay_in: seg.pay_in,
+            live_docs: None,
+            points: seg.points,
+            norms: self.norms(leaf),
+            global: Some(global),
+            max_doc: seg.max_doc,
+            cache: seg.cache,
+            reader: seg.reader,
+            similarity: self.similarity.filter(|s| !s.is_default_bm25()),
+        };
+        let mode = crate::exec::Mode::Complete;
+        let Some(mut scorer) =
+            crate::exec::build::build_boolean_root(&ctx, query, 1.0, mode, true)?
+        else {
+            return Ok(vec![None; docs.len()]);
+        };
+        let mut out = Vec::with_capacity(docs.len());
+        for &target in docs {
+            // `if (targetDoc > scorer.docID()) iterator.advance(targetDoc)`.
+            let mut doc = scorer.doc_id();
+            if target > doc {
+                doc = crate::exec::exact_advance(&mut *scorer, target)?;
+            }
+            out.push(if doc == target {
+                Some(scorer.score()?)
+            } else {
+                None
+            });
+        }
+        Ok(out)
+    }
+
+    /// [`Self::leaf_scores`] for a query already [`Self::prepare`]d (its
+    /// rewritten form and reader-wide statistics): for a caller scoring
+    /// several leaves, which would otherwise rewrite the query and gather
+    /// every segment's statistics again for each one.
+    pub(crate) fn leaf_scores_prepared(
+        &self,
+        query: &BooleanQuery,
+        global: &crate::GlobalStats,
+        leaf: usize,
+        include_deleted: bool,
+    ) -> Result<Vec<(i32, f32)>> {
         struct All(Vec<(i32, f32)>);
         impl ScoringCollector for All {
             fn collect(&mut self, doc: i32, score: f32) {
@@ -733,8 +825,6 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
             segment: leaf,
             segments: self.segments.len(),
         })?;
-        let (rewritten, global) = self.prepare(query)?;
-        let query = rewritten.as_ref().unwrap_or(query);
         let sim = self.similarity.filter(|s| !s.is_default_bm25());
         let one = OpenSegment {
             live_docs: if include_deleted { None } else { seg.live_docs },
@@ -746,7 +836,7 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
                 &one,
                 query,
                 self.norms(leaf),
-                &global,
+                global,
                 sim,
                 &mut all,
             )?,
@@ -754,7 +844,7 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
                 &one,
                 query,
                 self.norms(leaf),
-                Some(&global),
+                Some(global),
                 &mut all,
             )?,
         }

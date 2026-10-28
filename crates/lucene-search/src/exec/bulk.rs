@@ -95,6 +95,10 @@ pub(crate) enum Bulk<'a> {
     /// under `TOP_SCORES` (`+a ?b`): the scorer tree's own algorithm, every
     /// call monomorphic. The `f32` is the threshold last published.
     ReqOptTerms(Box<ReqOptTerms<'a>>, f32),
+    /// The same with a cached constant-scoring bit set for the required
+    /// clause (`+(cached) ?b`): `ReqOptSumScorer(ConstantScoreScorer,
+    /// TermScorer)`, the set's iterator and the term both monomorphic.
+    ReqBitsOptTerm(Box<ReqBitsOptTerm<'a>>, f32),
     /// The same over `ReqOptSumScorer(TermScorer, DisjunctionSumScorer)`
     /// (`+a ?b ?c`, or `+a ?(b c)`).
     ReqOptTermSum(Box<ReqOptTermSum<'a>>, f32),
@@ -123,6 +127,9 @@ pub(crate) enum Bulk<'a> {
 
 /// [`Bulk::ReqOptTerms`]' scorer.
 pub(crate) type ReqOptTerms<'a> = ReqOptSumScorer<TermScorer<'a>, TermScorer<'a>>;
+
+/// [`Bulk::ReqBitsOptTerm`]' scorer.
+pub(crate) type ReqBitsOptTerm<'a> = ReqOptSumScorer<super::cache::CachedScorer, TermScorer<'a>>;
 
 /// [`Bulk::ReqOptTermSum`]' scorer.
 pub(crate) type ReqOptTermSum<'a> = ReqOptSumScorer<TermScorer<'a>, TermSum<'a>>;
@@ -172,6 +179,7 @@ impl<'a> Bulk<'a> {
             Bulk::ReqBitsOpt(set, _, _) => set.cardinality(),
             Bulk::ReqScorerOpt(req, _) => req.cost(),
             Bulk::ReqOptTerms(s, _) => super::Scorer::cost(&**s),
+            Bulk::ReqBitsOptTerm(s, _) => super::Scorer::cost(&**s),
             Bulk::ReqOptTermSum(s, _) => super::Scorer::cost(&**s),
             Bulk::FilterOptTermSum(s, _) => super::Scorer::cost(&**s),
             Bulk::ReqExclOptTerm(s, _) => super::Scorer::cost(&**s),
@@ -200,6 +208,7 @@ impl<'a> Bulk<'a> {
             Bulk::ReqBitsOpt(..) => "req_bits_opt",
             Bulk::ReqScorerOpt(..) => "req_scorer_opt",
             Bulk::ReqOptTerms(..) => "req_opt_terms",
+            Bulk::ReqBitsOptTerm(..) => "req_bits_opt_term",
             Bulk::ReqOptTermSum(..) => "req_opt_term_sum",
             Bulk::FilterOptTermSum(..) => "filter_opt_term_sum",
             Bulk::ReqExclOptTerm(..) => "req_excl_opt_term",
@@ -276,6 +285,9 @@ impl<'a> Bulk<'a> {
                 default_score(&mut **s, published, mode, live_docs, collector, min, max)
             }
             Bulk::ReqOptTerms(s, published) => {
+                default_score(&mut **s, published, mode, live_docs, collector, min, max)
+            }
+            Bulk::ReqBitsOptTerm(s, published) => {
                 default_score(&mut **s, published, mode, live_docs, collector, min, max)
             }
             Bulk::DisMax(legs, state) => state.score(legs, live_docs, collector, min, max),
@@ -1184,6 +1196,32 @@ pub(crate) fn bulk_boolean_own<'a>(
         let (leg, _) = should.pop().expect("one optional clause");
         must.clear();
         Some(Bulk::ReqBitsOpt(set, c, Box::new(leg.into_leg())))
+    } else if let Some((set, c, cost)) = (must.len() == 1
+        && filter.is_empty()
+        && should.len() == 1
+        && msm == 0
+        && mode == Mode::TopScores
+        && should[0].0.is_leg())
+    .then(|| match &must[0].0 {
+        Child::Scorer(s) if s.doc_id() == -1 => {
+            s.constant_bits().map(|(set, c)| (set, c, s.cost()))
+        }
+        _ => None,
+    })
+    .flatten()
+    {
+        // The same under `TOP_SCORES`: the scorer tree's own
+        // `ReqOptSumScorer`, rebuilt over the cached set's own iterator so
+        // neither side is a virtual call per document.
+        let (opt, _) = should.pop().expect("one optional clause");
+        must.clear();
+        let req = super::cache::CachedScorer::constant(set, c, true).with_cost(cost);
+        let s = ReqBitsOptTerm::new(
+            Box::new(req),
+            Box::new(TermScorer::new(opt.into_leg(), true)),
+            true,
+        )?;
+        Some(Bulk::ReqBitsOptTerm(Box::new(s), 0.0))
     } else if must.len() == 1
         && filter.is_empty()
         && should.len() == 1

@@ -82,6 +82,7 @@ fn units(image: &[u16]) -> String {
 pub fn parse(query: &str) -> Result<SrndQuery, QueryParserError> {
     let mut p = Parser {
         rt: Runtime::new(&GRAMMAR, TokenManager::new(CharStream::new(query))),
+        depth: 0,
     };
     match p.top_srnd_query() {
         Ok(q) => Ok(q),
@@ -92,7 +93,16 @@ pub fn parse(query: &str) -> Result<SrndQuery, QueryParserError> {
 
 struct Parser {
     rt: Runtime<TokenManager>,
+    /// How many `PrimaryQuery`s the parse is inside, bounded by
+    /// [`MAX_DEPTH`].
+    depth: usize,
 }
+
+/// The deepest nesting of groups and prefix operators a parse accepts: each
+/// level recurses, and a Rust stack overflow aborts the process where Java's
+/// `StackOverflowError` can be caught, so a hostile `((((...` or
+/// `OR(OR(OR(...` is refused instead.
+pub(crate) const MAX_DEPTH: usize = 128;
 
 impl Parser {
     fn ntk(&mut self) -> PResult<i32> {
@@ -219,6 +229,18 @@ impl Parser {
 
     /// `PrimaryQuery()`.
     fn primary_query(&mut self) -> PResult<SrndQuery> {
+        if self.depth >= MAX_DEPTH {
+            return Err(Fail::Parse(format!(
+                "Cannot parse query: more than {MAX_DEPTH} nested queries"
+            )));
+        }
+        self.depth += 1;
+        let q = self.primary_query_inner();
+        self.depth -= 1;
+        q
+    }
+
+    fn primary_query_inner(&mut self) -> PResult<SrndQuery> {
         let mut q = match self.ntk()? {
             LPAREN => {
                 self.consume(LPAREN)?;

@@ -22,7 +22,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use crate::collector::{TotalHits, TotalHitsRelation};
-use crate::top_field::{compare_keys, FieldDoc, SortField};
+use crate::top_field::{FieldDoc, KeyOrder, SortField};
 use crate::{Error, Result};
 
 /// `ScoreDoc` with its `shardIndex`: `-1` when every hit came from one
@@ -362,9 +362,10 @@ pub fn merge_field_docs(
     let lens: Vec<usize> = shard_hits.iter().map(|s| s.hits.len()).collect();
     let hit = |r: &ShardRef| &shard_hits[r.shard_index].hits[r.hit_index];
     // `MergeSortQueue.lessThan`.
+    let order = KeyOrder::new(sort);
     let less = |a: &ShardRef, b: &ShardRef| {
         let (x, y) = (hit(a), hit(b));
-        match compare_keys(sort, &x.fields, &y.fields) {
+        match order.compare(&x.fields, &y.fields) {
             Ordering::Equal => {
                 tie_break_less_than(a, &x.score_doc(), b, &y.score_doc(), tie_breaker)
             }
