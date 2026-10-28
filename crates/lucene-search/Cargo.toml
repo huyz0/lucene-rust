@@ -132,3 +132,9 @@ harness = false
 [[bench]]
 name = "grouping_join"
 harness = false
+
+# The infix suggester's build/refresh/update/lookup and the expression
+# layer's per-document evaluation -- see the bench's module doc.
+[[bench]]
+name = "suggest_expressions"
+harness = false
