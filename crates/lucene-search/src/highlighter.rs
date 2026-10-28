@@ -98,7 +98,7 @@
 //! [`TermOffsetSpan`]'s offsets, [`Fragment::start_offset`]/
 //! [`Fragment::end_offset`], [`FragmentConfig::window_chars`], and the
 //! `contentLength`/`passageLength` [`PassageScorer`] consumes (Java's are the
-//! same `String` lengths). [`utf16_offset_to_byte`] converts one to a UTF-8
+//! same `String` lengths). `utf16_offset_to_byte` converts one to a UTF-8
 //! byte offset by walking `char_indices()` and accumulating `len_utf16()`, so
 //! slicing `full_text` always lands on a valid UTF-8 boundary -- it cannot
 //! panic on a multi-byte character even if the input offsets are wrong or
@@ -523,7 +523,7 @@ fn utf16_len(text: &str) -> usize {
 /// a window end) to the nearest ASCII-or-Unicode whitespace boundary within
 /// `text`, so a fragment window doesn't start or end mid-word. Falls back
 /// to the original offset (which is always a valid char boundary, since
-/// [`utf16_offset_to_byte`] only ever returns char-boundary indices) if no
+/// `utf16_offset_to_byte` only ever returns char-boundary indices) if no
 /// whitespace is found before reaching the text's start/end.
 fn snap_start_to_whitespace(text: &str, byte_offset: usize) -> usize {
     let before = &text[..byte_offset];
@@ -797,7 +797,7 @@ fn byte_offset_to_utf16(text: &str, byte_offset: usize) -> usize {
     utf16_len(&text[..byte_offset.min(text.len())])
 }
 
-/// [`utf16_offset_to_byte`] and [`byte_offset_to_utf16`] over one text,
+/// `utf16_offset_to_byte` and `byte_offset_to_utf16` over one text,
 /// answered by binary search over a table built once, instead of a rescan
 /// from the text's start per offset (which made fragment assembly
 /// O(matches x text length)). ASCII text, where both units agree, needs no
@@ -832,7 +832,7 @@ impl<'t> Utf16Map<'t> {
         }
     }
 
-    /// [`utf16_offset_to_byte`].
+    /// `utf16_offset_to_byte`.
     fn to_byte(&self, utf16_offset: usize) -> usize {
         if utf16_offset >= self.total_utf16 {
             return self.text.len();
@@ -847,7 +847,7 @@ impl<'t> Utf16Map<'t> {
         self.starts[i - 1].1
     }
 
-    /// [`byte_offset_to_utf16`], for a char-boundary `byte_offset`.
+    /// `byte_offset_to_utf16`, for a char-boundary `byte_offset`.
     fn to_utf16(&self, byte_offset: usize) -> usize {
         let byte_offset = byte_offset.min(self.text.len());
         if self.starts.is_empty() {

@@ -108,3 +108,9 @@ harness = false
 [[bench]]
 name = "term_count"
 harness = false
+
+# Measures a `STRING_VAL` sort's per-document cost (comparing and copying
+# `BINARY` values) -- see the bench's own module doc.
+[[bench]]
+name = "string_val_sort"
+harness = false

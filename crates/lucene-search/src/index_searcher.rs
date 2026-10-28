@@ -752,6 +752,58 @@ impl<'s, 'a> IndexSearcher<'s, 'a> {
         )
     }
 
+    /// `QueryRescorer.rescore`'s second pass on segment `leaf`: one
+    /// `COMPLETE` scorer, advanced to each of `docs` (leaf-local, ascending)
+    /// and scored where it lands on it -- `None` where the query does not
+    /// match. Deleted documents score as any other, a `Scorer` never reading
+    /// live docs. Only the hits are visited, not every match of the leaf.
+    pub(crate) fn leaf_scores_at(
+        &self,
+        query: &BooleanQuery,
+        global: &crate::GlobalStats,
+        leaf: usize,
+        docs: &[i32],
+    ) -> Result<Vec<Option<f32>>> {
+        let seg = self.segments.get(leaf).ok_or(Error::SliceOutOfRange {
+            segment: leaf,
+            segments: self.segments.len(),
+        })?;
+        let ctx = crate::exec::LeafContext {
+            fields: seg.fields,
+            doc_in: seg.doc_in,
+            pos_in: seg.pos_in,
+            pay_in: seg.pay_in,
+            live_docs: None,
+            points: seg.points,
+            norms: self.norms(leaf),
+            global: Some(global),
+            max_doc: seg.max_doc,
+            cache: seg.cache,
+            reader: seg.reader,
+            similarity: self.similarity.filter(|s| !s.is_default_bm25()),
+        };
+        let mode = crate::exec::Mode::Complete;
+        let Some(mut scorer) =
+            crate::exec::build::build_boolean_root(&ctx, query, 1.0, mode, true)?
+        else {
+            return Ok(vec![None; docs.len()]);
+        };
+        let mut out = Vec::with_capacity(docs.len());
+        for &target in docs {
+            // `if (targetDoc > scorer.docID()) iterator.advance(targetDoc)`.
+            let mut doc = scorer.doc_id();
+            if target > doc {
+                doc = crate::exec::exact_advance(&mut *scorer, target)?;
+            }
+            out.push(if doc == target {
+                Some(scorer.score()?)
+            } else {
+                None
+            });
+        }
+        Ok(out)
+    }
+
     /// [`Self::leaf_scores`] for a query already [`Self::prepare`]d (its
     /// rewritten form and reader-wide statistics): for a caller scoring
     /// several leaves, which would otherwise rewrite the query and gather

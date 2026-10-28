@@ -845,7 +845,7 @@ impl ValSlots {
             (None, None) => 0,
             (None, Some(_)) => self.missing_cmp,
             (Some(_), None) => -self.missing_cmp,
-            (Some(x), Some(y)) => x.cmp(y) as i32,
+            (Some(x), Some(y)) => cmp_bytes(x, y) as i32,
         }
     }
 }
@@ -883,7 +883,7 @@ impl StrSlots {
             (None, None) => 0,
             (None, Some(_)) => self.missing_cmp,
             (Some(_), None) => -self.missing_cmp,
-            (Some(x), Some(y)) => x.as_slice().cmp(y.as_slice()) as i32,
+            (Some(x), Some(y)) => cmp_bytes(x, y) as i32,
         }
     }
 }
@@ -908,6 +908,23 @@ impl Comparator {
             }
         }
     }
+}
+
+/// `Arrays.compareUnsigned` over two byte strings. Sort keys are mostly
+/// short, where a `memcmp` call costs more than the comparison: the first
+/// eight bytes of each are compared as one big-endian word inline (the
+/// order of the bytes and then of the lengths), the rest only on a tie.
+#[inline]
+fn cmp_bytes(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
+    if a.len() <= 8 && b.len() <= 8 {
+        let word = |x: &[u8]| {
+            let mut w = [0u8; 8];
+            w[..x.len()].copy_from_slice(x);
+            u64::from_be_bytes(w)
+        };
+        return word(a).cmp(&word(b)).then(a.len().cmp(&b.len()));
+    }
+    a.cmp(b)
 }
 
 /// `Long.compare`, as the sign of an `i32`.
@@ -4886,6 +4903,31 @@ fn count_rest(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cmp_bytes_is_unsigned_lexicographic_order() {
+        let alphabet = [0u8, 1, 0x7f, 0x80, 0xff];
+        let mut all: Vec<Vec<u8>> = vec![Vec::new()];
+        for len in 1..=3 {
+            let mut next = Vec::new();
+            for v in all.iter().filter(|v| v.len() == len - 1) {
+                for &b in &alphabet {
+                    let mut w = v.clone();
+                    w.push(b);
+                    next.push(w);
+                }
+            }
+            all.extend(next);
+        }
+        all.push(vec![1; 9]);
+        all.push(vec![1; 8]);
+        all.push([vec![1; 8], vec![0]].concat());
+        for a in &all {
+            for b in &all {
+                assert_eq!(super::cmp_bytes(a, b), a.as_slice().cmp(b), "{a:?} {b:?}");
+            }
+        }
+    }
+
     use super::*;
 
     #[test]
