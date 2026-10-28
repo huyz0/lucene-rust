@@ -690,7 +690,7 @@ pub fn check_segment_in_commit(
     // from the postings walk to the terms-vs-norms cross-check, so it stays
     // local rather than riding along on every `CheckResult` for the life of
     // the run (one `FixedBitSet` per field per segment).
-    let mut docs_with_terms = Vec::new();
+    let mut docs_with_terms = DocsWithTerms::new();
     if let (Some(fi), Some(postings)) = (&field_infos, &postings) {
         let (s, visited) = check_postings(&si, fi, live_docs.as_ref(), postings, &mut checks);
         stats = s;
@@ -1519,15 +1519,28 @@ fn check_term_vectors(
         let mut tot_vectors = 0i64;
         let mut memo: TermPostingsMemo = std::collections::HashMap::new();
         let mut memo_elements = 0usize;
+        // Field number -> `FieldInfo`, built once rather than scanned per
+        // document per vector field. The first entry wins, as `find` did.
+        let by_number: std::collections::HashMap<i32, &field_infos::FieldInfo> = field_infos
+            .map(|fi| {
+                let mut m = std::collections::HashMap::with_capacity(fi.fields.len());
+                for f in &fi.fields {
+                    m.entry(f.number).or_insert(f);
+                }
+                m
+            })
+            .unwrap_or_default();
         for doc_id in 0..si.doc_count.min(reader.max_doc()) {
             match reader.document(doc_id) {
                 Ok(None) => {}
                 Ok(Some(document)) => {
                     docs_with_vectors = docs_with_vectors.saturating_add(1);
                     let live = is_live(live_docs, doc_id);
-                    let Some(fi) = field_infos else { continue };
+                    if field_infos.is_none() {
+                        continue;
+                    }
                     for field in &document.fields {
-                        let info = fi.fields.iter().find(|f| f.number == field.field_number);
+                        let info = by_number.get(&field.field_number).copied();
                         match info.map(|f| f.store_term_vectors) {
                             Some(true) => {}
                             Some(false) => flag_problems.push(format!(
@@ -1948,19 +1961,104 @@ type TermPostingsMemo = std::collections::HashMap<
 /// messages (empty -> pass, non-empty -> fail listing at most the first 5,
 /// with a total count) -- shared by every per-field check here so the "how
 /// many terms, show a few" reporting shape isn't duplicated.
-fn named_field_check(name: &str, problems: &[String], num_units: i64, unit: &str) -> Check {
-    if problems.is_empty() {
+fn named_field_check<P: ProblemList + ?Sized>(
+    name: &str,
+    problems: &P,
+    num_units: i64,
+    unit: &str,
+) -> Check {
+    counted_field_check(name, problems.total(), problems.shown(), num_units, unit)
+}
+
+/// What [`named_field_check`] reports from: how many problems there were and
+/// the messages it spells out.
+trait ProblemList {
+    fn total(&self) -> usize;
+    fn shown(&self) -> &[String];
+}
+
+impl ProblemList for [String] {
+    fn total(&self) -> usize {
+        self.len()
+    }
+    fn shown(&self) -> &[String] {
+        &self[..self.len().min(SHOWN_PROBLEMS)]
+    }
+}
+
+impl ProblemList for Vec<String> {
+    fn total(&self) -> usize {
+        self.len()
+    }
+    fn shown(&self) -> &[String] {
+        self.as_slice().shown()
+    }
+}
+
+impl ProblemList for Problems {
+    fn total(&self) -> usize {
+        self.total
+    }
+    fn shown(&self) -> &[String] {
+        &self.shown
+    }
+}
+
+/// How many problem messages a failed [`named_field_check`] spells out.
+const SHOWN_PROBLEMS: usize = 5;
+
+/// [`named_field_check`] over a total and the messages it shows.
+fn counted_field_check(
+    name: &str,
+    total: usize,
+    shown: &[String],
+    num_units: i64,
+    unit: &str,
+) -> Check {
+    if total == 0 {
         Check::pass(name)
     } else {
-        let shown = problems.len().min(5);
         Check::fail(
             name,
             format!(
-                "{} of {num_units} {unit} affected; first {shown}: {}",
-                problems.len(),
-                problems[..shown].join("; ")
+                "{total} of {num_units} {unit} affected; first {}: {}",
+                shown.len(),
+                shown.join("; ")
             ),
         )
+    }
+}
+
+/// A problem list for a check that can fire once per document, point or
+/// node: on a thoroughly corrupt file that is millions of messages of which
+/// [`named_field_check`] shows five. Keeps the messages it shows and counts
+/// the rest, so the report is identical and the memory is bounded.
+#[derive(Default)]
+struct Problems {
+    shown: Vec<String>,
+    total: usize,
+}
+
+impl Problems {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn push(&mut self, message: String) {
+        self.total = self.total.saturating_add(1);
+        if self.shown.len() < SHOWN_PROBLEMS {
+            self.shown.push(message);
+        }
+    }
+
+    /// Appends another list's problems: its shown messages while there is
+    /// room, and its whole count.
+    fn absorb(&mut self, other: Problems) {
+        let extra = other.total.saturating_sub(other.shown.len());
+        for message in other.shown {
+            self.push(message);
+        }
+        self.total = self.total.saturating_add(extra);
     }
 }
 
@@ -2596,7 +2694,9 @@ fn check_term_impacts<'d>(
             ));
         }
         if doc >= max {
-            let hashed = hash.wrapping_mul(31).wrapping_add(target) & 0x1ff;
+            // Java hashes the document reached here (`31 * hash + doc`),
+            // not the target the advance asked for.
+            let hashed = hash.wrapping_mul(31).wrapping_add(doc) & 0x1ff;
             max = doc.wrapping_add(hashed.min(NO_MORE.wrapping_sub(doc)));
             cursor.advance_shallow(doc).map_err(|e| e.to_string())?;
             let levels = impacts_levels(&mut cursor, has_freqs);
@@ -2697,12 +2797,19 @@ fn check_postings(
     live_docs: Option<&lucene_util::fixed_bit_set::FixedBitSet>,
     p: &PostingsHandles<'_>,
     checks: &mut Vec<Check>,
-) -> (
-    CheckStats,
-    Vec<(String, lucene_util::fixed_bit_set::FixedBitSet)>,
-) {
+) -> (CheckStats, DocsWithTerms) {
     let mut stats = CheckStats::default();
-    let mut docs_with_terms: Vec<(String, lucene_util::fixed_bit_set::FixedBitSet)> = Vec::new();
+    let mut docs_with_terms: DocsWithTerms = std::collections::HashMap::new();
+    // One name -> `FieldInfo` map for the whole walk rather than a linear
+    // `.fnm` scan per field. The first entry wins, as `find` did.
+    let mut by_name: std::collections::HashMap<&str, &field_infos::FieldInfo> =
+        std::collections::HashMap::with_capacity(field_infos.fields.len());
+    for f in &field_infos.fields {
+        by_name.entry(f.name.as_str()).or_insert(f);
+    }
+    // `checkTermsIntersect`'s two automata, compiled once per segment
+    // rather than once per field.
+    let intersect_automata = IntersectAutomata::build();
     // Reported once for the segment, but tracked *per field*: a field that
     // needs a missing `.doc` must not suppress the next field's `docCount`
     // re-derivation and `visitedDocs` (which would make that field's
@@ -2719,7 +2826,7 @@ fn check_postings(
         // from what it found, so every name `iter_fields` yields came out of
         // this very `FieldInfos`. The lookup below is `x == x`; only the
         // `indexOptions=None` half has an independent claim to compare.
-        let Some(fi) = field_infos.fields.iter().find(|f| f.name == field_name) else {
+        let Some(&fi) = by_name.get(field_name) else {
             debug_assert!(
                 false,
                 "blocktree::open names every field from this FieldInfos, and rejects \
@@ -3086,14 +3193,14 @@ fn check_postings(
                 // A single-document term has no `.doc` postings to walk (it is
                 // inlined in the term dictionary), as for the probes above.
                 if claimed.doc_freq > 1 && (run_problems.is_empty() || impact_problems.is_empty()) {
-                    let freqs: Vec<i32> = if has_freqs {
-                        postings_of_term.freqs.clone()
+                    let freqs: &[i32] = if has_freqs {
+                        &postings_of_term.freqs
                     } else {
-                        Vec::new()
+                        &[]
                     };
                     let reference = TermDocs {
                         docs: &postings_of_term.docs,
-                        freqs: &freqs,
+                        freqs,
                     };
                     let flags = [
                         postings::PostingsFlags::DocsOnly,
@@ -3224,14 +3331,14 @@ fn check_postings(
         // Java's own round (the first of its four automaton/start-term
         // combinations): `makeAnyBinary() [a-e] makeAnyBinary()` over raw
         // bytes, so binary terms take part too.
-        if let Some((compiled, run)) = any_binary_a_to_e_any_binary() {
+        if let Some((compiled, run)) = &intersect_automata.any_binary {
             compare_intersect_with_scan(
                 field_name,
                 field_terms,
                 "automaton `anyBinary [a-e] anyBinary`",
-                |t| lucene_util::automaton::ByteRunnable::run(&run, t),
+                |t| lucene_util::automaton::ByteRunnable::run(run, t),
                 field_terms
-                    .compiled_terms(&compiled)
+                    .compiled_terms(compiled)
                     .map(|r| r.map(|(t, s)| (t, s.stats))),
                 &mut intersect_problems,
             );
@@ -3243,16 +3350,13 @@ fn check_postings(
         }
         // The regexp walker this port adds (`RegexpQuery`'s), over the same
         // DFA it compiles to.
-        if let Some((pattern, dfa)) = lucene_codecs::regexp::RegexpPattern::new(b".*[a-e].*")
-            .ok()
-            .and_then(|p| p.to_dfa().map(|d| (p, d)))
-        {
+        if let Some((pattern, dfa)) = &intersect_automata.regexp {
             compare_intersect_with_scan(
                 field_name,
                 field_terms,
                 "regexp `.*[a-e].*`",
                 |t| dfa.run(t),
-                field_terms.regexp_intersect(&pattern),
+                field_terms.regexp_intersect(pattern),
                 &mut intersect_problems,
             );
         } else {
@@ -3365,7 +3469,12 @@ fn check_postings(
                     field_terms.doc_count
                 ));
             }
-            docs_with_terms.push((field_name.to_string(), visited_docs));
+            // Only the norms cross-check reads these, and only for a field
+            // with norms: keeping a `maxDoc`-bit set for every other indexed
+            // field until then was dead weight.
+            if !fi.omit_norms && fi.index_options != field_infos::IndexOptions::None {
+                docs_with_terms.insert(field_name.to_string(), visited_docs);
+            }
         }
         checks.push(named_field_check(
             &format!("postings.field_summary:{field_name}"),
@@ -3459,6 +3568,37 @@ fn check_occurrences(
                 ));
             }
             last_start_offset = occ.start_offset;
+        }
+    }
+}
+
+/// `checkFields`' per-field `visitedDocs`, by field name, for the fields
+/// with norms (the only ones the terms-vs-norms cross-check reads).
+type DocsWithTerms = std::collections::HashMap<String, lucene_util::fixed_bit_set::FixedBitSet>;
+
+/// The automata `postings.intersect_agrees` walks every field with. They
+/// depend on nothing but constants, so they are built once per
+/// [`check_postings`] call rather than once per field. (Not once per
+/// process: a compiled automaton carries a `RefCell` run cache and so is not
+/// `Sync`, and segments are checked in parallel.)
+struct IntersectAutomata {
+    any_binary: Option<(
+        lucene_util::automaton::CompiledAutomaton,
+        lucene_util::automaton::ByteRunAutomaton,
+    )>,
+    regexp: Option<(
+        lucene_codecs::regexp::RegexpPattern,
+        lucene_codecs::automaton::ByteDfa,
+    )>,
+}
+
+impl IntersectAutomata {
+    fn build() -> Self {
+        IntersectAutomata {
+            any_binary: any_binary_a_to_e_any_binary(),
+            regexp: lucene_codecs::regexp::RegexpPattern::new(b".*[a-e].*")
+                .ok()
+                .and_then(|p| p.to_dfa().map(|d| (p, d))),
         }
     }
 }
@@ -3618,7 +3758,15 @@ fn check_doc_values(
             let at = match columns.iter().position(|(k, _)| *k == key) {
                 Some(at) => at,
                 None => {
-                    let column = open_field_column(dir, commit, si, field_infos, fi)?;
+                    // `.dvs` is opened when *any* field read from this
+                    // column declares a skip index, not just the one that
+                    // happens to open it: the column is shared.
+                    let wants_dvs = dv_fields.iter().any(|g| {
+                        g.doc_values_skip_index_type != field_infos::DocValuesSkipIndexType::None
+                            && column_key(g) == key
+                    });
+                    let column =
+                        open_field_column(dir, commit, si, field_infos, fi, wants_dvs, true)?;
                     columns.push((key, column));
                     columns.len().saturating_sub(1)
                 }
@@ -3631,7 +3779,7 @@ fn check_doc_values(
             } = &columns[at].1;
             let (meta, dvd, dvs, suffix) = (meta, &dvd[..], dvs.as_deref(), suffix.as_str());
             let name = &fi.name;
-            let mut problems: Vec<String> = Vec::new();
+            let mut problems = Problems::new();
             let mut docs_with_value = 0i64;
             let mut expected_docs_with_value: Option<i64> = None;
             // `checkSortedDocValues`/`checkSortedSetDocValues`' ordinal
@@ -3658,11 +3806,22 @@ fn check_doc_values(
                         );
                         continue;
                     };
+                    // One stateful reader for the whole walk, as the norms
+                    // check and the parent walk hold one: the free
+                    // per-document functions re-walk a sparse field's
+                    // `IndexedDISI` from its start on every call.
+                    let mut reader = doc_values::NumericReader::new(dvd, entry);
                     for doc in 0..si.doc_count {
-                        match doc_values::numeric_value(dvd, entry, doc) {
+                        match reader.value(doc) {
                             Ok(Some(_)) => docs_with_value = docs_with_value.saturating_add(1),
                             Ok(None) => {}
-                            Err(e) => problems.push(format!("docID={doc}: {e}")),
+                            Err(e) => {
+                                problems.push(format!("docID={doc}: {e}"));
+                                // A failed lookup can leave the cursor mid-block; the
+                                // next document starts from a fresh one, as the free
+                                // per-document functions always did.
+                                reader = doc_values::NumericReader::new(dvd, entry);
+                            }
                         }
                     }
                 }
@@ -3684,8 +3843,9 @@ fn check_doc_values(
                         continue;
                     };
                     expected_docs_with_value = Some(entry.num_docs_with_field as i64);
+                    let mut reader = doc_values::BinaryReader::new(dvd, entry);
                     for doc in 0..si.doc_count {
-                        match doc_values::binary_value(dvd, entry, doc) {
+                        match reader.value(doc) {
                             Ok(Some(v)) => {
                                 docs_with_value = docs_with_value.saturating_add(1);
                                 let len = v.len() as i32;
@@ -3698,7 +3858,13 @@ fn check_doc_values(
                                 }
                             }
                             Ok(None) => {}
-                            Err(e) => problems.push(format!("docID={doc}: {e}")),
+                            Err(e) => {
+                                problems.push(format!("docID={doc}: {e}"));
+                                // A failed lookup can leave the cursor mid-block; the
+                                // next document starts from a fresh one, as the free
+                                // per-document functions always did.
+                                reader = doc_values::BinaryReader::new(dvd, entry);
+                            }
                         }
                     }
                 }
@@ -3726,8 +3892,10 @@ fn check_doc_values(
                     let value_count = entry.terms.terms_dict_size;
                     let mut seen =
                         lucene_util::fixed_bit_set::FixedBitSet::new(value_count.max(0) as usize);
+                    // `sorted_ord` is `numeric_value` over the entry's `ords`.
+                    let mut reader = doc_values::NumericReader::new(dvd, &entry.ords);
                     for doc in 0..si.doc_count {
-                        match doc_values::sorted_ord(dvd, entry, doc) {
+                        match reader.value(doc) {
                             Ok(Some(ord)) => {
                                 docs_with_value = docs_with_value.saturating_add(1);
                                 if ord < 0 || ord >= value_count {
@@ -3744,7 +3912,13 @@ fn check_doc_values(
                                 }
                             }
                             Ok(None) => {}
-                            Err(e) => problems.push(format!("docID={doc}: {e}")),
+                            Err(e) => {
+                                problems.push(format!("docID={doc}: {e}"));
+                                // A failed lookup can leave the cursor mid-block; the
+                                // next document starts from a fresh one, as the free
+                                // per-document functions always did.
+                                reader = doc_values::NumericReader::new(dvd, &entry.ords);
+                            }
                         }
                     }
                     seen_ords = Some(seen);
@@ -3768,9 +3942,11 @@ fn check_doc_values(
                         continue;
                     };
                     expected_docs_with_value = Some(entry.num_docs_with_field as i64);
+                    let mut reader = doc_values::SortedNumericReader::new(dvd, entry);
+                    let mut values = Vec::new();
                     for doc in 0..si.doc_count {
-                        match doc_values::sorted_numeric_values(dvd, entry, doc) {
-                            Ok(values) => {
+                        match reader.values(doc, &mut values) {
+                            Ok(()) => {
                                 if !values.is_empty() {
                                     docs_with_value = docs_with_value.saturating_add(1);
                                 }
@@ -3795,7 +3971,13 @@ fn check_doc_values(
                                     }
                                 }
                             }
-                            Err(e) => problems.push(format!("docID={doc}: {e}")),
+                            Err(e) => {
+                                problems.push(format!("docID={doc}: {e}"));
+                                // A failed lookup can leave the cursor mid-block; the
+                                // next document starts from a fresh one, as the free
+                                // per-document functions always did.
+                                reader = doc_values::SortedNumericReader::new(dvd, entry);
+                            }
                         }
                     }
                 }
@@ -3826,8 +4008,9 @@ fn check_doc_values(
                             let mut seen = lucene_util::fixed_bit_set::FixedBitSet::new(
                                 value_count.max(0) as usize,
                             );
+                            let mut reader = doc_values::NumericReader::new(dvd, &single.ords);
                             for doc in 0..si.doc_count {
-                                match doc_values::sorted_ord(dvd, single, doc) {
+                                match reader.value(doc) {
                                     Ok(Some(ord)) => {
                                         docs_with_value = docs_with_value.saturating_add(1);
                                         if ord < 0 || ord >= value_count {
@@ -3844,7 +4027,13 @@ fn check_doc_values(
                                         }
                                     }
                                     Ok(None) => {}
-                                    Err(e) => problems.push(format!("docID={doc}: {e}")),
+                                    Err(e) => {
+                                        problems.push(format!("docID={doc}: {e}"));
+                                        // A failed lookup can leave the cursor mid-block; the
+                                        // next document starts from a fresh one, as the free
+                                        // per-document functions always did.
+                                        reader = doc_values::NumericReader::new(dvd, &single.ords);
+                                    }
                                 }
                             }
                             seen_ords = Some(seen);
@@ -3856,9 +4045,11 @@ fn check_doc_values(
                                 value_count.max(0) as usize,
                             );
                             expected_docs_with_value = Some(ords.num_docs_with_field as i64);
+                            let mut reader = doc_values::SortedNumericReader::new(dvd, ords);
+                            let mut values = Vec::new();
                             for doc in 0..si.doc_count {
-                                match doc_values::sorted_numeric_values(dvd, ords, doc) {
-                                    Ok(values) => {
+                                match reader.values(doc, &mut values) {
+                                    Ok(()) => {
                                         if values.is_empty() {
                                             continue;
                                         }
@@ -3866,7 +4057,7 @@ fn check_doc_values(
                                         // `SortedSetDocValues` ordinals are a
                                         // *set*: strictly increasing per doc.
                                         let mut prev = -1i64;
-                                        for ord in values {
+                                        for &ord in &values {
                                             if ord < 0 || ord >= value_count {
                                                 problems.push(format!(
                                                     "docID={doc}: ordinal {ord} outside the terms \
@@ -3887,7 +4078,13 @@ fn check_doc_values(
                                             prev = ord;
                                         }
                                     }
-                                    Err(e) => problems.push(format!("docID={doc}: {e}")),
+                                    Err(e) => {
+                                        problems.push(format!("docID={doc}: {e}"));
+                                        // A failed lookup can leave the cursor mid-block; the
+                                        // next document starts from a fresh one, as the free
+                                        // per-document functions always did.
+                                        reader = doc_values::SortedNumericReader::new(dvd, ords);
+                                    }
                                 }
                             }
                             seen_ords = Some(seen);
@@ -4059,15 +4256,21 @@ fn column_key(fi: &field_infos::FieldInfo) -> (i64, String) {
 /// format instance the field's attributes name. A base field with no
 /// attributes falls back to the first `.dvm` the `.si` lists, the one column
 /// a single-format segment has.
+///
+/// `wants_dvs` opens the column's `.dvs` skip-index file: true when any
+/// field that reads this column declares a skip index. `verify_dvd` checks
+/// the `.dvd`'s header and footer, which the value checks do once and the
+/// sort and soft-deletes checks, re-reading the same column, do not repeat.
 fn open_field_column(
     dir: &dyn Directory,
     commit: &SegmentCommitInfo,
     si: &SegmentInfo,
     base_infos: &FieldInfos,
     fi: &field_infos::FieldInfo,
+    wants_dvs: bool,
+    verify_dvd: bool,
 ) -> Result<DocValuesColumn, String> {
     let component = crate::field_updates::field_per_field_component(fi);
-    let wants_dvs = fi.doc_values_skip_index_type != field_infos::DocValuesSkipIndexType::None;
     let (dvm_name, dvd_name, dvs_name, suffix, only);
     if fi.doc_values_gen != -1 {
         let component = component.ok_or_else(|| {
@@ -4139,8 +4342,10 @@ fn open_field_column(
         only.as_ref().unwrap_or(base_infos),
     )
     .map_err(|e| e.to_string())?;
-    doc_values::check_data_header_footer(&dvd, &commit.segment_id, &suffix)
-        .map_err(|e| e.to_string())?;
+    if verify_dvd {
+        doc_values::check_data_header_footer(&dvd, &commit.segment_id, &suffix)
+            .map_err(|e| e.to_string())?;
+    }
     // `.dvs` is a separate file, present only when some field asked for a
     // skip index (`Lucene90DocValuesConsumer`'s
     // `VERSION_SKIPPER_SEPARATE_FILE`); its absence is reported per field.
@@ -4272,35 +4477,74 @@ fn check_doc_value_skipper(index: &doc_values::DocValuesSkipIndex) -> Vec<String
     problems
 }
 
-/// Opens a segment's `.dvm`/`.dvd` pair, if it has one, returning the parsed
-/// metadata and the raw data bytes. Shared by the doc-values-value checks,
-/// the index-sort check and the soft-deletes check, all of which need to
-/// read actual per-doc values.
-pub(crate) fn open_doc_values(
+/// The base doc-values column `fi` is read from -- the
+/// `PerFieldDocValuesFormat` instance its attributes name, as
+/// `SegmentDocValuesProducer` hands a field without an update generation to
+/// its own format's producer -- or, for a field without those attributes,
+/// the first `.dvm` the `.si` lists. `None` when the segment has no
+/// doc-values files at all. Reading only the first `.dvm` the `.si` lists
+/// failed a sort or soft-deletes field that lives in a second format
+/// instance.
+///
+/// Shared by the index-sort check, the soft-deletes check and the writer's
+/// block tests, all of which read actual per-doc values. The `.dvd` header
+/// and footer are not re-verified here: `check_doc_values` does that.
+pub(crate) fn open_base_column(
     dir: &dyn Directory,
     commit: &SegmentCommitInfo,
     si: &SegmentInfo,
     field_infos: &FieldInfos,
+    fi: &field_infos::FieldInfo,
 ) -> Option<Result<(doc_values::DocValuesMeta, lucene_store::directory::Input), String>> {
-    let dvm_name = si.files.iter().find(|f| f.ends_with(".dvm"))?;
-    let dvd_name = si.files.iter().find(|f| f.ends_with(".dvd"))?;
-    let suffix = if *dvm_name == format!("{}.dvm", commit.segment_name) {
-        String::new()
+    if !si.files.iter().any(|f| f.ends_with(".dvm"))
+        || !si.files.iter().any(|f| f.ends_with(".dvd"))
+    {
+        return None;
+    }
+    let base;
+    let fi = if fi.doc_values_gen == -1 {
+        fi
     } else {
-        dvm_name
-            .strip_prefix(&format!("{}_", commit.segment_name))
-            .or_else(|| dvm_name.strip_prefix('_'))
-            .and_then(|s| s.strip_suffix(".dvm"))
-            .unwrap_or_default()
-            .to_string()
+        base = field_infos::FieldInfo {
+            doc_values_gen: -1,
+            ..fi.clone()
+        };
+        &base
     };
-    Some((|| {
-        let dvm = dir.open(dvm_name).map_err(|e| e.to_string())?;
-        let dvd = dir.open(dvd_name).map_err(|e| e.to_string())?;
-        let (_v, meta) = doc_values::parse_meta(&dvm, &commit.segment_id, &suffix, field_infos)
-            .map_err(|e| e.to_string())?;
-        Ok((meta, dvd))
-    })())
+    Some(open_field_column(dir, commit, si, field_infos, fi, false, false).map(|c| (c.meta, c.dvd)))
+}
+
+/// One opened base column, keyed by [`column_key`].
+type BaseColumn = (
+    (i64, String),
+    (doc_values::DocValuesMeta, lucene_store::directory::Input),
+);
+
+/// [`open_base_column`] through a per-check cache, so several fields of one
+/// format instance open and parse its `.dvm` once.
+fn cached_base_column<'c>(
+    columns: &'c mut Vec<BaseColumn>,
+    dir: &dyn Directory,
+    commit: &SegmentCommitInfo,
+    si: &SegmentInfo,
+    field_infos: &FieldInfos,
+    fi: &field_infos::FieldInfo,
+) -> Result<(&'c doc_values::DocValuesMeta, &'c [u8]), String> {
+    let key = (
+        -1,
+        crate::field_updates::field_per_field_component(fi).unwrap_or_default(),
+    );
+    let at = match columns.iter().position(|(k, _)| *k == key) {
+        Some(at) => at,
+        None => {
+            let column = open_base_column(dir, commit, si, field_infos, fi)
+                .ok_or_else(|| "the segment has no doc-values files".to_string())??;
+            columns.push((key, column));
+            columns.len().saturating_sub(1)
+        }
+    };
+    let (meta, dvd) = &columns[at].1;
+    Ok((meta, &dvd[..]))
 }
 
 /// Which documents carry a value for `fi` -- `DocValuesIterator`'s
@@ -4323,24 +4567,20 @@ fn doc_values_presence(
             let entry = meta
                 .numeric_entry(fi.number)
                 .ok_or("no NUMERIC doc-values entry")?;
+            let mut reader = doc_values::NumericReader::new(dvd, entry);
             for doc in 0..max_doc {
-                present.push(
-                    doc_values::numeric_value(dvd, entry, doc)
-                        .map_err(|e| e.to_string())?
-                        .is_some(),
-                );
+                present.push(reader.value(doc).map_err(|e| e.to_string())?.is_some());
             }
         }
         field_infos::DocValuesType::SortedNumeric => {
             let entry = meta
                 .sorted_numeric_entry(fi.number)
                 .ok_or("no SORTED_NUMERIC doc-values entry")?;
+            let mut reader = doc_values::SortedNumericReader::new(dvd, entry);
+            let mut values = Vec::new();
             for doc in 0..max_doc {
-                present.push(
-                    !doc_values::sorted_numeric_values(dvd, entry, doc)
-                        .map_err(|e| e.to_string())?
-                        .is_empty(),
-                );
+                reader.values(doc, &mut values).map_err(|e| e.to_string())?;
+                present.push(!values.is_empty());
             }
         }
         other => return Err(format!("field has doc-values type {other:?}")),
@@ -4378,8 +4618,9 @@ fn sort_key_values(
             let entry = meta
                 .numeric_entry(fi.number)
                 .ok_or("no NUMERIC doc-values entry")?;
+            let mut reader = doc_values::NumericReader::new(dvd, entry);
             for doc in 0..max_doc {
-                keys.push(doc_values::numeric_value(dvd, entry, doc).map_err(|e| e.to_string())?);
+                keys.push(reader.value(doc).map_err(|e| e.to_string())?);
             }
         }
         (
@@ -4389,9 +4630,10 @@ fn sort_key_values(
             let entry = meta
                 .sorted_numeric_entry(fi.number)
                 .ok_or("no SORTED_NUMERIC doc-values entry")?;
+            let mut reader = doc_values::SortedNumericReader::new(dvd, entry);
+            let mut values = Vec::new();
             for doc in 0..max_doc {
-                let values = doc_values::sorted_numeric_values(dvd, entry, doc)
-                    .map_err(|e| e.to_string())?;
+                reader.values(doc, &mut values).map_err(|e| e.to_string())?;
                 // `SortedNumericSelector.MinValue`/`MaxValue`: the *first*
                 // and the *last* stored value of the document, not its
                 // smallest and largest. The two coincide only for an
@@ -4400,8 +4642,8 @@ fn sort_key_values(
                 // re-deriving min/max here would mask an unsorted column
                 // rather than expose it.
                 keys.push(match selector {
-                    SortedNumericSelector::Min => values.into_iter().next(),
-                    SortedNumericSelector::Max => values.into_iter().last(),
+                    SortedNumericSelector::Min => values.first().copied(),
+                    SortedNumericSelector::Max => values.last().copied(),
                 });
             }
         }
@@ -4409,8 +4651,10 @@ fn sort_key_values(
             let entry = meta
                 .sorted_entry(fi.number)
                 .ok_or("no SORTED doc-values entry")?;
+            // `sorted_ord` is `numeric_value` over the entry's `ords`.
+            let mut reader = doc_values::NumericReader::new(dvd, &entry.ords);
             for doc in 0..max_doc {
-                keys.push(doc_values::sorted_ord(dvd, entry, doc).map_err(|e| e.to_string())?);
+                keys.push(reader.value(doc).map_err(|e| e.to_string())?);
             }
         }
         (IndexSortKind::SortedSet { .. }, field_infos::DocValuesType::SortedSet)
@@ -4461,7 +4705,9 @@ pub(crate) fn check_index_sort(
     let Some(sort_fields) = &si.index_sort else {
         return;
     };
-    let Some(opened) = open_doc_values(dir, commit, si, field_infos) else {
+    if !si.files.iter().any(|f| f.ends_with(".dvm"))
+        || !si.files.iter().any(|f| f.ends_with(".dvd"))
+    {
         // The sharpest of the skip cases, and the reason this is modelled at
         // all: a segment that *declares* an index sort but carries no
         // doc-values files has nothing this check can read, and the sort is
@@ -4478,7 +4724,9 @@ pub(crate) fn check_index_sort(
         return;
     };
     let result = (|| -> Result<Vec<String>, String> {
-        let (meta, dvd) = opened?;
+        // Each field is read from its own `PerFieldDocValuesFormat`
+        // instance's column, opened once per instance.
+        let mut columns: Vec<BaseColumn> = Vec::new();
         let mut per_field: Vec<(Vec<Option<i64>>, segment_info::SortKeyComparator)> =
             Vec::with_capacity(sort_fields.len());
         for sf in sort_fields {
@@ -4488,8 +4736,10 @@ pub(crate) fn check_index_sort(
                 .find(|f| f.name == sf.field)
                 .ok_or_else(|| format!("sort field {:?} is not in .fnm", sf.field))?;
             let cmp = segment_info::SortKeyComparator::new(sf);
+            let (meta, dvd) = cached_base_column(&mut columns, dir, commit, si, field_infos, fi)
+                .map_err(|e| format!("sort field {:?}: {e}", sf.field))?;
             per_field.push((
-                sort_key_values(&dvd, &meta, sf, fi, si.doc_count)
+                sort_key_values(dvd, meta, sf, fi, si.doc_count)
                     .map_err(|e| format!("sort field {:?}: {e}", sf.field))?,
                 cmp,
             ));
@@ -4509,6 +4759,9 @@ pub(crate) fn check_index_sort(
             // `reader.getNumericDocValues(parentField)`: Java walks it
             // unconditionally, so a block segment without the column fails
             // the check rather than passing over an empty walk.
+            let (meta, dvd) =
+                cached_base_column(&mut columns, dir, commit, si, field_infos, parent)
+                    .map_err(|e| format!("parent field: {e}"))?;
             match meta.numeric_entry(parent.number) {
                 None => {
                     return Err(format!(
@@ -4517,7 +4770,7 @@ pub(crate) fn check_index_sort(
                     ))
                 }
                 Some(entry) => {
-                    let mut reader = doc_values::NumericReader::new(&dvd, entry);
+                    let mut reader = doc_values::NumericReader::new(dvd, entry);
                     let mut docs = Vec::new();
                     for doc in 0..si.doc_count {
                         if reader
@@ -4615,7 +4868,7 @@ fn check_soft_deletes(
             .map_err(|e| e.to_string())
             .transpose()
         }
-        _ => open_doc_values(dir, commit, si, field_infos),
+        _ => open_base_column(dir, commit, si, field_infos, fi),
     };
     let Some(column) = opened else {
         // Same shape as the index sort above: `.fnm` names a soft-deletes
@@ -4777,9 +5030,9 @@ fn check_points_structural_invariants(
             let num_index_dims = field.num_index_dims as usize;
             let bytes_per_dim = field.bytes_per_dim as usize;
 
-            let mut value_problems: Vec<String> = Vec::new();
-            let mut bound_problems: Vec<String> = Vec::new();
-            let mut doc_problems: Vec<String> = Vec::new();
+            let mut value_problems = Problems::new();
+            let mut bound_problems = Problems::new();
+            let mut doc_problems = Problems::new();
             let mut docs_seen =
                 lucene_util::fixed_bit_set::FixedBitSet::new(si.doc_count.max(0) as usize);
             let mut total_points = 0i64;
@@ -4839,6 +5092,41 @@ fn check_points_structural_invariants(
                             ));
                         }
                     }
+                }
+            }
+
+            // `CheckIndex.VerifyPointsVisitor`, driven through the BKD
+            // tree's own pruning walk exactly as Java's
+            // `values.intersect(visitor)`: every cell the walk hands to
+            // `compare` must be non-inverted and inside the field's bounds,
+            // every point must fall inside the last cell compared, and a
+            // one-dimensional field's values must be one ascending sweep
+            // with ties broken by ascending docID. The leaf decode above
+            // cannot see any of this: it checks points against the field's
+            // bounds only, and cells exist only in the walk.
+            {
+                let mut cells = Problems::new();
+                let mut visitor = VerifyPointsVisitor::new(field_name, field, &mut cells);
+                let walk = reader.intersect(field_info.number, &mut visitor);
+                let VerifyPointsVisitor {
+                    order: order_problems,
+                    in_cell: in_cell_problems,
+                    ..
+                } = visitor;
+                if let Err(e) = walk {
+                    value_problems.push(format!(
+                        "field {field_name:?}: the BKD intersect walk failed: {e}"
+                    ));
+                }
+                for p in [in_cell_problems, order_problems] {
+                    value_problems.absorb(p);
+                }
+                // A one-dimensional field has no
+                // `points.leaf_bounds_subset_of_field` check to report in.
+                if num_index_dims == 1 {
+                    value_problems.absorb(cells);
+                } else {
+                    bound_problems.absorb(cells);
                 }
             }
 
@@ -4913,6 +5201,150 @@ fn check_points_structural_invariants(
     }
 }
 
+/// `CheckIndex.VerifyPointsVisitor`'s cell and ordering checks, as an
+/// [`points::IntersectVisitor`] that answers `CELL_CROSSES_QUERY` for every
+/// cell so the walk hands it every point with its value. (Its doc and point
+/// counting is [`check_points_structural_invariants`]' leaf walk.)
+struct VerifyPointsVisitor<'a> {
+    field_name: &'a str,
+    num_data_dims: i32,
+    num_index_dims: usize,
+    bytes_per_dim: usize,
+    global_min: &'a [u8],
+    global_max: &'a [u8],
+    last_min: Vec<u8>,
+    last_max: Vec<u8>,
+    /// The last point's first-dimension value and docID, for the
+    /// one-dimensional sweep check.
+    last_value: Vec<u8>,
+    last_doc: i32,
+    cells: &'a mut Problems,
+    in_cell: Problems,
+    order: Problems,
+}
+
+impl<'a> VerifyPointsVisitor<'a> {
+    fn new(field_name: &'a str, field: &'a points::PointsField, cells: &'a mut Problems) -> Self {
+        let bytes_per_dim = usize::try_from(field.bytes_per_dim).unwrap_or(0);
+        let num_index_dims = usize::try_from(field.num_index_dims).unwrap_or(0);
+        Self {
+            field_name,
+            num_data_dims: field.num_dims,
+            num_index_dims,
+            bytes_per_dim,
+            global_min: &field.min_packed_value,
+            global_max: &field.max_packed_value,
+            last_min: field.min_packed_value.clone(),
+            last_max: field.max_packed_value.clone(),
+            last_value: vec![0; bytes_per_dim],
+            last_doc: -1,
+            cells,
+            in_cell: Problems::new(),
+            order: Problems::new(),
+        }
+    }
+
+    /// Dimension `dim`'s bytes of a packed value, empty when the value is
+    /// too short to have them (which `points::open` and the leaf decoder
+    /// already reject).
+    fn dim_of(&self, packed: &'a [u8], dim: usize) -> &'a [u8] {
+        let lo = dim.saturating_mul(self.bytes_per_dim);
+        packed
+            .get(lo..lo.saturating_add(self.bytes_per_dim))
+            .unwrap_or(&[])
+    }
+}
+
+impl points::IntersectVisitor for VerifyPointsVisitor<'_> {
+    fn compare(&mut self, min_packed: &[u8], max_packed: &[u8]) -> points::Relation {
+        self.last_min.clear();
+        self.last_min.extend_from_slice(min_packed);
+        self.last_max.clear();
+        self.last_max.extend_from_slice(max_packed);
+        let name = self.field_name;
+        for dim in 0..self.num_index_dims {
+            let lo = dim.saturating_mul(self.bytes_per_dim);
+            let range = lo..lo.saturating_add(self.bytes_per_dim);
+            let (Some(min), Some(max)) = (min_packed.get(range.clone()), max_packed.get(range))
+            else {
+                continue;
+            };
+            if min > max {
+                self.cells.push(format!(
+                    "field {name:?}: packed points cell minPackedValue {min:?} is out-of-bounds \
+                     of the cell's maxPackedValue {max:?} dim={dim}"
+                ));
+            }
+            if min < self.dim_of(self.global_min, dim) {
+                self.cells.push(format!(
+                    "field {name:?}: packed points cell minPackedValue {min:?} is out-of-bounds \
+                     of the global minimum dim={dim}"
+                ));
+            }
+            if max > self.dim_of(self.global_max, dim) {
+                self.cells.push(format!(
+                    "field {name:?}: packed points cell maxPackedValue {max:?} is out-of-bounds \
+                     of the global maximum dim={dim}"
+                ));
+            }
+        }
+        points::Relation::CellCrossesQuery
+    }
+
+    fn visit(&mut self, doc_id: i32) {
+        self.in_cell.push(format!(
+            "field {:?}: codec called IntersectVisitor.visit without a packed value for \
+             docID={doc_id}",
+            self.field_name
+        ));
+    }
+
+    fn visit_with_value(&mut self, doc_id: i32, packed_value: &[u8]) {
+        let name = self.field_name;
+        for dim in 0..self.num_index_dims {
+            let lo = dim.saturating_mul(self.bytes_per_dim);
+            let range = lo..lo.saturating_add(self.bytes_per_dim);
+            let (Some(value), Some(min), Some(max)) = (
+                packed_value.get(range.clone()),
+                self.last_min.get(range.clone()),
+                self.last_max.get(range),
+            ) else {
+                continue;
+            };
+            if value < min || value > max {
+                self.in_cell.push(format!(
+                    "field {name:?} docID={doc_id}: packed points value {value:?} is \
+                     out-of-bounds of the last cell min={min:?} max={max:?} dim={dim}"
+                ));
+            }
+        }
+        // `numDataDims == 1`: one in-order sweep, ties by increasing docID.
+        // (With more data dimensions a leaf is sorted by whichever
+        // dimension compresses best, so there is no global order.)
+        if self.num_data_dims == 1 {
+            let Some(value) = packed_value.get(..self.bytes_per_dim) else {
+                return;
+            };
+            match self.last_value.as_slice().cmp(value) {
+                std::cmp::Ordering::Greater => self.order.push(format!(
+                    "field {name:?} docID={doc_id}: packed points value {value:?} is \
+                     out-of-order vs the previous document's value {:?}",
+                    self.last_value
+                )),
+                std::cmp::Ordering::Equal if doc_id < self.last_doc => self.order.push(format!(
+                    "field {name:?}: packed points value is the same, but docID={doc_id} \
+                         is out of order vs previous docID={}",
+                    self.last_doc
+                )),
+                _ => {}
+            }
+            self.last_value.clear();
+            self.last_value.extend_from_slice(value);
+            self.last_doc = doc_id;
+        }
+    }
+}
+
 /// The per-field checks a field's own `points.decode`
 /// failure takes down -- everything that walks the field's leaves.
 const POINTS_PER_FIELD: &[&str] = &[
@@ -4965,7 +5397,7 @@ fn check_field_norms(
     si: &SegmentInfo,
     field_infos: &FieldInfos,
     live_docs: Option<&lucene_util::fixed_bit_set::FixedBitSet>,
-    docs_with_terms: &[(String, lucene_util::fixed_bit_set::FixedBitSet)],
+    docs_with_terms: &DocsWithTerms,
     stats: &mut CheckStats,
     checks: &mut Vec<Check>,
 ) {
@@ -5064,13 +5496,10 @@ fn check_field_norms(
         // cross-check either (it lives inside `checkFields`' per-field
         // loop) -- so the check is skipped rather than run against an empty
         // bitset, matching Java.
-        let visited = docs_with_terms
-            .iter()
-            .find(|(n, _)| *n == fi.name)
-            .map(|(_, v)| v);
+        let visited = docs_with_terms.get(&fi.name);
 
-        let mut decode_problems: Vec<String> = Vec::new();
-        let mut agree_problems: Vec<String> = Vec::new();
+        let mut decode_problems = Problems::new();
+        let mut agree_problems = Problems::new();
         let mut docs_with_norm = 0i64;
         // `actual`: live docs with a non-zero norm. `expected`: live docs
         // that have terms.
@@ -6055,8 +6484,8 @@ fn check_hnsw_graphs(
 /// looked for in a sorted copy instead.
 fn check_one_graph<G: HnswGraphView>(graph: &G, name: &str, sorted: bool, checks: &mut Vec<Check>) {
     let size = graph.size();
-    let mut level_problems: Vec<String> = Vec::new();
-    let mut order_problems: Vec<String> = Vec::new();
+    let mut level_problems = Problems::new();
+    let mut order_problems = Problems::new();
     let mut reachable = String::new();
     let mut degenerate: Vec<String> = Vec::new();
     let mut neighbors: Vec<i32> = Vec::new();
@@ -11413,7 +11842,7 @@ mod tests {
                 &si,
                 &fields,
                 None,
-                &[],
+                &DocsWithTerms::new(),
                 &mut stats,
                 &mut checks,
             );
@@ -11537,7 +11966,7 @@ mod tests {
             &si,
             &fields,
             None,
-            &[],
+            &DocsWithTerms::new(),
             &mut stats,
             &mut checks,
         );
@@ -14003,7 +14432,7 @@ mod tests {
     ///    order that every merge and every early-terminating query trusts
     ///    would be verified by nothing.
     /// 3. A `.dvd` the `.si` lists and the directory does not have -- the
-    ///    `dir.open` arm inside `open_doc_values`, distinct from the
+    ///    `dir.open` arm inside `open_base_column`, distinct from the
     ///    `doc_values.open` one c30 drives elsewhere because this is the
     ///    *second*, independent open of the same pair.
     /// 4. The same for the soft-deletes field, whose `softDelCount` is then a
@@ -14280,7 +14709,7 @@ mod tests {
         std::fs::remove_dir_all(&dst).ok();
 
         // (4) A `.dvd` that is *shorter* than the `.dvm` says its column is.
-        // `open_doc_values` parses only the `.dvm`, so the pair opens and the
+        // `open_base_column` parses only the `.dvm`, so the pair opens and the
         // failure lands in `sort_key_values`' per-document read -- the arm
         // that turns "the sort keys cannot be read" into a reported check
         // rather than a silent pass over an unverified order.
@@ -14302,5 +14731,254 @@ mod tests {
             "the failure must name the sort field: {sort:?}"
         );
         std::fs::remove_dir_all(&dst).ok();
+    }
+
+    fn writer_version() -> segment_info::LuceneVersion {
+        segment_info::LuceneVersion {
+            major: 10,
+            minor: 5,
+            bugfix: 0,
+        }
+    }
+
+    /// NUMERIC doc-values fields registered up front, as an index sort
+    /// needs its fields to be.
+    fn numeric_dv_fields(names: &[&str]) -> Vec<field_infos::FieldInfo> {
+        names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                field_infos::FieldInfo::new(*name, i as i32)
+                    .with_omit_norms(true)
+                    .with_doc_values(
+                        field_infos::DocValuesType::Numeric,
+                        field_infos::DocValuesSkipIndexType::None,
+                        -1,
+                    )
+            })
+            .collect()
+    }
+
+    /// Two NUMERIC fields in one `Lucene90` doc-values instance, only one of
+    /// them with a skip index: the column `check_doc_values` opens for the
+    /// first field is shared by the second, so whether `.dvs` is opened must
+    /// not depend on which of the two happens to be read first.
+    #[test]
+    fn a_skip_index_field_sharing_a_column_with_a_plain_one_reads_its_dvs() {
+        use crate::document::{Document, NumericDocValuesField};
+        use crate::index_writer::IndexWriter;
+        for plain_first in [true, false] {
+            let dst = tempdir();
+            let dir = FsDirectory::open(&dst);
+            let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", writer_version()).unwrap();
+            for i in 0..100i64 {
+                let mut d = Document::new();
+                if plain_first {
+                    d.add(NumericDocValuesField::new("a_plain", i));
+                    d.add(NumericDocValuesField::indexed_field("b_skip", i * 3));
+                } else {
+                    d.add(NumericDocValuesField::indexed_field("a_skip", i * 3));
+                    d.add(NumericDocValuesField::new("b_plain", i));
+                }
+                w.add_fields_document(&d).unwrap();
+            }
+            w.commit().unwrap();
+            drop(w);
+            let results = check_directory(&dir).unwrap();
+            let skip = if plain_first { "b_skip" } else { "a_skip" };
+            let check = results[1]
+                .checks
+                .iter()
+                .find(|c| c.name == format!("doc_values.skipper:{skip}"))
+                .expect("the skipper check ran");
+            assert!(check.passed(), "plain_first={plain_first}: {check:?}");
+            assert!(
+                results.iter().all(CheckResult::all_passed),
+                "plain_first={plain_first}"
+            );
+        }
+    }
+
+    /// An index sort whose field lives in the *second*
+    /// `PerFieldDocValuesFormat` instance (`Lucene90_1`) is read from that
+    /// instance's column, not from the first `.dvm` the `.si` lists.
+    #[test]
+    fn an_index_sort_field_in_a_second_doc_values_instance_is_verified() {
+        use crate::document::{Document, NumericDocValuesField};
+        use crate::index_writer::IndexWriter;
+        let dst = tempdir();
+        let dir = FsDirectory::open(&dst);
+        let mut w = IndexWriter::open(
+            &dir,
+            numeric_dv_fields(&["other", "ts"]),
+            "Lucene104",
+            writer_version(),
+        )
+        .unwrap();
+        for f in ["other", "ts"] {
+            w.add_doc_values_field(f).unwrap();
+        }
+        w.set_doc_values_format_for_field(
+            "ts",
+            lucene_codecs::per_field_doc_values::Lucene90DocValuesFormat::new(16).unwrap(),
+        );
+        w.set_index_sort(Some(&[segment_info::IndexSortField::long(
+            "ts", false, None,
+        )]))
+        .unwrap();
+        for i in 0..50i64 {
+            let mut d = Document::new();
+            d.add(NumericDocValuesField::new("other", i));
+            d.add(NumericDocValuesField::new("ts", (i * 7919) % 101));
+            w.add_fields_document(&d).unwrap();
+        }
+        w.commit().unwrap();
+        drop(w);
+        let results = check_directory(&dir).unwrap();
+        let files = dir.list_all().unwrap();
+        assert!(
+            files.iter().filter(|f| f.ends_with(".dvm")).count() >= 2,
+            "two doc-values instances: {files:?}"
+        );
+        let sort = results[1]
+            .checks
+            .iter()
+            .find(|c| c.name == "sort.docs_in_index_sort_order")
+            .expect("the sort check ran");
+        assert!(sort.passed(), "{sort:?}");
+        assert!(results.iter().all(CheckResult::all_passed));
+    }
+
+    /// `VerifyPointsVisitor`: a real multi-leaf 1-D and 2-D index passes the
+    /// cell and ordering checks, and the visitor itself rejects an inverted
+    /// cell, a point outside its cell and an out-of-order 1-D sweep.
+    #[test]
+    fn verify_points_visitor_passes_real_trees_and_rejects_bad_cells_and_order() {
+        use crate::document::{Document, IntPoint};
+        use crate::index_writer::IndexWriter;
+        use points::IntersectVisitor;
+        let dst = tempdir();
+        let dir = FsDirectory::open(&dst);
+        let mut w = IndexWriter::open(&dir, Vec::new(), "Lucene104", writer_version()).unwrap();
+        for i in 0..3000i32 {
+            let mut d = Document::new();
+            d.add(IntPoint::new("one", &[(i * 7919) % 1000]).unwrap());
+            d.add(IntPoint::new("two", &[i % 37, (i * 13) % 101]).unwrap());
+            w.add_fields_document(&d).unwrap();
+        }
+        w.commit().unwrap();
+        drop(w);
+        let results = check_directory(&dir).unwrap();
+        for field in ["one", "two"] {
+            for family in [
+                "points.value_within_field_bounds",
+                "points.point_count_matches",
+            ] {
+                let name = format!("{family}:{field}");
+                let c = results[1]
+                    .checks
+                    .iter()
+                    .find(|c| c.name == name)
+                    .unwrap_or_else(|| panic!("{name} ran"));
+                assert!(c.passed(), "{c:?}");
+            }
+        }
+        assert!(results.iter().all(CheckResult::all_passed));
+
+        let infos = segment_infos::read_latest(&dir).unwrap();
+        let commit = &infos.segments[0];
+        let open = |ext: &str| dir.open(&format!("{}.{ext}", commit.segment_name)).unwrap();
+        let (kdm, kdi, kdd) = (open("kdm"), open("kdi"), open("kdd"));
+        let reader = points::open(&kdm, &kdi, &kdd, &commit.segment_id, "").unwrap();
+        let fis = crate::index_writer::segment_field_infos(&dir, commit).unwrap();
+        let number = |name: &str| fis.fields.iter().find(|f| f.name == name).unwrap().number;
+        let one = reader.field(number("one")).unwrap();
+        assert!(one.num_leaves > 1, "a multi-leaf tree");
+
+        let v = |x: u8| [0x80, 0, 0, x];
+        let mut cells = Problems::new();
+        let mut visitor = VerifyPointsVisitor::new("one", one, &mut cells);
+        // In order, ties by docID: fine.
+        visitor.compare(&v(0), &v(0xff));
+        visitor.visit_with_value(3, &v(5));
+        visitor.visit_with_value(4, &v(5));
+        visitor.visit_with_value(1, &v(6));
+        assert_eq!((visitor.in_cell.total, visitor.order.total), (0, 0));
+        // A tie with a smaller docID, then a smaller value.
+        visitor.visit_with_value(0, &v(6));
+        visitor.visit_with_value(9, &v(2));
+        assert_eq!(visitor.order.total, 2, "{:?}", visitor.order.shown);
+        // A point outside the last cell.
+        visitor.compare(&v(10), &v(20));
+        visitor.visit_with_value(10, &v(30));
+        assert_eq!(visitor.in_cell.total, 1, "{:?}", visitor.in_cell.shown);
+        // An inverted cell.
+        visitor.compare(&v(20), &v(10));
+        drop(visitor);
+        assert!(cells.total >= 1, "{:?}", cells.shown);
+        assert!(cells.shown[0].contains("out-of-bounds of the cell's maxPackedValue"));
+    }
+
+    /// Not a correctness test: times `check_directory` over a 200k-document
+    /// segment with every doc-values type, sparse and dense, and an index
+    /// sort. `cargo test -p lucene-index --release --lib
+    /// check_index::tests::bench_doc_values_check -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_doc_values_check() {
+        use crate::document::{
+            BinaryDocValuesField, Document, NumericDocValuesField, SortedDocValuesField,
+            SortedNumericDocValuesField, SortedSetDocValuesField,
+        };
+        use crate::index_writer::IndexWriter;
+        let dst = tempdir();
+        let dir = FsDirectory::open(&dst);
+        let mut w = IndexWriter::open(
+            &dir,
+            numeric_dv_fields(&["dense"]),
+            "Lucene104",
+            writer_version(),
+        )
+        .unwrap();
+        w.add_doc_values_field("dense").unwrap();
+        w.set_index_sort(Some(&[segment_info::IndexSortField::long(
+            "dense", false, None,
+        )]))
+        .unwrap();
+        let n = 200_000i64;
+        for i in 0..n {
+            let mut d = Document::new();
+            d.add(NumericDocValuesField::new("dense", i));
+            if i % 3 == 0 {
+                d.add(NumericDocValuesField::new("sparse", i * 31 % 1000));
+                d.add(BinaryDocValuesField::new("bin", format!("v{}", i % 977)));
+            }
+            if i % 2 == 0 {
+                d.add(SortedNumericDocValuesField::new("sn", i % 50));
+                d.add(SortedNumericDocValuesField::new("sn", i % 70));
+                d.add(SortedSetDocValuesField::new("set", format!("s{}", i % 300)));
+                d.add(SortedSetDocValuesField::new("set", format!("t{}", i % 200)));
+            }
+            if i % 5 != 0 {
+                d.add(SortedDocValuesField::new(
+                    "sorted",
+                    format!("k{}", i % 1000),
+                ));
+            }
+            w.add_fields_document(&d).unwrap();
+        }
+        w.commit().unwrap();
+        w.force_merge(1).unwrap();
+        w.commit().unwrap();
+        drop(w);
+        let _ = check_directory(&dir).unwrap();
+        let mut best = std::time::Duration::MAX;
+        for _ in 0..3 {
+            let t = std::time::Instant::now();
+            let results = check_directory(&dir).unwrap();
+            best = best.min(t.elapsed());
+            assert!(results.iter().all(CheckResult::all_passed));
+        }
+        eprintln!("check_directory over {n} docs: best of 3 = {best:?}");
     }
 }
