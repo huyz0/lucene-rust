@@ -643,21 +643,22 @@ impl MergePolicy for TieredMergePolicy {
         } else {
             usize::try_from(max_segment_count).unwrap_or(1)
         };
-        // `isMerged(infos, infoZero, ctx)`, answered up front per segment.
-        let mut merged: HashSet<String> = HashSet::new();
-        for info in infos {
-            if self.is_merged(infos, info, ctx)? {
-                merged.insert(info.name.clone());
+        // `isMerged(infos, infoZero, ctx)`, asked only where Java's
+        // short-circuiting condition asks it.
+        let is_merged = |name: &str| -> Result<bool> {
+            match infos.iter().find(|info| info.name == name) {
+                Some(info) => self.is_merged(infos, info, ctx),
+                None => Ok(false),
             }
-        }
+        };
         let groups = forced_merges_full(
             &stats,
             max,
             segments_to_merge,
             ctx.merging_segments(),
-            &merged,
+            is_merged,
             &self.config,
-        );
+        )?;
         Ok(Self::to_spec(infos, groups))
     }
 
@@ -812,5 +813,46 @@ mod tests {
             spec.groups(),
             vec![vec!["_x".to_string(), "_y".to_string()]]
         );
+    }
+
+    /// `TieredMergePolicy.findForcedMerges` asks `isMerged` only for the
+    /// single-segment branch Java's short-circuit reaches, not once per
+    /// segment up front: the context sees exactly the one
+    /// `numDeletesToMerge` per segment that the size stats need.
+    #[test]
+    fn tiered_forced_merge_asks_is_merged_lazily() {
+        struct Counting {
+            calls: std::cell::Cell<usize>,
+            merging: HashSet<String>,
+        }
+        impl MergeContext for Counting {
+            fn num_deletes_to_merge(&self, info: &MergeSegment) -> Result<i32> {
+                self.calls.set(self.calls.get() + 1);
+                Ok(info.del_count)
+            }
+            fn num_deleted_docs(&self, info: &MergeSegment) -> i32 {
+                info.del_count
+            }
+            fn merging_segments(&self) -> &HashSet<String> {
+                &self.merging
+            }
+        }
+        let ctx = Counting {
+            calls: std::cell::Cell::new(0),
+            merging: HashSet::new(),
+        };
+        let infos: Vec<MergeSegment> = ["_a", "_b", "_c", "_d"]
+            .iter()
+            .map(|n| seg(n, 10, 0, 100))
+            .collect();
+        let to_merge: HashMap<String, bool> =
+            infos.iter().map(|s| (s.name.clone(), true)).collect();
+        let p = TieredMergePolicy::default();
+        let spec = p
+            .find_forced_merges(&infos, 1, &to_merge, &ctx)
+            .unwrap()
+            .unwrap();
+        assert_eq!(spec.groups().len(), 1);
+        assert_eq!(ctx.calls.get(), infos.len());
     }
 }
