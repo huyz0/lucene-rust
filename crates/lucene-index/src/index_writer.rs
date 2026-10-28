@@ -3485,6 +3485,23 @@ impl IndexingConfig {
                 )
             }
         };
+        // `PerFieldKnnVectorsFormat` picks a field's format when the field
+        // is first added (Java: during indexing, before any flush), so the
+        // codec is asked once per field here, in first-seen order, before the
+        // graphs build alongside inversion -- never from a worker thread, in
+        // whatever order the stages happen to run.
+        let mut vector_formats: Vec<(&str, per_field_knn_vectors::KnnVectorsFormat)> = Vec::new();
+        for v in buf.vectors.iter().flatten() {
+            if !vector_formats.iter().any(|(n, _)| *n == v.field_name) {
+                vector_formats.push((&v.field_name, self.knn_vectors_format_for(&v.field_name)));
+            }
+        }
+        let vector_format_for = |name: &str| {
+            vector_formats
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map_or_else(|| self.knn_vectors_format_for(name), |(_, f)| *f)
+        };
         let build_vectors = || -> Result<_> {
             Ok(if self.vector_fields.is_empty() {
                 None
@@ -3493,7 +3510,7 @@ impl IndexingConfig {
                     buf.vectors,
                     &self.vector_fields,
                     buf.docs.len() as i32,
-                    &|name: &str| self.knn_vectors_format_for(name),
+                    &vector_format_for,
                     self.knn_vectors_direct(),
                     &segment_id,
                 )?
