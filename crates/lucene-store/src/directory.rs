@@ -129,8 +129,17 @@ impl Input {
     /// `len` bytes of `base` from `start`, sharing `base` rather than copying
     /// them ([`Input::Slice`]). Out of bounds is corruption, as Java's
     /// `IndexInput.slice` reports it.
+    ///
+    /// A test harness's tracked input ([`Input::Tracked`]) is copied out
+    /// instead: its guard models Java's `close()`, which closes a compound
+    /// file's slices with it, and a window sharing it would keep the file
+    /// "open" past its owner.
     pub fn slice_of(base: &Arc<Input>, start: usize, len: usize) -> Result<Input> {
         match start.checked_add(len) {
+            #[cfg(any(test, feature = "test-util"))]
+            Some(end) if end <= base.len() && matches!(**base, Input::Tracked(_)) => {
+                Ok(Input::Owned(base[start..end].to_vec()))
+            }
             Some(end) if end <= base.len() => Ok(Input::Slice {
                 base: Arc::clone(base),
                 start,
@@ -1181,6 +1190,13 @@ mod tests {
         let inner = Input::slice_of(&Arc::new(mid), 1, 2).unwrap();
         assert_eq!(inner.as_ref(), b"45");
         assert_eq!(&Input::slice_of(&base, 10, 0).unwrap()[..], b"");
+        let tracked = Arc::new(Input::Tracked(TrackedInput::new(
+            Input::Owned(b"abc".to_vec()),
+            (),
+        )));
+        let copy = Input::slice_of(&tracked, 1, 2).unwrap();
+        assert!(matches!(copy, Input::Owned(_)), "{copy:?}");
+        assert_eq!((&copy[..], Arc::strong_count(&tracked)), (&b"bc"[..], 1));
         for (start, len) in [(0, 11), (11, 0), (usize::MAX, 2)] {
             let err = Input::slice_of(&base, start, len).unwrap_err();
             assert!(matches!(err, Error::Corrupted(_)), "{err:?}");
