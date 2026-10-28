@@ -83,6 +83,10 @@ pub enum Error {
     /// A terms dictionary other than the block tree failed to write a field.
     #[error("terms dictionary: {0}")]
     Dictionary(String),
+    /// A [`StreamingFieldsWriter`] call out of order (a field opened twice,
+    /// terms or a close with no field open, a finish with one still open).
+    #[error("streaming postings writer: {0}")]
+    StreamingOrder(&'static str),
     /// `Lucene103BlockTreeTermsWriter.validateSettings`'s
     /// `IllegalArgumentException` ([`WriteOptions::validate`]).
     #[error("{0}")]
@@ -868,6 +872,224 @@ pub fn write_no_fields(
     write_any_fields::<TermPostings>(&[], &[], options, segment_id, segment_suffix)
 }
 
+/// [`write_fields_with_options`] fed one field at a time, and each field a
+/// batch of terms at a time -- `Lucene103BlockTreeTermsWriter` over
+/// `Lucene104PostingsWriter` as `FieldsConsumer.merge` drives them. A merge
+/// hands it each run of merged terms as soon as the run is decoded and drops
+/// the run, so it never holds the merged segment's decoded postings, only
+/// their encoded bytes and each term's dictionary entry.
+///
+/// Writes exactly the bytes [`write_fields_with_options`] writes for the
+/// same fields and terms (fields with no terms get no record, as there), with
+/// `options.has_prox`/`has_payloads_or_offsets` read as `false` when unset:
+/// a streaming caller cannot let the inputs decide, and a merge always knows.
+pub struct StreamingFieldsWriter<'a> {
+    postings: PostingsWriter<'a>,
+    dict: BlockTreeDictionary,
+    field: Option<StreamedField>,
+}
+
+/// The open field of a [`StreamingFieldsWriter`]: its terms' bytes,
+/// statistics and file pointers so far.
+struct StreamedField {
+    field_number: i32,
+    index_options: IndexOptions,
+    has_payloads: bool,
+    term_bytes: Vec<u8>,
+    /// Term `i` is `term_bytes[term_ends[i - 1]..term_ends[i]]`.
+    term_ends: Vec<usize>,
+    doc_freqs: Vec<i32>,
+    total_term_freqs: Vec<i64>,
+    singletons: Vec<i32>,
+    states: TermStateColumns,
+}
+
+impl StreamedField {
+    fn last_term(&self) -> Option<&[u8]> {
+        let end = *self.term_ends.last()?;
+        let start = self
+            .term_ends
+            .len()
+            .checked_sub(2)
+            .map_or(0, |i| self.term_ends[i]);
+        Some(&self.term_bytes[start..end])
+    }
+}
+
+impl<'a> StreamingFieldsWriter<'a> {
+    /// The postings and dictionary headers.
+    ///
+    /// # Errors
+    /// [`Error::InvalidBlockSizes`] for `options`.
+    pub fn new(
+        options: &WriteOptions,
+        segment_id: &'a [u8; ID_LENGTH],
+        segment_suffix: &'a str,
+    ) -> Result<Self> {
+        options.validate()?;
+        Ok(Self {
+            postings: PostingsWriter::new(
+                options.has_prox.unwrap_or(false),
+                options.has_payloads_or_offsets.unwrap_or(false),
+                segment_id,
+                segment_suffix,
+            ),
+            dict: BlockTreeDictionary::new(options, segment_id, segment_suffix),
+            field: None,
+        })
+    }
+
+    /// `TermsWriter` for one field; its terms follow through
+    /// [`Self::add_terms`], then [`Self::finish_field`].
+    ///
+    /// # Errors
+    /// [`Error::UnsupportedIndexOptions`]; a field already open.
+    pub fn start_field(
+        &mut self,
+        field_number: i32,
+        index_options: IndexOptions,
+        has_payloads: bool,
+    ) -> Result<()> {
+        if !matches!(
+            index_options,
+            IndexOptions::Docs
+                | IndexOptions::DocsAndFreqs
+                | IndexOptions::DocsAndFreqsAndPositions
+                | IndexOptions::DocsAndFreqsAndPositionsAndOffsets
+                | IndexOptions::DocsAndCustomFreqs
+        ) {
+            return Err(Error::UnsupportedIndexOptions(index_options));
+        }
+        if self.field.is_some() {
+            return Err(Error::StreamingOrder(
+                "start_field: the previous field is still open",
+            ));
+        }
+        self.field = Some(StreamedField {
+            field_number,
+            index_options,
+            has_payloads,
+            term_bytes: Vec::new(),
+            term_ends: Vec::new(),
+            doc_freqs: Vec::new(),
+            total_term_freqs: Vec::new(),
+            singletons: Vec::new(),
+            states: TermStateColumns::default(),
+        });
+        Ok(())
+    }
+
+    /// The open field's next terms, ascending and after every term already
+    /// added; `norms` as [`write_fields_with_norms`] takes them. An empty
+    /// batch is nothing.
+    ///
+    /// # Errors
+    /// What [`write_fields`] rejects in a field's terms (indices are within
+    /// the batch, except [`Error::TermsNotSorted`], which counts from the
+    /// field's first term); no field open.
+    pub fn add_terms<T: TermSource>(
+        &mut self,
+        terms: &[T],
+        norms: &[FieldNorms<'_>],
+    ) -> Result<()> {
+        let Some(field) = self.field.as_mut() else {
+            return Err(Error::StreamingOrder("add_terms: no field is open"));
+        };
+        if terms.is_empty() {
+            return Ok(());
+        }
+        if field
+            .last_term()
+            .is_some_and(|last| last >= terms[0].term())
+        {
+            return Err(Error::TermsNotSorted(field.term_ends.len()));
+        }
+        let input = FieldPostingsInput {
+            field_number: field.field_number,
+            index_options: field.index_options,
+            doc_count: 0,
+            has_payloads: field.has_payloads,
+            terms,
+        };
+        let stats = validate_field(&input)?;
+        let (block_terms, singletons) = stats.slices();
+        self.postings
+            .encode_terms(&input, singletons, norms, &mut field.states);
+        for term in block_terms {
+            field.term_bytes.extend_from_slice(term.bytes);
+            field.term_ends.push(field.term_bytes.len());
+            field.doc_freqs.push(term.doc_freq);
+            field.total_term_freqs.push(term.total_term_freq);
+        }
+        field.singletons.extend_from_slice(singletons);
+        Ok(())
+    }
+
+    /// Closes the open field: its dictionary blocks, trie and `.tmd` record,
+    /// or nothing when it got no terms. `doc_count` is `docsSeen`.
+    ///
+    /// # Errors
+    /// No field open.
+    pub fn finish_field(&mut self, doc_count: i32) -> Result<()> {
+        let Some(field) = self.field.take() else {
+            return Err(Error::StreamingOrder("finish_field: no field is open"));
+        };
+        if field.term_ends.is_empty() {
+            return Ok(());
+        }
+        let mut start = 0usize;
+        let block_terms: Vec<blocktree_writer::BlockTerm<'_>> = field
+            .term_ends
+            .iter()
+            .zip(&field.doc_freqs)
+            .zip(&field.total_term_freqs)
+            .map(|((&end, &doc_freq), &total_term_freq)| {
+                let bytes = &field.term_bytes[start..end];
+                start = end;
+                blocktree_writer::BlockTerm {
+                    bytes,
+                    doc_freq,
+                    total_term_freq,
+                }
+            })
+            .collect();
+        self.dict.write_field(&FieldTermStates {
+            field_number: field.field_number,
+            index_options: field.index_options,
+            has_payloads: field.has_payloads,
+            doc_count,
+            block_terms: &block_terms,
+            singletons: &field.singletons,
+            doc_start_fp: &field.states.doc_start_fp,
+            pos_start_fp: &field.states.pos_start_fp,
+            pay_start_fp: &field.states.pay_start_fp,
+            last_pos_block_offset: &field.states.last_pos_block_offset,
+        });
+        Ok(())
+    }
+
+    /// Every file, footers included.
+    ///
+    /// # Errors
+    /// A field still open.
+    pub fn finish(self) -> Result<Output> {
+        if self.field.is_some() {
+            return Err(Error::StreamingOrder("finish: a field is still open"));
+        }
+        let postings = self.postings.finish();
+        let (tim, tip, tmd) = self.dict.finish();
+        Ok(Output {
+            doc: postings.doc,
+            psm: postings.psm,
+            pos: postings.pos,
+            pay: postings.pay,
+            tim,
+            tip,
+            tmd,
+        })
+    }
+}
+
 /// [`write_fields_with_options`] without its non-empty check.
 fn write_any_fields<T: TermSource>(
     inputs: &[FieldPostingsInput<'_, T>],
@@ -877,7 +1099,7 @@ fn write_any_fields<T: TermSource>(
     segment_suffix: &str,
 ) -> Result<Output> {
     options.validate()?;
-    let mut dict = BlockTreeDictionary::new(inputs.len(), options, segment_id, segment_suffix);
+    let mut dict = BlockTreeDictionary::new(options, segment_id, segment_suffix);
     let postings = write_any_postings(
         inputs,
         norms,
@@ -908,17 +1130,17 @@ struct BlockTreeDictionary {
     tim: Vec<u8>,
     tip: Vec<u8>,
     tmd: Vec<u8>,
+    /// The `.tmd` field records, after `numFields`: kept apart so that a
+    /// streaming writer, which only learns at the end which fields had
+    /// terms, can still write the count first.
+    records: Vec<u8>,
+    num_fields: usize,
     block_sizes: (usize, usize),
 }
 
 impl BlockTreeDictionary {
-    /// The three headers and `numFields`. `options` must be validated.
-    fn new(
-        num_fields: usize,
-        options: &WriteOptions,
-        segment_id: &[u8; ID_LENGTH],
-        segment_suffix: &str,
-    ) -> Self {
+    /// The three headers. `options` must be validated.
+    fn new(options: &WriteOptions, segment_id: &[u8; ID_LENGTH], segment_suffix: &str) -> Self {
         // Every file starts at a size a small segment fits: growing an empty
         // buffer through 8, 16, 32 ... bytes was a measurable share of a
         // one-document flush (`MemoryIndex`).
@@ -938,11 +1160,12 @@ impl BlockTreeDictionary {
         let tip = header(TERMS_INDEX_CODEC_NAME);
         let mut tmd = header(TERMS_META_CODEC_NAME);
         write_postings_terms_header(&mut tmd, segment_id, segment_suffix);
-        tmd.write_vint(num_fields as i32); // numFields
         BlockTreeDictionary {
             tim,
             tip,
             tmd,
+            records: Vec::with_capacity(initial),
+            num_fields: 0,
             block_sizes: (options.min_items_in_block, options.max_items_in_block),
         }
     }
@@ -950,7 +1173,13 @@ impl BlockTreeDictionary {
     /// One field's `.tim` blocks, `.tip` trie and `.tmd` record. `field`
     /// must have terms.
     fn write_field(&mut self, field: &FieldTermStates<'_>) {
-        let Self { tim, tip, tmd, .. } = self;
+        self.num_fields = self.num_fields.saturating_add(1);
+        let Self {
+            tim,
+            tip,
+            records: tmd,
+            ..
+        } = self;
         // ---- this field's .tim blocks + .tip trie ----
         // `Lucene103BlockTreeTermsWriter`'s block splitting and
         // `TrieBuilder`, in `crate::blocktree_writer`; each block's term
@@ -1000,8 +1229,12 @@ impl BlockTreeDictionary {
             mut tim,
             mut tip,
             mut tmd,
+            records,
+            num_fields,
             ..
         } = self;
+        tmd.write_vint(num_fields as i32); // numFields
+        tmd.extend_from_slice(&records);
         codec_util::write_footer(&mut tim);
         codec_util::write_footer(&mut tip);
         tmd.write_i64(tip.len() as i64); // indexLength
@@ -1051,7 +1284,7 @@ pub fn write_block_tree_dictionary(
 ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
     options.validate()?;
     let written: Vec<&DictionaryField> = fields.iter().filter(|f| !f.terms.is_empty()).collect();
-    let mut dict = BlockTreeDictionary::new(written.len(), options, segment_id, segment_suffix);
+    let mut dict = BlockTreeDictionary::new(options, segment_id, segment_suffix);
     for field in written {
         if let Some(i) = field
             .terms
@@ -1313,6 +1546,27 @@ where
     Ok(writer.finish())
 }
 
+/// Per term, in term order, the `IntBlockTermState` file pointers
+/// `finishTerm` leaves: `.doc` always, `.pos` and `lastPosBlockOffset` only
+/// for a field with positions, `.pay` only for one that also has offsets or
+/// payloads (empty otherwise, as [`FieldTermStates`] expects).
+#[derive(Debug, Default)]
+struct TermStateColumns {
+    doc_start_fp: Vec<u64>,
+    pos_start_fp: Vec<u64>,
+    pay_start_fp: Vec<u64>,
+    last_pos_block_offset: Vec<i64>,
+}
+
+impl TermStateColumns {
+    fn clear(&mut self) {
+        self.doc_start_fp.clear();
+        self.pos_start_fp.clear();
+        self.pay_start_fp.clear();
+        self.last_pos_block_offset.clear();
+    }
+}
+
 /// The postings streams kept open across `setField`/`writeTerm` calls.
 /// Shared-terms merges supply one term/field at a time instead of buffering
 /// an entire merged segment before the existing writer can consume it.
@@ -1321,6 +1575,10 @@ pub(crate) struct PostingsWriter<'a> {
     pos: Vec<u8>,
     pay: Vec<u8>,
     maxima: PostingsMaxima,
+    /// The current call's term pointers and position layouts, kept for
+    /// their capacity.
+    states: TermStateColumns,
+    layouts: Vec<PositionLayout>,
     any_positions: bool,
     any_offsets_or_payloads: bool,
     segment_id: &'a [u8; ID_LENGTH],
@@ -1360,6 +1618,8 @@ impl<'a> PostingsWriter<'a> {
                 Vec::new()
             },
             maxima: PostingsMaxima::default(),
+            states: TermStateColumns::default(),
+            layouts: Vec::new(),
             any_positions,
             any_offsets_or_payloads,
             segment_id,
@@ -1395,14 +1655,46 @@ impl<'a> PostingsWriter<'a> {
         E: From<Error>,
         F: FnMut(&FieldTermStates<'_>) -> std::result::Result<(), E>,
     {
+        let (block_terms, singletons) = stats.slices();
+        // Reused from field to field (and from call to call: the
+        // incremental shared-terms merge supplies one term per call).
+        let mut states = std::mem::take(&mut self.states);
+        states.clear();
+        self.encode_terms(input, singletons, norms, &mut states);
+        let result = terms_dict(&FieldTermStates {
+            field_number: input.field_number,
+            index_options: input.index_options,
+            has_payloads: input.has_payloads,
+            doc_count: input.doc_count,
+            block_terms,
+            singletons,
+            doc_start_fp: &states.doc_start_fp,
+            pos_start_fp: &states.pos_start_fp,
+            pay_start_fp: &states.pay_start_fp,
+            last_pos_block_offset: &states.last_pos_block_offset,
+        });
+        self.states = states;
+        result
+    }
+
+    /// `startTerm`/`startDoc`/`addPosition`/`finishTerm` for `input`'s terms
+    /// (validated; `singletons` from their [`FieldStats`]), appending each
+    /// term's file pointers to `states`.
+    fn encode_terms<T: TermSource>(
+        &mut self,
+        input: &FieldPostingsInput<'_, T>,
+        singletons: &[i32],
+        norms: &[FieldNorms<'_>],
+        states: &mut TermStateColumns,
+    ) {
         let Self {
             doc,
             pos,
             pay,
             maxima,
+            layouts,
             ..
         } = self;
-        let (block_terms, singletons) = stats.slices();
         let index_has_positions = input.index_options.subsumes_positions();
         let index_has_freq = input.index_options != IndexOptions::Docs;
         // `Lucene104PostingsWriter.setField`'s `fieldHasNorms`: this field's
@@ -1430,37 +1722,28 @@ impl<'a> PostingsWriter<'a> {
         let index_has_offsets = input.index_options.subsumes_offsets();
         let index_has_payloads = input.has_payloads;
         let index_has_offsets_or_payloads = index_has_offsets || index_has_payloads;
-        let mut pos_start_fp = if index_has_positions {
-            vec![0u64; input.terms.len()]
-        } else {
-            Vec::new()
-        };
-        let mut pay_start_fp = if index_has_positions && index_has_offsets_or_payloads {
-            vec![0u64; input.terms.len()]
-        } else {
-            Vec::new()
-        };
+        let TermStateColumns {
+            doc_start_fp,
+            pos_start_fp,
+            pay_start_fp,
+            last_pos_block_offset,
+        } = states;
         // `lastPosBlockOffset` per term: where this term's vint position tail
         // starts, relative to its own `posStartFP`. Only written to the term
         // metadata when `totalTermFreq > BLOCK_SIZE` (see
         // [`write_term_metadata`]), but computed for every term because
         // [`write_position_tail`] is the only place that knows it.
-        let mut last_pos_block_offset = if index_has_positions {
-            vec![0i64; input.terms.len()]
-        } else {
-            Vec::new()
-        };
         // One layout per term when the field indexes positions, none at all
         // otherwise: a `Vec<Option<_>>` of `None`s would cost a 80-byte slot
         // per term (80 MB for a million-term field) for nothing.
-        let mut layouts: Vec<PositionLayout> = Vec::new();
+        layouts.clear();
         if index_has_positions {
-            layouts.reserve_exact(input.terms.len());
+            layouts.reserve(input.terms.len());
             let mut scratch = PositionScratch::default();
-            for (i, t) in input.terms.iter().enumerate() {
-                pos_start_fp[i] = pos.len() as u64;
+            for t in input.terms.iter() {
+                pos_start_fp.push(pos.len() as u64);
                 if index_has_offsets_or_payloads {
-                    pay_start_fp[i] = pay.len() as u64;
+                    pay_start_fp.push(pay.len() as u64);
                 }
                 let layout = write_position_tail(
                     pos,
@@ -1470,7 +1753,7 @@ impl<'a> PostingsWriter<'a> {
                     index_has_payloads,
                     &mut scratch,
                 );
-                last_pos_block_offset[i] = layout.last_pos_block_offset as i64;
+                last_pos_block_offset.push(layout.last_pos_block_offset as i64);
                 layouts.push(layout);
             }
         }
@@ -1480,22 +1763,12 @@ impl<'a> PostingsWriter<'a> {
         // absolute convention `postings::TermMetadata::doc_start_fp` decodes
         // into) where its tail block begins, or `0` for a singleton term
         // (never read for singletons, see `postings::singleton_postings`).
-        // The incremental shared-terms merge supplies one term per call.
-        // Keep that pointer on the stack rather than allocating per term.
-        let mut one_doc_start_fp = [0u64; 1];
-        let mut many_doc_start_fp = Vec::new();
-        let doc_start_fp: &mut [u64] = if input.terms.len() == 1 {
-            &mut one_doc_start_fp
-        } else {
-            many_doc_start_fp.resize(input.terms.len(), 0);
-            &mut many_doc_start_fp
-        };
         for (i, t) in input.terms.iter().enumerate() {
             // `startTerm` samples `docOut.getFilePointer()` for every term,
             // singletons included: a singleton writes no `.doc` bytes, so its
             // `docStartFP` equals the next term's, and `encodeTerm` keys the
             // zigzag singleton branch off that equality.
-            doc_start_fp[i] = doc.len() as u64;
+            doc_start_fp.push(doc.len() as u64);
             if singletons[i] != -1 {
                 continue;
             }
@@ -1559,20 +1832,6 @@ impl<'a> PostingsWriter<'a> {
                 write_tail_block(doc, &docs[start..], prev_doc_id, index_has_freq);
             }
         }
-
-        terms_dict(&FieldTermStates {
-            field_number: input.field_number,
-            index_options: input.index_options,
-            has_payloads: input.has_payloads,
-            doc_count: input.doc_count,
-            block_terms,
-            singletons,
-            doc_start_fp,
-            pos_start_fp: &pos_start_fp,
-            pay_start_fp: &pay_start_fp,
-            last_pos_block_offset: &last_pos_block_offset,
-        })?;
-        Ok(())
     }
 
     /// `close`: footers and the `.psm` impact maxima and lengths.
@@ -1586,6 +1845,7 @@ impl<'a> PostingsWriter<'a> {
             any_offsets_or_payloads,
             segment_id,
             segment_suffix,
+            ..
         } = self;
         let initial = 256;
         codec_util::write_footer(&mut doc);
@@ -6463,6 +6723,139 @@ mod tests {
                 payload_lengths: 1,
                 total_term_freq: 2,
             })
+        ));
+    }
+
+    /// [`StreamingFieldsWriter`] writes [`write_fields_with_options`]'s
+    /// bytes whatever the batch split, and a field that gets no terms adds
+    /// nothing.
+    #[test]
+    fn streaming_writer_matches_whole_field_writer() {
+        let docs_terms: Vec<TermPostings> = (0..40u8)
+            .map(|i| match i % 4 {
+                0 => varied_docs_term(&[b'a', i], 1),
+                1 => irregular_docs_term(&[b'a', i], 300),
+                2 => varied_docs_term(&[b'a', i], 9000),
+                _ => irregular_docs_term(&[b'a', i], 17),
+            })
+            .collect();
+        let rich_terms: Vec<TermPostings> = (0..30u8)
+            .map(|i| {
+                let mut t = irregular_positions_term(
+                    &[b'b', i],
+                    40 + 50 * i32::from(i),
+                    1 + i32::from(i % 7) * 3,
+                );
+                t.offsets = t
+                    .positions
+                    .iter()
+                    .map(|ps| ps.iter().map(|&p| (p * 5, p * 5 + 3)).collect())
+                    .collect();
+                let total: usize = t.positions.iter().map(Vec::len).sum();
+                t.payload_lengths = (0..total).map(|k| (k % 4) as u32).collect();
+                t.payload_bytes = (0..t.payload_lengths.iter().sum::<u32>())
+                    .map(|b| b as u8)
+                    .collect();
+                t
+            })
+            .collect();
+        let pos_terms: Vec<TermPostings> = (0..25u8)
+            .map(|i| {
+                irregular_positions_term(&[b'c', i], 1 + 20 * i32::from(i), 1 + i32::from(i % 5))
+            })
+            .collect();
+        let max_doc = 30_000usize;
+        let norm_values: Vec<i64> = (0..max_doc as i64).map(|d| 1 + d % 13).collect();
+        let norms = [FieldNorms {
+            field_number: 2,
+            values: &norm_values,
+        }];
+        let fields = [
+            (1, IndexOptions::DocsAndFreqs, false, &docs_terms),
+            (
+                2,
+                IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
+                true,
+                &rich_terms,
+            ),
+            (3, IndexOptions::DocsAndFreqsAndPositions, false, &pos_terms),
+        ];
+        let inputs: Vec<FieldPostingsInput<'_>> = fields
+            .iter()
+            .map(
+                |&(field_number, index_options, has_payloads, terms)| FieldPostingsInput {
+                    field_number,
+                    index_options,
+                    doc_count: 7,
+                    has_payloads,
+                    terms,
+                },
+            )
+            .collect();
+        let options = WriteOptions {
+            has_prox: Some(true),
+            has_payloads_or_offsets: Some(true),
+            ..WriteOptions::default()
+        };
+        let id = [7u8; ID_LENGTH];
+        let expected =
+            write_fields_with_options(&inputs, &norms, &options, &id, "Lucene104_0").unwrap();
+        for batch in [1usize, 3, 7, usize::MAX] {
+            let mut w = StreamingFieldsWriter::new(&options, &id, "Lucene104_0").unwrap();
+            // A field whose terms were all deleted: no record at all.
+            w.start_field(0, IndexOptions::Docs, false).unwrap();
+            w.finish_field(0).unwrap();
+            for input in &inputs {
+                w.start_field(input.field_number, input.index_options, input.has_payloads)
+                    .unwrap();
+                for chunk in input.terms.chunks(batch.min(input.terms.len())) {
+                    w.add_terms(chunk, &norms).unwrap();
+                }
+                w.finish_field(input.doc_count).unwrap();
+            }
+            let got = w.finish().unwrap();
+            for (name, a, b) in [
+                ("doc", &got.doc, &expected.doc),
+                ("psm", &got.psm, &expected.psm),
+                ("pos", &got.pos, &expected.pos),
+                ("pay", &got.pay, &expected.pay),
+                ("tim", &got.tim, &expected.tim),
+                ("tip", &got.tip, &expected.tip),
+                ("tmd", &got.tmd, &expected.tmd),
+            ] {
+                assert!(a == b, "batch {batch}: .{name} differs");
+            }
+        }
+    }
+
+    #[test]
+    fn streaming_writer_rejects_out_of_order_terms_and_calls() {
+        let options = WriteOptions {
+            has_prox: Some(false),
+            has_payloads_or_offsets: Some(false),
+            ..WriteOptions::default()
+        };
+        let id = [1u8; ID_LENGTH];
+        let mut w = StreamingFieldsWriter::new(&options, &id, "").unwrap();
+        let b = [varied_docs_term(b"b", 2)];
+        let a = [varied_docs_term(b"a", 2)];
+        assert!(matches!(
+            w.add_terms(&b, &[]),
+            Err(Error::StreamingOrder(_))
+        ));
+        w.start_field(0, IndexOptions::DocsAndFreqs, false).unwrap();
+        assert!(matches!(
+            w.start_field(1, IndexOptions::DocsAndFreqs, false),
+            Err(Error::StreamingOrder(_))
+        ));
+        w.add_terms(&b, &[]).unwrap();
+        assert!(matches!(
+            w.add_terms(&a, &[]),
+            Err(Error::TermsNotSorted(1))
+        ));
+        assert!(matches!(
+            w.add_terms(&b, &[]),
+            Err(Error::TermsNotSorted(1))
         ));
     }
 }
