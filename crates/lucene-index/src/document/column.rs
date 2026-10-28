@@ -840,8 +840,9 @@ fn batch_documents(batch: &dyn ColumnBatch) -> Result<Vec<Document>> {
                                 c.name(),
                                 v,
                                 ft.clone(),
-                            )));
+                            )?));
                         }
+                        Ok(())
                     },
                 )?;
             }
@@ -864,8 +865,9 @@ fn batch_documents(batch: &dyn ColumnBatch) -> Result<Vec<Document>> {
                                 c.name(),
                                 v,
                                 ft.clone(),
-                            )));
+                            )?));
                         }
+                        Ok(())
                     },
                 )?;
             }
@@ -904,7 +906,7 @@ fn collect_vectors(
     c: &Column,
     num_docs: usize,
     mut next: impl FnMut() -> (i32, Option<VectorValue>),
-    mut on_vector: impl FnMut(usize, VectorValue),
+    mut on_vector: impl FnMut(usize, VectorValue) -> Result<()>,
 ) -> Result<()> {
     let dim = c.field_type().vector_dimension();
     let mut prev = -1;
@@ -933,7 +935,7 @@ fn collect_vectors(
             )));
         }
         prev = doc;
-        on_vector(d, value);
+        on_vector(d, value)?;
     }
 }
 
