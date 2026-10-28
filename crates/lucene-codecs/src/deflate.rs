@@ -21,17 +21,22 @@
 //! earlier in the same buffer -- exactly the "dictionary bytes already
 //! sitting before `d_off`" trick [`crate::lz4::decompress`] uses.
 
-use lucene_store::data_input::DataInput;
+use lucene_store::data_input::{DataInput, SliceInput};
 use lucene_store::{Error, Result};
 use miniz_oxide::inflate::core::inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
 use miniz_oxide::inflate::core::{decompress as tinfl_decompress, DecompressorOxide};
 use miniz_oxide::inflate::TINFLStatus;
 
+thread_local! {
+    static DECOMPRESSOR: std::cell::RefCell<Box<DecompressorOxide>> =
+        std::cell::RefCell::new(Box::default());
+}
+
 /// Decompresses `compressed_len` raw-DEFLATE bytes from `input` into
 /// `dest[d_off..d_off+decompressed_len]`. Back-references may reach earlier
 /// into `dest` than `d_off` (a preset dictionary).
 pub(crate) fn decompress(
-    input: &mut impl DataInput,
+    input: &mut SliceInput<'_>,
     compressed_len: usize,
     decompressed_len: usize,
     dest: &mut [u8],
@@ -67,20 +72,31 @@ pub(crate) fn decompress(
             input.remaining()
         )));
     }
-    let mut compressed = vec![0u8; compressed_len];
-    input.read_bytes(&mut compressed)?;
+    // Borrowed straight out of the input -- no per-unit copy. `remaining`
+    // was checked above, so the end cannot pass the input's end.
+    let at = input.position();
+    // ARITH: `compressed_len <= remaining() == len - at`.
+    #[allow(clippy::arithmetic_side_effects)]
+    let compressed = input.slice(at, at + compressed_len)?;
+    input.skip(compressed_len)?;
     if decompressed_len == 0 {
         return Ok(d_off);
     }
 
-    let mut decompressor = DecompressorOxide::new();
-    let (status, _in_read, out_written) = tinfl_decompress(
-        &mut decompressor,
-        &compressed,
-        dest,
-        d_off,
-        TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF,
-    );
+    // One inflater state per thread, re-initialised per unit: Java resets
+    // one `Inflater` per decompressor rather than allocating ~11 KB of
+    // tables for every sub-block of every chunk.
+    let (status, _in_read, out_written) = DECOMPRESSOR.with(|cell| {
+        let mut decompressor = cell.borrow_mut();
+        decompressor.init();
+        tinfl_decompress(
+            &mut decompressor,
+            compressed,
+            dest,
+            d_off,
+            TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF,
+        )
+    });
     if status != TINFLStatus::Done || out_written != decompressed_len {
         return Err(Error::Corrupted(format!(
             "deflate decompression failed: status={status:?}, wrote {out_written} of {decompressed_len} expected bytes"

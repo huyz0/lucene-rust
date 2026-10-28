@@ -144,6 +144,73 @@ impl Compressor {
     }
 }
 
+thread_local! {
+    /// [`take_scratch`]'s buffer.
+    static SCRATCH: std::cell::Cell<Vec<u8>> = const { std::cell::Cell::new(Vec::new()) };
+}
+
+/// A per-thread decompression buffer of at least `len` bytes, handed back by
+/// [`Scratch`]'s `Drop`: a preset-dictionary read (every random-access
+/// stored-fields document) decompresses its dictionary and one sub-block into
+/// it instead of allocating and zeroing `dict + block` bytes per document.
+///
+/// Its bytes are stale from the last use and never cleared: both
+/// decompressors write every byte of the range they are asked for before any
+/// back-reference can read it, and the callers check the written length.
+fn take_scratch(len: usize) -> Scratch {
+    let mut buf = SCRATCH.with(std::cell::Cell::take);
+    if buf.len() < len {
+        buf.resize(len, 0);
+    }
+    Scratch(buf)
+}
+
+/// See [`take_scratch`].
+struct Scratch(Vec<u8>);
+
+impl std::ops::Deref for Scratch {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Scratch {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        &mut self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let buf = std::mem::take(&mut self.0);
+        // Keep the larger of this and whatever a nested use put back.
+        SCRATCH.with(|cell| {
+            let other = cell.take();
+            cell.set(if other.capacity() > buf.capacity() {
+                other
+            } else {
+                buf
+            });
+        });
+    }
+}
+
+/// Of the unit just decompressed into `out[start..]`, keeps only its bytes
+/// `offset..want_end`: the decompressor writes straight into `out` (no
+/// scratch buffer, no second copy), and a whole-unit read -- every term
+/// vectors chunk, every [`crate::stored_fields::ChunkCursor`] load -- keeps
+/// all of it with no move at all.
+// ARITH: `start + want_end <= out.len()` since the unit occupies
+// `out[start..start + original_length]` and `want_end <= original_length`.
+#[allow(clippy::arithmetic_side_effects)]
+fn keep_range(out: &mut Vec<u8>, start: usize, offset: usize, want_end: usize) {
+    if offset > 0 {
+        out.copy_within(start + offset..start + want_end, start);
+    }
+    out.truncate(start + want_end - offset);
+}
+
 /// Java's `Decompressor.decompress(in, originalLength, offset, length,
 /// bytes)`: appends bytes `offset..offset + length` of the unit at `input`,
 /// whose plain text is `original_length` bytes, to `out`. A unit of no bytes
@@ -167,26 +234,40 @@ pub fn decompress(
             "range {offset}+{length} outside a {original_length} byte unit"
         )));
     }
+    // The unit is decompressed straight into `out[start..end]`.
+    let start = out.len();
+    let end = start.checked_add(original_length).ok_or_else(|| {
+        lucene_store::Error::Corrupted(format!("{original_length} byte unit overflows"))
+    })?;
     match compression {
         Compression::Fast | Compression::FastDecompression => {
-            let mut buffer = vec![0u8; original_length];
-            if lz4::decompress_slice(input, original_length, &mut buffer, 0)? != original_length {
+            out.resize(end, 0);
+            if lz4::decompress_slice(input, original_length, out, start)? != end {
+                out.truncate(start);
                 return Err(lucene_store::Error::Corrupted(
                     "LZ4 block length mismatch".into(),
                 ));
             }
-            out.extend_from_slice(&buffer[offset..want_end]);
+            keep_range(out, start, offset, want_end);
         }
         Compression::HighCompression => {
             let compressed_length = read_compressed_length(input)?;
-            let mut buffer = vec![0u8; original_length];
-            deflate::decompress(input, compressed_length, original_length, &mut buffer, 0)?;
-            out.extend_from_slice(&buffer[offset..want_end]);
+            out.resize(end, 0);
+            if let Err(e) =
+                deflate::decompress(input, compressed_length, original_length, out, start)
+            {
+                out.truncate(start);
+                return Err(e);
+            }
+            keep_range(out, start, offset, want_end);
         }
         Compression::Dummy => {
-            let mut buffer = vec![0u8; original_length];
-            input.read_bytes(&mut buffer)?;
-            out.extend_from_slice(&buffer[offset..want_end]);
+            let at = input.position();
+            // Borrowed, not read into a scratch buffer: `slice` bounds-checks
+            // the end, and a sum that would overflow is no valid end either.
+            let unit = input.slice(at, at.saturating_add(original_length))?;
+            out.extend_from_slice(&unit[offset..want_end]);
+            input.skip(original_length)?;
         }
         Compression::Lz4WithPreset => {
             decompress_preset(Preset::Lz4, input, original_length, offset, length, out)?
@@ -503,10 +584,11 @@ fn decompress_preset(
             // remaining bytes could inflate to (`read_chunk_header`).
             #[allow(clippy::arithmetic_side_effects)]
             let buffer_len = dict_length + block_length;
-            let mut buffer = vec![0u8; buffer_len];
+            let mut scratch = take_scratch(buffer_len);
+            let buffer = &mut scratch[..buffer_len];
             // The dictionary is always decompressed: even when none of its
             // bytes are wanted, the sub-blocks back-reference into it.
-            if lz4::decompress_slice(input, dict_length, &mut buffer, 0)? != dict_length {
+            if lz4::decompress_slice(input, dict_length, buffer, 0)? != dict_length {
                 return Err(lucene_store::Error::Corrupted(
                     "illegal dict length in LZ4 compression unit".into(),
                 ));
@@ -531,7 +613,7 @@ fn decompress_preset(
                 let lo = offset.max(plain);
                 let hi = want_end.min(plain + this_len);
                 if lo < hi {
-                    lz4::decompress_slice(input, this_len, &mut buffer, dict_length)?;
+                    lz4::decompress_slice(input, this_len, buffer, dict_length)?;
                     out.extend_from_slice(
                         &buffer[dict_length + lo - plain..dict_length + hi - plain],
                     );
@@ -556,8 +638,9 @@ fn decompress_preset(
             // `original_length`.
             #[allow(clippy::arithmetic_side_effects)]
             let buffer_len = dict_length + block_length;
-            let mut buffer = vec![0u8; buffer_len];
-            deflate::decompress(input, dict_compressed_length, dict_length, &mut buffer, 0)?;
+            let mut scratch = take_scratch(buffer_len);
+            let buffer = &mut scratch[..buffer_len];
+            deflate::decompress(input, dict_compressed_length, dict_length, buffer, 0)?;
             if offset < dict_length {
                 out.extend_from_slice(&buffer[offset..dict_length.min(want_end)]);
             }
@@ -571,13 +654,7 @@ fn decompress_preset(
                 let lo = offset.max(plain);
                 let hi = want_end.min(plain + this_len);
                 if lo < hi {
-                    deflate::decompress(
-                        input,
-                        compressed_length,
-                        this_len,
-                        &mut buffer,
-                        dict_length,
-                    )?;
+                    deflate::decompress(input, compressed_length, this_len, buffer, dict_length)?;
                     out.extend_from_slice(
                         &buffer[dict_length + lo - plain..dict_length + hi - plain],
                     );
