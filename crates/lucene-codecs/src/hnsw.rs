@@ -987,12 +987,97 @@ pub fn expected_visited_nodes(k: i32, graph_size: i32) -> i32 {
     ((graph_size as f64).ln() * k as f64) as i32
 }
 
+/// The searcher's visited-node set: a [`FixedBitSet`] that remembers which
+/// of its words a search touched, so resetting it for the next search clears
+/// those words rather than the whole set.
+///
+/// Java clears its `FixedBitSet` in full between searches (or uses a
+/// `SparseFixedBitSet` once the graph is large next to the expected visit
+/// count). A graph build runs one search per inserted node, so a full clear
+/// there is `O(n)` per insert and `O(n^2 / 64)` over the build, and the
+/// builder's set also had to be reallocated each time the graph grew by one
+/// node; a query over a large segment paid a full clear (plus a fresh
+/// allocation) per search. A beam search touches at most a few thousand
+/// nodes, so clearing what it touched is the cheap reset either way.
+///
+/// The backing set grows with Java's `oversize` slack, while [`Self::len`]
+/// stays the capacity asked for: it is the bound neighbour ordinals are
+/// checked against.
+#[derive(Debug)]
+struct VisitedSet {
+    bits: FixedBitSet,
+    /// Index of every word that went from zero to non-zero since the last
+    /// clear, each listed once.
+    touched: Vec<u32>,
+    len: usize,
+}
+
+impl VisitedSet {
+    fn new(len: usize) -> Self {
+        VisitedSet {
+            bits: FixedBitSet::new(len),
+            touched: Vec::new(),
+            len,
+        }
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    #[inline]
+    fn get(&self, index: usize) -> bool {
+        // FBS: `index < self.len <= self.bits.len()`; the searcher checks
+        // every ordinal against `len()` (`check_neighbors`) first.
+        self.bits.get(index)
+    }
+
+    #[inline]
+    fn set(&mut self, index: usize) {
+        let word = index >> 6;
+        if self.bits.words().get(word) == Some(&0) {
+            // A word index of a set sized from an `i32` capacity fits `u32`.
+            self.touched.push(word as u32);
+        }
+        // FBS: as in `get`.
+        self.bits.set(index);
+    }
+
+    /// `FixedBitSet.ensureCapacityAndClear`: at least `capacity` bits, none
+    /// set.
+    fn ensure_capacity_and_clear(&mut self, capacity: usize) {
+        if self.bits.len() < capacity {
+            // ARITH: `capacity > bits.len() >= 0`, so `capacity - 1` is fine.
+            #[allow(clippy::arithmetic_side_effects)]
+            let desired = capacity - 1;
+            self.bits = FixedBitSet::ensure_capacity_and_clear(
+                std::mem::replace(&mut self.bits, FixedBitSet::new(0)),
+                desired,
+            );
+            self.touched.clear();
+        } else if self.touched.len() > self.bits.words().len() / 16 {
+            // Touched most of it anyway: one memset beats the scattered
+            // per-word clears.
+            self.bits.clear_all();
+            self.touched.clear();
+        } else {
+            for word in self.touched.drain(..) {
+                let start = (word as usize) << 6;
+                let end = start.saturating_add(64).min(self.bits.len());
+                self.bits.clear_range(start, end);
+            }
+        }
+        self.len = capacity;
+    }
+}
+
 /// Port of `org.apache.lucene.util.hnsw.HnswGraphSearcher` (and the shared
 /// half of `AbstractHnswGraphSearcher`).
 #[derive(Debug)]
 pub struct HnswGraphSearcher {
     candidates: NeighborQueue,
-    visited: FixedBitSet,
+    visited: VisitedSet,
     bulk_nodes: Vec<i32>,
     bulk_scores: Vec<f32>,
     neighbor_scratch: Vec<i32>,
@@ -1002,7 +1087,7 @@ impl HnswGraphSearcher {
     pub fn new(k: usize, graph_size: i32) -> Self {
         HnswGraphSearcher {
             candidates: NeighborQueue::new(k.max(1), true),
-            visited: FixedBitSet::new(graph_size.max(1) as usize),
+            visited: VisitedSet::new(graph_size.max(1) as usize),
             bulk_nodes: Vec::new(),
             bulk_scores: Vec::new(),
             neighbor_scratch: Vec::new(),
@@ -1321,12 +1406,7 @@ impl HnswGraphSearcher {
 
     fn prepare_scratch_state(&mut self, capacity: usize, bulk_score_size: usize) {
         self.candidates.clear();
-        if self.visited.len() < capacity {
-            // `FixedBitSet.ensureCapacityAndClear`
-            self.visited = FixedBitSet::new(capacity);
-        } else {
-            self.visited.clear_all();
-        }
+        self.visited.ensure_capacity_and_clear(capacity);
         if self.bulk_nodes.len() < bulk_score_size {
             self.bulk_nodes = vec![0; bulk_score_size];
             self.bulk_scores = vec![0.0; bulk_score_size];
@@ -2713,6 +2793,35 @@ mod tests {
     /// The packing puts the score in the top 32 bits and the *complement* of
     /// the node id in the bottom 32, so equal scores are broken in favour of
     /// the smaller node id -- on both heap orders.
+    /// Both reset paths -- per-touched-word and full -- leave nothing set,
+    /// growth keeps the logical length, and `set` lists each word once.
+    #[test]
+    fn visited_set_resets_exactly_what_was_touched() {
+        let mut v = VisitedSet::new(1000);
+        for i in [0usize, 1, 63, 64, 500, 999] {
+            v.set(i);
+        }
+        assert_eq!(v.touched, vec![0, 1, 7, 15]);
+        v.ensure_capacity_and_clear(1000);
+        assert!(v.touched.is_empty());
+        assert!((0..1000).all(|i| !v.get(i)));
+        // Touch more than a sixteenth of the words: the full clear.
+        for i in (0..1000).step_by(64) {
+            v.set(i);
+        }
+        v.ensure_capacity_and_clear(1000);
+        assert!((0..1000).all(|i| !v.get(i)));
+        // Growth by one node at a time reallocates only past the slack.
+        v.ensure_capacity_and_clear(1001);
+        assert_eq!(v.len(), 1001);
+        let words = v.bits.words().len();
+        v.set(1000);
+        v.ensure_capacity_and_clear(1002);
+        assert_eq!(v.bits.words().len(), words, "oversized: no reallocation");
+        assert!(!v.get(1000));
+        assert_eq!(v.len(), 1002);
+    }
+
     #[test]
     fn neighbor_queue_breaks_score_ties_toward_the_smaller_node() {
         let mut max = NeighborQueue::new(4, true);

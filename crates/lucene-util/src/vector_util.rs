@@ -19,6 +19,35 @@
 
 use crate::simd;
 
+/// `bytes` read as the little-endian `f32`s a `.vec` file stores, without
+/// copying -- or `None` when that cannot be done in place: on a big-endian
+/// target, when `bytes` is not 4-byte aligned, or when its length is not a
+/// multiple of 4. The caller decodes into a scratch buffer then.
+///
+/// Lucene aligns every field's vector data to 64 bytes in the `.vec` file,
+/// and a mapped or heap-read file starts at least 8-byte aligned, so on the
+/// platforms this port ships for a stored float vector is scored straight
+/// out of the file: one pass over its bytes instead of a decode pass into a
+/// scratch buffer followed by the similarity's pass over that.
+#[inline]
+pub fn le_f32s(bytes: &[u8]) -> Option<&[f32]> {
+    #[cfg(target_endian = "little")]
+    {
+        // SAFETY: every 4-byte pattern is a valid `f32` (NaNs included), so
+        // reinterpreting initialised bytes as `f32` is sound; `align_to`
+        // itself only places an `f32` at a properly aligned address, and
+        // requiring empty prefix and suffix means the middle covers exactly
+        // `bytes`. On a little-endian target that middle is, value for
+        // value, what `f32::from_le_bytes` on each 4-byte chunk would give.
+        let (prefix, floats, suffix) = unsafe { bytes.align_to::<f32>() };
+        if prefix.is_empty() && suffix.is_empty() {
+            return Some(floats);
+        }
+    }
+    let _ = bytes;
+    None
+}
+
 /// `VectorUtil.EPSILON`.
 const EPSILON: f32 = 1e-4;
 
@@ -35,9 +64,23 @@ fn check_same(a: usize, b: usize) {
     }
 }
 
-/// `VectorUtil.dotProduct(byte[], byte[])`: signed bytes.
+/// `VectorUtil.dotProduct(byte[], byte[])`: signed bytes. The kernel the
+/// 7-bit scalar-quantized formats score every candidate with.
 #[inline]
 pub fn dot_product_i8(a: &[u8], b: &[u8]) -> i32 {
+    check_same(a.len(), b.len());
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    {
+        // SAFETY: AVX2 is enabled for this whole build; lengths are equal.
+        unsafe { byte_kernel_avx2::<true, false>(a, b) }
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+    dot_product_i8_scalar(a, b)
+}
+
+/// The specification [`dot_product_i8`] matches:
+/// `DefaultVectorUtilSupport.dotProduct(byte[], byte[])`.
+pub fn dot_product_i8_scalar(a: &[u8], b: &[u8]) -> i32 {
     check_same(a.len(), b.len());
     a.iter().zip(b).fold(0i32, |t, (&x, &y)| {
         t.wrapping_add(x as i8 as i32 * y as i8 as i32)
@@ -50,9 +93,8 @@ pub fn uint8_dot_product(a: &[u8], b: &[u8]) -> i32 {
     check_same(a.len(), b.len());
     #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
     {
-        // SAFETY: AVX2 is enabled for this whole build; the kernel reads only
-        // whole 32-byte chunks inside both (equal-length) slices.
-        unsafe { uint8_dot_product_avx2(a, b) }
+        // SAFETY: AVX2 is enabled for this whole build; lengths are equal.
+        unsafe { byte_kernel_avx2::<false, false>(a, b) }
     }
     #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
     uint8_dot_product_scalar(a, b)
@@ -66,37 +108,69 @@ pub fn uint8_dot_product_scalar(a: &[u8], b: &[u8]) -> i32 {
         .fold(0i32, |t, (&x, &y)| t.wrapping_add(x as i32 * y as i32))
 }
 
+/// One AVX2 pass for the four byte-vector kernels: each 32-byte step widens
+/// both inputs to 16-bit lanes (sign- or zero-extended per `SIGNED`), then
+/// either multiplies them pairwise or (for `SQUARE`) subtracts and squares,
+/// with `madd_epi16` summing adjacent products into 32-bit lanes. Every
+/// product fits: `|x|, |y| <= 255` and `|x - y| <= 255`, so two products sum
+/// to at most `2 * 255^2 < 2^31`. The 32-bit lane sums wrap exactly as the
+/// scalar specifications' `wrapping_add` does (integer sums do not depend on
+/// order), and the tail runs the same scalar step.
+///
+/// # Safety
+///
+/// The CPU must support AVX2 and `a.len() == b.len()`.
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 #[target_feature(enable = "avx2")]
-unsafe fn uint8_dot_product_avx2(a: &[u8], b: &[u8]) -> i32 {
+unsafe fn byte_kernel_avx2<const SIGNED: bool, const SQUARE: bool>(a: &[u8], b: &[u8]) -> i32 {
     use std::arch::x86_64::*;
-    let n = a.len();
-    let mut acc = _mm256_setzero_si256();
+    let n = a.len().min(b.len());
+    let widen = |v: __m128i| {
+        if SIGNED {
+            _mm256_cvtepi8_epi16(v)
+        } else {
+            _mm256_cvtepu8_epi16(v)
+        }
+    };
+    let step = |x: __m256i, y: __m256i| {
+        if SQUARE {
+            let d = _mm256_sub_epi16(x, y);
+            _mm256_madd_epi16(d, d)
+        } else {
+            _mm256_madd_epi16(x, y)
+        }
+    };
+    let mut acc0 = _mm256_setzero_si256();
+    let mut acc1 = _mm256_setzero_si256();
     let mut i = 0;
     while i + 32 <= n {
-        // SAFETY: `i + 32 <= n == a.len() == b.len()`.
+        // SAFETY: `i + 32 <= n <= a.len(), b.len()`.
         let (va, vb) = unsafe {
             (
                 _mm256_loadu_si256(a.as_ptr().add(i) as *const __m256i),
                 _mm256_loadu_si256(b.as_ptr().add(i) as *const __m256i),
             )
         };
-        // Widen each half to 16 lanes of u16 (values <= 255, so the i16
-        // multiply-add below cannot overflow: 2 * 255 * 255 < 2^31).
-        let a_lo = _mm256_cvtepu8_epi16(_mm256_castsi256_si128(va));
-        let a_hi = _mm256_cvtepu8_epi16(_mm256_extracti128_si256::<1>(va));
-        let b_lo = _mm256_cvtepu8_epi16(_mm256_castsi256_si128(vb));
-        let b_hi = _mm256_cvtepu8_epi16(_mm256_extracti128_si256::<1>(vb));
-        acc = _mm256_add_epi32(acc, _mm256_madd_epi16(a_lo, b_lo));
-        acc = _mm256_add_epi32(acc, _mm256_madd_epi16(a_hi, b_hi));
+        let a_lo = widen(_mm256_castsi256_si128(va));
+        let a_hi = widen(_mm256_extracti128_si256::<1>(va));
+        let b_lo = widen(_mm256_castsi256_si128(vb));
+        let b_hi = widen(_mm256_extracti128_si256::<1>(vb));
+        acc0 = _mm256_add_epi32(acc0, step(a_lo, b_lo));
+        acc1 = _mm256_add_epi32(acc1, step(a_hi, b_hi));
         i += 32;
     }
+    let acc = _mm256_add_epi32(acc0, acc1);
     let mut lanes = [0i32; 8];
     // SAFETY: `lanes` is 32 bytes.
     unsafe { _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, acc) };
     let mut total = lanes.iter().fold(0i32, |s, &v| s.wrapping_add(v));
     while i < n {
-        total = total.wrapping_add(a[i] as i32 * b[i] as i32);
+        let (x, y) = if SIGNED {
+            (a[i] as i8 as i32, b[i] as i8 as i32)
+        } else {
+            (a[i] as i32, b[i] as i32)
+        };
+        total = total.wrapping_add(if SQUARE { (x - y) * (x - y) } else { x * y });
         i += 1;
     }
     total
@@ -199,6 +273,18 @@ pub fn int4_dot_product_both_packed(a: &[u8], b: &[u8]) -> i32 {
 #[inline]
 pub fn square_distance_i8(a: &[u8], b: &[u8]) -> i32 {
     check_same(a.len(), b.len());
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    {
+        // SAFETY: AVX2 is enabled for this whole build; lengths are equal.
+        unsafe { byte_kernel_avx2::<true, true>(a, b) }
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+    square_distance_i8_scalar(a, b)
+}
+
+/// The specification [`square_distance_i8`] matches.
+pub fn square_distance_i8_scalar(a: &[u8], b: &[u8]) -> i32 {
+    check_same(a.len(), b.len());
     a.iter().zip(b).fold(0i32, |t, (&x, &y)| {
         let d = x as i8 as i32 - y as i8 as i32;
         t.wrapping_add(d * d)
@@ -248,6 +334,18 @@ pub fn int4_square_distance_both_packed(a: &[u8], b: &[u8]) -> i32 {
 /// `VectorUtil.uint8SquareDistance`.
 #[inline]
 pub fn uint8_square_distance(a: &[u8], b: &[u8]) -> i32 {
+    check_same(a.len(), b.len());
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    {
+        // SAFETY: AVX2 is enabled for this whole build; lengths are equal.
+        unsafe { byte_kernel_avx2::<false, true>(a, b) }
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+    uint8_square_distance_scalar(a, b)
+}
+
+/// The specification [`uint8_square_distance`] matches.
+pub fn uint8_square_distance_scalar(a: &[u8], b: &[u8]) -> i32 {
     check_same(a.len(), b.len());
     a.iter().zip(b).fold(0i32, |t, (&x, &y)| {
         let d = x as i32 - y as i32;
@@ -520,6 +618,59 @@ mod tests {
                 (s >> 24) as u8 & mask
             })
             .collect()
+    }
+
+    #[test]
+    fn le_f32s_views_aligned_bytes_and_refuses_the_rest() {
+        let floats = [1.5f32, -0.0, f32::MAX, 3.25];
+        let mut storage = [0u8; 16 + 4];
+        // The first 4-byte-aligned offset into the buffer.
+        let at = storage.as_ptr().align_offset(4);
+        for (i, f) in floats.iter().enumerate() {
+            storage[at + 4 * i..at + 4 * i + 4].copy_from_slice(&f.to_le_bytes());
+        }
+        let aligned = &storage[at..at + 16];
+        if cfg!(target_endian = "little") {
+            assert_eq!(le_f32s(aligned), Some(&floats[..]));
+        } else {
+            assert_eq!(le_f32s(aligned), None);
+        }
+        assert_eq!(le_f32s(&aligned[1..5]), None, "misaligned");
+        assert_eq!(le_f32s(&aligned[..6]), None, "partial float");
+    }
+
+    proptest::proptest! {
+        /// Every byte kernel against its scalar specification, at lengths
+        /// around the 32-byte step (tails included) and over all byte values.
+        #[test]
+        fn byte_kernels_match_their_scalar_specifications(
+            pairs in proptest::collection::vec((proptest::prelude::any::<u8>(), proptest::prelude::any::<u8>()), 0..200),
+        ) {
+            let (a, b): (Vec<u8>, Vec<u8>) = pairs.into_iter().unzip();
+            proptest::prop_assert_eq!(dot_product_i8(&a, &b), dot_product_i8_scalar(&a, &b));
+            proptest::prop_assert_eq!(uint8_dot_product(&a, &b), uint8_dot_product_scalar(&a, &b));
+            proptest::prop_assert_eq!(square_distance_i8(&a, &b), square_distance_i8_scalar(&a, &b));
+            proptest::prop_assert_eq!(uint8_square_distance(&a, &b), uint8_square_distance_scalar(&a, &b));
+        }
+    }
+
+    /// The extremes, in a vector long enough for 32-bit lane sums to wrap.
+    #[test]
+    fn byte_kernels_wrap_like_the_specifications() {
+        for (x, y) in [(0x80u8, 0x80u8), (0x80, 0x7f), (0xff, 0x00), (0xff, 0xff)] {
+            let a = vec![x; 70_001];
+            let b = vec![y; 70_001];
+            assert_eq!(dot_product_i8(&a, &b), dot_product_i8_scalar(&a, &b));
+            assert_eq!(uint8_dot_product(&a, &b), uint8_dot_product_scalar(&a, &b));
+            assert_eq!(
+                square_distance_i8(&a, &b),
+                square_distance_i8_scalar(&a, &b)
+            );
+            assert_eq!(
+                uint8_square_distance(&a, &b),
+                uint8_square_distance_scalar(&a, &b)
+            );
+        }
     }
 
     #[test]

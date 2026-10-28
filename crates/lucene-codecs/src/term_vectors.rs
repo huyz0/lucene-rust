@@ -1303,8 +1303,6 @@ fn common_prefix_len(a: &[u8], b: &[u8]) -> usize {
 ///
 /// - Every `direct_reader`/`packed_ints` array uses the exact bit width its
 ///   own values need rather than a cross-chunk minimisation.
-/// - The LZ4 unit is a single literal run (`encode_literal_lz4`) --
-///   valid LZ4 with no match finding.
 ///
 /// What is *not* scoped down any more (it was, before batch `c8`): chunking
 /// itself, term prefix sharing, `charsPerTerm`, and the
@@ -1312,8 +1310,7 @@ fn common_prefix_len(a: &[u8], b: &[u8]) -> usize {
 pub struct TermVectorsWriter {
     segment_id: [u8; ID_LENGTH],
     segment_suffix: String,
-    /// `None` for `Lucene90TermVectorsFormat` (`FAST`, written as one
-    /// literal run); a `CompressingCodec`'s format otherwise, whose units
+    /// `None` for `Lucene90TermVectorsFormat` (`FAST`); a `CompressingCodec`'s format otherwise, whose units
     /// `compressor` writes as Java's compressor does.
     format: Option<&'static CompressingFormat>,
     compressor: Compressor,
@@ -1639,13 +1636,13 @@ impl TermVectorsWriter {
             flush_positions(&mut out, &self.pending_docs);
             flush_offsets(&mut out, &self.pending_docs, &field_nums);
             flush_payload_lengths(&mut out, &self.pending_docs);
-            match self.format {
-                None => out.write_bytes(&encode_literal_lz4(&self.term_suffixes)),
-                Some(format) => {
-                    self.compressor
-                        .compress(format.compression, &self.term_suffixes, &mut out)
-                }
-            }
+            // `Lucene90TermVectorsFormat` is `CompressionMode.FAST`: one LZ4
+            // unit through the writer's reused hash table, as Java's.
+            let compression = self
+                .format
+                .map_or(Compression::Fast, |format| format.compression);
+            self.compressor
+                .compress(compression, &self.term_suffixes, &mut out);
         }
         self.tvd = out;
 
@@ -2315,6 +2312,8 @@ pub fn write_best_speed(
 /// verbatim -- same style as `stored_fields::encode_literal_lz4`, kept as an
 /// independent copy since term vectors' LZ4 unit has no dict/block-length
 /// wrapper (see [`open`]'s doc comment: it's a single plain LZ4 unit).
+/// Test-only: the writer compresses through [`Compressor`].
+#[cfg(test)]
 fn encode_literal_lz4(bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     let len = bytes.len();
