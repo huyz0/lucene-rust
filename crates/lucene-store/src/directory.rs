@@ -1083,8 +1083,12 @@ pub fn generation_from_segments_file_name(file_name: &str) -> Result<i64> {
     if file_name == SEGMENTS_PREFIX {
         return Ok(0);
     }
-    if let Some(suffix) = file_name.strip_prefix(&format!("{SEGMENTS_PREFIX}_")) {
-        return lucene_util::base36::from_base36(suffix).ok_or_else(|| {
+    // Java: `Long.parseLong(fileName.substring(1 + "segments".length()), 36)`
+    // -- the one character after `segments` is skipped, whatever it is.
+    if let Some(rest) = file_name.strip_prefix(SEGMENTS_PREFIX) {
+        let mut chars = rest.chars();
+        chars.next();
+        return lucene_util::base36::from_base36(chars.as_str()).ok_or_else(|| {
             Error::Corrupted(format!("fileName \"{file_name}\" is not a segments file"))
         });
     }
@@ -1208,6 +1212,13 @@ mod tests {
         assert_eq!(generation_from_segments_file_name("segments").unwrap(), 0);
         assert_eq!(generation_from_segments_file_name("segments_1").unwrap(), 1);
         assert_eq!(generation_from_segments_file_name("segments_2").unwrap(), 2);
+        // Java skips any one character after `segments`, not only `_`.
+        assert_eq!(
+            generation_from_segments_file_name("segments.bak").unwrap(),
+            14_636
+        );
+        assert_eq!(generation_from_segments_file_name("segments-7").unwrap(), 7);
+        assert!(generation_from_segments_file_name("segmentsX").is_err());
         // base-36: "segments_a" -> 10
         assert_eq!(
             generation_from_segments_file_name("segments_a").unwrap(),

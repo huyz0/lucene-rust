@@ -74,6 +74,7 @@
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
 use lucene_store::data_output::DataOutput;
+use lucene_util::vector_util;
 
 use crate::direct_monotonic;
 use crate::field_infos::{VectorEncoding, VectorSimilarityFunction};
@@ -221,68 +222,34 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
 /// Java's `byte` is signed and Lucene relies on that: a `BYTE`-encoded vector
 /// component is in `[-128, 127]`. This crate is `#![forbid(unsafe_code)]`, so
 /// it cannot reinterpret the `&[u8]` it mmaps as `&[i8]` for free -- instead
-/// every byte kernel takes `&[u8]` straight off the `.vec` file and widens
-/// each element through `as i8 as i32`, which is exactly Java's sign
-/// extension and costs one `movsx` per element.
+/// every byte kernel takes `&[u8]` straight off the `.vec` file and
+/// sign-extends each element, exactly as Java does. The kernels are
+/// `lucene_util::vector_util`'s AVX2 ones (`vpmovsxbw` + `vpmaddwd`, 32 bytes
+/// a step), whose scalar specifications are the `as i8 as i32` loops.
 pub fn square_distance_bytes(a: &[u8], b: &[u8]) -> i32 {
     debug_assert_eq!(a.len(), b.len(), "vector dimensions differ");
-    let mut sum = 0i32;
-    for (x, y) in a.iter().zip(b) {
-        // ARITH: both operands are sign-extended bytes, so `d` is in
-        // -255..=255 and `d * d` in 0..=65_025 -- neither can overflow `i32`.
-        // Only the accumulator can, and only for a `dimension` off `.vemf`
-        // above ~2^18 (Java's own bound, `VectorUtil`: "this will not overflow
-        // if dim < 2^18"). Java accumulates into an `int` and wraps there; the
-        // `wrapping_add` is that same semantics rather than a debug panic on a
-        // corrupt dimension.
-        #[allow(clippy::arithmetic_side_effects)]
-        let d = *x as i8 as i32 - *y as i8 as i32;
-        // ARITH: `|d| <= 255`, so `d * d <= 65_025`.
-        #[allow(clippy::arithmetic_side_effects)]
-        let square = d * d;
-        sum = sum.wrapping_add(square);
-    }
-    sum
+    // Java's own bound (`VectorUtil`: "this will not overflow if dim <
+    // 2^18"): above it the `int` accumulator wraps, and the kernel wraps the
+    // same way. Each kernel scores the common prefix, as the zip it replaced
+    // did, so a corrupt dimension stays a wrong score and never a panic.
+    let n = a.len().min(b.len());
+    vector_util::square_distance_i8(&a[..n], &b[..n])
 }
 
 /// Port of `VectorUtil.dotProduct(byte[], byte[])` -- an `i32` sum. See
 /// [`square_distance_bytes`] on why `&[u8]` and not `&[i8]`.
 pub fn dot_product_bytes(a: &[u8], b: &[u8]) -> i32 {
     debug_assert_eq!(a.len(), b.len(), "vector dimensions differ");
-    let mut sum = 0i32;
-    for (x, y) in a.iter().zip(b) {
-        // ARITH: a product of two sign-extended bytes is in
-        // -16_256..=16_384, inside `i16` -- the narrow multiply is what lets
-        // LLVM pair products into `vpmaddwd`, as Panama's byte kernel does.
-        // See [`square_distance_bytes`] for why the accumulator wraps rather
-        // than panics.
-        #[allow(clippy::arithmetic_side_effects)]
-        let product = ((*x as i8 as i16) * (*y as i8 as i16)) as i32;
-        sum = sum.wrapping_add(product);
-    }
-    sum
+    let n = a.len().min(b.len());
+    vector_util::dot_product_i8(&a[..n], &b[..n])
 }
 
 /// Port of `DefaultVectorUtilSupport.cosine(byte[], byte[])`: `i32`
 /// accumulators, then the same single `f64` square root of the product.
 pub fn cosine_bytes(a: &[u8], b: &[u8]) -> f32 {
     debug_assert_eq!(a.len(), b.len(), "vector dimensions differ");
-    let mut sum = 0i32;
-    let mut norm1 = 0i32;
-    let mut norm2 = 0i32;
-    for (x, y) in a.iter().zip(b) {
-        let e1 = *x as i8 as i16;
-        let e2 = *y as i8 as i16;
-        // ARITH: every product of two sign-extended bytes is in
-        // -16_256..=16_384, inside `i16` (see [`dot_product_bytes`]). See
-        // [`square_distance_bytes`] for why the three
-        // accumulators wrap rather than panic.
-        #[allow(clippy::arithmetic_side_effects)]
-        let (dot, sq1, sq2) = ((e1 * e2) as i32, (e1 * e1) as i32, (e2 * e2) as i32);
-        sum = sum.wrapping_add(dot);
-        norm1 = norm1.wrapping_add(sq1);
-        norm2 = norm2.wrapping_add(sq2);
-    }
+    let n = a.len().min(b.len());
+    let (sum, norm1, norm2) = vector_util::cosine_sums_i8(&a[..n], &b[..n]);
     if norm1 == 0 || norm2 == 0 {
         return 0.0;
     }

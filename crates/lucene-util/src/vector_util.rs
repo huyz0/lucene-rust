@@ -291,6 +291,91 @@ pub fn square_distance_i8_scalar(a: &[u8], b: &[u8]) -> i32 {
     })
 }
 
+/// The three `int` sums `DefaultVectorUtilSupport.cosine(byte[], byte[])`
+/// accumulates over signed bytes: `(a.b, a.a, b.b)`. The caller applies
+/// Java's `f64` division and square root to them.
+#[inline]
+pub fn cosine_sums_i8(a: &[u8], b: &[u8]) -> (i32, i32, i32) {
+    check_same(a.len(), b.len());
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    {
+        // SAFETY: AVX2 is enabled for this whole build; lengths are equal.
+        unsafe { cosine_sums_i8_avx2(a, b) }
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+    cosine_sums_i8_scalar(a, b)
+}
+
+/// The specification [`cosine_sums_i8`] matches.
+pub fn cosine_sums_i8_scalar(a: &[u8], b: &[u8]) -> (i32, i32, i32) {
+    check_same(a.len(), b.len());
+    a.iter()
+        .zip(b)
+        .fold((0i32, 0i32, 0i32), |(d, n1, n2), (&x, &y)| {
+            let (x, y) = (x as i8 as i32, y as i8 as i32);
+            (
+                d.wrapping_add(x * y),
+                n1.wrapping_add(x * x),
+                n2.wrapping_add(y * y),
+            )
+        })
+}
+
+/// [`byte_kernel_avx2`]'s widening with three `madd_epi16` accumulators per
+/// 16-lane half: every product of two sign-extended bytes is at most `2^14`
+/// in magnitude, so a pair sums well inside `i32`, and the lane sums wrap
+/// as the scalar specification's `wrapping_add` does.
+///
+/// # Safety
+///
+/// The CPU must support AVX2 and `a.len() == b.len()`.
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[target_feature(enable = "avx2")]
+unsafe fn cosine_sums_i8_avx2(a: &[u8], b: &[u8]) -> (i32, i32, i32) {
+    use std::arch::x86_64::*;
+    let n = a.len().min(b.len());
+    let mut dot = _mm256_setzero_si256();
+    let mut n1 = _mm256_setzero_si256();
+    let mut n2 = _mm256_setzero_si256();
+    let mut i = 0;
+    while i + 32 <= n {
+        // SAFETY: `i + 32 <= n <= a.len(), b.len()`.
+        let (va, vb) = unsafe {
+            (
+                _mm256_loadu_si256(a.as_ptr().add(i) as *const __m256i),
+                _mm256_loadu_si256(b.as_ptr().add(i) as *const __m256i),
+            )
+        };
+        for (x, y) in [
+            (
+                _mm256_cvtepi8_epi16(_mm256_castsi256_si128(va)),
+                _mm256_cvtepi8_epi16(_mm256_castsi256_si128(vb)),
+            ),
+            (
+                _mm256_cvtepi8_epi16(_mm256_extracti128_si256::<1>(va)),
+                _mm256_cvtepi8_epi16(_mm256_extracti128_si256::<1>(vb)),
+            ),
+        ] {
+            dot = _mm256_add_epi32(dot, _mm256_madd_epi16(x, y));
+            n1 = _mm256_add_epi32(n1, _mm256_madd_epi16(x, x));
+            n2 = _mm256_add_epi32(n2, _mm256_madd_epi16(y, y));
+        }
+        i += 32;
+    }
+    let sum = |v: __m256i| {
+        let mut lanes = [0i32; 8];
+        // SAFETY: `lanes` is 32 bytes.
+        unsafe { _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, v) };
+        lanes.iter().fold(0i32, |s, &l| s.wrapping_add(l))
+    };
+    let (tail_dot, tail_n1, tail_n2) = cosine_sums_i8_scalar(&a[i..n], &b[i..n]);
+    (
+        sum(dot).wrapping_add(tail_dot),
+        sum(n1).wrapping_add(tail_n1),
+        sum(n2).wrapping_add(tail_n2),
+    )
+}
+
 /// `VectorUtil.int4SquareDistance`.
 #[inline]
 pub fn int4_square_distance(a: &[u8], b: &[u8]) -> i32 {
@@ -651,6 +736,7 @@ mod tests {
             proptest::prop_assert_eq!(uint8_dot_product(&a, &b), uint8_dot_product_scalar(&a, &b));
             proptest::prop_assert_eq!(square_distance_i8(&a, &b), square_distance_i8_scalar(&a, &b));
             proptest::prop_assert_eq!(uint8_square_distance(&a, &b), uint8_square_distance_scalar(&a, &b));
+            proptest::prop_assert_eq!(cosine_sums_i8(&a, &b), cosine_sums_i8_scalar(&a, &b));
         }
     }
 
@@ -660,6 +746,9 @@ mod tests {
         for (x, y) in [(0x80u8, 0x80u8), (0x80, 0x7f), (0xff, 0x00), (0xff, 0xff)] {
             let a = vec![x; 70_001];
             let b = vec![y; 70_001];
+            // 140_001 * 2^14 passes `i32::MAX`, so the cosine sums wrap too.
+            let (a2, b2) = (vec![x; 140_001], vec![y; 140_001]);
+            assert_eq!(cosine_sums_i8(&a2, &b2), cosine_sums_i8_scalar(&a2, &b2));
             assert_eq!(dot_product_i8(&a, &b), dot_product_i8_scalar(&a, &b));
             assert_eq!(uint8_dot_product(&a, &b), uint8_dot_product_scalar(&a, &b));
             assert_eq!(

@@ -696,8 +696,14 @@ fn parse_generation(
     )?;
     let format = header.version;
 
-    let size = input.read_vint()? as usize;
-    let mut fields = Vec::with_capacity(size);
+    // Java's `new FieldInfo[size]` throws on a negative count; a huge one is
+    // bounded by the bytes left (every record takes several), so a corrupt
+    // count fails on a short read rather than in the allocator.
+    let size = input.read_vint()?;
+    let size = usize::try_from(size).map_err(|_| {
+        lucene_store::Error::Corrupted(format!("negative field count {size} in .fnm"))
+    })?;
+    let mut fields = Vec::with_capacity(size.min(input.remaining()));
 
     for _ in 0..size {
         let name = input.read_string()?;
@@ -850,9 +856,8 @@ pub fn write(fields: &[FieldInfo], segment_id: &[u8; ID_LENGTH], segment_suffix:
         if f.parent_field {
             bits |= PARENT_FIELD_FIELD;
         }
-        if f.doc_values_skip_index_type != DocValuesSkipIndexType::None {
-            bits |= DOCVALUES_SKIPPER;
-        }
+        // No `DOCVALUES_SKIPPER` (0x20) here: `Lucene94FieldInfosFormat.write`
+        // never sets it (javap, 10.5); the skip index has its own byte below.
         out.write_byte(bits);
 
         out.write_byte(f.index_options.to_byte());
@@ -1144,6 +1149,31 @@ mod tests {
         b.fields.push(f);
         let fis = parse(&b.build(), &b.id, &b.suffix).unwrap();
         assert!(fis.fields[0].parent_field);
+    }
+
+    #[test]
+    fn corrupt_field_counts_are_errors_not_allocations() {
+        let b = FnmBuilder::valid();
+        let good = b.build();
+        // The field count is the vint right after the index header.
+        let at = codec_util::index_header_length(CODEC_NAME, &b.suffix);
+        // -1, then i32::MAX: re-signed, so only the count is wrong.
+        for (count, negative) in [
+            ([0xff, 0xff, 0xff, 0xff, 0x0f], true),
+            ([0xff, 0xff, 0xff, 0xff, 0x07], false),
+        ] {
+            let mut bad = good[..at].to_vec();
+            bad.extend_from_slice(&count);
+            bad.extend_from_slice(&good[at + 1..good.len() - 8]);
+            let checksum = crc32fast::hash(&bad) as u64;
+            bad.extend_from_slice(&checksum.to_be_bytes());
+            let err = parse(&bad, &b.id, &b.suffix).unwrap_err();
+            assert_eq!(
+                err.to_string().contains("negative field count"),
+                negative,
+                "{err}"
+            );
+        }
     }
 
     #[test]
@@ -1640,7 +1670,15 @@ mod tests {
         field.doc_values_skip_index_type = DocValuesSkipIndexType::Range;
         field.doc_values_gen = 42;
         field.attributes = vec![("k1".to_string(), "v1".to_string())];
-        let bytes = write(&[field], &id, "");
+        let bytes = write(std::slice::from_ref(&field), &id, "");
+        // Only the skip-index-type byte differs from the same field without
+        // one (and the checksum): Java sets no 0x20 bit in the flags byte.
+        let mut plain = field.clone();
+        plain.doc_values_skip_index_type = DocValuesSkipIndexType::None;
+        let plain_bytes = write(&[plain], &id, "");
+        let body = bytes.len() - lucene_store::codec_util::FOOTER_LENGTH;
+        let differing = (0..body).filter(|&i| bytes[i] != plain_bytes[i]).count();
+        assert_eq!((bytes.len(), differing), (plain_bytes.len(), 1));
         let fis = parse(&bytes, &id, "").unwrap();
         assert_eq!(fis.fields[0].doc_values_type, DocValuesType::Numeric);
         assert_eq!(
