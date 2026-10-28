@@ -3446,16 +3446,31 @@ impl IndexingConfig {
         };
         let (points_output, vectors_output);
         let (norms_output, term_vectors_output, postings_output);
+        let stored_fields_bytes;
         if self.fast_inversion_applies(&norms_configs) {
             // `IndexingChain`'s own shape: a term hash per field, lengths
             // counted as tokens go by, postings handed to the writer in term
             // order -- see `crate::inverter`. Taken whenever nothing needs the
             // general pass's `InMemoryInvertedIndex` (term vectors, payloads).
-            let inverters = IndexWriter::invert_pending_fields_fast(
-                buf.docs,
-                &self.postings_fields,
-                &self.analyzer(),
+            // Stored fields' compression shares nothing with inversion, so
+            // it runs alongside it; only the file writes stay in order below.
+            let (inverters, stored) = rayon::join(
+                || {
+                    IndexWriter::invert_pending_fields_fast(
+                        buf.docs,
+                        &self.postings_fields,
+                        &self.analyzer(),
+                    )
+                },
+                || {
+                    segment_writer::build_native_stored_fields(
+                        buf.docs,
+                        &segment_id,
+                        self.codec.as_deref(),
+                    )
+                },
             );
+            stored_fields_bytes = stored;
             norms_output = if norms_configs.is_empty() {
                 None
             } else {
@@ -3488,15 +3503,27 @@ impl IndexingConfig {
                 flush_deletes,
             )?;
         } else {
-            let inverted = IndexWriter::invert_pending_fields(
-                buf.docs,
-                &self.postings_fields,
-                &self.term_vector_fields,
-                &norms_configs,
-                &self.payload_field_names(),
-                self.payload_source.as_deref(),
-                &self.analyzer(),
+            let (inverted, stored) = rayon::join(
+                || {
+                    IndexWriter::invert_pending_fields(
+                        buf.docs,
+                        &self.postings_fields,
+                        &self.term_vector_fields,
+                        &norms_configs,
+                        &self.payload_field_names(),
+                        self.payload_source.as_deref(),
+                        &self.analyzer(),
+                    )
+                },
+                || {
+                    segment_writer::build_native_stored_fields(
+                        buf.docs,
+                        &segment_id,
+                        self.codec.as_deref(),
+                    )
+                },
             );
+            stored_fields_bytes = stored;
             // Norms and term vectors only *read* the shared invert pass;
             // postings **consumes** it. Ordering them this way means the whole
             // inverted index -- by far the largest transient structure in a
@@ -3624,6 +3651,7 @@ impl IndexingConfig {
             // carried more than one document.
             buf.has_blocks,
             self.codec.as_deref(),
+            stored_fields_bytes,
         )?;
 
         let mut record = |names: Vec<String>| {
@@ -8506,21 +8534,25 @@ impl IndexWriter<'_> {
         postings: &[PostingsFieldConfig],
         analyzer: &Analyzer,
     ) -> Vec<(i32, crate::inverter::FieldInverter)> {
-        let mut values: Vec<&str> = Vec::new();
+        use rayon::prelude::*;
+        // Fields are independent, and each one's documents are split across
+        // the pool again inside `invert_parallel`.
         postings
-            .iter()
+            .par_iter()
             .map(|config| {
-                let mut inverter = crate::inverter::FieldInverter::new(config.index_options);
-                for (doc_id, doc) in docs.iter().enumerate() {
-                    values.clear();
-                    values.extend(doc.fields.iter().filter_map(|f| match &f.value {
-                        FieldValue::String(text) if f.field_number == config.field_number => {
-                            Some(text.as_str())
-                        }
-                        _ => None,
-                    }));
-                    inverter.add_document(doc_id as i32, &values, analyzer);
-                }
+                let inverter = crate::inverter::FieldInverter::invert_parallel(
+                    config.index_options,
+                    docs.len(),
+                    |doc_id, values: &mut Vec<&str>| {
+                        values.extend(docs[doc_id].fields.iter().filter_map(|f| match &f.value {
+                            FieldValue::String(text) if f.field_number == config.field_number => {
+                                Some(text.as_str())
+                            }
+                            _ => None,
+                        }));
+                    },
+                    analyzer,
+                );
                 (config.field_number, inverter)
             })
             .collect()
