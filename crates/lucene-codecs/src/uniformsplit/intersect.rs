@@ -3,7 +3,7 @@
 //! and seeking past a run of rejected ones to the automaton's next
 //! possible term.
 
-use lucene_util::automaton::{ByteRunnable, CompiledAutomaton, Transition, TransitionAccessor};
+use lucene_util::automaton::{ByteRunnableRef, CompiledAutomaton, Transition, TransitionAccessor};
 
 use super::block_reader::BlockReader;
 use super::{Error, Result, SeekStatus, TermBytes, UniformSplitTermState, UniformSplitTerms};
@@ -28,7 +28,7 @@ enum BlockIteration {
 /// automaton accepts.
 pub struct IntersectBlockReader<'a> {
     pub(super) base: BlockReader<'a>,
-    byte_runnable: &'a dyn ByteRunnable,
+    byte_runnable: ByteRunnableRef<'a>,
     /// `commonSuffix`.
     common_suffix: Option<&'a [u8]>,
     /// `minTermLength`.
@@ -67,10 +67,9 @@ impl<'a> IntersectBlockReader<'a> {
         compiled: &'a CompiledAutomaton,
         start_term: Option<&[u8]>,
     ) -> Result<Self> {
-        let (Some(byte_runnable), Some(transition_accessor)) = (
-            compiled.get_byte_runnable(),
-            compiled.get_transition_accessor(),
-        ) else {
+        let (Some(byte_runnable), Some(transition_accessor)) =
+            (compiled.byte_runnable(), compiled.get_transition_accessor())
+        else {
             return Err(Error::Unsupported(
                 "please use CompiledAutomaton.getTermsEnum instead",
             ));
@@ -325,7 +324,7 @@ impl<'a> IntersectBlockReader<'a> {
 /// `getMinTermLength()`: the length of the automaton's single-byte-path
 /// prefix (up to its first accept state) and its common suffix.
 fn min_term_length(
-    byte_runnable: &dyn ByteRunnable,
+    byte_runnable: ByteRunnableRef<'_>,
     transition_accessor: &dyn TransitionAccessor,
     finite: bool,
     common_suffix: Option<&[u8]>,
@@ -358,7 +357,7 @@ fn min_term_length(
 /// `AutomatonNextTermCalculator`: `AutomatonTermsEnum`'s `nextString`, the
 /// smallest term after a rejected one the automaton could accept.
 struct AutomatonNextTermCalculator<'a> {
-    byte_runnable: &'a dyn ByteRunnable,
+    byte_runnable: ByteRunnableRef<'a>,
     transition_accessor: &'a dyn TransitionAccessor,
     finite: bool,
     /// `visited`: the generation each state was last seen in (infinite
@@ -388,7 +387,7 @@ fn idx(state: i32) -> usize {
 #[allow(clippy::arithmetic_side_effects)]
 impl<'a> AutomatonNextTermCalculator<'a> {
     fn new(
-        byte_runnable: &'a dyn ByteRunnable,
+        byte_runnable: ByteRunnableRef<'a>,
         transition_accessor: &'a dyn TransitionAccessor,
         finite: bool,
     ) -> Self {

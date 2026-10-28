@@ -604,7 +604,7 @@ impl Monitor {
     /// `match(docs, PartitionMatcher.factory(executor, matcher, threads))`:
     /// the batch is built and the presearcher selects its candidates once;
     /// the candidates are cut into `threads` runs (`PartitionMatcher`'s
-    /// tasks), each run on its own thread against the shared batch, and the
+    /// tasks), run on the shared pool against the shared batch, and the
     /// per-document matches merge in run order. Equal to
     /// [`Monitor::match_docs`] for any thread count: a query's pieces resolve
     /// in candidate order whichever run they land in.
@@ -612,7 +612,7 @@ impl Monitor {
     /// A run is never shorter than [`MIN_CANDIDATES_PER_THREAD`] candidates,
     /// and there are no more runs than the machine has hardware threads
     /// (fewer threads are used otherwise), so a small candidate set is not
-    /// slowed by thread start-up.
+    /// slowed by handing work to another thread.
     pub fn match_docs_partitioned(
         &self,
         docs: &[DocFields<'_>],
@@ -635,28 +635,17 @@ impl Monitor {
         let max_doc = prepared.batch.max_doc();
         let parts = partition(&candidates, threads);
         // one searcher over the batch, shared by every run; the first run is
-        // this thread's own
-        let results: Result<Vec<MultiMatchingQueries>> =
-            prepared.batch.with_searcher(|searcher| {
-                std::thread::scope(|scope| {
-                    let handles: Vec<_> = parts[1..]
-                        .iter()
-                        .map(|part| {
-                            scope.spawn(move || run_on(searcher, max_doc, matcher, part, None))
-                        })
-                        .collect();
-                    let mut out = vec![run_on(searcher, max_doc, matcher, parts[0], None)];
-                    for h in handles {
-                        out.push(h.join().map_err(|_| {
-                            Error::IllegalState("a matcher worker panicked".into())
-                        })?);
-                    }
-                    Ok(out)
-                })
-            })?;
+        // this thread's own and the rest go to the crate's shared pool (no
+        // thread start-up per match), results in run order
+        let runs: Vec<Vec<usize>> = (0..parts.len()).map(|i| vec![i]).collect();
+        let results: Vec<MultiMatchingQueries> = prepared.batch.with_searcher(|searcher| {
+            crate::slices::run_slices(&runs, |run| {
+                run_on(searcher, max_doc, matcher, parts[run[0]], None)
+            })
+        })?;
         let mut merged: Vec<BTreeMap<String, QueryMatch>> = vec![BTreeMap::new(); docs.len()];
         let mut errors = BTreeMap::new();
-        for part in results? {
+        for part in results {
             for (doc, found) in part.matches.into_iter().enumerate() {
                 for (id, m) in found {
                     // a query's pieces split across runs resolve in run order,
@@ -687,7 +676,7 @@ impl Monitor {
 
 /// The fewest candidates [`Monitor::match_docs_partitioned`] gives a thread.
 /// A candidate's query costs a few microseconds against a one-document
-/// batch; a thread's start-up and wake-up cost tens, so a thread is given at
+/// batch; waking a pool thread costs tens, so a thread is given at
 /// least a few hundred microseconds of work.
 pub const MIN_CANDIDATES_PER_THREAD: usize = 64;
 

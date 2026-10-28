@@ -149,6 +149,11 @@ impl<P: Directory, S: Directory> Directory for FileSwitchDirectory<P, S> {
         self.directory(name).open(name)
     }
 
+    #[cfg(any(test, feature = "test-util"))]
+    fn close_input(&self, name: &str, input: Input) -> Result<()> {
+        self.directory(name).close_input(name, input)
+    }
+
     fn file_length(&self, name: &str) -> Result<u64> {
         self.directory(name).file_length(name)
     }

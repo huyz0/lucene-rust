@@ -8,7 +8,7 @@ use std::fmt;
 
 use lucene_store::codec_util::{self, FOOTER_LENGTH};
 use lucene_util::automaton::{
-    AutomatonType, ByteRunnable, CompiledAutomaton, Transition, TransitionAccessor,
+    AutomatonType, ByteRunnableRef, CompiledAutomaton, Transition, TransitionAccessor,
 };
 
 use super::{corrupt, Error, Result};
@@ -633,10 +633,9 @@ impl DirectField {
                 "please use CompiledAutomaton.getTermsEnum instead",
             ));
         }
-        let (Some(runnable), Some(accessor)) = (
-            compiled.get_byte_runnable(),
-            compiled.get_transition_accessor(),
-        ) else {
+        let (Some(runnable), Some(accessor)) =
+            (compiled.byte_runnable(), compiled.get_transition_accessor())
+        else {
             return Err(Error::Unsupported(
                 "a NORMAL automaton without its runnable",
             ));
@@ -847,7 +846,7 @@ struct State {
 /// jumping along the skip pointers past runs the automaton rejects.
 pub struct DirectIntersectTermsEnum<'a> {
     field: &'a DirectField,
-    runnable: &'a dyn ByteRunnable,
+    runnable: ByteRunnableRef<'a>,
     accessor: &'a dyn TransitionAccessor,
     common_suffix: Option<&'a [u8]>,
     term_ord: i32,
@@ -882,7 +881,7 @@ enum Start {
 impl<'a> DirectIntersectTermsEnum<'a> {
     fn new(
         field: &'a DirectField,
-        runnable: &'a dyn ByteRunnable,
+        runnable: ByteRunnableRef<'a>,
         accessor: &'a dyn TransitionAccessor,
         common_suffix: Option<&'a [u8]>,
         start_term: Option<&[u8]>,

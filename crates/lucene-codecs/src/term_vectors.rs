@@ -2037,7 +2037,17 @@ fn flush_fields(out: &mut Vec<u8>, docs: &[PendingDoc], field_nums: &[i64]) {
     // for a chunk with at least one field, so its length is at least 1.
     #[allow(clippy::arithmetic_side_effects)]
     let bits = direct_writer_bits_required(field_nums.len() as i64 - 1);
-    let bytes = direct_reader::encode(&offs, bits);
+    write_direct(out, &offs, bits);
+}
+
+/// A `DirectWriter` block into a scratch buffer, then its length and bytes:
+/// `DirectWriter.finish()` pads to a whole read word for the widths a reader
+/// fetches as 2/4/8 bytes (12, 20, ...), and the length counts the padding.
+fn write_direct(out: &mut Vec<u8>, values: &[i64], bits: u8) {
+    let mut bytes = direct_reader::encode(values, bits);
+    // ARITH: the padding is at most 7 bytes onto an in-memory buffer's length.
+    #[allow(clippy::arithmetic_side_effects)]
+    bytes.resize(bytes.len() + direct_reader::padding_bytes_needed(bits), 0);
     out.write_vint(bytes.len() as i32);
     out.write_bytes(&bytes);
 }
@@ -2072,9 +2082,7 @@ fn flush_flags(out: &mut Vec<u8>, docs: &[PendingDoc], field_nums: &[i64]) {
         )
     };
     out.write_vint(selector);
-    let bytes = direct_reader::encode(&values, FLAGS_BITS);
-    out.write_vint(bytes.len() as i32);
-    out.write_bytes(&bytes);
+    write_direct(out, &values, FLAGS_BITS);
 }
 
 /// `flushNumTerms`.
@@ -2089,9 +2097,7 @@ fn flush_num_terms(out: &mut Vec<u8>, docs: &[PendingDoc]) {
     let max_num_terms = counts.iter().copied().max().unwrap_or(0);
     let bits = direct_writer_bits_required(max_num_terms);
     out.write_vint(bits as i32);
-    let bytes = direct_reader::encode(&counts, bits);
-    out.write_vint(bytes.len() as i32);
-    out.write_bytes(&bytes);
+    write_direct(out, &counts, bits);
 }
 
 /// `flushTermLengths`: the prefix stream then the suffix stream.
@@ -3669,6 +3675,51 @@ mod tests {
 
         let (tvx, tvm) = build_trivial_single_chunk_index_and_meta(chunk_start, tvd.len() as i64);
         (tvd, tvx, tvm)
+    }
+
+    /// `DirectWriter.finish()`'s padding: 3 values at 12 bits are 5 packed
+    /// bytes plus one pad byte, and the length Java writes counts it.
+    #[test]
+    fn direct_blocks_carry_direct_writer_padding() {
+        let mut out = Vec::new();
+        write_direct(&mut out, &[300, 1, 4095], 12);
+        let mut want = vec![6];
+        want.extend(direct_reader::encode(&[300, 1, 4095], 12));
+        want.push(0);
+        assert_eq!(out, want);
+        out.clear();
+        write_direct(&mut out, &[3, 1], 4);
+        assert_eq!(out.len(), 2);
+    }
+
+    /// A field of 300 terms needs 12 bits per term count: the padded
+    /// num-terms block still reads back.
+    #[test]
+    fn write_best_speed_field_with_hundreds_of_terms_round_trips() {
+        let terms: Vec<TermVectorTerm> = (0..300)
+            .map(|i| TermVectorTerm {
+                term: format!("t{i:04}").into_bytes(),
+                freq: 1,
+                positions: None,
+                start_offsets: None,
+                end_offsets: None,
+                payloads: None,
+            })
+            .collect();
+        let docs = vec![TermVectorsDocument {
+            fields: vec![TermVectorField {
+                field_number: 0,
+                has_positions: false,
+                has_offsets: false,
+                has_payloads: false,
+                terms,
+            }],
+        }];
+        let (tvd, tvx, tvm) = write_best_speed(&docs, &id(), "");
+        let reader = open(&tvd, &tvx, &tvm, &id(), "").unwrap();
+        let doc = reader.document(0).unwrap().unwrap();
+        assert_eq!(doc.fields[0].terms.len(), 300);
+        assert_eq!(doc.fields[0].terms[299].term, b"t0299");
     }
 
     #[test]

@@ -46,7 +46,7 @@ mod utf32_to_utf8;
 
 pub use automaton::{Automaton, Builder, StatePair, Transition, TransitionAccessor};
 pub use case_folding::{expand as case_folding_expand, java_to_lower_case, java_to_upper_case};
-pub use compiled_automaton::{AutomatonType, CompiledAutomaton};
+pub use compiled_automaton::{AutomatonType, ByteRunnableRef, CompiledAutomaton};
 pub use error::{AutomatonError, TooComplexToDeterminize};
 pub use finite_strings::{
     FiniteStringsCursor, FiniteStringsIterator, LimitedFiniteStringsCursor,

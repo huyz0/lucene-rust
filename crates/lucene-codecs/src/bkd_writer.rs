@@ -2175,35 +2175,61 @@ impl<'d> BkdWriter<'d> {
     /// `BKDWriter.merge`: the one-dimensional merge. Each source yields its
     /// points in its tree's leaf order (sorted by value, then doc), with
     /// docs already mapped and deleted ones dropped.
-    pub fn merge(
+    ///
+    /// `BKDMergeQueue`: the sources' current points sit in a binary min-heap
+    /// ordered by `(value, doc)`, and the top is re-sifted after each point
+    /// (`updateTop`). `(value, doc)` never ties across sources -- each doc
+    /// belongs to one -- so the order is the one Java writes.
+    pub fn merge<V: AsRef<[u8]>>(
         &mut self,
         data: &mut Vec<u8>,
-        sources: Vec<Box<dyn Iterator<Item = (Vec<u8>, i32)> + '_>>,
+        sources: Vec<Box<dyn Iterator<Item = (V, i32)> + '_>>,
     ) -> Result<Option<BkdIndexPlan>> {
         let bpd = self.config.bytes_per_dim;
-        let mut heads: Vec<(Vec<u8>, i32, usize)> = Vec::new();
         let mut sources = sources;
-        for (i, s) in sources.iter_mut().enumerate() {
-            if let Some((v, d)) = s.next() {
-                heads.push((v, d, i));
+        // One current point per source; `heap` holds the indices of the
+        // sources that still have one.
+        let mut heads: Vec<Option<(V, i32)>> = sources.iter_mut().map(|s| s.next()).collect();
+        let less = |heads: &[Option<(V, i32)>], a: usize, b: usize| -> bool {
+            match (&heads[a], &heads[b]) {
+                (Some((va, da)), Some((vb, db))) => {
+                    (&va.as_ref()[..bpd], *da) < (&vb.as_ref()[..bpd], *db)
+                }
+                _ => false,
             }
+        };
+        // ARITH: heap positions are below `heap.len()`, so `2 * i + 2` cannot
+        // overflow a `usize` for any real number of sources.
+        #[allow(clippy::arithmetic_side_effects)]
+        let sift_down = |heap: &mut [usize], heads: &[Option<(V, i32)>], mut i: usize| loop {
+            let (l, r) = (2 * i + 1, 2 * i + 2);
+            let mut m = i;
+            if l < heap.len() && less(heads, heap[l], heap[m]) {
+                m = l;
+            }
+            if r < heap.len() && less(heads, heap[r], heap[m]) {
+                m = r;
+            }
+            if m == i {
+                break;
+            }
+            heap.swap(i, m);
+            i = m;
+        };
+        let mut heap: Vec<usize> = (0..heads.len()).filter(|&i| heads[i].is_some()).collect();
+        for i in (0..heap.len() / 2).rev() {
+            sift_down(&mut heap, &heads, i);
         }
         let mut one = OneDimWriter::new(self, data)?;
-        loop {
-            let best = heads
-                .iter()
-                .enumerate()
-                .min_by(|(_, a), (_, b)| a.0[..bpd].cmp(&b.0[..bpd]).then(a.1.cmp(&b.1)))
-                .map(|(i, _)| i);
-            let Some(bi) = best else { break };
-            let (v, d, src) = heads[bi].clone();
-            one.add(self, data, &v, d)?;
-            match sources[src].next() {
-                Some((nv, nd)) => heads[bi] = (nv, nd, src),
-                None => {
-                    heads.remove(bi);
-                }
+        while let Some(&top) = heap.first() {
+            if let Some((v, d)) = &heads[top] {
+                one.add(self, data, v.as_ref(), *d)?;
             }
+            heads[top] = sources[top].next();
+            if heads[top].is_none() {
+                heap.swap_remove(0);
+            }
+            sift_down(&mut heap, &heads, 0);
         }
         one.finish(self, data)
     }

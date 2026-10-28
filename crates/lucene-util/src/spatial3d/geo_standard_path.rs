@@ -40,6 +40,132 @@ struct Parts {
     planet_model: Arc<PlanetModel>,
     segments: Vec<PathSegment>,
     endpoints: Vec<SegmentEndpoint>,
+    /// Each leaf's own bounding box (`[segments, endpoints]`, as
+    /// [`bbox_of`]), built on the first `intersects` call: only the pruned
+    /// plane walk reads them.
+    leaf_boxes: OnceLock<[Vec<[f64; 6]>; 2]>,
+}
+
+impl Parts {
+    fn leaf_boxes(&self) -> &[Vec<[f64; 6]>; 2] {
+        self.leaf_boxes.get_or_init(|| {
+            let pm = &self.planet_model;
+            let one = |f: &dyn Fn(&mut XYZBounds)| {
+                let mut b = XYZBounds::new();
+                f(&mut b);
+                bbox_of(&b)
+            };
+            [
+                self.segments
+                    .iter()
+                    .map(|s| one(&|b| s.get_bounds(pm, b)))
+                    .collect(),
+                self.endpoints
+                    .iter()
+                    .map(|e| one(&|b| e.get_bounds(pm, b)))
+                    .collect(),
+            ]
+        })
+    }
+}
+
+/// `[minX, maxX, minY, maxY, minZ, maxZ]` of `bounds`, NaN where unset.
+fn bbox_of(bounds: &XYZBounds) -> [f64; 6] {
+    let nan = f64::NAN;
+    [
+        bounds.minimum_x().unwrap_or(nan),
+        bounds.maximum_x().unwrap_or(nan),
+        bounds.minimum_y().unwrap_or(nan),
+        bounds.maximum_y().unwrap_or(nan),
+        bounds.minimum_z().unwrap_or(nan),
+        bounds.maximum_z().unwrap_or(nan),
+    ]
+}
+
+/// How far (in each coordinate) outside a leaf's bounding box the query
+/// plane must pass before the leaf is skipped. See [`PlaneProbe`].
+const PRUNE_MARGIN: f64 = 1e-4;
+/// The smallest sine of the angle between the query plane and a leaf's
+/// plane for which the leaf may be skipped. See [`PlaneProbe`].
+const PRUNE_MIN_SIN: f64 = 1e-5;
+
+/// The query plane of a `GeoStandardPath::intersects` call, set up to skip
+/// the leaves (segments and end caps) it provably cannot meet. Java tests
+/// every leaf; skipping one never changes the answer:
+///
+/// A leaf's test is `q.intersects(p, ...)` for each of its planes `q`
+/// (`upper`/`lower` connecting planes, or the cap's circle planes), bounded
+/// by the leaf's other planes. It is true only on a witness point that lies
+/// on both `p` and `q` (or, when the two are numerically identical, on a
+/// notable point): either a root of the line `p ∩ q` with the ellipsoid, or
+/// the near-tangent point of that line. A leaf is skipped only when
+///
+/// 1. every plane `q` of the leaf makes an angle with `p` whose sine is at
+///    least [`PRUNE_MIN_SIN`]. That excludes the numerically identical case
+///    (its cross product is below `1e-12`), and bounds the near-tangent
+///    point's distance from the surface: `|f| < 1e-24 / 4A` with `A ~
+///    sin^2 >= 1e-10`, so below about `3e-15`. Every witness then lies, to
+///    within `~1e-6` (the worst case: a bounding plane's `1e-12` tolerance
+///    where it meets the arc almost tangentially), on the surface arc of
+///    `q` that the leaf's `getBounds` records -- the same bounding box
+///    (with its `1e-9` fudge) Java's own `PathNode.isWithin` trusts; and
+/// 2. `p` misses that box grown by [`PRUNE_MARGIN`] (`1e-4`, a hundred
+///    times that worst case) on every side, so no point near it is on `p`.
+///
+/// A node's box is the union of its leaves' boxes, so a node `p` misses
+/// lets each leaf below it skip its own box test.
+/// `tests::pruned_intersects_matches_the_full_walk` checks that the two
+/// walks agree on random paths and solids, axis-parallel planes included.
+struct PlaneProbe<'a> {
+    plane: &'a Plane,
+    /// `PRUNE_MARGIN` scaled to `p`'s value: moving a point `m` along every
+    /// axis changes `p(x)` by at most `m (|A| + |B| + |C|)`.
+    tol: f64,
+    norm_squared: f64,
+}
+
+impl<'a> PlaneProbe<'a> {
+    fn new(plane: &'a Plane) -> Self {
+        let tol = PRUNE_MARGIN * (abs(plane.x) + abs(plane.y) + abs(plane.z));
+        let norm_squared = plane.x * plane.x + plane.y * plane.y + plane.z * plane.z;
+        PlaneProbe {
+            plane,
+            tol,
+            norm_squared,
+        }
+    }
+
+    /// Whether `p` stays more than [`PRUNE_MARGIN`] away from the box. NaN
+    /// anywhere (an unset bound, a NaN plane) answers false.
+    #[inline]
+    fn misses(&self, b: &[f64; 6]) -> bool {
+        let p = self.plane;
+        let span = |a: f64, lo: f64, hi: f64| {
+            if a >= 0.0 {
+                (a * lo, a * hi)
+            } else {
+                (a * hi, a * lo)
+            }
+        };
+        let (x0, x1) = span(p.x, b[0], b[1]);
+        let (y0, y1) = span(p.y, b[2], b[3]);
+        let (z0, z1) = span(p.z, b[4], b[5]);
+        let lo = x0 + y0 + z0 + p.D;
+        let hi = x1 + y1 + z1 + p.D;
+        lo > self.tol || hi < -self.tol
+    }
+
+    /// Whether `q` meets `p` at an angle whose sine is at least
+    /// [`PRUNE_MIN_SIN`].
+    #[inline]
+    fn steep(&self, q: &Plane) -> bool {
+        let p = self.plane;
+        let c1 = q.y * p.z - q.z * p.y;
+        let c2 = q.z * p.x - q.x * p.z;
+        let c3 = q.x * p.y - q.y * p.x;
+        let q2 = q.x * q.x + q.y * q.y + q.z * q.z;
+        c1 * c1 + c2 * c2 + c3 * c3 >= PRUNE_MIN_SIN * PRUNE_MIN_SIN * q2 * self.norm_squared
+    }
 }
 
 /// `PathComponent`: a node of the tree, an end point or a segment.
@@ -558,6 +684,11 @@ impl PathSegment {
         )
     }
 
+    /// Whether every plane [`Self::intersects`] tests is steep to `probe`.
+    fn steep_to(&self, probe: &PlaneProbe<'_>) -> bool {
+        probe.steep(&self.upper_connecting_plane) && probe.steep(&self.lower_connecting_plane)
+    }
+
     fn intersects_shape(&self, geo_shape: &dyn GeoShape) -> bool {
         geo_shape.intersects(
             &self.upper_connecting_plane,
@@ -916,6 +1047,15 @@ impl SegmentEndpoint {
         }
     }
 
+    /// Whether every plane [`Self::intersects`] tests is steep to `probe`.
+    fn steep_to(&self, probe: &PlaneProbe<'_>) -> bool {
+        probe.steep(&self.circle_plane)
+            && match &self.kind {
+                EndpointKind::CutoffDual { circle_plane2, .. } => probe.steep(circle_plane2),
+                _ => true,
+            }
+    }
+
     fn intersects_shape(&self, geo_shape: &dyn GeoShape) -> bool {
         match &self.kind {
             EndpointKind::Circle => geo_shape.intersects(&self.circle_plane, &[], &[]),
@@ -1113,6 +1253,9 @@ impl Component {
         }
     }
 
+    /// Java's walk: every leaf tested. The reference the pruned walk
+    /// ([`Self::intersects_pruned`]) is checked against.
+    #[cfg(test)]
     fn intersects(
         &self,
         parts: &Parts,
@@ -1131,6 +1274,50 @@ impl Component {
             }
             Component::Segment(i) => {
                 parts.segments[*i].intersects(&parts.planet_model, p, notable_points, bounds)
+            }
+        }
+    }
+
+    /// `intersects` (`planeBounds` is always null there), skipping the
+    /// leaves `probe` proves `p` cannot meet (see [`PlaneProbe`]); `missed`
+    /// says an ancestor's box was already missed.
+    fn intersects_pruned(
+        &self,
+        parts: &Parts,
+        boxes: &[Vec<[f64; 6]>; 2],
+        probe: &PlaneProbe<'_>,
+        notable_points: &[GeoPoint],
+        bounds: &[&dyn Membership],
+        missed: bool,
+    ) -> bool {
+        let p = probe.plane;
+        match self {
+            Component::Node(n) => {
+                let missed = missed || probe.misses(&n.bbox);
+                n.child1
+                    .intersects_pruned(parts, boxes, probe, notable_points, bounds, missed)
+                    || n.child2.intersects_pruned(
+                        parts,
+                        boxes,
+                        probe,
+                        notable_points,
+                        bounds,
+                        missed,
+                    )
+            }
+            Component::Endpoint(i) => {
+                let e = &parts.endpoints[*i];
+                if (missed || probe.misses(&boxes[1][*i])) && e.steep_to(probe) {
+                    return false;
+                }
+                e.intersects(&parts.planet_model, p, notable_points, bounds)
+            }
+            Component::Segment(i) => {
+                let s = &parts.segments[*i];
+                if (missed || probe.misses(&boxes[0][*i])) && s.steep_to(probe) {
+                    return false;
+                }
+                s.intersects(&parts.planet_model, p, notable_points, bounds)
             }
         }
     }
@@ -1186,15 +1373,7 @@ impl TreeBuilder {
         let mut bounds = XYZBounds::new();
         first.get_bounds(parts, &mut bounds);
         second.get_bounds(parts, &mut bounds);
-        let nan = f64::NAN;
-        let bbox = [
-            bounds.minimum_x().unwrap_or(nan),
-            bounds.maximum_x().unwrap_or(nan),
-            bounds.minimum_y().unwrap_or(nan),
-            bounds.maximum_y().unwrap_or(nan),
-            bounds.minimum_z().unwrap_or(nan),
-            bounds.maximum_z().unwrap_or(nan),
-        ];
+        let bbox = bbox_of(&bounds);
         self.component_stack
             .push(Component::Node(Box::new(PathNode {
                 child1: first,
@@ -1238,6 +1417,7 @@ impl GeoStandardPath {
             planet_model: planet_model.clone(),
             segments: Vec::with_capacity(points.len()),
             endpoints: Vec::with_capacity(points.len()),
+            leaf_boxes: OnceLock::new(),
         };
         // Compute an offset to use for all segments.  This will be based on
         // the minimum magnitude of the entire ellipsoid.
@@ -1499,7 +1679,14 @@ impl GeoShape for GeoStandardPath {
     ) -> bool {
         match &self.root_component {
             None => false,
-            Some(r) => r.intersects(&self.parts, plane, notable_points, bounds),
+            Some(r) => r.intersects_pruned(
+                &self.parts,
+                self.parts.leaf_boxes(),
+                &PlaneProbe::new(plane),
+                notable_points,
+                bounds,
+                false,
+            ),
         }
     }
 }
@@ -1666,6 +1853,118 @@ mod tests {
             inside > total / 10 && inside < total * 9 / 10,
             "{inside}/{total}"
         );
+    }
+
+    /// The bounding-box-pruned `intersects` against Java's full walk, on
+    /// random paths (equator and meridian ones too, whose planes are axis
+    /// parallel, as every solid face is) and random planes: solid faces
+    /// bounded by the other faces, and arbitrary planes with random bounds.
+    #[test]
+    fn pruned_intersects_matches_the_full_walk() {
+        let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+        let (mut hits, mut calls, mut pruned_leaves) = (0usize, 0usize, 0usize);
+        for pm in [PlanetModel::wgs84(), PlanetModel::sphere()] {
+            for shape in 0..12 {
+                let n = [1usize, 2, 3, 5, 17, 40][shape % 6];
+                let width = match shape % 4 {
+                    0 => 1e-6,
+                    1 => 0.01 + 0.05 * rng.f(),
+                    2 => 0.3,
+                    _ => 1.5,
+                };
+                let pts: Vec<GeoPoint> = (0..n)
+                    .map(|i| {
+                        let t = i as f64 / n as f64;
+                        let (lat, lon) = match shape % 3 {
+                            // Along the equator / a meridian: axis-parallel
+                            // connecting planes.
+                            0 => (0.0, -1.0 + 2.0 * t),
+                            1 => (-1.2 + 2.4 * t, 0.5),
+                            _ => (
+                                -0.5 + t + 0.1 * (t * 13.0).sin(),
+                                -1.0 + 1.5 * t + 0.05 * rng.f(),
+                            ),
+                        };
+                        GeoPoint::from_lat_lon(&pm, lat, lon).unwrap()
+                    })
+                    .collect();
+                let Ok(path) = GeoStandardPath::new(&pm, width, &pts) else {
+                    continue;
+                };
+                let root = path.root_component.as_ref().unwrap();
+                let parts = &path.parts;
+                let boxes = parts.leaf_boxes();
+                let mut check = |p: &Plane, notable: &[GeoPoint], bounds: &[&dyn Membership]| {
+                    let full = root.intersects(parts, p, notable, bounds);
+                    let probe = PlaneProbe::new(p);
+                    let pruned =
+                        root.intersects_pruned(parts, boxes, &probe, notable, bounds, false);
+                    assert_eq!(full, pruned, "{p:?} on {}", path.java_to_string());
+                    calls += 1;
+                    hits += usize::from(full);
+                    pruned_leaves += (0..parts.segments.len())
+                        .filter(|&i| {
+                            probe.misses(&boxes[0][i]) && parts.segments[i].steep_to(&probe)
+                        })
+                        .count();
+                };
+                for i in 0..400 {
+                    let base = &pts[i % n];
+                    let spread = if i % 2 == 0 { width * 2.0 } else { 0.8 };
+                    let c = GeoPoint::from_lat_lon(
+                        &pm,
+                        (base.latitude() + spread * (rng.f() - 0.5)).clamp(-1.5, 1.5),
+                        base.longitude() + spread * (rng.f() - 0.5),
+                    )
+                    .unwrap();
+                    // A solid around `c`, extent log-uniform in [1e-7, 1].
+                    let s = 10f64.powf(-7.0 + 7.0 * rng.f());
+                    let lo = [c.x - s * rng.f(), c.y - s * rng.f(), c.z - s * rng.f()];
+                    let hi = [lo[0] + s, lo[1] + s, lo[2] + s];
+                    let face = |axis: usize, at: f64, inside: f64| {
+                        let mut v = [0.0; 3];
+                        v[axis] = 1.0;
+                        let mut ip = [0.0; 3];
+                        ip[axis] = inside;
+                        SidedPlane::from_xyz_normal(
+                            ip[0],
+                            ip[1],
+                            ip[2],
+                            &Vector::new(v[0], v[1], v[2]),
+                            -at,
+                        )
+                        .unwrap()
+                    };
+                    let faces: Vec<SidedPlane> = (0..3)
+                        .flat_map(|a| [face(a, lo[a], hi[a]), face(a, hi[a], lo[a])])
+                        .collect();
+                    for f in 0..6 {
+                        let others: Vec<&dyn Membership> = (0..6)
+                            .filter(|&g| g != f)
+                            .map(|g| &faces[g] as &dyn Membership)
+                            .collect();
+                        check(&faces[f], &[], &others);
+                        check(&faces[f], &path.edge_points, &[]);
+                    }
+                    // An arbitrary plane near `c`, bounded by two random
+                    // sided planes through the origin.
+                    let v = Vector::new(rng.f() - 0.5, rng.f() - 0.5, rng.f() - 0.5);
+                    if let Some(nv) = v.normalize() {
+                        let d = -(nv.x * c.x + nv.y * c.y + nv.z * c.z) + 0.01 * (rng.f() - 0.5);
+                        let p = Plane::with_d(&nv, d);
+                        let b1 = SidedPlane::from_vectors(&c, &pts[0], base);
+                        let b2 = SidedPlane::from_vectors(&pts[0], &c, &pts[n - 1]);
+                        check(&p, &[], &[]);
+                        if let (Ok(b1), Ok(b2)) = (b1, b2) {
+                            check(&p, &[], &[&b1, &b2]);
+                        }
+                    }
+                }
+            }
+        }
+        // Both answers occur, and the prune does fire.
+        assert!(hits > calls / 50 && hits < calls / 2, "{hits}/{calls}");
+        assert!(pruned_leaves > calls, "{pruned_leaves} over {calls} calls");
     }
 
     #[test]

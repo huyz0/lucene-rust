@@ -39,6 +39,7 @@ pub mod js;
 pub mod variable_context;
 
 pub use js::{compile, compile_with, default_functions, ExprFunction, Expression, ParseException};
+use js::{SharedValues, VarSlot, VarValues};
 
 /// What compiling an expression can fail with.
 #[derive(Debug, thiserror::Error)]
@@ -211,60 +212,59 @@ impl Bindings for CycleDetection<'_> {
 
 /// A [`DoubleValues`] shared by the variables that read the same source (and
 /// the scores every variable reads).
-struct Shared<'c>(Rc<RefCell<BoxDoubleValues<'c>>>);
+struct Shared<'c>(Rc<RefCell<SharedValues<'c>>>);
 
 impl DoubleValues for Shared<'_> {
     fn advance_exact(&mut self, doc: i32) -> crate::Result<bool> {
-        self.0.borrow_mut().advance_exact(doc)
+        self.0.borrow_mut().values.advance_exact(doc)
     }
 
     fn double_value(&mut self) -> crate::Result<f64> {
-        self.0.borrow_mut().double_value()
-    }
-}
-
-/// `ExpressionValueSource.zeroWhenUnpositioned`: always has a value, `0`
-/// where the wrapped values have none, read at most once per document. The
-/// wrapped values are [`Shared`]'s, read directly (one dispatch less per
-/// read).
-struct ZeroWhenUnpositioned<'c> {
-    inner: Rc<RefCell<BoxDoubleValues<'c>>>,
-    current_doc: i32,
-    value: f64,
-    computed: bool,
-}
-
-impl DoubleValues for ZeroWhenUnpositioned<'_> {
-    fn advance_exact(&mut self, doc: i32) -> crate::Result<bool> {
-        if self.current_doc != doc {
-            self.current_doc = doc;
-            self.computed = false;
-        }
-        Ok(true)
+        self.0.borrow_mut().values.double_value()
     }
 
-    fn double_value(&mut self) -> crate::Result<f64> {
-        if !self.computed {
-            let mut inner = self.inner.borrow_mut();
-            self.value = if inner.advance_exact(self.current_doc)? {
-                inner.double_value()?
-            } else {
-                0.0
-            };
-            self.computed = true;
-        }
-        Ok(self.value)
+    fn batch_capable(&self) -> bool {
+        self.0.borrow().values.batch_capable()
+    }
+
+    /// The shared values' batch, read once however many readers ask.
+    fn fill_batch(
+        &mut self,
+        docs: &[i32],
+        scores: &[f32],
+        out: &mut [f64],
+        has: &mut [bool],
+    ) -> crate::Result<()> {
+        self.0.borrow_mut().fill_batch(docs, scores, out, has)
     }
 }
 
 /// `ExpressionFunctionValues`: the expression's value for the current
-/// document, evaluated once.
+/// document, evaluated once. Each variable is a [`VarSlot`]
+/// (`zeroWhenUnpositioned`) stored inline and positioned as the evaluation
+/// first reads it, so a variable read costs only the wrapped values' own
+/// calls -- Java's per-document `advanceExact` over every wrapper is the
+/// slot's document check.
+///
+/// A batch ([`DoubleValues::fill_batch`], when every variable's values can
+/// be read so) reads each variable's values for the whole batch first, then
+/// evaluates the expression over those columns: the same values, without a
+/// call through each variable's values per document. Unlike the
+/// per-document evaluation, every variable is read at every document of the
+/// batch, also one a conditional would skip there (the values are the same;
+/// a failing read fails the batch).
 struct ExpressionFunctionValues<'c> {
     expression: Arc<Expression>,
-    function_values: Vec<BoxDoubleValues<'c>>,
+    function_values: Vec<VarSlot<'c>>,
     current_value: f64,
     current_doc: i32,
     computed: bool,
+    /// Every variable's values are [`DoubleValues::batch_capable`].
+    batch: bool,
+    /// A batch's variable values, variable by variable, and a variable's
+    /// `has` scratch.
+    columns: Vec<f64>,
+    column_has: Vec<bool>,
 }
 
 impl DoubleValues for ExpressionFunctionValues<'_> {
@@ -278,17 +278,52 @@ impl DoubleValues for ExpressionFunctionValues<'_> {
 
     fn double_value(&mut self) -> crate::Result<f64> {
         if !self.computed {
-            for v in &mut self.function_values {
-                v.advance_exact(self.current_doc)?;
-            }
-            self.current_value = self.expression.evaluate(&mut self.function_values)?;
+            self.current_value = self
+                .expression
+                .evaluate_at(&mut self.function_values, self.current_doc)?;
             self.computed = true;
         }
         Ok(self.current_value)
     }
+
+    fn batch_capable(&self) -> bool {
+        self.batch
+    }
+
+    /// Every document has a value: each variable's values for the batch
+    /// (`0` where one has none), then the expression over them.
+    fn fill_batch(
+        &mut self,
+        docs: &[i32],
+        scores: &[f32],
+        out: &mut [f64],
+        has: &mut [bool],
+    ) -> crate::Result<()> {
+        let n = docs.len();
+        self.columns.resize(self.function_values.len() * n, 0.0);
+        self.column_has.resize(n, false);
+        if n > 0 {
+            for (slot, column) in self
+                .function_values
+                .iter_mut()
+                .zip(self.columns.chunks_exact_mut(n))
+            {
+                slot.fill_batch(docs, scores, column, &mut self.column_has)?;
+            }
+        }
+        self.expression
+            .evaluate_batch(&self.columns, &mut out[..n])?;
+        has[..n].fill(true);
+        if let (Some(&doc), Some(&value)) = (docs.last(), out[..n].last()) {
+            self.current_doc = doc;
+            self.current_value = value;
+            self.computed = true;
+        }
+        Ok(())
+    }
 }
 
-type ValuesCache<'c> = HashMap<String, Rc<RefCell<BoxDoubleValues<'c>>>>;
+type ValuesCache<'c> = HashMap<String, Rc<RefCell<SharedValues<'c>>>>;
 
 /// `ExpressionValueSource` and its subclass `CachingExpressionValueSource`
 /// (`caching`): the expression over the sources its variables are bound to.
@@ -342,13 +377,24 @@ impl ExpressionValueSource {
         &self,
         ctx: &ValuesContext<'c>,
         leaf: usize,
-        scores: &Option<Rc<RefCell<BoxDoubleValues<'c>>>>,
+        scores: &Option<Rc<RefCell<SharedValues<'c>>>>,
         cache: &mut ValuesCache<'c>,
     ) -> crate::Result<BoxDoubleValues<'c>> {
-        let mut external: Vec<BoxDoubleValues<'c>> = Vec::with_capacity(self.variables.len());
+        let mut external: Vec<VarSlot<'c>> = Vec::with_capacity(self.variables.len());
         for (name, source) in self.expression.variables.iter().zip(&self.variables) {
-            let shared = match cache.get(name) {
-                Some(v) => v.clone(),
+            let slot = match cache.get(name) {
+                Some(v) => VarValues::Shared(v.clone()),
+                // a plain source's cache is its own and its names are
+                // distinct: nothing else reads a variable's values
+                None if !self.caching => VarValues::Owned(
+                    source.get_values(
+                        ctx,
+                        leaf,
+                        scores
+                            .as_ref()
+                            .map(|s| Box::new(Shared(s.clone())) as BoxDoubleValues<'c>),
+                    )?,
+                ),
                 None => {
                     let values: BoxDoubleValues<'c> = match source.as_expression() {
                         Some(nested) if self.caching && nested.caching => {
@@ -362,24 +408,23 @@ impl ExpressionValueSource {
                                 .map(|s| Box::new(Shared(s.clone())) as BoxDoubleValues<'c>),
                         )?,
                     };
-                    let rc = Rc::new(RefCell::new(values));
+                    let rc = Rc::new(RefCell::new(SharedValues::new(values)));
                     cache.insert(name.clone(), rc.clone());
-                    rc
+                    VarValues::Shared(rc)
                 }
             };
-            external.push(Box::new(ZeroWhenUnpositioned {
-                inner: shared,
-                current_doc: -1,
-                value: 0.0,
-                computed: false,
-            }));
+            external.push(VarSlot::new(slot));
         }
+        let batch = external.iter().all(VarSlot::batch_capable);
         Ok(Box::new(ExpressionFunctionValues {
             expression: self.expression.clone(),
             function_values: external,
             current_value: 0.0,
             current_doc: -1,
             computed: false,
+            batch,
+            columns: Vec::new(),
+            column_has: Vec::new(),
         }))
     }
 }
@@ -391,7 +436,7 @@ impl DoubleValuesSource for ExpressionValueSource {
         leaf: usize,
         scores: Option<BoxDoubleValues<'c>>,
     ) -> crate::Result<BoxDoubleValues<'c>> {
-        let scores = scores.map(|s| Rc::new(RefCell::new(s)));
+        let scores = scores.map(|s| Rc::new(RefCell::new(SharedValues::new(s))));
         self.values_with_cache(ctx, leaf, &scores, &mut HashMap::new())
     }
 
@@ -543,6 +588,7 @@ impl Rescorer for ExpressionRescorer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 
     fn expr(src: &str) -> Arc<Expression> {
         Arc::new(compile(src).unwrap())
@@ -622,5 +668,233 @@ mod tests {
         assert_eq!(with.describe(), "expr(s + c)");
         let caching = ExpressionValueSource::caching(&b, expr("c")).unwrap();
         assert!(caching.as_expression().is_some());
+    }
+
+    /// Even documents have the value `doc`, odd ones none; each read of a
+    /// value is counted, and the first read at `fail_at` fails.
+    struct Probe {
+        reads: Arc<AtomicUsize>,
+        fail_at: i32,
+        failed: Arc<AtomicBool>,
+    }
+
+    struct ProbeValues {
+        reads: Arc<AtomicUsize>,
+        fail_at: i32,
+        failed: Arc<AtomicBool>,
+        doc: i32,
+    }
+
+    impl DoubleValues for ProbeValues {
+        fn advance_exact(&mut self, doc: i32) -> crate::Result<bool> {
+            self.doc = doc;
+            Ok(doc % 2 == 0)
+        }
+        fn double_value(&mut self) -> crate::Result<f64> {
+            if self.doc == self.fail_at && !self.failed.swap(true, Relaxed) {
+                return Err(crate::Error::IllegalState("probe".into()));
+            }
+            self.reads.fetch_add(1, Relaxed);
+            Ok(f64::from(self.doc))
+        }
+        fn batch_capable(&self) -> bool {
+            true
+        }
+    }
+
+    /// The scores a batch is handed, or `-doc` read one document at a time.
+    struct BatchScores(i32);
+
+    impl DoubleValues for BatchScores {
+        fn advance_exact(&mut self, doc: i32) -> crate::Result<bool> {
+            self.0 = doc;
+            Ok(true)
+        }
+        fn double_value(&mut self) -> crate::Result<f64> {
+            Ok(f64::from(-self.0))
+        }
+        fn batch_capable(&self) -> bool {
+            true
+        }
+        fn fill_batch(
+            &mut self,
+            docs: &[i32],
+            scores: &[f32],
+            out: &mut [f64],
+            has: &mut [bool],
+        ) -> crate::Result<()> {
+            for ((o, h), &s) in out.iter_mut().zip(has.iter_mut()).zip(scores) {
+                *o = f64::from(s);
+                *h = true;
+            }
+            self.0 = docs.last().copied().unwrap_or(self.0);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_batch_reads_each_variable_once_per_document_and_matches_per_document_values() {
+        let reads = Arc::new(AtomicUsize::new(0));
+        let failed = Arc::new(AtomicBool::new(false));
+        let mut b = SimpleBindings::new();
+        b.add_source(
+            "p",
+            Arc::new(Probe {
+                reads: reads.clone(),
+                fail_at: -5,
+                failed: failed.clone(),
+            }),
+        );
+        b.add_source("_score", crate::values_source::scores());
+        b.add_source("c", constant(3.0));
+        // a caching nested source, whose `p` a caching outer one shares
+        let twice = ExpressionValueSource::caching(&b, expr("p + p + _score")).unwrap();
+        b.add_source("twice", Arc::new(twice));
+        let searcher = crate::index_searcher::IndexSearcher::new(&[], &[]).unwrap();
+        let ctx = ValuesContext::new(&searcher);
+        let scores = || Some(Box::new(BatchScores(-1)) as BoxDoubleValues<'_>);
+        let docs: Vec<i32> = (0..40).collect();
+        for caching in [false, true] {
+            let outer = expr("p * p + twice + (p ? _score : c) + c");
+            let source = if caching {
+                ExpressionValueSource::caching(&b, outer).unwrap()
+            } else {
+                ExpressionValueSource::new(&b, outer).unwrap()
+            };
+            // per document, with the scores `-doc`
+            let mut one = source.get_values(&ctx, 0, scores()).unwrap();
+            let want: Vec<u64> = docs
+                .iter()
+                .map(|&d| {
+                    assert!(one.advance_exact(d).unwrap());
+                    one.double_value().unwrap().to_bits()
+                })
+                .collect();
+            reads.store(0, Relaxed);
+            let mut v = source.get_values(&ctx, 0, scores()).unwrap();
+            assert!(v.batch_capable());
+            let mut got = Vec::new();
+            for chunk in docs.chunks(6) {
+                let s: Vec<f32> = chunk.iter().map(|&d| -d as f32).collect();
+                let (mut out, mut has) = (vec![f64::NAN; 6], vec![false; 6]);
+                v.fill_batch(chunk, &s, &mut out, &mut has).unwrap();
+                assert!(has[..chunk.len()].iter().all(|&h| h));
+                got.extend(out[..chunk.len()].iter().map(|x| x.to_bits()));
+            }
+            assert_eq!(got, want, "caching={caching}");
+            // the last document's value is current after the batch
+            assert!(v.advance_exact(39).unwrap());
+            assert_eq!(v.double_value().unwrap().to_bits(), want[39]);
+            // `p` read once per even document by each expression naming
+            // it, or once in all when a caching source shares it
+            let per_doc = if caching { 1 } else { 2 };
+            assert_eq!(reads.load(Relaxed), 20 * per_doc, "caching={caching}");
+        }
+
+        // An expression over no variable, and a failing read failing the batch.
+        let none = ExpressionValueSource::new(&b, expr("1 + 2")).unwrap();
+        let mut v = none.get_values(&ctx, 0, None).unwrap();
+        let (mut out, mut has) = ([0.0; 3], [false; 3]);
+        v.fill_batch(&[0, 1, 2], &[0.0; 3], &mut out, &mut has)
+            .unwrap();
+        assert_eq!((out, has), ([3.0; 3], [true; 3]));
+        let mut f = SimpleBindings::new();
+        f.add_source(
+            "p",
+            Arc::new(Probe {
+                reads,
+                fail_at: 4,
+                failed,
+            }),
+        );
+        let source = ExpressionValueSource::new(&f, expr("p + 1")).unwrap();
+        let mut v = source.get_values(&ctx, 0, None).unwrap();
+        let (mut out, mut has) = ([0.0; 8], [false; 8]);
+        let docs: Vec<i32> = (0..8).collect();
+        let e = v.fill_batch(&docs, &[0.0; 8], &mut out, &mut has);
+        assert!(e.unwrap_err().to_string().contains("probe"));
+    }
+
+    impl DoubleValuesSource for Probe {
+        fn get_values<'c>(
+            &self,
+            _ctx: &ValuesContext<'c>,
+            _leaf: usize,
+            _scores: Option<BoxDoubleValues<'c>>,
+        ) -> crate::Result<BoxDoubleValues<'c>> {
+            Ok(Box::new(ProbeValues {
+                reads: self.reads.clone(),
+                fail_at: self.fail_at,
+                failed: self.failed.clone(),
+                doc: -1,
+            }))
+        }
+        fn needs_scores(&self) -> bool {
+            false
+        }
+        fn is_cacheable(&self, _ctx: &ValuesContext<'_>, _leaf: usize) -> bool {
+            true
+        }
+        fn describe(&self) -> String {
+            "probe".into()
+        }
+    }
+
+    #[test]
+    fn variables_read_once_per_doc_zero_when_missing_and_retried_after_an_error() {
+        let reads = Arc::new(AtomicUsize::new(0));
+        let failed = Arc::new(AtomicBool::new(false));
+        let mut b = SimpleBindings::new();
+        b.add_source(
+            "p",
+            Arc::new(Probe {
+                reads: reads.clone(),
+                fail_at: 4,
+                failed: failed.clone(),
+            }),
+        );
+        b.add_expression("twice", expr("p + p"));
+        let searcher = crate::index_searcher::IndexSearcher::new(&[], &[]).unwrap();
+        let ctx = ValuesContext::new(&searcher);
+        for caching in [false, true] {
+            reads.store(0, Relaxed);
+            failed.store(false, Relaxed);
+            let outer = expr("p * p + twice + p");
+            let source = if caching {
+                ExpressionValueSource::caching(&b, outer).unwrap()
+            } else {
+                ExpressionValueSource::new(&b, outer).unwrap()
+            };
+            let mut v = source.get_values(&ctx, 0, None).unwrap();
+            let mut got = Vec::new();
+            for doc in 0..6 {
+                assert!(v.advance_exact(doc).unwrap());
+                match v.double_value() {
+                    Ok(x) => got.push(x),
+                    Err(e) => {
+                        assert_eq!(doc, 4);
+                        assert!(e.to_string().contains("probe"), "{e}");
+                        // the same document read again succeeds
+                        got.push(v.double_value().unwrap());
+                    }
+                }
+                // a second read of the document is the evaluated value
+                assert_eq!(v.double_value().unwrap(), got[got.len() - 1]);
+            }
+            let want: Vec<f64> = (0..6)
+                .map(|d| {
+                    if d % 2 == 0 {
+                        f64::from(d * d + 2 * d + d)
+                    } else {
+                        0.0
+                    }
+                })
+                .collect();
+            assert_eq!(got, want, "caching={caching}");
+            // per even document, `p` is read once for the outer expression
+            // and once for the nested one (whose values a caching source
+            // shares, but each variable keeps its own per-document value)
+            assert_eq!(reads.load(Relaxed), 6, "caching={caching}");
+        }
     }
 }

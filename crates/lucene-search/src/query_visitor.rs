@@ -82,7 +82,7 @@ struct Runs<'a>(&'a CompiledAutomaton);
 
 impl TermMatcher for Runs<'_> {
     fn matches(&self, term: &[u8]) -> bool {
-        self.0.get_byte_runnable().is_some_and(|r| r.run(term))
+        self.0.byte_runnable().is_some_and(|r| r.run(term))
     }
     fn to_owned_matcher(&self) -> Option<Box<dyn TermMatcher + Send + Sync>> {
         // the NFA form keeps a cache it cannot share; the DFA is plain data

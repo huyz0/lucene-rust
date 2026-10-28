@@ -280,9 +280,17 @@ const PARALLEL_CRC_MIN: usize = 8 << 20;
 /// check over a multi-GiB `.fdt`/`.vec` file (every `checkIntegrity` before a
 /// merge, and every [`write_footer`]) otherwise runs on one core.
 pub fn crc32(buf: &[u8]) -> u32 {
-    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    // The small-buffer test comes first: nearly every footer is tiny, and
+    // `available_parallelism` reads cgroup files on Linux on each call, so
+    // its answer is cached.
+    if buf.len() < PARALLEL_CRC_MIN {
+        return crc32fast::hash(buf);
+    }
+    static THREADS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let threads =
+        *THREADS.get_or_init(|| std::thread::available_parallelism().map_or(1, |n| n.get()));
     let pieces = threads.min(buf.len() / (PARALLEL_CRC_MIN / 2)).max(1);
-    if buf.len() < PARALLEL_CRC_MIN || pieces == 1 {
+    if pieces == 1 {
         return crc32fast::hash(buf);
     }
     let piece = buf.len().div_ceil(pieces);

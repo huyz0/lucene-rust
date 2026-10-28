@@ -48,3 +48,7 @@ harness = false
 [[bench]]
 name = "blocktree_open"
 harness = false
+
+[[bench]]
+name = "compiled_intersect"
+harness = false

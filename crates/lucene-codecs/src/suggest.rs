@@ -296,14 +296,28 @@ pub fn top_n_completions(
         .collect())
 }
 
-/// Ordering key for `top_n_completions`'s bounded heap: primarily by weight,
-/// then by suffix (ascending) as a deterministic tie-break. Deriving `Ord`
-/// gives exactly that (lexicographic over the struct's fields in
-/// declaration order).
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+/// Ordering key for `top_n_completions`'s bounded heap: smaller is *worse*,
+/// so the min-heap evicts the worst kept candidate. Worse is a lower weight,
+/// then on a weight tie the *larger* suffix: `TopNSearcher` with
+/// `TieBreakByInputComparator` keeps the smaller input when costs tie.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct HeapItem {
     weight: u32,
     suffix: Vec<u8>,
+}
+
+impl Ord for HeapItem {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.weight
+            .cmp(&other.weight)
+            .then_with(|| other.suffix.cmp(&self.suffix))
+    }
+}
+
+impl PartialOrd for HeapItem {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 #[cfg(test)]
@@ -479,6 +493,26 @@ mod tests {
                 },
                 Completion {
                     suffix: b"ana".to_vec(),
+                    weight: 20
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn top_n_completions_keeps_the_smaller_suffix_on_a_tie_at_the_cut_off() {
+        let fst = build_suggester_fst(&sample_entries()).unwrap();
+        // ""(20) and "ana"(20) tie for the second place: Java keeps "".
+        let top = top_n_completions(&fst, b"band", 2, false).unwrap();
+        assert_eq!(
+            top,
+            vec![
+                Completion {
+                    suffix: b"it".to_vec(),
+                    weight: 60
+                },
+                Completion {
+                    suffix: Vec::new(),
                     weight: 20
                 },
             ]
