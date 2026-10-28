@@ -143,6 +143,8 @@ fn distance_chars(a: &[char], b: &[char], transpositions: bool, max: usize) -> O
 }
 
 /// [`distance_chars`] with its three DP rows in `buf`, reused across calls.
+// ARITH: the DP itself; see [`distance_chars`] for every bound.
+#[allow(clippy::arithmetic_side_effects)]
 fn distance_chars_in(
     a: &[char],
     b: &[char],

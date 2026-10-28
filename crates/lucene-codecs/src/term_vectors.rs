@@ -2015,6 +2015,8 @@ fn flush_fields(out: &mut Vec<u8>, docs: &[PendingDoc], field_nums: &[i64]) {
 /// fetches as 2/4/8 bytes (12, 20, ...), and the length counts the padding.
 fn write_direct(out: &mut Vec<u8>, values: &[i64], bits: u8) {
     let mut bytes = direct_reader::encode(values, bits);
+    // ARITH: the padding is at most 7 bytes onto an in-memory buffer's length.
+    #[allow(clippy::arithmetic_side_effects)]
     bytes.resize(bytes.len() + direct_reader::padding_bytes_needed(bits), 0);
     out.write_vint(bytes.len() as i32);
     out.write_bytes(&bytes);

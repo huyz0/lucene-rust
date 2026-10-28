@@ -3217,6 +3217,9 @@ pub fn write_merged_with_mode(
     )
 }
 
+/// One sorted segment's `(packed value, doc)` points, fed to the 1-D BKD merge.
+type MergeSource<'a> = Box<dyn Iterator<Item = (&'a [u8], i32)> + 'a>;
+
 /// The `.kdm`/`.kdi`/`.kdd` of [`write_merged_with_mode`] and [`write_added`]:
 /// `Lucene90PointsWriter` with its leaf size and heap budget, and a
 /// subclass's `split` override when `split` is given.
@@ -3272,12 +3275,12 @@ fn write_fields(
             writer = writer.with_split(split);
         }
         let plan = if native_merge && field.num_dims == 1 {
-            let sources: Vec<Box<dyn Iterator<Item = (&[u8], i32)> + '_>> = field
+            let sources: Vec<MergeSource<'_>> = field
                 .sources
                 .iter()
                 .map(|s| {
                     Box::new(s.values.chunks_exact(stride).zip(s.docs.iter().copied()))
-                        as Box<dyn Iterator<Item = (&[u8], i32)> + '_>
+                        as MergeSource<'_>
                 })
                 .collect();
             writer.merge(&mut out.data, sources)?
