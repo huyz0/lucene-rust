@@ -133,6 +133,15 @@ pub const ANYTOKEN_FIELD: &str = "__anytokenfield";
 /// The term that marker holds.
 pub const ANYTOKEN: &[u8] = b"__ANYTOKEN__";
 
+/// A child's weight (`0` when it has none) as an integer ordered as
+/// `f64::total_cmp` orders the weight -- the key `advance_phase` sorts by, so
+/// each child's weight is computed once per sort, not once per comparison.
+fn total_key(tree: &QueryTree) -> i64 {
+    let bits = tree.weight().unwrap_or(0.0).to_bits() as i64;
+    // `total_cmp`'s own transform: flip the magnitude bits of a negative
+    bits ^ (((bits >> 63) as u64) >> 1) as i64
+}
+
 impl QueryTree {
     /// `QueryTree.term(term, weightor)`.
     pub fn term(term: Term, weightor: &TermWeightor) -> QueryTree {
@@ -206,11 +215,8 @@ impl QueryTree {
             QueryTree::Term { .. } | QueryTree::AnyTerm { .. } | QueryTree::Custom { .. } => false,
             QueryTree::Conjunction(children) => {
                 if children[0].advance_phase(min_weight) {
-                    children.sort_by(|a, b| {
-                        b.weight()
-                            .unwrap_or(0.0)
-                            .total_cmp(&a.weight().unwrap_or(0.0))
-                    });
+                    // heaviest first; each child's weight walked once
+                    children.sort_by_cached_key(|c| std::cmp::Reverse(total_key(c)));
                     return true;
                 }
                 if children.len() == 1 {
@@ -228,11 +234,7 @@ impl QueryTree {
                     changed |= c.advance_phase(min_weight);
                 }
                 if changed {
-                    children.sort_by(|a, b| {
-                        a.weight()
-                            .unwrap_or(0.0)
-                            .total_cmp(&b.weight().unwrap_or(0.0))
-                    });
+                    children.sort_by_cached_key(total_key);
                 }
                 changed
             }
@@ -273,5 +275,49 @@ impl QueryTree {
                 sb
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_sort_key_orders_weights_as_total_cmp_does() {
+        let custom = |weight: f64| QueryTree::Custom {
+            weight,
+            terms: Vec::new(),
+            description: String::new(),
+        };
+        let ws = [
+            3.5,
+            -0.0,
+            0.0,
+            1e-300,
+            -2.0,
+            f64::INFINITY,
+            f64::NAN,
+            7.25,
+            -f64::NAN,
+        ];
+        for a in ws {
+            for b in ws {
+                assert_eq!(
+                    total_key(&custom(a)).cmp(&total_key(&custom(b))),
+                    a.total_cmp(&b),
+                    "{a} {b}"
+                );
+            }
+        }
+        // a node with no weight (an error) sorts as 0
+        let bad = QueryTree::Term {
+            term: Term {
+                field: "f".into(),
+                bytes: b"t".to_vec(),
+            },
+            weight: 0.0,
+        };
+        assert!(bad.weight().is_err());
+        assert_eq!(total_key(&bad), total_key(&custom(0.0)));
     }
 }
