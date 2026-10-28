@@ -92,6 +92,11 @@ impl<D: Directory> Directory for SleepingLockWrapper<D> {
         pending_deletions() -> Result<BTreeSet<String>>;
     }
 
+    #[cfg(any(test, feature = "test-util"))]
+    fn close_input(&self, name: &str, input: Input) -> Result<()> {
+        self.inner.close_input(name, input)
+    }
+
     /// Tries once, then every `poll_interval` ms until `lock_wait_timeout`
     /// ms have passed; the timeout error wraps the first failure.
     fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
@@ -172,6 +177,11 @@ impl<D: Directory> Directory for LockValidatingDirectoryWrapper<D> {
         ) -> Result<FsIndexOutput>;
         obtain_lock(name: &str) -> Result<Box<dyn Lock>>;
         pending_deletions() -> Result<BTreeSet<String>>;
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    fn close_input(&self, name: &str, input: Input) -> Result<()> {
+        self.inner.close_input(name, input)
     }
 
     fn delete_file(&self, name: &str) -> Result<()> {
@@ -328,6 +338,68 @@ mod tests {
             sleeping.obtain_lock("write.lock"),
             Err(Error::Io(_))
         ));
+    }
+
+    /// A directory that records the names `close_input` sees.
+    struct RecordsCloses {
+        inner: ByteBuffersDirectory,
+        closed: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl Directory for RecordsCloses {
+        fn list_all(&self) -> Result<Vec<String>> {
+            self.inner.list_all()
+        }
+        fn open(&self, name: &str) -> Result<Input> {
+            self.inner.open(name)
+        }
+        fn create_output(&self, name: &str) -> Result<FsIndexOutput> {
+            self.inner.create_output(name)
+        }
+        fn sync(&self, names: &[String]) -> Result<()> {
+            self.inner.sync(names)
+        }
+        fn rename(&self, source: &str, dest: &str) -> Result<()> {
+            self.inner.rename(source, dest)
+        }
+        fn delete_file(&self, name: &str) -> Result<()> {
+            self.inner.delete_file(name)
+        }
+        fn sync_meta_data(&self) -> Result<()> {
+            self.inner.sync_meta_data()
+        }
+        fn obtain_lock(&self, name: &str) -> Result<Box<dyn Lock>> {
+            self.inner.obtain_lock(name)
+        }
+        fn close_input(&self, name: &str, input: Input) -> Result<()> {
+            drop(input);
+            self.closed.lock().unwrap().push(name.to_string());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn wrappers_forward_close_input_to_the_directory_beneath() {
+        let base = RecordsCloses {
+            inner: ByteBuffersDirectory::new(),
+            closed: Default::default(),
+        };
+        let mut out = base.create_output("f.dat").unwrap();
+        out.write_bytes(b"x");
+        out.close().unwrap();
+        let sleeping = SleepingLockWrapper::new(&base, 0).unwrap();
+        sleeping.close_input("a", sleeping.open("f.dat").unwrap()).unwrap();
+        let lock: Arc<dyn Lock> = Arc::from(base.obtain_lock("write.lock").unwrap());
+        let validating = LockValidatingDirectoryWrapper::new(&base, lock);
+        validating.close_input("b", validating.open("f.dat").unwrap()).unwrap();
+        let switch = crate::FileSwitchDirectory::new(
+            ["dat".to_string()].into_iter().collect(),
+            &base,
+            ByteBuffersDirectory::new(),
+        )
+        .unwrap();
+        switch.close_input("c.dat", switch.open("f.dat").unwrap()).unwrap();
+        assert_eq!(*base.closed.lock().unwrap(), ["a", "b", "c.dat"]);
     }
 
     #[test]
