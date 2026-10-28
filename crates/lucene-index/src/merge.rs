@@ -189,8 +189,9 @@
 //! once; [`lucene_codecs::postings::read_occurrences_flat`] validates its whole
 //! occurrence stream before live-document filtering. This keeps corruption in
 //! a deleted document from being hidden when its source still contributes.
-//! [`MergedTermPostings`] owns flat occurrence buffers and document boundaries,
-//! and implements [`TermSource`] for the native writer. Sorted merges apply
+//! [`MergedRun`] owns one term range's flat occurrence buffers and document
+//! boundaries, and its [`MergedTermView`]s implement [`TermSource`] for the
+//! native writer. Sorted merges apply
 //! the same permutation to documents, positions, offsets and payload runs.
 //!
 //! [`reconcile_field_numbers`] requires all sources sharing a field name to
@@ -366,6 +367,10 @@ pub enum Error {
     /// `ArithmeticException`) in `OrdinalMappingLeafReader`.
     #[error("sorted-numeric remap: {0}")]
     InvalidRemap(String),
+    /// One merged term holds more than `u32::MAX` positions: past what a
+    /// merge materializing a term's postings can index.
+    #[error("merged term has more than {} positions", u32::MAX)]
+    MergedTermTooLarge,
     #[error(
         "source {source_index}: live docs cover {live_docs_len} documents but the segment's maxDoc is {max_doc}"
     )]
@@ -2578,14 +2583,20 @@ fn merge_segments_mapped_inner(
 
     let write_postings = |files: &mut Vec<String>| -> Result<()> {
         if !merged_postings_fields.is_empty() {
-            let inputs: Vec<FieldPostingsInput<'_, MergedTermPostings>> = merged_postings_fields
+            // One small view per term over its range's shared buffers.
+            let views: Vec<Vec<MergedTermView<'_>>> = merged_postings_fields
                 .iter()
-                .map(|f| FieldPostingsInput {
+                .map(|f| f.runs.iter().flat_map(MergedRun::views).collect())
+                .collect();
+            let inputs: Vec<FieldPostingsInput<'_, MergedTermView<'_>>> = merged_postings_fields
+                .iter()
+                .zip(&views)
+                .map(|(f, terms)| FieldPostingsInput {
                     field_number: f.field_number,
                     index_options: f.index_options,
                     doc_count: f.doc_count,
                     has_payloads: f.has_payloads,
-                    terms: &f.terms,
+                    terms,
                 })
                 .collect();
             // The very columns the `.nvd` above was written from, handed to the
@@ -5004,34 +5015,69 @@ impl<'a> TermCursor<'a> {
     }
 }
 
-/// Final owned postings for one merged term, with one buffer per occurrence
-/// stream instead of one allocation per retained document. This representation
-/// targets the decode/materialization stage measured by the routing benchmark.
-/// Java: `MappedMultiPostingsEnum`, materialized for the native writer.
+/// One term range's merged postings, every term's streams concatenated into
+/// shared buffers: a term costs one [`RunTerm`] (four ends) instead of a
+/// struct of seven `Vec`s and their heap blocks. Holding a field's whole
+/// merged postings until the writer has seen every term is what bounds the
+/// merge's peak memory, so the per-term overhead is paid on every term of
+/// the segment at once. Java: `MappedMultiPostingsEnum`, materialized for the
+/// native writer.
 #[derive(Debug, Default)]
-struct MergedTermPostings {
-    term: Vec<u8>,
-    docs: Vec<(i32, i32)>,
-    positions: Vec<i32>,
-    offsets: Vec<(i32, i32)>,
-    doc_starts: Vec<usize>,
-    payload_bytes: Vec<u8>,
-    payload_lengths: Vec<u32>,
+struct MergedRun {
     has_positions: bool,
     has_offsets: bool,
     has_payloads: bool,
+    term_bytes: Vec<u8>,
+    terms: Vec<RunTerm>,
+    /// `(doc, freq)` of every term's documents, term after term.
+    docs: Vec<(i32, i32)>,
+    /// Parallel to `docs` when the field indexes positions: where each
+    /// document's positions (and offsets) end, counted from its term's first
+    /// position -- half the size of an absolute `usize`, and this buffer is
+    /// one entry per merged posting.
+    pos_ends: Vec<u32>,
+    /// A term's positions passed `u32::MAX`: [`Self::finish_term`] fails.
+    too_large: bool,
+    positions: Vec<i32>,
+    offsets: Vec<(i32, i32)>,
+    payload_lengths: Vec<u32>,
+    payload_bytes: Vec<u8>,
 }
 
-impl MergedTermPostings {
-    fn new(term: Vec<u8>, has_positions: bool, has_offsets: bool, has_payloads: bool) -> Self {
+/// Where one term of a [`MergedRun`] ends in each of its buffers; it starts
+/// where the previous term ends.
+#[derive(Debug, Clone, Copy, Default)]
+struct RunTerm {
+    term: usize,
+    docs: usize,
+    positions: usize,
+    payload_lengths: usize,
+    payload_bytes: usize,
+}
+
+impl MergedRun {
+    fn new(has_positions: bool, has_offsets: bool, has_payloads: bool) -> Self {
         Self {
-            term,
-            doc_starts: if has_positions { vec![0] } else { Vec::new() },
             has_positions,
             has_offsets,
             has_payloads,
             ..Self::default()
         }
+    }
+
+    /// The ends of the last finished term: where the open one starts.
+    fn open_start(&self) -> RunTerm {
+        self.terms.last().copied().unwrap_or_default()
+    }
+
+    /// Opens term `term`; [`Self::finish_term`] closes it.
+    fn start_term(&mut self, term: &[u8]) {
+        self.term_bytes.extend_from_slice(term);
+    }
+
+    /// The open term's bytes.
+    fn open_term(&self) -> &[u8] {
+        &self.term_bytes[self.open_start().term..]
     }
 
     /// The source reader has validated every occurrence before live filtering.
@@ -5046,7 +5092,12 @@ impl MergedTermPostings {
         self.docs.push((doc, freq));
         if let Some(occurrences) = occurrences {
             self.positions.extend_from_slice(occurrences.positions);
-            self.doc_starts.push(self.positions.len());
+            let end = self
+                .positions
+                .len()
+                .saturating_sub(self.open_start().positions);
+            self.too_large |= end > u32::MAX as usize;
+            self.pos_ends.push(end as u32);
             if self.has_offsets {
                 self.offsets.extend(
                     occurrences
@@ -5070,102 +5121,196 @@ impl MergedTermPostings {
         }
     }
 
-    fn document_range(&self, doc: usize) -> Option<std::ops::Range<usize>> {
-        let next = doc.checked_add(1)?;
-        Some(*self.doc_starts.get(doc)?..*self.doc_starts.get(next)?)
+    /// Closes the open term: kept, its documents in `DocIDMerger` order, when
+    /// it reached a live document; dropped otherwise.
+    fn finish_term(&mut self) -> Result<()> {
+        if self.too_large {
+            return Err(Error::MergedTermTooLarge);
+        }
+        let start = self.open_start();
+        if self.docs.len() == start.docs {
+            self.term_bytes.truncate(start.term);
+            return Ok(());
+        }
+        self.sort_open_documents(start);
+        self.terms.push(RunTerm {
+            term: self.term_bytes.len(),
+            docs: self.docs.len(),
+            positions: self.positions.len(),
+            payload_lengths: self.payload_lengths.len(),
+            payload_bytes: self.payload_bytes.len(),
+        });
+        Ok(())
+    }
+
+    /// Gives back what the buffers grew past their contents: a finished
+    /// range waits, whole, for the writer, while the others still grow.
+    fn shrink_to_fit(&mut self) {
+        self.term_bytes.shrink_to_fit();
+        self.terms.shrink_to_fit();
+        self.docs.shrink_to_fit();
+        self.pos_ends.shrink_to_fit();
+        self.positions.shrink_to_fit();
+        self.offsets.shrink_to_fit();
+        self.payload_lengths.shrink_to_fit();
+        self.payload_bytes.shrink_to_fit();
     }
 
     /// `DocIDMerger` order: plain merges already ascend, while sorted merges
-    /// interleave sources. Every occurrence stream follows the same permutation.
-    fn sort_documents(&mut self) {
-        if self.docs.windows(2).all(|w| w[0].0 < w[1].0) {
+    /// interleave sources. Every occurrence stream of the open term follows
+    /// the same permutation; earlier terms are not touched.
+    fn sort_open_documents(&mut self, start: RunTerm) {
+        let docs = &self.docs[start.docs..];
+        if docs.windows(2).all(|w| w[0].0 < w[1].0) {
             return;
         }
-        let mut permutation: Vec<usize> = (0..self.docs.len()).collect();
-        permutation.sort_unstable_by_key(|&i| self.docs[i].0);
+        let mut permutation: Vec<usize> = (0..docs.len()).collect();
+        permutation.sort_unstable_by_key(|&i| docs[i].0);
+        let sorted_docs: Vec<(i32, i32)> = permutation.iter().map(|&i| docs[i]).collect();
+        self.docs.truncate(start.docs);
+        self.docs.extend_from_slice(&sorted_docs);
+        if !self.has_positions {
+            return;
+        }
+        // The open term's positions start where the previous term's end;
+        // its ends count from there.
+        let pos_start = start.positions;
+        let ends = &self.pos_ends[start.docs..];
+        let span = |i: usize| {
+            let from = i.checked_sub(1).map_or(0, |prev| ends[prev] as usize);
+            pos_start.saturating_add(from)..pos_start.saturating_add(ends[i] as usize)
+        };
         // Counts come from the same spans that built the payload run, before
         // changing any document order. Each span is one validated i32 freq, so
         // its length fits u32; no count read from disk sizes an allocation here.
-        let counts: Vec<u32> = if self.payload_lengths.is_empty() {
-            Vec::new()
+        let counts: Vec<u32> = if self.payload_lengths.len() > start.payload_lengths {
+            (0..ends.len()).map(|i| span(i).len() as u32).collect()
         } else {
-            self.doc_starts
-                .windows(2)
-                .map(|w| w[1].saturating_sub(w[0]) as u32)
-                .collect()
+            Vec::new()
         };
         // ALLOC: capacities are lengths of already-owned buffers; each original
         // document span is appended once by a permutation of 0..docs.len().
-        let mut positions = Vec::with_capacity(self.positions.len());
-        let mut offsets = Vec::with_capacity(self.offsets.len());
-        let mut doc_starts = Vec::with_capacity(self.doc_starts.len());
-        if self.has_positions {
-            doc_starts.push(0);
-            for &doc in &permutation {
-                positions.extend_from_slice(self.positions(doc));
-                if self.has_offsets {
-                    offsets.extend_from_slice(self.offsets(doc));
-                }
-                doc_starts.push(positions.len());
+        let mut positions = Vec::with_capacity(self.positions.len().saturating_sub(pos_start));
+        let mut offsets = Vec::with_capacity(if self.has_offsets {
+            self.offsets.len().saturating_sub(pos_start)
+        } else {
+            0
+        });
+        let mut pos_ends = Vec::with_capacity(ends.len());
+        for &doc in &permutation {
+            let range = span(doc);
+            positions.extend_from_slice(&self.positions[range.clone()]);
+            if self.has_offsets {
+                offsets.extend_from_slice(&self.offsets[range]);
             }
+            // At most the unsorted term's own last end, which fit.
+            pos_ends.push(positions.len() as u32);
         }
-        // Release the old occurrence buffers before rebuilding the payload run.
-        self.positions = positions;
-        self.offsets = offsets;
-        self.doc_starts = doc_starts;
-        if !self.payload_lengths.is_empty() {
+        self.positions.truncate(pos_start);
+        self.positions.extend_from_slice(&positions);
+        if self.has_offsets {
+            self.offsets.truncate(pos_start);
+            self.offsets.extend_from_slice(&offsets);
+        }
+        self.pos_ends.truncate(start.docs);
+        self.pos_ends.extend_from_slice(&pos_ends);
+        if !counts.is_empty() {
             let (bytes, lengths) = postings_writer::permute_payload_run(
-                &self.payload_bytes,
-                &self.payload_lengths,
+                &self.payload_bytes[start.payload_bytes..],
+                &self.payload_lengths[start.payload_lengths..],
                 &counts,
                 &permutation,
             );
-            self.payload_bytes = bytes;
-            self.payload_lengths = lengths;
+            self.payload_bytes.truncate(start.payload_bytes);
+            self.payload_bytes.extend_from_slice(&bytes);
+            self.payload_lengths.truncate(start.payload_lengths);
+            self.payload_lengths.extend_from_slice(&lengths);
         }
-        self.docs = permutation.iter().map(|&i| self.docs[i]).collect();
+    }
+
+    /// One [`MergedTermView`] per finished term, in order.
+    fn views(&self) -> impl Iterator<Item = MergedTermView<'_>> + '_ {
+        (0..self.terms.len()).map(move |term| MergedTermView { run: self, term })
+    }
+
+    /// The ends of the term before `term`: where it starts.
+    fn start_of(&self, term: usize) -> RunTerm {
+        term.checked_sub(1)
+            .map_or_else(RunTerm::default, |prev| self.terms[prev])
     }
 }
 
-impl TermSource for MergedTermPostings {
+/// One finished term of a [`MergedRun`], read in place by the writer.
+#[derive(Debug, Clone, Copy)]
+struct MergedTermView<'a> {
+    run: &'a MergedRun,
+    term: usize,
+}
+
+impl MergedTermView<'_> {
+    /// Document `doc`'s span in the run's positions (and offsets).
+    fn document_range(&self, doc: usize) -> Option<std::ops::Range<usize>> {
+        let run = self.run;
+        let (start, end) = (run.start_of(self.term).docs, run.terms[self.term].docs);
+        let at = start.checked_add(doc).filter(|&at| at < end)?;
+        let base = run.start_of(self.term).positions;
+        let from = match doc.checked_sub(1) {
+            None => 0,
+            Some(_) => *run.pos_ends.get(at.checked_sub(1)?)? as usize,
+        };
+        let to = *run.pos_ends.get(at)? as usize;
+        Some(base.saturating_add(from)..base.saturating_add(to))
+    }
+}
+
+impl TermSource for MergedTermView<'_> {
     fn term(&self) -> &[u8] {
-        &self.term
+        let run = self.run;
+        &run.term_bytes[run.start_of(self.term).term..run.terms[self.term].term]
     }
     fn docs(&self) -> &[(i32, i32)] {
-        &self.docs
+        let run = self.run;
+        &run.docs[run.start_of(self.term).docs..run.terms[self.term].docs]
     }
     fn position_lists(&self) -> usize {
-        if self.has_positions {
-            self.docs.len()
+        if self.run.has_positions {
+            self.docs().len()
         } else {
             0
         }
     }
     fn positions(&self, doc: usize) -> &[i32] {
+        if !self.run.has_positions {
+            return &[];
+        }
         self.document_range(doc)
-            .and_then(|range| self.positions.get(range))
+            .and_then(|range| self.run.positions.get(range))
             .unwrap_or_default()
     }
     fn offset_lists(&self) -> usize {
-        if self.has_offsets {
-            self.docs.len()
+        if self.run.has_offsets {
+            self.docs().len()
         } else {
             0
         }
     }
     fn offsets(&self, doc: usize) -> &[(i32, i32)] {
-        if !self.has_offsets {
+        if !self.run.has_offsets {
             return &[];
         }
         self.document_range(doc)
-            .and_then(|range| self.offsets.get(range))
+            .and_then(|range| self.run.offsets.get(range))
             .unwrap_or_default()
     }
     fn payload_bytes(&self) -> &[u8] {
-        &self.payload_bytes
+        let run = self.run;
+        &run.payload_bytes
+            [run.start_of(self.term).payload_bytes..run.terms[self.term].payload_bytes]
     }
     fn payload_lengths(&self) -> &[u32] {
-        &self.payload_lengths
+        let run = self.run;
+        &run.payload_lengths
+            [run.start_of(self.term).payload_lengths..run.terms[self.term].payload_lengths]
     }
 }
 
@@ -5177,7 +5322,8 @@ struct MergedPostingsField {
     index_options: IndexOptions,
     doc_count: i32,
     has_payloads: bool,
-    terms: Vec<MergedTermPostings>,
+    /// The field's term ranges, in term order.
+    runs: Vec<MergedRun>,
 }
 
 /// Merges postings (term dictionaries + doc/freq data) across `sources` for
@@ -5345,7 +5491,7 @@ fn merge_postings(
             merged_doc_count,
         };
         let ranges = term_ranges(&per_source_field)?;
-        let parts: Vec<(Vec<MergedTermPostings>, FixedBitSet)> = if ranges.len() == 1 {
+        let parts: Vec<(MergedRun, FixedBitSet)> = if ranges.len() == 1 {
             vec![merge_term_range(
                 &per_source_field,
                 doc_id_maps,
@@ -5365,11 +5511,13 @@ fn merge_postings(
                 .collect::<Result<_>>()?
         };
         let mut parts = parts.into_iter();
-        let (mut terms_out, mut docs_seen) = parts
+        let (first, mut docs_seen) = parts
             .next()
             .expect("term_ranges returns at least one range");
-        for (terms, seen) in parts {
-            terms_out.extend(terms);
+        let mut runs = Vec::with_capacity(ranges.len());
+        runs.push(first);
+        for (run, seen) in parts {
+            runs.push(run);
             docs_seen.or(&seen);
         }
 
@@ -5384,7 +5532,7 @@ fn merge_postings(
             index_options,
             doc_count,
             has_payloads,
-            terms: terms_out,
+            runs,
         });
     }
 
@@ -5456,7 +5604,7 @@ fn merge_term_range(
     shape: FieldShape,
     lower: Option<&[u8]>,
     upper: Option<&[u8]>,
-) -> Result<(Vec<MergedTermPostings>, FixedBitSet)> {
+) -> Result<(MergedRun, FixedBitSet)> {
     let FieldShape {
         has_positions,
         has_offsets,
@@ -5486,7 +5634,11 @@ fn merge_term_range(
         });
     }
 
-    let mut terms_out: Vec<MergedTermPostings> = Vec::new();
+    let mut run = MergedRun::new(has_positions, has_offsets, has_payloads);
+    // One source term's decoded postings at a time, their buffers reused
+    // from term to term.
+    let mut source_postings = lucene_codecs::postings::Postings::default();
+    let mut occurrences_buf = lucene_codecs::postings::FlatOccurrences::default();
     let mut docs_seen = FixedBitSet::new(merged_doc_count.max(1));
     loop {
         // Smallest term across the live cursors.
@@ -5500,38 +5652,35 @@ fn merge_term_range(
         if upper.is_some_and(|upper| smallest >= upper) {
             break;
         }
-        let mut term =
-            MergedTermPostings::new(smallest.to_vec(), has_positions, has_offsets, has_payloads);
+        run.start_term(smallest);
         for src_idx in 0..cursors.len() {
             let Some(cursor) = cursors[src_idx].as_mut() else {
                 continue;
             };
-            if cursor.term != term.term {
+            if cursor.term.as_slice() != run.open_term() {
                 continue;
             }
             let pf = per_source_field[src_idx]
                 .expect("a cursor only exists for a source that contributes this field");
-            let (source_postings, source_positions) = if has_positions {
-                let (docs, positions) = cursor
+            let on_term = if has_positions {
+                cursor
                     .terms
-                    .try_current_postings_and_occurrences_flat(
+                    .try_current_postings_and_occurrences_flat_into(
                         pf.doc_in,
                         pf.pos_in.expect(
                             "checked as Error::PostingsPositionsInputMissingInSource above",
                         ),
                         pf.pay_in,
+                        &mut source_postings,
+                        &mut occurrences_buf,
                     )?
-                    .expect("the cursor is standing on this term");
-                (docs, Some(positions))
             } else {
-                (
-                    cursor
-                        .terms
-                        .try_current_postings(pf.doc_in)?
-                        .expect("the cursor is standing on this term"),
-                    None,
-                )
+                cursor
+                    .terms
+                    .try_current_postings_into(pf.doc_in, &mut source_postings)?
             };
+            assert!(on_term, "the cursor is standing on this term");
+            let source_positions = has_positions.then_some(&occurrences_buf);
 
             let doc_id_map = &doc_id_maps[src_idx];
             for (doc_idx, (&doc_id, &freq)) in source_postings
@@ -5560,7 +5709,7 @@ fn merge_term_range(
                             .document(doc_idx)
                             .expect("occurrence boundaries came from these same decoded freqs")
                     });
-                    term.push_document(merged_doc_id, freq, occurrences);
+                    run.push_document(merged_doc_id, freq, occurrences);
                 }
             }
             cursor.advance()?;
@@ -5568,12 +5717,10 @@ fn merge_term_range(
                 cursors[src_idx] = None;
             }
         }
-        if !term.docs.is_empty() {
-            term.sort_documents();
-            terms_out.push(term);
-        }
+        run.finish_term()?;
     }
-    Ok((terms_out, docs_seen))
+    run.shrink_to_fit();
+    Ok((run, docs_seen))
 }
 
 /// One source's (or the merged) points for one field, laid out flat: point
@@ -12555,32 +12702,33 @@ mod tests {
         ));
     }
 
+    fn occ<'a>(
+        positions: &'a [i32],
+        start_offsets: &'a [i32],
+        end_offsets: &'a [i32],
+        payload_lengths: &'a [u32],
+        payload_bytes: &'a [u8],
+    ) -> Option<lucene_codecs::postings::DocOccurrences<'a>> {
+        Some(lucene_codecs::postings::DocOccurrences {
+            positions,
+            start_offsets,
+            end_offsets,
+            payload_lengths,
+            payload_bytes,
+        })
+    }
+
     #[test]
     fn merged_term_flat_slices_and_absent_extras() {
-        use lucene_codecs::postings::DocOccurrences;
-        let mut term = MergedTermPostings::new(b"term".to_vec(), true, false, false);
-        term.push_document(
-            1,
-            2,
-            Some(DocOccurrences {
-                positions: &[3, 7],
-                start_offsets: &[],
-                end_offsets: &[],
-                payload_lengths: &[],
-                payload_bytes: &[],
-            }),
-        );
-        term.push_document(
-            4,
-            1,
-            Some(DocOccurrences {
-                positions: &[9],
-                start_offsets: &[],
-                end_offsets: &[],
-                payload_lengths: &[],
-                payload_bytes: &[],
-            }),
-        );
+        let mut run = MergedRun::new(true, false, false);
+        run.start_term(b"term");
+        run.push_document(1, 2, occ(&[3, 7], &[], &[], &[], &[]));
+        run.push_document(4, 1, occ(&[9], &[], &[], &[], &[]));
+        let positions_ptr = run.positions.as_ptr();
+        run.finish_term().unwrap();
+        // Already in order: nothing is rebuilt.
+        assert_eq!(run.positions.as_ptr(), positions_ptr);
+        let term = run.views().next().unwrap();
         assert_eq!(term.term(), b"term");
         assert_eq!(term.docs(), &[(1, 2), (4, 1)]);
         assert_eq!(term.position_lists(), 2);
@@ -12592,78 +12740,52 @@ mod tests {
         assert!(term.offsets(0).is_empty());
         assert!(term.payload_bytes().is_empty());
         assert!(term.payload_lengths().is_empty());
-        let positions_ptr = term.positions.as_ptr();
-        let starts_ptr = term.doc_starts.as_ptr();
-        term.sort_documents();
-        assert_eq!(term.positions.as_ptr(), positions_ptr);
-        assert_eq!(term.doc_starts.as_ptr(), starts_ptr);
-        assert_eq!(term.positions(0), &[3, 7]);
     }
 
     #[test]
     fn merged_term_empty_and_docs_only() {
-        let mut empty = MergedTermPostings::new(Vec::new(), true, true, true);
-        empty.sort_documents();
-        assert!(empty.term().is_empty());
-        assert!(empty.docs().is_empty());
-        assert_eq!(empty.position_lists(), 0);
-        assert_eq!(empty.offset_lists(), 0);
-        assert!(empty.positions(0).is_empty());
-        assert!(empty.offsets(0).is_empty());
-        assert!(empty.offsets(usize::MAX).is_empty());
-        assert!(empty.payload_bytes().is_empty());
-        assert!(empty.payload_lengths().is_empty());
-        let mut docs = MergedTermPostings::new(b"docs".to_vec(), false, false, false);
+        // A term no live document reached leaves nothing behind.
+        let mut run = MergedRun::new(true, true, true);
+        run.start_term(b"gone");
+        run.finish_term().unwrap();
+        assert!(run.term_bytes.is_empty());
+        assert_eq!(run.views().count(), 0);
+        let mut docs = MergedRun::new(false, false, false);
+        docs.start_term(b"docs");
         docs.push_document(4, 3, None);
         docs.push_document(1, 2, None);
-        docs.sort_documents();
-        assert_eq!(docs.docs(), &[(1, 2), (4, 3)]);
-        assert_eq!(docs.position_lists(), 0);
-        assert_eq!(docs.offset_lists(), 0);
-        assert!(docs.positions(0).is_empty());
-        assert!(docs.doc_starts.is_empty());
+        docs.finish_term().unwrap();
+        let term = docs.views().next().unwrap();
+        assert_eq!(term.docs(), &[(1, 2), (4, 3)]);
+        assert_eq!(term.position_lists(), 0);
+        assert_eq!(term.offset_lists(), 0);
+        assert!(term.positions(0).is_empty());
+        assert!(term.offsets(0).is_empty());
+        assert!(docs.pos_ends.is_empty());
     }
 
     #[test]
     fn merged_term_sorted_spans_keep_offsets_and_mixed_payloads_aligned() {
-        use lucene_codecs::postings::DocOccurrences;
-        let mut term = MergedTermPostings::new(b"mixed".to_vec(), true, true, true);
-        term.push_document(
-            2,
-            2,
-            Some(DocOccurrences {
-                positions: &[1, 3],
-                start_offsets: &[10, 30],
-                end_offsets: &[12, 35],
-                payload_lengths: &[1, 2],
-                payload_bytes: b"abc",
-            }),
-        );
-        term.push_document(
-            3,
-            1,
-            Some(DocOccurrences {
-                positions: &[5],
-                start_offsets: &[50],
-                end_offsets: &[55],
-                payload_lengths: &[],
-                payload_bytes: &[],
-            }),
-        );
-        term.push_document(
+        let mut run = MergedRun::new(true, true, true);
+        // A first term, so the sorted one starts mid-buffer.
+        run.start_term(b"first");
+        run.push_document(0, 1, occ(&[0], &[0], &[1], &[1], b"z"));
+        run.finish_term().unwrap();
+        run.start_term(b"mixed");
+        run.push_document(2, 2, occ(&[1, 3], &[10, 30], &[12, 35], &[1, 2], b"abc"));
+        run.push_document(3, 1, occ(&[5], &[50], &[55], &[], &[]));
+        run.push_document(
             1,
             3,
-            Some(DocOccurrences {
-                positions: &[2, 4, 8],
-                start_offsets: &[20, 40, 80],
-                end_offsets: &[22, 45, 88],
-                payload_lengths: &[0, 1, 0],
-                payload_bytes: b"d",
-            }),
+            occ(&[2, 4, 8], &[20, 40, 80], &[22, 45, 88], &[0, 1, 0], b"d"),
         );
-        assert_eq!(term.payload_lengths(), &[1, 2, 0, 0, 1, 0]);
         // A three-cycle catches a permutation accidentally applied backwards.
-        term.sort_documents();
+        run.finish_term().unwrap();
+        let views: Vec<_> = run.views().collect();
+        let (first, term) = (views[0], views[1]);
+        assert_eq!(first.positions(0), &[0]);
+        assert_eq!(first.payload_bytes(), b"z");
+        assert_eq!(term.term(), b"mixed");
         assert_eq!(term.docs(), &[(1, 3), (2, 2), (3, 1)]);
         assert_eq!(term.position_lists(), 3);
         assert_eq!(term.offset_lists(), 3);
@@ -12676,27 +12798,22 @@ mod tests {
         assert!(term.offsets(3).is_empty());
         assert_eq!(term.payload_lengths(), &[0, 1, 0, 1, 2, 0]);
         assert_eq!(term.payload_bytes(), b"dabc");
-        assert_eq!(term.doc_starts, &[0, 3, 5, 6]);
+        assert_eq!(run.pos_ends, &[1, 3, 5, 6]);
     }
 
     #[test]
     fn merged_term_sorted_positions_without_offsets_or_payloads() {
-        use lucene_codecs::postings::DocOccurrences;
-        let mut term = MergedTermPostings::new(b"positions".to_vec(), true, false, false);
+        let mut run = MergedRun::new(true, false, false);
+        run.start_term(b"positions");
         for (doc, positions) in [(2, &[5, 7][..]), (0, &[1][..])] {
-            term.push_document(
+            run.push_document(
                 doc,
                 positions.len() as i32,
-                Some(DocOccurrences {
-                    positions,
-                    start_offsets: &[],
-                    end_offsets: &[],
-                    payload_lengths: &[],
-                    payload_bytes: &[],
-                }),
+                occ(positions, &[], &[], &[], &[]),
             );
         }
-        term.sort_documents();
+        run.finish_term().unwrap();
+        let term = run.views().next().unwrap();
         assert_eq!(term.docs(), &[(0, 1), (2, 2)]);
         assert_eq!(term.positions(0), &[1]);
         assert_eq!(term.positions(1), &[5, 7]);
@@ -12706,31 +12823,12 @@ mod tests {
 
     #[test]
     fn merged_term_sorted_zero_length_document_span() {
-        use lucene_codecs::postings::DocOccurrences;
-        let mut term = MergedTermPostings::new(b"empty-span".to_vec(), true, true, true);
-        term.push_document(
-            2,
-            0,
-            Some(DocOccurrences {
-                positions: &[],
-                start_offsets: &[],
-                end_offsets: &[],
-                payload_lengths: &[],
-                payload_bytes: &[],
-            }),
-        );
-        term.push_document(
-            0,
-            1,
-            Some(DocOccurrences {
-                positions: &[4],
-                start_offsets: &[8],
-                end_offsets: &[10],
-                payload_lengths: &[1],
-                payload_bytes: b"p",
-            }),
-        );
-        term.sort_documents();
+        let mut run = MergedRun::new(true, true, true);
+        run.start_term(b"empty-span");
+        run.push_document(2, 0, occ(&[], &[], &[], &[], &[]));
+        run.push_document(0, 1, occ(&[4], &[8], &[10], &[1], b"p"));
+        run.finish_term().unwrap();
+        let term = run.views().next().unwrap();
         assert_eq!(term.docs(), &[(0, 1), (2, 0)]);
         assert_eq!(term.position_lists(), 2);
         assert_eq!(term.offset_lists(), 2);
@@ -12738,7 +12836,7 @@ mod tests {
         assert_eq!(term.offsets(0), &[(8, 10)]);
         assert!(term.positions(1).is_empty());
         assert!(term.offsets(1).is_empty());
-        assert_eq!(term.doc_starts, &[0, 1, 1]);
+        assert_eq!(run.pos_ends, &[1, 1]);
         assert_eq!(term.payload_lengths(), &[1]);
         assert_eq!(term.payload_bytes(), b"p");
     }
@@ -16653,27 +16751,37 @@ mod tests {
             .unwrap();
         let ranges = pool.install(|| term_ranges(&per_source_field)).unwrap();
         assert!(ranges.len() > 1, "{} ranges", ranges.len());
-        let mut parallel = Vec::new();
+        let mut runs = Vec::new();
         let mut parallel_seen = FixedBitSet::new(160);
         for i in 0..ranges.len() {
             let lower = (i > 0).then(|| ranges[i].as_slice());
             let upper = ranges.get(i + 1).map(Vec::as_slice);
-            let (terms, seen) =
+            let (run, seen) =
                 merge_term_range(&per_source_field, &doc_id_maps, shape, lower, upper).unwrap();
-            parallel.extend(terms);
+            runs.push(run);
             parallel_seen.or(&seen);
         }
+        let parallel: Vec<_> = runs.iter().flat_map(MergedRun::views).collect();
+        let serial: Vec<_> = serial.views().collect();
         assert_eq!(parallel.len(), serial.len());
+        let shape_of = |t: &MergedTermView<'_>| {
+            let docs = t.docs().len();
+            (
+                t.term().to_vec(),
+                t.docs().to_vec(),
+                (0..docs)
+                    .map(|d| t.positions(d).to_vec())
+                    .collect::<Vec<_>>(),
+                (0..docs).map(|d| t.offsets(d).to_vec()).collect::<Vec<_>>(),
+            )
+        };
         for (p, s) in parallel.iter().zip(&serial) {
-            assert_eq!(
-                (&p.term, &p.docs, &p.positions, &p.offsets, &p.doc_starts),
-                (&s.term, &s.docs, &s.positions, &s.offsets, &s.doc_starts)
-            );
+            assert_eq!(shape_of(p), shape_of(s));
         }
         assert_eq!(parallel_seen.cardinality(), serial_seen.cardinality());
         // A lower bound past every term: nothing.
         let (none, _) =
             merge_term_range(&per_source_field, &doc_id_maps, shape, Some(b"u"), None).unwrap();
-        assert!(none.is_empty());
+        assert_eq!(none.views().count(), 0);
     }
 }

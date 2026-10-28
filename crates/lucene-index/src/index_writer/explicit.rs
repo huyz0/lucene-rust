@@ -455,6 +455,7 @@ impl IndexingConfig {
             self.explicit_field(s.field_number)?;
         }
         let mut seen = BTreeSet::new();
+        let mut sorted: Vec<&[u8]> = Vec::new();
         for inv in &doc.fields.inverted {
             let f = self.explicit_field(inv.field_number)?;
             if !seen.insert(inv.field_number) {
@@ -479,9 +480,16 @@ impl IndexingConfig {
                     | IndexOptions::DocsAndFreqsAndPositionsAndOffsets
             );
             let offsets = f.index_options == IndexOptions::DocsAndFreqsAndPositionsAndOffsets;
+            // A sorted copy finds a repeat with one allocation per document
+            // rather than a tree node per term; only a document that has one
+            // walks the set, so the error is still the first repeat in order.
+            sorted.clear();
+            sorted.extend(inv.terms.iter().map(|t| t.term.as_slice()));
+            sorted.sort_unstable();
+            let repeats = sorted.windows(2).any(|w| w[0] == w[1]);
             let mut terms = BTreeSet::new();
             for t in &inv.terms {
-                if !terms.insert(t.term.as_slice()) {
+                if repeats && !terms.insert(t.term.as_slice()) {
                     return Err(explicit_error(format!(
                         "field {:?}: term {:?} listed twice",
                         f.name, t.term

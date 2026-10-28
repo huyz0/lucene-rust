@@ -29,6 +29,10 @@ name = "bench-runner"
 path = "src/main.rs"
 
 [[bin]]
+name = "alloc-profile"
+path = "src/alloc_profile.rs"
+
+[[bin]]
 name = "ffi-overhead"
 path = "src/ffi_overhead.rs"
 
