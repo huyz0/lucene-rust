@@ -162,6 +162,9 @@ pub enum RegexpError {
     /// Java: `"end-of-string expected at position <pos>"` -- trailing input
     /// the grammar could not consume, i.e. an unmatched `)`.
     EndOfStringExpected { pos: usize },
+    /// Java: `"invalid range: from (<from>) cannot be > to (<to>)"` --
+    /// `makeCharRange` on a class range written high-to-low, like `[z-a]`.
+    InvalidRange { from: u32, to: u32 },
 }
 
 impl fmt::Display for RegexpError {
@@ -170,6 +173,9 @@ impl fmt::Display for RegexpError {
             RegexpError::UnexpectedEndOfString => write!(f, "unexpected end-of-string"),
             RegexpError::ExpectedChar { expected, pos } => {
                 write!(f, "expected '{expected}' at position {pos}")
+            }
+            RegexpError::InvalidRange { from, to } => {
+                write!(f, "invalid range: from ({from}) cannot be > to ({to})")
             }
             RegexpError::IntegerExpected { pos } => {
                 write!(f, "integer expected at position {pos}")
@@ -1333,8 +1339,9 @@ impl Parser<'_> {
             return Ok(None);
         }
         let text: String = self.chars[start..self.pos].iter().collect();
-        text.parse::<u32>()
-            .map(Some)
+        // Java's `Integer.parseInt`: past `i32::MAX` is an error.
+        text.parse::<i32>()
+            .map(|n| Some(n as u32))
             .map_err(|_| RegexpError::IntegerExpected { pos: start })
     }
 
@@ -1377,6 +1384,9 @@ impl Parser<'_> {
                 let lo = self.parse_char_exp()? as u32;
                 if self.eat('-') {
                     let hi = self.parse_char_exp()? as u32;
+                    if lo > hi {
+                        return Err(RegexpError::InvalidRange { from: lo, to: hi });
+                    }
                     ranges.push((lo, hi));
                 } else {
                     ranges.push((lo, lo));
@@ -1543,9 +1553,11 @@ impl Parser<'_> {
         if i == 0 || i == s.len() - 1 || Some(i) != s.rfind('-') {
             return Err(err);
         }
-        let (Ok(a), Ok(b)) = (s[..i].parse::<u32>(), s[i + 1..].parse::<u32>()) else {
+        // `Integer.parseInt` on each bound: past `i32::MAX` is a syntax error.
+        let (Ok(a), Ok(b)) = (s[..i].parse::<i32>(), s[i + 1..].parse::<i32>()) else {
             return Err(err);
         };
+        let (a, b) = (a as u32, b as u32);
         // `digits > 0` (a fixed, zero-padded width) only when both bounds
         // were written with the same number of characters.
         let digits = if i == s.len() - 1 - i { i } else { 0 };
@@ -1716,9 +1728,12 @@ mod tests {
     #[test]
     fn dash_before_the_closing_bracket_is_a_range_end_in_lucene() {
         // `[a-]` is *not* "a literal trailing dash": `parseCharExp` consumes
-        // the `]` as the range's upper bound, and the class is then unclosed.
+        // the `]` as the range's upper bound, and `makeCharRange('a', ']')`
+        // throws before the unclosed class is noticed.
+        assert_eq!(err("[a-]"), RegexpError::InvalidRange { from: 97, to: 93 });
+        // With an upper bound above `a`, the unclosed class is the error.
         assert_eq!(
-            err("[a-]"),
+            err("[a-~"),
             RegexpError::ExpectedChar {
                 expected: ']',
                 pos: 4
@@ -2151,6 +2166,28 @@ mod tests {
             err("a{99999999999}"),
             RegexpError::IntegerExpected { pos: 2 }
         );
+    }
+
+    #[test]
+    fn bounds_past_i32_max_are_errors_as_in_java() {
+        // `Integer.parseInt` rejects 2^31 .. 2^32-1, which a `u32` accepts.
+        assert_eq!(
+            err("a{3000000000}"),
+            RegexpError::IntegerExpected { pos: 2 }
+        );
+        assert!(matches!(
+            err("<0-3000000000>"),
+            RegexpError::IntervalSyntax { .. }
+        ));
+    }
+
+    #[test]
+    fn inverted_class_range_is_an_error_as_in_java() {
+        let e = err("[z-a]");
+        assert_eq!(e, RegexpError::InvalidRange { from: 122, to: 97 });
+        assert_eq!(e.to_string(), "invalid range: from (122) cannot be > to (97)");
+        assert_eq!(err("[^z-a]"), e);
+        assert!(RegexpPattern::parse("[a-a]").is_ok());
     }
 
     // -- literal_prefix ------------------------------------------------
