@@ -918,6 +918,28 @@ fn bench_sorted_numeric_varying_bpv(c: &mut Criterion) {
             black_box(sum)
         })
     });
+
+    // A single-width field read a 512-document window at a time, as the
+    // aggregations do.
+    let narrow: Vec<Vec<i64>> = (0..DOCS as i64).map(|d| vec![d % 97, d % 97 + 3]).collect();
+    let (dvm, dvd, _) = ndv::write_single_dense_sorted_numeric_field(0, &narrow, &id, "").unwrap();
+    let (_, meta) = ndv::parse_meta(&dvm, &id, "", &fis).unwrap();
+    let entry = meta.sorted_numeric_entry(0).unwrap();
+    c.bench_function("doc_values/sorted_numeric_fill_window_512", |b| {
+        let (mut offsets, mut values) = (Vec::new(), Vec::new());
+        b.iter(|| {
+            let mut r = ndv::SortedNumericReader::new(&dvd, entry);
+            let mut n = 0usize;
+            for start in (0..DOCS).step_by(512) {
+                let len = 512.min(DOCS - start);
+                assert!(r
+                    .fill_window(start as i32, len, &mut offsets, &mut values)
+                    .unwrap());
+                n += values.len();
+            }
+            black_box(n)
+        })
+    });
 }
 
 /// Flushing a dense NUMERIC field whose values share a large GCD (timestamps
@@ -1077,9 +1099,130 @@ fn bench_fst_compile(c: &mut Criterion) {
     group.finish();
 }
 
+/// The wildcard/regexp n-gram index over a 100k-term dictionary: the build
+/// (two map lookups per term byte) and a candidate query.
+fn bench_term_ngram(c: &mut Criterion) {
+    use lucene_codecs::term_ngram::{grams_of, padded, TermNgramIndex};
+    let mut s = 0x2545_f491_4f6c_dd1du64;
+    let mut terms: Vec<Vec<u8>> = (0..100_000)
+        .map(|_| {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            let len = 4 + (s % 9) as usize;
+            (0..len)
+                .map(|i| b'a' + ((s >> (i * 5)) % 26) as u8)
+                .collect()
+        })
+        .collect();
+    terms.sort();
+    terms.dedup();
+    c.bench_function("term_ngram/build_100k", |b| {
+        b.iter(|| black_box(TermNgramIndex::build(terms.iter().map(Vec::as_slice)).unwrap()))
+    });
+    let index = TermNgramIndex::build(terms.iter().map(Vec::as_slice)).unwrap();
+    let (mut sym, mut keys) = (Vec::new(), Vec::new());
+    padded(b"abc", &mut sym);
+    grams_of(&sym, &mut keys);
+    c.bench_function("term_ngram/candidates_abc", |b| {
+        b.iter(|| black_box(index.candidates(&keys, usize::MAX)))
+    });
+}
+
+/// `FuzzyMatch::edits` over 100k candidate terms, as a fuzzy scan tests
+/// every term of a block.
+fn bench_fuzzy_edits(c: &mut Criterion) {
+    use lucene_codecs::fuzzy::FuzzyMatch;
+    let mut s = 0x9e37_79b9_7f4a_7c15u64;
+    let terms: Vec<Vec<u8>> = (0..100_000)
+        .map(|_| {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            let len = 5 + (s % 6) as usize;
+            (0..len)
+                .map(|i| b'a' + ((s >> (i * 5)) % 6) as u8)
+                .collect()
+        })
+        .collect();
+    let m = FuzzyMatch::new(b"abcdef", 2, 1, true);
+    c.bench_function("fuzzy/edits_100k", |b| {
+        b.iter(|| terms.iter().filter(|t| m.edits(t).is_some()).count())
+    });
+}
+
+/// The one-dimensional BKD merge (`BKDWriter.merge`) of 10 sorted 50k-point
+/// sources, as an IntPoint/LongPoint merge runs it.
+fn bench_bkd_merge_1d(c: &mut Criterion) {
+    use lucene_codecs::bkd_writer::{BkdConfig, BkdWriter, VERSION_CURRENT};
+    const SOURCES: usize = 10;
+    const PER: usize = 50_000;
+    let segs: Vec<Vec<(Vec<u8>, i32)>> = (0..SOURCES)
+        .map(|s| {
+            let mut pts: Vec<(Vec<u8>, i32)> = (0..PER)
+                .map(|i| {
+                    let v = ((i * SOURCES + s) as u64).wrapping_mul(2_654_435_761) as u32;
+                    (v.to_be_bytes().to_vec(), (s * PER + i) as i32)
+                })
+                .collect();
+            pts.sort();
+            pts
+        })
+        .collect();
+    let config = BkdConfig::new(1, 1, 4, 512).unwrap();
+    c.bench_function("points/merge_1d_10x50k", |b| {
+        b.iter(|| {
+            let sources: Vec<Box<dyn Iterator<Item = (Vec<u8>, i32)>>> = segs
+                .iter()
+                .map(|s| {
+                    Box::new(s.iter().map(|(v, d)| (v.clone(), *d)))
+                        as Box<dyn Iterator<Item = (Vec<u8>, i32)>>
+                })
+                .collect();
+            let mut w = BkdWriter::new(
+                SOURCES * PER,
+                None,
+                "_m",
+                config,
+                16.0,
+                (SOURCES * PER) as u64,
+                VERSION_CURRENT,
+            )
+            .unwrap();
+            let mut data = Vec::new();
+            black_box(w.merge(&mut data, sources).unwrap());
+            black_box(data.len())
+        })
+    });
+}
+
+/// BYTE-encoded vector similarity over 384 dims, the per-candidate call of
+/// `ByteVectorScorer` during an HNSW search or graph build.
+fn bench_byte_similarity(c: &mut Criterion) {
+    let a: Vec<u8> = (0..384u32)
+        .map(|i| (i.wrapping_mul(37) % 256) as u8)
+        .collect();
+    let b: Vec<u8> = (0..384u32)
+        .map(|i| (i.wrapping_mul(91) % 256) as u8)
+        .collect();
+    c.bench_function("vectors/byte_dot_384", |bch| {
+        bch.iter(|| lucene_codecs::vectors::dot_product_bytes(black_box(&a), black_box(&b)))
+    });
+    c.bench_function("vectors/byte_square_384", |bch| {
+        bch.iter(|| lucene_codecs::vectors::square_distance_bytes(black_box(&a), black_box(&b)))
+    });
+    c.bench_function("vectors/byte_cosine_384", |bch| {
+        bch.iter(|| lucene_codecs::vectors::cosine_bytes(black_box(&a), black_box(&b)))
+    });
+}
+
 criterion_group!(
     benches,
+    bench_byte_similarity,
     bench_fst_compile,
+    bench_term_ngram,
+    bench_fuzzy_edits,
+    bench_bkd_merge_1d,
     bench_postings_write,
     bench_numeric_write_gcd,
     bench_sorted_numeric_varying_bpv,
