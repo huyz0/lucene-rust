@@ -110,6 +110,11 @@ fn bench_footer_crc(c: &mut Criterion) {
         b.iter(|| black_box(lucene_store::codec_util::crc32(&buf)))
     });
     group.finish();
+    // A typical small file's footer: the parallel path must cost nothing.
+    let small = vec![0x5Au8; 1024];
+    c.bench_function("codec_util/crc32_1kib", |b| {
+        b.iter(|| black_box(lucene_store::codec_util::crc32(black_box(&small))))
+    });
 }
 
 criterion_group!(benches, bench_vec_encode, bench_fs_output, bench_footer_crc);
