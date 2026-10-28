@@ -3600,6 +3600,29 @@ pub fn count_boolean_query_segment(
         reader: seg.reader,
         similarity: None,
     };
+    if let Some(n) = count_boolean_query_shortcut(seg, query)? {
+        return Ok(n);
+    }
+    let mut count = Count(0);
+    if let Some(mut bulk) = exec::bulk_boolean(&ctx, query, 1.0, exec::Mode::NoScores)? {
+        exec::score_segment(
+            &mut bulk,
+            exec::Mode::NoScores,
+            seg.live_docs,
+            &mut count,
+            ctx.max_doc,
+        )?;
+    }
+    Ok(count.0)
+}
+
+/// `Weight.count` for a segment when it is answered without iterating
+/// matches -- a lone term with no deletions, an `exists` from exact field
+/// statistics -- else `None`.
+pub(crate) fn count_boolean_query_shortcut(
+    seg: &multi_segment::OpenSegment<'_>,
+    query: &BooleanQuery,
+) -> Result<Option<u64>> {
     // `BooleanWeight.count` of a lone required clause is that clause's
     // `Weight.count`: an `exists` is answered from the index statistics
     // (`FieldExistsQuery.count`) when they are exact for this segment, a term
@@ -3616,7 +3639,7 @@ pub fn count_boolean_query_segment(
             if let Some(n) = weight_count::count_field_exists_leaf(&leaf) {
                 #[cfg(any(test, feature = "asserting"))]
                 exec::asserting::check_count(n, seg.max_doc, seg.live_docs);
-                return Ok(u64::try_from(n).unwrap_or(0));
+                return Ok(Some(u64::try_from(n).unwrap_or(0)));
             }
         }
         (Some(Clause::Term(t)), _) => {
@@ -3624,22 +3647,12 @@ pub fn count_boolean_query_segment(
             {
                 #[cfg(any(test, feature = "asserting"))]
                 exec::asserting::check_count(n, seg.max_doc, seg.live_docs);
-                return Ok(u64::try_from(n).unwrap_or(0));
+                return Ok(Some(u64::try_from(n).unwrap_or(0)));
             }
         }
         _ => {}
     }
-    let mut count = Count(0);
-    if let Some(mut bulk) = exec::bulk_boolean(&ctx, query, 1.0, exec::Mode::NoScores)? {
-        exec::score_segment(
-            &mut bulk,
-            exec::Mode::NoScores,
-            seg.live_docs,
-            &mut count,
-            ctx.max_doc,
-        )?;
-    }
-    Ok(count.0)
+    Ok(None)
 }
 
 /// The one leaf a query is and nothing else -- the only `MUST` or `FILTER`

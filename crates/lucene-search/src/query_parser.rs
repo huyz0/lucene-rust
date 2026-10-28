@@ -239,6 +239,10 @@ pub enum ParseError {
     /// colon).
     #[error("unexpected end of input, expected {0}")]
     UnexpectedEnd(&'static str),
+    /// A `(` at this byte opened a group nested deeper than
+    /// [`MAX_GROUP_DEPTH`].
+    #[error("query nests more than {MAX_GROUP_DEPTH} groups at byte {0}")]
+    TooDeep(usize),
 }
 
 /// How a top-level clause combines into the enclosing [`BooleanQuery`] --
@@ -351,6 +355,7 @@ pub fn parse_query_with_operator(
         default_operator,
         multi_fields: &[],
         used_default_field: false,
+        depth: 0,
     };
     parser.skip_ws();
     if parser.pos >= parser.chars.len() {
@@ -418,6 +423,7 @@ pub fn parse_multi_field_query_with_boosts(
         default_operator,
         multi_fields: &owned,
         used_default_field: false,
+        depth: 0,
     };
     parser.skip_ws();
     if parser.pos >= parser.chars.len() {
@@ -490,7 +496,17 @@ struct Parser<'a> {
     /// [`Self::parse_boosted_atom`] once it has expanded that atom, so an
     /// enclosing group never expands a second time.
     used_default_field: bool,
+    /// How many `(` groups the parse is inside, bounded by
+    /// [`MAX_GROUP_DEPTH`].
+    depth: usize,
 }
+
+/// The deepest `(` nesting [`parse_query`] accepts. Each level recurses a
+/// few frames deep, and a Rust stack overflow aborts the process (Java's
+/// `StackOverflowError` is at least catchable), so a hostile `((((...` gets
+/// [`ParseError::TooDeep`] instead. An unoptimised build overflows a 2 MiB
+/// thread stack at about 250 levels, hence the margin.
+pub const MAX_GROUP_DEPTH: usize = 128;
 
 impl<'a> Parser<'a> {
     fn peek(&self) -> Option<char> {
@@ -803,6 +819,7 @@ impl<'a> Parser<'a> {
                 default_operator: self.default_operator,
                 multi_fields: &[],
                 used_default_field: false,
+                depth: self.depth,
             };
             let clause = sub.parse_atom_with_suffixes()?;
             debug_assert_eq!(
@@ -962,7 +979,13 @@ impl<'a> Parser<'a> {
             self.advance();
             return Err(ParseError::UnexpectedChar(open_pos, '('));
         }
-        let inner = self.parse_clause_list(true)?;
+        if self.depth >= MAX_GROUP_DEPTH {
+            return Err(ParseError::TooDeep(open_pos));
+        }
+        self.depth += 1;
+        let inner = self.parse_clause_list(true);
+        self.depth -= 1;
+        let inner = inner?;
         self.skip_ws();
         if self.peek() != Some(')') {
             return Err(ParseError::UnclosedParen(open_pos));
@@ -1313,6 +1336,32 @@ fn is_term_stop_char(c: char) -> bool {
 mod tests {
     use super::*;
     use crate::query::{BooleanQuery, PrefixQuery, WildcardQuery};
+
+    #[test]
+    fn deeply_nested_groups_are_refused_instead_of_overflowing_the_stack() {
+        // The limits fit an unoptimised build on a 2 MiB thread; a coverage-
+        // instrumented build's frames are larger, so run on a big stack.
+        std::thread::Builder::new()
+            .stack_size(64 << 20)
+            .spawn(|| {
+                let nested = |depth: usize| format!("{}a{}", "(".repeat(depth), ")".repeat(depth));
+                assert!(matches!(
+                    parse_query(&nested(MAX_GROUP_DEPTH), Some("f")),
+                    Ok(Clause::Term(_))
+                ));
+                assert_eq!(
+                    parse_query(&nested(MAX_GROUP_DEPTH + 1), Some("f")),
+                    Err(ParseError::TooDeep(MAX_GROUP_DEPTH))
+                );
+                assert_eq!(
+                    parse_query(&nested(200_000), Some("f")),
+                    Err(ParseError::TooDeep(MAX_GROUP_DEPTH))
+                );
+            })
+            .expect("spawn")
+            .join()
+            .expect("no panic");
+    }
 
     // --- `AND`/`OR`/`NOT` operators (`QueryParserBase.addClause`) ---
 

@@ -44,7 +44,7 @@
 use std::sync::Arc;
 
 use lucene_codecs::field_infos::IndexOptions;
-use lucene_codecs::postings::Position;
+use lucene_codecs::postings::{Position, PostingsFlags};
 
 use crate::exec::{self, LeafContext, Mode, NO_MORE_DOCS};
 use crate::multi_segment::OpenSegment;
@@ -687,13 +687,29 @@ fn occurrences(
     if let (Some(pos_in), true) = (seg.pos_in, ft.index_options().subsumes_positions()) {
         return Ok(ft.occurrences_for_doc(term, seg.doc_in, pos_in, seg.pay_in, doc)?);
     }
-    let Some(postings) = ft.postings(term, seg.doc_in)? else {
+    let Some(seeked) = ft.seek_term_state(term)? else {
         return Ok(None);
     };
-    let Ok(i) = postings.docs.binary_search(&doc) else {
-        return Ok(None);
+    let freq = match seg.doc_in {
+        // One `advance` on a lazy cursor, not the whole posting list decoded
+        // to find one document: this runs per matched document and term.
+        Some(doc_in) if seeked.stats.doc_freq > 1 => {
+            let mut cursor = ft.lazy_postings_for(&seeked, doc_in, PostingsFlags::Freqs)?;
+            if cursor.advance(doc)? != doc {
+                return Ok(None);
+            }
+            cursor.freq().unwrap_or(1).max(1)
+        }
+        _ => {
+            let Some(postings) = ft.postings(term, seg.doc_in)? else {
+                return Ok(None);
+            };
+            let Ok(i) = postings.docs.binary_search(&doc) else {
+                return Ok(None);
+            };
+            postings.freqs.get(i).copied().unwrap_or(1).max(1)
+        }
     };
-    let freq = postings.freqs.get(i).copied().unwrap_or(1).max(1);
     let none = Position {
         position: -1,
         start_offset: -1,

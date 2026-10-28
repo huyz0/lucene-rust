@@ -532,8 +532,13 @@ impl OffsetsEnum for MultiOffsets {
         }
         let mut top = self.queue.remove(0);
         if top.next_position()? {
-            self.queue.push(top);
-            self.sort();
+            // The rest is still sorted, so one binary search places `top`
+            // where pushing it and re-running the stable sort would: after
+            // every entry that does not compare greater.
+            let at = self
+                .queue
+                .partition_point(|x| compare_offsets(&**x, &*top) != Ordering::Greater);
+            self.queue.insert(at, top);
             return Ok(true);
         }
         Ok(!self.queue.is_empty())

@@ -845,7 +845,7 @@ impl ValSlots {
             (None, None) => 0,
             (None, Some(_)) => self.missing_cmp,
             (Some(_), None) => -self.missing_cmp,
-            (Some(x), Some(y)) => x.cmp(y) as i32,
+            (Some(x), Some(y)) => cmp_bytes(x, y) as i32,
         }
     }
 }
@@ -883,7 +883,7 @@ impl StrSlots {
             (None, None) => 0,
             (None, Some(_)) => self.missing_cmp,
             (Some(_), None) => -self.missing_cmp,
-            (Some(x), Some(y)) => x.as_slice().cmp(y.as_slice()) as i32,
+            (Some(x), Some(y)) => cmp_bytes(x, y) as i32,
         }
     }
 }
@@ -908,6 +908,23 @@ impl Comparator {
             }
         }
     }
+}
+
+/// `Arrays.compareUnsigned` over two byte strings. Sort keys are mostly
+/// short, where a `memcmp` call costs more than the comparison: the first
+/// eight bytes of each are compared as one big-endian word inline (the
+/// order of the bytes and then of the lengths), the rest only on a tie.
+#[inline]
+fn cmp_bytes(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
+    if a.len() <= 8 && b.len() <= 8 {
+        let word = |x: &[u8]| {
+            let mut w = [0u8; 8];
+            w[..x.len()].copy_from_slice(x);
+            u64::from_be_bytes(w)
+        };
+        return word(a).cmp(&word(b)).then(a.len().cmp(&b.len()));
+    }
+    a.cmp(b)
 }
 
 /// `Long.compare`, as the sign of an `i32`.
@@ -2408,13 +2425,14 @@ enum LeafKey<'a> {
     Custom(Box<dyn LeafFieldComparator + 'a>),
 }
 
-/// `TermValComparator.getValueForDoc`.
-fn binary_value(
-    column: &mut Option<lucene_codecs::doc_values::BinaryReader<'_>>,
+/// `TermValComparator.getValueForDoc`: borrowed from the column's bytes, so
+/// a comparison against the bottom or top allocates nothing.
+fn binary_value<'a>(
+    column: &mut Option<lucene_codecs::doc_values::BinaryReader<'a>>,
     doc: i32,
-) -> Result<Option<Vec<u8>>> {
+) -> Result<Option<&'a [u8]>> {
     Ok(match column {
-        Some(r) => r.value(doc)?.map(<[u8]>::to_vec),
+        Some(r) => r.value(doc)?,
         None => None,
     })
 }
@@ -3461,7 +3479,7 @@ impl<'a> Leaf<'a> {
                 LeafKey::Bytes(col) => {
                     let v = binary_value(col, doc)?;
                     let vals = c.vals.as_ref().ok_or(SortError::NoKeys)?;
-                    c.mul * vals.compare_values(vals.bottom.as_deref(), v.as_deref())
+                    c.mul * vals.compare_values(vals.bottom.as_deref(), v)
                 }
                 LeafKey::Custom(_) => {
                     let cs = c.custom.as_ref().ok_or(SortError::NoKeys)?;
@@ -3494,7 +3512,7 @@ impl<'a> Leaf<'a> {
                 LeafKey::Bytes(col) => {
                     let v = binary_value(col, doc)?;
                     let vals = c.vals.as_ref().ok_or(SortError::NoKeys)?;
-                    c.mul * vals.compare_values(vals.top.as_deref(), v.as_deref())
+                    c.mul * vals.compare_values(vals.top.as_deref(), v)
                 }
                 LeafKey::Custom(_) => {
                     let v = self.custom_value(i, doc, scorer)?;
@@ -3526,7 +3544,14 @@ impl<'a> Leaf<'a> {
                 continue;
             }
             if let (LeafKey::Bytes(col), Some(v)) = (&mut self.keys[i], tf.comps[i].vals.as_mut()) {
-                v.values[slot] = binary_value(col, doc)?;
+                // Into the slot's own buffer, kept across copies.
+                match (binary_value(col, doc)?, &mut v.values[slot]) {
+                    (Some(b), Some(buf)) => {
+                        buf.clear();
+                        buf.extend_from_slice(b);
+                    }
+                    (b, slot) => *slot = b.map(<[u8]>::to_vec),
+                }
                 continue;
             }
             if matches!(self.keys[i], LeafKey::Custom(_)) {
@@ -4296,7 +4321,8 @@ fn merge_top_docs(sort: &[SortField], top_n: usize, parts: Vec<TopFieldDocs>) ->
         }
         hits.extend(p.hits);
     }
-    hits.sort_by(|a, b| compare_hits(sort, a, b));
+    let order = KeyOrder::new(sort);
+    hits.sort_by(|a, b| compare_hits(&order, a, b));
     hits.truncate(top_n);
     TopFieldDocs {
         hits,
@@ -4307,58 +4333,78 @@ fn merge_top_docs(sort: &[SortField], top_n: usize, parts: Vec<TopFieldDocs>) ->
 
 /// Two hits in the sort's order (`FieldComparator.compareValues` times
 /// `reverseMul`, key by key), then by document.
-fn compare_hits(sort: &[SortField], a: &FieldDoc, b: &FieldDoc) -> std::cmp::Ordering {
-    compare_keys(sort, a, b).then(a.doc.cmp(&b.doc))
+fn compare_hits(order: &KeyOrder<'_>, a: &FieldDoc, b: &FieldDoc) -> std::cmp::Ordering {
+    order.compare(a, b).then(a.doc.cmp(&b.doc))
 }
 
 /// Two hits by the sort's keys alone: `FieldComparator.compareValues` times
 /// `reverseMul`, key by key (`TopDocs.MergeSortQueue.lessThan` before its
-/// tie-breaker).
-pub(crate) fn compare_keys(sort: &[SortField], a: &FieldDoc, b: &FieldDoc) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-    for (k, key) in sort.iter().enumerate() {
-        let (x, y) = (
-            a.values.get(k).copied().unwrap_or(0),
-            b.values.get(k).copied().unwrap_or(0),
-        );
-        let ord = match key.ty {
-            // Stored as its f32 bits; relevance orders the highest first.
-            SortType::Score => {
-                score_value(f32::from_bits(x as u32)).cmp(&score_value(f32::from_bits(y as u32)))
-            }
-            SortType::Custom(id) => {
-                let Ok(c) = custom_comparator(id, key, 1) else {
-                    return Ordering::Equal;
-                };
-                let bytes = c.values_are_bytes();
-                let va = sort_value_of(bytes, x, a.terms.get(k).and_then(Option::as_ref));
-                let vb = sort_value_of(bytes, y, b.terms.get(k).and_then(Option::as_ref));
-                c.compare_values(&va, &vb)
-            }
-            SortType::String | SortType::StringVal => {
-                let missing_cmp = if key.missing != 0 {
-                    Ordering::Greater
-                } else {
-                    Ordering::Less
-                };
-                match (
-                    a.terms.get(k).and_then(Option::as_ref),
-                    b.terms.get(k).and_then(Option::as_ref),
-                ) {
-                    (None, None) => Ordering::Equal,
-                    (None, Some(_)) => missing_cmp,
-                    (Some(_), None) => missing_cmp.reverse(),
-                    (Some(p), Some(q)) => p.cmp(q),
-                }
-            }
-            _ => x.cmp(&y),
-        };
-        let ord = if key.reverse { ord.reverse() } else { ord };
-        if ord != Ordering::Equal {
-            return ord;
-        }
+/// tie-breaker), with each custom key's comparator resolved once up front
+/// (`MergeSortQueue` builds its comparators in its constructor).
+pub(crate) struct KeyOrder<'s> {
+    sort: &'s [SortField],
+    /// Per key: the custom comparator, `None` for built-in keys. A custom key
+    /// whose source cannot be resolved compares every pair as equal.
+    custom: Vec<Option<Result<Box<dyn FieldComparator>>>>,
+}
+
+impl<'s> KeyOrder<'s> {
+    pub(crate) fn new(sort: &'s [SortField]) -> Self {
+        let custom = sort
+            .iter()
+            .map(|key| match key.ty {
+                SortType::Custom(id) => Some(custom_comparator(id, key, 1)),
+                _ => None,
+            })
+            .collect();
+        KeyOrder { sort, custom }
     }
-    Ordering::Equal
+
+    pub(crate) fn compare(&self, a: &FieldDoc, b: &FieldDoc) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        for (k, key) in self.sort.iter().enumerate() {
+            let (x, y) = (
+                a.values.get(k).copied().unwrap_or(0),
+                b.values.get(k).copied().unwrap_or(0),
+            );
+            let ord = match key.ty {
+                // Stored as its f32 bits; relevance orders the highest first.
+                SortType::Score => score_value(f32::from_bits(x as u32))
+                    .cmp(&score_value(f32::from_bits(y as u32))),
+                SortType::Custom(_) => {
+                    let Some(Ok(c)) = &self.custom[k] else {
+                        return Ordering::Equal;
+                    };
+                    let bytes = c.values_are_bytes();
+                    let va = sort_value_of(bytes, x, a.terms.get(k).and_then(Option::as_ref));
+                    let vb = sort_value_of(bytes, y, b.terms.get(k).and_then(Option::as_ref));
+                    c.compare_values(&va, &vb)
+                }
+                SortType::String | SortType::StringVal => {
+                    let missing_cmp = if key.missing != 0 {
+                        Ordering::Greater
+                    } else {
+                        Ordering::Less
+                    };
+                    match (
+                        a.terms.get(k).and_then(Option::as_ref),
+                        b.terms.get(k).and_then(Option::as_ref),
+                    ) {
+                        (None, None) => Ordering::Equal,
+                        (None, Some(_)) => missing_cmp,
+                        (Some(_), None) => missing_cmp.reverse(),
+                        (Some(p), Some(q)) => p.cmp(q),
+                    }
+                }
+                _ => x.cmp(&y),
+            };
+            let ord = if key.reverse { ord.reverse() } else { ord };
+            if ord != Ordering::Equal {
+                return ord;
+            }
+        }
+        Ordering::Equal
+    }
 }
 
 /// The statistics a sorted search hands its leaves, index-wide: every
@@ -4857,6 +4903,31 @@ fn count_rest(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cmp_bytes_is_unsigned_lexicographic_order() {
+        let alphabet = [0u8, 1, 0x7f, 0x80, 0xff];
+        let mut all: Vec<Vec<u8>> = vec![Vec::new()];
+        for len in 1..=3 {
+            let mut next = Vec::new();
+            for v in all.iter().filter(|v| v.len() == len - 1) {
+                for &b in &alphabet {
+                    let mut w = v.clone();
+                    w.push(b);
+                    next.push(w);
+                }
+            }
+            all.extend(next);
+        }
+        all.push(vec![1; 9]);
+        all.push(vec![1; 8]);
+        all.push([vec![1; 8], vec![0]].concat());
+        for a in &all {
+            for b in &all {
+                assert_eq!(super::cmp_bytes(a, b), a.as_slice().cmp(b), "{a:?} {b:?}");
+            }
+        }
+    }
+
     use super::*;
 
     #[test]

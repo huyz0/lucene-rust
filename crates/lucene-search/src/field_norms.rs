@@ -642,6 +642,18 @@ impl<'a> FieldNormsCursor<'_, 'a> {
     /// [`FieldNorms`]'s `norm_inverse` table.
     #[inline]
     pub fn norm_inverse(&mut self, doc: i32) -> norms::Result<f32> {
+        // The dense one-byte field, inline: a scorer calls this once per
+        // scored document, and `norm_byte`'s other cases stay out of line.
+        if let (None, Some(bytes)) = (&self.text, self.norms.dense_norm_bytes) {
+            if let Some(&b) = bytes.get(doc as usize) {
+                return Ok(self.norms.norm_inverse[b as usize]);
+            }
+        }
+        self.norm_inverse_slow(doc)
+    }
+
+    #[inline(never)]
+    fn norm_inverse_slow(&mut self, doc: i32) -> norms::Result<f32> {
         Ok(match self.norm_byte(doc)? {
             Some(b) => self.norms.norm_inverse[b as usize],
             // Same fallback as `field_length`: a doc the field legitimately

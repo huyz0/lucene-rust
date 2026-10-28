@@ -673,12 +673,16 @@ impl TopDocsCollector {
     /// score threshold before then. `u64::MAX` disables pruning entirely,
     /// which is exactly Java's `Integer.MAX_VALUE` sentinel that makes
     /// `scoreMode()` return `COMPLETE`.
+    ///
+    /// As in Java's constructor (`Math.max(totalHitsThreshold, numHits)`),
+    /// the threshold is never below `top_n`: a query matching exactly `top_n`
+    /// documents reports an exact (`EQUAL_TO`) count.
     pub fn with_total_hits_threshold(top_n: usize, total_hits_threshold: u64) -> Self {
         Self {
             top_n,
             hits: Vec::new(),
             total_hits: 0,
-            total_hits_threshold,
+            total_hits_threshold: total_hits_threshold.max(top_n as u64),
             total_hits_relation: TotalHitsRelation::EqualTo,
             after: None,
             min_score_acc: None,
