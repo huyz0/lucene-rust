@@ -1216,8 +1216,48 @@ fn bench_byte_similarity(c: &mut Criterion) {
     });
 }
 
+/// A 2-D BKD build that spills: 300k points against a 0.05 MB heap budget, so
+/// the radix partitions read their ranges back from the offline temp file.
+fn bench_bkd_offline_2d(c: &mut Criterion) {
+    use lucene_codecs::bkd_writer::{BkdConfig, BkdWriter, VERSION_CURRENT};
+    const N: usize = 300_000;
+    let points: Vec<[u8; 8]> = (0..N as u64)
+        .map(|i| {
+            let x = i.wrapping_mul(2_654_435_761) as u32;
+            let y = i.wrapping_mul(40_503).rotate_left(7) as u32;
+            let mut p = [0u8; 8];
+            p[..4].copy_from_slice(&x.to_be_bytes());
+            p[4..].copy_from_slice(&y.to_be_bytes());
+            p
+        })
+        .collect();
+    let config = BkdConfig::new(2, 2, 4, 512).unwrap();
+    c.bench_function("points/offline_2d_300k", |b| {
+        b.iter(|| {
+            let temp = lucene_store::ByteBuffersDirectory::new();
+            let mut w = BkdWriter::new(
+                N,
+                Some(&temp),
+                "_t",
+                config,
+                0.05,
+                N as u64,
+                VERSION_CURRENT,
+            )
+            .unwrap();
+            for (doc, p) in points.iter().enumerate() {
+                w.add(p, doc as i32).unwrap();
+            }
+            let mut data = Vec::new();
+            black_box(w.finish(&mut data).unwrap());
+            black_box(data.len())
+        })
+    });
+}
+
 criterion_group!(
     benches,
+    bench_bkd_offline_2d,
     bench_byte_similarity,
     bench_fst_compile,
     bench_term_ngram,
