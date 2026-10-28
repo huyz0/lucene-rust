@@ -195,14 +195,16 @@ pub fn commit_byte_size(
 fn files_byte_size(dir: &dyn Directory, files: &[String]) -> u64 {
     let mut total = 0u64;
     for file in files {
-        if let Ok(input) = dir.open(file) {
+        // `file_length`, not `open(..).len()`: `FsDirectory::open` reads the
+        // whole file, and this runs over every segment on every merge pass.
+        if let Ok(len) = dir.file_length(file) {
             // Saturating rather than a bare `+`: `info.files` is parsed off
             // the `.si`, so the *number* of terms is file-controlled even
             // though each term is the real byte length of a file that opened.
             // Saturation is the honest failure here -- it can only make a
             // segment look larger, and a larger segment is one this policy
             // excludes from merging, never one it merges wrongly.
-            total = total.saturating_add(input.len() as u64);
+            total = total.saturating_add(len);
         }
     }
     total

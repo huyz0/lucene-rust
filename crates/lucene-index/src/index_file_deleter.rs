@@ -812,10 +812,10 @@ impl<'d> IndexFileDeleter<'d> {
                 // what catches that in tests).
                 *count = count.saturating_sub(1);
                 if *count == 0 {
+                    // Removed from `ref_counts`, so a repeat of `name` later
+                    // in `files` finds no entry: no duplicate check needed.
                     self.ref_counts.remove(name);
-                    if !to_delete.contains(name) {
-                        to_delete.push(name.clone());
-                    }
+                    to_delete.push(name.clone());
                 }
             }
         }
@@ -1024,12 +1024,16 @@ pub(crate) fn parse_segment_name(file_name: &str) -> &str {
     // ARITH: `i` is a byte offset *within* `file_name[1..]`, so `i + 1` is at
     // most `file_name.len()` -- an in-memory length, hence at most
     // `isize::MAX`.
+    //
+    // `get`, not slicing: a `.si` names its own files, so a corrupt one can
+    // put an empty or non-ASCII-led name here, which must not panic.
     #[allow(clippy::arithmetic_side_effects)]
-    let idx = file_name[1..]
-        .find(['_', '.'])
+    let idx = file_name
+        .get(1..)
+        .and_then(|rest| rest.find(['_', '.']))
         .map(|i| i + 1)
         .unwrap_or(file_name.len());
-    &file_name[..idx]
+    file_name.get(..idx).unwrap_or(file_name)
 }
 
 /// `SegmentInfos.files(true)` read off disk: the commit's `segments_N`, then
@@ -1037,12 +1041,15 @@ pub(crate) fn parse_segment_name(file_name: &str) -> &str {
 /// `.liv`, field-infos and doc-values-update files.
 fn commit_file_names(dir: &dyn Directory, infos: &SegmentInfos) -> Result<Vec<String>> {
     let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
     if let Some(name) = lucene_store::directory::segments_file_name(infos.generation) {
+        seen.insert(name.clone());
         out.push(name);
     }
     for sci in &infos.segments {
         for f in segment_files(dir, sci)? {
-            if !out.contains(&f) {
+            if !seen.contains(&f) {
+                seen.insert(f.clone());
                 out.push(f);
             }
         }
