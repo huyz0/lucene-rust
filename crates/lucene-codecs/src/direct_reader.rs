@@ -295,29 +295,30 @@ fn read_at_width<const B: u8>(slice: &[u8], index: i64) -> Option<i64> {
 // comes off disk.
 #[allow(clippy::arithmetic_side_effects)]
 pub fn encode(values: &[i64], bits_per_value: u8) -> Vec<u8> {
-    let total_bits = values.len() as u128 * bits_per_value as u128;
+    let bpv = u32::from(bits_per_value.min(64));
+    let total_bits = values.len() as u128 * u128::from(bpv);
     let n_bytes = total_bits.div_ceil(8) as usize;
-    let mut out = vec![0u8; n_bytes];
-    for (i, &v) in values.iter().enumerate() {
-        let mut bit_pos = i as u128 * bits_per_value as u128;
-        let mut remaining = bits_per_value as u32;
-        let mut val = v as u64;
-        while remaining > 0 {
-            let byte_idx = (bit_pos >> 3) as usize;
-            let bit_off = (bit_pos & 7) as u32;
-            let can_write = 8 - bit_off;
-            let take = remaining.min(can_write);
-            let mask = if take == 64 {
-                u64::MAX
-            } else {
-                (1u64 << take) - 1
-            };
-            out[byte_idx] |= (((val & mask) << bit_off) & 0xFF) as u8;
-            val >>= take;
-            bit_pos += take as u128;
-            remaining -= take;
+    let mask = if bpv == 64 {
+        u64::MAX
+    } else {
+        (1u64 << bpv) - 1
+    };
+    let mut out = Vec::with_capacity(n_bytes);
+    // Little-endian bit packing, eight bytes at a time: `acc` holds the
+    // `nbits < 64` bits not yet written, so adding one value (at most 64
+    // bits) never overflows its 128.
+    let (mut acc, mut nbits) = (0u128, 0u32);
+    for &v in values {
+        acc |= u128::from(v as u64 & mask) << nbits;
+        nbits += bpv;
+        if nbits >= 64 {
+            out.extend_from_slice(&(acc as u64).to_le_bytes());
+            acc >>= 64;
+            nbits -= 64;
         }
     }
+    out.extend_from_slice(&(acc as u64).to_le_bytes()[..nbits.div_ceil(8) as usize]);
+    debug_assert_eq!(out.len(), n_bytes);
     out
 }
 
@@ -398,11 +399,63 @@ pub(crate) fn padding_bytes_needed(bits_per_value: u8) -> usize {
 
 #[cfg(test)]
 mod tests {
-    // The arithmetic gate is about values read off disk; a test's `i + 1` is
-    // not one. See docs/arithmetic-gate.md.
     #![allow(clippy::arithmetic_side_effects)]
 
     use super::*;
+
+    /// The bit-at-a-time encoder `encode` replaced, kept as its specification.
+    #[allow(clippy::arithmetic_side_effects)]
+    fn encode_bitwise(values: &[i64], bits_per_value: u8) -> Vec<u8> {
+        let total_bits = values.len() as u128 * bits_per_value as u128;
+        let n_bytes = total_bits.div_ceil(8) as usize;
+        let mut out = vec![0u8; n_bytes];
+        for (i, &v) in values.iter().enumerate() {
+            let mut bit_pos = i as u128 * bits_per_value as u128;
+            let mut remaining = bits_per_value as u32;
+            let mut val = v as u64;
+            while remaining > 0 {
+                let byte_idx = (bit_pos >> 3) as usize;
+                let bit_off = (bit_pos & 7) as u32;
+                let can_write = 8 - bit_off;
+                let take = remaining.min(can_write);
+                let mask = if take == 64 {
+                    u64::MAX
+                } else {
+                    (1u64 << take) - 1
+                };
+                out[byte_idx] |= (((val & mask) << bit_off) & 0xFF) as u8;
+                val >>= take;
+                bit_pos += take as u128;
+                remaining -= take;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn encode_matches_the_bitwise_specification() {
+        let mut x = 0x2545_F491_4F6C_DD1Du64;
+        for bpv in SUPPORTED_BITS.iter().map(|&b| b as u8).chain([0, 3, 63]) {
+            for n in [0usize, 1, 2, 7, 8, 9, 63, 64, 65, 300] {
+                let values: Vec<i64> = (0..n)
+                    .map(|_| {
+                        x ^= x << 13;
+                        x ^= x >> 7;
+                        x ^= x << 17;
+                        x as i64
+                    })
+                    .collect();
+                assert_eq!(
+                    encode(&values, bpv),
+                    encode_bitwise(&values, bpv),
+                    "bpv {bpv} n {n}"
+                );
+            }
+        }
+    }
+
+    // The arithmetic gate is about values read off disk; a test's `i + 1` is
+    // not one. See docs/arithmetic-gate.md.
 
     /// The reader agrees with [`get`] on every width, including the values
     /// in the last eight bytes of an *unpadded* slice (where it has to defer)

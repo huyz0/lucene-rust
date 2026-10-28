@@ -27,7 +27,7 @@
 //!
 //! `FST.FSTMetadata.save` + the on-heap body is [`CompiledFst::save`].
 
-use std::collections::HashMap;
+use lucene_util::fx_hash::FxHashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
 
@@ -548,6 +548,8 @@ impl FstCompilerBuilder {
             continuous_node_count: 0,
             last_read_len: 0,
             finished: false,
+            arc_bytes: Vec::new(),
+            key_scratch: Vec::new(),
         }
     }
 }
@@ -580,20 +582,22 @@ impl<V: Clone> UncompiledNode<V> {
     }
 }
 
+/// One arc of a node's identity for suffix sharing.
+type ArcKey<V> = (i32, i64, V, V, bool);
 /// A node's identity for suffix sharing: its arcs, fully resolved.
-type NodeKey<V> = Vec<(i32, i64, V, V, bool)>;
+type NodeKey<V> = Vec<ArcKey<V>>;
 
 #[derive(Debug)]
 struct Generation<V> {
     /// Node arcs -> (address, bytes a reader consumes through its last arc).
-    map: HashMap<NodeKey<V>, (i64, i64)>,
+    map: FxHashMap<NodeKey<V>, (i64, i64)>,
     copied_bytes: i64,
 }
 
 impl<V> Generation<V> {
     fn new() -> Self {
         Generation {
-            map: HashMap::new(),
+            map: FxHashMap::default(),
             copied_bytes: 0,
         }
     }
@@ -673,6 +677,11 @@ pub struct FstCompiler<O: FstOutputs> {
     /// just wrote (what `NodeHash` copies when promoting from fallback).
     last_read_len: i64,
     finished: bool,
+    /// `add_node`'s per-arc byte buffer, kept between nodes.
+    arc_bytes: Vec<u8>,
+    /// `dedup_add`'s lookup key, kept between nodes: a table hit (a shared
+    /// suffix) then allocates nothing; only a new entry copies it out.
+    key_scratch: Vec<ArcKey<O::Value>>,
 }
 
 /// A compiled FST: `FST.FSTMetadata` plus the on-heap body.
@@ -895,27 +904,30 @@ impl<O: FstOutputs> FstCompiler<O> {
     // ARITH: Java's `long` RAM accounting over in-memory table sizes.
     #[allow(clippy::arithmetic_side_effects)]
     fn dedup_add(&mut self, node_in: &UncompiledNode<O::Value>) -> i64 {
-        let key: NodeKey<O::Value> = node_in
-            .arcs
-            .iter()
-            .map(|a| {
-                (
-                    a.label,
-                    a.target,
-                    a.output.clone(),
-                    a.next_final_output.clone(),
-                    a.is_final,
-                )
-            })
-            .collect();
-        if let Some(&(addr, _)) = self.dedup.as_ref().and_then(|h| h.primary.map.get(&key)) {
+        let mut key = std::mem::take(&mut self.key_scratch);
+        key.clear();
+        key.extend(node_in.arcs.iter().map(|a| {
+            (
+                a.label,
+                a.target,
+                a.output.clone(),
+                a.next_final_output.clone(),
+                a.is_final,
+            )
+        }));
+        let hit = self
+            .dedup
+            .as_ref()
+            .and_then(|h| h.primary.map.get(key.as_slice()));
+        if let Some(&(addr, _)) = hit {
+            self.key_scratch = key;
             return addr;
         }
         let from_fallback = self
             .dedup
             .as_ref()
             .and_then(|h| h.fallback.as_ref())
-            .and_then(|f| f.map.get(&key))
+            .and_then(|f| f.map.get(key.as_slice()))
             .copied();
         let (addr, entry_read_len, copied) = match from_fallback {
             Some((addr, read_len)) => (addr, read_len, read_len),
@@ -925,9 +937,11 @@ impl<O: FstOutputs> FstCompiler<O> {
             }
         };
         let Some(hash) = self.dedup.as_mut() else {
+            self.key_scratch = key;
             return addr;
         };
-        hash.primary.map.insert(key, (addr, entry_read_len));
+        hash.primary.map.insert(key.clone(), (addr, entry_read_len));
+        self.key_scratch = key;
         hash.primary.copied_bytes += copied;
         let count = hash.primary.map.len() as i64;
         let copied_bytes = hash.primary.copied_bytes;
@@ -993,7 +1007,7 @@ impl<O: FstOutputs> FstCompiler<O> {
         let mut last_arc_start = 0usize;
         let mut max_bytes_per_arc = 0usize;
         let mut max_bytes_per_arc_without_label = 0usize;
-        let mut tmp = Vec::new();
+        let mut tmp = std::mem::take(&mut self.arc_bytes);
         for (arc_idx, arc) in node_in.arcs.iter().enumerate() {
             let mut flags = 0u8;
             if arc_idx == last_arc {
@@ -1041,6 +1055,7 @@ impl<O: FstOutputs> FstCompiler<O> {
                     max_bytes_per_arc_without_label.max(num_arc_bytes - num_label_bytes);
             }
         }
+        self.arc_bytes = tmp;
         self.last_read_len = self.scratch_pos as i64;
 
         if fixed {
