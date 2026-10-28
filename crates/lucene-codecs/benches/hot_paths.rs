@@ -1317,8 +1317,77 @@ fn bench_scalar_quantized_flush(c: &mut Criterion) {
     group.finish();
 }
 
+/// Term-vector flush through the callback writer: 2,000 documents, one field
+/// with positions and offsets, 60 terms of frequency 2 each.
+fn bench_term_vectors_flush(c: &mut Criterion) {
+    use lucene_codecs::field_infos::{
+        DocValuesSkipIndexType, DocValuesType, FieldInfo, IndexOptions, VectorEncoding,
+        VectorSimilarityFunction,
+    };
+    use lucene_codecs::term_vectors_writer::{
+        NativeTermVectorsWriter, TermVectorsWriteSink, TermVectorsWriteState,
+    };
+    const DOCS: i32 = 2_000;
+    let info = FieldInfo {
+        name: "body".to_string(),
+        number: 0,
+        store_term_vectors: true,
+        omit_norms: false,
+        store_payloads: false,
+        soft_deletes_field: false,
+        parent_field: false,
+        index_options: IndexOptions::DocsAndFreqsAndPositionsAndOffsets,
+        doc_values_type: DocValuesType::None,
+        doc_values_skip_index_type: DocValuesSkipIndexType::None,
+        doc_values_gen: -1,
+        attributes: Vec::new(),
+        point_dimension_count: 0,
+        point_index_dimension_count: 0,
+        point_num_bytes: 0,
+        vector_dimension: 0,
+        vector_encoding: VectorEncoding::Float32,
+        vector_similarity_function: VectorSimilarityFunction::Euclidean,
+    };
+    let terms: Vec<Vec<u8>> = (0..60)
+        .map(|t| format!("term{t:03}").into_bytes())
+        .collect();
+    let id = [5u8; 16];
+    c.bench_function("term_vectors/flush_2k_docs_60_terms", |b| {
+        b.iter(|| {
+            let dir = lucene_store::ByteBuffersDirectory::new();
+            let mut w = NativeTermVectorsWriter::new(TermVectorsWriteState {
+                directory: &dir,
+                segment: "_0",
+                id: &id,
+                suffix: "",
+                max_doc: DOCS,
+                format: None,
+            })
+            .unwrap();
+            for doc in 0..DOCS {
+                w.start_document(1).unwrap();
+                w.start_field(&info, terms.len() as i32, true, true, false)
+                    .unwrap();
+                for (t, term) in terms.iter().enumerate() {
+                    w.start_term(term, 2).unwrap();
+                    for k in 0..2 {
+                        let pos = (t as i32) * 2 + k + doc % 3;
+                        w.add_position(pos, pos * 6, pos * 6 + 5, None).unwrap();
+                    }
+                    w.finish_term().unwrap();
+                }
+                w.finish_field().unwrap();
+                w.finish_document().unwrap();
+            }
+            w.finish(DOCS).unwrap();
+            w.close().unwrap();
+        })
+    });
+}
+
 criterion_group!(
     benches,
+    bench_term_vectors_flush,
     bench_scalar_quantized_flush,
     bench_indexed_disi_decode,
     bench_bkd_offline_2d,
