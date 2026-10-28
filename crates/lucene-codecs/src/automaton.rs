@@ -548,14 +548,15 @@ pub trait TermAutomaton {
 /// [`TermAutomaton`], for `Terms.intersect(compiled, null)` --
 /// `IntersectTermsEnum` stepping `compiled.runAutomaton`. `-1` (a byte that
 /// leads nowhere) is [`DEAD`].
-pub struct RunnableTermAutomaton<'a>(pub &'a dyn lucene_util::automaton::ByteRunnable);
+pub struct RunnableTermAutomaton<'a>(pub lucene_util::automaton::ByteRunnableRef<'a>);
 
 impl RunnableTermAutomaton<'_> {
+    #[inline]
     fn step_byte(&self, state: u32, byte: u32) -> u32 {
         if state == DEAD {
             return DEAD;
         }
-        let next = self.0.step(state as i32, byte as i32);
+        let next = self.0.step_byte(state as i32, byte as u8);
         u32::try_from(next).unwrap_or(DEAD)
     }
 }

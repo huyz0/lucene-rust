@@ -2948,7 +2948,7 @@ impl FieldTerms {
             AutomatonType::SINGLE => {
                 CompiledTermsEnum::Single(compiled.term.as_deref().map(|t| (self, t)))
             }
-            AutomatonType::NORMAL => match compiled.get_byte_runnable() {
+            AutomatonType::NORMAL => match compiled.byte_runnable() {
                 Some(run) => CompiledTermsEnum::Normal(Box::new(DfaIntersect::new(
                     self,
                     crate::automaton::RunnableTermAutomaton(run),

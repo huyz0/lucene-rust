@@ -7,7 +7,7 @@ use std::fmt;
 use lucene_store::codec_util::{self, FOOTER_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
 use lucene_store::data_output::DataOutput;
-use lucene_util::automaton::{AutomatonType, ByteRunnable, CompiledAutomaton};
+use lucene_util::automaton::{AutomatonType, ByteRunnableRef, CompiledAutomaton};
 
 use super::fst_term_outputs::{FstTermOutputs, TermData};
 use super::{
@@ -418,7 +418,7 @@ impl FstFieldReader {
         compiled: &'a CompiledAutomaton,
         start_term: Option<&[u8]>,
     ) -> Result<FstIntersectTermsEnum<'a>> {
-        let fsa = match (compiled.automaton_type, compiled.get_byte_runnable()) {
+        let fsa = match (compiled.automaton_type, compiled.byte_runnable()) {
             (AutomatonType::NORMAL, Some(run)) => run,
             _ => {
                 return Err(Error::Unsupported(
@@ -625,7 +625,7 @@ struct Frame {
 /// `IntersectTermsEnum` over one of the dictionary's two output types.
 struct Intersect<'a, O: FstOutputs<Value = TermData>> {
     fst: &'a TypedFst<O>,
-    fsa: &'a dyn ByteRunnable,
+    fsa: ByteRunnableRef<'a>,
     /// `term`: `None` when the enum is exhausted; `level == len + 1`.
     term: Option<Vec<u8>>,
     pending: bool,
@@ -648,7 +648,7 @@ impl<O: FstOutputs<Value = TermData>> fmt::Debug for Intersect<'_, O> {
 impl<'a, O: FstOutputs<Value = TermData>> Intersect<'a, O> {
     fn new(
         fst: &'a TypedFst<O>,
-        fsa: &'a dyn ByteRunnable,
+        fsa: ByteRunnableRef<'a>,
         start_term: Option<&[u8]>,
     ) -> Result<Self> {
         let first = fst.first_arc();
