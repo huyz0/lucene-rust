@@ -1160,6 +1160,20 @@ impl FloatVectorValues<'_> {
         Ok(())
     }
 
+    /// `ord`'s vector, viewed in place in the `.vec` bytes when they can be
+    /// ([`lucene_util::vector_util::le_f32s`]: the usual case), else decoded
+    /// into `scratch` (which must be `dimension()` long, as for
+    /// [`Self::vector_into`]). Either way a scorer reads the components once
+    /// rather than once to decode and again to score.
+    pub fn vector_ref<'s>(&'s self, ord: i32, scratch: &'s mut [f32]) -> Result<&'s [f32]> {
+        let bytes = self.values.bytes(ord)?;
+        if let Some(floats) = lucene_util::vector_util::le_f32s(bytes) {
+            return Ok(floats);
+        }
+        self.vector_into(ord, scratch)?;
+        Ok(scratch)
+    }
+
     /// The `.vec` bytes of ordinals `from..to`, verbatim.
     ///
     /// `.vec` stores FLOAT32 components as little-endian `f32`, which is
@@ -1198,8 +1212,8 @@ impl FloatVectorValues<'_> {
         }
         let mut scratch = vec![0.0f32; self.values.dimension];
         for ord in 0..self.values.size {
-            self.vector_into(ord, &mut scratch)?;
-            heap.insert_with_overflow(ord, self.values.similarity.score(query, &scratch));
+            let candidate = self.vector_ref(ord, &mut scratch)?;
+            heap.insert_with_overflow(ord, self.values.similarity.score(query, candidate));
         }
         collect_descending(heap, |ord| self.values.ord_to_doc(ord))
     }
@@ -1819,8 +1833,8 @@ pub struct FloatVectorScorer<'a> {
 
 impl crate::hnsw::VectorScorer for FloatVectorScorer<'_> {
     fn score(&mut self, node: i32) -> Result<f32> {
-        self.values.vector_into(node, &mut self.scratch)?;
-        Ok(self.similarity.score(&self.query, &self.scratch))
+        let candidate = self.values.vector_ref(node, &mut self.scratch)?;
+        Ok(self.similarity.score(&self.query, candidate))
     }
 
     fn max_ord(&self) -> i32 {

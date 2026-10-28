@@ -13,6 +13,7 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use lucene_util::fixed_bit_set::FixedBitSet;
+use lucene_util::vector_util;
 use lucene_util::zigzag;
 
 const BLOCK_SIZE: usize = 16384;
@@ -68,8 +69,60 @@ fn bench_fixed_bit_set_cardinality(c: &mut Criterion) {
     });
 }
 
+/// Byte-vector similarity kernels (int8 / uint8 quantized HNSW scoring),
+/// SIMD dispatch vs the scalar specification, at a typical 768-dim vector.
+fn bench_byte_vector_kernels(c: &mut Criterion) {
+    let a: Vec<u8> = (0..768u32).map(|i| ((i * 37 + 11) % 251) as u8).collect();
+    let b: Vec<u8> = (0..768u32).map(|i| ((i * 91 + 7) % 241) as u8).collect();
+    let (ua, ub) = (&a, &b);
+    c.bench_function("byte_vectors/dot_i8", |bn| {
+        bn.iter(|| black_box(vector_util::dot_product_i8(black_box(&a), black_box(&b))))
+    });
+    c.bench_function("byte_vectors/dot_i8_scalar", |bn| {
+        bn.iter(|| {
+            black_box(vector_util::dot_product_i8_scalar(
+                black_box(&a),
+                black_box(&b),
+            ))
+        })
+    });
+    c.bench_function("byte_vectors/square_i8", |bn| {
+        bn.iter(|| {
+            black_box(vector_util::square_distance_i8(
+                black_box(&a),
+                black_box(&b),
+            ))
+        })
+    });
+    c.bench_function("byte_vectors/square_i8_scalar", |bn| {
+        bn.iter(|| {
+            black_box(vector_util::square_distance_i8_scalar(
+                black_box(&a),
+                black_box(&b),
+            ))
+        })
+    });
+    c.bench_function("byte_vectors/square_u8", |bn| {
+        bn.iter(|| {
+            black_box(vector_util::uint8_square_distance(
+                black_box(ua),
+                black_box(ub),
+            ))
+        })
+    });
+    c.bench_function("byte_vectors/square_u8_scalar", |bn| {
+        bn.iter(|| {
+            black_box(vector_util::uint8_square_distance_scalar(
+                black_box(ua),
+                black_box(ub),
+            ))
+        })
+    });
+}
+
 criterion_group!(
     benches,
+    bench_byte_vector_kernels,
     bench_zigzag_roundtrip,
     bench_fixed_bit_set_get,
     bench_fixed_bit_set_cardinality

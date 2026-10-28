@@ -69,6 +69,7 @@
 //!   rather than through a copy of it in the search layer.
 
 use std::cell::RefCell;
+use std::sync::Arc;
 
 use lucene_store::codec_util::{self, ID_LENGTH};
 use lucene_store::data_input::{DataInput, SliceInput};
@@ -763,7 +764,10 @@ pub struct HnswFieldEntry {
     pub dimension: i32,
     pub size: i32,
     /// `nodes_by_level[0]` is always empty (level 0 is `0..size` implicitly).
-    pub nodes_by_level: Vec<Vec<i32>>,
+    /// Shared with every [`OffHeapHnswGraph`] opened over this field, which a
+    /// kNN query does once per segment: a refcount bump, not a copy of every
+    /// upper-level node list.
+    pub nodes_by_level: Arc<[Vec<i32>]>,
     offsets_meta: Option<direct_monotonic::Meta>,
     offsets_offset: i64,
     offsets_length: i64,
@@ -1067,7 +1071,7 @@ pub(crate) fn read_graph_meta(
         num_levels,
         dimension,
         size,
-        nodes_by_level,
+        nodes_by_level: nodes_by_level.into(),
         offsets_meta,
         offsets_offset,
         offsets_length,
@@ -1083,7 +1087,7 @@ pub struct OffHeapHnswGraph<'a> {
     /// The node-offsets region (a `DirectMonotonicReader` payload).
     offsets_data: &'a [u8],
     offsets_meta: direct_monotonic::Meta,
-    nodes_by_level: Vec<Vec<i32>>,
+    nodes_by_level: Arc<[Vec<i32>]>,
     /// `graphLevelNodeIndexOffsets`: how many nodes precede each level in the
     /// flat node-offsets sequence.
     level_index_offsets: Vec<i64>,
@@ -1158,7 +1162,7 @@ impl<'a> OffHeapHnswGraph<'a> {
             data,
             offsets_data,
             offsets_meta,
-            nodes_by_level: entry.nodes_by_level.clone(),
+            nodes_by_level: Arc::clone(&entry.nodes_by_level),
             level_index_offsets,
             num_levels: entry.num_levels,
             entry_node,
